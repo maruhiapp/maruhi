@@ -4,5 +4,5 @@
     "correctness": "error",
     "suspicious": "error"
   },
-  "ignorePatterns": ["fallow-baselines"]
+  "ignorePatterns": ["fallow-baselines", ".agents", ".claude"]
 }

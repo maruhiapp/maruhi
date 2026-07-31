@@ -2,6 +2,8 @@
   "$schema": "./node_modules/fallow/schema.json",
   // CLI としてのみ使うツールは import されないため未使用依存から除外する
   "ignoreDependencies": ["@import-lint/cli"],
+  // エージェントスキル(ベンダードコンテンツ)は解析対象外
+  "ignorePatterns": [".agents/**", ".claude/**"],
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
