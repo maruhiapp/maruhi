@@ -34,7 +34,7 @@
 - **fallow**: baseline を `fallow-baselines/` にコミット済み。既存問題を意図的に受け入れ直すときだけ `bun run fallow:baseline` で更新する
 - **ImportLint**: `*.package` ディレクトリ命名が境界(`defaultImportability: "package"`)。Drizzle 隔離(ADR-0006)や crypto 内部の API 境界は、実装時に該当ディレクトリを `foo.package` に命名して有効化する
 - **React Doctor**: apps/web に React がまだ無いため「rules gated off」で素通りしている。スパイク A で React が入ると自動的に実検査になる。テレメトリ(Sentry)があるため **常に `--no-telemetry` を付ける**こと(scripts に設定済み)
-- **oxfmt**: Markdown を ignore にしてある(仕様文書を意図せず書き換えたため)。文書も整形対象にするかは人間の判断待ち
+- **oxfmt**: Markdown は整形対象外(決定済み 2026-07-31: 文書の整形は行わない)
 - web / docs の vitest プロジェクトは未定義。スパイク A / Blume 導入時にルート `vitest.config.ts` の projects に追加する
 
 ## エージェントスキル
@@ -50,6 +50,7 @@
 
 - 作業場所は `apps/web`(骨格のみ。React 依存なし)。使い捨てスパイクなら別ディレクトリでも可
 - スキル `funstack-static-knowledge` / `funstack-router-knowledge` / `heroui-react` を導入済み。HeroUI v3 は beta で `@beta` タグ必須、Tailwind v4 必須、Provider 不要・compound components、という v2 との差分がスキルに詳述されている
+- HeroUI Pro のライセンスは所有者が保有しており、クラウド環境(Cloud Agents > Secrets)に登録予定。ライセンスキーをリポジトリ・`.dev.vars` に書かないこと(CLAUDE.md のダミー値規則)
 - 依存追加は `bun add -E`(bunfig.toml の exact=true で強制)。理由をコミットメッセージに書く(CLAUDE.md)
 - web は Trusted Computing Base: CSP(`script-src 'self'`)、サードパーティスクリプト禁止を静的シェル段階から確認する
 - funstack-static は `@vitejs/plugin-rsc` ベース。RSC は静的シェルのみ(ADR-0007)の制約をスパイクの検証項目に含めること
