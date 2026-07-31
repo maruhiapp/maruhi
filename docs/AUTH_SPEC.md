@@ -1,0 +1,133 @@
+# maruhi 認証・アイデンティティ仕様書 (AUTH_SPEC)
+
+Version: 0.1-draft
+Status: レビュー中
+
+認証は GitHub OAuth の直接実装で行う(認証フレームワーク・外部 IdP サービスは使用しない)。
+ただしデータモデルは将来のエンタープライズ IdP(WorkOS 等)追加を無停止で行える形に固定する。
+この設計判断の経緯は ADR-0009 を参照。
+
+---
+
+## 1. 原則
+
+1. **GitHub は認証手段であり、アイデンティティの主ではない**。システム内の主体は常に内部 user_id
+2. **メールによる自動アカウントリンクは行わない**(アカウントリンク攻撃対策)。リンクは常にログイン済みセッションからの明示操作
+3. **セッションは DB バックで失効可能**。stateless JWT のみのセッションは禁止
+4. **CLI / API トークンは maruhi 自身が発行する**。GitHub のトークンを保存・流用しない
+5. ユーザー作成は単一の冪等な入口(get-or-create)で行い、認証フローと密結合させない
+
+## 2. データモデル
+
+```sql
+users (
+  id            TEXT PRIMARY KEY,   -- ULID。内部 user_id。全システムの主体識別子
+  email         TEXT,               -- 表示・通知用。識別子として使用禁止
+  email_verified INTEGER NOT NULL DEFAULT 0,
+  created_at, updated_at
+)
+
+linked_identities (
+  user_id          TEXT NOT NULL REFERENCES users(id),
+  provider         TEXT NOT NULL,   -- 'github'(将来: 'workos' 等)
+  provider_user_id TEXT NOT NULL,   -- GitHub の数値 ID(login 名ではない。login は変更可能)
+  provider_login   TEXT,            -- 表示用スナップショット
+  linked_at,
+  PRIMARY KEY (provider, provider_user_id)
+)
+
+organizations (
+  id, slug, name, created_at
+  -- 将来カラム(今は作らない): sso_connection_id, allowed_domains, enforce_sso
+)
+
+memberships (
+  org_id, user_id, role,            -- role: 'owner' | 'admin' | 'member'
+  PRIMARY KEY (org_id, user_id)
+)
+
+sessions (
+  id            TEXT PRIMARY KEY,   -- ランダム 256-bit の SHA-256 ハッシュを保存(生値は保存しない)
+  user_id       TEXT NOT NULL,
+  auth_method   TEXT NOT NULL,      -- 'github_oauth'(将来: 'sso' 等)。SSO 強制ポリシーに必要
+  created_at, expires_at, last_used_at
+)
+
+api_tokens (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  token_hash    TEXT NOT NULL,      -- SHA-256。生トークンは発行時に一度だけ表示
+  token_prefix  TEXT NOT NULL,      -- 表示用(例: maruhi_pat_Ab12…)
+  scopes        TEXT NOT NULL,      -- JSON 配列
+  expires_at, created_at, last_used_at
+)
+```
+
+規則:
+- プロジェクト・監査ログ・メンバーシップチェーン等、他のあらゆるテーブル / 構造からの参照は `users.id` のみ。`provider_user_id` を外部キーとして使用禁止
+- ルックアップは `(provider, provider_user_id)` でのみ行う。メールでのユーザー検索・照合をコードパスとして作らない
+
+## 3. Web ログイン(GitHub OAuth Authorization Code Flow)
+
+**セルフホストの前提**: GitHub OAuth(web / device とも)には OAuth App の client_id / client_secret が必要であり、これは maruhi が中央で配布できない(コールバック URL がデプロイごとに異なるため)。**セルフホストする各ユーザーが自分の GitHub OAuth App を作成する必要がある**。これは「ワンクリックで立つ」体験と摩擦するため、初回アクセス時のセットアップウィザード(OAuth App 作成手順の案内 + client_id/secret の登録)を Phase 1 の CLI / サーバーに含める(ROADMAP 参照)。
+
+1. `GET /auth/github/start`: `state`(128-bit 乱数)を発行し、HttpOnly クッキーに保存して GitHub へリダイレクト。scope は最小(`read:user user:email`)
+2. `GET /auth/github/callback`: `state` 検証(不一致は即拒否)→ code 交換 → GitHub API でユーザー情報取得
+3. `getOrCreateUser(provider='github', provider_user_id, profile)`:
+   - linked_identities に存在 → 該当 user を返す
+   - 不在 → users + linked_identities を作成(email は GitHub 側で verified なもののみ `email_verified=1` で保存)
+4. セッション発行(§5)
+
+- GitHub のアクセストークンは即時破棄する(保存しない)
+- 既ログイン状態からの別プロバイダ連携は「明示リンク」フロー(ログイン済みセッション + 新規 OAuth 完了)でのみ許可
+
+## 4. CLI ログイン(GitHub Device Flow, RFC 8628)
+
+1. CLI が GitHub の device flow を開始し、user_code と検証 URL を表示
+2. ユーザーがブラウザで承認 → CLI が GitHub トークンを取得
+3. CLI はそのトークンで maruhi サーバーの `/auth/device/exchange` を呼ぶ
+4. サーバーは GitHub API でトークンを検証し、getOrCreateUser → **maruhi 発行の API トークン**を返す
+5. GitHub トークンは両側で即時破棄。CLI は maruhi トークンのみを OS キーチェーンに保存する
+
+## 5. セッション
+
+- 生成: 256-bit 乱数。クライアントには生値、DB にはハッシュのみ
+- クッキー: `__Host-maruhi_session` / `HttpOnly` / `Secure` / `SameSite=Lax` / `Path=/`
+- 有効期限: 30 日(スライディング更新)。サーバー側削除で即時失効可能
+- CSRF: SameSite=Lax + 書き込み系は custom header 要求(HttpApi ミドルウェアで一括)
+
+## 6. API トークン
+
+- 形式: `maruhi_pat_` + Base62 乱数(256-bit 相当)。プレフィックスで種別判別・secret scanning 対応
+- スコープ: プロジェクト単位 × 権限(read / write / admin)。将来: エージェント用の短命リーストークン(Phase 3、CRYPTO_SPEC と連動)
+- 検証: 提示トークンの SHA-256 を DB と照合。タイミング安全比較
+
+## 7. 将来の IdP 追加(WorkOS 挿入ポイント)
+
+ホステッド版でエンタープライズ SSO を提供すると決めた場合の変更点は以下に限られる(それ以外の変更が必要になったら本仕様の設計ミスとして扱う):
+
+1. `AuthProvider` Effect サービスに WorkOS 実装を追加(OIDC コールバック → getOrCreateUser(provider='workos', …))
+2. organizations に SSO 関連カラムを追加(sso_connection_id, allowed_domains, enforce_sso)
+3. sessions.auth_method による「SSO 必須」ポリシーの実施
+4. SCIM deprovision: users の無効化 + 該当セッション削除 + org からの除去(メンバーシップチェーンの remove_member はチーム管理者のクライアント操作として通知)
+
+## 8. Effect サービス構成
+
+- `AuthProvider` — プロバイダとの認証ダンス(GitHub web / device)。プロバイダ検証済みアイデンティティを返す
+- `IdentityService` — getOrCreateUser、明示リンク、users / linked_identities の管理
+- `SessionService` — セッションの発行・検証・失効
+- `TokenService` — API トークンの発行・検証・失効・スコープ判定
+
+## 9. 未決事項(実装開始前に要決定)
+
+1. **プロジェクトと組織の関係**: プロジェクトは org に属する(`projects.org_id`)を基本とするが、個人ユーザーの扱い(個人用のパーソナル org を自動作成するか、org なしプロジェクトを許すか)が未決定。パーソナル org 自動作成が有力(モデルが単一になる)だが確定していない
+2. **認可モデル**: org ロール(owner / admin / member)とプロジェクト単位の権限、および CRYPTO_SPEC §6.2 のチェーン操作権限の対応表が未定義。CRYPTO_SPEC 未決事項 #7 と同時に設計する
+
+## 10. 禁止事項
+
+- メール一致による自動リンク・自動マージ
+- GitHub login 名(変更可能)を識別子として使うこと
+- GitHub トークンの永続化
+- セッション / トークン生値の DB 保存・ログ出力
+- パスワード認証の追加(本仕様の全面改訂なしに導入禁止)
