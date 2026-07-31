@@ -1,2 +1,4 @@
 // @maruhi/core — ドメイン型、Effect Schema、共有ロジック。
-export {};
+
+/** Placeholder export; replaced when implementation lands. */
+export const PACKAGE_NAME = "@maruhi/core";
