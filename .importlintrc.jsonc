@@ -1,0 +1,82 @@
+// .importlintrc.jsonc
+//
+// The `*.package` naming convention. Name any directory that should be an
+// encapsulation boundary "foo.package" (e.g. "src/auth.package/",
+// "src/billing.package/"). Everything inside a `*.package` directory, at any
+// depth, imports freely from everything else inside it; nothing outside can
+// import from it unless the export is tagged `@public`, or re-exported
+// (unannotated) from the boundary's own index.ts — the index loophole below
+// promotes those exports to the parent's package, and since a bare re-export
+// resets to `defaultImportability`, wider exposure is always a deliberate,
+// visible one-level-at-a-time edit.
+//
+// Directories you haven't renamed are unaffected — files outside every
+// boundary all share one project-root package and import freely from each
+// other — so this config works for gradual adoption on an existing codebase
+// as well as for new projects: adopt boundaries one directory rename at a
+// time.
+{
+  // Roots to walk for lint targets, relative to the project root.
+  "include": ["."],
+
+  // Extra glob patterns to skip, on top of .gitignore. Relative to the project root.
+  "exclude": [],
+
+  // Path to tsconfig.json (for resolver `paths`/`baseUrl`), relative to the
+  // project root. Defaults to "<project root>/tsconfig.json" if it exists.
+  // "tsconfig": "./tsconfig.json",
+
+  "rules": {
+    "package-access": {
+      // "error" | "warn" | "off". An `off` rule is never checked.
+      "severity": "error",
+
+      // Below: identical options, names, and defaults to
+      // eslint-plugin-import-access's `import-access/jsdoc` rule.
+
+      // Treat a file named "index.{js,ts,jsx,tsx,mjs,cjs,...}" as if its parent
+      // directory were the exporting file, for package-boundary purposes. This is
+      // the escape valve for the `*.package` convention: a bare re-export from a
+      // boundary's index.ts promotes that export to the parent's package.
+      "indexLoophole": true,
+
+      // Treat "foo/bar.ts" as in-package with "foo.ts" (one directory level,
+      // matching the importer's own filename stem). Turn on for the
+      // companion-file pattern: a "sub.ts" file living next to the "sub/"
+      // directory it belongs to.
+      // "filenameLoophole": true,
+      "filenameLoophole": false,
+
+      // Access level assumed for an export with no recognized JSDoc access tag.
+      // "public" | "package" | "private". "package" makes every `*.package`
+      // boundary (see packageDirectory below) an encapsulation boundary by
+      // default, with no JSDoc tag required. Files outside every boundary all
+      // share one project-root package, so they import freely from each other
+      // — adopt boundaries one directory rename at a time.
+      "defaultImportability": "package",
+
+      // How a bare specifier matching the importer's own package name is
+      // classified. "external" (never checked) | "internal" (checked normally).
+      "treatSelfReferenceAs": "external",
+
+      // Glob patterns (matched against the exporting file's project-relative
+      // path) that are never checked, regardless of access level.
+      "excludeSourcePatterns": [],
+
+      // Glob patterns identifying "package" directories (matched against both
+      // basename and project-relative path). A file with no matching ancestor
+      // belongs to a single project-root package. A `!`-prefixed pattern
+      // excludes a directory that would otherwise match. Below: the `*.package`
+      // naming convention — a directory is a boundary because of its name, not
+      // its location, so this never needs updating as the project grows.
+      //
+      // Alternative conventions (uncomment one instead, or drop the option
+      // entirely to make every directory its own package):
+      // "packageDirectory": ["**", "!**/*.internal"],  // inverse naming: every
+      //   directory is a boundary except ones opting out with an ".internal" name
+      // "packageDirectory": ["packages/*"],  // fixed-location: boundaries live
+      //   under one top-level directory instead of being named by suffix
+      "packageDirectory": ["**/*.package"],
+    },
+  },
+}
