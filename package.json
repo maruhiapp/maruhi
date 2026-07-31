@@ -1,0 +1,15 @@
+{
+  "name": "maruhi",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "engines": {
+    "bun": "1.3.14"
+  },
+  "scripts": {
+    "typecheck": "bun run --filter '*' typecheck"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
