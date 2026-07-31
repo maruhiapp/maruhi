@@ -51,6 +51,8 @@
 - 作業場所は `apps/web`(骨格のみ。React 依存なし)。使い捨てスパイクなら別ディレクトリでも可
 - スキル `funstack-static-knowledge` / `funstack-router-knowledge` / `heroui-react` を導入済み。HeroUI v3 は beta で `@beta` タグ必須、Tailwind v4 必須、Provider 不要・compound components、という v2 との差分がスキルに詳述されている
 - HeroUI Pro のライセンスは所有者が保有しており、クラウド環境(Cloud Agents > Secrets)に登録予定。ライセンスキーをリポジトリ・`.dev.vars` に書かないこと(CLAUDE.md のダミー値規則)
+- **HeroUI Pro のライセンス制約(2026-07-31 調査)**: Pro は私有ライセンス(`@heroui-pro/react`、トークン必須)で、コンポーネント・ソースの共有/公開/再配布を禁止。トークンの公開環境への露出も禁止。したがって **OSS 配布物(このリポジトリ、特に apps/web)には Pro を入れられない**。OSS 部分は HeroUI v3 コア(寛容ライセンス)のみで作り、Pro は非公開リポジトリ(maruhi.dev のマーケティングサイト等)に限定する方針を提案中(ADR-0007 / CLAUDE.md の「HeroUI v3 / Pro」表記の改訂が必要。人間の決定待ち)。スパイク A は OSS コアのみで実施可能
+- **CRYPTO_SPEC §8 改訂案の裏取り(2026-07-31)**: Shelve / Keyway はサーバー側暗号化でリカバリーラップの概念自体がなく参考外。E2EE の Infisical はリカバリーキット(乱数鍵)で秘密鍵の複製を直接復号し、salt 保存は低エントロピーなパスワード経路(Argon2id)のみ。→「salt = 空」は Infisical のリカバリー経路と同型、「AAD 束縛」は 3 製品のどれもやっていない上乗せの強化、として決定を維持
 - 依存追加は `bun add -E`(bunfig.toml の exact=true で強制)。理由をコミットメッセージに書く(CLAUDE.md)
 - web は Trusted Computing Base: CSP(`script-src 'self'`)、サードパーティスクリプト禁止を静的シェル段階から確認する
 - funstack-static は `@vitejs/plugin-rsc` ベース。RSC は静的シェルのみ(ADR-0007)の制約をスパイクの検証項目に含めること
