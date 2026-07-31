@@ -1,0 +1,45 @@
+# 品質ゲート(CLAUDE.md の 7 ステップと同一順序)
+# 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint → 5. fallow → 6. React Doctor → 7. テスト
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # React Doctor の diff モードと fallow audit が base ブランチとの比較を必要とする
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: 1. Format (oxfmt)
+        run: bun run fmt:check
+
+      - name: 2. Lint (oxlint)
+        run: bun run lint
+
+      - name: 3. Typecheck (tsc)
+        run: bun run typecheck
+
+      - name: 4. ImportLint
+        run: bunx import-lint --format github
+
+      - name: 5. fallow (baseline audit)
+        run: bun run fallow:audit
+
+      - name: 6. React Doctor (web, diff mode)
+        run: bun run doctor
+
+      - name: 7. Test (Vitest)
+        run: bun run test
