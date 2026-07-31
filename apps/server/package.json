@@ -7,6 +7,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.1",
     "@cloudflare/workers-types": "5.20260731.1"
   }
 }
