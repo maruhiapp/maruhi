@@ -24,7 +24,7 @@ E2EE(ゼロ知識)がデフォルト。ブランド表記は常に小文字の `
 
 ### Web ダッシュボードは Trusted Computing Base である
 E2EE では復号がクライアントで起きるため、Web フロントの XSS = 全シークレットの漏洩である。よって:
-- 厳格な CSP を必須とする(`script-src 'self'` 基調。inline script・eval 禁止)
+- 厳格な CSP を必須とする(`script-src 'self'` 基調。inline script・eval 禁止)。唯一の例外: 自ビルドが生成する起動スクリプトを、ビルド時に計算した SHA-256 ハッシュで個別許可すること(2026-08-01 所有者承認。`apps/web/scripts/write-headers.ts` 参照)。`'unsafe-inline'` はいかなる場合も禁止
 - サードパーティのスクリプト・CDN・アナリティクスを一切読み込まない。全アセットは自己配信(Workers Static Assets)
 - `dangerouslySetInnerHTML` と同等の生 HTML 挿入は禁止(React Doctor / レビューで検査)
 - 依存パッケージの追加は最小限とし、フロントの供給網を小さく保つ
@@ -59,7 +59,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 | フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
 | CLI | Gunshi(引数パース)+ Effect(実装)+ HttpApi 導出型付きクライアント |
 | IaC | Alchemy v2 Effect スタイル(運用側)。セルフホスト配布物は素の wrangler 両対応を維持 |
-| docs | Blume(別リポジトリ or `apps/docs`) |
+| docs | Blume(`apps/docs`) |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
 
 ## モノレポ構成(予定)
