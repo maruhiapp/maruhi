@@ -17,3 +17,4 @@
 - [ADR-0010: 品質ツールチェーン](./0010-quality-toolchain.md)
 - [ADR-0011: 未安定依存のリスク管理原則](./0011-unstable-deps.md)
 - [ADR-0012: IaC は Alchemy v2 Effect スタイル + セルフホストは wrangler 両対応](./0012-alchemy-wrangler.md)
+- [ADR-0013: web の UI ライブラリは Astryx(HeroUI v3 / Pro + Tailwind v4 を置換)](./0013-astryx.md)

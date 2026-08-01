@@ -1,6 +1,5 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "sortImports": true,
-  "sortTailwindcss": true,
   "ignorePatterns": ["**/*.md", "bun.lock", "fallow-baselines", ".agents", ".claude"]
 }

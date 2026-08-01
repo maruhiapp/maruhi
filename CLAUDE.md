@@ -45,7 +45,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 | サーバー HTTP 層 | Effect v4 `@effect/platform` HttpApi(Hono 不使用) |
 | アプリ基盤 | Effect v4 系(ピン留め) |
 | DB | Drizzle v1(`drizzle-kit` migrations、Effect サービス境界内に隔離)。D1 + DO SQLite |
-| フロント | React + FunStack(funstack-static + funstack-router)+ HeroUI v3 / Pro + Tailwind v4 |
+| フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
 | CLI | Gunshi(引数パース)+ Effect(実装)+ HttpApi 導出型付きクライアント |
 | IaC | Alchemy v2 Effect スタイル(運用側)。セルフホスト配布物は素の wrangler 両対応を維持 |
 | docs | Blume(別リポジトリ or `apps/docs`) |

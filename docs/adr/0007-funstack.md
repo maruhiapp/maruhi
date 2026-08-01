@@ -4,3 +4,5 @@
 **Decision**: funstack-static(ビルド時 RSC、静的デプロイ)+ funstack-router(Navigation API)。HeroUI v3 / Pro + Tailwind v4。
 **Rationale**: E2EE アプリはリクエスト時 SSR の利益がゼロ(サーバーは暗号文しか持たない)。ビルド時 RSC はこの制約と完全に整合し、静的シェルのバンドル削減と SEO ページの同居を実現、成果物は Workers Static Assets にそのまま載る。「No server runs = No RCE」は secrets 製品の攻撃面削減思想と一致。
 **Consequences**: 本番実績の少なさはリスク。緩和: RSC 境界を静的シェルに限定し、Vite SPA への退避を安価に保つ。シークレットを扱うコードは必ず client 側。
+
+**Note (2026-08-01)**: UI ライブラリ部分(HeroUI v3 / Pro + Tailwind v4)の選定は [ADR-0013](./0013-astryx.md) で Astryx に改訂された。FunStack(funstack-static + funstack-router)の採用は据え置き。
