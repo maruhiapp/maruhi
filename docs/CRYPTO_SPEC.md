@@ -28,7 +28,8 @@ Status: レビュー中(実装はこの文書の承認後に開始する)
 | ハッシュ(チェーン、フィンガープリント) | SHA-256 |
 | 鍵導出(リカバリーコード等) | HKDF-SHA256 |
 
-- 実装: AES-GCM / ECDH / Ed25519 / HKDF は WebCrypto。HPKE はライブラリ選定(スパイク C で決定。候補: hpke-js、@noble 系。**未決事項 #1**)
+- 実装: AES-GCM / Ed25519 / HKDF は WebCrypto。HPKE(X25519 KEM を含む)はライブラリ `hpke`(panva)1.x 系を使用する(**2026-08-01 決定**。厳密ピン。退避経路: hpke-js(dajiaji)。選定経緯は docs/notes/spike-c.md)
+- HPKE の Open(Decap)には受信者の **KeyPair(公開鍵込み)を渡す実装を標準とする**。秘密鍵単体渡しは extractable=true を強制されるため使用しない(非抽出鍵での運用と両立させる。スパイク C の検証知見)
 - 将来 `maruhi/v2` として KEM を X25519+ML-KEM-768 ハイブリッドへ移行する余地を確保する(Phase 2 以降)
 
 ### 2.1 AAD / info のエンコーディング規約(必須)
@@ -166,7 +167,7 @@ User master keypair(ユーザーごと)
 
 ## 13. 未決事項
 
-1. HPKE ライブラリ選定(スパイク C で決定)
+1. ~~HPKE ライブラリ選定~~ **決定済み(2026-08-01)**: `hpke`(panva)を採用(§2 参照)
 2. デバイス鍵分離・パスキー PRF(WebAuthn PRF 拡張)対応(Phase 2 以降)
 3. 変数名の秘匿オプション
 4. チェーンヘッドの外部チェックポイント機構
