@@ -2,6 +2,13 @@
 
 リポジトリ全体の開発ガイドは `CLAUDE.md` を参照(絶対規則・技術スタック・品質ゲート)。
 
+## Claude Code on the web specific instructions
+
+- セットアップは SessionStart フック(`.claude/hooks/session-start.sh`)が行う: Bun の `.bun-version` 同期と `bun install`。Playwright の Chromium は**ダウンロードせず**、環境プリインストール版(`/opt/pw-browsers/chromium`)を使う
+- フックが `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` をセッション環境変数に書き出し、`apps/web/test/e2e.test.ts` がそれを `chromium.launch({ executablePath })` に渡す(未設定なら従来どおり Playwright 管理のブラウザを使うため、Cursor / CI には影響しない)
+- `bunx playwright install` は実行しない(プリインストール版と競合し、ディスク割当も消費する)
+- 上記以外(品質ゲート・e2e の実行手順・dev サーバーの注意点など)は下の Cursor Cloud の節と共通
+
 ## Cursor Cloud specific instructions
 
 - Bun は `.bun-version`(厳密ピン)に従い `~/.bun/bin` にインストール済み(PATH は `~/.bashrc` 経由)。起動時のインストールスクリプトがバージョン同期・`bun install`・Playwright Chromium 取得を行う
