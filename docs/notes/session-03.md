@@ -57,6 +57,14 @@
 - 保存先: プロジェクト系イベント = プロジェクト DO 内 append-only(チェーンと同一 DO・同一トランザクション、クエリが DO 内で完結)。org / ユーザー系 = 3 案比較の上で **D1 専用テーブル(案 A)を提案**(認証イベントは sessions / tokens と同一トランザクションで書ける・検出クエリに関与しないため DO 併置の利点がない)
 - 判断が要る点(未決 #1〜#5): 閲覧権限モデルの詳細、監査ヘッドのチェーンチェックポイント、プロジェクト削除後の保全、var.read の集約、SIEM エクスポート
 
+## 4. 暗号テストベクター(packages/crypto/test-vectors/。実装より先にコミット)
+
+- RFC 9180 公式ベクター(spike-c 抽出分)を `hpke/` へコピー。maruhi 固有部は `encoding.json` / `variable-encryption.json` / `chain-entries.json` / `recovery-wrap.json` / `dek-wrap.json`(固定鍵・固定 nonce + 改竄系 negative)
+- 期待値の算出は独立参照ツール 2 系統: Python 3.11 + pyca/cryptography(`tools/generate_reference.py`)と hpke-js の ekm derandomize(`tools/generate-dek-wrap.mjs`)。さらに第 3 の実装系(Bun WebCrypto + panva hpke の非抽出 KeyPair Open)で全ベクターを突き合わせ検証(`tools/verify_reference.mjs`、全 PASS)
+- **チェーン正規化(CRYPTO_SPEC §6.1「実装はテストベクターで固定する」)の実体をここで定義した**: LP エンコーディングの入れ子(payload は op ごとの固定フィールド順)、バイナリ値は hex 小文字文字列、entry_hash = SHA-256(署名込みエントリバイト列)。鍵 FP は素の連結(固定長 32B×2)とした。**要人間レビュー**(test-vectors/README.md の「特に確認すべき点」参照)
+- fallow の解析対象から `packages/crypto/test-vectors/tools/**` を除外(spikes/ と同じ使い捨てツール扱い)
+- packages/crypto の実装コードは書いていない(仕様承認後・人間レビュー必須)
+
 ## 決定・整理の記録(2026-08-01)
 
 - **ホステッド版は Workers for Platforms を使わない**(所有者との整理): 通常のマルチテナント Workers アプリ + プロジェクト DO 分離で提供する。WfP はテナントのコードを実行するための仕組みであり、maruhi のテナント分離はデータレベル(プロジェクト DO の名前空間分離)で足りる。AUDIT_SPEC §5 の保存先設計(D1 共有テーブル + プロジェクト DO)もこの前提に立つ

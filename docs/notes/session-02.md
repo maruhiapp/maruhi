@@ -48,7 +48,7 @@
 - [x] ~~3 スパイク PR + 本 PR のマージ(上記手順 7)~~(#2〜#5 マージ済み)
 - [x] ~~マージ後: 環境セットアップエージェントの実行~~(環境構成に設定済み。Playwright はプリインストール Chromium を使用)
 - [x] ~~root 統合 PR(上記 8)+ ROADMAP のスパイク項目チェックオフ~~(2026-08-01 実施。web build + e2e / doctor:astryx を CI の独立ステップ化、e2e のポート固定解消、CI テレメトリ無効化)
-- [ ] 監査ログスキーマ(`docs/AUDIT_SPEC.md`)起草 → 暗号テストベクター定義(実装より先にコミット)。いずれも本 PR の仕様改訂マージ後
+- [x] ~~監査ログスキーマ(`docs/AUDIT_SPEC.md`)起草 → 暗号テストベクター定義(実装より先にコミット)~~(2026-08-01 実施。AUDIT_SPEC は 0.1-draft でレビュー待ち、テストベクターは packages/crypto/test-vectors/ にコミット。docs/notes/session-03.md 参照)
 - [x] ~~npm プレースホルダ publish~~(2026-08-01 完了。`maruhi@0.0.1`)
 - [x] ~~ROADMAP のチェックオフ(#2 マージ後の root 統合 PR で。対象: 要決定 3 件・検証スパイク 3 本・npm プレースホルダ + org — いずれも完了済み)~~(2026-08-01 実施)
 - [ ] `spikes/` の使い捨てコードの削除(所有者承認済みの方針: Phase 1 で crypto の 3 環境 CI とサーバー実装の雛形として参照し終えた時点で削除。その際 `.fallowrc.json` の `spikes/**` 行も戻す)

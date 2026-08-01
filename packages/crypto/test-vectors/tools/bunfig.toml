@@ -1,0 +1,4 @@
+# このディレクトリを独立プロジェクトとして解決させる(ルート workspaces に含めない)。
+# spikes/ と同じ手法(docs/notes/spike-c.md 参照)。
+[install]
+exact = true

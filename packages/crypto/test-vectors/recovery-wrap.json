@@ -1,0 +1,42 @@
+{
+  "description": "CRYPTO_SPEC §8: KEK = HKDF-SHA256(recovery_secret, salt=空, info=\"maruhi/v1/recovery\")、AES-256-GCM ラップ(AAD = LP(\"maruhi/v1/recovery-wrap\", user_id))",
+  "vectors": [
+    {
+      "name": "basic",
+      "recovery_secret_hex": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "user_id": "user-owner-0001",
+      "hkdf": {
+        "salt": "",
+        "info_utf8": "maruhi/v1/recovery",
+        "length": 32
+      },
+      "kek_hex": "4802ba2be1d52222298dabf36db13d6cd6f5a14143e4fa9b9f98f9914adf68e1",
+      "master_secret_blob_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacb",
+      "aad_hex": "000000176d61727568692f76312f7265636f766572792d777261700000000f757365722d6f776e65722d30303031",
+      "ciphertext_hex": "12c2b8874b67e868633fdad316890fbb62a883be363b7d810769e1ca7db8b67330dc2ebcb60036bea214a7871fee50ddd253af6d9afe82072d9ce06e81810553df68479eb8da17af69f6f884d478c32f"
+    }
+  ],
+  "negative": [
+    {
+      "name": "aad-user-mismatch",
+      "base": "basic",
+      "decrypt_aad_hex": "000000176d61727568692f76312f7265636f766572792d7772617000000010757365722d6d656d6265722d30303032",
+      "must_fail": true,
+      "note": "他ユーザーの鍵ブロブへの移植は復号失敗"
+    },
+    {
+      "name": "ciphertext-bit-flip",
+      "base": "basic",
+      "ciphertext_hex": "92c2b8874b67e868633fdad316890fbb62a883be363b7d810769e1ca7db8b67330dc2ebcb60036bea214a7871fee50ddd253af6d9afe82072d9ce06e81810553df68479eb8da17af69f6f884d478c32f",
+      "must_fail": true
+    },
+    {
+      "name": "wrong-salt",
+      "base": "basic",
+      "decrypt_kek_hex": "11689ac60a4daa092d374dc9baac56ff3283b1085829fb345773860644f4c343",
+      "must_fail": true,
+      "note": "salt を空以外にすると別 KEK になり復号失敗(salt = 空の規定の固定)"
+    }
+  ]
+}

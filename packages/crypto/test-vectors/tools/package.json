@@ -1,0 +1,16 @@
+{
+  "name": "maruhi-test-vector-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "テストベクターの参照生成・検証ツール(使い捨て。製品コードではない)。ワークスペース外の独立プロジェクトとして bun install する(bunfig.toml 参照)",
+  "type": "module",
+  "scripts": {
+    "generate": "python3 generate_reference.py && bun run generate-dek-wrap.mjs",
+    "verify": "bun run verify_reference.mjs"
+  },
+  "devDependencies": {
+    "@hpke/core": "1.9.0",
+    "@hpke/dhkem-x25519": "1.8.0",
+    "hpke": "1.1.3"
+  }
+}

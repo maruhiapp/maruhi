@@ -1,0 +1,50 @@
+{
+  "description": "CRYPTO_SPEC §4: 変数値の AES-256-GCM 暗号化。AAD は §2.1 エンコーディング",
+  "aad_fields_order": ["suite", "project_id", "environment_id", "epoch", "variable_id", "version"],
+  "note": "ciphertext_hex は ct || tag(16 bytes)。WebCrypto / pyca AESGCM と同じ連結形式",
+  "vectors": [
+    {
+      "name": "basic",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "nonce_hex": "a0a1a2a3a4a5a6a7a8a9aaab",
+      "suite": "maruhi/v1",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "epoch": 3,
+      "variable_id": "var-database-url-0001",
+      "version": 7,
+      "plaintext_utf8": "postgres://dummy:dummy@db.example.internal:5432/app",
+      "aad_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000d656e762d70726f642d303030310000000133000000157661722d64617461626173652d75726c2d303030310000000137",
+      "ciphertext_hex": "96770f5922b967cc584aa8b77217ada74ac82c7dffce0208fe2043fe1ec6056db7582e91db4721533ef03efd3d49b1d6266b36917d02cc28567385172eb283554e261c"
+    }
+  ],
+  "negative": [
+    {
+      "name": "aad-environment-mismatch",
+      "base": "basic",
+      "decrypt_aad_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000c656e762d6465762d303030320000000133000000157661722d64617461626173652d75726c2d303030310000000137",
+      "must_fail": true,
+      "note": "environment_id 差し替え(環境間の移植攻撃)は復号失敗"
+    },
+    {
+      "name": "aad-epoch-mismatch",
+      "base": "basic",
+      "decrypt_aad_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000d656e762d70726f642d303030310000000134000000157661722d64617461626173652d75726c2d303030310000000137",
+      "must_fail": true,
+      "note": "epoch 差し替え(ローテーション跨ぎの移植)は復号失敗"
+    },
+    {
+      "name": "ciphertext-bit-flip",
+      "base": "basic",
+      "ciphertext_hex": "96770f5922b967cc584aa8b77217ada74ac82c7dffce0208fe2043fe1ec6056db7582e91db4721533ef03efd3d49b1d6266b36917d02cc28567385172eb283554e261d",
+      "must_fail": true,
+      "note": "タグ末尾 1 bit 反転は復号失敗"
+    },
+    {
+      "name": "nonce-mismatch",
+      "base": "basic",
+      "decrypt_nonce_hex": "b0b1b2b3b4b5b6b7b8b9babb",
+      "must_fail": true
+    }
+  ]
+}
