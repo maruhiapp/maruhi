@@ -1,0 +1,10 @@
+{
+  "extends": ["../../.oxlintrc.json"],
+  // xstyle 値の妥当性検査(スパイク A で検証: oxlint の jsPlugins で ESLint プラグインが動く)
+  "jsPlugins": [{ "name": "stylex", "specifier": "@stylexjs/eslint-plugin" }],
+  "rules": {
+    "stylex/valid-styles": "error"
+  },
+  // astryx theme build の生成物は lint 対象外
+  "ignorePatterns": ["theme/maruhi.js", "theme/*.d.ts", "dist"]
+}
