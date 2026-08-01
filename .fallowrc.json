@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/fallow/schema.json",
+  // CLI / lint 設定からのみ参照されるツールは import されないため未使用依存から除外する
+  "ignoreDependencies": ["@import-lint/cli", "oxlint-plugin-eslint"],
+  // エージェントスキル(ベンダードコンテンツ)は解析対象外
+  "ignorePatterns": [".agents/**", ".claude/**"],
+  "audit": {
+    "deadCodeBaseline": "fallow-baselines/dead-code.json",
+    "healthBaseline": "fallow-baselines/health.json",
+    "dupesBaseline": "fallow-baselines/dupes.json"
+  }
+}

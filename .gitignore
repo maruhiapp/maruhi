@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Cloudflare
+.wrangler/
+.dev.vars
+
+# fallow のローカルキャッシュ(コミットする baseline は fallow-baselines/)
+.fallow/

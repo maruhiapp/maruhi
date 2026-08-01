@@ -1,0 +1,6 @@
+# ADR-0013: web の UI ライブラリは Astryx(HeroUI v3 / Pro + Tailwind v4 を置換)
+
+**Context**: HeroUI Pro は私有ライセンス(コンポーネント・ソースの共有/公開/再配布を禁止、ライセンストークン必須)で、OSS 配布物であるセルフホスト web ダッシュボードに含められないことが判明した。乗り換え候補として Astryx(Meta、MIT、StyleX ベース、2026-06 公開、Meta 内部 8 年・13,000 アプリ超)と React Aria Components(Adobe、monopackage 化済み、公式エージェントスキル + MCP あり)を比較。実測では依存はどちらも 16 パッケージ / 約 72MB と同等だが、Astryx はプリビルド CSS 方式のため Tailwind ツールチェーン自体が不要になる。壊れにくさ(公開 8 年の互換実績・コードモッド文化)は RAC が優る。
+**Decision**: apps/web の UI ライブラリは Astryx を採用する。Tailwind v4 は採用しない(oxfmt の Tailwind クラスソートも無効化)。スパイク A の検証対象を「Astryx × FunStack(RSC 静的シェルとの `"use client"` 境界、プリビルド CSS の Workers Static Assets 配信)」に変更する。
+**Rationale**: (1) 系全体の依存が最小になる(Tailwind 層ごと消える)。(2) agent-first 設計 — CLI が typed JSON・capability manifest・`--lang dense` を備え、`init --features agents` が AGENTS.md / CLAUDE.md を生成、`doctor` が CI ゲートになる。(3) トークンレベルのカスタマイズ(defineTheme)で挙動・a11y はシステム側、見た目はテーマ側という分離が長期一貫性に向く。(4) 所有者が beta(0.x)の新規リスクを許容すると判断した(2026-08-01)。
+**Consequences**: 0.x semver のため破壊的変更リスクがある。緩和: 厳密ピン留め + 更新は `astryx upgrade` コードモッドを使う独立 PR + `astryx doctor` を CI に組み込む。canary は使わず stable のみ。退避経路: React Aria Components + Tailwind v4(ヘッドレスに退避し、スタイル層は自前で書く)。HeroUI Pro ライセンスは本リポジトリでは使用しない(使うなら非公開のマーケティングサイトのみ)。styling の運用規律(className / style 禁止等)は別途規約として定める。

@@ -29,6 +29,17 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 - `dangerouslySetInnerHTML` と同等の生 HTML 挿入は禁止(React Doctor / レビューで検査)
 - 依存パッケージの追加は最小限とし、フロントの供給網を小さく保つ
 
+### Web UI(Astryx)の styling 規律(ADR-0013)
+- 見た目の変更はまず `apps/web/theme/` の defineTheme(トークン・variant)。ブランド定義はここが唯一の置き場所
+- 個別調整は Astryx コンポーネントの `xstyle` のみ。値は `stylex.create` + typed tokens(`@astryxdesign/core/theme/tokens.stylex`)で書き、生の hex 値・マジックナンバーを書かない
+- `className` とインライン `style` は禁止(oxlint が error にする)。外部 CSS を持ち込まない
+- 生 DOM への `stylex.props` と新規の視覚パターンは `apps/web/src/ui.package/` のみ
+- カスタマイズは必ずこの順で検討する: ① defineTheme(variant 追加を含む)→ ② xstyle → ③ ui.package での合成ラッパー → ④ ui.package での新規自作(Astryx の hooks / tokens 等の公開 API のみ使用)→ ⑤ upstream(facebook/astryx)への issue / PR。UX の再設計はどの段階でも選択肢に含める
+- **`astryx swizzle` は禁止**。コマンドに限らず、Astryx 内部実装のソースを手段を問わずリポジトリへ取り込むこと全般を禁止する(内部ソースの閲覧は学習目的のみ可、コピーは不可)。上流バグは厳密ピン留めにより「アップグレード PR の差し戻し」で対処し、swizzle をホットフィックスに使わない
+- 自作の StyleX(`stylex.create`。xstyle 用を含む)はビルドに StyleX コンパイラを要求し、未設定だと無警告で無スタイル描画になる。プリビルド CSS の消費と defineTheme のみならコンパイラ不要
+- 同じ xstyle 上書きが 2〜3 回現れたら、defineTheme の variant 化か ui.package への昇格を人間に提案する(逆流させない)
+- Astryx コンポーネントの API は推測せず `astryx component <名前> --json` で確認する。バージョンは stable のみ(canary 禁止)・厳密ピン、更新は `astryx upgrade` コードモッドを使う独立 PR で行う
+
 ### アーキテクチャ
 - 認証は `docs/AUTH_SPEC.md` に従う。メールによる自動アカウントリンク禁止。セッションは DB バック(stateless JWT のみのセッション禁止)
 - Drizzle の型(テーブル型・select 結果型)をリポジトリサービスの外に出さない。公開 API はドメイン型と Effect 型のみ
@@ -45,7 +56,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 | サーバー HTTP 層 | Effect v4 `@effect/platform` HttpApi(Hono 不使用) |
 | アプリ基盤 | Effect v4 系(ピン留め) |
 | DB | Drizzle v1(`drizzle-kit` migrations、Effect サービス境界内に隔離)。D1 + DO SQLite |
-| フロント | React + FunStack(funstack-static + funstack-router)+ HeroUI v3 / Pro + Tailwind v4 |
+| フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
 | CLI | Gunshi(引数パース)+ Effect(実装)+ HttpApi 導出型付きクライアント |
 | IaC | Alchemy v2 Effect スタイル(運用側)。セルフホスト配布物は素の wrangler 両対応を維持 |
 | docs | Blume(別リポジトリ or `apps/docs`) |

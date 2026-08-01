@@ -6,7 +6,7 @@
 - [ ] 監査ログのスキーマ設計(記録イベント一覧、actor = 内部 user_id + 鍵フィンガープリント、DO 内 append-only 形式。「要ローテーション検出」の算出要件を満たすこと)
 - [ ] 暗号テストベクターの定義(実装より先にコミット)
 - [ ] 検証スパイク(使い捨て):
-  - スパイク A: funstack-static + funstack-router + HeroUI v3 + Tailwind v4 → Workers Static Assets。`"use client"` 境界と Navigation API 非対応ブラウザの劣化挙動を確認
+  - スパイク A: funstack-static + funstack-router + Astryx(ADR-0013)→ Workers Static Assets。`"use client"` 境界、Navigation API 非対応ブラウザの劣化挙動、プリビルド CSS の静的配信 + 厳格 CSP、StyleX コンパイラ(xstyle 用)と Vite の組み合わせを確認
   - スパイク B: Effect v4 HttpApi + Durable Objects(ManagedRuntime パターン)+ vitest-pool-workers + Alchemy v2 デプロイ
   - スパイク C: E2EE ラウンドトリップをブラウザ / Bun / workerd の 3 環境で。HPKE ライブラリ選定(未決事項 #1 を解消)
 - [ ] npm `maruhi` プレースホルダ publish + org `maruhi`(@maruhi スコープ)作成
