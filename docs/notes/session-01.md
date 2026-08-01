@@ -44,9 +44,18 @@
 - drizzle 系 8 スキルは drizzle-kit@rc(1.0.0-beta 系)からの**コピー**。Phase 1 で drizzle-kit を依存に追加したら `drizzle-kit skills` で再同期する
 - 導入元: heroui-react / import-lint / funstack-{router,static}-knowledge / blume / blume-update-docs は `npx skills add` (GitHub 配布)
 
+## Astryx 採用決定(2026-08-01、ADR-0013)と styling 運用規律
+
+- 所有者決定により web の UI は Astryx(Tailwind v4 は不採用)。ADR-0013 参照。heroui-react スキルは削除済み
+- Astryx の styling 経路は 4 つ: defineTheme(トークン・variant)/ xstyle(stylex.create + typed tokens)/ className(外部 CSS interop 用)/ style(インライン)。swizzle はソース取り込み(**要 StyleX コンパイラ。無いと無警告で無スタイル描画**という罠あり)
+- **運用規律は選択肢 A / B1 / B2 を所有者に提示中(チャット参照)**。推奨は B2: className / style を oxlint で禁止、xstyle は typed tokens 縛りで許可、生 StyleX 作成と swizzle は ui.package のみ、ブランド変更は defineTheme 単一ファイルに集約
+- 強制手段(確認済み): oxlint native の no-restricted-imports(paths/patterns + overrides)、no-restricted-syntax は oxlint-plugin-eslint(jsPlugins)経由、astryx doctor(CI-friendly exit code)、ImportLint の *.package 境界
+- Astryx は SKILL.md 配布・MCP npm パッケージなし(確認済み)。エージェント対応は CLI(--json / capability manifest / --lang dense)と astryx init --features agents による AGENTS.md / CLAUDE.md 生成。導入はスパイク A で実施
+- バージョン規律: stable のみ(canary 禁止)、厳密ピン、更新は astryx upgrade コードモッド + 独立 PR
+
 ## 次セッション(ROADMAP スパイク A)への引き継ぎ
 
-スパイク A: funstack-static + funstack-router + HeroUI v3 + Tailwind v4 → Workers Static Assets。`"use client"` 境界と Navigation API 非対応ブラウザの劣化挙動の確認。
+スパイク A(ADR-0013 により更新): funstack-static + funstack-router + **Astryx** → Workers Static Assets。`"use client"` 境界、Navigation API 非対応ブラウザの劣化挙動、Astryx プリビルド CSS の静的配信、厳格 CSP との整合を確認。`astryx init --features agents` でエージェントドキュメントを生成し、`astryx doctor` を品質ゲートに追加する。
 
 - 作業場所は `apps/web`(骨格のみ。React 依存なし)。使い捨てスパイクなら別ディレクトリでも可
 - スキル `funstack-static-knowledge` / `funstack-router-knowledge` / `heroui-react` を導入済み。HeroUI v3 は beta で `@beta` タグ必須、Tailwind v4 必須、Provider 不要・compound components、という v2 との差分がスキルに詳述されている
