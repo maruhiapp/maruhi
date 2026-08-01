@@ -1,7 +1,23 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
   // CLI / lint 設定からのみ参照されるツールは import されないため未使用依存から除外する
-  "ignoreDependencies": ["@import-lint/cli", "oxlint-plugin-eslint"],
+  // (@stylexjs/unplugin と @stylexjs/eslint-plugin は @astryxdesign/build / oxlint 設定からの間接参照)
+  "ignoreDependencies": [
+    "@import-lint/cli",
+    "oxlint-plugin-eslint",
+    "@stylexjs/unplugin",
+    "@stylexjs/eslint-plugin"
+  ],
+  // apps/web のエントリは vite.config.ts の文字列参照(funstackStatic の root/app)のため
+  // fallow が自動検出できない。手動でエントリポイントとして宣言する
+  // theme/maruhi.js は astryx theme build の生成物。import 指定子 ../../theme/maruhi.js を
+  // fallow は TS 流儀で maruhi.ts に解決するため、実体の .js が未到達と誤検出される
+  "entry": [
+    "apps/web/src/Root.tsx",
+    "apps/web/src/App.tsx",
+    "apps/web/scripts/*.ts",
+    "apps/web/theme/maruhi.js"
+  ],
   // エージェントスキル(ベンダードコンテンツ)と使い捨て検証スパイク(spikes/)は解析対象外
   "ignorePatterns": [".agents/**", ".claude/**", "spikes/**"],
   "audit": {

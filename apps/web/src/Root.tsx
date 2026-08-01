@@ -1,0 +1,21 @@
+// 静的シェル(ビルド時 RSC)。ここはサーバーコンポーネントであり、
+// クライアントコンポーネントを import してはならない(hydrate されない)。
+import type React from "react";
+
+import "./styles/global.css";
+
+export default function Root({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="ja">
+      <head>
+        <meta charSet="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>maruhi spike-a</title>
+      </head>
+      <body>
+        {/* Root layout constraint: children は親要素の唯一の子でなければならない */}
+        <div id="app">{children}</div>
+      </body>
+    </html>
+  );
+}

@@ -1,0 +1,8 @@
+/*
+ * Astryx のプリビルド CSS(cascade layers: reset < astryx-base < astryx-theme < product)。
+ * theme/maruhi.css は `astryx theme build`(defineTheme のプリビルド)による生成物。
+ * すべて自己配信(Workers Static Assets)であり、外部 CDN・ランタイム注入を使わない。
+ */
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "../../theme/maruhi.css";

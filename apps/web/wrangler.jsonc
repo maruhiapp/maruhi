@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Workers Static Assets によるビルド成果物の配信検証(サーバーコードなし)。
+  // CSP 等のヘッダは public/_headers(ビルドで dist/public にコピーされる)で付与する。
+  "name": "maruhi-web-spike-a",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./dist/public",
+    "not_found_handling": "single-page-application",
+  },
+}

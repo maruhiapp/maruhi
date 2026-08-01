@@ -3,14 +3,42 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
   "scripts": {
+    "build": "vite build && bun run scripts/write-headers.ts",
+    "dev": "vite dev",
     "doctor": "react-doctor . --scope changed --no-telemetry",
+    "doctor:astryx": "astryx doctor",
+    "preview": "wrangler dev --port 8788",
+    "theme:build": "astryx theme build theme/maruhi.ts -o theme/maruhi.css",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@astryxdesign/core": "0.2.0",
+    "@astryxdesign/theme-neutral": "0.2.0",
+    "@funstack/router": "1.2.0",
+    "@funstack/static": "1.2.0",
+    "@stylexjs/stylex": "0.19.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
   "devDependencies": {
-    "react-doctor": "0.9.2"
+    "@astryxdesign/build": "0.2.0",
+    "@astryxdesign/cli": "0.2.0",
+    "@babel/core": "8.0.1",
+    "@stylexjs/babel-plugin": "0.19.0",
+    "@stylexjs/eslint-plugin": "0.19.0",
+    "@stylexjs/unplugin": "0.19.0",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.13",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.5",
+    "playwright": "1.62.1",
+    "react-doctor": "0.9.2",
+    "vite": "8.2.0",
+    "vitest": "4.1.10",
+    "wrangler": "4.118.0"
+  },
+  "astryx": {
+    "theme": "./theme/maruhi.ts"
   }
 }
