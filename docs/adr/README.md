@@ -1,6 +1,6 @@
 # maruhi Architecture Decision Records
 
-各 ADR は将来 `docs/adr/NNNN-slug.md` に分割する。Status: すべて Accepted(2026-07 時点)。
+Status: すべて Accepted(2026-07 時点)。
 これらの決定を覆す実装をエージェントが行うことは禁止。変更提案は ADR の改訂案として人間に提示すること。
 
 ## 索引
