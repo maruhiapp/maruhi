@@ -101,7 +101,7 @@ api_tokens (
 ## 6. API トークン
 
 - 形式: `maruhi_pat_` + Base62 乱数(256-bit 相当)。プレフィックスで種別判別・secret scanning 対応
-- スコープ: プロジェクト単位 × 権限(read / write / admin)。将来: エージェント用の短命リーストークン(Phase 3、CRYPTO_SPEC と連動)
+- スコープ: プロジェクト単位 × 権限(read / write / admin)。実効権限は min(トークンスコープ, 所有者のチェーン role)(§9-2)。将来: 環境単位のスコープ(Phase 2、CRYPTO_SPEC 未決事項 #11 と連動)、エージェント用の短命リーストークン(Phase 3、CRYPTO_SPEC と連動)
 - 検証: 提示トークンの SHA-256 を DB と照合。タイミング安全比較
 
 ## 7. 将来の IdP 追加(WorkOS 挿入ポイント)
