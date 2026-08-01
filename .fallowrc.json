@@ -18,8 +18,8 @@
     "apps/web/scripts/*.ts",
     "apps/web/theme/maruhi.js"
   ],
-  // エージェントスキル(ベンダードコンテンツ)は解析対象外
-  "ignorePatterns": [".agents/**", ".claude/**"],
+  // エージェントスキル(ベンダードコンテンツ)と使い捨て検証スパイク(spikes/)は解析対象外
+  "ignorePatterns": [".agents/**", ".claude/**", "spikes/**"],
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
