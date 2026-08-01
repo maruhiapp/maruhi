@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // ADR-0012 のセルフホスト経路: 素の wrangler 設定のみでデプロイできること。
+  // Alchemy 側の定義は alchemy.run.ts(同じ src/worker.ts を指す)。
+  "name": "spike-b",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+  "durable_objects": {
+    "bindings": [{ "name": "COUNTER", "class_name": "CounterDO" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CounterDO"] }],
+}
