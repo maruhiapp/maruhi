@@ -41,7 +41,7 @@
 15. **プロジェクトと組織の関係 = 案 A を採用**(所有者裁定 2026-08-01): パーソナル org 自動作成、projects.org_id は NOT NULL、単独利用時は UI で org を隠す。AUTH_SPEC §9-1 に反映済み(本 PR)
 16. **「セルフホスト = 1 人専用 + ホステッド = WorkOS で組織機能」案は取り下げ**(所有者、2026-08-01 議論の結果)。評価の記録: (1) WorkOS が提供するのは認証(SSO)とディレクトリ同期であり、maruhi の組織機能の本体(誰が DEK を受け取るか = チェーン + クライアント暗号操作、role 認可)は E2EE の性質上外注不能で、設計量は減らない。(2) 1 人専用とマルチテナントで製品が分岐し、以後の全機能を 2 回作ることになる(ADR-0009 の同一コードベース戦略と衝突)。(3) セルフホストからチーム利用を外すと OSS 配布物の価値が痩せる(FSL が禁じたいのは競合 SaaS であり、企業の自社チーム利用は歓迎すべき採用経路)。(4) 「後から WorkOS を無停止で挿せる」ことは AUTH_SPEC §7 の挿入ポイント設計が既に最小コストで担保している。なお監査ログは actor = 内部 user_id + 鍵フィンガープリントのみという絶対規則により WorkOS 採否と独立
 17. **監査ログスキーマ(`docs/AUDIT_SPEC.md`)は次セッションで起草**(所有者確認済み): 本 PR の仕様改訂(環境モデル・認可モデル)がレビュー・マージされた内容を前提に書くのが手戻りがないため
-18. **npm org `maruhi` は作成済み**(所有者、2026-08-01)。プレースホルダ publish はトークン登録後の新セッションでエージェントが実施(トークン設定の詳細はセッション 02 対話ログ参照)
+18. **npm の名前確保は完了**(2026-08-01): org `maruhi`(@maruhi スコープ)は所有者が作成、プレースホルダ `maruhi@0.0.1` はエージェントが publish 済み(maintainer: 所有者アカウント)。使用したトークンは短命の使い捨てで、publish 直後に所有者が Revoke する運用とした(Cloud Agents Secrets への恒久登録はせず。Phase 2 の本 publish は provenance 付き CI publish に切り替える)
 
 ## 次セッション以降の残タスク
 
@@ -49,7 +49,7 @@
 - [ ] マージ後: 環境セットアップエージェントの実行(bun 1.3.14 / `bun install` / `bunx playwright install chromium`)
 - [ ] root 統合 PR(上記 8)+ ROADMAP のスパイク項目チェックオフ
 - [ ] 監査ログスキーマ(`docs/AUDIT_SPEC.md`)起草 → 暗号テストベクター定義(実装より先にコミット)。いずれも本 PR の仕様改訂マージ後
-- [ ] `NPM_TOKEN` の Cloud Agents > Secrets 登録(所有者)→ プレースホルダ `maruhi` の publish(エージェント。publish 後トークンは Revoke 推奨)
+- [x] ~~npm プレースホルダ publish~~(2026-08-01 完了。`maruhi@0.0.1`)
 - [ ] ROADMAP の「要決定」項目のチェックオフ(3 件とも決定済みになったため。#2 マージ後の root 統合 PR で)
 - [ ] funstack-static への upstream 提案: 起動スクリプトの外部ファイル化オプション(+ `<link rel="preload" as="stylesheet">` の誤値報告)
 - [ ] Cloudflare 資格情報登録後: 実デプロイ検証(wrangler 一発デプロイ / Alchemy v2 / Static Assets の _headers 反映確認)
