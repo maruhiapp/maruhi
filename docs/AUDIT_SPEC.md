@@ -90,7 +90,7 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 
 | イベント | 対応する op(CRYPTO_SPEC §6.2) |
 |---|---|
-| `chain.genesis` | `genesis` |
+| `chain.genesis` ★ | `genesis`。**target_user_id には作成者(= actor.user_id)を入れる**(作成者の在籍区間の開始点を Q1 の索引で引けるようにするため) |
 | `chain.member_added` ★ | `add_member`(target_user_id, role) |
 | `chain.member_removed` ★ | `remove_member`(target_user_id) |
 | `chain.role_changed` | `change_role` |
@@ -108,19 +108,21 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | `server.value_decrypted` ★ | variable_id, environment_id, epoch, version | 同期処理での平文化。1 変数 1 行 |
 | `server.sync_executed` | sync_config_id, 結果種別 | 外部への送出。宛先の詳細(リポジトリ名等)は可変ストアの設定を `sync_config_id` で参照し、ログには書かない |
 
-`revoke_server` 時の要ローテーション検出は、`server.value_decrypted` を「サーバーが確実に平文化した集合」として §4 と同じ照会で使う。
+`revoke_server` 時の要ローテーション検出は §4.1 の revoke_server 変種(区間 = grant 区間、候補 = grant スコープ内、実読み取り = `server.value_decrypted`)で行う。
 
 ## 4. 要ローテーション検出からのクエリ要件(逆算)
 
 ### 4.1 アルゴリズム(CRYPTO_SPEC §7 の実装)
 
-`remove_member(M)`(または `revoke_server`)の受理時、同じ project DO 内で:
+`remove_member(M)` の受理時、同じ project DO 内で:
 
-1. **在籍区間の復元**: チェーンミラーから M の `chain.member_added`(または `chain.genesis`)〜 `chain.member_removed` の区間を全て求める(再追加があれば複数区間の和)
+1. **在籍区間の復元**: チェーンミラーから M の `chain.member_added`(または target_user_id = M の `chain.genesis`)〜 `chain.member_removed` の区間を全て求める(再追加があれば複数区間の和)
 2. **候補集合(閲覧可能だった集合)**: v1 は全メンバーが全環境・全エポックの DEK を受け取る(CRYPTO_SPEC §3)ため、「在籍区間と存在期間が重なる全 (variable × environment)」が閲覧可能だった集合になる。`var.created` 〜 `var.deleted`(未削除なら現在まで)の存在区間と在籍区間の重なりで判定する。**削除済み変数も含める**(上流 credential は変数を消しても失効しない)
 3. **根拠のランク付け**: 候補集合を 2 水準に分ける — (a) **確実に取得した**: 在籍区間内に M の `var.read` があるもの(API トークン経由を含む。actor.user_id で照合)、(b) **取得可能だった**: それ以外の候補全部。UI / CLI は (a) を強調表示する
 4. **結果の永続化**: `rotation.recommended` イベントとして追記し、UI / CLI は「要ローテーション」フラグとして表示する
 5. **フラグの解消**: 対象 (variable × environment) への `var.version_pushed`(= 上流をローテーションして新しい値を入れた)または `rotation.dismissed` で解消。解消状態はイベント列から導出する(フラグ自体を可変ストアに持たない)
+
+**`revoke_server` の変種**: 同じ骨格で次を差し替える — 手順 1 の区間は当該サーバー鍵 FP の `chain.server_granted` 〜 `chain.server_revoked`(再 grant があれば区間ごと)。手順 2 の候補は各 grant のスコープ(対象環境の部分集合。CRYPTO_SPEC §6.2)に含まれる環境の変数に限定。手順 3 の (a) は `var.read` の代わりに `server.value_decrypted`(actor_key_fingerprint = サーバー鍵 FP で照合)を使う。手順 4〜5 は同じ。
 
 環境スコープ role(CRYPTO_SPEC 未決事項 #11)が入った場合は、手順 2 の「全環境」が「M がアクセス権を持っていた環境」に狭まる。チェーンミラーが role / スコープを写しているため、この拡張はクエリの変更だけで成立する(スキーマ変更不要)。
 
