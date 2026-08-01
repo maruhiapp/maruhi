@@ -43,3 +43,10 @@
 ### 環境まわりの知見
 
 - クラウド環境の Playwright は `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` のプリインストール Chromium を使う(`bunx playwright install` は不要・禁止)。apps/web の e2e(localhost 向き)はプロキシ除外リストに localhost が入っているため動く
+
+## 2. root 統合 PR
+
+- ci.yml に独立ステップ 3 つを追加: 8. web ビルド(vite + write-headers)、9. web e2e(`bunx playwright install --with-deps chromium` → wrangler dev + Playwright)、10. `doctor:astryx`。**ルート vitest.config.ts の projects には web e2e を入れていない**(ビルド成果物前提のため。spike-a の推奨どおり)
+- e2e のポート固定(8791)を解消: `node:net` の `listen(0)` で OS に空きポートを割り当てさせる方式に変更(並列実行で衝突しない)。CI からの実行用に apps/web に `e2e` スクリプトを追加
+- CI 全体の env に `DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false`(「言わざる」をメンテナ CI にも適用。spike-b の知見)
+- ROADMAP のチェックオフ: 要決定 3 件・検証スパイク 3 本・npm プレースホルダ + org

@@ -7,13 +7,29 @@
 // 事前に `bun run build` が必要。
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:net";
 
 import { type Browser, chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const PORT = 8791;
-const BASE = `http://127.0.0.1:${PORT}`;
+// ポートは固定せず OS に空きを割り当てさせる(CI の並列実行でも衝突しない)
+function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        reject(new Error("failed to allocate a free port"));
+        return;
+      }
+      server.close((err) => (err ? reject(err) : resolve(address.port)));
+    });
+  });
+}
 
+let BASE: string;
 let wranglerProcess: ChildProcess;
 let browser: Browser;
 
@@ -32,7 +48,9 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 }
 
 beforeAll(async () => {
-  wranglerProcess = spawn("bunx", ["wrangler", "dev", "--port", String(PORT)], {
+  const port = await getFreePort();
+  BASE = `http://127.0.0.1:${port}`;
+  wranglerProcess = spawn("bunx", ["wrangler", "dev", "--port", String(port)], {
     cwd: import.meta.dirname + "/..",
     stdio: "ignore",
     env: { ...process.env, CI: "1" },

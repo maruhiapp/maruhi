@@ -1,11 +1,18 @@
-# 品質ゲート(CLAUDE.md の 7 ステップと同一順序)
+# 品質ゲート(CLAUDE.md の 7 ステップと同一順序)+ web 統合ステップ
 # 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint → 5. fallow → 6. React Doctor → 7. テスト
+# → 8. web ビルド → 9. web e2e(wrangler dev + Playwright)→ 10. astryx doctor
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+
+env:
+  # 「言わざる」原則(CLAUDE.md)はメンテナ環境の CI にも適用する:
+  # wrangler / alchemy / その他ツールのテレメトリを一括で無効化
+  DO_NOT_TRACK: "1"
+  WRANGLER_SEND_METRICS: "false"
 
 jobs:
   check:
@@ -43,3 +50,17 @@ jobs:
 
       - name: 7. Test (Vitest)
         run: bun run test
+
+      # web の e2e はビルド成果物(dist/public + _headers)前提のため、
+      # ルート vitest.config.ts の projects には入れず独立ステップで実行する
+      # (docs/notes/spike-a.md の推奨)。ポートは OS 割り当てで並列衝突しない。
+      - name: 8. Web build (vite + CSP headers)
+        run: bun run --filter @maruhi/web build
+
+      - name: 9. Web e2e (wrangler dev + Playwright)
+        run: |
+          bunx playwright install --with-deps chromium
+          bun run --filter @maruhi/web e2e
+
+      - name: 10. Astryx doctor (web)
+        run: bun run --filter @maruhi/web doctor:astryx

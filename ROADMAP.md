@@ -2,14 +2,14 @@
 
 ## Phase 0: 開発開始前(Bun 1.4 リリース + 数週間の待機期間)
 
-- [ ] 仕様の最終レビュー: CRYPTO_SPEC / AUTH_SPEC の未決事項のうち「実装開始前に要決定」3 件(環境モデル、認可モデル、プロジェクトと組織の関係 = AUTH_SPEC §9-1)を決定
+- [x] 仕様の最終レビュー: 「実装開始前に要決定」3 件を決定(2026-08-01 所有者裁定): 環境モデル = プロジェクト × 環境 × エポック(CRYPTO_SPEC §3〜§5)、認可モデル = チェーン上の 4 role(CRYPTO_SPEC §6.2)、プロジェクトと組織の関係 = パーソナル org 自動作成(AUTH_SPEC §9-1)
 - [ ] 監査ログのスキーマ設計(記録イベント一覧、actor = 内部 user_id + 鍵フィンガープリント、DO 内 append-only 形式。「要ローテーション検出」の算出要件を満たすこと)
 - [ ] 暗号テストベクターの定義(実装より先にコミット)
-- [ ] 検証スパイク(使い捨て):
+- [x] 検証スパイク(使い捨て)3 本完了(2026-08-01。結果は docs/notes/spike-{a,b,c}.md):
   - スパイク A: funstack-static + funstack-router + Astryx(ADR-0013)→ Workers Static Assets。`"use client"` 境界、Navigation API 非対応ブラウザの劣化挙動、プリビルド CSS の静的配信 + 厳格 CSP、StyleX コンパイラ(xstyle 用)と Vite の組み合わせを確認
-  - スパイク B: Effect v4 HttpApi + Durable Objects(ManagedRuntime パターン)+ vitest-pool-workers + Alchemy v2 デプロイ
-  - スパイク C: E2EE ラウンドトリップをブラウザ / Bun / workerd の 3 環境で。HPKE ライブラリ選定(未決事項 #1 を解消)
-- [ ] npm `maruhi` プレースホルダ publish + org `maruhi`(@maruhi スコープ)作成
+  - スパイク B: Effect v4 HttpApi + Durable Objects(ManagedRuntime パターン)+ vitest-pool-workers + Alchemy v2 / wrangler 両対応。実デプロイ検証は wrangler 経路成立(Alchemy 経路はユーザー API トークン切り替え待ち。docs/notes/session-03.md)
+  - スパイク C: E2EE ラウンドトリップをブラウザ / Bun / workerd の 3 環境で確認。HPKE ライブラリ選定(未決事項 #1)= `hpke`(panva)で決定
+- [x] npm `maruhi` プレースホルダ publish + org `maruhi`(@maruhi スコープ)作成(2026-08-01 完了。`maruhi@0.0.1`)
 - [ ] ウォッチ: Bun 1.4 安定化、Drizzle v1 正式版(D1 / DO SQLite の Effect ドライバ有無)、Effect v4 安定版化
 
 ## Phase 1: MVP(クローズド開発)
