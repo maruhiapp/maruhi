@@ -1,8 +1,39 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": [{ "name": "eslint-js", "specifier": "oxlint-plugin-eslint" }],
   "categories": {
     "correctness": "error",
     "suspicious": "error"
   },
-  "ignorePatterns": ["fallow-baselines", ".agents", ".claude"]
+  "ignorePatterns": ["fallow-baselines", ".agents", ".claude"],
+  "overrides": [
+    {
+      // Astryx styling 規律(ADR-0013、B2 運用)。詳細は CLAUDE.md の styling 規律を参照
+      "files": ["apps/web/**/*.{js,jsx,ts,tsx}"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": [
+          "error",
+          {
+            "selector": "JSXAttribute[name.name='className']",
+            "message": "className は禁止。Astryx の xstyle(stylex.create + typed tokens)か defineTheme を使う(CLAUDE.md の styling 規律)"
+          },
+          {
+            "selector": "JSXAttribute[name.name='style']",
+            "message": "インライン style は禁止。Astryx の xstyle(stylex.create + typed tokens)か defineTheme を使う(CLAUDE.md の styling 規律)"
+          },
+          {
+            "selector": "CallExpression[callee.object.name='stylex'][callee.property.name='props']",
+            "message": "stylex.props による生 DOM のスタイリングは apps/web/src/ui.package/ 内のみ。アプリコードは Astryx コンポーネント + xstyle を使う"
+          }
+        ]
+      }
+    },
+    {
+      // ui.package は新規視覚パターンの置き場所なので styling 制限を解除
+      "files": ["apps/web/**/ui.package/**"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": "off"
+      }
+    }
+  ]
 }

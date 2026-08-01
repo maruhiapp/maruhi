@@ -48,7 +48,8 @@
 
 - 所有者決定により web の UI は Astryx(Tailwind v4 は不採用)。ADR-0013 参照。heroui-react スキルは削除済み
 - Astryx の styling 経路は 4 つ: defineTheme(トークン・variant)/ xstyle(stylex.create + typed tokens)/ className(外部 CSS interop 用)/ style(インライン)。swizzle はソース取り込み(**要 StyleX コンパイラ。無いと無警告で無スタイル描画**という罠あり)
-- **運用規律は選択肢 A / B1 / B2 を所有者に提示中(チャット参照)**。推奨は B2: className / style を oxlint で禁止、xstyle は typed tokens 縛りで許可、生 StyleX 作成と swizzle は ui.package のみ、ブランド変更は defineTheme 単一ファイルに集約
+- **運用規律は B2 で決定(2026-08-01)**: defineTheme を基本とし、局所調整のみ xstyle(typed tokens 縛り)。className / インライン style / アプリコードでの stylex.props は oxlint(oxlint-plugin-eslint の no-restricted-syntax、apps/web スコープ)で機械禁止、`ui.package/` 内のみ解除。同じ上書きの再発はテーマ variant か ui.package へ昇格(逆流禁止)。CLAUDE.md に明文化済み・ダミー違反ファイルで発火と免除を検証済み
+- スパイク A に残した実装: `astryx init --features agents`(AGENTS.md 生成)、`astryx doctor` の品質ゲート追加、`@stylexjs/eslint-plugin` の上乗せ検討(xstyle 値の妥当性検査)
 - 強制手段(確認済み): oxlint native の no-restricted-imports(paths/patterns + overrides)、no-restricted-syntax は oxlint-plugin-eslint(jsPlugins)経由、astryx doctor(CI-friendly exit code)、ImportLint の *.package 境界
 - Astryx は SKILL.md 配布・MCP npm パッケージなし(確認済み)。エージェント対応は CLI(--json / capability manifest / --lang dense)と astryx init --features agents による AGENTS.md / CLAUDE.md 生成。導入はスパイク A で実施
 - バージョン規律: stable のみ(canary 禁止)、厳密ピン、更新は astryx upgrade コードモッド + 独立 PR

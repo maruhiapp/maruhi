@@ -29,6 +29,14 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 - `dangerouslySetInnerHTML` と同等の生 HTML 挿入は禁止(React Doctor / レビューで検査)
 - 依存パッケージの追加は最小限とし、フロントの供給網を小さく保つ
 
+### Web UI(Astryx)の styling 規律(ADR-0013)
+- 見た目の変更はまず `apps/web/theme/` の defineTheme(トークン・variant)。ブランド定義はここが唯一の置き場所
+- 個別調整は Astryx コンポーネントの `xstyle` のみ。値は `stylex.create` + typed tokens(`@astryxdesign/core/theme/tokens.stylex`)で書き、生の hex 値・マジックナンバーを書かない
+- `className` とインライン `style` は禁止(oxlint が error にする)。外部 CSS を持ち込まない
+- 生 DOM への `stylex.props`、`astryx swizzle` したソース、新規の視覚パターンは `apps/web/src/ui.package/` のみ(swizzle 出力は StyleX コンパイラがないと無警告で無スタイル描画になる点に注意)
+- 同じ xstyle 上書きが 2〜3 回現れたら、defineTheme の variant 化か ui.package への昇格を人間に提案する(逆流させない)
+- Astryx コンポーネントの API は推測せず `astryx component <名前> --json` で確認する。バージョンは stable のみ(canary 禁止)・厳密ピン、更新は `astryx upgrade` コードモッドを使う独立 PR で行う
+
 ### アーキテクチャ
 - 認証は `docs/AUTH_SPEC.md` に従う。メールによる自動アカウントリンク禁止。セッションは DB バック(stateless JWT のみのセッション禁止)
 - Drizzle の型(テーブル型・select 結果型)をリポジトリサービスの外に出さない。公開 API はドメイン型と Effect 型のみ
