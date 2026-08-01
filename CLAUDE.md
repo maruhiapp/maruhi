@@ -34,8 +34,9 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 - 個別調整は Astryx コンポーネントの `xstyle` のみ。値は `stylex.create` + typed tokens(`@astryxdesign/core/theme/tokens.stylex`)で書き、生の hex 値・マジックナンバーを書かない
 - `className` とインライン `style` は禁止(oxlint が error にする)。外部 CSS を持ち込まない
 - 生 DOM への `stylex.props` と新規の視覚パターンは `apps/web/src/ui.package/` のみ
-- カスタマイズは必ずこの順で検討する: ① defineTheme(variant 追加を含む)→ ② xstyle → ③ ui.package での合成ラッパー → ④ ui.package での新規自作(Astryx の hooks / tokens 利用可)
-- **`astryx swizzle` は原則禁止(最終手段)**。①〜④で不可能かつ upstream(facebook/astryx)への issue / PR で解決を待てない場合のみ、人間の承認を得て使う。swizzle する場合: 置き場所は ui.package、元コンポーネントとバージョン・理由をコメントに記録し、upstream 解決後に削除する一時措置として扱う。swizzle ソースは StyleX コンパイラがないと無警告で無スタイル描画になる(ビルド構成変更を伴うため独立 PR)
+- カスタマイズは必ずこの順で検討する: ① defineTheme(variant 追加を含む)→ ② xstyle → ③ ui.package での合成ラッパー → ④ ui.package での新規自作(Astryx の hooks / tokens 等の公開 API のみ使用)→ ⑤ upstream(facebook/astryx)への issue / PR。UX の再設計はどの段階でも選択肢に含める
+- **`astryx swizzle` は禁止**。コマンドに限らず、Astryx 内部実装のソースを手段を問わずリポジトリへ取り込むこと全般を禁止する(内部ソースの閲覧は学習目的のみ可、コピーは不可)。上流バグは厳密ピン留めにより「アップグレード PR の差し戻し」で対処し、swizzle をホットフィックスに使わない
+- 自作の StyleX(`stylex.create`。xstyle 用を含む)はビルドに StyleX コンパイラを要求し、未設定だと無警告で無スタイル描画になる。プリビルド CSS の消費と defineTheme のみならコンパイラ不要
 - 同じ xstyle 上書きが 2〜3 回現れたら、defineTheme の variant 化か ui.package への昇格を人間に提案する(逆流させない)
 - Astryx コンポーネントの API は推測せず `astryx component <名前> --json` で確認する。バージョンは stable のみ(canary 禁止)・厳密ピン、更新は `astryx upgrade` コードモッドを使う独立 PR で行う
 

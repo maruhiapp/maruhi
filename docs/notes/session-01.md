@@ -49,7 +49,8 @@
 - 所有者決定により web の UI は Astryx(Tailwind v4 は不採用)。ADR-0013 参照。heroui-react スキルは削除済み
 - Astryx の styling 経路は 4 つ: defineTheme(トークン・variant)/ xstyle(stylex.create + typed tokens)/ className(外部 CSS interop 用)/ style(インライン)。swizzle はソース取り込み(**要 StyleX コンパイラ。無いと無警告で無スタイル描画**という罠あり)
 - **運用規律は B2 で決定(2026-08-01)**: defineTheme を基本とし、局所調整のみ xstyle(typed tokens 縛り)。className / インライン style / アプリコードでの stylex.props は oxlint(oxlint-plugin-eslint の no-restricted-syntax、apps/web スコープ)で機械禁止、`ui.package/` 内のみ解除。同じ上書きの再発はテーマ variant か ui.package へ昇格(逆流禁止)。CLAUDE.md に明文化済み・ダミー違反ファイルで発火と免除を検証済み
-- **swizzle は原則禁止で確定(2026-08-01、所有者と合意)**: エスカレーション順 defineTheme → xstyle → 合成ラッパー → 新規自作 → upstream issue/PR、の全てで解決しない場合のみ人間承認つきで許可。一時措置として元バージョン・理由を記録し upstream 解決後に削除。理由: swizzle はフォークであり Astryx 採用理由(upstream 修正の還流・a11y のシステム側管理)を打ち消す + StyleX コンパイラをビルドに持ち込む
+- **swizzle は全面禁止で確定(2026-08-01、所有者決定)**: 手段を問わず Astryx 内部実装のリポジトリへの取り込みを禁止(実質基準。手動コピーも同罪)。上流バグは厳密ピン留め運用の「アップグレード PR 差し戻し」で対処するため、ホットフィックス用の例外は不要と判断。表現できない UI は UX 再設計 / 合成 / 公開 API での自作 / upstream issue・PR で解く
+- **訂正(重要)**: StyleX コンパイラは swizzle ではなく **`stylex.create` を書いた時点(xstyle 使用開始時点)で必要**(公式 docs 確認済み)。「未設定だと無警告で無スタイル描画」も authored StyleX 全般に適用。スパイク A で FunStack(Vite)+ StyleX コンパイラの組み合わせを必ず検証すること
 - スパイク A に残した実装: `astryx init --features agents`(AGENTS.md 生成)、`astryx doctor` の品質ゲート追加、`@stylexjs/eslint-plugin` の上乗せ検討(xstyle 値の妥当性検査)
 - 強制手段(確認済み): oxlint native の no-restricted-imports(paths/patterns + overrides)、no-restricted-syntax は oxlint-plugin-eslint(jsPlugins)経由、astryx doctor(CI-friendly exit code)、ImportLint の *.package 境界
 - Astryx は SKILL.md 配布・MCP npm パッケージなし(確認済み)。エージェント対応は CLI(--json / capability manifest / --lang dense)と astryx init --features agents による AGENTS.md / CLAUDE.md 生成。導入はスパイク A で実施
