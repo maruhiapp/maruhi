@@ -68,3 +68,6 @@
 ## 決定・整理の記録(2026-08-01)
 
 - **ホステッド版は Workers for Platforms を使わない**(所有者との整理): 通常のマルチテナント Workers アプリ + プロジェクト DO 分離で提供する。WfP はテナントのコードを実行するための仕組みであり、maruhi のテナント分離はデータレベル(プロジェクト DO の名前空間分離)で足りる。AUDIT_SPEC §5 の保存先設計(D1 共有テーブル + プロジェクト DO)もこの前提に立つ
+- **funstack-static まわりの upstream 報告は当面見送り**(所有者判断。実害なしのため)。調査結果の記録: ① preload の `as="stylesheet"`(正しくは `style`)はエミッタを追跡した結果 **@vitejs/plugin-rsc 0.5.32 にベンダリングされた react-server-dom のコード**が発生源で、funstack-static 本体ではない。preload が無効化されコンソール警告が出るだけで、CSS 本体は通常の `<link rel="stylesheet">` で読まれるため実害なし。② インラインブートストラップは funstack-static の設計選択(`bootstrapScriptContent`)であり、承認済みのハッシュ許可方式で運用確定。報告する場合は ① は plugin-rsc / React 側へ(facebook/react 原本との突き合わせ確認の上)、② は `bootstrapScripts`(外部 URL)への切り替えオプションとして funstack-static へ提案するのが筋
+- **workers.dev サブドメインを `maruhi` へ変更完了**(所有者がダッシュボードで実施。旧 `spike-b` は無効化。今後のデプロイ URL は `<worker>.maruhi.workers.dev`)
+- **`CLOUDFLARE_API_TOKEN` のユーザー API トークンへの差し替え**を所有者が実施(My Profile → API Tokens、「Edit Cloudflare Workers」テンプレート + D1 Edit、maruhi アカウント限定)。Alchemy 経路の再検証は差し替え後の新セッションで行う(シークレットはコンテナ起動時に注入されるため、既存セッションには反映されない)
