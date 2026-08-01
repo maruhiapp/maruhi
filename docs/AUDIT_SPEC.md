@@ -95,8 +95,8 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | `chain.member_removed` ★ | `remove_member`(target_user_id) |
 | `chain.role_changed` | `change_role` |
 | `chain.epoch_rotated` ★ | `rotate_epoch`(environment_id, 新エポック, 理由) |
-| `chain.server_granted` ★ | `grant_server`(サーバー鍵 FP, スコープ = 対象環境集合) |
-| `chain.server_revoked` ★ | `revoke_server` |
+| `chain.server_granted` ★ | `grant_server`。**target_key_fingerprint に付与対象のサーバー鍵 FP** を入れ、スコープ(対象環境集合)は payload に写す |
+| `chain.server_revoked` ★ | `revoke_server`。**target_key_fingerprint に失効対象のサーバー鍵 FP** を入れる |
 
 ### 3.5 grant_server 経由のサーバーアクセス ★
 
@@ -135,6 +135,7 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | Q3 | user_id × 期間 → 読んだ (variable × environment) の distinct 集合 | (actor_user_id, seq) + イベント種別 |
 | Q4 | (variable × environment) × 期間 → 閲覧・変更した主体一覧(逆引き。インシデント対応用) | Q2 と同じ索引 |
 | Q5 | 現在有効な rotation.recommended − 解消イベント | イベント種別 + (variable_id, environment_id, seq) |
+| Q6 | サーバー鍵 FP → grant 区間とスコープ(chain.server_granted / revoked の列)、および期間内の server.value_decrypted(actor_key_fingerprint で照合) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
 
 これらは**単一の project DO 内で完結する**(クロス DO join なし)。§5 の配置はこの性質を保つことを最優先に選ぶ。
 
@@ -156,6 +157,7 @@ audit_events (
   actor_key_fingerprint  TEXT,
   actor_api_token_id     TEXT,
   target_user_id  TEXT,             -- メンバー操作の対象
+  target_key_fingerprint TEXT,      -- grant_server / revoke_server の対象サーバー鍵 FP
   environment_id  TEXT,
   variable_id     TEXT,
   epoch           INTEGER,
@@ -166,6 +168,8 @@ audit_events (
 CREATE INDEX ae_var    ON audit_events (variable_id, environment_id, seq);
 CREATE INDEX ae_actor  ON audit_events (actor_user_id, seq);
 CREATE INDEX ae_target ON audit_events (target_user_id, seq);
+CREATE INDEX ae_target_fp ON audit_events (target_key_fingerprint, seq);
+CREATE INDEX ae_actor_fp  ON audit_events (actor_key_fingerprint, seq);
 CREATE INDEX ae_event  ON audit_events (event, seq);
 ```
 
