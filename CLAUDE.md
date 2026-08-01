@@ -33,7 +33,9 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 - 見た目の変更はまず `apps/web/theme/` の defineTheme(トークン・variant)。ブランド定義はここが唯一の置き場所
 - 個別調整は Astryx コンポーネントの `xstyle` のみ。値は `stylex.create` + typed tokens(`@astryxdesign/core/theme/tokens.stylex`)で書き、生の hex 値・マジックナンバーを書かない
 - `className` とインライン `style` は禁止(oxlint が error にする)。外部 CSS を持ち込まない
-- 生 DOM への `stylex.props`、`astryx swizzle` したソース、新規の視覚パターンは `apps/web/src/ui.package/` のみ(swizzle 出力は StyleX コンパイラがないと無警告で無スタイル描画になる点に注意)
+- 生 DOM への `stylex.props` と新規の視覚パターンは `apps/web/src/ui.package/` のみ
+- カスタマイズは必ずこの順で検討する: ① defineTheme(variant 追加を含む)→ ② xstyle → ③ ui.package での合成ラッパー → ④ ui.package での新規自作(Astryx の hooks / tokens 利用可)
+- **`astryx swizzle` は原則禁止(最終手段)**。①〜④で不可能かつ upstream(facebook/astryx)への issue / PR で解決を待てない場合のみ、人間の承認を得て使う。swizzle する場合: 置き場所は ui.package、元コンポーネントとバージョン・理由をコメントに記録し、upstream 解決後に削除する一時措置として扱う。swizzle ソースは StyleX コンパイラがないと無警告で無スタイル描画になる(ビルド構成変更を伴うため独立 PR)
 - 同じ xstyle 上書きが 2〜3 回現れたら、defineTheme の variant 化か ui.package への昇格を人間に提案する(逆流させない)
 - Astryx コンポーネントの API は推測せず `astryx component <名前> --json` で確認する。バージョンは stable のみ(canary 禁止)・厳密ピン、更新は `astryx upgrade` コードモッドを使う独立 PR で行う
 
