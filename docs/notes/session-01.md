@@ -61,9 +61,9 @@
 スパイク A(ADR-0013 により更新): funstack-static + funstack-router + **Astryx** → Workers Static Assets。`"use client"` 境界、Navigation API 非対応ブラウザの劣化挙動、Astryx プリビルド CSS の静的配信、厳格 CSP との整合を確認。`astryx init --features agents` でエージェントドキュメントを生成し、`astryx doctor` を品質ゲートに追加する。
 
 - 作業場所は `apps/web`(骨格のみ。React 依存なし)。使い捨てスパイクなら別ディレクトリでも可
-- スキル `funstack-static-knowledge` / `funstack-router-knowledge` / `heroui-react` を導入済み。HeroUI v3 は beta で `@beta` タグ必須、Tailwind v4 必須、Provider 不要・compound components、という v2 との差分がスキルに詳述されている
-- HeroUI Pro のライセンスは所有者が保有しており、クラウド環境(Cloud Agents > Secrets)に登録予定。ライセンスキーをリポジトリ・`.dev.vars` に書かないこと(CLAUDE.md のダミー値規則)
-- **HeroUI Pro のライセンス制約(2026-07-31 調査)**: Pro は私有ライセンス(`@heroui-pro/react`、トークン必須)で、コンポーネント・ソースの共有/公開/再配布を禁止。トークンの公開環境への露出も禁止。したがって **OSS 配布物(このリポジトリ、特に apps/web)には Pro を入れられない**。OSS 部分は HeroUI v3 コア(寛容ライセンス)のみで作り、Pro は非公開リポジトリ(maruhi.dev のマーケティングサイト等)に限定する方針を提案中(ADR-0007 / CLAUDE.md の「HeroUI v3 / Pro」表記の改訂が必要。人間の決定待ち)。スパイク A は OSS コアのみで実施可能
+- スキル `funstack-static-knowledge` / `funstack-router-knowledge` を導入済み(heroui-react は ADR-0013 により削除済み)
+- ~~HeroUI Pro のライセンスをクラウド環境(Cloud Agents > Secrets)に登録予定~~ → **不要になった(ADR-0013)**。本リポジトリでは HeroUI を使わない。Pro を使うなら将来の非公開マーケティングサイト用リポジトリで
+- **HeroUI Pro のライセンス制約(2026-07-31 調査。経緯の記録)**: Pro は私有ライセンス(`@heroui-pro/react`、トークン必須)で、コンポーネント・ソースの共有/公開/再配布を禁止。トークンの公開環境への露出も禁止。したがって OSS 配布物には Pro を入れられない。→ この制約が UI ライブラリ再選定の起点となり、**ADR-0013(Astryx 採用)で解決済み**
 - **HeroUI 乗り換え候補の調査(2026-08-01、実測込みで更新)**: 候補は Astryx(Meta、MIT、StyleX ベース、公開 2026-06、内部 8 年・13,000 アプリ)と React Aria Components(Adobe、v1.20、monopackage 化済み・公式エージェントスキル + MCP + llms.txt あり)。実測では依存はどちらも 16 パッケージ / 約 72MB で同等。ただし Astryx はプリビルド CSS 方式のため Tailwind ツールチェーン自体が不要になる。壊れにくさは RAC が優位(公開 8 年の互換実績・コードモッド文化。ただし次期 major が nightly 進行中)、Astryx は 0.x semver・外部コミュニティ対応が未証明。**所有者は Astryx の新規リスク許容 + Tailwind 廃止も可と表明済み**。推奨: スパイク A を「Astryx × FunStack」検証に差し替え、退避経路 = RAC(+ Tailwind v4)として ADR-0007 を改訂(人間の最終決定待ち)。採用決定時は .agents/skills の heroui-react を外し Astryx の CLI/MCP(`astryx init` が AGENTS.md / CLAUDE.md を生成)に入れ替え、oxfmt の sortTailwindcss 設定も除去する
 - **CRYPTO_SPEC §8 改訂案の裏取り(2026-07-31)**: Shelve / Keyway はサーバー側暗号化でリカバリーラップの概念自体がなく参考外。E2EE の Infisical はリカバリーキット(乱数鍵)で秘密鍵の複製を直接復号し、salt 保存は低エントロピーなパスワード経路(Argon2id)のみ。→「salt = 空」は Infisical のリカバリー経路と同型、「AAD 束縛」は 3 製品のどれもやっていない上乗せの強化、として決定を維持
 - 依存追加は `bun add -E`(bunfig.toml の exact=true で強制)。理由をコミットメッセージに書く(CLAUDE.md)
