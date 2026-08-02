@@ -28,6 +28,11 @@ import {
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
+  readonly DB: D1Database;
+  /** GitHub OAuth App の client_id(wrangler vars。セルフホストは自分の App の値)。 */
+  readonly GITHUB_CLIENT_ID: string;
+  /** GitHub OAuth App の client_secret(Workers Secret / .dev.vars。ダミー値のみコミット可)。 */
+  readonly GITHUB_CLIENT_SECRET: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,8 +105,13 @@ const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
 // 型付きエラー(DO 内部)と RPC 境界の outcome 型
 // ---------------------------------------------------------------------------
 
-class AlreadyInitializedError extends Data.TaggedError("AlreadyInitialized")<object> {}
+class AlreadyInitializedError extends Data.TaggedError("AlreadyInitialized")<{
+  readonly genesisActorUserId: string;
+  readonly headSeq: number;
+  readonly headHashHex: string;
+}> {}
 class NotInitializedError extends Data.TaggedError("NotInitialized")<object> {}
+class NotMemberError extends Data.TaggedError("NotMember")<object> {}
 class HeadConflictError extends Data.TaggedError("HeadConflict")<{
   readonly currentHeadSeq: number;
   readonly currentHeadHashHex: string;
@@ -118,7 +128,17 @@ class ProjectIdMismatchError extends Data.TaggedError("ProjectIdMismatch")<objec
 /** RPC 境界(structured clone)を渡る初期化結果。 */
 export type InitOutcome =
   | { readonly kind: "initialized"; readonly headSeq: number; readonly headHashHex: string }
-  | { readonly kind: "already-initialized" }
+  | {
+      /**
+       * 初期化済み。genesis actor と現ヘッドを返すのは、worker 側の冪等修復
+       * (AUTH_SPEC §11-3: projects 行欠損 + 要求者 = genesis actor なら成功扱い)
+       * の判定材料のため。
+       */
+      readonly kind: "already-initialized";
+      readonly genesisActorUserId: string;
+      readonly headSeq: number;
+      readonly headHashHex: string;
+    }
   | { readonly kind: "chain-invalid"; readonly seq: number; readonly reason: ChainInvalidReason }
   | { readonly kind: "entry-too-large"; readonly limitBytes: number }
   | { readonly kind: "project-id-mismatch" };
@@ -127,6 +147,7 @@ export type InitOutcome =
 export type AppendOutcome =
   | { readonly kind: "appended"; readonly headSeq: number; readonly headHashHex: string }
   | { readonly kind: "not-initialized" }
+  | { readonly kind: "not-member" }
   | {
       readonly kind: "head-conflict";
       readonly currentHeadSeq: number;
@@ -148,7 +169,8 @@ export type SnapshotOutcome =
       readonly headSeq: number;
       readonly headHashHex: string;
     }
-  | { readonly kind: "not-initialized" };
+  | { readonly kind: "not-initialized" }
+  | { readonly kind: "not-member" };
 
 // ---------------------------------------------------------------------------
 // Effect プログラム(検証・受理判定の本体)
@@ -192,12 +214,59 @@ function checkEntrySize(
   );
 }
 
-const initProgram = (expectedProjectId: string, entry: ChainEntry) =>
+/**
+ * チェーン導出状態のキャッシュ(DO インスタンスメモリ)。保存済みチェーンは
+ * 受理時に検証済みなので、同一ヘッドへの再導出を省く(§6.2 の認可・§11-2 の
+ * メンバーシップ判定を読み取りごとの O(n) 署名検証にしないため)。
+ */
+interface StateCache {
+  current: { readonly headHashHex: string; readonly state: ChainState } | null;
+}
+
+/**
+ * キャッシュ更新は headSeq の単調ガード付き: permit を持たない読み取り
+ * (snapshotFor)の導出中に追記がコミットした場合、古い状態で新しいキャッシュを
+ * 上書きしない(チェーンは append-only なので headSeq 比較で十分)。
+ */
+function updateStateCache(cache: StateCache, state: ChainState): void {
+  if (cache.current === null || state.headSeq >= cache.current.state.headSeq) {
+    cache.current = { headHashHex: state.headHashHex, state };
+  }
+}
+
+/** 保存済みチェーンから ChainState を導出する。検証失敗は実装バグ(defect)。 */
+function deriveStoredState(chain: StoredChain, cache: StateCache): Effect.Effect<ChainState> {
+  const cached = cache.current;
+  if (cached !== null && cached.headHashHex === chain.headHashHex) {
+    return Effect.succeed(cached.state);
+  }
+  return verifyChainEffect(chain.entries).pipe(
+    Effect.orDie,
+    Effect.tap((state) => Effect.sync(() => updateStateCache(cache, state))),
+  );
+}
+
+/** §6.2 / §11-2: チェーン導出メンバー(reader 含む)でなければ拒否する。 */
+function ensureChainMember(state: ChainState, userId: string): Effect.Effect<void, NotMemberError> {
+  return state.members.has(userId) ? Effect.void : Effect.fail(new NotMemberError());
+}
+
+const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateCache) =>
   Effect.gen(function* () {
     const store = yield* ChainStore;
     const chain = yield* store.load;
     if (chain.headSeq > 0) {
-      return yield* new AlreadyInitializedError();
+      const genesisActor = chain.entries[0]?.actor.userId;
+      if (genesisActor === undefined || chain.headHashHex === null) {
+        // headSeq > 0 なら両値は不変条件として存在する。欠けているのはストレージ
+        // 破損であり、空文字で成功応答に変換せず defect として落とす
+        return yield* Effect.die(new Error("initialized chain is missing genesis or head"));
+      }
+      return yield* new AlreadyInitializedError({
+        genesisActorUserId: genesisActor,
+        headSeq: chain.headSeq,
+        headHashHex: chain.headHashHex,
+      });
     }
     const canonicalBytes = yield* checkEntrySize(entry);
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
@@ -208,6 +277,7 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry) =>
       return yield* new ProjectIdMismatchError();
     }
     yield* store.insert(entry, state.headHashHex, canonicalBytes);
+    updateStateCache(cache, state);
     return { headSeq: state.headSeq, headHashHex: state.headHashHex };
   });
 
@@ -233,15 +303,27 @@ function ensureParentHead(
   return Effect.void;
 }
 
-/** 受理ポリシー(§6.4): チェーン全体のエントリ数・累積バイト数の上限。 */
+/**
+ * 受理ポリシー(§6.4): チェーン全体のエントリ数・累積バイト数の上限。
+ * 判定は数値のみに依存する純関数(エントリ数上限のユニットテストのために公開。
+ * 10,000 本の有効チェーンを統合テストで実生成するのは非現実的なため)。
+ */
+export function chainCapacityExceeded(
+  entryCount: number,
+  totalCanonicalBytes: number,
+  addedCanonicalBytes: number,
+): boolean {
+  return (
+    entryCount + 1 > MAX_CHAIN_ENTRIES ||
+    totalCanonicalBytes + addedCanonicalBytes > MAX_CHAIN_TOTAL_CANONICAL_BYTES
+  );
+}
+
 function ensureChainCapacity(
   chain: StoredChain,
   canonicalBytes: number,
 ): Effect.Effect<void, CapacityExceededError> {
-  if (
-    chain.entries.length + 1 > MAX_CHAIN_ENTRIES ||
-    chain.totalCanonicalBytes + canonicalBytes > MAX_CHAIN_TOTAL_CANONICAL_BYTES
-  ) {
+  if (chainCapacityExceeded(chain.entries.length, chain.totalCanonicalBytes, canonicalBytes)) {
     return Effect.fail(
       new CapacityExceededError({
         maxEntries: MAX_CHAIN_ENTRIES,
@@ -252,27 +334,52 @@ function ensureChainCapacity(
   return Effect.void;
 }
 
-const appendProgram = (parentHeadHashHex: string, entry: ChainEntry) =>
+/**
+ * 読み取り・追記に共通する前段: 未初期化の検査と、チェーン導出メンバーシップの
+ * 検査(§6.2 / §11-2)。非メンバーには CAS の現ヘッド情報・受理ポリシーの判定
+ * 結果を含む一切を返さない(worker が not-member を 404 に写す)。
+ */
+const loadChainForMember = (callerUserId: string, cache: StateCache) =>
   Effect.gen(function* () {
     const store = yield* ChainStore;
     const chain = yield* store.load;
+    if (chain.headSeq === 0 || chain.headHashHex === null) {
+      return yield* new NotInitializedError();
+    }
+    const state = yield* deriveStoredState(chain, cache);
+    yield* ensureChainMember(state, callerUserId);
+    return {
+      entries: chain.entries,
+      headSeq: chain.headSeq,
+      headHashHex: chain.headHashHex,
+      totalCanonicalBytes: chain.totalCanonicalBytes,
+    };
+  });
+
+const appendProgram = (
+  parentHeadHashHex: string,
+  entry: ChainEntry,
+  callerUserId: string,
+  cache: StateCache,
+) =>
+  Effect.gen(function* () {
+    const store = yield* ChainStore;
+    const chain = yield* loadChainForMember(callerUserId, cache);
     yield* ensureParentHead(chain, parentHeadHashHex);
     const canonicalBytes = yield* checkEntrySize(entry);
     yield* ensureChainCapacity(chain, canonicalBytes);
     // §6.4: 追記受理時にチェーン全体を再検証する(prev_hash 連続性・署名・操作権限)
     const state = yield* verifyChainEffect([...chain.entries, entry]);
     yield* store.insert(entry, state.headHashHex, canonicalBytes);
+    updateStateCache(cache, state);
     return { headSeq: state.headSeq, headHashHex: state.headHashHex };
   });
 
-const snapshotProgram = Effect.gen(function* () {
-  const store = yield* ChainStore;
-  const chain = yield* store.load;
-  if (chain.headSeq === 0 || chain.headHashHex === null) {
-    return yield* new NotInitializedError();
-  }
-  return { entries: chain.entries, headSeq: chain.headSeq, headHashHex: chain.headHashHex };
-});
+const snapshotProgram = (callerUserId: string, cache: StateCache) =>
+  Effect.gen(function* () {
+    const chain = yield* loadChainForMember(callerUserId, cache);
+    return { entries: chain.entries, headSeq: chain.headSeq, headHashHex: chain.headHashHex };
+  });
 
 // ---------------------------------------------------------------------------
 // Durable Object(ManagedRuntime パターン。spike-b の確立形)
@@ -280,8 +387,10 @@ const snapshotProgram = Effect.gen(function* () {
 
 export class ProjectChainDO extends DurableObject<Env> {
   readonly #runtime: ManagedRuntime.ManagedRuntime<ChainStore, never>;
-  // 変更操作の直列化(冒頭コメント参照)。読み取り(snapshot)は permit 不要
+  // 変更操作の直列化(冒頭コメント参照)。読み取り(snapshotFor)は permit 不要
   readonly #writeLock = Semaphore.makeUnsafe(1);
+  // チェーン導出状態のキャッシュ(deriveStoredState 参照)
+  readonly #stateCache: StateCache = { current: null };
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -292,7 +401,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   init(expectedProjectId: string, entry: ChainEntry): Promise<InitOutcome> {
     return this.#runtime.runPromise(
       this.#writeLock.withPermit(
-        initProgram(expectedProjectId, entry).pipe(
+        initProgram(expectedProjectId, entry, this.#stateCache).pipe(
           Effect.map(
             (head): InitOutcome => ({
               kind: "initialized",
@@ -301,8 +410,13 @@ export class ProjectChainDO extends DurableObject<Env> {
             }),
           ),
           Effect.catchTags({
-            AlreadyInitialized: (): Effect.Effect<InitOutcome> =>
-              Effect.succeed({ kind: "already-initialized" }),
+            AlreadyInitialized: (error): Effect.Effect<InitOutcome> =>
+              Effect.succeed({
+                kind: "already-initialized",
+                genesisActorUserId: error.genesisActorUserId,
+                headSeq: error.headSeq,
+                headHashHex: error.headHashHex,
+              }),
             ChainInvalid: (error): Effect.Effect<InitOutcome> =>
               Effect.succeed({ kind: "chain-invalid", seq: error.seq, reason: error.reason }),
             EntryTooLarge: (error): Effect.Effect<InitOutcome> =>
@@ -316,10 +430,14 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
-  append(parentHeadHashHex: string, entry: ChainEntry): Promise<AppendOutcome> {
+  append(
+    parentHeadHashHex: string,
+    entry: ChainEntry,
+    callerUserId: string,
+  ): Promise<AppendOutcome> {
     return this.#runtime.runPromise(
       this.#writeLock.withPermit(
-        appendProgram(parentHeadHashHex, entry).pipe(
+        appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache).pipe(
           Effect.map(
             (head): AppendOutcome => ({
               kind: "appended",
@@ -330,6 +448,7 @@ export class ProjectChainDO extends DurableObject<Env> {
           Effect.catchTags({
             NotInitialized: (): Effect.Effect<AppendOutcome> =>
               Effect.succeed({ kind: "not-initialized" }),
+            NotMember: (): Effect.Effect<AppendOutcome> => Effect.succeed({ kind: "not-member" }),
             HeadConflict: (error): Effect.Effect<AppendOutcome> =>
               Effect.succeed({
                 kind: "head-conflict",
@@ -353,9 +472,9 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
-  snapshot(): Promise<SnapshotOutcome> {
+  snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runtime.runPromise(
-      snapshotProgram.pipe(
+      snapshotProgram(callerUserId, this.#stateCache).pipe(
         Effect.map(
           (chain): SnapshotOutcome => ({
             kind: "snapshot",
@@ -367,6 +486,7 @@ export class ProjectChainDO extends DurableObject<Env> {
         Effect.catchTags({
           NotInitialized: (): Effect.Effect<SnapshotOutcome> =>
             Effect.succeed({ kind: "not-initialized" }),
+          NotMember: (): Effect.Effect<SnapshotOutcome> => Effect.succeed({ kind: "not-member" }),
         }),
       ),
     );

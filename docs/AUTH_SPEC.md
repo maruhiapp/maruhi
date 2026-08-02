@@ -1,7 +1,7 @@
 # maruhi 認証・アイデンティティ仕様書 (AUTH_SPEC)
 
-Version: 0.1-draft
-Status: レビュー中
+Version: 0.2-draft
+Status: レビュー中(§11 は 2026-08-02 のセッション 06 裁定を反映)
 
 認証は GitHub OAuth の直接実装で行う(認証フレームワーク・外部 IdP サービスは使用しない)。
 ただしデータモデルは将来のエンタープライズ IdP(WorkOS 等)追加を無停止で行える形に固定する。
@@ -89,6 +89,7 @@ api_tokens (
 2. ユーザーがブラウザで承認 → CLI が GitHub トークンを取得
 3. CLI はそのトークンで maruhi サーバーの `/auth/device/exchange` を呼ぶ
 4. サーバーは GitHub API でトークンを検証し、getOrCreateUser → **maruhi 発行の API トークン**を返す
+   - **audience 検証(2026-08-02 追加)**: 持ち込まれたトークンの検証は check-token API(`POST /applications/{client_id}/token`、Basic 認証 = client_id:client_secret)で行い、**自分の OAuth App に対して発行されたトークンであること**まで確認する。`GET /user` による有効性確認だけでは、他のアプリ向けに発行された(漏洩・流用)トークンで他人のアカウントに解決できてしまう(confused-deputy)
 5. GitHub トークンは両側で即時破棄。CLI は maruhi トークンのみを OS キーチェーンに保存する
 
 ## 5. セッション
@@ -103,6 +104,11 @@ api_tokens (
 - 形式: `maruhi_pat_` + Base62 乱数(256-bit 相当)。プレフィックスで種別判別・secret scanning 対応
 - スコープ: プロジェクト単位 × 権限(read / write / admin)。実効権限は min(トークンスコープ, 所有者のチェーン role)(§9-2)。将来: 環境単位のスコープ(Phase 2、CRYPTO_SPEC 未決事項 #11 と連動)、エージェント用の短命リーストークン(Phase 3、CRYPTO_SPEC と連動)
 - 検証: 提示トークンの SHA-256 を DB と照合。タイミング安全比較
+- **スコープ表現(2026-08-02 決定)**: スコープは `{ project: <project_id> | "*", permission: "read" | "write" | "admin" }` の配列。`"*"` は「所有者の全プロジェクト」を指すワイルドカード(CLI の作業用トークンに使う。実効権限は常に min(スコープ, チェーン role) でチェーン role に束縛されるため、ワイルドカードでも本人のチェーン権限を超えない)。device flow 交換時に要求スコープを指定し、省略時は `[{ project: "*", permission: "admin" }]`
+- **操作が要求する権限水準(2026-08-02 決定)**: チェーン取得 = read。チェーン追記はエントリの op で決まる — `rotate_epoch` = write、`add_member` / `remove_member` / `change_role` / `grant_server` / `revoke_server` = admin。プロジェクト作成(genesis init)= admin。op ごとの認可(誰がその op を実行できるか)の真実源は引き続きチェーン role(CRYPTO_SPEC §6.2)であり、この表はトークンスコープ側の必要条件である
+- **v1 の線引き(2026-08-02 決定)**: トークンの発行経路は device flow(§4)のみ。管理系 API は「自分自身のトークンの失効」まで。一覧・名前変更・追加発行の UI / API は Web ダッシュボード実装時に設計する
+- **同名トークンはローテーション(2026-08-02 追加)**: 同一 (user, name) への発行は既存トークンの失効を伴う再発行とする(再ログイン = ローテーション)。失効と挿入は原子的に行い、並行発行でも同名トークンは 1 本(DB の一意制約で保証)
+- **発行の上限(2026-08-02 追加)**: 別名トークンはユーザーあたり 100 本まで(超過は 429。同名ローテーションは上限に達していても可能)。トークン名は 128 文字以下、スコープは 100 エントリ以下、スコープの project はプロジェクト ID 形式または `"*"` のみ(認証済み主体による api_tokens の肥大 DoS の遮断)
 
 ## 7. 将来の IdP 追加(WorkOS 挿入ポイント)
 
@@ -139,3 +145,30 @@ api_tokens (
 - GitHub トークンの永続化
 - セッション / トークン生値の DB 保存・ログ出力
 - パスワード認証の追加(本仕様の全面改訂なしに導入禁止)
+
+## 11. チェーン API との接続(2026-08-02 所有者裁定)
+
+AUTH_SPEC(リクエスト認証)と CRYPTO_SPEC §6(チェーン認可)の接続部の規定。
+
+### 11-1. 認証主体とチェーン actor の対応
+
+- チェーン操作 API(init / get / append)はすべて**認証必須**
+- 追記系(init / append)は「**認証済み主体の内部 user_id と entry.actor.user_id の厳密一致**」を受理条件とする。不一致は拒否する
+- この一致要求は **API 受理ポリシー**であり、チェーン有効性の合意規則(CRYPTO_SPEC §6.1)ではない。チェーン形式は user_id の形式(ULID か否か)に依存せず検証可能であり続ける — ID 形式を有効性規則へ持ち込むことは、暗号学的利得なしにプロバイダ独立性を毀損するため行わない。本番のチェーンには結果として内部 ULID が載る。crypto のテストベクター(任意形式の bounded string)は無変更のまま正であり、サーバー統合テストは users にベクター ID の行をシードして整合させる
+- `add_member` 等の対象(target_user_id)の存在検証は v1 では行わない(未登録ユーザー招待は CRYPTO_SPEC 未決事項 #9 の設計時に扱う)
+
+### 11-2. 非メンバーへの応答は一律 404
+
+- 認証済みでもチェーン導出メンバー(または有効スコープのトークン)でない主体には、get / append とも **404(ProjectNotFound)** を返し、プロジェクト ID の存在を秘匿する。未初期化プロジェクトと区別できない応答とする(ID は genesis ハッシュであり実質ケーパビリティ)
+
+### 11-3. プロジェクト作成(init)と org の整合
+
+- init リクエストは **org_id を必須**とし、作成権限は対象 org の **member 以上**(§9-1)。`projects.org_id` は NOT NULL
+- 順序: org 権限確認(D1)→ DO genesis 受理 → D1 `projects` 行挿入。**DO(チェーン)が確定点**であり、projects 行は org 帰属の従属メタデータ(プロジェクト内権限の真実源ではない — CRYPTO_SPEC §6.4)
+- 部分失敗の修復(冪等): DO 受理後・行挿入前に失敗した場合、同一 genesis の再 init は DO から already-initialized が返る。このとき「projects 行が欠損 + 認証主体 = genesis actor」であれば行を挿入して成功として返す。それ以外の already-initialized は 409
+
+### 11-4. エンドポイントの配置
+
+- 認証エンドポイントは **OAuth リダイレクト系(§3 start / callback)を含めすべて api-schema の HttpApi 定義**に置く(サーバー実装とクライアント導出の共有源を単一に保つ)
+- 401 / 403 の型付きエラー(Unauthorized / Forbidden)を api-schema に共有定義し、認証必須エンドポイントの宣言に載せる
+- CSRF(§5)の custom header は `x-maruhi-csrf: 1` とする。セッションクッキーで認証された書き込み系リクエストにのみ要求する(Authorization ヘッダーによるトークン認証はクロスサイトから発行できないため対象外)

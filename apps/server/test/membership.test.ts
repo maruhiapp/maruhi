@@ -1,14 +1,20 @@
-// メンバーシップログのサーバー保存(CRYPTO_SPEC §6.4)の統合テスト。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// メンバーシップログのサーバー保存(CRYPTO_SPEC §6.4)+ 認可(AUTH_SPEC §11)の統合テスト。
+// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite / D1 を検証する。
 //
 // テストベクター(packages/crypto/test-vectors/chain-entries.json)の再利用:
-// - 正常系 seq 1〜9 をサーバー経由の受理テストとして再生する
-// - 認可系 negative(kind: "authorization")14 件を追記拒否テストとして再生する
+// - 正常系 seq 1〜9 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT 認証)
+// - 認可系 negative 14 件を追記拒否テストとして再生する。ただし actor が非メンバーの
+//   ケースは、§11-2(存在秘匿)により verifyChain の 422 より先に 404 になる
+//
+// 認証は実発行経路(device 交換)で PAT を取得する。ベクターの固定 user_id は
+// D1 への直接シード(users + linked_identities)で整合させる(AUTH_SPEC §11-1 裁定)。
 
+import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { chainCapacityExceeded } from "../src/chain-do.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
@@ -16,37 +22,68 @@ import {
   MAX_REQUEST_BODY_BYTES,
 } from "../src/policy.ts";
 import {
+  BASE,
+  bearer,
+  deviceToken,
+  JSON_HEADERS,
+  loginSession,
+  resetAuthDb,
+  seedOrgMember,
+  seedUser,
+  sessionHeaders,
+} from "./support/auth.ts";
+import {
   toWireEntry,
   vectorAuthzNegatives,
   vectorEntries,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
 
-const BASE = "https://example.com";
-const JSON_HEADERS = { "content-type": "application/json" };
+const VECTOR_ORG = "org-vector-0001";
+const GITHUB_IDS: Record<string, number> = {
+  "user-owner-0001": 9001,
+  "user-member-0002": 9002,
+  "user-admin-0003": 9003,
+};
 
-const initChain = (entry: ChainEntry): Promise<Response> =>
+let tokens: Record<string, string> = {};
+
+function tokenFor(userId: string): string {
+  const token = tokens[userId];
+  if (token === undefined) {
+    throw new Error(`no seeded token for ${userId}`);
+  }
+  return token;
+}
+
+const initChain = (
+  entry: ChainEntry,
+  options?: { readonly headers?: Record<string, string>; readonly orgId?: string },
+): Promise<Response> =>
   SELF.fetch(`${BASE}/projects`, {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ entry }),
+    headers: { ...JSON_HEADERS, ...(options?.headers ?? bearer(tokenFor("user-owner-0001"))) },
+    body: JSON.stringify({ orgId: options?.orgId ?? VECTOR_ORG, entry }),
   });
 
 const appendEntry = (
   projectId: string,
   parentHeadHashHex: string,
   entry: ChainEntry,
+  headers?: Record<string, string>,
 ): Promise<Response> =>
   SELF.fetch(`${BASE}/projects/${projectId}/chain/entries`, {
     method: "POST",
-    headers: JSON_HEADERS,
+    headers: { ...JSON_HEADERS, ...(headers ?? bearer(tokenFor(entry.actor.userId))) },
     body: JSON.stringify({ parentHeadHashHex, entry }),
   });
 
-const getChain = (projectId: string): Promise<Response> =>
-  SELF.fetch(`${BASE}/projects/${projectId}/chain`);
+const getChain = (projectId: string, headers?: Record<string, string>): Promise<Response> =>
+  SELF.fetch(`${BASE}/projects/${projectId}/chain`, {
+    headers: headers ?? bearer(tokenFor("user-owner-0001")),
+  });
 
-/** ベクターの seq 1..upTo をサーバーへ再生する(init + append)。 */
+/** ベクターの seq 1..upTo をサーバーへ再生する(init + append。actor ごとの PAT)。 */
 async function replayVectorChain(upTo: number): Promise<void> {
   for (const vector of vectorEntries) {
     if (vector.seq > upTo) {
@@ -67,9 +104,8 @@ async function replayVectorChain(upTo: number): Promise<void> {
 }
 
 // この vitest-pool-workers 構成(cloudflareTest プラグイン 0.20.1)にはテスト間の
-// ストレージ分離がなく、DO SQLite はファイル内のテスト間で持ち越される。
-// ベクターチェーンのプロジェクト ID は genesis ハッシュで固定(全テストで同一)
-// なので、テストごとに明示的に空へ戻す
+// ストレージ分離がなく、DO SQLite / D1 はファイル内のテスト間で持ち越される。
+// テストごとに明示的に空へ戻し、ベクターユーザーをシードして PAT を取り直す
 beforeEach(async () => {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
   await runInDurableObject(stub, (_instance, state) => {
@@ -85,6 +121,16 @@ beforeEach(async () => {
     );
     state.storage.sql.exec("DELETE FROM chain_entries");
   });
+  // DO インスタンスを退去させ、導出 ChainState のメモリキャッシュ(#stateCache)も
+  // テスト間で持ち越さない(SQL の DELETE はストレージしか消さない)
+  await evictDurableObject(stub);
+  await resetAuthDb();
+  tokens = {};
+  for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
+    await seedUser(userId, githubId);
+    tokens[userId] = await deviceToken(githubId);
+  }
+  await seedOrgMember(VECTOR_ORG, "user-owner-0001", "member");
 });
 
 describe("environment", () => {
@@ -93,8 +139,8 @@ describe("environment", () => {
   });
 });
 
-describe("POST /projects (genesis 受理)", () => {
-  it("accepts the vector genesis and derives project id = genesis entry hash", async () => {
+describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
+  it("accepts the vector genesis, derives project id = genesis entry hash, records the org row", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const response = await initChain(toWireEntry(genesis));
@@ -104,6 +150,11 @@ describe("POST /projects (genesis 受理)", () => {
       headSeq: 1,
       headHashHex: genesis.entry_hash_hex,
     });
+    // D1 の projects 行(org 帰属メタデータ)が追従する
+    const row = await env.DB.prepare("SELECT org_id FROM projects WHERE id = ?")
+      .bind(vectorProjectId)
+      .first<{ org_id: string }>();
+    expect(row?.org_id).toBe(VECTOR_ORG);
   });
 
   it("rejects a duplicate genesis submission with 409", async () => {
@@ -114,6 +165,45 @@ describe("POST /projects (genesis 受理)", () => {
     expect(second.status).toBe(409);
     const body = (await second.json()) as { projectId: string };
     expect(body.projectId).toBe(vectorProjectId);
+  });
+
+  it("repairs a missing projects row idempotently for the genesis actor (§11-3)", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    await initChain(toWireEntry(genesis));
+    // DO 受理後・D1 行挿入前のクラッシュを模擬: 行だけを消す
+    await env.DB.prepare("DELETE FROM projects WHERE id = ?").bind(vectorProjectId).run();
+    const retried = await initChain(toWireEntry(genesis));
+    expect(retried.status).toBe(200);
+    await expect(retried.json()).resolves.toEqual({
+      projectId: vectorProjectId,
+      headSeq: 1,
+      headHashHex: genesis.entry_hash_hex,
+    });
+    const row = await env.DB.prepare("SELECT org_id FROM projects WHERE id = ?")
+      .bind(vectorProjectId)
+      .first<{ org_id: string }>();
+    expect(row?.org_id).toBe(VECTOR_ORG);
+  });
+
+  it("rejects init into an org the caller is not a member of (403 org-membership-required)", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const response = await initChain(toWireEntry(genesis), { orgId: "org-not-mine" });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe("org-membership-required");
+  });
+
+  it("rejects init whose genesis actor is not the authenticated user (403 actor-mismatch §11-1)", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const response = await initChain(toWireEntry(genesis), {
+      headers: bearer(tokenFor("user-member-0002")),
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe("actor-mismatch");
   });
 
   it("rejects a non-genesis entry with 422 (bad-seq)", async () => {
@@ -159,6 +249,179 @@ describe("チェーン再生(正常系ベクター seq 1〜9)", () => {
   });
 });
 
+describe("チェーン API の認可(AUTH_SPEC §11)", () => {
+  it("rejects unauthenticated requests with 401", async () => {
+    const genesis = vectorEntries[0];
+    const entry2 = vectorEntries[1];
+    if (genesis === undefined || entry2 === undefined) throw new Error("missing vectors");
+    const get = await SELF.fetch(`${BASE}/projects/${vectorProjectId}/chain`);
+    expect(get.status).toBe(401);
+    const init = await initChain(toWireEntry(genesis), { headers: {} });
+    expect(init.status).toBe(401);
+    const append = await appendEntry(vectorProjectId, "0".repeat(64), toWireEntry(entry2), {});
+    expect(append.status).toBe(401);
+  });
+
+  it("conceals the project from authenticated non-members with 404 (§11-2)", async () => {
+    await replayVectorChain(1);
+    await seedUser("user-stranger-0009", 9009);
+    const strangerToken = await deviceToken(9009);
+
+    const get = await getChain(vectorProjectId, bearer(strangerToken));
+    expect(get.status).toBe(404);
+
+    // 署名は検証されるより先にメンバーシップで拒否される(現ヘッド情報も返さない)
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const forged: ChainEntry = {
+      suite: "maruhi/v1",
+      seq: 2,
+      prevHashHex: genesis.entry_hash_hex,
+      op: "rotate_epoch",
+      actor: { userId: "user-stranger-0009", keyFingerprintHex: "ab".repeat(16) },
+      payload: { environmentId: "env-prod-0001", newEpoch: 2, reason: "x" },
+      timestampMs: 1754006400000,
+      signatureHex: "12".repeat(64),
+    };
+    const append = await appendEntry(
+      vectorProjectId,
+      "f".repeat(64),
+      forged,
+      bearer(strangerToken),
+    );
+    expect(append.status).toBe(404);
+  });
+
+  it("removed members are concealed too: the §11-2 mapping of actor-not-member", async () => {
+    // seq 4 で user-member-0002 は削除される。以降の追記はチェーン検証(422)では
+    // なく、メンバーシップ判定の 404 で拒否される(存在秘匿が優先)
+    const nonmember = vectorAuthzNegatives.find((n) => n.name === "authz-nonmember-actor");
+    if (nonmember === undefined) throw new Error("missing authz-nonmember-actor vector");
+    await replayVectorChain(nonmember.entry.seq - 1);
+    const response = await appendEntry(
+      vectorProjectId,
+      nonmember.entry.prev_hash_hex,
+      toWireEntry(nonmember.entry),
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("rejects an append whose entry actor differs from the principal (403 actor-mismatch §11-1)", async () => {
+    await replayVectorChain(2);
+    const entry3 = vectorEntries[2];
+    if (entry3 === undefined) throw new Error("missing vector entry 3");
+    // entry3 の actor は user-member-0002。owner のトークンで送ると一致しない
+    const response = await appendEntry(
+      vectorProjectId,
+      entry3.prev_hash_hex,
+      toWireEntry(entry3),
+      bearer(tokenFor("user-owner-0001")),
+    );
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe("actor-mismatch");
+  });
+
+  it("enforces token scopes: read scope can get but cannot append (§9-2)", async () => {
+    await replayVectorChain(2);
+    const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
+    const readToken = await deviceToken(9002, readOnly);
+
+    const get = await getChain(vectorProjectId, bearer(readToken));
+    expect(get.status).toBe(200);
+
+    const entry3 = vectorEntries[2];
+    if (entry3 === undefined) throw new Error("missing vector entry 3");
+    const append = await appendEntry(
+      vectorProjectId,
+      entry3.prev_hash_hex,
+      toWireEntry(entry3),
+      bearer(readToken),
+    );
+    expect(append.status).toBe(403);
+    const body = (await append.json()) as { reason: string };
+    expect(body.reason).toBe("insufficient-permission");
+  });
+
+  it("conceals projects outside the token's scope with 404 (§11-2)", async () => {
+    await replayVectorChain(1);
+    const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
+    const scopedToken = await deviceToken(9001, otherScope);
+    const response = await getChain(vectorProjectId, bearer(scopedToken));
+    expect(response.status).toBe(404);
+  });
+
+  it("conceals everything from an empty-scope token (§11-2)", async () => {
+    await replayVectorChain(1);
+    const emptyScopeToken = await deviceToken(9001, []);
+    const response = await getChain(vectorProjectId, bearer(emptyScopeToken));
+    expect(response.status).toBe(404);
+  });
+
+  it("distinguishes write from admin ops (§6 の op→必要権限表)", async () => {
+    // seq 3 は rotate_epoch(write 要求)、actor は user-member-0002。
+    // write スコープのトークンで通り、同じトークンでは add_member(admin 要求)が
+    // 403 になる — 全 op を write(または admin)に潰す退行をここで判別する
+    await replayVectorChain(2);
+    const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
+    const memberWrite = await deviceToken(9002, writeScope);
+    const entry3 = vectorEntries[2];
+    if (entry3 === undefined) throw new Error("missing vector entry 3");
+    const rotate = await appendEntry(
+      vectorProjectId,
+      entry3.prev_hash_hex,
+      toWireEntry(entry3),
+      bearer(memberWrite),
+    );
+    expect(rotate.status).toBe(200);
+
+    // seq 4 は remove_member(admin 要求)、actor は user-owner-0001
+    const ownerWrite = await deviceToken(9001, writeScope);
+    const entry4 = vectorEntries[3];
+    if (entry4 === undefined) throw new Error("missing vector entry 4");
+    const removal = await appendEntry(
+      vectorProjectId,
+      entry4.prev_hash_hex,
+      toWireEntry(entry4),
+      bearer(ownerWrite),
+    );
+    expect(removal.status).toBe(403);
+    const body = (await removal.json()) as { reason: string };
+    expect(body.reason).toBe("insufficient-permission");
+  });
+
+  it("requires admin scope for init (genesis = プロジェクト作成)", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
+    const ownerWrite = await deviceToken(9001, writeScope);
+    const response = await initChain(toWireEntry(genesis), { headers: bearer(ownerWrite) });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe("insufficient-permission");
+  });
+
+  it("accepts session-cookie auth with the CSRF header and rejects writes without it (§5)", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const session = await loginSession(9001);
+
+    // CSRF ヘッダーなしの書き込みは 403
+    const headers = sessionHeaders(session);
+    const withoutCsrf: Record<string, string> = { cookie: headers["cookie"] ?? "" };
+    const rejected = await initChain(toWireEntry(genesis), {
+      headers: { ...JSON_HEADERS, ...withoutCsrf },
+    });
+    expect(rejected.status).toBe(403);
+
+    // CSRF ヘッダー付きは受理される(セッション = 本人のフルパワー)
+    const accepted = await initChain(toWireEntry(genesis), {
+      headers: { ...JSON_HEADERS, ...headers },
+    });
+    expect(accepted.status).toBe(200);
+  });
+});
+
 describe("GET /projects/:projectId/chain", () => {
   it("returns 404 for a project that was never initialized", async () => {
     const response = await getChain("ab".repeat(32));
@@ -168,6 +431,14 @@ describe("GET /projects/:projectId/chain", () => {
   it("returns 400 for a malformed project id", async () => {
     const response = await getChain("not-a-project-id");
     expect(response.status).toBe(400);
+  });
+
+  it("allows every chain-derived member including reader to fetch (§6.2)", async () => {
+    await replayVectorChain(6);
+    // seq 5 で user-admin-0003 が reader として追加され、seq 6 で change_role される。
+    // どの時点でもチェーン導出メンバーであれば取得できる
+    const response = await getChain(vectorProjectId, bearer(tokenFor("user-admin-0003")));
+    expect(response.status).toBe(200);
   });
 });
 
@@ -203,7 +474,12 @@ describe("CAS(§6.4 楽観ロック)", () => {
 
 describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 negative ベクター", () => {
   for (const negative of vectorAuthzNegatives) {
-    it(`rejects ${negative.name} with 422 (${negative.expected_reason})`, async () => {
+    // actor が非メンバーのケースは §11-2 の存在秘匿(404)が verifyChain より先に働く
+    const expectsConcealment = negative.expected_reason === "actor-not-member";
+    const label = expectsConcealment
+      ? `rejects ${negative.name} with 404 (§11-2 concealment)`
+      : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
+    it(label, async () => {
       const failingSeq = negative.entry.seq;
       await replayVectorChain(failingSeq - 1);
       const response = await appendEntry(
@@ -211,6 +487,10 @@ describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 nega
         negative.entry.prev_hash_hex,
         toWireEntry(negative.entry),
       );
+      if (expectsConcealment) {
+        expect(response.status).toBe(404);
+        return;
+      }
       expect(response.status).toBe(422);
       const body = (await response.json()) as { seq: number; reason: string };
       expect(body.reason).toBe(negative.expected_reason);
@@ -314,50 +594,39 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
       ...oversizedGenesis,
       actor: { ...oversizedGenesis.actor, userId: "u".repeat(600_000) + "v".repeat(500_000) },
     };
+    // サイズの先行検査は actor 一致(403)より先に働く(資源保護が優先)
     const response = await initChain(second);
     expect(response.status).toBe(413);
     const body = (await response.json()) as { limitBytes: number };
     expect(body.limitBytes).toBe(MAX_ENTRY_CANONICAL_BYTES);
   });
 
-  it("rejects an append once the chain holds the maximum number of entries", async () => {
-    // 10,000 エントリの実チェーン再生は現実的でないため、DO SQLite に直接
-    // 満杯状態を作って受理ポリシーの判定だけを検証する
-    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
-    const headHash = "ab".repeat(32);
-    await runInDurableObject(stub, (_instance, state) => {
-      state.storage.sql.exec(
-        `WITH RECURSIVE seqs(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seqs WHERE n < ?)
-         INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes)
-         SELECT n, '{}', CASE n WHEN ? THEN ? ELSE 'ff' END, 10 FROM seqs`,
-        MAX_CHAIN_ENTRIES,
-        MAX_CHAIN_ENTRIES,
-        headHash,
-      );
-    });
-    const entry2 = vectorEntries[1];
-    if (entry2 === undefined) throw new Error("missing vector entry 2");
-    const response = await appendEntry(vectorProjectId, headHash, toWireEntry(entry2));
-    expect(response.status).toBe(422);
-    const body = (await response.json()) as { maxEntries: number };
-    expect(body.maxEntries).toBe(MAX_CHAIN_ENTRIES);
-  });
-
   it("rejects an append once cumulative canonical bytes would exceed the cap", async () => {
+    // 有効な 2 エントリのチェーンを作り、蓄積バイト数だけを上限相当へ引き上げる
+    // (§11-2 によりメンバーシップ判定 = チェーン導出が受理判定より先に走るため、
+    // 保存チェーン自体は検証可能でなければならない)
+    await replayVectorChain(2);
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
-    const headHash = "cd".repeat(32);
     await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
-        "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, '{}', ?, ?)",
-        headHash,
+        "UPDATE chain_entries SET canonical_bytes = ? WHERE seq = 1",
         MAX_CHAIN_TOTAL_CANONICAL_BYTES,
       );
     });
     const entry2 = vectorEntries[1];
-    if (entry2 === undefined) throw new Error("missing vector entry 2");
-    const response = await appendEntry(vectorProjectId, headHash, toWireEntry(entry2));
+    const entry3 = vectorEntries[2];
+    if (entry2 === undefined || entry3 === undefined) throw new Error("missing vector entries");
+    const response = await appendEntry(vectorProjectId, entry2.entry_hash_hex, toWireEntry(entry3));
     expect(response.status).toBe(422);
     const body = (await response.json()) as { maxTotalBytes: number };
     expect(body.maxTotalBytes).toBe(MAX_CHAIN_TOTAL_CANONICAL_BYTES);
+  });
+
+  it("caps the total entry count (§6.4 receipt policy, unit-level)", () => {
+    // 10,000 本の有効チェーンの実生成は非現実的なため、判定関数を直接検証する
+    // (プラミングは累積バイト数のテストが同じ分岐を通している)
+    expect(chainCapacityExceeded(MAX_CHAIN_ENTRIES, 0, 10)).toBe(true);
+    expect(chainCapacityExceeded(MAX_CHAIN_ENTRIES - 1, 0, 10)).toBe(false);
+    expect(chainCapacityExceeded(1, MAX_CHAIN_TOTAL_CANONICAL_BYTES, 1)).toBe(true);
   });
 });
