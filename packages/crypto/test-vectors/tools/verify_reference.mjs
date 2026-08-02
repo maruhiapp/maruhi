@@ -139,9 +139,49 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     const fp = (await sha256(cat)).slice(0, 32);
     check(`chain: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
   }
+  // サーバー鍵フィンガープリント: SHA-256(server_enc_pub) 先頭 16 バイト(enc 鍵のみ。§9)
+  {
+    const fp = (await sha256(fromHex(doc.server_key.enc_pub_hex))).slice(0, 32);
+    check("chain: server key fingerprint", fp === doc.server_key.key_fingerprint_hex);
+  }
+  // grant_server の scope_environments: 入れ子 LP(環境 ID リストの LP の hex 文字列)
+  {
+    const e7 = doc.entries.find((e) => e.op === "grant_server");
+    check(
+      "chain: grant_server scope nested LP",
+      toHex(lpEncode(e7.payload.scope_environments)) === e7.payload.scope_environments_lp_hex,
+    );
+  }
   for (const n of doc.negative) {
     if (n.name === "prev-hash-mismatch") {
       check(`chain negative: ${n.name}`, n.claimed_prev_hash_hex !== n.expected_prev_hash_hex);
+      continue;
+    }
+    if (n.kind === "authorization") {
+      // 認可系は「暗号学的には有効(署名・正規化・prev_hash が正しい)」ことを確認する。
+      // 拒否は §6.2 の権限規則によるもので、その検査は実装テストが担う
+      const e = n.entry;
+      const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+      const signed = lpEncode([
+        e.suite,
+        e.seq,
+        e.prev_hash_hex,
+        e.op,
+        e.actor.user_id,
+        e.actor.key_fingerprint_hex,
+        payloadBytes,
+        e.timestamp_ms,
+      ]);
+      const sigOk = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(n.verify_key_hex),
+        fromHex(e.signature_hex),
+        signed,
+      );
+      check(
+        `chain authz negative: ${n.name} (signature must be VALID)`,
+        sigOk && toHex(signed) === e.signed_bytes_hex,
+      );
       continue;
     }
     const ok = await crypto.subtle.verify(
