@@ -7,7 +7,13 @@
 
 import { Context, Effect, Layer } from "effect";
 
-import type { DekWrapInput, PulledVariableValue, RecipientDekValue } from "./data-plane.ts";
+import type {
+  DekWrapInput,
+  PulledVariableValue,
+  RecipientDekValue,
+  ValueInput,
+  WireSuite,
+} from "./data-plane.ts";
 
 export interface EnvironmentRow {
   readonly environmentId: string;
@@ -52,14 +58,13 @@ export interface DataWriteOps {
   readonly insertVersion: (
     environmentId: string,
     variableId: string,
-    version: number,
-    epoch: number,
-    nonceHex: string,
-    ciphertextHex: string,
+    value: ValueInput,
     ciphertextBytes: number,
     nowMs: number,
   ) => void;
   readonly insertWrap: (environmentId: string, wrap: DekWrapInput, nowMs: number) => void;
+  /** §12-6 修復経路: 1 ラップの削除(存在検証は呼び出し側が済ませる)。 */
+  readonly deleteWrap: (environmentId: string, epoch: number, recipientUserId: string) => void;
 }
 
 interface DataStoreShape {
@@ -91,6 +96,8 @@ interface DataStoreShape {
   readonly totalCiphertextBytes: Effect.Effect<number>;
 
   readonly countWrapsForEpoch: (environmentId: string, epoch: number) => Effect.Effect<number>;
+  /** プロジェクト全体の DEK ラップ行数(現在保存中の量。§12-8)。 */
+  readonly countWrapRows: Effect.Effect<number>;
   readonly wrapExists: (
     environmentId: string,
     epoch: number,
@@ -108,6 +115,18 @@ export class DataStore extends Context.Service<DataStore, DataStoreShape>()("Dat
 
 function countsOf(row: Record<string, unknown> | undefined): ResourceCounts {
   return { active: Number(row?.["active_rows"] ?? 0), rows: Number(row?.["total_rows"] ?? 0) };
+}
+
+/**
+ * 保存済み suite 列の読み出し。書き込み経路は Schema の Literal(§12-2)が
+ * 強制するため、既知以外の値はストレージ破損として defect に落とす
+ * (cast で握り潰さない)。
+ */
+function storedSuite(value: unknown): WireSuite {
+  if (value !== "maruhi/v1") {
+    throw new Error("unexpected suite in stored row");
+  }
+  return value;
 }
 
 const makeEnvironmentQueries = (sql: SqlStorage) => ({
@@ -225,7 +244,7 @@ const makeVersionQueries = (sql: SqlStorage) => ({
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT v.variable_id, v.name, vv.version, vv.epoch, vv.nonce_hex, vv.ciphertext_hex
+          `SELECT v.variable_id, v.name, vv.version, vv.suite, vv.epoch, vv.nonce_hex, vv.ciphertext_hex
            FROM variables v
            JOIN variable_versions vv
              ON vv.environment_id = v.environment_id
@@ -240,6 +259,7 @@ const makeVersionQueries = (sql: SqlStorage) => ({
           variableId: String(row["variable_id"]),
           name: String(row["name"]),
           version: Number(row["version"]),
+          suite: storedSuite(row["suite"]),
           epoch: Number(row["epoch"]),
           nonceHex: String(row["nonce_hex"]),
           ciphertextHex: String(row["ciphertext_hex"]),
@@ -265,6 +285,10 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         .toArray()[0];
       return Number(row?.["n"] ?? 0);
     }),
+  countWrapRows: Effect.sync(() => {
+    const row = sql.exec("SELECT COUNT(*) AS n FROM dek_wraps").toArray()[0];
+    return Number(row?.["n"] ?? 0);
+  }),
   wrapExists: (environmentId: string, epoch: number, recipientUserId: string) =>
     Effect.sync(() => {
       const rows = sql
@@ -281,13 +305,14 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT epoch, enc_hex, ciphertext_hex FROM dek_wraps
+          `SELECT suite, epoch, enc_hex, ciphertext_hex FROM dek_wraps
            WHERE environment_id = ? AND recipient_user_id = ? ORDER BY epoch`,
           environmentId,
           recipientUserId,
         )
         .toArray()
         .map((row) => ({
+          suite: storedSuite(row["suite"]),
           epoch: Number(row["epoch"]),
           encHex: String(row["enc_hex"]),
           ciphertextHex: String(row["ciphertext_hex"]),
@@ -348,32 +373,24 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       variableId,
     );
   },
-  insertVersion: (
-    environmentId,
-    variableId,
-    version,
-    epoch,
-    nonceHex,
-    ciphertextHex,
-    ciphertextBytes,
-    nowMs,
-  ) => {
+  insertVersion: (environmentId, variableId, value, ciphertextBytes, nowMs) => {
     sql.exec(
       `INSERT INTO variable_versions
-         (environment_id, variable_id, version, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (environment_id, variable_id, version, suite, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       environmentId,
       variableId,
-      version,
-      epoch,
-      nonceHex,
-      ciphertextHex,
+      value.version,
+      value.suite,
+      value.epoch,
+      value.nonceHex,
+      value.ciphertextHex,
       ciphertextBytes,
       nowMs,
     );
     sql.exec(
       "UPDATE variables SET latest_version = ? WHERE environment_id = ? AND variable_id = ?",
-      version,
+      value.version,
       environmentId,
       variableId,
     );
@@ -381,15 +398,24 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   insertWrap: (environmentId, wrap, nowMs) => {
     sql.exec(
       `INSERT INTO dek_wraps
-         (environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex, ciphertext_hex, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       environmentId,
       wrap.epoch,
       wrap.recipientUserId,
+      wrap.suite,
       wrap.recipientEncPubHex,
       wrap.encHex,
       wrap.ciphertextHex,
       nowMs,
+    );
+  },
+  deleteWrap: (environmentId, epoch, recipientUserId) => {
+    sql.exec(
+      "DELETE FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ?",
+      environmentId,
+      epoch,
+      recipientUserId,
     );
   },
 });

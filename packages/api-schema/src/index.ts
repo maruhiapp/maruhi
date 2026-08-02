@@ -5,6 +5,8 @@ export { authGroup, DeviceExchangeResultSchema, MeSchema, UserOrgSchema } from "
 export { AuthMiddleware } from "./auth-middleware.ts";
 export { ChainActorSchema, ChainEntrySchema, RoleSchema } from "./chain.ts";
 export {
+  type DekWrapRef,
+  DekWrapRefSchema,
   type EncryptedPayload,
   EncryptedPayloadSchema,
   type RecipientDek,
@@ -33,6 +35,7 @@ export {
   DataLimitExceededError,
   DataLimitResourceSchema,
   DekWrapExistsError,
+  DekWrapNotFoundError,
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
   EnvironmentConflictError,

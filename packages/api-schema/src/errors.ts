@@ -248,6 +248,17 @@ export class DekWrapExistsError extends Schema.TaggedErrorClass<DekWrapExistsErr
   { httpApiStatus: 409 },
 ) {}
 
+/**
+ * 404: no wrap is stored for this (environment, epoch, recipient). Returned by
+ * the §12-6 repair path (deletion targets must exist — silently succeeding
+ * would let an admin believe a poisoned wrap was removed when it was not).
+ */
+export class DekWrapNotFoundError extends Schema.TaggedErrorClass<DekWrapNotFoundError>()(
+  "DekWrapNotFound",
+  { epoch: Schema.Number, recipientUserId: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
 /** 413: the value ciphertext exceeds the §12-8 acceptance policy (64 KiB). */
 export class ValueTooLargeError extends Schema.TaggedErrorClass<ValueTooLargeError>()(
   "ValueTooLarge",
@@ -264,6 +275,7 @@ export const DataLimitResourceSchema = Schema.Literals([
   "versions",
   "project-ciphertext-bytes",
   "dek-wraps-per-request",
+  "dek-wrap-rows",
 ]);
 
 /** 422: accepting the request would exceed a §12-8 count / size limit. */

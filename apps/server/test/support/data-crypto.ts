@@ -167,6 +167,7 @@ export function makeDek(): Uint8Array {
 }
 
 export interface WireWrappedDek {
+  readonly suite: string;
   readonly epoch: number;
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
@@ -202,6 +203,7 @@ export async function wrapDekTo(input: {
     "wrapDek",
   );
   return {
+    suite: SUITE_ID,
     epoch: input.epoch,
     recipientUserId: input.recipientUserId,
     recipientEncPubHex: encPubHex,

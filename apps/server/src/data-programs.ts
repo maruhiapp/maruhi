@@ -21,6 +21,7 @@ import type {
   DataRejectedError,
   DataRejection,
   DekWrapInput,
+  DekWrapRefInput,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
   ValueInput,
@@ -35,6 +36,7 @@ import {
   MAX_DEK_WRAPS_PER_REQUEST,
   MAX_ENVIRONMENT_ROWS,
   MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
+  MAX_PROJECT_DEK_WRAP_ROWS,
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
   MAX_VERSIONS_PER_VARIABLE,
 } from "./policy.ts";
@@ -105,6 +107,29 @@ const ensureProjectCapacity = (addedBytes: number) =>
         kind: "limit-exceeded",
         resource: "project-ciphertext-bytes",
         limit: MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
+      });
+    }
+  });
+
+/**
+ * §12-8: プロジェクト累積の DEK ラップ行数上限。追加分を含めて判定する純関数
+ * (上限行数の実生成は非現実的なため、判定はユニットテスト用に公開する —
+ * chainCapacityExceeded / projectBytesExceeded と同じ形)。
+ */
+export function wrapRowsExceeded(storedRows: number, addedRows: number): boolean {
+  return storedRows + addedRows > MAX_PROJECT_DEK_WRAP_ROWS;
+}
+
+/** ラップ挿入の全経路(DEK 登録・環境作成)で呼ぶ(§12-8)。 */
+const ensureWrapRowCapacity = (addedRows: number) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const stored = yield* store.countWrapRows;
+    if (wrapRowsExceeded(stored, addedRows)) {
+      return yield* rejectData({
+        kind: "limit-exceeded",
+        resource: "dek-wrap-rows",
+        limit: MAX_PROJECT_DEK_WRAP_ROWS,
       });
     }
   });
@@ -190,7 +215,11 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
     }
   });
 
-/** ラップ集合の受理検証(§12-6)のみ。挿入は呼び出し側の同期書き込みフェーズで行う。 */
+/**
+ * ラップ集合の受理検証(§12-6)+ 数量ポリシー(§12-8)のみ。挿入は呼び出し側の
+ * 同期書き込みフェーズで行う。ラップ挿入の全経路(環境作成・DEK 登録)が
+ * ここを通るため、累積行数上限の結線はこの 1 箇所でよい。
+ */
 const ensureWrapSetAcceptable = (
   environmentId: string,
   state: ChainState,
@@ -202,8 +231,27 @@ const ensureWrapSetAcceptable = (
     if (rejection !== null) {
       return yield* rejectData(rejection);
     }
+    yield* ensureWrapRowCapacity(wraps.length);
     yield* checkWrapSets(environmentId, state, wraps);
   });
+
+/**
+ * dek.registered(AUDIT_SPEC §3.3): 1 受信者 1 行(§5.1 の列構造 = 1 行 1
+ * target)。受信者は target_user_id に載せ、(target_user_id, seq) の索引で
+ * 「この受信者宛のラップの登録履歴」をそのまま引けるようにする。
+ */
+function dekRegisteredEvent(
+  actor: DataActor,
+  nowMs: number,
+  environmentId: string,
+  wrap: DekWrapInput,
+): AuditEventInput {
+  return dataEvent(actor, nowMs, "dek.registered", {
+    environmentId,
+    epoch: wrap.epoch,
+    targetUserId: wrap.recipientUserId,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 環境管理(§12-4)
@@ -284,15 +332,17 @@ export const createEnvironmentProgram = (
     // 書き込みで「環境行のない孤児ラップ」等を作らない)
     yield* Effect.sync(() => {
       store.write.insertEnvironment(input.environmentId, input.name, now);
-      for (const wrap of input.deks) {
-        store.write.insertWrap(input.environmentId, wrap, now);
-      }
       audit.appendSync(
         dataEvent(actor, now, "env.created", {
           environmentId: input.environmentId,
           payload: { name: input.name },
         }),
       );
+      // 環境作成時のエポック 1 の同梱分も dek.registered の対象(AUDIT_SPEC §3.3)
+      for (const wrap of input.deks) {
+        store.write.insertWrap(input.environmentId, wrap, now);
+        audit.appendSync(dekRegisteredEvent(actor, now, input.environmentId, wrap));
+      }
     });
     return {
       environmentId: input.environmentId,
@@ -420,16 +470,7 @@ function writeVersionWithAudit(
   value: ValueInput,
   nowMs: number,
 ): void {
-  write.insertVersion(
-    environmentId,
-    variableId,
-    value.version,
-    value.epoch,
-    value.nonceHex,
-    value.ciphertextHex,
-    value.ciphertextHex.length / 2,
-    nowMs,
-  );
+  write.insertVersion(environmentId, variableId, value, value.ciphertextHex.length / 2, nowMs);
   appendAudit(
     dataEvent(actor, nowMs, "var.version_pushed", {
       environmentId,
@@ -637,10 +678,67 @@ export const registerDekWrapsProgram = (
     const currentEpoch = currentEpochOf(state, environmentId);
     yield* ensureWrapSetAcceptable(environmentId, state, currentEpoch, wraps);
     const store = yield* DataStore;
+    const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
       for (const wrap of wraps) {
         store.write.insertWrap(environmentId, wrap, now);
+        audit.appendSync(dekRegisteredEvent(actor, now, environmentId, wrap));
+      }
+    });
+  });
+
+/**
+ * §12-6 の修復経路: admin による (環境, エポック, 受信者) 単位のラップ削除。
+ * 上書き禁止(可用性攻撃の遮断)は維持したまま、毒ラップを削除 → 不足分の
+ * 追記経路で再登録する。存在しないタプルは 404(黙って成功させない)。
+ */
+export const deleteDekWrapsProgram = (
+  actor: DataActor,
+  environmentId: string,
+  refs: readonly DekWrapRefInput[],
+  cache: StateCache,
+) =>
+  Effect.gen(function* () {
+    yield* requireMemberState(actor.userId, "admin", cache);
+    yield* requireActiveEnvironment(environmentId);
+    if (refs.length > MAX_DEK_WRAPS_PER_REQUEST) {
+      return yield* rejectData({
+        kind: "limit-exceeded",
+        resource: "dek-wraps-per-request",
+        limit: MAX_DEK_WRAPS_PER_REQUEST,
+      });
+    }
+    const store = yield* DataStore;
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      const key = `${ref.epoch}:${ref.recipientUserId}`;
+      if (seen.has(key)) {
+        return yield* rejectData({ kind: "dek-wrap-rejected", reason: "duplicate-recipient" });
+      }
+      seen.add(key);
+      if (!(yield* store.wrapExists(environmentId, ref.epoch, ref.recipientUserId))) {
+        return yield* rejectData({
+          kind: "dek-wrap-not-found",
+          epoch: ref.epoch,
+          recipientUserId: ref.recipientUserId,
+        });
+      }
+    }
+    const audit = yield* AuditStore;
+    const now = Date.now();
+    // 書き込みフェーズ(単一タスク): 削除と dek.deleted(1 受信者 1 行 —
+    // AUDIT_SPEC §3.3)を原子的に書く
+    yield* Effect.sync(() => {
+      for (const ref of refs) {
+        store.write.deleteWrap(environmentId, ref.epoch, ref.recipientUserId);
+        audit.appendSync(
+          dataEvent(actor, now, "dek.deleted", {
+            environmentId,
+            epoch: ref.epoch,
+            targetUserId: ref.recipientUserId,
+          }),
+        );
       }
     });
   });

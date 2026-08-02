@@ -19,13 +19,14 @@ import {
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { projectBytesExceeded } from "../src/data-programs.ts";
+import { projectBytesExceeded, wrapRowsExceeded } from "../src/data-programs.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
   MAX_DEK_WRAPS_PER_REQUEST,
   MAX_ENVIRONMENT_ROWS,
   MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
+  MAX_PROJECT_DEK_WRAP_ROWS,
   MAX_VALUE_CIPHERTEXT_BYTES,
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
   MAX_VERSIONS_PER_VARIABLE,
@@ -994,6 +995,251 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
   });
 });
 
+describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", () => {
+  it("deletes a poisoned wrap as admin and restores it through the append path", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const payload = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+
+    // owner(admin スコープ × チェーン role owner ≥ admin)が READER 宛を削除
+    const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(removed.status).toBe(204);
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT recipient_user_id FROM dek_wraps WHERE environment_id = ? ORDER BY recipient_user_id",
+      ENV,
+    );
+    expect(rows.map((row) => row["recipient_user_id"])).toEqual([MEMBER, OWNER].toSorted());
+    const emptied = await requestJson("GET", `/environments/${ENV}/deks`, token(READER));
+    await expect(emptied.json()).resolves.toEqual({ deks: [] });
+
+    // 不足分の追記経路(§12-6)で正しいラップを再登録 → READER は再び復号できる
+    const reWrap = await wrapDekTo({
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      dek,
+      recipientUserId: READER,
+    });
+    const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: [reWrap],
+    });
+    expect(registered.status).toBe(204);
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(pull.status).toBe(200);
+    const body = (await pull.json()) as {
+      variables: { value: WireEncryptedPayload }[];
+      deks: { epoch: number; encHex: string; ciphertextHex: string }[];
+    };
+    const wrap = body.deks[0];
+    const pulled = body.variables[0];
+    if (wrap === undefined || pulled === undefined) throw new Error("missing pull data");
+    expect(pulled.value.ciphertextHex).toBe(payload.ciphertextHex);
+    await expect(
+      unwrapAndDecrypt({
+        recipientUserId: READER,
+        wrapped: wrap,
+        projectId,
+        environmentId: ENV,
+        payload: pulled.value,
+      }),
+    ).resolves.toBe("postgres://alpha");
+  });
+
+  it("requires admin token scope and chain role admin (§12-3: 環境削除と同水準)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // member のデフォルト PAT はスコープ admin だがチェーン role が member → 403
+    const asMember = await requestJson("DELETE", `/environments/${ENV}/deks`, token(MEMBER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(asMember.status).toBe(403);
+    expect(((await asMember.json()) as { reason: string }).reason).toBe("insufficient-role");
+    // owner でもトークンスコープが write では 403(insufficient-permission)
+    const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
+    const ownerWrite = await deviceToken(9001, writeScope);
+    const scoped = await requestJson("DELETE", `/environments/${ENV}/deks`, ownerWrite, {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(scoped.status).toBe(403);
+    expect(((await scoped.json()) as { reason: string }).reason).toBe("insufficient-permission");
+    // 非メンバーにはプロジェクト自体を秘匿(404 — §11-2)
+    const concealed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(STRANGER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(concealed.status).toBe(404);
+    expect(((await concealed.json()) as { projectId: string }).projectId).toBe(projectId);
+  });
+
+  it("rejects missing tuples with 404 atomically and duplicate refs with 422", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 1 件目は存在・2 件目が不存在 → 404(DekWrapNotFound)で、何も消えない
+    const partial = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [
+        { epoch: 1, recipientUserId: READER },
+        { epoch: 1, recipientUserId: "user-nobody-0404" },
+      ],
+    });
+    expect(partial.status).toBe(404);
+    await expect(partial.json()).resolves.toMatchObject({
+      epoch: 1,
+      recipientUserId: "user-nobody-0404",
+    });
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ?",
+      ENV,
+    );
+    expect(rows[0]?.["n"]).toBe(3);
+    // 拒否された削除は監査行(dek.deleted)を一切残さない(検証と書き込みの分離)
+    const audits = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
+    );
+    expect(audits[0]?.["n"]).toBe(0);
+    // 同一タプルの重複列挙は 422(duplicate-recipient)
+    const duplicated = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [
+        { epoch: 1, recipientUserId: READER },
+        { epoch: 1, recipientUserId: READER },
+      ],
+    });
+    expect(duplicated.status).toBe(422);
+    expect(((await duplicated.json()) as { reason: string }).reason).toBe("duplicate-recipient");
+  });
+
+  it("treats re-registration after a full epoch deletion as an initial registration (§12-6)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // エポック 1 の全ラップを削除 → 再登録は初回登録として完全一致を要求される
+    const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
+    });
+    expect(removed.status).toBe(204);
+    const partial = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: [
+        await wrapDekTo({
+          projectId,
+          environmentId: ENV,
+          epoch: 1,
+          dek,
+          recipientUserId: OWNER,
+        }),
+      ],
+    });
+    expect(partial.status).toBe(422);
+    expect(((await partial.json()) as { reason: string }).reason).toBe("recipient-missing");
+    // 完全集合なら受理され、受信者は再び復号できる
+    const complete = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: await wrapDekForAll({
+        projectId,
+        environmentId: ENV,
+        epoch: 1,
+        dek,
+        recipientUserIds: ALL_MEMBERS,
+      }),
+    });
+    expect(complete.status).toBe(204);
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    const body = (await pull.json()) as {
+      variables: { value: WireEncryptedPayload }[];
+      deks: { epoch: number; encHex: string; ciphertextHex: string }[];
+    };
+    const wrap = body.deks[0];
+    const pulled = body.variables[0];
+    if (wrap === undefined || pulled === undefined) throw new Error("missing pull data");
+    await expect(
+      unwrapAndDecrypt({
+        recipientUserId: READER,
+        wrapped: wrap,
+        projectId,
+        environmentId: ENV,
+        payload: pulled.value,
+      }),
+    ).resolves.toBe("postgres://alpha");
+  });
+
+  it("rejects deletion requests for missing environments, empty lists and oversized lists", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 空列挙は 400(Schema。監査痕跡ゼロの破壊系呼び出し形を許さない — §12-6)
+    const empty = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [],
+    });
+    expect(empty.status).toBe(400);
+    // 件数上限は登録側と同じ MAX_DEK_WRAPS_PER_REQUEST(存在検証より先に判定)
+    const oversized = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
+        epoch: 1,
+        recipientUserId: `u${index}`,
+      })),
+    });
+    expect(oversized.status).toBe(422);
+    await expect(oversized.json()).resolves.toMatchObject({
+      resource: "dek-wraps-per-request",
+      limit: MAX_DEK_WRAPS_PER_REQUEST,
+    });
+    // tombstone 環境(ラップは物理削除済み)への削除は 404 EnvironmentNotFound
+    const removedEnv = await requestJson("DELETE", `/environments/${ENV}`, token(OWNER));
+    expect(removedEnv.status).toBe(204);
+    const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(gone.status).toBe(404);
+    // DekWrapNotFound({epoch, recipientUserId})ではなく EnvironmentNotFound({environmentId})
+    const goneBody = (await gone.json()) as { environmentId?: string; epoch?: number };
+    expect(goneBody.environmentId).toBe(ENV);
+    expect(goneBody.epoch).toBeUndefined();
+  });
+});
+
+describe("suite の永続化とワイヤ(§12-2 / CRYPTO_SPEC §2 設計原則 4)", () => {
+  it("stores the suite on versions and wraps and returns it on every distribution path", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const versionRows = await queryProjectDo(
+      projectId,
+      "SELECT suite FROM variable_versions WHERE environment_id = ?",
+      ENV,
+    );
+    expect(versionRows.map((row) => row["suite"])).toEqual(["maruhi/v1"]);
+    const wrapRows = await queryProjectDo(
+      projectId,
+      "SELECT DISTINCT suite FROM dek_wraps WHERE environment_id = ?",
+      ENV,
+    );
+    expect(wrapRows.map((row) => row["suite"])).toEqual(["maruhi/v1"]);
+
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(pull.status).toBe(200);
+    const body = (await pull.json()) as {
+      variables: { value: { suite: string } }[];
+      deks: { suite: string }[];
+    };
+    expect(body.variables[0]?.value.suite).toBe("maruhi/v1");
+    expect(body.deks[0]?.suite).toBe("maruhi/v1");
+    const mine = await requestJson("GET", `/environments/${ENV}/deks`, token(READER));
+    const mineBody = (await mine.json()) as { deks: { suite: string }[] };
+    expect(mineBody.deks[0]?.suite).toBe("maruhi/v1");
+  });
+
+  it("rejects wraps without a suite or with an unpinned suite (400 Schema)", async () => {
+    const base = await wrapsFor(ENV, ALL_MEMBERS);
+    const stripped = base.map(({ suite: _suite, ...rest }) => rest);
+    const missing = await requestJson("POST", "/environments", token(OWNER), {
+      environmentId: ENV,
+      name: "App",
+      deks: stripped,
+    });
+    expect(missing.status).toBe(400);
+    const wrong = await requestJson("POST", "/environments", token(OWNER), {
+      environmentId: ENV,
+      name: "App",
+      deks: base.map((wrap) => ({ ...wrap, suite: "maruhi/v2" })),
+    });
+    expect(wrong.status).toBe(400);
+  });
+});
+
 describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数)", () => {
   // 実生成は非現実的なため、行を SQL で直接シードして判定のプラミングを検証する
   it("caps active environments (422 environments)", async () => {
@@ -1076,6 +1322,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     await createEnvironmentOk(fixture, ENV, "App");
     // 件数上限は受信者検証より先に判定されるため、構造だけ正しいフェイクで足りる
     const deks = Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
+      suite: "maruhi/v1",
       epoch: 1,
       recipientUserId: `u${index}`,
       recipientEncPubHex: "ab".repeat(32),
@@ -1090,6 +1337,67 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
       resource: "dek-wraps-per-request",
       limit: MAX_DEK_WRAPS_PER_REQUEST,
     });
+  });
+
+  it("caps cumulative dek-wrap rows across every insertion path (422 §12-8, unit + plumbing)", async () => {
+    // 純関数の判定(100 万行の実登録は非現実的 — projectBytesExceeded と同じ形)
+    expect(wrapRowsExceeded(MAX_PROJECT_DEK_WRAP_ROWS, 1)).toBe(true);
+    expect(wrapRowsExceeded(MAX_PROJECT_DEK_WRAP_ROWS - 3, 3)).toBe(false);
+
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 既存 3 行(エポック 1 の完全集合)+ シードで上限ちょうどまで埋める
+    await queryProjectDo(
+      projectId,
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+       INSERT INTO dek_wraps
+         (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex, ciphertext_hex, created_at)
+       SELECT 'env-wrap-seed', n, 'u-seed', 'maruhi/v1', '', '', '', 0 FROM seq`,
+      MAX_PROJECT_DEK_WRAP_ROWS - 3,
+    );
+
+    // 経路 1: DEK 登録(ローテーション後の完全集合)— 1 行でも超過なら 422
+    await appendOperation(fixture, MEMBER, {
+      op: "rotate_epoch",
+      payload: { environmentId: ENV, newEpoch: 2, reason: "limit-test" },
+    });
+    const complete = await wrapDekForAll({
+      projectId,
+      environmentId: ENV,
+      epoch: 2,
+      dek: makeDek(),
+      recipientUserIds: ALL_MEMBERS,
+    });
+    const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: complete,
+    });
+    expect(registered.status).toBe(422);
+    await expect(registered.json()).resolves.toMatchObject({
+      resource: "dek-wrap-rows",
+      limit: MAX_PROJECT_DEK_WRAP_ROWS,
+    });
+
+    // 経路 2: 環境作成(エポック 1 の同梱集合)も同じ上限に束縛される
+    const created = await createEnvironmentWith(
+      fixture,
+      "env-wrap-limit",
+      "Limit",
+      await wrapsFor("env-wrap-limit", ALL_MEMBERS),
+    );
+    expect(created.status).toBe(422);
+    await expect(created.json()).resolves.toMatchObject({
+      resource: "dek-wrap-rows",
+      limit: MAX_PROJECT_DEK_WRAP_ROWS,
+    });
+
+    // 削除(修復経路)は行を解放する: 3 行消せば完全集合(3 行)が再び通る
+    const freed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
+    });
+    expect(freed.status).toBe(204);
+    const retried = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: complete,
+    });
+    expect(retried.status).toBe(204);
   });
 });
 

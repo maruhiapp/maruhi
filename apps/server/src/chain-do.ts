@@ -40,6 +40,7 @@ import type {
   DataOutcome,
   DataRejectedError,
   DekWrapInput,
+  DekWrapRefInput,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
   RecipientDekValue,
@@ -49,6 +50,7 @@ import type {
 import {
   createEnvironmentProgram,
   createVariableProgram,
+  deleteDekWrapsProgram,
   deleteEnvironmentProgram,
   deleteVariableProgram,
   listEnvironmentsProgram,
@@ -554,5 +556,14 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
   ): Promise<DataOutcome<readonly RecipientDekValue[]>> {
     return this.#runData(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  deleteDekWraps(
+    actor: DataActor,
+    environmentId: string,
+    refs: readonly DekWrapRefInput[],
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
   }
 }

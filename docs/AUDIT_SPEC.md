@@ -1,7 +1,7 @@
 # maruhi 監査ログ仕様書 (AUDIT_SPEC)
 
-Version: 0.2
-Status: 承認済み(2026-08-02。セッション 07 PR のマージをもって所有者承認とする — 本 Status 更新を含む PR のレビュー承認が確定条件)
+Version: 0.3
+Status: 承認済み(2026-08-02。PR #18 のマージにより所有者承認確定。§3.3 の `dek.registered` / `dek.deleted` は 2026-08-02 のセッション 07 レビュー所有者裁定をセッション 08 で反映)
 
 この文書は maruhi の監査ログ(何を・誰が・いつ)の設計を定める。
 CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーション検出)と AUTH_SPEC(§2 データモデル)を前提とする。
@@ -78,10 +78,13 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | `var.renamed` | variable_id, environment_id, 新名スナップショット | |
 | `var.deleted` ★ | variable_id, environment_id | 削除しても過去の閲覧可能性は消えない(§4) |
 | `var.read` ★ | variable_id, environment_id, epoch, version | 暗号文の配布(pull / Web での取得)。一括 pull は変数ごとに 1 行(§4 のクエリ要件のため) |
+| `dek.registered` | environment_id, epoch, target_user_id(受信者) | DEK ラップの登録(AUTH_SPEC §12-6。環境作成時のエポック 1 の同梱分を含む) |
+| `dek.deleted` | environment_id, epoch, target_user_id(受信者) | admin による毒ラップの削除(AUTH_SPEC §12-6 の修復経路) |
 | `rotation.recommended` | target_user_id, 対象 (variable × environment) 集合, 根拠種別 | §4 の算出結果の永続化(UI / CLI 表示用) |
 | `rotation.dismissed` | 対象 (variable × environment) | 人間による明示的な取り下げ(append-only の打ち消しイベント) |
 
 - `var.read` の粒度と量: CI からの定期 pull で最も高頻度になるイベント。v1 は素直に 1 変数 1 行で記録し、ドッグフーディングで量を実測してから集約(例: 同一 (actor, variable, environment) の読みを日単位で 1 行に丸める)を判断する。**要ローテーション検出に必要なのは「期間内に読んだか否か」だけなので、集約しても検出は劣化しない**
+- `dek.registered` / `dek.deleted` の粒度は **1 受信者 1 行**(2026-08-02 セッション 08 提案): §5.1 の列構造は 1 行 1 target(target_user_id は単値)であり、受信者ごとの行にすることで「この受信者宛のラップがいつ登録・削除されたか」を索引(target_user_id, seq)でそのまま引ける。登録はローテーション・メンバー追加時のみの低頻度イベントで、行数は AUTH_SPEC §12-8 のラップ行数上限が束縛する。v1 の要ローテーション検出(§4.1)には関与しない(候補集合は全メンバー × 全環境で算出するため)が、将来の環境スコープ role(CRYPTO_SPEC 未決 #11)で「誰がどのエポックの DEK を受け取ったか」が候補集合の入力になった場合の証跡を確保する
 - 「新バージョン push」は要ローテーションフラグの解消条件でもある(§4)
 
 ### 3.4 チェーン操作のミラー ★

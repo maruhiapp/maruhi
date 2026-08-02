@@ -190,6 +190,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "chain.member_added",
       "chain.member_added",
       "env.created",
+      // 環境作成時のエポック 1 の同梱ラップも dek.registered(1 受信者 1 行 — §3.3)
+      "dek.registered",
+      "dek.registered",
+      "dek.registered",
       "var.created",
       "var.version_pushed",
       "var.created",
@@ -205,9 +209,9 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "env.deleted",
     ]);
 
-    const created = events[4];
-    const pushed = events[5];
-    const read = events[8];
+    const created = events[7];
+    const pushed = events[8];
+    const read = events[11];
     if (created === undefined || pushed === undefined || read === undefined) {
       throw new Error("missing audit rows");
     }
@@ -248,15 +252,80 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     });
     expect(created.status).toBe(200);
     const after = await readAuditEvents(projectId);
-    const bySession = after.at(-1);
+    const bySession = after.find(
+      (event) => event["event"] === "env.created" && event["environment_id"] === "env-audit-0002",
+    );
     if (bySession === undefined) throw new Error("missing session event");
-    expect(bySession["event"]).toBe("env.created");
     expect(bySession["actor_user_id"]).toBe(MEMBER);
     expect(bySession["actor_api_token_id"]).toBeNull();
     expect(JSON.parse(String(bySession["payload"]))).toEqual({
       name: "Session",
       authMethod: "github_oauth",
     });
+  });
+
+  it("records dek.registered / dek.deleted per recipient with actor, epoch and target (§3.3)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    // 環境作成時のエポック 1 の同梱分: 受信者ごとに 1 行(1 行 1 target)
+    const initial = await readAuditEvents(projectId);
+    const epoch1 = initial.filter((event) => event["event"] === "dek.registered");
+    expect(epoch1.map((event) => event["target_user_id"])).toEqual([...ALL_MEMBERS]);
+    for (const event of epoch1) {
+      expect(event["environment_id"]).toBe(ENV);
+      expect(event["epoch"]).toBe(1);
+      expect(event["actor_user_id"]).toBe(OWNER);
+      // PAT 経由の登録なのでトークン id を持つ(§2 のアクター帰属)
+      expect(event["actor_api_token_id"]).toBeTypeOf("string");
+      expect(event["variable_id"]).toBeNull();
+    }
+
+    // 登録 API 経由(ローテーション後の完全集合)も同じ形で記録される
+    await appendOperation(fixture, MEMBER, {
+      op: "rotate_epoch",
+      payload: { environmentId: ENV, newEpoch: 2, reason: "audit-test" },
+    });
+    const complete = await wrapDekForAll({
+      projectId,
+      environmentId: ENV,
+      epoch: 2,
+      dek,
+      recipientUserIds: ALL_MEMBERS,
+    });
+    const registered = await requestJson(
+      "POST",
+      `/environments/${ENV}/deks`,
+      tokenOf(fixture.tokens, MEMBER),
+      {
+        deks: complete,
+      },
+    );
+    expect(registered.status).toBe(204);
+
+    // 削除(§12-6 の修復経路)は dek.deleted を受信者ごとに記録する
+    const removed = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/deks`,
+      tokenOf(fixture.tokens, OWNER),
+      {
+        wraps: [{ epoch: 2, recipientUserId: READER }],
+      },
+    );
+    expect(removed.status).toBe(204);
+
+    const events = await readAuditEvents(projectId);
+    const epoch2 = events.filter(
+      (event) => event["event"] === "dek.registered" && event["epoch"] === 2,
+    );
+    expect(epoch2.map((event) => event["target_user_id"])).toEqual([...ALL_MEMBERS]);
+    expect(epoch2[0]?.["actor_user_id"]).toBe(MEMBER);
+    const deleted = events.filter((event) => event["event"] === "dek.deleted");
+    expect(deleted.length).toBe(1);
+    const deletion = deleted[0];
+    if (deletion === undefined) throw new Error("missing dek.deleted");
+    expect(deletion["environment_id"]).toBe(ENV);
+    expect(deletion["epoch"]).toBe(2);
+    expect(deletion["target_user_id"]).toBe(READER);
+    expect(deletion["actor_user_id"]).toBe(OWNER);
   });
 
   it("never records provider identifiers or emails (§1-2)", async () => {
