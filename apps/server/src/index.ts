@@ -26,7 +26,10 @@ import type { Env } from "./chain-do.ts";
 import type { DbServices } from "./db.package/index.ts";
 import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
 import { authLive } from "./handlers-auth.ts";
+import { deksLive } from "./handlers-deks.ts";
+import { environmentsLive } from "./handlers-environments.ts";
 import { membershipLive } from "./handlers-membership.ts";
+import { variablesLive } from "./handlers-variables.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
@@ -73,6 +76,9 @@ function handlerFor(env: Env): EnvHandler {
   const apiLive = HttpApiBuilder.layer(maruhiApi).pipe(
     Layer.provide(membershipLive),
     Layer.provide(authLive),
+    Layer.provide(environmentsLive),
+    Layer.provide(variablesLive),
+    Layer.provide(deksLive),
     Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
     Layer.provide(platformContext),
     Layer.provide(Layer.succeedContext(services)),

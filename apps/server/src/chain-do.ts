@@ -1,25 +1,66 @@
-// プロジェクトのメンバーシップチェーンを append-only 保存するプロジェクト DO
-// (CRYPTO_SPEC §6.4)。
+// プロジェクト DO: メンバーシップチェーンの append-only 保存(CRYPTO_SPEC §6.4)、
+// データプレーン(環境・変数・暗号文・ラップ済み DEK — AUTH_SPEC §12)、監査ログ
+// (AUDIT_SPEC §5.1)を 1 DO に併置する(§4 のクエリがクロスストア join なしで
+// 成立し、チェーン追記とミラー追記が同じ直列化の下で書ける)。
 //
 // - サーバー側検証: 追記受理時に verifyChain(@maruhi/crypto)を再実行する。
 //   クライアント検証(§6.3)がサーバー不信の防衛、この検証が不正クライアントの
 //   防衛であり、両方必須(§6.4)
 // - 直列化 + CAS: 追記リクエストは親ヘッドハッシュを持ち、現ヘッドと不一致なら
-//   拒否する。DO 内の変更操作は Semaphore(1) で直列化する — DO の input gate は
+//   拒否する。DO 内の操作は Semaphore(1) で直列化する — DO の input gate は
 //   ストレージ以外の await(verifyChain 内の crypto.subtle)中に開くため、
-//   ゲート任せでは追記同士が交錯しうる。seq の PRIMARY KEY 制約が最終防衛
-// - 受理ポリシー(§6.4): エントリ 1 MiB / チェーン 10,000 エントリ・累積 32 MiB
-// - ストレージ(DO SQLite)は Effect サービス(ChainStore)の背後に隔離する。
-//   Drizzle(ADR-0006)はこの単一 append-only テーブルには見送り(設計判断は
-//   docs/notes/session-05.md): マイグレーション生成の利得がない規模で、依存を
-//   増やさず素の SQL を境界内に閉じる。D1 スキーマ導入時に再評価する
+//   ゲート任せでは追記同士が交錯しうる。データプレーンの変更も同じ permit を
+//   共有する(並行 push の欠損・交錯防止)。**読み取りも同じ permit で直列化する**:
+//   permit 外で読むと「メンバーシップ判定(チェーン導出)→ データ読み」の間に
+//   remove_member の受理が割り込み、削除直後のメンバーへ値を配布しうる
+//   (§11-2 違反の TOCTOU。Bugbot 指摘 2026-08-02)。permit 下では全操作が
+//   チェーン書き込みに対して線形化される。PRIMARY KEY 制約が最終防衛
+// - 受理ポリシー: チェーンは §6.4(1 MiB / 10,000 エントリ / 32 MiB)、データは
+//   §12-8(policy.ts)
+// - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
+//   AuditStore)の背後に隔離する。DDL は do-schema.ts(コンストラクタで適用)
 
-import { ChainInvalidError, toWrappedCryptoError } from "@maruhi/core";
-import type { ChainEntry, ChainInvalidReason, ChainState } from "@maruhi/crypto";
-import { canonicalChainEntryBytes, verifyChain } from "@maruhi/crypto";
+import { ChainInvalidError } from "@maruhi/core";
+import type { ChainEntry, ChainInvalidReason } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
-import { Context, Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
+import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
+import { AuditStore, auditStoreLayer, chainMirrorEvent } from "./audit-store.ts";
+import type { StateCache, StoredChain } from "./chain-store.ts";
+import {
+  canonicalBytesOf,
+  ChainStore,
+  chainStoreLayer,
+  deriveStoredState,
+  updateStateCache,
+  verifyChainEffect,
+} from "./chain-store.ts";
+import type {
+  DataActor,
+  DataOutcome,
+  DataRejectedError,
+  DekWrapInput,
+  EnvironmentPullValue,
+  EnvironmentSummaryValue,
+  RecipientDekValue,
+  ValueInput,
+  VariableVersionValue,
+} from "./data-plane.ts";
+import {
+  createEnvironmentProgram,
+  createVariableProgram,
+  deleteEnvironmentProgram,
+  deleteVariableProgram,
+  listEnvironmentsProgram,
+  listMyDekWrapsProgram,
+  pullEnvironmentProgram,
+  pushVersionProgram,
+  registerDekWrapsProgram,
+  renameEnvironmentProgram,
+  renameVariableProgram,
+} from "./data-programs.ts";
+import { DataStore, dataStoreLayer } from "./data-store.ts";
+import { ensureProjectDoTables } from "./do-schema.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
@@ -34,72 +75,6 @@ export interface Env {
   /** GitHub OAuth App の client_secret(Workers Secret / .dev.vars。ダミー値のみコミット可)。 */
   readonly GITHUB_CLIENT_SECRET: string;
 }
-
-// ---------------------------------------------------------------------------
-// ChainStore: DO SQLite を隔離する Effect サービス
-// ---------------------------------------------------------------------------
-
-interface StoredChain {
-  readonly entries: readonly ChainEntry[];
-  /** 0 = 未初期化 */
-  readonly headSeq: number;
-  readonly headHashHex: string | null;
-  readonly totalCanonicalBytes: number;
-}
-
-interface ChainStoreShape {
-  readonly load: Effect.Effect<StoredChain>;
-  readonly insert: (
-    entry: ChainEntry,
-    entryHashHex: string,
-    canonicalBytes: number,
-  ) => Effect.Effect<void>;
-}
-
-class ChainStore extends Context.Service<ChainStore, ChainStoreShape>()("ChainStore") {}
-
-const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
-  Layer.sync(ChainStore, () => {
-    sql.exec(
-      `CREATE TABLE IF NOT EXISTS chain_entries (
-         seq INTEGER PRIMARY KEY,
-         entry_json TEXT NOT NULL,
-         entry_hash_hex TEXT NOT NULL,
-         canonical_bytes INTEGER NOT NULL
-       )`,
-    );
-    return {
-      load: Effect.sync(() => {
-        const rows = sql
-          .exec(
-            "SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM chain_entries ORDER BY seq",
-          )
-          .toArray();
-        const entries = rows.map((row) => JSON.parse(String(row["entry_json"])) as ChainEntry);
-        const last = rows[rows.length - 1];
-        let totalCanonicalBytes = 0;
-        for (const row of rows) {
-          totalCanonicalBytes += Number(row["canonical_bytes"]);
-        }
-        return {
-          entries,
-          headSeq: last === undefined ? 0 : Number(last["seq"]),
-          headHashHex: last === undefined ? null : String(last["entry_hash_hex"]),
-          totalCanonicalBytes,
-        };
-      }),
-      insert: (entry, entryHashHex, canonicalBytes) =>
-        Effect.sync(() => {
-          sql.exec(
-            "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (?, ?, ?, ?)",
-            entry.seq,
-            JSON.stringify(entry),
-            entryHashHex,
-            canonicalBytes,
-          );
-        }),
-    };
-  });
 
 // ---------------------------------------------------------------------------
 // 型付きエラー(DO 内部)と RPC 境界の outcome 型
@@ -173,36 +148,8 @@ export type SnapshotOutcome =
   | { readonly kind: "not-member" };
 
 // ---------------------------------------------------------------------------
-// Effect プログラム(検証・受理判定の本体)
+// Effect プログラム(チェーン検証・受理判定の本体)
 // ---------------------------------------------------------------------------
-
-/** verifyChain を Effect に持ち上げ、ChainInvalid 以外の(契約上起こらない)失敗は defect にする。 */
-function verifyChainEffect(
-  entries: readonly ChainEntry[],
-): Effect.Effect<ChainState, ChainInvalidError> {
-  return Effect.flatMap(
-    Effect.promise(() => verifyChain(entries)),
-    (result) => {
-      if (result.ok) {
-        return Effect.succeed(result.value);
-      }
-      const wrapped = toWrappedCryptoError(result.error);
-      // verifyChain は契約上 ChainInvalid しか返さない。それ以外は実装バグ
-      return wrapped instanceof ChainInvalidError ? Effect.fail(wrapped) : Effect.die(wrapped);
-    },
-  );
-}
-
-/**
- * 正規化バイト列の長さ。Schema 検証済みエントリでは失敗しないが、エンコーダの
- * 例外は invalid-payload に封じ込める(DO を defect で落とさない)。
- */
-function canonicalBytesOf(entry: ChainEntry): Effect.Effect<number, ChainInvalidError> {
-  return Effect.try({
-    try: () => canonicalChainEntryBytes(entry).length,
-    catch: () => new ChainInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
-  });
-}
 
 function checkEntrySize(
   entry: ChainEntry,
@@ -214,42 +161,29 @@ function checkEntrySize(
   );
 }
 
-/**
- * チェーン導出状態のキャッシュ(DO インスタンスメモリ)。保存済みチェーンは
- * 受理時に検証済みなので、同一ヘッドへの再導出を省く(§6.2 の認可・§11-2 の
- * メンバーシップ判定を読み取りごとの O(n) 署名検証にしないため)。
- */
-interface StateCache {
-  current: { readonly headHashHex: string; readonly state: ChainState } | null;
-}
-
-/**
- * キャッシュ更新は headSeq の単調ガード付き: permit を持たない読み取り
- * (snapshotFor)の導出中に追記がコミットした場合、古い状態で新しいキャッシュを
- * 上書きしない(チェーンは append-only なので headSeq 比較で十分)。
- */
-function updateStateCache(cache: StateCache, state: ChainState): void {
-  if (cache.current === null || state.headSeq >= cache.current.state.headSeq) {
-    cache.current = { headHashHex: state.headHashHex, state };
-  }
-}
-
-/** 保存済みチェーンから ChainState を導出する。検証失敗は実装バグ(defect)。 */
-function deriveStoredState(chain: StoredChain, cache: StateCache): Effect.Effect<ChainState> {
-  const cached = cache.current;
-  if (cached !== null && cached.headHashHex === chain.headHashHex) {
-    return Effect.succeed(cached.state);
-  }
-  return verifyChainEffect(chain.entries).pipe(
-    Effect.orDie,
-    Effect.tap((state) => Effect.sync(() => updateStateCache(cache, state))),
-  );
-}
-
 /** §6.2 / §11-2: チェーン導出メンバー(reader 含む)でなければ拒否する。 */
-function ensureChainMember(state: ChainState, userId: string): Effect.Effect<void, NotMemberError> {
-  return state.members.has(userId) ? Effect.void : Effect.fail(new NotMemberError());
+function ensureChainMember(
+  members: ReadonlyMap<string, unknown>,
+  userId: string,
+): Effect.Effect<void, NotMemberError> {
+  return members.has(userId) ? Effect.void : Effect.fail(new NotMemberError());
 }
+
+/**
+ * チェーン追記の受理と同時に §3.4 のミラーイベントを記録する。単一の同期
+ * ブロック(= 同一イベントループタスク)で両方を書き、クラッシュしても
+ * 「チェーンだけ書けてミラーが欠ける」不整合を作らない(ミラーは v1 バック
+ * フィルなし — AUDIT_SPEC §3.4 — なので欠落は恒久化する)。
+ */
+const insertWithMirror = (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) =>
+  Effect.gen(function* () {
+    const store = yield* ChainStore;
+    const audit = yield* AuditStore;
+    yield* Effect.sync(() => {
+      store.insertSync(entry, entryHashHex, canonicalBytes);
+      audit.appendSync(chainMirrorEvent(entry, Date.now()));
+    });
+  });
 
 const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateCache) =>
   Effect.gen(function* () {
@@ -276,7 +210,7 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
     if (state.headHashHex !== expectedProjectId) {
       return yield* new ProjectIdMismatchError();
     }
-    yield* store.insert(entry, state.headHashHex, canonicalBytes);
+    yield* insertWithMirror(entry, state.headHashHex, canonicalBytes);
     updateStateCache(cache, state);
     return { headSeq: state.headSeq, headHashHex: state.headHashHex };
   });
@@ -347,7 +281,7 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
       return yield* new NotInitializedError();
     }
     const state = yield* deriveStoredState(chain, cache);
-    yield* ensureChainMember(state, callerUserId);
+    yield* ensureChainMember(state.members, callerUserId);
     return {
       entries: chain.entries,
       headSeq: chain.headSeq,
@@ -363,14 +297,13 @@ const appendProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const store = yield* ChainStore;
     const chain = yield* loadChainForMember(callerUserId, cache);
     yield* ensureParentHead(chain, parentHeadHashHex);
     const canonicalBytes = yield* checkEntrySize(entry);
     yield* ensureChainCapacity(chain, canonicalBytes);
     // §6.4: 追記受理時にチェーン全体を再検証する(prev_hash 連続性・署名・操作権限)
     const state = yield* verifyChainEffect([...chain.entries, entry]);
-    yield* store.insert(entry, state.headHashHex, canonicalBytes);
+    yield* insertWithMirror(entry, state.headHashHex, canonicalBytes);
     updateStateCache(cache, state);
     return { headSeq: state.headSeq, headHashHex: state.headHashHex };
   });
@@ -385,22 +318,53 @@ const snapshotProgram = (callerUserId: string, cache: StateCache) =>
 // Durable Object(ManagedRuntime パターン。spike-b の確立形)
 // ---------------------------------------------------------------------------
 
+type DoServices = ChainStore | DataStore | AuditStore;
+
+/** データプレーンの拒否を RPC outcome へ畳む(成功は ok 側)。 */
+const toDataOutcome = <T, R>(
+  program: Effect.Effect<T, DataRejectedError, R>,
+): Effect.Effect<DataOutcome<T>, never, R> =>
+  program.pipe(
+    Effect.map((value): DataOutcome<T> => ({ kind: "ok", value })),
+    Effect.catchTag(
+      "DataRejected",
+      (error): Effect.Effect<DataOutcome<T>> =>
+        Effect.succeed({ kind: "rejected", rejection: error.rejection }),
+    ),
+  );
+
 export class ProjectChainDO extends DurableObject<Env> {
-  readonly #runtime: ManagedRuntime.ManagedRuntime<ChainStore, never>;
-  // 変更操作の直列化(冒頭コメント参照)。読み取り(snapshotFor)は permit 不要
-  readonly #writeLock = Semaphore.makeUnsafe(1);
-  // チェーン導出状態のキャッシュ(deriveStoredState 参照)
+  readonly #runtime: ManagedRuntime.ManagedRuntime<DoServices, never>;
+  // 全操作(変更 + 読み取り)の直列化(冒頭コメント参照)
+  readonly #opLock = Semaphore.makeUnsafe(1);
+  // チェーン導出状態のキャッシュ(chain-store.ts の deriveStoredState 参照)
   readonly #stateCache: StateCache = { current: null };
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.#runtime = ManagedRuntime.make(chainStoreLayer(ctx.storage.sql));
+    ensureProjectDoTables(ctx.storage.sql);
+    this.#runtime = ManagedRuntime.make(
+      Layer.mergeAll(
+        chainStoreLayer(ctx.storage.sql),
+        dataStoreLayer(ctx.storage.sql),
+        auditStoreLayer(ctx.storage.sql),
+      ),
+    );
+  }
+
+  /**
+   * データプレーンのプログラムを permit 下で outcome に畳んで実行する。
+   * 読み取りも permit を取る: メンバーシップ判定とデータ読みをチェーン書き込みに
+   * 対して原子化する(冒頭コメントの TOCTOU 対策)。
+   */
+  #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
+    return this.#runtime.runPromise(this.#opLock.withPermit(toDataOutcome(program)));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   init(expectedProjectId: string, entry: ChainEntry): Promise<InitOutcome> {
     return this.#runtime.runPromise(
-      this.#writeLock.withPermit(
+      this.#opLock.withPermit(
         initProgram(expectedProjectId, entry, this.#stateCache).pipe(
           Effect.map(
             (head): InitOutcome => ({
@@ -436,7 +400,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     callerUserId: string,
   ): Promise<AppendOutcome> {
     return this.#runtime.runPromise(
-      this.#writeLock.withPermit(
+      this.#opLock.withPermit(
         appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache).pipe(
           Effect.map(
             (head): AppendOutcome => ({
@@ -474,7 +438,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runtime.runPromise(
-      snapshotProgram(callerUserId, this.#stateCache).pipe(
+      this.#opLock.withPermit(snapshotProgram(callerUserId, this.#stateCache)).pipe(
         Effect.map(
           (chain): SnapshotOutcome => ({
             kind: "snapshot",
@@ -490,5 +454,105 @@ export class ProjectChainDO extends DurableObject<Env> {
         }),
       ),
     );
+  }
+
+  // --- データプレーン RPC(AUTH_SPEC §12) -------------------------------
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  createEnvironment(
+    actor: DataActor,
+    input: {
+      readonly environmentId: string;
+      readonly name: string;
+      readonly deks: readonly DekWrapInput[];
+    },
+  ): Promise<DataOutcome<EnvironmentSummaryValue>> {
+    return this.#runData(createEnvironmentProgram(actor, input, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  renameEnvironment(
+    actor: DataActor,
+    environmentId: string,
+    name: string,
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(renameEnvironmentProgram(actor, environmentId, name, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  deleteEnvironment(actor: DataActor, environmentId: string): Promise<DataOutcome<void>> {
+    return this.#runData(deleteEnvironmentProgram(actor, environmentId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  listEnvironments(actor: DataActor): Promise<DataOutcome<readonly EnvironmentSummaryValue[]>> {
+    return this.#runData(listEnvironmentsProgram(actor, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  createVariable(
+    actor: DataActor,
+    environmentId: string,
+    input: { readonly variableId: string; readonly name: string; readonly value: ValueInput },
+  ): Promise<DataOutcome<VariableVersionValue>> {
+    return this.#runData(createVariableProgram(actor, environmentId, input, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  pushVersion(
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    value: ValueInput,
+  ): Promise<DataOutcome<VariableVersionValue>> {
+    return this.#runData(
+      pushVersionProgram(actor, environmentId, variableId, value, this.#stateCache),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  renameVariable(
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    name: string,
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(
+      renameVariableProgram(actor, environmentId, variableId, name, this.#stateCache),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  deleteVariable(
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(deleteVariableProgram(actor, environmentId, variableId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  pullEnvironment(
+    actor: DataActor,
+    environmentId: string,
+  ): Promise<DataOutcome<EnvironmentPullValue>> {
+    return this.#runData(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  registerDekWraps(
+    actor: DataActor,
+    environmentId: string,
+    wraps: readonly DekWrapInput[],
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  listMyDekWraps(
+    actor: DataActor,
+    environmentId: string,
+  ): Promise<DataOutcome<readonly RecipientDekValue[]>> {
+    return this.#runData(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
   }
 }

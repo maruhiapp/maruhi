@@ -1,0 +1,194 @@
+// データプレーンのハンドラ共通部(AUTH_SPEC §12)。
+//
+// - DO の DataRejection → api-schema の型付きエラーへの写像
+// - 申告 AAD 構成要素と保存先座標の一致検査(§12-2。リクエスト内容のみに依存する
+//   自己整合検査であり、存在情報を運ばない)
+// - 値サイズの先行検査(§12-8。資源保護は意味論的判定に優先 — §12-3)
+
+import type { EncryptedPayload } from "@maruhi/api-schema";
+import {
+  DataLimitExceededError,
+  DekWrapExistsError,
+  DekWrapRejectedError,
+  EnvironmentConflictError,
+  EnvironmentNotFoundError,
+  EpochConflictError,
+  ForbiddenError,
+  PayloadMismatchError,
+  ProjectNotFoundError,
+  ValueTooLargeError,
+  VariableConflictError,
+  VariableNotFoundError,
+  VersionConflictError,
+} from "@maruhi/api-schema";
+import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
+import { RequestAuth } from "@maruhi/core";
+import { Effect } from "effect";
+
+import { ensureTokenScopeForProject } from "./authz.ts";
+import type { ProjectChainDO } from "./chain-do.ts";
+import type { DataActor, DataOutcome, DataRejection, ValueInput } from "./data-plane.ts";
+import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
+import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
+
+/** 認証主体 → 監査アクター(AUDIT_SPEC §2)。 */
+function dataActorOf(principal: AuthenticatedPrincipal): DataActor {
+  return principal.kind === "token"
+    ? { userId: principal.userId, apiTokenId: principal.tokenId }
+    : { userId: principal.userId, authMethod: principal.authMethod };
+}
+
+/** EncryptedPayload → DO へ渡す保存入力(座標は検査済み、状態依存部のみ残す)。 */
+export function toValueInput(payload: EncryptedPayload): ValueInput {
+  return {
+    epoch: payload.aad.epoch,
+    version: payload.aad.version,
+    nonceHex: payload.nonceHex,
+    ciphertextHex: payload.ciphertextHex,
+  };
+}
+
+/** §12-8: 値の暗号文サイズの先行検査(hex は 1 バイト = 2 文字)。 */
+export function checkValueSize(payload: EncryptedPayload): Effect.Effect<void, ValueTooLargeError> {
+  return payload.ciphertextHex.length / 2 > MAX_VALUE_CIPHERTEXT_BYTES
+    ? Effect.fail(new ValueTooLargeError({ limitBytes: MAX_VALUE_CIPHERTEXT_BYTES }))
+    : Effect.void;
+}
+
+interface AadCoordinates {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+}
+
+function aadMismatchField(payload: EncryptedPayload, coordinates: AadCoordinates): string | null {
+  if (payload.aad.projectId !== coordinates.projectId) {
+    return "projectId";
+  }
+  if (payload.aad.environmentId !== coordinates.environmentId) {
+    return "environmentId";
+  }
+  if (payload.aad.variableId !== coordinates.variableId) {
+    return "variableId";
+  }
+  return null;
+}
+
+/**
+ * §12-2: 申告 AAD の座標成分(project / environment / variable)とリクエストの
+ * 保存先座標の一致検査。epoch / version は状態依存のため DO 側で検査する。
+ */
+export function checkAadCoordinates(
+  payload: EncryptedPayload,
+  coordinates: AadCoordinates,
+): Effect.Effect<void, PayloadMismatchError> {
+  const field = aadMismatchField(payload, coordinates);
+  return field === null ? Effect.void : Effect.fail(new PayloadMismatchError({ field }));
+}
+
+// ---------------------------------------------------------------------------
+// DataRejection → 型付きエラー
+// ---------------------------------------------------------------------------
+
+type DataApiError =
+  | ProjectNotFoundError
+  | ForbiddenError
+  | EnvironmentNotFoundError
+  | EnvironmentConflictError
+  | VariableNotFoundError
+  | VariableConflictError
+  | VersionConflictError
+  | EpochConflictError
+  | DekWrapRejectedError
+  | DekWrapExistsError
+  | DataLimitExceededError;
+
+// kind ごとの小さな写像(§11-2: 未初期化と非メンバーは区別せず 404 に畳む)
+const rejectionErrors: {
+  readonly [K in DataRejection["kind"]]: (
+    rejection: Extract<DataRejection, { kind: K }>,
+    projectId: string,
+  ) => DataApiError;
+} = {
+  "not-initialized": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
+  "not-member": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
+  "insufficient-role": () => new ForbiddenError({ reason: "insufficient-role" }),
+  "environment-not-found": (rejection) =>
+    new EnvironmentNotFoundError({ environmentId: rejection.environmentId }),
+  "environment-conflict": (rejection) =>
+    new EnvironmentConflictError({
+      environmentId: rejection.environmentId,
+      reason: rejection.reason,
+    }),
+  "variable-not-found": (rejection) =>
+    new VariableNotFoundError({ variableId: rejection.variableId }),
+  "variable-conflict": (rejection) =>
+    new VariableConflictError({ variableId: rejection.variableId, reason: rejection.reason }),
+  "version-conflict": (rejection) =>
+    new VersionConflictError({ currentVersion: rejection.currentVersion }),
+  "epoch-conflict": (rejection) => new EpochConflictError({ currentEpoch: rejection.currentEpoch }),
+  "dek-wrap-rejected": (rejection) => new DekWrapRejectedError({ reason: rejection.reason }),
+  "dek-wrap-exists": (rejection) =>
+    new DekWrapExistsError({ epoch: rejection.epoch, recipientUserId: rejection.recipientUserId }),
+  "limit-exceeded": (rejection) =>
+    new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
+};
+
+function dataRejectionError(rejection: DataRejection, projectId: string): DataApiError {
+  return rejectionErrors[rejection.kind](rejection as never, projectId);
+}
+
+/**
+ * DO の outcome をハンドラの成功値 / 型付きエラーへ写す。`allowed` はその
+ * エンドポイントが契約(api-schema のエラー宣言)上返しうるエラークラスの列で、
+ * 契約外の拒否はプログラム側の不変条件違反として defect に落とす(instanceof
+ * 判定 — oxlint の _tag 直接アクセス禁止に従う)。
+ */
+function unwrapDataOutcome<
+  T,
+  const C extends ReadonlyArray<abstract new (...args: never[]) => DataApiError>,
+>(
+  outcome: DataOutcome<T>,
+  projectId: string,
+  allowed: C,
+): Effect.Effect<T, InstanceType<C[number]>> {
+  if (outcome.kind === "ok") {
+    return Effect.succeed(outcome.value);
+  }
+  const error = dataRejectionError(outcome.rejection, projectId);
+  for (const errorClass of allowed) {
+    if (error instanceof errorClass) {
+      return Effect.fail(error as InstanceType<C[number]>);
+    }
+  }
+  return Effect.die(error);
+}
+
+/**
+ * データプレーンのハンドラ共通経路(§12-3 の判定順): 認証主体の解決 →
+ * トークンスコープ(スコープ外 404 / 水準不足 403)→ DO RPC → outcome の写像。
+ * ハンドラ固有の先行検査(値サイズ・AAD 座標)は呼び出し側がこの前に行う。
+ *
+ * カリー形なのは「T(RPC の値型)は明示、C(契約上のエラークラス列)は推論」を
+ * 両立させるため(TS は型引数の部分適用を許さない)。
+ */
+export const callProjectData =
+  <T>() =>
+  <const C extends ReadonlyArray<abstract new (...args: never[]) => DataApiError>>(options: {
+    readonly projectId: string;
+    readonly permission: TokenPermission;
+    readonly allowed: C;
+    readonly invoke: (
+      stub: DurableObjectStub<ProjectChainDO>,
+      actor: DataActor,
+    ) => PromiseLike<unknown>;
+  }) =>
+    Effect.gen(function* () {
+      const principal = yield* (yield* RequestAuth).principal;
+      yield* ensureTokenScopeForProject(principal, options.projectId, options.permission);
+      const env = yield* WorkerEnv;
+      const outcome = yield* rpcCall<DataOutcome<T>>(() =>
+        options.invoke(projectStub(env, options.projectId), dataActorOf(principal)),
+      );
+      return yield* unwrapDataOutcome(outcome, options.projectId, options.allowed);
+    });

@@ -11,7 +11,7 @@
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { chainCapacityExceeded } from "../src/chain-do.ts";
@@ -38,6 +38,7 @@ import {
   vectorEntries,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
+import { resetProjectDo } from "./support/project-do.ts";
 
 const VECTOR_ORG = "org-vector-0001";
 const GITHUB_IDS: Record<string, number> = {
@@ -107,23 +108,7 @@ async function replayVectorChain(upTo: number): Promise<void> {
 // ストレージ分離がなく、DO SQLite / D1 はファイル内のテスト間で持ち越される。
 // テストごとに明示的に空へ戻し、ベクターユーザーをシードして PAT を取り直す
 beforeEach(async () => {
-  const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
-  await runInDurableObject(stub, (_instance, state) => {
-    // DO の ChainStore layer は最初のメソッド呼び出しまで遅延構築されるため、
-    // テーブルが未作成のこともある(スキーマは src/chain-do.ts と同一)
-    state.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS chain_entries (
-         seq INTEGER PRIMARY KEY,
-         entry_json TEXT NOT NULL,
-         entry_hash_hex TEXT NOT NULL,
-         canonical_bytes INTEGER NOT NULL
-       )`,
-    );
-    state.storage.sql.exec("DELETE FROM chain_entries");
-  });
-  // DO インスタンスを退去させ、導出 ChainState のメモリキャッシュ(#stateCache)も
-  // テスト間で持ち越さない(SQL の DELETE はストレージしか消さない)
-  await evictDurableObject(stub);
+  await resetProjectDo(vectorProjectId);
   await resetAuthDb();
   tokens = {};
   for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {

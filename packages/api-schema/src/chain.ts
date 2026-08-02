@@ -12,13 +12,7 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { Schema } from "effect";
 
-function hexString(bytes: number): Schema.String {
-  return Schema.String.check(
-    Schema.isPattern(new RegExp(`^[0-9a-f]{${bytes * 2}}$`), {
-      description: `lowercase hex (${bytes} bytes)`,
-    }),
-  );
-}
+import { hexString } from "./hex.ts";
 
 const Hash256Hex = hexString(32);
 const PublicKeyHex = hexString(32);

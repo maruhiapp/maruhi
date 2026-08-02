@@ -21,3 +21,33 @@ export type ProjectId = typeof ProjectIdSchema.Type;
 export function isProjectId(value: string): value is ProjectId {
   return PROJECT_ID_PATTERN.test(value);
 }
+
+// ---------------------------------------------------------------------------
+// データプレーンの安定識別子(AUTH_SPEC §12-1)
+//
+// environment_id / variable_id はクライアント採番(AAD / HPKE info に入る値を
+// 暗号化・ラップの前に確定するため — CRYPTO_SPEC §3〜§5)。形式は API 受理
+// ポリシーであり、チェーン有効性の合意規則(CRYPTO_SPEC §6.1)ではない。
+// ---------------------------------------------------------------------------
+
+const RESOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** Schema for a client-issued environment id (AUTH_SPEC §12-1). */
+export const EnvironmentIdSchema = Schema.String.check(
+  Schema.isPattern(RESOURCE_ID_PATTERN, {
+    description: "environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+  }),
+);
+
+/** Environment id: a stable client-issued identifier (rename-safe, used in AADs). */
+export type EnvironmentId = typeof EnvironmentIdSchema.Type;
+
+/** Schema for a client-issued variable id (AUTH_SPEC §12-1). */
+export const VariableIdSchema = Schema.String.check(
+  Schema.isPattern(RESOURCE_ID_PATTERN, {
+    description: "variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+  }),
+);
+
+/** Variable id: a stable client-issued identifier (rename-safe, used in AADs). */
+export type VariableId = typeof VariableIdSchema.Type;
