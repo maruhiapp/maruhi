@@ -537,9 +537,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     wraps: readonly DekWrapInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runData(
-      registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache),
-    );
+    return this.#runData(registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)

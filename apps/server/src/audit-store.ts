@@ -45,28 +45,36 @@ const INSERT_EVENT = `INSERT INTO audit_events (
   SELECT COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
   FROM audit_events`;
 
+function orNull(value: string | number | undefined): string | number | null {
+  return value === undefined ? null : value;
+}
+
+/** 挿入バインディング(INSERT_EVENT の SELECT 列と同順)。未指定は NULL。 */
+function eventBindings(event: AuditEventInput): (string | number | null)[] {
+  return [
+    event.serverTs,
+    orNull(event.clientTs),
+    event.event,
+    event.actorType,
+    orNull(event.actorUserId),
+    orNull(event.actorKeyFingerprintHex),
+    orNull(event.actorApiTokenId),
+    orNull(event.targetUserId),
+    orNull(event.targetKeyFingerprintHex),
+    orNull(event.environmentId),
+    orNull(event.variableId),
+    orNull(event.epoch),
+    orNull(event.version),
+    orNull(event.chainSeq),
+    event.payload === undefined ? null : JSON.stringify(event.payload),
+  ];
+}
+
 export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
   Layer.sync(AuditStore, () => ({
     append: (event) =>
       Effect.sync(() => {
-        sql.exec(
-          INSERT_EVENT,
-          event.serverTs,
-          event.clientTs ?? null,
-          event.event,
-          event.actorType,
-          event.actorUserId ?? null,
-          event.actorKeyFingerprintHex ?? null,
-          event.actorApiTokenId ?? null,
-          event.targetUserId ?? null,
-          event.targetKeyFingerprintHex ?? null,
-          event.environmentId ?? null,
-          event.variableId ?? null,
-          event.epoch ?? null,
-          event.version ?? null,
-          event.chainSeq ?? null,
-          event.payload === undefined ? null : JSON.stringify(event.payload),
-        );
+        sql.exec(INSERT_EVENT, ...eventBindings(event));
       }),
   }));
 

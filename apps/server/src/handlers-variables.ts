@@ -2,7 +2,8 @@
 //
 // 判定順(§12-3): 認証(ミドルウェア)→ 値サイズの先行検査(413。資源保護は
 // 意味論的判定に優先)→ 申告 AAD の座標一致(422。リクエスト内容のみに依存する
-// 自己整合検査)→ トークンスコープ → DO(メンバーシップ / role / CAS / 数量)。
+// 自己整合検査で、存在情報を運ばない)→ トークンスコープ → DO(メンバーシップ /
+// role / CAS / 数量)。共通経路は data-http.ts の callProjectData。
 
 import {
   DataLimitExceededError,
@@ -10,32 +11,21 @@ import {
   EpochConflictError,
   ForbiddenError,
   maruhiApi,
-  PayloadMismatchError,
   ProjectNotFoundError,
   VariableConflictError,
   VariableNotFoundError,
   VersionConflictError,
 } from "@maruhi/api-schema";
-import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { ensureTokenScopeForProject } from "./authz.ts";
-import {
-  checkAadCoordinates,
-  checkValueSize,
-  dataActorOf,
-  toValueInput,
-  unwrapDataOutcome,
-} from "./data-http.ts";
+import { callProjectData, checkAadCoordinates, checkValueSize, toValueInput } from "./data-http.ts";
 import type {
-  DataOutcome,
   EnvironmentPullValue,
   PulledVariableValue,
   VariableVersionValue,
 } from "./data-plane.ts";
-import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 const noContent = HttpServerResponse.empty({ status: 204 });
 
@@ -62,132 +52,97 @@ function toWireVariable(projectId: string, environmentId: string, row: PulledVar
   };
 }
 
+const VERSION_ERRORS = [
+  ProjectNotFoundError,
+  ForbiddenError,
+  EnvironmentNotFoundError,
+  VersionConflictError,
+  EpochConflictError,
+  DataLimitExceededError,
+] as const;
+
 export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handlers) =>
   handlers
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
         yield* checkValueSize(payload.value);
-        yield* ensureTokenScopeForProject(principal, params.projectId, "write");
         yield* checkAadCoordinates(payload.value, {
           projectId: params.projectId,
           environmentId: params.environmentId,
           variableId: payload.variableId,
         });
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<VariableVersionValue>>(() =>
-          projectStub(env, params.projectId).createVariable(
-            dataActorOf(principal),
-            params.environmentId,
-            {
+        return yield* callProjectData<VariableVersionValue>()({
+          projectId: params.projectId,
+          permission: "write",
+          allowed: [...VERSION_ERRORS, VariableConflictError],
+          invoke: (stub, actor) =>
+            stub.createVariable(actor, params.environmentId, {
               variableId: payload.variableId,
               name: payload.name,
               value: toValueInput(payload.value),
-            },
-          ),
-        );
-        return yield* unwrapDataOutcome(outcome, params.projectId, [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableConflictError,
-          VersionConflictError,
-          EpochConflictError,
-          DataLimitExceededError,
-        ]);
+            }),
+        });
       }),
     )
     .handle("push", ({ params, payload }) =>
       Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
         yield* checkValueSize(payload.value);
-        yield* ensureTokenScopeForProject(principal, params.projectId, "write");
         yield* checkAadCoordinates(payload.value, {
           projectId: params.projectId,
           environmentId: params.environmentId,
           variableId: params.variableId,
         });
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<VariableVersionValue>>(() =>
-          projectStub(env, params.projectId).pushVersion(
-            dataActorOf(principal),
-            params.environmentId,
-            params.variableId,
-            toValueInput(payload.value),
-          ),
-        );
-        return yield* unwrapDataOutcome(outcome, params.projectId, [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableNotFoundError,
-          VersionConflictError,
-          EpochConflictError,
-          DataLimitExceededError,
-        ]);
+        return yield* callProjectData<VariableVersionValue>()({
+          projectId: params.projectId,
+          permission: "write",
+          allowed: [...VERSION_ERRORS, VariableNotFoundError],
+          invoke: (stub, actor) =>
+            stub.pushVersion(
+              actor,
+              params.environmentId,
+              params.variableId,
+              toValueInput(payload.value),
+            ),
+        });
       }),
     )
     .handle("rename", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        yield* ensureTokenScopeForProject(principal, params.projectId, "write");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<void>>(() =>
-          projectStub(env, params.projectId).renameVariable(
-            dataActorOf(principal),
-            params.environmentId,
-            params.variableId,
-            payload.name,
-          ),
-        );
-        yield* unwrapDataOutcome(outcome, params.projectId, [
+      callProjectData<void>()({
+        projectId: params.projectId,
+        permission: "write",
+        allowed: [
           ProjectNotFoundError,
           ForbiddenError,
           EnvironmentNotFoundError,
           VariableNotFoundError,
           VariableConflictError,
-        ]);
-        return noContent;
-      }),
+        ],
+        invoke: (stub, actor) =>
+          stub.renameVariable(actor, params.environmentId, params.variableId, payload.name),
+      }).pipe(Effect.as(noContent)),
     )
     .handle("remove", ({ params }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        yield* ensureTokenScopeForProject(principal, params.projectId, "write");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<void>>(() =>
-          projectStub(env, params.projectId).deleteVariable(
-            dataActorOf(principal),
-            params.environmentId,
-            params.variableId,
-          ),
-        );
-        yield* unwrapDataOutcome(outcome, params.projectId, [
+      callProjectData<void>()({
+        projectId: params.projectId,
+        permission: "write",
+        allowed: [
           ProjectNotFoundError,
           ForbiddenError,
           EnvironmentNotFoundError,
           VariableNotFoundError,
-        ]);
-        return noContent;
-      }),
+        ],
+        invoke: (stub, actor) =>
+          stub.deleteVariable(actor, params.environmentId, params.variableId),
+      }).pipe(Effect.as(noContent)),
     )
     .handle("pull", ({ params }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        yield* ensureTokenScopeForProject(principal, params.projectId, "read");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<EnvironmentPullValue>>(() =>
-          projectStub(env, params.projectId).pullEnvironment(
-            dataActorOf(principal),
-            params.environmentId,
-          ),
-        );
-        const pulled = yield* unwrapDataOutcome(outcome, params.projectId, [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-        ]);
-        return {
+      callProjectData<EnvironmentPullValue>()({
+        projectId: params.projectId,
+        permission: "read",
+        allowed: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
+        invoke: (stub, actor) => stub.pullEnvironment(actor, params.environmentId),
+      }).pipe(
+        Effect.map((pulled) => ({
           environmentId: pulled.environmentId,
           name: pulled.name,
           currentEpoch: pulled.currentEpoch,
@@ -195,7 +150,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
             toWireVariable(params.projectId, params.environmentId, row),
           ),
           deks: pulled.deks,
-        };
-      }),
+        })),
+      ),
     ),
 );

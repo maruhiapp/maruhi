@@ -124,7 +124,11 @@ export type DataRejection =
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
   | { readonly kind: "dek-wrap-exists"; readonly epoch: number; readonly recipientUserId: string }
-  | { readonly kind: "limit-exceeded"; readonly resource: DataLimitResource; readonly limit: number };
+  | {
+      readonly kind: "limit-exceeded";
+      readonly resource: DataLimitResource;
+      readonly limit: number;
+    };
 
 /** データプレーンのプログラムが失敗として運ぶ唯一の型付きエラー。 */
 export class DataRejectedError extends Data.TaggedError("DataRejected")<{
@@ -146,7 +150,7 @@ export type DataOutcome<T> =
 const ROLE_RANK: Record<Role, number> = { reader: 1, member: 2, admin: 3, owner: 4 };
 
 /** チェーン role の下限判定(reader < member < admin < owner)。 */
-export function roleAtLeast(role: Role, minimum: Role): boolean {
+function roleAtLeast(role: Role, minimum: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
@@ -197,7 +201,7 @@ export function dataEvent(
   fields: Pick<AuditEventInput, "environmentId" | "variableId" | "epoch" | "version" | "payload">,
 ): AuditEventInput {
   const payload = {
-    ...(fields.payload ?? {}),
+    ...fields.payload,
     ...(actor.authMethod === undefined ? {} : { authMethod: actor.authMethod }),
   };
   return {

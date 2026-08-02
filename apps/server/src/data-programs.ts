@@ -111,8 +111,8 @@ const ensureProjectCapacity = (addedBytes: number) =>
 // DEK ラップの受理検証(§12-6 = CRYPTO_SPEC §6.3 ゴーストメンバー対策のサーバー側)
 // ---------------------------------------------------------------------------
 
-/** 1 ラップの検査(§12-8 の純関数分割)。ok なら null。 */
-export function checkOneWrap(
+/** 1 ラップの検査(認知的複雑度の分割)。ok なら null。 */
+function checkOneWrap(
   state: ChainState,
   currentEpoch: number,
   wrap: DekWrapInput,
@@ -248,7 +248,11 @@ const ensureEnvironmentQuota = Effect.gen(function* () {
 
 export const createEnvironmentProgram = (
   actor: DataActor,
-  input: { readonly environmentId: string; readonly name: string; readonly deks: readonly DekWrapInput[] },
+  input: {
+    readonly environmentId: string;
+    readonly name: string;
+    readonly deks: readonly DekWrapInput[];
+  },
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -583,11 +587,7 @@ export const registerDekWrapsProgram = (
     yield* validateAndInsertWraps(environmentId, state, currentEpoch, wraps, Date.now());
   });
 
-export const listMyDekWrapsProgram = (
-  actor: DataActor,
-  environmentId: string,
-  cache: StateCache,
-) =>
+export const listMyDekWrapsProgram = (actor: DataActor, environmentId: string, cache: StateCache) =>
   Effect.gen(function* () {
     yield* requireMemberState(actor.userId, "reader", cache);
     yield* requireActiveEnvironment(environmentId);

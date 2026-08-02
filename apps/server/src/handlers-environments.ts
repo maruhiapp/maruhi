@@ -2,6 +2,7 @@
 //
 // 判定順(§12-3): 認証(ミドルウェア)→ トークンスコープ(スコープ外 404 /
 // 水準不足 403)→ DO(メンバーシップ 404 / チェーン role 403 / 意味論的検査)。
+// 共通経路は data-http.ts の callProjectData。
 
 import {
   DataLimitExceededError,
@@ -12,95 +13,64 @@ import {
   maruhiApi,
   ProjectNotFoundError,
 } from "@maruhi/api-schema";
-import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { ensureTokenScopeForProject } from "./authz.ts";
-import { dataActorOf, unwrapDataOutcome } from "./data-http.ts";
-import type { DataOutcome, EnvironmentSummaryValue } from "./data-plane.ts";
-import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
+import { callProjectData } from "./data-http.ts";
+import type { EnvironmentSummaryValue } from "./data-plane.ts";
 
 const noContent = HttpServerResponse.empty({ status: 204 });
 
 export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", (handlers) =>
   handlers
     .handle("create", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        yield* ensureTokenScopeForProject(principal, params.projectId, "write");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<EnvironmentSummaryValue>>(() =>
-          projectStub(env, params.projectId).createEnvironment(dataActorOf(principal), {
-            environmentId: payload.environmentId,
-            name: payload.name,
-            deks: payload.deks,
-          }),
-        );
-        return yield* unwrapDataOutcome(outcome, params.projectId, [
+      callProjectData<EnvironmentSummaryValue>()({
+        projectId: params.projectId,
+        permission: "write",
+        allowed: [
           ProjectNotFoundError,
           ForbiddenError,
           EnvironmentConflictError,
           DekWrapRejectedError,
           DataLimitExceededError,
-        ]);
+        ],
+        invoke: (stub, actor) =>
+          stub.createEnvironment(actor, {
+            environmentId: payload.environmentId,
+            name: payload.name,
+            deks: payload.deks,
+          }),
       }),
     )
     .handle("list", ({ params }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        yield* ensureTokenScopeForProject(principal, params.projectId, "read");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<readonly EnvironmentSummaryValue[]>>(() =>
-          projectStub(env, params.projectId).listEnvironments(dataActorOf(principal)),
-        );
-        const environments = yield* unwrapDataOutcome(outcome, params.projectId, [
-          ProjectNotFoundError,
-          ForbiddenError,
-        ]);
-        return { environments };
-      }),
+      callProjectData<readonly EnvironmentSummaryValue[]>()({
+        projectId: params.projectId,
+        permission: "read",
+        allowed: [ProjectNotFoundError, ForbiddenError],
+        invoke: (stub, actor) => stub.listEnvironments(actor),
+      }).pipe(Effect.map((environments) => ({ environments }))),
     )
     .handle("rename", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        yield* ensureTokenScopeForProject(principal, params.projectId, "write");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<void>>(() =>
-          projectStub(env, params.projectId).renameEnvironment(
-            dataActorOf(principal),
-            params.environmentId,
-            payload.name,
-          ),
-        );
-        yield* unwrapDataOutcome(outcome, params.projectId, [
+      callProjectData<void>()({
+        projectId: params.projectId,
+        permission: "write",
+        allowed: [
           ProjectNotFoundError,
           ForbiddenError,
           EnvironmentNotFoundError,
           EnvironmentConflictError,
-        ]);
-        return noContent;
-      }),
+        ],
+        invoke: (stub, actor) => stub.renameEnvironment(actor, params.environmentId, payload.name),
+      }).pipe(Effect.as(noContent)),
     )
     .handle("remove", ({ params }) =>
-      Effect.gen(function* () {
-        const principal = yield* (yield* RequestAuth).principal;
-        // 環境の削除は admin スコープ + チェーン role admin 以上(§12-3)
-        yield* ensureTokenScopeForProject(principal, params.projectId, "admin");
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<DataOutcome<void>>(() =>
-          projectStub(env, params.projectId).deleteEnvironment(
-            dataActorOf(principal),
-            params.environmentId,
-          ),
-        );
-        yield* unwrapDataOutcome(outcome, params.projectId, [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-        ]);
-        return noContent;
-      }),
+      // 環境の削除は admin スコープ + チェーン role admin 以上(§12-3)
+      callProjectData<void>()({
+        projectId: params.projectId,
+        permission: "admin",
+        allowed: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
+        invoke: (stub, actor) => stub.deleteEnvironment(actor, params.environmentId),
+      }).pipe(Effect.as(noContent)),
     ),
 );

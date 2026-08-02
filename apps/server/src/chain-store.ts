@@ -112,7 +112,10 @@ export function updateStateCache(cache: StateCache, state: ChainState): void {
 }
 
 /** 保存済みチェーンから ChainState を導出する。検証失敗は実装バグ(defect)。 */
-export function deriveStoredState(chain: StoredChain, cache: StateCache): Effect.Effect<ChainState> {
+export function deriveStoredState(
+  chain: StoredChain,
+  cache: StateCache,
+): Effect.Effect<ChainState> {
   const cached = cache.current;
   if (cached !== null && cached.headHashHex === chain.headHashHex) {
     return Effect.succeed(cached.state);

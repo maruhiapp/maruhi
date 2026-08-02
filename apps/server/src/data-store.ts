@@ -23,7 +23,7 @@ export interface VariableRow {
 }
 
 /** アクティブ数と行数(tombstone 込み)。§12-8 の数量ポリシー判定用。 */
-export interface ResourceCounts {
+interface ResourceCounts {
   readonly active: number;
   readonly rows: number;
 }
@@ -88,9 +88,7 @@ interface DataStoreShape {
     nowMs: number,
   ) => Effect.Effect<void>;
   /** アクティブ変数の最新バージョン一覧(一括 pull 用)。 */
-  readonly latestVersions: (
-    environmentId: string,
-  ) => Effect.Effect<readonly PulledVariableValue[]>;
+  readonly latestVersions: (environmentId: string) => Effect.Effect<readonly PulledVariableValue[]>;
   /** プロジェクトの累積暗号文バイト(現在保存中の量。§12-8)。 */
   readonly totalCiphertextBytes: Effect.Effect<number>;
 

@@ -21,14 +21,18 @@ import {
   VariableNotFoundError,
   VersionConflictError,
 } from "@maruhi/api-schema";
-import type { AuthenticatedPrincipal } from "@maruhi/core";
+import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
+import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 
+import { ensureTokenScopeForProject } from "./authz.ts";
+import type { ProjectChainDO } from "./chain-do.ts";
 import type { DataActor, DataOutcome, DataRejection, ValueInput } from "./data-plane.ts";
 import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
+import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 /** 認証主体 → 監査アクター(AUDIT_SPEC §2)。 */
-export function dataActorOf(principal: AuthenticatedPrincipal): DataActor {
+function dataActorOf(principal: AuthenticatedPrincipal): DataActor {
   return principal.kind === "token"
     ? { userId: principal.userId, apiTokenId: principal.tokenId }
     : { userId: principal.userId, authMethod: principal.authMethod };
@@ -45,9 +49,7 @@ export function toValueInput(payload: EncryptedPayload): ValueInput {
 }
 
 /** §12-8: 値の暗号文サイズの先行検査(hex は 1 バイト = 2 文字)。 */
-export function checkValueSize(
-  payload: EncryptedPayload,
-): Effect.Effect<void, ValueTooLargeError> {
+export function checkValueSize(payload: EncryptedPayload): Effect.Effect<void, ValueTooLargeError> {
   return payload.ciphertextHex.length / 2 > MAX_VALUE_CIPHERTEXT_BYTES
     ? Effect.fail(new ValueTooLargeError({ limitBytes: MAX_VALUE_CIPHERTEXT_BYTES }))
     : Effect.void;
@@ -142,7 +144,7 @@ function dataRejectionError(rejection: DataRejection, projectId: string): DataAp
  * 契約外の拒否はプログラム側の不変条件違反として defect に落とす(instanceof
  * 判定 — oxlint の _tag 直接アクセス禁止に従う)。
  */
-export function unwrapDataOutcome<
+function unwrapDataOutcome<
   T,
   const C extends ReadonlyArray<abstract new (...args: never[]) => DataApiError>,
 >(
@@ -161,3 +163,32 @@ export function unwrapDataOutcome<
   }
   return Effect.die(error);
 }
+
+/**
+ * データプレーンのハンドラ共通経路(§12-3 の判定順): 認証主体の解決 →
+ * トークンスコープ(スコープ外 404 / 水準不足 403)→ DO RPC → outcome の写像。
+ * ハンドラ固有の先行検査(値サイズ・AAD 座標)は呼び出し側がこの前に行う。
+ *
+ * カリー形なのは「T(RPC の値型)は明示、C(契約上のエラークラス列)は推論」を
+ * 両立させるため(TS は型引数の部分適用を許さない)。
+ */
+export const callProjectData =
+  <T>() =>
+  <const C extends ReadonlyArray<abstract new (...args: never[]) => DataApiError>>(options: {
+    readonly projectId: string;
+    readonly permission: TokenPermission;
+    readonly allowed: C;
+    readonly invoke: (
+      stub: DurableObjectStub<ProjectChainDO>,
+      actor: DataActor,
+    ) => PromiseLike<unknown>;
+  }) =>
+    Effect.gen(function* () {
+      const principal = yield* (yield* RequestAuth).principal;
+      yield* ensureTokenScopeForProject(principal, options.projectId, options.permission);
+      const env = yield* WorkerEnv;
+      const outcome = yield* rpcCall<DataOutcome<T>>(() =>
+        options.invoke(projectStub(env, options.projectId), dataActorOf(principal)),
+      );
+      return yield* unwrapDataOutcome(outcome, options.projectId, options.allowed);
+    });
