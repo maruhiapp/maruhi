@@ -4,3 +4,19 @@
 export { decodeHex, encodeHex } from "./bytes.ts";
 export { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 export { type ChainInvalidReason, type CryptoError, type CryptoResult } from "./errors.ts";
+export {
+  computeServerKeyFingerprint,
+  computeUserKeyFingerprint,
+  type EncryptionKey,
+  type EncryptionKeyPair,
+  exportEncryptionPublicKey,
+  exportSigningPublicKey,
+  generateDek,
+  generateEncryptionKeyPair,
+  generateSigningKeyPair,
+  importEncryptionKeyPair,
+  importEncryptionPublicKey,
+  importSigningKeyPair,
+  importSigningPublicKey,
+  type SigningKeyPair,
+} from "./keys.ts";

@@ -2,7 +2,8 @@
 //
 // 設計判断(セッション 04、裁定待ちのデフォルト (b)):
 // crypto は Effect に依存しない純粋なエラー値を返し、Effect ラップは packages/core 側で行う。
-// `_tag` 判別子は Effect の Data.TaggedError へのマッピングを容易にするための命名。
+// 判別子は `kind`(oxlint の no-underscore-dangle と衝突しない中立名)。
+// core 側の Effect ラップでは kind ごとに Data.TaggedError へマッピングする。
 //
 // 絶対規則: エラーには平文値・鍵素材・暗号文の断片を一切含めない。
 // 文脈は識別子(seq / op / 理由コード)のみ。WebCrypto 例外の message も伝播させない
@@ -28,10 +29,10 @@ export type ChainInvalidReason =
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =
   /** Input failed structural validation (wrong length, malformed hex, etc.). */
-  | { readonly _tag: "InvalidInput"; readonly field: string }
+  | { readonly kind: "InvalidInput"; readonly field: string }
   /** Key material could not be imported into WebCrypto / HPKE. */
   | {
-      readonly _tag: "KeyImportFailed";
+      readonly kind: "KeyImportFailed";
       readonly key:
         | "encryption-public"
         | "encryption-private"
@@ -39,15 +40,15 @@ export type CryptoError =
         | "signing-private";
     }
   /** AES-256-GCM decryption failed (tampered ciphertext, wrong AAD/nonce/key). */
-  | { readonly _tag: "DecryptFailed"; readonly operation: "variable" | "recovery" }
+  | { readonly kind: "DecryptFailed"; readonly operation: "variable" | "recovery" }
   /** HPKE Seal failed. */
-  | { readonly _tag: "DekWrapFailed" }
+  | { readonly kind: "DekWrapFailed" }
   /** HPKE Open failed (tampered enc/ciphertext or mismatched info context). */
-  | { readonly _tag: "DekUnwrapFailed" }
+  | { readonly kind: "DekUnwrapFailed" }
   /** Ed25519 signing failed. */
-  | { readonly _tag: "SignFailed" }
+  | { readonly kind: "SignFailed" }
   /** Chain verification failed at entry `seq` for `reason`. */
-  | { readonly _tag: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
+  | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 
 /**
  * Result of a fallible @maruhi/crypto operation. Errors are returned as values
