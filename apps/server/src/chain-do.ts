@@ -165,13 +165,20 @@ function ensureChainMember(
   return members.has(userId) ? Effect.void : Effect.fail(new NotMemberError());
 }
 
-/** チェーン追記の受理と同時に §3.4 のミラーイベントを記録する(同じ直列化の下)。 */
+/**
+ * チェーン追記の受理と同時に §3.4 のミラーイベントを記録する。単一の同期
+ * ブロック(= 同一イベントループタスク)で両方を書き、クラッシュしても
+ * 「チェーンだけ書けてミラーが欠ける」不整合を作らない(ミラーは v1 バック
+ * フィルなし — AUDIT_SPEC §3.4 — なので欠落は恒久化する)。
+ */
 const insertWithMirror = (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) =>
   Effect.gen(function* () {
     const store = yield* ChainStore;
     const audit = yield* AuditStore;
-    yield* store.insert(entry, entryHashHex, canonicalBytes);
-    yield* audit.append(chainMirrorEvent(entry, Date.now()));
+    yield* Effect.sync(() => {
+      store.insertSync(entry, entryHashHex, canonicalBytes);
+      audit.appendSync(chainMirrorEvent(entry, Date.now()));
+    });
   });
 
 const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateCache) =>

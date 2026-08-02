@@ -12,6 +12,7 @@
 import type { ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { AuditEventInput } from "./audit-store.ts";
 import { AuditStore } from "./audit-store.ts";
 import type { StateCache } from "./chain-store.ts";
 import type {
@@ -25,7 +26,7 @@ import type {
   VariableVersionValue,
 } from "./data-plane.ts";
 import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
-import type { EnvironmentRow, VariableRow } from "./data-store.ts";
+import type { DataWriteOps, EnvironmentRow, VariableRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
@@ -188,12 +189,12 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
     }
   });
 
-const validateAndInsertWraps = (
+/** ラップ集合の受理検証(§12-6)のみ。挿入は呼び出し側の同期書き込みフェーズで行う。 */
+const ensureWrapSetAcceptable = (
   environmentId: string,
   state: ChainState,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
-  nowMs: number,
 ) =>
   Effect.gen(function* () {
     const rejection = checkWrapRecipients(state, currentEpoch, wraps);
@@ -201,10 +202,6 @@ const validateAndInsertWraps = (
       return yield* rejectData(rejection);
     }
     yield* checkWrapSets(environmentId, state, wraps);
-    const store = yield* DataStore;
-    for (const wrap of wraps) {
-      yield* store.insertWrap(environmentId, wrap, nowMs);
-    }
   });
 
 // ---------------------------------------------------------------------------
@@ -272,16 +269,30 @@ export const createEnvironmentProgram = (
       });
     }
     // 未使用 ID(チェーン未観測)なので現エポックは常に初期値 1(§12-4)
-    const now = Date.now();
-    yield* validateAndInsertWraps(input.environmentId, state, 1, input.deks, now);
-    yield* store.insertEnvironment(input.environmentId, input.name, now);
+    yield* ensureWrapSetAcceptable(input.environmentId, state, 1, input.deks);
+    // §12-4 / §12-6: エポック 1 のラップは現メンバー集合と完全一致していなければ
+    // ならない。受信者・重複・エポック範囲は検査済みなので個数一致 = 完全一致。
+    // (checkWrapSets はリクエストに現れたエポックしか見ないため、空集合が
+    // 素通りしないようここで明示的に要求する)
+    if (input.deks.length !== state.members.size) {
+      return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
+    }
     const audit = yield* AuditStore;
-    yield* audit.append(
-      dataEvent(actor, now, "env.created", {
-        environmentId: input.environmentId,
-        payload: { name: input.name },
-      }),
-    );
+    const now = Date.now();
+    // 書き込みフェーズ: 単一の同期ブロック = 同一タスクで原子コミット(部分
+    // 書き込みで「環境行のない孤児ラップ」等を作らない)
+    yield* Effect.sync(() => {
+      store.write.insertEnvironment(input.environmentId, input.name, now);
+      for (const wrap of input.deks) {
+        store.write.insertWrap(input.environmentId, wrap, now);
+      }
+      audit.appendSync(
+        dataEvent(actor, now, "env.created", {
+          environmentId: input.environmentId,
+          payload: { name: input.name },
+        }),
+      );
+    });
     return {
       environmentId: input.environmentId,
       name: input.name,
@@ -306,11 +317,12 @@ export const renameEnvironmentProgram = (
         reason: "duplicate-name",
       });
     }
-    yield* store.setEnvironmentName(environmentId, name);
     const audit = yield* AuditStore;
-    yield* audit.append(
-      dataEvent(actor, Date.now(), "env.renamed", { environmentId, payload: { name } }),
-    );
+    const now = Date.now();
+    yield* Effect.sync(() => {
+      store.write.setEnvironmentName(environmentId, name);
+      audit.appendSync(dataEvent(actor, now, "env.renamed", { environmentId, payload: { name } }));
+    });
   });
 
 export const deleteEnvironmentProgram = (
@@ -324,23 +336,26 @@ export const deleteEnvironmentProgram = (
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 監査上の存在区間を閉じる: 配下の各変数に var.deleted を先に記録する(§12-4)
     const variables = yield* store.listActiveVariables(environmentId);
-    for (const variable of variables) {
-      yield* audit.append(
-        dataEvent(actor, now, "var.deleted", {
+    // 書き込みフェーズ(単一タスク): tombstone + データ削除と、存在区間を閉じる
+    // 変数ごとの var.deleted(§12-4)+ env.deleted を原子的に書く
+    yield* Effect.sync(() => {
+      store.write.retireEnvironment(environmentId, now);
+      for (const variable of variables) {
+        audit.appendSync(
+          dataEvent(actor, now, "var.deleted", {
+            environmentId,
+            variableId: variable.variableId,
+          }),
+        );
+      }
+      audit.appendSync(
+        dataEvent(actor, now, "env.deleted", {
           environmentId,
-          variableId: variable.variableId,
+          payload: { name: environment.name },
         }),
       );
-    }
-    yield* store.retireEnvironment(environmentId, now);
-    yield* audit.append(
-      dataEvent(actor, now, "env.deleted", {
-        environmentId,
-        payload: { name: environment.name },
-      }),
-    );
+    });
   });
 
 export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
@@ -391,36 +406,38 @@ const ensureVariableQuota = (environmentId: string) =>
     }
   });
 
-/** バージョン行の書き込み + var.version_pushed の記録(create / push 共通の末尾)。 */
-const insertVersionWithAudit = (
+/**
+ * バージョン行の書き込み + var.version_pushed の記録(create / push 共通の末尾)。
+ * 同期関数: 呼び出し側の書き込みフェーズ(単一の Effect.sync)内で使う。
+ */
+function writeVersionWithAudit(
+  write: DataWriteOps,
+  appendAudit: (event: AuditEventInput) => void,
   actor: DataActor,
   environmentId: string,
   variableId: string,
   value: ValueInput,
   nowMs: number,
-) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    yield* store.insertVersion(
+): void {
+  write.insertVersion(
+    environmentId,
+    variableId,
+    value.version,
+    value.epoch,
+    value.nonceHex,
+    value.ciphertextHex,
+    value.ciphertextHex.length / 2,
+    nowMs,
+  );
+  appendAudit(
+    dataEvent(actor, nowMs, "var.version_pushed", {
       environmentId,
       variableId,
-      value.version,
-      value.epoch,
-      value.nonceHex,
-      value.ciphertextHex,
-      value.ciphertextHex.length / 2,
-      nowMs,
-    );
-    const audit = yield* AuditStore;
-    yield* audit.append(
-      dataEvent(actor, nowMs, "var.version_pushed", {
-        environmentId,
-        variableId,
-        epoch: value.epoch,
-        version: value.version,
-      }),
-    );
-  });
+      epoch: value.epoch,
+      version: value.version,
+    }),
+  );
+}
 
 export const createVariableProgram = (
   actor: DataActor,
@@ -448,17 +465,29 @@ export const createVariableProgram = (
     // 作成は version 1 の値を同梱する(§12-5)。CAS は latest = 0 相当
     yield* ensureValueCas(state, environmentId, 0, input.value);
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
-    const now = Date.now();
-    yield* store.insertVariable(environmentId, input.variableId, input.name, now);
     const audit = yield* AuditStore;
-    yield* audit.append(
-      dataEvent(actor, now, "var.created", {
+    const now = Date.now();
+    // 書き込みフェーズ(単一タスク): 変数行 + version 1 + 監査 2 行を原子的に書く
+    // (「latest_version = 0 のまま ID だけ占有された変数」を残さない)
+    yield* Effect.sync(() => {
+      store.write.insertVariable(environmentId, input.variableId, input.name, now);
+      audit.appendSync(
+        dataEvent(actor, now, "var.created", {
+          environmentId,
+          variableId: input.variableId,
+          payload: { name: input.name },
+        }),
+      );
+      writeVersionWithAudit(
+        store.write,
+        audit.appendSync,
+        actor,
         environmentId,
-        variableId: input.variableId,
-        payload: { name: input.name },
-      }),
-    );
-    yield* insertVersionWithAudit(actor, environmentId, input.variableId, input.value, now);
+        input.variableId,
+        input.value,
+        now,
+      );
+    });
     return {
       variableId: input.variableId,
       version: input.value.version,
@@ -486,7 +515,20 @@ export const pushVersionProgram = (
       });
     }
     yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
-    yield* insertVersionWithAudit(actor, environmentId, variableId, value, Date.now());
+    const store = yield* DataStore;
+    const audit = yield* AuditStore;
+    const now = Date.now();
+    yield* Effect.sync(() => {
+      writeVersionWithAudit(
+        store.write,
+        audit.appendSync,
+        actor,
+        environmentId,
+        variableId,
+        value,
+        now,
+      );
+    });
     return {
       variableId,
       version: value.version,
@@ -509,15 +551,18 @@ export const renameVariableProgram = (
     if (yield* store.variableNameTaken(environmentId, name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    yield* store.setVariableName(environmentId, variableId, name);
     const audit = yield* AuditStore;
-    yield* audit.append(
-      dataEvent(actor, Date.now(), "var.renamed", {
-        environmentId,
-        variableId,
-        payload: { name },
-      }),
-    );
+    const now = Date.now();
+    yield* Effect.sync(() => {
+      store.write.setVariableName(environmentId, variableId, name);
+      audit.appendSync(
+        dataEvent(actor, now, "var.renamed", {
+          environmentId,
+          variableId,
+          payload: { name },
+        }),
+      );
+    });
   });
 
 export const deleteVariableProgram = (
@@ -531,10 +576,12 @@ export const deleteVariableProgram = (
     yield* requireActiveEnvironment(environmentId);
     yield* requireActiveVariable(environmentId, variableId);
     const store = yield* DataStore;
-    const now = Date.now();
-    yield* store.retireVariable(environmentId, variableId, now);
     const audit = yield* AuditStore;
-    yield* audit.append(dataEvent(actor, now, "var.deleted", { environmentId, variableId }));
+    const now = Date.now();
+    yield* Effect.sync(() => {
+      store.write.retireVariable(environmentId, variableId, now);
+      audit.appendSync(dataEvent(actor, now, "var.deleted", { environmentId, variableId }));
+    });
   });
 
 // ---------------------------------------------------------------------------
@@ -552,19 +599,22 @@ export const pullEnvironmentProgram = (
     const store = yield* DataStore;
     const variables = yield* store.latestVersions(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
-    // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行
+    // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行。
+    // 返した行に対して記録するため、permit 外でも行とイベントは常に一致する
     const audit = yield* AuditStore;
     const now = Date.now();
-    for (const variable of variables) {
-      yield* audit.append(
-        dataEvent(actor, now, "var.read", {
-          environmentId,
-          variableId: variable.variableId,
-          epoch: variable.epoch,
-          version: variable.version,
-        }),
-      );
-    }
+    yield* Effect.sync(() => {
+      for (const variable of variables) {
+        audit.appendSync(
+          dataEvent(actor, now, "var.read", {
+            environmentId,
+            variableId: variable.variableId,
+            epoch: variable.epoch,
+            version: variable.version,
+          }),
+        );
+      }
+    });
     return {
       environmentId,
       name: environment.name,
@@ -584,7 +634,14 @@ export const registerDekWrapsProgram = (
     const state = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const currentEpoch = currentEpochOf(state, environmentId);
-    yield* validateAndInsertWraps(environmentId, state, currentEpoch, wraps, Date.now());
+    yield* ensureWrapSetAcceptable(environmentId, state, currentEpoch, wraps);
+    const store = yield* DataStore;
+    const now = Date.now();
+    yield* Effect.sync(() => {
+      for (const wrap of wraps) {
+        store.write.insertWrap(environmentId, wrap, now);
+      }
+    });
   });
 
 export const listMyDekWrapsProgram = (actor: DataActor, environmentId: string, cache: StateCache) =>

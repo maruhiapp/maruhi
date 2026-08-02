@@ -21,11 +21,12 @@ export interface StoredChain {
 
 interface ChainStoreShape {
   readonly load: Effect.Effect<StoredChain>;
-  readonly insert: (
-    entry: ChainEntry,
-    entryHashHex: string,
-    canonicalBytes: number,
-  ) => Effect.Effect<void>;
+  /**
+   * 同期挿入。監査ミラーの追記(audit-store.ts)と同じ同期ブロックで呼び、
+   * チェーン挿入とミラーを同一タスクで原子コミットする(AUDIT_SPEC §5.1 の
+   * 「同一トランザクションで書ける」配置根拠を実装で保証する)。
+   */
+  readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
 }
 
 export class ChainStore extends Context.Service<ChainStore, ChainStoreShape>()("ChainStore") {}
@@ -51,16 +52,15 @@ export const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
         totalCanonicalBytes,
       };
     }),
-    insert: (entry, entryHashHex, canonicalBytes) =>
-      Effect.sync(() => {
-        sql.exec(
-          "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (?, ?, ?, ?)",
-          entry.seq,
-          JSON.stringify(entry),
-          entryHashHex,
-          canonicalBytes,
-        );
-      }),
+    insertSync: (entry, entryHashHex, canonicalBytes) => {
+      sql.exec(
+        "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (?, ?, ?, ?)",
+        entry.seq,
+        JSON.stringify(entry),
+        entryHashHex,
+        canonicalBytes,
+      );
+    },
   }));
 
 /** verifyChain を Effect に持ち上げ、ChainInvalid 以外の(契約上起こらない)失敗は defect にする。 */

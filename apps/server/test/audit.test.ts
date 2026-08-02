@@ -5,11 +5,18 @@
 //   両時刻を持つ(§3.4)
 // - アイデンティティ規則(§1-2): プロバイダ情報・メールが 1 行にも現れないこと
 
+import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
-import { encryptValue, makeDek, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
+import {
+  encryptValue,
+  hexBytes,
+  makeDek,
+  vectorKeyOf,
+  wrapDekForAll,
+} from "./support/data-crypto.ts";
 import type { DataFixture } from "./support/data-fixture.ts";
 import {
   ALL_MEMBERS,
@@ -92,6 +99,58 @@ describe("チェーンミラー(§3.4)", () => {
     expect(rotated["chain_seq"]).toBe(4);
     expect(JSON.parse(String(rotated["payload"]))).toEqual({ reason: "scheduled" });
   });
+
+  it("mirrors change_role / remove_member with the target user id (§4.1 Q1 の入力)", async () => {
+    await appendOperation(fixture, OWNER, {
+      op: "change_role",
+      payload: { targetUserId: READER, newRole: "admin" },
+    });
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: MEMBER },
+    });
+    const events = await readAuditEvents(projectId);
+    const roleChanged = events.at(-2);
+    const removed = events.at(-1);
+    if (roleChanged === undefined || removed === undefined) throw new Error("missing mirrors");
+    expect(roleChanged["event"]).toBe("chain.role_changed");
+    expect(roleChanged["target_user_id"]).toBe(READER);
+    expect(JSON.parse(String(roleChanged["payload"]))).toEqual({ newRole: "admin" });
+    expect(removed["event"]).toBe("chain.member_removed");
+    expect(removed["target_user_id"]).toBe(MEMBER);
+    expect(removed["actor_user_id"]).toBe(OWNER);
+    expect(removed["chain_seq"]).toBe(5);
+  });
+
+  it("mirrors grant_server / revoke_server with the server key fingerprint (§4.1 Q6 の入力)", async () => {
+    // FP = SHA-256(enc 公開鍵)[:16](CRYPTO_SPEC §9)。チェーン検証が整合を要求する
+    const serverEncPubHex = "ab".repeat(32);
+    const fpResult = await computeServerKeyFingerprint(hexBytes(serverEncPubHex));
+    if (!fpResult.ok) throw new Error("fingerprint failed");
+    const serverKeyFingerprintHex = encodeHex(fpResult.value);
+    await appendOperation(fixture, OWNER, {
+      op: "grant_server",
+      payload: {
+        serverEncPubHex,
+        serverKeyFingerprintHex,
+        scopeEnvironmentIds: [ENV],
+      },
+    });
+    await appendOperation(fixture, OWNER, {
+      op: "revoke_server",
+      payload: { serverKeyFingerprintHex },
+    });
+    const events = await readAuditEvents(projectId);
+    const granted = events.at(-2);
+    const revoked = events.at(-1);
+    if (granted === undefined || revoked === undefined) throw new Error("missing mirrors");
+    expect(granted["event"]).toBe("chain.server_granted");
+    expect(granted["target_key_fingerprint"]).toBe(serverKeyFingerprintHex);
+    expect(granted["target_user_id"]).toBeNull();
+    expect(JSON.parse(String(granted["payload"]))).toEqual({ scopeEnvironmentIds: [ENV] });
+    expect(revoked["event"]).toBe("chain.server_revoked");
+    expect(revoked["target_key_fingerprint"]).toBe(serverKeyFingerprintHex);
+  });
 });
 
 describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
@@ -103,6 +162,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
 
+    const envRenamed = await requestJson("PATCH", `/environments/${ENV}`, token(MEMBER), {
+      name: "App2",
+    });
+    expect(envRenamed.status).toBe(204);
     const renamed = await requestJson(
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
@@ -134,6 +197,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       // 一括 pull は変数ごとに 1 行(§3.3)
       "var.read",
       "var.read",
+      "env.renamed",
       "var.renamed",
       "var.deleted",
       // 環境削除は残存変数の var.deleted を伴う(§12-4)
@@ -199,16 +263,17 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const events = await readAuditEvents(projectId);
     // シードした GitHub の数値 ID(provider_user_id)・login・メール形式が
-    // どの列・payload にも現れない(タイムスタンプ列は数値の偶然一致を避けて除外)
+    // どの列・payload にも部分文字列としても現れない(タイムスタンプ列は数値の
+    // 偶然一致を避けて除外)
     for (const event of events) {
       for (const [column, value] of Object.entries(event)) {
         if (column === "server_ts" || column === "client_ts" || value === null) {
           continue;
         }
         const text = String(value);
-        expect(["9001", "9002", "9003", "9009"]).not.toContain(text);
-        expect(text).not.toContain("user900");
-        expect(text).not.toContain("@");
+        for (const forbidden of ["9001", "9002", "9003", "9009", "user900", "@"]) {
+          expect(text).not.toContain(forbidden);
+        }
       }
     }
   });

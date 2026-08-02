@@ -9,7 +9,7 @@
 //   プロバイダ ID・メールをこの層に持ち込まないこと
 
 import type { ChainEntry, ChainOp } from "@maruhi/crypto";
-import { Context, Effect, Layer } from "effect";
+import { Context, Layer } from "effect";
 
 /** 監査イベント 1 行の入力(列は AUDIT_SPEC §5.1、未指定は NULL)。 */
 export interface AuditEventInput {
@@ -31,7 +31,12 @@ export interface AuditEventInput {
 }
 
 interface AuditStoreShape {
-  readonly append: (event: AuditEventInput) => Effect.Effect<void>;
+  /**
+   * 同期追記。データ書き込みと同じ同期ブロック(= 同一イベントループタスク)で
+   * 呼ぶことで、クラッシュ時に「データだけ書けてイベントが欠ける」不整合を
+   * 構造的に防ぐ(DO SQLite の書き込みはタスク単位で原子コミットされる)。
+   */
+  readonly appendSync: (event: AuditEventInput) => void;
 }
 
 export class AuditStore extends Context.Service<AuditStore, AuditStoreShape>()("AuditStore") {}
@@ -72,10 +77,9 @@ function eventBindings(event: AuditEventInput): (string | number | null)[] {
 
 export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
   Layer.sync(AuditStore, () => ({
-    append: (event) =>
-      Effect.sync(() => {
-        sql.exec(INSERT_EVENT, ...eventBindings(event));
-      }),
+    appendSync: (event) => {
+      sql.exec(INSERT_EVENT, ...eventBindings(event));
+    },
   }));
 
 // ---------------------------------------------------------------------------

@@ -56,10 +56,14 @@ export type EncryptedPayload = typeof EncryptedPayloadSchema.Type;
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
  * recipient is identified by both user id and encryption public key; the
  * server requires both to match the chain-derived member exactly.
+ *
+ * recipientUserId の上限はチェーン合意規則の自由文字列上限(CRYPTO_SPEC §6.1 の
+ * 1024 バイト)に揃える — add_member の対象はここより狭く検証されないため、
+ * これより狭い上限はチェーン上の正当なメンバー宛ラップを登録不能にしうる。
  */
 export const WrappedDekSchema = Schema.Struct({
   epoch: PositiveInt,
-  recipientUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  recipientUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,

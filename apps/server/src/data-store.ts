@@ -28,6 +28,40 @@ interface ResourceCounts {
   readonly rows: number;
 }
 
+/**
+ * 書き込みの同期関数群。1 操作の全書き込み(監査追記を含む)を 1 つの同期
+ * ブロック(= 同一イベントループタスク)にまとめて呼ぶことで、クラッシュ時の
+ * 部分書き込みを構造的に防ぐ(DO SQLite の書き込みはタスク単位で原子コミット)。
+ * 検証(読み取り)は Effect 側のメソッドで書き込みフェーズの前に済ませる。
+ */
+export interface DataWriteOps {
+  readonly insertEnvironment: (environmentId: string, name: string, nowMs: number) => void;
+  readonly setEnvironmentName: (environmentId: string, name: string) => void;
+  /** tombstone 化 + 配下データ(変数・バージョン・ラップ)の即時削除。 */
+  readonly retireEnvironment: (environmentId: string, nowMs: number) => void;
+  readonly insertVariable: (
+    environmentId: string,
+    variableId: string,
+    name: string,
+    nowMs: number,
+  ) => void;
+  readonly setVariableName: (environmentId: string, variableId: string, name: string) => void;
+  /** tombstone 化 + 全バージョン(暗号文)の即時削除。 */
+  readonly retireVariable: (environmentId: string, variableId: string, nowMs: number) => void;
+  /** バージョン行の挿入と latest_version の前進(書き込みロック下で呼ぶ)。 */
+  readonly insertVersion: (
+    environmentId: string,
+    variableId: string,
+    version: number,
+    epoch: number,
+    nonceHex: string,
+    ciphertextHex: string,
+    ciphertextBytes: number,
+    nowMs: number,
+  ) => void;
+  readonly insertWrap: (environmentId: string, wrap: DekWrapInput, nowMs: number) => void;
+}
+
 interface DataStoreShape {
   readonly findEnvironment: (environmentId: string) => Effect.Effect<EnvironmentRow | null>;
   readonly countEnvironments: Effect.Effect<ResourceCounts>;
@@ -35,14 +69,6 @@ interface DataStoreShape {
     name: string,
     excludeEnvironmentId: string | null,
   ) => Effect.Effect<boolean>;
-  readonly insertEnvironment: (
-    environmentId: string,
-    name: string,
-    nowMs: number,
-  ) => Effect.Effect<void>;
-  readonly setEnvironmentName: (environmentId: string, name: string) => Effect.Effect<void>;
-  /** tombstone 化 + 配下データ(変数・バージョン・ラップ)の即時削除。 */
-  readonly retireEnvironment: (environmentId: string, nowMs: number) => Effect.Effect<void>;
   readonly listEnvironments: Effect.Effect<readonly { environmentId: string; name: string }[]>;
 
   readonly findVariable: (
@@ -55,38 +81,10 @@ interface DataStoreShape {
     name: string,
     excludeVariableId: string | null,
   ) => Effect.Effect<boolean>;
-  readonly insertVariable: (
-    environmentId: string,
-    variableId: string,
-    name: string,
-    nowMs: number,
-  ) => Effect.Effect<void>;
-  readonly setVariableName: (
-    environmentId: string,
-    variableId: string,
-    name: string,
-  ) => Effect.Effect<void>;
-  /** tombstone 化 + 全バージョン(暗号文)の即時削除。 */
-  readonly retireVariable: (
-    environmentId: string,
-    variableId: string,
-    nowMs: number,
-  ) => Effect.Effect<void>;
   readonly listActiveVariables: (
     environmentId: string,
   ) => Effect.Effect<readonly { variableId: string; name: string }[]>;
 
-  /** バージョン行の挿入と latest_version の前進(書き込みロック下で呼ぶ)。 */
-  readonly insertVersion: (
-    environmentId: string,
-    variableId: string,
-    version: number,
-    epoch: number,
-    nonceHex: string,
-    ciphertextHex: string,
-    ciphertextBytes: number,
-    nowMs: number,
-  ) => Effect.Effect<void>;
   /** アクティブ変数の最新バージョン一覧(一括 pull 用)。 */
   readonly latestVersions: (environmentId: string) => Effect.Effect<readonly PulledVariableValue[]>;
   /** プロジェクトの累積暗号文バイト(現在保存中の量。§12-8)。 */
@@ -98,15 +96,12 @@ interface DataStoreShape {
     epoch: number,
     recipientUserId: string,
   ) => Effect.Effect<boolean>;
-  readonly insertWrap: (
-    environmentId: string,
-    wrap: DekWrapInput,
-    nowMs: number,
-  ) => Effect.Effect<void>;
   readonly listWrapsForRecipient: (
     environmentId: string,
     recipientUserId: string,
   ) => Effect.Effect<readonly RecipientDekValue[]>;
+
+  readonly write: DataWriteOps;
 }
 
 export class DataStore extends Context.Service<DataStore, DataStoreShape>()("DataStore") {}
@@ -153,30 +148,6 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
         )
         .toArray();
       return rows.length > 0;
-    }),
-  insertEnvironment: (environmentId: string, name: string, nowMs: number) =>
-    Effect.sync(() => {
-      sql.exec(
-        "INSERT INTO environments (environment_id, name, created_at, deleted_at) VALUES (?, ?, ?, NULL)",
-        environmentId,
-        name,
-        nowMs,
-      );
-    }),
-  setEnvironmentName: (environmentId: string, name: string) =>
-    Effect.sync(() => {
-      sql.exec("UPDATE environments SET name = ? WHERE environment_id = ?", name, environmentId);
-    }),
-  retireEnvironment: (environmentId: string, nowMs: number) =>
-    Effect.sync(() => {
-      sql.exec(
-        "UPDATE environments SET deleted_at = ? WHERE environment_id = ?",
-        nowMs,
-        environmentId,
-      );
-      sql.exec("DELETE FROM variables WHERE environment_id = ?", environmentId);
-      sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
-      sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
     }),
   listEnvironments: Effect.sync(() =>
     sql
@@ -236,40 +207,6 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  insertVariable: (environmentId: string, variableId: string, name: string, nowMs: number) =>
-    Effect.sync(() => {
-      sql.exec(
-        `INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
-         VALUES (?, ?, ?, 0, ?, NULL)`,
-        environmentId,
-        variableId,
-        name,
-        nowMs,
-      );
-    }),
-  setVariableName: (environmentId: string, variableId: string, name: string) =>
-    Effect.sync(() => {
-      sql.exec(
-        "UPDATE variables SET name = ? WHERE environment_id = ? AND variable_id = ?",
-        name,
-        environmentId,
-        variableId,
-      );
-    }),
-  retireVariable: (environmentId: string, variableId: string, nowMs: number) =>
-    Effect.sync(() => {
-      sql.exec(
-        "UPDATE variables SET deleted_at = ? WHERE environment_id = ? AND variable_id = ?",
-        nowMs,
-        environmentId,
-        variableId,
-      );
-      sql.exec(
-        "DELETE FROM variable_versions WHERE environment_id = ? AND variable_id = ?",
-        environmentId,
-        variableId,
-      );
-    }),
   listActiveVariables: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -284,37 +221,6 @@ const makeVariableQueries = (sql: SqlStorage) => ({
 });
 
 const makeVersionQueries = (sql: SqlStorage) => ({
-  insertVersion: (
-    environmentId: string,
-    variableId: string,
-    version: number,
-    epoch: number,
-    nonceHex: string,
-    ciphertextHex: string,
-    ciphertextBytes: number,
-    nowMs: number,
-  ) =>
-    Effect.sync(() => {
-      sql.exec(
-        `INSERT INTO variable_versions
-           (environment_id, variable_id, version, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        environmentId,
-        variableId,
-        version,
-        epoch,
-        nonceHex,
-        ciphertextHex,
-        ciphertextBytes,
-        nowMs,
-      );
-      sql.exec(
-        "UPDATE variables SET latest_version = ? WHERE environment_id = ? AND variable_id = ?",
-        version,
-        environmentId,
-        variableId,
-      );
-    }),
   latestVersions: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -371,21 +277,6 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  insertWrap: (environmentId: string, wrap: DekWrapInput, nowMs: number) =>
-    Effect.sync(() => {
-      sql.exec(
-        `INSERT INTO dek_wraps
-           (environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        environmentId,
-        wrap.epoch,
-        wrap.recipientUserId,
-        wrap.recipientEncPubHex,
-        wrap.encHex,
-        wrap.ciphertextHex,
-        nowMs,
-      );
-    }),
   listWrapsForRecipient: (environmentId: string, recipientUserId: string) =>
     Effect.sync(() =>
       sql
@@ -404,10 +295,110 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     ),
 });
 
+const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
+  insertEnvironment: (environmentId, name, nowMs) => {
+    sql.exec(
+      "INSERT INTO environments (environment_id, name, created_at, deleted_at) VALUES (?, ?, ?, NULL)",
+      environmentId,
+      name,
+      nowMs,
+    );
+  },
+  setEnvironmentName: (environmentId, name) => {
+    sql.exec("UPDATE environments SET name = ? WHERE environment_id = ?", name, environmentId);
+  },
+  retireEnvironment: (environmentId, nowMs) => {
+    sql.exec(
+      "UPDATE environments SET deleted_at = ? WHERE environment_id = ?",
+      nowMs,
+      environmentId,
+    );
+    sql.exec("DELETE FROM variables WHERE environment_id = ?", environmentId);
+    sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
+    sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
+  },
+  insertVariable: (environmentId, variableId, name, nowMs) => {
+    sql.exec(
+      `INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
+       VALUES (?, ?, ?, 0, ?, NULL)`,
+      environmentId,
+      variableId,
+      name,
+      nowMs,
+    );
+  },
+  setVariableName: (environmentId, variableId, name) => {
+    sql.exec(
+      "UPDATE variables SET name = ? WHERE environment_id = ? AND variable_id = ?",
+      name,
+      environmentId,
+      variableId,
+    );
+  },
+  retireVariable: (environmentId, variableId, nowMs) => {
+    sql.exec(
+      "UPDATE variables SET deleted_at = ? WHERE environment_id = ? AND variable_id = ?",
+      nowMs,
+      environmentId,
+      variableId,
+    );
+    sql.exec(
+      "DELETE FROM variable_versions WHERE environment_id = ? AND variable_id = ?",
+      environmentId,
+      variableId,
+    );
+  },
+  insertVersion: (
+    environmentId,
+    variableId,
+    version,
+    epoch,
+    nonceHex,
+    ciphertextHex,
+    ciphertextBytes,
+    nowMs,
+  ) => {
+    sql.exec(
+      `INSERT INTO variable_versions
+         (environment_id, variable_id, version, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      environmentId,
+      variableId,
+      version,
+      epoch,
+      nonceHex,
+      ciphertextHex,
+      ciphertextBytes,
+      nowMs,
+    );
+    sql.exec(
+      "UPDATE variables SET latest_version = ? WHERE environment_id = ? AND variable_id = ?",
+      version,
+      environmentId,
+      variableId,
+    );
+  },
+  insertWrap: (environmentId, wrap, nowMs) => {
+    sql.exec(
+      `INSERT INTO dek_wraps
+         (environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      environmentId,
+      wrap.epoch,
+      wrap.recipientUserId,
+      wrap.recipientEncPubHex,
+      wrap.encHex,
+      wrap.ciphertextHex,
+      nowMs,
+    );
+  },
+});
+
 export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
   Layer.sync(DataStore, () => ({
     ...makeEnvironmentQueries(sql),
     ...makeVariableQueries(sql),
     ...makeVersionQueries(sql),
     ...makeWrapQueries(sql),
+    write: makeWriteOps(sql),
   }));

@@ -21,8 +21,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { projectBytesExceeded } from "../src/data-programs.ts";
 import {
+  MAX_ACTIVE_ENVIRONMENTS,
+  MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
+  MAX_DEK_WRAPS_PER_REQUEST,
+  MAX_ENVIRONMENT_ROWS,
   MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
   MAX_VALUE_CIPHERTEXT_BYTES,
+  MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
   MAX_VERSIONS_PER_VARIABLE,
 } from "../src/policy.ts";
 import { bearer, deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
@@ -288,6 +293,17 @@ describe("環境作成の DEK ラップ検証(§12-6)", () => {
     expect(response.status).toBe(422);
     const body = (await response.json()) as { reason: string };
     expect(body.reason).toBe("recipient-missing");
+  });
+
+  it("rejects an empty wrap set (§12-4: エポック 1 の完全集合の同梱は必須)", async () => {
+    // レビューループ 1 の指摘: 空集合はエポック単位の検査をすり抜けて
+    // 「誰も DEK を持てない環境」を作れてしまう。個数 = 現メンバー数の明示検査で塞ぐ
+    const response = await createEnvironmentWith(fixture, ENV, "App", []);
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe("recipient-missing");
+    const list = await requestJson("GET", "/environments", token(READER));
+    await expect(list.json()).resolves.toEqual({ environments: [] });
   });
 
   it("rejects a wrap addressed to a non-member (422 recipient-not-member)", async () => {
@@ -608,6 +624,27 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     });
     expect(sameName.status).toBe(409);
     expect(((await sameName.json()) as { reason: string }).reason).toBe("duplicate-name");
+
+    // 作成側の申告 AAD 不一致(§12-2): body の variableId と aad の不一致は 422
+    const createMismatch = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables`,
+      token(MEMBER),
+      { variableId: "var-other", name: "OTHER", value: fakePayload(aadFor(1, 1)) },
+    );
+    expect(createMismatch.status).toBe(422);
+    expect(((await createMismatch.json()) as { field: string }).field).toBe("variableId");
+
+    // 改名も名前一意性の対象(§12-1)
+    await createVariableOk(dek, "var-other", "OTHER", "other-value");
+    const renameConflict = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/var-other`,
+      token(MEMBER),
+      { name: "DATABASE_URL" },
+    );
+    expect(renameConflict.status).toBe(409);
+    expect(((await renameConflict.json()) as { reason: string }).reason).toBe("duplicate-name");
 
     const renamed = await requestJson(
       "PATCH",
@@ -954,5 +991,150 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
       body: JSON.stringify({ environmentId: ENV, name: "App", deks }),
     });
     expect(accepted.status).toBe(200);
+  });
+});
+
+describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数)", () => {
+  // 実生成は非現実的なため、行を SQL で直接シードして判定のプラミングを検証する
+  it("caps active environments (422 environments)", async () => {
+    await queryProjectDo(
+      projectId,
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+       INSERT INTO environments (environment_id, name, created_at, deleted_at)
+       SELECT 'env-seed-' || n, 'seed-' || n, 0, NULL FROM seq`,
+      MAX_ACTIVE_ENVIRONMENTS,
+    );
+    const response = await createEnvironmentWith(fixture, ENV, "App", []);
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      resource: "environments",
+      limit: MAX_ACTIVE_ENVIRONMENTS,
+    });
+  });
+
+  it("caps environment rows including tombstones (422 environment-rows)", async () => {
+    await queryProjectDo(
+      projectId,
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+       INSERT INTO environments (environment_id, name, created_at, deleted_at)
+       SELECT 'env-seed-' || n, 'seed-' || n, 0, 1 FROM seq`,
+      MAX_ENVIRONMENT_ROWS,
+    );
+    const response = await createEnvironmentWith(fixture, ENV, "App", []);
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      resource: "environment-rows",
+      limit: MAX_ENVIRONMENT_ROWS,
+    });
+  });
+
+  it("caps active variables per environment (422 variables)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    await queryProjectDo(
+      projectId,
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+       INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
+       SELECT ?, 'var-seed-' || n, 'SEED_' || n, 1, 0, NULL FROM seq`,
+      MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
+      ENV,
+    );
+    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      variableId: VAR,
+      name: "DATABASE_URL",
+      value: fakePayload(aadFor(1, 1)),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      resource: "variables",
+      limit: MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
+    });
+  });
+
+  it("caps variable rows including tombstones (422 variable-rows)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    await queryProjectDo(
+      projectId,
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+       INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
+       SELECT ?, 'var-seed-' || n, 'SEED_' || n, 1, 0, 1 FROM seq`,
+      MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
+      ENV,
+    );
+    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      variableId: VAR,
+      name: "DATABASE_URL",
+      value: fakePayload(aadFor(1, 1)),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      resource: "variable-rows",
+      limit: MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
+    });
+  });
+
+  it("caps DEK wraps per request (422 dek-wraps-per-request)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 件数上限は受信者検証より先に判定されるため、構造だけ正しいフェイクで足りる
+    const deks = Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
+      epoch: 1,
+      recipientUserId: `u${index}`,
+      recipientEncPubHex: "ab".repeat(32),
+      encHex: "cd".repeat(32),
+      ciphertextHex: "ef".repeat(48),
+    }));
+    const response = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks,
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      resource: "dek-wraps-per-request",
+      limit: MAX_DEK_WRAPS_PER_REQUEST,
+    });
+  });
+});
+
+describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
+  it("AAD 自己整合検査(422)は存在秘匿(404)に先行する(§12-3 の例外規定)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 非メンバーでも、AAD がリクエスト自身と食い違うなら 422(存在情報を運ばない)
+    const mismatch = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(STRANGER),
+      { value: fakePayload(aadFor(1, 2, { variableId: "var-other" })) },
+    );
+    expect(mismatch.status).toBe(422);
+    // AAD が自己整合していれば非メンバーには 404(§11-2)
+    const consistent = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(STRANGER),
+      { value: fakePayload(aadFor(1, 2)) },
+    );
+    expect(consistent.status).toBe(404);
+  });
+
+  it("rejects malformed ids and payloads with 400 (Schema)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 不正な environment_id(先頭ハイフン / 65 文字)は 400
+    for (const badId of ["-bad", "a".repeat(65)]) {
+      const response = await requestJson("GET", `/environments/${badId}/pull`, token(READER));
+      expect(response.status).toBe(400);
+    }
+    // 不正な EncryptedPayload: suite 不一致 / 大文字 hex nonce / タグ未満の暗号文
+    const base = fakePayload(aadFor(1, 1));
+    const badPayloads = [
+      { ...base, suite: "maruhi/v2" },
+      { ...base, nonceHex: "AB".repeat(12) },
+      { ...base, ciphertextHex: "ab".repeat(15) },
+    ];
+    for (const value of badPayloads) {
+      const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+        variableId: VAR,
+        name: "DATABASE_URL",
+        value,
+      });
+      expect(response.status).toBe(400);
+    }
   });
 });
