@@ -1,8 +1,10 @@
 // 全チェックの集約。vitest(node / workerd / browser)と Bun 直接実行の共通入口。
 // 各層の実装が進むごとにここへチェックを追加する。
 
+import { dekWrapChecks } from "./checks/dek-wrap.ts";
 import { encodingChecks } from "./checks/encoding.ts";
 import { keysChecks } from "./checks/keys.ts";
+import { rfc9180Checks } from "./checks/rfc9180.ts";
 import type { CheckResult } from "./checks/support.ts";
 import { variableChecks } from "./checks/variable.ts";
 
@@ -13,5 +15,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await encodingChecks());
   groups.push(await keysChecks());
   groups.push(await variableChecks());
+  groups.push(await dekWrapChecks());
+  groups.push(await rfc9180Checks());
   return groups.flat();
 }

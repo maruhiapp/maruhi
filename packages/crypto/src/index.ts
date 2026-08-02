@@ -6,6 +6,7 @@
 // エラーは型付きエラー値(CryptoResult)で返し、Effect ラップは packages/core 側で行う。
 
 export {
+  buildDekWrapInfo,
   buildVariableAad,
   type ChainInvalidReason,
   computeServerKeyFingerprint,
@@ -14,6 +15,7 @@ export {
   type CryptoResult,
   decodeHex,
   decryptVariable,
+  type DekWrapContext,
   encodeHex,
   encodeLengthPrefixed,
   type EncryptedVariable,
@@ -32,5 +34,8 @@ export {
   type LengthPrefixedField,
   type SigningKeyPair,
   SUITE_ID,
+  unwrapDek,
   type VariableContext,
+  wrapDek,
+  type WrappedDek,
 } from "./internal.package/index.ts";

@@ -2,6 +2,13 @@
 // 公開 API は最小に保つ(CLAUDE.md)。
 
 export { decodeHex, encodeHex } from "./bytes.ts";
+export {
+  buildDekWrapInfo,
+  type DekWrapContext,
+  unwrapDek,
+  wrapDek,
+  type WrappedDek,
+} from "./dek-wrap.ts";
 export { SUITE_ID } from "./suite.ts";
 export {
   buildVariableAad,
