@@ -1,0 +1,3 @@
+# ローカル開発用のダミー値のみ(CLAUDE.md: 本物のシークレットを置かない)
+GITHUB_CLIENT_ID=dummy-github-client-id
+GITHUB_CLIENT_SECRET=dummy-github-client-secret

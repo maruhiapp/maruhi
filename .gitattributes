@@ -1,0 +1,2 @@
+# drizzle-kit が再生成するスキーマスナップショット(レビュー対象は migration.sql)
+apps/server/drizzle/*/snapshot.json linguist-generated=true
