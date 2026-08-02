@@ -9,6 +9,7 @@ import type { EncryptedPayload } from "@maruhi/api-schema";
 import {
   DataLimitExceededError,
   DekWrapExistsError,
+  DekWrapNotFoundError,
   DekWrapRejectedError,
   EnvironmentConflictError,
   EnvironmentNotFoundError,
@@ -41,6 +42,7 @@ function dataActorOf(principal: AuthenticatedPrincipal): DataActor {
 /** EncryptedPayload → DO へ渡す保存入力(座標は検査済み、状態依存部のみ残す)。 */
 export function toValueInput(payload: EncryptedPayload): ValueInput {
   return {
+    suite: payload.suite,
     epoch: payload.aad.epoch,
     version: payload.aad.version,
     nonceHex: payload.nonceHex,
@@ -101,6 +103,7 @@ type DataApiError =
   | EpochConflictError
   | DekWrapRejectedError
   | DekWrapExistsError
+  | DekWrapNotFoundError
   | DataLimitExceededError;
 
 // kind ごとの小さな写像(§11-2: 未初期化と非メンバーは区別せず 404 に畳む)
@@ -130,6 +133,11 @@ const rejectionErrors: {
   "dek-wrap-rejected": (rejection) => new DekWrapRejectedError({ reason: rejection.reason }),
   "dek-wrap-exists": (rejection) =>
     new DekWrapExistsError({ epoch: rejection.epoch, recipientUserId: rejection.recipientUserId }),
+  "dek-wrap-not-found": (rejection) =>
+    new DekWrapNotFoundError({
+      epoch: rejection.epoch,
+      recipientUserId: rejection.recipientUserId,
+    }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
 };

@@ -31,14 +31,15 @@ const noContent = HttpServerResponse.empty({ status: 204 });
 
 /**
  * DO の保存行 → ワイヤの EncryptedPayload(§12-2)。AAD は保存座標から再構成する
- * (保存時に座標一致を検査済みなので、これは同値の自己記述表現)。
+ * (保存時に座標一致を検査済みなので、これは同値の自己記述表現)。suite は
+ * 保存行の値を返す(CRYPTO_SPEC §2 設計原則 4 — 行が自身のスイートを持つ)。
  */
 function toWireVariable(projectId: string, environmentId: string, row: PulledVariableValue) {
   return {
     variableId: row.variableId,
     name: row.name,
     value: {
-      suite: "maruhi/v1" as const,
+      suite: row.suite,
       aad: {
         projectId,
         environmentId,
