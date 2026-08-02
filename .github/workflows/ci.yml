@@ -1,6 +1,7 @@
 # 品質ゲート(CLAUDE.md の 7 ステップと同一順序)+ web 統合ステップ
 # 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint → 5. fallow → 6. React Doctor → 7. テスト
 # → 8. web ビルド → 9. web e2e(wrangler dev + Playwright)→ 10. astryx doctor
+# → 11. crypto 3 環境テスト(workerd / browser / Bun。CRYPTO_SPEC §11)
 name: ci
 
 on:
@@ -64,3 +65,15 @@ jobs:
 
       - name: 10. Astryx doctor (web)
         run: bun run --filter @maruhi/web doctor:astryx
+
+      # crypto の 3 環境実行(CRYPTO_SPEC §11)。ルート vitest.config.ts(step 7)は
+      # packages/*/vitest.config.ts の glob で node プロジェクトのみを拾う。
+      # workerd / browser はビルド外部依存(workerd バイナリ / Playwright Chromium)を
+      # 要するため、web e2e と同じ独立ステップ方式で playwright 導入(step 9)後に置く。
+      # playwright install は step 9 と同一 revision なら即 no-op。
+      - name: 11. Crypto multi-environment tests (workerd / browser / Bun)
+        run: |
+          bun run --filter @maruhi/crypto test:workerd
+          bunx playwright install chromium
+          bun run --filter @maruhi/crypto test:browser
+          bun run --filter @maruhi/crypto test:bun

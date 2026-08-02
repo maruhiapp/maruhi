@@ -1,0 +1,87 @@
+# セッション 04 メモ(packages/crypto 実装 — Phase 1 着工)
+
+日付: 2026-08-02。前提: セッション 03 の全 PR(#8〜#11)は main にマージ済み。
+スコープ: packages/crypto(E2EE コア)のみ。CRYPTO_SPEC 準拠 + テストベクター全通過。
+
+## 1. やったこと(コミット順 = 層順)
+
+1. **テストベクター補完**(実装より先にコミット): chain-entries.json を seq 5〜9 に延長
+   (add_member(reader) → change_role(admin) → grant_server → rotate_epoch(admin 実行)→
+   revoke_server)。署名系 negative 4 件 + 認可系 negative(`kind: "authorization"`)7 件 +
+   `expected_head_states`(状態導出 API の期待値)を追加。verify_reference.mjs 拡張、全 99 検査 PASS
+2. **§2.1 エンコーダ** + 型付きエラー + `internal.package` 境界
+3. **§3 鍵**: X25519(panva hpke API 経由)/ Ed25519(WebCrypto)、FP、DEK 生成
+4. **§4 変数暗号化**: AES-256-GCM + LP AAD。nonce は内部生成のみ(注入 API なし)
+5. **§5 DEK ラップ**: HPKE Base 単発 Seal/Open。Open は KeyPair 渡しのみ
+6. **§6 チェーン**: 正規化・署名・検証(role 権限含む)・状態導出(メンバー集合 + 有効 grant + 観測エポック)
+7. **§8 リカバリーラップ**: HKDF(salt=空)+ AES-256-GCM
+8. **3 環境テスト基盤**: node / workerd / browser の vitest + Bun 直接実行。CI step 11 に独立ステップ追加
+
+全 4 実行環境(Node / workerd / Chromium / Bun 1.3.14)で全 123 チェック PASS。
+
+## 2. 実装判断(PR レビューで特に見てほしい点)
+
+- **エラー設計は (b) で裁定確定**(2026-08-02。7 案比較の上で推奨を採択): crypto は Effect
+  非依存の純粋関数 + 判別可能 union(`CryptoResult`)、Effect ラップは core 側。決め手は
+  TCB の依存ゼロ維持と可逆性の非対称((b)→(a) は追加変更、(a)→(b) は破壊的変更)
+- **サーバー鍵 FP = `SHA-256(server_enc_pub)[:16]`**(2026-08-02 所有者裁定。5 案比較):
+  サーバーは enc 鍵のみ(§9)で §3 のユーザー FP 定義(enc||sig)を適用できないため。
+  ドメイン分離案は「入力長で前像空間が分離しており暗号学的利得ゼロ + FP は LP 対象外という
+  セッション 03 決定と不整合」で却下。CRYPTO_SPEC §9 に明文化済み
+- **grant_server の scope_environments**(2026-08-02 所有者裁定。6 案比較): 環境 ID リストを
+  LP エンコードし、その hex 小文字文字列を payload の 1 フィールドとして外側 LP に載せる
+  (binary_encoding 規約と同型の入れ子 LP)。リスト順序は署名対象の一部。ソートは検証強制でなく
+  生成時 SHOULD(scope はバイト列比較されず、強制すると既存ベクターの再生成が必要なため)。
+  CRYPTO_SPEC §6.2 に明文化済み
+- **同一サーバー鍵への再 grant はスコープ拡大(旧 ⊆ 新)のみ受理**(2026-08-02 所有者裁定。
+  当初は置き換えで実装したが、縮小を許すと revoke_server + rotate_epoch(§7 の全環境
+  ローテーション義務)を迂回できてしまう穴があるため変更した。縮小は必ず失効経路を通す。
+  ベクター `authz-grant-scope-narrowed` で固定、拒否理由コードは `grant-scope-narrowed`)
+- **エポック = 環境ごとのカウンタ(初期値 1、rotate_epoch は必ず +1)**(2026-08-02 所有者裁定・
+  案 3。当初は「単調性は未検証」で保留 → Bugbot HIGH 指摘を機に 7 案比較して裁定を仰いだ。
+  厳密 +1 は巻き戻し(削除済みメンバー保持の旧 DEK への再露出)に加え、厳密増加だけでは
+  防げない「member 権限 1 署名で safe integer 上限まで飛ばして環境のローテーションを
+  永久に不能にする DoS」も防ぐ。拒否理由コードは `epoch-out-of-sequence`。CRYPTO_SPEC
+  §3 / §6.3 に明文化済み。再 grant 規則も §6.3 に明文化済み)
+- **エラー判別子は `_tag` でなく `kind`**: oxlint の no-underscore-dangle と衝突するため。
+  Effect マッピングは core 側で kind ごとに行う
+- **フィールドサイズ上限**(2026-08-02 所有者裁定・案 2。4 案比較): 自由文字列フィールドは
+  UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は invalid-payload。
+  上限は「チェーン有効性の合意規則」(実装間で食い違うとチェーン分裂)なので仕様定数として
+  §6.1 に明文化し、ベクターで固定した。検査は length の事前判定 → 実エンコードの 2 段で、
+  検査自体が巨大確保を伴わない。サーバー §6.4 実装時にエントリ総量上限を追加で規定する
+- **検証順序**: フレーミング → payload 構造 → actor 解決(non-member / FP 不一致)→ 署名 →
+  認可 + 意味検証。認可系ベクターの expected_reason はこの順序を前提に固定してある
+- **Ed25519 の決定論性をテストに利用**: ベクター全エントリを seed から再署名して signature_hex の
+  完全一致を確認している(正規化と署名の同時固定。WebCrypto Ed25519 は RFC 8032 決定論的)
+- **秘密鍵は既定 extractable=false**。エクスポートが要る生成時(リカバリーブロブ作成)のみ
+  呼び出し側が明示 opt-in。nonce・HKDF salt は API から注入不可(誤用を構造的に排除)
+
+## 3. ハマったこと・環境知見
+
+- **システム Python の cryptography が壊れている**(`_cffi_backend` 欠落)。venv を作って
+  `pip install cryptography`(50.0.0)で参照ツールを実行した。ベクター再生成は
+  entries 1〜4 のバイト列が既存とビット一致することを diff で確認済み(append-only 延長)
+- **ブラウザテストの Chromium リビジョン不一致**: プリインストールは chromium-1194(playwright
+  1.56 系)だが、リポジトリの playwright ピンは 1.62.1(revision 1234 要求)。素の
+  `bunx playwright install chromium` は**グローバルキャッシュの 1.56.1 に解決されて no-op になる**
+  罠がある。`cd apps/web && bun x playwright install chromium` でリポジトリのピンを解決させて
+  1234 をダウンロードしたら browser プロジェクトも PASS。CI は bunx がリポジトリの
+  node_modules を解決するので問題にならない想定(step 11 に保険の install を入れてある)
+- **fallow の複雑度ゲート**(cyclomatic ≥ 10 / 60 行超で error)は暗号検証コードだと簡単に踏む。
+  op ごとの apply / shape 関数へ分割して解消した(結果的に見通しは良くなった)
+- root の vitest glob(packages/*/vitest.config.ts)は「ファイル名完全一致」なので、
+  vitest.workerd.config.ts / vitest.browser.config.ts を同居させても step 7 には载らない
+
+## 4. 次セッションへの申し送り
+
+- **PR マージ後に ROADMAP の「E2EE コア」をチェックオフする**(このセッションでは PR がレビュー待ちのため未実施)
+- 仕様解釈 4 点 + エラー設計はすべて所有者裁定済み(2026-08-02)で、CRYPTO_SPEC
+  §3 / §6.2 / §6.3 / §9 に明文化済み。core 実装時は `CryptoResult` の kind ごとに
+  Data.TaggedError へマッピングするラッパを書く(裁定 (b) の帰結)
+- 未実装(意図的スコープ外): §6.3 の DEK ラップ先一致検査・ヘッドゴシップ(検証 API の
+  ChainState を入力とする同期ロジック)、§6.4 サーバー側検証・CAS、§7 ローテーション
+  オーケストレーション、リカバリーコードの Base32 表示・master 鍵ブロブの直列化形式(CLI 実装時)
+- spikes/ は温存中(spike-c 構成の移植完了。削除判断は所有者)
+- 参照ツールの venv 手順は test-vectors/README.md に書いていない(使い捨てツールのため)。
+  再生成が必要なら本メモの §3 を参照

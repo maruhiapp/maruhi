@@ -224,11 +224,34 @@ def make_user(enc_seed: bytes, sig_seed: bytes):
     }
 
 
+def make_server(enc_seed: bytes):
+    # サーバー(デプロイメント)鍵は X25519 enc のみ(CRYPTO_SPEC §9。署名鍵を持たない)。
+    # サーバー鍵 FP は SHA-256(server_enc_pub(32B)) の先頭 16 バイト(要レビュー:
+    # §3 のユーザー FP 定義は enc||sig の連結だが、サーバーには sig 鍵が存在しないため)
+    enc_sk = X25519PrivateKey.from_private_bytes(enc_seed)
+    raw = serialization.Encoding.Raw
+    pub = serialization.PublicFormat.Raw
+    enc_pub = enc_sk.public_key().public_bytes(raw, pub)
+    fp = sha256(enc_pub)[:16]
+    return {"enc_pub_hex": enc_pub.hex(), "fp_hex": fp.hex()}
+
+
+def scope_environments_lp_hex(environment_ids: list) -> str:
+    # grant_server の許可スコープ: environment_id のリストを LP エンコード(入れ子 LP)し、
+    # その hex 小文字文字列を payload の 1 フィールドとして外側 LP に載せる
+    # (binary_encoding 規約「バイナリ値は hex 文字列として LP に載せる」と同型)。
+    # リストの順序は署名対象バイト列の一部(検証は as-signed 順で再構築する)
+    return lp_encode(environment_ids).hex()
+
+
 def gen_chain_entries():
     owner_id = "user-owner-0001"
     member_id = "user-member-0002"
+    admin_id = "user-admin-0003"
     owner = make_user(pat(0x10, 32), pat(0x20, 32))
     member = make_user(pat(0x30, 32), pat(0x40, 32))
+    admin = make_user(pat(0x50, 32), pat(0x60, 32))
+    server = make_server(pat(0x90, 32))
     suite = "maruhi/v1"
 
     def payload_bytes(op: str, payload: dict) -> bytes:
@@ -237,32 +260,41 @@ def gen_chain_entries():
     entries = []
     prev_hash_hex = "0" * 64
 
-    def add_entry(seq, op, actor_id, actor, payload, timestamp):
-        nonlocal prev_hash_hex
+    def build_entry(seq, op, actor_id, actor, payload, timestamp, prev_hex):
         pb = payload_bytes(op, payload)
-        signed = lp_encode([suite, seq, prev_hash_hex, op, actor_id, actor["fp_hex"], pb, timestamp])
+        signed = lp_encode([suite, seq, prev_hex, op, actor_id, actor["fp_hex"], pb, timestamp])
         sig = actor["sig_sk"].sign(signed)
         entry_bytes = lp_encode(
-            [suite, seq, prev_hash_hex, op, actor_id, actor["fp_hex"], pb, timestamp, sig.hex()]
+            [suite, seq, prev_hex, op, actor_id, actor["fp_hex"], pb, timestamp, sig.hex()]
         )
-        entry_hash = sha256(entry_bytes).hex()
-        entries.append(
-            {
-                "seq": seq,
-                "suite": suite,
-                "prev_hash_hex": prev_hash_hex,
-                "op": op,
-                "actor": {"user_id": actor_id, "key_fingerprint_hex": actor["fp_hex"]},
-                "payload": payload,
-                "timestamp_ms": timestamp,
-                "payload_bytes_hex": pb.hex(),
-                "signed_bytes_hex": signed.hex(),
-                "signature_hex": sig.hex(),
-                "entry_bytes_hex": entry_bytes.hex(),
-                "entry_hash_hex": entry_hash,
-            }
-        )
-        prev_hash_hex = entry_hash
+        return {
+            "seq": seq,
+            "suite": suite,
+            "prev_hash_hex": prev_hex,
+            "op": op,
+            "actor": {"user_id": actor_id, "key_fingerprint_hex": actor["fp_hex"]},
+            "payload": payload,
+            "timestamp_ms": timestamp,
+            "payload_bytes_hex": pb.hex(),
+            "signed_bytes_hex": signed.hex(),
+            "signature_hex": sig.hex(),
+            "entry_bytes_hex": entry_bytes.hex(),
+            "entry_hash_hex": sha256(entry_bytes).hex(),
+        }
+
+    def add_entry(seq, op, actor_id, actor, payload, timestamp):
+        nonlocal prev_hash_hex
+        entry = build_entry(seq, op, actor_id, actor, payload, timestamp, prev_hash_hex)
+        entries.append(entry)
+        prev_hash_hex = entry["entry_hash_hex"]
+
+    grant_scope = ["env-prod-0001", "env-dev-0002"]
+    grant_payload = {
+        "server_enc_pub_hex": server["enc_pub_hex"],
+        "server_key_fingerprint_hex": server["fp_hex"],
+        "scope_environments": grant_scope,  # 可読性のための平文表現(正規化対象は次行)
+        "scope_environments_lp_hex": scope_environments_lp_hex(grant_scope),
+    }
 
     t0 = 1754006400000  # 2025-08-01T00:00:00Z 相当の固定値(ダミー)
     add_entry(1, "genesis", owner_id, owner,
@@ -274,6 +306,17 @@ def gen_chain_entries():
               {"environment_id": "env-prod-0001", "new_epoch": "2", "reason": "scheduled"}, t0 + 2000)
     add_entry(4, "remove_member", owner_id, owner,
               {"target_user_id": member_id}, t0 + 3000)
+    # seq 5〜9: grant_server / revoke_server / change_role のベクター(セッション 04 で補完)
+    add_entry(5, "add_member", owner_id, owner,
+              {"target_user_id": admin_id, "enc_pub_hex": admin["enc_pub_hex"],
+               "sig_pub_hex": admin["sig_pub_hex"], "role": "reader"}, t0 + 4000)
+    add_entry(6, "change_role", owner_id, owner,
+              {"target_user_id": admin_id, "new_role": "admin"}, t0 + 5000)
+    add_entry(7, "grant_server", owner_id, owner, grant_payload, t0 + 6000)
+    add_entry(8, "rotate_epoch", admin_id, admin,
+              {"environment_id": "env-dev-0002", "new_epoch": "2", "reason": "scheduled"}, t0 + 7000)
+    add_entry(9, "revoke_server", owner_id, owner,
+              {"server_key_fingerprint_hex": server["fp_hex"]}, t0 + 8000)
 
     # negative 1: payload 改竄(role を admin に)。署名はそのまま → 検証失敗すべき
     e2 = entries[1]
@@ -325,6 +368,221 @@ def gen_chain_entries():
         },
     ]
 
+    # --- grant_server / revoke_server / change_role の署名系 negative --------------
+    e7 = entries[6]  # grant_server
+    e6 = entries[5]  # change_role
+    e9 = entries[8]  # revoke_server
+    reordered_scope = dict(grant_payload, **{
+        "scope_environments": list(reversed(grant_scope)),
+        "scope_environments_lp_hex": scope_environments_lp_hex(list(reversed(grant_scope))),
+    })
+    # 入れ子 LP を使わず環境 ID を素の連結にした誤エンコード(曖昧性の温床)。
+    # 正規化はこのバイト列を生まないことを固定する
+    flat_scope = dict(grant_payload, **{
+        "scope_environments_lp_hex": "".join(grant_scope).encode("utf-8").hex(),
+    })
+    tampered_revoke_fp = bytearray(bytes.fromhex(server["fp_hex"]))
+    tampered_revoke_fp[0] ^= 0x01
+
+    def resign_variant(name, base_entry, payload, note):
+        # payload だけ差し替えた signed_bytes に対して「元の署名」を検証 → 失敗すべき
+        pb = payload_bytes(base_entry["op"], payload)
+        signed = lp_encode([
+            suite, base_entry["seq"], base_entry["prev_hash_hex"], base_entry["op"],
+            base_entry["actor"]["user_id"], base_entry["actor"]["key_fingerprint_hex"],
+            pb, base_entry["timestamp_ms"],
+        ])
+        return {
+            "name": name,
+            "base_seq": base_entry["seq"],
+            "signed_bytes_hex": signed.hex(),
+            "signature_hex": base_entry["signature_hex"],
+            "verify_key_hex": owner["sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives += [
+        resign_variant(
+            "grant-server-scope-reorder", e7, reordered_scope,
+            "scope_environments の順序を入れ替えると元の署名は検証に失敗する(入れ子 LP の順序も署名対象)",
+        ),
+        resign_variant(
+            "grant-server-scope-flat-concat", e7, flat_scope,
+            "scope を入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する(§2.1 の曖昧性排除)",
+        ),
+        resign_variant(
+            "change-role-tampered-new-role", e6,
+            {"target_user_id": admin_id, "new_role": "owner"},
+            "new_role の書き換え(admin → owner)は署名検証に失敗する",
+        ),
+        resign_variant(
+            "revoke-server-tampered-fp", e9,
+            {"server_key_fingerprint_hex": bytes(tampered_revoke_fp).hex()},
+            "失効対象フィンガープリントの改竄は署名検証に失敗する",
+        ),
+    ]
+
+    # --- 認可系 negative: 署名・ハッシュ連鎖は正しいが §6.2 の権限規則で拒否すべき ---
+    # kind = "authorization"。署名は有効(verify_reference.mjs は署名が通ることを確認し、
+    # 実装テストはチェーン検証が expected_reason で失敗することを検査する)
+    head9 = entries[8]["entry_hash_hex"]
+    head5 = entries[4]["entry_hash_hex"]
+
+    def authz(name, entry, expected_reason, note):
+        return {
+            "name": name,
+            "kind": "authorization",
+            "entry": entry,
+            "verify_key_hex": None,  # 下で actor の sig_pub を入れる
+            "expected_reason": expected_reason,
+            "must_fail": True,
+            "note": note,
+        }
+
+    authz_cases = []
+
+    def add_authz(name, seq, prev_hex, op, actor_id, actor, payload, ts, expected_reason, note):
+        entry = build_entry(seq, op, actor_id, actor, payload, ts, prev_hex)
+        case = authz(name, entry, expected_reason, note)
+        case["verify_key_hex"] = {"user-owner-0001": owner, "user-member-0002": member,
+                                  "user-admin-0003": admin}[actor_id]["sig_pub_hex"]
+        authz_cases.append(case)
+
+    add_authz(
+        "authz-admin-grant-server", 10, head9, "grant_server", admin_id, admin,
+        grant_payload, t0 + 9000, "insufficient-role",
+        "grant_server は owner のみ。admin による正しく署名されたエントリでも拒否する",
+    )
+    add_authz(
+        "authz-reader-rotate-epoch", 6, head5, "rotate_epoch", admin_id, admin,
+        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "scheduled"},
+        t0 + 5000, "insufficient-role",
+        "seq 5 時点の user-admin-0003 は reader。rotate_epoch は member 以上のみ",
+    )
+    add_authz(
+        "authz-nonmember-actor", 10, head9, "rotate_epoch", member_id, member,
+        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "scheduled"},
+        t0 + 9000, "actor-not-member",
+        "seq 4 で削除済みの user-member-0002 はチェーンに追記できない(ゴーストメンバー対策)",
+    )
+    add_authz(
+        "authz-remove-last-owner", 10, head9, "remove_member", owner_id, owner,
+        {"target_user_id": owner_id}, t0 + 9000, "last-owner-protected",
+        "最後の owner は削除不可(§6.2)",
+    )
+    add_authz(
+        "authz-demote-last-owner", 10, head9, "change_role", owner_id, owner,
+        {"target_user_id": owner_id, "new_role": "member"}, t0 + 9000, "last-owner-protected",
+        "最後の owner は降格不可(§6.2)",
+    )
+    add_authz(
+        "authz-admin-adds-admin", 10, head9, "add_member", admin_id, admin,
+        {"target_user_id": member_id, "enc_pub_hex": member["enc_pub_hex"],
+         "sig_pub_hex": member["sig_pub_hex"], "role": "admin"},
+        t0 + 9000, "insufficient-role",
+        "admin / owner ロールの付与は owner のみ(admin は reader / member のみ追加可)",
+    )
+    # 再 grant のスコープ縮小は拒否(2026-08-02 所有者裁定): 縮小は revoke_server +
+    # rotate_epoch(§7 の全環境ローテーション義務)を経由させる。拡大(旧 ⊆ 新)のみ受理
+    head7 = entries[6]["entry_hash_hex"]
+    narrowed_scope = ["env-prod-0001"]
+    add_authz(
+        "authz-grant-scope-narrowed", 8, head7, "grant_server", owner_id, owner,
+        dict(grant_payload, **{
+            "scope_environments": narrowed_scope,
+            "scope_environments_lp_hex": scope_environments_lp_hex(narrowed_scope),
+        }),
+        t0 + 7000, "grant-scope-narrowed",
+        "有効な grant のスコープを狭める再 grant は owner 署名でも拒否する(§7 のローテーション義務を迂回させない)",
+    )
+
+    # エポック順序規則(2026-08-02 所有者裁定・案 3): エポックは環境ごとのカウンタ
+    # (初期値 1)で、rotate_epoch は必ず +1。巻き戻し(削除済みメンバー保持の旧 DEK
+    # への再露出)・重複・ジャンプ(member 権限 1 署名でのエポック空間焼き尽くし DoS)
+    # をすべて拒否する。seq 9 時点の観測値: env-prod-0001 = 2, env-dev-0002 = 2
+    for name, env, bad_epoch, note in [
+        ("authz-epoch-rollback", "env-prod-0001", "1",
+         "観測済みエポック(2)からの巻き戻しは拒否する"),
+        ("authz-epoch-duplicate", "env-prod-0001", "2",
+         "観測済みエポックと同値の rotate は拒否する(期待値は 3)"),
+        ("authz-epoch-jump", "env-prod-0001", "10",
+         "エポックのジャンプは拒否する(期待値は 3。焼き尽くし DoS 対策)"),
+        ("authz-epoch-first-jump", "env-staging-9999", "5",
+         "チェーン上で未観測の環境の初回 rotate は初期値 1 + 1 = 2 のみ受理する"),
+    ]:
+        add_authz(
+            name, 10, head9, "rotate_epoch", admin_id, admin,
+            {"environment_id": env, "new_epoch": bad_epoch, "reason": "scheduled"},
+            t0 + 9000, "epoch-out-of-sequence", note,
+        )
+
+    # フィールドサイズ上限(2026-08-02 所有者裁定・案 2): 自由文字列フィールドは
+    # UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は無効
+    # (巨大 payload による検証クライアントの資源消費対策。上限は合意規則なので
+    # ベクターで固定する)。署名は有効だが形状検証(invalid-payload)で拒否すべき
+    add_authz(
+        "authz-field-too-long", 10, head9, "rotate_epoch", admin_id, admin,
+        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "x" * 1025},
+        t0 + 9000, "invalid-payload",
+        "reason が 1025 バイト(上限 1024 超過)のエントリは署名が有効でも拒否する",
+    )
+    oversized_scope = [f"env-bulk-{i:04d}" for i in range(257)]
+    add_authz(
+        "authz-scope-too-many", 10, head9, "grant_server", owner_id, owner,
+        dict(grant_payload, **{
+            "scope_environments": oversized_scope,
+            "scope_environments_lp_hex": scope_environments_lp_hex(oversized_scope),
+        }),
+        t0 + 9000, "invalid-payload",
+        "scope_environments が 257 要素(上限 256 超過)のエントリは拒否する",
+    )
+
+    # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
+    # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
+    impostor = build_entry(10, "rotate_epoch", owner_id, member,
+                           {"environment_id": "env-prod-0001", "new_epoch": "3",
+                            "reason": "scheduled"}, t0 + 9000, head9)
+    authz_cases.append({
+        "name": "authz-actor-key-mismatch",
+        "kind": "authorization",
+        "entry": impostor,
+        "verify_key_hex": member["sig_pub_hex"],
+        "expected_reason": "actor-key-mismatch",
+        "must_fail": True,
+        "note": "actor.user_id (owner) の登録鍵と申告 FP・署名鍵 (member のもの) が一致しないエントリは拒否する",
+    })
+
+    negatives += authz_cases
+
+    # --- 検証済みチェーンから導出される状態の期待値(実装の導出 API を固定する)------
+    expected_head_states = [
+        {
+            "after_seq": 4,
+            "members": {owner_id: "owner"},
+            "server_grants": [],
+            "environment_epochs": {"env-prod-0001": "2"},
+        },
+        {
+            "after_seq": 7,
+            "members": {owner_id: "owner", admin_id: "admin"},
+            "server_grants": [
+                {
+                    "server_key_fingerprint_hex": server["fp_hex"],
+                    "server_enc_pub_hex": server["enc_pub_hex"],
+                    "scope_environments": grant_scope,
+                }
+            ],
+            "environment_epochs": {"env-prod-0001": "2"},
+        },
+        {
+            "after_seq": 9,
+            "members": {owner_id: "owner", admin_id: "admin"},
+            "server_grants": [],
+            "environment_epochs": {"env-prod-0001": "2", "env-dev-0002": "2"},
+        },
+    ]
+
     write(
         "chain-entries.json",
         {
@@ -337,6 +595,8 @@ def gen_chain_entries():
                 "binary_encoding": "prev_hash / 公開鍵 / FP / 署名は hex 小文字文字列として LP に載せる",
                 "payload_field_order": PAYLOAD_FIELD_ORDER,
                 "key_fingerprint": "SHA-256(enc_pub(32B) || sig_pub(32B)) の先頭 16 バイト(固定長のため素の連結)",
+                "server_key_fingerprint": "SHA-256(server_enc_pub(32B)) の先頭 16 バイト(サーバーは enc 鍵のみ。§9)→ 要レビュー",
+                "scope_environments": "environment_id のリストを LP エンコード(入れ子 LP)し、その hex 小文字文字列を scope_environments_lp_hex として payload に載せる。リストの順序は署名対象の一部(検証は as-signed 順で再構築)→ 要レビュー",
             },
             "keys": {
                 "user-owner-0001": {
@@ -353,8 +613,21 @@ def gen_chain_entries():
                     "sig_pub_hex": member["sig_pub_hex"],
                     "key_fingerprint_hex": member["fp_hex"],
                 },
+                "user-admin-0003": {
+                    "enc_sk_seed_hex": pat(0x50, 32).hex(),
+                    "sig_sk_seed_hex": pat(0x60, 32).hex(),
+                    "enc_pub_hex": admin["enc_pub_hex"],
+                    "sig_pub_hex": admin["sig_pub_hex"],
+                    "key_fingerprint_hex": admin["fp_hex"],
+                },
+            },
+            "server_key": {
+                "enc_sk_seed_hex": pat(0x90, 32).hex(),
+                "enc_pub_hex": server["enc_pub_hex"],
+                "key_fingerprint_hex": server["fp_hex"],
             },
             "entries": entries,
+            "expected_head_states": expected_head_states,
             "negative": negatives,
         },
     )

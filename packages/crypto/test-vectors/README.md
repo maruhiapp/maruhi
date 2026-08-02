@@ -44,6 +44,11 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 3. **鍵フィンガープリント**: `SHA-256(enc_pub(32B) || sig_pub(32B))` の先頭 16 バイト。両公開鍵が固定長のためここは素の連結(§2.1 の LP 適用対象は AAD / info / 正規化バイト列)。→ この解釈の妥当性はレビューで確認
 4. **§5 DEK ラップの aad は空**(文脈束縛は info が担う)。§4 変数暗号化は AAD、§8 リカバリーラップは AAD + info 固定文字列
 5. **§8 の HKDF salt = 空**: negative `wrong-salt` で「空以外の salt では復号不能」を固定
+6. **サーバー鍵フィンガープリント(2026-08-02 所有者裁定)**: `SHA-256(server_enc_pub(32B))` の先頭 16 バイト。サーバーは enc 鍵のみ保持(§9)で §3 のユーザー FP 定義(enc||sig)を適用できないため。CRYPTO_SPEC §9 に明文化済み
+7. **grant_server の scope_environments(2026-08-02 所有者裁定)**: environment_id のリストを LP エンコード(入れ子 LP)し、その **hex 小文字文字列**を `scope_environments_lp_hex` として payload の 1 フィールドに載せる(binary_encoding 規約と同型)。リストの順序は署名対象バイト列の一部(negative `grant-server-scope-reorder` / `grant-server-scope-flat-concat` で固定)。生成時はソート・重複なしを推奨(SHOULD。検証は集合として扱う)。CRYPTO_SPEC §6.2 に明文化済み
+8. **再 grant はスコープ拡大のみ(2026-08-02 所有者裁定)**: 有効な grant と同一サーバー鍵への grant_server は旧スコープ ⊆ 新スコープの場合のみ受理。縮小は `revoke_server`(§7 の全環境ローテーション義務を伴う)を経由させる(negative `authz-grant-scope-narrowed` で固定)
+9. **エポック = 環境ごとのカウンタ(2026-08-02 所有者裁定・案 3)**: 初期エポックは 1、`rotate_epoch` の new_epoch は「観測済みエポック(未観測なら 1)+ 1」と厳密一致。巻き戻し・重複・ジャンプは拒否(negative `authz-epoch-rollback` / `authz-epoch-duplicate` / `authz-epoch-jump` / `authz-epoch-first-jump` で固定)
+10. **フィールドサイズ上限(2026-08-02 所有者裁定・案 2)**: 自由文字列フィールドは UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は無効(negative `authz-field-too-long` / `authz-scope-too-many` で固定。チェーン有効性の合意規則のためベクターで定数を固定する)
 
 ## panva hpke の制約と検証方針(spike-c の知見)
 
@@ -53,6 +58,10 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 ## negative ベクターの規約
 
 `negative` 配列の各要素は `must_fail: true` を持ち、`base`(または `base_seq`)のベクターに対して差し替えるフィールド(`decrypt_aad_hex` / `open_info_hex` / `ciphertext_hex` 等)だけを指定する。実装テストはこれらで「復号・検証が失敗すること」を必須で検査する(改竄・移植・順序入替の検出)。
+
+chain-entries.json には加えて `kind: "authorization"` の negative がある(セッション 04 追加)。これは**暗号学的には有効**(署名・正規化・prev_hash がすべて正しい)な完全なエントリで、検証規則(§6.2 の role 権限、エポック順序、再 grant 規則)によってのみ拒否されるべきもの。`entry` に完全なエントリ、`expected_reason` に期待する拒否理由(`insufficient-role` / `actor-not-member` / `last-owner-protected` / `actor-key-mismatch` / `grant-scope-narrowed` / `epoch-out-of-sequence`)を持つ。`verify_reference.mjs` は署名が**有効であること**を確認し(拒否理由が暗号検証でないことの保証)、権限規則での拒否は実装テストが検査する。
+
+また `expected_head_states`(セッション 04 追加)は、検証済みチェーンから導出される「現メンバー集合(role 付き)+ 有効 grant_server 集合 + 環境ごとの観測エポック」の期待値を `after_seq` 時点ごとに固定する(§6.3 のクライアント検証 API の出力を固定するもの)。
 
 ## 実装時の CI(§11)
 
