@@ -307,6 +307,75 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   );
 }
 
+/**
+ * 実行時型が TS 型と乖離した悪意ある/破損エントリ(サーバー配布 JSON 想定)は
+ * 例外でなく invalid-payload になる(Bugbot セキュリティ指摘 2026-08-02 の再発防止)
+ */
+async function malformedInputChecks(c: Checks): Promise<void> {
+  const full = await verifyChain(typedEntries);
+  if (!full.ok) {
+    c.push("chain malformed: setup", false, "full chain must verify");
+    return;
+  }
+  const e7 = entryAt(7);
+  if (e7.op !== "grant_server") {
+    c.push("chain malformed: setup", false, "seq 7 must be grant_server");
+    return;
+  }
+  const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex, signatureHex: "00" };
+  const cases: readonly { name: string; entry: unknown }[] = [
+    {
+      name: "grant_server scope is not an array",
+      entry: {
+        ...base,
+        op: "grant_server",
+        payload: { ...e7.payload, scopeEnvironmentIds: "env-prod-0001" },
+      },
+    },
+    {
+      name: "grant_server scope contains non-string",
+      entry: {
+        ...base,
+        op: "grant_server",
+        payload: { ...e7.payload, scopeEnvironmentIds: [42] },
+      },
+    },
+    {
+      name: "rotate_epoch reason is not a string",
+      entry: {
+        ...base,
+        op: "rotate_epoch",
+        payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: {} },
+      },
+    },
+    {
+      name: "actor missing",
+      entry: { ...base, actor: undefined, op: "remove_member", payload: { targetUserId: "x" } },
+    },
+    {
+      name: "payload missing",
+      entry: { ...base, op: "remove_member", payload: undefined },
+    },
+    {
+      name: "add_member target is not a string",
+      entry: {
+        ...base,
+        op: "add_member",
+        payload: { ...entryAt(2).payload, targetUserId: 123 },
+      },
+    },
+  ];
+  for (const item of cases) {
+    // 例外を投げず invalid-payload の CryptoResult で返ることを検査する
+    try {
+      const result = await verifyChain([...typedEntries, item.entry as ChainEntry]);
+      c.push(`chain malformed: ${item.name}`, failsWith(result, 10, "invalid-payload"));
+    } catch (error) {
+      c.push(`chain malformed: ${item.name}`, false, `threw: ${String(error)}`);
+    }
+  }
+}
+
 async function regrantWideningCheck(c: Checks): Promise<void> {
   // 再 grant のスコープ拡大(旧 ⊆ 新)は受理され、スコープが更新される。
   // 縮小の拒否(grant-scope-narrowed)はベクター authz-grant-scope-narrowed が固定する
@@ -368,5 +437,6 @@ export async function chainNegativeChecks(): Promise<CheckResult[]> {
   await framingChecks(c);
   await semanticChecks(c);
   await regrantWideningCheck(c);
+  await malformedInputChecks(c);
   return c.results;
 }

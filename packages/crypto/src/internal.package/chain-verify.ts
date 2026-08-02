@@ -28,13 +28,25 @@ interface MutableChainState {
   readonly environmentEpochs: Map<string, number>;
 }
 
-function isHexOfLength(value: string, bytes: number): boolean {
+// 形状検証の各述語は、TS 型が主張する形と実際の実行時入力(サーバー配布の
+// JSON をキャストしたもの)が乖離していても例外を投げないよう、unknown を
+// 受けて実行時型から検査する(悪意あるチェーンデータは必ず invalid-payload に
+// 落とす。throw で検証を中断させない)
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isHexOfLength(value: unknown, bytes: number): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
   const decoded = decodeHex(value);
   return decoded !== null && decoded.length === bytes;
 }
 
-function isRole(value: string): value is Role {
-  return (ROLES as readonly string[]).includes(value);
+function isRole(value: unknown): value is Role {
+  return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
 
 function atLeast(role: Role, minimum: Role): boolean {
@@ -69,42 +81,63 @@ function checkFraming(
   return null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function checkPayloadShape(entry: ChainEntry): ChainInvalidReason | null {
   if (!Number.isSafeInteger(entry.timestampMs) || entry.timestampMs < 0) {
     return "invalid-payload";
   }
-  if (entry.actor.userId.length === 0) {
+  if (
+    !isRecord(entry.actor) ||
+    !isNonEmptyString(entry.actor.userId) ||
+    typeof entry.actor.keyFingerprintHex !== "string"
+  ) {
+    return "invalid-payload";
+  }
+  if (!isRecord(entry.payload)) {
     return "invalid-payload";
   }
   return operationShapeOk(entry) ? null : "invalid-payload";
 }
 
-function shapeGenesis(p: { encPubHex: string; sigPubHex: string }): boolean {
+function shapeGenesis(p: { encPubHex: unknown; sigPubHex: unknown }): boolean {
   return isHexOfLength(p.encPubHex, 32) && isHexOfLength(p.sigPubHex, 32);
 }
 
 function shapeAddMember(p: {
-  targetUserId: string;
-  encPubHex: string;
-  sigPubHex: string;
-  role: string;
+  targetUserId: unknown;
+  encPubHex: unknown;
+  sigPubHex: unknown;
+  role: unknown;
 }): boolean {
-  return p.targetUserId.length > 0 && shapeGenesis(p) && isRole(p.role);
+  return isNonEmptyString(p.targetUserId) && shapeGenesis(p) && isRole(p.role);
 }
 
-function shapeRotateEpoch(p: { environmentId: string; newEpoch: number }): boolean {
-  return p.environmentId.length > 0 && Number.isSafeInteger(p.newEpoch) && p.newEpoch >= 1;
+function shapeRotateEpoch(p: {
+  environmentId: unknown;
+  newEpoch: unknown;
+  reason: unknown;
+}): boolean {
+  return (
+    isNonEmptyString(p.environmentId) &&
+    Number.isSafeInteger(p.newEpoch) &&
+    (p.newEpoch as number) >= 1 &&
+    typeof p.reason === "string"
+  );
 }
 
 function shapeGrantServer(p: {
-  serverEncPubHex: string;
-  serverKeyFingerprintHex: string;
-  scopeEnvironmentIds: readonly string[];
+  serverEncPubHex: unknown;
+  serverKeyFingerprintHex: unknown;
+  scopeEnvironmentIds: unknown;
 }): boolean {
   return (
     isHexOfLength(p.serverEncPubHex, 32) &&
     isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES) &&
-    p.scopeEnvironmentIds.every((id) => id.length > 0)
+    Array.isArray(p.scopeEnvironmentIds) &&
+    p.scopeEnvironmentIds.every((id) => isNonEmptyString(id))
   );
 }
 
@@ -115,9 +148,9 @@ function operationShapeOk(entry: ChainEntry): boolean {
     case "add_member":
       return shapeAddMember(entry.payload);
     case "remove_member":
-      return entry.payload.targetUserId.length > 0;
+      return isNonEmptyString(entry.payload.targetUserId);
     case "change_role":
-      return entry.payload.targetUserId.length > 0 && isRole(entry.payload.newRole);
+      return isNonEmptyString(entry.payload.targetUserId) && isRole(entry.payload.newRole);
     case "rotate_epoch":
       return shapeRotateEpoch(entry.payload);
     case "grant_server":
@@ -371,6 +404,10 @@ async function applyOperation(
  *
  * Verification is fail-fast: the returned error carries the failing entry's
  * `seq` and a machine-readable reason.
+ *
+ * Entries are treated as untrusted input (chains are distributed by the
+ * server): every field is re-validated at runtime regardless of the static
+ * types, so malformed data yields `invalid-payload` instead of throwing.
  */
 export async function verifyChain(
   entries: readonly ChainEntry[],
