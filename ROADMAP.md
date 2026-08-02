@@ -4,7 +4,7 @@
 
 - [x] 仕様の最終レビュー: 「実装開始前に要決定」3 件を決定(2026-08-01 所有者裁定): 環境モデル = プロジェクト × 環境 × エポック(CRYPTO_SPEC §3〜§5)、認可モデル = チェーン上の 4 role(CRYPTO_SPEC §6.2)、プロジェクトと組織の関係 = パーソナル org 自動作成(AUTH_SPEC §9-1)
 - [ ] 監査ログのスキーマ設計(記録イベント一覧、actor = 内部 user_id + 鍵フィンガープリント、DO 内 append-only 形式。「要ローテーション検出」の算出要件を満たすこと)
-- [ ] 暗号テストベクターの定義(実装より先にコミット)
+- [x] 暗号テストベクターの定義(実装より先にコミット)(2026-08-01 PR #11。2026-08-02 PR #12 で grant_server / revoke_server / change_role・認可系 negative・expected_head_states を補完)
 - [x] 検証スパイク(使い捨て)3 本完了(2026-08-01。結果は docs/notes/spike-{a,b,c}.md):
   - スパイク A: funstack-static + funstack-router + Astryx(ADR-0013)→ Workers Static Assets。`"use client"` 境界、Navigation API 非対応ブラウザの劣化挙動、プリビルド CSS の静的配信 + 厳格 CSP、StyleX コンパイラ(xstyle 用)と Vite の組み合わせを確認
   - スパイク B: Effect v4 HttpApi + Durable Objects(ManagedRuntime パターン)+ vitest-pool-workers + Alchemy v2 / wrangler 両対応。実デプロイ検証は wrangler 経路成立(Alchemy 経路はユーザー API トークン切り替え待ち。docs/notes/session-03.md)
@@ -16,14 +16,14 @@
 
 **完了条件: 自分の全プロジェクトから .env を消せた**
 
-- E2EE コア(純粋 E2EE。サーバー鍵 = 選択的開示は実装しない、データ構造のみ確保)
-- メンバーシップログ(genesis + 単独ユーザー分。検証ロジック込み)
-- CLI: `maruhi run`(メモリ注入)、`push` / `pull`、device flow ログイン、OS キーチェーン
-- サーバー: プロジェクト DO、D1、HttpApi、監査ログ(append-only)
-- リカバリーコード
-- セルフホスト初回セットアップウィザード(GitHub OAuth App の作成案内 + client_id/secret 登録。AUTH_SPEC §3 参照)
-- Deploy to Cloudflare / wrangler 一発デプロイの検証
-- 数週間のドッグフーディング
+- [x] E2EE コア(純粋 E2EE。サーバー鍵 = 選択的開示は実装しない、データ構造のみ確保)(2026-08-02 完了。PR #12 = packages/crypto: §2.1 エンコーダ / §3 鍵 / §4 変数暗号化 / §5 DEK ラップ / §6 チェーン検証・状態導出 / §8 リカバリーラップ、テストベクター全通過・4 実行環境 CI。§6.3 の DEK ラップ先一致検査・ヘッドゴシップは同期ロジックとして後続)
+- [ ] メンバーシップログ(genesis + 単独ユーザー分。検証ロジック込み)※チェーンの暗号・検証層は PR #12 で完了。残りはサーバー保存(DO)・追記 API・クライアント同期
+- [ ] CLI: `maruhi run`(メモリ注入)、`push` / `pull`、device flow ログイン、OS キーチェーン
+- [ ] サーバー: プロジェクト DO、D1、HttpApi、監査ログ(append-only)
+- [ ] リカバリーコード
+- [ ] セルフホスト初回セットアップウィザード(GitHub OAuth App の作成案内 + client_id/secret 登録。AUTH_SPEC §3 参照)
+- [ ] Deploy to Cloudflare / wrangler 一発デプロイの検証
+- [ ] 数週間のドッグフーディング
 
 ## Phase 2: 公開
 
