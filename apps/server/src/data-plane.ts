@@ -26,13 +26,26 @@ export interface DataActor {
   readonly authMethod?: string;
 }
 
+/**
+ * スイート識別子(CRYPTO_SPEC §2 設計原則 4)。ワイヤは Schema の Literal が
+ * 強制するため、RPC 境界・保存行の型もこの literal で表す(AUTH_SPEC §12-2)。
+ */
+export type WireSuite = "maruhi/v1";
+
 /** 1 受信者宛のラップ済み DEK(AUTH_SPEC §12-6。ワイヤ表現と構造一致)。 */
 export interface DekWrapInput {
+  readonly suite: WireSuite;
   readonly epoch: number;
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
+}
+
+/** 保存済みラップの参照(§12-6 の修復経路の削除単位)。 */
+export interface DekWrapRefInput {
+  readonly epoch: number;
+  readonly recipientUserId: string;
 }
 
 /**
@@ -41,6 +54,7 @@ export interface DekWrapInput {
  * 検査する。
  */
 export interface ValueInput {
+  readonly suite: WireSuite;
   readonly epoch: number;
   readonly version: number;
   readonly nonceHex: string;
@@ -63,12 +77,14 @@ export interface PulledVariableValue {
   readonly variableId: string;
   readonly name: string;
   readonly version: number;
+  readonly suite: WireSuite;
   readonly epoch: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
 }
 
 export interface RecipientDekValue {
+  readonly suite: WireSuite;
   readonly epoch: number;
   readonly encHex: string;
   readonly ciphertextHex: string;
@@ -102,7 +118,8 @@ export type DataLimitResource =
   | "variable-rows"
   | "versions"
   | "project-ciphertext-bytes"
-  | "dek-wraps-per-request";
+  | "dek-wraps-per-request"
+  | "dek-wrap-rows";
 
 export type DataRejection =
   | { readonly kind: "not-initialized" }
@@ -124,6 +141,11 @@ export type DataRejection =
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
   | { readonly kind: "dek-wrap-exists"; readonly epoch: number; readonly recipientUserId: string }
+  | {
+      readonly kind: "dek-wrap-not-found";
+      readonly epoch: number;
+      readonly recipientUserId: string;
+    }
   | {
       readonly kind: "limit-exceeded";
       readonly resource: DataLimitResource;
@@ -198,7 +220,10 @@ export function dataEvent(
   actor: DataActor,
   serverTs: number,
   event: string,
-  fields: Pick<AuditEventInput, "environmentId" | "variableId" | "epoch" | "version" | "payload">,
+  fields: Pick<
+    AuditEventInput,
+    "environmentId" | "variableId" | "epoch" | "version" | "targetUserId" | "payload"
+  >,
 ): AuditEventInput {
   const payload = {
     ...fields.payload,

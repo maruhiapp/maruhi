@@ -34,10 +34,13 @@ const PROJECT_DO_DDL = [
      deleted_at INTEGER,
      PRIMARY KEY (environment_id, variable_id)
    )`,
+  // suite 列: すべての永続データ構造はスイート識別子を持つ(CRYPTO_SPEC §2
+  // 設計原則 4 / AUTH_SPEC §12-2。将来のアルゴリズム移行時に行単位で判別する)
   `CREATE TABLE IF NOT EXISTS variable_versions (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
      version INTEGER NOT NULL,
+     suite TEXT NOT NULL,
      epoch INTEGER NOT NULL,
      nonce_hex TEXT NOT NULL,
      ciphertext_hex TEXT NOT NULL,
@@ -49,6 +52,7 @@ const PROJECT_DO_DDL = [
      environment_id TEXT NOT NULL,
      epoch INTEGER NOT NULL,
      recipient_user_id TEXT NOT NULL,
+     suite TEXT NOT NULL,
      recipient_enc_pub_hex TEXT NOT NULL,
      enc_hex TEXT NOT NULL,
      ciphertext_hex TEXT NOT NULL,
