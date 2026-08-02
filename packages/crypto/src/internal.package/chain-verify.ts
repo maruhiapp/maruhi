@@ -189,6 +189,11 @@ async function verifyEntrySignature(entry: ChainEntry, sigPubHex: string): Promi
     return false;
   }
   try {
+    // 正規化はこの try 内で行うこと(リファクタで外へ出さない): 巨大フィールド等で
+    // エンコーダが投げる例外もここで bad-signature に封じ込め、verifyChain の
+    // 「不信入力で throw しない」契約を保つ。ループ末尾の computeChainEntryHash は
+    // ここで同一フィールドのエンコードが成功した後にのみ到達する
+    const signedBytes = canonicalChainSignedBytes(entry);
     const publicKey = await crypto.subtle.importKey(
       "raw",
       publicKeyBytes as BufferSource,
@@ -200,7 +205,7 @@ async function verifyEntrySignature(entry: ChainEntry, sigPubHex: string): Promi
       "Ed25519",
       publicKey,
       signature as BufferSource,
-      canonicalChainSignedBytes(entry) as BufferSource,
+      signedBytes as BufferSource,
     );
   } catch {
     return false;
