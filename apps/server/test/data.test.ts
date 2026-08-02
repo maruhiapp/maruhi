@@ -1091,6 +1091,12 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
       ENV,
     );
     expect(rows[0]?.["n"]).toBe(3);
+    // 拒否された削除は監査行(dek.deleted)を一切残さない(検証と書き込みの分離)
+    const audits = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
+    );
+    expect(audits[0]?.["n"]).toBe(0);
     // 同一タプルの重複列挙は 422(duplicate-recipient)
     const duplicated = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
@@ -1100,6 +1106,89 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     });
     expect(duplicated.status).toBe(422);
     expect(((await duplicated.json()) as { reason: string }).reason).toBe("duplicate-recipient");
+  });
+
+  it("treats re-registration after a full epoch deletion as an initial registration (§12-6)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // エポック 1 の全ラップを削除 → 再登録は初回登録として完全一致を要求される
+    const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
+    });
+    expect(removed.status).toBe(204);
+    const partial = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: [
+        await wrapDekTo({
+          projectId,
+          environmentId: ENV,
+          epoch: 1,
+          dek,
+          recipientUserId: OWNER,
+        }),
+      ],
+    });
+    expect(partial.status).toBe(422);
+    expect(((await partial.json()) as { reason: string }).reason).toBe("recipient-missing");
+    // 完全集合なら受理され、受信者は再び復号できる
+    const complete = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: await wrapDekForAll({
+        projectId,
+        environmentId: ENV,
+        epoch: 1,
+        dek,
+        recipientUserIds: ALL_MEMBERS,
+      }),
+    });
+    expect(complete.status).toBe(204);
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    const body = (await pull.json()) as {
+      variables: { value: WireEncryptedPayload }[];
+      deks: { epoch: number; encHex: string; ciphertextHex: string }[];
+    };
+    const wrap = body.deks[0];
+    const pulled = body.variables[0];
+    if (wrap === undefined || pulled === undefined) throw new Error("missing pull data");
+    await expect(
+      unwrapAndDecrypt({
+        recipientUserId: READER,
+        wrapped: wrap,
+        projectId,
+        environmentId: ENV,
+        payload: pulled.value,
+      }),
+    ).resolves.toBe("postgres://alpha");
+  });
+
+  it("rejects deletion requests for missing environments, empty lists and oversized lists", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 空列挙は 400(Schema。監査痕跡ゼロの破壊系呼び出し形を許さない — §12-6)
+    const empty = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [],
+    });
+    expect(empty.status).toBe(400);
+    // 件数上限は登録側と同じ MAX_DEK_WRAPS_PER_REQUEST(存在検証より先に判定)
+    const oversized = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
+        epoch: 1,
+        recipientUserId: `u${index}`,
+      })),
+    });
+    expect(oversized.status).toBe(422);
+    await expect(oversized.json()).resolves.toMatchObject({
+      resource: "dek-wraps-per-request",
+      limit: MAX_DEK_WRAPS_PER_REQUEST,
+    });
+    // tombstone 環境(ラップは物理削除済み)への削除は 404 EnvironmentNotFound
+    const removedEnv = await requestJson("DELETE", `/environments/${ENV}`, token(OWNER));
+    expect(removedEnv.status).toBe(204);
+    const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(gone.status).toBe(404);
+    // DekWrapNotFound({epoch, recipientUserId})ではなく EnvironmentNotFound({environmentId})
+    const goneBody = (await gone.json()) as { environmentId?: string; epoch?: number };
+    expect(goneBody.environmentId).toBe(ENV);
+    expect(goneBody.epoch).toBeUndefined();
   });
 });
 

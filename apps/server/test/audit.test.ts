@@ -274,6 +274,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       expect(event["environment_id"]).toBe(ENV);
       expect(event["epoch"]).toBe(1);
       expect(event["actor_user_id"]).toBe(OWNER);
+      // PAT 経由の登録なのでトークン id を持つ(§2 のアクター帰属)
+      expect(event["actor_api_token_id"]).toBeTypeOf("string");
       expect(event["variable_id"]).toBeNull();
     }
 

@@ -259,10 +259,13 @@ export const deksGroup = HttpApiGroup.make("deks")
   )
   .add(
     // 削除対象は body で列挙する: recipientUserId はチェーン合意規則上の自由
-    // 文字列(1024 バイト以下)であり、パス断片として安全に表現できないため
+    // 文字列(1024 バイト以下)であり、パス断片として安全に表現できないため。
+    // 空列挙は 400(監査痕跡ゼロの破壊系呼び出し形を許さない — §12-6)
     HttpApiEndpoint.delete("remove", "/projects/:projectId/environments/:environmentId/deks", {
       params: environmentParams,
-      payload: Schema.Struct({ wraps: Schema.Array(DekWrapRefSchema) }),
+      payload: Schema.Struct({
+        wraps: Schema.Array(DekWrapRefSchema).check(Schema.isMinLength(1)),
+      }),
       success: HttpApiSchema.NoContent,
       error: [
         ProjectNotFoundError,
