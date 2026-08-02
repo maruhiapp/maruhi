@@ -2,6 +2,14 @@
 // 公開 API は最小に保つ(CLAUDE.md)。
 
 export { decodeHex, encodeHex } from "./bytes.ts";
+export { SUITE_ID } from "./suite.ts";
+export {
+  buildVariableAad,
+  decryptVariable,
+  type EncryptedVariable,
+  encryptVariable,
+  type VariableContext,
+} from "./variable.ts";
 export { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 export { type ChainInvalidReason, type CryptoError, type CryptoResult } from "./errors.ts";
 export {

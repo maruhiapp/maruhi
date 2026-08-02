@@ -4,6 +4,7 @@
 import { encodingChecks } from "./checks/encoding.ts";
 import { keysChecks } from "./checks/keys.ts";
 import type { CheckResult } from "./checks/support.ts";
+import { variableChecks } from "./checks/variable.ts";
 
 export async function runAllChecks(): Promise<CheckResult[]> {
   // 各層のチェックは共有の固定ベクターを読むだけで相互に独立だが、
@@ -11,5 +12,6 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   const groups: CheckResult[][] = [];
   groups.push(await encodingChecks());
   groups.push(await keysChecks());
+  groups.push(await variableChecks());
   return groups.flat();
 }

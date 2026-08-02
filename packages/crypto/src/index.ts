@@ -5,20 +5,21 @@
 // 全環境(ブラウザ / Bun / workerd)で動く: WebCrypto + panva hpke 以外のプリミティブ禁止。
 // エラーは型付きエラー値(CryptoResult)で返し、Effect ラップは packages/core 側で行う。
 
-/** Algorithm suite identifier (CRYPTO_SPEC §2). */
-export const SUITE_ID = "maruhi/v1";
-
 export {
+  buildVariableAad,
   type ChainInvalidReason,
   computeServerKeyFingerprint,
   computeUserKeyFingerprint,
   type CryptoError,
   type CryptoResult,
   decodeHex,
+  decryptVariable,
   encodeHex,
   encodeLengthPrefixed,
+  type EncryptedVariable,
   type EncryptionKey,
   type EncryptionKeyPair,
+  encryptVariable,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
   generateDek,
@@ -30,4 +31,6 @@ export {
   importSigningPublicKey,
   type LengthPrefixedField,
   type SigningKeyPair,
+  SUITE_ID,
+  type VariableContext,
 } from "./internal.package/index.ts";
