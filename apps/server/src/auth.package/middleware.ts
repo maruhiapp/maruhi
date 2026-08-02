@@ -16,17 +16,33 @@ import type { HttpApiMiddleware } from "effect/unstable/httpapi";
 
 export const SESSION_COOKIE = "__Host-maruhi_session";
 const CSRF_HEADER = "x-maruhi-csrf";
-const BEARER_PREFIX = "Bearer ";
+// RFC 7235: auth-scheme は大文字小文字を区別しない。空白の連続も許容する
+const BEARER_PATTERN = /^bearer\s+(\S+)$/i;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+/** Authorization ヘッダーから Bearer トークンを取り出す(解釈不能は null)。 */
+export function parseBearerToken(authorization: string): string | null {
+  return BEARER_PATTERN.exec(authorization)?.[1] ?? null;
+}
+
+/**
+ * 資格情報の優先順位(固定): Authorization ヘッダーが存在するならそれのみを見る
+ * (Bearer として解釈できない・トークンが無効な場合もクッキーへフォールバック
+ * しない — 「トークンを提示したのにセッションで認可された」を起こさない)。
+ * Authorization がないときだけセッションクッキーを解決する。
+ */
 function resolvePrincipal(
   request: HttpServerRequest.HttpServerRequest,
 ): Effect.Effect<Principal, never, SessionService | TokenService> {
   return Effect.gen(function* () {
     const authorization = request.headers["authorization"];
-    if (authorization !== undefined && authorization.startsWith(BEARER_PREFIX)) {
+    if (authorization !== undefined) {
+      const rawToken = parseBearerToken(authorization);
+      if (rawToken === null) {
+        return anonymousPrincipal;
+      }
       const tokens = yield* TokenService;
-      return yield* tokens.resolveApiToken(authorization.slice(BEARER_PREFIX.length));
+      return yield* tokens.resolveApiToken(rawToken);
     }
     const rawSession = request.cookies[SESSION_COOKIE];
     if (rawSession !== undefined) {

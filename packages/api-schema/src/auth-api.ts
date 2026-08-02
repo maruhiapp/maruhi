@@ -11,10 +11,13 @@
 
 import { OrgRoleSchema, TokenScopeSchema } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { AuthFlowError } from "./errors.ts";
+
+/** 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。 */
+const Redirect = HttpApiSchema.Empty(302);
 
 /** Result of the device-flow exchange (AUTH_SPEC §4): the raw token, shown once. */
 export const DeviceExchangeResultSchema = Schema.Struct({
@@ -45,13 +48,13 @@ export const MeSchema = Schema.Struct({
 export const authGroup = HttpApiGroup.make("auth")
   .add(
     HttpApiEndpoint.get("githubStart", "/auth/github/start", {
-      success: Schema.Void,
+      success: Redirect,
     }),
   )
   .add(
     HttpApiEndpoint.get("githubCallback", "/auth/github/callback", {
       query: { code: Schema.String, state: Schema.String },
-      success: Schema.Void,
+      success: Redirect,
       error: [AuthFlowError],
     }),
   )
@@ -73,11 +76,11 @@ export const authGroup = HttpApiGroup.make("auth")
   )
   .add(
     HttpApiEndpoint.post("logout", "/auth/logout", {
-      success: Schema.Void,
+      success: HttpApiSchema.NoContent,
     }).middleware(AuthMiddleware),
   )
   .add(
     HttpApiEndpoint.post("revokeToken", "/auth/token/revoke", {
-      success: Schema.Void,
+      success: HttpApiSchema.NoContent,
     }).middleware(AuthMiddleware),
   );

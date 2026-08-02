@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "46f26634-0304-49e4-a413-2bbb09be3c96",
+  "id": "3d4b12a0-0dc3-4577-9318-d4248b355d93",
   "prevIds": ["00000000-0000-0000-0000-000000000000"],
   "ddl": [
     {
@@ -592,6 +592,20 @@
       "where": null,
       "origin": "manual",
       "name": "sess_user",
+      "entityType": "indexes",
+      "table": "sessions"
+    },
+    {
+      "columns": [
+        {
+          "value": "expires_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "sess_expires",
       "entityType": "indexes",
       "table": "sessions"
     }

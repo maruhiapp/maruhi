@@ -11,7 +11,7 @@
 
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
 import { SessionService, TokenService } from "@maruhi/core";
-import { Context, FileSystem, Layer, Path } from "effect";
+import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { Etag, HttpPlatform, HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -158,5 +158,11 @@ export default {
       return new Response(null, { status: 413 });
     }
     return handlerFor(env).handler(cappedRequest);
+  },
+  // 期限切れセッション行の定期掃除(wrangler.jsonc の triggers.crons)。
+  // resolve 時の掃除(auth.package/session.ts)は「提示された行」しか消せない
+  async scheduled(_controller, env, _ctx): Promise<void> {
+    const sessions = Context.get(makeDbServices(env.DB), SessionRepo);
+    await Effect.runPromise(sessions.deleteExpired(Date.now()));
   },
 } satisfies ExportedHandler<Env>;

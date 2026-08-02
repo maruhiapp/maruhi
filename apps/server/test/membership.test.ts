@@ -11,7 +11,7 @@
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { chainCapacityExceeded } from "../src/chain-do.ts";
@@ -121,6 +121,9 @@ beforeEach(async () => {
     );
     state.storage.sql.exec("DELETE FROM chain_entries");
   });
+  // DO インスタンスを退去させ、導出 ChainState のメモリキャッシュ(#stateCache)も
+  // テスト間で持ち越さない(SQL の DELETE はストレージしか消さない)
+  await evictDurableObject(stub);
   await resetAuthDb();
   tokens = {};
   for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
@@ -346,6 +349,56 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     const scopedToken = await deviceToken(9001, otherScope);
     const response = await getChain(vectorProjectId, bearer(scopedToken));
     expect(response.status).toBe(404);
+  });
+
+  it("conceals everything from an empty-scope token (§11-2)", async () => {
+    await replayVectorChain(1);
+    const emptyScopeToken = await deviceToken(9001, []);
+    const response = await getChain(vectorProjectId, bearer(emptyScopeToken));
+    expect(response.status).toBe(404);
+  });
+
+  it("distinguishes write from admin ops (§6 の op→必要権限表)", async () => {
+    // seq 3 は rotate_epoch(write 要求)、actor は user-member-0002。
+    // write スコープのトークンで通り、同じトークンでは add_member(admin 要求)が
+    // 403 になる — 全 op を write(または admin)に潰す退行をここで判別する
+    await replayVectorChain(2);
+    const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
+    const memberWrite = await deviceToken(9002, writeScope);
+    const entry3 = vectorEntries[2];
+    if (entry3 === undefined) throw new Error("missing vector entry 3");
+    const rotate = await appendEntry(
+      vectorProjectId,
+      entry3.prev_hash_hex,
+      toWireEntry(entry3),
+      bearer(memberWrite),
+    );
+    expect(rotate.status).toBe(200);
+
+    // seq 4 は remove_member(admin 要求)、actor は user-owner-0001
+    const ownerWrite = await deviceToken(9001, writeScope);
+    const entry4 = vectorEntries[3];
+    if (entry4 === undefined) throw new Error("missing vector entry 4");
+    const removal = await appendEntry(
+      vectorProjectId,
+      entry4.prev_hash_hex,
+      toWireEntry(entry4),
+      bearer(ownerWrite),
+    );
+    expect(removal.status).toBe(403);
+    const body = (await removal.json()) as { reason: string };
+    expect(body.reason).toBe("insufficient-permission");
+  });
+
+  it("requires admin scope for init (genesis = プロジェクト作成)", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
+    const ownerWrite = await deviceToken(9001, writeScope);
+    const response = await initChain(toWireEntry(genesis), { headers: bearer(ownerWrite) });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe("insufficient-permission");
   });
 
   it("accepts session-cookie auth with the CSRF header and rejects writes without it (§5)", async () => {

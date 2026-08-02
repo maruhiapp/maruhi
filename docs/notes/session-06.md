@@ -96,6 +96,49 @@
   今回スコープの optional 項目、未着手)。トークンの一覧・追加発行 UI/API は
   Web ダッシュボード実装時(確認 B の線引き)
 
+## 4.5 レビュー→修正ループ(PR #16 内。3 観点の並行レビュー → 検証 → 修正)
+
+採用・修正済みの指摘(重要度順):
+
+1. **device 交換の audience 検証欠如(セキュリティ・高)**: `/user` での有効性確認
+   だけでは他 App 向けに発行されたトークンで他人のアカウントに解決できた
+   (confused-deputy)。check-token API(`POST /applications/{client_id}/token`)で
+   「自 OAuth App 発行」まで検証する形に修正し、AUTH_SPEC §4-4 に明文化。
+   フェイク GitHub に other-app トークンを追加して判別テスト化
+2. **同名トークンのローテーション**: 同一 (user, name) への device 交換は既存
+   トークンの失効を伴う再発行(api_tokens の無制限増加 DoS 対策。§6 に明文化)
+3. **資格情報の優先順位の固定**: Authorization ヘッダー提示時はクッキーへ
+   フォールバックしない(無効 Bearer + 有効クッキー = 401)。Bearer スキームは
+   RFC 7235 どおり大文字小文字非区別。テストで pin
+4. **API 契約の乖離**: logout / revokeToken は `HttpApiSchema.NoContent`(204)、
+   OAuth リダイレクト系は `HttpApiSchema.Empty(302)` を宣言(導出クライアントの
+   成功ステータス照合が実応答と一致するように)
+5. **§3-3 メールフィルタの検証可能化**: フェイク GitHub を ID 帯で応答分岐させ
+   (unverified / non-primary / emails 404)、negative テスト 3 件 + 再ログイン時の
+   自己修復(サインアップ時の取り損ねを verified メールで補完)を追加
+6. **§6 op→権限表の判別テスト**: write スコープで rotate_epoch 可・add_member 403・
+   init 403 を追加(全 op を単一水準に潰す退行を検知可能に)
+7. **DO キャッシュの単調ガード**: permit なしの snapshotFor が古い ChainState で
+   新キャッシュを上書きしうる競合(perf のみ)を headSeq 比較で防止。
+   `?? ""` フォールバック(破損を成功応答化しうる)は defect 化
+8. **期限切れセッションの cron 掃除**: scheduled ハンドラ + `triggers.crons` +
+   sessions.expires_at インデックス(未提示行は resolve 時掃除では消えないため)
+9. **認証成功ごとの D1 書き込み間引き**: セッション延長・トークン last_used_at
+   とも 1 時間閾値(30 日スライディングの意味論は不変)
+10. **その他**: getOrCreateUser の競合判別を UNIQUE constraint メッセージで厳密化
+    (非競合の D1 障害を誤分類しない)、requestOrigin の Host ヘッダーフォール
+    バック廃止、トークン交換リクエストに User-Agent 付与、フェイクの忠実性強化
+    (UA 必須・Accept 分岐・check-token)、core スコープ結合則のユニットテスト
+    (個別エントリはワイルドカードを絞れない = 最強一致、を意図として固定)
+
+採用せず記録に留めた指摘(実害小・v1 許容):
+
+- 複数タブでの OAuth 開始は state クッキーが単一スロットのため先行タブが 400 に
+  なる(リトライで回復。修正するなら state の複数許容化)
+- callback 失敗経路では state クッキーを expire しない(TTL 10 分で自然失効)
+- transport 413(生ボディ上限)はスキーマ外の素の応答で、導出クライアントは
+  デコードできない(CLI 実装時にハンドリング分岐が要る)
+
 ## 5. 次セッションへの申し送り
 
 - **PR マージ後**: ROADMAP Phase 1「サーバー: プロジェクト DO、D1、HttpApi、

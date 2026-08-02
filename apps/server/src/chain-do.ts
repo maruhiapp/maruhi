@@ -223,6 +223,17 @@ interface StateCache {
   current: { readonly headHashHex: string; readonly state: ChainState } | null;
 }
 
+/**
+ * キャッシュ更新は headSeq の単調ガード付き: permit を持たない読み取り
+ * (snapshotFor)の導出中に追記がコミットした場合、古い状態で新しいキャッシュを
+ * 上書きしない(チェーンは append-only なので headSeq 比較で十分)。
+ */
+function updateStateCache(cache: StateCache, state: ChainState): void {
+  if (cache.current === null || state.headSeq >= cache.current.state.headSeq) {
+    cache.current = { headHashHex: state.headHashHex, state };
+  }
+}
+
 /** 保存済みチェーンから ChainState を導出する。検証失敗は実装バグ(defect)。 */
 function deriveStoredState(chain: StoredChain, cache: StateCache): Effect.Effect<ChainState> {
   const cached = cache.current;
@@ -231,11 +242,7 @@ function deriveStoredState(chain: StoredChain, cache: StateCache): Effect.Effect
   }
   return verifyChainEffect(chain.entries).pipe(
     Effect.orDie,
-    Effect.tap((state) =>
-      Effect.sync(() => {
-        cache.current = { headHashHex: state.headHashHex, state };
-      }),
-    ),
+    Effect.tap((state) => Effect.sync(() => updateStateCache(cache, state))),
   );
 }
 
@@ -249,11 +256,16 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
     const store = yield* ChainStore;
     const chain = yield* store.load;
     if (chain.headSeq > 0) {
-      const genesisActor = chain.entries[0]?.actor.userId ?? "";
+      const genesisActor = chain.entries[0]?.actor.userId;
+      if (genesisActor === undefined || chain.headHashHex === null) {
+        // headSeq > 0 なら両値は不変条件として存在する。欠けているのはストレージ
+        // 破損であり、空文字で成功応答に変換せず defect として落とす
+        return yield* Effect.die(new Error("initialized chain is missing genesis or head"));
+      }
       return yield* new AlreadyInitializedError({
         genesisActorUserId: genesisActor,
         headSeq: chain.headSeq,
-        headHashHex: chain.headHashHex ?? "",
+        headHashHex: chain.headHashHex,
       });
     }
     const canonicalBytes = yield* checkEntrySize(entry);
@@ -265,7 +277,7 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
       return yield* new ProjectIdMismatchError();
     }
     yield* store.insert(entry, state.headHashHex, canonicalBytes);
-    cache.current = { headHashHex: state.headHashHex, state };
+    updateStateCache(cache, state);
     return { headSeq: state.headSeq, headHashHex: state.headHashHex };
   });
 
@@ -359,7 +371,7 @@ const appendProgram = (
     // §6.4: 追記受理時にチェーン全体を再検証する(prev_hash 連続性・署名・操作権限)
     const state = yield* verifyChainEffect([...chain.entries, entry]);
     yield* store.insert(entry, state.headHashHex, canonicalBytes);
-    cache.current = { headHashHex: state.headHashHex, state };
+    updateStateCache(cache, state);
     return { headSeq: state.headSeq, headHashHex: state.headHashHex };
   });
 

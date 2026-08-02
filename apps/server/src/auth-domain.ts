@@ -44,4 +44,5 @@ export interface ApiTokenRecord {
   readonly tokenHash: string;
   readonly scopes: readonly TokenScope[];
   readonly expiresAtMs: number | null;
+  readonly lastUsedAtMs: number | null;
 }

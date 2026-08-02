@@ -14,6 +14,12 @@ import { randomHex, sha256Hex } from "../ids.ts";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * スライディング更新の書き込み間引き: 前回の延長から 1 時間未満なら D1 UPDATE を
+ * 省く(全リクエスト書き込みを避ける。30 日スライディングの意味論は保たれる)。
+ */
+const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
+
 const hashOf = (rawValue: string): Effect.Effect<string> =>
   Effect.promise(() => sha256Hex(rawValue));
 
@@ -27,10 +33,12 @@ function resolveRecord(sessions: SessionRepoShape, idHash: string): Effect.Effec
       // 期限切れ行はここで掃除する(DB バックの失効可能性を保つ)
       return Effect.as(sessions.deleteByHash(idHash), anonymousPrincipal);
     }
-    return Effect.as(sessions.touch(idHash, now, now + SESSION_TTL_MS), {
-      kind: "session",
-      userId: record.userId,
-    } satisfies Principal);
+    const principal = { kind: "session", userId: record.userId } satisfies Principal;
+    const newExpiresAt = now + SESSION_TTL_MS;
+    if (newExpiresAt - record.expiresAtMs < TOUCH_INTERVAL_MS) {
+      return Effect.succeed(principal);
+    }
+    return Effect.as(sessions.touch(idHash, now, newExpiresAt), principal);
   });
 }
 

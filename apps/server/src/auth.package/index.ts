@@ -4,6 +4,6 @@
 // リクエスト詳細・ハッシュ計算などの内部は境界内に閉じる。
 
 export { GitHubApi, makeGitHubApi } from "./github.ts";
-export { authMiddlewareImpl, SESSION_COOKIE } from "./middleware.ts";
+export { authMiddlewareImpl, parseBearerToken, SESSION_COOKIE } from "./middleware.ts";
 export { makeSessionService } from "./session.ts";
 export { makeTokenService } from "./token.ts";

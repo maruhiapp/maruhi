@@ -37,13 +37,20 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
     : { kind: "token", userId: record.userId, tokenId: record.id, scopes: record.scopes };
 }
 
+/** last_used_at の書き込み間引き(全リクエスト D1 UPDATE を避ける。粒度 1 時間)。 */
+const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
+
 function resolveByHash(tokens: TokenRepoShape, tokenHash: string): Effect.Effect<Principal> {
   return Effect.flatMap(tokens.findByHash(tokenHash), (record) => {
-    const principal = toPrincipal(record, tokenHash, Date.now());
+    const now = Date.now();
+    const principal = toPrincipal(record, tokenHash, now);
     if (principal.kind !== "token" || record === null) {
       return Effect.succeed(anonymousPrincipal);
     }
-    return Effect.as(tokens.touchLastUsed(record.id, Date.now()), principal);
+    if (record.lastUsedAtMs !== null && now - record.lastUsedAtMs < TOUCH_INTERVAL_MS) {
+      return Effect.succeed(principal);
+    }
+    return Effect.as(tokens.touchLastUsed(record.id, now), principal);
   });
 }
 
@@ -51,6 +58,9 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
   return {
     issueToken: (userId, name, scopes) =>
       Effect.gen(function* () {
+        // 同一 (user, name) は再発行 = ローテーション(旧行を失効)。device 交換の
+        // 連打で api_tokens が無限に増える DoS を防ぐ(名前を変えれば複数保持は可能)
+        yield* tokens.deleteByUserAndName(userId, name);
         const rawToken = TOKEN_PREFIX + randomBase62();
         const tokenHash = yield* hashOf(rawToken);
         const tokenId = ulid();

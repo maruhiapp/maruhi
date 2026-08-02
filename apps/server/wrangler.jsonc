@@ -24,4 +24,8 @@
     // client_secret は `wrangler secret put GITHUB_CLIENT_SECRET`(コミットしない)
     "GITHUB_CLIENT_ID": "replace-with-your-github-oauth-app-client-id",
   },
+  "triggers": {
+    // 期限切れセッション行の掃除(提示されない行は resolve 時の掃除では消えない)
+    "crons": ["17 3 * * *"],
+  },
 }

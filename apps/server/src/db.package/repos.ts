@@ -10,7 +10,7 @@
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -73,9 +73,18 @@ function lookupLinkedUser(db: Db, identity: VerifiedIdentity): Effect.Effect<str
 class InsertConflictError extends Data.TaggedError("InsertConflict")<object> {}
 
 /**
+ * 一意制約違反かどうかを D1 のエラーメッセージで判別する。競合以外の失敗
+ * (一時障害・FK 違反等)を「競合」に誤分類すると再ルックアップが空になり、
+ * 実態と異なる defect メッセージで障害調査を誤誘導するため区別する。
+ */
+function isUniqueConflict(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("UNIQUE constraint failed");
+}
+
+/**
  * users + linked_identities + パーソナル org + owner membership を atomic batch で
  * 作成する。並行サインアップは (provider, provider_user_id) の PK で片方が失敗する
- * ので、失敗時は呼び出し側が再ルックアップする。
+ * ので、競合時は呼び出し側が再ルックアップする。競合以外の失敗は defect。
  */
 function createUserBatch(
   db: Db,
@@ -111,7 +120,35 @@ function createUserBatch(
       ]);
       return userId;
     },
-    catch: () => new InsertConflictError(),
+    catch: (error) => {
+      if (isUniqueConflict(error)) {
+        return new InsertConflictError();
+      }
+      // 競合以外の D1 障害はインフラ defect としてそのまま伝播する
+      throw error;
+    },
+  });
+}
+
+/**
+ * ログイン時に verified メールを最新化する(GitHub の email API の一時障害で
+ * サインアップ時に取り損ねた場合の自己修復)。null では既存値を消さない。
+ */
+function refreshVerifiedEmail(
+  db: Db,
+  userId: string,
+  identity: VerifiedIdentity,
+  nowMs: number,
+): Effect.Effect<void> {
+  if (identity.verifiedEmail === null) {
+    return Effect.void;
+  }
+  const email = identity.verifiedEmail;
+  return run(async () => {
+    await db
+      .update(users)
+      .set({ email, emailVerified: 1, updatedAt: nowMs })
+      .where(and(eq(users.id, userId), isNull(users.email)));
   });
 }
 
@@ -122,7 +159,10 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
   ): Effect.Effect<ResolvedUser> =>
     Effect.flatMap(lookupLinkedUser(db, identity), (existing) => {
       if (existing !== null) {
-        return Effect.succeed({ userId: existing, created: false });
+        return Effect.as(refreshVerifiedEmail(db, existing, identity, nowMs), {
+          userId: existing,
+          created: false,
+        } satisfies ResolvedUser);
       }
       return createUserBatch(db, identity, nowMs).pipe(
         Effect.map((userId): ResolvedUser => ({ userId, created: true })),
@@ -174,6 +214,8 @@ export interface SessionRepoShape {
   /** スライディング更新(§5): last_used_at と expires_at を進める。 */
   readonly touch: (idHash: string, nowMs: number, expiresAtMs: number) => Effect.Effect<void>;
   readonly deleteByHash: (idHash: string) => Effect.Effect<void>;
+  /** 期限切れ行の一括掃除(cron から呼ぶ。提示されない行はここでしか消えない)。 */
+  readonly deleteExpired: (nowMs: number) => Effect.Effect<void>;
 }
 
 export class SessionRepo extends Context.Service<SessionRepo, SessionRepoShape>()("SessionRepo") {}
@@ -217,6 +259,10 @@ function makeSessionRepo(db: Db): SessionRepoShape {
       run(async () => {
         await db.delete(sessions).where(eq(sessions.id, idHash));
       }),
+    deleteExpired: (nowMs) =>
+      run(async () => {
+        await db.delete(sessions).where(lte(sessions.expiresAt, nowMs));
+      }),
   };
 }
 
@@ -239,6 +285,8 @@ export interface TokenRepoShape {
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
   readonly deleteById: (id: string) => Effect.Effect<void>;
+  /** 同一 (user, name) の既存トークンを削除する(device 交換の再発行 = ローテーション)。 */
+  readonly deleteByUserAndName: (userId: string, name: string) => Effect.Effect<void>;
 }
 
 export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("TokenRepo") {}
@@ -268,6 +316,12 @@ function makeTokenRepo(db: Db): TokenRepoShape {
       run(async () => {
         await db.delete(apiTokens).where(eq(apiTokens.id, id));
       }),
+    deleteByUserAndName: (userId, name) =>
+      run(async () => {
+        await db
+          .delete(apiTokens)
+          .where(and(eq(apiTokens.userId, userId), eq(apiTokens.name, name)));
+      }),
   };
 }
 
@@ -279,6 +333,7 @@ async function findTokenByHash(db: Db, tokenHash: string): Promise<ApiTokenRecor
       tokenHash: apiTokens.tokenHash,
       scopes: apiTokens.scopes,
       expiresAt: apiTokens.expiresAt,
+      lastUsedAt: apiTokens.lastUsedAt,
     })
     .from(apiTokens)
     .where(eq(apiTokens.tokenHash, tokenHash))
@@ -297,6 +352,7 @@ async function findTokenByHash(db: Db, tokenHash: string): Promise<ApiTokenRecor
     tokenHash: row.tokenHash,
     scopes,
     expiresAtMs: row.expiresAt,
+    lastUsedAtMs: row.lastUsedAt,
   };
 }
 

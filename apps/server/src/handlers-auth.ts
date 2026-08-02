@@ -13,7 +13,7 @@ import type { Cookies } from "effect/unstable/http";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { GitHubApi, SESSION_COOKIE } from "./auth.package/index.ts";
+import { GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
 import { IdentityRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { WorkerEnv } from "./worker-env.ts";
@@ -21,7 +21,6 @@ import { WorkerEnv } from "./worker-env.ts";
 const STATE_COOKIE = "__Host-maruhi_oauth_state";
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_SCOPE = "read:user user:email";
-const BEARER_PREFIX = "Bearer ";
 
 /** device flow 交換の既定スコープ(AUTH_SPEC §6: 省略時は * × admin)。 */
 const DEFAULT_TOKEN_SCOPES: readonly TokenScope[] = [{ project: "*", permission: "admin" }];
@@ -35,12 +34,14 @@ const HOST_COOKIE_OPTIONS = {
 } as const satisfies Cookies.Cookie["options"];
 
 function requestOrigin(request: HttpServerRequest.HttpServerRequest): string {
-  // effect の HttpServerRequest.url はパスのみ。絶対 URL は生の Web Request が持つ
+  // effect の HttpServerRequest.url はパスのみ。絶対 URL は生の Web Request が持つ。
+  // Host ヘッダー(攻撃者が偽装可能)を redirect_uri の組み立てに使わない —
+  // workerd の入口は常に Web Request なので、そうでないのは配線バグ(defect)
   const source: unknown = request.source;
   if (source instanceof Request) {
     return new URL(source.url).origin;
   }
-  return `https://${request.headers["host"] ?? "localhost"}`;
+  throw new Error("request origin unavailable: source is not a web Request");
 }
 
 function callbackUri(origin: string): string {
@@ -110,9 +111,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("deviceExchange", ({ payload }) =>
       Effect.gen(function* () {
         const github = yield* GitHubApi;
-        // §4-4: GitHub API でトークンを検証し、maruhi 発行のトークンを返す
+        // §4-4: 持ち込みトークンは check-token API で「自 OAuth App 発行」まで検証する
+        // (他 App 向けに発行されたトークンの流用 = confused-deputy を遮断)
         const identity = yield* github
-          .fetchIdentity(payload.githubAccessToken)
+          .verifyAppToken(payload.githubAccessToken)
           .pipe(Effect.mapError(authFlowFailure("github-token-invalid")));
         const identities = yield* IdentityRepo;
         const resolved = yield* identities.getOrCreateUser(identity, Date.now());
@@ -153,13 +155,13 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("revokeToken", ({ request }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
-        const authorization = request.headers["authorization"];
+        const rawToken = parseBearerToken(request.headers["authorization"] ?? "");
         // 失効対象は「提示されたトークン自身」のみ(v1 線引き)。セッション経由は対象外
-        if (principal.kind !== "token" || authorization === undefined) {
+        if (principal.kind !== "token" || rawToken === null) {
           return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
         }
         const tokens = yield* TokenService;
-        yield* tokens.revokePresentedToken(authorization.slice(BEARER_PREFIX.length));
+        yield* tokens.revokePresentedToken(rawToken);
         return HttpServerResponse.empty({ status: 204 });
       }),
     ),

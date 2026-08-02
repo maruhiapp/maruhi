@@ -90,7 +90,7 @@ export const sessions = sqliteTable(
     expiresAt: integer("expires_at").notNull(),
     lastUsedAt: integer("last_used_at").notNull(),
   },
-  (t) => [index("sess_user").on(t.userId)],
+  (t) => [index("sess_user").on(t.userId), index("sess_expires").on(t.expiresAt)],
 );
 
 export const apiTokens = sqliteTable(

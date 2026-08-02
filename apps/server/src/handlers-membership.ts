@@ -66,6 +66,10 @@ function policyFailure(outcome: PolicyRejection) {
 /**
  * §11-3 の冪等修復: DO は初期化済みだが projects 行が欠けている場合、要求者が
  * genesis actor 本人であれば行を挿入して成功として返す。それ以外は 409。
+ *
+ * genesisActorUserId の照合は実際には到達しない深層防御である(actor 一致検査が
+ * 先行し、projectId = genesis ハッシュのルーティングにより already-initialized が
+ * 返るのは同一 genesis の再提出時のみ = actor は常に一致する)。
  */
 const repairOrConflict = (
   projectId: string,

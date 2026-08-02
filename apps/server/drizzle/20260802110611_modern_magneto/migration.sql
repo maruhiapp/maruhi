@@ -68,4 +68,5 @@ CREATE INDEX `li_user` ON `linked_identities` (`user_id`);--> statement-breakpoi
 CREATE INDEX `mem_user` ON `memberships` (`user_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `org_slug` ON `organizations` (`slug`);--> statement-breakpoint
 CREATE INDEX `proj_org` ON `projects` (`org_id`);--> statement-breakpoint
-CREATE INDEX `sess_user` ON `sessions` (`user_id`);
+CREATE INDEX `sess_user` ON `sessions` (`user_id`);--> statement-breakpoint
+CREATE INDEX `sess_expires` ON `sessions` (`expires_at`);

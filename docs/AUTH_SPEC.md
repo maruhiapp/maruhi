@@ -89,6 +89,7 @@ api_tokens (
 2. ユーザーがブラウザで承認 → CLI が GitHub トークンを取得
 3. CLI はそのトークンで maruhi サーバーの `/auth/device/exchange` を呼ぶ
 4. サーバーは GitHub API でトークンを検証し、getOrCreateUser → **maruhi 発行の API トークン**を返す
+   - **audience 検証(2026-08-02 追加)**: 持ち込まれたトークンの検証は check-token API(`POST /applications/{client_id}/token`、Basic 認証 = client_id:client_secret)で行い、**自分の OAuth App に対して発行されたトークンであること**まで確認する。`GET /user` による有効性確認だけでは、他のアプリ向けに発行された(漏洩・流用)トークンで他人のアカウントに解決できてしまう(confused-deputy)
 5. GitHub トークンは両側で即時破棄。CLI は maruhi トークンのみを OS キーチェーンに保存する
 
 ## 5. セッション
@@ -106,6 +107,7 @@ api_tokens (
 - **スコープ表現(2026-08-02 決定)**: スコープは `{ project: <project_id> | "*", permission: "read" | "write" | "admin" }` の配列。`"*"` は「所有者の全プロジェクト」を指すワイルドカード(CLI の作業用トークンに使う。実効権限は常に min(スコープ, チェーン role) でチェーン role に束縛されるため、ワイルドカードでも本人のチェーン権限を超えない)。device flow 交換時に要求スコープを指定し、省略時は `[{ project: "*", permission: "admin" }]`
 - **操作が要求する権限水準(2026-08-02 決定)**: チェーン取得 = read。チェーン追記はエントリの op で決まる — `rotate_epoch` = write、`add_member` / `remove_member` / `change_role` / `grant_server` / `revoke_server` = admin。プロジェクト作成(genesis init)= admin。op ごとの認可(誰がその op を実行できるか)の真実源は引き続きチェーン role(CRYPTO_SPEC §6.2)であり、この表はトークンスコープ側の必要条件である
 - **v1 の線引き(2026-08-02 決定)**: トークンの発行経路は device flow(§4)のみ。管理系 API は「自分自身のトークンの失効」まで。一覧・名前変更・追加発行の UI / API は Web ダッシュボード実装時に設計する
+- **同名トークンはローテーション(2026-08-02 追加)**: 同一 (user, name) への発行は既存トークンの失効を伴う再発行とする(再ログイン = ローテーション)。発行連打による api_tokens の無制限増加を防ぐ(名前を変えれば複数トークンの併存は可能)
 
 ## 7. 将来の IdP 追加(WorkOS 挿入ポイント)
 
