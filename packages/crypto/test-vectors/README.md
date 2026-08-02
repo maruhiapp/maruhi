@@ -44,8 +44,8 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 3. **鍵フィンガープリント**: `SHA-256(enc_pub(32B) || sig_pub(32B))` の先頭 16 バイト。両公開鍵が固定長のためここは素の連結(§2.1 の LP 適用対象は AAD / info / 正規化バイト列)。→ この解釈の妥当性はレビューで確認
 4. **§5 DEK ラップの aad は空**(文脈束縛は info が担う)。§4 変数暗号化は AAD、§8 リカバリーラップは AAD + info 固定文字列
 5. **§8 の HKDF salt = 空**: negative `wrong-salt` で「空以外の salt では復号不能」を固定
-6. **サーバー鍵フィンガープリント(セッション 04 追加)**: `SHA-256(server_enc_pub(32B))` の先頭 16 バイト。サーバーは enc 鍵のみ保持(§9)で §3 のユーザー FP 定義(enc||sig)を適用できないため。→ 仕様に明文がない解釈。**要レビュー**
-7. **grant_server の scope_environments(セッション 04 追加)**: environment_id のリストを LP エンコード(入れ子 LP)し、その **hex 小文字文字列**を `scope_environments_lp_hex` として payload の 1 フィールドに載せる(binary_encoding 規約と同型)。リストの順序は署名対象バイト列の一部(negative `grant-server-scope-reorder` / `grant-server-scope-flat-concat` で固定)。→ **要レビュー**
+6. **サーバー鍵フィンガープリント(2026-08-02 所有者裁定)**: `SHA-256(server_enc_pub(32B))` の先頭 16 バイト。サーバーは enc 鍵のみ保持(§9)で §3 のユーザー FP 定義(enc||sig)を適用できないため。CRYPTO_SPEC §9 に明文化済み
+7. **grant_server の scope_environments(2026-08-02 所有者裁定)**: environment_id のリストを LP エンコード(入れ子 LP)し、その **hex 小文字文字列**を `scope_environments_lp_hex` として payload の 1 フィールドに載せる(binary_encoding 規約と同型)。リストの順序は署名対象バイト列の一部(negative `grant-server-scope-reorder` / `grant-server-scope-flat-concat` で固定)。生成時はソート・重複なしを推奨(SHOULD。検証は集合として扱う)。CRYPTO_SPEC §6.2 に明文化済み
 8. **再 grant はスコープ拡大のみ(2026-08-02 所有者裁定)**: 有効な grant と同一サーバー鍵への grant_server は旧スコープ ⊆ 新スコープの場合のみ受理。縮小は `revoke_server`(§7 の全環境ローテーション義務を伴う)を経由させる(negative `authz-grant-scope-narrowed` で固定)
 9. **エポック = 環境ごとのカウンタ(2026-08-02 所有者裁定・案 3)**: 初期エポックは 1、`rotate_epoch` の new_epoch は「観測済みエポック(未観測なら 1)+ 1」と厳密一致。巻き戻し・重複・ジャンプは拒否(negative `authz-epoch-rollback` / `authz-epoch-duplicate` / `authz-epoch-jump` / `authz-epoch-first-jump` で固定)
 
