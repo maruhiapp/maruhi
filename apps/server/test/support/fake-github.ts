@@ -22,6 +22,7 @@ interface OutboundRequest {
   readonly url: string;
   readonly headers: { get(name: string): string | null };
   json(): Promise<unknown>;
+  text(): Promise<string>;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -41,16 +42,28 @@ function formEncodedFallback(request: OutboundRequest): Response | null {
   });
 }
 
-function exchangeCode(request: OutboundRequest, body: { code?: string }): Response {
-  const fallback = formEncodedFallback(request);
-  if (fallback !== null) {
-    return fallback;
-  }
-  const match = /^code-(\d+)$/.exec(body.code ?? "");
+/** RFC 6749 §4.1.3: ボディは form-urlencoded(JSON を送る実装退行はここで割れる)。 */
+function wrongContentType(request: OutboundRequest): Response | null {
+  const contentType = request.headers.get("content-type") ?? "";
+  return contentType.includes("application/x-www-form-urlencoded")
+    ? null
+    : json({ error: "unsupported_content_type" }, 400);
+}
+
+function exchangeCodeResponse(params: URLSearchParams): Response {
+  const match = /^code-(\d+)$/.exec(params.get("code") ?? "");
   // GitHub は不正 code でも 200 + error ボディを返す(実挙動に合わせる)
   return match === null
     ? json({ error: "bad_verification_code" })
     : json({ access_token: `gh-token-${match[1]}` });
+}
+
+async function exchangeCode(request: OutboundRequest): Promise<Response> {
+  const rejected = formEncodedFallback(request) ?? wrongContentType(request);
+  if (rejected !== null) {
+    return rejected;
+  }
+  return exchangeCodeResponse(new URLSearchParams(await request.text()));
 }
 
 /** Bearer トークンから GitHub ユーザー ID を引く(other-app トークンも /user では有効)。 */
@@ -124,7 +137,7 @@ async function handleOAuth(request: OutboundRequest, url: URL): Promise<Response
   if (url.hostname !== "github.com" || url.pathname !== "/login/oauth/access_token") {
     return null;
   }
-  return exchangeCode(request, (await request.json()) as { code?: string });
+  return exchangeCode(request);
 }
 
 function apiResponse(url: URL, userId: number): Response | null {

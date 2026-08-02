@@ -76,6 +76,13 @@ export class AuthFlowError extends Schema.TaggedErrorClass<AuthFlowError>()(
   { httpApiStatus: 400 },
 ) {}
 
+/** 429: the per-user API token limit has been reached (AUTH_SPEC §6). */
+export class TokenLimitError extends Schema.TaggedErrorClass<TokenLimitError>()(
+  "TokenLimit",
+  { limit: Schema.Number },
+  { httpApiStatus: 429 },
+) {}
+
 /** 404: no chain has been initialized under this project id. */
 export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
   "ProjectNotFound",

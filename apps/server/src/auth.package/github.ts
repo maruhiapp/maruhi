@@ -74,10 +74,11 @@ async function exchangeCodeRequest(
   code: string,
   redirectUri: string,
 ): Promise<string | null> {
+  // RFC 6749 §4.1.3: トークンエンドポイントのボディは application/x-www-form-urlencoded
   const response = await fetch(OAUTH_TOKEN_URL, {
     method: "POST",
-    headers: { ...COMMON_HEADERS, "content-type": "application/json" },
-    body: JSON.stringify({
+    headers: { ...COMMON_HEADERS, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
       code,

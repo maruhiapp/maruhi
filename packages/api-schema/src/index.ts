@@ -16,6 +16,7 @@ export {
   ForbiddenReasonSchema,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
+  TokenLimitError,
   UnauthorizedError,
 } from "./errors.ts";
 export {

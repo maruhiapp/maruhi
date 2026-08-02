@@ -7,6 +7,7 @@
 export {
   type DbServices,
   IdentityRepo,
+  isUniqueConflict,
   makeDbServices,
   OrgRepo,
   ProjectRepo,

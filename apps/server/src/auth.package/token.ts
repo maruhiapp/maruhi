@@ -6,7 +6,7 @@
 // - 生値・ハッシュをログに出さない(AUTH_SPEC §10)
 
 import type { Principal, TokenServiceShape } from "@maruhi/core";
-import { anonymousPrincipal } from "@maruhi/core";
+import { anonymousPrincipal, TokenLimitReachedError } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { ApiTokenRecord } from "../auth-domain.ts";
@@ -14,6 +14,9 @@ import type { TokenRepoShape } from "../db.package/index.ts";
 import { constantTimeEqual, randomBase62, sha256Hex, ulid } from "../ids.ts";
 
 const TOKEN_PREFIX = "maruhi_pat_";
+
+/** ユーザーあたりのトークン本数上限(AUTH_SPEC §6)。 */
+const MAX_TOKENS_PER_USER = 100;
 
 /** 表示用プレフィックス(例: `maruhi_pat_Ab12…`)。生値の先頭 4 文字まで。 */
 function displayPrefix(rawToken: string): string {
@@ -58,6 +61,12 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
   return {
     issueToken: (userId, name, scopes) =>
       Effect.gen(function* () {
+        // 別名の新規発行はユーザーあたり上限まで(AUTH_SPEC §6。認証済み主体による
+        // api_tokens の無制限増加を防ぐ。同名ローテーションは上限に達していても可能)
+        const others = yield* tokens.countByUserExcludingName(userId, name);
+        if (others >= MAX_TOKENS_PER_USER) {
+          return yield* Effect.fail(new TokenLimitReachedError({ limit: MAX_TOKENS_PER_USER }));
+        }
         const rawToken = TOKEN_PREFIX + randomBase62();
         const tokenHash = yield* hashOf(rawToken);
         const tokenId = ulid();

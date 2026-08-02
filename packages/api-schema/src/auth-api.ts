@@ -14,9 +14,13 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { AuthFlowError } from "./errors.ts";
+import { AuthFlowError, TokenLimitError } from "./errors.ts";
 
-/** 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。 */
+/**
+ * 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。
+ * githubStart / githubCallback はブラウザナビゲーション専用であり、HttpApi 導出
+ * クライアント(fetch は既定でリダイレクトを追従する)から呼ぶ設計ではない。
+ */
 const Redirect = HttpApiSchema.Empty(302);
 
 /** Result of the device-flow exchange (AUTH_SPEC §4): the raw token, shown once. */
@@ -60,13 +64,15 @@ export const authGroup = HttpApiGroup.make("auth")
   )
   .add(
     HttpApiEndpoint.post("deviceExchange", "/auth/device/exchange", {
+      // 認証前に到達できる書き込み系のため、フィールドに明示的な上限を課す
+      // (D1 への肥大 JSON 蓄積の遮断。AUTH_SPEC §6)
       payload: Schema.Struct({
-        githubAccessToken: Schema.String,
-        tokenName: Schema.optionalKey(Schema.String),
-        scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema)),
+        githubAccessToken: Schema.String.check(Schema.isMaxLength(512)),
+        tokenName: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+        scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
       }),
       success: DeviceExchangeResultSchema,
-      error: [AuthFlowError],
+      error: [AuthFlowError, TokenLimitError],
     }),
   )
   .add(

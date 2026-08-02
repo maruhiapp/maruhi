@@ -5,7 +5,7 @@
 // - `__Host-` クッキーは Secure / Path=/ が必須(http の wrangler dev ではブラウザに
 //   保存されない点に注意 — テストはヘッダー検証で行う)
 
-import { AuthFlowError, ForbiddenError, maruhiApi } from "@maruhi/api-schema";
+import { AuthFlowError, ForbiddenError, maruhiApi, TokenLimitError } from "@maruhi/api-schema";
 import type { TokenScope } from "@maruhi/core";
 import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect } from "effect";
@@ -119,11 +119,17 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const identities = yield* IdentityRepo;
         const resolved = yield* identities.getOrCreateUser(identity, Date.now());
         const tokens = yield* TokenService;
-        const issued = yield* tokens.issueToken(
-          resolved.userId,
-          payload.tokenName ?? "device-flow",
-          payload.scopes ?? DEFAULT_TOKEN_SCOPES,
-        );
+        const issued = yield* tokens
+          .issueToken(
+            resolved.userId,
+            payload.tokenName ?? "device-flow",
+            payload.scopes ?? DEFAULT_TOKEN_SCOPES,
+          )
+          .pipe(
+            Effect.catchTag("TokenLimitReached", (error) =>
+              Effect.fail(new TokenLimitError({ limit: error.limit })),
+            ),
+          );
         return { token: issued.rawToken, tokenId: issued.tokenId, userId: resolved.userId };
       }),
     )

@@ -8,7 +8,9 @@
 // 禁止事項(AUTH_SPEC §10): この境界のどの型もセッション / トークンの生値を
 // 永続化・ログ出力する形で運ばない。resolve 系はハッシュ照合の結果だけを返す。
 
-import { Context, Effect, Schema } from "effect";
+import { Context, Data, Effect, Schema } from "effect";
+
+import { ProjectIdSchema } from "./project.ts";
 
 // ---------------------------------------------------------------------------
 // org ロール(AUTH_SPEC §9-1。プロジェクトアクセスには関与しない)
@@ -34,9 +36,11 @@ export type TokenPermission = typeof TokenPermissionSchema.Type;
  * One token scope entry (AUTH_SPEC §6): a project id (or `"*"` for all of the
  * owner's projects) paired with a permission level. Effective permission is
  * always min(scope, chain role) — a token never exceeds its owner's chain role.
+ * project はプロジェクト ID 形式(hex 64)か `"*"` のみ(任意文字列による
+ * scopes JSON の肥大を API 境界で遮断する)。
  */
 export const TokenScopeSchema = Schema.Struct({
-  project: Schema.String,
+  project: Schema.Union([ProjectIdSchema, Schema.Literal("*")]),
   permission: TokenPermissionSchema,
 });
 
@@ -155,14 +159,23 @@ export interface IssuedToken {
   readonly tokenId: string;
 }
 
+/** ユーザーあたりのトークン本数上限(AUTH_SPEC §6)に達している。 */
+export class TokenLimitReachedError extends Data.TaggedError("TokenLimitReached")<{
+  readonly limit: number;
+}> {}
+
 /** AUTH_SPEC §8: API トークンの発行・検証・失効・スコープ判定(§6)。 */
 export interface TokenServiceShape {
-  /** `maruhi_pat_` トークンを発行する。DB にはハッシュのみ保存し、生値はここでのみ返す。 */
+  /**
+   * `maruhi_pat_` トークンを発行する。DB にはハッシュのみ保存し、生値はここでのみ
+   * 返す。同名は既存の失効を伴う再発行(ローテーション)、別名の新規発行は
+   * ユーザーあたり上限まで(§6)。
+   */
   readonly issueToken: (
     userId: string,
     name: string,
     scopes: readonly TokenScope[],
-  ) => Effect.Effect<IssuedToken>;
+  ) => Effect.Effect<IssuedToken, TokenLimitReachedError>;
   /** `maruhi_pat_…` トークンから主体を解決する。失敗は匿名として扱う。 */
   readonly resolveApiToken: (rawToken: string) => Effect.Effect<Principal>;
   /** 提示されたトークン自身を失効させる(AUTH_SPEC §6 の v1 線引き)。 */

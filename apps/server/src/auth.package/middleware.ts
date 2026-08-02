@@ -10,8 +10,8 @@
 import { ForbiddenError, UnauthorizedError } from "@maruhi/api-schema";
 import type { Principal } from "@maruhi/core";
 import { anonymousPrincipal, RequestAuth, SessionService, TokenService } from "@maruhi/core";
-import { Effect } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
+import { Effect, Option } from "effect";
+import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { HttpApiMiddleware } from "effect/unstable/httpapi";
 
 export const SESSION_COOKIE = "__Host-maruhi_session";
@@ -62,6 +62,33 @@ function csrfViolated(request: HttpServerRequest.HttpServerRequest, principal: P
 }
 
 /**
+ * セッション認証の応答でクッキーの Max-Age を毎回更新する(§5 のスライディングを
+ * ブラウザ側にも反映する — DB だけ延長してもクッキーが 30 日で失効しては意味が
+ * ない)。ハンドラが同名クッキーを操作した応答(ログアウトの expire 等)には
+ * 触れない。
+ */
+function refreshSessionCookie(
+  response: HttpServerResponse.HttpServerResponse,
+  principal: Principal,
+  rawSession: string | undefined,
+): Effect.Effect<HttpServerResponse.HttpServerResponse> {
+  if (
+    principal.kind !== "session" ||
+    rawSession === undefined ||
+    Option.isSome(Cookies.get(response.cookies, SESSION_COOKIE))
+  ) {
+    return Effect.succeed(response);
+  }
+  return HttpServerResponse.setCookie(response, SESSION_COOKIE, rawSession, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: "30 days",
+  }).pipe(Effect.orDie);
+}
+
+/**
  * AuthMiddleware の実装本体。index.ts が `Layer.succeed(AuthMiddleware, …)` で
  * 提供する。SessionService / TokenService は env ごとの Layer 経由。
  */
@@ -79,7 +106,8 @@ export const authMiddlewareImpl: HttpApiMiddleware.HttpApiMiddleware<
     if (csrfViolated(request, principal)) {
       return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
     }
-    return yield* Effect.provideService(httpEffect, RequestAuth, {
+    const response = yield* Effect.provideService(httpEffect, RequestAuth, {
       principal: Effect.succeed(principal),
     });
+    return yield* refreshSessionCookie(response, principal, request.cookies[SESSION_COOKIE]);
   });

@@ -10,7 +10,7 @@
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
-import { and, eq, isNull, lte } from "drizzle-orm";
+import { and, count, eq, isNull, lte, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -76,9 +76,16 @@ class InsertConflictError extends Data.TaggedError("InsertConflict")<object> {}
  * 一意制約違反かどうかを D1 のエラーメッセージで判別する。競合以外の失敗
  * (一時障害・FK 違反等)を「競合」に誤分類すると再ルックアップが空になり、
  * 実態と異なる defect メッセージで障害調査を誤誘導するため区別する。
+ * drizzle は経路によってエラーを `cause` にラップする(batch は素通し、単発
+ * クエリは DrizzleQueryError)ため、cause 連鎖も辿る。テスト用に公開する。
  */
-function isUniqueConflict(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("UNIQUE constraint failed");
+export function isUniqueConflict(error: unknown): boolean {
+  for (let current = error; current instanceof Error; current = current.cause) {
+    if (current.message.includes("UNIQUE constraint failed")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -291,6 +298,8 @@ export interface TokenRepoShape {
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
   readonly deleteById: (id: string) => Effect.Effect<void>;
+  /** 指定名を除くユーザーのトークン本数(発行上限の判定用。同名は常にローテーション可)。 */
+  readonly countByUserExcludingName: (userId: string, name: string) => Effect.Effect<number>;
 }
 
 export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("TokenRepo") {}
@@ -324,6 +333,15 @@ function makeTokenRepo(db: Db): TokenRepoShape {
     deleteById: (id) =>
       run(async () => {
         await db.delete(apiTokens).where(eq(apiTokens.id, id));
+      }),
+    countByUserExcludingName: (userId, name) =>
+      run(async () => {
+        const row = await db
+          .select({ n: count() })
+          .from(apiTokens)
+          .where(and(eq(apiTokens.userId, userId), ne(apiTokens.name, name)))
+          .get();
+        return row?.n ?? 0;
       }),
   };
 }

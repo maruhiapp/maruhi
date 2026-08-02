@@ -5,6 +5,7 @@
 import { createExecutionContext, createScheduledController, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { isUniqueConflict } from "../src/db.package/index.ts";
 import worker from "../src/index.ts";
 import {
   BASE,
@@ -44,10 +45,29 @@ describe("GET /auth/github/start(§3-1)", () => {
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("Secure");
     expect(cookie).toContain("Path=/");
+    expect(cookie).toContain("SameSite=Lax");
   });
 });
 
 describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
+  it("sets the session cookie with the full __Host- attribute set (§5)", async () => {
+    // TCB 方針(CLAUDE.md): セッションクッキーの属性退行はここで検知する
+    const start = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
+    const state = new URL(start.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    const callback = await SELF.fetch(`${BASE}/auth/github/callback?code=code-100&state=${state}`, {
+      headers: { cookie: `${STATE_COOKIE}=${state}` },
+      redirect: "manual",
+    });
+    expect(callback.status).toBe(302);
+    const cookie = callback.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE}=`));
+    expect(cookie).toBeDefined();
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("Secure");
+    expect(cookie).toContain("Path=/");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).toContain("Max-Age=2592000");
+  });
+
   it("creates the user + personal org, issues a DB-backed session and clears the state cookie", async () => {
     const session = await loginSession(101);
     expect(session).toMatch(/^[0-9a-f]{64}$/);
@@ -221,6 +241,71 @@ describe("POST /auth/device/exchange(§4)", () => {
       n: number;
     }>();
     expect(count?.n).toBe(1);
+  });
+
+  it("rejects issuing beyond the per-user token limit with 429 (§6)", async () => {
+    // 上限 100 本(別名)。101 本目の新名は 429、同名ローテーションは引き続き可能
+    const first = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "seed" }),
+    });
+    expect(first.status).toBe(200);
+    const { userId } = (await first.json()) as { userId: string };
+    // 残り 99 本ぶんを直接シードして上限到達状態を作る
+    const rows = Array.from({ length: 99 }, (_, i) =>
+      env.DB.prepare(
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', NULL, 1, NULL)",
+      ).bind(`tok-${i}`, userId, `filler-${i}`, `hash-${i}`, "maruhi_pat_x"),
+    );
+    await env.DB.batch(rows);
+
+    const overflow = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "one-too-many" }),
+    });
+    expect(overflow.status).toBe(429);
+
+    // 同名(既存 "seed")のローテーションは上限に達していても通る
+    const rotate = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "seed" }),
+    });
+    expect(rotate.status).toBe(200);
+  });
+
+  it("rejects out-of-bounds payloads at the schema boundary (400)", async () => {
+    // scopes 要素数上限(100)超過
+    const tooManyScopes = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        githubAccessToken: "gh-token-205",
+        scopes: Array.from({ length: 101 }, () => ({ project: "*", permission: "read" })),
+      }),
+    });
+    expect(tooManyScopes.status).toBe(400);
+
+    // project はプロジェクト ID 形式(hex 64)か "*" のみ
+    const badProject = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        githubAccessToken: "gh-token-205",
+        scopes: [{ project: "x".repeat(500_000), permission: "read" }],
+      }),
+    });
+    expect(badProject.status).toBe(400);
+
+    // tokenName 上限(128 文字)超過
+    const longName = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "gh-token-205", tokenName: "n".repeat(129) }),
+    });
+    expect(longName.status).toBe(400);
   });
 });
 
@@ -442,6 +527,24 @@ describe("セッションのスライディング更新(§5)", () => {
     expect(row?.last_used_at ?? 0).toBeGreaterThan(0);
   });
 
+  it("re-issues the session cookie with a fresh Max-Age on session-authenticated responses (§5)", async () => {
+    // DB のスライディング延長だけでなく、ブラウザ側のクッキー期限も毎回更新される
+    const session = await loginSession(603);
+    const me = await SELF.fetch(`${BASE}/auth/me`, {
+      headers: { cookie: `${SESSION_COOKIE}=${session}` },
+    });
+    expect(me.status).toBe(200);
+    const cookie = me.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE}=`));
+    expect(cookie).toBeDefined();
+    expect(cookie).toContain(`${SESSION_COOKIE}=${session}`);
+    expect(cookie).toContain("Max-Age=2592000");
+
+    // トークン認証の応答ではクッキーを発行しない
+    const token = await deviceToken(604);
+    const tokenMe = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(token) });
+    expect(tokenMe.headers.getSetCookie()).toEqual([]);
+  });
+
   it("skips the D1 write when the extension gain is under the 1h threshold", async () => {
     const session = await loginSession(602);
     const before = await env.DB.prepare("SELECT expires_at FROM sessions").first<{
@@ -456,6 +559,23 @@ describe("セッションのスライディング更新(§5)", () => {
       expires_at: number;
     }>();
     expect(after?.expires_at).toBe(before?.expires_at);
+  });
+});
+
+describe("isUniqueConflict(D1 エラー判別)", () => {
+  it("detects UNIQUE violations directly and through cause chains", () => {
+    // batch 経路は素の Error、単発クエリ経路は DrizzleQueryError(cause 側)に
+    // メッセージが入る。どちらの形でも競合として判別できることを固定する
+    expect(isUniqueConflict(new Error("D1_ERROR: UNIQUE constraint failed: users.id"))).toBe(true);
+    expect(
+      isUniqueConflict(
+        new Error("Failed query: insert into users ...", {
+          cause: new Error("UNIQUE constraint failed: users.id: SQLITE_CONSTRAINT"),
+        }),
+      ),
+    ).toBe(true);
+    expect(isUniqueConflict(new Error("D1_ERROR: database is locked"))).toBe(false);
+    expect(isUniqueConflict("not an error")).toBe(false);
   });
 });
 

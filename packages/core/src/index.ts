@@ -30,6 +30,7 @@ export {
   scopePermissionFor,
   SessionService,
   type SessionServiceShape,
+  TokenLimitReachedError,
   type TokenPermission,
   TokenPermissionSchema,
   type TokenScope,

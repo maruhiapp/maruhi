@@ -131,6 +131,29 @@
     (UA 必須・Accept 分岐・check-token)、core スコープ結合則のユニットテスト
     (個別エントリはワイルドカードを絞れない = 最強一致、を意図として固定)
 
+### ループ 2〜3(再レビュー + Bugbot / CI)
+
+11. **CI 失敗の修正**: フェイク GitHub の check-token 照合が .dev.vars(gitignore
+    済み・CI に不在)の値を前提にしていた → 「パスの client_id と Basic の
+    client_id の一致 + secret 非空」の配線検証に変更(env 注入元非依存)
+12. **トークン主体 logout のセッション保護(Bugbot)**: Bearer 認証のリクエストに
+    同送されたブラウザのセッションクッキーを失効させない(logout はセッション
+    主体限定の操作に)
+13. **ローテーションの原子化(Bugbot + 再レビューが独立検出)**: delete + insert を
+    D1 atomic batch に統合 + UNIQUE (user_id, name)。並行 device 交換でも同名 1 本
+14. **トークン交換ボディを form-urlencoded に(Bugbot)**: RFC 6749 §4.1.3 準拠
+    (JSON ボディは仕様外)。フェイクも form を要求して pin
+15. **deviceExchange の入力境界 + 発行上限**: tokenName ≤ 128・scopes ≤ 100・
+    project はプロジェクト ID 形式か `"*"` のみ(Schema 強制)。別名トークンは
+    ユーザーあたり 100 本まで(429 TokenLimit。同名ローテーションは常に可能)
+16. **セッションクッキーのスライディング反映**: DB の延長だけでなく、セッション
+    認証の応答でクッキーを Max-Age 付きで再発行(ミドルウェア。ハンドラが同名
+    クッキーを操作した応答には触れない)。クッキー属性(HttpOnly / Secure /
+    SameSite / Max-Age)の回帰テストも追加
+17. **isUniqueConflict の cause 連鎖対応**: drizzle の単発クエリ経路
+    (DrizzleQueryError ラップ)でも競合判別が壊れないよう cause を辿る + 判別
+    テストで固定(batch 経路が素通しであることは workerd 実測で確認済み)
+
 採用せず記録に留めた指摘(実害小・v1 許容):
 
 - 複数タブでの OAuth 開始は state クッキーが単一スロットのため先行タブが 400 に
