@@ -24,7 +24,8 @@ export type ChainInvalidReason =
   | "last-owner-protected"
   | "unknown-target"
   | "duplicate-member"
-  | "unknown-server-grant";
+  | "unknown-server-grant"
+  | "grant-scope-narrowed";
 
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =

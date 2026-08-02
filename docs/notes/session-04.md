@@ -29,8 +29,10 @@
 - **grant_server の scope_environments**: 環境 ID リストを LP エンコードし、その hex 小文字文字列を
   payload の 1 フィールドとして外側 LP に載せる(binary_encoding 規約と同型の入れ子 LP)。
   リスト順序は署名対象の一部。**要レビュー** → 同上、§6.2 への明文化を提案
-- **同一サーバー鍵への再 grant はスコープ置き換え**として受理(revoke を挟まずにスコープ変更できる)。
-  拒否(revoke 必須)にする選択肢もある。**要レビュー**
+- **同一サーバー鍵への再 grant はスコープ拡大(旧 ⊆ 新)のみ受理**(2026-08-02 所有者裁定。
+  当初は置き換えで実装したが、縮小を許すと revoke_server + rotate_epoch(§7 の全環境
+  ローテーション義務)を迂回できてしまう穴があるため変更した。縮小は必ず失効経路を通す。
+  ベクター `authz-grant-scope-narrowed` で固定、拒否理由コードは `grant-scope-narrowed`)
 - **rotate_epoch の new_epoch 単調性は検証しない**(§6.3 に規定なし。同期ロジックと同時に設計)。
   構造検証は「1 以上の安全な整数」のみ
 - **エラー判別子は `_tag` でなく `kind`**: oxlint の no-underscore-dangle と衝突するため。

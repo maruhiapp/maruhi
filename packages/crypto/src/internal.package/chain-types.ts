@@ -56,6 +56,10 @@ export interface GrantServerPayload {
    * Environments the server key is granted access to. Canonicalized as a
    * nested length-prefixed encoding whose lowercase-hex form is one payload
    * field — list order is part of the signed bytes.
+   *
+   * Re-granting the same server key may only widen the scope (old ⊆ new);
+   * narrowing must go through revoke_server, which carries the §7 rotation
+   * obligation.
    */
   readonly scopeEnvironmentIds: readonly string[];
 }

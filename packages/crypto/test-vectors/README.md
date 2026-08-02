@@ -46,6 +46,7 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 5. **§8 の HKDF salt = 空**: negative `wrong-salt` で「空以外の salt では復号不能」を固定
 6. **サーバー鍵フィンガープリント(セッション 04 追加)**: `SHA-256(server_enc_pub(32B))` の先頭 16 バイト。サーバーは enc 鍵のみ保持(§9)で §3 のユーザー FP 定義(enc||sig)を適用できないため。→ 仕様に明文がない解釈。**要レビュー**
 7. **grant_server の scope_environments(セッション 04 追加)**: environment_id のリストを LP エンコード(入れ子 LP)し、その **hex 小文字文字列**を `scope_environments_lp_hex` として payload の 1 フィールドに載せる(binary_encoding 規約と同型)。リストの順序は署名対象バイト列の一部(negative `grant-server-scope-reorder` / `grant-server-scope-flat-concat` で固定)。→ **要レビュー**
+8. **再 grant はスコープ拡大のみ(2026-08-02 所有者裁定)**: 有効な grant と同一サーバー鍵への grant_server は旧スコープ ⊆ 新スコープの場合のみ受理。縮小は `revoke_server`(§7 の全環境ローテーション義務を伴う)を経由させる(negative `authz-grant-scope-narrowed` で固定)
 
 ## panva hpke の制約と検証方針(spike-c の知見)
 
@@ -56,7 +57,7 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 
 `negative` 配列の各要素は `must_fail: true` を持ち、`base`(または `base_seq`)のベクターに対して差し替えるフィールド(`decrypt_aad_hex` / `open_info_hex` / `ciphertext_hex` 等)だけを指定する。実装テストはこれらで「復号・検証が失敗すること」を必須で検査する(改竄・移植・順序入替の検出)。
 
-chain-entries.json には加えて `kind: "authorization"` の negative がある(セッション 04 追加)。これは**暗号学的には有効**(署名・正規化・prev_hash がすべて正しい)な完全なエントリで、§6.2 の role 権限規則によってのみ拒否されるべきもの。`entry` に完全なエントリ、`expected_reason` に期待する拒否理由(`insufficient-role` / `actor-not-member` / `last-owner-protected` / `actor-key-mismatch`)を持つ。`verify_reference.mjs` は署名が**有効であること**を確認し(拒否理由が暗号検証でないことの保証)、権限規則での拒否は実装テストが検査する。
+chain-entries.json には加えて `kind: "authorization"` の negative がある(セッション 04 追加)。これは**暗号学的には有効**(署名・正規化・prev_hash がすべて正しい)な完全なエントリで、§6.2 の role 権限規則によってのみ拒否されるべきもの。`entry` に完全なエントリ、`expected_reason` に期待する拒否理由(`insufficient-role` / `actor-not-member` / `last-owner-protected` / `actor-key-mismatch` / `grant-scope-narrowed`)を持つ。`verify_reference.mjs` は署名が**有効であること**を確認し(拒否理由が暗号検証でないことの保証)、権限規則での拒否は実装テストが検査する。
 
 また `expected_head_states`(セッション 04 追加)は、検証済みチェーンから導出される「現メンバー集合(role 付き)+ 有効 grant_server 集合 + 環境ごとの観測エポック」の期待値を `after_seq` 時点ごとに固定する(§6.3 のクライアント検証 API の出力を固定するもの)。
 

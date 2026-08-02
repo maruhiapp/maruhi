@@ -12,7 +12,13 @@ import {
   type UnsignedChainEntry,
   verifyChain,
 } from "../../src/index.ts";
-import { toTypedEntry, typedEntries, vectorKeys, vectorNegatives } from "./chain-vector.ts";
+import {
+  toTypedEntry,
+  typedEntries,
+  vectorEntries,
+  vectorKeys,
+  vectorNegatives,
+} from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 function failsWith(result: CryptoResult<ChainState>, seq: number, reason: string): boolean {
@@ -301,6 +307,39 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   );
 }
 
+async function regrantWideningCheck(c: Checks): Promise<void> {
+  // 再 grant のスコープ拡大(旧 ⊆ 新)は受理され、スコープが更新される。
+  // 縮小の拒否(grant-scope-narrowed)はベクター authz-grant-scope-narrowed が固定する
+  const e7 = entryAt(7);
+  const owner = vectorKeys["user-owner-0001"];
+  if (e7.op !== "grant_server" || owner === undefined) {
+    c.push("chain semantic: re-grant widening accepted", false, "setup failed");
+    return;
+  }
+  const widened = await signAs("user-owner-0001", {
+    suite: "maruhi/v1",
+    seq: 8,
+    prevHashHex: vectorEntries[6]?.entry_hash_hex ?? "",
+    actor: { userId: "user-owner-0001", keyFingerprintHex: owner.key_fingerprint_hex },
+    timestampMs: e7.timestampMs + 500,
+    op: "grant_server",
+    payload: {
+      ...e7.payload,
+      scopeEnvironmentIds: [...e7.payload.scopeEnvironmentIds, "env-staging-0003"],
+    },
+  });
+  const result =
+    widened === undefined ? undefined : await verifyChain([...typedEntries.slice(0, 7), widened]);
+  const grant =
+    result !== undefined && result.ok
+      ? result.value.serverGrants.get(e7.payload.serverKeyFingerprintHex)
+      : undefined;
+  c.push(
+    "chain semantic: re-grant widening accepted",
+    grant !== undefined && grant.scopeEnvironmentIds.length === 3,
+  );
+}
+
 /** 署名は正しいが意味的に不正なエントリ(vector 外の失敗系)を owner 鍵で作って検査 */
 async function semanticChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
@@ -328,5 +367,6 @@ export async function chainNegativeChecks(): Promise<CheckResult[]> {
   await authorizationChecks(c);
   await framingChecks(c);
   await semanticChecks(c);
+  await regrantWideningCheck(c);
   return c.results;
 }

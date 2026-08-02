@@ -295,7 +295,17 @@ async function applyGrantServer(
   if (encodeHex(digest.slice(0, FINGERPRINT_BYTES)) !== entry.payload.serverKeyFingerprintHex) {
     return "invalid-payload";
   }
-  // 同一サーバー鍵への再 grant はスコープの置き換えとして扱う(要レビュー)
+  // 同一サーバー鍵への再 grant はスコープ拡大(旧 ⊆ 新)のみ受理する(2026-08-02
+  // 所有者裁定)。縮小を許すと revoke_server + rotate_epoch(§7 の全環境ローテー
+  // ション義務)を迂回して「開示を止めたつもり」になれてしまうため、縮小は必ず
+  // 失効経路を通す。拡大は未開示環境を足すだけなので無害
+  const existing = state.serverGrants.get(entry.payload.serverKeyFingerprintHex);
+  if (existing !== undefined) {
+    const newScope = new Set(entry.payload.scopeEnvironmentIds);
+    if (existing.scopeEnvironmentIds.some((id) => !newScope.has(id))) {
+      return "grant-scope-narrowed";
+    }
+  }
   state.serverGrants.set(entry.payload.serverKeyFingerprintHex, {
     serverKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
     serverEncPubHex: entry.payload.serverEncPubHex,

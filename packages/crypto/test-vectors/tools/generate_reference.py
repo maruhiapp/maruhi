@@ -483,6 +483,19 @@ def gen_chain_entries():
         t0 + 9000, "insufficient-role",
         "admin / owner ロールの付与は owner のみ(admin は reader / member のみ追加可)",
     )
+    # 再 grant のスコープ縮小は拒否(2026-08-02 所有者裁定): 縮小は revoke_server +
+    # rotate_epoch(§7 の全環境ローテーション義務)を経由させる。拡大(旧 ⊆ 新)のみ受理
+    head7 = entries[6]["entry_hash_hex"]
+    narrowed_scope = ["env-prod-0001"]
+    add_authz(
+        "authz-grant-scope-narrowed", 8, head7, "grant_server", owner_id, owner,
+        dict(grant_payload, **{
+            "scope_environments": narrowed_scope,
+            "scope_environments_lp_hex": scope_environments_lp_hex(narrowed_scope),
+        }),
+        t0 + 7000, "grant-scope-narrowed",
+        "有効な grant のスコープを狭める再 grant は owner 署名でも拒否する(§7 のローテーション義務を迂回させない)",
+    )
 
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
