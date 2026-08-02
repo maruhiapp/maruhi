@@ -1,7 +1,7 @@
 # maruhi 監査ログ仕様書 (AUDIT_SPEC)
 
-Version: 0.1-draft
-Status: ドラフト(人間レビュー待ち。実装はこの文書の承認後に開始する)
+Version: 0.2
+Status: 承認済み(2026-08-02。セッション 07 PR のマージをもって所有者承認とする — 本 Status 更新を含む PR のレビュー承認が確定条件)
 
 この文書は maruhi の監査ログ(何を・誰が・いつ)の設計を定める。
 CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーション検出)と AUTH_SPEC(§2 データモデル)を前提とする。
@@ -97,6 +97,8 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | `chain.epoch_rotated` ★ | `rotate_epoch`(environment_id, 新エポック, 理由) |
 | `chain.server_granted` ★ | `grant_server`。**target_key_fingerprint に付与対象のサーバー鍵 FP** を入れ、スコープ(対象環境集合)は payload に写す |
 | `chain.server_revoked` ★ | `revoke_server`。**target_key_fingerprint に失効対象のサーバー鍵 FP** を入れる |
+
+- **バックフィル(2026-08-02 セッション 07 裁定)**: ミラーの記録は監査ログ実装の導入後に受理されたエントリから開始する。導入前に受理されたチェーンを持つ DO は存在しない(未リリース)ため、v1 では既存チェーンのバックフィルを実装しない。将来スキーマ移行等で必要になった場合は、§1-5(ミラーはチェーンから再構築可能)に基づく再構築処理として設計する
 
 ### 3.5 grant_server 経由のサーバーアクセス ★
 
