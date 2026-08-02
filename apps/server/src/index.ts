@@ -1,178 +1,37 @@
-// @maruhi/server — Workers + DO。Effect v4 HttpApi(ADR-0005)。
+// @maruhi/server — Workers + DO + D1。Effect v4 HttpApi(ADR-0005)。
 // サーバーコードは Web 標準 + Workers API のみ。Bun 固有 API(bun:*)は使用禁止。
 //
 // ソースは素の Workers API(export default { fetch } + DurableObject クラス)の
 // まま内部を Effect で実装する(ADR-0012: wrangler / Alchemy v2 両対応)。
+//
+// リクエスト認証(AUTH_SPEC)の結線:
+//   - AuthMiddleware(api-schema 契約)の実装は auth.package/middleware.ts
+//   - SessionService / TokenService / リポジトリは env(D1 binding)から worker
+//     起動時に一度だけ構築し、リクエストコンテキストとして handler へ渡す
 
-import {
-  ChainCapacityExceededError,
-  ChainEntryInvalidError,
-  ChainEntryTooLargeError,
-  ChainHeadConflictError,
-  maruhiApi,
-  ProjectAlreadyInitializedError,
-  ProjectNotFoundError,
-} from "@maruhi/api-schema";
-import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
-import { Context, Effect, FileSystem, Layer, Path } from "effect";
+import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
+import { SessionService, TokenService } from "@maruhi/core";
+import { Context, FileSystem, Layer, Path } from "effect";
 import { Etag, HttpPlatform, HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { RequestAuth, unauthenticatedRequestAuth } from "./auth.ts";
-import type {
-  AppendOutcome,
-  Env,
-  InitOutcome,
-  ProjectChainDO,
-  SnapshotOutcome,
-} from "./chain-do.ts";
-import { MAX_ENTRY_CANONICAL_BYTES, MAX_REQUEST_BODY_BYTES } from "./policy.ts";
+import {
+  authMiddlewareImpl,
+  GitHubApi,
+  makeGitHubApi,
+  makeSessionService,
+  makeTokenService,
+} from "./auth.package/index.ts";
+import type { Env } from "./chain-do.ts";
+import type { DbServices } from "./db.package/index.ts";
+import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
+import { authLive } from "./handlers-auth.ts";
+import { membershipLive } from "./handlers-membership.ts";
+import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
+import { WorkerEnv } from "./worker-env.ts";
 
 export { ProjectChainDO } from "./chain-do.ts";
 export type { Env } from "./chain-do.ts";
-
-class WorkerEnv extends Context.Service<WorkerEnv, Env>()("WorkerEnv") {}
-
-const projectStub = (env: Env, projectId: string): DurableObjectStub<ProjectChainDO> =>
-  env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
-
-// workers-types の RPC スタブ型は union 戻り値をメンバーごとの Promise 交差型に
-// 分配してしまうため、DO メソッドの宣言どおりの Promise<Outcome> へ戻す
-const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =>
-  Effect.promise(() => call() as Promise<T>);
-
-// RPC 境界の outcome → api-schema の型付きエラー / 成功レスポンスへの写像。
-// "project-id-mismatch" は worker が自分で計算した ID を渡す限り起こらない
-// (起きたら実装バグなので defect として落とす)
-
-type PolicyRejection = Extract<
-  AppendOutcome,
-  { kind: "chain-invalid" | "entry-too-large" | "capacity-exceeded" }
->;
-
-/** init / append に共通する受理拒否(検証失敗・サイズ / 累積上限)の写像。 */
-function policyFailure(
-  outcome: Extract<PolicyRejection, { kind: "chain-invalid" | "entry-too-large" }>,
-): ChainEntryInvalidError | ChainEntryTooLargeError;
-function policyFailure(
-  outcome: PolicyRejection,
-): ChainEntryInvalidError | ChainEntryTooLargeError | ChainCapacityExceededError;
-function policyFailure(outcome: PolicyRejection) {
-  switch (outcome.kind) {
-    case "chain-invalid":
-      return new ChainEntryInvalidError({ seq: outcome.seq, reason: outcome.reason });
-    case "entry-too-large":
-      return new ChainEntryTooLargeError({ limitBytes: outcome.limitBytes });
-    case "capacity-exceeded":
-      return new ChainCapacityExceededError({
-        maxEntries: outcome.maxEntries,
-        maxTotalBytes: outcome.maxTotalBytes,
-      });
-  }
-}
-
-const mapInitOutcome = (projectId: string, outcome: InitOutcome) => {
-  switch (outcome.kind) {
-    case "initialized":
-      return Effect.succeed({
-        projectId,
-        headSeq: outcome.headSeq,
-        headHashHex: outcome.headHashHex,
-      });
-    case "already-initialized":
-      return Effect.fail(new ProjectAlreadyInitializedError({ projectId }));
-    case "project-id-mismatch":
-      return Effect.die(new Error("project id mismatch between worker and DO"));
-    default:
-      return Effect.fail(policyFailure(outcome));
-  }
-};
-
-const mapAppendOutcome = (projectId: string, outcome: AppendOutcome) => {
-  switch (outcome.kind) {
-    case "appended":
-      return Effect.succeed({
-        projectId,
-        headSeq: outcome.headSeq,
-        headHashHex: outcome.headHashHex,
-      });
-    case "not-initialized":
-      return Effect.fail(new ProjectNotFoundError({ projectId }));
-    case "head-conflict":
-      return Effect.fail(
-        new ChainHeadConflictError({
-          currentHeadSeq: outcome.currentHeadSeq,
-          currentHeadHashHex: outcome.currentHeadHashHex,
-        }),
-      );
-    default:
-      return Effect.fail(policyFailure(outcome));
-  }
-};
-
-const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (handlers) =>
-  handlers
-    .handle("init", ({ payload }) =>
-      Effect.gen(function* () {
-        // 認証境界(auth.ts)。既知の制約: 主体は認可判定に未使用 — 追記系の保護は
-        // チェーン署名の検証のみ(認証セッションで置き換わる)
-        yield* (yield* RequestAuth).principal;
-        const env = yield* WorkerEnv;
-        // DO へ渡す前に worker 側でも受理ポリシーを先行検査する: サイズ超過エントリの
-        // ハッシュ計算・DO 転送を避け、エンコーダの例外は 5xx でなく 422 に落とす
-        // (受理判定の権威は引き続き DO — ここは前段の資源保護)
-        const canonicalBytes = yield* Effect.try({
-          try: () => canonicalChainEntryBytes(payload.entry).length,
-          catch: () =>
-            new ChainEntryInvalidError({ seq: payload.entry.seq, reason: "invalid-payload" }),
-        });
-        if (canonicalBytes > MAX_ENTRY_CANONICAL_BYTES) {
-          return yield* Effect.fail(
-            new ChainEntryTooLargeError({ limitBytes: MAX_ENTRY_CANONICAL_BYTES }),
-          );
-        }
-        // プロジェクト ID = genesis エントリハッシュ(CRYPTO_SPEC §6.4)。
-        // DO 側で検証・再計算との一致を確認した上で保存される
-        const projectId = yield* Effect.tryPromise({
-          try: () => computeChainEntryHash(payload.entry),
-          catch: () =>
-            new ChainEntryInvalidError({ seq: payload.entry.seq, reason: "invalid-payload" }),
-        });
-        const outcome = yield* rpcCall<InitOutcome>(() =>
-          projectStub(env, projectId).init(projectId, payload.entry),
-        );
-        return yield* mapInitOutcome(projectId, outcome);
-      }),
-    )
-    .handle("get", ({ params }) =>
-      Effect.gen(function* () {
-        yield* (yield* RequestAuth).principal;
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<SnapshotOutcome>(() =>
-          projectStub(env, params.projectId).snapshot(),
-        );
-        if (outcome.kind === "not-initialized") {
-          return yield* Effect.fail(new ProjectNotFoundError({ projectId: params.projectId }));
-        }
-        return {
-          projectId: params.projectId,
-          entries: outcome.entries,
-          headSeq: outcome.headSeq,
-          headHashHex: outcome.headHashHex,
-        };
-      }),
-    )
-    .handle("append", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* RequestAuth).principal;
-        const env = yield* WorkerEnv;
-        const outcome = yield* rpcCall<AppendOutcome>(() =>
-          projectStub(env, params.projectId).append(payload.parentHeadHashHex, payload.entry),
-        );
-        return yield* mapAppendOutcome(params.projectId, outcome);
-      }),
-    ),
-);
 
 // spike-b の検証知見: HttpApiBuilder.layer は型上 HttpPlatform / FileSystem /
 // Etag.Generator / Path を要求する(JSON API だけなら実行時には呼ばれない)。
@@ -184,12 +43,47 @@ const platformContext = Layer.mergeAll(
   Path.layer,
 );
 
-const apiLive = HttpApiBuilder.layer(maruhiApi).pipe(
-  Layer.provide(membershipLive),
-  Layer.provide(platformContext),
-);
+type RequestServices = DbServices | WorkerEnv | GitHubApi | SessionService | TokenService;
 
-const webHandler = HttpRouter.toWebHandler(apiLive);
+function buildServices(env: Env): Context.Context<RequestServices> {
+  const dbServices = makeDbServices(env.DB);
+  return dbServices.pipe(
+    Context.add(WorkerEnv, env),
+    Context.add(GitHubApi, makeGitHubApi(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET)),
+    Context.add(SessionService, makeSessionService(Context.get(dbServices, SessionRepo))),
+    Context.add(TokenService, makeTokenService(Context.get(dbServices, TokenRepo))),
+  );
+}
+
+interface EnvHandler {
+  readonly handler: (request: Request) => Promise<Response>;
+}
+
+// env(isolate ごとに安定)単位で HttpApi の Layer 構築を 1 回に抑える。
+// ミドルウェアの requires(SessionService / TokenService)は Layer で静的に
+// 満たす必要があるため、webHandler は env ごとに構築する
+const handlerCache = new WeakMap<Env, EnvHandler>();
+
+function handlerFor(env: Env): EnvHandler {
+  const cached = handlerCache.get(env);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const services = buildServices(env);
+  const apiLive = HttpApiBuilder.layer(maruhiApi).pipe(
+    Layer.provide(membershipLive),
+    Layer.provide(authLive),
+    Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
+    Layer.provide(platformContext),
+    Layer.provide(Layer.succeedContext(services)),
+  );
+  const webHandler = HttpRouter.toWebHandler(apiLive);
+  const built: EnvHandler = {
+    handler: (request) => webHandler.handler(request, services),
+  };
+  handlerCache.set(env, built);
+  return built;
+}
 
 /** チャンク列を 1 本のバイト列へ連結する。 */
 function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array {
@@ -263,9 +157,6 @@ export default {
     if (cappedRequest === null) {
       return new Response(null, { status: 413 });
     }
-    const requestContext = Context.make(WorkerEnv, env).pipe(
-      Context.add(RequestAuth, unauthenticatedRequestAuth),
-    );
-    return webHandler.handler(cappedRequest, requestContext);
+    return handlerFor(env).handler(cappedRequest);
   },
 } satisfies ExportedHandler<Env>;
