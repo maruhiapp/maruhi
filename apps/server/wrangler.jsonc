@@ -1,6 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // ADR-0012 のセルフホスト経路: 素の wrangler 設定のみでデプロイできること。
   "name": "maruhi-server",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
+  "durable_objects": {
+    "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectChainDO"] }],
 }

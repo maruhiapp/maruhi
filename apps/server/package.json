@@ -4,7 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@maruhi/api-schema": "workspace:*",
+    "@maruhi/core": "workspace:*",
+    "@maruhi/crypto": "workspace:*",
+    "effect": "4.0.0-beta.102"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.20.1",
