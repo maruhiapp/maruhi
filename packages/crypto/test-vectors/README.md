@@ -48,6 +48,7 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 7. **grant_server の scope_environments(2026-08-02 所有者裁定)**: environment_id のリストを LP エンコード(入れ子 LP)し、その **hex 小文字文字列**を `scope_environments_lp_hex` として payload の 1 フィールドに載せる(binary_encoding 規約と同型)。リストの順序は署名対象バイト列の一部(negative `grant-server-scope-reorder` / `grant-server-scope-flat-concat` で固定)。生成時はソート・重複なしを推奨(SHOULD。検証は集合として扱う)。CRYPTO_SPEC §6.2 に明文化済み
 8. **再 grant はスコープ拡大のみ(2026-08-02 所有者裁定)**: 有効な grant と同一サーバー鍵への grant_server は旧スコープ ⊆ 新スコープの場合のみ受理。縮小は `revoke_server`(§7 の全環境ローテーション義務を伴う)を経由させる(negative `authz-grant-scope-narrowed` で固定)
 9. **エポック = 環境ごとのカウンタ(2026-08-02 所有者裁定・案 3)**: 初期エポックは 1、`rotate_epoch` の new_epoch は「観測済みエポック(未観測なら 1)+ 1」と厳密一致。巻き戻し・重複・ジャンプは拒否(negative `authz-epoch-rollback` / `authz-epoch-duplicate` / `authz-epoch-jump` / `authz-epoch-first-jump` で固定)
+10. **フィールドサイズ上限(2026-08-02 所有者裁定・案 2)**: 自由文字列フィールドは UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は無効(negative `authz-field-too-long` / `authz-scope-too-many` で固定。チェーン有効性の合意規則のためベクターで定数を固定する)
 
 ## panva hpke の制約と検証方針(spike-c の知見)
 

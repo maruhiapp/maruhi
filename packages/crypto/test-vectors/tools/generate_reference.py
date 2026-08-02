@@ -517,6 +517,27 @@ def gen_chain_entries():
             t0 + 9000, "epoch-out-of-sequence", note,
         )
 
+    # フィールドサイズ上限(2026-08-02 所有者裁定・案 2): 自由文字列フィールドは
+    # UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は無効
+    # (巨大 payload による検証クライアントの資源消費対策。上限は合意規則なので
+    # ベクターで固定する)。署名は有効だが形状検証(invalid-payload)で拒否すべき
+    add_authz(
+        "authz-field-too-long", 10, head9, "rotate_epoch", admin_id, admin,
+        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "x" * 1025},
+        t0 + 9000, "invalid-payload",
+        "reason が 1025 バイト(上限 1024 超過)のエントリは署名が有効でも拒否する",
+    )
+    oversized_scope = [f"env-bulk-{i:04d}" for i in range(257)]
+    add_authz(
+        "authz-scope-too-many", 10, head9, "grant_server", owner_id, owner,
+        dict(grant_payload, **{
+            "scope_environments": oversized_scope,
+            "scope_environments_lp_hex": scope_environments_lp_hex(oversized_scope),
+        }),
+        t0 + 9000, "invalid-payload",
+        "scope_environments が 257 要素(上限 256 超過)のエントリは拒否する",
+    )
+
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
     impostor = build_entry(10, "rotate_epoch", owner_id, member,

@@ -10,7 +10,7 @@
 //   4. 署名検証(actor の登録 sig 公開鍵)→ bad-signature
 //   5. 認可 + 状態遷移(role 規則・対象の存在・最後の owner 保護)
 
-import { concatBytes, decodeHex, encodeHex } from "./bytes.ts";
+import { concatBytes, decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
 import { canonicalChainSignedBytes, computeChainEntryHash } from "./chain-canonical.ts";
 import type { ChainEntry, ChainMember, ChainState, Role, ServerGrant } from "./chain-types.ts";
 import type { ChainInvalidReason, CryptoResult } from "./errors.ts";
@@ -21,6 +21,10 @@ const GENESIS_PREV_HASH = "0".repeat(64);
 const ROLE_RANK: Readonly<Record<Role, number>> = { reader: 0, member: 1, admin: 2, owner: 3 };
 const ROLES: readonly Role[] = ["owner", "admin", "member", "reader"];
 const FINGERPRINT_BYTES = 16;
+// フィールドサイズ上限(CRYPTO_SPEC §6.1。2026-08-02 決定): チェーン有効性の
+// 合意規則。巨大 payload による検証クライアントの資源消費(可用性)対策
+const MAX_FIELD_BYTES = 1024;
+const MAX_SCOPE_ENVIRONMENTS = 256;
 
 interface MutableChainState {
   readonly members: Map<string, ChainMember>;
@@ -33,8 +37,15 @@ interface MutableChainState {
 // 受けて実行時型から検査する(悪意あるチェーンデータは必ず invalid-payload に
 // 落とす。throw で検証を中断させない)
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
+function withinFieldBytes(value: string): boolean {
+  // UTF-8 バイト数 ≥ コード単位数なので、まず安価な length で弾いてから
+  // 上限以下の候補だけ実エンコードで確定する(巨大文字列の確保を避ける)
+  return value.length <= MAX_FIELD_BYTES && utf8Encode(value).length <= MAX_FIELD_BYTES;
+}
+
+/** 非空かつ UTF-8 で MAX_FIELD_BYTES 以下の自由文字列フィールド(ID・reason 等) */
+function isBoundedId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && withinFieldBytes(value);
 }
 
 function isHexOfLength(value: unknown, bytes: number): boolean {
@@ -91,7 +102,7 @@ function checkPayloadShape(entry: ChainEntry): ChainInvalidReason | null {
   }
   if (
     !isRecord(entry.actor) ||
-    !isNonEmptyString(entry.actor.userId) ||
+    !isBoundedId(entry.actor.userId) ||
     typeof entry.actor.keyFingerprintHex !== "string"
   ) {
     return "invalid-payload";
@@ -115,7 +126,7 @@ function shapeAddMember(p: {
   sigPubHex: unknown;
   role: unknown;
 }): boolean {
-  return isNonEmptyString(p.targetUserId) && shapeGenesis(p) && isRole(p.role);
+  return isBoundedId(p.targetUserId) && shapeGenesis(p) && isRole(p.role);
 }
 
 function shapeRotateEpoch(p: {
@@ -124,10 +135,11 @@ function shapeRotateEpoch(p: {
   reason: unknown;
 }): boolean {
   return (
-    isNonEmptyString(p.environmentId) &&
+    isBoundedId(p.environmentId) &&
     Number.isSafeInteger(p.newEpoch) &&
     (p.newEpoch as number) >= 1 &&
-    typeof p.reason === "string"
+    typeof p.reason === "string" &&
+    withinFieldBytes(p.reason)
   );
 }
 
@@ -140,7 +152,8 @@ function shapeGrantServer(p: {
     isHexOfLength(p.serverEncPubHex, 32) &&
     isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES) &&
     Array.isArray(p.scopeEnvironmentIds) &&
-    p.scopeEnvironmentIds.every((id) => isNonEmptyString(id))
+    p.scopeEnvironmentIds.length <= MAX_SCOPE_ENVIRONMENTS &&
+    p.scopeEnvironmentIds.every((id) => isBoundedId(id))
   );
 }
 
@@ -151,9 +164,9 @@ function operationShapeOk(entry: ChainEntry): boolean {
     case "add_member":
       return shapeAddMember(entry.payload);
     case "remove_member":
-      return isNonEmptyString(entry.payload.targetUserId);
+      return isBoundedId(entry.payload.targetUserId);
     case "change_role":
-      return isNonEmptyString(entry.payload.targetUserId) && isRole(entry.payload.newRole);
+      return isBoundedId(entry.payload.targetUserId) && isRole(entry.payload.newRole);
     case "rotate_epoch":
       return shapeRotateEpoch(entry.payload);
     case "grant_server":

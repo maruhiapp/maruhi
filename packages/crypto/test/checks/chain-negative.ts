@@ -445,6 +445,46 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
   );
 }
 
+/** フィールドサイズ上限(§6.1)の境界: 1024 バイトちょうどは受理、バイト数基準で判定 */
+async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
+  const full = await verifyChain(typedEntries);
+  if (!full.ok) {
+    c.push("chain field-size: setup", false, "full chain must verify");
+    return;
+  }
+  const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex };
+  const adminActor = {
+    userId: "user-admin-0003",
+    keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
+  };
+
+  // reason がちょうど 1024 バイト(ASCII)→ 受理される
+  const atLimit = await signAs("user-admin-0003", {
+    ...base,
+    actor: adminActor,
+    op: "rotate_epoch",
+    payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: "y".repeat(1024) },
+  });
+  const accepted =
+    atLimit === undefined ? undefined : await verifyChain([...typedEntries, atLimit]);
+  c.push("chain field-size: 1024-byte reason accepted", accepted !== undefined && accepted.ok);
+
+  // ㊙(3 バイト)× 342 = 1026 バイト: コード単位数は 342 ≤ 1024 だが
+  // UTF-8 バイト数で超過 → 拒否(上限がバイト基準であることの固定)
+  const multibyte = await signAs("user-admin-0003", {
+    ...base,
+    actor: adminActor,
+    op: "rotate_epoch",
+    payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: "㊙".repeat(342) },
+  });
+  const rejected =
+    multibyte === undefined ? undefined : await verifyChain([...typedEntries, multibyte]);
+  c.push(
+    "chain field-size: multibyte over-limit reason rejected",
+    rejected !== undefined && failsWith(rejected, 10, "invalid-payload"),
+  );
+}
+
 /** 署名は正しいが意味的に不正なエントリ(vector 外の失敗系)を owner 鍵で作って検査 */
 async function semanticChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
@@ -474,5 +514,6 @@ export async function chainNegativeChecks(): Promise<CheckResult[]> {
   await semanticChecks(c);
   await regrantWideningCheck(c);
   await malformedInputChecks(c);
+  await fieldSizeBoundaryChecks(c);
   return c.results;
 }
