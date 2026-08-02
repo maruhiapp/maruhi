@@ -31,6 +31,14 @@
 - **→ 指示どおりここで中断。所有者への依頼: `CLOUDFLARE_API_TOKEN` をユーザー API トークン(dash の My Profile → API Tokens で作成。Workers 編集権限)に差し替えてほしい。**差し替え後の別セッションで `alchemy deploy` / `alchemy destroy` を再検証する
 - 失敗はデプロイ前に起きたため**リソースの残骸なし**(workers 一覧空を確認)。ローカルの `spikes/spike-b/.alchemy/log/out` が更新されたのみ(git restore 済み)
 
+**再検証(2026-08-02、ユーザー API トークン差し替え後)— ✅ 成立。ADR-0012 の両経路が実証完了**:
+
+- `/user/tokens/verify` → active、`wrangler whoami` → 「User API Token」表示を確認
+- `CI=1 bun x alchemy deploy --yes`: state store ブートストラップ(`alchemy-state-store` worker + Secrets Store への `AlchemyStateStoreToken` / `AlchemyStateStoreEncryptionKey` 登録)→ SpikeB スタックのデプロイまで一気に成功。**worker 名は alchemy の命名規則で `spike-b-spikeb-dev-unknown-<hash>`**(スタック + リソース + stage 由来。wrangler 経路の `spike-b` とは異なる。Phase 1 で運用側に載せるときは stage / 命名の明示設定が必要)
+- カウンタ API を実 URL(`*.maruhi.workers.dev`)で確認: GET 0 → increment(+3)→ 3、不正 payload 400。TLS はサブドメイン変更(spike-b → maruhi)から時間が経っていたため即時応答
+- 後片付け: `alchemy destroy --yes` で SpikeB 削除 → `wrangler delete --name alchemy-state-store` → Secrets Store 内の alchemy secret 2 件を API で削除 → workers / KV / secrets いずれも空を確認。**Cloudflare の既定 Secrets Store コンテナ(`default_secrets_store`、空)のみ残る**(alchemy ブートストラップが作成。アカウント既定ストアで実害なし)
+- 知見: alchemy の state store は「使うたびにブートストラップで常設 worker + secret を張る」設計。検証のように毎回消す使い方は本来の想定ではなく、Phase 1 で運用採用する場合は state store(worker + secret)を常設リソースとして受け入れるか、`alchemy.run.ts` の `state:` を別ストアに切り替えるかを判断する
+
 ### apps/web: Workers Static Assets + _headers(CSP)— ✅ 成立
 
 - `bun run build`(vite build + write-headers.ts)→ `wrangler deploy` 成功。アセット 11 ファイルアップロード(`_headers` はアセットとしては配信されず、設定として消費される — 期待どおり)
