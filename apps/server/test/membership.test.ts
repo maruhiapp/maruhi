@@ -274,6 +274,52 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
     expect(response.status).toBe(413);
   });
 
+  it("enforces the transport cap on the measured stream, not the Content-Length header", async () => {
+    // Content-Length を申告しないストリームボディ(chunked 相当)でも、実測で
+    // 上限を強制して 413 になること(ヘッダー偽装・欠落による迂回の防止)
+    const chunk = new TextEncoder().encode("x".repeat(64 * 1024));
+    const chunkCount = Math.ceil((MAX_REQUEST_BODY_BYTES + 1024 * 1024) / chunk.length);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= chunkCount) {
+          controller.close();
+          return;
+        }
+        sent += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const response = await SELF.fetch(`${BASE}/projects`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body,
+    });
+    expect(response.status).toBe(413);
+  });
+
+  it("rejects an oversized genesis at init with 413 (worker-side pre-check)", async () => {
+    const oversizedGenesis: ChainEntry = {
+      suite: "maruhi/v1",
+      seq: 1,
+      prevHashHex: "0".repeat(64),
+      op: "genesis",
+      actor: { userId: "u".repeat(600_000), keyFingerprintHex: "ab".repeat(16) },
+      payload: { encPubHex: "cd".repeat(32), sigPubHex: "ef".repeat(32) },
+      timestampMs: 1754006400000,
+      signatureHex: "12".repeat(64),
+    };
+    // actor.userId をもう 1 フィールド分肥大させ、正規化 1 MiB を超えさせる
+    const second: ChainEntry = {
+      ...oversizedGenesis,
+      actor: { ...oversizedGenesis.actor, userId: "u".repeat(600_000) + "v".repeat(500_000) },
+    };
+    const response = await initChain(second);
+    expect(response.status).toBe(413);
+    const body = (await response.json()) as { limitBytes: number };
+    expect(body.limitBytes).toBe(MAX_ENTRY_CANONICAL_BYTES);
+  });
+
   it("rejects an append once the chain holds the maximum number of entries", async () => {
     // 10,000 エントリの実チェーン再生は現実的でないため、DO SQLite に直接
     // 満杯状態を作って受理ポリシーの判定だけを検証する

@@ -13,7 +13,7 @@ import {
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
 } from "@maruhi/api-schema";
-import { computeChainEntryHash } from "@maruhi/crypto";
+import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { Etag, HttpPlatform, HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -26,7 +26,7 @@ import type {
   ProjectChainDO,
   SnapshotOutcome,
 } from "./chain-do.ts";
-import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
+import { MAX_ENTRY_CANONICAL_BYTES, MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 
 export { ProjectChainDO } from "./chain-do.ts";
 export type { Env } from "./chain-do.ts";
@@ -118,9 +118,26 @@ const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (handlers) 
         // チェーン署名の検証のみ(認証セッションで置き換わる)
         yield* (yield* RequestAuth).principal;
         const env = yield* WorkerEnv;
+        // DO へ渡す前に worker 側でも受理ポリシーを先行検査する: サイズ超過エントリの
+        // ハッシュ計算・DO 転送を避け、エンコーダの例外は 5xx でなく 422 に落とす
+        // (受理判定の権威は引き続き DO — ここは前段の資源保護)
+        const canonicalBytes = yield* Effect.try({
+          try: () => canonicalChainEntryBytes(payload.entry).length,
+          catch: () =>
+            new ChainEntryInvalidError({ seq: payload.entry.seq, reason: "invalid-payload" }),
+        });
+        if (canonicalBytes > MAX_ENTRY_CANONICAL_BYTES) {
+          return yield* Effect.fail(
+            new ChainEntryTooLargeError({ limitBytes: MAX_ENTRY_CANONICAL_BYTES }),
+          );
+        }
         // プロジェクト ID = genesis エントリハッシュ(CRYPTO_SPEC §6.4)。
         // DO 側で検証・再計算との一致を確認した上で保存される
-        const projectId = yield* Effect.promise(() => computeChainEntryHash(payload.entry));
+        const projectId = yield* Effect.tryPromise({
+          try: () => computeChainEntryHash(payload.entry),
+          catch: () =>
+            new ChainEntryInvalidError({ seq: payload.entry.seq, reason: "invalid-payload" }),
+        });
         const outcome = yield* rpcCall<InitOutcome>(() =>
           projectStub(env, projectId).init(projectId, payload.entry),
         );
@@ -174,17 +191,81 @@ const apiLive = HttpApiBuilder.layer(maruhiApi).pipe(
 
 const webHandler = HttpRouter.toWebHandler(apiLive);
 
+/** チャンク列を 1 本のバイト列へ連結する。 */
+function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return body;
+}
+
+/**
+ * ストリームを上限までバッファして返す(超過は null)。Content-Length は
+ * クライアント申告値であり信用できない(欠落・偽装・chunked)ため、上限は
+ * 実測で強制する。
+ */
+async function readStreamWithinLimit(
+  stream: ReadableStream<Uint8Array>,
+  limitBytes: number,
+): Promise<Uint8Array | null> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      return concatChunks(chunks, total);
+    }
+    total += value.length;
+    if (total > limitBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+}
+
+/** Content-Length 申告値による安価な事前棄却(ヘッダー欠落は 0 扱い = 通す)。 */
+function declaredLengthExceedsCap(request: Request): boolean {
+  const declared = Number(request.headers.get("content-length"));
+  return Number.isFinite(declared) && declared > MAX_REQUEST_BODY_BYTES;
+}
+
+/**
+ * HTTP 境界の生ボディ上限(policy.ts)。JSON パース前のメモリ DoS 防御。
+ * 超過は null(呼び出し側がスキーマ外の素の 413 で返す)。上限内のボディは
+ * バッファ済みバイト列に置き換えて後段(JSON パース)へ渡す。
+ */
+async function capRequestBody(request: Request): Promise<Request | null> {
+  if (declaredLengthExceedsCap(request)) {
+    return null;
+  }
+  if (request.body === null) {
+    return request;
+  }
+  const body = await readStreamWithinLimit(request.body, MAX_REQUEST_BODY_BYTES);
+  if (body === null) {
+    return null;
+  }
+  return new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: body.buffer as ArrayBuffer,
+  });
+}
+
 export default {
-  fetch(request, env): Promise<Response> | Response {
-    // HTTP 境界の生ボディ上限(policy.ts)。JSON パース前のメモリ DoS 防御なので、
-    // スキーマ外の素の 413 で返す(正規化バイト列基準の受理判定は DO 内で行う)
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
+  async fetch(request, env): Promise<Response> {
+    const cappedRequest = await capRequestBody(request);
+    if (cappedRequest === null) {
       return new Response(null, { status: 413 });
     }
     const requestContext = Context.make(WorkerEnv, env).pipe(
       Context.add(RequestAuth, unauthenticatedRequestAuth),
     );
-    return webHandler.handler(request, requestContext);
+    return webHandler.handler(cappedRequest, requestContext);
   },
 } satisfies ExportedHandler<Env>;
