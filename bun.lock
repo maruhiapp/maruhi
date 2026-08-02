@@ -67,6 +67,8 @@
       "name": "@maruhi/api-schema",
       "version": "0.0.0",
       "dependencies": {
+        "@maruhi/core": "workspace:*",
+        "@maruhi/crypto": "workspace:*",
         "effect": "4.0.0-beta.102",
       },
     },

@@ -7,9 +7,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@maruhi/core": "workspace:*",
+    "@maruhi/crypto": "workspace:*",
     "effect": "4.0.0-beta.102"
   }
 }
