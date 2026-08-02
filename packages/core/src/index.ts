@@ -38,4 +38,12 @@ export {
   TokenService,
   type TokenServiceShape,
 } from "./auth.ts";
-export { isProjectId, type ProjectId, ProjectIdSchema } from "./project.ts";
+export {
+  type EnvironmentId,
+  EnvironmentIdSchema,
+  isProjectId,
+  type ProjectId,
+  ProjectIdSchema,
+  type VariableId,
+  VariableIdSchema,
+} from "./project.ts";

@@ -5,6 +5,24 @@ export { authGroup, DeviceExchangeResultSchema, MeSchema, UserOrgSchema } from "
 export { AuthMiddleware } from "./auth-middleware.ts";
 export { ChainActorSchema, ChainEntrySchema, RoleSchema } from "./chain.ts";
 export {
+  type EncryptedPayload,
+  EncryptedPayloadSchema,
+  type RecipientDek,
+  RecipientDekSchema,
+  VariableAadSchema,
+  type WrappedDek,
+  WrappedDekSchema,
+} from "./data.ts";
+export {
+  deksGroup,
+  EnvironmentPullSchema,
+  environmentsGroup,
+  EnvironmentSummarySchema,
+  PulledVariableSchema,
+  variablesGroup,
+  VariableVersionSchema,
+} from "./data-api.ts";
+export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
   ChainCapacityExceededError,
@@ -12,12 +30,26 @@ export {
   ChainEntryTooLargeError,
   ChainHeadConflictError,
   ChainInvalidReasonSchema,
+  DataLimitExceededError,
+  DataLimitResourceSchema,
+  DekWrapExistsError,
+  DekWrapRejectedError,
+  DekWrapRejectReasonSchema,
+  EnvironmentConflictError,
+  EnvironmentNotFoundError,
+  EpochConflictError,
   ForbiddenError,
   ForbiddenReasonSchema,
+  PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
+  ResourceConflictReasonSchema,
   TokenLimitError,
   UnauthorizedError,
+  ValueTooLargeError,
+  VariableConflictError,
+  VariableNotFoundError,
+  VersionConflictError,
 } from "./errors.ts";
 export {
   ChainHeadSchema,

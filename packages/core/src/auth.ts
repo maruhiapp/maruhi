@@ -111,11 +111,13 @@ function isTokenScope(value: unknown): value is TokenScope {
 
 /**
  * An authenticated request principal. Session principals carry the full power
- * of the user (bounded by chain roles); token principals additionally carry
- * the token's scopes for min(scope, chain role) enforcement (AUTH_SPEC §9-2).
+ * of the user (bounded by chain roles) plus the auth method used to establish
+ * the session (recorded in audit events — AUDIT_SPEC §2); token principals
+ * additionally carry the token's scopes for min(scope, chain role)
+ * enforcement (AUTH_SPEC §9-2).
  */
 export type AuthenticatedPrincipal =
-  | { readonly kind: "session"; readonly userId: string }
+  | { readonly kind: "session"; readonly userId: string; readonly authMethod: string }
   | {
       readonly kind: "token";
       readonly userId: string;

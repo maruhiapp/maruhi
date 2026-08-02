@@ -11,6 +11,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import { authGroup } from "./auth-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ChainEntrySchema } from "./chain.ts";
+import { deksGroup, environmentsGroup, variablesGroup } from "./data-api.ts";
 import {
   ChainCapacityExceededError,
   ChainEntryInvalidError,
@@ -88,4 +89,9 @@ export const membershipGroup = HttpApiGroup.make("membership")
   );
 
 /** The maruhi HTTP API. */
-export const maruhiApi = HttpApi.make("maruhi").add(membershipGroup).add(authGroup);
+export const maruhiApi = HttpApi.make("maruhi")
+  .add(membershipGroup)
+  .add(authGroup)
+  .add(environmentsGroup)
+  .add(variablesGroup)
+  .add(deksGroup);

@@ -33,7 +33,11 @@ function resolveRecord(sessions: SessionRepoShape, idHash: string): Effect.Effec
       // 期限切れ行はここで掃除する(DB バックの失効可能性を保つ)
       return Effect.as(sessions.deleteByHash(idHash), anonymousPrincipal);
     }
-    const principal = { kind: "session", userId: record.userId } satisfies Principal;
+    const principal = {
+      kind: "session",
+      userId: record.userId,
+      authMethod: record.authMethod,
+    } satisfies Principal;
     const newExpiresAt = now + SESSION_TTL_MS;
     if (newExpiresAt - record.expiresAtMs < TOUCH_INTERVAL_MS) {
       return Effect.succeed(principal);
