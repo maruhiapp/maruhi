@@ -7,9 +7,19 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:bun": "bun test/run-in-bun.ts",
+    "test:workerd": "vitest run --config vitest.workerd.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "hpke": "1.1.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.1",
+    "@cloudflare/workers-types": "5.20260731.1",
+    "@vitest/browser-playwright": "4.1.10",
+    "vitest": "4.1.10"
   }
 }
