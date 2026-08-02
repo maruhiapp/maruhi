@@ -21,6 +21,7 @@ const GENESIS_PREV_HASH = "0".repeat(64);
 const ROLE_RANK: Readonly<Record<Role, number>> = { reader: 0, member: 1, admin: 2, owner: 3 };
 const ROLES: readonly Role[] = ["owner", "admin", "member", "reader"];
 const FINGERPRINT_BYTES = 16;
+const SIGNATURE_BYTES = 64;
 // フィールドサイズ上限(CRYPTO_SPEC §6.1。2026-08-02 決定): チェーン有効性の
 // 合意規則。巨大 payload による検証クライアントの資源消費(可用性)対策
 const MAX_FIELD_BYTES = 1024;
@@ -111,7 +112,7 @@ function checkPayloadShape(entry: ChainEntry): ChainInvalidReason | null {
   ) {
     return "invalid-payload";
   }
-  if (!isHexOfLength(entry.signatureHex, 64)) {
+  if (!isHexOfLength(entry.signatureHex, SIGNATURE_BYTES)) {
     return "invalid-payload";
   }
   if (!isRecord(entry.payload)) {
@@ -205,7 +206,7 @@ async function resolveActorSigPub(
 async function verifyEntrySignature(entry: ChainEntry, sigPubHex: string): Promise<boolean> {
   const signature = decodeHex(entry.signatureHex);
   const publicKeyBytes = decodeHex(sigPubHex);
-  if (signature === null || signature.length !== 64 || publicKeyBytes === null) {
+  if (signature === null || signature.length !== SIGNATURE_BYTES || publicKeyBytes === null) {
     return false;
   }
   try {

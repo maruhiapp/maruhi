@@ -340,7 +340,13 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     c.push("chain malformed: setup", false, "seq 7 must be grant_server");
     return;
   }
-  const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex, signatureHex: "00" };
+  // signatureHex は形状として妥当な 64 バイトのダミーにする: 短い値だと全ケースが
+  // 署名長の shape 検査で短絡し、各ケースが意図したフィールドを検査しなくなる
+  const base = {
+    ...nextEntryBase(),
+    prevHashHex: full.value.headHashHex,
+    signatureHex: "00".repeat(64),
+  };
   const cases: readonly { name: string; entry: unknown }[] = [
     {
       name: "grant_server scope is not an array",
