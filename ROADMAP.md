@@ -19,7 +19,7 @@
 - [x] E2EE コア(純粋 E2EE。サーバー鍵 = 選択的開示は実装しない、データ構造のみ確保)(2026-08-02 完了。PR #12 = packages/crypto: §2.1 エンコーダ / §3 鍵 / §4 変数暗号化 / §5 DEK ラップ / §6 チェーン検証・状態導出 / §8 リカバリーラップ、テストベクター全通過・4 実行環境 CI。§6.3 の DEK ラップ先一致検査・ヘッドゴシップは同期ロジックとして後続)
 - [ ] メンバーシップログ(genesis + 単独ユーザー分。検証ロジック込み)※チェーンの暗号・検証層は PR #12、サーバー保存(プロジェクト DO)・追記 API(§6.4 検証 / CAS / 受理ポリシー)は PR #14 で完了(2026-08-02)。残りはクライアント同期(§6.3 の DEK ラップ先一致検査・ヘッドゴシップ)
 - [ ] CLI: `maruhi run`(メモリ注入)、`push` / `pull`、device flow ログイン、OS キーチェーン
-- [ ] サーバー: プロジェクト DO、D1、HttpApi、監査ログ(append-only)
+- [ ] サーバー: プロジェクト DO、D1、HttpApi、監査ログ(append-only)※ DO・D1(Drizzle v1)・HttpApi に加え、認証・アイデンティティ基盤(AUTH_SPEC 本実装: GitHub OAuth web / device 交換、DB バックセッション、maruhi 発行トークン、パーソナル org、チェーン API の認証・認可 = AUTH_SPEC §11)は PR #16 で完了(2026-08-02)。残りは監査ログ実装(AUDIT_SPEC の所有者承認待ち)と変数値 API
 - [ ] リカバリーコード
 - [ ] セルフホスト初回セットアップウィザード(GitHub OAuth App の作成案内 + client_id/secret 登録。AUTH_SPEC §3 参照)
 - [ ] Deploy to Cloudflare / wrangler 一発デプロイの検証
