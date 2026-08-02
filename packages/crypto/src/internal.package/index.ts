@@ -36,6 +36,12 @@ export {
   type WrappedDek,
 } from "./dek-wrap.ts";
 export {
+  buildDekWrapSignatureBytes,
+  type DekWrapSignatureContext,
+  signDekWrap,
+  verifyDekWrapSignature,
+} from "./dek-wrap-sign.ts";
+export {
   generateRecoverySecret,
   unwrapMasterSecret,
   type WrappedMasterSecret,

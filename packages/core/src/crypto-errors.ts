@@ -41,6 +41,11 @@ export class CryptoDekUnwrapError extends Data.TaggedError("CryptoDekUnwrap")<ob
 /** Ed25519 signing failed. */
 export class CryptoSignError extends Data.TaggedError("CryptoSign")<object> {}
 
+/** DEK-wrap registration signature verification failed (CRYPTO_SPEC §5.1). */
+export class CryptoDekWrapSignatureError extends Data.TaggedError(
+  "CryptoDekWrapSignature",
+)<object> {}
+
 /** Membership-chain verification failed at entry `seq` for `reason`. */
 export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly seq: number;
@@ -56,6 +61,7 @@ export type WrappedCryptoError =
   | CryptoDekWrapError
   | CryptoDekUnwrapError
   | CryptoSignError
+  | CryptoDekWrapSignatureError
   | ChainInvalidError;
 
 /** Maps a raw `CryptoError` value onto its Effect-tagged counterpart. */
@@ -75,6 +81,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoDekUnwrapError();
     case "SignFailed":
       return new CryptoSignError();
+    case "DekWrapSignatureInvalid":
+      return new CryptoDekWrapSignatureError();
     case "ChainInvalid":
       return new ChainInvalidError({ seq: error.seq, reason: error.reason });
   }

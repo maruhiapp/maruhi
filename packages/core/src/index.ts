@@ -6,6 +6,7 @@ export {
   CryptoDecryptError,
   CryptoDekUnwrapError,
   CryptoDekWrapError,
+  CryptoDekWrapSignatureError,
   CryptoEncryptError,
   cryptoEffect,
   CryptoInvalidInputError,
