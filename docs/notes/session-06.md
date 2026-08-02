@@ -102,9 +102,10 @@
   監査ログ(append-only)」の注記更新(D1 + 認証 + チェーン認可まで完了。
   監査ログ実装は AUDIT_SPEC 承認待ち)
 - **AUDIT_SPEC(PR #10 で所有者起草)のレビュー・承認が監査ログ実装の前提**
-- 未回収の optional 項目: CI のテレメトリ無効化(WRANGLER_SEND_METRICS=false /
-  DO_NOT_TRACK=1 — spike-b からの申し送り。CI 定義自体が未整備のため保留)、
-  リカバリーブロブ取得のレート制限設計(CRYPTO_SPEC §8)
+- ~~CI のテレメトリ無効化(spike-b からの申し送り)~~ → **解消済みを確認**:
+  .github/workflows/ci.yml に DO_NOT_TRACK=1 / WRANGLER_SEND_METRICS=false が
+  設定済み(所有者側で対応済み)
+- 未回収の optional 項目: リカバリーブロブ取得のレート制限設計(CRYPTO_SPEC §8)
 - CLI 実装時: device flow の CLI 側は `/auth/device/exchange`(HttpApi 導出
   クライアント)+ OS キーチェーン保存。トークンの既定スコープは `* × admin`
   (実効権限はチェーン role で束縛)
