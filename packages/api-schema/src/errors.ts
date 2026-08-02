@@ -222,13 +222,15 @@ export const DekWrapRejectReasonSchema = Schema.Literals([
   "recipient-missing",
   "duplicate-recipient",
   "epoch-out-of-range",
+  "signature-invalid",
 ]);
 
 /**
  * 422: the wrap set violates §12-6 — a recipient is not a current chain
  * member / has a different chain key, the initial registration for an epoch
- * does not cover the member set exactly, a recipient is duplicated, or the
- * epoch is outside 1..currentEpoch.
+ * does not cover the member set exactly, a recipient is duplicated, the
+ * epoch is outside 1..currentEpoch, or a registration signature does not
+ * verify under the caller's chain signing key (CRYPTO_SPEC §5.1).
  */
 export class DekWrapRejectedError extends Schema.TaggedErrorClass<DekWrapRejectedError>()(
   "DekWrapRejected",

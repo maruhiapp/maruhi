@@ -28,6 +28,9 @@ const EncPubHex = hexString(32);
 const HpkeEncHex = hexString(32);
 // ラップ済み DEK = 32 バイト DEK + GCM タグ 16 バイト(CRYPTO_SPEC §5)
 const WrappedDekCiphertextHex = hexString(48);
+// 登録署名(Ed25519、CRYPTO_SPEC §5.1)と署名者鍵フィンガープリント(§3)
+const WrapSignatureHex = hexString(64);
+const KeyFingerprintHex = hexString(16);
 
 // AES-256-GCM の ct || tag: タグ込み 16 バイト以上の hex 小文字(偶数長)
 const ValueCiphertextHex = Schema.String.check(
@@ -63,6 +66,8 @@ export type EncryptedPayload = typeof EncryptedPayloadSchema.Type;
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
  * recipient is identified by both user id and encryption public key; the
  * server requires both to match the chain-derived member exactly.
+ * `signatureHex` is the per-wrap registration signature (CRYPTO_SPEC §5.1);
+ * the signer must be the calling principal, so the wire carries no signer id.
  *
  * recipientUserId の上限はチェーン合意規則の自由文字列上限(CRYPTO_SPEC §6.1 の
  * 1024 バイト)に揃える — add_member の対象はここより狭く検証されないため、
@@ -75,17 +80,26 @@ export const WrappedDekSchema = Schema.Struct({
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
+  signatureHex: WrapSignatureHex,
 });
 
 /** One HPKE-wrapped epoch DEK for one recipient. */
 export type WrappedDek = typeof WrappedDekSchema.Type;
 
-/** A wrap distributed to its recipient (the recipient is the caller — §12-6). */
+/**
+ * A wrap distributed to its recipient (the recipient is the caller — §12-6).
+ * Carries the registration signature and the signer identity (user id + key
+ * fingerprint at acceptance time) so the client can verify attribution
+ * against the chain history (CRYPTO_SPEC §5.1).
+ */
 export const RecipientDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
+  signatureHex: WrapSignatureHex,
+  signerUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  signerKeyFingerprintHex: KeyFingerprintHex,
 });
 
 /** A wrap distributed to its recipient. */
