@@ -96,6 +96,9 @@ function checkPayloadShape(entry: ChainEntry): ChainInvalidReason | null {
   ) {
     return "invalid-payload";
   }
+  if (typeof entry.signatureHex !== "string") {
+    return "invalid-payload";
+  }
   if (!isRecord(entry.payload)) {
     return "invalid-payload";
   }

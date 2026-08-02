@@ -21,11 +21,14 @@ export function encodeHex(bytes: Uint8Array): string {
 
 /**
  * Decodes a lowercase hex string. Returns null for malformed input (odd
- * length, non-hex characters). Uppercase is rejected: the canonical form of
- * chain entries and fingerprints is lowercase only.
+ * length, non-hex characters — and, defensively, non-string runtime values
+ * from untrusted JSON). Uppercase is rejected: the canonical form of chain
+ * entries and fingerprints is lowercase only.
  */
 export function decodeHex(s: string): Uint8Array | null {
-  if (s.length % 2 !== 0 || !/^[0-9a-f]*$/.test(s)) {
+  // 不信データの検証境界から呼ばれるため、実行時型が string でない場合も
+  // throw せず null を返す(TS 型より実行時の防御を優先)
+  if (typeof s !== "string" || s.length % 2 !== 0 || !/^[0-9a-f]*$/.test(s)) {
     return null;
   }
   const out = new Uint8Array(s.length / 2);

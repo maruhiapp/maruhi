@@ -364,6 +364,24 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { ...entryAt(2).payload, targetUserId: 123 },
       },
     },
+    {
+      name: "signature missing",
+      entry: {
+        ...base,
+        signatureHex: undefined,
+        op: "remove_member",
+        payload: { targetUserId: "x" },
+      },
+    },
+    {
+      name: "signature is null",
+      entry: {
+        ...base,
+        signatureHex: null,
+        op: "remove_member",
+        payload: { targetUserId: "x" },
+      },
+    },
   ];
   for (const item of cases) {
     // 例外を投げず invalid-payload の CryptoResult で返ることを検査する
