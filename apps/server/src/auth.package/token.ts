@@ -58,13 +58,13 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
   return {
     issueToken: (userId, name, scopes) =>
       Effect.gen(function* () {
-        // 同一 (user, name) は再発行 = ローテーション(旧行を失効)。device 交換の
-        // 連打で api_tokens が無限に増える DoS を防ぐ(名前を変えれば複数保持は可能)
-        yield* tokens.deleteByUserAndName(userId, name);
         const rawToken = TOKEN_PREFIX + randomBase62();
         const tokenHash = yield* hashOf(rawToken);
         const tokenId = ulid();
-        yield* tokens.insert({
+        // 同一 (user, name) は再発行 = ローテーション(旧行の失効と新行の挿入を
+        // atomic batch で行う)。device 交換の連打で api_tokens が無限に増える DoS を
+        // 防ぐ(名前を変えれば複数保持は可能)
+        yield* tokens.replaceForUserAndName({
           id: tokenId,
           userId,
           name,

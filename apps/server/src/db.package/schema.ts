@@ -111,7 +111,12 @@ export const apiTokens = sqliteTable(
     createdAt: integer("created_at").notNull(),
     lastUsedAt: integer("last_used_at"),
   },
-  (t) => [uniqueIndex("tok_hash").on(t.tokenHash), index("tok_user").on(t.userId)],
+  (t) => [
+    uniqueIndex("tok_hash").on(t.tokenHash),
+    index("tok_user").on(t.userId),
+    // 同名トークンはローテーション(AUTH_SPEC §6)。並行発行でも 1 本を DB 制約で保証
+    uniqueIndex("tok_user_name").on(t.userId, t.name),
+  ],
 );
 
 export const projects = sqliteTable(

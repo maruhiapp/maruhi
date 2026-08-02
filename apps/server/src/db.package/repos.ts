@@ -281,31 +281,40 @@ export interface NewApiToken {
 }
 
 export interface TokenRepoShape {
-  readonly insert: (token: NewApiToken) => Effect.Effect<void>;
+  /**
+   * 同一 (user, name) の既存トークンを失効させつつ新トークンを挿入する
+   * (device 交換の再発行 = ローテーション)。delete + insert を D1 の atomic
+   * batch で行い、並行発行でも同名トークンが複数残らない(UNIQUE (user_id, name)
+   * が最終防衛)。
+   */
+  readonly replaceForUserAndName: (token: NewApiToken) => Effect.Effect<void>;
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
   readonly deleteById: (id: string) => Effect.Effect<void>;
-  /** 同一 (user, name) の既存トークンを削除する(device 交換の再発行 = ローテーション)。 */
-  readonly deleteByUserAndName: (userId: string, name: string) => Effect.Effect<void>;
 }
 
 export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("TokenRepo") {}
 
 function makeTokenRepo(db: Db): TokenRepoShape {
   return {
-    insert: (token) =>
+    replaceForUserAndName: (token) =>
       run(async () => {
-        await db.insert(apiTokens).values({
-          id: token.id,
-          userId: token.userId,
-          name: token.name,
-          tokenHash: token.tokenHash,
-          tokenPrefix: token.tokenPrefix,
-          scopes: JSON.stringify(token.scopes),
-          expiresAt: null,
-          createdAt: token.createdAtMs,
-          lastUsedAt: null,
-        });
+        await db.batch([
+          db
+            .delete(apiTokens)
+            .where(and(eq(apiTokens.userId, token.userId), eq(apiTokens.name, token.name))),
+          db.insert(apiTokens).values({
+            id: token.id,
+            userId: token.userId,
+            name: token.name,
+            tokenHash: token.tokenHash,
+            tokenPrefix: token.tokenPrefix,
+            scopes: JSON.stringify(token.scopes),
+            expiresAt: null,
+            createdAt: token.createdAtMs,
+            lastUsedAt: null,
+          }),
+        ]);
       }),
     findByHash: (tokenHash) => run(() => findTokenByHash(db, tokenHash)),
     touchLastUsed: (id, nowMs) =>
@@ -315,12 +324,6 @@ function makeTokenRepo(db: Db): TokenRepoShape {
     deleteById: (id) =>
       run(async () => {
         await db.delete(apiTokens).where(eq(apiTokens.id, id));
-      }),
-    deleteByUserAndName: (userId, name) =>
-      run(async () => {
-        await db
-          .delete(apiTokens)
-          .where(and(eq(apiTokens.userId, userId), eq(apiTokens.name, name)));
       }),
   };
 }

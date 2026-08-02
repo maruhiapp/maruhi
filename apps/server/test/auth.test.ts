@@ -212,6 +212,16 @@ describe("POST /auth/device/exchange(§4)", () => {
     const newMe = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(second) });
     expect(newMe.status).toBe(200);
   });
+
+  it("keeps at most one token per (user, name) under concurrent exchanges", async () => {
+    // ローテーションは delete + insert の atomic batch(+ UNIQUE (user_id, name))。
+    // 並行 device 交換でも同名トークンが複数残らない
+    await Promise.all([deviceToken(203), deviceToken(203), deviceToken(203)]);
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(1);
+  });
 });
 
 describe("GET /auth/me(認証必須)", () => {

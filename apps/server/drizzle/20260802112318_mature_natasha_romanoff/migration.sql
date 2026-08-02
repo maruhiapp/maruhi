@@ -64,6 +64,7 @@ CREATE TABLE `users` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `tok_hash` ON `api_tokens` (`token_hash`);--> statement-breakpoint
 CREATE INDEX `tok_user` ON `api_tokens` (`user_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `tok_user_name` ON `api_tokens` (`user_id`,`name`);--> statement-breakpoint
 CREATE INDEX `li_user` ON `linked_identities` (`user_id`);--> statement-breakpoint
 CREATE INDEX `mem_user` ON `memberships` (`user_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `org_slug` ON `organizations` (`slug`);--> statement-breakpoint

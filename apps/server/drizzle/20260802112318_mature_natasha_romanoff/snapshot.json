@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "3d4b12a0-0dc3-4577-9318-d4248b355d93",
+  "id": "366afc45-f74c-4d3f-b866-35d84234dc3d",
   "prevIds": ["00000000-0000-0000-0000-000000000000"],
   "ddl": [
     {
@@ -522,6 +522,24 @@
       "where": null,
       "origin": "manual",
       "name": "tok_user",
+      "entityType": "indexes",
+      "table": "api_tokens"
+    },
+    {
+      "columns": [
+        {
+          "value": "user_id",
+          "isExpression": false
+        },
+        {
+          "value": "name",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "tok_user_name",
       "entityType": "indexes",
       "table": "api_tokens"
     },
