@@ -45,6 +45,12 @@ export interface ChangeRolePayload {
 
 export interface RotateEpochPayload {
   readonly environmentId: string;
+  /**
+   * Strictly a number in this typed API. Wire formats (chain JSON, test
+   * vectors) may carry the epoch as a decimal string — the §2.1 encoding
+   * makes both forms byte-identical — but decoders MUST coerce to a number
+   * before calling verifyChain; a string here is rejected as invalid-payload.
+   */
   readonly newEpoch: number;
   readonly reason: string;
 }
