@@ -31,6 +31,12 @@ function invalidInput(field: string): { readonly ok: false; readonly error: Cryp
   return { ok: false, error: { kind: "InvalidInput", field } };
 }
 
+// epoch は LP エンコーダの前提(非負の安全な整数)を Result で検証する
+// (variable.ts と同様。try による偶発的な封じ込めでなく型付きエラーで返す)
+function checkEpoch(context: DekWrapContext): boolean {
+  return Number.isSafeInteger(context.epoch) && context.epoch >= 0;
+}
+
 /**
  * Builds the HPKE info for a DEK wrap:
  * `LP("maruhi/v1/dek-wrap", project_id, environment_id, epoch, recipient_user_id)`.
@@ -56,6 +62,9 @@ export async function wrapDek(input: {
   if (input.dek.length !== DEK_BYTES) {
     return invalidInput("dek length");
   }
+  if (!checkEpoch(input.context)) {
+    return invalidInput("context epoch");
+  }
   try {
     const { encapsulatedSecret, ciphertext } = await hpkeSuite().Seal(
       input.recipientPublicKey,
@@ -77,6 +86,9 @@ export async function unwrapDek(input: {
   readonly wrapped: WrappedDek;
   readonly context: DekWrapContext;
 }): Promise<CryptoResult<Uint8Array>> {
+  if (!checkEpoch(input.context)) {
+    return invalidInput("context epoch");
+  }
   try {
     const dek = await hpkeSuite().Open(
       input.recipientKeyPair,

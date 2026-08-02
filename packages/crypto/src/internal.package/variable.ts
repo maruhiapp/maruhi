@@ -29,6 +29,18 @@ function invalidInput(field: string): { readonly ok: false; readonly error: Cryp
   return { ok: false, error: { kind: "InvalidInput", field } };
 }
 
+// 数値フィールドは LP エンコーダの前提(非負の安全な整数)を Result で検証する。
+// これを怠ると buildVariableAad が TypeError を投げ「エラーは値で返す」契約が破れる
+function checkContextNumbers(context: VariableContext): string | null {
+  if (!Number.isSafeInteger(context.epoch) || context.epoch < 0) {
+    return "context epoch";
+  }
+  if (!Number.isSafeInteger(context.version) || context.version < 0) {
+    return "context version";
+  }
+  return null;
+}
+
 /**
  * Builds the AAD for a variable value:
  * `LP(suite, project_id, environment_id, epoch, variable_id, version)`.
@@ -62,6 +74,10 @@ export async function encryptVariable(input: {
   if (input.dek.length !== DEK_BYTES) {
     return invalidInput("dek length");
   }
+  const badField = checkContextNumbers(input.context);
+  if (badField !== null) {
+    return invalidInput(badField);
+  }
   const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
   const key = await importDek(input.dek, "encrypt");
   const ciphertext = new Uint8Array(
@@ -94,6 +110,10 @@ export async function decryptVariable(input: {
   }
   if (input.nonce.length !== NONCE_BYTES) {
     return invalidInput("nonce length");
+  }
+  const badField = checkContextNumbers(input.context);
+  if (badField !== null) {
+    return invalidInput(badField);
   }
   try {
     const key = await importDek(input.dek, "decrypt");

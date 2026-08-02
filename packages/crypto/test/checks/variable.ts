@@ -88,6 +88,37 @@ async function tamperChecks(c: Checks): Promise<void> {
   }
 }
 
+async function invalidContextChecks(c: Checks): Promise<void> {
+  // 数値文脈フィールドが LP エンコーダの前提(非負の安全な整数)を満たさない場合、
+  // throw でなく InvalidInput の CryptoResult で返る(encrypt / decrypt とも)
+  const dek = generateDek();
+  const plaintext = new TextEncoder().encode("x");
+  const cases: readonly { name: string; context: VariableContext }[] = [
+    { name: "negative epoch", context: { ...baseContext(), epoch: -1 } },
+    { name: "non-integer version", context: { ...baseContext(), version: 1.5 } },
+  ];
+  for (const item of cases) {
+    try {
+      const encrypted = await encryptVariable({ dek, context: item.context, plaintext });
+      const decrypted = await decryptVariable({
+        dek,
+        context: item.context,
+        nonce: fromHex(base.nonce_hex),
+        ciphertext: fromHex(base.ciphertext_hex),
+      });
+      c.push(
+        `var-enc invalid context: ${item.name}`,
+        !encrypted.ok &&
+          encrypted.error.kind === "InvalidInput" &&
+          !decrypted.ok &&
+          decrypted.error.kind === "InvalidInput",
+      );
+    } catch (error) {
+      c.push(`var-enc invalid context: ${item.name}`, false, `threw: ${String(error)}`);
+    }
+  }
+}
+
 async function roundtripChecks(c: Checks): Promise<void> {
   const dek = generateDek();
   const plaintext = new TextEncoder().encode("dummy-value-not-a-real-secret");
@@ -141,6 +172,7 @@ export async function variableChecks(): Promise<CheckResult[]> {
   await vectorChecks(c);
   await aadMismatchChecks(c);
   await tamperChecks(c);
+  await invalidContextChecks(c);
   await roundtripChecks(c);
   await nonceUniquenessChecks(c);
   return c.results;

@@ -106,6 +106,32 @@ async function negativeChecks(c: Checks): Promise<void> {
   }
 }
 
+async function invalidContextChecks(c: Checks): Promise<void> {
+  // epoch が非負の安全な整数でない場合は throw でなく InvalidInput で返る
+  const recipient = await generateEncryptionKeyPair();
+  try {
+    const wrapped = await wrapDek({
+      recipientPublicKey: recipient.publicKey,
+      dek: generateDek(),
+      context: { ...baseContext(), epoch: -1 },
+    });
+    const unwrapped = await unwrapDek({
+      recipientKeyPair: recipient,
+      wrapped: { enc: fromHex(base.enc_hex), ciphertext: fromHex(base.ciphertext_hex) },
+      context: { ...baseContext(), epoch: Number.NaN },
+    });
+    c.push(
+      "dek-wrap invalid context: bad epoch",
+      !wrapped.ok &&
+        wrapped.error.kind === "InvalidInput" &&
+        !unwrapped.ok &&
+        unwrapped.error.kind === "InvalidInput",
+    );
+  } catch (error) {
+    c.push("dek-wrap invalid context: bad epoch", false, `threw: ${String(error)}`);
+  }
+}
+
 async function roundtripChecks(c: Checks): Promise<void> {
   // Seal 方向: 自己ラウンドトリップ(受信者は生成鍵・非抽出)
   const recipient = await generateEncryptionKeyPair();
@@ -148,6 +174,7 @@ export async function dekWrapChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   await vectorOpenChecks(c);
   await negativeChecks(c);
+  await invalidContextChecks(c);
   await roundtripChecks(c);
   return c.results;
 }
