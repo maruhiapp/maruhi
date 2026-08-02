@@ -1,6 +1,19 @@
 // @maruhi/crypto — E2EE コア(WebCrypto + HPKE)。
-// 実装は docs/CRYPTO_SPEC.md の承認後に開始する。このパッケージへの変更は人間レビュー必須。
-// テストベクター(test-vectors/)を実装より先にコミットすること。
+// 暗号仕様は docs/CRYPTO_SPEC.md が唯一の正。このパッケージへの変更は人間レビュー必須。
+// 実装は test-vectors/ の全ベクターを通ることを必須とする。
+//
+// 全環境(ブラウザ / Bun / workerd)で動く: WebCrypto + panva hpke 以外のプリミティブ禁止。
+// エラーは型付きエラー値(CryptoResult)で返し、Effect ラップは packages/core 側で行う。
 
-/** Placeholder export; replaced when implementation lands. */
-export const PACKAGE_NAME = "@maruhi/crypto";
+/** Algorithm suite identifier (CRYPTO_SPEC §2). */
+export const SUITE_ID = "maruhi/v1";
+
+export {
+  type ChainInvalidReason,
+  type CryptoError,
+  type CryptoResult,
+  decodeHex,
+  encodeHex,
+  encodeLengthPrefixed,
+  type LengthPrefixedField,
+} from "./internal.package/index.ts";
