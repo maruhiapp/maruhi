@@ -6,6 +6,7 @@ import { chainChecks } from "./checks/chain.ts";
 import { dekWrapChecks } from "./checks/dek-wrap.ts";
 import { encodingChecks } from "./checks/encoding.ts";
 import { keysChecks } from "./checks/keys.ts";
+import { recoveryChecks } from "./checks/recovery.ts";
 import { rfc9180Checks } from "./checks/rfc9180.ts";
 import type { CheckResult } from "./checks/support.ts";
 import { variableChecks } from "./checks/variable.ts";
@@ -21,5 +22,6 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await rfc9180Checks());
   groups.push(await chainChecks());
   groups.push(await chainNegativeChecks());
+  groups.push(await recoveryChecks());
   return groups.flat();
 }

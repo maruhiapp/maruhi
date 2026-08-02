@@ -35,6 +35,12 @@ export {
   wrapDek,
   type WrappedDek,
 } from "./dek-wrap.ts";
+export {
+  generateRecoverySecret,
+  unwrapMasterSecret,
+  type WrappedMasterSecret,
+  wrapMasterSecret,
+} from "./recovery.ts";
 export { SUITE_ID } from "./suite.ts";
 export {
   buildVariableAad,
