@@ -194,6 +194,54 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- dek-wrap-signature.json --------------------------------------------------
+{
+  const doc = read("dek-wrap-signature.json");
+  const dekWrap = read("dek-wrap.json");
+  const importSigPub = (hex) =>
+    crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  const signedBytes = (ctx) =>
+    lpEncode([
+      ctx.domain,
+      ctx.project_id,
+      ctx.environment_id,
+      ctx.epoch,
+      ctx.recipient_user_id,
+      ctx.recipient_enc_pub_hex,
+      ctx.enc_hex,
+      ctx.ciphertext_hex,
+    ]);
+  const base = doc.vectors[0];
+  // ラップ本体が dek-wrap.json の basic ベクターと同一であること(一続きの実データ)
+  check(
+    "dek-wrap-sig: wrap body matches dek-wrap.json",
+    base.enc_hex === dekWrap.vectors[0].enc_hex &&
+      base.ciphertext_hex === dekWrap.vectors[0].ciphertext_hex &&
+      base.recipient_enc_pub_hex === dekWrap.recipient_keypair.pkRm_hex,
+  );
+  const bytes = signedBytes(base);
+  check("dek-wrap-sig: signed bytes reconstruction", toHex(bytes) === base.signed_bytes_hex);
+  check("dek-wrap-sig: domain embeds suite", base.domain === `${base.suite}/dek-wrap-sig`);
+  const ok = await crypto.subtle.verify(
+    "Ed25519",
+    await importSigPub(doc.signer.sig_pub_hex),
+    fromHex(base.signature_hex),
+    bytes,
+  );
+  check("dek-wrap-sig: Ed25519 signature", ok);
+  for (const n of doc.negative) {
+    const reconstructed = signedBytes(n.context);
+    const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
+    const verified = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(n.verify_key_hex),
+      fromHex(n.signature_hex),
+      reconstructed,
+    );
+    check(`dek-wrap-sig negative: ${n.name}`, bytesMatch && verified === false);
+  }
+}
+
 // --- recovery-wrap.json ------------------------------------------------------
 {
   const doc = read("recovery-wrap.json");

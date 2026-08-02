@@ -13,6 +13,7 @@ CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし�
 | `chain-entries.json` | §6 チェーンエントリ正規化 + Ed25519 署名 + ハッシュ連鎖 | pyca/cryptography(同上) |
 | `recovery-wrap.json` | §8 リカバリーラップ(HKDF salt=空 + AES-256-GCM + AAD) | pyca/cryptography(同上) |
 | `dek-wrap.json` | §5 DEK ラップ(HPKE 単発 Seal) | hpke-js(`tools/generate-dek-wrap.mjs`。ekm derandomize で Seal 方向を固定) |
+| `dek-wrap-signature.json` | §5.1 DEK ラップの登録署名(Ed25519 + §2.1 LP) | Python 3 + pyca/cryptography(`tools/generate_reference.py`。ラップ本体は dek-wrap.json の basic ベクターを読み込む) |
 
 ## 期待値の算出方法(独立参照ツール)
 
@@ -49,6 +50,7 @@ bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 8. **再 grant はスコープ拡大のみ(2026-08-02 所有者裁定)**: 有効な grant と同一サーバー鍵への grant_server は旧スコープ ⊆ 新スコープの場合のみ受理。縮小は `revoke_server`(§7 の全環境ローテーション義務を伴う)を経由させる(negative `authz-grant-scope-narrowed` で固定)
 9. **エポック = 環境ごとのカウンタ(2026-08-02 所有者裁定・案 3)**: 初期エポックは 1、`rotate_epoch` の new_epoch は「観測済みエポック(未観測なら 1)+ 1」と厳密一致。巻き戻し・重複・ジャンプは拒否(negative `authz-epoch-rollback` / `authz-epoch-duplicate` / `authz-epoch-jump` / `authz-epoch-first-jump` で固定)
 10. **フィールドサイズ上限(2026-08-02 所有者裁定・案 2)**: 自由文字列フィールドは UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は無効(negative `authz-field-too-long` / `authz-scope-too-many` で固定。チェーン有効性の合意規則のためベクターで定数を固定する)
+11. **§5.1 DEK ラップの登録署名(2026-08-02 所有者裁定 2-E。セッション 09 起草)**: `signed_bytes = LP("<suite>/dek-wrap-sig", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)` を署名者のチェーン sig 鍵(Ed25519)で署名。suite の束縛はドメイン文字列(negative `suite-mismatch` で固定)、バイナリ列は hex 小文字文字列として LP に載せる(規約 2 の binary_encoding と同じ)。改竄(`tampered-ciphertext` / `tampered-enc`)・座標移植(`transplant-project` / `-environment` / `-epoch` / `-recipient`)・受信者鍵差し替え(`recipient-key-mismatch`)・署名者鍵不一致(`wrong-signer-key`)を negative で固定。**このベクター自体も PR レビューでの人間確認対象**(§5.1 の仕様起草と同時にコミットし、実装より先行する)
 
 ## panva hpke の制約と検証方針(spike-c の知見)
 
