@@ -101,9 +101,9 @@ export interface StateCache {
 }
 
 /**
- * キャッシュ更新は headSeq の単調ガード付き: permit を持たない読み取り
- * (snapshotFor / pull 系)の導出中に追記がコミットした場合、古い状態で新しい
- * キャッシュを上書きしない(チェーンは append-only なので headSeq 比較で十分)。
+ * キャッシュ更新は headSeq の単調ガード付き(チェーンは append-only なので
+ * headSeq 比較で十分)。全操作が permit 下で直列化された現在は実質的に到達しない
+ * 防御線だが、permit 外の導出経路が将来増えても古い状態で上書きしないよう残す。
  */
 export function updateStateCache(cache: StateCache, state: ChainState): void {
   if (cache.current === null || state.headSeq >= cache.current.state.headSeq) {

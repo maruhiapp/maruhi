@@ -7,10 +7,14 @@
 //   クライアント検証(§6.3)がサーバー不信の防衛、この検証が不正クライアントの
 //   防衛であり、両方必須(§6.4)
 // - 直列化 + CAS: 追記リクエストは親ヘッドハッシュを持ち、現ヘッドと不一致なら
-//   拒否する。DO 内の変更操作は Semaphore(1) で直列化する — DO の input gate は
+//   拒否する。DO 内の操作は Semaphore(1) で直列化する — DO の input gate は
 //   ストレージ以外の await(verifyChain 内の crypto.subtle)中に開くため、
 //   ゲート任せでは追記同士が交錯しうる。データプレーンの変更も同じ permit を
-//   共有する(並行 push の欠損・交錯防止)。PRIMARY KEY 制約が最終防衛
+//   共有する(並行 push の欠損・交錯防止)。**読み取りも同じ permit で直列化する**:
+//   permit 外で読むと「メンバーシップ判定(チェーン導出)→ データ読み」の間に
+//   remove_member の受理が割り込み、削除直後のメンバーへ値を配布しうる
+//   (§11-2 違反の TOCTOU。Bugbot 指摘 2026-08-02)。permit 下では全操作が
+//   チェーン書き込みに対して線形化される。PRIMARY KEY 制約が最終防衛
 // - 受理ポリシー: チェーンは §6.4(1 MiB / 10,000 エントリ / 32 MiB)、データは
 //   §12-8(policy.ts)
 // - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
@@ -331,8 +335,8 @@ const toDataOutcome = <T, R>(
 
 export class ProjectChainDO extends DurableObject<Env> {
   readonly #runtime: ManagedRuntime.ManagedRuntime<DoServices, never>;
-  // 変更操作の直列化(冒頭コメント参照)。読み取り(snapshotFor / pull 系)は permit 不要
-  readonly #writeLock = Semaphore.makeUnsafe(1);
+  // 全操作(変更 + 読み取り)の直列化(冒頭コメント参照)
+  readonly #opLock = Semaphore.makeUnsafe(1);
   // チェーン導出状態のキャッシュ(chain-store.ts の deriveStoredState 参照)
   readonly #stateCache: StateCache = { current: null };
 
@@ -348,22 +352,19 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /** 変更系プログラムを書き込みロック下で outcome に畳んで実行する。 */
+  /**
+   * データプレーンのプログラムを permit 下で outcome に畳んで実行する。
+   * 読み取りも permit を取る: メンバーシップ判定とデータ読みをチェーン書き込みに
+   * 対して原子化する(冒頭コメントの TOCTOU 対策)。
+   */
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
-    return this.#runtime.runPromise(this.#writeLock.withPermit(toDataOutcome(program)));
-  }
-
-  /** 読み取り系プログラム(permit 不要)。 */
-  #runDataRead<T>(
-    program: Effect.Effect<T, DataRejectedError, DoServices>,
-  ): Promise<DataOutcome<T>> {
-    return this.#runtime.runPromise(toDataOutcome(program));
+    return this.#runtime.runPromise(this.#opLock.withPermit(toDataOutcome(program)));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   init(expectedProjectId: string, entry: ChainEntry): Promise<InitOutcome> {
     return this.#runtime.runPromise(
-      this.#writeLock.withPermit(
+      this.#opLock.withPermit(
         initProgram(expectedProjectId, entry, this.#stateCache).pipe(
           Effect.map(
             (head): InitOutcome => ({
@@ -399,7 +400,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     callerUserId: string,
   ): Promise<AppendOutcome> {
     return this.#runtime.runPromise(
-      this.#writeLock.withPermit(
+      this.#opLock.withPermit(
         appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache).pipe(
           Effect.map(
             (head): AppendOutcome => ({
@@ -437,7 +438,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runtime.runPromise(
-      snapshotProgram(callerUserId, this.#stateCache).pipe(
+      this.#opLock.withPermit(snapshotProgram(callerUserId, this.#stateCache)).pipe(
         Effect.map(
           (chain): SnapshotOutcome => ({
             kind: "snapshot",
@@ -485,7 +486,7 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   listEnvironments(actor: DataActor): Promise<DataOutcome<readonly EnvironmentSummaryValue[]>> {
-    return this.#runDataRead(listEnvironmentsProgram(actor, this.#stateCache));
+    return this.#runData(listEnvironmentsProgram(actor, this.#stateCache));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
@@ -535,7 +536,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     environmentId: string,
   ): Promise<DataOutcome<EnvironmentPullValue>> {
-    return this.#runDataRead(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
+    return this.#runData(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
@@ -552,6 +553,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     environmentId: string,
   ): Promise<DataOutcome<readonly RecipientDekValue[]>> {
-    return this.#runDataRead(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
+    return this.#runData(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
   }
 }

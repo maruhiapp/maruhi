@@ -5,9 +5,10 @@
 // DEK ラップの受信者検証)→ 数量ポリシー(§12-8)→ 書き込み + 監査イベント
 // (AUDIT_SPEC §3.3)。
 //
-// 変更系プログラムは DO の書き込みロック(Semaphore(1))下で実行される前提。
-// pull はロックなしで走るため、監査追記は 1 文の同期 SQL(audit-store.ts)に
-// 限定し、返した行とイベントが常に一致するようにしている。
+// 全プログラム(読み取り含む)は DO の Semaphore(1) permit 下で実行される前提:
+// permit 外の読み取りは「メンバーシップ判定 → データ読み」の間に remove_member が
+// 割り込む TOCTOU(削除直後のメンバーへの配布 — §11-2 違反)を作るため、読み取りも
+// 直列化する(Bugbot 指摘 2026-08-02)。
 
 import type { ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -599,8 +600,8 @@ export const pullEnvironmentProgram = (
     const store = yield* DataStore;
     const variables = yield* store.latestVersions(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
-    // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行。
-    // 返した行に対して記録するため、permit 外でも行とイベントは常に一致する
+    // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行
+    // (返した行に対して記録するため、行とイベントは常に一致する)
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {

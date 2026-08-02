@@ -2,9 +2,8 @@
 //
 // - append-only: このサービスは追記のみを公開する(更新・削除の口を作らない —
 //   AUDIT_SPEC §1-4)。読み取りは Phase 2 の監査ログ UI と同時に設計する(§6)
-// - seq は INSERT ... SELECT COALESCE(MAX(seq),0)+1 で単調・無欠番に採番する。
-//   1 文の同期 SQL なので await 境界をまたがず、書き込みロック外(pull の
-//   var.read)でも競合しない
+// - seq は INSERT ... SELECT COALESCE(MAX(seq),0)+1 で単調・無欠番に採番する
+//   (1 文の同期 SQL なので await 境界をまたがない)
 // - アイデンティティ規則(§1-2): actor / target は内部 user_id と鍵 FP のみ。
 //   プロバイダ ID・メールをこの層に持ち込まないこと
 
