@@ -3,6 +3,32 @@
 
 export { decodeHex, encodeHex } from "./bytes.ts";
 export {
+  canonicalChainEntryBytes,
+  canonicalChainPayloadBytes,
+  canonicalChainSignedBytes,
+  computeChainEntryHash,
+} from "./chain-canonical.ts";
+export { signChainEntry } from "./chain-sign.ts";
+export {
+  type AddMemberPayload,
+  type ChainActor,
+  type ChainEntry,
+  type ChainMember,
+  type ChainOp,
+  type ChainOperation,
+  type ChainState,
+  type ChangeRolePayload,
+  type GenesisPayload,
+  type GrantServerPayload,
+  type RemoveMemberPayload,
+  type RevokeServerPayload,
+  type Role,
+  type RotateEpochPayload,
+  type ServerGrant,
+  type UnsignedChainEntry,
+} from "./chain-types.ts";
+export { verifyChain } from "./chain-verify.ts";
+export {
   buildDekWrapInfo,
   type DekWrapContext,
   unwrapDek,
