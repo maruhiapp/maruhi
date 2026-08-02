@@ -13,10 +13,16 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { EncryptedPayloadSchema, RecipientDekSchema, WrappedDekSchema } from "./data.ts";
+import {
+  DekWrapRefSchema,
+  EncryptedPayloadSchema,
+  RecipientDekSchema,
+  WrappedDekSchema,
+} from "./data.ts";
 import {
   DataLimitExceededError,
   DekWrapExistsError,
+  DekWrapNotFoundError,
   DekWrapRejectedError,
   EnvironmentConflictError,
   EnvironmentNotFoundError,
@@ -220,10 +226,13 @@ export const variablesGroup = HttpApiGroup.make("variables")
   );
 
 /**
- * DEK wrap registration and distribution (AUTH_SPEC §12-6). Registration
- * covers both the full-set path (environment creation / post-rotation) and
- * the backfill path (wrapping historical epochs for a newly added member).
- * Distribution is caller-only: a member fetches the wraps addressed to them.
+ * DEK wrap registration, distribution and repair (AUTH_SPEC §12-6).
+ * Registration covers both the full-set path (environment creation /
+ * post-rotation) and the backfill path (wrapping historical epochs for a
+ * newly added member). Distribution is caller-only: a member fetches the
+ * wraps addressed to them. Deletion is the admin-only repair path for
+ * poisoned wraps (overwriting stays forbidden); the deleted slots are then
+ * re-registered through the append path.
  */
 export const deksGroup = HttpApiGroup.make("deks")
   .add(
@@ -246,5 +255,22 @@ export const deksGroup = HttpApiGroup.make("deks")
       params: environmentParams,
       success: Schema.Struct({ deks: Schema.Array(RecipientDekSchema) }),
       error: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    // 削除対象は body で列挙する: recipientUserId はチェーン合意規則上の自由
+    // 文字列(1024 バイト以下)であり、パス断片として安全に表現できないため
+    HttpApiEndpoint.delete("remove", "/projects/:projectId/environments/:environmentId/deks", {
+      params: environmentParams,
+      payload: Schema.Struct({ wraps: Schema.Array(DekWrapRefSchema) }),
+      success: HttpApiSchema.NoContent,
+      error: [
+        ProjectNotFoundError,
+        ForbiddenError,
+        EnvironmentNotFoundError,
+        DekWrapNotFoundError,
+        DekWrapRejectedError,
+        DataLimitExceededError,
+      ],
     }).middleware(AuthMiddleware),
   );

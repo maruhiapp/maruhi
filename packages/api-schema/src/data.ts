@@ -16,6 +16,13 @@ import { hexString } from "./hex.ts";
 /** 1 始まりの整数(epoch / version — CRYPTO_SPEC §3 / §4)。 */
 const PositiveInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1));
 
+/**
+ * スイート識別子(CRYPTO_SPEC §2 設計原則 4: すべての永続データ構造が持つ)。
+ * v1 の API は Literal でピン留めする(suite とエポックの結合 = v2 移行の形は
+ * v2 設計まで保留 — AUTH_SPEC §12-2)。
+ */
+const SuiteSchema = Schema.Literal("maruhi/v1");
+
 const NonceHex = hexString(12);
 const EncPubHex = hexString(32);
 const HpkeEncHex = hexString(32);
@@ -43,7 +50,7 @@ export const VariableAadSchema = Schema.Struct({
  * secret value ever takes across the API boundary (CRYPTO_SPEC §10).
  */
 export const EncryptedPayloadSchema = Schema.Struct({
-  suite: Schema.Literal("maruhi/v1"),
+  suite: SuiteSchema,
   aad: VariableAadSchema,
   nonceHex: NonceHex,
   ciphertextHex: ValueCiphertextHex,
@@ -62,6 +69,7 @@ export type EncryptedPayload = typeof EncryptedPayloadSchema.Type;
  * これより狭い上限はチェーン上の正当なメンバー宛ラップを登録不能にしうる。
  */
 export const WrappedDekSchema = Schema.Struct({
+  suite: SuiteSchema,
   epoch: PositiveInt,
   recipientUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
   recipientEncPubHex: EncPubHex,
@@ -74,6 +82,7 @@ export type WrappedDek = typeof WrappedDekSchema.Type;
 
 /** A wrap distributed to its recipient (the recipient is the caller — §12-6). */
 export const RecipientDekSchema = Schema.Struct({
+  suite: SuiteSchema,
   epoch: PositiveInt,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
@@ -81,3 +90,16 @@ export const RecipientDekSchema = Schema.Struct({
 
 /** A wrap distributed to its recipient. */
 export type RecipientDek = typeof RecipientDekSchema.Type;
+
+/**
+ * Reference naming one stored wrap — the unit of the admin-only deletion in
+ * the §12-6 repair path (delete a poisoned wrap, then re-register the missing
+ * one through the append path).
+ */
+export const DekWrapRefSchema = Schema.Struct({
+  epoch: PositiveInt,
+  recipientUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+});
+
+/** Reference naming one stored wrap (§12-6 repair path). */
+export type DekWrapRef = typeof DekWrapRefSchema.Type;
