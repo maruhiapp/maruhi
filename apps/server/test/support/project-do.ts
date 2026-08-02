@@ -22,3 +22,20 @@ export async function resetProjectDo(projectId: string): Promise<void> {
   });
   await evictDurableObject(stub);
 }
+
+/** DO SQLite への直接クエリ(保存状態・監査ログの検証用)。 */
+export async function queryProjectDo(
+  projectId: string,
+  query: string,
+  ...bindings: (string | number)[]
+): Promise<Record<string, unknown>[]> {
+  const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+  return await runInDurableObject(stub, (_instance, state) =>
+    state.storage.sql.exec(query, ...bindings).toArray(),
+  );
+}
+
+/** 監査イベントの全行(seq 順)。 */
+export function readAuditEvents(projectId: string): Promise<Record<string, unknown>[]> {
+  return queryProjectDo(projectId, "SELECT * FROM audit_events ORDER BY seq");
+}
