@@ -49,7 +49,9 @@ function isBoundedId(value: unknown): value is string {
 }
 
 function isHexOfLength(value: unknown, bytes: number): boolean {
-  if (typeof value !== "string") {
+  // 期待長と異なる文字列は decodeHex(正規表現スキャン + 確保)に入る前に O(1) で
+  // 弾く(巨大 hex 文字列での CPU / メモリ消費を防ぐ fail-fast)
+  if (typeof value !== "string" || value.length !== bytes * 2) {
     return false;
   }
   const decoded = decodeHex(value);
@@ -100,14 +102,16 @@ function checkPayloadShape(entry: ChainEntry): ChainInvalidReason | null {
   if (!Number.isSafeInteger(entry.timestampMs) || entry.timestampMs < 0) {
     return "invalid-payload";
   }
+  // actor FP(16B)と署名(64B)は §6.1 の固定長 hex。厳密長で fail-fast し、
+  // 巨大 hex 文字列が decodeHex や正規化に到達しないようにする
   if (
     !isRecord(entry.actor) ||
     !isBoundedId(entry.actor.userId) ||
-    typeof entry.actor.keyFingerprintHex !== "string"
+    !isHexOfLength(entry.actor.keyFingerprintHex, FINGERPRINT_BYTES)
   ) {
     return "invalid-payload";
   }
-  if (typeof entry.signatureHex !== "string") {
+  if (!isHexOfLength(entry.signatureHex, 64)) {
     return "invalid-payload";
   }
   if (!isRecord(entry.payload)) {

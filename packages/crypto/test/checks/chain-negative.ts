@@ -400,6 +400,24 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "x" },
       },
     },
+    {
+      name: "signature hex oversized",
+      entry: {
+        ...base,
+        signatureHex: "ab".repeat(500_000),
+        op: "remove_member",
+        payload: { targetUserId: "x" },
+      },
+    },
+    {
+      name: "actor fingerprint hex oversized",
+      entry: {
+        ...base,
+        actor: { userId: "user-owner-0001", keyFingerprintHex: "ab".repeat(500_000) },
+        op: "remove_member",
+        payload: { targetUserId: "x" },
+      },
+    },
   ];
   for (const item of cases) {
     // 例外を投げず invalid-payload の CryptoResult で返ることを検査する
