@@ -1,0 +1,46 @@
+{
+  "description": "CRYPTO_SPEC §2.1 の長さプレフィックス付きエンコーディング(uint32-BE 長さ + UTF-8 本体)のベクター",
+  "cases": [
+    {
+      "name": "ambiguity-ab-c",
+      "fields": ["ab", "c"],
+      "expected_hex": "0000000261620000000163",
+      "note": "次の ambiguity-a-bc と素の文字列連結では同一になるが、LP では異なることが本質"
+    },
+    {
+      "name": "ambiguity-a-bc",
+      "fields": ["a", "bc"],
+      "expected_hex": "0000000161000000026263"
+    },
+    {
+      "name": "empty-field",
+      "fields": [""],
+      "expected_hex": "00000000",
+      "note": "空フィールドは 00000000 のみ"
+    },
+    {
+      "name": "empty-list",
+      "fields": [],
+      "expected_hex": "",
+      "note": "フィールド 0 個は空バイト列"
+    },
+    {
+      "name": "utf8-multibyte",
+      "fields": ["㊙"],
+      "expected_hex": "00000003e38a99",
+      "note": "UTF-8 マルチバイト(3 バイト)"
+    },
+    {
+      "name": "number-decimal",
+      "fields": ["epoch", "42"],
+      "expected_hex": "0000000565706f6368000000023432",
+      "note": "数値は 10 進文字列化(42 → \"42\")"
+    },
+    {
+      "name": "aad-shape-example",
+      "fields": ["maruhi/v1", "proj-0001", "env-prod-0001", "3", "var-database-url-0001", "7"],
+      "expected_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000d656e762d70726f642d303030310000000133000000157661722d64617461626173652d75726c2d303030310000000137",
+      "note": "variable-encryption.json の basic ベクターの AAD と同一バイト列"
+    }
+  ]
+}

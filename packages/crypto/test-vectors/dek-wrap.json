@@ -1,0 +1,56 @@
+{
+  "description": "CRYPTO_SPEC §5: DEK ラップ(HPKE Base mode 単発 Seal、DHKEM(X25519,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM)。info は §2.1 エンコーディング。Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)",
+  "info_fields_order": ["domain", "project_id", "environment_id", "epoch", "recipient_user_id"],
+  "recipient_keypair": {
+    "ikmR_hex": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+    "skRm_hex": "bcf39051eb6f0e98911d2f7f4a61e3e3530ea5c34310c516fbc0c2db84d83b03",
+    "pkRm_hex": "1b826c89257be5222fc5eeeadf7afca7b4bcf0e3e2d0ef1e4f99d86ad196486e",
+    "note": "DeriveKeyPair(ikmR) による決定論的生成。RFC 9180 ベクター(hpke/)でも同 API を検証済み"
+  },
+  "vectors": [
+    {
+      "name": "basic",
+      "domain": "maruhi/v1/dek-wrap",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "epoch": 3,
+      "recipient_user_id": "user-recipient-0002",
+      "info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "ikmE_hex": "909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "aad_hex": "",
+      "enc_hex": "9e1e855b21e05a429ba515e8a1eff218ac2444c9d9fc32fffc7a40f4e752eb44",
+      "ciphertext_hex": "9268b9864452e7dbe614fcd29846400a65f795728a08e45e880abf94f87d4e49c77d5439009b0ec44f11507e32e22f8d"
+    }
+  ],
+  "negative": [
+    {
+      "name": "info-epoch-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d30303031000000013400000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "epoch 差し替え(別エポックへの移植)は Open 失敗"
+    },
+    {
+      "name": "info-recipient-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000000f757365722d6f776e65722d30303031",
+      "must_fail": true,
+      "note": "受信者差し替え(別メンバー宛ラップの移植)は Open 失敗"
+    },
+    {
+      "name": "info-environment-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000c656e762d6465762d30303032000000013300000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "環境差し替えは Open 失敗(環境モデルの文脈束縛)"
+    },
+    {
+      "name": "enc-tampered",
+      "base": "basic",
+      "enc_hex": "9f1e855b21e05a429ba515e8a1eff218ac2444c9d9fc32fffc7a40f4e752eb44",
+      "must_fail": true,
+      "note": "enc(カプセル化公開鍵)の改竄は Open 失敗"
+    }
+  ]
+}

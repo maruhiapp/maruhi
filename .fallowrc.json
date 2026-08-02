@@ -18,8 +18,14 @@
     "apps/web/scripts/*.ts",
     "apps/web/theme/maruhi.js"
   ],
-  // エージェントスキル(ベンダードコンテンツ)と使い捨て検証スパイク(spikes/)は解析対象外
-  "ignorePatterns": [".agents/**", ".claude/**", "spikes/**"],
+  // エージェントスキル(ベンダードコンテンツ)と使い捨て検証スパイク(spikes/)、
+  // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外
+  "ignorePatterns": [
+    ".agents/**",
+    ".claude/**",
+    "spikes/**",
+    "packages/crypto/test-vectors/tools/**"
+  ],
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",

@@ -31,6 +31,14 @@
 - **→ 指示どおりここで中断。所有者への依頼: `CLOUDFLARE_API_TOKEN` をユーザー API トークン(dash の My Profile → API Tokens で作成。Workers 編集権限)に差し替えてほしい。**差し替え後の別セッションで `alchemy deploy` / `alchemy destroy` を再検証する
 - 失敗はデプロイ前に起きたため**リソースの残骸なし**(workers 一覧空を確認)。ローカルの `spikes/spike-b/.alchemy/log/out` が更新されたのみ(git restore 済み)
 
+**再検証(2026-08-02、ユーザー API トークン差し替え後)— ✅ 成立。ADR-0012 の両経路が実証完了**:
+
+- `/user/tokens/verify` → active、`wrangler whoami` → 「User API Token」表示を確認
+- `CI=1 bun x alchemy deploy --yes`: state store ブートストラップ(`alchemy-state-store` worker + Secrets Store への `AlchemyStateStoreToken` / `AlchemyStateStoreEncryptionKey` 登録)→ SpikeB スタックのデプロイまで一気に成功。**worker 名は alchemy の命名規則で `spike-b-spikeb-dev-unknown-<hash>`**(スタック + リソース + stage 由来。wrangler 経路の `spike-b` とは異なる。Phase 1 で運用側に載せるときは stage / 命名の明示設定が必要)
+- カウンタ API を実 URL(`*.maruhi.workers.dev`)で確認: GET 0 → increment(+3)→ 3、不正 payload 400。TLS はサブドメイン変更(spike-b → maruhi)から時間が経っていたため即時応答
+- 後片付け: `alchemy destroy --yes` で SpikeB 削除 → `wrangler delete --name alchemy-state-store` → Secrets Store 内の alchemy secret 2 件を API で削除 → workers / KV / secrets いずれも空を確認。**Cloudflare の既定 Secrets Store コンテナ(`default_secrets_store`、空)のみ残る**(alchemy ブートストラップが作成。アカウント既定ストアで実害なし)
+- 知見: alchemy の state store は「使うたびにブートストラップで常設 worker + secret を張る」設計。検証のように毎回消す使い方は本来の想定ではなく、Phase 1 で運用採用する場合は state store(worker + secret)を常設リソースとして受け入れるか、`alchemy.run.ts` の `state:` を別ストアに切り替えるかを判断する
+
 ### apps/web: Workers Static Assets + _headers(CSP)— ✅ 成立
 
 - `bun run build`(vite build + write-headers.ts)→ `wrangler deploy` 成功。アセット 11 ファイルアップロード(`_headers` はアセットとしては配信されず、設定として消費される — 期待どおり)
@@ -57,6 +65,17 @@
 - 保存先: プロジェクト系イベント = プロジェクト DO 内 append-only(チェーンと同一 DO・同一トランザクション、クエリが DO 内で完結)。org / ユーザー系 = 3 案比較の上で **D1 専用テーブル(案 A)を提案**(認証イベントは sessions / tokens と同一トランザクションで書ける・検出クエリに関与しないため DO 併置の利点がない)
 - 判断が要る点(未決 #1〜#5): 閲覧権限モデルの詳細、監査ヘッドのチェーンチェックポイント、プロジェクト削除後の保全、var.read の集約、SIEM エクスポート
 
+## 4. 暗号テストベクター(packages/crypto/test-vectors/。実装より先にコミット)
+
+- RFC 9180 公式ベクター(spike-c 抽出分)を `hpke/` へコピー。maruhi 固有部は `encoding.json` / `variable-encryption.json` / `chain-entries.json` / `recovery-wrap.json` / `dek-wrap.json`(固定鍵・固定 nonce + 改竄系 negative)
+- 期待値の算出は独立参照ツール 2 系統: Python 3.11 + pyca/cryptography(`tools/generate_reference.py`)と hpke-js の ekm derandomize(`tools/generate-dek-wrap.mjs`)。さらに第 3 の実装系(Bun WebCrypto + panva hpke の非抽出 KeyPair Open)で全ベクターを突き合わせ検証(`tools/verify_reference.mjs`、全 PASS)
+- **チェーン正規化(CRYPTO_SPEC §6.1「実装はテストベクターで固定する」)の実体をここで定義した**: LP エンコーディングの入れ子(payload は op ごとの固定フィールド順)、バイナリ値は hex 小文字文字列、entry_hash = SHA-256(署名込みエントリバイト列)。鍵 FP は素の連結(固定長 32B×2)とした。**要人間レビュー**(test-vectors/README.md の「特に確認すべき点」参照)
+- fallow の解析対象から `packages/crypto/test-vectors/tools/**` を除外(spikes/ と同じ使い捨てツール扱い)
+- packages/crypto の実装コードは書いていない(仕様承認後・人間レビュー必須)
+
 ## 決定・整理の記録(2026-08-01)
 
 - **ホステッド版は Workers for Platforms を使わない**(所有者との整理): 通常のマルチテナント Workers アプリ + プロジェクト DO 分離で提供する。WfP はテナントのコードを実行するための仕組みであり、maruhi のテナント分離はデータレベル(プロジェクト DO の名前空間分離)で足りる。AUDIT_SPEC §5 の保存先設計(D1 共有テーブル + プロジェクト DO)もこの前提に立つ
+- **funstack-static まわりの upstream 報告は当面見送り**(所有者判断。実害なしのため)。調査結果の記録: ① preload の `as="stylesheet"`(正しくは `style`)はエミッタを追跡した結果 **@vitejs/plugin-rsc 0.5.32 にベンダリングされた react-server-dom のコード**が発生源で、funstack-static 本体ではない。preload が無効化されコンソール警告が出るだけで、CSS 本体は通常の `<link rel="stylesheet">` で読まれるため実害なし。② インラインブートストラップは funstack-static の設計選択(`bootstrapScriptContent`)であり、承認済みのハッシュ許可方式で運用確定。報告する場合は ① は plugin-rsc / React 側へ(facebook/react 原本との突き合わせ確認の上)、② は `bootstrapScripts`(外部 URL)への切り替えオプションとして funstack-static へ提案するのが筋
+- **workers.dev サブドメインを `maruhi` へ変更完了**(所有者がダッシュボードで実施。旧 `spike-b` は無効化。今後のデプロイ URL は `<worker>.maruhi.workers.dev`)
+- **`CLOUDFLARE_API_TOKEN` のユーザー API トークンへの差し替え**を所有者が実施(My Profile → API Tokens、「Edit Cloudflare Workers」テンプレート + D1 Edit、maruhi アカウント限定)。Alchemy 経路の再検証は差し替え後の新セッションで行う(シークレットはコンテナ起動時に注入されるため、既存セッションには反映されない)

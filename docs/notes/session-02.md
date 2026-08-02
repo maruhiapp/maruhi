@@ -48,10 +48,10 @@
 - [x] ~~3 スパイク PR + 本 PR のマージ(上記手順 7)~~(#2〜#5 マージ済み)
 - [x] ~~マージ後: 環境セットアップエージェントの実行~~(環境構成に設定済み。Playwright はプリインストール Chromium を使用)
 - [x] ~~root 統合 PR(上記 8)+ ROADMAP のスパイク項目チェックオフ~~(2026-08-01 実施。web build + e2e / doctor:astryx を CI の独立ステップ化、e2e のポート固定解消、CI テレメトリ無効化)
-- [ ] 監査ログスキーマ(`docs/AUDIT_SPEC.md`)起草 → 暗号テストベクター定義(実装より先にコミット)。いずれも本 PR の仕様改訂マージ後
+- [x] ~~監査ログスキーマ(`docs/AUDIT_SPEC.md`)起草 → 暗号テストベクター定義(実装より先にコミット)~~(2026-08-01 実施。AUDIT_SPEC は 0.1-draft でレビュー待ち、テストベクターは packages/crypto/test-vectors/ にコミット。docs/notes/session-03.md 参照)
 - [x] ~~npm プレースホルダ publish~~(2026-08-01 完了。`maruhi@0.0.1`)
 - [x] ~~ROADMAP のチェックオフ(#2 マージ後の root 統合 PR で。対象: 要決定 3 件・検証スパイク 3 本・npm プレースホルダ + org — いずれも完了済み)~~(2026-08-01 実施)
 - [ ] `spikes/` の使い捨てコードの削除(所有者承認済みの方針: Phase 1 で crypto の 3 環境 CI とサーバー実装の雛形として参照し終えた時点で削除。その際 `.fallowrc.json` の `spikes/**` 行も戻す)
-- [ ] funstack-static への upstream 提案: 起動スクリプトの外部ファイル化オプション(+ `<link rel="preload" as="stylesheet">` の誤値報告)
-- [x] ~~Cloudflare 資格情報登録後: 実デプロイ検証(wrangler 一発デプロイ / Alchemy v2 / Static Assets の _headers 反映確認)~~(2026-08-01 実施。wrangler 経路 + _headers 反映は確認済み。**Alchemy 経路のみアカウント API トークン起因でブロック → ユーザートークン切り替え後に再検証**。docs/notes/session-03.md 参照)
+- [x] ~~funstack-static への upstream 提案: 起動スクリプトの外部ファイル化オプション(+ `<link rel="preload" as="stylesheet">` の誤値報告)~~(2026-08-01 所有者判断: **当面見送り**。実害なしのため。調査記録は docs/notes/session-03.md)
+- [x] ~~Cloudflare 資格情報登録後: 実デプロイ検証(wrangler 一発デプロイ / Alchemy v2 / Static Assets の _headers 反映確認)~~(完了。2026-08-01 に wrangler 経路 + _headers 反映、2026-08-02 にユーザー API トークン差し替え後の Alchemy 経路も確認。ADR-0012 の両経路実証済み。docs/notes/session-03.md 参照)
 - [ ] Effect v4 stable リリース後: ピン更新の独立 PR

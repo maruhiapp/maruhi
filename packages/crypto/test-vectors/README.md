@@ -1,0 +1,59 @@
+# packages/crypto/test-vectors
+
+CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし、`packages/crypto` の実装はこれらを通ることを必須とする。**
+鍵・ID・値はすべて決定論的なダミー(パターンバイト列)であり、本物のシークレットは含まれない。
+
+## ファイル一覧
+
+| ファイル | 対象 | 期待値の算出(参照ツール) |
+|---|---|---|
+| `hpke/rfc9180-base-x25519-hkdfsha256-aes256gcm.json` | HPKE 層(RFC 9180 公式ベクター。本スイート Base mode の抽出) | IETF cfrg/draft-irtf-cfrg-hpke の test-vectors.json から抽出(spikes/spike-c で抽出・4 環境で検証済みのコピー) |
+| `encoding.json` | §2.1 長さプレフィックス付きエンコーディング | Python 3 標準ライブラリ(`tools/generate_reference.py`) |
+| `variable-encryption.json` | §4 変数値の AES-256-GCM + AAD | pyca/cryptography(同上) |
+| `chain-entries.json` | §6 チェーンエントリ正規化 + Ed25519 署名 + ハッシュ連鎖 | pyca/cryptography(同上) |
+| `recovery-wrap.json` | §8 リカバリーラップ(HKDF salt=空 + AES-256-GCM + AAD) | pyca/cryptography(同上) |
+| `dek-wrap.json` | §5 DEK ラップ(HPKE 単発 Seal) | hpke-js(`tools/generate-dek-wrap.mjs`。ekm derandomize で Seal 方向を固定) |
+
+## 期待値の算出方法(独立参照ツール)
+
+実装対象スタック(WebCrypto + panva `hpke`)とは**別の実装系**で期待値を算出している:
+
+- `tools/generate_reference.py` — Python 3.11 + pyca/cryptography。encoding / variable-encryption / chain-entries / recovery-wrap を生成
+- `tools/generate-dek-wrap.mjs` — hpke-js(@hpke/core 1.9.0 + @hpke/dhkem-x25519 1.8.0)。dek-wrap を生成。panva hpke は意図的に Seal の derandomize 手段を持たないため(docs/notes/spike-c.md)、Seal 方向の固定には ekm を注入できる hpke-js を使う。hpke-js 自体は RFC 9180 公式ベクターで Seal 方向まで一致することを spike-c で検証済み
+- `tools/verify_reference.mjs` — 生成系とさらに別の実装系による突き合わせ検証: WebCrypto(Bun)で encoding / AES-GCM / HKDF / Ed25519 / SHA-256 を、**panva hpke(実装が採用予定のライブラリ)の KeyPair 渡し Open** で dek-wrap を検証する。全 PASS を確認してからコミットする
+
+再生成・再検証(`tools/` ディレクトリで実行):
+
+```sh
+cd tools
+bun install            # hpke-js / panva hpke(厳密ピン)
+bun run generate       # python3 generate_reference.py + generate-dek-wrap.mjs
+bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
+```
+
+`tools/` は使い捨ての参照ツールであり製品コードではない。製品コード(`packages/crypto/src`)から import してはならない。
+
+## ベクターが固定する仕様(人間レビューで特に確認すべき点)
+
+1. **§2.1 エンコーディング**: `uint32-BE 長さ + UTF-8 本体` の連結。数値は 10 進文字列化。`("ab","c")` と `("a","bc")` が異なるバイト列になることをベクターで固定
+2. **チェーン正規化(§6.1 の「実装はテストベクターで固定する」の実体)**:
+   - `signed_bytes = LP(suite, seq, prev_hash_hex, op, actor_user_id, actor_key_fingerprint_hex, payload_bytes, timestamp_ms)`
+   - `payload_bytes` = op ごとに固定したフィールド順(chain-entries.json の `canonicalization.payload_field_order`)の LP エンコードを 1 フィールドとして埋め込む(入れ子 LP)
+   - `entry_bytes = LP(signed_bytes の 8 フィールド, signature_hex)`、`entry_hash = SHA-256(entry_bytes)` が次エントリの `prev_hash`
+   - バイナリ値(prev_hash / 公開鍵 / FP / 署名)は **hex 小文字文字列**として LP に載せる(生バイトではない)
+3. **鍵フィンガープリント**: `SHA-256(enc_pub(32B) || sig_pub(32B))` の先頭 16 バイト。両公開鍵が固定長のためここは素の連結(§2.1 の LP 適用対象は AAD / info / 正規化バイト列)。→ この解釈の妥当性はレビューで確認
+4. **§5 DEK ラップの aad は空**(文脈束縛は info が担う)。§4 変数暗号化は AAD、§8 リカバリーラップは AAD + info 固定文字列
+5. **§8 の HKDF salt = 空**: negative `wrong-salt` で「空以外の salt では復号不能」を固定
+
+## panva hpke の制約と検証方針(spike-c の知見)
+
+- panva は単発 Seal の derandomize 不可 → **実装テストは「Open 方向ベクター一致 + DeriveKeyPair 一致 + 自己ラウンドトリップ」**で書く。Seal 方向の完全固定は hpke-js 生成の本ベクター(+ RFC 9180 公式ベクター)が担う
+- Open は **KeyPair(公開鍵込み)渡しを標準**とする(秘密鍵単体渡しは extractable=true を強制されるため使わない)。`tools/verify_reference.mjs` は非抽出(extractable=false)の KeyPair で Open が通ることを確認している
+
+## negative ベクターの規約
+
+`negative` 配列の各要素は `must_fail: true` を持ち、`base`(または `base_seq`)のベクターに対して差し替えるフィールド(`decrypt_aad_hex` / `open_info_hex` / `ciphertext_hex` 等)だけを指定する。実装テストはこれらで「復号・検証が失敗すること」を必須で検査する(改竄・移植・順序入替の検出)。
+
+## 実装時の CI(§11)
+
+ラウンドトリップ + 本ベクターの検証はブラウザ(Chromium)/ Bun / workerd の 3 環境すべてで実行する。vitest 構成の雛形は spikes/spike-c(node / workerd / browser の 3 プロジェクト + Bun 直接実行)を参照。
