@@ -463,6 +463,10 @@ export async function verifyChain(
 
   for (const [index, entry] of entries.entries()) {
     seq = index + 1;
+    // 配列スロット自体が null / 非オブジェクトの細工データでも throw しない
+    if (!isRecord(entry)) {
+      return fail("invalid-payload");
+    }
     const framing = checkFraming(entry, seq, prevHash);
     if (framing !== null) {
       return fail(framing);

@@ -65,20 +65,25 @@ export async function wrapMasterSecret(input: {
   if (input.recoverySecret.length !== RECOVERY_SECRET_BYTES) {
     return invalidInput("recovery secret length");
   }
-  const kek = await deriveKek(input.recoverySecret, "encrypt");
   const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce as BufferSource,
-        additionalData: wrapAad(input.userId) as BufferSource,
-      },
-      kek,
-      input.masterSecretBlob as BufferSource,
-    ),
-  );
-  return { ok: true, value: { nonce, ciphertext } };
+  try {
+    const kek = await deriveKek(input.recoverySecret, "encrypt");
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv: nonce as BufferSource,
+          additionalData: wrapAad(input.userId) as BufferSource,
+        },
+        kek,
+        input.masterSecretBlob as BufferSource,
+      ),
+    );
+    return { ok: true, value: { nonce, ciphertext } };
+  } catch {
+    // WebCrypto の予期しない失敗も値で返す(unwrap 側と対称)
+    return { ok: false, error: { kind: "EncryptFailed", operation: "recovery" } };
+  }
 }
 
 /**

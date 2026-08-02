@@ -418,6 +418,8 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "x" },
       },
     },
+    { name: "entry slot is null", entry: null },
+    { name: "entry slot is a string", entry: "not-an-entry" },
   ];
   for (const item of cases) {
     // 例外を投げず invalid-payload の CryptoResult で返ることを検査する

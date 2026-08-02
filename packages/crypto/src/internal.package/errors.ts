@@ -41,6 +41,8 @@ export type CryptoError =
         | "signing-public"
         | "signing-private";
     }
+  /** AES-256-GCM encryption failed unexpectedly (e.g. oversized plaintext). */
+  | { readonly kind: "EncryptFailed"; readonly operation: "variable" | "recovery" }
   /** AES-256-GCM decryption failed (tampered ciphertext, wrong AAD/nonce/key). */
   | { readonly kind: "DecryptFailed"; readonly operation: "variable" | "recovery" }
   /** HPKE Seal failed. */

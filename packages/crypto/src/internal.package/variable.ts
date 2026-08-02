@@ -79,19 +79,24 @@ export async function encryptVariable(input: {
     return invalidInput(badField);
   }
   const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
-  const key = await importDek(input.dek, "encrypt");
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce as BufferSource,
-        additionalData: buildVariableAad(input.context) as BufferSource,
-      },
-      key,
-      input.plaintext as BufferSource,
-    ),
-  );
-  return { ok: true, value: { nonce, ciphertext } };
+  try {
+    const key = await importDek(input.dek, "encrypt");
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv: nonce as BufferSource,
+          additionalData: buildVariableAad(input.context) as BufferSource,
+        },
+        key,
+        input.plaintext as BufferSource,
+      ),
+    );
+    return { ok: true, value: { nonce, ciphertext } };
+  } catch {
+    // WebCrypto の予期しない失敗(巨大平文等)も値で返す(復号側と対称)
+    return { ok: false, error: { kind: "EncryptFailed", operation: "variable" } };
+  }
 }
 
 /**
