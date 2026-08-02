@@ -33,8 +33,12 @@
   当初は置き換えで実装したが、縮小を許すと revoke_server + rotate_epoch(§7 の全環境
   ローテーション義務)を迂回できてしまう穴があるため変更した。縮小は必ず失効経路を通す。
   ベクター `authz-grant-scope-narrowed` で固定、拒否理由コードは `grant-scope-narrowed`)
-- **rotate_epoch の new_epoch 単調性は検証しない**(§6.3 に規定なし。同期ロジックと同時に設計)。
-  構造検証は「1 以上の安全な整数」のみ
+- **エポック = 環境ごとのカウンタ(初期値 1、rotate_epoch は必ず +1)**(2026-08-02 所有者裁定・
+  案 3。当初は「単調性は未検証」で保留 → Bugbot HIGH 指摘を機に 7 案比較して裁定を仰いだ。
+  厳密 +1 は巻き戻し(削除済みメンバー保持の旧 DEK への再露出)に加え、厳密増加だけでは
+  防げない「member 権限 1 署名で safe integer 上限まで飛ばして環境のローテーションを
+  永久に不能にする DoS」も防ぐ。拒否理由コードは `epoch-out-of-sequence`。CRYPTO_SPEC
+  §3 / §6.3 に明文化済み。再 grant 規則も §6.3 に明文化済み)
 - **エラー判別子は `_tag` でなく `kind`**: oxlint の no-underscore-dangle と衝突するため。
   Effect マッピングは core 側で kind ごとに行う
 - **検証順序**: フレーミング → payload 構造 → actor 解決(non-member / FP 不一致)→ 署名 →

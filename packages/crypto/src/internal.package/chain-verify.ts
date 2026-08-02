@@ -369,6 +369,9 @@ function applyRevokeServer(
   return null;
 }
 
+// 環境の初期エポック(環境作成は平文メタデータでチェーン外だが、エポックは常に 1 から始まる)
+const INITIAL_EPOCH = 1;
+
 function applyRotateEpoch(
   entry: ChainEntry & { readonly op: "rotate_epoch" },
   state: MutableChainState,
@@ -376,6 +379,14 @@ function applyRotateEpoch(
 ): ChainInvalidReason | null {
   if (!atLeast(actorRole, "member")) {
     return "insufficient-role";
+  }
+  // エポックは環境ごとのカウンタで必ず +1(2026-08-02 所有者裁定・案 3)。
+  // 巻き戻し(削除済みメンバーが保持する旧 DEK で新しい値が暗号化される)、
+  // 重複、ジャンプ(member 権限の 1 署名で safe integer 上限まで飛ばして
+  // 以後のローテーションを不能にする DoS)をすべて拒否する
+  const observed = state.environmentEpochs.get(entry.payload.environmentId) ?? INITIAL_EPOCH;
+  if (entry.payload.newEpoch !== observed + 1) {
+    return "epoch-out-of-sequence";
   }
   state.environmentEpochs.set(entry.payload.environmentId, entry.payload.newEpoch);
   return null;

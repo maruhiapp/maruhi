@@ -497,6 +497,26 @@ def gen_chain_entries():
         "有効な grant のスコープを狭める再 grant は owner 署名でも拒否する(§7 のローテーション義務を迂回させない)",
     )
 
+    # エポック順序規則(2026-08-02 所有者裁定・案 3): エポックは環境ごとのカウンタ
+    # (初期値 1)で、rotate_epoch は必ず +1。巻き戻し(削除済みメンバー保持の旧 DEK
+    # への再露出)・重複・ジャンプ(member 権限 1 署名でのエポック空間焼き尽くし DoS)
+    # をすべて拒否する。seq 9 時点の観測値: env-prod-0001 = 2, env-dev-0002 = 2
+    for name, env, bad_epoch, note in [
+        ("authz-epoch-rollback", "env-prod-0001", "1",
+         "観測済みエポック(2)からの巻き戻しは拒否する"),
+        ("authz-epoch-duplicate", "env-prod-0001", "2",
+         "観測済みエポックと同値の rotate は拒否する(期待値は 3)"),
+        ("authz-epoch-jump", "env-prod-0001", "10",
+         "エポックのジャンプは拒否する(期待値は 3。焼き尽くし DoS 対策)"),
+        ("authz-epoch-first-jump", "env-staging-9999", "5",
+         "チェーン上で未観測の環境の初回 rotate は初期値 1 + 1 = 2 のみ受理する"),
+    ]:
+        add_authz(
+            name, 10, head9, "rotate_epoch", admin_id, admin,
+            {"environment_id": env, "new_epoch": bad_epoch, "reason": "scheduled"},
+            t0 + 9000, "epoch-out-of-sequence", note,
+        )
+
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
     impostor = build_entry(10, "rotate_epoch", owner_id, member,

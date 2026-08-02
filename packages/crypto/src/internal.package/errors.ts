@@ -25,7 +25,8 @@ export type ChainInvalidReason =
   | "unknown-target"
   | "duplicate-member"
   | "unknown-server-grant"
-  | "grant-scope-narrowed";
+  | "grant-scope-narrowed"
+  | "epoch-out-of-sequence";
 
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =

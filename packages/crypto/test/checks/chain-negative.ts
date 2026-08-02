@@ -286,8 +286,11 @@ function semanticCases(
   ];
 }
 
-async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
-  // 正しい追記(admin による rotate_epoch)は検証を通り、状態が更新される
+async function appendRotation(
+  base: SemanticBase,
+  environmentId: string,
+  newEpoch: number,
+): Promise<ChainState | undefined> {
   const rotate = await signAs("user-admin-0003", {
     ...base,
     actor: {
@@ -295,15 +298,30 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
       keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
     },
     op: "rotate_epoch",
-    payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: "scheduled" },
+    payload: { environmentId, newEpoch, reason: "scheduled" },
   });
-  const extended = rotate === undefined ? undefined : await verifyChain([...typedEntries, rotate]);
+  if (rotate === undefined) {
+    return undefined;
+  }
+  const result = await verifyChain([...typedEntries, rotate]);
+  return result.ok ? result.value : undefined;
+}
+
+async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
+  // 正しい追記(admin による rotate_epoch。観測値 2 → 3)は検証を通り、状態が更新される
+  const extended = await appendRotation(base, "env-prod-0001", 3);
   c.push(
     "chain semantic: valid append by admin verifies",
     extended !== undefined &&
-      extended.ok &&
-      extended.value.headSeq === 10 &&
-      extended.value.environmentEpochs.get("env-prod-0001") === 3,
+      extended.headSeq === 10 &&
+      extended.environmentEpochs.get("env-prod-0001") === 3,
+  );
+
+  // 未観測環境の初回 rotate は 初期値 1 + 1 = 2 のみ受理される(エポック = カウンタ)
+  const withFirst = await appendRotation(base, "env-staging-0003", 2);
+  c.push(
+    "chain semantic: first rotation of unobserved environment to 2 accepted",
+    withFirst !== undefined && withFirst.environmentEpochs.get("env-staging-0003") === 2,
   );
 }
 
