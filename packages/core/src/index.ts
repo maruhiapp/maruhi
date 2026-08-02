@@ -15,4 +15,26 @@ export {
   toWrappedCryptoError,
   type WrappedCryptoError,
 } from "./crypto-errors.ts";
+export {
+  anonymousPrincipal,
+  type AuthenticatedPrincipal,
+  type IssuedSession,
+  type IssuedToken,
+  type OrgRole,
+  OrgRoleSchema,
+  parseTokenScopes,
+  permissionAtLeast,
+  type Principal,
+  RequestAuth,
+  type RequestAuthShape,
+  scopePermissionFor,
+  SessionService,
+  type SessionServiceShape,
+  type TokenPermission,
+  TokenPermissionSchema,
+  type TokenScope,
+  TokenScopeSchema,
+  TokenService,
+  type TokenServiceShape,
+} from "./auth.ts";
 export { isProjectId, type ProjectId, ProjectIdSchema } from "./project.ts";

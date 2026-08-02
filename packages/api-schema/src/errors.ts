@@ -36,6 +36,46 @@ void allReasonsListed;
 /** Reason codes a server-side chain verification can reject an entry with. */
 export const ChainInvalidReasonSchema = Schema.Literals(CHAIN_INVALID_REASONS);
 
+/** 401: the request presented no valid session cookie or API token. */
+export class UnauthorizedError extends Schema.TaggedErrorClass<UnauthorizedError>()(
+  "Unauthorized",
+  {},
+  { httpApiStatus: 401 },
+) {}
+
+/** Reason codes for a 403 (AUTH_SPEC §5 CSRF / §9-2 実効権限 / §11-1 / §11-3). */
+export const ForbiddenReasonSchema = Schema.Literals([
+  "csrf-header-required",
+  "insufficient-permission",
+  "actor-mismatch",
+  "org-membership-required",
+]);
+
+/** 403: the authenticated principal may not perform this operation. */
+export class ForbiddenError extends Schema.TaggedErrorClass<ForbiddenError>()(
+  "Forbidden",
+  { reason: ForbiddenReasonSchema },
+  { httpApiStatus: 403 },
+) {}
+
+/** Reason codes for a failed authentication flow (AUTH_SPEC §3 / §4). */
+export const AuthFlowFailureReasonSchema = Schema.Literals([
+  "state-mismatch",
+  "code-exchange-failed",
+  "github-token-invalid",
+]);
+
+/**
+ * 400: the OAuth / device-flow dance failed (state mismatch, code exchange
+ * rejection, or an invalid GitHub token presented to the device exchange).
+ * 提示された外部 ID・トークン値は運ばない(理由コードのみ)。
+ */
+export class AuthFlowError extends Schema.TaggedErrorClass<AuthFlowError>()(
+  "AuthFlow",
+  { reason: AuthFlowFailureReasonSchema },
+  { httpApiStatus: 400 },
+) {}
+
 /** 404: no chain has been initialized under this project id. */
 export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
   "ProjectNotFound",
