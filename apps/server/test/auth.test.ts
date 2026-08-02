@@ -360,6 +360,26 @@ describe("POST /auth/logout(§5: セッション失効)", () => {
     expect(me.status).toBe(200);
   });
 
+  it("token-authenticated logout does not destroy a browser session sent alongside", async () => {
+    // ブラウザ拡張等が Bearer とセッションクッキーを同送しても、トークン主体の
+    // logout は Web セッションを失効させず、クッキーの expire も返さない
+    const session = await loginSession(407);
+    const token = await deviceToken(408);
+    const response = await SELF.fetch(`${BASE}/auth/logout`, {
+      method: "POST",
+      headers: { ...bearer(token), cookie: `${SESSION_COOKIE}=${session}` },
+    });
+    expect(response.status).toBe(204);
+    const expired = response.headers
+      .getSetCookie()
+      .find((cookie) => cookie.startsWith(`${SESSION_COOKIE}=`));
+    expect(expired).toBeUndefined();
+    const me = await SELF.fetch(`${BASE}/auth/me`, {
+      headers: { cookie: `${SESSION_COOKIE}=${session}` },
+    });
+    expect(me.status).toBe(200);
+  });
+
   it("does not require the CSRF header for token-authenticated writes", async () => {
     const token = await deviceToken(403);
     const response = await SELF.fetch(`${BASE}/auth/token/revoke`, {

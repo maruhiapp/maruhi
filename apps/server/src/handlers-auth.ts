@@ -138,13 +138,19 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("logout", ({ request }) =>
       Effect.gen(function* () {
         // AuthMiddleware 通過済み(401 / CSRF 403 はミドルウェアが担う)
-        yield* (yield* RequestAuth).principal;
+        const principal = yield* (yield* RequestAuth).principal;
+        const response = HttpServerResponse.empty({ status: 204 });
+        if (principal.kind !== "session") {
+          // ログアウトはセッション主体の操作。トークン主体は no-op とし、同送された
+          // ブラウザのセッションクッキーに触れない(Bearer 認証のリクエストが
+          // 無関係な Web セッションを破壊しないため)
+          return response;
+        }
         const rawSession = request.cookies[SESSION_COOKIE];
         if (rawSession !== undefined) {
           const sessions = yield* SessionService;
           yield* sessions.revokeSession(rawSession);
         }
-        const response = HttpServerResponse.empty({ status: 204 });
         return yield* HttpServerResponse.expireCookie(
           response,
           SESSION_COOKIE,

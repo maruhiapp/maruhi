@@ -18,11 +18,6 @@
 //   668         → /user/emails が 404(user:email スコープなし相当)
 // 自 App 外トークン: gh-token-other-app-<n>(/user では有効、check-token では 404)。
 
-// テスト時の env: .dev.vars(dummy-github-client-id / dummy-github-client-secret)が
-// wrangler vars より優先される(vitest-pool-workers が .dev.vars を secrets として読む)
-const FAKE_CLIENT_ID = "dummy-github-client-id";
-const FAKE_CLIENT_SECRET = "dummy-github-client-secret";
-
 interface OutboundRequest {
   readonly url: string;
   readonly headers: { get(name: string): string | null };
@@ -87,10 +82,33 @@ function emailEntries(userId: number): { body: unknown; status: number } {
   };
 }
 
+/**
+ * Basic 認証を検証する: パスの {client_id} と Basic 側の client_id が一致し、
+ * secret が非空であること(実装の配線 = 「自分の client_id/secret で照会している」を
+ * 検査する。env の実値には依存しない — ローカルは .dev.vars、CI は wrangler vars と
+ * 注入元が異なるため、値そのものを固定すると環境で割れる)。
+ */
+function decodeBasicPair(auth: string): readonly [string, string] | null {
+  if (!auth.startsWith("Basic ")) {
+    return null;
+  }
+  const decoded = atob(auth.slice("Basic ".length));
+  const separator = decoded.indexOf(":");
+  return separator <= 0 ? null : [decoded.slice(0, separator), decoded.slice(separator + 1)];
+}
+
+function basicAuthMatches(request: OutboundRequest, clientIdFromPath: string): boolean {
+  const pair = decodeBasicPair(request.headers.get("authorization") ?? "");
+  return pair !== null && pair[0] === clientIdFromPath && pair[1] !== "";
+}
+
 /** §4-4 の audience 検証: 自 App 発行(other-app でない)トークンのみ 200 + user を返す。 */
-function checkAppToken(request: OutboundRequest, body: { access_token?: string }): Response {
-  const expectedBasic = `Basic ${btoa(`${FAKE_CLIENT_ID}:${FAKE_CLIENT_SECRET}`)}`;
-  if (request.headers.get("authorization") !== expectedBasic) {
+function checkAppToken(
+  request: OutboundRequest,
+  clientIdFromPath: string,
+  body: { access_token?: string },
+): Response {
+  if (!basicAuthMatches(request, clientIdFromPath)) {
     return json({ message: "Bad credentials" }, 401);
   }
   const match = /^gh-token-(\d+)$/.exec(body.access_token ?? "");
@@ -139,6 +157,18 @@ function missingUserAgent(request: OutboundRequest): Response | null {
   return json({ message: "Request forbidden: missing User-Agent" }, 403);
 }
 
+async function routeCheckToken(request: OutboundRequest, url: URL): Promise<Response | null> {
+  const match = /^\/applications\/([^/]+)\/token$/.exec(url.pathname);
+  if (match?.[1] === undefined) {
+    return null;
+  }
+  return checkAppToken(
+    request,
+    decodeURIComponent(match[1]),
+    (await request.json()) as { access_token?: string },
+  );
+}
+
 async function handleApi(request: OutboundRequest, url: URL): Promise<Response | null> {
   if (url.hostname !== "api.github.com") {
     return null;
@@ -147,10 +177,7 @@ async function handleApi(request: OutboundRequest, url: URL): Promise<Response |
   if (forbidden !== null) {
     return forbidden;
   }
-  const isCheckToken = /^\/applications\/[^/]+\/token$/.test(url.pathname);
-  return isCheckToken
-    ? checkAppToken(request, (await request.json()) as { access_token?: string })
-    : bearerApiResponse(request, url);
+  return (await routeCheckToken(request, url)) ?? bearerApiResponse(request, url);
 }
 
 export async function fakeGitHub(request: OutboundRequest): Promise<Response> {
