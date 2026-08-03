@@ -10,6 +10,7 @@ export {
   CryptoEncryptError,
   cryptoEffect,
   CryptoInvalidInputError,
+  CryptoKeyExportError,
   CryptoKeyImportError,
   CryptoSignError,
   fromCryptoResult,

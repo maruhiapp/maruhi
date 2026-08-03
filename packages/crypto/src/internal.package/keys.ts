@@ -102,6 +102,26 @@ export async function importEncryptionKeyPair(input: {
   }
 }
 
+/**
+ * Serializes an extractable X25519 private key to its 32-byte raw form
+ * (the inverse of `importEncryptionKeyPair`). Only for persisting a freshly
+ * generated master key into the OS keychain (CRYPTO_SPEC §3) — keys imported
+ * for use stay non-extractable and fail here with `KeyExportFailed`.
+ */
+export async function exportEncryptionPrivateKey(
+  key: EncryptionKey,
+): Promise<CryptoResult<Uint8Array>> {
+  try {
+    const raw = await hpkeSuite().SerializePrivateKey(key);
+    if (raw.length !== X25519_KEY_BYTES) {
+      return { ok: false, error: { kind: "KeyExportFailed", key: "encryption-private" } };
+    }
+    return { ok: true, value: raw };
+  } catch {
+    return { ok: false, error: { kind: "KeyExportFailed", key: "encryption-private" } };
+  }
+}
+
 /** Serializes a signing public key to its 32-byte raw form. */
 export async function exportSigningPublicKey(key: CryptoKey): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.exportKey("raw", key));
@@ -130,6 +150,39 @@ function base64UrlEncode(bytes: Uint8Array): string {
     binary += String.fromCharCode(b);
   }
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(value: string): Uint8Array | null {
+  try {
+    const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/"));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serializes an extractable Ed25519 private key to its 32-byte RFC 8032 seed
+ * (the inverse of `importSigningKeyPair`). WebCrypto has no raw export for
+ * Ed25519 private keys, so the seed is read from the standard JWK (OKP) `d`
+ * field. Only for persisting a freshly generated master key into the OS
+ * keychain (CRYPTO_SPEC §3) — non-extractable keys fail with `KeyExportFailed`.
+ */
+export async function exportSigningPrivateSeed(key: CryptoKey): Promise<CryptoResult<Uint8Array>> {
+  try {
+    const jwk = await crypto.subtle.exportKey("jwk", key);
+    const seed = typeof jwk.d === "string" ? base64UrlDecode(jwk.d) : null;
+    if (seed === null || seed.length !== ED25519_KEY_BYTES) {
+      return { ok: false, error: { kind: "KeyExportFailed", key: "signing-private" } };
+    }
+    return { ok: true, value: seed };
+  } catch {
+    return { ok: false, error: { kind: "KeyExportFailed", key: "signing-private" } };
+  }
 }
 
 /**

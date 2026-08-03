@@ -4,7 +4,9 @@
 import {
   computeServerKeyFingerprint,
   computeUserKeyFingerprint,
+  exportEncryptionPrivateKey,
   exportEncryptionPublicKey,
+  exportSigningPrivateSeed,
   exportSigningPublicKey,
   generateDek,
   generateEncryptionKeyPair,
@@ -107,10 +109,56 @@ async function generationChecks(c: Checks): Promise<void> {
   c.push("keys: DEK is 32 bytes and random", a.length === 32 && toHex(a) !== toHex(b));
 }
 
+async function privateExportChecks(c: Checks): Promise<void> {
+  // enc 秘密鍵: extractable 生成 → raw エクスポート → 再インポートで公開鍵が一致
+  // (CLI が master keypair を OS キーチェーンへ保存する経路 — CRYPTO_SPEC §3)
+  const enc = await generateEncryptionKeyPair({ extractable: true });
+  const encSk = await exportEncryptionPrivateKey(enc.privateKey);
+  const encPub = await exportEncryptionPublicKey(enc.publicKey);
+  let encRoundtrip = false;
+  if (encSk.ok) {
+    const reimported = await importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk.value });
+    encRoundtrip =
+      encSk.value.length === 32 &&
+      reimported.ok &&
+      toHex(await exportEncryptionPublicKey(reimported.value.publicKey)) === toHex(encPub);
+  }
+  c.push("keys: encryption private key export/import round trip", encRoundtrip);
+
+  // sig 秘密鍵: extractable 生成 → seed エクスポート → 再インポートで公開鍵が一致
+  const sig = await generateSigningKeyPair({ extractable: true });
+  const sigSeed = await exportSigningPrivateSeed(sig.privateKey);
+  const sigPub = await exportSigningPublicKey(sig.publicKey);
+  let sigRoundtrip = false;
+  if (sigSeed.ok) {
+    const reimported = await importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed.value });
+    sigRoundtrip =
+      sigSeed.value.length === 32 &&
+      reimported.ok &&
+      toHex(await exportSigningPublicKey(reimported.value.publicKey)) === toHex(sigPub);
+  }
+  c.push("keys: signing private seed export/import round trip", sigRoundtrip);
+
+  // 非抽出鍵のエクスポートは KeyExportFailed(throw しない)
+  const encLocked = await generateEncryptionKeyPair();
+  const encDenied = await exportEncryptionPrivateKey(encLocked.privateKey);
+  c.push(
+    "keys: non-extractable encryption private key export fails",
+    !encDenied.ok && encDenied.error.kind === "KeyExportFailed",
+  );
+  const sigLocked = await generateSigningKeyPair();
+  const sigDenied = await exportSigningPrivateSeed(sigLocked.privateKey);
+  c.push(
+    "keys: non-extractable signing private key export fails",
+    !sigDenied.ok && sigDenied.error.kind === "KeyExportFailed",
+  );
+}
+
 export async function keysChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   await fingerprintChecks(c);
   await vectorImportChecks(c);
   await generationChecks(c);
+  await privateExportChecks(c);
   return c.results;
 }
