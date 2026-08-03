@@ -6,7 +6,8 @@
 // してから表示する。値(--show)は対象外: 値はメンバーが E2EE で書いた
 // データでサーバーには偽造できず、改変すれば復号失敗に落ちる。
 
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+// Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
+const CONTROL_CHARS = /\p{Cc}/gu;
 
 /** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
 export function displayText(value: string): string {
