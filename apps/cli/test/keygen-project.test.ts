@@ -155,6 +155,18 @@ describe("maruhi project init", () => {
     expect(env.errors.join("\n")).toContain("genesis ハッシュと一致しません");
   });
 
+  it("org が空の場合は状態異常として正確に報告する(「複数所属」と言わない)", async () => {
+    const user = await makeTestUser("user-0001");
+    const maruhi = await start([meHandler(user.userId, [])]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    seedSession(env, maruhi.origin, user);
+    expect(await runCli(["project", "init"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("所属する org がありません");
+    expect(errors).not.toContain("複数の org");
+  });
+
   it("複数 org は --org 必須。slug 指定で作成できる", async () => {
     const user = await makeTestUser("user-0001");
     let submittedOrgId = "";

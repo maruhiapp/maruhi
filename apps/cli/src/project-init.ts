@@ -34,7 +34,14 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): UserOrg | 
     );
   }
   const [first] = orgs;
-  if (first !== undefined && orgs.length === 1) {
+  if (first === undefined) {
+    // サインアップ時にパーソナル org が自動作成される(§9-1)ため通常は
+    // 起きない。起きたらサーバー側の状態異常として正確に報告する
+    return cliError(
+      "所属する org がありません(サインアップ時にパーソナル org が自動作成されるはずです。サーバー側の状態を確認してください)",
+    );
+  }
+  if (orgs.length === 1) {
     // パーソナル org のみ(単独利用)。org 概念を表示しない(§9-1)
     return first;
   }
