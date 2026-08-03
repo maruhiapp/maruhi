@@ -112,12 +112,14 @@ interface ProjectContext extends SessionContext {
   readonly verified: VerifiedProject;
 }
 
-/** データ系コマンド共通の前段: セッション → master 鍵 → §6.3 同期検査。 */
+/** データ系コマンド共通の前段: ID 検証 → セッション → master 鍵 → §6.3 同期検査。 */
 function openProject(flags: CommonFlags): Effect.Effect<ProjectContext, CliError, CliServices> {
   return Effect.gen(function* () {
+    // プロジェクト ID の形式検証はネットワークアクセスより先に行う
+    const store = yield* ConfigStore;
+    const projectId = yield* resolveProjectId(flags.project, yield* store.load);
     const context = yield* openSession(flags.server);
     const masterKeys = yield* loadMasterKeys(context.session);
-    const projectId = yield* resolveProjectId(flags.project, context.config);
     const verified = yield* syncProject(context.client, projectId);
     const recipient: DekRecipient = {
       userId: context.session.userId,
@@ -364,8 +366,10 @@ function pullCommand(execute: Execute) {
       execute(
         Effect.gen(function* () {
           const io = yield* CliIo;
+          const store = yield* ConfigStore;
+          // 環境 ID の形式検証はネットワークアクセスより先に行う
+          const environmentId = yield* resolveEnvironmentId(ctx.values.env, yield* store.load);
           const context = yield* openProject(ctx.values);
-          const environmentId = yield* resolveEnvironmentId(ctx.values.env, context.config);
           const variables = yield* pullVariables({
             client: context.client,
             verified: context.verified,
@@ -401,8 +405,9 @@ function pushCommand(execute: Execute) {
       execute(
         Effect.gen(function* () {
           const io = yield* CliIo;
+          const store = yield* ConfigStore;
+          const environmentId = yield* resolveEnvironmentId(ctx.values.env, yield* store.load);
           const context = yield* openProject(ctx.values);
-          const environmentId = yield* resolveEnvironmentId(ctx.values.env, context.config);
           const value = normalizeStdinValue(yield* io.readStdin);
           const pushed = yield* pushVariable({
             client: context.client,
@@ -436,8 +441,9 @@ function runCommand(execute: Execute) {
     run: (ctx) =>
       execute(
         Effect.gen(function* () {
+          const store = yield* ConfigStore;
+          const environmentId = yield* resolveEnvironmentId(ctx.values.env, yield* store.load);
           const context = yield* openProject(ctx.values);
-          const environmentId = yield* resolveEnvironmentId(ctx.values.env, context.config);
           const variables = yield* pullVariables({
             client: context.client,
             verified: context.verified,
@@ -480,7 +486,11 @@ function configCommand(execute: Execute) {
             if (value === undefined) {
               return yield* Effect.fail(cliError("設定する値を指定してください"));
             }
-            const config = yield* store.load;
+            // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
+            // ファイルなので破棄してよい — CLI 内から復旧不能にしない)
+            const config = yield* store.load.pipe(
+              Effect.catch(() => Effect.succeed<CliConfig>({})),
+            );
             yield* store.save({ ...config, [key]: value });
             yield* io.log(`${key} を設定しました`);
             return;
@@ -526,6 +536,16 @@ export async function runCli(
         Effect.gen(function* () {
           const io = yield* CliIo;
           yield* io.logError(`maruhi: ${toCliError(error).message}`);
+          return 1;
+        }),
+      ),
+      // defect(バグ)を usage エラー(2)に化けさせない: runPromise の
+      // reject → gunshi 経由で外側 catch へ落ちると exit 2 になってしまう
+      Effect.catchDefect((defect) =>
+        Effect.gen(function* () {
+          const io = yield* CliIo;
+          const message = defect instanceof Error ? defect.message : String(defect);
+          yield* io.logError(`maruhi: 内部エラー: ${message}`);
           return 1;
         }),
       ),

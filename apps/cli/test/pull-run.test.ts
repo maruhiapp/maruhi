@@ -5,11 +5,13 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import {
+  addMemberOp,
   buildChain,
   type BuiltChain,
   encryptValueFor,
   genesisOp,
   makeTestUser,
+  removeMemberOp,
   rotateEpochOp,
   type TestUser,
   type WireEncryptedPayload,
@@ -219,6 +221,159 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("復号できません");
   });
 
+  it("チェーン現エポックを超えるラップ(ファントムエポック)を拒否する", async () => {
+    // 正規メンバー(owner)署名でも、チェーンに rotate_epoch がない epoch 3 の
+    // ラップは受理しない(§12-6 のクライアント側 — サーバー不信の本線)
+    const phantom = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 3,
+      dek: crypto.getRandomValues(new Uint8Array(32)),
+      recipient: fixture.owner,
+      signer: fixture.owner,
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ deks: [...fixture.wraps, phantom] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("現エポック(2)を超えるエポック 3");
+  });
+
+  it("チェーン現エポックを超える申告エポックの変数を拒否する", async () => {
+    const phantomValue = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 3,
+      variableId: "vp",
+      version: 1,
+      plaintext: "phantom",
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ variableId: "vp", name: "PHANTOM", value: phantomValue }] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("現エポック(2)を超えています");
+  });
+
+  it("署名者 FP がチェーン履歴のどの鍵とも一致しないラップを拒否する", async () => {
+    const wrap = fixture.wraps[0];
+    if (wrap === undefined) {
+      throw new Error("fixture");
+    }
+    const wrongFp = { ...wrap, signerKeyFingerprintHex: "00".repeat(16) };
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ deks: [wrongFp, fixture.wraps[1]] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("署名者がチェーン履歴に存在しません");
+  });
+
+  it("同一エポックの DEK ラップの重複を拒否する", async () => {
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ deks: [fixture.wraps[0], fixture.wraps[0], fixture.wraps[1]] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("重複しています");
+  });
+
+  it("別環境の座標で暗号化された暗号文の差し替えは復号失敗に落ちる", async () => {
+    // environmentId だけ他所(other-env)の値を prod として配布 → 自前の座標
+    // (URL に使った environmentId)で復号するため必ず失敗する
+    const crossEnv = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: "other-env",
+      epoch: 2,
+      variableId: "va",
+      version: 3,
+      plaintext: "cross",
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: crossEnv }] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("復号できません");
+  });
+
+  it("削除→新鍵で再追加されたメンバーの過去署名は当時の鍵で検証できる(§5.1)", async () => {
+    // signer は在籍当時の鍵一式(keysetA)で署名し、その後削除 → 同一 user_id が
+    // 新鍵(keysetB)で再追加された。keyHistory は 2 束縛を持ち、FP 一致で
+    // 当時の鍵が選ばれる(チェーンは append-only — CRYPTO_SPEC §5.1)
+    const oldKeys = await makeTestUser("user-rotated-5555");
+    const newKeys = await makeTestUser("user-rotated-5555");
+    const owner = fixture.owner;
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(oldKeys, "member") },
+      { actor: owner, operation: removeMemberOp(oldKeys) },
+      { actor: owner, operation: addMemberOp(newKeys, "member") },
+    ]);
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const wrap = await wrapDekFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek,
+      recipient: owner,
+      signer: oldKeys,
+    });
+    const value = await encryptValueFor({
+      dek,
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "vr",
+      version: 1,
+      plaintext: "historic",
+    });
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      })),
+      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          name: ENV_ID,
+          currentEpoch: 1,
+          variables: [{ variableId: "vr", name: "HISTORIC", value }],
+          deks: [wrap],
+        },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("HISTORIC");
+  });
+
+  it("トークン・秘密鍵素材は出力に現れない", async () => {
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).not.toContain("maruhi_pat_");
+    expect(output).not.toContain(fixture.owner.encSkHex);
+    expect(output).not.toContain(fixture.owner.sigSkSeedHex);
+  });
+
   it("変数名の重複(サーバー応答の不整合)を拒否する", async () => {
     const env = await startEnv([
       chainHandler(),
@@ -251,6 +406,15 @@ describe("maruhi run", () => {
     env.setAgent({ isAgent: true, name: "cursor" });
     expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
+  });
+
+  it("値は子プロセス環境のみに現れ、端末出力には出ない", async () => {
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).not.toContain("alpha-value");
+    expect(output).not.toContain("beta-value");
+    expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe("alpha-value");
   });
 
   it("子プロセスの終了コードを伝播する", async () => {

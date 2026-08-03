@@ -116,6 +116,30 @@ describe("maruhi login", () => {
     expect(env.keychain.size).toBe(0);
   });
 
+  it("キーチェーン保存に失敗したら発行済みトークンを失効させてから失敗する(孤児化防止)", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    let revoked = 0;
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+      onRequest("POST", "/auth/token/revoke", (request) => {
+        expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_issued");
+        revoked += 1;
+        return { status: 204 };
+      }),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    env.failKeychainWrites();
+    expect(await runCli(["login", "--github-base-url", githubServer.origin], env.layer)).toBe(1);
+    expect(revoked).toBe(1);
+    expect(env.keychain.size).toBe(0);
+    expect(env.errors.join("\n")).toContain("キーチェーン");
+  });
+
   it("client_id 未設定は設定手順を案内して失敗する", async () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
@@ -159,6 +183,23 @@ describe("maruhi logout", () => {
     );
     expect(await runCli(["logout"], env.layer)).toBe(1);
     expect(env.keychain.size).toBe(1);
+  });
+
+  it("既に失効済み(401)の場合もキーチェーンを削除して成功する", async () => {
+    const maruhi = await start([
+      onRequest("POST", "/auth/token/revoke", () => ({
+        status: 401,
+        json: { _tag: "Unauthorized" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    env.keychain.set(
+      tokenEntryName(maruhi.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+    );
+    expect(await runCli(["logout"], env.layer)).toBe(0);
+    expect(env.keychain.size).toBe(0);
   });
 
   it("トークン未保存はエラーメッセージで案内する", async () => {

@@ -53,6 +53,7 @@ export function pullVariables(input: {
 
     const results: DecryptedVariable[] = [];
     const seenNames = new Set<string>();
+    const chainEpoch = input.verified.state.environmentEpochs.get(input.environmentId) ?? 1;
     for (const variable of response.variables) {
       // 変数名の一意性はサーバーが強制する(§12-1)が、`maruhi run` の環境変数
       // 注入が黙って片方を潰さないようクライアントでも検査する(サーバー不信)
@@ -65,6 +66,15 @@ export function pullVariables(input: {
 
       const declaredEpoch = variable.value.aad.epoch;
       const declaredVersion = variable.value.aad.version;
+      // ファントムエポック対策の第二層(deks.ts のラップ側検査と対): 申告
+      // epoch はチェーン導出の現エポック以下でなければならない
+      if (declaredEpoch > chainEpoch) {
+        return yield* Effect.fail(
+          cliError(
+            `変数 ${variable.name} の申告エポック ${declaredEpoch} がチェーン上の現エポック(${chainEpoch})を超えています(サーバー応答とチェーンの矛盾)`,
+          ),
+        );
+      }
       const dek = deksByEpoch.get(declaredEpoch);
       if (dek === undefined) {
         return yield* Effect.fail(

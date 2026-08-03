@@ -155,4 +155,25 @@ describe("syncProject (§6.3)", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     expect(failureMessage(exit)).toContain("チェーンヘッド");
   });
+
+  it("seq は正しいがハッシュだけ虚偽の申告ヘッドも拒否する", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(member, "member") },
+    ]);
+    const server = await startServer([
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: "ab".repeat(32),
+        },
+      })),
+    ]);
+    const exit = await runSync(server.origin, built.projectId);
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(failureMessage(exit)).toContain("チェーンヘッド");
+  });
 });

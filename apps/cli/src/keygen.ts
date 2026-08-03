@@ -21,7 +21,7 @@ import { Effect } from "effect";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { Keychain, masterKeyEntryName, type StoredMasterKey } from "./keychain.ts";
-import { type CliSession, loadMasterKeys } from "./session.ts";
+import { type CliSession, importMasterKeys, loadMasterKeys } from "./session.ts";
 
 /** `maruhi key generate`: create and store the master keypair for the session user. */
 export function keyGenerateOp(input: {
@@ -57,12 +57,12 @@ export function keyGenerateOp(input: {
       sigPubHex: encodeHex(sigPub),
       sigSkSeedHex: encodeHex(sigSeed.value),
     };
+    // 保存「前」にレコードを再インポートして自己検証する(検証失敗の壊れた
+    // レコードをキーチェーンに残さない — レビューループ 1 [低])
+    const validated = yield* importMasterKeys(record);
     yield* keychain.set(entryName, JSON.stringify(record));
-
-    // 保存済みレコードから再インポートして FP を出す(保存形式の自己検証を兼ねる)
-    const loaded = yield* loadMasterKeys(input.session);
     yield* io.log("master keypair を生成し、OS キーチェーンに保存しました");
-    yield* io.log(`key fingerprint: ${loaded.fingerprintHex}`);
+    yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
     yield* io.log(
       "注意: この鍵を失うと参加プロジェクトの値を復号できなくなります(リカバリーコードは未実装)",
     );

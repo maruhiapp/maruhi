@@ -43,14 +43,21 @@ function postForm(
         },
         body: new URLSearchParams(form),
       });
-      if (!response.ok) {
-        throw new Error(String(response.status));
+      // RFC 8628 / RFC 6749 準拠実装は error 応答を HTTP 400 + JSON ボディで
+      // 返しうる(github.com は 200 + error だが、準拠実装も受ける)。
+      // JSON オブジェクトが取れる限りステータスに関わらず呼び出し元の
+      // error フィールド分類に委ねる
+      const text = await response.text();
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
       }
-      const body: unknown = await response.json();
-      if (typeof body !== "object" || body === null) {
-        throw new Error("malformed");
+      if (typeof parsed === "object" && parsed !== null) {
+        return parsed as Record<string, unknown>;
       }
-      return body as Record<string, unknown>;
+      throw new Error(String(response.status));
     },
     catch: () => cliError("GitHub への接続に失敗しました(ネットワーク・URL を確認してください)"),
   });

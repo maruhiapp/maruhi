@@ -15,6 +15,8 @@ import {
   importEncryptionPublicKey,
   importSigningKeyPair,
   importSigningPublicKey,
+  unwrapDek,
+  wrapDek,
 } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
@@ -109,42 +111,108 @@ async function generationChecks(c: Checks): Promise<void> {
   c.push("keys: DEK is 32 bytes and random", a.length === 32 && toHex(a) !== toHex(b));
 }
 
-async function privateExportChecks(c: Checks): Promise<void> {
-  // enc 秘密鍵: extractable 生成 → raw エクスポート → 再インポートで公開鍵が一致
-  // (CLI が master keypair を OS キーチェーンへ保存する経路 — CRYPTO_SPEC §3)
+async function encExportChecks(c: Checks): Promise<void> {
+  // enc 秘密鍵: extractable 生成 → raw エクスポート → 再インポートした鍵ペアで
+  // HPKE Open が機能する(公開鍵一致は入力からの復元で自明のため、機能検証で
+  // エクスポート値の正しさを固定する — CLI の OS キーチェーン経路 CRYPTO_SPEC §3)
   const enc = await generateEncryptionKeyPair({ extractable: true });
   const encSk = await exportEncryptionPrivateKey(enc.privateKey);
   const encPub = await exportEncryptionPublicKey(enc.publicKey);
   let encRoundtrip = false;
-  if (encSk.ok) {
+  if (encSk.ok && encSk.value.length === 32) {
     const reimported = await importEncryptionKeyPair({
       publicKey: encPub,
       privateKey: encSk.value,
     });
-    encRoundtrip =
-      encSk.value.length === 32 &&
-      reimported.ok &&
-      toHex(await exportEncryptionPublicKey(reimported.value.publicKey)) === toHex(encPub);
+    if (reimported.ok) {
+      const dek = generateDek();
+      const context = {
+        projectId: "p".repeat(64),
+        environmentId: "env-export-check",
+        epoch: 1,
+        recipientUserId: "user-export-check",
+      };
+      const wrapped = await wrapDek({ recipientPublicKey: enc.publicKey, dek, context });
+      if (wrapped.ok) {
+        const opened = await unwrapDek({
+          recipientKeyPair: reimported.value,
+          wrapped: wrapped.value,
+          context,
+        });
+        encRoundtrip = opened.ok && toHex(opened.value) === toHex(dek);
+      }
+    }
   }
-  c.push("keys: encryption private key export/import round trip", encRoundtrip);
+  c.push("keys: encryption private key export/import round trip (HPKE open)", encRoundtrip);
+}
 
-  // sig 秘密鍵: extractable 生成 → seed エクスポート → 再インポートで公開鍵が一致
+async function sigExportChecks(c: Checks): Promise<void> {
+  // sig 秘密鍵: extractable 生成 → seed エクスポート → 再インポートした秘密鍵の
+  // 署名が「元の」公開鍵で検証できる(機能検証)
   const sig = await generateSigningKeyPair({ extractable: true });
   const sigSeed = await exportSigningPrivateSeed(sig.privateKey);
   const sigPub = await exportSigningPublicKey(sig.publicKey);
   let sigRoundtrip = false;
-  if (sigSeed.ok) {
+  if (sigSeed.ok && sigSeed.value.length === 32) {
     const reimported = await importSigningKeyPair({
       publicKey: sigPub,
       privateSeed: sigSeed.value,
     });
-    sigRoundtrip =
-      sigSeed.value.length === 32 &&
-      reimported.ok &&
-      toHex(await exportSigningPublicKey(reimported.value.publicKey)) === toHex(sigPub);
+    if (reimported.ok) {
+      const message = new TextEncoder().encode("export-check");
+      const signature = new Uint8Array(
+        await crypto.subtle.sign("Ed25519", reimported.value.privateKey, message as BufferSource),
+      );
+      sigRoundtrip = await crypto.subtle.verify(
+        "Ed25519",
+        sig.publicKey,
+        signature as BufferSource,
+        message as BufferSource,
+      );
+    }
   }
-  c.push("keys: signing private seed export/import round trip", sigRoundtrip);
+  c.push("keys: signing private seed export/import round trip (sign/verify)", sigRoundtrip);
+}
 
+async function vectorExportChecks(c: Checks): Promise<void> {
+  // ベクター固定: chain-entries.json の固定鍵を extractable でインポート →
+  // エクスポートがベクターの秘密鍵 hex と一致する(決定的検査)
+  const ownerKeys = users["user-owner-0001"];
+  if (ownerKeys === undefined) {
+    c.push("keys: vector user-owner-0001 present for export checks", false);
+  } else {
+    const encPair = await importEncryptionKeyPair({
+      publicKey: fromHex(ownerKeys.enc_pub_hex),
+      privateKey: fromHex(ownerKeys.enc_sk_seed_hex),
+      extractable: true,
+    });
+    const encExported = encPair.ok
+      ? await exportEncryptionPrivateKey(encPair.value.privateKey)
+      : null;
+    c.push(
+      "keys: encryption private key export matches vector",
+      encExported !== null &&
+        encExported.ok &&
+        toHex(encExported.value) === ownerKeys.enc_sk_seed_hex,
+    );
+    const sigPair = await importSigningKeyPair({
+      publicKey: fromHex(ownerKeys.sig_pub_hex),
+      privateSeed: fromHex(ownerKeys.sig_sk_seed_hex),
+      extractable: true,
+    });
+    const sigExported = sigPair.ok
+      ? await exportSigningPrivateSeed(sigPair.value.privateKey)
+      : null;
+    c.push(
+      "keys: signing private seed export matches vector",
+      sigExported !== null &&
+        sigExported.ok &&
+        toHex(sigExported.value) === ownerKeys.sig_sk_seed_hex,
+    );
+  }
+}
+
+async function lockedExportChecks(c: Checks): Promise<void> {
   // 非抽出鍵のエクスポートは KeyExportFailed(throw しない)
   const encLocked = await generateEncryptionKeyPair();
   const encDenied = await exportEncryptionPrivateKey(encLocked.privateKey);
@@ -165,6 +233,9 @@ export async function keysChecks(): Promise<CheckResult[]> {
   await fingerprintChecks(c);
   await vectorImportChecks(c);
   await generationChecks(c);
-  await privateExportChecks(c);
+  await encExportChecks(c);
+  await sigExportChecks(c);
+  await vectorExportChecks(c);
+  await lockedExportChecks(c);
   return c.results;
 }

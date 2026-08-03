@@ -56,7 +56,17 @@ export function loginOp(input: {
       userId: exchanged.userId,
       tokenId: exchanged.tokenId,
     };
-    yield* keychain.set(tokenEntryName(input.origin), JSON.stringify(record));
+    yield* keychain.set(tokenEntryName(input.origin), JSON.stringify(record)).pipe(
+      // 保存できないなら発行済みトークンを孤児化させない: サーバー側の失効を
+      // 試みてから失敗させる(失効自体の失敗は握らず元エラーを優先)
+      Effect.catch((setError) =>
+        Effect.gen(function* () {
+          const authed = yield* makeApiClient({ baseUrl: input.origin, token: exchanged.token });
+          yield* authed.auth.revokeToken({}).pipe(Effect.catch(() => Effect.void));
+          return yield* Effect.fail(setError);
+        }),
+      ),
+    );
     yield* io.log(
       `ログインしました(user: ${exchanged.userId})。トークンは OS キーチェーンに保存されました`,
     );

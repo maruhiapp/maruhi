@@ -10,11 +10,11 @@
 // 存在しない — タスク裁定)。github client_id はサーバー側にも公開設定
 // エンドポイントがないため、v1 はユーザーが設定で与える(要裁定: session-11.md)。
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 
@@ -71,7 +71,7 @@ function pickString(record: Record<string, unknown>, key: string): string | unde
 function decodeConfig(json: string): CliConfig | null {
   try {
     const value: unknown = JSON.parse(json);
-    if (typeof value !== "object" || value === null) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
       return null;
     }
     const record = value as Record<string, unknown>;
@@ -112,14 +112,12 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
       Effect.tryPromise({
         try: async () => {
           await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-          await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+          // temp + rename で torn write を防ぐ(同時実行の最後の書き込みが勝つ)
+          const temp = `${path}.${process.pid}.tmp`;
+          await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+          await rename(temp, path);
         },
         catch: () => cliError(`設定ファイルを書き込めません: ${path}`),
       }),
   };
-}
-
-/** Layer providing a file-backed {@link ConfigStore}. */
-export function layerFileConfigStore(path: string): Layer.Layer<ConfigStore> {
-  return Layer.succeed(ConfigStore, makeFileConfigStore(path));
 }

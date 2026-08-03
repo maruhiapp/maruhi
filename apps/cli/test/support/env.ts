@@ -10,7 +10,8 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import type { CliServices } from "../../src/cli.ts";
-import { layerFileConfigStore } from "../../src/config.ts";
+import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
+import { cliError } from "../../src/errors.ts";
 import { type AgentProfile, CliIo } from "../../src/io.ts";
 import {
   Keychain,
@@ -40,6 +41,10 @@ export interface TestEnv {
   setAgent(profile: AgentProfile): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
+  /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
+  failKeychainWrites(): void;
+  /** defect 経路の検査用: 設定読込を throw(非 CliError)にする。 */
+  breakConfigLoadWithDefect(): void;
 }
 
 export async function makeTestEnv(): Promise<TestEnv> {
@@ -53,20 +58,35 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
   let runnerExitCode = 0;
+  let keychainWritable = true;
+  let configLoadDefect = false;
 
+  const fileStore = makeFileConfigStore(configPath);
   const layer = Layer.mergeAll(
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),
       set: (name, value) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
+          if (!keychainWritable) {
+            return Effect.fail(cliError("キーチェーンに書き込めません(テスト注入)"));
+          }
           keychain.set(name, value);
+          return Effect.void;
         }),
       remove: (name) =>
         Effect.sync(() => {
           keychain.delete(name);
         }),
     }),
-    layerFileConfigStore(configPath),
+    Layer.succeed(ConfigStore, {
+      load: Effect.suspend(() => {
+        if (configLoadDefect) {
+          throw new Error("config load defect (test)");
+        }
+        return fileStore.load;
+      }),
+      save: (config) => fileStore.save(config),
+    }),
     Layer.succeed(CliIo, {
       log: (line) =>
         Effect.sync(() => {
@@ -113,13 +133,20 @@ export async function makeTestEnv(): Promise<TestEnv> {
     setRunnerExitCode(code) {
       runnerExitCode = code;
     },
+    failKeychainWrites() {
+      keychainWritable = false;
+    },
+    breakConfigLoadWithDefect() {
+      configLoadDefect = true;
+    },
   };
 }
 
 /** ログイン済み + master 鍵保存済みの状態をキーチェーンへシードする。 */
 export function seedSession(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
-    token: "maruhi_pat_test-token-value",
+    // 実サーバーの形式(maruhi_pat_ + Base62 乱数)に寄せたフィクスチャ
+    token: "maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x",
     userId: user.userId,
     tokenId: "tok_0001",
   };

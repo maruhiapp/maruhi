@@ -231,6 +231,13 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
   });
 }
 
+function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<PushState, CliError> {
+  return Effect.gen(function* () {
+    const target = yield* resolveTarget({ ...input, verified: state.verified });
+    return { ...state, target, version: target.nextVersion };
+  });
+}
+
 function nextState(
   input: PushInput,
   state: PushState,
@@ -238,6 +245,11 @@ function nextState(
 ): Effect.Effect<PushState, CliError> {
   switch (outcome.kind) {
     case "version-conflict":
+      // create 経路への VersionConflict は「並行作成された」を意味する
+      // (自分の乱数 ID はサーバーに存在しない)ため、名前から解決し直す
+      if (state.target.create) {
+        return reresolveTarget(input, state);
+      }
       return Effect.succeed({
         ...state,
         version: outcome.currentVersion + 1,
@@ -249,14 +261,20 @@ function nextState(
       return Effect.gen(function* () {
         const verified = yield* input.resync;
         const epoch = verified.state.environmentEpochs.get(input.environmentId) ?? 1;
+        if (epoch === state.epoch) {
+          // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
+          // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)
+          return yield* Effect.fail(
+            cliError(
+              `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままです(サーバー応答とチェーンの矛盾)`,
+            ),
+          );
+        }
         const deks = yield* fetchDeks({ ...input, verified });
         return { ...state, verified, epoch, deks };
       });
     case "variable-conflict":
-      return Effect.gen(function* () {
-        const target = yield* resolveTarget({ ...input, verified: state.verified });
-        return { ...state, target, version: target.nextVersion };
-      });
+      return reresolveTarget(input, state);
   }
 }
 
@@ -278,7 +296,11 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
           epoch: outcome.accepted.epoch,
         };
       }
-      state = yield* nextState(input, state, outcome);
+      if (attempt < MAX_ATTEMPTS) {
+        // 最終試行の競合後に無駄な再同期・再解決を行わない(その失敗が
+        // 「競合が解消しない」という本来の報告を覆い隠すため)
+        state = yield* nextState(input, state, outcome);
+      }
     }
     return yield* Effect.fail(
       cliError(`push の競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`),

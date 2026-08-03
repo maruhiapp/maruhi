@@ -23,10 +23,33 @@ export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerS
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+// 実行制御系の環境変数名は注入を拒否する(レビューループ 1 [低]): 変数名は
+// 平文メタデータで AAD に束縛されないため、悪意あるサーバーが名前と暗号文の
+// 対応を付け替えても復号は成功する。正当な秘密値がこれらの名前で注入されると
+// 子プロセスのコード実行制御になるため、名前空間ごと塞ぐ。
+// (名前の暗号学的束縛は仕様側の検討事項 — session-11.md 申し送り)
+const DENIED_ENV_NAMES = new Set([
+  "PATH",
+  "NODE_OPTIONS",
+  "BASH_ENV",
+  "ENV",
+  "IFS",
+  "SHELL",
+  "PYTHONSTARTUP",
+  "PYTHONPATH",
+  "PERL5OPT",
+]);
+const DENIED_ENV_PREFIXES = ["LD_", "DYLD_"];
+
+function isDeniedEnvName(name: string): boolean {
+  return DENIED_ENV_NAMES.has(name) || DENIED_ENV_PREFIXES.some((p) => name.startsWith(p));
+}
+
 /**
  * Builds the env-var map to inject: variable display names become env names.
- * Names and values are validated for env-var safety (no `=`, no NUL, UTF-8);
- * the error mentions only the variable name, never the value.
+ * Names and values are validated for env-var safety (no `=`, no NUL, UTF-8,
+ * no execution-control names); the error mentions only the variable name,
+ * never the value.
  */
 export function buildInjectionEnv(
   variables: readonly DecryptedVariable[],
@@ -37,6 +60,13 @@ export function buildInjectionEnv(
       if (variable.name.includes("=") || variable.name.includes("\0")) {
         return yield* Effect.fail(
           cliError(`変数名を環境変数として注入できません(不正な文字を含みます): ${variable.name}`),
+        );
+      }
+      if (isDeniedEnvName(variable.name)) {
+        return yield* Effect.fail(
+          cliError(
+            `変数名 ${variable.name} は実行制御系の環境変数のため注入を拒否します(変数を改名してください)`,
+          ),
         );
       }
       let value: string;

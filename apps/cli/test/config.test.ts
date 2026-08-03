@@ -39,6 +39,30 @@ describe("maruhi config", () => {
     expect(env.errors.join("\n")).toContain("不明な設定キー");
   });
 
+  it("壊れた設定ファイルは get で報告され、set で作り直せる", async () => {
+    const env = await makeTestEnv();
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    await mkdir(dirname(env.configPath), { recursive: true });
+    await writeFile(env.configPath, "{ broken json");
+    expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("壊れています");
+    // set は破棄して作り直せる(非機密のみのファイル)
+    expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
+    expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
+    expect(env.logs).toContain("https://maruhi.example");
+  });
+
+  it("JSON 配列の設定ファイルは破損として扱う", async () => {
+    const env = await makeTestEnv();
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    await mkdir(dirname(env.configPath), { recursive: true });
+    await writeFile(env.configPath, "[]");
+    expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("壊れています");
+  });
+
   it("サブコマンドなしは使い方を表示する", async () => {
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);

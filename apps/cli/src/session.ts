@@ -12,6 +12,7 @@ import {
   encodeHex,
   importEncryptionKeyPair,
   importSigningKeyPair,
+  SUITE_ID,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/unstable/http";
@@ -46,7 +47,13 @@ export interface MasterKeys {
   readonly fingerprintHex: string;
 }
 
-/** Resolves the server base URL: --server flag → config. Fails with guidance. */
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Resolves the server base URL: --server flag → config. Fails with guidance.
+ * `http:` は loopback のみ許可する(トークン・GitHub トークンが平文で
+ * 経路上に出るため。wrangler dev のローカル開発は通る)。
+ */
 export function resolveServerOrigin(
   flag: string | undefined,
   config: CliConfig,
@@ -61,6 +68,11 @@ export function resolveServerOrigin(
   }
   try {
     const url = new URL(raw);
+    if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
+      return Effect.fail(
+        cliError(`http: は loopback のみ許可されます(トークンが平文送信されるため): ${raw}`),
+      );
+    }
     if (url.protocol !== "https:" && url.protocol !== "http:") {
       return Effect.fail(cliError(`サーバー URL は http(s) で指定してください: ${raw}`));
     }
@@ -146,9 +158,16 @@ const corruptKeyError = cliError(
   "キーチェーンの master 鍵レコードが壊れています(鍵素材を読み込めません)",
 );
 
-/** Imports a stored master-key record into usable (non-extractable) key objects. */
-function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterKeys, CliError> {
+/**
+ * Imports a stored master-key record into usable (non-extractable) key
+ * objects. keygen は保存前の自己検証にも使う(壊れたレコードを書かない)。
+ */
+export function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterKeys, CliError> {
   return Effect.gen(function* () {
+    if (record.suite !== SUITE_ID) {
+      // 将来スイートの鍵レコードを v1 として黙って解釈しない
+      return yield* Effect.fail(cliError(`master 鍵レコードのスイートが未知です(${record.suite})`));
+    }
     const encPub = decodeHex(record.encPubHex);
     const encSk = decodeHex(record.encSkHex);
     const sigPub = decodeHex(record.sigPubHex);

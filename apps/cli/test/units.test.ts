@@ -6,7 +6,7 @@ import { Effect, Exit } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeStdinValue, runCli } from "../src/cli.ts";
-import { pollDeviceFlow } from "../src/device-flow.ts";
+import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
 import {
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -56,6 +56,44 @@ describe("pollDeviceFlow", () => {
     );
     expect(token).toBe("gho_x");
     expect(polls).toBe(2);
+  });
+
+  it("expired_token(サーバー申告)で中断する。RFC 準拠の 400 + error ボディも分類できる", async () => {
+    const server = await MockServer.start([
+      onRequest("POST", "/login/oauth/access_token", () => ({
+        // RFC 8628 準拠実装の形(GitHub 実サーバーは 200 + error)
+        status: 400,
+        json: { error: "expired_token" },
+      })),
+    ]);
+    servers.push(server);
+    const exit = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: server.origin,
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: 0,
+          expiresInSeconds: 60,
+        },
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("有効期限");
+  });
+
+  it("device flow 開始応答の欠損(device_code なし)を検出する", async () => {
+    const server = await MockServer.start([
+      onRequest("POST", "/login/device/code", () => ({ status: 200, json: { interval: 5 } })),
+    ]);
+    servers.push(server);
+    const exit = await Effect.runPromiseExit(
+      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("device flow");
   });
 
   it("期限切れ(deadline 超過)で中断する", async () => {
@@ -119,6 +157,14 @@ describe("resolveServerOrigin", () => {
     const invalid = await Effect.runPromiseExit(resolveServerOrigin("not-a-url", {}));
     expect(Exit.isFailure(invalid)).toBe(true);
   });
+
+  it("http: は loopback のみ許可する(平文送信の遮断)", async () => {
+    const loopback = await Effect.runPromise(resolveServerOrigin("http://localhost:8787", {}));
+    expect(loopback).toBe("http://localhost:8787");
+    const remote = await Effect.runPromiseExit(resolveServerOrigin("http://maruhi.example", {}));
+    expect(Exit.isFailure(remote)).toBe(true);
+    expect(JSON.stringify(remote)).toContain("loopback");
+  });
 });
 
 function variable(name: string, value: string | Uint8Array): DecryptedVariable {
@@ -142,6 +188,8 @@ describe("buildInjectionEnv", () => {
   it("`=` を含む名前・NUL を含む値・不正 UTF-8 を拒否する(値はエラーに出さない)", async () => {
     const badName = await Effect.runPromiseExit(buildInjectionEnv([variable("A=B", "x")]));
     expect(Exit.isFailure(badName)).toBe(true);
+    const nulName = await Effect.runPromiseExit(buildInjectionEnv([variable("A\0B", "x")]));
+    expect(Exit.isFailure(nulName)).toBe(true);
     const withNul = await Effect.runPromiseExit(buildInjectionEnv([variable("SECRET_A", "a\0b")]));
     expect(Exit.isFailure(withNul)).toBe(true);
     expect(JSON.stringify(withNul)).not.toContain("a\\u0000b");
@@ -149,6 +197,14 @@ describe("buildInjectionEnv", () => {
       buildInjectionEnv([variable("SECRET_B", new Uint8Array([0xff, 0xfe]))]),
     );
     expect(Exit.isFailure(invalidUtf8)).toBe(true);
+  });
+
+  it("実行制御系の環境変数名(PATH / LD_* / NODE_OPTIONS 等)への注入を拒否する", async () => {
+    for (const name of ["PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS"]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("実行制御系");
+    }
   });
 });
 
@@ -180,5 +236,64 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     // エラーになるが、セッション解決(/auth/me)自体は通ることを検証する
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("master 鍵がありません");
+  });
+
+  it("環境変数がキーチェーンより優先される", async () => {
+    const user = await makeTestUser("user-env-0001");
+    let presented = "";
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", (request) => {
+        presented = String(request.headers["authorization"]);
+        return { status: 200, json: { userId: user.userId, orgs: [] } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.keychain.set(
+      tokenEntryName(server.origin),
+      JSON.stringify({ token: "maruhi_pat_keychain", userId: user.userId, tokenId: "tok_1" }),
+    );
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    await runCli(["key", "show"], env.layer);
+    expect(presented).toBe("Bearer maruhi_pat_env");
+  });
+
+  it("/auth/me が 401 なら案内メッセージで失敗する", async () => {
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => ({ status: 401, json: { _tag: "Unauthorized" } })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("MARUHI_TOKEN での認証に失敗");
+  });
+});
+
+describe("入力検証と defect の扱い", () => {
+  it("不正なプロジェクト ID / 環境 ID は早期にエラーになる", async () => {
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: "https://maruhi.example", defaultEnvironment: "dev" });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("プロジェクト ID の形式が不正");
+    const env2 = await makeTestEnv();
+    await seedConfig(env2, {
+      server: "https://maruhi.example",
+      defaultProject: "ab".repeat(32),
+    });
+    env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    // 環境 ID の形式検証はネットワークアクセス(セッション解決)より先に走る
+    expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(1);
+    expect(env2.errors.join("\n")).toContain("環境 ID の形式が不正");
+  });
+
+  it("defect(バグ由来の throw)は usage エラー(2)でなく 1 で報告される", async () => {
+    const env = await makeTestEnv();
+    env.breakConfigLoadWithDefect();
+    expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("内部エラー");
   });
 });

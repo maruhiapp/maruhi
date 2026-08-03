@@ -224,7 +224,10 @@ describe("maruhi push", () => {
     expect(await decryptWire(dek1, pushBodies[1] as WireEncryptedPayload)).toBe("new-value");
   });
 
-  it("EpochConflict(409)は再同期 → 新エポック DEK 取得 → 再暗号化して再試行する", async () => {
+  it("EpochConflict(409)は再同期 → 新エポック DEK 取得 → 再暗号化して再試行する(エポックの真実源はチェーン)", async () => {
+    // push.test は「同一 genesis の 2 状態」を前提にする(Ed25519 の決定論署名 +
+    // 固定 timestamp により成立)
+    expect(chainV2.projectId).toBe(chainV1.projectId);
     const createBodies: CreateBody[] = [];
     const server = await MockServer.start([
       // 初回同期はローテーション前(epoch 1)、再同期でローテーション後が見える
@@ -238,7 +241,9 @@ describe("maruhi push", () => {
           const body = request.body as CreateBody;
           createBodies.push(body);
           if (createBodies.length === 1) {
-            return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 2 } };
+            // サーバー申告の currentEpoch は嘘(5)。真実源はチェーン導出値(2)
+            // であることを固定する(申告値を使う退行は aad.epoch=5 になり検出)
+            return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 5 } };
           }
           return {
             status: 200,
@@ -260,9 +265,112 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
     expect(createBodies).toHaveLength(2);
     expect(createBodies[0]?.value.aad.epoch).toBe(1);
-    // 再試行はチェーン導出の新エポック + 新 DEK で暗号化されている
+    // 再試行はチェーン導出の新エポック(2。申告の 5 ではない)+ 新 DEK で
+    // 暗号化されている。再同期でチェーンが 2 回取得されている
     expect(createBodies[1]?.value.aad.epoch).toBe(2);
     expect(await decryptWire(dek2, (createBodies[1] as CreateBody).value)).toBe("rotated-value");
+    expect(
+      server.requests.filter((r) => r.path === `/projects/${chainV1.projectId}/chain`),
+    ).toHaveLength(2);
+    // 平文値は出力に現れない
+    expect([...env.logs, ...env.errors].join("\n")).not.toContain("rotated-value");
+  });
+
+  it("EpochConflict 申告がチェーンと矛盾する(再同期しても現エポック不変)なら即時報告する", async () => {
+    const env = await startEnv(
+      [
+        chainHandlerOf([chainV1]),
+        deksHandlerOf([[wrap1]]),
+        pullHandlerOf([], [wrap1]),
+        onRequest(
+          "POST",
+          `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+          () => ({ status: 409, json: { _tag: "EpochConflict", currentEpoch: 2 } }),
+        ),
+      ],
+      "value",
+    );
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("サーバー応答とチェーンの矛盾");
+  });
+
+  it("EpochConflict 後に新エポックの DEK が自分宛にない場合は明示エラーになる", async () => {
+    const env = await startEnv(
+      [
+        chainHandlerOf([chainV1, chainV2]),
+        deksHandlerOf([[wrap1], [wrap1]]),
+        pullHandlerOf([], [wrap1]),
+        onRequest(
+          "POST",
+          `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+          () => ({ status: 409, json: { _tag: "EpochConflict", currentEpoch: 2 } }),
+        ),
+      ],
+      "value",
+    );
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("現エポック 2 の DEK が自分宛に登録されていません");
+  });
+
+  it("create の競合(並行作成)は名前から再解決して push 経路へ切り替える", async () => {
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-racer",
+      version: 1,
+      plaintext: "raced",
+    });
+    let pullCalls = 0;
+    let pushed: WireEncryptedPayload | null = null;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            name: ENV_ID,
+            currentEpoch: 1,
+            // 初回解決では変数なし(create 経路)、競合後の再解決では
+            // 並行作成された v-racer が見える
+            variables:
+              pullCalls === 1 ? [] : [{ variableId: "v-racer", name: "API_KEY", value: existing }],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
+        status: 409,
+        json: { _tag: "VariableConflict", variableId: "ignored", reason: "duplicate-name" },
+      })),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-racer/versions`,
+        (request) => {
+          pushed = (request.body as { value: WireEncryptedPayload }).value;
+          return { status: 200, json: { variableId: "v-racer", version: 2, epoch: 1 } };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("after-race"));
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
+    expect(pullCalls).toBe(2);
+    const body = pushed as WireEncryptedPayload | null;
+    expect(body?.aad.variableId).toBe("v-racer");
+    expect(body?.aad.version).toBe(2);
   });
 
   it("スキーマ外の素の 413 は「値が大きすぎる」として報告する", async () => {
