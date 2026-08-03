@@ -232,7 +232,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     if (envCreated === undefined) throw new Error("missing env.created");
     expect(envCreated["actor_user_id"]).toBe(OWNER);
     expect(envCreated["actor_api_token_id"]).toBeTypeOf("string");
-    // データ操作は署名を伴わないため鍵 FP を持たない(ミラーのみが FP を持つ)
+    // 署名を伴わないデータ操作は鍵 FP を持たない(FP を持つのはチェーンミラーと、
+    // 登録署名を写す dek.registered のみ — AUDIT_SPEC §3.3)
     expect(envCreated["actor_key_fingerprint"]).toBeNull();
 
     // セッション経由の操作は auth_method を payload に持つ(§2 / §5.1)
@@ -244,6 +245,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       epoch: 1,
       dek,
       recipientUserIds: ALL_MEMBERS,
+      signerUserId: MEMBER,
     });
     const created = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
@@ -274,6 +276,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       expect(event["environment_id"]).toBe(ENV);
       expect(event["epoch"]).toBe(1);
       expect(event["actor_user_id"]).toBe(OWNER);
+      // 登録署名(CRYPTO_SPEC §5.1)の署名者 FP を写す(§3.3 — 突合用)
+      expect(event["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
       // PAT 経由の登録なのでトークン id を持つ(§2 のアクター帰属)
       expect(event["actor_api_token_id"]).toBeTypeOf("string");
       expect(event["variable_id"]).toBeNull();
@@ -290,6 +294,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       epoch: 2,
       dek,
       recipientUserIds: ALL_MEMBERS,
+      signerUserId: MEMBER,
     });
     const registered = await requestJson(
       "POST",
@@ -318,6 +323,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     );
     expect(epoch2.map((event) => event["target_user_id"])).toEqual([...ALL_MEMBERS]);
     expect(epoch2[0]?.["actor_user_id"]).toBe(MEMBER);
+    expect(epoch2[0]?.["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     const deleted = events.filter((event) => event["event"] === "dek.deleted");
     expect(deleted.length).toBe(1);
     const deletion = deleted[0];
@@ -326,6 +332,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(deletion["epoch"]).toBe(2);
     expect(deletion["target_user_id"]).toBe(READER);
     expect(deletion["actor_user_id"]).toBe(OWNER);
+    // 削除は署名を伴わないため FP を持たない(AUDIT_SPEC §3.3)
+    expect(deletion["actor_key_fingerprint"]).toBeNull();
   });
 
   it("never records provider identifiers or emails (§1-2)", async () => {

@@ -23,9 +23,12 @@ import {
   importEncryptionKeyPair,
   importEncryptionPublicKey,
   importSigningKeyPair,
+  importSigningPublicKey,
   signChainEntry,
+  signDekWrap,
   SUITE_ID,
   unwrapDek,
+  verifyDekWrapSignature,
   wrapDek,
 } from "@maruhi/crypto";
 
@@ -173,9 +176,90 @@ export interface WireWrappedDek {
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
+  readonly signatureHex: string;
 }
 
-/** DEK を 1 受信者へ HPKE ラップし、ワイヤ表現(§12-2)で返す。 */
+/**
+ * 署名なしのワイヤ表現に登録署名(CRYPTO_SPEC §5.1)を付ける。署名者は
+ * ベクター固定鍵のユーザー(= API を呼ぶ主体と一致させること — §12-6)。
+ * フェイクラップの受理ポリシー系テストにも使う(サーバーは中身を検証できないが
+ * 署名は検証するため、フェイクにも呼び出し主体の署名が要る)。
+ */
+export async function signWrapAs(
+  signerUserId: string,
+  projectId: string,
+  environmentId: string,
+  wrap: Omit<WireWrappedDek, "signatureHex">,
+): Promise<WireWrappedDek> {
+  const keys = vectorKeyOf(signerUserId);
+  const pair = unwrapResult(
+    await importSigningKeyPair({
+      publicKey: hexBytes(keys.sig_pub_hex),
+      privateSeed: hexBytes(keys.sig_sk_seed_hex),
+    }),
+    "importSigningKeyPair",
+  );
+  const signatureHex = unwrapResult(
+    await signDekWrap({
+      context: {
+        suite: wrap.suite,
+        projectId,
+        environmentId,
+        epoch: wrap.epoch,
+        recipientUserId: wrap.recipientUserId,
+        recipientEncPubHex: wrap.recipientEncPubHex,
+        encHex: wrap.encHex,
+        ciphertextHex: wrap.ciphertextHex,
+      },
+      signingKey: pair.privateKey,
+    }),
+    "signDekWrap",
+  );
+  return { ...wrap, signatureHex };
+}
+
+/**
+ * 配布されたラップの登録署名をクライアント側で検証する(CRYPTO_SPEC §5.1)。
+ * 検証鍵は「チェーン上で署名者 user_id に束縛された sig 公開鍵」— テストでは
+ * ベクター固定鍵から引く。
+ */
+export async function verifyDistributedWrapSignature(input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly recipientUserId: string;
+  readonly recipientEncPubHex: string;
+  readonly wrap: {
+    readonly suite: string;
+    readonly epoch: number;
+    readonly encHex: string;
+    readonly ciphertextHex: string;
+    readonly signatureHex: string;
+    readonly signerUserId: string;
+  };
+}): Promise<boolean> {
+  const signerKeys = vectorKeyOf(input.wrap.signerUserId);
+  const publicKey = unwrapResult(
+    await importSigningPublicKey(hexBytes(signerKeys.sig_pub_hex)),
+    "importSigningPublicKey",
+  );
+  const result = await verifyDekWrapSignature({
+    context: {
+      suite: input.wrap.suite,
+      projectId: input.projectId,
+      environmentId: input.environmentId,
+      epoch: input.wrap.epoch,
+      recipientUserId: input.recipientUserId,
+      recipientEncPubHex: input.recipientEncPubHex,
+      encHex: input.wrap.encHex,
+      ciphertextHex: input.wrap.ciphertextHex,
+    },
+    signatureHex: input.wrap.signatureHex,
+    signerPublicKey: publicKey,
+  });
+  return result.ok;
+}
+
+/** DEK を 1 受信者へ HPKE ラップし、署名者の登録署名付きワイヤ表現(§12-2)で返す。 */
 export async function wrapDekTo(input: {
   readonly projectId: string;
   readonly environmentId: string;
@@ -183,6 +267,8 @@ export async function wrapDekTo(input: {
   readonly dek: Uint8Array;
   readonly recipientUserId: string;
   readonly recipientEncPubHex?: string;
+  /** 登録署名の署名者。API を呼ぶ主体と一致させる(§12-6 の受理条件)。 */
+  readonly signerUserId: string;
 }): Promise<WireWrappedDek> {
   const encPubHex = input.recipientEncPubHex ?? vectorKeyOf(input.recipientUserId).enc_pub_hex;
   const publicKey = unwrapResult(
@@ -202,14 +288,14 @@ export async function wrapDekTo(input: {
     }),
     "wrapDek",
   );
-  return {
+  return signWrapAs(input.signerUserId, input.projectId, input.environmentId, {
     suite: SUITE_ID,
     epoch: input.epoch,
     recipientUserId: input.recipientUserId,
     recipientEncPubHex: encPubHex,
     encHex: encodeHex(wrapped.enc),
     ciphertextHex: encodeHex(wrapped.ciphertext),
-  };
+  });
 }
 
 /** DEK を複数受信者へラップする(環境作成・ローテーションの完全集合用)。 */
@@ -219,6 +305,8 @@ export async function wrapDekForAll(input: {
   readonly epoch: number;
   readonly dek: Uint8Array;
   readonly recipientUserIds: readonly string[];
+  /** 登録署名の署名者。API を呼ぶ主体と一致させる(§12-6 の受理条件)。 */
+  readonly signerUserId: string;
 }): Promise<WireWrappedDek[]> {
   const wraps: WireWrappedDek[] = [];
   for (const recipientUserId of input.recipientUserIds) {
