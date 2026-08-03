@@ -141,6 +141,31 @@ describe("maruhi pull", () => {
     expect(env.logs).toContain("BETA=beta-value");
   });
 
+  it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {
+    // 悪意ある共同編集者が保存した値(ESC + BEL)+ 正当な複数行(PEM 風)
+    const evil = "sk-\u001b[31mFAKE\u0007\nline2";
+    const value = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "vs",
+      version: 1,
+      plaintext: evil,
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ variableId: "vs", name: "SECRET", value }] }),
+    ]);
+    expect(await runCli(["pull", "--show"], env.layer)).toBe(0);
+    const output = env.logs.join("\n");
+    // ESC / BEL は端末へ生で流れない
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u0007");
+    // 改行は保持(複数行シークレットが壊れない)
+    expect(output).toContain("SECRET=sk-\uFFFD[31mFAKE\uFFFD\nline2");
+  });
+
   it("AI エージェント検出時、--show は拒否される", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });

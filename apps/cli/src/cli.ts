@@ -14,7 +14,7 @@ import { ensureValueDisplayAllowed } from "./agent.ts";
 import { makeApiClient, type MaruhiClient } from "./api.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
-import { displayText } from "./display.ts";
+import { displayText, displayValue } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -143,7 +143,9 @@ function showValues(variables: readonly DecryptedVariable[]): Effect.Effect<void
     const io = yield* CliIo;
     yield* ensureValueDisplayAllowed(io.agentProfile());
     for (const variable of variables) {
-      yield* io.log(`${displayText(variable.name)}=${displayDecoder.decode(variable.value)}`);
+      yield* io.log(
+        `${displayText(variable.name)}=${displayValue(displayDecoder.decode(variable.value))}`,
+      );
     }
   });
 }
