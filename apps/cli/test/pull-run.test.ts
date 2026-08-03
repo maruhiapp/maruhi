@@ -374,6 +374,28 @@ describe("maruhi pull", () => {
     expect(output).not.toContain(fixture.owner.sigSkSeedHex);
   });
 
+  it("変数名の制御文字(ANSI・改行)は端末出力でサニタイズされる", async () => {
+    const evilName = "EVIL\u001b[2J\nNAME";
+    const value = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "ve",
+      version: 1,
+      plaintext: "v",
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ variableId: "ve", name: evilName, value }] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    const output = [...env.logs, ...env.errors].join("\n");
+    // 生の ESC がそのまま端末へ流れない(制御文字は置換される)
+    expect(output).not.toContain("\u001b");
+    expect(output).toContain("EVIL\uFFFD[2J\uFFFDNAME");
+  });
+
   it("変数名の重複(サーバー応答の不整合)を拒否する", async () => {
     const env = await startEnv([
       chainHandler(),

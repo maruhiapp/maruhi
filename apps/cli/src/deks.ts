@@ -19,6 +19,7 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { VerifiedProject } from "./sync.ts";
 
@@ -47,7 +48,7 @@ async function verifyAndUnwrapOne(input: {
   const signerKeyBytes = signerKeyFor(verified, wrap);
   if (signerKeyBytes === null) {
     return {
-      failure: `署名者がチェーン履歴に存在しません(signer=${wrap.signerUserId}, fp=${wrap.signerKeyFingerprintHex})`,
+      failure: `署名者がチェーン履歴に存在しません(signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
     };
   }
   const signerKey = await importSigningPublicKey(signerKeyBytes);
@@ -71,7 +72,7 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!verifiedSignature.ok) {
     return {
-      failure: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${wrap.signerUserId})`,
+      failure: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
     };
   }
   const enc = decodeHex(wrap.encHex);
@@ -91,7 +92,7 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!dek.ok) {
     return {
-      failure: `DEK を復号できません(epoch=${wrap.epoch}, signer=${wrap.signerUserId})。ラップが自分の鍵宛でないか、破損しています`,
+      failure: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
     };
   }
   return dek.value;

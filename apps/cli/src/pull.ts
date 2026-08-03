@@ -15,6 +15,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, verifyAndUnwrapDeks } from "./deks.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
@@ -59,7 +60,7 @@ export function pullVariables(input: {
       // 注入が黙って片方を潰さないようクライアントでも検査する(サーバー不信)
       if (seenNames.has(variable.name)) {
         return yield* Effect.fail(
-          cliError(`変数名が重複しています(サーバー応答の不整合): ${variable.name}`),
+          cliError(`変数名が重複しています(サーバー応答の不整合): ${displayText(variable.name)}`),
         );
       }
       seenNames.add(variable.name);
@@ -71,7 +72,7 @@ export function pullVariables(input: {
       if (declaredEpoch > chainEpoch) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${variable.name} の申告エポック ${declaredEpoch} がチェーン上の現エポック(${chainEpoch})を超えています。直後にローテーションが行われた可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
+            `変数 ${displayText(variable.name)} の申告エポック ${declaredEpoch} がチェーン上の現エポック(${chainEpoch})を超えています。直後にローテーションが行われた可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
           ),
         );
       }
@@ -79,14 +80,16 @@ export function pullVariables(input: {
       if (dek === undefined) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${variable.name} のエポック ${declaredEpoch} の DEK が配布されていません(自分宛ラップの欠落)`,
+            `変数 ${displayText(variable.name)} のエポック ${declaredEpoch} の DEK が配布されていません(自分宛ラップの欠落)`,
           ),
         );
       }
       const nonce = decodeHex(variable.value.nonceHex);
       const ciphertext = decodeHex(variable.value.ciphertextHex);
       if (nonce === null || ciphertext === null) {
-        return yield* Effect.fail(cliError(`変数 ${variable.name} の暗号文形式が不正です`));
+        return yield* Effect.fail(
+          cliError(`変数 ${displayText(variable.name)} の暗号文形式が不正です`),
+        );
       }
       const plaintext = yield* Effect.promise(() =>
         decryptVariable({
@@ -107,7 +110,7 @@ export function pullVariables(input: {
       if (!plaintext.ok) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${variable.name} を復号できません(文脈不一致または暗号文破損 — サーバーによる差し替えの可能性)`,
+            `変数 ${displayText(variable.name)} を復号できません(文脈不一致または暗号文破損 — サーバーによる差し替えの可能性)`,
           ),
         );
       }

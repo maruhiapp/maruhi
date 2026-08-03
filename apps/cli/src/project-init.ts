@@ -16,6 +16,7 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { displayText } from "./display.ts";
 import { CliError, cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -30,7 +31,9 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): UserOrg | 
     const matched = orgs.find((org) => org.orgId === flag || org.slug === flag);
     return (
       matched ??
-      cliError(`org が見つかりません: ${flag}(所属 org: ${orgs.map((o) => o.slug).join(", ")})`)
+      cliError(
+        `org が見つかりません: ${flag}(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
+      )
     );
   }
   const [first] = orgs;
@@ -46,7 +49,7 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): UserOrg | 
     return first;
   }
   return cliError(
-    `複数の org に所属しています。--org <slug> で指定してください(所属 org: ${orgs.map((o) => o.slug).join(", ")})`,
+    `複数の org に所属しています。--org <slug> で指定してください(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
   );
 }
 

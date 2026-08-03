@@ -5,6 +5,7 @@
 
 import { Context, Effect } from "effect";
 
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { DecryptedVariable } from "./pull.ts";
 
@@ -73,16 +74,30 @@ export function buildInjectionEnv(
 ): Effect.Effect<Readonly<Record<string, string>>, CliError> {
   return Effect.gen(function* () {
     const env: Record<string, string> = {};
+    // Windows の環境変数名は大文字小文字を区別しないため、大小違いだけの
+    // 名前の共存を許すと片方が黙って潰れる。衝突として拒否する
+    const seenUpper = new Set<string>();
     for (const variable of variables) {
+      const upper = variable.name.toUpperCase();
+      if (seenUpper.has(upper)) {
+        return yield* Effect.fail(
+          cliError(
+            `変数名が大文字小文字の違いだけで衝突しています(Windows では同一の環境変数になります): ${displayText(variable.name)}`,
+          ),
+        );
+      }
+      seenUpper.add(upper);
       if (variable.name.includes("=") || variable.name.includes("\0")) {
         return yield* Effect.fail(
-          cliError(`変数名を環境変数として注入できません(不正な文字を含みます): ${variable.name}`),
+          cliError(
+            `変数名を環境変数として注入できません(不正な文字を含みます): ${displayText(variable.name)}`,
+          ),
         );
       }
       if (isDeniedEnvName(variable.name)) {
         return yield* Effect.fail(
           cliError(
-            `変数名 ${variable.name} は実行制御系の環境変数のため注入を拒否します(変数を改名してください)`,
+            `変数名 ${displayText(variable.name)} は実行制御系の環境変数のため注入を拒否します(変数を改名してください)`,
           ),
         );
       }
@@ -92,13 +107,15 @@ export function buildInjectionEnv(
       } catch {
         return yield* Effect.fail(
           cliError(
-            `変数 ${variable.name} の値が UTF-8 として不正です(環境変数として注入できません)`,
+            `変数 ${displayText(variable.name)} の値が UTF-8 として不正です(環境変数として注入できません)`,
           ),
         );
       }
       if (value.includes("\0")) {
         return yield* Effect.fail(
-          cliError(`変数 ${variable.name} の値に NUL が含まれます(環境変数として注入できません)`),
+          cliError(
+            `変数 ${displayText(variable.name)} の値に NUL が含まれます(環境変数として注入できません)`,
+          ),
         );
       }
       env[variable.name] = value;

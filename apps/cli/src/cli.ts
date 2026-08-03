@@ -14,6 +14,7 @@ import { ensureValueDisplayAllowed } from "./agent.ts";
 import { makeApiClient, type MaruhiClient } from "./api.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
+import { displayText } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -131,7 +132,7 @@ function openProject(flags: CommonFlags): Effect.Effect<ProjectContext, CliError
 }
 
 function formatPulledLine(variable: DecryptedVariable): string {
-  return `${variable.name}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${variable.value.byteLength} bytes)`;
+  return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${variable.value.byteLength} bytes)`;
 }
 
 const displayDecoder = new TextDecoder("utf-8", { fatal: false });
@@ -142,7 +143,7 @@ function showValues(variables: readonly DecryptedVariable[]): Effect.Effect<void
     const io = yield* CliIo;
     yield* ensureValueDisplayAllowed(io.agentProfile());
     for (const variable of variables) {
-      yield* io.log(`${variable.name}=${displayDecoder.decode(variable.value)}`);
+      yield* io.log(`${displayText(variable.name)}=${displayDecoder.decode(variable.value)}`);
     }
   });
 }
@@ -286,7 +287,9 @@ function projectCommand(execute: Execute) {
             yield* io.log(`head: ${verified.state.headHashHex}`);
             yield* io.log(`メンバー(${verified.state.members.size}):`);
             for (const member of verified.state.members.values()) {
-              yield* io.log(`  ${member.userId}\t${member.role}\tfp=${member.keyFingerprintHex}`);
+              yield* io.log(
+                `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
+              );
             }
             for (const [environmentId, epoch] of verified.state.environmentEpochs) {
               yield* io.log(`環境 ${environmentId}: epoch=${epoch}`);

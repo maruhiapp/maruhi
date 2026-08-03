@@ -199,6 +199,14 @@ describe("buildInjectionEnv", () => {
     expect(Exit.isFailure(invalidUtf8)).toBe(true);
   });
 
+  it("大文字小文字の違いだけの名前の衝突を拒否する(Windows の非区別対策)", async () => {
+    const exit = await Effect.runPromiseExit(
+      buildInjectionEnv([variable("Secret_A", "x"), variable("SECRET_A", "y")]),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("大文字小文字の違い");
+  });
+
   it("実行制御系の環境変数名(PATH / LD_* / NODE_OPTIONS 等)への注入を拒否する", async () => {
     // "Path" は Windows の大文字小文字非区別への防衛(大文字化して比較)
     for (const name of [
