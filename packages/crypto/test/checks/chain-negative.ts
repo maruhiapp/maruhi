@@ -42,6 +42,15 @@ function negativeByName(name: string) {
   return vectorNegatives.find((n) => n.name === name);
 }
 
+/** ベクター固定鍵(欠落はフィクスチャ破損 = throw。entryAt と同じ流儀)。 */
+function keysOf(userId: string) {
+  const keys = vectorKeys[userId];
+  if (keys === undefined) {
+    throw new Error(`chain vector keys for ${userId} missing`);
+  }
+  return keys;
+}
+
 interface TamperVariant {
   readonly name: string;
   readonly entry: ChainEntry;
@@ -240,7 +249,8 @@ type SemanticBase = Omit<UnsignedChainEntry, "op" | "payload">;
 function semanticCases(
   base: SemanticBase,
 ): readonly { name: string; entry: UnsignedChainEntry; expect: string }[] {
-  const memberKeys = vectorKeys["user-member-0002"];
+  const memberKeys = keysOf("user-member-0002");
+  const ownerKeys = keysOf("user-owner-0001");
   return [
     {
       name: "grant_server with mismatched fingerprint",
@@ -248,8 +258,8 @@ function semanticCases(
         ...base,
         op: "grant_server",
         payload: {
-          serverEncPubHex: memberKeys?.enc_pub_hex ?? "",
-          serverKeyFingerprintHex: memberKeys?.key_fingerprint_hex ?? "",
+          serverEncPubHex: memberKeys.enc_pub_hex,
+          serverKeyFingerprintHex: memberKeys.key_fingerprint_hex,
           scopeEnvironmentIds: ["env-prod-0001"],
         },
       },
@@ -262,8 +272,26 @@ function semanticCases(
         op: "add_member",
         payload: {
           targetUserId: "user-admin-0003",
-          encPubHex: memberKeys?.enc_pub_hex ?? "",
-          sigPubHex: memberKeys?.sig_pub_hex ?? "",
+          encPubHex: memberKeys.enc_pub_hex,
+          sigPubHex: memberKeys.sig_pub_hex,
+          role: "reader",
+        },
+      },
+      expect: "duplicate-member",
+    },
+    {
+      // 検査順序の固定(§6.2): 対象 user_id と鍵の両方が重複する場合、
+      // user_id 重複(duplicate-member)が鍵重複(duplicate-member-key)より
+      // 先に判定される(owner の鍵一式 = 現メンバーの鍵を流用しても理由は
+      // duplicate-member)
+      name: "add_member duplicate user id wins over duplicate key",
+      entry: {
+        ...base,
+        op: "add_member",
+        payload: {
+          targetUserId: "user-admin-0003",
+          encPubHex: ownerKeys.enc_pub_hex,
+          sigPubHex: ownerKeys.sig_pub_hex,
           role: "reader",
         },
       },
@@ -305,6 +333,30 @@ async function appendRotation(
   }
   const result = await verifyChain([...typedEntries, rotate]);
   return result.ok ? result.value : undefined;
+}
+
+async function readdRemovedMemberCheck(c: Checks, base: SemanticBase): Promise<void> {
+  // メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2): seq 4 で削除済みの
+  // user-member-0002 を同一 user_id・同一鍵で再追加する(同一人物の復帰)は
+  // 拒否されない。履歴全体との重複禁止を採らなかった線引きの positive 側
+  const memberKeys = keysOf("user-member-0002");
+  const readd = await signAs("user-owner-0001", {
+    ...base,
+    op: "add_member",
+    payload: {
+      targetUserId: "user-member-0002",
+      encPubHex: memberKeys.enc_pub_hex,
+      sigPubHex: memberKeys.sig_pub_hex,
+      role: "member",
+    },
+  });
+  const result = readd === undefined ? undefined : await verifyChain([...typedEntries, readd]);
+  c.push(
+    "chain semantic: re-adding a removed member with the same keys is accepted",
+    result !== undefined &&
+      result.ok &&
+      result.value.members.get("user-member-0002")?.role === "member",
+  );
 }
 
 async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
@@ -529,6 +581,7 @@ async function semanticChecks(c: Checks): Promise<void> {
     c.push(`chain semantic: ${item.name}`, failsWith(result, 10, item.expect));
   }
   await validAppendCheck(c, base);
+  await readdRemovedMemberCheck(c, base);
 }
 
 export async function chainNegativeChecks(): Promise<CheckResult[]> {

@@ -37,6 +37,7 @@ import {
   encryptValue,
   hexBytes,
   makeDek,
+  signEntryAt,
   signWrapAs,
   unwrapAndDecrypt,
   vectorKeyOf,
@@ -1300,11 +1301,15 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     }
   });
 
-  it("rejects third-party re-submission into a deleted slot, even via a duplicated chain key", async () => {
+  it("rejects third-party re-submission into a deleted slot (signer mismatch)", async () => {
     // CRYPTO_SPEC §5.1 の名指しシナリオ: 削除済みスロットへ「他人の署名済み
-    // ラップ」を第三者が再投入する経路は署名者不一致で塞がる。さらにチェーンは
-    // 同一公開鍵の複数メンバーを許すため、MEMBER の鍵一式を流用したソック垢
-    // (STRANGER)でも signer_user_id の束縛(レビューループ 1)で拒否される
+    // ラップ」を第三者が再投入する経路は署名者不一致で塞がる。
+    // かつては「MEMBER の鍵一式を流用したソック垢(STRANGER)」の最強形
+    // (鍵一致・user_id 不一致)をここで固定していたが、§6.2 のメンバー鍵一意性
+    // (2026-08-03)により鍵重複メンバーはチェーン追記の時点で成立しなくなった
+    // (下の chain-level テストと membership.test.ts の authz ベクターループが
+    // 固定する)。鍵一致のまま signer_user_id だけが異なる署名の拒否は
+    // ベクター negative `transplant-signer` が crypto 層で固定し続ける
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
@@ -1323,15 +1328,16 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     });
     expect(registered.status).toBe(204);
 
-    // MEMBER の鍵一式を流用して STRANGER をチェーンに追加(add_member は鍵の
-    // 重複を拒否しない)→ 再び削除 → STRANGER が MEMBER 署名のラップをそのまま
-    // 再投入 → 検証鍵は一致するが signer_user_id が異なるため 422
+    // STRANGER(自前の鍵で正規にメンバー化)が MEMBER 署名のラップをそのまま
+    // 再投入 → 呼び出し主体 = 署名者の厳密一致(§12-6)に反するため 422
+    const encPair = await generateEncryptionKeyPair();
+    const sigPair = await generateSigningKeyPair();
     await appendOperation(fixture, OWNER, {
       op: "add_member",
       payload: {
         targetUserId: STRANGER,
-        encPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
-        sigPubHex: vectorKeyOf(MEMBER).sig_pub_hex,
+        encPubHex: encodeHex(await exportEncryptionPublicKey(encPair.publicKey)),
+        sigPubHex: encodeHex(await exportSigningPublicKey(sigPair.publicKey)),
         role: "member",
       },
     });
@@ -1351,6 +1357,37 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       READER,
     );
     expect(rows.length).toBe(0);
+  });
+
+  it("rejects the key-reuse sock puppet at the chain layer (422 duplicate-member-key)", async () => {
+    // かつて上のテストが利用していた「MEMBER の鍵一式を流用した STRANGER の
+    // add_member」は、§6.2 のメンバー鍵一意性(合意規則)によりチェーン追記の
+    // 時点で拒否される(帰属付け替えの根本原因の解消 — 防衛の多層化)。
+    // ベクター固定チェーンに対する網羅は membership.test.ts の authz ループ
+    // (authz-add-member-duplicate-key ほか 2 件)が担い、ここではデータプレーンの
+    // fixture チェーンでも成立することを固定する
+    const { entry } = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: {
+        op: "add_member",
+        payload: {
+          targetUserId: STRANGER,
+          encPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
+          sigPubHex: vectorKeyOf(MEMBER).sig_pub_hex,
+          role: "member",
+        },
+      },
+    });
+    const response = await requestJson("POST", "/chain/entries", token(OWNER), {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry,
+    });
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { seq: number; reason: string };
+    expect(body.reason).toBe("duplicate-member-key");
+    expect(body.seq).toBe(fixture.head.seq + 1);
   });
 
   it("accepts the original signer re-registering the identical wrap and signature (§5.1 の意味論の対)", async () => {
