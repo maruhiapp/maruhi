@@ -17,8 +17,8 @@
 **完了条件: 自分の全プロジェクトから .env を消せた**
 
 - [x] E2EE コア(純粋 E2EE。サーバー鍵 = 選択的開示は実装しない、データ構造のみ確保)(2026-08-02 完了。PR #12 = packages/crypto: §2.1 エンコーダ / §3 鍵 / §4 変数暗号化 / §5 DEK ラップ / §6 チェーン検証・状態導出 / §8 リカバリーラップ、テストベクター全通過・4 実行環境 CI。§6.3 の DEK ラップ先一致検査・ヘッドゴシップは同期ロジックとして後続)
-- [ ] メンバーシップログ(genesis + 単独ユーザー分。検証ロジック込み)※チェーンの暗号・検証層は PR #12、サーバー保存(プロジェクト DO)・追記 API(§6.4 検証 / CAS / 受理ポリシー)は PR #14 で完了(2026-08-02)。残りはクライアント同期(§6.3 の DEK ラップ先一致検査・ヘッドゴシップ)
-- [ ] CLI: `maruhi run`(メモリ注入)、`push` / `pull`、device flow ログイン、OS キーチェーン
+- [ ] メンバーシップログ(genesis + 単独ユーザー分。検証ロジック込み)※チェーンの暗号・検証層は PR #12、サーバー保存(プロジェクト DO)・追記 API(§6.4 検証 / CAS / 受理ポリシー)は PR #14 で完了(2026-08-02)。クライアント同期のうち §6.3 の DEK ラップ先一致検査は PR #25 で完了(2026-08-03)。残りはヘッドゴシップ(Phase 2)
+- [x] CLI: `maruhi run`(メモリ注入)、`push` / `pull`、device flow ログイン、OS キーチェーン(2026-08-03 完了。PR #25 = apps/cli: login〔device flow〕/ logout / key / project init|verify / env create / pull [--show] / push / run / config、OS キーチェーン = Bun.secrets、§5.1 配布時検証・§6.3 同期検査のクライアント実装込み。CLI 配布・Windows 対応は Phase 2、初回セットアップウィザード・リカバリーは別項目のまま)
 - [x] サーバー: プロジェクト DO、D1、HttpApi、監査ログ(append-only)※ DO・D1(Drizzle v1)・HttpApi に加え、認証・アイデンティティ基盤(AUTH_SPEC 本実装: GitHub OAuth web / device 交換、DB バックセッション、maruhi 発行トークン、パーソナル org、チェーン API の認証・認可 = AUTH_SPEC §11)は PR #16 で完了(2026-08-02)。変数値・環境・DEK API(AUTH_SPEC §12)と監査ログ(project DO 側: AUDIT_SPEC §3.3 / §3.4 / §5.1。同 PR のマージをもって AUDIT_SPEC は所有者承認済み)は PR #18 で完了(2026-08-02)。セッション 07 レビュー裁定 3 件の実装(3-D = ラップの suite 保存、F 先行分 = DEK ラップ行数上限、2-D = 修復経路〔ラップ削除 → 再登録〕+ dek 監査イベント)は PR #20 で完了(2026-08-02)。DEK ラップ登録署名(裁定 2-E = CRYPTO_SPEC §5.1。同 PR のマージをもって §5.1 は所有者承認済み)は PR #21 で完了(2026-08-03)。残りは監査ログの D1 側(認証・org 系 = AUDIT_SPEC §3.1〜§3.2)と読み取り API(Phase 2 の監査ログ UI と同時に設計)
 - [ ] リカバリーコード
 - [ ] セルフホスト初回セットアップウィザード(GitHub OAuth App の作成案内 + client_id/secret 登録。AUTH_SPEC §3 参照)
