@@ -28,6 +28,12 @@ export interface VariableRow {
   readonly deletedAtMs: number | null;
 }
 
+/** ラップ登録署名の署名者(dek_wraps の signer_* 列に保存する)。 */
+export interface WrapSignerInfo {
+  readonly userId: string;
+  readonly keyFingerprintHex: string;
+}
+
 /** アクティブ数と行数(tombstone 込み)。§12-8 の数量ポリシー判定用。 */
 interface ResourceCounts {
   readonly active: number;
@@ -62,7 +68,16 @@ export interface DataWriteOps {
     ciphertextBytes: number,
     nowMs: number,
   ) => void;
-  readonly insertWrap: (environmentId: string, wrap: DekWrapInput, nowMs: number) => void;
+  /**
+   * ラップ行の挿入。signer は登録受理時のチェーン導出メンバー(= 署名検証に
+   * 使った鍵の持ち主 — CRYPTO_SPEC §5.1)。
+   */
+  readonly insertWrap: (
+    environmentId: string,
+    wrap: DekWrapInput,
+    signer: WrapSignerInfo,
+    nowMs: number,
+  ) => void;
   /** §12-6 修復経路: 1 ラップの削除(存在検証は呼び出し側が済ませる)。 */
   readonly deleteWrap: (environmentId: string, epoch: number, recipientUserId: string) => void;
 }
@@ -305,7 +320,8 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT suite, epoch, enc_hex, ciphertext_hex FROM dek_wraps
+          `SELECT suite, epoch, enc_hex, ciphertext_hex, signature_hex, signer_user_id, signer_key_fingerprint
+           FROM dek_wraps
            WHERE environment_id = ? AND recipient_user_id = ? ORDER BY epoch`,
           environmentId,
           recipientUserId,
@@ -316,6 +332,9 @@ const makeWrapQueries = (sql: SqlStorage) => ({
           epoch: Number(row["epoch"]),
           encHex: String(row["enc_hex"]),
           ciphertextHex: String(row["ciphertext_hex"]),
+          signatureHex: String(row["signature_hex"]),
+          signerUserId: String(row["signer_user_id"]),
+          signerKeyFingerprintHex: String(row["signer_key_fingerprint"]),
         })),
     ),
 });
@@ -395,11 +414,12 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       variableId,
     );
   },
-  insertWrap: (environmentId, wrap, nowMs) => {
+  insertWrap: (environmentId, wrap, signer, nowMs) => {
     sql.exec(
       `INSERT INTO dek_wraps
-         (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex, ciphertext_hex, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex, ciphertext_hex,
+          signature_hex, signer_user_id, signer_key_fingerprint, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       environmentId,
       wrap.epoch,
       wrap.recipientUserId,
@@ -407,6 +427,9 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       wrap.recipientEncPubHex,
       wrap.encHex,
       wrap.ciphertextHex,
+      wrap.signatureHex,
+      signer.userId,
+      signer.keyFingerprintHex,
       nowMs,
     );
   },

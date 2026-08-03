@@ -17,8 +17,9 @@ import { ChainStore, deriveStoredState } from "./chain-store.ts";
 
 /**
  * データ操作の監査アクター(AUDIT_SPEC §2)。worker が認証主体から作る。
- * 鍵 FP は持たない(データ操作は署名を伴わないため。FP を持つのはチェーン
- * ミラーのみ)。
+ * 鍵 FP は持たない — ほとんどのデータ操作は署名を伴わないため。署名を伴う
+ * 唯一の例外は DEK ラップ登録(CRYPTO_SPEC §5.1)で、その署名者 FP は worker
+ * でなく DO がチェーン導出メンバーから取り、dek.registered イベントに写す。
  */
 export interface DataActor {
   readonly userId: string;
@@ -32,7 +33,11 @@ export interface DataActor {
  */
 export type WireSuite = "maruhi/v1";
 
-/** 1 受信者宛のラップ済み DEK(AUTH_SPEC §12-6。ワイヤ表現と構造一致)。 */
+/**
+ * 1 受信者宛のラップ済み DEK(AUTH_SPEC §12-6。ワイヤ表現と構造一致)。
+ * signatureHex は登録署名(CRYPTO_SPEC §5.1)— 署名者は API 呼び出し主体と
+ * 厳密一致(§12-6)のため、ワイヤ・RPC 境界に署名者 ID は載せない。
+ */
 export interface DekWrapInput {
   readonly suite: WireSuite;
   readonly epoch: number;
@@ -40,6 +45,7 @@ export interface DekWrapInput {
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
+  readonly signatureHex: string;
 }
 
 /** 保存済みラップの参照(§12-6 の修復経路の削除単位)。 */
@@ -83,11 +89,19 @@ export interface PulledVariableValue {
   readonly ciphertextHex: string;
 }
 
+/**
+ * 配布されるラップ(RecipientDek と構造一致)。署名・署名者情報(登録受理時の
+ * チェーン導出メンバーの user_id + 鍵 FP)を運び、配布時のクライアント検証
+ * (CRYPTO_SPEC §5.1)を可能にする。
+ */
 export interface RecipientDekValue {
   readonly suite: WireSuite;
   readonly epoch: number;
   readonly encHex: string;
   readonly ciphertextHex: string;
+  readonly signatureHex: string;
+  readonly signerUserId: string;
+  readonly signerKeyFingerprintHex: string;
 }
 
 export interface EnvironmentPullValue {
@@ -109,7 +123,8 @@ export type DekWrapRejectReason =
   | "recipient-key-mismatch"
   | "recipient-missing"
   | "duplicate-recipient"
-  | "epoch-out-of-range";
+  | "epoch-out-of-range"
+  | "signature-invalid";
 
 export type DataLimitResource =
   | "environments"
@@ -192,10 +207,25 @@ function requireRole(
 }
 
 /**
+ * requireMemberState の結果: 導出状態に加えて、呼び出し主体のチェーンメンバー
+ * (登録署名の検証鍵・署名者 FP の源 — CRYPTO_SPEC §5.1)と、プロジェクト ID
+ * (= genesis エントリハッシュ。署名対象の座標)を返す。
+ */
+export interface MemberContext {
+  readonly state: ChainState;
+  readonly member: ChainMember;
+  readonly projectId: string;
+}
+
+/**
  * データ操作に共通する前段: 未初期化の検査 → チェーン導出 → メンバーシップと
  * role 下限の検査(§12-3 の判定順)。導出はチェーン API と同じキャッシュを流用する。
  */
-export const requireMemberState = (callerUserId: string, minimum: Role, cache: StateCache) =>
+export const requireMemberState = (
+  callerUserId: string,
+  minimum: Role,
+  cache: StateCache,
+): Effect.Effect<MemberContext, DataRejectedError, ChainStore> =>
   Effect.gen(function* () {
     const store = yield* ChainStore;
     const chain = yield* store.load;
@@ -203,8 +233,12 @@ export const requireMemberState = (callerUserId: string, minimum: Role, cache: S
       return yield* rejectData({ kind: "not-initialized" });
     }
     const state = yield* deriveStoredState(chain, cache);
-    yield* requireRole(state, callerUserId, minimum);
-    return state;
+    const member = yield* requireRole(state, callerUserId, minimum);
+    if (chain.genesisHashHex === null) {
+      // headSeq > 0 なら genesis 行は不変条件として存在する(ストレージ破損は defect)
+      return yield* Effect.die(new Error("initialized chain is missing its genesis hash"));
+    }
+    return { state, member, projectId: chain.genesisHashHex };
   });
 
 /** 環境の現エポック = チェーン観測値、未観測なら初期値 1(CRYPTO_SPEC §3)。 */
@@ -215,6 +249,9 @@ export function currentEpochOf(state: ChainState, environmentId: string): number
 /**
  * データ操作の監査イベントを組み立てる(AUDIT_SPEC §3.3)。actor の
  * auth_method は列ではなく payload JSON に載せる(§5.1: 頻出属性のみ列に昇格)。
+ * actor の鍵 FP は原則持たない(チェーンミラーの専有)が、**dek.registered のみ
+ * 例外**として登録署名(CRYPTO_SPEC §5.1)の署名者 FP を actorKeyFingerprintHex
+ * に写す(AUDIT_SPEC §3.3 — 監査行とチェーン外署名の突合用)。
  */
 export function dataEvent(
   actor: DataActor,
@@ -222,7 +259,13 @@ export function dataEvent(
   event: string,
   fields: Pick<
     AuditEventInput,
-    "environmentId" | "variableId" | "epoch" | "version" | "targetUserId" | "payload"
+    | "environmentId"
+    | "variableId"
+    | "epoch"
+    | "version"
+    | "targetUserId"
+    | "payload"
+    | "actorKeyFingerprintHex"
   >,
 ): AuditEventInput {
   const payload = {

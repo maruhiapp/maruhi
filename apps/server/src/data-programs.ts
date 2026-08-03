@@ -10,7 +10,8 @@
 // 割り込む TOCTOU(削除直後のメンバーへの配布 — §11-2 違反)を作るため、読み取りも
 // 直列化する(Bugbot 指摘 2026-08-02)。
 
-import type { ChainState } from "@maruhi/crypto";
+import type { ChainMember, ChainState } from "@maruhi/crypto";
+import { decodeHex, importSigningPublicKey, verifyDekWrapSignature } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -186,6 +187,58 @@ function checkWrapRecipients(
 }
 
 /**
+ * §12-6 / CRYPTO_SPEC §5.1: 全ラップの登録署名を検証する。署名者 = API 呼び出し
+ * 主体の厳密一致が受理条件なので、検証鍵は呼び出し主体の**受理時点のチェーン
+ * 導出 sig 公開鍵**(= 登録時点の鍵。全操作は permit 下で直列化されている)。
+ * 他人が署名したラップの持ち込み(削除済みスロットへの第三者再投入を含む)は
+ * ここで signature-invalid に落ちる。
+ */
+const ensureWrapSignatures = (
+  projectId: string,
+  environmentId: string,
+  signer: ChainMember,
+  wraps: readonly DekWrapInput[],
+) =>
+  Effect.gen(function* () {
+    if (wraps.length === 0) {
+      return;
+    }
+    // 検証済みチェーン由来の鍵はインポート可能が不変条件(失敗はストレージ /
+    // 検証器のバグ = defect)
+    const signerKeyBytes = decodeHex(signer.sigPubHex);
+    if (signerKeyBytes === null) {
+      return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
+    }
+    const imported = yield* Effect.promise(() => importSigningPublicKey(signerKeyBytes));
+    if (!imported.ok) {
+      return yield* Effect.die(new Error("chain-derived signing key failed to import"));
+    }
+    for (const wrap of wraps) {
+      const verified = yield* Effect.promise(() =>
+        verifyDekWrapSignature({
+          context: {
+            suite: wrap.suite,
+            projectId,
+            environmentId,
+            epoch: wrap.epoch,
+            recipientUserId: wrap.recipientUserId,
+            recipientEncPubHex: wrap.recipientEncPubHex,
+            encHex: wrap.encHex,
+            ciphertextHex: wrap.ciphertextHex,
+          },
+          signatureHex: wrap.signatureHex,
+          signerPublicKey: imported.value,
+        }),
+      );
+      if (!verified.ok) {
+        // InvalidInput(構造不正)も含めて署名不受理に畳む(Schema 検証済みの
+        // ワイヤでは実質 DekWrapSignatureInvalid のみ到達する)
+        return yield* rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" });
+      }
+    }
+  });
+
+/**
  * エポックごとの集合検査(§12-6): 初回登録(既存ラップなし)は現メンバー集合と
  * 完全一致(受信者検査済みなので個数一致 = 完全)、既存エポックへの追記は
  * 既存 (エポック, 受信者) との重複を拒否する。
@@ -216,13 +269,17 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
   });
 
 /**
- * ラップ集合の受理検証(§12-6)+ 数量ポリシー(§12-8)のみ。挿入は呼び出し側の
- * 同期書き込みフェーズで行う。ラップ挿入の全経路(環境作成・DEK 登録)が
- * ここを通るため、累積行数上限の結線はこの 1 箇所でよい。
+ * ラップ集合の受理検証(§12-6)+ 数量ポリシー(§12-8)+ 登録署名の検証
+ * (CRYPTO_SPEC §5.1)。挿入は呼び出し側の同期書き込みフェーズで行う。
+ * ラップ挿入の全経路(環境作成・DEK 登録)がここを通るため、累積行数上限と
+ * 署名必須の結線はこの 1 箇所でよい。署名検証(Ed25519 × 件数)は最も高価な
+ * ため、安価な検査(件数・受信者・重複・集合)がすべて通った後に行う。
  */
 const ensureWrapSetAcceptable = (
+  projectId: string,
   environmentId: string,
   state: ChainState,
+  signer: ChainMember,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
 ) =>
@@ -233,15 +290,19 @@ const ensureWrapSetAcceptable = (
     }
     yield* ensureWrapRowCapacity(wraps.length);
     yield* checkWrapSets(environmentId, state, wraps);
+    yield* ensureWrapSignatures(projectId, environmentId, signer, wraps);
   });
 
 /**
  * dek.registered(AUDIT_SPEC §3.3): 1 受信者 1 行(§5.1 の列構造 = 1 行 1
  * target)。受信者は target_user_id に載せ、(target_user_id, seq) の索引で
  * 「この受信者宛のラップの登録履歴」をそのまま引けるようにする。
+ * actor_key_fingerprint には登録署名の署名者 FP を写す(§3.3 — セッション 07
+ * 裁定 B「E の署名者 FP を写して突合可能にする」)。
  */
 function dekRegisteredEvent(
   actor: DataActor,
+  signer: ChainMember,
   nowMs: number,
   environmentId: string,
   wrap: DekWrapInput,
@@ -250,6 +311,7 @@ function dekRegisteredEvent(
     environmentId,
     epoch: wrap.epoch,
     targetUserId: wrap.recipientUserId,
+    actorKeyFingerprintHex: signer.keyFingerprintHex,
   });
 }
 
@@ -302,7 +364,7 @@ export const createEnvironmentProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const state = yield* requireMemberState(actor.userId, "member", cache);
+    const { state, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     const store = yield* DataStore;
     const existing = yield* store.findEnvironment(input.environmentId);
     const unavailable = environmentIdUnavailable(existing, state, input.environmentId);
@@ -318,7 +380,7 @@ export const createEnvironmentProgram = (
       });
     }
     // 未使用 ID(チェーン未観測)なので現エポックは常に初期値 1(§12-4)
-    yield* ensureWrapSetAcceptable(input.environmentId, state, 1, input.deks);
+    yield* ensureWrapSetAcceptable(projectId, input.environmentId, state, member, 1, input.deks);
     // §12-4 / §12-6: エポック 1 のラップは現メンバー集合と完全一致していなければ
     // ならない。受信者・重複・エポック範囲は検査済みなので個数一致 = 完全一致。
     // (checkWrapSets はリクエストに現れたエポックしか見ないため、空集合が
@@ -340,8 +402,8 @@ export const createEnvironmentProgram = (
       );
       // 環境作成時のエポック 1 の同梱分も dek.registered の対象(AUDIT_SPEC §3.3)
       for (const wrap of input.deks) {
-        store.write.insertWrap(input.environmentId, wrap, now);
-        audit.appendSync(dekRegisteredEvent(actor, now, input.environmentId, wrap));
+        store.write.insertWrap(input.environmentId, wrap, member, now);
+        audit.appendSync(dekRegisteredEvent(actor, member, now, input.environmentId, wrap));
       }
     });
     return {
@@ -411,7 +473,7 @@ export const deleteEnvironmentProgram = (
 
 export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
   Effect.gen(function* () {
-    const state = yield* requireMemberState(actor.userId, "reader", cache);
+    const { state } = yield* requireMemberState(actor.userId, "reader", cache);
     const store = yield* DataStore;
     const environments = yield* store.listEnvironments;
     return environments.map(
@@ -488,7 +550,7 @@ export const createVariableProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const state = yield* requireMemberState(actor.userId, "member", cache);
+    const { state } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;
     const existing = yield* store.findVariable(environmentId, input.variableId);
@@ -545,7 +607,7 @@ export const pushVersionProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const state = yield* requireMemberState(actor.userId, "member", cache);
+    const { state } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
@@ -636,7 +698,7 @@ export const pullEnvironmentProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const state = yield* requireMemberState(actor.userId, "reader", cache);
+    const { state } = yield* requireMemberState(actor.userId, "reader", cache);
     const environment = yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;
     const variables = yield* store.latestVersions(environmentId);
@@ -673,17 +735,17 @@ export const registerDekWrapsProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const state = yield* requireMemberState(actor.userId, "member", cache);
+    const { state, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const currentEpoch = currentEpochOf(state, environmentId);
-    yield* ensureWrapSetAcceptable(environmentId, state, currentEpoch, wraps);
+    yield* ensureWrapSetAcceptable(projectId, environmentId, state, member, currentEpoch, wraps);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
       for (const wrap of wraps) {
-        store.write.insertWrap(environmentId, wrap, now);
-        audit.appendSync(dekRegisteredEvent(actor, now, environmentId, wrap));
+        store.write.insertWrap(environmentId, wrap, member, now);
+        audit.appendSync(dekRegisteredEvent(actor, member, now, environmentId, wrap));
       }
     });
   });
