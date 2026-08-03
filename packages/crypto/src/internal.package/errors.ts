@@ -42,6 +42,11 @@ export type CryptoError =
         | "signing-public"
         | "signing-private";
     }
+  /** A private key could not be serialized (e.g. it is non-extractable). */
+  | {
+      readonly kind: "KeyExportFailed";
+      readonly key: "encryption-private" | "signing-private";
+    }
   /** AES-256-GCM encryption failed unexpectedly (e.g. oversized plaintext). */
   | { readonly kind: "EncryptFailed"; readonly operation: "variable" | "recovery" }
   /** AES-256-GCM decryption failed (tampered ciphertext, wrong AAD/nonce/key). */

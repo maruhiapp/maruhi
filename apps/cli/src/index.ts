@@ -1,5 +1,7 @@
-// @maruhi/cli — Gunshi + Effect。`maruhi` / `mh` バイナリ(実装は Phase 1 で)。
-// ディスクレス不変条件: シークレットの平文をディスクに書かない。.env 系ファイルの生成機能を作らない。
+// @maruhi/cli — Gunshi + Effect の `maruhi` / `mh` CLI。
+// ディスクレス不変条件: シークレットの平文をディスクに書かない。.env 系ファイルの
+// 生成機能を作らない。永続化は maruhi トークン・master 秘密鍵(OS キーチェーン)と
+// 非機密設定のみ。
 
-/** Placeholder export; replaced when implementation lands. */
-export const PACKAGE_NAME = "@maruhi/cli";
+export { type CliServices, runCli } from "./cli.ts";
+export { liveLayer } from "./live.ts";

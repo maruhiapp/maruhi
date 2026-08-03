@@ -22,6 +22,11 @@ export class CryptoKeyImportError extends Data.TaggedError("CryptoKeyImport")<{
   readonly key: "encryption-public" | "encryption-private" | "signing-public" | "signing-private";
 }> {}
 
+/** A private key could not be serialized (e.g. it is non-extractable). */
+export class CryptoKeyExportError extends Data.TaggedError("CryptoKeyExport")<{
+  readonly key: "encryption-private" | "signing-private";
+}> {}
+
 /** AES-256-GCM encryption failed unexpectedly. */
 export class CryptoEncryptError extends Data.TaggedError("CryptoEncrypt")<{
   readonly operation: "variable" | "recovery";
@@ -56,6 +61,7 @@ export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
 export type WrappedCryptoError =
   | CryptoInvalidInputError
   | CryptoKeyImportError
+  | CryptoKeyExportError
   | CryptoEncryptError
   | CryptoDecryptError
   | CryptoDekWrapError
@@ -71,6 +77,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoInvalidInputError({ field: error.field });
     case "KeyImportFailed":
       return new CryptoKeyImportError({ key: error.key });
+    case "KeyExportFailed":
+      return new CryptoKeyExportError({ key: error.key });
     case "EncryptFailed":
       return new CryptoEncryptError({ operation: error.operation });
     case "DecryptFailed":

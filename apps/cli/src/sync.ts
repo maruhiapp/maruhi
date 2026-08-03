@@ -1,0 +1,147 @@
+// クライアント同期検査(CRYPTO_SPEC §6.3)。
+//
+// 同期のたびにチェーン全体を取得し、verifyChain(prev_hash 連続性・署名・
+// §6.2 認可規則 = 鍵一意性を含む)で全再検証した上で、genesis エントリハッシュの
+// 再計算がプロジェクト ID と一致することを確認する(§6.4 の束縛 — サーバーによる
+// チェーン差し替えの機械的検出)。v1 はローカルキャッシュ・差分検証を持たない
+// (毎回全取得・全再検証が最簡 — 差分検証を入れる場合は session-10 §5 の
+// 鍵索引再構築の注意に従うこと)。
+//
+// 併せて §5.1 の配布時検証が使う「チェーン履歴で user_id に束縛された鍵」の索引
+// (genesis / add_member の payload。削除済みメンバーの当時の鍵も含む)を作る。
+// ヘッドゴシップ(§6.3)は Phase 2 — 本セッションのスコープ外。
+
+import type { ProjectId } from "@maruhi/core";
+import type { ChainEntry, ChainState } from "@maruhi/crypto";
+import {
+  computeChainEntryHash,
+  computeUserKeyFingerprint,
+  decodeHex,
+  encodeHex,
+  verifyChain,
+} from "@maruhi/crypto";
+import { Effect } from "effect";
+
+import type { MaruhiClient } from "./api.ts";
+import { cliError, type CliError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
+
+/** One key set the chain history binds to a user id (genesis / add_member payload). */
+export interface KeyBinding {
+  readonly encPubHex: string;
+  readonly sigPubHex: string;
+  readonly keyFingerprintHex: string;
+}
+
+/** A fully verified project chain (§6.3) plus the §5.1 signer-key history index. */
+export interface VerifiedProject {
+  readonly projectId: ProjectId;
+  readonly state: ChainState;
+  /** Every key set ever bound to each user id (append-only history — §5.1). */
+  readonly keyHistory: ReadonlyMap<string, readonly KeyBinding[]>;
+}
+
+function bindingKey(binding: KeyBinding): string {
+  return `${binding.encPubHex}:${binding.sigPubHex}`;
+}
+
+async function buildKeyHistory(
+  entries: readonly ChainEntry[],
+): Promise<ReadonlyMap<string, readonly KeyBinding[]>> {
+  const history = new Map<string, KeyBinding[]>();
+  const seen = new Set<string>();
+  const add = (userId: string, binding: KeyBinding) => {
+    const dedupe = `${userId}#${bindingKey(binding)}`;
+    if (seen.has(dedupe)) {
+      return;
+    }
+    seen.add(dedupe);
+    const list = history.get(userId);
+    if (list === undefined) {
+      history.set(userId, [binding]);
+    } else {
+      list.push(binding);
+    }
+  };
+  for (const entry of entries) {
+    // 鍵を登録する op は genesis と add_member のみ(§6.2)。verifyChain 通過後
+    // なので hex は正規形、genesis の actor FP は payload 鍵と一致検証済み
+    if (entry.op === "genesis") {
+      add(entry.actor.userId, {
+        encPubHex: entry.payload.encPubHex,
+        sigPubHex: entry.payload.sigPubHex,
+        keyFingerprintHex: entry.actor.keyFingerprintHex,
+      });
+    } else if (entry.op === "add_member") {
+      const enc = decodeHex(entry.payload.encPubHex) ?? new Uint8Array(0);
+      const sig = decodeHex(entry.payload.sigPubHex) ?? new Uint8Array(0);
+      const fingerprint = await computeUserKeyFingerprint(enc, sig);
+      if (fingerprint.ok) {
+        add(entry.payload.targetUserId, {
+          encPubHex: entry.payload.encPubHex,
+          sigPubHex: entry.payload.sigPubHex,
+          keyFingerprintHex: encodeHex(fingerprint.value),
+        });
+      }
+    }
+  }
+  return history;
+}
+
+/**
+ * Fetches and fully verifies the project chain (§6.3), checks the genesis
+ * hash against the project id (§6.4), and cross-checks the server's claimed
+ * head against the locally derived one.
+ */
+export function syncProject(
+  client: MaruhiClient,
+  projectId: ProjectId,
+): Effect.Effect<VerifiedProject, CliError> {
+  return Effect.gen(function* () {
+    const snapshot = yield* client.membership
+      .get({ params: { projectId } })
+      .pipe(Effect.mapError(toCliError));
+
+    const entries: readonly ChainEntry[] = snapshot.entries;
+    const verified = yield* Effect.promise(() => verifyChain(entries));
+    if (!verified.ok) {
+      const { seq, reason } =
+        verified.error.kind === "ChainInvalid"
+          ? verified.error
+          : { seq: 0, reason: "invalid-payload" };
+      return yield* Effect.fail(
+        cliError(
+          `チェーン検証に失敗しました(seq=${seq}, reason=${reason})。サーバーが不正なチェーンを配布している可能性があります`,
+        ),
+      );
+    }
+    const state = verified.value;
+
+    // §6.4: プロジェクト ID = genesis エントリハッシュ。サーバーが別チェーンを
+    // 同じ ID で配布する差し替えをここで機械的に検出する
+    const genesis = entries[0];
+    if (genesis === undefined) {
+      return yield* Effect.fail(cliError("チェーンが空です"));
+    }
+    const genesisHash = yield* Effect.promise(() => computeChainEntryHash(genesis));
+    if (genesisHash !== projectId) {
+      return yield* Effect.fail(
+        cliError(
+          `genesis ハッシュがプロジェクト ID と一致しません(サーバーによるチェーン差し替えの疑い): expected=${projectId} actual=${genesisHash}`,
+        ),
+      );
+    }
+
+    // サーバー申告のヘッドと導出ヘッドの整合(申告値は信用しない)
+    if (state.headSeq !== snapshot.headSeq || state.headHashHex !== snapshot.headHashHex) {
+      return yield* Effect.fail(
+        cliError(
+          "サーバー申告のチェーンヘッドが取得エントリと一致しません(応答が自己矛盾しています)",
+        ),
+      );
+    }
+
+    const keyHistory = yield* Effect.promise(() => buildKeyHistory(entries));
+    return { projectId, state, keyHistory } satisfies VerifiedProject;
+  });
+}

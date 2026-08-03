@@ -1,4 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // @maruhi/crypto のソースを型として取り込むため DOM lib(WebCrypto 型)が必要。
+    // Bun 固有 API(Bun.secrets / Bun.spawn — ADR-0004: CLI は Bun 可)は @types/bun
+    "lib": ["ES2023", "DOM"],
+    "types": ["bun"]
+  },
   "include": ["src", "test", "vitest.config.ts"]
 }

@@ -1,3 +1,8 @@
 {
-  "clone_groups": []
+  "clone_groups": [
+    "apps/cli/test/support/crypto.ts:31-58|apps/server/test/support/data-crypto.ts:37-62",
+    "apps/cli/test/support/crypto.ts:80-105|apps/server/test/support/data-crypto.ts:102-119",
+    "apps/cli/test/support/crypto.ts:108-124|apps/server/test/support/data-crypto.ts:128-148",
+    "apps/server/src/data-store.ts:244-253|apps/server/src/data-store.ts:258-275"
+  ]
 }
