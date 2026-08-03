@@ -296,6 +296,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     // key show は session 解決 + master 鍵を要求する。master 鍵がないため
     // エラーになるが、セッション解決(/auth/me)自体は通ることを検証する
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
@@ -319,6 +320,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
       JSON.stringify({ token: "maruhi_pat_keychain", userId: user.userId, tokenId: "tok_1" }),
     );
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     await runCli(["key", "show"], env.layer);
     expect(presented).toBe("Bearer maruhi_pat_env");
   });
@@ -331,8 +333,40 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("MARUHI_TOKEN での認証に失敗");
+  });
+
+  it("MARUHI_TOKEN_ORIGIN 未指定なら MARUHI_TOKEN を使わず案内する", async () => {
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => ({ status: 200, json: { userId: "u", orgs: [] } })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定");
+  });
+
+  it("MARUHI_TOKEN_ORIGIN が接続先と一致しなければトークンを送らない", async () => {
+    let hit = false;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => {
+        hit = true;
+        return { status: 200, json: { userId: "u", orgs: [] } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("一致しません");
+    // トークンは接続先へ送信されない
+    expect(hit).toBe(false);
   });
 });
 

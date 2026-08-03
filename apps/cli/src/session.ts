@@ -106,6 +106,26 @@ export function resolveSession(
     const io = yield* CliIo;
     const envToken = io.envVar("MARUHI_TOKEN");
     if (envToken !== undefined && envToken.length > 0) {
+      // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
+      // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
+      // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を
+      // MARUHI_TOKEN_ORIGIN で明示させ、解決 origin と一致するときのみ送る
+      const declaredOrigin = io.envVar("MARUHI_TOKEN_ORIGIN");
+      if (declaredOrigin === undefined || declaredOrigin.length === 0) {
+        return yield* Effect.fail(
+          cliError(
+            "MARUHI_TOKEN を使うには MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定してください(トークンを意図しない別オリジンへ送らないため)",
+          ),
+        );
+      }
+      const expectedOrigin = yield* normalizeHttpOrigin(declaredOrigin, "MARUHI_TOKEN_ORIGIN");
+      if (expectedOrigin !== origin) {
+        return yield* Effect.fail(
+          cliError(
+            `MARUHI_TOKEN_ORIGIN(${expectedOrigin})が接続先(${origin})と一致しません。トークンをこのオリジンへ送信しません`,
+          ),
+        );
+      }
       const client = yield* makeApiClient({ baseUrl: origin, token: envToken });
       const me = yield* client.auth
         .me({})
