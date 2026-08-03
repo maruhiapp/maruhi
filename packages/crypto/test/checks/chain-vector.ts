@@ -33,6 +33,13 @@ interface VectorNegative {
   readonly must_fail: boolean;
 }
 
+interface VectorValidAppend {
+  readonly name: string;
+  readonly entry: VectorEntry;
+  readonly expected_members: Readonly<Record<string, string>>;
+  readonly note?: string;
+}
+
 interface VectorHeadState {
   readonly after_seq: number;
   readonly members: Readonly<Record<string, string>>;
@@ -47,6 +54,7 @@ interface VectorHeadState {
 export const vectorEntries = chainVectors.entries as readonly VectorEntry[];
 export const vectorNegatives = chainVectors.negative as readonly VectorNegative[];
 export const vectorHeadStates = chainVectors.expected_head_states as readonly VectorHeadState[];
+export const vectorValidAppends = chainVectors.valid_appends as readonly VectorValidAppend[];
 export const vectorKeys = chainVectors.keys as Readonly<
   Record<
     string,

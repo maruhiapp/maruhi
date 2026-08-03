@@ -6,6 +6,7 @@ import {
   canonicalChainSignedBytes,
   type ChainEntry,
   type ChainState,
+  computeChainEntryHash,
   type CryptoResult,
   importSigningKeyPair,
   signChainEntry,
@@ -18,6 +19,7 @@ import {
   vectorEntries,
   vectorKeys,
   vectorNegatives,
+  vectorValidAppends,
 } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
@@ -335,27 +337,52 @@ async function appendRotation(
   return result.ok ? result.value : undefined;
 }
 
-async function readdRemovedMemberCheck(c: Checks, base: SemanticBase): Promise<void> {
-  // メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2): seq 4 で削除済みの
-  // user-member-0002 を同一 user_id・同一鍵で再追加する(同一人物の復帰)は
-  // 拒否されない。履歴全体との重複禁止を採らなかった線引きの positive 側
+async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
+  // メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2)の positive 側を
+  // ベクター(valid_appends)で固定する: 削除済み user-member-0002 の鍵は
+  // 同一 user_id での復帰も、別 user_id での再利用も拒否されない。
+  // 「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
+  for (const append of vectorValidAppends) {
+    const entry = toTypedEntry(append.entry);
+    const result = await verifyChain([...typedEntries, entry]);
+    const membersMatch =
+      result.ok &&
+      result.value.members.size === Object.keys(append.expected_members).length &&
+      Object.entries(append.expected_members).every(
+        ([userId, role]) => result.value.members.get(userId)?.role === role,
+      );
+    c.push(`chain valid append: ${append.name}`, membersMatch);
+  }
+
+  // 索引の再形成: 復帰(re-add)で鍵が現メンバー集合に戻った後は、同じ鍵での
+  // 別 user_id の追加が再び duplicate-member-key になる(remove での索引削除と
+  // add での再登録の両方向を閉じる)
+  const readd = vectorValidAppends.find((a) => a.name === "readd-removed-member-same-key");
+  if (readd === undefined) {
+    c.push("chain semantic: duplicate key rejected again after re-add", false, "vector missing");
+    return;
+  }
+  const readdEntry = toTypedEntry(readd.entry);
   const memberKeys = keysOf("user-member-0002");
-  const readd = await signAs("user-owner-0001", {
+  const duplicated = await signAs("user-owner-0001", {
     ...base,
+    seq: 11,
+    prevHashHex: await computeChainEntryHash(readdEntry),
     op: "add_member",
     payload: {
-      targetUserId: "user-member-0002",
+      targetUserId: "user-clone-0004",
       encPubHex: memberKeys.enc_pub_hex,
       sigPubHex: memberKeys.sig_pub_hex,
       role: "member",
     },
   });
-  const result = readd === undefined ? undefined : await verifyChain([...typedEntries, readd]);
+  const result =
+    duplicated === undefined
+      ? undefined
+      : await verifyChain([...typedEntries, readdEntry, duplicated]);
   c.push(
-    "chain semantic: re-adding a removed member with the same keys is accepted",
-    result !== undefined &&
-      result.ok &&
-      result.value.members.get("user-member-0002")?.role === "member",
+    "chain semantic: duplicate key rejected again after re-add",
+    result !== undefined && failsWith(result, 11, "duplicate-member-key"),
   );
 }
 
@@ -581,7 +608,7 @@ async function semanticChecks(c: Checks): Promise<void> {
     c.push(`chain semantic: ${item.name}`, failsWith(result, 10, item.expect));
   }
   await validAppendCheck(c, base);
-  await readdRemovedMemberCheck(c, base);
+  await validAppendVectorChecks(c, base);
 }
 
 export async function chainNegativeChecks(): Promise<CheckResult[]> {
