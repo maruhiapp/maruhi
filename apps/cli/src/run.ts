@@ -36,6 +36,7 @@ const DENIED_ENV_NAMES = new Set([
   "NODE_OPTIONS",
   "NODE_PATH",
   "NODE_EXTRA_CA_CERTS",
+  "BUN_OPTIONS",
   "BASH_ENV",
   "ENV",
   "IFS",

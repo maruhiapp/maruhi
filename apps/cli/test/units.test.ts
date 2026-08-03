@@ -201,7 +201,14 @@ describe("buildInjectionEnv", () => {
 
   it("実行制御系の環境変数名(PATH / LD_* / NODE_OPTIONS 等)への注入を拒否する", async () => {
     // "Path" は Windows の大文字小文字非区別への防衛(大文字化して比較)
-    for (const name of ["PATH", "Path", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS"]) {
+    for (const name of [
+      "PATH",
+      "Path",
+      "LD_PRELOAD",
+      "DYLD_INSERT_LIBRARIES",
+      "NODE_OPTIONS",
+      "BUN_OPTIONS",
+    ]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("実行制御系");
