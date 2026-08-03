@@ -166,11 +166,14 @@ describe("maruhi pull", () => {
     expect(output).toContain("SECRET=sk-\uFFFD[31mFAKE\uFFFD\nline2");
   });
 
-  it("AI エージェント検出時、--show は拒否される", async () => {
+  it("AI エージェント検出時、--show は拒否される(run を迂回策として勧めない)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("AI エージェント環境を検出");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("AI エージェント環境を検出");
+    // 値表示の迂回になる run を勧めない(エージェントに迂回レシピを渡さない)
+    expect(errors).not.toContain("maruhi run");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
   });
 

@@ -263,6 +263,8 @@ describe("buildInjectionEnv", () => {
       "LD_PRELOAD",
       "DYLD_INSERT_LIBRARIES",
       "NODE_OPTIONS",
+      "NODE_TLS_REJECT_UNAUTHORIZED",
+      "SSLKEYLOGFILE",
       "BUN_OPTIONS",
     ]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
