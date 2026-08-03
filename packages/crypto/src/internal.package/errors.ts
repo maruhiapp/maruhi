@@ -51,6 +51,8 @@ export type CryptoError =
   | { readonly kind: "DekUnwrapFailed" }
   /** Ed25519 signing failed. */
   | { readonly kind: "SignFailed" }
+  /** DEK-wrap registration signature verification failed (CRYPTO_SPEC §5.1). */
+  | { readonly kind: "DekWrapSignatureInvalid" }
   /** Chain verification failed at entry `seq` for `reason`. */
   | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 

@@ -634,6 +634,180 @@ def gen_chain_entries():
 
 
 # ---------------------------------------------------------------------------
+# 3.5 dek-wrap-signature.json — §5.1 DEK ラップの登録署名(Ed25519 + §2.1 LP)
+#
+# signed_bytes = LP(domain, project_id, environment_id, epoch, recipient_user_id,
+#                   recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id)
+#   domain = "<suite>/dek-wrap-sig"(suite の束縛はドメイン文字列が担う — §5 info と同型)
+#   バイナリ列(受信者 enc 公開鍵 / HPKE enc / ラップ暗号文)は grant_server の
+#   scope_environments と同じく hex 小文字文字列として LP に載せる
+#   signer_user_id は署名者自身の内部 user_id(チェーンが同一鍵の複数メンバーを
+#   許すため、鍵流用による帰属の付け替えを塞ぐ — §5.1)
+# ラップ本体(enc/ct/受信者鍵)は dek-wrap.json の basic ベクターを読み込んで使う
+# (ラップ → 登録署名が一続きの実データになる)。署名者は chain-entries.json の
+# user-owner-0001 / user-member-0002 と同一のダミー鍵
+
+SIGNED_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "epoch", "recipient_user_id",
+    "recipient_enc_pub_hex", "enc_hex", "ciphertext_hex", "signer_user_id",
+]
+
+
+def wrap_signature_signed_bytes(ctx: dict) -> bytes:
+    return lp_encode([
+        ctx["domain"], ctx["project_id"], ctx["environment_id"], ctx["epoch"],
+        ctx["recipient_user_id"], ctx["recipient_enc_pub_hex"],
+        ctx["enc_hex"], ctx["ciphertext_hex"], ctx["signer_user_id"],
+    ])
+
+
+def gen_dek_wrap_signature():
+    with open(os.path.join(OUT_DIR, "dek-wrap.json"), encoding="utf-8") as fh:
+        dek_wrap = json.load(fh)
+    wrap = dek_wrap["vectors"][0]
+
+    owner = make_user(pat(0x10, 32), pat(0x20, 32))     # = chain-entries user-owner-0001
+    member = make_user(pat(0x30, 32), pat(0x40, 32))    # = chain-entries user-member-0002
+
+    base_ctx = {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-wrap-sig",
+        "project_id": wrap["project_id"],
+        "environment_id": wrap["environment_id"],
+        "epoch": wrap["epoch"],
+        "recipient_user_id": wrap["recipient_user_id"],
+        "recipient_enc_pub_hex": dek_wrap["recipient_keypair"]["pkRm_hex"],
+        "enc_hex": wrap["enc_hex"],
+        "ciphertext_hex": wrap["ciphertext_hex"],
+        "signer_user_id": "user-owner-0001",
+    }
+    base_signed = wrap_signature_signed_bytes(base_ctx)
+    base_sig = owner["sig_sk"].sign(base_signed)
+
+    tampered_ct = bytearray(bytes.fromhex(base_ctx["ciphertext_hex"]))
+    tampered_ct[-1] ^= 0x01
+    tampered_enc = bytearray(bytes.fromhex(base_ctx["enc_hex"]))
+    tampered_enc[0] ^= 0x01
+    tampered_sig = bytearray(base_sig)
+    tampered_sig[-1] ^= 0x01
+
+    def negative(name, overrides, verify_key_hex, note, signature=None):
+        # overrides を適用した文脈で signed_bytes を再構築し、「元の署名」
+        # (signature 指定時はその署名)を検証 → 失敗すべき
+        ctx = dict(base_ctx, **overrides)
+        return {
+            "name": name,
+            "base": "basic",
+            "context": ctx,
+            "verify_signed_bytes_hex": wrap_signature_signed_bytes(ctx).hex(),
+            "signature_hex": (signature if signature is not None else base_sig).hex(),
+            "verify_key_hex": verify_key_hex,
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        negative(
+            "tampered-signature",
+            {},
+            owner["sig_pub_hex"],
+            "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
+            signature=bytes(tampered_sig),
+        ),
+        negative(
+            "tampered-ciphertext",
+            {"ciphertext_hex": bytes(tampered_ct).hex()},
+            owner["sig_pub_hex"],
+            "ラップ暗号文の末尾 1 bit 反転(毒ラップへの差し替え)は署名検証に失敗する",
+        ),
+        negative(
+            "tampered-enc",
+            {"enc_hex": bytes(tampered_enc).hex()},
+            owner["sig_pub_hex"],
+            "HPKE encapsulated key の改竄は署名検証に失敗する",
+        ),
+        negative(
+            "transplant-project",
+            {"project_id": "proj-0002"},
+            owner["sig_pub_hex"],
+            "別プロジェクトへの座標移植は署名検証に失敗する",
+        ),
+        negative(
+            "transplant-environment",
+            {"environment_id": "env-dev-0002"},
+            owner["sig_pub_hex"],
+            "別環境への座標移植は署名検証に失敗する",
+        ),
+        negative(
+            "transplant-epoch",
+            {"epoch": 4},
+            owner["sig_pub_hex"],
+            "別エポックへの座標移植は署名検証に失敗する",
+        ),
+        negative(
+            "transplant-recipient",
+            {"recipient_user_id": "user-owner-0001"},
+            owner["sig_pub_hex"],
+            "別受信者への座標移植は署名検証に失敗する",
+        ),
+        negative(
+            "recipient-key-mismatch",
+            {"recipient_enc_pub_hex": owner["enc_pub_hex"]},
+            owner["sig_pub_hex"],
+            "受信者 enc 公開鍵の差し替えは署名検証に失敗する(recipient_enc_pub_hex も署名対象)",
+        ),
+        negative(
+            "wrong-signer-key",
+            {},
+            member["sig_pub_hex"],
+            "署名者以外の鍵では検証に失敗する(呼び出し主体 = 署名者の受理条件を支える)",
+        ),
+        negative(
+            "transplant-signer",
+            {"signer_user_id": "user-member-0002"},
+            owner["sig_pub_hex"],
+            "署名者 user_id の差し替えは同一鍵でも検証に失敗する(鍵流用ソック垢への帰属付け替え対策 — §5.1)",
+        ),
+        negative(
+            "suite-mismatch",
+            {"suite": "maruhi/v2", "domain": "maruhi/v2/dek-wrap-sig"},
+            owner["sig_pub_hex"],
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+    ]
+
+    write(
+        "dek-wrap-signature.json",
+        {
+            "description": "CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)。ラップ本体は dek-wrap.json の basic ベクターと同一",
+            "signed_fields_order": SIGNED_FIELDS_ORDER,
+            "binary_encoding": "受信者 enc 公開鍵 / HPKE enc / ラップ暗号文は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+            "signer": {
+                "user_id": "user-owner-0001",
+                "sig_sk_seed_hex": pat(0x20, 32).hex(),
+                "sig_pub_hex": owner["sig_pub_hex"],
+                "key_fingerprint_hex": owner["fp_hex"],
+                "note": "chain-entries.json の user-owner-0001 と同一のダミー鍵",
+            },
+            "wrong_signer": {
+                "user_id": "user-member-0002",
+                "sig_pub_hex": member["sig_pub_hex"],
+                "note": "wrong-signer-key negative 用(chain-entries.json の user-member-0002)",
+            },
+            "vectors": [
+                dict(
+                    base_ctx,
+                    name="basic",
+                    signed_bytes_hex=base_signed.hex(),
+                    signature_hex=base_sig.hex(),
+                )
+            ],
+            "negative": negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. recovery-wrap.json — §8 リカバリーコードによる master 秘密鍵ラップ
 
 def gen_recovery_wrap():
@@ -708,4 +882,5 @@ if __name__ == "__main__":
     gen_encoding()
     gen_variable_encryption()
     gen_chain_entries()
+    gen_dek_wrap_signature()
     gen_recovery_wrap()

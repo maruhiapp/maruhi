@@ -48,6 +48,10 @@ const PROJECT_DO_DDL = [
      created_at INTEGER NOT NULL,
      PRIMARY KEY (environment_id, variable_id, version)
    )`,
+  // signature_hex / signer_*: DEK ラップの登録署名(CRYPTO_SPEC §5.1)と署名者。
+  // 配布時のクライアント検証(署名者のチェーン履歴上の鍵と突合)を可能にする。
+  // DDL 直接変更(公開前・適用済み環境なし。ローカル dev の .wrangler/state は
+  // このブランチで動かす前に破棄が必要 — session-08.md §3 と同じ注意)
   `CREATE TABLE IF NOT EXISTS dek_wraps (
      environment_id TEXT NOT NULL,
      epoch INTEGER NOT NULL,
@@ -56,6 +60,9 @@ const PROJECT_DO_DDL = [
      recipient_enc_pub_hex TEXT NOT NULL,
      enc_hex TEXT NOT NULL,
      ciphertext_hex TEXT NOT NULL,
+     signature_hex TEXT NOT NULL,
+     signer_user_id TEXT NOT NULL,
+     signer_key_fingerprint TEXT NOT NULL,
      created_at INTEGER NOT NULL,
      PRIMARY KEY (environment_id, epoch, recipient_user_id)
    )`,

@@ -288,6 +288,7 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
       entries: chain.entries,
       headSeq: chain.headSeq,
       headHashHex: chain.headHashHex,
+      genesisHashHex: chain.genesisHashHex,
       totalCanonicalBytes: chain.totalCanonicalBytes,
     };
   });

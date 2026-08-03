@@ -16,6 +16,8 @@ export interface StoredChain {
   /** 0 = 未初期化 */
   readonly headSeq: number;
   readonly headHashHex: string | null;
+  /** genesis エントリのハッシュ = プロジェクト ID(CRYPTO_SPEC §6.4)。未初期化なら null */
+  readonly genesisHashHex: string | null;
   readonly totalCanonicalBytes: number;
 }
 
@@ -40,6 +42,7 @@ export const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
         )
         .toArray();
       const entries = rows.map((row) => JSON.parse(String(row["entry_json"])) as ChainEntry);
+      const first = rows[0];
       const last = rows[rows.length - 1];
       let totalCanonicalBytes = 0;
       for (const row of rows) {
@@ -49,6 +52,7 @@ export const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
         entries,
         headSeq: last === undefined ? 0 : Number(last["seq"]),
         headHashHex: last === undefined ? null : String(last["entry_hash_hex"]),
+        genesisHashHex: first === undefined ? null : String(first["entry_hash_hex"]),
         totalCanonicalBytes,
       };
     }),

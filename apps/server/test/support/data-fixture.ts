@@ -154,6 +154,7 @@ export async function createEnvironmentOk(
     epoch: 1,
     dek,
     recipientUserIds: ALL_MEMBERS,
+    signerUserId: OWNER,
   });
   const response = await requestJson("POST", "/environments", tokenOf(fixture.tokens, OWNER), {
     environmentId,
