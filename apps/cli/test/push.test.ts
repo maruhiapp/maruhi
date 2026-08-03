@@ -276,7 +276,9 @@ describe("maruhi push", () => {
     expect([...env.logs, ...env.errors].join("\n")).not.toContain("rotated-value");
   });
 
-  it("EpochConflict 申告がチェーンと矛盾する(再同期しても現エポック不変)なら即時報告する", async () => {
+  it("EpochConflict 申告がチェーンと矛盾する(再同期しても現エポック不変)なら試行回数に関わらず矛盾として報告する", async () => {
+    // サーバーが毎回 EpochConflict を返し続ける = 試行上限まで到達するが、
+    // 汎用の「競合が解消しません」でなく定的な矛盾エラーを報告する
     const env = await startEnv(
       [
         chainHandlerOf([chainV1]),
@@ -291,7 +293,9 @@ describe("maruhi push", () => {
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("サーバー応答とチェーンの矛盾");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("サーバー応答とチェーンの矛盾");
+    expect(errors).not.toContain("競合が解消しません");
   });
 
   it("EpochConflict 後に新エポックの DEK が自分宛にない場合は明示エラーになる", async () => {

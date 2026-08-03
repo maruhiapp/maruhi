@@ -111,13 +111,17 @@ export function logoutOp(input: {
       );
     }
     const client = yield* makeApiClient({ baseUrl: input.origin, token: record.token });
+    // キーチェーン削除を失効「より先」に行う: 失効後に削除が失敗すると、
+    // サーバーが無効化済みのトークンをキーチェーンに残し、以後の全コマンドが
+    // その死んだトークンで 401 になる(手動でしか復旧できない)。削除が先なら
+    // 最悪でもサーバー側に生きたトークンが残るだけで、再ログインで回収できる
+    yield* keychain.remove(entryName);
     yield* client.auth.revokeToken({}).pipe(
-      // 既に失効済み(401)はローカル削除に進んでよい。それ以外(ネットワーク等)は
-      // キーチェーンを残したまま失敗させ、サーバー側に生きたトークンを放置しない
+      // 既に失効済み(401)は成功として扱う。それ以外(ネットワーク等)は
+      // 失敗させ、サーバー側に生きたトークンが残りうることを利用者へ伝える
       Effect.catchTag("Unauthorized", () => Effect.void),
       Effect.mapError(toCliError),
     );
-    yield* keychain.remove(entryName);
     yield* io.log("ログアウトしました(トークンを失効し、キーチェーンから削除しました)");
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
     // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する

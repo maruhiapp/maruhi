@@ -197,7 +197,7 @@ describe("maruhi logout", () => {
     expect(env.keychain.size).toBe(0);
   });
 
-  it("失効 API の失敗(5xx)時はキーチェーンを残す(生きたトークンを放置しない)", async () => {
+  it("失効 API の失敗(5xx)時はキーチェーンを先に削除する(無効トークンを残さない)", async () => {
     const maruhi = await start([
       onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
     ]);
@@ -207,8 +207,11 @@ describe("maruhi logout", () => {
       tokenEntryName(maruhi.origin),
       JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
     );
+    // 削除を失効より先に行う: 失効成功後に削除が失敗すると無効トークンが
+    // キーチェーンに残り以後の全コマンドが 401 になるため。失効失敗は exit 1
+    // だが、キーチェーンからは既に削除済み(再ログインで回収可能)
     expect(await runCli(["logout"], env.layer)).toBe(1);
-    expect(env.keychain.size).toBe(1);
+    expect(env.keychain.size).toBe(0);
   });
 
   it("既に失効済み(401)の場合もキーチェーンを削除して成功する", async () => {

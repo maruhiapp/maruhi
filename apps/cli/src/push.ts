@@ -309,11 +309,12 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
           epoch: outcome.accepted.epoch,
         };
       }
-      if (attempt < MAX_ATTEMPTS) {
-        // 最終試行の競合後に無駄な再同期・再解決を行わない(その失敗が
-        // 「競合が解消しない」という本来の報告を覆い隠すため)
-        state = yield* nextState(input, state, outcome);
-      }
+      // 最終試行でも nextState を実行する: epoch-conflict の「サーバー応答と
+      // チェーンの矛盾」は定的(リトライで解けない)エラーで、汎用の
+      // 「競合が解消しません」より情報量が高い。定的エラー・ネットワーク
+      // エラーはそのまま伝播させ(汎用メッセージで覆い隠さない)、
+      // 再試行可能な状態が返った場合のみ次周回で使う(最終周回では未使用)。
+      state = yield* nextState(input, state, outcome);
     }
     return yield* Effect.fail(
       cliError(`push の競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`),

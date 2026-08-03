@@ -325,8 +325,14 @@ function envCommand(execute: Execute) {
             return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(create)`));
           }
           const environmentId = ctx.values["environment-id"];
-          if (!RESOURCE_ID_PATTERN.test(environmentId)) {
-            return yield* Effect.fail(cliError(`環境 ID の形式が不正です: ${environmentId}`));
+          // positional 未指定は undefined。RegExp.test は "undefined" に
+          // 文字列化してパターンに通ってしまうため、型で明示的に弾く
+          if (environmentId === undefined || !RESOURCE_ID_PATTERN.test(environmentId)) {
+            return yield* Effect.fail(
+              cliError(
+                `環境 ID を指定してください(例: maruhi env create dev)。指定値: ${String(environmentId)}`,
+              ),
+            );
           }
           const io = yield* CliIo;
           const context = yield* openProject({

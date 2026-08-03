@@ -168,6 +168,22 @@ describe("maruhi env create", () => {
     );
   });
 
+  it("環境 ID の positional 未指定はネットワーク前に拒否される(bogus id で create API を呼ばない)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const server = await MockServer.start([chainHandler(built.projectId, built)]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    // gunshi が required positional を parse 層で弾く(usage エラー = exit 2)。
+    // ハンドラ内の undefined ガードは、その前段が外れても "undefined" が
+    // RESOURCE_ID_PATTERN を通らないための多層防御。いずれにせよ HTTP は起きない
+    const code = await runCli(["env", "create"], env.layer);
+    expect(code === 1 || code === 2).toBe(true);
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("grant_server が有効なプロジェクトでは拒否する(Phase 2 未実装)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
