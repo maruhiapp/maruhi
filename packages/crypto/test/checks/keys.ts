@@ -117,7 +117,10 @@ async function privateExportChecks(c: Checks): Promise<void> {
   const encPub = await exportEncryptionPublicKey(enc.publicKey);
   let encRoundtrip = false;
   if (encSk.ok) {
-    const reimported = await importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk.value });
+    const reimported = await importEncryptionKeyPair({
+      publicKey: encPub,
+      privateKey: encSk.value,
+    });
     encRoundtrip =
       encSk.value.length === 32 &&
       reimported.ok &&
@@ -131,7 +134,10 @@ async function privateExportChecks(c: Checks): Promise<void> {
   const sigPub = await exportSigningPublicKey(sig.publicKey);
   let sigRoundtrip = false;
   if (sigSeed.ok) {
-    const reimported = await importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed.value });
+    const reimported = await importSigningKeyPair({
+      publicKey: sigPub,
+      privateSeed: sigSeed.value,
+    });
     sigRoundtrip =
       sigSeed.value.length === 32 &&
       reimported.ok &&
