@@ -2,11 +2,25 @@
   "name": "@maruhi/cli",
   "version": "0.0.0",
   "private": true,
+  "bin": {
+    "maruhi": "./src/bin.ts",
+    "mh": "./src/bin.ts"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@maruhi/api-schema": "workspace:*",
+    "@maruhi/core": "workspace:*",
+    "@maruhi/crypto": "workspace:*",
+    "effect": "4.0.0-beta.102",
+    "gunshi": "0.37.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14"
   }
 }
