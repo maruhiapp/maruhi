@@ -4,6 +4,7 @@
 #23(ROADMAP)・#24(空 `deks: []` 400)マージ済みを確認して開始。
 スコープ: タスク指定の 1〜7 全項目(基盤 / ログイン / 鍵管理 / 同期検査 /
 pull + 配布時検証 / run / push + 環境管理)を単一 PR(#25)で実装。
+**PR #25 は 2026-08-03 マージ済み**(merge commit `2430e47`。§6 参照)。
 コミットは層順(crypto → 基盤 → ログイン・鍵管理 → 同期・pull・run →
 push・環境 → 配線 → テスト)。
 
@@ -22,12 +23,13 @@ push・環境 → 配線 → テスト)。
    分岐を含む)
 3. **コマンド**: login / logout / key (generate|show) / project (init|verify) /
    env create / pull [--show] / push <NAME> / run -- <cmd> / config (get|set)
-4. **テスト**: CLI 53 件(全体 419 件)。ワイヤレベル HTTP モック + 実 crypto
-   フィクスチャ。live E2E(実 bin.ts + モック)で §6.3 検証の実動作と
-   キーチェーン不在時の挙動を実測
+4. **テスト**: CLI 53 件(全体 419 件 — 実装時点。レビューループ・マージ前
+   修正の追加分を含む最終は 16 ファイル / 462 件 — §6)。ワイヤレベル HTTP
+   モック + 実 crypto フィクスチャ。live E2E(実 bin.ts + モック)で §6.3
+   検証の実動作とキーチェーン不在時の挙動を実測
 5. **docs**: 本メモ
 
-## 2. 裁定事項の細部(複数案比較 → 推奨で仮進行。確定条件 = PR レビュー承認)
+## 2. 裁定事項の細部(複数案比較 → 推奨で仮進行。確定条件 = PR レビュー承認 → PR #25 マージにより確定)
 
 ### 2-1. OS キーチェーン = Bun.secrets(依存ゼロ)
 
@@ -224,7 +226,8 @@ unused-export 検出(テスト専用エクスポートも検出 — session-07 �
    catchDefect を追加(内部エラー = exit 1)。テストで固定
 3. セキュリティ [低] 5 件: http は loopback のみ / deks・master 鍵レコードの
    suite 明示固定 / 実行制御系環境変数名(PATH・LD_*・NODE_OPTIONS 等)への
-   注入拒否 / MARUHI_TOKEN の origin 非スコープは文書化
+   注入拒否 / MARUHI_TOKEN の origin 非スコープは文書化(→ 当時の裁定。後の
+   マージ前修正で `MARUHI_TOKEN_ORIGIN` による origin 束縛を実装 — 下記)
 4. 正しさ [低] 群: push の create 競合再解決・最終試行後の無駄な遷移廃止・
    エポック矛盾の即時報告、keygen の保存前自己検証、login の保存失敗時
    トークン失効(孤児化防止)、config の原子的書き込み・破損復旧、
@@ -260,9 +263,35 @@ Windows の大文字小文字非区別対策)、エポック超過エラーの�
   仕様側検討として申し送り
 - ヘッドゴシップ未実装(Phase 2)= split view は v1 未防御であることの明示
 - keygen の並行実行 TOCTOU(対話コマンドのため実害僅少)、config save
-  クラッシュ時の .tmp 孤児、interval=0 の下限クランプ(deadline で有界)、
+  クラッシュ時の .tmp 孤児、interval=0 の下限クランプ(deadline で有界と
+  判断 → 当時の裁定。後のマージ前修正で下限固定を実装 — 下記)、
   一時ディレクトリ掃除、device flow の不整合鍵ペア import(処理系依存)
 
+### マージ前修正(Autopilot 後。Bugbot / Security Agent / レビュアー指摘)
+
+ready 化後のレビューコメント対応として以下を実装(いずれも PR #25 内):
+
+- **`MARUHI_TOKEN` の origin 束縛(Security Agent HIGH)**: `MARUHI_TOKEN_ORIGIN`
+  の指定を必須とし、解決 origin と一致するときのみ送る(§2-1 に反映済み)。
+  ループ 1 の「文書化のみ」裁定を上書き
+- **device flow のポーリング間隔に下限固定(RFC 8628 既定 5 秒)**: サーバー
+  申告 interval(0 含む)をそのまま使わない。ループ 3 で見送った interval=0
+  クランプの再裁定
+- **`--github-base-url` の URL 検証**: https 必須(loopback のみ http 許容)
+- **実行制御系環境変数拒否の拡充**: denylist に BUN_OPTIONS(Security Agent
+  HIGH)・TLS 系を追加。env 名を POSIX 識別子に限定し bash 関数インポート名
+  (`BASH_FUNC_*%%`)等を構造的に拒否、大文字小文字違いの衝突も拒否
+- **端末出力の制御文字サニタイズ**: サーバー由来文字列(login 出力・key show
+  の userId 等)の制御文字を除去(display.ts、oxlint no-control-regex 対応で
+  `\p{Cc}` ベース)
+- **`pull --show` の値の端末インジェクション対策(Security Agent Medium)**:
+  値表示にも ANSI / OSC 系制御シーケンスのサニタイズを適用
+- **login / logout / push の追加修正**: env 未指定の扱い・logout の削除順・
+  push 最終試行の扱い(レビュアー指摘 3 件)、project init の org 空配列に
+  正確なエラー(Bugbot Low)、agent 拒否メッセージから run への迂回案内を除去、
+  ほか Bugbot 指摘 Medium 3 件
+
 経過: ループ 1 = 高 1・中 3・低多数 → ループ 2 = 低 6 → ループ 3 = ゼロ
-(ブロッキング)。`bun run check`(447 件)+ live E2E green。以降は ready 化 →
-所有者指示によるマージ。
+(ブロッキング)→ マージ前修正(上記)。最終品質ゲート = `bun run check`
+全通過(16 test files / 462 tests)+ live E2E green(マージ後の main でも
+実測で再確認)。**2026-08-03 マージ済み**(merge commit `2430e47`)。
