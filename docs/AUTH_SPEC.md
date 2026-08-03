@@ -266,7 +266,7 @@ WrappedDek = {
 ### 12-5. 変数とバージョニング
 
 - version は 1 始まりの連番で AAD の一部(CRYPTO_SPEC §4)。**サーバーは version を採番できない**(採番すると申告 AAD とずれる)ため、push は CAS で受理する: 申告 version == 現在の最新 version + 1 のみ受理し、不一致は 409 で現在の最新 version(番号のみ)を返す
-- **409 後の再試行手順(2026-08-03 — CRYPTO_SPEC §4.1 の連鎖と CAS の接続)**: クライアントは勝った最新 version を取得し(12-7)、**§6.3 の全検証を通過させた上で**その signed_bytes ハッシュを自ら再計算して `prevValueSigHashHex` に用い、新 version で再暗号化・再署名して再試行する。**409 応答に勝者の signed_bytes ハッシュは含めない**(含めるとクライアントが未検証のサーバー申告値へ自分の署名で連鎖することになり、悪意サーバーが偽 prev への連鎖署名を作らせられる — 証拠連鎖の汚染)。metaVersion CAS(下記)の再試行も同じ手順に従う
+- **409 後の再試行手順(2026-08-03 — CRYPTO_SPEC §4.1 の連鎖と CAS の接続)**: クライアントは勝った最新 version を取得し(12-7)、**§6.3 の全検証を通過させた上で**その signed_bytes ハッシュを自ら再計算して `prevValueSigHashHex` に用い、新 version で再暗号化・再署名して再試行する。**409 応答に勝者の signed_bytes ハッシュは含めない**(含めるとクライアントが未検証のサーバー申告値へ自分の署名で連鎖することになり、悪意サーバーが偽 prev への連鎖署名を作らせられる — 証拠連鎖の汚染)。metaVersion CAS(下記)の再試行は**同型の手順をステートメントに適用する**: 勝った最新ステートメントを取得 → §6.3 の全検証 → その signed_bytes ハッシュを自ら再計算して `prevMetaSigHashHex` に用い、metaVersion + 1 の新ステートメントを再署名して再試行する(値を伴わないため再暗号化は発生しない。409 応答に勝者のハッシュを含めない規律も同一)
 - **push が参照できるエポックは現エポックのみ**(チェーン導出 ChainState.environmentEpochs の値、`create_environment` 直後は初期値 1)。旧エポックの push は 409 で現エポックを返す。ローテーション直後の競合はこの応答によりクライアントが新 DEK を取得・再暗号化して再試行する。**保存済みの過去バージョンは当時のエポックのまま保持される**(CRYPTO_SPEC §7)— 本規則は新規受理だけを現エポックに束縛する
 - **値署名の検証(2026-08-03 — CRYPTO_SPEC §4.1 / §6.4)**: push の受理条件に以下を加える。検証失敗は 422(`signature-invalid` / `chain-head-unknown` / `chain-head-state-mismatch`)で拒否する:
   1. 署名は**呼び出し主体の受理時点チェーン導出 sig 鍵**で検証し、署名対象の writer_user_id にも呼び出し主体の user_id を用いる(12-6 の登録署名と同じ「呼び出し主体 = 署名者」規則。他人が署名した値の持ち込みは拒否)
@@ -274,9 +274,10 @@ WrappedDek = {
   3. **認可時点(共通)**: 宣言ヘッド時点のチェーン導出状態で、呼び出し主体が当該操作の必要 role(12-3 の二重判定の表)を持つこと
   4. **エポック整合(値のみ — CRYPTO_SPEC §6.3 の 4 と同じ書き分け)**: 宣言ヘッド時点の当該環境の現エポックが、申告 AAD の epoch と一致すること(受理時点の現エポック検査 — 上記 — とは別の検査であることに注意: 宣言ヘッドから受理までの間にローテーションが挟まれば受理時点検査が 409 で落とす)。**宣言ヘッド seq が当該環境の `create_environment` の seq より前である値署名は無効**(§6.3 の 4 の後段と同一 — エポックが未定義の宣言ヘッドを既定値で補う実装を禁止する)。メタステートメントは AAD・epoch フィールドを持たない(CRYPTO_SPEC §4.2)ため本検査の対象外
   5. `prevValueSigHashHex` が保存済みの直前 version の signed_bytes ハッシュと一致すること(version 1 は空文字列)。サーバーは各バージョンの signed_bytes ハッシュを保存行に持つ
+- **エポック単調性(CRYPTO_SPEC §4.1)の独立検査はサーバーに置かない(2026-08-03 明確化)**: 「受理は現エポックのみ」(上記)と現エポックの時間単調性(rotate_epoch は +1 のみ — CRYPTO_SPEC §6.3)により、受理される新 version の epoch は保存済み全バージョンの epoch 以上であることが**構造的に**保証される。独立の比較検査は冗長であり追加しない(この含意は本規則群の帰結であるため、「受理は現エポックのみ」を緩める将来改訂はエポック単調性の担保方法の再検討を伴う)
 - **署名対象の座標はサーバー側の値から再構成する(2026-08-03)**: signed_bytes の検証に用いる project_id は DO 自身のチェーン(genesis ハッシュ)から、environment / variable 座標は URL・保存先から取る。クライアント申告値(申告 AAD)から組まない(CRYPTO_SPEC §5.1 実装の「project_id は DO 自身のチェーンから取る」— セッション 09 §3 — と同じ不変条件。申告 AAD との一致検査 — 12-2 — に暗黙依存させない)。**この規則は値署名とメタステートメント署名の両方に適用する**: `var_meta_signed_bytes` / `env_meta_signed_bytes` の project_id / environment_id / variable_id も URL・保存先座標から再構成し、ワイヤの `environmentId` / `variableId` 申告値から組まない(別座標への有効署名を要求パスの座標で保存する取り違えを構造的に排除する)
 - サーバーの保存行は値ごとに署名・writer(user_id + 鍵 FP)・宣言ヘッド(hash + seq)・prev ハッシュを持ち、配布(12-7)でそのまま返す。監査イベント `var.version_pushed` は writer の鍵 FP を写す(AUDIT_SPEC §3.3)
-- 変数の作成は最初の値(version 1)と `VariableMetaStatement`(metaVersion 1)を同梱する(値のない変数は存在しない)。改名・削除のステートメントは metaVersion の CAS(申告 == 最新 + 1)で受理し、409 は最新 metaVersion を返す。ステートメントの署名検証は**上記 1〜3(署名者一致・ヘッド実在・宣言ヘッド時点の role)+ prev 連鎖(`prevMetaSigHashHex` の metaVersion 連鎖 — 上記 5 と同型)**。エポック整合(上記 4)は値専用でありメタステートメントには適用しない
+- 変数の作成は最初の値(version 1)と `VariableMetaStatement`(metaVersion 1)を同梱する(値のない変数は存在しない)。**同梱する version 1 の値は通常 push と同一の検証(上記 1〜5)を受ける**(作成経由で値署名の検証を迂回できない)。改名・削除のステートメントは metaVersion の CAS(申告 == 最新 + 1)で受理し、409 は最新 metaVersion を返す。ステートメントの署名検証は**上記 1〜3(署名者一致・ヘッド実在・宣言ヘッド時点の role)+ prev 連鎖(`prevMetaSigHashHex` の metaVersion 連鎖 — 上記 5 と同型)**。エポック整合(上記 4)は値専用でありメタステートメントには適用しない
 - 削除は変数 tombstone + 全バージョンの暗号文削除。削除の `VariableMetaStatement`(status deleted)は保存・配布し続ける。監査上の存在区間は var.created / var.deleted イベントが保持する(要ローテーション検出は削除済み変数も対象 — AUDIT_SPEC §4.1)
 
 ### 12-6. DEK ラップの保存・配布(CRYPTO_SPEC §6.3 ゴーストメンバー対策のサーバー側)
