@@ -50,9 +50,31 @@ export interface MasterKeys {
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /**
+ * Validates and normalizes a base URL: https anywhere, http only on loopback
+ * (tokens / GitHub tokens travel in cleartext otherwise; wrangler dev and
+ * device-flow test servers on localhost still pass). `label` names the URL in
+ * error messages.
+ */
+export function normalizeHttpOrigin(raw: string, label: string): Effect.Effect<string, CliError> {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return Effect.fail(cliError(`${label}を解釈できません: ${raw}`));
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return Effect.fail(cliError(`${label}は http(s) で指定してください: ${raw}`));
+  }
+  if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
+    return Effect.fail(
+      cliError(`${label}の http: は loopback のみ許可されます(平文送信になるため): ${raw}`),
+    );
+  }
+  return Effect.succeed(url.origin);
+}
+
+/**
  * Resolves the server base URL: --server flag → config. Fails with guidance.
- * `http:` は loopback のみ許可する(トークン・GitHub トークンが平文で
- * 経路上に出るため。wrangler dev のローカル開発は通る)。
  */
 export function resolveServerOrigin(
   flag: string | undefined,
@@ -66,20 +88,7 @@ export function resolveServerOrigin(
       ),
     );
   }
-  try {
-    const url = new URL(raw);
-    if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
-      return Effect.fail(
-        cliError(`http: は loopback のみ許可されます(トークンが平文送信されるため): ${raw}`),
-      );
-    }
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      return Effect.fail(cliError(`サーバー URL は http(s) で指定してください: ${raw}`));
-    }
-    return Effect.succeed(url.origin);
-  } catch {
-    return Effect.fail(cliError(`サーバー URL を解釈できません: ${raw}`));
-  }
+  return normalizeHttpOrigin(raw, "サーバー URL");
 }
 
 const noSessionError = cliError(

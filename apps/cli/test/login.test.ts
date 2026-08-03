@@ -77,7 +77,15 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
 
     const code = await runCli(
-      ["login", "--token-name", "cli-test", "--github-base-url", githubServer.origin],
+      [
+        "login",
+        "--token-name",
+        "cli-test",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
       env.layer,
     );
     expect(code).toBe(0);
@@ -110,7 +118,10 @@ describe("maruhi login", () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
-    const code = await runCli(["login", "--github-base-url", githubServer.origin], env.layer);
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
     expect(code).toBe(1);
     expect(env.errors.join("\n")).toContain("認可が拒否");
     expect(env.keychain.size).toBe(0);
@@ -134,7 +145,12 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
     env.failKeychainWrites();
-    expect(await runCli(["login", "--github-base-url", githubServer.origin], env.layer)).toBe(1);
+    expect(
+      await runCli(
+        ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+        env.layer,
+      ),
+    ).toBe(1);
     expect(revoked).toBe(1);
     expect(env.keychain.size).toBe(0);
     expect(env.errors.join("\n")).toContain("キーチェーン");
@@ -155,7 +171,15 @@ describe("maruhi login", () => {
     env.failKeychainWrites();
     expect(
       await runCli(
-        ["login", "--github-base-url", githubServer.origin, "--token-name", "cli-test"],
+        [
+          "login",
+          "--github-base-url",
+          githubServer.origin,
+          "--token-name",
+          "cli-test",
+          "--github-poll-interval",
+          "0",
+        ],
         env.layer,
       ),
     ).toBe(1);
@@ -164,6 +188,14 @@ describe("maruhi login", () => {
     expect(errors).not.toContain("失効させました)");
     // 同名再ログインによるローテーション失効の案内がある
     expect(errors).toContain("cli-test");
+  });
+
+  it("--github-base-url の非 loopback http は拒否する(平文経路の遮断)", async () => {
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    expect(await runCli(["login", "--github-base-url", "http://evil.example"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("loopback");
   });
 
   it("client_id 未設定は設定手順を案内して失敗する", async () => {

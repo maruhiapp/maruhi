@@ -23,14 +23,19 @@ export function loginOp(input: {
   readonly clientId: string;
   readonly tokenName: string;
   readonly githubBaseUrl?: string;
+  /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
+  readonly minIntervalSeconds?: number;
 }): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keychain = yield* Keychain;
-    const flowOptions =
-      input.githubBaseUrl === undefined
-        ? { clientId: input.clientId }
-        : { clientId: input.clientId, githubBaseUrl: input.githubBaseUrl };
+    const flowOptions = {
+      clientId: input.clientId,
+      ...(input.githubBaseUrl === undefined ? {} : { githubBaseUrl: input.githubBaseUrl }),
+      ...(input.minIntervalSeconds === undefined
+        ? {}
+        : { minIntervalSeconds: input.minIntervalSeconds }),
+    };
 
     const authorization = yield* startDeviceFlow(flowOptions);
     yield* io.log(

@@ -96,6 +96,46 @@ describe("pollDeviceFlow", () => {
     expect(JSON.stringify(exit)).toContain("device flow");
   });
 
+  it("サーバーが interval 0 を返しても下限(既定 5 秒)に丸める(ビジースピン防止)", async () => {
+    const server = await MockServer.start([
+      onRequest("POST", "/login/device/code", () => ({
+        status: 200,
+        json: {
+          device_code: "d",
+          user_code: "U",
+          verification_uri: "https://github.example/device",
+          interval: 0,
+          expires_in: 900,
+        },
+      })),
+    ]);
+    servers.push(server);
+    const auth = await Effect.runPromise(
+      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
+    );
+    expect(auth.intervalSeconds).toBe(5);
+  });
+
+  it("minIntervalSeconds を渡すと下限を上書きできる(テスト用)", async () => {
+    const server = await MockServer.start([
+      onRequest("POST", "/login/device/code", () => ({
+        status: 200,
+        json: {
+          device_code: "d",
+          user_code: "U",
+          verification_uri: "https://github.example/device",
+          interval: 0,
+          expires_in: 900,
+        },
+      })),
+    ]);
+    servers.push(server);
+    const auth = await Effect.runPromise(
+      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin, minIntervalSeconds: 0 }),
+    );
+    expect(auth.intervalSeconds).toBe(0);
+  });
+
   it("期限切れ(deadline 超過)で中断する", async () => {
     const server = await MockServer.start([
       onRequest("POST", "/login/oauth/access_token", () => ({

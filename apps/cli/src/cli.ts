@@ -30,6 +30,7 @@ import {
   type CliSession,
   loadMasterKeys,
   type MasterKeys,
+  normalizeHttpOrigin,
   resolveServerOrigin,
   resolveSession,
 } from "./session.ts";
@@ -183,6 +184,11 @@ function loginCommand(execute: Execute) {
         description: "GitHub の base URL(テスト用)",
         hidden: true,
       },
+      "github-poll-interval": {
+        type: "number",
+        description: "device flow ポーリング間隔の下限秒(テスト用)",
+        hidden: true,
+      },
     },
     run: (ctx) =>
       execute(
@@ -198,12 +204,19 @@ function loginCommand(execute: Execute) {
               ),
             );
           }
-          const githubBaseUrl = ctx.values["github-base-url"];
+          // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
+          // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)
+          const githubBaseUrl =
+            ctx.values["github-base-url"] === undefined
+              ? undefined
+              : yield* normalizeHttpOrigin(ctx.values["github-base-url"], "GitHub base URL");
+          const minIntervalSeconds = ctx.values["github-poll-interval"];
           yield* loginOp({
             origin,
             clientId,
             tokenName: ctx.values["token-name"] ?? `cli:${hostname()}`,
             ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
+            ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
           });
         }),
       ),

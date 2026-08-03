@@ -13,6 +13,9 @@ import { cliError, type CliError } from "./errors.ts";
 const GITHUB_BASE_URL = "https://github.com";
 const DEVICE_FLOW_SCOPE = "read:user user:email";
 const SLOW_DOWN_EXTRA_SECONDS = 5;
+// RFC 8628 §3.5: interval 省略時の既定は 5 秒。サーバーが 0 や負値を返しても
+// ビジースピン(CPU・レート制限)にならないよう、この値を下限に固定する
+const DEFAULT_POLL_INTERVAL_SECONDS = 5;
 
 /** RFC 8628 §3.2 device authorization response (the fields the CLI uses). */
 export interface DeviceAuthorization {
@@ -26,6 +29,8 @@ export interface DeviceAuthorization {
 interface DeviceFlowOptions {
   readonly clientId: string;
   readonly githubBaseUrl?: string;
+  /** ポーリング間隔の下限(秒)。既定 5(RFC 8628)。テストのみ短縮する。 */
+  readonly minIntervalSeconds?: number;
 }
 
 function postForm(
@@ -68,6 +73,7 @@ export function startDeviceFlow(
   options: DeviceFlowOptions,
 ): Effect.Effect<DeviceAuthorization, CliError> {
   const base = options.githubBaseUrl ?? GITHUB_BASE_URL;
+  const minInterval = options.minIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS;
   return Effect.gen(function* () {
     const body = yield* postForm(`${base}/login/device/code`, {
       client_id: options.clientId,
@@ -93,7 +99,9 @@ export function startDeviceFlow(
       deviceCode,
       userCode,
       verificationUri,
-      intervalSeconds: typeof interval === "number" && interval >= 0 ? interval : 5,
+      // 省略・0・負値・非数・下限未満はすべて下限(既定 5 秒)に丸める
+      intervalSeconds:
+        typeof interval === "number" && interval >= minInterval ? interval : minInterval,
       expiresInSeconds: typeof expiresIn === "number" && expiresIn > 0 ? expiresIn : 900,
     } satisfies DeviceAuthorization;
   });
