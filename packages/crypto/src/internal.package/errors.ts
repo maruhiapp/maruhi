@@ -24,6 +24,7 @@ export type ChainInvalidReason =
   | "last-owner-protected"
   | "unknown-target"
   | "duplicate-member"
+  | "duplicate-member-key"
   | "unknown-server-grant"
   | "grant-scope-narrowed"
   | "epoch-out-of-sequence";

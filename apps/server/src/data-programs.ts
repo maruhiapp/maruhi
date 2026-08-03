@@ -229,8 +229,9 @@ const ensureWrapSignatures = (
             recipientEncPubHex: wrap.recipientEncPubHex,
             encHex: wrap.encHex,
             ciphertextHex: wrap.ciphertextHex,
-            // 署名対象の署名者 = 呼び出し主体(§12-6)。同一公開鍵を持つ別
-            // メンバー経由の帰属付け替えもここで落ちる(CRYPTO_SPEC §5.1)
+            // 署名対象の署名者 = 呼び出し主体(§12-6)。鍵重複メンバーは
+            // チェーン層(CRYPTO_SPEC §6.2)が禁止するが、仮に存在しても
+            // 帰属付け替えはここで落ちる(§5.1 の独立防衛層)
             signerUserId: signer.userId,
           },
           signatureHex: wrap.signatureHex,
