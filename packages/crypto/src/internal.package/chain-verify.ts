@@ -31,6 +31,13 @@ interface MutableChainState {
   readonly members: Map<string, ChainMember>;
   readonly serverGrants: Map<string, ServerGrant>;
   readonly environmentEpochs: Map<string, number>;
+  // 現メンバー集合の enc / sig 公開鍵の索引(メンバー鍵の一意性 — §6.2)。
+  // 本規則自体が「各鍵は高々 1 メンバーに属する」を不変条件にするため、
+  // remove_member での Set 削除は他メンバーの鍵を消さない(健全)。
+  // hex は §6.1 の形状検証(decodeHex = 小文字のみ)を通った正規形なので
+  // 文字列一致 = バイト一致
+  readonly memberEncPubs: Set<string>;
+  readonly memberSigPubs: Set<string>;
 }
 
 // 形状検証の各述語は、TS 型が主張する形と実際の実行時入力(サーバー配布の
@@ -254,6 +261,10 @@ function applyGenesis(
     sigPubHex: entry.payload.sigPubHex,
     keyFingerprintHex: entry.actor.keyFingerprintHex,
   });
+  // genesis 時点のメンバー集合は空なので鍵重複は構造上生じない(§6.2)。
+  // 以後の add_member の比較対象として owner の鍵も索引に載せる
+  state.memberEncPubs.add(entry.payload.encPubHex);
+  state.memberSigPubs.add(entry.payload.sigPubHex);
   return null;
 }
 
@@ -272,6 +283,17 @@ async function applyAddMember(
   if (state.members.has(entry.payload.targetUserId)) {
     return "duplicate-member";
   }
+  // メンバー鍵の一意性(§6.2。2026-08-03 決定): enc / sig のいずれかが現メンバー
+  // 集合の同種鍵と一致する追加を拒否する。判定は個別鍵単位(FP 単位ではない —
+  // 片鍵だけ流用したソック垢も拒否)。禁止範囲は現メンバー集合のみで、削除済み
+  // メンバーの同一鍵 re-add(同一人物の復帰)は拒否しない。検査順序(role →
+  // duplicate-member → 本検査)はテストベクターの期待理由が固定する
+  if (
+    state.memberEncPubs.has(entry.payload.encPubHex) ||
+    state.memberSigPubs.has(entry.payload.sigPubHex)
+  ) {
+    return "duplicate-member-key";
+  }
   state.members.set(entry.payload.targetUserId, {
     userId: entry.payload.targetUserId,
     role: entry.payload.role,
@@ -279,6 +301,8 @@ async function applyAddMember(
     sigPubHex: entry.payload.sigPubHex,
     keyFingerprintHex: await userFingerprintHex(entry.payload.encPubHex, entry.payload.sigPubHex),
   });
+  state.memberEncPubs.add(entry.payload.encPubHex);
+  state.memberSigPubs.add(entry.payload.sigPubHex);
   return null;
 }
 
@@ -317,6 +341,8 @@ function applyRemoveMember(
     return "last-owner-protected";
   }
   state.members.delete(target.userId);
+  state.memberEncPubs.delete(target.encPubHex);
+  state.memberSigPubs.delete(target.sigPubHex);
   return null;
 }
 
@@ -456,6 +482,8 @@ export async function verifyChain(
     members: new Map(),
     serverGrants: new Map(),
     environmentEpochs: new Map(),
+    memberEncPubs: new Set(),
+    memberSigPubs: new Set(),
   };
   let prevHash = GENESIS_PREV_HASH;
   let seq = 0;

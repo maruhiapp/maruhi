@@ -538,6 +538,52 @@ def gen_chain_entries():
         "scope_environments が 257 要素(上限 256 超過)のエントリは拒否する",
     )
 
+    # メンバー鍵の一意性(CRYPTO_SPEC §6.2。2026-08-03 決定 — セッション 10):
+    # add_member は対象の enc / sig 公開鍵のいずれかが現メンバー集合の同種鍵と
+    # 一致する場合に拒否する(duplicate-member-key)。判定は個別鍵単位 — 片方の
+    # 鍵だけを流用したソック垢も拒否する(FP = enc‖sig の一致判定ではない)。
+    # head9 時点の現メンバー: user-owner-0001(owner)/ user-admin-0003(admin)。
+    # actor は owner(role 規則を通過)・target_user_id は新規(duplicate-member を
+    # 通過)にし、鍵重複の検査だけで拒否されるエントリにする
+    clone = make_user(pat(0x70, 32), pat(0x80, 32))  # 流用しない側の新鮮な鍵
+    for name, enc_hex, sig_hex, note in [
+        ("authz-add-member-duplicate-key", admin["enc_pub_hex"], admin["sig_pub_hex"],
+         "現メンバー(user-admin-0003)の enc / sig 鍵一式を流用した別 user_id の追加は拒否する(鍵流用ソック垢)"),
+        ("authz-add-member-duplicate-enc-key", admin["enc_pub_hex"], clone["sig_pub_hex"],
+         "enc 公開鍵だけが現メンバーと一致する追加も拒否する(判定は個別鍵単位)"),
+        ("authz-add-member-duplicate-sig-key", clone["enc_pub_hex"], admin["sig_pub_hex"],
+         "sig 公開鍵だけが現メンバーと一致する追加も拒否する(判定は個別鍵単位)"),
+        ("authz-add-member-duplicate-owner-key", owner["enc_pub_hex"], owner["sig_pub_hex"],
+         "genesis 由来の owner の鍵一式の流用も拒否する(genesis もメンバー鍵索引の対象 — レビューループ 1 [高])"),
+    ]:
+        add_authz(
+            name, 10, head9, "add_member", owner_id, owner,
+            {"target_user_id": "user-clone-0004", "enc_pub_hex": enc_hex,
+             "sig_pub_hex": sig_hex, "role": "member"},
+            t0 + 9000, "duplicate-member-key", note,
+        )
+    # 検査順序の固定(role 規則 → 鍵重複): actor = admin が現メンバー鍵を流用した
+    # 対象に role "admin" を付与しようとするエントリは、鍵重複より先に role 規則で
+    # 拒否される(insufficient-role。duplicate-member-key ではない)
+    add_authz(
+        "authz-add-member-role-precedes-duplicate-key", 10, head9, "add_member",
+        admin_id, admin,
+        {"target_user_id": "user-clone-0004", "enc_pub_hex": owner["enc_pub_hex"],
+         "sig_pub_hex": owner["sig_pub_hex"], "role": "admin"},
+        t0 + 9000, "insufficient-role",
+        "role 規則(admin/owner 付与は owner のみ)は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
+    )
+    # 検査順序の固定(user_id 重複 → 鍵重複): 対象 user_id と鍵の両方が重複する
+    # エントリは duplicate-member で拒否される(duplicate-member-key ではない)
+    add_authz(
+        "authz-add-member-duplicate-user-precedes-key", 10, head9, "add_member",
+        owner_id, owner,
+        {"target_user_id": admin_id, "enc_pub_hex": owner["enc_pub_hex"],
+         "sig_pub_hex": owner["sig_pub_hex"], "role": "member"},
+        t0 + 9000, "duplicate-member",
+        "対象 user_id の重複は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
+    )
+
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
     impostor = build_entry(10, "rotate_epoch", owner_id, member,
@@ -554,6 +600,37 @@ def gen_chain_entries():
     })
 
     negatives += authz_cases
+
+    # --- 有効な追記の positive(合意規則の許容側の境界を固定する)-------------------
+    # メンバー鍵一意性(§6.2)の禁止範囲が「現メンバー集合のみ」であることの固定:
+    # 削除済みメンバー(seq 4 の user-member-0002)の鍵は現集合に属さないため、
+    # 同一 user_id での復帰も、別 user_id での再利用も拒否されない。
+    # 「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
+    valid_appends = [
+        {
+            "name": "readd-removed-member-same-key",
+            "entry": build_entry(10, "add_member", owner_id, owner,
+                                 {"target_user_id": member_id,
+                                  "enc_pub_hex": member["enc_pub_hex"],
+                                  "sig_pub_hex": member["sig_pub_hex"],
+                                  "role": "member"},
+                                 t0 + 9000, head9),
+            "expected_members": {owner_id: "owner", admin_id: "admin", member_id: "member"},
+            "note": "削除済みメンバーを同一 user_id・同一鍵で再追加する(同一人物の復帰)は受理される(§6.2 の禁止範囲は現メンバー集合のみ)",
+        },
+        {
+            "name": "reuse-removed-member-key-new-user",
+            "entry": build_entry(10, "add_member", owner_id, owner,
+                                 {"target_user_id": "user-newcomer-0005",
+                                  "enc_pub_hex": member["enc_pub_hex"],
+                                  "sig_pub_hex": member["sig_pub_hex"],
+                                  "role": "member"},
+                                 t0 + 9000, head9),
+            "expected_members": {owner_id: "owner", admin_id: "admin",
+                                 "user-newcomer-0005": "member"},
+            "note": "削除済みメンバーの鍵を別 user_id で再登録することも拒否されない(admin/owner の add_member 権限内の行為と等価 — §6.2)",
+        },
+    ]
 
     # --- 検証済みチェーンから導出される状態の期待値(実装の導出 API を固定する)------
     expected_head_states = [
@@ -628,6 +705,7 @@ def gen_chain_entries():
             },
             "entries": entries,
             "expected_head_states": expected_head_states,
+            "valid_appends": valid_appends,
             "negative": negatives,
         },
     )

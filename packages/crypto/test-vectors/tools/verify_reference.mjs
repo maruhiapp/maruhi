@@ -152,6 +152,52 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       toHex(lpEncode(e7.payload.scope_environments)) === e7.payload.scope_environments_lp_hex,
     );
   }
+  // valid_appends: 合意規則の許容側の境界(§6.2 の禁止範囲 = 現メンバー集合のみ)。
+  // 署名・正規化・prev_hash(= 正規チェーン最終エントリのハッシュ)が有効である
+  // ことを確認する。受理されること自体の検査は実装テストが担う
+  for (const a of doc.valid_appends) {
+    const e = a.entry;
+    const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+    const signed = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+    ]);
+    const sigOk = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(doc.keys[e.actor.user_id].sig_pub_hex),
+      fromHex(e.signature_hex),
+      signed,
+    );
+    // 受理後のヘッドとして意味を持つ entry_bytes / entry_hash も正規チェーンの
+    // エントリと同水準で検査する(第三者実装がこのハッシュへ追記を連鎖させても
+    // 陳腐値が黙って通らないように — レビューループ 2)
+    const entryBytes = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+      e.signature_hex,
+    ]);
+    check(
+      `chain valid append: ${a.name} (signature must be VALID)`,
+      sigOk &&
+        toHex(payloadBytes) === e.payload_bytes_hex &&
+        toHex(signed) === e.signed_bytes_hex &&
+        e.prev_hash_hex === doc.entries.at(-1).entry_hash_hex &&
+        toHex(entryBytes) === e.entry_bytes_hex &&
+        (await sha256(entryBytes)) === e.entry_hash_hex,
+    );
+  }
   for (const n of doc.negative) {
     if (n.name === "prev-hash-mismatch") {
       check(`chain negative: ${n.name}`, n.claimed_prev_hash_hex !== n.expected_prev_hash_hex);
