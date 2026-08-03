@@ -18,6 +18,7 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { Keychain, masterKeyEntryName, type StoredMasterKey } from "./keychain.ts";
@@ -76,7 +77,8 @@ export function keyShowOp(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keys = yield* loadMasterKeys(input.session);
-    yield* io.log(`user:            ${input.session.userId}`);
+    // userId はサーバー由来の自由文字列。他の出力経路と同様サニタイズする
+    yield* io.log(`user:            ${displayText(input.session.userId)}`);
     yield* io.log(`enc public key:  ${keys.record.encPubHex}`);
     yield* io.log(`sig public key:  ${keys.record.sigPubHex}`);
     yield* io.log(`key fingerprint: ${keys.fingerprintHex}`);

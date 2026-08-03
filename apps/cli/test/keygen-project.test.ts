@@ -88,6 +88,17 @@ describe("maruhi key", () => {
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(user.sigSkSeedHex);
   });
+
+  it("show は制御文字を含む userId をサニタイズする", async () => {
+    const user = await makeTestUser("user\u001b[31m-0001");
+    const maruhi = await start([]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    seedSession(env, maruhi.origin, user);
+    expect(await runCli(["key", "show"], env.layer)).toBe(0);
+    const output = env.logs.join("\n");
+    expect(output).not.toContain("\u001b");
+    expect(output).toContain("user\uFFFD[31m-0001");
+  });
 });
 
 function meHandler(userId: string, orgs: readonly { orgId: string; slug: string }[]): MockHandler {
