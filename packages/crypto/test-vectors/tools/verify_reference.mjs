@@ -174,11 +174,28 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       fromHex(e.signature_hex),
       signed,
     );
+    // 受理後のヘッドとして意味を持つ entry_bytes / entry_hash も正規チェーンの
+    // エントリと同水準で検査する(第三者実装がこのハッシュへ追記を連鎖させても
+    // 陳腐値が黙って通らないように — レビューループ 2)
+    const entryBytes = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+      e.signature_hex,
+    ]);
     check(
       `chain valid append: ${a.name} (signature must be VALID)`,
       sigOk &&
+        toHex(payloadBytes) === e.payload_bytes_hex &&
         toHex(signed) === e.signed_bytes_hex &&
-        e.prev_hash_hex === doc.entries.at(-1).entry_hash_hex,
+        e.prev_hash_hex === doc.entries.at(-1).entry_hash_hex &&
+        toHex(entryBytes) === e.entry_bytes_hex &&
+        (await sha256(entryBytes)) === e.entry_hash_hex,
     );
   }
   for (const n of doc.negative) {

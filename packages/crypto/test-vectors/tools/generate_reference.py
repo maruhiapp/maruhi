@@ -573,6 +573,16 @@ def gen_chain_entries():
         t0 + 9000, "insufficient-role",
         "role 規則(admin/owner 付与は owner のみ)は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
     )
+    # 検査順序の固定(user_id 重複 → 鍵重複): 対象 user_id と鍵の両方が重複する
+    # エントリは duplicate-member で拒否される(duplicate-member-key ではない)
+    add_authz(
+        "authz-add-member-duplicate-user-precedes-key", 10, head9, "add_member",
+        owner_id, owner,
+        {"target_user_id": admin_id, "enc_pub_hex": owner["enc_pub_hex"],
+         "sig_pub_hex": owner["sig_pub_hex"], "role": "member"},
+        t0 + 9000, "duplicate-member",
+        "対象 user_id の重複は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
+    )
 
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る

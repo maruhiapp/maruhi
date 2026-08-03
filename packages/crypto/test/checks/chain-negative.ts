@@ -1,6 +1,6 @@
-// CRYPTO_SPEC §6 のチェック(negative): 改竄・移植・順序入替(must_fail)、
-// 認可系ベクター(署名は有効だが §6.2 の role 規則で拒否)、フレーミング・
-// 意味検証の失敗系。
+// CRYPTO_SPEC §6 のチェック(negative + 境界の positive): 改竄・移植・順序入替
+// (must_fail)、認可系ベクター(署名は有効だが §6.2 の規則で拒否)、フレーミング・
+// 意味検証の失敗系、および合意規則の許容側の境界(valid_appends)。
 
 import {
   canonicalChainSignedBytes,
