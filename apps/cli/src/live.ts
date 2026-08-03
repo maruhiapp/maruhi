@@ -6,7 +6,7 @@
 // - ProcessRunner = Bun.spawn(環境変数へのメモリ注入のみ。stdio は継承)
 // - エージェント検出 = gunshi/agent の getAgentProfile
 
-import { Effect, Layer } from "effect";
+import { Duration, Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { getAgentProfile } from "gunshi/agent";
 
@@ -22,24 +22,26 @@ const keychainUnavailable = () =>
     "OS キーチェーンにアクセスできません(この環境ではトークン・鍵を保存できません)。平文ファイルへの保存は行いません — トークンは MARUHI_TOKEN 環境変数で渡せます",
   );
 
+// keyring デーモン不在の headless Linux では Bun.secrets の書き込みが応答なしで
+// ブロックすることを実測(Cursor Cloud 環境)。キーチェーンのロック解除
+// プロンプト(ユーザー操作)を待つ余地を残しつつ、ハングは案内エラーに落とす
+const KEYCHAIN_TIMEOUT = Duration.seconds(30);
+
+function keychainOp<T>(run: () => Promise<T>): Effect.Effect<T, ReturnType<typeof cliError>> {
+  return Effect.tryPromise({ try: run, catch: keychainUnavailable }).pipe(
+    Effect.timeout(KEYCHAIN_TIMEOUT),
+    Effect.catchTag("TimeoutError", () => Effect.fail(keychainUnavailable())),
+  );
+}
+
 function makeBunKeychain(): KeychainShape {
   return {
-    get: (name) =>
-      Effect.tryPromise({
-        try: () => Bun.secrets.get({ service: KEYCHAIN_SERVICE, name }),
-        catch: keychainUnavailable,
-      }),
+    get: (name) => keychainOp(() => Bun.secrets.get({ service: KEYCHAIN_SERVICE, name })),
     set: (name, value) =>
-      Effect.tryPromise({
-        try: () => Bun.secrets.set({ service: KEYCHAIN_SERVICE, name, value }),
-        catch: keychainUnavailable,
-      }),
+      keychainOp(() => Bun.secrets.set({ service: KEYCHAIN_SERVICE, name, value })),
     remove: (name) =>
-      Effect.tryPromise({
-        try: async () => {
-          await Bun.secrets.delete({ service: KEYCHAIN_SERVICE, name });
-        },
-        catch: keychainUnavailable,
+      keychainOp(async () => {
+        await Bun.secrets.delete({ service: KEYCHAIN_SERVICE, name });
       }),
   };
 }
