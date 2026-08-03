@@ -71,7 +71,7 @@ export function pullVariables(input: {
       if (declaredEpoch > chainEpoch) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${variable.name} の申告エポック ${declaredEpoch} がチェーン上の現エポック(${chainEpoch})を超えています(サーバー応答とチェーンの矛盾)`,
+            `変数 ${variable.name} の申告エポック ${declaredEpoch} がチェーン上の現エポック(${chainEpoch})を超えています。直後にローテーションが行われた可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
           ),
         );
       }

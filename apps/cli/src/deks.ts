@@ -126,7 +126,7 @@ export function verifyAndUnwrapDeks(input: {
       if (wrap.epoch > chainEpoch) {
         return yield* Effect.fail(
           cliError(
-            `チェーン上の現エポック(${chainEpoch})を超えるエポック ${wrap.epoch} の DEK ラップが配布されました(サーバー応答とチェーンの矛盾)`,
+            `チェーン上の現エポック(${chainEpoch})を超えるエポック ${wrap.epoch} の DEK ラップが配布されました。直後にローテーションが行われた可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
           ),
         );
       }

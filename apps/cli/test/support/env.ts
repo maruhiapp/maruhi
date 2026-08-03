@@ -146,7 +146,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
 export function seedSession(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
     // 実サーバーの形式(maruhi_pat_ + Base62 乱数)に寄せたフィクスチャ
-    token: "maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x",
+    token: "maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123",
     userId: user.userId,
     tokenId: "tok_0001",
   };

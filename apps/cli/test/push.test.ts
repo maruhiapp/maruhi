@@ -392,6 +392,64 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("大きすぎます");
   });
 
+  it("create 経路への VersionConflict(異常応答)も名前から再解決して自壊しない", async () => {
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-late",
+      version: 1,
+      plaintext: "late",
+    });
+    let pullCalls = 0;
+    let pushedVersion = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            name: ENV_ID,
+            currentEpoch: 1,
+            variables:
+              pullCalls === 1 ? [] : [{ variableId: "v-late", name: "API_KEY", value: existing }],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
+        // create にはスキーマ上返しうるが通常起きない応答。乱数 ID のまま
+        // push 経路へ落ちる退行(存在しない ID への push)をしないこと
+        status: 409,
+        json: { _tag: "VersionConflict", currentVersion: 1 },
+      })),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-late/versions`,
+        (request) => {
+          pushedVersion = (request.body as { value: WireEncryptedPayload }).value.aad.version;
+          return { status: 200, json: { variableId: "v-late", version: pushedVersion, epoch: 1 } };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
+    expect(pullCalls).toBe(2);
+    expect(pushedVersion).toBe(2);
+  });
+
   it("競合が解消しない場合は試行上限で中断する", async () => {
     const existing = await encryptValueFor({
       dek: dek1,

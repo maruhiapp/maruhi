@@ -58,6 +58,24 @@ describe("maruhi key", () => {
     expect(env.errors.join("\n")).toContain("既に存在します");
   });
 
+  it("未知スイートの master 鍵レコードを拒否する", async () => {
+    const user = await makeTestUser("user-0001");
+    const maruhi = await start([]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    env.keychain.set(
+      masterKeyEntryName(maruhi.origin, user.userId),
+      JSON.stringify({
+        suite: "maruhi/v2",
+        encPubHex: user.encPubHex,
+        encSkHex: user.encSkHex,
+        sigPubHex: user.sigPubHex,
+        sigSkSeedHex: user.sigSkSeedHex,
+      }),
+    );
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("スイートが未知");
+  });
+
   it("show は公開鍵と FP のみ表示する", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([]);

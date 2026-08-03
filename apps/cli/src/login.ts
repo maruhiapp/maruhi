@@ -63,7 +63,11 @@ export function loginOp(input: {
         Effect.gen(function* () {
           const authed = yield* makeApiClient({ baseUrl: input.origin, token: exchanged.token });
           yield* authed.auth.revokeToken({}).pipe(Effect.catch(() => Effect.void));
-          return yield* Effect.fail(setError);
+          // 元エラー(キーチェーン不達)を優先しつつ、いま発行したトークンは
+          // 失効済みであること(= MARUHI_TOKEN に流用できないこと)を明示する
+          return yield* Effect.fail(
+            cliError(`${setError.message}(いま発行したトークンはサーバー側で失効させました)`),
+          );
         }),
       ),
     );

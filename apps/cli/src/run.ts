@@ -27,22 +27,38 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 // 平文メタデータで AAD に束縛されないため、悪意あるサーバーが名前と暗号文の
 // 対応を付け替えても復号は成功する。正当な秘密値がこれらの名前で注入されると
 // 子プロセスのコード実行制御になるため、名前空間ごと塞ぐ。
-// (名前の暗号学的束縛は仕様側の検討事項 — session-11.md 申し送り)
+// このリストは best-effort の緩和策であり網羅ではない — 根本策は名前の
+// 暗号学的束縛(仕様側の検討事項 — session-11.md 申し送り)。
+// 比較は大文字化して行う(Windows の環境変数名は大文字小文字を区別しない —
+// レビューループ 2 [低])
 const DENIED_ENV_NAMES = new Set([
   "PATH",
   "NODE_OPTIONS",
+  "NODE_PATH",
+  "NODE_EXTRA_CA_CERTS",
   "BASH_ENV",
   "ENV",
   "IFS",
   "SHELL",
+  "ZDOTDIR",
   "PYTHONSTARTUP",
   "PYTHONPATH",
+  "PYTHONHOME",
   "PERL5OPT",
+  "PERL5LIB",
+  "PERLLIB",
+  "RUBYOPT",
+  "RUBYLIB",
+  "JAVA_TOOL_OPTIONS",
+  "_JAVA_OPTIONS",
+  "CLASSPATH",
+  "GCONV_PATH",
 ]);
-const DENIED_ENV_PREFIXES = ["LD_", "DYLD_"];
+const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_"];
 
 function isDeniedEnvName(name: string): boolean {
-  return DENIED_ENV_NAMES.has(name) || DENIED_ENV_PREFIXES.some((p) => name.startsWith(p));
+  const upper = name.toUpperCase();
+  return DENIED_ENV_NAMES.has(upper) || DENIED_ENV_PREFIXES.some((p) => upper.startsWith(p));
 }
 
 /**
