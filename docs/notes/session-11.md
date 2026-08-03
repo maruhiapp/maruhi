@@ -74,13 +74,14 @@ server / githubClientId / defaultProject / defaultEnvironment のみ
 線引きをテストで固定できる)。ファイル出力の選択肢はディスクレス不変条件により
 存在しない。
 
-### 2-6. セルフホストの GitHub client_id = CLI 設定で与える(要裁定)
+### 2-6. セルフホストの GitHub client_id = CLI 設定で与える(裁定済み)
 
 v1 は `maruhi config set githubClientId <id>`(または `--github-client-id`)。
 サーバー・仕様の変更なしで動く。**長期はサーバーの公開設定エンドポイント
 (client_id は公開情報)が UX 上優位**だが AUTH_SPEC 改訂 + サーバー実装を
-伴うため、セットアップウィザード(ROADMAP Phase 1 の独立項目)と同時に
-裁定へ回した(PR #25 の要裁定 1)。
+伴うため要裁定に回した(PR #25 の要裁定 1)。
+**→ 2026-08-03 所有者裁定: 「今は A(CLI 設定)、次の独立 PR で B(公開設定
+エンドポイント)」で確定**(§5 申し送り参照)。
 
 ### 2-7. テスト戦略 = ワイヤレベル HTTP モック + 実 crypto(spawn 比較で採用)
 
@@ -127,7 +128,10 @@ unused-export 検出(テスト専用エクスポートも検出 — session-07 �
   §3 の再確認): テスト支援はすべて test/support/ に置き、src の export は
   src 内の消費者があるものだけにした
 - fallow dupes ベースラインへ cli / server のテスト支援 3 クローン群を追加
-  (§2-7 の独立判断。既存の data-store.ts 内部クローン 1 群は継承)
+  (§2-7 の独立判断。既存の data-store.ts 内部クローン 1 群は継承)。
+  **→ 2026-08-03 所有者裁定: 本 PR はベースライン許容のまま、マージ後に
+  共有フィクスチャ抽出(packages/crypto/test/ へ)を小さな独立 PR で行う**
+  (§5 申し送り参照)
 
 ## 4. 既知の制約・v1 許容
 
@@ -144,6 +148,33 @@ unused-export 検出(テスト専用エクスポートも検出 — session-07 �
 
 ## 5. 次セッションへの申し送り
 
+### 裁定済みの後続 PR 3 本(2026-08-03 所有者裁定。互いに独立・順序自由)
+
+1. **サーバー公開設定エンドポイント(client_id 配布 — PR #25 要裁定 1 の
+   裁定 = 「今は A、次の独立 PR で B」)**: 未認証の公開エンドポイント
+   (例: `GET /auth/config`)が githubClientId を返し、login が自動解決する。
+   AUTH_SPEC §4 の改訂 + サーバー実装を伴う。設計点: (i) 応答は client_id
+   のみから始める(セットアップウィザードの要求は必要時に追加)、
+   (ii) 未認証面の増加は client_id が公開情報のため許容、(iii) 導入後も
+   config の githubClientId は上書き手段として残す(GHES・テスト用)
+2. **テスト支援フィクスチャの共有抽出(PR #25 要裁定 2 の裁定 = 「本 PR は
+   ベースライン許容のまま、マージ後に B を小さな独立 PR で」)**: cli / server
+   のテスト支援クローン 3 群(チェーン組立・op ビルダー・unwrapResult 系
+   約 75 行)を `packages/crypto/test/` 配下の共有モジュールへ抽出し、
+   dupes ベースラインから当該 3 群を削除して縮める。注意: (i) 挙動変更ゼロの
+   機械的抽出に徹する、(ii) サーバーテスト都合の `unwrapAndDecrypt`(申告
+   AAD をそのまま使う)は共有側に持ち込まない、(iii) packages/crypto 配下の
+   変更のため人間レビュー必須
+3. **pull のメタデータのみモード(PR #25 要裁定 3 の裁定 = 「今は A、次の
+   独立 PR で G」)**: 一括 pull にメタデータのみのモード(値・DEK を返さない)
+   を追加し、`var.read` を記録しないことを AUTH_SPEC §12-7 / AUDIT_SPEC の
+   意味論として明文化する(「読んでいないものを読んだと記録しない」)。
+   認可は pull と同水準(read × reader)。CLI 側は push の名前解決を
+   このモードへ切り替える(レビュー指摘の「push が DEK 集合を pull と
+   listMine で二重取得する」無駄も同時に解消)
+
+### その他の申し送り
+
 - **チェーン追記系コマンド(add_member / remove_member / rotate_epoch /
   change_role)**: 追記 + ChainHeadConflict(409 CAS)リトライループを
   コマンドと同時に実装する(§2-8)。remove_member は §7 の全環境 rotate +
@@ -151,10 +182,6 @@ unused-export 検出(テスト専用エクスポートも検出 — session-07 �
 - **CI・キーチェーン不在環境での pull / run**: master 秘密鍵の供給経路が
   ない(MARUHI_TOKEN はトークンのみ)。リカバリーコード(§8)実装か
   専用のマシン鍵設計とセットで検討
-- **サーバー公開設定エンドポイント(client_id 配布)**: PR #25 要裁定 1。
-  採用時は AUTH_SPEC 改訂 + サーバー実装 + login の自動解決
-- **変数メタデータ一覧 API**: push の名前解決の var.read 監査ノイズ
-  (PR #25 要裁定 3)。AUTH_SPEC §12 の改訂を伴う
 - **実サーバーとの統合スモーク**(wrangler dev spawn + D1 適用): モックの
   契約乖離への保険。web e2e の先例 + D1 マイグレーション適用が必要
 - **§6.3 ヘッドゴシップは Phase 2**(未着手のまま)。書き込み系リクエストへの
