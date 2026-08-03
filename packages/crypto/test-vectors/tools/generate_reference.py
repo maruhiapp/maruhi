@@ -538,6 +538,29 @@ def gen_chain_entries():
         "scope_environments が 257 要素(上限 256 超過)のエントリは拒否する",
     )
 
+    # メンバー鍵の一意性(CRYPTO_SPEC §6.2。2026-08-03 決定 — セッション 10):
+    # add_member は対象の enc / sig 公開鍵のいずれかが現メンバー集合の同種鍵と
+    # 一致する場合に拒否する(duplicate-member-key)。判定は個別鍵単位 — 片方の
+    # 鍵だけを流用したソック垢も拒否する(FP = enc‖sig の一致判定ではない)。
+    # head9 時点の現メンバー: user-owner-0001(owner)/ user-admin-0003(admin)。
+    # actor は owner(role 規則を通過)・target_user_id は新規(duplicate-member を
+    # 通過)にし、鍵重複の検査だけで拒否されるエントリにする
+    clone = make_user(pat(0x70, 32), pat(0x80, 32))  # 流用しない側の新鮮な鍵
+    for name, enc_hex, sig_hex, note in [
+        ("authz-add-member-duplicate-key", admin["enc_pub_hex"], admin["sig_pub_hex"],
+         "現メンバー(user-admin-0003)の enc / sig 鍵一式を流用した別 user_id の追加は拒否する(鍵流用ソック垢)"),
+        ("authz-add-member-duplicate-enc-key", admin["enc_pub_hex"], clone["sig_pub_hex"],
+         "enc 公開鍵だけが現メンバーと一致する追加も拒否する(判定は個別鍵単位)"),
+        ("authz-add-member-duplicate-sig-key", clone["enc_pub_hex"], admin["sig_pub_hex"],
+         "sig 公開鍵だけが現メンバーと一致する追加も拒否する(判定は個別鍵単位)"),
+    ]:
+        add_authz(
+            name, 10, head9, "add_member", owner_id, owner,
+            {"target_user_id": "user-clone-0004", "enc_pub_hex": enc_hex,
+             "sig_pub_hex": sig_hex, "role": "member"},
+            t0 + 9000, "duplicate-member-key", note,
+        )
+
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
     impostor = build_entry(10, "rotate_epoch", owner_id, member,
