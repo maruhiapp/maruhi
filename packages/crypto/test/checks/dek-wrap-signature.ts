@@ -31,6 +31,7 @@ interface VectorContext {
   readonly recipient_enc_pub_hex: string;
   readonly enc_hex: string;
   readonly ciphertext_hex: string;
+  readonly signer_user_id: string;
 }
 
 function contextOf(v: VectorContext): DekWrapSignatureContext {
@@ -43,6 +44,7 @@ function contextOf(v: VectorContext): DekWrapSignatureContext {
     recipientEncPubHex: v.recipient_enc_pub_hex,
     encHex: v.enc_hex,
     ciphertextHex: v.ciphertext_hex,
+    signerUserId: v.signer_user_id,
   };
 }
 
@@ -118,6 +120,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
       context: { ...contextOf(base), ciphertextHex: base.ciphertext_hex.toUpperCase() },
     },
     { name: "short enc hex", context: { ...contextOf(base), encHex: "ab" } },
+    { name: "empty suite", context: { ...contextOf(base), suite: "" } },
+    { name: "empty signer", context: { ...contextOf(base), signerUserId: "" } },
   ];
   for (const bad of badContexts) {
     const signed = await signDekWrap({ context: bad.context, signingKey: pair.privateKey });

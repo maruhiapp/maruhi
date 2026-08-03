@@ -210,6 +210,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.recipient_enc_pub_hex,
       ctx.enc_hex,
       ctx.ciphertext_hex,
+      ctx.signer_user_id,
     ]);
   const base = doc.vectors[0];
   // ラップ本体が dek-wrap.json の basic ベクターと同一であること(一続きの実データ)
@@ -222,6 +223,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const bytes = signedBytes(base);
   check("dek-wrap-sig: signed bytes reconstruction", toHex(bytes) === base.signed_bytes_hex);
   check("dek-wrap-sig: domain embeds suite", base.domain === `${base.suite}/dek-wrap-sig`);
+  check("dek-wrap-sig: signer identity bound", base.signer_user_id === doc.signer.user_id);
   const ok = await crypto.subtle.verify(
     "Ed25519",
     await importSigPub(doc.signer.sig_pub_hex),

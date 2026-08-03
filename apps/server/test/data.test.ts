@@ -1267,15 +1267,139 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     await expect(list.json()).resolves.toEqual({ environments: [] });
   });
 
-  it("rejects wraps without a signature (400 Schema)", async () => {
+  it("rejects wraps without a signature (400 Schema, 両経路)", async () => {
     const deks = await wrapsFor(ENV, ALL_MEMBERS);
     const stripped = deks.map(({ signatureHex: _signatureHex, ...rest }) => rest);
-    const response = await requestJson("POST", "/environments", token(OWNER), {
+    const created = await requestJson("POST", "/environments", token(OWNER), {
       environmentId: ENV,
       name: "App",
       deks: stripped,
     });
-    expect(response.status).toBe(400);
+    expect(created.status).toBe(400);
+    // 登録 API 経路も同じ Schema(WrappedDekSchema)で 400
+    await createEnvironmentOk(fixture, ENV, "App");
+    const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
+      deks: stripped,
+    });
+    expect(registered.status).toBe(400);
+  });
+
+  it("rejects malformed signatures with 400 (Schema: 大文字 hex / 長さ不正 / 非 hex)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    const [wrap] = await wrapsFor(ENV, [OWNER], 1, MEMBER);
+    if (wrap === undefined) throw new Error("missing wrap");
+    for (const signatureHex of [
+      wrap.signatureHex.toUpperCase(),
+      wrap.signatureHex.slice(2),
+      `zz${wrap.signatureHex.slice(2)}`,
+    ]) {
+      const response = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+        deks: [{ ...wrap, signatureHex }],
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("rejects third-party re-submission into a deleted slot, even via a duplicated chain key", async () => {
+    // CRYPTO_SPEC §5.1 の名指しシナリオ: 削除済みスロットへ「他人の署名済み
+    // ラップ」を第三者が再投入する経路は署名者不一致で塞がる。さらにチェーンは
+    // 同一公開鍵の複数メンバーを許すため、MEMBER の鍵一式を流用したソック垢
+    // (STRANGER)でも signer_user_id の束縛(レビューループ 1)で拒否される
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(removed.status).toBe(204);
+    const reWrap = await wrapDekTo({
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      dek,
+      recipientUserId: READER,
+      signerUserId: MEMBER,
+    });
+    const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: [reWrap],
+    });
+    expect(registered.status).toBe(204);
+
+    // MEMBER の鍵一式を流用して STRANGER をチェーンに追加(add_member は鍵の
+    // 重複を拒否しない)→ 再び削除 → STRANGER が MEMBER 署名のラップをそのまま
+    // 再投入 → 検証鍵は一致するが signer_user_id が異なるため 422
+    await appendOperation(fixture, OWNER, {
+      op: "add_member",
+      payload: {
+        targetUserId: STRANGER,
+        encPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
+        sigPubHex: vectorKeyOf(MEMBER).sig_pub_hex,
+        role: "member",
+      },
+    });
+    const removedAgain = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(removedAgain.status).toBe(204);
+    const replayed = await requestJson("POST", `/environments/${ENV}/deks`, token(STRANGER), {
+      deks: [reWrap],
+    });
+    expect(replayed.status).toBe(422);
+    expect(((await replayed.json()) as { reason: string }).reason).toBe("signature-invalid");
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT 1 FROM dek_wraps WHERE environment_id = ? AND epoch = 1 AND recipient_user_id = ?",
+      ENV,
+      READER,
+    );
+    expect(rows.length).toBe(0);
+  });
+
+  it("accepts the original signer re-registering the identical wrap and signature (§5.1 の意味論の対)", async () => {
+    // 署名は帰属であり鮮度証明ではない: 削除後、元署名者自身による同一内容 +
+    // 同一署名の再登録は有効(タイムスタンプ・ノンスを含めない設計の positive 側)
+    const dek = makeDek();
+    const deks = await wrapDekForAll({
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      dek,
+      recipientUserIds: ALL_MEMBERS,
+      signerUserId: OWNER,
+    });
+    const created = await createEnvironmentWith(fixture, ENV, "App", deks);
+    expect(created.status).toBe(200);
+    const readerWrap = deks.find((wrap) => wrap.recipientUserId === READER);
+    if (readerWrap === undefined) throw new Error("missing reader wrap");
+    const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: READER }],
+    });
+    expect(removed.status).toBe(204);
+    const restored = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
+      deks: [readerWrap],
+    });
+    expect(restored.status).toBe(204);
+    const mine = await requestJson("GET", `/environments/${ENV}/deks`, token(READER));
+    const body = (await mine.json()) as { deks: { signatureHex: string }[] };
+    expect(body.deks[0]?.signatureHex).toBe(readerWrap.signatureHex);
+  });
+
+  it("keeps the empty registration a silent no-op (204。申し送り事項の現挙動固定)", async () => {
+    // 登録側の空 deks: [] は main 由来の非破壊 no-op(削除側の空列挙 400 とは
+    // 非対称 — session-08 §5 の申し送りどおり独立 PR で判断)。署名必須化後も
+    // 署名ゼロ件の no-op であることを固定する
+    await createEnvironmentOk(fixture, ENV, "App");
+    const before = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.registered'",
+    );
+    const response = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
+      deks: [],
+    });
+    expect(response.status).toBe(204);
+    const after = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.registered'",
+    );
+    expect(after[0]?.["n"]).toBe(before[0]?.["n"]);
   });
 
   it("distributes the signature and signer identity, verifiable client-side (§12-2)", async () => {

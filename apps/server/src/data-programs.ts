@@ -204,7 +204,11 @@ const ensureWrapSignatures = (
       return;
     }
     // 検証済みチェーン由来の鍵はインポート可能が不変条件(失敗はストレージ /
-    // 検証器のバグ = defect)
+    // 検証器のバグ = defect)。注: 後段のインポート成功は「WebCrypto の raw
+    // Ed25519 インポートは長さ検査のみ」という現行ランタイム挙動にも依拠する
+    // (add_member の対象メンバーの鍵はチェーン受理時にインポートされないため)。
+    // ランタイムが点検証を導入した場合、不正な 32 バイト鍵を持つメンバー自身の
+    // リクエストが defect になる(自傷のみ・攻撃には使えない)
     const signerKeyBytes = decodeHex(signer.sigPubHex);
     if (signerKeyBytes === null) {
       return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
@@ -225,6 +229,9 @@ const ensureWrapSignatures = (
             recipientEncPubHex: wrap.recipientEncPubHex,
             encHex: wrap.encHex,
             ciphertextHex: wrap.ciphertextHex,
+            // 署名対象の署名者 = 呼び出し主体(§12-6)。同一公開鍵を持つ別
+            // メンバー経由の帰属付け替えもここで落ちる(CRYPTO_SPEC §5.1)
+            signerUserId: signer.userId,
           },
           signatureHex: wrap.signatureHex,
           signerPublicKey: imported.value,

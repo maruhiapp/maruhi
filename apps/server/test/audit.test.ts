@@ -322,8 +322,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       (event) => event["event"] === "dek.registered" && event["epoch"] === 2,
     );
     expect(epoch2.map((event) => event["target_user_id"])).toEqual([...ALL_MEMBERS]);
-    expect(epoch2[0]?.["actor_user_id"]).toBe(MEMBER);
-    expect(epoch2[0]?.["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
+    for (const event of epoch2) {
+      expect(event["actor_user_id"]).toBe(MEMBER);
+      expect(event["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
+    }
     const deleted = events.filter((event) => event["event"] === "dek.deleted");
     expect(deleted.length).toBe(1);
     const deletion = deleted[0];

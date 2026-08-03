@@ -1,8 +1,11 @@
 // CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。
 // signed_bytes = LP("<suite>/dek-wrap-sig", project_id, environment_id, epoch,
-//                   recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)
+//                   recipient_user_id, recipient_enc_pub_hex, enc_hex,
+//                   ciphertext_hex, signer_user_id)
 // suite の束縛はドメイン文字列が担う(§5 の HPKE info と同型)。バイナリ列は
 // §6.2 grant_server の先例どおり hex 小文字文字列として LP に載せる。
+// signer_user_id は署名者自身の内部 user_id — チェーンは同一公開鍵の複数
+// メンバーを許容するため、鍵流用による帰属の付け替えを署名自体で塞ぐ(§5.1)。
 // テストベクター: test-vectors/dek-wrap-signature.json
 //
 // 署名の意味論は帰属であり鮮度証明ではない(タイムスタンプ・ノンスを含めない —
@@ -31,6 +34,8 @@ export interface DekWrapSignatureContext {
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
+  /** The signer's own internal user id (binds attribution to the identity, §5.1). */
+  readonly signerUserId: string;
 }
 
 function invalidInput(field: string): { readonly ok: false; readonly error: CryptoError } {
@@ -43,8 +48,16 @@ function isLowercaseHexOfLength(value: string, length: number): boolean {
 
 // 署名対象の構造検証: epoch は LP エンコーダの前提(非負の安全な整数)、
 // hex フィールドは小文字・固定長(大文字 hex を許すと同一ラップに複数の
-// 正規形が生まれ、署名の一意性が壊れる)
+// 正規形が生まれ、署名の一意性が壊れる)。suite / signer_user_id は非空
+// (サーバー経路では Schema / 認証がより強く検証するが、公開 API として
+// 空文字のドメイン・署名者を弾く)
 function contextInvalidField(context: DekWrapSignatureContext): string | null {
+  if (context.suite.length === 0) {
+    return "context suite";
+  }
+  if (context.signerUserId.length === 0) {
+    return "context signerUserId";
+  }
   if (!Number.isSafeInteger(context.epoch) || context.epoch < 0) {
     return "context epoch";
   }
@@ -76,6 +89,7 @@ export function buildDekWrapSignatureBytes(context: DekWrapSignatureContext): Ui
     context.recipientEncPubHex,
     context.encHex,
     context.ciphertextHex,
+    context.signerUserId,
   ]);
 }
 
