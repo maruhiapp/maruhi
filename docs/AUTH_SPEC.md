@@ -270,11 +270,12 @@ WrappedDek = {
 - **値署名の検証(2026-08-03 — CRYPTO_SPEC §4.1 / §6.4)**: push の受理条件に以下を加える。検証失敗は 422(`signature-invalid` / `chain-head-unknown` / `chain-head-state-mismatch`)で拒否する:
   1. 署名は**呼び出し主体の受理時点チェーン導出 sig 鍵**で検証し、署名対象の writer_user_id にも呼び出し主体の user_id を用いる(12-6 の登録署名と同じ「呼び出し主体 = 署名者」規則。他人が署名した値の持ち込みは拒否)
   2. `chainHeadHashHex` は自チェーンの seq = `chainHeadSeq` のエントリハッシュと一致すること
-  3. 宣言ヘッド時点のチェーン導出状態で、呼び出し主体が member 以上であり、当該環境の現エポックが申告 AAD の epoch と一致すること(受理時点の現エポック検査 — 上記 — とは別の検査であることに注意: 宣言ヘッドから受理までの間にローテーションが挟まれば受理時点検査が 409 で落とす)
-  4. `prevValueSigHashHex` が保存済みの直前 version の signed_bytes ハッシュと一致すること(version 1 は空文字列)。サーバーは各バージョンの signed_bytes ハッシュを保存行に持つ
+  3. **認可時点(共通)**: 宣言ヘッド時点のチェーン導出状態で、呼び出し主体が当該操作の必要 role(12-3 の二重判定の表)を持つこと
+  4. **エポック整合(値のみ — CRYPTO_SPEC §6.3 の 4 と同じ書き分け)**: 宣言ヘッド時点の当該環境の現エポックが、申告 AAD の epoch と一致すること(受理時点の現エポック検査 — 上記 — とは別の検査であることに注意: 宣言ヘッドから受理までの間にローテーションが挟まれば受理時点検査が 409 で落とす)。メタステートメントは AAD・epoch フィールドを持たない(CRYPTO_SPEC §4.2)ため本検査の対象外
+  5. `prevValueSigHashHex` が保存済みの直前 version の signed_bytes ハッシュと一致すること(version 1 は空文字列)。サーバーは各バージョンの signed_bytes ハッシュを保存行に持つ
 - **署名対象の座標はサーバー側の値から再構成する(2026-08-03)**: signed_bytes の検証に用いる project_id は DO 自身のチェーン(genesis ハッシュ)から、environment / variable 座標は URL・保存先から取る。クライアント申告値(申告 AAD)から組まない(CRYPTO_SPEC §5.1 実装の「project_id は DO 自身のチェーンから取る」— セッション 09 §3 — と同じ不変条件。申告 AAD との一致検査 — 12-2 — に暗黙依存させない)
 - サーバーの保存行は値ごとに署名・writer(user_id + 鍵 FP)・宣言ヘッド(hash + seq)・prev ハッシュを持ち、配布(12-7)でそのまま返す。監査イベント `var.version_pushed` は writer の鍵 FP を写す(AUDIT_SPEC §3.3)
-- 変数の作成は最初の値(version 1)と `VariableMetaStatement`(metaVersion 1)を同梱する(値のない変数は存在しない)。改名・削除のステートメントは metaVersion の CAS(申告 == 最新 + 1)で受理し、409 は最新 metaVersion を返す。ステートメントの署名検証は値署名と同じ規則(上記 1〜3 + prev 連鎖。role 水準は 12-3)
+- 変数の作成は最初の値(version 1)と `VariableMetaStatement`(metaVersion 1)を同梱する(値のない変数は存在しない)。改名・削除のステートメントは metaVersion の CAS(申告 == 最新 + 1)で受理し、409 は最新 metaVersion を返す。ステートメントの署名検証は**上記 1〜3(署名者一致・ヘッド実在・宣言ヘッド時点の role)+ prev 連鎖(`prevMetaSigHashHex` の metaVersion 連鎖 — 上記 5 と同型)**。エポック整合(上記 4)は値専用でありメタステートメントには適用しない
 - 削除は変数 tombstone + 全バージョンの暗号文削除。削除の `VariableMetaStatement`(status deleted)は保存・配布し続ける。監査上の存在区間は var.created / var.deleted イベントが保持する(要ローテーション検出は削除済み変数も対象 — AUDIT_SPEC §4.1)
 
 ### 12-6. DEK ラップの保存・配布(CRYPTO_SPEC §6.3 ゴーストメンバー対策のサーバー側)
