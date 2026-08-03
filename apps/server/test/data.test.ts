@@ -1442,6 +1442,17 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
           wrap,
         }),
       ).resolves.toBe(false);
+      // サーバーが署名者を偽って申告しても検証失敗(signer_user_id も署名対象 —
+      // CRYPTO_SPEC §5.1。ベクター transplant-signer の統合レベルの対)
+      await expect(
+        verifyDistributedWrapSignature({
+          projectId,
+          environmentId: ENV,
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+          wrap: { ...wrap, signerUserId: MEMBER },
+        }),
+      ).resolves.toBe(false);
     }
   });
 
