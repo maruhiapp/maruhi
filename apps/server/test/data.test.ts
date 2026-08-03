@@ -1382,10 +1382,11 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(body.deks[0]?.signatureHex).toBe(readerWrap.signatureHex);
   });
 
-  it("keeps the empty registration a silent no-op (204。申し送り事項の現挙動固定)", async () => {
-    // 登録側の空 deks: [] は main 由来の非破壊 no-op(削除側の空列挙 400 とは
-    // 非対称 — session-08 §5 の申し送りどおり独立 PR で判断)。署名必須化後も
-    // 署名ゼロ件の no-op であることを固定する
+  it("rejects an empty registration list with 400 (§12-6: 削除側の空列挙と同じ規律)", async () => {
+    // 空の deks: [] はかつて 204 の silent no-op だった(session-08/09 の
+    // 申し送り)。呼び出し形として意味のあるユースケースがなく、silent no-op は
+    // クライアントバグ(空配列の送信を登録完了と誤認)を隠すため、削除側の
+    // 空 wraps 400 と同じ minItems 1 の Schema 検証で拒否する(2026-08-03 統一)
     await createEnvironmentOk(fixture, ENV, "App");
     const before = await queryProjectDo(
       projectId,
@@ -1394,7 +1395,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     const response = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: [],
     });
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(400);
     const after = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.registered'",

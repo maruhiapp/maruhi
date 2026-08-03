@@ -238,7 +238,10 @@ export const deksGroup = HttpApiGroup.make("deks")
   .add(
     HttpApiEndpoint.post("register", "/projects/:projectId/environments/:environmentId/deks", {
       params: environmentParams,
-      payload: Schema.Struct({ deks: Schema.Array(WrappedDekSchema) }),
+      // 空の deks は 400(§12-6。削除側の空 wraps と同じ「黙って成功させない」
+      // 規律 — 2026-08-03 に 204 no-op から統一)。環境作成の deks は対象外
+      // (空集合は完全一致要件の 422 recipient-missing が先に意味を持つ)
+      payload: Schema.Struct({ deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)) }),
       success: HttpApiSchema.NoContent,
       error: [
         ProjectNotFoundError,
