@@ -12,6 +12,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import { pollDeviceFlow, startDeviceFlow } from "./device-flow.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -38,11 +39,13 @@ export function loginOp(input: {
     };
 
     const authorization = yield* startDeviceFlow(flowOptions);
+    // verificationUri / userCode は GitHub(または上書き先)由来の外部文字列。
+    // 制御文字・ANSI を生で端末へ流さない
     yield* io.log(
-      `ブラウザで ${authorization.verificationUri} を開き、次のコードを入力してください:`,
+      `ブラウザで ${displayText(authorization.verificationUri)} を開き、次のコードを入力してください:`,
     );
     yield* io.log("");
-    yield* io.log(`    ${authorization.userCode}`);
+    yield* io.log(`    ${displayText(authorization.userCode)}`);
     yield* io.log("");
     yield* io.log("承認を待っています…");
 
@@ -83,7 +86,7 @@ export function loginOp(input: {
       ),
     );
     yield* io.log(
-      `ログインしました(user: ${exchanged.userId})。トークンは OS キーチェーンに保存されました`,
+      `ログインしました(user: ${displayText(exchanged.userId)})。トークンは OS キーチェーンに保存されました`,
     );
     yield* io.log(`同名トークン(${input.tokenName})の再ログインは旧トークンの失効を伴います`);
   });

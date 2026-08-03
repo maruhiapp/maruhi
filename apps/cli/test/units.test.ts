@@ -239,6 +239,14 @@ describe("buildInjectionEnv", () => {
     expect(Exit.isFailure(invalidUtf8)).toBe(true);
   });
 
+  it("bash 関数インポート名(BASH_FUNC_x%% / x())を拒否する(shellshock 系)", async () => {
+    for (const name of ["BASH_FUNC_ls%%", "evil()", "a b", "my-secret", "1abc"]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("英数字と _ のみ");
+    }
+  });
+
   it("大文字小文字の違いだけの名前の衝突を拒否する(Windows の非区別対策)", async () => {
     const exit = await Effect.runPromiseExit(
       buildInjectionEnv([variable("Secret_A", "x"), variable("SECRET_A", "y")]),

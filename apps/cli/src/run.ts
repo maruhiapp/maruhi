@@ -63,6 +63,10 @@ function isDeniedEnvName(name: string): boolean {
   return DENIED_ENV_NAMES.has(upper) || DENIED_ENV_PREFIXES.some((p) => upper.startsWith(p));
 }
 
+// 注入する環境変数名は POSIX 識別子に限定する(bash 関数インポート名など
+// 特殊文字を含む注入経路を構造的に塞ぐ。denylist は識別子内の実行制御名を覆う)
+const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
  * Builds the env-var map to inject: variable display names become env names.
  * Names and values are validated for env-var safety (no `=`, no NUL, UTF-8,
@@ -87,10 +91,15 @@ export function buildInjectionEnv(
         );
       }
       seenUpper.add(upper);
-      if (variable.name.includes("=") || variable.name.includes("\0")) {
+      // 環境変数名は POSIX 識別子([A-Za-z_][A-Za-z0-9_]*)に限定する。
+      // これは `=` / NUL / 制御文字だけでなく、bash 関数インポートの
+      // エンコード名(BASH_FUNC_x%% や x() 形式 — shellshock 系の関数注入)も
+      // 弾く: 悪意あるメンバーがそうした名前の変数を作り、被害者が
+      // `maruhi run -- bash ...` を実行するとシェルが攻撃者定義関数を読み込む
+      if (!SAFE_ENV_NAME.test(variable.name)) {
         return yield* Effect.fail(
           cliError(
-            `変数名を環境変数として注入できません(不正な文字を含みます): ${displayText(variable.name)}`,
+            `変数名を環境変数として注入できません(名前は英数字と _ のみ、先頭は英字か _): ${displayText(variable.name)}`,
           ),
         );
       }
