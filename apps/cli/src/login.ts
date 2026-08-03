@@ -58,15 +58,21 @@ export function loginOp(input: {
     };
     yield* keychain.set(tokenEntryName(input.origin), JSON.stringify(record)).pipe(
       // 保存できないなら発行済みトークンを孤児化させない: サーバー側の失効を
-      // 試みてから失敗させる(失効自体の失敗は握らず元エラーを優先)
+      // 試みてから失敗させる(元エラー = キーチェーン不達を優先しつつ、失効の
+      // 成否を正確に報告する — 失効成功を無条件に主張しない)
       Effect.catch((setError) =>
         Effect.gen(function* () {
           const authed = yield* makeApiClient({ baseUrl: input.origin, token: exchanged.token });
-          yield* authed.auth.revokeToken({}).pipe(Effect.catch(() => Effect.void));
-          // 元エラー(キーチェーン不達)を優先しつつ、いま発行したトークンは
-          // 失効済みであること(= MARUHI_TOKEN に流用できないこと)を明示する
+          const revoked = yield* authed.auth.revokeToken({}).pipe(
+            Effect.map(() => true),
+            Effect.catch(() => Effect.succeed(false)),
+          );
           return yield* Effect.fail(
-            cliError(`${setError.message}(いま発行したトークンはサーバー側で失効させました)`),
+            cliError(
+              revoked
+                ? `${setError.message}(いま発行したトークンはサーバー側で失効させました)`
+                : `${setError.message}(発行したトークンの失効にも失敗しました。同名トークン(${input.tokenName})での再ログインが成功すればローテーションにより自動失効します)`,
+            ),
           );
         }),
       ),
@@ -113,5 +119,12 @@ export function logoutOp(input: {
     );
     yield* keychain.remove(entryName);
     yield* io.log("ログアウトしました(トークンを失効し、キーチェーンから削除しました)");
+    // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
+    // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する
+    if ((io.envVar("MARUHI_TOKEN") ?? "").length > 0) {
+      yield* io.log(
+        "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きその トークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)",
+      );
+    }
   });
 }

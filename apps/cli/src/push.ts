@@ -57,16 +57,29 @@ function resolveTarget(input: {
     .pull({ params: { projectId: input.verified.projectId, environmentId: input.environmentId } })
     .pipe(
       Effect.mapError(toCliError),
-      Effect.map((response) => {
-        const existing = response.variables.find((variable) => variable.name === input.name);
-        if (existing === undefined) {
-          return { variableId: generateVariableId(), nextVersion: 1, create: true };
+      Effect.flatMap((response) => {
+        // 名前の一意性はサーバーが強制する(§12-1)が、push 先の同定が応答の
+        // 並び順に依存しないようクライアントでも検査する(pullVariables と同じ
+        // サーバー不信の規律 — 重複時に恣意的な 1 件へ束縛しない)
+        const matches = response.variables.filter((variable) => variable.name === input.name);
+        if (matches.length > 1) {
+          return Effect.fail(
+            cliError(`変数名が重複しています(サーバー応答の不整合): ${input.name}`),
+          );
         }
-        return {
+        const existing = matches[0];
+        if (existing === undefined) {
+          return Effect.succeed<PushTarget>({
+            variableId: generateVariableId(),
+            nextVersion: 1,
+            create: true,
+          });
+        }
+        return Effect.succeed<PushTarget>({
           variableId: existing.variableId,
           nextVersion: existing.value.aad.version + 1,
           create: false,
-        };
+        });
       }),
     );
 }

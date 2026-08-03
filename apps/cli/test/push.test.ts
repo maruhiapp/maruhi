@@ -450,6 +450,43 @@ describe("maruhi push", () => {
     expect(pushedVersion).toBe(2);
   });
 
+  it("名前解決で変数名が重複していたら拒否する(恣意的な 1 件へ束縛しない)", async () => {
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-a",
+      version: 1,
+      plaintext: "a",
+    });
+    const other = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-b",
+      version: 1,
+      plaintext: "b",
+    });
+    const env = await startEnv(
+      [
+        chainHandlerOf([chainV1]),
+        deksHandlerOf([[wrap1]]),
+        pullHandlerOf(
+          [
+            { variableId: "v-a", name: "API_KEY", value: existing },
+            { variableId: "v-b", name: "API_KEY", value: other },
+          ],
+          [wrap1],
+        ),
+      ],
+      "value",
+    );
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("変数名が重複しています");
+  });
+
   it("競合が解消しない場合は試行上限で中断する", async () => {
     const existing = await encryptValueFor({
       dek: dek1,

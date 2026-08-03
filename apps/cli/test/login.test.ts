@@ -140,6 +140,32 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("キーチェーン");
   });
 
+  it("キーチェーン保存失敗 + 失効も失敗した場合は「失効させた」と主張しない", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+      onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    env.failKeychainWrites();
+    expect(
+      await runCli(
+        ["login", "--github-base-url", githubServer.origin, "--token-name", "cli-test"],
+        env.layer,
+      ),
+    ).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("失効にも失敗しました");
+    expect(errors).not.toContain("失効させました)");
+    // 同名再ログインによるローテーション失効の案内がある
+    expect(errors).toContain("cli-test");
+  });
+
   it("client_id 未設定は設定手順を案内して失敗する", async () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
@@ -200,6 +226,20 @@ describe("maruhi logout", () => {
     );
     expect(await runCli(["logout"], env.layer)).toBe(0);
     expect(env.keychain.size).toBe(0);
+  });
+
+  it("MARUHI_TOKEN が残っている場合は「引き続き認証される」ことを警告する", async () => {
+    const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    env.keychain.set(
+      tokenEntryName(maruhi.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+    );
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    expect(await runCli(["logout"], env.layer)).toBe(0);
+    expect(env.keychain.size).toBe(0);
+    expect(env.logs.join("\n")).toContain("MARUHI_TOKEN が設定されているため");
   });
 
   it("トークン未保存はエラーメッセージで案内する", async () => {
