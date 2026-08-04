@@ -43,11 +43,11 @@ import {
   buildEnvironmentFloor,
   checkEnvironmentPull,
   type FloorHandle,
-  floorViolationLabel,
   type VerifiedMetaEvidence,
   type VerifiedPullSnapshot,
   type VerifiedTombstone,
 } from "./floor-check.ts";
+import { formatFloorViolation } from "./floor-evidence.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /** One pulled variable whose write signature and statement passed §6.3. */
@@ -485,8 +485,14 @@ function enforceFloor(input: {
   return Effect.gen(function* () {
     const violation = checkEnvironmentPull(input.floor.current(), input.snapshot);
     if (violation !== null) {
+      // 拒否 + 提示可能な証拠(座標・両 signed bytes ハッシュ・宣言ヘッド)
       return yield* Effect.fail(
-        cliError(`ローカル床検査で不整合を検出しました: ${floorViolationLabel(violation)}`),
+        cliError(
+          formatFloorViolation(
+            { projectId: input.verified.projectId, environmentId: input.environmentId },
+            violation,
+          ),
+        ),
       );
     }
     // 規則 (c) 基準の前進値 = 今回のチェーン導出現エポック(§6.2 — サーバー

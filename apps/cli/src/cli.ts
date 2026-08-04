@@ -18,12 +18,8 @@ import { displayText, displayValue } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import {
-  checkChainFloor,
-  type FloorHandle,
-  floorViolationLabel,
-  makeFloorHandle,
-} from "./floor-check.ts";
+import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
+import { formatFloorViolation } from "./floor-evidence.ts";
 import { FloorStore, type ProjectFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { Keychain } from "./keychain.ts";
@@ -154,9 +150,8 @@ function loadCheckedFloor(
     if (loaded.floor !== null) {
       const violation = checkChainFloor(loaded.floor, verified);
       if (violation !== null) {
-        return yield* Effect.fail(
-          cliError(`ローカル床検査で不整合を検出しました: ${floorViolationLabel(violation)}`),
-        );
+        // 拒否 + 提示可能な証拠(床の記録ヘッドと今回の同期ヘッド)
+        return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
       }
     }
     yield* store.commitHead(projectId, {
