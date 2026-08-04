@@ -5,11 +5,12 @@
 // DEK 生成 → HPKE ラップ → AES-GCM 暗号化 → クライアント側復号までを実行する。
 // フェイクの暗号文を使うのは「サーバーが中身を検証できない」ことを利用する
 // 受理ポリシー系テストのみ(各テストに明記)。
+// チェーン組立・ワイヤ値の共通コアは packages/crypto/test/support/fixture.ts
+// (cli テスト支援と共有 — session-11 §5 裁定)。
 
 import type {
   ChainEntry,
   ChainOperation,
-  CryptoResult,
   MetaStatementTarget,
   UnsignedChainEntry,
   VariableContext,
@@ -18,8 +19,6 @@ import {
   computeChainEntryHash,
   computeDekCommitment,
   computeMetaSignedBytesHash,
-  computeValueSignedBytesHash,
-  decodeHex,
   decryptVariable,
   encodeHex,
   encryptVariable,
@@ -39,24 +38,23 @@ import {
 } from "@maruhi/crypto";
 
 import { vectorKeys } from "../../../../packages/crypto/test/checks/chain-vector.ts";
+import type {
+  BuiltChain,
+  WireEncryptedPayload,
+} from "../../../../packages/crypto/test/support/fixture.ts";
+import {
+  BASE_TIME_MS,
+  buildChainWith,
+  hexBytes,
+  unwrapResult,
+  valueContextOf,
+} from "../../../../packages/crypto/test/support/fixture.ts";
 
-const BASE_TIME_MS = 1754006400000;
-
-function unwrapResult<T>(result: CryptoResult<T>, label: string): T {
-  if (!result.ok) {
-    throw new Error(`${label}: ${JSON.stringify(result.error)}`);
-  }
-  return result.value;
-}
-
-/** テスト内の hex は常に整形済み(decodeHex の null は組み立てバグ = throw)。 */
-export function hexBytes(hex: string): Uint8Array {
-  const bytes = decodeHex(hex);
-  if (bytes === null) {
-    throw new Error(`invalid hex in test data: ${hex.slice(0, 16)}…`);
-  }
-  return bytes;
-}
+export type { BuiltChain, WireEncryptedPayload };
+export {
+  hexBytes,
+  valueSignedBytesHashOf,
+} from "../../../../packages/crypto/test/support/fixture.ts";
 
 /** ベクター固定鍵のユーザー(user-owner-0001 / user-member-0002 / user-admin-0003)。 */
 export function vectorKeyOf(userId: string) {
@@ -108,40 +106,18 @@ export async function signEntryAt(input: {
   return { entry, hash: await computeChainEntryHash(entry) };
 }
 
-export interface BuiltChain {
-  readonly entries: readonly ChainEntry[];
-  /** entries[i] のエントリハッシュ(CAS の親ヘッドに使う)。 */
-  readonly hashes: readonly string[];
-  /** プロジェクト ID = genesis エントリハッシュ(CRYPTO_SPEC §6.4)。 */
-  readonly projectId: string;
-}
-
 /** テスト時署名で有効なチェーンを組み立てる(seq / prev_hash / timestamp は自動)。 */
 export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChain> {
-  const entries: ChainEntry[] = [];
-  const hashes: string[] = [];
-  let prevHashHex = "0".repeat(64);
-  for (const [index, step] of steps.entries()) {
-    const keys = vectorKeyOf(step.actorUserId);
-    const unsigned: UnsignedChainEntry = {
-      ...step.operation,
-      suite: SUITE_ID,
-      seq: index + 1,
-      prevHashHex,
-      actor: { userId: step.actorUserId, keyFingerprintHex: keys.key_fingerprint_hex },
-      timestampMs: BASE_TIME_MS + index * 1000,
-    };
-    const entry = await signAs(step.actorUserId, unsigned);
-    const hash = await computeChainEntryHash(entry);
-    entries.push(entry);
-    hashes.push(hash);
-    prevHashHex = hash;
-  }
-  const projectId = hashes[0];
-  if (projectId === undefined) {
-    throw new Error("buildChain: empty chain");
-  }
-  return { entries, hashes, projectId };
+  return buildChainWith(
+    steps.map((step) => ({
+      actor: {
+        userId: step.actorUserId,
+        keyFingerprintHex: vectorKeyOf(step.actorUserId).key_fingerprint_hex,
+      },
+      operation: step.operation,
+      signEntry: (unsigned) => signAs(step.actorUserId, unsigned),
+    })),
+  );
 }
 
 /** genesis 用の payload(actor 自身の公開鍵一式)。 */
@@ -357,46 +333,10 @@ export async function wrapDekForAll(input: {
   return wraps;
 }
 
-export interface WireEncryptedPayload {
-  readonly suite: string;
-  readonly aad: {
-    readonly projectId: string;
-    readonly environmentId: string;
-    readonly epoch: number;
-    readonly variableId: string;
-    readonly version: number;
-  };
-  readonly nonceHex: string;
-  readonly ciphertextHex: string;
-  // 値の書き込み署名ブロック(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-2)
-  readonly prevValueSigHashHex: string;
-  readonly chainHeadHashHex: string;
-  readonly chainHeadSeq: number;
-  readonly signatureHex: string;
-}
-
 /** 値署名の宣言ヘッド(署名時点で最後に検証したチェーンヘッド — §4.1)。 */
 export interface ValueChainHead {
   readonly seq: number;
   readonly hashHex: string;
-}
-
-/** WireEncryptedPayload から §4.1 の署名コンテキストを再構成する。 */
-function valueContextOf(payload: WireEncryptedPayload, writerUserId: string) {
-  return {
-    suite: payload.suite,
-    projectId: payload.aad.projectId,
-    environmentId: payload.aad.environmentId,
-    epoch: payload.aad.epoch,
-    variableId: payload.aad.variableId,
-    version: payload.aad.version,
-    nonceHex: payload.nonceHex,
-    ciphertextHex: payload.ciphertextHex,
-    prevValueSigHashHex: payload.prevValueSigHashHex,
-    writerUserId,
-    chainHeadHashHex: payload.chainHeadHashHex,
-    chainHeadSeq: payload.chainHeadSeq,
-  };
 }
 
 /**
@@ -432,20 +372,6 @@ export async function signValueAs(
     "signValue",
   );
   return { ...withHead, signatureHex };
-}
-
-/**
- * value_signed_bytes の SHA-256(次 version の prevValueSigHashHex に使う —
- * §4.1 の連鎖)。writer はワイヤに載らないため明示指定する。
- */
-export async function valueSignedBytesHashOf(
-  payload: WireEncryptedPayload,
-  writerUserId: string,
-): Promise<string> {
-  return unwrapResult(
-    await computeValueSignedBytesHash(valueContextOf(payload, writerUserId)),
-    "computeValueSignedBytesHash",
-  );
 }
 
 /** 変数値を DEK で暗号化し、§4.1 の値署名付きワイヤ表現(§12-2)で返す。 */

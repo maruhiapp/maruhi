@@ -1,20 +1,12 @@
 // テスト用の実 crypto フィクスチャ(@maruhi/crypto の公開 API のみ)。
 // 都度生成した鍵でチェーン署名・DEK ラップ・値暗号化まで実データを作る。
+// チェーン組立・ワイヤ値の共通コアは packages/crypto/test/support/fixture.ts
+// (server テスト支援と共有 — session-11 §5 裁定)。
 
-import type {
-  ChainEntry,
-  ChainOperation,
-  CryptoResult,
-  EncryptionKeyPair,
-  SigningKeyPair,
-  UnsignedChainEntry,
-} from "@maruhi/crypto";
+import type { ChainOperation, EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
 import {
-  computeChainEntryHash,
   computeDekCommitment,
   computeUserKeyFingerprint,
-  computeValueSignedBytesHash,
-  decodeHex,
   encodeHex,
   encryptVariable,
   exportEncryptionPrivateKey,
@@ -32,22 +24,22 @@ import {
   wrapDek,
 } from "@maruhi/crypto";
 
-const BASE_TIME_MS = 1754006400000;
+import type {
+  BuiltChain,
+  LazyChainOperation,
+  WireEncryptedPayload as SharedWireEncryptedPayload,
+} from "../../../../packages/crypto/test/support/fixture.ts";
+import {
+  buildChainWith,
+  hexBytes,
+  unwrapResult,
+} from "../../../../packages/crypto/test/support/fixture.ts";
 
-function unwrapResult<T>(result: CryptoResult<T>, label: string): T {
-  if (!result.ok) {
-    throw new Error(`${label}: ${JSON.stringify(result.error)}`);
-  }
-  return result.value;
-}
-
-export function hexBytes(hex: string): Uint8Array {
-  const bytes = decodeHex(hex);
-  if (bytes === null) {
-    throw new Error(`invalid hex in test data: ${hex.slice(0, 16)}…`);
-  }
-  return bytes;
-}
+export type { BuiltChain, LazyChainOperation };
+export {
+  hexBytes,
+  valueSignedBytesHashOf as valueHashOf,
+} from "../../../../packages/crypto/test/support/fixture.ts";
 
 /** A test user with freshly generated (exportable) master keys. */
 export interface TestUser {
@@ -81,59 +73,24 @@ export async function makeTestUser(userId: string): Promise<TestUser> {
   };
 }
 
-/**
- * プロジェクト ID(= genesis ハッシュ)に依存する op の遅延構築。§5.2 の
- * コミットメント原像は project_id を含むため、create_environment / rotate_epoch
- * の payload は genesis を組んだ後でしか確定できない。
- */
-export type LazyChainOperation = (projectId: string) => ChainOperation | Promise<ChainOperation>;
-
 export interface ChainStep {
   readonly actor: TestUser;
   readonly operation: ChainOperation | LazyChainOperation;
 }
 
-export interface BuiltChain {
-  readonly entries: readonly ChainEntry[];
-  readonly hashes: readonly string[];
-  /** プロジェクト ID = genesis エントリハッシュ(CRYPTO_SPEC §6.4)。 */
-  readonly projectId: string;
-}
-
 /** Builds a valid signed chain (seq / prev_hash / timestamp are automatic). */
 export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChain> {
-  const entries: ChainEntry[] = [];
-  const hashes: string[] = [];
-  let prevHashHex = "0".repeat(64);
-  for (const [index, step] of steps.entries()) {
-    const projectId = hashes[0];
-    if (typeof step.operation === "function" && projectId === undefined) {
-      throw new Error("buildChain: genesis step cannot depend on the project id");
-    }
-    const operation =
-      typeof step.operation === "function" ? await step.operation(projectId ?? "") : step.operation;
-    const unsigned: UnsignedChainEntry = {
-      ...operation,
-      suite: SUITE_ID,
-      seq: index + 1,
-      prevHashHex,
+  return buildChainWith(
+    steps.map((step) => ({
       actor: { userId: step.actor.userId, keyFingerprintHex: step.actor.fingerprintHex },
-      timestampMs: BASE_TIME_MS + index * 1000,
-    };
-    const entry = unwrapResult(
-      await signChainEntry({ entry: unsigned, signingKey: step.actor.sigKeyPair.privateKey }),
-      "signChainEntry",
-    );
-    const hash = await computeChainEntryHash(entry);
-    entries.push(entry);
-    hashes.push(hash);
-    prevHashHex = hash;
-  }
-  const projectId = hashes[0];
-  if (projectId === undefined) {
-    throw new Error("buildChain: empty chain");
-  }
-  return { entries, hashes, projectId };
+      operation: step.operation,
+      signEntry: async (unsigned) =>
+        unwrapResult(
+          await signChainEntry({ entry: unsigned, signingKey: step.actor.sigKeyPair.privateKey }),
+          "signChainEntry",
+        ),
+    })),
+  );
 }
 
 export function genesisOp(user: TestUser): ChainOperation {
@@ -293,21 +250,9 @@ export async function wrapDekFor(input: {
 }
 
 /** EncryptedPayload 形のワイヤ表現(§4.1 の署名ブロック込み — §12-2)。 */
-export interface WireEncryptedPayload {
+export interface WireEncryptedPayload extends SharedWireEncryptedPayload {
+  /** CLI テストは常に正規スイートのワイヤを作る(共有形は string — 検証系 negative 用)。 */
   readonly suite: "maruhi/v1";
-  readonly aad: {
-    readonly projectId: string;
-    readonly environmentId: string;
-    readonly epoch: number;
-    readonly variableId: string;
-    readonly version: number;
-  };
-  readonly nonceHex: string;
-  readonly ciphertextHex: string;
-  readonly prevValueSigHashHex: string;
-  readonly chainHeadHashHex: string;
-  readonly chainHeadSeq: number;
-  readonly signatureHex: string;
 }
 
 /** 配布形(DistributedEncryptedPayload — writer の検証材料込み)。 */
@@ -418,34 +363,6 @@ export function headOf(built: BuiltChain, seq: number): { seq: number; hashHex: 
     throw new Error(`headOf: chain has no seq ${seq}`);
   }
   return { seq, hashHex };
-}
-
-function valueContextOf(payload: WireEncryptedPayload, writerUserId: string) {
-  return {
-    suite: payload.suite,
-    projectId: payload.aad.projectId,
-    environmentId: payload.aad.environmentId,
-    epoch: payload.aad.epoch,
-    variableId: payload.aad.variableId,
-    version: payload.aad.version,
-    nonceHex: payload.nonceHex,
-    ciphertextHex: payload.ciphertextHex,
-    prevValueSigHashHex: payload.prevValueSigHashHex,
-    writerUserId,
-    chainHeadHashHex: payload.chainHeadHashHex,
-    chainHeadSeq: payload.chainHeadSeq,
-  };
-}
-
-/** value_signed_bytes の SHA-256(次 version の prev に使う — §4.1 の連鎖)。 */
-export async function valueHashOf(
-  payload: WireEncryptedPayload,
-  writerUserId: string,
-): Promise<string> {
-  return unwrapResult(
-    await computeValueSignedBytesHash(valueContextOf(payload, writerUserId)),
-    "computeValueSignedBytesHash",
-  );
 }
 
 /**
