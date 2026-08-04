@@ -3,7 +3,13 @@
 
 export { authGroup, DeviceExchangeResultSchema, MeSchema, UserOrgSchema } from "./auth-api.ts";
 export { AuthMiddleware } from "./auth-middleware.ts";
-export { ChainActorSchema, ChainEntrySchema, RoleSchema } from "./chain.ts";
+export {
+  ChainActorSchema,
+  ChainEntrySchema,
+  CreateEnvironmentEntrySchema,
+  RoleSchema,
+  RotateEpochEntrySchema,
+} from "./chain.ts";
 export {
   type DekWrapRef,
   DekWrapRefSchema,
@@ -17,6 +23,7 @@ export {
 } from "./data.ts";
 export {
   deksGroup,
+  EnvironmentChainResultSchema,
   EnvironmentPullSchema,
   environmentsGroup,
   EnvironmentSummarySchema,
@@ -32,6 +39,7 @@ export {
   ChainEntryTooLargeError,
   ChainHeadConflictError,
   ChainInvalidReasonSchema,
+  CompositeRequiredError,
   DataLimitExceededError,
   DataLimitResourceSchema,
   DekWrapExistsError,
@@ -39,6 +47,7 @@ export {
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
   EnvironmentConflictError,
+  EnvironmentConflictReasonSchema,
   EnvironmentNotFoundError,
   EpochConflictError,
   ForbiddenError,

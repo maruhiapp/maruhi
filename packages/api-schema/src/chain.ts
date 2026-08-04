@@ -66,13 +66,34 @@ const ChangeRoleEntrySchema = Schema.Struct({
   payload: Schema.Struct({ targetUserId: Schema.String, newRole: RoleSchema }),
 });
 
-const RotateEpochEntrySchema = Schema.Struct({
+/**
+ * `create_environment` entry (CRYPTO_SPEC §6.2, 2026-08-03): carries the
+ * epoch-1 DEK commitment (§5.2). Submitted only through the composite
+ * environment-creation endpoint (AUTH_SPEC §12-4) — the generic append
+ * rejects it (§6). Exported for that endpoint's payload schema.
+ */
+export const CreateEnvironmentEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("create_environment"),
+  payload: Schema.Struct({
+    environmentId: Schema.String,
+    dekCommitmentHex: Hash256Hex,
+  }),
+});
+
+/**
+ * `rotate_epoch` entry: carries the new-epoch DEK commitment (§5.2,
+ * 2026-08-03). Submitted only through the composite rotation endpoint
+ * (AUTH_SPEC §12-4). Exported for that endpoint's payload schema.
+ */
+export const RotateEpochEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("rotate_epoch"),
   payload: Schema.Struct({
     environmentId: Schema.String,
     newEpoch: Schema.Number,
     reason: Schema.String,
+    dekCommitmentHex: Hash256Hex,
   }),
 });
 
@@ -98,6 +119,7 @@ export const ChainEntrySchema = Schema.Union([
   AddMemberEntrySchema,
   RemoveMemberEntrySchema,
   ChangeRoleEntrySchema,
+  CreateEnvironmentEntrySchema,
   RotateEpochEntrySchema,
   GrantServerEntrySchema,
   RevokeServerEntrySchema,

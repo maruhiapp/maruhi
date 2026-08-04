@@ -17,6 +17,7 @@ import {
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   ChainHeadConflictError,
+  CompositeRequiredError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
@@ -48,6 +49,9 @@ export const ChainSnapshotSchema = Schema.Struct({
  * - `append`: append one entry; `parentHeadHashHex` is the compare-and-swap
  *   parent (§6.4)。§6.3 の「署名付き申告ヘッド」(ヘッドゴシップ)とは別物。
  *   認証主体と entry.actor の厳密一致を要求する(§11-1)。
+ *   `create_environment` / `rotate_epoch` は複合エンドポイント
+ *   (environments group の create / rotate — AUTH_SPEC §12-4)経由のみ受理し、
+ *   ここでは CompositeRequired で拒否する(AUTH_SPEC §6。2026-08-03)。
  */
 export const membershipGroup = HttpApiGroup.make("membership")
   .add(
@@ -83,6 +87,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
+        CompositeRequiredError,
         ForbiddenError,
       ],
     }).middleware(AuthMiddleware),
