@@ -73,8 +73,23 @@ export {
   type ChainInvalidReason,
   type CryptoError,
   type CryptoResult,
+  type MetaInvalidReason,
   type ValueInvalidReason,
 } from "./errors.ts";
+export {
+  buildMetaSignedBytes,
+  computeMetaSignedBytesHash,
+  type MetaStatementContext,
+  type MetaStatementStatus,
+  type MetaStatementTarget,
+  signMetaStatement,
+  verifyMetaStatementSignature,
+} from "./meta-sign.ts";
+export {
+  type DistributedMetaStatementInput,
+  type MetaPredecessor,
+  verifyDistributedMetaStatement,
+} from "./meta-verify.ts";
 export {
   buildValueSignedBytes,
   computeValueSignedBytesHash,

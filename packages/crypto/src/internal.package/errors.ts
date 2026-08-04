@@ -66,6 +66,41 @@ export type ValueInvalidReason =
   | "prev-hash-mismatch"
   | "epoch-regressed";
 
+/**
+ * Reason codes for rejecting a distributed metadata statement (CRYPTO_SPEC
+ * §4.2 / §6.3 — metadata-signature.json の rule negative が固定する語彙)。
+ * 値(ValueInvalidReason)との違いはメタの意味論そのもの:
+ *
+ * - `signature-invalid` — valid-format の Ed25519 検証失敗
+ * - `author-unknown` — チェーン履歴のどの時点にも (author_user_id, 鍵 FP) の
+ *   束縛が存在しない(検証鍵を選択できない)
+ * - `chain-head-mismatch` / `chain-head-future` — 宣言ヘッドの不一致 2 種
+ *   (§6.3-2a / -2b。値署名と同じ区別 — future は再同期の入口)
+ * - `author-not-member-at-head` / `author-key-mismatch-at-head` /
+ *   `author-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
+ *   role 水準は環境の削除のみ admin、それ以外は member — §4.2 / AUTH_SPEC §12-3)
+ * - `prev-shape-mismatch` — metaVersion 1 は空 / > 1 は 64 hex という prev の
+ *   形の違反(predecessor を保持しない latest-only でも必ず検査する)
+ * - `prev-hash-mismatch` — predecessor を渡された場合のみの連鎖検査(§6.3-6)
+ * - `revived-after-delete` — deleted な predecessor の後続ステートメント
+ *   (§4.2 の「削除後の再 active 化は禁止」— tombstone は終端)
+ *
+ * エポック整合(値の environment-not-created / epoch-not-current)に相当する
+ * 理由は**存在しない**: メタはエポックアンカーを持たず(§4.2)、前進
+ * meta_version への注入は v1 未検出の既知残余(§14.3-5)。
+ */
+export type MetaInvalidReason =
+  | "signature-invalid"
+  | "author-unknown"
+  | "chain-head-mismatch"
+  | "chain-head-future"
+  | "author-not-member-at-head"
+  | "author-key-mismatch-at-head"
+  | "author-role-insufficient-at-head"
+  | "prev-shape-mismatch"
+  | "prev-hash-mismatch"
+  | "revived-after-delete";
+
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =
   /** Input failed structural validation (wrong length, malformed hex, etc.). */
@@ -107,6 +142,12 @@ export type CryptoError =
    * epoch, or the predecessor chaining was rejected for `reason`.
    */
   | { readonly kind: "ValueInvalid"; readonly reason: ValueInvalidReason }
+  /**
+   * A metadata statement failed verification (CRYPTO_SPEC §4.2 / §6.3): the
+   * author signature, the declared chain head, the head-time authorization,
+   * or the predecessor chaining was rejected for `reason`.
+   */
+  | { readonly kind: "MetaStatementInvalid"; readonly reason: MetaInvalidReason }
   /** Chain verification failed at entry `seq` for `reason`. */
   | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 

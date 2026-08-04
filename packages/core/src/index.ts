@@ -13,6 +13,7 @@ export {
   CryptoInvalidInputError,
   CryptoKeyExportError,
   CryptoKeyImportError,
+  CryptoMetaStatementInvalidError,
   CryptoSignError,
   CryptoValueInvalidError,
   fromCryptoResult,

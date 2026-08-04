@@ -577,10 +577,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.domain === `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`,
     );
     check(`meta-sig ${label}: project id is genesis hash`, ctx.project_id === projectId);
-    check(
-      `meta-sig ${label}: name is NFC-normal`,
-      ctx.name.normalize("NFC") === ctx.name,
-    );
+    check(`meta-sig ${label}: name is NFC-normal`, ctx.name.normalize("NFC") === ctx.name);
     const authorKeys = chain.keys[ctx.author_user_id];
     check(
       `meta-sig ${label}: author fingerprint matches chain keys`,
