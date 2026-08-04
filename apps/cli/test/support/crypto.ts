@@ -26,6 +26,7 @@ import {
   importEncryptionPublicKey,
   signChainEntry,
   signDekWrap,
+  signMetaStatement,
   signValue,
   SUITE_ID,
   wrapDek,
@@ -313,6 +314,101 @@ export interface WireEncryptedPayload {
 export interface WireDistributedValue extends WireEncryptedPayload {
   readonly writerUserId: string;
   readonly writerKeyFingerprintHex: string;
+}
+
+/** 配布形の変数メタステートメント(DistributedVariableMetaStatement — §12-2)。 */
+export interface WireDistributedVariableStatement {
+  readonly suite: "maruhi/v1";
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly name: string;
+  readonly status: "active" | "deleted";
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+  readonly authorUserId: string;
+  readonly authorKeyFingerprintHex: string;
+}
+
+/** 配布形の環境メタステートメント(variableId を持たない同型)。 */
+export type WireDistributedEnvironmentStatement = Omit<
+  WireDistributedVariableStatement,
+  "variableId"
+>;
+
+interface StatementInputBase {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly name: string;
+  readonly author: TestUser;
+  readonly head: { readonly seq: number; readonly hashHex: string };
+  readonly status?: "active" | "deleted";
+  readonly metaVersion?: number;
+  readonly prevMetaSigHashHex?: string;
+}
+
+async function signDistributedStatement(
+  input: StatementInputBase,
+  target: { kind: "variable"; variableId: string } | { kind: "environment" },
+): Promise<WireDistributedEnvironmentStatement> {
+  const status = input.status ?? "active";
+  const metaVersion = input.metaVersion ?? 1;
+  const prevMetaSigHashHex = input.prevMetaSigHashHex ?? (metaVersion === 1 ? "" : "cd".repeat(32));
+  const signatureHex = unwrapResult(
+    await signMetaStatement({
+      context: {
+        suite: SUITE_ID,
+        projectId: input.projectId,
+        environmentId: input.environmentId,
+        target,
+        name: input.name,
+        status,
+        metaVersion,
+        prevMetaSigHashHex,
+        authorUserId: input.author.userId,
+        chainHeadHashHex: input.head.hashHex,
+        chainHeadSeq: input.head.seq,
+      },
+      signingKey: input.author.sigKeyPair.privateKey,
+    }),
+    "signMetaStatement",
+  );
+  return {
+    suite: SUITE_ID,
+    environmentId: input.environmentId,
+    name: input.name,
+    status,
+    metaVersion,
+    prevMetaSigHashHex,
+    chainHeadHashHex: input.head.hashHex,
+    chainHeadSeq: input.head.seq,
+    signatureHex,
+    authorUserId: input.author.userId,
+    authorKeyFingerprintHex: input.author.fingerprintHex,
+  };
+}
+
+/**
+ * 変数メタステートメント(§4.2)を author 署名し、配布形(author 情報込み —
+ * §12-2)で返す。既定は作成形(metaVersion 1・active・prev 空)。
+ */
+export async function statementFor(
+  input: StatementInputBase & { readonly variableId: string },
+): Promise<WireDistributedVariableStatement> {
+  const statement = await signDistributedStatement(input, {
+    kind: "variable",
+    variableId: input.variableId,
+  });
+  return { ...statement, variableId: input.variableId };
+}
+
+/** 環境メタステートメントの配布形(variableId フィールドを持たない同型)。 */
+export async function environmentStatementFor(
+  input: StatementInputBase,
+): Promise<WireDistributedEnvironmentStatement> {
+  return signDistributedStatement(input, { kind: "environment" });
 }
 
 /** BuiltChain 上の宣言ヘッド(seq 位置の entry hash)。 */

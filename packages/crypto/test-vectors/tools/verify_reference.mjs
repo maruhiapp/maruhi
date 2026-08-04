@@ -548,6 +548,196 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- metadata-signature.json ---------------------------------------------------
+{
+  const doc = read("metadata-signature.json");
+  const chain = read("chain-entries.json");
+  const projectId = chain.entries[0].entry_hash_hex;
+  const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  const importSigPub = (hex) =>
+    crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  const signedBytes = (ctx) =>
+    lpEncode(
+      (ctx.kind === "variable" ? doc.var_signed_fields_order : doc.env_signed_fields_order).map(
+        (key) => ctx[key],
+      ),
+    );
+  const byName = new Map(doc.vectors.map((v) => [v.name, v]));
+
+  const verifyStatement = async (v, label) => {
+    const ctx = v.context;
+    const bytes = signedBytes(ctx);
+    check(`meta-sig ${label}: signed bytes`, toHex(bytes) === v.signed_bytes_hex);
+    check(
+      `meta-sig ${label}: signed bytes sha256`,
+      (await sha256hex(bytes)) === v.signed_bytes_sha256_hex,
+    );
+    check(
+      `meta-sig ${label}: domain embeds suite and kind`,
+      ctx.domain === `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`,
+    );
+    check(`meta-sig ${label}: project id is genesis hash`, ctx.project_id === projectId);
+    check(`meta-sig ${label}: name is NFC-normal`, ctx.name.normalize("NFC") === ctx.name);
+    const authorKeys = chain.keys[ctx.author_user_id];
+    check(
+      `meta-sig ${label}: author fingerprint matches chain keys`,
+      authorKeys.key_fingerprint_hex === v.author_key_fingerprint_hex,
+    );
+    const ok = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(authorKeys.sig_pub_hex),
+      fromHex(v.signature_hex),
+      bytes,
+    );
+    check(`meta-sig ${label}: Ed25519 signature`, ok);
+  };
+
+  for (const v of doc.vectors) {
+    await verifyStatement(v, v.name);
+    // チェーン参照の整合(rule negative は bogus ヘッドを持つため positive のみ)
+    check(
+      `meta-sig ${v.name}: head hash matches chain`,
+      v.context.chain_head_hash_hex === chain.entries[v.context.chain_head_seq - 1].entry_hash_hex,
+    );
+    // prev 連鎖: prev_base を持つベクターは直前 metaVersion の signed_bytes ハッシュへ連鎖
+    if (v.prev_base !== undefined) {
+      check(
+        `meta-sig ${v.name}: prev links to ${v.prev_base}`,
+        v.context.prev_meta_sig_hash_hex === byName.get(v.prev_base)?.signed_bytes_sha256_hex,
+      );
+    } else {
+      check(
+        `meta-sig ${v.name}: metaVersion 1 has empty prev`,
+        v.context.prev_meta_sig_hash_hex === "",
+      );
+    }
+  }
+  // 削除ステートメントは直前 active 名を保持する(§4.2 — name を削除で空にしない)
+  {
+    const del = byName.get("var-delete");
+    const rename = byName.get("var-rename");
+    check(
+      "meta-sig var-delete: keeps last active name",
+      del.context.status === "deleted" && del.context.name === rename.context.name,
+    );
+  }
+
+  // rename-fork: 両 branch とも署名有効・同一座標・prev 同一で signed_bytes が異なる
+  {
+    const [a, b] = doc.rename_fork.branches;
+    for (const branch of [a, b]) {
+      await verifyStatement(branch, `fork ${branch.name}`);
+    }
+    const sameCoordinate =
+      a.context.variable_id === b.context.variable_id &&
+      a.context.meta_version === b.context.meta_version &&
+      a.context.environment_id === b.context.environment_id &&
+      a.context.prev_meta_sig_hash_hex === b.context.prev_meta_sig_hash_hex;
+    check(
+      "meta-sig rename-fork: same coordinate, distinct signed bytes (equivocation evidence)",
+      sameCoordinate && a.signed_bytes_sha256_hex !== b.signed_bytes_sha256_hex,
+    );
+  }
+
+  // name-swap: 正規 2 本は有効、name フィールドだけ入れ替えたバイト列では署名失敗
+  {
+    for (const statement of doc.name_swap.statements) {
+      await verifyStatement(statement, `swap ${statement.name}`);
+    }
+    for (const swapped of doc.name_swap.swapped) {
+      const reconstructed = signedBytes(swapped.context);
+      const bytesMatch = toHex(reconstructed) === swapped.verify_signed_bytes_hex;
+      const verified = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(swapped.verify_key_hex),
+        fromHex(swapped.signature_hex),
+        reconstructed,
+      );
+      check(`meta-sig name-swap: ${swapped.name}`, bytesMatch && verified === false);
+    }
+  }
+
+  // tenure-extension: 派生チェーンの seq 13 エントリ自体が有効(value-signature と同一内容)
+  {
+    const e = doc.tenure_extension.entry;
+    const order = chain.canonicalization.payload_field_order;
+    const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+    const signed = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+    ]);
+    const sigOk = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(chain.keys[e.actor.user_id].sig_pub_hex),
+      fromHex(e.signature_hex),
+      signed,
+    );
+    const entryBytes = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+      e.signature_hex,
+    ]);
+    check(
+      "meta-sig tenure-extension: entry is a valid append",
+      sigOk &&
+        toHex(payloadBytes) === e.payload_bytes_hex &&
+        toHex(signed) === e.signed_bytes_hex &&
+        e.prev_hash_hex === chain.entries.at(-1).entry_hash_hex &&
+        toHex(entryBytes) === e.entry_bytes_hex &&
+        (await sha256hex(entryBytes)) === e.entry_hash_hex,
+    );
+  }
+
+  for (const n of doc.negative) {
+    if (n.kind === "authorization") {
+      // 検証規則系は「暗号学的には有効(署名が正しい)」ことを確認する。
+      // expected_reason での拒否は実装テスト(§6.3 の履歴検証)が担う
+      const bytes = signedBytes(n.context);
+      const ok = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(n.verify_key_hex),
+        fromHex(n.signature_hex),
+        bytes,
+      );
+      check(
+        `meta-sig rule negative: ${n.name} (signature must be VALID)`,
+        ok && toHex(bytes) === n.signed_bytes_hex,
+      );
+      continue;
+    }
+    const reconstructed = signedBytes(n.context);
+    const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
+    const verified = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(n.verify_key_hex),
+      fromHex(n.signature_hex),
+      reconstructed,
+    );
+    check(`meta-sig negative: ${n.name}`, bytesMatch && verified === false);
+  }
+  // nfc-variant: NFC 正規形で署名された name の NFD 変種は byte 列が異なることの固定
+  {
+    const nfc = doc.negative.find((n) => n.name === "nfc-variant");
+    check(
+      "meta-sig nfc-variant: negative name is non-NFC variant of the signed name",
+      nfc.context.name.normalize("NFC") === byName.get("var-nfc-name").context.name &&
+        nfc.context.name !== byName.get("var-nfc-name").context.name,
+    );
+  }
+}
+
 // --- recovery-wrap.json ------------------------------------------------------
 {
   const doc = read("recovery-wrap.json");

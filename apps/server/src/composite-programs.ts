@@ -1,8 +1,9 @@
 // 複合リクエストの Effect プログラム(AUTH_SPEC §12-4 / CRYPTO_SPEC §6.4 の複合受理)。
 //
 // - 環境作成 = `create_environment` チェーンエントリ(エポック 1 の DEK
-//   コミットメント込み — §5.2/§6.2)+ 表示名 + エポック 1 のラップ完全集合
-//   (PR-1 の意図的中間状態: EnvironmentMetaStatement の同梱は PR-3)
+//   コミットメント込み — §5.2/§6.2)+ EnvironmentMetaStatement(metaVersion 1 —
+//   §4.2。宣言ヘッドは追記前の現ヘッド = 同梱エントリの prev)+ エポック 1 の
+//   ラップ完全集合
 // - ローテーション = `rotate_epoch` エントリ(新エポックのコミットメント込み)+
 //   新エポックのラップ完全集合(従来の「汎用チェーン追記 + DEK 登録 API」の
 //   2 往復を置換。現在値の再暗号化は後続の通常 push — §12-7)
@@ -32,11 +33,19 @@ import {
   updateStateCache,
   verifyChainEffect,
 } from "./chain-store.ts";
-import type { DataActor, DataRejectedError, DekWrapInput, InitializedChain } from "./data-plane.ts";
+import type {
+  DataActor,
+  DataRejectedError,
+  DekWrapInput,
+  InitializedChain,
+  MetaStatementInput,
+} from "./data-plane.ts";
 import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import {
   dekRegisteredEvent,
   ensureEnvironmentQuota,
+  ensureMetaStatementSignature,
+  ensureNfcName,
   ensureWrapSetAcceptable,
 } from "./data-programs.ts";
 import type { DataWriteOps } from "./data-store.ts";
@@ -62,9 +71,12 @@ export interface EnvironmentChainResultValue {
 const loadChainForComposite = (callerUserId: string, cache: StateCache) =>
   Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
-    const { state } = yield* deriveStoredState(chain, cache);
+    // history は追記前チェーンの履歴索引: 同梱ステートメントの宣言ヘッド実在
+    // 検査は追記前のチェーンに対して行う(§12-4 — 同梱エントリ自身をヘッドに
+    // 宣言する形は受理しない)
+    const { state, history } = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, "member");
-    return { chain, state, member, projectId: chain.genesisHashHex };
+    return { chain, state, history, member, projectId: chain.genesisHashHex };
   });
 
 /** CAS(§6.4): 親ヘッド不一致は現ヘッド情報付きで拒否(worker が 409 に写す)。 */
@@ -242,14 +254,24 @@ export const createEnvironmentCompositeProgram = (
   input: {
     readonly parentHeadHashHex: string;
     readonly entry: ChainEntry & { readonly op: "create_environment" };
-    readonly name: string;
+    readonly statement: MetaStatementInput;
     readonly deks: readonly DekWrapInput[];
   },
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { chain, member, projectId } = yield* loadChainForComposite(actor.userId, cache);
+    const { chain, history, member, projectId } = yield* loadChainForComposite(actor.userId, cache);
     yield* ensureCompositeParentHead(chain, input.parentHeadHashHex);
+    // 複合内の宣言ヘッド(§12-4): 同梱ステートメントの宣言ヘッドは追記前の
+    // 現ヘッド(= 同梱エントリの prev)と厳密一致。CAS 通過後なので現ヘッド =
+    // parentHeadHashHex。ヘッド CAS 失敗の再試行ではエントリとステートメントの
+    // 両方を再署名する(クライアント側 — env-create.ts)
+    if (
+      input.statement.chainHeadHashHex !== chain.headHashHex ||
+      input.statement.chainHeadSeq !== chain.headSeq
+    ) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "statementChainHead" });
+    }
     const { canonicalBytes, applied, appliedState } = yield* verifyCompositeEntry(
       chain,
       input.entry,
@@ -259,13 +281,26 @@ export const createEnvironmentCompositeProgram = (
     // ID の一意性はチェーン合意規則(duplicate-environment — verifyChain)が
     // 担う。データプレーンに残る検査は表示名の一意性と数量ポリシーのみ
     yield* ensureEnvironmentQuota;
-    if (yield* store.environmentNameTaken(input.name, null)) {
+    yield* ensureNfcName(input.statement.name);
+    if (yield* store.environmentNameTaken(input.statement.name, null)) {
       return yield* rejectData({
         kind: "environment-conflict",
         environmentId,
         reason: "duplicate-name",
       });
     }
+    // ステートメント検証は追記前の履歴に対して行う(§12-4)。メタステートメントは
+    // 環境の存在を検査しないため、宣言ヘッド時点に環境が未存在でも受理される
+    // (値署名との意図された非対称)。author = 呼び出し主体・宣言ヘッド時点の
+    // member 以上は verifyDistributedMetaStatement が検査する
+    const metaSignedBytesHashHex = yield* ensureMetaStatementSignature({
+      projectId,
+      environmentId,
+      target: { kind: "environment" },
+      history,
+      member,
+      statement: input.statement,
+    });
     // 同梱エントリ適用後の現エポックは常に 1(create_environment — §12-4)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -282,14 +317,24 @@ export const createEnvironmentCompositeProgram = (
       environmentId,
     });
     // 書き込みフェーズ: 単一の同期ブロック = 同一タスクで原子コミット
-    // (チェーンエントリ + ミラー + 環境行 + ラップ + 監査を分割しない — §12-4)
+    // (チェーンエントリ + ミラー + 環境行 + ステートメント行 + ラップ + 監査を
+    // 分割しない — §12-4)
     yield* Effect.sync(() => {
       insertCompositeEntrySync(writeContext, input.entry, canonicalBytes, appliedState);
-      store.write.insertEnvironment(environmentId, input.name, writeContext.nowMs);
+      store.write.insertEnvironment(environmentId, input.statement.name, writeContext.nowMs);
+      store.write.insertEnvironmentMetaStatement(
+        environmentId,
+        input.statement,
+        metaSignedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        writeContext.nowMs,
+      );
+      // env.created はステートメント author の鍵 FP を写す(AUDIT_SPEC §3.3)
       writeContext.audit.appendSync(
         dataEvent(actor, writeContext.nowMs, "env.created", {
           environmentId,
-          payload: { name: input.name },
+          payload: { name: input.statement.name },
+          actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
       insertCompositeWrapsSync(writeContext, input.deks);

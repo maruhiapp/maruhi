@@ -17,7 +17,7 @@ import {
   seedOrgMember,
   seedUser,
 } from "./auth.ts";
-import type { WireWrappedDek } from "./data-crypto.ts";
+import type { WireEnvironmentMetaStatement, WireWrappedDek } from "./data-crypto.ts";
 import {
   addMemberOperation,
   buildChain,
@@ -25,8 +25,10 @@ import {
   createEnvironmentOperation,
   genesisOperation,
   makeDek,
+  metaSignedBytesHashOf,
   rotateEpochOperation,
   signEntryAt,
+  signMetaStatementAs,
   wrapDekForAll,
 } from "./data-crypto.ts";
 import { resetProjectDo } from "./project-do.ts";
@@ -60,6 +62,14 @@ export interface DataFixture {
   readonly tokens: Record<string, string>;
   /** チェーンの現ヘッド(appendOperation が進める)。 */
   head: { seq: number; hashHex: string };
+  /**
+   * 環境ごとの最新ステートメント + author(rename / 削除の prev 連鎖の材料 —
+   * 受理成功時に helper が進める)。
+   */
+  readonly envStatements: Map<
+    string,
+    { statement: WireEnvironmentMetaStatement; authorUserId: string }
+  >;
 }
 
 /** DO / D1 のリセット + ユーザー・PAT のシード + ベースチェーンの API 再生。 */
@@ -93,6 +103,7 @@ export async function setupDataProject(): Promise<DataFixture> {
   return {
     tokens,
     head: { seq: baseChain.entries.length, hashHex: prevHash },
+    envStatements: new Map(),
   };
 }
 
@@ -150,9 +161,32 @@ function advanceHead(fixture: DataFixture, body: { headSeq: number; headHashHex:
 }
 
 /**
+ * 環境作成の複合同梱ステートメント(metaVersion 1)をテスト時署名で作る。
+ * 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
+ */
+export async function createEnvironmentStatement(input: {
+  readonly authorUserId: string;
+  readonly environmentId: string;
+  readonly name: string;
+  readonly head: { readonly seq: number; readonly hashHex: string };
+}): Promise<WireEnvironmentMetaStatement> {
+  return signMetaStatementAs(input.authorUserId, projectId, {
+    suite: "maruhi/v1",
+    environmentId: input.environmentId,
+    name: input.name,
+    status: "active" as const,
+    metaVersion: 1,
+    prevMetaSigHashHex: "",
+    chainHeadHashHex: input.head.hashHex,
+    chainHeadSeq: input.head.seq,
+  });
+}
+
+/**
  * 複合の環境作成リクエスト(§12-4)を組み立てて送る: create_environment
- * エントリ(コミットメント込み)をテスト時署名し、親ヘッド CAS 付きで
- * ラップ集合・表示名と同時に POST する。200 ならフィクスチャのヘッドを進める。
+ * エントリ(コミットメント込み)+ EnvironmentMetaStatement(metaVersion 1。
+ * 宣言ヘッド = 追記前の現ヘッド)をテスト時署名し、親ヘッド CAS 付きで
+ * ラップ集合と同時に POST する。200 ならフィクスチャのヘッドを進める。
  */
 export async function createEnvironmentComposite(
   fixture: DataFixture,
@@ -164,6 +198,8 @@ export async function createEnvironmentComposite(
     readonly actorUserId?: string;
     /** CAS 失敗テスト用の親ヘッド上書き。 */
     readonly parentHeadHashHex?: string;
+    /** 複合内整合の negative 用のステートメント上書き。 */
+    readonly statement?: WireEnvironmentMetaStatement;
   },
 ): Promise<Response> {
   const actorUserId = input.actorUserId ?? OWNER;
@@ -173,6 +209,17 @@ export async function createEnvironmentComposite(
     actorUserId,
     operation: createEnvironmentOperation(input.environmentId, input.dekCommitmentHex),
   });
+  const statement =
+    input.statement ??
+    (await createEnvironmentStatement({
+      authorUserId: actorUserId,
+      environmentId: input.environmentId,
+      name: input.name,
+      head: {
+        seq: fixture.head.seq,
+        hashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+      },
+    }));
   const response = await requestJson(
     "POST",
     "/environments",
@@ -180,7 +227,7 @@ export async function createEnvironmentComposite(
     {
       parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       entry,
-      name: input.name,
+      statement,
       deks: input.deks,
     },
   );
@@ -189,6 +236,96 @@ export async function createEnvironmentComposite(
       fixture,
       (await response.clone().json()) as { headSeq: number; headHashHex: string },
     );
+    fixture.envStatements.set(input.environmentId, { statement, authorUserId: actorUserId });
+  }
+  return response;
+}
+
+/**
+ * 環境の次ステートメント(rename / 削除)をテスト時署名で作る: prev = 記録済み
+ * 最新ステートメントの signed_bytes ハッシュ、metaVersion = 最新 + 1、宣言
+ * ヘッド = 現ヘッド。
+ */
+async function nextEnvironmentStatement(
+  fixture: DataFixture,
+  input: {
+    readonly environmentId: string;
+    readonly name: string;
+    readonly status: "active" | "deleted";
+    readonly authorUserId: string;
+  },
+): Promise<WireEnvironmentMetaStatement> {
+  const last = fixture.envStatements.get(input.environmentId);
+  if (last === undefined) {
+    throw new Error(`no recorded statement for environment ${input.environmentId}`);
+  }
+  const prevMetaSigHashHex = await metaSignedBytesHashOf(
+    projectId,
+    last.statement,
+    last.authorUserId,
+  );
+  return signMetaStatementAs(input.authorUserId, projectId, {
+    suite: "maruhi/v1",
+    environmentId: input.environmentId,
+    name: input.name,
+    status: input.status,
+    metaVersion: last.statement.metaVersion + 1,
+    prevMetaSigHashHex,
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+  });
+}
+
+/** 環境 rename(ステートメント付き PATCH)。204 なら記録を進める。 */
+export async function renameEnvironmentRequest(
+  fixture: DataFixture,
+  environmentId: string,
+  name: string,
+  actorUserId: string,
+): Promise<Response> {
+  const statement = await nextEnvironmentStatement(fixture, {
+    environmentId,
+    name,
+    status: "active",
+    authorUserId: actorUserId,
+  });
+  const response = await requestJson(
+    "PATCH",
+    `/environments/${environmentId}`,
+    tokenOf(fixture.tokens, actorUserId),
+    { statement },
+  );
+  if (response.status === 204) {
+    fixture.envStatements.set(environmentId, { statement, authorUserId: actorUserId });
+  }
+  return response;
+}
+
+/** 環境削除(status deleted のステートメント付き DELETE)。204 なら記録を進める。 */
+export async function deleteEnvironmentRequest(
+  fixture: DataFixture,
+  environmentId: string,
+  actorUserId: string,
+): Promise<Response> {
+  const last = fixture.envStatements.get(environmentId);
+  if (last === undefined) {
+    throw new Error(`no recorded statement for environment ${environmentId}`);
+  }
+  // deleted の name は直前 active 名を保持する(§4.2)
+  const statement = await nextEnvironmentStatement(fixture, {
+    environmentId,
+    name: last.statement.name,
+    status: "deleted",
+    authorUserId: actorUserId,
+  });
+  const response = await requestJson(
+    "DELETE",
+    `/environments/${environmentId}`,
+    tokenOf(fixture.tokens, actorUserId),
+    { statement },
+  );
+  if (response.status === 204) {
+    fixture.envStatements.set(environmentId, { statement, authorUserId: actorUserId });
   }
   return response;
 }

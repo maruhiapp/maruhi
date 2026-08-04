@@ -34,7 +34,16 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 interface CompositeCreateBody {
   readonly parentHeadHashHex: string;
   readonly entry: ChainEntry & { readonly op: "create_environment" };
-  readonly name: string;
+  readonly statement: {
+    readonly environmentId: string;
+    readonly name: string;
+    readonly status: string;
+    readonly metaVersion: number;
+    readonly prevMetaSigHashHex: string;
+    readonly chainHeadHashHex: string;
+    readonly chainHeadSeq: number;
+    readonly signatureHex: string;
+  };
   readonly deks: WrappedDek[];
 }
 
@@ -162,7 +171,16 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging", "--name", "Staging"], env.layer)).toBe(0);
     const body = payload as CompositeCreateBody | null;
     if (body === null) throw new Error("composite create was not called");
-    expect(body.name).toBe("Staging");
+    // 表示名は EnvironmentMetaStatement(metaVersion 1)が運ぶ(§12-4)。
+    // 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev)
+    expect(body.statement.name).toBe("Staging");
+    expect(body.statement.environmentId).toBe("staging");
+    expect(body.statement.status).toBe("active");
+    expect(body.statement.metaVersion).toBe(1);
+    expect(body.statement.prevMetaSigHashHex).toBe("");
+    expect(body.statement.chainHeadHashHex).toBe(head);
+    expect(body.statement.chainHeadSeq).toBe(built.entries.length);
+    expect(body.statement.signatureHex).toMatch(/^[0-9a-f]{128}$/);
     // 親ヘッド CAS + エントリは現ヘッドの直後(seq = head + 1)に actor = 呼び出し
     // 主体で署名されている
     expect(body.parentHeadHashHex).toBe(head);
@@ -275,6 +293,10 @@ describe("maruhi env create", () => {
     expect(second.parentHeadHashHex).toBe(headB);
     expect(second.entry.prevHashHex).toBe(headB);
     expect(second.entry.signatureHex).not.toBe(first.entry.signatureHex);
+    // ステートメントも**両方**再署名される(宣言ヘッド = 追記前の新ヘッド — §12-4)
+    expect(second.statement.chainHeadHashHex).toBe(headB);
+    expect(second.statement.chainHeadSeq).toBe(chainB.entries.length);
+    expect(second.statement.signatureHex).not.toBe(first.statement.signatureHex);
     // コミットメント(= 生成済み DEK)は不変のまま
     expect(second.entry.payload.dekCommitmentHex).toBe(first.entry.payload.dekCommitmentHex);
     // メンバー集合が変わった(other が加わった)ため、ラップ集合は作り直されている

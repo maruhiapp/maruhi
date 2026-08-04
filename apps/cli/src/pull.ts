@@ -22,6 +22,7 @@ import { pullVerifiedEnvironment } from "./values.ts";
 
 /** One decrypted variable (plaintext bytes live in memory only). */
 export interface DecryptedVariable {
+  /** 検証済みメタステートメント由来の名前(§4.2 — 裸の name を信用しない)。 */
   readonly variableId: string;
   readonly name: string;
   readonly version: number;
@@ -29,9 +30,16 @@ export interface DecryptedVariable {
   readonly value: Uint8Array;
 }
 
+/** 復号済み変数と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
+export interface PulledVariables {
+  readonly variables: readonly DecryptedVariable[];
+  readonly warnings: readonly string[];
+}
+
 /**
- * Pulls one environment, verifies every value's write signature (§4.1 —
- * before any decryption), verifies and unwraps the caller's DEKs (§5.1
+ * Pulls one environment, verifies every value's write signature and every
+ * metadata statement (§4.1 / §4.2 — before any decryption; names come only
+ * from verified statements), verifies and unwraps the caller's DEKs (§5.1
  * registration signature + §5.2 commitment matching stay mandatory), then
  * decrypts every latest version. DEKs are indexed by epoch because latest
  * versions may span epochs until a rotation's re-encryption completes
@@ -44,7 +52,7 @@ export function pullVariables(input: {
   readonly recipient: DekRecipient;
   /** future head(§6.3-2b)時の有界再同期。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<readonly DecryptedVariable[], CliError> {
+}): Effect.Effect<PulledVariables, CliError> {
   return Effect.gen(function* () {
     // (1) 値署名の検証(復号より前)。future head なら有界再同期で前進した
     // ビューが返る — 以降の検証(ラップ・エポック)も同じビューで行う
@@ -61,18 +69,11 @@ export function pullVariables(input: {
     });
 
     const results: DecryptedVariable[] = [];
-    const seenNames = new Set<string>();
     // 環境の存在はチェーン導出(§6.2)。現エポックの参照もチェーン導出値から取る
     const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
     for (const variable of pulled.variables) {
-      // 変数名の一意性はサーバーが強制する(§12-1)が、`maruhi run` の環境変数
-      // 注入が黙って片方を潰さないようクライアントでも検査する(サーバー不信)
-      if (seenNames.has(variable.name)) {
-        return yield* Effect.fail(
-          cliError(`変数名が重複しています(サーバー応答の不整合): ${displayText(variable.name)}`),
-        );
-      }
-      seenNames.add(variable.name);
+      // 同名 active の重複はステートメント検証(values.ts)が解決拒否済み
+      // (§4.2 — `maruhi run` の環境変数注入が黙って片方を潰す経路はない)
 
       // 値署名の検証(§6.3-4)が「宣言ヘッド時点の現エポック = 値の epoch」を
       // 保証済みで、エポックの単調性からこの値は現エポック以下。ここの検査は
@@ -130,6 +131,6 @@ export function pullVariables(input: {
         value: plaintext.value,
       });
     }
-    return results;
+    return { variables: results, warnings: pulled.warnings };
   });
 }

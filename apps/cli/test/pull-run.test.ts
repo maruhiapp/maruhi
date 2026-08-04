@@ -10,13 +10,17 @@ import {
   type BuiltChain,
   createEnvironmentOp,
   encryptValueFor,
+  environmentStatementFor,
   genesisOp,
   headOf,
   makeTestUser,
   removeMemberOp,
   rotateEpochOp,
+  statementFor,
   type TestUser,
+  type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
+  type WireDistributedVariableStatement,
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
@@ -33,10 +37,72 @@ interface Fixture {
   readonly wraps: readonly WireRecipientDek[];
   readonly valueAlpha: WireDistributedValue;
   readonly valueBeta: WireDistributedValue;
+  readonly envStatement: WireDistributedEnvironmentStatement;
+  readonly entryAlpha: {
+    variableId: string;
+    statement: WireDistributedVariableStatement;
+    value: WireDistributedValue;
+  };
+  readonly entryBeta: {
+    variableId: string;
+    statement: WireDistributedVariableStatement;
+    value: WireDistributedValue;
+  };
 }
 
 let fixture: Fixture;
 let servers: MockServer[] = [];
+
+/** genesis をヘッドにした宣言(seq 1 の entry hash = projectId — どの延長ビューにも実在)。 */
+function genesisHead(projectId: string): { seq: number; hashHex: string } {
+  return { seq: 1, hashHex: projectId };
+}
+
+/**
+ * pull 応答の 1 変数(検証済みステートメント + 値 — §12-7 のワイヤ形)。
+ * ステートメントの宣言ヘッドは genesis(メタはエポックアンカーを持たないため、
+ * author が member 以上ならどのビューでも検証を通る — §4.2)。
+ */
+async function pullEntry(
+  projectId: string,
+  variableId: string,
+  name: string,
+  value: WireDistributedValue,
+  author?: TestUser,
+  environmentId = ENV_ID,
+): Promise<{
+  variableId: string;
+  statement: WireDistributedVariableStatement;
+  value: WireDistributedValue;
+}> {
+  return {
+    variableId,
+    statement: await statementFor({
+      projectId,
+      environmentId,
+      variableId,
+      name,
+      author: author ?? fixture.owner,
+      head: genesisHead(projectId),
+    }),
+    value,
+  };
+}
+
+/** pull 応答の環境ステートメント(active・metaVersion 1・genesis ヘッド)。 */
+async function pullEnvStatement(
+  projectId: string,
+  author?: TestUser,
+  environmentId = ENV_ID,
+): Promise<WireDistributedEnvironmentStatement> {
+  return environmentStatementFor({
+    projectId,
+    environmentId,
+    name: environmentId,
+    author: author ?? fixture.owner,
+    head: genesisHead(projectId),
+  });
+}
 
 beforeAll(async () => {
   const owner = await makeTestUser("user-owner-1111");
@@ -77,7 +143,49 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(built, 2),
   });
-  fixture = { owner, built, dek1, dek2, wraps, valueAlpha, valueBeta };
+  const envStatement = await environmentStatementFor({
+    projectId: built.projectId,
+    environmentId: ENV_ID,
+    name: ENV_ID,
+    author: owner,
+    head: { seq: 1, hashHex: built.projectId },
+  });
+  const entryAlpha = {
+    variableId: "va",
+    statement: await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "va",
+      name: "ALPHA",
+      author: owner,
+      head: { seq: 1, hashHex: built.projectId },
+    }),
+    value: valueAlpha,
+  };
+  const entryBeta = {
+    variableId: "vb",
+    statement: await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "vb",
+      name: "BETA",
+      author: owner,
+      head: { seq: 1, hashHex: built.projectId },
+    }),
+    value: valueBeta,
+  };
+  fixture = {
+    owner,
+    built,
+    dek1,
+    dek2,
+    wraps,
+    valueAlpha,
+    valueBeta,
+    envStatement,
+    entryAlpha,
+    entryBeta,
+  };
 });
 
 afterEach(async () => {
@@ -101,18 +209,18 @@ function chainHandler(): MockHandler {
 function pullHandler(overrides?: {
   readonly deks?: readonly unknown[];
   readonly variables?: readonly unknown[];
+  readonly deletedVariables?: readonly unknown[];
+  readonly statement?: unknown;
 }): MockHandler {
-  const { built, wraps, valueAlpha, valueBeta } = fixture;
+  const { built, wraps, entryAlpha, entryBeta, envStatement } = fixture;
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
     status: 200,
     json: {
       environmentId: ENV_ID,
-      name: ENV_ID,
       currentEpoch: 2,
-      variables: overrides?.variables ?? [
-        { variableId: "va", name: "ALPHA", value: valueAlpha },
-        { variableId: "vb", name: "BETA", value: valueBeta },
-      ],
+      statement: overrides?.statement ?? envStatement,
+      variables: overrides?.variables ?? [entryAlpha, entryBeta],
+      deletedVariables: overrides?.deletedVariables ?? [],
       deks: overrides?.deks ?? wraps,
     },
   }));
@@ -167,7 +275,9 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      pullHandler({ variables: [{ variableId: "vs", name: "SECRET", value }] }),
+      pullHandler({
+        variables: [await pullEntry(fixture.built.projectId, "vs", "SECRET", value)],
+      }),
     ]);
     expect(await runCli(["pull", "--show"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
@@ -255,7 +365,7 @@ describe("maruhi pull", () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({
-        variables: [{ variableId: "va", name: "ALPHA", value: fixture.valueBeta }],
+        variables: [await pullEntry(fixture.built.projectId, "va", "ALPHA", fixture.valueBeta)],
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -297,7 +407,9 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      pullHandler({ variables: [{ variableId: "vp", name: "PHANTOM", value: phantomValue }] }),
+      pullHandler({
+        variables: [await pullEntry(fixture.built.projectId, "vp", "PHANTOM", phantomValue)],
+      }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
@@ -369,15 +481,27 @@ describe("maruhi pull", () => {
       recipient: fixture.owner,
       signer: fixture.owner,
     });
+    const ghostEnvStatement = await pullEnvStatement(fixture.built.projectId, undefined, "ghost");
+    const ghostEntry = await pullEntry(
+      fixture.built.projectId,
+      "vg",
+      "GHOST",
+      ghostValue,
+      undefined,
+      "ghost",
+    );
     const env = await startEnv([
       chainHandler(),
       onRequest("GET", `/projects/${fixture.built.projectId}/environments/ghost/pull`, () => ({
         status: 200,
         json: {
           environmentId: "ghost",
-          name: "ghost",
           currentEpoch: 1,
-          variables: [{ variableId: "vg", name: "GHOST", value: ghostValue }],
+          // メタステートメントは環境の存在を検査しない(§12-4 の非対称)ため
+          // ghost 環境のステートメント自体は検証を通り、値署名(§6.3-4)が落とす
+          statement: ghostEnvStatement,
+          variables: [ghostEntry],
+          deletedVariables: [],
           deks: [ghostWrap],
         },
       })),
@@ -425,7 +549,9 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: crossEnv }] }),
+      pullHandler({
+        variables: [await pullEntry(fixture.built.projectId, "va", "ALPHA", crossEnv)],
+      }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("申告 AAD 座標が要求文脈と一致しません");
@@ -467,6 +593,14 @@ describe("maruhi pull", () => {
       writer: oldKeys,
       head: headOf(built, 3),
     });
+    const pullJson = {
+      environmentId: ENV_ID,
+      currentEpoch: 1,
+      statement: await pullEnvStatement(built.projectId, owner),
+      variables: [await pullEntry(built.projectId, "vr", "HISTORIC", value, owner)],
+      deletedVariables: [],
+      deks: [wrap],
+    };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
         status: 200,
@@ -479,13 +613,7 @@ describe("maruhi pull", () => {
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
         status: 200,
-        json: {
-          environmentId: ENV_ID,
-          name: ENV_ID,
-          currentEpoch: 1,
-          variables: [{ variableId: "vr", name: "HISTORIC", value }],
-          deks: [wrap],
-        },
+        json: pullJson,
       })),
     ]);
     servers.push(server);
@@ -524,7 +652,9 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      pullHandler({ variables: [{ variableId: "ve", name: evilName, value }] }),
+      pullHandler({
+        variables: [await pullEntry(fixture.built.projectId, "ve", evilName, value)],
+      }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const output = [...env.logs, ...env.errors].join("\n");
@@ -538,13 +668,13 @@ describe("maruhi pull", () => {
       chainHandler(),
       pullHandler({
         variables: [
-          { variableId: "va", name: "ALPHA", value: fixture.valueAlpha },
-          { variableId: "vb", name: "ALPHA", value: fixture.valueBeta },
+          fixture.entryAlpha,
+          await pullEntry(fixture.built.projectId, "vb", "ALPHA", fixture.valueBeta),
         ],
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("変数名が重複");
+    expect(env.errors.join("\n")).toContain("同名の active ステートメント");
   });
 
   it("値署名の bit 反転を復号より前に拒否する(§4.1)", async () => {
@@ -555,9 +685,7 @@ describe("maruhi pull", () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({
-        variables: [
-          { variableId: "va", name: "ALPHA", value: { ...value, signatureHex: flipped } },
-        ],
+        variables: [{ ...fixture.entryAlpha, value: { ...value, signatureHex: flipped } }],
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -575,7 +703,7 @@ describe("maruhi pull", () => {
     };
     const env = await startEnv([
       chainHandler(),
-      pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: lying }] }),
+      pullHandler({ variables: [{ ...fixture.entryAlpha, value: lying }] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("reason=writer-unknown");
@@ -613,6 +741,14 @@ describe("maruhi pull", () => {
       writer: oldKeys,
       head: headOf(built, 5),
     });
+    const pullJson = {
+      environmentId: ENV_ID,
+      currentEpoch: 1,
+      statement: await pullEnvStatement(built.projectId, owner),
+      variables: [await pullEntry(built.projectId, "vf", "FORGED", forged, owner)],
+      deletedVariables: [],
+      deks: [wrap],
+    };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
         status: 200,
@@ -625,13 +761,7 @@ describe("maruhi pull", () => {
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
         status: 200,
-        json: {
-          environmentId: ENV_ID,
-          name: ENV_ID,
-          currentEpoch: 1,
-          variables: [{ variableId: "vf", name: "FORGED", value: forged }],
-          deks: [wrap],
-        },
+        json: pullJson,
       })),
     ]);
     servers.push(server);
@@ -651,8 +781,8 @@ describe("maruhi pull", () => {
       chainHandler(),
       pullHandler({
         variables: [
-          { variableId: "va", name: "ALPHA", value: fixture.valueAlpha },
-          { variableId: "va", name: "ALPHA2", value: fixture.valueAlpha },
+          fixture.entryAlpha,
+          { ...fixture.entryAlpha, statement: { ...fixture.entryAlpha.statement, name: "ALPHA2" } },
         ],
       }),
     ]);
@@ -693,6 +823,14 @@ describe("maruhi pull", () => {
       writer: newcomer,
       head: headOf(fullBuilt, 3),
     });
+    const newcomerPullJson = {
+      environmentId: ENV_ID,
+      currentEpoch: 1,
+      statement: await pullEnvStatement(fullBuilt.projectId, owner),
+      variables: [await pullEntry(fullBuilt.projectId, "vn", "NEWCOMER", value, owner)],
+      deletedVariables: [],
+      deks: [wrap],
+    };
     let chainCalls = 0;
     const server = await MockServer.start([
       onRequest("GET", `/projects/${fullBuilt.projectId}/chain`, () => {
@@ -710,13 +848,7 @@ describe("maruhi pull", () => {
       }),
       onRequest("GET", `/projects/${fullBuilt.projectId}/environments/${ENV_ID}/pull`, () => ({
         status: 200,
-        json: {
-          environmentId: ENV_ID,
-          name: ENV_ID,
-          currentEpoch: 1,
-          variables: [{ variableId: "vn", name: "NEWCOMER", value }],
-          deks: [wrap],
-        },
+        json: newcomerPullJson,
       })),
     ]);
     servers.push(server);
@@ -754,7 +886,7 @@ describe("maruhi pull", () => {
     const env = await startEnv([
       progressiveChain,
       pullHandler({
-        variables: [{ variableId: "va", name: "ALPHA", value: fixture.valueAlpha }],
+        variables: [fixture.entryAlpha],
         deks: fixture.wraps,
       }),
     ]);
@@ -805,7 +937,7 @@ describe("maruhi pull", () => {
     const env = await startEnv([
       progressiveChain,
       pullHandler({
-        variables: [{ variableId: "va", name: "ALPHA", value: futureValue }],
+        variables: [{ ...fixture.entryAlpha, value: futureValue }],
         deks: fixture.wraps,
       }),
     ]);
@@ -827,10 +959,364 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: bogus }] }),
+      pullHandler({ variables: [{ ...fixture.entryAlpha, value: bogus }] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("reason=chain-head-mismatch");
+  });
+});
+
+describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
+  it("ステートメント署名の bit 反転を復号より前に拒否する", async () => {
+    const statement = fixture.entryAlpha.statement;
+    const flipped = `${statement.signatureHex.slice(0, -1)}${
+      statement.signatureHex.endsWith("0") ? "1" : "0"
+    }`;
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [{ ...fixture.entryAlpha, statement: { ...statement, signatureHex: flipped } }],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("メタステートメント の検証に失敗");
+  });
+
+  it("名前の付け替え(name だけ差し替えたステートメント)を拒否する(name-swap の運搬形)", async () => {
+    // 署名は正規のまま name フィールドだけ書き換える = byte-exact 署名で落ちる
+    const swapped = { ...fixture.entryAlpha.statement, name: "DEBUG_ENDPOINT" };
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [{ ...fixture.entryAlpha, statement: swapped }],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=signature-invalid");
+  });
+
+  it("別変数のステートメントの移植(variableId 不一致)を拒否する", async () => {
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [{ ...fixture.entryAlpha, statement: fixture.entryBeta.statement }],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("ステートメント座標が要求文脈と一致しません");
+  });
+
+  it("author の虚偽申告(署名は別人のまま)を拒否する(§4.2 の帰属)", async () => {
+    const stranger = await makeTestUser("user-stranger-9999");
+    const lying = {
+      ...fixture.entryAlpha.statement,
+      authorUserId: stranger.userId,
+      authorKeyFingerprintHex: stranger.fingerprintHex,
+    };
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ ...fixture.entryAlpha, statement: lying }] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=author-unknown");
+  });
+
+  it("環境ステートメントの改竄・deleted 配布を拒否する", async () => {
+    // 署名 bit 反転
+    const flipped = `${fixture.envStatement.signatureHex.slice(0, -1)}${
+      fixture.envStatement.signatureHex.endsWith("0") ? "1" : "0"
+    }`;
+    const tampered = await startEnv([
+      chainHandler(),
+      pullHandler({ statement: { ...fixture.envStatement, signatureHex: flipped } }),
+    ]);
+    expect(await runCli(["pull"], tampered.layer)).toBe(1);
+    expect(tampered.errors.join("\n")).toContain("メタステートメント の検証に失敗");
+
+    // deleted ステートメントの配布(削除済み環境の pull はサーバーでは 404 のはず)
+    const deletedStatement = await pullEnvStatement(fixture.built.projectId);
+    const deleted = await startEnv([
+      chainHandler(),
+      pullHandler({
+        statement: {
+          ...(await environmentStatementFor({
+            projectId: fixture.built.projectId,
+            environmentId: ENV_ID,
+            name: ENV_ID,
+            author: fixture.owner,
+            head: genesisHead(fixture.built.projectId),
+            status: "deleted",
+            metaVersion: 2,
+          })),
+        },
+      }),
+    ]);
+    void deletedStatement;
+    expect(await runCli(["pull"], deleted.layer)).toBe(1);
+    expect(deleted.errors.join("\n")).toContain("deleted ステートメントが配布されました");
+  });
+
+  it("削除済み変数の tombstone は検証され、active との併置(無断復活の運搬形)は拒否する", async () => {
+    // 正常系: deleted ステートメントのみの配布は受理され、値には現れない
+    const tombstone = await statementFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-deleted",
+      name: "RETIRED_KEY",
+      author: fixture.owner,
+      head: genesisHead(fixture.built.projectId),
+      status: "deleted",
+      metaVersion: 2,
+    });
+    const ok = await startEnv([chainHandler(), pullHandler({ deletedVariables: [tombstone] })]);
+    expect(await runCli(["pull"], ok.layer)).toBe(0);
+    expect(ok.logs.join("\n")).not.toContain("RETIRED_KEY");
+
+    // 同一 variableId が active と deleted の両方で配布される = 拒否
+    const revived = { ...tombstone, variableId: fixture.entryAlpha.variableId };
+    const conflict = await startEnv([chainHandler(), pullHandler({ deletedVariables: [revived] })]);
+    expect(await runCli(["pull"], conflict.layer)).toBe(1);
+    expect(conflict.errors.join("\n")).toContain("active と deleted の両方で配布されました");
+
+    // tombstone の署名改竄も拒否(配布し続ける以上、検証もし続ける)
+    const flipped = `${tombstone.signatureHex.slice(0, -1)}${
+      tombstone.signatureHex.endsWith("0") ? "1" : "0"
+    }`;
+    const tampered = await startEnv([
+      chainHandler(),
+      pullHandler({ deletedVariables: [{ ...tombstone, signatureHex: flipped }] }),
+    ]);
+    expect(await runCli(["pull"], tampered.layer)).toBe(1);
+    expect(tampered.errors.join("\n")).toContain("メタステートメント の検証に失敗");
+  });
+
+  it("非 NFC 名の配布は警告される(SHOULD — §12-1。処理は継続する)", async () => {
+    const nfdName = "CAFE\u0301_URL";
+    expect(nfdName.normalize("NFC")).not.toBe(nfdName);
+    const value = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "vnfd",
+      version: 1,
+      plaintext: "v",
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [await pullEntry(fixture.built.projectId, "vnfd", nfdName, value)],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("NFC 正規形ではありません");
+  });
+
+  it("削除済み author のステートメントは在籍中ヘッドで検証できる(§6.3-1 の対)", async () => {
+    // author(oldKeys)は seq 4 で削除済み。宣言ヘッド seq 3(在籍中)の
+    // ステートメントは削除後の全チェーンでも当時の鍵で検証できる
+    const oldKeys = await makeTestUser("user-rotated-5555");
+    const owner = fixture.owner;
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(oldKeys, "member") },
+      { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
+      { actor: owner, operation: removeMemberOp(oldKeys) },
+    ]);
+    const wrap = await wrapDekFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek,
+      recipient: owner,
+      signer: owner,
+    });
+    const value = await encryptValueFor({
+      dek,
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "vh",
+      version: 1,
+      plaintext: "historic",
+      writer: oldKeys,
+      head: headOf(built, 3),
+    });
+    const pullJson = {
+      environmentId: ENV_ID,
+      currentEpoch: 1,
+      statement: await environmentStatementFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        name: ENV_ID,
+        author: oldKeys,
+        head: headOf(built, 3),
+      }),
+      variables: [
+        {
+          variableId: "vh",
+          statement: await statementFor({
+            projectId: built.projectId,
+            environmentId: ENV_ID,
+            variableId: "vh",
+            name: "HISTORIC",
+            author: oldKeys,
+            head: headOf(built, 3),
+          }),
+          value,
+        },
+      ],
+      deletedVariables: [],
+      deks: [wrap],
+    };
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      })),
+      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: pullJson,
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("HISTORIC");
+  });
+
+  it("削除済み author が削除後のヘッドを宣言したステートメントを拒否する", async () => {
+    const oldKeys = await makeTestUser("user-rotated-5555");
+    const owner = fixture.owner;
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(oldKeys, "member") },
+      { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
+      { actor: owner, operation: removeMemberOp(oldKeys) },
+    ]);
+    const wrap = await wrapDekFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek,
+      recipient: owner,
+      signer: owner,
+    });
+    const value = await encryptValueFor({
+      dek,
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "vf",
+      version: 1,
+      plaintext: "v",
+      writer: owner,
+      head: headOf(built, 3),
+    });
+    // メタの前進注入のうち「削除後ヘッドの宣言」は在籍検査で落ちる(§6.3-3。
+    // 在籍中ヘッドを宣言する前進注入はエポックアンカーがなく v1 未検出 — §14.3-5)
+    const forgedStatement = await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "vf",
+      name: "FORGED_NAME",
+      author: oldKeys,
+      head: headOf(built, 4),
+      metaVersion: 2,
+    });
+    const pullJson = {
+      environmentId: ENV_ID,
+      currentEpoch: 1,
+      statement: await environmentStatementFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        name: ENV_ID,
+        author: owner,
+        head: headOf(built, 1),
+      }),
+      variables: [{ variableId: "vf", statement: forgedStatement, value }],
+      deletedVariables: [],
+      deks: [wrap],
+    };
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      })),
+      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: pullJson,
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=author-not-member-at-head");
+  });
+
+  it("ステートメントの future head も有界再同期を経て受理する(値と同じ機構の流用 — §6.3-2b)", async () => {
+    // 旧ビュー = seq 2 まで。ステートメントは seq 3(rotate)をヘッドに宣言。
+    // 初回検証は chain-head-future → 再同期で延長が見え、再検証で受理
+    const { built } = fixture;
+    const futureStatement = await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "va",
+      name: "ALPHA",
+      author: fixture.owner,
+      head: headOf(built, 3),
+    });
+    const shortChain = built.entries.slice(0, 2);
+    let chainCalls = 0;
+    const progressiveChain = onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+      chainCalls += 1;
+      const entries = chainCalls === 1 ? shortChain : built.entries;
+      return {
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries,
+          headSeq: entries.length,
+          headHashHex: built.hashes[entries.length - 1],
+        },
+      };
+    });
+    const env = await startEnv([
+      progressiveChain,
+      pullHandler({
+        variables: [{ ...fixture.entryAlpha, statement: futureStatement }],
+        deks: fixture.wraps,
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(chainCalls).toBe(2);
+    expect(env.logs.join("\n")).toContain("ALPHA");
   });
 });
 

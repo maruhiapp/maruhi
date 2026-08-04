@@ -23,7 +23,7 @@ import { Keychain } from "./keychain.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp } from "./login.ts";
 import { projectInitOp } from "./project-init.ts";
-import { type DecryptedVariable, pullVariables } from "./pull.ts";
+import { type DecryptedVariable, type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { ProcessRunner, runOp } from "./run.ts";
 import {
@@ -134,6 +134,16 @@ function openProject(flags: CommonFlags): Effect.Effect<ProjectContext, CliError
 
 function formatPulledLine(variable: DecryptedVariable): string {
   return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${variable.value.byteLength} bytes)`;
+}
+
+/** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
+function logWarnings(warnings: readonly string[]): Effect.Effect<void, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    for (const warning of warnings) {
+      yield* io.logError(`警告: ${warning}`);
+    }
+  });
 }
 
 const displayDecoder = new TextDecoder("utf-8", { fatal: false });
@@ -397,19 +407,20 @@ function pullCommand(execute: Execute) {
           // 環境 ID の形式検証はネットワークアクセスより先に行う
           const environmentId = yield* resolveEnvironmentId(ctx.values.env, yield* store.load);
           const context = yield* openProject(ctx.values);
-          const variables = yield* pullVariables({
+          const pulled: PulledVariables = yield* pullVariables({
             client: context.client,
             verified: context.verified,
             environmentId,
             recipient: context.recipient,
             resync: syncProject(context.client, context.projectId),
           });
-          yield* io.log(`同期・検証 OK: ${variables.length} 変数(環境 ${environmentId})`);
-          for (const variable of variables) {
+          yield* logWarnings(pulled.warnings);
+          yield* io.log(`同期・検証 OK: ${pulled.variables.length} 変数(環境 ${environmentId})`);
+          for (const variable of pulled.variables) {
             yield* io.log(formatPulledLine(variable));
           }
           if (ctx.values.show === true) {
-            yield* showValues(variables);
+            yield* showValues(pulled.variables);
           }
         }),
       ),
@@ -445,10 +456,12 @@ function pushCommand(execute: Execute) {
             value,
             verified: context.verified,
             resync: syncProject(context.client, context.projectId),
-            // 値署名(§4.1): writer = 自分の内部 user_id、鍵 = master sig 鍵
+            // 値署名(§4.1)/ 作成時のステートメント著者署名(§4.2):
+            // writer / author = 自分の内部 user_id、鍵 = master sig 鍵
             writerUserId: context.session.userId,
             signingKey: context.masterKeys.sigKeyPair.privateKey,
           });
+          yield* logWarnings(pushed.warnings);
           yield* io.log(
             `push しました: ${ctx.values.name}(version=${pushed.version}, epoch=${pushed.epoch})`,
           );
@@ -475,14 +488,17 @@ function runCommand(execute: Execute) {
           const store = yield* ConfigStore;
           const environmentId = yield* resolveEnvironmentId(ctx.values.env, yield* store.load);
           const context = yield* openProject(ctx.values);
-          const variables = yield* pullVariables({
+          const pulled = yield* pullVariables({
             client: context.client,
             verified: context.verified,
             environmentId,
             recipient: context.recipient,
             resync: syncProject(context.client, context.projectId),
           });
-          return yield* runOp({ command: ctx.rest, variables });
+          yield* logWarnings(pulled.warnings);
+          // `maruhi run` の環境変数名は検証済みステートメント経由(§4.2 / §12-7)。
+          // 実行制御系変数名 denylist(run.ts)は検証済み name に適用される防衛層
+          return yield* runOp({ command: ctx.rest, variables: pulled.variables });
         }),
       ),
   });

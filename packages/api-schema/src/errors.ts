@@ -267,6 +267,43 @@ export class ValueSignatureRejectedError extends Schema.TaggedErrorClass<ValueSi
   { httpApiStatus: 422 },
 ) {}
 
+/**
+ * 422: a metadata-statement signature (CRYPTO_SPEC §4.2) was rejected. The
+ * reason vocabulary is shared with the value write signature (session-12
+ * §6-7 — 新理由コードを作らない): `signature-invalid` / `chain-head-unknown` /
+ * `chain-head-state-mismatch`(state-mismatch はヘッド時点の在籍・鍵束縛・
+ * role、prev の形 / 保存 predecessor との不一致、削除後の再ステートメントを
+ * 含む)。
+ */
+export class MetaStatementRejectedError extends Schema.TaggedErrorClass<MetaStatementRejectedError>()(
+  "MetaStatementRejected",
+  { reason: ValueSignatureRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * 409: metaVersion CAS failure (AUTH_SPEC §12-5) — the statement's declared
+ * metaVersion is not `currentMetaVersion + 1`. Carries the latest metaVersion
+ * **number only** (never the winner's signed-bytes hash — クライアントは勝者を
+ * 再取得・検証して prev を自計算する。§12-5 の 409 規律)。
+ */
+export class MetaVersionConflictError extends Schema.TaggedErrorClass<MetaVersionConflictError>()(
+  "MetaVersionConflict",
+  { currentMetaVersion: Schema.Number },
+  { httpApiStatus: 409 },
+) {}
+
+/**
+ * 422: the statement's display name is not in NFC normal form (AUTH_SPEC
+ * §12-1). Normalization is the signing client's responsibility — the server
+ * only checks and never normalizes (byte-exact 署名との両立 — CRYPTO_SPEC §4.2)。
+ */
+export class NameNotNfcError extends Schema.TaggedErrorClass<NameNotNfcError>()(
+  "NameNotNfc",
+  {},
+  { httpApiStatus: 422 },
+) {}
+
 /** Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6). */
 export const DekWrapRejectReasonSchema = Schema.Literals([
   "recipient-not-member",
@@ -327,6 +364,10 @@ export const DataLimitResourceSchema = Schema.Literals([
   "variables",
   "variable-rows",
   "versions",
+  // metaVersion 行 / 変数(環境)。仮裁定: §12-8 の「バージョン数 / 変数」と
+  // 同値(1,000)を rename / 削除のステートメント行にも適用する(無制限の
+  // rename 連打による DO ストレージ肥大の遮断。確定条件 = PR レビュー承認)
+  "meta-versions",
   "project-ciphertext-bytes",
   "dek-wraps-per-request",
   "dek-wrap-rows",

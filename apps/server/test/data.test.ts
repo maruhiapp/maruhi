@@ -19,12 +19,17 @@ import {
   importSigningKeyPair,
   unwrapDek,
   verifyChainWithHistory,
+  verifyDistributedMetaStatement,
   verifyDistributedValue,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { projectBytesExceeded, wrapRowsExceeded } from "../src/data-programs.ts";
+import {
+  metaVersionsExceeded,
+  projectBytesExceeded,
+  wrapRowsExceeded,
+} from "../src/data-programs.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
@@ -37,12 +42,15 @@ import {
   MAX_VERSIONS_PER_VARIABLE,
 } from "../src/policy.ts";
 import { deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
+import type { WireEncryptedPayload, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
+  createVariableStatement,
   encryptValue,
   hexBytes,
   makeDek,
+  metaSignedBytesHashOf,
   signEntryAt,
+  signMetaStatementAs,
   signValueAs,
   signWrapAs,
   unwrapAndDecrypt,
@@ -58,12 +66,15 @@ import {
   appendOperation,
   createEnvironmentComposite,
   createEnvironmentOk,
+  createEnvironmentStatement,
   createEnvironmentWith,
   dataUrl,
+  deleteEnvironmentRequest,
   MEMBER,
   OWNER,
   projectId,
   READER,
+  renameEnvironmentRequest,
   requestJson,
   rotateEnvironmentComposite,
   setupDataProject,
@@ -77,11 +88,130 @@ const VAR = "var-database-url";
 
 let fixture: DataFixture;
 
+/** 変数ごとの最新ステートメント + author(rename / 削除の prev 連鎖の材料)。 */
+let varStatements: Map<string, { statement: WireVariableMetaStatement; authorUserId: string }>;
+
 beforeEach(async () => {
   fixture = await setupDataProject();
+  varStatements = new Map();
 });
 
 const token = (userId: string): string => tokenOf(fixture.tokens, userId);
+
+/** 変数作成に同梱するステートメント(metaVersion 1)を署名し、記録する。 */
+async function variableStatementFor(
+  authorUserId: string,
+  variableId: string,
+  name: string,
+  environmentId = ENV,
+): Promise<WireVariableMetaStatement> {
+  return createVariableStatement({
+    authorUserId,
+    projectId,
+    environmentId,
+    variableId,
+    name,
+    head: fixture.head,
+  });
+}
+
+/** 変数の次ステートメント(rename / 削除)を記録済み最新から署名する。 */
+async function nextVariableStatement(input: {
+  readonly variableId: string;
+  readonly name: string;
+  readonly status: "active" | "deleted";
+  readonly authorUserId: string;
+  readonly environmentId?: string;
+}): Promise<WireVariableMetaStatement> {
+  const last = varStatements.get(input.variableId);
+  if (last === undefined) {
+    throw new Error(`no recorded statement for variable ${input.variableId}`);
+  }
+  const prevMetaSigHashHex = await metaSignedBytesHashOf(
+    projectId,
+    last.statement,
+    last.authorUserId,
+  );
+  return signMetaStatementAs(input.authorUserId, projectId, {
+    suite: "maruhi/v1" as const,
+    environmentId: input.environmentId ?? ENV,
+    variableId: input.variableId,
+    name: input.name,
+    status: input.status,
+    metaVersion: last.statement.metaVersion + 1,
+    prevMetaSigHashHex,
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+  });
+}
+
+/** 変数 rename(ステートメント付き PATCH)。204 なら記録を進める。 */
+async function renameVariableRequest(
+  variableId: string,
+  name: string,
+  actorUserId: string,
+): Promise<Response> {
+  const statement = await nextVariableStatement({
+    variableId,
+    name,
+    status: "active",
+    authorUserId: actorUserId,
+  });
+  const response = await requestJson(
+    "PATCH",
+    `/environments/${ENV}/variables/${variableId}`,
+    token(actorUserId),
+    { statement },
+  );
+  if (response.status === 204) {
+    varStatements.set(variableId, { statement, authorUserId: actorUserId });
+  }
+  return response;
+}
+
+/** 変数削除(status deleted のステートメント付き DELETE)。204 なら記録を進める。 */
+async function deleteVariableRequest(variableId: string, actorUserId: string): Promise<Response> {
+  const last = varStatements.get(variableId);
+  if (last === undefined) {
+    throw new Error(`no recorded statement for variable ${variableId}`);
+  }
+  const statement = await nextVariableStatement({
+    variableId,
+    // deleted の name は直前 active 名を保持する(§4.2)
+    name: last.statement.name,
+    status: "deleted",
+    authorUserId: actorUserId,
+  });
+  const response = await requestJson(
+    "DELETE",
+    `/environments/${ENV}/variables/${variableId}`,
+    token(actorUserId),
+    { statement },
+  );
+  if (response.status === 204) {
+    varStatements.set(variableId, { statement, authorUserId: actorUserId });
+  }
+  return response;
+}
+
+/**
+ * Schema 通過のみが必要なテスト(400 / 403 / 404 が署名検証より前に確定)用の
+ * 未署名ダミーステートメント(形式のみ有効なゼロ署名)。
+ */
+function unsignedVariableStatement(variableId: string, name: string): WireVariableMetaStatement {
+  return {
+    suite: "maruhi/v1",
+    environmentId: ENV,
+    variableId,
+    name,
+    status: "active",
+    metaVersion: 1,
+    prevMetaSigHashHex: "",
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+    signatureHex: "00".repeat(64),
+  };
+}
 
 /**
  * 受理ポリシー系テスト用のフェイク暗号文(サーバーは中身を復号できない)。
@@ -146,7 +276,7 @@ const aadFor = (
   ...overrides,
 });
 
-/** 変数作成(実暗号化 + MEMBER の値署名。宣言ヘッド = 現ヘッド)。 */
+/** 変数作成(実暗号化 + MEMBER の値署名 + metaVersion 1 のステートメント同梱)。 */
 async function createVariableOk(
   dek: Uint8Array,
   variableId: string,
@@ -159,13 +289,14 @@ async function createVariableOk(
     plaintext,
     { writerUserId: MEMBER, head: fixture.head },
   );
+  const statement = await variableStatementFor(MEMBER, variableId, name);
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-    variableId,
-    name,
+    statement,
     value,
   });
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toEqual({ variableId, version: 1, epoch: 1 });
+  varStatements.set(variableId, { statement, authorUserId: MEMBER });
   return value;
 }
 
@@ -199,10 +330,33 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     expect(chainBody.entries.at(-1)?.op).toBe("create_environment");
     expect(chainBody.entries.at(-1)?.seq).toBe(body.headSeq);
 
+    // 環境一覧は裸 name でなく最新ステートメント + author 情報を返す(§12-2)
     const list = await requestJson("GET", "/environments", token(READER));
     expect(list.status).toBe(200);
-    await expect(list.json()).resolves.toEqual({
-      environments: [{ environmentId: ENV, name: "App", currentEpoch: 1 }],
+    const listBody = (await list.json()) as {
+      environments: {
+        environmentId: string;
+        currentEpoch: number;
+        statement: {
+          name: string;
+          status: string;
+          metaVersion: number;
+          authorUserId: string;
+          authorKeyFingerprintHex: string;
+        };
+      }[];
+    };
+    expect(listBody.environments.length).toBe(1);
+    expect(listBody.environments[0]).toMatchObject({
+      environmentId: ENV,
+      currentEpoch: 1,
+      statement: {
+        name: "App",
+        status: "active",
+        metaVersion: 1,
+        authorUserId: OWNER,
+        authorKeyFingerprintHex: vectorKeyOf(OWNER).key_fingerprint_hex,
+      },
     });
 
     const wraps = await queryProjectDo(
@@ -235,11 +389,17 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
   it("never reuses a deleted environment id (422 duplicate-environment) and hard-deletes its data", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://old");
-    const removed = await requestJson("DELETE", `/environments/${ENV}`, token(OWNER));
+    const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
 
-    // 変数・バージョン・ラップは即時削除、環境行は tombstone(§12-4)
-    for (const table of ["variables", "variable_versions", "dek_wraps"]) {
+    // 変数・変数ステートメント・バージョン・ラップは即時削除、環境行は
+    // tombstone(§12-4)。環境自身のステートメント連鎖(deleted 込み)は残る
+    for (const table of [
+      "variables",
+      "variable_meta_statements",
+      "variable_versions",
+      "dek_wraps",
+    ]) {
       const rows = await queryProjectDo(
         projectId,
         `SELECT 1 FROM ${table} WHERE environment_id = ?`,
@@ -362,22 +522,20 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
 
     const second = await createEnvironmentWith(fixture, "env-app-0002", "Staging", deks);
     expect(second.status).toBe(200);
-    const renamed = await requestJson("PATCH", "/environments/env-app-0002", token(MEMBER), {
-      name: "App",
-    });
+    const renamed = await renameEnvironmentRequest(fixture, "env-app-0002", "App", MEMBER);
     expect(renamed.status).toBe(409);
-    const ok = await requestJson("PATCH", "/environments/env-app-0002", token(MEMBER), {
-      name: "Prod",
-    });
+    const ok = await renameEnvironmentRequest(fixture, "env-app-0002", "Prod", MEMBER);
     expect(ok.status).toBe(204);
     const list = await requestJson("GET", "/environments", token(READER));
-    const listBody = (await list.json()) as { environments: { name: string }[] };
-    expect(listBody.environments.map((e) => e.name).toSorted()).toEqual(["App", "Prod"]);
+    const listBody = (await list.json()) as {
+      environments: { statement: { name: string } }[];
+    };
+    expect(listBody.environments.map((e) => e.statement.name).toSorted()).toEqual(["App", "Prod"]);
   });
 
   it("requires chain role admin for environment deletion (§12-3)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    const asMember = await requestJson("DELETE", `/environments/${ENV}`, token(MEMBER));
+    const asMember = await deleteEnvironmentRequest(fixture, ENV, MEMBER);
     expect(asMember.status).toBe(403);
     const body = (await asMember.json()) as { reason: string };
     expect(body.reason).toBe("insufficient-role");
@@ -428,7 +586,12 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const response = await requestJson("POST", "/environments", token(MEMBER), {
       parentHeadHashHex: fixture.head.hashHex,
       entry,
-      name: "App",
+      statement: await createEnvironmentStatement({
+        authorUserId: OWNER,
+        environmentId: ENV,
+        name: "App",
+        head: fixture.head,
+      }),
       deks,
     });
     expect(response.status).toBe(403);
@@ -441,13 +604,29 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       ["GET", "/environments"],
       ["GET", `/environments/${ENV}/pull`],
       ["GET", `/environments/${ENV}/deks`],
-      ["DELETE", `/environments/${ENV}`],
     ] as const) {
       const response = await requestJson(method, path, token(STRANGER));
       expect(response.status).toBe(404);
       const body = (await response.json()) as { projectId: string };
       expect(body.projectId).toBe(projectId);
     }
+    // 削除(ステートメント必須)も非メンバーには 404。STRANGER はベクター鍵を
+    // 持たないため未署名ダミーで送る(存在秘匿は署名検証より前 — §12-3)
+    const removal = await requestJson("DELETE", `/environments/${ENV}`, token(STRANGER), {
+      statement: {
+        suite: "maruhi/v1",
+        environmentId: ENV,
+        name: "App",
+        status: "deleted",
+        metaVersion: 2,
+        prevMetaSigHashHex: "cd".repeat(32),
+        chainHeadHashHex: fixture.head.hashHex,
+        chainHeadSeq: fixture.head.seq,
+        signatureHex: "00".repeat(64),
+      },
+    });
+    expect(removal.status).toBe(404);
+    expect(((await removal.json()) as { projectId: string }).projectId).toBe(projectId);
   });
 
   it("rejects unauthenticated requests with 401", async () => {
@@ -558,16 +737,40 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const body = (await pull.json()) as {
       environmentId: string;
       currentEpoch: number;
-      variables: { variableId: string; name: string; value: WireEncryptedPayload }[];
+      statement: { name: string; status: string; authorUserId: string };
+      variables: {
+        variableId: string;
+        statement: {
+          variableId: string;
+          name: string;
+          status: string;
+          metaVersion: number;
+          authorUserId: string;
+          authorKeyFingerprintHex: string;
+        };
+        value: WireEncryptedPayload;
+      }[];
+      deletedVariables: unknown[];
       deks: { epoch: number; encHex: string; ciphertextHex: string }[];
     };
     expect(body.currentEpoch).toBe(1);
     expect(body.variables.length).toBe(1);
     expect(body.deks.length).toBe(1);
+    // pull は裸 name でなくステートメント + author 情報を運ぶ(§12-2 / §12-7)
+    expect(body.statement).toMatchObject({ name: "App", status: "active", authorUserId: OWNER });
+    expect(body.deletedVariables).toEqual([]);
     const [variable] = body.variables;
     const [wrappedDek] = body.deks;
     if (variable === undefined || wrappedDek === undefined) throw new Error("missing pull data");
     expect(variable.value.aad).toEqual(aadFor(1, 1));
+    expect(variable.statement).toMatchObject({
+      variableId: VAR,
+      name: "DATABASE_URL",
+      status: "active",
+      metaVersion: 1,
+      authorUserId: MEMBER,
+      authorKeyFingerprintHex: vectorKeyOf(MEMBER).key_fingerprint_hex,
+    });
 
     // reader のクライアント側復号(E2EE のラウンドトリップ)
     const plaintext = await unwrapAndDecrypt({
@@ -672,8 +875,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   it("creation requires version 1 (409 currentVersion 0)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "DATABASE_URL",
+      statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 2)),
     });
     expect(response.status).toBe(409);
@@ -811,9 +1013,22 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const concealed = await requestJson("GET", `/environments/${ENV}/pull`, scoped);
     expect(concealed.status).toBe(404);
 
-    // 環境削除は admin スコープが必要(write では 403)
+    // 環境削除は admin スコープが必要(write では 403。スコープ検査は署名検証より
+    // 前 — §12-3 — なので未署名ダミーのステートメントで足りる)
     const memberWrite = await deviceToken(9001, writeScope);
-    const removal = await requestJson("DELETE", `/environments/${ENV}`, memberWrite);
+    const removal = await requestJson("DELETE", `/environments/${ENV}`, memberWrite, {
+      statement: {
+        suite: "maruhi/v1",
+        environmentId: ENV,
+        name: "App",
+        status: "deleted",
+        metaVersion: 2,
+        prevMetaSigHashHex: "cd".repeat(32),
+        chainHeadHashHex: fixture.head.hashHex,
+        chainHeadSeq: fixture.head.seq,
+        signatureHex: "00".repeat(64),
+      },
+    });
     expect(removal.status).toBe(403);
     expect(((await removal.json()) as { reason: string }).reason).toBe("insufficient-permission");
   });
@@ -823,55 +1038,42 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
     const duplicate = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "OTHER",
+      statement: await variableStatementFor(MEMBER, VAR, "OTHER"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(duplicate.status).toBe(409);
     expect(((await duplicate.json()) as { reason: string }).reason).toBe("exists");
 
     const sameName = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: "var-other",
-      name: "DATABASE_URL",
+      statement: await variableStatementFor(MEMBER, "var-other", "DATABASE_URL"),
       value: await fakePayload(MEMBER, { ...aadFor(1, 1), variableId: "var-other" }),
     });
     expect(sameName.status).toBe(409);
     expect(((await sameName.json()) as { reason: string }).reason).toBe("duplicate-name");
 
-    // 作成側の申告 AAD 不一致(§12-2): body の variableId と aad の不一致は 422
+    // 作成側の申告 AAD 不一致(§12-2): ステートメントの variableId と aad の不一致は 422
     const createMismatch = await requestJson(
       "POST",
       `/environments/${ENV}/variables`,
       token(MEMBER),
-      { variableId: "var-other", name: "OTHER", value: await fakePayload(MEMBER, aadFor(1, 1)) },
+      {
+        statement: await variableStatementFor(MEMBER, "var-other", "OTHER"),
+        value: await fakePayload(MEMBER, aadFor(1, 1)),
+      },
     );
     expect(createMismatch.status).toBe(422);
     expect(((await createMismatch.json()) as { field: string }).field).toBe("variableId");
 
     // 改名も名前一意性の対象(§12-1)
     await createVariableOk(dek, "var-other", "OTHER", "other-value");
-    const renameConflict = await requestJson(
-      "PATCH",
-      `/environments/${ENV}/variables/var-other`,
-      token(MEMBER),
-      { name: "DATABASE_URL" },
-    );
+    const renameConflict = await renameVariableRequest("var-other", "DATABASE_URL", MEMBER);
     expect(renameConflict.status).toBe(409);
     expect(((await renameConflict.json()) as { reason: string }).reason).toBe("duplicate-name");
 
-    const renamed = await requestJson(
-      "PATCH",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-      { name: "DB_URL" },
-    );
+    const renamed = await renameVariableRequest(VAR, "DB_URL", MEMBER);
     expect(renamed.status).toBe(204);
 
-    const removed = await requestJson(
-      "DELETE",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-    );
+    const removed = await deleteVariableRequest(VAR, MEMBER);
     expect(removed.status).toBe(204);
     const versions = await queryProjectDo(
       projectId,
@@ -883,8 +1085,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
 
     // 削除済み ID の再利用は拒否(§12-1)
     const retired = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "REBORN",
+      statement: await variableStatementFor(MEMBER, VAR, "REBORN"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(retired.status).toBe(409);
@@ -903,8 +1104,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   it("rejects an oversized ciphertext with 413 (§12-8)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "BIG",
+      statement: await variableStatementFor(MEMBER, VAR, "BIG"),
       value: await fakePayload(MEMBER, aadFor(1, 1), {
         ciphertextBytes: MAX_VALUE_CIPHERTEXT_BYTES + 1,
       }),
@@ -1063,20 +1263,21 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
       value.signatureHex.endsWith("00") ? "01" : "00"
     }`;
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "DATABASE_URL",
+      statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: { ...value, signatureHex: flipped },
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
-    // 変数行・バージョン行・監査(var.created / var.version_pushed)のいずれも残らない
-    const variables = await queryProjectDo(
-      projectId,
-      "SELECT 1 FROM variables WHERE environment_id = ? AND variable_id = ?",
-      ENV,
-      VAR,
-    );
-    expect(variables.length).toBe(0);
+    // 変数行・ステートメント行・バージョン行・監査のいずれも残らない
+    for (const table of ["variables", "variable_meta_statements"]) {
+      const rows = await queryProjectDo(
+        projectId,
+        `SELECT 1 FROM ${table} WHERE environment_id = ? AND variable_id = ?`,
+        ENV,
+        VAR,
+      );
+      expect(rows.length).toBe(0);
+    }
     const audits = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.created', 'var.version_pushed')",
@@ -1246,8 +1447,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
       `/environments/${ENV}/variables`,
       token(MEMBER),
       {
-        variableId: "var-phantom-prev",
-        name: "PHANTOM",
+        statement: await variableStatementFor(MEMBER, "var-phantom-prev", "PHANTOM"),
         value: {
           suite: "maruhi/v1",
           aad: aadFor(1, 1, { variableId: "var-phantom-prev" }),
@@ -1494,6 +1694,552 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
   });
 });
 
+describe("メタステートメントの受理検証(§12-5 のメタ規則 = CRYPTO_SPEC §4.2)", () => {
+  /** 拒否時の無副作用: ステートメント行・変数名キャッシュ・監査が変わらない。 */
+  async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]): Promise<void> {
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? ORDER BY meta_version",
+      ENV,
+      VAR,
+    );
+    expect(rows.map((row) => row["meta_version"])).toEqual([...expectedMetaVersions]);
+    const renamedAudits = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.renamed', 'var.deleted')",
+    );
+    expect(renamedAudits[0]?.["n"]).toBe(Math.max(0, expectedMetaVersions.length - 1));
+  }
+
+  it("accepts the create → rename → delete statement chain and keeps distributing the tombstone", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 作成ステートメント(metaVersion 1)を rename が上書きする前に控える
+    const created = varStatements.get(VAR);
+    if (created === undefined) throw new Error("missing recorded statement");
+    const renamed = await renameVariableRequest(VAR, "DB_URL", MEMBER);
+    expect(renamed.status).toBe(204);
+
+    // rename 後の pull は metaVersion 2 のステートメント + author を配布する
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    const body = (await pull.json()) as {
+      variables: {
+        statement: {
+          name: string;
+          status: string;
+          metaVersion: number;
+          prevMetaSigHashHex: string;
+          authorUserId: string;
+        };
+      }[];
+      deletedVariables: unknown[];
+    };
+    expect(body.variables[0]?.statement).toMatchObject({
+      name: "DB_URL",
+      status: "active",
+      metaVersion: 2,
+      authorUserId: MEMBER,
+    });
+    expect(body.deletedVariables).toEqual([]);
+
+    // 削除: tombstone + 全バージョン削除。deleted ステートメント(name は直前
+    // active 名を保持)は保存・配布し続ける(§12-5)
+    const removed = await deleteVariableRequest(VAR, MEMBER);
+    expect(removed.status).toBe(204);
+    const afterDelete = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    const deletedBody = (await afterDelete.json()) as {
+      variables: unknown[];
+      deletedVariables: {
+        variableId: string;
+        name: string;
+        status: string;
+        metaVersion: number;
+        authorUserId: string;
+        authorKeyFingerprintHex: string;
+      }[];
+    };
+    expect(deletedBody.variables).toEqual([]);
+    expect(deletedBody.deletedVariables).toEqual([
+      expect.objectContaining({
+        variableId: VAR,
+        name: "DB_URL",
+        status: "deleted",
+        metaVersion: 3,
+        authorUserId: MEMBER,
+        authorKeyFingerprintHex: vectorKeyOf(MEMBER).key_fingerprint_hex,
+      }),
+    ]);
+
+    // ステートメント行(§12-5 の保存行): metaVersion ごとに author・宣言ヘッド・
+    // prev・サーバー再計算ハッシュを保持する
+    const rows = await queryProjectDo(
+      projectId,
+      `SELECT meta_version, name, status, prev_meta_sig_hash_hex, signed_bytes_hash_hex, author_user_id, author_key_fingerprint
+       FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? ORDER BY meta_version`,
+      ENV,
+      VAR,
+    );
+    expect(rows.map((row) => [row["meta_version"], row["name"], row["status"]])).toEqual([
+      [1, "DATABASE_URL", "active"],
+      [2, "DB_URL", "active"],
+      [3, "DB_URL", "deleted"],
+    ]);
+    expect(rows[0]?.["signed_bytes_hash_hex"]).toBe(
+      await metaSignedBytesHashOf(projectId, created.statement, MEMBER),
+    );
+    expect(rows.every((row) => row["author_user_id"] === MEMBER)).toBe(true);
+  });
+
+  it("enforces the metaVersion CAS: only latest + 1, returning the number only (409 §12-5)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const created = varStatements.get(VAR);
+    if (created === undefined) throw new Error("missing recorded statement");
+    // 申告 metaVersion 3(最新は 1)→ 409 currentMetaVersion 1。勝者の
+    // signed_bytes ハッシュは載せない(§12-5 の 409 規律)
+    const stale = await signMetaStatementAs(MEMBER, projectId, {
+      suite: "maruhi/v1" as const,
+      environmentId: ENV,
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active" as const,
+      metaVersion: 3,
+      prevMetaSigHashHex: "cd".repeat(32),
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    });
+    const response = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: stale },
+    );
+    expect(response.status).toBe(409);
+    const staleBody = (await response.json()) as Record<string, unknown>;
+    expect(staleBody).toMatchObject({ currentMetaVersion: 1 });
+    expect(Object.keys(staleBody).filter((key) => key.toLowerCase().includes("hash"))).toEqual([]);
+    await expectNoMetaSideEffects([1]);
+  });
+
+  it("rejects non-NFC names with 422 NameNotNfc on every statement path (§12-1)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    // NFD(結合文字)の名前 — サーバーは正規化せず検査のみ(byte-exact 署名との両立)
+    const nfdName = "CAFE\u0301_URL";
+    expect(nfdName.normalize("NFC")).not.toBe(nfdName);
+
+    // 変数作成
+    const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      statement: await variableStatementFor(MEMBER, VAR, nfdName),
+      value: await fakePayload(MEMBER, aadFor(1, 1)),
+    });
+    expect(created.status).toBe(422);
+    expect((await created.json()) as Record<string, unknown>).toMatchObject({
+      _tag: "NameNotNfc",
+    });
+    await expectNoMetaSideEffects([]);
+
+    // 変数 rename
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const renamed = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement: await nextVariableStatement({
+          variableId: VAR,
+          name: nfdName,
+          status: "active",
+          authorUserId: MEMBER,
+        }),
+      },
+    );
+    expect(renamed.status).toBe(422);
+    await expectNoMetaSideEffects([1]);
+
+    // 複合の環境作成(同梱ステートメント)— チェーンエントリも追記されない(原子性)
+    const headBefore = fixture.head;
+    const response = await createEnvironmentWith(
+      fixture,
+      "env-nfd-0002",
+      nfdName,
+      await wrapsFor("env-nfd-0002", ALL_MEMBERS),
+    );
+    expect(response.status).toBe(422);
+    const chain = await requestJson("GET", "/chain", token(READER));
+    expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
+  });
+
+  it("requires the delete statement to keep the last active name (422 PayloadMismatch)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const wrongName = await nextVariableStatement({
+      variableId: VAR,
+      name: "SOMETHING_ELSE",
+      status: "deleted",
+      authorUserId: MEMBER,
+    });
+    const response = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: wrongName },
+    );
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { field: string }).field).toBe("name");
+    // 変数は削除されていない
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(((await pull.json()) as { variables: unknown[] }).variables.length).toBe(1);
+    await expectNoMetaSideEffects([1]);
+  });
+
+  it("rejects a statement signed by someone other than the caller (422 signature-invalid)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // OWNER が署名した rename を MEMBER が持ち込む → 検証鍵は呼び出し主体
+    // (MEMBER)の受理時点チェーン鍵なので失敗(他人の署名の持ち込み拒否)
+    const ownerSigned = await nextVariableStatement({
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active",
+      authorUserId: OWNER,
+    });
+    const response = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: ownerSigned },
+    );
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
+    await expectNoMetaSideEffects([1]);
+  });
+
+  it("rejects statements whose declared head predates the author's membership or is unknown (§12-5 の 2〜3)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const created = varStatements.get(VAR);
+    if (created === undefined) throw new Error("missing recorded statement");
+    const prevHash = await metaSignedBytesHashOf(projectId, created.statement, MEMBER);
+
+    // (a) 宣言ヘッド = genesis(seq 1)。MEMBER の add_member は seq 2 なので
+    // ヘッド時点で非在籍 → chain-head-state-mismatch。メタは環境の存在を検査
+    // しない(§12-4 の非対称)ため、拒否理由は在籍のみに帰着する
+    const beforeMembership = await signMetaStatementAs(MEMBER, projectId, {
+      suite: "maruhi/v1" as const,
+      environmentId: ENV,
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active" as const,
+      metaVersion: 2,
+      prevMetaSigHashHex: prevHash,
+      chainHeadHashHex: await hashOf(1),
+      chainHeadSeq: 1,
+    });
+    const notMember = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: beforeMembership },
+    );
+    expect(notMember.status).toBe(422);
+    expect(((await notMember.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+
+    // (b) 実在 seq × 不一致 hash → chain-head-unknown
+    const unknownHead = await signMetaStatementAs(MEMBER, projectId, {
+      suite: "maruhi/v1" as const,
+      environmentId: ENV,
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active" as const,
+      metaVersion: 2,
+      prevMetaSigHashHex: prevHash,
+      chainHeadHashHex: "ee".repeat(32),
+      chainHeadSeq: fixture.head.seq,
+    });
+    const mismatch = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: unknownHead },
+    );
+    expect(mismatch.status).toBe(422);
+    expect(((await mismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
+
+    // (c) prev の不一致(署名は有効)→ chain-head-state-mismatch
+    const wrongPrev = await signMetaStatementAs(MEMBER, projectId, {
+      suite: "maruhi/v1" as const,
+      environmentId: ENV,
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active" as const,
+      metaVersion: 2,
+      prevMetaSigHashHex: "cd".repeat(32),
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    });
+    const prevMismatch = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: wrongPrev },
+    );
+    expect(prevMismatch.status).toBe(422);
+    expect(((await prevMismatch.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+    await expectNoMetaSideEffects([1]);
+  });
+
+  it("distributes a removed author's statement, verifiable at its in-tenure head (§6.3 のクライアント検証)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: MEMBER },
+    });
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    const body = (await pull.json()) as {
+      variables: {
+        variableId: string;
+        statement: {
+          suite: "maruhi/v1";
+          name: string;
+          status: "active" | "deleted";
+          metaVersion: number;
+          prevMetaSigHashHex: string;
+          chainHeadHashHex: string;
+          chainHeadSeq: number;
+          signatureHex: string;
+          authorUserId: string;
+          authorKeyFingerprintHex: string;
+        };
+      }[];
+    };
+    const pulled = body.variables[0];
+    if (pulled === undefined) throw new Error("missing pulled variable");
+    // author 情報は受理時点のまま配布される(現メンバー集合から再導出しない)
+    expect(pulled.statement.authorUserId).toBe(MEMBER);
+
+    // クライアント検証(§6.3): 削除後の全チェーンでも、宣言ヘッドが在籍区間内
+    // なので当時の鍵で検証できる
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const chainBody = (await chain.json()) as { entries: ChainEntry[] };
+    const verified = await verifyChainWithHistory(chainBody.entries);
+    if (!verified.ok) throw new Error("chain verification failed");
+    const result = await verifyDistributedMetaStatement({
+      history: verified.value.history,
+      context: {
+        suite: pulled.statement.suite,
+        projectId,
+        environmentId: ENV,
+        target: { kind: "variable", variableId: pulled.variableId },
+        name: pulled.statement.name,
+        status: pulled.statement.status,
+        metaVersion: pulled.statement.metaVersion,
+        prevMetaSigHashHex: pulled.statement.prevMetaSigHashHex,
+        authorUserId: pulled.statement.authorUserId,
+        chainHeadHashHex: pulled.statement.chainHeadHashHex,
+        chainHeadSeq: pulled.statement.chainHeadSeq,
+      },
+      authorKeyFingerprintHex: pulled.statement.authorKeyFingerprintHex,
+      signatureHex: pulled.statement.signatureHex,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("lists deleted environments with their tombstone statement (§12-4 の配布継続)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    await createEnvironmentOk(fixture, "env-app-0002", "Staging");
+    const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
+    expect(removed.status).toBe(204);
+    const list = await requestJson("GET", "/environments", token(READER));
+    const body = (await list.json()) as {
+      environments: {
+        environmentId: string;
+        statement: { name: string; status: string; metaVersion: number; authorUserId: string };
+      }[];
+    };
+    expect(body.environments.length).toBe(2);
+    const deleted = body.environments.find((e) => e.environmentId === ENV);
+    expect(deleted?.statement).toMatchObject({
+      name: "App",
+      status: "deleted",
+      metaVersion: 2,
+      authorUserId: OWNER,
+    });
+    // 削除済み環境への pull は従来どおり 404(tombstone)
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(pull.status).toBe(404);
+  });
+
+  it("requires the composite statement to declare the pre-append head (§12-4)", async () => {
+    // 先に 1 つ環境を作ってヘッドを進め、「古い実在ヘッド」を作る
+    await createEnvironmentOk(fixture, ENV, "App");
+    const staleHead = { seq: fixture.head.seq - 1, hashHex: await hashOf(fixture.head.seq - 1) };
+    const deks = await wrapsFor("env-app-0002", ALL_MEMBERS);
+    const headBefore = fixture.head;
+    const staleStatement = await createEnvironmentStatement({
+      authorUserId: OWNER,
+      environmentId: "env-app-0002",
+      name: "Staging",
+      head: staleHead,
+    });
+    const response = await createEnvironmentComposite(fixture, {
+      environmentId: "env-app-0002",
+      name: "Staging",
+      deks,
+      dekCommitmentHex: "ab".repeat(32),
+      statement: staleStatement,
+    });
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { field: string }).field).toBe("statementChainHead");
+    // 原子性: チェーンにも環境行にも痕跡を残さない
+    const chain = await requestJson("GET", "/chain", token(READER));
+    expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
+  });
+
+  it("retries a composite creation after a head CAS conflict by re-signing both entry and statement (§12-4)", async () => {
+    const deks = await wrapsFor(ENV, ALL_MEMBERS);
+    const stale = await createEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      name: "App",
+      deks,
+      dekCommitmentHex: "ab".repeat(32),
+      parentHeadHashHex: projectId, // genesis ハッシュ = 古いヘッド
+    });
+    // CAS が先に落ちる(ステートメントの宣言ヘッドも古いが、409 で再試行を促す)
+    expect(stale.status).toBe(409);
+    const headBefore = { ...fixture.head };
+    // 再試行はエントリ(prev 変更)とステートメント(宣言ヘッド変更)の両方を
+    // 再署名する(fixture helper が両方作り直す — §12-4)
+    const retried = await createEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      name: "App",
+      deks,
+      dekCommitmentHex: "ab".repeat(32),
+    });
+    expect(retried.status).toBe(200);
+    // 保存されたステートメントの宣言ヘッドは追記前の現ヘッド(= 再署名済み)
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT chain_head_seq, chain_head_hash_hex FROM environment_meta_statements WHERE environment_id = ?",
+      ENV,
+    );
+    expect(rows[0]).toEqual({
+      chain_head_seq: headBefore.seq,
+      chain_head_hash_hex: headBefore.hashHex,
+    });
+  });
+
+  it("caps meta versions per variable (422 meta-versions — 仮裁定の §12-8 適用)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 実 rename 1,000 回は非現実的なので latest_meta_version を直接引き上げ、
+    // 上限直前のステートメント行(prev 検査の predecessor)をシードする
+    await queryProjectDo(
+      projectId,
+      "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      MAX_VERSIONS_PER_VARIABLE,
+      ENV,
+      VAR,
+    );
+    const response = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement: await signMetaStatementAs(MEMBER, projectId, {
+          suite: "maruhi/v1" as const,
+          environmentId: ENV,
+          variableId: VAR,
+          name: "DB_URL",
+          status: "active" as const,
+          metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
+          prevMetaSigHashHex: "cd".repeat(32),
+          chainHeadHashHex: fixture.head.hashHex,
+          chainHeadSeq: fixture.head.seq,
+        }),
+      },
+    );
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      resource: "meta-versions",
+      limit: MAX_VERSIONS_PER_VARIABLE,
+    });
+  });
+
+  it("accepts the delete statement even at the meta version cap (deleted は上限対象外)", async () => {
+    // 上限で削除まで遮断すると、rename 連打で上限到達したリソースがどの role
+    // でも恒久的に削除不能になる(レビュー②③ [major])。tombstone は連鎖の
+    // 終端で追加行は高々 1 行なので上限の対象外とする
+    expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "active")).toBe(true);
+    expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE - 1, "active")).toBe(false);
+    expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "deleted")).toBe(false);
+
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 実 rename 1,000 回は非現実的なので、latest と最新ステートメント行の
+    // meta_version を直接引き上げて上限到達状態をシードする(prev は保存済みの
+    // サーバー再計算ハッシュを流用)
+    await queryProjectDo(
+      projectId,
+      "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      MAX_VERSIONS_PER_VARIABLE,
+      ENV,
+      VAR,
+    );
+    await queryProjectDo(
+      projectId,
+      "UPDATE variable_meta_statements SET meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      MAX_VERSIONS_PER_VARIABLE,
+      ENV,
+      VAR,
+    );
+    const anchorRows = await queryProjectDo(
+      projectId,
+      "SELECT signed_bytes_hash_hex FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ?",
+      ENV,
+      VAR,
+    );
+    const prevHash = anchorRows[0]?.signed_bytes_hash_hex;
+    if (typeof prevHash !== "string") {
+      throw new Error("seeded meta statement row missing");
+    }
+    const removed = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement: await signMetaStatementAs(MEMBER, projectId, {
+          suite: "maruhi/v1" as const,
+          environmentId: ENV,
+          variableId: VAR,
+          // deleted の name は直前 active 名を保持する(§4.2)
+          name: "DATABASE_URL",
+          status: "deleted" as const,
+          metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
+          prevMetaSigHashHex: prevHash,
+          chainHeadHashHex: fixture.head.hashHex,
+          chainHeadSeq: fixture.head.seq,
+        }),
+      },
+    );
+    expect(removed.status).toBe(204);
+    // tombstone ステートメントは保存・配布され続ける(§12-5)
+    const tombstones = await queryProjectDo(
+      projectId,
+      "SELECT status, meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? AND status = 'deleted'",
+      ENV,
+      VAR,
+    );
+    expect(tombstones).toEqual([
+      { status: "deleted", meta_version: MAX_VERSIONS_PER_VARIABLE + 1 },
+    ]);
+  });
+});
+
 describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 / CRYPTO_SPEC §7)", () => {
   it("accepts pushes only under the current chain epoch and completes the composite rotation flow", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
@@ -1660,7 +2406,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
 
   it("rejects a rotation to a deleted environment with 404 (§12-4: §7 の「全環境」は削除済みを含まない)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    const removed = await requestJson("DELETE", `/environments/${ENV}`, token(OWNER));
+    const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
     const deks = await wrapDekForAll({
       projectId,
@@ -1902,7 +2648,12 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
     const body = JSON.stringify({
       parentHeadHashHex: fixture.head.hashHex,
       entry,
-      name: "App",
+      statement: await createEnvironmentStatement({
+        authorUserId: OWNER,
+        environmentId: ENV,
+        name: "App",
+        head: fixture.head,
+      }),
       deks,
     });
     // CSRF ヘッダーなしの書き込みは 403
@@ -2109,7 +2860,7 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
       limit: MAX_DEK_WRAPS_PER_REQUEST,
     });
     // tombstone 環境(ラップは物理削除済み)への削除は 404 EnvironmentNotFound
-    const removedEnv = await requestJson("DELETE", `/environments/${ENV}`, token(OWNER));
+    const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removedEnv.status).toBe(204);
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [{ epoch: 1, recipientUserId: READER }],
@@ -2195,7 +2946,12 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     const created = await requestJson("POST", "/environments", token(OWNER), {
       parentHeadHashHex: fixture.head.hashHex,
       entry,
-      name: "App",
+      statement: await createEnvironmentStatement({
+        authorUserId: OWNER,
+        environmentId: ENV,
+        name: "App",
+        head: fixture.head,
+      }),
       deks: stripped,
     });
     expect(created.status).toBe(400);
@@ -2581,7 +3337,16 @@ describe("suite の永続化とワイヤ(§12-2 / CRYPTO_SPEC §2 設計原則 4
         payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
       },
     });
-    const compositeBase = { parentHeadHashHex: fixture.head.hashHex, entry, name: "App" };
+    const compositeBase = {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry,
+      statement: await createEnvironmentStatement({
+        authorUserId: OWNER,
+        environmentId: ENV,
+        name: "App",
+        head: fixture.head,
+      }),
+    };
     const missing = await requestJson("POST", "/environments", token(OWNER), {
       ...compositeBase,
       deks: stripped,
@@ -2601,8 +3366,8 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     await queryProjectDo(
       projectId,
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
-       INSERT INTO environments (environment_id, name, created_at, deleted_at)
-       SELECT 'env-seed-' || n, 'seed-' || n, 0, NULL FROM seq`,
+       INSERT INTO environments (environment_id, name, latest_meta_version, created_at, deleted_at)
+       SELECT 'env-seed-' || n, 'seed-' || n, 1, 0, NULL FROM seq`,
       MAX_ACTIVE_ENVIRONMENTS,
     );
     const response = await createEnvironmentWith(fixture, ENV, "App", []);
@@ -2617,8 +3382,8 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     await queryProjectDo(
       projectId,
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
-       INSERT INTO environments (environment_id, name, created_at, deleted_at)
-       SELECT 'env-seed-' || n, 'seed-' || n, 0, 1 FROM seq`,
+       INSERT INTO environments (environment_id, name, latest_meta_version, created_at, deleted_at)
+       SELECT 'env-seed-' || n, 'seed-' || n, 1, 0, 1 FROM seq`,
       MAX_ENVIRONMENT_ROWS,
     );
     const response = await createEnvironmentWith(fixture, ENV, "App", []);
@@ -2634,14 +3399,13 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     await queryProjectDo(
       projectId,
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
-       INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
-       SELECT ?, 'var-seed-' || n, 'SEED_' || n, 1, 0, NULL FROM seq`,
+       INSERT INTO variables (environment_id, variable_id, name, latest_meta_version, latest_version, created_at, deleted_at)
+       SELECT ?, 'var-seed-' || n, 'SEED_' || n, 1, 1, 0, NULL FROM seq`,
       MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
       ENV,
     );
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "DATABASE_URL",
+      statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(response.status).toBe(422);
@@ -2656,14 +3420,13 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     await queryProjectDo(
       projectId,
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
-       INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
-       SELECT ?, 'var-seed-' || n, 'SEED_' || n, 1, 0, 1 FROM seq`,
+       INSERT INTO variables (environment_id, variable_id, name, latest_meta_version, latest_version, created_at, deleted_at)
+       SELECT ?, 'var-seed-' || n, 'SEED_' || n, 1, 1, 0, 1 FROM seq`,
       MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
       ENV,
     );
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      variableId: VAR,
-      name: "DATABASE_URL",
+      statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(response.status).toBe(422);
@@ -2838,7 +3601,19 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       const response = await requestJson("POST", "/environments", token(OWNER), {
         parentHeadHashHex: fixture.head.hashHex,
         entry,
-        name: `Bad-${badId.length}`,
+        // ステートメント側も同じ受理ポリシー形式(EnvironmentIdSchema)で 400 に
+        // なる(entry と揃えて Schema 境界を固定)。署名検証には到達しない
+        statement: {
+          suite: "maruhi/v1",
+          environmentId: badId,
+          name: `Bad-${badId.length}`,
+          status: "active",
+          metaVersion: 1,
+          prevMetaSigHashHex: "",
+          chainHeadHashHex: fixture.head.hashHex,
+          chainHeadSeq: fixture.head.seq,
+          signatureHex: "00".repeat(64),
+        },
         deks: [],
       });
       expect(response.status).toBe(400);
@@ -2859,8 +3634,7 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
     ];
     for (const value of badPayloads) {
       const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-        variableId: VAR,
-        name: "DATABASE_URL",
+        statement: unsignedVariableStatement(VAR, "DATABASE_URL"),
         value,
       });
       expect(response.status).toBe(400);

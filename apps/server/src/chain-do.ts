@@ -48,6 +48,7 @@ import type {
   DekWrapRefInput,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
+  MetaStatementInput,
   RecipientDekValue,
   ValueInput,
   VariableVersionValue,
@@ -487,7 +488,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     input: {
       readonly parentHeadHashHex: string;
       readonly entry: ChainEntry & { readonly op: "create_environment" };
-      readonly name: string;
+      readonly statement: MetaStatementInput;
       readonly deks: readonly DekWrapInput[];
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
@@ -515,14 +516,22 @@ export class ProjectChainDO extends DurableObject<Env> {
   renameEnvironment(
     actor: DataActor,
     environmentId: string,
-    name: string,
+    statement: MetaStatementInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(renameEnvironmentProgram(actor, environmentId, name, this.#stateCache));
+    return this.#runData(
+      renameEnvironmentProgram(actor, environmentId, statement, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
-  deleteEnvironment(actor: DataActor, environmentId: string): Promise<DataOutcome<void>> {
-    return this.#runData(deleteEnvironmentProgram(actor, environmentId, this.#stateCache));
+  deleteEnvironment(
+    actor: DataActor,
+    environmentId: string,
+    statement: MetaStatementInput,
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(
+      deleteEnvironmentProgram(actor, environmentId, statement, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
@@ -534,7 +543,11 @@ export class ProjectChainDO extends DurableObject<Env> {
   createVariable(
     actor: DataActor,
     environmentId: string,
-    input: { readonly variableId: string; readonly name: string; readonly value: ValueInput },
+    input: {
+      readonly variableId: string;
+      readonly statement: MetaStatementInput;
+      readonly value: ValueInput;
+    },
   ): Promise<DataOutcome<VariableVersionValue>> {
     return this.#runData(createVariableProgram(actor, environmentId, input, this.#stateCache));
   }
@@ -556,10 +569,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     environmentId: string,
     variableId: string,
-    name: string,
+    statement: MetaStatementInput,
   ): Promise<DataOutcome<void>> {
     return this.#runData(
-      renameVariableProgram(actor, environmentId, variableId, name, this.#stateCache),
+      renameVariableProgram(actor, environmentId, variableId, statement, this.#stateCache),
     );
   }
 
@@ -568,8 +581,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     environmentId: string,
     variableId: string,
+    statement: MetaStatementInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(deleteVariableProgram(actor, environmentId, variableId, this.#stateCache));
+    return this.#runData(
+      deleteVariableProgram(actor, environmentId, variableId, statement, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)

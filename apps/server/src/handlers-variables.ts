@@ -1,9 +1,14 @@
 // 変数 API のハンドラ(AUTH_SPEC §12-5 / §12-7)。
 //
 // 判定順(§12-3): 認証(ミドルウェア)→ 値サイズの先行検査(413。資源保護は
-// 意味論的判定に優先)→ 申告 AAD の座標一致(422。リクエスト内容のみに依存する
-// 自己整合検査で、存在情報を運ばない)→ トークンスコープ → DO(メンバーシップ /
-// role / CAS / 数量)。共通経路は data-http.ts の callProjectData。
+// 意味論的判定に優先)→ 申告 AAD / ステートメントの座標一致(422。リクエスト
+// 内容のみに依存する自己整合検査で、存在情報を運ばない)→ トークンスコープ →
+// DO(メンバーシップ / role / CAS / 署名 / 数量)。共通経路は data-http.ts の
+// callProjectData。
+//
+// 作成は version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱(§12-5)。
+// variableId・表示名はステートメントが運ぶため、AAD 座標検査の期待 variableId は
+// ステートメントの variableId を使う(URL に variableId を持たない唯一の値経路)。
 
 import {
   DataLimitExceededError,
@@ -11,6 +16,10 @@ import {
   EpochConflictError,
   ForbiddenError,
   maruhiApi,
+  MetaStatementRejectedError,
+  MetaVersionConflictError,
+  NameNotNfcError,
+  PayloadMismatchError,
   ProjectNotFoundError,
   ValueSignatureRejectedError,
   VariableConflictError,
@@ -21,12 +30,15 @@ import { Effect } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { callProjectData, checkAadCoordinates, checkValueSize, toValueInput } from "./data-http.ts";
-import type {
-  EnvironmentPullValue,
-  PulledVariableValue,
-  VariableVersionValue,
-} from "./data-plane.ts";
+import {
+  callProjectData,
+  checkAadCoordinates,
+  checkStatementCoordinates,
+  checkValueSize,
+  toMetaStatementInput,
+  toValueInput,
+} from "./data-http.ts";
+import type { EnvironmentPullValue, VariableVersionValue } from "./data-plane.ts";
 
 const noContent = HttpServerResponse.empty({ status: 204 });
 
@@ -34,14 +46,19 @@ const noContent = HttpServerResponse.empty({ status: 204 });
  * DO の保存行 → ワイヤの DistributedEncryptedPayload(§12-2 / §12-7)。AAD は
  * 保存座標から再構成する(保存時に座標一致を検査済みなので、これは同値の
  * 自己記述表現)。suite は保存行の値を返す(CRYPTO_SPEC §2 設計原則 4)。
- * 署名ブロックと writer(受理時点の user_id + 鍵 FP)は保存行をそのまま返す —
- * 現メンバー集合から再導出しない(削除済み writer の過去値の検証可能性)。
- * サーバー再計算の signed_bytes ハッシュは配布しない。
+ * 署名ブロックと writer / ステートメント + author(受理時点の user_id + 鍵 FP)は
+ * 保存行をそのまま返す — 現メンバー集合から再導出しない(削除済み writer /
+ * author の過去データの検証可能性)。サーバー再計算の signed_bytes ハッシュは
+ * 値・ステートメントとも配布しない。
  */
-function toWireVariable(projectId: string, environmentId: string, row: PulledVariableValue) {
+function toWireVariable(
+  projectId: string,
+  environmentId: string,
+  row: EnvironmentPullValue["variables"][number],
+) {
   return {
     variableId: row.variableId,
-    name: row.name,
+    statement: row.statement,
     value: {
       suite: row.suite,
       aad: {
@@ -73,24 +90,34 @@ const VERSION_ERRORS = [
   DataLimitExceededError,
 ] as const;
 
+const META_ERRORS = [
+  MetaStatementRejectedError,
+  MetaVersionConflictError,
+  PayloadMismatchError,
+] as const;
+
 export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handlers) =>
   handlers
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* checkValueSize(payload.value);
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: params.environmentId,
+        });
         yield* checkAadCoordinates(payload.value, {
           projectId: params.projectId,
           environmentId: params.environmentId,
-          variableId: payload.variableId,
+          // variableId の保存先はステートメントが確定する(値の AAD との一致検査)
+          variableId: payload.statement.variableId,
         });
         return yield* callProjectData<VariableVersionValue>()({
           projectId: params.projectId,
           permission: "write",
-          allowed: [...VERSION_ERRORS, VariableConflictError],
+          allowed: [...VERSION_ERRORS, ...META_ERRORS, NameNotNfcError, VariableConflictError],
           invoke: (stub, actor) =>
             stub.createVariable(actor, params.environmentId, {
-              variableId: payload.variableId,
-              name: payload.name,
+              variableId: payload.statement.variableId,
+              statement: toMetaStatementInput(payload.statement),
               value: toValueInput(payload.value),
             }),
         });
@@ -107,7 +134,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         return yield* callProjectData<VariableVersionValue>()({
           projectId: params.projectId,
           permission: "write",
-          allowed: [...VERSION_ERRORS, VariableNotFoundError],
+          allowed: [...VERSION_ERRORS, PayloadMismatchError, VariableNotFoundError],
           invoke: (stub, actor) =>
             stub.pushVersion(
               actor,
@@ -119,32 +146,58 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
       }),
     )
     .handle("rename", ({ params, payload }) =>
-      callProjectData<void>()({
-        projectId: params.projectId,
-        permission: "write",
-        allowed: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableNotFoundError,
-          VariableConflictError,
-        ],
-        invoke: (stub, actor) =>
-          stub.renameVariable(actor, params.environmentId, params.variableId, payload.name),
+      Effect.gen(function* () {
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: params.environmentId,
+          variableId: params.variableId,
+        });
+        return yield* callProjectData<void>()({
+          projectId: params.projectId,
+          permission: "write",
+          allowed: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            VariableNotFoundError,
+            VariableConflictError,
+            ...META_ERRORS,
+            NameNotNfcError,
+            DataLimitExceededError,
+          ],
+          invoke: (stub, actor) =>
+            stub.renameVariable(
+              actor,
+              params.environmentId,
+              params.variableId,
+              toMetaStatementInput(payload.statement),
+            ),
+        });
       }).pipe(Effect.as(noContent)),
     )
-    .handle("remove", ({ params }) =>
-      callProjectData<void>()({
-        projectId: params.projectId,
-        permission: "write",
-        allowed: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          VariableNotFoundError,
-        ],
-        invoke: (stub, actor) =>
-          stub.deleteVariable(actor, params.environmentId, params.variableId),
+    .handle("remove", ({ params, payload }) =>
+      Effect.gen(function* () {
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: params.environmentId,
+          variableId: params.variableId,
+        });
+        return yield* callProjectData<void>()({
+          projectId: params.projectId,
+          permission: "write",
+          allowed: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            VariableNotFoundError,
+            ...META_ERRORS,
+          ],
+          invoke: (stub, actor) =>
+            stub.deleteVariable(
+              actor,
+              params.environmentId,
+              params.variableId,
+              toMetaStatementInput(payload.statement),
+            ),
+        });
       }).pipe(Effect.as(noContent)),
     )
     .handle("pull", ({ params }) =>
@@ -156,11 +209,12 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
       }).pipe(
         Effect.map((pulled) => ({
           environmentId: pulled.environmentId,
-          name: pulled.name,
           currentEpoch: pulled.currentEpoch,
+          statement: pulled.statement,
           variables: pulled.variables.map((row) =>
             toWireVariable(params.projectId, params.environmentId, row),
           ),
+          deletedVariables: pulled.deletedVariables,
           deks: pulled.deks,
         })),
       ),

@@ -10,12 +10,16 @@ import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
+import type { WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
   commitmentOf,
+  createVariableStatement,
   encryptValue,
   hexBytes,
   makeDek,
+  metaSignedBytesHashOf,
   signEntryAt,
+  signMetaStatementAs,
   vectorKeyOf,
   wrapDekForAll,
   wrapDekTo,
@@ -25,11 +29,14 @@ import {
   ALL_MEMBERS,
   appendOperation,
   createEnvironmentOk,
+  createEnvironmentStatement,
   dataUrl,
+  deleteEnvironmentRequest,
   MEMBER,
   OWNER,
   projectId,
   READER,
+  renameEnvironmentRequest,
   requestJson,
   rotateEnvironmentOk,
   setupDataProject,
@@ -41,9 +48,11 @@ const ENV = "env-audit-0001";
 const VAR = "var-api-key";
 
 let fixture: DataFixture;
+let varStatements: Map<string, { statement: WireVariableMetaStatement; authorUserId: string }>;
 
 beforeEach(async () => {
   fixture = await setupDataProject();
+  varStatements = new Map();
 });
 
 const token = (userId: string): string => tokenOf(fixture.tokens, userId);
@@ -55,12 +64,65 @@ async function createVariableOk(dek: Uint8Array, variableId: string, name: strin
     `secret-${variableId}`,
     { writerUserId: MEMBER, head: fixture.head },
   );
-  const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+  const statement = await createVariableStatement({
+    authorUserId: MEMBER,
+    projectId,
+    environmentId: ENV,
     variableId,
     name,
+    head: fixture.head,
+  });
+  const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+    statement,
     value,
   });
   expect(response.status).toBe(200);
+  varStatements.set(variableId, { statement, authorUserId: MEMBER });
+}
+
+/** 変数の次ステートメント(rename / 削除)を記録済み最新から署名する。 */
+async function nextVariableStatement(input: {
+  readonly variableId: string;
+  readonly name: string;
+  readonly status: "active" | "deleted";
+  readonly authorUserId: string;
+}): Promise<WireVariableMetaStatement> {
+  const last = varStatements.get(input.variableId);
+  if (last === undefined) throw new Error(`no recorded statement for ${input.variableId}`);
+  const statement = await signMetaStatementAs(input.authorUserId, projectId, {
+    suite: "maruhi/v1" as const,
+    environmentId: ENV,
+    variableId: input.variableId,
+    name: input.name,
+    status: input.status,
+    metaVersion: last.statement.metaVersion + 1,
+    prevMetaSigHashHex: await metaSignedBytesHashOf(projectId, last.statement, last.authorUserId),
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+  });
+  varStatements.set(input.variableId, { statement, authorUserId: input.authorUserId });
+  return statement;
+}
+
+/**
+ * ライフサイクル末尾 5 行(env.renamed → var.renamed → var.deleted →
+ * カスケード var.deleted → env.deleted)の author 鍵 FP の検査(AUDIT_SPEC §3.3):
+ * メタステートメントを伴う操作は author の鍵 FP を写し、環境削除のカスケード
+ * var.deleted は env 削除ステートメントの author FP を写す。
+ */
+function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]): void {
+  const tail = events.slice(-5);
+  const memberFp = vectorKeyOf(MEMBER).key_fingerprint_hex;
+  const ownerFp = vectorKeyOf(OWNER).key_fingerprint_hex;
+  expect(tail.map((row) => [row["event"], row["actor_key_fingerprint"]])).toEqual([
+    ["env.renamed", memberFp],
+    ["var.renamed", memberFp],
+    ["var.deleted", memberFp],
+    ["var.deleted", ownerFp],
+    ["env.deleted", ownerFp],
+  ]);
+  expect(JSON.parse(String(tail[0]?.["payload"]))).toMatchObject({ name: "App2" });
+  expect(JSON.parse(String(tail[1]?.["payload"]))).toMatchObject({ name: "API_KEY_V2" });
 }
 
 describe("チェーンミラー(§3.4)", () => {
@@ -183,24 +245,38 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
 
-    const envRenamed = await requestJson("PATCH", `/environments/${ENV}`, token(MEMBER), {
-      name: "App2",
-    });
+    const envRenamed = await renameEnvironmentRequest(fixture, ENV, "App2", MEMBER);
     expect(envRenamed.status).toBe(204);
     const renamed = await requestJson(
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { name: "API_KEY_V2" },
+      {
+        statement: await nextVariableStatement({
+          variableId: VAR,
+          name: "API_KEY_V2",
+          status: "active",
+          authorUserId: MEMBER,
+        }),
+      },
     );
     expect(renamed.status).toBe(204);
     const removedVar = await requestJson(
       "DELETE",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
+      {
+        statement: await nextVariableStatement({
+          variableId: VAR,
+          // deleted の name は直前 active 名を保持する(§4.2)
+          name: "API_KEY_V2",
+          status: "deleted",
+          authorUserId: MEMBER,
+        }),
+      },
     );
     expect(removedVar.status).toBe(204);
-    const removedEnv = await requestJson("DELETE", `/environments/${ENV}`, token(OWNER));
+    const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removedEnv.status).toBe(204);
 
     const events = await readAuditEvents(projectId);
@@ -241,9 +317,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(created["variable_id"]).toBe(VAR);
     expect(created["environment_id"]).toBe(ENV);
     expect(JSON.parse(String(created["payload"]))).toEqual({ name: "API_KEY" });
-    // var.created / var.version_pushed は値署名(CRYPTO_SPEC §4.1)を伴う操作
-    // なので、受理時点の chain-derived writer 鍵 FP を写す(AUDIT_SPEC §3.3。
-    // 署名・signed bytes・hash・nonce・暗号文は監査に載せない)
+    // var.created / var.version_pushed は署名(CRYPTO_SPEC §4.1 / §4.2)を伴う
+    // 操作なので、受理時点の chain-derived 鍵 FP を写す(AUDIT_SPEC §3.3。
+    // 署名・signed bytes・hash・nonce・暗号文は監査に載せない)。作成では
+    // 同梱 v1 の writer FP = ステートメントの author FP(同一主体 — §12-5)
     expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(pushed["epoch"]).toBe(1);
     expect(pushed["version"]).toBe(1);
@@ -253,6 +330,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(read["version"]).toBe(1);
     // var.read は署名を伴わないため FP を持たない(§3.3 の意味論)
     expect(read["actor_key_fingerprint"]).toBeNull();
+
+    expectMetaAuthorFingerprints(events);
   });
 
   it("attributes actors: PAT ops carry the token id, session ops carry auth_method (§2)", async () => {
@@ -262,9 +341,9 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     if (envCreated === undefined) throw new Error("missing env.created");
     expect(envCreated["actor_user_id"]).toBe(OWNER);
     expect(envCreated["actor_api_token_id"]).toBeTypeOf("string");
-    // 署名を伴わないデータ操作は鍵 FP を持たない(FP を持つのはチェーンミラーと、
-    // 登録署名を写す dek.registered のみ — AUDIT_SPEC §3.3)
-    expect(envCreated["actor_key_fingerprint"]).toBeNull();
+    // env.created はメタステートメント(CRYPTO_SPEC §4.2)を伴う操作なので
+    // author の鍵 FP を写す(AUDIT_SPEC §3.3 — 2026-08-04 PR-3)
+    expect(envCreated["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
     // セッション経由の操作は auth_method を payload に持つ(§2 / §5.1)
     const session = await loginSession(9002);
@@ -295,7 +374,12 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       body: JSON.stringify({
         parentHeadHashHex: fixture.head.hashHex,
         entry,
-        name: "Session",
+        statement: await createEnvironmentStatement({
+          authorUserId: MEMBER,
+          environmentId: "env-audit-0002",
+          name: "Session",
+          head: fixture.head,
+        }),
         deks,
       }),
     });

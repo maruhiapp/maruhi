@@ -13,6 +13,7 @@ import type {
   ChainInvalidReason,
   CryptoError,
   CryptoResult,
+  MetaInvalidReason,
   ValueInvalidReason,
 } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
@@ -71,6 +72,17 @@ export class CryptoValueInvalidError extends Data.TaggedError("CryptoValueInvali
   readonly reason: ValueInvalidReason;
 }> {}
 
+/**
+ * A metadata statement failed the §4.2 / §6.3 verification (author
+ * signature, declared chain head, head-time authorization, or predecessor
+ * chaining) for `reason`.
+ */
+export class CryptoMetaStatementInvalidError extends Data.TaggedError(
+  "CryptoMetaStatementInvalid",
+)<{
+  readonly reason: MetaInvalidReason;
+}> {}
+
 /** Membership-chain verification failed at entry `seq` for `reason`. */
 export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly seq: number;
@@ -90,6 +102,7 @@ export type WrappedCryptoError =
   | CryptoDekWrapSignatureError
   | CryptoDekCommitmentError
   | CryptoValueInvalidError
+  | CryptoMetaStatementInvalidError
   | ChainInvalidError;
 
 /** Maps a raw `CryptoError` value onto its Effect-tagged counterpart. */
@@ -117,6 +130,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoDekCommitmentError();
     case "ValueInvalid":
       return new CryptoValueInvalidError({ reason: error.reason });
+    case "MetaStatementInvalid":
+      return new CryptoMetaStatementInvalidError({ reason: error.reason });
     case "ChainInvalid":
       return new ChainInvalidError({ seq: error.seq, reason: error.reason });
   }
