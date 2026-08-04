@@ -1,7 +1,7 @@
 # maruhi 監査ログ仕様書 (AUDIT_SPEC)
 
 Version: 0.5
-Status: 承認済みベース + 改訂レビュー中(0.3 は 2026-08-02 の PR #18 マージにより所有者承認確定。§3.3 の `dek.registered` への署名者鍵 FP の追加は 2026-08-02 のセッション 07 レビュー所有者裁定 2-E — CRYPTO_SPEC §5.1 — をセッション 09 で反映、PR #21 マージで承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft — 2026-08-03 セッション 12 — の波及であり、確定条件 = 同改訂 PR のマージ)
+Status: 所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認)
 
 この文書は maruhi の監査ログ(何を・誰が・いつ)の設計を定める。
 CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーション検出)と AUTH_SPEC(§2 データモデル)を前提とする。
