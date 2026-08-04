@@ -7,8 +7,8 @@
 // テーブルの DDL は do-schema.ts(DO コンストラクタが適用済み)。
 
 import { ChainInvalidError, toWrappedCryptoError } from "@maruhi/core";
-import type { ChainEntry, ChainState } from "@maruhi/crypto";
-import { canonicalChainEntryBytes, verifyChain } from "@maruhi/crypto";
+import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
+import { canonicalChainEntryBytes, verifyChainWithHistory } from "@maruhi/crypto";
 import { Context, Effect, Layer } from "effect";
 
 export interface StoredChain {
@@ -67,12 +67,22 @@ export const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
     },
   }));
 
-/** verifyChain を Effect に持ち上げ、ChainInvalid 以外の(契約上起こらない)失敗は defect にする。 */
+/**
+ * 検証済みチェーンの導出状態と履歴索引の対(CRYPTO_SPEC §6.3 / §4.1)。
+ * 履歴索引は値署名の「宣言ヘッド時点」検証の入力で、検証ループと同時に構築
+ * されるため(verifyChainWithHistory)、未検証チェーンの索引は存在しない。
+ */
+export interface VerifiedChainView {
+  readonly state: ChainState;
+  readonly history: ChainHistoryIndex;
+}
+
+/** verifyChainWithHistory を Effect に持ち上げ、ChainInvalid 以外の(契約上起こらない)失敗は defect にする。 */
 export function verifyChainEffect(
   entries: readonly ChainEntry[],
-): Effect.Effect<ChainState, ChainInvalidError> {
+): Effect.Effect<VerifiedChainView, ChainInvalidError> {
   return Effect.flatMap(
-    Effect.promise(() => verifyChain(entries)),
+    Effect.promise(() => verifyChainWithHistory(entries)),
     (result) => {
       if (result.ok) {
         return Effect.succeed(result.value);
@@ -96,12 +106,13 @@ export function canonicalBytesOf(entry: ChainEntry): Effect.Effect<number, Chain
 }
 
 /**
- * チェーン導出状態のキャッシュ(DO インスタンスメモリ)。保存済みチェーンは
- * 受理時に検証済みなので、同一ヘッドへの再導出を省く(§6.2 の認可・§11-2 の
- * メンバーシップ判定を読み取りごとの O(n) 署名検証にしないため)。
+ * チェーン導出状態 + 履歴索引のキャッシュ(DO インスタンスメモリ)。保存済み
+ * チェーンは受理時に検証済みなので、同一ヘッドへの再導出を省く(§6.2 の認可・
+ * §11-2 のメンバーシップ判定・値署名の宣言ヘッド時点検証 — §12-8 — を
+ * 読み取りごとの O(n) 署名検証にしないため)。
  */
 export interface StateCache {
-  current: { readonly headHashHex: string; readonly state: ChainState } | null;
+  current: { readonly headHashHex: string; readonly verified: VerifiedChainView } | null;
 }
 
 /**
@@ -109,23 +120,23 @@ export interface StateCache {
  * headSeq 比較で十分)。全操作が permit 下で直列化された現在は実質的に到達しない
  * 防御線だが、permit 外の導出経路が将来増えても古い状態で上書きしないよう残す。
  */
-export function updateStateCache(cache: StateCache, state: ChainState): void {
-  if (cache.current === null || state.headSeq >= cache.current.state.headSeq) {
-    cache.current = { headHashHex: state.headHashHex, state };
+export function updateStateCache(cache: StateCache, verified: VerifiedChainView): void {
+  if (cache.current === null || verified.state.headSeq >= cache.current.verified.state.headSeq) {
+    cache.current = { headHashHex: verified.state.headHashHex, verified };
   }
 }
 
-/** 保存済みチェーンから ChainState を導出する。検証失敗は実装バグ(defect)。 */
+/** 保存済みチェーンから検証済みビュー(状態 + 履歴索引)を導出する。検証失敗は実装バグ(defect)。 */
 export function deriveStoredState(
   chain: StoredChain,
   cache: StateCache,
-): Effect.Effect<ChainState> {
+): Effect.Effect<VerifiedChainView> {
   const cached = cache.current;
   if (cached !== null && cached.headHashHex === chain.headHashHex) {
-    return Effect.succeed(cached.state);
+    return Effect.succeed(cached.verified);
   }
   return verifyChainEffect(chain.entries).pipe(
     Effect.orDie,
-    Effect.tap((state) => Effect.sync(() => updateStateCache(cache, state))),
+    Effect.tap((verified) => Effect.sync(() => updateStateCache(cache, verified))),
   );
 }

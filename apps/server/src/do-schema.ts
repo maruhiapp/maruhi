@@ -36,6 +36,14 @@ const PROJECT_DO_DDL = [
    )`,
   // suite 列: すべての永続データ構造はスイート識別子を持つ(CRYPTO_SPEC §2
   // 設計原則 4 / AUTH_SPEC §12-2。将来のアルゴリズム移行時に行単位で判別する)
+  //
+  // 値の書き込み署名列(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5。2026-08-04 PR-2):
+  // prev_value_sig_hash_hex(version 1 は空文字列)/ 宣言ヘッド(hash + seq)/
+  // 署名 / サーバー再計算の signed_bytes ハッシュ(prev 検査と 409 再試行の
+  // 検証材料 — 配布はしない)/ 受理時点の writer(user_id + チェーン導出鍵 FP)。
+  // signed bytes 本体・公開鍵は保存しない(座標とチェーンから再構成できる)。
+  // すべて NOT NULL — backfill・nullable 遷移は作らない(公開前・適用済み環境
+  // なしの DDL 直接変更。古い .wrangler/state は破棄が必要 — session-14.md)
   `CREATE TABLE IF NOT EXISTS variable_versions (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -45,6 +53,13 @@ const PROJECT_DO_DDL = [
      nonce_hex TEXT NOT NULL,
      ciphertext_hex TEXT NOT NULL,
      ciphertext_bytes INTEGER NOT NULL,
+     prev_value_sig_hash_hex TEXT NOT NULL,
+     chain_head_hash_hex TEXT NOT NULL,
+     chain_head_seq INTEGER NOT NULL,
+     signature_hex TEXT NOT NULL,
+     signed_bytes_hash_hex TEXT NOT NULL,
+     writer_user_id TEXT NOT NULL,
+     writer_key_fingerprint TEXT NOT NULL,
      created_at INTEGER NOT NULL,
      PRIMARY KEY (environment_id, variable_id, version)
    )`,

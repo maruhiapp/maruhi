@@ -21,6 +21,7 @@ import {
   ForbiddenError,
   PayloadMismatchError,
   ProjectNotFoundError,
+  ValueSignatureRejectedError,
   ValueTooLargeError,
   VariableConflictError,
   VariableNotFoundError,
@@ -43,7 +44,10 @@ function dataActorOf(principal: AuthenticatedPrincipal): DataActor {
     : { userId: principal.userId, authMethod: principal.authMethod };
 }
 
-/** EncryptedPayload → DO へ渡す保存入力(座標は検査済み、状態依存部のみ残す)。 */
+/**
+ * EncryptedPayload → DO へ渡す保存入力(座標は検査済み、状態依存部と署名
+ * ブロック — CRYPTO_SPEC §4.1 — を運ぶ)。
+ */
 export function toValueInput(payload: EncryptedPayload): ValueInput {
   return {
     suite: payload.suite,
@@ -51,6 +55,10 @@ export function toValueInput(payload: EncryptedPayload): ValueInput {
     version: payload.aad.version,
     nonceHex: payload.nonceHex,
     ciphertextHex: payload.ciphertextHex,
+    prevValueSigHashHex: payload.prevValueSigHashHex,
+    chainHeadHashHex: payload.chainHeadHashHex,
+    chainHeadSeq: payload.chainHeadSeq,
+    signatureHex: payload.signatureHex,
   };
 }
 
@@ -110,6 +118,7 @@ type DataApiError =
   | VariableConflictError
   | VersionConflictError
   | EpochConflictError
+  | ValueSignatureRejectedError
   | DekWrapRejectedError
   | DekWrapExistsError
   | DekWrapNotFoundError
@@ -155,6 +164,7 @@ const rejectionErrors: {
   "version-conflict": (rejection) =>
     new VersionConflictError({ currentVersion: rejection.currentVersion }),
   "epoch-conflict": (rejection) => new EpochConflictError({ currentEpoch: rejection.currentEpoch }),
+  "value-rejected": (rejection) => new ValueSignatureRejectedError({ reason: rejection.reason }),
   "dek-wrap-rejected": (rejection) => new DekWrapRejectedError({ reason: rejection.reason }),
   "dek-wrap-exists": (rejection) =>
     new DekWrapExistsError({ epoch: rejection.epoch, recipientUserId: rejection.recipientUserId }),

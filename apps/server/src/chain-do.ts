@@ -217,15 +217,15 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
     }
     const canonicalBytes = yield* checkEntrySize(entry);
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
-    const state = yield* verifyChainEffect([entry]);
+    const verified = yield* verifyChainEffect([entry]);
     // プロジェクト ID = genesis エントリハッシュ(§6.4)。ルーティングした DO と
     // エントリの束縛が崩れていたら受理しない(worker 側バグへの防衛)
-    if (state.headHashHex !== expectedProjectId) {
+    if (verified.state.headHashHex !== expectedProjectId) {
       return yield* new ProjectIdMismatchError();
     }
-    yield* insertWithMirror(entry, state.headHashHex, canonicalBytes);
-    updateStateCache(cache, state);
-    return { headSeq: state.headSeq, headHashHex: state.headHashHex };
+    yield* insertWithMirror(entry, verified.state.headHashHex, canonicalBytes);
+    updateStateCache(cache, verified);
+    return { headSeq: verified.state.headSeq, headHashHex: verified.state.headHashHex };
   });
 
 /**
@@ -293,7 +293,7 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
     if (chain.headSeq === 0 || chain.headHashHex === null) {
       return yield* new NotInitializedError();
     }
-    const state = yield* deriveStoredState(chain, cache);
+    const { state } = yield* deriveStoredState(chain, cache);
     yield* ensureChainMember(state.members, callerUserId);
     return {
       entries: chain.entries,
@@ -323,10 +323,10 @@ const appendProgram = (
     const canonicalBytes = yield* checkEntrySize(entry);
     yield* ensureChainCapacity(chain, canonicalBytes);
     // §6.4: 追記受理時にチェーン全体を再検証する(prev_hash 連続性・署名・操作権限)
-    const state = yield* verifyChainEffect([...chain.entries, entry]);
-    yield* insertWithMirror(entry, state.headHashHex, canonicalBytes);
-    updateStateCache(cache, state);
-    return { headSeq: state.headSeq, headHashHex: state.headHashHex };
+    const verified = yield* verifyChainEffect([...chain.entries, entry]);
+    yield* insertWithMirror(entry, verified.state.headHashHex, canonicalBytes);
+    updateStateCache(cache, verified);
+    return { headSeq: verified.state.headSeq, headHashHex: verified.state.headHashHex };
   });
 
 const snapshotProgram = (callerUserId: string, cache: StateCache) =>

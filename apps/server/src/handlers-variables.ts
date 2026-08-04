@@ -12,6 +12,7 @@ import {
   ForbiddenError,
   maruhiApi,
   ProjectNotFoundError,
+  ValueSignatureRejectedError,
   VariableConflictError,
   VariableNotFoundError,
   VersionConflictError,
@@ -30,9 +31,12 @@ import type {
 const noContent = HttpServerResponse.empty({ status: 204 });
 
 /**
- * DO の保存行 → ワイヤの EncryptedPayload(§12-2)。AAD は保存座標から再構成する
- * (保存時に座標一致を検査済みなので、これは同値の自己記述表現)。suite は
- * 保存行の値を返す(CRYPTO_SPEC §2 設計原則 4 — 行が自身のスイートを持つ)。
+ * DO の保存行 → ワイヤの DistributedEncryptedPayload(§12-2 / §12-7)。AAD は
+ * 保存座標から再構成する(保存時に座標一致を検査済みなので、これは同値の
+ * 自己記述表現)。suite は保存行の値を返す(CRYPTO_SPEC §2 設計原則 4)。
+ * 署名ブロックと writer(受理時点の user_id + 鍵 FP)は保存行をそのまま返す —
+ * 現メンバー集合から再導出しない(削除済み writer の過去値の検証可能性)。
+ * サーバー再計算の signed_bytes ハッシュは配布しない。
  */
 function toWireVariable(projectId: string, environmentId: string, row: PulledVariableValue) {
   return {
@@ -49,6 +53,12 @@ function toWireVariable(projectId: string, environmentId: string, row: PulledVar
       },
       nonceHex: row.nonceHex,
       ciphertextHex: row.ciphertextHex,
+      prevValueSigHashHex: row.prevValueSigHashHex,
+      chainHeadHashHex: row.chainHeadHashHex,
+      chainHeadSeq: row.chainHeadSeq,
+      signatureHex: row.signatureHex,
+      writerUserId: row.writerUserId,
+      writerKeyFingerprintHex: row.writerKeyFingerprintHex,
     },
   };
 }
@@ -59,6 +69,7 @@ const VERSION_ERRORS = [
   EnvironmentNotFoundError,
   VersionConflictError,
   EpochConflictError,
+  ValueSignatureRejectedError,
   DataLimitExceededError,
 ] as const;
 

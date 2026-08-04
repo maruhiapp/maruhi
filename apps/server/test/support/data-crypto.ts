@@ -16,6 +16,7 @@ import type {
 import {
   computeChainEntryHash,
   computeDekCommitment,
+  computeValueSignedBytesHash,
   decodeHex,
   decryptVariable,
   encodeHex,
@@ -27,6 +28,7 @@ import {
   importSigningPublicKey,
   signChainEntry,
   signDekWrap,
+  signValue,
   SUITE_ID,
   unwrapDek,
   verifyDekWrapSignature,
@@ -363,13 +365,96 @@ export interface WireEncryptedPayload {
   };
   readonly nonceHex: string;
   readonly ciphertextHex: string;
+  // 値の書き込み署名ブロック(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-2)
+  readonly prevValueSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
 }
 
-/** 変数値を DEK で暗号化し、ワイヤ表現(§12-2)で返す。 */
+/** 値署名の宣言ヘッド(署名時点で最後に検証したチェーンヘッド — §4.1)。 */
+export interface ValueChainHead {
+  readonly seq: number;
+  readonly hashHex: string;
+}
+
+/** WireEncryptedPayload から §4.1 の署名コンテキストを再構成する。 */
+function valueContextOf(payload: WireEncryptedPayload, writerUserId: string) {
+  return {
+    suite: payload.suite,
+    projectId: payload.aad.projectId,
+    environmentId: payload.aad.environmentId,
+    epoch: payload.aad.epoch,
+    variableId: payload.aad.variableId,
+    version: payload.aad.version,
+    nonceHex: payload.nonceHex,
+    ciphertextHex: payload.ciphertextHex,
+    prevValueSigHashHex: payload.prevValueSigHashHex,
+    writerUserId,
+    chainHeadHashHex: payload.chainHeadHashHex,
+    chainHeadSeq: payload.chainHeadSeq,
+  };
+}
+
+/**
+ * 署名なしワイヤ値に §4.1 の値署名を付ける(署名者 = API を呼ぶ主体と一致
+ * させること — §12-5)。フェイク暗号文の受理ポリシー系テストにも使う
+ * (サーバーは中身を復号できないが値署名は検証するため、フェイクにも呼び出し
+ * 主体の実鍵による正しい署名が要る)。
+ */
+export async function signValueAs(
+  writerUserId: string,
+  unsigned: Omit<WireEncryptedPayload, "signatureHex">,
+  head: ValueChainHead,
+): Promise<WireEncryptedPayload> {
+  const keys = vectorKeyOf(writerUserId);
+  const pair = unwrapResult(
+    await importSigningKeyPair({
+      publicKey: hexBytes(keys.sig_pub_hex),
+      privateSeed: hexBytes(keys.sig_sk_seed_hex),
+    }),
+    "importSigningKeyPair",
+  );
+  const withHead = {
+    ...unsigned,
+    chainHeadHashHex: head.hashHex,
+    chainHeadSeq: head.seq,
+    signatureHex: "",
+  };
+  const signatureHex = unwrapResult(
+    await signValue({
+      context: valueContextOf(withHead, writerUserId),
+      signingKey: pair.privateKey,
+    }),
+    "signValue",
+  );
+  return { ...withHead, signatureHex };
+}
+
+/**
+ * value_signed_bytes の SHA-256(次 version の prevValueSigHashHex に使う —
+ * §4.1 の連鎖)。writer はワイヤに載らないため明示指定する。
+ */
+export async function valueSignedBytesHashOf(
+  payload: WireEncryptedPayload,
+  writerUserId: string,
+): Promise<string> {
+  return unwrapResult(
+    await computeValueSignedBytesHash(valueContextOf(payload, writerUserId)),
+    "computeValueSignedBytesHash",
+  );
+}
+
+/** 変数値を DEK で暗号化し、§4.1 の値署名付きワイヤ表現(§12-2)で返す。 */
 export async function encryptValue(
   dek: Uint8Array,
   context: VariableContext,
   plaintext: string,
+  signing: {
+    readonly writerUserId: string;
+    readonly head: ValueChainHead;
+    readonly prevValueSigHashHex?: string;
+  },
 ): Promise<WireEncryptedPayload> {
   const encrypted = unwrapResult(
     await encryptVariable({
@@ -379,12 +464,19 @@ export async function encryptValue(
     }),
     "encryptVariable",
   );
-  return {
-    suite: SUITE_ID,
-    aad: { ...context },
-    nonceHex: encodeHex(encrypted.nonce),
-    ciphertextHex: encodeHex(encrypted.ciphertext),
-  };
+  return signValueAs(
+    signing.writerUserId,
+    {
+      suite: SUITE_ID,
+      aad: { ...context },
+      nonceHex: encodeHex(encrypted.nonce),
+      ciphertextHex: encodeHex(encrypted.ciphertext),
+      prevValueSigHashHex: signing.prevValueSigHashHex ?? "",
+      chainHeadHashHex: signing.head.hashHex,
+      chainHeadSeq: signing.head.seq,
+    },
+    signing.head,
+  );
 }
 
 /**

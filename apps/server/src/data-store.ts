@@ -34,6 +34,24 @@ export interface WrapSignerInfo {
   readonly keyFingerprintHex: string;
 }
 
+/**
+ * 値の writer(variable_versions の writer_* 列に保存する — 受理時点の
+ * チェーン導出メンバーの user_id + 鍵 FP。CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5)。
+ */
+export interface ValueWriterInfo {
+  readonly userId: string;
+  readonly keyFingerprintHex: string;
+}
+
+/**
+ * 保存済みバージョンの検証アンカー: サーバー再計算の signed_bytes ハッシュと
+ * 当時のエポック。次 version の prev 検査(§12-5 の 5)の入力。
+ */
+export interface VersionAnchor {
+  readonly signedBytesHashHex: string;
+  readonly epoch: number;
+}
+
 /** アクティブ数と行数(tombstone 込み)。§12-8 の数量ポリシー判定用。 */
 interface ResourceCounts {
   readonly active: number;
@@ -66,6 +84,8 @@ export interface DataWriteOps {
     variableId: string,
     value: ValueInput,
     ciphertextBytes: number,
+    signedBytesHashHex: string,
+    writer: ValueWriterInfo,
     nowMs: number,
   ) => void;
   /**
@@ -107,6 +127,12 @@ interface DataStoreShape {
 
   /** アクティブ変数の最新バージョン一覧(一括 pull 用)。 */
   readonly latestVersions: (environmentId: string) => Effect.Effect<readonly PulledVariableValue[]>;
+  /** 保存済みバージョンの検証アンカー(prev 検査 — §12-5 の 5)。 */
+  readonly versionAnchor: (
+    environmentId: string,
+    variableId: string,
+    version: number,
+  ) => Effect.Effect<VersionAnchor | null>;
   /** プロジェクトの累積暗号文バイト(現在保存中の量。§12-8)。 */
   readonly totalCiphertextBytes: Effect.Effect<number>;
 
@@ -255,11 +281,16 @@ const makeVariableQueries = (sql: SqlStorage) => ({
 });
 
 const makeVersionQueries = (sql: SqlStorage) => ({
+  // 配布(§12-7)は保存済みの署名ブロックと writer をそのまま返す(現メンバー
+  // 集合から再導出しない — 削除済み writer の過去値の検証可能性)。
+  // signed_bytes_hash_hex は選択しない = 配布しない(AUTH_SPEC §12-2)
   latestVersions: (environmentId: string) =>
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT v.variable_id, v.name, vv.version, vv.suite, vv.epoch, vv.nonce_hex, vv.ciphertext_hex
+          `SELECT v.variable_id, v.name, vv.version, vv.suite, vv.epoch, vv.nonce_hex, vv.ciphertext_hex,
+                  vv.prev_value_sig_hash_hex, vv.chain_head_hash_hex, vv.chain_head_seq,
+                  vv.signature_hex, vv.writer_user_id, vv.writer_key_fingerprint
            FROM variables v
            JOIN variable_versions vv
              ON vv.environment_id = v.environment_id
@@ -278,8 +309,33 @@ const makeVersionQueries = (sql: SqlStorage) => ({
           epoch: Number(row["epoch"]),
           nonceHex: String(row["nonce_hex"]),
           ciphertextHex: String(row["ciphertext_hex"]),
+          prevValueSigHashHex: String(row["prev_value_sig_hash_hex"]),
+          chainHeadHashHex: String(row["chain_head_hash_hex"]),
+          chainHeadSeq: Number(row["chain_head_seq"]),
+          signatureHex: String(row["signature_hex"]),
+          writerUserId: String(row["writer_user_id"]),
+          writerKeyFingerprintHex: String(row["writer_key_fingerprint"]),
         })),
     ),
+  versionAnchor: (environmentId: string, variableId: string, version: number) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          `SELECT signed_bytes_hash_hex, epoch FROM variable_versions
+           WHERE environment_id = ? AND variable_id = ? AND version = ?`,
+          environmentId,
+          variableId,
+          version,
+        )
+        .toArray()[0];
+      if (row === undefined) {
+        return null;
+      }
+      return {
+        signedBytesHashHex: String(row["signed_bytes_hash_hex"]),
+        epoch: Number(row["epoch"]),
+      };
+    }),
   totalCiphertextBytes: Effect.sync(() => {
     const row = sql
       .exec("SELECT COALESCE(SUM(ciphertext_bytes), 0) AS total FROM variable_versions")
@@ -392,11 +448,21 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       variableId,
     );
   },
-  insertVersion: (environmentId, variableId, value, ciphertextBytes, nowMs) => {
+  insertVersion: (
+    environmentId,
+    variableId,
+    value,
+    ciphertextBytes,
+    signedBytesHashHex,
+    writer,
+    nowMs,
+  ) => {
     sql.exec(
       `INSERT INTO variable_versions
-         (environment_id, variable_id, version, suite, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (environment_id, variable_id, version, suite, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes,
+          prev_value_sig_hash_hex, chain_head_hash_hex, chain_head_seq, signature_hex,
+          signed_bytes_hash_hex, writer_user_id, writer_key_fingerprint, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       environmentId,
       variableId,
       value.version,
@@ -405,6 +471,13 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       value.nonceHex,
       value.ciphertextHex,
       ciphertextBytes,
+      value.prevValueSigHashHex,
+      value.chainHeadHashHex,
+      value.chainHeadSeq,
+      value.signatureHex,
+      signedBytesHashHex,
+      writer.userId,
+      writer.keyFingerprintHex,
       nowMs,
     );
     sql.exec(
