@@ -94,14 +94,32 @@ function hexFieldInvalid(context: MetaStatementContext): string | null {
   return null;
 }
 
+// suite と署名対象の座標(projectId / environmentId)は非空。座標の非空検査は
+// 防御的一貫性のため(LP により空でも符号化は無曖昧 = 脆弱性ではないが、
+// 他フィールドと検査水準を揃える — session-15 レビュー①)。空の座標を署名する
+// 正当な呼び出しは存在しない
+function coordinateFieldInvalid(context: MetaStatementContext): string | null {
+  if (context.suite.length === 0) {
+    return "context suite";
+  }
+  if (context.projectId.length === 0) {
+    return "context projectId";
+  }
+  if (context.environmentId.length === 0) {
+    return "context environmentId";
+  }
+  return null;
+}
+
 // 署名対象の構造検証。metaVersion ↔ prev の結合(1 = 空 / > 1 = 64 hex)は
 // ここでは検査しない: 検証側は「署名は有効だが規則違反」のステートメント
 // (ベクターの rule negative v1-nonempty-prev 等)の署名をまず検証できる必要が
 // あり、結合は検証規則(meta-verify.ts の prev-shape-mismatch)として理由
 // コード付きで拒否する(value-sign.ts と同じ非対称)。
 function contextInvalidField(context: MetaStatementContext): string | null {
-  if (context.suite.length === 0) {
-    return "context suite";
+  const coordinate = coordinateFieldInvalid(context);
+  if (coordinate !== null) {
+    return coordinate;
   }
   if (context.target.kind === "variable" && context.target.variableId.length === 0) {
     return "context variableId";

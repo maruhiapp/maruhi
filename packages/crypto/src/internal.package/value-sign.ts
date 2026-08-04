@@ -102,6 +102,15 @@ function contextInvalidField(context: ValueSignatureContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
   }
+  // projectId / environmentId の非空検査は防御的一貫性のため(LP により空でも
+  // 符号化は無曖昧 = 脆弱性ではないが、他フィールドと検査水準を揃える —
+  // session-15 レビュー①)。空の座標を署名する正当な呼び出しは存在しない
+  if (context.projectId.length === 0) {
+    return "context projectId";
+  }
+  if (context.environmentId.length === 0) {
+    return "context environmentId";
+  }
   if (context.writerUserId.length === 0) {
     return "context writerUserId";
   }

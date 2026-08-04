@@ -36,6 +36,37 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures += 1;
 };
 
+// 正規化・署名のフィールド順は仕様のハードコードを正とし、ベクター JSON の
+// 宣言はそれとの一致を検査する(JSON 由来の順序で検証すると、宣言の改変ごと
+// 検証が通ってしまい、順序を独立に固定できない — session-15 レビュー③)。
+// チェーン payload の正規化フィールド順(CRYPTO_SPEC §6.1 / §6.2)
+const PAYLOAD_FIELD_ORDER = {
+  genesis: ["enc_pub_hex", "sig_pub_hex"],
+  add_member: ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role"],
+  remove_member: ["target_user_id"],
+  change_role: ["target_user_id", "new_role"],
+  create_environment: ["environment_id", "dek_commitment_hex"],
+  rotate_epoch: ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
+  grant_server: ["server_enc_pub_hex", "server_key_fingerprint_hex", "scope_environments_lp_hex"],
+  revoke_server: ["server_key_fingerprint_hex"],
+};
+// メタステートメントの署名フィールド順(CRYPTO_SPEC §4.2 の LP 引数列)
+const VAR_SIGNED_FIELDS_ORDER = [
+  "domain",
+  "project_id",
+  "environment_id",
+  "variable_id",
+  "name",
+  "status",
+  "meta_version",
+  "prev_meta_sig_hash_hex",
+  "author_user_id",
+  "chain_head_hash_hex",
+  "chain_head_seq",
+];
+const ENV_SIGNED_FIELDS_ORDER = VAR_SIGNED_FIELDS_ORDER.filter((f) => f !== "variable_id");
+const sameOrder = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 // --- encoding.json -----------------------------------------------------------
 {
   const doc = read("encoding.json");
@@ -89,7 +120,14 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 // --- chain-entries.json ------------------------------------------------------
 {
   const doc = read("chain-entries.json");
-  const order = doc.canonicalization.payload_field_order;
+  // 検証は仕様ハードコードの順序で行い、JSON の宣言はそれとの一致を検査する
+  const declared = doc.canonicalization.payload_field_order;
+  check(
+    "chain: payload_field_order matches spec",
+    sameOrder(Object.keys(declared).toSorted(), Object.keys(PAYLOAD_FIELD_ORDER).toSorted()) &&
+      Object.entries(PAYLOAD_FIELD_ORDER).every(([op, fields]) => sameOrder(declared[op], fields)),
+  );
+  const order = PAYLOAD_FIELD_ORDER;
   let prevHash = "0".repeat(64);
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
@@ -473,8 +511,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   // tenure-extension: 派生チェーンの seq 13 エントリ自体が有効(正規化・署名・prev 連鎖)
   {
     const e = doc.tenure_extension.entry;
-    const order = chain.canonicalization.payload_field_order;
-    const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+    const payloadBytes = lpEncode(PAYLOAD_FIELD_ORDER[e.op].map((k) => e.payload[k]));
     const signed = lpEncode([
       e.suite,
       e.seq,
@@ -556,9 +593,18 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  // 検証は仕様ハードコードの順序で行い、JSON の宣言はそれとの一致を検査する
+  check(
+    "meta-sig: var_signed_fields_order matches spec",
+    sameOrder(doc.var_signed_fields_order, VAR_SIGNED_FIELDS_ORDER),
+  );
+  check(
+    "meta-sig: env_signed_fields_order matches spec",
+    sameOrder(doc.env_signed_fields_order, ENV_SIGNED_FIELDS_ORDER),
+  );
   const signedBytes = (ctx) =>
     lpEncode(
-      (ctx.kind === "variable" ? doc.var_signed_fields_order : doc.env_signed_fields_order).map(
+      (ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER).map(
         (key) => ctx[key],
       ),
     );
@@ -660,8 +706,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   // tenure-extension: 派生チェーンの seq 13 エントリ自体が有効(value-signature と同一内容)
   {
     const e = doc.tenure_extension.entry;
-    const order = chain.canonicalization.payload_field_order;
-    const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+    const payloadBytes = lpEncode(PAYLOAD_FIELD_ORDER[e.op].map((k) => e.payload[k]));
     const signed = lpEncode([
       e.suite,
       e.seq,
