@@ -660,6 +660,78 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("変数 ID が同一応答内で重複");
   });
 
+  it("未同期区間で追加された新規メンバーが書いた値は有界再同期を経て受理する(レビューループ 1 [低])", async () => {
+    // 旧ビュー = genesis のみ(seq 1)。新メンバーを seq 2 で追加し、その新メンバーが
+    // seq 3 で環境作成 + 値を書く。旧ビューでは writer が未知(writer-unknown)だが
+    // 宣言 seq が自ヘッドより先なので即時拒否せず再同期して受理する
+    const owner = fixture.owner;
+    const newcomer = await makeTestUser("user-newcomer-2222");
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const shortBuilt = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const fullBuilt = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(newcomer, "member") },
+      { actor: newcomer, operation: createEnvironmentOp(ENV_ID, dek) },
+    ]);
+    expect(shortBuilt.projectId).toBe(fullBuilt.projectId);
+    const wrap = await wrapDekFor({
+      projectId: fullBuilt.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek,
+      recipient: owner,
+      signer: newcomer,
+    });
+    const value = await encryptValueFor({
+      dek,
+      projectId: fullBuilt.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "vn",
+      version: 1,
+      plaintext: "by-newcomer",
+      writer: newcomer,
+      head: headOf(fullBuilt, 3),
+    });
+    let chainCalls = 0;
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${fullBuilt.projectId}/chain`, () => {
+        chainCalls += 1;
+        const source = chainCalls === 1 ? shortBuilt : fullBuilt;
+        return {
+          status: 200,
+          json: {
+            projectId: fullBuilt.projectId,
+            entries: source.entries,
+            headSeq: source.entries.length,
+            headHashHex: source.hashes[source.hashes.length - 1],
+          },
+        };
+      }),
+      onRequest("GET", `/projects/${fullBuilt.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          name: ENV_ID,
+          currentEpoch: 1,
+          variables: [{ variableId: "vn", name: "NEWCOMER", value }],
+          deks: [wrap],
+        },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: fullBuilt.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(chainCalls).toBe(2);
+    expect(env.logs.join("\n")).toContain("NEWCOMER");
+  });
+
   it("future head(自ビューより先の宣言 seq)は有界再同期の延長検査を経て受理する(§6.3-2b)", async () => {
     // 旧ビュー = seq 2 まで(rotate 未観測)。値は seq 3(rotate)をヘッドに宣言。
     // 初回検証は chain-head-future → 再同期で 3 エントリの延長が見え、再検証で受理

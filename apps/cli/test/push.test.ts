@@ -275,6 +275,145 @@ describe("maruhi push", () => {
     expect(await decryptWire(dek1, pushBodies[1] as WireEncryptedPayload)).toBe("new-value");
   });
 
+  it("409 の申告が検証済み latest より古い(巻き戻し)なら拒否する(レビューループ 1 [高])", async () => {
+    // クライアントは v4 を検証済み。悪意サーバーは v2 まで巻き戻した 409 を返し、
+    // 再取得でも巻き戻しビュー(v2 = 単体では全検証を通る古い正規値)を配布する。
+    // セッション内で保持している検証済み latest(v4)からの後退として拒否する
+    const head = headOf(chainV1, chainV1.entries.length);
+    const v4 = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head,
+    });
+    const rolledBack = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 2,
+      plaintext: "old-regular",
+      writer: owner,
+      head,
+    });
+    let pullCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            name: ENV_ID,
+            currentEpoch: 1,
+            variables: [
+              {
+                variableId: "v-existing",
+                name: "API_KEY",
+                value: pullCalls === 1 ? v4 : rolledBack,
+              },
+            ],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+        () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 2 } }),
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("巻き戻し");
+  });
+
+  it("409 後の winner の prev が検証済み直前 version と連鎖しなければ拒否する(レビューループ 1 [中])", async () => {
+    // クライアントは v4 を検証済み。winner は v5 だが prev が v4 でなく別の
+    // 履歴(fork)に連鎖している → 隣接 predecessor の §6.3-6 検査で拒否する
+    const head = headOf(chainV1, chainV1.entries.length);
+    const v4 = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head,
+    });
+    // v5 だが prev はダミー(v4 の hash ではない = 分岐した履歴への連鎖)
+    const forkedV5 = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 5,
+      plaintext: "forked",
+      writer: owner,
+      head,
+      prevValueSigHashHex: "ab".repeat(32),
+    });
+    let pullCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            name: ENV_ID,
+            currentEpoch: 1,
+            variables: [
+              {
+                variableId: "v-existing",
+                name: "API_KEY",
+                value: pullCalls === 1 ? v4 : forkedV5,
+              },
+            ],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+        () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("prev が検証済みの直前 version");
+  });
+
   it("409 後の再取得が申告 currentVersion より古ければ不整合として拒否する", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
@@ -353,7 +492,7 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("欠落");
+    expect(env.errors.join("\n")).toContain("存在しません");
   });
 
   it("409 後の再取得が同一 version で異なる signed bytes を返したら equivocation として拒否する", async () => {

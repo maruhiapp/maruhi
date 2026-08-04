@@ -229,5 +229,59 @@ FP は PR-3(メタステートメント)の領分。
 
 ## 8. レビュー→修正ループ(PR 内。3 観点の並行レビュー → 修正)
 
-(実装後の 3 観点レビュー — セキュリティ・暗号 / 正しさ・並行性・fork /
-仕様・ベクター・wire — の結果をここに記録する)
+### ループ 1 の指摘と対応
+
+3 観点(セキュリティ・暗号 / 正しさ・並行性・fork / 仕様・ベクター・wire)を
+並行実行。**[高] 1 = [中](セキュリティ観点)の同根**を独立検出:
+
+1. **409 リトライがセッション内の検証済み latest からの後退を検出しない
+   (正しさ [高]・セキュリティ [中] が同根を独立検出)**: `adoptConflictWinner`
+   の整合検査が (a) `winner.version < currentVersion`(申告との不整合)と
+   (b) `winner.version === known.version` のハッシュ相違(equivocation)のみで、
+   `currentVersion < known.version` / `winner.version < known.version`
+   (このセッションで §6.3 検証済みの latest からの後退)を拒否していなかった。
+   悪意サーバーが巻き戻し申告 + 巻き戻しビュー(単体では全検証を通る古い正規値)を
+   配布すると、正直 writer が**巻き戻しブランチの座標へ自分の署名で連鎖**して
+   しまう(実史との same-coordinate fork 証拠の片割れを被害者自身に作らせる)。
+   ローカル床(PR-4)は「セッションを跨ぐ永続検出」であり、**同一 push フロー内で
+   `state.target.latest` を保持している以上、後退はゼロコストで検出できる**のが
+   論点。→ 対応: `winnerInconsistency` を新設し、(i) `currentVersion < known.version`
+   / `winner.version < known.version` = 巻き戻しの証拠として拒否、を追加。正直
+   サーバーでは latest_version 単調(行の個別削除なし)のため誤拒否なし
+2. **隣接 predecessor を持つ 409 経路で §6.3-6(prev 実在一致・エポック非減少)を
+   検査していない(正しさ [中])**: 裁定 B は「pull は latest-only で predecessor
+   を渡せない」だが、`winner.version === known.version + 1` のときクライアントは
+   まさに直前 version の検証済みアンカーを保持している。→ 対応:
+   `winnerInconsistency` に (ii) `winner.version === known.version + 1` のとき
+   `winner.prevValueSigHashHex === known.signedBytesHashHex` と
+   `winner.epoch >= known.epoch` を直接比較、を追加(VerifiedPulledValue に
+   `prevValueSigHashHex` を追加)。fork した履歴への連鎖を無償で検出する
+3. **自ビュー外の新規メンバーが書いた値が `writer-unknown` で即時拒否され、
+   §6.3-2b の有界再同期に入らない(セキュリティ [低])**: 検査順(仮裁定 C:
+   署名 → ヘッド)により鍵選択がヘッド束縛検査より先に走るため、宣言ヘッドが自
+   ビューより先 **かつ** writer が未同期区間で追加された新規メンバーの場合、
+   `chain-head-future` に到達する前に `writer-unknown` で落ちる。fail-closed だが
+   §6.3-2b の「まず再同期」規範から外れ、悪意サーバーが警告疲れを誘発できる。→
+   対応: `values.ts` の分類で「`writer-unknown` かつ `chainHeadSeq > 自ビューの
+   headSeq`」を future と同じ有界再同期経路に入れる(再同期後も unknown なら拒否)。
+   crypto 層の検査順は不変
+4. **[低]・[情報] 群**: winner 欠落メッセージに並行削除の可能性を併記
+   (正しさ [低])/ `dataEvent` の JSDoc を「クライアント署名を伴う操作
+   (dek.registered / var.created / var.version_pushed)が署名者 FP を写す」へ更新
+   (契約 [低] — 実装は仕様どおりで JSDoc のみ旧世代)/ サーバー側の
+   `epoch-regressed` 分岐は CAS 通過後は到達不能だが共有検証器の無害な防衛線
+   (正しさ [情報])/ create 経路の quota が CAS 前なのは「既存判定順への挿入
+   のみ」で整合(正しさ [情報])/ tenure 跨ぎ拒否のサーバー統合テスト追加を推奨
+   (セキュリティ [情報])
+
+3 観点とも **blocking / 新規重大指摘は上記のみ**で、署名対象バイト列・検証規則・
+サーバー受理・原子性・inclusive 境界・キャッシュ一貫性・ベクター仕様適合・wire
+契約・規範仕様の無変更はいずれも「確認済み(問題なし)」と判定された。
+
+### ループ 2(修正の再検証)
+
+ループ 1 の修正はいずれも `adoptConflictWinner` / `values.ts` の局所変更で、
+正直フローの誤拒否を生まないことを確認(latest_version 単調性・delete = 404 /
+tombstone の帰結)。品質ゲート再実行: `bun run check` green、crypto 4 実行環境
+green、server / CLI テスト green(§7 の数値 + 巻き戻し拒否・prev 連鎖検査・
+新規メンバー再同期の negative / positive を追加)。

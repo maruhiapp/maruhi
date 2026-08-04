@@ -312,6 +312,55 @@ function refreshEpochState(
 }
 
 /**
+ * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
+ * 整合検査(レビューループ 1 [高]/[中])。正直サーバーでは latest_version は
+ * 単調増加(バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後
+ * 404)なので、後退はすべて巻き戻し・equivocation の証拠であり誤拒否はない。
+ */
+/** 検証済み既知 latest に対する winner の後退・equivocation 検査。 */
+function winnerRegression(
+  target: PushTarget,
+  known: VerifiedPulledValue,
+  winner: VerifiedPulledValue,
+  currentVersion: number,
+): string | null {
+  if (currentVersion < known.version || winner.version < known.version) {
+    // このセッションで検証済みの latest からの後退 = 巻き戻しの証拠。採用して
+    // prev を付け替えると、巻き戻しブランチへ自分の署名で連鎖してしまう
+    return `変数 ${target.variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
+  }
+  if (winner.version === known.version && winner.signedBytesHashHex !== known.signedBytesHashHex) {
+    // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
+    return `変数 ${target.variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+  }
+  // 隣接 predecessor を保持している場合は §6.3-6 の連鎖検査が無償でできる
+  // (レビューループ 1 [中] — pull の latest-only 制約の例外)
+  if (winner.version === known.version + 1) {
+    if (winner.prevValueSigHashHex !== known.signedBytesHashHex) {
+      return `変数 ${target.variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    }
+    if (winner.epoch < known.epoch) {
+      return `変数 ${target.variableId} の version ${winner.version} の epoch(${winner.epoch})が直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
+    }
+  }
+  return null;
+}
+
+function winnerInconsistency(
+  target: PushTarget,
+  winner: VerifiedPulledValue,
+  currentVersion: number,
+): string | null {
+  if (winner.version < currentVersion) {
+    // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
+    return `再取得した pull の最新 version(${winner.version})が 409 の申告(${currentVersion})より古く、不整合です`;
+  }
+  return target.latest === null
+    ? null
+    : winnerRegression(target, target.latest, winner, currentVersion);
+}
+
+/**
  * 409 VersionConflict 後の winner 再取得(§12-5 の再試行手順): bulk pull を
  * 再取得し、stable id で winner を特定して検証し、その signed-bytes hash へ
  * prev を付け替える。409 応答に勝者のハッシュを要求しない。
@@ -334,31 +383,13 @@ function adoptConflictWinner(
     if (winner === undefined) {
       return yield* Effect.fail(
         cliError(
-          `バージョン競合の勝者(変数 ${state.target.variableId})が再取得した pull に存在しません(欠落 — サーバー応答の不整合)`,
+          `バージョン競合の勝者(変数 ${state.target.variableId})が再取得した pull に存在しません(他メンバーによる並行削除、またはサーバー応答の不整合)`,
         ),
       );
     }
-    if (winner.version < currentVersion) {
-      // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
-      return yield* Effect.fail(
-        cliError(
-          `再取得した pull の最新 version(${winner.version})が 409 の申告(${currentVersion})より古く、不整合です`,
-        ),
-      );
-    }
-    const known = state.target.latest;
-    if (known !== null && winner.version === known.version) {
-      if (winner.signedBytesHashHex !== known.signedBytesHashHex) {
-        // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
-        return yield* Effect.fail(
-          cliError(
-            `変数 ${state.target.variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`,
-          ),
-        );
-      }
-      // 内容も version も検証済みの値と同一(409 の申告だけが古い)。定的な
-      // 矛盾とまでは断定できないため状態はそのまま再試行し、解消しなければ
-      // 試行上限の打ち切りに任せる
+    const inconsistency = winnerInconsistency(state.target, winner, currentVersion);
+    if (inconsistency !== null) {
+      return yield* Effect.fail(cliError(inconsistency));
     }
     const refreshed = yield* refreshEpochState(input, state, pulled.verified);
     return {

@@ -1380,6 +1380,93 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     expect(rejected.status).toBe(404);
   });
 
+  it("rejects a re-added member declaring a head from their old tenure (422 chain-head-state-mismatch)", async () => {
+    // remove → 別鍵 re-add した主体が旧在籍区間のヘッドを宣言する形は、署名が
+    // 有効でも「宣言ヘッド時点の束縛鍵 = 受理時点の鍵」で落ちる(§12-5 の 3)。
+    // crypto ベクター key-from-other-tenure のサーバー API レベルの対
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 旧在籍区間(現ヘッド)の hash を控えてから MEMBER を削除
+    const oldTenureHead = { ...fixture.head };
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: MEMBER },
+    });
+    // 同一 user_id(MEMBER)を新鮮な鍵で re-add する(旧鍵・他メンバー鍵との
+    // 重複は §6.2 のメンバー鍵一意性で弾かれるため、新規生成鍵を使う)。
+    // 受理時点の MEMBER の束縛鍵は新鍵になり、旧在籍区間のヘッド宣言は落ちる
+    const newEncPair = await generateEncryptionKeyPair();
+    const newSigPair = await generateSigningKeyPair();
+    const rejoin = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: {
+        op: "add_member",
+        payload: {
+          targetUserId: MEMBER,
+          encPubHex: encodeHex(await exportEncryptionPublicKey(newEncPair.publicKey)),
+          sigPubHex: encodeHex(await exportSigningPublicKey(newSigPair.publicKey)),
+          role: "member",
+        },
+      },
+    });
+    const rejoined = await requestJson("POST", "/chain/entries", token(OWNER), {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry: rejoin.entry,
+    });
+    expect(rejoined.status).toBe(200);
+    fixture.head = { seq: rejoin.entry.seq, hashHex: rejoin.hash };
+    // 受理時点の MEMBER の束縛鍵は新鍵。サーバーはその鍵で署名検証し署名対象の
+    // writer_user_id にも MEMBER を用いる。攻撃者は新鍵で署名した上で旧在籍区間の
+    // ヘッドを宣言する(署名は有効 → ヘッド時点の束縛鍵 = 旧鍵 ≠ 受理時点の新鍵で
+    // 落ちる)。context を手で組んで新鍵で署名する
+    const context = {
+      suite: "maruhi/v1" as const,
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      variableId: VAR,
+      version: 2,
+      nonceHex: "00".repeat(12),
+      ciphertextHex: "ab".repeat(48),
+      prevValueSigHashHex: "cd".repeat(32),
+      writerUserId: MEMBER,
+      chainHeadHashHex: oldTenureHead.hashHex,
+      chainHeadSeq: oldTenureHead.seq,
+    };
+    const signatureHex = encodeHex(
+      new Uint8Array(
+        await crypto.subtle.sign(
+          "Ed25519",
+          newSigPair.privateKey,
+          buildValueSignedBytes(context) as BufferSource,
+        ),
+      ),
+    );
+    const value = {
+      suite: "maruhi/v1" as const,
+      aad: aadFor(1, 2),
+      nonceHex: context.nonceHex,
+      ciphertextHex: context.ciphertextHex,
+      prevValueSigHashHex: context.prevValueSigHashHex,
+      chainHeadHashHex: context.chainHeadHashHex,
+      chainHeadSeq: context.chainHeadSeq,
+      signatureHex,
+    };
+    const response = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value },
+    );
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+    await expectNoVersionSideEffects([1]);
+  });
+
   it("stores the signature block and server-computed hash on the version row (§12-5 の保存行)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const headAtWrite = { ...fixture.head };

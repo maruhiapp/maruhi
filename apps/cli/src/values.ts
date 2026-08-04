@@ -36,6 +36,8 @@ export interface VerifiedPulledValue {
   readonly epoch: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
+  /** 署名済みの prev(直前 version の signed bytes ハッシュ。version 1 は空)。 */
+  readonly prevValueSigHashHex: string;
   /**
    * Locally recomputed hash of the value's signed bytes — the prev anchor
    * for pushing the next version (§4.1 の連鎖) and the comparator for
@@ -64,24 +66,57 @@ type VerifyOutcome =
   | { readonly kind: "future" }
   | { readonly kind: "rejected"; readonly message: string };
 
+/** 申告 AAD の座標成分が期待座標(検証済み genesis / 要求 env / 応答外側 id)と一致するか(§6.3-5)。 */
+function coordinatesMatch(
+  verified: VerifiedProject,
+  environmentId: string,
+  variable: PulledWire,
+): boolean {
+  const aad = variable.value.aad;
+  return (
+    aad.projectId === verified.projectId &&
+    aad.environmentId === environmentId &&
+    aad.variableId === variable.variableId
+  );
+}
+
+/**
+ * 検証失敗理由 → VerifyOutcome。chain-head-future と「未同期区間の新規メンバーが
+ * 宣言する自ビューより先のヘッド(writer-unknown かつ宣言 seq > 自ヘッド)」は
+ * 有界再同期の入口(future)へ。それ以外は拒否(レビューループ 1 [低])。
+ */
+function failureOutcome(
+  verified: VerifiedProject,
+  variable: PulledWire,
+  error: { readonly kind: string; readonly reason?: string },
+): VerifyOutcome {
+  if (error.kind === "ValueInvalid") {
+    if (
+      error.reason === "chain-head-future" ||
+      (error.reason === "writer-unknown" && variable.value.chainHeadSeq > verified.history.headSeq)
+    ) {
+      return { kind: "future" };
+    }
+  }
+  const reason = error.reason ?? error.kind;
+  return {
+    kind: "rejected",
+    message: `変数 ${displayText(variable.name)} の値署名の検証に失敗しました(reason=${reason})。サーバーによる差し替え・偽造の可能性があります`,
+  };
+}
+
 async function verifyOne(
   verified: VerifiedProject,
   environmentId: string,
   variable: PulledWire,
 ): Promise<VerifyOutcome> {
   const payload = variable.value;
-  const label = displayText(variable.name);
-  // 座標整合(§6.3-5): 申告 AAD の座標成分は期待座標と一致しなければならない。
-  // 検証・復号は期待座標で行うため不一致はどのみち失敗するが、明示検査で
-  // 「どの座標が食い違ったか」を可視化する
-  if (
-    payload.aad.projectId !== verified.projectId ||
-    payload.aad.environmentId !== environmentId ||
-    payload.aad.variableId !== variable.variableId
-  ) {
+  // 座標整合(§6.3-5): 検証・復号は期待座標で行うため不一致はどのみち失敗するが、
+  // 明示検査で「どの座標が食い違ったか」を可視化する
+  if (!coordinatesMatch(verified, environmentId, variable)) {
     return {
       kind: "rejected",
-      message: `変数 ${label} の申告 AAD 座標が要求文脈と一致しません(サーバー応答の不整合)`,
+      message: `変数 ${displayText(variable.name)} の申告 AAD 座標が要求文脈と一致しません(サーバー応答の不整合)`,
     };
   }
   const result = await verifyDistributedValue({
@@ -103,27 +138,21 @@ async function verifyOne(
     writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
     signatureHex: payload.signatureHex,
   });
-  if (result.ok) {
-    return {
-      kind: "ok",
-      value: {
-        variableId: variable.variableId,
-        name: variable.name,
-        version: payload.aad.version,
-        epoch: payload.aad.epoch,
-        nonceHex: payload.nonceHex,
-        ciphertextHex: payload.ciphertextHex,
-        signedBytesHashHex: result.value.signedBytesHashHex,
-      },
-    };
+  if (!result.ok) {
+    return failureOutcome(verified, variable, result.error);
   }
-  if (result.error.kind === "ValueInvalid" && result.error.reason === "chain-head-future") {
-    return { kind: "future" };
-  }
-  const reason = result.error.kind === "ValueInvalid" ? result.error.reason : result.error.kind;
   return {
-    kind: "rejected",
-    message: `変数 ${label} の値署名の検証に失敗しました(reason=${reason})。サーバーによる差し替え・偽造の可能性があります`,
+    kind: "ok",
+    value: {
+      variableId: variable.variableId,
+      name: variable.name,
+      version: payload.aad.version,
+      epoch: payload.aad.epoch,
+      nonceHex: payload.nonceHex,
+      ciphertextHex: payload.ciphertextHex,
+      prevValueSigHashHex: payload.prevValueSigHashHex,
+      signedBytesHashHex: result.value.signedBytesHashHex,
+    },
   };
 }
 
