@@ -39,6 +39,10 @@ export interface VerifiedMetaEvidence {
   readonly metaSigHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
+  /** 配布された著者署名と帰属(証拠の自己完結性 — §14.2-5)。 */
+  readonly signatureHex: string;
+  readonly authorUserId: string;
+  readonly authorKeyFingerprintHex: string;
 }
 
 /** 検証済み tombstone(deleted ステートメント)。 */
@@ -53,13 +57,17 @@ export interface VerifiedPullSnapshot {
   readonly tombstones: readonly VerifiedTombstone[];
 }
 
-/** 配布された値側の証拠材料(座標・ハッシュ・宣言ヘッド)。 */
+/** 配布された値側の証拠材料(座標・ハッシュ・宣言ヘッド・署名と帰属)。 */
 export interface PulledValueEvidence {
   readonly version: number;
   readonly epoch: number;
   readonly valueSigHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
+  /** 配布された writer 署名と帰属(証拠の自己完結性 — §14.2-5)。 */
+  readonly signatureHex: string;
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
 }
 
 /** 床側(過去に検証済み)のメタ記録。 */
@@ -207,6 +215,9 @@ function valueEvidenceOf(value: VerifiedPulledValue): PulledValueEvidence {
     valueSigHashHex: value.signedBytesHashHex,
     chainHeadSeq: value.valueChainHeadSeq,
     chainHeadHashHex: value.valueChainHeadHashHex,
+    signatureHex: value.valueSignatureHex,
+    writerUserId: value.writerUserId,
+    writerKeyFingerprintHex: value.writerKeyFingerprintHex,
   };
 }
 
@@ -217,6 +228,9 @@ function metaEvidenceOf(value: VerifiedPulledValue): VerifiedMetaEvidence {
     metaSigHashHex: value.metaSignedBytesHashHex,
     chainHeadSeq: value.metaChainHeadSeq,
     chainHeadHashHex: value.metaChainHeadHashHex,
+    signatureHex: value.metaSignatureHex,
+    authorUserId: value.authorUserId,
+    authorKeyFingerprintHex: value.authorKeyFingerprintHex,
   };
 }
 

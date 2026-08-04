@@ -125,15 +125,27 @@ interface ProjectContext extends SessionContext {
   readonly floor: ProjectFloor | null;
 }
 
+interface CheckedFloor {
+  readonly floor: ProjectFloor | null;
+  /** チェーン床検査を通過したビュー(短縮疑い時の有界再同期で前進していることがある)。 */
+  readonly verified: VerifiedProject;
+}
+
 /**
  * ローカル床の読み込み(fail-open — 初回と破損を区別して知らせる)+ チェーン床
  * 検査(§6.3 規則 (a) のチェーン部分)+ 検証済みヘッドの床前進。規則 (c) の
  * 基準(pullEpoch)はここでは動かさない(チェーン同期単独で前進させない規範)。
+ *
+ * 床ヘッドが自ビューより先(headSeq の後退)は、同期と床ロードの間に兄弟
+ * プロセスが床を前進させた正直なレースでも起きるため、即時証拠にせず
+ * §6.3-2b と同型の有界再同期(1 回)で解決を試みる。床 seq 位置のハッシュ
+ * 不一致は 2 つの検証済み成果物の矛盾(硬い証拠)なので即時拒否のまま。
  */
 function loadCheckedFloor(
   projectId: string,
   verified: VerifiedProject,
-): Effect.Effect<ProjectFloor | null, CliError, CliServices> {
+  resync: Effect.Effect<VerifiedProject, CliError>,
+): Effect.Effect<CheckedFloor, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const store = yield* FloorStore;
@@ -147,18 +159,23 @@ function loadCheckedFloor(
         "警告: ローカル床ファイルを読み取れません(破損)。床なしとして続行します — ローカル状態が意図せず改変・削除された可能性があります。心当たりがない場合は注意してください",
       );
     }
+    let view = verified;
     if (loaded.floor !== null) {
-      const violation = checkChainFloor(loaded.floor, verified);
+      let violation = checkChainFloor(loaded.floor, view);
+      if (violation !== null && violation.kind === "chain-shortened") {
+        view = yield* resync;
+        violation = checkChainFloor(loaded.floor, view);
+      }
       if (violation !== null) {
         // 拒否 + 提示可能な証拠(床の記録ヘッドと今回の同期ヘッド)
         return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
       }
     }
     yield* store.commitHead(projectId, {
-      seq: verified.state.headSeq,
-      hashHex: verified.state.headHashHex,
+      seq: view.state.headSeq,
+      hashHex: view.state.headHashHex,
     });
-    return loaded.floor;
+    return { floor: loaded.floor, verified: view };
   });
 }
 
@@ -185,14 +202,25 @@ function openProject(flags: CommonFlags): Effect.Effect<ProjectContext, CliError
     const projectId = yield* resolveProjectId(flags.project, yield* store.load);
     const context = yield* openSession(flags.server);
     const masterKeys = yield* loadMasterKeys(context.session);
-    const verified = yield* syncProject(context.client, projectId);
-    const floor = yield* loadCheckedFloor(projectId, verified);
+    const synced = yield* syncProject(context.client, projectId);
+    const checked = yield* loadCheckedFloor(
+      projectId,
+      synced,
+      syncProject(context.client, projectId),
+    );
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,
       encKeyPair: masterKeys.encKeyPair,
     };
-    return { ...context, masterKeys, recipient, projectId, verified, floor };
+    return {
+      ...context,
+      masterKeys,
+      recipient,
+      projectId,
+      verified: checked.verified,
+      floor: checked.floor,
+    };
   });
 }
 
@@ -371,9 +399,13 @@ function projectCommand(execute: Execute) {
             const io = yield* CliIo;
             const context = yield* openSession(ctx.values.server);
             const projectId = yield* resolveProjectId(ctx.values.project, context.config);
-            const verified = yield* syncProject(context.client, projectId);
+            const synced = yield* syncProject(context.client, projectId);
             // チェーン床の検査(§6.3 規則 (a))も verify の一部
-            yield* loadCheckedFloor(projectId, verified);
+            const verified = (yield* loadCheckedFloor(
+              projectId,
+              synced,
+              syncProject(context.client, projectId),
+            )).verified;
             yield* io.log(`チェーン検証 OK(head seq=${verified.state.headSeq})`);
             yield* io.log(`head: ${verified.state.headHashHex}`);
             yield* io.log(`メンバー(${verified.state.members.size}):`);

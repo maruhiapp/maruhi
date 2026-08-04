@@ -377,6 +377,38 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     expect(env.errors.join("\n")).toContain("メタステートメントの巻き戻し");
   });
 
+  it("環境メタの同一 metaVersion への異なる signed bytes(環境名の付け替え)を拒否する", async () => {
+    const env = await makeTestEnv();
+    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+    const statement = await statementOf({ variableId: "vb", name: "BETA" });
+    await establishFloor(env, {
+      variables: [{ variableId: "vb", statement, value }],
+      deks: [wrap1],
+    });
+
+    // 同一 metaVersion 1 で name だけ異なる環境ステートメント(有効署名)
+    const swapped = await environmentStatementFor({
+      projectId,
+      environmentId: ENV_ID,
+      name: "prod-swapped",
+      author: owner,
+      head: genesisHead(),
+    });
+    await startPhase(env, [
+      chainHandlerFor([chain1]),
+      pullHandlerFor({
+        statement: swapped,
+        variables: [{ variableId: "vb", statement, value }],
+        deks: [wrap1],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("metaVersion への異なる signed bytes");
+    // 環境メタの証拠座標は環境まで(variable= を含まない)
+    expect(errors).toContain(`座標: project=${projectId} environment=${ENV_ID}\n`);
+  });
+
   it("エポックの後退(前進 version への床エポック未満の配布)を拒否する", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "va", name: "ALPHA" });
@@ -405,7 +437,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     expect(env.errors.join("\n")).toContain("単調性違反");
   });
 
-  it("チェーン長の後退(短縮)を拒否する", async () => {
+  it("チェーン長の後退(短縮)を拒否する(有界再同期でも解決しない場合)", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
@@ -419,6 +451,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
       chain2,
     );
 
+    // 再同期(2 回目の chain 取得)でも chain1 のまま = 真の短縮
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [{ variableId: "vb", statement, value }], deks: [wrap1] }),
@@ -428,6 +461,34 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     expect(errors).toContain("チェーンの短縮");
     expect(errors).toContain(`seq=3 hash=${chain2.hashes[2]}`);
     expect(errors).toContain(`seq=2 hash=${chain1.hashes[1]}`);
+  });
+
+  it("床ヘッドが自ビューより先の正直なレース(兄弟プロセスの前進)は有界再同期で解決する", async () => {
+    const env = await makeTestEnv();
+    const statement = await statementOf({ variableId: "vb", name: "BETA" });
+    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+    // 床は chain2(seq 3)まで確立済み
+    await establishFloor(
+      env,
+      {
+        variables: [{ variableId: "vb", statement, value }],
+        deks: [wrap1, wrap2],
+        currentEpoch: 2,
+      },
+      chain2,
+    );
+
+    // 1 回目の同期は古いビュー(chain1)を掴む(同期と床ロードの間に兄弟が床を
+    // 前進させた形のレース)→ 短縮を即時証拠にせず 1 回だけ再同期して解決する
+    await startPhase(env, [
+      chainHandlerFor([chain1, chain2]),
+      pullHandlerFor({
+        variables: [{ variableId: "vb", statement, value }],
+        deks: [wrap1, wrap2],
+        currentEpoch: 2,
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 });
 
@@ -692,27 +753,35 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
     });
   });
 
-  it("削除の無断取り消し(deleted 記録済みの active 配布)を拒否する", async () => {
-    const env = await makeTestEnv();
-    await establishFloor(env, {
-      variables: [],
-      deletedVariables: [await tombstoneOf()],
-      deks: [wrap1],
-    });
-
-    // 削除済み variableId が metaVersion 前進の active として配布される
-    const revived = await statementOf({ variableId: "vb", name: "BETA", metaVersion: 3 });
-    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
-    await startPhase(env, [
-      chainHandlerFor([chain1]),
-      pullHandlerFor({
-        variables: [{ variableId: "vb", statement: revived, value }],
+  it.each([
+    ["metaVersion 前進", 3],
+    ["同一 metaVersion", 2],
+    ["metaVersion 後退", 1],
+  ])(
+    "削除の無断取り消し(deleted 記録済みの active 配布 — %s)を拒否する",
+    async (_label, metaVersion) => {
+      const env = await makeTestEnv();
+      await establishFloor(env, {
+        variables: [],
+        deletedVariables: [await tombstoneOf()],
         deks: [wrap1],
-      }),
-    ]);
-    expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("削除の無断取り消し");
-  });
+      });
+
+      // 削除済み variableId が active として配布される(metaVersion の値に依らず
+      // 拒否 — deleted は終端状態で正当な再 active 化が存在しない)
+      const revived = await statementOf({ variableId: "vb", name: "BETA", metaVersion });
+      const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+      await startPhase(env, [
+        chainHandlerFor([chain1]),
+        pullHandlerFor({
+          variables: [{ variableId: "vb", statement: revived, value }],
+          deks: [wrap1],
+        }),
+      ]);
+      expect(await runCli(["pull"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("削除の無断取り消し");
+    },
+  );
 
   it("tombstone の差し替え(deleted は終端状態 — 床との厳密一致を要求)を拒否する", async () => {
     const env = await makeTestEnv();
@@ -785,7 +854,13 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const floor = await readFloorFile(env);
     expect(floor.chainHead).toEqual({ seq: 3, hashHex: chain2.hashes[2] });
-    expect(floor.environments[ENV_ID]?.pullEpoch).toBe(2);
+    // 規則 (c) 基準は応答取得**前**のビュー(chain1 = エポック 1)から導出する:
+    // 再同期(チェーン同期)で知ったエポック 2 を基準へ昇格させると、応答生成と
+    // 再同期の間に rotate が挟まった場合に「ローテーション後・再暗号化完了前」の
+    // 正当な旧エポック最新値を次回 pull で誤拒否する(§6.3 の「チェーン同期単独で
+    // 基準を前進させない」規範の再同期経路への適用 — レビュー②)
+    expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
+    expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 2 });
   });
 
   it("床より先の宣言ヘッドが再同期でも解決しなければ証拠として拒否する", async () => {
@@ -886,5 +961,59 @@ describe("メタの前進注入は床でも検出されない(§14.3-5 — 非�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("BETA_INJECTED");
+  });
+
+  it("環境メタの前進注入も床では検出されない(§14.3-5 — 任意の変数・環境のメタに成立)", async () => {
+    // §14.3-5: 前進注入は攻撃鍵が在籍区間中に author 資格を持っていた任意の
+    // 変数・環境のメタに成立する。変数側と同様、環境側も非検出を固定する
+    const env = await makeTestEnv();
+    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+    const statement = await statementOf({ variableId: "vb", name: "BETA" });
+    await establishFloor(env, {
+      variables: [{ variableId: "vb", statement, value }],
+      deks: [wrap1],
+    });
+
+    const injectedEnvMeta = await environmentStatementFor({
+      projectId,
+      environmentId: ENV_ID,
+      name: "prod-injected",
+      author: owner,
+      head: genesisHead(),
+      metaVersion: 2,
+    });
+    await startPhase(env, [
+      chainHandlerFor([chain1]),
+      pullHandlerFor({
+        statement: injectedEnvMeta,
+        variables: [{ variableId: "vb", statement, value }],
+        deks: [wrap1],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+  });
+});
+
+describe("commitHead のみの床(project verify 先行)との相互作用", () => {
+  it("verify で作られたヘッドのみの床から、後続 pull が環境床を確立できる", async () => {
+    const env = await makeTestEnv();
+    // フェーズ 1: project verify(チェーン床検査 + ヘッド前進のみ。環境床なし)
+    await startPhase(env, [chainHandlerFor([chain1])]);
+    expect(await runCli(["project", "verify"], env.layer)).toBe(0);
+    let floor = await readFloorFile(env);
+    expect(floor.chainHead).toEqual({ seq: 2, hashHex: chain1.hashes[1] });
+    expect(floor.environments[ENV_ID]).toBeUndefined();
+
+    // フェーズ 2: pull が環境床(規則 (c) 基準込み)を確立する
+    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+    const statement = await statementOf({ variableId: "vb", name: "BETA" });
+    await startPhase(env, [
+      chainHandlerFor([chain1]),
+      pullHandlerFor({ variables: [{ variableId: "vb", statement, value }], deks: [wrap1] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    floor = await readFloorFile(env);
+    expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
+    expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 1 });
   });
 });

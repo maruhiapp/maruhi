@@ -4,7 +4,7 @@
 // 読み込み分類・マージ規則(ヘッド前進のみ・変数床の後退禁止)・原子更新。
 // 後半(結線テスト)は floor-detection.test.ts(セッションを跨ぐ検出)。
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -199,6 +199,80 @@ describe("makeFileFloorStore(fail-open 読み込みと原子コミット)", () =
     expect(environment?.variables["vb"]).toMatchObject({ status: "deleted" });
   });
 
+  it("commitPull のマージは単調(並行プロセスが確立した新しい床を古いコミットが後退させない)", async () => {
+    // プロセス B が新世代(pullEpoch 3・va v5)をコミット済み
+    await Effect.runPromise(
+      store.commitPull(PROJECT_ID, {
+        chainHead: { seq: 5, hashHex: HASH_B },
+        environmentId: "prod",
+        environment: envFloor({
+          pullEpoch: 3,
+          metaVersion: 2,
+          variables: {
+            va: {
+              status: "active",
+              version: 5,
+              epoch: 3,
+              valueSigHashHex: HASH_B,
+              metaVersion: 2,
+              metaSigHashHex: HASH_B,
+            },
+          },
+        }),
+      }),
+    );
+    // プロセス A の古い pull(pullEpoch 2・va v3・vb の tombstone 込み)が後に着地
+    await Effect.runPromise(
+      store.commitPull(PROJECT_ID, {
+        chainHead: { seq: 3, hashHex: HASH_A },
+        environmentId: "prod",
+        environment: envFloor(),
+      }),
+    );
+    const result = await load();
+    const environment = result.floor?.environments["prod"];
+    // pullEpoch(規則 (c) 基準)・メタ・変数床は後退しない。片側にしかない
+    // 変数(vb)は union で保持される
+    expect(result.floor?.chainHead).toEqual({ seq: 5, hashHex: HASH_B });
+    expect(environment?.pullEpoch).toBe(3);
+    expect(environment?.metaVersion).toBe(2);
+    expect(environment?.variables["va"]).toMatchObject({ version: 5, epoch: 3 });
+    expect(environment?.variables["vb"]).toMatchObject({ status: "deleted" });
+  });
+
+  it("マージは deleted(終端状態)を active で上書きしない(commitPush の窓)", async () => {
+    await Effect.runPromise(
+      store.commitPull(PROJECT_ID, {
+        chainHead: { seq: 3, hashHex: HASH_A },
+        environmentId: "prod",
+        environment: envFloor(),
+      }),
+    );
+    // vb は床上 deleted(終端)。並行 push の遅延コミットが active を書こうと
+    // しても保持される(削除の無断取り消しの検出材料を失わない)
+    await Effect.runPromise(
+      store.commitPush(PROJECT_ID, {
+        chainHead: { seq: 3, hashHex: HASH_A },
+        environmentId: "prod",
+        variableId: "vb",
+        variable: {
+          status: "active",
+          version: 9,
+          epoch: 2,
+          valueSigHashHex: HASH_B,
+          metaVersion: 9,
+          metaSigHashHex: HASH_B,
+        },
+      }),
+    );
+    const result = await load();
+    expect(result.floor?.environments["prod"]?.variables["vb"]).toEqual({
+      status: "deleted",
+      metaVersion: 2,
+      metaSigHashHex: HASH_C,
+    });
+  });
+
   it("commitPush は並行プロセスが先に進めた変数床を後退させない", async () => {
     await Effect.runPromise(
       store.commitPull(PROJECT_ID, {
@@ -243,12 +317,27 @@ describe("makeFileFloorStore(fail-open 読み込みと原子コミット)", () =
     expect(result.floor?.environments["prod"]).toBeUndefined();
   });
 
-  it("破損した床ファイルへのコミットは作り直す(fail-open の帰結)", async () => {
+  it("破損した床ファイルへのコミットは退避(quarantine)してから作り直す", async () => {
     await writeFile(join(dir, `${PROJECT_ID}.json`), "{broken");
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
     const result = await load();
     expect(result.state).toBe("loaded");
     expect(result.floor?.chainHead).toEqual({ seq: 1, hashHex: HASH_A });
+    // 破損の形自体もフォレンジック材料 — 上書きで消さず .corrupt-* へ退避する
+    const entries = await readdir(dir);
+    const quarantined = entries.find((name) => name.startsWith(`${PROJECT_ID}.json.corrupt-`));
+    expect(quarantined).toBeDefined();
+    expect(await readFile(join(dir, quarantined as string), "utf8")).toBe("{broken");
+  });
+
+  it("missing は ENOENT のみ: それ以外の読み取りエラーは初回と同一視しない", async () => {
+    // 床ファイルのパスにディレクトリを置く(readFile → EISDIR)
+    await mkdir(join(dir, `${PROJECT_ID}.json`));
+    await expect(Effect.runPromise(store.load(PROJECT_ID))).rejects.toThrow("読み取れません");
+    // 書き込み経路も空からの作り直しをせず中断する(床の無警告全消去を防ぐ)
+    await expect(
+      Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A })),
+    ).rejects.toThrow("書き込めません");
   });
 
   it("書き込みは temp + rename(コミット後のファイルは常に完全な JSON)", async () => {

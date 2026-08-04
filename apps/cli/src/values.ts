@@ -79,6 +79,14 @@ export interface VerifiedPulledValue {
   /** メタステートメントの宣言ヘッド(同上)。 */
   readonly metaChainHeadSeq: number;
   readonly metaChainHeadHashHex: string;
+  /** 検証済みの値署名と帰属(fork 証拠の自己完結性 — §14.2-5)。 */
+  readonly valueSignatureHex: string;
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
+  /** 検証済みのステートメント署名と帰属(同上)。 */
+  readonly metaSignatureHex: string;
+  readonly authorUserId: string;
+  readonly authorKeyFingerprintHex: string;
 }
 
 /** A bulk pull whose values and statements all passed verification (§12-7 / §6.3). */
@@ -261,6 +269,12 @@ async function verifyOne(
       valueChainHeadHashHex: payload.chainHeadHashHex,
       metaChainHeadSeq: statement.chainHeadSeq,
       metaChainHeadHashHex: statement.chainHeadHashHex,
+      valueSignatureHex: payload.signatureHex,
+      writerUserId: payload.writerUserId,
+      writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
+      metaSignatureHex: statement.signatureHex,
+      authorUserId: statement.authorUserId,
+      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
     },
   };
 }
@@ -307,6 +321,9 @@ async function verifyEnvironmentStatement(
       metaSigHashHex: result.value.signedBytesHashHex,
       chainHeadSeq: statement.chainHeadSeq,
       chainHeadHashHex: statement.chainHeadHashHex,
+      signatureHex: statement.signatureHex,
+      authorUserId: statement.authorUserId,
+      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
     },
   };
 }
@@ -357,6 +374,9 @@ async function verifyDeletedStatements(
       metaSigHashHex: result.value.signedBytesHashHex,
       chainHeadSeq: statement.chainHeadSeq,
       chainHeadHashHex: statement.chainHeadHashHex,
+      signatureHex: statement.signatureHex,
+      authorUserId: statement.authorUserId,
+      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
     });
   }
   return { kind: "ok", value: tombstones };
@@ -475,10 +495,25 @@ function verifyAll(
  * pull の基準、基準の前進は検証成功後に変数床と原子的に)。検査はすべて
  * 署名検証を通過したデータ同士の比較なので、不一致は否認不能な証拠であり
  * 全件拒否する(§6.3 の「拒否・警告」の強い側)。
+ *
+ * コミット点は §6.3 検証成功(以後のラップ検証・復号の失敗で床は巻き戻さない
+ * — 記録されるのは署名検証済みダイジェストのみで、基準の単調性論証は復号の
+ * 成否と独立。「成功した pull(検証込み)」の「検証」は §6.3 を指す解釈)。
  */
 function enforceFloor(input: {
   readonly floor: FloorHandle;
-  readonly verified: VerifiedProject;
+  /**
+   * 規則 (c) 基準の導出に使うビュー。**pull 応答の取得より前に検証したビュー**
+   * でなければならない: 応答より新しいビュー(future head の有界再同期後)から
+   * 基準を導出すると、応答生成と再同期の間の rotate で基準が過前進し、
+   * 「ローテーション後・再暗号化完了前の正当な旧エポック最新値」(§12-7)を
+   * 次回 pull で誤拒否する(§6.3 の「チェーン同期単独で基準を前進させない」
+   * 規範の再同期経路への適用 — レビュー②)。基準 ≤ 応答生成時点のエポックなら、
+   * 以後に受理される正規 push のエポックは常に基準以上で誤拒否がない。
+   */
+  readonly baselineView: VerifiedProject;
+  /** 検証に使ったビュー(床のチェーンヘッドのコミット値)。 */
+  readonly commitView: VerifiedProject;
   readonly environmentId: string;
   readonly snapshot: VerifiedPullSnapshot;
 }): Effect.Effect<void, CliError> {
@@ -489,22 +524,29 @@ function enforceFloor(input: {
       return yield* Effect.fail(
         cliError(
           formatFloorViolation(
-            { projectId: input.verified.projectId, environmentId: input.environmentId },
+            { projectId: input.commitView.projectId, environmentId: input.environmentId },
             violation,
           ),
         ),
       );
     }
-    // 規則 (c) 基準の前進値 = 今回のチェーン導出現エポック(§6.2 — サーバー
-    // 申告の currentEpoch は使わない)。環境がチェーンに存在しないのに検証を
-    // 通る配布はここで止まる(メタはエポックアンカーを持たないため、変数ゼロの
-    // 環境ではステートメント検証だけでは検出できない)
-    const chainEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
-      .currentEpoch;
-    yield* input.floor.commitPull(buildEnvironmentFloor(chainEpoch, input.snapshot), {
-      seq: input.verified.state.headSeq,
-      hashHex: input.verified.state.headHashHex,
-    });
+    // 環境がチェーンに存在しないのに検証を通る配布はここで止まる(メタは
+    // エポックアンカーを持たないため、変数ゼロの環境ではステートメント検証
+    // だけでは検出できない)
+    yield* requireChainEnvironment(input.commitView, input.environmentId);
+    // 規則 (c) 基準の前進値 = 応答取得前ビューのチェーン導出現エポック(§6.2 —
+    // サーバー申告の currentEpoch は使わない)
+    const baselineEnvironment = input.baselineView.state.environments.get(input.environmentId);
+    if (baselineEnvironment === undefined) {
+      // 応答取得と再同期の間に環境が作られた稀なレース: 基準を過前進させずに
+      // 導出できるビューがないため、このコミットは見送る(次回 pull で確立。
+      // 床は SHOULD — 検出材料の確立が一周遅れるだけで誤検出はない)
+      return;
+    }
+    yield* input.floor.commitPull(
+      buildEnvironmentFloor(baselineEnvironment.currentEpoch, input.snapshot),
+      { seq: input.commitView.state.headSeq, hashHex: input.commitView.state.headHashHex },
+    );
   });
 }
 
@@ -532,7 +574,8 @@ export function pullVerifiedEnvironment(input: {
     if (first.kind === "ok") {
       yield* enforceFloor({
         floor: input.floor,
-        verified: input.verified,
+        baselineView: input.verified,
+        commitView: input.verified,
         environmentId: input.environmentId,
         snapshot: first.snapshot,
       });
@@ -550,9 +593,12 @@ export function pullVerifiedEnvironment(input: {
     const advanced = yield* resyncExtended(input.resync, input.verified);
     const second = yield* verifyAll(advanced, input.environmentId, response);
     if (second.kind === "ok") {
+      // 検証は前進ビュー、規則 (c) 基準は応答取得前のビューから導出する
+      // (enforceFloor の baselineView 契約 — 再同期での基準過前進を防ぐ)
       yield* enforceFloor({
         floor: input.floor,
-        verified: advanced,
+        baselineView: input.verified,
+        commitView: advanced,
         environmentId: input.environmentId,
         snapshot: second.snapshot,
       });

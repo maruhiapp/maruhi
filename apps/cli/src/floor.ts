@@ -177,6 +177,11 @@ function decodeVariableFloor(value: unknown): VariableFloor | null {
   };
 }
 
+// JSON 由来のキーをレコードへ代入する前の防衛(`__proto__` 等はブラケット代入で
+// プロトタイプ設定になり、エントリが黙って欠落する)。正規の ID(§12-1 の形式)
+// はこれらに一致しないため、一致 = 破損として全体拒否してよい
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   if (
     !isRecord(value) ||
@@ -190,7 +195,7 @@ function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   const variables: Record<string, VariableFloor> = {};
   for (const [variableId, raw] of Object.entries(value["variables"])) {
     const variable = decodeVariableFloor(raw);
-    if (variable === null) {
+    if (variable === null || UNSAFE_KEYS.has(variableId)) {
       return null;
     }
     variables[variableId] = variable;
@@ -224,7 +229,7 @@ export function decodeProjectFloor(json: string): ProjectFloor | null {
   const environments: Record<string, EnvironmentFloor> = {};
   for (const [environmentId, raw] of Object.entries(value["environments"])) {
     const environment = decodeEnvironmentFloor(raw);
-    if (environment === null) {
+    if (environment === null || UNSAFE_KEYS.has(environmentId)) {
       return null;
     }
     environments[environmentId] = environment;
@@ -235,6 +240,64 @@ export function decodeProjectFloor(json: string): ProjectFloor | null {
 /** チェーンヘッドの前進マージ(seq の大きい側が勝つ。後退はさせない)。 */
 function mergeHead(existing: ChainHeadFloor, incoming: ChainHeadFloor): ChainHeadFloor {
   return incoming.seq > existing.seq ? incoming : existing;
+}
+
+/**
+ * 変数床の単調マージ。ディスク上の床は**決して後退させない**(read-merge-write
+ * の窓で古いコミットが後に着地しても、並行プロセスが確立した検出材料を失わ
+ * ない — 悪意サーバーが応答遅延で着地順を制御しても床を過去世代へ戻せない):
+ * deleted は終端状態(active で上書きしない・metaVersion の大きい側のみ採用)、
+ * active 同士は値側(version)とメタ側(metaVersion)を独立に単調マージする。
+ * どちらの入力も §6.3 検証を通過した床レコードなので、この規則は健全。
+ */
+function mergeVariableFloor(
+  existing: VariableFloor | undefined,
+  incoming: VariableFloor,
+): VariableFloor {
+  if (existing === undefined) {
+    return incoming;
+  }
+  if (existing.status === "deleted" || incoming.status === "deleted") {
+    // 削除は終端状態(§4.2 / session-15 §2-2): deleted 記録は active で上書き
+    // せず、tombstone 同士・active → deleted は metaVersion の前進のみ受け入れる
+    if (incoming.status === "deleted" && incoming.metaVersion > existing.metaVersion) {
+      return incoming;
+    }
+    return existing;
+  }
+  const value = incoming.version >= existing.version ? incoming : existing;
+  const meta = incoming.metaVersion >= existing.metaVersion ? incoming : existing;
+  return {
+    status: "active",
+    version: value.version,
+    epoch: value.epoch,
+    valueSigHashHex: value.valueSigHashHex,
+    metaVersion: meta.metaVersion,
+    metaSigHashHex: meta.metaSigHashHex,
+  };
+}
+
+/** 環境床の単調マージ(pullEpoch は max・メタは metaVersion の大きい側・変数は単調 union)。 */
+function mergeEnvironmentFloor(
+  existing: EnvironmentFloor | undefined,
+  incoming: EnvironmentFloor,
+): EnvironmentFloor {
+  if (existing === undefined) {
+    return incoming;
+  }
+  const meta = incoming.metaVersion >= existing.metaVersion ? incoming : existing;
+  // union: 正当な床の変数キーは消えない(削除も tombstone レコードとして残る)
+  // ため、片側にしかない変数は保持する
+  const variables: Record<string, VariableFloor> = { ...existing.variables };
+  for (const [variableId, variable] of Object.entries(incoming.variables)) {
+    variables[variableId] = mergeVariableFloor(existing.variables[variableId], variable);
+  }
+  return {
+    pullEpoch: Math.max(existing.pullEpoch, incoming.pullEpoch),
+    metaVersion: meta.metaVersion,
+    metaSigHashHex: meta.metaSigHashHex,
+    variables,
+  };
 }
 
 type FloorMerge = (current: ProjectFloor | null) => ProjectFloor;
@@ -251,7 +314,13 @@ function applyPull(commit: PullCommit): FloorMerge {
     const base = applyHead(commit.chainHead)(current);
     return {
       ...base,
-      environments: { ...base.environments, [commit.environmentId]: commit.environment },
+      environments: {
+        ...base.environments,
+        [commit.environmentId]: mergeEnvironmentFloor(
+          base.environments[commit.environmentId],
+          commit.environment,
+        ),
+      },
     };
   };
 }
@@ -267,35 +336,48 @@ function applyPush(commit: PushCommit): FloorMerge {
       // 反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)
       return base;
     }
-    const existing = environment.variables[commit.variableId];
-    if (
-      existing !== undefined &&
-      existing.status === "active" &&
-      commit.variable.status === "active" &&
-      existing.version >= commit.variable.version
-    ) {
-      // 並行プロセスが先に進めていたら後退させない
-      return base;
-    }
     return {
       ...base,
       environments: {
         ...base.environments,
         [commit.environmentId]: {
           ...environment,
-          variables: { ...environment.variables, [commit.variableId]: commit.variable },
+          variables: {
+            ...environment.variables,
+            [commit.variableId]: mergeVariableFloor(
+              environment.variables[commit.variableId],
+              commit.variable,
+            ),
+          },
         },
       },
     };
   };
 }
 
+function isFileMissingError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+/**
+ * 床ファイルの読み込み。missing は **ENOENT のみ**: それ以外の I/O エラー
+ * (EACCES / EIO 等)を「初回」と同一視すると、読めないだけの床を次のコミットが
+ * 空から作り直して全消去する(検出機構の不可視な無効化)ため、例外として投げて
+ * 呼び出し側のエラーにする。
+ */
 async function readFloorFile(path: string): Promise<FloorLoadResult> {
   let json: string;
   try {
     json = await readFile(path, "utf8");
-  } catch {
-    return { floor: null, state: "missing" };
+  } catch (error) {
+    if (isFileMissingError(error)) {
+      return { floor: null, state: "missing" };
+    }
+    throw error;
   }
   const floor = decodeProjectFloor(json);
   return floor === null ? { floor: null, state: "corrupt" } : { floor, state: "loaded" };
@@ -317,10 +399,17 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
       try: async () => {
         const path = pathOf(projectId);
         // read-merge-write: コミット直前に最新のファイル内容へマージする
-        // (同一プロジェクトの並行 CLI との lost update を最小化)。破損して
-        // いた場合は作り直す(読み込み時に警告済み — fail-open の帰結)
-        const current = (await readFloorFile(path)).floor;
-        const next = merge(current);
+        // (同一プロジェクトの並行 CLI と競合しても、マージ規則の単調性により
+        // ディスク上の床は後退しない)。missing 以外の読み取り失敗は throw され、
+        // 空からの作り直しによる床の無警告全消去を防ぐ
+        const loaded = await readFloorFile(path);
+        if (loaded.state === "corrupt") {
+          // 破損床は作り直す(読み込み時に警告済み — fail-open の帰結)前に
+          // 退避する: 床ファイルは証拠の半分であり、破損の形自体もフォレンジック
+          // 材料になる(上書きで消さない)
+          await rename(path, `${path}.corrupt-${Date.now()}`);
+        }
+        const next = merge(loaded.floor);
         await mkdir(dirname(path), { recursive: true, mode: 0o700 });
         // temp + rename の原子的置き換え(§6.3 の同一トランザクション規範):
         // 規則 (c) 基準と変数床が別々に見える中間状態をディスク上に作らない

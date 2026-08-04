@@ -49,13 +49,30 @@ type ValueViolation = Extract<
   { kind: "value-rollback" | "value-equivocation" | "value-epoch-regression" }
 >;
 
+function pulledValueLines(pulled: {
+  readonly version: number;
+  readonly epoch: number;
+  readonly valueSigHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly chainHeadHashHex: string;
+  readonly signatureHex: string;
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
+}): readonly string[] {
+  return [
+    `  今回の配布: version=${pulled.version} epoch=${pulled.epoch}`,
+    `    value_signed_bytes_hash=${pulled.valueSigHashHex}`,
+    `    宣言ヘッド: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
+    `    writer 署名: writer=${pulled.writerUserId} fp=${pulled.writerKeyFingerprintHex}`,
+    `    signature=${pulled.signatureHex}`,
+  ];
+}
+
 function valueEvidenceLines(violation: ValueViolation): readonly string[] {
   return [
     `  床の記録(過去に検証済み): version=${violation.floor.version} epoch=${violation.floor.epoch}`,
     `    value_signed_bytes_hash=${violation.floor.valueSigHashHex}`,
-    `  今回の配布: version=${violation.pulled.version} epoch=${violation.pulled.epoch}`,
-    `    value_signed_bytes_hash=${violation.pulled.valueSigHashHex}`,
-    `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
+    ...pulledValueLines(violation.pulled),
   ];
 }
 
@@ -71,6 +88,8 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
     `  今回の配布: status=${violation.pulled.status} metaVersion=${violation.pulled.metaVersion}`,
     `    meta_signed_bytes_hash=${violation.pulled.metaSigHashHex}`,
     `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
+    `    author 署名: author=${violation.pulled.authorUserId} fp=${violation.pulled.authorKeyFingerprintHex}`,
+    `    signature=${violation.pulled.signatureHex}`,
   ];
 }
 
@@ -106,9 +125,7 @@ function variableEvidenceLines(
       coordinateLine(coordinates, violation.variableId),
       `  規則 (c) の基準: pull 時点エポック基準=${violation.baselineEpoch}(前回成功 pull 時点のチェーン導出現エポック)`,
       `  床の記録 version=${violation.floorVersion}(0 = 床に記録なし)`,
-      `  今回の配布: version=${violation.pulled.version} epoch=${violation.pulled.epoch}`,
-      `    value_signed_bytes_hash=${violation.pulled.valueSigHashHex}`,
-      `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
+      ...pulledValueLines(violation.pulled),
     ];
   }
   if (
