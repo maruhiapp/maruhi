@@ -15,6 +15,9 @@ import {
   EnvironmentNotFoundError,
   ForbiddenError,
   maruhiApi,
+  MetaStatementRejectedError,
+  MetaVersionConflictError,
+  NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
 } from "@maruhi/api-schema";
@@ -26,7 +29,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ensureActorMatches } from "./authz.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";
-import { callProjectData } from "./data-http.ts";
+import { callProjectData, checkStatementCoordinates, toMetaStatementInput } from "./data-http.ts";
 import type { EnvironmentSummaryValue } from "./data-plane.ts";
 
 const noContent = HttpServerResponse.empty({ status: 204 });
@@ -54,29 +57,36 @@ const ensureCompositeActor = (entry: ChainEntry) =>
 export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", (handlers) =>
   handlers
     .handle("create", ({ params, payload }) =>
-      ensureCompositeActor(payload.entry).pipe(
-        Effect.andThen(
-          callProjectData<EnvironmentChainResultValue>()({
-            projectId: params.projectId,
-            permission: "write",
-            allowed: [
-              ProjectNotFoundError,
-              ForbiddenError,
-              EnvironmentConflictError,
-              ...COMPOSITE_CHAIN_ERRORS,
-              DekWrapRejectedError,
-              DataLimitExceededError,
-            ],
-            invoke: (stub, actor) =>
-              stub.createEnvironment(actor, {
-                parentHeadHashHex: payload.parentHeadHashHex,
-                entry: payload.entry,
-                name: payload.name,
-                deks: payload.deks,
-              }),
-          }),
-        ),
-      ),
+      Effect.gen(function* () {
+        yield* ensureCompositeActor(payload.entry);
+        // 複合内整合検査(§12-4)の worker 側: エントリ payload とステートメントの
+        // environment_id の一致(宣言ヘッドの一致検査は状態依存のため DO 側)
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: payload.entry.payload.environmentId,
+        });
+        return yield* callProjectData<EnvironmentChainResultValue>()({
+          projectId: params.projectId,
+          permission: "write",
+          allowed: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentConflictError,
+            ...COMPOSITE_CHAIN_ERRORS,
+            PayloadMismatchError,
+            MetaStatementRejectedError,
+            NameNotNfcError,
+            DekWrapRejectedError,
+            DataLimitExceededError,
+          ],
+          invoke: (stub, actor) =>
+            stub.createEnvironment(actor, {
+              parentHeadHashHex: payload.parentHeadHashHex,
+              entry: payload.entry,
+              statement: toMetaStatementInput(payload.statement),
+              deks: payload.deks,
+            }),
+        });
+      }),
     )
     .handle("rotate", ({ params, payload }) =>
       ensureCompositeActor(payload.entry).pipe(
@@ -112,25 +122,58 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
       }).pipe(Effect.map((environments) => ({ environments }))),
     )
     .handle("rename", ({ params, payload }) =>
-      callProjectData<void>()({
-        projectId: params.projectId,
-        permission: "write",
-        allowed: [
-          ProjectNotFoundError,
-          ForbiddenError,
-          EnvironmentNotFoundError,
-          EnvironmentConflictError,
-        ],
-        invoke: (stub, actor) => stub.renameEnvironment(actor, params.environmentId, payload.name),
+      Effect.gen(function* () {
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: params.environmentId,
+        });
+        return yield* callProjectData<void>()({
+          projectId: params.projectId,
+          permission: "write",
+          allowed: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            EnvironmentConflictError,
+            PayloadMismatchError,
+            MetaVersionConflictError,
+            MetaStatementRejectedError,
+            NameNotNfcError,
+            DataLimitExceededError,
+          ],
+          invoke: (stub, actor) =>
+            stub.renameEnvironment(
+              actor,
+              params.environmentId,
+              toMetaStatementInput(payload.statement),
+            ),
+        });
       }).pipe(Effect.as(noContent)),
     )
-    .handle("remove", ({ params }) =>
-      // 環境の削除は admin スコープ + チェーン role admin 以上(§12-3)
-      callProjectData<void>()({
-        projectId: params.projectId,
-        permission: "admin",
-        allowed: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
-        invoke: (stub, actor) => stub.deleteEnvironment(actor, params.environmentId),
+    .handle("remove", ({ params, payload }) =>
+      // 環境の削除は admin スコープ + チェーン role admin 以上(§12-3)。
+      // 削除も署名付きステートメント(status deleted)を要する(§12-4)
+      Effect.gen(function* () {
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: params.environmentId,
+        });
+        return yield* callProjectData<void>()({
+          projectId: params.projectId,
+          permission: "admin",
+          allowed: [
+            ProjectNotFoundError,
+            ForbiddenError,
+            EnvironmentNotFoundError,
+            PayloadMismatchError,
+            MetaVersionConflictError,
+            MetaStatementRejectedError,
+          ],
+          invoke: (stub, actor) =>
+            stub.deleteEnvironment(
+              actor,
+              params.environmentId,
+              toMetaStatementInput(payload.statement),
+            ),
+        });
       }).pipe(Effect.as(noContent)),
     ),
 );

@@ -19,9 +19,13 @@ const PROJECT_DO_DDL = [
      entry_hash_hex TEXT NOT NULL,
      canonical_bytes INTEGER NOT NULL
    )`,
+  // name / latest_meta_version は最新ステートメント(*_meta_statements)の
+  // 導出キャッシュ(名前一意性クエリと metaVersion CAS 用)。真実源は
+  // ステートメント行で、書き込みフェーズで同期更新する(2026-08-04 PR-3)
   `CREATE TABLE IF NOT EXISTS environments (
      environment_id TEXT PRIMARY KEY,
      name TEXT NOT NULL,
+     latest_meta_version INTEGER NOT NULL,
      created_at INTEGER NOT NULL,
      deleted_at INTEGER
    )`,
@@ -29,10 +33,52 @@ const PROJECT_DO_DDL = [
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
      name TEXT NOT NULL,
+     latest_meta_version INTEGER NOT NULL,
      latest_version INTEGER NOT NULL,
      created_at INTEGER NOT NULL,
      deleted_at INTEGER,
      PRIMARY KEY (environment_id, variable_id)
+   )`,
+  // メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5。2026-08-04
+  // PR-3): metaVersion ごとに signed_bytes ハッシュ(サーバー再計算 — prev
+  // 検査・409 再試行の検証材料。配布しない)・署名・author(user_id + 受理
+  // 時点のチェーン導出鍵 FP)・name・status・prev・宣言ヘッドを保存する。
+  // 削除ステートメント(status deleted)も保存・配布し続ける(§12-4/-5 —
+  // 削除の否認・無断復活の検出材料)。すべて NOT NULL — backfill・nullable
+  // 遷移は作らない(公開前・適用済み環境なしの DDL 直接変更。古い
+  // .wrangler/state は破棄が必要 — session-15.md)
+  `CREATE TABLE IF NOT EXISTS variable_meta_statements (
+     environment_id TEXT NOT NULL,
+     variable_id TEXT NOT NULL,
+     meta_version INTEGER NOT NULL,
+     suite TEXT NOT NULL,
+     name TEXT NOT NULL,
+     status TEXT NOT NULL,
+     prev_meta_sig_hash_hex TEXT NOT NULL,
+     chain_head_hash_hex TEXT NOT NULL,
+     chain_head_seq INTEGER NOT NULL,
+     signature_hex TEXT NOT NULL,
+     signed_bytes_hash_hex TEXT NOT NULL,
+     author_user_id TEXT NOT NULL,
+     author_key_fingerprint TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     PRIMARY KEY (environment_id, variable_id, meta_version)
+   )`,
+  `CREATE TABLE IF NOT EXISTS environment_meta_statements (
+     environment_id TEXT NOT NULL,
+     meta_version INTEGER NOT NULL,
+     suite TEXT NOT NULL,
+     name TEXT NOT NULL,
+     status TEXT NOT NULL,
+     prev_meta_sig_hash_hex TEXT NOT NULL,
+     chain_head_hash_hex TEXT NOT NULL,
+     chain_head_seq INTEGER NOT NULL,
+     signature_hex TEXT NOT NULL,
+     signed_bytes_hash_hex TEXT NOT NULL,
+     author_user_id TEXT NOT NULL,
+     author_key_fingerprint TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     PRIMARY KEY (environment_id, meta_version)
    )`,
   // suite 列: すべての永続データ構造はスイート識別子を持つ(CRYPTO_SPEC §2
   // 設計原則 4 / AUTH_SPEC §12-2。将来のアルゴリズム移行時に行単位で判別する)
@@ -116,6 +162,8 @@ export const PROJECT_DO_TABLES = [
   "chain_entries",
   "environments",
   "variables",
+  "variable_meta_statements",
+  "environment_meta_statements",
   "variable_versions",
   "dek_wraps",
   "audit_events",

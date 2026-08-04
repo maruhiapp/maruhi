@@ -60,6 +60,55 @@ export interface DekWrapRefInput {
   readonly recipientUserId: string;
 }
 
+/** ステートメントのライフサイクル状態(CRYPTO_SPEC §4.2)。 */
+export type MetaStatementStatusInput = "active" | "deleted";
+
+/**
+ * メタデータステートメントの保存入力(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5)。
+ * 座標(environment / variable)は worker が URL・ステートメント申告値の一致を
+ * 検査済みで、DO は保存先座標から署名対象を再構成する(§12-5 — ワイヤの申告値
+ * から組まない)。author = 呼び出し主体が契約のため author の ID / FP はここに
+ * 載せない(DO が受理時点のチェーン導出メンバーから取る)。
+ */
+export interface MetaStatementInput {
+  readonly suite: WireSuite;
+  readonly name: string;
+  readonly status: MetaStatementStatusInput;
+  readonly metaVersion: number;
+  /** 直前ステートメントの signed_bytes の SHA-256(metaVersion 1 は空文字列)。 */
+  readonly prevMetaSigHashHex: string;
+  /** author が署名時点で最後に検証したチェーンヘッド(§4.2 の認可時点束縛)。 */
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  /** ステートメント署名(Ed25519 — CRYPTO_SPEC §4.2)。 */
+  readonly signatureHex: string;
+}
+
+/**
+ * 配布されるメタデータステートメント(DistributedVariableMetaStatement /
+ * DistributedEnvironmentMetaStatement と構造一致 — 変数用は variableId 付き)。
+ * 保存済みの署名ブロックと author(受理時点の user_id + チェーン導出鍵 FP)を
+ * そのまま返す(削除済み author の過去ステートメントの検証可能性 — §12-2)。
+ */
+export interface DistributedMetaStatementValue {
+  readonly suite: WireSuite;
+  readonly environmentId: string;
+  readonly name: string;
+  readonly status: MetaStatementStatusInput;
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+  readonly authorUserId: string;
+  readonly authorKeyFingerprintHex: string;
+}
+
+/** 変数ステートメントの配布形(variableId 付き)。 */
+export interface DistributedVariableMetaStatementValue extends DistributedMetaStatementValue {
+  readonly variableId: string;
+}
+
 /**
  * 変数値の保存入力。AAD 構成要素のうち座標(project / environment / variable)は
  * worker が URL との一致を検査済み(§12-2)。DO は状態依存の epoch / version と
@@ -84,8 +133,9 @@ export interface ValueInput {
 
 export interface EnvironmentSummaryValue {
   readonly environmentId: string;
-  readonly name: string;
   readonly currentEpoch: number;
+  /** 最新の環境メタステートメント(削除済み環境は deleted ステートメント)。 */
+  readonly statement: DistributedMetaStatementValue;
 }
 
 export interface VariableVersionValue {
@@ -102,7 +152,6 @@ export interface VariableVersionValue {
  */
 export interface PulledVariableValue {
   readonly variableId: string;
-  readonly name: string;
   readonly version: number;
   readonly suite: WireSuite;
   readonly epoch: number;
@@ -133,9 +182,15 @@ export interface RecipientDekValue {
 
 export interface EnvironmentPullValue {
   readonly environmentId: string;
-  readonly name: string;
   readonly currentEpoch: number;
-  readonly variables: readonly PulledVariableValue[];
+  /** 環境自身の最新メタステートメント(§12-7 の検証材料の同梱)。 */
+  readonly statement: DistributedMetaStatementValue;
+  /** アクティブ変数ごとの最新ステートメント + 最新バージョン。 */
+  readonly variables: readonly (PulledVariableValue & {
+    readonly statement: DistributedVariableMetaStatementValue;
+  })[];
+  /** 削除済み変数の deleted ステートメント(保存・配布し続ける — §12-5)。 */
+  readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
   readonly deks: readonly RecipientDekValue[];
 }
 
@@ -172,12 +227,21 @@ export type ValueSignatureRejectReason =
   | "chain-head-unknown"
   | "chain-head-state-mismatch";
 
+/**
+ * メタステートメントの 422 理由は値署名と同じ 3 語彙を共有する(session-12
+ * §6-7 — 新理由コードを作らない)。chain-head-state-mismatch はヘッド時点の
+ * 在籍・鍵束縛・role、prev の形 / 保存 predecessor との不一致、削除後の
+ * 再ステートメント(revived-after-delete)を含む。
+ */
+export type MetaStatementRejectReason = ValueSignatureRejectReason;
+
 export type DataLimitResource =
   | "environments"
   | "environment-rows"
   | "variables"
   | "variable-rows"
   | "versions"
+  | "meta-versions"
   | "project-ciphertext-bytes"
   | "dek-wraps-per-request"
   | "dek-wrap-rows";
@@ -222,6 +286,9 @@ export type DataRejection =
   | { readonly kind: "version-conflict"; readonly currentVersion: number }
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
+  | { readonly kind: "meta-rejected"; readonly reason: MetaStatementRejectReason }
+  | { readonly kind: "meta-version-conflict"; readonly currentMetaVersion: number }
+  | { readonly kind: "name-not-nfc" }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
   | { readonly kind: "dek-wrap-exists"; readonly epoch: number; readonly recipientUserId: string }
   | {

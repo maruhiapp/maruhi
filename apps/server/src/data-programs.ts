@@ -14,6 +14,9 @@ import type {
   ChainHistoryIndex,
   ChainMember,
   ChainState,
+  MetaInvalidReason,
+  MetaPredecessor,
+  MetaStatementTarget,
   ValueInvalidReason,
   ValuePredecessor,
 } from "@maruhi/crypto";
@@ -21,6 +24,7 @@ import {
   decodeHex,
   importSigningPublicKey,
   verifyDekWrapSignature,
+  verifyDistributedMetaStatement,
   verifyDistributedValue,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -36,6 +40,8 @@ import type {
   DekWrapRefInput,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
+  MetaStatementInput,
+  MetaStatementRejectReason,
   ValueInput,
   ValueSignatureRejectReason,
   VariableVersionValue,
@@ -214,6 +220,129 @@ const ensureValueSignature = (input: {
     // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
     return yield* Effect.die(new Error(`value verification failed: ${verified.error.kind}`));
   });
+
+// ---------------------------------------------------------------------------
+// メタステートメントのサーバー検証(§12-5 のメタ規則 = CRYPTO_SPEC §4.2 / §6.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * crypto の詳細理由 → ワイヤの 3 理由への写像(値署名の VALUE_REJECT_REASONS と
+ * 同じ仮裁定 C の規約 — 語彙を共有し新理由コードを作らない。session-12 §6-7)。
+ * 網羅は Record 型が静的に強制する。
+ */
+const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejectReason>> = {
+  "signature-invalid": "signature-invalid",
+  "chain-head-mismatch": "chain-head-unknown",
+  "chain-head-future": "chain-head-unknown",
+  "author-unknown": "chain-head-state-mismatch",
+  "author-not-member-at-head": "chain-head-state-mismatch",
+  "author-key-mismatch-at-head": "chain-head-state-mismatch",
+  "author-role-insufficient-at-head": "chain-head-state-mismatch",
+  "prev-shape-mismatch": "chain-head-state-mismatch",
+  "prev-hash-mismatch": "chain-head-state-mismatch",
+  "revived-after-delete": "chain-head-state-mismatch",
+};
+
+/**
+ * メタステートメントの受理検証(§12-5 の 1〜3 + prev 連鎖)。検査内容:
+ *
+ * 1. 署名は呼び出し主体の受理時点チェーン導出 sig 鍵で検証し、author_user_id にも
+ *    呼び出し主体を用いる(他人が署名したステートメントの持ち込み拒否)
+ * 2. 宣言ヘッド(hash + seq)の exact pair が検証対象チェーン上に存在する
+ * 3. 宣言ヘッド時点でも必要 role(環境の削除のみ admin、それ以外は member —
+ *    §12-3 の二重判定)で、当時の束縛鍵 = 受理時点の鍵
+ * 4. metaVersion 1 は prev 空、> 1 は保存済み直前ステートメントの signed-bytes
+ *    hash と一致し、直前が deleted なら拒否(§4.2 — 再 active 化の禁止)
+ *
+ * エポック整合(値の §12-5 の 4)はメタに存在しない(エポックアンカーなし —
+ * §4.2。環境の存在も検査しない — §12-4 の複合同梱形との両立)。
+ * 座標(project / environment / variable)はサーバー側の値(genesis ハッシュ・
+ * URL / 保存先)から再構成する — ワイヤの申告値から組まない(§12-5)。
+ *
+ * 成功時はサーバー再計算の signed_bytes ハッシュを返す(保存行に書く)。
+ */
+export const ensureMetaStatementSignature = (input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly target: MetaStatementTarget;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly statement: MetaStatementInput;
+  /** metaVersion > 1 のとき保存済み直前ステートメントのアンカー(呼び出し側が引く)。 */
+  readonly predecessor?: MetaPredecessor | undefined;
+}) =>
+  Effect.gen(function* () {
+    const verified = yield* Effect.promise(() =>
+      verifyDistributedMetaStatement({
+        history: input.history,
+        context: {
+          suite: input.statement.suite,
+          projectId: input.projectId,
+          environmentId: input.environmentId,
+          target: input.target,
+          name: input.statement.name,
+          status: input.statement.status,
+          metaVersion: input.statement.metaVersion,
+          prevMetaSigHashHex: input.statement.prevMetaSigHashHex,
+          // author = 呼び出し主体(§12-5 の 1)。検証鍵と head 時点の束縛一致は
+          // FP(受理時点のチェーン導出メンバー)で verifyDistributedMetaStatement が検査
+          authorUserId: input.member.userId,
+          chainHeadHashHex: input.statement.chainHeadHashHex,
+          chainHeadSeq: input.statement.chainHeadSeq,
+        },
+        authorKeyFingerprintHex: input.member.keyFingerprintHex,
+        signatureHex: input.statement.signatureHex,
+        predecessor: input.predecessor,
+      }),
+    );
+    if (verified.ok) {
+      return verified.value.signedBytesHashHex;
+    }
+    if (verified.error.kind === "MetaStatementInvalid") {
+      return yield* rejectData({
+        kind: "meta-rejected",
+        reason: META_REJECT_REASONS[verified.error.reason],
+      });
+    }
+    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
+    // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
+    return yield* Effect.die(
+      new Error(`meta statement verification failed: ${verified.error.kind}`),
+    );
+  });
+
+/**
+ * §12-1: name は NFC 正規形でなければ 422。サーバーは検査のみで正規化しない
+ * (byte-exact 署名との両立 — 正規化の実施主体は署名前のクライアント)。
+ */
+export const ensureNfcName = (name: string): Effect.Effect<void, DataRejectedError> =>
+  name.normalize("NFC") === name ? Effect.void : Effect.fail(rejectData({ kind: "name-not-nfc" }));
+
+/** metaVersion の CAS(§12-5): 申告 == 最新 + 1 のみ。409 は最新番号のみを返す。 */
+const ensureMetaCas = (
+  latestMetaVersion: number,
+  statement: MetaStatementInput,
+): Effect.Effect<void, DataRejectedError> =>
+  statement.metaVersion === latestMetaVersion + 1
+    ? Effect.void
+    : Effect.fail(
+        rejectData({ kind: "meta-version-conflict", currentMetaVersion: latestMetaVersion }),
+      );
+
+/**
+ * metaVersion 行数の上限(仮裁定 — §12-8 の「バージョン数 / 変数」と同値を
+ * ステートメント行にも適用。rename 連打による DO ストレージ肥大の遮断)。
+ */
+const ensureMetaQuota = (statement: MetaStatementInput): Effect.Effect<void, DataRejectedError> =>
+  statement.metaVersion > MAX_VERSIONS_PER_VARIABLE
+    ? Effect.fail(
+        rejectData({
+          kind: "limit-exceeded",
+          resource: "meta-versions",
+          limit: MAX_VERSIONS_PER_VARIABLE,
+        }),
+      )
+    : Effect.void;
 
 /** §12-8: 累積暗号文バイトの上限。追加分を含めて判定する純関数(ユニットテスト用に公開)。 */
 export function projectBytesExceeded(storedBytes: number, addedBytes: number): boolean {
@@ -469,52 +598,125 @@ export const ensureEnvironmentQuota = Effect.gen(function* () {
   }
 });
 
+/** 保存済み直前ステートメントのアンカー(CAS 通過後は必ず存在 — 欠落は defect)。 */
+const requireEnvironmentMetaPredecessor = (environmentId: string, latestMetaVersion: number) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const anchor = yield* store.environmentMetaAnchor(environmentId, latestMetaVersion);
+    if (anchor === null) {
+      return yield* Effect.die(new Error("environment meta predecessor row missing"));
+    }
+    return anchor;
+  });
+
 export const renameEnvironmentProgram = (
   actor: DataActor,
   environmentId: string,
-  name: string,
+  statement: MetaStatementInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "member", cache);
-    yield* requireActiveEnvironment(environmentId);
+    const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
+    const environment = yield* requireActiveEnvironment(environmentId);
+    yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
-    if (yield* store.environmentNameTaken(name, environmentId)) {
+    if (yield* store.environmentNameTaken(statement.name, environmentId)) {
       return yield* rejectData({
         kind: "environment-conflict",
         environmentId,
         reason: "duplicate-name",
       });
     }
+    yield* ensureMetaQuota(statement);
+    // 判定順(値の裁定 D と同型): CAS → ステートメント署名 → 原子書き込み
+    yield* ensureMetaCas(environment.latestMetaVersion, statement);
+    const predecessor = yield* requireEnvironmentMetaPredecessor(
+      environmentId,
+      environment.latestMetaVersion,
+    );
+    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+      projectId,
+      environmentId,
+      target: { kind: "environment" },
+      history,
+      member,
+      statement,
+      predecessor,
+    });
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
-      store.write.setEnvironmentName(environmentId, name);
-      audit.appendSync(dataEvent(actor, now, "env.renamed", { environmentId, payload: { name } }));
+      store.write.insertEnvironmentMetaStatement(
+        environmentId,
+        statement,
+        signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      audit.appendSync(
+        dataEvent(actor, now, "env.renamed", {
+          environmentId,
+          payload: { name: statement.name },
+          actorKeyFingerprintHex: member.keyFingerprintHex,
+        }),
+      );
     });
   });
 
 export const deleteEnvironmentProgram = (
   actor: DataActor,
   environmentId: string,
+  statement: MetaStatementInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "admin", cache);
+    // 受理時点 admin(§12-3)。宣言ヘッド時点 admin は署名検証(§12-3 の
+    // 二重判定 — env × deleted の必要 role)が検査する
+    const { history, member, projectId } = yield* requireMemberState(actor.userId, "admin", cache);
     const environment = yield* requireActiveEnvironment(environmentId);
+    // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)
+    if (statement.name !== environment.name) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "name" });
+    }
+    yield* ensureMetaQuota(statement);
+    yield* ensureMetaCas(environment.latestMetaVersion, statement);
+    const predecessor = yield* requireEnvironmentMetaPredecessor(
+      environmentId,
+      environment.latestMetaVersion,
+    );
+    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+      projectId,
+      environmentId,
+      target: { kind: "environment" },
+      history,
+      member,
+      statement,
+      predecessor,
+    });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
     const variables = yield* store.listActiveVariables(environmentId);
-    // 書き込みフェーズ(単一タスク): tombstone + データ削除と、存在区間を閉じる
-    // 変数ごとの var.deleted(§12-4)+ env.deleted を原子的に書く
+    // 書き込みフェーズ(単一タスク): tombstone + データ削除 + deleted ステート
+    // メント行と、存在区間を閉じる変数ごとの var.deleted(§12-4)+ env.deleted を
+    // 原子的に書く。カスケード削除される変数は個別のステートメントを持たない
+    // ため、var.deleted の FP は環境削除ステートメントの author FP を写す
+    // (「FP = 署名の証跡」の意味論 — この削除を認可した署名は env 側にある)
     yield* Effect.sync(() => {
       store.write.retireEnvironment(environmentId, now);
+      store.write.insertEnvironmentMetaStatement(
+        environmentId,
+        statement,
+        signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
       for (const variable of variables) {
         audit.appendSync(
           dataEvent(actor, now, "var.deleted", {
             environmentId,
             variableId: variable.variableId,
+            actorKeyFingerprintHex: member.keyFingerprintHex,
           }),
         );
       }
@@ -522,6 +724,7 @@ export const deleteEnvironmentProgram = (
         dataEvent(actor, now, "env.deleted", {
           environmentId,
           payload: { name: environment.name },
+          actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
     });
@@ -531,11 +734,14 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
   Effect.gen(function* () {
     const { state } = yield* requireMemberState(actor.userId, "reader", cache);
     const store = yield* DataStore;
-    const environments = yield* store.listEnvironments;
+    const environments = yield* store.listEnvironmentStatements;
+    // 削除済み環境もチェーン上に create_environment を持つ(チェーンは削除を
+    // 観測しない — §6.2)ため、currentEpochOf は全行で導出可能
     return environments.map(
       (environment): EnvironmentSummaryValue => ({
-        ...environment,
+        environmentId: environment.environmentId,
         currentEpoch: currentEpochOf(state, environment.environmentId),
+        statement: environment.statement,
       }),
     );
   });
@@ -616,7 +822,11 @@ function writeVersionWithAudit(
 export const createVariableProgram = (
   actor: DataActor,
   environmentId: string,
-  input: { readonly variableId: string; readonly name: string; readonly value: ValueInput },
+  input: {
+    readonly variableId: string;
+    readonly statement: MetaStatementInput;
+    readonly value: ValueInput;
+  },
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -633,17 +843,30 @@ export const createVariableProgram = (
       return yield* rejectData(unavailable);
     }
     yield* ensureVariableQuota(environmentId);
-    if (yield* store.variableNameTaken(environmentId, input.name, null)) {
+    yield* ensureNfcName(input.statement.name);
+    if (yield* store.variableNameTaken(environmentId, input.statement.name, null)) {
       return yield* rejectData({
         kind: "variable-conflict",
         variableId: input.variableId,
         reason: "duplicate-name",
       });
     }
-    // 作成は version 1 の値を同梱する(§12-5)。CAS は latest = 0 相当
+    // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
+    // ワイヤ Schema が metaVersion 1・active・prev 空を固定するが、CAS は
+    // 防衛線として残す(latest = 0 相当)
+    yield* ensureMetaCas(0, input.statement);
     yield* ensureValueCas(state, environmentId, 0, input.value);
-    // 同梱 version 1 も通常 push と同一の値署名検証を受ける(§12-5 — 作成経由の
-    // 検証迂回は不可)。判定順: CAS → 値署名 → 数量ポリシー(裁定 D)
+    // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名検証を
+    // 受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)。判定順:
+    // CAS → メタ署名 → 値署名 → 数量ポリシー(裁定 D への挿入)
+    const metaSignedBytesHashHex = yield* ensureMetaStatementSignature({
+      projectId,
+      environmentId,
+      target: { kind: "variable", variableId: input.variableId },
+      history,
+      member,
+      statement: input.statement,
+    });
     const signedBytesHashHex = yield* ensureValueSignature({
       projectId,
       environmentId,
@@ -655,15 +878,26 @@ export const createVariableProgram = (
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 書き込みフェーズ(単一タスク): 変数行 + version 1 + 監査 2 行を原子的に書く
-    // (「latest_version = 0 のまま ID だけ占有された変数」を残さない)
+    // 書き込みフェーズ(単一タスク): 変数行 + ステートメント行 + version 1 +
+    // 監査 2 行を原子的に書く(「latest_version = 0 のまま ID だけ占有された
+    // 変数」を残さない)
     yield* Effect.sync(() => {
-      store.write.insertVariable(environmentId, input.variableId, input.name, now);
+      store.write.insertVariable(environmentId, input.variableId, input.statement.name, now);
+      store.write.insertVariableMetaStatement(
+        environmentId,
+        input.variableId,
+        input.statement,
+        metaSignedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      // var.created の FP = 同梱 v1 の writer FP = author FP(同一主体 — §12-5。
+      // テストが固定する)
       audit.appendSync(
         dataEvent(actor, now, "var.created", {
           environmentId,
           variableId: input.variableId,
-          payload: { name: input.name },
+          payload: { name: input.statement.name },
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
@@ -744,30 +978,70 @@ export const pushVersionProgram = (
     } satisfies VariableVersionValue;
   });
 
+/** 保存済み直前ステートメントのアンカー(変数版。CAS 通過後は必ず存在 — 欠落は defect)。 */
+const requireVariableMetaPredecessor = (
+  environmentId: string,
+  variableId: string,
+  latestMetaVersion: number,
+) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const anchor = yield* store.variableMetaAnchor(environmentId, variableId, latestMetaVersion);
+    if (anchor === null) {
+      return yield* Effect.die(new Error("variable meta predecessor row missing"));
+    }
+    return anchor;
+  });
+
 export const renameVariableProgram = (
   actor: DataActor,
   environmentId: string,
   variableId: string,
-  name: string,
+  statement: MetaStatementInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "member", cache);
+    const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
-    yield* requireActiveVariable(environmentId, variableId);
+    const variable = yield* requireActiveVariable(environmentId, variableId);
+    yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
-    if (yield* store.variableNameTaken(environmentId, name, variableId)) {
+    if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
+    yield* ensureMetaQuota(statement);
+    yield* ensureMetaCas(variable.latestMetaVersion, statement);
+    const predecessor = yield* requireVariableMetaPredecessor(
+      environmentId,
+      variableId,
+      variable.latestMetaVersion,
+    );
+    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+      projectId,
+      environmentId,
+      target: { kind: "variable", variableId },
+      history,
+      member,
+      statement,
+      predecessor,
+    });
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
-      store.write.setVariableName(environmentId, variableId, name);
+      store.write.insertVariableMetaStatement(
+        environmentId,
+        variableId,
+        statement,
+        signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
       audit.appendSync(
         dataEvent(actor, now, "var.renamed", {
           environmentId,
           variableId,
-          payload: { name },
+          payload: { name: statement.name },
+          actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
     });
@@ -777,18 +1051,55 @@ export const deleteVariableProgram = (
   actor: DataActor,
   environmentId: string,
   variableId: string,
+  statement: MetaStatementInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "member", cache);
+    const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
-    yield* requireActiveVariable(environmentId, variableId);
+    const variable = yield* requireActiveVariable(environmentId, variableId);
+    // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)
+    if (statement.name !== variable.name) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "name" });
+    }
+    yield* ensureMetaQuota(statement);
+    yield* ensureMetaCas(variable.latestMetaVersion, statement);
+    const predecessor = yield* requireVariableMetaPredecessor(
+      environmentId,
+      variableId,
+      variable.latestMetaVersion,
+    );
+    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+      projectId,
+      environmentId,
+      target: { kind: "variable", variableId },
+      history,
+      member,
+      statement,
+      predecessor,
+    });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
+    // 書き込みフェーズ: tombstone + 全バージョン削除 + deleted ステートメント行
+    // (保存・配布し続ける — §12-5)+ var.deleted(author FP — AUDIT_SPEC §3.3)
     yield* Effect.sync(() => {
       store.write.retireVariable(environmentId, variableId, now);
-      audit.appendSync(dataEvent(actor, now, "var.deleted", { environmentId, variableId }));
+      store.write.insertVariableMetaStatement(
+        environmentId,
+        variableId,
+        statement,
+        signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      audit.appendSync(
+        dataEvent(actor, now, "var.deleted", {
+          environmentId,
+          variableId,
+          actorKeyFingerprintHex: member.keyFingerprintHex,
+        }),
+      );
     });
   });
 
@@ -803,9 +1114,18 @@ export const pullEnvironmentProgram = (
 ) =>
   Effect.gen(function* () {
     const { state } = yield* requireMemberState(actor.userId, "reader", cache);
-    const environment = yield* requireActiveEnvironment(environmentId);
+    yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;
+    // 環境自身の最新ステートメント(§12-7 の検証材料の同梱)。環境行はステート
+    // メントと原子的に作られる(複合受理)ため、欠落は不変条件違反 = defect
+    const statement = yield* store.environmentStatement(environmentId);
+    if (statement === null) {
+      return yield* Effect.die(new Error("environment meta statement row missing"));
+    }
     const variables = yield* store.latestVersions(environmentId);
+    // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
+    // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
+    const deletedVariables = yield* store.deletedVariableStatements(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
     // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行
     // (返した行に対して記録するため、行とイベントは常に一致する)
@@ -825,9 +1145,10 @@ export const pullEnvironmentProgram = (
     });
     return {
       environmentId,
-      name: environment.name,
       currentEpoch: currentEpochOf(state, environmentId),
+      statement,
       variables,
+      deletedVariables,
       deks,
     } satisfies EnvironmentPullValue;
   });

@@ -19,6 +19,9 @@ import {
   EnvironmentNotFoundError,
   EpochConflictError,
   ForbiddenError,
+  MetaStatementRejectedError,
+  MetaVersionConflictError,
+  NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
   ValueSignatureRejectedError,
@@ -33,7 +36,13 @@ import { Effect } from "effect";
 
 import { ensureTokenScopeForProject } from "./authz.ts";
 import type { ProjectChainDO } from "./chain-do.ts";
-import type { DataActor, DataOutcome, DataRejection, ValueInput } from "./data-plane.ts";
+import type {
+  DataActor,
+  DataOutcome,
+  DataRejection,
+  MetaStatementInput,
+  ValueInput,
+} from "./data-plane.ts";
 import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -100,6 +109,48 @@ export function checkAadCoordinates(
   return field === null ? Effect.void : Effect.fail(new PayloadMismatchError({ field }));
 }
 
+/**
+ * ステートメント申告座標とリクエスト保存先座標の一致検査(§12-5 の座標再構成の
+ * 前提)。DO は URL / 保存先から署名対象を再構成するため、不一致な申告はどのみち
+ * 署名検証で落ちるが、AAD 座標検査(§12-2 の 1a)と同じくリクエスト内容のみに
+ * 依存する自己整合検査として worker で先行拒否し、食い違った座標を可視化する。
+ */
+export function checkStatementCoordinates(
+  statement: { readonly environmentId: string; readonly variableId?: string },
+  coordinates: { readonly environmentId: string; readonly variableId?: string },
+): Effect.Effect<void, PayloadMismatchError> {
+  if (statement.environmentId !== coordinates.environmentId) {
+    return Effect.fail(new PayloadMismatchError({ field: "statementEnvironmentId" }));
+  }
+  if (coordinates.variableId !== undefined && statement.variableId !== coordinates.variableId) {
+    return Effect.fail(new PayloadMismatchError({ field: "statementVariableId" }));
+  }
+  return Effect.void;
+}
+
+/** ワイヤのステートメント → DO へ渡す保存入力(座標は検査済み)。 */
+export function toMetaStatementInput(statement: {
+  readonly suite: "maruhi/v1";
+  readonly name: string;
+  readonly status: "active" | "deleted";
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+}): MetaStatementInput {
+  return {
+    suite: statement.suite,
+    name: statement.name,
+    status: statement.status,
+    metaVersion: statement.metaVersion,
+    prevMetaSigHashHex: statement.prevMetaSigHashHex,
+    chainHeadHashHex: statement.chainHeadHashHex,
+    chainHeadSeq: statement.chainHeadSeq,
+    signatureHex: statement.signatureHex,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // DataRejection → 型付きエラー
 // ---------------------------------------------------------------------------
@@ -119,6 +170,9 @@ type DataApiError =
   | VersionConflictError
   | EpochConflictError
   | ValueSignatureRejectedError
+  | MetaStatementRejectedError
+  | MetaVersionConflictError
+  | NameNotNfcError
   | DekWrapRejectedError
   | DekWrapExistsError
   | DekWrapNotFoundError
@@ -165,6 +219,10 @@ const rejectionErrors: {
     new VersionConflictError({ currentVersion: rejection.currentVersion }),
   "epoch-conflict": (rejection) => new EpochConflictError({ currentEpoch: rejection.currentEpoch }),
   "value-rejected": (rejection) => new ValueSignatureRejectedError({ reason: rejection.reason }),
+  "meta-rejected": (rejection) => new MetaStatementRejectedError({ reason: rejection.reason }),
+  "meta-version-conflict": (rejection) =>
+    new MetaVersionConflictError({ currentMetaVersion: rejection.currentMetaVersion }),
+  "name-not-nfc": () => new NameNotNfcError(),
   "dek-wrap-rejected": (rejection) => new DekWrapRejectedError({ reason: rejection.reason }),
   "dek-wrap-exists": (rejection) =>
     new DekWrapExistsError({ epoch: rejection.epoch, recipientUserId: rejection.recipientUserId }),

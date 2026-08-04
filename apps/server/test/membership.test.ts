@@ -41,7 +41,13 @@ import {
   vectorEntries,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
-import { hexBytes, makeDek, signEntryAt, wrapDekForAll } from "./support/data-crypto.ts";
+import {
+  hexBytes,
+  makeDek,
+  signEntryAt,
+  signMetaStatementAs,
+  wrapDekForAll,
+} from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 const VECTOR_ORG = "org-vector-0001";
@@ -125,7 +131,23 @@ async function submitComposite(
       : `${BASE}/projects/${vectorProjectId}/environments/${environmentId}/rotate`;
   const body =
     entry.op === "create_environment"
-      ? { parentHeadHashHex: entry.prevHashHex, entry, name: environmentId, deks }
+      ? {
+          parentHeadHashHex: entry.prevHashHex,
+          entry,
+          // 同梱ステートメント(metaVersion 1)。宣言ヘッドは追記前の現ヘッド =
+          // 同梱エントリの prev(AUTH_SPEC §12-4)
+          statement: await signMetaStatementAs(entry.actor.userId, vectorProjectId, {
+            suite: "maruhi/v1" as const,
+            environmentId,
+            name: environmentId,
+            status: "active" as const,
+            metaVersion: 1,
+            prevMetaSigHashHex: "",
+            chainHeadHashHex: entry.prevHashHex,
+            chainHeadSeq: entry.seq - 1,
+          }),
+          deks,
+        }
       : { parentHeadHashHex: entry.prevHashHex, entry, deks };
   return SELF.fetch(url, {
     method: "POST",

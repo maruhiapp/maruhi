@@ -9,6 +9,10 @@ import { Context, Effect, Layer } from "effect";
 
 import type {
   DekWrapInput,
+  DistributedMetaStatementValue,
+  DistributedVariableMetaStatementValue,
+  MetaStatementInput,
+  MetaStatementStatusInput,
   PulledVariableValue,
   RecipientDekValue,
   ValueInput,
@@ -18,12 +22,15 @@ import type {
 interface EnvironmentRow {
   readonly environmentId: string;
   readonly name: string;
+  /** 最新ステートメントの metaVersion(導出キャッシュ — metaVersion CAS 用)。 */
+  readonly latestMetaVersion: number;
   readonly deletedAtMs: number | null;
 }
 
 export interface VariableRow {
   readonly variableId: string;
   readonly name: string;
+  readonly latestMetaVersion: number;
   readonly latestVersion: number;
   readonly deletedAtMs: number | null;
 }
@@ -52,6 +59,25 @@ interface VersionAnchor {
   readonly epoch: number;
 }
 
+/**
+ * ステートメントの author(*_meta_statements の author_* 列に保存する —
+ * 受理時点のチェーン導出メンバーの user_id + 鍵 FP。CRYPTO_SPEC §4.2)。
+ */
+export interface MetaAuthorInfo {
+  readonly userId: string;
+  readonly keyFingerprintHex: string;
+}
+
+/**
+ * 保存済みステートメントの検証アンカー: サーバー再計算の signed_bytes ハッシュと
+ * status。次 metaVersion の prev 検査と削除後の再ステートメント拒否
+ * (§12-5 のメタ規則)の入力。
+ */
+interface MetaAnchor {
+  readonly signedBytesHashHex: string;
+  readonly status: MetaStatementStatusInput;
+}
+
 /** アクティブ数と行数(tombstone 込み)。§12-8 の数量ポリシー判定用。 */
 interface ResourceCounts {
   readonly active: number;
@@ -65,9 +91,24 @@ interface ResourceCounts {
  * 検証(読み取り)は Effect 側のメソッドで書き込みフェーズの前に済ませる。
  */
 export interface DataWriteOps {
+  /** 環境行の挿入。name / latest_meta_version は直後の insertEnvironmentMetaStatement が確定する。 */
   readonly insertEnvironment: (environmentId: string, name: string, nowMs: number) => void;
-  readonly setEnvironmentName: (environmentId: string, name: string) => void;
-  /** tombstone 化 + 配下データ(変数・バージョン・ラップ)の即時削除。 */
+  /**
+   * 環境ステートメント行の挿入 + 環境行キャッシュ(name / latest_meta_version)の
+   * 同期更新。作成・rename・削除の全経路で同じ同期ブロック内から呼ぶ。
+   */
+  readonly insertEnvironmentMetaStatement: (
+    environmentId: string,
+    statement: MetaStatementInput,
+    signedBytesHashHex: string,
+    author: MetaAuthorInfo,
+    nowMs: number,
+  ) => void;
+  /**
+   * tombstone 化 + 配下データ(変数・変数ステートメント・バージョン・ラップ)の
+   * 即時削除。環境自身の削除ステートメント(insertEnvironmentMetaStatement)は
+   * 保存・配布し続ける(§12-4)。
+   */
   readonly retireEnvironment: (environmentId: string, nowMs: number) => void;
   readonly insertVariable: (
     environmentId: string,
@@ -75,8 +116,16 @@ export interface DataWriteOps {
     name: string,
     nowMs: number,
   ) => void;
-  readonly setVariableName: (environmentId: string, variableId: string, name: string) => void;
-  /** tombstone 化 + 全バージョン(暗号文)の即時削除。 */
+  /** 変数ステートメント行の挿入 + 変数行キャッシュの同期更新(環境版と同型)。 */
+  readonly insertVariableMetaStatement: (
+    environmentId: string,
+    variableId: string,
+    statement: MetaStatementInput,
+    signedBytesHashHex: string,
+    author: MetaAuthorInfo,
+    nowMs: number,
+  ) => void;
+  /** tombstone 化 + 全バージョン(暗号文)の即時削除。deleted ステートメントは残る。 */
   readonly retireVariable: (environmentId: string, variableId: string, nowMs: number) => void;
   /** バージョン行の挿入と latest_version の前進(書き込みロック下で呼ぶ)。 */
   readonly insertVersion: (
@@ -109,7 +158,19 @@ interface DataStoreShape {
     name: string,
     excludeEnvironmentId: string | null,
   ) => Effect.Effect<boolean>;
-  readonly listEnvironments: Effect.Effect<readonly { environmentId: string; name: string }[]>;
+  /** 全環境(削除済み込み)の最新ステートメント付き一覧(環境一覧応答用)。 */
+  readonly listEnvironmentStatements: Effect.Effect<
+    readonly { environmentId: string; statement: DistributedMetaStatementValue }[]
+  >;
+  /** 1 環境の最新ステートメント(pull 応答用。行が無いのは不変条件違反 = null)。 */
+  readonly environmentStatement: (
+    environmentId: string,
+  ) => Effect.Effect<DistributedMetaStatementValue | null>;
+  /** 環境ステートメントの検証アンカー(prev 検査 — §12-5 のメタ規則)。 */
+  readonly environmentMetaAnchor: (
+    environmentId: string,
+    metaVersion: number,
+  ) => Effect.Effect<MetaAnchor | null>;
 
   readonly findVariable: (
     environmentId: string,
@@ -124,9 +185,23 @@ interface DataStoreShape {
   readonly listActiveVariables: (
     environmentId: string,
   ) => Effect.Effect<readonly { variableId: string; name: string }[]>;
+  /** 変数ステートメントの検証アンカー(prev 検査 — §12-5 のメタ規則)。 */
+  readonly variableMetaAnchor: (
+    environmentId: string,
+    variableId: string,
+    metaVersion: number,
+  ) => Effect.Effect<MetaAnchor | null>;
+  /** 削除済み変数の deleted ステートメント一覧(pull で配布し続ける — §12-5)。 */
+  readonly deletedVariableStatements: (
+    environmentId: string,
+  ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
 
-  /** アクティブ変数の最新バージョン一覧(一括 pull 用)。 */
-  readonly latestVersions: (environmentId: string) => Effect.Effect<readonly PulledVariableValue[]>;
+  /** アクティブ変数の最新バージョン + 最新ステートメント一覧(一括 pull 用)。 */
+  readonly latestVersions: (
+    environmentId: string,
+  ) => Effect.Effect<
+    readonly (PulledVariableValue & { statement: DistributedVariableMetaStatementValue })[]
+  >;
   /** 保存済みバージョンの検証アンカー(prev 検査 — §12-5 の 5)。 */
   readonly versionAnchor: (
     environmentId: string,
@@ -170,12 +245,54 @@ function storedSuite(value: unknown): WireSuite {
   return value;
 }
 
+/** メタステートメント行 → 配布形(author 込み。environmentId は列から取る)。 */
+function statementOf(row: Record<string, unknown>): DistributedMetaStatementValue {
+  const status = String(row["status"]);
+  if (status !== "active" && status !== "deleted") {
+    // 書き込み経路は Schema の Literal が強制する(既知以外はストレージ破損)
+    throw new Error("unexpected status in stored meta statement row");
+  }
+  return {
+    suite: storedSuite(row["suite"]),
+    environmentId: String(row["environment_id"]),
+    name: String(row["name"]),
+    status,
+    metaVersion: Number(row["meta_version"]),
+    prevMetaSigHashHex: String(row["prev_meta_sig_hash_hex"]),
+    chainHeadHashHex: String(row["chain_head_hash_hex"]),
+    chainHeadSeq: Number(row["chain_head_seq"]),
+    signatureHex: String(row["signature_hex"]),
+    authorUserId: String(row["author_user_id"]),
+    authorKeyFingerprintHex: String(row["author_key_fingerprint"]),
+  };
+}
+
+function variableStatementOf(row: Record<string, unknown>): DistributedVariableMetaStatementValue {
+  return { ...statementOf(row), variableId: String(row["variable_id"]) };
+}
+
+function anchorOf(row: Record<string, unknown> | undefined): MetaAnchor | null {
+  if (row === undefined) {
+    return null;
+  }
+  const status = String(row["status"]);
+  if (status !== "active" && status !== "deleted") {
+    throw new Error("unexpected status in stored meta statement row");
+  }
+  return { signedBytesHashHex: String(row["signed_bytes_hash_hex"]), status };
+}
+
+// 配布(§12-2)は signed_bytes_hash_hex を選択しない = 配布しない(検証者が
+// 自ら再計算する)。アンカー照会(anchorOf)だけがハッシュ列を読む
+const MS_COLUMNS =
+  "ms.environment_id, ms.suite, ms.name, ms.status, ms.meta_version, ms.prev_meta_sig_hash_hex, ms.chain_head_hash_hex, ms.chain_head_seq, ms.signature_hex, ms.author_user_id, ms.author_key_fingerprint";
+
 const makeEnvironmentQueries = (sql: SqlStorage) => ({
   findEnvironment: (environmentId: string) =>
     Effect.sync(() => {
       const row = sql
         .exec(
-          "SELECT environment_id, name, deleted_at FROM environments WHERE environment_id = ?",
+          "SELECT environment_id, name, latest_meta_version, deleted_at FROM environments WHERE environment_id = ?",
           environmentId,
         )
         .toArray()[0];
@@ -185,6 +302,7 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
       return {
         environmentId: String(row["environment_id"]),
         name: String(row["name"]),
+        latestMetaVersion: Number(row["latest_meta_version"]),
         deletedAtMs: row["deleted_at"] === null ? null : Number(row["deleted_at"]),
       };
     }),
@@ -209,17 +327,52 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  listEnvironments: Effect.sync(() =>
+  // 削除済み環境も deleted ステートメント付きで列挙する(削除の否認・無断
+  // 復活の検出材料 — §12-4。クライアントはステートメントの status で判別する)
+  listEnvironmentStatements: Effect.sync(() =>
     sql
       .exec(
-        "SELECT environment_id, name FROM environments WHERE deleted_at IS NULL ORDER BY created_at, environment_id",
+        `SELECT ${MS_COLUMNS}
+         FROM environments e
+         JOIN environment_meta_statements ms
+           ON ms.environment_id = e.environment_id
+          AND ms.meta_version = e.latest_meta_version
+         ORDER BY e.created_at, e.environment_id`,
       )
       .toArray()
       .map((row) => ({
         environmentId: String(row["environment_id"]),
-        name: String(row["name"]),
+        statement: statementOf(row),
       })),
   ),
+  environmentStatement: (environmentId: string) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          `SELECT ${MS_COLUMNS}
+           FROM environments e
+           JOIN environment_meta_statements ms
+             ON ms.environment_id = e.environment_id
+            AND ms.meta_version = e.latest_meta_version
+           WHERE e.environment_id = ?`,
+          environmentId,
+        )
+        .toArray()[0];
+      return row === undefined ? null : statementOf(row);
+    }),
+  environmentMetaAnchor: (environmentId: string, metaVersion: number) =>
+    Effect.sync(() =>
+      anchorOf(
+        sql
+          .exec(
+            `SELECT signed_bytes_hash_hex, status FROM environment_meta_statements
+             WHERE environment_id = ? AND meta_version = ?`,
+            environmentId,
+            metaVersion,
+          )
+          .toArray()[0],
+      ),
+    ),
 });
 
 const makeVariableQueries = (sql: SqlStorage) => ({
@@ -227,7 +380,7 @@ const makeVariableQueries = (sql: SqlStorage) => ({
     Effect.sync(() => {
       const row = sql
         .exec(
-          `SELECT variable_id, name, latest_version, deleted_at FROM variables
+          `SELECT variable_id, name, latest_meta_version, latest_version, deleted_at FROM variables
            WHERE environment_id = ? AND variable_id = ?`,
           environmentId,
           variableId,
@@ -239,10 +392,42 @@ const makeVariableQueries = (sql: SqlStorage) => ({
       return {
         variableId: String(row["variable_id"]),
         name: String(row["name"]),
+        latestMetaVersion: Number(row["latest_meta_version"]),
         latestVersion: Number(row["latest_version"]),
         deletedAtMs: row["deleted_at"] === null ? null : Number(row["deleted_at"]),
       };
     }),
+  variableMetaAnchor: (environmentId: string, variableId: string, metaVersion: number) =>
+    Effect.sync(() =>
+      anchorOf(
+        sql
+          .exec(
+            `SELECT signed_bytes_hash_hex, status FROM variable_meta_statements
+             WHERE environment_id = ? AND variable_id = ? AND meta_version = ?`,
+            environmentId,
+            variableId,
+            metaVersion,
+          )
+          .toArray()[0],
+      ),
+    ),
+  deletedVariableStatements: (environmentId: string) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT ms.variable_id, ${MS_COLUMNS}
+           FROM variables v
+           JOIN variable_meta_statements ms
+             ON ms.environment_id = v.environment_id
+            AND ms.variable_id = v.variable_id
+            AND ms.meta_version = v.latest_meta_version
+           WHERE v.environment_id = ? AND v.deleted_at IS NOT NULL
+           ORDER BY v.created_at, v.variable_id`,
+          environmentId,
+        )
+        .toArray()
+        .map(variableStatementOf),
+    ),
   countVariables: (environmentId: string) =>
     Effect.sync(() => {
       const row = sql
@@ -281,21 +466,34 @@ const makeVariableQueries = (sql: SqlStorage) => ({
 });
 
 const makeVersionQueries = (sql: SqlStorage) => ({
-  // 配布(§12-7)は保存済みの署名ブロックと writer をそのまま返す(現メンバー
-  // 集合から再導出しない — 削除済み writer の過去値の検証可能性)。
-  // signed_bytes_hash_hex は選択しない = 配布しない(AUTH_SPEC §12-2)
+  // 配布(§12-7)は保存済みの署名ブロックと writer / author をそのまま返す
+  // (現メンバー集合から再導出しない — 削除済み writer / author の過去データの
+  // 検証可能性)。signed_bytes_hash_hex は値・ステートメントとも選択しない =
+  // 配布しない(AUTH_SPEC §12-2)
   latestVersions: (environmentId: string) =>
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT v.variable_id, v.name, vv.version, vv.suite, vv.epoch, vv.nonce_hex, vv.ciphertext_hex,
+          `SELECT v.variable_id, vv.version, vv.suite, vv.epoch, vv.nonce_hex, vv.ciphertext_hex,
                   vv.prev_value_sig_hash_hex, vv.chain_head_hash_hex, vv.chain_head_seq,
-                  vv.signature_hex, vv.writer_user_id, vv.writer_key_fingerprint
+                  vv.signature_hex, vv.writer_user_id, vv.writer_key_fingerprint,
+                  ms.suite AS ms_suite, ms.name AS ms_name, ms.status AS ms_status,
+                  ms.meta_version AS ms_meta_version,
+                  ms.prev_meta_sig_hash_hex AS ms_prev_meta_sig_hash_hex,
+                  ms.chain_head_hash_hex AS ms_chain_head_hash_hex,
+                  ms.chain_head_seq AS ms_chain_head_seq,
+                  ms.signature_hex AS ms_signature_hex,
+                  ms.author_user_id AS ms_author_user_id,
+                  ms.author_key_fingerprint AS ms_author_key_fingerprint
            FROM variables v
            JOIN variable_versions vv
              ON vv.environment_id = v.environment_id
             AND vv.variable_id = v.variable_id
             AND vv.version = v.latest_version
+           JOIN variable_meta_statements ms
+             ON ms.environment_id = v.environment_id
+            AND ms.variable_id = v.variable_id
+            AND ms.meta_version = v.latest_meta_version
            WHERE v.environment_id = ? AND v.deleted_at IS NULL
            ORDER BY v.created_at, v.variable_id`,
           environmentId,
@@ -303,7 +501,6 @@ const makeVersionQueries = (sql: SqlStorage) => ({
         .toArray()
         .map((row) => ({
           variableId: String(row["variable_id"]),
-          name: String(row["name"]),
           version: Number(row["version"]),
           suite: storedSuite(row["suite"]),
           epoch: Number(row["epoch"]),
@@ -315,6 +512,20 @@ const makeVersionQueries = (sql: SqlStorage) => ({
           signatureHex: String(row["signature_hex"]),
           writerUserId: String(row["writer_user_id"]),
           writerKeyFingerprintHex: String(row["writer_key_fingerprint"]),
+          statement: variableStatementOf({
+            environment_id: environmentId,
+            variable_id: row["variable_id"],
+            suite: row["ms_suite"],
+            name: row["ms_name"],
+            status: row["ms_status"],
+            meta_version: row["ms_meta_version"],
+            prev_meta_sig_hash_hex: row["ms_prev_meta_sig_hash_hex"],
+            chain_head_hash_hex: row["ms_chain_head_hash_hex"],
+            chain_head_seq: row["ms_chain_head_seq"],
+            signature_hex: row["ms_signature_hex"],
+            author_user_id: row["ms_author_user_id"],
+            author_key_fingerprint: row["ms_author_key_fingerprint"],
+          }),
         })),
     ),
   versionAnchor: (environmentId: string, variableId: string, version: number) =>
@@ -395,17 +606,68 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     ),
 });
 
+/** ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。 */
+function insertStatementRow(
+  sql: SqlStorage,
+  table: "variable_meta_statements" | "environment_meta_statements",
+  keys: readonly (string | number)[],
+  statement: MetaStatementInput,
+  signedBytesHashHex: string,
+  author: MetaAuthorInfo,
+  nowMs: number,
+): void {
+  const keyColumns =
+    table === "variable_meta_statements"
+      ? "environment_id, variable_id, meta_version"
+      : "environment_id, meta_version";
+  sql.exec(
+    `INSERT INTO ${table}
+       (${keyColumns}, suite, name, status, prev_meta_sig_hash_hex,
+        chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex,
+        author_user_id, author_key_fingerprint, created_at)
+     VALUES (${keys.map(() => "?").join(", ")}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ...keys,
+    statement.suite,
+    statement.name,
+    statement.status,
+    statement.prevMetaSigHashHex,
+    statement.chainHeadHashHex,
+    statement.chainHeadSeq,
+    statement.signatureHex,
+    signedBytesHashHex,
+    author.userId,
+    author.keyFingerprintHex,
+    nowMs,
+  );
+}
+
 const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
+  // latest_meta_version は 0 で挿入し、同じ同期ブロック内の
+  // insertEnvironmentMetaStatement(metaVersion 1)が確定する
   insertEnvironment: (environmentId, name, nowMs) => {
     sql.exec(
-      "INSERT INTO environments (environment_id, name, created_at, deleted_at) VALUES (?, ?, ?, NULL)",
+      "INSERT INTO environments (environment_id, name, latest_meta_version, created_at, deleted_at) VALUES (?, ?, 0, ?, NULL)",
       environmentId,
       name,
       nowMs,
     );
   },
-  setEnvironmentName: (environmentId, name) => {
-    sql.exec("UPDATE environments SET name = ? WHERE environment_id = ?", name, environmentId);
+  insertEnvironmentMetaStatement: (environmentId, statement, signedBytesHashHex, author, nowMs) => {
+    insertStatementRow(
+      sql,
+      "environment_meta_statements",
+      [environmentId, statement.metaVersion],
+      statement,
+      signedBytesHashHex,
+      author,
+      nowMs,
+    );
+    sql.exec(
+      "UPDATE environments SET name = ?, latest_meta_version = ? WHERE environment_id = ?",
+      statement.name,
+      statement.metaVersion,
+      environmentId,
+    );
   },
   retireEnvironment: (environmentId, nowMs) => {
     sql.exec(
@@ -414,23 +676,44 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       environmentId,
     );
     sql.exec("DELETE FROM variables WHERE environment_id = ?", environmentId);
+    // 配下の変数ステートメントも即時削除する(§12-4 の配下データ)。環境自身の
+    // ステートメント連鎖(deleted 込み)は environment_meta_statements に残る —
+    // 環境 ID はチェーン合意規則で再利用不能のため、変数側に検出材料は残らない
+    sql.exec("DELETE FROM variable_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
   },
   insertVariable: (environmentId, variableId, name, nowMs) => {
     sql.exec(
-      `INSERT INTO variables (environment_id, variable_id, name, latest_version, created_at, deleted_at)
-       VALUES (?, ?, ?, 0, ?, NULL)`,
+      `INSERT INTO variables (environment_id, variable_id, name, latest_meta_version, latest_version, created_at, deleted_at)
+       VALUES (?, ?, ?, 0, 0, ?, NULL)`,
       environmentId,
       variableId,
       name,
       nowMs,
     );
   },
-  setVariableName: (environmentId, variableId, name) => {
+  insertVariableMetaStatement: (
+    environmentId,
+    variableId,
+    statement,
+    signedBytesHashHex,
+    author,
+    nowMs,
+  ) => {
+    insertStatementRow(
+      sql,
+      "variable_meta_statements",
+      [environmentId, variableId, statement.metaVersion],
+      statement,
+      signedBytesHashHex,
+      author,
+      nowMs,
+    );
     sql.exec(
-      "UPDATE variables SET name = ? WHERE environment_id = ? AND variable_id = ?",
-      name,
+      "UPDATE variables SET name = ?, latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      statement.name,
+      statement.metaVersion,
       environmentId,
       variableId,
     );

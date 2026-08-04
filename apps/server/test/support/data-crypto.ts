@@ -10,12 +10,14 @@ import type {
   ChainEntry,
   ChainOperation,
   CryptoResult,
+  MetaStatementTarget,
   UnsignedChainEntry,
   VariableContext,
 } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
   computeDekCommitment,
+  computeMetaSignedBytesHash,
   computeValueSignedBytesHash,
   decodeHex,
   decryptVariable,
@@ -28,6 +30,7 @@ import {
   importSigningPublicKey,
   signChainEntry,
   signDekWrap,
+  signMetaStatement,
   signValue,
   SUITE_ID,
   unwrapDek,
@@ -477,6 +480,120 @@ export async function encryptValue(
     },
     signing.head,
   );
+}
+
+// ---------------------------------------------------------------------------
+// メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)のテスト時署名
+// ---------------------------------------------------------------------------
+
+/** 変数ステートメントのワイヤ表現(VariableMetaStatement — §12-2)。 */
+export interface WireVariableMetaStatement {
+  readonly suite: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly name: string;
+  readonly status: "active" | "deleted";
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+}
+
+/** 環境ステートメントのワイヤ表現(EnvironmentMetaStatement — §12-2)。 */
+export type WireEnvironmentMetaStatement = Omit<WireVariableMetaStatement, "variableId">;
+
+function metaTargetOf(statement: { readonly variableId?: string }): MetaStatementTarget {
+  return statement.variableId === undefined
+    ? { kind: "environment" }
+    : { kind: "variable", variableId: statement.variableId };
+}
+
+function metaContextOf(
+  projectId: string,
+  statement: Omit<WireVariableMetaStatement, "signatureHex" | "variableId"> & {
+    readonly variableId?: string;
+  },
+  authorUserId: string,
+) {
+  return {
+    suite: statement.suite,
+    projectId,
+    environmentId: statement.environmentId,
+    target: metaTargetOf(statement),
+    name: statement.name,
+    status: statement.status,
+    metaVersion: statement.metaVersion,
+    prevMetaSigHashHex: statement.prevMetaSigHashHex,
+    authorUserId,
+    chainHeadHashHex: statement.chainHeadHashHex,
+    chainHeadSeq: statement.chainHeadSeq,
+  };
+}
+
+/**
+ * 署名なしステートメントに §4.2 の author 署名を付ける(署名者 = API を呼ぶ
+ * 主体と一致させること — §12-5 のメタ規則)。変数(variableId あり)・環境
+ * (なし)の両形を扱う。
+ */
+export async function signMetaStatementAs<
+  T extends Omit<WireVariableMetaStatement, "signatureHex" | "variableId"> & {
+    readonly variableId?: string;
+  },
+>(authorUserId: string, projectId: string, unsigned: T): Promise<T & { signatureHex: string }> {
+  const keys = vectorKeyOf(authorUserId);
+  const pair = unwrapResult(
+    await importSigningKeyPair({
+      publicKey: hexBytes(keys.sig_pub_hex),
+      privateSeed: hexBytes(keys.sig_sk_seed_hex),
+    }),
+    "importSigningKeyPair",
+  );
+  const signatureHex = unwrapResult(
+    await signMetaStatement({
+      context: metaContextOf(projectId, unsigned, authorUserId),
+      signingKey: pair.privateKey,
+    }),
+    "signMetaStatement",
+  );
+  return { ...unsigned, signatureHex };
+}
+
+/**
+ * meta_signed_bytes の SHA-256(次 metaVersion の prevMetaSigHashHex に使う —
+ * §4.2 の連鎖)。author はワイヤに載らないため明示指定する。
+ */
+export async function metaSignedBytesHashOf(
+  projectId: string,
+  statement: Omit<WireVariableMetaStatement, "variableId"> & { readonly variableId?: string },
+  authorUserId: string,
+): Promise<string> {
+  return unwrapResult(
+    await computeMetaSignedBytesHash(metaContextOf(projectId, statement, authorUserId)),
+    "computeMetaSignedBytesHash",
+  );
+}
+
+/** 変数作成に同梱するステートメント(metaVersion 1・active・prev 空)を署名して返す。 */
+export async function createVariableStatement(input: {
+  readonly authorUserId: string;
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly name: string;
+  readonly head: ValueChainHead;
+}): Promise<WireVariableMetaStatement> {
+  return signMetaStatementAs(input.authorUserId, input.projectId, {
+    suite: SUITE_ID,
+    environmentId: input.environmentId,
+    variableId: input.variableId,
+    name: input.name,
+    status: "active" as const,
+    metaVersion: 1,
+    prevMetaSigHashHex: "",
+    chainHeadHashHex: input.head.hashHex,
+    chainHeadSeq: input.head.seq,
+  });
 }
 
 /**
