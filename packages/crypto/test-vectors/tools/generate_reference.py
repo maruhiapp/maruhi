@@ -16,6 +16,7 @@
 import hashlib
 import json
 import os
+import unicodedata
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -1736,6 +1737,556 @@ def gen_value_signature():
 
 
 # ---------------------------------------------------------------------------
+# 3.8 metadata-signature.json — §4.2 変数・環境メタデータの署名付きステートメント
+#
+# var_meta_signed_bytes = LP("<suite>/var-meta-sig", project_id, environment_id,
+#                            variable_id, name, status, meta_version,
+#                            prev_meta_sig_hash_hex, author_user_id,
+#                            chain_head_hash_hex, chain_head_seq)
+# env_meta_signed_bytes = LP("<suite>/env-meta-sig", project_id, environment_id,
+#                            name, status, meta_version, prev_meta_sig_hash_hex,
+#                            author_user_id, chain_head_hash_hex, chain_head_seq)
+#   domain = "<suite>/var-meta-sig" / "<suite>/env-meta-sig"(suite の束縛は
+#   ドメイン文字列が担う — §4.1 と同型)。数値(meta_version / chain_head_seq)は
+#   10 進文字列化、バイナリ(ハッシュ)は hex 小文字文字列として LP に載せる
+#   prev_meta_sig_hash_hex = 直前ステートメントの signed_bytes の SHA-256
+#   (meta_version 1 は空文字列)。name は UTF-8 バイト列としてそのまま束縛
+#   (byte-exact — NFC 正規化は署名前のクライアントの責務。§4.2)
+#
+# チェーン状態を要する検証規則系は chain-entries.json の正規 12 エントリチェーンを
+# 参照して構成する(value-signature.json と同じ cross-file の先例)。
+# メタステートメントはエポックアンカーを持たない(§4.2 / §14.3-5)ため、値署名の
+# epoch-not-current / environment-not-created に相当する規則は存在しない —
+# var-meta-head-before-env-create は **positive**(意図された非対称の固定。
+# AUTH_SPEC §12-4)。
+
+VAR_META_SIG_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "variable_id", "name", "status",
+    "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
+    "chain_head_hash_hex", "chain_head_seq",
+]
+ENV_META_SIG_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "name", "status",
+    "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
+    "chain_head_hash_hex", "chain_head_seq",
+]
+
+
+def meta_signed_bytes(ctx: dict) -> bytes:
+    order = VAR_META_SIG_FIELDS_ORDER if ctx["kind"] == "variable" else ENV_META_SIG_FIELDS_ORDER
+    return lp_encode([ctx[key] for key in order])
+
+
+def gen_metadata_signature():
+    with open(os.path.join(OUT_DIR, "chain-entries.json"), encoding="utf-8") as fh:
+        chain = json.load(fh)
+    entries = chain["entries"]
+    project_id = entries[0]["entry_hash_hex"]
+    suite = "maruhi/v1"
+
+    def head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"]
+
+    def signer_of(user_id: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(chain["keys"][user_id]["sig_sk_seed_hex"])
+        )
+
+    def sig_pub_of(user_id: str) -> str:
+        return chain["keys"][user_id]["sig_pub_hex"]
+
+    def fp_of(user_id: str) -> str:
+        return chain["keys"][user_id]["key_fingerprint_hex"]
+
+    owner_id = "user-owner-0001"
+    member_id = "user-member-0002"
+    admin_id = "user-admin-0003"
+
+    def make_context(kind, environment_id, variable_id, name, status, meta_version,
+                     prev_hash_hex, author_id, head_hash_hex, head_seq):
+        ctx = {
+            "kind": kind,
+            "suite": suite,
+            "domain": f"{suite}/{'var' if kind == 'variable' else 'env'}-meta-sig",
+            "project_id": project_id,
+            "environment_id": environment_id,
+        }
+        if kind == "variable":
+            ctx["variable_id"] = variable_id
+        ctx.update({
+            "name": name,
+            "status": status,
+            "meta_version": meta_version,
+            "prev_meta_sig_hash_hex": prev_hash_hex,
+            "author_user_id": author_id,
+            "chain_head_hash_hex": head_hash_hex,
+            "chain_head_seq": head_seq,
+        })
+        return ctx
+
+    def make_statement(name, kind, environment_id, variable_id, display_name, status,
+                       meta_version, prev_hash_hex, author_id, head_seq, note,
+                       prev_base=None):
+        ctx = make_context(kind, environment_id, variable_id, display_name, status,
+                           meta_version, prev_hash_hex, author_id, head_hash(head_seq), head_seq)
+        signed = meta_signed_bytes(ctx)
+        vector = {
+            "name": name,
+            "context": ctx,
+            "author_key_fingerprint_hex": fp_of(author_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(author_id).sign(signed).hex(),
+            "note": note,
+        }
+        if prev_base is not None:
+            vector["prev_base"] = prev_base
+        return vector
+
+    # --- 正例(session-12 §8-2)。宣言ヘッド時点の inclusive 規約(§6.3)と
+    # 「作成 → rename → 削除」の prev 連鎖・削除時の name 保持を固定する ---
+    var_create = make_statement(
+        "var-create", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY",
+        "active", 1, "", admin_id, 12,
+        "変数作成(metaVersion 1、prev 空、status active)。author は head 12 時点の admin(member 以上)",
+    )
+    var_rename = make_statement(
+        "var-rename", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_ROTATED",
+        "active", 2, var_create["signed_bytes_sha256_hex"], admin_id, 12,
+        "rename(metaVersion 2)。prev = var-create の signed_bytes の SHA-256(§4.2 の連鎖)",
+        prev_base="var-create",
+    )
+    var_delete = make_statement(
+        "var-delete", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_ROTATED",
+        "deleted", 3, var_rename["signed_bytes_sha256_hex"], admin_id, 12,
+        "削除(status deleted、metaVersion 3)。name は直前の active 名をそのまま保持する(§4.2 — 削除で空にしない)",
+        prev_base="var-rename",
+    )
+    nfc_name = unicodedata.normalize("NFC", "CAF\u00c9_URL")
+    var_nfc = make_statement(
+        "var-nfc-name", "variable", "env-prod-0001", "var-cafe-0009", nfc_name,
+        "active", 1, "", admin_id, 12,
+        "NFC 正規形の非 ASCII 名。署名は name の UTF-8 バイト列に byte-exact に束縛される(§4.2)",
+    )
+    env_create = make_statement(
+        "env-create-meta", "environment", "env-prod-0001", None, "Production",
+        "active", 1, "", member_id, 2,
+        "環境作成の複合リクエスト同梱ステートメント(metaVersion 1): 宣言ヘッドは追記前の現ヘッド"
+        "(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。宣言ヘッド時点に環境は"
+        "未存在だが、メタステートメントの検証は環境の存在を検査しない(§12-4 の意図された非対称)",
+    )
+    env_rename = make_statement(
+        "env-rename", "environment", "env-prod-0001", None, "Production EU",
+        "active", 2, env_create["signed_bytes_sha256_hex"], admin_id, 12,
+        "環境 rename(metaVersion 2、member 以上)。prev = env-create-meta の signed_bytes の SHA-256",
+        prev_base="env-create-meta",
+    )
+    env_delete = make_statement(
+        "env-delete-admin", "environment", "env-prod-0001", None, "Production EU",
+        "deleted", 3, env_rename["signed_bytes_sha256_hex"], admin_id, 12,
+        "環境削除(status deleted)。環境の削除のみ宣言ヘッド時点 admin 以上(§4.2 / §12-3 の水準差)。"
+        "head 12 時点の user-admin-0003 は admin。name は直前 active 名を保持",
+        prev_base="env-rename",
+    )
+    vectors = [
+        var_create,
+        var_rename,
+        var_delete,
+        var_nfc,
+        env_create,
+        env_rename,
+        env_delete,
+        make_statement(
+            "removed-author-in-tenure", "variable", "env-prod-0001", "var-legacy-0002",
+            "LEGACY_TOKEN", "active", 1, "", member_id, 4,
+            "seq 5 で削除済みの author による在籍区間内(head 4)の過去ステートメント。"
+            "削除後も当時の鍵で検証できる(§6.3-1 — value-signature の removed-writer-in-tenure の対応物)",
+        ),
+        make_statement(
+            "var-meta-head-before-env-create", "variable", "env-prod-0001", "var-early-0005",
+            "EARLY_BIRD", "active", 1, "", member_id, 2,
+            "positive: 宣言ヘッド(seq 2)が env-prod-0001 の create_environment(seq 3)より前でも"
+            "var メタステートメントは受理される。メタはエポックアンカーを持たず環境の存在を検査しない"
+            "(値署名の §6.3-4 と意図的に非対称 — AUTH_SPEC §12-4。§14.3-5 の既知残余の対価)",
+        ),
+    ]
+
+    # --- rename-fork(§14.2-5 / §8-2): 同一 (variable, metaVersion) に対する内容の
+    # 異なる 2 つの有効ステートメント。単体ではどちらも全検証を通り、組になって
+    # 初めて equivocation の暗号学的証拠になる(signed_bytes_sha256 の相違で機械判定)
+    fork_branches = [
+        make_statement(
+            "rename-fork-a", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_BLUE",
+            "active", 2, var_create["signed_bytes_sha256_hex"], admin_id, 12,
+            "metaVersion 2 の分岐 A(admin が署名)", prev_base="var-create",
+        ),
+        make_statement(
+            "rename-fork-b", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_GREEN",
+            "active", 2, var_create["signed_bytes_sha256_hex"], owner_id, 12,
+            "metaVersion 2 の分岐 B(owner が署名)。A と同一座標・同一 prev で name が異なる",
+            prev_base="var-create",
+        ),
+    ]
+
+    # --- name-swap(§8-2): 2 変数の名前入替。正規ステートメントは名前を
+    # variable_id へ署名で束縛しており、名前フィールドだけを入れ替えたバイト列では
+    # 元署名の検証に失敗する(サーバーによる名前 ↔ 暗号文の付け替えの遮断 — §4.2)
+    swap_a = make_statement(
+        "name-swap-var-a", "variable", "env-prod-0001", "var-swap-a-0006", "DATABASE_URL",
+        "active", 1, "", admin_id, 12,
+        "name-swap の正規側 A(DATABASE_URL → var-swap-a-0006)",
+    )
+    swap_b = make_statement(
+        "name-swap-var-b", "variable", "env-prod-0001", "var-swap-b-0007", "DEBUG_ENDPOINT",
+        "active", 1, "", admin_id, 12,
+        "name-swap の正規側 B(DEBUG_ENDPOINT → var-swap-b-0007)",
+    )
+
+    def swapped_negative(name, base_vector, swapped_name, note):
+        ctx = dict(base_vector["context"], name=swapped_name)
+        return {
+            "name": name,
+            "base": base_vector["name"],
+            "context": ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(ctx).hex(),
+            "signature_hex": base_vector["signature_hex"],
+            "verify_key_hex": sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": note,
+        }
+
+    name_swap = {
+        "note": "2 変数の名前入替(DATABASE_URL ↔ DEBUG_ENDPOINT)。正規ステートメント 2 本は"
+                "各々検証を通るが、name フィールドだけを入れ替えたバイト列では元署名の検証に失敗する"
+                "(名前 ↔ ID の対応は署名が束縛する — §4.2。付け替えられた側の配布は座標整合 §6.3-5 でも落ちる)",
+        "statements": [swap_a, swap_b],
+        "swapped": [
+            swapped_negative(
+                "name-swap-a-to-b", swap_a, "DEBUG_ENDPOINT",
+                "var-swap-a-0006 のステートメントに var-swap-b-0007 の名前を載せ替えると署名検証に失敗する",
+            ),
+            swapped_negative(
+                "name-swap-b-to-a", swap_b, "DATABASE_URL",
+                "var-swap-b-0007 のステートメントに var-swap-a-0006 の名前を載せ替えると署名検証に失敗する",
+            ),
+        ],
+    }
+
+    # --- tenure 跨ぎ検査用の派生チェーン(value-signature.json と同一の派生形。
+    # chain-entries.json 本体は変更しない): 正規 12 エントリの後に seq 13 で
+    # user-member-0002 を新鍵で re-add する
+    rejoined = make_user(pat(0x74, 32), pat(0x84, 32))
+    readd_payload = {
+        "target_user_id": member_id,
+        "enc_pub_hex": rejoined["enc_pub_hex"],
+        "sig_pub_hex": rejoined["sig_pub_hex"],
+        "role": "member",
+    }
+    owner_fp = chain["keys"][owner_id]["key_fingerprint_hex"]
+    readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
+    readd_ts = 1754006400000 + 12000
+    readd_signed = lp_encode(
+        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
+    )
+    readd_sig = signer_of(owner_id).sign(readd_signed)
+    readd_entry_bytes = lp_encode(
+        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
+         readd_sig.hex()]
+    )
+    tenure_extension = {
+        "note": "key-from-other-tenure 用の派生チェーン(value-signature.json と同一内容): "
+                "正規 12 エントリの後に seq 13 で user-member-0002 を新鍵で re-add する"
+                "(remove → re-add = 別 tenure)。chain-entries.json 本体は変更しない",
+        "rejoined_member": {
+            "user_id": member_id,
+            "enc_sk_seed_hex": pat(0x74, 32).hex(),
+            "sig_sk_seed_hex": pat(0x84, 32).hex(),
+            "enc_pub_hex": rejoined["enc_pub_hex"],
+            "sig_pub_hex": rejoined["sig_pub_hex"],
+            "key_fingerprint_hex": rejoined["fp_hex"],
+        },
+        "entry": {
+            "seq": 13,
+            "suite": suite,
+            "prev_hash_hex": head_hash(12),
+            "op": "add_member",
+            "actor": {"user_id": owner_id, "key_fingerprint_hex": owner_fp},
+            "payload": readd_payload,
+            "timestamp_ms": readd_ts,
+            "payload_bytes_hex": readd_pb.hex(),
+            "signed_bytes_hex": readd_signed.hex(),
+            "signature_hex": readd_sig.hex(),
+            "entry_bytes_hex": readd_entry_bytes.hex(),
+            "entry_hash_hex": sha256(readd_entry_bytes).hex(),
+        },
+    }
+
+    # --- negative(署名系): 改竄・移植 = 元署名を維持したまま signed_bytes を
+    # 差し替え、Ed25519 検証が失敗することを固定する(value-signature と同じ形)
+    base_sig = bytes.fromhex(var_create["signature_hex"])
+    tampered_sig = bytearray(base_sig)
+    tampered_sig[-1] ^= 0x01
+
+    def make_negative(name, overrides, note, base_vector=None, verify_key_hex=None,
+                      signature=None):
+        source = base_vector if base_vector is not None else var_create
+        ctx = dict(source["context"], **overrides)
+        return {
+            "name": name,
+            "base": source["name"],
+            "context": ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(ctx).hex(),
+            "signature_hex": (signature.hex() if signature is not None
+                              else source["signature_hex"]),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None
+            else sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": note,
+        }
+
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+    assert nfd_name != nfc_name  # NFC / NFD で byte が異なる名前であること
+    negatives = [
+        make_negative(
+            "tampered-signature", {},
+            "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
+            signature=bytes(tampered_sig),
+        ),
+        make_negative(
+            "tampered-status", {"status": "deleted"},
+            "status の書き換え(active → deleted)は元署名の検証に失敗する(無署名の削除偽造の遮断 — §4.2 の tombstone 署名化)",
+        ),
+        make_negative(
+            "transplant-project", {"project_id": "proj-other-0002"},
+            "別プロジェクトへの座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-environment", {"environment_id": "env-dev-0002"},
+            "別環境への座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-variable", {"variable_id": "var-other-9999"},
+            "別変数への座標移植は署名検証に失敗する(値 — variable_id 束縛 — と名前の対応の付け替え対策)",
+        ),
+        make_negative(
+            "transplant-meta-version", {"meta_version": 2},
+            "別 metaVersion への移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-signer", {"author_user_id": owner_id},
+            "author_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §4.2 の user_id 焼き込み)",
+        ),
+        make_negative(
+            "wrong-signer-key", {},
+            "署名者以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)",
+            verify_key_hex=sig_pub_of(owner_id),
+        ),
+        make_negative(
+            "chain-head-swap", {"chain_head_hash_hex": head_hash(11)},
+            "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)",
+        ),
+        make_negative(
+            "chain-head-seq-mismatch", {"chain_head_seq": 11},
+            "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)",
+        ),
+        make_negative(
+            "tampered-prev-hash",
+            {"prev_meta_sig_hash_hex": sha256(b"bogus-meta-predecessor").hex()},
+            "prev_meta_sig_hash_hex の差し替えは元署名の検証に失敗する(連鎖の改竄は署名で固定される)",
+            base_vector=var_rename,
+        ),
+        make_negative(
+            "suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/var-meta-sig"},
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+        make_negative(
+            "nfc-variant", {"name": nfd_name},
+            "NFC 正規形で署名された name を NFD 変種に置き換えると byte 列が異なり署名検証に失敗する"
+            "(署名は byte-exact — 正規化は署名前のクライアントの責務で、検証者は正規化しない。§4.2)",
+            base_vector=var_nfc,
+        ),
+        make_negative(
+            "env-transplant-environment", {"environment_id": "env-dev-0002"},
+            "環境ステートメントの別環境への座標移植は署名検証に失敗する",
+            base_vector=env_create,
+            verify_key_hex=sig_pub_of(member_id),
+        ),
+        make_negative(
+            "cross-kind-transplant",
+            {"kind": "variable", "domain": "maruhi/v1/var-meta-sig",
+             "variable_id": "var-cross-0008"},
+            "環境ステートメントの署名を変数ステートメントのバイト列(var-meta-sig ドメイン)で検証すると失敗する"
+            "(var / env のドメイン分離の固定)",
+            base_vector=env_create,
+            verify_key_hex=sig_pub_of(member_id),
+        ),
+    ]
+
+    # --- negative(検証規則系。kind = "authorization"): 署名は有効だが、検証済み
+    # チェーン履歴に対する §6.3 の検証規則で拒否されるべきもの。expected_reason は
+    # 実装の理由コードを固定する(value-signature の rule negative と同じ運び方)。
+    # メタにはエポック整合(§6.3-4)が存在しない — epoch-not-current /
+    # environment-not-created 相当の規則系 negative は意図して置かない(§14.3-5)
+    ghost = make_user(pat(0x78, 32), pat(0x88, 32))
+    ghost_signer = Ed25519PrivateKey.from_private_bytes(pat(0x88, 32))
+
+    def rule_negative(name, kind, environment_id, variable_id, display_name, status,
+                      meta_version, prev_hash_hex, author_id, head_hash_hex, head_seq,
+                      expected_reason, note, chain_ref="canonical",
+                      author_fp=None, sign_with=None, verify_key_hex=None,
+                      predecessor=None):
+        ctx = make_context(kind, environment_id, variable_id, display_name, status,
+                           meta_version, prev_hash_hex, author_id, head_hash_hex, head_seq)
+        signed = meta_signed_bytes(ctx)
+        signer = sign_with if sign_with is not None else signer_of(author_id)
+        case = {
+            "name": name,
+            "kind": "authorization",
+            "chain": chain_ref,
+            "context": ctx,
+            "author_key_fingerprint_hex": author_fp if author_fp is not None else fp_of(author_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None
+            else sig_pub_of(author_id),
+            "expected_reason": expected_reason,
+            "must_fail": True,
+            "note": note,
+        }
+        if predecessor is not None:
+            case["predecessor"] = predecessor
+        return case
+
+    rule_negatives = [
+        rule_negative(
+            "head-not-in-chain", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", admin_id, sha256(b"not-in-chain").hex(), 12,
+            "chain-head-mismatch",
+            "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)"
+            "または偽造の硬い証拠として即時拒否(§6.3-2a)",
+        ),
+        rule_negative(
+            "head-beyond-local-seq", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", admin_id, sha256(b"future-head").hex(), 13,
+            "chain-head-future",
+            "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
+            "延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)。値署名と同じ有界再同期の"
+            "入口が流用されることを固定する",
+        ),
+        rule_negative(
+            "author-removed-at-head", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", member_id, head_hash(12), 12,
+            "author-not-member-at-head",
+            "seq 5 で削除済みの author が削除後のヘッド(12)を宣言する形は拒否する"
+            "(削除済みメンバーの鍵による新規ステートメントの遮断 — §6.3-3)",
+        ),
+        rule_negative(
+            "author-role-insufficient", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", admin_id, head_hash(6), 6,
+            "author-role-insufficient-at-head",
+            "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。変数の作成・rename・"
+            "削除は宣言ヘッド時点で member 以上が必要(§4.2 / §6.3-3)",
+        ),
+        rule_negative(
+            "env-delete-role-insufficient", "environment", "env-prod-0001", None, "Production",
+            "deleted", 2, env_create["signed_bytes_sha256_hex"], member_id, head_hash(4), 4,
+            "author-role-insufficient-at-head",
+            "head 4 時点の user-member-0002 は member。環境の削除ステートメントのみ宣言ヘッド時点で"
+            "admin 以上が必要(§4.2 / §12-3 の水準差の固定 — 環境の作成・rename は member 水準)",
+        ),
+        rule_negative(
+            "key-from-other-tenure", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", member_id,
+            tenure_extension["entry"]["entry_hash_hex"], 13,
+            "author-key-mismatch-at-head",
+            "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間の"
+            "ヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)",
+            chain_ref="tenure-extension",
+        ),
+        rule_negative(
+            "author-unknown-in-history", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, "", "user-ghost-0042", head_hash(12), 12,
+            "author-unknown",
+            "チェーン履歴のどの時点にも存在しない author_user_id / 鍵 FP の組は検証鍵を選択"
+            "できず拒否する(署名自体は本 negative の鍵で有効)",
+            author_fp=ghost["fp_hex"], sign_with=ghost_signer,
+            verify_key_hex=ghost["sig_pub_hex"],
+        ),
+        rule_negative(
+            "v1-nonempty-prev", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
+            "active", 1, sha256(b"phantom-meta-predecessor").hex(), admin_id, head_hash(12), 12,
+            "prev-shape-mismatch",
+            "metaVersion 1 の prev_meta_sig_hash_hex は空文字列でなければならない(§4.2)。"
+            "predecessor を保持しない latest-only 検証でも形は必ず検査する(session-14 裁定 B の同型)",
+        ),
+        rule_negative(
+            "v2-empty-prev", "variable", "env-prod-0001", "var-rule-0005", "RULE_VAR_2",
+            "active", 2, "", admin_id, head_hash(12), 12,
+            "prev-shape-mismatch",
+            "metaVersion > 1 の prev_meta_sig_hash_hex は 64 文字 hex でなければならない(§4.2)",
+        ),
+        rule_negative(
+            "prev-hash-mismatch", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_FORGED",
+            "active", 2, sha256(b"wrong-meta-predecessor").hex(), admin_id, head_hash(12), 12,
+            "prev-hash-mismatch",
+            "既知の直前 metaVersion(var-create)の signed_bytes ハッシュと prev が一致しない"
+            "連鎖不整合(§6.3-6)。署名は有効 — Ed25519 failure に潰してはならない",
+            predecessor={
+                "base": "var-create",
+                "signed_bytes_sha256_hex": var_create["signed_bytes_sha256_hex"],
+                "status": "active",
+            },
+        ),
+        rule_negative(
+            "revive-after-delete", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_REVIVED",
+            "active", 4, var_delete["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12,
+            "revived-after-delete",
+            "deleted(var-delete、metaVersion 3)の後の active 化は、prev 連鎖・署名が有効でも"
+            "拒否する(§4.2 — ID 再利用禁止のステートメント層での対応物。削除済み変数の無断復活の遮断)",
+            predecessor={
+                "base": "var-delete",
+                "signed_bytes_sha256_hex": var_delete["signed_bytes_sha256_hex"],
+                "status": "deleted",
+            },
+        ),
+    ]
+
+    write(
+        "metadata-signature.json",
+        {
+            "description": "CRYPTO_SPEC §4.2: 変数・環境メタデータの署名付きステートメント(Ed25519)。var_meta_signed_bytes = LP(\"<suite>/var-meta-sig\", project_id, environment_id, variable_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)、env_meta_signed_bytes = LP(\"<suite>/env-meta-sig\", project_id, environment_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+            "var_signed_fields_order": VAR_META_SIG_FIELDS_ORDER,
+            "env_signed_fields_order": ENV_META_SIG_FIELDS_ORDER,
+            "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(meta_version / chain_head_seq)は 10 進文字列化。name は UTF-8 バイト列を byte-exact に束縛(NFC 正規化は署名前のクライアントの責務 — §4.2)",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、author 鍵 = keys",
+            "no_epoch_anchor": "メタステートメントはエポックアンカーを持たない(§4.2)。値署名の epoch-not-current-at-head / environment-not-created-at-head に相当する検証規則は存在せず、前進 meta_version への注入は v1 未検出の既知残余(§14.3-5)。var-meta-head-before-env-create が positive であることがこの非対称の固定",
+            "extra_keys": {
+                "ghost": {
+                    "note": "author-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+                    "enc_sk_seed_hex": pat(0x78, 32).hex(),
+                    "sig_sk_seed_hex": pat(0x88, 32).hex(),
+                    "enc_pub_hex": ghost["enc_pub_hex"],
+                    "sig_pub_hex": ghost["sig_pub_hex"],
+                    "key_fingerprint_hex": ghost["fp_hex"],
+                },
+            },
+            "tenure_extension": tenure_extension,
+            "vectors": vectors,
+            "rename_fork": {
+                "note": "同一座標(var-api-key-0001 × metaVersion 2)に対する内容の異なる 2 つの"
+                        "有効ステートメント。各 branch は単体で §6.3 の全検証を通り(両方 verify 成功)、"
+                        "組として signed_bytes_sha256_hex の相違 = サーバー equivocation の否認不能な"
+                        "証拠になる(§14.2-5。防止ではなく証拠化)",
+                "branches": fork_branches,
+            },
+            "name_swap": name_swap,
+            "negative": negatives + rule_negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. recovery-wrap.json — §8 リカバリーコードによる master 秘密鍵ラップ
 
 def gen_recovery_wrap():
@@ -1812,5 +2363,6 @@ if __name__ == "__main__":
     gen_chain_entries()
     gen_dek_wrap_signature()
     gen_dek_commitment()
-    gen_value_signature()  # chain-entries.json / 上記の出力を参照するため最後に生成
+    gen_value_signature()  # chain-entries.json / 上記の出力を参照するため後段で生成
+    gen_metadata_signature()  # 同上(chain-entries.json を参照)
     gen_recovery_wrap()
