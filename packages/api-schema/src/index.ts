@@ -13,6 +13,8 @@ export {
 export {
   type DekWrapRef,
   DekWrapRefSchema,
+  type DistributedEncryptedPayload,
+  DistributedEncryptedPayloadSchema,
   type EncryptedPayload,
   EncryptedPayloadSchema,
   type RecipientDek,
@@ -58,6 +60,8 @@ export {
   ResourceConflictReasonSchema,
   TokenLimitError,
   UnauthorizedError,
+  ValueSignatureRejectedError,
+  ValueSignatureRejectReasonSchema,
   ValueTooLargeError,
   VariableConflictError,
   VariableNotFoundError,

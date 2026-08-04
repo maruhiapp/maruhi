@@ -1,14 +1,20 @@
-// 暗号化 push(AUTH_SPEC §12-5 の CAS + session-07 §5 の申し送りの決着)。
+// 暗号化 + 値署名付き push(AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1。session-14 裁定 G)。
 //
-// - version は AAD の一部でサーバーは採番できない → 409 VersionConflict は
-//   currentVersion + 1 で再暗号化して再試行
-// - 409 EpochConflict は再同期(チェーン全再検証)→ 現エポック DEK の
-//   再取得・再検証 → 再暗号化 → 再試行。エポックの真実源はチェーン導出値
-//   (サーバー申告の currentEpoch は使わない)
-// - スキーマ外の素の 413(HTTP 生ボディ上限)は failure.ts の HttpClientError
-//   分岐が「値が大きすぎる」に写す
-// - 値は stdin から読み、argv に載せない(プロセス一覧への露出防止)。
-//   平文はメモリ上のみ
+// - 通常 push: 既存変数でも pull で取得した最新値を §6.3 で全検証し、自前で
+//   再構築した signed-bytes hash を prev にする(サーバー申告のハッシュに連鎖
+//   署名しない)。version = 検証済み latest + 1、宣言ヘッド = 最後に検証した
+//   チェーンヘッド、DEK は現エポックのコミットメント検証済み・nonce は fresh、
+//   署名は自分の user id + master sig 鍵
+// - 409 VersionConflict: currentVersion 番号だけで次 version / prev を決めない。
+//   bulk pull を再取得 → winner 特定(既存変数は stable id、create の
+//   duplicate-name race は現行 name の再解決)→ winner を値署名検証 → 自計算
+//   hash を prev → fresh nonce で再暗号・再署名。pull が 409 より古ければ
+//   不整合拒否、新しければ実 winner を採用。欠落・同一 version で異なる
+//   signed bytes(equivocation の証拠)は拒否。上限 5 回
+// - 409 EpochConflict: 延長検査付き再同期(サーバーの currentEpoch 申告を
+//   真実源にしない)→ chain-derived epoch とコミットメント検証済み DEK で
+//   再暗号・新ヘッドで再署名。prev は検証済み predecessor hash を維持
+// - 値は stdin から読み、argv に載せない。平文はメモリ上のみ
 
 import {
   EpochConflictError,
@@ -16,14 +22,15 @@ import {
   VersionConflictError,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import { encodeHex, encryptVariable, SUITE_ID } from "@maruhi/crypto";
+import { encodeHex, encryptVariable, signValue, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import type { VerifiedProject } from "./sync.ts";
+import { resyncExtended, type VerifiedProject } from "./sync.ts";
+import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 
@@ -42,46 +49,56 @@ function generateVariableId(): string {
 
 interface PushTarget {
   readonly variableId: string;
-  /** null = 変数が存在しない(create 経路、version 1)。 */
-  readonly nextVersion: number;
   readonly create: boolean;
+  /** 検証済みの現行最新値(create = 新規変数なら null)。prev と equivocation 検査の基準。 */
+  readonly latest: VerifiedPulledValue | null;
 }
 
+function nextVersionOf(target: PushTarget): number {
+  return target.latest === null ? 1 : target.latest.version + 1;
+}
+
+function prevHashOf(target: PushTarget): string {
+  return target.latest === null ? "" : target.latest.signedBytesHashHex;
+}
+
+interface ResolvedTarget {
+  readonly target: PushTarget;
+  /** pull 検証で前進していることがあるビュー(future head の有界再同期)。 */
+  readonly verified: VerifiedProject;
+}
+
+/**
+ * 表示名から push 先を解決する。pull 応答の全値は §6.3 の値署名検証を通過して
+ * おり(pullVerifiedEnvironment)、一致した変数の検証済み latest が次 version と
+ * prev 連鎖の根拠になる。名前 → ID の解決自体は PR-3(メタステートメント)まで
+ * 非認証のまま(既知の制約 — session-14.md)。
+ */
 function resolveTarget(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly name: string;
-}): Effect.Effect<PushTarget, CliError> {
-  return input.client.variables
-    .pull({ params: { projectId: input.verified.projectId, environmentId: input.environmentId } })
-    .pipe(
-      Effect.mapError(toCliError),
-      Effect.flatMap((response) => {
-        // 名前の一意性はサーバーが強制する(§12-1)が、push 先の同定が応答の
-        // 並び順に依存しないようクライアントでも検査する(pullVariables と同じ
-        // サーバー不信の規律 — 重複時に恣意的な 1 件へ束縛しない)
-        const matches = response.variables.filter((variable) => variable.name === input.name);
-        if (matches.length > 1) {
-          return Effect.fail(
-            cliError(`変数名が重複しています(サーバー応答の不整合): ${input.name}`),
-          );
-        }
-        const existing = matches[0];
-        if (existing === undefined) {
-          return Effect.succeed<PushTarget>({
-            variableId: generateVariableId(),
-            nextVersion: 1,
-            create: true,
-          });
-        }
-        return Effect.succeed<PushTarget>({
-          variableId: existing.variableId,
-          nextVersion: existing.value.aad.version + 1,
-          create: false,
-        });
-      }),
-    );
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+}): Effect.Effect<ResolvedTarget, CliError> {
+  return Effect.gen(function* () {
+    const pulled = yield* pullVerifiedEnvironment(input);
+    // 名前の一意性はサーバーが強制する(§12-1)が、push 先の同定が応答の
+    // 並び順に依存しないようクライアントでも検査する(重複時に恣意的な
+    // 1 件へ束縛しない)
+    const matches = pulled.variables.filter((variable) => variable.name === input.name);
+    if (matches.length > 1) {
+      return yield* Effect.fail(
+        cliError(`変数名が重複しています(サーバー応答の不整合): ${input.name}`),
+      );
+    }
+    const existing = matches[0];
+    const target: PushTarget =
+      existing === undefined
+        ? { variableId: generateVariableId(), create: true, latest: null }
+        : { variableId: existing.variableId, create: false, latest: existing };
+    return { target, verified: pulled.verified };
+  });
 }
 
 function fetchDeks(input: {
@@ -107,14 +124,18 @@ function fetchDeks(input: {
     );
 }
 
-function encryptPayload(input: {
+/** 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。 */
+function encryptAndSignPayload(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly variableId: string;
   readonly epoch: number;
   readonly version: number;
+  readonly prevValueSigHashHex: string;
   readonly dek: Uint8Array;
   readonly value: Uint8Array;
+  readonly writerUserId: string;
+  readonly signingKey: CryptoKey;
 }) {
   const context = {
     projectId: input.verified.projectId,
@@ -130,11 +151,35 @@ function encryptPayload(input: {
     if (!encrypted.ok) {
       return yield* Effect.fail(cliError("値の暗号化に失敗しました"));
     }
+    const nonceHex = encodeHex(encrypted.value.nonce);
+    const ciphertextHex = encodeHex(encrypted.value.ciphertext);
+    const signature = yield* Effect.promise(() =>
+      signValue({
+        context: {
+          suite: SUITE_ID,
+          ...context,
+          nonceHex,
+          ciphertextHex,
+          prevValueSigHashHex: input.prevValueSigHashHex,
+          writerUserId: input.writerUserId,
+          chainHeadHashHex: input.verified.state.headHashHex,
+          chainHeadSeq: input.verified.state.headSeq,
+        },
+        signingKey: input.signingKey,
+      }),
+    );
+    if (!signature.ok) {
+      return yield* Effect.fail(cliError("値署名の作成に失敗しました"));
+    }
     return {
       suite: SUITE_ID,
       aad: context,
-      nonceHex: encodeHex(encrypted.value.nonce),
-      ciphertextHex: encodeHex(encrypted.value.ciphertext),
+      nonceHex,
+      ciphertextHex,
+      prevValueSigHashHex: input.prevValueSigHashHex,
+      chainHeadHashHex: input.verified.state.headHashHex,
+      chainHeadSeq: input.verified.state.headSeq,
+      signatureHex: signature.value,
     } as const;
   });
 }
@@ -188,8 +233,11 @@ interface PushInput {
   readonly name: string;
   readonly value: Uint8Array;
   readonly verified: VerifiedProject;
-  /** EpochConflict 時の再同期(チェーン全再検証)。 */
+  /** 再同期(チェーン全再検証)。呼び出し側は resyncExtended で延長検査を通す。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** 値署名の writer(自分の内部 user_id)と master sig 鍵(§4.1)。 */
+  readonly writerUserId: string;
+  readonly signingKey: CryptoKey;
 }
 
 interface PushState {
@@ -197,17 +245,16 @@ interface PushState {
   readonly epoch: number;
   readonly deks: ReadonlyMap<number, Uint8Array>;
   readonly target: PushTarget;
-  readonly version: number;
 }
 
 function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
-    const verified = input.verified;
+    const resolved = yield* resolveTarget(input);
+    const verified = resolved.verified;
     // 現エポックはチェーン導出値(§6.2 — 環境未作成の push はここで止まる)
     const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
     const deks = yield* fetchDeks({ ...input, verified });
-    const target = yield* resolveTarget({ ...input, verified });
-    return { verified, epoch, deks, target, version: target.nextVersion };
+    return { verified, epoch, deks, target: resolved.target };
   });
 }
 
@@ -221,14 +268,17 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
         ),
       );
     }
-    const payload = yield* encryptPayload({
+    const payload = yield* encryptAndSignPayload({
       verified: state.verified,
       environmentId: input.environmentId,
       variableId: state.target.variableId,
       epoch: state.epoch,
-      version: state.version,
+      version: nextVersionOf(state.target),
+      prevValueSigHashHex: prevHashOf(state.target),
       dek,
       value: input.value,
+      writerUserId: input.writerUserId,
+      signingKey: input.signingKey,
     });
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     return yield* classifyAttempt(
@@ -245,10 +295,126 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
   });
 }
 
+/** エポックが変わった(または初出の)場合のみ DEK 集合を取り直す。 */
+function refreshEpochState(
+  input: PushInput,
+  state: PushState,
+  verified: VerifiedProject,
+): Effect.Effect<Pick<PushState, "verified" | "epoch" | "deks">, CliError> {
+  return Effect.gen(function* () {
+    const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+    if (state.deks.has(epoch)) {
+      return { verified, epoch, deks: state.deks };
+    }
+    const deks = yield* fetchDeks({ ...input, verified });
+    return { verified, epoch, deks };
+  });
+}
+
+/**
+ * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
+ * 整合検査(レビューループ 1 [高]/[中])。正直サーバーでは latest_version は
+ * 単調増加(バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後
+ * 404)なので、後退はすべて巻き戻し・equivocation の証拠であり誤拒否はない。
+ */
+/**
+ * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
+ * 後退・equivocation・連鎖の整合検査。正直サーバーでは latest_version は単調増加
+ * (バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後 404)なので
+ * 後退はすべて巻き戻し・equivocation の証拠であり、誤拒否はない。
+ */
+function winnerRegression(
+  target: PushTarget,
+  known: VerifiedPulledValue,
+  winner: VerifiedPulledValue,
+  currentVersion: number,
+): string | null {
+  if (currentVersion < known.version || winner.version < known.version) {
+    // このセッションで検証済みの latest からの後退 = 巻き戻しの証拠。採用して
+    // prev を付け替えると、巻き戻しブランチへ自分の署名で連鎖してしまう
+    return `変数 ${target.variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
+  }
+  if (winner.version === known.version && winner.signedBytesHashHex !== known.signedBytesHashHex) {
+    // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
+    return `変数 ${target.variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+  }
+  // エポック単調性(§4.1)は推移的なので、winner が検証済み latest より新しければ
+  // 版番号のギャップに関わらず epoch 非減少を要求できる(レビューループ 2 [低] —
+  // 版番号の選び方で隣接検査を迂回する旧エポック注入を塞ぐ)。正直サーバーは
+  // 受理順にエポック非減少なので誤拒否はない
+  if (winner.version > known.version && winner.epoch < known.epoch) {
+    return `変数 ${target.variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
+  }
+  // 隣接 predecessor を保持している場合は §6.3-6 の prev 実在一致も無償で検査できる
+  // (レビューループ 1 [中] — pull の latest-only 制約の例外)
+  if (
+    winner.version === known.version + 1 &&
+    winner.prevValueSigHashHex !== known.signedBytesHashHex
+  ) {
+    return `変数 ${target.variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+  }
+  return null;
+}
+
+/** 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。 */
+function winnerInconsistency(
+  target: PushTarget,
+  winner: VerifiedPulledValue,
+  currentVersion: number,
+): string | null {
+  if (winner.version < currentVersion) {
+    // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
+    return `再取得した pull の最新 version(${winner.version})が 409 の申告(${currentVersion})より古く、不整合です`;
+  }
+  return target.latest === null
+    ? null
+    : winnerRegression(target, target.latest, winner, currentVersion);
+}
+
+/**
+ * 409 VersionConflict 後の winner 再取得(§12-5 の再試行手順): bulk pull を
+ * 再取得し、stable id で winner を特定して検証し、その signed-bytes hash へ
+ * prev を付け替える。409 応答に勝者のハッシュを要求しない。
+ */
+function adoptConflictWinner(
+  input: PushInput,
+  state: PushState,
+  currentVersion: number,
+): Effect.Effect<PushState, CliError> {
+  return Effect.gen(function* () {
+    const pulled = yield* pullVerifiedEnvironment({
+      client: input.client,
+      verified: state.verified,
+      environmentId: input.environmentId,
+      resync: input.resync,
+    });
+    const winner = pulled.variables.find(
+      (variable) => variable.variableId === state.target.variableId,
+    );
+    if (winner === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `バージョン競合の勝者(変数 ${state.target.variableId})が再取得した pull に存在しません(他メンバーによる並行削除、またはサーバー応答の不整合)`,
+        ),
+      );
+    }
+    const inconsistency = winnerInconsistency(state.target, winner, currentVersion);
+    if (inconsistency !== null) {
+      return yield* Effect.fail(cliError(inconsistency));
+    }
+    const refreshed = yield* refreshEpochState(input, state, pulled.verified);
+    return {
+      ...refreshed,
+      target: { ...state.target, create: false, latest: winner },
+    };
+  });
+}
+
 function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
-    const target = yield* resolveTarget({ ...input, verified: state.verified });
-    return { ...state, target, version: target.nextVersion };
+    const resolved = yield* resolveTarget({ ...input, verified: state.verified });
+    const refreshed = yield* refreshEpochState(input, state, resolved.verified);
+    return { ...refreshed, target: resolved.target };
   });
 }
 
@@ -264,16 +430,14 @@ function nextState(
       if (state.target.create) {
         return reresolveTarget(input, state);
       }
-      return Effect.succeed({
-        ...state,
-        version: outcome.currentVersion + 1,
-        target: { ...state.target, create: false },
-      });
+      return adoptConflictWinner(input, state, outcome.currentVersion);
     case "epoch-conflict":
-      // エポックの真実源はチェーン(§6.3)。再同期して導出値を使い、
-      // 新エポックの DEK を取得・再検証する
+      // エポックの真実源はチェーン(§6.3)。延長検査付きで再同期して導出値を
+      // 使い、新エポックのコミットメント検証済み DEK を取得する。prev は
+      // 検証済み predecessor hash のまま(値は変わっていない — 変わっていれば
+      // 次の試行が VersionConflict になり上の手順へ入る)
       return Effect.gen(function* () {
-        const verified = yield* input.resync;
+        const verified = yield* resyncExtended(input.resync, state.verified);
         const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
         if (epoch === state.epoch) {
           // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
@@ -293,10 +457,12 @@ function nextState(
 }
 
 /**
- * Pushes one variable value: resolve the target by display name, encrypt
- * under the chain-derived current epoch, and retry through the CAS conflicts
- * (§12-5). The chain — not the server's claim — is the epoch authority, so an
- * EpochConflict triggers a full re-sync before the retry.
+ * Pushes one variable value: resolve the target by display name from a
+ * fully verified pull, encrypt under the chain-derived current epoch with a
+ * commitment-verified DEK, sign as the caller (§4.1: prev = the verified
+ * latest value's signed-bytes hash, head = the last verified chain head),
+ * and retry through the CAS conflicts (§12-5). The chain — not the server's
+ * claim — stays the epoch authority.
  */
 export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, CliError> {
   return Effect.gen(function* () {
@@ -311,10 +477,10 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
         };
       }
       // 最終試行でも nextState を実行する: epoch-conflict の「サーバー応答と
-      // チェーンの矛盾」は定的(リトライで解けない)エラーで、汎用の
-      // 「競合が解消しません」より情報量が高い。定的エラー・ネットワーク
-      // エラーはそのまま伝播させ(汎用メッセージで覆い隠さない)、
-      // 再試行可能な状態が返った場合のみ次周回で使う(最終周回では未使用)。
+      // チェーンの矛盾」や equivocation の証拠は定的(リトライで解けない)
+      // エラーで、汎用の「競合が解消しません」より情報量が高い。定的エラー・
+      // ネットワークエラーはそのまま伝播させ、再試行可能な状態が返った場合のみ
+      // 次周回で使う(最終周回では未使用)。
       state = yield* nextState(input, state, outcome);
     }
     return yield* Effect.fail(

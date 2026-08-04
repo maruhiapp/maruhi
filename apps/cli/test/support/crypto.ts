@@ -13,6 +13,7 @@ import {
   computeChainEntryHash,
   computeDekCommitment,
   computeUserKeyFingerprint,
+  computeValueSignedBytesHash,
   decodeHex,
   encodeHex,
   encryptVariable,
@@ -25,6 +26,7 @@ import {
   importEncryptionPublicKey,
   signChainEntry,
   signDekWrap,
+  signValue,
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
@@ -289,7 +291,7 @@ export async function wrapDekFor(input: {
   };
 }
 
-/** EncryptedPayload 形のワイヤ表現。 */
+/** EncryptedPayload 形のワイヤ表現(§4.1 の署名ブロック込み — §12-2)。 */
 export interface WireEncryptedPayload {
   readonly suite: "maruhi/v1";
   readonly aad: {
@@ -301,9 +303,61 @@ export interface WireEncryptedPayload {
   };
   readonly nonceHex: string;
   readonly ciphertextHex: string;
+  readonly prevValueSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
 }
 
-/** 変数値を DEK で暗号化し、ワイヤ表現(§12-2)で返す。 */
+/** 配布形(DistributedEncryptedPayload — writer の検証材料込み)。 */
+export interface WireDistributedValue extends WireEncryptedPayload {
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
+}
+
+/** BuiltChain 上の宣言ヘッド(seq 位置の entry hash)。 */
+export function headOf(built: BuiltChain, seq: number): { seq: number; hashHex: string } {
+  const hashHex = built.hashes[seq - 1];
+  if (hashHex === undefined) {
+    throw new Error(`headOf: chain has no seq ${seq}`);
+  }
+  return { seq, hashHex };
+}
+
+function valueContextOf(payload: WireEncryptedPayload, writerUserId: string) {
+  return {
+    suite: payload.suite,
+    projectId: payload.aad.projectId,
+    environmentId: payload.aad.environmentId,
+    epoch: payload.aad.epoch,
+    variableId: payload.aad.variableId,
+    version: payload.aad.version,
+    nonceHex: payload.nonceHex,
+    ciphertextHex: payload.ciphertextHex,
+    prevValueSigHashHex: payload.prevValueSigHashHex,
+    writerUserId,
+    chainHeadHashHex: payload.chainHeadHashHex,
+    chainHeadSeq: payload.chainHeadSeq,
+  };
+}
+
+/** value_signed_bytes の SHA-256(次 version の prev に使う — §4.1 の連鎖)。 */
+export async function valueHashOf(
+  payload: WireEncryptedPayload,
+  writerUserId: string,
+): Promise<string> {
+  return unwrapResult(
+    await computeValueSignedBytesHash(valueContextOf(payload, writerUserId)),
+    "computeValueSignedBytesHash",
+  );
+}
+
+/**
+ * 変数値を DEK で暗号化し、writer の値署名(§4.1)付き配布形(§12-2)で返す。
+ * 宣言ヘッドは writer が「署名時点で最後に検証したチェーンヘッド」の位置。
+ * version > 1 の prev はテスト側で指定する(既定はダミー 64 hex — pull は
+ * latest-only で prev の実在一致は検査対象外 — 裁定 B)。
+ */
 export async function encryptValueFor(input: {
   readonly dek: Uint8Array;
   readonly projectId: string;
@@ -312,7 +366,10 @@ export async function encryptValueFor(input: {
   readonly variableId: string;
   readonly version: number;
   readonly plaintext: string;
-}): Promise<WireEncryptedPayload> {
+  readonly writer: TestUser;
+  readonly head: { readonly seq: number; readonly hashHex: string };
+  readonly prevValueSigHashHex?: string;
+}): Promise<WireDistributedValue> {
   const context = {
     projectId: input.projectId,
     environmentId: input.environmentId,
@@ -328,10 +385,36 @@ export async function encryptValueFor(input: {
     }),
     "encryptVariable",
   );
+  const nonceHex = encodeHex(encrypted.nonce);
+  const ciphertextHex = encodeHex(encrypted.ciphertext);
+  const prevValueSigHashHex =
+    input.prevValueSigHashHex ?? (input.version === 1 ? "" : "cd".repeat(32));
+  const signatureHex = unwrapResult(
+    await signValue({
+      context: {
+        suite: SUITE_ID,
+        ...context,
+        nonceHex,
+        ciphertextHex,
+        prevValueSigHashHex,
+        writerUserId: input.writer.userId,
+        chainHeadHashHex: input.head.hashHex,
+        chainHeadSeq: input.head.seq,
+      },
+      signingKey: input.writer.sigKeyPair.privateKey,
+    }),
+    "signValue",
+  );
   return {
     suite: SUITE_ID,
     aad: context,
-    nonceHex: encodeHex(encrypted.nonce),
-    ciphertextHex: encodeHex(encrypted.ciphertext),
+    nonceHex,
+    ciphertextHex,
+    prevValueSigHashHex,
+    chainHeadHashHex: input.head.hashHex,
+    chainHeadSeq: input.head.seq,
+    signatureHex,
+    writerUserId: input.writer.userId,
+    writerKeyFingerprintHex: input.writer.fingerprintHex,
   };
 }

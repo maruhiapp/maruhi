@@ -11,11 +11,12 @@ import {
   createEnvironmentOp,
   encryptValueFor,
   genesisOp,
+  headOf,
   makeTestUser,
   removeMemberOp,
   rotateEpochOp,
   type TestUser,
-  type WireEncryptedPayload,
+  type WireDistributedValue,
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
@@ -30,8 +31,8 @@ interface Fixture {
   readonly dek1: Uint8Array;
   readonly dek2: Uint8Array;
   readonly wraps: readonly WireRecipientDek[];
-  readonly valueAlpha: WireEncryptedPayload;
-  readonly valueBeta: WireEncryptedPayload;
+  readonly valueAlpha: WireDistributedValue;
+  readonly valueBeta: WireDistributedValue;
 }
 
 let fixture: Fixture;
@@ -53,7 +54,9 @@ beforeAll(async () => {
     await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
   ];
   // 最新バージョンのエポックは変数ごとに異なる(§12-7): ALPHA は epoch 2、
-  // BETA はローテーション後も再暗号化されていない epoch 1 のまま
+  // BETA はローテーション後も再暗号化されていない epoch 1 のまま。
+  // 値署名(§4.1)の宣言ヘッドは各エポックが現エポックだった位置(inclusive):
+  // ALPHA = seq 3(rotate)、BETA = seq 2(create)
   const valueAlpha = await encryptValueFor({
     dek: dek2,
     ...common,
@@ -61,6 +64,8 @@ beforeAll(async () => {
     variableId: "va",
     version: 3,
     plaintext: "alpha-value",
+    writer: owner,
+    head: headOf(built, 3),
   });
   const valueBeta = await encryptValueFor({
     dek: dek1,
@@ -69,6 +74,8 @@ beforeAll(async () => {
     variableId: "vb",
     version: 1,
     plaintext: "beta-value",
+    writer: owner,
+    head: headOf(built, 2),
   });
   fixture = { owner, built, dek1, dek2, wraps, valueAlpha, valueBeta };
 });
@@ -155,6 +162,8 @@ describe("maruhi pull", () => {
       variableId: "vs",
       version: 1,
       plaintext: evil,
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
     });
     const env = await startEnv([
       chainHandler(),
@@ -239,9 +248,10 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("DEK が配布されていません");
   });
 
-  it("別変数の暗号文の差し替え(メタデータと AAD の不一致)は復号失敗に落ちる", async () => {
-    // BETA の暗号文を ALPHA のスロットで配る。申告 aad は信用せず自前の座標
-    // (variableId = 応答メタデータの ID)で復号するため必ず失敗する
+  it("別変数の暗号文の差し替え(メタデータと AAD の不一致)は復号より前に拒否される", async () => {
+    // BETA の暗号文を ALPHA のスロットで配る。値署名の検証(§6.3-5 の座標整合)が
+    // 復号より前に申告 AAD と外側メタデータの不一致を検出する(旧実装では
+    // 復号失敗まで進んでいた — 検出が前段化した)
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -249,7 +259,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("復号できません");
+    expect(env.errors.join("\n")).toContain("申告 AAD 座標が要求文脈と一致しません");
   });
 
   it("チェーン現エポックを超えるラップ(ファントムエポック)を拒否する", async () => {
@@ -272,6 +282,8 @@ describe("maruhi pull", () => {
   });
 
   it("チェーン現エポックを超える申告エポックの変数を拒否する", async () => {
+    // チェーンに存在しないエポック(3)は、どのヘッドを宣言しても「ヘッド時点の
+    // 現エポック」と一致しない — 値署名の検証(§6.3-4)が復号より前に拒否する
     const phantomValue = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -280,13 +292,15 @@ describe("maruhi pull", () => {
       variableId: "vp",
       version: 1,
       plaintext: "phantom",
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
     });
     const env = await startEnv([
       chainHandler(),
       pullHandler({ variables: [{ variableId: "vp", name: "PHANTOM", value: phantomValue }] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("現エポック(2)を超えています");
+    expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
   });
 
   it("チェーン上のコミットメントと一致しない DEK(毒ラップ = 偽 DEK 注入)を拒否する(§5.2)", async () => {
@@ -334,8 +348,8 @@ describe("maruhi pull", () => {
   });
 
   it("チェーンに create_environment がない環境(ファントム環境)の配布を拒否する", async () => {
-    // 「未観測なら epoch 1」の既定値は廃止(§6.2): チェーンが知らない環境の
-    // 配布はサーバー応答とチェーンの矛盾として全体を拒否する
+    // 「未観測なら epoch 1」の既定値は廃止(§6.2): チェーンが知らない環境の値は
+    // 値署名の検証(§6.3-4 — 環境作成前ヘッドの拒否)が復号より前に落とす
     const ghostValue = await encryptValueFor({
       dek: fixture.dek1,
       projectId: fixture.built.projectId,
@@ -344,6 +358,8 @@ describe("maruhi pull", () => {
       variableId: "vg",
       version: 1,
       plaintext: "ghost",
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
     });
     const ghostWrap = await wrapDekFor({
       projectId: fixture.built.projectId,
@@ -367,7 +383,7 @@ describe("maruhi pull", () => {
       })),
     ]);
     expect(await runCli(["pull", "--env", "ghost"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("チェーン上に存在しません");
+    expect(env.errors.join("\n")).toContain("reason=environment-not-created-at-head");
   });
 
   it("署名者 FP がチェーン履歴のどの鍵とも一致しないラップを拒否する", async () => {
@@ -393,9 +409,9 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("重複しています");
   });
 
-  it("別環境の座標で暗号化された暗号文の差し替えは復号失敗に落ちる", async () => {
-    // environmentId だけ他所(other-env)の値を prod として配布 → 自前の座標
-    // (URL に使った environmentId)で復号するため必ず失敗する
+  it("別環境の座標で暗号化された暗号文の差し替えは復号より前に拒否される", async () => {
+    // environmentId だけ他所(other-env)の値を prod として配布 → 申告 AAD の
+    // 座標整合(§6.3-5)が復号より前に検出する(値署名の導入で前段化)
     const crossEnv = await encryptValueFor({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
@@ -404,13 +420,15 @@ describe("maruhi pull", () => {
       variableId: "va",
       version: 3,
       plaintext: "cross",
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
     });
     const env = await startEnv([
       chainHandler(),
       pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: crossEnv }] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("復号できません");
+    expect(env.errors.join("\n")).toContain("申告 AAD 座標が要求文脈と一致しません");
   });
 
   it("削除→新鍵で再追加されたメンバーの過去署名は当時の鍵で検証できる(§5.1)", async () => {
@@ -436,6 +454,8 @@ describe("maruhi pull", () => {
       recipient: owner,
       signer: oldKeys,
     });
+    // 値も当時の鍵で署名(§4.1): 宣言ヘッドは在籍区間内(seq 3 = 自身の
+    // create_environment エントリ)— 削除後の全チェーンでも検証できる(§6.3-1)
     const value = await encryptValueFor({
       dek,
       projectId: built.projectId,
@@ -444,6 +464,8 @@ describe("maruhi pull", () => {
       variableId: "vr",
       version: 1,
       plaintext: "historic",
+      writer: oldKeys,
+      head: headOf(built, 3),
     });
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -497,6 +519,8 @@ describe("maruhi pull", () => {
       variableId: "ve",
       version: 1,
       plaintext: "v",
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
     });
     const env = await startEnv([
       chainHandler(),
@@ -521,6 +545,292 @@ describe("maruhi pull", () => {
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("変数名が重複");
+  });
+
+  it("値署名の bit 反転を復号より前に拒否する(§4.1)", async () => {
+    const value = fixture.valueAlpha;
+    const flipped = `${value.signatureHex.slice(0, -1)}${
+      value.signatureHex.endsWith("0") ? "1" : "0"
+    }`;
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [
+          { variableId: "va", name: "ALPHA", value: { ...value, signatureHex: flipped } },
+        ],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=signature-invalid");
+  });
+
+  it("writer の虚偽申告(署名は別人のまま)を拒否する(§4.1 の帰属)", async () => {
+    // 署名は owner のまま、writer を別 user_id + 別 FP と申告 → チェーン履歴に
+    // その束縛が存在せず検証鍵を選択できない
+    const stranger = await makeTestUser("user-stranger-9999");
+    const lying = {
+      ...fixture.valueAlpha,
+      writerUserId: stranger.userId,
+      writerKeyFingerprintHex: stranger.fingerprintHex,
+    };
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: lying }] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=writer-unknown");
+  });
+
+  it("削除済み writer が削除後のヘッドを宣言した値を拒否する(§6.3-3)", async () => {
+    // oldKeys は seq 4 で削除。head 5(削除後)を宣言する値は、署名が有効でも
+    // 「宣言ヘッド時点の在籍」で拒否される(削除済みメンバーの鍵による新規注入)
+    const oldKeys = await makeTestUser("user-rotated-5555");
+    const owner = fixture.owner;
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(oldKeys, "member") },
+      { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
+      { actor: owner, operation: removeMemberOp(oldKeys) },
+      { actor: owner, operation: addMemberOp(await makeTestUser("user-other-7777"), "member") },
+    ]);
+    const wrap = await wrapDekFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek,
+      recipient: owner,
+      signer: owner,
+    });
+    const forged = await encryptValueFor({
+      dek,
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "vf",
+      version: 1,
+      plaintext: "forged-after-removal",
+      writer: oldKeys,
+      head: headOf(built, 5),
+    });
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      })),
+      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          name: ENV_ID,
+          currentEpoch: 1,
+          variables: [{ variableId: "vf", name: "FORGED", value: forged }],
+          deks: [wrap],
+        },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=writer-not-member-at-head");
+  });
+
+  it("同一応答内の variableId 重複を拒否する(equivocation の運搬形)", async () => {
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [
+          { variableId: "va", name: "ALPHA", value: fixture.valueAlpha },
+          { variableId: "va", name: "ALPHA2", value: fixture.valueAlpha },
+        ],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("変数 ID が同一応答内で重複");
+  });
+
+  it("未同期区間で追加された新規メンバーが書いた値は有界再同期を経て受理する(レビューループ 1 [低])", async () => {
+    // 旧ビュー = genesis のみ(seq 1)。新メンバーを seq 2 で追加し、その新メンバーが
+    // seq 3 で環境作成 + 値を書く。旧ビューでは writer が未知(writer-unknown)だが
+    // 宣言 seq が自ヘッドより先なので即時拒否せず再同期して受理する
+    const owner = fixture.owner;
+    const newcomer = await makeTestUser("user-newcomer-2222");
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const shortBuilt = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const fullBuilt = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(newcomer, "member") },
+      { actor: newcomer, operation: createEnvironmentOp(ENV_ID, dek) },
+    ]);
+    expect(shortBuilt.projectId).toBe(fullBuilt.projectId);
+    const wrap = await wrapDekFor({
+      projectId: fullBuilt.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek,
+      recipient: owner,
+      signer: newcomer,
+    });
+    const value = await encryptValueFor({
+      dek,
+      projectId: fullBuilt.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "vn",
+      version: 1,
+      plaintext: "by-newcomer",
+      writer: newcomer,
+      head: headOf(fullBuilt, 3),
+    });
+    let chainCalls = 0;
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${fullBuilt.projectId}/chain`, () => {
+        chainCalls += 1;
+        const source = chainCalls === 1 ? shortBuilt : fullBuilt;
+        return {
+          status: 200,
+          json: {
+            projectId: fullBuilt.projectId,
+            entries: source.entries,
+            headSeq: source.entries.length,
+            headHashHex: source.hashes[source.hashes.length - 1],
+          },
+        };
+      }),
+      onRequest("GET", `/projects/${fullBuilt.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          name: ENV_ID,
+          currentEpoch: 1,
+          variables: [{ variableId: "vn", name: "NEWCOMER", value }],
+          deks: [wrap],
+        },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: fullBuilt.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(chainCalls).toBe(2);
+    expect(env.logs.join("\n")).toContain("NEWCOMER");
+  });
+
+  it("future head(自ビューより先の宣言 seq)は有界再同期の延長検査を経て受理する(§6.3-2b)", async () => {
+    // 旧ビュー = seq 2 まで(rotate 未観測)。値は seq 3(rotate)をヘッドに宣言。
+    // 初回検証は chain-head-future → 再同期で 3 エントリの延長が見え、再検証で受理
+    const { built } = fixture;
+    const shortChain = built.entries.slice(0, 2);
+    let chainCalls = 0;
+    const progressiveChain = onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+      chainCalls += 1;
+      const entries = chainCalls === 1 ? shortChain : built.entries;
+      return {
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries,
+          headSeq: entries.length,
+          headHashHex: built.hashes[entries.length - 1],
+        },
+      };
+    });
+    const env = await startEnv([
+      progressiveChain,
+      pullHandler({
+        variables: [{ variableId: "va", name: "ALPHA", value: fixture.valueAlpha }],
+        deks: fixture.wraps,
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    // 初回同期 + future head の再同期でチェーンは 2 回取得される
+    expect(chainCalls).toBe(2);
+    expect(env.logs.join("\n")).toContain("ALPHA");
+  });
+
+  it("future head の再同期が旧ビューの延長でなければ拒否する(別整合チェーンの差し替え)", async () => {
+    // 旧ビュー = 正規 3 エントリ。値は seq 4 を宣言 → 再同期で「同じ genesis から
+    // 分岐した別の 4 エントリチェーン」が返る = 旧 head(seq 3)のハッシュが不一致
+    const { built, owner } = fixture;
+    const forkDek = crypto.getRandomValues(new Uint8Array(32));
+    const forked = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, fixture.dek1) },
+      // 正規チェーンの seq 3(rotate epoch 2)と異なるエントリ = 分岐
+      { actor: owner, operation: createEnvironmentOp("side", forkDek) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, fixture.dek2) },
+    ]);
+    expect(forked.projectId).toBe(built.projectId);
+    const futureValue = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "va",
+      version: 1,
+      plaintext: "future",
+      writer: owner,
+      head: headOf(forked, 4),
+    });
+    let chainCalls = 0;
+    const progressiveChain = onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+      chainCalls += 1;
+      const source = chainCalls === 1 ? built : forked;
+      return {
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: source.entries,
+          headSeq: source.entries.length,
+          headHashHex: source.hashes[source.hashes.length - 1],
+        },
+      };
+    });
+    const env = await startEnv([
+      progressiveChain,
+      pullHandler({
+        variables: [{ variableId: "va", name: "ALPHA", value: futureValue }],
+        deks: fixture.wraps,
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("延長ではありません");
+  });
+
+  it("seq が自ビュー以下でハッシュが一致しないヘッドの宣言は即時拒否する(§6.3-2a)", async () => {
+    const bogus = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "va",
+      version: 1,
+      plaintext: "bogus-head",
+      writer: fixture.owner,
+      head: { seq: 3, hashHex: "ee".repeat(32) },
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [{ variableId: "va", name: "ALPHA", value: bogus }] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reason=chain-head-mismatch");
   });
 });
 

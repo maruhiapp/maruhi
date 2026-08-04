@@ -402,6 +402,7 @@ function pullCommand(execute: Execute) {
             verified: context.verified,
             environmentId,
             recipient: context.recipient,
+            resync: syncProject(context.client, context.projectId),
           });
           yield* io.log(`同期・検証 OK: ${variables.length} 変数(環境 ${environmentId})`);
           for (const variable of variables) {
@@ -444,6 +445,9 @@ function pushCommand(execute: Execute) {
             value,
             verified: context.verified,
             resync: syncProject(context.client, context.projectId),
+            // 値署名(§4.1): writer = 自分の内部 user_id、鍵 = master sig 鍵
+            writerUserId: context.session.userId,
+            signingKey: context.masterKeys.sigKeyPair.privateKey,
           });
           yield* io.log(
             `push しました: ${ctx.values.name}(version=${pushed.version}, epoch=${pushed.epoch})`,
@@ -476,6 +480,7 @@ function runCommand(execute: Execute) {
             verified: context.verified,
             environmentId,
             recipient: context.recipient,
+            resync: syncProject(context.client, context.projectId),
           });
           return yield* runOp({ command: ctx.rest, variables });
         }),

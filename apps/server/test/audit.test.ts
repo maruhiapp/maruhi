@@ -53,6 +53,7 @@ async function createVariableOk(dek: Uint8Array, variableId: string, name: strin
     dek,
     { projectId, environmentId: ENV, epoch: 1, variableId, version: 1 },
     `secret-${variableId}`,
+    { writerUserId: MEMBER, head: fixture.head },
   );
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
     variableId,
@@ -240,11 +241,18 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(created["variable_id"]).toBe(VAR);
     expect(created["environment_id"]).toBe(ENV);
     expect(JSON.parse(String(created["payload"]))).toEqual({ name: "API_KEY" });
+    // var.created / var.version_pushed は値署名(CRYPTO_SPEC §4.1)を伴う操作
+    // なので、受理時点の chain-derived writer 鍵 FP を写す(AUDIT_SPEC §3.3。
+    // 署名・signed bytes・hash・nonce・暗号文は監査に載せない)
+    expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(pushed["epoch"]).toBe(1);
     expect(pushed["version"]).toBe(1);
+    expect(pushed["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(read["actor_user_id"]).toBe(READER);
     expect(read["epoch"]).toBe(1);
     expect(read["version"]).toBe(1);
+    // var.read は署名を伴わないため FP を持たない(§3.3 の意味論)
+    expect(read["actor_key_fingerprint"]).toBeNull();
   });
 
   it("attributes actors: PAT ops carry the token id, session ops carry auth_method (§2)", async () => {

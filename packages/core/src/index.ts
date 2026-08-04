@@ -14,6 +14,7 @@ export {
   CryptoKeyExportError,
   CryptoKeyImportError,
   CryptoSignError,
+  CryptoValueInvalidError,
   fromCryptoResult,
   toWrappedCryptoError,
   type WrappedCryptoError,

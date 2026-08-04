@@ -14,7 +14,8 @@
 
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
-import type { CryptoError, CryptoResult } from "./errors.ts";
+import type { CryptoResult } from "./errors.ts";
+import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
 
 const SIGNATURE_BYTES = 64;
 const ENC_PUB_HEX_LENGTH = 32 * 2;
@@ -37,14 +38,6 @@ export interface DekWrapSignatureContext {
   readonly ciphertextHex: string;
   /** The signer's own internal user id (binds attribution to the identity, §5.1). */
   readonly signerUserId: string;
-}
-
-function invalidInput(field: string): { readonly ok: false; readonly error: CryptoError } {
-  return { ok: false, error: { kind: "InvalidInput", field } };
-}
-
-function isLowercaseHexOfLength(value: string, length: number): boolean {
-  return value.length === length && decodeHex(value) !== null;
 }
 
 // 署名対象の構造検証: epoch は LP エンコーダの前提(非負の安全な整数)、

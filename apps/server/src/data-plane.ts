@@ -4,7 +4,13 @@
 // 拒否は DataRejectedError 1 種に畳み、DO の RPC 境界では DataOutcome の
 // 判別 union として渡す(worker が api-schema の型付きエラーへ写像する)。
 
-import type { ChainInvalidReason, ChainMember, ChainState, Role } from "@maruhi/crypto";
+import type {
+  ChainHistoryIndex,
+  ChainInvalidReason,
+  ChainMember,
+  ChainState,
+  Role,
+} from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -56,8 +62,10 @@ export interface DekWrapRefInput {
 
 /**
  * 変数値の保存入力。AAD 構成要素のうち座標(project / environment / variable)は
- * worker が URL との一致を検査済み(§12-2)。DO は状態依存の epoch / version を
- * 検査する。
+ * worker が URL との一致を検査済み(§12-2)。DO は状態依存の epoch / version と
+ * 値署名(§12-5 = CRYPTO_SPEC §4.1 / §6.4)を検査する。
+ * writer = 呼び出し主体が契約のため writer の ID / FP はここに載せない
+ * (DO が受理時点のチェーン導出メンバーから取る)。
  */
 export interface ValueInput {
   readonly suite: WireSuite;
@@ -65,6 +73,13 @@ export interface ValueInput {
   readonly version: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
+  /** 直前 version の value_signed_bytes の SHA-256(version 1 は空文字列)。 */
+  readonly prevValueSigHashHex: string;
+  /** writer が署名時点で最後に検証したチェーンヘッド(§4.1 の認可時点束縛)。 */
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  /** 値の書き込み署名(Ed25519 — CRYPTO_SPEC §4.1)。 */
+  readonly signatureHex: string;
 }
 
 export interface EnvironmentSummaryValue {
@@ -79,6 +94,12 @@ export interface VariableVersionValue {
   readonly epoch: number;
 }
 
+/**
+ * 一括 pull の 1 変数(§12-7)。保存済みの署名ブロックと writer(受理時点の
+ * user_id + チェーン導出鍵 FP)を配布する — 現メンバー集合から再導出しない
+ * (削除済み writer の過去値もチェーン履歴の当時の鍵で検証可能にするため)。
+ * サーバー再計算の signed_bytes ハッシュは配布しない(検証者が自ら再計算する)。
+ */
 export interface PulledVariableValue {
   readonly variableId: string;
   readonly name: string;
@@ -87,6 +108,12 @@ export interface PulledVariableValue {
   readonly epoch: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
+  readonly prevValueSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
 }
 
 /**
@@ -132,6 +159,18 @@ export type DekWrapRejectReason =
   | "duplicate-recipient"
   | "epoch-out-of-range"
   | "signature-invalid";
+
+/**
+ * 値署名の 422 理由(AUTH_SPEC §12-5。仮裁定 C — 仕様の 3 理由のみ):
+ * signature-invalid = valid-format の Ed25519 失敗 / chain-head-unknown =
+ * 有効署名だが宣言 seq 不在またはその seq の保存 hash 不一致 /
+ * chain-head-state-mismatch = head は既知だが head 時点の鍵・role・環境・
+ * エポック不一致、または保存 predecessor と prev 不一致。
+ */
+export type ValueSignatureRejectReason =
+  | "signature-invalid"
+  | "chain-head-unknown"
+  | "chain-head-state-mismatch";
 
 export type DataLimitResource =
   | "environments"
@@ -182,6 +221,7 @@ export type DataRejection =
     }
   | { readonly kind: "version-conflict"; readonly currentVersion: number }
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
+  | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
   | { readonly kind: "dek-wrap-exists"; readonly epoch: number; readonly recipientUserId: string }
   | {
@@ -236,12 +276,14 @@ export function requireRole(
 }
 
 /**
- * requireMemberState の結果: 導出状態に加えて、呼び出し主体のチェーンメンバー
- * (登録署名の検証鍵・署名者 FP の源 — CRYPTO_SPEC §5.1)と、プロジェクト ID
+ * requireMemberState の結果: 導出状態・履歴索引(値署名の宣言ヘッド時点検証の
+ * 入力 — CRYPTO_SPEC §4.1 / §6.4)に加えて、呼び出し主体のチェーンメンバー
+ * (登録署名・値署名の検証鍵と署名者 FP の源 — §5.1 / §4.1)と、プロジェクト ID
  * (= genesis エントリハッシュ。署名対象の座標)を返す。
  */
 export interface MemberContext {
   readonly state: ChainState;
+  readonly history: ChainHistoryIndex;
   readonly member: ChainMember;
   readonly projectId: string;
 }
@@ -281,9 +323,9 @@ export const requireMemberState = (
 ): Effect.Effect<MemberContext, DataRejectedError, ChainStore> =>
   Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
-    const state = yield* deriveStoredState(chain, cache);
+    const { state, history } = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, minimum);
-    return { state, member, projectId: chain.genesisHashHex };
+    return { state, history, member, projectId: chain.genesisHashHex };
   });
 
 /**

@@ -62,7 +62,7 @@ export interface EnvironmentChainResultValue {
 const loadChainForComposite = (callerUserId: string, cache: StateCache) =>
   Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
-    const state = yield* deriveStoredState(chain, cache);
+    const { state } = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, "member");
     return { chain, state, member, projectId: chain.genesisHashHex };
   });
@@ -116,14 +116,14 @@ const verifyCompositeEntry = (chain: StoredChain, entry: ChainEntry) =>
     // §6.4: 受理時にチェーン全体を再検証する(prev_hash 連続性・署名・合意規則 =
     // duplicate-environment / unknown-environment / エポック順序 / role /
     // dek_commitment_hex の形式)
-    const appliedState = yield* verifyChainEffect([...chain.entries, entry]).pipe(
+    const applied = yield* verifyChainEffect([...chain.entries, entry]).pipe(
       Effect.catchTag("ChainInvalid", (error: ChainInvalidError) =>
         Effect.fail(
           rejectData({ kind: "chain-entry-invalid", seq: error.seq, reason: error.reason }),
         ),
       ),
     );
-    return { canonicalBytes, appliedState };
+    return { canonicalBytes, applied, appliedState: applied.state };
   });
 
 /**
@@ -250,7 +250,10 @@ export const createEnvironmentCompositeProgram = (
   Effect.gen(function* () {
     const { chain, member, projectId } = yield* loadChainForComposite(actor.userId, cache);
     yield* ensureCompositeParentHead(chain, input.parentHeadHashHex);
-    const { canonicalBytes, appliedState } = yield* verifyCompositeEntry(chain, input.entry);
+    const { canonicalBytes, applied, appliedState } = yield* verifyCompositeEntry(
+      chain,
+      input.entry,
+    );
     const environmentId = input.entry.payload.environmentId;
     const store = yield* DataStore;
     // ID の一意性はチェーン合意規則(duplicate-environment — verifyChain)が
@@ -291,7 +294,7 @@ export const createEnvironmentCompositeProgram = (
       );
       insertCompositeWrapsSync(writeContext, input.deks);
     });
-    updateStateCache(cache, appliedState);
+    updateStateCache(cache, applied);
     return compositeResult(environmentId, 1, appliedState);
   });
 
@@ -320,7 +323,10 @@ export const rotateEpochCompositeProgram = (
       return yield* rejectData({ kind: "environment-not-found", environmentId });
     }
     yield* ensureCompositeParentHead(chain, input.parentHeadHashHex);
-    const { canonicalBytes, appliedState } = yield* verifyCompositeEntry(chain, input.entry);
+    const { canonicalBytes, applied, appliedState } = yield* verifyCompositeEntry(
+      chain,
+      input.entry,
+    );
     // 同梱エントリ適用後の現エポック = new_epoch(エポック順序は verifyChain 検証済み)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -340,6 +346,6 @@ export const rotateEpochCompositeProgram = (
       insertCompositeEntrySync(writeContext, input.entry, canonicalBytes, appliedState);
       insertCompositeWrapsSync(writeContext, input.deks);
     });
-    updateStateCache(cache, appliedState);
+    updateStateCache(cache, applied);
     return compositeResult(environmentId, input.entry.payload.newEpoch, appliedState);
   });

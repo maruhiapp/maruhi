@@ -6,13 +6,17 @@ import { describe, expect, it } from "vitest";
 import {
   ChainInvalidError,
   CryptoDecryptError,
+  CryptoDekCommitmentError,
   CryptoDekUnwrapError,
   CryptoDekWrapError,
+  CryptoDekWrapSignatureError,
   cryptoEffect,
   CryptoEncryptError,
   CryptoInvalidInputError,
+  CryptoKeyExportError,
   CryptoKeyImportError,
   CryptoSignError,
+  CryptoValueInvalidError,
   fromCryptoResult,
   isProjectId,
   toWrappedCryptoError,
@@ -27,13 +31,23 @@ const KIND_TO_CLASS: readonly [
 ][] = [
   [{ kind: "InvalidInput", field: "nonce" }, CryptoInvalidInputError],
   [{ kind: "KeyImportFailed", key: "signing-public" }, CryptoKeyImportError],
+  [{ kind: "KeyExportFailed", key: "signing-private" }, CryptoKeyExportError],
   [{ kind: "EncryptFailed", operation: "variable" }, CryptoEncryptError],
   [{ kind: "DecryptFailed", operation: "recovery" }, CryptoDecryptError],
   [{ kind: "DekWrapFailed" }, CryptoDekWrapError],
   [{ kind: "DekUnwrapFailed" }, CryptoDekUnwrapError],
   [{ kind: "SignFailed" }, CryptoSignError],
+  [{ kind: "DekWrapSignatureInvalid" }, CryptoDekWrapSignatureError],
+  [{ kind: "DekCommitmentMismatch" }, CryptoDekCommitmentError],
+  [{ kind: "ValueInvalid", reason: "signature-invalid" }, CryptoValueInvalidError],
   [{ kind: "ChainInvalid", seq: 3, reason: "bad-signature" }, ChainInvalidError],
 ];
+
+// 網羅の静的検査: crypto 側に kind が追加されたらここがコンパイルエラーになる
+type CoveredKind = (typeof KIND_TO_CLASS)[number][0]["kind"];
+type AllKindsCovered = CryptoError["kind"] extends CoveredKind ? true : never;
+const allKindsCovered: AllKindsCovered = true;
+void allKindsCovered;
 
 describe("toWrappedCryptoError", () => {
   it("maps every CryptoError kind onto its tagged counterpart", () => {
@@ -52,6 +66,17 @@ describe("toWrappedCryptoError", () => {
     if (wrapped instanceof ChainInvalidError) {
       expect(wrapped.seq).toBe(7);
       expect(wrapped.reason).toBe("epoch-out-of-sequence");
+    }
+  });
+
+  it("preserves the reason of a value verification failure", () => {
+    const wrapped = toWrappedCryptoError({
+      kind: "ValueInvalid",
+      reason: "writer-key-mismatch-at-head",
+    });
+    expect(wrapped).toBeInstanceOf(CryptoValueInvalidError);
+    if (wrapped instanceof CryptoValueInvalidError) {
+      expect(wrapped.reason).toBe("writer-key-mismatch-at-head");
     }
   });
 });

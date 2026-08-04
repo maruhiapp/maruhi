@@ -9,7 +9,12 @@
 // エラー値が識別子(field / seq / 理由コード)しか運ばないため、ここでの詰め替えも
 // それ以外を追加しない。
 
-import type { ChainInvalidReason, CryptoError, CryptoResult } from "@maruhi/crypto";
+import type {
+  ChainInvalidReason,
+  CryptoError,
+  CryptoResult,
+  ValueInvalidReason,
+} from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
 /** Structural validation of an input failed (wrong length, malformed hex, …). */
@@ -57,6 +62,15 @@ export class CryptoDekWrapSignatureError extends Data.TaggedError(
  */
 export class CryptoDekCommitmentError extends Data.TaggedError("CryptoDekCommitment")<object> {}
 
+/**
+ * A variable value failed the §4.1 / §6.3 verification (signature, declared
+ * chain head, head-time authorization / epoch, or predecessor chaining) for
+ * `reason`.
+ */
+export class CryptoValueInvalidError extends Data.TaggedError("CryptoValueInvalid")<{
+  readonly reason: ValueInvalidReason;
+}> {}
+
 /** Membership-chain verification failed at entry `seq` for `reason`. */
 export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly seq: number;
@@ -75,6 +89,7 @@ export type WrappedCryptoError =
   | CryptoSignError
   | CryptoDekWrapSignatureError
   | CryptoDekCommitmentError
+  | CryptoValueInvalidError
   | ChainInvalidError;
 
 /** Maps a raw `CryptoError` value onto its Effect-tagged counterpart. */
@@ -100,6 +115,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoDekWrapSignatureError();
     case "DekCommitmentMismatch":
       return new CryptoDekCommitmentError();
+    case "ValueInvalid":
+      return new CryptoValueInvalidError({ reason: error.reason });
     case "ChainInvalid":
       return new ChainInvalidError({ seq: error.seq, reason: error.reason });
   }

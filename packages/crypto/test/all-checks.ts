@@ -1,6 +1,7 @@
 // 全チェックの集約。vitest(node / workerd / browser)と Bun 直接実行の共通入口。
 // 各層の実装が進むごとにここへチェックを追加する。
 
+import { chainHistoryChecks } from "./checks/chain-history.ts";
 import { chainNegativeChecks } from "./checks/chain-negative.ts";
 import { chainChecks } from "./checks/chain.ts";
 import { dekCommitmentChecks } from "./checks/dek-commitment.ts";
@@ -11,6 +12,7 @@ import { keysChecks } from "./checks/keys.ts";
 import { recoveryChecks } from "./checks/recovery.ts";
 import { rfc9180Checks } from "./checks/rfc9180.ts";
 import type { CheckResult } from "./checks/support.ts";
+import { valueSignatureChecks } from "./checks/value-signature.ts";
 import { variableChecks } from "./checks/variable.ts";
 
 export async function runAllChecks(): Promise<CheckResult[]> {
@@ -26,6 +28,8 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await rfc9180Checks());
   groups.push(await chainChecks());
   groups.push(await chainNegativeChecks());
+  groups.push(await chainHistoryChecks());
+  groups.push(await valueSignatureChecks());
   groups.push(await recoveryChecks());
   return groups.flat();
 }

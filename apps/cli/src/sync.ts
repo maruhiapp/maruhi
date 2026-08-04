@@ -12,13 +12,13 @@
 // ヘッドゴシップ(§6.3)は Phase 2 — 本セッションのスコープ外。
 
 import type { ProjectId } from "@maruhi/core";
-import type { ChainEntry, ChainState } from "@maruhi/crypto";
+import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
   computeUserKeyFingerprint,
   decodeHex,
   encodeHex,
-  verifyChain,
+  verifyChainWithHistory,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -33,11 +33,22 @@ export interface KeyBinding {
   readonly keyFingerprintHex: string;
 }
 
-/** A fully verified project chain (§6.3) plus the §5.1 signer-key history index. */
+/**
+ * A fully verified project chain (§6.3) plus the §5.1 signer-key history
+ * index and the §4.1 chain-history index (seq → hash / tenure / エポック有効
+ * 区間の照会 — 値署名の宣言ヘッド時点検証の入力)。
+ */
 export interface VerifiedProject {
   readonly projectId: ProjectId;
   readonly state: ChainState;
-  /** Every key set ever bound to each user id (append-only history — §5.1). */
+  /** History queries over this verified snapshot (CRYPTO_SPEC §6.3 / §4.1). */
+  readonly history: ChainHistoryIndex;
+  /**
+   * Every key set ever bound to each user id (append-only history — §5.1)。
+   * DEK ラップの配布時検証(deks.ts — ヘッド束縛を持たない §5.1 の意味論)用。
+   * 値署名の鍵選択・tenure 照会は history 側を使う(dedupe で tenure を
+   * 消さない — session-14 裁定 A)。
+   */
   readonly keyHistory: ReadonlyMap<string, readonly KeyBinding[]>;
 }
 
@@ -103,7 +114,7 @@ export function syncProject(
       .pipe(Effect.mapError(toCliError));
 
     const entries: readonly ChainEntry[] = snapshot.entries;
-    const verified = yield* Effect.promise(() => verifyChain(entries));
+    const verified = yield* Effect.promise(() => verifyChainWithHistory(entries));
     if (!verified.ok) {
       const { seq, reason } =
         verified.error.kind === "ChainInvalid"
@@ -115,7 +126,7 @@ export function syncProject(
         ),
       );
     }
-    const state = verified.value;
+    const { state, history } = verified.value;
 
     // §6.4: プロジェクト ID = genesis エントリハッシュ。サーバーが別チェーンを
     // 同じ ID で配布する差し替えをここで機械的に検出する
@@ -142,6 +153,38 @@ export function syncProject(
     }
 
     const keyHistory = yield* Effect.promise(() => buildKeyHistory(entries));
-    return { projectId, state, keyHistory } satisfies VerifiedProject;
+    return { projectId, state, history, keyHistory } satisfies VerifiedProject;
   });
+}
+
+/**
+ * 再同期後の新スナップショットが旧検証済みビューの**延長**であることの検査
+ * (§6.3-2b の再同期分岐)。syncProject が全体検証と genesis 一致を済ませて
+ * いる前提で、(1) 新ヘッドが旧ヘッド以上、(2) 旧 verified head の seq/hash が
+ * 新スナップショット内で一致、を要求する。別の整合チェーンへの差し替え・
+ * 旧 head の欠落・同 seq のハッシュ不一致はすべてここで落ちる。
+ */
+function ensureExtensionOf(
+  previous: VerifiedProject,
+  next: VerifiedProject,
+): Effect.Effect<VerifiedProject, CliError> {
+  if (
+    next.state.headSeq < previous.state.headSeq ||
+    next.history.entryHashAt(previous.state.headSeq) !== previous.state.headHashHex
+  ) {
+    return Effect.fail(
+      cliError(
+        `再同期したチェーンが検証済みビュー(seq=${previous.state.headSeq})の延長ではありません(サーバーによるチェーン差し替え / 分岐の証拠)`,
+      ),
+    );
+  }
+  return Effect.succeed(next);
+}
+
+/** 延長検査付き再同期(§6.3-2b / session-14 裁定 G)。 */
+export function resyncExtended(
+  resync: Effect.Effect<VerifiedProject, CliError>,
+  previous: VerifiedProject,
+): Effect.Effect<VerifiedProject, CliError> {
+  return Effect.flatMap(resync, (next) => ensureExtensionOf(previous, next));
 }

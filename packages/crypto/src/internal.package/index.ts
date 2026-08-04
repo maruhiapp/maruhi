@@ -8,6 +8,11 @@ export {
   canonicalChainSignedBytes,
   computeChainEntryHash,
 } from "./chain-canonical.ts";
+export {
+  type ChainHistoryIndex,
+  type EnvironmentStateAtSeq,
+  type MemberStateAtSeq,
+} from "./chain-history.ts";
 export { signChainEntry } from "./chain-sign.ts";
 export {
   type AddMemberPayload,
@@ -29,7 +34,7 @@ export {
   type ServerGrant,
   type UnsignedChainEntry,
 } from "./chain-types.ts";
-export { verifyChain } from "./chain-verify.ts";
+export { verifyChain, verifyChainWithHistory } from "./chain-verify.ts";
 export {
   buildDekCommitmentBytes,
   computeDekCommitment,
@@ -64,7 +69,24 @@ export {
   type VariableContext,
 } from "./variable.ts";
 export { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
-export { type ChainInvalidReason, type CryptoError, type CryptoResult } from "./errors.ts";
+export {
+  type ChainInvalidReason,
+  type CryptoError,
+  type CryptoResult,
+  type ValueInvalidReason,
+} from "./errors.ts";
+export {
+  buildValueSignedBytes,
+  computeValueSignedBytesHash,
+  signValue,
+  type ValueSignatureContext,
+  verifyValueSignature,
+} from "./value-sign.ts";
+export {
+  type DistributedValueInput,
+  type ValuePredecessor,
+  verifyDistributedValue,
+} from "./value-verify.ts";
 export {
   computeServerKeyFingerprint,
   computeUserKeyFingerprint,

@@ -7,14 +7,19 @@
 // テストのみ(各テストに明記)。
 
 import type { TokenScope } from "@maruhi/core";
+import type { ChainEntry } from "@maruhi/crypto";
 import {
+  buildValueSignedBytes,
   decryptVariable,
   encodeHex,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
+  importSigningKeyPair,
   unwrapDek,
+  verifyChainWithHistory,
+  verifyDistributedValue,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -38,8 +43,10 @@ import {
   hexBytes,
   makeDek,
   signEntryAt,
+  signValueAs,
   signWrapAs,
   unwrapAndDecrypt,
+  valueSignedBytesHashOf,
   vectorKeyOf,
   verifyDistributedWrapSignature,
   wrapDekForAll,
@@ -76,13 +83,53 @@ beforeEach(async () => {
 
 const token = (userId: string): string => tokenOf(fixture.tokens, userId);
 
-/** 受理ポリシー系テスト用のフェイク暗号文(サーバーは中身を検証できない)。 */
-function fakePayload(aad: WireEncryptedPayload["aad"], ciphertextBytes = 48): WireEncryptedPayload {
+/**
+ * 受理ポリシー系テスト用のフェイク暗号文(サーバーは中身を復号できない)。
+ * 値署名(§12-5)はサーバーが検証するため、フェイクでも呼び出し主体の実鍵で
+ * 正しく署名する(writerUserId = リクエストに使う PAT の主体と一致させること)。
+ * 宣言ヘッドは現ヘッド(fixture.head)。
+ */
+function fakePayload(
+  writerUserId: string,
+  aad: WireEncryptedPayload["aad"],
+  options?: {
+    readonly ciphertextBytes?: number;
+    readonly prevValueSigHashHex?: string;
+  },
+): Promise<WireEncryptedPayload> {
+  return signValueAs(
+    writerUserId,
+    {
+      suite: "maruhi/v1",
+      aad,
+      nonceHex: "00".repeat(12),
+      ciphertextHex: "ab".repeat(options?.ciphertextBytes ?? 48),
+      // version > 1 の既定 prev はダミー 64 hex(prev 検査より前段 — CAS 等 —
+      // で拒否されるテスト用。prev 検査へ到達するテストは実ハッシュを渡す)
+      prevValueSigHashHex:
+        options?.prevValueSigHashHex ?? (aad.version === 1 ? "" : "cd".repeat(32)),
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    },
+    fixture.head,
+  );
+}
+
+/**
+ * 署名検証に到達しないことが確定しているテスト(Schema 400 / AAD 422 /
+ * 非メンバー 404)用の未署名フェイク。STRANGER はベクター鍵を持たないため
+ * 実署名できない — 形式のみ有効なゼロ署名を載せる。
+ */
+function unsignedPayload(aad: WireEncryptedPayload["aad"]): WireEncryptedPayload {
   return {
     suite: "maruhi/v1",
     aad,
     nonceHex: "00".repeat(12),
-    ciphertextHex: "ab".repeat(ciphertextBytes),
+    ciphertextHex: "ab".repeat(48),
+    prevValueSigHashHex: aad.version === 1 ? "" : "cd".repeat(32),
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+    signatureHex: "00".repeat(64),
   };
 }
 
@@ -99,7 +146,7 @@ const aadFor = (
   ...overrides,
 });
 
-/** 変数作成(実暗号化)。 */
+/** 変数作成(実暗号化 + MEMBER の値署名。宣言ヘッド = 現ヘッド)。 */
 async function createVariableOk(
   dek: Uint8Array,
   variableId: string,
@@ -110,6 +157,7 @@ async function createVariableOk(
     dek,
     { projectId, environmentId: ENV, epoch: 1, variableId, version: 1 },
     plaintext,
+    { writerUserId: MEMBER, head: fixture.head },
   );
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
     variableId,
@@ -531,11 +579,18 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     });
     expect(plaintext).toBe("postgres://alpha");
 
-    // 新バージョンを push すると pull は最新のみ返す
+    // 新バージョンを push すると pull は最新のみ返す(prev = v1 の signed_bytes
+    // ハッシュへ連鎖 — §4.1)
+    const v1 = variable.value;
     const v2 = await encryptValue(
       dek,
       { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
       "postgres://beta",
+      {
+        writerUserId: MEMBER,
+        head: fixture.head,
+        prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+      },
     );
     const push = await requestJson(
       "POST",
@@ -577,7 +632,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
         "POST",
         `/environments/${ENV}/variables/${VAR}/versions`,
         token(MEMBER),
-        { value: fakePayload(aadFor(1, 2, override)) },
+        { value: await fakePayload(MEMBER, aadFor(1, 2, override)) },
       );
       expect(response.status).toBe(422);
       const body = (await response.json()) as { field: string };
@@ -594,17 +649,21 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(1, 1)) },
+      { value: await fakePayload(MEMBER, aadFor(1, 1)) },
     );
     expect(stale.status).toBe(409);
-    await expect(stale.json()).resolves.toMatchObject({ currentVersion: 1 });
+    // 409 は currentVersion(番号)のみを返す — 勝者の signed_bytes ハッシュは
+    // 載せない(未検証値への連鎖署名の禁止 — §12-5)
+    const staleBody = (await stale.json()) as Record<string, unknown>;
+    expect(staleBody).toMatchObject({ currentVersion: 1 });
+    expect(Object.keys(staleBody).filter((key) => key.toLowerCase().includes("hash"))).toEqual([]);
 
     // 飛び番(3)も拒否
     const skipped = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(1, 3)) },
+      { value: await fakePayload(MEMBER, aadFor(1, 3)) },
     );
     expect(skipped.status).toBe(409);
     await expect(skipped.json()).resolves.toMatchObject({ currentVersion: 1 });
@@ -615,7 +674,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: VAR,
       name: "DATABASE_URL",
-      value: fakePayload(aadFor(1, 2)),
+      value: await fakePayload(MEMBER, aadFor(1, 2)),
     });
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ currentVersion: 0 });
@@ -623,7 +682,8 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
 
   it("serializes concurrent pushes: exactly one winner, no lost or interleaved writes", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const prevHash = await valueSignedBytesHashOf(v1, MEMBER);
 
     const contenders = await Promise.all(
       Array.from({ length: 8 }, (_v, index) =>
@@ -631,6 +691,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
           dek,
           { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
           `postgres://contender-${index}`,
+          { writerUserId: MEMBER, head: fixture.head, prevValueSigHashHex: prevHash },
         ),
       ),
     );
@@ -670,17 +731,25 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   it("accepts concurrent pushes to different variables", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const ids = ["var-a", "var-b", "var-c"];
+    const firstVersions = new Map<string, WireEncryptedPayload>();
     for (const id of ids) {
-      await createVariableOk(dek, id, `NAME_${id}`, `value-${id}`);
+      firstVersions.set(id, await createVariableOk(dek, id, `NAME_${id}`, `value-${id}`));
     }
     const values = await Promise.all(
-      ids.map((id) =>
-        encryptValue(
+      ids.map(async (id) => {
+        const v1 = firstVersions.get(id);
+        if (v1 === undefined) throw new Error("missing first version");
+        return encryptValue(
           dek,
           { projectId, environmentId: ENV, epoch: 1, variableId: id, version: 2 },
           `next-${id}`,
-        ),
-      ),
+          {
+            writerUserId: MEMBER,
+            head: fixture.head,
+            prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+          },
+        );
+      }),
     );
     const responses = await Promise.all(
       ids.map((id, index) =>
@@ -699,7 +768,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(READER),
-      { value: fakePayload(aadFor(1, 2)) },
+      { value: await fakePayload(READER, aadFor(1, 2)) },
     );
     expect(response.status).toBe(403);
     const body = (await response.json()) as { reason: string };
@@ -719,7 +788,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       readToken,
-      { value: fakePayload(aadFor(1, 2)) },
+      { value: await fakePayload(MEMBER, aadFor(1, 2)) },
     );
     expect(push.status).toBe(403);
     expect(((await push.json()) as { reason: string }).reason).toBe("insufficient-permission");
@@ -731,7 +800,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       readerWrite,
-      { value: fakePayload(aadFor(1, 2)) },
+      { value: await fakePayload(READER, aadFor(1, 2)) },
     );
     expect(readerPush.status).toBe(403);
     expect(((await readerPush.json()) as { reason: string }).reason).toBe("insufficient-role");
@@ -756,7 +825,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const duplicate = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: VAR,
       name: "OTHER",
-      value: fakePayload(aadFor(1, 1)),
+      value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(duplicate.status).toBe(409);
     expect(((await duplicate.json()) as { reason: string }).reason).toBe("exists");
@@ -764,7 +833,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const sameName = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: "var-other",
       name: "DATABASE_URL",
-      value: fakePayload({ ...aadFor(1, 1), variableId: "var-other" }),
+      value: await fakePayload(MEMBER, { ...aadFor(1, 1), variableId: "var-other" }),
     });
     expect(sameName.status).toBe(409);
     expect(((await sameName.json()) as { reason: string }).reason).toBe("duplicate-name");
@@ -774,7 +843,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables`,
       token(MEMBER),
-      { variableId: "var-other", name: "OTHER", value: fakePayload(aadFor(1, 1)) },
+      { variableId: "var-other", name: "OTHER", value: await fakePayload(MEMBER, aadFor(1, 1)) },
     );
     expect(createMismatch.status).toBe(422);
     expect(((await createMismatch.json()) as { field: string }).field).toBe("variableId");
@@ -816,7 +885,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const retired = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: VAR,
       name: "REBORN",
-      value: fakePayload(aadFor(1, 1)),
+      value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(retired.status).toBe(409);
     expect(((await retired.json()) as { reason: string }).reason).toBe("retired");
@@ -826,7 +895,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(1, 2)) },
+      { value: await fakePayload(MEMBER, aadFor(1, 2)) },
     );
     expect(pushDeleted.status).toBe(404);
   });
@@ -836,7 +905,9 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: VAR,
       name: "BIG",
-      value: fakePayload(aadFor(1, 1), MAX_VALUE_CIPHERTEXT_BYTES + 1),
+      value: await fakePayload(MEMBER, aadFor(1, 1), {
+        ciphertextBytes: MAX_VALUE_CIPHERTEXT_BYTES + 1,
+      }),
     });
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({
@@ -847,7 +918,10 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   it("caps versions per variable (422 §12-8)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // 1,000 回の実 push は非現実的なので latest_version を直接引き上げる
+    // 1,000 回の実 push は非現実的なので latest_version を直接引き上げ、
+    // 上限直前の version 行(prev 検査の predecessor)をシードする
+    // (数量ポリシーは値署名の後 — 裁定 D — のため署名検証を通る形が要る)
+    const seededHash = "aa".repeat(32);
     await queryProjectDo(
       projectId,
       "UPDATE variables SET latest_version = ? WHERE environment_id = ? AND variable_id = ?",
@@ -855,11 +929,34 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       ENV,
       VAR,
     );
+    await queryProjectDo(
+      projectId,
+      `INSERT INTO variable_versions
+         (environment_id, variable_id, version, suite, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes,
+          prev_value_sig_hash_hex, chain_head_hash_hex, chain_head_seq, signature_hex,
+          signed_bytes_hash_hex, writer_user_id, writer_key_fingerprint, created_at)
+       VALUES (?, ?, ?, 'maruhi/v1', 1, ?, ?, 48, ?, ?, 1, ?, ?, ?, ?, 0)`,
+      ENV,
+      VAR,
+      MAX_VERSIONS_PER_VARIABLE,
+      "00".repeat(12),
+      "ab".repeat(48),
+      "bb".repeat(32),
+      projectId,
+      "00".repeat(64),
+      seededHash,
+      MEMBER,
+      vectorKeyOf(MEMBER).key_fingerprint_hex,
+    );
     const response = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(1, MAX_VERSIONS_PER_VARIABLE + 1)) },
+      {
+        value: await fakePayload(MEMBER, aadFor(1, MAX_VERSIONS_PER_VARIABLE + 1), {
+          prevValueSigHashHex: seededHash,
+        }),
+      },
     );
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
@@ -874,7 +971,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     expect(projectBytesExceeded(MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES - 10, 10)).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     // 保存済みバイト数だけを上限相当へ引き上げてプラミングを検証する
     await queryProjectDo(
       projectId,
@@ -887,7 +984,11 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(1, 2)) },
+      {
+        value: await fakePayload(MEMBER, aadFor(1, 2), {
+          prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+        }),
+      },
     );
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
@@ -897,10 +998,506 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   });
 });
 
+/** チェーン保存行のエントリハッシュ(宣言ヘッドの exact pair 構成用)。 */
+async function hashOf(seq: number): Promise<string> {
+  const rows = await queryProjectDo(
+    projectId,
+    "SELECT entry_hash_hex FROM chain_entries WHERE seq = ?",
+    seq,
+  );
+  return String(rows[0]?.["entry_hash_hex"]);
+}
+
+describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
+  /** 拒否時の無副作用の検査: 変数・バージョン・latest・監査のいずれも変わらない。 */
+  async function expectNoVersionSideEffects(expectedVersions: readonly number[]): Promise<void> {
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT version FROM variable_versions WHERE environment_id = ? AND variable_id = ? ORDER BY version",
+      ENV,
+      VAR,
+    );
+    expect(rows.map((row) => row["version"])).toEqual([...expectedVersions]);
+    const pushedAudits = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.version_pushed'",
+    );
+    expect(pushedAudits[0]?.["n"]).toBe(expectedVersions.length);
+  }
+
+  it("rejects a value signed by someone other than the caller (422 signature-invalid)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // OWNER が正しく署名した値を MEMBER が持ち込む → 検証鍵は呼び出し主体
+    // (MEMBER)の受理時点チェーン鍵なので失敗する(他人の署名の持ち込み拒否)
+    const ownerSigned = await encryptValue(
+      dek,
+      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+      "postgres://beta",
+      {
+        writerUserId: OWNER,
+        head: fixture.head,
+        prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+      },
+    );
+    const response = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: ownerSigned },
+    );
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
+    await expectNoVersionSideEffects([1]);
+  });
+
+  it("rejects creation with a tampered signature and writes nothing (作成経由の検証迂回は不可)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const value = await encryptValue(
+      dek,
+      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 1 },
+      "postgres://alpha",
+      { writerUserId: MEMBER, head: fixture.head },
+    );
+    const flipped = `${value.signatureHex.slice(0, -2)}${
+      value.signatureHex.endsWith("00") ? "01" : "00"
+    }`;
+    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      variableId: VAR,
+      name: "DATABASE_URL",
+      value: { ...value, signatureHex: flipped },
+    });
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
+    // 変数行・バージョン行・監査(var.created / var.version_pushed)のいずれも残らない
+    const variables = await queryProjectDo(
+      projectId,
+      "SELECT 1 FROM variables WHERE environment_id = ? AND variable_id = ?",
+      ENV,
+      VAR,
+    );
+    expect(variables.length).toBe(0);
+    const audits = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.created', 'var.version_pushed')",
+    );
+    expect(audits[0]?.["n"]).toBe(0);
+  });
+
+  it("rejects unknown declared heads (422 chain-head-unknown): hash mismatch and future seq", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 実在 seq × 不一致 hash(有効署名)— exact pair の存在が受理条件
+    const mismatched = await signValueAs(
+      MEMBER,
+      {
+        suite: "maruhi/v1",
+        aad: aadFor(1, 2),
+        nonceHex: "00".repeat(12),
+        ciphertextHex: "ab".repeat(48),
+        prevValueSigHashHex: "cd".repeat(32),
+        chainHeadHashHex: "ee".repeat(32),
+        chainHeadSeq: fixture.head.seq,
+      },
+      { seq: fixture.head.seq, hashHex: "ee".repeat(32) },
+    );
+    const hashMismatch = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: mismatched },
+    );
+    expect(hashMismatch.status).toBe(422);
+    expect(((await hashMismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
+
+    // 自チェーンより先の seq(サーバーには存在しない)も chain-head-unknown
+    const future = await signValueAs(
+      MEMBER,
+      {
+        suite: "maruhi/v1",
+        aad: aadFor(1, 2),
+        nonceHex: "00".repeat(12),
+        ciphertextHex: "ab".repeat(48),
+        prevValueSigHashHex: "cd".repeat(32),
+        chainHeadHashHex: "ee".repeat(32),
+        chainHeadSeq: fixture.head.seq + 5,
+      },
+      { seq: fixture.head.seq + 5, hashHex: "ee".repeat(32) },
+    );
+    const futureResponse = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: future },
+    );
+    expect(futureResponse.status).toBe(422);
+    expect(((await futureResponse.json()) as { reason: string }).reason).toBe("chain-head-unknown");
+    await expectNoVersionSideEffects([1]);
+  });
+
+  it("rejects heads whose head-time state mismatches (422 chain-head-state-mismatch)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const prevHash = await valueSignedBytesHashOf(v1, MEMBER);
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const entries = ((await chain.json()) as { entries: { seq: number }[] }).entries;
+    expect(entries.length).toBe(fixture.head.seq);
+
+    // (a) writer が member になる前のヘッド(seq 1 = genesis)の宣言
+    const beforeMembership = await signValueAs(
+      MEMBER,
+      {
+        suite: "maruhi/v1",
+        aad: aadFor(1, 2),
+        nonceHex: "00".repeat(12),
+        ciphertextHex: "ab".repeat(48),
+        prevValueSigHashHex: prevHash,
+        chainHeadHashHex: await hashOf(1),
+        chainHeadSeq: 1,
+      },
+      { seq: 1, hashHex: await hashOf(1) },
+    );
+    const notMember = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: beforeMembership },
+    );
+    expect(notMember.status).toBe(422);
+    expect(((await notMember.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+
+    // (b) 環境作成前のヘッド(ベースチェーンの seq 3)の宣言 — エポックが未定義の
+    // ヘッドを既定値で補う実装の禁止(§12-5 の 4 後段)
+    const beforeCreate = await signValueAs(
+      MEMBER,
+      {
+        suite: "maruhi/v1",
+        aad: aadFor(1, 2),
+        nonceHex: "00".repeat(12),
+        ciphertextHex: "ab".repeat(48),
+        prevValueSigHashHex: prevHash,
+        chainHeadHashHex: await hashOf(3),
+        chainHeadSeq: 3,
+      },
+      { seq: 3, hashHex: await hashOf(3) },
+    );
+    const envNotCreated = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: beforeCreate },
+    );
+    expect(envNotCreated.status).toBe(422);
+    expect(((await envNotCreated.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+    await expectNoVersionSideEffects([1]);
+  });
+
+  it("rejects prev-chain mismatches (422 chain-head-state-mismatch): wrong prev and non-empty v1 prev", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // version 2 の prev が保存済み version 1 の signed_bytes ハッシュと不一致
+    // (署名は有効 — Ed25519 failure に潰されないことの固定)
+    const wrongPrev = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: await fakePayload(MEMBER, aadFor(1, 2), { prevValueSigHashHex: "cd".repeat(32) }) },
+    );
+    expect(wrongPrev.status).toBe(422);
+    expect(((await wrongPrev.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+
+    // version 1 に非空 prev(署名は有効な形を低水準 API で作る — signValue は
+    // 結合違反の署名を拒否するため)
+    const context = {
+      suite: "maruhi/v1",
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      variableId: "var-phantom-prev",
+      version: 1,
+      nonceHex: "00".repeat(12),
+      ciphertextHex: "ab".repeat(48),
+      prevValueSigHashHex: "cd".repeat(32),
+      writerUserId: MEMBER,
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    };
+    const keys = vectorKeyOf(MEMBER);
+    const pairResult = await importSigningKeyPair({
+      publicKey: hexBytes(keys.sig_pub_hex),
+      privateSeed: hexBytes(keys.sig_sk_seed_hex),
+    });
+    if (!pairResult.ok) throw new Error("key import failed");
+    const rawSignature = new Uint8Array(
+      await crypto.subtle.sign(
+        "Ed25519",
+        pairResult.value.privateKey,
+        buildValueSignedBytes(context) as BufferSource,
+      ),
+    );
+    const v1NonEmptyPrev = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables`,
+      token(MEMBER),
+      {
+        variableId: "var-phantom-prev",
+        name: "PHANTOM",
+        value: {
+          suite: "maruhi/v1",
+          aad: aadFor(1, 1, { variableId: "var-phantom-prev" }),
+          nonceHex: context.nonceHex,
+          ciphertextHex: context.ciphertextHex,
+          prevValueSigHashHex: context.prevValueSigHashHex,
+          chainHeadHashHex: context.chainHeadHashHex,
+          chainHeadSeq: context.chainHeadSeq,
+          signatureHex: encodeHex(rawSignature),
+        },
+      },
+    );
+    expect(v1NonEmptyPrev.status).toBe(422);
+    expect(((await v1NonEmptyPrev.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+    await expectNoVersionSideEffects([1]);
+  });
+
+  it("distributes the writer identity and signature block; client verifies via chain history (§12-7)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const headAtWrite = { ...fixture.head };
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(pull.status).toBe(200);
+    const body = (await pull.json()) as {
+      variables: {
+        variableId: string;
+        value: WireEncryptedPayload & {
+          writerUserId: string;
+          writerKeyFingerprintHex: string;
+        };
+      }[];
+    };
+    const pulled = body.variables[0];
+    if (pulled === undefined) throw new Error("missing pulled variable");
+    expect(pulled.value.writerUserId).toBe(MEMBER);
+    expect(pulled.value.writerKeyFingerprintHex).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
+    expect(pulled.value.chainHeadSeq).toBe(headAtWrite.seq);
+    expect(pulled.value.chainHeadHashHex).toBe(headAtWrite.hashHex);
+    expect(pulled.value.prevValueSigHashHex).toBe("");
+    // サーバー再計算の signed_bytes ハッシュは配布されない(§12-2)
+    expect("signedBytesHashHex" in pulled.value).toBe(false);
+
+    // クライアント検証(§6.3): 取得チェーンの履歴索引に対する期待座標での検証
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const chainBody = (await chain.json()) as { entries: ChainEntry[] };
+    const verified = await verifyChainWithHistory(chainBody.entries);
+    if (!verified.ok) throw new Error("chain verification failed");
+    const result = await verifyDistributedValue({
+      history: verified.value.history,
+      context: {
+        suite: "maruhi/v1",
+        projectId,
+        environmentId: ENV,
+        epoch: pulled.value.aad.epoch,
+        variableId: pulled.variableId,
+        version: pulled.value.aad.version,
+        nonceHex: pulled.value.nonceHex,
+        ciphertextHex: pulled.value.ciphertextHex,
+        prevValueSigHashHex: pulled.value.prevValueSigHashHex,
+        writerUserId: pulled.value.writerUserId,
+        chainHeadHashHex: pulled.value.chainHeadHashHex,
+        chainHeadSeq: pulled.value.chainHeadSeq,
+      },
+      writerKeyFingerprintHex: pulled.value.writerKeyFingerprintHex,
+      signatureHex: pulled.value.signatureHex,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("keeps distributing a removed writer's stored value, verifiable at its in-tenure head", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // writer(MEMBER)を削除。保存済み値の writer 情報は受理時点のまま配布される
+    // (現メンバー集合から再導出しない — 削除済み writer の過去値の検証可能性)
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: MEMBER },
+    });
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    const body = (await pull.json()) as {
+      variables: {
+        variableId: string;
+        value: WireEncryptedPayload & {
+          writerUserId: string;
+          writerKeyFingerprintHex: string;
+        };
+      }[];
+    };
+    const pulled = body.variables[0];
+    if (pulled === undefined) throw new Error("missing pulled variable");
+    expect(pulled.value.writerUserId).toBe(MEMBER);
+
+    // 削除後の全チェーンでも、宣言ヘッドが在籍区間内なので検証は通る(§6.3-1/3)
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const chainBody = (await chain.json()) as { entries: ChainEntry[] };
+    const verified = await verifyChainWithHistory(chainBody.entries);
+    if (!verified.ok) throw new Error("chain verification failed");
+    const result = await verifyDistributedValue({
+      history: verified.value.history,
+      context: {
+        suite: "maruhi/v1",
+        projectId,
+        environmentId: ENV,
+        epoch: pulled.value.aad.epoch,
+        variableId: pulled.variableId,
+        version: pulled.value.aad.version,
+        nonceHex: pulled.value.nonceHex,
+        ciphertextHex: pulled.value.ciphertextHex,
+        prevValueSigHashHex: pulled.value.prevValueSigHashHex,
+        writerUserId: pulled.value.writerUserId,
+        chainHeadHashHex: pulled.value.chainHeadHashHex,
+        chainHeadSeq: pulled.value.chainHeadSeq,
+      },
+      writerKeyFingerprintHex: pulled.value.writerKeyFingerprintHex,
+      signatureHex: pulled.value.signatureHex,
+    });
+    expect(result.ok).toBe(true);
+
+    // 削除済み writer による新規 push(削除後のヘッド宣言)は受理段階で拒否される
+    // (呼び出し主体が現メンバーでない → 404 存在秘匿が先に立つ — §11-2)
+    const rejected = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value: await fakePayload(MEMBER, aadFor(1, 2)) },
+    );
+    expect(rejected.status).toBe(404);
+  });
+
+  it("rejects a re-added member declaring a head from their old tenure (422 chain-head-state-mismatch)", async () => {
+    // remove → 別鍵 re-add した主体が旧在籍区間のヘッドを宣言する形は、署名が
+    // 有効でも「宣言ヘッド時点の束縛鍵 = 受理時点の鍵」で落ちる(§12-5 の 3)。
+    // crypto ベクター key-from-other-tenure のサーバー API レベルの対
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 旧在籍区間(現ヘッド)の hash を控えてから MEMBER を削除
+    const oldTenureHead = { ...fixture.head };
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: MEMBER },
+    });
+    // 同一 user_id(MEMBER)を新鮮な鍵で re-add する(旧鍵・他メンバー鍵との
+    // 重複は §6.2 のメンバー鍵一意性で弾かれるため、新規生成鍵を使う)。
+    // 受理時点の MEMBER の束縛鍵は新鍵になり、旧在籍区間のヘッド宣言は落ちる
+    const newEncPair = await generateEncryptionKeyPair();
+    const newSigPair = await generateSigningKeyPair();
+    const rejoin = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: {
+        op: "add_member",
+        payload: {
+          targetUserId: MEMBER,
+          encPubHex: encodeHex(await exportEncryptionPublicKey(newEncPair.publicKey)),
+          sigPubHex: encodeHex(await exportSigningPublicKey(newSigPair.publicKey)),
+          role: "member",
+        },
+      },
+    });
+    const rejoined = await requestJson("POST", "/chain/entries", token(OWNER), {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry: rejoin.entry,
+    });
+    expect(rejoined.status).toBe(200);
+    fixture.head = { seq: rejoin.entry.seq, hashHex: rejoin.hash };
+    // 受理時点の MEMBER の束縛鍵は新鍵。サーバーはその鍵で署名検証し署名対象の
+    // writer_user_id にも MEMBER を用いる。攻撃者は新鍵で署名した上で旧在籍区間の
+    // ヘッドを宣言する(署名は有効 → ヘッド時点の束縛鍵 = 旧鍵 ≠ 受理時点の新鍵で
+    // 落ちる)。context を手で組んで新鍵で署名する
+    // prev は保存済み v1 の実 signed-bytes ハッシュにする(ダミーだと
+    // prev-hash-mismatch が同じ 422 理由を返して tenure 検査の変異が隠れる —
+    // レビューループ 2 [低])。tenure 検査(head 時点状態)が prev 検査より先
+    const context = {
+      suite: "maruhi/v1" as const,
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      variableId: VAR,
+      version: 2,
+      nonceHex: "00".repeat(12),
+      ciphertextHex: "ab".repeat(48),
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+      writerUserId: MEMBER,
+      chainHeadHashHex: oldTenureHead.hashHex,
+      chainHeadSeq: oldTenureHead.seq,
+    };
+    const signatureHex = encodeHex(
+      new Uint8Array(
+        await crypto.subtle.sign(
+          "Ed25519",
+          newSigPair.privateKey,
+          buildValueSignedBytes(context) as BufferSource,
+        ),
+      ),
+    );
+    const value = {
+      suite: "maruhi/v1" as const,
+      aad: aadFor(1, 2),
+      nonceHex: context.nonceHex,
+      ciphertextHex: context.ciphertextHex,
+      prevValueSigHashHex: context.prevValueSigHashHex,
+      chainHeadHashHex: context.chainHeadHashHex,
+      chainHeadSeq: context.chainHeadSeq,
+      signatureHex,
+    };
+    const response = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/versions`,
+      token(MEMBER),
+      { value },
+    );
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe(
+      "chain-head-state-mismatch",
+    );
+    await expectNoVersionSideEffects([1]);
+  });
+
+  it("stores the signature block and server-computed hash on the version row (§12-5 の保存行)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const headAtWrite = { ...fixture.head };
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const rows = await queryProjectDo(
+      projectId,
+      `SELECT prev_value_sig_hash_hex, chain_head_hash_hex, chain_head_seq, signature_hex,
+              signed_bytes_hash_hex, writer_user_id, writer_key_fingerprint
+       FROM variable_versions WHERE environment_id = ? AND variable_id = ? AND version = 1`,
+      ENV,
+      VAR,
+    );
+    expect(rows[0]).toEqual({
+      prev_value_sig_hash_hex: "",
+      chain_head_hash_hex: headAtWrite.hashHex,
+      chain_head_seq: headAtWrite.seq,
+      signature_hex: v1.signatureHex,
+      signed_bytes_hash_hex: await valueSignedBytesHashOf(v1, MEMBER),
+      writer_user_id: MEMBER,
+      writer_key_fingerprint: vectorKeyOf(MEMBER).key_fingerprint_hex,
+    });
+  });
+});
+
 describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 / CRYPTO_SPEC §7)", () => {
   it("accepts pushes only under the current chain epoch and completes the composite rotation flow", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
-    await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
+    const varV1 = await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek1, "var-static", "STATIC_KEY", "static-secret");
 
     // ローテーション前の未来エポック push も拒否
@@ -908,7 +1505,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(2, 2)) },
+      { value: await fakePayload(MEMBER, aadFor(2, 2)) },
     );
     expect(early.status).toBe(409);
     await expect(early.json()).resolves.toMatchObject({ currentEpoch: 1 });
@@ -965,7 +1562,7 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(MEMBER),
-      { value: fakePayload(aadFor(1, 2)) },
+      { value: await fakePayload(MEMBER, aadFor(1, 2)) },
     );
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ currentEpoch: 2 });
@@ -999,11 +1596,18 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
     expect(future.status).toBe(422);
     expect(((await future.json()) as { reason: string }).reason).toBe("epoch-out-of-range");
 
-    // 新エポックで再暗号化した値を push(var-static は当時のエポックのまま保持 — §7)
+    // 新エポックで再暗号化した値を push(var-static は当時のエポックのまま保持 — §7)。
+    // 宣言ヘッド = rotate エントリを含む現ヘッド、prev は v1 へ連鎖、エポックは
+    // 単調(1 → 2)— ローテーション実行フローの §4.1 の形
     const v2 = await encryptValue(
       dek2,
       { projectId, environmentId: ENV, epoch: 2, variableId: VAR, version: 2 },
       "postgres://rotated",
+      {
+        writerUserId: MEMBER,
+        head: fixture.head,
+        prevValueSigHashHex: await valueSignedBytesHashOf(varV1, MEMBER),
+      },
     );
     const pushed = await requestJson(
       "POST",
@@ -2038,7 +2642,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: VAR,
       name: "DATABASE_URL",
-      value: fakePayload(aadFor(1, 1)),
+      value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
@@ -2060,7 +2664,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       variableId: VAR,
       name: "DATABASE_URL",
-      value: fakePayload(aadFor(1, 1)),
+      value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
@@ -2190,12 +2794,14 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
 describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
   it("AAD 自己整合検査(422)は存在秘匿(404)に先行する(§12-3 の例外規定)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // 非メンバーでも、AAD がリクエスト自身と食い違うなら 422(存在情報を運ばない)
+    // 非メンバーでも、AAD がリクエスト自身と食い違うなら 422(存在情報を運ばない)。
+    // どちらも認可判定で止まり値署名の検証には到達しない(§12-3 の判定順)ため
+    // 未署名フェイクで足りる(STRANGER はベクター鍵を持たない)
     const mismatch = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(STRANGER),
-      { value: fakePayload(aadFor(1, 2, { variableId: "var-other" })) },
+      { value: unsignedPayload(aadFor(1, 2, { variableId: "var-other" })) },
     );
     expect(mismatch.status).toBe(422);
     // AAD が自己整合していれば非メンバーには 404(§11-2)
@@ -2203,7 +2809,7 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
       token(STRANGER),
-      { value: fakePayload(aadFor(1, 2)) },
+      { value: unsignedPayload(aadFor(1, 2)) },
     );
     expect(consistent.status).toBe(404);
   });
@@ -2237,12 +2843,19 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       });
       expect(response.status).toBe(400);
     }
-    // 不正な EncryptedPayload: suite 不一致 / 大文字 hex nonce / タグ未満の暗号文
-    const base = fakePayload(aadFor(1, 1));
+    // 不正な EncryptedPayload: suite 不一致 / 大文字 hex nonce / タグ未満の暗号文 /
+    // 署名ブロックの形式違反(大文字署名 / prev 長不正 / head hash 長不正 /
+    // chainHeadSeq 0)— いずれも Schema の 400(署名検証より前)
+    const base = unsignedPayload(aadFor(1, 1));
     const badPayloads = [
       { ...base, suite: "maruhi/v2" },
       { ...base, nonceHex: "AB".repeat(12) },
       { ...base, ciphertextHex: "ab".repeat(15) },
+      { ...base, signatureHex: "AB".repeat(64) },
+      { ...base, signatureHex: "ab".repeat(63) },
+      { ...base, prevValueSigHashHex: "ab".repeat(31) },
+      { ...base, chainHeadHashHex: "ab".repeat(31) },
+      { ...base, chainHeadSeq: 0 },
     ];
     for (const value of badPayloads) {
       const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {

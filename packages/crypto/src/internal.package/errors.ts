@@ -31,6 +31,41 @@ export type ChainInvalidReason =
   | "grant-scope-narrowed"
   | "epoch-out-of-sequence";
 
+/**
+ * Reason codes for rejecting a distributed variable value (CRYPTO_SPEC §4.1 /
+ * §6.3 — value-signature.json の rule negative が固定する語彙):
+ *
+ * - `signature-invalid` — valid-format の Ed25519 検証失敗
+ * - `writer-unknown` — チェーン履歴のどの時点にも (writer_user_id, 鍵 FP) の
+ *   束縛が存在しない(検証鍵を選択できない)
+ * - `chain-head-mismatch` — 宣言 seq は自ビュー内だが保存ハッシュと不一致
+ *   (§6.3-2a: チェーン分岐または偽造の硬い証拠 — 即時拒否)
+ * - `chain-head-future` — 宣言 seq が自ビューのヘッドより先(§6.3-2b:
+ *   まず再同期し、延長として一致すれば再検証。この理由での即時拒否は誤り)
+ * - `writer-not-member-at-head` / `writer-key-mismatch-at-head` /
+ *   `writer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
+ *   key-mismatch は remove → 別鍵 re-add の tenure 跨ぎを含む)
+ * - `environment-not-created-at-head` / `epoch-not-current-at-head` —
+ *   宣言ヘッド時点のエポック整合(§6.3-4)
+ * - `prev-shape-mismatch` — version 1 は空 / version > 1 は 64 hex という
+ *   prev の形の違反(predecessor を保持しない latest-only でも必ず検査する)
+ * - `prev-hash-mismatch` / `epoch-regressed` — predecessor を渡された場合のみの
+ *   連鎖・エポック単調性検査(§6.3-6 / §4.1)
+ */
+export type ValueInvalidReason =
+  | "signature-invalid"
+  | "writer-unknown"
+  | "chain-head-mismatch"
+  | "chain-head-future"
+  | "writer-not-member-at-head"
+  | "writer-key-mismatch-at-head"
+  | "writer-role-insufficient-at-head"
+  | "environment-not-created-at-head"
+  | "epoch-not-current-at-head"
+  | "prev-shape-mismatch"
+  | "prev-hash-mismatch"
+  | "epoch-regressed";
+
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =
   /** Input failed structural validation (wrong length, malformed hex, etc.). */
@@ -66,6 +101,12 @@ export type CryptoError =
    * (environment, epoch) coordinates (CRYPTO_SPEC §5.2 — poison wrap).
    */
   | { readonly kind: "DekCommitmentMismatch" }
+  /**
+   * A variable value failed verification (CRYPTO_SPEC §4.1 / §6.3): the
+   * write signature, the declared chain head, the head-time authorization /
+   * epoch, or the predecessor chaining was rejected for `reason`.
+   */
+  | { readonly kind: "ValueInvalid"; readonly reason: ValueInvalidReason }
   /** Chain verification failed at entry `seq` for `reason`. */
   | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 

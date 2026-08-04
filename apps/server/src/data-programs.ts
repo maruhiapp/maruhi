@@ -10,8 +10,19 @@
 // 割り込む TOCTOU(削除直後のメンバーへの配布 — §11-2 違反)を作るため、読み取りも
 // 直列化する(Bugbot 指摘 2026-08-02)。
 
-import type { ChainMember, ChainState } from "@maruhi/crypto";
-import { decodeHex, importSigningPublicKey, verifyDekWrapSignature } from "@maruhi/crypto";
+import type {
+  ChainHistoryIndex,
+  ChainMember,
+  ChainState,
+  ValueInvalidReason,
+  ValuePredecessor,
+} from "@maruhi/crypto";
+import {
+  decodeHex,
+  importSigningPublicKey,
+  verifyDekWrapSignature,
+  verifyDistributedValue,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -26,6 +37,7 @@ import type {
   EnvironmentPullValue,
   EnvironmentSummaryValue,
   ValueInput,
+  ValueSignatureRejectReason,
   VariableVersionValue,
 } from "./data-plane.ts";
 import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
@@ -93,6 +105,115 @@ const ensureValueCas = (
   const rejection = checkValueCas(state, environmentId, latestVersion, value);
   return rejection === null ? Effect.void : Effect.fail(rejectData(rejection));
 };
+
+// ---------------------------------------------------------------------------
+// 値署名のサーバー検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * crypto の詳細理由 → ワイヤの 3 理由(仮裁定 C)への写像。
+ * chain-head-future はサーバーにとって「自チェーンに存在しない seq」なので
+ * chain-head-unknown に畳む(クライアント側の再同期分岐はサーバーには無い)。
+ * 網羅は Record 型が静的に強制する(理由コード追加時にコンパイルエラー)。
+ */
+const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRejectReason>> = {
+  "signature-invalid": "signature-invalid",
+  "chain-head-mismatch": "chain-head-unknown",
+  "chain-head-future": "chain-head-unknown",
+  "writer-unknown": "chain-head-state-mismatch",
+  "writer-not-member-at-head": "chain-head-state-mismatch",
+  "writer-key-mismatch-at-head": "chain-head-state-mismatch",
+  "writer-role-insufficient-at-head": "chain-head-state-mismatch",
+  "environment-not-created-at-head": "chain-head-state-mismatch",
+  "epoch-not-current-at-head": "chain-head-state-mismatch",
+  "prev-shape-mismatch": "chain-head-state-mismatch",
+  "prev-hash-mismatch": "chain-head-state-mismatch",
+  "epoch-regressed": "chain-head-state-mismatch",
+};
+
+/**
+ * 値署名の受理検証(§12-5 の 1〜5)。判定順は CAS(epoch / version)の後・数量
+ * ポリシーの前(session-14 裁定 D)。検査内容:
+ *
+ * 1. 署名は呼び出し主体の受理時点チェーン導出 sig 鍵で検証し、writer_user_id にも
+ *    呼び出し主体を用いる(他人が署名した値の持ち込み拒否)
+ * 2. 宣言ヘッド(hash + seq)の exact pair が自チェーン上に存在する
+ * 3. 宣言ヘッド時点でも member 以上で、当時の束縛鍵 = 受理時点の鍵
+ *    (remove → 別鍵 re-add の旧在籍区間ヘッド宣言の拒否)
+ * 4. 宣言ヘッド時点で環境作成済みかつ current epoch = 値 epoch
+ * 5. version 1 は prev 空、version > 1 は保存済み N-1 の signed-bytes hash と一致
+ *
+ * 座標(project / environment / variable)はサーバー側の値(genesis ハッシュ・
+ * URL / 保存先)から再構成する — クライアント申告の AAD から組まない(§12-5)。
+ * 宣言ヘッドは現ヘッドと同一でなくてよく、seq 単調性・サーバー独自のエポック
+ * 単調比較も課さない(裁定 D — 「現エポックのみ受理 + rotate +1 + version CAS」の
+ * 帰結として構造的に単調)。
+ *
+ * 成功時はサーバー再計算の signed_bytes ハッシュを返す(保存行に書く)。
+ * すべての crypto await はこの Effect 内で完了する(同期書き込みフェーズより前)。
+ */
+const ensureValueSignature = (input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly value: ValueInput;
+}) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    // predecessor(version > 1): 保存済み N-1 の signed_bytes ハッシュ。CAS 通過後
+    // なので必ず存在する(欠落はストレージ / 実装バグ = defect)。version 1 は
+    // predecessor なし — prev 空の形検査は verifyDistributedValue が行う
+    let predecessor: ValuePredecessor | undefined;
+    if (input.value.version > 1) {
+      const anchor = yield* store.versionAnchor(
+        input.environmentId,
+        input.variableId,
+        input.value.version - 1,
+      );
+      if (anchor === null) {
+        return yield* Effect.die(new Error("predecessor version row missing after CAS acceptance"));
+      }
+      predecessor = anchor;
+    }
+    const verified = yield* Effect.promise(() =>
+      verifyDistributedValue({
+        history: input.history,
+        context: {
+          suite: input.value.suite,
+          projectId: input.projectId,
+          environmentId: input.environmentId,
+          epoch: input.value.epoch,
+          variableId: input.variableId,
+          version: input.value.version,
+          nonceHex: input.value.nonceHex,
+          ciphertextHex: input.value.ciphertextHex,
+          prevValueSigHashHex: input.value.prevValueSigHashHex,
+          // writer = 呼び出し主体(§12-5 の 1)。検証鍵と head 時点の束縛一致は
+          // FP(受理時点のチェーン導出メンバー)で verifyDistributedValue が検査
+          writerUserId: input.member.userId,
+          chainHeadHashHex: input.value.chainHeadHashHex,
+          chainHeadSeq: input.value.chainHeadSeq,
+        },
+        writerKeyFingerprintHex: input.member.keyFingerprintHex,
+        signatureHex: input.value.signatureHex,
+        predecessor,
+      }),
+    );
+    if (verified.ok) {
+      return verified.value.signedBytesHashHex;
+    }
+    if (verified.error.kind === "ValueInvalid") {
+      return yield* rejectData({
+        kind: "value-rejected",
+        reason: VALUE_REJECT_REASONS[verified.error.reason],
+      });
+    }
+    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
+    // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
+    return yield* Effect.die(new Error(`value verification failed: ${verified.error.kind}`));
+  });
 
 /** §12-8: 累積暗号文バイトの上限。追加分を含めて判定する純関数(ユニットテスト用に公開)。 */
 export function projectBytesExceeded(storedBytes: number, addedBytes: number): boolean {
@@ -457,23 +578,37 @@ const ensureVariableQuota = (environmentId: string) =>
 /**
  * バージョン行の書き込み + var.version_pushed の記録(create / push 共通の末尾)。
  * 同期関数: 呼び出し側の書き込みフェーズ(単一の Effect.sync)内で使う。
+ * writer は受理時点のチェーン導出メンバー(値署名の検証に使った鍵の持ち主 —
+ * CRYPTO_SPEC §4.1)。監査は chain-derived writer FP のみを写す(AUDIT_SPEC §3.3 —
+ * 署名・signed bytes・hash・nonce・暗号文は監査に載せない)。
  */
 function writeVersionWithAudit(
   write: DataWriteOps,
   appendAudit: (event: AuditEventInput) => void,
   actor: DataActor,
+  writer: ChainMember,
   environmentId: string,
   variableId: string,
   value: ValueInput,
+  signedBytesHashHex: string,
   nowMs: number,
 ): void {
-  write.insertVersion(environmentId, variableId, value, value.ciphertextHex.length / 2, nowMs);
+  write.insertVersion(
+    environmentId,
+    variableId,
+    value,
+    value.ciphertextHex.length / 2,
+    signedBytesHashHex,
+    { userId: writer.userId, keyFingerprintHex: writer.keyFingerprintHex },
+    nowMs,
+  );
   appendAudit(
     dataEvent(actor, nowMs, "var.version_pushed", {
       environmentId,
       variableId,
       epoch: value.epoch,
       version: value.version,
+      actorKeyFingerprintHex: writer.keyFingerprintHex,
     }),
   );
 }
@@ -485,7 +620,11 @@ export const createVariableProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state } = yield* requireMemberState(actor.userId, "member", cache);
+    const { state, history, member, projectId } = yield* requireMemberState(
+      actor.userId,
+      "member",
+      cache,
+    );
     yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;
     const existing = yield* store.findVariable(environmentId, input.variableId);
@@ -503,6 +642,16 @@ export const createVariableProgram = (
     }
     // 作成は version 1 の値を同梱する(§12-5)。CAS は latest = 0 相当
     yield* ensureValueCas(state, environmentId, 0, input.value);
+    // 同梱 version 1 も通常 push と同一の値署名検証を受ける(§12-5 — 作成経由の
+    // 検証迂回は不可)。判定順: CAS → 値署名 → 数量ポリシー(裁定 D)
+    const signedBytesHashHex = yield* ensureValueSignature({
+      projectId,
+      environmentId,
+      variableId: input.variableId,
+      history,
+      member,
+      value: input.value,
+    });
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
     const audit = yield* AuditStore;
     const now = Date.now();
@@ -515,15 +664,18 @@ export const createVariableProgram = (
           environmentId,
           variableId: input.variableId,
           payload: { name: input.name },
+          actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
       writeVersionWithAudit(
         store.write,
         audit.appendSync,
         actor,
+        member,
         environmentId,
         input.variableId,
         input.value,
+        signedBytesHashHex,
         now,
       );
     });
@@ -542,10 +694,25 @@ export const pushVersionProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state } = yield* requireMemberState(actor.userId, "member", cache);
+    const { state, history, member, projectId } = yield* requireMemberState(
+      actor.userId,
+      "member",
+      cache,
+    );
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
+    // 判定順(裁定 D): epoch / version CAS → 値署名(署名 → 宣言 head →
+    // head 時点状態 → predecessor)→ 数量ポリシー → 原子書き込み。
+    // 不受理時は variable / version / latest / audit のいずれも変更しない
+    const signedBytesHashHex = yield* ensureValueSignature({
+      projectId,
+      environmentId,
+      variableId,
+      history,
+      member,
+      value,
+    });
     if (value.version > MAX_VERSIONS_PER_VARIABLE) {
       return yield* rejectData({
         kind: "limit-exceeded",
@@ -562,9 +729,11 @@ export const pushVersionProgram = (
         store.write,
         audit.appendSync,
         actor,
+        member,
         environmentId,
         variableId,
         value,
+        signedBytesHashHex,
         now,
       );
     });

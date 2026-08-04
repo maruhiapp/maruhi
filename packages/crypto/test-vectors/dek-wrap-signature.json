@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)。ラップ本体は dek-wrap.json の basic ベクターと同一",
+  "description": "CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id)。ラップ本体は dek-wrap.json の basic ベクターと同一",
   "signed_fields_order": [
     "domain",
     "project_id",

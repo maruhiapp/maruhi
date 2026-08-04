@@ -238,6 +238,35 @@ export class PayloadMismatchError extends Schema.TaggedErrorClass<PayloadMismatc
   { httpApiStatus: 422 },
 ) {}
 
+/**
+ * Reason codes for a 422 on a value push / create (AUTH_SPEC §12-5 =
+ * CRYPTO_SPEC §4.1 / §6.4 のサーバー検証。仮裁定 — 確定条件 = PR レビュー承認):
+ *
+ * - `signature-invalid` — valid-format の Ed25519 検証失敗
+ * - `chain-head-unknown` — 署名は有効だが宣言 seq が自チェーンに存在しない、
+ *   またはその seq の保存ハッシュと不一致
+ * - `chain-head-state-mismatch` — ヘッドは既知だがヘッド時点の鍵 / role / 環境 /
+ *   エポックが不一致、または保存 predecessor と prev が不一致
+ *
+ * 検査順: 署名壊れ → unknown head → state mismatch。仕様(session-12 §6-7)の
+ * 3 理由のみ — 4 つ目の理由はワイヤ変更なので本 PR では作らない。
+ */
+export const ValueSignatureRejectReasonSchema = Schema.Literals([
+  "signature-invalid",
+  "chain-head-unknown",
+  "chain-head-state-mismatch",
+]);
+
+/**
+ * 422: the value write signature (CRYPTO_SPEC §4.1) was rejected. Carries a
+ * reason code only — never signature bytes, hashes or ciphertext fragments.
+ */
+export class ValueSignatureRejectedError extends Schema.TaggedErrorClass<ValueSignatureRejectedError>()(
+  "ValueSignatureRejected",
+  { reason: ValueSignatureRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
 /** Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6). */
 export const DekWrapRejectReasonSchema = Schema.Literals([
   "recipient-not-member",

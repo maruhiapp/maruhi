@@ -1,10 +1,10 @@
-// 一括 pull と復号(AUTH_SPEC §12-7 + CRYPTO_SPEC §5.1)。
+// 一括 pull と復号(AUTH_SPEC §12-7 + CRYPTO_SPEC §4.1 / §5.1 / §5.2)。
 //
-// 復号文脈(AAD)は暗号文に併置された申告 `aad` を信用せず、値を帰属させる
-// 座標 — 検証済み genesis ハッシュの projectId・URL に使った environmentId・
-// 応答メタデータ(PulledVariableSchema)の variableId — で組み立てる。
-// epoch / version は申告値を使うが、この座標に束縛されるため、サーバーが
-// 別変数の暗号文を差し替えれば復号失敗に落ちる(session-07 §5)。
+// 検証順(§6.3): (1) 全値の値署名を復号より前に検証する(values.ts — future
+// head の有界再同期を含む)、(2) 自分宛ラップの §5.1 登録署名 + §5.2 DEK
+// コミットメント照合(deks.ts)、(3) AES-GCM 復号。復号文脈(AAD)は申告
+// `aad` を信用せず、検証済み座標(genesis ハッシュ・要求環境・応答メタの
+// variableId)で組み立てる(session-07 §5 / session-14 裁定 G)。
 //
 // 平文はメモリ上の Uint8Array のみ。ディスクへ書く経路はこのモジュールに
 // 存在しない(ディスクレス不変条件)。
@@ -17,8 +17,8 @@ import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
+import { pullVerifiedEnvironment } from "./values.ts";
 
 /** One decrypted variable (plaintext bytes live in memory only). */
 export interface DecryptedVariable {
@@ -30,35 +30,41 @@ export interface DecryptedVariable {
 }
 
 /**
- * Pulls one environment and decrypts every variable's latest version after
- * the §5.1 wrap verification. DEKs are indexed by epoch because latest
- * versions may span epochs until re-encryption completes (§12-7).
+ * Pulls one environment, verifies every value's write signature (§4.1 —
+ * before any decryption), verifies and unwraps the caller's DEKs (§5.1
+ * registration signature + §5.2 commitment matching stay mandatory), then
+ * decrypts every latest version. DEKs are indexed by epoch because latest
+ * versions may span epochs until a rotation's re-encryption completes
+ * (§12-7).
  */
 export function pullVariables(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
+  /** future head(§6.3-2b)時の有界再同期。 */
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.Effect<readonly DecryptedVariable[], CliError> {
   return Effect.gen(function* () {
-    const response = yield* input.client.variables
-      .pull({ params: { projectId: input.verified.projectId, environmentId: input.environmentId } })
-      .pipe(Effect.mapError(toCliError));
+    // (1) 値署名の検証(復号より前)。future head なら有界再同期で前進した
+    // ビューが返る — 以降の検証(ラップ・エポック)も同じビューで行う
+    const pulled = yield* pullVerifiedEnvironment(input);
+    const verified = pulled.verified;
 
+    // (2) ラップの §5.1 / §5.2 検証と unwrap(コミットメント照合まで成功する
+    // まで DEK は使用しない)
     const deksByEpoch = yield* verifyAndUnwrapDeks({
-      verified: input.verified,
+      verified,
       environmentId: input.environmentId,
       recipient: input.recipient,
-      deks: response.deks,
+      deks: pulled.deks,
     });
 
     const results: DecryptedVariable[] = [];
     const seenNames = new Set<string>();
-    // 環境の存在はチェーン導出(§6.2 — verifyAndUnwrapDeks が検査済みだが、
-    // 現エポックの参照もチェーン導出値から取る)
-    const chainEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
-      .currentEpoch;
-    for (const variable of response.variables) {
+    // 環境の存在はチェーン導出(§6.2)。現エポックの参照もチェーン導出値から取る
+    const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+    for (const variable of pulled.variables) {
       // 変数名の一意性はサーバーが強制する(§12-1)が、`maruhi run` の環境変数
       // 注入が黙って片方を潰さないようクライアントでも検査する(サーバー不信)
       if (seenNames.has(variable.name)) {
@@ -68,27 +74,26 @@ export function pullVariables(input: {
       }
       seenNames.add(variable.name);
 
-      const declaredEpoch = variable.value.aad.epoch;
-      const declaredVersion = variable.value.aad.version;
-      // ファントムエポック対策の第二層(deks.ts のラップ側検査と対): 申告
-      // epoch はチェーン導出の現エポック以下でなければならない
-      if (declaredEpoch > chainEpoch) {
+      // 値署名の検証(§6.3-4)が「宣言ヘッド時点の現エポック = 値の epoch」を
+      // 保証済みで、エポックの単調性からこの値は現エポック以下。ここの検査は
+      // 導出不整合(実装バグ)への防衛線として残す
+      if (variable.epoch > chainEpoch) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${displayText(variable.name)} の申告エポック ${declaredEpoch} がチェーン上の現エポック(${chainEpoch})を超えています。直後にローテーションが行われた可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
+            `変数 ${displayText(variable.name)} の申告エポック ${variable.epoch} がチェーン上の現エポック(${chainEpoch})を超えています(検証済みビューとの不整合)`,
           ),
         );
       }
-      const dek = deksByEpoch.get(declaredEpoch);
+      const dek = deksByEpoch.get(variable.epoch);
       if (dek === undefined) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${displayText(variable.name)} のエポック ${declaredEpoch} の DEK が配布されていません(自分宛ラップの欠落)`,
+            `変数 ${displayText(variable.name)} のエポック ${variable.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
           ),
         );
       }
-      const nonce = decodeHex(variable.value.nonceHex);
-      const ciphertext = decodeHex(variable.value.ciphertextHex);
+      const nonce = decodeHex(variable.nonceHex);
+      const ciphertext = decodeHex(variable.ciphertextHex);
       if (nonce === null || ciphertext === null) {
         return yield* Effect.fail(
           cliError(`変数 ${displayText(variable.name)} の暗号文形式が不正です`),
@@ -97,14 +102,14 @@ export function pullVariables(input: {
       const plaintext = yield* Effect.promise(() =>
         decryptVariable({
           dek,
-          // 申告 AAD をそのまま使わない: 座標(project / environment / variable)は
-          // 自前の検証済み値。epoch / version のみ申告値(この座標に束縛される)
+          // 座標(project / environment / variable)は自前の検証済み値。
+          // epoch / version は値署名で検証済みの申告値(この座標に束縛される)
           context: {
-            projectId: input.verified.projectId,
+            projectId: verified.projectId,
             environmentId: input.environmentId,
-            epoch: declaredEpoch,
+            epoch: variable.epoch,
             variableId: variable.variableId,
-            version: declaredVersion,
+            version: variable.version,
           },
           nonce,
           ciphertext,
@@ -120,8 +125,8 @@ export function pullVariables(input: {
       results.push({
         variableId: variable.variableId,
         name: variable.name,
-        version: declaredVersion,
-        epoch: declaredEpoch,
+        version: variable.version,
+        epoch: variable.epoch,
         value: plaintext.value,
       });
     }
