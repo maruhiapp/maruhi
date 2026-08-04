@@ -21,8 +21,11 @@ import type { WireWrappedDek } from "./data-crypto.ts";
 import {
   addMemberOperation,
   buildChain,
+  commitmentOf,
+  createEnvironmentOperation,
   genesisOperation,
   makeDek,
+  rotateEpochOperation,
   signEntryAt,
   wrapDekForAll,
 } from "./data-crypto.ts";
@@ -141,6 +144,50 @@ export function requestJson(
   });
 }
 
+/** 複合結果(§12-4)からヘッドを進める。 */
+function advanceHead(fixture: DataFixture, body: { headSeq: number; headHashHex: string }): void {
+  fixture.head = { seq: body.headSeq, hashHex: body.headHashHex };
+}
+
+/**
+ * 複合の環境作成リクエスト(§12-4)を組み立てて送る: create_environment
+ * エントリ(コミットメント込み)をテスト時署名し、親ヘッド CAS 付きで
+ * ラップ集合・表示名と同時に POST する。200 ならフィクスチャのヘッドを進める。
+ */
+export async function createEnvironmentComposite(
+  fixture: DataFixture,
+  input: {
+    readonly environmentId: string;
+    readonly name: string;
+    readonly deks: readonly WireWrappedDek[];
+    readonly dekCommitmentHex: string;
+    readonly actorUserId?: string;
+    /** CAS 失敗テスト用の親ヘッド上書き。 */
+    readonly parentHeadHashHex?: string;
+  },
+): Promise<Response> {
+  const actorUserId = input.actorUserId ?? OWNER;
+  const { entry } = await signEntryAt({
+    seq: fixture.head.seq + 1,
+    prevHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+    actorUserId,
+    operation: createEnvironmentOperation(input.environmentId, input.dekCommitmentHex),
+  });
+  const response = await requestJson("POST", "/environments", tokenOf(fixture.tokens, actorUserId), {
+    parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+    entry,
+    name: input.name,
+    deks: input.deks,
+  });
+  if (response.status === 200) {
+    advanceHead(
+      fixture,
+      (await response.clone().json()) as { headSeq: number; headHashHex: string },
+    );
+  }
+  return response;
+}
+
 /** 環境作成(エポック 1 の完全ラップ集合を実 crypto で同梱)。DEK を返す。 */
 export async function createEnvironmentOk(
   fixture: DataFixture,
@@ -156,25 +203,101 @@ export async function createEnvironmentOk(
     recipientUserIds: ALL_MEMBERS,
     signerUserId: OWNER,
   });
-  const response = await requestJson("POST", "/environments", tokenOf(fixture.tokens, OWNER), {
+  const response = await createEnvironmentComposite(fixture, {
     environmentId,
     name,
     deks,
+    dekCommitmentHex: await commitmentOf(projectId, environmentId, 1, dek),
   });
   expect(response.status).toBe(200);
   return dek;
 }
 
-/** 環境作成リクエストを任意のラップ集合で送る(negative テスト用)。 */
-export function createEnvironmentWith(
+/**
+ * 環境作成リクエストを任意のラップ集合で送る(negative テスト用)。
+ * コミットメントは使い捨て DEK から計算する(内容はサーバー検証不能 — §5.2 の
+ * 照合は受信者の責務であり、受理判定に影響しない)。
+ */
+export async function createEnvironmentWith(
   fixture: DataFixture,
   environmentId: string,
   name: string,
   deks: readonly WireWrappedDek[],
 ): Promise<Response> {
-  return requestJson("POST", "/environments", tokenOf(fixture.tokens, OWNER), {
+  return createEnvironmentComposite(fixture, {
     environmentId,
     name,
     deks,
+    dekCommitmentHex: await commitmentOf(projectId, environmentId, 1, makeDek()),
   });
+}
+
+/**
+ * 複合のローテーションリクエスト(§12-4)を組み立てて送る: rotate_epoch
+ * エントリ(新エポックのコミットメント込み)+ ラップ集合。200 ならヘッドを進める。
+ */
+export async function rotateEnvironmentComposite(
+  fixture: DataFixture,
+  input: {
+    readonly environmentId: string;
+    readonly newEpoch: number;
+    readonly deks: readonly WireWrappedDek[];
+    readonly dekCommitmentHex: string;
+    readonly actorUserId?: string;
+    readonly parentHeadHashHex?: string;
+    /** URL とエントリ payload の不一致テスト用(既定はエントリと同じ環境)。 */
+    readonly urlEnvironmentId?: string;
+  },
+): Promise<Response> {
+  const actorUserId = input.actorUserId ?? MEMBER;
+  const { entry } = await signEntryAt({
+    seq: fixture.head.seq + 1,
+    prevHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+    actorUserId,
+    operation: rotateEpochOperation(input.environmentId, input.newEpoch, input.dekCommitmentHex),
+  });
+  const response = await requestJson(
+    "POST",
+    `/environments/${input.urlEnvironmentId ?? input.environmentId}/rotate`,
+    tokenOf(fixture.tokens, actorUserId),
+    {
+      parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+      entry,
+      deks: input.deks,
+    },
+  );
+  if (response.status === 200) {
+    advanceHead(
+      fixture,
+      (await response.clone().json()) as { headSeq: number; headHashHex: string },
+    );
+  }
+  return response;
+}
+
+/** ローテーション(新エポックの完全ラップ集合込み)。新エポックの DEK を返す。 */
+export async function rotateEnvironmentOk(
+  fixture: DataFixture,
+  actorUserId: string,
+  environmentId: string,
+  newEpoch: number,
+): Promise<Uint8Array> {
+  const dek = makeDek();
+  const deks = await wrapDekForAll({
+    projectId,
+    environmentId,
+    epoch: newEpoch,
+    dek,
+    recipientUserIds: ALL_MEMBERS,
+    signerUserId: actorUserId,
+  });
+  const response = await rotateEnvironmentComposite(fixture, {
+    environmentId,
+    newEpoch,
+    deks,
+    dekCommitmentHex: await commitmentOf(projectId, environmentId, newEpoch, dek),
+    actorUserId,
+  });
+  expect(response.status).toBe(200);
+  return dek;
 }

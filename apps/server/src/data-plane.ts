@@ -4,7 +4,7 @@
 // 拒否は DataRejectedError 1 種に畳み、DO の RPC 境界では DataOutcome の
 // 判別 union として渡す(worker が api-schema の型付きエラーへ写像する)。
 
-import type { ChainMember, ChainState, Role } from "@maruhi/crypto";
+import type { ChainInvalidReason, ChainMember, ChainState, Role } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -118,6 +118,13 @@ export interface EnvironmentPullValue {
 
 export type ResourceConflictReason = "exists" | "retired" | "duplicate-name";
 
+/**
+ * 環境の 409 は表示名の衝突のみ(2026-08-03): ID の一意性(旧 exists / retired)は
+ * チェーン合意規則 `duplicate-environment`(chain-entry-invalid)へ吸収された
+ * (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)。
+ */
+export type EnvironmentConflictReason = "duplicate-name";
+
 export type DekWrapRejectReason =
   | "recipient-not-member"
   | "recipient-key-mismatch"
@@ -144,8 +151,29 @@ export type DataRejection =
   | {
       readonly kind: "environment-conflict";
       readonly environmentId: string;
-      readonly reason: ResourceConflictReason;
+      readonly reason: EnvironmentConflictReason;
     }
+  // 複合リクエスト(§12-4)のチェーン受理系(worker が api-schema の
+  // ChainHeadConflict / ChainEntryInvalid / ChainEntryTooLarge /
+  // ChainCapacityExceeded へ写像する — エラー契約の複合エンドポイントへの移動)
+  | {
+      readonly kind: "chain-head-conflict";
+      readonly currentHeadSeq: number;
+      readonly currentHeadHashHex: string;
+    }
+  | {
+      readonly kind: "chain-entry-invalid";
+      readonly seq: number;
+      readonly reason: ChainInvalidReason;
+    }
+  | { readonly kind: "chain-entry-too-large"; readonly limitBytes: number }
+  | {
+      readonly kind: "chain-capacity-exceeded";
+      readonly maxEntries: number;
+      readonly maxTotalBytes: number;
+    }
+  // 複合内整合検査(§12-4): URL 座標と同梱エントリ payload の不一致
+  | { readonly kind: "payload-mismatch"; readonly field: string }
   | { readonly kind: "variable-not-found"; readonly variableId: string }
   | {
       readonly kind: "variable-conflict";
@@ -191,7 +219,8 @@ function roleAtLeast(role: Role, minimum: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
-function requireRole(
+/** チェーン導出 role の下限検査(複合プログラム — composite-programs.ts — と共有)。 */
+export function requireRole(
   state: ChainState,
   callerUserId: string,
   minimum: Role,
@@ -241,9 +270,19 @@ export const requireMemberState = (
     return { state, member, projectId: chain.genesisHashHex };
   });
 
-/** 環境の現エポック = チェーン観測値、未観測なら初期値 1(CRYPTO_SPEC §3)。 */
+/**
+ * 環境の現エポック = チェーン導出値(CRYPTO_SPEC §6.2 / §6.3。2026-08-03)。
+ * 環境の存在自体がチェーン導出(`create_environment`)になったため「未観測なら
+ * 初期値 1」の既定値は廃止した。データ行は複合受理(§12-4)でチェーンエントリと
+ * 原子的に作られるため、アクティブなデータ行があるのにチェーンに環境がないのは
+ * 不変条件違反(ストレージ / 実装バグ)であり defect として落とす。
+ */
 export function currentEpochOf(state: ChainState, environmentId: string): number {
-  return state.environmentEpochs.get(environmentId) ?? 1;
+  const environment = state.environments.get(environmentId);
+  if (environment === undefined) {
+    throw new Error("environment missing from chain-derived state");
+  }
+  return environment.currentEpoch;
 }
 
 /**

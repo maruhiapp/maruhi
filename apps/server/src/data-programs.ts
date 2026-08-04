@@ -279,11 +279,12 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
 /**
  * ラップ集合の受理検証(§12-6)+ 数量ポリシー(§12-8)+ 登録署名の検証
  * (CRYPTO_SPEC §5.1)。挿入は呼び出し側の同期書き込みフェーズで行う。
- * ラップ挿入の全経路(環境作成・DEK 登録)がここを通るため、累積行数上限と
- * 署名必須の結線はこの 1 箇所でよい。署名検証(Ed25519 × 件数)は最も高価な
- * ため、安価な検査(件数・受信者・重複・集合)がすべて通った後に行う。
+ * ラップ挿入の全経路 — 独立登録 API(バックフィル・修復再登録)と複合リクエスト
+ * (環境作成・ローテーション — composite-programs.ts)— がここを通るため、
+ * 累積行数上限と署名必須の結線はこの 1 箇所でよい。署名検証(Ed25519 × 件数)は
+ * 最も高価なため、安価な検査(件数・受信者・重複・集合)がすべて通った後に行う。
  */
-const ensureWrapSetAcceptable = (
+export const ensureWrapSetAcceptable = (
   projectId: string,
   environmentId: string,
   state: ChainState,
@@ -308,7 +309,7 @@ const ensureWrapSetAcceptable = (
  * actor_key_fingerprint には登録署名の署名者 FP を写す(§3.3 — セッション 07
  * 裁定 B「E の署名者 FP を写して突合可能にする」)。
  */
-function dekRegisteredEvent(
+export function dekRegisteredEvent(
   actor: DataActor,
   signer: ChainMember,
   nowMs: number,
@@ -324,26 +325,11 @@ function dekRegisteredEvent(
 }
 
 // ---------------------------------------------------------------------------
-// 環境管理(§12-4)
+// 環境管理(§12-4)。作成・ローテーションは複合リクエスト(composite-programs.ts)
 // ---------------------------------------------------------------------------
 
-/** 作成不可の理由(§12-1 / §12-4): 現存 = exists、tombstone・チェーン観測済み = retired。 */
-function environmentIdUnavailable(
-  existing: EnvironmentRow | null,
-  state: ChainState,
-  environmentId: string,
-): DataRejection | null {
-  if (existing !== null) {
-    const reason = existing.deletedAtMs === null ? "exists" : "retired";
-    return { kind: "environment-conflict", environmentId, reason };
-  }
-  if (state.environmentEpochs.has(environmentId)) {
-    return { kind: "environment-conflict", environmentId, reason: "retired" };
-  }
-  return null;
-}
-
-const ensureEnvironmentQuota = Effect.gen(function* () {
+/** 環境数の数量ポリシー(§12-8。複合作成 — composite-programs.ts — から呼ぶ)。 */
+export const ensureEnvironmentQuota = Effect.gen(function* () {
   const store = yield* DataStore;
   const counts = yield* store.countEnvironments;
   if (counts.active + 1 > MAX_ACTIVE_ENVIRONMENTS) {
@@ -361,65 +347,6 @@ const ensureEnvironmentQuota = Effect.gen(function* () {
     });
   }
 });
-
-export const createEnvironmentProgram = (
-  actor: DataActor,
-  input: {
-    readonly environmentId: string;
-    readonly name: string;
-    readonly deks: readonly DekWrapInput[];
-  },
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    const { state, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
-    const store = yield* DataStore;
-    const existing = yield* store.findEnvironment(input.environmentId);
-    const unavailable = environmentIdUnavailable(existing, state, input.environmentId);
-    if (unavailable !== null) {
-      return yield* rejectData(unavailable);
-    }
-    yield* ensureEnvironmentQuota;
-    if (yield* store.environmentNameTaken(input.name, null)) {
-      return yield* rejectData({
-        kind: "environment-conflict",
-        environmentId: input.environmentId,
-        reason: "duplicate-name",
-      });
-    }
-    // 未使用 ID(チェーン未観測)なので現エポックは常に初期値 1(§12-4)
-    yield* ensureWrapSetAcceptable(projectId, input.environmentId, state, member, 1, input.deks);
-    // §12-4 / §12-6: エポック 1 のラップは現メンバー集合と完全一致していなければ
-    // ならない。受信者・重複・エポック範囲は検査済みなので個数一致 = 完全一致。
-    // (checkWrapSets はリクエストに現れたエポックしか見ないため、空集合が
-    // 素通りしないようここで明示的に要求する)
-    if (input.deks.length !== state.members.size) {
-      return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
-    }
-    const audit = yield* AuditStore;
-    const now = Date.now();
-    // 書き込みフェーズ: 単一の同期ブロック = 同一タスクで原子コミット(部分
-    // 書き込みで「環境行のない孤児ラップ」等を作らない)
-    yield* Effect.sync(() => {
-      store.write.insertEnvironment(input.environmentId, input.name, now);
-      audit.appendSync(
-        dataEvent(actor, now, "env.created", {
-          environmentId: input.environmentId,
-          payload: { name: input.name },
-        }),
-      );
-      // 環境作成時のエポック 1 の同梱分も dek.registered の対象(AUDIT_SPEC §3.3)
-      for (const wrap of input.deks) {
-        store.write.insertWrap(input.environmentId, wrap, member, now);
-        audit.appendSync(dekRegisteredEvent(actor, member, now, input.environmentId, wrap));
-      }
-    });
-    return {
-      environmentId: input.environmentId,
-      name: input.name,
-      currentEpoch: 1,
-    } satisfies EnvironmentSummaryValue;
-  });
 
 export const renameEnvironmentProgram = (
   actor: DataActor,

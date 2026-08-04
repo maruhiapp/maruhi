@@ -35,6 +35,11 @@ import {
   updateStateCache,
   verifyChainEffect,
 } from "./chain-store.ts";
+import type { EnvironmentChainResultValue } from "./composite-programs.ts";
+import {
+  createEnvironmentCompositeProgram,
+  rotateEpochCompositeProgram,
+} from "./composite-programs.ts";
 import type {
   DataActor,
   DataOutcome,
@@ -48,7 +53,6 @@ import type {
   VariableVersionValue,
 } from "./data-plane.ts";
 import {
-  createEnvironmentProgram,
   createVariableProgram,
   deleteDekWrapsProgram,
   deleteEnvironmentProgram,
@@ -465,12 +469,30 @@ export class ProjectChainDO extends DurableObject<Env> {
   createEnvironment(
     actor: DataActor,
     input: {
-      readonly environmentId: string;
+      readonly parentHeadHashHex: string;
+      readonly entry: ChainEntry & { readonly op: "create_environment" };
       readonly name: string;
       readonly deks: readonly DekWrapInput[];
     },
-  ): Promise<DataOutcome<EnvironmentSummaryValue>> {
-    return this.#runData(createEnvironmentProgram(actor, input, this.#stateCache));
+  ): Promise<DataOutcome<EnvironmentChainResultValue>> {
+    // 複合受理(§12-4): チェーン追記(CAS + verifyChain)とデータ登録を同一
+    // permit・同一同期ブロックで原子化する(§6.4 の複合受理)
+    return this.#runData(createEnvironmentCompositeProgram(actor, input, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  rotateEpoch(
+    actor: DataActor,
+    environmentId: string,
+    input: {
+      readonly parentHeadHashHex: string;
+      readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
+      readonly deks: readonly DekWrapInput[];
+    },
+  ): Promise<DataOutcome<EnvironmentChainResultValue>> {
+    return this.#runData(
+      rotateEpochCompositeProgram(actor, environmentId, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)

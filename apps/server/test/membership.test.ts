@@ -14,6 +14,7 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { vectorEnvironmentDeks } from "../../../packages/crypto/test/checks/chain-vector.ts";
 import { chainCapacityExceeded } from "../src/chain-do.ts";
 import {
   MAX_CHAIN_ENTRIES,
@@ -38,6 +39,7 @@ import {
   vectorEntries,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
+import { hexBytes, makeDek, signEntryAt, wrapDekForAll } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 const VECTOR_ORG = "org-vector-0001";
@@ -84,24 +86,86 @@ const getChain = (projectId: string, headers?: Record<string, string>): Promise<
     headers: headers ?? bearer(tokenFor("user-owner-0001")),
   });
 
-/** ベクターの seq 1..upTo をサーバーへ再生する(init + append。actor ごとの PAT)。 */
-async function replayVectorChain(upTo: number): Promise<void> {
+/**
+ * ベクターの (environment, epoch) のダミー DEK(実計算のコミットメントと対)。
+ * negative の不正座標(存在しないエポック等)にはベクター DEK がないため乱数で
+ * 代替する — それらの拒否はラップ内容に依存しない(合意規則・判定順で落ちる)。
+ */
+function vectorDek(environmentId: string, epoch: number): Uint8Array {
+  const dekHex = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_hex;
+  return dekHex === undefined ? makeDek() : hexBytes(dekHex);
+}
+
+/**
+ * create_environment / rotate_epoch のベクターエントリを複合エンドポイント
+ * (AUTH_SPEC §12-4)へ送る。汎用 append は 2 op を CompositeRequired で拒否する
+ * ため、再生・negative とも複合経由になる。ラップ集合はベクターのダミー DEK を
+ * 現メンバー集合(recipients)へ実 HPKE でラップし、actor 自身が署名する。
+ */
+async function submitComposite(
+  entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
+  recipients: readonly string[],
+  headers?: Record<string, string>,
+): Promise<Response> {
+  const environmentId = entry.payload.environmentId;
+  const epoch = entry.op === "create_environment" ? 1 : entry.payload.newEpoch;
+  const deks = await wrapDekForAll({
+    projectId: vectorProjectId,
+    environmentId,
+    epoch,
+    dek: vectorDek(environmentId, epoch),
+    recipientUserIds: recipients,
+    signerUserId: entry.actor.userId,
+  });
+  const url =
+    entry.op === "create_environment"
+      ? `${BASE}/projects/${vectorProjectId}/environments`
+      : `${BASE}/projects/${vectorProjectId}/environments/${environmentId}/rotate`;
+  const body =
+    entry.op === "create_environment"
+      ? { parentHeadHashHex: entry.prevHashHex, entry, name: environmentId, deks }
+      : { parentHeadHashHex: entry.prevHashHex, entry, deks };
+  return SELF.fetch(url, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, ...(headers ?? bearer(tokenFor(entry.actor.userId))) },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * ベクターの seq 1..upTo をサーバーへ再生する(init + append + 複合。actor ごとの
+ * PAT)。複合のラップ集合が要る現メンバー集合は op を追いながら導出する。
+ */
+async function replayVectorChain(upTo: number): Promise<readonly string[]> {
+  const members: string[] = [];
   for (const vector of vectorEntries) {
     if (vector.seq > upTo) {
       break;
     }
-    if (vector.seq === 1) {
-      const response = await initChain(toWireEntry(vector));
+    const entry = toWireEntry(vector);
+    if (entry.op === "genesis") {
+      const response = await initChain(entry);
       expect(response.status).toBe(200);
-    } else {
-      const response = await appendEntry(
-        vectorProjectId,
-        vector.prev_hash_hex,
-        toWireEntry(vector),
-      );
+      members.push(entry.actor.userId);
+      continue;
+    }
+    if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
+      const response = await submitComposite(entry, members);
       expect(response.status).toBe(200);
+      continue;
+    }
+    const response = await appendEntry(vectorProjectId, vector.prev_hash_hex, entry);
+    expect(response.status).toBe(200);
+    if (entry.op === "add_member") {
+      members.push(entry.payload.targetUserId);
+    } else if (entry.op === "remove_member") {
+      const index = members.indexOf(entry.payload.targetUserId);
+      if (index >= 0) {
+        members.splice(index, 1);
+      }
     }
   }
+  return members;
 }
 
 // この vitest-pool-workers 構成(cloudflareTest プラグイン 0.20.1)にはテスト間の
@@ -201,9 +265,9 @@ describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
   });
 });
 
-describe("チェーン再生(正常系ベクター seq 1〜9)", () => {
+describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate は複合経由)", () => {
   it("accepts the full vector chain and stores it append-only", async () => {
-    await replayVectorChain(9);
+    await replayVectorChain(12);
 
     const response = await getChain(vectorProjectId);
     expect(response.status).toBe(200);
@@ -215,9 +279,11 @@ describe("チェーン再生(正常系ベクター seq 1〜9)", () => {
     };
     const last = vectorEntries[vectorEntries.length - 1];
     expect(body.projectId).toBe(vectorProjectId);
-    expect(body.headSeq).toBe(9);
+    expect(body.headSeq).toBe(12);
     expect(body.headHashHex).toBe(last?.entry_hash_hex);
-    expect(body.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(body.entries.map((entry) => entry.seq)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ]);
     expect(body.entries.map((entry) => entry.op)).toEqual(vectorEntries.map((v) => v.op));
 
     // DO SQLite の実データを直接確認する(append-only 保存とハッシュ列)
@@ -226,7 +292,7 @@ describe("チェーン再生(正常系ベクター seq 1〜9)", () => {
       const rows = state.storage.sql
         .exec("SELECT seq, entry_hash_hex FROM chain_entries ORDER BY seq")
         .toArray();
-      expect(rows.length).toBe(9);
+      expect(rows.length).toBe(12);
       expect(rows.map((row) => row["entry_hash_hex"])).toEqual(
         vectorEntries.map((v) => v.entry_hash_hex),
       );
@@ -262,9 +328,9 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
       suite: "maruhi/v1",
       seq: 2,
       prevHashHex: genesis.entry_hash_hex,
-      op: "rotate_epoch",
+      op: "remove_member",
       actor: { userId: "user-stranger-0009", keyFingerprintHex: "ab".repeat(16) },
-      payload: { environmentId: "env-prod-0001", newEpoch: 2, reason: "x" },
+      payload: { targetUserId: "user-owner-0001" },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
     };
@@ -277,30 +343,29 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(append.status).toBe(404);
   });
 
-  it("removed members are concealed too: the §11-2 mapping of actor-not-member", async () => {
-    // seq 4 で user-member-0002 は削除される。以降の追記はチェーン検証(422)では
-    // なく、メンバーシップ判定の 404 で拒否される(存在秘匿が優先)
+  it("removed members are concealed too: the §11-2 mapping of actor-not-member(複合経由)", async () => {
+    // seq 5 で user-member-0002 は削除される。以降の書き込み(rotate は複合経由)は
+    // チェーン検証(422)ではなく、メンバーシップ判定の 404 で拒否される(存在秘匿)
     const nonmember = vectorAuthzNegatives.find((n) => n.name === "authz-nonmember-actor");
     if (nonmember === undefined) throw new Error("missing authz-nonmember-actor vector");
     await replayVectorChain(nonmember.entry.seq - 1);
-    const response = await appendEntry(
-      vectorProjectId,
-      nonmember.entry.prev_hash_hex,
-      toWireEntry(nonmember.entry),
-    );
+    const entry = toWireEntry(nonmember.entry);
+    if (entry.op !== "rotate_epoch") throw new Error("expected a rotate_epoch negative");
+    const response = await submitComposite(entry, ["user-owner-0001", "user-admin-0003"]);
     expect(response.status).toBe(404);
   });
 
   it("rejects an append whose entry actor differs from the principal (403 actor-mismatch §11-1)", async () => {
-    await replayVectorChain(2);
-    const entry3 = vectorEntries[2];
-    if (entry3 === undefined) throw new Error("missing vector entry 3");
-    // entry3 の actor は user-member-0002。owner のトークンで送ると一致しない
+    await replayVectorChain(4);
+    const entry5 = vectorEntries[4];
+    if (entry5 === undefined) throw new Error("missing vector entry 5");
+    // entry5(remove_member)の actor は user-owner-0001。member のトークンで
+    // 送ると一致しない
     const response = await appendEntry(
       vectorProjectId,
-      entry3.prev_hash_hex,
-      toWireEntry(entry3),
-      bearer(tokenFor("user-owner-0001")),
+      entry5.prev_hash_hex,
+      toWireEntry(entry5),
+      bearer(tokenFor("user-member-0002")),
     );
     expect(response.status).toBe(403);
     const body = (await response.json()) as { reason: string };
@@ -308,19 +373,19 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
   });
 
   it("enforces token scopes: read scope can get but cannot append (§9-2)", async () => {
-    await replayVectorChain(2);
+    await replayVectorChain(1);
     const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
-    const readToken = await deviceToken(9002, readOnly);
+    const readToken = await deviceToken(9001, readOnly);
 
     const get = await getChain(vectorProjectId, bearer(readToken));
     expect(get.status).toBe(200);
 
-    const entry3 = vectorEntries[2];
-    if (entry3 === undefined) throw new Error("missing vector entry 3");
+    const entry2 = vectorEntries[1];
+    if (entry2 === undefined) throw new Error("missing vector entry 2");
     const append = await appendEntry(
       vectorProjectId,
-      entry3.prev_hash_hex,
-      toWireEntry(entry3),
+      entry2.prev_hash_hex,
+      toWireEntry(entry2),
       bearer(readToken),
     );
     expect(append.status).toBe(403);
@@ -344,30 +409,41 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
   });
 
   it("distinguishes write from admin ops (§6 の op→必要権限表)", async () => {
-    // seq 3 は rotate_epoch(write 要求)、actor は user-member-0002。
-    // write スコープのトークンで通り、同じトークンでは add_member(admin 要求)が
-    // 403 になる — 全 op を write(または admin)に潰す退行をここで判別する
+    // seq 3(create_environment)・seq 4(rotate_epoch)は複合エンドポイント経由の
+    // write 要求で、write スコープのトークンで通る。同じ write スコープでは
+    // remove_member(admin 要求。汎用 append)が 403 になる — 全 op を
+    // write(または admin)に潰す退行をここで判別する
     await replayVectorChain(2);
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const memberWrite = await deviceToken(9002, writeScope);
-    const entry3 = vectorEntries[2];
-    if (entry3 === undefined) throw new Error("missing vector entry 3");
-    const rotate = await appendEntry(
-      vectorProjectId,
-      entry3.prev_hash_hex,
-      toWireEntry(entry3),
-      bearer(memberWrite),
-    );
-    expect(rotate.status).toBe(200);
+    const vector3 = vectorEntries[2];
+    const vector4 = vectorEntries[3];
+    if (vector3 === undefined || vector4 === undefined) throw new Error("missing vectors");
+    const entry3 = toWireEntry(vector3);
+    const entry4 = toWireEntry(vector4);
+    if (entry3.op !== "create_environment" || entry4.op !== "rotate_epoch") {
+      throw new Error("unexpected vector ops");
+    }
+    const members = ["user-owner-0001", "user-member-0002"];
+    const created = await submitComposite(entry3, members, {
+      ...JSON_HEADERS,
+      ...bearer(memberWrite),
+    });
+    expect(created.status).toBe(200);
+    const rotated = await submitComposite(entry4, members, {
+      ...JSON_HEADERS,
+      ...bearer(memberWrite),
+    });
+    expect(rotated.status).toBe(200);
 
-    // seq 4 は remove_member(admin 要求)、actor は user-owner-0001
+    // seq 5 は remove_member(admin 要求)、actor は user-owner-0001
     const ownerWrite = await deviceToken(9001, writeScope);
-    const entry4 = vectorEntries[3];
-    if (entry4 === undefined) throw new Error("missing vector entry 4");
+    const entry5 = vectorEntries[4];
+    if (entry5 === undefined) throw new Error("missing vector entry 5");
     const removal = await appendEntry(
       vectorProjectId,
-      entry4.prev_hash_hex,
-      toWireEntry(entry4),
+      entry5.prev_hash_hex,
+      toWireEntry(entry5),
       bearer(ownerWrite),
     );
     expect(removal.status).toBe(403);
@@ -430,22 +506,29 @@ describe("GET /projects/:projectId/chain", () => {
 describe("CAS(§6.4 楽観ロック)", () => {
   it("rejects an append whose parent head is stale and reports the current head", async () => {
     await replayVectorChain(2);
-    const entry3 = vectorEntries[2];
     const entry2 = vectorEntries[1];
     const genesis = vectorEntries[0];
-    if (entry3 === undefined || entry2 === undefined || genesis === undefined) {
+    if (entry2 === undefined || genesis === undefined) {
       throw new Error("missing vector entries");
     }
+    // テスト時署名の remove_member(seq 3。汎用 append の対象 op)で CAS を検査する
+    // (ベクター seq 3 は create_environment になり複合経由 — data.test.ts が担う)
+    const { entry } = await signEntryAt({
+      seq: 3,
+      prevHashHex: entry2.entry_hash_hex,
+      actorUserId: "user-owner-0001",
+      operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+    });
 
     // 親を genesis ハッシュ(1 つ古いヘッド)にすると拒否され、現ヘッドが返る
-    const stale = await appendEntry(vectorProjectId, genesis.entry_hash_hex, toWireEntry(entry3));
+    const stale = await appendEntry(vectorProjectId, genesis.entry_hash_hex, entry);
     expect(stale.status).toBe(409);
     const body = (await stale.json()) as { currentHeadSeq: number; currentHeadHashHex: string };
     expect(body.currentHeadSeq).toBe(2);
     expect(body.currentHeadHashHex).toBe(entry2.entry_hash_hex);
 
     // 正しい親で再試行すると受理される(クライアントの再同期・再試行の流れ)
-    const retried = await appendEntry(vectorProjectId, entry2.entry_hash_hex, toWireEntry(entry3));
+    const retried = await appendEntry(vectorProjectId, entry2.entry_hash_hex, entry);
     expect(retried.status).toBe(200);
   });
 
@@ -457,8 +540,65 @@ describe("CAS(§6.4 楽観ロック)", () => {
   });
 });
 
+// create_environment / rotate_epoch の negative は複合エンドポイント経由になり、
+// サーバーの判定順(§12-3 / §12-4)が合意規則(verifyChain)より先に働くケースが
+// ある。ベクターの expected_reason(合意規則の理由コード)は crypto 層の 4 実行
+// 環境テストが固定し、ここではサーバー受理面での期待(status + 種別)を固定する:
+// - role 不足は DO の requireRole が verifyChain より先(403 insufficient-role)
+// - 未知環境への rotate はデータ行の不在が先(404 EnvironmentNotFound —
+//   行はチェーンと原子的に作られるため意味論は unknown-environment と一致)
+// - dek_commitment_hex の形式違反は api-schema の hex Schema が先(400)
+interface CompositeExpectation {
+  readonly status: number;
+  readonly reason?: string;
+}
+
+const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
+  // 削除済みメンバーは §11-2 の存在秘匿(上の専用テストと同じ 404)
+  "authz-nonmember-actor": { status: 404 },
+  "authz-reader-rotate-epoch": { status: 403, reason: "insufficient-role" },
+  "authz-rotate-role-precedes-unknown": { status: 403, reason: "insufficient-role" },
+  "authz-create-env-reader": { status: 403, reason: "insufficient-role" },
+  "authz-create-env-role-precedes-duplicate": { status: 403, reason: "insufficient-role" },
+  "authz-rotate-unknown-environment": { status: 404 },
+  "authz-rotate-unknown-precedes-epoch": { status: 404 },
+  "authz-create-env-duplicate": { status: 422, reason: "duplicate-environment" },
+  "authz-epoch-rollback": { status: 422, reason: "epoch-out-of-sequence" },
+  "authz-epoch-duplicate": { status: 422, reason: "epoch-out-of-sequence" },
+  "authz-epoch-jump": { status: 422, reason: "epoch-out-of-sequence" },
+  "authz-epoch-first-jump": { status: 422, reason: "epoch-out-of-sequence" },
+  "create-env-commitment-uppercase-hex": { status: 400 },
+  "create-env-commitment-bad-length": { status: 400 },
+  "rotate-commitment-uppercase-hex": { status: 400 },
+  "create-env-commitment-format-precedes-role": { status: 400 },
+  "authz-field-too-long": { status: 422, reason: "invalid-payload" },
+  "authz-actor-key-mismatch": { status: 422, reason: "actor-key-mismatch" },
+};
+
 describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 negative ベクター", () => {
   for (const negative of vectorAuthzNegatives) {
+    const op = negative.entry.op;
+    const isComposite = op === "create_environment" || op === "rotate_epoch";
+    if (isComposite) {
+      const expectation = compositeExpectations[negative.name];
+      if (expectation === undefined) {
+        throw new Error(`missing composite expectation for ${negative.name}`);
+      }
+      it(`rejects ${negative.name} via the composite endpoint with ${expectation.status}${expectation.reason === undefined ? "" : ` (${expectation.reason})`}`, async () => {
+        const members = await replayVectorChain(negative.entry.seq - 1);
+        const entry = toWireEntry(negative.entry);
+        if (entry.op !== "create_environment" && entry.op !== "rotate_epoch") {
+          throw new Error("unexpected op");
+        }
+        const response = await submitComposite(entry, members);
+        expect(response.status).toBe(expectation.status);
+        if (expectation.reason !== undefined) {
+          const body = (await response.json()) as { reason: string };
+          expect(body.reason).toBe(expectation.reason);
+        }
+      });
+      continue;
+    }
     // actor が非メンバーのケースは §11-2 の存在秘匿(404)が verifyChain より先に働く
     const expectsConcealment = negative.expected_reason === "actor-not-member";
     const label = expectsConcealment
@@ -510,17 +650,15 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
     if (genesis === undefined) throw new Error("missing genesis vector");
     // §6.1 のフィールド上限(1024 B)には違反するが、正規化は可能な巨大エントリ。
     // 受理ポリシー(1 MiB)の検査は verifyChain より先に行われるため 413 になる
+    // (op は汎用 append の対象のもの — rotate_epoch は複合経由になったため
+    // remove_member の巨大 targetUserId で構成する)
     const oversized: ChainEntry = {
       suite: "maruhi/v1",
       seq: 2,
       prevHashHex: genesis.entry_hash_hex,
-      op: "rotate_epoch",
+      op: "remove_member",
       actor: { userId: "user-owner-0001", keyFingerprintHex: "ab".repeat(16) },
-      payload: {
-        environmentId: "e".repeat(600_000),
-        newEpoch: 2,
-        reason: "r".repeat(600_000),
-      },
+      payload: { targetUserId: "u".repeat(1_200_000) },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
     };
@@ -599,9 +737,14 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
       );
     });
     const entry2 = vectorEntries[1];
-    const entry3 = vectorEntries[2];
-    if (entry2 === undefined || entry3 === undefined) throw new Error("missing vector entries");
-    const response = await appendEntry(vectorProjectId, entry2.entry_hash_hex, toWireEntry(entry3));
+    if (entry2 === undefined) throw new Error("missing vector entries");
+    const { entry } = await signEntryAt({
+      seq: 3,
+      prevHashHex: entry2.entry_hash_hex,
+      actorUserId: "user-owner-0001",
+      operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+    });
+    const response = await appendEntry(vectorProjectId, entry2.entry_hash_hex, entry);
     expect(response.status).toBe(422);
     const body = (await response.json()) as { maxTotalBytes: number };
     expect(body.maxTotalBytes).toBe(MAX_CHAIN_TOTAL_CANONICAL_BYTES);
