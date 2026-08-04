@@ -74,46 +74,62 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
   ];
 }
 
+type ChainViolation = Extract<FloorViolation, { kind: "chain-shortened" | "chain-diverged" }>;
+
+function chainEvidenceLines(
+  coordinates: FloorEvidenceCoordinates,
+  violation: ChainViolation,
+): readonly string[] {
+  const divergedLine =
+    violation.kind === "chain-diverged"
+      ? [
+          `  今回のチェーンの同 seq のエントリハッシュ: ${violation.actualHashHex === "" ? "(存在しない)" : violation.actualHashHex}`,
+        ]
+      : [];
+  return [
+    coordinateLine(coordinates),
+    `  床の記録(過去に検証済みのヘッド): ${headText(violation.floorHead.seq, violation.floorHead.hashHex)}`,
+    ...divergedLine,
+    `  今回の同期ヘッド: ${headText(violation.syncedHead.seq, violation.syncedHead.hashHex)}`,
+  ];
+}
+
+function variableEvidenceLines(
+  coordinates: FloorEvidenceCoordinates,
+  violation: Exclude<FloorViolation, ChainViolation>,
+): readonly string[] {
+  if (violation.kind === "variable-omitted") {
+    return [coordinateLine(coordinates, violation.variableId), ...floorVariableLines(violation)];
+  }
+  if (violation.kind === "stale-epoch-injection") {
+    return [
+      coordinateLine(coordinates, violation.variableId),
+      `  規則 (c) の基準: pull 時点エポック基準=${violation.baselineEpoch}(前回成功 pull 時点のチェーン導出現エポック)`,
+      `  床の記録 version=${violation.floorVersion}(0 = 床に記録なし)`,
+      `  今回の配布: version=${violation.pulled.version} epoch=${violation.pulled.epoch}`,
+      `    value_signed_bytes_hash=${violation.pulled.valueSigHashHex}`,
+      `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
+    ];
+  }
+  if (
+    violation.kind === "value-rollback" ||
+    violation.kind === "value-equivocation" ||
+    violation.kind === "value-epoch-regression"
+  ) {
+    return [coordinateLine(coordinates, violation.variableId), ...valueEvidenceLines(violation)];
+  }
+  // メタ系 4 種(環境メタの violation は variableId が null — 座標行は環境まで)
+  return [coordinateLine(coordinates, violation.variableId), ...metaEvidenceLines(violation)];
+}
+
 function evidenceLines(
   coordinates: FloorEvidenceCoordinates,
   violation: FloorViolation,
 ): readonly string[] {
-  switch (violation.kind) {
-    case "chain-shortened":
-      return [
-        coordinateLine(coordinates),
-        `  床の記録(過去に検証済みのヘッド): ${headText(violation.floorHead.seq, violation.floorHead.hashHex)}`,
-        `  今回の同期ヘッド: ${headText(violation.syncedHead.seq, violation.syncedHead.hashHex)}`,
-      ];
-    case "chain-diverged":
-      return [
-        coordinateLine(coordinates),
-        `  床の記録(過去に検証済みのヘッド): ${headText(violation.floorHead.seq, violation.floorHead.hashHex)}`,
-        `  今回のチェーンの同 seq のエントリハッシュ: ${violation.actualHashHex === "" ? "(存在しない)" : violation.actualHashHex}`,
-        `  今回の同期ヘッド: ${headText(violation.syncedHead.seq, violation.syncedHead.hashHex)}`,
-      ];
-    case "variable-omitted":
-      return [coordinateLine(coordinates, violation.variableId), ...floorVariableLines(violation)];
-    case "value-rollback":
-    case "value-equivocation":
-    case "value-epoch-regression":
-      return [coordinateLine(coordinates, violation.variableId), ...valueEvidenceLines(violation)];
-    case "stale-epoch-injection":
-      return [
-        coordinateLine(coordinates, violation.variableId),
-        `  規則 (c) の基準: pull 時点エポック基準=${violation.baselineEpoch}(前回成功 pull 時点のチェーン導出現エポック)`,
-        `  床の記録 version=${violation.floorVersion}(0 = 床に記録なし)`,
-        `  今回の配布: version=${violation.pulled.version} epoch=${violation.pulled.epoch}`,
-        `    value_signed_bytes_hash=${violation.pulled.valueSigHashHex}`,
-        `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
-      ];
-    case "meta-rollback":
-    case "meta-equivocation":
-    case "deletion-revoked":
-    case "tombstone-mismatch":
-      // 環境メタの violation は variableId が null(座標行は環境まで)
-      return [coordinateLine(coordinates, violation.variableId), ...metaEvidenceLines(violation)];
+  if (violation.kind === "chain-shortened" || violation.kind === "chain-diverged") {
+    return chainEvidenceLines(coordinates, violation);
   }
+  return variableEvidenceLines(coordinates, violation);
 }
 
 /**
