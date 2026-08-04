@@ -281,9 +281,7 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
     expect(body.projectId).toBe(vectorProjectId);
     expect(body.headSeq).toBe(12);
     expect(body.headHashHex).toBe(last?.entry_hash_hex);
-    expect(body.entries.map((entry) => entry.seq)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-    ]);
+    expect(body.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(body.entries.map((entry) => entry.op)).toEqual(vectorEntries.map((v) => v.op));
 
     // DO SQLite の実データを直接確認する(append-only 保存とハッシュ列)

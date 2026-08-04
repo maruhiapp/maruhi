@@ -83,9 +83,7 @@ export async function makeTestUser(userId: string): Promise<TestUser> {
  * コミットメント原像は project_id を含むため、create_environment / rotate_epoch
  * の payload は genesis を組んだ後でしか確定できない。
  */
-export type LazyChainOperation = (
-  projectId: string,
-) => ChainOperation | Promise<ChainOperation>;
+export type LazyChainOperation = (projectId: string) => ChainOperation | Promise<ChainOperation>;
 
 export interface ChainStep {
   readonly actor: TestUser;
@@ -159,7 +157,7 @@ export function removeMemberOp(target: TestUser): ChainOperation {
 }
 
 /** §5.2 のコミットメント(hex 小文字 64 文字)。 */
-export async function dekCommitmentFor(
+async function dekCommitmentFor(
   projectId: string,
   environmentId: string,
   epoch: number,

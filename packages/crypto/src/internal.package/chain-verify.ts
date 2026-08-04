@@ -152,10 +152,7 @@ function shapeAddMember(p: {
   return isBoundedId(p.targetUserId) && shapeGenesis(p) && isRole(p.role);
 }
 
-function shapeCreateEnvironment(p: {
-  environmentId: unknown;
-  dekCommitmentHex: unknown;
-}): boolean {
+function shapeCreateEnvironment(p: { environmentId: unknown; dekCommitmentHex: unknown }): boolean {
   // dek_commitment_hex は hex 小文字 64 文字(§6.2 の合意規則。形式検査は
   // payload 構造検査の段に属し、認可判定に先行する)
   return isBoundedId(p.environmentId) && isHexOfLength(p.dekCommitmentHex, SHA256_BYTES);
@@ -191,25 +188,23 @@ function shapeGrantServer(p: {
   );
 }
 
+// op ごとの payload 形状述語(§6.1 / §6.2 の構造検査)。分岐でなく表引きにして
+// op 追加時の検査漏れを型(網羅 Record)で防ぐ
+const PAYLOAD_SHAPES: {
+  readonly [K in ChainEntry["op"]]: (payload: Extract<ChainEntry, { op: K }>["payload"]) => boolean;
+} = {
+  genesis: shapeGenesis,
+  add_member: shapeAddMember,
+  remove_member: (p) => isBoundedId(p.targetUserId),
+  change_role: (p) => isBoundedId(p.targetUserId) && isRole(p.newRole),
+  create_environment: shapeCreateEnvironment,
+  rotate_epoch: shapeRotateEpoch,
+  grant_server: shapeGrantServer,
+  revoke_server: (p) => isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES),
+};
+
 function operationShapeOk(entry: ChainEntry): boolean {
-  switch (entry.op) {
-    case "genesis":
-      return shapeGenesis(entry.payload);
-    case "add_member":
-      return shapeAddMember(entry.payload);
-    case "remove_member":
-      return isBoundedId(entry.payload.targetUserId);
-    case "change_role":
-      return isBoundedId(entry.payload.targetUserId) && isRole(entry.payload.newRole);
-    case "create_environment":
-      return shapeCreateEnvironment(entry.payload);
-    case "rotate_epoch":
-      return shapeRotateEpoch(entry.payload);
-    case "grant_server":
-      return shapeGrantServer(entry.payload);
-    case "revoke_server":
-      return isHexOfLength(entry.payload.serverKeyFingerprintHex, FINGERPRINT_BYTES);
-  }
+  return PAYLOAD_SHAPES[entry.op](entry.payload as never);
 }
 
 /** actor の登録 sig 公開鍵(hex)を解決する。genesis は payload で自己記述 */

@@ -56,7 +56,10 @@ function contextInvalidField(context: DekCommitmentContext): string | null {
  * the context first (compute / verify below do); this builder assumes valid
  * input.
  */
-export function buildDekCommitmentBytes(context: DekCommitmentContext, dek: Uint8Array): Uint8Array {
+export function buildDekCommitmentBytes(
+  context: DekCommitmentContext,
+  dek: Uint8Array,
+): Uint8Array {
   return encodeLengthPrefixed([
     `${context.suite}/dek-commit`,
     context.projectId,
@@ -81,7 +84,10 @@ export async function computeDekCommitment(input: {
   if (input.dek.length !== DEK_BYTES) {
     return invalidInput("dek");
   }
-  return { ok: true, value: encodeHex(await sha256(buildDekCommitmentBytes(input.context, input.dek))) };
+  return {
+    ok: true,
+    value: encodeHex(await sha256(buildDekCommitmentBytes(input.context, input.dek))),
+  };
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   type ChainState,
   computeChainEntryHash,
   type CryptoResult,
+  type EnvironmentChainState,
   importSigningKeyPair,
   signChainEntry,
   type UnsignedChainEntry,
@@ -60,31 +61,36 @@ interface TamperVariant {
   readonly expect: string;
 }
 
+/** 期待した op のベクターエントリ(不一致はフィクスチャ破損 = throw)。 */
+function entryOfOp<K extends ChainEntry["op"]>(seq: number, op: K): ChainEntry & { op: K } {
+  const entry = entryAt(seq);
+  if (entry.op !== op) {
+    throw new Error(`chain vector seq ${seq}: expected ${op}, got ${entry.op}`);
+  }
+  return entry as ChainEntry & { op: K };
+}
+
+/** ベクターの (environment, epoch) のコミットメント(欠落はフィクスチャ破損 = throw)。 */
+function vectorCommitmentOf(environmentId: string, epoch: number): string {
+  const commitment = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_commitment_hex;
+  if (commitment === undefined) {
+    throw new Error(`chain vector environment_deks missing ${environmentId}#${epoch}`);
+  }
+  return commitment;
+}
+
 /** 改竄済み payload の typed 変種。canonical bytes がベクターの negative と一致するはず */
 function payloadTamperVariants(): readonly TamperVariant[] {
-  const e2 = entryAt(2);
-  const eChange = entryAt(7);
-  const eGrant = entryAt(9);
-  const eRotate = entryAt(10);
-  const eCreate = entryAt(11);
-  const eRevoke = entryAt(12);
-  if (
-    e2.op !== "add_member" ||
-    eChange.op !== "change_role" ||
-    eGrant.op !== "grant_server" ||
-    eRotate.op !== "rotate_epoch" ||
-    eCreate.op !== "create_environment" ||
-    eRevoke.op !== "revoke_server"
-  ) {
-    throw new Error("chain vector ops unexpected");
-  }
+  const e2 = entryOfOp(2, "add_member");
+  const eChange = entryOfOp(7, "change_role");
+  const eGrant = entryOfOp(9, "grant_server");
+  const eRotate = entryOfOp(10, "rotate_epoch");
+  const eCreate = entryOfOp(11, "create_environment");
+  const eRevoke = entryOfOp(12, "revoke_server");
   const flipped = fromHex(eRevoke.payload.serverKeyFingerprintHex);
   flipped[0] = (flipped[0] ?? 0) ^ 0x01;
-  const freshCommitment = vectorEnvironmentDeks["env-fresh-0004"]?.["1"]?.dek_commitment_hex;
-  const prodCommitment = vectorEnvironmentDeks["env-prod-0001"]?.["2"]?.dek_commitment_hex;
-  if (freshCommitment === undefined || prodCommitment === undefined) {
-    throw new Error("chain vector environment_deks missing");
-  }
+  const freshCommitment = vectorCommitmentOf("env-fresh-0004", 1);
+  const prodCommitment = vectorCommitmentOf("env-prod-0001", 2);
   return [
     {
       name: "tampered-payload-role",
@@ -355,13 +361,37 @@ async function appendRotation(
       keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
     },
     op: "rotate_epoch",
-    payload: { environmentId, newEpoch, reason: "scheduled", dekCommitmentHex: DUMMY_COMMITMENT_HEX },
+    payload: {
+      environmentId,
+      newEpoch,
+      reason: "scheduled",
+      dekCommitmentHex: DUMMY_COMMITMENT_HEX,
+    },
   });
   if (rotate === undefined) {
     return undefined;
   }
   const result = await verifyChain([...typedEntries, rotate]);
   return result.ok ? result.value : undefined;
+}
+
+/** 導出状態のメンバー集合が期待(user_id → role)と一致するか。 */
+function membersMatch(state: ChainState, expected: Readonly<Record<string, string>>): boolean {
+  return (
+    state.members.size === Object.keys(expected).length &&
+    Object.entries(expected).every(([userId, role]) => state.members.get(userId)?.role === role)
+  );
+}
+
+/** 導出状態の環境集合が期待(environment_id → 現エポック)と一致するか。 */
+function environmentsMatch(state: ChainState, expected: Readonly<Record<string, string>>): boolean {
+  return (
+    state.environments.size === Object.keys(expected).length &&
+    Object.entries(expected).every(
+      ([environmentId, epoch]) =>
+        state.environments.get(environmentId)?.currentEpoch === Number(epoch),
+    )
+  );
 }
 
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
@@ -373,20 +403,12 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
   for (const append of vectorValidAppends) {
     const entry = toTypedEntry(append.entry);
     const result = await verifyChain([...typedEntries, entry]);
-    const membersMatch =
+    c.push(
+      `chain valid append: ${append.name}`,
       result.ok &&
-      result.value.members.size === Object.keys(append.expected_members).length &&
-      Object.entries(append.expected_members).every(
-        ([userId, role]) => result.value.members.get(userId)?.role === role,
-      );
-    const environmentsMatch =
-      result.ok &&
-      result.value.environments.size === Object.keys(append.expected_environments).length &&
-      Object.entries(append.expected_environments).every(
-        ([environmentId, epoch]) =>
-          result.value.environments.get(environmentId)?.currentEpoch === Number(epoch),
-      );
-    c.push(`chain valid append: ${append.name}`, membersMatch && environmentsMatch);
+        membersMatch(result.value, append.expected_members) &&
+        environmentsMatch(result.value, append.expected_environments),
+    );
   }
 
   // 索引の再形成: 復帰(re-add)で鍵が現メンバー集合に戻った後は、同じ鍵での
@@ -421,6 +443,26 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
   );
 }
 
+/** 導出された環境状態が期待(現エポック・作成 seq・エポック開始 seq)と一致するか。 */
+function environmentStateIs(
+  environment: EnvironmentChainState | undefined,
+  expected: {
+    readonly currentEpoch: number;
+    readonly createdAtSeq?: number;
+    readonly epochStartSeqs: Readonly<Record<number, number>>;
+  },
+): boolean {
+  if (environment === undefined || environment.currentEpoch !== expected.currentEpoch) {
+    return false;
+  }
+  if (expected.createdAtSeq !== undefined && environment.createdAtSeq !== expected.createdAtSeq) {
+    return false;
+  }
+  return Object.entries(expected.epochStartSeqs).every(
+    ([epoch, seq]) => environment.epochStartSeqs.get(Number(epoch)) === seq,
+  );
+}
+
 async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   // 正しい追記(admin による rotate_epoch。現エポック 2 → 3)は検証を通り、
   // 状態(現エポック・エポック開始 seq・コミットメント)が更新される
@@ -428,12 +470,9 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   const prod = extended?.environments.get("env-prod-0001");
   c.push(
     "chain semantic: valid append by admin verifies",
-    extended !== undefined &&
-      extended.headSeq === NEXT_SEQ &&
-      prod !== undefined &&
-      prod.currentEpoch === 3 &&
-      prod.epochStartSeqs.get(3) === NEXT_SEQ &&
-      prod.dekCommitments.get(3) === DUMMY_COMMITMENT_HEX,
+    extended?.headSeq === NEXT_SEQ &&
+      environmentStateIs(prod, { currentEpoch: 3, epochStartSeqs: { 3: NEXT_SEQ } }) &&
+      prod?.dekCommitments.get(3) === DUMMY_COMMITMENT_HEX,
   );
 
   // create_environment → rotate_epoch の 2 エントリ連鎖: 作成直後の環境の
@@ -453,7 +492,7 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
     prevHashHex: await computeChainEntryHash(create),
     actor: {
       userId: "user-admin-0003",
-      keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
+      keyFingerprintHex: keysOf("user-admin-0003").key_fingerprint_hex,
     },
     op: "rotate_epoch",
     payload: {
@@ -466,16 +505,14 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   const result =
     rotate === undefined ? undefined : await verifyChain([...typedEntries, create, rotate]);
   const chained =
-    result !== undefined && result.ok
-      ? result.value.environments.get("env-chained-0006")
-      : undefined;
+    result?.ok === true ? result.value.environments.get("env-chained-0006") : undefined;
   c.push(
     "chain semantic: create then rotate chain",
-    chained !== undefined &&
-      chained.currentEpoch === 2 &&
-      chained.createdAtSeq === NEXT_SEQ &&
-      chained.epochStartSeqs.get(1) === NEXT_SEQ &&
-      chained.epochStartSeqs.get(2) === NEXT_SEQ + 1,
+    environmentStateIs(chained, {
+      currentEpoch: 2,
+      createdAtSeq: NEXT_SEQ,
+      epochStartSeqs: { 1: NEXT_SEQ, 2: NEXT_SEQ + 1 },
+    }),
   );
 }
 

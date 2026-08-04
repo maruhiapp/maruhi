@@ -323,14 +323,10 @@ describe("maruhi pull", () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler(),
-      onRequest(
-        "GET",
-        `/projects/${fixture.built.projectId}/environments/${ENV_ID}/deks`,
-        () => ({
-          status: 200,
-          json: { deks: [fixture.wraps[0], poison] },
-        }),
-      ),
+      onRequest("GET", `/projects/${fixture.built.projectId}/environments/${ENV_ID}/deks`, () => ({
+        status: 200,
+        json: { deks: [fixture.wraps[0], poison] },
+      })),
     ]);
     env.setStdin(new TextEncoder().encode("new-value"));
     expect(await runCli(["push", "GAMMA"], env.layer)).toBe(1);
@@ -359,20 +355,16 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      onRequest(
-        "GET",
-        `/projects/${fixture.built.projectId}/environments/ghost/pull`,
-        () => ({
-          status: 200,
-          json: {
-            environmentId: "ghost",
-            name: "ghost",
-            currentEpoch: 1,
-            variables: [{ variableId: "vg", name: "GHOST", value: ghostValue }],
-            deks: [ghostWrap],
-          },
-        }),
-      ),
+      onRequest("GET", `/projects/${fixture.built.projectId}/environments/ghost/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: "ghost",
+          name: "ghost",
+          currentEpoch: 1,
+          variables: [{ variableId: "vg", name: "GHOST", value: ghostValue }],
+          deks: [ghostWrap],
+        },
+      })),
     ]);
     expect(await runCli(["pull", "--env", "ghost"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("チェーン上に存在しません");

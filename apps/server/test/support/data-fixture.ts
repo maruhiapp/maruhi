@@ -173,12 +173,17 @@ export async function createEnvironmentComposite(
     actorUserId,
     operation: createEnvironmentOperation(input.environmentId, input.dekCommitmentHex),
   });
-  const response = await requestJson("POST", "/environments", tokenOf(fixture.tokens, actorUserId), {
-    parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
-    entry,
-    name: input.name,
-    deks: input.deks,
-  });
+  const response = await requestJson(
+    "POST",
+    "/environments",
+    tokenOf(fixture.tokens, actorUserId),
+    {
+      parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+      entry,
+      name: input.name,
+      deks: input.deks,
+    },
+  );
   if (response.status === 200) {
     advanceHead(
       fixture,

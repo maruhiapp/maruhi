@@ -31,7 +31,7 @@ import {
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
   MAX_VERSIONS_PER_VARIABLE,
 } from "../src/policy.ts";
-import { bearer, deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
+import { deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
   encryptValue,
@@ -59,7 +59,6 @@ import {
   READER,
   requestJson,
   rotateEnvironmentComposite,
-  rotateEnvironmentOk,
   setupDataProject,
   STRANGER,
   tokenOf,

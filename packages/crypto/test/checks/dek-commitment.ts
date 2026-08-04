@@ -140,7 +140,11 @@ async function rewrapInvarianceChecks(c: Checks): Promise<void> {
     epoch: base.epoch,
     recipientUserId: "user-backfilled-0006",
   };
-  const wrapped = await wrapDek({ recipientPublicKey: recipient.publicKey, dek, context: wrapContext });
+  const wrapped = await wrapDek({
+    recipientPublicKey: recipient.publicKey,
+    dek,
+    context: wrapContext,
+  });
   if (!wrapped.ok) {
     c.push("dek-commitment: rewrap invariance", false, "wrap failed");
     return;

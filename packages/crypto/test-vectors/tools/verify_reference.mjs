@@ -178,8 +178,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         check(
           `chain seq ${e.seq}: rotate_epoch carries new-epoch commitment`,
           e.payload.dek_commitment_hex ===
-            doc.environment_deks[e.payload.environment_id][e.payload.new_epoch]
-              .dek_commitment_hex,
+            doc.environment_deks[e.payload.environment_id][e.payload.new_epoch].dek_commitment_hex,
         );
       }
     }
@@ -326,8 +325,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 {
   const doc = read("dek-commitment.json");
   const dekWrap = read("dek-wrap.json");
-  const sha256hex = async (u8) =>
-    toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const preimage = (ctx) =>
     lpEncode([ctx.domain, ctx.project_id, ctx.environment_id, ctx.epoch, ctx.dek_hex]);
   for (const v of doc.vectors) {

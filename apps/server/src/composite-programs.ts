@@ -22,6 +22,7 @@ import type { ChainInvalidError } from "@maruhi/core";
 import type { ChainEntry, ChainMember, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { AuditEventInput } from "./audit-store.ts";
 import { AuditStore, chainMirrorEvent } from "./audit-store.ts";
 import type { StateCache, StoredChain } from "./chain-store.ts";
 import {
@@ -31,13 +32,14 @@ import {
   updateStateCache,
   verifyChainEffect,
 } from "./chain-store.ts";
-import type { DataActor, DataRejectedError, DekWrapInput } from "./data-plane.ts";
-import { dataEvent, rejectData, requireRole } from "./data-plane.ts";
+import type { DataActor, DataRejectedError, DekWrapInput, InitializedChain } from "./data-plane.ts";
+import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import {
   dekRegisteredEvent,
   ensureEnvironmentQuota,
   ensureWrapSetAcceptable,
 } from "./data-programs.ts";
+import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import {
   MAX_CHAIN_ENTRIES,
@@ -59,26 +61,18 @@ export interface EnvironmentChainResultValue {
  */
 const loadChainForComposite = (callerUserId: string, cache: StateCache) =>
   Effect.gen(function* () {
-    const store = yield* ChainStore;
-    const chain = yield* store.load;
-    if (chain.headSeq === 0 || chain.headHashHex === null) {
-      return yield* rejectData({ kind: "not-initialized" });
-    }
+    const chain = yield* loadInitializedChain;
     const state = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, "member");
-    if (chain.genesisHashHex === null) {
-      // headSeq > 0 なら genesis 行は不変条件として存在する(ストレージ破損は defect)
-      return yield* Effect.die(new Error("initialized chain is missing its genesis hash"));
-    }
     return { chain, state, member, projectId: chain.genesisHashHex };
   });
 
 /** CAS(§6.4): 親ヘッド不一致は現ヘッド情報付きで拒否(worker が 409 に写す)。 */
 function ensureCompositeParentHead(
-  chain: StoredChain,
+  chain: InitializedChain,
   parentHeadHashHex: string,
 ): Effect.Effect<void, DataRejectedError> {
-  if (chain.headHashHex !== null && parentHeadHashHex !== chain.headHashHex) {
+  if (parentHeadHashHex !== chain.headHashHex) {
     return Effect.fail(
       rejectData({
         kind: "chain-head-conflict",
@@ -172,6 +166,77 @@ const ensureCompositeWrapSet = (input: {
     }
   });
 
+/** 複合の書き込みフェーズで共有する依存とパラメータ(同期関数群の引数)。 */
+interface CompositeWriteContext {
+  readonly chainStore: {
+    readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
+  };
+  readonly dataStore: { readonly write: DataWriteOps };
+  readonly audit: { readonly appendSync: (event: AuditEventInput) => void };
+  readonly actor: DataActor;
+  readonly member: ChainMember;
+  readonly environmentId: string;
+  readonly nowMs: number;
+}
+
+/** チェーンエントリ + ミラー(AUDIT_SPEC §3.4。dek_commitment を payload に写す)。 */
+function insertCompositeEntrySync(
+  context: CompositeWriteContext,
+  entry: ChainEntry,
+  canonicalBytes: number,
+  appliedState: ChainState,
+): void {
+  context.chainStore.insertSync(entry, appliedState.headHashHex, canonicalBytes);
+  context.audit.appendSync(chainMirrorEvent(entry, context.nowMs));
+}
+
+/** 同梱ラップの挿入 + dek.registered(1 受信者 1 行 — AUDIT_SPEC §3.3)。 */
+function insertCompositeWrapsSync(
+  context: CompositeWriteContext,
+  deks: readonly DekWrapInput[],
+): void {
+  for (const wrap of deks) {
+    context.dataStore.write.insertWrap(context.environmentId, wrap, context.member, context.nowMs);
+    context.audit.appendSync(
+      dekRegisteredEvent(context.actor, context.member, context.nowMs, context.environmentId, wrap),
+    );
+  }
+}
+
+/** 書き込みフェーズの依存(ChainStore / AuditStore)を束ねて CompositeWriteContext を作る。 */
+const makeWriteContext = (input: {
+  readonly dataStore: { readonly write: DataWriteOps };
+  readonly actor: DataActor;
+  readonly member: ChainMember;
+  readonly environmentId: string;
+}) =>
+  Effect.gen(function* () {
+    const chainStore = yield* ChainStore;
+    const audit = yield* AuditStore;
+    return {
+      chainStore,
+      dataStore: input.dataStore,
+      audit,
+      actor: input.actor,
+      member: input.member,
+      environmentId: input.environmentId,
+      nowMs: Date.now(),
+    } satisfies CompositeWriteContext;
+  });
+
+function compositeResult(
+  environmentId: string,
+  currentEpoch: number,
+  appliedState: ChainState,
+): EnvironmentChainResultValue {
+  return {
+    environmentId,
+    currentEpoch,
+    headSeq: appliedState.headSeq,
+    headHashHex: appliedState.headHashHex,
+  };
+}
+
 export const createEnvironmentCompositeProgram = (
   actor: DataActor,
   input: {
@@ -207,35 +272,27 @@ export const createEnvironmentCompositeProgram = (
       establishedEpoch: 1,
       deks: input.deks,
     });
-    const chainStore = yield* ChainStore;
-    const audit = yield* AuditStore;
-    const now = Date.now();
+    const writeContext = yield* makeWriteContext({
+      dataStore: store,
+      actor,
+      member,
+      environmentId,
+    });
     // 書き込みフェーズ: 単一の同期ブロック = 同一タスクで原子コミット
     // (チェーンエントリ + ミラー + 環境行 + ラップ + 監査を分割しない — §12-4)
     yield* Effect.sync(() => {
-      chainStore.insertSync(input.entry, appliedState.headHashHex, canonicalBytes);
-      // chain.environment_created(AUDIT_SPEC §3.4): dek_commitment を payload に写す
-      audit.appendSync(chainMirrorEvent(input.entry, now));
-      store.write.insertEnvironment(environmentId, input.name, now);
-      audit.appendSync(
-        dataEvent(actor, now, "env.created", {
+      insertCompositeEntrySync(writeContext, input.entry, canonicalBytes, appliedState);
+      store.write.insertEnvironment(environmentId, input.name, writeContext.nowMs);
+      writeContext.audit.appendSync(
+        dataEvent(actor, writeContext.nowMs, "env.created", {
           environmentId,
           payload: { name: input.name },
         }),
       );
-      // 複合同梱のエポック 1 ラップも dek.registered の対象(AUDIT_SPEC §3.3)
-      for (const wrap of input.deks) {
-        store.write.insertWrap(environmentId, wrap, member, now);
-        audit.appendSync(dekRegisteredEvent(actor, member, now, environmentId, wrap));
-      }
+      insertCompositeWrapsSync(writeContext, input.deks);
     });
     updateStateCache(cache, appliedState);
-    return {
-      environmentId,
-      currentEpoch: 1,
-      headSeq: appliedState.headSeq,
-      headHashHex: appliedState.headHashHex,
-    } satisfies EnvironmentChainResultValue;
+    return compositeResult(environmentId, 1, appliedState);
   });
 
 export const rotateEpochCompositeProgram = (
@@ -273,23 +330,16 @@ export const rotateEpochCompositeProgram = (
       establishedEpoch: input.entry.payload.newEpoch,
       deks: input.deks,
     });
-    const chainStore = yield* ChainStore;
-    const audit = yield* AuditStore;
-    const now = Date.now();
+    const writeContext = yield* makeWriteContext({
+      dataStore: store,
+      actor,
+      member,
+      environmentId,
+    });
     yield* Effect.sync(() => {
-      chainStore.insertSync(input.entry, appliedState.headHashHex, canonicalBytes);
-      // chain.epoch_rotated(AUDIT_SPEC §3.4): dek_commitment を payload に写す
-      audit.appendSync(chainMirrorEvent(input.entry, now));
-      for (const wrap of input.deks) {
-        store.write.insertWrap(environmentId, wrap, member, now);
-        audit.appendSync(dekRegisteredEvent(actor, member, now, environmentId, wrap));
-      }
+      insertCompositeEntrySync(writeContext, input.entry, canonicalBytes, appliedState);
+      insertCompositeWrapsSync(writeContext, input.deks);
     });
     updateStateCache(cache, appliedState);
-    return {
-      environmentId,
-      currentEpoch: input.entry.payload.newEpoch,
-      headSeq: appliedState.headSeq,
-      headHashHex: appliedState.headHashHex,
-    } satisfies EnvironmentChainResultValue;
+    return compositeResult(environmentId, input.entry.payload.newEpoch, appliedState);
   });

@@ -29,7 +29,7 @@ import type {
   VariableVersionValue,
 } from "./data-plane.ts";
 import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
-import type { DataWriteOps, EnvironmentRow, VariableRow } from "./data-store.ts";
+import type { DataWriteOps, VariableRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,

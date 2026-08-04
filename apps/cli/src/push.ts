@@ -274,8 +274,7 @@ function nextState(
       // 新エポックの DEK を取得・再検証する
       return Effect.gen(function* () {
         const verified = yield* input.resync;
-        const epoch = (yield* requireChainEnvironment(verified, input.environmentId))
-          .currentEpoch;
+        const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
         if (epoch === state.epoch) {
           // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
           // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)

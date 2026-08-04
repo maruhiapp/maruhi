@@ -8,7 +8,7 @@ import type { ChainInvalidReason, ChainMember, ChainState, Role } from "@maruhi/
 import { Data, Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
+import type { StateCache, StoredChain } from "./chain-store.ts";
 import { ChainStore, deriveStoredState } from "./chain-store.ts";
 
 // ---------------------------------------------------------------------------
@@ -246,6 +246,30 @@ export interface MemberContext {
   readonly projectId: string;
 }
 
+/** 初期化済みチェーン(genesis ハッシュの存在を型で保証した StoredChain)。 */
+export type InitializedChain = StoredChain & {
+  readonly headHashHex: string;
+  readonly genesisHashHex: string;
+};
+
+/**
+ * チェーンのロードと初期化検査(データ操作・複合受理の共通前段)。未初期化は
+ * not-initialized、headSeq > 0 なのに genesis / ヘッドが欠けるのはストレージ
+ * 破損(defect)。
+ */
+export const loadInitializedChain: Effect.Effect<InitializedChain, DataRejectedError, ChainStore> =
+  Effect.gen(function* () {
+    const store = yield* ChainStore;
+    const chain = yield* store.load;
+    if (chain.headSeq === 0 || chain.headHashHex === null) {
+      return yield* rejectData({ kind: "not-initialized" });
+    }
+    if (chain.genesisHashHex === null) {
+      return yield* Effect.die(new Error("initialized chain is missing its genesis hash"));
+    }
+    return { ...chain, headHashHex: chain.headHashHex, genesisHashHex: chain.genesisHashHex };
+  });
+
 /**
  * データ操作に共通する前段: 未初期化の検査 → チェーン導出 → メンバーシップと
  * role 下限の検査(§12-3 の判定順)。導出はチェーン API と同じキャッシュを流用する。
@@ -256,17 +280,9 @@ export const requireMemberState = (
   cache: StateCache,
 ): Effect.Effect<MemberContext, DataRejectedError, ChainStore> =>
   Effect.gen(function* () {
-    const store = yield* ChainStore;
-    const chain = yield* store.load;
-    if (chain.headSeq === 0 || chain.headHashHex === null) {
-      return yield* rejectData({ kind: "not-initialized" });
-    }
+    const chain = yield* loadInitializedChain;
     const state = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, minimum);
-    if (chain.genesisHashHex === null) {
-      // headSeq > 0 なら genesis 行は不変条件として存在する(ストレージ破損は defect)
-      return yield* Effect.die(new Error("initialized chain is missing its genesis hash"));
-    }
     return { state, member, projectId: chain.genesisHashHex };
   });
 
