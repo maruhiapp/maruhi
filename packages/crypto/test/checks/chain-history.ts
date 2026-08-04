@@ -14,7 +14,7 @@ const MEMBER = "user-member-0002";
 const ADMIN = "user-admin-0003";
 
 /** tenure_extension のエントリ(seq 13 の新鍵 re-add)を型付きで得る。 */
-export function tenureExtensionEntry(): ChainEntry {
+function tenureExtensionEntry(): ChainEntry {
   const raw = valueVectors.tenure_extension.entry;
   return toTypedEntry({
     seq: raw.seq,
@@ -70,7 +70,7 @@ function entryHashChecks(c: Checks, history: ChainHistoryIndex): void {
   );
 }
 
-function memberInclusiveChecks(c: Checks, history: ChainHistoryIndex): void {
+function memberBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
   // genesis 自身の seq で owner 有効(inclusive)
   c.push("history: owner valid at genesis seq", history.memberStateAt(OWNER, 1)?.role === "owner");
   // add_member 自身の seq で対象有効(inclusive)。seq 1 では未加入
@@ -95,6 +95,9 @@ function memberInclusiveChecks(c: Checks, history: ChainHistoryIndex): void {
     history.memberStateAt(MEMBER, 5) === undefined,
   );
   c.push("history: member invalid after removal", history.memberStateAt(MEMBER, 12) === undefined);
+}
+
+function roleChangeBoundaryChecks(c: Checks, history: ChainHistoryIndex): void {
   // change_role 自身の seq で新 role 有効(inclusive)。add 時は reader
   c.push("history: admin absent before add", history.memberStateAt(ADMIN, 5) === undefined);
   c.push(
@@ -108,7 +111,7 @@ function memberInclusiveChecks(c: Checks, history: ChainHistoryIndex): void {
   c.push("history: admin keeps role at head", history.memberStateAt(ADMIN, 12)?.role === "admin");
 }
 
-function environmentInclusiveChecks(c: Checks, history: ChainHistoryIndex): void {
+function environmentCreateRotateChecks(c: Checks, history: ChainHistoryIndex): void {
   // create_environment 自身の seq でエポック 1 有効(inclusive)。前 seq は未作成
   c.push(
     "history: environment absent before create",
@@ -128,6 +131,9 @@ function environmentInclusiveChecks(c: Checks, history: ChainHistoryIndex): void
     "history: epoch stays current at head",
     history.environmentStateAt("env-prod-0001", 12)?.currentEpoch === 2,
   );
+}
+
+function environmentCoverageChecks(c: Checks, history: ChainHistoryIndex): void {
   c.push(
     "history: dev environment created at seq 8",
     history.environmentStateAt("env-dev-0002", 8)?.currentEpoch === 1 &&
@@ -170,7 +176,7 @@ function keyLookupChecks(c: Checks, history: ChainHistoryIndex): void {
   );
 }
 
-function tenureChecks(c: Checks, extended: ChainHistoryIndex): void {
+function tenureBoundaryChecks(c: Checks, extended: ChainHistoryIndex): void {
   const rejoined = valueVectors.tenure_extension.rejoined_member;
   const oldKeys = vectorKeys[MEMBER];
   // remove → re-add は別 tenure: 旧区間(seq 2〜4)は旧鍵、新区間(seq 13〜)は新鍵
@@ -188,6 +194,11 @@ function tenureChecks(c: Checks, extended: ChainHistoryIndex): void {
     "history: removal gap stays invalid between tenures",
     extended.memberStateAt(MEMBER, 12) === undefined,
   );
+}
+
+function tenureKeyLookupChecks(c: Checks, extended: ChainHistoryIndex): void {
+  const rejoined = valueVectors.tenure_extension.rejoined_member;
+  const oldKeys = vectorKeys[MEMBER];
   // 同じ user_id の両 tenure の鍵が FP で個別に引ける(dedupe で tenure を消さない)
   c.push(
     "history: both tenures' keys resolvable by fingerprint",
@@ -201,8 +212,10 @@ export async function chainHistoryChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const history = await canonicalHistory();
   entryHashChecks(c, history);
-  memberInclusiveChecks(c, history);
-  environmentInclusiveChecks(c, history);
+  memberBoundaryChecks(c, history);
+  roleChangeBoundaryChecks(c, history);
+  environmentCreateRotateChecks(c, history);
+  environmentCoverageChecks(c, history);
   keyLookupChecks(c, history);
   const extended = await extendedHistory();
   c.push("history: extension head seq", extended.headSeq === 13);
@@ -210,6 +223,7 @@ export async function chainHistoryChecks(): Promise<CheckResult[]> {
     "history: extension entry hash at seq 13",
     extended.entryHashAt(13) === valueVectors.tenure_extension.entry.entry_hash_hex,
   );
-  tenureChecks(c, extended);
+  tenureBoundaryChecks(c, extended);
+  tenureKeyLookupChecks(c, extended);
   return c.results;
 }

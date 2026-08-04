@@ -17,8 +17,9 @@
 
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
-import type { CryptoError, CryptoResult } from "./errors.ts";
+import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
+import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
 
 const SIGNATURE_BYTES = 64;
 const NONCE_HEX_LENGTH = 12 * 2;
@@ -53,27 +54,8 @@ export interface ValueSignatureContext {
   readonly chainHeadSeq: number;
 }
 
-function invalidInput(field: string): { readonly ok: false; readonly error: CryptoError } {
-  return { ok: false, error: { kind: "InvalidInput", field } };
-}
-
-function isLowercaseHexOfLength(value: string, length: number): boolean {
-  return value.length === length && decodeHex(value) !== null;
-}
-
-// 署名対象の構造検証(§5.1 実装と同じ規律): hex は小文字・固定長(大文字 hex を
-// 許すと同一値に複数の正規形が生まれ、署名の一意性が壊れる)。
-// version ↔ prev の結合(version 1 = 空 / version > 1 = 64 hex)はここでは
-// 検査しない: 検証側は「署名は有効だが規則違反」の値(ベクターの rule negative
-// v1-nonempty-prev 等)の署名をまず検証できる必要があり、結合は検証規則
-// (value-verify.ts の prev-shape-mismatch)として理由コード付きで拒否する。
-function contextInvalidField(context: ValueSignatureContext): string | null {
-  if (context.suite.length === 0) {
-    return "context suite";
-  }
-  if (context.writerUserId.length === 0) {
-    return "context writerUserId";
-  }
+// 数値フィールド(epoch / version / chain_head_seq)は 1 始まりの安全な整数
+function numericFieldInvalid(context: ValueSignatureContext): string | null {
   if (!Number.isSafeInteger(context.epoch) || context.epoch < 1) {
     return "context epoch";
   }
@@ -83,6 +65,12 @@ function contextInvalidField(context: ValueSignatureContext): string | null {
   if (!Number.isSafeInteger(context.chainHeadSeq) || context.chainHeadSeq < 1) {
     return "context chainHeadSeq";
   }
+  return null;
+}
+
+// バイナリ列は hex 小文字のみ(§5.1 実装と同じ規律 — 大文字 hex を許すと
+// 同一値に複数の正規形が生まれ、署名の一意性が壊れる)
+function hexFieldInvalid(context: ValueSignatureContext): string | null {
   if (!isLowercaseHexOfLength(context.nonceHex, NONCE_HEX_LENGTH)) {
     return "context nonceHex";
   }
@@ -103,6 +91,21 @@ function contextInvalidField(context: ValueSignatureContext): string | null {
     return "context chainHeadHashHex";
   }
   return null;
+}
+
+// 署名対象の構造検証。version ↔ prev の結合(version 1 = 空 / version > 1 =
+// 64 hex)はここでは検査しない: 検証側は「署名は有効だが規則違反」の値
+// (ベクターの rule negative v1-nonempty-prev 等)の署名をまず検証できる必要が
+// あり、結合は検証規則(value-verify.ts の prev-shape-mismatch)として理由
+// コード付きで拒否する。
+function contextInvalidField(context: ValueSignatureContext): string | null {
+  if (context.suite.length === 0) {
+    return "context suite";
+  }
+  if (context.writerUserId.length === 0) {
+    return "context writerUserId";
+  }
+  return numericFieldInvalid(context) ?? hexFieldInvalid(context);
 }
 
 /** Validates a value-signature context (shared by sign / verify / hash). */

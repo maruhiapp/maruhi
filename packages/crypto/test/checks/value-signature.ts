@@ -74,6 +74,41 @@ function contextOf(v: VectorContext): ValueSignatureContext {
 const positives = valueVectors.vectors;
 const byName = new Map(positives.map((v) => [v.name, v]));
 
+/** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
+async function signAndVerifyChecks(
+  c: Checks,
+  name: string,
+  context: ValueSignatureContext,
+  signatureHex: string,
+): Promise<void> {
+  // 署名方向: writer の seed で署名し期待署名と一致(Ed25519 は決定論的)
+  const keys = vectorKeys[context.writerUserId];
+  if (keys === undefined) {
+    c.push(`value-sig ${name}: writer keys`, false, "writer keys missing");
+    return;
+  }
+  const pair = await importSigningKeyPair({
+    publicKey: fromHex(keys.sig_pub_hex),
+    privateSeed: fromHex(keys.sig_sk_seed_hex),
+  });
+  const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
+  if (!pair.ok || !publicKey.ok) {
+    c.push(`value-sig ${name}: writer keys`, false, "key import failed");
+    return;
+  }
+  const signed = await signValue({ context, signingKey: pair.value.privateKey });
+  c.push(
+    `value-sig ${name}: deterministic re-sign matches vector`,
+    signed.ok && signed.value === signatureHex,
+  );
+  const verified = await verifyValueSignature({
+    context,
+    signatureHex,
+    writerPublicKey: publicKey.value,
+  });
+  c.push(`value-sig ${name}: raw signature verify`, verified.ok);
+}
+
 async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   for (const vector of positives) {
     const context = contextOf(vector.context);
@@ -86,39 +121,7 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
       `value-sig ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-
-    // 署名方向: writer の seed で署名し期待署名と一致(Ed25519 は決定論的)
-    const keys = vectorKeys[vector.context.writer_user_id];
-    if (keys === undefined) {
-      c.push(`value-sig ${vector.name}: writer keys`, false, "writer keys missing");
-      continue;
-    }
-    const pair = await importSigningKeyPair({
-      publicKey: fromHex(keys.sig_pub_hex),
-      privateSeed: fromHex(keys.sig_sk_seed_hex),
-    });
-    if (!pair.ok) {
-      c.push(`value-sig ${vector.name}: writer keys`, false, "key import failed");
-      continue;
-    }
-    const signed = await signValue({ context, signingKey: pair.value.privateKey });
-    c.push(
-      `value-sig ${vector.name}: deterministic re-sign matches vector`,
-      signed.ok && signed.value === vector.signature_hex,
-    );
-
-    // 低水準の検証方向
-    const publicKey = await importSigningPublicKey(fromHex(keys.sig_pub_hex));
-    if (!publicKey.ok) {
-      c.push(`value-sig ${vector.name}: verify key import`, false);
-      continue;
-    }
-    const verified = await verifyValueSignature({
-      context,
-      signatureHex: vector.signature_hex,
-      writerPublicKey: publicKey.value,
-    });
-    c.push(`value-sig ${vector.name}: raw signature verify`, verified.ok);
+    await signAndVerifyChecks(c, vector.name, context, vector.signature_hex);
 
     // 履歴ベースの複合検証(§6.3): prev_base があれば predecessor 込みで検査
     const base = "prev_base" in vector ? byName.get(vector.prev_base as string) : undefined;
@@ -171,6 +174,59 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
   );
 }
 
+/** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
+async function ruleNegativeCheck(
+  c: Checks,
+  negative: RuleNegative,
+  history: ChainHistoryIndex,
+  extended: ChainHistoryIndex,
+): Promise<void> {
+  const chainHistory = negative.chain === "tenure-extension" ? extended : history;
+  const result = await verifyDistributedValue({
+    history: chainHistory,
+    context: contextOf(negative.context),
+    writerKeyFingerprintHex: negative.writer_key_fingerprint_hex ?? "",
+    signatureHex: negative.signature_hex,
+    predecessor:
+      negative.predecessor === undefined
+        ? undefined
+        : {
+            signedBytesHashHex: negative.predecessor.signed_bytes_sha256_hex,
+            epoch: negative.predecessor.epoch,
+          },
+  });
+  c.push(
+    `value-sig rule negative: ${negative.name}`,
+    !result.ok &&
+      result.error.kind === "ValueInvalid" &&
+      result.error.reason === negative.expected_reason,
+    result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
+  );
+}
+
+/** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
+async function tamperNegativeCheck(c: Checks, negative: RuleNegative): Promise<void> {
+  const context = contextOf(negative.context);
+  const bytesMatch = toHex(buildValueSignedBytes(context)) === negative.verify_signed_bytes_hex;
+  const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
+  if (!key.ok) {
+    c.push(`value-sig negative: ${negative.name}`, false, "verify key import failed");
+    return;
+  }
+  const result = await verifyValueSignature({
+    context,
+    signatureHex: negative.signature_hex,
+    writerPublicKey: key.value,
+  });
+  c.push(
+    `value-sig negative: ${negative.name}`,
+    bytesMatch &&
+      !result.ok &&
+      result.error.kind === "ValueInvalid" &&
+      result.error.reason === "signature-invalid",
+  );
+}
+
 async function negativeChecks(
   c: Checks,
   history: ChainHistoryIndex,
@@ -180,51 +236,10 @@ async function negativeChecks(
   for (const negative of valueVectors.negative as readonly RuleNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      // 署名は有効(verify_reference.mjs が確認)だが、履歴検証が
-      // expected_reason で拒否する
-      const chainHistory = negative.chain === "tenure-extension" ? extended : history;
-      const result = await verifyDistributedValue({
-        history: chainHistory,
-        context: contextOf(negative.context),
-        writerKeyFingerprintHex: negative.writer_key_fingerprint_hex ?? "",
-        signatureHex: negative.signature_hex,
-        predecessor:
-          negative.predecessor === undefined
-            ? undefined
-            : {
-                signedBytesHashHex: negative.predecessor.signed_bytes_sha256_hex,
-                epoch: negative.predecessor.epoch,
-              },
-      });
-      c.push(
-        `value-sig rule negative: ${negative.name}`,
-        !result.ok &&
-          result.error.kind === "ValueInvalid" &&
-          result.error.reason === negative.expected_reason,
-        result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
-      );
-      continue;
+      await ruleNegativeCheck(c, negative, history, extended);
+    } else {
+      await tamperNegativeCheck(c, negative);
     }
-    // 改竄・移植系: 実装の正規化がベクターの検証側バイト列を再現し、元署名が失敗する
-    const context = contextOf(negative.context);
-    const bytesMatch = toHex(buildValueSignedBytes(context)) === negative.verify_signed_bytes_hex;
-    const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
-    if (!key.ok) {
-      c.push(`value-sig negative: ${negative.name}`, false, "verify key import failed");
-      continue;
-    }
-    const result = await verifyValueSignature({
-      context,
-      signatureHex: negative.signature_hex,
-      writerPublicKey: key.value,
-    });
-    c.push(
-      `value-sig negative: ${negative.name}`,
-      bytesMatch &&
-        !result.ok &&
-        result.error.kind === "ValueInvalid" &&
-        result.error.reason === "signature-invalid",
-    );
   }
   // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
   c.push(

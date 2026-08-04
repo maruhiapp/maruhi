@@ -15,7 +15,7 @@ import type {
   WireSuite,
 } from "./data-plane.ts";
 
-export interface EnvironmentRow {
+interface EnvironmentRow {
   readonly environmentId: string;
   readonly name: string;
   readonly deletedAtMs: number | null;
@@ -47,7 +47,7 @@ export interface ValueWriterInfo {
  * 保存済みバージョンの検証アンカー: サーバー再計算の signed_bytes ハッシュと
  * 当時のエポック。次 version の prev 検査(§12-5 の 5)の入力。
  */
-export interface VersionAnchor {
+interface VersionAnchor {
   readonly signedBytesHashHex: string;
   readonly epoch: number;
 }

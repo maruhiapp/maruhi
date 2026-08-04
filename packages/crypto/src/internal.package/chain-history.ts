@@ -91,6 +91,19 @@ interface EnvironmentRecord {
   readonly epochStarts: readonly (readonly [number, number])[];
 }
 
+/** change_role はエントリ自身の seq で新 role が有効(inclusive)。 */
+function roleAt(tenure: TenureRecord, seq: number): Role | undefined {
+  let role: Role | undefined;
+  for (const span of tenure.roles) {
+    if (span.fromSeq <= seq) {
+      role = span.role;
+    } else {
+      break;
+    }
+  }
+  return role;
+}
+
 class ChainHistory implements ChainHistoryIndex {
   readonly headSeq: number;
   readonly headHashHex: string;
@@ -130,15 +143,7 @@ class ChainHistory implements ChainHistoryIndex {
     if (tenure === undefined) {
       return undefined;
     }
-    // change_role はエントリ自身の seq で新 role が有効(inclusive)
-    let role = tenure.roles[0]?.role;
-    for (const span of tenure.roles) {
-      if (span.fromSeq <= seq) {
-        role = span.role;
-      } else {
-        break;
-      }
-    }
+    const role = roleAt(tenure, seq);
     if (role === undefined) {
       return undefined;
     }

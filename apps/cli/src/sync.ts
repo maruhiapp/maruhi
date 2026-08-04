@@ -164,7 +164,7 @@ export function syncProject(
  * 新スナップショット内で一致、を要求する。別の整合チェーンへの差し替え・
  * 旧 head の欠落・同 seq のハッシュ不一致はすべてここで落ちる。
  */
-export function ensureExtensionOf(
+function ensureExtensionOf(
   previous: VerifiedProject,
   next: VerifiedProject,
 ): Effect.Effect<VerifiedProject, CliError> {

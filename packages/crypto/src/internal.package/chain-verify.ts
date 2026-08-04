@@ -512,6 +512,20 @@ async function applyOperation(
   }
 }
 
+/** 適用済み状態から対象メンバーの鍵束縛を引いて tenure 開始を記録する。 */
+function recordTenureStartOf(
+  history: ChainHistoryBuilder,
+  state: MutableChainState,
+  userId: string,
+  seq: number,
+  role: Role,
+): void {
+  const member = state.members.get(userId);
+  if (member !== undefined) {
+    history.recordTenureStart(userId, seq, member, member.keyFingerprintHex, role);
+  }
+}
+
 /**
  * 適用成功済みエントリを履歴索引(chain-history.ts)へ記録する。tenure の
  * 開始・終了・role 変更はすべて当該エントリ自身の seq を境界にする
@@ -523,32 +537,18 @@ function recordHistory(
   state: MutableChainState,
 ): void {
   switch (entry.op) {
-    case "genesis": {
-      const member = state.members.get(entry.actor.userId);
-      if (member !== undefined) {
-        history.recordTenureStart(
-          member.userId,
-          entry.seq,
-          member,
-          member.keyFingerprintHex,
-          "owner",
-        );
-      }
+    case "genesis":
+      recordTenureStartOf(history, state, entry.actor.userId, entry.seq, "owner");
       return;
-    }
-    case "add_member": {
-      const member = state.members.get(entry.payload.targetUserId);
-      if (member !== undefined) {
-        history.recordTenureStart(
-          member.userId,
-          entry.seq,
-          member,
-          member.keyFingerprintHex,
-          entry.payload.role,
-        );
-      }
+    case "add_member":
+      recordTenureStartOf(
+        history,
+        state,
+        entry.payload.targetUserId,
+        entry.seq,
+        entry.payload.role,
+      );
       return;
-    }
     case "change_role":
       history.recordRoleChange(entry.payload.targetUserId, entry.seq, entry.payload.newRole);
       return;
@@ -565,6 +565,38 @@ function recordHistory(
     case "revoke_server":
       return;
   }
+}
+
+/**
+ * 適用前の 1 エントリ検査(検証段順: フレーミング → payload 構造 → actor 解決 →
+ * 署名)。null = 通過。認可 + 状態遷移は applyOperation が続けて検査する。
+ */
+async function checkEntryBeforeApply(
+  entry: ChainEntry,
+  seq: number,
+  prevHash: string,
+  state: MutableChainState,
+): Promise<ChainInvalidReason | null> {
+  // 配列スロット自体が null / 非オブジェクトの細工データでも throw しない
+  if (!isRecord(entry)) {
+    return "invalid-payload";
+  }
+  const framing = checkFraming(entry, seq, prevHash);
+  if (framing !== null) {
+    return framing;
+  }
+  const shape = checkPayloadShape(entry);
+  if (shape !== null) {
+    return shape;
+  }
+  const actor = await resolveActorSigPub(entry, state);
+  if ("reason" in actor) {
+    return actor.reason;
+  }
+  if (!(await verifyEntrySignature(entry, actor.sigPubHex))) {
+    return "bad-signature";
+  }
+  return null;
 }
 
 async function verifyChainCore(
@@ -588,24 +620,9 @@ async function verifyChainCore(
 
   for (const [index, entry] of entries.entries()) {
     seq = index + 1;
-    // 配列スロット自体が null / 非オブジェクトの細工データでも throw しない
-    if (!isRecord(entry)) {
-      return fail("invalid-payload");
-    }
-    const framing = checkFraming(entry, seq, prevHash);
-    if (framing !== null) {
-      return fail(framing);
-    }
-    const shape = checkPayloadShape(entry);
-    if (shape !== null) {
-      return fail(shape);
-    }
-    const actor = await resolveActorSigPub(entry, state);
-    if ("reason" in actor) {
-      return fail(actor.reason);
-    }
-    if (!(await verifyEntrySignature(entry, actor.sigPubHex))) {
-      return fail("bad-signature");
+    const rejected = await checkEntryBeforeApply(entry, seq, prevHash, state);
+    if (rejected !== null) {
+      return fail(rejected);
     }
     // actor は resolveActorSigPub で存在確認済み(genesis は owner として自己記述)
     const actorRole = state.members.get(entry.actor.userId)?.role ?? "reader";

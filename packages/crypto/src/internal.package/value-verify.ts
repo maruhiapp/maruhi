@@ -22,6 +22,7 @@ import { decodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoResult, ValueInvalidReason } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
+import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
 import {
   computeValueSignedBytesHash,
   valueContextInvalidField,
@@ -63,17 +64,6 @@ function valueInvalid(reason: ValueInvalidReason): {
   readonly error: { readonly kind: "ValueInvalid"; readonly reason: ValueInvalidReason };
 } {
   return { ok: false, error: { kind: "ValueInvalid", reason } };
-}
-
-function invalidInput(field: string): {
-  readonly ok: false;
-  readonly error: { readonly kind: "InvalidInput"; readonly field: string };
-} {
-  return { ok: false, error: { kind: "InvalidInput", field } };
-}
-
-function isLowercaseHexOfLength(value: string, length: number): boolean {
-  return value.length === length && decodeHex(value) !== null;
 }
 
 const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } as const;

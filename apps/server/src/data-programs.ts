@@ -114,26 +114,22 @@ const ensureValueCas = (
  * crypto の詳細理由 → ワイヤの 3 理由(仮裁定 C)への写像。
  * chain-head-future はサーバーにとって「自チェーンに存在しない seq」なので
  * chain-head-unknown に畳む(クライアント側の再同期分岐はサーバーには無い)。
+ * 網羅は Record 型が静的に強制する(理由コード追加時にコンパイルエラー)。
  */
-export function toValueRejectReason(reason: ValueInvalidReason): ValueSignatureRejectReason {
-  switch (reason) {
-    case "signature-invalid":
-      return "signature-invalid";
-    case "chain-head-mismatch":
-    case "chain-head-future":
-      return "chain-head-unknown";
-    case "writer-unknown":
-    case "writer-not-member-at-head":
-    case "writer-key-mismatch-at-head":
-    case "writer-role-insufficient-at-head":
-    case "environment-not-created-at-head":
-    case "epoch-not-current-at-head":
-    case "prev-shape-mismatch":
-    case "prev-hash-mismatch":
-    case "epoch-regressed":
-      return "chain-head-state-mismatch";
-  }
-}
+const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRejectReason>> = {
+  "signature-invalid": "signature-invalid",
+  "chain-head-mismatch": "chain-head-unknown",
+  "chain-head-future": "chain-head-unknown",
+  "writer-unknown": "chain-head-state-mismatch",
+  "writer-not-member-at-head": "chain-head-state-mismatch",
+  "writer-key-mismatch-at-head": "chain-head-state-mismatch",
+  "writer-role-insufficient-at-head": "chain-head-state-mismatch",
+  "environment-not-created-at-head": "chain-head-state-mismatch",
+  "epoch-not-current-at-head": "chain-head-state-mismatch",
+  "prev-shape-mismatch": "chain-head-state-mismatch",
+  "prev-hash-mismatch": "chain-head-state-mismatch",
+  "epoch-regressed": "chain-head-state-mismatch",
+};
 
 /**
  * 値署名の受理検証(§12-5 の 1〜5)。判定順は CAS(epoch / version)の後・数量
@@ -211,7 +207,7 @@ const ensureValueSignature = (input: {
     if (verified.error.kind === "ValueInvalid") {
       return yield* rejectData({
         kind: "value-rejected",
-        reason: toValueRejectReason(verified.error.reason),
+        reason: VALUE_REJECT_REASONS[verified.error.reason],
       });
     }
     // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
