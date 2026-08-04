@@ -283,7 +283,7 @@ metaVersion・エポックの後退 / 同一 version・metaVersion の signed by
 
 ## 7. テスト結果
 
-- CLI: **184 tests green**(既存 128 + 床ストア単体 25 + 床検出の結線 31)。
+- CLI: **186 tests green**(既存 128 + 床ストア単体 27 + 床検出の結線 31)。
   session-12 §8-5 の床項目を充足: 欠落(変数・tombstone・pull/run/push の
   3 経路)/ 巻き戻し(version / metaVersion / 環境 metaVersion / epoch /
   チェーン長)/ 規則 (c) の両縁(rotate 直後の正当な旧エポック新版の受理 +
@@ -296,9 +296,10 @@ metaVersion・エポックの後退 / 同一 version・metaVersion の signed by
   pull が床を前進させないこと(更新順序)/ push 受理後の床前進 / 単調マージ
   (床の後退禁止・deleted 終端・union)/ 削除の無断取り消し(metaVersion
   3 通り)/ commitHead のみの床からの環境床確立 / メタ前進注入の非検出の固定
-  (変数・環境の両方)/ `constructor` / `prototype` キーの正当 ID 扱い
+  (変数・環境の両方)/ `constructor` / `prototype` キーの正当 ID 扱い /
+  コミット返り値のマージ済み床とハンドルのキャッシュ同期
 - `bun run check`(fmt / lint / typecheck / importlint / fallow audit / doctor /
-  test)green — 全体 865 tests。`fallow audit --base main`(CI 相当)も
+  test)green — 全体 867 tests。`fallow audit --base main`(CI 相当)も
   no issues。crypto パッケージ非変更のため 4 実行環境テストは対象外
 
 ## 8. レビュー→修正ループ(PR 内。3 観点の並行レビュー → 修正)
@@ -379,5 +380,26 @@ metaVersion・エポックの後退 / 同一 version・metaVersion の signed by
 
 ループ 2 の修正(キー検証の是正・own-property 参照・延長検査)を①に再確認依頼
 し、収束を確認。修正はいずれも受理範囲の是正(正当な ID の誤拒否の除去)と
-検査の強化のみで、床の検出規則・更新順序は不変。全品質ゲート再実行 green
-(CLI 184 tests / 全体 865 tests)。blocking / 新規重大指摘ゼロで収束した。
+検査の強化のみで、床の検出規則・更新順序は不変。全品質ゲート再実行 green。
+blocking / 新規重大指摘ゼロで収束した。
+
+### PR 公開後の自動レビュー対応(Cursor Bugbot — 2026-08-04)
+
+Bugbot が High Severity 2 件(同根)を指摘: `FloorHandle` のプロセス内キャッシュ
+がコミット後に**送信スナップショット**(pull の環境床 / push の 1 変数)で更新
+され、ストアが read-merge-write でディスクへ書いた**マージ済み床**と食い違う —
+並行 CLI がディスクに確立した検出材料(union の変数・deleted 終端・より新しい
+version / pullEpoch)を、同一コマンド内の後続検査(push の再試行ループ等)が
+取りこぼす。
+
+- 指摘のうち「規則 (c) が誤発火する」は成立しない(メモリ側の pullEpoch は常に
+  低い側 = 許容側にしかずれない)が、「兄弟プロセスの検出材料の取りこぼし」は
+  実在する(検出喪失の窓 — 誤拒否ではない)
+- 修正: `commitPull` / `commitPush` が**ディスクへ書いたマージ済み環境床を返す**
+  形に変え、ハンドルのキャッシュはそれを採用する(commitPush で環境レコードが
+  ない稀な形のみ従来どおりプロセス内知識を前進)。ディスクの床は自 CLI が §6.3
+  検証済みレコードしか書かないため、マージ結果の採用は検査基準として健全
+  (ローカル状態を書ける攻撃者は床の外 — fail-open の線引きと同じ)
+- ストアの返り値(union / null)とハンドルのキャッシュ同期をテストで固定。
+  コミット前(openProject 時スナップショット)の窓は残るが、それは床ロード
+  時点の知識そのものであり §2-3 の一世代残余に帰着する

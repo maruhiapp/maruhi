@@ -107,10 +107,24 @@ export interface FloorStoreShape {
   readonly load: (projectId: string) => Effect.Effect<FloorLoadResult, CliError>;
   /** チェーン同期成功時のヘッド前進(規則 (c) 基準は動かさない)。 */
   readonly commitHead: (projectId: string, head: ChainHeadFloor) => Effect.Effect<void, CliError>;
-  /** 検証済み pull の床コミット(環境床の置き換え + ヘッド前進を 1 書き込みで)。 */
-  readonly commitPull: (projectId: string, commit: PullCommit) => Effect.Effect<void, CliError>;
-  /** 受理された push の変数床前進(規則 (c) 基準 pullEpoch は動かさない)。 */
-  readonly commitPush: (projectId: string, commit: PushCommit) => Effect.Effect<void, CliError>;
+  /**
+   * 検証済み pull の床コミット(環境床の単調マージ + ヘッド前進を 1 書き込みで)。
+   * **ディスクへ書いた後の(マージ済み)環境床**を返す — 呼び出し側のプロセス内
+   * キャッシュはこれを採用し、並行 CLI が確立した検出材料(union・deleted 終端・
+   * より新しい version / pullEpoch)をコマンド実行中に取りこぼさない。
+   */
+  readonly commitPull: (
+    projectId: string,
+    commit: PullCommit,
+  ) => Effect.Effect<EnvironmentFloor, CliError>;
+  /**
+   * 受理された push の変数床前進(規則 (c) 基準 pullEpoch は動かさない)。
+   * マージ済み環境床(環境レコードがディスクにない場合は null)を返す。
+   */
+  readonly commitPush: (
+    projectId: string,
+    commit: PushCommit,
+  ) => Effect.Effect<EnvironmentFloor | null, CliError>;
 }
 
 export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("cli/FloorStore") {}
@@ -414,7 +428,7 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
     return join(dir, `${projectId}.json`);
   };
 
-  const write = (projectId: string, merge: FloorMerge): Effect.Effect<void, CliError> =>
+  const write = (projectId: string, merge: FloorMerge): Effect.Effect<ProjectFloor, CliError> =>
     Effect.tryPromise({
       try: async () => {
         const path = pathOf(projectId);
@@ -436,6 +450,7 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
         const temp = `${path}.${process.pid}.tmp`;
         await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
         await rename(temp, path);
+        return next;
       },
       catch: () =>
         cliError(
@@ -450,8 +465,18 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
         catch: () =>
           cliError(`ローカル床ファイルを読み取れません: ${join(dir, `${projectId}.json`)}`),
       }),
-    commitHead: (projectId, head) => write(projectId, applyHead(head)),
-    commitPull: (projectId, commit) => write(projectId, applyPull(commit)),
-    commitPush: (projectId, commit) => write(projectId, applyPush(commit)),
+    commitHead: (projectId, head) => Effect.asVoid(write(projectId, applyHead(head))),
+    commitPull: (projectId, commit) =>
+      write(projectId, applyPull(commit)).pipe(
+        // マージ済み(= ディスクへ書いた)環境床を返す。applyPull がレコードを
+        // 必ず作るため own-property 参照は常に存在する
+        Effect.map(
+          (next) => floorRecordGet(next.environments, commit.environmentId) ?? commit.environment,
+        ),
+      ),
+    commitPush: (projectId, commit) =>
+      write(projectId, applyPush(commit)).pipe(
+        Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
+      ),
   };
 }

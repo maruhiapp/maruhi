@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { makeFloorHandle } from "../src/floor-check.ts";
 import {
   decodeProjectFloor,
   type EnvironmentFloor,
@@ -315,6 +316,110 @@ describe("makeFileFloorStore(fail-open 読み込みと原子コミット)", () =
       metaVersion: 2,
       metaSigHashHex: HASH_C,
     });
+  });
+
+  it("commitPull / commitPush はディスクへ書いたマージ済み環境床を返す(プロセス内キャッシュの同期材料)", async () => {
+    // 兄弟プロセスが vb の tombstone 込みの床を確立済み
+    await Effect.runPromise(
+      store.commitPull(PROJECT_ID, {
+        chainHead: { seq: 3, hashHex: HASH_A },
+        environmentId: "prod",
+        environment: envFloor(),
+      }),
+    );
+    // 自プロセスのコミットは va しか知らない → 返り値は union(vb を含む)
+    const merged = await Effect.runPromise(
+      store.commitPull(PROJECT_ID, {
+        chainHead: { seq: 4, hashHex: HASH_B },
+        environmentId: "prod",
+        environment: envFloor({
+          pullEpoch: 3,
+          variables: {
+            va: {
+              status: "active",
+              version: 4,
+              epoch: 3,
+              valueSigHashHex: HASH_B,
+              metaVersion: 1,
+              metaSigHashHex: HASH_C,
+            },
+          },
+        }),
+      }),
+    );
+    expect(merged.pullEpoch).toBe(3);
+    expect(merged.variables["va"]).toMatchObject({ version: 4 });
+    expect(merged.variables["vb"]).toMatchObject({ status: "deleted" });
+    // commitPush も同様(環境レコードがない場合は null)
+    const pushed = await Effect.runPromise(
+      store.commitPush(PROJECT_ID, {
+        chainHead: { seq: 4, hashHex: HASH_B },
+        environmentId: "prod",
+        variableId: "va",
+        variable: {
+          status: "active",
+          version: 5,
+          epoch: 3,
+          valueSigHashHex: HASH_A,
+          metaVersion: 1,
+          metaSigHashHex: HASH_C,
+        },
+      }),
+    );
+    expect(pushed?.variables["va"]).toMatchObject({ version: 5 });
+    expect(pushed?.variables["vb"]).toMatchObject({ status: "deleted" });
+    const missing = await Effect.runPromise(
+      store.commitPush(PROJECT_ID, {
+        chainHead: { seq: 4, hashHex: HASH_B },
+        environmentId: "other-env",
+        variableId: "va",
+        variable: { status: "deleted", metaVersion: 1, metaSigHashHex: HASH_A },
+      }),
+    );
+    expect(missing).toBeNull();
+  });
+
+  it("FloorHandle のプロセス内キャッシュはコミットごとにマージ済み床へ同期する", async () => {
+    // 兄弟プロセスが vb の tombstone を確立済み(自プロセスの openProject 後)
+    await Effect.runPromise(
+      store.commitPull(PROJECT_ID, {
+        chainHead: { seq: 3, hashHex: HASH_A },
+        environmentId: "prod",
+        environment: envFloor({ pullEpoch: 3 }),
+      }),
+    );
+    // 自プロセスのハンドルは古いスナップショット(床なし)から開始
+    const handle = makeFloorHandle({
+      store,
+      projectId: PROJECT_ID,
+      environmentId: "prod",
+      initial: null,
+    });
+    await Effect.runPromise(
+      handle.commitPull(
+        envFloor({
+          pullEpoch: 2,
+          variables: {
+            va: {
+              status: "active",
+              version: 1,
+              epoch: 2,
+              valueSigHashHex: HASH_B,
+              metaVersion: 1,
+              metaSigHashHex: HASH_C,
+            },
+          },
+        }),
+        { seq: 3, hashHex: HASH_A },
+      ),
+    );
+    // 送信スナップショット(va v1・pullEpoch 2)でなくマージ済み床が採用される:
+    // 兄弟の tombstone(vb)・より新しい va(v3)・高い方の基準(pullEpoch 3)を
+    // 同一コマンド内の後続検査が引き継ぐ
+    const current = handle.current();
+    expect(current?.pullEpoch).toBe(3);
+    expect(current?.variables["vb"]).toMatchObject({ status: "deleted" });
+    expect(current?.variables["va"]).toMatchObject({ version: 3 });
   });
 
   it("commitPush は並行プロセスが先に進めた変数床を後退させない", async () => {

@@ -421,7 +421,12 @@ export function buildEnvironmentFloor(
 /**
  * 1 コマンド実行中の環境床ハンドル。プロセス内で pull が複数回起きる場合
  * (push の再試行ループ)に、直前の pull がコミットした床を次の検査の基準に
- * する(ディスク再読はしない — 検査と基準前進の順序をプロセス内で保つ)。
+ * する。プロセス内キャッシュはコミットのたびに**ストアが書いたマージ済み
+ * 環境床**へ同期する(単なる送信スナップショットではない): read-merge-write
+ * の単調マージが取り込んだ並行 CLI の検出材料(union・deleted 終端・より新しい
+ * version / pullEpoch)を、同一コマンド内の後続検査が取りこぼさないため。
+ * ディスクの床は自 CLI が §6.3 検証済みレコードしか書かないので、マージ結果の
+ * 採用は検査基準として健全(ローカル状態を書ける攻撃者は床の外 — fail-open)。
  */
 export interface FloorHandle {
   readonly environmentId: string;
@@ -459,11 +464,12 @@ export function makeFloorHandle(input: {
           environment,
         })
         .pipe(
-          Effect.tap(() =>
+          Effect.tap((merged) =>
             Effect.sync(() => {
-              current = environment;
+              current = merged;
             }),
           ),
+          Effect.asVoid,
         ),
     commitPush: (variableId, variable, head) =>
       input.store
@@ -474,9 +480,14 @@ export function makeFloorHandle(input: {
           variable,
         })
         .pipe(
-          Effect.tap(() =>
+          Effect.tap((merged) =>
             Effect.sync(() => {
-              if (current !== null) {
+              if (merged !== null) {
+                current = merged;
+              } else if (current !== null) {
+                // ディスクに環境レコードがない稀な形(破損の作り直し直後の
+                // レース — applyPush は基準を捏造しない)ではプロセス内の
+                // 知識だけを前進させる
                 current = {
                   ...current,
                   variables: { ...current.variables, [variableId]: variable },
@@ -484,6 +495,7 @@ export function makeFloorHandle(input: {
               }
             }),
           ),
+          Effect.asVoid,
         ),
   };
 }
