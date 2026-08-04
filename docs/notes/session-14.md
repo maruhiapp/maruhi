@@ -280,8 +280,33 @@ FP は PR-3(メタステートメント)の領分。
 
 ### ループ 2(修正の再検証)
 
-ループ 1 の修正はいずれも `adoptConflictWinner` / `values.ts` の局所変更で、
-正直フローの誤拒否を生まないことを確認(latest_version 単調性・delete = 404 /
-tombstone の帰結)。品質ゲート再実行: `bun run check` green、crypto 4 実行環境
-green、server / CLI テスト green(§7 の数値 + 巻き戻し拒否・prev 連鎖検査・
-新規メンバー再同期の negative / positive を追加)。
+3 観点ともループ 1 の修正を**十分・新規ブロッキングなし**と判定(巻き戻し・
+equivocation・prev 連鎖・新規メンバー再同期の各分岐が正直サーバーの不変条件 —
+latest_version 単調性・delete = 404 / tombstone — の下で誤拒否を生まないことを
+検証)。新規 [低] 2 件 + [情報] を検出・対応:
+
+1. **非隣接 winner のエポック単調性が未検査(正しさ [低])**: §4.1 の単調性は
+   推移的なので、`winner.version > known.version` でありさえすれば版番号ギャップ
+   越しでも epoch 非減少を要求できる。旧実装は隣接(`known.version + 1`)のみで
+   検査しており、版番号を +2 以上ずらすと削除済みメンバーの旧エポック署名注入が
+   隣接検査を迂回できた。→ `winnerRegression` の epoch 検査を `winner.version >
+   known.version` 全体へ持ち上げ(prev 実在一致は隣接のみ維持)。正直サーバーは
+   受理順にエポック非減少のため誤拒否なし。版番号ギャップ越しの後退拒否テストを追加
+2. **サーバー tenure 跨ぎテストの変異検出力(契約 [低])**: 新規テストの prev が
+   ダミー 64hex だと、tenure 検査を変異で消しても `prev-hash-mismatch` が同じ
+   ワイヤ理由(`chain-head-state-mismatch`)を返してテストが緑のまま通る。→
+   prev を保存済み v1 の実 signed-bytes ハッシュにし、tenure 検査(head 時点状態 —
+   prev 検査より前段)を単独の失敗要因に固定
+3. [情報]: `winnerRegression` の二重 JSDoc の統合、`winnerInconsistency` の
+   ドキュメント追記(いずれも分割時の残骸)
+
+品質ゲート再実行: `bun run check` green(686 tests)、crypto 4 実行環境 green、
+vectors verify 全 PASS。
+
+### ループ 3(最終確認)
+
+ループ 2 の 3 分岐(エポック単調性の持ち上げ・テスト検出力・ドキュメント)を
+反映後、残余は [情報](エポック後退ブランチの専用負テスト = 追加済み、
+「writer-unknown → 再同期後も unknown → 拒否」の負テスト = 有界性・延長検査の
+既存負テストでカバー)のみで、ブロッキングゼロ。経過: ループ 1 = 高 1(2 観点
+同根)・中 1・低 3・情報数件 → ループ 2 = 低 2・情報 → ループ 3 = ゼロ。

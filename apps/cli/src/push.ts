@@ -317,7 +317,12 @@ function refreshEpochState(
  * 単調増加(バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後
  * 404)なので、後退はすべて巻き戻し・equivocation の証拠であり誤拒否はない。
  */
-/** 検証済み既知 latest に対する winner の後退・equivocation 検査。 */
+/**
+ * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
+ * 後退・equivocation・連鎖の整合検査。正直サーバーでは latest_version は単調増加
+ * (バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後 404)なので
+ * 後退はすべて巻き戻し・equivocation の証拠であり、誤拒否はない。
+ */
 function winnerRegression(
   target: PushTarget,
   known: VerifiedPulledValue,
@@ -333,19 +338,25 @@ function winnerRegression(
     // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
     return `変数 ${target.variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
   }
-  // 隣接 predecessor を保持している場合は §6.3-6 の連鎖検査が無償でできる
+  // エポック単調性(§4.1)は推移的なので、winner が検証済み latest より新しければ
+  // 版番号のギャップに関わらず epoch 非減少を要求できる(レビューループ 2 [低] —
+  // 版番号の選び方で隣接検査を迂回する旧エポック注入を塞ぐ)。正直サーバーは
+  // 受理順にエポック非減少なので誤拒否はない
+  if (winner.version > known.version && winner.epoch < known.epoch) {
+    return `変数 ${target.variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
+  }
+  // 隣接 predecessor を保持している場合は §6.3-6 の prev 実在一致も無償で検査できる
   // (レビューループ 1 [中] — pull の latest-only 制約の例外)
-  if (winner.version === known.version + 1) {
-    if (winner.prevValueSigHashHex !== known.signedBytesHashHex) {
-      return `変数 ${target.variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
-    }
-    if (winner.epoch < known.epoch) {
-      return `変数 ${target.variableId} の version ${winner.version} の epoch(${winner.epoch})が直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
-    }
+  if (
+    winner.version === known.version + 1 &&
+    winner.prevValueSigHashHex !== known.signedBytesHashHex
+  ) {
+    return `変数 ${target.variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
   }
   return null;
 }
 
+/** 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。 */
 function winnerInconsistency(
   target: PushTarget,
   winner: VerifiedPulledValue,
