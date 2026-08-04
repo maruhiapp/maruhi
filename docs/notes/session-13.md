@@ -244,3 +244,19 @@ op ビルダー等)は、本セッションの改修でフィンガープリン�
 crypto 4 実行環境(node 243 / workerd / browser / bun)green。
 経過: ループ 1 = 高 1(2 観点同根)・中 2・低 3・情報多数 → ループ 2 =
 情報 1 → 指摘ゼロ(ブロッキング)。
+
+### PR 公開後の自動レビュー対応(2026-08-04)
+
+- **Bugbot [Medium] 1 件(dismiss・コード変更なし)**: 「複合 create は
+  非トランザクショナルな Effect.sync 内でチェーンエントリ → 環境行の順に書く
+  ため、後続が throw するとチェーンだけ残り ID が復旧不能」という指摘。
+  根拠を示して非問題と判断した — (1) 当該ブロックは await を挟まない同期
+  `sql.exec` 列で、SQLite-backed DO は「intervening await のない一連の書き込み」を
+  **1 トランザクションとして原子コミット**する(公式ドキュメントの Write
+  Coalescing。ストレージ層の失敗は Output Gate が応答をエラーへ差し替え DO ごと
+  再起動 = 部分永続化は観測不能)、(2)「後続が throw する」経路自体が到達不能
+  (permit 直列化の下で全 INSERT のキーの新鮮さを事前検査が保証済み — 環境行 PK
+  は duplicate-environment 合意規則、ラップ PK は未作成環境 / 新エポックの構造的
+  不在 + dedupe、監査 seq は MAX+1 の単文。文間は純粋な同期 JS のみ)、
+  (3) 同パターンは insertWithMirror 以降の全書き込みフェーズで承認済みの確立規約
+  (data-store.ts に明文化)。Security Agent・CI(check)は指摘なしで pass
