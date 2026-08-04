@@ -1,0 +1,135 @@
+{
+  "description": "CRYPTO_SPEC §5.2: エポック DEK のコミットメント。dek_commitment_hex = lower_hex(SHA-256(LP(\"<suite>/dek-commit\", project_id, environment_id, epoch, dek_hex)))。DEK・座標は dek-wrap.json の basic ベクターと同一",
+  "preimage_fields_order": ["domain", "project_id", "environment_id", "epoch", "dek_hex"],
+  "binary_encoding": "dek_hex は DEK 32 バイトの hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+  "rewrap_invariance": {
+    "note": "コミットメントの原像はラップ・受信者に依存しない(§5.2): add_member 後の過去エポック backfill、修復経路の削除 → 再登録、HPKE のランダム性による同一 DEK のラップ暗号文の変動、受信者集合の事後拡大のいずれでもコミットメントは不変。実装テストは同一 DEK を新しくラップし直し(HPKE Seal はランダム)、unwrap した DEK が本コミットメントに照合成功することを固定する",
+    "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+    "commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+    "wrap_reference": "dek-wrap.json vectors[0](同一 DEK のラップ実データ)"
+  },
+  "vectors": [
+    {
+      "suite": "maruhi/v1",
+      "domain": "maruhi/v1/dek-commit",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "epoch": 3,
+      "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "name": "basic",
+      "preimage_hex": "000000146d61727568692f76312f64656b2d636f6d6d69740000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000004038303831383238333834383538363837383838393861386238633864386538663930393139323933393439353936393739383939396139623963396439653966",
+      "commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "note": "dek-wrap.json の basic と同一の DEK・座標(epoch 3 = rotate 由来)"
+    },
+    {
+      "suite": "maruhi/v1",
+      "domain": "maruhi/v1/dek-commit",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "epoch": 1,
+      "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "name": "epoch-1-create",
+      "preimage_hex": "000000146d61727568692f76312f64656b2d636f6d6d69740000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001310000004038303831383238333834383538363837383838393861386238633864386538663930393139323933393439353936393739383939396139623963396439653966",
+      "commitment_hex": "cf34c67deb7717183ec887602d540e8fd3846e1ee30c9514cfd1268969e7c3b4",
+      "note": "エポック 1(create_environment 由来 — §6.2)のコミットメント。座標が原像に入るため basic とは異なる値になる"
+    }
+  ],
+  "negative": [
+    {
+      "name": "dek-mismatch",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-commit",
+        "project_id": "proj-0001",
+        "environment_id": "env-prod-0001",
+        "epoch": 3,
+        "dek_hex": "f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f1011121314151617"
+      },
+      "computed_commitment_hex": "e3ddb9fb769f063160e570c5170ddbf95effca598c63a51be4a8d9a29ba25518",
+      "expected_commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "must_fail": true,
+      "note": "別の DEK はコミットメント照合に失敗する(偽 DEK 注入の遮断 — §5.2 / §14.2-1)"
+    },
+    {
+      "name": "transplant-project",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-commit",
+        "project_id": "proj-0002",
+        "environment_id": "env-prod-0001",
+        "epoch": 3,
+        "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+      },
+      "computed_commitment_hex": "b38389ffa5b10bf604c74051e3a9d5cdf0a36e6f30603cbf73a3ae23413ad835",
+      "expected_commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "must_fail": true,
+      "note": "別プロジェクト座標のコミットメントとは一致しない(座標が原像に入る)"
+    },
+    {
+      "name": "transplant-environment",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-commit",
+        "project_id": "proj-0001",
+        "environment_id": "env-dev-0002",
+        "epoch": 3,
+        "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+      },
+      "computed_commitment_hex": "8a00a043b6a26c834a96daac1c85ce61218eeb20ed24e60473394030293e791e",
+      "expected_commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "must_fail": true,
+      "note": "別環境座標のコミットメントとは一致しない"
+    },
+    {
+      "name": "transplant-epoch",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-commit",
+        "project_id": "proj-0001",
+        "environment_id": "env-prod-0001",
+        "epoch": 4,
+        "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+      },
+      "computed_commitment_hex": "2ff45b86a0b2bc9a71687e8f8d401bd48c8a55789c6fec2ece47f2e7bf4824cc",
+      "expected_commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "must_fail": true,
+      "note": "別エポック座標のコミットメントとは一致しない"
+    },
+    {
+      "name": "wrong-domain",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v2",
+        "domain": "maruhi/v2/dek-commit",
+        "project_id": "proj-0001",
+        "environment_id": "env-prod-0001",
+        "epoch": 3,
+        "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+      },
+      "computed_commitment_hex": "10e2acba0fb4a1ce38d9d1e2ad91be29db6d3d591fd01944bb219fbabf9e68d5",
+      "expected_commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "must_fail": true,
+      "note": "suite が異なればドメイン文字列が異なり、スイート間のコミットメント移植は照合に失敗する"
+    },
+    {
+      "name": "uppercase-hex",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-commit",
+        "project_id": "proj-0001",
+        "environment_id": "env-prod-0001",
+        "epoch": 3,
+        "dek_hex": "808182838485868788898A8B8C8D8E8F909192939495969798999A9B9C9D9E9F"
+      },
+      "computed_commitment_hex": "2a186eedb7a75ababdd7b0159928577acd231bb088f1d8a0402fca6e901c2984",
+      "expected_commitment_hex": "b42affb41d190831a49d9c7daa708a13bba35e978da5168db0ab6c8c08818aa3",
+      "must_fail": true,
+      "note": "dek_hex の大文字 hex は別バイト列になり照合に失敗する(原像の正規形は hex 小文字 — 実装は入力を小文字 hex に正規化してから計算すること)"
+    }
+  ]
+}

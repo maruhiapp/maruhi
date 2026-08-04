@@ -152,6 +152,38 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       toHex(lpEncode(e7.payload.scope_environments)) === e7.payload.scope_environments_lp_hex,
     );
   }
+  // §5.2 の DEK コミットメント: environment_deks のダミー DEK からの再計算が
+  // 掲載値と一致し、create_environment / rotate_epoch の payload がそれを載せている
+  {
+    const projectId = doc.entries[0].entry_hash_hex; // = genesis ハッシュ(§6.4)
+    for (const [environmentId, perEnv] of Object.entries(doc.environment_deks)) {
+      for (const [epoch, info] of Object.entries(perEnv)) {
+        const computed = await sha256(
+          lpEncode(["maruhi/v1/dek-commit", projectId, environmentId, epoch, info.dek_hex]),
+        );
+        check(
+          `chain: dek commitment ${environmentId}#${epoch}`,
+          computed === info.dek_commitment_hex,
+        );
+      }
+    }
+    for (const e of doc.entries) {
+      if (e.op === "create_environment") {
+        check(
+          `chain seq ${e.seq}: create_environment carries epoch-1 commitment`,
+          e.payload.dek_commitment_hex ===
+            doc.environment_deks[e.payload.environment_id]["1"].dek_commitment_hex,
+        );
+      } else if (e.op === "rotate_epoch") {
+        check(
+          `chain seq ${e.seq}: rotate_epoch carries new-epoch commitment`,
+          e.payload.dek_commitment_hex ===
+            doc.environment_deks[e.payload.environment_id][e.payload.new_epoch]
+              .dek_commitment_hex,
+        );
+      }
+    }
+  }
   // valid_appends: 合意規則の許容側の境界(§6.2 の禁止範囲 = 現メンバー集合のみ)。
   // 署名・正規化・prev_hash(= 正規チェーン最終エントリのハッシュ)が有効である
   // ことを確認する。受理されること自体の検査は実装テストが担う
@@ -287,6 +319,46 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       reconstructed,
     );
     check(`dek-wrap-sig negative: ${n.name}`, bytesMatch && verified === false);
+  }
+}
+
+// --- dek-commitment.json -------------------------------------------------------
+{
+  const doc = read("dek-commitment.json");
+  const dekWrap = read("dek-wrap.json");
+  const sha256hex = async (u8) =>
+    toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  const preimage = (ctx) =>
+    lpEncode([ctx.domain, ctx.project_id, ctx.environment_id, ctx.epoch, ctx.dek_hex]);
+  for (const v of doc.vectors) {
+    const bytes = preimage(v);
+    check(`dek-commitment: ${v.name} preimage`, toHex(bytes) === v.preimage_hex);
+    check(`dek-commitment: ${v.name} commitment`, (await sha256hex(bytes)) === v.commitment_hex);
+    check(`dek-commitment: ${v.name} domain embeds suite`, v.domain === `${v.suite}/dek-commit`);
+  }
+  const basic = doc.vectors[0];
+  const wrapBase = dekWrap.vectors[0];
+  // DEK・座標が dek-wrap.json の basic と同一(ラップ → §5.2 照合が一続きの実データ)
+  check(
+    "dek-commitment: coordinates match dek-wrap.json",
+    basic.dek_hex === wrapBase.dek_hex &&
+      basic.project_id === wrapBase.project_id &&
+      basic.environment_id === wrapBase.environment_id &&
+      basic.epoch === wrapBase.epoch,
+  );
+  check(
+    "dek-commitment: rewrap invariance references basic",
+    doc.rewrap_invariance.dek_hex === basic.dek_hex &&
+      doc.rewrap_invariance.commitment_hex === basic.commitment_hex,
+  );
+  for (const n of doc.negative) {
+    const computed = await sha256hex(preimage(n.context));
+    check(
+      `dek-commitment negative: ${n.name}`,
+      computed === n.computed_commitment_hex &&
+        computed !== n.expected_commitment_hex &&
+        n.expected_commitment_hex === basic.commitment_hex,
+    );
   }
 }
 
