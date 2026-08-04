@@ -35,9 +35,19 @@ import { verifyDistributedMetaStatement, verifyDistributedValue } from "@maruhi/
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { requireChainEnvironment } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import {
+  buildEnvironmentFloor,
+  checkEnvironmentPull,
+  type FloorHandle,
+  floorViolationLabel,
+  type VerifiedMetaEvidence,
+  type VerifiedPullSnapshot,
+  type VerifiedTombstone,
+} from "./floor-check.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /** One pulled variable whose write signature and statement passed §6.3. */
@@ -63,6 +73,12 @@ export interface VerifiedPulledValue {
   readonly metaSignedBytesHashHex: string;
   /** 署名済みの prev(直前 metaVersion の signed bytes ハッシュ。metaVersion 1 は空)。 */
   readonly prevMetaSigHashHex: string;
+  /** 値署名の宣言ヘッド(床検査の fork 証拠に含める — §6.3 / §14.2-5)。 */
+  readonly valueChainHeadSeq: number;
+  readonly valueChainHeadHashHex: string;
+  /** メタステートメントの宣言ヘッド(同上)。 */
+  readonly metaChainHeadSeq: number;
+  readonly metaChainHeadHashHex: string;
 }
 
 /** A bulk pull whose values and statements all passed verification (§12-7 / §6.3). */
@@ -241,6 +257,10 @@ async function verifyOne(
       metaVersion: statement.metaVersion,
       metaSignedBytesHashHex: verifiedStatement.value.signedBytesHashHex,
       prevMetaSigHashHex: statement.prevMetaSigHashHex,
+      valueChainHeadSeq: payload.chainHeadSeq,
+      valueChainHeadHashHex: payload.chainHeadHashHex,
+      metaChainHeadSeq: statement.chainHeadSeq,
+      metaChainHeadHashHex: statement.chainHeadHashHex,
     },
   };
 }
@@ -251,12 +271,12 @@ interface PullWire {
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
 }
 
-/** 環境自身のステートメント検証(active であること込み)。 */
+/** 環境自身のステートメント検証(active であること込み)。証拠材料を返す。 */
 async function verifyEnvironmentStatement(
   verified: VerifiedProject,
   environmentId: string,
   statement: DistributedEnvironmentMetaStatement,
-): Promise<VerifyOutcome<void>> {
+): Promise<VerifyOutcome<VerifiedMetaEvidence>> {
   if (statement.environmentId !== environmentId) {
     return {
       kind: "rejected",
@@ -279,7 +299,16 @@ async function verifyEnvironmentStatement(
       message: `環境 ${environmentId} に deleted ステートメントが配布されました(削除済み環境の配布 — サーバー応答の不整合)`,
     };
   }
-  return { kind: "ok", value: undefined };
+  return {
+    kind: "ok",
+    value: {
+      status: "active",
+      metaVersion: statement.metaVersion,
+      metaSigHashHex: result.value.signedBytesHashHex,
+      chainHeadSeq: statement.chainHeadSeq,
+      chainHeadHashHex: statement.chainHeadHashHex,
+    },
+  };
 }
 
 /** 削除済み変数の tombstone ステートメント検証(active 側との併置 = 無断復活の運搬形も拒否)。 */
@@ -288,8 +317,9 @@ async function verifyDeletedStatements(
   environmentId: string,
   deleted: readonly DistributedVariableMetaStatement[],
   activeIds: ReadonlySet<string>,
-): Promise<VerifyOutcome<void>> {
+): Promise<VerifyOutcome<readonly VerifiedTombstone[]>> {
   const seen = new Set<string>();
+  const tombstones: VerifiedTombstone[] = [];
   for (const statement of deleted) {
     if (statement.environmentId !== environmentId) {
       return {
@@ -320,8 +350,16 @@ async function verifyDeletedStatements(
     if (result.kind !== "ok") {
       return result;
     }
+    tombstones.push({
+      variableId: statement.variableId,
+      status: "deleted",
+      metaVersion: statement.metaVersion,
+      metaSigHashHex: result.value.signedBytesHashHex,
+      chainHeadSeq: statement.chainHeadSeq,
+      chainHeadHashHex: statement.chainHeadHashHex,
+    });
   }
-  return { kind: "ok", value: undefined };
+  return { kind: "ok", value: tombstones };
 }
 
 /** 検証済み active 集合の名前検査: 同名 active の重複 = 解決拒否(§4.2)、非 NFC = 警告(SHOULD)。 */
@@ -381,7 +419,7 @@ function verifyAll(
 ): Effect.Effect<
   | {
       readonly kind: "ok";
-      readonly values: readonly VerifiedPulledValue[];
+      readonly snapshot: VerifiedPullSnapshot;
       readonly warnings: readonly string[];
     }
   | { readonly kind: "future" },
@@ -420,7 +458,47 @@ function verifyAll(
     if (nameFailure !== null) {
       return yield* Effect.fail(cliError(nameFailure));
     }
-    return { kind: "ok", values: actives.value.values, warnings } as const;
+    return {
+      kind: "ok",
+      snapshot: {
+        environment: environment.value,
+        variables: actives.value.values,
+        tombstones: deleted.value,
+      },
+      warnings,
+    } as const;
+  });
+}
+
+/**
+ * 床検査(§6.3 の (a)(b)(c))と床コミット(更新順序の規範: 検査は前回成功
+ * pull の基準、基準の前進は検証成功後に変数床と原子的に)。検査はすべて
+ * 署名検証を通過したデータ同士の比較なので、不一致は否認不能な証拠であり
+ * 全件拒否する(§6.3 の「拒否・警告」の強い側)。
+ */
+function enforceFloor(input: {
+  readonly floor: FloorHandle;
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly snapshot: VerifiedPullSnapshot;
+}): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
+    const violation = checkEnvironmentPull(input.floor.current(), input.snapshot);
+    if (violation !== null) {
+      return yield* Effect.fail(
+        cliError(`ローカル床検査で不整合を検出しました: ${floorViolationLabel(violation)}`),
+      );
+    }
+    // 規則 (c) 基準の前進値 = 今回のチェーン導出現エポック(§6.2 — サーバー
+    // 申告の currentEpoch は使わない)。環境がチェーンに存在しないのに検証を
+    // 通る配布はここで止まる(メタはエポックアンカーを持たないため、変数ゼロの
+    // 環境ではステートメント検証だけでは検出できない)
+    const chainEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
+      .currentEpoch;
+    yield* input.floor.commitPull(buildEnvironmentFloor(chainEpoch, input.snapshot), {
+      seq: input.verified.state.headSeq,
+      hashHex: input.verified.state.headHashHex,
+    });
   });
 }
 
@@ -437,6 +515,8 @@ export function pullVerifiedEnvironment(input: {
   readonly environmentId: EnvironmentId;
   /** future head 時の有界再同期(1 回)。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** ローカル床(§6.3)。検査(規則 (a)(b)(c))と検証成功後の原子コミットを担う。 */
+  readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentPull, CliError> {
   return Effect.gen(function* () {
     const response = yield* input.client.variables
@@ -444,21 +524,35 @@ export function pullVerifiedEnvironment(input: {
       .pipe(Effect.mapError(toCliError));
     const first = yield* verifyAll(input.verified, input.environmentId, response);
     if (first.kind === "ok") {
+      yield* enforceFloor({
+        floor: input.floor,
+        verified: input.verified,
+        environmentId: input.environmentId,
+        snapshot: first.snapshot,
+      });
       return {
         verified: input.verified,
-        variables: first.values,
+        variables: first.snapshot.variables,
         deks: response.deks,
         warnings: first.warnings,
       };
     }
     // 宣言ヘッドが自ビューより先 = 自チェーンが古いだけの可能性(§6.3-2b)。
     // 1 回だけ再同期し、旧ビューの延長であることを検査してから全体を再検証する
+    // (延長検査 + prev_hash 連鎖により、前進ビューは openProject 時の床検査と
+    // 整合したまま — 床 seq 以下の全エントリが一致する)
     const advanced = yield* resyncExtended(input.resync, input.verified);
     const second = yield* verifyAll(advanced, input.environmentId, response);
     if (second.kind === "ok") {
+      yield* enforceFloor({
+        floor: input.floor,
+        verified: advanced,
+        environmentId: input.environmentId,
+        snapshot: second.snapshot,
+      });
       return {
         verified: advanced,
-        variables: second.values,
+        variables: second.snapshot.variables,
         deks: response.deks,
         warnings: second.warnings,
       };

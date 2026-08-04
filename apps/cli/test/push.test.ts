@@ -458,7 +458,9 @@ describe("maruhi push", () => {
   it("409 後の winner が版番号ギャップ越しにエポック後退していたら拒否する(レビューループ 2 [低])", async () => {
     // known = epoch 2 の v4(検証済み)。winner は version 6(ギャップ 2 で prev
     // 隣接検査は対象外)だが epoch 1 = 旧エポックへ後退している(削除済みメンバーの
-    // 旧エポック署名の版番号ずらし注入の形)。持ち上げたエポック単調性検査で拒否
+    // 旧エポック署名の版番号ずらし注入の形)。セッション 16 以降は初回 pull が
+    // コミットした床の規則 (a) が再取得 pull の時点で先に検出する(winner 検査は
+    // 床が使えない場合の防衛層として残る)
     const head3 = headOf(chainV2, 3); // rotate(epoch 2 が現)を含むヘッド
     const head2 = headOf(chainV2, 2); // create(epoch 1 が現)のヘッド
     const knownV4 = await encryptValueFor({
@@ -519,7 +521,7 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("エポック単調性違反");
+    expect(env.errors.join("\n")).toContain("単調性違反");
   });
 
   it("409 後の再取得が申告 currentVersion より古ければ不整合として拒否する", async () => {
@@ -552,7 +554,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("409 の申告(7)より古く、不整合");
   });
 
-  it("409 後の再取得で winner が欠落していたら拒否する", async () => {
+  it("409 後の再取得で winner が欠落していたら拒否する(床の欠落検出が先に発火)", async () => {
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -599,7 +601,7 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("存在しません");
+    expect(env.errors.join("\n")).toContain("欠落");
   });
 
   it("409 後の再取得が同一 version で異なる signed bytes を返したら equivocation として拒否する", async () => {
@@ -1022,7 +1024,8 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("メタデータ巻き戻し");
+    // セッション 16 以降は初回 pull がコミットした床の規則 (a) が先に検出する
+    expect(env.errors.join("\n")).toContain("巻き戻し");
   });
 
   it("409 後の再取得が隣接 metaVersion で prev 不一致なら拒否する(分岐履歴への連鎖)", async () => {

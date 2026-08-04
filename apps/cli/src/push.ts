@@ -35,13 +35,23 @@ import {
   VersionConflictError,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import { encodeHex, encryptVariable, signMetaStatement, signValue, SUITE_ID } from "@maruhi/crypto";
+import {
+  computeMetaSignedBytesHash,
+  computeValueSignedBytesHash,
+  encodeHex,
+  encryptVariable,
+  signMetaStatement,
+  signValue,
+  SUITE_ID,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import type { FloorHandle } from "./floor-check.ts";
+import type { VariableFloor } from "./floor.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
@@ -97,6 +107,8 @@ function resolveTarget(input: {
   readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** ローカル床(§6.3 — 解決に使う検証済み pull にも床検査・床コミットが掛かる)。 */
+  readonly floor: FloorHandle;
 }): Effect.Effect<ResolvedTarget, CliError> {
   return Effect.gen(function* () {
     const pulled = yield* pullVerifiedEnvironment(input);
@@ -171,33 +183,42 @@ function encryptAndSignPayload(input: {
     }
     const nonceHex = encodeHex(encrypted.value.nonce);
     const ciphertextHex = encodeHex(encrypted.value.ciphertext);
+    const signatureContext = {
+      suite: SUITE_ID,
+      ...context,
+      nonceHex,
+      ciphertextHex,
+      prevValueSigHashHex: input.prevValueSigHashHex,
+      writerUserId: input.writerUserId,
+      chainHeadHashHex: input.verified.state.headHashHex,
+      chainHeadSeq: input.verified.state.headSeq,
+    } as const;
     const signature = yield* Effect.promise(() =>
-      signValue({
-        context: {
-          suite: SUITE_ID,
-          ...context,
-          nonceHex,
-          ciphertextHex,
-          prevValueSigHashHex: input.prevValueSigHashHex,
-          writerUserId: input.writerUserId,
-          chainHeadHashHex: input.verified.state.headHashHex,
-          chainHeadSeq: input.verified.state.headSeq,
-        },
-        signingKey: input.signingKey,
-      }),
+      signValue({ context: signatureContext, signingKey: input.signingKey }),
     );
     if (!signature.ok) {
       return yield* Effect.fail(cliError("値署名の作成に失敗しました"));
     }
+    // 自分の署名対象の signed bytes ハッシュ(受理されたらローカル床に昇格する
+    // — サーバー申告ではなく自計算値。次 version の prev の根拠と同じ姿勢)
+    const signedBytesHash = yield* Effect.promise(() =>
+      computeValueSignedBytesHash(signatureContext),
+    );
+    if (!signedBytesHash.ok) {
+      return yield* Effect.fail(cliError("値署名対象のハッシュ計算に失敗しました"));
+    }
     return {
-      suite: SUITE_ID,
-      aad: context,
-      nonceHex,
-      ciphertextHex,
-      prevValueSigHashHex: input.prevValueSigHashHex,
-      chainHeadHashHex: input.verified.state.headHashHex,
-      chainHeadSeq: input.verified.state.headSeq,
-      signatureHex: signature.value,
+      payload: {
+        suite: SUITE_ID,
+        aad: context,
+        nonceHex,
+        ciphertextHex,
+        prevValueSigHashHex: input.prevValueSigHashHex,
+        chainHeadHashHex: input.verified.state.headHashHex,
+        chainHeadSeq: input.verified.state.headSeq,
+        signatureHex: signature.value,
+      },
+      signedBytesHashHex: signedBytesHash.value,
     } as const;
   });
 }
@@ -209,6 +230,8 @@ interface AcceptedAttempt {
     readonly version: number;
     readonly epoch: number;
   };
+  /** 受理された自分の書き込みの床レコード(自計算値 — サーバー echo でない)。 */
+  readonly floorVariable: VariableFloor;
 }
 
 type AttemptOutcome =
@@ -224,9 +247,10 @@ function classifyAttempt<R>(
     unknown,
     R
   >,
+  floorVariable: VariableFloor,
 ): Effect.Effect<AttemptOutcome, CliError, R> {
   return attempt.pipe(
-    Effect.map((accepted): AttemptOutcome => ({ kind: "accepted", accepted })),
+    Effect.map((accepted): AttemptOutcome => ({ kind: "accepted", accepted, floorVariable })),
     Effect.catch((error): Effect.Effect<AttemptOutcome, CliError> => {
       if (error instanceof VersionConflictError) {
         return Effect.succeed({ kind: "version-conflict", currentVersion: error.currentVersion });
@@ -257,6 +281,8 @@ interface PushInput {
   /** 値署名の writer(自分の内部 user_id)と master sig 鍵(§4.1)。 */
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
+  /** ローカル床(§6.3 — 内部 pull の検査・コミットと、受理後の変数床前進)。 */
+  readonly floor: FloorHandle;
 }
 
 interface PushState {
@@ -293,38 +319,44 @@ function signCreateStatement(input: {
   readonly signingKey: CryptoKey;
 }) {
   return Effect.gen(function* () {
-    const signature = yield* Effect.promise(() =>
-      signMetaStatement({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.verified.projectId,
-          environmentId: input.environmentId,
-          target: { kind: "variable", variableId: input.variableId },
-          name: input.name,
-          status: "active",
-          metaVersion: 1,
-          prevMetaSigHashHex: "",
-          authorUserId: input.authorUserId,
-          chainHeadHashHex: input.verified.state.headHashHex,
-          chainHeadSeq: input.verified.state.headSeq,
-        },
-        signingKey: input.signingKey,
-      }),
-    );
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("メタステートメントの署名に失敗しました"));
-    }
-    return {
+    const context = {
       suite: SUITE_ID,
+      projectId: input.verified.projectId,
       environmentId: input.environmentId,
-      variableId: input.variableId,
+      target: { kind: "variable", variableId: input.variableId },
       name: input.name,
       status: "active",
       metaVersion: 1,
       prevMetaSigHashHex: "",
+      authorUserId: input.authorUserId,
       chainHeadHashHex: input.verified.state.headHashHex,
       chainHeadSeq: input.verified.state.headSeq,
-      signatureHex: signature.value,
+    } as const;
+    const signature = yield* Effect.promise(() =>
+      signMetaStatement({ context, signingKey: input.signingKey }),
+    );
+    if (!signature.ok) {
+      return yield* Effect.fail(cliError("メタステートメントの署名に失敗しました"));
+    }
+    // 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3)
+    const metaSigHash = yield* Effect.promise(() => computeMetaSignedBytesHash(context));
+    if (!metaSigHash.ok) {
+      return yield* Effect.fail(cliError("メタステートメント署名対象のハッシュ計算に失敗しました"));
+    }
+    return {
+      statement: {
+        suite: SUITE_ID,
+        environmentId: input.environmentId,
+        variableId: input.variableId,
+        name: input.name,
+        status: "active",
+        metaVersion: 1,
+        prevMetaSigHashHex: "",
+        chainHeadHashHex: input.verified.state.headHashHex,
+        chainHeadSeq: input.verified.state.headSeq,
+        signatureHex: signature.value,
+      },
+      metaSigHashHex: metaSigHash.value,
     } as const;
   });
 }
@@ -339,22 +371,29 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
         ),
       );
     }
-    const payload = yield* encryptAndSignPayload({
+    const version = nextVersionOf(state.target);
+    const signed = yield* encryptAndSignPayload({
       verified: state.verified,
       environmentId: input.environmentId,
       variableId: state.target.variableId,
       epoch: state.epoch,
-      version: nextVersionOf(state.target),
+      version,
       prevValueSigHashHex: prevHashOf(state.target),
       dek,
       value: input.value,
       writerUserId: input.writerUserId,
       signingKey: input.signingKey,
     });
+    const valueFloor = {
+      status: "active",
+      version,
+      epoch: state.epoch,
+      valueSigHashHex: signed.signedBytesHashHex,
+    } as const;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     if (state.target.create) {
       // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)
-      const statement = yield* signCreateStatement({
+      const created = yield* signCreateStatement({
         verified: state.verified,
         environmentId: input.environmentId,
         variableId: state.target.variableId,
@@ -363,14 +402,30 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
         signingKey: input.signingKey,
       });
       return yield* classifyAttempt(
-        input.client.variables.create({ params, payload: { statement, value: payload } }),
+        input.client.variables.create({
+          params,
+          payload: { statement: created.statement, value: signed.payload },
+        }),
+        { ...valueFloor, metaVersion: 1, metaSigHashHex: created.metaSigHashHex },
+      );
+    }
+    // 既存変数の push はメタを変更しない — 床のメタ記録は検証済み latest のまま
+    const latest = state.target.latest;
+    if (latest === null) {
+      return yield* Effect.fail(
+        cliError(`変数 ${state.target.variableId} の検証済み最新値がありません(内部不整合)`),
       );
     }
     return yield* classifyAttempt(
       input.client.variables.push({
         params: { ...params, variableId: state.target.variableId },
-        payload: { value: payload },
+        payload: { value: signed.payload },
       }),
+      {
+        ...valueFloor,
+        metaVersion: latest.metaVersion,
+        metaSigHashHex: latest.metaSignedBytesHashHex,
+      },
     );
   });
 }
@@ -511,6 +566,7 @@ function adoptConflictWinner(
       verified: state.verified,
       environmentId: input.environmentId,
       resync: input.resync,
+      floor: input.floor,
     });
     const winner = pulled.variables.find(
       (variable) => variable.variableId === state.target.variableId,
@@ -604,6 +660,17 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const outcome = yield* attemptOnce(normalized, state);
       if (outcome.kind === "accepted") {
+        // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
+        // 書き込みの巻き戻しも検出できる)。規則 (c) 基準は動かさない。
+        // push 自体は受理済みなので、床の書き込み失敗はその旨を明示する
+        yield* input.floor
+          .commitPush(
+            // 床のキーは自分が署名した変数 ID(サーバー echo を信用しない)
+            state.target.variableId,
+            outcome.floorVariable,
+            { seq: state.verified.state.headSeq, hashHex: state.verified.state.headHashHex },
+          )
+          .pipe(Effect.mapError((error) => cliError(`push は受理されましたが、${error.message}`)));
         return {
           variableId: outcome.accepted.variableId,
           version: outcome.accepted.version,
