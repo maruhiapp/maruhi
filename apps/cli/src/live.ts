@@ -13,6 +13,7 @@ import { getAgentProfile } from "gunshi/agent";
 import type { CliServices } from "./cli.ts";
 import { ConfigStore, defaultConfigPath, makeFileConfigStore } from "./config.ts";
 import { cliError } from "./errors.ts";
+import { floorDirOf, FloorStore, makeFileFloorStore } from "./floor.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { KEYCHAIN_SERVICE, Keychain, type KeychainShape } from "./keychain.ts";
 import { ProcessRunner, type ProcessRunnerShape } from "./run.ts";
@@ -94,9 +95,12 @@ function makeLiveIo(): CliIoShape {
 
 /** Production service layer for the maruhi CLI (Bun runtime). */
 export function liveLayer(): Layer.Layer<CliServices> {
+  const configPath = defaultConfigPath((name) => process.env[name]);
   return Layer.mergeAll(
     Layer.succeed(Keychain, makeBunKeychain()),
-    Layer.succeed(ConfigStore, makeFileConfigStore(defaultConfigPath((name) => process.env[name]))),
+    Layer.succeed(ConfigStore, makeFileConfigStore(configPath)),
+    // ローカル床(§6.3)は設定と同系の非機密置き場(<config dir>/floor)
+    Layer.succeed(FloorStore, makeFileFloorStore(floorDirOf(configPath))),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     FetchHttpClient.layer,

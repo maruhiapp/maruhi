@@ -1,0 +1,501 @@
+// ローカル床の検出規則(CRYPTO_SPEC §6.3 の (a)(b)(c))と更新順序の規範。
+//
+// 検査対象はすべて §6.3 の署名検証を通過済みの配布データ(values.ts)。床との
+// 不一致は「正規署名済みデータ同士の矛盾」なので、検出はサーバーの equivocation
+// または(在籍区間内の鍵による)偽造の否認不能な証拠であり、誤検出の懸念がない
+// — よって全件を拒否とする(§6.3 の「拒否・警告」の強い側)。
+//
+// - 規則 (a): チェーンの短縮、version / metaVersion / エポックの後退、削除の
+//   無断取り消し
+// - 規則 (b): 床と同一 version / metaVersion に対する signed bytes の相違
+//   (内容差し替え・分岐の証拠)
+// - 規則 (c): 床の version より新しい version の epoch が、当該環境の pull 時点
+//   エポック基準(pullEpoch)より小さい配布の拒否(削除済みメンバーの鍵による
+//   「前進 version への旧エポック注入」の検出 — §14.3-5)。基準は前回成功 pull
+//   の値を使い、チェーン同期単独では前進させない(誤拒否と検出喪失の両縁 —
+//   セッション 12 ノート §12 ループ 2)
+//
+// **メタステートメントの床は巻き戻し検出のみ**: メタはエポックアンカーを
+// 持たないため(§4.2)、前進 metaVersion の注入は床を持っても検出されない
+// (§14.3-5 — 最重要の非保証。「検出済み」と誤認する検査をここに置かない)。
+
+import { Effect } from "effect";
+
+import type { CliError } from "./errors.ts";
+import {
+  type ChainHeadFloor,
+  type EnvironmentFloor,
+  floorRecordGet,
+  type FloorStoreShape,
+  type ProjectFloor,
+  type VariableFloor,
+} from "./floor.ts";
+import type { VerifiedProject } from "./sync.ts";
+import type { VerifiedPulledValue } from "./values.ts";
+
+/** deleted を含む検証済みメタステートメントの証拠材料。 */
+export interface VerifiedMetaEvidence {
+  readonly status: "active" | "deleted";
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly chainHeadHashHex: string;
+  /** 配布された著者署名と帰属(証拠の自己完結性 — §14.2-5)。 */
+  readonly signatureHex: string;
+  readonly authorUserId: string;
+  readonly authorKeyFingerprintHex: string;
+}
+
+/** 検証済み tombstone(deleted ステートメント)。 */
+export interface VerifiedTombstone extends VerifiedMetaEvidence {
+  readonly variableId: string;
+}
+
+/** 床検査の入力(§6.3 の検証を全通過した pull 応答のダイジェスト)。 */
+export interface VerifiedPullSnapshot {
+  readonly environment: VerifiedMetaEvidence;
+  readonly variables: readonly VerifiedPulledValue[];
+  readonly tombstones: readonly VerifiedTombstone[];
+}
+
+/** 配布された値側の証拠材料(座標・ハッシュ・宣言ヘッド・署名と帰属)。 */
+export interface PulledValueEvidence {
+  readonly version: number;
+  readonly epoch: number;
+  readonly valueSigHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly chainHeadHashHex: string;
+  /** 配布された writer 署名と帰属(証拠の自己完結性 — §14.2-5)。 */
+  readonly signatureHex: string;
+  readonly writerUserId: string;
+  readonly writerKeyFingerprintHex: string;
+}
+
+/** 床側(過去に検証済み)のメタ記録。 */
+export interface FloorMetaEvidence {
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+}
+
+/** active な変数床(値側の証拠比較の基準)。 */
+export type ActiveVariableFloor = Extract<VariableFloor, { status: "active" }>;
+
+/** 床検査で検出した不整合(拒否 + 証拠表示の材料 — floor-evidence.ts が整形)。 */
+export type FloorViolation =
+  | {
+      readonly kind: "chain-shortened";
+      readonly floorHead: ChainHeadFloor;
+      readonly syncedHead: ChainHeadFloor;
+    }
+  | {
+      readonly kind: "chain-diverged";
+      readonly floorHead: ChainHeadFloor;
+      readonly actualHashHex: string;
+      readonly syncedHead: ChainHeadFloor;
+    }
+  | {
+      readonly kind: "variable-omitted";
+      readonly variableId: string;
+      readonly floor: VariableFloor;
+    }
+  | {
+      readonly kind: "value-rollback";
+      readonly variableId: string;
+      readonly floor: ActiveVariableFloor;
+      readonly pulled: PulledValueEvidence;
+    }
+  | {
+      readonly kind: "value-equivocation";
+      readonly variableId: string;
+      readonly floor: ActiveVariableFloor;
+      readonly pulled: PulledValueEvidence;
+    }
+  | {
+      readonly kind: "value-epoch-regression";
+      readonly variableId: string;
+      readonly floor: ActiveVariableFloor;
+      readonly pulled: PulledValueEvidence;
+    }
+  | {
+      readonly kind: "stale-epoch-injection";
+      readonly variableId: string;
+      /** 規則 (c) の基準(前回成功 pull 時点のチェーン導出現エポック)。 */
+      readonly baselineEpoch: number;
+      readonly floorVersion: number;
+      readonly pulled: PulledValueEvidence;
+    }
+  | {
+      readonly kind: "meta-rollback";
+      readonly target: "variable" | "environment";
+      readonly variableId: string | null;
+      readonly floor: FloorMetaEvidence;
+      readonly pulled: VerifiedMetaEvidence;
+    }
+  | {
+      readonly kind: "meta-equivocation";
+      readonly target: "variable" | "environment";
+      readonly variableId: string | null;
+      readonly floor: FloorMetaEvidence;
+      readonly pulled: VerifiedMetaEvidence;
+    }
+  | {
+      readonly kind: "deletion-revoked";
+      readonly variableId: string;
+      readonly floor: FloorMetaEvidence;
+      readonly pulled: VerifiedMetaEvidence;
+    }
+  | {
+      readonly kind: "tombstone-mismatch";
+      readonly variableId: string;
+      readonly floor: FloorMetaEvidence;
+      readonly pulled: VerifiedMetaEvidence;
+    };
+
+/** 拒否メッセージの種別ラベル(証拠の整形は floor-evidence.ts)。 */
+export function floorViolationLabel(violation: FloorViolation): string {
+  switch (violation.kind) {
+    case "chain-shortened":
+      return "チェーンの短縮(巻き戻し)";
+    case "chain-diverged":
+      return "検証済みチェーンヘッドと異なる分岐の配布(equivocation の即時証拠)";
+    case "variable-omitted":
+      return "検証済み変数の欠落(選択的な応答の切り詰め)";
+    case "value-rollback":
+      return "値バージョンの巻き戻し";
+    case "value-equivocation":
+      return "同一 version への異なる signed bytes の配布(equivocation の証拠)";
+    case "value-epoch-regression":
+      return "エポックの後退(§4.1 単調性違反)";
+    case "stale-epoch-injection":
+      return "pull 時点エポック基準未満の前進 version(旧エポック鍵による前進注入の証拠)";
+    case "meta-rollback":
+      return "メタステートメントの巻き戻し";
+    case "meta-equivocation":
+      return "同一 metaVersion への異なる signed bytes の配布(equivocation の証拠)";
+    case "deletion-revoked":
+      return "削除の無断取り消し";
+    case "tombstone-mismatch":
+      return "削除済み変数の tombstone の差し替え";
+  }
+}
+
+/**
+ * チェーン床の検査(規則 (a) のチェーン部分)。同期・検証済みのチェーンが
+ * 床に記録したヘッドを含む延長であることを要求する: (1) 短縮(headSeq の
+ * 後退)、(2) 床 seq 位置のハッシュ不一致(= 床のヘッドが載っていない別分岐 —
+ * prev_hash 連鎖により床 seq 一致は床以下の全エントリ一致を意味する)。
+ * seq が床より先へ進むのは正常(他メンバーの追記)。
+ */
+export function checkChainFloor(
+  floor: ProjectFloor,
+  verified: VerifiedProject,
+): FloorViolation | null {
+  const syncedHead: ChainHeadFloor = {
+    seq: verified.state.headSeq,
+    hashHex: verified.state.headHashHex,
+  };
+  if (verified.state.headSeq < floor.chainHead.seq) {
+    return { kind: "chain-shortened", floorHead: floor.chainHead, syncedHead };
+  }
+  const actualHashHex = verified.history.entryHashAt(floor.chainHead.seq);
+  if (actualHashHex !== floor.chainHead.hashHex) {
+    return {
+      kind: "chain-diverged",
+      floorHead: floor.chainHead,
+      actualHashHex: actualHashHex ?? "",
+      syncedHead,
+    };
+  }
+  return null;
+}
+
+function valueEvidenceOf(value: VerifiedPulledValue): PulledValueEvidence {
+  return {
+    version: value.version,
+    epoch: value.epoch,
+    valueSigHashHex: value.signedBytesHashHex,
+    chainHeadSeq: value.valueChainHeadSeq,
+    chainHeadHashHex: value.valueChainHeadHashHex,
+    signatureHex: value.valueSignatureHex,
+    writerUserId: value.writerUserId,
+    writerKeyFingerprintHex: value.writerKeyFingerprintHex,
+  };
+}
+
+function metaEvidenceOf(value: VerifiedPulledValue): VerifiedMetaEvidence {
+  return {
+    status: "active",
+    metaVersion: value.metaVersion,
+    metaSigHashHex: value.metaSignedBytesHashHex,
+    chainHeadSeq: value.metaChainHeadSeq,
+    chainHeadHashHex: value.metaChainHeadHashHex,
+    signatureHex: value.metaSignatureHex,
+    authorUserId: value.authorUserId,
+    authorKeyFingerprintHex: value.authorKeyFingerprintHex,
+  };
+}
+
+/** 変数メタの床検査(後退 = (a)・同一 metaVersion の相違 = (b)。前進は非保証)。 */
+function checkMetaAgainstFloor(
+  target: "variable" | "environment",
+  variableId: string | null,
+  floor: FloorMetaEvidence,
+  pulled: VerifiedMetaEvidence,
+): FloorViolation | null {
+  if (pulled.metaVersion < floor.metaVersion) {
+    return { kind: "meta-rollback", target, variableId, floor, pulled };
+  }
+  if (pulled.metaVersion === floor.metaVersion && pulled.metaSigHashHex !== floor.metaSigHashHex) {
+    return { kind: "meta-equivocation", target, variableId, floor, pulled };
+  }
+  return null;
+}
+
+/** active な床 × active な配布値の検査(規則 (a)(b) の値・変数メタ部分)。 */
+function checkActiveVariable(
+  floor: ActiveVariableFloor,
+  value: VerifiedPulledValue,
+): FloorViolation | null {
+  const variableId = value.variableId;
+  const pulled = valueEvidenceOf(value);
+  if (value.version < floor.version) {
+    return { kind: "value-rollback", variableId, floor, pulled };
+  }
+  if (value.version === floor.version && value.signedBytesHashHex !== floor.valueSigHashHex) {
+    // epoch を含む全署名対象が signed bytes に入るため、同一 version の内容
+    // 相違はこの 1 検査で覆われる(§4.1 の署名対象全列挙)
+    return { kind: "value-equivocation", variableId, floor, pulled };
+  }
+  if (value.version > floor.version && value.epoch < floor.epoch) {
+    // §4.1 のエポック単調性(推移的 — 版番号のギャップに関わらず要求できる)
+    return { kind: "value-epoch-regression", variableId, floor, pulled };
+  }
+  return checkMetaAgainstFloor("variable", variableId, floor, metaEvidenceOf(value));
+}
+
+/** 床が active と記録している変数の検査(active / tombstone / 欠落の 3 分岐)。 */
+function checkFloorActive(
+  variableId: string,
+  floor: ActiveVariableFloor,
+  active: VerifiedPulledValue | undefined,
+  tombstone: VerifiedTombstone | undefined,
+): FloorViolation | null {
+  if (active !== undefined) {
+    return checkActiveVariable(floor, active);
+  }
+  if (tombstone !== undefined) {
+    // metaVersion が床より進んだ deleted は正当な削除。同一 metaVersion で
+    // status が違えば signed bytes も違う = (b) の証拠。後退は (a)
+    return checkMetaAgainstFloor("variable", variableId, floor, tombstone);
+  }
+  return { kind: "variable-omitted", variableId, floor };
+}
+
+/** 床が deleted と記録している変数の検査(削除は終端状態 — §4.2 / session-15 §2-2)。 */
+function checkFloorDeleted(
+  variableId: string,
+  floor: Extract<VariableFloor, { status: "deleted" }>,
+  active: VerifiedPulledValue | undefined,
+  tombstone: VerifiedTombstone | undefined,
+): FloorViolation | null {
+  if (active !== undefined) {
+    // 削除の無断取り消し(規則 (a))。deleted 後の再 active 化は正当な経路が
+    // 存在しない(サーバー受理も predecessor 検証も拒否する — session-15 §2-2)
+    return { kind: "deletion-revoked", variableId, floor, pulled: metaEvidenceOf(active) };
+  }
+  if (tombstone === undefined) {
+    return { kind: "variable-omitted", variableId, floor };
+  }
+  if (
+    tombstone.metaVersion !== floor.metaVersion ||
+    tombstone.metaSigHashHex !== floor.metaSigHashHex
+  ) {
+    // deleted は終端状態で正当な後続ステートメントが存在しないため、床との
+    // 厳密一致を要求する(後退 = (a)、相違 = (b)、前進 = deleted 後の偽造)
+    return { kind: "tombstone-mismatch", variableId, floor, pulled: tombstone };
+  }
+  return null;
+}
+
+/**
+ * 環境 1 つ分の床検査(規則 (a)(b)(c))。床なし(初回)は検査対象がない —
+ * その場合に何が保証されないかは §14.3-3(初回同期クライアント)。
+ * 返すのは最初に見つかった不整合 1 件(すべて拒否条件なので列挙は不要)。
+ */
+export function checkEnvironmentPull(
+  floor: EnvironmentFloor | null,
+  snapshot: VerifiedPullSnapshot,
+): FloorViolation | null {
+  if (floor === null) {
+    return null;
+  }
+  const environmentViolation = checkMetaAgainstFloor(
+    "environment",
+    null,
+    { metaVersion: floor.metaVersion, metaSigHashHex: floor.metaSigHashHex },
+    snapshot.environment,
+  );
+  if (environmentViolation !== null) {
+    return environmentViolation;
+  }
+  const actives = new Map(snapshot.variables.map((value) => [value.variableId, value]));
+  const tombstones = new Map(
+    snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
+  );
+  // 床にある変数ごとの検査(欠落・後退・相違・削除取り消し)。active / deleted
+  // の同一 ID 併置は values.ts が拒否済み
+  for (const [variableId, variableFloor] of Object.entries(floor.variables)) {
+    const violation =
+      variableFloor.status === "active"
+        ? checkFloorActive(
+            variableId,
+            variableFloor,
+            actives.get(variableId),
+            tombstones.get(variableId),
+          )
+        : checkFloorDeleted(
+            variableId,
+            variableFloor,
+            actives.get(variableId),
+            tombstones.get(variableId),
+          );
+    if (violation !== null) {
+      return violation;
+    }
+  }
+  // 規則 (c): 床の version より新しい version(床にない変数は version 0 相当 —
+  // 前回 pull 以降に正当に作られた変数は当時の現エポック以上でしか書けない)の
+  // epoch が pull 時点エポック基準より小さい配布は前進注入の証拠。基準「以上」は
+  // 受理する(ローテーション直後・再暗号化完了前の正当な旧エポック値 — §12-7)
+  for (const value of snapshot.variables) {
+    const variableFloor = floorRecordGet(floor.variables, value.variableId);
+    const floorVersion = variableFloor?.status === "active" ? variableFloor.version : 0;
+    if (value.version > floorVersion && value.epoch < floor.pullEpoch) {
+      return {
+        kind: "stale-epoch-injection",
+        variableId: value.variableId,
+        baselineEpoch: floor.pullEpoch,
+        floorVersion,
+        pulled: valueEvidenceOf(value),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * 検証成功した pull 応答から次の環境床を組み立てる(§6.3 の更新順序: 検査は
+ * 前回基準で行い、規則 (c) 基準の前進 = 今回のチェーン導出現エポックは検証
+ * 成功後に変数床と原子的にコミットされる — 呼び出し側が commitPull で書く)。
+ */
+export function buildEnvironmentFloor(
+  chainCurrentEpoch: number,
+  snapshot: VerifiedPullSnapshot,
+): EnvironmentFloor {
+  const variables: Record<string, VariableFloor> = {};
+  for (const value of snapshot.variables) {
+    variables[value.variableId] = {
+      status: "active",
+      version: value.version,
+      epoch: value.epoch,
+      valueSigHashHex: value.signedBytesHashHex,
+      metaVersion: value.metaVersion,
+      metaSigHashHex: value.metaSignedBytesHashHex,
+    };
+  }
+  for (const tombstone of snapshot.tombstones) {
+    variables[tombstone.variableId] = {
+      status: "deleted",
+      metaVersion: tombstone.metaVersion,
+      metaSigHashHex: tombstone.metaSigHashHex,
+    };
+  }
+  return {
+    pullEpoch: chainCurrentEpoch,
+    metaVersion: snapshot.environment.metaVersion,
+    metaSigHashHex: snapshot.environment.metaSigHashHex,
+    variables,
+  };
+}
+
+/**
+ * 1 コマンド実行中の環境床ハンドル。プロセス内で pull が複数回起きる場合
+ * (push の再試行ループ)に、直前の pull がコミットした床を次の検査の基準に
+ * する。プロセス内キャッシュはコミットのたびに**ストアが書いたマージ済み
+ * 環境床**へ同期する(単なる送信スナップショットではない): read-merge-write
+ * の単調マージが取り込んだ並行 CLI の検出材料(union・deleted 終端・より新しい
+ * version / pullEpoch)を、同一コマンド内の後続検査が取りこぼさないため。
+ * ディスクの床は自 CLI が §6.3 検証済みレコードしか書かないので、マージ結果の
+ * 採用は検査基準として健全(ローカル状態を書ける攻撃者は床の外 — fail-open)。
+ */
+export interface FloorHandle {
+  readonly environmentId: string;
+  /** 現在の環境床(初回 pull 前は openProject 時に読んだスナップショット)。 */
+  readonly current: () => EnvironmentFloor | null;
+  /** 検証済み pull の原子コミット(規則 (c) 基準 + 変数床 + ヘッド)。 */
+  readonly commitPull: (
+    environment: EnvironmentFloor,
+    head: ChainHeadFloor,
+  ) => Effect.Effect<void, CliError>;
+  /** 受理された push の変数床前進(pullEpoch は動かさない)。 */
+  readonly commitPush: (
+    variableId: string,
+    variable: VariableFloor,
+    head: ChainHeadFloor,
+  ) => Effect.Effect<void, CliError>;
+}
+
+/** 床ストアに対する環境床ハンドルを作る。 */
+export function makeFloorHandle(input: {
+  readonly store: FloorStoreShape;
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly initial: EnvironmentFloor | null;
+}): FloorHandle {
+  let current = input.initial;
+  return {
+    environmentId: input.environmentId,
+    current: () => current,
+    commitPull: (environment, head) =>
+      input.store
+        .commitPull(input.projectId, {
+          chainHead: head,
+          environmentId: input.environmentId,
+          environment,
+        })
+        .pipe(
+          Effect.tap((merged) =>
+            Effect.sync(() => {
+              current = merged;
+            }),
+          ),
+          Effect.asVoid,
+        ),
+    commitPush: (variableId, variable, head) =>
+      input.store
+        .commitPush(input.projectId, {
+          chainHead: head,
+          environmentId: input.environmentId,
+          variableId,
+          variable,
+        })
+        .pipe(
+          Effect.tap((merged) =>
+            Effect.sync(() => {
+              if (merged !== null) {
+                current = merged;
+              } else if (current !== null) {
+                // ディスクに環境レコードがない稀な形(破損の作り直し直後の
+                // レース — applyPush は基準を捏造しない)ではプロセス内の
+                // 知識だけを前進させる
+                current = {
+                  ...current,
+                  variables: { ...current.variables, [variableId]: variable },
+                };
+              }
+            }),
+          ),
+          Effect.asVoid,
+        ),
+  };
+}

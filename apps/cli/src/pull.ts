@@ -17,6 +17,7 @@ import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import type { FloorHandle } from "./floor-check.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
 
@@ -52,6 +53,8 @@ export function pullVariables(input: {
   readonly recipient: DekRecipient;
   /** future head(§6.3-2b)時の有界再同期。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** ローカル床(§6.3 — 検査と検証成功後の原子コミット)。 */
+  readonly floor: FloorHandle;
 }): Effect.Effect<PulledVariables, CliError> {
   return Effect.gen(function* () {
     // (1) 値署名の検証(復号より前)。future head なら有界再同期で前進した

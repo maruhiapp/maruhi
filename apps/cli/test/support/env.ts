@@ -12,6 +12,7 @@ import { FetchHttpClient } from "effect/unstable/http";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
 import { cliError } from "../../src/errors.ts";
+import { floorDirOf, FloorStore, makeFileFloorStore } from "../../src/floor.ts";
 import { type AgentProfile, CliIo } from "../../src/io.ts";
 import {
   Keychain,
@@ -37,6 +38,8 @@ export interface TestEnv {
   readonly errors: string[];
   readonly runnerCalls: RunnerCall[];
   readonly configPath: string;
+  /** ローカル床(§6.3)のディレクトリ(<configDir>/floor)。 */
+  readonly floorDir: string;
   setStdin(bytes: Uint8Array): void;
   setAgent(profile: AgentProfile): void;
   setEnvVar(name: string, value: string | undefined): void;
@@ -62,7 +65,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let configLoadDefect = false;
 
   const fileStore = makeFileConfigStore(configPath);
+  const floorDir = floorDirOf(configPath);
   const layer = Layer.mergeAll(
+    Layer.succeed(FloorStore, makeFileFloorStore(floorDir)),
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),
       set: (name, value) =>
@@ -117,6 +122,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     errors,
     runnerCalls,
     configPath,
+    floorDir,
     setStdin(bytes) {
       stdin = bytes;
     },

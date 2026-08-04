@@ -18,6 +18,9 @@ import { displayText, displayValue } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
+import { formatFloorViolation } from "./floor-evidence.ts";
+import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { Keychain } from "./keychain.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
@@ -34,10 +37,16 @@ import {
   resolveServerOrigin,
   resolveSession,
 } from "./session.ts";
-import { syncProject, type VerifiedProject } from "./sync.ts";
+import { resyncExtended, syncProject, type VerifiedProject } from "./sync.ts";
 
 /** Services every CLI command may need (production wiring lives in live.ts). */
-export type CliServices = Keychain | ConfigStore | CliIo | ProcessRunner | HttpClient.HttpClient;
+export type CliServices =
+  | Keychain
+  | ConfigStore
+  | FloorStore
+  | CliIo
+  | ProcessRunner
+  | HttpClient.HttpClient;
 
 const CLI_VERSION = "0.0.0";
 
@@ -112,9 +121,85 @@ interface ProjectContext extends SessionContext {
   readonly recipient: DekRecipient;
   readonly projectId: string;
   readonly verified: VerifiedProject;
+  /** openProject 時点のローカル床(§6.3。床なし = null)。 */
+  readonly floor: ProjectFloor | null;
 }
 
-/** データ系コマンド共通の前段: ID 検証 → セッション → master 鍵 → §6.3 同期検査。 */
+interface CheckedFloor {
+  readonly floor: ProjectFloor | null;
+  /** チェーン床検査を通過したビュー(短縮疑い時の有界再同期で前進していることがある)。 */
+  readonly verified: VerifiedProject;
+}
+
+/**
+ * ローカル床の読み込み(fail-open — 初回と破損を区別して知らせる)+ チェーン床
+ * 検査(§6.3 規則 (a) のチェーン部分)+ 検証済みヘッドの床前進。規則 (c) の
+ * 基準(pullEpoch)はここでは動かさない(チェーン同期単独で前進させない規範)。
+ *
+ * 床ヘッドが自ビューより先(headSeq の後退)は、同期と床ロードの間に兄弟
+ * プロセスが床を前進させた正直なレースでも起きるため、即時証拠にせず
+ * §6.3-2b と同型の有界再同期(1 回)で解決を試みる。床 seq 位置のハッシュ
+ * 不一致は 2 つの検証済み成果物の矛盾(硬い証拠)なので即時拒否のまま。
+ */
+function loadCheckedFloor(
+  projectId: string,
+  verified: VerifiedProject,
+  resync: Effect.Effect<VerifiedProject, CliError>,
+): Effect.Effect<CheckedFloor, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const store = yield* FloorStore;
+    const loaded = yield* store.load(projectId);
+    if (loaded.state === "missing") {
+      yield* io.logError(
+        "注意: このプロジェクトのローカル床がまだありません(初回同期)。巻き戻し・欠落の永続検出は次回以降の実行から有効になります",
+      );
+    } else if (loaded.state === "corrupt") {
+      yield* io.logError(
+        "警告: ローカル床ファイルを読み取れません(破損)。床なしとして続行します — ローカル状態が意図せず改変・削除された可能性があります。心当たりがない場合は注意してください",
+      );
+    }
+    let view = verified;
+    if (loaded.floor !== null) {
+      let violation = checkChainFloor(loaded.floor, view);
+      if (violation !== null && violation.kind === "chain-shortened") {
+        // 延長検査付き再同期: 初回ビューが単に古いだけなら再同期ビューの接頭辞に
+        // なっているはず。延長でなければ、初回ビュー自体が分岐していた
+        // (短縮 + 分岐の複合)証拠として拒否する(レビュー②)
+        view = yield* resyncExtended(resync, view);
+        violation = checkChainFloor(loaded.floor, view);
+      }
+      if (violation !== null) {
+        // 拒否 + 提示可能な証拠(床の記録ヘッドと今回の同期ヘッド)
+        return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
+      }
+    }
+    yield* store.commitHead(projectId, {
+      seq: view.state.headSeq,
+      hashHex: view.state.headHashHex,
+    });
+    return { floor: loaded.floor, verified: view };
+  });
+}
+
+/** 環境単位の床ハンドル(コマンド内の pull / push が検査・コミットに使う)。 */
+function floorHandleFor(
+  context: ProjectContext,
+  environmentId: string,
+): Effect.Effect<FloorHandle, never, CliServices> {
+  return Effect.map(FloorStore, (store) =>
+    makeFloorHandle({
+      store,
+      projectId: context.projectId,
+      environmentId,
+      // own-property 参照(環境 ID `constructor` 等の正当な ID が継承プロパティに
+      // 解決されるのを防ぐ — floor.ts の floorRecordGet 参照)
+      initial: floorRecordGet(context.floor?.environments, environmentId) ?? null,
+    }),
+  );
+}
+
+/** データ系コマンド共通の前段: ID 検証 → セッション → master 鍵 → §6.3 同期検査 → 床検査。 */
 function openProject(flags: CommonFlags): Effect.Effect<ProjectContext, CliError, CliServices> {
   return Effect.gen(function* () {
     // プロジェクト ID の形式検証はネットワークアクセスより先に行う
@@ -122,13 +207,25 @@ function openProject(flags: CommonFlags): Effect.Effect<ProjectContext, CliError
     const projectId = yield* resolveProjectId(flags.project, yield* store.load);
     const context = yield* openSession(flags.server);
     const masterKeys = yield* loadMasterKeys(context.session);
-    const verified = yield* syncProject(context.client, projectId);
+    const synced = yield* syncProject(context.client, projectId);
+    const checked = yield* loadCheckedFloor(
+      projectId,
+      synced,
+      syncProject(context.client, projectId),
+    );
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,
       encKeyPair: masterKeys.encKeyPair,
     };
-    return { ...context, masterKeys, recipient, projectId, verified };
+    return {
+      ...context,
+      masterKeys,
+      recipient,
+      projectId,
+      verified: checked.verified,
+      floor: checked.floor,
+    };
   });
 }
 
@@ -307,7 +404,13 @@ function projectCommand(execute: Execute) {
             const io = yield* CliIo;
             const context = yield* openSession(ctx.values.server);
             const projectId = yield* resolveProjectId(ctx.values.project, context.config);
-            const verified = yield* syncProject(context.client, projectId);
+            const synced = yield* syncProject(context.client, projectId);
+            // チェーン床の検査(§6.3 規則 (a))も verify の一部
+            const verified = (yield* loadCheckedFloor(
+              projectId,
+              synced,
+              syncProject(context.client, projectId),
+            )).verified;
             yield* io.log(`チェーン検証 OK(head seq=${verified.state.headSeq})`);
             yield* io.log(`head: ${verified.state.headHashHex}`);
             yield* io.log(`メンバー(${verified.state.members.size}):`);
@@ -413,6 +516,7 @@ function pullCommand(execute: Execute) {
             environmentId,
             recipient: context.recipient,
             resync: syncProject(context.client, context.projectId),
+            floor: yield* floorHandleFor(context, environmentId),
           });
           yield* logWarnings(pulled.warnings);
           yield* io.log(`同期・検証 OK: ${pulled.variables.length} 変数(環境 ${environmentId})`);
@@ -460,6 +564,7 @@ function pushCommand(execute: Execute) {
             // writer / author = 自分の内部 user_id、鍵 = master sig 鍵
             writerUserId: context.session.userId,
             signingKey: context.masterKeys.sigKeyPair.privateKey,
+            floor: yield* floorHandleFor(context, environmentId),
           });
           yield* logWarnings(pushed.warnings);
           yield* io.log(
@@ -494,6 +599,7 @@ function runCommand(execute: Execute) {
             environmentId,
             recipient: context.recipient,
             resync: syncProject(context.client, context.projectId),
+            floor: yield* floorHandleFor(context, environmentId),
           });
           yield* logWarnings(pulled.warnings);
           // `maruhi run` の環境変数名は検証済みステートメント経由(§4.2 / §12-7)。
