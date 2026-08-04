@@ -1084,7 +1084,9 @@ def gen_dek_wrap_signature():
     write(
         "dek-wrap-signature.json",
         {
-            "description": "CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)。ラップ本体は dek-wrap.json の basic ベクターと同一",
+            # description の LP 列挙から signer_user_id が欠落していた(signed_fields_order は
+            # 当初から正しい)。セッション 12 §13 の申し送りどおり PR-2 で修正(2026-08-04)
+            "description": "CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id)。ラップ本体は dek-wrap.json の basic ベクターと同一",
             "signed_fields_order": SIGNED_FIELDS_ORDER,
             "binary_encoding": "受信者 enc 公開鍵 / HPKE enc / ラップ暗号文は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
             "signer": {
@@ -1235,6 +1237,505 @@ def gen_dek_commitment():
 
 
 # ---------------------------------------------------------------------------
+# 3.7 value-signature.json — §4.1 値の書き込み署名(Ed25519 + §2.1 LP)
+#
+# value_signed_bytes = LP("<suite>/value-sig", project_id, environment_id, epoch,
+#                         variable_id, version, nonce_hex, ciphertext_hex,
+#                         prev_value_sig_hash_hex, writer_user_id,
+#                         chain_head_hash_hex, chain_head_seq)
+#   domain = "<suite>/value-sig"(suite の束縛はドメイン文字列が担う — §5.1 と同型)
+#   数値(epoch / version / chain_head_seq)は 10 進文字列化、バイナリ(nonce /
+#   ciphertext / ハッシュ)は hex 小文字文字列として LP に載せる
+#   prev_value_sig_hash_hex = 直前 version の value_signed_bytes の SHA-256
+#   (version 1 は空文字列)
+#
+# チェーン状態を要する検証規則系は chain-entries.json の正規 12 エントリチェーンを
+# 参照して構成する(dek-wrap-signature.json が dek-wrap.json を読む cross-file の
+# 先例)。ciphertext は environment_deks のダミー DEK による実 AES-GCM 暗号文
+# (AAD = §4)で、値署名 → 復号が一続きの実データになる。
+
+VALUE_SIG_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "epoch", "variable_id", "version",
+    "nonce_hex", "ciphertext_hex", "prev_value_sig_hash_hex", "writer_user_id",
+    "chain_head_hash_hex", "chain_head_seq",
+]
+
+
+def value_signed_bytes(ctx: dict) -> bytes:
+    return lp_encode([
+        ctx["domain"], ctx["project_id"], ctx["environment_id"], ctx["epoch"],
+        ctx["variable_id"], ctx["version"], ctx["nonce_hex"], ctx["ciphertext_hex"],
+        ctx["prev_value_sig_hash_hex"], ctx["writer_user_id"],
+        ctx["chain_head_hash_hex"], ctx["chain_head_seq"],
+    ])
+
+
+def gen_value_signature():
+    with open(os.path.join(OUT_DIR, "chain-entries.json"), encoding="utf-8") as fh:
+        chain = json.load(fh)
+    entries = chain["entries"]
+    project_id = entries[0]["entry_hash_hex"]
+    suite = "maruhi/v1"
+    domain = "maruhi/v1/value-sig"
+
+    def head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"]
+
+    def signer_of(user_id: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(chain["keys"][user_id]["sig_sk_seed_hex"])
+        )
+
+    def sig_pub_of(user_id: str) -> str:
+        return chain["keys"][user_id]["sig_pub_hex"]
+
+    def fp_of(user_id: str) -> str:
+        return chain["keys"][user_id]["key_fingerprint_hex"]
+
+    def dek_of(environment_id: str, epoch: int) -> bytes:
+        return bytes.fromhex(chain["environment_deks"][environment_id][str(epoch)]["dek_hex"])
+
+    def encrypt(environment_id: str, epoch: int, variable_id: str, version: int,
+                nonce: bytes, plaintext: str) -> str:
+        aad = var_aad(suite, project_id, environment_id, epoch, variable_id, version)
+        return AESGCM(dek_of(environment_id, epoch)).encrypt(
+            nonce, plaintext.encode("utf-8"), aad
+        ).hex()
+
+    owner_id = "user-owner-0001"
+    member_id = "user-member-0002"
+    admin_id = "user-admin-0003"
+
+    def make_value(name, writer_id, environment_id, epoch, variable_id, version,
+                   nonce, plaintext, prev_hash_hex, head_seq, note, prev_base=None):
+        ct_hex = encrypt(environment_id, epoch, variable_id, version, nonce, plaintext)
+        ctx = {
+            "suite": suite,
+            "domain": domain,
+            "project_id": project_id,
+            "environment_id": environment_id,
+            "epoch": epoch,
+            "variable_id": variable_id,
+            "version": version,
+            "nonce_hex": nonce.hex(),
+            "ciphertext_hex": ct_hex,
+            "prev_value_sig_hash_hex": prev_hash_hex,
+            "writer_user_id": writer_id,
+            "chain_head_hash_hex": head_hash(head_seq),
+            "chain_head_seq": head_seq,
+        }
+        signed = value_signed_bytes(ctx)
+        vector = {
+            "name": name,
+            "context": ctx,
+            "writer_key_fingerprint_hex": fp_of(writer_id),
+            "plaintext_utf8": plaintext,
+            "aad_hex": var_aad(suite, project_id, environment_id, epoch, variable_id, version).hex(),
+            "dek_ref": {"environment_id": environment_id, "epoch": epoch},
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(writer_id).sign(signed).hex(),
+            "note": note,
+        }
+        if prev_base is not None:
+            vector["prev_base"] = prev_base
+        return vector
+
+    # --- 正例(§8-1)。宣言ヘッド時点の inclusive 規約(§6.3)を境界で固定する ---
+    v1_basic = make_value(
+        "v1-basic", admin_id, "env-prod-0001", 2, "var-api-key-0001", 1,
+        pat(0xA4, 12), "sk-dummy-api-key-v1", "", 12,
+        "version 1(prev 空)。writer は head 12 時点の admin(member 以上)、env-prod-0001 の現エポック 2",
+    )
+    v2_chained = make_value(
+        "v2-chained", admin_id, "env-prod-0001", 2, "var-api-key-0001", 2,
+        pat(0xA5, 12), "sk-dummy-api-key-v2",
+        v1_basic["signed_bytes_sha256_hex"], 12,
+        "version 2。prev = v1-basic の value_signed_bytes の SHA-256(§4.1 の連鎖)",
+        prev_base="v1-basic",
+    )
+    vectors = [
+        v1_basic,
+        v2_chained,
+        make_value(
+            "create-head-inclusive", member_id, "env-prod-0001", 1, "var-database-url-0001", 1,
+            pat(0xA6, 12), "postgres://dummy:dummy@db.example.internal:5432/app", "", 3,
+            "create_environment エントリ(seq 3)自身を宣言ヘッドにする直後 push(§6.3 の inclusive 規約): "
+            "head 3 で env-prod-0001 は作成済み・エポック 1 有効、writer(member)も seq 2 の add 以降有効",
+        ),
+        make_value(
+            "removed-writer-in-tenure", member_id, "env-prod-0001", 2, "var-legacy-0002", 1,
+            pat(0xA7, 12), "legacy-secret-dummy", "", 4,
+            "seq 5 で削除済みの writer による在籍区間内(head 4 = 自身の rotate_epoch エントリ)の過去値。"
+            "rotate エントリ自身を宣言ヘッドにする再暗号化 push の座標(エポック 2 は head 4 で有効 — inclusive)であり、"
+            "削除後も当時の鍵で検証できる(§6.3-1)",
+        ),
+        make_value(
+            "env-dev-v1", admin_id, "env-dev-0002", 1, "var-service-token-0003", 1,
+            pat(0xA8, 12), "svc-token-dummy-rotates", "", 8,
+            "env-dev-0002 の作成エントリ(seq 8)自身を宣言ヘッドにする version 1(エポック 1)",
+        ),
+    ]
+    vectors.append(
+        make_value(
+            "rotate-head-reencryption", admin_id, "env-dev-0002", 2, "var-service-token-0003", 2,
+            pat(0xA9, 12), "svc-token-dummy-rotates",
+            vectors[-1]["signed_bytes_sha256_hex"], 10,
+            "ローテーション実行者による再暗号化 push(§7 = §4.1): rotate_epoch エントリ(seq 10)自身を"
+            "宣言ヘッドにし、平文は同一のまま新エポック DEK で暗号化、prev は旧エポックの version 1 に連鎖"
+            "(エポック単調性 2 ≥ 1)",
+            prev_base="env-dev-v1",
+        )
+    )
+
+    # --- fork-same-version(§14.3-5 / §8-1): 同一座標(variable × version)に対する
+    # 内容の異なる 2 つの有効署名。単体ではどちらも全検証を通り、組になって初めて
+    # equivocation の暗号学的証拠になる(signed_bytes_sha256 の相違で機械判定)
+    fork_prev = v2_chained["signed_bytes_sha256_hex"]
+    fork_branches = [
+        make_value(
+            "fork-branch-a", admin_id, "env-prod-0001", 2, "var-api-key-0001", 3,
+            pat(0xAA, 12), "fork-branch-a-dummy", fork_prev, 12,
+            "version 3 の分岐 A(admin が署名)", prev_base="v2-chained",
+        ),
+        make_value(
+            "fork-branch-b", owner_id, "env-prod-0001", 2, "var-api-key-0001", 3,
+            pat(0xAB, 12), "fork-branch-b-dummy", fork_prev, 12,
+            "version 3 の分岐 B(owner が署名)。A と同一座標・同一 prev で内容が異なる", prev_base="v2-chained",
+        ),
+    ]
+
+    # --- tenure 跨ぎ検査用の派生チェーン(chain-entries.json 本体は変更しない):
+    # 正規 12 エントリを prefix に、seq 13 で user-member-0002 を新鍵で re-add する。
+    # 旧鍵(在籍区間 1)× 新区間のヘッド(seq 13)の組合せは §6.3-1 のヘッド時点
+    # 鍵束縛で拒否されるべき
+    rejoined = make_user(pat(0x74, 32), pat(0x84, 32))
+    readd_payload = {
+        "target_user_id": member_id,
+        "enc_pub_hex": rejoined["enc_pub_hex"],
+        "sig_pub_hex": rejoined["sig_pub_hex"],
+        "role": "member",
+    }
+    owner_keys = chain["keys"][owner_id]
+    owner_fp = owner_keys["key_fingerprint_hex"]
+    readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
+    readd_ts = 1754006400000 + 12000
+    readd_signed = lp_encode(
+        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
+    )
+    readd_sig = signer_of(owner_id).sign(readd_signed)
+    readd_entry_bytes = lp_encode(
+        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
+         readd_sig.hex()]
+    )
+    tenure_extension = {
+        "note": "key-from-other-tenure 用の派生チェーン: 正規 12 エントリの後に seq 13 で "
+                "user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。"
+                "chain-entries.json 本体は変更しない",
+        "rejoined_member": {
+            "user_id": member_id,
+            "enc_sk_seed_hex": pat(0x74, 32).hex(),
+            "sig_sk_seed_hex": pat(0x84, 32).hex(),
+            "enc_pub_hex": rejoined["enc_pub_hex"],
+            "sig_pub_hex": rejoined["sig_pub_hex"],
+            "key_fingerprint_hex": rejoined["fp_hex"],
+        },
+        "entry": {
+            "seq": 13,
+            "suite": suite,
+            "prev_hash_hex": head_hash(12),
+            "op": "add_member",
+            "actor": {"user_id": owner_id, "key_fingerprint_hex": owner_fp},
+            "payload": readd_payload,
+            "timestamp_ms": readd_ts,
+            "payload_bytes_hex": readd_pb.hex(),
+            "signed_bytes_hex": readd_signed.hex(),
+            "signature_hex": readd_sig.hex(),
+            "entry_bytes_hex": readd_entry_bytes.hex(),
+            "entry_hash_hex": sha256(readd_entry_bytes).hex(),
+        },
+    }
+
+    # --- negative(署名系): 改竄・移植 = 元署名を維持したまま signed_bytes を
+    # 差し替え、Ed25519 検証が失敗することを固定する(dek-wrap-signature と同じ形)
+    base_ctx = v1_basic["context"]
+    base_sig = bytes.fromhex(v1_basic["signature_hex"])
+    admin_pub = sig_pub_of(admin_id)
+    tampered_sig = bytearray(base_sig)
+    tampered_sig[-1] ^= 0x01
+    tampered_ct = bytearray(bytes.fromhex(base_ctx["ciphertext_hex"]))
+    tampered_ct[-1] ^= 0x01
+    tampered_nonce = bytearray(bytes.fromhex(base_ctx["nonce_hex"]))
+    tampered_nonce[0] ^= 0x01
+
+    def make_negative(name, overrides, note, base_vector=None, verify_key_hex=None,
+                      signature=None):
+        source = base_vector if base_vector is not None else v1_basic
+        ctx = dict(source["context"], **overrides)
+        return {
+            "name": name,
+            "base": source["name"],
+            "context": ctx,
+            "verify_signed_bytes_hex": value_signed_bytes(ctx).hex(),
+            "signature_hex": (signature.hex() if signature is not None
+                              else source["signature_hex"]),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None else admin_pub,
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        make_negative(
+            "tampered-signature", {},
+            "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
+            signature=bytes(tampered_sig),
+        ),
+        make_negative(
+            "tampered-ciphertext", {"ciphertext_hex": bytes(tampered_ct).hex()},
+            "暗号文の末尾 1 bit 反転(タグ含む差し替え)は元署名の検証に失敗する",
+        ),
+        make_negative(
+            "tampered-nonce", {"nonce_hex": bytes(tampered_nonce).hex()},
+            "nonce の改竄は元署名の検証に失敗する(nonce も署名対象)",
+        ),
+        make_negative(
+            "transplant-project", {"project_id": "proj-other-0002"},
+            "別プロジェクトへの座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-environment", {"environment_id": "env-dev-0002"},
+            "別環境への座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-epoch", {"epoch": 1},
+            "別エポックへの座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-variable", {"variable_id": "var-other-9999"},
+            "別変数への座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-version", {"version": 2},
+            "別バージョンへの座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-signer", {"writer_user_id": owner_id},
+            "writer_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §4.1 の user_id 焼き込み)",
+        ),
+        make_negative(
+            "wrong-signer-key", {},
+            "署名者以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)",
+            verify_key_hex=sig_pub_of(owner_id),
+        ),
+        make_negative(
+            "chain-head-swap", {"chain_head_hash_hex": head_hash(11)},
+            "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)",
+        ),
+        make_negative(
+            "chain-head-seq-mismatch", {"chain_head_seq": 11},
+            "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)",
+        ),
+        make_negative(
+            "tampered-prev-hash",
+            {"prev_value_sig_hash_hex": sha256(b"bogus-predecessor").hex()},
+            "prev_value_sig_hash_hex の差し替えは元署名の検証に失敗する(連鎖の改竄は署名で固定される)",
+            base_vector=v2_chained,
+        ),
+        make_negative(
+            "suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/value-sig"},
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+    ]
+
+    # --- negative(検証規則系。kind = "authorization"): 署名は有効だが、
+    # 検証済みチェーン履歴に対する §6.3 の検証規則で拒否されるべきもの。
+    # expected_reason は実装の理由コードを固定する(chain-entries の authz と同じ運び方)
+    ghost = make_user(pat(0x78, 32), pat(0x88, 32))
+    ghost_signer = Ed25519PrivateKey.from_private_bytes(pat(0x88, 32))
+
+    def rule_negative(name, writer_id, environment_id, epoch, variable_id, version,
+                      nonce, plaintext, prev_hash_hex, head_hash_hex, head_seq,
+                      expected_reason, note, chain_ref="canonical",
+                      writer_fp=None, sign_with=None, verify_key_hex=None,
+                      predecessor=None):
+        # epoch 座標と同じエポックの DEK で実暗号化する(環境の全対象エポックの
+        # ダミー DEK は environment_deks に存在する)
+        ct_hex = encrypt(environment_id, epoch, variable_id, version, nonce, plaintext)
+        ctx = {
+            "suite": suite,
+            "domain": domain,
+            "project_id": project_id,
+            "environment_id": environment_id,
+            "epoch": epoch,
+            "variable_id": variable_id,
+            "version": version,
+            "nonce_hex": nonce.hex(),
+            "ciphertext_hex": ct_hex,
+            "prev_value_sig_hash_hex": prev_hash_hex,
+            "writer_user_id": writer_id,
+            "chain_head_hash_hex": head_hash_hex,
+            "chain_head_seq": head_seq,
+        }
+        signed = value_signed_bytes(ctx)
+        signer = sign_with if sign_with is not None else signer_of(writer_id)
+        case = {
+            "name": name,
+            "kind": "authorization",
+            "chain": chain_ref,
+            "context": ctx,
+            "writer_key_fingerprint_hex": writer_fp if writer_fp is not None else fp_of(writer_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None else sig_pub_of(writer_id),
+            "expected_reason": expected_reason,
+            "must_fail": True,
+            "note": note,
+        }
+        if predecessor is not None:
+            case["predecessor"] = predecessor
+        return case
+
+    rule_negatives = [
+        rule_negative(
+            "head-not-in-chain", admin_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB0, 12), "rule-dummy", "", sha256(b"not-in-chain").hex(), 12,
+            "chain-head-mismatch",
+            "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)"
+            "または偽造の硬い証拠として即時拒否(§6.3-2a)",
+        ),
+        rule_negative(
+            "head-beyond-local-seq", admin_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB1, 12), "rule-dummy", "", sha256(b"future-head").hex(), 13,
+            "chain-head-future",
+            "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
+            "延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)。この理由コードは"
+            "「即時拒否せず再同期を試みる」分岐の入口を固定する",
+        ),
+        rule_negative(
+            "writer-role-insufficient", admin_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB2, 12), "rule-dummy", "", head_hash(6), 6,
+            "writer-role-insufficient-at-head",
+            "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。値の push は"
+            "宣言ヘッド時点で member 以上が必要(§6.3-3)",
+        ),
+        rule_negative(
+            "writer-removed-at-head", member_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB3, 12), "rule-dummy", "", head_hash(12), 12,
+            "writer-not-member-at-head",
+            "seq 5 で削除済みの writer が削除後のヘッド(12)を宣言する形は拒否する"
+            "(削除済みメンバーの鍵による新規登録の遮断 — §6.3-3)",
+        ),
+        rule_negative(
+            "epoch-not-current-at-head", admin_id, "env-prod-0001", 1, "var-rule-0004", 1,
+            pat(0xB4, 12), "rule-dummy", "", head_hash(12), 12,
+            "epoch-not-current-at-head",
+            "head 12 時点の env-prod-0001 の現エポックは 2。エポック 1 への署名は拒否する"
+            "(削除済みメンバーの鍵で現エポックの値を偽造する経路の対偶 — §6.3-4)",
+        ),
+        rule_negative(
+            "head-before-environment-create", member_id, "env-prod-0001", 1, "var-rule-0004", 1,
+            pat(0xB5, 12), "rule-dummy", "", head_hash(2), 2,
+            "environment-not-created-at-head",
+            "宣言ヘッド(seq 2)が env-prod-0001 の create_environment(seq 3)より前 = 環境未存在で"
+            "エポックが定義されない。既定値へのフォールバック実装を禁止する(§6.3-4 後段)",
+        ),
+        rule_negative(
+            "key-from-other-tenure", member_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB6, 12), "rule-dummy", "",
+            tenure_extension["entry"]["entry_hash_hex"], 13,
+            "writer-key-mismatch-at-head",
+            "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間の"
+            "ヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛 — 同じ鍵の dedupe で"
+            "tenure を消した実装はここで落ちる)",
+            chain_ref="tenure-extension",
+        ),
+        rule_negative(
+            "writer-unknown-in-history", "user-ghost-0042", "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB7, 12), "rule-dummy", "", head_hash(12), 12,
+            "writer-unknown",
+            "チェーン履歴のどの時点にも存在しない writer_user_id / 鍵 FP の組は検証鍵を選択"
+            "できず拒否する(署名自体は本 negative の鍵で有効)",
+            writer_fp=ghost["fp_hex"], sign_with=ghost_signer,
+            verify_key_hex=ghost["sig_pub_hex"],
+        ),
+        rule_negative(
+            "v1-nonempty-prev", admin_id, "env-prod-0001", 2, "var-rule-0004", 1,
+            pat(0xB8, 12), "rule-dummy", sha256(b"phantom-predecessor").hex(),
+            head_hash(12), 12,
+            "prev-shape-mismatch",
+            "version 1 の prev_value_sig_hash_hex は空文字列でなければならない(§4.1)。"
+            "latest-only 検証でも必ず検査する形の規則(session-14 裁定 B)",
+        ),
+        rule_negative(
+            "v2-empty-prev", admin_id, "env-prod-0001", 2, "var-rule-0005", 2,
+            pat(0xB9, 12), "rule-dummy", "", head_hash(12), 12,
+            "prev-shape-mismatch",
+            "version > 1 の prev_value_sig_hash_hex は 64 文字 hex でなければならない(§4.1)。"
+            "predecessor を保持しない latest-only 検証でも形は必ず検査する(裁定 B)",
+        ),
+        rule_negative(
+            "prev-hash-mismatch", admin_id, "env-prod-0001", 2, "var-api-key-0001", 2,
+            pat(0xBA, 12), "rule-dummy", sha256(b"wrong-predecessor").hex(),
+            head_hash(12), 12,
+            "prev-hash-mismatch",
+            "既知の直前 version(v1-basic)の signed_bytes ハッシュと prev が一致しない連鎖不整合"
+            "(§6.3-6)。署名は有効 — Ed25519 failure に潰してはならない(裁定 B)",
+            predecessor={
+                "base": "v1-basic",
+                "signed_bytes_sha256_hex": v1_basic["signed_bytes_sha256_hex"],
+                "epoch": 2,
+            },
+        ),
+        rule_negative(
+            "epoch-regression-across-versions", member_id, "env-prod-0001", 1,
+            "var-api-key-0001", 3,
+            pat(0xBB, 12), "rule-dummy", v2_chained["signed_bytes_sha256_hex"],
+            head_hash(3), 3,
+            "epoch-regressed",
+            "version 3 の epoch(1)が直前 version(v2-chained、epoch 2)より小さい = §4.1 の"
+            "エポック単調性違反。head 3 は writer(member)の在籍区間内・エポック 1 が当時の"
+            "現エポックで他の全検証を通る「前進 version への旧エポック注入」の形",
+            predecessor={
+                "base": "v2-chained",
+                "signed_bytes_sha256_hex": v2_chained["signed_bytes_sha256_hex"],
+                "epoch": 2,
+            },
+        ),
+    ]
+
+    write(
+        "value-signature.json",
+        {
+            "description": "CRYPTO_SPEC §4.1: 値の書き込み署名(Ed25519)。value_signed_bytes = LP(\"<suite>/value-sig\", project_id, environment_id, epoch, variable_id, version, nonce_hex, ciphertext_hex, prev_value_sig_hash_hex, writer_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵・DEK は chain-entries.json の正規 12 エントリチェーンを参照",
+            "signed_fields_order": VALUE_SIG_FIELDS_ORDER,
+            "binary_encoding": "nonce / ciphertext / ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / version / chain_head_seq)は 10 進文字列化",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、writer 鍵 = keys、DEK = environment_deks(ciphertext は実 AES-GCM 暗号文で、AAD は §4 の LP)",
+            "extra_keys": {
+                "ghost": {
+                    "note": "writer-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+                    "enc_sk_seed_hex": pat(0x78, 32).hex(),
+                    "sig_sk_seed_hex": pat(0x88, 32).hex(),
+                    "enc_pub_hex": ghost["enc_pub_hex"],
+                    "sig_pub_hex": ghost["sig_pub_hex"],
+                    "key_fingerprint_hex": ghost["fp_hex"],
+                },
+            },
+            "tenure_extension": tenure_extension,
+            "vectors": vectors,
+            "fork_same_version": {
+                "note": "同一座標(var-api-key-0001 × version 3)に対する内容の異なる 2 つの有効署名。"
+                        "各 branch は単体で §6.3 の全検証を通り(両方 verify 成功)、組として "
+                        "signed_bytes_sha256_hex の相違 = サーバー equivocation の否認不能な証拠になる"
+                        "(§14.2-5。防止ではなく証拠化 — 検出は同一座標の突合で行う)",
+                "branches": fork_branches,
+            },
+            "negative": negatives + rule_negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. recovery-wrap.json — §8 リカバリーコードによる master 秘密鍵ラップ
 
 def gen_recovery_wrap():
@@ -1311,4 +1812,5 @@ if __name__ == "__main__":
     gen_chain_entries()
     gen_dek_wrap_signature()
     gen_dek_commitment()
+    gen_value_signature()  # chain-entries.json / 上記の出力を参照するため最後に生成
     gen_recovery_wrap()

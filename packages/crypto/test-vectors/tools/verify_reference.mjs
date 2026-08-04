@@ -360,6 +360,194 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- value-signature.json ------------------------------------------------------
+{
+  const doc = read("value-signature.json");
+  const chain = read("chain-entries.json");
+  const projectId = chain.entries[0].entry_hash_hex;
+  const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  const importSigPub = (hex) =>
+    crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  const signedBytes = (ctx) =>
+    lpEncode([
+      ctx.domain,
+      ctx.project_id,
+      ctx.environment_id,
+      ctx.epoch,
+      ctx.variable_id,
+      ctx.version,
+      ctx.nonce_hex,
+      ctx.ciphertext_hex,
+      ctx.prev_value_sig_hash_hex,
+      ctx.writer_user_id,
+      ctx.chain_head_hash_hex,
+      ctx.chain_head_seq,
+    ]);
+  const byName = new Map(doc.vectors.map((v) => [v.name, v]));
+
+  for (const v of doc.vectors) {
+    const ctx = v.context;
+    const bytes = signedBytes(ctx);
+    check(`value-sig ${v.name}: signed bytes`, toHex(bytes) === v.signed_bytes_hex);
+    check(
+      `value-sig ${v.name}: signed bytes sha256`,
+      (await sha256hex(bytes)) === v.signed_bytes_sha256_hex,
+    );
+    check(`value-sig ${v.name}: domain embeds suite`, ctx.domain === `${ctx.suite}/value-sig`);
+    // チェーン参照の整合: project_id = genesis ハッシュ、head = entries[seq-1] のハッシュ
+    check(`value-sig ${v.name}: project id is genesis hash`, ctx.project_id === projectId);
+    check(
+      `value-sig ${v.name}: head hash matches chain`,
+      ctx.chain_head_hash_hex === chain.entries[ctx.chain_head_seq - 1].entry_hash_hex,
+    );
+    // writer 鍵(chain-entries の keys)で Ed25519 検証
+    const writerKeys = chain.keys[ctx.writer_user_id];
+    check(
+      `value-sig ${v.name}: writer fingerprint matches chain keys`,
+      writerKeys.key_fingerprint_hex === v.writer_key_fingerprint_hex,
+    );
+    const ok = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(writerKeys.sig_pub_hex),
+      fromHex(v.signature_hex),
+      bytes,
+    );
+    check(`value-sig ${v.name}: Ed25519 signature`, ok);
+    // prev 連鎖: prev_base を持つベクターは直前 version の signed_bytes ハッシュへ連鎖
+    if (v.prev_base !== undefined) {
+      check(
+        `value-sig ${v.name}: prev links to ${v.prev_base}`,
+        ctx.prev_value_sig_hash_hex === byName.get(v.prev_base)?.signed_bytes_sha256_hex,
+      );
+    } else {
+      check(`value-sig ${v.name}: version 1 has empty prev`, ctx.prev_value_sig_hash_hex === "");
+    }
+    // ciphertext は environment_deks の DEK による実 AES-GCM 暗号文(AAD = §4 の LP)
+    const aad = lpEncode([
+      ctx.suite,
+      ctx.project_id,
+      ctx.environment_id,
+      ctx.epoch,
+      ctx.variable_id,
+      ctx.version,
+    ]);
+    check(`value-sig ${v.name}: aad reconstruction`, toHex(aad) === v.aad_hex);
+    const dekHex =
+      chain.environment_deks[v.dek_ref.environment_id][String(v.dek_ref.epoch)].dek_hex;
+    const pt = await aesGcmDecrypt(dekHex, ctx.nonce_hex, v.aad_hex, ctx.ciphertext_hex);
+    check(
+      `value-sig ${v.name}: ciphertext decrypts`,
+      new TextDecoder().decode(pt) === v.plaintext_utf8,
+    );
+  }
+
+  // fork-same-version: 両 branch とも署名有効・同一座標・prev 同一で signed_bytes が異なる
+  {
+    const [a, b] = doc.fork_same_version.branches;
+    for (const branch of [a, b]) {
+      const bytes = signedBytes(branch.context);
+      const ok = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(chain.keys[branch.context.writer_user_id].sig_pub_hex),
+        fromHex(branch.signature_hex),
+        bytes,
+      );
+      check(`value-sig fork ${branch.name}: signature must be VALID`, ok);
+      check(
+        `value-sig fork ${branch.name}: signed bytes`,
+        toHex(bytes) === branch.signed_bytes_hex,
+      );
+    }
+    const sameCoordinate =
+      a.context.variable_id === b.context.variable_id &&
+      a.context.version === b.context.version &&
+      a.context.environment_id === b.context.environment_id &&
+      a.context.epoch === b.context.epoch &&
+      a.context.prev_value_sig_hash_hex === b.context.prev_value_sig_hash_hex;
+    check(
+      "value-sig fork: same coordinate, distinct signed bytes (equivocation evidence)",
+      sameCoordinate && a.signed_bytes_sha256_hex !== b.signed_bytes_sha256_hex,
+    );
+  }
+
+  // tenure-extension: 派生チェーンの seq 13 エントリ自体が有効(正規化・署名・prev 連鎖)
+  {
+    const e = doc.tenure_extension.entry;
+    const order = chain.canonicalization.payload_field_order;
+    const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+    const signed = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+    ]);
+    const sigOk = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(chain.keys[e.actor.user_id].sig_pub_hex),
+      fromHex(e.signature_hex),
+      signed,
+    );
+    const entryBytes = lpEncode([
+      e.suite,
+      e.seq,
+      e.prev_hash_hex,
+      e.op,
+      e.actor.user_id,
+      e.actor.key_fingerprint_hex,
+      payloadBytes,
+      e.timestamp_ms,
+      e.signature_hex,
+    ]);
+    check(
+      "value-sig tenure-extension: entry is a valid append",
+      sigOk &&
+        toHex(payloadBytes) === e.payload_bytes_hex &&
+        toHex(signed) === e.signed_bytes_hex &&
+        e.prev_hash_hex === chain.entries.at(-1).entry_hash_hex &&
+        toHex(entryBytes) === e.entry_bytes_hex &&
+        (await sha256hex(entryBytes)) === e.entry_hash_hex,
+    );
+    // re-add は新鍵(旧鍵と異なる = 別 tenure の鍵束縛)
+    check(
+      "value-sig tenure-extension: rejoined member key differs from tenure 1",
+      e.payload.sig_pub_hex !== chain.keys["user-member-0002"].sig_pub_hex &&
+        e.payload.sig_pub_hex === doc.tenure_extension.rejoined_member.sig_pub_hex,
+    );
+  }
+
+  for (const n of doc.negative) {
+    if (n.kind === "authorization") {
+      // 検証規則系は「暗号学的には有効(署名が正しい)」ことを確認する。
+      // expected_reason での拒否は実装テスト(§6.3 の履歴検証)が担う
+      const bytes = signedBytes(n.context);
+      const ok = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(n.verify_key_hex),
+        fromHex(n.signature_hex),
+        bytes,
+      );
+      check(
+        `value-sig rule negative: ${n.name} (signature must be VALID)`,
+        ok && toHex(bytes) === n.signed_bytes_hex,
+      );
+      continue;
+    }
+    const reconstructed = signedBytes(n.context);
+    const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
+    const verified = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(n.verify_key_hex),
+      fromHex(n.signature_hex),
+      reconstructed,
+    );
+    check(`value-sig negative: ${n.name}`, bytesMatch && verified === false);
+  }
+}
+
 // --- recovery-wrap.json ------------------------------------------------------
 {
   const doc = read("recovery-wrap.json");
