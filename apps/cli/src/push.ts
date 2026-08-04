@@ -20,7 +20,7 @@ import { encodeHex, encryptVariable, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type DekRecipient, verifyAndUnwrapDeks } from "./deks.ts";
+import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
@@ -203,7 +203,8 @@ interface PushState {
 function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
     const verified = input.verified;
-    const epoch = verified.state.environmentEpochs.get(input.environmentId) ?? 1;
+    // 現エポックはチェーン導出値(§6.2 — 環境未作成の push はここで止まる)
+    const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
     const deks = yield* fetchDeks({ ...input, verified });
     const target = yield* resolveTarget({ ...input, verified });
     return { verified, epoch, deks, target, version: target.nextVersion };
@@ -273,7 +274,8 @@ function nextState(
       // 新エポックの DEK を取得・再検証する
       return Effect.gen(function* () {
         const verified = yield* input.resync;
-        const epoch = verified.state.environmentEpochs.get(input.environmentId) ?? 1;
+        const epoch = (yield* requireChainEnvironment(verified, input.environmentId))
+          .currentEpoch;
         if (epoch === state.epoch) {
           // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
           // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)

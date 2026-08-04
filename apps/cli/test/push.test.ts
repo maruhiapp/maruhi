@@ -9,6 +9,7 @@ import { runCli } from "../src/cli.ts";
 import {
   buildChain,
   type BuiltChain,
+  createEnvironmentOp,
   encryptValueFor,
   genesisOp,
   hexBytes,
@@ -35,14 +36,18 @@ let servers: MockServer[] = [];
 
 beforeAll(async () => {
   owner = await makeTestUser("user-owner-1111");
-  chainV1 = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+  dek1 = crypto.getRandomValues(new Uint8Array(32));
+  dek2 = crypto.getRandomValues(new Uint8Array(32));
+  chainV1 = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+  ]);
   // 同一 genesis(同一プロジェクト)にローテーションが積まれた形
   chainV2 = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
-    { actor: owner, operation: rotateEpochOp(ENV_ID, 2) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+    { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
   ]);
-  dek1 = crypto.getRandomValues(new Uint8Array(32));
-  dek2 = crypto.getRandomValues(new Uint8Array(32));
   const common = { projectId: chainV1.projectId, environmentId: ENV_ID };
   wrap1 = await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner });
   wrap2 = await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner });

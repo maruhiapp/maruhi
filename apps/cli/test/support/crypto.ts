@@ -11,6 +11,7 @@ import type {
 } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
+  computeDekCommitment,
   computeUserKeyFingerprint,
   decodeHex,
   encodeHex,
@@ -77,9 +78,18 @@ export async function makeTestUser(userId: string): Promise<TestUser> {
   };
 }
 
+/**
+ * プロジェクト ID(= genesis ハッシュ)に依存する op の遅延構築。§5.2 の
+ * コミットメント原像は project_id を含むため、create_environment / rotate_epoch
+ * の payload は genesis を組んだ後でしか確定できない。
+ */
+export type LazyChainOperation = (
+  projectId: string,
+) => ChainOperation | Promise<ChainOperation>;
+
 export interface ChainStep {
   readonly actor: TestUser;
-  readonly operation: ChainOperation;
+  readonly operation: ChainOperation | LazyChainOperation;
 }
 
 export interface BuiltChain {
@@ -95,8 +105,14 @@ export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChai
   const hashes: string[] = [];
   let prevHashHex = "0".repeat(64);
   for (const [index, step] of steps.entries()) {
+    const projectId = hashes[0];
+    if (typeof step.operation === "function" && projectId === undefined) {
+      throw new Error("buildChain: genesis step cannot depend on the project id");
+    }
+    const operation =
+      typeof step.operation === "function" ? await step.operation(projectId ?? "") : step.operation;
     const unsigned: UnsignedChainEntry = {
-      ...step.operation,
+      ...operation,
       suite: SUITE_ID,
       seq: index + 1,
       prevHashHex,
@@ -142,8 +158,51 @@ export function removeMemberOp(target: TestUser): ChainOperation {
   return { op: "remove_member", payload: { targetUserId: target.userId } };
 }
 
-export function rotateEpochOp(environmentId: string, newEpoch: number): ChainOperation {
-  return { op: "rotate_epoch", payload: { environmentId, newEpoch, reason: "test" } };
+/** §5.2 のコミットメント(hex 小文字 64 文字)。 */
+export async function dekCommitmentFor(
+  projectId: string,
+  environmentId: string,
+  epoch: number,
+  dek: Uint8Array,
+): Promise<string> {
+  return unwrapResult(
+    await computeDekCommitment({
+      context: { suite: SUITE_ID, projectId, environmentId, epoch },
+      dek,
+    }),
+    "computeDekCommitment",
+  );
+}
+
+/**
+ * create_environment(エポック 1 のコミットメント込み — §6.2)。フィクスチャの
+ * 実 DEK からコミットメントを計算するため、pull 側の §5.2 照合まで実データで通る。
+ */
+export function createEnvironmentOp(environmentId: string, dek: Uint8Array): LazyChainOperation {
+  return async (projectId) => ({
+    op: "create_environment",
+    payload: {
+      environmentId,
+      dekCommitmentHex: await dekCommitmentFor(projectId, environmentId, 1, dek),
+    },
+  });
+}
+
+/** rotate_epoch(新エポックのコミットメント込み — §6.2)。 */
+export function rotateEpochOp(
+  environmentId: string,
+  newEpoch: number,
+  dek: Uint8Array,
+): LazyChainOperation {
+  return async (projectId) => ({
+    op: "rotate_epoch",
+    payload: {
+      environmentId,
+      newEpoch,
+      reason: "test",
+      dekCommitmentHex: await dekCommitmentFor(projectId, environmentId, newEpoch, dek),
+    },
+  });
 }
 
 /** grant_server(サーバー鍵はランダム生成。FP = SHA-256(enc)[:16] — §9)。 */

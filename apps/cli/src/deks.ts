@@ -1,4 +1,4 @@
-// 配布されたラップ済み DEK の検証と復号(CRYPTO_SPEC §5.1 / §12-7)。
+// 配布されたラップ済み DEK の検証と復号(CRYPTO_SPEC §5.1 / §5.2 / §12-7)。
 //
 // 検証の座標は申告値を信用せず自前で組み立てる: projectId = 検証済み genesis
 // ハッシュ、environmentId = リクエストに使った ID、recipient = 自分の
@@ -7,14 +7,19 @@
 // メンバーの当時の鍵も可 — チェーンは append-only)。
 // wrap の epoch は申告値だが、登録署名(§5.1)と HPKE info(§5)の両方に
 // 束縛されるため、別エポックへの移植は検証・復号失敗に落ちる。
+//
+// §5.2(2026-08-03): unwrap した DEK は、チェーン導出の (environment, epoch)
+// コミットメントと照合するまでいかなる暗号操作(復号・暗号化)にも使わない。
+// 不一致は毒ラップ(共謀サーバーによる偽 DEK 注入の遮断 — §14.2-1)。
 
 import type { RecipientDek } from "@maruhi/api-schema";
-import type { EncryptionKeyPair } from "@maruhi/crypto";
+import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
 import {
   decodeHex,
   importSigningPublicKey,
   SUITE_ID,
   unwrapDek,
+  verifyDekCommitment,
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -43,6 +48,8 @@ async function verifyAndUnwrapOne(input: {
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly wrap: RecipientDek;
+  /** チェーン導出の当該 (environment, epoch) のコミットメント(§5.2)。 */
+  readonly expectedCommitmentHex: string;
 }): Promise<Uint8Array | { readonly failure: string }> {
   const { verified, environmentId, recipient, wrap } = input;
   const signerKeyBytes = signerKeyFor(verified, wrap);
@@ -95,7 +102,40 @@ async function verifyAndUnwrapOne(input: {
       failure: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
     };
   }
+  // §5.2 / §6.3: コミットメント照合に成功するまで DEK を使用しない。座標は
+  // 自前の検証済み値(genesis ハッシュ・リクエストの環境 ID)から組み立てる
+  const commitment = await verifyDekCommitment({
+    context: {
+      suite: SUITE_ID,
+      projectId: verified.projectId,
+      environmentId,
+      epoch: wrap.epoch,
+    },
+    dek: dek.value,
+    expectedCommitmentHex: input.expectedCommitmentHex,
+  });
+  if (!commitment.ok) {
+    return {
+      failure: `DEK がチェーン上のコミットメントと一致しません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。毒ラップ(偽 DEK)の可能性があります — 管理者による修復(ラップ削除 → 再登録)が必要です`,
+    };
+  }
   return dek.value;
+}
+
+/** チェーン導出の環境状態(§6.2)。未作成の環境の配布はサーバー応答とチェーンの矛盾。 */
+export function requireChainEnvironment(
+  verified: VerifiedProject,
+  environmentId: string,
+): Effect.Effect<EnvironmentChainState, CliError> {
+  const environment = verified.state.environments.get(environmentId);
+  if (environment === undefined) {
+    return Effect.fail(
+      cliError(
+        `環境 ${environmentId} がチェーン上に存在しません(create_environment 未観測)。サーバー応答とチェーンが矛盾しています`,
+      ),
+    );
+  }
+  return Effect.succeed(environment);
 }
 
 /**
@@ -115,8 +155,11 @@ export function verifyAndUnwrapDeks(input: {
   readonly recipient: DekRecipient;
   readonly deks: readonly RecipientDek[];
 }): Effect.Effect<ReadonlyMap<number, Uint8Array>, CliError> {
-  const chainEpoch = input.verified.state.environmentEpochs.get(input.environmentId) ?? 1;
   return Effect.gen(function* () {
+    // 環境の存在自体がチェーン導出(§6.2。「未観測なら 1」の既定値は廃止):
+    // チェーンに無い環境の配布はファントム環境として全体を拒否する
+    const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
+    const chainEpoch = environment.currentEpoch;
     const byEpoch = new Map<number, Uint8Array>();
     for (const wrap of input.deks) {
       if (wrap.suite !== SUITE_ID) {
@@ -136,12 +179,23 @@ export function verifyAndUnwrapDeks(input: {
           cliError(`同一エポックの DEK ラップが重複しています(epoch=${wrap.epoch})`),
         );
       }
+      // チェーン導出のコミットメント(§5.2)。1 ≤ epoch ≤ 現エポックの全エポックは
+      // create / rotate エントリがコミットメントを掲載済み(§6.2 の合意規則)
+      const expectedCommitmentHex = environment.dekCommitments.get(wrap.epoch);
+      if (expectedCommitmentHex === undefined) {
+        return yield* Effect.fail(
+          cliError(
+            `エポック ${wrap.epoch} のコミットメントがチェーン上に存在しません(チェーン導出の不整合)`,
+          ),
+        );
+      }
       const result = yield* Effect.promise(() =>
         verifyAndUnwrapOne({
           verified: input.verified,
           environmentId: input.environmentId,
           recipient: input.recipient,
           wrap,
+          expectedCommitmentHex,
         }),
       );
       if (!(result instanceof Uint8Array)) {

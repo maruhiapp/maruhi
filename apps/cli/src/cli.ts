@@ -306,8 +306,10 @@ function projectCommand(execute: Execute) {
                 `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
               );
             }
-            for (const [environmentId, epoch] of verified.state.environmentEpochs) {
-              yield* io.log(`環境 ${environmentId}: epoch=${epoch}`);
+            for (const [environmentId, environment] of verified.state.environments) {
+              yield* io.log(
+                `環境 ${environmentId}: epoch=${environment.currentEpoch}(作成 seq=${environment.createdAtSeq})`,
+              );
             }
             return;
           }
@@ -361,6 +363,7 @@ function envCommand(execute: Execute) {
             name: ctx.values.name ?? environmentId,
             signerUserId: context.session.userId,
             signingKeyPair: context.masterKeys.sigKeyPair,
+            resync: syncProject(context.client, context.projectId),
           });
           yield* io.log(
             `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${context.verified.state.members.size} 名へラップ済み)`,

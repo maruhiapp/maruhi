@@ -11,6 +11,7 @@ import {
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   ChainHeadConflictError,
+  CompositeRequiredError,
   DataLimitExceededError,
   DekWrapExistsError,
   DekWrapNotFoundError,
@@ -92,6 +93,10 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ChainCapacityExceededError),
     (e) =>
       `チェーン容量の上限に達しています(最大 ${e.maxEntries} エントリ / ${e.maxTotalBytes} バイト)`,
+  ),
+  when(
+    isInstanceOf(CompositeRequiredError),
+    (e) => `この操作(${e.op})は複合エンドポイント経由でのみ受理されます(AUTH_SPEC §12-4)`,
   ),
   when(
     isInstanceOf(ChainInvalidError),

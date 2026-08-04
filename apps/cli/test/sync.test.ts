@@ -11,6 +11,7 @@ import {
   addMemberOp,
   type BuiltChain,
   buildChain,
+  createEnvironmentOp,
   genesisOp,
   makeTestUser,
   removeMemberOp,
@@ -66,10 +67,13 @@ function failureMessage(exit: Awaited<ReturnType<typeof runSync>>): string {
 
 describe("syncProject (§6.3)", () => {
   it("有効なチェーンを検証し、削除済みメンバーの鍵も履歴索引に残す", async () => {
+    const dek1 = crypto.getRandomValues(new Uint8Array(32));
+    const dek2 = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },
-      { actor: member, operation: rotateEpochOp("prod", 2) },
+      { actor: member, operation: createEnvironmentOp("prod", dek1) },
+      { actor: member, operation: rotateEpochOp("prod", 2, dek2) },
       { actor: owner, operation: removeMemberOp(member) },
     ]);
     const server = await startServer([
@@ -85,7 +89,14 @@ describe("syncProject (§6.3)", () => {
     const verified = exit.value;
     // 現メンバーは owner のみ(member は削除済み)
     expect([...verified.state.members.keys()]).toEqual([owner.userId]);
-    expect(verified.state.environmentEpochs.get("prod")).toBe(2);
+    // 環境集合はチェーン導出(§6.2): 現エポック・作成 seq・エポック開始 seq・
+    // エポックごとのコミットメントまで導出される
+    const prod = verified.state.environments.get("prod");
+    expect(prod?.currentEpoch).toBe(2);
+    expect(prod?.createdAtSeq).toBe(3);
+    expect(prod?.epochStartSeqs.get(1)).toBe(3);
+    expect(prod?.epochStartSeqs.get(2)).toBe(4);
+    expect(prod?.dekCommitments.get(2)).toMatch(/^[0-9a-f]{64}$/);
     // §5.1 の鍵履歴: 削除済みメンバーの当時の鍵が引ける(append-only)
     const bindings = verified.keyHistory.get(member.userId);
     expect(bindings).toHaveLength(1);
