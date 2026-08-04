@@ -12,6 +12,7 @@ export type ChainOp =
   | "add_member"
   | "remove_member"
   | "change_role"
+  | "create_environment"
   | "rotate_epoch"
   | "grant_server"
   | "revoke_server";
@@ -43,6 +44,16 @@ export interface ChangeRolePayload {
   readonly newRole: Role;
 }
 
+export interface CreateEnvironmentPayload {
+  readonly environmentId: string;
+  /**
+   * Epoch-1 DEK commitment (CRYPTO_SPEC §5.2): lowercase hex, 64 chars.
+   * Chain verification checks the format only — matching the commitment
+   * against an unwrapped DEK is the recipient's §5.2 duty.
+   */
+  readonly dekCommitmentHex: string;
+}
+
 export interface RotateEpochPayload {
   readonly environmentId: string;
   /**
@@ -53,6 +64,8 @@ export interface RotateEpochPayload {
    */
   readonly newEpoch: number;
   readonly reason: string;
+  /** New-epoch DEK commitment (CRYPTO_SPEC §5.2): lowercase hex, 64 chars. */
+  readonly dekCommitmentHex: string;
 }
 
 export interface GrantServerPayload {
@@ -80,6 +93,7 @@ export type ChainOperation =
   | { readonly op: "add_member"; readonly payload: AddMemberPayload }
   | { readonly op: "remove_member"; readonly payload: RemoveMemberPayload }
   | { readonly op: "change_role"; readonly payload: ChangeRolePayload }
+  | { readonly op: "create_environment"; readonly payload: CreateEnvironmentPayload }
   | { readonly op: "rotate_epoch"; readonly payload: RotateEpochPayload }
   | { readonly op: "grant_server"; readonly payload: GrantServerPayload }
   | { readonly op: "revoke_server"; readonly payload: RevokeServerPayload };
@@ -113,15 +127,33 @@ export interface ServerGrant {
 }
 
 /**
+ * One environment derived from a verified chain (CRYPTO_SPEC §6.2 / §6.3):
+ * its existence (`create_environment`), the current epoch, the seq at which
+ * each epoch became current (§6.3 の「各エポックの有効区間(開始 seq)」 —
+ * §4.1 の値検証の入力), and the §5.2 DEK commitment per epoch.
+ */
+export interface EnvironmentChainState {
+  readonly currentEpoch: number;
+  /** Seq of the `create_environment` entry (= epoch 1's start seq). */
+  readonly createdAtSeq: number;
+  /** epoch → seq of the entry that made it current (create / rotate). */
+  readonly epochStartSeqs: ReadonlyMap<number, number>;
+  /** epoch → dek_commitment_hex (CRYPTO_SPEC §5.2). */
+  readonly dekCommitments: ReadonlyMap<number, string>;
+}
+
+/**
  * State derived from a verified chain (CRYPTO_SPEC §6.3): the current member
- * set (with roles), active server grants, and the epochs observed per
- * environment via rotate_epoch entries. This is the input for DEK-wrap
- * recipient checks and head gossip, implemented with the sync logic later.
+ * set (with roles), active server grants, and the environment set with per
+ * epoch state. Environments exist only via `create_environment` (§6.2) —
+ * there is no implicit "epoch defaults to 1" for unknown ids (2026-08-03).
+ * This is the input for DEK-wrap recipient checks, the §5.2 commitment
+ * matching, and head gossip (implemented with the sync logic later).
  */
 export interface ChainState {
   readonly members: ReadonlyMap<string, ChainMember>;
   readonly serverGrants: ReadonlyMap<string, ServerGrant>;
-  readonly environmentEpochs: ReadonlyMap<string, number>;
+  readonly environments: ReadonlyMap<string, EnvironmentChainState>;
   readonly headSeq: number;
   readonly headHashHex: string;
 }

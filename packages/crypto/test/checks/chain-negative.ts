@@ -17,6 +17,7 @@ import {
   toTypedEntry,
   typedEntries,
   vectorEntries,
+  vectorEnvironmentDeks,
   vectorKeys,
   vectorNegatives,
   vectorValidAppends,
@@ -62,19 +63,28 @@ interface TamperVariant {
 /** 改竄済み payload の typed 変種。canonical bytes がベクターの negative と一致するはず */
 function payloadTamperVariants(): readonly TamperVariant[] {
   const e2 = entryAt(2);
-  const e6 = entryAt(6);
-  const e7 = entryAt(7);
-  const e9 = entryAt(9);
+  const eChange = entryAt(7);
+  const eGrant = entryAt(9);
+  const eRotate = entryAt(10);
+  const eCreate = entryAt(11);
+  const eRevoke = entryAt(12);
   if (
     e2.op !== "add_member" ||
-    e6.op !== "change_role" ||
-    e7.op !== "grant_server" ||
-    e9.op !== "revoke_server"
+    eChange.op !== "change_role" ||
+    eGrant.op !== "grant_server" ||
+    eRotate.op !== "rotate_epoch" ||
+    eCreate.op !== "create_environment" ||
+    eRevoke.op !== "revoke_server"
   ) {
     throw new Error("chain vector ops unexpected");
   }
-  const flipped = fromHex(e9.payload.serverKeyFingerprintHex);
+  const flipped = fromHex(eRevoke.payload.serverKeyFingerprintHex);
   flipped[0] = (flipped[0] ?? 0) ^ 0x01;
+  const freshCommitment = vectorEnvironmentDeks["env-fresh-0004"]?.["1"]?.dek_commitment_hex;
+  const prodCommitment = vectorEnvironmentDeks["env-prod-0001"]?.["2"]?.dek_commitment_hex;
+  if (freshCommitment === undefined || prodCommitment === undefined) {
+    throw new Error("chain vector environment_deks missing");
+  }
   return [
     {
       name: "tampered-payload-role",
@@ -84,22 +94,33 @@ function payloadTamperVariants(): readonly TamperVariant[] {
     {
       name: "grant-server-scope-reorder",
       entry: {
-        ...e7,
+        ...eGrant,
         payload: {
-          ...e7.payload,
-          scopeEnvironmentIds: e7.payload.scopeEnvironmentIds.toReversed(),
+          ...eGrant.payload,
+          scopeEnvironmentIds: eGrant.payload.scopeEnvironmentIds.toReversed(),
         },
       },
       expect: "bad-signature",
     },
     {
       name: "change-role-tampered-new-role",
-      entry: { ...e6, payload: { ...e6.payload, newRole: "owner" } },
+      entry: { ...eChange, payload: { ...eChange.payload, newRole: "owner" } },
       expect: "bad-signature",
     },
     {
       name: "revoke-server-tampered-fp",
-      entry: { ...e9, payload: { serverKeyFingerprintHex: toHex(flipped) } },
+      entry: { ...eRevoke, payload: { serverKeyFingerprintHex: toHex(flipped) } },
+      expect: "bad-signature",
+    },
+    // dek_commitment_hex も署名対象(§5.2): 差し替えは検証失敗
+    {
+      name: "create-env-tampered-commitment",
+      entry: { ...eCreate, payload: { ...eCreate.payload, dekCommitmentHex: freshCommitment } },
+      expect: "bad-signature",
+    },
+    {
+      name: "rotate-tampered-commitment",
+      entry: { ...eRotate, payload: { ...eRotate.payload, dekCommitmentHex: prodCommitment } },
       expect: "bad-signature",
     },
   ];
@@ -230,21 +251,27 @@ async function signAs(userId: string, entry: UnsignedChainEntry): Promise<ChainE
   return signed.ok ? signed.value : undefined;
 }
 
+/** 正規チェーン末尾(seq 12)に続く追記エントリの seq。 */
+const NEXT_SEQ = typedEntries.length + 1;
+
 function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
-  const head = entryAt(9);
+  const head = entryAt(typedEntries.length);
   const owner = vectorKeys["user-owner-0001"];
   if (owner === undefined) {
     throw new Error("owner keys missing");
   }
   return {
     suite: "maruhi/v1",
-    seq: 10,
+    seq: NEXT_SEQ,
     // prev はベクター最終エントリのハッシュ(chain.ts の positive で固定済み)
     prevHashHex: "",
     actor: { userId: "user-owner-0001", keyFingerprintHex: owner.key_fingerprint_hex },
     timestampMs: head.timestampMs + 1000,
   };
 }
+
+/** テスト内で追記するエントリ用の形式的に有効なコミットメント(内容は §5.2 の照合対象で、チェーン検証は形式のみ検査する)。 */
+const DUMMY_COMMITMENT_HEX = "ab".repeat(32);
 
 type SemanticBase = Omit<UnsignedChainEntry, "op" | "payload">;
 
@@ -328,7 +355,7 @@ async function appendRotation(
       keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
     },
     op: "rotate_epoch",
-    payload: { environmentId, newEpoch, reason: "scheduled" },
+    payload: { environmentId, newEpoch, reason: "scheduled", dekCommitmentHex: DUMMY_COMMITMENT_HEX },
   });
   if (rotate === undefined) {
     return undefined;
@@ -338,10 +365,11 @@ async function appendRotation(
 }
 
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
-  // メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2)の positive 側を
-  // ベクター(valid_appends)で固定する: 削除済み user-member-0002 の鍵は
-  // 同一 user_id での復帰も、別 user_id での再利用も拒否されない。
-  // 「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
+  // 合意規則の許容側の境界をベクター(valid_appends)で固定する:
+  // (1) メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2)—
+  //     「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
+  // (2) 環境ライフサイクル(§6.2)— 未使用 ID の create_environment と
+  //     create 済み環境(エポック 1)への初回 rotate(new_epoch 2)は受理される
   for (const append of vectorValidAppends) {
     const entry = toTypedEntry(append.entry);
     const result = await verifyChain([...typedEntries, entry]);
@@ -351,7 +379,14 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
       Object.entries(append.expected_members).every(
         ([userId, role]) => result.value.members.get(userId)?.role === role,
       );
-    c.push(`chain valid append: ${append.name}`, membersMatch);
+    const environmentsMatch =
+      result.ok &&
+      result.value.environments.size === Object.keys(append.expected_environments).length &&
+      Object.entries(append.expected_environments).every(
+        ([environmentId, epoch]) =>
+          result.value.environments.get(environmentId)?.currentEpoch === Number(epoch),
+      );
+    c.push(`chain valid append: ${append.name}`, membersMatch && environmentsMatch);
   }
 
   // 索引の再形成: 復帰(re-add)で鍵が現メンバー集合に戻った後は、同じ鍵での
@@ -366,7 +401,7 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
   const memberKeys = keysOf("user-member-0002");
   const duplicated = await signAs("user-owner-0001", {
     ...base,
-    seq: 11,
+    seq: NEXT_SEQ + 1,
     prevHashHex: await computeChainEntryHash(readdEntry),
     op: "add_member",
     payload: {
@@ -382,25 +417,65 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
       : await verifyChain([...typedEntries, readdEntry, duplicated]);
   c.push(
     "chain semantic: duplicate key rejected again after re-add",
-    result !== undefined && failsWith(result, 11, "duplicate-member-key"),
+    result !== undefined && failsWith(result, NEXT_SEQ + 1, "duplicate-member-key"),
   );
 }
 
 async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
-  // 正しい追記(admin による rotate_epoch。観測値 2 → 3)は検証を通り、状態が更新される
+  // 正しい追記(admin による rotate_epoch。現エポック 2 → 3)は検証を通り、
+  // 状態(現エポック・エポック開始 seq・コミットメント)が更新される
   const extended = await appendRotation(base, "env-prod-0001", 3);
+  const prod = extended?.environments.get("env-prod-0001");
   c.push(
     "chain semantic: valid append by admin verifies",
     extended !== undefined &&
-      extended.headSeq === 10 &&
-      extended.environmentEpochs.get("env-prod-0001") === 3,
+      extended.headSeq === NEXT_SEQ &&
+      prod !== undefined &&
+      prod.currentEpoch === 3 &&
+      prod.epochStartSeqs.get(3) === NEXT_SEQ &&
+      prod.dekCommitments.get(3) === DUMMY_COMMITMENT_HEX,
   );
 
-  // 未観測環境の初回 rotate は 初期値 1 + 1 = 2 のみ受理される(エポック = カウンタ)
-  const withFirst = await appendRotation(base, "env-staging-0003", 2);
+  // create_environment → rotate_epoch の 2 エントリ連鎖: 作成直後の環境の
+  // エポック開始 seq(1 = create の seq、2 = rotate の seq)まで導出される
+  const create = await signAs("user-owner-0001", {
+    ...base,
+    op: "create_environment",
+    payload: { environmentId: "env-chained-0006", dekCommitmentHex: DUMMY_COMMITMENT_HEX },
+  });
+  if (create === undefined) {
+    c.push("chain semantic: create then rotate chain", false, "signing failed");
+    return;
+  }
+  const rotate = await signAs("user-admin-0003", {
+    ...base,
+    seq: NEXT_SEQ + 1,
+    prevHashHex: await computeChainEntryHash(create),
+    actor: {
+      userId: "user-admin-0003",
+      keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
+    },
+    op: "rotate_epoch",
+    payload: {
+      environmentId: "env-chained-0006",
+      newEpoch: 2,
+      reason: "scheduled",
+      dekCommitmentHex: DUMMY_COMMITMENT_HEX,
+    },
+  });
+  const result =
+    rotate === undefined ? undefined : await verifyChain([...typedEntries, create, rotate]);
+  const chained =
+    result !== undefined && result.ok
+      ? result.value.environments.get("env-chained-0006")
+      : undefined;
   c.push(
-    "chain semantic: first rotation of unobserved environment to 2 accepted",
-    withFirst !== undefined && withFirst.environmentEpochs.get("env-staging-0003") === 2,
+    "chain semantic: create then rotate chain",
+    chained !== undefined &&
+      chained.currentEpoch === 2 &&
+      chained.createdAtSeq === NEXT_SEQ &&
+      chained.epochStartSeqs.get(1) === NEXT_SEQ &&
+      chained.epochStartSeqs.get(2) === NEXT_SEQ + 1,
   );
 }
 
@@ -414,9 +489,9 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     c.push("chain malformed: setup", false, "full chain must verify");
     return;
   }
-  const e7 = entryAt(7);
-  if (e7.op !== "grant_server") {
-    c.push("chain malformed: setup", false, "seq 7 must be grant_server");
+  const eGrant = entryAt(9);
+  if (eGrant.op !== "grant_server") {
+    c.push("chain malformed: setup", false, "seq 9 must be grant_server");
     return;
   }
   // signatureHex は形状として妥当な 64 バイトのダミーにする: 短い値だと全ケースが
@@ -432,7 +507,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "grant_server",
-        payload: { ...e7.payload, scopeEnvironmentIds: "env-prod-0001" },
+        payload: { ...eGrant.payload, scopeEnvironmentIds: "env-prod-0001" },
       },
     },
     {
@@ -440,7 +515,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "grant_server",
-        payload: { ...e7.payload, scopeEnvironmentIds: [42] },
+        payload: { ...eGrant.payload, scopeEnvironmentIds: [42] },
       },
     },
     {
@@ -448,7 +523,33 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "rotate_epoch",
-        payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: {} },
+        payload: {
+          environmentId: "env-prod-0001",
+          newEpoch: 3,
+          reason: {},
+          dekCommitmentHex: DUMMY_COMMITMENT_HEX,
+        },
+      },
+    },
+    {
+      name: "rotate_epoch commitment is not a string",
+      entry: {
+        ...base,
+        op: "rotate_epoch",
+        payload: {
+          environmentId: "env-prod-0001",
+          newEpoch: 3,
+          reason: "scheduled",
+          dekCommitmentHex: 42,
+        },
+      },
+    },
+    {
+      name: "create_environment commitment missing",
+      entry: {
+        ...base,
+        op: "create_environment",
+        payload: { environmentId: "env-shapeless-0007" },
       },
     },
     {
@@ -510,7 +611,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     // 例外を投げず invalid-payload の CryptoResult で返ることを検査する
     try {
       const result = await verifyChain([...typedEntries, item.entry as ChainEntry]);
-      c.push(`chain malformed: ${item.name}`, failsWith(result, 10, "invalid-payload"));
+      c.push(`chain malformed: ${item.name}`, failsWith(result, NEXT_SEQ, "invalid-payload"));
     } catch (error) {
       c.push(`chain malformed: ${item.name}`, false, `threw: ${String(error)}`);
     }
@@ -520,29 +621,29 @@ async function malformedInputChecks(c: Checks): Promise<void> {
 async function regrantWideningCheck(c: Checks): Promise<void> {
   // 再 grant のスコープ拡大(旧 ⊆ 新)は受理され、スコープが更新される。
   // 縮小の拒否(grant-scope-narrowed)はベクター authz-grant-scope-narrowed が固定する
-  const e7 = entryAt(7);
+  const eGrant = entryAt(9);
   const owner = vectorKeys["user-owner-0001"];
-  if (e7.op !== "grant_server" || owner === undefined) {
+  if (eGrant.op !== "grant_server" || owner === undefined) {
     c.push("chain semantic: re-grant widening accepted", false, "setup failed");
     return;
   }
   const widened = await signAs("user-owner-0001", {
     suite: "maruhi/v1",
-    seq: 8,
-    prevHashHex: vectorEntries[6]?.entry_hash_hex ?? "",
+    seq: 10,
+    prevHashHex: vectorEntries[8]?.entry_hash_hex ?? "",
     actor: { userId: "user-owner-0001", keyFingerprintHex: owner.key_fingerprint_hex },
-    timestampMs: e7.timestampMs + 500,
+    timestampMs: eGrant.timestampMs + 500,
     op: "grant_server",
     payload: {
-      ...e7.payload,
-      scopeEnvironmentIds: [...e7.payload.scopeEnvironmentIds, "env-staging-0003"],
+      ...eGrant.payload,
+      scopeEnvironmentIds: [...eGrant.payload.scopeEnvironmentIds, "env-stage-0003"],
     },
   });
   const result =
-    widened === undefined ? undefined : await verifyChain([...typedEntries.slice(0, 7), widened]);
+    widened === undefined ? undefined : await verifyChain([...typedEntries.slice(0, 9), widened]);
   const grant =
     result !== undefined && result.ok
-      ? result.value.serverGrants.get(e7.payload.serverKeyFingerprintHex)
+      ? result.value.serverGrants.get(eGrant.payload.serverKeyFingerprintHex)
       : undefined;
   c.push(
     "chain semantic: re-grant widening accepted",
@@ -568,7 +669,12 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     ...base,
     actor: adminActor,
     op: "rotate_epoch",
-    payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: "y".repeat(1024) },
+    payload: {
+      environmentId: "env-prod-0001",
+      newEpoch: 3,
+      reason: "y".repeat(1024),
+      dekCommitmentHex: DUMMY_COMMITMENT_HEX,
+    },
   });
   const accepted =
     atLimit === undefined ? undefined : await verifyChain([...typedEntries, atLimit]);
@@ -580,13 +686,18 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     ...base,
     actor: adminActor,
     op: "rotate_epoch",
-    payload: { environmentId: "env-prod-0001", newEpoch: 3, reason: "㊙".repeat(342) },
+    payload: {
+      environmentId: "env-prod-0001",
+      newEpoch: 3,
+      reason: "㊙".repeat(342),
+      dekCommitmentHex: DUMMY_COMMITMENT_HEX,
+    },
   });
   const rejected =
     multibyte === undefined ? undefined : await verifyChain([...typedEntries, multibyte]);
   c.push(
     "chain field-size: multibyte over-limit reason rejected",
-    rejected !== undefined && failsWith(rejected, 10, "invalid-payload"),
+    rejected !== undefined && failsWith(rejected, NEXT_SEQ, "invalid-payload"),
   );
 }
 
@@ -605,7 +716,7 @@ async function semanticChecks(c: Checks): Promise<void> {
       continue;
     }
     const result = await verifyChain([...typedEntries, signed]);
-    c.push(`chain semantic: ${item.name}`, failsWith(result, 10, item.expect));
+    c.push(`chain semantic: ${item.name}`, failsWith(result, NEXT_SEQ, item.expect));
   }
   await validAppendCheck(c, base);
   await validAppendVectorChecks(c, base);
