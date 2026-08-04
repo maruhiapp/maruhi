@@ -23,6 +23,11 @@
      `valueSignedBytesHashOf`)
    - 両テスト支援モジュールの公開 API は不変(テストファイル本体は無変更)。
      fallow dupes ベースラインを再保存(17 群 → 12 群)
+   - **追記: fallow 3.10.0 → 3.14.0**(本 PR に同梱)。恒常原因だった行範囲
+     ベースラインの陳腐化は fallow#2029 / v3.11.0 の fingerprint 照合で直るため、
+     ピン留めを上げて `clone_fingerprints` 付きで再保存。`fallow:baseline` の
+     health 保存に `--baseline-mode identity` を明示(3.14 の上書き拒否対応)。
+     audit の changed-files スコープ依存の偽警告は 3.14 でも残存(§3)
 2. **crypto の防御的検査の一貫性(PR #36)**:
    - (a) `meta-sign.ts` / `value-sign.ts` の context 検査に projectId /
      environmentId の非空検査を追加(+ invalid-input チェック 4 件)
@@ -52,21 +57,22 @@
   複雑度しきい値(cyclomatic 10)を超えたため、suite + 座標の検査を
   `coordinateFieldInvalid` へ分割。判定順・報告フィールド名は不変
 
-## 3. 学び(fallow 3.10.0 の audit ベースライン照合はスコープ依存)
+## 3. 学び(fallow の dupes ベースライン警告は 2 段)
 
 `bun run check` の「duplication baseline has N entries but matched 0 current
 clone groups」警告(session-15 §6 で「ベースラインのパス不一致」として申し送り)
 の実際の発生条件は 2 段あった:
 
-1. **恒常的な原因(解消済み)**: ベースラインの行範囲が現行コードと不一致で、
-   全走査(`fallow dupes --baseline`)でも matched 0 だった。PR #35 の再保存で
-   12/12 一致・警告なしに
-2. **残余挙動(fallow の仕様)**: `fallow audit` はベースライン照合を
-   **changed files スコープ**で行うため、ベースライン記載のクローンを含む
-   ファイルが変更セットに 1 つもない PR では、正確なベースラインでも同文の警告が
-   出る(クローンを含むファイルを変更セットに入れると消えることを実験で確認)。
-   informational でありゲート(exit code)には影響しない。fallow のバージョン
-   更新(独立 PR の領分)時に挙動改善を再確認する
+1. **恒常的な原因(PR #35 で解消)**: ベースラインの `path:start-end` 行範囲が
+   現行コードと不一致で、全走査(`fallow dupes --baseline`)でも matched 0。
+   fallow#2029(v3.11.0)の fingerprint 照合 + 3.14.0 ピン留め + 再保存で
+   12/12 一致・警告なしに。行ずれにも耐える
+2. **残余挙動(3.14.0 でも残存・upstream 未修正)**: `fallow audit` は
+   ベースライン照合を **changed files スコープ**で行うため、正確な
+   fingerprint ベースラインでも「ベースライン記載のクローンを含むファイルが
+   変更セットに 1 つもない」PR では同文の警告が出る(クローンを含むファイルを
+   変更セットに入れると消えることを 3.10 / 3.14 の両方で実験確認)。
+   informational でありゲート(exit code)には影響しない
 
 また、changed files に既存クローンが含まれる場合(PR #36 の crypto src /
 checks)は「inherited findings」として gate から除外される(`--gate all` で
@@ -89,7 +95,8 @@ checks)は「inherited findings」として gate から除外される(`--gate a
 ## 5. テスト結果
 
 - **PR #35**: `bun run check` green(867 tests — main と同数。テストの意味不変)。
-  `fallow dupes`: cli/server テスト支援間のクローン 0
+  `fallow dupes --baseline`(3.14.0): 警告なし・新規クローン 0。cli/server
+  テスト支援間のクローン 0
 - **PR #36**: `bun run check` green(871 tests = 867 + invalid-input 4)。
   vectors `bun run verify` 全 428 検査 PASS(既存 425 + 順序一致検査 3)。
   crypto 4 実行環境 green: node 464 / workerd 464 / browser 464 / Bun 463
