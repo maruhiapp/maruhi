@@ -12,6 +12,7 @@
 
 import { concatBytes, decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
 import { canonicalChainSignedBytes, computeChainEntryHash } from "./chain-canonical.ts";
+import { ChainHistoryBuilder, type ChainHistoryIndex } from "./chain-history.ts";
 import type { ChainEntry, ChainMember, ChainState, Role, ServerGrant } from "./chain-types.ts";
 import type { ChainInvalidReason, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -512,20 +513,63 @@ async function applyOperation(
 }
 
 /**
- * Verifies a full membership chain (CRYPTO_SPEC §6.3): framing, payload
- * shape, actor identity, Ed25519 signatures and the §6.2 role rules — and
- * derives the resulting state (current members with roles, active server
- * grants, observed environment epochs, chain head).
- *
- * Verification is fail-fast: the returned error carries the failing entry's
- * `seq` and a machine-readable reason.
- *
- * Entries are treated as untrusted input (chains are distributed by the
- * server): every field is re-validated at runtime regardless of the static
- * types, so malformed data yields `invalid-payload` instead of throwing.
+ * 適用成功済みエントリを履歴索引(chain-history.ts)へ記録する。tenure の
+ * 開始・終了・role 変更はすべて当該エントリ自身の seq を境界にする
+ * (§6.3 の inclusive 規約 — value-signature.json のベクターが固定)。
  */
-export async function verifyChain(
+function recordHistory(
+  history: ChainHistoryBuilder,
+  entry: ChainEntry,
+  state: MutableChainState,
+): void {
+  switch (entry.op) {
+    case "genesis": {
+      const member = state.members.get(entry.actor.userId);
+      if (member !== undefined) {
+        history.recordTenureStart(
+          member.userId,
+          entry.seq,
+          member,
+          member.keyFingerprintHex,
+          "owner",
+        );
+      }
+      return;
+    }
+    case "add_member": {
+      const member = state.members.get(entry.payload.targetUserId);
+      if (member !== undefined) {
+        history.recordTenureStart(
+          member.userId,
+          entry.seq,
+          member,
+          member.keyFingerprintHex,
+          entry.payload.role,
+        );
+      }
+      return;
+    }
+    case "change_role":
+      history.recordRoleChange(entry.payload.targetUserId, entry.seq, entry.payload.newRole);
+      return;
+    case "remove_member":
+      history.recordTenureEnd(entry.payload.targetUserId, entry.seq);
+      return;
+    case "create_environment":
+      history.recordEnvironmentCreated(entry.payload.environmentId, entry.seq);
+      return;
+    case "rotate_epoch":
+      history.recordEpochRotated(entry.payload.environmentId, entry.payload.newEpoch, entry.seq);
+      return;
+    case "grant_server":
+    case "revoke_server":
+      return;
+  }
+}
+
+async function verifyChainCore(
   entries: readonly ChainEntry[],
+  history: ChainHistoryBuilder | null,
 ): Promise<CryptoResult<ChainState>> {
   if (entries.length === 0) {
     return { ok: false, error: { kind: "ChainInvalid", seq: 0, reason: "empty-chain" } };
@@ -569,7 +613,11 @@ export async function verifyChain(
     if (applied !== null) {
       return fail(applied);
     }
+    if (history !== null) {
+      recordHistory(history, entry, state);
+    }
     prevHash = await computeChainEntryHash(entry);
+    history?.recordEntryHash(prevHash);
   }
 
   return {
@@ -582,4 +630,41 @@ export async function verifyChain(
       headHashHex: prevHash,
     },
   };
+}
+
+/**
+ * Verifies a full membership chain (CRYPTO_SPEC §6.3): framing, payload
+ * shape, actor identity, Ed25519 signatures and the §6.2 role rules — and
+ * derives the resulting state (current members with roles, active server
+ * grants, observed environment epochs, chain head).
+ *
+ * Verification is fail-fast: the returned error carries the failing entry's
+ * `seq` and a machine-readable reason.
+ *
+ * Entries are treated as untrusted input (chains are distributed by the
+ * server): every field is re-validated at runtime regardless of the static
+ * types, so malformed data yields `invalid-payload` instead of throwing.
+ */
+export async function verifyChain(
+  entries: readonly ChainEntry[],
+): Promise<CryptoResult<ChainState>> {
+  return verifyChainCore(entries, null);
+}
+
+/**
+ * `verifyChain` plus the per-snapshot history index (CRYPTO_SPEC §6.3 /
+ * §4.1 — the input of the declared-head-time value verification). The index
+ * is built inside the same verification loop, so it can only exist for a
+ * chain that passed full verification, and per-value checks never re-verify
+ * chain signatures (session-14 裁定 A).
+ */
+export async function verifyChainWithHistory(
+  entries: readonly ChainEntry[],
+): Promise<CryptoResult<{ readonly state: ChainState; readonly history: ChainHistoryIndex }>> {
+  const builder = new ChainHistoryBuilder();
+  const result = await verifyChainCore(entries, builder);
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, value: { state: result.value, history: builder.build() } };
 }
