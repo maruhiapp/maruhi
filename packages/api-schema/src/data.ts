@@ -97,6 +97,135 @@ export const DistributedEncryptedPayloadSchema = Schema.Struct({
 /** A distributed variable value with its writer identity. */
 export type DistributedEncryptedPayload = typeof DistributedEncryptedPayloadSchema.Type;
 
+// ---------------------------------------------------------------------------
+// メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。
+// 名前 ↔ ID の対応と active / deleted 状態の真正性を author の Ed25519 署名が
+// 束縛する。name は NFC 正規化済み(§12-1 — 実施主体は署名前のクライアント。
+// サーバーは検査のみで正規化しない)。長さ上限 256 文字は §12-8 の受理ポリシー
+// (値と違い専用の検証層を持たないため Schema で強制 — 旧 ResourceNameSchema)。
+// ---------------------------------------------------------------------------
+
+/** NFC 正規形かどうかは Schema でなくサーバーの 422(NameNotNfc)が検査する。 */
+const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+
+const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
+// metaVersion 1 は作成専用(status active・prev 空)なので、rename / 削除の
+// リクエスト形は metaVersion >= 2 に固定される(下の narrowed struct)
+const MetaVersionAtLeast2 = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(2));
+const PrevMetaSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
+const MetaSignatureHex = hexString(64);
+
+const varMetaBaseFields = {
+  suite: SuiteSchema,
+  environmentId: EnvironmentIdSchema,
+  variableId: VariableIdSchema,
+  name: StatementNameSchema,
+  chainHeadHashHex: Sha256Hex,
+  chainHeadSeq: PositiveInt,
+  signatureHex: MetaSignatureHex,
+};
+
+const envMetaBaseFields = {
+  suite: SuiteSchema,
+  environmentId: EnvironmentIdSchema,
+  name: StatementNameSchema,
+  chainHeadHashHex: Sha256Hex,
+  chainHeadSeq: PositiveInt,
+  signatureHex: MetaSignatureHex,
+};
+
+// ライフサイクル 3 形(作成 = metaVersion 1・active・prev 空 / rename = active /
+// 削除 = deleted)。リクエストのワイヤ形を操作ごとに固定し、「作成なのに
+// deleted」「削除なのに active」をサーバー検査でなく Schema(400)で拒否する
+const creationLifecycleFields = {
+  status: Schema.Literal("active"),
+  metaVersion: Schema.Literal(1),
+  prevMetaSigHashHex: Schema.Literal(""),
+};
+const renameLifecycleFields = {
+  status: Schema.Literal("active"),
+  metaVersion: MetaVersionAtLeast2,
+  prevMetaSigHashHex: Sha256Hex,
+};
+const deleteLifecycleFields = {
+  status: Schema.Literal("deleted"),
+  metaVersion: MetaVersionAtLeast2,
+  prevMetaSigHashHex: Sha256Hex,
+};
+// 配布側は全ライフサイクルを運ぶ(保存済みステートメントの自己記述形)
+const anyLifecycleFields = {
+  status: MetaStatementStatusSchema,
+  metaVersion: PositiveInt,
+  prevMetaSigHashHex: PrevMetaSigHashHex,
+};
+
+/** 変数作成に同梱するステートメント(metaVersion 1 — AUTH_SPEC §12-5)。 */
+export const CreateVariableMetaStatementSchema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...creationLifecycleFields,
+});
+
+/** 変数 rename のステートメント(metaVersion CAS — §12-5)。 */
+export const RenameVariableMetaStatementSchema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...renameLifecycleFields,
+});
+
+/** 変数削除のステートメント(status deleted。name は直前 active 名 — §4.2)。 */
+export const DeleteVariableMetaStatementSchema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...deleteLifecycleFields,
+});
+
+/** 環境作成の複合リクエストに同梱するステートメント(§12-4)。 */
+export const CreateEnvironmentMetaStatementSchema = Schema.Struct({
+  ...envMetaBaseFields,
+  ...creationLifecycleFields,
+});
+
+/** 環境 rename のステートメント(§12-4 → §12-5 のメタ規則)。 */
+export const RenameEnvironmentMetaStatementSchema = Schema.Struct({
+  ...envMetaBaseFields,
+  ...renameLifecycleFields,
+});
+
+/** 環境削除のステートメント(宣言ヘッド時点 admin — §12-3)。 */
+export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
+  ...envMetaBaseFields,
+  ...deleteLifecycleFields,
+});
+
+/**
+ * A distributed variable metadata statement (AUTH_SPEC §12-2 / §12-7): the
+ * stored statement plus the verification material — the author's user id and
+ * key fingerprint at acceptance time. The receiver verifies against its own
+ * verified chain history (CRYPTO_SPEC §6.3); an author removed since then
+ * stays verifiable through the chain's key history. Name-returning responses
+ * carry statements instead of bare name snapshots (§12-2) — clients must not
+ * trust a name that did not pass statement verification.
+ */
+export const DistributedVariableMetaStatementSchema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...anyLifecycleFields,
+  authorUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  authorKeyFingerprintHex: KeyFingerprintHex,
+});
+
+/** A distributed variable metadata statement with its author identity. */
+export type DistributedVariableMetaStatement = typeof DistributedVariableMetaStatementSchema.Type;
+
+/** A distributed environment metadata statement (same shape, env kind). */
+export const DistributedEnvironmentMetaStatementSchema = Schema.Struct({
+  ...envMetaBaseFields,
+  ...anyLifecycleFields,
+  authorUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  authorKeyFingerprintHex: KeyFingerprintHex,
+});
+
+/** A distributed environment metadata statement with its author identity. */
+export type DistributedEnvironmentMetaStatement =
+  typeof DistributedEnvironmentMetaStatementSchema.Type;
+
 /**
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
  * recipient is identified by both user id and encryption public key; the

@@ -15,10 +15,18 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/ht
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { CreateEnvironmentEntrySchema, RotateEpochEntrySchema } from "./chain.ts";
 import {
+  CreateEnvironmentMetaStatementSchema,
+  CreateVariableMetaStatementSchema,
   DekWrapRefSchema,
+  DeleteEnvironmentMetaStatementSchema,
+  DeleteVariableMetaStatementSchema,
   DistributedEncryptedPayloadSchema,
+  DistributedEnvironmentMetaStatementSchema,
+  DistributedVariableMetaStatementSchema,
   EncryptedPayloadSchema,
   RecipientDekSchema,
+  RenameEnvironmentMetaStatementSchema,
+  RenameVariableMetaStatementSchema,
   WrappedDekSchema,
 } from "./data.ts";
 import {
@@ -34,6 +42,9 @@ import {
   EnvironmentNotFoundError,
   EpochConflictError,
   ForbiddenError,
+  MetaStatementRejectedError,
+  MetaVersionConflictError,
+  NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
   ValueSignatureRejectedError,
@@ -43,9 +54,6 @@ import {
   VersionConflictError,
 } from "./errors.ts";
 
-/** Display name of an environment or variable (§12-8: 256 chars max). */
-const ResourceNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
-
 const projectParams = { projectId: ProjectIdSchema };
 const environmentParams = { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema };
 const variableParams = {
@@ -54,11 +62,17 @@ const variableParams = {
   variableId: VariableIdSchema,
 };
 
-/** One active environment (current epoch is chain-derived — CRYPTO_SPEC §3). */
+/**
+ * One environment in the listing (current epoch is chain-derived —
+ * CRYPTO_SPEC §3). The display name travels as the latest verified-able
+ * metadata statement + author info instead of a bare snapshot (AUTH_SPEC
+ * §12-2 — 2026-08-04 改訂)。削除済み環境も最新の deleted ステートメント付きで
+ * 列挙される(削除の否認・無断復活の検出材料 — §12-4)。
+ */
 export const EnvironmentSummarySchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
-  name: ResourceNameSchema,
   currentEpoch: Schema.Number,
+  statement: DistributedEnvironmentMetaStatementSchema,
 });
 
 /**
@@ -83,24 +97,29 @@ export const VariableVersionSchema = Schema.Struct({
 /**
  * One variable in a bulk pull: its latest version, self-describing via the
  * AAD, carried as the distributed form (writer identity + signature block —
- * AUTH_SPEC §12-7 の検証材料の同梱).
+ * AUTH_SPEC §12-7 の検証材料の同梱), plus its latest metadata statement +
+ * author info(名前 → variableId の解決は検証済みステートメント経由 — §12-7)。
  */
 export const PulledVariableSchema = Schema.Struct({
   variableId: VariableIdSchema,
-  name: ResourceNameSchema,
+  statement: DistributedVariableMetaStatementSchema,
   value: DistributedEncryptedPayloadSchema,
 });
 
 /**
  * Bulk pull of one environment (§12-7): every active variable's latest
  * version plus every epoch's DEK wrapped for the caller (latest versions may
- * span epochs until a rotation's re-encryption completes — CRYPTO_SPEC §7).
+ * span epochs until a rotation's re-encryption completes — CRYPTO_SPEC §7)。
+ * `statement` は環境自身の最新メタステートメント、`deletedVariables` は削除
+ * 済み変数の deleted ステートメント(保存・配布し続ける — §12-5。削除の否認・
+ * 無断復活の検出材料。暗号文は削除済みなので値は伴わない)。
  */
 export const EnvironmentPullSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
-  name: ResourceNameSchema,
   currentEpoch: Schema.Number,
+  statement: DistributedEnvironmentMetaStatementSchema,
   variables: Schema.Array(PulledVariableSchema),
+  deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   deks: Schema.Array(RecipientDekSchema),
 });
 
@@ -110,15 +129,19 @@ export const EnvironmentPullSchema = Schema.Struct({
  *
  * - `create` is a composite request: the `create_environment` chain entry
  *   (environment id + epoch-1 DEK commitment, appended with a parent-head
- *   CAS), the display name, and the complete epoch-1 DEK wrap set for the
- *   current member set — accepted atomically by the project DO. An
- *   environment never exists without its commitment and its members' wraps.
- *   PR-1 の意図的な中間状態: 表示名は裸の `name` のまま運ぶ
- *   (`EnvironmentMetaStatement` の同梱 — CRYPTO_SPEC §4.2 — は PR-3)。
+ *   CAS), the `EnvironmentMetaStatement` (metaVersion 1 — its declared head
+ *   must be the pre-append current head = the entry's prev, §12-4), and the
+ *   complete epoch-1 DEK wrap set for the current member set — accepted
+ *   atomically by the project DO. An environment never exists without its
+ *   commitment, its statement and its members' wraps.
  * - `rotate` is the composite rotation: the `rotate_epoch` entry (new-epoch
  *   commitment) plus the complete new-epoch wrap set, replacing the former
  *   two-step "generic chain append + DEK registration" flow. Re-encryption
- *   of current values stays a follow-up push (§12-7).
+ *   of current values stays a follow-up push (§12-7). rotate はステートメントを
+ *   運ばない(名前・状態は変わらない)。
+ * - `rename` / `remove` carry a signed `EnvironmentMetaStatement`
+ *   (metaVersion CAS — §12-5 のメタ規則。削除は status = deleted で宣言ヘッド
+ *   時点 admin — §12-3)。
  */
 export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
@@ -127,7 +150,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
       payload: Schema.Struct({
         parentHeadHashHex: Schema.String,
         entry: CreateEnvironmentEntrySchema,
-        name: ResourceNameSchema,
+        statement: CreateEnvironmentMetaStatementSchema,
         deks: Schema.Array(WrappedDekSchema),
       }),
       success: EnvironmentChainResultSchema,
@@ -139,6 +162,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
+        // 複合内整合検査(§12-4): エントリ payload とステートメントの
+        // environment_id / 宣言ヘッドの不一致
+        PayloadMismatchError,
+        MetaStatementRejectedError,
+        NameNotNfcError,
         DekWrapRejectedError,
         DataLimitExceededError,
       ],
@@ -180,21 +208,36 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.patch("rename", "/projects/:projectId/environments/:environmentId", {
       params: environmentParams,
-      payload: Schema.Struct({ name: ResourceNameSchema }),
+      payload: Schema.Struct({ statement: RenameEnvironmentMetaStatementSchema }),
       success: HttpApiSchema.NoContent,
       error: [
         ProjectNotFoundError,
         ForbiddenError,
         EnvironmentNotFoundError,
         EnvironmentConflictError,
+        PayloadMismatchError,
+        MetaVersionConflictError,
+        MetaStatementRejectedError,
+        NameNotNfcError,
+        DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/projects/:projectId/environments/:environmentId", {
       params: environmentParams,
+      // 削除も署名付きステートメント(status deleted。name は直前 active 名 —
+      // CRYPTO_SPEC §4.2)を要する。DELETE + body は deks.remove の先例に倣う
+      payload: Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema }),
       success: HttpApiSchema.NoContent,
-      error: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
+      error: [
+        ProjectNotFoundError,
+        ForbiddenError,
+        EnvironmentNotFoundError,
+        PayloadMismatchError,
+        MetaVersionConflictError,
+        MetaStatementRejectedError,
+      ],
     }).middleware(AuthMiddleware),
   );
 
@@ -207,9 +250,11 @@ export const variablesGroup = HttpApiGroup.make("variables")
   .add(
     HttpApiEndpoint.post("create", "/projects/:projectId/environments/:environmentId/variables", {
       params: environmentParams,
+      // 作成 = version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱
+      // (§12-5)。variableId と表示名はステートメントが運ぶ(裸のフィールドを
+      // 併置しない — 二重運搬の不一致面を作らない)
       payload: Schema.Struct({
-        variableId: VariableIdSchema,
-        name: ResourceNameSchema,
+        statement: CreateVariableMetaStatementSchema,
         value: EncryptedPayloadSchema,
       }),
       success: VariableVersionSchema,
@@ -221,9 +266,11 @@ export const variablesGroup = HttpApiGroup.make("variables")
         PayloadMismatchError,
         VersionConflictError,
         EpochConflictError,
-        // 同梱 version 1 も通常 push と同一の値署名検証を受ける(§12-5 —
-        // 作成経由の検証迂回は不可)
+        // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名
+        // 検証を受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)
         ValueSignatureRejectedError,
+        MetaStatementRejectedError,
+        NameNotNfcError,
         ValueTooLargeError,
         DataLimitExceededError,
       ],
@@ -258,7 +305,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
-        payload: Schema.Struct({ name: ResourceNameSchema }),
+        payload: Schema.Struct({ statement: RenameVariableMetaStatementSchema }),
         success: HttpApiSchema.NoContent,
         error: [
           ProjectNotFoundError,
@@ -266,6 +313,11 @@ export const variablesGroup = HttpApiGroup.make("variables")
           EnvironmentNotFoundError,
           VariableNotFoundError,
           VariableConflictError,
+          PayloadMismatchError,
+          MetaVersionConflictError,
+          MetaStatementRejectedError,
+          NameNotNfcError,
+          DataLimitExceededError,
         ],
       },
     ).middleware(AuthMiddleware),
@@ -276,12 +328,17 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
+        // 削除も署名付きステートメント(status deleted。name は直前 active 名)
+        payload: Schema.Struct({ statement: DeleteVariableMetaStatementSchema }),
         success: HttpApiSchema.NoContent,
         error: [
           ProjectNotFoundError,
           ForbiddenError,
           EnvironmentNotFoundError,
           VariableNotFoundError,
+          PayloadMismatchError,
+          MetaVersionConflictError,
+          MetaStatementRejectedError,
         ],
       },
     ).middleware(AuthMiddleware),
