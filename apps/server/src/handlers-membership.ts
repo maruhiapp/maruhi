@@ -11,6 +11,7 @@ import {
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   ChainHeadConflictError,
+  CompositeRequiredError,
   ForbiddenError,
   maruhiApi,
   ProjectAlreadyInitializedError,
@@ -114,6 +115,10 @@ function appendRejection(projectId: string, outcome: Exclude<AppendOutcome, { ki
   if (outcome.kind === "not-initialized" || outcome.kind === "not-member") {
     return new ProjectNotFoundError({ projectId });
   }
+  // DO 側の多層防御(通常はハンドラの先行検査が同じ 422 を返す)
+  if (outcome.kind === "composite-required") {
+    return new CompositeRequiredError({ op: outcome.op });
+  }
   if (outcome.kind === "head-conflict") {
     return new ChainHeadConflictError({
       currentHeadSeq: outcome.currentHeadSeq,
@@ -197,6 +202,12 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
     .handle("append", ({ params, payload }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
+        // AUTH_SPEC §6 / §12-4(2026-08-03): create_environment / rotate_epoch は
+        // 複合エンドポイント(付随データとの原子受理)経由のみ。汎用追記での
+        // 迂回は「エポックはあるがラップがない」中間状態を作るため型付きで拒否
+        if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
+          return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
+        }
         // §11-1: 追記エントリの actor = 認証主体(受理ポリシー)
         yield* ensureActorMatches(principal, payload.entry);
         yield* ensureTokenScopeForProject(

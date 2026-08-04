@@ -13,6 +13,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
+import { CreateEnvironmentEntrySchema, RotateEpochEntrySchema } from "./chain.ts";
 import {
   DekWrapRefSchema,
   EncryptedPayloadSchema,
@@ -20,6 +21,10 @@ import {
   WrappedDekSchema,
 } from "./data.ts";
 import {
+  ChainCapacityExceededError,
+  ChainEntryInvalidError,
+  ChainEntryTooLargeError,
+  ChainHeadConflictError,
   DataLimitExceededError,
   DekWrapExistsError,
   DekWrapNotFoundError,
@@ -54,6 +59,18 @@ export const EnvironmentSummarySchema = Schema.Struct({
   currentEpoch: Schema.Number,
 });
 
+/**
+ * Result of a composite environment creation / rotation (AUTH_SPEC §12-4):
+ * the accepted chain head (the entry was appended atomically with the data)
+ * plus the resulting current epoch.
+ */
+export const EnvironmentChainResultSchema = Schema.Struct({
+  environmentId: EnvironmentIdSchema,
+  currentEpoch: Schema.Number,
+  headSeq: Schema.Number,
+  headHashHex: Schema.String,
+});
+
 /** Result of accepting a variable version (creation is version 1 — §12-5). */
 export const VariableVersionSchema = Schema.Struct({
   variableId: VariableIdSchema,
@@ -82,24 +99,66 @@ export const EnvironmentPullSchema = Schema.Struct({
 });
 
 /**
- * Environment management (AUTH_SPEC §12-4). Creation is atomic: the request
- * carries the complete epoch-1 DEK wrap set for the current member set, so an
- * environment never exists without its members being able to decrypt it.
+ * Environment management (AUTH_SPEC §12-4。2026-08-03 セッション 12 改訂 —
+ * 環境作成のチェーン op 化に追随)。
+ *
+ * - `create` is a composite request: the `create_environment` chain entry
+ *   (environment id + epoch-1 DEK commitment, appended with a parent-head
+ *   CAS), the display name, and the complete epoch-1 DEK wrap set for the
+ *   current member set — accepted atomically by the project DO. An
+ *   environment never exists without its commitment and its members' wraps.
+ *   PR-1 の意図的な中間状態: 表示名は裸の `name` のまま運ぶ
+ *   (`EnvironmentMetaStatement` の同梱 — CRYPTO_SPEC §4.2 — は PR-3)。
+ * - `rotate` is the composite rotation: the `rotate_epoch` entry (new-epoch
+ *   commitment) plus the complete new-epoch wrap set, replacing the former
+ *   two-step "generic chain append + DEK registration" flow. Re-encryption
+ *   of current values stays a follow-up push (§12-7).
  */
 export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.post("create", "/projects/:projectId/environments", {
       params: projectParams,
       payload: Schema.Struct({
-        environmentId: EnvironmentIdSchema,
+        parentHeadHashHex: Schema.String,
+        entry: CreateEnvironmentEntrySchema,
         name: ResourceNameSchema,
         deks: Schema.Array(WrappedDekSchema),
       }),
-      success: EnvironmentSummarySchema,
+      success: EnvironmentChainResultSchema,
       error: [
         ProjectNotFoundError,
         ForbiddenError,
         EnvironmentConflictError,
+        ChainHeadConflictError,
+        ChainEntryInvalidError,
+        ChainEntryTooLargeError,
+        ChainCapacityExceededError,
+        DekWrapRejectedError,
+        DataLimitExceededError,
+      ],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    HttpApiEndpoint.post("rotate", "/projects/:projectId/environments/:environmentId/rotate", {
+      params: environmentParams,
+      payload: Schema.Struct({
+        parentHeadHashHex: Schema.String,
+        entry: RotateEpochEntrySchema,
+        deks: Schema.Array(WrappedDekSchema),
+      }),
+      success: EnvironmentChainResultSchema,
+      error: [
+        ProjectNotFoundError,
+        ForbiddenError,
+        // 削除済み(tombstone)環境への rotate は 404(§12-4 — §7 の「全環境」は
+        // 削除済みを含まない)
+        EnvironmentNotFoundError,
+        // URL の environmentId と entry.payload.environmentId の不一致(複合内整合検査)
+        PayloadMismatchError,
+        ChainHeadConflictError,
+        ChainEntryInvalidError,
+        ChainEntryTooLargeError,
+        ChainCapacityExceededError,
         DekWrapRejectedError,
         DataLimitExceededError,
       ],

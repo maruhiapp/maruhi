@@ -14,7 +14,7 @@ import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type DekRecipient, verifyAndUnwrapDeks } from "./deks.ts";
+import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -54,7 +54,10 @@ export function pullVariables(input: {
 
     const results: DecryptedVariable[] = [];
     const seenNames = new Set<string>();
-    const chainEpoch = input.verified.state.environmentEpochs.get(input.environmentId) ?? 1;
+    // 環境の存在はチェーン導出(§6.2 — verifyAndUnwrapDeks が検査済みだが、
+    // 現エポックの参照もチェーン導出値から取る)
+    const chainEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
+      .currentEpoch;
     for (const variable of response.variables) {
       // 変数名の一意性はサーバーが強制する(§12-1)が、`maruhi run` の環境変数
       // 注入が黙って片方を潰さないようクライアントでも検査する(サーバー不信)

@@ -11,11 +11,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import {
+  commitmentOf,
   encryptValue,
   hexBytes,
   makeDek,
+  signEntryAt,
   vectorKeyOf,
   wrapDekForAll,
+  wrapDekTo,
 } from "./support/data-crypto.ts";
 import type { DataFixture } from "./support/data-fixture.ts";
 import {
@@ -28,6 +31,7 @@ import {
   projectId,
   READER,
   requestJson,
+  rotateEnvironmentOk,
   setupDataProject,
   tokenOf,
 } from "./support/data-fixture.ts";
@@ -85,19 +89,35 @@ describe("チェーンミラー(§3.4)", () => {
     expect(JSON.parse(String(addMember["payload"]))).toEqual({ role: "member" });
   });
 
-  it("mirrors rotate_epoch with environment id, new epoch and reason", async () => {
-    await appendOperation(fixture, MEMBER, {
-      op: "rotate_epoch",
-      payload: { environmentId: ENV, newEpoch: 2, reason: "scheduled" },
-    });
+  it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4, 2026-08-03)", async () => {
+    // 作成・ローテーションとも複合リクエスト(§12-4)経由でチェーンに載る。
+    // ミラー payload のコミットメントは同梱 DEK の §5.2 実計算値と一致する
+    // (形式だけでなく値まで固定: 別エポックの値や定数を写す変異を落とす)
+    const dek1 = await createEnvironmentOk(fixture, ENV, "App");
+    const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
+    const commitment1 = await commitmentOf(projectId, ENV, 1, dek1);
+    const commitment2 = await commitmentOf(projectId, ENV, 2, dek2);
     const events = await readAuditEvents(projectId);
-    const rotated = events.at(-1);
-    if (rotated === undefined) throw new Error("missing rotation mirror");
+    const rotated = events.at(-1 - ALL_MEMBERS.length);
+    const created = events.find((event) => event["event"] === "chain.environment_created");
+    if (rotated === undefined || created === undefined) throw new Error("missing mirrors");
+
+    expect(created["environment_id"]).toBe(ENV);
+    expect(created["epoch"]).toBe(1);
+    expect(created["chain_seq"]).toBe(4);
+    expect(created["actor_user_id"]).toBe(OWNER);
+    expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
+    // dek_commitment は payload に写す(AUDIT_SPEC §3.4)
+    expect(JSON.parse(String(created["payload"]))).toEqual({ dekCommitmentHex: commitment1 });
+
     expect(rotated["event"]).toBe("chain.epoch_rotated");
     expect(rotated["environment_id"]).toBe(ENV);
     expect(rotated["epoch"]).toBe(2);
-    expect(rotated["chain_seq"]).toBe(4);
-    expect(JSON.parse(String(rotated["payload"]))).toEqual({ reason: "scheduled" });
+    expect(rotated["chain_seq"]).toBe(5);
+    expect(JSON.parse(String(rotated["payload"]))).toEqual({
+      reason: "scheduled",
+      dekCommitmentHex: commitment2,
+    });
   });
 
   it("mirrors change_role / remove_member with the target user id (§4.1 Q1 の入力)", async () => {
@@ -189,8 +209,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "chain.genesis",
       "chain.member_added",
       "chain.member_added",
+      // 複合の環境作成(§12-4)はチェーンミラー + env.created + 同梱ラップの
+      // dek.registered(1 受信者 1 行 — §3.3)を原子的に書く
+      "chain.environment_created",
       "env.created",
-      // 環境作成時のエポック 1 の同梱ラップも dek.registered(1 受信者 1 行 — §3.3)
       "dek.registered",
       "dek.registered",
       "dek.registered",
@@ -209,9 +231,9 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "env.deleted",
     ]);
 
-    const created = events[7];
-    const pushed = events[8];
-    const read = events[11];
+    const created = events[8];
+    const pushed = events[9];
+    const read = events[12];
     if (created === undefined || pushed === undefined || read === undefined) {
       throw new Error("missing audit rows");
     }
@@ -247,10 +269,27 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
+    const { entry } = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: MEMBER,
+      operation: {
+        op: "create_environment",
+        payload: {
+          environmentId: "env-audit-0002",
+          dekCommitmentHex: await commitmentOf(projectId, "env-audit-0002", 1, dek),
+        },
+      },
+    });
     const created = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
       headers: { ...JSON_HEADERS, ...sessionHeaders(session) },
-      body: JSON.stringify({ environmentId: "env-audit-0002", name: "Session", deks }),
+      body: JSON.stringify({
+        parentHeadHashHex: fixture.head.hashHex,
+        entry,
+        name: "Session",
+        deks,
+      }),
     });
     expect(created.status).toBe(200);
     const after = await readAuditEvents(projectId);
@@ -283,28 +322,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       expect(event["variable_id"]).toBeNull();
     }
 
-    // 登録 API 経由(ローテーション後の完全集合)も同じ形で記録される
-    await appendOperation(fixture, MEMBER, {
-      op: "rotate_epoch",
-      payload: { environmentId: ENV, newEpoch: 2, reason: "audit-test" },
-    });
-    const complete = await wrapDekForAll({
-      projectId,
-      environmentId: ENV,
-      epoch: 2,
-      dek,
-      recipientUserIds: ALL_MEMBERS,
-      signerUserId: MEMBER,
-    });
-    const registered = await requestJson(
-      "POST",
-      `/environments/${ENV}/deks`,
-      tokenOf(fixture.tokens, MEMBER),
-      {
-        deks: complete,
-      },
-    );
-    expect(registered.status).toBe(204);
+    // 複合ローテーション(§12-4)の同梱分も同じ形で記録される
+    await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
 
     // 削除(§12-6 の修復経路)は dek.deleted を受信者ごとに記録する
     const removed = await requestJson(
@@ -317,6 +336,30 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     );
     expect(removed.status).toBe(204);
 
+    // 修復再登録(登録 API に残る経路 — §12-6)も同じ形で記録される
+    const removedEpoch1 = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/deks`,
+      tokenOf(fixture.tokens, OWNER),
+      { wraps: [{ epoch: 1, recipientUserId: READER }] },
+    );
+    expect(removedEpoch1.status).toBe(204);
+    const reWrap = await wrapDekTo({
+      projectId,
+      environmentId: ENV,
+      epoch: 1,
+      dek,
+      recipientUserId: READER,
+      signerUserId: MEMBER,
+    });
+    const reRegistered = await requestJson(
+      "POST",
+      `/environments/${ENV}/deks`,
+      tokenOf(fixture.tokens, MEMBER),
+      { deks: [reWrap] },
+    );
+    expect(reRegistered.status).toBe(204);
+
     const events = await readAuditEvents(projectId);
     const epoch2 = events.filter(
       (event) => event["event"] === "dek.registered" && event["epoch"] === 2,
@@ -326,8 +369,15 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       expect(event["actor_user_id"]).toBe(MEMBER);
       expect(event["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     }
+    const repair = events.at(-1);
+    if (repair === undefined) throw new Error("missing repair registration event");
+    expect(repair["event"]).toBe("dek.registered");
+    expect(repair["epoch"]).toBe(1);
+    expect(repair["target_user_id"]).toBe(READER);
+    expect(repair["actor_user_id"]).toBe(MEMBER);
+    expect(repair["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     const deleted = events.filter((event) => event["event"] === "dek.deleted");
-    expect(deleted.length).toBe(1);
+    expect(deleted.length).toBe(2);
     const deletion = deleted[0];
     if (deletion === undefined) throw new Error("missing dek.deleted");
     expect(deletion["environment_id"]).toBe(ENV);

@@ -14,11 +14,14 @@ import { Effect } from "effect";
 
 /**
  * 追記エントリの op が要求するトークン権限水準(AUTH_SPEC §6)。
- * `rotate_epoch` = write、メンバー / サーバー鍵管理系 = admin。
- * append に genesis が来た場合も admin(verifyChain が bad-genesis で拒否する)。
+ * `create_environment` / `rotate_epoch` = write(ただしこの 2 op は複合
+ * エンドポイント経由のみで、汎用 append はハンドラが CompositeRequired で
+ * 先に拒否する — ここの写像は表の網羅性のために保持)、メンバー / サーバー鍵
+ * 管理系 = admin。append に genesis が来た場合も admin(verifyChain が
+ * bad-genesis で拒否する)。
  */
 export function requiredPermissionForOp(op: ChainEntry["op"]): TokenPermission {
-  return op === "rotate_epoch" ? "write" : "admin";
+  return op === "rotate_epoch" || op === "create_environment" ? "write" : "admin";
 }
 
 /** §11-1: 認証主体の内部 user_id と entry.actor.user_id の厳密一致(受理ポリシー)。 */

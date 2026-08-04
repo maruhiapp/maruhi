@@ -8,6 +8,7 @@ import {
   addMemberOp,
   buildChain,
   type BuiltChain,
+  createEnvironmentOp,
   encryptValueFor,
   genesisOp,
   makeTestUser,
@@ -38,12 +39,14 @@ let servers: MockServer[] = [];
 
 beforeAll(async () => {
   const owner = await makeTestUser("user-owner-1111");
-  const built = await buildChain([
-    { actor: owner, operation: genesisOp(owner) },
-    { actor: owner, operation: rotateEpochOp(ENV_ID, 2) },
-  ]);
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
+  // チェーンには実 DEK のコミットメントが載る(§5.2 — pull の照合まで実データ)
+  const built = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+    { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+  ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const wraps = [
     await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
@@ -286,6 +289,87 @@ describe("maruhi pull", () => {
     expect(env.errors.join("\n")).toContain("現エポック(2)を超えています");
   });
 
+  it("チェーン上のコミットメントと一致しない DEK(毒ラップ = 偽 DEK 注入)を拒否する(§5.2)", async () => {
+    // 正規メンバー(owner)が §5.1 署名した実在エポック宛のラップでも、中身が
+    // チェーン掲載のコミットメントと一致しない DEK なら使用前に拒否する
+    // (悪意サーバー + チェーン履歴上の鍵保持者の共謀による偽 DEK 注入の遮断 —
+    // CRYPTO_SPEC §14.2-1。セッション 11 の既知残余を閉じる本 PR の本丸)
+    const forgedDek = crypto.getRandomValues(new Uint8Array(32));
+    const poison = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek: forgedDek,
+      recipient: fixture.owner,
+      signer: fixture.owner,
+    });
+    const env = await startEnv([chainHandler(), pullHandler({ deks: [poison, fixture.wraps[1]] })]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("コミットメントと一致しません");
+  });
+
+  it("push 前(listMine 経由)でもコミットメント不一致の DEK を拒否する(§5.2 の機密性側)", async () => {
+    // §5.2 の (2): 偽 DEK での暗号化(攻撃者が読める push)の誘導を、DEK 使用前の
+    // 照合で遮断する。listMine の配布に毒ラップを混ぜる
+    const forgedDek = crypto.getRandomValues(new Uint8Array(32));
+    const poison = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      dek: forgedDek,
+      recipient: fixture.owner,
+      signer: fixture.owner,
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler(),
+      onRequest("GET", `/projects/${fixture.built.projectId}/environments/${ENV_ID}/deks`, () => ({
+        status: 200,
+        json: { deks: [fixture.wraps[0], poison] },
+      })),
+    ]);
+    env.setStdin(new TextEncoder().encode("new-value"));
+    expect(await runCli(["push", "GAMMA"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("コミットメントと一致しません");
+  });
+
+  it("チェーンに create_environment がない環境(ファントム環境)の配布を拒否する", async () => {
+    // 「未観測なら epoch 1」の既定値は廃止(§6.2): チェーンが知らない環境の
+    // 配布はサーバー応答とチェーンの矛盾として全体を拒否する
+    const ghostValue = await encryptValueFor({
+      dek: fixture.dek1,
+      projectId: fixture.built.projectId,
+      environmentId: "ghost",
+      epoch: 1,
+      variableId: "vg",
+      version: 1,
+      plaintext: "ghost",
+    });
+    const ghostWrap = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: "ghost",
+      epoch: 1,
+      dek: fixture.dek1,
+      recipient: fixture.owner,
+      signer: fixture.owner,
+    });
+    const env = await startEnv([
+      chainHandler(),
+      onRequest("GET", `/projects/${fixture.built.projectId}/environments/ghost/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: "ghost",
+          name: "ghost",
+          currentEpoch: 1,
+          variables: [{ variableId: "vg", name: "GHOST", value: ghostValue }],
+          deks: [ghostWrap],
+        },
+      })),
+    ]);
+    expect(await runCli(["pull", "--env", "ghost"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("チェーン上に存在しません");
+  });
+
   it("署名者 FP がチェーン履歴のどの鍵とも一致しないラップを拒否する", async () => {
     const wrap = fixture.wraps[0];
     if (wrap === undefined) {
@@ -336,13 +420,14 @@ describe("maruhi pull", () => {
     const oldKeys = await makeTestUser("user-rotated-5555");
     const newKeys = await makeTestUser("user-rotated-5555");
     const owner = fixture.owner;
+    const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(oldKeys, "member") },
+      { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: removeMemberOp(oldKeys) },
       { actor: owner, operation: addMemberOp(newKeys, "member") },
     ]);
-    const dek = crypto.getRandomValues(new Uint8Array(32));
     const wrap = await wrapDekFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

@@ -51,6 +51,12 @@ export class CryptoDekWrapSignatureError extends Data.TaggedError(
   "CryptoDekWrapSignature",
 )<object> {}
 
+/**
+ * An unwrapped DEK does not match the chain-published commitment for its
+ * coordinates (CRYPTO_SPEC §5.2 — poison wrap).
+ */
+export class CryptoDekCommitmentError extends Data.TaggedError("CryptoDekCommitment")<object> {}
+
 /** Membership-chain verification failed at entry `seq` for `reason`. */
 export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly seq: number;
@@ -68,6 +74,7 @@ export type WrappedCryptoError =
   | CryptoDekUnwrapError
   | CryptoSignError
   | CryptoDekWrapSignatureError
+  | CryptoDekCommitmentError
   | ChainInvalidError;
 
 /** Maps a raw `CryptoError` value onto its Effect-tagged counterpart. */
@@ -91,6 +98,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoSignError();
     case "DekWrapSignatureInvalid":
       return new CryptoDekWrapSignatureError();
+    case "DekCommitmentMismatch":
+      return new CryptoDekCommitmentError();
     case "ChainInvalid":
       return new ChainInvalidError({ seq: error.seq, reason: error.reason });
   }

@@ -68,6 +68,33 @@ async function deterministicSigningChecks(c: Checks): Promise<void> {
   }
 }
 
+function environmentMatches(
+  state: ChainState,
+  environmentId: string,
+  expected: (typeof vectorHeadStates)[number]["environments"][string],
+): boolean {
+  const actual = state.environments.get(environmentId);
+  if (actual === undefined) {
+    return false;
+  }
+  const seqsMatch =
+    actual.epochStartSeqs.size === Object.keys(expected.epoch_start_seqs).length &&
+    Object.entries(expected.epoch_start_seqs).every(
+      ([epoch, seq]) => actual.epochStartSeqs.get(Number(epoch)) === seq,
+    );
+  const commitmentsMatch =
+    actual.dekCommitments.size === Object.keys(expected.dek_commitments).length &&
+    Object.entries(expected.dek_commitments).every(
+      ([epoch, commitment]) => actual.dekCommitments.get(Number(epoch)) === commitment,
+    );
+  return (
+    actual.currentEpoch === Number(expected.current_epoch) &&
+    actual.createdAtSeq === expected.created_at_seq &&
+    seqsMatch &&
+    commitmentsMatch
+  );
+}
+
 function stateMatches(state: ChainState, expectedIndex: number): boolean {
   const expected = vectorHeadStates[expectedIndex];
   if (expected === undefined) {
@@ -88,16 +115,18 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
         actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",")
       );
     });
-  const epochsMatch =
-    state.environmentEpochs.size === Object.keys(expected.environment_epochs).length &&
-    Object.entries(expected.environment_epochs).every(
-      ([environmentId, epoch]) => state.environmentEpochs.get(environmentId) === Number(epoch),
+  // 環境集合はチェーン導出(§6.2): 期待に無い環境が導出されてもならない
+  // (「未観測なら初期値 1」の廃止 — 2026-08-03)
+  const environmentsMatch =
+    state.environments.size === Object.keys(expected.environments).length &&
+    Object.entries(expected.environments).every(([environmentId, environment]) =>
+      environmentMatches(state, environmentId, environment),
     );
-  return membersMatch && grantsMatch && epochsMatch;
+  return membersMatch && grantsMatch && environmentsMatch;
 }
 
 async function verificationChecks(c: Checks): Promise<void> {
-  // 全 9 エントリの検証 + ヘッド情報
+  // 正規チェーン全エントリ(12)の検証 + ヘッド情報
   const full = await verifyChain(typedEntries);
   const lastVector = vectorEntries[vectorEntries.length - 1];
   c.push(

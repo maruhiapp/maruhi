@@ -18,6 +18,8 @@ export {
   type ChainOperation,
   type ChainState,
   type ChangeRolePayload,
+  type CreateEnvironmentPayload,
+  type EnvironmentChainState,
   type GenesisPayload,
   type GrantServerPayload,
   type RemoveMemberPayload,
@@ -28,6 +30,12 @@ export {
   type UnsignedChainEntry,
 } from "./chain-types.ts";
 export { verifyChain } from "./chain-verify.ts";
+export {
+  buildDekCommitmentBytes,
+  computeDekCommitment,
+  type DekCommitmentContext,
+  verifyDekCommitment,
+} from "./dek-commitment.ts";
 export {
   buildDekWrapInfo,
   type DekWrapContext,

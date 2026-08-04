@@ -15,6 +15,7 @@ import type {
 } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
+  computeDekCommitment,
   decodeHex,
   decryptVariable,
   encodeHex,
@@ -162,6 +163,40 @@ export function addMemberOperation(
       role,
     },
   };
+}
+
+/** §5.2 のコミットメント(hex 小文字 64 文字)。 */
+export async function commitmentOf(
+  projectId: string,
+  environmentId: string,
+  epoch: number,
+  dek: Uint8Array,
+): Promise<string> {
+  return unwrapResult(
+    await computeDekCommitment({
+      context: { suite: SUITE_ID, projectId, environmentId, epoch },
+      dek,
+    }),
+    "computeDekCommitment",
+  );
+}
+
+/** create_environment 用の payload(エポック 1 のコミットメント込み — §6.2)。 */
+export function createEnvironmentOperation(
+  environmentId: string,
+  dekCommitmentHex: string,
+): ChainOperation {
+  return { op: "create_environment", payload: { environmentId, dekCommitmentHex } };
+}
+
+/** rotate_epoch 用の payload(新エポックのコミットメント込み — §6.2)。 */
+export function rotateEpochOperation(
+  environmentId: string,
+  newEpoch: number,
+  dekCommitmentHex: string,
+  reason = "scheduled",
+): ChainOperation {
+  return { op: "rotate_epoch", payload: { environmentId, newEpoch, reason, dekCommitmentHex } };
 }
 
 /** 新しい環境エポック DEK(256-bit 乱数)。 */

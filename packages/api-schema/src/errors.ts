@@ -22,6 +22,8 @@ const CHAIN_INVALID_REASONS = [
   "unknown-target",
   "duplicate-member",
   "duplicate-member-key",
+  "duplicate-environment",
+  "unknown-environment",
   "unknown-server-grant",
   "grant-scope-narrowed",
   "epoch-out-of-sequence",
@@ -137,6 +139,18 @@ export class ChainCapacityExceededError extends Schema.TaggedErrorClass<ChainCap
   { httpApiStatus: 422 },
 ) {}
 
+/**
+ * 422: `create_environment` / `rotate_epoch` entries may only be submitted
+ * through their composite endpoints (AUTH_SPEC §6 / §12-4, 2026-08-03) — the
+ * generic chain append rejects them so the entry-plus-data atomicity cannot
+ * be bypassed ("エポックはあるがラップがない" 中間状態を作らせない).
+ */
+export class CompositeRequiredError extends Schema.TaggedErrorClass<CompositeRequiredError>()(
+  "CompositeRequired",
+  { op: Schema.Literals(["create_environment", "rotate_epoch"]) },
+  { httpApiStatus: 422 },
+) {}
+
 // ---------------------------------------------------------------------------
 // データプレーン API の型付きエラー(AUTH_SPEC §12)。
 // チェーン API と同じく、エラーは識別子・カウンタのみを運ぶ(平文値・鍵素材なし)。
@@ -159,10 +173,10 @@ export class VariableNotFoundError extends Schema.TaggedErrorClass<VariableNotFo
 ) {}
 
 /**
- * Reason codes for a 409 on environment / variable creation or rename
- * (AUTH_SPEC §12-1): `exists` = the id is in use, `retired` = the id was used
- * before (tombstone or chain-observed epoch) and may not be reused,
- * `duplicate-name` = the display name is taken within the uniqueness scope.
+ * Reason codes for a 409 on variable creation or rename (AUTH_SPEC §12-1):
+ * `exists` = the id is in use, `retired` = the id was used before (tombstone)
+ * and may not be reused, `duplicate-name` = the display name is taken within
+ * the uniqueness scope.
  */
 export const ResourceConflictReasonSchema = Schema.Literals([
   "exists",
@@ -170,10 +184,18 @@ export const ResourceConflictReasonSchema = Schema.Literals([
   "duplicate-name",
 ]);
 
-/** 409: the environment id or display name conflicts (AUTH_SPEC §12-1 / §12-4). */
+/**
+ * Reason codes for a 409 on environment creation or rename. Only the display
+ * name remains a data-plane check: id uniqueness (`exists` / `retired`) was
+ * absorbed into the chain consensus rule `duplicate-environment`
+ * (ChainEntryInvalid — CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4, 2026-08-03).
+ */
+export const EnvironmentConflictReasonSchema = Schema.Literals(["duplicate-name"]);
+
+/** 409: the environment display name conflicts (AUTH_SPEC §12-1 / §12-4). */
 export class EnvironmentConflictError extends Schema.TaggedErrorClass<EnvironmentConflictError>()(
   "EnvironmentConflict",
-  { environmentId: Schema.String, reason: ResourceConflictReasonSchema },
+  { environmentId: Schema.String, reason: EnvironmentConflictReasonSchema },
   { httpApiStatus: 409 },
 ) {}
 

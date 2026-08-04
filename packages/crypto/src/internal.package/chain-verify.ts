@@ -22,15 +22,26 @@ const ROLE_RANK: Readonly<Record<Role, number>> = { reader: 0, member: 1, admin:
 const ROLES: readonly Role[] = ["owner", "admin", "member", "reader"];
 const FINGERPRINT_BYTES = 16;
 const SIGNATURE_BYTES = 64;
+const SHA256_BYTES = 32;
 // フィールドサイズ上限(CRYPTO_SPEC §6.1。2026-08-02 決定): チェーン有効性の
 // 合意規則。巨大 payload による検証クライアントの資源消費(可用性)対策
 const MAX_FIELD_BYTES = 1024;
 const MAX_SCOPE_ENVIRONMENTS = 256;
 
+interface MutableEnvironmentState {
+  currentEpoch: number;
+  readonly createdAtSeq: number;
+  readonly epochStartSeqs: Map<number, number>;
+  readonly dekCommitments: Map<number, string>;
+}
+
 interface MutableChainState {
   readonly members: Map<string, ChainMember>;
   readonly serverGrants: Map<string, ServerGrant>;
-  readonly environmentEpochs: Map<string, number>;
+  // 環境集合(§6.2 create_environment の導出)。チェーンは環境の削除を観測しない
+  // (削除はデータプレーン操作)ため、このマップ自体が「履歴全体の使用済み ID」
+  // でもあり、duplicate-environment の判定に追加の索引を要しない
+  readonly environments: Map<string, MutableEnvironmentState>;
   // 現メンバー集合の enc / sig 公開鍵の索引(メンバー鍵の一意性 — §6.2)。
   // 本規則自体が「各鍵は高々 1 メンバーに属する」を不変条件にするため、
   // remove_member での Set 削除は他メンバーの鍵を消さない(健全)。
@@ -141,17 +152,25 @@ function shapeAddMember(p: {
   return isBoundedId(p.targetUserId) && shapeGenesis(p) && isRole(p.role);
 }
 
+function shapeCreateEnvironment(p: { environmentId: unknown; dekCommitmentHex: unknown }): boolean {
+  // dek_commitment_hex は hex 小文字 64 文字(§6.2 の合意規則。形式検査は
+  // payload 構造検査の段に属し、認可判定に先行する)
+  return isBoundedId(p.environmentId) && isHexOfLength(p.dekCommitmentHex, SHA256_BYTES);
+}
+
 function shapeRotateEpoch(p: {
   environmentId: unknown;
   newEpoch: unknown;
   reason: unknown;
+  dekCommitmentHex: unknown;
 }): boolean {
   return (
     isBoundedId(p.environmentId) &&
     Number.isSafeInteger(p.newEpoch) &&
     (p.newEpoch as number) >= 1 &&
     typeof p.reason === "string" &&
-    withinFieldBytes(p.reason)
+    withinFieldBytes(p.reason) &&
+    isHexOfLength(p.dekCommitmentHex, SHA256_BYTES)
   );
 }
 
@@ -169,23 +188,23 @@ function shapeGrantServer(p: {
   );
 }
 
+// op ごとの payload 形状述語(§6.1 / §6.2 の構造検査)。分岐でなく表引きにして
+// op 追加時の検査漏れを型(網羅 Record)で防ぐ
+const PAYLOAD_SHAPES: {
+  readonly [K in ChainEntry["op"]]: (payload: Extract<ChainEntry, { op: K }>["payload"]) => boolean;
+} = {
+  genesis: shapeGenesis,
+  add_member: shapeAddMember,
+  remove_member: (p) => isBoundedId(p.targetUserId),
+  change_role: (p) => isBoundedId(p.targetUserId) && isRole(p.newRole),
+  create_environment: shapeCreateEnvironment,
+  rotate_epoch: shapeRotateEpoch,
+  grant_server: shapeGrantServer,
+  revoke_server: (p) => isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES),
+};
+
 function operationShapeOk(entry: ChainEntry): boolean {
-  switch (entry.op) {
-    case "genesis":
-      return shapeGenesis(entry.payload);
-    case "add_member":
-      return shapeAddMember(entry.payload);
-    case "remove_member":
-      return isBoundedId(entry.payload.targetUserId);
-    case "change_role":
-      return isBoundedId(entry.payload.targetUserId) && isRole(entry.payload.newRole);
-    case "rotate_epoch":
-      return shapeRotateEpoch(entry.payload);
-    case "grant_server":
-      return shapeGrantServer(entry.payload);
-    case "revoke_server":
-      return isHexOfLength(entry.payload.serverKeyFingerprintHex, FINGERPRINT_BYTES);
-  }
+  return PAYLOAD_SHAPES[entry.op](entry.payload as never);
 }
 
 /** actor の登録 sig 公開鍵(hex)を解決する。genesis は payload で自己記述 */
@@ -413,8 +432,31 @@ function applyRevokeServer(
   return null;
 }
 
-// 環境の初期エポック(環境作成は平文メタデータでチェーン外だが、エポックは常に 1 から始まる)
+// 環境の初期エポック(create_environment 直後の値 — CRYPTO_SPEC §3 / §6.2)
 const INITIAL_EPOCH = 1;
+
+function applyCreateEnvironment(
+  entry: ChainEntry & { readonly op: "create_environment" },
+  state: MutableChainState,
+  actorRole: Role,
+): ChainInvalidReason | null {
+  if (!atLeast(actorRole, "member")) {
+    return "insufficient-role";
+  }
+  // environment_id はチェーン履歴全体で一意(§6.2)。チェーンは環境の削除を
+  // 観測しない(削除はデータプレーン操作)ため、environments マップは削除されず、
+  // 削除済み環境 ID の再作成もここで拒否される(ID 再利用禁止の合意規則昇格)
+  if (state.environments.has(entry.payload.environmentId)) {
+    return "duplicate-environment";
+  }
+  state.environments.set(entry.payload.environmentId, {
+    currentEpoch: INITIAL_EPOCH,
+    createdAtSeq: entry.seq,
+    epochStartSeqs: new Map([[INITIAL_EPOCH, entry.seq]]),
+    dekCommitments: new Map([[INITIAL_EPOCH, entry.payload.dekCommitmentHex]]),
+  });
+  return null;
+}
 
 function applyRotateEpoch(
   entry: ChainEntry & { readonly op: "rotate_epoch" },
@@ -424,15 +466,23 @@ function applyRotateEpoch(
   if (!atLeast(actorRole, "member")) {
     return "insufficient-role";
   }
+  // 認可段の検査順序(§6.2。ベクターで固定): role → unknown-environment →
+  // エポック順序。当該 environment_id の create_environment が先行していなければ
+  // 無効(「未観測なら初期値 1」の既定値フォールバックは廃止 — 2026-08-03)
+  const environment = state.environments.get(entry.payload.environmentId);
+  if (environment === undefined) {
+    return "unknown-environment";
+  }
   // エポックは環境ごとのカウンタで必ず +1(2026-08-02 所有者裁定・案 3)。
   // 巻き戻し(削除済みメンバーが保持する旧 DEK で新しい値が暗号化される)、
   // 重複、ジャンプ(member 権限の 1 署名で safe integer 上限まで飛ばして
   // 以後のローテーションを不能にする DoS)をすべて拒否する
-  const observed = state.environmentEpochs.get(entry.payload.environmentId) ?? INITIAL_EPOCH;
-  if (entry.payload.newEpoch !== observed + 1) {
+  if (entry.payload.newEpoch !== environment.currentEpoch + 1) {
     return "epoch-out-of-sequence";
   }
-  state.environmentEpochs.set(entry.payload.environmentId, entry.payload.newEpoch);
+  environment.currentEpoch = entry.payload.newEpoch;
+  environment.epochStartSeqs.set(entry.payload.newEpoch, entry.seq);
+  environment.dekCommitments.set(entry.payload.newEpoch, entry.payload.dekCommitmentHex);
   return null;
 }
 
@@ -450,6 +500,8 @@ async function applyOperation(
       return applyRemoveMember(entry, state, actorRole);
     case "change_role":
       return applyChangeRole(entry, state, actorRole);
+    case "create_environment":
+      return applyCreateEnvironment(entry, state, actorRole);
     case "rotate_epoch":
       return applyRotateEpoch(entry, state, actorRole);
     case "grant_server":
@@ -481,7 +533,7 @@ export async function verifyChain(
   const state: MutableChainState = {
     members: new Map(),
     serverGrants: new Map(),
-    environmentEpochs: new Map(),
+    environments: new Map(),
     memberEncPubs: new Set(),
     memberSigPubs: new Set(),
   };
@@ -525,7 +577,7 @@ export async function verifyChain(
     value: {
       members: state.members,
       serverGrants: state.serverGrants,
-      environmentEpochs: state.environmentEpochs,
+      environments: state.environments,
       headSeq: entries.length,
       headHashHex: prevHash,
     },

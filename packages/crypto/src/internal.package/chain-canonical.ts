@@ -34,9 +34,13 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
       const p = operation.payload;
       return encodeLengthPrefixed([p.targetUserId, p.newRole]);
     }
+    case "create_environment": {
+      const p = operation.payload;
+      return encodeLengthPrefixed([p.environmentId, p.dekCommitmentHex]);
+    }
     case "rotate_epoch": {
       const p = operation.payload;
-      return encodeLengthPrefixed([p.environmentId, p.newEpoch, p.reason]);
+      return encodeLengthPrefixed([p.environmentId, p.newEpoch, p.reason, p.dekCommitmentHex]);
     }
     case "grant_server": {
       const p = operation.payload;

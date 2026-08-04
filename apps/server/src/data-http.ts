@@ -7,6 +7,10 @@
 
 import type { EncryptedPayload } from "@maruhi/api-schema";
 import {
+  ChainCapacityExceededError,
+  ChainEntryInvalidError,
+  ChainEntryTooLargeError,
+  ChainHeadConflictError,
   DataLimitExceededError,
   DekWrapExistsError,
   DekWrapNotFoundError,
@@ -97,6 +101,11 @@ type DataApiError =
   | ForbiddenError
   | EnvironmentNotFoundError
   | EnvironmentConflictError
+  | ChainHeadConflictError
+  | ChainEntryInvalidError
+  | ChainEntryTooLargeError
+  | ChainCapacityExceededError
+  | PayloadMismatchError
   | VariableNotFoundError
   | VariableConflictError
   | VersionConflictError
@@ -123,6 +132,22 @@ const rejectionErrors: {
       environmentId: rejection.environmentId,
       reason: rejection.reason,
     }),
+  // 複合リクエスト(§12-4)のチェーン受理系(エラー契約の複合エンドポイントへの移動)
+  "chain-head-conflict": (rejection) =>
+    new ChainHeadConflictError({
+      currentHeadSeq: rejection.currentHeadSeq,
+      currentHeadHashHex: rejection.currentHeadHashHex,
+    }),
+  "chain-entry-invalid": (rejection) =>
+    new ChainEntryInvalidError({ seq: rejection.seq, reason: rejection.reason }),
+  "chain-entry-too-large": (rejection) =>
+    new ChainEntryTooLargeError({ limitBytes: rejection.limitBytes }),
+  "chain-capacity-exceeded": (rejection) =>
+    new ChainCapacityExceededError({
+      maxEntries: rejection.maxEntries,
+      maxTotalBytes: rejection.maxTotalBytes,
+    }),
+  "payload-mismatch": (rejection) => new PayloadMismatchError({ field: rejection.field }),
   "variable-not-found": (rejection) =>
     new VariableNotFoundError({ variableId: rejection.variableId }),
   "variable-conflict": (rejection) =>

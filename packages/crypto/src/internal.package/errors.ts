@@ -25,6 +25,8 @@ export type ChainInvalidReason =
   | "unknown-target"
   | "duplicate-member"
   | "duplicate-member-key"
+  | "duplicate-environment"
+  | "unknown-environment"
   | "unknown-server-grant"
   | "grant-scope-narrowed"
   | "epoch-out-of-sequence";
@@ -59,6 +61,11 @@ export type CryptoError =
   | { readonly kind: "SignFailed" }
   /** DEK-wrap registration signature verification failed (CRYPTO_SPEC §5.1). */
   | { readonly kind: "DekWrapSignatureInvalid" }
+  /**
+   * An unwrapped DEK does not match the chain-published commitment for its
+   * (environment, epoch) coordinates (CRYPTO_SPEC §5.2 — poison wrap).
+   */
+  | { readonly kind: "DekCommitmentMismatch" }
   /** Chain verification failed at entry `seq` for `reason`. */
   | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 

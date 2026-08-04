@@ -113,11 +113,19 @@ const mirrorTails: {
     targetUserId: entry.payload.targetUserId,
     payload: { newRole: entry.payload.newRole },
   }),
+  // dek_commitment は payload に写す(AUDIT_SPEC §3.4。2026-08-03 — 監査行と
+  // チェーン掲載コミットメントの突合用)
+  create_environment: (entry) => ({
+    event: "chain.environment_created",
+    environmentId: entry.payload.environmentId,
+    epoch: 1,
+    payload: { dekCommitmentHex: entry.payload.dekCommitmentHex },
+  }),
   rotate_epoch: (entry) => ({
     event: "chain.epoch_rotated",
     environmentId: entry.payload.environmentId,
     epoch: entry.payload.newEpoch,
-    payload: { reason: entry.payload.reason },
+    payload: { reason: entry.payload.reason, dekCommitmentHex: entry.payload.dekCommitmentHex },
   }),
   grant_server: (entry) => ({
     event: "chain.server_granted",

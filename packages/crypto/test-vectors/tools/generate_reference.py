@@ -200,10 +200,26 @@ PAYLOAD_FIELD_ORDER = {
     "add_member": ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role"],
     "remove_member": ["target_user_id"],
     "change_role": ["target_user_id", "new_role"],
-    "rotate_epoch": ["environment_id", "new_epoch", "reason"],
+    # 2026-08-03(セッション 12 / CRYPTO_SPEC 0.4-draft): 環境作成のチェーン op 化
+    # (§6.2 create_environment)と rotate_epoch payload 末尾への dek_commitment_hex 追加
+    "create_environment": ["environment_id", "dek_commitment_hex"],
+    "rotate_epoch": ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
     "grant_server": ["server_enc_pub_hex", "server_key_fingerprint_hex", "scope_environments_lp_hex"],
     "revoke_server": ["server_key_fingerprint_hex"],
 }
+
+# CRYPTO_SPEC §5.2: エポック DEK のコミットメント。
+#   dek_commitment_hex = lower_hex(SHA-256(LP("maruhi/v1/dek-commit",
+#                                             project_id, environment_id, epoch, dek_hex)))
+# ドメイン文字列が suite を束縛し、座標(project / environment / epoch)を原像に含める。
+# dek_hex は DEK 32 バイトの hex 小文字文字列(binary_encoding 規約と同じ)。
+DEK_COMMIT_DOMAIN = "maruhi/v1/dek-commit"
+
+
+def dek_commitment_hex(project_id: str, environment_id: str, epoch, dek: bytes) -> str:
+    return sha256(
+        lp_encode([DEK_COMMIT_DOMAIN, project_id, environment_id, epoch, dek.hex()])
+    ).hex()
 
 
 def make_user(enc_seed: bytes, sig_seed: bytes):
@@ -299,24 +315,67 @@ def gen_chain_entries():
     t0 = 1754006400000  # 2025-08-01T00:00:00Z 相当の固定値(ダミー)
     add_entry(1, "genesis", owner_id, owner,
               {"enc_pub_hex": owner["enc_pub_hex"], "sig_pub_hex": owner["sig_pub_hex"]}, t0)
+
+    # プロジェクト ID = genesis エントリハッシュ(§6.4)。§5.2 のコミットメント原像の
+    # project_id 座標に使う(チェーンとコミットメントの座標が一続きの実データになる)
+    project_id = entries[0]["entry_hash_hex"]
+
+    # 各 (environment, epoch) の決定論的ダミー DEK。コミットメントの内容は
+    # チェーン検証では検証不能(§6.2)だが、実装テストが §5.2 の照合
+    # (DEK → コミットメント再計算 → チェーン掲載値と一致)まで検査できるよう、
+    # 実際に計算したコミットメントを payload に載せる
+    environment_deks = {
+        "env-prod-0001": {1: pat(0xC0, 32), 2: pat(0xC4, 32), 3: pat(0xF0, 32)},
+        "env-dev-0002": {1: pat(0xC8, 32), 2: pat(0xCC, 32)},
+        "env-stage-0003": {1: pat(0xD4, 32), 2: pat(0xD8, 32)},
+        "env-fresh-0004": {1: pat(0xDC, 32)},
+        # negative 用(チェーンに載らない座標のプレースホルダ DEK)
+        "env-ghost-9999": {2: pat(0xE4, 32), 7: pat(0xE8, 32)},
+        "env-reader-blocked-0008": {1: pat(0xEC, 32)},
+    }
+
+    def commit(environment_id: str, epoch: int) -> str:
+        return dek_commitment_hex(project_id, environment_id, epoch, environment_deks[environment_id][epoch])
+
+    def create_env_payload(environment_id: str):
+        return {"environment_id": environment_id, "dek_commitment_hex": commit(environment_id, 1)}
+
+    def rotate_payload(environment_id: str, new_epoch: int, reason: str = "scheduled"):
+        return {
+            "environment_id": environment_id,
+            "new_epoch": str(new_epoch),
+            "reason": reason,
+            "dek_commitment_hex": commit(environment_id, new_epoch),
+        }
+
+    # 正規チェーン(2026-08-03 再生成 — セッション 12 §8-4): 全 rotate_epoch に
+    # create_environment が先行し、rotate payload はコミットメント込みの 4 フィールド。
+    # seq 11 の env-stage-0003 はローテーション未実施(エポック 1)の環境として残し、
+    # 「create 直後の初回 rotate は 2 のみ」の境界(authz-epoch-first-jump)と
+    # エポック 1 環境の head state を固定する
     add_entry(2, "add_member", owner_id, owner,
               {"target_user_id": member_id, "enc_pub_hex": member["enc_pub_hex"],
                "sig_pub_hex": member["sig_pub_hex"], "role": "member"}, t0 + 1000)
-    add_entry(3, "rotate_epoch", member_id, member,
-              {"environment_id": "env-prod-0001", "new_epoch": "2", "reason": "scheduled"}, t0 + 2000)
-    add_entry(4, "remove_member", owner_id, owner,
-              {"target_user_id": member_id}, t0 + 3000)
-    # seq 5〜9: grant_server / revoke_server / change_role のベクター(セッション 04 で補完)
-    add_entry(5, "add_member", owner_id, owner,
+    add_entry(3, "create_environment", member_id, member,
+              create_env_payload("env-prod-0001"), t0 + 2000)
+    add_entry(4, "rotate_epoch", member_id, member,
+              rotate_payload("env-prod-0001", 2), t0 + 3000)
+    add_entry(5, "remove_member", owner_id, owner,
+              {"target_user_id": member_id}, t0 + 4000)
+    add_entry(6, "add_member", owner_id, owner,
               {"target_user_id": admin_id, "enc_pub_hex": admin["enc_pub_hex"],
-               "sig_pub_hex": admin["sig_pub_hex"], "role": "reader"}, t0 + 4000)
-    add_entry(6, "change_role", owner_id, owner,
-              {"target_user_id": admin_id, "new_role": "admin"}, t0 + 5000)
-    add_entry(7, "grant_server", owner_id, owner, grant_payload, t0 + 6000)
-    add_entry(8, "rotate_epoch", admin_id, admin,
-              {"environment_id": "env-dev-0002", "new_epoch": "2", "reason": "scheduled"}, t0 + 7000)
-    add_entry(9, "revoke_server", owner_id, owner,
-              {"server_key_fingerprint_hex": server["fp_hex"]}, t0 + 8000)
+               "sig_pub_hex": admin["sig_pub_hex"], "role": "reader"}, t0 + 5000)
+    add_entry(7, "change_role", owner_id, owner,
+              {"target_user_id": admin_id, "new_role": "admin"}, t0 + 6000)
+    add_entry(8, "create_environment", admin_id, admin,
+              create_env_payload("env-dev-0002"), t0 + 7000)
+    add_entry(9, "grant_server", owner_id, owner, grant_payload, t0 + 8000)
+    add_entry(10, "rotate_epoch", admin_id, admin,
+              rotate_payload("env-dev-0002", 2), t0 + 9000)
+    add_entry(11, "create_environment", owner_id, owner,
+              create_env_payload("env-stage-0003"), t0 + 10000)
+    add_entry(12, "revoke_server", owner_id, owner,
+              {"server_key_fingerprint_hex": server["fp_hex"]}, t0 + 11000)
 
     # negative 1: payload 改竄(role を admin に)。署名はそのまま → 検証失敗すべき
     e2 = entries[1]
@@ -356,7 +415,7 @@ def gen_chain_entries():
             "signature_hex": owner["sig_sk"].sign(bytes.fromhex(entries[2]["signed_bytes_hex"])).hex(),
             "verify_key_hex": member["sig_pub_hex"],
             "must_fail": True,
-            "note": "actor(member)以外の鍵による署名は actor の公開鍵で検証に失敗する",
+            "note": "actor(member。seq 3 = create_environment)以外の鍵による署名は actor の公開鍵で検証に失敗する",
         },
         {
             "name": "prev-hash-mismatch",
@@ -368,10 +427,12 @@ def gen_chain_entries():
         },
     ]
 
-    # --- grant_server / revoke_server / change_role の署名系 negative --------------
-    e7 = entries[6]  # grant_server
-    e6 = entries[5]  # change_role
-    e9 = entries[8]  # revoke_server
+    # --- grant_server / revoke_server / change_role / commitment の署名系 negative ---
+    e_grant = entries[8]   # seq 9: grant_server
+    e_change = entries[6]  # seq 7: change_role
+    e_revoke = entries[11]  # seq 12: revoke_server
+    e_create_stage = entries[10]  # seq 11: create_environment env-stage-0003
+    e_rotate_dev = entries[9]     # seq 10: rotate_epoch env-dev-0002 → 2
     reordered_scope = dict(grant_payload, **{
         "scope_environments": list(reversed(grant_scope)),
         "scope_environments_lp_hex": scope_environments_lp_hex(list(reversed(grant_scope))),
@@ -384,7 +445,7 @@ def gen_chain_entries():
     tampered_revoke_fp = bytearray(bytes.fromhex(server["fp_hex"]))
     tampered_revoke_fp[0] ^= 0x01
 
-    def resign_variant(name, base_entry, payload, note):
+    def resign_variant(name, base_entry, payload, note, verify_key_hex=None):
         # payload だけ差し替えた signed_bytes に対して「元の署名」を検証 → 失敗すべき
         pb = payload_bytes(base_entry["op"], payload)
         signed = lp_encode([
@@ -397,37 +458,50 @@ def gen_chain_entries():
             "base_seq": base_entry["seq"],
             "signed_bytes_hex": signed.hex(),
             "signature_hex": base_entry["signature_hex"],
-            "verify_key_hex": owner["sig_pub_hex"],
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None else owner["sig_pub_hex"],
             "must_fail": True,
             "note": note,
         }
 
     negatives += [
         resign_variant(
-            "grant-server-scope-reorder", e7, reordered_scope,
+            "grant-server-scope-reorder", e_grant, reordered_scope,
             "scope_environments の順序を入れ替えると元の署名は検証に失敗する(入れ子 LP の順序も署名対象)",
         ),
         resign_variant(
-            "grant-server-scope-flat-concat", e7, flat_scope,
+            "grant-server-scope-flat-concat", e_grant, flat_scope,
             "scope を入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する(§2.1 の曖昧性排除)",
         ),
         resign_variant(
-            "change-role-tampered-new-role", e6,
+            "change-role-tampered-new-role", e_change,
             {"target_user_id": admin_id, "new_role": "owner"},
             "new_role の書き換え(admin → owner)は署名検証に失敗する",
         ),
         resign_variant(
-            "revoke-server-tampered-fp", e9,
+            "revoke-server-tampered-fp", e_revoke,
             {"server_key_fingerprint_hex": bytes(tampered_revoke_fp).hex()},
             "失効対象フィンガープリントの改竄は署名検証に失敗する",
+        ),
+        # dek_commitment_hex も署名対象(payload の一部): 差し替えは検証失敗(§5.2 の
+        # 「チェーンエントリは作成者の署名で覆われる」の負例側)
+        resign_variant(
+            "create-env-tampered-commitment", e_create_stage,
+            dict(e_create_stage["payload"], dek_commitment_hex=commit("env-fresh-0004", 1)),
+            "create_environment の dek_commitment_hex の差し替えは署名検証に失敗する(§5.2)",
+        ),
+        resign_variant(
+            "rotate-tampered-commitment", e_rotate_dev,
+            dict(e_rotate_dev["payload"], dek_commitment_hex=commit("env-prod-0001", 2)),
+            "rotate_epoch の dek_commitment_hex の差し替えは署名検証に失敗する(§5.2)",
+            verify_key_hex=admin["sig_pub_hex"],
         ),
     ]
 
     # --- 認可系 negative: 署名・ハッシュ連鎖は正しいが §6.2 の権限規則で拒否すべき ---
     # kind = "authorization"。署名は有効(verify_reference.mjs は署名が通ることを確認し、
     # 実装テストはチェーン検証が expected_reason で失敗することを検査する)
-    head9 = entries[8]["entry_hash_hex"]
-    head5 = entries[4]["entry_hash_hex"]
+    head12 = entries[11]["entry_hash_hex"]
+    head6 = entries[5]["entry_hash_hex"]
 
     def authz(name, entry, expected_reason, note):
         return {
@@ -450,91 +524,178 @@ def gen_chain_entries():
         authz_cases.append(case)
 
     add_authz(
-        "authz-admin-grant-server", 10, head9, "grant_server", admin_id, admin,
-        grant_payload, t0 + 9000, "insufficient-role",
+        "authz-admin-grant-server", 13, head12, "grant_server", admin_id, admin,
+        grant_payload, t0 + 12000, "insufficient-role",
         "grant_server は owner のみ。admin による正しく署名されたエントリでも拒否する",
     )
     add_authz(
-        "authz-reader-rotate-epoch", 6, head5, "rotate_epoch", admin_id, admin,
-        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "scheduled"},
-        t0 + 5000, "insufficient-role",
-        "seq 5 時点の user-admin-0003 は reader。rotate_epoch は member 以上のみ",
+        "authz-reader-rotate-epoch", 7, head6, "rotate_epoch", admin_id, admin,
+        rotate_payload("env-prod-0001", 3),
+        t0 + 6000, "insufficient-role",
+        "seq 6 時点の user-admin-0003 は reader。rotate_epoch は member 以上のみ",
     )
     add_authz(
-        "authz-nonmember-actor", 10, head9, "rotate_epoch", member_id, member,
-        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "scheduled"},
-        t0 + 9000, "actor-not-member",
-        "seq 4 で削除済みの user-member-0002 はチェーンに追記できない(ゴーストメンバー対策)",
+        "authz-nonmember-actor", 13, head12, "rotate_epoch", member_id, member,
+        rotate_payload("env-prod-0001", 3),
+        t0 + 12000, "actor-not-member",
+        "seq 5 で削除済みの user-member-0002 はチェーンに追記できない(ゴーストメンバー対策)",
     )
     add_authz(
-        "authz-remove-last-owner", 10, head9, "remove_member", owner_id, owner,
-        {"target_user_id": owner_id}, t0 + 9000, "last-owner-protected",
+        "authz-remove-last-owner", 13, head12, "remove_member", owner_id, owner,
+        {"target_user_id": owner_id}, t0 + 12000, "last-owner-protected",
         "最後の owner は削除不可(§6.2)",
     )
     add_authz(
-        "authz-demote-last-owner", 10, head9, "change_role", owner_id, owner,
-        {"target_user_id": owner_id, "new_role": "member"}, t0 + 9000, "last-owner-protected",
+        "authz-demote-last-owner", 13, head12, "change_role", owner_id, owner,
+        {"target_user_id": owner_id, "new_role": "member"}, t0 + 12000, "last-owner-protected",
         "最後の owner は降格不可(§6.2)",
     )
     add_authz(
-        "authz-admin-adds-admin", 10, head9, "add_member", admin_id, admin,
+        "authz-admin-adds-admin", 13, head12, "add_member", admin_id, admin,
         {"target_user_id": member_id, "enc_pub_hex": member["enc_pub_hex"],
          "sig_pub_hex": member["sig_pub_hex"], "role": "admin"},
-        t0 + 9000, "insufficient-role",
+        t0 + 12000, "insufficient-role",
         "admin / owner ロールの付与は owner のみ(admin は reader / member のみ追加可)",
     )
     # 再 grant のスコープ縮小は拒否(2026-08-02 所有者裁定): 縮小は revoke_server +
     # rotate_epoch(§7 の全環境ローテーション義務)を経由させる。拡大(旧 ⊆ 新)のみ受理
-    head7 = entries[6]["entry_hash_hex"]
+    head9 = entries[8]["entry_hash_hex"]
     narrowed_scope = ["env-prod-0001"]
     add_authz(
-        "authz-grant-scope-narrowed", 8, head7, "grant_server", owner_id, owner,
+        "authz-grant-scope-narrowed", 10, head9, "grant_server", owner_id, owner,
         dict(grant_payload, **{
             "scope_environments": narrowed_scope,
             "scope_environments_lp_hex": scope_environments_lp_hex(narrowed_scope),
         }),
-        t0 + 7000, "grant-scope-narrowed",
+        t0 + 9000, "grant-scope-narrowed",
         "有効な grant のスコープを狭める再 grant は owner 署名でも拒否する(§7 のローテーション義務を迂回させない)",
     )
 
-    # エポック順序規則(2026-08-02 所有者裁定・案 3): エポックは環境ごとのカウンタ
-    # (初期値 1)で、rotate_epoch は必ず +1。巻き戻し(削除済みメンバー保持の旧 DEK
-    # への再露出)・重複・ジャンプ(member 権限 1 署名でのエポック空間焼き尽くし DoS)
-    # をすべて拒否する。seq 9 時点の観測値: env-prod-0001 = 2, env-dev-0002 = 2
+    # 環境ライフサイクルのチェーン束縛(2026-08-03 — CRYPTO_SPEC §6.2):
+    # create_environment の environment_id はチェーン履歴全体で一意
+    # (duplicate-environment)、rotate_epoch は create_environment の先行が必須
+    # (unknown-environment)。認可段の検査順序は role → duplicate / unknown →
+    # エポック順序(理由コードごと本ベクターで固定する)
+    add_authz(
+        "authz-create-env-duplicate", 13, head12, "create_environment", owner_id, owner,
+        create_env_payload("env-prod-0001"),
+        t0 + 12000, "duplicate-environment",
+        "作成済み environment_id の再作成は拒否する(履歴全体一意 — データプレーンで削除済みの ID の再作成も、チェーンは削除を観測しないため同じ理由で拒否される)",
+    )
+    add_authz(
+        "authz-rotate-unknown-environment", 13, head12, "rotate_epoch", admin_id, admin,
+        rotate_payload("env-ghost-9999", 2),
+        t0 + 12000, "unknown-environment",
+        "create_environment が先行しない環境への rotate は拒否する。new_epoch = 2 は旧意味論(未観測 = 1 + 1)なら受理された値であり、既定値フォールバック実装はここで落ちる",
+    )
+    add_authz(
+        "authz-rotate-unknown-precedes-epoch", 13, head12, "rotate_epoch", admin_id, admin,
+        rotate_payload("env-ghost-9999", 7),
+        t0 + 12000, "unknown-environment",
+        "未知環境 × 不正エポックの複合違反は unknown-environment が先に判定される(認可段の検査順序: duplicate / unknown → エポック順序)",
+    )
+    add_authz(
+        "authz-create-env-reader", 7, head6, "create_environment", admin_id, admin,
+        create_env_payload("env-reader-blocked-0008"),
+        t0 + 6000, "insufficient-role",
+        "seq 6 時点の user-admin-0003 は reader。create_environment は member 以上のみ",
+    )
+    add_authz(
+        "authz-create-env-role-precedes-duplicate", 7, head6, "create_environment",
+        admin_id, admin,
+        create_env_payload("env-prod-0001"),
+        t0 + 6000, "insufficient-role",
+        "role 不足 × ID 重複の複合違反は role 規則が先に判定される(認可段の検査順序: role → duplicate-environment)",
+    )
+    add_authz(
+        "authz-rotate-role-precedes-unknown", 7, head6, "rotate_epoch", admin_id, admin,
+        rotate_payload("env-ghost-9999", 2),
+        t0 + 6000, "insufficient-role",
+        "role 不足 × 未知環境の複合違反は role 規則が先に判定される(認可段の検査順序: role → unknown-environment)",
+    )
+
+    # エポック順序規則(2026-08-02 所有者裁定・案 3。2026-08-03 の §6.2 環境ライフ
+    # サイクル束縛に追随): エポックは create_environment で 1 に始まる環境ごとの
+    # カウンタで、rotate_epoch は必ず +1。巻き戻し(削除済みメンバー保持の旧 DEK
+    # への再露出)・重複・ジャンプ(member 権限 1 署名でのエポック空間焼き尽くし
+    # DoS)をすべて拒否する。head12 時点の現エポック: env-prod-0001 = 2,
+    # env-dev-0002 = 2, env-stage-0003 = 1(未ローテーション)
     for name, env, bad_epoch, note in [
-        ("authz-epoch-rollback", "env-prod-0001", "1",
-         "観測済みエポック(2)からの巻き戻しは拒否する"),
-        ("authz-epoch-duplicate", "env-prod-0001", "2",
-         "観測済みエポックと同値の rotate は拒否する(期待値は 3)"),
-        ("authz-epoch-jump", "env-prod-0001", "10",
+        ("authz-epoch-rollback", "env-prod-0001", 1,
+         "現エポック(2)からの巻き戻しは拒否する"),
+        ("authz-epoch-duplicate", "env-prod-0001", 2,
+         "現エポックと同値の rotate は拒否する(期待値は 3)"),
+        ("authz-epoch-jump", "env-prod-0001", 10,
          "エポックのジャンプは拒否する(期待値は 3。焼き尽くし DoS 対策)"),
-        ("authz-epoch-first-jump", "env-staging-9999", "5",
-         "チェーン上で未観測の環境の初回 rotate は初期値 1 + 1 = 2 のみ受理する"),
+        ("authz-epoch-first-jump", "env-stage-0003", 5,
+         "create_environment 直後(エポック 1)の環境の初回 rotate は 2 のみ受理する"),
     ]:
+        # 誤エポックのコミットメントは「その環境のエポック 2 用 DEK」で計算する
+        # (形式は有効。拒否理由がコミットメントでなくエポック順序であることを固定)
+        payload = {
+            "environment_id": env,
+            "new_epoch": str(bad_epoch),
+            "reason": "scheduled",
+            "dek_commitment_hex": dek_commitment_hex(
+                project_id, env, bad_epoch, environment_deks[env][2]
+            ),
+        }
         add_authz(
-            name, 10, head9, "rotate_epoch", admin_id, admin,
-            {"environment_id": env, "new_epoch": bad_epoch, "reason": "scheduled"},
-            t0 + 9000, "epoch-out-of-sequence", note,
+            name, 13, head12, "rotate_epoch", admin_id, admin,
+            payload, t0 + 12000, "epoch-out-of-sequence", note,
         )
+
+    # dek_commitment_hex の形式違反(大文字 hex・長さ不正)は payload 構造検査の
+    # negative(§6.2 — 既存の検証段順「構造 → actor → 署名 → 認可」の構造段に属し、
+    # 認可判定に先行する)。署名は有効(署名対象は形式違反の文字列そのもの)
+    fresh_commit = commit("env-fresh-0004", 1)
+    add_authz(
+        "create-env-commitment-uppercase-hex", 13, head12, "create_environment",
+        owner_id, owner,
+        {"environment_id": "env-fresh-0004", "dek_commitment_hex": fresh_commit.upper()},
+        t0 + 12000, "invalid-payload",
+        "dek_commitment_hex の大文字 hex は payload 構造検査で拒否する(hex 小文字 64 文字が正規形 — §6.2)",
+    )
+    add_authz(
+        "create-env-commitment-bad-length", 13, head12, "create_environment",
+        owner_id, owner,
+        {"environment_id": "env-fresh-0004", "dek_commitment_hex": fresh_commit[:62]},
+        t0 + 12000, "invalid-payload",
+        "dek_commitment_hex の長さ不正(62 文字)は payload 構造検査で拒否する",
+    )
+    add_authz(
+        "rotate-commitment-uppercase-hex", 13, head12, "rotate_epoch", admin_id, admin,
+        dict(rotate_payload("env-prod-0001", 3), dek_commitment_hex=commit("env-prod-0001", 2).upper()),
+        t0 + 12000, "invalid-payload",
+        "rotate_epoch の dek_commitment_hex の大文字 hex も payload 構造検査で拒否する",
+    )
+    add_authz(
+        "create-env-commitment-format-precedes-role", 7, head6, "create_environment",
+        admin_id, admin,
+        {"environment_id": "env-reader-blocked-0008",
+         "dek_commitment_hex": commit("env-reader-blocked-0008", 1).upper()},
+        t0 + 6000, "invalid-payload",
+        "形式違反 × role 不足(seq 6 時点の reader)の複合違反は構造検査が先に判定される(検証段順: 構造 → 認可)",
+    )
 
     # フィールドサイズ上限(2026-08-02 所有者裁定・案 2): 自由文字列フィールドは
     # UTF-8 で 1024 バイト以下、scope_environments は 256 要素以下。超過は無効
     # (巨大 payload による検証クライアントの資源消費対策。上限は合意規則なので
     # ベクターで固定する)。署名は有効だが形状検証(invalid-payload)で拒否すべき
     add_authz(
-        "authz-field-too-long", 10, head9, "rotate_epoch", admin_id, admin,
-        {"environment_id": "env-prod-0001", "new_epoch": "3", "reason": "x" * 1025},
-        t0 + 9000, "invalid-payload",
+        "authz-field-too-long", 13, head12, "rotate_epoch", admin_id, admin,
+        dict(rotate_payload("env-prod-0001", 3), reason="x" * 1025),
+        t0 + 12000, "invalid-payload",
         "reason が 1025 バイト(上限 1024 超過)のエントリは署名が有効でも拒否する",
     )
     oversized_scope = [f"env-bulk-{i:04d}" for i in range(257)]
     add_authz(
-        "authz-scope-too-many", 10, head9, "grant_server", owner_id, owner,
+        "authz-scope-too-many", 13, head12, "grant_server", owner_id, owner,
         dict(grant_payload, **{
             "scope_environments": oversized_scope,
             "scope_environments_lp_hex": scope_environments_lp_hex(oversized_scope),
         }),
-        t0 + 9000, "invalid-payload",
+        t0 + 12000, "invalid-payload",
         "scope_environments が 257 要素(上限 256 超過)のエントリは拒否する",
     )
 
@@ -542,7 +703,7 @@ def gen_chain_entries():
     # add_member は対象の enc / sig 公開鍵のいずれかが現メンバー集合の同種鍵と
     # 一致する場合に拒否する(duplicate-member-key)。判定は個別鍵単位 — 片方の
     # 鍵だけを流用したソック垢も拒否する(FP = enc‖sig の一致判定ではない)。
-    # head9 時点の現メンバー: user-owner-0001(owner)/ user-admin-0003(admin)。
+    # head12 時点の現メンバー: user-owner-0001(owner)/ user-admin-0003(admin)。
     # actor は owner(role 規則を通過)・target_user_id は新規(duplicate-member を
     # 通過)にし、鍵重複の検査だけで拒否されるエントリにする
     clone = make_user(pat(0x70, 32), pat(0x80, 32))  # 流用しない側の新鮮な鍵
@@ -557,38 +718,37 @@ def gen_chain_entries():
          "genesis 由来の owner の鍵一式の流用も拒否する(genesis もメンバー鍵索引の対象 — レビューループ 1 [高])"),
     ]:
         add_authz(
-            name, 10, head9, "add_member", owner_id, owner,
+            name, 13, head12, "add_member", owner_id, owner,
             {"target_user_id": "user-clone-0004", "enc_pub_hex": enc_hex,
              "sig_pub_hex": sig_hex, "role": "member"},
-            t0 + 9000, "duplicate-member-key", note,
+            t0 + 12000, "duplicate-member-key", note,
         )
     # 検査順序の固定(role 規則 → 鍵重複): actor = admin が現メンバー鍵を流用した
     # 対象に role "admin" を付与しようとするエントリは、鍵重複より先に role 規則で
     # 拒否される(insufficient-role。duplicate-member-key ではない)
     add_authz(
-        "authz-add-member-role-precedes-duplicate-key", 10, head9, "add_member",
+        "authz-add-member-role-precedes-duplicate-key", 13, head12, "add_member",
         admin_id, admin,
         {"target_user_id": "user-clone-0004", "enc_pub_hex": owner["enc_pub_hex"],
          "sig_pub_hex": owner["sig_pub_hex"], "role": "admin"},
-        t0 + 9000, "insufficient-role",
+        t0 + 12000, "insufficient-role",
         "role 規則(admin/owner 付与は owner のみ)は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
     )
     # 検査順序の固定(user_id 重複 → 鍵重複): 対象 user_id と鍵の両方が重複する
     # エントリは duplicate-member で拒否される(duplicate-member-key ではない)
     add_authz(
-        "authz-add-member-duplicate-user-precedes-key", 10, head9, "add_member",
+        "authz-add-member-duplicate-user-precedes-key", 13, head12, "add_member",
         owner_id, owner,
         {"target_user_id": admin_id, "enc_pub_hex": owner["enc_pub_hex"],
          "sig_pub_hex": owner["sig_pub_hex"], "role": "member"},
-        t0 + 9000, "duplicate-member",
+        t0 + 12000, "duplicate-member",
         "対象 user_id の重複は鍵重複検査より先に判定される(§6.2 の検査順序の固定)",
     )
 
     # actor の申告 FP・署名鍵が「チェーンに登録された actor の鍵」と一致しない偽装。
     # member の鍵で署名し FP も member のものだが、user_id は owner を騙る
-    impostor = build_entry(10, "rotate_epoch", owner_id, member,
-                           {"environment_id": "env-prod-0001", "new_epoch": "3",
-                            "reason": "scheduled"}, t0 + 9000, head9)
+    impostor = build_entry(13, "rotate_epoch", owner_id, member,
+                           rotate_payload("env-prod-0001", 3), t0 + 12000, head12)
     authz_cases.append({
         "name": "authz-actor-key-mismatch",
         "kind": "authorization",
@@ -602,46 +762,89 @@ def gen_chain_entries():
     negatives += authz_cases
 
     # --- 有効な追記の positive(合意規則の許容側の境界を固定する)-------------------
-    # メンバー鍵一意性(§6.2)の禁止範囲が「現メンバー集合のみ」であることの固定:
-    # 削除済みメンバー(seq 4 の user-member-0002)の鍵は現集合に属さないため、
-    # 同一 user_id での復帰も、別 user_id での再利用も拒否されない。
-    # 「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
+    # (1) メンバー鍵一意性(§6.2)の禁止範囲が「現メンバー集合のみ」であることの固定:
+    #     削除済みメンバー(seq 5 の user-member-0002)の鍵は現集合に属さないため、
+    #     同一 user_id での復帰も、別 user_id での再利用も拒否されない。
+    #     「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
+    # (2) 環境ライフサイクル(§6.2)の許容側: 未使用 ID の create_environment と、
+    #     create 済み環境(エポック 1)への初回 rotate(new_epoch 2)は受理される。
+    #     チェーンは環境の削除を観測しない(データプレーンの tombstone 後も
+    #     duplicate-environment のまま)ため、「削除後の再作成」の許容側は
+    #     「別 ID での作成が有効」がその全体である
+    base_environments = {
+        "env-prod-0001": "2",
+        "env-dev-0002": "2",
+        "env-stage-0003": "1",
+    }
     valid_appends = [
         {
             "name": "readd-removed-member-same-key",
-            "entry": build_entry(10, "add_member", owner_id, owner,
+            "entry": build_entry(13, "add_member", owner_id, owner,
                                  {"target_user_id": member_id,
                                   "enc_pub_hex": member["enc_pub_hex"],
                                   "sig_pub_hex": member["sig_pub_hex"],
                                   "role": "member"},
-                                 t0 + 9000, head9),
+                                 t0 + 12000, head12),
             "expected_members": {owner_id: "owner", admin_id: "admin", member_id: "member"},
+            "expected_environments": base_environments,
             "note": "削除済みメンバーを同一 user_id・同一鍵で再追加する(同一人物の復帰)は受理される(§6.2 の禁止範囲は現メンバー集合のみ)",
         },
         {
             "name": "reuse-removed-member-key-new-user",
-            "entry": build_entry(10, "add_member", owner_id, owner,
+            "entry": build_entry(13, "add_member", owner_id, owner,
                                  {"target_user_id": "user-newcomer-0005",
                                   "enc_pub_hex": member["enc_pub_hex"],
                                   "sig_pub_hex": member["sig_pub_hex"],
                                   "role": "member"},
-                                 t0 + 9000, head9),
+                                 t0 + 12000, head12),
             "expected_members": {owner_id: "owner", admin_id: "admin",
                                  "user-newcomer-0005": "member"},
+            "expected_environments": base_environments,
             "note": "削除済みメンバーの鍵を別 user_id で再登録することも拒否されない(admin/owner の add_member 権限内の行為と等価 — §6.2)",
+        },
+        {
+            "name": "create-environment-fresh-id",
+            "entry": build_entry(13, "create_environment", owner_id, owner,
+                                 create_env_payload("env-fresh-0004"), t0 + 12000, head12),
+            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_environments": dict(base_environments, **{"env-fresh-0004": "1"}),
+            "note": "未使用 ID の create_environment は受理され、環境はエポック 1 で環境集合に加わる(§6.2)",
+        },
+        {
+            "name": "rotate-freshly-created-environment",
+            "entry": build_entry(13, "rotate_epoch", admin_id, admin,
+                                 rotate_payload("env-stage-0003", 2), t0 + 12000, head12),
+            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_environments": dict(base_environments, **{"env-stage-0003": "2"}),
+            "note": "create_environment 済み(エポック 1)の環境への初回 rotate(new_epoch 2)は受理される(create → rotate の境界)",
         },
     ]
 
     # --- 検証済みチェーンから導出される状態の期待値(実装の導出 API を固定する)------
+    # 2026-08-03(§6.2 / §6.3): 環境の存在・エポック開始 seq・エポックごとの DEK
+    # コミットメントがチェーン導出値になった。「未観測なら初期値 1」の既定値は廃止
+    # (チェーンに create_environment がない環境は環境集合に存在しない)
+    def env_state(environment_id, current_epoch, created_at_seq, epoch_start_seqs):
+        return {
+            "current_epoch": str(current_epoch),
+            "created_at_seq": created_at_seq,
+            "epoch_start_seqs": {str(epoch): seq for epoch, seq in epoch_start_seqs.items()},
+            "dek_commitments": {
+                str(epoch): commit(environment_id, epoch) for epoch in epoch_start_seqs
+            },
+        }
+
     expected_head_states = [
         {
-            "after_seq": 4,
+            "after_seq": 5,
             "members": {owner_id: "owner"},
             "server_grants": [],
-            "environment_epochs": {"env-prod-0001": "2"},
+            "environments": {
+                "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
+            },
         },
         {
-            "after_seq": 7,
+            "after_seq": 9,
             "members": {owner_id: "owner", admin_id: "admin"},
             "server_grants": [
                 {
@@ -650,13 +853,20 @@ def gen_chain_entries():
                     "scope_environments": grant_scope,
                 }
             ],
-            "environment_epochs": {"env-prod-0001": "2"},
+            "environments": {
+                "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
+                "env-dev-0002": env_state("env-dev-0002", 1, 8, {1: 8}),
+            },
         },
         {
-            "after_seq": 9,
+            "after_seq": 12,
             "members": {owner_id: "owner", admin_id: "admin"},
             "server_grants": [],
-            "environment_epochs": {"env-prod-0001": "2", "env-dev-0002": "2"},
+            "environments": {
+                "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
+                "env-dev-0002": env_state("env-dev-0002", 2, 8, {1: 8, 2: 10}),
+                "env-stage-0003": env_state("env-stage-0003", 1, 11, {1: 11}),
+            },
         },
     ]
 
@@ -674,6 +884,7 @@ def gen_chain_entries():
                 "key_fingerprint": "SHA-256(enc_pub(32B) || sig_pub(32B)) の先頭 16 バイト(固定長のため素の連結)",
                 "server_key_fingerprint": "SHA-256(server_enc_pub(32B)) の先頭 16 バイト(サーバーは enc 鍵のみ。§9)→ 要レビュー",
                 "scope_environments": "environment_id のリストを LP エンコード(入れ子 LP)し、その hex 小文字文字列を scope_environments_lp_hex として payload に載せる。リストの順序は署名対象の一部(検証は as-signed 順で再構築)→ 要レビュー",
+                "dek_commitment": "dek_commitment_hex = lower_hex(SHA-256(LP(\"maruhi/v1/dek-commit\", project_id, environment_id, epoch, dek_hex)))(§5.2)。project_id = genesis エントリハッシュ。形式は hex 小文字 64 文字(形式検査は payload 構造検査の段 — §6.2)。内容の照合は受信者の §5.2 検証が担い、チェーン検証は形式のみ検査する",
             },
             "keys": {
                 "user-owner-0001": {
@@ -702,6 +913,22 @@ def gen_chain_entries():
                 "enc_sk_seed_hex": pat(0x90, 32).hex(),
                 "enc_pub_hex": server["enc_pub_hex"],
                 "key_fingerprint_hex": server["fp_hex"],
+            },
+            # 各 (environment, epoch) のダミー DEK と §5.2 コミットメント。
+            # チェーン payload の dek_commitment_hex はここから計算した実値で、
+            # 実装テストは「DEK → コミットメント再計算 → チェーン掲載値と一致」の
+            # §5.2 照合まで検査できる(negative は dek-commitment.json 側)
+            "environment_deks": {
+                environment_id: {
+                    str(epoch): {
+                        "dek_hex": dek.hex(),
+                        "dek_commitment_hex": dek_commitment_hex(
+                            project_id, environment_id, epoch, dek
+                        ),
+                    }
+                    for epoch, dek in per_env.items()
+                }
+                for environment_id, per_env in environment_deks.items()
             },
             "entries": entries,
             "expected_head_states": expected_head_states,
@@ -886,6 +1113,128 @@ def gen_dek_wrap_signature():
 
 
 # ---------------------------------------------------------------------------
+# 3.6 dek-commitment.json — §5.2 エポック DEK のコミットメント(SHA-256 + §2.1 LP)
+#
+# dek_commitment_hex = lower_hex(SHA-256(LP("<suite>/dek-commit",
+#                                           project_id, environment_id, epoch, dek_hex)))
+#   domain = "<suite>/dek-commit"(suite の束縛はドメイン文字列が担う — §5.1 と同型)
+#   dek_hex = DEK 32 バイトの hex 小文字文字列(binary_encoding 規約)
+# 基本ベクターの DEK・座標は dek-wrap.json の basic と同一(ラップ → コミットメント
+# 照合が一続きの実データになる)。コミットメントは受信者集合・ラップ暗号文に
+# 依存しない(§5.2 — backfill・修復再登録・HPKE ランダム性・受信者集合の事後拡大の
+# すべてに不変)ことを rewrap_invariance が固定する
+
+COMMITMENT_FIELDS_ORDER = ["domain", "project_id", "environment_id", "epoch", "dek_hex"]
+
+
+def commitment_preimage(ctx: dict) -> bytes:
+    return lp_encode([
+        ctx["domain"], ctx["project_id"], ctx["environment_id"], ctx["epoch"], ctx["dek_hex"],
+    ])
+
+
+def gen_dek_commitment():
+    with open(os.path.join(OUT_DIR, "dek-wrap.json"), encoding="utf-8") as fh:
+        dek_wrap = json.load(fh)
+    wrap = dek_wrap["vectors"][0]
+
+    base_ctx = {
+        "suite": "maruhi/v1",
+        "domain": DEK_COMMIT_DOMAIN,
+        "project_id": wrap["project_id"],
+        "environment_id": wrap["environment_id"],
+        "epoch": wrap["epoch"],
+        "dek_hex": wrap["dek_hex"],
+    }
+    base_preimage = commitment_preimage(base_ctx)
+    base_commitment = sha256(base_preimage).hex()
+
+    def positive(name, overrides, note):
+        ctx = dict(base_ctx, **overrides)
+        preimage = commitment_preimage(ctx)
+        return dict(
+            ctx,
+            name=name,
+            preimage_hex=preimage.hex(),
+            commitment_hex=sha256(preimage).hex(),
+            note=note,
+        )
+
+    vectors = [
+        positive("basic", {},
+                 "dek-wrap.json の basic と同一の DEK・座標(epoch 3 = rotate 由来)"),
+        positive("epoch-1-create", {"epoch": 1},
+                 "エポック 1(create_environment 由来 — §6.2)のコミットメント。座標が原像に入るため basic とは異なる値になる"),
+    ]
+
+    other_dek = pat(0xF8, 32)
+
+    def negative(name, overrides, note):
+        # overrides を適用した文脈でコミットメントを再計算 → basic と一致しないはず
+        ctx = dict(base_ctx, **overrides)
+        preimage = commitment_preimage(ctx)
+        return {
+            "name": name,
+            "base": "basic",
+            "context": ctx,
+            "computed_commitment_hex": sha256(preimage).hex(),
+            "expected_commitment_hex": base_commitment,
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        negative(
+            "dek-mismatch",
+            {"dek_hex": other_dek.hex()},
+            "別の DEK はコミットメント照合に失敗する(偽 DEK 注入の遮断 — §5.2 / §14.2-1)",
+        ),
+        negative(
+            "transplant-project",
+            {"project_id": "proj-0002"},
+            "別プロジェクト座標のコミットメントとは一致しない(座標が原像に入る)",
+        ),
+        negative(
+            "transplant-environment",
+            {"environment_id": "env-dev-0002"},
+            "別環境座標のコミットメントとは一致しない",
+        ),
+        negative(
+            "transplant-epoch",
+            {"epoch": 4},
+            "別エポック座標のコミットメントとは一致しない",
+        ),
+        negative(
+            "wrong-domain",
+            {"suite": "maruhi/v2", "domain": "maruhi/v2/dek-commit"},
+            "suite が異なればドメイン文字列が異なり、スイート間のコミットメント移植は照合に失敗する",
+        ),
+        negative(
+            "uppercase-hex",
+            {"dek_hex": wrap["dek_hex"].upper()},
+            "dek_hex の大文字 hex は別バイト列になり照合に失敗する(原像の正規形は hex 小文字 — 実装は入力を小文字 hex に正規化してから計算すること)",
+        ),
+    ]
+
+    write(
+        "dek-commitment.json",
+        {
+            "description": "CRYPTO_SPEC §5.2: エポック DEK のコミットメント。dek_commitment_hex = lower_hex(SHA-256(LP(\"<suite>/dek-commit\", project_id, environment_id, epoch, dek_hex)))。DEK・座標は dek-wrap.json の basic ベクターと同一",
+            "preimage_fields_order": COMMITMENT_FIELDS_ORDER,
+            "binary_encoding": "dek_hex は DEK 32 バイトの hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+            "rewrap_invariance": {
+                "note": "コミットメントの原像はラップ・受信者に依存しない(§5.2): add_member 後の過去エポック backfill、修復経路の削除 → 再登録、HPKE のランダム性による同一 DEK のラップ暗号文の変動、受信者集合の事後拡大のいずれでもコミットメントは不変。実装テストは同一 DEK を新しくラップし直し(HPKE Seal はランダム)、unwrap した DEK が本コミットメントに照合成功することを固定する",
+                "dek_hex": wrap["dek_hex"],
+                "commitment_hex": base_commitment,
+                "wrap_reference": "dek-wrap.json vectors[0](同一 DEK のラップ実データ)",
+            },
+            "vectors": vectors,
+            "negative": negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. recovery-wrap.json — §8 リカバリーコードによる master 秘密鍵ラップ
 
 def gen_recovery_wrap():
@@ -961,4 +1310,5 @@ if __name__ == "__main__":
     gen_variable_encryption()
     gen_chain_entries()
     gen_dek_wrap_signature()
+    gen_dek_commitment()
     gen_recovery_wrap()

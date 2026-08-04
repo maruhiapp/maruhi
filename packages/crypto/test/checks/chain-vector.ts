@@ -37,7 +37,16 @@ interface VectorValidAppend {
   readonly name: string;
   readonly entry: VectorEntry;
   readonly expected_members: Readonly<Record<string, string>>;
+  /** 受理後の環境ごとの現エポック(§6.2 環境ライフサイクル — 2026-08-03)。 */
+  readonly expected_environments: Readonly<Record<string, string>>;
   readonly note?: string;
+}
+
+interface VectorEnvironmentState {
+  readonly current_epoch: string;
+  readonly created_at_seq: number;
+  readonly epoch_start_seqs: Readonly<Record<string, number>>;
+  readonly dek_commitments: Readonly<Record<string, string>>;
 }
 
 interface VectorHeadState {
@@ -48,7 +57,7 @@ interface VectorHeadState {
     readonly server_enc_pub_hex: string;
     readonly scope_environments: readonly string[];
   }[];
-  readonly environment_epochs: Readonly<Record<string, string>>;
+  readonly environments: Readonly<Record<string, VectorEnvironmentState>>;
 }
 
 export const vectorEntries = chainVectors.entries as readonly VectorEntry[];
@@ -65,6 +74,13 @@ export const vectorKeys = chainVectors.keys as Readonly<
       readonly sig_pub_hex: string;
       readonly key_fingerprint_hex: string;
     }
+  >
+>;
+/** 各 (environment, epoch) のダミー DEK と §5.2 コミットメント(実計算値)。 */
+export const vectorEnvironmentDeks = chainVectors.environment_deks as Readonly<
+  Record<
+    string,
+    Readonly<Record<string, { readonly dek_hex: string; readonly dek_commitment_hex: string }>>
   >
 >;
 function str(payload: Readonly<Record<string, unknown>>, key: string): string {
@@ -102,6 +118,14 @@ function toOperation(op: string, payload: Readonly<Record<string, unknown>>): Ch
           newRole: str(payload, "new_role") as Role,
         },
       };
+    case "create_environment":
+      return {
+        op,
+        payload: {
+          environmentId: str(payload, "environment_id"),
+          dekCommitmentHex: str(payload, "dek_commitment_hex"),
+        },
+      };
     case "rotate_epoch":
       return {
         op,
@@ -109,6 +133,7 @@ function toOperation(op: string, payload: Readonly<Record<string, unknown>>): Ch
           environmentId: str(payload, "environment_id"),
           newEpoch: Number(str(payload, "new_epoch")),
           reason: str(payload, "reason"),
+          dekCommitmentHex: str(payload, "dek_commitment_hex"),
         },
       };
     case "grant_server":
