@@ -306,6 +306,32 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     expect(errors).not.toContain("new");
   });
 
+  it("variableId `constructor`(正当な ID)でも床の確立と巻き戻し検出が機能する", async () => {
+    // Object.prototype の継承プロパティ名と衝突する §12-1 適合 ID(レビュー①
+    // 再指摘)。素のブラケット参照だと「床にない ID」が Function に解決され、
+    // 床が自己破損・誤検査になる — own-property 参照で正しく動くことを固定する
+    const env = await makeTestEnv();
+    const statement = await statementOf({ variableId: "constructor", name: "CTOR_VAR" });
+    const v1 = await valueOf({ variableId: "constructor", version: 1, epoch: 1, plaintext: "a" });
+    const v2 = await valueOf({ variableId: "constructor", version: 2, epoch: 1, plaintext: "b" });
+    await establishFloor(env, {
+      variables: [{ variableId: "constructor", statement, value: v2 }],
+      deks: [wrap1],
+    });
+    const floor = await readFloorFile(env);
+    expect(floor.environments[ENV_ID]?.variables["constructor"]).toMatchObject({ version: 2 });
+
+    await startPhase(env, [
+      chainHandlerFor([chain1]),
+      pullHandlerFor({
+        variables: [{ variableId: "constructor", statement, value: v1 }],
+        deks: [wrap1],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("値バージョンの巻き戻し");
+  });
+
   it("拒否された pull は床を前進させない(更新順序の規範 — 検査は前回基準)", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });

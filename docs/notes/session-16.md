@@ -283,7 +283,7 @@ metaVersion・エポックの後退 / 同一 version・metaVersion の signed by
 
 ## 7. テスト結果
 
-- CLI: **180 tests green**(既存 128 + 床ストア単体 22 + 床検出の結線 30)。
+- CLI: **184 tests green**(既存 128 + 床ストア単体 25 + 床検出の結線 31)。
   session-12 §8-5 の床項目を充足: 欠落(変数・tombstone・pull/run/push の
   3 経路)/ 巻き戻し(version / metaVersion / 環境 metaVersion / epoch /
   チェーン長)/ 規則 (c) の両縁(rotate 直後の正当な旧エポック新版の受理 +
@@ -296,9 +296,9 @@ metaVersion・エポックの後退 / 同一 version・metaVersion の signed by
   pull が床を前進させないこと(更新順序)/ push 受理後の床前進 / 単調マージ
   (床の後退禁止・deleted 終端・union)/ 削除の無断取り消し(metaVersion
   3 通り)/ commitHead のみの床からの環境床確立 / メタ前進注入の非検出の固定
-  (変数・環境の両方)
+  (変数・環境の両方)/ `constructor` / `prototype` キーの正当 ID 扱い
 - `bun run check`(fmt / lint / typecheck / importlint / fallow audit / doctor /
-  test)green — 全体 861 tests。`fallow audit --base main`(CI 相当)も
+  test)green — 全体 865 tests。`fallow audit --base main`(CI 相当)も
   no issues。crypto パッケージ非変更のため 4 実行環境テストは対象外
 
 ## 8. レビュー→修正ループ(PR 内。3 観点の並行レビュー → 修正)
@@ -348,12 +348,36 @@ metaVersion・エポックの後退 / 同一 version・metaVersion の signed by
   戻さない)の解釈 → `enforceFloor` の JSDoc に明記
 - [情報 / ①] メタ前進注入による床の毒化と回復経路 → §3 補足 + §6 申し送り
 - [情報 / ③] 環境削除の無断取り消しは床の対象外 → §3 補足
-- [nit / ①②] `__proto__` 系キーの防衛(decode で破損扱い)→ 修正に同梱。
-  `.tmp` のクラッシュ残置・スキーマ前方互換(旧 CLI が v2 を破損扱い → 退避
-  して作り直す挙動になる)は現時点で実害なし — 記録のみ
+- [nit / ①②] `.tmp` のクラッシュ残置・スキーマ前方互換(旧 CLI が v2 を破損
+  扱い → 退避して作り直す挙動になる)は現時点で実害なし — 記録のみ
 
-### 再レビュー
+### 再レビュー(ループ 2)
 
-修正はいずれも「検出材料を失わない」「誤拒否を作らない」方向のみ(検査の弱体化
-なし)。修正後に全品質ゲートを再実行して green を確認し、3 観点へ修正差分の
-再レビューを依頼、blocking / 新規重大指摘ゼロで収束した。
+修正差分の再レビューを 3 観点に依頼。②③ は収束、① がループ 1 修正の同梱分
+(`__proto__` 系キーの防衛)に**新規 [major] 1 件**を検出した:
+
+- **[major / ①] `constructor` / `prototype` を危険キー扱いした誤り**: ループ 1 で
+  入れた decode のキー拒否集合(`__proto__` / `constructor` / `prototype`)の
+  うち後者 2 つは **§12-1 の正当な ID 形式**(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+  に一致する。variableId `constructor` を一度 pull すると床が自己破損扱いになり、
+  「破損警告 + 退避 + 再構築 → 次の pull で再混入」の恒久ループで床検出が
+  無効化される(member 権限で誘発可能)。さらに素のブラケット参照
+  (`record[variableId]`)は「レコードにない `constructor`」を Object.prototype
+  の継承プロパティ(関数)へ解決し、誤検査・床の自壊を招く。→ (1) decode の
+  キー検証を「§12-1 形式に一致しないキー = 破損」へ変更(`__proto__` は先頭 `_`
+  で形式外なので構造的に排除される。`constructor` / `prototype` は受理)、
+  (2) 床レコードの動的キー参照を全箇所 `floorRecordGet`(own-property 参照)へ
+  統一(floor.ts のマージ・floor-check.ts の規則 (c)・cli.ts のハンドル初期化)。
+  decode の受理・拒否と、variableId `constructor` での床確立 + 巻き戻し検出の
+  e2e をテストで固定
+- **[minor / ②] チェーン床の有界再同期に延長検査がない**: 短縮疑いの再同期を
+  素の `syncProject` で行うと、初回ビュー自体が分岐していた場合(短縮 + 分岐の
+  複合)にその証拠を取り逃す。→ `resyncExtended`(延長検査付き)へ変更。正直な
+  stale ビューは常に再同期ビューの接頭辞なので誤発火はない
+
+### 再レビュー(ループ 3)
+
+ループ 2 の修正(キー検証の是正・own-property 参照・延長検査)を①に再確認依頼
+し、収束を確認。修正はいずれも受理範囲の是正(正当な ID の誤拒否の除去)と
+検査の強化のみで、床の検出規則・更新順序は不変。全品質ゲート再実行 green
+(CLI 184 tests / 全体 865 tests)。blocking / 新規重大指摘ゼロで収束した。

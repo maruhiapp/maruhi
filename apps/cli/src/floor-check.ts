@@ -22,12 +22,13 @@
 import { Effect } from "effect";
 
 import type { CliError } from "./errors.ts";
-import type {
-  ChainHeadFloor,
-  EnvironmentFloor,
-  FloorStoreShape,
-  ProjectFloor,
-  VariableFloor,
+import {
+  type ChainHeadFloor,
+  type EnvironmentFloor,
+  floorRecordGet,
+  type FloorStoreShape,
+  type ProjectFloor,
+  type VariableFloor,
 } from "./floor.ts";
 import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedPulledValue } from "./values.ts";
@@ -367,7 +368,7 @@ export function checkEnvironmentPull(
   // epoch が pull 時点エポック基準より小さい配布は前進注入の証拠。基準「以上」は
   // 受理する(ローテーション直後・再暗号化完了前の正当な旧エポック値 — §12-7)
   for (const value of snapshot.variables) {
-    const variableFloor = floor.variables[value.variableId];
+    const variableFloor = floorRecordGet(floor.variables, value.variableId);
     const floorVersion = variableFloor?.status === "active" ? variableFloor.version : 0;
     if (value.version > floorVersion && value.epoch < floor.pullEpoch) {
       return {

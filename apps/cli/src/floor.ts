@@ -177,10 +177,27 @@ function decodeVariableFloor(value: unknown): VariableFloor | null {
   };
 }
 
-// JSON 由来のキーをレコードへ代入する前の防衛(`__proto__` 等はブラケット代入で
-// プロトタイプ設定になり、エントリが黙って欠落する)。正規の ID(§12-1 の形式)
-// はこれらに一致しないため、一致 = 破損として全体拒否してよい
-const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+// レコードキー(environmentId / variableId)は §12-1 の受理形式
+// `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` を要求する。正規の床は wire スキーマ検証済み
+// (または CLI 採番)の ID しか書かないため、形式外のキー = 破損として全体拒否
+// してよい。これは `__proto__`(先頭 `_` で形式外 — ブラケット代入でプロトタイプ
+// 設定になりエントリが黙って欠落する)を構造的に排除する。**`constructor` /
+// `prototype` は正当な ID であり拒否しない**(レビュー①再指摘 — 参照側は
+// floorRecordGet の own-property 参照で継承プロパティへの解決を防ぐ)
+const RECORD_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * Own-property lookup for floor records. `constructor` / `prototype` は §12-1 の
+ * 正当な ID なので、素のブラケット参照だと「レコードに存在しない ID」が
+ * Object.prototype の継承プロパティ(関数)に解決されて誤動作する。床レコードの
+ * 動的キー参照は必ずこれを使う。
+ */
+export function floorRecordGet<T>(
+  record: Readonly<Record<string, T>> | undefined,
+  key: string,
+): T | undefined {
+  return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
+}
 
 function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   if (
@@ -195,7 +212,7 @@ function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   const variables: Record<string, VariableFloor> = {};
   for (const [variableId, raw] of Object.entries(value["variables"])) {
     const variable = decodeVariableFloor(raw);
-    if (variable === null || UNSAFE_KEYS.has(variableId)) {
+    if (variable === null || !RECORD_KEY_PATTERN.test(variableId)) {
       return null;
     }
     variables[variableId] = variable;
@@ -229,7 +246,7 @@ export function decodeProjectFloor(json: string): ProjectFloor | null {
   const environments: Record<string, EnvironmentFloor> = {};
   for (const [environmentId, raw] of Object.entries(value["environments"])) {
     const environment = decodeEnvironmentFloor(raw);
-    if (environment === null || UNSAFE_KEYS.has(environmentId)) {
+    if (environment === null || !RECORD_KEY_PATTERN.test(environmentId)) {
       return null;
     }
     environments[environmentId] = environment;
@@ -290,7 +307,10 @@ function mergeEnvironmentFloor(
   // ため、片側にしかない変数は保持する
   const variables: Record<string, VariableFloor> = { ...existing.variables };
   for (const [variableId, variable] of Object.entries(incoming.variables)) {
-    variables[variableId] = mergeVariableFloor(existing.variables[variableId], variable);
+    variables[variableId] = mergeVariableFloor(
+      floorRecordGet(existing.variables, variableId),
+      variable,
+    );
   }
   return {
     pullEpoch: Math.max(existing.pullEpoch, incoming.pullEpoch),
@@ -317,7 +337,7 @@ function applyPull(commit: PullCommit): FloorMerge {
       environments: {
         ...base.environments,
         [commit.environmentId]: mergeEnvironmentFloor(
-          base.environments[commit.environmentId],
+          floorRecordGet(base.environments, commit.environmentId),
           commit.environment,
         ),
       },
@@ -328,7 +348,7 @@ function applyPull(commit: PullCommit): FloorMerge {
 function applyPush(commit: PushCommit): FloorMerge {
   return (current) => {
     const base = applyHead(commit.chainHead)(current);
-    const environment = base.environments[commit.environmentId];
+    const environment = floorRecordGet(base.environments, commit.environmentId);
     if (environment === undefined) {
       // 環境床がない(並行破損等)場合、変数床だけの環境レコードを作らない:
       // 規則 (c) 基準(pullEpoch)は pull でしか確定できず、ここで捏造すると
@@ -345,7 +365,7 @@ function applyPush(commit: PushCommit): FloorMerge {
           variables: {
             ...environment.variables,
             [commit.variableId]: mergeVariableFloor(
-              environment.variables[commit.variableId],
+              floorRecordGet(environment.variables, commit.variableId),
               commit.variable,
             ),
           },

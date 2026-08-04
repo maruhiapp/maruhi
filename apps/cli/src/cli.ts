@@ -20,7 +20,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorViolation } from "./floor-evidence.ts";
-import { FloorStore, type ProjectFloor } from "./floor.ts";
+import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { Keychain } from "./keychain.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
@@ -37,7 +37,7 @@ import {
   resolveServerOrigin,
   resolveSession,
 } from "./session.ts";
-import { syncProject, type VerifiedProject } from "./sync.ts";
+import { resyncExtended, syncProject, type VerifiedProject } from "./sync.ts";
 
 /** Services every CLI command may need (production wiring lives in live.ts). */
 export type CliServices =
@@ -163,7 +163,10 @@ function loadCheckedFloor(
     if (loaded.floor !== null) {
       let violation = checkChainFloor(loaded.floor, view);
       if (violation !== null && violation.kind === "chain-shortened") {
-        view = yield* resync;
+        // 延長検査付き再同期: 初回ビューが単に古いだけなら再同期ビューの接頭辞に
+        // なっているはず。延長でなければ、初回ビュー自体が分岐していた
+        // (短縮 + 分岐の複合)証拠として拒否する(レビュー②)
+        view = yield* resyncExtended(resync, view);
         violation = checkChainFloor(loaded.floor, view);
       }
       if (violation !== null) {
@@ -189,7 +192,9 @@ function floorHandleFor(
       store,
       projectId: context.projectId,
       environmentId,
-      initial: context.floor?.environments[environmentId] ?? null,
+      // own-property 参照(環境 ID `constructor` 等の正当な ID が継承プロパティに
+      // 解決されるのを防ぐ — floor.ts の floorRecordGet 参照)
+      initial: floorRecordGet(context.floor?.environments, environmentId) ?? null,
     }),
   );
 }

@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   decodeProjectFloor,
   type EnvironmentFloor,
+  floorRecordGet,
   type FloorStoreShape,
   makeFileFloorStore,
   type ProjectFloor,
@@ -104,6 +105,49 @@ describe("decodeProjectFloor(スキーマの厳格デコード)", () => {
     ],
   ])("破損として全体拒否する: %s", (_label, json) => {
     expect(decodeProjectFloor(json)).toBeNull();
+  });
+
+  it("`constructor` / `prototype` は §12-1 の正当な ID としてキーに使える", () => {
+    // Object.prototype の継承プロパティ名と衝突する正当な ID(レビュー①再指摘)。
+    // 破損扱いにしない(参照側は floorRecordGet の own-property 参照で守る)
+    const floor: ProjectFloor = {
+      v: 1,
+      chainHead: { seq: 1, hashHex: HASH_A },
+      environments: {
+        constructor: envFloor({
+          variables: {
+            prototype: {
+              status: "active",
+              version: 1,
+              epoch: 1,
+              valueSigHashHex: HASH_B,
+              metaVersion: 1,
+              metaSigHashHex: HASH_C,
+            },
+          },
+        }),
+      },
+    };
+    expect(decodeProjectFloor(JSON.stringify(floor))).toEqual(floor);
+  });
+
+  it("ID 形式(§12-1)に合わないキーは破損として全体拒否する(`__proto__` を含む)", () => {
+    const withKey = (key: string) =>
+      JSON.stringify({
+        v: 1,
+        chainHead: { seq: 1, hashHex: HASH_A },
+        environments: { prod: envFloor() },
+      }).replace('"va"', JSON.stringify(key));
+    expect(decodeProjectFloor(withKey("__proto__"))).toBeNull();
+    expect(decodeProjectFloor(withKey("_leading-underscore"))).toBeNull();
+  });
+
+  it("floorRecordGet は継承プロパティに解決しない(own-property 参照)", () => {
+    const record: Record<string, number> = { va: 1 };
+    expect(floorRecordGet(record, "va")).toBe(1);
+    expect(floorRecordGet(record, "constructor")).toBeUndefined();
+    expect(floorRecordGet(record, "prototype")).toBeUndefined();
+    expect(floorRecordGet(undefined, "va")).toBeUndefined();
   });
 
   it("deleted 変数は value 系フィールドなしで有効", () => {
