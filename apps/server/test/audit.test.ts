@@ -104,6 +104,27 @@ async function nextVariableStatement(input: {
   return statement;
 }
 
+/**
+ * ライフサイクル末尾 5 行(env.renamed → var.renamed → var.deleted →
+ * カスケード var.deleted → env.deleted)の author 鍵 FP の検査(AUDIT_SPEC §3.3):
+ * メタステートメントを伴う操作は author の鍵 FP を写し、環境削除のカスケード
+ * var.deleted は env 削除ステートメントの author FP を写す。
+ */
+function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]): void {
+  const tail = events.slice(-5);
+  const memberFp = vectorKeyOf(MEMBER).key_fingerprint_hex;
+  const ownerFp = vectorKeyOf(OWNER).key_fingerprint_hex;
+  expect(tail.map((row) => [row["event"], row["actor_key_fingerprint"]])).toEqual([
+    ["env.renamed", memberFp],
+    ["var.renamed", memberFp],
+    ["var.deleted", memberFp],
+    ["var.deleted", ownerFp],
+    ["env.deleted", ownerFp],
+  ]);
+  expect(JSON.parse(String(tail[0]?.["payload"]))).toMatchObject({ name: "App2" });
+  expect(JSON.parse(String(tail[1]?.["payload"]))).toMatchObject({ name: "API_KEY_V2" });
+}
+
 describe("チェーンミラー(§3.4)", () => {
   it("mirrors accepted chain entries with actor identity, chain_seq and both timestamps", async () => {
     const events = await readAuditEvents(projectId);
@@ -310,19 +331,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     // var.read は署名を伴わないため FP を持たない(§3.3 の意味論)
     expect(read["actor_key_fingerprint"]).toBeNull();
 
-    // メタステートメントを伴う操作(§4.2)は author の鍵 FP を写す(§3.3)。
-    // 環境削除のカスケード var.deleted も env 削除ステートメントの author FP
-    const [envRenamedRow, varRenamedRow, varDeletedRow, cascadeDeletedRow, envDeletedRow] =
-      events.slice(-5);
-    expect(envRenamedRow?.["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
-    expect(JSON.parse(String(envRenamedRow?.["payload"]))).toMatchObject({ name: "App2" });
-    expect(varRenamedRow?.["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
-    expect(JSON.parse(String(varRenamedRow?.["payload"]))).toMatchObject({ name: "API_KEY_V2" });
-    expect(varDeletedRow?.["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
-    expect(cascadeDeletedRow?.["actor_key_fingerprint"]).toBe(
-      vectorKeyOf(OWNER).key_fingerprint_hex,
-    );
-    expect(envDeletedRow?.["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
+    expectMetaAuthorFingerprints(events);
   });
 
   it("attributes actors: PAT ops carry the token id, session ops carry auth_method (§2)", async () => {

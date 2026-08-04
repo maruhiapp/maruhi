@@ -11,13 +11,17 @@ import {
   type BuiltChain,
   createEnvironmentOp,
   encryptValueFor,
+  environmentStatementFor,
   genesisOp,
   headOf,
   hexBytes,
   makeTestUser,
   rotateEpochOp,
+  statementFor,
   type TestUser,
   valueHashOf,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedVariableStatement,
   type WireEncryptedPayload,
   wrapDekFor,
   type WireRecipientDek,
@@ -34,7 +38,32 @@ let dek1: Uint8Array;
 let dek2: Uint8Array;
 let wrap1: WireRecipientDek;
 let wrap2: WireRecipientDek;
+let envStatement: WireDistributedEnvironmentStatement;
 let servers: MockServer[] = [];
+
+/** pull 応答の 1 変数(検証済みステートメント + 値)。宣言ヘッドは genesis。 */
+async function entryOf(
+  variableId: string,
+  name: string,
+  value: WireEncryptedPayload,
+): Promise<{
+  variableId: string;
+  statement: WireDistributedVariableStatement;
+  value: WireEncryptedPayload;
+}> {
+  return {
+    variableId,
+    statement: await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId,
+      name,
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+    }),
+    value,
+  };
+}
 
 beforeAll(async () => {
   owner = await makeTestUser("user-owner-1111");
@@ -53,6 +82,13 @@ beforeAll(async () => {
   const common = { projectId: chainV1.projectId, environmentId: ENV_ID };
   wrap1 = await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner });
   wrap2 = await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner });
+  envStatement = await environmentStatementFor({
+    projectId: chainV1.projectId,
+    environmentId: ENV_ID,
+    name: ENV_ID,
+    author: owner,
+    head: { seq: 1, hashHex: chainV1.projectId },
+  });
 });
 
 afterEach(async () => {
@@ -88,12 +124,23 @@ function deksHandlerOf(sets: readonly (readonly WireRecipientDek[])[]): MockHand
 }
 
 function pullHandlerOf(
-  variables: readonly { variableId: string; name: string; value: WireEncryptedPayload }[],
+  variables: readonly {
+    variableId: string;
+    statement: WireDistributedVariableStatement;
+    value: WireEncryptedPayload;
+  }[],
   deks: readonly WireRecipientDek[],
 ): MockHandler {
   return onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => ({
     status: 200,
-    json: { environmentId: ENV_ID, name: ENV_ID, currentEpoch: 1, variables, deks },
+    json: {
+      environmentId: ENV_ID,
+      currentEpoch: 1,
+      statement: envStatement,
+      variables,
+      deletedVariables: [],
+      deks,
+    },
   }));
 }
 
@@ -112,8 +159,7 @@ async function startEnv(handlers: readonly MockHandler[], stdin: string): Promis
 }
 
 interface CreateBody {
-  readonly variableId: string;
-  readonly name: string;
+  readonly statement: WireDistributedVariableStatement;
   readonly value: WireEncryptedPayload;
 }
 
@@ -146,7 +192,7 @@ describe("maruhi push", () => {
           return {
             status: 200,
             json: {
-              variableId: body.variableId,
+              variableId: body.statement.variableId,
               version: body.value.aad.version,
               epoch: body.value.aad.epoch,
             },
@@ -167,12 +213,19 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
     expect(createCalls).toHaveLength(1);
     const body = createCalls[0] as CreateBody;
-    expect(body.name).toBe("API_KEY");
+    // 作成は metaVersion 1 のステートメントを同梱する(§12-5): author 署名付き・
+    // prev 空・宣言ヘッド = 最後に検証したチェーンヘッド
+    expect(body.statement.name).toBe("API_KEY");
+    expect(body.statement.status).toBe("active");
+    expect(body.statement.metaVersion).toBe(1);
+    expect(body.statement.prevMetaSigHashHex).toBe("");
+    expect(body.statement.chainHeadSeq).toBe(chainV1.entries.length);
+    expect(body.statement.signatureHex).toMatch(/^[0-9a-f]{128}$/);
     expect(body.value.aad).toEqual({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
       epoch: 1,
-      variableId: body.variableId,
+      variableId: body.statement.variableId,
       version: 1,
     });
     // 値署名ブロック(§4.1): 新規変数は prev 空、宣言ヘッド = 最後に検証した
@@ -211,6 +264,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     const pushBodies: WireEncryptedPayload[] = [];
     let pullCalls = 0;
     const server = await MockServer.start([
@@ -222,15 +276,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
-            variables: [
-              {
-                variableId: "v-existing",
-                name: "API_KEY",
-                value: pullCalls === 1 ? existing : winner,
-              },
-            ],
+            statement: envStatement,
+            variables: [{ ...entryExisting, value: pullCalls === 1 ? existing : winner }],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -302,6 +351,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", v4);
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -312,15 +362,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
-            variables: [
-              {
-                variableId: "v-existing",
-                name: "API_KEY",
-                value: pullCalls === 1 ? v4 : rolledBack,
-              },
-            ],
+            statement: envStatement,
+            variables: [{ ...entryExisting, value: pullCalls === 1 ? v4 : rolledBack }],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -372,6 +417,7 @@ describe("maruhi push", () => {
       head,
       prevValueSigHashHex: "ab".repeat(32),
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", v4);
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -382,15 +428,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
-            variables: [
-              {
-                variableId: "v-existing",
-                name: "API_KEY",
-                value: pullCalls === 1 ? v4 : forkedV5,
-              },
-            ],
+            statement: envStatement,
+            variables: [{ ...entryExisting, value: pullCalls === 1 ? v4 : forkedV5 }],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -443,6 +484,7 @@ describe("maruhi push", () => {
       head: head2,
       prevValueSigHashHex: "ab".repeat(32),
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", knownV4);
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV2]),
@@ -453,15 +495,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 2,
-            variables: [
-              {
-                variableId: "v-existing",
-                name: "API_KEY",
-                value: pullCalls === 1 ? knownV4 : regressedV6,
-              },
-            ],
+            statement: envStatement,
+            variables: [{ ...entryExisting, value: pullCalls === 1 ? knownV4 : regressedV6 }],
+            deletedVariables: [],
             deks: [wrap1, wrap2],
           },
         };
@@ -502,7 +539,7 @@ describe("maruhi push", () => {
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
         // 再取得しても version 4 のまま(409 の申告 7 より古い)
-        pullHandlerOf([{ variableId: "v-existing", name: "API_KEY", value: existing }], [wrap1]),
+        pullHandlerOf([await entryOf("v-existing", "API_KEY", existing)], [wrap1]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
@@ -527,6 +564,7 @@ describe("maruhi push", () => {
       writer: owner,
       head: headOf(chainV1, chainV1.entries.length),
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -537,12 +575,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
-            variables:
-              pullCalls === 1
-                ? [{ variableId: "v-existing", name: "API_KEY", value: existing }]
-                : [],
+            statement: envStatement,
+            variables: pullCalls === 1 ? [entryExisting] : [],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -581,6 +617,7 @@ describe("maruhi push", () => {
     const existing = await encryptValueFor({ ...coordinates, plaintext: "old" });
     // 同一座標(version 4)で内容の異なる有効署名(§14.2-5 の証拠の形)
     const forked = await encryptValueFor({ ...coordinates, plaintext: "forked" });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
@@ -591,15 +628,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
-            variables: [
-              {
-                variableId: "v-existing",
-                name: "API_KEY",
-                value: pullCalls === 1 ? existing : forked,
-              },
-            ],
+            statement: envStatement,
+            variables: [{ ...entryExisting, value: pullCalls === 1 ? existing : forked }],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -647,7 +679,11 @@ describe("maruhi push", () => {
           }
           return {
             status: 200,
-            json: { variableId: body.variableId, version: 1, epoch: body.value.aad.epoch },
+            json: {
+              variableId: body.statement.variableId,
+              version: 1,
+              epoch: body.value.aad.epoch,
+            },
           };
         },
       ),
@@ -728,6 +764,7 @@ describe("maruhi push", () => {
       writer: owner,
       head: headOf(chainV1, chainV1.entries.length),
     });
+    const entryRacer = await entryOf("v-racer", "API_KEY", existing);
     let pullCalls = 0;
     let pushed: WireEncryptedPayload | null = null;
     const server = await MockServer.start([
@@ -739,12 +776,12 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
+            statement: envStatement,
             // 初回解決では変数なし(create 経路)、競合後の再解決では
             // 並行作成された v-racer が見える
-            variables:
-              pullCalls === 1 ? [] : [{ variableId: "v-racer", name: "API_KEY", value: existing }],
+            variables: pullCalls === 1 ? [] : [entryRacer],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -812,6 +849,7 @@ describe("maruhi push", () => {
       writer: owner,
       head: headOf(chainV1, chainV1.entries.length),
     });
+    const entryLate = await entryOf("v-late", "API_KEY", existing);
     let pullCalls = 0;
     let pushedVersion = 0;
     const server = await MockServer.start([
@@ -823,10 +861,10 @@ describe("maruhi push", () => {
           status: 200,
           json: {
             environmentId: ENV_ID,
-            name: ENV_ID,
             currentEpoch: 1,
-            variables:
-              pullCalls === 1 ? [] : [{ variableId: "v-late", name: "API_KEY", value: existing }],
+            statement: envStatement,
+            variables: pullCalls === 1 ? [] : [entryLate],
+            deletedVariables: [],
             deks: [wrap1],
           },
         };
@@ -889,17 +927,281 @@ describe("maruhi push", () => {
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
         pullHandlerOf(
-          [
-            { variableId: "v-a", name: "API_KEY", value: existing },
-            { variableId: "v-b", name: "API_KEY", value: other },
-          ],
+          [await entryOf("v-a", "API_KEY", existing), await entryOf("v-b", "API_KEY", other)],
           [wrap1],
         ),
       ],
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("変数名が重複しています");
+    expect(env.errors.join("\n")).toContain("同名の active ステートメント");
+  });
+
+  it("409 後の再取得ステートメントが metaVersion 巻き戻しなら拒否する(§12-5 のメタ同型)", async () => {
+    // クライアントは metaVersion 2 のステートメントを検証済み。再取得(409 後)で
+    // metaVersion 1 のステートメントが配布される = メタデータ巻き戻しの証拠
+    const head = headOf(chainV1, chainV1.entries.length);
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head,
+    });
+    const winner = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 5,
+      plaintext: "winner",
+      writer: owner,
+      head,
+      prevValueSigHashHex: await valueHashOf(existing, owner.userId),
+    });
+    const statementV2 = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 2,
+    });
+    const statementV1 = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 1,
+    });
+    let pullCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 1,
+            statement: envStatement,
+            variables: [
+              {
+                variableId: "v-existing",
+                statement: pullCalls === 1 ? statementV2 : statementV1,
+                value: pullCalls === 1 ? existing : winner,
+              },
+            ],
+            deletedVariables: [],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+        () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("メタデータ巻き戻し");
+  });
+
+  it("409 後の再取得が同一 metaVersion で異なる signed bytes を返したら equivocation として拒否する(rename fork)", async () => {
+    const head = headOf(chainV1, chainV1.entries.length);
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head,
+    });
+    const winner = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 5,
+      plaintext: "winner",
+      writer: owner,
+      head,
+      prevValueSigHashHex: await valueHashOf(existing, owner.userId),
+    });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
+    // 同一 metaVersion(1)で name が異なる有効ステートメント = rename fork の証拠
+    const forkedStatement = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY_FORKED",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 1,
+    });
+    let pullCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 1,
+            statement: envStatement,
+            variables: [
+              pullCalls === 1
+                ? entryExisting
+                : { ...entryExisting, statement: forkedStatement, value: winner },
+            ],
+            deletedVariables: [],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+        () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("equivocation");
+  });
+
+  it("create への MetaVersionConflict(409)は名前から再解決する(並行 rename との競合)", async () => {
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-meta-race",
+      version: 1,
+      plaintext: "raced",
+      writer: owner,
+      head: headOf(chainV1, chainV1.entries.length),
+    });
+    const entryRaced = await entryOf("v-meta-race", "API_KEY", existing);
+    let pullCalls = 0;
+    let pushedVersion = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 1,
+            statement: envStatement,
+            variables: pullCalls === 1 ? [] : [entryRaced],
+            deletedVariables: [],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
+        status: 409,
+        json: { _tag: "MetaVersionConflict", currentMetaVersion: 1 },
+      })),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-meta-race/versions`,
+        (request) => {
+          pushedVersion = (request.body as { value: WireEncryptedPayload }).value.aad.version;
+          return {
+            status: 200,
+            json: { variableId: "v-meta-race", version: pushedVersion, epoch: 1 },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
+    expect(pullCalls).toBe(2);
+    expect(pushedVersion).toBe(2);
+  });
+
+  it("名前は署名前に NFC 正規化される(ルックアップキーとステートメントの両方 — §12-1)", async () => {
+    // NFD(結合文字)の名前で push → 同梱ステートメントの name は NFC 正規形
+    const nfdName = "CAFE\u0301_URL";
+    const nfcName = nfdName.normalize("NFC");
+    expect(nfcName).not.toBe(nfdName);
+    const createCalls: CreateBody[] = [];
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      pullHandlerOf([], [wrap1]),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+        (request) => {
+          const body = request.body as CreateBody;
+          createCalls.push(body);
+          return {
+            status: 200,
+            json: {
+              variableId: body.statement.variableId,
+              version: 1,
+              epoch: body.value.aad.epoch,
+            },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", nfdName], env.layer)).toBe(0);
+    expect(createCalls[0]?.statement.name).toBe(nfcName);
   });
 
   it("競合が解消しない場合は試行上限で中断する", async () => {
@@ -922,7 +1224,7 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
-        pullHandlerOf([{ variableId: "v-existing", name: "API_KEY", value: existing }], [wrap1]),
+        pullHandlerOf([await entryOf("v-existing", "API_KEY", existing)], [wrap1]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,

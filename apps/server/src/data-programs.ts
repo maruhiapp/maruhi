@@ -344,6 +344,47 @@ const ensureMetaQuota = (statement: MetaStatementInput): Effect.Effect<void, Dat
       )
     : Effect.void;
 
+/**
+ * rename / 削除に共通するメタ受理列(§12-5): metaVersion 上限 → CAS(409 は
+ * 最新番号のみ)→ 保存済み直前ステートメントのアンカー取得(CAS 通過後は必ず
+ * 存在 — 欠落は defect)→ 署名検証(predecessor 込み — prev 連鎖と削除後の
+ * 再ステートメント拒否)。成功時はサーバー再計算の signed_bytes ハッシュを返す。
+ */
+const acceptMetaStatement = (input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly target: MetaStatementTarget;
+  readonly latestMetaVersion: number;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly statement: MetaStatementInput;
+}) =>
+  Effect.gen(function* () {
+    yield* ensureMetaQuota(input.statement);
+    yield* ensureMetaCas(input.latestMetaVersion, input.statement);
+    const store = yield* DataStore;
+    const anchor =
+      input.target.kind === "variable"
+        ? yield* store.variableMetaAnchor(
+            input.environmentId,
+            input.target.variableId,
+            input.latestMetaVersion,
+          )
+        : yield* store.environmentMetaAnchor(input.environmentId, input.latestMetaVersion);
+    if (anchor === null) {
+      return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
+    }
+    return yield* ensureMetaStatementSignature({
+      projectId: input.projectId,
+      environmentId: input.environmentId,
+      target: input.target,
+      history: input.history,
+      member: input.member,
+      statement: input.statement,
+      predecessor: anchor,
+    });
+  });
+
 /** §12-8: 累積暗号文バイトの上限。追加分を含めて判定する純関数(ユニットテスト用に公開)。 */
 export function projectBytesExceeded(storedBytes: number, addedBytes: number): boolean {
   return storedBytes + addedBytes > MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES;
@@ -598,17 +639,6 @@ export const ensureEnvironmentQuota = Effect.gen(function* () {
   }
 });
 
-/** 保存済み直前ステートメントのアンカー(CAS 通過後は必ず存在 — 欠落は defect)。 */
-const requireEnvironmentMetaPredecessor = (environmentId: string, latestMetaVersion: number) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const anchor = yield* store.environmentMetaAnchor(environmentId, latestMetaVersion);
-    if (anchor === null) {
-      return yield* Effect.die(new Error("environment meta predecessor row missing"));
-    }
-    return anchor;
-  });
-
 export const renameEnvironmentProgram = (
   actor: DataActor,
   environmentId: string,
@@ -627,21 +657,15 @@ export const renameEnvironmentProgram = (
         reason: "duplicate-name",
       });
     }
-    yield* ensureMetaQuota(statement);
-    // 判定順(値の裁定 D と同型): CAS → ステートメント署名 → 原子書き込み
-    yield* ensureMetaCas(environment.latestMetaVersion, statement);
-    const predecessor = yield* requireEnvironmentMetaPredecessor(
-      environmentId,
-      environment.latestMetaVersion,
-    );
-    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+    // 判定順(値の裁定 D と同型): 上限 → CAS → ステートメント署名 → 原子書き込み
+    const signedBytesHashHex = yield* acceptMetaStatement({
       projectId,
       environmentId,
       target: { kind: "environment" },
+      latestMetaVersion: environment.latestMetaVersion,
       history,
       member,
       statement,
-      predecessor,
     });
     const audit = yield* AuditStore;
     const now = Date.now();
@@ -678,20 +702,14 @@ export const deleteEnvironmentProgram = (
     if (statement.name !== environment.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    yield* ensureMetaQuota(statement);
-    yield* ensureMetaCas(environment.latestMetaVersion, statement);
-    const predecessor = yield* requireEnvironmentMetaPredecessor(
-      environmentId,
-      environment.latestMetaVersion,
-    );
-    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+    const signedBytesHashHex = yield* acceptMetaStatement({
       projectId,
       environmentId,
       target: { kind: "environment" },
+      latestMetaVersion: environment.latestMetaVersion,
       history,
       member,
       statement,
-      predecessor,
     });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
@@ -978,21 +996,6 @@ export const pushVersionProgram = (
     } satisfies VariableVersionValue;
   });
 
-/** 保存済み直前ステートメントのアンカー(変数版。CAS 通過後は必ず存在 — 欠落は defect)。 */
-const requireVariableMetaPredecessor = (
-  environmentId: string,
-  variableId: string,
-  latestMetaVersion: number,
-) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const anchor = yield* store.variableMetaAnchor(environmentId, variableId, latestMetaVersion);
-    if (anchor === null) {
-      return yield* Effect.die(new Error("variable meta predecessor row missing"));
-    }
-    return anchor;
-  });
-
 export const renameVariableProgram = (
   actor: DataActor,
   environmentId: string,
@@ -1009,21 +1012,14 @@ export const renameVariableProgram = (
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    yield* ensureMetaQuota(statement);
-    yield* ensureMetaCas(variable.latestMetaVersion, statement);
-    const predecessor = yield* requireVariableMetaPredecessor(
-      environmentId,
-      variableId,
-      variable.latestMetaVersion,
-    );
-    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+    const signedBytesHashHex = yield* acceptMetaStatement({
       projectId,
       environmentId,
       target: { kind: "variable", variableId },
+      latestMetaVersion: variable.latestMetaVersion,
       history,
       member,
       statement,
-      predecessor,
     });
     const audit = yield* AuditStore;
     const now = Date.now();
@@ -1062,21 +1058,14 @@ export const deleteVariableProgram = (
     if (statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    yield* ensureMetaQuota(statement);
-    yield* ensureMetaCas(variable.latestMetaVersion, statement);
-    const predecessor = yield* requireVariableMetaPredecessor(
-      environmentId,
-      variableId,
-      variable.latestMetaVersion,
-    );
-    const signedBytesHashHex = yield* ensureMetaStatementSignature({
+    const signedBytesHashHex = yield* acceptMetaStatement({
       projectId,
       environmentId,
       target: { kind: "variable", variableId },
+      latestMetaVersion: variable.latestMetaVersion,
       history,
       member,
       statement,
-      predecessor,
     });
     const store = yield* DataStore;
     const audit = yield* AuditStore;

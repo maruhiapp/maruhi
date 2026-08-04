@@ -267,9 +267,13 @@ export const variablesGroup = HttpApiGroup.make("variables")
         VersionConflictError,
         EpochConflictError,
         // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名
-        // 検証を受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)
+        // 検証を受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)。
+        // MetaVersionConflict はワイヤ Schema(metaVersion = 1 固定)の下では
+        // 実質到達しないが、CAS の契約として宣言する(クライアントは名前から
+        // 再解決してリトライする — 並行 rename との競合の受け皿)
         ValueSignatureRejectedError,
         MetaStatementRejectedError,
+        MetaVersionConflictError,
         NameNotNfcError,
         ValueTooLargeError,
         DataLimitExceededError,

@@ -246,7 +246,7 @@ export async function createEnvironmentComposite(
  * 最新ステートメントの signed_bytes ハッシュ、metaVersion = 最新 + 1、宣言
  * ヘッド = 現ヘッド。
  */
-export async function nextEnvironmentStatement(
+async function nextEnvironmentStatement(
   fixture: DataFixture,
   input: {
     readonly environmentId: string;

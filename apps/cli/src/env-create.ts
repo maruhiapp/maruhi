@@ -1,10 +1,10 @@
 // 環境作成の複合リクエスト(AUTH_SPEC §12-4。2026-08-03 の環境作成チェーン op 化):
 // `create_environment` チェーンエントリ(エポック 1 の DEK コミットメント込み —
-// CRYPTO_SPEC §5.2 / §6.2)+ 表示名 + エポック 1 の DEK ラップ完全集合を 1 リクエストで
-// 原子的に受理させる。CLI 初の「genesis 以外のチェーン追記」であり、親ヘッド CAS の
-// 失敗(ChainHeadConflict)は再同期 → エントリの再署名(seq / prev 変更)で
-// リトライする(session-11 §2-8 で保留していた CAS リトライの部分着地。
-// PR-1 の意図的中間状態: EnvironmentMetaStatement の同梱 — §4.2 — は PR-3)。
+// CRYPTO_SPEC §5.2 / §6.2)+ `EnvironmentMetaStatement`(metaVersion 1 — §4.2。
+// 表示名は署名前に NFC 正規化し、宣言ヘッドは追記前の現ヘッド = 同梱エントリの
+// prev)+ エポック 1 の DEK ラップ完全集合を 1 リクエストで原子的に受理させる。
+// 親ヘッド CAS の失敗(ChainHeadConflict)は再同期 → **エントリとステートメントの
+// 両方を再署名**(seq / prev / 宣言ヘッド変更 — §12-4)してリトライする。
 //
 // ラップ集合は検証済み ChainState の現メンバー集合と厳密一致させて生成する
 // (CRYPTO_SPEC §6.3 のラップ先一致検査 = ゴーストメンバー対策のクライアント側。
@@ -29,6 +29,7 @@ import {
   importEncryptionPublicKey,
   signChainEntry,
   signDekWrap,
+  signMetaStatement,
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
@@ -176,6 +177,54 @@ function ensureCreatable(
   return Effect.succeed(member);
 }
 
+/**
+ * 複合同梱の `EnvironmentMetaStatement`(metaVersion 1・active・prev 空)を
+ * 著者署名する。宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
+ * CAS リトライではエントリと共にここも再署名される。
+ */
+function signCreateStatement(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly name: string;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+}) {
+  return Effect.gen(function* () {
+    const signature = yield* Effect.promise(() =>
+      signMetaStatement({
+        context: {
+          suite: SUITE_ID,
+          projectId: input.verified.projectId,
+          environmentId: input.environmentId,
+          target: { kind: "environment" },
+          name: input.name,
+          status: "active",
+          metaVersion: 1,
+          prevMetaSigHashHex: "",
+          authorUserId: input.signerUserId,
+          chainHeadHashHex: input.verified.state.headHashHex,
+          chainHeadSeq: input.verified.state.headSeq,
+        },
+        signingKey: input.signingKeyPair.privateKey,
+      }),
+    );
+    if (!signature.ok) {
+      return yield* Effect.fail(cliError("環境メタステートメントの署名に失敗しました"));
+    }
+    return {
+      suite: SUITE_ID,
+      environmentId: input.environmentId,
+      name: input.name,
+      status: "active",
+      metaVersion: 1,
+      prevMetaSigHashHex: "",
+      chainHeadHashHex: input.verified.state.headHashHex,
+      chainHeadSeq: input.verified.state.headSeq,
+      signatureHex: signature.value,
+    } as const;
+  });
+}
+
 /** create_environment エントリを現ヘッドの直後(seq = head + 1)に署名する。 */
 function signCreateEntry(input: {
   readonly verified: VerifiedProject;
@@ -235,6 +284,8 @@ export function envCreateOp(input: {
   return Effect.gen(function* () {
     let verified = input.verified;
     let member = yield* ensureCreatable(verified, input.environmentId, input.signerUserId);
+    // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
+    const name = input.name.normalize("NFC");
     const dek = generateDek();
     const commitment = yield* Effect.promise(() =>
       computeDekCommitment({
@@ -260,11 +311,20 @@ export function envCreateOp(input: {
     });
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      // CAS リトライではエントリ(prev 変更)とステートメント(宣言ヘッド変更)の
+      // **両方**を再署名する(§12-4)。ラップ集合はメンバー集合変化時のみ再構築
       const entry = yield* signCreateEntry({
         verified,
         environmentId: input.environmentId,
         dekCommitmentHex: commitment.value,
         member,
+        signingKeyPair: input.signingKeyPair,
+      });
+      const statement = yield* signCreateStatement({
+        verified,
+        environmentId: input.environmentId,
+        name,
+        signerUserId: input.signerUserId,
         signingKeyPair: input.signingKeyPair,
       });
       const outcome = yield* input.client.environments
@@ -273,7 +333,7 @@ export function envCreateOp(input: {
           payload: {
             parentHeadHashHex: verified.state.headHashHex,
             entry,
-            name: input.name,
+            statement,
             deks,
           },
         })

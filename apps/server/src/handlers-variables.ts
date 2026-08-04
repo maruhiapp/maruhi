@@ -113,15 +113,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         return yield* callProjectData<VariableVersionValue>()({
           projectId: params.projectId,
           permission: "write",
-          // MetaVersionConflict は作成では契約外(ワイヤ Schema が metaVersion 1 を
-          // 固定するため到達しない — DO の防衛 CAS が発火したら defect)
-          allowed: [
-            ...VERSION_ERRORS,
-            MetaStatementRejectedError,
-            PayloadMismatchError,
-            NameNotNfcError,
-            VariableConflictError,
-          ],
+          allowed: [...VERSION_ERRORS, ...META_ERRORS, NameNotNfcError, VariableConflictError],
           invoke: (stub, actor) =>
             stub.createVariable(actor, params.environmentId, {
               variableId: payload.statement.variableId,
