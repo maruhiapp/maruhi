@@ -105,6 +105,9 @@ class CapacityExceededError extends Data.TaggedError("CapacityExceeded")<{
   readonly maxTotalBytes: number;
 }> {}
 class ProjectIdMismatchError extends Data.TaggedError("ProjectIdMismatch")<object> {}
+class CompositeRequiredOpError extends Data.TaggedError("CompositeRequiredOp")<{
+  readonly op: "create_environment" | "rotate_epoch";
+}> {}
 
 /** RPC 境界(structured clone)を渡る初期化結果。 */
 export type InitOutcome =
@@ -129,6 +132,10 @@ export type AppendOutcome =
   | { readonly kind: "appended"; readonly headSeq: number; readonly headHashHex: string }
   | { readonly kind: "not-initialized" }
   | { readonly kind: "not-member" }
+  | {
+      readonly kind: "composite-required";
+      readonly op: "create_environment" | "rotate_epoch";
+    }
   | {
       readonly kind: "head-conflict";
       readonly currentHeadSeq: number;
@@ -304,6 +311,13 @@ const appendProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
+    // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
+    // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
+    // 将来増えても「エポック / 環境はチェーンにあるがラップ・環境行がない」状態を
+    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)
+    if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
+      return yield* new CompositeRequiredOpError({ op: entry.op });
+    }
     const chain = yield* loadChainForMember(callerUserId, cache);
     yield* ensureParentHead(chain, parentHeadHashHex);
     const canonicalBytes = yield* checkEntrySize(entry);
@@ -420,6 +434,8 @@ export class ProjectChainDO extends DurableObject<Env> {
             NotInitialized: (): Effect.Effect<AppendOutcome> =>
               Effect.succeed({ kind: "not-initialized" }),
             NotMember: (): Effect.Effect<AppendOutcome> => Effect.succeed({ kind: "not-member" }),
+            CompositeRequiredOp: (error): Effect.Effect<AppendOutcome> =>
+              Effect.succeed({ kind: "composite-required", op: error.op }),
             HeadConflict: (error): Effect.Effect<AppendOutcome> =>
               Effect.succeed({
                 kind: "head-conflict",

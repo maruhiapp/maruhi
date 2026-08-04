@@ -284,6 +284,74 @@ describe("maruhi env create", () => {
     );
   });
 
+  it("ChainHeadConflict リトライでメンバー集合が不変ならラップ集合を再利用する(§12-4)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    // 伸びたチェーンだがメンバー集合(user_id → enc 鍵)は不変(rename 等価の
+    // 代わりに change_role で自分の role を owner のまま……は不可なので、
+    // 「add してすぐ remove」でヘッドだけ進める)
+    const passerby = await makeTestUser("user-passerby-5555");
+    const chainB = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(passerby, "reader") },
+      { actor: owner, operation: removeMemberOp(passerby) },
+    ]);
+    expect(chainB.projectId).toBe(chainA.projectId);
+    const headB = chainB.hashes[chainB.hashes.length - 1] ?? "";
+    let chainCalls = 0;
+    const bodies: CompositeCreateBody[] = [];
+    const env = await startEnv(
+      chainA.projectId,
+      [
+        onRequest("GET", `/projects/${chainA.projectId}/chain`, () => {
+          chainCalls += 1;
+          const built = chainCalls === 1 ? chainA : chainB;
+          return {
+            status: 200,
+            json: {
+              projectId: chainA.projectId,
+              entries: built.entries,
+              headSeq: built.entries.length,
+              headHashHex: built.hashes[built.hashes.length - 1],
+            },
+          };
+        }),
+        onRequest("POST", `/projects/${chainA.projectId}/environments`, (request) => {
+          bodies.push(request.body as CompositeCreateBody);
+          if (bodies.length === 1) {
+            return {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: chainB.entries.length,
+                currentHeadHashHex: headB,
+              },
+            };
+          }
+          return {
+            status: 200,
+            json: {
+              environmentId: "staging",
+              currentEpoch: 1,
+              headSeq: chainB.entries.length + 1,
+              headHashHex: "cd".repeat(32),
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    expect(bodies).toHaveLength(2);
+    const [first, second] = bodies;
+    if (first === undefined || second === undefined) throw new Error("missing bodies");
+    // エントリは再署名される(prev が変わる)が、ラップ集合は再構築されない
+    // (HPKE Seal はランダムなので、再ラップしていれば enc / ct / 署名が変わる)
+    expect(second.entry.prevHashHex).toBe(headB);
+    expect(second.deks).toEqual(first.deks);
+  });
+
   it("環境 ID の positional 未指定はネットワーク前に拒否される(bogus id で create API を呼ばない)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);

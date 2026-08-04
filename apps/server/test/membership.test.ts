@@ -2,9 +2,11 @@
 // vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite / D1 を検証する。
 //
 // テストベクター(packages/crypto/test-vectors/chain-entries.json)の再利用:
-// - 正常系 seq 1〜9 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT 認証)
-// - 認可系 negative 14 件を追記拒否テストとして再生する。ただし actor が非メンバーの
-//   ケースは、§11-2(存在秘匿)により verifyChain の 422 より先に 404 になる
+// - 正常系 seq 1〜12 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT
+//   認証。create_environment / rotate_epoch は複合エンドポイント経由 — §12-4)
+// - 認可系 negative 全件を拒否テストとして再生する。サーバー受理面では判定順に
+//   より合意規則の理由コードがそのまま出ないケースがある(role 403 先行・
+//   未作成環境 404 先行・形式違反 400 先行 — compositeExpectations の対応表)
 //
 // 認証は実発行経路(device 交換)で PAT を取得する。ベクターの固定 user_id は
 // D1 への直接シード(users + linked_identities)で整合させる(AUTH_SPEC §11-1 裁定)。

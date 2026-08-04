@@ -289,7 +289,10 @@ export function envCreateOp(input: {
         return { currentEpoch: outcome.created.currentEpoch };
       }
       // 親ヘッド CAS 失敗(並行追記): 再同期して新ヘッドでエントリを再署名する
-      // (§12-4)。ラップ集合は現メンバー集合が変わった場合のみ作り直す
+      // (§12-4)。ラップ集合は現メンバー集合が変わった場合のみ作り直す。
+      // 最終試行後もここを実行する: 再同期で判明する定的エラー(並行作成による
+      // duplicate-environment 等)は汎用の「競合が解消しません」より情報量が高い
+      // (push.ts の nextState と同じ判断)
       const resynced = yield* input.resync;
       const rebuiltMember = yield* ensureCreatable(
         resynced,

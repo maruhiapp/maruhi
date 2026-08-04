@@ -152,8 +152,37 @@ function headerTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
+/**
+ * kind なし(暗号検証系)negative の網羅ガード: ベクター再生成で negative が
+ * 増えたとき、名前ハードコードの検査(payloadTamperVariants 等)が黙って
+ * 新規分を落とさないよう、全 name が検査済み集合に含まれることを固定する。
+ */
+function tamperCoverageCheck(c: Checks, covered: ReadonlySet<string>): void {
+  const uncovered = vectorNegatives
+    .filter((negative) => negative.kind === undefined)
+    .map((negative) => negative.name)
+    .filter((name) => !covered.has(name));
+  c.push(
+    "chain negative: every non-authorization vector is covered",
+    uncovered.length === 0,
+    uncovered.length === 0 ? undefined : `uncovered: ${uncovered.join(", ")}`,
+  );
+}
+
 async function tamperedChecks(c: Checks): Promise<void> {
-  for (const variant of [...payloadTamperVariants(), ...headerTamperVariants()]) {
+  const payloadVariants = payloadTamperVariants();
+  const headerVariants = headerTamperVariants();
+  tamperCoverageCheck(
+    c,
+    new Set([
+      ...payloadVariants.map((variant) => variant.name),
+      ...headerVariants.map((variant) => variant.name),
+      // bytesLevelChecks が担う 2 件
+      "field-order-swap",
+      "grant-server-scope-flat-concat",
+    ]),
+  );
+  for (const variant of [...payloadVariants, ...headerVariants]) {
     const vector = negativeByName(variant.name);
     if (vector === undefined) {
       c.push(`chain negative: ${variant.name}`, false, "vector missing");

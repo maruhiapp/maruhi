@@ -115,6 +115,10 @@ function appendRejection(projectId: string, outcome: Exclude<AppendOutcome, { ki
   if (outcome.kind === "not-initialized" || outcome.kind === "not-member") {
     return new ProjectNotFoundError({ projectId });
   }
+  // DO 側の多層防御(通常はハンドラの先行検査が同じ 422 を返す)
+  if (outcome.kind === "composite-required") {
+    return new CompositeRequiredError({ op: outcome.op });
+  }
   if (outcome.kind === "head-conflict") {
     return new ChainHeadConflictError({
       currentHeadSeq: outcome.currentHeadSeq,

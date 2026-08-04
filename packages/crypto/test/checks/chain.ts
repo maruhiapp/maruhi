@@ -126,7 +126,7 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
 }
 
 async function verificationChecks(c: Checks): Promise<void> {
-  // 全 9 エントリの検証 + ヘッド情報
+  // 正規チェーン全エントリ(12)の検証 + ヘッド情報
   const full = await verifyChain(typedEntries);
   const lastVector = vectorEntries[vectorEntries.length - 1];
   c.push(

@@ -2215,6 +2215,28 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       const response = await requestJson("GET", `/environments/${badId}/pull`, token(READER));
       expect(response.status).toBe(400);
     }
+    // 複合 create のエントリ内 environment_id にも §12-1 の受理ポリシー形式を
+    // 強制する(400): 複合化で ID の運搬がチェーンエントリ内へ移り URL 座標を
+    // 持たないため、緩い形式を通すと URL param を持つ後続エンドポイント
+    // (rotate / rename / delete / pull)から到達不能な環境が生まれる
+    for (const badId of ["-bad", "a".repeat(65), "my env/💥"]) {
+      const { entry } = await signEntryAt({
+        seq: fixture.head.seq + 1,
+        prevHashHex: fixture.head.hashHex,
+        actorUserId: OWNER,
+        operation: {
+          op: "create_environment",
+          payload: { environmentId: badId, dekCommitmentHex: "ab".repeat(32) },
+        },
+      });
+      const response = await requestJson("POST", "/environments", token(OWNER), {
+        parentHeadHashHex: fixture.head.hashHex,
+        entry,
+        name: `Bad-${badId.length}`,
+        deks: [],
+      });
+      expect(response.status).toBe(400);
+    }
     // 不正な EncryptedPayload: suite 不一致 / 大文字 hex nonce / タグ未満の暗号文
     const base = fakePayload(aadFor(1, 1));
     const badPayloads = [

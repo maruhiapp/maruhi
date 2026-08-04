@@ -90,9 +90,13 @@ describe("チェーンミラー(§3.4)", () => {
   });
 
   it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4, 2026-08-03)", async () => {
-    // 作成・ローテーションとも複合リクエスト(§12-4)経由でチェーンに載る
-    await createEnvironmentOk(fixture, ENV, "App");
-    await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
+    // 作成・ローテーションとも複合リクエスト(§12-4)経由でチェーンに載る。
+    // ミラー payload のコミットメントは同梱 DEK の §5.2 実計算値と一致する
+    // (形式だけでなく値まで固定: 別エポックの値や定数を写す変異を落とす)
+    const dek1 = await createEnvironmentOk(fixture, ENV, "App");
+    const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
+    const commitment1 = await commitmentOf(projectId, ENV, 1, dek1);
+    const commitment2 = await commitmentOf(projectId, ENV, 2, dek2);
     const events = await readAuditEvents(projectId);
     const rotated = events.at(-1 - ALL_MEMBERS.length);
     const created = events.find((event) => event["event"] === "chain.environment_created");
@@ -104,21 +108,16 @@ describe("チェーンミラー(§3.4)", () => {
     expect(created["actor_user_id"]).toBe(OWNER);
     expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
     // dek_commitment は payload に写す(AUDIT_SPEC §3.4)
-    const createdPayload = JSON.parse(String(created["payload"])) as {
-      dekCommitmentHex: string;
-    };
-    expect(createdPayload.dekCommitmentHex).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(String(created["payload"]))).toEqual({ dekCommitmentHex: commitment1 });
 
     expect(rotated["event"]).toBe("chain.epoch_rotated");
     expect(rotated["environment_id"]).toBe(ENV);
     expect(rotated["epoch"]).toBe(2);
     expect(rotated["chain_seq"]).toBe(5);
-    const rotatedPayload = JSON.parse(String(rotated["payload"])) as {
-      reason: string;
-      dekCommitmentHex: string;
-    };
-    expect(rotatedPayload.reason).toBe("scheduled");
-    expect(rotatedPayload.dekCommitmentHex).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(String(rotated["payload"]))).toEqual({
+      reason: "scheduled",
+      dekCommitmentHex: commitment2,
+    });
   });
 
   it("mirrors change_role / remove_member with the target user id (§4.1 Q1 の入力)", async () => {

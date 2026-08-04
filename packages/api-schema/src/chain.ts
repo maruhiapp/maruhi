@@ -9,6 +9,7 @@
 // verifyChain の `invalid-payload`(テストベクターで固定された理由コード)として
 // 一貫して報告されるべきで、Schema での 400 と二重の拒否経路を作らないため。
 
+import { EnvironmentIdSchema } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Schema } from "effect";
 
@@ -71,12 +72,19 @@ const ChangeRoleEntrySchema = Schema.Struct({
  * epoch-1 DEK commitment (§5.2). Submitted only through the composite
  * environment-creation endpoint (AUTH_SPEC §12-4) — the generic append
  * rejects it (§6). Exported for that endpoint's payload schema.
+ *
+ * environmentId は §12-1 の受理ポリシー形式(EnvironmentIdSchema)で検査する:
+ * 複合化で ID の運搬が旧 payload からチェーンエントリ内へ移り、URL 座標も
+ * 持たないため、ここが唯一のワイヤ受理点になる(形式は合意規則ではない —
+ * チェーン検証は §6.1 の bounded string のみを要求する。緩い形式の ID を
+ * 受理すると URL param を持つ後続エンドポイント — rotate / rename / delete /
+ * pull — から到達不能な環境が生まれ、§7 の全環境ローテーション義務も破れる)。
  */
 export const CreateEnvironmentEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("create_environment"),
   payload: Schema.Struct({
-    environmentId: Schema.String,
+    environmentId: EnvironmentIdSchema,
     dekCommitmentHex: Hash256Hex,
   }),
 });
@@ -90,7 +98,9 @@ export const RotateEpochEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("rotate_epoch"),
   payload: Schema.Struct({
-    environmentId: Schema.String,
+    // create_environment と同じ受理ポリシー形式(URL 座標との一致検査 —
+    // §12-4 — の対象だが、ワイヤ側でも同じ形式に固定して非対称を作らない)
+    environmentId: EnvironmentIdSchema,
     newEpoch: Schema.Number,
     reason: Schema.String,
     dekCommitmentHex: Hash256Hex,

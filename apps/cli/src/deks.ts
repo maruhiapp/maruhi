@@ -131,7 +131,7 @@ export function requireChainEnvironment(
   if (environment === undefined) {
     return Effect.fail(
       cliError(
-        `環境 ${environmentId} がチェーン上に存在しません(create_environment 未観測)。サーバー応答とチェーンが矛盾しています`,
+        `環境 ${environmentId} がチェーン上に存在しません(create_environment 未観測)。作成直後の可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
       ),
     );
   }
