@@ -18,6 +18,7 @@ import { displayText, displayValue } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { FloorStore } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { Keychain } from "./keychain.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
@@ -37,7 +38,13 @@ import {
 import { syncProject, type VerifiedProject } from "./sync.ts";
 
 /** Services every CLI command may need (production wiring lives in live.ts). */
-export type CliServices = Keychain | ConfigStore | CliIo | ProcessRunner | HttpClient.HttpClient;
+export type CliServices =
+  | Keychain
+  | ConfigStore
+  | FloorStore
+  | CliIo
+  | ProcessRunner
+  | HttpClient.HttpClient;
 
 const CLI_VERSION = "0.0.0";
 
