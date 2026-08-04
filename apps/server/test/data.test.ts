@@ -25,7 +25,11 @@ import {
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { projectBytesExceeded, wrapRowsExceeded } from "../src/data-programs.ts";
+import {
+  metaVersionsExceeded,
+  projectBytesExceeded,
+  wrapRowsExceeded,
+} from "../src/data-programs.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
@@ -2164,6 +2168,75 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       resource: "meta-versions",
       limit: MAX_VERSIONS_PER_VARIABLE,
     });
+  });
+
+  it("accepts the delete statement even at the meta version cap (deleted は上限対象外)", async () => {
+    // 上限で削除まで遮断すると、rename 連打で上限到達したリソースがどの role
+    // でも恒久的に削除不能になる(レビュー②③ [major])。tombstone は連鎖の
+    // 終端で追加行は高々 1 行なので上限の対象外とする
+    expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "active")).toBe(true);
+    expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE - 1, "active")).toBe(false);
+    expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "deleted")).toBe(false);
+
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 実 rename 1,000 回は非現実的なので、latest と最新ステートメント行の
+    // meta_version を直接引き上げて上限到達状態をシードする(prev は保存済みの
+    // サーバー再計算ハッシュを流用)
+    await queryProjectDo(
+      projectId,
+      "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      MAX_VERSIONS_PER_VARIABLE,
+      ENV,
+      VAR,
+    );
+    await queryProjectDo(
+      projectId,
+      "UPDATE variable_meta_statements SET meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      MAX_VERSIONS_PER_VARIABLE,
+      ENV,
+      VAR,
+    );
+    const anchorRows = await queryProjectDo(
+      projectId,
+      "SELECT signed_bytes_hash_hex FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ?",
+      ENV,
+      VAR,
+    );
+    const prevHash = anchorRows[0]?.signed_bytes_hash_hex;
+    if (typeof prevHash !== "string") {
+      throw new Error("seeded meta statement row missing");
+    }
+    const removed = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement: await signMetaStatementAs(MEMBER, projectId, {
+          suite: "maruhi/v1" as const,
+          environmentId: ENV,
+          variableId: VAR,
+          // deleted の name は直前 active 名を保持する(§4.2)
+          name: "DATABASE_URL",
+          status: "deleted" as const,
+          metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
+          prevMetaSigHashHex: prevHash,
+          chainHeadHashHex: fixture.head.hashHex,
+          chainHeadSeq: fixture.head.seq,
+        }),
+      },
+    );
+    expect(removed.status).toBe(204);
+    // tombstone ステートメントは保存・配布され続ける(§12-5)
+    const tombstones = await queryProjectDo(
+      projectId,
+      "SELECT status, meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? AND status = 'deleted'",
+      ENV,
+      VAR,
+    );
+    expect(tombstones).toEqual([
+      { status: "deleted", meta_version: MAX_VERSIONS_PER_VARIABLE + 1 },
+    ]);
   });
 });
 

@@ -1025,6 +1025,96 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("メタデータ巻き戻し");
   });
 
+  it("409 後の再取得が隣接 metaVersion で prev 不一致なら拒否する(分岐履歴への連鎖)", async () => {
+    // クライアントは metaVersion 1 のステートメントを検証済み。再取得(409 後)の
+    // metaVersion 2 の prev が検証済み signed bytes ハッシュと一致しない =
+    // 分岐した prev 連鎖への追従を拒否する(winnerValueRegression の隣接検査の同型)
+    const head = headOf(chainV1, chainV1.entries.length);
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head,
+    });
+    const winner = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 5,
+      plaintext: "winner",
+      writer: owner,
+      head,
+      prevValueSigHashHex: await valueHashOf(existing, owner.userId),
+    });
+    const statementV1 = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 1,
+    });
+    // prev 既定値("cd"×32)は statementV1 の signed bytes ハッシュと一致しない
+    const forkedSuccessor = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 2,
+    });
+    let pullCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+        pullCalls += 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 1,
+            statement: envStatement,
+            variables: [
+              {
+                variableId: "v-existing",
+                statement: pullCalls === 1 ? statementV1 : forkedSuccessor,
+                value: pullCalls === 1 ? existing : winner,
+              },
+            ],
+            deletedVariables: [],
+            deks: [wrap1],
+          },
+        };
+      }),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+        () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("分岐した履歴への連鎖");
+  });
+
   it("409 後の再取得が同一 metaVersion で異なる signed bytes を返したら equivocation として拒否する(rename fork)", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({

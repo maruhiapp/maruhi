@@ -61,6 +61,8 @@ export interface VerifiedPulledValue {
   readonly metaVersion: number;
   /** ステートメントの signed bytes ハッシュ(自計算 — 同一 metaVersion の相違検査)。 */
   readonly metaSignedBytesHashHex: string;
+  /** 署名済みの prev(直前 metaVersion の signed bytes ハッシュ。metaVersion 1 は空)。 */
+  readonly prevMetaSigHashHex: string;
 }
 
 /** A bulk pull whose values and statements all passed verification (§12-7 / §6.3). */
@@ -238,6 +240,7 @@ async function verifyOne(
       signedBytesHashHex: result.value.signedBytesHashHex,
       metaVersion: statement.metaVersion,
       metaSignedBytesHashHex: verifiedStatement.value.signedBytesHashHex,
+      prevMetaSigHashHex: statement.prevMetaSigHashHex,
     },
   };
 }

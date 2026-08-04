@@ -42,6 +42,7 @@ import type {
   EnvironmentSummaryValue,
   MetaStatementInput,
   MetaStatementRejectReason,
+  MetaStatementStatusInput,
   ValueInput,
   ValueSignatureRejectReason,
   VariableVersionValue,
@@ -332,9 +333,24 @@ const ensureMetaCas = (
 /**
  * metaVersion 行数の上限(仮裁定 — §12-8 の「バージョン数 / 変数」と同値を
  * ステートメント行にも適用。rename 連打による DO ストレージ肥大の遮断)。
+ * 削除(status deleted)は対象外: tombstone は連鎖の終端で追加行は高々 1 行
+ * であり、上限で削除まで遮断すると上限到達リソースがどの role でも恒久的に
+ * 削除不能になる(§12-8 の「削除で解放される」原則との衝突 — レビュー②③)。
+ * 判定は保存済み状態(latest + 1)基準: CAS 前の stale な申告 metaVersion を
+ * limit-exceeded と誤報せず、実際に上限へ達したときのみ 422 にする。
  */
-const ensureMetaQuota = (statement: MetaStatementInput): Effect.Effect<void, DataRejectedError> =>
-  statement.metaVersion > MAX_VERSIONS_PER_VARIABLE
+export function metaVersionsExceeded(
+  latestMetaVersion: number,
+  status: MetaStatementStatusInput,
+): boolean {
+  return status !== "deleted" && latestMetaVersion + 1 > MAX_VERSIONS_PER_VARIABLE;
+}
+
+const ensureMetaQuota = (
+  latestMetaVersion: number,
+  statement: MetaStatementInput,
+): Effect.Effect<void, DataRejectedError> =>
+  metaVersionsExceeded(latestMetaVersion, statement.status)
     ? Effect.fail(
         rejectData({
           kind: "limit-exceeded",
@@ -360,7 +376,7 @@ const acceptMetaStatement = (input: {
   readonly statement: MetaStatementInput;
 }) =>
   Effect.gen(function* () {
-    yield* ensureMetaQuota(input.statement);
+    yield* ensureMetaQuota(input.latestMetaVersion, input.statement);
     yield* ensureMetaCas(input.latestMetaVersion, input.statement);
     const store = yield* DataStore;
     const anchor =

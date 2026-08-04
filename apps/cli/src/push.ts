@@ -457,6 +457,14 @@ function winnerMetaRegression(
   ) {
     return `変数 ${target.variableId} の metaVersion ${winner.metaVersion} に、検証済みのステートメントと異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
   }
+  // 隣接 predecessor を保持している場合は prev 連鎖の一致も無償で検査できる
+  // (winnerValueRegression の §6.3-6 検査の同型 — レビュー② [minor])
+  if (
+    winner.metaVersion === known.metaVersion + 1 &&
+    winner.prevMetaSigHashHex !== known.metaSignedBytesHashHex
+  ) {
+    return `変数 ${target.variableId} の metaVersion ${winner.metaVersion} の prev が検証済みの直前 metaVersion の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+  }
   return null;
 }
 

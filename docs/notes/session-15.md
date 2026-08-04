@@ -104,11 +104,18 @@ active / deleted 併置(無断復活の運搬形)を拒否する。環境削除�
 
 ### 2-6. meta-versions 上限(仮裁定 — §12-8 の表にない受理ポリシー追加)
 
-rename / 削除のステートメント行に「バージョン数 / 変数」と同値(1,000)の上限を
+rename のステートメント行に「バージョン数 / 変数」と同値(1,000)の上限を
 適用した(`meta-versions` resource)。ステートメント行は §12-8 のどの上限にも
 束縛されず、rename 連打で無制限に積めたため(受理ポリシーであり合意規則では
 ない — セルフホストでの引き上げは合意を破らない)。仕様表への追記は PR レビュー
 承認後に AUTH_SPEC 側で行う想定。
+**削除(status deleted)は上限の対象外**(§8 レビュー②③ major の修正):
+tombstone は連鎖の終端で追加行は高々 1 行であり、削除まで遮断すると上限到達
+リソースがどの role でも恒久的に削除不能になる(§12-8 の「削除で解放される」
+原則と衝突し、remove エンドポイントの wire 契約 — `DataLimitExceededError`
+未宣言 — にも違反する)。判定は保存済み状態(latest + 1 > 上限)基準
+(`metaVersionsExceeded` — stale な申告 metaVersion を limit-exceeded と
+誤報しない)。
 
 ### 2-7. 複合作成の宣言ヘッドは厳密一致で検査
 
@@ -201,8 +208,18 @@ hash は載せない(AUDIT_SPEC §3.3)。環境削除のカスケード var.dele
   version / epoch と同じ立て付け)。**メタの床は巻き戻し検出のみで前進注入は
   閉じない**(§4 のとおり)ことを床の文書にも明記すること
 - **AUTH_SPEC §12-8 の表への `meta-versions` 追記**(§2-6 の仮裁定が承認された
-  場合): 「metaVersion 行数 / 変数(環境)= 1,000」を受理ポリシー表に追加する
-  仕様同期 PR を推奨
+  場合): 「metaVersion 行数 / 変数(環境)= 1,000(status deleted は対象外)」を
+  受理ポリシー表に追加する仕様同期 PR を推奨
+- **AUTH_SPEC §12-4 のカスケード対象の明文化**(レビュー③ minor): 環境削除の
+  カスケード対象列挙(「配下の変数・バージョン・ラップ済み DEK」)に「変数メタ
+  ステートメント」を明記する改訂を人間に提案する(根拠 = 環境 ID のチェーン
+  再利用不能。§2-4 の裁定の仕様側固定)
+- **crypto の防御的検査の一貫性(独立 PR 候補 — レビュー① minor / ③ nit)**:
+  (a) `meta-sign.ts` / `value-sign.ts` の context 検査に projectId /
+  environmentId の非空検査を追加する(LP により空でも符号化は無曖昧 = 脆弱性では
+  ないが、他フィールドの検査水準と不揃い)。(b) `verify_reference.mjs` の署名
+  フィールド順をベクター JSON 由来でなく仕様ハードコード + JSON との一致検査に
+  する(chain-entries の `payload_field_order` も同型なので同時に)
 - **テスト支援の共有抽出(session-11 §5 の裁定済み独立 PR)**: 本セッションで
   signMetaStatementAs / statementFor 系のクローンが cli / server 両側にさらに
   増えた(fallow dupes 8 グループ)。抽出時にベースラインごと解消する
@@ -217,13 +234,67 @@ hash は載せない(AUDIT_SPEC §3.3)。環境削除のカスケード var.dele
   `bun run verify` 全 425 検査 PASS(metadata-signature 追加分込み)
 - `@maruhi/crypto`: node 460 / workerd 460 / browser 460 / Bun 459(vitest の
   集約 1 件差は従来どおり)— metadata-signature チェック追加
-- server(vitest-pool-workers): 193 tests green(メタ受理検証 10 件を新設、
-  既存 fixture をステートメント必須へ全面更新 — 公開前の意図的な wire 非互換)
-- CLI: 127 tests green(ステートメント配布時検証 9 件・push のメタ 409 手順
-  4 件・複合 CAS 両方再署名の検査を追加)
+- server(vitest-pool-workers): 194 tests green(メタ受理検証 10 件を新設、
+  既存 fixture をステートメント必須へ全面更新 — 公開前の意図的な wire 非互換。
+  レビュー修正で上限到達時の削除受理テストを追加)
+- CLI: 128 tests green(ステートメント配布時検証 9 件・push のメタ 409 手順
+  4 件・複合 CAS 両方再署名の検査を追加。レビュー修正で隣接 prev 不一致の
+  拒否テストを追加)
 - `bun run check`(fmt / lint / typecheck / importlint / fallow / doctor / test)
-  green(807 tests)
+  green(809 tests)
 
 ## 8. レビュー→修正ループ(PR 内。3 観点の並行レビュー → 修正)
 
-(実施後に追記)
+実装完了後、独立の 3 観点レビュー(① セキュリティ・暗号 ② 正しさ・並行性・
+fork ③ 仕様・ベクター・wire)を並行実施した。blocking 指摘なし。major 1 件
+(②③ が独立に同一指摘)と minor 1 件をコードで修正し、残りは記録・申し送りで
+決着した。
+
+### 修正した指摘
+
+- **[major / ②③] meta-versions 上限が削除ステートメントも遮断し、上限到達
+  リソースが恒久的に削除不能**: latest_meta_version = 1,000 の変数・環境への
+  削除(metaVersion 1,001)も `limit-exceeded` になり、以後どの role でも削除
+  できない(member が 999 回 rename した環境が admin にも削除不能な active の
+  まま残り、active 環境枠 100 を恒久占有できる)。さらに remove エンドポイント
+  は `DataLimitExceededError` を宣言しないため応答は 500(wire 契約違反)。
+  → `ensureMetaQuota` を **status deleted は対象外** + **保存済み状態
+  (latest + 1)基準**に修正(§2-6 に裁定を追記)。上限到達状態をシードした
+  削除受理テストと純関数 `metaVersionsExceeded` の判定テストで固定
+- **[minor / ②] `winnerMetaRegression` に隣接 predecessor の prev 一致検査が
+  ない**: 値側 `winnerValueRegression` は winner.version = known + 1 のとき
+  prev と検証済み signed bytes hash の一致を検査する(PR-2 レビューループ由来)
+  が、メタ側に同型検査がなく、隣接 metaVersion を保持する再試行セッション内で
+  無償検出できる分岐連鎖を逃していた。→ `VerifiedPulledValue` に検証済み
+  ステートメントの `prevMetaSigHashHex` を追加し、同型の隣接検査を実装。
+  prev 不一致の後続ステートメント配布を拒否する CLI テストで固定
+
+### 記録で決着した指摘(コード変更なし)
+
+- [minor / ①] `meta-sign.ts` の projectId / environmentId 非空検査の欠落:
+  LP により空でも符号化は無曖昧・サーバーは座標を自前再構成するため脆弱性では
+  ない。PR-2 の `value-sign.ts` と同形のため、両方まとめて独立 PR で整備
+  (§6 申し送り)
+- [minor / ③] 環境削除カスケードでの変数ステートメント物理削除は AUTH_SPEC
+  §12-4 の列挙にない実装裁定: 環境 ID のチェーン再利用不能により実害はない
+  (§2-4)。仕様側の明文化を人間に提案(§6 申し送り)
+- [nit / ②] `ensureMetaQuota` の判定基準: major 修正に同梱(状態基準へ変更)
+- [nit / ②] 削除の name byte-exact 検査(422)が metaVersion CAS(409)より
+  先に判定される: どちらも決定的な拒否でセキュリティ差はない。CLI に delete
+  コマンドを足す際(裁定 F)に 409 駆動の再試行から競合が見えない点だけ留意
+  (現順序 = 意図。name 検査は「ペイロードの形」の検査で CAS より手前の層)
+- [nit / ②] `reresolveTarget` が検証済み floor を無比較で破棄する経路: 到達
+  可能なのは create 試行のみで create には floor が存在せず、現行契約では
+  不到達。エラー契約を広げる際に `winnerRegression` 適用を足すこと(PR-4 の
+  床実装と同時が自然)
+- [nit / ①] 変数作成への `MetaVersionConflict` 宣言が実質不到達である旨:
+  `data-api.ts` の該当箇所に既存コメントで明記済み(§2-3)
+- [nit / ③] `verify_reference.mjs` のフィールド順がベクター JSON 由来:
+  chain-entries の既存パターンと同型。独立 PR で仕様ハードコード化(§6 申し送り)
+
+### 再レビュー
+
+修正 2 件はどちらも受理範囲を狭める・検査を増やす方向のみ(削除の quota 免除は
+「上限による削除遮断」という欠陥の除去で、CAS・署名検証・prev 連鎖検査は不変)。
+修正後に全品質ゲートを再実行して green を確認し、blocking / 新規重大指摘ゼロで
+収束した。
