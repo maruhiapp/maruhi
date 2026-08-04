@@ -16,6 +16,7 @@ import { AuthMiddleware } from "./auth-middleware.ts";
 import { CreateEnvironmentEntrySchema, RotateEpochEntrySchema } from "./chain.ts";
 import {
   DekWrapRefSchema,
+  DistributedEncryptedPayloadSchema,
   EncryptedPayloadSchema,
   RecipientDekSchema,
   WrappedDekSchema,
@@ -35,6 +36,7 @@ import {
   ForbiddenError,
   PayloadMismatchError,
   ProjectNotFoundError,
+  ValueSignatureRejectedError,
   ValueTooLargeError,
   VariableConflictError,
   VariableNotFoundError,
@@ -78,11 +80,15 @@ export const VariableVersionSchema = Schema.Struct({
   epoch: Schema.Number,
 });
 
-/** One variable in a bulk pull: its latest version, self-describing via the AAD. */
+/**
+ * One variable in a bulk pull: its latest version, self-describing via the
+ * AAD, carried as the distributed form (writer identity + signature block —
+ * AUTH_SPEC §12-7 の検証材料の同梱).
+ */
 export const PulledVariableSchema = Schema.Struct({
   variableId: VariableIdSchema,
   name: ResourceNameSchema,
-  value: EncryptedPayloadSchema,
+  value: DistributedEncryptedPayloadSchema,
 });
 
 /**
@@ -215,6 +221,9 @@ export const variablesGroup = HttpApiGroup.make("variables")
         PayloadMismatchError,
         VersionConflictError,
         EpochConflictError,
+        // 同梱 version 1 も通常 push と同一の値署名検証を受ける(§12-5 —
+        // 作成経由の検証迂回は不可)
+        ValueSignatureRejectedError,
         ValueTooLargeError,
         DataLimitExceededError,
       ],
@@ -236,6 +245,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
           PayloadMismatchError,
           VersionConflictError,
           EpochConflictError,
+          ValueSignatureRejectedError,
           ValueTooLargeError,
           DataLimitExceededError,
         ],

@@ -28,9 +28,17 @@ const EncPubHex = hexString(32);
 const HpkeEncHex = hexString(32);
 // ラップ済み DEK = 32 バイト DEK + GCM タグ 16 バイト(CRYPTO_SPEC §5)
 const WrappedDekCiphertextHex = hexString(48);
-// 登録署名(Ed25519、CRYPTO_SPEC §5.1)と署名者鍵フィンガープリント(§3)
+// 登録署名 / 値の書き込み署名(Ed25519、CRYPTO_SPEC §5.1 / §4.1)と
+// 鍵フィンガープリント(§3)
 const WrapSignatureHex = hexString(64);
+const ValueSignatureHex = hexString(64);
 const KeyFingerprintHex = hexString(16);
+// チェーンヘッド・prev の SHA-256(hex 小文字 64 文字 — CRYPTO_SPEC §4.1)
+const Sha256Hex = hexString(32);
+// prev_value_sig_hash_hex: version 1 は空文字列、以降は 64 文字 hex(§4.1)。
+// version との結合(1 ⇔ 空)は状態に依存しない検証規則としてサーバー / クライアント
+// の署名検証(prev-shape-mismatch)が検査する — Schema はワイヤ形状のみ
+const PrevValueSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
 
 // AES-256-GCM の ct || tag: タグ込み 16 バイト以上の hex 小文字(偶数長)
 const ValueCiphertextHex = Schema.String.check(
@@ -51,16 +59,43 @@ export const VariableAadSchema = Schema.Struct({
 /**
  * An encrypted variable value on the wire (AUTH_SPEC §12-2): the only shape a
  * secret value ever takes across the API boundary (CRYPTO_SPEC §10).
+ *
+ * 2026-08-04(CRYPTO_SPEC §4.1 = セッション 12 仕様の実装 PR-2)以降、値は
+ * writer の書き込み署名ブロックを伴う: prev 連鎖(prevValueSigHashHex)、
+ * 認可時点のチェーンヘッド束縛(chainHeadHashHex + chainHeadSeq)、Ed25519
+ * 署名(signatureHex)。push / create では writer = 呼び出し主体が契約
+ * (§12-5)のため、writer の ID / FP / signed-bytes hash はワイヤに載せない。
  */
 export const EncryptedPayloadSchema = Schema.Struct({
   suite: SuiteSchema,
   aad: VariableAadSchema,
   nonceHex: NonceHex,
   ciphertextHex: ValueCiphertextHex,
+  prevValueSigHashHex: PrevValueSigHashHex,
+  chainHeadHashHex: Sha256Hex,
+  chainHeadSeq: PositiveInt,
+  signatureHex: ValueSignatureHex,
 });
 
 /** An encrypted variable value on the wire. */
 export type EncryptedPayload = typeof EncryptedPayloadSchema.Type;
+
+/**
+ * A distributed (pulled) variable value (AUTH_SPEC §12-2 / §12-7): the stored
+ * payload plus the verification material — the writer's user id and key
+ * fingerprint at acceptance time. The receiver verifies against its own
+ * verified chain history (CRYPTO_SPEC §6.3); a writer removed since then
+ * stays verifiable through the chain's key history. The server-computed
+ * signed-bytes hash is NOT distributed — verifiers recompute it themselves.
+ */
+export const DistributedEncryptedPayloadSchema = Schema.Struct({
+  ...EncryptedPayloadSchema.fields,
+  writerUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  writerKeyFingerprintHex: KeyFingerprintHex,
+});
+
+/** A distributed variable value with its writer identity. */
+export type DistributedEncryptedPayload = typeof DistributedEncryptedPayloadSchema.Type;
 
 /**
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
