@@ -158,6 +158,17 @@ function headerTamperVariants(): readonly TamperVariant[] {
  * 新規分を落とさないよう、全 name が検査済み集合に含まれることを固定する。
  */
 function tamperCoverageCheck(c: Checks, covered: ReadonlySet<string>): void {
+  // kind の語彙は undefined(暗号検証系 — 本関数の網羅対象)と "authorization"
+  // (crypto / server の authorization スイープが全件を舐める)の 2 つのみ。
+  // 第三の kind が導入されると両方のふるいから静かに漏れるため、語彙自体を固定する
+  const unknownKinds = vectorNegatives
+    .filter((negative) => negative.kind !== undefined && negative.kind !== "authorization")
+    .map((negative) => negative.name);
+  c.push(
+    "chain negative: kind vocabulary is fixed",
+    unknownKinds.length === 0,
+    unknownKinds.length === 0 ? undefined : `unknown kind: ${unknownKinds.join(", ")}`,
+  );
   const uncovered = vectorNegatives
     .filter((negative) => negative.kind === undefined)
     .map((negative) => negative.name)
