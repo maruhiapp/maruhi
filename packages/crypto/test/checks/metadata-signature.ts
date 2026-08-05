@@ -325,6 +325,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevMetaSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
+    { name: "empty project id", context: { ...baseContext, projectId: "" } },
+    { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
     { name: "empty author", context: { ...baseContext, authorUserId: "" } },
     {
       name: "empty variable id",
