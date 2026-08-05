@@ -1,8 +1,30 @@
 {
   "clone_groups": [
-    "apps/cli/test/support/crypto.ts:31-58|apps/server/test/support/data-crypto.ts:37-62",
-    "apps/cli/test/support/crypto.ts:80-105|apps/server/test/support/data-crypto.ts:102-119",
-    "apps/cli/test/support/crypto.ts:108-124|apps/server/test/support/data-crypto.ts:128-148",
-    "apps/server/src/data-store.ts:244-253|apps/server/src/data-store.ts:258-275"
+    "apps/server/src/data-programs.ts:1015-1025|apps/server/src/data-programs.ts:1062-1072",
+    "apps/server/src/handlers-environments.ts:146-157|apps/server/src/handlers-variables.ts:171-180",
+    "apps/server/src/handlers-variables.ts:148-161|apps/server/src/handlers-variables.ts:177-190",
+    "packages/crypto/src/internal.package/dek-wrap-sign.ts:126-139|packages/crypto/src/internal.package/meta-sign.ts:220-233|packages/crypto/src/internal.package/value-sign.ts:200-213",
+    "packages/crypto/src/internal.package/meta-verify.ts:88-99|packages/crypto/src/internal.package/value-verify.ts:71-82",
+    "packages/crypto/src/internal.package/meta-verify.ts:157-173|packages/crypto/src/internal.package/value-verify.ts:145-161",
+    "packages/crypto/test/checks/metadata-signature.ts:118-130|packages/crypto/test/checks/value-signature.ts:87-99",
+    "packages/crypto/test/checks/metadata-signature.ts:138-148|packages/crypto/test/checks/value-signature.ts:107-117",
+    "packages/crypto/test/checks/metadata-signature.ts:268-278|packages/crypto/test/checks/value-signature.ts:210-220",
+    "packages/crypto/test/checks/metadata-signature.ts:294-303|packages/crypto/test/checks/value-signature.ts:236-245",
+    "packages/crypto/test/checks/metadata-signature.ts:304-312|packages/crypto/test/checks/value-signature.ts:246-254",
+    "packages/crypto/test/checks/metadata-signature.ts:422-433|packages/crypto/test/checks/value-signature.ts:306-317"
+  ],
+  "clone_fingerprints": [
+    "dup:d35fd995:2",
+    "dup:633d7ad6:2",
+    "dup:835bf399:2",
+    "dup:2904d72e:3",
+    "dup:038be313:2",
+    "dup:1937fa47:2",
+    "dup:e37a3791:2",
+    "dup:19911378:2",
+    "dup:c4ccd5f8:2",
+    "dup:13526e73:2",
+    "dup:87c9b4ef:2",
+    "dup:ed2e4bf4:2"
   ]
 }
