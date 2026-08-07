@@ -1,6 +1,6 @@
 # maruhi Architecture Decision Records
 
-Status: すべて Accepted(2026-07 時点)。
+Status: 0001〜0013 は Accepted(2026-07 時点)。0014 は提案中(所有者承認待ち)。
 これらの決定を覆す実装をエージェントが行うことは禁止。変更提案は ADR の改訂案として人間に提示すること。
 
 ## 索引
@@ -18,3 +18,4 @@ Status: すべて Accepted(2026-07 時点)。
 - [ADR-0011: 未安定依存のリスク管理原則](./0011-unstable-deps.md)
 - [ADR-0012: IaC は Alchemy v2 Effect スタイル + セルフホストは wrangler 両対応](./0012-alchemy-wrangler.md)
 - [ADR-0013: web の UI ライブラリは Astryx(HeroUI v3 / Pro + Tailwind v4 を置換)](./0013-astryx.md)
+- [ADR-0014: 製品進化方針 — ゼロ知識チーム秘密基盤を本線とし、エージェント隔離を次の楔にする【提案中】](./0014-product-evolution-policy.md)
