@@ -20,7 +20,7 @@
 - [ ] メンバーシップログ(genesis + 単独ユーザー分。検証ロジック込み)※チェーンの暗号・検証層は PR #12、サーバー保存(プロジェクト DO)・追記 API(§6.4 検証 / CAS / 受理ポリシー)は PR #14 で完了(2026-08-02)。クライアント同期のうち §6.3 の DEK ラップ先一致検査は PR #25 で完了(2026-08-03)。残りはヘッドゴシップ(Phase 2)
 - [x] CLI: `maruhi run`(メモリ注入)、`push` / `pull`、device flow ログイン、OS キーチェーン(2026-08-03 完了。PR #25 = apps/cli: login〔device flow〕/ logout / key / project init|verify / env create / pull [--show] / push / run / config、OS キーチェーン = Bun.secrets、§5.1 配布時検証・§6.3 同期検査のクライアント実装込み。§6.3 ローカル床(巻き戻し・欠落・前進注入〔値〕の永続検出)は PR #33 = セッション 16 / 真正性シリーズ実装 PR-4 で完了(2026-08-04)。CLI 配布・Windows 対応は Phase 2、初回セットアップウィザード・リカバリーは別項目のまま)
 - [x] サーバー: プロジェクト DO、D1、HttpApi、監査ログ(append-only)※ DO・D1(Drizzle v1)・HttpApi に加え、認証・アイデンティティ基盤(AUTH_SPEC 本実装: GitHub OAuth web / device 交換、DB バックセッション、maruhi 発行トークン、パーソナル org、チェーン API の認証・認可 = AUTH_SPEC §11)は PR #16 で完了(2026-08-02)。変数値・環境・DEK API(AUTH_SPEC §12)と監査ログ(project DO 側: AUDIT_SPEC §3.3 / §3.4 / §5.1。同 PR のマージをもって AUDIT_SPEC は所有者承認済み)は PR #18 で完了(2026-08-02)。セッション 07 レビュー裁定 3 件の実装(3-D = ラップの suite 保存、F 先行分 = DEK ラップ行数上限、2-D = 修復経路〔ラップ削除 → 再登録〕+ dek 監査イベント)は PR #20 で完了(2026-08-02)。DEK ラップ登録署名(裁定 2-E = CRYPTO_SPEC §5.1。同 PR のマージをもって §5.1 は所有者承認済み)は PR #21 で完了(2026-08-03)。値・DEK・メタデータの真正性(CRYPTO_SPEC 0.4 改訂 = セッション 12。PR #27 マージで承認)の実装は PR #28(DEK コミットメント / create_environment・rotate_epoch の複合受理)・PR #30(値署名 / 認可時点の二重判定 / prev 連鎖・fork 証拠化)・PR #31(メタデータステートメント / 認証済み名前解決)で完了(2026-08-04。crypto / api-schema / server / CLI 横断)。残りは監査ログの D1 側(認証・org 系 = AUDIT_SPEC §3.1〜§3.2)と読み取り API(Phase 2 の監査ログ UI と同時に設計)
-- [ ] リカバリーコード
+- [ ] リカバリーコード(保存確認・印刷 / 保管リマインダ等の紛失対策 UX 込み — ADR-0014)
 - [ ] セルフホスト初回セットアップウィザード(GitHub OAuth App の作成案内 + client_id/secret 登録。AUTH_SPEC §3 参照)
 - [ ] Deploy to Cloudflare / wrangler 一発デプロイの検証
 - [ ] 数週間のドッグフーディング
@@ -31,20 +31,25 @@
 
 - 公開前チェックリスト: ライセンス最終確認(FSL-1.1-MIT + MIT 分割)、DCO + CONTRIBUTING.md、テレメトリゼロの明文化、maruhi.dev 取得、商標出願(9 類・42 類)
 - 脅威モデル文書(CRYPTO_SPEC を基に「何から守り、何からは守らないか」を明文化)
-- チーム共有(add_member / remove_member、エポックローテーション、要ローテーション検出)
-- ヘッドゴシップ検証
+- チーム共有(add_member / remove_member、エポックローテーション、要ローテーション検出。ゼロ知識運用の UX 設計込み: 未登録ユーザー招待 = CRYPTO_SPEC 未決 #9、鍵フィンガープリント確認、退職時ローテ推奨 — ADR-0014)
+- ヘッドゴシップ検証(環境マニフェスト・定期チェックポイントの設計と同時 — CRYPTO_SPEC 未決 #12)
 - GitHub Actions 同期(ここで選択的開示 = grant_server を実装)
 - 環境間パリティチェック(環境モデル決定が前提)
 - 監査ログ UI、Web ダッシュボード
 - CLI 配布: npm / brew tap / インストールスクリプト、macOS 公証(Apple Developer Program は公開 2〜3 週前に登録)、npm provenance、チェックサム公開
 - docs サイト(Blume)
 
-## Phase 3: エージェント
+## Phase 3: エージェント(方針は ADR-0014。優先度順)
 
-- MCP サーバー同居(スコープ付き・短命・監査付きの読み取り)
+- 値なしスキーマ(名前・型・説明・必須のみをエージェントへ開示。`maruhi schema` / MCP。`.env.schema` ファイルは正にしない)
+- MCP サーバー同居(スコープ付き・短命・監査付きの読み取り。値なしスキーマの配信機構を兼ねる)
+- エージェント向け credential brokering(`maruhi proxy run`: プレースホルダのみ渡し、通信境界で実値に差し替え。「サーバーもエージェントも平文を持たない」)
 - DO ベースのリース(「このエージェントセッションに、この変数だけ、30 分」)
-- エージェント向け credential brokering の土台
+- no-reveal 方針化(人間向けの値表示を例外操作に格上げ。エージェント検出時の表示拒否は既定のまま)
+- リーク検知・ログ redact(付帯機能。本線を汚さない範囲で)
 
 ## 将来(未スケジュール)
 
 - パスキー PRF によるデバイス鍵、SOPS 互換エクスポート、チェーンヘッド外部チェックポイント、`maruhi/v2` ハイブリッド PQ、ホステッドクラウド版(着工日 = WorkOS 再判断ポイント、ADR-0009)
+- リカバリーの封印バックアップ(ユーザー所有ストレージへ、パスフレーズ / パスキーで暗号化。運営が読める預かりは禁止 — ADR-0014)
+- 四眼・承認付き reveal(prod reveal / エクスポート / 危険操作の break-glass。企業向け)、上流 credential の自動ローテーション(コネクタ次第。「要ローテーション検出」= Phase 2 の後続)、remove / 降格から全環境 rotate 完了までの窓の機構化(CRYPTO_SPEC §14.3-5 (ii)。候補はセッション 12 ノート §10-7)
