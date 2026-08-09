@@ -67,6 +67,9 @@ function makeBunProcessRunner(): ProcessRunnerShape {
   };
 }
 
+/** 対話入力の Ctrl+C / Ctrl+D による中断(EOF・読み取り不能と区別する)。 */
+class PromptInterruptedError extends Error {}
+
 const ENTER_CHARS = new Set(["\r", "\n"]);
 const ERASE_CHARS = new Set(["\u007f", "\b"]);
 const CTRL_C = "\u0003";
@@ -101,6 +104,8 @@ export function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
       process.stderr.write("\n");
       if (outcome === "done") {
         resolve(line);
+      } else if (outcome === "interrupted") {
+        reject(new PromptInterruptedError("interrupted"));
       } else {
         reject(new Error(outcome));
       }
@@ -274,7 +279,7 @@ function makeLiveIo(): CliIoShape {
         },
         catch: (error) =>
           cliError(
-            error instanceof Error && error.message === "interrupted"
+            error instanceof PromptInterruptedError
               ? "入力が中断されました"
               : "対話入力を読み取れません(非対話環境では実行できない操作です)",
           ),

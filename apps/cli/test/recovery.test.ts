@@ -286,6 +286,23 @@ describe("maruhi key recover(復元)", () => {
     expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
   });
 
+  it("AI エージェント環境ではコード入力を拒否する(発行側と対称の線引き)", async () => {
+    const user = await makeTestUser("user-0001");
+    let fetched = false;
+    const maruhi = await start([
+      onRequest("GET", "/auth/recovery", () => {
+        fetched = true;
+        return { status: 404, json: { _tag: "RecoveryWrapNotFound" } };
+      }),
+    ]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    env.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("リカバリーコードの入力を拒否しました");
+    // ブロブ取得(要監視イベント)にも到達しない
+    expect(fetched).toBe(false);
+  });
+
   it("既に master 鍵があるデバイスでは上書きを拒否する", async () => {
     const user = await makeTestUser("user-0001");
     const maruhi = await start([]);

@@ -144,6 +144,16 @@ export function recoverMasterKeyOp(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keychain = yield* Keychain;
+    // 発行側と対称の線引き: コードは鍵素材であり、エージェント越しの stdin に
+    // 打ち込ませる経路も作らない(入力はエージェントのセッション層から読める)。
+    // 復元は人間の対話端末で行う
+    if (io.agentProfile().isAgent) {
+      return yield* Effect.fail(
+        cliError(
+          "AI エージェント環境を検出したため、リカバリーコードの入力を拒否しました(コードは鍵素材です。復元は人間の対話端末で実行してください)",
+        ),
+      );
+    }
     const entryName = yield* ensureNoStoredMasterKey(
       input.session,
       "master 鍵は既にこのデバイスにあります。上書きすると既存の鍵を失うため拒否します(`maruhi key show` で確認できます)",
