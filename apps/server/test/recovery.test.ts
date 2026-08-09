@@ -4,7 +4,7 @@
 // ブロブはサーバーから見て不透明な暗号文なので、内容は任意の hex フィクスチャで
 // よい(復号可能性はクライアント側 = CLI のテストが担う)。
 
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { RECOVERY_FETCH_LIMIT } from "../src/db.package/index.ts";
@@ -138,6 +138,20 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     expect((await putWrap(bearer(token), "ef".repeat(64))).status).toBe(204);
     const afterReissue = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(afterReissue.status).toBe(200);
+  });
+
+  it("rejects an unknown stored suite without consuming the fetch window", async () => {
+    const token = await deviceToken(515);
+    expect((await putWrap(bearer(token))).status).toBe(204);
+    // v1 の書き込み経路では作れない行を直接作る(将来バージョンの書き込み /
+    // DB 破損の想定)。黙って v1 として配布しない(500)+ 窓を消費しない
+    await env.DB.prepare("UPDATE recovery_wraps SET suite = 'maruhi/v2'").run();
+    const broken = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
+    expect(broken.status).toBe(500);
+    const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
+      fetch_count: number;
+    }>();
+    expect(row?.fetch_count).toBe(0);
   });
 
   it("does not count 404s toward the fetch window (未登録は計数外)", async () => {
