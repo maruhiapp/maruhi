@@ -21,6 +21,15 @@ export interface CliIoShape {
   readonly logError: (line: string) => Effect.Effect<void>;
   /** Reads stdin to EOF (push values arrive here, never via argv). */
   readonly readStdin: Effect.Effect<Uint8Array, CliError>;
+  /**
+   * Reads one interactive line (recovery-code entry / save confirmation).
+   * `secret` requests no-echo input on a TTY; off-TTY input falls back to a
+   * plain line read. Fails when no input is available (EOF / 非対話環境).
+   */
+  readonly promptLine: (input: {
+    readonly prompt: string;
+    readonly secret?: boolean;
+  }) => Effect.Effect<string, CliError>;
   readonly envVar: (name: string) => string | undefined;
   readonly agentProfile: () => AgentProfile;
 }

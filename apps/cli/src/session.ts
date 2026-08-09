@@ -165,6 +165,26 @@ export function resolveSession(
   });
 }
 
+/**
+ * Fails when a master key is already stored for (origin, userId); returns the
+ * keychain entry name otherwise. keygen / recover 共通の上書き防止ガード
+ * (鍵を失うと復号可能性を失うため、上書きは常に拒否する)。
+ */
+export function ensureNoStoredMasterKey(
+  session: CliSession,
+  refusal: string,
+): Effect.Effect<string, CliError, Keychain> {
+  return Effect.gen(function* () {
+    const keychain = yield* Keychain;
+    const entryName = masterKeyEntryName(session.origin, session.userId);
+    const existing = yield* keychain.get(entryName);
+    if (existing !== null) {
+      return yield* Effect.fail(cliError(refusal));
+    }
+    return entryName;
+  });
+}
+
 /** Loads and imports the master keypair for (origin, userId) from the keychain. */
 export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, CliError, Keychain> {
   return Effect.gen(function* () {

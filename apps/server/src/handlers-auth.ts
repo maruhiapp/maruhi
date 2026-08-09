@@ -5,8 +5,15 @@
 // - `__Host-` クッキーは Secure / Path=/ が必須(http の wrangler dev ではブラウザに
 //   保存されない点に注意 — テストはヘッダー検証で行う)
 
-import { AuthFlowError, ForbiddenError, maruhiApi, TokenLimitError } from "@maruhi/api-schema";
-import type { TokenScope } from "@maruhi/core";
+import {
+  AuthFlowError,
+  ForbiddenError,
+  maruhiApi,
+  RecoveryRateLimitedError,
+  RecoveryWrapNotFoundError,
+  TokenLimitError,
+} from "@maruhi/api-schema";
+import type { AuthenticatedPrincipal, TokenScope } from "@maruhi/core";
 import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect } from "effect";
 import type { Cookies } from "effect/unstable/http";
@@ -14,7 +21,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
-import { IdentityRepo } from "./db.package/index.ts";
+import { IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
@@ -53,6 +60,26 @@ function authFlowFailure(
   reason: "state-mismatch" | "code-exchange-failed" | "github-token-invalid",
 ): () => AuthFlowError {
   return () => new AuthFlowError({ reason });
+}
+
+/**
+ * 鍵素材管理操作(リカバリーブロブの登録・再発行・取得)のトークン条件
+ * (AUTH_SPEC §13-2): セッション主体は常に可、トークン主体は `*` × admin
+ * スコープを含む場合のみ可。スコープ限定トークンにラップの置換(可用性攻撃)や
+ * 要監視のブロブ取得を許さない。
+ */
+function ensureKeyMaterialAccess(
+  principal: AuthenticatedPrincipal,
+): Effect.Effect<void, ForbiddenError> {
+  if (principal.kind === "session") {
+    return Effect.void;
+  }
+  const allowed = principal.scopes.some(
+    (scope) => scope.project === "*" && scope.permission === "admin",
+  );
+  return allowed
+    ? Effect.void
+    : Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
 }
 
 export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
@@ -175,6 +202,67 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const tokens = yield* TokenService;
         yield* tokens.revokePresentedToken(rawToken);
         return HttpServerResponse.empty({ status: 204 });
+      }),
+    )
+    .handle("recoveryPut", ({ payload }) =>
+      Effect.gen(function* () {
+        const principal = yield* (yield* RequestAuth).principal;
+        yield* ensureKeyMaterialAccess(principal);
+        const recovery = yield* RecoveryRepo;
+        // 登録と再発行は同じ置換 upsert(§13-1)。旧ラップ行はここで消える。
+        // 監査(auth.recovery_code_reissued)は D1 側監査基盤の導入と同時(§13-5)
+        yield* recovery.upsert(
+          principal.userId,
+          {
+            suite: payload.suite,
+            nonceHex: payload.nonceHex,
+            ciphertextHex: payload.ciphertextHex,
+          },
+          Date.now(),
+        );
+        return HttpServerResponse.empty({ status: 204 });
+      }),
+    )
+    .handle("recoveryGet", () =>
+      Effect.gen(function* () {
+        const principal = yield* (yield* RequestAuth).principal;
+        yield* ensureKeyMaterialAccess(principal);
+        const recovery = yield* RecoveryRepo;
+        // レート制限(§13-3)は存在判定より先に計数しない: 未登録(404)は
+        // 計数対象外で、行がなければ recordFetch は常に allowed を返す
+        const wrap = yield* recovery.find(principal.userId);
+        if (wrap === null) {
+          return yield* Effect.fail(new RecoveryWrapNotFoundError());
+        }
+        const decision = yield* recovery.recordFetch(principal.userId, Date.now());
+        if (!decision.allowed) {
+          return yield* Effect.fail(
+            new RecoveryRateLimitedError({ retryAfterSeconds: decision.retryAfterSeconds }),
+          );
+        }
+        if (wrap.suite !== "maruhi/v1") {
+          // PUT は Literal でピン留めされており(§13-4)、v1 の書き込み経路では
+          // 他スイートの行は生まれない。存在したら将来バージョンの書き込みか
+          // DB 破損であり、黙って v1 として配布しない(実装バグとして扱う)
+          return yield* Effect.die(new Error("stored recovery wrap has an unknown suite"));
+        }
+        // 監査(auth.recovery_blob_fetched)は D1 側監査基盤の導入と同時(§13-5)
+        return {
+          suite: "maruhi/v1" as const,
+          nonceHex: wrap.nonceHex,
+          ciphertextHex: wrap.ciphertextHex,
+          updatedAtMs: wrap.updatedAtMs,
+        };
+      }),
+    )
+    .handle("recoveryStatus", () =>
+      Effect.gen(function* () {
+        const principal = yield* (yield* RequestAuth).principal;
+        const recovery = yield* RecoveryRepo;
+        const wrap = yield* recovery.find(principal.userId);
+        return wrap === null
+          ? { registered: false, updatedAtMs: null }
+          : { registered: true, updatedAtMs: wrap.updatedAtMs };
       }),
     ),
 );

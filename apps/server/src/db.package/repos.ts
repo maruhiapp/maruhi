@@ -16,6 +16,8 @@ import { Context, Data, Effect } from "effect";
 
 import type {
   ApiTokenRecord,
+  RecoveryFetchDecision,
+  RecoveryWrapRecord,
   ResolvedUser,
   SessionRecord,
   UserOrg,
@@ -28,6 +30,7 @@ import {
   memberships,
   organizations,
   projects,
+  recoveryWraps,
   sessions,
   users,
 } from "./schema.ts";
@@ -378,6 +381,124 @@ async function findTokenByHash(db: Db, tokenHash: string): Promise<ApiTokenRecor
 }
 
 // ---------------------------------------------------------------------------
+// RecoveryRepo(AUTH_SPEC §13。ブロブは user 単位で高々 1 つ)
+// ---------------------------------------------------------------------------
+
+/** ブロブ取得レート制限の固定窓(AUTH_SPEC §13-3: user あたり 1 時間 5 回)。 */
+const RECOVERY_FETCH_WINDOW_MS = 60 * 60 * 1000;
+export const RECOVERY_FETCH_LIMIT = 5;
+
+interface RecoveryRepoShape {
+  /** 登録・再発行 = 置換 upsert(§13-1。旧ラップは受理と同時に消える)。 */
+  readonly upsert: (
+    userId: string,
+    wrap: { readonly suite: string; readonly nonceHex: string; readonly ciphertextHex: string },
+    nowMs: number,
+  ) => Effect.Effect<void>;
+  readonly find: (userId: string) => Effect.Effect<RecoveryWrapRecord | null>;
+  /**
+   * 固定窓の計数を進め、取得可否を返す(§13-3)。行が存在しないときは
+   * allowed(404 は計数しない — 呼び出し側が find で判定する)。読み → 条件付き
+   * 更新の 2 文であり、並行リクエストで計数が僅かに超過しうるベストエフォート。
+   */
+  readonly recordFetch: (userId: string, nowMs: number) => Effect.Effect<RecoveryFetchDecision>;
+}
+
+export class RecoveryRepo extends Context.Service<RecoveryRepo, RecoveryRepoShape>()(
+  "RecoveryRepo",
+) {}
+
+function makeRecoveryRepo(db: Db): RecoveryRepoShape {
+  return {
+    upsert: (userId, wrap, nowMs) =>
+      run(async () => {
+        await db
+          .insert(recoveryWraps)
+          .values({
+            userId,
+            suite: wrap.suite,
+            nonceHex: wrap.nonceHex,
+            ciphertextHex: wrap.ciphertextHex,
+            createdAt: nowMs,
+            updatedAt: nowMs,
+            fetchWindowStart: null,
+            fetchCount: 0,
+          })
+          .onConflictDoUpdate({
+            target: recoveryWraps.userId,
+            set: {
+              suite: wrap.suite,
+              nonceHex: wrap.nonceHex,
+              ciphertextHex: wrap.ciphertextHex,
+              updatedAt: nowMs,
+              // 再発行は新しいブロブなので取得窓もリセットする(旧ブロブへの
+              // 試行履歴を新ブロブに引き継がない)
+              fetchWindowStart: null,
+              fetchCount: 0,
+            },
+          });
+      }),
+    find: (userId) =>
+      run(async () => {
+        const row = await db
+          .select({
+            suite: recoveryWraps.suite,
+            nonceHex: recoveryWraps.nonceHex,
+            ciphertextHex: recoveryWraps.ciphertextHex,
+            updatedAt: recoveryWraps.updatedAt,
+          })
+          .from(recoveryWraps)
+          .where(eq(recoveryWraps.userId, userId))
+          .get();
+        return row === undefined
+          ? null
+          : {
+              suite: row.suite,
+              nonceHex: row.nonceHex,
+              ciphertextHex: row.ciphertextHex,
+              updatedAtMs: row.updatedAt,
+            };
+      }),
+    recordFetch: (userId, nowMs) =>
+      run(async () => {
+        const row = await db
+          .select({
+            fetchWindowStart: recoveryWraps.fetchWindowStart,
+            fetchCount: recoveryWraps.fetchCount,
+          })
+          .from(recoveryWraps)
+          .where(eq(recoveryWraps.userId, userId))
+          .get();
+        if (row === undefined) {
+          return { allowed: true } as const;
+        }
+        const windowStart = row.fetchWindowStart;
+        const windowExpired =
+          windowStart === null || nowMs - windowStart >= RECOVERY_FETCH_WINDOW_MS;
+        if (windowExpired) {
+          await db
+            .update(recoveryWraps)
+            .set({ fetchWindowStart: nowMs, fetchCount: 1 })
+            .where(eq(recoveryWraps.userId, userId));
+          return { allowed: true } as const;
+        }
+        if (row.fetchCount >= RECOVERY_FETCH_LIMIT) {
+          const remainingMs = RECOVERY_FETCH_WINDOW_MS - (nowMs - windowStart);
+          return {
+            allowed: false,
+            retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+          } as const;
+        }
+        await db
+          .update(recoveryWraps)
+          .set({ fetchCount: row.fetchCount + 1 })
+          .where(eq(recoveryWraps.userId, userId));
+        return { allowed: true } as const;
+      }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // OrgRepo(§9-1 org ロール。プロジェクトアクセスには関与しない)
 // ---------------------------------------------------------------------------
 
@@ -438,7 +559,13 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
 // 束ね: D1 binding からリポジトリ一式の Context を作る
 // ---------------------------------------------------------------------------
 
-export type DbServices = IdentityRepo | SessionRepo | TokenRepo | OrgRepo | ProjectRepo;
+export type DbServices =
+  | IdentityRepo
+  | SessionRepo
+  | TokenRepo
+  | OrgRepo
+  | ProjectRepo
+  | RecoveryRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
 export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
@@ -448,5 +575,6 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(TokenRepo, makeTokenRepo(db)),
     Context.add(OrgRepo, makeOrgRepo(db)),
     Context.add(ProjectRepo, makeProjectRepo(db)),
+    Context.add(RecoveryRepo, makeRecoveryRepo(db)),
   );
 }

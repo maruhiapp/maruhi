@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { tokenEntryName } from "../src/keychain.ts";
+import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -106,6 +106,63 @@ describe("maruhi login", () => {
     expect(stored).not.toContain("gho_github-token-value");
     // トークン生値は端末出力にも出ない
     expect(env.logs.join("\n")).not.toContain("maruhi_pat_issued");
+  });
+
+  it("ログイン後、鍵なし + リカバリー登録済みなら `key recover` を案内する", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+      onRequest("GET", "/auth/recovery/status", () => ({
+        status: 200,
+        json: { registered: true, updatedAtMs: 1754006400000 },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(env.logs.join("\n")).toContain("`maruhi key recover`");
+  });
+
+  it("ログイン後、鍵あり + リカバリー未登録なら発行を促す(保管リマインダ)", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+      onRequest("GET", "/auth/recovery/status", () => ({
+        status: 200,
+        json: { registered: false, updatedAtMs: null },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    // 事前にこの (origin, user) の master 鍵レコードを置いておく
+    env.keychain.set(
+      masterKeyEntryName(maruhi.origin, "user-0001"),
+      JSON.stringify({
+        suite: "maruhi/v1",
+        encPubHex: "00".repeat(32),
+        encSkHex: "00".repeat(32),
+        sigPubHex: "00".repeat(32),
+        sigSkSeedHex: "00".repeat(32),
+      }),
+    );
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(env.errors.join("\n")).toContain("`maruhi key recovery` で発行してください");
   });
 
   it("ブラウザ側の拒否(access_denied)はエラーで終了する", async () => {

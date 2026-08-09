@@ -40,7 +40,15 @@ export interface TestEnv {
   readonly configPath: string;
   /** ローカル床(§6.3)のディレクトリ(<configDir>/floor)。 */
   readonly floorDir: string;
+  /** promptLine に表示されたプロンプト文字列(検査用)。 */
+  readonly prompts: string[];
   setStdin(bytes: Uint8Array): void;
+  /**
+   * promptLine が順に返す応答をキューする(枯渇後は失敗 = EOF 相当)。
+   * 関数は応答時点で評価される(表示済みログから値を導く応答のため —
+   * リカバリーコードの保存確認等)。
+   */
+  setPromptResponses(lines: readonly (string | (() => string))[]): void;
   setAgent(profile: AgentProfile): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
@@ -58,6 +66,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const errors: string[] = [];
   const runnerCalls: RunnerCall[] = [];
   const envVars = new Map<string, string>();
+  const prompts: string[] = [];
+  const promptResponses: (string | (() => string))[] = [];
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
   let runnerExitCode = 0;
@@ -102,6 +112,14 @@ export async function makeTestEnv(): Promise<TestEnv> {
           errors.push(line);
         }),
       readStdin: Effect.suspend(() => Effect.succeed(stdin)),
+      promptLine: ({ prompt }) =>
+        Effect.suspend(() => {
+          prompts.push(prompt);
+          const next = promptResponses.shift();
+          return next === undefined
+            ? Effect.fail(cliError("対話入力を読み取れません(テスト: 応答キューが空)"))
+            : Effect.succeed(typeof next === "function" ? next() : next);
+        }),
       envVar: (name) => envVars.get(name),
       agentProfile: () => agent,
     }),
@@ -123,8 +141,13 @@ export async function makeTestEnv(): Promise<TestEnv> {
     runnerCalls,
     configPath,
     floorDir,
+    prompts,
     setStdin(bytes) {
       stdin = bytes;
+    },
+    setPromptResponses(lines) {
+      promptResponses.length = 0;
+      promptResponses.push(...lines);
     },
     setAgent(profile) {
       agent = profile;

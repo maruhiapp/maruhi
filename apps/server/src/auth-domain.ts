@@ -46,3 +46,20 @@ export interface ApiTokenRecord {
   readonly expiresAtMs: number | null;
   readonly lastUsedAtMs: number | null;
 }
+
+/**
+ * リカバリーブロブ行のドメイン表現(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み
+ * master 秘密鍵)。サーバーから見て不透明な暗号文であり、リカバリーコード自体は
+ * どの層にも現れない。
+ */
+export interface RecoveryWrapRecord {
+  readonly suite: string;
+  readonly nonceHex: string;
+  readonly ciphertextHex: string;
+  readonly updatedAtMs: number;
+}
+
+/** ブロブ取得のレート制限判定の結果(AUTH_SPEC §13-3 の固定窓)。 */
+export type RecoveryFetchDecision =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly retryAfterSeconds: number };

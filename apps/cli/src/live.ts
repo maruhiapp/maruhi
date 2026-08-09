@@ -6,6 +6,8 @@
 // - ProcessRunner = Bun.spawn(環境変数へのメモリ注入のみ。stdio は継承)
 // - エージェント検出 = gunshi/agent の getAgentProfile
 
+import { createInterface } from "node:readline";
+
 import { Duration, Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { getAgentProfile } from "gunshi/agent";
@@ -67,6 +69,76 @@ function makeBunProcessRunner(): ProcessRunnerShape {
   };
 }
 
+const ENTER_CHARS = new Set(["\r", "\n"]);
+const ERASE_CHARS = new Set(["\u007f", "\b"]);
+const CTRL_C = "\u0003";
+
+/**
+ * TTY での非エコー入力(リカバリーコード等の秘密の 1 行)。raw mode で 1 文字
+ * ずつ読み、端末には何も表示しない(Backspace は末尾削除、Ctrl+C は中断)。
+ */
+function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true);
+    stdin.resume();
+    let line = "";
+    const cleanup = () => {
+      stdin.off("data", onData);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+    };
+    const finish = (outcome: "done" | "interrupted") => {
+      cleanup();
+      process.stderr.write("\n");
+      if (outcome === "done") {
+        resolve(line);
+      } else {
+        reject(new Error("interrupted"));
+      }
+    };
+    // 1 文字を処理し、入力が終端した(finish 済み)かを返す
+    const handleChar = (ch: string): boolean => {
+      if (ENTER_CHARS.has(ch)) {
+        finish("done");
+        return true;
+      }
+      if (ch === CTRL_C) {
+        finish("interrupted");
+        return true;
+      }
+      line = ERASE_CHARS.has(ch) ? line.slice(0, -1) : line + ch;
+      return false;
+    };
+    const onData = (chunk: Buffer) => {
+      for (const ch of chunk.toString("utf8")) {
+        if (handleChar(ch)) {
+          return;
+        }
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+/** 通常のエコーありの 1 行読み取り(EOF は失敗)。 */
+function readPlainLine(stdin: NodeJS.ReadStream): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = createInterface({ input: stdin });
+    let settled = false;
+    rl.once("line", (line) => {
+      settled = true;
+      rl.close();
+      resolve(line);
+    });
+    rl.once("close", () => {
+      if (!settled) {
+        reject(new Error("eof"));
+      }
+    });
+  });
+}
+
 function makeLiveIo(): CliIoShape {
   return {
     log: (line) => Effect.sync(() => console.log(line)),
@@ -88,6 +160,25 @@ function makeLiveIo(): CliIoShape {
       },
       catch: () => cliError("stdin を読み取れません"),
     }),
+    promptLine: ({ prompt, secret }) =>
+      Effect.tryPromise({
+        try: async () => {
+          // プロンプトは stderr へ(stdout をパイプしても対話が壊れない)
+          process.stderr.write(prompt);
+          const stdin = process.stdin;
+          if (secret === true && stdin.isTTY) {
+            return await readHiddenLine(stdin);
+          }
+          // 非 TTY(パイプ入力)ではエコー制御のしようがないためそのまま読む
+          return await readPlainLine(stdin);
+        },
+        catch: (error) =>
+          cliError(
+            error instanceof Error && error.message === "interrupted"
+              ? "入力が中断されました"
+              : "対話入力を読み取れません(非対話環境では実行できない操作です)",
+          ),
+      }),
     envVar: (name) => process.env[name],
     agentProfile: getAgentProfile,
   };

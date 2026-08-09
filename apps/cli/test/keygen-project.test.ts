@@ -32,10 +32,43 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
   return env;
 }
 
+/** リカバリー登録状態の応答(key show / generate の後段が呼ぶ)。 */
+function recoveryStatusHandler(registered: boolean): MockHandler {
+  return onRequest("GET", "/auth/recovery/status", () => ({
+    status: 200,
+    json: { registered, updatedAtMs: registered ? 1754006400000 : null },
+  }));
+}
+
+/** リカバリーラップ登録の受理(generate / recovery の PUT)。 */
+function recoveryPutHandler(): MockHandler {
+  return onRequest("PUT", "/auth/recovery", () => ({ status: 204 }));
+}
+
+/** 表示済みログからリカバリーコード行(4 文字 × 13 グループ)を取り出す。 */
+function displayedRecoveryCode(env: TestEnv): string {
+  const line = env.logs.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+  if (line === undefined) {
+    throw new Error("recovery code line not found in logs");
+  }
+  return line.trim();
+}
+
+/** 保存確認プロンプトへの正答(コードの最終グループ)を遅延評価でキューする。 */
+function queueSaveConfirmation(env: TestEnv): void {
+  env.setPromptResponses([
+    () => {
+      const groups = displayedRecoveryCode(env).split("-");
+      return groups[groups.length - 1] ?? "";
+    },
+  ]);
+}
+
 describe("maruhi key", () => {
   it("generate は鍵をキーチェーンに保存し、FP を表示する(秘密鍵は表示しない)", async () => {
-    const maruhi = await start([]);
+    const maruhi = await start([recoveryStatusHandler(false), recoveryPutHandler()]);
     const env = await loggedInEnv(maruhi.origin, "user-0001");
+    queueSaveConfirmation(env);
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
     const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"));
     expect(stored).toBeDefined();
@@ -51,8 +84,9 @@ describe("maruhi key", () => {
   });
 
   it("既存鍵の上書きを拒否する", async () => {
-    const maruhi = await start([]);
+    const maruhi = await start([recoveryStatusHandler(false), recoveryPutHandler()]);
     const env = await loggedInEnv(maruhi.origin, "user-0001");
+    queueSaveConfirmation(env);
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
     expect(await runCli(["key", "generate"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("既に存在します");
@@ -76,22 +110,33 @@ describe("maruhi key", () => {
     expect(env.errors.join("\n")).toContain("スイートが未知");
   });
 
-  it("show は公開鍵と FP のみ表示する", async () => {
+  it("show は公開鍵と FP のみ表示し、リカバリー登録状態を出す", async () => {
     const user = await makeTestUser("user-0001");
-    const maruhi = await start([]);
+    const maruhi = await start([recoveryStatusHandler(true)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["key", "show"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
     expect(output).toContain(user.encPubHex);
     expect(output).toContain(user.fingerprintHex);
+    expect(output).toContain("recovery:        登録済み");
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(user.sigSkSeedHex);
   });
 
+  it("show はリカバリー未登録なら発行を促す(保管リマインダ)", async () => {
+    const user = await makeTestUser("user-0001");
+    const maruhi = await start([recoveryStatusHandler(false)]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    seedSession(env, maruhi.origin, user);
+    expect(await runCli(["key", "show"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("recovery:        未登録");
+    expect(env.errors.join("\n")).toContain("`maruhi key recovery` で発行してください");
+  });
+
   it("show は制御文字を含む userId をサニタイズする", async () => {
     const user = await makeTestUser("user\u001b[31m-0001");
-    const maruhi = await start([]);
+    const maruhi = await start([recoveryStatusHandler(true)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["key", "show"], env.layer)).toBe(0);
