@@ -15,7 +15,8 @@ import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/unstable/
 import type { HttpApiMiddleware } from "effect/unstable/httpapi";
 
 export const SESSION_COOKIE = "__Host-maruhi_session";
-const CSRF_HEADER = "x-maruhi-csrf";
+/** CSRF 対抗ヘッダー。状態を持つ GET(リカバリーブロブ取得)もハンドラ側で要求する。 */
+export const CSRF_HEADER = "x-maruhi-csrf";
 // RFC 7235: auth-scheme は大文字小文字を区別しない。空白の連続も許容する
 const BEARER_PATTERN = /^bearer\s+(\S+)$/i;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

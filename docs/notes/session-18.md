@@ -108,6 +108,17 @@ live.ts の入力プリミティブは「テスト用に公開」(repos.ts の i
 先例)し、live-io.test.ts で 7 件の単体テストを追加(行の持ち越し・CRLF・
 改行なし終端・EOF ハング・Backspace・エスケープ列・Ctrl+C/D)。
 
+PR 上のボットレビューからさらに 2 件を反映:
+
+6. **未知 suite の検査を取得計数より先に**(Bugbot。Cursor Autofix も同一修正を
+   push — リベースで統合): 配布に至らない defect 応答に固定窓を消費させない。
+   未知 suite 行を D1 直接更新で作る回帰テストを追加(500 + fetch_count 不変)
+7. **ブロブ取得の CSRF ヘッダー(Security Agent)**: `GET /auth/recovery` は
+   状態(取得計数)を持つ GET で、Lax セッションクッキーはクロスサイトの
+   トップレベル遷移でも同送される — 第三者サイトが被害者の取得窓(5/h)を
+   消費できた。セッション主体に書き込み系と同じ `x-maruhi-csrf: 1` を要求
+   (AUTH_SPEC §13-2 に追記。Bearer 主体は対象外)
+
 ## 5. テスト結果
 
 - server(vitest-pool-workers): recovery.test.ts 13 件(認可 2 主体 / スコープ

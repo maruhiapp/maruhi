@@ -56,10 +56,27 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
     const session = await loginSession(502);
     const put = await putWrap(sessionHeaders(session));
     expect(put.status).toBe(204);
+    // 取得もセッション主体は CSRF ヘッダー必須(§13-2 — 状態を持つ GET)
+    const get = await SELF.fetch(`${BASE}/auth/recovery`, {
+      headers: sessionHeaders(session),
+    });
+    expect(get.status).toBe(200);
+  });
+
+  it("session GET without the CSRF header is rejected and does not consume the window", async () => {
+    const session = await loginSession(507);
+    expect((await putWrap(sessionHeaders(session))).status).toBe(204);
+    // Lax クッキーだけが同送されるクロスサイト遷移の形(カスタムヘッダーなし)
     const get = await SELF.fetch(`${BASE}/auth/recovery`, {
       headers: { cookie: sessionHeaders(session)["cookie"] ?? "" },
     });
-    expect(get.status).toBe(200);
+    expect(get.status).toBe(403);
+    const body = (await get.json()) as Record<string, unknown>;
+    expect(body["reason"]).toBe("csrf-header-required");
+    const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
+      fetch_count: number;
+    }>();
+    expect(row?.fetch_count).toBe(0);
   });
 
   it("re-registration replaces the previous blob (再発行 = 置換。§13-1)", async () => {

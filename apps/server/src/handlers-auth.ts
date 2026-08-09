@@ -20,7 +20,7 @@ import type { Cookies } from "effect/unstable/http";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
+import { CSRF_HEADER, GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
 import { IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { WorkerEnv } from "./worker-env.ts";
@@ -223,10 +223,17 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return HttpServerResponse.empty({ status: 204 });
       }),
     )
-    .handle("recoveryGet", () =>
+    .handle("recoveryGet", ({ request }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
+        // GET だが取得計数という状態を持つ(§13-3)。Lax セッションクッキーは
+        // クロスサイトのトップレベル遷移でも同送されるため、セッション主体には
+        // 書き込み系と同じ CSRF ヘッダーを要求する(第三者サイトからの窓消費 =
+        // 可用性いやがらせの遮断)。Bearer はクロスサイトで付与できないため対象外
+        if (principal.kind === "session" && request.headers[CSRF_HEADER] !== "1") {
+          return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
+        }
         const recovery = yield* RecoveryRepo;
         // レート制限(§13-3)は存在判定より先に計数しない: 未登録(404)は
         // 計数対象外で、行がなければ recordFetch は常に allowed を返す
