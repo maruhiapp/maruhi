@@ -45,11 +45,14 @@ function recoveryPutHandler(): MockHandler {
   return onRequest("PUT", "/auth/recovery", () => ({ status: 204 }));
 }
 
-/** 表示済みログからリカバリーコード行(4 文字 × 13 グループ)を取り出す。 */
+/**
+ * リカバリーコード行(4 文字 × 13 グループ)を stderr 出力から取り出す。
+ * コードは鍵素材なので stdout(リダイレクトされうる)には出ない。
+ */
 function displayedRecoveryCode(env: TestEnv): string {
-  const line = env.logs.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+  const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
   if (line === undefined) {
-    throw new Error("recovery code line not found in logs");
+    throw new Error("recovery code line not found in stderr output");
   }
   return line.trim();
 }
@@ -122,6 +125,18 @@ describe("maruhi key", () => {
     expect(output).toContain("recovery:        登録済み");
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(user.sigSkSeedHex);
+  });
+
+  it("show はリカバリー状態を取得できなくても失敗しない(オフラインで使える)", async () => {
+    const user = await makeTestUser("user-0001");
+    // recovery/status ハンドラなし = サーバー側が応答しない状況
+    const maruhi = await start([]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    seedSession(env, maruhi.origin, user);
+    expect(await runCli(["key", "show"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain(user.fingerprintHex);
+    expect(env.logs.join("\n")).toContain("recovery:        確認できませんでした");
+    expect(env.errors.join("\n")).toContain("リカバリー登録状態を確認できません");
   });
 
   it("show はリカバリー未登録なら発行を促す(保管リマインダ)", async () => {

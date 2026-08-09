@@ -60,10 +60,11 @@ function putHandler(record: (body: PutBody) => void): MockHandler {
   });
 }
 
+// コードは鍵素材なので stderr(プロンプトと同じチャネル)にのみ表示される
 function displayedCode(env: TestEnv): string {
-  const line = env.logs.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+  const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
   if (line === undefined) {
-    throw new Error("recovery code line not found in logs");
+    throw new Error("recovery code line not found in stderr output");
   }
   return line.trim();
 }
@@ -145,7 +146,9 @@ describe("maruhi key generate のリカバリー発行", () => {
         env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001")),
       );
     }
-    expect(env.logs.join("\n")).toContain("保存確認が完了しました");
+    expect(env.errors.join("\n")).toContain("保存確認が完了しました");
+    // 鍵素材(コード)はリダイレクトされうる stdout に出ない(レビュー①)
+    expect(env.logs.join("\n")).not.toContain(displayedCode(env));
   });
 
   it("保存確認に 3 回失敗すると失敗するが、登録は残る旨を案内する", async () => {
@@ -203,7 +206,7 @@ describe("maruhi key recovery(発行・再発行)", () => {
     env.setPromptResponses([lastGroupOf(env)]);
     expect(await runCli(["key", "recovery"], env.layer)).toBe(0);
     expect(put).not.toBeNull();
-    expect(env.logs.join("\n")).toContain("これまでのリカバリーコードは無効になります");
+    expect(env.errors.join("\n")).toContain("これまでのリカバリーコードは無効になります");
   });
 
   it("AI エージェント環境では発行を拒否する", async () => {

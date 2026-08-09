@@ -101,8 +101,8 @@ export function loginOp(input: {
 
 /**
  * ログイン後の次の一歩の案内(デバイス追加・保管リマインダ — CRYPTO_SPEC §8 の
- * フローの入口)。補助線なので、状態確認の失敗でログイン成功を失敗に変えない
- * (握り潰しではなく明示の劣化: 案内をスキップするだけで他に副作用がない)。
+ * フローの入口)。補助線なので、状態確認の失敗でログイン成功を失敗に変えない。
+ * ただし無言では飲まない(CLAUDE.md): 失敗時はスキップした旨を 1 行で明示する。
  */
 function nextStepHint(
   origin: string,
@@ -126,7 +126,15 @@ function nextStepHint(
         "注意: リカバリーコードが未登録です。鍵を失うと復元できません — `maruhi key recovery` で発行してください",
       );
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(
+    Effect.catch(() =>
+      Effect.flatMap(CliIo, (io) =>
+        io.logError(
+          "注意: リカバリー登録状態を確認できなかったため、次の一歩の案内をスキップしました(ログインには影響しません。状態は `maruhi key show` で確認できます)",
+        ),
+      ),
+    ),
+  );
 }
 
 /** `maruhi logout`: revoke the presented token, then remove it from the keychain. */

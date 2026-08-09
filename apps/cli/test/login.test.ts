@@ -165,6 +165,27 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("`maruhi key recovery` で発行してください");
   });
 
+  it("ログイン後の案内は状態確認に失敗してもログインを失敗させず、スキップを明示する", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    // recovery/status ハンドラなし = 状態確認が失敗する状況
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    // 無言のスキップにしない(CLAUDE.md: catch で無言に飲まない)
+    expect(env.errors.join("\n")).toContain("次の一歩の案内をスキップしました");
+  });
+
   it("ブラウザ側の拒否(access_denied)はエラーで終了する", async () => {
     const github = fakeGitHub({
       pendingPolls: 0,

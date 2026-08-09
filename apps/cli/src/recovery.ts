@@ -61,7 +61,7 @@ export function issueRecoveryCodeOp(input: {
     // 既登録の置換(再発行)は事前に明示する(旧コードはこの操作で無効になる)
     const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
     if (status.registered) {
-      yield* io.log(
+      yield* io.logError(
         "既存のリカバリー登録を置き換えます(これまでのリカバリーコードは無効になります)",
       );
     }
@@ -88,18 +88,24 @@ export function issueRecoveryCodeOp(input: {
       })
       .pipe(Effect.mapError(toCliError));
 
+    // コードの表示ブロックは丸ごと stderr へ(プロンプトと同じチャネル)。
+    // stdout はリダイレクト・パイプされうる: コードは鍵素材であり、
+    // `maruhi key generate > log` で平文ファイルに残る経路を作らない。
+    // stderr なら確認プロンプトと同じ画面に出て、確認の儀式も成立する
     const code = formatRecoveryCode(secret);
-    yield* io.log("");
-    yield* io.log("リカバリーコードを発行しました。今すぐ安全な場所に保管してください:");
-    yield* io.log("");
-    yield* io.log(`    ${code}`);
-    yield* io.log("");
-    yield* io.log("推奨: 印刷またはパスワードマネージャへの保存。このコードは二度と表示されません");
-    yield* io.log(
+    yield* io.logError("");
+    yield* io.logError("リカバリーコードを発行しました。今すぐ安全な場所に保管してください:");
+    yield* io.logError("");
+    yield* io.logError(`    ${code}`);
+    yield* io.logError("");
+    yield* io.logError(
+      "推奨: 印刷またはパスワードマネージャへの保存。このコードは二度と表示されません",
+    );
+    yield* io.logError(
       "このコードと GitHub 認証で、鍵を失ったデバイスから master 鍵を復元できます(`maruhi key recover`)",
     );
     yield* confirmCodeSaved(code);
-    yield* io.log("保存確認が完了しました");
+    yield* io.logError("保存確認が完了しました");
   });
 }
 

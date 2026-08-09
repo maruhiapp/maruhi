@@ -24,7 +24,6 @@ import type { HttpClient } from "effect/unstable/http";
 import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { Keychain, type StoredMasterKey } from "./keychain.ts";
 import { issueRecoveryAfterKeygen } from "./recovery.ts";
@@ -92,9 +91,18 @@ export function keyShowOp(input: {
     yield* io.log(`sig public key:  ${keys.record.sigPubHex}`);
     yield* io.log(`key fingerprint: ${keys.fingerprintHex}`);
     // 保管リマインダ(ROADMAP の紛失対策 UX): 登録状態を常に表示し、未登録は
-    // 発行コマンドを案内する。status はブロブを運ばない(AUTH_SPEC §13-2)
-    const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
-    if (status.registered) {
+    // 発行コマンドを案内する。status はブロブを運ばない(AUTH_SPEC §13-2)。
+    // show の本務はローカル鍵の表示なので、状態確認の失敗はコマンドを失敗させず
+    // 「確認できなかった」と明示して劣化する(オフライン・トークン失効でも使える)
+    const status = yield* input.client.auth
+      .recoveryStatus({})
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    if (status === null) {
+      yield* io.log("recovery:        確認できませんでした");
+      yield* io.logError(
+        "注意: リカバリー登録状態を確認できません(サーバーに接続できないかトークンが失効しています)。鍵情報の表示には影響しません",
+      );
+    } else if (status.registered) {
       const updated =
         status.updatedAtMs === null ? "" : `(更新: ${formatDateUtc(status.updatedAtMs)})`;
       yield* io.log(`recovery:        登録済み${updated}`);
