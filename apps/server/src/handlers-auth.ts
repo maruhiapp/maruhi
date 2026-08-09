@@ -234,17 +234,19 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         if (wrap === null) {
           return yield* Effect.fail(new RecoveryWrapNotFoundError());
         }
+        if (wrap.suite !== "maruhi/v1") {
+          // PUT は Literal でピン留めされており(§13-4)、v1 の書き込み経路では
+          // 他スイートの行は生まれない。存在したら将来バージョンの書き込みか
+          // DB 破損であり、黙って v1 として配布しない(実装バグとして扱う)。
+          // 計数(recordFetch)より先に判定し、配布できないリクエストで
+          // クォータを消費しない(§13-3 の計数対象はブロブ配布のみ)
+          return yield* Effect.die(new Error("stored recovery wrap has an unknown suite"));
+        }
         const decision = yield* recovery.recordFetch(principal.userId, Date.now());
         if (!decision.allowed) {
           return yield* Effect.fail(
             new RecoveryRateLimitedError({ retryAfterSeconds: decision.retryAfterSeconds }),
           );
-        }
-        if (wrap.suite !== "maruhi/v1") {
-          // PUT は Literal でピン留めされており(§13-4)、v1 の書き込み経路では
-          // 他スイートの行は生まれない。存在したら将来バージョンの書き込みか
-          // DB 破損であり、黙って v1 として配布しない(実装バグとして扱う)
-          return yield* Effect.die(new Error("stored recovery wrap has an unknown suite"));
         }
         // 監査(auth.recovery_blob_fetched)は D1 側監査基盤の導入と同時(§13-5)
         return {
