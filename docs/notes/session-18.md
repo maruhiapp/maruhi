@@ -142,12 +142,14 @@ pullfrog レビュー(設計確認 3 件 + nit 2 件、ブロッカーなし)へ
 
 ## 5. テスト結果
 
-- server(vitest-pool-workers): recovery.test.ts 13 件(認可 2 主体 / スコープ
-  条件 403 / 置換 / レート制限と窓リセット / 404 計数外 / status / Schema 400 /
+- server(vitest-pool-workers): recovery.test.ts 15 件(認可 2 主体 / スコープ
+  条件 403 / 置換 / レート制限と窓リセット / 404 計数外 / 未知 suite = 500 +
+  窓不消費 / セッション GET の CSRF 403 + 窓不消費 / status / Schema 400 /
   401)を含め全通過
-- cli(Vitest): recovery.test.ts 13 件(Base32 roundtrip・拒否系、発行 →
+- cli(Vitest): recovery.test.ts 14 件(Base32 roundtrip・拒否系、発行 →
   表示コードで実復号できる roundtrip、保存確認失敗、エージェントスキップ /
-  拒否、復元成功・誤コード 3 回・404・429・上書き拒否)+ login の案内 2 件 +
-  key show の recovery 行 2 件。既存テストは新フローに追随
+  発行拒否 / 入力拒否、復元成功・誤コード 3 回・404・429・上書き拒否)+
+  live-io.test.ts 7 件 + login の案内 3 件 + key show の recovery 行 3 件。
+  既存テストは新フローに追随
 - `bun run check`(oxfmt / oxlint / tsc / ImportLint / fallow audit / React
   Doctor / 全テスト)green
