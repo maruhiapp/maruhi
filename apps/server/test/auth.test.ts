@@ -610,8 +610,8 @@ const PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
 // worker.fetch を env 差し替えで直接呼ぶための着信リクエスト型合わせ
 // (fetch 側は IncomingRequestCfProperties を要求するが、コンストラクタ産の
 // Request は CfProperties になる — workers-types の既知の型差)
-const incoming = (url: string): Request<unknown, IncomingRequestCfProperties> =>
-  new Request(url) as Request<unknown, IncomingRequestCfProperties>;
+const incoming = (url: string, init?: RequestInit): Request<unknown, IncomingRequestCfProperties> =>
+  new Request(url, init) as Request<unknown, IncomingRequestCfProperties>;
 
 describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
   it("returns the configured client_id without authentication", async () => {
@@ -638,6 +638,28 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
     const { GITHUB_CLIENT_ID: _removed, ...missing } = env;
     const response = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
     expect(response.status).toBe(503);
+  });
+
+  it("treats a missing client_secret as unconfigured (`wrangler secret put` 漏れ)", async () => {
+    // client_id は実値でも secret 未登録なら 503: 素通しすると認証は不透明な
+    // トークン交換失敗(GitHub 401 → AuthFlow 400)に落ち、/auth/config の
+    // 200 が誤った安心を与える(pullfrog レビュー指摘)
+    const { GITHUB_CLIENT_SECRET: _removed, ...missing } = env;
+    const config = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
+    expect(config.status).toBe(503);
+    // deviceExchange も GitHub へのトークン検証より先に fail-closed する
+    const exchange = await worker.fetch(
+      incoming(`${BASE}/auth/device/exchange`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        // ガードはトークン検証より先に走る(値は Schema を満たせば何でもよい)
+        body: JSON.stringify({ githubAccessToken: "gh-token-901" }),
+      }),
+      missing as typeof env,
+    );
+    expect(exchange.status).toBe(503);
+    const body = (await exchange.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("SetupIncomplete");
   });
 
   it("githubStart fails closed with 503 instead of bouncing to GitHub's error page", async () => {

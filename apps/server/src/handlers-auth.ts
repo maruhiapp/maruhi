@@ -58,18 +58,24 @@ function callbackUri(origin: string): string {
 
 /**
  * セルフホスト未設定の検出(AUTH_SPEC §3): client_id が wrangler.jsonc
- * テンプレートのプレースホルダのまま・空・欠落(Env 型は string だが、vars を
- * 消したデプロイでは実行時に undefined になり得る)。未設定のまま GitHub へ
- * リダイレクトすると GitHub 側のエラーページに飛んで原因に辿り着けないため、
- * 503 でセットアップガイド(docs/SELF_HOSTING.md)へ誘導する。
- * リテラルは wrangler.jsonc の vars.GITHUB_CLIENT_ID と同期すること。
+ * テンプレートのプレースホルダのまま・空・欠落、または client_secret が
+ * 未登録(`wrangler secret put` 漏れ)・空(Env 型は string だが、vars /
+ * secret を欠いたデプロイでは実行時に undefined になり得る)。素通しすると
+ * GitHub のエラーページや不透明なトークン交換失敗(AuthFlow 400)に落ちて
+ * 原因に辿り着けないため、503 でセットアップガイド(docs/SELF_HOSTING.md)へ
+ * 誘導する。プレースホルダのリテラルは wrangler.jsonc の vars.GITHUB_CLIENT_ID
+ * と同期すること。
  */
 const CLIENT_ID_PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
 
 function ensureGitHubOAuthConfigured(
   clientId: string | undefined,
+  clientSecret: string | undefined,
 ): Effect.Effect<void, SetupIncompleteError> {
-  return clientId === undefined || clientId === "" || clientId === CLIENT_ID_PLACEHOLDER
+  const clientIdMissing =
+    clientId === undefined || clientId === "" || clientId === CLIENT_ID_PLACEHOLDER;
+  const clientSecretMissing = clientSecret === undefined || clientSecret === "";
+  return clientIdMissing || clientSecretMissing
     ? Effect.fail(new SetupIncompleteError({ reason: "github-oauth-unconfigured" }))
     : Effect.void;
 }
@@ -107,15 +113,16 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
         // 公開設定(AUTH_SPEC §4): client_id は authorize URL に平文で現れる
-        // 公開情報のみ。client_secret 等をこの応答に足さないこと
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID);
+        // 公開情報のみ。client_secret 等をこの応答に足さないこと(検査条件には
+        // 含む — 200 が「client_id / secret とも登録済み」の確認として機能する)
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         return { githubClientId: env.GITHUB_CLIENT_ID };
       }),
     )
     .handle("githubStart", ({ request }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID);
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         const state = randomHex(16);
         const origin = requestOrigin(request);
         const authorize = new URL(GITHUB_AUTHORIZE_URL);
@@ -166,6 +173,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     )
     .handle("deviceExchange", ({ payload }) =>
       Effect.gen(function* () {
+        // 未設定サーバーは不透明なトークン交換失敗(GitHub 401 → AuthFlow 400)
+        // より先に fail-closed する(AUTH_SPEC §3)
+        const env = yield* WorkerEnv;
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         const github = yield* GitHubApi;
         // §4-4: 持ち込みトークンは check-token API で「自 OAuth App 発行」まで検証する
         // (他 App 向けに発行されたトークンの流用 = confused-deputy を遮断)

@@ -130,7 +130,7 @@ export const authGroup = HttpApiGroup.make("auth")
         scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
       }),
       success: DeviceExchangeResultSchema,
-      error: [AuthFlowError, TokenLimitError],
+      error: [AuthFlowError, SetupIncompleteError, TokenLimitError],
     }),
   )
   .add(

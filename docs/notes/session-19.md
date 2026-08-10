@@ -107,6 +107,22 @@ client_secret ローテーション・独自ドメイン(コールバック URL 
    セルフホスターが使う版との差の穴を塞いだ
 3. nit: handlers-auth.ts のコメントの節参照(存在しない §3-3 → §3)
 
+PR #39 上の pullfrog レビュー(IMPORTANT 1 件 + nit 2 件)への反映(3 コミット目):
+
+4. **client_secret の登録漏れも fail-closed の対象に(IMPORTANT)**: guard が
+   client_id しか見ておらず、client_id 置換済みで `wrangler secret put` を漏らした
+   サーバーは検出を素通りして不透明なトークン交換失敗(GitHub 401 → AuthFlow 400)
+   に落ち、SELF_HOSTING 手順 7 の `/auth/config` 200 が誤った安心を与えていた。
+   guard を client_id + client_secret の両方受けに拡張し、`deviceExchange` にも
+   適用(api-schema の error リストへ SetupIncomplete を追加)。AUTH_SPEC §3 の
+   自己診断条件へ secret を明記し、SELF_HOSTING の動作確認を「200 = 両方登録済み」の
+   意味論へ更新(トラブルシューティングに `wrangler secret list` も記載)。
+   secret 欠落の回帰テストを追加(/auth/config と deviceExchange の 503)
+5. nit: api.ts の「deviceExchange is the only unauthenticated call」docstring を
+   authConfig 追加後の実態へ修正
+6. nit: SELF_HOSTING の更新節に、wrangler.jsonc のローカル編集(database_id /
+   client_id)と `git pull` の衝突注意(フォークへのコミット推奨)を追記
+
 ## 5. スコープ外(申し送り)
 
 - **ドッグフーディング開始時の人間タスク**: GitHub OAuth App の作成(SELF_HOSTING.md

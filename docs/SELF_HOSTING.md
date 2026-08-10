@@ -96,7 +96,9 @@ bunx wrangler secret put GITHUB_CLIENT_SECRET   # プロンプトに貼り付け
 bun run deploy
 curl https://<デプロイ URL>/auth/config
 # → {"githubClientId":"<あなたの client_id>"} なら設定完了
-# → 503 {"_tag":"SetupIncomplete",...} なら手順 6 の置き換え・再デプロイ漏れ
+#   (200 は client_id / client_secret の両方が登録済みであることを意味する)
+# → 503 {"_tag":"SetupIncomplete",...} なら手順 6 のどれかの漏れ:
+#   client_id の置き換え・secret put・再デプロイ
 ```
 
 ### 8. CLI から接続
@@ -119,10 +121,18 @@ bun run db:migrate   # 新しいマイグレーションがあれば適用(先�
 bun run deploy
 ```
 
+手順 2 / 6 で行った `wrangler.jsonc` のローカル編集(`database_id` / `GITHUB_CLIENT_ID`)は
+自分のフォークにコミットしておくこと(upstream 側でこのファイルが更新されると
+`git pull` が未コミットの編集と衝突する。コミットしない運用なら pull 後に再適用する)。
+client_secret は Workers Secret 側に保存されているため更新の影響を受けない。
+
 ## トラブルシューティング
 
-- **`/auth/config` や `/auth/github/start` が 503 `SetupIncomplete`**:
-  `GITHUB_CLIENT_ID` がプレースホルダのまま。手順 6〜7 をやり直す
+- **`/auth/config` / `/auth/github/start` / `/auth/device/exchange` が 503
+  `SetupIncomplete`**: `GITHUB_CLIENT_ID` がプレースホルダのまま、**または
+  `GITHUB_CLIENT_SECRET` が未登録**(`wrangler secret put` 漏れ)。手順 6〜7 を
+  やり直す(登録済みシークレットの一覧は `bunx wrangler secret list` で確認できる —
+  値は表示されない)
 - **CLI ログインで GitHub が `device_flow_disabled` を返す**: OAuth App の
   "Enable Device Flow" が未チェック(手順 5)
 - **ブラウザログインで GitHub のエラーページに飛ぶ**: コールバック URL の不一致。

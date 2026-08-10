@@ -14,7 +14,8 @@ export type MaruhiClient = HttpApiClient.ForApi<typeof maruhiApi>;
 
 /**
  * Derives the typed client. `token` is attached as a Bearer header when
- * present (deviceExchange is the only unauthenticated call the CLI makes).
+ * present (authConfig and deviceExchange are the only unauthenticated calls
+ * the CLI makes).
  */
 export function makeApiClient(options: {
   readonly baseUrl: string;

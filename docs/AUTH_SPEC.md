@@ -77,7 +77,7 @@ api_tokens (
 
 1. **導入手順の正は `docs/SELF_HOSTING.md`**(実デプロイで検証済みの wrangler コマンド列 + OAuth App 作成案内)。セットアップの全手順が Cloudflare 資格情報を要する wrangler 操作であり、maruhi CLI にもサーバーにも CF 資格情報を持たせない。対話的な CLI ウィザードは作らない — セルフホストは上級者経路(ADR-0014 裁定 5)であり、コピー&ペースト可能な検証済み手順書が最小かつ十分
 2. **client_id は wrangler vars、client_secret は Workers Secret としてデプロイ時に登録する。ランタイムの登録 API・「初回アクセス時の Web 登録フォーム」は作らない**: 未認証の初回登録面は「デプロイ直後に先にアクセスした者が自分の OAuth App を登録してインスタンスを乗っ取る」経路になり、防ぐには別のブートストラップシークレットの配布が要る(複雑さの追加に見合わない。設定はデプロイ時に固定するのが最小)
-3. **未設定サーバーの自己診断**: client_id がプレースホルダ(`replace-with-your-github-oauth-app-client-id`)または空のままのサーバーは、`GET /auth/config`(§4)と `GET /auth/github/start` が 503 `SetupIncomplete`(reason: `github-oauth-unconfigured`)を返し、セットアップガイドへ誘導する(GitHub のエラーページへ飛ばして原因を分からなくしない)
+3. **未設定サーバーの自己診断**: OAuth App 設定が未完(client_id がプレースホルダ `replace-with-your-github-oauth-app-client-id` / 空 / 欠落、**または client_secret が未登録 / 空**)のサーバーは、`GET /auth/config`(§4)・`GET /auth/github/start`・`POST /auth/device/exchange` が 503 `SetupIncomplete`(reason: `github-oauth-unconfigured`)を返し、セットアップガイドへ誘導する(GitHub のエラーページや不透明なトークン交換失敗 = `AuthFlow` 400 へ落として原因を分からなくしない)。secret も条件に含めるため、`/auth/config` の 200 は「client_id / client_secret とも登録済み」の確認として使える(SELF_HOSTING.md の動作確認手順)
 4. CLI 側の client_id 自動解決は §4 の公開設定エンドポイントで行う(セルフホスト利用者の CLI 設定は `server` 1 項目で足りる)
 
 1. `GET /auth/github/start`: `state`(128-bit 乱数)を発行し、HttpOnly クッキーに保存して GitHub へリダイレクト。scope は最小(`read:user user:email`)
@@ -99,7 +99,7 @@ api_tokens (
    - **audience 検証(2026-08-02 追加)**: 持ち込まれたトークンの検証は check-token API(`POST /applications/{client_id}/token`、Basic 認証 = client_id:client_secret)で行い、**自分の OAuth App に対して発行されたトークンであること**まで確認する。`GET /user` による有効性確認だけでは、他のアプリ向けに発行された(漏洩・流用)トークンで他人のアカウントに解決できてしまう(confused-deputy)
 5. GitHub トークンは両側で即時破棄。CLI は maruhi トークンのみを OS キーチェーンに保存する
 
-- **公開設定エンドポイント `GET /auth/config`(2026-08-03 セッション 11 裁定 B。2026-08-10 セッション 19 で実装)**: 未認証で `{ githubClientId }` を返す。client_id は公開情報(authorize URL のクエリに平文で現れる)であり、未認証面の増加は許容する(裁定 (ii))。サーバーが未設定(§3 のプレースホルダ / 空)の場合は 503 `SetupIncomplete` を返す
+- **公開設定エンドポイント `GET /auth/config`(2026-08-03 セッション 11 裁定 B。2026-08-10 セッション 19 で実装)**: 未認証で `{ githubClientId }` を返す。client_id は公開情報(authorize URL のクエリに平文で現れる)であり、未認証面の増加は許容する(裁定 (ii))。サーバーが未設定(§3 の自己診断条件 — client_secret の未登録を含む)の場合は 503 `SetupIncomplete` を返す
 - **CLI の client_id 解決順**: `--github-client-id` フラグ → config の `githubClientId` → `GET /auth/config`。導入後も config の `githubClientId` は上書き手段として残す(GHES・テスト用 — 裁定 (iii))
 
 ## 5. セッション
