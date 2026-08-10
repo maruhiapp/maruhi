@@ -23,6 +23,7 @@ import {
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
+  SetupIncompleteError,
   TokenLimitError,
   UnauthorizedError,
   ValueTooLargeError,
@@ -144,6 +145,11 @@ const renderers: readonly Renderer[] = [
     (e) => `DEK ラップが見つかりません(epoch=${e.epoch}, recipient=${e.recipientUserId})`,
   ),
   when(isInstanceOf(AuthFlowError), (e) => `認証フローに失敗しました(${e.reason})`),
+  when(
+    isInstanceOf(SetupIncompleteError),
+    (e) =>
+      `サーバーのセルフホスト初期セットアップが未完了です(${e.reason})。サーバー管理者は docs/SELF_HOSTING.md の手順で GitHub OAuth App を登録してください`,
+  ),
   when(isInstanceOf(TokenLimitError), (e) => `API トークンの発行上限に達しています(${e.limit} 本)`),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
 ];

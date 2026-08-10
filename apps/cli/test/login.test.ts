@@ -363,3 +363,83 @@ describe("maruhi logout", () => {
     expect(env.errors.join("\n")).toContain("キーチェーンにありません");
   });
 });
+
+describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
+  it("config に githubClientId がなければサーバーから自動解決してログインする", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    let configCalls = 0;
+    const maruhi = await start([
+      onRequest("GET", "/auth/config", () => {
+        configCalls += 1;
+        return { status: 200, json: { githubClientId: "Iv1.fromserver" } };
+      }),
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(configCalls).toBe(1);
+    expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
+  });
+
+  it("config の githubClientId があればサーバーへ問い合わせない(上書き手段 — 裁定 (iii))", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_x" });
+    const githubServer = await start(github.handlers);
+    let configCalls = 0;
+    const maruhi = await start([
+      onRequest("GET", "/auth/config", () => {
+        configCalls += 1;
+        return { status: 200, json: { githubClientId: "Iv1.fromserver" } };
+      }),
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.configured" });
+
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(configCalls).toBe(0);
+  });
+
+  it("未設定サーバー(503 SetupIncomplete)はセットアップガイドを案内して失敗する", async () => {
+    const maruhi = await start([
+      onRequest("GET", "/auth/config", () => ({
+        status: 503,
+        json: { _tag: "SetupIncomplete", reason: "github-oauth-unconfigured" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    const code = await runCli(["login"], env.layer);
+    expect(code).toBe(1);
+    expect(env.errors.join("\n")).toContain("初期セットアップが未完了");
+    expect(env.errors.join("\n")).toContain("SELF_HOSTING");
+  });
+
+  it("自動取得に失敗したら手動設定(config set githubClientId)の逃げ道を案内する", async () => {
+    // /auth/config を持たない旧サーバー相当(404)
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    const code = await runCli(["login"], env.layer);
+    expect(code).toBe(1);
+    expect(env.errors.join("\n")).toContain("maruhi config set githubClientId");
+  });
+});

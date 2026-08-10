@@ -2,6 +2,7 @@
 // API 境界の型は EncryptedPayload 系のみ。平文のシークレットを表す型を置かないこと。
 
 export {
+  AuthConfigSchema,
   authGroup,
   DeviceExchangeResultSchema,
   MeSchema,
@@ -81,6 +82,8 @@ export {
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
   ResourceConflictReasonSchema,
+  SetupIncompleteError,
+  SetupIncompleteReasonSchema,
   TokenLimitError,
   UnauthorizedError,
   ValueSignatureRejectedError,

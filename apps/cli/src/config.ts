@@ -7,8 +7,9 @@
 // OS キーチェーンのみ(keychain.ts)。
 //
 // サーバー URL に既定値はない(セルフホスト前提でホステッドのデフォルトが
-// 存在しない — タスク裁定)。github client_id はサーバー側にも公開設定
-// エンドポイントがないため、v1 はユーザーが設定で与える(要裁定: session-11.md)。
+// 存在しない — タスク裁定)。githubClientId は login がサーバーの公開設定
+// エンドポイント(GET /auth/config — AUTH_SPEC §4)から自動解決するため通常
+// 不要。設定値は上書き手段として残る(GHES・テスト用 — セッション 11 裁定)。
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";

@@ -603,3 +603,70 @@ describe("scheduled: 期限切れセッションの定期掃除", () => {
     expect(me.status).toBe(200);
   });
 });
+
+// wrangler.jsonc テンプレートのプレースホルダ(handlers-auth.ts と同期)
+const PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
+
+// worker.fetch を env 差し替えで直接呼ぶための着信リクエスト型合わせ
+// (fetch 側は IncomingRequestCfProperties を要求するが、コンストラクタ産の
+// Request は CfProperties になる — workers-types の既知の型差)
+const incoming = (url: string, init?: RequestInit): Request<unknown, IncomingRequestCfProperties> =>
+  new Request(url, init) as Request<unknown, IncomingRequestCfProperties>;
+
+describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
+  it("returns the configured client_id without authentication", async () => {
+    const response = await SELF.fetch(`${BASE}/auth/config`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ githubClientId: env.GITHUB_CLIENT_ID });
+  });
+
+  it("returns 503 SetupIncomplete while the client_id is still the placeholder", async () => {
+    const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), unconfigured);
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("SetupIncomplete");
+    expect(body["reason"]).toBe("github-oauth-unconfigured");
+  });
+
+  it("treats an empty or missing client_id as unconfigured too", async () => {
+    const empty = { ...env, GITHUB_CLIENT_ID: "" };
+    expect((await worker.fetch(incoming(`${BASE}/auth/config`), empty)).status).toBe(503);
+    // vars を消したデプロイ(Env 型の外だが実行時に起こり得る)も 503 へ倒す
+    // (素通しすると /auth/config は encode defect、start は client_id=undefined で
+    // GitHub へ飛ぶ)
+    const { GITHUB_CLIENT_ID: _removed, ...missing } = env;
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
+    expect(response.status).toBe(503);
+  });
+
+  it("treats a missing client_secret as unconfigured (`wrangler secret put` 漏れ)", async () => {
+    // client_id は実値でも secret 未登録なら 503: 素通しすると認証は不透明な
+    // トークン交換失敗(GitHub 401 → AuthFlow 400)に落ち、/auth/config の
+    // 200 が誤った安心を与える(pullfrog レビュー指摘)
+    const { GITHUB_CLIENT_SECRET: _removed, ...missing } = env;
+    const config = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
+    expect(config.status).toBe(503);
+    // deviceExchange も GitHub へのトークン検証より先に fail-closed する
+    const exchange = await worker.fetch(
+      incoming(`${BASE}/auth/device/exchange`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        // ガードはトークン検証より先に走る(値は Schema を満たせば何でもよい)
+        body: JSON.stringify({ githubAccessToken: "gh-token-901" }),
+      }),
+      missing as typeof env,
+    );
+    expect(exchange.status).toBe(503);
+    const body = (await exchange.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("SetupIncomplete");
+  });
+
+  it("githubStart fails closed with 503 instead of bouncing to GitHub's error page", async () => {
+    const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
+    const response = await worker.fetch(incoming(`${BASE}/auth/github/start`), unconfigured);
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("SetupIncomplete");
+  });
+});

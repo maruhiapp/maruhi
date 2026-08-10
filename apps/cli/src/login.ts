@@ -7,6 +7,7 @@
 //   自動失効する
 // - logout は自トークンの失効(§6 v1 線引き)+ キーチェーンからの削除
 
+import { SetupIncompleteError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
@@ -23,6 +24,40 @@ import {
   type StoredToken,
   tokenEntryName,
 } from "./keychain.ts";
+
+/**
+ * GitHub OAuth App client_id の解決(AUTH_SPEC §4): `--github-client-id`
+ * フラグ → config の `githubClientId` → サーバーの公開設定エンドポイント
+ * `GET /auth/config`。config は自動解決の導入後も上書き手段として残す
+ * (GHES・テスト用 — セッション 11 裁定 (iii))。
+ */
+export function resolveClientId(input: {
+  readonly origin: string;
+  readonly explicit: string | undefined;
+  readonly configured: string | undefined;
+}): Effect.Effect<string, CliError, HttpClient.HttpClient> {
+  if (input.explicit !== undefined) {
+    return Effect.succeed(input.explicit);
+  }
+  if (input.configured !== undefined) {
+    return Effect.succeed(input.configured);
+  }
+  return Effect.gen(function* () {
+    const client = yield* makeApiClient({ baseUrl: input.origin });
+    const config = yield* client.auth.authConfig({}).pipe(
+      Effect.mapError((error) =>
+        // 未設定サーバー(SetupIncomplete)は failure.ts の案内をそのまま使う。
+        // それ以外(到達不能・旧サーバー等)は手動設定の逃げ道を添える
+        error instanceof SetupIncompleteError
+          ? toCliError(error)
+          : cliError(
+              `${toCliError(error).message}(client_id をサーバーから自動取得できませんでした。\`maruhi config set githubClientId <id>\` で手動設定できます)`,
+            ),
+      ),
+    );
+    return config.githubClientId;
+  });
+}
 
 /** `maruhi login`: device flow → token exchange → keychain. */
 export function loginOp(input: {
