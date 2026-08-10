@@ -15,6 +15,7 @@ import {
   LOGIN_FAILED_WINDOW_MS,
   makeDbServices,
   ProjectRepo,
+  TokenRepo,
 } from "../src/db.package/index.ts";
 import {
   BASE,
@@ -269,7 +270,10 @@ describe("セッション / トークンの失効(§3.1)", () => {
 
   it("records auth.token_revoked with the token id as both actor token and target payload", async () => {
     const token = await deviceToken(701);
-    const tokenRow = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
+    const tokenRow = await env.DB.prepare("SELECT id, user_id FROM api_tokens").first<{
+      id: string;
+      user_id: string;
+    }>();
     const revoke = await SELF.fetch(`${BASE}/auth/token/revoke`, {
       method: "POST",
       headers: bearer(token),
@@ -280,6 +284,16 @@ describe("セッション / トークンの失効(§3.1)", () => {
     expect(revoked).toHaveLength(1);
     expect((revoked[0] as AuditRow).actor_api_token_id).toBe(tokenRow?.id);
     expect(payloadOf(revoked[0] as AuditRow)).toEqual({ tokenId: tokenRow?.id });
+
+    // 削除が空振りする再失効(並行 revoke の負け側と同じ実行順)はイベントを
+    // 増やさない(1 失効 = 高々 1 行)
+    const services = makeDbServices(env.DB);
+    const tokens = Context.get(services, TokenRepo);
+    await Effect.runPromise(
+      tokens.revokeById(tokenRow?.id ?? "", tokenRow?.user_id ?? "", Date.now()),
+    );
+    const after = await auditRows("user_audit_events");
+    expect(after.filter((row) => row.event === "auth.token_revoked")).toHaveLength(1);
   });
 });
 

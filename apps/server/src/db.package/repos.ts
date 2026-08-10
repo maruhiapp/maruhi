@@ -411,14 +411,22 @@ function makeTokenRepo(db: Db): TokenRepoShape {
     // actor のトークン id = 失効対象 id になる
     revokeById: (id, userId, nowMs) =>
       run(async () => {
-        await db.batch([
-          db.delete(apiTokens).where(eq(apiTokens.id, id)),
-          userAuditInsert(db, nowMs, {
-            event: "auth.token_revoked",
-            actor: { userId, apiTokenId: id },
-            payload: { tokenId: id },
-          }),
-        ]);
+        // 削除の成立を returning で観測してからイベントを書く(revokeByHash と
+        // 同型 — Cursor Security Agent 指摘対応)。並行 revoke は呼び出し側の
+        // findByHash を両方通過し得るため、無条件 batch だと 1 失効に複数の
+        // token_revoked を記録できてしまう(過大計上)。重複より欠落側に倒す
+        const deleted = await db
+          .delete(apiTokens)
+          .where(eq(apiTokens.id, id))
+          .returning({ id: apiTokens.id });
+        if (deleted.length === 0) {
+          return;
+        }
+        await userAuditInsert(db, nowMs, {
+          event: "auth.token_revoked",
+          actor: { userId, apiTokenId: id },
+          payload: { tokenId: id },
+        });
       }),
     countByUserExcludingName: (userId, name) =>
       run(async () => {

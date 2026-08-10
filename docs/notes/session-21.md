@@ -37,7 +37,10 @@ AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案
     deleteExpired は従来どおりイベントなし
   - tokens.replaceForUserAndName: token_created(tokenId / name / scopes)。
     tokens.revokeById(deleteById を置換): token_revoked(actor のトークン id =
-    失効対象 id — v1 は自トークン失効のみ)
+    失効対象 id — v1 は自トークン失効のみ)。削除の成立を returning で観測して
+    から記録(Cursor Security Agent 指摘対応: 並行 revoke は findByHash を両方
+    通過し得るため、無条件 batch だと 1 失効に複数行 = 過大計上になる。
+    revokeByHash と同型の裁定)
   - recovery.upsert / recordFetch: actor(principal 由来)を引数で受け、
     reissued / blob_fetched を各 batch に同梱
   - projects.insertIfAbsent: org.project_created は**行が実際に挿入されたとき
