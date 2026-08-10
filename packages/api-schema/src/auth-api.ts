@@ -101,7 +101,8 @@ export const RecoveryStatusSchema = Schema.Struct({
 export const authGroup = HttpApiGroup.make("auth")
   .add(
     // 公開設定エンドポイント(AUTH_SPEC §4。セッション 11 裁定 B)。未認証。
-    // 未設定サーバー(§3 プレースホルダ)は 503 でセットアップガイドへ誘導する
+    // 未設定サーバー(§3 の自己診断条件: client_id がプレースホルダ / 空 / 欠落、
+    // または client_secret 未登録)は 503 でセットアップガイドへ誘導する
     HttpApiEndpoint.get("authConfig", "/auth/config", {
       success: AuthConfigSchema,
       error: [SetupIncompleteError],

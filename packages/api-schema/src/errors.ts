@@ -85,8 +85,9 @@ export const SetupIncompleteReasonSchema = Schema.Literals(["github-oauth-unconf
 
 /**
  * 503: this deployment has not finished self-host setup — the GitHub OAuth
- * App is not configured (AUTH_SPEC §3: client_id がプレースホルダ / 空)。
- * クライアントは docs/SELF_HOSTING.md のセットアップ手順へ誘導する。
+ * App is not configured (AUTH_SPEC §3: client_id がプレースホルダ / 空 / 欠落、
+ * または client_secret が未登録 / 空)。クライアントは docs/SELF_HOSTING.md の
+ * セットアップ手順へ誘導する(成功応答 = 両方登録済み、の意味論を支える)。
  */
 export class SetupIncompleteError extends Schema.TaggedErrorClass<SetupIncompleteError>()(
   "SetupIncomplete",
