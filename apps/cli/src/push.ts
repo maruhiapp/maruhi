@@ -3,8 +3,11 @@
 //
 // - 名前 → variableId の解決は**検証済みステートメント経由が必須**(§4.2 /
 //   §12-7 — session-14 まで「非認証」と記録していた既知制約を閉じる)。
+//   解決は**メタデータのみ pull**(§12-7 — 値・DEK を運ばず var.read が記録
+//   されない。session-11 裁定 3)で行い、既存変数への push のみ値付き pull で
+//   検証済み最新値と同梱 DEK を取得する(listMine との二重取得はしない)。
 //   ルックアップキーは NFC 正規化してから byte-exact で照合する(§12-1)。
-//   同名 active の重複は pullVerifiedEnvironment(values.ts)が拒否する
+//   同名 active の重複は検証側(values.ts)が拒否する
 // - 新規作成: `VariableMetaStatement`(metaVersion 1・active・prev 空)を自分の
 //   鍵で著者署名して version 1 の値と同梱する(§12-5)。名前は署名前に NFC
 //   正規化する(正規化の実施主体はクライアント — §4.2)
@@ -31,6 +34,7 @@
 import {
   EpochConflictError,
   MetaVersionConflictError,
+  type RecipientDek,
   VariableConflictError,
   VersionConflictError,
 } from "@maruhi/api-schema";
@@ -48,12 +52,17 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { VariableFloor } from "./floor.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
-import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
+import {
+  pullVerifiedEnvironment,
+  pullVerifiedEnvironmentMetadata,
+  type VerifiedPulledValue,
+} from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 
@@ -92,14 +101,25 @@ interface ResolvedTarget {
   /** pull 検証で前進していることがあるビュー(future head の有界再同期)。 */
   readonly verified: VerifiedProject;
   readonly warnings: readonly string[];
+  /**
+   * 既存変数の解決で行った値付き pull の同梱 DEK(create 解決では null)。
+   * verified と同じビューで検証・開封する前提の生ワイヤ形(§12-7 — listMine
+   * との二重取得の解消: session-11 裁定 3)。
+   */
+  readonly deks: readonly RecipientDek[] | null;
 }
 
 /**
- * 表示名から push 先を解決する。pull 応答の全値・全ステートメントは §6.3 の
- * 検証を通過しており(pullVerifiedEnvironment — 同名 active の重複はそこで
- * 解決拒否済み)、名前の照合は**検証済みステートメントの name** に対する
+ * 表示名から push 先を解決する。解決はメタデータのみ pull(§12-7 — 値・DEK を
+ * 運ばず、サーバーは var.read を記録しない)の検証済みステートメントに対する
  * byte-exact 比較で行う(ルックアップキーは呼び出し側で NFC 正規化済み —
- * §12-1)。一致した変数の検証済み latest が次 version と prev 連鎖の根拠になる。
+ * §12-1。同名 active の重複は検証側が拒否済み)。
+ *
+ * 既存変数だった場合のみ値付き pull を行う: prev 連鎖(§4.1)は検証済み最新値の
+ * signed-bytes ハッシュを要し、これは暗号文込みの取得なしに自計算できない
+ * (var.read はこの取得に対して正しく記録される)。新規作成は値を一切読まない
+ * (prev は空・version 1)ため var.read が記録されない — 「読んでいないものを
+ * 読んだと記録しない」の CLI 側(session-11 裁定 3)。
  */
 function resolveTarget(input: {
   readonly client: MaruhiClient;
@@ -107,14 +127,14 @@ function resolveTarget(input: {
   readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3 — 解決に使う検証済み pull にも床検査・床コミットが掛かる)。 */
+  /** ローカル床(§6.3 — 解決に使う検証済み pull にも床検査〔+ 値付きは床コミット〕が掛かる)。 */
   readonly floor: FloorHandle;
 }): Effect.Effect<ResolvedTarget, CliError> {
   return Effect.gen(function* () {
-    const pulled = yield* pullVerifiedEnvironment(input);
-    // 同名 active の重複は pullVerifiedEnvironment が拒否済みだが、push 先の
-    // 同定が応答の並び順に依存しない防衛線として残す(§4.2 の解決拒否)
-    const matches = pulled.variables.filter((variable) => variable.name === input.name);
+    const metadata = yield* pullVerifiedEnvironmentMetadata(input);
+    // 同名 active の重複は検証側が拒否済みだが、push 先の同定が応答の並び順に
+    // 依存しない防衛線として残す(§4.2 の解決拒否)
+    const matches = metadata.variables.filter((variable) => variable.name === input.name);
     if (matches.length > 1) {
       return yield* Effect.fail(
         cliError(
@@ -123,11 +143,42 @@ function resolveTarget(input: {
       );
     }
     const existing = matches[0];
-    const target: PushTarget =
-      existing === undefined
-        ? { variableId: generateVariableId(), create: true, latest: null }
-        : { variableId: existing.variableId, create: false, latest: existing };
-    return { target, verified: pulled.verified, warnings: pulled.warnings };
+    if (existing === undefined) {
+      return {
+        target: { variableId: generateVariableId(), create: true, latest: null },
+        verified: metadata.verified,
+        warnings: metadata.warnings,
+        deks: null,
+      };
+    }
+    const pulled = yield* pullVerifiedEnvironment({ ...input, verified: metadata.verified });
+    const latest = pulled.variables.find((variable) => variable.variableId === existing.variableId);
+    if (latest === undefined) {
+      // 解決と値取得の間の並行削除、または応答間の不整合(欠落は床検査でも
+      // 変数単位の証拠になる)。誤った prev で作成へ倒さず明示エラーにする
+      return yield* Effect.fail(
+        cliError(
+          `名前解決した変数 ${existing.variableId}(${input.name})が値付き pull に存在しません(他メンバーによる並行削除、またはサーバー応答の不整合)。再実行してください`,
+        ),
+      );
+    }
+    if (latest.name !== input.name) {
+      // 解決と値取得の間の並行 rename。入力した名前と別の名前へ変わった変数に
+      // push を向けない(単一応答で解決していた旧フローのスナップショット整合の
+      // 回復 — PR #41 レビュー指摘)。latest.name は検証済みステートメントの
+      // name(§12-2)なので byte-exact 比較で足りる
+      return yield* Effect.fail(
+        cliError(
+          `名前解決した変数 ${existing.variableId} の名前が、値取得までに ${displayText(input.name)} から ${displayText(latest.name)} へ変わっています(他メンバーによる並行 rename)。再実行してください`,
+        ),
+      );
+    }
+    return {
+      target: { variableId: existing.variableId, create: false, latest },
+      verified: pulled.verified,
+      warnings: [...metadata.warnings, ...pulled.warnings],
+      deks: pulled.deks,
+    };
   });
 }
 
@@ -299,7 +350,17 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
     const verified = resolved.verified;
     // 現エポックはチェーン導出値(§6.2 — 環境未作成の push はここで止まる)
     const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
-    const deks = yield* fetchDeks({ ...input, verified });
+    // DEK は 1 経路で 1 回だけ取得する(session-11 裁定 3 の二重取得解消):
+    // 既存変数 = 値付き pull の同梱分を検証・開封 / 新規作成 = listMine
+    const deks =
+      resolved.deks === null
+        ? yield* fetchDeks({ ...input, verified })
+        : yield* verifyAndUnwrapDeks({
+            verified,
+            environmentId: input.environmentId,
+            recipient: input.recipient,
+            deks: resolved.deks,
+          });
     return { verified, epoch, deks, target: resolved.target, warnings: resolved.warnings };
   });
 }
@@ -594,6 +655,9 @@ function adoptConflictWinner(
 function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
     const resolved = yield* resolveTarget({ ...input, verified: state.verified });
+    // 再解決の DEK は既知エポックの手持ちを優先し、エポックが進んだ時のみ
+    // 取り直す(refreshEpochState)。resolved.deks は初回解決専用 — 競合
+    // リトライの稀な経路で開封をやり直さない
     const refreshed = yield* refreshEpochState(input, state, resolved.verified);
     return {
       ...refreshed,
@@ -643,8 +707,10 @@ function nextState(
 
 /**
  * Pushes one variable value: resolve the target by display name through the
- * verified metadata statements of a fully verified pull (§4.2 — the lookup
- * key is NFC-normalized, matching is byte-exact), encrypt under the
+ * verified metadata statements of a metadata-only pull (§4.2 / §12-7 — the
+ * lookup key is NFC-normalized, matching is byte-exact; only a push to an
+ * existing variable fetches values, so a creation is never recorded as a
+ * `var.read`), encrypt under the
  * chain-derived current epoch with a commitment-verified DEK, sign as the
  * caller (§4.1: prev = the verified latest value's signed-bytes hash, head =
  * the last verified chain head; creation additionally author-signs a

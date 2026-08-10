@@ -124,6 +124,23 @@ export const EnvironmentPullSchema = Schema.Struct({
 });
 
 /**
+ * Metadata-only bulk pull (§12-7 メタデータのみモード — 2026-08-10): the same
+ * environment-scoped read without values (ciphertexts) or DEKs. The response
+ * carries the environment statement, the chain-derived current epoch, every
+ * active variable's latest statement and the deleted statements — the full
+ * §6.3 metadata verification material, nothing else. Used for name →
+ * variableId resolution (CLI push) and other value-free reads; the server
+ * records no `var.read` for it(読んでいないものを読んだと記録しない)。
+ */
+export const EnvironmentMetadataPullSchema = Schema.Struct({
+  environmentId: EnvironmentIdSchema,
+  currentEpoch: Schema.Number,
+  statement: DistributedEnvironmentMetaStatementSchema,
+  variables: Schema.Array(DistributedVariableMetaStatementSchema),
+  deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
+});
+
+/**
  * Environment management (AUTH_SPEC §12-4。2026-08-03 セッション 12 改訂 —
  * 環境作成のチェーン op 化に追随)。
  *
@@ -353,6 +370,19 @@ export const variablesGroup = HttpApiGroup.make("variables")
       success: EnvironmentPullSchema,
       error: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
     }).middleware(AuthMiddleware),
+  )
+  .add(
+    // メタデータのみモード(§12-7): 認可は pull と同一行(read × reader)。
+    // var.read は記録されない(値を配布しないため — AUDIT_SPEC §3.3)
+    HttpApiEndpoint.get(
+      "pullMetadata",
+      "/projects/:projectId/environments/:environmentId/pull/metadata",
+      {
+        params: environmentParams,
+        success: EnvironmentMetadataPullSchema,
+        error: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
+      },
+    ).middleware(AuthMiddleware),
   );
 
 /**

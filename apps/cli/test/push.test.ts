@@ -144,6 +144,32 @@ function pullHandlerOf(
   }));
 }
 
+/** メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で止まる)。 */
+function pullMetadataHandlerOf(
+  variants: readonly (readonly WireDistributedVariableStatement[])[],
+  currentEpoch = 1,
+): MockHandler {
+  let call = 0;
+  return onRequest(
+    "GET",
+    `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+    () => {
+      const variables = variants[Math.min(call, variants.length - 1)] ?? [];
+      call += 1;
+      return {
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          currentEpoch,
+          statement: envStatement,
+          variables,
+          deletedVariables: [],
+        },
+      };
+    },
+  );
+}
+
 async function startEnv(handlers: readonly MockHandler[], stdin: string): Promise<TestEnv> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -182,7 +208,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      pullHandlerOf([], [wrap1]),
+      pullMetadataHandlerOf([[]]),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -237,6 +263,11 @@ describe("maruhi push", () => {
     // 末尾改行 1 つは除去され、値は現エポック DEK で復号できる
     expect(await decryptWire(dek1, body.value)).toBe("secret-value");
     expect(env.logs.join("\n")).toContain("version=1");
+    // 新規作成の名前解決はメタデータのみ pull(§12-7)で行い、値付き pull を
+    // 一切呼ばない = サーバー側で var.read が記録されない経路(session-11 裁定 3)
+    const paths = server.requests.map((request) => request.path);
+    expect(paths).toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`);
+    expect(paths).not.toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`);
   });
 
   it("VersionConflict(409)は再取得した winner を検証し、その hash へ prev を付け替えて再試行する", async () => {
@@ -269,7 +300,9 @@ describe("maruhi push", () => {
     let pullCalls = 0;
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      // listMine ハンドラを置かない: 既存変数への push は値付き pull の同梱 DEK を
+      // 使い、listMine との二重取得をしない(session-11 裁定 3)。呼べば 404 で落ちる
+      pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -322,6 +355,14 @@ describe("maruhi push", () => {
     // 再試行は新 version で再暗号化されている(nonce も新しい)
     expect(pushBodies[0]?.nonceHex).not.toBe(pushBodies[1]?.nonceHex);
     expect(await decryptWire(dek1, pushBodies[1] as WireEncryptedPayload)).toBe("new-value");
+    // DEK は値付き pull の同梱分のみで賄われ、listMine は一度も呼ばれない
+    expect(
+      server.requests.filter(
+        (request) =>
+          request.method === "GET" &&
+          request.path === `/projects/${chainV1.projectId}/environments/${ENV_ID}/deks`,
+      ),
+    ).toHaveLength(0);
   });
 
   it("409 の申告が検証済み latest より古い(巻き戻し)なら拒否する(レビューループ 1 [高])", async () => {
@@ -356,6 +397,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -422,6 +464,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -491,6 +534,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV2]),
       deksHandlerOf([[wrap1, wrap2]]),
+      pullMetadataHandlerOf([[entryExisting.statement]], 2),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -536,12 +580,14 @@ describe("maruhi push", () => {
       writer: owner,
       head: headOf(chainV1, chainV1.entries.length),
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     const env = await startEnv(
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
+        pullMetadataHandlerOf([[entryExisting.statement]]),
         // 再取得しても version 4 のまま(409 の申告 7 より古い)
-        pullHandlerOf([await entryOf("v-existing", "API_KEY", existing)], [wrap1]),
+        pullHandlerOf([entryExisting], [wrap1]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
@@ -571,6 +617,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -624,6 +671,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -667,7 +715,7 @@ describe("maruhi push", () => {
       // 初回同期はローテーション前(epoch 1)、再同期でローテーション後が見える
       chainHandlerOf([chainV1, chainV2]),
       deksHandlerOf([[wrap1], [wrap1, wrap2]]),
-      pullHandlerOf([], [wrap1]),
+      pullMetadataHandlerOf([[]]),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -721,7 +769,7 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
-        pullHandlerOf([], [wrap1]),
+        pullMetadataHandlerOf([[]]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -741,7 +789,7 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1, chainV2]),
         deksHandlerOf([[wrap1], [wrap1]]),
-        pullHandlerOf([], [wrap1]),
+        pullMetadataHandlerOf([[]]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -772,6 +820,9 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      // 初回解決では変数なし(create 経路)、競合後の再解決では並行作成された
+      // v-racer が見える(解決はメタデータのみ pull — §12-7)
+      pullMetadataHandlerOf([[], [entryRacer.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -780,9 +831,7 @@ describe("maruhi push", () => {
             environmentId: ENV_ID,
             currentEpoch: 1,
             statement: envStatement,
-            // 初回解決では変数なし(create 経路)、競合後の再解決では
-            // 並行作成された v-racer が見える
-            variables: pullCalls === 1 ? [] : [entryRacer],
+            variables: [entryRacer],
             deletedVariables: [],
             deks: [wrap1],
           },
@@ -812,7 +861,9 @@ describe("maruhi push", () => {
     env.setStdin(new TextEncoder().encode("after-race"));
 
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    expect(pullCalls).toBe(2);
+    // 値付き pull は再解決で既存変数になってから 1 回だけ(初回解決は
+    // メタデータのみで値を読まない)
+    expect(pullCalls).toBe(1);
     const body = pushed as WireEncryptedPayload | null;
     expect(body?.aad.variableId).toBe("v-racer");
     expect(body?.aad.version).toBe(2);
@@ -825,7 +876,7 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
-        pullHandlerOf([], [wrap1]),
+        pullMetadataHandlerOf([[]]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -857,6 +908,8 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      // 初回解決は変数なし(create 経路)、再解決で v-late が見える
+      pullMetadataHandlerOf([[], [entryLate.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -865,7 +918,7 @@ describe("maruhi push", () => {
             environmentId: ENV_ID,
             currentEpoch: 1,
             statement: envStatement,
-            variables: pullCalls === 1 ? [] : [entryLate],
+            variables: [entryLate],
             deletedVariables: [],
             deks: [wrap1],
           },
@@ -896,7 +949,8 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    expect(pullCalls).toBe(2);
+    // 値付き pull は再解決後の 1 回のみ(初回解決はメタデータのみ)
+    expect(pullCalls).toBe(1);
     expect(pushedVersion).toBe(2);
   });
 
@@ -924,14 +978,14 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
+    const entryA = await entryOf("v-a", "API_KEY", existing);
+    const entryB = await entryOf("v-b", "API_KEY", other);
     const env = await startEnv(
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
-        pullHandlerOf(
-          [await entryOf("v-a", "API_KEY", existing), await entryOf("v-b", "API_KEY", other)],
-          [wrap1],
-        ),
+        // 名前解決はメタデータのみ pull — 同名 active の重複はその検証で拒否される
+        pullMetadataHandlerOf([[entryA.statement, entryB.statement]]),
       ],
       "value",
     );
@@ -988,6 +1042,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[statementV2]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -1079,6 +1134,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[statementV1]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -1158,6 +1214,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -1213,6 +1270,8 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
+      // 初回解決は変数なし(create 経路)、再解決で v-meta-race が見える
+      pullMetadataHandlerOf([[], [entryRaced.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
         pullCalls += 1;
         return {
@@ -1221,7 +1280,7 @@ describe("maruhi push", () => {
             environmentId: ENV_ID,
             currentEpoch: 1,
             statement: envStatement,
-            variables: pullCalls === 1 ? [] : [entryRaced],
+            variables: [entryRaced],
             deletedVariables: [],
             deks: [wrap1],
           },
@@ -1253,7 +1312,8 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    expect(pullCalls).toBe(2);
+    // 値付き pull は再解決後の 1 回のみ(初回解決はメタデータのみ)
+    expect(pullCalls).toBe(1);
     expect(pushedVersion).toBe(2);
   });
 
@@ -1266,7 +1326,7 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      pullHandlerOf([], [wrap1]),
+      pullMetadataHandlerOf([[]]),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -1312,12 +1372,14 @@ describe("maruhi push", () => {
       writer: owner,
       head: headOf(chainV1, chainV1.entries.length),
     });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let attempts = 0;
     const env = await startEnv(
       [
         chainHandlerOf([chainV1]),
         deksHandlerOf([[wrap1]]),
-        pullHandlerOf([await entryOf("v-existing", "API_KEY", existing)], [wrap1]),
+        pullMetadataHandlerOf([[entryExisting.statement]]),
+        pullHandlerOf([entryExisting], [wrap1]),
         onRequest(
           "POST",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
@@ -1332,5 +1394,63 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     expect(attempts).toBe(5);
     expect(env.errors.join("\n")).toContain("競合が解消しません");
+  });
+
+  it("名前解決と値取得の間に並行 rename が入ったら push を向けずに拒否する(PR #41 レビュー指摘)", async () => {
+    // メタデータ解決は API_KEY → v-existing。値付き pull では同じ変数が
+    // API_KEY_V2 へ改名済み(metaVersion 2)= 入力した名前と別の名前に変わった
+    // 変数への push を防ぐ(単一応答で解決していた旧フローのスナップショット整合)
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head: headOf(chainV1, chainV1.entries.length),
+    });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
+    const renamedStatement = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY_V2",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 2,
+    });
+    const env = await startEnv(
+      [
+        chainHandlerOf([chainV1]),
+        pullMetadataHandlerOf([[entryExisting.statement]]),
+        pullHandlerOf([{ ...entryExisting, statement: renamedStatement }], [wrap1]),
+      ],
+      "value",
+    );
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("並行 rename");
+  });
+
+  it("メタデータ解決の応答に deleted ステートメントがアクティブ一覧で混ざっていたら拒否する(§12-7)", async () => {
+    // メタデータのみ pull にも値付き pull と同じ検証規律が掛かる(削除の無断
+    // 取り消しの運搬形。値がない分、検証はステートメント側だけで完結する)
+    const deletedStatement = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-dead",
+      name: "API_KEY",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 2,
+      status: "deleted",
+    });
+    const env = await startEnv(
+      [chainHandlerOf([chainV1]), pullMetadataHandlerOf([[deletedStatement]])],
+      "value",
+    );
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("deleted ステートメントがアクティブ一覧");
   });
 });

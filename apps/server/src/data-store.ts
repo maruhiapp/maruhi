@@ -195,6 +195,10 @@ interface DataStoreShape {
   readonly deletedVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
+  /** アクティブ変数の最新ステートメント一覧(メタデータのみモード — §12-7)。 */
+  readonly activeVariableStatements: (
+    environmentId: string,
+  ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
 
   /** アクティブ変数の最新バージョン + 最新ステートメント一覧(一括 pull 用)。 */
   readonly latestVersions: (
@@ -422,6 +426,25 @@ const makeVariableQueries = (sql: SqlStorage) => ({
             AND ms.variable_id = v.variable_id
             AND ms.meta_version = v.latest_meta_version
            WHERE v.environment_id = ? AND v.deleted_at IS NOT NULL
+           ORDER BY v.created_at, v.variable_id`,
+          environmentId,
+        )
+        .toArray()
+        .map(variableStatementOf),
+    ),
+  // deletedVariableStatements の active 側(メタデータのみモード — §12-7):
+  // 最新ステートメントのみ。値・DEK は選択しない(配布しないため触りもしない)
+  activeVariableStatements: (environmentId: string) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT ms.variable_id, ${MS_COLUMNS}
+           FROM variables v
+           JOIN variable_meta_statements ms
+             ON ms.environment_id = v.environment_id
+            AND ms.variable_id = v.variable_id
+            AND ms.meta_version = v.latest_meta_version
+           WHERE v.environment_id = ? AND v.deleted_at IS NULL
            ORDER BY v.created_at, v.variable_id`,
           environmentId,
         )

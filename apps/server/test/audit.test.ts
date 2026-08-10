@@ -245,6 +245,16 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
 
+    // メタデータのみモード(AUTH_SPEC §12-7)は値を配布しないため、var.read を
+    // 含む一切の監査行を追加しない(「読んでいないものを読んだと記録しない」—
+    // §3.3。下の期待イベント列に本リクエスト由来の行が現れないことが検査)
+    const metadataPull = await requestJson(
+      "GET",
+      `/environments/${ENV}/pull/metadata`,
+      token(READER),
+    );
+    expect(metadataPull.status).toBe(200);
+
     const envRenamed = await renameEnvironmentRequest(fixture, ENV, "App2", MEMBER);
     expect(envRenamed.status).toBe(204);
     const renamed = await requestJson(

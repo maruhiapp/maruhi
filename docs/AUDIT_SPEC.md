@@ -77,13 +77,14 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | `var.version_pushed` ★ | variable_id, environment_id, version, epoch, **actor_key_fingerprint** | 値の更新(平文・暗号文は含めない)。writer 署名(CRYPTO_SPEC §4.1)の鍵 FP を写す(2026-08-03) |
 | `var.renamed` | variable_id, environment_id, 新名スナップショット, **actor_key_fingerprint** | メタステートメントの author 鍵 FP を写す(2026-08-03) |
 | `var.deleted` ★ | variable_id, environment_id, **actor_key_fingerprint** | 削除しても過去の閲覧可能性は消えない(§4)。削除ステートメントの author 鍵 FP を写す(2026-08-03) |
-| `var.read` ★ | variable_id, environment_id, epoch, version | 暗号文の配布(pull / Web での取得)。一括 pull は変数ごとに 1 行(§4 のクエリ要件のため) |
+| `var.read` ★ | variable_id, environment_id, epoch, version | **暗号文の配布**に対して記録する(pull / Web での取得)。一括 pull は変数ごとに 1 行(§4 のクエリ要件のため)。**メタデータのみモード(AUTH_SPEC §12-7)は暗号文を配布しないため記録しない**(読んでいないものを読んだと記録しない — 2026-08-10) |
 | `dek.registered` | environment_id, epoch, target_user_id(受信者), **actor_key_fingerprint(署名者鍵 FP)** | DEK ラップの登録(AUTH_SPEC §12-6。**複合リクエストの同梱分 — 環境作成のエポック 1・ローテーションの新エポック(同 §12-4。2026-08-03)— を含む**)。actor_key_fingerprint には登録署名(CRYPTO_SPEC §5.1)の署名者鍵 FP を写す(署名との突合用。セッション 07 裁定 B) |
 | `dek.deleted` | environment_id, epoch, target_user_id(受信者) | admin による毒ラップの削除(AUTH_SPEC §12-6 の修復経路) |
 | `rotation.recommended` | target_user_id, 対象 (variable × environment) 集合, 根拠種別 | §4 の算出結果の永続化(UI / CLI 表示用) |
 | `rotation.dismissed` | 対象 (variable × environment) | 人間による明示的な取り下げ(append-only の打ち消しイベント) |
 
 - `var.read` の粒度と量: CI からの定期 pull で最も高頻度になるイベント。v1 は素直に 1 変数 1 行で記録し、ドッグフーディングで量を実測してから集約(例: 同一 (actor, variable, environment) の読みを日単位で 1 行に丸める)を判断する。**要ローテーション検出に必要なのは「期間内に読んだか否か」だけなので、集約しても検出は劣化しない**
+- **`var.read` の意味論(2026-08-10 セッション 20)**: 記録条件は「暗号文を応答に含めて返したこと」であり、名前解決・一覧などメタデータだけを返す読み取りは対象外(AUTH_SPEC §12-7 のメタデータのみモード)。これは §4 の「確実に取得した」ランク(在籍区間内の `var.read` の有無)の入力純度を守るための規律である — 値を取得していないメンバーの解決操作が `var.read` に混入すると、要ローテーション検出が「取得した」を過大申告し、監査ログを読む人間を誤らせる
 - **actor_key_fingerprint を持つデータ系イベント(2026-08-03 セッション 12 改訂)**: データ系イベントの actor は原則 user_id(+ トークン id / auth_method)のみで鍵 FP を持たない(FP を持つのはチェーンミラー §3.4)としてきたが、この例外は「**クライアント署名を伴う操作**」の類型として一般化する — `dek.registered`(登録署名 = CRYPTO_SPEC §5.1。2026-08-02 セッション 09)に加え、`var.version_pushed` / `var.created`(値の書き込み署名 = 同 §4.1)、`var.renamed` / `var.deleted` / `env.created` / `env.renamed` / `env.deleted`(メタステートメント署名 = 同 §4.2)が署名者鍵 FP を actor_key_fingerprint 列に写す。監査行(サーバー管理データ)とチェーン外署名(クライアント署名 = サーバーが偽造できない)を突合可能にするための記録であり、§2 のアクターモデル(type=user の key_fingerprint)の範囲内である。`dek.deleted` は署名を伴わない操作のため引き続き FP を持たない(この非対称は「FP = 署名の証跡」の意味論を保つためであり、均しにいかない)
 - `dek.registered` / `dek.deleted` の粒度は **1 受信者 1 行**(2026-08-02 セッション 08 提案): §5.1 の列構造は 1 行 1 target(target_user_id は単値)であり、受信者ごとの行にすることで「この受信者宛のラップがいつ登録・削除されたか」を索引(target_user_id, seq)でそのまま引ける。登録はローテーション・メンバー追加時のみの低頻度イベントで、行数は AUTH_SPEC §12-8 のラップ行数上限が束縛する。v1 の要ローテーション検出(§4.1)には関与しない(候補集合は全メンバー × 全環境で算出するため)が、将来の環境スコープ role(CRYPTO_SPEC 未決 #11)で「誰がどのエポックの DEK を受け取ったか」が候補集合の入力になった場合の証跡を確保する
 - 「新バージョン push」は要ローテーションフラグの解消条件でもある(§4)

@@ -58,6 +58,25 @@ export interface VerifiedPullSnapshot {
   readonly tombstones: readonly VerifiedTombstone[];
 }
 
+/**
+ * メタデータのみ pull(§12-7)の検証済みダイジェスト。値を運ばないため、
+ * 床検査はメタ水準(規則 (a)(b) のメタ部分 + 欠落・削除取り消し)に限られる —
+ * 値の巻き戻し・equivocation・規則 (c) はこの形からは検査できない
+ * (検査済みと偽らない: 値水準の床検査は値を運ぶ pull の領分)。
+ */
+export interface VerifiedMetadataSnapshot {
+  readonly environment: VerifiedMetaEvidence;
+  readonly variables: readonly VerifiedActiveStatement[];
+  readonly tombstones: readonly VerifiedTombstone[];
+}
+
+/** 検証済みのアクティブ変数ステートメント(メタデータのみ pull の 1 変数)。 */
+export interface VerifiedActiveStatement extends VerifiedMetaEvidence {
+  readonly variableId: string;
+  /** 検証済みステートメントの name(名前解決はこれ以外を信用しない — §12-2)。 */
+  readonly name: string;
+}
+
 /** 配布された値側の証拠材料(座標・ハッシュ・宣言ヘッド・署名と帰属)。 */
 export interface PulledValueEvidence {
   readonly version: number;
@@ -273,15 +292,15 @@ function checkActiveVariable(
   return checkMetaAgainstFloor("variable", variableId, floor, metaEvidenceOf(value));
 }
 
-/** 床が active と記録している変数の検査(active / tombstone / 欠落の 3 分岐)。 */
-function checkFloorActive(
+/** 床が active と記録している変数のメタ水準検査(active / tombstone / 欠落の 3 分岐)。 */
+function checkFloorActiveMeta(
   variableId: string,
   floor: ActiveVariableFloor,
-  active: VerifiedPulledValue | undefined,
+  active: VerifiedMetaEvidence | undefined,
   tombstone: VerifiedTombstone | undefined,
 ): FloorViolation | null {
   if (active !== undefined) {
-    return checkActiveVariable(floor, active);
+    return checkMetaAgainstFloor("variable", variableId, floor, active);
   }
   if (tombstone !== undefined) {
     // metaVersion が床より進んだ deleted は正当な削除。同一 metaVersion で
@@ -291,17 +310,30 @@ function checkFloorActive(
   return { kind: "variable-omitted", variableId, floor };
 }
 
+/** 床が active と記録している変数の検査(値水準 + メタ水準)。 */
+function checkFloorActive(
+  variableId: string,
+  floor: ActiveVariableFloor,
+  active: VerifiedPulledValue | undefined,
+  tombstone: VerifiedTombstone | undefined,
+): FloorViolation | null {
+  if (active !== undefined) {
+    return checkActiveVariable(floor, active);
+  }
+  return checkFloorActiveMeta(variableId, floor, undefined, tombstone);
+}
+
 /** 床が deleted と記録している変数の検査(削除は終端状態 — §4.2 / session-15 §2-2)。 */
 function checkFloorDeleted(
   variableId: string,
   floor: Extract<VariableFloor, { status: "deleted" }>,
-  active: VerifiedPulledValue | undefined,
+  active: VerifiedMetaEvidence | undefined,
   tombstone: VerifiedTombstone | undefined,
 ): FloorViolation | null {
   if (active !== undefined) {
     // 削除の無断取り消し(規則 (a))。deleted 後の再 active 化は正当な経路が
     // 存在しない(サーバー受理も predecessor 検証も拒否する — session-15 §2-2)
-    return { kind: "deletion-revoked", variableId, floor, pulled: metaEvidenceOf(active) };
+    return { kind: "deletion-revoked", variableId, floor, pulled: active };
   }
   if (tombstone === undefined) {
     return { kind: "variable-omitted", variableId, floor };
@@ -318,6 +350,51 @@ function checkFloorDeleted(
 }
 
 /**
+ * 環境メタ検査 + 床にある変数ごとの検査(欠落・後退・相違・削除取り消し)の
+ * 共通骨格。active 側の検査だけが形(値付き / メタのみ)で差し替わる。
+ * active / deleted の同一 ID 併置は values.ts が拒否済み。
+ */
+function checkFloorCommon<T>(
+  floor: EnvironmentFloor,
+  environment: VerifiedMetaEvidence,
+  actives: ReadonlyMap<string, T>,
+  tombstones: ReadonlyMap<string, VerifiedTombstone>,
+  checkActive: (
+    variableId: string,
+    variableFloor: ActiveVariableFloor,
+    active: T | undefined,
+    tombstone: VerifiedTombstone | undefined,
+  ) => FloorViolation | null,
+  toMeta: (active: T) => VerifiedMetaEvidence,
+): FloorViolation | null {
+  const environmentViolation = checkMetaAgainstFloor(
+    "environment",
+    null,
+    { metaVersion: floor.metaVersion, metaSigHashHex: floor.metaSigHashHex },
+    environment,
+  );
+  if (environmentViolation !== null) {
+    return environmentViolation;
+  }
+  for (const [variableId, variableFloor] of Object.entries(floor.variables)) {
+    const active = actives.get(variableId);
+    const violation =
+      variableFloor.status === "active"
+        ? checkActive(variableId, variableFloor, active, tombstones.get(variableId))
+        : checkFloorDeleted(
+            variableId,
+            variableFloor,
+            active === undefined ? undefined : toMeta(active),
+            tombstones.get(variableId),
+          );
+    if (violation !== null) {
+      return violation;
+    }
+  }
+  return null;
+}
+
+/**
  * 環境 1 つ分の床検査(規則 (a)(b)(c))。床なし(初回)は検査対象がない —
  * その場合に何が保証されないかは §14.3-3(初回同期クライアント)。
  * 返すのは最初に見つかった不整合 1 件(すべて拒否条件なので列挙は不要)。
@@ -329,39 +406,20 @@ export function checkEnvironmentPull(
   if (floor === null) {
     return null;
   }
-  const environmentViolation = checkMetaAgainstFloor(
-    "environment",
-    null,
-    { metaVersion: floor.metaVersion, metaSigHashHex: floor.metaSigHashHex },
-    snapshot.environment,
-  );
-  if (environmentViolation !== null) {
-    return environmentViolation;
-  }
   const actives = new Map(snapshot.variables.map((value) => [value.variableId, value]));
   const tombstones = new Map(
     snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
   );
-  // 床にある変数ごとの検査(欠落・後退・相違・削除取り消し)。active / deleted
-  // の同一 ID 併置は values.ts が拒否済み
-  for (const [variableId, variableFloor] of Object.entries(floor.variables)) {
-    const violation =
-      variableFloor.status === "active"
-        ? checkFloorActive(
-            variableId,
-            variableFloor,
-            actives.get(variableId),
-            tombstones.get(variableId),
-          )
-        : checkFloorDeleted(
-            variableId,
-            variableFloor,
-            actives.get(variableId),
-            tombstones.get(variableId),
-          );
-    if (violation !== null) {
-      return violation;
-    }
+  const violation = checkFloorCommon(
+    floor,
+    snapshot.environment,
+    actives,
+    tombstones,
+    checkFloorActive,
+    metaEvidenceOf,
+  );
+  if (violation !== null) {
+    return violation;
   }
   // 規則 (c): 床の version より新しい version(床にない変数は version 0 相当 —
   // 前回 pull 以降に正当に作られた変数は当時の現エポック以上でしか書けない)の
@@ -381,6 +439,35 @@ export function checkEnvironmentPull(
     }
   }
   return null;
+}
+
+/**
+ * メタデータのみ pull(§12-7)の床検査: 規則 (a)(b) のメタ部分(環境・変数
+ * ステートメントの後退 / 同一 metaVersion の相違)、検証済み変数の欠落、
+ * 削除の無断取り消し・tombstone の差し替え。値を運ばない形のため値水準の
+ * 検査と規則 (c) は対象外で、**床のコミット(基準の前進)も行わない** —
+ * 変数床のレコードは値のダイジェストを要し、メタだけから捏造しない
+ * (床は SHOULD: 検出材料の確立が値を運ぶ pull まで遅れるだけで誤検出はない)。
+ */
+export function checkEnvironmentMetadataPull(
+  floor: EnvironmentFloor | null,
+  snapshot: VerifiedMetadataSnapshot,
+): FloorViolation | null {
+  if (floor === null) {
+    return null;
+  }
+  const actives = new Map(snapshot.variables.map((statement) => [statement.variableId, statement]));
+  const tombstones = new Map(
+    snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
+  );
+  return checkFloorCommon(
+    floor,
+    snapshot.environment,
+    actives,
+    tombstones,
+    checkFloorActiveMeta,
+    (statement) => statement,
+  );
 }
 
 /**
