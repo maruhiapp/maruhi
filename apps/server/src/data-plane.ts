@@ -194,6 +194,22 @@ export interface EnvironmentPullValue {
   readonly deks: readonly RecipientDekValue[];
 }
 
+/**
+ * メタデータのみモードの応答(§12-7 — 2026-08-10): 値(暗号文)と DEK を
+ * 含まない。§6.3 のメタ検証材料(環境 + アクティブ変数の最新ステートメント +
+ * tombstone)のみを運ぶ。var.read は記録されない(AUDIT_SPEC §3.3)。
+ */
+export interface EnvironmentMetadataPullValue {
+  readonly environmentId: string;
+  readonly currentEpoch: number;
+  /** 環境自身の最新メタステートメント。 */
+  readonly statement: DistributedMetaStatementValue;
+  /** アクティブ変数ごとの最新ステートメント(値は伴わない)。 */
+  readonly variables: readonly DistributedVariableMetaStatementValue[];
+  /** 削除済み変数の deleted ステートメント(§12-5)。 */
+  readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
+}
+
 // ---------------------------------------------------------------------------
 // 拒否理由(worker が api-schema の型付きエラーへ写像する)
 // ---------------------------------------------------------------------------

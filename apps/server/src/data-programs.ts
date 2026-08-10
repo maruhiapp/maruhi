@@ -38,6 +38,7 @@ import type {
   DataRejection,
   DekWrapInput,
   DekWrapRefInput,
+  EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
   MetaStatementInput,
@@ -1112,21 +1113,30 @@ export const deleteVariableProgram = (
 // 一括 pull(§12-7)と DEK 配布(§12-6)
 // ---------------------------------------------------------------------------
 
+/**
+ * pull 系(値付き・メタデータのみ)共通の前段: reader 認可・環境の存在・
+ * 環境自身の最新ステートメント(§12-7 の検証材料の同梱)。環境行はステート
+ * メントと原子的に作られる(複合受理)ため、欠落は不変条件違反 = defect。
+ */
+const requirePullContext = (actor: DataActor, environmentId: string, cache: StateCache) =>
+  Effect.gen(function* () {
+    const { state } = yield* requireMemberState(actor.userId, "reader", cache);
+    yield* requireActiveEnvironment(environmentId);
+    const store = yield* DataStore;
+    const statement = yield* store.environmentStatement(environmentId);
+    if (statement === null) {
+      return yield* Effect.die(new Error("environment meta statement row missing"));
+    }
+    return { state, store, statement };
+  });
+
 export const pullEnvironmentProgram = (
   actor: DataActor,
   environmentId: string,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state } = yield* requireMemberState(actor.userId, "reader", cache);
-    yield* requireActiveEnvironment(environmentId);
-    const store = yield* DataStore;
-    // 環境自身の最新ステートメント(§12-7 の検証材料の同梱)。環境行はステート
-    // メントと原子的に作られる(複合受理)ため、欠落は不変条件違反 = defect
-    const statement = yield* store.environmentStatement(environmentId);
-    if (statement === null) {
-      return yield* Effect.die(new Error("environment meta statement row missing"));
-    }
+    const { state, store, statement } = yield* requirePullContext(actor, environmentId, cache);
     const variables = yield* store.latestVersions(environmentId);
     // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
     // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
@@ -1156,6 +1166,30 @@ export const pullEnvironmentProgram = (
       deletedVariables,
       deks,
     } satisfies EnvironmentPullValue;
+  });
+
+/**
+ * メタデータのみモード(§12-7 — 2026-08-10): 値(暗号文)と DEK を返さず、
+ * §6.3 のメタ検証材料のみ返す。認可は一括 pull と同一(reader)。監査は
+ * **何も記録しない** — var.read の記録条件は暗号文の配布であり、読んでいない
+ * ものを読んだと記録しない(AUDIT_SPEC §3.3)。
+ */
+export const pullEnvironmentMetadataProgram = (
+  actor: DataActor,
+  environmentId: string,
+  cache: StateCache,
+) =>
+  Effect.gen(function* () {
+    const { state, store, statement } = yield* requirePullContext(actor, environmentId, cache);
+    const variables = yield* store.activeVariableStatements(environmentId);
+    const deletedVariables = yield* store.deletedVariableStatements(environmentId);
+    return {
+      environmentId,
+      currentEpoch: currentEpochOf(state, environmentId),
+      statement,
+      variables,
+      deletedVariables,
+    } satisfies EnvironmentMetadataPullValue;
   });
 
 export const registerDekWrapsProgram = (

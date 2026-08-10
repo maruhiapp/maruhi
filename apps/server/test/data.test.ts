@@ -1198,6 +1198,123 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
   });
 });
 
+describe("メタデータのみモード(§12-7 — 値・DEK を返さない)", () => {
+  it("returns the statement-only material: environment + active + tombstones, no values, no deks", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await createVariableOk(dek, "var-second", "REDIS_URL", "redis://alpha");
+    const renamed = await renameVariableRequest(VAR, "DB_URL", MEMBER);
+    expect(renamed.status).toBe(204);
+    const removed = await deleteVariableRequest("var-second", MEMBER);
+    expect(removed.status).toBe(204);
+
+    const response = await requestJson("GET", `/environments/${ENV}/pull/metadata`, token(READER));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      environmentId: string;
+      currentEpoch: number;
+      statement: { name: string; status: string; authorUserId: string };
+      variables: {
+        variableId: string;
+        name: string;
+        status: string;
+        metaVersion: number;
+        prevMetaSigHashHex: string;
+        chainHeadHashHex: string;
+        chainHeadSeq: number;
+        signatureHex: string;
+        authorUserId: string;
+        authorKeyFingerprintHex: string;
+        suite: "maruhi/v1";
+      }[];
+      deletedVariables: { variableId: string; name: string; status: string }[];
+    };
+    expect(body.environmentId).toBe(ENV);
+    expect(body.currentEpoch).toBe(1);
+    expect(body.statement).toMatchObject({ name: "App", status: "active", authorUserId: OWNER });
+    // アクティブ変数は最新ステートメントのみ(rename 後 = metaVersion 2)。
+    // 値(暗号文)の断片がどこにも同梱されない
+    expect(body.variables).toEqual([
+      expect.objectContaining({
+        variableId: VAR,
+        name: "DB_URL",
+        status: "active",
+        metaVersion: 2,
+        authorUserId: MEMBER,
+        authorKeyFingerprintHex: vectorKeyOf(MEMBER).key_fingerprint_hex,
+      }),
+    ]);
+    expect(body.deletedVariables).toEqual([
+      expect.objectContaining({ variableId: "var-second", name: "REDIS_URL", status: "deleted" }),
+    ]);
+    expect(body).not.toHaveProperty("deks");
+    const raw = JSON.stringify(body);
+    for (const forbidden of ["ciphertextHex", "nonceHex", "encHex", "prevValueSigHashHex"]) {
+      expect(raw).not.toContain(forbidden);
+    }
+
+    // 配布されたステートメントは §6.3 のクライアント検証を通る(検証材料の
+    // 同梱義務は値付き pull と同一 — §12-7)
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const chainBody = (await chain.json()) as { entries: ChainEntry[] };
+    const verified = await verifyChainWithHistory(chainBody.entries);
+    if (!verified.ok) throw new Error("chain verification failed");
+    const pulled = body.variables[0];
+    if (pulled === undefined) throw new Error("missing statement");
+    const result = await verifyDistributedMetaStatement({
+      history: verified.value.history,
+      context: {
+        suite: pulled.suite,
+        projectId,
+        environmentId: ENV,
+        target: { kind: "variable", variableId: pulled.variableId },
+        name: pulled.name,
+        status: pulled.status as "active" | "deleted",
+        metaVersion: pulled.metaVersion,
+        prevMetaSigHashHex: pulled.prevMetaSigHashHex,
+        authorUserId: pulled.authorUserId,
+        chainHeadHashHex: pulled.chainHeadHashHex,
+        chainHeadSeq: pulled.chainHeadSeq,
+      },
+      authorKeyFingerprintHex: pulled.authorKeyFingerprintHex,
+      signatureHex: pulled.signatureHex,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("authorizes like the bulk pull (read × reader) and conceals like it (§12-3 / §11-2)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+
+    // reader(チェーン role)+ read スコープで取得可(pull と同一行 — §12-3)
+    const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
+    const readToken = await deviceToken(9003, readScope);
+    const allowed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
+    expect(allowed.status).toBe(200);
+
+    // 非メンバーは 404(存在秘匿 — §11-2)
+    const stranger = await requestJson(
+      "GET",
+      `/environments/${ENV}/pull/metadata`,
+      token(STRANGER),
+    );
+    expect(stranger.status).toBe(404);
+
+    // スコープ外プロジェクトも 404(存在秘匿はスコープ検査が先行)
+    const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
+    const scoped = await deviceToken(9002, otherScope);
+    const concealed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, scoped);
+    expect(concealed.status).toBe(404);
+
+    // 削除済み環境は 404(pull と同じ)。READER のトークンは readToken の
+    // 再発行で置換済みのため、以後は readToken を使う
+    const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
+    expect(removed.status).toBe(204);
+    const gone = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
+    expect(gone.status).toBe(404);
+  });
+});
+
 /** チェーン保存行のエントリハッシュ(宣言ヘッドの exact pair 構成用)。 */
 async function hashOf(seq: number): Promise<string> {
   const rows = await queryProjectDo(

@@ -26,5 +26,9 @@ export default defineConfig({
   ],
   test: {
     name: "server",
+    // workerd 実環境の HTTP 往復が多いテスト(1 テスト 10 リクエスト超)は
+    // スイート全体の負荷次第で既定 5s を超えることがある(実測フレーク)。
+    // ハング検出の有界性は保ったまま余裕を持たせる
+    testTimeout: 15_000,
   },
 });

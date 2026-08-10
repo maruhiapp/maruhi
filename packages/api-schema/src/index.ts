@@ -45,6 +45,7 @@ export {
 export {
   deksGroup,
   EnvironmentChainResultSchema,
+  EnvironmentMetadataPullSchema,
   EnvironmentPullSchema,
   environmentsGroup,
   EnvironmentSummarySchema,

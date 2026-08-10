@@ -38,7 +38,11 @@ import {
   toMetaStatementInput,
   toValueInput,
 } from "./data-http.ts";
-import type { EnvironmentPullValue, VariableVersionValue } from "./data-plane.ts";
+import type {
+  EnvironmentMetadataPullValue,
+  EnvironmentPullValue,
+  VariableVersionValue,
+} from "./data-plane.ts";
 
 const noContent = HttpServerResponse.empty({ status: 204 });
 
@@ -218,5 +222,15 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           deks: pulled.deks,
         })),
       ),
+    )
+    // メタデータのみモード(§12-7): 認可は pull と同一(read × reader)。
+    // 値・DEK を返さず、var.read は記録されない(AUDIT_SPEC §3.3)
+    .handle("pullMetadata", ({ params }) =>
+      callProjectData<EnvironmentMetadataPullValue>()({
+        projectId: params.projectId,
+        permission: "read",
+        allowed: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
+        invoke: (stub, actor) => stub.pullEnvironmentMetadata(actor, params.environmentId),
+      }),
     ),
 );

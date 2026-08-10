@@ -46,6 +46,7 @@ import type {
   DataRejectedError,
   DekWrapInput,
   DekWrapRefInput,
+  EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
   MetaStatementInput,
@@ -60,6 +61,7 @@ import {
   deleteVariableProgram,
   listEnvironmentsProgram,
   listMyDekWrapsProgram,
+  pullEnvironmentMetadataProgram,
   pullEnvironmentProgram,
   pushVersionProgram,
   registerDekWrapsProgram,
@@ -594,6 +596,14 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
   ): Promise<DataOutcome<EnvironmentPullValue>> {
     return this.#runData(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  pullEnvironmentMetadata(
+    actor: DataActor,
+    environmentId: string,
+  ): Promise<DataOutcome<EnvironmentMetadataPullValue>> {
+    return this.#runData(pullEnvironmentMetadataProgram(actor, environmentId, this.#stateCache));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
