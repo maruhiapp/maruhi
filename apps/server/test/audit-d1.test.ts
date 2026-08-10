@@ -202,6 +202,9 @@ describe("device flow(§3.1)", () => {
     await deviceToken(701);
     const events = await auditRows("user_audit_events");
     expect(events.filter((row) => row.event === "auth.token_created")).toHaveLength(2);
+    // 置換された旧行の削除はローテーションの一部であり、明示失効イベントに
+    // ならない(§3.1 の線引きの否定側)
+    expect(events.filter((row) => row.event === "auth.token_revoked")).toHaveLength(0);
     // ローテーションで残る実トークンは 1 本のまま
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;

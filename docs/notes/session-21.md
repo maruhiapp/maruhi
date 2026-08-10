@@ -30,9 +30,11 @@ AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案
   - createUserBatch: user_created + identity_linked(provider 種別名のみ)+
     org.created(personal)+ org.member_added(owner 本人)を既存 batch に同梱
   - sessions.insert: login_succeeded(§3.1 の 1:1 規定に基づきリポジトリ内で固定)
-  - sessions.revokeByHash(新設): 明示失効専用。先に行を引いて actor(所有者・
-    auth_method)を写し、削除と同一 batch で session_revoked。期限切れ掃除の
-    deleteByHash / deleteExpired は従来どおりイベントなし
+  - sessions.revokeByHash(新設): 明示失効専用。削除の成立を returning で観測
+    してから session_revoked を記録(actor = 削除行の所有者・auth_method。
+    Pullfrog 指摘対応: 読み → 削除の 2 段では並行ログアウトが 1 失効に 2 行
+    記録し得る。重複より欠落側に倒す)。期限切れ掃除の deleteByHash /
+    deleteExpired は従来どおりイベントなし
   - tokens.replaceForUserAndName: token_created(tokenId / name / scopes)。
     tokens.revokeById(deleteById を置換): token_revoked(actor のトークン id =
     失効対象 id — v1 は自トークン失効のみ)
@@ -44,8 +46,12 @@ AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案
     PK 競合時は batch ごと原子的に巻き戻して no-op(isUniqueConflict 判別)。
     偽イベントの混入も監査行だけの欠落も起きない)
 - **device flow のログイン成功**: セッションを作らないため sessions.insert に
-  相乗りできない。getOrCreateUser 直後にハンドラで単独追記(トークン発行が
-  上限で失敗しても GitHub 検証は成功している、の順序に整合)
+  相乗りできない。getOrCreateUser 直後にハンドラで単独追記。**基準点は
+  「GitHub 検証成功」であって「交換 200」ではない**(Pullfrog が確認を求めた
+  点への裁定): トークン上限(429)は認証失敗ではなく login_failed の理由語彙
+  にも該当しないため、発行後へ移すと「認証は成功したのに監査痕跡ゼロ」の経路
+  が生まれる。監査書き込み障害が交換を 500 にする非対称は許容(best-effort 化
+  = 無言の監査欠落はしない — エラーを握り潰さない規約)
 - **login_failed は未認証経路からの D1 書き込み**になる(仕様が記録を要求)。
   PR レビュー(Cursor Security Agent, MEDIUM)の指摘を受け、固定窓の全体上限
   (1 時間 100 行、超過は不記録のベストエフォート — AUDIT_SPEC §3.1 に明文化)

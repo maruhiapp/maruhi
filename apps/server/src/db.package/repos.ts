@@ -311,24 +311,24 @@ function makeSessionRepo(db: Db): SessionRepoShape {
       }),
     revokeByHash: (idHash, nowMs) =>
       run(async () => {
-        // actor(セッション所有者)を写すため先に行を引く。行がなければ no-op
-        // (存在しないセッションの失効をイベント化しない)
-        const row = await db
-          .select({ userId: sessions.userId, authMethod: sessions.authMethod })
-          .from(sessions)
+        // 削除の成立を returning で観測してからイベントを書く(actor もここから
+        // 写す)。読み → 削除の 2 段だと並行ログアウトが両方 SELECT に成功して
+        // 1 失効に 2 行記録し得る(Pullfrog 指摘)。削除と追記が 2 文になる分
+        // 「削除だけ成功しイベントが欠ける」窓は理論上残るが、重複より欠落側に
+        // 倒す。行がなければ no-op(存在しない失効をイベント化しない)
+        const deleted = await db
+          .delete(sessions)
           .where(eq(sessions.id, idHash))
-          .get();
+          .returning({ userId: sessions.userId, authMethod: sessions.authMethod });
+        const row = deleted[0];
         if (row === undefined) {
           return;
         }
-        await db.batch([
-          db.delete(sessions).where(eq(sessions.id, idHash)),
-          userAuditInsert(db, nowMs, {
-            event: "auth.session_revoked",
-            actor: { userId: row.userId, authMethod: row.authMethod },
-            payload: { sessionId: idHash },
-          }),
-        ]);
+        await userAuditInsert(db, nowMs, {
+          event: "auth.session_revoked",
+          actor: { userId: row.userId, authMethod: row.authMethod },
+          payload: { sessionId: idHash },
+        });
       }),
     deleteByHash: (idHash) =>
       run(async () => {
