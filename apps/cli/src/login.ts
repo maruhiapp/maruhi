@@ -16,7 +16,13 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { Keychain, parseStoredToken, type StoredToken, tokenEntryName } from "./keychain.ts";
+import {
+  Keychain,
+  masterKeyEntryName,
+  parseStoredToken,
+  type StoredToken,
+  tokenEntryName,
+} from "./keychain.ts";
 
 /** `maruhi login`: device flow → token exchange → keychain. */
 export function loginOp(input: {
@@ -89,7 +95,46 @@ export function loginOp(input: {
       `ログインしました(user: ${displayText(exchanged.userId)})。トークンは OS キーチェーンに保存されました`,
     );
     yield* io.log(`同名トークン(${input.tokenName})の再ログインは旧トークンの失効を伴います`);
+    yield* nextStepHint(input.origin, exchanged.userId, exchanged.token);
   });
+}
+
+/**
+ * ログイン後の次の一歩の案内(デバイス追加・保管リマインダ — CRYPTO_SPEC §8 の
+ * フローの入口)。補助線なので、状態確認の失敗でログイン成功を失敗に変えない。
+ * ただし無言では飲まない(CLAUDE.md): 失敗時はスキップした旨を 1 行で明示する。
+ */
+function nextStepHint(
+  origin: string,
+  userId: string,
+  token: string,
+): Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const keychain = yield* Keychain;
+    const master = yield* keychain.get(masterKeyEntryName(origin, userId));
+    const client = yield* makeApiClient({ baseUrl: origin, token });
+    const status = yield* client.auth.recoveryStatus({});
+    if (master === null) {
+      yield* io.log(
+        status.registered
+          ? "このデバイスに master 鍵がありません。リカバリーコードで復元できます: `maruhi key recover`"
+          : "master 鍵がありません。`maruhi key generate` で生成してください",
+      );
+    } else if (!status.registered) {
+      yield* io.logError(
+        "注意: リカバリーコードが未登録です。鍵を失うと復元できません — `maruhi key recovery` で発行してください",
+      );
+    }
+  }).pipe(
+    Effect.catch(() =>
+      Effect.flatMap(CliIo, (io) =>
+        io.logError(
+          "注意: リカバリー登録状態を確認できなかったため、次の一歩の案内をスキップしました(ログインには影響しません。状態は `maruhi key show` で確認できます)",
+        ),
+      ),
+    ),
+  );
 }
 
 /** `maruhi logout`: revoke the presented token, then remove it from the keychain. */

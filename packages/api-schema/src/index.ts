@@ -1,7 +1,15 @@
 // @maruhi/api-schema — HttpApi 定義(サーバー実装とクライアント導出の共有源)。
 // API 境界の型は EncryptedPayload 系のみ。平文のシークレットを表す型を置かないこと。
 
-export { authGroup, DeviceExchangeResultSchema, MeSchema, UserOrgSchema } from "./auth-api.ts";
+export {
+  authGroup,
+  DeviceExchangeResultSchema,
+  MeSchema,
+  RecoveryStatusSchema,
+  RecoveryWrapResultSchema,
+  RecoveryWrapSchema,
+  UserOrgSchema,
+} from "./auth-api.ts";
 export { AuthMiddleware } from "./auth-middleware.ts";
 export {
   ChainActorSchema,
@@ -70,6 +78,8 @@ export {
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
+  RecoveryRateLimitedError,
+  RecoveryWrapNotFoundError,
   ResourceConflictReasonSchema,
   TokenLimitError,
   UnauthorizedError,

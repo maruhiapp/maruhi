@@ -19,6 +19,7 @@ export const STATE_COOKIE = "__Host-maruhi_oauth_state";
 const AUTH_TABLES = [
   "sessions",
   "api_tokens",
+  "recovery_wraps",
   "memberships",
   "projects",
   "linked_identities",

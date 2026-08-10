@@ -11,6 +11,8 @@ export {
   makeDbServices,
   OrgRepo,
   ProjectRepo,
+  RECOVERY_FETCH_LIMIT,
+  RecoveryRepo,
   SessionRepo,
   type SessionRepoShape,
   TokenRepo,

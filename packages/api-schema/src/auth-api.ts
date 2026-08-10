@@ -14,7 +14,13 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { AuthFlowError, TokenLimitError } from "./errors.ts";
+import {
+  AuthFlowError,
+  ForbiddenError,
+  RecoveryRateLimitedError,
+  RecoveryWrapNotFoundError,
+  TokenLimitError,
+} from "./errors.ts";
 
 /**
  * 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。
@@ -42,6 +48,39 @@ export const UserOrgSchema = Schema.Struct({
 export const MeSchema = Schema.Struct({
   userId: Schema.String,
   orgs: Schema.Array(UserOrgSchema),
+});
+
+// リカバリーブロブ(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み master 秘密鍵)。
+// サーバーから見て不透明な暗号文であり、リカバリーコード自体はワイヤに現れない。
+const RecoveryNonceHex = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{24}$/, { description: "lowercase hex nonce (12 bytes)" }),
+);
+// AES-256-GCM の ct || tag: タグ込み 16 バイト以上・16 KiB 以下(§13-4 受理ポリシー)
+const RecoveryCiphertextHex = Schema.String.check(
+  Schema.isPattern(/^(?:[0-9a-f]{2}){16,16384}$/, {
+    description: "lowercase hex AES-GCM ciphertext (16 bytes .. 16 KiB incl. tag)",
+  }),
+);
+
+/** A wrapped master-secret blob on the wire (AUTH_SPEC §13-4). */
+export const RecoveryWrapSchema = Schema.Struct({
+  suite: Schema.Literal("maruhi/v1"),
+  nonceHex: RecoveryNonceHex,
+  ciphertextHex: RecoveryCiphertextHex,
+});
+
+/** GET /auth/recovery: the stored blob plus its last-update time. */
+export const RecoveryWrapResultSchema = Schema.Struct({
+  suite: Schema.Literal("maruhi/v1"),
+  nonceHex: RecoveryNonceHex,
+  ciphertextHex: RecoveryCiphertextHex,
+  updatedAtMs: Schema.Number,
+});
+
+/** GET /auth/recovery/status: registration state only — never the blob (§13-2). */
+export const RecoveryStatusSchema = Schema.Struct({
+  registered: Schema.Boolean,
+  updatedAtMs: Schema.NullOr(Schema.Number),
 });
 
 /**
@@ -88,5 +127,24 @@ export const authGroup = HttpApiGroup.make("auth")
   .add(
     HttpApiEndpoint.post("revokeToken", "/auth/token/revoke", {
       success: HttpApiSchema.NoContent,
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    // 登録・再発行 = 置換 upsert(AUTH_SPEC §13-1。旧ラップは受理と同時に消える)
+    HttpApiEndpoint.put("recoveryPut", "/auth/recovery", {
+      payload: RecoveryWrapSchema,
+      success: HttpApiSchema.NoContent,
+      error: [ForbiddenError],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    HttpApiEndpoint.get("recoveryGet", "/auth/recovery", {
+      success: RecoveryWrapResultSchema,
+      error: [ForbiddenError, RecoveryWrapNotFoundError, RecoveryRateLimitedError],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    HttpApiEndpoint.get("recoveryStatus", "/auth/recovery/status", {
+      success: RecoveryStatusSchema,
     }).middleware(AuthMiddleware),
   );

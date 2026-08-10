@@ -119,6 +119,24 @@ export const apiTokens = sqliteTable(
   ],
 );
 
+export const recoveryWraps = sqliteTable("recovery_wraps", {
+  /** user 単位で高々 1 つ(AUTH_SPEC §13-1) */
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id),
+  /** スイート識別子(CRYPTO_SPEC §2 設計原則 4) */
+  suite: text("suite").notNull(),
+  /** 96-bit nonce(hex 小文字 24 文字) */
+  nonceHex: text("nonce_hex").notNull(),
+  /** AES-256-GCM の ct || tag(hex 小文字)。サーバーは復号・解釈しない */
+  ciphertextHex: text("ciphertext_hex").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  /** ブロブ取得の固定窓レート制限(AUTH_SPEC §13-3)。未取得は 0 / null */
+  fetchWindowStart: integer("fetch_window_start"),
+  fetchCount: integer("fetch_count").notNull().default(0),
+});
+
 export const projects = sqliteTable(
   "projects",
   {

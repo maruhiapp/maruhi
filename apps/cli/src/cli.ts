@@ -28,6 +28,7 @@ import { loginOp, logoutOp } from "./login.ts";
 import { projectInitOp } from "./project-init.ts";
 import { type DecryptedVariable, type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
+import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { ProcessRunner, runOp } from "./run.ts";
 import {
   type CliSession,
@@ -352,9 +353,12 @@ function logoutCommand(execute: Execute) {
 function keyCommand(execute: Execute) {
   return define({
     name: "key",
-    description: "master keypair の管理(generate / show)",
+    description: "master keypair の管理(generate / show / recover / recovery)",
     args: {
-      action: { type: "positional", description: "generate | show" },
+      action: {
+        type: "positional",
+        description: "generate | show | recover(コードから復元)| recovery(コードの発行・再発行)",
+      },
       server: { type: "string", description: "サーバー URL(省略時は config の server)" },
     },
     run: (ctx) =>
@@ -362,13 +366,24 @@ function keyCommand(execute: Execute) {
         Effect.gen(function* () {
           const context = yield* openSession(ctx.values.server);
           if (ctx.values.action === "generate") {
-            return yield* keyGenerateOp({ session: context.session });
+            return yield* keyGenerateOp({ session: context.session, client: context.client });
           }
           if (ctx.values.action === "show") {
-            return yield* keyShowOp({ session: context.session });
+            return yield* keyShowOp({ session: context.session, client: context.client });
+          }
+          if (ctx.values.action === "recover") {
+            return yield* recoverMasterKeyOp({ session: context.session, client: context.client });
+          }
+          if (ctx.values.action === "recovery") {
+            const masterKeys = yield* loadMasterKeys(context.session);
+            return yield* issueRecoveryCodeOp({
+              session: context.session,
+              client: context.client,
+              masterKeys,
+            });
           }
           return yield* Effect.fail(
-            cliError(`不明な操作です: ${ctx.values.action}(generate | show)`),
+            cliError(`不明な操作です: ${ctx.values.action}(generate | show | recover | recovery)`),
           );
         }),
       ),

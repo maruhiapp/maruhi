@@ -87,6 +87,23 @@ export class TokenLimitError extends Schema.TaggedErrorClass<TokenLimitError>()(
   { httpApiStatus: 429 },
 ) {}
 
+/** 404: no recovery wrap is registered for the authenticated user (AUTH_SPEC §13). */
+export class RecoveryWrapNotFoundError extends Schema.TaggedErrorClass<RecoveryWrapNotFoundError>()(
+  "RecoveryWrapNotFound",
+  {},
+  { httpApiStatus: 404 },
+) {}
+
+/**
+ * 429: the recovery-blob fetch window is exhausted (AUTH_SPEC §13-3 —
+ * CRYPTO_SPEC §8 のレート制限)。`retryAfterSeconds` は固定窓の残り秒数。
+ */
+export class RecoveryRateLimitedError extends Schema.TaggedErrorClass<RecoveryRateLimitedError>()(
+  "RecoveryRateLimited",
+  { retryAfterSeconds: Schema.Number },
+  { httpApiStatus: 429 },
+) {}
+
 /** 404: no chain has been initialized under this project id. */
 export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
   "ProjectNotFound",
