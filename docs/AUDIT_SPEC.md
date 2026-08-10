@@ -1,7 +1,7 @@
 # maruhi 監査ログ仕様書 (AUDIT_SPEC)
 
-Version: 0.5
-Status: 所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認)
+Version: 0.6
+Status: 所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認。0.6 = §5.2 案 A の D1 実装と §3.1 の記録細則 — 2026-08-10 セッション 21、マージをもって承認)
 
 この文書は maruhi の監査ログ(何を・誰が・いつ)の設計を定める。
 CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーション検出)と AUTH_SPEC(§2 データモデル)を前提とする。
@@ -52,8 +52,12 @@ actor: {
 | `auth.recovery_code_reissued` | — | 再発行(旧ラップ削除を含む) |
 | `auth.user_created` | — | getOrCreateUser の新規作成分 |
 
-- `auth.session_created` は `auth.login_succeeded` と 1:1 なので独立イベントにしない
+- `auth.session_created` は `auth.login_succeeded` と 1:1 なので独立イベントにしない。Web ログインの `auth.login_succeeded` はセッション id(保存 id と同じハッシュ。生値ではない — AUTH_SPEC §10)を payload に写し、`auth.session_revoked` の対象 session id と突合できるようにする(2026-08-10)
+- `auth.session_revoked` は**明示失効のみ**(ログアウト / サーバー側失効)。期限切れ行の掃除(resolve 時・cron)は失効イベントではないため記録しない(2026-08-10)
+- `auth.login_failed` の actor は **user_id なしの type=user**(人はいるが特定できていない外部主体。type=system は主体のない内部処理用であり失敗試行には使わない — §2)(2026-08-10)
+- `auth.login_failed` の記録は**固定窓の全体上限つき**(1 時間 100 行、超過分は記録しない。ベストエフォート): 本イベントは唯一の未認証経路からの書き込みであり、無効リクエストの洪水による D1 書き込み増幅(可用性・コスト攻撃)を有界にする。洪水そのものは窓内の上限到達として観測でき、要ローテーション検出(§4)の入力ではないため SHOULD 記録で足りる(2026-08-10 セッション 21 セキュリティレビュー対応)
 - トークン**使用**はイベント化しない(高頻度・低情報。api_tokens.last_used_at と、データ系イベントの actor.api_token_id が代替)
+- 同名トークンのローテーション(AUTH_SPEC §6 の置換)は `auth.token_created` 1 行で表し、置換された旧行の削除を独立の `auth.token_revoked` にしない(発行の意味論が「置換」であり、明示失効と区別する)(2026-08-10)
 
 ### 3.2 org 系
 
@@ -65,6 +69,8 @@ actor: {
 | `org.project_created` / `org.project_deleted` | project_id |
 
 org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2)ため、org 系イベントは要ローテーション検出に関与しない。
+
+- パーソナル org 自動作成(AUTH_SPEC §9-1)は `org.created`(payload `personal: true`)+ 本人 owner の `org.member_added` として記録する。org 名スナップショットは payload に**写さない** — パーソナル org の名前は providerLogin 由来であり、§1-2 の禁止情報にあたる(2026-08-10)
 
 ### 3.3 プロジェクト データ系 ★
 
@@ -194,6 +200,8 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 | C: org DO のみ新設し、ユーザー系も所属パーソナル org に置く | DO パターンで統一しつつ +1 クラス | — | ユーザーは複数 org に属せるため「どの org に書くか」が人工的。リンク・リカバリー等 org と無関係なイベントの置き場が歪む |
 
 **提案: 案 A(D1)を v1 に採用する。** 理由: (1) §4 の中核クエリはすべてプロジェクト DO 内で完結しており、org / 認証系イベントは検出に関与しない = DO 併置の利点がない。(2) 認証系イベントは記録対象(sessions / tokens)と同じ D1 に置くことで、発行・失効処理と同一トランザクションで追記できる。(3) append-only はどのストアでも「コード規律 + 追記専用サービス境界」で守るものであり、DO にしても自動では強くならない。案 B への移行はイベント構造が同型なので後からでも機械的に可能(ホステッド版のコンプライアンス要件が出た時点で再評価)。
+
+**実装(2026-08-10 セッション 21)**: 案 A のとおり `user_audit_events`(§3.1)/ `org_audit_events`(§3.2)を D1 に実装した。列は §5.1 と同じ設計(頻出属性の列昇格 + payload JSON。auth_method は §2 どおり payload)で、D1 側イベントに現れない DO 専用列(チェーン・変数座標・鍵 FP・client_ts)は持たず、org 系の横断クエリ用に `org_id` / `project_id` を列昇格する。users への FK は張らない(監査行は記録対象の行より長生きし、参照整合が追記を阻害してはならない)。同一トランザクション追記(理由 (2))は各リポジトリが自分の D1 batch へ挿入文を同梱する形で実現し、主データ書き込みを伴わないイベント(`auth.login_failed` と device flow の `auth.login_succeeded`)のみ単独追記とする。記録は対応する操作 API が存在するイベントのみ(org の改名・削除・メンバー管理 API は未実装のため、該当イベントは API 導入時に記録を開始する)。読み取り API は §6〜§7 どおり作らない(Phase 2)。
 
 ### 5.3 保持と量
 

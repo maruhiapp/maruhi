@@ -22,7 +22,12 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { CSRF_HEADER, GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
-import { IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
+import {
+  D1AuditRepo,
+  IdentityRepo,
+  principalAuditActor,
+  RecoveryRepo,
+} from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
@@ -88,6 +93,24 @@ function authFlowFailure(
 }
 
 /**
+ * auth.login_failed の記録(AUDIT_SPEC §3.1)。actor は user_id なしの user =
+ * 未認証の外部主体。理由種別のみ記録し、提示された外部 ID・コード・トークンは
+ * 記録しない(同 §3.1 の禁止)。未認証経路からの書き込み増幅を有界にするため
+ * 固定窓上限つきの専用追記を使う(db.package/audit.ts)。
+ */
+function recordLoginFailed(
+  authMethod: "github_oauth" | "device_flow",
+  reason: AuthFlowError["reason"],
+): Effect.Effect<void, never, D1AuditRepo> {
+  return Effect.flatMap(D1AuditRepo, (audit) =>
+    audit.appendLoginFailed(
+      { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
+      Date.now(),
+    ),
+  );
+}
+
+/**
  * 鍵素材管理操作(リカバリーブロブの登録・再発行・取得)のトークン条件
  * (AUTH_SPEC §13-2): セッション主体は常に可、トークン主体は `*` × admin
  * スコープを含む場合のみ可。スコープ限定トークンにラップの置換(可用性攻撃)や
@@ -142,16 +165,19 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const expectedState = request.cookies[STATE_COOKIE];
         // §3-2: state 検証(不一致は即拒否)
         if (expectedState === undefined || !constantTimeEqual(expectedState, query.state)) {
+          yield* recordLoginFailed("github_oauth", "state-mismatch");
           return yield* Effect.fail(new AuthFlowError({ reason: "state-mismatch" }));
         }
         const origin = requestOrigin(request);
         const github = yield* GitHubApi;
-        const accessToken = yield* github
-          .exchangeCode(query.code, callbackUri(origin))
-          .pipe(Effect.mapError(authFlowFailure("code-exchange-failed")));
-        const identity = yield* github
-          .fetchIdentity(accessToken)
-          .pipe(Effect.mapError(authFlowFailure("github-token-invalid")));
+        const accessToken = yield* github.exchangeCode(query.code, callbackUri(origin)).pipe(
+          Effect.mapError(authFlowFailure("code-exchange-failed")),
+          Effect.tapError(() => recordLoginFailed("github_oauth", "code-exchange-failed")),
+        );
+        const identity = yield* github.fetchIdentity(accessToken).pipe(
+          Effect.mapError(authFlowFailure("github-token-invalid")),
+          Effect.tapError(() => recordLoginFailed("github_oauth", "github-token-invalid")),
+        );
         // GitHub トークンはここで役目を終える(保存しない。§3 / §10)
         const identities = yield* IdentityRepo;
         const resolved = yield* identities.getOrCreateUser(identity, Date.now());
@@ -180,11 +206,23 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const github = yield* GitHubApi;
         // §4-4: 持ち込みトークンは check-token API で「自 OAuth App 発行」まで検証する
         // (他 App 向けに発行されたトークンの流用 = confused-deputy を遮断)
-        const identity = yield* github
-          .verifyAppToken(payload.githubAccessToken)
-          .pipe(Effect.mapError(authFlowFailure("github-token-invalid")));
+        const identity = yield* github.verifyAppToken(payload.githubAccessToken).pipe(
+          Effect.mapError(authFlowFailure("github-token-invalid")),
+          Effect.tapError(() => recordLoginFailed("device_flow", "github-token-invalid")),
+        );
         const identities = yield* IdentityRepo;
         const resolved = yield* identities.getOrCreateUser(identity, Date.now());
+        // device flow 完了 = ログイン成功(AUDIT_SPEC §3.1)。セッションは作らない
+        // ため、Web と違いセッション挿入に相乗りせずここで記録する。後続の
+        // トークン発行が上限で失敗しても GitHub 検証は成功している
+        const audit = yield* D1AuditRepo;
+        yield* audit.appendUserEvent(
+          {
+            event: "auth.login_succeeded",
+            actor: { userId: resolved.userId, authMethod: "device_flow" },
+          },
+          Date.now(),
+        );
         const tokens = yield* TokenService;
         const issued = yield* tokens
           .issueToken(
@@ -250,7 +288,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         yield* ensureKeyMaterialAccess(principal);
         const recovery = yield* RecoveryRepo;
         // 登録と再発行は同じ置換 upsert(§13-1)。旧ラップ行はここで消える。
-        // 監査(auth.recovery_code_reissued)は D1 側監査基盤の導入と同時(§13-5)
+        // 監査(auth.recovery_code_reissued)は upsert が同一 batch で記録する(§13-5)
         yield* recovery.upsert(
           principal.userId,
           {
@@ -259,6 +297,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
             ciphertextHex: payload.ciphertextHex,
           },
           Date.now(),
+          principalAuditActor(principal),
         );
         return HttpServerResponse.empty({ status: 204 });
       }),
@@ -289,13 +328,18 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           // クォータを消費しない(§13-3 の計数対象はブロブ配布のみ)
           return yield* Effect.die(new Error("stored recovery wrap has an unknown suite"));
         }
-        const decision = yield* recovery.recordFetch(principal.userId, Date.now());
+        // 監査(auth.recovery_blob_fetched)は recordFetch が計数と同一 batch で
+        // 記録する(§13-5。拒否 = 配布なしは記録しない)
+        const decision = yield* recovery.recordFetch(
+          principal.userId,
+          Date.now(),
+          principalAuditActor(principal),
+        );
         if (!decision.allowed) {
           return yield* Effect.fail(
             new RecoveryRateLimitedError({ retryAfterSeconds: decision.retryAfterSeconds }),
           );
         }
-        // 監査(auth.recovery_blob_fetched)は D1 側監査基盤の導入と同時(§13-5)
         return {
           suite: "maruhi/v1" as const,
           nonceHex: wrap.nonceHex,

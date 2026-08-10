@@ -95,7 +95,7 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
         Effect.flatMap(tokens.findByHash(tokenHash), (record) =>
           record === null || !constantTimeEqual(tokenHash, record.tokenHash)
             ? Effect.void
-            : tokens.deleteById(record.id),
+            : tokens.revokeById(record.id, record.userId, Date.now()),
         ),
       ),
   };

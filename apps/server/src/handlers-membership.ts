@@ -17,6 +17,7 @@ import {
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
 } from "@maruhi/api-schema";
+import type { AuthenticatedPrincipal } from "@maruhi/core";
 import { RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
@@ -30,7 +31,7 @@ import {
   requiredPermissionForOp,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
-import { OrgRepo, ProjectRepo } from "./db.package/index.ts";
+import { OrgRepo, principalAuditActor, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -75,34 +76,40 @@ function policyFailure(outcome: PolicyRejection) {
 const repairOrConflict = (
   projectId: string,
   orgId: string,
-  principalUserId: string,
+  principal: AuthenticatedPrincipal,
   outcome: Extract<InitOutcome, { kind: "already-initialized" }>,
 ) =>
   Effect.gen(function* () {
     const projects = yield* ProjectRepo;
     const exists = yield* projects.exists(projectId);
-    if (exists || outcome.genesisActorUserId !== principalUserId) {
+    if (exists || outcome.genesisActorUserId !== principal.userId) {
       return yield* Effect.fail(new ProjectAlreadyInitializedError({ projectId }));
     }
-    yield* projects.insertIfAbsent(projectId, orgId, Date.now());
+    yield* projects.insertIfAbsent(projectId, orgId, Date.now(), principalAuditActor(principal));
     return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
   });
 
 const mapInitOutcome = (
   projectId: string,
   orgId: string,
-  principalUserId: string,
+  principal: AuthenticatedPrincipal,
   outcome: InitOutcome,
 ) => {
   switch (outcome.kind) {
     case "initialized":
       return Effect.gen(function* () {
         const projects = yield* ProjectRepo;
-        yield* projects.insertIfAbsent(projectId, orgId, Date.now());
+        // org.project_created(AUDIT_SPEC §3.2)は insertIfAbsent が同一 batch で記録
+        yield* projects.insertIfAbsent(
+          projectId,
+          orgId,
+          Date.now(),
+          principalAuditActor(principal),
+        );
         return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
       });
     case "already-initialized":
-      return repairOrConflict(projectId, orgId, principalUserId, outcome);
+      return repairOrConflict(projectId, orgId, principal, outcome);
     case "project-id-mismatch":
       return Effect.die(new Error("project id mismatch between worker and DO"));
     default:
@@ -176,7 +183,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         const outcome = yield* rpcCall<InitOutcome>(() =>
           projectStub(env, projectId).init(projectId, payload.entry),
         );
-        return yield* mapInitOutcome(projectId, payload.orgId, principal.userId, outcome);
+        return yield* mapInitOutcome(projectId, payload.orgId, principal, outcome);
       }),
     )
     .handle("get", ({ params }) =>
