@@ -636,9 +636,9 @@ function makeOrgRepo(db: Db): OrgRepoShape {
 interface ProjectRepoShape {
   /**
    * 冪等挿入(修復経路を含む §11-3)。既存行はそのまま。org.project_created
-   * (AUDIT_SPEC §3.2)を同一 batch で記録する — 両呼び出し元(初期化直後 /
-   * exists 検査済みの修復)とも行が無い前提の経路であり、conflict による
-   * 空振り挿入でイベントだけ重複する実行順は通常運転では生じない。
+   * (AUDIT_SPEC §3.2)を同一 batch で記録する。batch の原子性により、既存行
+   * との競合で挿入が成立しなかった場合は監査行も巻き戻る(空振り挿入で
+   * イベントだけ重複しない)。
    */
   readonly insertIfAbsent: (
     projectId: string,
@@ -655,18 +655,23 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
   return {
     insertIfAbsent: (projectId, orgId, nowMs, actor) =>
       run(async () => {
-        await db.batch([
-          db
-            .insert(projects)
-            .values({ id: projectId, orgId, createdAt: nowMs })
-            .onConflictDoNothing(),
-          orgAuditInsert(db, nowMs, {
-            event: "org.project_created",
-            actor,
-            orgId,
-            projectId,
-          }),
-        ]);
+        try {
+          await db.batch([
+            db.insert(projects).values({ id: projectId, orgId, createdAt: nowMs }),
+            orgAuditInsert(db, nowMs, {
+              event: "org.project_created",
+              actor,
+              orgId,
+              projectId,
+            }),
+          ]);
+        } catch (error) {
+          // PK 競合 = 既に作成済み。batch ごと巻き戻るため挿入・監査とも no-op
+          // (冪等)。監査行だけが残る実行順は存在しない。競合以外は defect
+          if (!isUniqueConflict(error)) {
+            throw error;
+          }
+        }
       }),
     exists: (projectId) =>
       run(async () => {
