@@ -7,8 +7,15 @@
 // - アイデンティティ規則(§1-2): プロバイダ ID・login・メールが 1 行にも現れない
 
 import { env, SELF } from "cloudflare:test";
+import { Context, Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import {
+  LOGIN_FAILED_WINDOW_LIMIT,
+  LOGIN_FAILED_WINDOW_MS,
+  makeDbServices,
+  ProjectRepo,
+} from "../src/db.package/index.ts";
 import {
   BASE,
   bearer,
@@ -128,6 +135,43 @@ describe("Web OAuth ログイン(§3.1)", () => {
       authMethod: "github_oauth",
       reason: "code-exchange-failed",
     });
+  });
+
+  it("caps auth.login_failed writes per fixed window (unauthenticated write amplification bound)", async () => {
+    // 窓内が上限まで埋まっている状態を直接シードする(実リクエストの反復は遅い)
+    const now = Date.now();
+    const seed = env.DB.prepare(
+      "INSERT INTO user_audit_events (server_ts, event, actor_type, payload) VALUES (?, 'auth.login_failed', 'user', ?)",
+    );
+    await env.DB.batch(
+      Array.from({ length: LOGIN_FAILED_WINDOW_LIMIT }, () =>
+        seed.bind(now, JSON.stringify({ authMethod: "github_oauth", reason: "state-mismatch" })),
+      ),
+    );
+    const blocked = await SELF.fetch(
+      `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
+      { redirect: "manual" },
+    );
+    // 拒否応答は変わらず、監査行だけが増えない
+    expect(blocked.status).toBe(400);
+    const capped = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
+    ).first<{ n: number }>();
+    expect(capped?.n).toBe(LOGIN_FAILED_WINDOW_LIMIT);
+
+    // 窓の外へ出た行は数えない = 記録が再開する
+    await env.DB.prepare("UPDATE user_audit_events SET server_ts = ?")
+      .bind(now - LOGIN_FAILED_WINDOW_MS - 1000)
+      .run();
+    const recorded = await SELF.fetch(
+      `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
+      { redirect: "manual" },
+    );
+    expect(recorded.status).toBe(400);
+    const resumed = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
+    ).first<{ n: number }>();
+    expect(resumed?.n).toBe(LOGIN_FAILED_WINDOW_LIMIT + 1);
   });
 });
 
@@ -323,6 +367,20 @@ describe("org.project_created(§3.2)と禁止情報(§1-2)", () => {
     expect(row.project_id).toBe(vectorProjectId);
     expect(row.actor_user_id).toBe(OWNER);
     expect(row.actor_api_token_id).not.toBeNull();
+  });
+
+  it("does not record org.project_created when the insert is skipped by conflict", async () => {
+    const token = await deviceToken(OWNER_GITHUB_ID);
+    await initGenesis(token);
+    // 行が既に存在する状態での冪等挿入(並行 init の競合側と同じ実行順)は
+    // イベントを増やさない(偽の作成イベントを作らない)
+    const services = makeDbServices(env.DB);
+    const projects = Context.get(services, ProjectRepo);
+    await Effect.runPromise(
+      projects.insertIfAbsent(vectorProjectId, VECTOR_ORG, Date.now(), { userId: OWNER }),
+    );
+    const events = await auditRows("org_audit_events");
+    expect(events.filter((row) => row.event === "org.project_created")).toHaveLength(1);
   });
 
   it("never records provider identifiers or emails in any row (§1-2)", async () => {

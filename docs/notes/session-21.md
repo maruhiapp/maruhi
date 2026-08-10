@@ -38,13 +38,19 @@ AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案
     失効対象 id — v1 は自トークン失効のみ)
   - recovery.upsert / recordFetch: actor(principal 由来)を引数で受け、
     reissued / blob_fetched を各 batch に同梱
-  - projects.insertIfAbsent: org.project_created を同一 batch で記録(両呼び出し
-    元 — 初期化直後・exists 検査済み修復 — とも行が無い前提の経路)
+  - projects.insertIfAbsent: org.project_created は**行が実際に挿入されたとき
+    のみ**記録(PR レビュー = Cursor Bugbot 指摘対応、修正実装は Bugbot Autofix
+    案を採用: onConflictDoNothing をやめ素の挿入 + 監査行の 2 文 batch とし、
+    PK 競合時は batch ごと原子的に巻き戻して no-op(isUniqueConflict 判別)。
+    偽イベントの混入も監査行だけの欠落も起きない)
 - **device flow のログイン成功**: セッションを作らないため sessions.insert に
   相乗りできない。getOrCreateUser 直後にハンドラで単独追記(トークン発行が
   上限で失敗しても GitHub 検証は成功している、の順序に整合)
 - **login_failed は未認証経路からの D1 書き込み**になる(仕様が記録を要求)。
-  書き込み増幅の悪用は §5.3 の量の実測(ドッグフーディング)で観測する申し送り
+  PR レビュー(Cursor Security Agent, MEDIUM)の指摘を受け、固定窓の全体上限
+  (1 時間 100 行、超過は不記録のベストエフォート — AUDIT_SPEC §3.1 に明文化)
+  で書き込み増幅を有界にした。窓の実測・上限値の調整は §5.3 のドッグフー
+  ディング実測と同時に見直す
 
 ## 3. 実装
 
@@ -60,7 +66,9 @@ AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案
 
 ## 4. テスト・品質
 
-- server +13(audit-d1.test.ts): サインアップ一括イベント列 / 再ログインの差分 /
+- server +15(audit-d1.test.ts): サインアップ一括イベント列 / 再ログインの差分 /
+  login_failed の固定窓上限(上限で抑制・窓経過で再開)/ 冪等挿入の空振りが
+  org.project_created を増やさない /
   login_failed 3 種の理由と匿名 actor / device flow の token_created(id・name・
   scopes 突合)/ ローテーション 2 行 / session_revoked の id 突合と再ログアウト
   無記録 / **期限切れ掃除が session_revoked を出さない** / token_revoked の
@@ -69,7 +77,7 @@ AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案
   login・@ が全行に現れない — DO 側 §1-2 テストの D1 版)
 - 既存テストの追随は test/support/auth.ts の reset テーブル追加のみ(API 変更が
   サーバー内部に閉じた)
-- `bun run check` green(938 テスト)
+- `bun run check` green(940 テスト)
 
 ## 5. スコープ外(申し送り)
 

@@ -95,14 +95,15 @@ function authFlowFailure(
 /**
  * auth.login_failed の記録(AUDIT_SPEC §3.1)。actor は user_id なしの user =
  * 未認証の外部主体。理由種別のみ記録し、提示された外部 ID・コード・トークンは
- * 記録しない(同 §3.1 の禁止)。
+ * 記録しない(同 §3.1 の禁止)。未認証経路からの書き込み増幅を有界にするため
+ * 固定窓上限つきの専用追記を使う(db.package/audit.ts)。
  */
 function recordLoginFailed(
   authMethod: "github_oauth" | "device_flow",
   reason: AuthFlowError["reason"],
 ): Effect.Effect<void, never, D1AuditRepo> {
   return Effect.flatMap(D1AuditRepo, (audit) =>
-    audit.appendUserEvent(
+    audit.appendLoginFailed(
       { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
       Date.now(),
     ),

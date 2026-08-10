@@ -55,6 +55,7 @@ actor: {
 - `auth.session_created` は `auth.login_succeeded` と 1:1 なので独立イベントにしない。Web ログインの `auth.login_succeeded` はセッション id(保存 id と同じハッシュ。生値ではない — AUTH_SPEC §10)を payload に写し、`auth.session_revoked` の対象 session id と突合できるようにする(2026-08-10)
 - `auth.session_revoked` は**明示失効のみ**(ログアウト / サーバー側失効)。期限切れ行の掃除(resolve 時・cron)は失効イベントではないため記録しない(2026-08-10)
 - `auth.login_failed` の actor は **user_id なしの type=user**(人はいるが特定できていない外部主体。type=system は主体のない内部処理用であり失敗試行には使わない — §2)(2026-08-10)
+- `auth.login_failed` の記録は**固定窓の全体上限つき**(1 時間 100 行、超過分は記録しない。ベストエフォート): 本イベントは唯一の未認証経路からの書き込みであり、無効リクエストの洪水による D1 書き込み増幅(可用性・コスト攻撃)を有界にする。洪水そのものは窓内の上限到達として観測でき、要ローテーション検出(§4)の入力ではないため SHOULD 記録で足りる(2026-08-10 セッション 21 セキュリティレビュー対応)
 - トークン**使用**はイベント化しない(高頻度・低情報。api_tokens.last_used_at と、データ系イベントの actor.api_token_id が代替)
 - 同名トークンのローテーション(AUTH_SPEC §6 の置換)は `auth.token_created` 1 行で表し、置換された旧行の削除を独立の `auth.token_revoked` にしない(発行の意味論が「置換」であり、明示失効と区別する)(2026-08-10)
 

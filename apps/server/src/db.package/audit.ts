@@ -11,6 +11,7 @@
 //   この層に持ち込まないこと
 
 import type { AuthenticatedPrincipal } from "@maruhi/core";
+import { and, count, eq, gte } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
@@ -75,9 +76,24 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
   return db.insert(orgAuditEvents).values(rowOf(event, serverTs));
 }
 
+/**
+ * auth.login_failed の記録上限(AUDIT_SPEC §3.1)。login_failed は唯一の
+ * 未認証経路からの D1 書き込みであり、無効リクエストの洪水による書き込み増幅
+ * (可用性・コスト面の攻撃)を有界にするため、固定窓の全体上限を超えた分は
+ * 記録しない。読み → 書きの 2 文で、並行リクエスト下では僅かに超過しうる
+ * ベストエフォート(recovery の取得計数 — repos.ts — と同じ性質)。
+ */
+export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
+export const LOGIN_FAILED_WINDOW_LIMIT = 100;
+
 interface D1AuditRepoShape {
   /** 単独イベントの追記(主データ書き込みを伴わないイベント用)。 */
   readonly appendUserEvent: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
+  /**
+   * auth.login_failed 専用の追記。固定窓(1 時間)の記録上限を超えたら黙って
+   * 落とす(SHOULD 記録 — 洪水そのものは窓内の上限到達として観測できる)。
+   */
+  readonly appendLoginFailed: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
 }
 
 export class D1AuditRepo extends Context.Service<D1AuditRepo, D1AuditRepoShape>()("D1AuditRepo") {}
@@ -86,6 +102,23 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
   return {
     appendUserEvent: (event, serverTs) =>
       Effect.promise(async () => {
+        await userAuditInsert(db, serverTs, event);
+      }),
+    appendLoginFailed: (event, serverTs) =>
+      Effect.promise(async () => {
+        const row = await db
+          .select({ n: count() })
+          .from(userAuditEvents)
+          .where(
+            and(
+              eq(userAuditEvents.event, "auth.login_failed"),
+              gte(userAuditEvents.serverTs, serverTs - LOGIN_FAILED_WINDOW_MS),
+            ),
+          )
+          .get();
+        if ((row?.n ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
+          return;
+        }
         await userAuditInsert(db, serverTs, event);
       }),
   };
