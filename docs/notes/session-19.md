@@ -93,7 +93,21 @@ client_secret ローテーション・独自ドメイン(コールバック URL 
   `config set githubClientId` の逃げ道を案内
 - `bun run check` green(920 テスト)
 
-## 4. スコープ外(申し送り)
+## 4. セルフレビューと修正(2 コミット目)
+
+1. **未設定検出の `undefined` 素通し(防御漏れ)**: Env 型上 `GITHUB_CLIENT_ID` は
+   string だが、セルフホスターが vars を消したデプロイでは実行時に undefined に
+   なり得る。素通しすると `/auth/config` は Schema エンコードの defect(500)、
+   `/auth/github/start` は `client_id=undefined` の URL で GitHub へ飛ぶ。
+   `ensureGitHubOAuthConfigured` を `string | undefined` 受けにして 503 へ倒し、
+   var 欠落の回帰テストを追加
+2. **ピン留め wrangler(4.118)での設定検証**: 実デプロイは bunx の 4.120 で
+   行ったため、`bun run deploy:dry-run`(= 4.118)で新 wrangler.jsonc
+   (`migrations_pattern` / `preview_urls` 含む)のパース・バンドル成立を確認し、
+   セルフホスターが使う版との差の穴を塞いだ
+3. nit: handlers-auth.ts のコメントの節参照(存在しない §3-3 → §3)
+
+## 5. スコープ外(申し送り)
 
 - **ドッグフーディング開始時の人間タスク**: GitHub OAuth App の作成(SELF_HOSTING.md
   手順 5〜7)と、検証デプロイへの client_id/secret 登録。CLI 側は §1 記載の

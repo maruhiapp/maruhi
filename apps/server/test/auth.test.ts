@@ -629,9 +629,14 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
     expect(body["reason"]).toBe("github-oauth-unconfigured");
   });
 
-  it("treats an empty client_id as unconfigured too", async () => {
-    const unconfigured = { ...env, GITHUB_CLIENT_ID: "" };
-    const response = await worker.fetch(incoming(`${BASE}/auth/config`), unconfigured);
+  it("treats an empty or missing client_id as unconfigured too", async () => {
+    const empty = { ...env, GITHUB_CLIENT_ID: "" };
+    expect((await worker.fetch(incoming(`${BASE}/auth/config`), empty)).status).toBe(503);
+    // vars を消したデプロイ(Env 型の外だが実行時に起こり得る)も 503 へ倒す
+    // (素通しすると /auth/config は encode defect、start は client_id=undefined で
+    // GitHub へ飛ぶ)
+    const { GITHUB_CLIENT_ID: _removed, ...missing } = env;
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
     expect(response.status).toBe(503);
   });
 

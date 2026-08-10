@@ -57,16 +57,19 @@ function callbackUri(origin: string): string {
 }
 
 /**
- * セルフホスト未設定の検出(AUTH_SPEC §3-3): client_id が wrangler.jsonc
- * テンプレートのプレースホルダのまま、または空。未設定のまま GitHub へ
+ * セルフホスト未設定の検出(AUTH_SPEC §3): client_id が wrangler.jsonc
+ * テンプレートのプレースホルダのまま・空・欠落(Env 型は string だが、vars を
+ * 消したデプロイでは実行時に undefined になり得る)。未設定のまま GitHub へ
  * リダイレクトすると GitHub 側のエラーページに飛んで原因に辿り着けないため、
  * 503 でセットアップガイド(docs/SELF_HOSTING.md)へ誘導する。
  * リテラルは wrangler.jsonc の vars.GITHUB_CLIENT_ID と同期すること。
  */
 const CLIENT_ID_PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
 
-function ensureGitHubOAuthConfigured(clientId: string): Effect.Effect<void, SetupIncompleteError> {
-  return clientId === "" || clientId === CLIENT_ID_PLACEHOLDER
+function ensureGitHubOAuthConfigured(
+  clientId: string | undefined,
+): Effect.Effect<void, SetupIncompleteError> {
+  return clientId === undefined || clientId === "" || clientId === CLIENT_ID_PLACEHOLDER
     ? Effect.fail(new SetupIncompleteError({ reason: "github-oauth-unconfigured" }))
     : Effect.void;
 }
