@@ -1396,6 +1396,43 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("競合が解消しません");
   });
 
+  it("名前解決と値取得の間に並行 rename が入ったら push を向けずに拒否する(PR #41 レビュー指摘)", async () => {
+    // メタデータ解決は API_KEY → v-existing。値付き pull では同じ変数が
+    // API_KEY_V2 へ改名済み(metaVersion 2)= 入力した名前と別の名前に変わった
+    // 変数への push を防ぐ(単一応答で解決していた旧フローのスナップショット整合)
+    const existing = await encryptValueFor({
+      dek: dek1,
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      variableId: "v-existing",
+      version: 4,
+      plaintext: "current",
+      writer: owner,
+      head: headOf(chainV1, chainV1.entries.length),
+    });
+    const entryExisting = await entryOf("v-existing", "API_KEY", existing);
+    const renamedStatement = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-existing",
+      name: "API_KEY_V2",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+      metaVersion: 2,
+    });
+    const env = await startEnv(
+      [
+        chainHandlerOf([chainV1]),
+        pullMetadataHandlerOf([[entryExisting.statement]]),
+        pullHandlerOf([{ ...entryExisting, statement: renamedStatement }], [wrap1]),
+      ],
+      "value",
+    );
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("並行 rename");
+  });
+
   it("メタデータ解決の応答に deleted ステートメントがアクティブ一覧で混ざっていたら拒否する(§12-7)", async () => {
     // メタデータのみ pull にも値付き pull と同じ検証規律が掛かる(削除の無断
     // 取り消しの運搬形。値がない分、検証はステートメント側だけで完結する)

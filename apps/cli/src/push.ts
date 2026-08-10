@@ -52,6 +52,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
@@ -158,6 +159,17 @@ function resolveTarget(input: {
       return yield* Effect.fail(
         cliError(
           `名前解決した変数 ${existing.variableId}(${input.name})が値付き pull に存在しません(他メンバーによる並行削除、またはサーバー応答の不整合)。再実行してください`,
+        ),
+      );
+    }
+    if (latest.name !== input.name) {
+      // 解決と値取得の間の並行 rename。入力した名前と別の名前へ変わった変数に
+      // push を向けない(単一応答で解決していた旧フローのスナップショット整合の
+      // 回復 — PR #41 レビュー指摘)。latest.name は検証済みステートメントの
+      // name(§12-2)なので byte-exact 比較で足りる
+      return yield* Effect.fail(
+        cliError(
+          `名前解決した変数 ${existing.variableId} の名前が、値取得までに ${displayText(input.name)} から ${displayText(latest.name)} へ変わっています(他メンバーによる並行 rename)。再実行してください`,
         ),
       );
     }
