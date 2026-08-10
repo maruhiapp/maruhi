@@ -41,8 +41,10 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import {
   buildEnvironmentFloor,
+  checkEnvironmentMetadataPull,
   checkEnvironmentPull,
   type FloorHandle,
+  type VerifiedActiveStatement,
   type VerifiedMetaEvidence,
   type VerifiedPullSnapshot,
   type VerifiedTombstone,
@@ -384,7 +386,7 @@ async function verifyDeletedStatements(
 
 /** 検証済み active 集合の名前検査: 同名 active の重複 = 解決拒否(§4.2)、非 NFC = 警告(SHOULD)。 */
 function checkVerifiedNames(
-  values: readonly VerifiedPulledValue[],
+  values: readonly { readonly variableId: string; readonly name: string }[],
   warnings: string[],
 ): string | null {
   const seenNames = new Set<string>();
@@ -401,6 +403,66 @@ function checkVerifiedNames(
     }
   }
   return null;
+}
+
+/**
+ * メタデータのみ pull のアクティブ変数ステートメント群の検証(§12-7 の
+ * メタデータのみモード)。座標整合・variableId 重複拒否・active であることの
+ * 検査は値付き pull の verifyOne と同一の規律で、値署名の検証だけがない。
+ */
+async function verifyActiveStatements(
+  verified: VerifiedProject,
+  environmentId: string,
+  statements: readonly DistributedVariableMetaStatement[],
+): Promise<
+  VerifyOutcome<{ readonly values: readonly VerifiedActiveStatement[]; readonly ids: Set<string> }>
+> {
+  const seenIds = new Set<string>();
+  const values: VerifiedActiveStatement[] = [];
+  for (const statement of statements) {
+    if (statement.environmentId !== environmentId) {
+      return {
+        kind: "rejected",
+        message: `変数 ${displayText(statement.variableId)} のステートメント座標が要求文脈と一致しません(名前の付け替え・移植の可能性)`,
+      };
+    }
+    if (seenIds.has(statement.variableId)) {
+      return {
+        kind: "rejected",
+        message: `変数 ID が同一応答内で重複しています(サーバー応答の不整合): ${statement.variableId}`,
+      };
+    }
+    seenIds.add(statement.variableId);
+    const outcome = await verifyStatement(
+      verified,
+      environmentId,
+      { kind: "variable", variableId: statement.variableId },
+      statement,
+      `変数 ${displayText(statement.variableId)} のメタステートメント`,
+    );
+    if (outcome.kind !== "ok") {
+      return outcome;
+    }
+    if (statement.status !== "active") {
+      return {
+        kind: "rejected",
+        message: `変数 ${displayText(statement.variableId)} に deleted ステートメントがアクティブ一覧で配布されました(削除の無断取り消しの可能性)`,
+      };
+    }
+    values.push({
+      variableId: statement.variableId,
+      name: statement.name,
+      status: "active",
+      metaVersion: statement.metaVersion,
+      metaSigHashHex: outcome.value.signedBytesHashHex,
+      chainHeadSeq: statement.chainHeadSeq,
+      chainHeadHashHex: statement.chainHeadHashHex,
+      signatureHex: statement.signatureHex,
+      authorUserId: statement.authorUserId,
+      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+    });
+  }
+  return { kind: "ok", value: { values, ids: seenIds } };
 }
 
 /** アクティブ変数群の検証(variableId 重複の拒否込み)。 */
@@ -432,14 +494,27 @@ async function verifyActiveVariables(
   return { kind: "ok", value: { values, ids: seenIds } };
 }
 
-function verifyAll(
+/**
+ * pull 応答の共通検証骨格(§6.3): 環境ステートメント → アクティブ集合(値付き /
+ * メタのみで差し替わる)→ tombstone → 名前検査。future はどの段でも全体を
+ * future にする(有界再同期の入口)。
+ */
+function verifyAllCommon<T extends { readonly variableId: string; readonly name: string }>(
   verified: VerifiedProject,
   environmentId: string,
-  pull: PullWire,
+  pull: {
+    readonly statement: DistributedEnvironmentMetaStatement;
+    readonly deletedVariables: readonly DistributedVariableMetaStatement[];
+  },
+  verifyActives: () => Promise<
+    VerifyOutcome<{ readonly values: readonly T[]; readonly ids: Set<string> }>
+  >,
 ): Effect.Effect<
   | {
       readonly kind: "ok";
-      readonly snapshot: VerifiedPullSnapshot;
+      readonly environment: VerifiedMetaEvidence;
+      readonly variables: readonly T[];
+      readonly tombstones: readonly VerifiedTombstone[];
       readonly warnings: readonly string[];
     }
   | { readonly kind: "future" },
@@ -455,9 +530,7 @@ function verifyAll(
     if (environment.kind === "rejected") {
       return yield* Effect.fail(cliError(environment.message));
     }
-    const actives = yield* Effect.promise(() =>
-      verifyActiveVariables(verified, environmentId, pull.variables),
-    );
+    const actives = yield* Effect.promise(verifyActives);
     if (actives.kind === "future") {
       return { kind: "future" } as const;
     }
@@ -480,14 +553,44 @@ function verifyAll(
     }
     return {
       kind: "ok",
-      snapshot: {
-        environment: environment.value,
-        variables: actives.value.values,
-        tombstones: deleted.value,
-      },
+      environment: environment.value,
+      variables: actives.value.values,
+      tombstones: deleted.value,
       warnings,
     } as const;
   });
+}
+
+function verifyAll(
+  verified: VerifiedProject,
+  environmentId: string,
+  pull: PullWire,
+): Effect.Effect<
+  | {
+      readonly kind: "ok";
+      readonly snapshot: VerifiedPullSnapshot;
+      readonly warnings: readonly string[];
+    }
+  | { readonly kind: "future" },
+  CliError
+> {
+  return verifyAllCommon(verified, environmentId, pull, () =>
+    verifyActiveVariables(verified, environmentId, pull.variables),
+  ).pipe(
+    Effect.map((result) =>
+      result.kind === "future"
+        ? result
+        : ({
+            kind: "ok",
+            snapshot: {
+              environment: result.environment,
+              variables: result.variables,
+              tombstones: result.tombstones,
+            },
+            warnings: result.warnings,
+          } as const),
+    ),
+  );
 }
 
 /**
@@ -612,6 +715,133 @@ export function pullVerifiedEnvironment(input: {
     return yield* Effect.fail(
       cliError(
         "再同期後もチェーンに存在しないヘッドへ束縛された値またはステートメントが配布されています(チェーン分岐または偽造の証拠)",
+      ),
+    );
+  });
+}
+
+/** メタデータのみ pull の検証済み応答(§12-7 のメタデータのみモード)。 */
+export interface VerifiedEnvironmentMetadata {
+  /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。 */
+  readonly verified: VerifiedProject;
+  readonly variables: readonly VerifiedActiveStatement[];
+  readonly warnings: readonly string[];
+}
+
+interface MetadataPullWire {
+  readonly statement: DistributedEnvironmentMetaStatement;
+  readonly variables: readonly DistributedVariableMetaStatement[];
+  readonly deletedVariables: readonly DistributedVariableMetaStatement[];
+}
+
+function verifyAllMetadata(
+  verified: VerifiedProject,
+  environmentId: string,
+  pull: MetadataPullWire,
+): Effect.Effect<
+  | {
+      readonly kind: "ok";
+      readonly environment: VerifiedMetaEvidence;
+      readonly variables: readonly VerifiedActiveStatement[];
+      readonly tombstones: readonly VerifiedTombstone[];
+      readonly warnings: readonly string[];
+    }
+  | { readonly kind: "future" },
+  CliError
+> {
+  return verifyAllCommon(verified, environmentId, pull, () =>
+    verifyActiveStatements(verified, environmentId, pull.variables),
+  );
+}
+
+/**
+ * メタデータのみ pull の床検査(値を運ばない形 — メタ水準の規則 (a)(b) と
+ * 欠落・削除取り消しのみ。checkEnvironmentMetadataPull 参照)。床のコミットは
+ * 行わない: 変数床のレコードは値のダイジェストを要し、メタだけから作らない
+ * (基準の確立が値を運ぶ pull まで一周遅れるだけで誤検出はない — 床は SHOULD)。
+ */
+function enforceMetadataFloor(input: {
+  readonly floor: FloorHandle;
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly environment: VerifiedMetaEvidence;
+  readonly variables: readonly VerifiedActiveStatement[];
+  readonly tombstones: readonly VerifiedTombstone[];
+}): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
+    const violation = checkEnvironmentMetadataPull(input.floor.current(), {
+      environment: input.environment,
+      variables: input.variables,
+      tombstones: input.tombstones,
+    });
+    if (violation !== null) {
+      return yield* Effect.fail(
+        cliError(
+          formatFloorViolation(
+            { projectId: input.verified.projectId, environmentId: input.environmentId },
+            violation,
+          ),
+        ),
+      );
+    }
+    // 環境がチェーンに存在しないのに検証を通る配布はここで止まる(enforceFloor
+    // と同じファントム環境検査 — メタはエポックアンカーを持たない)
+    yield* requireChainEnvironment(input.verified, input.environmentId);
+  });
+}
+
+/**
+ * Pulls only the metadata of one environment (§12-7 metadata-only mode: no
+ * values, no DEKs — the server records no `var.read`) and verifies the
+ * environment statement, every active variable statement and every tombstone
+ * against the verified chain history before any name is trusted (§6.3).
+ * Future heads get the same single bounded re-sync as the full pull. Used
+ * for name → variableId resolution (push) — a write-path read that must not
+ * be recorded as having read values it never received.
+ */
+export function pullVerifiedEnvironmentMetadata(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly environmentId: EnvironmentId;
+  /** future head 時の有界再同期(1 回)。 */
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** ローカル床(§6.3)。メタ水準の検査のみ — コミットしない(enforceMetadataFloor)。 */
+  readonly floor: FloorHandle;
+}): Effect.Effect<VerifiedEnvironmentMetadata, CliError> {
+  return Effect.gen(function* () {
+    const response = yield* input.client.variables
+      .pullMetadata({
+        params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+      })
+      .pipe(Effect.mapError(toCliError));
+    const first = yield* verifyAllMetadata(input.verified, input.environmentId, response);
+    if (first.kind === "ok") {
+      yield* enforceMetadataFloor({
+        floor: input.floor,
+        verified: input.verified,
+        environmentId: input.environmentId,
+        environment: first.environment,
+        variables: first.variables,
+        tombstones: first.tombstones,
+      });
+      return { verified: input.verified, variables: first.variables, warnings: first.warnings };
+    }
+    const advanced = yield* resyncExtended(input.resync, input.verified);
+    const second = yield* verifyAllMetadata(advanced, input.environmentId, response);
+    if (second.kind === "ok") {
+      yield* enforceMetadataFloor({
+        floor: input.floor,
+        verified: advanced,
+        environmentId: input.environmentId,
+        environment: second.environment,
+        variables: second.variables,
+        tombstones: second.tombstones,
+      });
+      return { verified: advanced, variables: second.variables, warnings: second.warnings };
+    }
+    return yield* Effect.fail(
+      cliError(
+        "再同期後もチェーンに存在しないヘッドへ束縛されたステートメントが配布されています(チェーン分岐または偽造の証拠)",
       ),
     );
   });

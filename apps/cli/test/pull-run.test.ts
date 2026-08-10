@@ -448,7 +448,22 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      pullHandler(),
+      // GAMMA は未存在 → create 経路の名前解決はメタデータのみ pull(§12-7)、
+      // DEK は listMine で 1 回だけ取得される(その配布に毒ラップを混ぜる)
+      onRequest(
+        "GET",
+        `/projects/${fixture.built.projectId}/environments/${ENV_ID}/pull/metadata`,
+        () => ({
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 2,
+            statement: fixture.envStatement,
+            variables: [fixture.entryAlpha.statement, fixture.entryBeta.statement],
+            deletedVariables: [],
+          },
+        }),
+      ),
       onRequest("GET", `/projects/${fixture.built.projectId}/environments/${ENV_ID}/deks`, () => ({
         status: 200,
         json: { deks: [fixture.wraps[0], poison] },

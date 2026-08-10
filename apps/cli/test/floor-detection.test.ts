@@ -196,6 +196,24 @@ function deksHandlerFor(deks: readonly WireRecipientDek[]): MockHandler {
   }));
 }
 
+/** メタデータのみ pull(§12-7 — push の名前解決経路)の応答。 */
+function pullMetadataHandlerFor(payload: {
+  readonly variables: readonly WireDistributedVariableStatement[];
+  readonly deletedVariables?: readonly WireDistributedVariableStatement[];
+  readonly currentEpoch?: number;
+}): MockHandler {
+  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
+    status: 200,
+    json: {
+      environmentId: ENV_ID,
+      currentEpoch: payload.currentEpoch ?? 1,
+      statement: envStatement,
+      variables: payload.variables,
+      deletedVariables: payload.deletedVariables ?? [],
+    },
+  }));
+}
+
 /** 同一 TestEnv(= 同一の床)に対する新しいサーバーフェーズを開始する。 */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<MockServer> {
   const server = await MockServer.start(handlers);
@@ -533,10 +551,12 @@ describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
       value: beta,
     };
     await establishFloor(env, { variables: [alphaEntry, betaEntry], deks: [wrap1] });
-    // フェーズ 2: BETA を配布から落とす(選択的な応答の切り詰め)
+    // フェーズ 2: BETA を配布から落とす(選択的な応答の切り詰め)。メタデータ
+    // のみ pull(push の解決経路)でも同様に落とす — 床のメタ水準検査が対象
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [alphaEntry], deks: [wrap1] }),
+      pullMetadataHandlerFor({ variables: [alphaEntry.statement] }),
       deksHandlerFor([wrap1]),
     ]);
   }
@@ -929,9 +949,10 @@ describe("push 受理後の床前進(§6.3 — 自分の書き込みの巻き戻
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const entry = { variableId: "vb", statement, value: v1 };
-    // フェーズ 1: push(解決 pull は v1 → v2 を受理)
+    // フェーズ 1: push(メタデータ解決 → 値付き pull で v1 検証 → v2 を受理)
     await startPhase(env, [
       chainHandlerFor([chain1]),
+      pullMetadataHandlerFor({ variables: [statement] }),
       pullHandlerFor({ variables: [entry], deks: [wrap1] }),
       deksHandlerFor([wrap1]),
       onRequest(
