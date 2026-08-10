@@ -24,7 +24,7 @@ import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { Keychain } from "./keychain.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
-import { loginOp, logoutOp } from "./login.ts";
+import { loginOp, logoutOp, resolveClientId } from "./login.ts";
 import { projectInitOp } from "./project-init.ts";
 import { type DecryptedVariable, type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
@@ -281,7 +281,8 @@ function loginCommand(execute: Execute) {
       server: { type: "string", description: "サーバー URL(省略時は config の server)" },
       "github-client-id": {
         type: "string",
-        description: "GitHub OAuth App の client_id(省略時は config の githubClientId)",
+        description:
+          "GitHub OAuth App の client_id(省略時は config の githubClientId → サーバーの /auth/config から自動解決)",
       },
       "token-name": {
         type: "string",
@@ -304,14 +305,12 @@ function loginCommand(execute: Execute) {
           const store = yield* ConfigStore;
           const config = yield* store.load;
           const origin = yield* resolveServerOrigin(ctx.values.server, config);
-          const clientId = ctx.values["github-client-id"] ?? config.githubClientId;
-          if (clientId === undefined) {
-            return yield* Effect.fail(
-              cliError(
-                "GitHub OAuth App の client_id が未設定です。--github-client-id を指定するか、`maruhi config set githubClientId <id>` で設定してください(セルフホストではサーバーと同じ OAuth App を使います)",
-              ),
-            );
-          }
+          // フラグ → config → サーバーの公開設定エンドポイント(AUTH_SPEC §4)
+          const clientId = yield* resolveClientId({
+            origin,
+            explicit: ctx.values["github-client-id"],
+            configured: config.githubClientId,
+          });
           // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
           // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)
           const githubBaseUrl =

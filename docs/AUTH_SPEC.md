@@ -1,7 +1,7 @@
 # maruhi 認証・アイデンティティ仕様書 (AUTH_SPEC)
 
-Version: 0.7-draft
-Status: 所有者承認済み(§11 は 2026-08-02 のセッション 06 裁定、§12 は 2026-08-02 のセッション 07 提案を反映。§12-2 の suite / §12-6 の修復経路 / §12-8 の DEK ラップ行数上限はセッション 07 の所有者裁定をセッション 08 で反映。§12-2 / §12-6 の DEK ラップ登録署名は CRYPTO_SPEC §5.1 として PR #21、§12-6 のメンバー鍵一意性は CRYPTO_SPEC §6.2 として PR #22 で承認済み。§12-1〜§12-8 の値・メタデータ署名 / DEK コミットメント / 環境作成のチェーン op 化に伴う改訂は 2026-08-04 の PR #27 マージで承認。§12-8 の metaVersion 行数上限と §12-4 の環境削除カスケード対象への変数メタステートメント明記は、2026-08-04 のセッション 15 所有者裁定 — PR #31 マージで承認 — をセッション 15.5 で反映。§13 リカバリーブロブ API は 2026-08-09 セッション 18 起草 — 実装 PR のマージをもって所有者承認とする)
+Version: 0.8-draft
+Status: 所有者承認済み(§11 は 2026-08-02 のセッション 06 裁定、§12 は 2026-08-02 のセッション 07 提案を反映。§12-2 の suite / §12-6 の修復経路 / §12-8 の DEK ラップ行数上限はセッション 07 の所有者裁定をセッション 08 で反映。§12-2 / §12-6 の DEK ラップ登録署名は CRYPTO_SPEC §5.1 として PR #21、§12-6 のメンバー鍵一意性は CRYPTO_SPEC §6.2 として PR #22 で承認済み。§12-1〜§12-8 の値・メタデータ署名 / DEK コミットメント / 環境作成のチェーン op 化に伴う改訂は 2026-08-04 の PR #27 マージで承認。§12-8 の metaVersion 行数上限と §12-4 の環境削除カスケード対象への変数メタステートメント明記は、2026-08-04 のセッション 15 所有者裁定 — PR #31 マージで承認 — をセッション 15.5 で反映。§13 リカバリーブロブ API は 2026-08-09 セッション 18 起草 — PR #38 マージで承認。§3 のセットアップウィザードの形と §4 の公開設定エンドポイント `GET /auth/config`(セッション 11 裁定 B の実装)は 2026-08-10 セッション 19 起草 — 実装 PR のマージをもって所有者承認とする)
 
 認証は GitHub OAuth の直接実装で行う(認証フレームワーク・外部 IdP サービスは使用しない)。
 ただしデータモデルは将来のエンタープライズ IdP(WorkOS 等)追加を無停止で行える形に固定する。
@@ -71,7 +71,14 @@ api_tokens (
 
 ## 3. Web ログイン(GitHub OAuth Authorization Code Flow)
 
-**セルフホストの前提**: GitHub OAuth(web / device とも)には OAuth App の client_id / client_secret が必要であり、これは maruhi が中央で配布できない(コールバック URL がデプロイごとに異なるため)。**セルフホストする各ユーザーが自分の GitHub OAuth App を作成する必要がある**。これは「ワンクリックで立つ」体験と摩擦するため、初回アクセス時のセットアップウィザード(OAuth App 作成手順の案内 + client_id/secret の登録)を Phase 1 の CLI / サーバーに含める(ROADMAP 参照)。
+**セルフホストの前提**: GitHub OAuth(web / device とも)には OAuth App の client_id / client_secret が必要であり、これは maruhi が中央で配布できない(コールバック URL がデプロイごとに異なるため)。**セルフホストする各ユーザーが自分の GitHub OAuth App を作成する必要がある**。
+
+**初回セットアップウィザードの形(2026-08-10 セッション 19 設計。実装 PR のマージをもって所有者承認)**:
+
+1. **導入手順の正は `docs/SELF_HOSTING.md`**(実デプロイで検証済みの wrangler コマンド列 + OAuth App 作成案内)。セットアップの全手順が Cloudflare 資格情報を要する wrangler 操作であり、maruhi CLI にもサーバーにも CF 資格情報を持たせない。対話的な CLI ウィザードは作らない — セルフホストは上級者経路(ADR-0014 裁定 5)であり、コピー&ペースト可能な検証済み手順書が最小かつ十分
+2. **client_id は wrangler vars、client_secret は Workers Secret としてデプロイ時に登録する。ランタイムの登録 API・「初回アクセス時の Web 登録フォーム」は作らない**: 未認証の初回登録面は「デプロイ直後に先にアクセスした者が自分の OAuth App を登録してインスタンスを乗っ取る」経路になり、防ぐには別のブートストラップシークレットの配布が要る(複雑さの追加に見合わない。設定はデプロイ時に固定するのが最小)
+3. **未設定サーバーの自己診断**: client_id がプレースホルダ(`replace-with-your-github-oauth-app-client-id`)または空のままのサーバーは、`GET /auth/config`(§4)と `GET /auth/github/start` が 503 `SetupIncomplete`(reason: `github-oauth-unconfigured`)を返し、セットアップガイドへ誘導する(GitHub のエラーページへ飛ばして原因を分からなくしない)
+4. CLI 側の client_id 自動解決は §4 の公開設定エンドポイントで行う(セルフホスト利用者の CLI 設定は `server` 1 項目で足りる)
 
 1. `GET /auth/github/start`: `state`(128-bit 乱数)を発行し、HttpOnly クッキーに保存して GitHub へリダイレクト。scope は最小(`read:user user:email`)
 2. `GET /auth/github/callback`: `state` 検証(不一致は即拒否)→ code 交換 → GitHub API でユーザー情報取得
@@ -91,6 +98,9 @@ api_tokens (
 4. サーバーは GitHub API でトークンを検証し、getOrCreateUser → **maruhi 発行の API トークン**を返す
    - **audience 検証(2026-08-02 追加)**: 持ち込まれたトークンの検証は check-token API(`POST /applications/{client_id}/token`、Basic 認証 = client_id:client_secret)で行い、**自分の OAuth App に対して発行されたトークンであること**まで確認する。`GET /user` による有効性確認だけでは、他のアプリ向けに発行された(漏洩・流用)トークンで他人のアカウントに解決できてしまう(confused-deputy)
 5. GitHub トークンは両側で即時破棄。CLI は maruhi トークンのみを OS キーチェーンに保存する
+
+- **公開設定エンドポイント `GET /auth/config`(2026-08-03 セッション 11 裁定 B。2026-08-10 セッション 19 で実装)**: 未認証で `{ githubClientId }` を返す。client_id は公開情報(authorize URL のクエリに平文で現れる)であり、未認証面の増加は許容する(裁定 (ii))。サーバーが未設定(§3 のプレースホルダ / 空)の場合は 503 `SetupIncomplete` を返す
+- **CLI の client_id 解決順**: `--github-client-id` フラグ → config の `githubClientId` → `GET /auth/config`。導入後も config の `githubClientId` は上書き手段として残す(GHES・テスト用 — 裁定 (iii))
 
 ## 5. セッション
 

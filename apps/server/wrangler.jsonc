@@ -4,6 +4,12 @@
   "name": "maruhi-server",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
+  // workers.dev サブドメインで公開する(セルフホストの既定 URL。独自ドメインを
+  // routes で割り当てる場合も OAuth コールバック URL は origin から導出される)
+  "workers_dev": true,
+  // バージョンごとのプレビュー URL は無効化: 認証エンドポイントの origin を
+  // 増やさない(OAuth コールバックはデプロイ URL 1 つに固定する)
+  "preview_urls": false,
   "durable_objects": {
     "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
   },
@@ -20,8 +26,10 @@
     },
   ],
   "vars": {
-    // セルフホスト: 自分の GitHub OAuth App の client_id に置き換える。
-    // client_secret は `wrangler secret put GITHUB_CLIENT_SECRET`(コミットしない)
+    // セルフホスト: 自分の GitHub OAuth App の client_id に置き換える(手順は
+    // docs/SELF_HOSTING.md)。client_secret は `wrangler secret put
+    // GITHUB_CLIENT_SECRET`(コミットしない)。このプレースホルダ文字列は
+    // サーバーの未設定検出(handlers-auth.ts)と同期している — 変更しないこと
     "GITHUB_CLIENT_ID": "replace-with-your-github-oauth-app-client-id",
   },
   "triggers": {

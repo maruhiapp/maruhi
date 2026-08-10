@@ -19,6 +19,7 @@ import {
   ForbiddenError,
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
+  SetupIncompleteError,
   TokenLimitError,
 } from "./errors.ts";
 
@@ -28,6 +29,15 @@ import {
  * クライアント(fetch は既定でリダイレクトを追従する)から呼ぶ設計ではない。
  */
 const Redirect = HttpApiSchema.Empty(302);
+
+/**
+ * Public (unauthenticated) server configuration (AUTH_SPEC §4). The GitHub
+ * OAuth client_id is public information — it appears in the authorize URL —
+ * so exposing it lets a self-hosted CLI resolve it from the server URL alone.
+ */
+export const AuthConfigSchema = Schema.Struct({
+  githubClientId: Schema.String,
+});
 
 /** Result of the device-flow exchange (AUTH_SPEC §4): the raw token, shown once. */
 export const DeviceExchangeResultSchema = Schema.Struct({
@@ -90,8 +100,17 @@ export const RecoveryStatusSchema = Schema.Struct({
  */
 export const authGroup = HttpApiGroup.make("auth")
   .add(
+    // 公開設定エンドポイント(AUTH_SPEC §4。セッション 11 裁定 B)。未認証。
+    // 未設定サーバー(§3 プレースホルダ)は 503 でセットアップガイドへ誘導する
+    HttpApiEndpoint.get("authConfig", "/auth/config", {
+      success: AuthConfigSchema,
+      error: [SetupIncompleteError],
+    }),
+  )
+  .add(
     HttpApiEndpoint.get("githubStart", "/auth/github/start", {
       success: Redirect,
+      error: [SetupIncompleteError],
     }),
   )
   .add(

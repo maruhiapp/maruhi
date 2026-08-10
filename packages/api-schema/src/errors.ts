@@ -80,6 +80,20 @@ export class AuthFlowError extends Schema.TaggedErrorClass<AuthFlowError>()(
   { httpApiStatus: 400 },
 ) {}
 
+/** Reason codes for a 503 on an unconfigured self-hosted server (AUTH_SPEC §3). */
+export const SetupIncompleteReasonSchema = Schema.Literals(["github-oauth-unconfigured"]);
+
+/**
+ * 503: this deployment has not finished self-host setup — the GitHub OAuth
+ * App is not configured (AUTH_SPEC §3: client_id がプレースホルダ / 空)。
+ * クライアントは docs/SELF_HOSTING.md のセットアップ手順へ誘導する。
+ */
+export class SetupIncompleteError extends Schema.TaggedErrorClass<SetupIncompleteError>()(
+  "SetupIncomplete",
+  { reason: SetupIncompleteReasonSchema },
+  { httpApiStatus: 503 },
+) {}
+
 /** 429: the per-user API token limit has been reached (AUTH_SPEC §6). */
 export class TokenLimitError extends Schema.TaggedErrorClass<TokenLimitError>()(
   "TokenLimit",

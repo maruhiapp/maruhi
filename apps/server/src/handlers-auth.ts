@@ -11,6 +11,7 @@ import {
   maruhiApi,
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
+  SetupIncompleteError,
   TokenLimitError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal, TokenScope } from "@maruhi/core";
@@ -55,6 +56,21 @@ function callbackUri(origin: string): string {
   return `${origin}/auth/github/callback`;
 }
 
+/**
+ * セルフホスト未設定の検出(AUTH_SPEC §3-3): client_id が wrangler.jsonc
+ * テンプレートのプレースホルダのまま、または空。未設定のまま GitHub へ
+ * リダイレクトすると GitHub 側のエラーページに飛んで原因に辿り着けないため、
+ * 503 でセットアップガイド(docs/SELF_HOSTING.md)へ誘導する。
+ * リテラルは wrangler.jsonc の vars.GITHUB_CLIENT_ID と同期すること。
+ */
+const CLIENT_ID_PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
+
+function ensureGitHubOAuthConfigured(clientId: string): Effect.Effect<void, SetupIncompleteError> {
+  return clientId === "" || clientId === CLIENT_ID_PLACEHOLDER
+    ? Effect.fail(new SetupIncompleteError({ reason: "github-oauth-unconfigured" }))
+    : Effect.void;
+}
+
 /** GitHub の認証ダンス失敗を API の型付きエラーへ写す。 */
 function authFlowFailure(
   reason: "state-mismatch" | "code-exchange-failed" | "github-token-invalid",
@@ -84,9 +100,19 @@ function ensureKeyMaterialAccess(
 
 export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
   handlers
+    .handle("authConfig", () =>
+      Effect.gen(function* () {
+        const env = yield* WorkerEnv;
+        // 公開設定(AUTH_SPEC §4): client_id は authorize URL に平文で現れる
+        // 公開情報のみ。client_secret 等をこの応答に足さないこと
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID);
+        return { githubClientId: env.GITHUB_CLIENT_ID };
+      }),
+    )
     .handle("githubStart", ({ request }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID);
         const state = randomHex(16);
         const origin = requestOrigin(request);
         const authorize = new URL(GITHUB_AUTHORIZE_URL);

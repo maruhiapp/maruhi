@@ -603,3 +603,43 @@ describe("scheduled: 期限切れセッションの定期掃除", () => {
     expect(me.status).toBe(200);
   });
 });
+
+// wrangler.jsonc テンプレートのプレースホルダ(handlers-auth.ts と同期)
+const PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
+
+// worker.fetch を env 差し替えで直接呼ぶための着信リクエスト型合わせ
+// (fetch 側は IncomingRequestCfProperties を要求するが、コンストラクタ産の
+// Request は CfProperties になる — workers-types の既知の型差)
+const incoming = (url: string): Request<unknown, IncomingRequestCfProperties> =>
+  new Request(url) as Request<unknown, IncomingRequestCfProperties>;
+
+describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
+  it("returns the configured client_id without authentication", async () => {
+    const response = await SELF.fetch(`${BASE}/auth/config`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ githubClientId: env.GITHUB_CLIENT_ID });
+  });
+
+  it("returns 503 SetupIncomplete while the client_id is still the placeholder", async () => {
+    const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), unconfigured);
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("SetupIncomplete");
+    expect(body["reason"]).toBe("github-oauth-unconfigured");
+  });
+
+  it("treats an empty client_id as unconfigured too", async () => {
+    const unconfigured = { ...env, GITHUB_CLIENT_ID: "" };
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), unconfigured);
+    expect(response.status).toBe(503);
+  });
+
+  it("githubStart fails closed with 503 instead of bouncing to GitHub's error page", async () => {
+    const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
+    const response = await worker.fetch(incoming(`${BASE}/auth/github/start`), unconfigured);
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("SetupIncomplete");
+  });
+});
