@@ -380,4 +380,4 @@ RecoveryWrap = {
 
 ### 13-5. 監査イベント
 
-ブロブ取得は `auth.recovery_blob_fetched`、登録・再発行は `auth.recovery_code_reissued`(AUDIT_SPEC §3.1。D1 側)。D1 側監査ログ基盤(同 §3.1〜§3.2 の保存先)は未実装のため、記録の実装は D1 側監査ログ基盤の導入(ROADMAP Phase 1 残項目)と同時に行う(申し送り)。
+ブロブ取得は `auth.recovery_blob_fetched`、登録・再発行は `auth.recovery_code_reissued`(AUDIT_SPEC §3.1。D1 側)。D1 側監査ログ基盤(同 §5.2 案 A)の導入をもって実装済み(2026-08-10 セッション 21): 取得はブロブを実際に配布した応答(200)のみ計数更新と同一 batch で記録し、レート制限拒否・未登録 404 は記録しない(配布していないものを配布したと記録しない — §13-3 の計数対象と同じ線引き)。登録・再発行は置換 upsert と同一 batch で記録する(初回登録も同じ置換受理のため同一イベント)。

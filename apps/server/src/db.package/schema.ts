@@ -150,3 +150,50 @@ export const projects = sqliteTable(
   },
   (t) => [index("proj_org").on(t.orgId)],
 );
+
+// ---------------------------------------------------------------------------
+// D1 側監査イベント(AUDIT_SPEC §3.1〜§3.2。保存先の裁定は §5.2 案 A)
+//
+// - 列構成は project DO の audit_events(§5.1)と同じ設計(頻出属性の列昇格 +
+//   payload JSON)。DO 専用列(チェーン・変数座標・鍵 FP)は D1 側イベントに
+//   現れないため持たず、org 系の横断クエリ用に org_id / project_id を昇格する
+// - seq は autoincrement(§5.2。DO の無欠番保証はない — D1 で実用上足りる)
+// - append-only(§1-4): このテーブルへ UPDATE / DELETE を発行するコードを
+//   書かない。読み取り API は Phase 2 の監査ログ UI と同時に設計する(§6)
+// - users への FK を張らない: 監査行は記録対象の行より長生きし、参照整合で
+//   追記が阻害されてはならない(§1-4 の append-only を守る側に倒す)
+// ---------------------------------------------------------------------------
+
+/** user / org 監査テーブルの共通列(Drizzle の列オブジェクト共有パターン)。 */
+const auditEventColumns = {
+  seq: integer("seq").primaryKey({ autoIncrement: true }),
+  /** サーバー受理時刻(unix ms) */
+  serverTs: integer("server_ts").notNull(),
+  /** AUDIT_SPEC §3 のイベント名(`領域.動詞`) */
+  event: text("event").notNull(),
+  /** §2 アクター種別。D1 側は現状 'user' のみ(login_failed は user_id なしの user) */
+  actorType: text("actor_type").notNull(),
+  actorUserId: text("actor_user_id"),
+  actorApiTokenId: text("actor_api_token_id"),
+  /** メンバー操作の対象 */
+  targetUserId: text("target_user_id"),
+  orgId: text("org_id"),
+  projectId: text("project_id"),
+  /** JSON。auth_method・スナップショット等の補足。§1-2/1-3 の禁止情報を含めない */
+  payload: text("payload"),
+};
+
+/** 認証系イベント(AUDIT_SPEC §3.1)。 */
+export const userAuditEvents = sqliteTable("user_audit_events", auditEventColumns, (t) => [
+  index("uae_actor").on(t.actorUserId, t.seq),
+  index("uae_target").on(t.targetUserId, t.seq),
+  index("uae_event").on(t.event, t.seq),
+]);
+
+/** org 系イベント(AUDIT_SPEC §3.2)。 */
+export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns, (t) => [
+  index("oae_actor").on(t.actorUserId, t.seq),
+  index("oae_target").on(t.targetUserId, t.seq),
+  index("oae_event").on(t.event, t.seq),
+  index("oae_org").on(t.orgId, t.seq),
+]);

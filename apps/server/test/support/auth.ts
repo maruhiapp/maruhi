@@ -15,7 +15,7 @@ export const CSRF_HEADERS = { "x-maruhi-csrf": "1" };
 export const SESSION_COOKIE = "__Host-maruhi_session";
 export const STATE_COOKIE = "__Host-maruhi_oauth_state";
 
-// FK の親子順に削除する
+// FK の親子順に削除する(監査テーブルは FK なし — 末尾でよい)
 const AUTH_TABLES = [
   "sessions",
   "api_tokens",
@@ -25,6 +25,8 @@ const AUTH_TABLES = [
   "linked_identities",
   "organizations",
   "users",
+  "user_audit_events",
+  "org_audit_events",
 ];
 
 const SEED_TIME_MS = 1754006400000;

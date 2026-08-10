@@ -59,7 +59,9 @@ export function makeSessionService(sessions: SessionRepoShape): SessionServiceSh
       }),
     resolveSession: (rawValue) =>
       Effect.flatMap(hashOf(rawValue), (idHash) => resolveRecord(sessions, idHash)),
+    // 明示失効は監査イベント込みの revokeByHash(期限切れ掃除の deleteByHash と
+    // 区別する — AUDIT_SPEC §3.1 の auth.session_revoked は明示失効のみ)
     revokeSession: (rawValue) =>
-      Effect.flatMap(hashOf(rawValue), (idHash) => sessions.deleteByHash(idHash)),
+      Effect.flatMap(hashOf(rawValue), (idHash) => sessions.revokeByHash(idHash, Date.now())),
   };
 }

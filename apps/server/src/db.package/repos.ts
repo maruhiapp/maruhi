@@ -24,6 +24,8 @@ import type {
   VerifiedIdentity,
 } from "../auth-domain.ts";
 import { ulid } from "../ids.ts";
+import type { D1AuditActor } from "./audit.ts";
+import { D1AuditRepo, makeD1AuditRepo, orgAuditInsert, userAuditInsert } from "./audit.ts";
 import {
   apiTokens,
   linkedIdentities,
@@ -95,6 +97,11 @@ export function isUniqueConflict(error: unknown): boolean {
  * users + linked_identities + パーソナル org + owner membership を atomic batch で
  * 作成する。並行サインアップは (provider, provider_user_id) の PK で片方が失敗する
  * ので、競合時は呼び出し側が再ルックアップする。競合以外の失敗は defect。
+ *
+ * 監査(AUDIT_SPEC §3.1〜§3.2)も同じ batch で追記する: auth.user_created /
+ * auth.identity_linked(provider 種別名のみ — 数値 ID・login は記録しない)/
+ * org.created(パーソナル org 自動作成。org 名は providerLogin 由来のため
+ * payload に写さない — §1-2)/ org.member_added(owner 自身)。
  */
 function createUserBatch(
   db: Db,
@@ -103,6 +110,7 @@ function createUserBatch(
 ): Effect.Effect<string, InsertConflictError> {
   const userId = ulid(nowMs);
   const orgId = ulid(nowMs);
+  const actor: D1AuditActor = { userId };
   return Effect.tryPromise({
     try: async () => {
       await db.batch([
@@ -127,6 +135,25 @@ function createUserBatch(
           createdAt: nowMs,
         }),
         db.insert(memberships).values({ orgId, userId, role: "owner" }),
+        userAuditInsert(db, nowMs, { event: "auth.user_created", actor }),
+        userAuditInsert(db, nowMs, {
+          event: "auth.identity_linked",
+          actor,
+          payload: { provider: identity.provider },
+        }),
+        orgAuditInsert(db, nowMs, {
+          event: "org.created",
+          actor,
+          orgId,
+          payload: { personal: true },
+        }),
+        orgAuditInsert(db, nowMs, {
+          event: "org.member_added",
+          actor,
+          orgId,
+          targetUserId: userId,
+          payload: { role: "owner" },
+        }),
       ]);
       return userId;
     },
@@ -223,6 +250,12 @@ export interface SessionRepoShape {
   readonly findByHash: (idHash: string) => Effect.Effect<SessionRecord | null>;
   /** スライディング更新(§5): last_used_at と expires_at を進める。 */
   readonly touch: (idHash: string, nowMs: number, expiresAtMs: number) => Effect.Effect<void>;
+  /**
+   * 明示失効(ログアウト / サーバー側失効)。auth.session_revoked を同一 batch で
+   * 記録する(AUDIT_SPEC §3.1)。期限切れ掃除は deleteByHash / deleteExpired を
+   * 使う(失効イベントではないため記録しない)。
+   */
+  readonly revokeByHash: (idHash: string, nowMs: number) => Effect.Effect<void>;
   readonly deleteByHash: (idHash: string) => Effect.Effect<void>;
   /** 期限切れ行の一括掃除(cron から呼ぶ。提示されない行はここでしか消えない)。 */
   readonly deleteExpired: (nowMs: number) => Effect.Effect<void>;
@@ -232,16 +265,27 @@ export class SessionRepo extends Context.Service<SessionRepo, SessionRepoShape>(
 
 function makeSessionRepo(db: Db): SessionRepoShape {
   return {
+    // auth.login_succeeded はセッション作成と 1:1(AUDIT_SPEC §3.1 —
+    // auth.session_created を独立イベントにしない)なので同じ batch で記録する。
+    // session id(= 保存 id と同じハッシュ。生値ではない — AUTH_SPEC §10)は
+    // 失効イベントとの突合用に payload に写す
     insert: (idHash, userId, authMethod, nowMs, expiresAtMs) =>
       run(async () => {
-        await db.insert(sessions).values({
-          id: idHash,
-          userId,
-          authMethod,
-          createdAt: nowMs,
-          expiresAt: expiresAtMs,
-          lastUsedAt: nowMs,
-        });
+        await db.batch([
+          db.insert(sessions).values({
+            id: idHash,
+            userId,
+            authMethod,
+            createdAt: nowMs,
+            expiresAt: expiresAtMs,
+            lastUsedAt: nowMs,
+          }),
+          userAuditInsert(db, nowMs, {
+            event: "auth.login_succeeded",
+            actor: { userId, authMethod },
+            payload: { sessionId: idHash },
+          }),
+        ]);
       }),
     findByHash: (idHash) =>
       run(async () => {
@@ -264,6 +308,27 @@ function makeSessionRepo(db: Db): SessionRepoShape {
           .update(sessions)
           .set({ lastUsedAt: nowMs, expiresAt: expiresAtMs })
           .where(eq(sessions.id, idHash));
+      }),
+    revokeByHash: (idHash, nowMs) =>
+      run(async () => {
+        // actor(セッション所有者)を写すため先に行を引く。行がなければ no-op
+        // (存在しないセッションの失効をイベント化しない)
+        const row = await db
+          .select({ userId: sessions.userId, authMethod: sessions.authMethod })
+          .from(sessions)
+          .where(eq(sessions.id, idHash))
+          .get();
+        if (row === undefined) {
+          return;
+        }
+        await db.batch([
+          db.delete(sessions).where(eq(sessions.id, idHash)),
+          userAuditInsert(db, nowMs, {
+            event: "auth.session_revoked",
+            actor: { userId: row.userId, authMethod: row.authMethod },
+            payload: { sessionId: idHash },
+          }),
+        ]);
       }),
     deleteByHash: (idHash) =>
       run(async () => {
@@ -300,7 +365,8 @@ export interface TokenRepoShape {
   readonly replaceForUserAndName: (token: NewApiToken) => Effect.Effect<void>;
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
-  readonly deleteById: (id: string) => Effect.Effect<void>;
+  /** 明示失効。auth.token_revoked を同一 batch で記録する(AUDIT_SPEC §3.1)。 */
+  readonly revokeById: (id: string, userId: string, nowMs: number) => Effect.Effect<void>;
   /** 指定名を除くユーザーのトークン本数(発行上限の判定用。同名は常にローテーション可)。 */
   readonly countByUserExcludingName: (userId: string, name: string) => Effect.Effect<number>;
 }
@@ -309,6 +375,9 @@ export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("Tok
 
 function makeTokenRepo(db: Db): TokenRepoShape {
   return {
+    // auth.token_created を同一 batch で記録する(AUDIT_SPEC §3.1)。同名旧行の
+    // 削除はローテーションの一部で独立イベントにしない(旧トークン id を知る
+    // には先行 SELECT が要り、発行の意味論も「置換」1 つで足りる)
     replaceForUserAndName: (token) =>
       run(async () => {
         await db.batch([
@@ -326,6 +395,11 @@ function makeTokenRepo(db: Db): TokenRepoShape {
             createdAt: token.createdAtMs,
             lastUsedAt: null,
           }),
+          userAuditInsert(db, token.createdAtMs, {
+            event: "auth.token_created",
+            actor: { userId: token.userId },
+            payload: { tokenId: token.id, name: token.name, scopes: token.scopes },
+          }),
         ]);
       }),
     findByHash: (tokenHash) => run(() => findTokenByHash(db, tokenHash)),
@@ -333,9 +407,18 @@ function makeTokenRepo(db: Db): TokenRepoShape {
       run(async () => {
         await db.update(apiTokens).set({ lastUsedAt: nowMs }).where(eq(apiTokens.id, id));
       }),
-    deleteById: (id) =>
+    // v1 の失効経路は「提示されたトークン自身」のみ(AUTH_SPEC §6)なので、
+    // actor のトークン id = 失効対象 id になる
+    revokeById: (id, userId, nowMs) =>
       run(async () => {
-        await db.delete(apiTokens).where(eq(apiTokens.id, id));
+        await db.batch([
+          db.delete(apiTokens).where(eq(apiTokens.id, id)),
+          userAuditInsert(db, nowMs, {
+            event: "auth.token_revoked",
+            actor: { userId, apiTokenId: id },
+            payload: { tokenId: id },
+          }),
+        ]);
       }),
     countByUserExcludingName: (userId, name) =>
       run(async () => {
@@ -389,19 +472,30 @@ const RECOVERY_FETCH_WINDOW_MS = 60 * 60 * 1000;
 export const RECOVERY_FETCH_LIMIT = 5;
 
 interface RecoveryRepoShape {
-  /** 登録・再発行 = 置換 upsert(§13-1。旧ラップは受理と同時に消える)。 */
+  /**
+   * 登録・再発行 = 置換 upsert(§13-1。旧ラップは受理と同時に消える)。
+   * auth.recovery_code_reissued を同一 batch で記録する(AUDIT_SPEC §3.1 /
+   * AUTH_SPEC §13-5。初回登録も同じ置換受理なので同一イベント)。
+   */
   readonly upsert: (
     userId: string,
     wrap: { readonly suite: string; readonly nonceHex: string; readonly ciphertextHex: string },
     nowMs: number,
+    actor: D1AuditActor,
   ) => Effect.Effect<void>;
   readonly find: (userId: string) => Effect.Effect<RecoveryWrapRecord | null>;
   /**
    * 固定窓の計数を進め、取得可否を返す(§13-3)。行が存在しないときは
    * allowed(404 は計数しない — 呼び出し側が find で判定する)。読み → 条件付き
    * 更新の 2 文であり、並行リクエストで計数が僅かに超過しうるベストエフォート。
+   * allowed のとき auth.recovery_blob_fetched(要監視イベント — AUDIT_SPEC §3.1)
+   * を計数更新と同一 batch で記録する(拒否 = 配布なしは記録しない)。
    */
-  readonly recordFetch: (userId: string, nowMs: number) => Effect.Effect<RecoveryFetchDecision>;
+  readonly recordFetch: (
+    userId: string,
+    nowMs: number,
+    actor: D1AuditActor,
+  ) => Effect.Effect<RecoveryFetchDecision>;
 }
 
 export class RecoveryRepo extends Context.Service<RecoveryRepo, RecoveryRepoShape>()(
@@ -410,33 +504,36 @@ export class RecoveryRepo extends Context.Service<RecoveryRepo, RecoveryRepoShap
 
 function makeRecoveryRepo(db: Db): RecoveryRepoShape {
   return {
-    upsert: (userId, wrap, nowMs) =>
+    upsert: (userId, wrap, nowMs, actor) =>
       run(async () => {
-        await db
-          .insert(recoveryWraps)
-          .values({
-            userId,
-            suite: wrap.suite,
-            nonceHex: wrap.nonceHex,
-            ciphertextHex: wrap.ciphertextHex,
-            createdAt: nowMs,
-            updatedAt: nowMs,
-            fetchWindowStart: null,
-            fetchCount: 0,
-          })
-          .onConflictDoUpdate({
-            target: recoveryWraps.userId,
-            set: {
+        await db.batch([
+          db
+            .insert(recoveryWraps)
+            .values({
+              userId,
               suite: wrap.suite,
               nonceHex: wrap.nonceHex,
               ciphertextHex: wrap.ciphertextHex,
+              createdAt: nowMs,
               updatedAt: nowMs,
-              // 再発行は新しいブロブなので取得窓もリセットする(旧ブロブへの
-              // 試行履歴を新ブロブに引き継がない)
               fetchWindowStart: null,
               fetchCount: 0,
-            },
-          });
+            })
+            .onConflictDoUpdate({
+              target: recoveryWraps.userId,
+              set: {
+                suite: wrap.suite,
+                nonceHex: wrap.nonceHex,
+                ciphertextHex: wrap.ciphertextHex,
+                updatedAt: nowMs,
+                // 再発行は新しいブロブなので取得窓もリセットする(旧ブロブへの
+                // 試行履歴を新ブロブに引き継がない)
+                fetchWindowStart: null,
+                fetchCount: 0,
+              },
+            }),
+          userAuditInsert(db, nowMs, { event: "auth.recovery_code_reissued", actor }),
+        ]);
       }),
     find: (userId) =>
       run(async () => {
@@ -459,7 +556,7 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
               updatedAtMs: row.updatedAt,
             };
       }),
-    recordFetch: (userId, nowMs) =>
+    recordFetch: (userId, nowMs, actor) =>
       run(async () => {
         const row = await db
           .select({
@@ -472,14 +569,21 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
         if (row === undefined) {
           return { allowed: true } as const;
         }
+        const fetchedEvent = userAuditInsert(db, nowMs, {
+          event: "auth.recovery_blob_fetched",
+          actor,
+        });
         const windowStart = row.fetchWindowStart;
         const windowExpired =
           windowStart === null || nowMs - windowStart >= RECOVERY_FETCH_WINDOW_MS;
         if (windowExpired) {
-          await db
-            .update(recoveryWraps)
-            .set({ fetchWindowStart: nowMs, fetchCount: 1 })
-            .where(eq(recoveryWraps.userId, userId));
+          await db.batch([
+            db
+              .update(recoveryWraps)
+              .set({ fetchWindowStart: nowMs, fetchCount: 1 })
+              .where(eq(recoveryWraps.userId, userId)),
+            fetchedEvent,
+          ]);
           return { allowed: true } as const;
         }
         if (row.fetchCount >= RECOVERY_FETCH_LIMIT) {
@@ -489,10 +593,13 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
             retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
           } as const;
         }
-        await db
-          .update(recoveryWraps)
-          .set({ fetchCount: row.fetchCount + 1 })
-          .where(eq(recoveryWraps.userId, userId));
+        await db.batch([
+          db
+            .update(recoveryWraps)
+            .set({ fetchCount: row.fetchCount + 1 })
+            .where(eq(recoveryWraps.userId, userId)),
+          fetchedEvent,
+        ]);
         return { allowed: true } as const;
       }),
   };
@@ -527,8 +634,18 @@ function makeOrgRepo(db: Db): OrgRepoShape {
 // ---------------------------------------------------------------------------
 
 interface ProjectRepoShape {
-  /** 冪等挿入(修復経路を含む §11-3)。既存行はそのまま。 */
-  readonly insertIfAbsent: (projectId: string, orgId: string, nowMs: number) => Effect.Effect<void>;
+  /**
+   * 冪等挿入(修復経路を含む §11-3)。既存行はそのまま。org.project_created
+   * (AUDIT_SPEC §3.2)を同一 batch で記録する — 両呼び出し元(初期化直後 /
+   * exists 検査済みの修復)とも行が無い前提の経路であり、conflict による
+   * 空振り挿入でイベントだけ重複する実行順は通常運転では生じない。
+   */
+  readonly insertIfAbsent: (
+    projectId: string,
+    orgId: string,
+    nowMs: number,
+    actor: D1AuditActor,
+  ) => Effect.Effect<void>;
   readonly exists: (projectId: string) => Effect.Effect<boolean>;
 }
 
@@ -536,12 +653,20 @@ export class ProjectRepo extends Context.Service<ProjectRepo, ProjectRepoShape>(
 
 function makeProjectRepo(db: Db): ProjectRepoShape {
   return {
-    insertIfAbsent: (projectId, orgId, nowMs) =>
+    insertIfAbsent: (projectId, orgId, nowMs, actor) =>
       run(async () => {
-        await db
-          .insert(projects)
-          .values({ id: projectId, orgId, createdAt: nowMs })
-          .onConflictDoNothing();
+        await db.batch([
+          db
+            .insert(projects)
+            .values({ id: projectId, orgId, createdAt: nowMs })
+            .onConflictDoNothing(),
+          orgAuditInsert(db, nowMs, {
+            event: "org.project_created",
+            actor,
+            orgId,
+            projectId,
+          }),
+        ]);
       }),
     exists: (projectId) =>
       run(async () => {
@@ -565,7 +690,8 @@ export type DbServices =
   | TokenRepo
   | OrgRepo
   | ProjectRepo
-  | RecoveryRepo;
+  | RecoveryRepo
+  | D1AuditRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
 export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
@@ -576,5 +702,6 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(OrgRepo, makeOrgRepo(db)),
     Context.add(ProjectRepo, makeProjectRepo(db)),
     Context.add(RecoveryRepo, makeRecoveryRepo(db)),
+    Context.add(D1AuditRepo, makeD1AuditRepo(db)),
   );
 }
