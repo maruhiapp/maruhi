@@ -244,7 +244,10 @@ export function applyProjectDoMigrations(
   const current = readProjectDoSchemaVersion(sql);
   if (current > migrations.length) {
     // セルフホスト配布物では旧バージョンへのロールバックデプロイが現実に起こる。
-    // 新スキーマの DB 上で旧コードを黙って動かさない(§運用: 前進のみ)
+    // 新スキーマの DB 上で旧コードを黙って動かさない(§運用: 前進のみ)。
+    // 影響範囲に注意: この throw は DO コンストラクタで起きるため、ロールバック中は
+    // 適用済みプロジェクトの DO が一切開けなくなる(整合性 > 可用性の意図的選択。
+    // 復旧は前方デプロイ)。ステップを追加する際はこの爆風半径を前提に置くこと
     throw new Error(
       `project DO schema version ${current} is newer than this deployment supports ` +
         `(max ${migrations.length}); refusing to run older code on a newer schema`,
