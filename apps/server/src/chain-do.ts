@@ -290,12 +290,41 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   /**
+   * タスク失敗時のインスタンスメモリ無効化。DO ストレージはタスク単位で
+   * ロールバックされるが、インスタンスメモリ(parse 済みチェーン・導出状態・
+   * 監査採番)は残る。書き込みフェーズ途中の defect でキャッシュだけが前進した
+   * まま残ると、ロールバック済みストレージと食い違う phantom 状態を配って
+   * しまう(最悪、phantom ヘッドへの後続追記で保存チェーンに欠番が恒久化し、
+   * 再起動後の全操作が defect になる)ため、失敗経路では必ず破棄して次の
+   * ロード / 追記を保存状態からの再読込に戻す。受理拒否(DataRejected)は
+   * 書き込みフェーズ前に確定するため対象外(キャッシュは前進していない)。
+   */
+  #invalidateCachesOnDefect<A, E>(
+    program: Effect.Effect<A, E, DoServices>,
+  ): Effect.Effect<A, E, DoServices> {
+    const cache = this.#stateCache;
+    return program.pipe(
+      Effect.catchDefect((defect) =>
+        Effect.gen(function* () {
+          const audit = yield* AuditStore;
+          cache.chain = null;
+          cache.current = null;
+          audit.resetSeqCacheSync();
+          return yield* Effect.die(defect);
+        }),
+      ),
+    );
+  }
+
+  /**
    * データプレーンのプログラムを permit 下で outcome に畳んで実行する。
    * 読み取りも permit を取る: メンバーシップ判定とデータ読みをチェーン書き込みに
    * 対して原子化する(冒頭コメントの TOCTOU 対策)。
    */
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
-    return this.#runtime.runPromise(this.#opLock.withPermit(toDataOutcome(program)));
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(this.#invalidateCachesOnDefect(toDataOutcome(program))),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
@@ -305,25 +334,27 @@ export class ProjectChainDO extends DurableObject<Env> {
     // project-id-mismatch だけが専用分岐を持つ
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
-        initProgram(expectedProjectId, entry, this.#stateCache).pipe(
-          Effect.map((head): InitOutcome => ({
-            kind: "initialized",
-            headSeq: head.headSeq,
-            headHashHex: head.headHashHex,
-          })),
-          Effect.catchTags({
-            AlreadyInitialized: (error): Effect.Effect<InitOutcome> =>
-              Effect.succeed({
-                kind: "already-initialized",
-                genesisActorUserId: error.genesisActorUserId,
-                headSeq: error.headSeq,
-                headHashHex: error.headHashHex,
-              }),
-            ProjectIdMismatch: (): Effect.Effect<InitOutcome> =>
-              Effect.succeed({ kind: "project-id-mismatch" }),
-            DataRejected: (error): Effect.Effect<InitOutcome> =>
-              Effect.succeed({ kind: "rejected", rejection: error.rejection }),
-          }),
+        this.#invalidateCachesOnDefect(
+          initProgram(expectedProjectId, entry, this.#stateCache).pipe(
+            Effect.map((head): InitOutcome => ({
+              kind: "initialized",
+              headSeq: head.headSeq,
+              headHashHex: head.headHashHex,
+            })),
+            Effect.catchTags({
+              AlreadyInitialized: (error): Effect.Effect<InitOutcome> =>
+                Effect.succeed({
+                  kind: "already-initialized",
+                  genesisActorUserId: error.genesisActorUserId,
+                  headSeq: error.headSeq,
+                  headHashHex: error.headHashHex,
+                }),
+              ProjectIdMismatch: (): Effect.Effect<InitOutcome> =>
+                Effect.succeed({ kind: "project-id-mismatch" }),
+              DataRejected: (error): Effect.Effect<InitOutcome> =>
+                Effect.succeed({ kind: "rejected", rejection: error.rejection }),
+            }),
+          ),
         ),
       ),
     );
