@@ -378,7 +378,8 @@ export async function encryptValueFor(input: {
   readonly epoch: number;
   readonly variableId: string;
   readonly version: number;
-  readonly plaintext: string;
+  /** 平文(文字列は UTF-8 エンコード。不正 UTF-8 バイト列のテスト用に bytes も可)。 */
+  readonly plaintext: string | Uint8Array;
   readonly writer: TestUser;
   readonly head: { readonly seq: number; readonly hashHex: string };
   readonly prevValueSigHashHex?: string;
@@ -394,7 +395,10 @@ export async function encryptValueFor(input: {
     await encryptVariable({
       dek: input.dek,
       context,
-      plaintext: new TextEncoder().encode(input.plaintext),
+      plaintext:
+        typeof input.plaintext === "string"
+          ? new TextEncoder().encode(input.plaintext)
+          : input.plaintext,
     }),
     "encryptVariable",
   );

@@ -44,6 +44,13 @@ interface AuditStoreShape {
    * 内」で保たれる(文はチャンク分割されるが同一タスクでコミットされる)。
    */
   readonly appendManySync: (events: readonly AuditEventInput[]) => void;
+  /**
+   * 採番キャッシュの破棄。タスク失敗時はストレージがタスク単位でロールバック
+   * されるのにメモリの採番だけが前進したまま残り、次の追記が欠番を作る
+   * (AUDIT_SPEC §5.1 違反)ため、DO は失敗経路(chain-do.ts の defect フック)で
+   * 必ずこれを呼び、次の追記を MAX(seq) の再読込から続ける。
+   */
+  readonly resetSeqCacheSync: () => void;
 }
 
 export class AuditStore extends Context.Service<AuditStore, AuditStoreShape>()("AuditStore") {}
@@ -89,30 +96,42 @@ function eventBindings(event: AuditEventInput): (string | number | null)[] {
   ];
 }
 
-export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
-  Layer.sync(AuditStore, () => {
-    // 次 seq(単調・無欠番 — AUDIT_SPEC §5.1)の DO インスタンスメモリ保持。
-    // 行ごとの `SELECT COALESCE(MAX(seq),0)+1` 集約を初期化時の 1 回に置き換える。
-    // null はキャッシュ無効(DO 再起動直後)で、次の追記時に MAX(seq) を再読込
-    // する。前進は挿入成功後のみ(挿入が失敗しても欠番を作らない)。全追記は
-    // この Layer 経由 + DO の permit 下で直列化されている前提
-    let nextSeqCache: number | null = null;
-    const nextSeq = (): number => {
-      if (nextSeqCache === null) {
-        const row = sql
-          .exec("SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM audit_events")
-          .toArray()[0];
-        nextSeqCache = Number(row?.["next_seq"] ?? 1);
-      }
-      return nextSeqCache;
-    };
-    return {
-      appendSync: (event) => {
-        const seq = nextSeq();
+/**
+ * AuditStore の実装(テストから直接構築できるよう Layer と分けて公開)。
+ *
+ * 次 seq(単調・無欠番 — AUDIT_SPEC §5.1)は DO インスタンスメモリに保持し、
+ * 行ごとの `SELECT COALESCE(MAX(seq),0)+1` 集約を初期化時の 1 回に置き換える。
+ * null はキャッシュ無効(DO 再起動直後・失敗後)で、次の追記時に MAX(seq) を
+ * 再読込する。挿入の失敗時は採番キャッシュを即座に破棄する — チャンク成功 ≠
+ * タスク成功であり、タスク失敗時のストレージロールバック(タスク単位)に対して
+ * メモリの採番だけが前進したまま残ると次の追記が欠番を作るため(同じ理由で
+ * DO の失敗経路も resetSeqCacheSync を呼ぶ — chain-do.ts)。全追記はこの実装
+ * 経由 + DO の permit 下で直列化されている前提。
+ */
+export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
+  let nextSeqCache: number | null = null;
+  const nextSeq = (): number => {
+    if (nextSeqCache === null) {
+      const row = sql
+        .exec("SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM audit_events")
+        .toArray()[0];
+      nextSeqCache = Number(row?.["next_seq"] ?? 1);
+    }
+    return nextSeqCache;
+  };
+  return {
+    appendSync: (event) => {
+      const seq = nextSeq();
+      try {
         sql.exec(INSERT_COLUMNS + VALUES_ROW, seq, ...eventBindings(event));
-        nextSeqCache = seq + 1;
-      },
-      appendManySync: (events) => {
+      } catch (error) {
+        nextSeqCache = null;
+        throw error;
+      }
+      nextSeqCache = seq + 1;
+    },
+    appendManySync: (events) => {
+      try {
         for (let offset = 0; offset < events.length; offset += APPEND_CHUNK_ROWS) {
           const chunk = events.slice(offset, offset + APPEND_CHUNK_ROWS);
           const seq = nextSeq();
@@ -122,9 +141,19 @@ export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
           );
           nextSeqCache = seq + chunk.length;
         }
-      },
-    };
-  });
+      } catch (error) {
+        nextSeqCache = null;
+        throw error;
+      }
+    },
+    resetSeqCacheSync: () => {
+      nextSeqCache = null;
+    },
+  };
+};
+
+export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
+  Layer.sync(AuditStore, () => makeAuditStore(sql));
 
 // ---------------------------------------------------------------------------
 // チェーンミラー(AUDIT_SPEC §3.4): 受理済みエントリ → 監査イベント。
