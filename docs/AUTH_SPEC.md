@@ -1,7 +1,7 @@
 # maruhi 認証・アイデンティティ仕様書 (AUTH_SPEC)
 
 Version: 0.8-draft
-Status: 所有者承認済み(§11 は 2026-08-02 のセッション 06 裁定、§12 は 2026-08-02 のセッション 07 提案を反映。§12-2 の suite / §12-6 の修復経路 / §12-8 の DEK ラップ行数上限はセッション 07 の所有者裁定をセッション 08 で反映。§12-2 / §12-6 の DEK ラップ登録署名は CRYPTO_SPEC §5.1 として PR #21、§12-6 のメンバー鍵一意性は CRYPTO_SPEC §6.2 として PR #22 で承認済み。§12-1〜§12-8 の値・メタデータ署名 / DEK コミットメント / 環境作成のチェーン op 化に伴う改訂は 2026-08-04 の PR #27 マージで承認。§12-8 の metaVersion 行数上限と §12-4 の環境削除カスケード対象への変数メタステートメント明記は、2026-08-04 のセッション 15 所有者裁定 — PR #31 マージで承認 — をセッション 15.5 で反映。§13 リカバリーブロブ API は 2026-08-09 セッション 18 起草 — PR #38 マージで承認。§3 のセットアップウィザードの形と §4 の公開設定エンドポイント `GET /auth/config`(セッション 11 裁定 B の実装)は 2026-08-10 セッション 19 起草 — 実装 PR のマージをもって所有者承認とする)
+Status: 所有者承認済み(§11 は 2026-08-02 のセッション 06 裁定、§12 は 2026-08-02 のセッション 07 提案を反映。§12-2 の suite / §12-6 の修復経路 / §12-8 の DEK ラップ行数上限はセッション 07 の所有者裁定をセッション 08 で反映。§12-2 / §12-6 の DEK ラップ登録署名は CRYPTO_SPEC §5.1 として PR #21、§12-6 のメンバー鍵一意性は CRYPTO_SPEC §6.2 として PR #22 で承認済み。§12-1〜§12-8 の値・メタデータ署名 / DEK コミットメント / 環境作成のチェーン op 化に伴う改訂は 2026-08-04 の PR #27 マージで承認。§12-8 の metaVersion 行数上限と §12-4 の環境削除カスケード対象への変数メタステートメント明記は、2026-08-04 のセッション 15 所有者裁定 — PR #31 マージで承認 — をセッション 15.5 で反映。§13 リカバリーブロブ API は 2026-08-09 セッション 18 起草 — PR #38 マージで承認。§3 のセットアップウィザードの形と §4 の公開設定エンドポイント `GET /auth/config`(セッション 11 裁定 B の実装)は 2026-08-10 セッション 19 起草 — 実装 PR のマージをもって所有者承認とする。§3-2 の client_id 登録方法の Workers Secret への統一(Deploy to Cloudflare ボタン対応の前提工事)は 2026-08-11 起草 — 実装 PR のマージをもって所有者承認とする)
 
 認証は GitHub OAuth の直接実装で行う(認証フレームワーク・外部 IdP サービスは使用しない)。
 ただしデータモデルは将来のエンタープライズ IdP(WorkOS 等)追加を無停止で行える形に固定する。
@@ -76,8 +76,8 @@ api_tokens (
 **初回セットアップウィザードの形(2026-08-10 セッション 19 設計。実装 PR のマージをもって所有者承認)**:
 
 1. **導入手順の正は `docs/SELF_HOSTING.md`**(実デプロイで検証済みの wrangler コマンド列 + OAuth App 作成案内)。セットアップの全手順が Cloudflare 資格情報を要する wrangler 操作であり、maruhi CLI にもサーバーにも CF 資格情報を持たせない。対話的な CLI ウィザードは作らない — セルフホストは上級者経路(ADR-0014 裁定 5)であり、コピー&ペースト可能な検証済み手順書が最小かつ十分
-2. **client_id は wrangler vars、client_secret は Workers Secret としてデプロイ時に登録する。ランタイムの登録 API・「初回アクセス時の Web 登録フォーム」は作らない**: 未認証の初回登録面は「デプロイ直後に先にアクセスした者が自分の OAuth App を登録してインスタンスを乗っ取る」経路になり、防ぐには別のブートストラップシークレットの配布が要る(複雑さの追加に見合わない。設定はデプロイ時に固定するのが最小)
-3. **未設定サーバーの自己診断**: OAuth App 設定が未完(client_id がプレースホルダ `replace-with-your-github-oauth-app-client-id` / 空 / 欠落、**または client_secret が未登録 / 空**)のサーバーは、`GET /auth/config`(§4)・`GET /auth/github/start`・`POST /auth/device/exchange` が 503 `SetupIncomplete`(reason: `github-oauth-unconfigured`)を返し、セットアップガイドへ誘導する(GitHub のエラーページや不透明なトークン交換失敗 = `AuthFlow` 400 へ落として原因を分からなくしない)。secret も条件に含めるため、`/auth/config` の 200 は「client_id / client_secret とも登録済み」の確認として使える(SELF_HOSTING.md の動作確認手順)
+2. **client_id / client_secret はともに Workers Secret として登録する(`wrangler secret put` ×2)。ランタイムの登録 API・「初回アクセス時の Web 登録フォーム」は作らない**: client_id は公開情報(§4)であり秘匿目的ではない — 登録経路を secret に統一するのは、`wrangler.jsonc` の編集(フォークへのコミット)を不要にし、`secret put` の即時反映により再デプロイなしで設定を完了させるため(Deploy to Cloudflare ボタン経由のデプロイでは複製リポジトリの編集を挟まない導線が前提。2026-08-11 改訂 — 旧仕様は client_id を wrangler vars で配布していた)。Web 登録フォームを作らない理由: 未認証の初回登録面は「デプロイ直後に先にアクセスした者が自分の OAuth App を登録してインスタンスを乗っ取る」経路になり、防ぐには別のブートストラップシークレットの配布が要る(複雑さの追加に見合わない。設定はデプロイ時に固定するのが最小)
+3. **未設定サーバーの自己診断**: OAuth App 設定が未完(client_id がプレースホルダ `replace-with-your-github-oauth-app-client-id`(client_id を wrangler vars で配布していた旧テンプレートのフォークへの後方互換防御)/ 空 / 欠落、**または client_secret が未登録 / 空**)のサーバーは、`GET /auth/config`(§4)・`GET /auth/github/start`・`POST /auth/device/exchange` が 503 `SetupIncomplete`(reason: `github-oauth-unconfigured`)を返し、セットアップガイドへ誘導する(GitHub のエラーページや不透明なトークン交換失敗 = `AuthFlow` 400 へ落として原因を分からなくしない)。secret も条件に含めるため、`/auth/config` の 200 は「client_id / client_secret とも登録済み」の確認として使える(SELF_HOSTING.md の動作確認手順)
 4. CLI 側の client_id 自動解決は §4 の公開設定エンドポイントで行う(セルフホスト利用者の CLI 設定は `server` 1 項目で足りる)
 
 1. `GET /auth/github/start`: `state`(128-bit 乱数)を発行し、HttpOnly クッキーに保存して GitHub へリダイレクト。scope は最小(`read:user user:email`)
