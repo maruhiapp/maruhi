@@ -602,6 +602,24 @@ describe("CAS(§6.4 楽観ロック)", () => {
     expect(retried.status).toBe(200);
   });
 
+  it("rejects a malformed parentHeadHashHex with 400 (schema — CAS 意味論より前)", async () => {
+    await replayVectorChain(2);
+    const entry2 = vectorEntries[1];
+    if (entry2 === undefined) throw new Error("missing vector entries");
+    const { entry } = await signEntryAt({
+      seq: 3,
+      prevHashHex: entry2.entry_hash_hex,
+      actorUserId: "user-owner-0001",
+      operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+    });
+    // CAS の比較対象の形式は Sha256Hex(64 文字小文字 hex)で固定する(意図的な
+    // 受理変更): 不正形式は 409(現ヘッド情報付き)へ到達せず schema 境界の 400
+    for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {
+      const response = await appendEntry(vectorProjectId, bad, entry);
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("rejects an append to an uninitialized project with 404", async () => {
     const entry2 = vectorEntries[1];
     if (entry2 === undefined) throw new Error("missing vector entry 2");

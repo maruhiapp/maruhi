@@ -93,7 +93,7 @@ export {
   VariableConflictError,
   VariableNotFoundError,
   VersionConflictError,
-} from "./errors.ts";
+} from "./errors/index.ts";
 export {
   ChainHeadSchema,
   ChainSnapshotSchema,

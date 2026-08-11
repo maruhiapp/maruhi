@@ -21,7 +21,8 @@ import {
   RecoveryWrapNotFoundError,
   SetupIncompleteError,
   TokenLimitError,
-} from "./errors.ts";
+} from "./errors/index.ts";
+import { hexString } from "./hex.ts";
 
 /**
  * 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。
@@ -62,9 +63,7 @@ export const MeSchema = Schema.Struct({
 
 // リカバリーブロブ(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み master 秘密鍵)。
 // サーバーから見て不透明な暗号文であり、リカバリーコード自体はワイヤに現れない。
-const RecoveryNonceHex = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{24}$/, { description: "lowercase hex nonce (12 bytes)" }),
-);
+const RecoveryNonceHex = hexString(12);
 // AES-256-GCM の ct || tag: タグ込み 16 バイト以上・16 KiB 以下(§13-4 受理ポリシー)
 const RecoveryCiphertextHex = Schema.String.check(
   Schema.isPattern(/^(?:[0-9a-f]{2}){16,16384}$/, {

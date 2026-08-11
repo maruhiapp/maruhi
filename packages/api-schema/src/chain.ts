@@ -13,26 +13,22 @@ import { EnvironmentIdSchema } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Schema } from "effect";
 
-import { hexString } from "./hex.ts";
-
-const Hash256Hex = hexString(32);
-const PublicKeyHex = hexString(32);
-const FingerprintHex = hexString(16);
-const SignatureHex = hexString(64);
+import { KeyFingerprintHex, PublicKeyHex, Sha256Hex, SignatureHex } from "./hex.ts";
 
 /** Chain role (CRYPTO_SPEC §6.2). */
 export const RoleSchema = Schema.Literals(["owner", "admin", "member", "reader"]);
 
 /** Entry actor: internal user id + key fingerprint only (CRYPTO_SPEC §6.1). */
 export const ChainActorSchema = Schema.Struct({
+  // userId は意図的に bound しない(§6.1 の自由文字列上限は verifyChain が検査する)
   userId: Schema.String,
-  keyFingerprintHex: FingerprintHex,
+  keyFingerprintHex: KeyFingerprintHex,
 });
 
 const entryBaseFields = {
   suite: Schema.String,
   seq: Schema.Number,
-  prevHashHex: Hash256Hex,
+  prevHashHex: Sha256Hex,
   actor: ChainActorSchema,
   timestampMs: Schema.Number,
   signatureHex: SignatureHex,
@@ -85,7 +81,7 @@ export const CreateEnvironmentEntrySchema = Schema.Struct({
   op: Schema.Literal("create_environment"),
   payload: Schema.Struct({
     environmentId: EnvironmentIdSchema,
-    dekCommitmentHex: Hash256Hex,
+    dekCommitmentHex: Sha256Hex,
   }),
 });
 
@@ -103,7 +99,7 @@ export const RotateEpochEntrySchema = Schema.Struct({
     environmentId: EnvironmentIdSchema,
     newEpoch: Schema.Number,
     reason: Schema.String,
-    dekCommitmentHex: Hash256Hex,
+    dekCommitmentHex: Sha256Hex,
   }),
 });
 
@@ -112,7 +108,7 @@ const GrantServerEntrySchema = Schema.Struct({
   op: Schema.Literal("grant_server"),
   payload: Schema.Struct({
     serverEncPubHex: PublicKeyHex,
-    serverKeyFingerprintHex: FingerprintHex,
+    serverKeyFingerprintHex: KeyFingerprintHex,
     scopeEnvironmentIds: Schema.Array(Schema.String),
   }),
 });
@@ -120,7 +116,7 @@ const GrantServerEntrySchema = Schema.Struct({
 const RevokeServerEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("revoke_server"),
-  payload: Schema.Struct({ serverKeyFingerprintHex: FingerprintHex }),
+  payload: Schema.Struct({ serverKeyFingerprintHex: KeyFingerprintHex }),
 });
 
 /** Wire schema for one signed chain entry, discriminated by `op` (CRYPTO_SPEC §6.1). */

@@ -338,6 +338,39 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
     expect(consistent.status).toBe(404);
   });
 
+  it("rejects a malformed composite parentHeadHashHex with 400 (Schema)", async () => {
+    // CAS の親ヘッド形式は Sha256Hex で固定(意図的な受理変更): 不正形式は
+    // 409(ChainHeadConflict)へ到達せず schema 境界の 400 で落ちる
+    const { entry } = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: {
+        op: "create_environment",
+        payload: { environmentId: "env-head-form", dekCommitmentHex: "ab".repeat(32) },
+      },
+    });
+    for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {
+      const response = await requestJson("POST", "/environments", token(OWNER), {
+        parentHeadHashHex: bad,
+        entry,
+        statement: {
+          suite: "maruhi/v1",
+          environmentId: "env-head-form",
+          name: "HeadForm",
+          status: "active",
+          metaVersion: 1,
+          prevMetaSigHashHex: "",
+          chainHeadHashHex: fixture.head.hashHex,
+          chainHeadSeq: fixture.head.seq,
+          signatureHex: "00".repeat(64),
+        },
+        deks: [],
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("rejects malformed ids and payloads with 400 (Schema)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     // 不正な environment_id(先頭ハイフン / 65 文字)は 400

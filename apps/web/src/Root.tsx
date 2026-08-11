@@ -10,10 +10,10 @@ export default function Root({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>maruhi spike-a</title>
+        <title>maruhi</title>
       </head>
       <body>
-        {/* Root layout constraint: children は親要素の唯一の子でなければならない */}
+        {/* フレームワーク(funstack-static)のマウントポイント制約で raw div が必要 — コンポーネント化しないこと。children は親要素の唯一の子でなければならない */}
         <div id="app">{children}</div>
       </body>
     </html>

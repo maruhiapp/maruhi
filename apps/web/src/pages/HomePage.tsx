@@ -7,7 +7,7 @@ const builtAt = new Date().toISOString();
 export function HomePage() {
   return (
     <main>
-      <h1>maruhi spike-a</h1>
+      <h1>maruhi</h1>
       <p data-testid="built-at">server-rendered at build time: {builtAt}</p>
       <p>
         <a href="/about" data-testid="to-about">

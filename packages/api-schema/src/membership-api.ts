@@ -21,21 +21,22 @@ import {
   ForbiddenError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
-} from "./errors.ts";
+} from "./errors/index.ts";
+import { PositiveInt, Sha256Hex } from "./hex.ts";
 
 /** Chain head after a successful initialization or append. */
 export const ChainHeadSchema = Schema.Struct({
   projectId: ProjectIdSchema,
-  headSeq: Schema.Number,
-  headHashHex: Schema.String,
+  headSeq: PositiveInt,
+  headHashHex: Sha256Hex,
 });
 
 /** Full chain as stored by the project DO (entries in seq order). */
 export const ChainSnapshotSchema = Schema.Struct({
   projectId: ProjectIdSchema,
   entries: Schema.Array(ChainEntrySchema),
-  headSeq: Schema.Number,
-  headHashHex: Schema.String,
+  headSeq: PositiveInt,
+  headHashHex: Sha256Hex,
 });
 
 /**
@@ -77,7 +78,8 @@ export const membershipGroup = HttpApiGroup.make("membership")
     HttpApiEndpoint.post("append", "/projects/:projectId/chain/entries", {
       params: { projectId: ProjectIdSchema },
       payload: Schema.Struct({
-        parentHeadHashHex: Schema.String,
+        // CAS の親ヘッド。不正形式は schema 境界の 400 で落とす(意図的な受理変更)
+        parentHeadHashHex: Sha256Hex,
         entry: ChainEntrySchema,
       }),
       success: ChainHeadSchema,
