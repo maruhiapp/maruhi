@@ -359,15 +359,15 @@ export class ProjectChainDO extends DurableObject<Env> {
   readonly #runtime: ManagedRuntime.ManagedRuntime<DoServices, never>;
   // 全操作(変更 + 読み取り)の直列化(冒頭コメント参照)
   readonly #opLock = Semaphore.makeUnsafe(1);
-  // チェーン導出状態のキャッシュ(chain-store.ts の deriveStoredState 参照)
-  readonly #stateCache: StateCache = { current: null };
+  // チェーン導出状態 + parse 済みチェーンのキャッシュ(chain-store.ts 参照)
+  readonly #stateCache: StateCache = { current: null, chain: null };
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ensureProjectDoTables(ctx.storage);
     this.#runtime = ManagedRuntime.make(
       Layer.mergeAll(
-        chainStoreLayer(ctx.storage.sql),
+        chainStoreLayer(ctx.storage.sql, this.#stateCache),
         dataStoreLayer(ctx.storage.sql),
         auditStoreLayer(ctx.storage.sql),
       ),
