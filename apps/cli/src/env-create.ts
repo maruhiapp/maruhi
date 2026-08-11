@@ -29,7 +29,6 @@ import {
   importEncryptionPublicKey,
   signChainEntry,
   signDekWrap,
-  signMetaStatement,
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
@@ -38,6 +37,7 @@ import { Effect } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { signCreateStatement } from "./meta-statement.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -177,54 +177,6 @@ function ensureCreatable(
   return Effect.succeed(member);
 }
 
-/**
- * 複合同梱の `EnvironmentMetaStatement`(metaVersion 1・active・prev 空)を
- * 著者署名する。宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
- * CAS リトライではエントリと共にここも再署名される。
- */
-function signCreateStatement(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly name: string;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-}) {
-  return Effect.gen(function* () {
-    const signature = yield* Effect.promise(() =>
-      signMetaStatement({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.verified.projectId,
-          environmentId: input.environmentId,
-          target: { kind: "environment" },
-          name: input.name,
-          status: "active",
-          metaVersion: 1,
-          prevMetaSigHashHex: "",
-          authorUserId: input.signerUserId,
-          chainHeadHashHex: input.verified.state.headHashHex,
-          chainHeadSeq: input.verified.state.headSeq,
-        },
-        signingKey: input.signingKeyPair.privateKey,
-      }),
-    );
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("環境メタステートメントの署名に失敗しました"));
-    }
-    return {
-      suite: SUITE_ID,
-      environmentId: input.environmentId,
-      name: input.name,
-      status: "active",
-      metaVersion: 1,
-      prevMetaSigHashHex: "",
-      chainHeadHashHex: input.verified.state.headHashHex,
-      chainHeadSeq: input.verified.state.headSeq,
-      signatureHex: signature.value,
-    } as const;
-  });
-}
-
 /** create_environment エントリを現ヘッドの直後(seq = head + 1)に署名する。 */
 function signCreateEntry(input: {
   readonly verified: VerifiedProject;
@@ -320,12 +272,15 @@ export function envCreateOp(input: {
         member,
         signingKeyPair: input.signingKeyPair,
       });
-      const statement = yield* signCreateStatement({
+      // 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
+      // 共有実装(meta-statement.ts)— push.ts との差分は target のみ
+      const { statement } = yield* signCreateStatement({
         verified,
         environmentId: input.environmentId,
+        target: { kind: "environment" },
         name,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
+        authorUserId: input.signerUserId,
+        signingKey: input.signingKeyPair.privateKey,
       });
       const outcome = yield* input.client.environments
         .create({

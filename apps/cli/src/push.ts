@@ -40,11 +40,9 @@ import {
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import {
-  computeMetaSignedBytesHash,
   computeValueSignedBytesHash,
   encodeHex,
   encryptVariable,
-  signMetaStatement,
   signValue,
   SUITE_ID,
 } from "@maruhi/crypto";
@@ -57,6 +55,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { VariableFloor } from "./floor.ts";
+import { signCreateStatement } from "./meta-statement.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import {
   pullVerifiedEnvironment,
@@ -365,63 +364,6 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   });
 }
 
-/**
- * 新規作成に同梱する `VariableMetaStatement`(metaVersion 1・active・prev 空 —
- * §12-5)を自分の鍵で著者署名する。宣言ヘッドは値署名と同じ「最後に検証した
- * チェーンヘッド」。CAS リトライで検証ビューが進めば作り直される(attemptOnce
- * ごとに署名するため)。
- */
-function signCreateStatement(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: EnvironmentId;
-  readonly variableId: string;
-  readonly name: string;
-  readonly authorUserId: string;
-  readonly signingKey: CryptoKey;
-}) {
-  return Effect.gen(function* () {
-    const context = {
-      suite: SUITE_ID,
-      projectId: input.verified.projectId,
-      environmentId: input.environmentId,
-      target: { kind: "variable", variableId: input.variableId },
-      name: input.name,
-      status: "active",
-      metaVersion: 1,
-      prevMetaSigHashHex: "",
-      authorUserId: input.authorUserId,
-      chainHeadHashHex: input.verified.state.headHashHex,
-      chainHeadSeq: input.verified.state.headSeq,
-    } as const;
-    const signature = yield* Effect.promise(() =>
-      signMetaStatement({ context, signingKey: input.signingKey }),
-    );
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("メタステートメントの署名に失敗しました"));
-    }
-    // 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3)
-    const metaSigHash = yield* Effect.promise(() => computeMetaSignedBytesHash(context));
-    if (!metaSigHash.ok) {
-      return yield* Effect.fail(cliError("メタステートメント署名対象のハッシュ計算に失敗しました"));
-    }
-    return {
-      statement: {
-        suite: SUITE_ID,
-        environmentId: input.environmentId,
-        variableId: input.variableId,
-        name: input.name,
-        status: "active",
-        metaVersion: 1,
-        prevMetaSigHashHex: "",
-        chainHeadHashHex: input.verified.state.headHashHex,
-        chainHeadSeq: input.verified.state.headSeq,
-        signatureHex: signature.value,
-      },
-      metaSigHashHex: metaSigHash.value,
-    } as const;
-  });
-}
-
 function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptOutcome, CliError> {
   return Effect.gen(function* () {
     const dek = state.deks.get(state.epoch);
@@ -453,11 +395,13 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
     } as const;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     if (state.target.create) {
-      // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)
+      // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
+      // 宣言ヘッドは値署名と同じ「最後に検証したチェーンヘッド」で、CAS リトライで
+      // 検証ビューが進めば試行ごとに作り直される(meta-statement.ts の共有実装)
       const created = yield* signCreateStatement({
         verified: state.verified,
         environmentId: input.environmentId,
-        variableId: state.target.variableId,
+        target: { kind: "variable", variableId: state.target.variableId },
         name: input.name,
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
