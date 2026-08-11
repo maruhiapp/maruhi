@@ -214,7 +214,16 @@ export function readProjectDoSchemaVersion(sql: SqlStorage): number {
   sql.exec(SCHEMA_META_DDL);
   const rows = sql.exec("SELECT version FROM schema_meta WHERE id = 1").toArray();
   const row = rows[0];
-  return row === undefined ? 0 : Number(row.version);
+  if (row === undefined) {
+    return 0;
+  }
+  const version = Number(row.version);
+  if (!Number.isInteger(version) || version < 0) {
+    // 破損値を 0 扱いにすると全ステップが再実行されてしまう(step 2 以降は
+    // 冪等でない)ため、明示的に失敗させて人間の調査へ回す
+    throw new Error(`project DO schema_meta.version is corrupt: ${String(row.version)}`);
+  }
+  return version;
 }
 
 /**
@@ -222,6 +231,10 @@ export function readProjectDoSchemaVersion(sql: SqlStorage): number {
  * version bump run in one synchronous transaction, so a failing step rolls
  * back entirely and is retried from its start on the next call. Applied steps
  * are skipped, so calling this on an up-to-date database is a no-op.
+ *
+ * Refuses to run when the stored version is newer than this deployment's step
+ * count: after a rollback deploy the old code cannot know the newer schema's
+ * shape, and continuing silently risks writing through stale assumptions.
  */
 export function applyProjectDoMigrations(
   storage: DurableObjectStorage,
@@ -229,6 +242,17 @@ export function applyProjectDoMigrations(
 ): void {
   const sql = storage.sql;
   const current = readProjectDoSchemaVersion(sql);
+  if (current > migrations.length) {
+    // セルフホスト配布物では旧バージョンへのロールバックデプロイが現実に起こる。
+    // 新スキーマの DB 上で旧コードを黙って動かさない(§運用: 前進のみ)。
+    // 影響範囲に注意: この throw は DO コンストラクタで起きるため、ロールバック中は
+    // 適用済みプロジェクトの DO が一切開けなくなる(整合性 > 可用性の意図的選択。
+    // 復旧は前方デプロイ)。ステップを追加する際はこの爆風半径を前提に置くこと
+    throw new Error(
+      `project DO schema version ${current} is newer than this deployment supports ` +
+        `(max ${migrations.length}); refusing to run older code on a newer schema`,
+    );
+  }
   for (const [index, migration] of migrations.entries()) {
     if (index < current) {
       continue;

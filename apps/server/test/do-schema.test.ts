@@ -144,6 +144,42 @@ describe("project DO schema migrations", () => {
     });
   });
 
+  it("保存 version がデプロイのステップ数より新しい場合は拒否する(ロールバック防御)", async () => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
+      dropAllUserTables(sql);
+      ensureProjectDoTables(storage);
+      // 「新コードで 1 ステップ進んだ DB に旧コードがロールバックデプロイされた」状況を再現
+      sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, PROJECT_DO_MIGRATIONS.length + 1);
+
+      expect(() => ensureProjectDoTables(storage)).toThrow(/newer than this deployment/);
+      // 拒否はステップ適用前に起きる(version は書き戻されない)
+      expect(readProjectDoSchemaVersion(sql)).toBe(PROJECT_DO_MIGRATIONS.length + 1);
+
+      // 後片付け: 実バージョンへ戻す
+      sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, PROJECT_DO_MIGRATIONS.length);
+      ensureProjectDoTables(storage);
+    });
+  });
+
+  it("schema_meta.version の破損値は 0 扱いにせず明示的に失敗する", async () => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
+      dropAllUserTables(sql);
+      ensureProjectDoTables(storage);
+      // CHECK 制約は id のみで version の型は強制されない(SQLite は動的型)
+      sql.exec(`UPDATE schema_meta SET version = 'garbage' WHERE id = 1`);
+
+      // 0 扱いで全ステップ再実行(step 1 の IF NOT EXISTS は通るが将来の
+      // ALTER TABLE ステップは冪等でない)へ落ちないことを固定する
+      expect(() => ensureProjectDoTables(storage)).toThrow(/schema_meta\.version is corrupt/);
+
+      // 後片付け: 実バージョンへ戻す
+      sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, PROJECT_DO_MIGRATIONS.length);
+      ensureProjectDoTables(storage);
+    });
+  });
+
   it("適用済み DB への再適用は no-op", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
