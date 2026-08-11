@@ -6,9 +6,10 @@
 // - アイデンティティ規則(§1-2): プロバイダ情報・メールが 1 行にも現れないこと
 
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { env, evictDurableObject, SELF } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { makeAuditStore } from "../src/audit-store.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
@@ -124,6 +125,10 @@ function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]
   expect(JSON.parse(String(tail[0]?.["payload"]))).toMatchObject({ name: "App2" });
   expect(JSON.parse(String(tail[1]?.["payload"]))).toMatchObject({ name: "API_KEY_V2" });
 }
+
+/** 採番リセット検査用の最小イベント(audit-store.ts の失敗時リセットのテスト入力)。 */
+const seqTestEvent = (name: string) =>
+  ({ event: name, serverTs: 1, actorType: "user", actorUserId: OWNER }) as const;
 
 describe("チェーンミラー(§3.4)", () => {
   it("mirrors accepted chain entries with actor identity, chain_seq and both timestamps", async () => {
@@ -342,6 +347,42 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(read["actor_key_fingerprint"]).toBeNull();
 
     expectMetaAuthorFingerprints(events);
+  });
+
+  it("挿入失敗時は採番キャッシュを破棄し、次の追記は MAX(seq) の再読込から続く", async () => {
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const store = makeAuditStore(sql);
+      const baseRow = sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0];
+      const base = Number(baseRow?.["m"] ?? 0);
+      store.appendSync(seqTestEvent("test.one"));
+      // チャンク 2(7 行目以降)の途中 seq に衝突行を直接挿入して失敗を誘発する
+      sql.exec(
+        "INSERT INTO audit_events (seq, server_ts, event, actor_type) VALUES (?, ?, ?, ?)",
+        base + 9,
+        1,
+        "test.direct",
+        "user",
+      );
+      expect(() =>
+        store.appendManySync(
+          Array.from({ length: 12 }, (_e, index) => seqTestEvent(`test.b${index}`)),
+        ),
+      ).toThrow();
+      // 失敗で採番キャッシュは破棄され、次の追記は現 DB の MAX(seq)+1 から続く
+      // (前進したままなら base+14 で採番され、ロールバック後の DB に対して
+      // 欠番を作る)。注: 実運用ではタスク失敗がチャンク 1 も含めて
+      // ロールバックする — ここは採番キャッシュの挙動のみを固定する
+      store.appendSync(seqTestEvent("test.after"));
+      const last = sql
+        .exec("SELECT seq, event FROM audit_events ORDER BY seq DESC LIMIT 1")
+        .toArray()[0];
+      expect(last?.["event"]).toBe("test.after");
+      expect(last?.["seq"]).toBe(base + 10);
+    });
+    // 直接挿入した行がこのテスト後に残らないよう DO を初期状態へ戻す
+    await evictDurableObject(stub);
   });
 
   it("チャンク分割される一括 append と DO 再起動をまたいでも seq は無欠番(§5.1)", async () => {
