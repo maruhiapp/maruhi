@@ -565,7 +565,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
         if (column === "server_ts" || column === "client_ts" || value === null) {
           continue;
         }
-        const text = String(value);
+        // ランダム hex(DEK コミットメント・鍵 FP 等)は "9001" 等の数字列を偶然
+        // 含み得るため、長い hex 連続は走査前に除去する(provider ID の実漏洩は
+        // 短い独立値として現れるので検出力は落ちない)
+        const text = String(value).replace(/[0-9a-f]{16,}/g, "");
         for (const forbidden of ["9001", "9002", "9003", "9009", "user900", "@"]) {
           expect(text).not.toContain(forbidden);
         }
