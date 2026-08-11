@@ -65,31 +65,28 @@ function loadRowsAfter(sql: SqlStorage, afterSeq: number): LoadedRows {
   };
 }
 
+/** 空チェーン(キャッシュ無効時の差分ロードの基底 = フルロード)。 */
+const EMPTY_CHAIN: StoredChain = {
+  entries: [],
+  headSeq: 0,
+  headHashHex: null,
+  genesisHashHex: null,
+  totalCanonicalBytes: 0,
+};
+
 function loadChain(sql: SqlStorage, cache: StateCache): StoredChain {
-  const cached = cache.chain;
-  if (cached === null) {
-    // キャッシュ無効(DO 再起動直後など)はフルロードして張り直す
-    const loaded = loadRowsAfter(sql, 0);
-    const chain: StoredChain = {
-      entries: loaded.entries,
-      headSeq: loaded.lastSeq ?? 0,
-      headHashHex: loaded.hashes[loaded.hashes.length - 1] ?? null,
-      genesisHashHex: loaded.hashes[0] ?? null,
-      totalCanonicalBytes: loaded.addedBytes,
-    };
-    cache.chain = chain;
-    return chain;
-  }
-  const diff = loadRowsAfter(sql, cached.headSeq);
-  if (diff.entries.length === 0) {
-    return cached;
+  // キャッシュ無効(DO 再起動直後など)は空チェーン基底の差分 = フルロード
+  const base = cache.chain ?? EMPTY_CHAIN;
+  const diff = loadRowsAfter(sql, base.headSeq);
+  if (diff.entries.length === 0 && cache.chain !== null) {
+    return base;
   }
   const chain: StoredChain = {
-    entries: [...cached.entries, ...diff.entries],
-    headSeq: diff.lastSeq ?? cached.headSeq,
-    headHashHex: diff.hashes[diff.hashes.length - 1] ?? cached.headHashHex,
-    genesisHashHex: cached.genesisHashHex ?? diff.hashes[0] ?? null,
-    totalCanonicalBytes: cached.totalCanonicalBytes + diff.addedBytes,
+    entries: [...base.entries, ...diff.entries],
+    headSeq: diff.lastSeq ?? base.headSeq,
+    headHashHex: diff.hashes[diff.hashes.length - 1] ?? base.headHashHex,
+    genesisHashHex: base.genesisHashHex ?? diff.hashes[0] ?? null,
+    totalCanonicalBytes: base.totalCanonicalBytes + diff.addedBytes,
   };
   cache.chain = chain;
   return chain;

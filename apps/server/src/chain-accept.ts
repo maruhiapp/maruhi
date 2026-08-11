@@ -23,11 +23,11 @@ import {
 } from "./policy.ts";
 
 /** ChainInvalid(検証・エンコーダ失敗)→ chain-entry-invalid 拒否。 */
-export const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>
+const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>
   rejectData({ kind: "chain-entry-invalid", seq: error.seq, reason: error.reason });
 
 /** §6.4: 1 エントリの正規化サイズ検査。通過したら正規化バイト数を返す。 */
-export function checkEntrySize(entry: ChainEntry): Effect.Effect<number, DataRejectedError> {
+function checkEntrySize(entry: ChainEntry): Effect.Effect<number, DataRejectedError> {
   return canonicalBytesOf(entry).pipe(
     Effect.mapError(rejectChainInvalid),
     Effect.flatMap((bytes) =>
