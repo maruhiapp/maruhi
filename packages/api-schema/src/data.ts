@@ -11,10 +11,17 @@
 import { EnvironmentIdSchema, ProjectIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 
-import { hexString } from "./hex.ts";
-
-/** 1 始まりの整数(epoch / version — CRYPTO_SPEC §3 / §4)。 */
-const PositiveInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1));
+import {
+  EncPubHex,
+  hexString,
+  HpkeEncHex,
+  KeyFingerprintHex,
+  MetaSignatureHex,
+  PositiveInt,
+  Sha256Hex,
+  ValueSignatureHex,
+  WrapSignatureHex,
+} from "./hex.ts";
 
 /**
  * スイート識別子(CRYPTO_SPEC §2 設計原則 4: すべての永続データ構造が持つ)。
@@ -24,17 +31,8 @@ const PositiveInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEq
 const SuiteSchema = Schema.Literal("maruhi/v1");
 
 const NonceHex = hexString(12);
-const EncPubHex = hexString(32);
-const HpkeEncHex = hexString(32);
 // ラップ済み DEK = 32 バイト DEK + GCM タグ 16 バイト(CRYPTO_SPEC §5)
 const WrappedDekCiphertextHex = hexString(48);
-// 登録署名 / 値の書き込み署名(Ed25519、CRYPTO_SPEC §5.1 / §4.1)と
-// 鍵フィンガープリント(§3)
-const WrapSignatureHex = hexString(64);
-const ValueSignatureHex = hexString(64);
-const KeyFingerprintHex = hexString(16);
-// チェーンヘッド・prev の SHA-256(hex 小文字 64 文字 — CRYPTO_SPEC §4.1)
-const Sha256Hex = hexString(32);
 // prev_value_sig_hash_hex: version 1 は空文字列、以降は 64 文字 hex(§4.1)。
 // version との結合(1 ⇔ 空)は状態に依存しない検証規則としてサーバー / クライアント
 // の署名検証(prev-shape-mismatch)が検査する — Schema はワイヤ形状のみ
@@ -46,6 +44,14 @@ const ValueCiphertextHex = Schema.String.check(
     description: "lowercase hex AES-GCM ciphertext (>= 16 bytes incl. tag)",
   }),
 );
+
+/**
+ * 内部 user_id のワイヤ上限: チェーン合意規則の自由文字列上限(CRYPTO_SPEC §6.1
+ * の 1024 バイト)に揃える。これより狭い上限はチェーン上の正当なメンバーを
+ * 表現不能にしうる。chain.ts 側は意図的に bound しない(§6.1 — verifyChain が
+ * 上限を検査する)。
+ */
+const BoundedUserId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024));
 
 /** Declared AAD components of a variable ciphertext (CRYPTO_SPEC §4). */
 export const VariableAadSchema = Schema.Struct({
@@ -90,7 +96,7 @@ export type EncryptedPayload = typeof EncryptedPayloadSchema.Type;
  */
 export const DistributedEncryptedPayloadSchema = Schema.Struct({
   ...EncryptedPayloadSchema.fields,
-  writerUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  writerUserId: BoundedUserId,
   writerKeyFingerprintHex: KeyFingerprintHex,
 });
 
@@ -113,7 +119,6 @@ const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
 // リクエスト形は metaVersion >= 2 に固定される(下の narrowed struct)
 const MetaVersionAtLeast2 = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(2));
 const PrevMetaSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
-const MetaSignatureHex = hexString(64);
 
 const varMetaBaseFields = {
   suite: SuiteSchema,
@@ -207,7 +212,7 @@ export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
 export const DistributedVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...anyLifecycleFields,
-  authorUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  authorUserId: BoundedUserId,
   authorKeyFingerprintHex: KeyFingerprintHex,
 });
 
@@ -218,7 +223,7 @@ export type DistributedVariableMetaStatement = typeof DistributedVariableMetaSta
 export const DistributedEnvironmentMetaStatementSchema = Schema.Struct({
   ...envMetaBaseFields,
   ...anyLifecycleFields,
-  authorUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  authorUserId: BoundedUserId,
   authorKeyFingerprintHex: KeyFingerprintHex,
 });
 
@@ -240,7 +245,7 @@ export type DistributedEnvironmentMetaStatement =
 export const WrappedDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
-  recipientUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  recipientUserId: BoundedUserId,
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
@@ -262,7 +267,7 @@ export const RecipientDekSchema = Schema.Struct({
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
   signatureHex: WrapSignatureHex,
-  signerUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  signerUserId: BoundedUserId,
   signerKeyFingerprintHex: KeyFingerprintHex,
 });
 
@@ -276,7 +281,7 @@ export type RecipientDek = typeof RecipientDekSchema.Type;
  */
 export const DekWrapRefSchema = Schema.Struct({
   epoch: PositiveInt,
-  recipientUserId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  recipientUserId: BoundedUserId,
 });
 
 /** Reference naming one stored wrap (§12-6 repair path). */
