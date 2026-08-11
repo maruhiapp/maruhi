@@ -17,7 +17,7 @@
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
-    "effect": "4.0.0-beta.102",
+    "effect": "4.0.0-beta.107",
     "gunshi": "0.37.1"
   },
   "devDependencies": {

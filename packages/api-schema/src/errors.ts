@@ -40,7 +40,7 @@ void allReasonsListed;
 export const ChainInvalidReasonSchema = Schema.Literals(CHAIN_INVALID_REASONS);
 
 /** 401: the request presented no valid session cookie or API token. */
-export class UnauthorizedError extends Schema.TaggedErrorClass<UnauthorizedError>()(
+export class UnauthorizedError extends Schema.TaggedError<UnauthorizedError>()(
   "Unauthorized",
   {},
   { httpApiStatus: 401 },
@@ -56,7 +56,7 @@ export const ForbiddenReasonSchema = Schema.Literals([
 ]);
 
 /** 403: the authenticated principal may not perform this operation. */
-export class ForbiddenError extends Schema.TaggedErrorClass<ForbiddenError>()(
+export class ForbiddenError extends Schema.TaggedError<ForbiddenError>()(
   "Forbidden",
   { reason: ForbiddenReasonSchema },
   { httpApiStatus: 403 },
@@ -74,7 +74,7 @@ export const AuthFlowFailureReasonSchema = Schema.Literals([
  * rejection, or an invalid GitHub token presented to the device exchange).
  * 提示された外部 ID・トークン値は運ばない(理由コードのみ)。
  */
-export class AuthFlowError extends Schema.TaggedErrorClass<AuthFlowError>()(
+export class AuthFlowError extends Schema.TaggedError<AuthFlowError>()(
   "AuthFlow",
   { reason: AuthFlowFailureReasonSchema },
   { httpApiStatus: 400 },
@@ -89,21 +89,21 @@ export const SetupIncompleteReasonSchema = Schema.Literals(["github-oauth-unconf
  * または client_secret が未登録 / 空)。クライアントは docs/SELF_HOSTING.md の
  * セットアップ手順へ誘導する(成功応答 = 両方登録済み、の意味論を支える)。
  */
-export class SetupIncompleteError extends Schema.TaggedErrorClass<SetupIncompleteError>()(
+export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteError>()(
   "SetupIncomplete",
   { reason: SetupIncompleteReasonSchema },
   { httpApiStatus: 503 },
 ) {}
 
 /** 429: the per-user API token limit has been reached (AUTH_SPEC §6). */
-export class TokenLimitError extends Schema.TaggedErrorClass<TokenLimitError>()(
+export class TokenLimitError extends Schema.TaggedError<TokenLimitError>()(
   "TokenLimit",
   { limit: Schema.Number },
   { httpApiStatus: 429 },
 ) {}
 
 /** 404: no recovery wrap is registered for the authenticated user (AUTH_SPEC §13). */
-export class RecoveryWrapNotFoundError extends Schema.TaggedErrorClass<RecoveryWrapNotFoundError>()(
+export class RecoveryWrapNotFoundError extends Schema.TaggedError<RecoveryWrapNotFoundError>()(
   "RecoveryWrapNotFound",
   {},
   { httpApiStatus: 404 },
@@ -113,21 +113,21 @@ export class RecoveryWrapNotFoundError extends Schema.TaggedErrorClass<RecoveryW
  * 429: the recovery-blob fetch window is exhausted (AUTH_SPEC §13-3 —
  * CRYPTO_SPEC §8 のレート制限)。`retryAfterSeconds` は固定窓の残り秒数。
  */
-export class RecoveryRateLimitedError extends Schema.TaggedErrorClass<RecoveryRateLimitedError>()(
+export class RecoveryRateLimitedError extends Schema.TaggedError<RecoveryRateLimitedError>()(
   "RecoveryRateLimited",
   { retryAfterSeconds: Schema.Number },
   { httpApiStatus: 429 },
 ) {}
 
 /** 404: no chain has been initialized under this project id. */
-export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
+export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
   "ProjectNotFound",
   { projectId: Schema.String },
   { httpApiStatus: 404 },
 ) {}
 
 /** 409: a chain already exists under this project id (duplicate genesis submission). */
-export class ProjectAlreadyInitializedError extends Schema.TaggedErrorClass<ProjectAlreadyInitializedError>()(
+export class ProjectAlreadyInitializedError extends Schema.TaggedError<ProjectAlreadyInitializedError>()(
   "ProjectAlreadyInitialized",
   { projectId: Schema.String },
   { httpApiStatus: 409 },
@@ -138,7 +138,7 @@ export class ProjectAlreadyInitializedError extends Schema.TaggedErrorClass<Proj
  * head that is no longer the current head. The current head is returned so the
  * client can fetch, re-verify, and retry.
  */
-export class ChainHeadConflictError extends Schema.TaggedErrorClass<ChainHeadConflictError>()(
+export class ChainHeadConflictError extends Schema.TaggedError<ChainHeadConflictError>()(
   "ChainHeadConflict",
   { currentHeadSeq: Schema.Number, currentHeadHashHex: Schema.String },
   { httpApiStatus: 409 },
@@ -148,14 +148,14 @@ export class ChainHeadConflictError extends Schema.TaggedErrorClass<ChainHeadCon
  * 422: server-side chain verification (CRYPTO_SPEC §6.4 = verifyChain の再実行)
  * rejected the entry at `seq` for `reason`.
  */
-export class ChainEntryInvalidError extends Schema.TaggedErrorClass<ChainEntryInvalidError>()(
+export class ChainEntryInvalidError extends Schema.TaggedError<ChainEntryInvalidError>()(
   "ChainEntryInvalid",
   { seq: Schema.Number, reason: ChainInvalidReasonSchema },
   { httpApiStatus: 422 },
 ) {}
 
 /** 413: the entry's canonical byte length exceeds the §6.4 acceptance policy (1 MiB). */
-export class ChainEntryTooLargeError extends Schema.TaggedErrorClass<ChainEntryTooLargeError>()(
+export class ChainEntryTooLargeError extends Schema.TaggedError<ChainEntryTooLargeError>()(
   "ChainEntryTooLarge",
   { limitBytes: Schema.Number },
   { httpApiStatus: 413 },
@@ -165,7 +165,7 @@ export class ChainEntryTooLargeError extends Schema.TaggedErrorClass<ChainEntryT
  * 422: accepting the entry would exceed the §6.4 chain-wide acceptance policy
  * (10,000 entries / 32 MiB cumulative canonical bytes).
  */
-export class ChainCapacityExceededError extends Schema.TaggedErrorClass<ChainCapacityExceededError>()(
+export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacityExceededError>()(
   "ChainCapacityExceeded",
   { maxEntries: Schema.Number, maxTotalBytes: Schema.Number },
   { httpApiStatus: 422 },
@@ -177,7 +177,7 @@ export class ChainCapacityExceededError extends Schema.TaggedErrorClass<ChainCap
  * generic chain append rejects them so the entry-plus-data atomicity cannot
  * be bypassed ("エポックはあるがラップがない" 中間状態を作らせない).
  */
-export class CompositeRequiredError extends Schema.TaggedErrorClass<CompositeRequiredError>()(
+export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",
   { op: Schema.Literals(["create_environment", "rotate_epoch"]) },
   { httpApiStatus: 422 },
@@ -191,14 +191,14 @@ export class CompositeRequiredError extends Schema.TaggedErrorClass<CompositeReq
 // ---------------------------------------------------------------------------
 
 /** 404: no active environment under this id (returned to chain members only). */
-export class EnvironmentNotFoundError extends Schema.TaggedErrorClass<EnvironmentNotFoundError>()(
+export class EnvironmentNotFoundError extends Schema.TaggedError<EnvironmentNotFoundError>()(
   "EnvironmentNotFound",
   { environmentId: Schema.String },
   { httpApiStatus: 404 },
 ) {}
 
 /** 404: no active variable under this id (returned to chain members only). */
-export class VariableNotFoundError extends Schema.TaggedErrorClass<VariableNotFoundError>()(
+export class VariableNotFoundError extends Schema.TaggedError<VariableNotFoundError>()(
   "VariableNotFound",
   { variableId: Schema.String },
   { httpApiStatus: 404 },
@@ -225,14 +225,14 @@ export const ResourceConflictReasonSchema = Schema.Literals([
 export const EnvironmentConflictReasonSchema = Schema.Literals(["duplicate-name"]);
 
 /** 409: the environment display name conflicts (AUTH_SPEC §12-1 / §12-4). */
-export class EnvironmentConflictError extends Schema.TaggedErrorClass<EnvironmentConflictError>()(
+export class EnvironmentConflictError extends Schema.TaggedError<EnvironmentConflictError>()(
   "EnvironmentConflict",
   { environmentId: Schema.String, reason: EnvironmentConflictReasonSchema },
   { httpApiStatus: 409 },
 ) {}
 
 /** 409: the variable id or display name conflicts (AUTH_SPEC §12-1 / §12-5). */
-export class VariableConflictError extends Schema.TaggedErrorClass<VariableConflictError>()(
+export class VariableConflictError extends Schema.TaggedError<VariableConflictError>()(
   "VariableConflict",
   { variableId: Schema.String, reason: ResourceConflictReasonSchema },
   { httpApiStatus: 409 },
@@ -243,7 +243,7 @@ export class VariableConflictError extends Schema.TaggedErrorClass<VariableConfl
  * `currentVersion + 1`. The client re-encrypts under the next version and
  * retries (the version is part of the AAD, so the server cannot renumber).
  */
-export class VersionConflictError extends Schema.TaggedErrorClass<VersionConflictError>()(
+export class VersionConflictError extends Schema.TaggedError<VersionConflictError>()(
   "VersionConflict",
   { currentVersion: Schema.Number },
   { httpApiStatus: 409 },
@@ -254,7 +254,7 @@ export class VersionConflictError extends Schema.TaggedErrorClass<VersionConflic
  * §12-5). After a rotation the client fetches the new DEK, re-encrypts and
  * retries under `currentEpoch`.
  */
-export class EpochConflictError extends Schema.TaggedErrorClass<EpochConflictError>()(
+export class EpochConflictError extends Schema.TaggedError<EpochConflictError>()(
   "EpochConflict",
   { currentEpoch: Schema.Number },
   { httpApiStatus: 409 },
@@ -264,7 +264,7 @@ export class EpochConflictError extends Schema.TaggedErrorClass<EpochConflictErr
  * 422: a declared AAD component does not match the storage coordinates named
  * by the request (AUTH_SPEC §12-2). `field` names the mismatching component.
  */
-export class PayloadMismatchError extends Schema.TaggedErrorClass<PayloadMismatchError>()(
+export class PayloadMismatchError extends Schema.TaggedError<PayloadMismatchError>()(
   "PayloadMismatch",
   { field: Schema.String },
   { httpApiStatus: 422 },
@@ -293,7 +293,7 @@ export const ValueSignatureRejectReasonSchema = Schema.Literals([
  * 422: the value write signature (CRYPTO_SPEC §4.1) was rejected. Carries a
  * reason code only — never signature bytes, hashes or ciphertext fragments.
  */
-export class ValueSignatureRejectedError extends Schema.TaggedErrorClass<ValueSignatureRejectedError>()(
+export class ValueSignatureRejectedError extends Schema.TaggedError<ValueSignatureRejectedError>()(
   "ValueSignatureRejected",
   { reason: ValueSignatureRejectReasonSchema },
   { httpApiStatus: 422 },
@@ -307,7 +307,7 @@ export class ValueSignatureRejectedError extends Schema.TaggedErrorClass<ValueSi
  * role、prev の形 / 保存 predecessor との不一致、削除後の再ステートメントを
  * 含む)。
  */
-export class MetaStatementRejectedError extends Schema.TaggedErrorClass<MetaStatementRejectedError>()(
+export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatementRejectedError>()(
   "MetaStatementRejected",
   { reason: ValueSignatureRejectReasonSchema },
   { httpApiStatus: 422 },
@@ -319,7 +319,7 @@ export class MetaStatementRejectedError extends Schema.TaggedErrorClass<MetaStat
  * **number only** (never the winner's signed-bytes hash — クライアントは勝者を
  * 再取得・検証して prev を自計算する。§12-5 の 409 規律)。
  */
-export class MetaVersionConflictError extends Schema.TaggedErrorClass<MetaVersionConflictError>()(
+export class MetaVersionConflictError extends Schema.TaggedError<MetaVersionConflictError>()(
   "MetaVersionConflict",
   { currentMetaVersion: Schema.Number },
   { httpApiStatus: 409 },
@@ -330,7 +330,7 @@ export class MetaVersionConflictError extends Schema.TaggedErrorClass<MetaVersio
  * §12-1). Normalization is the signing client's responsibility — the server
  * only checks and never normalizes (byte-exact 署名との両立 — CRYPTO_SPEC §4.2)。
  */
-export class NameNotNfcError extends Schema.TaggedErrorClass<NameNotNfcError>()(
+export class NameNotNfcError extends Schema.TaggedError<NameNotNfcError>()(
   "NameNotNfc",
   {},
   { httpApiStatus: 422 },
@@ -353,7 +353,7 @@ export const DekWrapRejectReasonSchema = Schema.Literals([
  * epoch is outside 1..currentEpoch, or a registration signature does not
  * verify under the caller's chain signing key (CRYPTO_SPEC §5.1).
  */
-export class DekWrapRejectedError extends Schema.TaggedErrorClass<DekWrapRejectedError>()(
+export class DekWrapRejectedError extends Schema.TaggedError<DekWrapRejectedError>()(
   "DekWrapRejected",
   { reason: DekWrapRejectReasonSchema },
   { httpApiStatus: 422 },
@@ -365,7 +365,7 @@ export class DekWrapRejectedError extends Schema.TaggedErrorClass<DekWrapRejecte
  * undecryptable blob would be an availability attack the server cannot
  * detect).
  */
-export class DekWrapExistsError extends Schema.TaggedErrorClass<DekWrapExistsError>()(
+export class DekWrapExistsError extends Schema.TaggedError<DekWrapExistsError>()(
   "DekWrapExists",
   { epoch: Schema.Number, recipientUserId: Schema.String },
   { httpApiStatus: 409 },
@@ -376,14 +376,14 @@ export class DekWrapExistsError extends Schema.TaggedErrorClass<DekWrapExistsErr
  * the §12-6 repair path (deletion targets must exist — silently succeeding
  * would let an admin believe a poisoned wrap was removed when it was not).
  */
-export class DekWrapNotFoundError extends Schema.TaggedErrorClass<DekWrapNotFoundError>()(
+export class DekWrapNotFoundError extends Schema.TaggedError<DekWrapNotFoundError>()(
   "DekWrapNotFound",
   { epoch: Schema.Number, recipientUserId: Schema.String },
   { httpApiStatus: 404 },
 ) {}
 
 /** 413: the value ciphertext exceeds the §12-8 acceptance policy (64 KiB). */
-export class ValueTooLargeError extends Schema.TaggedErrorClass<ValueTooLargeError>()(
+export class ValueTooLargeError extends Schema.TaggedError<ValueTooLargeError>()(
   "ValueTooLarge",
   { limitBytes: Schema.Number },
   { httpApiStatus: 413 },
@@ -406,7 +406,7 @@ export const DataLimitResourceSchema = Schema.Literals([
 ]);
 
 /** 422: accepting the request would exceed a §12-8 count / size limit. */
-export class DataLimitExceededError extends Schema.TaggedErrorClass<DataLimitExceededError>()(
+export class DataLimitExceededError extends Schema.TaggedError<DataLimitExceededError>()(
   "DataLimitExceeded",
   { resource: DataLimitResourceSchema, limit: Schema.Number },
   { httpApiStatus: 422 },
