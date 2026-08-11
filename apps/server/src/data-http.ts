@@ -30,8 +30,8 @@ import {
   VariableNotFoundError,
   VersionConflictError,
 } from "@maruhi/api-schema";
-import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
-import { RequestAuth } from "@maruhi/core";
+import type { TokenPermission } from "@maruhi/core";
+import { auditActorOf, RequestAuth } from "@maruhi/core";
 import { Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import type { HttpApiEndpoint } from "effect/unstable/httpapi";
@@ -50,13 +50,6 @@ import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 /** 204 応答(書き込み系エンドポイント共通)。 */
 export const noContent = HttpServerResponse.empty({ status: 204 });
-
-/** 認証主体 → 監査アクター(AUDIT_SPEC §2)。 */
-function dataActorOf(principal: AuthenticatedPrincipal): DataActor {
-  return principal.kind === "token"
-    ? { userId: principal.userId, apiTokenId: principal.tokenId }
-    : { userId: principal.userId, authMethod: principal.authMethod };
-}
 
 /**
  * EncryptedPayload → DO へ渡す保存入力(座標は検査済み、状態依存部と署名
@@ -330,7 +323,7 @@ export const callProjectData =
       yield* ensureTokenScopeForProject(principal, options.projectId, options.permission);
       const env = yield* WorkerEnv;
       const outcome = yield* rpcCall<DataOutcome<T>>(() =>
-        options.invoke(projectStub(env, options.projectId), dataActorOf(principal)),
+        options.invoke(projectStub(env, options.projectId), auditActorOf(principal)),
       );
       return yield* unwrapDataOutcome(outcome, options.projectId, options.endpoint);
     });

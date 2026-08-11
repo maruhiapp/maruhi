@@ -15,7 +15,7 @@ import {
   ProjectAlreadyInitializedError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal } from "@maruhi/core";
-import { RequestAuth } from "@maruhi/core";
+import { auditActorOf, RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -30,7 +30,7 @@ import {
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
 import { dataRejectionError } from "./data-http.ts";
 import type { DataRejection } from "./data-plane.ts";
-import { OrgRepo, principalAuditActor, ProjectRepo } from "./db.package/index.ts";
+import { OrgRepo, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -117,7 +117,7 @@ const repairOrConflict = (
     if (exists || outcome.genesisActorUserId !== principal.userId) {
       return yield* Effect.fail(new ProjectAlreadyInitializedError({ projectId }));
     }
-    yield* projects.insertIfAbsent(projectId, orgId, Date.now(), principalAuditActor(principal));
+    yield* projects.insertIfAbsent(projectId, orgId, Date.now(), auditActorOf(principal));
     return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
   });
 
@@ -132,12 +132,7 @@ const mapInitOutcome = (
       return Effect.gen(function* () {
         const projects = yield* ProjectRepo;
         // org.project_created(AUDIT_SPEC §3.2)は insertIfAbsent が同一 batch で記録
-        yield* projects.insertIfAbsent(
-          projectId,
-          orgId,
-          Date.now(),
-          principalAuditActor(principal),
-        );
+        yield* projects.insertIfAbsent(projectId, orgId, Date.now(), auditActorOf(principal));
         return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
       });
     case "already-initialized":

@@ -20,6 +20,7 @@ export {
   toWrappedCryptoError,
   type WrappedCryptoError,
 } from "./crypto-errors.ts";
+export { type AuditActor, auditActorOf, auditPayloadWith } from "./audit.ts";
 export {
   anonymousPrincipal,
   type AuthenticatedPrincipal,

@@ -15,19 +15,14 @@ import {
   TokenLimitError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal, TokenScope } from "@maruhi/core";
-import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
+import { auditActorOf, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect } from "effect";
 import type { Cookies } from "effect/unstable/http";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { CSRF_HEADER, GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
-import {
-  D1AuditRepo,
-  IdentityRepo,
-  principalAuditActor,
-  RecoveryRepo,
-} from "./db.package/index.ts";
+import { D1AuditRepo, IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
@@ -296,7 +291,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
             ciphertextHex: payload.ciphertextHex,
           },
           Date.now(),
-          principalAuditActor(principal),
+          auditActorOf(principal),
         );
         return HttpServerResponse.empty({ status: 204 });
       }),
@@ -332,7 +327,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const decision = yield* recovery.recordFetch(
           principal.userId,
           Date.now(),
-          principalAuditActor(principal),
+          auditActorOf(principal),
         );
         if (!decision.allowed) {
           return yield* Effect.fail(

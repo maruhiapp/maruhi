@@ -4,6 +4,8 @@
 // 拒否は DataRejectedError 1 種に畳み、DO の RPC 境界では DataOutcome の
 // 判別 union として渡す(worker が api-schema の型付きエラーへ写像する)。
 
+import type { AuditActor } from "@maruhi/core";
+import { auditPayloadWith } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
   ChainInvalidReason,
@@ -22,16 +24,13 @@ import { ChainStore, deriveStoredState } from "./chain-store.ts";
 // ---------------------------------------------------------------------------
 
 /**
- * データ操作の監査アクター(AUDIT_SPEC §2)。worker が認証主体から作る。
+ * データ操作の監査アクター(AUDIT_SPEC §2)。worker が認証主体から
+ * auditActorOf(@maruhi/core — 写像の唯一の実装)で作る。
  * 鍵 FP は持たない — ほとんどのデータ操作は署名を伴わないため。署名を伴う
  * 唯一の例外は DEK ラップ登録(CRYPTO_SPEC §5.1)で、その署名者 FP は worker
  * でなく DO がチェーン導出メンバーから取り、dek.registered イベントに写す。
  */
-export interface DataActor {
-  readonly userId: string;
-  readonly apiTokenId?: string;
-  readonly authMethod?: string;
-}
+export type DataActor = AuditActor;
 
 /**
  * スイート識別子(CRYPTO_SPEC §2 設計原則 4)。ワイヤは Schema の Literal が
@@ -448,10 +447,7 @@ export function dataEvent(
     | "actorKeyFingerprintHex"
   >,
 ): AuditEventInput {
-  const payload = {
-    ...fields.payload,
-    ...(actor.authMethod === undefined ? {} : { authMethod: actor.authMethod }),
-  };
+  const payload = auditPayloadWith(actor, fields.payload);
   return {
     ...fields,
     event,
