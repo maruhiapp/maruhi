@@ -57,21 +57,20 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
       }),
     )
     .handle("rotate", ({ params, payload, endpoint }) =>
-      ensureCompositeActor(payload.entry).pipe(
-        Effect.andThen(
-          callProjectData<EnvironmentChainResultValue>()({
-            endpoint,
-            projectId: params.projectId,
-            permission: "write",
-            invoke: (stub, actor) =>
-              stub.rotateEpoch(actor, params.environmentId, {
-                parentHeadHashHex: payload.parentHeadHashHex,
-                entry: payload.entry,
-                deks: payload.deks,
-              }),
-          }),
-        ),
-      ),
+      Effect.gen(function* () {
+        yield* ensureCompositeActor(payload.entry);
+        return yield* callProjectData<EnvironmentChainResultValue>()({
+          endpoint,
+          projectId: params.projectId,
+          permission: "write",
+          invoke: (stub, actor) =>
+            stub.rotateEpoch(actor, params.environmentId, {
+              parentHeadHashHex: payload.parentHeadHashHex,
+              entry: payload.entry,
+              deks: payload.deks,
+            }),
+        });
+      }),
     )
     .handle("list", ({ params, endpoint }) =>
       callProjectData<readonly EnvironmentSummaryValue[]>()({
