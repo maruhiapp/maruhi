@@ -4,6 +4,10 @@
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
+// apps/web の e2e と同じ環境変数で Chromium 実行体を差し替え可能にする
+// (プリインストール済みブラウザだけがある実行環境向け。未設定なら既定解決)
+const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
+
 export default defineConfig({
   test: {
     name: "crypto-browser",
@@ -11,7 +15,9 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      provider: playwright({
+        launchOptions: executablePath ? { executablePath } : {},
+      }),
       instances: [{ browser: "chromium" }],
     },
   },
