@@ -2,11 +2,12 @@
 //
 // この vitest-pool-workers 構成(cloudflareTest プラグイン 0.21.0)にはテスト間の
 // ストレージ分離がなく、DO SQLite はファイル内のテスト間で持ち越される。
-// runInDurableObject で DO をインスタンス化するとコンストラクタが DDL を適用する
-// ため、ここでは PROJECT_DO_TABLES の全テーブルを名指しで DELETE し、その後
+// runInDurableObject で DO をインスタンス化するとコンストラクタがマイグレーションを
+// 適用するため、ここでは PROJECT_DO_TABLES の全テーブルを名指しで DELETE し、その後
 // evictDurableObject で導出 ChainState のメモリキャッシュも消す。
-// **テーブルを増やしたら src/do-schema.ts の PROJECT_DO_TABLES に必ず追加する**
-// (この一覧が唯一のリセット対象定義)。
+// PROJECT_DO_TABLES は src/do-schema.ts のマイグレーションステップの tables 宣言から
+// 導出される(テーブルを増やすステップは必ず tables に宣言する)。schema_meta は
+// 適用済み version の記録のため意図的に DELETE しない。
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 
