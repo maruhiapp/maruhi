@@ -185,7 +185,10 @@ interface CompositeWriteContext {
     readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
   };
   readonly dataStore: { readonly write: DataWriteOps };
-  readonly audit: { readonly appendSync: (event: AuditEventInput) => void };
+  readonly audit: {
+    readonly appendSync: (event: AuditEventInput) => void;
+    readonly appendManySync: (events: readonly AuditEventInput[]) => void;
+  };
   readonly actor: DataActor;
   readonly member: ChainMember;
   readonly environmentId: string;
@@ -210,10 +213,12 @@ function insertCompositeWrapsSync(
 ): void {
   for (const wrap of deks) {
     context.dataStore.write.insertWrap(context.environmentId, wrap, context.member, context.nowMs);
-    context.audit.appendSync(
-      dekRegisteredEvent(context.actor, context.member, context.nowMs, context.environmentId, wrap),
-    );
   }
+  context.audit.appendManySync(
+    deks.map((wrap) =>
+      dekRegisteredEvent(context.actor, context.member, context.nowMs, context.environmentId, wrap),
+    ),
+  );
 }
 
 /** 書き込みフェーズの依存(ChainStore / AuditStore)を束ねて CompositeWriteContext を作る。 */

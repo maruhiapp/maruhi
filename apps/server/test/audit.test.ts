@@ -6,7 +6,7 @@
 // - アイデンティティ規則(§1-2): プロバイダ情報・メールが 1 行にも現れないこと
 
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { SELF } from "cloudflare:test";
+import { env, evictDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
@@ -342,6 +342,29 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(read["actor_key_fingerprint"]).toBeNull();
 
     expectMetaAuthorFingerprints(events);
+  });
+
+  it("チャンク分割される一括 append と DO 再起動をまたいでも seq は無欠番(§5.1)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    // multi-row INSERT の 1 文あたり行数(audit-store.ts の 6 行)を越える
+    // 8 変数を作り、一括 pull の var.read 8 行が複数チャンクに割れて追記される
+    for (let index = 0; index < 8; index += 1) {
+      await createVariableOk(dek, `var-batch-${index}`, `BATCH_${index}`);
+    }
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(pull.status).toBe(200);
+
+    // DO 再起動相当: インスタンスメモリの next seq を破棄し、次の追記が
+    // MAX(seq) の再読込から続き番号で採番することを確認する
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    await evictDurableObject(stub);
+    const renamed = await renameEnvironmentRequest(fixture, ENV, "App2", MEMBER);
+    expect(renamed.status).toBe(204);
+
+    const events = await readAuditEvents(projectId);
+    expect(events.map((event) => event["seq"])).toEqual(events.map((_e, index) => index + 1));
+    expect(events.filter((event) => event["event"] === "var.read").length).toBe(8);
+    expect(events[events.length - 1]?.["event"]).toBe("env.renamed");
   });
 
   it("attributes actors: PAT ops carry the token id, session ops carry auth_method (§2)", async () => {

@@ -763,22 +763,20 @@ export const deleteEnvironmentProgram = (
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
-      for (const variable of variables) {
-        audit.appendSync(
+      audit.appendManySync([
+        ...variables.map((variable) =>
           dataEvent(actor, now, "var.deleted", {
             environmentId,
             variableId: variable.variableId,
             actorKeyFingerprintHex: member.keyFingerprintHex,
           }),
-        );
-      }
-      audit.appendSync(
+        ),
         dataEvent(actor, now, "env.deleted", {
           environmentId,
           payload: { name: environment.name },
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
-      );
+      ]);
     });
   });
 
@@ -1162,16 +1160,16 @@ export const pullEnvironmentProgram = (
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
-      for (const variable of variables) {
-        audit.appendSync(
+      audit.appendManySync(
+        variables.map((variable) =>
           dataEvent(actor, now, "var.read", {
             environmentId,
             variableId: variable.variableId,
             epoch: variable.epoch,
             version: variable.version,
           }),
-        );
-      }
+        ),
+      );
     });
     return {
       environmentId,
@@ -1224,8 +1222,10 @@ export const registerDekWrapsProgram = (
     yield* Effect.sync(() => {
       for (const wrap of wraps) {
         store.write.insertWrap(environmentId, wrap, member, now);
-        audit.appendSync(dekRegisteredEvent(actor, member, now, environmentId, wrap));
       }
+      audit.appendManySync(
+        wraps.map((wrap) => dekRegisteredEvent(actor, member, now, environmentId, wrap)),
+      );
     });
   });
 
@@ -1270,14 +1270,16 @@ export const deleteDekWrapsProgram = (
     yield* Effect.sync(() => {
       for (const ref of refs) {
         store.write.deleteWrap(environmentId, ref.epoch, ref.recipientUserId);
-        audit.appendSync(
+      }
+      audit.appendManySync(
+        refs.map((ref) =>
           dataEvent(actor, now, "dek.deleted", {
             environmentId,
             epoch: ref.epoch,
             targetUserId: ref.recipientUserId,
           }),
-        );
-      }
+        ),
+      );
     });
   });
 
