@@ -125,11 +125,20 @@ bun run deploy   # マイグレーション適用 → デプロイ(常にこの�
 未コミットの編集と衝突する。コミットしない運用なら pull 後に再適用する)。
 client_id / client_secret は Workers Secret 側に保存されているため更新の影響を受けない。
 
+**2026-08-11 改訂をまたぐ更新(1 回だけの移行作業)**: 旧手順では client_id を
+`wrangler.jsonc` の `vars.GITHUB_CLIENT_ID` に記入していた。旧手順で立てた
+インスタンスは、この改訂以降のコードへ更新してデプロイする**前に**
+`bunx wrangler secret put GITHUB_CLIENT_ID` で client_id を Workers Secret として
+登録すること(新しい `wrangler.jsonc` には vars がないため、未登録のままデプロイ
+すると認証系エンドポイントが 503 `SetupIncomplete` になる。その場合も secret put
+すれば即時復旧する — 再デプロイ不要)。
+
 ## トラブルシューティング
 
 - **`/auth/config` / `/auth/github/start` / `/auth/device/exchange` が 503
   `SetupIncomplete`**: `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` のどちらかが
-  未登録(`wrangler secret put` 漏れ — 手順 5)。登録済みシークレットの一覧は
+  未登録(`wrangler secret put` 漏れ — 手順 5。旧手順で立てたインスタンスの
+  更新後に起きた場合は「更新」節の移行作業を参照)。登録済みシークレットの一覧は
   `bunx wrangler secret list` で確認できる(値は表示されない)
 - **CLI ログインで GitHub が `device_flow_disabled` を返す**: OAuth App の
   "Enable Device Flow" が未チェック(手順 4)
