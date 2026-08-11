@@ -133,6 +133,8 @@ export {
   verifyChainWithHistory,
 } from "./internal.package/index.ts";
 
+// §7: エポックとメンバーシップ変更 — export 面なし(ワークフロー規定のみ)
+
 // §8: リカバリーコード
 export {
   generateRecoverySecret,
