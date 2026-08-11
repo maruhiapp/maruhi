@@ -7,7 +7,7 @@
 import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { HttpApiMiddleware } from "effect/unstable/httpapi";
 
-import { ForbiddenError, UnauthorizedError } from "./errors.ts";
+import { ForbiddenError, UnauthorizedError } from "./errors/index.ts";
 
 /**
  * Authentication middleware (AUTH_SPEC §5, §11-4): resolves the session cookie

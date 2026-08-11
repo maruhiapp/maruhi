@@ -52,7 +52,7 @@ import {
   VariableConflictError,
   VariableNotFoundError,
   VersionConflictError,
-} from "./errors.ts";
+} from "./errors/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
 
 const projectParams = { projectId: ProjectIdSchema };

@@ -21,7 +21,7 @@ import {
   ForbiddenError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
-} from "./errors.ts";
+} from "./errors/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
 
 /** Chain head after a successful initialization or append. */

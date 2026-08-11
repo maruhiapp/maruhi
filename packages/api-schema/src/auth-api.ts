@@ -21,7 +21,7 @@ import {
   RecoveryWrapNotFoundError,
   SetupIncompleteError,
   TokenLimitError,
-} from "./errors.ts";
+} from "./errors/index.ts";
 import { hexString } from "./hex.ts";
 
 /**
