@@ -1,7 +1,7 @@
 // DEK ラップの保存・配布・修復 API のハンドラ(AUTH_SPEC §12-6)。
 //
 // 受信者検証(非メンバー宛・鍵不一致・欠落・重複・上書き)は DO 側
-// (data-programs.ts)が ChainState 導出の現メンバー集合に対して行う。
+// (programs-dek.ts + dek-wraps.ts)が ChainState 導出の現メンバー集合に対して行う。
 // 共通経路は data-http.ts の callProjectData。返しうるエラーの集合は各
 // エンドポイントの契約宣言(api-schema)から導出される(手書きの列挙は無い)。
 

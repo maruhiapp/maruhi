@@ -259,7 +259,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
       // DataLimitExceeded は宣言しない: 削除経路の数量検査は metaVersion 上限のみ
       // で、削除ステートメント(ワイヤ Schema が status = deleted を固定)は
       // その対象外(§12-8 — 上限で削除を遮断すると上限到達リソースが恒久的に
-      // 削除不能になる。data-programs.ts の metaVersionsExceeded とその固定
+      // 削除不能になる。quotas.ts の metaVersionsExceeded とその固定
       // テストが根拠)。variables.remove も同じ
       error: [
         ProjectNotFoundError,
