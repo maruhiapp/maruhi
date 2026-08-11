@@ -24,8 +24,10 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
@@ -149,7 +151,7 @@ export function requireChainEnvironment(
  * (チェーンに rotate_epoch がないエポックの DEK を受理すると、共謀サーバーが
  * 正規メンバー署名済みの攻撃者 DEK で偽値を注入できる)。
  */
-export function verifyAndUnwrapDeks(input: {
+function verifyAndUnwrapDeks(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly recipient: DekRecipient;
@@ -204,5 +206,62 @@ export function verifyAndUnwrapDeks(input: {
       byEpoch.set(wrap.epoch, result);
     }
     return byEpoch;
+  });
+}
+
+/**
+ * 検証済みビュー由来の環境鍵集合: チェーン導出の現エポックと、
+ * 同じビューで検証・開封した自分宛 DEK の対。
+ */
+export interface EnvironmentKeys {
+  readonly currentEpoch: number;
+  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+}
+
+/**
+ * Derives the environment keys — the chain-derived current epoch and the
+ * caller's verified, unwrapped DEKs — from one verified view, so that "the
+ * epoch and the DEK set come from the same verified view" is enforced by
+ * construction instead of by convention.
+ *
+ * 取得経路の優先順: cached(このセッションで検証済みの既知集合)に現エポックが
+ * あれば再取得しない → prefetched(値付き pull の同梱ラップ — §12-7 の二重取得
+ * 解消)があればそれを検証・開封 → どちらも無ければ listMine を取得して検証・
+ * 開封する。検証(§5.1 登録署名 + §5.2 コミットメント照合)は全経路で必須。
+ */
+export function environmentKeysFor(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly recipient: DekRecipient;
+  /** 値付き pull の同梱ラップ(verified と同じビューで検証する前提の生ワイヤ形)。 */
+  readonly prefetched?: readonly RecipientDek[] | null | undefined;
+  /** このセッションで検証・開封済みの既知集合(現エポックがあれば再取得しない)。 */
+  readonly cached?: ReadonlyMap<number, Uint8Array> | undefined;
+}): Effect.Effect<EnvironmentKeys, CliError> {
+  return Effect.gen(function* () {
+    // 現エポックはチェーン導出値(§6.2 — 環境未作成はここで止まる)
+    const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
+      .currentEpoch;
+    if (input.cached?.has(currentEpoch) === true) {
+      return { currentEpoch, deksByEpoch: input.cached };
+    }
+    const wire =
+      input.prefetched ??
+      (yield* input.client.deks
+        .listMine({
+          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+        })
+        .pipe(
+          Effect.mapError(toCliError),
+          Effect.map((response) => response.deks),
+        ));
+    const deksByEpoch = yield* verifyAndUnwrapDeks({
+      verified: input.verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      deks: wire,
+    });
+    return { currentEpoch, deksByEpoch };
   });
 }

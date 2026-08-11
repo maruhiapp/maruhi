@@ -49,10 +49,9 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
+import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { VariableFloor } from "./floor.ts";
 import { signCreateStatement } from "./meta-statement.ts";
@@ -180,29 +179,6 @@ function resolveTarget(input: {
       deks: pulled.deks,
     };
   });
-}
-
-function fetchDeks(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly environmentId: EnvironmentId;
-  readonly recipient: DekRecipient;
-}): Effect.Effect<ReadonlyMap<number, Uint8Array>, CliError> {
-  return input.client.deks
-    .listMine({
-      params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-    })
-    .pipe(
-      Effect.mapError(toCliError),
-      Effect.flatMap((response) =>
-        verifyAndUnwrapDeks({
-          verified: input.verified,
-          environmentId: input.environmentId,
-          recipient: input.recipient,
-          deks: response.deks,
-        }),
-      ),
-    );
 }
 
 /** 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。 */
@@ -336,20 +312,24 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
     const resolved = yield* resolveTarget(input);
     const verified = resolved.verified;
-    // 現エポックはチェーン導出値(§6.2 — 環境未作成の push はここで止まる)
-    const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+    // 現エポック(チェーン導出値 — §6.2。環境未作成の push はここで止まる)と
+    // DEK 集合は同じ検証済みビューから一括導出する(deks.ts の environmentKeysFor)。
     // DEK は 1 経路で 1 回だけ取得する(session-11 裁定 3 の二重取得解消):
-    // 既存変数 = 値付き pull の同梱分を検証・開封 / 新規作成 = listMine
-    const deks =
-      resolved.deks === null
-        ? yield* fetchDeks({ ...input, verified })
-        : yield* verifyAndUnwrapDeks({
-            verified,
-            environmentId: input.environmentId,
-            recipient: input.recipient,
-            deks: resolved.deks,
-          });
-    return { verified, epoch, deks, target: resolved.target, warnings: resolved.warnings };
+    // 既存変数 = 値付き pull の同梱分(prefetched)を検証・開封 / 新規作成 = listMine
+    const keys = yield* environmentKeysFor({
+      client: input.client,
+      verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      prefetched: resolved.deks,
+    });
+    return {
+      verified,
+      epoch: keys.currentEpoch,
+      deks: keys.deksByEpoch,
+      target: resolved.target,
+      warnings: resolved.warnings,
+    };
   });
 }
 
@@ -429,20 +409,22 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
   });
 }
 
-/** エポックが変わった(または初出の)場合のみ DEK 集合を取り直す。 */
+/** エポックが変わった(または初出の)場合のみ DEK 集合を取り直す(cached の意味論)。 */
 function refreshEpochState(
   input: PushInput,
   state: PushState,
   verified: VerifiedProject,
 ): Effect.Effect<Pick<PushState, "verified" | "epoch" | "deks">, CliError> {
-  return Effect.gen(function* () {
-    const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
-    if (state.deks.has(epoch)) {
-      return { verified, epoch, deks: state.deks };
-    }
-    const deks = yield* fetchDeks({ ...input, verified });
-    return { verified, epoch, deks };
-  });
+  return Effect.map(
+    environmentKeysFor({
+      client: input.client,
+      verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      cached: state.deks,
+    }),
+    (keys) => ({ verified, epoch: keys.currentEpoch, deks: keys.deksByEpoch }),
+  );
 }
 
 /**
@@ -624,18 +606,25 @@ function nextState(
       // 次の試行が VersionConflict になり上の手順へ入る)
       return Effect.gen(function* () {
         const verified = yield* resyncExtended(input.resync, state.verified);
-        const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
-        if (epoch === state.epoch) {
+        // 現エポックと DEK は同じ再同期ビューから一括導出(手持ちの検証済み
+        // 集合に現エポックがあれば再取得しない — environmentKeysFor の cached)
+        const keys = yield* environmentKeysFor({
+          client: input.client,
+          verified,
+          environmentId: input.environmentId,
+          recipient: input.recipient,
+          cached: state.deks,
+        });
+        if (keys.currentEpoch === state.epoch) {
           // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
           // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)
           return yield* Effect.fail(
             cliError(
-              `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままです(サーバー応答とチェーンの矛盾)`,
+              `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${keys.currentEpoch} のままです(サーバー応答とチェーンの矛盾)`,
             ),
           );
         }
-        const deks = yield* fetchDeks({ ...input, verified });
-        return { ...state, verified, epoch, deks };
+        return { ...state, verified, epoch: keys.currentEpoch, deks: keys.deksByEpoch };
       });
     case "variable-conflict":
       return reresolveTarget(input, state);

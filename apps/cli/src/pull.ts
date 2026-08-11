@@ -14,7 +14,7 @@ import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
+import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
@@ -63,17 +63,19 @@ export function pullVariables(input: {
     const verified = pulled.verified;
 
     // (2) ラップの §5.1 / §5.2 検証と unwrap(コミットメント照合まで成功する
-    // まで DEK は使用しない)
-    const deksByEpoch = yield* verifyAndUnwrapDeks({
+    // まで DEK は使用しない)。現エポック(チェーン導出 — §6.2)と DEK 集合は
+    // 同じ検証済みビューから一括導出する(deks.ts の environmentKeysFor)
+    const keys = yield* environmentKeysFor({
+      client: input.client,
       verified,
       environmentId: input.environmentId,
       recipient: input.recipient,
-      deks: pulled.deks,
+      prefetched: pulled.deks,
     });
+    const deksByEpoch = keys.deksByEpoch;
 
     const results: DecryptedVariable[] = [];
-    // 環境の存在はチェーン導出(§6.2)。現エポックの参照もチェーン導出値から取る
-    const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+    const chainEpoch = keys.currentEpoch;
     for (const variable of pulled.variables) {
       // 同名 active の重複はステートメント検証(values.ts)が解決拒否済み
       // (§4.2 — `maruhi run` の環境変数注入が黙って片方を潰す経路はない)
