@@ -25,13 +25,12 @@
       "migrations_pattern": "drizzle/*/migration.sql",
     },
   ],
-  "vars": {
-    // セルフホスト: 自分の GitHub OAuth App の client_id に置き換える(手順は
-    // docs/SELF_HOSTING.md)。client_secret は `wrangler secret put
-    // GITHUB_CLIENT_SECRET`(コミットしない)。このプレースホルダ文字列は
-    // サーバーの未設定検出(handlers-auth.ts)と同期している — 変更しないこと
-    "GITHUB_CLIENT_ID": "replace-with-your-github-oauth-app-client-id",
-  },
+  // GitHub OAuth App の GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET は両方とも
+  // Workers Secret として登録する(`wrangler secret put` — 手順は
+  // docs/SELF_HOSTING.md)。client_id は公開情報だが、登録経路を secret に
+  // 統一することでこのファイルの編集(フォークへのコミット)と再デプロイを
+  // 不要にしている(AUTH_SPEC §3-2)。未登録のまま立てたサーバーは認証系
+  // エンドポイントが 503 SetupIncomplete を返す(handlers-auth.ts)
   "triggers": {
     // 期限切れセッション行の掃除(提示されない行は resolve 時の掃除では消えない)
     "crons": ["17 3 * * *"],

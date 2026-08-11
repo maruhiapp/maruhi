@@ -12,9 +12,10 @@ export default defineConfig({
         // GitHub へのアウトバウンド fetch をフェイクに差し替える(実ネットワーク禁止)
         outboundService: fakeGitHub,
         bindings: {
-          // wrangler.jsonc の vars はセルフホスト向けプレースホルダのため、
-          // テストは「設定済みサーバー」のダミー値で上書きする(未設定検出の
-          // テストは worker.fetch に env を差し替えて渡す — auth.test.ts)
+          // GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET は本番では Workers Secret
+          // (wrangler.jsonc には現れない)のため、テストは「設定済みサーバー」の
+          // ダミー値をここで注入する(未設定検出のテストは worker.fetch に env を
+          // 差し替えて渡す — auth.test.ts)
           GITHUB_CLIENT_ID: "dummy-github-client-id",
           GITHUB_CLIENT_SECRET: "dummy-github-client-secret",
           // D1 マイグレーション(test 側で applyD1Migrations に渡す)。

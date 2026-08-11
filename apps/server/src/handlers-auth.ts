@@ -62,14 +62,13 @@ function callbackUri(origin: string): string {
 }
 
 /**
- * セルフホスト未設定の検出(AUTH_SPEC §3): client_id が wrangler.jsonc
- * テンプレートのプレースホルダのまま・空・欠落、または client_secret が
- * 未登録(`wrangler secret put` 漏れ)・空(Env 型は string だが、vars /
+ * セルフホスト未設定の検出(AUTH_SPEC §3): client_id / client_secret の
+ * どちらかが未登録(`wrangler secret put` 漏れ)・空(Env 型は string だが、
  * secret を欠いたデプロイでは実行時に undefined になり得る)。素通しすると
  * GitHub のエラーページや不透明なトークン交換失敗(AuthFlow 400)に落ちて
  * 原因に辿り着けないため、503 でセットアップガイド(docs/SELF_HOSTING.md)へ
- * 誘導する。プレースホルダのリテラルは wrangler.jsonc の vars.GITHUB_CLIENT_ID
- * と同期すること。
+ * 誘導する。プレースホルダ検出は旧テンプレート(client_id を wrangler vars で
+ * 配布していた時期)のフォークが値未置換のまま立てた場合への後方互換の防御。
  */
 const CLIENT_ID_PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
 

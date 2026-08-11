@@ -98,8 +98,9 @@ function emailEntries(userId: number): { body: unknown; status: number } {
 /**
  * Basic 認証を検証する: パスの {client_id} と Basic 側の client_id が一致し、
  * secret が非空であること(実装の配線 = 「自分の client_id/secret で照会している」を
- * 検査する。env の実値には依存しない — ローカルは .dev.vars、CI は wrangler vars と
- * 注入元が異なるため、値そのものを固定すると環境で割れる)。
+ * 検査する。env の実値には依存しない — テストの注入元は vitest.config.ts の
+ * miniflare bindings、wrangler dev は .dev.vars と環境で異なるため、値そのものを
+ * 固定すると環境で割れる)。
  */
 function decodeBasicPair(auth: string): readonly [string, string] | null {
   if (!auth.startsWith("Basic ")) {

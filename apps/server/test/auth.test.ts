@@ -604,7 +604,9 @@ describe("scheduled: 期限切れセッションの定期掃除", () => {
   });
 });
 
-// wrangler.jsonc テンプレートのプレースホルダ(handlers-auth.ts と同期)
+// 旧テンプレート(client_id を wrangler vars で配布していた時期)のプレースホルダ。
+// 現テンプレートには現れないが、旧フォークへの後方互換防御として検出を維持している
+// (handlers-auth.ts の CLIENT_ID_PLACEHOLDER と同期)
 const PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
 
 // worker.fetch を env 差し替えで直接呼ぶための着信リクエスト型合わせ

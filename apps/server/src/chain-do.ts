@@ -79,7 +79,7 @@ import {
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
   readonly DB: D1Database;
-  /** GitHub OAuth App の client_id(wrangler vars。セルフホストは自分の App の値)。 */
+  /** GitHub OAuth App の client_id(Workers Secret / .dev.vars。公開情報だが登録経路は secret に統一 — AUTH_SPEC §3-2)。 */
   readonly GITHUB_CLIENT_ID: string;
   /** GitHub OAuth App の client_secret(Workers Secret / .dev.vars。ダミー値のみコミット可)。 */
   readonly GITHUB_CLIENT_SECRET: string;
