@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy": "bun run db:migrate && wrangler deploy",
     "deploy:dry-run": "wrangler deploy --dry-run",
     "db:create": "wrangler d1 create maruhi",
     "db:migrate": "wrangler d1 migrations apply DB --remote",

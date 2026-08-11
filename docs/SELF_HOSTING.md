@@ -52,7 +52,7 @@ bunx wrangler d1 create maruhi
 ### 3. 初回デプロイ(マイグレーション適用 + URL の確定)
 
 ```sh
-bun run deploy   # = wrangler d1 migrations apply DB --remote && wrangler deploy
+bun run deploy   # = bun run db:migrate && wrangler deploy
 ```
 
 deploy スクリプトは D1 マイグレーションの適用(バインディング名 `DB` を参照 —
@@ -131,7 +131,11 @@ client_id / client_secret は Workers Secret 側に保存されているため�
 `bunx wrangler secret put GITHUB_CLIENT_ID` で client_id を Workers Secret として
 登録すること(新しい `wrangler.jsonc` には vars がないため、未登録のままデプロイ
 すると認証系エンドポイントが 503 `SetupIncomplete` になる。その場合も secret put
-すれば即時復旧する — 再デプロイ不要)。
+すれば即時復旧する — 再デプロイ不要)。あわせて、`git pull` のマージ衝突を解消する
+際は自分のフォークの `vars.GITHUB_CLIENT_ID` ブロックを**残さず削除**(upstream 側を
+採用)すること — vars が残っていると、デプロイのたびに wrangler が「vars がリモートの
+同名 secret を置き換える」旨の確認を求め(非対話デプロイではエラー)、承認すると
+登録した secret が vars で上書きされて移行が無効になる。
 
 ## トラブルシューティング
 
@@ -159,7 +163,11 @@ client_id / client_secret は Workers Secret 側に保存されているため�
 - **Deploy to Cloudflare ボタン**: リポジトリ公開(Phase 2)後に README へ設置予定。
   ボタン対応の前提工事(マイグレーションの deploy 統合・バインディング名参照・
   client_id の secret 化 = デプロイ後の設定が secret put ×2 だけで完結)は済んでいる。
-  残る未検証点はボタンのモノレポ対応(リポジトリルート URL で
-  `apps/server/wrangler.jsonc` が検出され D1 が自動プロビジョニングされるか)で、
-  公開リポジトリでしか検証できないため公開時に実検証する
+  未検証点は 2 つあり、公開リポジトリでしか検証できないため公開時に実検証する:
+  ① ボタンのモノレポ対応(リポジトリルート URL で `apps/server/wrangler.jsonc` が
+  検出され D1 が自動プロビジョニングされるか)。② ボタンのビルドパイプラインが
+  `apps/server` の `deploy` スクリプト(マイグレーション込み)を実行するか —
+  既定の素の `wrangler deploy` に落ちるとマイグレーション未適用のまま公開され、
+  DB を触る全エンドポイントが 500 になる。セットアップページで deploy コマンドの
+  上書き指定が必要になる可能性が高い
 - 認証以外も含む API 仕様は `docs/AUTH_SPEC.md`、暗号仕様は `docs/CRYPTO_SPEC.md` を参照
