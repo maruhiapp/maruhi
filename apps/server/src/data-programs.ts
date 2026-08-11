@@ -789,13 +789,11 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
     const environments = yield* store.listEnvironmentStatements;
     // 削除済み環境もチェーン上に create_environment を持つ(チェーンは削除を
     // 観測しない — §6.2)ため、currentEpochOf は全行で導出可能
-    return environments.map(
-      (environment): EnvironmentSummaryValue => ({
-        environmentId: environment.environmentId,
-        currentEpoch: currentEpochOf(state, environment.environmentId),
-        statement: environment.statement,
-      }),
-    );
+    return environments.map((environment): EnvironmentSummaryValue => ({
+      environmentId: environment.environmentId,
+      currentEpoch: currentEpochOf(state, environment.environmentId),
+      statement: environment.statement,
+    }));
   });
 
 // ---------------------------------------------------------------------------
