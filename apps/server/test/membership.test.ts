@@ -192,7 +192,7 @@ async function replayVectorChain(upTo: number): Promise<readonly string[]> {
   return members;
 }
 
-// この vitest-pool-workers 構成(cloudflareTest プラグイン 0.20.1)にはテスト間の
+// この vitest-pool-workers 構成(cloudflareTest プラグイン 0.21.0)にはテスト間の
 // ストレージ分離がなく、DO SQLite / D1 はファイル内のテスト間で持ち越される。
 // テストごとに明示的に空へ戻し、ベクターユーザーをシードして PAT を取り直す
 beforeEach(async () => {

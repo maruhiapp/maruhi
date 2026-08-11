@@ -20,7 +20,16 @@ export default defineConfig({
           GITHUB_CLIENT_SECRET: "dummy-github-client-secret",
           // D1 マイグレーション(test 側で applyD1Migrations に渡す)。
           // パスは設定ファイル基準(ルートの vitest run でも壊れないよう絶対化)
-          TEST_MIGRATIONS: readDrizzleMigrations(new URL("drizzle/", import.meta.url).pathname),
+          // Miniflare bindings は Record<string, Json>。D1Migration[] は JSON 互換だが
+          // interface に index signature が無いため、Json 代入用に広げて渡す
+          // (vitest-pool-workers 0.21 / miniflare 5 の型厳密化)。
+          TEST_MIGRATIONS: readDrizzleMigrations(
+            new URL("drizzle/", import.meta.url).pathname,
+          ) as Array<{
+            name: string;
+            queries: string[];
+            [key: string]: string | string[];
+          }>,
         },
       },
     }),
