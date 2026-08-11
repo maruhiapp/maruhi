@@ -24,15 +24,17 @@ import {
 import { RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ensureActorMatches } from "./authz.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";
-import { callProjectData, checkStatementCoordinates, toMetaStatementInput } from "./data-http.ts";
+import {
+  callProjectData,
+  checkStatementCoordinates,
+  noContent,
+  toMetaStatementInput,
+} from "./data-http.ts";
 import type { EnvironmentSummaryValue } from "./data-plane.ts";
-
-const noContent = HttpServerResponse.empty({ status: 204 });
 
 // 複合リクエスト(§12-4)がチェーンエントリを運ぶため返しうるエラー群
 // (エラー契約の複合エンドポイントへの移動 — session-12 §6-8)

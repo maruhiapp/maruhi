@@ -27,7 +27,6 @@ import {
   VersionConflictError,
 } from "@maruhi/api-schema";
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -35,6 +34,7 @@ import {
   checkAadCoordinates,
   checkStatementCoordinates,
   checkValueSize,
+  noContent,
   toMetaStatementInput,
   toValueInput,
 } from "./data-http.ts";
@@ -43,8 +43,6 @@ import type {
   EnvironmentPullValue,
   VariableVersionValue,
 } from "./data-plane.ts";
-
-const noContent = HttpServerResponse.empty({ status: 204 });
 
 /**
  * DO の保存行 → ワイヤの DistributedEncryptedPayload(§12-2 / §12-7)。AAD は

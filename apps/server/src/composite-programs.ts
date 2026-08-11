@@ -47,6 +47,7 @@ import {
   ensureMetaStatementSignature,
   ensureNfcName,
   ensureWrapSetAcceptable,
+  requireActiveEnvironment,
 } from "./data-programs.ts";
 import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
@@ -362,11 +363,7 @@ export const rotateEpochCompositeProgram = (
     }
     // 削除済み(tombstone)環境への rotate は 404(§12-4 — §7 の「全環境」は
     // 削除済みを含まない。黙って受理して守るもののないエポックを進めない)
-    const store = yield* DataStore;
-    const environment = yield* store.findEnvironment(environmentId);
-    if (environment === null || environment.deletedAtMs !== null) {
-      return yield* rejectData({ kind: "environment-not-found", environmentId });
-    }
+    yield* requireActiveEnvironment(environmentId);
     yield* ensureCompositeParentHead(chain, input.parentHeadHashHex);
     const { canonicalBytes, applied, appliedState } = yield* verifyCompositeEntry(
       chain,
@@ -382,7 +379,7 @@ export const rotateEpochCompositeProgram = (
       deks: input.deks,
     });
     const writeContext = yield* makeWriteContext({
-      dataStore: store,
+      dataStore: yield* DataStore,
       actor,
       member,
       environmentId,
