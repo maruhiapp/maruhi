@@ -7,15 +7,12 @@
 //   4. op ごとのチェーン role 認可は verifyChain(§6.2)が真実源
 
 import {
-  ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
-  ChainHeadConflictError,
   CompositeRequiredError,
   ForbiddenError,
   maruhiApi,
   ProjectAlreadyInitializedError,
-  ProjectNotFoundError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal } from "@maruhi/core";
 import { RequestAuth } from "@maruhi/core";
@@ -31,39 +28,74 @@ import {
   requiredPermissionForOp,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
+import { dataRejectionError } from "./data-http.ts";
+import type { DataRejection } from "./data-plane.ts";
 import { OrgRepo, principalAuditActor, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 // RPC 境界の outcome → api-schema の型付きエラー / 成功レスポンスへの写像。
-// "project-id-mismatch" は worker が自分で計算した ID を渡す限り起こらない
-// (起きたら実装バグなので defect として落とす)
+// エラークラスの構成は data-http.ts の rejectionErrors 一表に寄せ、ここでは
+// outcome の kind を DataRejection の kind へ揃えるだけにする(チェーン系
+// エラーの写像を二重管理しない)。"project-id-mismatch" は worker が自分で
+// 計算した ID を渡す限り起こらない(起きたら実装バグなので defect として落とす)
 
-type PolicyRejection = Extract<
-  AppendOutcome,
-  { kind: "chain-invalid" | "entry-too-large" | "capacity-exceeded" }
->;
+/** チェーン RPC(init / append / snapshot)の拒否 outcome。 */
+type ChainRejectionOutcome = Exclude<AppendOutcome, { kind: "appended" | "composite-required" }>;
 
-/** init / append に共通する受理拒否(検証失敗・サイズ / 累積上限)の写像。 */
-function policyFailure(
-  outcome: Extract<PolicyRejection, { kind: "chain-invalid" | "entry-too-large" }>,
-): ChainEntryInvalidError | ChainEntryTooLargeError;
-function policyFailure(
-  outcome: PolicyRejection,
-): ChainEntryInvalidError | ChainEntryTooLargeError | ChainCapacityExceededError;
-function policyFailure(outcome: PolicyRejection) {
-  switch (outcome.kind) {
-    case "chain-invalid":
-      return new ChainEntryInvalidError({ seq: outcome.seq, reason: outcome.reason });
-    case "entry-too-large":
-      return new ChainEntryTooLargeError({ limitBytes: outcome.limitBytes });
-    case "capacity-exceeded":
-      return new ChainCapacityExceededError({
-        maxEntries: outcome.maxEntries,
-        maxTotalBytes: outcome.maxTotalBytes,
-      });
-  }
+/** outcome の kind → DataRejection の kind(名前だけの対応表。型で網羅強制)。 */
+interface ChainRejectionKinds {
+  readonly "not-initialized": "not-initialized";
+  readonly "not-member": "not-member";
+  readonly "head-conflict": "chain-head-conflict";
+  readonly "chain-invalid": "chain-entry-invalid";
+  readonly "entry-too-large": "chain-entry-too-large";
+  readonly "capacity-exceeded": "chain-capacity-exceeded";
 }
+
+const chainRejections: {
+  readonly [K in ChainRejectionOutcome["kind"]]: (
+    outcome: Extract<ChainRejectionOutcome, { kind: K }>,
+  ) => Extract<DataRejection, { kind: ChainRejectionKinds[K] }>;
+} = {
+  // §11-2: 未初期化と非メンバーを区別しない(存在秘匿)— 404 への畳み込みは
+  // rejectionErrors(data-http.ts)が担う
+  "not-initialized": () => ({ kind: "not-initialized" }),
+  "not-member": () => ({ kind: "not-member" }),
+  "head-conflict": (outcome) => ({
+    kind: "chain-head-conflict",
+    currentHeadSeq: outcome.currentHeadSeq,
+    currentHeadHashHex: outcome.currentHeadHashHex,
+  }),
+  "chain-invalid": (outcome) => ({
+    kind: "chain-entry-invalid",
+    seq: outcome.seq,
+    reason: outcome.reason,
+  }),
+  "entry-too-large": (outcome) => ({
+    kind: "chain-entry-too-large",
+    limitBytes: outcome.limitBytes,
+  }),
+  "capacity-exceeded": (outcome) => ({
+    kind: "chain-capacity-exceeded",
+    maxEntries: outcome.maxEntries,
+    maxTotalBytes: outcome.maxTotalBytes,
+  }),
+};
+
+/**
+ * チェーン系拒否 → 共有写像表(dataRejectionError)による型付きエラー。
+ * 引数を kind 対応表で確定した Extract 型に固定することで、返り値が outcome の
+ * kind に対応するエラー型のみへ絞られる(宣言外エラーの混入はコンパイルエラー)。
+ */
+const chainRejectionError = <O extends ChainRejectionOutcome>(projectId: string, outcome: O) =>
+  dataRejectionError(
+    chainRejections[outcome.kind](outcome as never) as Extract<
+      DataRejection,
+      { kind: ChainRejectionKinds[O["kind"]] }
+    >,
+    projectId,
+  );
 
 /**
  * §11-3 の冪等修復: DO は初期化済みだが projects 行が欠けている場合、要求者が
@@ -113,32 +145,24 @@ const mapInitOutcome = (
     case "project-id-mismatch":
       return Effect.die(new Error("project id mismatch between worker and DO"));
     default:
-      return Effect.fail(policyFailure(outcome));
+      return Effect.fail(chainRejectionError(projectId, outcome));
   }
 };
 
-function appendRejection(projectId: string, outcome: Exclude<AppendOutcome, { kind: "appended" }>) {
-  // §11-2: 未初期化と非メンバーを区別しない(存在秘匿)
-  if (outcome.kind === "not-initialized" || outcome.kind === "not-member") {
-    return new ProjectNotFoundError({ projectId });
+const mapAppendOutcome = (projectId: string, outcome: AppendOutcome) => {
+  if (outcome.kind === "appended") {
+    return Effect.succeed({
+      projectId,
+      headSeq: outcome.headSeq,
+      headHashHex: outcome.headHashHex,
+    });
   }
   // DO 側の多層防御(通常はハンドラの先行検査が同じ 422 を返す)
   if (outcome.kind === "composite-required") {
-    return new CompositeRequiredError({ op: outcome.op });
+    return Effect.fail(new CompositeRequiredError({ op: outcome.op }));
   }
-  if (outcome.kind === "head-conflict") {
-    return new ChainHeadConflictError({
-      currentHeadSeq: outcome.currentHeadSeq,
-      currentHeadHashHex: outcome.currentHeadHashHex,
-    });
-  }
-  return policyFailure(outcome);
-}
-
-const mapAppendOutcome = (projectId: string, outcome: AppendOutcome) =>
-  outcome.kind === "appended"
-    ? Effect.succeed({ projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex })
-    : Effect.fail(appendRejection(projectId, outcome));
+  return Effect.fail(chainRejectionError(projectId, outcome));
+};
 
 /**
  * DO へ渡す前の worker 側先行検査: サイズ超過エントリのハッシュ計算・DO 転送を
@@ -195,8 +219,8 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           projectStub(env, params.projectId).snapshotFor(principal.userId),
         );
         if (outcome.kind !== "snapshot") {
-          // §11-2: 未初期化と非メンバーを区別しない(存在秘匿)
-          return yield* Effect.fail(new ProjectNotFoundError({ projectId: params.projectId }));
+          // §11-2: 未初期化と非メンバーを区別しない(存在秘匿。畳み込みは共有写像表)
+          return yield* Effect.fail(chainRejectionError(params.projectId, outcome));
         }
         return {
           projectId: params.projectId,

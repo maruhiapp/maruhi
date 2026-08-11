@@ -4,28 +4,14 @@
 // 意味論的判定に優先)→ 申告 AAD / ステートメントの座標一致(422。リクエスト
 // 内容のみに依存する自己整合検査で、存在情報を運ばない)→ トークンスコープ →
 // DO(メンバーシップ / role / CAS / 署名 / 数量)。共通経路は data-http.ts の
-// callProjectData。
+// callProjectData。DO 拒否として返しうるエラーの集合は各エンドポイントの契約
+// 宣言(api-schema)から導出される(手書きの列挙は無い)。
 //
 // 作成は version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱(§12-5)。
 // variableId・表示名はステートメントが運ぶため、AAD 座標検査の期待 variableId は
 // ステートメントの variableId を使う(URL に variableId を持たない唯一の値経路)。
 
-import {
-  DataLimitExceededError,
-  EnvironmentNotFoundError,
-  EpochConflictError,
-  ForbiddenError,
-  maruhiApi,
-  MetaStatementRejectedError,
-  MetaVersionConflictError,
-  NameNotNfcError,
-  PayloadMismatchError,
-  ProjectNotFoundError,
-  ValueSignatureRejectedError,
-  VariableConflictError,
-  VariableNotFoundError,
-  VersionConflictError,
-} from "@maruhi/api-schema";
+import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -82,25 +68,9 @@ function toWireVariable(
   };
 }
 
-const VERSION_ERRORS = [
-  ProjectNotFoundError,
-  ForbiddenError,
-  EnvironmentNotFoundError,
-  VersionConflictError,
-  EpochConflictError,
-  ValueSignatureRejectedError,
-  DataLimitExceededError,
-] as const;
-
-const META_ERRORS = [
-  MetaStatementRejectedError,
-  MetaVersionConflictError,
-  PayloadMismatchError,
-] as const;
-
 export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handlers) =>
   handlers
-    .handle("create", ({ params, payload }) =>
+    .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* checkValueSize(payload.value);
         yield* checkStatementCoordinates(payload.statement, {
@@ -113,9 +83,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           variableId: payload.statement.variableId,
         });
         return yield* callProjectData<VariableVersionValue>()({
+          endpoint,
           projectId: params.projectId,
           permission: "write",
-          allowed: [...VERSION_ERRORS, ...META_ERRORS, NameNotNfcError, VariableConflictError],
           invoke: (stub, actor) =>
             stub.createVariable(actor, params.environmentId, {
               variableId: payload.statement.variableId,
@@ -125,7 +95,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }),
     )
-    .handle("push", ({ params, payload }) =>
+    .handle("push", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* checkValueSize(payload.value);
         yield* checkAadCoordinates(payload.value, {
@@ -134,9 +104,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           variableId: params.variableId,
         });
         return yield* callProjectData<VariableVersionValue>()({
+          endpoint,
           projectId: params.projectId,
           permission: "write",
-          allowed: [...VERSION_ERRORS, PayloadMismatchError, VariableNotFoundError],
           invoke: (stub, actor) =>
             stub.pushVersion(
               actor,
@@ -147,25 +117,16 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }),
     )
-    .handle("rename", ({ params, payload }) =>
+    .handle("rename", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
           variableId: params.variableId,
         });
         return yield* callProjectData<void>()({
+          endpoint,
           projectId: params.projectId,
           permission: "write",
-          allowed: [
-            ProjectNotFoundError,
-            ForbiddenError,
-            EnvironmentNotFoundError,
-            VariableNotFoundError,
-            VariableConflictError,
-            ...META_ERRORS,
-            NameNotNfcError,
-            DataLimitExceededError,
-          ],
           invoke: (stub, actor) =>
             stub.renameVariable(
               actor,
@@ -176,22 +137,16 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }).pipe(Effect.as(noContent)),
     )
-    .handle("remove", ({ params, payload }) =>
+    .handle("remove", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
           variableId: params.variableId,
         });
         return yield* callProjectData<void>()({
+          endpoint,
           projectId: params.projectId,
           permission: "write",
-          allowed: [
-            ProjectNotFoundError,
-            ForbiddenError,
-            EnvironmentNotFoundError,
-            VariableNotFoundError,
-            ...META_ERRORS,
-          ],
           invoke: (stub, actor) =>
             stub.deleteVariable(
               actor,
@@ -202,11 +157,11 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }).pipe(Effect.as(noContent)),
     )
-    .handle("pull", ({ params }) =>
+    .handle("pull", ({ params, endpoint }) =>
       callProjectData<EnvironmentPullValue>()({
+        endpoint,
         projectId: params.projectId,
         permission: "read",
-        allowed: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
         invoke: (stub, actor) => stub.pullEnvironment(actor, params.environmentId),
       }).pipe(
         Effect.map((pulled) => ({
@@ -223,11 +178,11 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     )
     // メタデータのみモード(§12-7): 認可は pull と同一(read × reader)。
     // 値・DEK を返さず、var.read は記録されない(AUDIT_SPEC §3.3)
-    .handle("pullMetadata", ({ params }) =>
+    .handle("pullMetadata", ({ params, endpoint }) =>
       callProjectData<EnvironmentMetadataPullValue>()({
+        endpoint,
         projectId: params.projectId,
         permission: "read",
-        allowed: [ProjectNotFoundError, ForbiddenError, EnvironmentNotFoundError],
         invoke: (stub, actor) => stub.pullEnvironmentMetadata(actor, params.environmentId),
       }),
     ),

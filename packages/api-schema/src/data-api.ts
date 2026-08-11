@@ -185,6 +185,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         MetaStatementRejectedError,
         NameNotNfcError,
         DekWrapRejectedError,
+        // ラップ集合検査(§12-6 checkWrapSets)は既存 (エポック, 受信者) との
+        // 重複を 409 で拒否しうる。確立エポック(create = 1)は現行チェーン規則
+        // (duplicate-environment)の下では既存ラップを持ちえないが、規則の変化で
+        // 409 が契約外(500)へ落ちないよう契約として宣言する
+        DekWrapExistsError,
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
@@ -211,6 +216,9 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
         DekWrapRejectedError,
+        // 確立エポック(rotate = new_epoch)への既存ラップは現行チェーン規則
+        // (エポック単調性)の下では存在しえないが、create と同じ理由で宣言する
+        DekWrapExistsError,
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
@@ -247,6 +255,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
       // CRYPTO_SPEC §4.2)を要する。DELETE + body は deks.remove の先例に倣う
       payload: Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema }),
       success: HttpApiSchema.NoContent,
+      // DataLimitExceeded は宣言しない: 削除経路の数量検査は metaVersion 上限のみ
+      // で、削除ステートメント(ワイヤ Schema が status = deleted を固定)は
+      // その対象外(§12-8 — 上限で削除を遮断すると上限到達リソースが恒久的に
+      // 削除不能になる。data-programs.ts の metaVersionsExceeded とその固定
+      // テストが根拠)。variables.remove も同じ
       error: [
         ProjectNotFoundError,
         ForbiddenError,
@@ -352,6 +365,8 @@ export const variablesGroup = HttpApiGroup.make("variables")
         // 削除も署名付きステートメント(status deleted。name は直前 active 名)
         payload: Schema.Struct({ statement: DeleteVariableMetaStatementSchema }),
         success: HttpApiSchema.NoContent,
+        // DataLimitExceeded を宣言しない理由は environments.remove と同じ
+        // (deleted は metaVersion 上限の対象外 — §12-8)
         error: [
           ProjectNotFoundError,
           ForbiddenError,

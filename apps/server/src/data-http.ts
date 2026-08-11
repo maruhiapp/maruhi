@@ -32,8 +32,9 @@ import {
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
 import { RequestAuth } from "@maruhi/core";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
+import type { HttpApiEndpoint } from "effect/unstable/httpapi";
 
 import { ensureTokenScopeForProject } from "./authz.ts";
 import type { ProjectChainDO } from "./chain-do.ts";
@@ -182,13 +183,11 @@ type DataApiError =
   | DekWrapNotFoundError
   | DataLimitExceededError;
 
-// kind ごとの小さな写像(§11-2: 未初期化と非メンバーは区別せず 404 に畳む)
-const rejectionErrors: {
-  readonly [K in DataRejection["kind"]]: (
-    rejection: Extract<DataRejection, { kind: K }>,
-    projectId: string,
-  ) => DataApiError;
-} = {
+// kind ごとの小さな写像(§11-2: 未初期化と非メンバーは区別せず 404 に畳む)。
+// satisfies で網羅性を強制しつつ kind ごとの戻り値型を保つ(dataRejectionError の
+// 呼び出し側 — handlers-membership.ts のチェーン系写像 — が精密なエラー union を
+// 受け取れるように)
+const rejectionErrors = {
   "not-initialized": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "not-member": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "insufficient-role": () => new ForbiddenError({ reason: "insufficient-role" }),
@@ -237,36 +236,72 @@ const rejectionErrors: {
     }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
+} satisfies {
+  readonly [K in DataRejection["kind"]]: (
+    rejection: Extract<DataRejection, { kind: K }>,
+    projectId: string,
+  ) => DataApiError;
 };
 
-function dataRejectionError(rejection: DataRejection, projectId: string): DataApiError {
-  return rejectionErrors[rejection.kind](rejection as never, projectId);
+/**
+ * DataRejection → api-schema の型付きエラー(kind ごとの写像の唯一の置き場所)。
+ * チェーン API ハンドラ(handlers-membership.ts)も RPC outcome の kind を
+ * DataRejection の kind に揃えたうえでここを通す(写像の二重管理をしない)。
+ */
+export function dataRejectionError<K extends DataRejection["kind"]>(
+  rejection: Extract<DataRejection, { kind: K }>,
+  projectId: string,
+): ReturnType<(typeof rejectionErrors)[K]> {
+  return rejectionErrors[rejection.kind](rejection as never, projectId) as ReturnType<
+    (typeof rejectionErrors)[K]
+  >;
 }
 
 /**
- * DO の outcome をハンドラの成功値 / 型付きエラーへ写す。`allowed` はその
- * エンドポイントが契約(api-schema のエラー宣言)上返しうるエラークラスの列で、
- * 契約外の拒否はプログラム側の不変条件違反として defect に落とす(instanceof
- * 判定 — oxlint の _tag 直接アクセス禁止に従う)。
+ * エンドポイント契約(HttpApiEndpoint の error 宣言)のうち、DO 拒否の写像
+ * (rejectionErrors)として現れうるエラー型。契約宣言に含まれる worker 先行検査
+ * 専用のエラー(ValueTooLarge 等)は DataRejection から生成されないため除く。
  */
-function unwrapDataOutcome<
-  T,
-  const C extends ReadonlyArray<abstract new (...args: never[]) => DataApiError>,
->(
+type ContractDataError<Endpoint extends HttpApiEndpoint.Top> = Extract<
+  HttpApiEndpoint.Error<Endpoint>["Type"],
+  DataApiError
+>;
+
+// endpoint.error(宣言 Schema の集合。HttpApiEndpoint の公開プロパティ)から
+// 構成した「エラー値が契約に含まれるか」の判定列。エンドポイントはビルド時に
+// 固定される値なのでエンドポイントごとに 1 回だけ構成すればよい
+const contractFilters = new WeakMap<object, ReadonlyArray<(error: DataApiError) => boolean>>();
+
+function contractFilterOf(
+  endpoint: HttpApiEndpoint.Top,
+): ReadonlyArray<(error: DataApiError) => boolean> {
+  let filters = contractFilters.get(endpoint);
+  if (filters === undefined) {
+    filters = Array.from(endpoint.error, (schema) => Schema.is(schema));
+    contractFilters.set(endpoint, filters);
+  }
+  return filters;
+}
+
+/**
+ * DO の outcome をハンドラの成功値 / 型付きエラーへ写す。返してよいエラーの
+ * 集合はエンドポイントの契約宣言(api-schema の error: [...])そのものから
+ * 実行時(endpoint.error の Schema 判定)・型(Error 型引数)の両面で導出する
+ * ため、宣言と写像がズレることはない。契約外の拒否はプログラム側の不変条件
+ * 違反として defect(500)に落とす。テストから直接検証できるよう公開する。
+ */
+export function unwrapDataOutcome<T, Endpoint extends HttpApiEndpoint.Top>(
   outcome: DataOutcome<T>,
   projectId: string,
-  allowed: C,
-): Effect.Effect<T, InstanceType<C[number]>> {
+  endpoint: Endpoint,
+): Effect.Effect<T, ContractDataError<Endpoint>> {
   if (outcome.kind === "ok") {
     return Effect.succeed(outcome.value);
   }
   const error = dataRejectionError(outcome.rejection, projectId);
-  for (const errorClass of allowed) {
-    if (error instanceof errorClass) {
-      return Effect.fail(error as InstanceType<C[number]>);
-    }
-  }
-  return Effect.die(error);
+  return contractFilterOf(endpoint).some((allows) => allows(error))
+    ? Effect.fail(error as ContractDataError<Endpoint>)
+    : Effect.die(error);
 }
 
 /**
@@ -274,15 +309,17 @@ function unwrapDataOutcome<
  * トークンスコープ(スコープ外 404 / 水準不足 403)→ DO RPC → outcome の写像。
  * ハンドラ固有の先行検査(値サイズ・AAD 座標)は呼び出し側がこの前に行う。
  *
- * カリー形なのは「T(RPC の値型)は明示、C(契約上のエラークラス列)は推論」を
- * 両立させるため(TS は型引数の部分適用を許さない)。
+ * `endpoint` にはハンドラ引数の endpoint(処理中のエンドポイントそのもの)を
+ * 渡す。契約上返しうるエラーはそこから導出されるため、手書きの列挙は無い。
+ * カリー形なのは「T(RPC の値型)は明示、Endpoint は推論」を両立させるため
+ * (TS は型引数の部分適用を許さない)。
  */
 export const callProjectData =
   <T>() =>
-  <const C extends ReadonlyArray<abstract new (...args: never[]) => DataApiError>>(options: {
+  <Endpoint extends HttpApiEndpoint.Top>(options: {
+    readonly endpoint: Endpoint;
     readonly projectId: string;
     readonly permission: TokenPermission;
-    readonly allowed: C;
     readonly invoke: (
       stub: DurableObjectStub<ProjectChainDO>,
       actor: DataActor,
@@ -295,5 +332,5 @@ export const callProjectData =
       const outcome = yield* rpcCall<DataOutcome<T>>(() =>
         options.invoke(projectStub(env, options.projectId), dataActorOf(principal)),
       );
-      return yield* unwrapDataOutcome(outcome, options.projectId, options.allowed);
+      return yield* unwrapDataOutcome(outcome, options.projectId, options.endpoint);
     });
