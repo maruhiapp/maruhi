@@ -166,9 +166,13 @@ export interface ProjectDoMigration {
 // 順序付きマイグレーションステップ。**末尾への追記のみ可**(適用済みステップの
 // 編集・並べ替え・削除は、外部にデプロイ済みの DO と不整合になるため禁止)。
 // 各ステップは「前ステップまで適用済みの DB」を前提に書いてよい(ALTER TABLE 等)。
-// 適用は 1 ステップずつ version を進めるため、途中で失敗しても次回コンストラクタ
-// 実行時に失敗したステップから再開される(ステップ内は再実行安全に書くこと —
-// step 1 は IF NOT EXISTS でこれを満たす)。
+// 各ステップは「本体 + version 進め」を 1 トランザクション(transactionSync)で
+// 適用するため、途中で例外が起きてもステップ全体がロールバックされ、次回
+// コンストラクタ実行時に失敗したステップの先頭から再実行される(部分適用の
+// DDL は残らないので、ステップ自体を冪等に書く必要はない)。
+// 例外: 本機構導入(step 1)以前にデプロイされた DO は「テーブルあり・version
+// 行なし」で version 0 と読まれるため、step 1 に限り IF NOT EXISTS で既存
+// テーブルと共存できる形を維持すること。
 export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   {
     tables: [
@@ -214,29 +218,33 @@ export function readProjectDoSchemaVersion(sql: SqlStorage): number {
 }
 
 /**
- * Apply the not-yet-applied migration steps in order, advancing the stored
- * version after each step. Already-applied steps are skipped, so calling this
- * on an up-to-date database is a no-op.
+ * Apply the not-yet-applied migration steps in order. Each step and its
+ * version bump run in one synchronous transaction, so a failing step rolls
+ * back entirely and is retried from its start on the next call. Applied steps
+ * are skipped, so calling this on an up-to-date database is a no-op.
  */
 export function applyProjectDoMigrations(
-  sql: SqlStorage,
+  storage: DurableObjectStorage,
   migrations: readonly ProjectDoMigration[],
 ): void {
+  const sql = storage.sql;
   const current = readProjectDoSchemaVersion(sql);
   for (const [index, migration] of migrations.entries()) {
     if (index < current) {
       continue;
     }
-    migration.apply(sql);
-    sql.exec(
-      `INSERT INTO schema_meta (id, version) VALUES (1, ?)
-       ON CONFLICT (id) DO UPDATE SET version = excluded.version`,
-      index + 1,
-    );
+    storage.transactionSync(() => {
+      migration.apply(sql);
+      sql.exec(
+        `INSERT INTO schema_meta (id, version) VALUES (1, ?)
+         ON CONFLICT (id) DO UPDATE SET version = excluded.version`,
+        index + 1,
+      );
+    });
   }
 }
 
 /** DO コンストラクタから呼ぶ(冪等)。未適用ステップだけを順に適用する。 */
-export function ensureProjectDoTables(sql: SqlStorage): void {
-  applyProjectDoMigrations(sql, PROJECT_DO_MIGRATIONS);
+export function ensureProjectDoTables(storage: DurableObjectStorage): void {
+  applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
 }

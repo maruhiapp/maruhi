@@ -364,7 +364,7 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ensureProjectDoTables(ctx.storage.sql);
+    ensureProjectDoTables(ctx.storage);
     this.#runtime = ManagedRuntime.make(
       Layer.mergeAll(
         chainStoreLayer(ctx.storage.sql),

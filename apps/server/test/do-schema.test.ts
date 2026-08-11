@@ -1,7 +1,8 @@
 // プロジェクト DO のスキーママイグレーション機構(src/do-schema.ts)のテスト。
 //
 // workerd 実環境の SqlStorage で検証する: (a) 空 DB への全ステップ適用、
-// (b) 途中版 DB への残ステップのみの適用、(c) 適用済み DB への再適用 no-op。
+// (b) 途中版 DB への残ステップのみの適用、(c) 途中失敗ステップのロールバックと
+// 再実行、(d) 適用済み DB への再適用 no-op。
 // 実 DO(ProjectChainDO)のコンストラクタは runInDurableObject のインスタンス化
 // 時点でマイグレーションを適用してしまうため、「空 DB」「途中版 DB」は全テーブルの
 // DROP + schema_meta の初期化で再現する。このファイルは専用の DO 名を使い、他の
@@ -19,10 +20,10 @@ import {
   readProjectDoSchemaVersion,
 } from "../src/do-schema.ts";
 
-/** このファイル専用 DO の SqlStorage 上で body を実行する。 */
-async function withSql<T>(body: (sql: SqlStorage) => T): Promise<T> {
+/** このファイル専用 DO の storage 上で body を実行する。 */
+async function withStorage<T>(body: (storage: DurableObjectStorage) => T): Promise<T> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("do-schema-migrations-test"));
-  return await runInDurableObject(stub, (_instance, state) => body(state.storage.sql));
+  return await runInDurableObject(stub, (_instance, state) => body(state.storage));
 }
 
 /** 全ユーザーテーブル(_cf_ 内部テーブル以外)を DROP し、マイグレーション未適用の空 DB に戻す。 */
@@ -51,11 +52,12 @@ function userTableNames(sql: SqlStorage): Set<string> {
 
 describe("project DO schema migrations", () => {
   it("空 DB への適用で全ステップが走り最新版になる", async () => {
-    await withSql((sql) => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
       dropAllUserTables(sql);
       expect(readProjectDoSchemaVersion(sql)).toBe(0);
 
-      ensureProjectDoTables(sql);
+      ensureProjectDoTables(storage);
 
       expect(readProjectDoSchemaVersion(sql)).toBe(PROJECT_DO_MIGRATIONS.length);
       const tables = userTableNames(sql);
@@ -69,7 +71,8 @@ describe("project DO schema migrations", () => {
   });
 
   it("途中版 DB への適用は未適用ステップだけを順に走らせる", async () => {
-    await withSql((sql) => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
       dropAllUserTables(sql);
       const applied: string[] = [];
       const stepOne: ProjectDoMigration = {
@@ -88,33 +91,70 @@ describe("project DO schema migrations", () => {
       };
 
       // step 1 だけ適用された「旧版 DB」を作る
-      applyProjectDoMigrations(sql, [stepOne]);
+      applyProjectDoMigrations(storage, [stepOne]);
       expect(readProjectDoSchemaVersion(sql)).toBe(1);
       expect(applied).toEqual(["one"]);
 
       // ステップが増えた新コードでの起動に相当。step 1 は再実行されない
       // (stepOne の CREATE TABLE は IF NOT EXISTS なしのため、再実行されれば throw する)
-      applyProjectDoMigrations(sql, [stepOne, stepTwo]);
+      applyProjectDoMigrations(storage, [stepOne, stepTwo]);
       expect(readProjectDoSchemaVersion(sql)).toBe(2);
       expect(applied).toEqual(["one", "two"]);
       expect(userTableNames(sql)).toEqual(new Set(["schema_meta", "mig_test_a", "mig_test_b"]));
 
       // 後片付け: 実スキーマへ戻す(このファイル専用 DO だが、状態を残さない)
       dropAllUserTables(sql);
-      ensureProjectDoTables(sql);
+      ensureProjectDoTables(storage);
+    });
+  });
+
+  it("途中で失敗したステップは丸ごとロールバックされ、再実行で完遂できる", async () => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
+      dropAllUserTables(sql);
+      let failNext = true;
+      const flaky: ProjectDoMigration = {
+        tables: ["mig_test_c", "mig_test_d"],
+        apply(s) {
+          s.exec(`CREATE TABLE mig_test_c (id INTEGER PRIMARY KEY)`);
+          if (failNext) {
+            throw new Error("simulated mid-step failure");
+          }
+          s.exec(`CREATE TABLE mig_test_d (id INTEGER PRIMARY KEY)`);
+        },
+      };
+
+      // 途中失敗: version は進まず、ステップ前半の DDL(mig_test_c)も残らない
+      expect(() => applyProjectDoMigrations(storage, [flaky])).toThrow(
+        "simulated mid-step failure",
+      );
+      expect(readProjectDoSchemaVersion(sql)).toBe(0);
+      expect(userTableNames(sql)).toEqual(new Set(["schema_meta"]));
+
+      // 次回起動に相当する再実行はステップ先頭から走り、完遂する
+      // (mig_test_c の CREATE TABLE は IF NOT EXISTS なし — 部分適用が残っていれば throw する)
+      failNext = false;
+      applyProjectDoMigrations(storage, [flaky]);
+      expect(readProjectDoSchemaVersion(sql)).toBe(1);
+      expect(userTableNames(sql)).toEqual(new Set(["schema_meta", "mig_test_c", "mig_test_d"]));
+
+      // 後片付け: 実スキーマへ戻す
+      dropAllUserTables(sql);
+      ensureProjectDoTables(storage);
     });
   });
 
   it("適用済み DB への再適用は no-op", async () => {
-    await withSql((sql) => {
+    await withStorage((storage) => {
+      const sql = storage.sql;
       dropAllUserTables(sql);
-      ensureProjectDoTables(sql);
+      ensureProjectDoTables(storage);
       const before = readProjectDoSchemaVersion(sql);
       sql.exec(
         `INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, '{}', 'ab', 2)`,
       );
 
-      ensureProjectDoTables(sql);
+      ensureProjectDoTables(storage);
 
       // version もデータも変わらない(ステップは一切走らない)
       expect(readProjectDoSchemaVersion(sql)).toBe(before);
