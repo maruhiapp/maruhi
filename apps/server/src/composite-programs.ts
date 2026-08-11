@@ -33,16 +33,11 @@ import type { StateCache } from "./chain-store.ts";
 import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
 import type { DataActor, DekWrapInput, MetaStatementInput } from "./data-plane.ts";
 import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
-import {
-  dekRegisteredEvent,
-  ensureEnvironmentQuota,
-  ensureMetaStatementSignature,
-  ensureNfcName,
-  ensureWrapSetAcceptable,
-  requireActiveEnvironment,
-} from "./data-programs.ts";
 import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
+import { dekRegisteredEvent, ensureWrapSetAcceptable } from "./dek-wraps.ts";
+import { ensureEnvironmentQuota, requireActiveEnvironment } from "./quotas.ts";
+import { ensureMetaStatementSignature, ensureNfcName } from "./verify-meta.ts";
 
 /** 複合受理の結果(RPC 境界を渡る)。 */
 export interface EnvironmentChainResultValue {

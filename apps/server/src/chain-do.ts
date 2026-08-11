@@ -53,22 +53,26 @@ import type {
   VariableVersionValue,
 } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
-import {
-  createVariableProgram,
-  deleteDekWrapsProgram,
-  deleteEnvironmentProgram,
-  deleteVariableProgram,
-  listEnvironmentsProgram,
-  listMyDekWrapsProgram,
-  pullEnvironmentMetadataProgram,
-  pullEnvironmentProgram,
-  pushVersionProgram,
-  registerDekWrapsProgram,
-  renameEnvironmentProgram,
-  renameVariableProgram,
-} from "./data-programs.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
+import {
+  deleteDekWrapsProgram,
+  listMyDekWrapsProgram,
+  registerDekWrapsProgram,
+} from "./programs-dek.ts";
+import {
+  deleteEnvironmentProgram,
+  listEnvironmentsProgram,
+  pullEnvironmentMetadataProgram,
+  pullEnvironmentProgram,
+  renameEnvironmentProgram,
+} from "./programs-environment.ts";
+import {
+  createVariableProgram,
+  deleteVariableProgram,
+  pushVersionProgram,
+  renameVariableProgram,
+} from "./programs-variable.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;

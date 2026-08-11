@@ -35,7 +35,10 @@ import { resetProjectDo } from "./project-do.ts";
 
 export const OWNER = "user-owner-0001";
 export const MEMBER = "user-member-0002";
-export const READER = "user-admin-0003";
+// reader ロールのメンバー。署名鍵は 3 本目のベクター鍵(user-admin-0003)を
+// 借用する(data-crypto.ts の VECTOR_KEY_ALIASES — 鍵とユーザー ID の束縛は
+// チェーンの add_member が行うため、鍵集合の名義とは独立でよい)
+export const READER = "user-reader-0003";
 export const STRANGER = "user-stranger-0009";
 const DATA_ORG = "org-data-0001";
 
