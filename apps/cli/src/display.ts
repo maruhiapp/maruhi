@@ -87,6 +87,9 @@ export function showValues(
     // \u30B3\u30DE\u30F3\u30C9\u5165\u53E3(\u5FA9\u53F7\u524D)\u306E\u691C\u67FB\u304C\u672C\u7DDA\u3002\u5FA9\u53F7\u5F8C\u306E\u3053\u306E\u691C\u67FB\u306F\u3001showValues \u3092
     // \u76F4\u63A5\u547C\u3076\u5C06\u6765\u306E\u7D4C\u8DEF\u304C\u5165\u53E3\u691C\u67FB\u3092\u6B20\u3044\u3066\u3082\u8868\u793A\u306B\u81F3\u3089\u305B\u306A\u3044\u9632\u885B\u7DDA
     yield* ensureValueDisplayAllowed(io.agentProfile());
+    // \u5168\u5024\u306E\u30C7\u30B3\u30FC\u30C9\u3092\u51FA\u529B\u3088\u308A\u524D\u306B\u5B8C\u4E86\u3055\u305B\u308B(all-or-nothing)\u30021 \u5024\u3067\u3082\u4E0D\u6B63
+    // UTF-8 \u306A\u3089\u4F55\u3082\u8868\u793A\u305B\u305A\u5931\u6557\u3057\u3001\u90E8\u5206\u51FA\u529B(\u524D\u534A\u306E\u5024\u3060\u3051\u753B\u9762\u306B\u6B8B\u308B)\u3092\u4F5C\u3089\u306A\u3044
+    const lines: string[] = [];
     for (const variable of variables) {
       const text = decodeValueText(variable.value);
       if (text === null) {
@@ -96,7 +99,10 @@ export function showValues(
           ),
         );
       }
-      yield* io.log(`${displayText(variable.name)}=${displayValue(text)}`);
+      lines.push(`${displayText(variable.name)}=${displayValue(text)}`);
+    }
+    for (const line of lines) {
+      yield* io.log(line);
     }
   });
 }
