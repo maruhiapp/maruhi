@@ -6,6 +6,7 @@
 
 import { hostname } from "node:os";
 
+import { isEnvironmentId, isProjectId } from "@maruhi/core";
 import { Effect, Layer } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { cli, define } from "gunshi";
@@ -51,9 +52,8 @@ export type CliServices =
 
 const CLI_VERSION = "0.0.0";
 
-// AUTH_SPEC §12-1 の受理ポリシー形式(クライアント側の早期検証)
-const RESOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
+// ID の形式検証(AUTH_SPEC §12-1 のクライアント側早期検証)は @maruhi/core の
+// isProjectId / isEnvironmentId を使う(パターンの重複定義を持たない)
 
 interface CommonFlags {
   readonly server?: string | undefined;
@@ -73,7 +73,7 @@ function resolveProjectId(
       ),
     );
   }
-  if (!PROJECT_ID_PATTERN.test(value)) {
+  if (!isProjectId(value)) {
     return Effect.fail(cliError(`プロジェクト ID の形式が不正です: ${value}`));
   }
   return Effect.succeed(value);
@@ -91,7 +91,7 @@ function resolveEnvironmentId(
       ),
     );
   }
-  if (!RESOURCE_ID_PATTERN.test(value)) {
+  if (!isEnvironmentId(value)) {
     return Effect.fail(cliError(`環境 ID の形式が不正です: ${value}`));
   }
   return Effect.succeed(value);
@@ -469,9 +469,8 @@ function envCommand(execute: Execute) {
             return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(create)`));
           }
           const environmentId = ctx.values["environment-id"];
-          // positional 未指定は undefined。RegExp.test は "undefined" に
-          // 文字列化してパターンに通ってしまうため、型で明示的に弾く
-          if (environmentId === undefined || !RESOURCE_ID_PATTERN.test(environmentId)) {
+          // positional 未指定(undefined)は型で明示的に弾く
+          if (environmentId === undefined || !isEnvironmentId(environmentId)) {
             return yield* Effect.fail(
               cliError(
                 `環境 ID を指定してください(例: maruhi env create dev)。指定値: ${String(environmentId)}`,
@@ -655,9 +654,17 @@ function configCommand(execute: Execute) {
               return yield* Effect.fail(cliError("設定する値を指定してください"));
             }
             // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
-            // ファイルなので破棄してよい — CLI 内から復旧不能にしない)
+            // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
+            // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す
             const config = yield* store.load.pipe(
-              Effect.catch(() => Effect.succeed<CliConfig>({})),
+              Effect.catch((error) =>
+                Effect.gen(function* () {
+                  yield* io.logError(
+                    `警告: ${toCliError(error).message} — 既存の設定を破棄し、このキーのみで作り直します`,
+                  );
+                  return {} satisfies CliConfig;
+                }),
+              ),
             );
             yield* store.save({ ...config, [key]: value });
             yield* io.log(`${key} を設定しました`);

@@ -62,9 +62,14 @@ function postForm(
       if (typeof parsed === "object" && parsed !== null) {
         return parsed as Record<string, unknown>;
       }
-      throw new Error(String(response.status));
+      throw new Error(`HTTP ${response.status}`);
     },
-    catch: () => cliError("GitHub への接続に失敗しました(ネットワーク・URL を確認してください)"),
+    catch: (error) =>
+      cliError(
+        `GitHub への接続に失敗しました(ネットワーク・URL を確認してください): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
   });
 }
 
