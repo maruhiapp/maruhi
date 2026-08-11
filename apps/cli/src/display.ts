@@ -27,7 +27,7 @@ export function displayText(value: string): string {
 const VALUE_CONTROL_CHARS = /[^\P{Cc}\t\n]/gu;
 
 /** Neutralizes injection-capable control chars in a secret value, keeping \t and \n. */
-export function displayValue(value: string): string {
+function displayValue(value: string): string {
   return value.replace(VALUE_CONTROL_CHARS, "\uFFFD");
 }
 

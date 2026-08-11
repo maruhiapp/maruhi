@@ -63,7 +63,7 @@ export function resolveProjectId(
   return Effect.succeed(value);
 }
 
-export function resolveEnvironmentId(
+function resolveEnvironmentId(
   flag: string | undefined,
   config: CliConfig,
 ): Effect.Effect<string, CliError> {
