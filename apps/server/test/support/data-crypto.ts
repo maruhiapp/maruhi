@@ -5,7 +5,7 @@
 // DEK 生成 → HPKE ラップ → AES-GCM 暗号化 → クライアント側復号までを実行する。
 // フェイクの暗号文を使うのは「サーバーが中身を検証できない」ことを利用する
 // 受理ポリシー系テストのみ(各テストに明記)。
-// チェーン組立・ワイヤ値の共通コアは packages/crypto/test/support/fixture.ts
+// チェーン組立・ワイヤ値の共通コアは @maruhi/crypto/test-support
 // (cli テスト支援と共有 — session-11 §5 裁定)。
 
 import type {
@@ -36,25 +36,18 @@ import {
   verifyDekWrapSignature,
   wrapDek,
 } from "@maruhi/crypto";
-
-import { vectorKeys } from "../../../../packages/crypto/test/checks/chain-vector.ts";
-import type {
-  BuiltChain,
-  WireEncryptedPayload,
-} from "../../../../packages/crypto/test/support/fixture.ts";
+import type { BuiltChain, WireEncryptedPayload } from "@maruhi/crypto/test-support";
 import {
   BASE_TIME_MS,
   buildChainWith,
   hexBytes,
   unwrapResult,
   valueContextOf,
-} from "../../../../packages/crypto/test/support/fixture.ts";
+  vectorKeys,
+} from "@maruhi/crypto/test-support";
 
 export type { BuiltChain, WireEncryptedPayload };
-export {
-  hexBytes,
-  valueSignedBytesHashOf,
-} from "../../../../packages/crypto/test/support/fixture.ts";
+export { hexBytes, valueSignedBytesHashOf } from "@maruhi/crypto/test-support";
 
 /**
  * ベクター固定鍵集合に無いユーザー ID の鍵借用。データフィクスチャの reader

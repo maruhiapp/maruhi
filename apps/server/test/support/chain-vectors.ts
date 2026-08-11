@@ -1,16 +1,15 @@
 // packages/crypto/test-vectors/chain-entries.json のサーバーテスト向けビュー。
-// ベクター JSON → 型付きエントリの変換は packages/crypto/test/checks/chain-vector.ts
-// の実装(テストベクターの正規変換)を再利用し、ここでは重複させない。
+// ベクター JSON → 型付きエントリの変換は @maruhi/crypto/test-support の実装
+// (テストベクターの正規変換)を再利用し、ここでは重複させない。
 // crypto の型付きエントリ(camelCase)は api-schema のワイヤ形式と構造的に同一。
 
 import type { ChainEntry } from "@maruhi/crypto";
-
 import {
   toTypedEntry,
   vectorEntries,
-  vectorNegatives,
   type VectorEntry,
-} from "../../../../packages/crypto/test/checks/chain-vector.ts";
+  vectorNegatives,
+} from "@maruhi/crypto/test-support";
 
 export { vectorEntries };
 export type { VectorEntry };
