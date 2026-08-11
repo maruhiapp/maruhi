@@ -20,21 +20,18 @@
 // - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
 //   AuditStore)の背後に隔離する。DDL は do-schema.ts(コンストラクタで適用)
 
-import type { ChainInvalidError } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
 import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
-import { AuditStore, auditStoreLayer, chainMirrorEvent } from "./audit-store.ts";
-import type { StateCache, StoredChain } from "./chain-store.ts";
+import { AuditStore, auditStoreLayer } from "./audit-store.ts";
 import {
-  canonicalBytesOf,
-  ChainStore,
-  chainStoreLayer,
-  deriveStoredState,
-  updateStateCache,
-  verifyChainEffect,
-} from "./chain-store.ts";
+  ensureParentHead,
+  insertAcceptedEntrySync,
+  verifyAcceptableEntry,
+} from "./chain-accept.ts";
+import type { StateCache, VerifiedChainView } from "./chain-store.ts";
+import { ChainStore, chainStoreLayer, deriveStoredState, updateStateCache } from "./chain-store.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";
 import {
   createEnvironmentCompositeProgram,
@@ -72,11 +69,6 @@ import {
 } from "./data-programs.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
-import {
-  MAX_CHAIN_ENTRIES,
-  MAX_CHAIN_TOTAL_CANONICAL_BYTES,
-  MAX_ENTRY_CANONICAL_BYTES,
-} from "./policy.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
@@ -144,23 +136,6 @@ export type SnapshotOutcome = DataOutcome<ChainSnapshotValue>;
 // Effect プログラム(チェーン検証・受理判定の本体)
 // ---------------------------------------------------------------------------
 
-/** ChainInvalid(検証・エンコーダ失敗)→ chain-entry-invalid 拒否。 */
-const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>
-  rejectData({ kind: "chain-entry-invalid", seq: error.seq, reason: error.reason });
-
-function checkEntrySize(entry: ChainEntry): Effect.Effect<number, DataRejectedError> {
-  return canonicalBytesOf(entry).pipe(
-    Effect.mapError(rejectChainInvalid),
-    Effect.flatMap((bytes) =>
-      bytes > MAX_ENTRY_CANONICAL_BYTES
-        ? Effect.fail(
-            rejectData({ kind: "chain-entry-too-large", limitBytes: MAX_ENTRY_CANONICAL_BYTES }),
-          )
-        : Effect.succeed(bytes),
-    ),
-  );
-}
-
 /** §6.2 / §11-2: チェーン導出メンバー(reader 含む)でなければ拒否する。 */
 function ensureChainMember(
   members: ReadonlyMap<string, unknown>,
@@ -174,15 +149,17 @@ function ensureChainMember(
  * ブロック(= 同一イベントループタスク)で両方を書き、クラッシュしても
  * 「チェーンだけ書けてミラーが欠ける」不整合を作らない(ミラーは v1 バック
  * フィルなし — AUDIT_SPEC §3.4 — なので欠落は恒久化する)。
+ * serverTs は全検査後・書き込みフェーズ直前に取得する(複合経路と同じ
+ * タイミング — chain-accept.ts の insertAcceptedEntrySync 参照)。
  */
-const insertWithMirror = (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) =>
+const insertAccepted = (entry: ChainEntry, applied: VerifiedChainView, canonicalBytes: number) =>
   Effect.gen(function* () {
-    const store = yield* ChainStore;
+    const chainStore = yield* ChainStore;
     const audit = yield* AuditStore;
-    yield* Effect.sync(() => {
-      store.insertSync(entry, entryHashHex, canonicalBytes);
-      audit.appendSync(chainMirrorEvent(entry, Date.now()));
-    });
+    const nowMs = Date.now();
+    yield* Effect.sync(() =>
+      insertAcceptedEntrySync({ chainStore, audit }, entry, applied, canonicalBytes, nowMs),
+    );
   });
 
 const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateCache) =>
@@ -202,73 +179,18 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
         headHashHex: chain.headHashHex,
       });
     }
-    const canonicalBytes = yield* checkEntrySize(entry);
+    // 空チェーンへの受理 4 手順(容量検査は空チェーンでは自明に通る)。
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
-    const verified = yield* verifyChainEffect([entry]).pipe(Effect.mapError(rejectChainInvalid));
+    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
     // プロジェクト ID = genesis エントリハッシュ(§6.4)。ルーティングした DO と
     // エントリの束縛が崩れていたら受理しない(worker 側バグへの防衛)
-    if (verified.state.headHashHex !== expectedProjectId) {
+    if (applied.state.headHashHex !== expectedProjectId) {
       return yield* new ProjectIdMismatchError();
     }
-    yield* insertWithMirror(entry, verified.state.headHashHex, canonicalBytes);
-    updateStateCache(cache, verified);
-    return { headSeq: verified.state.headSeq, headHashHex: verified.state.headHashHex };
+    yield* insertAccepted(entry, applied, canonicalBytes);
+    updateStateCache(cache, applied);
+    return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
   });
-
-/**
- * CAS(§6.4): 未初期化を拒否し、親ヘッドが現ヘッドと一致しなければ現ヘッド情報
- * 付きで拒否する。クライアントは最新チェーンを取得・再検証して再試行する。
- */
-function ensureParentHead(
-  chain: StoredChain,
-  parentHeadHashHex: string,
-): Effect.Effect<void, DataRejectedError> {
-  if (chain.headSeq === 0 || chain.headHashHex === null) {
-    return Effect.fail(rejectData({ kind: "not-initialized" }));
-  }
-  if (parentHeadHashHex !== chain.headHashHex) {
-    return Effect.fail(
-      rejectData({
-        kind: "chain-head-conflict",
-        currentHeadSeq: chain.headSeq,
-        currentHeadHashHex: chain.headHashHex,
-      }),
-    );
-  }
-  return Effect.void;
-}
-
-/**
- * 受理ポリシー(§6.4): チェーン全体のエントリ数・累積バイト数の上限。
- * 判定は数値のみに依存する純関数(エントリ数上限のユニットテストのために公開。
- * 10,000 本の有効チェーンを統合テストで実生成するのは非現実的なため)。
- */
-export function chainCapacityExceeded(
-  entryCount: number,
-  totalCanonicalBytes: number,
-  addedCanonicalBytes: number,
-): boolean {
-  return (
-    entryCount + 1 > MAX_CHAIN_ENTRIES ||
-    totalCanonicalBytes + addedCanonicalBytes > MAX_CHAIN_TOTAL_CANONICAL_BYTES
-  );
-}
-
-function ensureChainCapacity(
-  chain: StoredChain,
-  canonicalBytes: number,
-): Effect.Effect<void, DataRejectedError> {
-  if (chainCapacityExceeded(chain.entries.length, chain.totalCanonicalBytes, canonicalBytes)) {
-    return Effect.fail(
-      rejectData({
-        kind: "chain-capacity-exceeded",
-        maxEntries: MAX_CHAIN_ENTRIES,
-        maxTotalBytes: MAX_CHAIN_TOTAL_CANONICAL_BYTES,
-      }),
-    );
-  }
-  return Effect.void;
-}
 
 /**
  * 読み取り・追記に共通する前段: 未初期化の検査と、チェーン導出メンバーシップの
@@ -309,15 +231,12 @@ const appendProgram = (
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
     yield* ensureParentHead(chain, parentHeadHashHex);
-    const canonicalBytes = yield* checkEntrySize(entry);
-    yield* ensureChainCapacity(chain, canonicalBytes);
-    // §6.4: 追記受理時にチェーン全体を再検証する(prev_hash 連続性・署名・操作権限)
-    const verified = yield* verifyChainEffect([...chain.entries, entry]).pipe(
-      Effect.mapError(rejectChainInvalid),
-    );
-    yield* insertWithMirror(entry, verified.state.headHashHex, canonicalBytes);
-    updateStateCache(cache, verified);
-    return { headSeq: verified.state.headSeq, headHashHex: verified.state.headHashHex };
+    // 受理 4 手順(サイズ → 容量 → verifyChain → insert + ミラー)は複合経路と
+    // 共有(chain-accept.ts)
+    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
+    yield* insertAccepted(entry, applied, canonicalBytes);
+    updateStateCache(cache, applied);
+    return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
   });
 
 const snapshotProgram = (

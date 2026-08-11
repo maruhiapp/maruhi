@@ -19,27 +19,19 @@
 // 権威で、duplicate-environment / unknown-environment / エポック順序 / role /
 // コミットメント形式はすべてそこで判定される。
 
-import type { ChainInvalidError } from "@maruhi/core";
 import type { ChainEntry, ChainMember, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
-import { AuditStore, chainMirrorEvent } from "./audit-store.ts";
-import type { StateCache, StoredChain } from "./chain-store.ts";
+import { AuditStore } from "./audit-store.ts";
 import {
-  canonicalBytesOf,
-  ChainStore,
-  deriveStoredState,
-  updateStateCache,
-  verifyChainEffect,
-} from "./chain-store.ts";
-import type {
-  DataActor,
-  DataRejectedError,
-  DekWrapInput,
-  InitializedChain,
-  MetaStatementInput,
-} from "./data-plane.ts";
+  ensureParentHead,
+  insertAcceptedEntrySync,
+  verifyAcceptableEntry,
+} from "./chain-accept.ts";
+import type { StateCache } from "./chain-store.ts";
+import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
+import type { DataActor, DekWrapInput, MetaStatementInput } from "./data-plane.ts";
 import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import {
   dekRegisteredEvent,
@@ -51,11 +43,6 @@ import {
 } from "./data-programs.ts";
 import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
-import {
-  MAX_CHAIN_ENTRIES,
-  MAX_CHAIN_TOTAL_CANONICAL_BYTES,
-  MAX_ENTRY_CANONICAL_BYTES,
-} from "./policy.ts";
 
 /** 複合受理の結果(RPC 境界を渡る)。 */
 export interface EnvironmentChainResultValue {
@@ -78,65 +65,6 @@ const loadChainForComposite = (callerUserId: string, cache: StateCache) =>
     const { state, history } = yield* deriveStoredState(chain, cache);
     const member = yield* requireRole(state, callerUserId, "member");
     return { chain, state, history, member, projectId: chain.genesisHashHex };
-  });
-
-/** CAS(§6.4): 親ヘッド不一致は現ヘッド情報付きで拒否(worker が 409 に写す)。 */
-function ensureCompositeParentHead(
-  chain: InitializedChain,
-  parentHeadHashHex: string,
-): Effect.Effect<void, DataRejectedError> {
-  if (parentHeadHashHex !== chain.headHashHex) {
-    return Effect.fail(
-      rejectData({
-        kind: "chain-head-conflict",
-        currentHeadSeq: chain.headSeq,
-        currentHeadHashHex: chain.headHashHex,
-      }),
-    );
-  }
-  return Effect.void;
-}
-
-/**
- * 同梱エントリのサイズ・容量ポリシー(§6.4)と全チェーン再検証。受理される
- * 場合は「エントリ適用後の状態」(§12-4 のラップ判定基準)を返す。
- */
-const verifyCompositeEntry = (chain: StoredChain, entry: ChainEntry) =>
-  Effect.gen(function* () {
-    const canonicalBytes = yield* canonicalBytesOf(entry).pipe(
-      Effect.catchTag("ChainInvalid", (error: ChainInvalidError) =>
-        Effect.fail(
-          rejectData({ kind: "chain-entry-invalid", seq: error.seq, reason: error.reason }),
-        ),
-      ),
-    );
-    if (canonicalBytes > MAX_ENTRY_CANONICAL_BYTES) {
-      return yield* rejectData({
-        kind: "chain-entry-too-large",
-        limitBytes: MAX_ENTRY_CANONICAL_BYTES,
-      });
-    }
-    if (
-      chain.entries.length + 1 > MAX_CHAIN_ENTRIES ||
-      chain.totalCanonicalBytes + canonicalBytes > MAX_CHAIN_TOTAL_CANONICAL_BYTES
-    ) {
-      return yield* rejectData({
-        kind: "chain-capacity-exceeded",
-        maxEntries: MAX_CHAIN_ENTRIES,
-        maxTotalBytes: MAX_CHAIN_TOTAL_CANONICAL_BYTES,
-      });
-    }
-    // §6.4: 受理時にチェーン全体を再検証する(prev_hash 連続性・署名・合意規則 =
-    // duplicate-environment / unknown-environment / エポック順序 / role /
-    // dek_commitment_hex の形式)
-    const applied = yield* verifyChainEffect([...chain.entries, entry]).pipe(
-      Effect.catchTag("ChainInvalid", (error: ChainInvalidError) =>
-        Effect.fail(
-          rejectData({ kind: "chain-entry-invalid", seq: error.seq, reason: error.reason }),
-        ),
-      ),
-    );
-    return { canonicalBytes, applied, appliedState: applied.state };
   });
 
 /**
@@ -193,17 +121,6 @@ interface CompositeWriteContext {
   readonly member: ChainMember;
   readonly environmentId: string;
   readonly nowMs: number;
-}
-
-/** チェーンエントリ + ミラー(AUDIT_SPEC §3.4。dek_commitment を payload に写す)。 */
-function insertCompositeEntrySync(
-  context: CompositeWriteContext,
-  entry: ChainEntry,
-  canonicalBytes: number,
-  appliedState: ChainState,
-): void {
-  context.chainStore.insertSync(entry, appliedState.headHashHex, canonicalBytes);
-  context.audit.appendSync(chainMirrorEvent(entry, context.nowMs));
 }
 
 /** 同梱ラップの挿入 + dek.registered(1 受信者 1 行 — AUDIT_SPEC §3.3)。 */
@@ -267,7 +184,7 @@ export const createEnvironmentCompositeProgram = (
 ) =>
   Effect.gen(function* () {
     const { chain, history, member, projectId } = yield* loadChainForComposite(actor.userId, cache);
-    yield* ensureCompositeParentHead(chain, input.parentHeadHashHex);
+    yield* ensureParentHead(chain, input.parentHeadHashHex);
     // 複合内の宣言ヘッド(§12-4): 同梱ステートメントの宣言ヘッドは追記前の
     // 現ヘッド(= 同梱エントリの prev)と厳密一致。CAS 通過後なので現ヘッド =
     // parentHeadHashHex。ヘッド CAS 失敗の再試行ではエントリとステートメントの
@@ -278,10 +195,11 @@ export const createEnvironmentCompositeProgram = (
     ) {
       return yield* rejectData({ kind: "payload-mismatch", field: "statementChainHead" });
     }
-    const { canonicalBytes, applied, appliedState } = yield* verifyCompositeEntry(
-      chain,
-      input.entry,
-    );
+    // 受理 4 手順のうち検査 3 手順(サイズ → 容量 → verifyChain — §6.4 の合意
+    // 規則 = duplicate-environment / エポック順序 / role / コミットメント形式を
+    // 含む)は汎用チェーン API と共有(chain-accept.ts)
+    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, input.entry);
+    const appliedState = applied.state;
     const environmentId = input.entry.payload.environmentId;
     const store = yield* DataStore;
     // ID の一意性はチェーン合意規則(duplicate-environment — verifyChain)が
@@ -326,7 +244,13 @@ export const createEnvironmentCompositeProgram = (
     // (チェーンエントリ + ミラー + 環境行 + ステートメント行 + ラップ + 監査を
     // 分割しない — §12-4)
     yield* Effect.sync(() => {
-      insertCompositeEntrySync(writeContext, input.entry, canonicalBytes, appliedState);
+      insertAcceptedEntrySync(
+        writeContext,
+        input.entry,
+        applied,
+        canonicalBytes,
+        writeContext.nowMs,
+      );
       store.write.insertEnvironment(environmentId, input.statement.name, writeContext.nowMs);
       store.write.insertEnvironmentMetaStatement(
         environmentId,
@@ -369,11 +293,9 @@ export const rotateEpochCompositeProgram = (
     // 削除済み(tombstone)環境への rotate は 404(§12-4 — §7 の「全環境」は
     // 削除済みを含まない。黙って受理して守るもののないエポックを進めない)
     yield* requireActiveEnvironment(environmentId);
-    yield* ensureCompositeParentHead(chain, input.parentHeadHashHex);
-    const { canonicalBytes, applied, appliedState } = yield* verifyCompositeEntry(
-      chain,
-      input.entry,
-    );
+    yield* ensureParentHead(chain, input.parentHeadHashHex);
+    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, input.entry);
+    const appliedState = applied.state;
     // 同梱エントリ適用後の現エポック = new_epoch(エポック順序は verifyChain 検証済み)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -390,7 +312,13 @@ export const rotateEpochCompositeProgram = (
       environmentId,
     });
     yield* Effect.sync(() => {
-      insertCompositeEntrySync(writeContext, input.entry, canonicalBytes, appliedState);
+      insertAcceptedEntrySync(
+        writeContext,
+        input.entry,
+        applied,
+        canonicalBytes,
+        writeContext.nowMs,
+      );
       insertCompositeWrapsSync(writeContext, input.deks);
     });
     updateStateCache(cache, applied);

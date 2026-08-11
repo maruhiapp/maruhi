@@ -17,7 +17,7 @@ import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:te
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { vectorEnvironmentDeks } from "../../../packages/crypto/test/checks/chain-vector.ts";
-import { chainCapacityExceeded } from "../src/chain-do.ts";
+import { chainCapacityExceeded } from "../src/chain-accept.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
