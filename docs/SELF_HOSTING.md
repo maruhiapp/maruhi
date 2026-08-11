@@ -60,7 +60,8 @@ DB 名を変えていても動く)とデプロイを常にこの順で行う。d
 (`drizzle/<name>/migration.sql`)は `wrangler.jsonc` の `migrations_pattern` で
 wrangler にそのまま認識される。
 
-出力の `https://maruhi-server.<あなたのサブドメイン>.workers.dev` を控える。
+出力の `https://maruhi-server.<あなたのサブドメイン>.workers.dev` を控える
+(以下「`<デプロイ URL>`」はこの `https://` を含む URL 全体を指す)。
 GitHub OAuth のコールバック URL はこのデプロイ URL から決まるため、**OAuth App の
 作成より先にデプロイする**(この時点ではまだ OAuth 未設定なので、認証系エンドポイントは
 503 `SetupIncomplete` を返す — 正常)。
@@ -94,7 +95,7 @@ bunx wrangler secret put GITHUB_CLIENT_SECRET   # 同上
 ### 6. 動作確認
 
 ```sh
-curl https://<デプロイ URL>/auth/config
+curl <デプロイ URL>/auth/config
 # → {"githubClientId":"<あなたの client_id>"} なら設定完了
 #   (200 は client_id / client_secret の両方が登録済みであることを意味する)
 # → 503 {"_tag":"SetupIncomplete",...} なら手順 5 の secret put 漏れ
@@ -104,7 +105,7 @@ curl https://<デプロイ URL>/auth/config
 ### 7. CLI から接続
 
 ```sh
-maruhi config set server https://<デプロイ URL>
+maruhi config set server <デプロイ URL>
 maruhi login          # client_id はサーバーから自動解決(GET /auth/config)
 maruhi key generate   # 初回のみ: master 鍵の生成 + リカバリーコード発行(人間の端末で)
 ```
@@ -164,11 +165,16 @@ vars の値で置き換えられて移行が無効になる(対話デプロイ�
 - **Deploy to Cloudflare ボタン**: リポジトリ公開(Phase 2)後に README へ設置予定。
   ボタン対応の前提工事(マイグレーションの deploy 統合・バインディング名参照・
   client_id の secret 化 = デプロイ後の設定が secret put ×2 だけで完結)は済んでいる。
-  未検証点は 2 つあり、公開リポジトリでしか検証できないため公開時に実検証する:
+  未検証点は 3 つあり、公開リポジトリでしか検証できないため公開時に実検証する:
   ① ボタンのモノレポ対応(リポジトリルート URL で `apps/server/wrangler.jsonc` が
   検出され D1 が自動プロビジョニングされるか)。② ボタンのビルドパイプラインが
   `apps/server` の `deploy` スクリプト(マイグレーション込み)を実行するか —
   既定の素の `wrangler deploy` に落ちるとマイグレーション未適用のまま公開され、
   DB を触る全エンドポイントが 500 になる。セットアップページで deploy コマンドの
-  上書き指定が必要になる可能性が高い
+  上書き指定が必要になる可能性が高い。③ コミット済みのプレースホルダ
+  `database_id`(`00000000-…`)をボタンのプロビジョニングが実 ID へ差し替えるか —
+  Cloudflare のドキュメントは既定値の記載を推奨し「新規作成リソースの ID で
+  構成を更新する」とあるが、wrangler 単体の自動プロビジョニングは database_id が
+  埋まっているとその UUID をそのまま参照するため、ボタン側が差し替えない場合は
+  存在しない UUID への API エラーで失敗する(その場合プレースホルダの削除が必要)
 - 認証以外も含む API 仕様は `docs/AUTH_SPEC.md`、暗号仕様は `docs/CRYPTO_SPEC.md` を参照
