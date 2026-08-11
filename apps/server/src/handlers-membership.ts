@@ -19,6 +19,7 @@ import { auditActorOf, RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
+import type { HttpApiEndpoint } from "effect/unstable/httpapi";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -28,74 +29,18 @@ import {
   requiredPermissionForOp,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
-import { dataRejectionError } from "./data-http.ts";
-import type { DataRejection } from "./data-plane.ts";
+import { unwrapDataOutcome } from "./data-http.ts";
+import type { DataOutcome } from "./data-plane.ts";
 import { OrgRepo, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 // RPC 境界の outcome → api-schema の型付きエラー / 成功レスポンスへの写像。
-// エラークラスの構成は data-http.ts の rejectionErrors 一表に寄せ、ここでは
-// outcome の kind を DataRejection の kind へ揃えるだけにする(チェーン系
-// エラーの写像を二重管理しない)。"project-id-mismatch" は worker が自分で
-// 計算した ID を渡す限り起こらない(起きたら実装バグなので defect として落とす)
-
-/** チェーン RPC(init / append / snapshot)の拒否 outcome。 */
-type ChainRejectionOutcome = Exclude<AppendOutcome, { kind: "appended" | "composite-required" }>;
-
-/** outcome の kind → DataRejection の kind(名前だけの対応表。型で網羅強制)。 */
-interface ChainRejectionKinds {
-  readonly "not-initialized": "not-initialized";
-  readonly "not-member": "not-member";
-  readonly "head-conflict": "chain-head-conflict";
-  readonly "chain-invalid": "chain-entry-invalid";
-  readonly "entry-too-large": "chain-entry-too-large";
-  readonly "capacity-exceeded": "chain-capacity-exceeded";
-}
-
-const chainRejections: {
-  readonly [K in ChainRejectionOutcome["kind"]]: (
-    outcome: Extract<ChainRejectionOutcome, { kind: K }>,
-  ) => Extract<DataRejection, { kind: ChainRejectionKinds[K] }>;
-} = {
-  // §11-2: 未初期化と非メンバーを区別しない(存在秘匿)— 404 への畳み込みは
-  // rejectionErrors(data-http.ts)が担う
-  "not-initialized": () => ({ kind: "not-initialized" }),
-  "not-member": () => ({ kind: "not-member" }),
-  "head-conflict": (outcome) => ({
-    kind: "chain-head-conflict",
-    currentHeadSeq: outcome.currentHeadSeq,
-    currentHeadHashHex: outcome.currentHeadHashHex,
-  }),
-  "chain-invalid": (outcome) => ({
-    kind: "chain-entry-invalid",
-    seq: outcome.seq,
-    reason: outcome.reason,
-  }),
-  "entry-too-large": (outcome) => ({
-    kind: "chain-entry-too-large",
-    limitBytes: outcome.limitBytes,
-  }),
-  "capacity-exceeded": (outcome) => ({
-    kind: "chain-capacity-exceeded",
-    maxEntries: outcome.maxEntries,
-    maxTotalBytes: outcome.maxTotalBytes,
-  }),
-};
-
-/**
- * チェーン系拒否 → 共有写像表(dataRejectionError)による型付きエラー。
- * 引数を kind 対応表で確定した Extract 型に固定することで、返り値が outcome の
- * kind に対応するエラー型のみへ絞られる(宣言外エラーの混入はコンパイルエラー)。
- */
-const chainRejectionError = <O extends ChainRejectionOutcome>(projectId: string, outcome: O) =>
-  dataRejectionError(
-    chainRejections[outcome.kind](outcome as never) as Extract<
-      DataRejection,
-      { kind: ChainRejectionKinds[O["kind"]] }
-    >,
-    projectId,
-  );
+// チェーン RPC の拒否は DataRejection(data-plane.ts)で届き、データプレーンと
+// 同じ unwrapDataOutcome(data-http.ts)がエンドポイントの契約宣言から導出した
+// 集合で選別・写像する(チェーン系エラーの写像を二重管理しない)。
+// "project-id-mismatch" は worker が自分で計算した ID を渡す限り起こらない
+// (起きたら実装バグなので defect として落とす)
 
 /**
  * §11-3 の冪等修復: DO は初期化済みだが projects 行が欠けている場合、要求者が
@@ -121,7 +66,8 @@ const repairOrConflict = (
     return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
   });
 
-const mapInitOutcome = (
+const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
+  endpoint: Endpoint,
   projectId: string,
   orgId: string,
   principal: AuthenticatedPrincipal,
@@ -139,24 +85,13 @@ const mapInitOutcome = (
       return repairOrConflict(projectId, orgId, principal, outcome);
     case "project-id-mismatch":
       return Effect.die(new Error("project id mismatch between worker and DO"));
-    default:
-      return Effect.fail(chainRejectionError(projectId, outcome));
+    case "rejected": {
+      const rejected: DataOutcome<never> = { kind: "rejected", rejection: outcome.rejection };
+      // 型引数は明示する: DataOutcome<never>(常に rejected)からの T 推論は
+      // union 対 union で unknown に落ちるため
+      return unwrapDataOutcome<never, Endpoint>(rejected, projectId, endpoint);
+    }
   }
-};
-
-const mapAppendOutcome = (projectId: string, outcome: AppendOutcome) => {
-  if (outcome.kind === "appended") {
-    return Effect.succeed({
-      projectId,
-      headSeq: outcome.headSeq,
-      headHashHex: outcome.headHashHex,
-    });
-  }
-  // DO 側の多層防御(通常はハンドラの先行検査が同じ 422 を返す)
-  if (outcome.kind === "composite-required") {
-    return Effect.fail(new CompositeRequiredError({ op: outcome.op }));
-  }
-  return Effect.fail(chainRejectionError(projectId, outcome));
 };
 
 /**
@@ -183,7 +118,7 @@ const precheckAndComputeProjectId = (entry: ChainEntry) =>
 
 export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (handlers) =>
   handlers
-    .handle("init", ({ payload }) =>
+    .handle("init", ({ payload, endpoint }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         // サイズの先行検査を最初に行う(巨大エントリはどの意味論的判定よりも先に
@@ -202,10 +137,10 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         const outcome = yield* rpcCall<InitOutcome>(() =>
           projectStub(env, projectId).init(projectId, payload.entry),
         );
-        return yield* mapInitOutcome(projectId, payload.orgId, principal, outcome);
+        return yield* mapInitOutcome(endpoint, projectId, payload.orgId, principal, outcome);
       }),
     )
-    .handle("get", ({ params }) =>
+    .handle("get", ({ params, endpoint }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureTokenScopeForProject(principal, params.projectId, "read");
@@ -213,24 +148,24 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         const outcome = yield* rpcCall<SnapshotOutcome>(() =>
           projectStub(env, params.projectId).snapshotFor(principal.userId),
         );
-        if (outcome.kind !== "snapshot") {
-          // §11-2: 未初期化と非メンバーを区別しない(存在秘匿。畳み込みは共有写像表)
-          return yield* Effect.fail(chainRejectionError(params.projectId, outcome));
-        }
+        // §11-2: 未初期化と非メンバーを区別しない(存在秘匿。畳み込みは
+        // rejectionErrors — 契約宣言からの導出は unwrapDataOutcome)
+        const snapshot = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
         return {
           projectId: params.projectId,
-          entries: outcome.entries,
-          headSeq: outcome.headSeq,
-          headHashHex: outcome.headHashHex,
+          entries: snapshot.entries,
+          headSeq: snapshot.headSeq,
+          headHashHex: snapshot.headHashHex,
         };
       }),
     )
-    .handle("append", ({ params, payload }) =>
+    .handle("append", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         // AUTH_SPEC §6 / §12-4(2026-08-03): create_environment / rotate_epoch は
         // 複合エンドポイント(付随データとの原子受理)経由のみ。汎用追記での
         // 迂回は「エポックはあるがラップがない」中間状態を作るため型付きで拒否
+        // (DO 側にも同じガードがあり composite-required 拒否として届く — 多層防御)
         if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
           return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
         }
@@ -249,7 +184,12 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
             principal.userId,
           ),
         );
-        return yield* mapAppendOutcome(params.projectId, outcome);
+        const head = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
+        return {
+          projectId: params.projectId,
+          headSeq: head.headSeq,
+          headHashHex: head.headHashHex,
+        };
       }),
     ),
 );

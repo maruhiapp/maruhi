@@ -11,6 +11,7 @@ import {
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   ChainHeadConflictError,
+  CompositeRequiredError,
   DataLimitExceededError,
   DekWrapExistsError,
   DekWrapNotFoundError,
@@ -158,6 +159,7 @@ type DataApiError =
   | ForbiddenError
   | EnvironmentNotFoundError
   | EnvironmentConflictError
+  | CompositeRequiredError
   | ChainHeadConflictError
   | ChainEntryInvalidError
   | ChainEntryTooLargeError
@@ -191,7 +193,8 @@ const rejectionErrors = {
       environmentId: rejection.environmentId,
       reason: rejection.reason,
     }),
-  // 複合リクエスト(§12-4)のチェーン受理系(エラー契約の複合エンドポイントへの移動)
+  // チェーン受理系(複合リクエスト §12-4 と汎用チェーン API の共有)
+  "composite-required": (rejection) => new CompositeRequiredError({ op: rejection.op }),
   "chain-head-conflict": (rejection) =>
     new ChainHeadConflictError({
       currentHeadSeq: rejection.currentHeadSeq,

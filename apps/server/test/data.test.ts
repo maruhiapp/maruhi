@@ -10,6 +10,7 @@ import {
   deksGroup,
   DekWrapExistsError,
   environmentsGroup,
+  membershipGroup,
   variablesGroup,
 } from "@maruhi/api-schema";
 import type { TokenScope } from "@maruhi/core";
@@ -3862,6 +3863,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       environmentId: "env-contract",
       reason: "duplicate-name",
     },
+    "composite-required": { kind: "composite-required", op: "create_environment" },
     "chain-head-conflict": {
       kind: "chain-head-conflict",
       currentHeadSeq: 4,
@@ -3903,6 +3905,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "insufficient-role": "Forbidden",
     "environment-not-found": "EnvironmentNotFound",
     "environment-conflict": "EnvironmentConflict",
+    "composite-required": "CompositeRequired",
     "chain-head-conflict": "ChainHeadConflict",
     "chain-entry-invalid": "ChainEntryInvalid",
     "chain-entry-too-large": "ChainEntryTooLarge",
@@ -3922,8 +3925,11 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "limit-exceeded": "DataLimitExceeded",
   } as const satisfies Record<DataRejection["kind"], string>;
 
-  // 全データプレーンエンドポイント × 全拒否 kind の組み合わせ
+  // 全データプレーン + チェーンエンドポイント × 全拒否 kind の組み合わせ
+  // (チェーン API — membership — の拒否も DataRejection で届き、同じ
+  // unwrapDataOutcome を通る。worker ↔ DO の対応はこの表が固定する)
   const contractCases = Object.entries({
+    membership: membershipGroup,
     environments: environmentsGroup,
     variables: variablesGroup,
     deks: deksGroup,
@@ -3976,7 +3982,8 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       results.map((result) => result.expected),
     );
     // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
-    // 追加したらこの数を更新する(environments 5 / variables 6 / deks 3)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(14);
+    // 追加したらこの数を更新する(membership 3 / environments 5 / variables 6 /
+    // deks 3)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(17);
   });
 });

@@ -271,9 +271,13 @@ export type DataRejection =
       readonly environmentId: string;
       readonly reason: EnvironmentConflictReason;
     }
-  // 複合リクエスト(§12-4)のチェーン受理系(worker が api-schema の
-  // ChainHeadConflict / ChainEntryInvalid / ChainEntryTooLarge /
-  // ChainCapacityExceeded へ写像する — エラー契約の複合エンドポイントへの移動)
+  // チェーン受理系(複合リクエスト §12-4 と汎用チェーン API — chain-do.ts —
+  // の両方が使う。worker が api-schema の ChainHeadConflict / ChainEntryInvalid /
+  // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired へ写像する)
+  | {
+      readonly kind: "composite-required";
+      readonly op: "create_environment" | "rotate_epoch";
+    }
   | {
       readonly kind: "chain-head-conflict";
       readonly currentHeadSeq: number;
