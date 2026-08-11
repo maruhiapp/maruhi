@@ -53,6 +53,7 @@ import {
   VariableNotFoundError,
   VersionConflictError,
 } from "./errors.ts";
+import { PositiveInt, Sha256Hex } from "./hex.ts";
 
 const projectParams = { projectId: ProjectIdSchema };
 const environmentParams = { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema };
@@ -83,8 +84,8 @@ export const EnvironmentSummarySchema = Schema.Struct({
 export const EnvironmentChainResultSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
   currentEpoch: Schema.Number,
-  headSeq: Schema.Number,
-  headHashHex: Schema.String,
+  headSeq: PositiveInt,
+  headHashHex: Sha256Hex,
 });
 
 /** Result of accepting a variable version (creation is version 1 — §12-5). */
@@ -165,7 +166,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
     HttpApiEndpoint.post("create", "/projects/:projectId/environments", {
       params: projectParams,
       payload: Schema.Struct({
-        parentHeadHashHex: Schema.String,
+        parentHeadHashHex: Sha256Hex,
         entry: CreateEnvironmentEntrySchema,
         statement: CreateEnvironmentMetaStatementSchema,
         deks: Schema.Array(WrappedDekSchema),
@@ -198,7 +199,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
     HttpApiEndpoint.post("rotate", "/projects/:projectId/environments/:environmentId/rotate", {
       params: environmentParams,
       payload: Schema.Struct({
-        parentHeadHashHex: Schema.String,
+        parentHeadHashHex: Sha256Hex,
         entry: RotateEpochEntrySchema,
         deks: Schema.Array(WrappedDekSchema),
       }),
