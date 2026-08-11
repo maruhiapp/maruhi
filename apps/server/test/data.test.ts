@@ -6,7 +6,12 @@
 // 暗号文を使うのは「サーバーは中身を検証できない」ことを利用する受理ポリシー系
 // テストのみ(各テストに明記)。
 
-import { DekWrapExistsError, environmentsGroup, variablesGroup } from "@maruhi/api-schema";
+import {
+  deksGroup,
+  DekWrapExistsError,
+  environmentsGroup,
+  variablesGroup,
+} from "@maruhi/api-schema";
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -25,9 +30,10 @@ import {
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { Cause, Effect, Exit } from "effect";
+import type { HttpApiEndpoint } from "effect/unstable/httpapi";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { unwrapDataOutcome } from "../src/data-http.ts";
+import { dataRejectionError, unwrapDataOutcome } from "../src/data-http.ts";
 import type { DataRejection } from "../src/data-plane.ts";
 import {
   metaVersionsExceeded,
@@ -3765,6 +3771,29 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
 
 const rejectedOutcome = (rejection: DataRejection) => ({ kind: "rejected", rejection }) as const;
 
+/**
+ * エンドポイントの宣言エラーのタグ集合。実行時判定(Schema.is)から独立な
+ * 経路として identifier 注釈(Schema.TaggedError がタグと同値で付与)から
+ * 読む。effect 更新で注釈の形が変わったらここで明示的に落とし、契約導出の
+ * 再検証(PR #49 で beta.107 に対して行った手動検証の再実行)を促す。
+ */
+const declaredTagsOf = (endpoint: HttpApiEndpoint.Top): ReadonlySet<string> =>
+  new Set(
+    Array.from(endpoint.error, (schema) => {
+      const identifier = (schema.ast.annotations as Record<string, unknown> | undefined)?.[
+        "identifier"
+      ];
+      if (typeof identifier !== "string") {
+        throw new Error(
+          "declared error schema without a string identifier annotation — " +
+            "re-verify the error-contract derivation (Schema.is / endpoint.error) " +
+            "against the new effect version",
+        );
+      }
+      return identifier;
+    }),
+  );
+
 describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome)", () => {
   // DO 拒否はエンドポイントの契約宣言(api-schema の error: [...])から導出した
   // 集合で選別される(手書きの allowed 列は存在しない)。ここでは宣言との
@@ -3818,5 +3847,136 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       ),
     );
     expect(error).toMatchObject({ _tag: "ProjectNotFound", projectId });
+  });
+
+  // kind ごとの代表拒否(全フィールドが Schema の語彙内の有効値)。
+  // satisfies で DataRejection の全 kind の網羅を型強制する — kind が増えたら
+  // ここに足さない限りコンパイルが落ちる
+  const representativeRejections = {
+    "not-initialized": { kind: "not-initialized" },
+    "not-member": { kind: "not-member" },
+    "insufficient-role": { kind: "insufficient-role" },
+    "environment-not-found": { kind: "environment-not-found", environmentId: "env-contract" },
+    "environment-conflict": {
+      kind: "environment-conflict",
+      environmentId: "env-contract",
+      reason: "duplicate-name",
+    },
+    "chain-head-conflict": {
+      kind: "chain-head-conflict",
+      currentHeadSeq: 4,
+      currentHeadHashHex: "ab".repeat(32),
+    },
+    "chain-entry-invalid": { kind: "chain-entry-invalid", seq: 2, reason: "bad-signature" },
+    "chain-entry-too-large": { kind: "chain-entry-too-large", limitBytes: 1024 },
+    "chain-capacity-exceeded": {
+      kind: "chain-capacity-exceeded",
+      maxEntries: 10,
+      maxTotalBytes: 1024,
+    },
+    "payload-mismatch": { kind: "payload-mismatch", field: "environmentId" },
+    "variable-not-found": { kind: "variable-not-found", variableId: "var-contract" },
+    "variable-conflict": {
+      kind: "variable-conflict",
+      variableId: "var-contract",
+      reason: "duplicate-name",
+    },
+    "version-conflict": { kind: "version-conflict", currentVersion: 3 },
+    "epoch-conflict": { kind: "epoch-conflict", currentEpoch: 2 },
+    "value-rejected": { kind: "value-rejected", reason: "signature-invalid" },
+    "meta-rejected": { kind: "meta-rejected", reason: "signature-invalid" },
+    "meta-version-conflict": { kind: "meta-version-conflict", currentMetaVersion: 2 },
+    "name-not-nfc": { kind: "name-not-nfc" },
+    "dek-wrap-rejected": { kind: "dek-wrap-rejected", reason: "duplicate-recipient" },
+    "dek-wrap-exists": { kind: "dek-wrap-exists", epoch: 2, recipientUserId: READER },
+    "dek-wrap-not-found": { kind: "dek-wrap-not-found", epoch: 2, recipientUserId: READER },
+    "limit-exceeded": { kind: "limit-exceeded", resource: "variables", limit: 100 },
+  } as const satisfies {
+    readonly [K in DataRejection["kind"]]: Extract<DataRejection, { kind: K }>;
+  };
+
+  // kind → 期待エラータグのゴールデン表(data-http.ts rejectionErrors の写像の
+  // 固定)。satisfies で全 kind の網羅を型強制する
+  const expectedTagByKind = {
+    "not-initialized": "ProjectNotFound",
+    "not-member": "ProjectNotFound",
+    "insufficient-role": "Forbidden",
+    "environment-not-found": "EnvironmentNotFound",
+    "environment-conflict": "EnvironmentConflict",
+    "chain-head-conflict": "ChainHeadConflict",
+    "chain-entry-invalid": "ChainEntryInvalid",
+    "chain-entry-too-large": "ChainEntryTooLarge",
+    "chain-capacity-exceeded": "ChainCapacityExceeded",
+    "payload-mismatch": "PayloadMismatch",
+    "variable-not-found": "VariableNotFound",
+    "variable-conflict": "VariableConflict",
+    "version-conflict": "VersionConflict",
+    "epoch-conflict": "EpochConflict",
+    "value-rejected": "ValueSignatureRejected",
+    "meta-rejected": "MetaStatementRejected",
+    "meta-version-conflict": "MetaVersionConflict",
+    "name-not-nfc": "NameNotNfc",
+    "dek-wrap-rejected": "DekWrapRejected",
+    "dek-wrap-exists": "DekWrapExists",
+    "dek-wrap-not-found": "DekWrapNotFound",
+    "limit-exceeded": "DataLimitExceeded",
+  } as const satisfies Record<DataRejection["kind"], string>;
+
+  // 全データプレーンエンドポイント × 全拒否 kind の組み合わせ
+  const contractCases = Object.entries({
+    environments: environmentsGroup,
+    variables: variablesGroup,
+    deks: deksGroup,
+  }).flatMap(([groupName, group]) =>
+    Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
+      Object.values(representativeRejections).map((rejection) => ({
+        endpointLabel: `${groupName}.${endpointName}`,
+        endpoint: endpoint as HttpApiEndpoint.Top,
+        rejection: rejection as DataRejection,
+      })),
+    ),
+  );
+
+  /** 1 組み合わせの実測 / 期待判定("label: fail|die" の形。toEqual の diff 用)。 */
+  const judgeContractCase = (contractCase: (typeof contractCases)[number]) => {
+    const { endpoint, rejection, endpointLabel } = contractCase;
+    const label = `${endpointLabel} ← ${rejection.kind}`;
+    const exit = Effect.runSyncExit(
+      unwrapDataOutcome(rejectedOutcome(rejection), projectId, endpoint),
+    );
+    const died = Exit.isFailure(exit) && Cause.hasDies(exit.cause);
+    if (!died) {
+      // 契約内なら返る失敗値そのものも写像どおりのタグであること
+      const failed = Effect.runSync(
+        Effect.flip(unwrapDataOutcome(rejectedOutcome(rejection), projectId, endpoint)),
+      );
+      expect(failed, label).toMatchObject({ _tag: expectedTagByKind[rejection.kind] });
+    }
+    return {
+      observed: `${label}: ${died ? "die" : "fail"}`,
+      expected: `${label}: ${declaredTagsOf(endpoint).has(expectedTagByKind[rejection.kind]) ? "fail" : "die"}`,
+    };
+  };
+
+  it("DataRejection → エラークラスの写像(rejectionErrors)はゴールデン表どおり", () => {
+    for (const rejection of Object.values(representativeRejections)) {
+      expect(dataRejectionError(rejection, projectId), rejection.kind).toMatchObject({
+        _tag: expectedTagByKind[rejection.kind],
+      });
+    }
+  });
+
+  it("全データプレーンエンドポイント × 全拒否 kind で fail / die 判定が宣言と厳密一致する", () => {
+    // effect 更新(Schema.is / endpoint.error の意味変化)へのドリフト検出器。
+    // ピン留め中の beta.107 では全 14 エンドポイント × 全エラー種の厳密一致を
+    // 手動検証済み(PR #49)— このテストはその検証の自動再実行
+    const results = contractCases.map(judgeContractCase);
+    // toEqual の diff で不一致の (endpoint, kind) がそのまま読めるようにする
+    expect(results.map((result) => result.observed)).toEqual(
+      results.map((result) => result.expected),
+    );
+    // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
+    // 追加したらこの数を更新する(environments 5 / variables 6 / deks 3)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(14);
   });
 });
