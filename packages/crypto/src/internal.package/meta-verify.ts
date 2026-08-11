@@ -27,10 +27,8 @@
 // 再ステートメント拒否は predecessor が渡された場合のみ検査し、渡されない場合に
 // 「検査済み」と偽らない(呼び出し側は §14.3 の非保証を負う)。
 
-import { decodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoResult, MetaInvalidReason } from "./errors.ts";
-import { importSigningPublicKey } from "./keys.ts";
 import {
   computeMetaSignedBytesHash,
   metaContextInvalidField,
@@ -38,11 +36,14 @@ import {
   type MetaStatementStatus,
   verifyMetaStatementSignature,
 } from "./meta-sign.ts";
-import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
-
-const FINGERPRINT_HEX_LENGTH = 16 * 2;
-const SHA256_HEX_LENGTH = 32 * 2;
-const SIGNATURE_HEX_LENGTH = 64 * 2;
+import {
+  distributedInputInvalidField,
+  headAuthorizationReason,
+  type HeadAuthorizationReasons,
+  importActorKeyByFingerprint,
+  invalidInput,
+  ROLE_RANK,
+} from "./validate.ts";
 
 /**
  * The verified predecessor statement's anchor (§6.3-6): its signed-bytes
@@ -76,8 +77,6 @@ function metaInvalid(reason: MetaInvalidReason): {
   return { ok: false, error: { kind: "MetaStatementInvalid", reason } };
 }
 
-const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } as const;
-
 /** §4.2 / §12-3 の role 水準: 環境の削除のみ admin、それ以外は member。 */
 function requiredRoleRank(context: MetaStatementContext): number {
   return context.target.kind === "environment" && context.status === "deleted"
@@ -85,30 +84,29 @@ function requiredRoleRank(context: MetaStatementContext): number {
     : ROLE_RANK.member;
 }
 
+// 2〜3. ヘッド束縛・認可時点(§6.3-1〜-3)の理由コード写像。検査本体は
+// headAuthorizationReason(validate.ts — value-verify と共有)
+const HEAD_AUTHORIZATION_REASONS = {
+  chainHeadFuture: "chain-head-future",
+  chainHeadMismatch: "chain-head-mismatch",
+  notMemberAtHead: "author-not-member-at-head",
+  keyMismatchAtHead: "author-key-mismatch-at-head",
+  roleInsufficientAtHead: "author-role-insufficient-at-head",
+} as const satisfies HeadAuthorizationReasons<MetaInvalidReason>;
+
 function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { history, context } = input;
-  // 2. ヘッド束縛(§6.3-2): 不一致 2 種の区別。seq > 自ヘッド = future(再同期の
-  //    入口)、seq ≤ 自ヘッドのハッシュ不一致 = 分岐または偽造の硬い証拠
-  if (context.chainHeadSeq > history.headSeq) {
-    return "chain-head-future";
-  }
-  if (history.entryHashAt(context.chainHeadSeq) !== context.chainHeadHashHex) {
-    return "chain-head-mismatch";
-  }
-  // 3. 認可時点(§6.3-1 / -3): 宣言ヘッド時点(inclusive)の在籍・鍵束縛・role
-  const member = history.memberStateAt(context.authorUserId, context.chainHeadSeq);
-  if (member === undefined) {
-    return "author-not-member-at-head";
-  }
-  if (member.keyFingerprintHex !== input.authorKeyFingerprintHex) {
-    // remove → 別鍵 re-add の tenure 跨ぎ(旧区間の鍵 × 新区間のヘッド)を拒否
-    return "author-key-mismatch-at-head";
-  }
-  if (ROLE_RANK[member.role] < requiredRoleRank(context)) {
-    return "author-role-insufficient-at-head";
-  }
-  // エポック整合(§6.3-4)はメタに存在しない(モジュール冒頭コメント参照)
-  return null;
+  // エポック整合(§6.3-4)はメタに存在しない(モジュール冒頭コメント参照)ため、
+  // 共有検査(値署名は続けて §6.3-4 を検査する)がそのまま全体
+  return headAuthorizationReason({
+    history,
+    chainHeadSeq: context.chainHeadSeq,
+    chainHeadHashHex: context.chainHeadHashHex,
+    actorUserId: context.authorUserId,
+    actorKeyFingerprintHex: input.authorKeyFingerprintHex,
+    requiredRoleRank: requiredRoleRank(context),
+    reasons: HEAD_AUTHORIZATION_REASONS,
+  });
 }
 
 function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
@@ -149,39 +147,25 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
 export async function verifyDistributedMetaStatement(
   input: DistributedMetaStatementInput,
 ): Promise<CryptoResult<{ readonly signedBytesHashHex: string }>> {
-  const field = metaContextInvalidField(input.context);
+  const field =
+    metaContextInvalidField(input.context) ??
+    distributedInputInvalidField({
+      actorKeyFingerprintHex: input.authorKeyFingerprintHex,
+      actorKeyFingerprintField: "authorKeyFingerprintHex",
+      signatureHex: input.signatureHex,
+      predecessorSignedBytesHashHex: input.predecessor?.signedBytesHashHex,
+    });
   if (field !== null) {
     return invalidInput(field);
   }
-  if (!isLowercaseHexOfLength(input.authorKeyFingerprintHex, FINGERPRINT_HEX_LENGTH)) {
-    return invalidInput("authorKeyFingerprintHex");
-  }
-  if (!isLowercaseHexOfLength(input.signatureHex, SIGNATURE_HEX_LENGTH)) {
-    return invalidInput("signatureHex");
-  }
-  if (
-    input.predecessor !== undefined &&
-    !isLowercaseHexOfLength(input.predecessor.signedBytesHashHex, SHA256_HEX_LENGTH)
-  ) {
-    return invalidInput("predecessor signedBytesHashHex");
-  }
 
-  // 1. 鍵の選択(§6.3-1 前段): 履歴で author_user_id に束縛された鍵のうち FP
-  //    一致。宣言ヘッド時点の有効束縛の検査は署名検証の後(headStateReason)—
-  //    署名壊れを先に判定する検査順のため、選択自体は全 tenure を対象にする
-  const sigPubHex = input.history.sigKeyByFingerprint(
-    input.context.authorUserId,
-    input.authorKeyFingerprintHex,
-  );
-  if (sigPubHex === undefined) {
-    return metaInvalid("author-unknown");
-  }
-  const keyBytes = decodeHex(sigPubHex);
-  if (keyBytes === null) {
-    // 検証済みチェーン由来の鍵は常に正規形 hex(到達しない防衛線)
-    return metaInvalid("author-unknown");
-  }
-  const imported = await importSigningPublicKey(keyBytes);
+  // 1. 鍵の選択(§6.3-1 前段。検査順は value-verify と同一): validate.ts の共有コア
+  const imported = await importActorKeyByFingerprint({
+    history: input.history,
+    actorUserId: input.context.authorUserId,
+    actorKeyFingerprintHex: input.authorKeyFingerprintHex,
+    onUnknown: { kind: "MetaStatementInvalid", reason: "author-unknown" },
+  });
   if (!imported.ok) {
     return imported;
   }
