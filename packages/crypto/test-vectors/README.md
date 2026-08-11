@@ -7,7 +7,7 @@ CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし�
 
 | ファイル | 対象 | 期待値の算出(参照ツール) |
 |---|---|---|
-| `hpke/rfc9180-base-x25519-hkdfsha256-aes256gcm.json` | HPKE 層(RFC 9180 公式ベクター。本スイート Base mode の抽出) | IETF cfrg/draft-irtf-cfrg-hpke の test-vectors.json から抽出(spikes/spike-c で抽出・4 環境で検証済みのコピー) |
+| `hpke/rfc9180-base-x25519-hkdfsha256-aes256gcm.json` | HPKE 層(RFC 9180 公式ベクター。本スイート Base mode の抽出) | IETF cfrg/draft-irtf-cfrg-hpke の test-vectors.json から抽出(抽出・4 環境検証の経緯は docs/notes/spike-c.md 参照) |
 | `encoding.json` | §2.1 長さプレフィックス付きエンコーディング | Python 3 標準ライブラリ(`tools/generate_reference.py`) |
 | `variable-encryption.json` | §4 変数値の AES-256-GCM + AAD | pyca/cryptography(同上) |
 | `chain-entries.json` | §6 チェーンエントリ正規化 + Ed25519 署名 + ハッシュ連鎖 | pyca/cryptography(同上) |
@@ -79,4 +79,4 @@ chain-entries.json の `valid_appends`(セッション 10 追加)は、正規チ
 
 ## 実装時の CI(§11)
 
-ラウンドトリップ + 本ベクターの検証はブラウザ(Chromium)/ Bun / workerd の 3 環境すべてで実行する。vitest 構成の雛形は spikes/spike-c(node / workerd / browser の 3 プロジェクト + Bun 直接実行)を参照。
+ラウンドトリップ + 本ベクターの検証はブラウザ(Chromium)/ Bun / workerd の 3 環境すべてで実行する。vitest 構成の実体は `packages/crypto` の `vitest.config.ts`(node)/ `vitest.browser.config.ts`(browser)/ `vitest.workerd.config.ts`(workerd)+ `test/run-in-bun.ts`(Bun 直接実行)。

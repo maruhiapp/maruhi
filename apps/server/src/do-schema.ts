@@ -1,4 +1,4 @@
-// プロジェクト DO(SQLite)のテーブル定義。
+// プロジェクト DO(SQLite)のテーブル定義とマイグレーション機構。
 //
 // - chain_entries: メンバーシップチェーンの append-only 保存(CRYPTO_SPEC §6.4)
 // - environments / variables / variable_versions / dek_wraps: データプレーン
@@ -6,11 +6,15 @@
 //   表現し、ID の再利用を禁止する(§12-1)。暗号文・ラップは即時削除する
 // - audit_events: 監査ログ(AUDIT_SPEC §5.1 のスキーマそのまま)。seq は
 //   INSERT ... SELECT MAX(seq)+1 による単調・無欠番の採番
+// - schema_meta: 適用済みマイグレーションの version(1 行)。maruhi はセルフ
+//   ホスト配布物のため、公開後は既存 DO のスキーマ変更を順序付きステップとして
+//   PROJECT_DO_MIGRATIONS に追記する(IF NOT EXISTS の DDL 再適用では既存
+//   テーブルに列を追加できない)
 //
 // Drizzle(drizzle-orm/durable-sqlite)は今回も見送り(セッション 05 の判断を
-// 継続。裁定は docs/notes/session-07.md): クエリは単純なキー参照のみで、DO の
-// マイグレーションはコンストラクタでの DDL 適用と等価になるため、依存を増やさず
-// 素の SQL を Store サービス境界内に閉じる。D1 側(db.package)は引き続き Drizzle。
+// 継続。裁定は docs/notes/session-07.md): クエリは単純なキー参照のみで、依存を
+// 増やさず素の SQL を Store サービス境界内に閉じる。D1 側(db.package)は
+// 引き続き Drizzle。
 
 const PROJECT_DO_DDL = [
   `CREATE TABLE IF NOT EXISTS chain_entries (
@@ -44,9 +48,7 @@ const PROJECT_DO_DDL = [
   // 検査・409 再試行の検証材料。配布しない)・署名・author(user_id + 受理
   // 時点のチェーン導出鍵 FP)・name・status・prev・宣言ヘッドを保存する。
   // 削除ステートメント(status deleted)も保存・配布し続ける(§12-4/-5 —
-  // 削除の否認・無断復活の検出材料)。すべて NOT NULL — backfill・nullable
-  // 遷移は作らない(公開前・適用済み環境なしの DDL 直接変更。古い
-  // .wrangler/state は破棄が必要 — session-15.md)
+  // 削除の否認・無断復活の検出材料)
   `CREATE TABLE IF NOT EXISTS variable_meta_statements (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -87,9 +89,7 @@ const PROJECT_DO_DDL = [
   // prev_value_sig_hash_hex(version 1 は空文字列)/ 宣言ヘッド(hash + seq)/
   // 署名 / サーバー再計算の signed_bytes ハッシュ(prev 検査と 409 再試行の
   // 検証材料 — 配布はしない)/ 受理時点の writer(user_id + チェーン導出鍵 FP)。
-  // signed bytes 本体・公開鍵は保存しない(座標とチェーンから再構成できる)。
-  // すべて NOT NULL — backfill・nullable 遷移は作らない(公開前・適用済み環境
-  // なしの DDL 直接変更。古い .wrangler/state は破棄が必要 — session-14.md)
+  // signed bytes 本体・公開鍵は保存しない(座標とチェーンから再構成できる)
   `CREATE TABLE IF NOT EXISTS variable_versions (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -110,9 +110,7 @@ const PROJECT_DO_DDL = [
      PRIMARY KEY (environment_id, variable_id, version)
    )`,
   // signature_hex / signer_*: DEK ラップの登録署名(CRYPTO_SPEC §5.1)と署名者。
-  // 配布時のクライアント検証(署名者のチェーン履歴上の鍵と突合)を可能にする。
-  // DDL 直接変更(公開前・適用済み環境なし。ローカル dev の .wrangler/state は
-  // このブランチで動かす前に破棄が必要 — session-08.md §3 と同じ注意)
+  // 配布時のクライアント検証(署名者のチェーン履歴上の鍵と突合)を可能にする
   `CREATE TABLE IF NOT EXISTS dek_wraps (
      environment_id TEXT NOT NULL,
      epoch INTEGER NOT NULL,
@@ -155,23 +153,98 @@ const PROJECT_DO_DDL = [
 ];
 
 /**
- * プロジェクト DO の全テーブル名。テストの beforeEach リセット(名指しの DELETE
- * 一覧)がここを参照する — テーブルを追加したら必ずこの配列にも追加すること。
+ * A single ordered migration step for the project DO's SQLite schema.
+ *
+ * `tables` lists the tables this step introduces — the test reset helper
+ * derives its DELETE targets from these, so declare every new table here.
  */
-export const PROJECT_DO_TABLES = [
-  "chain_entries",
-  "environments",
-  "variables",
-  "variable_meta_statements",
-  "environment_meta_statements",
-  "variable_versions",
-  "dek_wraps",
-  "audit_events",
-] as const;
+export interface ProjectDoMigration {
+  readonly tables: readonly string[];
+  readonly apply: (sql: SqlStorage) => void;
+}
 
-/** DO コンストラクタから呼ぶ(冪等)。全テーブル・索引を作成する。 */
-export function ensureProjectDoTables(sql: SqlStorage): void {
-  for (const statement of PROJECT_DO_DDL) {
-    sql.exec(statement);
+// 順序付きマイグレーションステップ。**末尾への追記のみ可**(適用済みステップの
+// 編集・並べ替え・削除は、外部にデプロイ済みの DO と不整合になるため禁止)。
+// 各ステップは「前ステップまで適用済みの DB」を前提に書いてよい(ALTER TABLE 等)。
+// 各ステップは「本体 + version 進め」を 1 トランザクション(transactionSync)で
+// 適用するため、途中で例外が起きてもステップ全体がロールバックされ、次回
+// コンストラクタ実行時に失敗したステップの先頭から再実行される(部分適用の
+// DDL は残らないので、ステップ自体を冪等に書く必要はない)。
+// 例外: 本機構導入(step 1)以前にデプロイされた DO は「テーブルあり・version
+// 行なし」で version 0 と読まれるため、step 1 に限り IF NOT EXISTS で既存
+// テーブルと共存できる形を維持すること。
+export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
+  {
+    tables: [
+      "chain_entries",
+      "environments",
+      "variables",
+      "variable_meta_statements",
+      "environment_meta_statements",
+      "variable_versions",
+      "dek_wraps",
+      "audit_events",
+    ],
+    apply(sql) {
+      for (const statement of PROJECT_DO_DDL) {
+        sql.exec(statement);
+      }
+    },
+  },
+];
+
+/**
+ * All project-DO table names, derived from the migration steps. The test
+ * reset helper (test/support/project-do.ts) uses this as its DELETE list.
+ * `schema_meta` is intentionally excluded: the applied-version row must
+ * survive test resets so migrations are not re-applied to a populated schema.
+ */
+export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMap(
+  (migration) => migration.tables,
+);
+
+// version は「適用済みステップ数」(0 = 未適用、PROJECT_DO_MIGRATIONS.length = 最新)
+const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  version INTEGER NOT NULL
+)`;
+
+/** Read the number of applied migration steps (0 for a fresh database). */
+export function readProjectDoSchemaVersion(sql: SqlStorage): number {
+  sql.exec(SCHEMA_META_DDL);
+  const rows = sql.exec("SELECT version FROM schema_meta WHERE id = 1").toArray();
+  const row = rows[0];
+  return row === undefined ? 0 : Number(row.version);
+}
+
+/**
+ * Apply the not-yet-applied migration steps in order. Each step and its
+ * version bump run in one synchronous transaction, so a failing step rolls
+ * back entirely and is retried from its start on the next call. Applied steps
+ * are skipped, so calling this on an up-to-date database is a no-op.
+ */
+export function applyProjectDoMigrations(
+  storage: DurableObjectStorage,
+  migrations: readonly ProjectDoMigration[],
+): void {
+  const sql = storage.sql;
+  const current = readProjectDoSchemaVersion(sql);
+  for (const [index, migration] of migrations.entries()) {
+    if (index < current) {
+      continue;
+    }
+    storage.transactionSync(() => {
+      migration.apply(sql);
+      sql.exec(
+        `INSERT INTO schema_meta (id, version) VALUES (1, ?)
+         ON CONFLICT (id) DO UPDATE SET version = excluded.version`,
+        index + 1,
+      );
+    });
   }
+}
+
+/** DO コンストラクタから呼ぶ(冪等)。未適用ステップだけを順に適用する。 */
+export function ensureProjectDoTables(storage: DurableObjectStorage): void {
+  applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
 }
