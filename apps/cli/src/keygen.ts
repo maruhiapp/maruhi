@@ -34,6 +34,10 @@ import {
   loadMasterKeys,
 } from "./session.ts";
 
+// WebCrypto の reject は defect にせず型付きの失敗へ写す(未検査の外部
+// メッセージを「内部エラー」として端末に流さない)
+const keygenFailed = () => cliError("鍵の生成に失敗しました(暗号処理エラー)");
+
 /** `maruhi key generate`: create and store the master keypair for the session user. */
 export function keyGenerateOp(input: {
   readonly session: CliSession;
@@ -47,12 +51,30 @@ export function keyGenerateOp(input: {
       "master 鍵は既に存在します。上書きすると既存プロジェクトの復号可能性を失うため拒否します(`maruhi key show` で確認できます)",
     );
 
-    const encPair = yield* Effect.promise(() => generateEncryptionKeyPair({ extractable: true }));
-    const sigPair = yield* Effect.promise(() => generateSigningKeyPair({ extractable: true }));
-    const encPub = yield* Effect.promise(() => exportEncryptionPublicKey(encPair.publicKey));
-    const sigPub = yield* Effect.promise(() => exportSigningPublicKey(sigPair.publicKey));
-    const encSk = yield* Effect.promise(() => exportEncryptionPrivateKey(encPair.privateKey));
-    const sigSeed = yield* Effect.promise(() => exportSigningPrivateSeed(sigPair.privateKey));
+    const encPair = yield* Effect.tryPromise({
+      try: () => generateEncryptionKeyPair({ extractable: true }),
+      catch: keygenFailed,
+    });
+    const sigPair = yield* Effect.tryPromise({
+      try: () => generateSigningKeyPair({ extractable: true }),
+      catch: keygenFailed,
+    });
+    const encPub = yield* Effect.tryPromise({
+      try: () => exportEncryptionPublicKey(encPair.publicKey),
+      catch: keygenFailed,
+    });
+    const sigPub = yield* Effect.tryPromise({
+      try: () => exportSigningPublicKey(sigPair.publicKey),
+      catch: keygenFailed,
+    });
+    const encSk = yield* Effect.tryPromise({
+      try: () => exportEncryptionPrivateKey(encPair.privateKey),
+      catch: keygenFailed,
+    });
+    const sigSeed = yield* Effect.tryPromise({
+      try: () => exportSigningPrivateSeed(sigPair.privateKey),
+      catch: keygenFailed,
+    });
     if (!encSk.ok || !sigSeed.ok) {
       return yield* Effect.fail(cliError("鍵の生成に失敗しました(秘密鍵をシリアライズできません)"));
     }

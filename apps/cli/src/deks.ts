@@ -45,6 +45,11 @@ function signerKeyFor(verified: VerifiedProject, wrap: RecipientDek): Uint8Array
   return match === undefined ? null : decodeHex(match.sigPubHex);
 }
 
+/** 1 ラップの検証・開封結果(タグ付き Result — instanceof 判別をしない)。 */
+type UnwrapResult =
+  | { readonly kind: "ok"; readonly dek: Uint8Array }
+  | { readonly kind: "rejected"; readonly message: string };
+
 async function verifyAndUnwrapOne(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -52,17 +57,18 @@ async function verifyAndUnwrapOne(input: {
   readonly wrap: RecipientDek;
   /** チェーン導出の当該 (environment, epoch) のコミットメント(§5.2)。 */
   readonly expectedCommitmentHex: string;
-}): Promise<Uint8Array | { readonly failure: string }> {
+}): Promise<UnwrapResult> {
   const { verified, environmentId, recipient, wrap } = input;
   const signerKeyBytes = signerKeyFor(verified, wrap);
   if (signerKeyBytes === null) {
     return {
-      failure: `署名者がチェーン履歴に存在しません(signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
+      kind: "rejected",
+      message: `署名者がチェーン履歴に存在しません(signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
     };
   }
   const signerKey = await importSigningPublicKey(signerKeyBytes);
   if (!signerKey.ok) {
-    return { failure: "署名者の公開鍵を読み込めません" };
+    return { kind: "rejected", message: "署名者の公開鍵を読み込めません" };
   }
   const verifiedSignature = await verifyDekWrapSignature({
     context: {
@@ -81,13 +87,14 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!verifiedSignature.ok) {
     return {
-      failure: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
+      kind: "rejected",
+      message: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
     };
   }
   const enc = decodeHex(wrap.encHex);
   const ciphertext = decodeHex(wrap.ciphertextHex);
   if (enc === null || ciphertext === null) {
-    return { failure: `DEK ラップの形式が不正です(epoch=${wrap.epoch})` };
+    return { kind: "rejected", message: `DEK ラップの形式が不正です(epoch=${wrap.epoch})` };
   }
   const dek = await unwrapDek({
     recipientKeyPair: recipient.encKeyPair,
@@ -101,7 +108,8 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!dek.ok) {
     return {
-      failure: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
+      kind: "rejected",
+      message: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
     };
   }
   // §5.2 / §6.3: コミットメント照合に成功するまで DEK を使用しない。座標は
@@ -118,10 +126,11 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!commitment.ok) {
     return {
-      failure: `DEK がチェーン上のコミットメントと一致しません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。毒ラップ(偽 DEK)の可能性があります — 管理者による修復(ラップ削除 → 再登録)が必要です`,
+      kind: "rejected",
+      message: `DEK がチェーン上のコミットメントと一致しません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。毒ラップ(偽 DEK)の可能性があります — 管理者による修復(ラップ削除 → 再登録)が必要です`,
     };
   }
-  return dek.value;
+  return { kind: "ok", dek: dek.value };
 }
 
 /** チェーン導出の環境状態(§6.2)。未作成の環境の配布はサーバー応答とチェーンの矛盾。 */
@@ -191,19 +200,22 @@ function verifyAndUnwrapDeks(input: {
           ),
         );
       }
-      const result = yield* Effect.promise(() =>
-        verifyAndUnwrapOne({
-          verified: input.verified,
-          environmentId: input.environmentId,
-          recipient: input.recipient,
-          wrap,
-          expectedCommitmentHex,
-        }),
-      );
-      if (!(result instanceof Uint8Array)) {
-        return yield* Effect.fail(cliError(result.failure));
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          verifyAndUnwrapOne({
+            verified: input.verified,
+            environmentId: input.environmentId,
+            recipient: input.recipient,
+            wrap,
+            expectedCommitmentHex,
+          }),
+        catch: () =>
+          cliError(`DEK ラップの検証が失敗しました(epoch=${wrap.epoch} — 暗号処理エラー)`),
+      });
+      if (result.kind === "rejected") {
+        return yield* Effect.fail(cliError(result.message));
       }
-      byEpoch.set(wrap.epoch, result);
+      byEpoch.set(wrap.epoch, result.dek);
     }
     return byEpoch;
   });

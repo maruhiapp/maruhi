@@ -122,14 +122,18 @@ export function signCreateStatement(
 ): Effect.Effect<SignedCreateStatement<WireCreateStatementBase>, CliError> {
   return Effect.gen(function* () {
     const context = createStatementContext(input);
-    const signature = yield* Effect.promise(() =>
-      signMetaStatement({ context, signingKey: input.signingKey }),
-    );
+    const signature = yield* Effect.tryPromise({
+      try: () => signMetaStatement({ context, signingKey: input.signingKey }),
+      catch: () => cliError("メタステートメントの署名に失敗しました"),
+    });
     if (!signature.ok) {
       return yield* Effect.fail(cliError("メタステートメントの署名に失敗しました"));
     }
     // 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3)
-    const metaSigHash = yield* Effect.promise(() => computeMetaSignedBytesHash(context));
+    const metaSigHash = yield* Effect.tryPromise({
+      try: () => computeMetaSignedBytesHash(context),
+      catch: () => cliError("メタステートメント署名対象のハッシュ計算に失敗しました"),
+    });
     if (!metaSigHash.ok) {
       return yield* Effect.fail(cliError("メタステートメント署名対象のハッシュ計算に失敗しました"));
     }

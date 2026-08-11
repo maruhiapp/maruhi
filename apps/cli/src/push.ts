@@ -202,9 +202,10 @@ function encryptAndSignPayload(input: {
     version: input.version,
   };
   return Effect.gen(function* () {
-    const encrypted = yield* Effect.promise(() =>
-      encryptVariable({ dek: input.dek, context, plaintext: input.value }),
-    );
+    const encrypted = yield* Effect.tryPromise({
+      try: () => encryptVariable({ dek: input.dek, context, plaintext: input.value }),
+      catch: () => cliError("値の暗号化に失敗しました"),
+    });
     if (!encrypted.ok) {
       return yield* Effect.fail(cliError("値の暗号化に失敗しました"));
     }
@@ -220,17 +221,19 @@ function encryptAndSignPayload(input: {
       chainHeadHashHex: input.verified.state.headHashHex,
       chainHeadSeq: input.verified.state.headSeq,
     } as const;
-    const signature = yield* Effect.promise(() =>
-      signValue({ context: signatureContext, signingKey: input.signingKey }),
-    );
+    const signature = yield* Effect.tryPromise({
+      try: () => signValue({ context: signatureContext, signingKey: input.signingKey }),
+      catch: () => cliError("値署名の作成に失敗しました"),
+    });
     if (!signature.ok) {
       return yield* Effect.fail(cliError("値署名の作成に失敗しました"));
     }
     // 自分の署名対象の signed bytes ハッシュ(受理されたらローカル床に昇格する
     // — サーバー申告ではなく自計算値。次 version の prev の根拠と同じ姿勢)
-    const signedBytesHash = yield* Effect.promise(() =>
-      computeValueSignedBytesHash(signatureContext),
-    );
+    const signedBytesHash = yield* Effect.tryPromise({
+      try: () => computeValueSignedBytesHash(signatureContext),
+      catch: () => cliError("値署名対象のハッシュ計算に失敗しました"),
+    });
     if (!signedBytesHash.ok) {
       return yield* Effect.fail(cliError("値署名対象のハッシュ計算に失敗しました"));
     }

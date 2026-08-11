@@ -105,22 +105,25 @@ export function pullVariables(input: {
           cliError(`変数 ${displayText(variable.name)} の暗号文形式が不正です`),
         );
       }
-      const plaintext = yield* Effect.promise(() =>
-        decryptVariable({
-          dek,
-          // 座標(project / environment / variable)は自前の検証済み値。
-          // epoch / version は値署名で検証済みの申告値(この座標に束縛される)
-          context: {
-            projectId: verified.projectId,
-            environmentId: input.environmentId,
-            epoch: variable.epoch,
-            variableId: variable.variableId,
-            version: variable.version,
-          },
-          nonce,
-          ciphertext,
-        }),
-      );
+      const plaintext = yield* Effect.tryPromise({
+        try: () =>
+          decryptVariable({
+            dek,
+            // 座標(project / environment / variable)は自前の検証済み値。
+            // epoch / version は値署名で検証済みの申告値(この座標に束縛される)
+            context: {
+              projectId: verified.projectId,
+              environmentId: input.environmentId,
+              epoch: variable.epoch,
+              variableId: variable.variableId,
+              version: variable.version,
+            },
+            nonce,
+            ciphertext,
+          }),
+        catch: () =>
+          cliError(`変数 ${displayText(variable.name)} の復号処理が失敗しました(暗号処理エラー)`),
+      });
       if (!plaintext.ok) {
         return yield* Effect.fail(
           cliError(

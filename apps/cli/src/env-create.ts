@@ -42,6 +42,11 @@ import type { VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 
+/** 1 ラップの生成結果(実理由コード付きのタグ付き Result — 複数原因を 1 汎用文言に潰さない)。 */
+type WrapBuildResult =
+  | { readonly kind: "ok"; readonly wrap: WrappedDek }
+  | { readonly kind: "failed"; readonly reason: string };
+
 async function wrapAndSignFor(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -50,15 +55,15 @@ async function wrapAndSignFor(input: {
   readonly member: ChainMember;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Promise<WrappedDek | null> {
+}): Promise<WrapBuildResult> {
   const { verified, environmentId, epoch, dek, member } = input;
   const recipientKeyBytes = decodeHex(member.encPubHex);
   if (recipientKeyBytes === null) {
-    return null;
+    return { kind: "failed", reason: "受信者の enc 公開鍵 hex を復号できません" };
   }
   const recipientKey = await importEncryptionPublicKey(recipientKeyBytes);
   if (!recipientKey.ok) {
-    return null;
+    return { kind: "failed", reason: "受信者の enc 公開鍵を読み込めません" };
   }
   const wrapped = await wrapDek({
     recipientPublicKey: recipientKey.value,
@@ -71,7 +76,7 @@ async function wrapAndSignFor(input: {
     },
   });
   if (!wrapped.ok) {
-    return null;
+    return { kind: "failed", reason: "HPKE ラップに失敗しました" };
   }
   const encHex = encodeHex(wrapped.value.enc);
   const ciphertextHex = encodeHex(wrapped.value.ciphertext);
@@ -90,16 +95,19 @@ async function wrapAndSignFor(input: {
     signingKey: input.signingKeyPair.privateKey,
   });
   if (!signature.ok) {
-    return null;
+    return { kind: "failed", reason: "登録署名の作成に失敗しました" };
   }
   return {
-    suite: SUITE_ID,
-    epoch,
-    recipientUserId: member.userId,
-    recipientEncPubHex: member.encPubHex,
-    encHex,
-    ciphertextHex,
-    signatureHex: signature.value,
+    kind: "ok",
+    wrap: {
+      suite: SUITE_ID,
+      epoch,
+      recipientUserId: member.userId,
+      recipientEncPubHex: member.encPubHex,
+      encHex,
+      ciphertextHex,
+      signatureHex: signature.value,
+    },
   };
 }
 
@@ -122,13 +130,17 @@ function buildWrapSetForMembers(input: {
     );
     const wraps: WrappedDek[] = [];
     for (const member of members) {
-      const wrap = yield* Effect.promise(() => wrapAndSignFor({ ...input, member }));
-      if (wrap === null) {
+      const built = yield* Effect.tryPromise({
+        try: () => wrapAndSignFor({ ...input, member }),
+        catch: () =>
+          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成が失敗しました(暗号処理エラー)`),
+      });
+      if (built.kind === "failed") {
         return yield* Effect.fail(
-          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成に失敗しました`),
+          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成に失敗しました(${built.reason})`),
         );
       }
-      wraps.push(wrap);
+      wraps.push(built.wrap);
     }
     return wraps;
   });
@@ -186,26 +198,28 @@ function signCreateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "create_environment" }, CliError> {
   return Effect.gen(function* () {
-    const signed = yield* Effect.promise(() =>
-      signChainEntry({
-        entry: {
-          suite: SUITE_ID,
-          seq: input.verified.state.headSeq + 1,
-          prevHashHex: input.verified.state.headHashHex,
-          op: "create_environment",
-          actor: {
-            userId: input.member.userId,
-            keyFingerprintHex: input.member.keyFingerprintHex,
+    const signed = yield* Effect.tryPromise({
+      try: () =>
+        signChainEntry({
+          entry: {
+            suite: SUITE_ID,
+            seq: input.verified.state.headSeq + 1,
+            prevHashHex: input.verified.state.headHashHex,
+            op: "create_environment",
+            actor: {
+              userId: input.member.userId,
+              keyFingerprintHex: input.member.keyFingerprintHex,
+            },
+            payload: {
+              environmentId: input.environmentId,
+              dekCommitmentHex: input.dekCommitmentHex,
+            },
+            timestampMs: Date.now(),
           },
-          payload: {
-            environmentId: input.environmentId,
-            dekCommitmentHex: input.dekCommitmentHex,
-          },
-          timestampMs: Date.now(),
-        },
-        signingKey: input.signingKeyPair.privateKey,
-      }),
-    );
+          signingKey: input.signingKeyPair.privateKey,
+        }),
+      catch: () => cliError("create_environment エントリの署名に失敗しました"),
+    });
     if (!signed.ok) {
       return yield* Effect.fail(cliError("create_environment エントリの署名に失敗しました"));
     }
@@ -245,17 +259,19 @@ export function envCreateOp(input: {
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
     const name = input.name.normalize("NFC");
     const dek = generateDek();
-    const commitment = yield* Effect.promise(() =>
-      computeDekCommitment({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.verified.projectId,
-          environmentId: input.environmentId,
-          epoch: 1,
-        },
-        dek,
-      }),
-    );
+    const commitment = yield* Effect.tryPromise({
+      try: () =>
+        computeDekCommitment({
+          context: {
+            suite: SUITE_ID,
+            projectId: input.verified.projectId,
+            environmentId: input.environmentId,
+            epoch: 1,
+          },
+          dek,
+        }),
+      catch: () => cliError("DEK コミットメントの計算に失敗しました"),
+    });
     if (!commitment.ok) {
       return yield* Effect.fail(cliError("DEK コミットメントの計算に失敗しました"));
     }
