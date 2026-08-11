@@ -2,8 +2,9 @@
   "clone_groups": [
     "apps/server/src/data-programs.ts:1031-1041|apps/server/src/data-programs.ts:1078-1088",
     "apps/server/src/data-programs.ts:1148-1155|apps/server/src/data-programs.ts:1192-1199",
-    "apps/server/src/handlers-environments.ts:148-159|apps/server/src/handlers-variables.ts:173-182",
-    "apps/server/src/handlers-variables.ts:150-163|apps/server/src/handlers-variables.ts:179-192",
+    "apps/server/src/handlers-environments.ts:102-112|apps/server/src/handlers-environments.ts:84-92",
+    "apps/server/src/handlers-environments.ts:96-107|apps/server/src/handlers-variables.ts:134-143",
+    "apps/server/src/handlers-variables.ts:120-131|apps/server/src/handlers-variables.ts:140-151",
     "packages/crypto/test/checks/metadata-signature.ts:118-130|packages/crypto/test/checks/value-signature.ts:87-99",
     "packages/crypto/test/checks/metadata-signature.ts:138-148|packages/crypto/test/checks/value-signature.ts:107-117",
     "packages/crypto/test/checks/metadata-signature.ts:268-278|packages/crypto/test/checks/value-signature.ts:210-220",
@@ -14,8 +15,9 @@
   "clone_fingerprints": [
     "dup:d35fd995:2",
     "dup:2f024bf4:2",
-    "dup:633d7ad6:2",
-    "dup:835bf399:2",
+    "dup:1d9cf7df:2",
+    "dup:57e34c80:2",
+    "dup:008f160f:2",
     "dup:e37a3791:2",
     "dup:19911378:2",
     "dup:c4ccd5f8:2",
