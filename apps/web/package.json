@@ -14,8 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@astryxdesign/core": "0.2.0",
-    "@astryxdesign/theme-neutral": "0.2.0",
+    "@astryxdesign/core": "0.3.0",
+    "@astryxdesign/theme-neutral": "0.3.0",
     "@funstack/router": "1.2.0",
     "@funstack/static": "1.2.0",
     "@stylexjs/stylex": "0.19.0",
@@ -23,8 +23,8 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@astryxdesign/build": "0.2.0",
-    "@astryxdesign/cli": "0.2.0",
+    "@astryxdesign/build": "0.3.0",
+    "@astryxdesign/cli": "0.3.0",
     "@babel/core": "8.0.1",
     "@stylexjs/babel-plugin": "0.19.0",
     "@stylexjs/eslint-plugin": "0.19.0",
