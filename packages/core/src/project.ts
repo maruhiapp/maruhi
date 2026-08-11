@@ -51,3 +51,13 @@ export const VariableIdSchema = Schema.String.check(
 
 /** Variable id: a stable client-issued identifier (rename-safe, used in AADs). */
 export type VariableId = typeof VariableIdSchema.Type;
+
+/** Runtime guard matching {@link EnvironmentIdSchema}. */
+export function isEnvironmentId(value: string): value is EnvironmentId {
+  return RESOURCE_ID_PATTERN.test(value);
+}
+
+/** Runtime guard matching {@link VariableIdSchema}. */
+export function isVariableId(value: string): value is VariableId {
+  return RESOURCE_ID_PATTERN.test(value);
+}
