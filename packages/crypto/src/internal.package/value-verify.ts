@@ -23,6 +23,7 @@ import type { CryptoResult, ValueInvalidReason } from "./errors.ts";
 import {
   distributedInputInvalidField,
   headAuthorizationReason,
+  type HeadAuthorizationReasons,
   importActorKeyByFingerprint,
   invalidInput,
   ROLE_RANK,
@@ -74,7 +75,7 @@ const HEAD_AUTHORIZATION_REASONS = {
   notMemberAtHead: "writer-not-member-at-head",
   keyMismatchAtHead: "writer-key-mismatch-at-head",
   roleInsufficientAtHead: "writer-role-insufficient-at-head",
-} as const satisfies Record<string, ValueInvalidReason>;
+} as const satisfies HeadAuthorizationReasons<ValueInvalidReason>;
 
 function headStateReason(input: DistributedValueInput): ValueInvalidReason | null {
   const { history, context } = input;

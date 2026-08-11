@@ -39,6 +39,7 @@ import {
 import {
   distributedInputInvalidField,
   headAuthorizationReason,
+  type HeadAuthorizationReasons,
   importActorKeyByFingerprint,
   invalidInput,
   ROLE_RANK,
@@ -91,7 +92,7 @@ const HEAD_AUTHORIZATION_REASONS = {
   notMemberAtHead: "author-not-member-at-head",
   keyMismatchAtHead: "author-key-mismatch-at-head",
   roleInsufficientAtHead: "author-role-insufficient-at-head",
-} as const satisfies Record<string, MetaInvalidReason>;
+} as const satisfies HeadAuthorizationReasons<MetaInvalidReason>;
 
 function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { history, context } = input;
