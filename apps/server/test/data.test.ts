@@ -6,6 +6,7 @@
 // 暗号文を使うのは「サーバーは中身を検証できない」ことを利用する受理ポリシー系
 // テストのみ(各テストに明記)。
 
+import { DekWrapExistsError, environmentsGroup, variablesGroup } from "@maruhi/api-schema";
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -23,8 +24,11 @@ import {
   verifyDistributedValue,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
+import { Cause, Effect, Exit } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { unwrapDataOutcome } from "../src/data-http.ts";
+import type { DataRejection } from "../src/data-plane.ts";
 import {
   metaVersionsExceeded,
   projectBytesExceeded,
@@ -3756,5 +3760,63 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       });
       expect(response.status).toBe(400);
     }
+  });
+});
+
+const rejectedOutcome = (rejection: DataRejection) => ({ kind: "rejected", rejection }) as const;
+
+describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome)", () => {
+  // DO 拒否はエンドポイントの契約宣言(api-schema の error: [...])から導出した
+  // 集合で選別される(手書きの allowed 列は存在しない)。ここでは宣言との
+  // 対応関係そのものを写像単体で固定する。dek-wrap-exists は現行チェーン規則
+  // (duplicate-environment / エポック単調性)の下では複合 create / rotate から
+  // 実際には到達しないため、HTTP 統合ではなくこの単体で契約を検証する
+
+  it("dek-wrap-exists は create / rotate の契約エラー(409 DekWrapExists)として返る", () => {
+    // 契約ギャップ修正: 従来は create / rotate の宣言・allowed に無く、チェーン
+    // 規則が緩んだ瞬間に defect(500)へ落ちる構造だった。宣言に加えたことで
+    // 409 の型付きエラーとして返る
+    for (const endpoint of [
+      environmentsGroup.endpoints.create,
+      environmentsGroup.endpoints.rotate,
+    ] as const) {
+      const error = Effect.runSync(
+        Effect.flip(
+          unwrapDataOutcome(
+            rejectedOutcome({ kind: "dek-wrap-exists", epoch: 2, recipientUserId: READER }),
+            projectId,
+            endpoint,
+          ),
+        ),
+      );
+      expect(error).toBeInstanceOf(DekWrapExistsError);
+      expect(error).toMatchObject({ epoch: 2, recipientUserId: READER });
+    }
+  });
+
+  it("契約外の拒否は defect(500)のまま(不変条件違反を型付きエラーに漏らさない)", () => {
+    // variables.pull の宣言は ProjectNotFound / Forbidden / EnvironmentNotFound
+    // のみ。version-conflict の拒否が漏れてきたら実装バグとして die する
+    const exit = Effect.runSyncExit(
+      unwrapDataOutcome(
+        rejectedOutcome({ kind: "version-conflict", currentVersion: 3 }),
+        projectId,
+        variablesGroup.endpoints.pull,
+      ),
+    );
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+  });
+
+  it("§11-2 の存在秘匿の畳み込み(not-member → 404 ProjectNotFound)も宣言内", () => {
+    const error = Effect.runSync(
+      Effect.flip(
+        unwrapDataOutcome(
+          rejectedOutcome({ kind: "not-member" }),
+          projectId,
+          variablesGroup.endpoints.pull,
+        ),
+      ),
+    );
+    expect(error).toMatchObject({ _tag: "ProjectNotFound", projectId });
   });
 });

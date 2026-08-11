@@ -7,7 +7,18 @@
 // 応答は実 crypto(support/crypto.ts)で組み立て、ワイヤ形は api-schema の
 // スキーマに一致させる。
 
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type Server } from "node:http";
+
+/**
+ * 応答書き込みに使う最小の構造型。@types/node の ServerResponse を直接使うと、
+ * 依存ツリーに複数バージョンの @types/node が共存したときに「片方にだけある
+ * メソッド」で構造不一致になる(26.1 / 26.2 の writeInformation)ため、
+ * 実際に使う 2 メソッドだけへ絞ってバージョン差から独立させる。
+ */
+interface ResponseWriter {
+  writeHead(status: number, headers: Record<string, string>): unknown;
+  end(payload: string): unknown;
+}
 
 /** One recorded request (body is parsed JSON when the content type is JSON). */
 export interface MockRequest {
@@ -52,7 +63,7 @@ function parseBody(raw: string, contentType: string): unknown {
   }
 }
 
-function writeResponse(response: ServerResponse, result: MockResponse): void {
+function writeResponse(response: ResponseWriter, result: MockResponse): void {
   const payload = result.json !== undefined ? JSON.stringify(result.json) : (result.bodyText ?? "");
   response.writeHead(result.status, {
     "content-type":
@@ -64,7 +75,7 @@ function writeResponse(response: ServerResponse, result: MockResponse): void {
 async function dispatch(
   chain: readonly MockHandler[],
   mockRequest: MockRequest,
-  response: ServerResponse,
+  response: ResponseWriter,
 ): Promise<void> {
   try {
     for (const handler of chain) {

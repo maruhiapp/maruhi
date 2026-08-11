@@ -2,25 +2,10 @@
 //
 // 判定順(§12-3): 認証(ミドルウェア)→ トークンスコープ(スコープ外 404 /
 // 水準不足 403)→ DO(メンバーシップ 404 / チェーン role 403 / 意味論的検査)。
-// 共通経路は data-http.ts の callProjectData。
+// 共通経路は data-http.ts の callProjectData。返しうるエラーの集合は各
+// エンドポイントの契約宣言(api-schema)から導出される(手書きの列挙は無い)。
 
-import {
-  ChainCapacityExceededError,
-  ChainEntryInvalidError,
-  ChainEntryTooLargeError,
-  ChainHeadConflictError,
-  DataLimitExceededError,
-  DekWrapRejectedError,
-  EnvironmentConflictError,
-  EnvironmentNotFoundError,
-  ForbiddenError,
-  maruhiApi,
-  MetaStatementRejectedError,
-  MetaVersionConflictError,
-  NameNotNfcError,
-  PayloadMismatchError,
-  ProjectNotFoundError,
-} from "@maruhi/api-schema";
+import { maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -36,15 +21,6 @@ import {
 } from "./data-http.ts";
 import type { EnvironmentSummaryValue } from "./data-plane.ts";
 
-// 複合リクエスト(§12-4)がチェーンエントリを運ぶため返しうるエラー群
-// (エラー契約の複合エンドポイントへの移動 — session-12 §6-8)
-const COMPOSITE_CHAIN_ERRORS = [
-  ChainHeadConflictError,
-  ChainEntryInvalidError,
-  ChainEntryTooLargeError,
-  ChainCapacityExceededError,
-] as const;
-
 /**
  * §12-4: チェーンエントリの actor・ラップの署名者は呼び出し主体と厳密一致。
  * actor の一致は worker が先行検査する(§11-1 の汎用 append と同じ受理ポリシー。
@@ -58,7 +34,7 @@ const ensureCompositeActor = (entry: ChainEntry) =>
 
 export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", (handlers) =>
   handlers
-    .handle("create", ({ params, payload }) =>
+    .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* ensureCompositeActor(payload.entry);
         // 複合内整合検査(§12-4)の worker 側: エントリ payload とステートメントの
@@ -67,19 +43,9 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
           environmentId: payload.entry.payload.environmentId,
         });
         return yield* callProjectData<EnvironmentChainResultValue>()({
+          endpoint,
           projectId: params.projectId,
           permission: "write",
-          allowed: [
-            ProjectNotFoundError,
-            ForbiddenError,
-            EnvironmentConflictError,
-            ...COMPOSITE_CHAIN_ERRORS,
-            PayloadMismatchError,
-            MetaStatementRejectedError,
-            NameNotNfcError,
-            DekWrapRejectedError,
-            DataLimitExceededError,
-          ],
           invoke: (stub, actor) =>
             stub.createEnvironment(actor, {
               parentHeadHashHex: payload.parentHeadHashHex,
@@ -90,21 +56,13 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         });
       }),
     )
-    .handle("rotate", ({ params, payload }) =>
+    .handle("rotate", ({ params, payload, endpoint }) =>
       ensureCompositeActor(payload.entry).pipe(
         Effect.andThen(
           callProjectData<EnvironmentChainResultValue>()({
+            endpoint,
             projectId: params.projectId,
             permission: "write",
-            allowed: [
-              ProjectNotFoundError,
-              ForbiddenError,
-              EnvironmentNotFoundError,
-              PayloadMismatchError,
-              ...COMPOSITE_CHAIN_ERRORS,
-              DekWrapRejectedError,
-              DataLimitExceededError,
-            ],
             invoke: (stub, actor) =>
               stub.rotateEpoch(actor, params.environmentId, {
                 parentHeadHashHex: payload.parentHeadHashHex,
@@ -115,33 +73,23 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         ),
       ),
     )
-    .handle("list", ({ params }) =>
+    .handle("list", ({ params, endpoint }) =>
       callProjectData<readonly EnvironmentSummaryValue[]>()({
+        endpoint,
         projectId: params.projectId,
         permission: "read",
-        allowed: [ProjectNotFoundError, ForbiddenError],
         invoke: (stub, actor) => stub.listEnvironments(actor),
       }).pipe(Effect.map((environments) => ({ environments }))),
     )
-    .handle("rename", ({ params, payload }) =>
+    .handle("rename", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
         });
         return yield* callProjectData<void>()({
+          endpoint,
           projectId: params.projectId,
           permission: "write",
-          allowed: [
-            ProjectNotFoundError,
-            ForbiddenError,
-            EnvironmentNotFoundError,
-            EnvironmentConflictError,
-            PayloadMismatchError,
-            MetaVersionConflictError,
-            MetaStatementRejectedError,
-            NameNotNfcError,
-            DataLimitExceededError,
-          ],
           invoke: (stub, actor) =>
             stub.renameEnvironment(
               actor,
@@ -151,7 +99,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         });
       }).pipe(Effect.as(noContent)),
     )
-    .handle("remove", ({ params, payload }) =>
+    .handle("remove", ({ params, payload, endpoint }) =>
       // 環境の削除は admin スコープ + チェーン role admin 以上(§12-3)。
       // 削除も署名付きステートメント(status deleted)を要する(§12-4)
       Effect.gen(function* () {
@@ -159,16 +107,9 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
           environmentId: params.environmentId,
         });
         return yield* callProjectData<void>()({
+          endpoint,
           projectId: params.projectId,
           permission: "admin",
-          allowed: [
-            ProjectNotFoundError,
-            ForbiddenError,
-            EnvironmentNotFoundError,
-            PayloadMismatchError,
-            MetaVersionConflictError,
-            MetaStatementRejectedError,
-          ],
           invoke: (stub, actor) =>
             stub.deleteEnvironment(
               actor,
