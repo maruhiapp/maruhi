@@ -1,6 +1,6 @@
 // テスト用の実 crypto フィクスチャ(@maruhi/crypto の公開 API のみ)。
 // 都度生成した鍵でチェーン署名・DEK ラップ・値暗号化まで実データを作る。
-// チェーン組立・ワイヤ値の共通コアは packages/crypto/test/support/fixture.ts
+// チェーン組立・ワイヤ値の共通コアは @maruhi/crypto/test-support
 // (server テスト支援と共有 — session-11 §5 裁定)。
 
 import type { ChainOperation, EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
@@ -23,23 +23,15 @@ import {
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
-
 import type {
   BuiltChain,
   LazyChainOperation,
   WireEncryptedPayload as SharedWireEncryptedPayload,
-} from "../../../../packages/crypto/test/support/fixture.ts";
-import {
-  buildChainWith,
-  hexBytes,
-  unwrapResult,
-} from "../../../../packages/crypto/test/support/fixture.ts";
+} from "@maruhi/crypto/test-support";
+import { buildChainWith, hexBytes, unwrapResult } from "@maruhi/crypto/test-support";
 
 export type { BuiltChain, LazyChainOperation };
-export {
-  hexBytes,
-  valueSignedBytesHashOf as valueHashOf,
-} from "../../../../packages/crypto/test/support/fixture.ts";
+export { hexBytes, valueSignedBytesHashOf as valueHashOf } from "@maruhi/crypto/test-support";
 
 /** A test user with freshly generated (exportable) master keys. */
 export interface TestUser {
