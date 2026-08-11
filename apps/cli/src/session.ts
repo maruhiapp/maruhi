@@ -35,7 +35,6 @@ export interface CliSession {
   /** Normalized server origin (keychain scoping key and API base URL). */
   readonly origin: string;
   readonly token: string;
-  readonly tokenSource: "env" | "keychain";
   readonly userId: string;
 }
 
@@ -139,7 +138,6 @@ export function resolveSession(
       return {
         origin,
         token: envToken,
-        tokenSource: "env",
         userId: me.userId,
       } satisfies CliSession;
     }
@@ -159,7 +157,6 @@ export function resolveSession(
     return {
       origin,
       token: record.token,
-      tokenSource: "keychain",
       userId: record.userId,
     } satisfies CliSession;
   });
