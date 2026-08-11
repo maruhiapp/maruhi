@@ -35,6 +35,7 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -130,14 +131,19 @@ function buildWrapSetForMembers(input: {
     );
     const wraps: WrappedDek[] = [];
     for (const member of members) {
+      // user_id はチェーン由来の自由文字列 — 端末へ出す前に必ず中和する
       const built = yield* Effect.tryPromise({
         try: () => wrapAndSignFor({ ...input, member }),
         catch: () =>
-          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成が失敗しました(暗号処理エラー)`),
+          cliError(
+            `メンバー ${displayText(member.userId)} 宛の DEK ラップ生成が失敗しました(暗号処理エラー)`,
+          ),
       });
       if (built.kind === "failed") {
         return yield* Effect.fail(
-          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成に失敗しました(${built.reason})`),
+          cliError(
+            `メンバー ${displayText(member.userId)} 宛の DEK ラップ生成に失敗しました(${built.reason})`,
+          ),
         );
       }
       wraps.push(built.wrap);

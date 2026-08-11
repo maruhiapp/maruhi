@@ -34,6 +34,7 @@ import {
 import { ChainInvalidError } from "@maruhi/core";
 import { HttpClientError } from "effect/unstable/http";
 
+import { displayText } from "./display.ts";
 import { CliError, cliError } from "./errors.ts";
 
 type Renderer = (error: unknown) => string | null;
@@ -135,14 +136,16 @@ const renderers: readonly Renderer[] = [
     (e) => `サーバーの受理上限を超えます(${e.resource} の上限 ${e.limit})`,
   ),
   when(isInstanceOf(DekWrapRejectedError), (e) => `DEK ラップ登録が拒否されました(${e.reason})`),
+  // recipientUserId はサーバー応答の自由文字列 — 端末へ出す前に中和する
   when(
     isInstanceOf(DekWrapExistsError),
     (e) =>
-      `DEK ラップが既に存在します(epoch=${e.epoch}, recipient=${e.recipientUserId})。上書きは禁止されています`,
+      `DEK ラップが既に存在します(epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})。上書きは禁止されています`,
   ),
   when(
     isInstanceOf(DekWrapNotFoundError),
-    (e) => `DEK ラップが見つかりません(epoch=${e.epoch}, recipient=${e.recipientUserId})`,
+    (e) =>
+      `DEK ラップが見つかりません(epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
   ),
   when(isInstanceOf(AuthFlowError), (e) => `認証フローに失敗しました(${e.reason})`),
   when(
