@@ -12,12 +12,11 @@
 // 署名の意味論は帰属であり鮮度証明ではない(タイムスタンプ・ノンスを含めない —
 // §5.1)。既存部品(Ed25519 + §2.1 LP エンコーダ)のみで構成する。
 
-import { decodeHex, encodeHex } from "./bytes.ts";
+import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
-import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
+import { invalidInput, isLowercaseHexOfLength, verifyEd25519Over } from "./validate.ts";
 
-const SIGNATURE_BYTES = 64;
 const ENC_PUB_HEX_LENGTH = 32 * 2;
 const HPKE_ENC_HEX_LENGTH = 32 * 2;
 const WRAP_CIPHERTEXT_HEX_LENGTH = 48 * 2;
@@ -129,21 +128,12 @@ export async function verifyDekWrapSignature(input: {
   if (field !== null) {
     return invalidInput(field);
   }
-  const signature = decodeHex(input.signatureHex);
-  if (signature === null || signature.length !== SIGNATURE_BYTES) {
-    return invalidInput("signatureHex");
-  }
-  try {
-    const valid = await crypto.subtle.verify(
-      "Ed25519",
-      input.signerPublicKey,
-      signature as BufferSource,
-      buildDekWrapSignatureBytes(input.context) as BufferSource,
-    );
-    return valid
-      ? { ok: true, value: undefined }
-      : { ok: false, error: { kind: "DekWrapSignatureInvalid" } };
-  } catch {
-    return { ok: false, error: { kind: "DekWrapSignatureInvalid" } };
-  }
+  return verifyEd25519Over(
+    buildDekWrapSignatureBytes(input.context),
+    input.signatureHex,
+    input.signerPublicKey,
+    {
+      kind: "DekWrapSignatureInvalid",
+    },
+  );
 }

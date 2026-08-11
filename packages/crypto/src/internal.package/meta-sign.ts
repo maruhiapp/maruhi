@@ -21,13 +21,12 @@
 // (履歴照会は chain-history.ts)が担い、本モジュールは正規化・署名・ハッシュの
 // 低水準のみ。
 
-import { decodeHex, encodeHex } from "./bytes.ts";
+import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
-import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
+import { invalidInput, isLowercaseHexOfLength, verifyEd25519Over } from "./validate.ts";
 
-const SIGNATURE_BYTES = 64;
 const SHA256_HEX_LENGTH = 32 * 2;
 
 /** Lifecycle status a metadata statement binds (CRYPTO_SPEC §4.2). */
@@ -241,21 +240,13 @@ export async function verifyMetaStatementSignature(input: {
   if (field !== null) {
     return invalidInput(field);
   }
-  const signature = decodeHex(input.signatureHex);
-  if (signature === null || signature.length !== SIGNATURE_BYTES) {
-    return invalidInput("signatureHex");
-  }
-  try {
-    const valid = await crypto.subtle.verify(
-      "Ed25519",
-      input.authorPublicKey,
-      signature as BufferSource,
-      buildMetaSignedBytes(input.context) as BufferSource,
-    );
-    return valid
-      ? { ok: true, value: undefined }
-      : { ok: false, error: { kind: "MetaStatementInvalid", reason: "signature-invalid" } };
-  } catch {
-    return { ok: false, error: { kind: "MetaStatementInvalid", reason: "signature-invalid" } };
-  }
+  return verifyEd25519Over(
+    buildMetaSignedBytes(input.context),
+    input.signatureHex,
+    input.authorPublicKey,
+    {
+      kind: "MetaStatementInvalid",
+      reason: "signature-invalid",
+    },
+  );
 }

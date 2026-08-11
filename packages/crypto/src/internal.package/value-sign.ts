@@ -19,9 +19,8 @@ import { decodeHex, encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
-import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
+import { invalidInput, isLowercaseHexOfLength, verifyEd25519Over } from "./validate.ts";
 
-const SIGNATURE_BYTES = 64;
 const NONCE_HEX_LENGTH = 12 * 2;
 const SHA256_HEX_LENGTH = 32 * 2;
 // AES-256-GCM の ct || tag はタグ 16 バイトが下限(AUTH_SPEC §12-2 のワイヤ形状)
@@ -212,21 +211,13 @@ export async function verifyValueSignature(input: {
   if (field !== null) {
     return invalidInput(field);
   }
-  const signature = decodeHex(input.signatureHex);
-  if (signature === null || signature.length !== SIGNATURE_BYTES) {
-    return invalidInput("signatureHex");
-  }
-  try {
-    const valid = await crypto.subtle.verify(
-      "Ed25519",
-      input.writerPublicKey,
-      signature as BufferSource,
-      buildValueSignedBytes(input.context) as BufferSource,
-    );
-    return valid
-      ? { ok: true, value: undefined }
-      : { ok: false, error: { kind: "ValueInvalid", reason: "signature-invalid" } };
-  } catch {
-    return { ok: false, error: { kind: "ValueInvalid", reason: "signature-invalid" } };
-  }
+  return verifyEd25519Over(
+    buildValueSignedBytes(input.context),
+    input.signatureHex,
+    input.writerPublicKey,
+    {
+      kind: "ValueInvalid",
+      reason: "signature-invalid",
+    },
+  );
 }
