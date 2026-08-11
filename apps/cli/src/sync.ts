@@ -127,7 +127,10 @@ export function syncProject(
       .pipe(Effect.mapError(toCliError));
 
     const entries: readonly ChainEntry[] = snapshot.entries;
-    const verified = yield* Effect.promise(() => verifyChainWithHistory(entries));
+    const verified = yield* Effect.tryPromise({
+      try: () => verifyChainWithHistory(entries),
+      catch: () => cliError("チェーン検証の実行に失敗しました(暗号処理エラー)"),
+    });
     if (!verified.ok) {
       const { seq, reason } =
         verified.error.kind === "ChainInvalid"
@@ -147,7 +150,10 @@ export function syncProject(
     if (genesis === undefined) {
       return yield* Effect.fail(cliError("チェーンが空です"));
     }
-    const genesisHash = yield* Effect.promise(() => computeChainEntryHash(genesis));
+    const genesisHash = yield* Effect.tryPromise({
+      try: () => computeChainEntryHash(genesis),
+      catch: () => cliError("genesis ハッシュの計算に失敗しました(暗号処理エラー)"),
+    });
     if (genesisHash !== projectId) {
       return yield* Effect.fail(
         cliError(

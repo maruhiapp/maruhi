@@ -524,25 +524,31 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   CliError
 > {
   return Effect.gen(function* () {
-    const environment = yield* Effect.promise(() =>
-      verifyEnvironmentStatement(verified, environmentId, pull.statement),
-    );
+    const environment = yield* Effect.tryPromise({
+      try: () => verifyEnvironmentStatement(verified, environmentId, pull.statement),
+      catch: () => cliError("環境ステートメントの検証が失敗しました(暗号処理エラー)"),
+    });
     if (environment.kind === "future") {
       return { kind: "future" } as const;
     }
     if (environment.kind === "rejected") {
       return yield* Effect.fail(cliError(environment.message));
     }
-    const actives = yield* Effect.promise(verifyActives);
+    const actives = yield* Effect.tryPromise({
+      try: verifyActives,
+      catch: () => cliError("変数ステートメント・値署名の検証が失敗しました(暗号処理エラー)"),
+    });
     if (actives.kind === "future") {
       return { kind: "future" } as const;
     }
     if (actives.kind === "rejected") {
       return yield* Effect.fail(cliError(actives.message));
     }
-    const deleted = yield* Effect.promise(() =>
-      verifyDeletedStatements(verified, environmentId, pull.deletedVariables, actives.value.ids),
-    );
+    const deleted = yield* Effect.tryPromise({
+      try: () =>
+        verifyDeletedStatements(verified, environmentId, pull.deletedVariables, actives.value.ids),
+      catch: () => cliError("削除済み変数ステートメントの検証が失敗しました(暗号処理エラー)"),
+    });
     if (deleted.kind === "future") {
       return { kind: "future" } as const;
     }

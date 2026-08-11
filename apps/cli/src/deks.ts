@@ -24,8 +24,10 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
@@ -43,6 +45,11 @@ function signerKeyFor(verified: VerifiedProject, wrap: RecipientDek): Uint8Array
   return match === undefined ? null : decodeHex(match.sigPubHex);
 }
 
+/** 1 ラップの検証・開封結果(タグ付き Result — instanceof 判別をしない)。 */
+type UnwrapResult =
+  | { readonly kind: "ok"; readonly dek: Uint8Array }
+  | { readonly kind: "rejected"; readonly message: string };
+
 async function verifyAndUnwrapOne(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -50,17 +57,18 @@ async function verifyAndUnwrapOne(input: {
   readonly wrap: RecipientDek;
   /** チェーン導出の当該 (environment, epoch) のコミットメント(§5.2)。 */
   readonly expectedCommitmentHex: string;
-}): Promise<Uint8Array | { readonly failure: string }> {
+}): Promise<UnwrapResult> {
   const { verified, environmentId, recipient, wrap } = input;
   const signerKeyBytes = signerKeyFor(verified, wrap);
   if (signerKeyBytes === null) {
     return {
-      failure: `署名者がチェーン履歴に存在しません(signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
+      kind: "rejected",
+      message: `署名者がチェーン履歴に存在しません(signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
     };
   }
   const signerKey = await importSigningPublicKey(signerKeyBytes);
   if (!signerKey.ok) {
-    return { failure: "署名者の公開鍵を読み込めません" };
+    return { kind: "rejected", message: "署名者の公開鍵を読み込めません" };
   }
   const verifiedSignature = await verifyDekWrapSignature({
     context: {
@@ -79,13 +87,14 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!verifiedSignature.ok) {
     return {
-      failure: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
+      kind: "rejected",
+      message: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
     };
   }
   const enc = decodeHex(wrap.encHex);
   const ciphertext = decodeHex(wrap.ciphertextHex);
   if (enc === null || ciphertext === null) {
-    return { failure: `DEK ラップの形式が不正です(epoch=${wrap.epoch})` };
+    return { kind: "rejected", message: `DEK ラップの形式が不正です(epoch=${wrap.epoch})` };
   }
   const dek = await unwrapDek({
     recipientKeyPair: recipient.encKeyPair,
@@ -99,7 +108,8 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!dek.ok) {
     return {
-      failure: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
+      kind: "rejected",
+      message: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
     };
   }
   // §5.2 / §6.3: コミットメント照合に成功するまで DEK を使用しない。座標は
@@ -116,10 +126,11 @@ async function verifyAndUnwrapOne(input: {
   });
   if (!commitment.ok) {
     return {
-      failure: `DEK がチェーン上のコミットメントと一致しません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。毒ラップ(偽 DEK)の可能性があります — 管理者による修復(ラップ削除 → 再登録)が必要です`,
+      kind: "rejected",
+      message: `DEK がチェーン上のコミットメントと一致しません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。毒ラップ(偽 DEK)の可能性があります — 管理者による修復(ラップ削除 → 再登録)が必要です`,
     };
   }
-  return dek.value;
+  return { kind: "ok", dek: dek.value };
 }
 
 /** チェーン導出の環境状態(§6.2)。未作成の環境の配布はサーバー応答とチェーンの矛盾。 */
@@ -149,7 +160,7 @@ export function requireChainEnvironment(
  * (チェーンに rotate_epoch がないエポックの DEK を受理すると、共謀サーバーが
  * 正規メンバー署名済みの攻撃者 DEK で偽値を注入できる)。
  */
-export function verifyAndUnwrapDeks(input: {
+function verifyAndUnwrapDeks(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly recipient: DekRecipient;
@@ -189,20 +200,80 @@ export function verifyAndUnwrapDeks(input: {
           ),
         );
       }
-      const result = yield* Effect.promise(() =>
-        verifyAndUnwrapOne({
-          verified: input.verified,
-          environmentId: input.environmentId,
-          recipient: input.recipient,
-          wrap,
-          expectedCommitmentHex,
-        }),
-      );
-      if (!(result instanceof Uint8Array)) {
-        return yield* Effect.fail(cliError(result.failure));
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          verifyAndUnwrapOne({
+            verified: input.verified,
+            environmentId: input.environmentId,
+            recipient: input.recipient,
+            wrap,
+            expectedCommitmentHex,
+          }),
+        catch: () =>
+          cliError(`DEK ラップの検証が失敗しました(epoch=${wrap.epoch} — 暗号処理エラー)`),
+      });
+      if (result.kind === "rejected") {
+        return yield* Effect.fail(cliError(result.message));
       }
-      byEpoch.set(wrap.epoch, result);
+      byEpoch.set(wrap.epoch, result.dek);
     }
     return byEpoch;
+  });
+}
+
+/**
+ * 検証済みビュー由来の環境鍵集合: チェーン導出の現エポックと、
+ * 同じビューで検証・開封した自分宛 DEK の対。
+ */
+export interface EnvironmentKeys {
+  readonly currentEpoch: number;
+  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+}
+
+/**
+ * Derives the environment keys — the chain-derived current epoch and the
+ * caller's verified, unwrapped DEKs — from one verified view, so that "the
+ * epoch and the DEK set come from the same verified view" is enforced by
+ * construction instead of by convention.
+ *
+ * 取得経路の優先順: cached(このセッションで検証済みの既知集合)に現エポックが
+ * あれば再取得しない → prefetched(値付き pull の同梱ラップ — §12-7 の二重取得
+ * 解消)があればそれを検証・開封 → どちらも無ければ listMine を取得して検証・
+ * 開封する。検証(§5.1 登録署名 + §5.2 コミットメント照合)は全経路で必須。
+ */
+export function environmentKeysFor(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly recipient: DekRecipient;
+  /** 値付き pull の同梱ラップ(verified と同じビューで検証する前提の生ワイヤ形)。 */
+  readonly prefetched?: readonly RecipientDek[] | null | undefined;
+  /** このセッションで検証・開封済みの既知集合(現エポックがあれば再取得しない)。 */
+  readonly cached?: ReadonlyMap<number, Uint8Array> | undefined;
+}): Effect.Effect<EnvironmentKeys, CliError> {
+  return Effect.gen(function* () {
+    // 現エポックはチェーン導出値(§6.2 — 環境未作成はここで止まる)
+    const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
+      .currentEpoch;
+    if (input.cached?.has(currentEpoch) === true) {
+      return { currentEpoch, deksByEpoch: input.cached };
+    }
+    const wire =
+      input.prefetched ??
+      (yield* input.client.deks
+        .listMine({
+          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+        })
+        .pipe(
+          Effect.mapError(toCliError),
+          Effect.map((response) => response.deks),
+        ));
+    const deksByEpoch = yield* verifyAndUnwrapDeks({
+      verified: input.verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      deks: wire,
+    });
+    return { currentEpoch, deksByEpoch };
   });
 }

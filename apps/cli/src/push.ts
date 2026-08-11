@@ -40,23 +40,22 @@ import {
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import {
-  computeMetaSignedBytesHash,
   computeValueSignedBytesHash,
   encodeHex,
   encryptVariable,
-  signMetaStatement,
   signValue,
   SUITE_ID,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type DekRecipient, requireChainEnvironment, verifyAndUnwrapDeks } from "./deks.ts";
+import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { VariableFloor } from "./floor.ts";
+import { signCreateStatement } from "./meta-statement.ts";
+import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import {
   pullVerifiedEnvironment,
@@ -182,29 +181,6 @@ function resolveTarget(input: {
   });
 }
 
-function fetchDeks(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly environmentId: EnvironmentId;
-  readonly recipient: DekRecipient;
-}): Effect.Effect<ReadonlyMap<number, Uint8Array>, CliError> {
-  return input.client.deks
-    .listMine({
-      params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-    })
-    .pipe(
-      Effect.mapError(toCliError),
-      Effect.flatMap((response) =>
-        verifyAndUnwrapDeks({
-          verified: input.verified,
-          environmentId: input.environmentId,
-          recipient: input.recipient,
-          deks: response.deks,
-        }),
-      ),
-    );
-}
-
 /** 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。 */
 function encryptAndSignPayload(input: {
   readonly verified: VerifiedProject;
@@ -226,9 +202,10 @@ function encryptAndSignPayload(input: {
     version: input.version,
   };
   return Effect.gen(function* () {
-    const encrypted = yield* Effect.promise(() =>
-      encryptVariable({ dek: input.dek, context, plaintext: input.value }),
-    );
+    const encrypted = yield* Effect.tryPromise({
+      try: () => encryptVariable({ dek: input.dek, context, plaintext: input.value }),
+      catch: () => cliError("値の暗号化に失敗しました"),
+    });
     if (!encrypted.ok) {
       return yield* Effect.fail(cliError("値の暗号化に失敗しました"));
     }
@@ -244,17 +221,19 @@ function encryptAndSignPayload(input: {
       chainHeadHashHex: input.verified.state.headHashHex,
       chainHeadSeq: input.verified.state.headSeq,
     } as const;
-    const signature = yield* Effect.promise(() =>
-      signValue({ context: signatureContext, signingKey: input.signingKey }),
-    );
+    const signature = yield* Effect.tryPromise({
+      try: () => signValue({ context: signatureContext, signingKey: input.signingKey }),
+      catch: () => cliError("値署名の作成に失敗しました"),
+    });
     if (!signature.ok) {
       return yield* Effect.fail(cliError("値署名の作成に失敗しました"));
     }
     // 自分の署名対象の signed bytes ハッシュ(受理されたらローカル床に昇格する
     // — サーバー申告ではなく自計算値。次 version の prev の根拠と同じ姿勢)
-    const signedBytesHash = yield* Effect.promise(() =>
-      computeValueSignedBytesHash(signatureContext),
-    );
+    const signedBytesHash = yield* Effect.tryPromise({
+      try: () => computeValueSignedBytesHash(signatureContext),
+      catch: () => cliError("値署名対象のハッシュ計算に失敗しました"),
+    });
     if (!signedBytesHash.ok) {
       return yield* Effect.fail(cliError("値署名対象のハッシュ計算に失敗しました"));
     }
@@ -274,8 +253,7 @@ function encryptAndSignPayload(input: {
   });
 }
 
-interface AcceptedAttempt {
-  readonly kind: "accepted";
+interface AcceptedPush {
   readonly accepted: {
     readonly variableId: string;
     readonly version: number;
@@ -283,41 +261,30 @@ interface AcceptedAttempt {
   };
   /** 受理された自分の書き込みの床レコード(自計算値 — サーバー echo でない)。 */
   readonly floorVariable: VariableFloor;
+  /** 受理時点の状態(床コミットのヘッド・変数 ID の源)。 */
+  readonly state: PushState;
 }
 
-type AttemptOutcome =
-  | AcceptedAttempt
+type PushConflict =
   | { readonly kind: "version-conflict"; readonly currentVersion: number }
   | { readonly kind: "epoch-conflict" }
   | { readonly kind: "variable-conflict" };
 
-/** CAS 競合(§12-5)をリトライ可能な結果へ分類し、それ以外は CliError に写す。 */
-function classifyAttempt<R>(
-  attempt: Effect.Effect<
-    { readonly variableId: string; readonly version: number; readonly epoch: number },
-    unknown,
-    R
-  >,
-  floorVariable: VariableFloor,
-): Effect.Effect<AttemptOutcome, CliError, R> {
-  return attempt.pipe(
-    Effect.map((accepted): AttemptOutcome => ({ kind: "accepted", accepted, floorVariable })),
-    Effect.catch((error): Effect.Effect<AttemptOutcome, CliError> => {
-      if (error instanceof VersionConflictError) {
-        return Effect.succeed({ kind: "version-conflict", currentVersion: error.currentVersion });
-      }
-      if (error instanceof EpochConflictError) {
-        return Effect.succeed({ kind: "epoch-conflict" });
-      }
-      if (error instanceof VariableConflictError || error instanceof MetaVersionConflictError) {
-        // create の name 競合 / metaVersion 競合(並行作成・並行 rename)は名前
-        // から解決し直す(§12-5 のメタ再試行 = 再取得 → 検証 → 再署名。ID 競合は
-        // 乱数 ID の衝突で実質起こらない — 起きたら再解決でも新 ID が振られる)
-        return Effect.succeed({ kind: "variable-conflict" });
-      }
-      return Effect.fail(toCliError(error));
-    }),
-  );
+/** CAS 競合(§12-5)のリトライ可能な分類。それ以外は null(定的エラー)。 */
+function classifyPushConflict(error: unknown): PushConflict | null {
+  if (error instanceof VersionConflictError) {
+    return { kind: "version-conflict", currentVersion: error.currentVersion };
+  }
+  if (error instanceof EpochConflictError) {
+    return { kind: "epoch-conflict" };
+  }
+  if (error instanceof VariableConflictError || error instanceof MetaVersionConflictError) {
+    // create の name 競合 / metaVersion 競合(並行作成・並行 rename)は名前
+    // から解決し直す(§12-5 のメタ再試行 = 再取得 → 検証 → 再署名。ID 競合は
+    // 乱数 ID の衝突で実質起こらない — 起きたら再解決でも新 ID が振られる)
+    return { kind: "variable-conflict" };
+  }
+  return null;
 }
 
 interface PushInput {
@@ -348,81 +315,29 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
   return Effect.gen(function* () {
     const resolved = yield* resolveTarget(input);
     const verified = resolved.verified;
-    // 現エポックはチェーン導出値(§6.2 — 環境未作成の push はここで止まる)
-    const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+    // 現エポック(チェーン導出値 — §6.2。環境未作成の push はここで止まる)と
+    // DEK 集合は同じ検証済みビューから一括導出する(deks.ts の environmentKeysFor)。
     // DEK は 1 経路で 1 回だけ取得する(session-11 裁定 3 の二重取得解消):
-    // 既存変数 = 値付き pull の同梱分を検証・開封 / 新規作成 = listMine
-    const deks =
-      resolved.deks === null
-        ? yield* fetchDeks({ ...input, verified })
-        : yield* verifyAndUnwrapDeks({
-            verified,
-            environmentId: input.environmentId,
-            recipient: input.recipient,
-            deks: resolved.deks,
-          });
-    return { verified, epoch, deks, target: resolved.target, warnings: resolved.warnings };
-  });
-}
-
-/**
- * 新規作成に同梱する `VariableMetaStatement`(metaVersion 1・active・prev 空 —
- * §12-5)を自分の鍵で著者署名する。宣言ヘッドは値署名と同じ「最後に検証した
- * チェーンヘッド」。CAS リトライで検証ビューが進めば作り直される(attemptOnce
- * ごとに署名するため)。
- */
-function signCreateStatement(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: EnvironmentId;
-  readonly variableId: string;
-  readonly name: string;
-  readonly authorUserId: string;
-  readonly signingKey: CryptoKey;
-}) {
-  return Effect.gen(function* () {
-    const context = {
-      suite: SUITE_ID,
-      projectId: input.verified.projectId,
+    // 既存変数 = 値付き pull の同梱分(prefetched)を検証・開封 / 新規作成 = listMine
+    const keys = yield* environmentKeysFor({
+      client: input.client,
+      verified,
       environmentId: input.environmentId,
-      target: { kind: "variable", variableId: input.variableId },
-      name: input.name,
-      status: "active",
-      metaVersion: 1,
-      prevMetaSigHashHex: "",
-      authorUserId: input.authorUserId,
-      chainHeadHashHex: input.verified.state.headHashHex,
-      chainHeadSeq: input.verified.state.headSeq,
-    } as const;
-    const signature = yield* Effect.promise(() =>
-      signMetaStatement({ context, signingKey: input.signingKey }),
-    );
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("メタステートメントの署名に失敗しました"));
-    }
-    // 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3)
-    const metaSigHash = yield* Effect.promise(() => computeMetaSignedBytesHash(context));
-    if (!metaSigHash.ok) {
-      return yield* Effect.fail(cliError("メタステートメント署名対象のハッシュ計算に失敗しました"));
-    }
+      recipient: input.recipient,
+      prefetched: resolved.deks,
+    });
     return {
-      statement: {
-        suite: SUITE_ID,
-        environmentId: input.environmentId,
-        variableId: input.variableId,
-        name: input.name,
-        status: "active",
-        metaVersion: 1,
-        prevMetaSigHashHex: "",
-        chainHeadHashHex: input.verified.state.headHashHex,
-        chainHeadSeq: input.verified.state.headSeq,
-        signatureHex: signature.value,
-      },
-      metaSigHashHex: metaSigHash.value,
-    } as const;
+      verified,
+      epoch: keys.currentEpoch,
+      deks: keys.deksByEpoch,
+      target: resolved.target,
+      warnings: resolved.warnings,
+    };
   });
 }
 
-function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptOutcome, CliError> {
+/** 1 試行(暗号化・署名・送信)。競合の分類は retryOnConflict の classify が担う。 */
+function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AcceptedPush, unknown> {
   return Effect.gen(function* () {
     const dek = state.deks.get(state.epoch);
     if (dek === undefined) {
@@ -453,22 +368,26 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
     } as const;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     if (state.target.create) {
-      // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)
+      // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
+      // 宣言ヘッドは値署名と同じ「最後に検証したチェーンヘッド」で、CAS リトライで
+      // 検証ビューが進めば試行ごとに作り直される(meta-statement.ts の共有実装)
       const created = yield* signCreateStatement({
         verified: state.verified,
         environmentId: input.environmentId,
-        variableId: state.target.variableId,
+        target: { kind: "variable", variableId: state.target.variableId },
         name: input.name,
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
       });
-      return yield* classifyAttempt(
-        input.client.variables.create({
-          params,
-          payload: { statement: created.statement, value: signed.payload },
-        }),
-        { ...valueFloor, metaVersion: 1, metaSigHashHex: created.metaSigHashHex },
-      );
+      const accepted = yield* input.client.variables.create({
+        params,
+        payload: { statement: created.statement, value: signed.payload },
+      });
+      return {
+        accepted,
+        floorVariable: { ...valueFloor, metaVersion: 1, metaSigHashHex: created.metaSigHashHex },
+        state,
+      };
     }
     // 既存変数の push はメタを変更しない — 床のメタ記録は検証済み latest のまま
     const latest = state.target.latest;
@@ -477,34 +396,38 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AttemptO
         cliError(`変数 ${state.target.variableId} の検証済み最新値がありません(内部不整合)`),
       );
     }
-    return yield* classifyAttempt(
-      input.client.variables.push({
-        params: { ...params, variableId: state.target.variableId },
-        payload: { value: signed.payload },
-      }),
-      {
+    const accepted = yield* input.client.variables.push({
+      params: { ...params, variableId: state.target.variableId },
+      payload: { value: signed.payload },
+    });
+    return {
+      accepted,
+      floorVariable: {
         ...valueFloor,
         metaVersion: latest.metaVersion,
         metaSigHashHex: latest.metaSignedBytesHashHex,
       },
-    );
+      state,
+    };
   });
 }
 
-/** エポックが変わった(または初出の)場合のみ DEK 集合を取り直す。 */
+/** エポックが変わった(または初出の)場合のみ DEK 集合を取り直す(cached の意味論)。 */
 function refreshEpochState(
   input: PushInput,
   state: PushState,
   verified: VerifiedProject,
 ): Effect.Effect<Pick<PushState, "verified" | "epoch" | "deks">, CliError> {
-  return Effect.gen(function* () {
-    const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
-    if (state.deks.has(epoch)) {
-      return { verified, epoch, deks: state.deks };
-    }
-    const deks = yield* fetchDeks({ ...input, verified });
-    return { verified, epoch, deks };
-  });
+  return Effect.map(
+    environmentKeysFor({
+      client: input.client,
+      verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      cached: state.deks,
+    }),
+    (keys) => ({ verified, epoch: keys.currentEpoch, deks: keys.deksByEpoch }),
+  );
 }
 
 /**
@@ -661,10 +584,15 @@ function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<Push
   });
 }
 
+/**
+ * 競合からの回復(§12-5 の再試行手順のドメイン固有部)。retryOnConflict の
+ * recover として、最終試行後にも走る(定的エラー — equivocation の証拠・
+ * サーバー応答とチェーンの矛盾 — の表面化)。
+ */
 function nextState(
   input: PushInput,
   state: PushState,
-  outcome: Exclude<AttemptOutcome, AcceptedAttempt>,
+  outcome: PushConflict,
 ): Effect.Effect<PushState, CliError> {
   switch (outcome.kind) {
     case "version-conflict":
@@ -681,18 +609,25 @@ function nextState(
       // 次の試行が VersionConflict になり上の手順へ入る)
       return Effect.gen(function* () {
         const verified = yield* resyncExtended(input.resync, state.verified);
-        const epoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
-        if (epoch === state.epoch) {
+        // 現エポックと DEK は同じ再同期ビューから一括導出(手持ちの検証済み
+        // 集合に現エポックがあれば再取得しない — environmentKeysFor の cached)
+        const keys = yield* environmentKeysFor({
+          client: input.client,
+          verified,
+          environmentId: input.environmentId,
+          recipient: input.recipient,
+          cached: state.deks,
+        });
+        if (keys.currentEpoch === state.epoch) {
           // 再同期してもチェーン導出エポックが変わらないなら、サーバーの
           // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)
           return yield* Effect.fail(
             cliError(
-              `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままです(サーバー応答とチェーンの矛盾)`,
+              `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${keys.currentEpoch} のままです(サーバー応答とチェーンの矛盾)`,
             ),
           );
         }
-        const deks = yield* fetchDeks({ ...input, verified });
-        return { ...state, verified, epoch, deks };
+        return { ...state, verified, epoch: keys.currentEpoch, deks: keys.deksByEpoch };
       });
     case "variable-conflict":
       return reresolveTarget(input, state);
@@ -716,37 +651,34 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1): ルックアップキーと
     // 新規作成時に署名する名前の両方を NFC 正規形にする
     const normalized: PushInput = { ...input, name: input.name.normalize("NFC") };
-    let state = yield* initialState(normalized);
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      const outcome = yield* attemptOnce(normalized, state);
-      if (outcome.kind === "accepted") {
-        // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
-        // 書き込みの巻き戻しも検出できる)。規則 (c) 基準は動かさない。
-        // push 自体は受理済みなので、床の書き込み失敗はその旨を明示する
-        yield* input.floor
-          .commitPush(
-            // 床のキーは自分が署名した変数 ID(サーバー echo を信用しない)
-            state.target.variableId,
-            outcome.floorVariable,
-            { seq: state.verified.state.headSeq, hashHex: state.verified.state.headHashHex },
-          )
-          .pipe(Effect.mapError((error) => cliError(`push は受理されましたが、${error.message}`)));
-        return {
-          variableId: outcome.accepted.variableId,
-          version: outcome.accepted.version,
-          epoch: outcome.accepted.epoch,
-          warnings: state.warnings,
-        };
-      }
-      // 最終試行でも nextState を実行する: epoch-conflict の「サーバー応答と
-      // チェーンの矛盾」や equivocation の証拠は定的(リトライで解けない)
-      // エラーで、汎用の「競合が解消しません」より情報量が高い。定的エラー・
-      // ネットワークエラーはそのまま伝播させ、再試行可能な状態が返った場合のみ
-      // 次周回で使う(最終周回では未使用)。
-      state = yield* nextState(normalized, state, outcome);
-    }
-    return yield* Effect.fail(
-      cliError(`push の競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`),
-    );
+    const initial = yield* initialState(normalized);
+    const outcome = yield* retryOnConflict(initial, {
+      maxAttempts: MAX_ATTEMPTS,
+      attempt: (state) => attemptOnce(normalized, state),
+      classify: classifyPushConflict,
+      recover: (state, conflict) => nextState(normalized, state, conflict),
+      exhaustedMessage: `push の競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+    });
+    // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
+    // 書き込みの巻き戻しも検出できる)。規則 (c) 基準は動かさない。
+    // push 自体は受理済みなので、床の書き込み失敗はその旨を明示する
+    const acceptedState = outcome.state;
+    yield* input.floor
+      .commitPush(
+        // 床のキーは自分が署名した変数 ID(サーバー echo を信用しない)
+        acceptedState.target.variableId,
+        outcome.floorVariable,
+        {
+          seq: acceptedState.verified.state.headSeq,
+          hashHex: acceptedState.verified.state.headHashHex,
+        },
+      )
+      .pipe(Effect.mapError((error) => cliError(`push は受理されましたが、${error.message}`)));
+    return {
+      variableId: outcome.accepted.variableId,
+      version: outcome.accepted.version,
+      epoch: outcome.accepted.epoch,
+      warnings: acceptedState.warnings,
+    };
   });
 }

@@ -29,7 +29,6 @@ import {
   importEncryptionPublicKey,
   signChainEntry,
   signDekWrap,
-  signMetaStatement,
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
@@ -37,10 +36,16 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
+import { signCreateStatement } from "./meta-statement.ts";
+import { retryOnConflict } from "./retry.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
+
+/** 1 ラップの生成結果(実理由コード付きのタグ付き Result — 複数原因を 1 汎用文言に潰さない)。 */
+type WrapBuildResult =
+  | { readonly kind: "ok"; readonly wrap: WrappedDek }
+  | { readonly kind: "failed"; readonly reason: string };
 
 async function wrapAndSignFor(input: {
   readonly verified: VerifiedProject;
@@ -50,15 +55,15 @@ async function wrapAndSignFor(input: {
   readonly member: ChainMember;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Promise<WrappedDek | null> {
+}): Promise<WrapBuildResult> {
   const { verified, environmentId, epoch, dek, member } = input;
   const recipientKeyBytes = decodeHex(member.encPubHex);
   if (recipientKeyBytes === null) {
-    return null;
+    return { kind: "failed", reason: "受信者の enc 公開鍵 hex を復号できません" };
   }
   const recipientKey = await importEncryptionPublicKey(recipientKeyBytes);
   if (!recipientKey.ok) {
-    return null;
+    return { kind: "failed", reason: "受信者の enc 公開鍵を読み込めません" };
   }
   const wrapped = await wrapDek({
     recipientPublicKey: recipientKey.value,
@@ -71,7 +76,7 @@ async function wrapAndSignFor(input: {
     },
   });
   if (!wrapped.ok) {
-    return null;
+    return { kind: "failed", reason: "HPKE ラップに失敗しました" };
   }
   const encHex = encodeHex(wrapped.value.enc);
   const ciphertextHex = encodeHex(wrapped.value.ciphertext);
@@ -90,16 +95,19 @@ async function wrapAndSignFor(input: {
     signingKey: input.signingKeyPair.privateKey,
   });
   if (!signature.ok) {
-    return null;
+    return { kind: "failed", reason: "登録署名の作成に失敗しました" };
   }
   return {
-    suite: SUITE_ID,
-    epoch,
-    recipientUserId: member.userId,
-    recipientEncPubHex: member.encPubHex,
-    encHex,
-    ciphertextHex,
-    signatureHex: signature.value,
+    kind: "ok",
+    wrap: {
+      suite: SUITE_ID,
+      epoch,
+      recipientUserId: member.userId,
+      recipientEncPubHex: member.encPubHex,
+      encHex,
+      ciphertextHex,
+      signatureHex: signature.value,
+    },
   };
 }
 
@@ -122,13 +130,17 @@ function buildWrapSetForMembers(input: {
     );
     const wraps: WrappedDek[] = [];
     for (const member of members) {
-      const wrap = yield* Effect.promise(() => wrapAndSignFor({ ...input, member }));
-      if (wrap === null) {
+      const built = yield* Effect.tryPromise({
+        try: () => wrapAndSignFor({ ...input, member }),
+        catch: () =>
+          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成が失敗しました(暗号処理エラー)`),
+      });
+      if (built.kind === "failed") {
         return yield* Effect.fail(
-          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成に失敗しました`),
+          cliError(`メンバー ${member.userId} 宛の DEK ラップ生成に失敗しました(${built.reason})`),
         );
       }
-      wraps.push(wrap);
+      wraps.push(built.wrap);
     }
     return wraps;
   });
@@ -177,54 +189,6 @@ function ensureCreatable(
   return Effect.succeed(member);
 }
 
-/**
- * 複合同梱の `EnvironmentMetaStatement`(metaVersion 1・active・prev 空)を
- * 著者署名する。宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
- * CAS リトライではエントリと共にここも再署名される。
- */
-function signCreateStatement(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly name: string;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-}) {
-  return Effect.gen(function* () {
-    const signature = yield* Effect.promise(() =>
-      signMetaStatement({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.verified.projectId,
-          environmentId: input.environmentId,
-          target: { kind: "environment" },
-          name: input.name,
-          status: "active",
-          metaVersion: 1,
-          prevMetaSigHashHex: "",
-          authorUserId: input.signerUserId,
-          chainHeadHashHex: input.verified.state.headHashHex,
-          chainHeadSeq: input.verified.state.headSeq,
-        },
-        signingKey: input.signingKeyPair.privateKey,
-      }),
-    );
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("環境メタステートメントの署名に失敗しました"));
-    }
-    return {
-      suite: SUITE_ID,
-      environmentId: input.environmentId,
-      name: input.name,
-      status: "active",
-      metaVersion: 1,
-      prevMetaSigHashHex: "",
-      chainHeadHashHex: input.verified.state.headHashHex,
-      chainHeadSeq: input.verified.state.headSeq,
-      signatureHex: signature.value,
-    } as const;
-  });
-}
-
 /** create_environment エントリを現ヘッドの直後(seq = head + 1)に署名する。 */
 function signCreateEntry(input: {
   readonly verified: VerifiedProject;
@@ -234,26 +198,28 @@ function signCreateEntry(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry & { readonly op: "create_environment" }, CliError> {
   return Effect.gen(function* () {
-    const signed = yield* Effect.promise(() =>
-      signChainEntry({
-        entry: {
-          suite: SUITE_ID,
-          seq: input.verified.state.headSeq + 1,
-          prevHashHex: input.verified.state.headHashHex,
-          op: "create_environment",
-          actor: {
-            userId: input.member.userId,
-            keyFingerprintHex: input.member.keyFingerprintHex,
+    const signed = yield* Effect.tryPromise({
+      try: () =>
+        signChainEntry({
+          entry: {
+            suite: SUITE_ID,
+            seq: input.verified.state.headSeq + 1,
+            prevHashHex: input.verified.state.headHashHex,
+            op: "create_environment",
+            actor: {
+              userId: input.member.userId,
+              keyFingerprintHex: input.member.keyFingerprintHex,
+            },
+            payload: {
+              environmentId: input.environmentId,
+              dekCommitmentHex: input.dekCommitmentHex,
+            },
+            timestampMs: Date.now(),
           },
-          payload: {
-            environmentId: input.environmentId,
-            dekCommitmentHex: input.dekCommitmentHex,
-          },
-          timestampMs: Date.now(),
-        },
-        signingKey: input.signingKeyPair.privateKey,
-      }),
-    );
+          signingKey: input.signingKeyPair.privateKey,
+        }),
+      catch: () => cliError("create_environment エントリの署名に失敗しました"),
+    });
     if (!signed.ok) {
       return yield* Effect.fail(cliError("create_environment エントリの署名に失敗しました"));
     }
@@ -263,6 +229,13 @@ function signCreateEntry(input: {
     }
     return signed.value;
   });
+}
+
+/** CAS リトライの状態: 検証ビュー・自分のメンバー行・エポック 1 のラップ集合。 */
+interface CreateState {
+  readonly verified: VerifiedProject;
+  readonly member: ChainMember;
+  readonly deks: readonly WrappedDek[];
 }
 
 /**
@@ -282,27 +255,28 @@ export function envCreateOp(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.Effect<{ readonly currentEpoch: number }, CliError> {
   return Effect.gen(function* () {
-    let verified = input.verified;
-    let member = yield* ensureCreatable(verified, input.environmentId, input.signerUserId);
+    const member = yield* ensureCreatable(input.verified, input.environmentId, input.signerUserId);
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
     const name = input.name.normalize("NFC");
     const dek = generateDek();
-    const commitment = yield* Effect.promise(() =>
-      computeDekCommitment({
-        context: {
-          suite: SUITE_ID,
-          projectId: verified.projectId,
-          environmentId: input.environmentId,
-          epoch: 1,
-        },
-        dek,
-      }),
-    );
+    const commitment = yield* Effect.tryPromise({
+      try: () =>
+        computeDekCommitment({
+          context: {
+            suite: SUITE_ID,
+            projectId: input.verified.projectId,
+            environmentId: input.environmentId,
+            epoch: 1,
+          },
+          dek,
+        }),
+      catch: () => cliError("DEK コミットメントの計算に失敗しました"),
+    });
     if (!commitment.ok) {
       return yield* Effect.fail(cliError("DEK コミットメントの計算に失敗しました"));
     }
-    let deks = yield* buildWrapSetForMembers({
-      verified,
+    const deks = yield* buildWrapSetForMembers({
+      verified: input.verified,
       environmentId: input.environmentId,
       epoch: 1,
       dek,
@@ -310,72 +284,69 @@ export function envCreateOp(input: {
       signingKeyPair: input.signingKeyPair,
     });
 
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      // CAS リトライではエントリ(prev 変更)とステートメント(宣言ヘッド変更)の
-      // **両方**を再署名する(§12-4)。ラップ集合はメンバー集合変化時のみ再構築
-      const entry = yield* signCreateEntry({
-        verified,
-        environmentId: input.environmentId,
-        dekCommitmentHex: commitment.value,
-        member,
-        signingKeyPair: input.signingKeyPair,
-      });
-      const statement = yield* signCreateStatement({
-        verified,
-        environmentId: input.environmentId,
-        name,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-      });
-      const outcome = yield* input.client.environments
-        .create({
-          params: { projectId: verified.projectId },
-          payload: {
-            parentHeadHashHex: verified.state.headHashHex,
-            entry,
-            statement,
-            deks,
-          },
-        })
-        .pipe(
-          Effect.map((created) => ({ kind: "created", created }) as const),
-          Effect.catch((error) =>
-            error instanceof ChainHeadConflictError
-              ? Effect.succeed({ kind: "head-conflict" } as const)
-              : Effect.fail(toCliError(error)),
-          ),
-        );
-      if (outcome.kind === "created") {
-        return { currentEpoch: outcome.created.currentEpoch };
-      }
-      // 親ヘッド CAS 失敗(並行追記): 再同期して新ヘッドでエントリを再署名する
-      // (§12-4)。ラップ集合は現メンバー集合が変わった場合のみ作り直す。
-      // 最終試行後もここを実行する: 再同期で判明する定的エラー(並行作成による
-      // duplicate-environment 等)は汎用の「競合が解消しません」より情報量が高い
-      // (push.ts の nextState と同じ判断)
-      const resynced = yield* input.resync;
-      const rebuiltMember = yield* ensureCreatable(
-        resynced,
-        input.environmentId,
-        input.signerUserId,
-      );
-      if (!sameMemberSet(verified, resynced)) {
-        deks = yield* buildWrapSetForMembers({
-          verified: resynced,
-          environmentId: input.environmentId,
-          epoch: 1,
-          dek,
-          signerUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-        });
-      }
-      verified = resynced;
-      member = rebuiltMember;
-    }
-    return yield* Effect.fail(
-      cliError(
-        `環境作成のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
-      ),
+    return yield* retryOnConflict<CreateState, { readonly currentEpoch: number }, "head-conflict">(
+      { verified: input.verified, member, deks },
+      {
+        maxAttempts: MAX_ATTEMPTS,
+        // CAS リトライではエントリ(prev 変更)とステートメント(宣言ヘッド変更)の
+        // **両方**を再署名する(§12-4)。ラップ集合はメンバー集合変化時のみ再構築
+        attempt: (state) =>
+          Effect.gen(function* () {
+            const entry = yield* signCreateEntry({
+              verified: state.verified,
+              environmentId: input.environmentId,
+              dekCommitmentHex: commitment.value,
+              member: state.member,
+              signingKeyPair: input.signingKeyPair,
+            });
+            // 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
+            // 共有実装(meta-statement.ts)— push.ts との差分は target のみ
+            const { statement } = yield* signCreateStatement({
+              verified: state.verified,
+              environmentId: input.environmentId,
+              target: { kind: "environment" },
+              name,
+              authorUserId: input.signerUserId,
+              signingKey: input.signingKeyPair.privateKey,
+            });
+            const created = yield* input.client.environments.create({
+              params: { projectId: state.verified.projectId },
+              payload: {
+                parentHeadHashHex: state.verified.state.headHashHex,
+                entry,
+                statement,
+                deks: state.deks,
+              },
+            });
+            return { currentEpoch: created.currentEpoch };
+          }),
+        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+        // 親ヘッド CAS 失敗(並行追記): 再同期して新ヘッドでエントリを再署名する
+        // (§12-4)。ラップ集合は現メンバー集合が変わった場合のみ作り直す。
+        // 再同期で判明する定的エラー(並行作成による duplicate-environment 等)は
+        // retryOnConflict の規約どおり最終試行後も表面化する
+        recover: (state) =>
+          Effect.gen(function* () {
+            const resynced = yield* input.resync;
+            const rebuiltMember = yield* ensureCreatable(
+              resynced,
+              input.environmentId,
+              input.signerUserId,
+            );
+            const rebuiltDeks = sameMemberSet(state.verified, resynced)
+              ? state.deks
+              : yield* buildWrapSetForMembers({
+                  verified: resynced,
+                  environmentId: input.environmentId,
+                  epoch: 1,
+                  dek,
+                  signerUserId: input.signerUserId,
+                  signingKeyPair: input.signingKeyPair,
+                });
+            return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
+          }),
+        exhaustedMessage: `環境作成のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+      },
     );
   });
 }

@@ -5,7 +5,7 @@
 
 import { Context, Effect } from "effect";
 
-import { displayText } from "./display.ts";
+import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { DecryptedVariable } from "./pull.ts";
 
@@ -21,8 +21,6 @@ export interface ProcessRunnerShape {
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
   "cli/ProcessRunner",
 ) {}
-
-const decoder = new TextDecoder("utf-8", { fatal: true });
 
 // 実行制御系の環境変数名は注入を拒否する(レビューループ 1 [低]): 変数名は
 // 平文メタデータで AAD に束縛されないため、悪意あるサーバーが名前と暗号文の
@@ -112,10 +110,9 @@ export function buildInjectionEnv(
           ),
         );
       }
-      let value: string;
-      try {
-        value = decoder.decode(variable.value);
-      } catch {
+      // デコード方針は display.ts に一本化(fatal — pull --show と共通)
+      const value = decodeValueText(variable.value);
+      if (value === null) {
         return yield* Effect.fail(
           cliError(
             `変数 ${displayText(variable.name)} の値が UTF-8 として不正です(環境変数として注入できません)`,

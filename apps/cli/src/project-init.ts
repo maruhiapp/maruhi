@@ -17,7 +17,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
-import { CliError, cliError } from "./errors.ts";
+import { type CliError, cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import type { CliSession, MasterKeys } from "./session.ts";
@@ -26,31 +26,39 @@ type UserOrg = typeof UserOrgSchema.Type;
 
 const GENESIS_PREV_HASH = "0".repeat(64);
 
-function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): UserOrg | CliError {
+/** org 選択の純関数はタグ付き Result で返す(instanceof 判別をしない — B-5 の慣用統一)。 */
+type PickedOrg =
+  | { readonly kind: "ok"; readonly org: UserOrg }
+  | { readonly kind: "rejected"; readonly message: string };
+
+function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg {
   if (flag !== undefined) {
     const matched = orgs.find((org) => org.orgId === flag || org.slug === flag);
-    return (
-      matched ??
-      cliError(
-        `org が見つかりません: ${flag}(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
-      )
-    );
+    return matched === undefined
+      ? {
+          kind: "rejected",
+          message: `org が見つかりません: ${flag}(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
+        }
+      : { kind: "ok", org: matched };
   }
   const [first] = orgs;
   if (first === undefined) {
     // サインアップ時にパーソナル org が自動作成される(§9-1)ため通常は
     // 起きない。起きたらサーバー側の状態異常として正確に報告する
-    return cliError(
-      "所属する org がありません(サインアップ時にパーソナル org が自動作成されるはずです。サーバー側の状態を確認してください)",
-    );
+    return {
+      kind: "rejected",
+      message:
+        "所属する org がありません(サインアップ時にパーソナル org が自動作成されるはずです。サーバー側の状態を確認してください)",
+    };
   }
   if (orgs.length === 1) {
     // パーソナル org のみ(単独利用)。org 概念を表示しない(§9-1)
-    return first;
+    return { kind: "ok", org: first };
   }
-  return cliError(
-    `複数の org に所属しています。--org <slug> で指定してください(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
-  );
+  return {
+    kind: "rejected",
+    message: `複数の org に所属しています。--org <slug> で指定してください(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
+  };
 }
 
 /** `maruhi project init`: sign a genesis entry and initialize the project. */
@@ -63,10 +71,11 @@ export function projectInitOp(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const me = yield* input.client.auth.me({}).pipe(Effect.mapError(toCliError));
-    const org = pickOrg(me.orgs, input.orgFlag);
-    if (org instanceof CliError) {
-      return yield* Effect.fail(org);
+    const picked = pickOrg(me.orgs, input.orgFlag);
+    if (picked.kind === "rejected") {
+      return yield* Effect.fail(cliError(picked.message));
     }
+    const org = picked.org;
 
     const unsigned: UnsignedChainEntry = {
       suite: SUITE_ID,
@@ -83,14 +92,19 @@ export function projectInitOp(input: {
       },
       timestampMs: Date.now(),
     };
-    const signed = yield* Effect.promise(() =>
-      signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
-    );
+    const signed = yield* Effect.tryPromise({
+      try: () =>
+        signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
+      catch: () => cliError("genesis エントリの署名に失敗しました"),
+    });
     if (!signed.ok) {
       return yield* Effect.fail(cliError("genesis エントリの署名に失敗しました"));
     }
     // クライアント側で予見したプロジェクト ID(genesis ハッシュ — §6.4)
-    const expectedProjectId = yield* Effect.promise(() => computeChainEntryHash(signed.value));
+    const expectedProjectId = yield* Effect.tryPromise({
+      try: () => computeChainEntryHash(signed.value),
+      catch: () => cliError("genesis ハッシュの計算に失敗しました(暗号処理エラー)"),
+    });
 
     const head = yield* input.client.membership
       .init({ payload: { orgId: org.orgId, entry: signed.value } })

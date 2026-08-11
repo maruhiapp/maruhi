@@ -221,13 +221,19 @@ export function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterK
     if (encPub === null || encSk === null || sigPub === null || sigSeed === null) {
       return yield* Effect.fail(corruptKeyError);
     }
-    const encKeyPair = yield* Effect.promise(() =>
-      importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
-    );
-    const sigKeyPair = yield* Effect.promise(() =>
-      importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
-    );
-    const fingerprint = yield* Effect.promise(() => computeUserKeyFingerprint(encPub, sigPub));
+    // WebCrypto の reject(壊れた鍵素材のインポート例外)も corruptKeyError に写す
+    const encKeyPair = yield* Effect.tryPromise({
+      try: () => importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
+      catch: () => corruptKeyError,
+    });
+    const sigKeyPair = yield* Effect.tryPromise({
+      try: () => importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
+      catch: () => corruptKeyError,
+    });
+    const fingerprint = yield* Effect.tryPromise({
+      try: () => computeUserKeyFingerprint(encPub, sigPub),
+      catch: () => corruptKeyError,
+    });
     if (!encKeyPair.ok || !sigKeyPair.ok || !fingerprint.ok) {
       return yield* Effect.fail(corruptKeyError);
     }

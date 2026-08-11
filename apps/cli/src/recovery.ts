@@ -68,13 +68,15 @@ export function issueRecoveryCodeOp(input: {
 
     const secret = generateRecoverySecret();
     const blob = new TextEncoder().encode(JSON.stringify(input.masterKeys.record));
-    const wrapped = yield* Effect.promise(() =>
-      wrapMasterSecret({
-        recoverySecret: secret,
-        userId: input.session.userId,
-        masterSecretBlob: blob,
-      }),
-    );
+    const wrapped = yield* Effect.tryPromise({
+      try: () =>
+        wrapMasterSecret({
+          recoverySecret: secret,
+          userId: input.session.userId,
+          masterSecretBlob: blob,
+        }),
+      catch: () => cliError("リカバリーブロブの暗号化に失敗しました(暗号処理エラー)"),
+    });
     if (!wrapped.ok) {
       return yield* Effect.fail(cliError("リカバリーラップの作成に失敗しました"));
     }
@@ -214,13 +216,15 @@ function unwrapWithPromptedCode(input: {
         );
         continue;
       }
-      const unwrapped = yield* Effect.promise(() =>
-        unwrapMasterSecret({
-          recoverySecret: secret,
-          userId: input.userId,
-          wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
-        }),
-      );
+      const unwrapped = yield* Effect.tryPromise({
+        try: () =>
+          unwrapMasterSecret({
+            recoverySecret: secret,
+            userId: input.userId,
+            wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
+          }),
+        catch: () => cliError("リカバリーブロブの復号に失敗しました(暗号処理エラー)"),
+      });
       if (!unwrapped.ok) {
         yield* io.logError("復号できません。コードが正しいか確認してください");
         continue;

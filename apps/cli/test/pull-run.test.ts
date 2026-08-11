@@ -288,6 +288,34 @@ describe("maruhi pull", () => {
     expect(output).toContain("SECRET=sk-\uFFFD[31mFAKE\uFFFD\nline2");
   });
 
+  it("不正 UTF-8 の値があると --show は失敗し、正常な値も一切出力しない", async () => {
+    // 不正 UTF-8 バイト列(0xff/0xfe は UTF-8 に現れない)を平文とする値
+    const binary = await encryptValueFor({
+      dek: fixture.dek2,
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "vbin",
+      version: 1,
+      plaintext: new Uint8Array([0x41, 0xff, 0xfe, 0x42]),
+      writer: fixture.owner,
+      head: headOf(fixture.built, 3),
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [
+          fixture.entryAlpha,
+          await pullEntry(fixture.built.projectId, "vbin", "BINARY", binary),
+        ],
+      }),
+    ]);
+    expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("UTF-8 として不正のため表示できません");
+    // all-or-nothing: 先に並ぶ ALPHA(正常デコード可)も部分出力しない
+    expect(env.logs.join("\n")).not.toContain("ALPHA=alpha-value");
+  });
+
   it("AI エージェント検出時、--show は拒否される(run を迂回策として勧めない)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });
@@ -297,6 +325,8 @@ describe("maruhi pull", () => {
     // 値表示の迂回になる run を勧めない(エージェントに迂回レシピを渡さない)
     expect(errors).not.toContain("maruhi run");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
+    // 拒否はコマンド入口(復号前)で確定する: 同期・復号・メタデータ表示に進まない
+    expect(env.logs.join("\n")).not.toContain("同期・検証 OK");
   });
 
   it("署名者を偽装したラップ(signerUserId の虚偽申告)を拒否する", async () => {
