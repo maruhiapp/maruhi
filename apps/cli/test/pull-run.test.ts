@@ -297,6 +297,8 @@ describe("maruhi pull", () => {
     // 値表示の迂回になる run を勧めない(エージェントに迂回レシピを渡さない)
     expect(errors).not.toContain("maruhi run");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
+    // 拒否はコマンド入口(復号前)で確定する: 同期・復号・メタデータ表示に進まない
+    expect(env.logs.join("\n")).not.toContain("同期・検証 OK");
   });
 
   it("署名者を偽装したラップ(signerUserId の虚偽申告)を拒否する", async () => {

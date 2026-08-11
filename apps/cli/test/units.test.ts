@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeStdinValue, runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
+import { decodeValueText } from "../src/display.ts";
 import {
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -275,6 +276,16 @@ describe("buildInjectionEnv", () => {
 });
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+describe("decodeValueText(値デコード方針の一本化)", () => {
+  it("有効な UTF-8(改行・タブ込み)はそのまま返し、不正 UTF-8 は null を返す", () => {
+    expect(decodeValueText(new TextEncoder().encode("multi\nline\tvalue"))).toBe(
+      "multi\nline\tvalue",
+    );
+    // --show / run 共通の fatal 方針: 置換文字で偽装せず、呼び出し側が明示エラーにする
+    expect(decodeValueText(new Uint8Array([0xff, 0xfe]))).toBeNull();
+  });
+});
 
 describe("normalizeStdinValue", () => {
   it("末尾の改行 1 つ(LF / CRLF)のみ除去する", () => {

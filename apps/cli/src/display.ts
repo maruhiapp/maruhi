@@ -9,7 +9,7 @@
 import { Effect } from "effect";
 
 import { ensureValueDisplayAllowed } from "./agent.ts";
-import type { CliError } from "./errors.ts";
+import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 
 // Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
@@ -58,7 +58,25 @@ export function logWarnings(warnings: readonly string[]): Effect.Effect<void, Cl
   });
 }
 
-const displayDecoder = new TextDecoder("utf-8", { fatal: false });
+const strictValueDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * \u5024\u30D0\u30A4\u30C8\u5217 \u2192 \u30C6\u30AD\u30B9\u30C8\u306E\u552F\u4E00\u306E\u30C7\u30B3\u30FC\u30C9\u65B9\u91DD(fatal)\u3002\u4E0D\u6B63 UTF-8 \u306F null
+ * (\u547C\u3073\u51FA\u3057\u5074\u304C\u5909\u6570\u540D\u4ED8\u304D\u306E\u660E\u793A\u30A8\u30E9\u30FC\u306B\u3059\u308B)\u3002
+ *
+ * \u65B9\u91DD\u306E\u9078\u5B9A: run(\u74B0\u5883\u5909\u6570\u6CE8\u5165)\u306F fatal \u5FC5\u9808\u3067\u3042\u308A\u3001\u8868\u793A\u5074\u3060\u3051\u7F6E\u63DB\u6587\u5B57\u3067
+ * \u901A\u3059\u3068\u300C--show \u3067\u306F\u8868\u793A\u3067\u304D\u308B\u306E\u306B run \u3067\u306F\u5931\u6557\u3059\u308B\u300D\u975E\u5BFE\u79F0\u3068\u3001\u7F6E\u63DB\u6587\u5B57\u3067
+ * \u9759\u304B\u306B\u58CA\u308C\u305F\u5024\u306E\u30B3\u30D4\u30FC\u4E8B\u6545\u3092\u751F\u3080\u3002\u4E21\u7D4C\u8DEF\u3068\u3082 fatal \u306B\u7D71\u4E00\u3059\u308B(pull --show \u306E
+ * \u4E0D\u6B63 UTF-8 \u5024\u306F\u7F6E\u63DB\u8868\u793A\u304B\u3089\u30CF\u30FC\u30C9\u30A8\u30E9\u30FC\u3078\u306E\u6319\u52D5\u5909\u66F4)\u3002
+ */
+export function decodeValueText(value: Uint8Array): string | null {
+  try {
+    return strictValueDecoder.decode(value);
+  } catch {
+    // fatal \u30C7\u30B3\u30FC\u30C0\u306E\u4F8B\u5916\u306F\u300C\u4E0D\u6B63 UTF-8\u300D\u306E\u5224\u5B9A\u5024\u3068\u3057\u3066\u6271\u3046(\u5024\u306F\u904B\u3070\u306A\u3044)
+    return null;
+  }
+}
 
 /** \u5024\u306E\u7AEF\u672B\u8868\u793A(pull --show)\u3002\u30A8\u30FC\u30B8\u30A7\u30F3\u30C8\u691C\u51FA\u6642\u306F agent.ts \u304C\u62D2\u5426\u3059\u308B\u3002 */
 export function showValues(
@@ -66,11 +84,19 @@ export function showValues(
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    // \u30B3\u30DE\u30F3\u30C9\u5165\u53E3(\u5FA9\u53F7\u524D)\u306E\u691C\u67FB\u304C\u672C\u7DDA\u3002\u5FA9\u53F7\u5F8C\u306E\u3053\u306E\u691C\u67FB\u306F\u3001showValues \u3092
+    // \u76F4\u63A5\u547C\u3076\u5C06\u6765\u306E\u7D4C\u8DEF\u304C\u5165\u53E3\u691C\u67FB\u3092\u6B20\u3044\u3066\u3082\u8868\u793A\u306B\u81F3\u3089\u305B\u306A\u3044\u9632\u885B\u7DDA
     yield* ensureValueDisplayAllowed(io.agentProfile());
     for (const variable of variables) {
-      yield* io.log(
-        `${displayText(variable.name)}=${displayValue(displayDecoder.decode(variable.value))}`,
-      );
+      const text = decodeValueText(variable.value);
+      if (text === null) {
+        return yield* Effect.fail(
+          cliError(
+            `\u5909\u6570 ${displayText(variable.name)} \u306E\u5024\u306F UTF-8 \u3068\u3057\u3066\u4E0D\u6B63\u306E\u305F\u3081\u8868\u793A\u3067\u304D\u307E\u305B\u3093(\u30D0\u30A4\u30CA\u30EA\u5024\u306F --show \u306E\u5BFE\u8C61\u5916\u3067\u3059)`,
+          ),
+        );
+      }
+      yield* io.log(`${displayText(variable.name)}=${displayValue(text)}`);
     }
   });
 }

@@ -10,6 +10,7 @@ import { isEnvironmentId } from "@maruhi/core";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
+import { ensureValueDisplayAllowed } from "./agent.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
 import type { CliServices } from "./context.ts";
 import {
@@ -298,6 +299,11 @@ function pullCommand(execute: Execute) {
       execute(
         Effect.gen(function* () {
           const io = yield* CliIo;
+          // 値の表示拒否(AI エージェント検出)はコマンド入口 = 復号前に検査する。
+          // 環境全体を復号してから拒否しない(復号された平文を作らない)
+          if (ctx.values.show === true) {
+            yield* ensureValueDisplayAllowed(io.agentProfile());
+          }
           const context = yield* openEnvironment(ctx.values);
           const pulled: PulledVariables = yield* pullVariables({
             client: context.client,
