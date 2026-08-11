@@ -42,7 +42,7 @@ react 19.2.8 / react-dom 19.2.8 / @funstack/static 1.2.0 / @funstack/router 1.2.
 ### 5. StyleX コンパイラ(xstyle 用)× Vite — ✅ 成立(重要な訂正あり)
 
 - `@astryxdesign/build/vite` の `astryxStylex` を Vite プラグインに追加し、`stylex.create` + typed tokens(`spacingVars['--spacing-5']`)の xstyle が**静的 CSS(`.xqifx2i { margin-top: var(--spacing-5) }`)にコンパイルされて CSS アセットに追記**されることを確認。computed style で 20px 適用を e2e 検証
-- **セッション 01 メモの訂正**: 「コンパイラ未設定だと無警告で無スタイル描画」は @stylexjs/stylex 0.19.0 では不正確。実際は**ビルドは無警告で成功**し、ブラウザで `stylex.create` が **`Unexpected 'stylex.create' call at runtime` を throw してクライアント島ごと描画されない**(コンソールにのみエラー)。つまり「静かな見た目崩れ」ではなく「ビルドは通るがランタイムで全損」。`SPIKE_NO_STYLEX=1 bun run build` で再現可能。CI でビルドが通ってもデプロイが壊れる点は同じなので、**e2e(今回の 4 テスト)を品質ゲートに含めることが実効的な防御**になる
+- **セッション 01 メモの訂正**: 「コンパイラ未設定だと無警告で無スタイル描画」は @stylexjs/stylex 0.19.0 では不正確。実際は**ビルドは無警告で成功**し、ブラウザで `stylex.create` が **`Unexpected 'stylex.create' call at runtime` を throw してクライアント島ごと描画されない**(コンソールにのみエラー)。つまり「静かな見た目崩れ」ではなく「ビルドは通るがランタイムで全損」。`SPIKE_NO_STYLEX=1 bun run build` で再現可能だった(当時の検証記録 — この再現用スイッチは検証完了につき 2026-08-11 に vite.config.ts から撤去済み。再現するには一時的にプラグイン配列から `astryxStylex` を外す)。CI でビルドが通ってもデプロイが壊れる点は同じなので、**e2e(今回の 4 テスト)を品質ゲートに含めることが実効的な防御**になる
 - `astryxStylex` の API は 2 形態あり要注意: `stylexOptions` キーを渡すと **legacy モード**(今回使用。プリビルド CSS 消費 + アプリコードのみコンパイル。出力レイヤは `priority1`)。新形式(オプション直渡し)は `@astryxdesign/core` を **src へ alias するライブラリソースビルド**に切り替え、さらに `transformIndexHtml` でレイヤ順のインライン `<style>` を注入する(funstack-static の HTML 生成には適用されず、かつ CSP と衝突しうる)。**maruhi は legacy モード(プリビルド消費)が正解**。README は新形式を説明していないため、更新時に挙動が変わらないか注意
 - dev サーバー(`vite dev`)での StyleX HMR は未検証(ビルド + 配信の検証を優先した)
 
