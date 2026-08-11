@@ -67,7 +67,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** 現存(非 tombstone)の環境。存在しなければ environment-not-found。 */
-const requireActiveEnvironment = (environmentId: string) =>
+export const requireActiveEnvironment = (environmentId: string) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
     const environment = yield* store.findEnvironment(environmentId);
@@ -447,6 +447,26 @@ const ensureWrapRowCapacity = (addedRows: number) =>
 // DEK ラップの受理検証(§12-6 = CRYPTO_SPEC §6.3 ゴーストメンバー対策のサーバー側)
 // ---------------------------------------------------------------------------
 
+/**
+ * (epoch × recipient) の重複検出キー。ラップの登録と削除は同じ一意性単位を
+ * 共有する(書式をここに一本化し、両経路の受理境界がズレないようにする)。
+ */
+function wrapRefKey(ref: { readonly epoch: number; readonly recipientUserId: string }): string {
+  return `${ref.epoch}:${ref.recipientUserId}`;
+}
+
+/** 1 リクエストのラップ件数上限(登録・削除の両経路で共通)。ok なら null。 */
+function checkWrapRequestCount(count: number): DataRejection | null {
+  if (count > MAX_DEK_WRAPS_PER_REQUEST) {
+    return {
+      kind: "limit-exceeded",
+      resource: "dek-wraps-per-request",
+      limit: MAX_DEK_WRAPS_PER_REQUEST,
+    };
+  }
+  return null;
+}
+
 /** 1 ラップの検査(認知的複雑度の分割)。ok なら null。 */
 function checkOneWrap(
   state: ChainState,
@@ -464,7 +484,7 @@ function checkOneWrap(
   if (member.encPubHex !== wrap.recipientEncPubHex) {
     return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
   }
-  const key = `${wrap.epoch}:${wrap.recipientUserId}`;
+  const key = wrapRefKey(wrap);
   if (seen.has(key)) {
     return { kind: "dek-wrap-rejected", reason: "duplicate-recipient" };
   }
@@ -477,12 +497,9 @@ function checkWrapRecipients(
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
 ): DataRejection | null {
-  if (wraps.length > MAX_DEK_WRAPS_PER_REQUEST) {
-    return {
-      kind: "limit-exceeded",
-      resource: "dek-wraps-per-request",
-      limit: MAX_DEK_WRAPS_PER_REQUEST,
-    };
+  const countRejection = checkWrapRequestCount(wraps.length);
+  if (countRejection !== null) {
+    return countRejection;
   }
   const seen = new Set<string>();
   for (const wrap of wraps) {
@@ -1228,17 +1245,14 @@ export const deleteDekWrapsProgram = (
   Effect.gen(function* () {
     yield* requireMemberState(actor.userId, "admin", cache);
     yield* requireActiveEnvironment(environmentId);
-    if (refs.length > MAX_DEK_WRAPS_PER_REQUEST) {
-      return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "dek-wraps-per-request",
-        limit: MAX_DEK_WRAPS_PER_REQUEST,
-      });
+    const countRejection = checkWrapRequestCount(refs.length);
+    if (countRejection !== null) {
+      return yield* rejectData(countRejection);
     }
     const store = yield* DataStore;
     const seen = new Set<string>();
     for (const ref of refs) {
-      const key = `${ref.epoch}:${ref.recipientUserId}`;
+      const key = wrapRefKey(ref);
       if (seen.has(key)) {
         return yield* rejectData({ kind: "dek-wrap-rejected", reason: "duplicate-recipient" });
       }

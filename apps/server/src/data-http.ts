@@ -33,6 +33,7 @@ import {
 import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
 import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
+import { HttpServerResponse } from "effect/unstable/http";
 
 import { ensureTokenScopeForProject } from "./authz.ts";
 import type { ProjectChainDO } from "./chain-do.ts";
@@ -45,6 +46,9 @@ import type {
 } from "./data-plane.ts";
 import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
+
+/** 204 応答(書き込み系エンドポイント共通)。 */
+export const noContent = HttpServerResponse.empty({ status: 204 });
 
 /** 認証主体 → 監査アクター(AUDIT_SPEC §2)。 */
 function dataActorOf(principal: AuthenticatedPrincipal): DataActor {

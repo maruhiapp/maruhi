@@ -3,22 +3,20 @@ import funstackStatic from "@funstack/static";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// SPIKE_NO_STYLEX=1 で StyleX コンパイラを外したビルドを作れる
-// (xstyle 用 stylex.create がコンパイラ未設定だと無警告で無スタイル描画になる罠の再現用)。
-const stylexPlugins =
-  process.env["SPIKE_NO_STYLEX"] === "1"
-    ? []
-    : astryxStylex({
-        stylexOptions: {
-          dev: process.env["NODE_ENV"] === "development",
-          runtimeInjection: false,
-          treeshakeCompensation: true,
-          unstable_moduleResolution: {
-            type: "commonJS",
-            rootDir: import.meta.dirname,
-          },
-        },
-      });
+// StyleX コンパイラは常時有効。未設定ビルドはランタイムで全損する
+// (検証記録: docs/notes/spike-a.md — e2e が実効的な防御)ため、
+// コンパイラを外すスイッチは置かない。
+const stylexPlugins = astryxStylex({
+  stylexOptions: {
+    dev: process.env["NODE_ENV"] === "development",
+    runtimeInjection: false,
+    treeshakeCompensation: true,
+    unstable_moduleResolution: {
+      type: "commonJS",
+      rootDir: import.meta.dirname,
+    },
+  },
+});
 
 export default defineConfig({
   plugins: [

@@ -15,13 +15,10 @@ import {
   ProjectNotFoundError,
 } from "@maruhi/api-schema";
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { callProjectData } from "./data-http.ts";
+import { callProjectData, noContent } from "./data-http.ts";
 import type { RecipientDekValue } from "./data-plane.ts";
-
-const noContent = HttpServerResponse.empty({ status: 204 });
 
 export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
   handlers

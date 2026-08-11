@@ -56,6 +56,13 @@ function bindingKey(binding: KeyBinding): string {
   return `${binding.encPubHex}:${binding.sigPubHex}`;
 }
 
+/**
+ * verifyChain 通過後には成り立つはずの前提(hex の正規形・鍵長)が破れたとき
+ * の内部矛盾。鍵索引からの黙った欠落は §5.1 検証で「署名者がチェーン履歴に
+ * 存在しません」という偽装様のエラーに化けるため、ここで型付きの失敗にする。
+ */
+class ChainDerivationError extends Error {}
+
 async function buildKeyHistory(
   entries: readonly ChainEntry[],
 ): Promise<ReadonlyMap<string, readonly KeyBinding[]>> {
@@ -84,16 +91,22 @@ async function buildKeyHistory(
         keyFingerprintHex: entry.actor.keyFingerprintHex,
       });
     } else if (entry.op === "add_member") {
-      const enc = decodeHex(entry.payload.encPubHex) ?? new Uint8Array(0);
-      const sig = decodeHex(entry.payload.sigPubHex) ?? new Uint8Array(0);
-      const fingerprint = await computeUserKeyFingerprint(enc, sig);
-      if (fingerprint.ok) {
-        add(entry.payload.targetUserId, {
-          encPubHex: entry.payload.encPubHex,
-          sigPubHex: entry.payload.sigPubHex,
-          keyFingerprintHex: encodeHex(fingerprint.value),
-        });
+      const enc = decodeHex(entry.payload.encPubHex);
+      const sig = decodeHex(entry.payload.sigPubHex);
+      if (enc === null || sig === null) {
+        throw new ChainDerivationError(`add_member(seq=${entry.seq})の公開鍵 hex を復号できません`);
       }
+      const fingerprint = await computeUserKeyFingerprint(enc, sig);
+      if (!fingerprint.ok) {
+        throw new ChainDerivationError(
+          `add_member(seq=${entry.seq})の鍵フィンガープリントを計算できません`,
+        );
+      }
+      add(entry.payload.targetUserId, {
+        encPubHex: entry.payload.encPubHex,
+        sigPubHex: entry.payload.sigPubHex,
+        keyFingerprintHex: encodeHex(fingerprint.value),
+      });
     }
   }
   return history;
@@ -152,7 +165,15 @@ export function syncProject(
       );
     }
 
-    const keyHistory = yield* Effect.promise(() => buildKeyHistory(entries));
+    const keyHistory = yield* Effect.tryPromise({
+      try: () => buildKeyHistory(entries),
+      catch: (error) =>
+        cliError(
+          `チェーン導出の不整合: ${
+            error instanceof ChainDerivationError ? error.message : String(error)
+          }(検証済みチェーンから鍵索引を構築できません)`,
+        ),
+    });
     return { projectId, state, history, keyHistory } satisfies VerifiedProject;
   });
 }

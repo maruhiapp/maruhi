@@ -46,7 +46,9 @@ export {
 export {
   type EnvironmentId,
   EnvironmentIdSchema,
+  isEnvironmentId,
   isProjectId,
+  isVariableId,
   type ProjectId,
   ProjectIdSchema,
   type VariableId,

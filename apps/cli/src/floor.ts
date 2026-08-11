@@ -27,6 +27,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -135,7 +136,6 @@ export function floorDirOf(configPath: string): string {
 }
 
 const HEX_64 = /^[0-9a-f]{64}$/;
-const PROJECT_ID = HEX_64;
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -192,13 +192,12 @@ function decodeVariableFloor(value: unknown): VariableFloor | null {
 }
 
 // レコードキー(environmentId / variableId)は §12-1 の受理形式
-// `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` を要求する。正規の床は wire スキーマ検証済み
-// (または CLI 採番)の ID しか書かないため、形式外のキー = 破損として全体拒否
-// してよい。これは `__proto__`(先頭 `_` で形式外 — ブラケット代入でプロトタイプ
-// 設定になりエントリが黙って欠落する)を構造的に排除する。**`constructor` /
-// `prototype` は正当な ID であり拒否しない**(レビュー①再指摘 — 参照側は
-// floorRecordGet の own-property 参照で継承プロパティへの解決を防ぐ)
-const RECORD_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// (@maruhi/core の isEnvironmentId / isVariableId)を要求する。正規の床は wire
+// スキーマ検証済み(または CLI 採番)の ID しか書かないため、形式外のキー =
+// 破損として全体拒否してよい。これは `__proto__`(先頭 `_` で形式外 — ブラケット
+// 代入でプロトタイプ設定になりエントリが黙って欠落する)を構造的に排除する。
+// **`constructor` / `prototype` は正当な ID であり拒否しない**(レビュー①再指摘 —
+// 参照側は floorRecordGet の own-property 参照で継承プロパティへの解決を防ぐ)
 
 /**
  * Own-property lookup for floor records. `constructor` / `prototype` は §12-1 の
@@ -226,7 +225,7 @@ function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   const variables: Record<string, VariableFloor> = {};
   for (const [variableId, raw] of Object.entries(value["variables"])) {
     const variable = decodeVariableFloor(raw);
-    if (variable === null || !RECORD_KEY_PATTERN.test(variableId)) {
+    if (variable === null || !isVariableId(variableId)) {
       return null;
     }
     variables[variableId] = variable;
@@ -260,7 +259,7 @@ export function decodeProjectFloor(json: string): ProjectFloor | null {
   const environments: Record<string, EnvironmentFloor> = {};
   for (const [environmentId, raw] of Object.entries(value["environments"])) {
     const environment = decodeEnvironmentFloor(raw);
-    if (environment === null || !RECORD_KEY_PATTERN.test(environmentId)) {
+    if (environment === null || !isEnvironmentId(environmentId)) {
       return null;
     }
     environments[environmentId] = environment;
@@ -422,7 +421,7 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
   const pathOf = (projectId: string): string => {
     // projectId は genesis ハッシュ(hex 64)のはずだが、ファイル名に使う前に
     // 形式を強制する(パス組み立てへの信頼できない文字列の混入を防ぐ)
-    if (!PROJECT_ID.test(projectId)) {
+    if (!isProjectId(projectId)) {
       throw new Error(`invalid project id for floor path: ${projectId}`);
     }
     return join(dir, `${projectId}.json`);

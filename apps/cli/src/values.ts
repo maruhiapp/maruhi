@@ -155,6 +155,27 @@ function failureOutcome<T>(
   };
 }
 
+/**
+ * 検証済みステートメント → 証拠材料の共通フィールド(§14.2-5 の自己完結性)。
+ * 床検査と証拠表示が使う 7 フィールドの写像をここに一本化する(手書きの
+ * 再列挙で 1 フィールド落とすと、テストに落ちずに equivocation 証拠が黙って
+ * 弱くなるため)。
+ */
+function metaEvidenceFields(
+  statement: DistributedVariableMetaStatement | DistributedEnvironmentMetaStatement,
+  metaSigHashHex: string,
+): Omit<VerifiedMetaEvidence, "status"> {
+  return {
+    metaVersion: statement.metaVersion,
+    metaSigHashHex,
+    chainHeadSeq: statement.chainHeadSeq,
+    chainHeadHashHex: statement.chainHeadHashHex,
+    signatureHex: statement.signatureHex,
+    authorUserId: statement.authorUserId,
+    authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+  };
+}
+
 /** ステートメントの複合検証(§6.3)。期待座標から context を自前で組む。 */
 async function verifyStatement(
   verified: VerifiedProject,
@@ -319,13 +340,7 @@ async function verifyEnvironmentStatement(
     kind: "ok",
     value: {
       status: "active",
-      metaVersion: statement.metaVersion,
-      metaSigHashHex: result.value.signedBytesHashHex,
-      chainHeadSeq: statement.chainHeadSeq,
-      chainHeadHashHex: statement.chainHeadHashHex,
-      signatureHex: statement.signatureHex,
-      authorUserId: statement.authorUserId,
-      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+      ...metaEvidenceFields(statement, result.value.signedBytesHashHex),
     },
   };
 }
@@ -372,13 +387,7 @@ async function verifyDeletedStatements(
     tombstones.push({
       variableId: statement.variableId,
       status: "deleted",
-      metaVersion: statement.metaVersion,
-      metaSigHashHex: result.value.signedBytesHashHex,
-      chainHeadSeq: statement.chainHeadSeq,
-      chainHeadHashHex: statement.chainHeadHashHex,
-      signatureHex: statement.signatureHex,
-      authorUserId: statement.authorUserId,
-      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+      ...metaEvidenceFields(statement, result.value.signedBytesHashHex),
     });
   }
   return { kind: "ok", value: tombstones };
@@ -453,13 +462,7 @@ async function verifyActiveStatements(
       variableId: statement.variableId,
       name: statement.name,
       status: "active",
-      metaVersion: statement.metaVersion,
-      metaSigHashHex: outcome.value.signedBytesHashHex,
-      chainHeadSeq: statement.chainHeadSeq,
-      chainHeadHashHex: statement.chainHeadHashHex,
-      signatureHex: statement.signatureHex,
-      authorUserId: statement.authorUserId,
-      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+      ...metaEvidenceFields(statement, outcome.value.signedBytesHashHex),
     });
   }
   return { kind: "ok", value: { values, ids: seenIds } };
@@ -654,6 +657,50 @@ function enforceFloor(input: {
 }
 
 /**
+ * pull 系の共通骨格(§6.3-2b): 取得 → 検証 → 床検査(accept)。future
+ * (宣言ヘッドが自ビューより先 = 自チェーンが古いだけの可能性)はどの段でも
+ * **1 回だけ**再同期し、旧ビューの延長であることを検査してから全体を再検証
+ * する(有界。延長検査 + prev_hash 連鎖により、前進ビューは openProject 時の
+ * 床検査と整合したまま — 床 seq 以下の全エントリが一致する)。再検証も future
+ * なら divergedMessage で拒否する。
+ */
+function pullWithBoundedResync<TWire, TVerified>(input: {
+  readonly verified: VerifiedProject;
+  /** future head 時の有界再同期(1 回)。 */
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  readonly fetch: Effect.Effect<TWire, CliError>;
+  readonly verify: (
+    view: VerifiedProject,
+    wire: TWire,
+  ) => Effect.Effect<
+    { readonly kind: "ok"; readonly value: TVerified } | { readonly kind: "future" },
+    CliError
+  >;
+  /** 床検査・コミット。view = 検証に使ったビュー(再同期で前進していることがある)。 */
+  readonly accept: (view: VerifiedProject, value: TVerified) => Effect.Effect<void, CliError>;
+  readonly divergedMessage: string;
+}): Effect.Effect<
+  { readonly view: VerifiedProject; readonly wire: TWire; readonly value: TVerified },
+  CliError
+> {
+  return Effect.gen(function* () {
+    const wire = yield* input.fetch;
+    const first = yield* input.verify(input.verified, wire);
+    if (first.kind === "ok") {
+      yield* input.accept(input.verified, first.value);
+      return { view: input.verified, wire, value: first.value };
+    }
+    const advanced = yield* resyncExtended(input.resync, input.verified);
+    const second = yield* input.verify(advanced, wire);
+    if (second.kind === "ok") {
+      yield* input.accept(advanced, second.value);
+      return { view: advanced, wire, value: second.value };
+    }
+    return yield* Effect.fail(cliError(input.divergedMessage));
+  });
+}
+
+/**
  * Pulls one environment and verifies every value's write signature and every
  * metadata statement (environment, active variables, tombstones) before
  * anything is decrypted or resolved by name (§6.3 / §12-7). A declared head
@@ -669,55 +716,47 @@ export function pullVerifiedEnvironment(input: {
   /** ローカル床(§6.3)。検査(規則 (a)(b)(c))と検証成功後の原子コミットを担う。 */
   readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentPull, CliError> {
-  return Effect.gen(function* () {
-    const response = yield* input.client.variables
-      .pull({ params: { projectId: input.verified.projectId, environmentId: input.environmentId } })
-      .pipe(Effect.mapError(toCliError));
-    const first = yield* verifyAll(input.verified, input.environmentId, response);
-    if (first.kind === "ok") {
-      yield* enforceFloor({
-        floor: input.floor,
-        baselineView: input.verified,
-        commitView: input.verified,
-        environmentId: input.environmentId,
-        snapshot: first.snapshot,
-      });
-      return {
-        verified: input.verified,
-        variables: first.snapshot.variables,
-        deks: response.deks,
-        warnings: first.warnings,
-      };
-    }
-    // 宣言ヘッドが自ビューより先 = 自チェーンが古いだけの可能性(§6.3-2b)。
-    // 1 回だけ再同期し、旧ビューの延長であることを検査してから全体を再検証する
-    // (延長検査 + prev_hash 連鎖により、前進ビューは openProject 時の床検査と
-    // 整合したまま — 床 seq 以下の全エントリが一致する)
-    const advanced = yield* resyncExtended(input.resync, input.verified);
-    const second = yield* verifyAll(advanced, input.environmentId, response);
-    if (second.kind === "ok") {
-      // 検証は前進ビュー、規則 (c) 基準は応答取得前のビューから導出する
-      // (enforceFloor の baselineView 契約 — 再同期での基準過前進を防ぐ)
-      yield* enforceFloor({
-        floor: input.floor,
-        baselineView: input.verified,
-        commitView: advanced,
-        environmentId: input.environmentId,
-        snapshot: second.snapshot,
-      });
-      return {
-        verified: advanced,
-        variables: second.snapshot.variables,
-        deks: response.deks,
-        warnings: second.warnings,
-      };
-    }
-    return yield* Effect.fail(
-      cliError(
+  return Effect.map(
+    pullWithBoundedResync({
+      verified: input.verified,
+      resync: input.resync,
+      fetch: input.client.variables
+        .pull({
+          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+        })
+        .pipe(Effect.mapError(toCliError)),
+      verify: (view, wire) =>
+        verifyAll(view, input.environmentId, wire).pipe(
+          Effect.map((result) =>
+            result.kind === "future"
+              ? result
+              : ({
+                  kind: "ok",
+                  value: { snapshot: result.snapshot, warnings: result.warnings },
+                } as const),
+          ),
+        ),
+      accept: (view, value) =>
+        enforceFloor({
+          floor: input.floor,
+          // 検証は(前進していることのある)view、規則 (c) 基準は応答取得前の
+          // ビューから導出する(enforceFloor の baselineView 契約 — 再同期での
+          // 基準過前進を防ぐ)
+          baselineView: input.verified,
+          commitView: view,
+          environmentId: input.environmentId,
+          snapshot: value.snapshot,
+        }),
+      divergedMessage:
         "再同期後もチェーンに存在しないヘッドへ束縛された値またはステートメントが配布されています(チェーン分岐または偽造の証拠)",
-      ),
-    );
-  });
+    }),
+    ({ view, wire, value }) => ({
+      verified: view,
+      variables: value.snapshot.variables,
+      deks: wire.deks,
+      warnings: value.warnings,
+    }),
+  );
 }
 
 /** メタデータのみ pull の検証済み応答(§12-7 のメタデータのみモード)。 */
@@ -808,41 +847,37 @@ export function pullVerifiedEnvironmentMetadata(input: {
   /** ローカル床(§6.3)。メタ水準の検査のみ — コミットしない(enforceMetadataFloor)。 */
   readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentMetadata, CliError> {
-  return Effect.gen(function* () {
-    const response = yield* input.client.variables
-      .pullMetadata({
-        params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-      })
-      .pipe(Effect.mapError(toCliError));
-    const first = yield* verifyAllMetadata(input.verified, input.environmentId, response);
-    if (first.kind === "ok") {
-      yield* enforceMetadataFloor({
-        floor: input.floor,
-        verified: input.verified,
-        environmentId: input.environmentId,
-        environment: first.environment,
-        variables: first.variables,
-        tombstones: first.tombstones,
-      });
-      return { verified: input.verified, variables: first.variables, warnings: first.warnings };
-    }
-    const advanced = yield* resyncExtended(input.resync, input.verified);
-    const second = yield* verifyAllMetadata(advanced, input.environmentId, response);
-    if (second.kind === "ok") {
-      yield* enforceMetadataFloor({
-        floor: input.floor,
-        verified: advanced,
-        environmentId: input.environmentId,
-        environment: second.environment,
-        variables: second.variables,
-        tombstones: second.tombstones,
-      });
-      return { verified: advanced, variables: second.variables, warnings: second.warnings };
-    }
-    return yield* Effect.fail(
-      cliError(
+  return Effect.map(
+    pullWithBoundedResync({
+      verified: input.verified,
+      resync: input.resync,
+      fetch: input.client.variables
+        .pullMetadata({
+          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+        })
+        .pipe(Effect.mapError(toCliError)),
+      verify: (view, wire) =>
+        verifyAllMetadata(view, input.environmentId, wire).pipe(
+          Effect.map((result) =>
+            result.kind === "future" ? result : ({ kind: "ok", value: result } as const),
+          ),
+        ),
+      accept: (view, value) =>
+        enforceMetadataFloor({
+          floor: input.floor,
+          verified: view,
+          environmentId: input.environmentId,
+          environment: value.environment,
+          variables: value.variables,
+          tombstones: value.tombstones,
+        }),
+      divergedMessage:
         "再同期後もチェーンに存在しないヘッドへ束縛されたステートメントが配布されています(チェーン分岐または偽造の証拠)",
-      ),
-    );
-  });
+    }),
+    ({ view, value }) => ({
+      verified: view,
+      variables: value.variables,
+      warnings: value.warnings,
+    }),
+  );
 }

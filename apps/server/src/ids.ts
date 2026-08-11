@@ -3,6 +3,8 @@
 // ここにあるのは暗号プロトコルではなく ID / 乱数のエンコーディングのみ。
 // 暗号操作(ハッシュ)は WebCrypto に委譲する(CLAUDE.md: 独自プリミティブ禁止)。
 
+import { encodeHex } from "@maruhi/crypto";
+
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /**
@@ -46,13 +48,13 @@ export function randomBase62(): string {
 
 /** ランダム hex 文字列(`byteLength` バイト分)。セッション生値・OAuth state に使う。 */
 export function randomHex(byteLength: number): string {
-  return bytesToHex(crypto.getRandomValues(new Uint8Array(byteLength)));
+  return encodeHex(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
 /** SHA-256 の hex(小文字)。セッション / トークンの保存用ハッシュ(AUTH_SPEC §5 / §6)。 */
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return bytesToHex(new Uint8Array(digest));
+  return encodeHex(new Uint8Array(digest));
 }
 
 /**
@@ -66,12 +68,4 @@ export function constantTimeEqual(a: string, b: string): boolean {
     diff |= (a.charCodeAt(i) | 0) ^ (b.charCodeAt(i) | 0);
   }
   return diff === 0;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let out = "";
-  for (const byte of bytes) {
-    out += byte.toString(16).padStart(2, "0");
-  }
-  return out;
 }

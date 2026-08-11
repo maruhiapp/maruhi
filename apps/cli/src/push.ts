@@ -509,12 +509,6 @@ function refreshEpochState(
 
 /**
  * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
- * 整合検査(レビューループ 1 [高]/[中])。正直サーバーでは latest_version は
- * 単調増加(バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後
- * 404)なので、後退はすべて巻き戻し・equivocation の証拠であり誤拒否はない。
- */
-/**
- * 検証済み既知 latest(このセッションで §6.3 検証を通した値)に対する winner の
  * 後退・equivocation・連鎖の整合検査。正直サーバーでは latest_version は単調増加
  * (バージョン行の個別削除なし。変数削除は tombstone + 全行削除 = 以後 404)なので
  * 後退はすべて巻き戻し・equivocation の証拠であり、誤拒否はない。

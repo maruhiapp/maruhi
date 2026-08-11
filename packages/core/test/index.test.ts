@@ -18,7 +18,9 @@ import {
   CryptoSignError,
   CryptoValueInvalidError,
   fromCryptoResult,
+  isEnvironmentId,
   isProjectId,
+  isVariableId,
   toWrappedCryptoError,
   type WrappedCryptoError,
 } from "../src/index.ts";
@@ -120,3 +122,33 @@ describe("isProjectId", () => {
     expect(isProjectId("zz".repeat(32))).toBe(false);
   });
 });
+
+// isEnvironmentId / isVariableId は同一の §12-1 受理形式(AUTH_SPEC)。
+// 床レコードキーの検証にも使うため、`__proto__`(先頭 `_` で形式外)の拒否と
+// `constructor` / `prototype`(正当な ID)の受理という境界を直接固定する
+for (const [name, guard] of [
+  ["isEnvironmentId", isEnvironmentId],
+  ["isVariableId", isVariableId],
+] as const) {
+  describe(name, () => {
+    it("accepts §12-1 resource ids (1-64 chars, alphanumeric start)", () => {
+      expect(guard("dev")).toBe(true);
+      expect(guard("a")).toBe(true);
+      expect(guard(`a${"b".repeat(63)}`)).toBe(true);
+      expect(guard("A1_-x")).toBe(true);
+      // 継承プロパティ名でも形式に合えば正当な ID(参照側が own-property で防御)
+      expect(guard("constructor")).toBe(true);
+      expect(guard("prototype")).toBe(true);
+    });
+
+    it("rejects empty, leading-symbol, over-length, and out-of-alphabet ids", () => {
+      expect(guard("")).toBe(false);
+      expect(guard("__proto__")).toBe(false);
+      expect(guard("-dev")).toBe(false);
+      expect(guard("_dev")).toBe(false);
+      expect(guard(`a${"b".repeat(64)}`)).toBe(false);
+      expect(guard("dev/prod")).toBe(false);
+      expect(guard("日本語")).toBe(false);
+    });
+  });
+}

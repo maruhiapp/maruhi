@@ -516,7 +516,6 @@ export function buildEnvironmentFloor(
  * 採用は検査基準として健全(ローカル状態を書ける攻撃者は床の外 — fail-open)。
  */
 export interface FloorHandle {
-  readonly environmentId: string;
   /** 現在の環境床(初回 pull 前は openProject 時に読んだスナップショット)。 */
   readonly current: () => EnvironmentFloor | null;
   /** 検証済み pull の原子コミット(規則 (c) 基準 + 変数床 + ヘッド)。 */
@@ -541,7 +540,6 @@ export function makeFloorHandle(input: {
 }): FloorHandle {
   let current = input.initial;
   return {
-    environmentId: input.environmentId,
     current: () => current,
     commitPull: (environment, head) =>
       input.store
