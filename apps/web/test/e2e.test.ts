@@ -67,7 +67,7 @@ afterAll(async () => {
   wranglerProcess?.kill();
 });
 
-describe("spike-a: funstack-static + funstack-router + Astryx on Workers Static Assets", () => {
+describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static Assets", () => {
   it("serves the static shell with strict CSP headers", async () => {
     const res = await fetch(BASE);
     expect(res.status).toBe(200);
