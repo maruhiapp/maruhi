@@ -233,8 +233,55 @@ interface DataStoreShape {
 
 export class DataStore extends Context.Service<DataStore, DataStoreShape>()("DataStore") {}
 
-function countsOf(row: Record<string, unknown> | undefined): ResourceCounts {
-  return { active: Number(row?.["active_rows"] ?? 0), rows: Number(row?.["total_rows"] ?? 0) };
+// ---------------------------------------------------------------------------
+// 行デコードの安全層: 必須列の存在・型を検査し、不一致は説明付き defect にする。
+// String(...) / Number(...) の素通しは列名 typo / rename を文字列 "undefined" や
+// NaN として通過させるため、行 → ドメイン型の写像は必ずここを経由する
+// (storedSuite / statementOf の status 検査 — 「未知値は defect」— の全列への拡張)。
+// ---------------------------------------------------------------------------
+
+type StoredRow = Record<string, unknown>;
+
+/** 列の存在検査(SELECT 句とデコーダの列名不一致 = 実装バグの検出)。 */
+function columnValue(row: StoredRow, column: string): unknown {
+  const value = row[column];
+  if (value === undefined) {
+    throw new Error(`stored row is missing column "${column}"`);
+  }
+  return value;
+}
+
+function stringColumn(row: StoredRow, column: string): string {
+  const value = columnValue(row, column);
+  if (typeof value !== "string") {
+    throw new Error(`stored column "${column}" is not a string`);
+  }
+  return value;
+}
+
+function numberColumn(row: StoredRow, column: string): number {
+  const value = columnValue(row, column);
+  if (typeof value !== "number") {
+    throw new Error(`stored column "${column}" is not a number`);
+  }
+  return value;
+}
+
+function nullableNumberColumn(row: StoredRow, column: string): number | null {
+  const value = columnValue(row, column);
+  if (value !== null && typeof value !== "number") {
+    throw new Error(`stored column "${column}" is not a number or NULL`);
+  }
+  return value;
+}
+
+function countsOf(row: StoredRow | undefined): ResourceCounts {
+  if (row === undefined) {
+    return { active: 0, rows: 0 };
+  }
+  // SUM(CASE ...) は 0 行のとき NULL を返すため 0 に読み替える(COUNT は常に数値)
+  const active = nullableNumberColumn(row, "active_rows");
+  return { active: active ?? 0, rows: numberColumn(row, "total_rows") };
 }
 
 /**
@@ -249,41 +296,52 @@ function storedSuite(value: unknown): WireSuite {
   return value;
 }
 
-/** メタステートメント行 → 配布形(author 込み。environmentId は列から取る)。 */
-function statementOf(row: Record<string, unknown>): DistributedMetaStatementValue {
-  const status = String(row["status"]);
+/**
+ * メタステートメント列(environmentId / variableId を除く共通部)のデコード。
+ * prefix は latestVersions の SQL 別名(ms_*)用 — 擬似行オブジェクトの組み立てを
+ * せず、別名付きの行をそのまま読む。
+ */
+function statementColumns(
+  row: StoredRow,
+  prefix: string,
+): Omit<DistributedMetaStatementValue, "environmentId"> {
+  const status = stringColumn(row, `${prefix}status`);
   if (status !== "active" && status !== "deleted") {
     // 書き込み経路は Schema の Literal が強制する(既知以外はストレージ破損)
     throw new Error("unexpected status in stored meta statement row");
   }
   return {
-    suite: storedSuite(row["suite"]),
-    environmentId: String(row["environment_id"]),
-    name: String(row["name"]),
+    suite: storedSuite(columnValue(row, `${prefix}suite`)),
+    name: stringColumn(row, `${prefix}name`),
     status,
-    metaVersion: Number(row["meta_version"]),
-    prevMetaSigHashHex: String(row["prev_meta_sig_hash_hex"]),
-    chainHeadHashHex: String(row["chain_head_hash_hex"]),
-    chainHeadSeq: Number(row["chain_head_seq"]),
-    signatureHex: String(row["signature_hex"]),
-    authorUserId: String(row["author_user_id"]),
-    authorKeyFingerprintHex: String(row["author_key_fingerprint"]),
+    metaVersion: numberColumn(row, `${prefix}meta_version`),
+    prevMetaSigHashHex: stringColumn(row, `${prefix}prev_meta_sig_hash_hex`),
+    chainHeadHashHex: stringColumn(row, `${prefix}chain_head_hash_hex`),
+    chainHeadSeq: numberColumn(row, `${prefix}chain_head_seq`),
+    signatureHex: stringColumn(row, `${prefix}signature_hex`),
+    authorUserId: stringColumn(row, `${prefix}author_user_id`),
+    authorKeyFingerprintHex: stringColumn(row, `${prefix}author_key_fingerprint`),
   };
 }
 
-function variableStatementOf(row: Record<string, unknown>): DistributedVariableMetaStatementValue {
-  return { ...statementOf(row), variableId: String(row["variable_id"]) };
+/** メタステートメント行 → 配布形(author 込み。environmentId は列から取る)。 */
+function statementOf(row: StoredRow): DistributedMetaStatementValue {
+  return { environmentId: stringColumn(row, "environment_id"), ...statementColumns(row, "") };
 }
 
-function anchorOf(row: Record<string, unknown> | undefined): MetaAnchor | null {
+function variableStatementOf(row: StoredRow): DistributedVariableMetaStatementValue {
+  return { ...statementOf(row), variableId: stringColumn(row, "variable_id") };
+}
+
+function anchorOf(row: StoredRow | undefined): MetaAnchor | null {
   if (row === undefined) {
     return null;
   }
-  const status = String(row["status"]);
+  const status = stringColumn(row, "status");
   if (status !== "active" && status !== "deleted") {
     throw new Error("unexpected status in stored meta statement row");
   }
-  return { signedBytesHashHex: String(row["signed_bytes_hash_hex"]), status };
+  return { signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"), status };
 }
 
 // 配布(§12-2)は signed_bytes_hash_hex を選択しない = 配布しない(検証者が
@@ -304,10 +362,10 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        environmentId: String(row["environment_id"]),
-        name: String(row["name"]),
-        latestMetaVersion: Number(row["latest_meta_version"]),
-        deletedAtMs: row["deleted_at"] === null ? null : Number(row["deleted_at"]),
+        environmentId: stringColumn(row, "environment_id"),
+        name: stringColumn(row, "name"),
+        latestMetaVersion: numberColumn(row, "latest_meta_version"),
+        deletedAtMs: nullableNumberColumn(row, "deleted_at"),
       };
     }),
   countEnvironments: Effect.sync(() => {
@@ -345,7 +403,7 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
       )
       .toArray()
       .map((row) => ({
-        environmentId: String(row["environment_id"]),
+        environmentId: stringColumn(row, "environment_id"),
         statement: statementOf(row),
       })),
   ),
@@ -394,11 +452,11 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        variableId: String(row["variable_id"]),
-        name: String(row["name"]),
-        latestMetaVersion: Number(row["latest_meta_version"]),
-        latestVersion: Number(row["latest_version"]),
-        deletedAtMs: row["deleted_at"] === null ? null : Number(row["deleted_at"]),
+        variableId: stringColumn(row, "variable_id"),
+        name: stringColumn(row, "name"),
+        latestMetaVersion: numberColumn(row, "latest_meta_version"),
+        latestVersion: numberColumn(row, "latest_version"),
+        deletedAtMs: nullableNumberColumn(row, "deleted_at"),
       };
     }),
   variableMetaAnchor: (environmentId: string, variableId: string, metaVersion: number) =>
@@ -484,7 +542,10 @@ const makeVariableQueries = (sql: SqlStorage) => ({
           environmentId,
         )
         .toArray()
-        .map((row) => ({ variableId: String(row["variable_id"]), name: String(row["name"]) })),
+        .map((row) => ({
+          variableId: stringColumn(row, "variable_id"),
+          name: stringColumn(row, "name"),
+        })),
     ),
 });
 
@@ -523,32 +584,25 @@ const makeVersionQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          variableId: String(row["variable_id"]),
-          version: Number(row["version"]),
-          suite: storedSuite(row["suite"]),
-          epoch: Number(row["epoch"]),
-          nonceHex: String(row["nonce_hex"]),
-          ciphertextHex: String(row["ciphertext_hex"]),
-          prevValueSigHashHex: String(row["prev_value_sig_hash_hex"]),
-          chainHeadHashHex: String(row["chain_head_hash_hex"]),
-          chainHeadSeq: Number(row["chain_head_seq"]),
-          signatureHex: String(row["signature_hex"]),
-          writerUserId: String(row["writer_user_id"]),
-          writerKeyFingerprintHex: String(row["writer_key_fingerprint"]),
-          statement: variableStatementOf({
-            environment_id: environmentId,
-            variable_id: row["variable_id"],
-            suite: row["ms_suite"],
-            name: row["ms_name"],
-            status: row["ms_status"],
-            meta_version: row["ms_meta_version"],
-            prev_meta_sig_hash_hex: row["ms_prev_meta_sig_hash_hex"],
-            chain_head_hash_hex: row["ms_chain_head_hash_hex"],
-            chain_head_seq: row["ms_chain_head_seq"],
-            signature_hex: row["ms_signature_hex"],
-            author_user_id: row["ms_author_user_id"],
-            author_key_fingerprint: row["ms_author_key_fingerprint"],
-          }),
+          variableId: stringColumn(row, "variable_id"),
+          version: numberColumn(row, "version"),
+          suite: storedSuite(columnValue(row, "suite")),
+          epoch: numberColumn(row, "epoch"),
+          nonceHex: stringColumn(row, "nonce_hex"),
+          ciphertextHex: stringColumn(row, "ciphertext_hex"),
+          prevValueSigHashHex: stringColumn(row, "prev_value_sig_hash_hex"),
+          chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
+          chainHeadSeq: numberColumn(row, "chain_head_seq"),
+          signatureHex: stringColumn(row, "signature_hex"),
+          writerUserId: stringColumn(row, "writer_user_id"),
+          writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
+          // ステートメント部は ms_* 別名列をそのまま読む(statementColumns の
+          // prefix)。環境 ID は WHERE 句の引数、変数 ID は行の値
+          statement: {
+            environmentId,
+            variableId: stringColumn(row, "variable_id"),
+            ...statementColumns(row, "ms_"),
+          },
         })),
     ),
   versionAnchor: (environmentId: string, variableId: string, version: number) =>
@@ -566,15 +620,15 @@ const makeVersionQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        signedBytesHashHex: String(row["signed_bytes_hash_hex"]),
-        epoch: Number(row["epoch"]),
+        signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+        epoch: numberColumn(row, "epoch"),
       };
     }),
   totalCiphertextBytes: Effect.sync(() => {
     const row = sql
       .exec("SELECT COALESCE(SUM(ciphertext_bytes), 0) AS total FROM variable_versions")
       .toArray()[0];
-    return Number(row?.["total"] ?? 0);
+    return row === undefined ? 0 : numberColumn(row, "total");
   }),
 });
 
@@ -588,11 +642,11 @@ const makeWrapQueries = (sql: SqlStorage) => ({
           epoch,
         )
         .toArray()[0];
-      return Number(row?.["n"] ?? 0);
+      return row === undefined ? 0 : numberColumn(row, "n");
     }),
   countWrapRows: Effect.sync(() => {
     const row = sql.exec("SELECT COUNT(*) AS n FROM dek_wraps").toArray()[0];
-    return Number(row?.["n"] ?? 0);
+    return row === undefined ? 0 : numberColumn(row, "n");
   }),
   wrapExists: (environmentId: string, epoch: number, recipientUserId: string) =>
     Effect.sync(() => {
@@ -618,13 +672,13 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          suite: storedSuite(row["suite"]),
-          epoch: Number(row["epoch"]),
-          encHex: String(row["enc_hex"]),
-          ciphertextHex: String(row["ciphertext_hex"]),
-          signatureHex: String(row["signature_hex"]),
-          signerUserId: String(row["signer_user_id"]),
-          signerKeyFingerprintHex: String(row["signer_key_fingerprint"]),
+          suite: storedSuite(columnValue(row, "suite")),
+          epoch: numberColumn(row, "epoch"),
+          encHex: stringColumn(row, "enc_hex"),
+          ciphertextHex: stringColumn(row, "ciphertext_hex"),
+          signatureHex: stringColumn(row, "signature_hex"),
+          signerUserId: stringColumn(row, "signer_user_id"),
+          signerKeyFingerprintHex: stringColumn(row, "signer_key_fingerprint"),
         })),
     ),
 });

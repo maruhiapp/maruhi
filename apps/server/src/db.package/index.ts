@@ -4,12 +4,7 @@
 // 必要とするシェイプ型・構築関数のみ。Drizzle のテーブル定義(schema.ts)・
 // クエリ型は境界外に出さない(ADR-0006)。
 
-export {
-  D1AuditRepo,
-  LOGIN_FAILED_WINDOW_LIMIT,
-  LOGIN_FAILED_WINDOW_MS,
-  principalAuditActor,
-} from "./audit.ts";
+export { D1AuditRepo, LOGIN_FAILED_WINDOW_LIMIT, LOGIN_FAILED_WINDOW_MS } from "./audit.ts";
 export {
   type DbServices,
   IdentityRepo,

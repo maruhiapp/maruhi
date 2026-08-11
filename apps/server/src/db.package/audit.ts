@@ -10,7 +10,8 @@
 //   トークン id)と auth_method 種別名のみ。プロバイダ ID・login・メールを
 //   この層に持ち込まないこと
 
-import type { AuthenticatedPrincipal } from "@maruhi/core";
+import type { AuditActor } from "@maruhi/core";
+import { auditPayloadWith } from "@maruhi/core";
 import { and, count, eq, gte } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -20,15 +21,13 @@ import { orgAuditEvents, userAuditEvents } from "./schema.ts";
 type Db = ReturnType<typeof drizzle>;
 
 /**
- * 監査アクター(AUDIT_SPEC §2)。userId 省略は「未認証の外部主体」
- * (auth.login_failed のみ — 人はいるが特定できていない。type=system は
- * 主体のない内部処理用であり、外部からの失敗試行には使わない)。
+ * 監査アクター(AUDIT_SPEC §2)。共有の AuditActor(@maruhi/core — 認証主体
+ * からの写像 auditActorOf の唯一の出口)からの派生で、userId のみ省略可にする:
+ * 省略は「未認証の外部主体」(auth.login_failed のみ — 人はいるが特定できて
+ * いない。type=system は主体のない内部処理用であり、外部からの失敗試行には
+ * 使わない)。
  */
-export interface D1AuditActor {
-  readonly userId?: string;
-  readonly apiTokenId?: string;
-  readonly authMethod?: string;
-}
+export type D1AuditActor = Omit<AuditActor, "userId"> & { readonly userId?: string };
 
 /** 監査イベント 1 行の入力(列は schema.ts の共通列。未指定は NULL)。 */
 export interface D1AuditEventInput {
@@ -40,19 +39,9 @@ export interface D1AuditEventInput {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
-/** 認証主体 → 監査アクター(data-http.ts の dataActorOf と同じ写像)。 */
-export function principalAuditActor(principal: AuthenticatedPrincipal): D1AuditActor {
-  return principal.kind === "token"
-    ? { userId: principal.userId, apiTokenId: principal.tokenId }
-    : { userId: principal.userId, authMethod: principal.authMethod };
-}
-
 /** 挿入行への写像。auth_method は DO 側と同じく payload に載る(§2)。 */
 function rowOf(event: D1AuditEventInput, serverTs: number) {
-  const payload = {
-    ...event.payload,
-    ...(event.actor.authMethod === undefined ? {} : { authMethod: event.actor.authMethod }),
-  };
+  const payload = auditPayloadWith(event.actor, event.payload);
   return {
     serverTs,
     event: event.event,

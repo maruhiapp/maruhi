@@ -33,29 +33,68 @@ interface ChainStoreShape {
 
 export class ChainStore extends Context.Service<ChainStore, ChainStoreShape>()("ChainStore") {}
 
-export const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
+/**
+ * 差分ロード(キャッシュ済みヘッドより後の行のみ)。afterSeq = 0 はフルロード。
+ * チェーンは append-only(削除・更新の口がない — insertSync のみ)なので、
+ * キャッシュ済み接頭辞 + `seq > afterSeq` の連結はフルロードと同一結果になる。
+ */
+interface LoadedRows {
+  readonly entries: ChainEntry[];
+  readonly hashes: string[];
+  readonly lastSeq: number | null;
+  readonly addedBytes: number;
+}
+
+function loadRowsAfter(sql: SqlStorage, afterSeq: number): LoadedRows {
+  const rows = sql
+    .exec(
+      "SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM chain_entries WHERE seq > ? ORDER BY seq",
+      afterSeq,
+    )
+    .toArray();
+  let addedBytes = 0;
+  for (const row of rows) {
+    addedBytes += Number(row["canonical_bytes"]);
+  }
+  const last = rows[rows.length - 1];
+  return {
+    entries: rows.map((row) => JSON.parse(String(row["entry_json"])) as ChainEntry),
+    hashes: rows.map((row) => String(row["entry_hash_hex"])),
+    lastSeq: last === undefined ? null : Number(last["seq"]),
+    addedBytes,
+  };
+}
+
+/** 空チェーン(キャッシュ無効時の差分ロードの基底 = フルロード)。 */
+const EMPTY_CHAIN: StoredChain = {
+  entries: [],
+  headSeq: 0,
+  headHashHex: null,
+  genesisHashHex: null,
+  totalCanonicalBytes: 0,
+};
+
+function loadChain(sql: SqlStorage, cache: StateCache): StoredChain {
+  // キャッシュ無効(DO 再起動直後など)は空チェーン基底の差分 = フルロード
+  const base = cache.chain ?? EMPTY_CHAIN;
+  const diff = loadRowsAfter(sql, base.headSeq);
+  if (diff.entries.length === 0 && cache.chain !== null) {
+    return base;
+  }
+  const chain: StoredChain = {
+    entries: [...base.entries, ...diff.entries],
+    headSeq: diff.lastSeq ?? base.headSeq,
+    headHashHex: diff.hashes[diff.hashes.length - 1] ?? base.headHashHex,
+    genesisHashHex: base.genesisHashHex ?? diff.hashes[0] ?? null,
+    totalCanonicalBytes: base.totalCanonicalBytes + diff.addedBytes,
+  };
+  cache.chain = chain;
+  return chain;
+}
+
+export const chainStoreLayer = (sql: SqlStorage, cache: StateCache): Layer.Layer<ChainStore> =>
   Layer.sync(ChainStore, () => ({
-    load: Effect.sync(() => {
-      const rows = sql
-        .exec(
-          "SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM chain_entries ORDER BY seq",
-        )
-        .toArray();
-      const entries = rows.map((row) => JSON.parse(String(row["entry_json"])) as ChainEntry);
-      const first = rows[0];
-      const last = rows[rows.length - 1];
-      let totalCanonicalBytes = 0;
-      for (const row of rows) {
-        totalCanonicalBytes += Number(row["canonical_bytes"]);
-      }
-      return {
-        entries,
-        headSeq: last === undefined ? 0 : Number(last["seq"]),
-        headHashHex: last === undefined ? null : String(last["entry_hash_hex"]),
-        genesisHashHex: first === undefined ? null : String(first["entry_hash_hex"]),
-        totalCanonicalBytes,
-      };
-    }),
+    load: Effect.sync(() => loadChain(sql, cache)),
     insertSync: (entry, entryHashHex, canonicalBytes) => {
       sql.exec(
         "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (?, ?, ?, ?)",
@@ -64,6 +103,20 @@ export const chainStoreLayer = (sql: SqlStorage): Layer.Layer<ChainStore> =>
         entryHashHex,
         canonicalBytes,
       );
+      // 受理済み追記のキャッシュへの増分反映。キャッシュと不連続な挿入は
+      // 起こらない想定(全経路が load → 検証 → insertSync の直列)だが、万一の
+      // 場合は無効化してフルロードに戻す(古い状態を配らない防御線)
+      const cached = cache.chain;
+      cache.chain =
+        cached !== null && entry.seq === cached.headSeq + 1
+          ? {
+              entries: [...cached.entries, entry],
+              headSeq: entry.seq,
+              headHashHex: entryHashHex,
+              genesisHashHex: cached.genesisHashHex ?? entryHashHex,
+              totalCanonicalBytes: cached.totalCanonicalBytes + canonicalBytes,
+            }
+          : null;
     },
   }));
 
@@ -110,9 +163,15 @@ export function canonicalBytesOf(entry: ChainEntry): Effect.Effect<number, Chain
  * チェーンは受理時に検証済みなので、同一ヘッドへの再導出を省く(§6.2 の認可・
  * §11-2 のメンバーシップ判定・値署名の宣言ヘッド時点検証 — §12-8 — を
  * 読み取りごとの O(n) 署名検証にしないため)。
+ *
+ * chain は parse 済みチェーンのキャッシュ: ロード SQL を `seq > headSeq` の
+ * 差分に限定し、全操作前段の「全行 SELECT + JSON.parse」を省く(ホットパス
+ * 最適化)。チェーンは append-only なので差分連結 = フルロードと同一結果。
+ * null はキャッシュ無効(DO 再起動直後など)で、次のロードがフルロードで張り直す。
  */
 export interface StateCache {
   current: { readonly headHashHex: string; readonly verified: VerifiedChainView } | null;
+  chain: StoredChain | null;
 }
 
 /**

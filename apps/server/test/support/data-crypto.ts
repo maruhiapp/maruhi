@@ -56,9 +56,19 @@ export {
   valueSignedBytesHashOf,
 } from "../../../../packages/crypto/test/support/fixture.ts";
 
-/** ベクター固定鍵のユーザー(user-owner-0001 / user-member-0002 / user-admin-0003)。 */
+/**
+ * ベクター固定鍵集合に無いユーザー ID の鍵借用。データフィクスチャの reader
+ * (user-reader-0003)は 3 本目のベクター鍵(名義 user-admin-0003)を使う —
+ * 鍵とユーザー ID の束縛はチェーンの add_member が行うため、ベクター JSON の
+ * 名義とテストユーザー ID は独立でよい。
+ */
+const VECTOR_KEY_ALIASES: Record<string, string> = {
+  "user-reader-0003": "user-admin-0003",
+};
+
+/** ベクター固定鍵のユーザー(user-owner-0001 / user-member-0002 / user-admin-0003 + 借用者)。 */
 export function vectorKeyOf(userId: string) {
-  const keys = vectorKeys[userId];
+  const keys = vectorKeys[VECTOR_KEY_ALIASES[userId] ?? userId];
   if (keys === undefined) {
     throw new Error(`no vector keys for ${userId}`);
   }

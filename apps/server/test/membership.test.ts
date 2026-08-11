@@ -13,11 +13,11 @@
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { vectorEnvironmentDeks } from "../../../packages/crypto/test/checks/chain-vector.ts";
-import { chainCapacityExceeded } from "../src/chain-do.ts";
+import { chainCapacityExceeded } from "../src/chain-accept.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
@@ -319,6 +319,54 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
         vectorEntries.map((v) => v.entry_hash_hex),
       );
     });
+  });
+});
+
+describe("チェーンの差分ロードキャッシュ(chain-store.ts StateCache.chain)", () => {
+  const readChain = async () => {
+    const response = await getChain(vectorProjectId);
+    expect(response.status).toBe(200);
+    return (await response.json()) as {
+      projectId: string;
+      entries: ChainEntry[];
+      headSeq: number;
+      headHashHex: string;
+    };
+  };
+
+  it("追記→読み取り→追記の往復がフルロードと同一結果を返す(複合追記の増分反映込み)", async () => {
+    // seq 1〜12 の再生は「追記(増分反映)→ 読み取り(差分ロード)」を毎手で
+    // 往復し、複合受理(create/rotate)の insertSync 経路もキャッシュに反映する
+    const members = await replayVectorChain(12);
+    const warm = await readChain();
+
+    // DO 退去 = インスタンスメモリのキャッシュ破棄。次の読み取りはフルロードに
+    // フォールバックし、ウォームキャッシュの結果と完全一致しなければならない
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
+    await evictDurableObject(stub);
+    const cold = await readChain();
+    expect(cold).toEqual(warm);
+
+    // フォールバック後も追記を受理でき、以降の読み取りへ増分反映される
+    const target = members.find((userId) => userId !== "user-owner-0001");
+    if (target === undefined) throw new Error("vector chain has no removable member");
+    const { entry } = await signEntryAt({
+      seq: 13,
+      prevHashHex: warm.headHashHex,
+      actorUserId: "user-owner-0001",
+      operation: { op: "remove_member", payload: { targetUserId: target } },
+    });
+    const appended = await appendEntry(vectorProjectId, warm.headHashHex, entry);
+    expect(appended.status).toBe(200);
+    const after = await readChain();
+    expect(after.headSeq).toBe(13);
+    expect(after.entries.slice(0, 12)).toEqual(warm.entries);
+    expect(after.entries[12]).toEqual(entry);
+
+    // もう一度キャッシュを破棄してもフルロードが同一結果に到達する
+    await evictDurableObject(stub);
+    const coldAfter = await readChain();
+    expect(coldAfter).toEqual(after);
   });
 });
 
@@ -758,6 +806,9 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
         MAX_CHAIN_TOTAL_CANONICAL_BYTES,
       );
     });
+    // 保存行の直接改変(append-only 不変条件の外)はインスタンスの差分ロード
+    // キャッシュに映らないため、DO 再起動相当の退去でフルロードに戻す
+    await evictDurableObject(stub);
     const entry2 = vectorEntries[1];
     if (entry2 === undefined) throw new Error("missing vector entries");
     const { entry } = await signEntryAt({

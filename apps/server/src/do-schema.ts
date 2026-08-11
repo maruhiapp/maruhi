@@ -5,7 +5,7 @@
 //   (AUTH_SPEC §12)。environments / variables の削除は tombstone(deleted_at)で
 //   表現し、ID の再利用を禁止する(§12-1)。暗号文・ラップは即時削除する
 // - audit_events: 監査ログ(AUDIT_SPEC §5.1 のスキーマそのまま)。seq は
-//   INSERT ... SELECT MAX(seq)+1 による単調・無欠番の採番
+//   単調・無欠番(採番は audit-store.ts — DO メモリ保持の next seq)
 // - schema_meta: 適用済みマイグレーションの version(1 行)。maruhi はセルフ
 //   ホスト配布物のため、公開後は既存 DO のスキーマ変更を順序付きステップとして
 //   PROJECT_DO_MIGRATIONS に追記する(IF NOT EXISTS の DDL 再適用では既存
