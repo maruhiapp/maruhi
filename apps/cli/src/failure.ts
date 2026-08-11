@@ -3,7 +3,7 @@
 // 規律: メッセージは識別子(ID・理由コード・上限値・HTTP ステータス)のみで
 // 構成し、平文値・鍵素材・トークン生値を運ばない(CLAUDE.md)。
 // `_tag` への直接アクセスは oxlint が禁止するため、判定は instanceof で行う
-// (Schema.TaggedErrorClass は instanceof が使える — session-07 の知見)。
+// (Schema.TaggedError は instanceof が使える — session-07 の知見)。
 
 import {
   AuthFlowError,

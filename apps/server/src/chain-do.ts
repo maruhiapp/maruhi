@@ -350,10 +350,8 @@ const toDataOutcome = <T, R>(
 ): Effect.Effect<DataOutcome<T>, never, R> =>
   program.pipe(
     Effect.map((value): DataOutcome<T> => ({ kind: "ok", value })),
-    Effect.catchTag(
-      "DataRejected",
-      (error): Effect.Effect<DataOutcome<T>> =>
-        Effect.succeed({ kind: "rejected", rejection: error.rejection }),
+    Effect.catchTag("DataRejected", (error): Effect.Effect<DataOutcome<T>> =>
+      Effect.succeed({ kind: "rejected", rejection: error.rejection }),
     ),
   );
 
@@ -390,13 +388,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         initProgram(expectedProjectId, entry, this.#stateCache).pipe(
-          Effect.map(
-            (head): InitOutcome => ({
-              kind: "initialized",
-              headSeq: head.headSeq,
-              headHashHex: head.headHashHex,
-            }),
-          ),
+          Effect.map((head): InitOutcome => ({
+            kind: "initialized",
+            headSeq: head.headSeq,
+            headHashHex: head.headHashHex,
+          })),
           Effect.catchTags({
             AlreadyInitialized: (error): Effect.Effect<InitOutcome> =>
               Effect.succeed({
@@ -426,13 +422,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache).pipe(
-          Effect.map(
-            (head): AppendOutcome => ({
-              kind: "appended",
-              headSeq: head.headSeq,
-              headHashHex: head.headHashHex,
-            }),
-          ),
+          Effect.map((head): AppendOutcome => ({
+            kind: "appended",
+            headSeq: head.headSeq,
+            headHashHex: head.headHashHex,
+          })),
           Effect.catchTags({
             NotInitialized: (): Effect.Effect<AppendOutcome> =>
               Effect.succeed({ kind: "not-initialized" }),
@@ -465,14 +459,12 @@ export class ProjectChainDO extends DurableObject<Env> {
   snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(snapshotProgram(callerUserId, this.#stateCache)).pipe(
-        Effect.map(
-          (chain): SnapshotOutcome => ({
-            kind: "snapshot",
-            entries: chain.entries,
-            headSeq: chain.headSeq,
-            headHashHex: chain.headHashHex,
-          }),
-        ),
+        Effect.map((chain): SnapshotOutcome => ({
+          kind: "snapshot",
+          entries: chain.entries,
+          headSeq: chain.headSeq,
+          headHashHex: chain.headHashHex,
+        })),
         Effect.catchTags({
           NotInitialized: (): Effect.Effect<SnapshotOutcome> =>
             Effect.succeed({ kind: "not-initialized" }),
