@@ -1,7 +1,7 @@
 # maruhi 監査ログ仕様書 (AUDIT_SPEC)
 
-Version: 0.6
-Status: 所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認。0.6 = §5.2 案 A の D1 実装と §3.1 の記録細則 — 2026-08-10 セッション 21、マージをもって承認)
+Version: 0.7-draft
+Status: 0.6 までは所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認。0.6 = §5.2 案 A の D1 実装と §3.1 の記録細則 — 2026-08-10 セッション 21、マージをもって承認)。0.7-draft = Phase 2 機能裁定の起草(2026-08-12 セッション 22): §3.2 invite.* / §3.5 ワークロードリースへの改訂 / §4.1 revoke_server 変種の入力更新 / §6 可視性クラス(未決 #1 の解消)/ §7 読み取り API — **本改訂 PR のマージをもって所有者承認とする**
 
 この文書は maruhi の監査ログ(何を・誰が・いつ)の設計を定める。
 CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーション検出)と AUTH_SPEC(§2 データモデル)を前提とする。
@@ -67,10 +67,13 @@ actor: {
 | `org.member_added` / `org.member_removed` | target_user_id, org role |
 | `org.member_role_changed` | target_user_id, 旧/新 role |
 | `org.project_created` / `org.project_deleted` | project_id |
+| `invite.created` / `invite.revoked` | project_id, 招待 id, role(2026-08-12 — AUTH_SPEC §15) |
+| `invite.accepted` | project_id, 招待 id, target_user_id(受諾者), payload に受諾鍵 FP |
 
 org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2)ため、org 系イベントは要ローテーション検出に関与しない。
 
 - パーソナル org 自動作成(AUTH_SPEC §9-1)は `org.created`(payload `personal: true`)+ 本人 owner の `org.member_added` として記録する。org 名スナップショットは payload に**写さない** — パーソナル org の名前は providerLogin 由来であり、§1-2 の禁止情報にあたる(2026-08-10)
+- **招待イベント(2026-08-12 起草 — AUTH_SPEC §15)**: 招待レコードは D1 にあるため(受諾はプロジェクト非メンバーからの操作)、invite.* も D1 側に置き、発行・受諾・失効のレコード操作と**同一 batch** で追記する(§5.2 の同一トランザクション原則)。project_id 列で対象プロジェクトを参照する。プロジェクト DO 側の対応物は最終的な `chain.member_added`(§3.4)であり、招待ライフサイクル自体は DO へ二重記録しない。可視性は §6 のクラス 2(プロジェクト admin 以上)と同水準
 
 ### 3.3 プロジェクト データ系 ★
 
@@ -112,17 +115,18 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 
 - **バックフィル(2026-08-02 セッション 07 裁定)**: ミラーの記録は監査ログ実装の導入後に受理されたエントリから開始する。導入前に受理されたチェーンを持つ DO は存在しない(未リリース)ため、v1 では既存チェーンのバックフィルを実装しない。将来スキーマ移行等で必要になった場合は、§1-5(ミラーはチェーンから再構築可能)に基づく再構築処理として設計する
 
-### 3.5 grant_server 経由のサーバーアクセス ★
+### 3.5 grant_server 経由のサーバーアクセス ★(2026-08-12 改訂 — ワークロードリースへの対応)
 
-サーバーが開示済み DEK を実際に行使した記録。actor は `{ type: "server", key_fingerprint }`。
+サーバーが開示済み DEK を実際に行使した記録。actor は `{ type: "server", key_fingerprint }`(`server.lease_denied` のみ例外 — 下記)。
 
 | イベント | 主な属性 | 備考 |
 |---|---|---|
-| `server.dek_unwrapped` | environment_id, epoch | サーバーがラップ済み DEK を復号した |
-| `server.value_decrypted` ★ | variable_id, environment_id, epoch, version | 同期処理での平文化。1 変数 1 行 |
-| `server.sync_executed` | sync_config_id, 結果種別 | 外部への送出。宛先の詳細(リポジトリ名等)は可変ストアの設定を `sync_config_id` で参照し、ログには書かない |
+| `server.dek_unwrapped` | environment_id, epoch | サーバーがラップ済み DEK を復号した(リース発行に伴う) |
+| `server.lease_issued` ★ | environment_id, payload = { grant_chain_seq, claims_digest, epochs } | ワークロードリースの発行(AUTH_SPEC §14)。**環境単位 1 行**(リースは環境単位配布であり変数粒度の選択がない)。外部識別子(リポジトリ名等)は書かない — 一致したポリシーはチェーン(grant payload)が保持し、grant_chain_seq + claims_digest で突合する(§1-2 の禁止情報をリース経路でも増やさない) |
+| `server.lease_denied` | payload = { reason, claims_digest? } | **OIDC 署名検証を通過した後の拒否のみ**を記録し、固定窓の全体上限(1 時間 100 行、超過は不記録)を適用する — `auth.login_failed` と同じ規律(§3.1)。actor は `{ type: "system" }`(maruhi 上の識別を持たない外部ワークロードであり、サーバー鍵の行使でもない) |
+| `server.value_decrypted` ★ | variable_id, environment_id, epoch, version | **予約(v1 リース経路では発生しない)**: リースにおいてサーバーは値を復号しない(CRYPTO_SPEC §9.1)。push 型同期アドオン(将来 — libsodium 例外の裁定を要する)を導入する場合に有効化する。1 変数 1 行 |
 
-`revoke_server` 時の要ローテーション検出は §4.1 の revoke_server 変種(区間 = grant 区間、候補 = grant スコープ内、実読み取り = `server.value_decrypted`)で行う。
+`revoke_server` 時の要ローテーション検出は §4.1 の revoke_server 変種(区間 = grant 区間、候補 = grant スコープ内、実読み取り = `server.lease_issued`〔発行時点の環境内アクティブ変数の全てをランク (a) に含める — 環境単位配布の帰結〕+ `server.value_decrypted`〔予約〕)で行う。
 
 ## 4. 要ローテーション検出からのクエリ要件(逆算)
 
@@ -136,7 +140,7 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 4. **結果の永続化**: `rotation.recommended` イベントとして追記し、UI / CLI は「要ローテーション」フラグとして表示する
 5. **フラグの解消**: 対象 (variable × environment) への `var.version_pushed`(= 上流をローテーションして新しい値を入れた)または `rotation.dismissed` で解消。解消状態はイベント列から導出する(フラグ自体を可変ストアに持たない)
 
-**`revoke_server` の変種**: 同じ骨格で次を差し替える — 手順 1 の区間は当該サーバー鍵 FP の `chain.server_granted` 〜 `chain.server_revoked`(再 grant があれば区間ごと)。手順 2 の候補は各 grant のスコープ(対象環境の部分集合。CRYPTO_SPEC §6.2)に含まれる環境の変数に限定。手順 3 の (a) は `var.read` の代わりに `server.value_decrypted`(actor_key_fingerprint = サーバー鍵 FP で照合)を使う。手順 4〜5 は同じ。
+**`revoke_server` の変種**: 同じ骨格で次を差し替える — 手順 1 の区間は当該サーバー鍵 FP の `chain.server_granted` 〜 `chain.server_revoked`(再 grant があれば区間ごと)。手順 2 の候補は各 grant のスコープ(対象環境の部分集合。CRYPTO_SPEC §6.2)に含まれる環境の変数に限定。手順 3 の (a) は `var.read` の代わりに `server.lease_issued`(actor_key_fingerprint = サーバー鍵 FP で照合。発行時点の環境内アクティブ変数の全てを (a) に含める — 環境単位配布)および `server.value_decrypted`(予約 — §3.5)を使う。手順 4〜5 は同じ。
 
 環境スコープ role(CRYPTO_SPEC 未決事項 #11)が入った場合は、手順 2 の「全環境」が「M がアクセス権を持っていた環境」に狭まる。チェーンミラーが role / スコープを写しているため、この拡張はクエリの変更だけで成立する(スキーマ変更不要)。
 
@@ -149,7 +153,7 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | Q3 | user_id × 期間 → 読んだ (variable × environment) の distinct 集合 | (actor_user_id, seq) + イベント種別 |
 | Q4 | (variable × environment) × 期間 → 閲覧・変更した主体一覧(逆引き。インシデント対応用) | Q2 と同じ索引 |
 | Q5 | 現在有効な rotation.recommended − 解消イベント | イベント種別 + (variable_id, environment_id, seq) |
-| Q6 | サーバー鍵 FP → grant 区間とスコープ(chain.server_granted / revoked の列)、および期間内の server.value_decrypted(actor_key_fingerprint で照合) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
+| Q6 | サーバー鍵 FP → grant 区間とスコープ(chain.server_granted / revoked の列)、および期間内の server.lease_issued(actor_key_fingerprint = サーバー鍵 FP で照合。§4.1 変種の (a) の主入力 — 2026-08-12)+ server.value_decrypted(予約 — §3.5) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
 
 これらは**単一の project DO 内で完結する**(クロス DO join なし)。§5 の配置はこの性質を保つことを最優先に選ぶ。
 
@@ -214,16 +218,21 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
   - project DO の seq が単調・無欠番であること(欠番 = 削除の痕跡)
   - チェーンミラー部分はチェーン(署名付き)と突合して再構築・検証できること
   - 将来オプション: 監査ログのヘッドハッシュを定期的にメンバーシップチェーンへチェックポイントとして追記し、署名で束縛する(CRYPTO_SPEC 未決事項 #4 と同じ機構。未決 #2)
-- 閲覧権限(v1): プロジェクト監査ログはチェーン role の **admin 以上**。自分が actor のイベントは本人も閲覧可。ユーザー系(§3.1)は本人のみ、org 系(§3.2)は org admin 以上。Phase 2 の監査ログ UI で再設計する(未決 #1)
+- **閲覧権限(2026-08-12 改訂 — 旧 v1 暫定案を置換。未決 #1 の解消)**: イベントを 2 つの可視性クラスに分ける。線引きの原則は「**人の行動の監視情報か、開示機構の作動か**」:
+  - **クラス 1(チェーン role reader 以上 = 全メンバー)**: クライアント同期で既に配布・検証される事実、および開示機構の作動 — `chain.*` 全部、`env.*`、`var.created` / `var.renamed` / `var.deleted` / `var.version_pushed`、`server.*`、`rotation.recommended` / `rotation.dismissed`。チェーンミラーを admin に絞っても全メンバーはチェーン同期で同じ事実を検証・取得済みであり、絞りは見せかけの防御にしかならない。`server.*` は人ではなく開示機構の記録であり、自分の秘密の開示行使を知る正当な利害が全メンバー(reader 含む)にある(CRYPTO_SPEC §9 の常時明示義務の監査面)
+  - **クラス 2(チェーン role admin 以上)**: 人間 actor の行動系 — `var.read`、`dek.registered` / `dek.deleted`、`invite.*`(保存は D1 = §3.2 だが可視性は同水準)、および他人が actor の行の横断検索。同僚の読み取りパターンはプライバシー情報であり、ガバナンス権限に束ねる
+  - **本人が actor の行はクラスに依らず本人が閲覧可**。ユーザー系(§3.1)は本人のみ、org 系(§3.2)は org admin 以上(従来どおり)
+  - **要ローテーションフラグの導出ビュー**(§4.1 の「現在有効な recommended − 解消」)はクラス 1 — 検出の目的は上流 credential のローテーションの促しであり、admin 限定では機能しない
 
 ## 7. API 境界
 
 - 監査イベントの読み取りは HttpApi で公開する(ドメイン型のみ。Drizzle 型を出さない = ADR-0006)。追記 API は**公開しない**(イベントは各操作のサーバー側処理が生成する。クライアントが任意のイベントを書ける口を作らない)
+- **読み取り API の形(2026-08-12 起草 — Phase 2)**: project DO 側は seq カーソルページング(limit ≤ 200)+ フィルタ(event 種別 / actor_user_id / target_user_id / variable_id / environment_id)。§6 の可視性クラスは認可段で強制し、クラス 2 の行・フィルタは admin 未満に対して**存在しないかのように振る舞う**(件数・ページングにも漏らさない)。要ローテーションフラグは独立の導出ビューエンドポイント(§4.1 の 5 の導出をサーバーが実行し、現在有効な集合を返す)。ユーザー系・org 系(D1)は同型のカーソルページング(本人 / org admin)。**例外: invite.*(保存は D1 — §3.2)の読み取りは org admin 軸に属さない**: プロジェクト監査の経路の一部として project_id スコープの D1 クエリで提供し、権限軸は当該プロジェクトの**チェーン role admin 以上**(§6 クラス 2 と同一)とする — org admin であることは invite.* の閲覧権限を与えず、チェーン role admin は org admin でなくても閲覧できる(2026-08-12 レビュー反映 — 保存先と権限軸を独立に定める)。CLI は `maruhi audit`、Web は監査 UI が消費する(Phase 2 C1 / W2)
 - 例外: 将来 CLI / クライアントが「クライアント側でしか観測できない事象」を報告する必要が出た場合(例: エージェント環境検出による拒否)は、専用の狭い報告エンドポイントとして設計し、本仕様を改訂する
 
 ## 8. 未決事項
 
-1. 監査ログ閲覧 UI の権限モデルの詳細(Phase 2 の監査ログ UI と同時に設計。§6)
+1. ~~監査ログ閲覧 UI の権限モデルの詳細~~ **解消(2026-08-12 — §6 の可視性クラス。本改訂 PR のマージをもって確定)**
 2. 監査ヘッドのチェーンへのチェックポイント(改竄検出の強化。CRYPTO_SPEC 未決 #4 と統合して設計)
 3. プロジェクト削除後の監査ログ保全(ホステッド版のコンプライアンス要件が出た時点で: 削除前スナップショットの org 側への退避等)
 4. `var.read` の集約方針(ドッグフーディングの実測後。§3.3 / §5.3)
