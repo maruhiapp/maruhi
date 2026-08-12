@@ -2065,11 +2065,11 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("未完了 1 変数");
   });
 
-  it("最終巡で初めて残った「開けない値」も、原因を競合に潰さず報告する", async () => {
-    // 競合していた 2 件が最終巡までに解消し、残るのは開けない 1 件だけ。
-    // 最終巡は復号しない(平文を作らない)ので targets は空になるが、
-    // 自分宛ラップの有無だけは判定できる — ここで原因を既定文言に落とすと、
-    // 存在しない並行 writer を追わせることになる
+  it("押せる対象が尽きて打ち切った巡でも、原因を競合に潰さず報告する", async () => {
+    // 競合していた vbb が 2 巡目で他メンバーに書き切られ、残るのは開けない
+    // vaa だけ。押せる対象が尽きるので stalledOnUndecryptable で打ち切るが、
+    // このとき原因を既定文言(競合)に落とすと、存在しない並行 writer を
+    // 追わせることになる(最終巡まで回る形は次のテストが担当する)
     const undecryptable = await variableAt({
       built: chainRotatedTwice,
       variableId: "vaa",
@@ -2127,6 +2127,58 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("エポック 1 の DEK が配布されていません");
     expect(errors).not.toContain("並行 push との競合が解消しませんでした");
     expect(env.logs.join("\n")).toContain("未完了 1 変数");
+  });
+
+  it("最終巡(復号しない巡)でも、開けない値をラップの有無だけで原因として拾う", async () => {
+    // 押せる対象(vbb)が最後まで競合し続けるので打ち切りは起きず、巡を使い切る。
+    // 最終巡の再走査は**復号しない**(押すことのない平文を作らない)ため
+    // targets は空になるが、自分宛ラップの有無は Map 参照だけで分かる —
+    // ここを飛ばすと、開けない vaa が残っているのに原因が競合の既定文言に化ける
+    const variables = [
+      await variableAt({
+        built: chainRotatedTwice,
+        variableId: "vaa",
+        name: "OLD_ONE",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "unreadable-here",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainRotatedTwice,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek2,
+        epoch: 2,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 3,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotatedTwice,
+      variables,
+      // epoch 1 の自分宛ラップが無い(= vaa は開けない)
+      deks: [
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 3,
+      // vbb は最後まで競合し続ける(= 毎巡 push する対象が残り、打ち切らない)
+      onPush: () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    // 受理された push は無い(全巡 409)。vbb は毎巡「押せる対象」として残るので
+    // 打ち切りは起きず、最終巡の復号なし再走査まで到達する
+    expect(state.pushes).toHaveLength(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("エポック 1 の DEK が配布されていません");
+    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
+    expect(env.logs.join("\n")).toContain("未完了 2 変数");
   });
 
   it("現エポックの DEK が無くて再開できない場合、--new-epoch の逃げ道を案内する", async () => {
