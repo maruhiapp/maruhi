@@ -181,8 +181,14 @@ function resolveTarget(input: {
   });
 }
 
-/** 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。 */
-function encryptAndSignPayload(input: {
+/**
+ * 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。
+ *
+ * ローテーションの再暗号化(env-rotate.ts)も同じ実装を通す: 再暗号化は
+ * 「実行者が writer として署名する通常 push」(§7 / §4.1)であり、署名対象の
+ * 組み立てが 2 実装に割れると片方だけが規律を失う。
+ */
+export function encryptAndSignPayload(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly variableId: string;

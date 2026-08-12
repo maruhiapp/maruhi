@@ -6,13 +6,7 @@
 // 親ヘッド CAS の失敗(ChainHeadConflict)は再同期 → **エントリとステートメントの
 // 両方を再署名**(seq / prev / 宣言ヘッド変更 — §12-4)してリトライする。
 //
-// ラップ集合は検証済み ChainState の現メンバー集合と厳密一致させて生成する
-// (CRYPTO_SPEC §6.3 のラップ先一致検査 = ゴーストメンバー対策のクライアント側。
-// サーバーの §12-6 検証は補助線であり、こちらが本線 — session-07 §5)。
-// ラップ生成 → signDekWrap → 登録は一続きで行う(署名者 = 呼び出し主体 —
-// session-10 §5)。CAS リトライでの作り直しは、再同期で現メンバー集合が変わった
-// 場合のみ(§12-4 — HPKE Seal はランダムなので不要な再ラップを避ける)。
-//
+// ラップ集合の生成は dek-wrap.ts の共有実装(env-rotate.ts と共通)。
 // grant_server が有効なプロジェクトは拒否する: サーバー宛ラップのデータ
 // プレーンは Phase 2 未実装で、メンバー宛のみの登録は §7 の開示契約を
 // 黙って破ることになるため。
@@ -21,21 +15,11 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
-import {
-  computeDekCommitment,
-  decodeHex,
-  encodeHex,
-  generateDek,
-  importEncryptionPublicKey,
-  signChainEntry,
-  signDekWrap,
-  SUITE_ID,
-  wrapDek,
-} from "@maruhi/crypto";
+import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { displayText } from "./display.ts";
+import { buildWrapSetForMembers, ensureNoServerGrant, sameMemberSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -43,156 +27,30 @@ import type { VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 
-/** 1 ラップの生成結果(実理由コード付きのタグ付き Result — 複数原因を 1 汎用文言に潰さない)。 */
-type WrapBuildResult =
-  | { readonly kind: "ok"; readonly wrap: WrappedDek }
-  | { readonly kind: "failed"; readonly reason: string };
-
-async function wrapAndSignFor(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly epoch: number;
-  readonly dek: Uint8Array;
-  readonly member: ChainMember;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-}): Promise<WrapBuildResult> {
-  const { verified, environmentId, epoch, dek, member } = input;
-  const recipientKeyBytes = decodeHex(member.encPubHex);
-  if (recipientKeyBytes === null) {
-    return { kind: "failed", reason: "受信者の enc 公開鍵 hex を復号できません" };
-  }
-  const recipientKey = await importEncryptionPublicKey(recipientKeyBytes);
-  if (!recipientKey.ok) {
-    return { kind: "failed", reason: "受信者の enc 公開鍵を読み込めません" };
-  }
-  const wrapped = await wrapDek({
-    recipientPublicKey: recipientKey.value,
-    dek,
-    context: {
-      projectId: verified.projectId,
-      environmentId,
-      epoch,
-      recipientUserId: member.userId,
-    },
-  });
-  if (!wrapped.ok) {
-    return { kind: "failed", reason: "HPKE ラップに失敗しました" };
-  }
-  const encHex = encodeHex(wrapped.value.enc);
-  const ciphertextHex = encodeHex(wrapped.value.ciphertext);
-  const signature = await signDekWrap({
-    context: {
-      suite: SUITE_ID,
-      projectId: verified.projectId,
-      environmentId,
-      epoch,
-      recipientUserId: member.userId,
-      recipientEncPubHex: member.encPubHex,
-      encHex,
-      ciphertextHex,
-      signerUserId: input.signerUserId,
-    },
-    signingKey: input.signingKeyPair.privateKey,
-  });
-  if (!signature.ok) {
-    return { kind: "failed", reason: "登録署名の作成に失敗しました" };
-  }
-  return {
-    kind: "ok",
-    wrap: {
-      suite: SUITE_ID,
-      epoch,
-      recipientUserId: member.userId,
-      recipientEncPubHex: member.encPubHex,
-      encHex,
-      ciphertextHex,
-      signatureHex: signature.value,
-    },
-  };
-}
-
-/**
- * Builds the wrap set for one epoch: exactly the verified current member set
- * (§6.3), each wrap signed by the caller (§5.1). Deterministic recipient
- * order (userId ascending) for reproducible requests.
- */
-function buildWrapSetForMembers(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly epoch: number;
-  readonly dek: Uint8Array;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<readonly WrappedDek[], CliError> {
-  return Effect.gen(function* () {
-    const members = [...input.verified.state.members.values()].toSorted((a, b) =>
-      a.userId < b.userId ? -1 : 1,
-    );
-    const wraps: WrappedDek[] = [];
-    for (const member of members) {
-      // user_id はチェーン由来の自由文字列 — 端末へ出す前に必ず中和する
-      const built = yield* Effect.tryPromise({
-        try: () => wrapAndSignFor({ ...input, member }),
-        catch: () =>
-          cliError(
-            `メンバー ${displayText(member.userId)} 宛の DEK ラップ生成が失敗しました(暗号処理エラー)`,
-          ),
-      });
-      if (built.kind === "failed") {
-        return yield* Effect.fail(
-          cliError(
-            `メンバー ${displayText(member.userId)} 宛の DEK ラップ生成に失敗しました(${built.reason})`,
-          ),
-        );
-      }
-      wraps.push(built.wrap);
-    }
-    return wraps;
-  });
-}
-
-/** 現メンバー集合(user_id → enc 公開鍵)の同一性。ラップ集合の再利用可否の判定。 */
-function sameMemberSet(a: VerifiedProject, b: VerifiedProject): boolean {
-  if (a.state.members.size !== b.state.members.size) {
-    return false;
-  }
-  for (const [userId, member] of a.state.members) {
-    if (b.state.members.get(userId)?.encPubHex !== member.encPubHex) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function ensureCreatable(
   verified: VerifiedProject,
   environmentId: string,
   signerUserId: string,
 ): Effect.Effect<ChainMember, CliError> {
-  if (verified.state.serverGrants.size > 0) {
-    return Effect.fail(
-      cliError(
-        "このプロジェクトは grant_server が有効です。サーバー宛 DEK ラップは Phase 2 未実装のため、CLI からの環境作成は行えません",
-      ),
-    );
-  }
-  // environment_id はチェーン履歴全体で一意(合意規則 duplicate-environment —
-  // CRYPTO_SPEC §6.2)。サーバーの 422 を待たずクライアントでも早期検出する
-  if (verified.state.environments.has(environmentId)) {
-    return Effect.fail(
-      cliError(
-        `環境 ID ${environmentId} はチェーン上で使用済みです(create_environment 観測済み — 削除済み環境の ID も再利用できません)。別の ID を使ってください`,
-      ),
-    );
-  }
-  const member = verified.state.members.get(signerUserId);
-  if (member === undefined) {
-    return Effect.fail(
-      cliError("このプロジェクトのチェーン導出メンバーではありません(環境を作成できません)"),
-    );
-  }
-  return Effect.succeed(member);
+  return Effect.gen(function* () {
+    yield* ensureNoServerGrant(verified, "環境作成");
+    // environment_id はチェーン履歴全体で一意(合意規則 duplicate-environment —
+    // CRYPTO_SPEC §6.2)。サーバーの 422 を待たずクライアントでも早期検出する
+    if (verified.state.environments.has(environmentId)) {
+      return yield* Effect.fail(
+        cliError(
+          `環境 ID ${environmentId} はチェーン上で使用済みです(create_environment 観測済み — 削除済み環境の ID も再利用できません)。別の ID を使ってください`,
+        ),
+      );
+    }
+    const member = verified.state.members.get(signerUserId);
+    if (member === undefined) {
+      return yield* Effect.fail(
+        cliError("このプロジェクトのチェーン導出メンバーではありません(環境を作成できません)"),
+      );
+    }
+    return member;
+  });
 }
 
 /** create_environment エントリを現ヘッドの直後(seq = head + 1)に署名する。 */

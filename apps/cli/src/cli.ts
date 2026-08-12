@@ -6,13 +6,13 @@
 
 import { hostname } from "node:os";
 
-import { isEnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
 import { ensureValueDisplayAllowed } from "./agent.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
-import type { CliServices } from "./context.ts";
+import type { CliServices, CommonFlags } from "./context.ts";
 import {
   loadCheckedFloor,
   openEnvironment,
@@ -22,6 +22,7 @@ import {
 } from "./context.ts";
 import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
+import { envRotateOp } from "./env-rotate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -228,14 +229,91 @@ function projectCommand(execute: Execute) {
   });
 }
 
+/** `maruhi env create <id>`: 複合リクエストによる環境作成(§12-4)。 */
+function envCreate(
+  flags: CommonFlags & { readonly name?: string | undefined },
+  environmentId: EnvironmentId,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openProject(flags);
+    const created = yield* envCreateOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      name: flags.name ?? environmentId,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+    });
+    yield* io.log(
+      `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${context.verified.state.members.size} 名へラップ済み)`,
+    );
+  });
+}
+
+/**
+ * `maruhi env rotate <id> --reason <text>`: エポックローテーション(§7 / §12-4)。
+ * 完了サマリは再暗号化の実績を報告し、未完了分(部分完了)は警告として明示する
+ * — 「エポックだけ進んで再暗号化が残っている」状態を成功の顔で終わらせない。
+ */
+function envRotate(
+  flags: CommonFlags & { readonly reason?: string | undefined },
+  environmentId: EnvironmentId,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)
+    const context = yield* openEnvironment({ ...flags, env: environmentId });
+    const summary = yield* envRotateOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      recipient: context.recipient,
+      reason: flags.reason ?? "",
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+    yield* logWarnings(summary.warnings);
+    const skipped =
+      summary.alreadyCurrent === 0
+        ? ""
+        : `、並行更新により再暗号化不要 ${summary.alreadyCurrent} 変数`;
+    const scope =
+      summary.mode === "rotated"
+        ? `環境 ${environmentId} を epoch ${summary.previousEpoch} → ${summary.epoch} へローテーション`
+        : `環境 ${environmentId}(epoch ${summary.epoch})の再暗号化を再開`;
+    if (summary.remaining > 0) {
+      // 部分完了: エポックは進んでおり、旧エポックの DEK 保持者は未再暗号化の
+      // 変数の現在値を読めるままである(§7)。「完了」の顔で終わらせず、
+      // 成功終了にもしない
+      yield* io.log(
+        `部分完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped}、未完了 ${summary.remaining} 変数)`,
+      );
+      yield* io.logError(
+        `警告: ${summary.remaining} 変数の再暗号化が完了していません(並行 push との競合が解消しませんでした)。これらの現在値は epoch ${summary.epoch} 未満の DEK のままです — maruhi env rotate ${environmentId} --reason ... を再実行すると、エポックを進めずに残りから再開します`,
+      );
+      return 1;
+    }
+    yield* io.log(`完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})`);
+    return 0;
+  });
+}
+
 function envCommand(execute: Execute) {
   return define({
     name: "env",
-    description: "環境の管理(create)",
+    description: "環境の管理(create / rotate)",
     args: {
-      action: { type: "positional", description: "create" },
+      action: { type: "positional", description: "create | rotate" },
       "environment-id": { type: "positional", description: "環境 ID(例: dev / prod)" },
-      name: { type: "string", description: "表示名(省略時は環境 ID)" },
+      name: { type: "string", description: "表示名(create のみ。省略時は環境 ID)" },
+      reason: {
+        type: "string",
+        description: "ローテーションの理由(rotate は必須。チェーンに記録される)",
+      },
       server: { type: "string", description: "サーバー URL(省略時は config の server)" },
       project: {
         type: "string",
@@ -245,35 +323,24 @@ function envCommand(execute: Execute) {
     run: (ctx) =>
       execute(
         Effect.gen(function* () {
-          if (ctx.values.action !== "create") {
-            return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(create)`));
+          const action = ctx.values.action;
+          if (action !== "create" && action !== "rotate") {
+            return yield* Effect.fail(cliError(`不明な操作です: ${action}(create | rotate)`));
           }
           const environmentId = ctx.values["environment-id"];
           // positional 未指定(undefined)は型で明示的に弾く
           if (environmentId === undefined || !isEnvironmentId(environmentId)) {
             return yield* Effect.fail(
               cliError(
-                `環境 ID を指定してください(例: maruhi env create dev)。指定値: ${String(environmentId)}`,
+                `環境 ID を指定してください(例: maruhi env ${action} dev)。指定値: ${String(environmentId)}`,
               ),
             );
           }
-          const io = yield* CliIo;
-          const context = yield* openProject({
-            server: ctx.values.server,
-            project: ctx.values.project,
-          });
-          const created = yield* envCreateOp({
-            client: context.client,
-            verified: context.verified,
-            environmentId,
-            name: ctx.values.name ?? environmentId,
-            signerUserId: context.session.userId,
-            signingKeyPair: context.masterKeys.sigKeyPair,
-            resync: context.resync,
-          });
-          yield* io.log(
-            `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${context.verified.state.members.size} 名へラップ済み)`,
-          );
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "rotate") {
+            return yield* envRotate({ ...flags, reason: ctx.values.reason }, environmentId);
+          }
+          return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
         }),
       ),
   });

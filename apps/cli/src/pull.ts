@@ -19,7 +19,7 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { VerifiedProject } from "./sync.ts";
-import { pullVerifiedEnvironment } from "./values.ts";
+import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
 /** One decrypted variable (plaintext bytes live in memory only). */
 export interface DecryptedVariable {
@@ -35,6 +35,79 @@ export interface DecryptedVariable {
 export interface PulledVariables {
   readonly variables: readonly DecryptedVariable[];
   readonly warnings: readonly string[];
+}
+
+/**
+ * Decrypts one already-verified value (§6.3 を通過した values.ts の産物)。
+ * 復号文脈(AAD)の座標は申告 `aad` ではなく検証済みの値(genesis ハッシュ・
+ * 要求環境・応答外側の variableId)から組む。epoch / version は値署名で検証
+ * 済みの申告値(この座標に束縛される)。
+ *
+ * 共有点である理由: `maruhi run` の pull と `maruhi env rotate` の再暗号化は
+ * 同じ規律で復号しなければならない(復号経路が 2 つに割れると、片方だけが
+ * 座標の自前構築・エポック上限検査を失う静かな退行になる)。
+ */
+export function decryptVerifiedValue(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly variable: VerifiedPulledValue;
+  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  /** チェーン導出の現エポック(申告エポックの上限 — 導出不整合への防衛線)。 */
+  readonly chainEpoch: number;
+}): Effect.Effect<Uint8Array, CliError> {
+  return Effect.gen(function* () {
+    const variable = input.variable;
+    // 値署名の検証(§6.3-4)が「宣言ヘッド時点の現エポック = 値の epoch」を
+    // 保証済みで、エポックの単調性からこの値は現エポック以下。ここの検査は
+    // 導出不整合(実装バグ)への防衛線として残す
+    if (variable.epoch > input.chainEpoch) {
+      return yield* Effect.fail(
+        cliError(
+          `変数 ${displayText(variable.name)} の申告エポック ${variable.epoch} がチェーン上の現エポック(${input.chainEpoch})を超えています(検証済みビューとの不整合)`,
+        ),
+      );
+    }
+    const dek = input.deksByEpoch.get(variable.epoch);
+    if (dek === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `変数 ${displayText(variable.name)} のエポック ${variable.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
+        ),
+      );
+    }
+    const nonce = decodeHex(variable.nonceHex);
+    const ciphertext = decodeHex(variable.ciphertextHex);
+    if (nonce === null || ciphertext === null) {
+      return yield* Effect.fail(
+        cliError(`変数 ${displayText(variable.name)} の暗号文形式が不正です`),
+      );
+    }
+    const plaintext = yield* Effect.tryPromise({
+      try: () =>
+        decryptVariable({
+          dek,
+          context: {
+            projectId: input.verified.projectId,
+            environmentId: input.environmentId,
+            epoch: variable.epoch,
+            variableId: variable.variableId,
+            version: variable.version,
+          },
+          nonce,
+          ciphertext,
+        }),
+      catch: () =>
+        cliError(`変数 ${displayText(variable.name)} の復号処理が失敗しました(暗号処理エラー)`),
+    });
+    if (!plaintext.ok) {
+      return yield* Effect.fail(
+        cliError(
+          `変数 ${displayText(variable.name)} を復号できません(文脈不一致または暗号文破損 — サーバーによる差し替えの可能性)`,
+        ),
+      );
+    }
+    return plaintext.value;
+  });
 }
 
 /**
@@ -75,68 +148,22 @@ export function pullVariables(input: {
     const deksByEpoch = keys.deksByEpoch;
 
     const results: DecryptedVariable[] = [];
-    const chainEpoch = keys.currentEpoch;
     for (const variable of pulled.variables) {
       // 同名 active の重複はステートメント検証(values.ts)が解決拒否済み
       // (§4.2 — `maruhi run` の環境変数注入が黙って片方を潰す経路はない)
-
-      // 値署名の検証(§6.3-4)が「宣言ヘッド時点の現エポック = 値の epoch」を
-      // 保証済みで、エポックの単調性からこの値は現エポック以下。ここの検査は
-      // 導出不整合(実装バグ)への防衛線として残す
-      if (variable.epoch > chainEpoch) {
-        return yield* Effect.fail(
-          cliError(
-            `変数 ${displayText(variable.name)} の申告エポック ${variable.epoch} がチェーン上の現エポック(${chainEpoch})を超えています(検証済みビューとの不整合)`,
-          ),
-        );
-      }
-      const dek = deksByEpoch.get(variable.epoch);
-      if (dek === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            `変数 ${displayText(variable.name)} のエポック ${variable.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
-          ),
-        );
-      }
-      const nonce = decodeHex(variable.nonceHex);
-      const ciphertext = decodeHex(variable.ciphertextHex);
-      if (nonce === null || ciphertext === null) {
-        return yield* Effect.fail(
-          cliError(`変数 ${displayText(variable.name)} の暗号文形式が不正です`),
-        );
-      }
-      const plaintext = yield* Effect.tryPromise({
-        try: () =>
-          decryptVariable({
-            dek,
-            // 座標(project / environment / variable)は自前の検証済み値。
-            // epoch / version は値署名で検証済みの申告値(この座標に束縛される)
-            context: {
-              projectId: verified.projectId,
-              environmentId: input.environmentId,
-              epoch: variable.epoch,
-              variableId: variable.variableId,
-              version: variable.version,
-            },
-            nonce,
-            ciphertext,
-          }),
-        catch: () =>
-          cliError(`変数 ${displayText(variable.name)} の復号処理が失敗しました(暗号処理エラー)`),
+      const plaintext = yield* decryptVerifiedValue({
+        verified,
+        environmentId: input.environmentId,
+        variable,
+        deksByEpoch,
+        chainEpoch: keys.currentEpoch,
       });
-      if (!plaintext.ok) {
-        return yield* Effect.fail(
-          cliError(
-            `変数 ${displayText(variable.name)} を復号できません(文脈不一致または暗号文破損 — サーバーによる差し替えの可能性)`,
-          ),
-        );
-      }
       results.push({
         variableId: variable.variableId,
         name: variable.name,
         version: variable.version,
         epoch: variable.epoch,
-        value: plaintext.value,
+        value: plaintext,
       });
     }
     return { variables: results, warnings: pulled.warnings };
