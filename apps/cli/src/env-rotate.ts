@@ -1157,6 +1157,80 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
   );
 }
 
+/**
+ * 中断復旧: エポックは進んだが再暗号化が残っている状態(§12-7 の正当な過渡
+ * 状態)を、**エポックを進めずに**続きから片付ける。新しいチェーンエントリは
+ * 作らないので、この経路では `--reason` は記録されず必須でもない。
+ */
+function resumeReencryption(input: {
+  readonly input: RotateInput;
+  readonly pulled: { readonly verified: VerifiedProject };
+  readonly keys: { readonly deksByEpoch: ReadonlyMap<number, Uint8Array> };
+  readonly currentEpoch: number;
+  readonly stale: readonly VerifiedPulledValue[];
+  /** 指定された理由(null = `--reason` 未指定)。警告の文面にだけ効く。 */
+  readonly reason: string | null;
+  readonly warnings: string[];
+}): Effect.Effect<RotationSummary, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const { currentEpoch, stale, warnings } = input;
+    const environmentId = input.input.environmentId;
+    // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
+    // grant_server の有効化・role 変更・削除が起きていれば、古い検証状態の
+    // まま再開経路だけが素通りしてしまう — Cursor Security Reviewer 指摘)
+    const member = yield* ensureRotatable(
+      input.pulled.verified,
+      environmentId,
+      input.input.signerUserId,
+    );
+    const dek = input.keys.deksByEpoch.get(currentEpoch);
+    if (dek === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。再暗号化を再開できません`,
+        ),
+      );
+    }
+    // 文面は「要求があったか」で変える: 理由なしの実行(部分完了の案内が
+    // 勧める形)は何も要求していないので、切り替えたと言うと嘘になる
+    const switched =
+      input.reason === null
+        ? "この再暗号化を再開します(新しいエポックは作りません)"
+        : "**要求されたローテーションは実行せず**、この再暗号化の再開に切り替えます(新しいエポックは作られず、この経路はチェーンエントリを作らないため --reason も記録されません)";
+    yield* io.logError(
+      `警告: 環境 ${environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。${switched}。退職者の削除など「新しいエポックが必ず必要」な場合は --new-epoch を付けて実行してください — 未完了状態を装う応答でローテーションを抑止される経路への対策でもあります`,
+    );
+    const targets = yield* decryptTargets({
+      verified: input.pulled.verified,
+      environmentId,
+      values: stale,
+      deksByEpoch: input.keys.deksByEpoch,
+      chainEpoch: currentEpoch,
+    });
+    const outcome = yield* reencryptCurrentValues({
+      context: reencryptContext(input.input, member, {
+        epoch: currentEpoch,
+        dek,
+        deksByEpoch: input.keys.deksByEpoch,
+      }),
+      view: input.pulled.verified,
+      targets,
+      sink: warnings,
+    });
+    return {
+      mode: "resumed",
+      previousEpoch: currentEpoch,
+      epoch: currentEpoch,
+      reencrypted: outcome.reencrypted,
+      alreadyCurrent: outcome.alreadyCurrent,
+      remaining: outcome.remaining,
+      failure: outcome.failure,
+      warnings: dedupeWarnings(warnings),
+    };
+  });
+}
+
 function rotateWithWarnings(
   input: RotateInput,
   warnings: string[],
@@ -1165,6 +1239,13 @@ function rotateWithWarnings(
     const io = yield* CliIo;
     const reason = yield* checkReasonLength(input.reason);
     yield* ensureRotatable(input.verified, input.environmentId, input.signerUserId);
+    // --new-epoch は再開経路を通らない = 必ずエントリを署名する。理由の必須検査を
+    // 署名直前まで遅らせる理由(再開では reason が記録されない)がここには無いので、
+    // pull より前に落とす — 満たしようのない引数検査のために全変数の暗号文を
+    // 取りに行き、変数ごとの var.read を監査ログへ残さない(ensureRotatable と同じ規律)
+    if (input.forceNewEpoch) {
+      yield* requireReason(reason);
+    }
     // 対象集合の出所はサーバーの pull 応答しかない(変数一覧はチェーンに載らない
     // — §6.2)。欠落の検出はローカル床の variable-omitted 規則(§6.3 (a))が担う
     // ため、床がない実行(初回同期・破損後)では「一貫して落とされた変数」を
@@ -1200,54 +1281,17 @@ function rotateWithWarnings(
     const currentEpoch = keys.currentEpoch;
     const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
 
+    // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
     if (stale.length > 0 && !input.forceNewEpoch) {
-      // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
-      // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
-      // grant_server の有効化・role 変更・削除が起きていれば、古い検証状態の
-      // まま再開経路だけが素通りしてしまう — Cursor Security Reviewer 指摘)
-      const resumeMember = yield* ensureRotatable(
-        pulled.verified,
-        input.environmentId,
-        input.signerUserId,
-      );
-      const dek = keys.deksByEpoch.get(currentEpoch);
-      if (dek === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。再暗号化を再開できません`,
-          ),
-        );
-      }
-      yield* io.logError(
-        `警告: 環境 ${input.environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。**要求されたローテーションは実行せず**、この再暗号化の再開に切り替えます(新しいエポックは作られず、この経路はチェーンエントリを作らないため --reason も記録されません)。退職者の削除など「新しいエポックが必ず必要」な場合は --new-epoch を付けて実行してください — 未完了状態を装う応答でローテーションを抑止される経路への対策でもあります`,
-      );
-      const targets = yield* decryptTargets({
-        verified: pulled.verified,
-        environmentId: input.environmentId,
-        values: stale,
-        deksByEpoch: keys.deksByEpoch,
-        chainEpoch: currentEpoch,
+      return yield* resumeReencryption({
+        input,
+        pulled,
+        keys,
+        currentEpoch,
+        stale,
+        reason,
+        warnings,
       });
-      const outcome = yield* reencryptCurrentValues({
-        context: reencryptContext(input, resumeMember, {
-          epoch: currentEpoch,
-          dek,
-          deksByEpoch: keys.deksByEpoch,
-        }),
-        view: pulled.verified,
-        targets,
-        sink: warnings,
-      });
-      return {
-        mode: "resumed",
-        previousEpoch: currentEpoch,
-        epoch: currentEpoch,
-        reencrypted: outcome.reencrypted,
-        alreadyCurrent: outcome.alreadyCurrent,
-        remaining: outcome.remaining,
-        failure: outcome.failure,
-        warnings: dedupeWarnings(warnings),
-      };
     }
 
     // 未完了がなく --reason も指定されていない = 「確認だけ」の実行(部分完了の

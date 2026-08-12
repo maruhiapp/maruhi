@@ -558,6 +558,8 @@ describe("maruhi env rotate", () => {
     // 完了報告が隠さない(退職者削除後の実行が成功扱いに見える形を塞ぐ)
     expect(env.logs.join("\n")).toContain("新しいエポックは作成していません");
     expect(env.errors.join("\n")).toContain("要求されたローテーションは実行していません");
+    // 要求があった実行では「要求を実行せず切り替えた」と明示する
+    expect(env.errors.join("\n")).toContain("要求されたローテーションは実行せず");
   });
 
   it("ローテーション後の push 失敗は、エポックが進んだ事実を部分完了として報告する", async () => {
@@ -647,7 +649,11 @@ describe("maruhi env rotate", () => {
     if (pushed === undefined) throw new Error("resume push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(dek2, pushed.value)).toBe("key-abc");
-    expect(env.errors.join("\n")).not.toContain("要求されたローテーションは実行していません");
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("要求されたローテーションは実行していません");
+    // 何も要求していない実行に「要求を実行せず切り替えた」と言わない
+    expect(errors).toContain("再暗号化が未完了です。この再暗号化を再開します");
+    expect(errors).not.toContain("要求されたローテーションは実行せず");
   });
 
   it("完了検証: 初回 pull 以降に他メンバーが作った変数も再暗号化してから完了とする", async () => {
@@ -1766,6 +1772,49 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("確認完了");
     expect(env.logs.join("\n")).toContain("新しいエポックを作るには --reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
+  it("--new-epoch に --reason が無い実行は、値を取りに行く前に落とす(var.read を残さない)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
+
+    // --new-epoch は必ずエントリを署名する = 理由が必須。満たしようのない
+    // 引数検査のために全変数の暗号文を取りに行き、変数ごとの var.read を
+    // 監査ログへ残さない(ensureRotatable と同じ規律)
+    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("--reason にローテーションの理由を指定してください");
+    expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
+    expect(state.rotateBodies).toHaveLength(0);
   });
 
   it("空の --reason は「確認だけ」に潰さず落とす(要求したのに何もしない成功終了を作らない)", async () => {
