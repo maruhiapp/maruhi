@@ -22,7 +22,7 @@ import {
 } from "./context.ts";
 import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
-import { envRotateOp } from "./env-rotate.ts";
+import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -253,33 +253,16 @@ function envCreate(
 }
 
 /**
- * `maruhi env rotate <id> --reason <text>`: エポックローテーション(§7 / §12-4)。
- * 完了サマリは再暗号化の実績を報告し、未完了分(部分完了)は警告として明示する
- * — 「エポックだけ進んで再暗号化が残っている」状態を成功の顔で終わらせない。
+ * ローテーション結果の報告と終了コード。完了サマリは再暗号化の実績を報告し、
+ * 未完了分(部分完了)は警告として明示する — 「エポックだけ進んで再暗号化が
+ * 残っている」状態を成功の顔で終わらせない。
  */
-function envRotate(
-  flags: CommonFlags & {
-    readonly reason?: string | undefined;
-    readonly newEpoch?: boolean | undefined;
-  },
+function reportRotation(
   environmentId: EnvironmentId,
-): Effect.Effect<number, CliError, CliServices> {
+  summary: RotationSummary,
+): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)
-    const context = yield* openEnvironment({ ...flags, env: environmentId });
-    const summary = yield* envRotateOp({
-      client: context.client,
-      verified: context.verified,
-      environmentId,
-      recipient: context.recipient,
-      reason: flags.reason ?? "",
-      forceNewEpoch: flags.newEpoch === true,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
     yield* logWarnings(summary.warnings);
     const skipped =
       summary.alreadyCurrent === 0
@@ -293,8 +276,13 @@ function envRotate(
       // 部分完了 / 完了未検証: エポックは進んでおり、旧エポックの DEK 保持者は
       // 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で
       // 終わらせず、成功終了にもしない
+      // 中断した場合の残数は上限であって実測ではない(再走査へ到達していない
+      // ため、競合分が既に他メンバーによって新エポックで書かれている可能性が
+      // 残る)。断定せず「未確認を含む」と示す
       const scale =
-        summary.remaining > 0 ? `未完了 ${summary.remaining} 変数` : "完了を検証できませんでした";
+        summary.remaining > 0
+          ? `未完了 ${summary.remaining} 変数${summary.failure === null ? "" : "(未確認を含む)"}`
+          : "完了を検証できませんでした";
       yield* io.log(
         `部分完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`,
       );
@@ -305,7 +293,7 @@ function envRotate(
           ? "並行 push との競合が解消しませんでした"
           : `再暗号化が中断しました: ${summary.failure}`;
       yield* io.logError(
-        `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
+        `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します(再実行は残りを再走査するため、実際の未完了数もそこで確定します)。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
       );
       return 1;
     }
@@ -321,6 +309,33 @@ function envRotate(
     }
     yield* io.log(`完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})`);
     return 0;
+  });
+}
+
+/** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
+function envRotate(
+  flags: CommonFlags & {
+    readonly reason?: string | undefined;
+    readonly newEpoch?: boolean | undefined;
+  },
+  environmentId: EnvironmentId,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)
+    const context = yield* openEnvironment({ ...flags, env: environmentId });
+    const summary = yield* envRotateOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      recipient: context.recipient,
+      reason: flags.reason ?? "",
+      forceNewEpoch: flags.newEpoch === true,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+    return yield* reportRotation(environmentId, summary);
   });
 }
 

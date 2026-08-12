@@ -1159,6 +1159,149 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("epoch 2 未満の DEK のまま");
   });
 
+  it("再開経路でも前進した検証ビューでガードを再適用する(pull 中に grant_server が有効化された場合)", async () => {
+    // 4 エントリ目に grant_server。初回の同期では 3 エントリしか見えず、
+    // 環境ステートメントが seq 4 を宣言する(future head)ため有界再同期が走る
+    const granted = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+      { actor: owner, operation: await grantServerOp([ENV_ID]) },
+    ]);
+    const futureEnvStatement = await environmentStatementFor({
+      projectId: granted.projectId,
+      environmentId: ENV_ID,
+      name: ENV_ID,
+      author: owner,
+      head: headOf(granted, 4),
+    });
+    const common = { projectId: granted.projectId, environmentId: ENV_ID };
+    const variables = [
+      await variableAt({
+        built: granted,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    let chainCalls = 0;
+    const pushPaths: string[] = [];
+    const handlers: MockHandler[] = [
+      onRequest("GET", `/projects/${granted.projectId}/chain`, () => {
+        // 初回は grant_server を含まない 3 エントリ、再同期で 4 エントリ
+        const count = chainCalls === 0 ? 3 : 4;
+        chainCalls += 1;
+        return {
+          status: 200,
+          json: {
+            projectId: granted.projectId,
+            entries: granted.entries.slice(0, count),
+            headSeq: count,
+            headHashHex: granted.hashes[count - 1],
+          },
+        };
+      }),
+      onRequest("GET", `/projects/${granted.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          currentEpoch: 2,
+          statement: futureEnvStatement,
+          variables,
+          deletedVariables: [],
+          deks: [],
+        },
+      })),
+      (request) => {
+        if (request.method === "POST") {
+          pushPaths.push(request.path);
+        }
+        return null;
+      },
+    ];
+    const server = await MockServer.start(handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: granted.projectId });
+    void common;
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("grant_server");
+    // 再開経路でも書き込みには進んでいない
+    expect(pushPaths).toHaveLength(0);
+  });
+
+  it("サーバーの EpochConflict 申告は原因を断定せず、再走査のチェーン検証に委ねる", async () => {
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      // チェーンは epoch 2 のままなのに、サーバーは毎回エポック競合を申告する
+      onPush: () => ({ status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "申告"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 申告を鵜呑みにして「他メンバーが並行ローテーションした」と報告しない
+    expect(errors).not.toContain("並行ローテーション");
+    expect(errors).toContain("再暗号化が完了していません");
+  });
+
+  it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {
+    // 非 NFC 名(合成済みでない Á)は毎 pull で警告が出る — 3 巡しても 1 行
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "ÁPI_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      onPush: () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "重複"], env.layer)).toBe(1);
+    const nfcWarnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    expect(nfcWarnings).toHaveLength(1);
+  });
+
   it("grant_server が有効なプロジェクトでは拒否する(Phase 2 未実装)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

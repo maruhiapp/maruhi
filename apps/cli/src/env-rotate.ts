@@ -139,6 +139,15 @@ function checkReasonLength(reason: string): Effect.Effect<string, CliError> {
   return Effect.succeed(trimmed);
 }
 
+/**
+ * 警告の重複排除。初回 pull と毎巡の再走査は同じ pull 全体の SHOULD 警告
+ * (非 NFC 名など)を返すため、そのまま並べると同じ行が 4 回出て、実行固有の
+ * 警告(並行削除・床の欠落)が埋もれる。
+ */
+function dedupeWarnings(warnings: readonly string[]): readonly string[] {
+  return [...new Set(warnings)];
+}
+
 /** 新エポックを作る経路でのみ理由を必須にする(rotate_epoch payload の一部)。 */
 function requireReason(reason: string): Effect.Effect<string, CliError> {
   if (reason.length === 0) {
@@ -408,10 +417,18 @@ function decryptTargets(input: {
 
 /** 1 変数の再暗号化 push の結果(競合は 409 の申告 version を持ち帰る)。 */
 type PushAttempt =
-  | { readonly kind: "pushed" }
+  /** 受理済み。床の更新に失敗した場合のみ警告を伴う(受理自体は取り消せない)。 */
+  | { readonly kind: "pushed"; readonly floorWarning: string | null }
   | { readonly kind: "conflict"; readonly currentVersion: number }
   /** 並行削除(404)。削除済み変数に再暗号化すべき現在値は存在しない。 */
-  | { readonly kind: "deleted" };
+  | { readonly kind: "deleted" }
+  /**
+   * サーバーがエポック競合を申告した(409 EpochConflict)。原因の断定はここで
+   * せず、再走査(チェーン再検証)に委ねる — 「他メンバーが並行ローテーション
+   * した」のか「サーバーの申告がチェーンと矛盾している」のかは、チェーン導出の
+   * 現エポックを見るまで区別できない(push.ts の epoch-conflict と同じ規律)。
+   */
+  | { readonly kind: "epoch-stale" };
 
 /**
  * 再暗号化 1 変数分の push(§7 / §4.1 — 再暗号化は「実行者が writer として
@@ -469,11 +486,8 @@ function pushReencrypted(input: {
             return Effect.succeed({ kind: "deleted" });
           }
           if (error instanceof EpochConflictError) {
-            return Effect.fail(
-              cliError(
-                `再暗号化の途中で環境 ${input.environmentId} のエポックが進みました(他メンバーによる並行ローテーション)`,
-              ),
-            );
+            // 申告を真実源にしない: チェーン再検証は再走査が行う
+            return Effect.succeed({ kind: "epoch-stale" });
           }
           return Effect.fail(toCliError(error));
         }),
@@ -482,8 +496,12 @@ function pushReencrypted(input: {
       return outcome;
     }
     // 受理された自分の書き込みを床へ昇格する(§6.3)。メタは変更していないので
-    // 床のメタ記録は検証済み latest のまま。規則 (c) の基準は動かさない
-    yield* input.floor
+    // 床のメタ記録は検証済み latest のまま。規則 (c) の基準は動かさない。
+    //
+    // 床の書き込み失敗で「受理済みの再暗号化」を未完了扱いにしない: 受理は
+    // 取り消せず、この変数は既に新エポックにある。失う(SHOULD の)検出材料を
+    // 警告として伝え、残りの変数の処理は止めない
+    const floorWarning = yield* input.floor
       .commitPush(
         latest.variableId,
         {
@@ -496,8 +514,15 @@ function pushReencrypted(input: {
         },
         { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex },
       )
-      .pipe(Effect.mapError((error) => cliError(`再暗号化は受理されましたが、${error.message}`)));
-    return { kind: "pushed" };
+      .pipe(
+        Effect.as(null),
+        Effect.catch((error) =>
+          Effect.succeed(
+            `変数 ${displayText(latest.name)} の再暗号化は受理されましたが、${error.message}(この変数の巻き戻し検出の材料が一部欠けます)`,
+          ),
+        ),
+      );
+    return { kind: "pushed", floorWarning };
   });
 }
 
@@ -697,6 +722,14 @@ function runPushPass(input: {
         );
         continue;
       }
+      if (attempt.value.kind === "epoch-stale") {
+        // 再走査がチェーン導出のエポックで実態を判定する。この変数は旧エポックの
+        // ままなので、エポックが動いていなければ次巡の対象として再び現れる
+        continue;
+      }
+      if (attempt.value.floorWarning !== null) {
+        warnings.push(attempt.value.floorWarning);
+      }
       reencrypted += 1;
       yield* io.log(
         `  再暗号化 (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
@@ -837,6 +870,10 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
 
     if (stale.length > 0 && !input.forceNewEpoch) {
       // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
+      // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
+      // grant_server の有効化・role 変更・削除が起きていれば、古い検証状態の
+      // まま再開経路だけが素通りしてしまう — Cursor Security Reviewer 指摘)
+      yield* ensureRotatable(pulled.verified, input.environmentId, input.signerUserId);
       const dek = keys.deksByEpoch.get(currentEpoch);
       if (dek === undefined) {
         return yield* Effect.fail(
@@ -877,7 +914,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         alreadyCurrent: outcome.alreadyCurrent,
         remaining: outcome.remaining,
         failure: outcome.failure,
-        warnings: [...warnings, ...outcome.warnings],
+        warnings: dedupeWarnings([...warnings, ...outcome.warnings]),
       };
     }
 
@@ -956,7 +993,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       alreadyCurrent: outcome.alreadyCurrent,
       remaining: outcome.remaining,
       failure: outcome.failure,
-      warnings: [...warnings, ...outcome.warnings],
+      warnings: dedupeWarnings([...warnings, ...outcome.warnings]),
     };
   });
 }
