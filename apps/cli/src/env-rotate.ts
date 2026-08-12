@@ -467,6 +467,18 @@ function decryptForRotation(input: {
 }
 
 /**
+ * 未完了の原因の優先順: push の失敗 > 開けない値 > 競合(既定文言 = null)。
+ * 開けない値を競合に潰すと、存在しない並行 writer を追わせることになる —
+ * 実際に要るのは「当該エポックのラップを持つ別メンバーによる再実行」である。
+ */
+function blockingCause(
+  pushFailure: string | null,
+  undecryptable: readonly string[],
+): string | null {
+  return pushFailure ?? undecryptable[0] ?? null;
+}
+
+/**
  * 未完了で終わった実行の締め。原因(blockingFailure)がある場合はそれが報告され
  * るので何もせず、無い場合だけ「起きたがもう原因ではない失敗」を警告に残す。
  */
@@ -741,6 +753,11 @@ interface RescanResult {
    * 無いのに復号すると、押すことのない平文を変数の数だけメモリへ作ることになる。
    */
   readonly targets: readonly ReencryptTarget[];
+  /**
+   * 開けなかった値の理由。最終巡(復号しない)でも自分宛ラップの有無だけは
+   * 判定するので、「開けない値だけが残った」ことは常に原因として報告できる。
+   */
+  readonly undecryptable: readonly string[];
   /** 競合していたが既に現エポックで書かれていた変数数(再暗号化不要)。 */
   readonly alreadyCurrent: number;
   /**
@@ -831,16 +848,32 @@ function rescanEnvironment(input: {
       collectWarning: input.collectWarning,
     });
     if (reconciled.evidence !== null) {
-      return { view, stale: [], targets: [], alreadyCurrent: 0, evidence: reconciled.evidence };
+      return {
+        view,
+        stale: [],
+        targets: [],
+        undecryptable: [],
+        alreadyCurrent: 0,
+        evidence: reconciled.evidence,
+      };
     }
     // 完了検証 + 次巡の対象: 目標エポック未満の active 値すべて(競合分に
     // 限らない — 窓の間に作られた変数もここに現れる)
     const stale = pulled.variables.filter((value) => value.epoch < epoch);
     if (!input.decryptRemaining) {
+      // 復号はしないが「開けるのか」は判定する: 自分宛ラップの有無は Map の
+      // 参照だけで分かり、平文を作らずに済む。これを飛ばすと、最終巡で初めて
+      // 判明する「開けない値だけが残った」状態の原因が既定文言(競合)に化ける
       return {
         view,
         stale,
         targets: [],
+        undecryptable: stale
+          .filter((value) => !deksByEpoch.has(value.epoch))
+          .map(
+            (value) =>
+              `変数 ${displayText(value.name)} のエポック ${value.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
+          ),
         alreadyCurrent: reconciled.alreadyCurrent,
         evidence: null,
       };
@@ -862,6 +895,7 @@ function rescanEnvironment(input: {
       view,
       stale,
       targets: decrypted.targets,
+      undecryptable: decrypted.undecryptable,
       alreadyCurrent: reconciled.alreadyCurrent,
       evidence: null,
     };
@@ -1099,6 +1133,8 @@ type PassVerdict =
       readonly remaining: number;
       /** 次巡の対象(最終巡は空 — remaining が 0 でなくても復号しない)。 */
       readonly targets: readonly ReencryptTarget[];
+      /** 開けなかった値の理由(未完了の原因として報告する)。 */
+      readonly undecryptable: readonly string[];
       readonly alreadyCurrent: number;
     }
   /**
@@ -1208,6 +1244,7 @@ function settlePass(input: {
         view: rescan.value.view,
         remaining: rescan.value.stale.length,
         targets: rescan.value.targets,
+        undecryptable: rescan.value.undecryptable,
         alreadyCurrent: rescan.value.alreadyCurrent,
       },
     } as const;
@@ -1318,14 +1355,11 @@ function reencryptCurrentValues(input: {
         );
         return outcome(0, null, true);
       }
-      blockingFailure = attempted.firstFailure;
+      blockingFailure = blockingCause(attempted.firstFailure, settled.verdict.undecryptable);
       seenFailure ??= attempted.firstFailure;
       if (stalledOnUndecryptable(pending, pass)) {
         // 未完了は残っているのに押せる対象が 1 つも無い = 復号できない値だけが
-        // 残っている(残りの巡を回しても pull を繰り返すだけで前進しない)。
-        // 原因は競合ではないので、既定文言に化けないよう明示して抜ける
-        blockingFailure ??=
-          "再暗号化に必要な値を復号できません(当該エポックの DEK が自分宛に配布されていません)";
+        // 残っている。残りの巡を回しても pull を繰り返すだけで前進しない
         break;
       }
     }

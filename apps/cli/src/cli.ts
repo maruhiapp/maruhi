@@ -481,12 +481,19 @@ function envCommand(execute: Execute) {
               ),
             );
           }
-          // 宣言済みオプション名は引数表(= ctx.values のキー)から導く
-          yield* checkEnvFlags(action, ctx.tokens, new Set(Object.keys(ctx.values)));
+          // 宣言済みオプション名は**引数表**(ctx.args)から導く。ctx.values は
+          // 「実際に渡された値」しか持たないので、宣言の一覧としては使えない
+          yield* checkEnvFlags(action, ctx.tokens, new Set(Object.keys(ctx.args)));
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
+            // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
+            // 落とすため、values だけでは「未指定」と区別できない。区別を失うと
+            // `--reason "$UNSET"` の実行が「確認だけ」の経路へ滑り込み、何も
+            // 送らないまま成功終了する(env-rotate の checkReasonLength が
+            // 空指定を落とせるよう、指定の有無は explicit で判定する)
+            const reason = ctx.explicit.reason ? (ctx.values.reason ?? "") : undefined;
             return yield* envRotate(
-              { ...flags, reason: ctx.values.reason, newEpoch: ctx.values["new-epoch"] },
+              { ...flags, reason, newEpoch: ctx.values["new-epoch"] },
               environmentId,
             );
           }

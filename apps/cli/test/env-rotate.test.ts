@@ -2065,6 +2065,70 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("未完了 1 変数");
   });
 
+  it("最終巡で初めて残った「開けない値」も、原因を競合に潰さず報告する", async () => {
+    // 競合していた 2 件が最終巡までに解消し、残るのは開けない 1 件だけ。
+    // 最終巡は復号しない(平文を作らない)ので targets は空になるが、
+    // 自分宛ラップの有無だけは判定できる — ここで原因を既定文言に落とすと、
+    // 存在しない並行 writer を追わせることになる
+    const undecryptable = await variableAt({
+      built: chainRotatedTwice,
+      variableId: "vaa",
+      name: "OLD_ONE",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "unreadable-here",
+      headSeq: 2,
+    });
+    const stale = await variableAt({
+      built: chainRotatedTwice,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek2,
+      epoch: 2,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 3,
+    });
+    const winner = await variableAt({
+      built: chainRotatedTwice,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek3,
+      epoch: 3,
+      version: 2,
+      plaintext: "key-def",
+      headSeq: 4,
+      prevValueSigHashHex: await valueHashOf(stale.value, owner.userId),
+    });
+    const variables = [undecryptable, stale];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotatedTwice,
+      variables,
+      // epoch 1 の自分宛ラップが無い(= vaa は開けない)
+      deks: [
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 3,
+      // vbb は競合し続けるが、2 巡目の後に他メンバーが現エポックで書き切る
+      onPush: (call) => {
+        if (call === 1) {
+          variables[1] = winner;
+        }
+        return { status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("エポック 1 の DEK が配布されていません");
+    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
+    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+  });
+
   it("現エポックの DEK が無くて再開できない場合、--new-epoch の逃げ道を案内する", async () => {
     // 中断されたローテーションの後に加わったメンバー: 現エポック(2)のラップが
     // まだ自分宛に無い。再開はできないが --new-epoch なら成立する(自分で新しい
@@ -2264,10 +2328,18 @@ describe("maruhi env rotate", () => {
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
     // `--reason "$UNSET_VAR"` の形。未指定と同一視すると、退職者削除の
-    // スクリプトが「新エポックができた」と受け取ったまま何も送られない
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(1);
+    // スクリプトが「新エポックができた」と受け取ったまま何も送られない。
+    // **空文字列**は gunshi が undefined に落とすので、指定の有無は
+    // ctx.explicit で判定しないと未指定と区別できない(空白のみの値は
+    // truthy なので通ってしまい、この経路を素通りさせていた)
+    for (const value of ["", "  "]) {
+      expect(await runCli(["env", "rotate", ENV_ID, "--reason", value], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("--reason が空です");
+      expect(env.logs.join("\n")).not.toContain("確認完了");
+    }
+    // `--reason=` の形(値を = で繋いだ空指定)も同じ
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason="], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("--reason が空です");
-    expect(env.logs.join("\n")).not.toContain("確認完了");
     expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
