@@ -443,7 +443,7 @@ function refreshEpochState(
  * 後退はすべて巻き戻し・equivocation の証拠であり、誤拒否はない。
  */
 function winnerValueRegression(
-  target: PushTarget,
+  variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
   currentVersion: number,
@@ -451,18 +451,18 @@ function winnerValueRegression(
   if (currentVersion < known.version || winner.version < known.version) {
     // このセッションで検証済みの latest からの後退 = 巻き戻しの証拠。採用して
     // prev を付け替えると、巻き戻しブランチへ自分の署名で連鎖してしまう
-    return `変数 ${target.variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
+    return `変数 ${variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
   }
   if (winner.version === known.version && winner.signedBytesHashHex !== known.signedBytesHashHex) {
     // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
-    return `変数 ${target.variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+    return `変数 ${variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
   }
   // エポック単調性(§4.1)は推移的なので、winner が検証済み latest より新しければ
   // 版番号のギャップに関わらず epoch 非減少を要求できる(レビューループ 2 [低] —
   // 版番号の選び方で隣接検査を迂回する旧エポック注入を塞ぐ)。正直サーバーは
   // 受理順にエポック非減少なので誤拒否はない
   if (winner.version > known.version && winner.epoch < known.epoch) {
-    return `変数 ${target.variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
+    return `変数 ${variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
   }
   // 隣接 predecessor を保持している場合は §6.3-6 の prev 実在一致も無償で検査できる
   // (レビューループ 1 [中] — pull の latest-only 制約の例外)
@@ -470,7 +470,7 @@ function winnerValueRegression(
     winner.version === known.version + 1 &&
     winner.prevValueSigHashHex !== known.signedBytesHashHex
   ) {
-    return `変数 ${target.variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    return `変数 ${variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
   }
   return null;
 }
@@ -483,18 +483,18 @@ function winnerValueRegression(
  * 誤拒否はない。
  */
 function winnerMetaRegression(
-  target: PushTarget,
+  variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
 ): string | null {
   if (winner.metaVersion < known.metaVersion) {
-    return `変数 ${target.variableId} の再取得ステートメント(metaVersion ${winner.metaVersion})が検証済みの最新(metaVersion ${known.metaVersion})より古く、メタデータ巻き戻しの証拠です`;
+    return `変数 ${variableId} の再取得ステートメント(metaVersion ${winner.metaVersion})が検証済みの最新(metaVersion ${known.metaVersion})より古く、メタデータ巻き戻しの証拠です`;
   }
   if (
     winner.metaVersion === known.metaVersion &&
     winner.metaSignedBytesHashHex !== known.metaSignedBytesHashHex
   ) {
-    return `変数 ${target.variableId} の metaVersion ${winner.metaVersion} に、検証済みのステートメントと異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+    return `変数 ${variableId} の metaVersion ${winner.metaVersion} に、検証済みのステートメントと異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
   }
   // 隣接 predecessor を保持している場合は prev 連鎖の一致も無償で検査できる
   // (winnerValueRegression の §6.3-6 検査の同型 — レビュー② [minor])
@@ -502,20 +502,27 @@ function winnerMetaRegression(
     winner.metaVersion === known.metaVersion + 1 &&
     winner.prevMetaSigHashHex !== known.metaSignedBytesHashHex
   ) {
-    return `変数 ${target.variableId} の metaVersion ${winner.metaVersion} の prev が検証済みの直前 metaVersion の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    return `変数 ${variableId} の metaVersion ${winner.metaVersion} の prev が検証済みの直前 metaVersion の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
   }
   return null;
 }
 
-function winnerRegression(
-  target: PushTarget,
+/**
+ * 409 の勝者を採用してよいかの検査(§12-5 の再試行手順)。値・メタの両側で
+ * 「検証済み既知 latest からの後退・同一座標の signed bytes 相違・隣接 prev の
+ * 不一致」を拒否する。**ローテーションの再暗号化(env-rotate.ts)も同じ検査を
+ * 通す**: 勝者への prev 付け替えは push 経路と同型であり、片方だけが分岐した
+ * 履歴への連鎖署名を許すと、床(SHOULD・初回同期では不在)頼みの穴になる。
+ */
+export function winnerRegression(
+  variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
   currentVersion: number,
 ): string | null {
   return (
-    winnerValueRegression(target, known, winner, currentVersion) ??
-    winnerMetaRegression(target, known, winner)
+    winnerValueRegression(variableId, known, winner, currentVersion) ??
+    winnerMetaRegression(variableId, known, winner)
   );
 }
 
@@ -531,7 +538,7 @@ function winnerInconsistency(
   }
   return target.latest === null
     ? null
-    : winnerRegression(target, target.latest, winner, currentVersion);
+    : winnerRegression(target.variableId, target.latest, winner, currentVersion);
 }
 
 /**

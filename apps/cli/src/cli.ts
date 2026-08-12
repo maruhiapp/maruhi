@@ -292,10 +292,25 @@ function envRotate(
       yield* io.log(
         `部分完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped}、未完了 ${summary.remaining} 変数)`,
       );
+      // 中断原因がある場合はそれを明示する(エポックだけが進んだ事実を、
+      // 生のエラーだけ出して伝え損ねない)
+      const cause =
+        summary.failure === null
+          ? "並行 push との競合が解消しませんでした"
+          : `再暗号化が中断しました: ${summary.failure}`;
       yield* io.logError(
-        `警告: ${summary.remaining} 変数の再暗号化が完了していません(並行 push との競合が解消しませんでした)。これらの現在値は epoch ${summary.epoch} 未満の DEK のままです — maruhi env rotate ${environmentId} --reason ... を再実行すると、エポックを進めずに残りから再開します`,
+        `警告: ${summary.remaining} 変数の再暗号化が完了していません(${cause})。これらの現在値は epoch ${summary.epoch} 未満の DEK のままです — maruhi env rotate ${environmentId} --reason ... を再実行すると、エポックを進めずに残りから再開します`,
       );
       return 1;
+    }
+    if (summary.mode === "resumed") {
+      // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
+      // いないので、完了報告がローテーション成功に見えてはならない(退職者の
+      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
+      yield* io.log(
+        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)— 新しいローテーションが必要な場合はもう一度実行してください`,
+      );
+      return 0;
     }
     yield* io.log(`完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})`);
     return 0;

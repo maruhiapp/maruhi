@@ -36,7 +36,7 @@ import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
-import { encryptAndSignPayload } from "./push.ts";
+import { encryptAndSignPayload, winnerRegression } from "./push.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
@@ -61,6 +61,8 @@ export interface RotationSummary {
   readonly alreadyCurrent: number;
   /** 競合が解けず未完了のまま残った変数数(> 0 なら部分完了)。 */
   readonly remaining: number;
+  /** 再暗号化を中断させた原因(null = 最後まで走った)。呼び出し側が警告に使う。 */
+  readonly failure: string | null;
   readonly warnings: readonly string[];
 }
 
@@ -91,6 +93,21 @@ interface ReencryptOutcome {
   readonly alreadyCurrent: number;
   readonly remaining: number;
   readonly warnings: readonly string[];
+  /**
+   * 再暗号化を中断させた原因(null = 最後まで走った)。エポックが進んだ後の
+   * 失敗を例外として投げ捨てると、「エポックだけ進んで再暗号化が残っている」
+   * 事実が呼び出し側の部分完了警告を素通りしてしまうため、結果として返す。
+   */
+  readonly failure: string | null;
+}
+
+/** 409 を返された 1 変数(勝者の検証に要する既知 latest と申告 version を保つ)。 */
+interface ConflictedTarget {
+  readonly variableId: string;
+  /** 競合時に自分が prev の基準にしていた検証済み値。 */
+  readonly known: VerifiedPulledValue;
+  /** 409 が申告した最新 version(勝者の整合検査の入力 — 採否の根拠にはしない)。 */
+  readonly currentVersion: number;
 }
 
 /**
@@ -360,6 +377,11 @@ function decryptTargets(input: {
   });
 }
 
+/** 1 変数の再暗号化 push の結果(競合は 409 の申告 version を持ち帰る)。 */
+type PushAttempt =
+  | { readonly kind: "pushed" }
+  | { readonly kind: "conflict"; readonly currentVersion: number };
+
 /**
  * 再暗号化 1 変数分の push(§7 / §4.1 — 再暗号化は「実行者が writer として
  * 署名する通常 push」であり、専用のワイヤも認可も持たない)。
@@ -374,7 +396,7 @@ function pushReencrypted(input: {
   readonly dek: Uint8Array;
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
-}): Effect.Effect<"pushed" | "conflict", CliError> {
+}): Effect.Effect<PushAttempt, CliError> {
   return Effect.gen(function* () {
     const latest = input.target.value;
     const version = latest.version + 1;
@@ -402,12 +424,12 @@ function pushReencrypted(input: {
         payload: { value: signed.payload },
       })
       .pipe(
-        Effect.map(() => "pushed" as const),
-        Effect.catch((error): Effect.Effect<"pushed" | "conflict", CliError> => {
+        Effect.map(() => ({ kind: "pushed" }) as const),
+        Effect.catch((error): Effect.Effect<PushAttempt, CliError> => {
           if (error instanceof VersionConflictError) {
             // 並行 push の勝者がいる。409 の申告値では決めず、呼び出し側が
             // 再取得・再検証して実態(勝者が既に現エポックか)を確かめる
-            return Effect.succeed("conflict");
+            return Effect.succeed({ kind: "conflict", currentVersion: error.currentVersion });
           }
           if (error instanceof EpochConflictError) {
             return Effect.fail(
@@ -419,8 +441,8 @@ function pushReencrypted(input: {
           return Effect.fail(toCliError(error));
         }),
       );
-    if (outcome === "conflict") {
-      return "conflict";
+    if (outcome.kind === "conflict") {
+      return outcome;
     }
     // 受理された自分の書き込みを床へ昇格する(§6.3)。メタは変更していないので
     // 床のメタ記録は検証済み latest のまま。規則 (c) の基準は動かさない
@@ -438,7 +460,7 @@ function pushReencrypted(input: {
         { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex },
       )
       .pipe(Effect.mapError((error) => cliError(`再暗号化は受理されましたが、${error.message}`)));
-    return "pushed";
+    return { kind: "pushed" };
   });
 }
 
@@ -451,9 +473,16 @@ interface ReplanResult {
 
 /**
  * VersionConflict を起こした変数の再計画(§12-5 の再試行手順): 再取得 →
- * §6.3 全検証 → 勝者の実態で分岐する。勝者の epoch が既に新エポックなら
- * 再暗号化は不要(push は現エポックでしか受理されない — §12-5)であり、
- * それ未満なら勝者を新しい基準にして再暗号化し直す。
+ * §6.3 全検証 → **勝者の整合検査(push.ts と共有の winnerRegression)** →
+ * 実態で分岐する。勝者の epoch が既に新エポックなら再暗号化は不要(push は
+ * 現エポックでしか受理されない — §12-5)であり、それ未満なら勝者を新しい
+ * 基準にして再暗号化し直す。
+ *
+ * 整合検査を省けない理由: 再暗号化は勝者の signed bytes ハッシュを prev に
+ * 付け替えて署名するため、検査なしでは分岐した履歴へ自分の署名で連鎖して
+ * しまう(§12-5 の証拠連鎖の汚染)。ローカル床は巻き戻し・同一 version の
+ * 相違を捕まえるが SHOULD であり(初回同期・破損時は不在)、隣接 prev の
+ * 不一致は床に材料自体がない。
  */
 function replanConflicted(input: {
   readonly client: MaruhiClient;
@@ -463,7 +492,7 @@ function replanConflicted(input: {
   readonly floor: FloorHandle;
   readonly epoch: number;
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
-  readonly conflicted: readonly string[];
+  readonly conflicted: readonly ConflictedTarget[];
 }): Effect.Effect<ReplanResult, CliError> {
   return Effect.gen(function* () {
     const pulled = yield* pullVerifiedEnvironment({
@@ -485,13 +514,24 @@ function replanConflicted(input: {
     const warnings = [...pulled.warnings];
     const targets: ReencryptTarget[] = [];
     let alreadyCurrent = 0;
-    for (const variableId of input.conflicted) {
-      const latest = pulled.variables.find((value) => value.variableId === variableId);
+    for (const conflict of input.conflicted) {
+      const latest = pulled.variables.find((value) => value.variableId === conflict.variableId);
       if (latest === undefined) {
         warnings.push(
-          `変数 ${displayText(variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
+          `変数 ${displayText(conflict.variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
         );
         continue;
+      }
+      // 勝者の整合検査は「採用するか」に関わらず先に行う: 巻き戻し・
+      // equivocation・分岐した prev 連鎖は、それ自体が中断すべき証拠である
+      const regression = winnerRegression(
+        conflict.variableId,
+        conflict.known,
+        latest,
+        conflict.currentVersion,
+      );
+      if (regression !== null) {
+        return yield* Effect.fail(cliError(regression));
       }
       if (latest.epoch >= input.epoch) {
         alreadyCurrent += 1;
@@ -515,6 +555,15 @@ function replanConflicted(input: {
  * VersionConflict は再取得・再検証で実態を確かめてから次巡へ回す(上限
  * {@link MAX_REENCRYPT_PASSES} 巡)。解けなかった分は remaining として
  * 呼び出し側が部分完了の警告に使う — 黙って完了扱いにしない。
+ *
+ * 失敗は投げずに {@link ReencryptOutcome.failure} として返す: この関数が
+ * 走る時点でエポックは既に進んでおり、途中の失敗(ネットワーク・並行
+ * ローテーション・床書き込み)を例外として投げると「エポックだけ進んで
+ * 再暗号化が残っている」事実が部分完了の報告経路を素通りしてしまう。
+ *
+ * 最終巡の競合も**必ず再取得して実態を確かめる**: 競合の勝者が既に現エポックで
+ * 書かれていれば再暗号化は不要であり、確かめずに remaining へ計上すると
+ * 「未完了である」という誤報(= 存在しない機密性の穴の警告)になる。
  */
 function reencryptCurrentValues(input: {
   readonly client: MaruhiClient;
@@ -538,10 +587,19 @@ function reencryptCurrentValues(input: {
     let reencrypted = 0;
     let alreadyCurrent = 0;
 
+    const outcome = (remaining: number, failure: string | null): ReencryptOutcome => ({
+      reencrypted,
+      alreadyCurrent,
+      remaining,
+      warnings,
+      failure,
+    });
+
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
-      const conflicted: string[] = [];
+      const conflicted: ConflictedTarget[] = [];
+      let processed = 0;
       for (const target of pending) {
-        const result = yield* pushReencrypted({
+        const attempt = yield* pushReencrypted({
           client: input.client,
           environmentId: input.environmentId,
           view,
@@ -551,9 +609,21 @@ function reencryptCurrentValues(input: {
           dek: input.dek,
           writerUserId: input.writerUserId,
           signingKey: input.signingKey,
-        });
-        if (result === "conflict") {
-          conflicted.push(target.value.variableId);
+        }).pipe(
+          Effect.map((value) => ({ kind: "ok", value }) as const),
+          Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
+        );
+        processed += 1;
+        if (attempt.kind === "failed") {
+          // 未処理分(この変数を含む残り)+ 競合分が未完了として残る
+          return outcome(pending.length - processed + 1 + conflicted.length, attempt.error.message);
+        }
+        if (attempt.value.kind === "conflict") {
+          conflicted.push({
+            variableId: target.value.variableId,
+            known: target.value,
+            currentVersion: attempt.value.currentVersion,
+          });
           continue;
         }
         reencrypted += 1;
@@ -562,10 +632,7 @@ function reencryptCurrentValues(input: {
         );
       }
       if (conflicted.length === 0) {
-        return { reencrypted, alreadyCurrent, remaining: 0, warnings };
-      }
-      if (pass === MAX_REENCRYPT_PASSES) {
-        return { reencrypted, alreadyCurrent, remaining: conflicted.length, warnings };
+        return outcome(0, null);
       }
       const replanned = yield* replanConflicted({
         client: input.client,
@@ -576,16 +643,22 @@ function reencryptCurrentValues(input: {
         epoch: input.epoch,
         deksByEpoch: input.deksByEpoch,
         conflicted,
-      });
-      view = replanned.view;
-      pending = replanned.targets;
-      alreadyCurrent += replanned.alreadyCurrent;
-      warnings.push(...replanned.warnings);
+      }).pipe(
+        Effect.map((value) => ({ kind: "ok", value }) as const),
+        Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
+      );
+      if (replanned.kind === "failed") {
+        return outcome(conflicted.length, replanned.error.message);
+      }
+      view = replanned.value.view;
+      pending = replanned.value.targets;
+      alreadyCurrent += replanned.value.alreadyCurrent;
+      warnings.push(...replanned.value.warnings);
       if (pending.length === 0) {
-        return { reencrypted, alreadyCurrent, remaining: 0, warnings };
+        return outcome(0, null);
       }
     }
-    return { reencrypted, alreadyCurrent, remaining: pending.length, warnings };
+    return outcome(pending.length, null);
   });
 }
 
@@ -668,6 +741,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         reencrypted: outcome.reencrypted,
         alreadyCurrent: outcome.alreadyCurrent,
         remaining: outcome.remaining,
+        failure: outcome.failure,
         warnings: [...warnings, ...outcome.warnings],
       };
     }
@@ -741,6 +815,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       reencrypted: outcome.reencrypted,
       alreadyCurrent: outcome.alreadyCurrent,
       remaining: outcome.remaining,
+      failure: outcome.failure,
       warnings: [...warnings, ...outcome.warnings],
     };
   });

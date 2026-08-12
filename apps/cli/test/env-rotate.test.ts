@@ -45,6 +45,7 @@ import {
   rotateEpochOp,
   statementFor,
   type TestUser,
+  valueHashOf,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
@@ -127,6 +128,8 @@ async function variableAt(input: {
   readonly version: number;
   readonly plaintext: string;
   readonly headSeq: number;
+  /** version > 1 の prev(既定はフィクスチャのダミー — 連鎖検査の negative 用)。 */
+  readonly prevValueSigHashHex?: string;
 }): Promise<PulledVariable> {
   return {
     variableId: input.variableId,
@@ -148,6 +151,9 @@ async function variableAt(input: {
       plaintext: input.plaintext,
       writer: owner,
       head: headOf(input.built, input.headSeq),
+      ...(input.prevValueSigHashHex === undefined
+        ? {}
+        : { prevValueSigHashHex: input.prevValueSigHashHex }),
     }),
   };
 }
@@ -541,6 +547,50 @@ describe("maruhi env rotate", () => {
     // 再開であることは明示される(--reason はチェーンに記録されない旨も)
     expect(env.errors.join("\n")).toContain("再暗号化が未完了");
     expect(env.logs.join("\n")).toContain("再暗号化を再開");
+    // 再開は「要求されたローテーション」ではない: 新エポックを作っていない事実を
+    // 完了報告が隠さない(退職者削除後の実行が成功扱いに見える形を塞ぐ)
+    expect(env.logs.join("\n")).toContain("新しいエポックは作成していません");
+  });
+
+  it("ローテーション後の push 失敗は、エポックが進んだ事実を部分完了として報告する", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onPush: () => ({ status: 503, bodyText: "unavailable" }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "初回"], env.layer)).toBe(1);
+    // 複合は受理済み = エポックは進んでいる。生のエラーだけで終わらせず、
+    // 「エポックが進み再暗号化が残っている」ことと再開手段を伝える
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(env.logs.join("\n")).toContain("部分完了");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("再暗号化が中断しました");
+    expect(errors).toContain("再実行すると、エポックを進めずに残りから再開します");
   });
 
   it("再開時に再暗号化済みの変数は対象にしない(最新値の epoch が現エポックのもの)", async () => {
@@ -693,7 +743,8 @@ describe("maruhi env rotate", () => {
       plaintext: "key-abc",
       headSeq: 2,
     });
-    // 409 の後の再取得で見える「他メンバーが新エポックで書いた勝者」
+    // 409 の後の再取得で見える「他メンバーが新エポックで書いた勝者」。
+    // 正直な並行 writer は検証済み version 1 へ prev を連鎖させている
     const winner = await variableAt({
       built: chainRotated,
       variableId: "vbb",
@@ -703,6 +754,7 @@ describe("maruhi env rotate", () => {
       version: 2,
       plaintext: "key-def",
       headSeq: 3,
+      prevValueSigHashHex: await valueHashOf(stale.value, owner.userId),
     });
     const variables = [stale];
     const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
@@ -729,6 +781,105 @@ describe("maruhi env rotate", () => {
     // 勝者は現エポックで受理済み = 再暗号化不要。上書きしに行かない
     expect(state.pushes).toHaveLength(0);
     expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
+  });
+
+  it("409 の勝者が分岐した履歴へ連鎖していたら、prev を付け替えず中断する(§12-5)", async () => {
+    const stale = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 2,
+    });
+    // 勝者の prev が検証済み version 1 の signed bytes ハッシュを指していない
+    // = 分岐した履歴(equivocation の証拠)。ここへ自分の署名で連鎖しない。
+    // 勝者は現エポックなので床の規則 (c) には掛からず、かつ「再暗号化不要」の
+    // 近道より前に整合検査が走ることも同時に固定する
+    const forked = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek2,
+      epoch: 2,
+      version: 2,
+      plaintext: "key-forked",
+      headSeq: 3,
+      prevValueSigHashHex: "ab".repeat(32),
+    });
+    const variables = [stale];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      onPush: (call) => {
+        if (call !== 0) {
+          return undefined;
+        }
+        variables[0] = forked;
+        return { status: 409, json: { _tag: "VersionConflict", currentVersion: 2 } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "分岐"], env.layer)).toBe(1);
+    expect(state.pushes).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("分岐した履歴への連鎖");
+  });
+
+  it("最終巡の競合も再取得で確かめる(勝者が現エポックなら未完了と誤報しない)", async () => {
+    const stale = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 2,
+    });
+    const winner = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek2,
+      epoch: 2,
+      version: 2,
+      plaintext: "key-def",
+      headSeq: 3,
+      prevValueSigHashHex: await valueHashOf(stale.value, owner.userId),
+    });
+    const variables = [stale];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      // 最終巡(3 回目)の競合の直後に、他メンバーの現エポック書き込みが確定する
+      onPush: (call) => {
+        if (call === 2) {
+          variables[0] = winner;
+        }
+        return { status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "競合"], env.layer)).toBe(0);
+    expect(state.pushes).toHaveLength(0);
+    expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
+    expect(env.errors.join("\n")).not.toContain("完了していません");
   });
 
   it("競合が解消しないまま残った再暗号化は、部分完了として警告し非ゼロで終わる", async () => {
