@@ -1065,6 +1065,16 @@ function settlePass(input: {
   });
 }
 
+/**
+ * 「起きたが、もう原因ではない失敗」の記録。原因として掲げると調査を誤誘導する
+ * が、黙って落とすと 502 が起きた事実自体が消える — 解決の仕方を添えて警告に残す。
+ */
+function noteResolvedFailure(warnings: string[], failure: string | null, resolution: string): void {
+  if (failure !== null) {
+    warnings.push(`再暗号化の途中で失敗がありましたが、${resolution}: ${failure}`);
+  }
+}
+
 function reencryptCurrentValues(input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
@@ -1083,11 +1093,14 @@ function reencryptCurrentValues(input: {
     let reencrypted = 0;
     let alreadyCurrent = 0;
     /**
-     * 巡を跨いで持ち越す**最新**の失敗原因(未完了で終わった場合の報告材料)。
-     * 古い方を残すと、既に解消した一時失敗を原因として掲げたまま、いま塞いで
-     * いる本当の原因を隠してしまう。
+     * **直近の巡**で実際に起きた失敗(= いま未完了を塞いでいる原因)。巡を跨いで
+     * 持ち越さない: 1 巡目の一時失敗が 2 巡目で解消したなら、それはもう原因では
+     * ない。持ち越すと、解消済みの失敗を掲げたまま本当の原因(解けない 409 なら
+     * 「並行 push との競合」)を隠し、調査を検証失敗・床違反の方向へ誤誘導する。
      */
-    let lastFailure: string | null = null;
+    let blockingFailure: string | null = null;
+    /** この実行で一度でも起きた失敗(完了できた場合の「起きたが解決した」報告用)。 */
+    let seenFailure: string | null = null;
     /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
     const known = new Map<string, ConflictedTarget>();
 
@@ -1138,18 +1151,27 @@ function reencryptCurrentValues(input: {
         // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
         // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
         // (完了を検証できている以上、部分完了として非ゼロ終了させない)
-        const anyFailure = attempted.firstFailure ?? lastFailure;
-        if (anyFailure !== null) {
-          warnings.push(
-            `再暗号化の途中で失敗がありましたが、再走査で完了を確認しました: ${anyFailure}`,
-          );
-        }
+        // 完了を検証できている以上、部分完了として非ゼロ終了させない
+        noteResolvedFailure(
+          warnings,
+          attempted.firstFailure ?? seenFailure,
+          "再走査で完了を確認しました",
+        );
         return outcome(0, null, true);
       }
-      lastFailure = attempted.firstFailure ?? lastFailure;
+      blockingFailure = attempted.firstFailure;
+      seenFailure ??= attempted.firstFailure;
+    }
+    // 最終巡に失敗がない = 残っているのは競合分。過去の失敗は原因ではない
+    if (blockingFailure === null) {
+      noteResolvedFailure(
+        warnings,
+        seenFailure,
+        "その後の巡で解消しています(未完了として残っているのは競合分です)",
+      );
     }
     // 巡を使い切った(中断ではない): 残数は最終巡の再走査を通った**実測**である
-    return outcome(pending.length, lastFailure, true);
+    return outcome(pending.length, blockingFailure, true);
   });
 }
 

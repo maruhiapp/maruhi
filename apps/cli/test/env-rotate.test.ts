@@ -660,6 +660,63 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("再暗号化が完了しませんでした: サーバー");
   });
 
+  it("解消した一時失敗は原因として残さない(解けない競合は競合として報告する)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainBase,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // vaa は 1 巡目だけ 502(2 巡目で成功)。vbb は最後まで競合し続ける
+      onPush: (call, variableId) => {
+        if (variableId === "vaa") {
+          return call === 0 ? { status: 502, bodyText: "bad gateway" } : undefined;
+        }
+        return { status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "混在"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 残っているのは競合分だけなので、原因は競合である。解消済みの 502 を
+    // 掲げると、調査が検証失敗・床違反の方向へ誤誘導される
+    expect(errors).toContain("並行 push との競合が解消しませんでした");
+    expect(errors).not.toContain("再暗号化が完了しませんでした");
+    // 解消した失敗が起きた事実自体は警告として残す
+    expect(errors).toContain("再暗号化の途中で失敗がありました");
+  });
+
   it("巡末の再走査に到達できなかった場合だけ、残数を「未確認を含む」として報告する", async () => {
     const variables = [
       await variableAt({
