@@ -443,6 +443,26 @@ describe("maruhi env create", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("reader は環境を作成できない(member 以上 — §6.2)。ラップを作る前に拒否する", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const reader = await makeTestUser("user-reader-5555");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(reader, "reader") },
+    ]);
+    const server = await MockServer.start([chainHandler(built.projectId, built)]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, reader);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    // サーバーの汎用 403 を待たない: 待つと DEK 生成 + 全メンバー分の HPKE
+    // ラップ・署名を済ませてから拒否されることになる(env rotate と同じ規律)
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reader は環境を作成できません");
+    expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
   it("作成する環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([

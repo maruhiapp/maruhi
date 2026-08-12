@@ -51,6 +51,16 @@ function ensureCreatable(
         cliError("このプロジェクトのチェーン導出メンバーではありません(環境を作成できません)"),
       );
     }
+    // create_environment は member 以上(§6.2)。ここで落とさないと、reader は
+    // DEK 生成と全メンバー分の HPKE ラップ・署名を済ませて複合を送ってから、
+    // サーバーの汎用 403 を受け取ることになる(env-rotate と同じ早期拒否)
+    if (member.role === "reader") {
+      return yield* Effect.fail(
+        cliError(
+          "reader は環境を作成できません(create_environment は member 以上 — CRYPTO_SPEC §6.2)",
+        ),
+      );
+    }
     return member;
   });
 }

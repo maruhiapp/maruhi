@@ -1546,6 +1546,74 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("再実行では解消しません");
   });
 
+  it("EpochConflict を申告された変数が解消していれば、残りは普通の部分完了として案内する", async () => {
+    // 申告された vaa は他メンバーが現エポックで書き切って解消。残っているのは
+    // 別理由(502)の vbb だけ — ここで「再実行では解消しません」と断じると、
+    // 再実行で片付く状態なのに再開の案内も残数の報告も届かなくなる
+    const staleA = await variableAt({
+      built: chainRotated,
+      variableId: "vaa",
+      name: "DATABASE_URL",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "postgres://example",
+      headSeq: 2,
+    });
+    const winnerA = await variableAt({
+      built: chainRotated,
+      variableId: "vaa",
+      name: "DATABASE_URL",
+      dek: dek2,
+      epoch: 2,
+      version: 2,
+      plaintext: "postgres://example",
+      headSeq: 3,
+      prevValueSigHashHex: await valueHashOf(staleA.value, owner.userId),
+    });
+    const variables = [
+      staleA,
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      onPush: (_call, variableId) => {
+        if (variableId === "vaa") {
+          // 申告と同時に、他メンバーの現エポック書き込みが確定する
+          variables[0] = winnerA;
+          return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } };
+        }
+        return { status: 502, bodyText: "bad gateway" };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 矛盾した申告自体は調査対象として残す(が、中断はしない)
+    expect(errors).toContain("申告された変数は再走査で epoch 2 に揃っていることを確認済み");
+    // 中断していれば部分完了の報告経路へ到達しない = 残数も再開案内も出ない
+    expect(env.logs.join("\n")).toContain("部分完了");
+    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    expect(errors).toContain("再実行すると、エポックを進めずに残りから再開します");
+  });
+
   it("EpochConflict でチェーンが実際に進んでいれば、矛盾ではなく並行ローテーションとして扱う", async () => {
     const dek3 = crypto.getRandomValues(new Uint8Array(32));
     const rotatedTwice = await buildChain([

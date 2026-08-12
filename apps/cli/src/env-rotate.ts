@@ -629,7 +629,15 @@ function reconcileKnown(input: {
 /** 再取得・再検証の結果(完了検証と 409 競合の再計画を兼ねる)。 */
 interface RescanResult {
   readonly view: VerifiedProject;
-  /** 目標エポック未満のまま残っている active 値(= 次巡の再暗号化対象)。 */
+  /**
+   * 目標エポック未満のまま残っている active 値。**完了判定と残数はこちらが正**
+   * (targets は最終巡で空になるため)。
+   */
+  readonly stale: readonly VerifiedPulledValue[];
+  /**
+   * stale を復号した再暗号化材料(= 次巡の対象)。**最終巡では空**: 次巡が
+   * 無いのに復号すると、押すことのない平文を変数の数だけメモリへ作ることになる。
+   */
   readonly targets: readonly ReencryptTarget[];
   /** 競合していたが既に現エポックで書かれていた変数数(再暗号化不要)。 */
   readonly alreadyCurrent: number;
@@ -683,6 +691,11 @@ function rescanEnvironment(input: {
    * 「サーバーの矛盾」と誤認する — push.ts の epoch-conflict と同じ規律)。
    */
   readonly forceResync: boolean;
+  /**
+   * 残った対象を復号するか。次巡がある場合だけ true — 最終巡は残数を数えるだけ
+   * なので、押すことのない平文を作らない(復号は「使う直前」に限る)。
+   */
+  readonly decryptRemaining: boolean;
 }): Effect.Effect<RescanResult, CliError> {
   return Effect.gen(function* () {
     const { client, environmentId, resync, floor, epoch, deksByEpoch } = input.context;
@@ -716,18 +729,21 @@ function rescanEnvironment(input: {
       collectWarning: input.collectWarning,
     });
     if (reconciled.evidence !== null) {
-      return { view, targets: [], alreadyCurrent: 0, evidence: reconciled.evidence };
+      return { view, stale: [], targets: [], alreadyCurrent: 0, evidence: reconciled.evidence };
     }
     // 完了検証 + 次巡の対象: 目標エポック未満の active 値すべて(競合分に
     // 限らない — 窓の間に作られた変数もここに現れる)
-    const targets = yield* decryptTargets({
-      verified: view,
-      environmentId,
-      values: pulled.variables.filter((value) => value.epoch < epoch),
-      deksByEpoch,
-      chainEpoch: environment.currentEpoch,
-    });
-    return { view, targets, alreadyCurrent: reconciled.alreadyCurrent, evidence: null };
+    const stale = pulled.variables.filter((value) => value.epoch < epoch);
+    const targets = input.decryptRemaining
+      ? yield* decryptTargets({
+          verified: view,
+          environmentId,
+          values: stale,
+          deksByEpoch,
+          chainEpoch: environment.currentEpoch,
+        })
+      : [];
+    return { view, stale, targets, alreadyCurrent: reconciled.alreadyCurrent, evidence: null };
   });
 }
 
@@ -811,8 +827,13 @@ function reencryptContext(
 interface PushPassResult {
   readonly reencrypted: number;
   readonly conflicted: readonly ConflictedTarget[];
-  /** サーバーがエポック競合を申告した数(チェーンとの突き合わせは再走査が行う)。 */
-  readonly epochStale: number;
+  /**
+   * サーバーがエポック競合を申告した変数(チェーンとの突き合わせは再走査が行う)。
+   * **数ではなく id で持つ**: 「申告がチェーンと矛盾している」と断じてよいのは、
+   * 申告された当の変数が再走査でも残っている場合だけである(他の変数が別の理由で
+   * 残っているだけなら、その実行は普通の部分完了として案内すべき)。
+   */
+  readonly epochStaleIds: ReadonlySet<string>;
   /** 再暗号化を完了できなかった変数(409・一時失敗・エポック競合)。 */
   readonly unfinishedIds: ReadonlySet<string>;
   /** 受理された自分の書き込み(台帳の新しい基準)。 */
@@ -848,7 +869,7 @@ function runPushPass(input: {
     // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
     const total = input.doneBefore + input.pending.length;
     let reencrypted = 0;
-    let epochStale = 0;
+    const epochStaleIds = new Set<string>();
     let firstFailure: string | null = null;
     for (const target of input.pending) {
       const attempt = yield* asOutcome(
@@ -880,7 +901,7 @@ function runPushPass(input: {
       if (attempt.value.kind === "epoch-stale") {
         // 再走査がチェーン導出のエポックで実態を判定する。この変数は旧エポックの
         // ままなので、エポックが動いていなければ次巡の対象として再び現れる
-        epochStale += 1;
+        epochStaleIds.add(target.value.variableId);
         unfinishedIds.add(target.value.variableId);
         continue;
       }
@@ -898,7 +919,7 @@ function runPushPass(input: {
     return {
       reencrypted,
       conflicted,
-      epochStale,
+      epochStaleIds,
       unfinishedIds,
       written,
       firstFailure,
@@ -908,32 +929,23 @@ function runPushPass(input: {
 }
 
 /**
- * 今巡の対象を既知値の台帳へ記録する。対象は次巡の prev アンカーになりうる
- * ため、409 を返したものに限らず整合検査(§12-5)の基準として保持する。
+ * §6.3 検証を通した値を既知値の台帳へ記録する。入口は 2 つあるが記録は同一:
+ *
+ * - **今巡の対象**: 次巡の prev アンカーになりうるため、409 を返したものに
+ *   限らず整合検査(§12-5)の基準として保持する
+ * - **受理された自分の書き込み**: 床(SHOULD)の更新に失敗しても、次の再走査は
+ *   「自分が書いた version」を基準に比較できる — 受理済みの書き込みを押し戻す
+ *   応答を、床の有無に関わらず巻き戻しとして検出する
+ *
+ * どちらも「自分が正しいと確認した値とその version」であり、記録の形が割れると
+ * 片方だけ §12-5 の検査が弱まるため 1 つにしてある(409 の申告 version を運ぶ
+ * recordConflicts だけは別物)。
  */
-function recordPending(
+function recordKnown(
   known: Map<string, ConflictedTarget>,
-  pending: readonly ReencryptTarget[],
+  values: readonly VerifiedPulledValue[],
 ): void {
-  for (const target of pending) {
-    known.set(target.value.variableId, {
-      variableId: target.value.variableId,
-      known: target.value,
-      currentVersion: target.value.version,
-    });
-  }
-}
-
-/**
- * 受理された自分の書き込みを台帳の基準へ昇格する。床(SHOULD)の更新に失敗
- * しても、次の再走査は「自分が書いた version」を基準に比較できる — 受理済みの
- * 書き込みを押し戻す応答を、床の有無に関わらず巻き戻しとして検出する。
- */
-function recordWritten(
-  known: Map<string, ConflictedTarget>,
-  written: readonly VerifiedPulledValue[],
-): void {
-  for (const value of written) {
+  for (const value of values) {
     known.set(value.variableId, {
       variableId: value.variableId,
       known: value,
@@ -958,10 +970,13 @@ function recordConflicts(
 
 /** 巡末の判定(完了検証の結果をどう扱うか)。 */
 type PassVerdict =
-  /** 続行可能(targets が空なら完了)。 */
+  /** 続行可能(remaining が 0 なら完了)。 */
   | {
       readonly kind: "settled";
       readonly view: VerifiedProject;
+      /** 目標エポック未満のまま残っている変数数(完了判定と残数の正)。 */
+      readonly remaining: number;
+      /** 次巡の対象(最終巡は空 — remaining が 0 でなくても復号しない)。 */
       readonly targets: readonly ReencryptTarget[];
       readonly alreadyCurrent: number;
     }
@@ -981,6 +996,8 @@ function settlePass(input: {
   readonly known: ReadonlyMap<string, ConflictedTarget>;
   readonly pass: PushPassResult;
   readonly reencrypted: number;
+  /** 次巡があるか(= 残った対象を復号する意味があるか)。 */
+  readonly hasNextPass: boolean;
 }): Effect.Effect<
   { readonly verdict: PassVerdict; readonly warnings: readonly string[] },
   never,
@@ -998,7 +1015,8 @@ function settlePass(input: {
         unfinishedIds: input.pass.unfinishedIds,
         collectWarning: (warning) => warnings.push(warning),
         // エポック競合の申告があった巡は、チェーンを取り直してから判定する
-        forceResync: input.pass.epochStale > 0,
+        forceResync: input.pass.epochStaleIds.size > 0,
+        decryptRemaining: input.hasNextPass,
       }),
     );
     if (rescan.kind === "failed") {
@@ -1030,17 +1048,21 @@ function settlePass(input: {
         },
       } as const;
     }
-    if (input.pass.epochStale > 0) {
+    if (input.pass.epochStaleIds.size > 0) {
       // 強制再同期したチェーンでもエポックが変わっていない(進んでいれば
       // rescanEnvironment が失敗している)。サーバーの EpochConflict 申告は
       // チェーンと矛盾しており、その変数を押し直しても解けない(push.ts と同じ判定)。
       //
-      // ただし**やり残しがあるとき**に限る: 再走査が「目標エポック未満の
-      // active 値はもう無い」ことを検証済みなら、他メンバーが同じエポックで
-      // 書き切ったなどで目的は達成されている。矛盾した申告は調査対象として
-      // 残しつつ、揃っている事実を中断で覆い隠さない(再暗号化の完否を決める
-      // のは検証済みの実態であって、サーバーの自己申告ではない)
-      if (rescan.value.targets.length > 0) {
+      // ただし中断してよいのは**申告された当の変数がまだ残っている**場合だけ:
+      // 他メンバーが同じエポックで書き切るなどしてその変数が解消していれば、
+      // 残りは別の理由(一時的な失敗・競合)であり、再実行で片付く。「再実行では
+      // 解消しません」と断じると、再開の案内も残数の報告も届かなくなる。
+      // 再暗号化の完否を決めるのは検証済みの実態であって、サーバーの自己申告ではない
+      // 判定は stale(常に埋まる)で行う — targets は最終巡で空になる
+      const unresolved = rescan.value.stale.filter((value) =>
+        input.pass.epochStaleIds.has(value.variableId),
+      );
+      if (unresolved.length > 0) {
         return {
           warnings,
           verdict: {
@@ -1050,7 +1072,7 @@ function settlePass(input: {
         } as const;
       }
       warnings.push(
-        `サーバーが再暗号化の push に対してエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままでした(サーバー応答とチェーンの矛盾)。再走査ではアクティブ変数がすべて epoch ${epoch} で暗号化されていることを確認済みなので処理は完了扱いにしますが、この応答の矛盾自体は調査対象です`,
+        `サーバーが再暗号化の push に対してエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままでした(サーバー応答とチェーンの矛盾)。申告された変数は再走査で epoch ${epoch} に揃っていることを確認済みなので処理を続けますが、この応答の矛盾自体は調査対象です`,
       );
     }
     return {
@@ -1058,6 +1080,7 @@ function settlePass(input: {
       verdict: {
         kind: "settled",
         view: rescan.value.view,
+        remaining: rescan.value.stale.length,
         targets: rescan.value.targets,
         alreadyCurrent: rescan.value.alreadyCurrent,
       },
@@ -1101,6 +1124,8 @@ function reencryptCurrentValues(input: {
     let blockingFailure: string | null = null;
     /** この実行で一度でも起きた失敗(完了できた場合の「起きたが解決した」報告用)。 */
     let seenFailure: string | null = null;
+    /** 目標エポック未満のまま残っている変数数(最終巡の再走査が確定させる)。 */
+    let staleCount = input.targets.length;
     /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
     const known = new Map<string, ConflictedTarget>();
 
@@ -1117,7 +1142,10 @@ function reencryptCurrentValues(input: {
     });
 
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
-      recordPending(known, pending);
+      recordKnown(
+        known,
+        pending.map((target) => target.value),
+      );
       const attempted = yield* runPushPass({
         context: input.context,
         view,
@@ -1126,7 +1154,7 @@ function reencryptCurrentValues(input: {
       });
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
-      recordWritten(known, attempted.written);
+      recordKnown(known, attempted.written);
       recordConflicts(known, attempted.conflicted);
       const settled = yield* settlePass({
         context: input.context,
@@ -1134,6 +1162,7 @@ function reencryptCurrentValues(input: {
         known,
         pass: attempted,
         reencrypted,
+        hasNextPass: pass < MAX_REENCRYPT_PASSES,
       });
       warnings.push(...settled.warnings);
       if (settled.verdict.kind === "unverified") {
@@ -1147,7 +1176,8 @@ function reencryptCurrentValues(input: {
       view = settled.verdict.view;
       pending = settled.verdict.targets;
       alreadyCurrent += settled.verdict.alreadyCurrent;
-      if (pending.length === 0) {
+      staleCount = settled.verdict.remaining;
+      if (staleCount === 0) {
         // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
         // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
         // (完了を検証できている以上、部分完了として非ゼロ終了させない)
@@ -1170,7 +1200,7 @@ function reencryptCurrentValues(input: {
       );
     }
     // 巡を使い切った(中断ではない): 残数は最終巡の再走査を通った**実測**である
-    return outcome(pending.length, blockingFailure, true);
+    return outcome(staleCount, blockingFailure, true);
   });
 }
 
