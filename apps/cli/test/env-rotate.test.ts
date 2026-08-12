@@ -540,8 +540,10 @@ describe("maruhi env rotate", () => {
     const newDek = await newEpochDekOf(first);
 
     // 2 回目(同じ設定・同じローカル床): エポックは 2 のまま、残り 1 変数だけを
-    // 再暗号化する。rotate は**呼ばれない**(エポックを二重に進めない)
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再実行"], env.layer)).toBe(0);
+    // 再暗号化する。rotate は**呼ばれない**(エポックを二重に進めない)。
+    // --reason 付き = ローテーションの要求なので、再開へ切り替わった実行は
+    // 成功終了しない(スクリプトが「新エポックができた」と誤認しない)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再実行"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.pushes).toHaveLength(2);
     const resumed = state.pushes[1];
@@ -555,6 +557,7 @@ describe("maruhi env rotate", () => {
     // 再開は「要求されたローテーション」ではない: 新エポックを作っていない事実を
     // 完了報告が隠さない(退職者削除後の実行が成功扱いに見える形を塞ぐ)
     expect(env.logs.join("\n")).toContain("新しいエポックは作成していません");
+    expect(env.errors.join("\n")).toContain("要求されたローテーションは実行していません");
   });
 
   it("ローテーション後の push 失敗は、エポックが進んだ事実を部分完了として報告する", async () => {
@@ -598,7 +601,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("再実行すると、エポックを進めずに残りから再開します");
   });
 
-  it("再開時に再暗号化済みの変数は対象にしない(最新値の epoch が現エポックのもの)", async () => {
+  it("理由なしの再実行は再開だけを要求している(再暗号化済みの変数は対象にせず成功終了)", async () => {
     const variables = [
       // 既に epoch 2 へ再暗号化済み(宣言ヘッド = rotate エントリ自身)
       await variableAt({
@@ -634,13 +637,17 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再開"], env.layer)).toBe(0);
+    // 部分完了の案内は「再実行すると、エポックを進めずに残りから再開します」。
+    // その案内どおりの実行(理由なし)は再開だけを要求しているので、やり残しが
+    // なくなった時点で成功終了する(--reason 付きの実行だけが exit 1 になる)
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.rotateBodies).toHaveLength(0);
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     const pushed = state.pushes[0];
     if (pushed === undefined) throw new Error("resume push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(dek2, pushed.value)).toBe("key-abc");
+    expect(env.errors.join("\n")).not.toContain("要求されたローテーションは実行していません");
   });
 
   it("完了検証: 初回 pull 以降に他メンバーが作った変数も再暗号化してから完了とする", async () => {
@@ -907,7 +914,7 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "競合"], env.layer)).toBe(0);
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     // 勝者は現エポックで受理済み = 再暗号化不要。上書きしに行かない
     expect(state.pushes).toHaveLength(0);
     expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
@@ -1013,7 +1020,7 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "競合"], env.layer)).toBe(0);
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.pushes).toHaveLength(0);
     expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
     expect(env.errors.join("\n")).not.toContain("完了していません");
@@ -1091,6 +1098,53 @@ describe("maruhi env rotate", () => {
     // 404 は中断原因として記録され、完了時は「起きたが解決した」warning になる
     // (部分完了の原因が「並行 push との競合」に化けない)
     expect(env.errors.join("\n")).toContain("404 で拒否されました");
+  });
+
+  it("404 を返し続けながら変数を配布し続けるサーバーでは、404 が部分完了の原因として出る", async () => {
+    // 「404 で拒否するが、pull ではアクティブなまま配布する」= 削除でも競合でも
+    // ない。原因を記録しないと部分完了の報告が既定文言(並行 push との競合)に
+    // 化け、運用者が存在しない競合を追うことになる
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onPush: (_call, variableId) => ({
+        status: 404,
+        json: { _tag: "VariableNotFound", variableId },
+      }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "404 継続"], env.layer)).toBe(1);
+    expect(state.rotateBodies).toHaveLength(1);
+    const errors = env.errors.join("\n");
+    expect(env.logs.join("\n")).toContain("部分完了");
+    expect(errors).toContain(
+      "再暗号化が中断しました: 変数 API_KEY の再暗号化が 404 で拒否されました(並行削除の可能性)",
+    );
+    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
   });
 
   it("409 の申告より古い値しか配布されない応答は、勝者として採用せず中断する(§12-5)", async () => {

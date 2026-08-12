@@ -912,17 +912,18 @@ function recordWritten(
   }
 }
 
-/** 409 の申告 version で台帳を上書きし、今巡の競合 ID 集合を返す。 */
+/**
+ * 409 の申告 version で台帳を上書きする。競合の「集合」は別途保持しない —
+ * 消失の警告も alreadyCurrent の計上も未完了集合(409 に限らない)が基準であり、
+ * 409 だけの集合を持ち回ると「まだ何かの判断に使われている」と読めてしまう。
+ */
 function recordConflicts(
   known: Map<string, ConflictedTarget>,
   conflicted: readonly ConflictedTarget[],
-): ReadonlySet<string> {
-  const conflictedIds = new Set<string>();
+): void {
   for (const conflict of conflicted) {
     known.set(conflict.variableId, conflict);
-    conflictedIds.add(conflict.variableId);
   }
-  return conflictedIds;
 }
 
 /** 巡末の判定(完了検証の結果をどう扱うか)。 */
@@ -948,7 +949,6 @@ function settlePass(input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   readonly known: ReadonlyMap<string, ConflictedTarget>;
-  readonly conflictedIds: ReadonlySet<string>;
   readonly pass: PushPassResult;
   readonly reencrypted: number;
 }): Effect.Effect<
@@ -1064,12 +1064,11 @@ function reencryptCurrentValues(input: {
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
       recordWritten(known, attempted.written);
-      const conflictedIds = recordConflicts(known, attempted.conflicted);
+      recordConflicts(known, attempted.conflicted);
       const settled = yield* settlePass({
         context: input.context,
         view,
         known,
-        conflictedIds,
         pass: attempted,
         reencrypted,
       });

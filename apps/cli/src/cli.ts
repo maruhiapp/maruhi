@@ -294,6 +294,8 @@ function reportPartialRotation(
 function reportRotation(
   environmentId: EnvironmentId,
   summary: RotationSummary,
+  /** 新しいエポックを要求した実行か(--reason 指定 or --new-epoch)。 */
+  rotationRequested: boolean,
 ): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -320,12 +322,21 @@ function reportRotation(
     if (summary.mode === "resumed") {
       // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
       // いないので、完了報告がローテーション成功に見えてはならない(退職者の
-      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ。新エポックの
-      // 存在を保証したい呼び出しは --new-epoch を使う)
+      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
       yield* io.log(
-        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)— 新しいローテーションが必要な場合はもう一度実行するか、--new-epoch を付けて実行してください`,
+        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)`,
       );
-      return 0;
+      if (!rotationRequested) {
+        // 理由なしの実行 = 「未完了があれば再開する」ことだけを要求している
+        return 0;
+      }
+      // ローテーションを要求した実行(--reason / --new-epoch)が再開へ切り替わった
+      // ので、**終了コードでも**成功と言わない: `maruhi env rotate prod --reason ...
+      // || exit 1` のようなスクリプトが、新エポックなしで成功と受け取る形を塞ぐ
+      yield* io.logError(
+        `警告: 要求されたローテーションは実行していません(未完了の再暗号化を先に片付けたため)。この実行の後に新しいエポックが必要な場合は、もう一度実行するか --new-epoch を付けて実行してください`,
+      );
+      return 1;
     }
     yield* io.log(`完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})`);
     return 0;
@@ -355,7 +366,13 @@ function envRotate(
       resync: context.resync,
       floor: context.floorHandle,
     });
-    return yield* reportRotation(environmentId, summary);
+    // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
+    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)
+    return yield* reportRotation(
+      environmentId,
+      summary,
+      flags.newEpoch === true || (flags.reason ?? "").trim().length > 0,
+    );
   });
 }
 
