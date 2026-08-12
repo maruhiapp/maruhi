@@ -54,8 +54,6 @@ export interface RotationSummary {
   readonly mode: "rotated" | "resumed";
   readonly previousEpoch: number;
   readonly epoch: number;
-  /** 新エポックの DEK をラップした現メンバー数(resumed では現メンバー数)。 */
-  readonly memberCount: number;
   /** 再暗号化して push した変数数。 */
   readonly reencrypted: number;
   /** 並行 push により既に現エポックで書かれていた変数数(再暗号化不要)。 */
@@ -646,19 +644,27 @@ function rescanEnvironment(input: {
  * (エラー channel)とする — 「再実行すれば直る」種類の失敗ではないため、
  * 部分完了 + 再開案内に混ぜてはならない(push 経路の扱いと揃える)。
  */
-/** 1 巡分の push の結果(進捗・競合・中断の 3 面)。 */
+/** 1 巡分の push の結果。 */
 interface PushPassResult {
   readonly reencrypted: number;
   readonly conflicted: readonly ConflictedTarget[];
+  /** サーバーがエポック競合を申告した数(チェーンとの突き合わせは再走査が行う)。 */
+  readonly epochStale: number;
+  /** 個別に失敗した数と最初の原因(巡自体は止めない)。 */
+  readonly failed: number;
+  readonly firstFailure: string | null;
   readonly warnings: readonly string[];
-  /** 中断した場合の原因と未処理数(null = 全対象を試行し終えた)。 */
-  readonly failure: { readonly message: string; readonly unprocessed: number } | null;
 }
 
 /**
  * 1 巡分の再暗号化 push。競合(409)は次の再走査へ回し、並行削除(404)は
- * 警告して飛ばし、それ以外の失敗は未処理数とともに中断として返す(投げない —
- * エポックが進んだ後の失敗は部分完了として報告する必要がある)。
+ * 警告して飛ばす。
+ *
+ * **個別の失敗で巡を中断しない**: 1 変数の一時的な失敗(502 等)で残りを
+ * 見捨てると、100 変数のうち 3 番目で落ちた場合に 97 変数が旧エポックの DEK で
+ * 読めるまま残る。さらに恒久的に失敗する 1 変数があると、順序が安定なため
+ * 以後の変数が**どの再実行でも**到達不能になる。失敗は数と原因として集計し、
+ * 実際の残りは巡末の再走査(検証済みの実態)が決める。
  */
 function runPushPass(input: {
   readonly client: MaruhiClient;
@@ -680,7 +686,9 @@ function runPushPass(input: {
     // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
     const total = input.doneBefore + input.pending.length;
     let reencrypted = 0;
-    let processed = 0;
+    let epochStale = 0;
+    let failed = 0;
+    let firstFailure: string | null = null;
     for (const target of input.pending) {
       const attempt = yield* pushReencrypted({
         client: input.client,
@@ -696,17 +704,11 @@ function runPushPass(input: {
         Effect.map((value) => ({ kind: "ok", value }) as const),
         Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
       );
-      processed += 1;
       if (attempt.kind === "failed") {
-        return {
-          reencrypted,
-          conflicted,
-          warnings,
-          failure: {
-            message: attempt.error.message,
-            unprocessed: input.pending.length - processed + 1,
-          },
-        };
+        // 巡は止めない(残りの変数を旧エポックに取り残さない)
+        failed += 1;
+        firstFailure ??= attempt.error.message;
+        continue;
       }
       if (attempt.value.kind === "conflict") {
         conflicted.push({
@@ -725,6 +727,7 @@ function runPushPass(input: {
       if (attempt.value.kind === "epoch-stale") {
         // 再走査がチェーン導出のエポックで実態を判定する。この変数は旧エポックの
         // ままなので、エポックが動いていなければ次巡の対象として再び現れる
+        epochStale += 1;
         continue;
       }
       if (attempt.value.floorWarning !== null) {
@@ -735,7 +738,7 @@ function runPushPass(input: {
         `  再暗号化 (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
       );
     }
-    return { reencrypted, conflicted, warnings, failure: null };
+    return { reencrypted, conflicted, epochStale, failed, firstFailure, warnings };
   });
 }
 
@@ -758,6 +761,8 @@ function reencryptCurrentValues(input: {
     let pending = input.targets;
     let reencrypted = 0;
     let alreadyCurrent = 0;
+    /** 巡を跨いで持ち越す最後の失敗原因(未完了で終わった場合の報告材料)。 */
+    let lastFailure: string | null = null;
 
     const outcome = (remaining: number, failure: string | null): ReencryptOutcome => ({
       reencrypted,
@@ -783,14 +788,8 @@ function reencryptCurrentValues(input: {
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
       const conflicted = attempted.conflicted;
-      if (attempted.failure !== null) {
-        // 未処理分(中断した変数を含む残り)+ 競合分が未完了として残る
-        return outcome(
-          attempted.failure.unprocessed + conflicted.length,
-          attempted.failure.message,
-        );
-      }
-      // 完了検証(競合の有無に関わらず必ず行う)
+      // 完了検証(競合・失敗の有無に関わらず必ず行う。残りは申告や試行結果では
+      // なく、検証済みの実態から決める)
       const rescan = yield* rescanEnvironment({
         client: input.client,
         environmentId: input.environmentId,
@@ -806,9 +805,22 @@ function reencryptCurrentValues(input: {
       );
       if (rescan.kind === "failed") {
         // 完了を**検証できなかった**(残数は下限しか分からない)
-        return outcome(conflicted.length, rescan.error.message);
+        return outcome(
+          conflicted.length + attempted.failed,
+          attempted.firstFailure ?? rescan.error.message,
+        );
       }
       warnings.push(...rescan.value.warnings);
+      if (attempted.epochStale > 0) {
+        // 再走査はエポックが進んでいれば失敗しているので、ここへ来た = チェーン
+        // 導出の現エポックは変わっていない。サーバーの EpochConflict 申告は
+        // チェーンと矛盾しており、再試行では解けない(push.ts と同じ判定)
+        return yield* Effect.fail(
+          cliError(
+            `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${input.epoch} のままです(サーバー応答とチェーンの矛盾)。環境 ${input.environmentId} は epoch ${input.epoch} へ進んでおり、再暗号化は ${reencrypted} 変数で中断しました — 再実行では解消しません`,
+          ),
+        );
+      }
       if (rescan.value.evidence !== null) {
         // 暗号学的証拠は即時中断(再実行では解消しない)。エポックが進んでいる
         // 文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない
@@ -822,11 +834,19 @@ function reencryptCurrentValues(input: {
       pending = rescan.value.targets;
       alreadyCurrent += rescan.value.alreadyCurrent;
       if (pending.length === 0) {
-        // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了
+        // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
+        // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
+        // (完了を検証できている以上、部分完了として非ゼロ終了させない)
+        if (attempted.firstFailure !== null) {
+          warnings.push(
+            `再暗号化の途中で失敗がありましたが、再走査で完了を確認しました: ${attempted.firstFailure}`,
+          );
+        }
         return outcome(0, null);
       }
+      lastFailure = attempted.firstFailure ?? lastFailure;
     }
-    return outcome(pending.length, null);
+    return outcome(pending.length, lastFailure);
   });
 }
 
@@ -883,7 +903,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         );
       }
       yield* io.logError(
-        `注意: 環境 ${input.environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。新しいエポックへは進めず、この再暗号化を再開します(この経路はチェーンエントリを作らないため --reason は記録されません)。中断状態に関わらず新しいエポックを必ず作るには --new-epoch を付けてください`,
+        `警告: 環境 ${input.environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。**要求されたローテーションは実行せず**、この再暗号化の再開に切り替えます(新しいエポックは作られず、この経路はチェーンエントリを作らないため --reason も記録されません)。退職者の削除など「新しいエポックが必ず必要」な場合は --new-epoch を付けて実行してください — 未完了状態を装う応答でローテーションを抑止される経路への対策でもあります`,
       );
       const targets = yield* decryptTargets({
         verified: pulled.verified,
@@ -909,7 +929,6 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         mode: "resumed",
         previousEpoch: currentEpoch,
         epoch: currentEpoch,
-        memberCount: pulled.verified.state.members.size,
         reencrypted: outcome.reencrypted,
         alreadyCurrent: outcome.alreadyCurrent,
         remaining: outcome.remaining,
@@ -988,7 +1007,6 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       mode: "rotated",
       previousEpoch: currentEpoch,
       epoch: newEpoch,
-      memberCount: rotated.memberCount,
       reencrypted: outcome.reencrypted,
       alreadyCurrent: outcome.alreadyCurrent,
       remaining: outcome.remaining,

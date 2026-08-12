@@ -525,7 +525,9 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onPush: (call) => (call === 1 ? { status: 503, bodyText: "unavailable" } : undefined),
+      // vbb だけが 1 回目の実行中ずっと落ちる(巡内リトライでも回復しない)
+      onPush: (call, variableId) =>
+        variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -1265,9 +1267,11 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "申告"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    // 申告を鵜呑みにして「他メンバーが並行ローテーションした」と報告しない
+    // 申告を鵜呑みにして「他メンバーが並行ローテーションした」と報告しない。
+    // チェーン導出の現エポックが変わっていない以上、これは応答の矛盾である
     expect(errors).not.toContain("並行ローテーション");
-    expect(errors).toContain("再暗号化が完了していません");
+    expect(errors).toContain("サーバー応答とチェーンの矛盾");
+    expect(errors).toContain("再実行では解消しません");
   });
 
   it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {
@@ -1300,6 +1304,89 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "重複"], env.layer)).toBe(1);
     const nfcWarnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
     expect(nfcWarnings).toHaveLength(1);
+  });
+
+  it("1 変数の恒久的な失敗が、他の変数の再暗号化を巻き添えにしない", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "POISON",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "poison-value",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainBase,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainBase,
+        variableId: "vcc",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // 先頭の 1 変数だけが常に失敗する(順序が安定なため、中断すると
+      // 後続の変数はどの再実行でも到達できなくなる)
+      onPush: (_call, variableId) =>
+        variableId === "vaa" ? { status: 502, bodyText: "bad gateway" } : undefined,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "毒変数"], env.layer)).toBe(1);
+    // 後続の 2 変数は新エポックへ移っている(部分完了は毒変数のみ)
+    expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vbb", "vcc"]);
+    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+  });
+
+  it("操作に適用されないオプション・綴り間違いは黙って捨てずに拒否する", async () => {
+    const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
+
+    // 綴り間違い(gunshi は未知オプションを無視するため、放置すると
+    // 「必ず新エポック」の意図が黙って弱い再開経路へ落ちる)
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epochs"], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("不明なオプション");
+    // create 用のオプションを rotate に付けた場合も拒否する
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--name", "n"], env.layer)).toBe(
+      1,
+    );
+    expect(env.errors.join("\n")).toContain("env rotate では使えません");
+    // HTTP は一切起きていない
+    expect(server.requests).toHaveLength(0);
   });
 
   it("grant_server が有効なプロジェクトでは拒否する(Phase 2 未実装)", async () => {

@@ -339,6 +339,49 @@ function envRotate(
   });
 }
 
+/** env コマンドが受け付けるオプション名(操作ごとの適用可否は下の表)。 */
+const ENV_ACTION_FLAGS = {
+  create: new Set(["name"]),
+  rotate: new Set(["reason", "new-epoch"]),
+} as const;
+const ENV_COMMON_FLAGS = new Set(["server", "project"]);
+
+/**
+ * env のオプション検査。gunshi は 1 コマンド 1 引数表なので、`create` と
+ * `rotate` の両方のフラグが常に受理される。**黙って捨てない**ために 2 つを
+ * 検査する:
+ *
+ * 1. 未知のオプション(`--new-epochs` のような綴り間違い)。gunshi は未知の
+ *    オプションを無視するため、放置すると「新エポックを必ず作る」つもりの
+ *    実行が黙って弱い再開経路へ落ちる
+ * 2. 操作に適用されないオプション(create への --reason 等)。指定した意図が
+ *    無視されたことに気付けるようにする
+ */
+function checkEnvFlags(
+  action: "create" | "rotate",
+  tokens: readonly { readonly kind: string; readonly name?: string | undefined }[],
+): Effect.Effect<void, CliError> {
+  const applicable = ENV_ACTION_FLAGS[action];
+  for (const token of tokens) {
+    if (token.kind !== "option" || token.name === undefined) {
+      continue;
+    }
+    const name = token.name;
+    if (ENV_COMMON_FLAGS.has(name) || applicable.has(name)) {
+      continue;
+    }
+    const other = action === "create" ? ENV_ACTION_FLAGS.rotate : ENV_ACTION_FLAGS.create;
+    return Effect.fail(
+      cliError(
+        other.has(name)
+          ? `--${displayText(name)} は env ${action} では使えません(${action === "create" ? "rotate" : "create"} 用のオプションです)`
+          : `不明なオプションです: --${displayText(name)}`,
+      ),
+    );
+  }
+  return Effect.void;
+}
+
 function envCommand(execute: Execute) {
   return define({
     name: "env",
@@ -377,6 +420,7 @@ function envCommand(execute: Execute) {
               ),
             );
           }
+          yield* checkEnvFlags(action, ctx.tokens);
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
             return yield* envRotate(
