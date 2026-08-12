@@ -534,6 +534,51 @@ function pushReencrypted(input: {
   });
 }
 
+/**
+ * 既知値と再取得値の突き合わせ。この実行で §6.3 検証を通した値(次巡の prev
+ * アンカーの基準)に対して、巻き戻し・equivocation・分岐した prev 連鎖・409
+ * 申告との食い違いを検査し(push 経路と同一の winnerInconsistency)、未完了の
+ * まま消えた変数を並行削除として警告する。
+ *
+ * 整合検査は「その値を採用するか」に関わらず先に行う: 証拠はそれ自体が中断
+ * すべき事実であり、「再暗号化不要」の近道に隠れてはならない。
+ */
+function reconcileKnown(input: {
+  readonly known: ReadonlyMap<string, ConflictedTarget>;
+  readonly conflictedIds: ReadonlySet<string>;
+  readonly unfinishedIds: ReadonlySet<string>;
+  readonly latest: readonly VerifiedPulledValue[];
+  readonly epoch: number;
+  readonly collectWarning: (warning: string) => void;
+}): { readonly evidence: string | null; readonly alreadyCurrent: number } {
+  let alreadyCurrent = 0;
+  for (const [variableId, previous] of input.known) {
+    const latest = input.latest.find((value) => value.variableId === variableId);
+    if (latest === undefined) {
+      if (input.unfinishedIds.has(variableId)) {
+        // 未完了のまま消えた = 並行削除。黙って対象から外さない
+        input.collectWarning(
+          `変数 ${displayText(variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
+        );
+      }
+      continue;
+    }
+    const inconsistency = winnerInconsistency(
+      variableId,
+      previous.known,
+      latest,
+      previous.currentVersion,
+    );
+    if (inconsistency !== null) {
+      return { evidence: inconsistency, alreadyCurrent: 0 };
+    }
+    if (input.conflictedIds.has(variableId) && latest.epoch >= input.epoch) {
+      alreadyCurrent += 1;
+    }
+  }
+  return { evidence: null, alreadyCurrent };
+}
+
 /** 再取得・再検証の結果(完了検証と 409 競合の再計画を兼ねる)。 */
 interface RescanResult {
   readonly view: VerifiedProject;
@@ -541,7 +586,6 @@ interface RescanResult {
   readonly targets: readonly ReencryptTarget[];
   /** 競合していたが既に現エポックで書かれていた変数数(再暗号化不要)。 */
   readonly alreadyCurrent: number;
-  readonly warnings: readonly string[];
   /**
    * 暗号学的証拠(巻き戻し・equivocation・分岐した prev 連鎖)。非 null は
    * 即時中断であり、「再実行で解消する」種類の失敗と混ぜてはならない。
@@ -577,6 +621,17 @@ function rescanEnvironment(input: {
   /** 今巡 409 を返した変数(alreadyCurrent の計上対象)。 */
   readonly conflictedIds: ReadonlySet<string>;
   /**
+   * 今巡で再暗号化を**完了できなかった**変数(409・一時失敗・エポック競合)。
+   * これらがアクティブ集合から消えていれば並行削除として警告する — 完了扱いに
+   * するのは「消えたことを見た」場合だけであり、黙って落とさない。
+   */
+  readonly unfinishedIds: ReadonlySet<string>;
+  /**
+   * 警告の受け皿。失敗しても収集済みの警告(非 NFC 名・並行削除)を失わないよう、
+   * 戻り値ではなくここへ流す(エラー channel は警告を運べない)。
+   */
+  readonly collectWarning: (warning: string) => void;
+  /**
    * チェーンの強制再同期。サーバーがエポック競合を申告した巡では、pull の
    * future head 条件に依存せず**必ず**チェーンを取り直して現エポックを
    * 導出し直す(取り直さないと、他メンバーの並行ローテーションを
@@ -603,40 +658,19 @@ function rescanEnvironment(input: {
         ),
       );
     }
-    const warnings = [...pulled.warnings];
-    const rejected = (evidence: string): RescanResult => ({
-      view,
-      targets: [],
-      alreadyCurrent: 0,
-      warnings,
-      evidence,
+    for (const warning of pulled.warnings) {
+      input.collectWarning(warning);
+    }
+    const reconciled = reconcileKnown({
+      known: input.known,
+      conflictedIds: input.conflictedIds,
+      unfinishedIds: input.unfinishedIds,
+      latest: pulled.variables,
+      epoch,
+      collectWarning: input.collectWarning,
     });
-    let alreadyCurrent = 0;
-    for (const [variableId, previous] of input.known) {
-      const latest = pulled.variables.find((value) => value.variableId === variableId);
-      if (latest === undefined) {
-        if (input.conflictedIds.has(variableId)) {
-          warnings.push(
-            `変数 ${displayText(variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
-          );
-        }
-        continue;
-      }
-      // 整合検査は「採用するか」に関わらず先に行う: 巻き戻し・equivocation・
-      // 分岐した prev 連鎖・409 申告との食い違いは、それ自体が中断すべき証拠
-      // である(push 経路と同一の winnerInconsistency を通す)
-      const inconsistency = winnerInconsistency(
-        variableId,
-        previous.known,
-        latest,
-        previous.currentVersion,
-      );
-      if (inconsistency !== null) {
-        return rejected(inconsistency);
-      }
-      if (input.conflictedIds.has(variableId) && latest.epoch >= epoch) {
-        alreadyCurrent += 1;
-      }
+    if (reconciled.evidence !== null) {
+      return { view, targets: [], alreadyCurrent: 0, evidence: reconciled.evidence };
     }
     // 完了検証 + 次巡の対象: 目標エポック未満の active 値すべて(競合分に
     // 限らない — 窓の間に作られた変数もここに現れる)
@@ -647,7 +681,7 @@ function rescanEnvironment(input: {
       deksByEpoch,
       chainEpoch: environment.currentEpoch,
     });
-    return { view, targets, alreadyCurrent, warnings, evidence: null };
+    return { view, targets, alreadyCurrent: reconciled.alreadyCurrent, evidence: null };
   });
 }
 
@@ -729,6 +763,8 @@ interface PushPassResult {
   readonly conflicted: readonly ConflictedTarget[];
   /** サーバーがエポック競合を申告した数(チェーンとの突き合わせは再走査が行う)。 */
   readonly epochStale: number;
+  /** 再暗号化を完了できなかった変数(409・一時失敗・エポック競合)。 */
+  readonly unfinishedIds: ReadonlySet<string>;
   /** 個別に失敗した数と最初の原因(巡自体は止めない)。 */
   readonly failed: number;
   readonly firstFailure: string | null;
@@ -755,6 +791,7 @@ function runPushPass(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const conflicted: ConflictedTarget[] = [];
+    const unfinishedIds = new Set<string>();
     const warnings: string[] = [];
     // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
     const total = input.doneBefore + input.pending.length;
@@ -770,6 +807,7 @@ function runPushPass(input: {
         // 巡は止めない(残りの変数を旧エポックに取り残さない)
         failed += 1;
         firstFailure ??= attempt.error.message;
+        unfinishedIds.add(target.value.variableId);
         continue;
       }
       if (attempt.value.kind === "conflict") {
@@ -778,6 +816,7 @@ function runPushPass(input: {
           known: target.value,
           currentVersion: attempt.value.currentVersion,
         });
+        unfinishedIds.add(target.value.variableId);
         continue;
       }
       if (attempt.value.kind === "deleted") {
@@ -790,6 +829,7 @@ function runPushPass(input: {
         // 再走査がチェーン導出のエポックで実態を判定する。この変数は旧エポックの
         // ままなので、エポックが動いていなければ次巡の対象として再び現れる
         epochStale += 1;
+        unfinishedIds.add(target.value.variableId);
         continue;
       }
       if (attempt.value.floorWarning !== null) {
@@ -800,7 +840,7 @@ function runPushPass(input: {
         `  再暗号化 (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
       );
     }
-    return { reencrypted, conflicted, epochStale, failed, firstFailure, warnings };
+    return { reencrypted, conflicted, epochStale, unfinishedIds, failed, firstFailure, warnings };
   });
 }
 
@@ -837,27 +877,37 @@ function settlePass(input: {
 > {
   return Effect.gen(function* () {
     const { environmentId, epoch } = input.context;
+    // 収集済みの警告は再走査が失敗しても失わない(エラー channel は運べない)
+    const warnings: string[] = [];
     const rescan = yield* asOutcome(
       rescanEnvironment({
         context: input.context,
         view: input.view,
         known: input.known,
         conflictedIds: input.conflictedIds,
+        unfinishedIds: input.pass.unfinishedIds,
+        collectWarning: (warning) => warnings.push(warning),
         // エポック競合の申告があった巡は、チェーンを取り直してから判定する
         forceResync: input.pass.epochStale > 0,
       }),
     );
     if (rescan.kind === "failed") {
+      // **再走査の失敗を優先する**: 床の巻き戻し・チェーン分岐の証拠や並行
+      // ローテーションの検出はここに現れるため、変数 1 件の一時的な失敗で
+      // 覆い隠してはならない(押し出すと「再実行で直る」案内に化ける)
+      const pushFailure =
+        input.pass.firstFailure === null
+          ? ""
+          : `(併せて再暗号化中の失敗もありました: ${input.pass.firstFailure})`;
       return {
-        warnings: [],
+        warnings,
         verdict: {
           kind: "unverified",
           remaining: input.conflictedIds.size + input.pass.failed,
-          failure: input.pass.firstFailure ?? rescan.error.message,
+          failure: `${rescan.error.message}${pushFailure}`,
         },
       } as const;
     }
-    const warnings = rescan.value.warnings;
     const context = `環境 ${environmentId} は epoch ${epoch} へ進んでおり、再暗号化は ${input.reencrypted} 変数で中断しました`;
     if (rescan.value.evidence !== null) {
       // 暗号学的証拠は最優先の即時中断(再実行では解消しない)。エポックが
@@ -992,6 +1042,12 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
     const io = yield* CliIo;
     const reason = yield* checkReasonLength(input.reason);
     yield* ensureRotatable(input.verified, input.environmentId, input.signerUserId);
+    // 対象集合の出所はサーバーの pull 応答しかない(変数一覧はチェーンに載らない
+    // — §6.2)。欠落の検出はローカル床の variable-omitted 規則(§6.3 (a))が担う
+    // ため、床がない実行(初回同期・破損後)では「一貫して落とされた変数」を
+    // 検出できない。ローテーションは失効操作でありこの残余は重いので、
+    // 完了報告の前に明示する(§14.3-3 の支配的残余の、この経路での現れ方)
+    const floorless = input.floor.current() === null;
 
     // (1) 検証済み pull(§6.3 / §12-7): 全アクティブ変数の最新値 + 自分宛の
     // 全エポックのラップ。ローテーション後・再暗号化完了前は最新値のエポックが
@@ -1011,6 +1067,11 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       prefetched: pulled.deks,
     });
     const warnings = [...pulled.warnings];
+    if (floorless) {
+      warnings.push(
+        `この環境のローカル床がまだないため、サーバーが応答から落とし続けた変数(存在するのに一覧に現れない変数)は再暗号化の対象に入らず、欠落も検出できません(CRYPTO_SPEC §6.3 の欠落検出は床を前提とします)。失効目的のローテーションでは、床のある環境で再実行して ${displayText(input.environmentId)} の変数一覧が一致することを確認してください`,
+      );
+    }
     const currentEpoch = keys.currentEpoch;
     const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
 

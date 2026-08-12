@@ -1395,6 +1395,47 @@ describe("maruhi env rotate", () => {
     expect(env.errors.join("\n")).toContain("分岐した履歴への連鎖");
   });
 
+  it("床のない実行では、応答から落とされた変数を検出できない旨を警告する", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    // 初回同期(床なし): 対象集合の出所はサーバー応答しかなく、一貫した
+    // 欠落は検出できない。失効目的のローテーションではこれを黙らない
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床なし"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("欠落も検出できません");
+
+    // 2 回目(床あり)では出ない
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床あり"], env.layer)).toBe(0);
+    const secondRunErrors = env.errors.filter((line) => line.includes("欠落も検出できません"));
+    expect(secondRunErrors).toHaveLength(1);
+  });
+
   it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {
     // 非 NFC 名(合成済みでない Á)は毎 pull で警告が出る — 3 巡しても 1 行
     const variables = [
