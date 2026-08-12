@@ -19,7 +19,7 @@ import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@ma
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { buildWrapSetForMembers, ensureNoServerGrant, sameMemberSet } from "./dek-wrap.ts";
+import { buildWrapSetForMembers, requireWritingMember, sameMemberSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -33,31 +33,24 @@ function ensureCreatable(
   signerUserId: string,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // 作成しようとしている ID が既存 grant のスコープに載っている場合(未作成 ID を
-    // 先回りで開示した grant)だけが、この作成にサーバー宛ラップの義務を課す
-    yield* ensureNoServerGrant(verified, environmentId, "環境作成");
+    // grant ガード(作成しようとしている ID が既存 grant のスコープに載っている
+    // 場合だけ義務が生じる)+ メンバー性 + role は env rotate と共有。role を
+    // ここで落とさないと、reader は DEK 生成と全メンバー分の HPKE ラップ・署名を
+    // 済ませて複合を送ってから、サーバーの汎用 403 を受け取ることになる
+    const member = yield* requireWritingMember({
+      verified,
+      environmentId,
+      signerUserId,
+      operation: "環境作成",
+      forbidden:
+        "reader は環境を作成できません(create_environment は member 以上 — CRYPTO_SPEC §6.2)",
+    });
     // environment_id はチェーン履歴全体で一意(合意規則 duplicate-environment —
     // CRYPTO_SPEC §6.2)。サーバーの 422 を待たずクライアントでも早期検出する
     if (verified.state.environments.has(environmentId)) {
       return yield* Effect.fail(
         cliError(
           `環境 ID ${environmentId} はチェーン上で使用済みです(create_environment 観測済み — 削除済み環境の ID も再利用できません)。別の ID を使ってください`,
-        ),
-      );
-    }
-    const member = verified.state.members.get(signerUserId);
-    if (member === undefined) {
-      return yield* Effect.fail(
-        cliError("このプロジェクトのチェーン導出メンバーではありません(環境を作成できません)"),
-      );
-    }
-    // create_environment は member 以上(§6.2)。ここで落とさないと、reader は
-    // DEK 生成と全メンバー分の HPKE ラップ・署名を済ませて複合を送ってから、
-    // サーバーの汎用 403 を受け取ることになる(env-rotate と同じ早期拒否)
-    if (member.role === "reader") {
-      return yield* Effect.fail(
-        cliError(
-          "reader は環境を作成できません(create_environment は member 以上 — CRYPTO_SPEC §6.2)",
         ),
       );
     }

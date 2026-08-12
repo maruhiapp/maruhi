@@ -11,7 +11,7 @@
 // 変わった場合のみ(§12-4 — HPKE Seal はランダムなので不要な再ラップを避ける)。
 
 import type { WrappedDek } from "@maruhi/api-schema";
-import type { ChainMember, SigningKeyPair } from "@maruhi/crypto";
+import type { ChainMember, Role, SigningKeyPair } from "@maruhi/crypto";
 import {
   decodeHex,
   encodeHex,
@@ -149,6 +149,47 @@ export function sameMemberSet(a: VerifiedProject, b: VerifiedProject): boolean {
 }
 
 /**
+ * role の順序(CRYPTO_SPEC §6.2)。**否定形(`=== "reader"`)で書かない**:
+ * Role に member 未満の値が増えたとき、否定形の判定は無言で素通りしてしまう。
+ * `satisfies Record<Role, number>` なら、値が増えた時点でここが型エラーになる。
+ */
+const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies Record<Role, number>;
+
+/**
+ * 複合操作(環境作成・ローテーション)の共通ガード: grant_server の開示スコープ・
+ * 自分がチェーン導出の現メンバーであること・role が **member 以上**であること
+ * (§6.2)。いずれも DEK 生成・HPKE ラップ・pull(= `var.read` の記録)より
+ * **前**に落とすためのもので、サーバーの汎用 403 を待たない。
+ *
+ * 環境の存在検査(rotate)や ID の重複検査(create)は操作固有なので呼び出し側に残す。
+ */
+export function requireWritingMember(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly signerUserId: string;
+  /** メッセージに埋める操作名(例: 「ローテーション」)。 */
+  readonly operation: string;
+  /** 権限不足時の文言(操作ごとに具体的に書く)。 */
+  readonly forbidden: string;
+}): Effect.Effect<ChainMember, CliError> {
+  return Effect.gen(function* () {
+    yield* ensureNoServerGrant(input.verified, input.environmentId, input.operation);
+    const member = input.verified.state.members.get(input.signerUserId);
+    if (member === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `このプロジェクトのチェーン導出メンバーではありません(${input.operation}を行えません)`,
+        ),
+      );
+    }
+    if (ROLE_RANK[member.role] < ROLE_RANK.member) {
+      return yield* Effect.fail(cliError(input.forbidden));
+    }
+    return member;
+  });
+}
+
+/**
  * **対象環境が** grant_server のスコープに入っている場合に複合操作を拒否する。
  * サーバー宛ラップのデータプレーンは Phase 2 未実装で、メンバー宛のみの完全集合は
  * §7 / §12-4 の開示契約(サーバー鍵への再ラップ義務)を黙って破ることになるため。
@@ -161,7 +202,7 @@ export function sameMemberSet(a: VerifiedProject, b: VerifiedProject): boolean {
  * スコープが空の grant は「対象なし」とも「全環境」とも読めるが §6.2 は意味を
  * 定めていないため、保守的に全環境扱い(= 拒否)とする。
  */
-export function ensureNoServerGrant(
+function ensureNoServerGrant(
   verified: VerifiedProject,
   environmentId: string,
   operation: string,

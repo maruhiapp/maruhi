@@ -29,7 +29,7 @@ import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@ma
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { buildWrapSetForMembers, ensureNoServerGrant, sameMemberSet } from "./dek-wrap.ts";
+import { buildWrapSetForMembers, requireWritingMember, sameMemberSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -201,25 +201,18 @@ function ensureRotatable(
   signerUserId: string,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // §7: grant_server が有効なら新エポック DEK をサーバー鍵へも再ラップしなければ
-    // リース経路が停止する。メンバー宛だけの完全集合で黙って進めない
-    yield* ensureNoServerGrant(verified, environmentId, "ローテーション");
+    // grant ガード + メンバー性 + role(member 以上)は env create と共有
+    // (§7: grant_server が有効なら新エポック DEK をサーバー鍵へも再ラップしなければ
+    // リース経路が停止する。メンバー宛だけの完全集合で黙って進めない)
+    const member = yield* requireWritingMember({
+      verified,
+      environmentId,
+      signerUserId,
+      operation: "ローテーション",
+      forbidden:
+        "reader はエポックをローテーションできません(rotate_epoch と値の push は member 以上 — CRYPTO_SPEC §6.2)",
+    });
     yield* requireChainEnvironment(verified, environmentId);
-    const member = verified.state.members.get(signerUserId);
-    if (member === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          "このプロジェクトのチェーン導出メンバーではありません(エポックをローテーションできません)",
-        ),
-      );
-    }
-    if (member.role === "reader") {
-      return yield* Effect.fail(
-        cliError(
-          "reader はエポックをローテーションできません(rotate_epoch と値の push は member 以上 — CRYPTO_SPEC §6.2)",
-        ),
-      );
-    }
     return member;
   });
 }
@@ -421,6 +414,85 @@ function appendRotation(
   });
 }
 
+/**
+ * 通常ローテーション経路の復号。既定は保守的(1 件でも開けなければエポックを
+ * 進めない = 「エポックだけ進んで再暗号化が完了しない状態」を作らない)。
+ *
+ * ただし **`--new-epoch` は「この実行の後に必ず新エポックが存在する」ことを
+ * 要求する呼び出し**(退職者の削除 — §7)。そこで止めると、開けない値が 1 つ
+ * あるだけでエポックが 1 つも進まず、削除されたメンバーの旧 DEK が**全変数**に
+ * 対して有効なまま残る — 守れる範囲まで自ら捨てることになる。開けなかった分は
+ * 部分完了として報告し、失効そのものは前へ進める。
+ */
+function decryptForRotation(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly values: readonly VerifiedPulledValue[];
+  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly chainEpoch: number;
+  readonly forceNewEpoch: boolean;
+  readonly warnings: string[];
+}): Effect.Effect<readonly ReencryptTarget[], CliError> {
+  return Effect.gen(function* () {
+    const decrypted = yield* decryptTargets(input);
+    const blocked = decrypted.undecryptable[0];
+    if (blocked !== undefined && !input.forceNewEpoch) {
+      return yield* Effect.fail(
+        cliError(
+          `再暗号化に必要な値を復号できません(${blocked})。エポックを進めると、この値は旧エポックの DEK のまま取り残されます — 当該エポックのラップを持つメンバーが実行するか、失効を優先する場合は --new-epoch を付けて実行してください`,
+        ),
+      );
+    }
+    for (const reason of decrypted.undecryptable) {
+      input.warnings.push(
+        `再暗号化できない値があります(${reason})。新エポックへは進めますが、この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`,
+      );
+    }
+    return decrypted.targets;
+  });
+}
+
+/**
+ * 未完了で終わった実行の締め。原因(blockingFailure)がある場合はそれが報告され
+ * るので何もせず、無い場合だけ「起きたがもう原因ではない失敗」を警告に残す。
+ */
+function noteStaleFailures(
+  warnings: string[],
+  blockingFailure: string | null,
+  seenFailure: string | null,
+): void {
+  if (blockingFailure !== null) {
+    return;
+  }
+  // 最終巡に失敗がない = 残っているのは競合分。過去の失敗は原因ではない
+  noteResolvedFailure(
+    warnings,
+    seenFailure,
+    "その後の巡で解消しています(未完了として残っているのは競合分です)",
+  );
+}
+
+/**
+ * 未完了が残っているのに押せる対象が 1 つも無い状態か(= 復号できない値だけが
+ * 残っている)。残りの巡を回しても pull を繰り返すだけで前進しない。
+ * 最終巡の targets は「復号しない」ので常に空 — 判定するのは復号を試みた巡だけ。
+ */
+function stalledOnUndecryptable(pending: readonly ReencryptTarget[], pass: number): boolean {
+  return pending.length === 0 && pass < MAX_REENCRYPT_PASSES;
+}
+
+/** 復号の結果。開けなかった値は「再暗号化できない値」として数と理由を持ち帰る。 */
+interface DecryptOutcome {
+  readonly targets: readonly ReencryptTarget[];
+  /**
+   * 復号できなかった値の理由(自分宛に当該エポックのラップが無い等)。
+   * **1 件で全体を落とさない**: ローテーションは失効操作であり、開けない値が
+   * 1 つあるからといって開ける 99 件を旧 DEK のまま残すのは、守れる範囲を
+   * 自ら捨てることになる。呼び出し側が文脈に応じて「進める / 落とす」を決める。
+   */
+  readonly undecryptable: readonly string[];
+}
+
 /** 検証済み最新値の復号(再暗号化の材料づくり)。復号規律は pull と共有する。 */
 function decryptTargets(input: {
   readonly verified: VerifiedProject;
@@ -428,20 +500,27 @@ function decryptTargets(input: {
   readonly values: readonly VerifiedPulledValue[];
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
   readonly chainEpoch: number;
-}): Effect.Effect<readonly ReencryptTarget[], CliError> {
+}): Effect.Effect<DecryptOutcome, never> {
   return Effect.gen(function* () {
     const targets: ReencryptTarget[] = [];
+    const undecryptable: string[] = [];
     for (const value of input.values) {
-      const plaintext = yield* decryptVerifiedValue({
-        verified: input.verified,
-        environmentId: input.environmentId,
-        variable: value,
-        deksByEpoch: input.deksByEpoch,
-        chainEpoch: input.chainEpoch,
-      });
-      targets.push({ value, plaintext });
+      const attempt = yield* asOutcome(
+        decryptVerifiedValue({
+          verified: input.verified,
+          environmentId: input.environmentId,
+          variable: value,
+          deksByEpoch: input.deksByEpoch,
+          chainEpoch: input.chainEpoch,
+        }),
+      );
+      if (attempt.kind === "failed") {
+        undecryptable.push(attempt.error.message);
+        continue;
+      }
+      targets.push({ value, plaintext: attempt.value });
     }
-    return targets;
+    return { targets, undecryptable };
   });
 }
 
@@ -734,16 +813,37 @@ function rescanEnvironment(input: {
     // 完了検証 + 次巡の対象: 目標エポック未満の active 値すべて(競合分に
     // 限らない — 窓の間に作られた変数もここに現れる)
     const stale = pulled.variables.filter((value) => value.epoch < epoch);
-    const targets = input.decryptRemaining
-      ? yield* decryptTargets({
-          verified: view,
-          environmentId,
-          values: stale,
-          deksByEpoch,
-          chainEpoch: environment.currentEpoch,
-        })
-      : [];
-    return { view, stale, targets, alreadyCurrent: reconciled.alreadyCurrent, evidence: null };
+    if (!input.decryptRemaining) {
+      return {
+        view,
+        stale,
+        targets: [],
+        alreadyCurrent: reconciled.alreadyCurrent,
+        evidence: null,
+      };
+    }
+    // 開けない値があっても再走査自体は失敗させない: 完了判定は復号前の stale が
+    // 決めており(= 開けない値はそのまま未完了として数え上げられる)、ここで
+    // 落とすと**押せた分まで**「完了を検証できませんでした」に化ける
+    const decrypted = yield* decryptTargets({
+      verified: view,
+      environmentId,
+      values: stale,
+      deksByEpoch,
+      chainEpoch: environment.currentEpoch,
+    });
+    for (const reason of decrypted.undecryptable) {
+      input.collectWarning(
+        `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです`,
+      );
+    }
+    return {
+      view,
+      stale,
+      targets: decrypted.targets,
+      alreadyCurrent: reconciled.alreadyCurrent,
+      evidence: null,
+    };
   });
 }
 
@@ -1190,15 +1290,16 @@ function reencryptCurrentValues(input: {
       }
       blockingFailure = attempted.firstFailure;
       seenFailure ??= attempted.firstFailure;
+      if (stalledOnUndecryptable(pending, pass)) {
+        // 未完了は残っているのに押せる対象が 1 つも無い = 復号できない値だけが
+        // 残っている(残りの巡を回しても pull を繰り返すだけで前進しない)。
+        // 原因は競合ではないので、既定文言に化けないよう明示して抜ける
+        blockingFailure ??=
+          "再暗号化に必要な値を復号できません(当該エポックの DEK が自分宛に配布されていません)";
+        break;
+      }
     }
-    // 最終巡に失敗がない = 残っているのは競合分。過去の失敗は原因ではない
-    if (blockingFailure === null) {
-      noteResolvedFailure(
-        warnings,
-        seenFailure,
-        "その後の巡で解消しています(未完了として残っているのは競合分です)",
-      );
-    }
+    noteStaleFailures(warnings, blockingFailure, seenFailure);
     // 巡を使い切った(中断ではない): 残数は最終巡の再走査を通った**実測**である
     return outcome(staleCount, blockingFailure, true);
   });
@@ -1219,15 +1320,21 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
   // 収集した警告は**失敗経路でも**必ず吐く: 成功時は呼び出し側が
   // summary.warnings を表示するが、中断すると表示経路に到達しない。床の更新
   // 失敗・並行削除・床なしの但し書きは、まさに中断時に効く情報である
-  const warnings: string[] = [];
-  return rotateWithWarnings(input, warnings).pipe(
-    Effect.catch((error) =>
-      Effect.gen(function* () {
-        yield* logWarnings(dedupeWarnings(warnings));
-        return yield* Effect.fail(error);
-      }),
-    ),
-  );
+  //
+  // 受け皿は **Effect の中**で作る: 外で作ると 2 回目の実行が 1 回目の警告を
+  // 抱えたまま始まり(retry / repeat / 同じ Effect の再実行)、前回の床警告や
+  // 削除通知が今回の結果として報告される
+  return Effect.suspend(() => {
+    const warnings: string[] = [];
+    return rotateWithWarnings(input, warnings).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          yield* logWarnings(dedupeWarnings(warnings));
+          return yield* Effect.fail(error);
+        }),
+      ),
+    );
+  });
 }
 
 /**
@@ -1274,13 +1381,23 @@ function resumeReencryption(input: {
     yield* io.logError(
       `警告: 環境 ${environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。${switched}。退職者の削除など「新しいエポックが必ず必要」な場合は --new-epoch を付けて実行してください — 未完了状態を装う応答でローテーションを抑止される経路への対策でもあります`,
     );
-    const targets = yield* decryptTargets({
+    // 開けない値があっても再開自体は止めない: **エポックは既に進んでいる**ので、
+    // 「エポックだけ進んで再暗号化が完了しない状態を作らない」という通常経路の
+    // 理由はここでは成立しない — その状態はもう出来ており、開ける分を押さない
+    // 選択はそれを維持するだけである(100 件中 1 件が開けないとき、残り 99 件を
+    // 旧 DEK のまま置き去りにしない)。開けなかった分は未完了として報告する
+    const decrypted = yield* decryptTargets({
       verified: input.pulled.verified,
       environmentId,
       values: stale,
       deksByEpoch: input.keys.deksByEpoch,
       chainEpoch: currentEpoch,
     });
+    for (const reason of decrypted.undecryptable) {
+      warnings.push(
+        `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`,
+      );
+    }
     const outcome = yield* reencryptCurrentValues({
       context: reencryptContext(input.input, member, {
         epoch: currentEpoch,
@@ -1288,7 +1405,7 @@ function resumeReencryption(input: {
         deksByEpoch: input.keys.deksByEpoch,
       }),
       view: input.pulled.verified,
-      targets,
+      targets: decrypted.targets,
       sink: warnings,
     });
     return {
@@ -1397,12 +1514,14 @@ function rotateWithWarnings(
     // 未完了の再暗号化(旧エポックの値)がある状態で --new-epoch が指定された
     // 場合も、対象は「全アクティブ変数」なので中間エポックを経由せず一気に
     // 新エポックへ揃う(全エポックの DEK は自分宛ラップから復号済み)
-    const targets = yield* decryptTargets({
+    const targets = yield* decryptForRotation({
       verified: pulled.verified,
       environmentId: input.environmentId,
       values: pulled.variables,
       deksByEpoch: keys.deksByEpoch,
       chainEpoch: currentEpoch,
+      forceNewEpoch: input.forceNewEpoch,
+      warnings,
     });
     const dek = generateDek();
     const commitment = yield* Effect.tryPromise({

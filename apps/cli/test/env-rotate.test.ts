@@ -83,10 +83,13 @@ let owner: TestUser;
 let reader: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
+let dek3: Uint8Array;
 /** genesis + create_environment(epoch 1)。 */
 let chainBase: BuiltChain;
 /** 同一 genesis に rotate_epoch(epoch 2、DEK = dek2)が積まれた形。 */
 let chainRotated: BuiltChain;
+/** さらに rotate_epoch(epoch 3、DEK = dek3)まで積まれた形。 */
+let chainRotatedTwice: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let servers: MockServer[] = [];
 
@@ -95,6 +98,7 @@ beforeAll(async () => {
   reader = await makeTestUser("user-reader-2222");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
+  dek3 = crypto.getRandomValues(new Uint8Array(32));
   chainBase = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -103,6 +107,12 @@ beforeAll(async () => {
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+  ]);
+  chainRotatedTwice = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+    { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+    { actor: owner, operation: rotateEpochOp(ENV_ID, 3, dek3) },
   ]);
   envStatement = await environmentStatementFor({
     projectId: chainBase.projectId,
@@ -1615,13 +1625,7 @@ describe("maruhi env rotate", () => {
   });
 
   it("EpochConflict でチェーンが実際に進んでいれば、矛盾ではなく並行ローテーションとして扱う", async () => {
-    const dek3 = crypto.getRandomValues(new Uint8Array(32));
-    const rotatedTwice = await buildChain([
-      { actor: owner, operation: genesisOp(owner) },
-      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-      { actor: owner, operation: rotateEpochOp(ENV_ID, 3, dek3) },
-    ]);
+    const rotatedTwice = chainRotatedTwice;
     const variables = [
       await variableAt({
         built: chainRotated,
@@ -1684,6 +1688,140 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("並行ローテーション");
     expect(errors).not.toContain("サーバー応答とチェーンの矛盾");
     expect(pushPaths).toHaveLength(1);
+  });
+
+  it("--new-epoch は復号できない値があってもエポックを進める(失効を優先する — §7)", async () => {
+    // 退職者削除の実行。開けない値が 1 つあるだけでエポックが 1 つも進まないと、
+    // 削除されたメンバーの旧 DEK が**全変数**に対して有効なまま残る
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vaa",
+        name: "OLD_ONE",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "unreadable-here",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek2,
+        epoch: 2,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 3,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      // epoch 1 の自分宛ラップが無い
+      deks: [await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner })],
+      currentEpoch: 2,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除", "--new-epoch"], env.layer),
+    ).toBe(1);
+    // **エポックは進んでいる**(失効そのものは達成される)
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(state.rotateBodies[0]?.entry.payload.newEpoch).toBe(3);
+    // 開ける値は新エポックへ、開けない値は未完了として報告する
+    expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("再暗号化できない値があります");
+    expect(env.logs.join("\n")).toContain("部分完了");
+  });
+
+  it("--new-epoch なしなら、復号できない値がある時点でエポックを進めない", async () => {
+    // 既定は保守的: エポックだけ進んで再暗号化が完了しない状態を作らない。
+    // 失効を優先する場合の逃げ道(--new-epoch)は案内する。
+    // 現エポックの値だが暗号化に使われた鍵が違う(= AEAD 認証が通らない)形
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vaa",
+        name: "CORRUPT",
+        dek: dek1,
+        epoch: 2,
+        version: 1,
+        plaintext: "unreadable-here",
+        headSeq: 3,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "通常"], env.layer)).toBe(1);
+    expect(state.rotateBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("--new-epoch を付けて実行してください");
+  });
+
+  it("復号できない値が 1 つあっても、再開は開ける分を再暗号化する(epoch は既に進んでいる)", async () => {
+    // §12-7 の過渡状態にいるメンバー: epoch 2 のラップは持つが epoch 1 は持たない
+    // (ローテーション後に追加された / epoch 1 の再ラップが未登録)。従来は
+    // decryptTargets の全か無かで中断し、開ける値まで旧 DEK のまま残していた
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vaa",
+        name: "OLD_ONE",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "unreadable-here",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek2,
+        epoch: 2,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 3,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotatedTwice,
+      variables,
+      // epoch 1 の自分宛ラップが無い(epoch 2 / 3 のみ)
+      deks: [
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 3,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    // 開けなかった 1 件は未完了として報告されるが、開ける 1 件は押される
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
+    const pushed = state.pushes[0];
+    if (pushed === undefined) throw new Error("push missing");
+    expect(pushed.value.aad).toMatchObject({ epoch: 3 });
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("再暗号化できない値が残っています");
+    expect(errors).toContain("エポック 1 の DEK が配布されていません");
+    // 原因が既定文言(競合)に化けない
+    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
+    expect(env.logs.join("\n")).toContain("未完了 1 変数");
   });
 
   it("409 以外の失敗で拾い直した勝者にも整合検査を適用する(分岐 prev への連鎖を防ぐ)", async () => {
