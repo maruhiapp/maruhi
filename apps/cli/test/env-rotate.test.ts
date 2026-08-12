@@ -1640,7 +1640,7 @@ describe("maruhi env rotate", () => {
     expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
   });
 
-  it("--reason 未指定は HTTP の書き込みを起こさずに拒否する", async () => {
+  it("未完了がなく --reason もない実行は、確認だけして何も書き込まない", async () => {
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
@@ -1648,7 +1648,24 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    // 部分完了の案内が勧める再実行の着地点。ここで --reason を要求すると、
+    // 案内どおりに再実行した利用者が理由を求められ、指定すると二度目の
+    // ローテーションになってしまう
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("確認完了");
+    expect(env.logs.join("\n")).toContain("新しいエポックを作るには --reason");
+    expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
+  it("新しいエポックを作る経路では --reason を要求する(--new-epoch 指定時も)", async () => {
+    const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("--reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });

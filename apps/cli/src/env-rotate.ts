@@ -50,8 +50,11 @@ const MAX_REASON_BYTES = 1024;
 
 /** ローテーション 1 回分の結果(表示・終了コードの材料)。 */
 export interface RotationSummary {
-  /** rotated = 新エポックを開始した / resumed = 未完了の再暗号化を再開した。 */
-  readonly mode: "rotated" | "resumed";
+  /**
+   * rotated = 新エポックを開始した / resumed = 未完了の再暗号化を再開した /
+   * up-to-date = 未完了がなく、新しいエポックも要求されなかった(確認のみ)。
+   */
+  readonly mode: "rotated" | "resumed" | "up-to-date";
   readonly previousEpoch: number;
   readonly epoch: number;
   /** 再暗号化して push した変数数。 */
@@ -559,14 +562,15 @@ function reconcileKnown(input: {
   readonly epoch: number;
   readonly collectWarning: (warning: string) => void;
 }): { readonly evidence: string | null; readonly alreadyCurrent: number } {
+  const latestById = new Map(input.latest.map((value) => [value.variableId, value]));
   let alreadyCurrent = 0;
   for (const [variableId, previous] of input.known) {
-    const latest = input.latest.find((value) => value.variableId === variableId);
+    const latest = latestById.get(variableId);
     if (latest === undefined) {
       if (input.unfinishedIds.has(variableId)) {
         // 未完了のまま消えた = 並行削除。黙って対象から外さない
         input.collectWarning(
-          `変数 ${displayText(variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
+          `変数 ${displayText(previous.known.name)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
         );
       }
       continue;
@@ -779,8 +783,7 @@ interface PushPassResult {
   readonly unfinishedIds: ReadonlySet<string>;
   /** 受理された自分の書き込み(台帳の新しい基準)。 */
   readonly written: readonly VerifiedPulledValue[];
-  /** 個別に失敗した数と最初の原因(巡自体は止めない)。 */
-  readonly failed: number;
+  /** 個別に失敗した最初の原因(巡自体は止めない。数は unfinishedIds が持つ)。 */
   readonly firstFailure: string | null;
   readonly warnings: readonly string[];
 }
@@ -812,7 +815,6 @@ function runPushPass(input: {
     const total = input.doneBefore + input.pending.length;
     let reencrypted = 0;
     let epochStale = 0;
-    let failed = 0;
     let firstFailure: string | null = null;
     for (const target of input.pending) {
       const attempt = yield* asOutcome(
@@ -820,7 +822,6 @@ function runPushPass(input: {
       );
       if (attempt.kind === "failed") {
         // 巡は止めない(残りの変数を旧エポックに取り残さない)
-        failed += 1;
         firstFailure ??= attempt.error.message;
         unfinishedIds.add(target.value.variableId);
         continue;
@@ -838,6 +839,7 @@ function runPushPass(input: {
         warnings.push(
           `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(他メンバーによる並行削除の可能性)。再取得でアクティブ集合から消えていれば対象から外し、まだ配布されていれば未完了として数えます`,
         );
+        unfinishedIds.add(target.value.variableId);
         continue;
       }
       if (attempt.value.kind === "epoch-stale") {
@@ -864,7 +866,6 @@ function runPushPass(input: {
       epochStale,
       unfinishedIds,
       written,
-      failed,
       firstFailure,
       warnings,
     };
@@ -1211,6 +1212,23 @@ function rotateWithWarnings(
         alreadyCurrent: outcome.alreadyCurrent,
         remaining: outcome.remaining,
         failure: outcome.failure,
+        warnings: dedupeWarnings(warnings),
+      };
+    }
+
+    // 未完了がなく理由も指定されていない = 「確認だけ」の実行(部分完了の
+    // 案内が勧める再実行の形)。ここで --reason を要求すると、案内どおりに
+    // 再実行した利用者が理由を求められ、指定すると**二度目のローテーション**に
+    // なってしまう。何もせず完了状態を報告する
+    if (reason.length === 0 && !input.forceNewEpoch) {
+      return {
+        mode: "up-to-date",
+        previousEpoch: currentEpoch,
+        epoch: currentEpoch,
+        reencrypted: 0,
+        alreadyCurrent: 0,
+        remaining: 0,
+        failure: null,
         warnings: dedupeWarnings(warnings),
       };
     }

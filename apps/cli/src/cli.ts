@@ -253,6 +253,40 @@ function envCreate(
 }
 
 /**
+ * 部分完了 / 完了未検証の報告。エポックは進んでおり、旧エポックの DEK 保持者は
+ * 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で終わらせず、
+ * 成功終了にもしない。
+ */
+function reportPartialRotation(
+  environmentId: EnvironmentId,
+  summary: RotationSummary,
+  scope: string,
+  skipped: string,
+): Effect.Effect<number, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    // 中断した場合の残数は上限であって実測ではない(再走査へ到達していないため、
+    // 競合分が既に他メンバーによって新エポックで書かれている可能性が残る)。
+    // 断定せず「未確認を含む」と示す
+    const scale =
+      summary.remaining > 0
+        ? `未完了 ${summary.remaining} 変数${summary.failure === null ? "" : "(未確認を含む)"}`
+        : "完了を検証できませんでした";
+    yield* io.log(`部分完了: ${scope}(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`);
+    // 中断原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
+    // エラーだけ出して伝え損ねない)
+    const cause =
+      summary.failure === null
+        ? "並行 push との競合が解消しませんでした"
+        : `再暗号化が中断しました: ${summary.failure}`;
+    yield* io.logError(
+      `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します(再実行は残りを再走査するため、実際の未完了数もそこで確定します)。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
+    );
+    return 1;
+  });
+}
+
+/**
  * ローテーション結果の報告と終了コード。完了サマリは再暗号化の実績を報告し、
  * 未完了分(部分完了)は警告として明示する — 「エポックだけ進んで再暗号化が
  * 残っている」状態を成功の顔で終わらせない。
@@ -268,34 +302,20 @@ function reportRotation(
       summary.alreadyCurrent === 0
         ? ""
         : `、並行更新により再暗号化不要 ${summary.alreadyCurrent} 変数`;
+    if (summary.mode === "up-to-date") {
+      // 確認のみ(未完了なし・新エポック未要求)。部分完了の案内が勧める
+      // 再実行の着地点でもあるので、何もしなかったことを明示する
+      yield* io.log(
+        `確認完了: 環境 ${environmentId} のアクティブ変数はすべて epoch ${summary.epoch} で暗号化されています(未完了の再暗号化はありません)。新しいエポックを作るには --reason を指定してください`,
+      );
+      return 0;
+    }
     const scope =
       summary.mode === "rotated"
         ? `環境 ${environmentId} を epoch ${summary.previousEpoch} → ${summary.epoch} へローテーション`
         : `環境 ${environmentId}(epoch ${summary.epoch})の再暗号化を再開`;
     if (summary.remaining > 0 || summary.failure !== null) {
-      // 部分完了 / 完了未検証: エポックは進んでおり、旧エポックの DEK 保持者は
-      // 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で
-      // 終わらせず、成功終了にもしない
-      // 中断した場合の残数は上限であって実測ではない(再走査へ到達していない
-      // ため、競合分が既に他メンバーによって新エポックで書かれている可能性が
-      // 残る)。断定せず「未確認を含む」と示す
-      const scale =
-        summary.remaining > 0
-          ? `未完了 ${summary.remaining} 変数${summary.failure === null ? "" : "(未確認を含む)"}`
-          : "完了を検証できませんでした";
-      yield* io.log(
-        `部分完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`,
-      );
-      // 中断原因がある場合はそれを明示する(エポックだけが進んだ事実を、
-      // 生のエラーだけ出して伝え損ねない)
-      const cause =
-        summary.failure === null
-          ? "並行 push との競合が解消しませんでした"
-          : `再暗号化が中断しました: ${summary.failure}`;
-      yield* io.logError(
-        `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します(再実行は残りを再走査するため、実際の未完了数もそこで確定します)。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
-      );
-      return 1;
+      return yield* reportPartialRotation(environmentId, summary, `${scope}しました`, skipped);
     }
     if (summary.mode === "resumed") {
       // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
