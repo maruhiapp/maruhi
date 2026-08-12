@@ -359,7 +359,10 @@ function envRotate(
       verified: context.verified,
       environmentId,
       recipient: context.recipient,
-      reason: flags.reason ?? "",
+      // 未指定(undefined)と空文字列は**別物**として渡す: `--reason "$UNSET"`
+      // のような空指定を「理由なしの確認実行」に潰すと、ローテーションを
+      // 要求した実行が何も送らないまま成功終了する(env-rotate の checkReasonLength)
+      reason: flags.reason,
       forceNewEpoch: flags.newEpoch === true,
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
@@ -367,11 +370,13 @@ function envRotate(
       floor: context.floorHandle,
     });
     // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
-    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)
+    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)。
+    // 空の --reason は envRotateOp が既に落としているので、ここに来る
+    // flags.reason !== undefined は必ず「中身のある理由の指定」である
     return yield* reportRotation(
       environmentId,
       summary,
-      flags.newEpoch === true || (flags.reason ?? "").trim().length > 0,
+      flags.newEpoch === true || flags.reason !== undefined,
     );
   });
 }

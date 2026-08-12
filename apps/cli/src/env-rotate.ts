@@ -73,8 +73,12 @@ interface RotateInput {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
-  /** チェーンに記録される理由(§6.2 の payload フィールド)。 */
-  readonly reason: string;
+  /**
+   * チェーンに記録される理由(§6.2 の payload フィールド)。`undefined` は
+   * **`--reason` 自体が未指定**であることを表す(空文字列との区別が要る —
+   * checkReasonLength)。
+   */
+  readonly reason: string | undefined;
   /**
    * 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る
    * (`--new-epoch`)。「この実行の後に必ず新エポックが存在する」ことを要求
@@ -118,16 +122,32 @@ interface ConflictedTarget {
 }
 
 /**
- * 理由文字列の早期検証(長さのみ)。チェーンの自由文字列上限(§6.1)を超える
- * エントリは**無効**(合意規則)なので、サーバーの拒否を待たず手前で落とす。
+ * 理由文字列の早期検証。返り値の `null` は「`--reason` そのものが未指定」で、
+ * 空文字列は返さない — **指定されたが空**(`--reason "$UNSET_VAR"` など)は
+ * ここで落とす。両者を `""` に潰すと、ローテーションを要求した実行が
+ * 「理由なしの確認だけ」の経路へ滑り込み、何も要求を送らないまま成功終了する
+ * (退職者削除のスクリプトが、進んでいないエポックを進んだと受け取る)。
  *
- * 「未指定」の判定はここでは行わない: 再開(新エントリを作らない)経路では
- * reason は記録されず必須でもないため、必須検査は実際にエントリを署名する
- * 直前(requireReason)に置く。壊れた状態からの復旧を、書き込まれない
- * フィールドの欠落で拒否しない。
+ * 長さ上限はチェーンの自由文字列上限(§6.1)。超えるエントリは**無効**
+ * (合意規則)なので、サーバーの拒否を待たず手前で落とす。
+ *
+ * 「必須」判定はここでは行わない: 再開(新エントリを作らない)経路では reason は
+ * 記録されず必須でもないため、必須検査は実際にエントリを署名する直前
+ * (requireReason)に置く。壊れた状態からの復旧を、書き込まれないフィールドの
+ * 欠落で拒否しない。
  */
-function checkReasonLength(reason: string): Effect.Effect<string, CliError> {
+function checkReasonLength(reason: string | undefined): Effect.Effect<string | null, CliError> {
+  if (reason === undefined) {
+    return Effect.succeed(null);
+  }
   const trimmed = reason.trim();
+  if (trimmed.length === 0) {
+    return Effect.fail(
+      cliError(
+        "--reason が空です。ローテーションの理由を指定してください(値が空になる変数展開の可能性があります)。理由を書かずに未完了の再暗号化だけを再開する場合は --reason を付けずに実行してください",
+      ),
+    );
+  }
   const bytes = new TextEncoder().encode(trimmed).length;
   if (bytes > MAX_REASON_BYTES) {
     return Effect.fail(
@@ -149,8 +169,8 @@ function dedupeWarnings(warnings: readonly string[]): readonly string[] {
 }
 
 /** 新エポックを作る経路でのみ理由を必須にする(rotate_epoch payload の一部)。 */
-function requireReason(reason: string): Effect.Effect<string, CliError> {
-  if (reason.length === 0) {
+function requireReason(reason: string | null): Effect.Effect<string, CliError> {
+  if (reason === null) {
     return Effect.fail(
       cliError(
         "--reason にローテーションの理由を指定してください(チェーンの rotate_epoch エントリに記録され、後から書き換えられません)",
@@ -1003,14 +1023,25 @@ function settlePass(input: {
     if (input.pass.epochStale > 0) {
       // 強制再同期したチェーンでもエポックが変わっていない(進んでいれば
       // rescanEnvironment が失敗している)。サーバーの EpochConflict 申告は
-      // チェーンと矛盾しており、再試行では解けない(push.ts と同じ判定)
-      return {
-        warnings,
-        verdict: {
-          kind: "abort",
-          message: `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままです(サーバー応答とチェーンの矛盾)。${context} — 再実行では解消しません`,
-        },
-      } as const;
+      // チェーンと矛盾しており、その変数を押し直しても解けない(push.ts と同じ判定)。
+      //
+      // ただし**やり残しがあるとき**に限る: 再走査が「目標エポック未満の
+      // active 値はもう無い」ことを検証済みなら、他メンバーが同じエポックで
+      // 書き切ったなどで目的は達成されている。矛盾した申告は調査対象として
+      // 残しつつ、揃っている事実を中断で覆い隠さない(再暗号化の完否を決める
+      // のは検証済みの実態であって、サーバーの自己申告ではない)
+      if (rescan.value.targets.length > 0) {
+        return {
+          warnings,
+          verdict: {
+            kind: "abort",
+            message: `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままです(サーバー応答とチェーンの矛盾)。${context} — 再実行では解消しません`,
+          },
+        } as const;
+      }
+      warnings.push(
+        `サーバーが再暗号化の push に対してエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままでした(サーバー応答とチェーンの矛盾)。再走査ではアクティブ変数がすべて epoch ${epoch} で暗号化されていることを確認済みなので処理は完了扱いにしますが、この応答の矛盾自体は調査対象です`,
+      );
     }
     return {
       warnings,
@@ -1219,11 +1250,12 @@ function rotateWithWarnings(
       };
     }
 
-    // 未完了がなく理由も指定されていない = 「確認だけ」の実行(部分完了の
+    // 未完了がなく --reason も指定されていない = 「確認だけ」の実行(部分完了の
     // 案内が勧める再実行の形)。ここで --reason を要求すると、案内どおりに
     // 再実行した利用者が理由を求められ、指定すると**二度目のローテーション**に
-    // なってしまう。何もせず完了状態を報告する
-    if (reason.length === 0 && !input.forceNewEpoch) {
+    // なってしまう。何もせず完了状態を報告する。
+    // `--reason ""` はこの経路に入らない(checkReasonLength が手前で落とす)
+    if (reason === null && !input.forceNewEpoch) {
       return {
         mode: "up-to-date",
         previousEpoch: currentEpoch,

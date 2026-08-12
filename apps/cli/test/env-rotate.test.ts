@@ -1333,6 +1333,60 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("再実行では解消しません");
   });
 
+  it("EpochConflict の申告があっても、再走査で全変数が揃っていれば完了とする(警告は残す)", async () => {
+    const stale = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 2,
+    });
+    // 申告の裏で、他メンバーが**同じエポック**で書き切った
+    const winner = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek2,
+      epoch: 2,
+      version: 2,
+      plaintext: "key-def",
+      headSeq: 3,
+      prevValueSigHashHex: await valueHashOf(stale.value, owner.userId),
+    });
+    const variables = [stale];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      onPush: (call) => {
+        if (call !== 0) {
+          return undefined;
+        }
+        variables[0] = winner;
+        return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    // 再暗号化の完否を決めるのは検証済みの実態であって、サーバーの自己申告では
+    // ない。揃っている事実を「応答が矛盾している」中断で覆い隠さない
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
+    expect(state.pushes).toHaveLength(0);
+    expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
+    const errors = env.errors.join("\n");
+    // 矛盾した申告自体は調査対象として残す(中断はしない)
+    expect(errors).toContain("サーバー応答とチェーンの矛盾");
+    expect(errors).not.toContain("再実行では解消しません");
+  });
+
   it("EpochConflict でチェーンが実際に進んでいれば、矛盾ではなく並行ローテーションとして扱う", async () => {
     const dek3 = crypto.getRandomValues(new Uint8Array(32));
     const rotatedTwice = await buildChain([
@@ -1711,6 +1765,23 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("確認完了");
     expect(env.logs.join("\n")).toContain("新しいエポックを作るには --reason");
+    expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
+  it("空の --reason は「確認だけ」に潰さず落とす(要求したのに何もしない成功終了を作らない)", async () => {
+    const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
+
+    // `--reason "$UNSET_VAR"` の形。未指定と同一視すると、退職者削除の
+    // スクリプトが「新エポックができた」と受け取ったまま何も送られない
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("--reason が空です");
+    expect(env.logs.join("\n")).not.toContain("確認完了");
+    expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
