@@ -23,7 +23,7 @@ import { buildWrapSetForMembers, ensureNoServerGrant, sameMemberSet } from "./de
 import { cliError, type CliError } from "./errors.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
-import type { VerifiedProject } from "./sync.ts";
+import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 
@@ -119,7 +119,7 @@ export function envCreateOp(input: {
   readonly signingKeyPair: SigningKeyPair;
   /** ChainHeadConflict 時の再同期(チェーン全再検証)。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<{ readonly currentEpoch: number }, CliError> {
+}): Effect.Effect<{ readonly currentEpoch: number; readonly memberCount: number }, CliError> {
   return Effect.gen(function* () {
     const member = yield* ensureCreatable(input.verified, input.environmentId, input.signerUserId);
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
@@ -150,7 +150,11 @@ export function envCreateOp(input: {
       signingKeyPair: input.signingKeyPair,
     });
 
-    return yield* retryOnConflict<CreateState, { readonly currentEpoch: number }, "head-conflict">(
+    return yield* retryOnConflict<
+      CreateState,
+      { readonly currentEpoch: number; readonly memberCount: number },
+      "head-conflict"
+    >(
       { verified: input.verified, member, deks },
       {
         maxAttempts: MAX_ATTEMPTS,
@@ -184,7 +188,9 @@ export function envCreateOp(input: {
                 deks: state.deks,
               },
             });
-            return { currentEpoch: created.currentEpoch };
+            // 実際に登録したラップ集合の大きさを返す(CAS リトライで作り直した
+            // 場合、呼び出し側の古いビューのメンバー数とは食い違いうる)
+            return { currentEpoch: created.currentEpoch, memberCount: state.deks.length };
           }),
         classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
         // 親ヘッド CAS 失敗(並行追記): 再同期して新ヘッドでエントリを再署名する
@@ -193,7 +199,11 @@ export function envCreateOp(input: {
         // retryOnConflict の規約どおり最終試行後も表面化する
         recover: (state) =>
           Effect.gen(function* () {
-            const resynced = yield* input.resync;
+            // 再同期は**延長検査付き**(§6.3-2b): ChainHeadConflict を返した
+            // サーバーが、署名としては妥当な短縮・分岐チェーンを配ってきた場合に、
+            // 巻き戻ったメンバー / grant 状態でエントリを再署名しラップ集合を
+            // 作り直してしまう経路を塞ぐ(env-rotate の CAS リトライと同じ規律)
+            const resynced = yield* resyncExtended(input.resync, state.verified);
             const rebuiltMember = yield* ensureCreatable(
               resynced,
               input.environmentId,

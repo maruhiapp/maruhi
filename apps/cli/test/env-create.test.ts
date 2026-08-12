@@ -304,6 +304,59 @@ describe("maruhi env create", () => {
     expect(second.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, other.userId].toSorted(),
     );
+    // 完了報告のメンバー数は**実際に登録したラップ集合**の大きさ(開始時のビューの
+    // 1 名ではない)。作り直した集合と食い違う数を報告しない
+    expect(env.logs.join("\n")).toContain("現メンバー 2 名へラップ済み");
+  });
+
+  it("ChainHeadConflict の再同期は延長検査付き(短縮・分岐チェーンへ再署名しない)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const other = await makeTestUser("user-other-4444");
+    // 初回に見えるチェーン(2 エントリ)より、409 後に配られるチェーンが短い =
+    // 巻き戻し。署名としては妥当でも、この状態でエントリを再署名し、巻き戻った
+    // メンバー集合でラップ集合を作り直してはならない(§6.3-2b)
+    const long = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(other, "reader") },
+    ]);
+    const short = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    let chainCalls = 0;
+    const bodies: CompositeCreateBody[] = [];
+    const env = await startEnv(
+      long.projectId,
+      [
+        onRequest("GET", `/projects/${long.projectId}/chain`, () => {
+          chainCalls += 1;
+          const built = chainCalls === 1 ? long : short;
+          return {
+            status: 200,
+            json: {
+              projectId: long.projectId,
+              entries: built.entries,
+              headSeq: built.entries.length,
+              headHashHex: built.hashes[built.hashes.length - 1],
+            },
+          };
+        }),
+        onRequest("POST", `/projects/${long.projectId}/environments`, (request) => {
+          bodies.push(request.body as CompositeCreateBody);
+          return {
+            status: 409,
+            json: {
+              _tag: "ChainHeadConflict",
+              currentHeadSeq: short.entries.length,
+              currentHeadHashHex: short.hashes[short.hashes.length - 1],
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("延長ではありません");
+    // 巻き戻ったビューでの再署名は行われない(送信は初回の 1 度きり)
+    expect(bodies).toHaveLength(1);
   });
 
   it("ChainHeadConflict リトライでメンバー集合が不変ならラップ集合を再利用する(§12-4)", async () => {

@@ -247,7 +247,9 @@ function envCreate(
       resync: context.resync,
     });
     yield* io.log(
-      `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${context.verified.state.members.size} 名へラップ済み)`,
+      // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り
+      // 直した場合、コマンド開始時のビューのメンバー数とは食い違いうる)
+      `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${created.memberCount} 名へラップ済み)`,
     );
   });
 }

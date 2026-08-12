@@ -1151,7 +1151,6 @@ function reencryptCurrentValues(input: {
         // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
         // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
         // (完了を検証できている以上、部分完了として非ゼロ終了させない)
-        // 完了を検証できている以上、部分完了として非ゼロ終了させない
         noteResolvedFailure(
           warnings,
           attempted.firstFailure ?? seenFailure,
