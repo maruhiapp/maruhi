@@ -638,6 +638,131 @@ describe("maruhi env rotate", () => {
     expect(await decryptWire(dek2, pushed.value)).toBe("key-abc");
   });
 
+  it("完了検証: 初回 pull 以降に他メンバーが作った変数も再暗号化してから完了とする", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    // 初回 pull と複合受理の窓で、他メンバーが旧エポックの変数を作成する
+    const late = await variableAt({
+      built: chainBase,
+      variableId: "vlate",
+      name: "LATE_VAR",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "late-value",
+      headSeq: 2,
+    });
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => {
+        variables.push(late);
+        return undefined;
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "窓"], env.layer)).toBe(0);
+    // 対象集合になかった vlate も、完了検証の再走査で見つけて再暗号化する
+    expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vlate"]);
+    const body = state.rotateBodies[0];
+    if (body === undefined) throw new Error("rotate was not called");
+    const newDek = await newEpochDekOf(body);
+    const pushedLate = state.pushes.find((push) => push.variableId === "vlate");
+    if (pushedLate === undefined) throw new Error("late push missing");
+    expect(pushedLate.value.aad).toMatchObject({ epoch: 2, version: 2 });
+    expect(await decryptWire(newDek, pushedLate.value)).toBe("late-value");
+  });
+
+  it("--new-epoch は未完了の再暗号化があっても新しいエポックを作る(§7 の全環境ローテーション用)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除", "--new-epoch"], env.layer),
+    ).toBe(0);
+    // 再開ではなくローテーション: 新エポック 3 のエントリが作られ、
+    // 旧エポックの値は中間エポックを経由せず一気に epoch 3 へ揃う
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(state.rotateBodies[0]?.entry.payload.newEpoch).toBe(3);
+    const pushed = state.pushes[0];
+    if (pushed === undefined) throw new Error("push missing");
+    expect(pushed.value.aad).toMatchObject({ epoch: 3, version: 2 });
+    expect(env.logs.join("\n")).toContain("epoch 2 → 3");
+  });
+
+  it("再開経路は --reason を要求しない(記録されないフィールドで復旧を阻まない)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
+    expect(state.rotateBodies).toHaveLength(0);
+    expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
+  });
+
   it("ChainHeadConflict(409)は再同期してエントリを再署名し、リトライする(§12-4)", async () => {
     const state = makeServer({
       built: chainBase,
@@ -831,7 +956,12 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "分岐"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
-    expect(env.errors.join("\n")).toContain("分岐した履歴への連鎖");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("分岐した履歴への連鎖");
+    // 暗号学的証拠は「再実行で直る失敗」ではない: 部分完了 + 再開案内へ
+    // 潰さず、調査を促す即時中断として出す(push 経路と同じ扱い)
+    expect(errors).toContain("再実行では解消しない証拠です");
+    expect(env.logs.join("\n")).not.toContain("部分完了");
   });
 
   it("最終巡の競合も再取得で確かめる(勝者が現エポックなら未完了と誤報しない)", async () => {
@@ -914,8 +1044,9 @@ describe("maruhi env rotate", () => {
     // 「完了」の顔で終わらせない(サマリ自体が部分完了を名乗る)
     expect(env.logs.join("\n")).toContain("部分完了");
     expect(env.logs.some((line) => line.startsWith("完了:"))).toBe(false);
+    expect(env.logs.join("\n")).toContain("未完了 1 変数");
     const errors = env.errors.join("\n");
-    expect(errors).toContain("1 変数の再暗号化が完了していません");
+    expect(errors).toContain("再暗号化が完了していません");
     // 旧エポックの DEK 保持者が現在値を読めるままであることを明示する
     expect(errors).toContain("epoch 2 未満の DEK のまま");
   });

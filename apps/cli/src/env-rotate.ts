@@ -73,6 +73,12 @@ interface RotateInput {
   readonly recipient: DekRecipient;
   /** チェーンに記録される理由(§6.2 の payload フィールド)。 */
   readonly reason: string;
+  /**
+   * 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る
+   * (`--new-epoch`)。「この実行の後に必ず新エポックが存在する」ことを要求
+   * する呼び出し(退職者の削除に伴う全環境ローテーション — §7)のための保証。
+   */
+  readonly forceNewEpoch: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   /** 再同期(チェーン全再検証)。CAS 競合・受理後の確認に使う。 */
@@ -111,18 +117,16 @@ interface ConflictedTarget {
 }
 
 /**
- * 理由文字列の正規化と早期検証。チェーンの自由文字列上限(§6.1)を超える
+ * 理由文字列の早期検証(長さのみ)。チェーンの自由文字列上限(§6.1)を超える
  * エントリは**無効**(合意規則)なので、サーバーの拒否を待たず手前で落とす。
+ *
+ * 「未指定」の判定はここでは行わない: 再開(新エントリを作らない)経路では
+ * reason は記録されず必須でもないため、必須検査は実際にエントリを署名する
+ * 直前(requireReason)に置く。壊れた状態からの復旧を、書き込まれない
+ * フィールドの欠落で拒否しない。
  */
-function normalizeReason(reason: string): Effect.Effect<string, CliError> {
+function checkReasonLength(reason: string): Effect.Effect<string, CliError> {
   const trimmed = reason.trim();
-  if (trimmed.length === 0) {
-    return Effect.fail(
-      cliError(
-        "--reason にローテーションの理由を指定してください(チェーンの rotate_epoch エントリに記録され、後から書き換えられません)",
-      ),
-    );
-  }
   const bytes = new TextEncoder().encode(trimmed).length;
   if (bytes > MAX_REASON_BYTES) {
     return Effect.fail(
@@ -132,6 +136,18 @@ function normalizeReason(reason: string): Effect.Effect<string, CliError> {
     );
   }
   return Effect.succeed(trimmed);
+}
+
+/** 新エポックを作る経路でのみ理由を必須にする(rotate_epoch payload の一部)。 */
+function requireReason(reason: string): Effect.Effect<string, CliError> {
+  if (reason.length === 0) {
+    return Effect.fail(
+      cliError(
+        "--reason にローテーションの理由を指定してください(チェーンの rotate_epoch エントリに記録され、後から書き換えられません)",
+      ),
+    );
+  }
+  return Effect.succeed(reason);
 }
 
 /**
@@ -464,27 +480,38 @@ function pushReencrypted(input: {
   });
 }
 
-interface ReplanResult {
+/** 再取得・再検証の結果(完了検証と 409 競合の再計画を兼ねる)。 */
+interface RescanResult {
   readonly view: VerifiedProject;
+  /** 目標エポック未満のまま残っている active 値(= 次巡の再暗号化対象)。 */
   readonly targets: readonly ReencryptTarget[];
+  /** 競合していたが既に現エポックで書かれていた変数数(再暗号化不要)。 */
   readonly alreadyCurrent: number;
   readonly warnings: readonly string[];
+  /**
+   * 暗号学的証拠(巻き戻し・equivocation・分岐した prev 連鎖)。非 null は
+   * 即時中断であり、「再実行で解消する」種類の失敗と混ぜてはならない。
+   */
+  readonly evidence: string | null;
 }
 
 /**
- * VersionConflict を起こした変数の再計画(§12-5 の再試行手順): 再取得 →
- * §6.3 全検証 → **勝者の整合検査(push.ts と共有の winnerRegression)** →
- * 実態で分岐する。勝者の epoch が既に新エポックなら再暗号化は不要(push は
- * 現エポックでしか受理されない — §12-5)であり、それ未満なら勝者を新しい
- * 基準にして再暗号化し直す。
+ * 環境の再取得・再検証(§6.3)。2 つの役割を 1 経路で担う:
  *
- * 整合検査を省けない理由: 再暗号化は勝者の signed bytes ハッシュを prev に
- * 付け替えて署名するため、検査なしでは分岐した履歴へ自分の署名で連鎖して
- * しまう(§12-5 の証拠連鎖の汚染)。ローカル床は巻き戻し・同一 version の
- * 相違を捕まえるが SHOULD であり(初回同期・破損時は不在)、隣接 prev の
- * 不一致は床に材料自体がない。
+ * 1. **完了検証**: 目標エポック未満の active 値が残っていないことを確かめる。
+ *    初回 pull から複合受理までの窓で他メンバーが作成した変数は最初の対象集合に
+ *    入っておらず(受理後の作成は現エポックでしか受理されない — §12-5)、この
+ *    再走査で初めて可視になる。これを省くと「エポックだけ進み、旧 DEK のままの
+ *    値が残っているのに完了と報告する」形になる
+ * 2. **409 競合の再計画**(§12-5 の再試行手順): 勝者を §6.3 で検証し、
+ *    **勝者の整合検査(push.ts と共有の winnerRegression)**を採否の判断より
+ *    前に適用する。再暗号化は勝者の signed bytes ハッシュへ prev を付け替えて
+ *    署名するため、検査なしでは分岐した履歴へ自分の署名で連鎖してしまう
+ *    (§12-5 の証拠連鎖の汚染)。ローカル床は巻き戻し・同一 version の相違を
+ *    捕まえるが SHOULD であり(初回同期・破損時は不在)、隣接 prev の不一致は
+ *    床に材料自体がない
  */
-function replanConflicted(input: {
+function rescanEnvironment(input: {
   readonly client: MaruhiClient;
   readonly environmentId: EnvironmentId;
   readonly view: VerifiedProject;
@@ -493,7 +520,7 @@ function replanConflicted(input: {
   readonly epoch: number;
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
   readonly conflicted: readonly ConflictedTarget[];
-}): Effect.Effect<ReplanResult, CliError> {
+}): Effect.Effect<RescanResult, CliError> {
   return Effect.gen(function* () {
     const pulled = yield* pullVerifiedEnvironment({
       client: input.client,
@@ -507,12 +534,18 @@ function replanConflicted(input: {
     if (environment.currentEpoch !== input.epoch) {
       return yield* Effect.fail(
         cliError(
-          `再暗号化の途中で環境 ${input.environmentId} のエポックが ${input.epoch} → ${environment.currentEpoch} へ進みました(他メンバーによる並行ローテーション)。再実行すると新しいエポックの再暗号化から再開します`,
+          `再暗号化の途中で環境 ${input.environmentId} のエポックが ${input.epoch} → ${environment.currentEpoch} へ進みました(他メンバーによる並行ローテーション)`,
         ),
       );
     }
     const warnings = [...pulled.warnings];
-    const targets: ReencryptTarget[] = [];
+    const rejected = (evidence: string): RescanResult => ({
+      view,
+      targets: [],
+      alreadyCurrent: 0,
+      warnings,
+      evidence,
+    });
     let alreadyCurrent = 0;
     for (const conflict of input.conflicted) {
       const latest = pulled.variables.find((value) => value.variableId === conflict.variableId);
@@ -522,8 +555,8 @@ function replanConflicted(input: {
         );
         continue;
       }
-      // 勝者の整合検査は「採用するか」に関わらず先に行う: 巻き戻し・
-      // equivocation・分岐した prev 連鎖は、それ自体が中断すべき証拠である
+      // 整合検査は「採用するか」に関わらず先に行う: 巻き戻し・equivocation・
+      // 分岐した prev 連鎖は、それ自体が中断すべき証拠である
       const regression = winnerRegression(
         conflict.variableId,
         conflict.known,
@@ -531,39 +564,40 @@ function replanConflicted(input: {
         conflict.currentVersion,
       );
       if (regression !== null) {
-        return yield* Effect.fail(cliError(regression));
+        return rejected(regression);
       }
       if (latest.epoch >= input.epoch) {
         alreadyCurrent += 1;
-        continue;
       }
-      const plaintext = yield* decryptVerifiedValue({
-        verified: view,
-        environmentId: input.environmentId,
-        variable: latest,
-        deksByEpoch: input.deksByEpoch,
-        chainEpoch: environment.currentEpoch,
-      });
-      targets.push({ value: latest, plaintext });
     }
-    return { view, targets, alreadyCurrent, warnings };
+    // 完了検証 + 次巡の対象: 目標エポック未満の active 値すべて(競合分に
+    // 限らない — 窓の間に作られた変数もここに現れる)
+    const targets = yield* decryptTargets({
+      verified: view,
+      environmentId: input.environmentId,
+      values: pulled.variables.filter((value) => value.epoch < input.epoch),
+      deksByEpoch: input.deksByEpoch,
+      chainEpoch: environment.currentEpoch,
+    });
+    return { view, targets, alreadyCurrent, warnings, evidence: null };
   });
 }
 
 /**
- * 現在値の再暗号化(§7): 対象を新エポック DEK で暗号化して通常 push し、
- * VersionConflict は再取得・再検証で実態を確かめてから次巡へ回す(上限
- * {@link MAX_REENCRYPT_PASSES} 巡)。解けなかった分は remaining として
- * 呼び出し側が部分完了の警告に使う — 黙って完了扱いにしない。
+ * 現在値の再暗号化(§7): 対象を目標エポックの DEK で暗号化して通常 push し、
+ * **毎巡の末尾で環境を再走査して完了を検証する**(上限
+ * {@link MAX_REENCRYPT_PASSES} 巡)。再走査は競合の実態確認(勝者が既に現
+ * エポックなら再暗号化不要)と、初回 pull 以降に作られた変数の発見を兼ねる。
+ * 「対象を全部 push し終えた」ことは完了の証拠にならない — 完了の証拠は
+ * 「再取得・再検証したビューに目標エポック未満の active 値がない」ことである。
  *
  * 失敗は投げずに {@link ReencryptOutcome.failure} として返す: この関数が
  * 走る時点でエポックは既に進んでおり、途中の失敗(ネットワーク・並行
  * ローテーション・床書き込み)を例外として投げると「エポックだけ進んで
  * 再暗号化が残っている」事実が部分完了の報告経路を素通りしてしまう。
- *
- * 最終巡の競合も**必ず再取得して実態を確かめる**: 競合の勝者が既に現エポックで
- * 書かれていれば再暗号化は不要であり、確かめずに remaining へ計上すると
- * 「未完了である」という誤報(= 存在しない機密性の穴の警告)になる。
+ * ただし**暗号学的証拠(RescanResult.evidence)は例外**で、これは即時中断
+ * (エラー channel)とする — 「再実行すれば直る」種類の失敗ではないため、
+ * 部分完了 + 再開案内に混ぜてはならない(push 経路の扱いと揃える)。
  */
 function reencryptCurrentValues(input: {
   readonly client: MaruhiClient;
@@ -580,7 +614,6 @@ function reencryptCurrentValues(input: {
 }): Effect.Effect<ReencryptOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const total = input.targets.length;
     const warnings: string[] = [];
     let view = input.view;
     let pending = input.targets;
@@ -597,6 +630,8 @@ function reencryptCurrentValues(input: {
 
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
       const conflicted: ConflictedTarget[] = [];
+      // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
+      const total = reencrypted + pending.length;
       let processed = 0;
       for (const target of pending) {
         const attempt = yield* pushReencrypted({
@@ -631,10 +666,8 @@ function reencryptCurrentValues(input: {
           `  再暗号化 (${reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
         );
       }
-      if (conflicted.length === 0) {
-        return outcome(0, null);
-      }
-      const replanned = yield* replanConflicted({
+      // 完了検証(競合の有無に関わらず必ず行う)
+      const rescan = yield* rescanEnvironment({
         client: input.client,
         environmentId: input.environmentId,
         view,
@@ -647,14 +680,25 @@ function reencryptCurrentValues(input: {
         Effect.map((value) => ({ kind: "ok", value }) as const),
         Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
       );
-      if (replanned.kind === "failed") {
-        return outcome(conflicted.length, replanned.error.message);
+      if (rescan.kind === "failed") {
+        // 完了を**検証できなかった**(残数は下限しか分からない)
+        return outcome(conflicted.length, rescan.error.message);
       }
-      view = replanned.value.view;
-      pending = replanned.value.targets;
-      alreadyCurrent += replanned.value.alreadyCurrent;
-      warnings.push(...replanned.value.warnings);
+      warnings.push(...rescan.value.warnings);
+      if (rescan.value.evidence !== null) {
+        // 暗号学的証拠は即時中断(再実行では解消しない)。エポックが進んでいる
+        // 文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない
+        return yield* Effect.fail(
+          cliError(
+            `${rescan.value.evidence}\n環境 ${input.environmentId} は epoch ${input.epoch} へ進んでおり、再暗号化は ${reencrypted} 変数で中断しました。これは再実行では解消しない証拠です — サーバーの応答を調査してください`,
+          ),
+        );
+      }
+      view = rescan.value.view;
+      pending = rescan.value.targets;
+      alreadyCurrent += rescan.value.alreadyCurrent;
       if (pending.length === 0) {
+        // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了
         return outcome(0, null);
       }
     }
@@ -676,7 +720,7 @@ function reencryptCurrentValues(input: {
 export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const reason = yield* normalizeReason(input.reason);
+    const reason = yield* checkReasonLength(input.reason);
     yield* ensureRotatable(input.verified, input.environmentId, input.signerUserId);
 
     // (1) 検証済み pull(§6.3 / §12-7): 全アクティブ変数の最新値 + 自分宛の
@@ -700,7 +744,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
     const currentEpoch = keys.currentEpoch;
     const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
 
-    if (stale.length > 0) {
+    if (stale.length > 0 && !input.forceNewEpoch) {
       // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
       const dek = keys.deksByEpoch.get(currentEpoch);
       if (dek === undefined) {
@@ -711,7 +755,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         );
       }
       yield* io.logError(
-        `注意: 環境 ${input.environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。新しいエポックへは進めず、この再暗号化を再開します(--reason はチェーンに記録されません。新しいローテーションは完了後に再実行してください)`,
+        `注意: 環境 ${input.environmentId} は epoch ${currentEpoch} へのローテーション後、${stale.length} 変数の再暗号化が未完了です。新しいエポックへは進めず、この再暗号化を再開します(この経路はチェーンエントリを作らないため --reason は記録されません)。中断状態に関わらず新しいエポックを必ず作るには --new-epoch を付けてください`,
       );
       const targets = yield* decryptTargets({
         verified: pulled.verified,
@@ -747,10 +791,15 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
     }
 
     // --- 通常のローテーション ---
+    // 理由が必須になるのはここから(チェーンエントリを実際に署名する経路)
+    const entryReason = yield* requireReason(reason);
     const newEpoch = currentEpoch + 1;
     const member = yield* ensureRotatable(pulled.verified, input.environmentId, input.signerUserId);
     // 再暗号化に要する平文は**エポックを進める前に**手元へ揃える: 復号できない
-    // 値があるなら、エポックだけが進んで再暗号化が永久に完了しない状態を作らない
+    // 値があるなら、エポックだけが進んで再暗号化が永久に完了しない状態を作らない。
+    // 未完了の再暗号化(旧エポックの値)がある状態で --new-epoch が指定された
+    // 場合も、対象は「全アクティブ変数」なので中間エポックを経由せず一気に
+    // 新エポックへ揃う(全エポックの DEK は自分宛ラップから復号済み)
     const targets = yield* decryptTargets({
       verified: pulled.verified,
       environmentId: input.environmentId,
@@ -782,7 +831,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       ...input,
       baseline: pulled.verified,
       member,
-      reason,
+      reason: entryReason,
       newEpoch,
       dek,
       dekCommitmentHex: commitment.value,

@@ -258,7 +258,10 @@ function envCreate(
  * — 「エポックだけ進んで再暗号化が残っている」状態を成功の顔で終わらせない。
  */
 function envRotate(
-  flags: CommonFlags & { readonly reason?: string | undefined },
+  flags: CommonFlags & {
+    readonly reason?: string | undefined;
+    readonly newEpoch?: boolean | undefined;
+  },
   environmentId: EnvironmentId,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
@@ -271,6 +274,7 @@ function envRotate(
       environmentId,
       recipient: context.recipient,
       reason: flags.reason ?? "",
+      forceNewEpoch: flags.newEpoch === true,
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
@@ -285,12 +289,14 @@ function envRotate(
       summary.mode === "rotated"
         ? `環境 ${environmentId} を epoch ${summary.previousEpoch} → ${summary.epoch} へローテーション`
         : `環境 ${environmentId}(epoch ${summary.epoch})の再暗号化を再開`;
-    if (summary.remaining > 0) {
-      // 部分完了: エポックは進んでおり、旧エポックの DEK 保持者は未再暗号化の
-      // 変数の現在値を読めるままである(§7)。「完了」の顔で終わらせず、
-      // 成功終了にもしない
+    if (summary.remaining > 0 || summary.failure !== null) {
+      // 部分完了 / 完了未検証: エポックは進んでおり、旧エポックの DEK 保持者は
+      // 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で
+      // 終わらせず、成功終了にもしない
+      const scale =
+        summary.remaining > 0 ? `未完了 ${summary.remaining} 変数` : "完了を検証できませんでした";
       yield* io.log(
-        `部分完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped}、未完了 ${summary.remaining} 変数)`,
+        `部分完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`,
       );
       // 中断原因がある場合はそれを明示する(エポックだけが進んだ事実を、
       // 生のエラーだけ出して伝え損ねない)
@@ -299,16 +305,17 @@ function envRotate(
           ? "並行 push との競合が解消しませんでした"
           : `再暗号化が中断しました: ${summary.failure}`;
       yield* io.logError(
-        `警告: ${summary.remaining} 変数の再暗号化が完了していません(${cause})。これらの現在値は epoch ${summary.epoch} 未満の DEK のままです — maruhi env rotate ${environmentId} --reason ... を再実行すると、エポックを進めずに残りから再開します`,
+        `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します`,
       );
       return 1;
     }
     if (summary.mode === "resumed") {
       // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
       // いないので、完了報告がローテーション成功に見えてはならない(退職者の
-      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
+      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ。新エポックの
+      // 存在を保証したい呼び出しは --new-epoch を使う)
       yield* io.log(
-        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)— 新しいローテーションが必要な場合はもう一度実行してください`,
+        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)— 新しいローテーションが必要な場合はもう一度実行するか、--new-epoch を付けて実行してください`,
       );
       return 0;
     }
@@ -327,7 +334,11 @@ function envCommand(execute: Execute) {
       name: { type: "string", description: "表示名(create のみ。省略時は環境 ID)" },
       reason: {
         type: "string",
-        description: "ローテーションの理由(rotate は必須。チェーンに記録される)",
+        description: "ローテーションの理由(新しいエポックを作る場合は必須。チェーンに記録される)",
+      },
+      "new-epoch": {
+        type: "boolean",
+        description: "rotate: 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る",
       },
       server: { type: "string", description: "サーバー URL(省略時は config の server)" },
       project: {
@@ -353,7 +364,10 @@ function envCommand(execute: Execute) {
           }
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
-            return yield* envRotate({ ...flags, reason: ctx.values.reason }, environmentId);
+            return yield* envRotate(
+              { ...flags, reason: ctx.values.reason, newEpoch: ctx.values["new-epoch"] },
+              environmentId,
+            );
           }
           return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
         }),
