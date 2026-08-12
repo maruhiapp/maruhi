@@ -1274,6 +1274,127 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("再実行では解消しません");
   });
 
+  it("EpochConflict でチェーンが実際に進んでいれば、矛盾ではなく並行ローテーションとして扱う", async () => {
+    const dek3 = crypto.getRandomValues(new Uint8Array(32));
+    const rotatedTwice = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 3, dek3) },
+    ]);
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const deks = [
+      await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+      await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+    ];
+    let chainCalls = 0;
+    const pushPaths: string[] = [];
+    const handlers: MockHandler[] = [
+      onRequest("GET", `/projects/${chainBase.projectId}/chain`, () => {
+        // 初回同期は epoch 2。再暗号化の途中で他メンバーが epoch 3 へ進める
+        const built = chainCalls === 0 ? chainRotated : rotatedTwice;
+        chainCalls += 1;
+        return {
+          status: 200,
+          json: {
+            projectId: chainBase.projectId,
+            entries: built.entries,
+            headSeq: built.entries.length,
+            headHashHex: built.hashes[built.hashes.length - 1],
+          },
+        };
+      }),
+      onRequest("GET", `/projects/${chainBase.projectId}/environments/${ENV_ID}/pull`, () => ({
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          currentEpoch: 2,
+          statement: envStatement,
+          variables,
+          deletedVariables: [],
+          deks,
+        },
+      })),
+      (request) => {
+        if (request.method !== "POST" || !request.path.endsWith("/versions")) {
+          return null;
+        }
+        pushPaths.push(request.path);
+        return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } };
+      },
+    ];
+    const env = await startEnv(handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 強制再同期でチェーンが実際に進んでいることを確認したので、これは
+    // サーバーの矛盾ではない(良性のレースを不正と誤認しない)
+    expect(errors).toContain("並行ローテーション");
+    expect(errors).not.toContain("サーバー応答とチェーンの矛盾");
+    expect(pushPaths).toHaveLength(1);
+  });
+
+  it("409 以外の失敗で拾い直した勝者にも整合検査を適用する(分岐 prev への連鎖を防ぐ)", async () => {
+    const stale = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 2,
+    });
+    // 502 の後の再走査で見える「現エポックだが prev が繋がらない後継」
+    const forked = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek2,
+      epoch: 2,
+      version: 2,
+      plaintext: "key-forked",
+      headSeq: 3,
+      prevValueSigHashHex: "ab".repeat(32),
+    });
+    const variables = [stale];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      // 409 ではなく一時的な失敗(この変数は conflicted 集合に入らない)
+      onPush: (call) => {
+        if (call !== 0) {
+          return undefined;
+        }
+        variables[0] = forked;
+        return { status: 502, bodyText: "bad gateway" };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    expect(state.pushes).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("分岐した履歴への連鎖");
+  });
+
   it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {
     // 非 NFC 名(合成済みでない Á)は毎 pull で警告が出る — 3 巡しても 1 行
     const variables = [

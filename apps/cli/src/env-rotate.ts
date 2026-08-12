@@ -31,7 +31,7 @@ import { Effect } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapSetForMembers, ensureNoServerGrant, sameMemberSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
-import { displayText } from "./display.ts";
+import { displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
@@ -144,6 +144,21 @@ function checkReasonLength(reason: string): Effect.Effect<string, CliError> {
  */
 function dedupeWarnings(warnings: readonly string[]): readonly string[] {
   return [...new Set(warnings)];
+}
+
+/**
+ * 即時中断(証拠・矛盾)。**蓄積した警告を先に吐いてから**失敗する: 床の
+ * 更新に失敗した変数の警告など、実行後もディスク上に影響が残る事実を
+ * エラーだけ出して捨てない(呼び出し側の logWarnings はここへ到達しない)。
+ */
+function abortWith(
+  warnings: readonly string[],
+  message: string,
+): Effect.Effect<never, CliError, CliIo> {
+  return Effect.gen(function* () {
+    yield* logWarnings(dedupeWarnings(warnings));
+    return yield* Effect.fail(cliError(message));
+  });
 }
 
 /** 新エポックを作る経路でのみ理由を必須にする(rotate_epoch payload の一部)。 */
@@ -433,38 +448,33 @@ type PushAttempt =
  * 署名する通常 push」であり、専用のワイヤも認可も持たない)。
  */
 function pushReencrypted(input: {
-  readonly client: MaruhiClient;
-  readonly environmentId: EnvironmentId;
+  readonly context: ReencryptContext;
   readonly view: VerifiedProject;
-  readonly floor: FloorHandle;
   readonly target: ReencryptTarget;
-  readonly epoch: number;
-  readonly dek: Uint8Array;
-  readonly writerUserId: string;
-  readonly signingKey: CryptoKey;
 }): Effect.Effect<PushAttempt, CliError> {
   return Effect.gen(function* () {
+    const { environmentId, epoch, dek, writerUserId, signingKey, floor, client } = input.context;
     const latest = input.target.value;
     const version = latest.version + 1;
     // prev は検証済み最新値の**自計算**ハッシュ(サーバー申告のハッシュへ
     // 連鎖署名しない — §12-5 の証拠連鎖の汚染回避)
     const signed = yield* encryptAndSignPayload({
       verified: input.view,
-      environmentId: input.environmentId,
+      environmentId: environmentId,
       variableId: latest.variableId,
-      epoch: input.epoch,
+      epoch: epoch,
       version,
       prevValueSigHashHex: latest.signedBytesHashHex,
-      dek: input.dek,
+      dek: dek,
       value: input.target.plaintext,
-      writerUserId: input.writerUserId,
-      signingKey: input.signingKey,
+      writerUserId: writerUserId,
+      signingKey: signingKey,
     });
-    const outcome = yield* input.client.variables
+    const outcome = yield* client.variables
       .push({
         params: {
           projectId: input.view.projectId,
-          environmentId: input.environmentId,
+          environmentId: environmentId,
           variableId: latest.variableId,
         },
         payload: { value: signed.payload },
@@ -499,13 +509,13 @@ function pushReencrypted(input: {
     // 床の書き込み失敗で「受理済みの再暗号化」を未完了扱いにしない: 受理は
     // 取り消せず、この変数は既に新エポックにある。失う(SHOULD の)検出材料を
     // 警告として伝え、残りの変数の処理は止めない
-    const floorWarning = yield* input.floor
+    const floorWarning = yield* floor
       .commitPush(
         latest.variableId,
         {
           status: "active",
           version,
-          epoch: input.epoch,
+          epoch: epoch,
           valueSigHashHex: signed.signedBytesHashHex,
           metaVersion: latest.metaVersion,
           metaSigHashHex: latest.metaSignedBytesHashHex,
@@ -556,29 +566,40 @@ interface RescanResult {
  *    床に材料自体がない
  */
 function rescanEnvironment(input: {
-  readonly client: MaruhiClient;
-  readonly environmentId: EnvironmentId;
+  readonly context: ReencryptContext;
   readonly view: VerifiedProject;
-  readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly floor: FloorHandle;
-  readonly epoch: number;
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
-  readonly conflicted: readonly ConflictedTarget[];
+  /**
+   * この実行で一度でも §6.3 検証を通した値(variableId → 既知値 + 409 申告
+   * version)。**409 を返した変数に限らない**: 一時的な失敗で再走査から拾い
+   * 直した変数も次巡の prev アンカーになるため、同じ整合検査を通す。
+   */
+  readonly known: ReadonlyMap<string, ConflictedTarget>;
+  /** 今巡 409 を返した変数(alreadyCurrent の計上対象)。 */
+  readonly conflictedIds: ReadonlySet<string>;
+  /**
+   * チェーンの強制再同期。サーバーがエポック競合を申告した巡では、pull の
+   * future head 条件に依存せず**必ず**チェーンを取り直して現エポックを
+   * 導出し直す(取り直さないと、他メンバーの並行ローテーションを
+   * 「サーバーの矛盾」と誤認する — push.ts の epoch-conflict と同じ規律)。
+   */
+  readonly forceResync: boolean;
 }): Effect.Effect<RescanResult, CliError> {
   return Effect.gen(function* () {
+    const { client, environmentId, resync, floor, epoch, deksByEpoch } = input.context;
+    const base = input.forceResync ? yield* resyncExtended(resync, input.view) : input.view;
     const pulled = yield* pullVerifiedEnvironment({
-      client: input.client,
-      verified: input.view,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
+      client,
+      verified: base,
+      environmentId,
+      resync,
+      floor,
     });
     const view = pulled.verified;
-    const environment = yield* requireChainEnvironment(view, input.environmentId);
-    if (environment.currentEpoch !== input.epoch) {
+    const environment = yield* requireChainEnvironment(view, environmentId);
+    if (environment.currentEpoch !== epoch) {
       return yield* Effect.fail(
         cliError(
-          `再暗号化の途中で環境 ${input.environmentId} のエポックが ${input.epoch} → ${environment.currentEpoch} へ進みました(他メンバーによる並行ローテーション)`,
+          `再暗号化の途中で環境 ${environmentId} のエポックが ${epoch} → ${environment.currentEpoch} へ進みました(他メンバーによる並行ローテーション)`,
         ),
       );
     }
@@ -591,27 +612,29 @@ function rescanEnvironment(input: {
       evidence,
     });
     let alreadyCurrent = 0;
-    for (const conflict of input.conflicted) {
-      const latest = pulled.variables.find((value) => value.variableId === conflict.variableId);
+    for (const [variableId, previous] of input.known) {
+      const latest = pulled.variables.find((value) => value.variableId === variableId);
       if (latest === undefined) {
-        warnings.push(
-          `変数 ${displayText(conflict.variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
-        );
+        if (input.conflictedIds.has(variableId)) {
+          warnings.push(
+            `変数 ${displayText(variableId)} は再取得時のアクティブ集合に存在しません(他メンバーによる並行削除)。再暗号化の対象から外します`,
+          );
+        }
         continue;
       }
       // 整合検査は「採用するか」に関わらず先に行う: 巻き戻し・equivocation・
       // 分岐した prev 連鎖・409 申告との食い違いは、それ自体が中断すべき証拠
       // である(push 経路と同一の winnerInconsistency を通す)
       const inconsistency = winnerInconsistency(
-        conflict.variableId,
-        conflict.known,
+        variableId,
+        previous.known,
         latest,
-        conflict.currentVersion,
+        previous.currentVersion,
       );
       if (inconsistency !== null) {
         return rejected(inconsistency);
       }
-      if (latest.epoch >= input.epoch) {
+      if (input.conflictedIds.has(variableId) && latest.epoch >= epoch) {
         alreadyCurrent += 1;
       }
     }
@@ -619,9 +642,9 @@ function rescanEnvironment(input: {
     // 限らない — 窓の間に作られた変数もここに現れる)
     const targets = yield* decryptTargets({
       verified: view,
-      environmentId: input.environmentId,
-      values: pulled.variables.filter((value) => value.epoch < input.epoch),
-      deksByEpoch: input.deksByEpoch,
+      environmentId,
+      values: pulled.variables.filter((value) => value.epoch < epoch),
+      deksByEpoch,
       chainEpoch: environment.currentEpoch,
     });
     return { view, targets, alreadyCurrent, warnings, evidence: null };
@@ -644,6 +667,62 @@ function rescanEnvironment(input: {
  * (エラー channel)とする — 「再実行すれば直る」種類の失敗ではないため、
  * 部分完了 + 再開案内に混ぜてはならない(push 経路の扱いと揃える)。
  */
+/**
+ * 再暗号化の 3 関数(1 変数の push・1 巡の push・巡末の再走査)が共有する文脈。
+ * 巡ごとに変わるのは view と対象だけなので、変わらないものを 1 つにまとめる
+ * (同形の長い引数列が call site ごとに重複するのを避ける)。
+ */
+interface ReencryptContext {
+  readonly client: MaruhiClient;
+  readonly environmentId: EnvironmentId;
+  readonly floor: FloorHandle;
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  /** 再暗号化の目標エポック(ローテーション後の新エポック / 再開時の現エポック)。 */
+  readonly epoch: number;
+  readonly dek: Uint8Array;
+  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly writerUserId: string;
+  readonly signingKey: CryptoKey;
+}
+
+/**
+ * 失敗を投げずに値として持ち帰る。エポックが進んだ後の失敗は「部分完了」の
+ * 報告経路へ乗せる必要があり、例外として抜けると運用状態を伝え損ねる。
+ */
+function asOutcome<A, R>(
+  effect: Effect.Effect<A, CliError, R>,
+): Effect.Effect<
+  | { readonly kind: "ok"; readonly value: A }
+  | { readonly kind: "failed"; readonly error: CliError },
+  never,
+  R
+> {
+  return effect.pipe(
+    Effect.map((value) => ({ kind: "ok", value }) as const),
+    Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
+  );
+}
+
+/** RotateInput + エポック固有の材料から再暗号化の文脈を組む。 */
+function reencryptContext(
+  input: RotateInput,
+  epochMaterial: {
+    readonly epoch: number;
+    readonly dek: Uint8Array;
+    readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  },
+): ReencryptContext {
+  return {
+    client: input.client,
+    environmentId: input.environmentId,
+    floor: input.floor,
+    resync: input.resync,
+    writerUserId: input.signerUserId,
+    signingKey: input.signingKeyPair.privateKey,
+    ...epochMaterial,
+  };
+}
+
 /** 1 巡分の push の結果。 */
 interface PushPassResult {
   readonly reencrypted: number;
@@ -667,14 +746,8 @@ interface PushPassResult {
  * 実際の残りは巡末の再走査(検証済みの実態)が決める。
  */
 function runPushPass(input: {
-  readonly client: MaruhiClient;
-  readonly environmentId: EnvironmentId;
+  readonly context: ReencryptContext;
   readonly view: VerifiedProject;
-  readonly floor: FloorHandle;
-  readonly epoch: number;
-  readonly dek: Uint8Array;
-  readonly writerUserId: string;
-  readonly signingKey: CryptoKey;
   readonly pending: readonly ReencryptTarget[];
   /** 進行表示の通し番号の起点(これまでに再暗号化した数)。 */
   readonly doneBefore: number;
@@ -690,19 +763,8 @@ function runPushPass(input: {
     let failed = 0;
     let firstFailure: string | null = null;
     for (const target of input.pending) {
-      const attempt = yield* pushReencrypted({
-        client: input.client,
-        environmentId: input.environmentId,
-        view: input.view,
-        floor: input.floor,
-        target,
-        epoch: input.epoch,
-        dek: input.dek,
-        writerUserId: input.writerUserId,
-        signingKey: input.signingKey,
-      }).pipe(
-        Effect.map((value) => ({ kind: "ok", value }) as const),
-        Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
+      const attempt = yield* asOutcome(
+        pushReencrypted({ context: input.context, view: input.view, target }),
       );
       if (attempt.kind === "failed") {
         // 巡は止めない(残りの変数を旧エポックに取り残さない)
@@ -742,17 +804,99 @@ function runPushPass(input: {
   });
 }
 
-function reencryptCurrentValues(input: {
-  readonly client: MaruhiClient;
-  readonly environmentId: EnvironmentId;
-  readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly floor: FloorHandle;
-  readonly writerUserId: string;
-  readonly signingKey: CryptoKey;
+/** 巡末の判定(完了検証の結果をどう扱うか)。 */
+type PassVerdict =
+  /** 続行可能(targets が空なら完了)。 */
+  | {
+      readonly kind: "settled";
+      readonly view: VerifiedProject;
+      readonly targets: readonly ReencryptTarget[];
+      readonly alreadyCurrent: number;
+    }
+  /** 完了を検証できなかった(残数は下限)。 */
+  | { readonly kind: "unverified"; readonly remaining: number; readonly failure: string }
+  /** 再実行では解消しない中断(暗号学的証拠・サーバーとチェーンの矛盾)。 */
+  | { readonly kind: "abort"; readonly message: string };
+
+/**
+ * 1 巡の末尾の完了検証と判定。再走査(競合・失敗の有無に関わらず必ず行う)の
+ * 結果から、続行・完了・未検証・即時中断のいずれかを決める。判定の優先順は
+ * 「証拠 > 矛盾 > 続行」— 証拠は再実行で解消しないため他の理由に潰されない。
+ */
+function settlePass(input: {
+  readonly context: ReencryptContext;
   readonly view: VerifiedProject;
-  readonly epoch: number;
-  readonly dek: Uint8Array;
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly known: ReadonlyMap<string, ConflictedTarget>;
+  readonly conflictedIds: ReadonlySet<string>;
+  readonly pass: PushPassResult;
+  readonly reencrypted: number;
+}): Effect.Effect<
+  { readonly verdict: PassVerdict; readonly warnings: readonly string[] },
+  never,
+  never
+> {
+  return Effect.gen(function* () {
+    const { environmentId, epoch } = input.context;
+    const rescan = yield* asOutcome(
+      rescanEnvironment({
+        context: input.context,
+        view: input.view,
+        known: input.known,
+        conflictedIds: input.conflictedIds,
+        // エポック競合の申告があった巡は、チェーンを取り直してから判定する
+        forceResync: input.pass.epochStale > 0,
+      }),
+    );
+    if (rescan.kind === "failed") {
+      return {
+        warnings: [],
+        verdict: {
+          kind: "unverified",
+          remaining: input.conflictedIds.size + input.pass.failed,
+          failure: input.pass.firstFailure ?? rescan.error.message,
+        },
+      } as const;
+    }
+    const warnings = rescan.value.warnings;
+    const context = `環境 ${environmentId} は epoch ${epoch} へ進んでおり、再暗号化は ${input.reencrypted} 変数で中断しました`;
+    if (rescan.value.evidence !== null) {
+      // 暗号学的証拠は最優先の即時中断(再実行では解消しない)。エポックが
+      // 進んでいる文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない
+      return {
+        warnings,
+        verdict: {
+          kind: "abort",
+          message: `${rescan.value.evidence}\n${context}。これは再実行では解消しない証拠です — サーバーの応答を調査してください`,
+        },
+      } as const;
+    }
+    if (input.pass.epochStale > 0) {
+      // 強制再同期したチェーンでもエポックが変わっていない(進んでいれば
+      // rescanEnvironment が失敗している)。サーバーの EpochConflict 申告は
+      // チェーンと矛盾しており、再試行では解けない(push.ts と同じ判定)
+      return {
+        warnings,
+        verdict: {
+          kind: "abort",
+          message: `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままです(サーバー応答とチェーンの矛盾)。${context} — 再実行では解消しません`,
+        },
+      } as const;
+    }
+    return {
+      warnings,
+      verdict: {
+        kind: "settled",
+        view: rescan.value.view,
+        targets: rescan.value.targets,
+        alreadyCurrent: rescan.value.alreadyCurrent,
+      },
+    } as const;
+  });
+}
+
+function reencryptCurrentValues(input: {
+  readonly context: ReencryptContext;
+  readonly view: VerifiedProject;
   readonly targets: readonly ReencryptTarget[];
 }): Effect.Effect<ReencryptOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -763,6 +907,8 @@ function reencryptCurrentValues(input: {
     let alreadyCurrent = 0;
     /** 巡を跨いで持ち越す最後の失敗原因(未完了で終わった場合の報告材料)。 */
     let lastFailure: string | null = null;
+    /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
+    const known = new Map<string, ConflictedTarget>();
 
     const outcome = (remaining: number, failure: string | null): ReencryptOutcome => ({
       reencrypted,
@@ -773,66 +919,46 @@ function reencryptCurrentValues(input: {
     });
 
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
+      // この巡の対象は、次巡の prev アンカーになりうる既知値でもある(§12-5 の
+      // 整合検査の基準)。409 の申告 version は下で上書きする
+      for (const target of pending) {
+        known.set(target.value.variableId, {
+          variableId: target.value.variableId,
+          known: target.value,
+          currentVersion: target.value.version,
+        });
+      }
       const attempted = yield* runPushPass({
-        client: input.client,
-        environmentId: input.environmentId,
+        context: input.context,
         view,
-        floor: input.floor,
-        epoch: input.epoch,
-        dek: input.dek,
-        writerUserId: input.writerUserId,
-        signingKey: input.signingKey,
         pending,
         doneBefore: reencrypted,
       });
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
-      const conflicted = attempted.conflicted;
-      // 完了検証(競合・失敗の有無に関わらず必ず行う。残りは申告や試行結果では
-      // なく、検証済みの実態から決める)
-      const rescan = yield* rescanEnvironment({
-        client: input.client,
-        environmentId: input.environmentId,
+      const conflictedIds = new Set<string>();
+      for (const conflict of attempted.conflicted) {
+        known.set(conflict.variableId, conflict);
+        conflictedIds.add(conflict.variableId);
+      }
+      const settled = yield* settlePass({
+        context: input.context,
         view,
-        resync: input.resync,
-        floor: input.floor,
-        epoch: input.epoch,
-        deksByEpoch: input.deksByEpoch,
-        conflicted,
-      }).pipe(
-        Effect.map((value) => ({ kind: "ok", value }) as const),
-        Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
-      );
-      if (rescan.kind === "failed") {
-        // 完了を**検証できなかった**(残数は下限しか分からない)
-        return outcome(
-          conflicted.length + attempted.failed,
-          attempted.firstFailure ?? rescan.error.message,
-        );
+        known,
+        conflictedIds,
+        pass: attempted,
+        reencrypted,
+      });
+      warnings.push(...settled.warnings);
+      if (settled.verdict.kind === "unverified") {
+        return outcome(settled.verdict.remaining, settled.verdict.failure);
       }
-      warnings.push(...rescan.value.warnings);
-      if (attempted.epochStale > 0) {
-        // 再走査はエポックが進んでいれば失敗しているので、ここへ来た = チェーン
-        // 導出の現エポックは変わっていない。サーバーの EpochConflict 申告は
-        // チェーンと矛盾しており、再試行では解けない(push.ts と同じ判定)
-        return yield* Effect.fail(
-          cliError(
-            `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${input.epoch} のままです(サーバー応答とチェーンの矛盾)。環境 ${input.environmentId} は epoch ${input.epoch} へ進んでおり、再暗号化は ${reencrypted} 変数で中断しました — 再実行では解消しません`,
-          ),
-        );
+      if (settled.verdict.kind === "abort") {
+        return yield* abortWith(warnings, settled.verdict.message);
       }
-      if (rescan.value.evidence !== null) {
-        // 暗号学的証拠は即時中断(再実行では解消しない)。エポックが進んでいる
-        // 文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない
-        return yield* Effect.fail(
-          cliError(
-            `${rescan.value.evidence}\n環境 ${input.environmentId} は epoch ${input.epoch} へ進んでおり、再暗号化は ${reencrypted} 変数で中断しました。これは再実行では解消しない証拠です — サーバーの応答を調査してください`,
-          ),
-        );
-      }
-      view = rescan.value.view;
-      pending = rescan.value.targets;
-      alreadyCurrent += rescan.value.alreadyCurrent;
+      view = settled.verdict.view;
+      pending = settled.verdict.targets;
+      alreadyCurrent += settled.verdict.alreadyCurrent;
       if (pending.length === 0) {
         // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
         // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
@@ -913,16 +1039,12 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         chainEpoch: currentEpoch,
       });
       const outcome = yield* reencryptCurrentValues({
-        client: input.client,
-        environmentId: input.environmentId,
-        resync: input.resync,
-        floor: input.floor,
-        writerUserId: input.signerUserId,
-        signingKey: input.signingKeyPair.privateKey,
+        context: reencryptContext(input, {
+          epoch: currentEpoch,
+          dek,
+          deksByEpoch: keys.deksByEpoch,
+        }),
         view: pulled.verified,
-        epoch: currentEpoch,
-        dek,
-        deksByEpoch: keys.deksByEpoch,
         targets,
       });
       return {
@@ -991,16 +1113,8 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
     const deksByEpoch = new Map<number, Uint8Array>(keys.deksByEpoch);
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
-      client: input.client,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
-      writerUserId: input.signerUserId,
-      signingKey: input.signingKeyPair.privateKey,
+      context: reencryptContext(input, { epoch: newEpoch, dek, deksByEpoch }),
       view: rotated.view,
-      epoch: newEpoch,
-      dek,
-      deksByEpoch,
       targets,
     });
     return {
