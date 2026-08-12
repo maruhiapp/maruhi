@@ -507,14 +507,7 @@ function winnerMetaRegression(
   return null;
 }
 
-/**
- * 409 の勝者を採用してよいかの検査(§12-5 の再試行手順)。値・メタの両側で
- * 「検証済み既知 latest からの後退・同一座標の signed bytes 相違・隣接 prev の
- * 不一致」を拒否する。**ローテーションの再暗号化(env-rotate.ts)も同じ検査を
- * 通す**: 勝者への prev 付け替えは push 経路と同型であり、片方だけが分岐した
- * 履歴への連鎖署名を許すと、床(SHOULD・初回同期では不在)頼みの穴になる。
- */
-export function winnerRegression(
+function winnerRegression(
   variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
@@ -526,9 +519,18 @@ export function winnerRegression(
   );
 }
 
-/** 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。 */
-function winnerInconsistency(
-  target: PushTarget,
+/**
+ * 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。
+ *
+ * 検査は 2 層: (1) 応答間の整合(再取得の最新が 409 の申告より古い = サーバーの
+ * 自己矛盾)、(2) 検証済み既知 latest からの後退・同一座標の signed bytes 相違・
+ * 隣接 prev の不一致。**ローテーションの再暗号化(env-rotate.ts)も同じ検査を
+ * 通す**: 勝者への prev 付け替えは push 経路と同型であり、片方だけが分岐した
+ * 履歴への連鎖署名を許すと、床(SHOULD・初回同期では不在)頼みの穴になる。
+ */
+export function winnerInconsistency(
+  variableId: string,
+  known: VerifiedPulledValue | null,
   winner: VerifiedPulledValue,
   currentVersion: number,
 ): string | null {
@@ -536,9 +538,7 @@ function winnerInconsistency(
     // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
     return `再取得した pull の最新 version(${winner.version})が 409 の申告(${currentVersion})より古く、不整合です`;
   }
-  return target.latest === null
-    ? null
-    : winnerRegression(target.variableId, target.latest, winner, currentVersion);
+  return known === null ? null : winnerRegression(variableId, known, winner, currentVersion);
 }
 
 /**
@@ -569,7 +569,12 @@ function adoptConflictWinner(
         ),
       );
     }
-    const inconsistency = winnerInconsistency(state.target, winner, currentVersion);
+    const inconsistency = winnerInconsistency(
+      state.target.variableId,
+      state.target.latest,
+      winner,
+      currentVersion,
+    );
     if (inconsistency !== null) {
       return yield* Effect.fail(cliError(inconsistency));
     }

@@ -19,6 +19,7 @@ import {
   ChainHeadConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
+  VariableNotFoundError,
   VersionConflictError,
   type WrappedDek,
 } from "@maruhi/api-schema";
@@ -36,7 +37,7 @@ import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
-import { encryptAndSignPayload, winnerRegression } from "./push.ts";
+import { encryptAndSignPayload, winnerInconsistency } from "./push.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
@@ -345,27 +346,39 @@ function appendRotation(
       },
     );
 
-    // 受理後の確認はサーバー申告(応答の currentEpoch)ではなくチェーン再検証で行う
-    const view = yield* resyncExtended(input.resync, accepted.state.verified);
-    const environment = yield* requireChainEnvironment(view, input.environmentId);
-    if (environment.currentEpoch !== input.newEpoch) {
-      return yield* Effect.fail(
+    // 受理後の確認はサーバー申告(応答の currentEpoch)ではなくチェーン再検証で
+    // 行う。ここから先の失敗は**エポックが既に進んだ後**の失敗なので、原因だけ
+    // 出して「エポックが動いた・再暗号化は未実行」という運用状態を伝え損ねない
+    // (再同期のネットワーク障害が素の転送エラーとして出る形を塞ぐ)
+    const confirmed = yield* Effect.gen(function* () {
+      const view = yield* resyncExtended(input.resync, accepted.state.verified);
+      const environment = yield* requireChainEnvironment(view, input.environmentId);
+      if (environment.currentEpoch !== input.newEpoch) {
+        return yield* Effect.fail(
+          cliError(
+            `再同期したチェーンの現エポックが ${environment.currentEpoch} です(受理直後の並行ローテーションの可能性)`,
+          ),
+        );
+      }
+      if (environment.dekCommitments.get(input.newEpoch) !== input.dekCommitmentHex) {
+        // §5.2: コミットメント照合に成功するまで DEK をいかなる暗号操作にも使わない。
+        // 自分で生成した DEK にも同じ規律を適用する(受理されたエントリが自分の
+        // ものであることの確認 = 再暗号化を他人の DEK 前提で始めない)
+        return yield* Effect.fail(
+          cliError(
+            `受理された epoch=${input.newEpoch} のコミットメントが、生成した DEK のものと一致しません(CRYPTO_SPEC §5.2)。この DEK は使用しません`,
+          ),
+        );
+      }
+      return view;
+    }).pipe(
+      Effect.mapError((error) =>
         cliError(
-          `ローテーション(epoch=${input.newEpoch})は受理されましたが、再同期したチェーンの現エポックは ${environment.currentEpoch} です(受理直後の並行ローテーションの可能性)。再実行すると未完了の再暗号化から再開します`,
+          `ローテーション(epoch=${input.newEpoch})は受理されましたが、受理後の確認に失敗しました: ${error.message}。環境 ${input.environmentId} のエポックは進んでおり、現在値の再暗号化は 1 件も実行されていません — 原因を解消して再実行すると、エポックを進めずに再暗号化から再開します`,
         ),
-      );
-    }
-    if (environment.dekCommitments.get(input.newEpoch) !== input.dekCommitmentHex) {
-      // §5.2: コミットメント照合に成功するまで DEK をいかなる暗号操作にも使わない。
-      // 自分で生成した DEK にも同じ規律を適用する(受理されたエントリが自分の
-      // ものであることの確認 = 再暗号化を他人の DEK 前提で始めない)
-      return yield* Effect.fail(
-        cliError(
-          `受理された epoch=${input.newEpoch} のコミットメントが、生成した DEK のものと一致しません(CRYPTO_SPEC §5.2)。この DEK は使用せず中断します — 再実行してください`,
-        ),
-      );
-    }
-    return { view, memberCount: accepted.state.deks.length };
+      ),
+    );
+    return { view: confirmed, memberCount: accepted.state.deks.length };
   });
 }
 
@@ -396,7 +409,9 @@ function decryptTargets(input: {
 /** 1 変数の再暗号化 push の結果(競合は 409 の申告 version を持ち帰る)。 */
 type PushAttempt =
   | { readonly kind: "pushed" }
-  | { readonly kind: "conflict"; readonly currentVersion: number };
+  | { readonly kind: "conflict"; readonly currentVersion: number }
+  /** 並行削除(404)。削除済み変数に再暗号化すべき現在値は存在しない。 */
+  | { readonly kind: "deleted" };
 
 /**
  * 再暗号化 1 変数分の push(§7 / §4.1 — 再暗号化は「実行者が writer として
@@ -447,17 +462,23 @@ function pushReencrypted(input: {
             // 再取得・再検証して実態(勝者が既に現エポックか)を確かめる
             return Effect.succeed({ kind: "conflict", currentVersion: error.currentVersion });
           }
+          if (error instanceof VariableNotFoundError) {
+            // 並行削除。削除は tombstone + 全バージョン削除(§12-5)であり、
+            // 再暗号化すべき現在値は存在しない — 再走査側の同じレースの扱い
+            // (警告して対象から外す)と揃え、残りの変数の処理を止めない
+            return Effect.succeed({ kind: "deleted" });
+          }
           if (error instanceof EpochConflictError) {
             return Effect.fail(
               cliError(
-                `再暗号化の途中で環境 ${input.environmentId} のエポックが進みました(他メンバーによる並行ローテーション)。再実行すると新しいエポックの再暗号化から再開します`,
+                `再暗号化の途中で環境 ${input.environmentId} のエポックが進みました(他メンバーによる並行ローテーション)`,
               ),
             );
           }
           return Effect.fail(toCliError(error));
         }),
       );
-    if (outcome.kind === "conflict") {
+    if (outcome.kind !== "pushed") {
       return outcome;
     }
     // 受理された自分の書き込みを床へ昇格する(§6.3)。メタは変更していないので
@@ -556,15 +577,16 @@ function rescanEnvironment(input: {
         continue;
       }
       // 整合検査は「採用するか」に関わらず先に行う: 巻き戻し・equivocation・
-      // 分岐した prev 連鎖は、それ自体が中断すべき証拠である
-      const regression = winnerRegression(
+      // 分岐した prev 連鎖・409 申告との食い違いは、それ自体が中断すべき証拠
+      // である(push 経路と同一の winnerInconsistency を通す)
+      const inconsistency = winnerInconsistency(
         conflict.variableId,
         conflict.known,
         latest,
         conflict.currentVersion,
       );
-      if (regression !== null) {
-        return rejected(regression);
+      if (inconsistency !== null) {
+        return rejected(inconsistency);
       }
       if (latest.epoch >= input.epoch) {
         alreadyCurrent += 1;
@@ -599,6 +621,91 @@ function rescanEnvironment(input: {
  * (エラー channel)とする — 「再実行すれば直る」種類の失敗ではないため、
  * 部分完了 + 再開案内に混ぜてはならない(push 経路の扱いと揃える)。
  */
+/** 1 巡分の push の結果(進捗・競合・中断の 3 面)。 */
+interface PushPassResult {
+  readonly reencrypted: number;
+  readonly conflicted: readonly ConflictedTarget[];
+  readonly warnings: readonly string[];
+  /** 中断した場合の原因と未処理数(null = 全対象を試行し終えた)。 */
+  readonly failure: { readonly message: string; readonly unprocessed: number } | null;
+}
+
+/**
+ * 1 巡分の再暗号化 push。競合(409)は次の再走査へ回し、並行削除(404)は
+ * 警告して飛ばし、それ以外の失敗は未処理数とともに中断として返す(投げない —
+ * エポックが進んだ後の失敗は部分完了として報告する必要がある)。
+ */
+function runPushPass(input: {
+  readonly client: MaruhiClient;
+  readonly environmentId: EnvironmentId;
+  readonly view: VerifiedProject;
+  readonly floor: FloorHandle;
+  readonly epoch: number;
+  readonly dek: Uint8Array;
+  readonly writerUserId: string;
+  readonly signingKey: CryptoKey;
+  readonly pending: readonly ReencryptTarget[];
+  /** 進行表示の通し番号の起点(これまでに再暗号化した数)。 */
+  readonly doneBefore: number;
+}): Effect.Effect<PushPassResult, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const conflicted: ConflictedTarget[] = [];
+    const warnings: string[] = [];
+    // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
+    const total = input.doneBefore + input.pending.length;
+    let reencrypted = 0;
+    let processed = 0;
+    for (const target of input.pending) {
+      const attempt = yield* pushReencrypted({
+        client: input.client,
+        environmentId: input.environmentId,
+        view: input.view,
+        floor: input.floor,
+        target,
+        epoch: input.epoch,
+        dek: input.dek,
+        writerUserId: input.writerUserId,
+        signingKey: input.signingKey,
+      }).pipe(
+        Effect.map((value) => ({ kind: "ok", value }) as const),
+        Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
+      );
+      processed += 1;
+      if (attempt.kind === "failed") {
+        return {
+          reencrypted,
+          conflicted,
+          warnings,
+          failure: {
+            message: attempt.error.message,
+            unprocessed: input.pending.length - processed + 1,
+          },
+        };
+      }
+      if (attempt.value.kind === "conflict") {
+        conflicted.push({
+          variableId: target.value.variableId,
+          known: target.value,
+          currentVersion: attempt.value.currentVersion,
+        });
+        continue;
+      }
+      if (attempt.value.kind === "deleted") {
+        warnings.push(
+          `変数 ${displayText(target.value.name)} は再暗号化の直前に削除されました(他メンバーによる並行削除)。再暗号化の対象から外します`,
+        );
+        continue;
+      }
+      reencrypted += 1;
+      yield* io.log(
+        `  再暗号化 (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
+      );
+    }
+    return { reencrypted, conflicted, warnings, failure: null };
+  });
+}
+
 function reencryptCurrentValues(input: {
   readonly client: MaruhiClient;
   readonly environmentId: EnvironmentId;
@@ -613,7 +720,6 @@ function reencryptCurrentValues(input: {
   readonly targets: readonly ReencryptTarget[];
 }): Effect.Effect<ReencryptOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const warnings: string[] = [];
     let view = input.view;
     let pending = input.targets;
@@ -629,41 +735,26 @@ function reencryptCurrentValues(input: {
     });
 
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
-      const conflicted: ConflictedTarget[] = [];
-      // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
-      const total = reencrypted + pending.length;
-      let processed = 0;
-      for (const target of pending) {
-        const attempt = yield* pushReencrypted({
-          client: input.client,
-          environmentId: input.environmentId,
-          view,
-          floor: input.floor,
-          target,
-          epoch: input.epoch,
-          dek: input.dek,
-          writerUserId: input.writerUserId,
-          signingKey: input.signingKey,
-        }).pipe(
-          Effect.map((value) => ({ kind: "ok", value }) as const),
-          Effect.catch((error) => Effect.succeed({ kind: "failed", error } as const)),
-        );
-        processed += 1;
-        if (attempt.kind === "failed") {
-          // 未処理分(この変数を含む残り)+ 競合分が未完了として残る
-          return outcome(pending.length - processed + 1 + conflicted.length, attempt.error.message);
-        }
-        if (attempt.value.kind === "conflict") {
-          conflicted.push({
-            variableId: target.value.variableId,
-            known: target.value,
-            currentVersion: attempt.value.currentVersion,
-          });
-          continue;
-        }
-        reencrypted += 1;
-        yield* io.log(
-          `  再暗号化 (${reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
+      const attempted = yield* runPushPass({
+        client: input.client,
+        environmentId: input.environmentId,
+        view,
+        floor: input.floor,
+        epoch: input.epoch,
+        dek: input.dek,
+        writerUserId: input.writerUserId,
+        signingKey: input.signingKey,
+        pending,
+        doneBefore: reencrypted,
+      });
+      reencrypted += attempted.reencrypted;
+      warnings.push(...attempted.warnings);
+      const conflicted = attempted.conflicted;
+      if (attempted.failure !== null) {
+        // 未処理分(中断した変数を含む残り)+ 競合分が未完了として残る
+        return outcome(
+          attempted.failure.unprocessed + conflicted.length,
+          attempted.failure.message,
         );
       }
       // 完了検証(競合の有無に関わらず必ず行う)

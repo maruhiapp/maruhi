@@ -161,6 +161,8 @@ async function variableAt(input: {
 interface ServerOptions {
   readonly built: BuiltChain;
   readonly variables: PulledVariable[];
+  /** 削除済み変数の tombstone(§12-5 — 保存・配布し続ける)。 */
+  readonly deletedVariables?: WireDistributedVariableStatement[];
   readonly deks: WireRecipientDek[];
   readonly currentEpoch: number;
   /** rotate 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
@@ -185,6 +187,7 @@ function makeServer(options: ServerOptions): ServerState {
   const entries: ChainEntry[] = [...options.built.entries];
   const hashes: string[] = [...options.built.hashes];
   const variables = options.variables;
+  const deletedVariables = options.deletedVariables ?? [];
   const deks = options.deks;
   const rotateBodies: RotateBody[] = [];
   const pushes: { variableId: string; value: WireDistributedValue }[] = [];
@@ -209,7 +212,7 @@ function makeServer(options: ServerOptions): ServerState {
         currentEpoch,
         statement: envStatement,
         variables,
-        deletedVariables: [],
+        deletedVariables,
         deks,
       },
     })),
@@ -1010,6 +1013,111 @@ describe("maruhi env rotate", () => {
     expect(state.pushes).toHaveLength(0);
     expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
     expect(env.errors.join("\n")).not.toContain("完了していません");
+  });
+
+  it("再暗号化中の並行削除(404)は警告して続行する(残りの変数を巻き添えにしない)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DOOMED",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "doomed-value",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainBase,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    // 削除は tombstone(status deleted・metaVersion + 1)+ 全バージョン削除(§12-5)
+    const tombstone = await statementFor({
+      projectId: chainBase.projectId,
+      environmentId: ENV_ID,
+      variableId: "vaa",
+      name: "DOOMED",
+      author: owner,
+      head: headOf(chainBase, 1),
+      status: "deleted",
+      metaVersion: 2,
+    });
+    const deletedVariables: WireDistributedVariableStatement[] = [];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deletedVariables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onPush: (call, variableId) => {
+        if (call !== 0) {
+          return undefined;
+        }
+        // 再暗号化の直前に他メンバーが削除した
+        variables.splice(
+          variables.findIndex((variable) => variable.variableId === variableId),
+          1,
+        );
+        deletedVariables.push(tombstone);
+        return { status: 404, json: { _tag: "VariableNotFound", variableId } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "削除レース"], env.layer)).toBe(0);
+    // 削除された変数は対象から外れ、残りは再暗号化される
+    expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
+    expect(env.errors.join("\n")).toContain("並行削除");
+  });
+
+  it("409 の申告より古い値しか配布されない応答は、勝者として採用せず中断する(§12-5)", async () => {
+    const stale = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 2,
+    });
+    const variables = [stale];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      // 「最新は version 9」と申告しながら、再取得では version 1 しか配布しない
+      onPush: (call) =>
+        call === 0
+          ? { status: 409, json: { _tag: "VersionConflict", currentVersion: 9 } }
+          : undefined,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "自己矛盾"], env.layer)).toBe(1);
+    expect(state.pushes).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("409 の申告");
   });
 
   it("競合が解消しないまま残った再暗号化は、部分完了として警告し非ゼロで終わる", async () => {
