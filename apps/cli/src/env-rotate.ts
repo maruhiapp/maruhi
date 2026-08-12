@@ -306,7 +306,19 @@ function appendRotation(
     readonly dek: Uint8Array;
     readonly dekCommitmentHex: string;
   },
-): Effect.Effect<{ readonly view: VerifiedProject; readonly memberCount: number }, CliError> {
+): Effect.Effect<
+  {
+    readonly view: VerifiedProject;
+    readonly memberCount: number;
+    /**
+     * **受理に使った**自分のメンバー行。CAS リトライで再同期した場合、呼び出し
+     * 側が最初に持っていた行とは鍵フィンガープリントが違いうる — 以後の書き込みの
+     * 帰属(台帳の writer)はこちらを使う。
+     */
+    readonly member: ChainMember;
+  },
+  CliError
+> {
   return Effect.gen(function* () {
     const buildWraps = (verified: VerifiedProject) =>
       buildWrapSetForMembers({
@@ -410,7 +422,11 @@ function appendRotation(
         ),
       ),
     );
-    return { view: confirmed, memberCount: accepted.state.deks.length };
+    return {
+      view: confirmed,
+      memberCount: accepted.state.deks.length,
+      member: accepted.state.member,
+    };
   });
 }
 
@@ -444,9 +460,7 @@ function decryptForRotation(input: {
       );
     }
     for (const reason of decrypted.undecryptable) {
-      input.warnings.push(
-        `再暗号化できない値があります(${reason})。新エポックへは進めますが、この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`,
-      );
+      input.warnings.push(undecryptableWarning(reason));
     }
     return decrypted.targets;
   });
@@ -479,6 +493,15 @@ function noteStaleFailures(
  */
 function stalledOnUndecryptable(pending: readonly ReencryptTarget[], pass: number): boolean {
   return pending.length === 0 && pass < MAX_REENCRYPT_PASSES;
+}
+
+/**
+ * 復号できなかった値の警告文。**1 箇所に固定する**: 同じ変数が経路ごとに
+ * 少しずつ違う文面で警告されると、dedupeWarnings(集合)は別物として通してしまい、
+ * 重複排除のために入れた仕組みがそのまま重複を出すことになる。
+ */
+function undecryptableWarning(reason: string): string {
+  return `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`;
 }
 
 /** 復号の結果。開けなかった値は「再暗号化できない値」として数と理由を持ち帰る。 */
@@ -833,9 +856,7 @@ function rescanEnvironment(input: {
       chainEpoch: environment.currentEpoch,
     });
     for (const reason of decrypted.undecryptable) {
-      input.collectWarning(
-        `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです`,
-      );
+      input.collectWarning(undecryptableWarning(reason));
     }
     return {
       view,
@@ -1080,7 +1101,12 @@ type PassVerdict =
       readonly targets: readonly ReencryptTarget[];
       readonly alreadyCurrent: number;
     }
-  /** 完了を検証できなかった(残数は下限)。 */
+  /**
+   * 完了を検証できなかった。`remaining` は「今巡で完了しなかった数」であって
+   * 実測ではない — 上限でも下限でもない(競合分が他メンバーの手で解決していれば
+   * 過大、実行中に作られた変数は数に入らないため過小になりうる)。表示側は
+   * これを「未確認を含む」と断って出す(remainingExact = false)。
+   */
   | { readonly kind: "unverified"; readonly remaining: number; readonly failure: string }
   /** 再実行では解消しない中断(暗号学的証拠・サーバーとチェーンの矛盾)。 */
   | { readonly kind: "abort"; readonly message: string };
@@ -1224,8 +1250,13 @@ function reencryptCurrentValues(input: {
     let blockingFailure: string | null = null;
     /** この実行で一度でも起きた失敗(完了できた場合の「起きたが解決した」報告用)。 */
     let seenFailure: string | null = null;
-    /** 目標エポック未満のまま残っている変数数(最終巡の再走査が確定させる)。 */
-    let staleCount = input.targets.length;
+    /**
+     * 目標エポック未満のまま残っている変数数。**毎巡の再走査が確定させる**ので、
+     * ここは初期値を持たない(0 のまま読まれる経路は無い — 読むのは巡を 1 度
+     * 以上回した後だけ)。対象数で初期化すると、報告され得ない数を「残数の
+     * 既定値」に見せてしまう
+     */
+    let staleCount = 0;
     /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
     const known = new Map<string, ConflictedTarget>();
 
@@ -1266,8 +1297,7 @@ function reencryptCurrentValues(input: {
       });
       warnings.push(...settled.warnings);
       if (settled.verdict.kind === "unverified") {
-        // 再走査に到達できていない = 残数は「今巡で完了しなかった数」という
-        // 上限であって実測ではない(競合分が他メンバーの手で解決している可能性)
+        // 再走査に到達できていない = 残数は実測ではない(PassVerdict の定義)
         return outcome(settled.verdict.remaining, settled.verdict.failure, false);
       }
       if (settled.verdict.kind === "abort") {
@@ -1366,9 +1396,12 @@ function resumeReencryption(input: {
     );
     const dek = input.keys.deksByEpoch.get(currentEpoch);
     if (dek === undefined) {
+      // 逃げ道を必ず添える: この経路は再開専用なので現エポックの DEK が要るが、
+      // --new-epoch は再開を通らず自分で新 DEK を作るため**必ず成功する**。
+      // 案内しないと、失効目的の実行が「打つ手なし」で終わる
       return yield* Effect.fail(
         cliError(
-          `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。再暗号化を再開できません`,
+          `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。未完了の再暗号化を再開できません — 再ラップを待つか、失効を優先する場合は --new-epoch を付けて実行してください(新しいエポックを作るので現エポックの DEK は不要です)`,
         ),
       );
     }
@@ -1394,9 +1427,7 @@ function resumeReencryption(input: {
       chainEpoch: currentEpoch,
     });
     for (const reason of decrypted.undecryptable) {
-      warnings.push(
-        `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`,
-      );
+      warnings.push(undecryptableWarning(reason));
     }
     const outcome = yield* reencryptCurrentValues({
       context: reencryptContext(input.input, member, {
@@ -1560,7 +1591,8 @@ function rotateWithWarnings(
     const deksByEpoch = new Map<number, Uint8Array>(keys.deksByEpoch);
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
-      context: reencryptContext(input, member, { epoch: newEpoch, dek, deksByEpoch }),
+      // 帰属は受理時点のメンバー行(CAS リトライで再署名していれば更新済み)
+      context: reencryptContext(input, rotated.member, { epoch: newEpoch, dek, deksByEpoch }),
       view: rotated.view,
       targets,
       sink: warnings,

@@ -1734,7 +1734,7 @@ describe("maruhi env rotate", () => {
     // 開ける値は新エポックへ、開けない値は未完了として報告する
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化できない値があります");
+    expect(errors).toContain("再暗号化できない値が残っています");
     expect(env.logs.join("\n")).toContain("部分完了");
   });
 
@@ -1822,6 +1822,11 @@ describe("maruhi env rotate", () => {
     // 原因が既定文言(競合)に化けない
     expect(errors).not.toContain("並行 push との競合が解消しませんでした");
     expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    // 同じ変数の警告は 1 回だけ(再開経路と巡末の再走査で文面が割れると
+    // dedupeWarnings が別物として通してしまう)
+    expect(
+      env.errors.filter((line) => line.includes("再暗号化できない値が残っています")),
+    ).toHaveLength(1);
   });
 
   it("409 以外の失敗で拾い直した勝者にも整合検査を適用する(分岐 prev への連鎖を防ぐ)", async () => {
@@ -2060,6 +2065,38 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("未完了 1 変数");
   });
 
+  it("現エポックの DEK が無くて再開できない場合、--new-epoch の逃げ道を案内する", async () => {
+    // 中断されたローテーションの後に加わったメンバー: 現エポック(2)のラップが
+    // まだ自分宛に無い。再開はできないが --new-epoch なら成立する(自分で新しい
+    // DEK を作るので現エポックの DEK は要らない)— 案内しないと失効が詰む
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner })],
+      currentEpoch: 2,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("再暗号化を再開できません");
+    expect(errors).toContain("--new-epoch を付けて実行してください");
+    expect(state.rotateBodies).toHaveLength(0);
+  });
+
   it("操作に適用されないオプション・綴り間違いは黙って捨てずに拒否する", async () => {
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
@@ -2079,8 +2116,20 @@ describe("maruhi env rotate", () => {
       1,
     );
     expect(env.errors.join("\n")).toContain("env rotate では使えません");
-    // HTTP は一切起きていない
-    expect(server.requests).toHaveLength(0);
+    // 打ったとおりの綴りで返す(短縮形を `--x` に書き換えて出さない)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "-q"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("不明なオプションです: -q");
+    expect(env.errors.join("\n")).not.toContain("--q");
+    // 操作専用でない宣言済みオプション(--project 等)は拒否しない。許可集合は
+    // 引数表から導くので、手書きの一覧との二重管理で弾かれることがない
+    expect(
+      await runCli(
+        ["env", "rotate", ENV_ID, "--reason", "x", "--project", chainBase.projectId],
+        env.layer,
+      ),
+    ).not.toBe(1);
+    // 拒否された 3 例では HTTP は一切起きていない(最後の 1 例だけが通信する)
+    expect(server.requests.length).toBeGreaterThan(0);
   });
 
   it("対象環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {

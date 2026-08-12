@@ -388,12 +388,15 @@ function envRotate(
   });
 }
 
-/** env コマンドが受け付けるオプション名(操作ごとの適用可否は下の表)。 */
+/**
+ * **操作専用**のオプション(ここに無い宣言済みオプションは両操作で使える)。
+ * 「宣言されているか」は引数表から導くので、この表に載せ忘れても新しい
+ * オプションが不明扱いで拒否されることはない。
+ */
 const ENV_ACTION_FLAGS = {
-  create: new Set(["name"]),
-  rotate: new Set(["reason", "new-epoch"]),
+  create: new Set<string>(["name"]),
+  rotate: new Set<string>(["reason", "new-epoch"]),
 } as const;
-const ENV_COMMON_FLAGS = new Set(["server", "project"]);
 
 /**
  * env のオプション検査。gunshi は 1 コマンド 1 引数表なので、`create` と
@@ -405,28 +408,37 @@ const ENV_COMMON_FLAGS = new Set(["server", "project"]);
  *    実行が黙って弱い再開経路へ落ちる
  * 2. 操作に適用されないオプション(create への --reason 等)。指定した意図が
  *    無視されたことに気付けるようにする
+ *
+ * 1 の判定材料(`declared`)は**引数表そのもの**から渡す — 手書きの一覧と
+ * 二重管理にすると、次に増えたオプションが実装済みなのに拒否される。
  */
 function checkEnvFlags(
   action: "create" | "rotate",
-  tokens: readonly { readonly kind: string; readonly name?: string | undefined }[],
+  tokens: readonly {
+    readonly kind: string;
+    readonly name?: string | undefined;
+    readonly rawName?: string | undefined;
+  }[],
+  declared: ReadonlySet<string>,
 ): Effect.Effect<void, CliError> {
-  const applicable = ENV_ACTION_FLAGS[action];
+  const other = action === "create" ? ENV_ACTION_FLAGS.rotate : ENV_ACTION_FLAGS.create;
   for (const token of tokens) {
     if (token.kind !== "option" || token.name === undefined) {
       continue;
     }
     const name = token.name;
-    if (ENV_COMMON_FLAGS.has(name) || applicable.has(name)) {
-      continue;
+    // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
+    const typed = displayText(token.rawName ?? `--${name}`);
+    if (!declared.has(name)) {
+      return Effect.fail(cliError(`不明なオプションです: ${typed}`));
     }
-    const other = action === "create" ? ENV_ACTION_FLAGS.rotate : ENV_ACTION_FLAGS.create;
-    return Effect.fail(
-      cliError(
-        other.has(name)
-          ? `--${displayText(name)} は env ${action} では使えません(${action === "create" ? "rotate" : "create"} 用のオプションです)`
-          : `不明なオプションです: --${displayText(name)}`,
-      ),
-    );
+    if (other.has(name)) {
+      return Effect.fail(
+        cliError(
+          `${typed} は env ${action} では使えません(${action === "create" ? "rotate" : "create"} 用のオプションです)`,
+        ),
+      );
+    }
   }
   return Effect.void;
 }
@@ -469,7 +481,8 @@ function envCommand(execute: Execute) {
               ),
             );
           }
-          yield* checkEnvFlags(action, ctx.tokens);
+          // 宣言済みオプション名は引数表(= ctx.values のキー)から導く
+          yield* checkEnvFlags(action, ctx.tokens, new Set(Object.keys(ctx.values)));
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
             return yield* envRotate(
