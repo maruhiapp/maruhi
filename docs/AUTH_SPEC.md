@@ -390,7 +390,7 @@ CRYPTO_SPEC §9.1(ワークロードリース)の API 面。長期資格情報�
 ### 14-1. 認証(OIDC)と認可(チェーン束縛ポリシー)
 
 - 認証はリクエスト同梱の OIDC トークン(JWT)で行う。maruhi トークン・セッションは使わない(§12-3 の表の外)。検証: (1) issuer が**サーバー実装の対応 issuer 一覧**(v1 = GitHub Actions `https://token.actions.githubusercontent.com` のみ)に含まれること(デプロイメント全体で一様な静的設定であり、プロジェクトの存在・状態情報を運ばない)、(2) 署名は issuer の JWKS(OIDC discovery 経由で取得・TTL キャッシュ。取得失敗時は fail-closed)で検証し、alg は RS256 / ES256 のみ許可(対称鍵 alg・`none` は拒否)、(3) `exp` / `iat` の時刻検証(clock skew 許容 ±60 秒)。**認証はここまでであり、チェーン導出状態(grant・lease_policy)を一切参照しない** — grant の policy との突合は下の認可に属する(14-3 のとおり、認証失敗のみが 401 になる)
-- 認可: チェーン導出の有効 grant_server の lease_policy(CRYPTO_SPEC §6.2)から、issuer_url がトークンの issuer と一致し、かつ audience がトークンの `aud` と一致する要素を選択し(audience の推奨値はデプロイメントの origin)、その claim_constraints を**完全一致**で評価する(制約に列挙された claim のみ評価し、列挙外の claim は関与しない)。評価意味論の拡張(prefix 等)は本章の改訂で行い、チェーン形式には影響しない(CRYPTO_SPEC §6.2 の構造 / 意味論の分離)
+- 認可は**存在量化**で判定する(2026-08-12 レビュー反映 — 「一致する要素の選択」では複数要素一致時の選定が非決定になる): チェーン導出の有効 grant_server の lease_policy(CRYPTO_SPEC §6.2)に、(1) issuer_url がトークンの issuer と一致し、(2) audience がトークンの `aud` と一致し(audience の推奨値はデプロイメントの origin)、(3) claim_constraints の**すべて**がトークンの claim と**完全一致**する要素が **1 つでも存在すれば**認可する。制約に列挙された claim のみ評価し、列挙外の claim は関与しない。同一 (issuer_url, audience) で claim_constraints の異なる複数要素は**正当な表現**である(例: ブランチ単位の CI 制限を `sub` 制約の値違いの要素として並べる — v1 は完全一致のみのため、複数ブランチの許可はこの形で表現する)。どの要素が一致したかは認可結果・リースラップに影響しない(claims_digest — CRYPTO_SPEC §9.1 — はトークンの issuer / sub / aud から計算され、要素の同定に依存しない)。評価意味論の拡張(prefix 等)は本章の改訂で行い、チェーン形式には影響しない(CRYPTO_SPEC §6.2 の構造 / 意味論の分離)
 - 対象環境が開示スコープ(scope_environments)に含まれること
 - **存在秘匿(§11-2 の適用)**: 未知プロジェクト・grant なし・ポリシー不一致(issuer_url / audience / claim 制約のいずれの不一致も)・スコープ外環境は一律 404。OIDC 検証自体の失敗(対応 issuer 一覧外・署名・時刻・形式)のみ 401
 
