@@ -390,15 +390,58 @@ describe("maruhi env create", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("grant_server が有効なプロジェクトでは拒否する(Phase 2 未実装)", async () => {
+  it("作成する環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      // 未作成 ID を先回りで開示したスコープ
+      { actor: owner, operation: await grantServerOp(["staging"]) },
+    ]);
+    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("grant_server");
+  });
+
+  it("スコープが空の grant_server は全環境扱いで拒否する(§6.2 が空の意味を定めていない)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: await grantServerOp([]) },
+    ]);
+    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("開示スコープ");
+  });
+
+  it("別環境だけを開示した grant_server は、他環境の作成を止めない(§6.2 のスコープは部分集合)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: await grantServerOp(["dev"]) },
     ]);
-    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
-    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("grant_server");
+    let called = false;
+    const env = await startEnv(
+      built.projectId,
+      [
+        chainHandler(built.projectId, built),
+        onRequest("POST", `/projects/${built.projectId}/environments`, () => {
+          called = true;
+          return {
+            status: 200,
+            json: {
+              environmentId: "staging",
+              currentEpoch: 1,
+              headSeq: built.entries.length + 1,
+              headHashHex: "cd".repeat(32),
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    expect(called).toBe(true);
   });
 
   it("チェーン観測済みの環境 ID は HTTP を呼ばず早期拒否する(履歴全体一意 — §6.2)", async () => {

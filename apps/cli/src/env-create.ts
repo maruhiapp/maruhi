@@ -33,7 +33,9 @@ function ensureCreatable(
   signerUserId: string,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    yield* ensureNoServerGrant(verified, "環境作成");
+    // 作成しようとしている ID が既存 grant のスコープに載っている場合(未作成 ID を
+    // 先回りで開示した grant)だけが、この作成にサーバー宛ラップの義務を課す
+    yield* ensureNoServerGrant(verified, environmentId, "環境作成");
     // environment_id はチェーン履歴全体で一意(合意規則 duplicate-environment —
     // CRYPTO_SPEC §6.2)。サーバーの 422 を待たずクライアントでも早期検出する
     if (verified.state.environments.has(environmentId)) {

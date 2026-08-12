@@ -63,6 +63,11 @@ export interface RotationSummary {
   readonly alreadyCurrent: number;
   /** 競合が解けず未完了のまま残った変数数(> 0 なら部分完了)。 */
   readonly remaining: number;
+  /**
+   * `remaining` が再走査を通った実測か(false = 中断により上限しか分からない)。
+   * 表示で「未確認を含む」と断らねばならないのはこちらだけである。
+   */
+  readonly remainingExact: boolean;
   /** 再暗号化を中断させた原因(null = 最後まで走った)。呼び出し側が警告に使う。 */
   readonly failure: string | null;
   readonly warnings: readonly string[];
@@ -104,6 +109,11 @@ interface ReencryptOutcome {
   readonly reencrypted: number;
   readonly alreadyCurrent: number;
   readonly remaining: number;
+  /**
+   * `remaining` が再走査を通った**実測**か(false = 再走査に到達できず、
+   * 「今巡で完了しなかった数」という上限しか分かっていない)。
+   */
+  readonly remainingExact: boolean;
   /**
    * 再暗号化を中断させた原因(null = 最後まで走った)。エポックが進んだ後の
    * 失敗を例外として投げ捨てると、「エポックだけ進んで再暗号化が残っている」
@@ -193,7 +203,7 @@ function ensureRotatable(
   return Effect.gen(function* () {
     // §7: grant_server が有効なら新エポック DEK をサーバー鍵へも再ラップしなければ
     // リース経路が停止する。メンバー宛だけの完全集合で黙って進めない
-    yield* ensureNoServerGrant(verified, "ローテーション");
+    yield* ensureNoServerGrant(verified, environmentId, "ローテーション");
     yield* requireChainEnvironment(verified, environmentId);
     const member = verified.state.members.get(signerUserId);
     if (member === undefined) {
@@ -1072,15 +1082,24 @@ function reencryptCurrentValues(input: {
     let pending = input.targets;
     let reencrypted = 0;
     let alreadyCurrent = 0;
-    /** 巡を跨いで持ち越す最後の失敗原因(未完了で終わった場合の報告材料)。 */
+    /**
+     * 巡を跨いで持ち越す**最新**の失敗原因(未完了で終わった場合の報告材料)。
+     * 古い方を残すと、既に解消した一時失敗を原因として掲げたまま、いま塞いで
+     * いる本当の原因を隠してしまう。
+     */
     let lastFailure: string | null = null;
     /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
     const known = new Map<string, ConflictedTarget>();
 
-    const outcome = (remaining: number, failure: string | null): ReencryptOutcome => ({
+    const outcome = (
+      remaining: number,
+      failure: string | null,
+      remainingExact: boolean,
+    ): ReencryptOutcome => ({
       reencrypted,
       alreadyCurrent,
       remaining,
+      remainingExact,
       failure,
     });
 
@@ -1105,7 +1124,9 @@ function reencryptCurrentValues(input: {
       });
       warnings.push(...settled.warnings);
       if (settled.verdict.kind === "unverified") {
-        return outcome(settled.verdict.remaining, settled.verdict.failure);
+        // 再走査に到達できていない = 残数は「今巡で完了しなかった数」という
+        // 上限であって実測ではない(競合分が他メンバーの手で解決している可能性)
+        return outcome(settled.verdict.remaining, settled.verdict.failure, false);
       }
       if (settled.verdict.kind === "abort") {
         return yield* Effect.fail(cliError(settled.verdict.message));
@@ -1117,17 +1138,18 @@ function reencryptCurrentValues(input: {
         // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
         // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
         // (完了を検証できている以上、部分完了として非ゼロ終了させない)
-        const anyFailure = lastFailure ?? attempted.firstFailure;
+        const anyFailure = attempted.firstFailure ?? lastFailure;
         if (anyFailure !== null) {
           warnings.push(
             `再暗号化の途中で失敗がありましたが、再走査で完了を確認しました: ${anyFailure}`,
           );
         }
-        return outcome(0, null);
+        return outcome(0, null, true);
       }
-      lastFailure ??= attempted.firstFailure;
+      lastFailure = attempted.firstFailure ?? lastFailure;
     }
-    return outcome(pending.length, lastFailure);
+    // 巡を使い切った(中断ではない): 残数は最終巡の再走査を通った**実測**である
+    return outcome(pending.length, lastFailure, true);
   });
 }
 
@@ -1225,6 +1247,7 @@ function resumeReencryption(input: {
       reencrypted: outcome.reencrypted,
       alreadyCurrent: outcome.alreadyCurrent,
       remaining: outcome.remaining,
+      remainingExact: outcome.remainingExact,
       failure: outcome.failure,
       warnings: dedupeWarnings(warnings),
     };
@@ -1307,6 +1330,7 @@ function rotateWithWarnings(
         reencrypted: 0,
         alreadyCurrent: 0,
         remaining: 0,
+        remainingExact: true,
         failure: null,
         warnings: dedupeWarnings(warnings),
       };
@@ -1378,6 +1402,7 @@ function rotateWithWarnings(
       reencrypted: outcome.reencrypted,
       alreadyCurrent: outcome.alreadyCurrent,
       remaining: outcome.remaining,
+      remainingExact: outcome.remainingExact,
       failure: outcome.failure,
       warnings: dedupeWarnings(warnings),
     };

@@ -267,18 +267,23 @@ function reportPartialRotation(
     const io = yield* CliIo;
     // 中断した場合の残数は上限であって実測ではない(再走査へ到達していないため、
     // 競合分が既に他メンバーによって新エポックで書かれている可能性が残る)。
-    // 断定せず「未確認を含む」と示す
+    // 断定せず「未確認を含む」と示す — 巡を使い切っただけの残数は再走査を
+    // 通った実測なので、そちらに但し書きを付けて疑わしく見せない
     const scale =
       summary.remaining > 0
-        ? `未完了 ${summary.remaining} 変数${summary.failure === null ? "" : "(未確認を含む)"}`
+        ? `未完了 ${summary.remaining} 変数${summary.remainingExact ? "" : "(未確認を含む)"}`
         : "完了を検証できませんでした";
     yield* io.log(`部分完了: ${scope}(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`);
-    // 中断原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
-    // エラーだけ出して伝え損ねない)
+    // 失敗の原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
+    // エラーだけ出して伝え損ねない)。「中断」と言えるのは再走査へ到達できず
+    // 途中で降りた場合だけで、巡を使い切った場合は最後まで走ったうえでの未完了である
+    const stopped = summary.remainingExact
+      ? "再暗号化が完了しませんでした"
+      : "再暗号化が中断しました";
     const cause =
       summary.failure === null
         ? "並行 push との競合が解消しませんでした"
-        : `再暗号化が中断しました: ${summary.failure}`;
+        : `${stopped}: ${summary.failure}`;
     yield* io.logError(
       `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します(再実行は残りを再走査するため、実際の未完了数もそこで確定します)。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
     );

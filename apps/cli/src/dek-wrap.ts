@@ -149,18 +149,31 @@ export function sameMemberSet(a: VerifiedProject, b: VerifiedProject): boolean {
 }
 
 /**
- * grant_server が有効なプロジェクトの複合操作を拒否する。サーバー宛ラップの
- * データプレーンは Phase 2 未実装で、メンバー宛のみの完全集合は §7 / §12-4 の
- * 開示契約(サーバー鍵への再ラップ義務)を黙って破ることになるため。
+ * **対象環境が** grant_server のスコープに入っている場合に複合操作を拒否する。
+ * サーバー宛ラップのデータプレーンは Phase 2 未実装で、メンバー宛のみの完全集合は
+ * §7 / §12-4 の開示契約(サーバー鍵への再ラップ義務)を黙って破ることになるため。
+ *
+ * 判定は grant ごとのスコープ(§6.2 の「対象環境の部分集合」)で行う: エポックは
+ * 環境ごとに独立に進む(§3)ので、dev だけを開示した grant が prod の失効
+ * ローテーション(§7)を止めてよい理由はない — 止めれば、退職者の削除に必要な
+ * 唯一の手段が別環境の設定によって塞がれる。
+ *
+ * スコープが空の grant は「対象なし」とも「全環境」とも読めるが §6.2 は意味を
+ * 定めていないため、保守的に全環境扱い(= 拒否)とする。
  */
 export function ensureNoServerGrant(
   verified: VerifiedProject,
+  environmentId: string,
   operation: string,
 ): Effect.Effect<void, CliError> {
-  if (verified.state.serverGrants.size > 0) {
+  const covering = [...verified.state.serverGrants.values()].some(
+    (grant) =>
+      grant.scopeEnvironmentIds.length === 0 || grant.scopeEnvironmentIds.includes(environmentId),
+  );
+  if (covering) {
     return Effect.fail(
       cliError(
-        `このプロジェクトは grant_server が有効です。サーバー宛 DEK ラップは Phase 2 未実装のため、CLI からの${operation}は行えません`,
+        `環境 ${displayText(environmentId)} は grant_server の開示スコープに含まれています。サーバー宛 DEK ラップは Phase 2 未実装のため、CLI からの${operation}は行えません`,
       ),
     );
   }

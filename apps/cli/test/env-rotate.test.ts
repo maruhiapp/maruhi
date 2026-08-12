@@ -169,6 +169,8 @@ interface ServerOptions {
   readonly onRotate?: (call: number) => MockResponse | undefined;
   /** push 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
   readonly onPush?: (call: number, variableId: string) => MockResponse | undefined;
+  /** pull 呼び出しごとの差し込み応答(undefined = 正常応答)。巡末の再走査を潰す用。 */
+  readonly onPull?: (call: number) => MockResponse | undefined;
 }
 
 interface ServerState {
@@ -194,6 +196,7 @@ function makeServer(options: ServerOptions): ServerState {
   let currentEpoch = options.currentEpoch;
   let rotateCalls = 0;
   let pushCalls = 0;
+  let pullCalls = 0;
 
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
@@ -205,17 +208,23 @@ function makeServer(options: ServerOptions): ServerState {
         headHashHex: hashes[hashes.length - 1],
       },
     })),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
-      status: 200,
-      json: {
-        environmentId: ENV_ID,
-        currentEpoch,
-        statement: envStatement,
-        variables,
-        deletedVariables,
-        deks,
-      },
-    })),
+    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => {
+      const injected = options.onPull?.(pullCalls);
+      pullCalls += 1;
+      return (
+        injected ?? {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch,
+            statement: envStatement,
+            variables,
+            deletedVariables,
+            deks,
+          },
+        }
+      );
+    }),
     async (request) => {
       if (
         request.method !== "POST" ||
@@ -597,10 +606,97 @@ describe("maruhi env rotate", () => {
     // 複合は受理済み = エポックは進んでいる。生のエラーだけで終わらせず、
     // 「エポックが進み再暗号化が残っている」ことと再開手段を伝える
     expect(state.rotateBodies).toHaveLength(1);
+    // 巡を使い切った(= 毎巡の再走査は通っている)ので、残数は実測である。
+    // 「中断」とも「未確認を含む」とも言わない
     expect(env.logs.join("\n")).toContain("部分完了");
+    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    expect(env.logs.join("\n")).not.toContain("未確認を含む");
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化が中断しました");
+    expect(errors).toContain("再暗号化が完了しませんでした");
+    expect(errors).not.toContain("再暗号化が中断しました");
     expect(errors).toContain("再実行すると、エポックを進めずに残りから再開します");
+  });
+
+  it("部分完了の原因は最新の失敗を出す(解消済みの一時失敗が本当の原因を隠さない)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // 1 巡目は一時的な 503、以降は 404 を返し続ける(= いま塞いでいる原因)
+      onPush: (call, variableId) =>
+        call === 0
+          ? { status: 503, bodyText: "unavailable" }
+          : { status: 404, json: { _tag: "VariableNotFound", variableId } },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "原因の鮮度"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "再暗号化が完了しませんでした: 変数 DATABASE_URL の再暗号化が 404 で拒否されました(並行削除の可能性)",
+    );
+    expect(errors).not.toContain("再暗号化が完了しませんでした: サーバー");
+  });
+
+  it("巡末の再走査に到達できなかった場合だけ、残数を「未確認を含む」として報告する", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onPush: () => ({ status: 503, bodyText: "unavailable" }),
+      // 初回 pull は通し、巡末の再走査で落とす(= 実態を確かめられない)
+      onPull: (call) => (call === 0 ? undefined : { status: 503, bodyText: "unavailable" }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再走査失敗"], env.layer)).toBe(1);
+    // 競合分が他メンバーの手で解決している可能性が残るので、断定しない
+    expect(env.logs.join("\n")).toContain("未完了 1 変数(未確認を含む)");
+    expect(env.errors.join("\n")).toContain("再暗号化が中断しました");
   });
 
   it("理由なしの再実行は再開だけを要求している(再暗号化済みの変数は対象にせず成功終了)", async () => {
@@ -1148,7 +1244,7 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(env.logs.join("\n")).toContain("部分完了");
     expect(errors).toContain(
-      "再暗号化が中断しました: 変数 API_KEY の再暗号化が 404 で拒否されました(並行削除の可能性)",
+      "再暗号化が完了しませんでした: 変数 API_KEY の再暗号化が 404 で拒否されました(並行削除の可能性)",
     );
     expect(errors).not.toContain("並行 push との競合が解消しませんでした");
   });
@@ -1724,7 +1820,7 @@ describe("maruhi env rotate", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("grant_server が有効なプロジェクトでは拒否する(Phase 2 未実装)", async () => {
+  it("対象環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -1736,6 +1832,36 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "テスト"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("grant_server");
     expect(state.rotateBodies).toHaveLength(0);
+  });
+
+  it("別環境だけを開示した grant_server は、この環境の失効ローテーションを止めない(§7)", async () => {
+    // エポックは環境ごとに独立に進む(§3)。dev だけを開示した grant が prod の
+    // ローテーションを塞ぐと、退職者削除に必要な唯一の手段が別環境の設定で
+    // 止まる — スコープ(§6.2 の「対象環境の部分集合」)で判定する
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: await grantServerOp(["other-env"]) },
+    ]);
+    const state = makeServer({
+      built,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(0);
+    expect(state.rotateBodies).toHaveLength(1);
   });
 
   it("reader はローテーションできない(member 以上 — §6.2)。値の取得より前に拒否する", async () => {
