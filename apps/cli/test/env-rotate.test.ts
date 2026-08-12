@@ -1121,7 +1121,7 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "自己矛盾"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
-    expect(env.errors.join("\n")).toContain("409 の申告");
+    expect(env.errors.join("\n")).toContain("既知の最新 version");
   });
 
   it("競合が解消しないまま残った再暗号化は、部分完了として警告し非ゼロで終わる", async () => {
@@ -1436,6 +1436,60 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床あり"], env.layer)).toBe(0);
     const secondRunErrors = env.errors.filter((line) => line.includes("欠落も検出できません"));
     expect(secondRunErrors).toHaveLength(1);
+  });
+
+  it("受理済みの自分の書き込みを押し戻す応答は、床に頼らず巻き戻しとして検出する", async () => {
+    const stale = await variableAt({
+      built: chainRotated,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "key-abc",
+      headSeq: 2,
+    });
+    const other = await variableAt({
+      built: chainRotated,
+      variableId: "vcc",
+      name: "OTHER",
+      dek: dek1,
+      epoch: 1,
+      version: 1,
+      plaintext: "other-value",
+      headSeq: 2,
+    });
+    const variables = [stale, other];
+    const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: [
+        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+      ],
+      currentEpoch: 2,
+      // vcc は競合させて 2 巡目へ持ち込む。vbb の受理済み書き込み(version 2)は
+      // 反映せず、再走査で version 1 のまま配布し続ける = 押し戻し
+      onPush: (_call, variableId) => {
+        if (variableId === "vbb") {
+          // 受理はするが保存はしない(サーバーが自分の書き込みを握り潰す形)
+          return {
+            status: 200,
+            json: { variableId, version: 2, epoch: 2 },
+          };
+        }
+        return { status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } };
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+    // 受理済み push の床コミットだけを失敗させる: 床は SHOULD であり、書けない
+    // 場合(破損・権限)でもこの検出が成立することを固定する
+    env.failFloorPushCommits();
+
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
+    // 床がなくても、自分が署名した version からの後退は巻き戻しの証拠
+    expect(env.errors.join("\n")).toContain("既知の最新 version(2)より古く、不整合");
   });
 
   it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {

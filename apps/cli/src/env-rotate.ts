@@ -414,8 +414,17 @@ function decryptTargets(input: {
 
 /** 1 変数の再暗号化 push の結果(競合は 409 の申告 version を持ち帰る)。 */
 type PushAttempt =
-  /** 受理済み。床の更新に失敗した場合のみ警告を伴う(受理自体は取り消せない)。 */
-  | { readonly kind: "pushed"; readonly floorWarning: string | null }
+  /**
+   * 受理済み。床の更新に失敗した場合のみ警告を伴う(受理自体は取り消せない)。
+   * `written` は**受理された自分の書き込み**であり、以後の再走査における
+   * 整合検査の基準になる(床は SHOULD で、書き込み失敗もありうるため、
+   * 自分の書き込みの巻き戻しを床だけに頼らない)。
+   */
+  | {
+      readonly kind: "pushed";
+      readonly floorWarning: string | null;
+      readonly written: VerifiedPulledValue;
+    }
   | { readonly kind: "conflict"; readonly currentVersion: number }
   /** 並行削除(404)。削除済み変数に再暗号化すべき現在値は存在しない。 */
   | { readonly kind: "deleted" }
@@ -514,7 +523,22 @@ function pushReencrypted(input: {
           ),
         ),
       );
-    return { kind: "pushed", floorWarning };
+    // 受理された自分の書き込み(署名対象そのものから組む — サーバー echo でない)
+    const written: VerifiedPulledValue = {
+      ...latest,
+      version,
+      epoch,
+      nonceHex: signed.payload.nonceHex,
+      ciphertextHex: signed.payload.ciphertextHex,
+      prevValueSigHashHex: latest.signedBytesHashHex,
+      signedBytesHashHex: signed.signedBytesHashHex,
+      valueChainHeadSeq: input.view.state.headSeq,
+      valueChainHeadHashHex: input.view.state.headHashHex,
+      valueSignatureHex: signed.payload.signatureHex,
+      writerUserId,
+      writerKeyFingerprintHex: input.context.writerKeyFingerprintHex,
+    };
+    return { kind: "pushed", floorWarning, written };
   });
 }
 
@@ -700,6 +724,8 @@ interface ReencryptContext {
   readonly dek: Uint8Array;
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
   readonly writerUserId: string;
+  /** 自分の鍵 FP(受理済みの自分の書き込みを台帳へ記録するときの帰属)。 */
+  readonly writerKeyFingerprintHex: string;
   readonly signingKey: CryptoKey;
 }
 
@@ -724,6 +750,7 @@ function asOutcome<A, R>(
 /** RotateInput + エポック固有の材料から再暗号化の文脈を組む。 */
 function reencryptContext(
   input: RotateInput,
+  member: ChainMember,
   epochMaterial: {
     readonly epoch: number;
     readonly dek: Uint8Array;
@@ -736,6 +763,7 @@ function reencryptContext(
     floor: input.floor,
     resync: input.resync,
     writerUserId: input.signerUserId,
+    writerKeyFingerprintHex: member.keyFingerprintHex,
     signingKey: input.signingKeyPair.privateKey,
     ...epochMaterial,
   };
@@ -749,6 +777,8 @@ interface PushPassResult {
   readonly epochStale: number;
   /** 再暗号化を完了できなかった変数(409・一時失敗・エポック競合)。 */
   readonly unfinishedIds: ReadonlySet<string>;
+  /** 受理された自分の書き込み(台帳の新しい基準)。 */
+  readonly written: readonly VerifiedPulledValue[];
   /** 個別に失敗した数と最初の原因(巡自体は止めない)。 */
   readonly failed: number;
   readonly firstFailure: string | null;
@@ -775,6 +805,7 @@ function runPushPass(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const conflicted: ConflictedTarget[] = [];
+    const written: VerifiedPulledValue[] = [];
     const unfinishedIds = new Set<string>();
     const warnings: string[] = [];
     // 進行表示の分母は「この巡で判明している総数」(再走査で対象が増えうる)
@@ -819,12 +850,24 @@ function runPushPass(input: {
       if (attempt.value.floorWarning !== null) {
         warnings.push(attempt.value.floorWarning);
       }
+      // 受理済みの自分の書き込みを台帳の基準へ昇格する: 以後の再走査が
+      // 押し戻し(自分の書き込みの巻き戻し)を検出できるようにする
+      written.push(attempt.value.written);
       reencrypted += 1;
       yield* io.log(
         `  再暗号化 (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)}(version=${target.value.version + 1})`,
       );
     }
-    return { reencrypted, conflicted, epochStale, unfinishedIds, failed, firstFailure, warnings };
+    return {
+      reencrypted,
+      conflicted,
+      epochStale,
+      unfinishedIds,
+      written,
+      failed,
+      firstFailure,
+      warnings,
+    };
   });
 }
 
@@ -841,6 +884,24 @@ function recordPending(
       variableId: target.value.variableId,
       known: target.value,
       currentVersion: target.value.version,
+    });
+  }
+}
+
+/**
+ * 受理された自分の書き込みを台帳の基準へ昇格する。床(SHOULD)の更新に失敗
+ * しても、次の再走査は「自分が書いた version」を基準に比較できる — 受理済みの
+ * 書き込みを押し戻す応答を、床の有無に関わらず巻き戻しとして検出する。
+ */
+function recordWritten(
+  known: Map<string, ConflictedTarget>,
+  written: readonly VerifiedPulledValue[],
+): void {
+  for (const value of written) {
+    known.set(value.variableId, {
+      variableId: value.variableId,
+      known: value,
+      currentVersion: value.version,
     });
   }
 }
@@ -997,6 +1058,7 @@ function reencryptCurrentValues(input: {
       });
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
+      recordWritten(known, attempted.written);
       const conflictedIds = recordConflicts(known, attempted.conflicted);
       const settled = yield* settlePass({
         context: input.context,
@@ -1085,6 +1147,14 @@ function rotateWithWarnings(
       resync: input.resync,
       floor: input.floor,
     });
+    // 警告は後続の失敗(DEK 検証など)より**前**に sink へ入れる: 失敗経路の
+    // flush に含まれなければ、失敗時にだけ消えるという round 8 と同じ穴になる
+    warnings.push(...pulled.warnings);
+    if (floorless) {
+      warnings.push(
+        `この環境のローカル床がまだないため、サーバーが応答から落とし続けた変数(存在するのに一覧に現れない変数)は再暗号化の対象に入らず、欠落も検出できません(CRYPTO_SPEC §6.3 の欠落検出は床を前提とします)。失効目的のローテーションでは、床のある環境で再実行して ${displayText(input.environmentId)} の変数一覧が一致することを確認してください`,
+      );
+    }
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified: pulled.verified,
@@ -1092,12 +1162,6 @@ function rotateWithWarnings(
       recipient: input.recipient,
       prefetched: pulled.deks,
     });
-    warnings.push(...pulled.warnings);
-    if (floorless) {
-      warnings.push(
-        `この環境のローカル床がまだないため、サーバーが応答から落とし続けた変数(存在するのに一覧に現れない変数)は再暗号化の対象に入らず、欠落も検出できません(CRYPTO_SPEC §6.3 の欠落検出は床を前提とします)。失効目的のローテーションでは、床のある環境で再実行して ${displayText(input.environmentId)} の変数一覧が一致することを確認してください`,
-      );
-    }
     const currentEpoch = keys.currentEpoch;
     const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
 
@@ -1106,7 +1170,11 @@ function rotateWithWarnings(
       // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
       // grant_server の有効化・role 変更・削除が起きていれば、古い検証状態の
       // まま再開経路だけが素通りしてしまう — Cursor Security Reviewer 指摘)
-      yield* ensureRotatable(pulled.verified, input.environmentId, input.signerUserId);
+      const resumeMember = yield* ensureRotatable(
+        pulled.verified,
+        input.environmentId,
+        input.signerUserId,
+      );
       const dek = keys.deksByEpoch.get(currentEpoch);
       if (dek === undefined) {
         return yield* Effect.fail(
@@ -1126,7 +1194,7 @@ function rotateWithWarnings(
         chainEpoch: currentEpoch,
       });
       const outcome = yield* reencryptCurrentValues({
-        context: reencryptContext(input, {
+        context: reencryptContext(input, resumeMember, {
           epoch: currentEpoch,
           dek,
           deksByEpoch: keys.deksByEpoch,
@@ -1201,7 +1269,7 @@ function rotateWithWarnings(
     const deksByEpoch = new Map<number, Uint8Array>(keys.deksByEpoch);
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
-      context: reencryptContext(input, { epoch: newEpoch, dek, deksByEpoch }),
+      context: reencryptContext(input, member, { epoch: newEpoch, dek, deksByEpoch }),
       view: rotated.view,
       targets,
       sink: warnings,

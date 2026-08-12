@@ -522,11 +522,16 @@ function winnerRegression(
 /**
  * 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。
  *
- * 検査は 2 層: (1) 応答間の整合(再取得の最新が 409 の申告より古い = サーバーの
- * 自己矛盾)、(2) 検証済み既知 latest からの後退・同一座標の signed bytes 相違・
- * 隣接 prev の不一致。**ローテーションの再暗号化(env-rotate.ts)も同じ検査を
- * 通す**: 勝者への prev 付け替えは push 経路と同型であり、片方だけが分岐した
- * 履歴への連鎖署名を許すと、床(SHOULD・初回同期では不在)頼みの穴になる。
+ * 検査は 2 層: (1) 応答間の整合(再取得の最新が「存在すると分かっている
+ * version」より古い = サーバーの自己矛盾)、(2) 検証済み既知 latest からの
+ * 後退・同一座標の signed bytes 相違・隣接 prev の不一致。**ローテーションの
+ * 再暗号化(env-rotate.ts)も同じ検査を通す**: 勝者への prev 付け替えは push
+ * 経路と同型であり、片方だけが分岐した履歴への連鎖署名を許すと、床(SHOULD・
+ * 初回同期では不在)頼みの穴になる。
+ *
+ * `currentVersion` の出所は経路で異なる(push = 409 の申告、ローテーション =
+ * 409 の申告または**自分が受理させた version**)ため、文言は「既知の最新」で
+ * 統一する。
  */
 export function winnerInconsistency(
   variableId: string,
@@ -536,7 +541,7 @@ export function winnerInconsistency(
 ): string | null {
   if (winner.version < currentVersion) {
     // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
-    return `再取得した pull の最新 version(${winner.version})が 409 の申告(${currentVersion})より古く、不整合です`;
+    return `再取得した pull の最新 version(${winner.version})が既知の最新 version(${currentVersion})より古く、不整合です(サーバー応答の自己矛盾)`;
   }
   return known === null ? null : winnerRegression(variableId, known, winner, currentVersion);
 }

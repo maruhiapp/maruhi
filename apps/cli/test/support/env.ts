@@ -54,6 +54,12 @@ export interface TestEnv {
   setRunnerExitCode(code: number): void;
   /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
   failKeychainWrites(): void;
+  /**
+   * 受理された push の床コミットだけを失敗させる(読み取り・pull コミットは
+   * 通す)。床は SHOULD であり、書けなかった場合でも検出が床だけに依存して
+   * いないことを固定するために使う。
+   */
+  failFloorPushCommits(): void;
   /** defect 経路の検査用: 設定読込を throw(非 CliError)にする。 */
   breakConfigLoadWithDefect(): void;
 }
@@ -72,12 +78,24 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let agent: AgentProfile = { isAgent: false };
   let runnerExitCode = 0;
   let keychainWritable = true;
+  let floorPushCommittable = true;
   let configLoadDefect = false;
 
   const fileStore = makeFileConfigStore(configPath);
   const floorDir = floorDirOf(configPath);
+  const floorStore = makeFileFloorStore(floorDir);
   const layer = Layer.mergeAll(
-    Layer.succeed(FloorStore, makeFileFloorStore(floorDir)),
+    Layer.succeed(FloorStore, {
+      load: (projectId) => floorStore.load(projectId),
+      commitHead: (projectId, head) => floorStore.commitHead(projectId, head),
+      commitPull: (projectId, commit) => floorStore.commitPull(projectId, commit),
+      commitPush: (projectId, commit) =>
+        Effect.suspend(() =>
+          floorPushCommittable
+            ? floorStore.commitPush(projectId, commit)
+            : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
+        ),
+    }),
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),
       set: (name, value) =>
@@ -164,6 +182,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     failKeychainWrites() {
       keychainWritable = false;
+    },
+    failFloorPushCommits() {
+      floorPushCommittable = false;
     },
     breakConfigLoadWithDefect() {
       configLoadDefect = true;
