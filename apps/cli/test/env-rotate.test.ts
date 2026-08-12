@@ -1088,6 +1088,9 @@ describe("maruhi env rotate", () => {
     // 削除された変数は対象から外れ、残りは再暗号化される
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     expect(env.errors.join("\n")).toContain("並行削除");
+    // 404 は中断原因として記録され、完了時は「起きたが解決した」warning になる
+    // (部分完了の原因が「並行 push との競合」に化けない)
+    expect(env.errors.join("\n")).toContain("404 で拒否されました");
   });
 
   it("409 の申告より古い値しか配布されない応答は、勝者として採用せず中断する(§12-5)", async () => {

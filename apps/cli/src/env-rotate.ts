@@ -556,7 +556,12 @@ function pushReencrypted(input: {
  */
 function reconcileKnown(input: {
   readonly known: ReadonlyMap<string, ConflictedTarget>;
-  readonly conflictedIds: ReadonlySet<string>;
+  /**
+   * 今巡で再暗号化を完了できなかった変数(409・一時失敗・404・エポック競合)。
+   * 消失の警告と「他メンバーが既に現エポックで書いていた」の計上は、409 に
+   * 限らずこの集合を基準にする — でないと 502 で落ちた変数が再暗号化・
+   * 再暗号化不要・未完了のどれにも数えられず、合計が合わなくなる。
+   */
   readonly unfinishedIds: ReadonlySet<string>;
   readonly latest: readonly VerifiedPulledValue[];
   readonly epoch: number;
@@ -584,7 +589,7 @@ function reconcileKnown(input: {
     if (inconsistency !== null) {
       return { evidence: inconsistency, alreadyCurrent: 0 };
     }
-    if (input.conflictedIds.has(variableId) && latest.epoch >= input.epoch) {
+    if (input.unfinishedIds.has(variableId) && latest.epoch >= input.epoch) {
       alreadyCurrent += 1;
     }
   }
@@ -630,10 +635,8 @@ function rescanEnvironment(input: {
    * 直した変数も次巡の prev アンカーになるため、同じ整合検査を通す。
    */
   readonly known: ReadonlyMap<string, ConflictedTarget>;
-  /** 今巡 409 を返した変数(alreadyCurrent の計上対象)。 */
-  readonly conflictedIds: ReadonlySet<string>;
   /**
-   * 今巡で再暗号化を**完了できなかった**変数(409・一時失敗・エポック競合)。
+   * 今巡で再暗号化を**完了できなかった**変数(409・一時失敗・404・エポック競合)。
    * これらがアクティブ集合から消えていれば並行削除として警告する — 完了扱いに
    * するのは「消えたことを見た」場合だけであり、黙って落とさない。
    */
@@ -662,6 +665,11 @@ function rescanEnvironment(input: {
       floor,
     });
     const view = pulled.verified;
+    // 警告は**どの判定より前に**流す: 並行ローテーションで中断する巡でも、
+    // この pull が集めた SHOULD 警告は失われてはならない(sink の規律)
+    for (const warning of pulled.warnings) {
+      input.collectWarning(warning);
+    }
     const environment = yield* requireChainEnvironment(view, environmentId);
     if (environment.currentEpoch !== epoch) {
       return yield* Effect.fail(
@@ -670,12 +678,8 @@ function rescanEnvironment(input: {
         ),
       );
     }
-    for (const warning of pulled.warnings) {
-      input.collectWarning(warning);
-    }
     const reconciled = reconcileKnown({
       known: input.known,
-      conflictedIds: input.conflictedIds,
       unfinishedIds: input.unfinishedIds,
       latest: pulled.variables,
       epoch,
@@ -839,6 +843,7 @@ function runPushPass(input: {
         warnings.push(
           `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(他メンバーによる並行削除の可能性)。再取得でアクティブ集合から消えていれば対象から外し、まだ配布されていれば未完了として数えます`,
         );
+        firstFailure ??= `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(並行削除の可能性)`;
         unfinishedIds.add(target.value.variableId);
         continue;
       }
@@ -960,7 +965,6 @@ function settlePass(input: {
         context: input.context,
         view: input.view,
         known: input.known,
-        conflictedIds: input.conflictedIds,
         unfinishedIds: input.pass.unfinishedIds,
         collectWarning: (warning) => warnings.push(warning),
         // エポック競合の申告があった巡は、チェーンを取り直してから判定する
