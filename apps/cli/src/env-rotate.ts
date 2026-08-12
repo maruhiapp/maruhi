@@ -97,7 +97,6 @@ interface ReencryptOutcome {
   readonly reencrypted: number;
   readonly alreadyCurrent: number;
   readonly remaining: number;
-  readonly warnings: readonly string[];
   /**
    * 再暗号化を中断させた原因(null = 最後まで走った)。エポックが進んだ後の
    * 失敗を例外として投げ捨てると、「エポックだけ進んで再暗号化が残っている」
@@ -144,21 +143,6 @@ function checkReasonLength(reason: string): Effect.Effect<string, CliError> {
  */
 function dedupeWarnings(warnings: readonly string[]): readonly string[] {
   return [...new Set(warnings)];
-}
-
-/**
- * 即時中断(証拠・矛盾)。**蓄積した警告を先に吐いてから**失敗する: 床の
- * 更新に失敗した変数の警告など、実行後もディスク上に影響が残る事実を
- * エラーだけ出して捨てない(呼び出し側の logWarnings はここへ到達しない)。
- */
-function abortWith(
-  warnings: readonly string[],
-  message: string,
-): Effect.Effect<never, CliError, CliIo> {
-  return Effect.gen(function* () {
-    yield* logWarnings(dedupeWarnings(warnings));
-    return yield* Effect.fail(cliError(message));
-  });
 }
 
 /** 新エポックを作る経路でのみ理由を必須にする(rotate_epoch payload の一部)。 */
@@ -821,7 +805,7 @@ function runPushPass(input: {
       }
       if (attempt.value.kind === "deleted") {
         warnings.push(
-          `変数 ${displayText(target.value.name)} は再暗号化の直前に削除されました(他メンバーによる並行削除)。再暗号化の対象から外します`,
+          `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(他メンバーによる並行削除の可能性)。再取得でアクティブ集合から消えていれば対象から外し、まだ配布されていれば未完了として数えます`,
         );
         continue;
       }
@@ -842,6 +826,36 @@ function runPushPass(input: {
     }
     return { reencrypted, conflicted, epochStale, unfinishedIds, failed, firstFailure, warnings };
   });
+}
+
+/**
+ * 今巡の対象を既知値の台帳へ記録する。対象は次巡の prev アンカーになりうる
+ * ため、409 を返したものに限らず整合検査(§12-5)の基準として保持する。
+ */
+function recordPending(
+  known: Map<string, ConflictedTarget>,
+  pending: readonly ReencryptTarget[],
+): void {
+  for (const target of pending) {
+    known.set(target.value.variableId, {
+      variableId: target.value.variableId,
+      known: target.value,
+      currentVersion: target.value.version,
+    });
+  }
+}
+
+/** 409 の申告 version で台帳を上書きし、今巡の競合 ID 集合を返す。 */
+function recordConflicts(
+  known: Map<string, ConflictedTarget>,
+  conflicted: readonly ConflictedTarget[],
+): ReadonlySet<string> {
+  const conflictedIds = new Set<string>();
+  for (const conflict of conflicted) {
+    known.set(conflict.variableId, conflict);
+    conflictedIds.add(conflict.variableId);
+  }
+  return conflictedIds;
 }
 
 /** 巡末の判定(完了検証の結果をどう扱うか)。 */
@@ -903,7 +917,7 @@ function settlePass(input: {
         warnings,
         verdict: {
           kind: "unverified",
-          remaining: input.conflictedIds.size + input.pass.failed,
+          remaining: input.pass.unfinishedIds.size,
           failure: `${rescan.error.message}${pushFailure}`,
         },
       } as const;
@@ -948,9 +962,15 @@ function reencryptCurrentValues(input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   readonly targets: readonly ReencryptTarget[];
+  /**
+   * 警告の受け皿(呼び出し側と共有する配列)。中断は例外として抜けるため、
+   * 戻り値で返すと**失敗時にだけ**警告が消える — 中断こそ、床の更新失敗や
+   * 並行削除の通知が最も効く場面なので、書き込み先を共有して失わない。
+   */
+  readonly sink: string[];
 }): Effect.Effect<ReencryptOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
-    const warnings: string[] = [];
+    const warnings = input.sink;
     let view = input.view;
     let pending = input.targets;
     let reencrypted = 0;
@@ -964,20 +984,11 @@ function reencryptCurrentValues(input: {
       reencrypted,
       alreadyCurrent,
       remaining,
-      warnings,
       failure,
     });
 
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
-      // この巡の対象は、次巡の prev アンカーになりうる既知値でもある(§12-5 の
-      // 整合検査の基準)。409 の申告 version は下で上書きする
-      for (const target of pending) {
-        known.set(target.value.variableId, {
-          variableId: target.value.variableId,
-          known: target.value,
-          currentVersion: target.value.version,
-        });
-      }
+      recordPending(known, pending);
       const attempted = yield* runPushPass({
         context: input.context,
         view,
@@ -986,11 +997,7 @@ function reencryptCurrentValues(input: {
       });
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
-      const conflictedIds = new Set<string>();
-      for (const conflict of attempted.conflicted) {
-        known.set(conflict.variableId, conflict);
-        conflictedIds.add(conflict.variableId);
-      }
+      const conflictedIds = recordConflicts(known, attempted.conflicted);
       const settled = yield* settlePass({
         context: input.context,
         view,
@@ -1004,7 +1011,7 @@ function reencryptCurrentValues(input: {
         return outcome(settled.verdict.remaining, settled.verdict.failure);
       }
       if (settled.verdict.kind === "abort") {
-        return yield* abortWith(warnings, settled.verdict.message);
+        return yield* Effect.fail(cliError(settled.verdict.message));
       }
       view = settled.verdict.view;
       pending = settled.verdict.targets;
@@ -1013,14 +1020,15 @@ function reencryptCurrentValues(input: {
         // 再取得・再検証したビューに目標エポック未満の active 値がない = 完了。
         // 途中の一時的な失敗は「起きたが結果として解決した」事実として警告に残す
         // (完了を検証できている以上、部分完了として非ゼロ終了させない)
-        if (attempted.firstFailure !== null) {
+        const anyFailure = lastFailure ?? attempted.firstFailure;
+        if (anyFailure !== null) {
           warnings.push(
-            `再暗号化の途中で失敗がありましたが、再走査で完了を確認しました: ${attempted.firstFailure}`,
+            `再暗号化の途中で失敗がありましたが、再走査で完了を確認しました: ${anyFailure}`,
           );
         }
         return outcome(0, null);
       }
-      lastFailure = attempted.firstFailure ?? lastFailure;
+      lastFailure ??= attempted.firstFailure;
     }
     return outcome(pending.length, lastFailure);
   });
@@ -1038,6 +1046,24 @@ function reencryptCurrentValues(input: {
  * (§12-7 の正当な過渡状態からの冪等な再開)。
  */
 export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, CliError, CliIo> {
+  // 収集した警告は**失敗経路でも**必ず吐く: 成功時は呼び出し側が
+  // summary.warnings を表示するが、中断すると表示経路に到達しない。床の更新
+  // 失敗・並行削除・床なしの但し書きは、まさに中断時に効く情報である
+  const warnings: string[] = [];
+  return rotateWithWarnings(input, warnings).pipe(
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        yield* logWarnings(dedupeWarnings(warnings));
+        return yield* Effect.fail(error);
+      }),
+    ),
+  );
+}
+
+function rotateWithWarnings(
+  input: RotateInput,
+  warnings: string[],
+): Effect.Effect<RotationSummary, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const reason = yield* checkReasonLength(input.reason);
@@ -1066,7 +1092,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       recipient: input.recipient,
       prefetched: pulled.deks,
     });
-    const warnings = [...pulled.warnings];
+    warnings.push(...pulled.warnings);
     if (floorless) {
       warnings.push(
         `この環境のローカル床がまだないため、サーバーが応答から落とし続けた変数(存在するのに一覧に現れない変数)は再暗号化の対象に入らず、欠落も検出できません(CRYPTO_SPEC §6.3 の欠落検出は床を前提とします)。失効目的のローテーションでは、床のある環境で再実行して ${displayText(input.environmentId)} の変数一覧が一致することを確認してください`,
@@ -1107,6 +1133,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         }),
         view: pulled.verified,
         targets,
+        sink: warnings,
       });
       return {
         mode: "resumed",
@@ -1116,7 +1143,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
         alreadyCurrent: outcome.alreadyCurrent,
         remaining: outcome.remaining,
         failure: outcome.failure,
-        warnings: dedupeWarnings([...warnings, ...outcome.warnings]),
+        warnings: dedupeWarnings(warnings),
       };
     }
 
@@ -1177,6 +1204,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       context: reencryptContext(input, { epoch: newEpoch, dek, deksByEpoch }),
       view: rotated.view,
       targets,
+      sink: warnings,
     });
     return {
       mode: "rotated",
@@ -1186,7 +1214,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       alreadyCurrent: outcome.alreadyCurrent,
       remaining: outcome.remaining,
       failure: outcome.failure,
-      warnings: dedupeWarnings([...warnings, ...outcome.warnings]),
+      warnings: dedupeWarnings(warnings),
     };
   });
 }

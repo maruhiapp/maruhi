@@ -963,6 +963,8 @@ describe("maruhi env rotate", () => {
     expect(state.pushes).toHaveLength(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("分岐した履歴への連鎖");
+    // 中断でも収集済みの警告は失わない(床なしの但し書きは中断時こそ効く)
+    expect(errors).toContain("欠落も検出できません");
     // 暗号学的証拠は「再実行で直る失敗」ではない: 部分完了 + 再開案内へ
     // 潰さず、調査を促す即時中断として出す(push 経路と同じ扱い)
     expect(errors).toContain("再実行では解消しない証拠です");
