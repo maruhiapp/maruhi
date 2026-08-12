@@ -177,6 +177,11 @@ interface ServerOptions {
   readonly currentEpoch: number;
   /** rotate 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
   readonly onRotate?: (call: number) => MockResponse | undefined;
+  /**
+   * **受理した後**に差し込む応答(応答の消失・502 のモデル化)。チェーンへの
+   * 追記とラップの配布は起きるが、クライアントにはエラーだけが見える。
+   */
+  readonly onRotateAfterAccept?: (call: number) => MockResponse | undefined;
   /** push 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
   readonly onPush?: (call: number, variableId: string) => MockResponse | undefined;
   /** pull 呼び出しごとの差し込み応答(undefined = 正常応答)。巡末の再走査を潰す用。 */
@@ -245,6 +250,7 @@ function makeServer(options: ServerOptions): ServerState {
       const body = request.body as RotateBody;
       rotateBodies.push(body);
       const injected = options.onRotate?.(rotateCalls);
+      const injectedAfterAccept = options.onRotateAfterAccept?.(rotateCalls);
       rotateCalls += 1;
       if (injected !== undefined) {
         return injected;
@@ -267,15 +273,17 @@ function makeServer(options: ServerOptions): ServerState {
           signerKeyFingerprintHex: owner.fingerprintHex,
         });
       }
-      return {
-        status: 200,
-        json: {
-          environmentId: ENV_ID,
-          currentEpoch,
-          headSeq: entries.length,
-          headHashHex: hashes[hashes.length - 1],
-        },
-      };
+      return (
+        injectedAfterAccept ?? {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch,
+            headSeq: entries.length,
+            headHashHex: hashes[hashes.length - 1],
+          },
+        }
+      );
     },
     (request) => {
       const prefix = `/projects/${projectId}/environments/${ENV_ID}/variables/`;
@@ -1738,9 +1746,76 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("部分完了");
   });
 
-  it("--new-epoch なしなら、復号できない値がある時点でエポックを進めない", async () => {
-    // 既定は保守的: エポックだけ進んで再暗号化が完了しない状態を作らない。
-    // 失効を優先する場合の逃げ道(--new-epoch)は案内する。
+  it("複合の送信が失敗しても、受理されていれば「エポックは進んだ」と報告する", async () => {
+    // 応答の消失(502 / タイムアウト)。DO は受理済みなのにクライアントには
+    // 転送エラーしか見えない — 素のエラーで終わると「何も起きなかった」と
+    // 読ませ、エポックだけ進んで再暗号化 0 件という最も危険な状態を隠す
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // 受理はする(チェーンへ追記される)が、応答は 502 で返す
+      onRotateAfterAccept: () => ({ status: 502, bodyText: "bad gateway" }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "応答消失"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("ローテーション自体は受理されています");
+    expect(errors).toContain("再暗号化から再開します");
+  });
+
+  it("複合の送信が失敗し、受理もされていなければ「そのまま再実行できる」と伝える", async () => {
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "未達"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("受理されていません");
+    expect(errors).toContain("そのまま再実行できます");
+  });
+
+  it("ラップを持っているのに開けない値は、差し替えの疑いとして即時中断する", async () => {
+    // 自分宛ラップはあるのに復号が失敗する = 暗号文の差し替え or 検証済みビューとの
+    // 不整合。良性の「ラップ待ち」に潰して --new-epoch で踏み越えるよう案内しては
+    // ならない(pull / run と同じく即時中断する)。
     // 現エポックの値だが暗号化に使われた鍵が違う(= AEAD 認証が通らない)形
     const variables = [
       await variableAt({
@@ -1768,7 +1843,11 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "通常"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.errors.join("\n")).toContain("--new-epoch を付けて実行してください");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("サーバーによる差し替えの可能性");
+    // 良性の欠落として扱わない = 踏み越える手段を案内しない
+    expect(errors).not.toContain("--new-epoch を付けて実行してください");
+    expect(errors).not.toContain("ラップを持つメンバーによる再実行");
   });
 
   it("復号できない値が 1 つあっても、再開は開ける分を再暗号化する(epoch は既に進んでいる)", async () => {
@@ -2232,6 +2311,13 @@ describe("maruhi env rotate", () => {
       1,
     );
     expect(env.errors.join("\n")).toContain("env rotate では使えません");
+    // boolean への値指定(`--new-epoch=false`)は拒否する。gunshi は値を読まずに
+    // true にするため、放置すると書いたことと逆(必ず新エポック)が起き、
+    // チェーンは append-only なので取り消せない
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch=false"], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
     // 打ったとおりの綴りで返す(短縮形を `--x` に書き換えて出さない)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "-q"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("不明なオプションです: -q");

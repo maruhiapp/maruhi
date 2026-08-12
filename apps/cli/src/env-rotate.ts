@@ -263,6 +263,42 @@ function signRotateEntry(input: {
   });
 }
 
+/**
+ * 複合の送信が CAS 以外の理由で失敗したときの報告文。**「届かなかった」とは
+ * 限らない**(応答の消失・502 / 504)ので、チェーンを見て実際に受理されたかを
+ * 確かめてから言う。素の転送エラーだけを出すと、「エポックだけ進んで再暗号化は
+ * 0 件」という最も危険な状態を「何も起きなかった」と読ませてしまう。
+ */
+function describeSendFailure(input: {
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  readonly baseline: VerifiedProject;
+  readonly environmentId: string;
+  readonly newEpoch: number;
+  readonly cause: string;
+}): Effect.Effect<CliError, never> {
+  return Effect.gen(function* () {
+    const probe = yield* asOutcome(
+      Effect.gen(function* () {
+        const view = yield* resyncExtended(input.resync, input.baseline);
+        return yield* requireChainEnvironment(view, input.environmentId);
+      }),
+    );
+    if (probe.kind === "failed") {
+      return cliError(
+        `${input.cause}。この失敗は「リクエストが届かなかった」ことを意味しません(応答の消失もありえます)。受理されたかどうかをチェーンで確認しようとしましたが、それも失敗しました(${probe.error.message})— **環境 ${input.environmentId} のエポックが既に ${input.newEpoch} へ進んでいる可能性があります**。通信を復旧したうえで maruhi env rotate ${input.environmentId} を再実行してください(進んでいれば再暗号化から再開し、進んでいなければローテーションからやり直します)`,
+      );
+    }
+    if (probe.value.currentEpoch === input.newEpoch) {
+      return cliError(
+        `${input.cause}。ただしチェーンを確認したところ、**ローテーション自体は受理されています**(環境 ${input.environmentId} は epoch ${input.newEpoch})。現在値の再暗号化は 1 件も実行されていないため、旧エポックの DEK 保持者は現在値を読めるままです — maruhi env rotate ${input.environmentId} を再実行すると、エポックを進めずに再暗号化から再開します`,
+      );
+    }
+    return cliError(
+      `${input.cause}。チェーンを確認したところ受理されていません(環境 ${input.environmentId} は epoch ${probe.value.currentEpoch} のまま)。そのまま再実行できます`,
+    );
+  });
+}
+
 /** CAS リトライの状態: 検証ビュー・自分のメンバー行・新エポックのラップ集合。 */
 interface RotateState {
   readonly verified: VerifiedProject;
@@ -330,65 +366,80 @@ function appendRotation(
         signingKeyPair: input.signingKeyPair,
       });
 
-    const accepted = yield* retryOnConflict<RotateState, AcceptedRotation, "head-conflict">(
-      { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
-      {
-        maxAttempts: MAX_ATTEMPTS,
-        attempt: (state) =>
-          Effect.gen(function* () {
-            const entry = yield* signRotateEntry({
-              verified: state.verified,
-              environmentId: input.environmentId,
-              newEpoch: input.newEpoch,
-              reason: input.reason,
-              dekCommitmentHex: input.dekCommitmentHex,
-              member: state.member,
-              signingKeyPair: input.signingKeyPair,
-            });
-            yield* input.client.environments
-              .rotate({
-                params: {
-                  projectId: state.verified.projectId,
-                  environmentId: input.environmentId,
-                },
-                payload: {
-                  parentHeadHashHex: state.verified.state.headHashHex,
-                  entry,
-                  deks: state.deks,
-                },
-              })
-              .pipe(Effect.mapError(mapRotateFailure(input.environmentId)));
-            return { state };
-          }),
-        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-        recover: (state) =>
-          Effect.gen(function* () {
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            const member = yield* ensureRotatable(
-              resynced,
-              input.environmentId,
-              input.signerUserId,
-            );
-            const environment = yield* requireChainEnvironment(resynced, input.environmentId);
-            if (environment.currentEpoch + 1 !== input.newEpoch) {
-              // 他メンバーが並行してローテーションした。生成済みの新 DEK・
-              // コミットメント・ラップ集合は当該エポック専用(§5 の info /
-              // §5.2 の原像に epoch が入る)なので流用せず中断する。再実行は
-              // 未完了の再暗号化があればエポックを進めずに再開する
-              return yield* Effect.fail(
-                cliError(
-                  `他のメンバーによる並行ローテーションを検出しました(環境 ${input.environmentId} の現エポックは ${environment.currentEpoch})。生成した新 DEK は使用せず中断します — 再実行してください`,
-                ),
+    const attempted = yield* asOutcome(
+      retryOnConflict<RotateState, AcceptedRotation, "head-conflict">(
+        { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
+        {
+          maxAttempts: MAX_ATTEMPTS,
+          attempt: (state) =>
+            Effect.gen(function* () {
+              const entry = yield* signRotateEntry({
+                verified: state.verified,
+                environmentId: input.environmentId,
+                newEpoch: input.newEpoch,
+                reason: input.reason,
+                dekCommitmentHex: input.dekCommitmentHex,
+                member: state.member,
+                signingKeyPair: input.signingKeyPair,
+              });
+              yield* input.client.environments
+                .rotate({
+                  params: {
+                    projectId: state.verified.projectId,
+                    environmentId: input.environmentId,
+                  },
+                  payload: {
+                    parentHeadHashHex: state.verified.state.headHashHex,
+                    entry,
+                    deks: state.deks,
+                  },
+                })
+                .pipe(Effect.mapError(mapRotateFailure(input.environmentId)));
+              return { state };
+            }),
+          classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+          recover: (state) =>
+            Effect.gen(function* () {
+              const resynced = yield* resyncExtended(input.resync, state.verified);
+              const member = yield* ensureRotatable(
+                resynced,
+                input.environmentId,
+                input.signerUserId,
               );
-            }
-            const deks = sameMemberSet(state.verified, resynced)
-              ? state.deks
-              : yield* buildWraps(resynced);
-            return { verified: resynced, member, deks };
-          }),
-        exhaustedMessage: `ローテーションのチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
-      },
+              const environment = yield* requireChainEnvironment(resynced, input.environmentId);
+              if (environment.currentEpoch + 1 !== input.newEpoch) {
+                // 他メンバーが並行してローテーションした。生成済みの新 DEK・
+                // コミットメント・ラップ集合は当該エポック専用(§5 の info /
+                // §5.2 の原像に epoch が入る)なので流用せず中断する。再実行は
+                // 未完了の再暗号化があればエポックを進めずに再開する
+                return yield* Effect.fail(
+                  cliError(
+                    `他のメンバーによる並行ローテーションを検出しました(環境 ${input.environmentId} の現エポックは ${environment.currentEpoch})。生成した新 DEK は使用せず中断します — 再実行してください`,
+                  ),
+                );
+              }
+              const deks = sameMemberSet(state.verified, resynced)
+                ? state.deks
+                : yield* buildWraps(resynced);
+              return { verified: resynced, member, deks };
+            }),
+          exhaustedMessage: `ローテーションのチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+        },
+      ),
     );
+    if (attempted.kind === "failed") {
+      // 送信の失敗を「何も起きなかった」と読ませない(describeSendFailure)
+      return yield* Effect.fail(
+        yield* describeSendFailure({
+          resync: input.resync,
+          baseline: input.baseline,
+          environmentId: input.environmentId,
+          newEpoch: input.newEpoch,
+          cause: attempted.error.message,
+        }),
+      );
+    }
+    const accepted = attempted.value;
 
     // 受理後の確認はサーバー申告(応答の currentEpoch)ではなくチェーン再検証で
     // 行う。ここから先の失敗は**エポックが既に進んだ後**の失敗なので、原因だけ
@@ -431,14 +482,16 @@ function appendRotation(
 }
 
 /**
- * 通常ローテーション経路の復号。既定は保守的(1 件でも開けなければエポックを
- * 進めない = 「エポックだけ進んで再暗号化が完了しない状態」を作らない)。
+ * 再暗号化材料の準備(復号 + 開けなかった値の警告)。
  *
- * ただし **`--new-epoch` は「この実行の後に必ず新エポックが存在する」ことを
- * 要求する呼び出し**(退職者の削除 — §7)。そこで止めると、開けない値が 1 つ
- * あるだけでエポックが 1 つも進まず、削除されたメンバーの旧 DEK が**全変数**に
- * 対して有効なまま残る — 守れる範囲まで自ら捨てることになる。開けなかった分は
- * 部分完了として報告し、失効そのものは前へ進める。
+ * 「開けない」= **自分宛に当該エポックのラップが無い**場合だけである
+ * (それ以外の復号失敗は decryptTargets が即時中断する)。これは別メンバーなら
+ * 開ける良性の欠落なので、1 件のために全体を止めない — 失効操作で守れる範囲まで
+ * 自ら捨てることになるためで、開けなかった分は部分完了として報告する。
+ *
+ * この状況が起こりうるのは §12-7 の過渡状態(旧エポックの値が残っている)だけで、
+ * 通常のローテーション経路(旧エポックの値が無い = 全値が現エポック)では
+ * 現エポックの DEK を必ず持っているため発生しない。
  */
 function decryptForRotation(input: {
   readonly verified: VerifiedProject;
@@ -446,19 +499,10 @@ function decryptForRotation(input: {
   readonly values: readonly VerifiedPulledValue[];
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
   readonly chainEpoch: number;
-  readonly forceNewEpoch: boolean;
   readonly warnings: string[];
 }): Effect.Effect<readonly ReencryptTarget[], CliError> {
   return Effect.gen(function* () {
     const decrypted = yield* decryptTargets(input);
-    const blocked = decrypted.undecryptable[0];
-    if (blocked !== undefined && !input.forceNewEpoch) {
-      return yield* Effect.fail(
-        cliError(
-          `再暗号化に必要な値を復号できません(${blocked})。エポックを進めると、この値は旧エポックの DEK のまま取り残されます — 当該エポックのラップを持つメンバーが実行するか、失効を優先する場合は --new-epoch を付けて実行してください`,
-        ),
-      );
-    }
     for (const reason of decrypted.undecryptable) {
       input.warnings.push(undecryptableWarning(reason));
     }
@@ -520,10 +564,13 @@ function undecryptableWarning(reason: string): string {
 interface DecryptOutcome {
   readonly targets: readonly ReencryptTarget[];
   /**
-   * 復号できなかった値の理由(自分宛に当該エポックのラップが無い等)。
-   * **1 件で全体を落とさない**: ローテーションは失効操作であり、開けない値が
-   * 1 つあるからといって開ける 99 件を旧 DEK のまま残すのは、守れる範囲を
-   * 自ら捨てることになる。呼び出し側が文脈に応じて「進める / 落とす」を決める。
+   * **自分宛に当該エポックのラップが無い**ために開けなかった値の理由。
+   * これは良性の欠落(別メンバーなら開ける)なので、1 件で全体を落とさない —
+   * ローテーションは失効操作であり、開けない値が 1 つあるからといって開ける
+   * 99 件を旧 DEK のまま残すのは、守れる範囲を自ら捨てることになる。
+   *
+   * **ラップを持っているのに開けない場合はここに入らない**(暗号文の差し替え・
+   * 検証済みビューとの不整合の可能性であり、pull / run と同じく即時中断する)。
    */
   readonly undecryptable: readonly string[];
 }
@@ -535,25 +582,31 @@ function decryptTargets(input: {
   readonly values: readonly VerifiedPulledValue[];
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
   readonly chainEpoch: number;
-}): Effect.Effect<DecryptOutcome, never> {
+}): Effect.Effect<DecryptOutcome, CliError> {
   return Effect.gen(function* () {
     const targets: ReencryptTarget[] = [];
     const undecryptable: string[] = [];
     for (const value of input.values) {
-      const attempt = yield* asOutcome(
-        decryptVerifiedValue({
-          verified: input.verified,
-          environmentId: input.environmentId,
-          variable: value,
-          deksByEpoch: input.deksByEpoch,
-          chainEpoch: input.chainEpoch,
-        }),
-      );
-      if (attempt.kind === "failed") {
-        undecryptable.push(attempt.error.message);
+      // 良性の欠落(自分宛ラップが無い)だけを「開けない値」として飛ばす。
+      // ラップを持っているのに復号が失敗するのは、AEAD 認証の失敗(暗号文の
+      // 差し替え)か検証済みビューとの不整合であり、pull / run と同じく
+      // 即時中断する — これを「別メンバーの再実行待ち」に潰すと、差し替えの
+      // 兆候を良性の運用待ちとして報告し、--new-epoch で踏み越えるよう案内する
+      // ことになる
+      if (!input.deksByEpoch.has(value.epoch)) {
+        undecryptable.push(
+          `変数 ${displayText(value.name)} のエポック ${value.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
+        );
         continue;
       }
-      targets.push({ value, plaintext: attempt.value });
+      const plaintext = yield* decryptVerifiedValue({
+        verified: input.verified,
+        environmentId: input.environmentId,
+        variable: value,
+        deksByEpoch: input.deksByEpoch,
+        chainEpoch: input.chainEpoch,
+      });
+      targets.push({ value, plaintext });
     }
     return { targets, undecryptable };
   });
@@ -1452,17 +1505,17 @@ function resumeReencryption(input: {
     // 「エポックだけ進んで再暗号化が完了しない状態を作らない」という通常経路の
     // 理由はここでは成立しない — その状態はもう出来ており、開ける分を押さない
     // 選択はそれを維持するだけである(100 件中 1 件が開けないとき、残り 99 件を
-    // 旧 DEK のまま置き去りにしない)。開けなかった分は未完了として報告する
-    const decrypted = yield* decryptTargets({
+    // 旧 DEK のまま置き去りにしない)。= 「必ず進める」側と同じ方針なので
+    // decryptForRotation と方針を共有する(2 箇所に割れると、分類の変更が
+    // 再開経路にだけ入り損ねる)
+    const targets = yield* decryptForRotation({
       verified: input.pulled.verified,
       environmentId,
       values: stale,
       deksByEpoch: input.keys.deksByEpoch,
       chainEpoch: currentEpoch,
+      warnings,
     });
-    for (const reason of decrypted.undecryptable) {
-      warnings.push(undecryptableWarning(reason));
-    }
     const outcome = yield* reencryptCurrentValues({
       context: reencryptContext(input.input, member, {
         epoch: currentEpoch,
@@ -1470,7 +1523,7 @@ function resumeReencryption(input: {
         deksByEpoch: input.keys.deksByEpoch,
       }),
       view: input.pulled.verified,
-      targets: decrypted.targets,
+      targets,
       sink: warnings,
     });
     return {
@@ -1585,7 +1638,6 @@ function rotateWithWarnings(
       values: pulled.variables,
       deksByEpoch: keys.deksByEpoch,
       chainEpoch: currentEpoch,
-      forceNewEpoch: input.forceNewEpoch,
       warnings,
     });
     const dek = generateDek();

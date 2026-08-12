@@ -397,6 +397,8 @@ const ENV_ACTION_FLAGS = {
   create: new Set<string>(["name"]),
   rotate: new Set<string>(["reason", "new-epoch"]),
 } as const;
+/** 「もう一方の操作」の対応表(三項演算子を判定と文面の 2 箇所へ散らさない)。 */
+const ENV_OTHER_ACTION = { create: "rotate", rotate: "create" } as const;
 
 /**
  * env のオプション検査。gunshi は 1 コマンド 1 引数表なので、`create` と
@@ -409,35 +411,57 @@ const ENV_ACTION_FLAGS = {
  * 2. 操作に適用されないオプション(create への --reason 等)。指定した意図が
  *    無視されたことに気付けるようにする
  *
- * 1 の判定材料(`declared`)は**引数表そのもの**から渡す — 手書きの一覧と
- * 二重管理にすると、次に増えたオプションが実装済みなのに拒否される。
+ * 3. boolean オプションへの値の指定(`--new-epoch=false`)。gunshi は boolean の
+ *    インライン値を**読まずに true** にするため、放置すると `--new-epoch=false`
+ *    が「必ず新エポック」として通り、書いたことと逆の結果になる(しかもチェーンは
+ *    append-only なので取り消せない)
+ *
+ * 判定材料(`args`)は**引数表そのもの**を渡す — 手書きの一覧と二重管理にすると、
+ * 次に増えたオプションが実装済みなのに拒否される。
  */
+type EnvFlagToken = {
+  readonly kind: string;
+  readonly name?: string | undefined;
+  readonly rawName?: string | undefined;
+  readonly inlineValue?: boolean | undefined;
+};
+type EnvArgTable = Readonly<Record<string, { readonly type?: string | undefined }>>;
+
+/** 1 トークン分の判定。拒否する場合はその理由(表示文)、問題なければ null。 */
+function envFlagRejection(
+  action: "create" | "rotate",
+  token: EnvFlagToken,
+  args: EnvArgTable,
+): string | null {
+  if (token.kind !== "option" || token.name === undefined) {
+    return null;
+  }
+  const name = token.name;
+  // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
+  const typed = displayText(token.rawName ?? `--${name}`);
+  const schema = args[name];
+  if (schema === undefined) {
+    return `不明なオプションです: ${typed}`;
+  }
+  if (schema.type === "boolean" && token.inlineValue === true) {
+    return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+  }
+  const otherAction = ENV_OTHER_ACTION[action];
+  if (ENV_ACTION_FLAGS[otherAction].has(name)) {
+    return `${typed} は env ${action} では使えません(${otherAction} 用のオプションです)`;
+  }
+  return null;
+}
+
 function checkEnvFlags(
   action: "create" | "rotate",
-  tokens: readonly {
-    readonly kind: string;
-    readonly name?: string | undefined;
-    readonly rawName?: string | undefined;
-  }[],
-  declared: ReadonlySet<string>,
+  tokens: readonly EnvFlagToken[],
+  args: EnvArgTable,
 ): Effect.Effect<void, CliError> {
-  const other = action === "create" ? ENV_ACTION_FLAGS.rotate : ENV_ACTION_FLAGS.create;
   for (const token of tokens) {
-    if (token.kind !== "option" || token.name === undefined) {
-      continue;
-    }
-    const name = token.name;
-    // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
-    const typed = displayText(token.rawName ?? `--${name}`);
-    if (!declared.has(name)) {
-      return Effect.fail(cliError(`不明なオプションです: ${typed}`));
-    }
-    if (other.has(name)) {
-      return Effect.fail(
-        cliError(
-          `${typed} は env ${action} では使えません(${action === "create" ? "rotate" : "create"} 用のオプションです)`,
-        ),
-      );
+    const rejection = envFlagRejection(action, token, args);
+    if (rejection !== null) {
+      return Effect.fail(cliError(rejection));
     }
   }
   return Effect.void;
@@ -481,9 +505,9 @@ function envCommand(execute: Execute) {
               ),
             );
           }
-          // 宣言済みオプション名は**引数表**(ctx.args)から導く。ctx.values は
-          // 「実際に渡された値」しか持たないので、宣言の一覧としては使えない
-          yield* checkEnvFlags(action, ctx.tokens, new Set(Object.keys(ctx.args)));
+          // 判定材料は**引数表**(ctx.args)そのもの。ctx.values は「実際に渡された
+          // 値」しか持たないので、宣言の一覧としても型の参照元としても使えない
+          yield* checkEnvFlags(action, ctx.tokens, ctx.args);
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
             // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
