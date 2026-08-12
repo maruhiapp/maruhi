@@ -153,7 +153,7 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | Q3 | user_id × 期間 → 読んだ (variable × environment) の distinct 集合 | (actor_user_id, seq) + イベント種別 |
 | Q4 | (variable × environment) × 期間 → 閲覧・変更した主体一覧(逆引き。インシデント対応用) | Q2 と同じ索引 |
 | Q5 | 現在有効な rotation.recommended − 解消イベント | イベント種別 + (variable_id, environment_id, seq) |
-| Q6 | サーバー鍵 FP → grant 区間とスコープ(chain.server_granted / revoked の列)、および期間内の server.value_decrypted(actor_key_fingerprint で照合) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
+| Q6 | サーバー鍵 FP → grant 区間とスコープ(chain.server_granted / revoked の列)、および期間内の server.lease_issued(actor_key_fingerprint = サーバー鍵 FP で照合。§4.1 変種の (a) の主入力 — 2026-08-12)+ server.value_decrypted(予約 — §3.5) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
 
 これらは**単一の project DO 内で完結する**(クロス DO join なし)。§5 の配置はこの性質を保つことを最優先に選ぶ。
 
@@ -227,7 +227,7 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 ## 7. API 境界
 
 - 監査イベントの読み取りは HttpApi で公開する(ドメイン型のみ。Drizzle 型を出さない = ADR-0006)。追記 API は**公開しない**(イベントは各操作のサーバー側処理が生成する。クライアントが任意のイベントを書ける口を作らない)
-- **読み取り API の形(2026-08-12 起草 — Phase 2)**: project DO 側は seq カーソルページング(limit ≤ 200)+ フィルタ(event 種別 / actor_user_id / target_user_id / variable_id / environment_id)。§6 の可視性クラスは認可段で強制し、クラス 2 の行・フィルタは admin 未満に対して**存在しないかのように振る舞う**(件数・ページングにも漏らさない)。要ローテーションフラグは独立の導出ビューエンドポイント(§4.1 の 5 の導出をサーバーが実行し、現在有効な集合を返す)。ユーザー系・org 系(D1)は同型のカーソルページング(本人 / org admin)。CLI は `maruhi audit`、Web は監査 UI が消費する(Phase 2 C1 / W2)
+- **読み取り API の形(2026-08-12 起草 — Phase 2)**: project DO 側は seq カーソルページング(limit ≤ 200)+ フィルタ(event 種別 / actor_user_id / target_user_id / variable_id / environment_id)。§6 の可視性クラスは認可段で強制し、クラス 2 の行・フィルタは admin 未満に対して**存在しないかのように振る舞う**(件数・ページングにも漏らさない)。要ローテーションフラグは独立の導出ビューエンドポイント(§4.1 の 5 の導出をサーバーが実行し、現在有効な集合を返す)。ユーザー系・org 系(D1)は同型のカーソルページング(本人 / org admin)。**例外: invite.*(保存は D1 — §3.2)の読み取りは org admin 軸に属さない**: プロジェクト監査の経路の一部として project_id スコープの D1 クエリで提供し、権限軸は当該プロジェクトの**チェーン role admin 以上**(§6 クラス 2 と同一)とする — org admin であることは invite.* の閲覧権限を与えず、チェーン role admin は org admin でなくても閲覧できる(2026-08-12 レビュー反映 — 保存先と権限軸を独立に定める)。CLI は `maruhi audit`、Web は監査 UI が消費する(Phase 2 C1 / W2)
 - 例外: 将来 CLI / クライアントが「クライアント側でしか観測できない事象」を報告する必要が出た場合(例: エージェント環境検出による拒否)は、専用の狭い報告エンドポイントとして設計し、本仕様を改訂する
 
 ## 8. 未決事項
