@@ -34,6 +34,7 @@ import {
 import { ChainInvalidError } from "@maruhi/core";
 import { HttpClientError } from "effect/unstable/http";
 
+import { displayText } from "./display.ts";
 import { CliError, cliError } from "./errors.ts";
 
 type Renderer = (error: unknown) => string | null;
@@ -66,16 +67,24 @@ const renderers: readonly Renderer[] = [
       "認証に失敗しました(トークンが失効している可能性があります)。`maruhi login` で再ログインしてください",
   ),
   when(isInstanceOf(ForbiddenError), (e) => `権限が不足しています(${e.reason})`),
+  // エラー Schema の ID / field 列はワイヤ上無制約の Schema.String(サーバーが
+  // 自由に埋められる)— reason / op / resource(Literals)と異なり中和が必要
   when(
     isInstanceOf(ProjectNotFoundError),
     (e) =>
-      `プロジェクトが見つかりません: ${e.projectId}(非メンバーには存在自体が秘匿されます。ID とアクセス権を確認してください)`,
+      `プロジェクトが見つかりません: ${displayText(e.projectId)}(非メンバーには存在自体が秘匿されます。ID とアクセス権を確認してください)`,
   ),
-  when(isInstanceOf(EnvironmentNotFoundError), (e) => `環境が見つかりません: ${e.environmentId}`),
-  when(isInstanceOf(VariableNotFoundError), (e) => `変数が見つかりません: ${e.variableId}`),
+  when(
+    isInstanceOf(EnvironmentNotFoundError),
+    (e) => `環境が見つかりません: ${displayText(e.environmentId)}`,
+  ),
+  when(
+    isInstanceOf(VariableNotFoundError),
+    (e) => `変数が見つかりません: ${displayText(e.variableId)}`,
+  ),
   when(
     isInstanceOf(ProjectAlreadyInitializedError),
-    (e) => `プロジェクトは初期化済みです: ${e.projectId}`,
+    (e) => `プロジェクトは初期化済みです: ${displayText(e.projectId)}`,
   ),
   when(
     isInstanceOf(ChainHeadConflictError),
@@ -106,11 +115,11 @@ const renderers: readonly Renderer[] = [
   ),
   when(
     isInstanceOf(EnvironmentConflictError),
-    (e) => `環境が競合しています: ${e.environmentId}(${e.reason})`,
+    (e) => `環境が競合しています: ${displayText(e.environmentId)}(${e.reason})`,
   ),
   when(
     isInstanceOf(VariableConflictError),
-    (e) => `変数が競合しています: ${e.variableId}(${e.reason})`,
+    (e) => `変数が競合しています: ${displayText(e.variableId)}(${e.reason})`,
   ),
   when(
     isInstanceOf(VersionConflictError),
@@ -124,7 +133,7 @@ const renderers: readonly Renderer[] = [
   ),
   when(
     isInstanceOf(PayloadMismatchError),
-    (e) => `申告 AAD が保存先座標と一致しません(${e.field})`,
+    (e) => `申告 AAD が保存先座標と一致しません(${displayText(e.field)})`,
   ),
   when(
     isInstanceOf(ValueTooLargeError),
@@ -135,14 +144,16 @@ const renderers: readonly Renderer[] = [
     (e) => `サーバーの受理上限を超えます(${e.resource} の上限 ${e.limit})`,
   ),
   when(isInstanceOf(DekWrapRejectedError), (e) => `DEK ラップ登録が拒否されました(${e.reason})`),
+  // recipientUserId はサーバー応答の自由文字列 — 端末へ出す前に中和する
   when(
     isInstanceOf(DekWrapExistsError),
     (e) =>
-      `DEK ラップが既に存在します(epoch=${e.epoch}, recipient=${e.recipientUserId})。上書きは禁止されています`,
+      `DEK ラップが既に存在します(epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})。上書きは禁止されています`,
   ),
   when(
     isInstanceOf(DekWrapNotFoundError),
-    (e) => `DEK ラップが見つかりません(epoch=${e.epoch}, recipient=${e.recipientUserId})`,
+    (e) =>
+      `DEK ラップが見つかりません(epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
   ),
   when(isInstanceOf(AuthFlowError), (e) => `認証フローに失敗しました(${e.reason})`),
   when(
@@ -167,7 +178,8 @@ export function toCliError(error: unknown): CliError {
     }
   }
   if (error instanceof Error) {
-    return cliError(`予期しないエラー: ${error.message}`);
+    // 未知エラーの message は応答本文の断片等を含みうる — 無条件に中和する
+    return cliError(`予期しないエラー: ${displayText(error.message)}`);
   }
   return cliError("予期しないエラーが発生しました");
 }

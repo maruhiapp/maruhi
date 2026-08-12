@@ -6,6 +6,7 @@
 // 鍵漏洩の否認不能な証拠 — §14.2-5)。**平文値・鍵素材は含めない**(識別は
 // すべて ID とハッシュ — ディスクレス不変条件)。
 
+import { displayText } from "./display.ts";
 import type { FloorViolation } from "./floor-check.ts";
 import { floorViolationLabel } from "./floor-check.ts";
 
@@ -63,7 +64,8 @@ function pulledValueLines(pulled: {
     `  今回の配布: version=${pulled.version} epoch=${pulled.epoch}`,
     `    value_signed_bytes_hash=${pulled.valueSigHashHex}`,
     `    宣言ヘッド: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
-    `    writer 署名: writer=${pulled.writerUserId} fp=${pulled.writerKeyFingerprintHex}`,
+    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    `    writer 署名: writer=${displayText(pulled.writerUserId)} fp=${pulled.writerKeyFingerprintHex}`,
     `    signature=${pulled.signatureHex}`,
   ];
 }
@@ -88,7 +90,8 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
     `  今回の配布: status=${violation.pulled.status} metaVersion=${violation.pulled.metaVersion}`,
     `    meta_signed_bytes_hash=${violation.pulled.metaSigHashHex}`,
     `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
-    `    author 署名: author=${violation.pulled.authorUserId} fp=${violation.pulled.authorKeyFingerprintHex}`,
+    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    `    author 署名: author=${displayText(violation.pulled.authorUserId)} fp=${violation.pulled.authorKeyFingerprintHex}`,
     `    signature=${violation.pulled.signatureHex}`,
   ];
 }

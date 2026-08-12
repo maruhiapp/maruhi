@@ -2,12 +2,14 @@
 // キーチェーンレコードの codec、run の注入検証、stdin 正規化、
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
 
+import { ProjectNotFoundError } from "@maruhi/api-schema";
 import { Effect, Exit } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeStdinValue, runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
 import { decodeValueText } from "../src/display.ts";
+import { toCliError } from "../src/failure.ts";
 import {
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -284,6 +286,22 @@ describe("decodeValueText(値デコード方針の一本化)", () => {
     );
     // --show / run 共通の fatal 方針: 置換文字で偽装せず、呼び出し側が明示エラーにする
     expect(decodeValueText(new Uint8Array([0xff, 0xfe]))).toBeNull();
+  });
+});
+
+describe("toCliError(サーバー由来文字列の端末中和)", () => {
+  it("エラー Schema の自由文字列 ID と未知エラーの message を中和する", () => {
+    // ワイヤ上無制約の Schema.String 列(悪意あるサーバーが ANSI/改行を埋められる)
+    const notFound = toCliError(
+      new ProjectNotFoundError({ projectId: "x\u001b[31mred\u001b[0m\nfake" }),
+    );
+    expect(notFound.message).not.toContain("\u001b");
+    expect(notFound.message).not.toContain("\n");
+    expect(notFound.message).toContain("x\uFFFD[31mred\uFFFD[0m\uFFFDfake");
+    // 未知エラー fallback(応答本文の断片を含みうる)も無条件に中和する
+    const unknown = toCliError(new Error("boom\u001b]0;pwned\u0007"));
+    expect(unknown.message).not.toContain("\u001b");
+    expect(unknown.message).not.toContain("\u0007");
   });
 });
 

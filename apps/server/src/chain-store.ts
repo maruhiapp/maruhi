@@ -1,6 +1,7 @@
 // プロジェクト DO 内のチェーン保存(ChainStore)と導出状態(ChainState)の共有部。
 //
-// chain-do.ts(チェーン API のプログラム)と data-programs.ts(データプレーン)の
+// chain-do.ts(チェーン API のプログラム)とデータプレーンのプログラム群
+// (programs-environment.ts / programs-variable.ts / programs-dek.ts)の
 // 両方が使う: 認可の真実源はチェーン導出の現メンバー集合であり(CRYPTO_SPEC §6.4)、
 // データ操作もチェーン導出 role で認可する(§6.2、AUTH_SPEC §12-3)。
 //

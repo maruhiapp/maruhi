@@ -1,10 +1,10 @@
 {
   "clone_groups": [
-    "apps/server/src/data-programs.ts:1031-1041|apps/server/src/data-programs.ts:1078-1088",
-    "apps/server/src/data-programs.ts:1148-1155|apps/server/src/data-programs.ts:1192-1199",
-    "apps/server/src/handlers-environments.ts:102-112|apps/server/src/handlers-environments.ts:84-92",
-    "apps/server/src/handlers-environments.ts:96-107|apps/server/src/handlers-variables.ts:134-143",
+    "apps/server/src/handlers-environments.ts:101-111|apps/server/src/handlers-environments.ts:83-91",
+    "apps/server/src/handlers-environments.ts:95-106|apps/server/src/handlers-variables.ts:134-143",
     "apps/server/src/handlers-variables.ts:120-131|apps/server/src/handlers-variables.ts:140-151",
+    "apps/server/src/programs-environment.ts:161-168|apps/server/src/programs-environment.ts:205-212",
+    "apps/server/src/programs-variable.ts:246-256|apps/server/src/programs-variable.ts:293-303",
     "packages/crypto/test/checks/metadata-signature.ts:118-130|packages/crypto/test/checks/value-signature.ts:87-99",
     "packages/crypto/test/checks/metadata-signature.ts:138-148|packages/crypto/test/checks/value-signature.ts:107-117",
     "packages/crypto/test/checks/metadata-signature.ts:268-278|packages/crypto/test/checks/value-signature.ts:210-220",
@@ -13,11 +13,11 @@
     "packages/crypto/test/checks/metadata-signature.ts:424-435|packages/crypto/test/checks/value-signature.ts:308-319"
   ],
   "clone_fingerprints": [
-    "dup:d35fd995:2",
-    "dup:2f024bf4:2",
     "dup:1d9cf7df:2",
     "dup:57e34c80:2",
     "dup:008f160f:2",
+    "dup:2f024bf4:2",
+    "dup:d35fd995:2",
     "dup:e37a3791:2",
     "dup:19911378:2",
     "dup:c4ccd5f8:2",
