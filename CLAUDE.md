@@ -96,4 +96,4 @@ apps/
 - `docs/CRYPTO_SPEC.md` — 暗号仕様(唯一の正)
 - `docs/AUTH_SPEC.md` — 認証・アイデンティティ仕様
 - `docs/adr/` — 設計判断の記録
-- ライセンス: サーバー = FSL-1.1-MIT、CLI/SDK/crypto = MIT(公開前に最終確認。公開までクローズド)
+- ライセンス: サーバー/web = FSL-1.1-MIT、CLI/SDK/crypto = MIT(確定 — ADR-0003。LICENSE 一式・CONTRIBUTING.md〔DCO〕導入済み)
