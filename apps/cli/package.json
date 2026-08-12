@@ -2,6 +2,7 @@
   "name": "@maruhi/cli",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "bin": {
     "maruhi": "./src/bin.ts",
     "mh": "./src/bin.ts"

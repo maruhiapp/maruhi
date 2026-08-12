@@ -2,6 +2,7 @@
   "name": "@maruhi/web",
   "version": "0.0.0",
   "private": true,
+  "license": "FSL-1.1-MIT",
   "type": "module",
   "scripts": {
     "build": "vite build && bun run scripts/write-headers.ts",
