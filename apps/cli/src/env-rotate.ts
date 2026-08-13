@@ -36,7 +36,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
-import { decryptVerifiedValue } from "./pull.ts";
+import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
 import { encryptAndSignPayload, winnerInconsistency } from "./push.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
@@ -290,16 +290,19 @@ function describeSendFailure(input: {
         `${input.cause}。この失敗は「リクエストが届かなかった」ことを意味しません(応答の消失もありえます)。受理されたかどうかをチェーンで確認しようとしましたが、それも失敗しました(${probe.error.message})— **環境 ${input.environmentId} のエポックが既に ${input.newEpoch} へ進んでいる可能性があります**。通信を復旧したうえで maruhi env rotate ${input.environmentId} を再実行してください(進んでいれば再暗号化から再開し、進んでいなければローテーションからやり直します)`,
       );
     }
-    if (probe.value.currentEpoch === input.newEpoch) {
-      // エポックが一致しても、それが**自分の**エントリとは限らない(並行して
-      // 他メンバーが同じエポックへローテーションした場合も一致する)。
-      // コミットメントで自分の DEK かどうかを見分ける — 見分けないと、
-      // 受理されていない自分の失効ローテーションを「受理済み」と報告してしまう
-      const mine = probe.value.dekCommitments.get(input.newEpoch) === input.dekCommitmentHex;
+    // 判定は**コミットメントの一致**で行い、現エポックの値では見ない。
+    // dekCommitments は全エポック分を持つので、受理後にさらに他メンバーが
+    // ローテーションして現エポックが目標を追い越していても、自分の分が載って
+    // いれば受理済みと分かる — 現エポックの一致を条件にすると、その場合に
+    // 「受理されていません」と報告してしまう(エポックは進み、再暗号化は 0 件)
+    if (probe.value.dekCommitments.get(input.newEpoch) === input.dekCommitmentHex) {
       return cliError(
-        mine
-          ? `${input.cause}。ただしチェーンを確認したところ、**このローテーション自体は受理されています**(環境 ${input.environmentId} は epoch ${input.newEpoch})。現在値の再暗号化は 1 件も実行されていないため、旧エポックの DEK 保持者は現在値を読めるままです — maruhi env rotate ${input.environmentId} を再実行すると、エポックを進めずに再暗号化から再開します`
-          : `${input.cause}。チェーン上の epoch ${input.newEpoch} は**他メンバーのローテーション**であり、この実行の分は受理されていません(生成した DEK は使用しません)— maruhi env rotate ${input.environmentId} を再実行してください(未完了の再暗号化があれば、エポックを進めずに再開します)`,
+        `${input.cause}。ただしチェーンを確認したところ、**このローテーション自体は受理されています**(環境 ${input.environmentId} の epoch ${input.newEpoch} は自分が生成した DEK のものです)。現在値の再暗号化は 1 件も実行されていないため、旧エポックの DEK 保持者は現在値を読めるままです — maruhi env rotate ${input.environmentId} を再実行すると、エポックを進めずに再暗号化から再開します`,
+      );
+    }
+    if (probe.value.currentEpoch >= input.newEpoch) {
+      return cliError(
+        `${input.cause}。チェーン上の epoch ${input.newEpoch} は**他メンバーのローテーション**であり、この実行の分は受理されていません(生成した DEK は使用しません)— maruhi env rotate ${input.environmentId} を再実行してください(未完了の再暗号化があれば、エポックを進めずに再開します)`,
       );
     }
     return cliError(
@@ -521,11 +524,6 @@ function decryptForRotation(input: {
 }
 
 /**
- * 巡末の実態で裏を取った push 失敗だけを原因候補にする。並行削除(404)のように
- * **その変数自体が解決している**失敗を原因として掲げると、実際に未完了で残って
- * いる別の変数(競合など)の本当の原因を隠してしまう。
- */
-/**
  * 1 つも再暗号化できないならエポックを進めない。進めても全ての現在値が旧エポックの
  * DEK のまま取り残されるだけで、**失効にならない**(自分宛ラップが 1 つも無い
  * メンバー / 全ラップを落とす応答で、エポックだけが空回りする)。--new-epoch も
@@ -549,6 +547,11 @@ function failureMessage(
   return failure === null ? null : failure.message;
 }
 
+/**
+ * 巡末の実態で裏を取った push 失敗だけを原因候補にする。並行削除(404)のように
+ * **その変数自体が解決している**失敗を原因として掲げると、実際に未完了で残って
+ * いる別の変数(競合など)の本当の原因を隠してしまう。
+ */
 function pendingFailure(
   failure: { readonly variableId: string; readonly message: string } | null,
   staleIds: ReadonlySet<string>,
@@ -601,18 +604,10 @@ function stalledOnUndecryptable(pending: readonly ReencryptTarget[], pass: numbe
 }
 
 /**
- * 「自分宛ラップが無い」理由文。**1 箇所に固定する**(下の undecryptableWarning と
- * 同じ理由 — 文面が割れると dedupeWarnings が同じ変数を 2 回通す)。
- */
-/**
  * 復号できなかった値の警告文。**1 箇所に固定する**: 同じ変数が経路ごとに
  * 少しずつ違う文面で警告されると、dedupeWarnings(集合)は別物として通してしまい、
  * 重複排除のために入れた仕組みがそのまま重複を出すことになる。
  */
-function missingWrapReason(value: VerifiedPulledValue): string {
-  return `変数 ${displayText(value.name)} のエポック ${value.epoch} の DEK が配布されていません(自分宛ラップの欠落)`;
-}
-
 function undecryptableWarning(reason: string): string {
   return `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`;
 }
@@ -1353,7 +1348,7 @@ function settlePass(input: {
         } as const;
       }
       warnings.push(
-        `サーバーが再暗号化の push に対してエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままでした(サーバー応答とチェーンの矛盾)。申告された変数は再走査で epoch ${epoch} に揃っていることを確認済みなので処理を続けますが、この応答の矛盾自体は調査対象です`,
+        `サーバーが再暗号化の push に対してエポック競合を申告しましたが、チェーン上の現エポックは ${epoch} のままでした(サーバー応答とチェーンの矛盾)。申告された変数は再走査の未完了集合に残っていない(現エポックで書かれたか、削除された)ので処理を続けますが、この応答の矛盾自体は調査対象です`,
       );
     }
     return {
@@ -1537,6 +1532,11 @@ function resumeReencryption(input: {
   readonly stale: readonly VerifiedPulledValue[];
   /** 指定された理由(null = `--reason` 未指定)。警告の文面にだけ効く。 */
   readonly reason: string | null;
+  /**
+   * 現在値のうち 1 つでも自分で開けるか。再開できないときに `--new-epoch` を
+   * 勧めてよいか(= 進めた先に再暗号化する材料があるか)の判定に使う。
+   */
+  readonly anyDecryptable: boolean;
   readonly warnings: string[];
 }): Effect.Effect<RotationSummary, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -1553,12 +1553,15 @@ function resumeReencryption(input: {
     );
     const dek = input.keys.deksByEpoch.get(currentEpoch);
     if (dek === undefined) {
-      // 逃げ道を必ず添える: この経路は再開専用なので現エポックの DEK が要るが、
-      // --new-epoch は再開を通らず自分で新 DEK を作るため**必ず成功する**。
-      // 案内しないと、失効目的の実行が「打つ手なし」で終わる
+      // 逃げ道は**満たせるときだけ**案内する: --new-epoch は自分で新 DEK を作る
+      // ので現エポックの DEK 自体は要らないが、再暗号化する材料(開ける現在値)が
+      // 1 つも無ければ ensureRotationIsUseful で弾かれる。無条件に勧めると、
+      // 2 つの矛盾するエラーの間で利用者を往復させることになる
       return yield* Effect.fail(
         cliError(
-          `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。未完了の再暗号化を再開できません — 再ラップを待つか、失効を優先する場合は --new-epoch を付けて実行してください(新しいエポックを作るので現エポックの DEK は不要です)`,
+          input.anyDecryptable
+            ? `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。未完了の再暗号化を再開できません — 再ラップを待つか、失効を優先する場合は --new-epoch を付けて実行してください(自分で開ける値だけが新エポックへ移り、開けない値は未完了として報告されます)`
+            : `現エポック ${currentEpoch} の DEK が自分宛に登録されていません(ローテーション実行者による再ラップ待ちの可能性)。開ける現在値が 1 つも無いため、--new-epoch でエポックを進めても再暗号化できるものがありません — 自分宛の再ラップを待つか、当該エポックのラップを持つメンバーが実行してください`,
         ),
       );
     }
@@ -1669,6 +1672,7 @@ function rotateWithWarnings(
         currentEpoch,
         stale,
         reason,
+        anyDecryptable: pulled.variables.some((value) => keys.deksByEpoch.has(value.epoch)),
         warnings,
       });
     }

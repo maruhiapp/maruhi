@@ -38,6 +38,19 @@ export interface PulledVariables {
 }
 
 /**
+ * 「自分宛に当該エポックのラップが無い」理由文。**復号の失敗理由を作る側**に置き、
+ * 呼び出し側(env-rotate の警告)と共有する: env rotate はこの文面で「良性の欠落」を
+ * 見分け、`dedupeWarnings`(完全一致の集合)で重複を潰すため、2 箇所に書くと
+ * 片方を直した瞬間に同じ変数の警告が 2 行出るようになる。
+ */
+export function missingWrapReason(variable: {
+  readonly name: string;
+  readonly epoch: number;
+}): string {
+  return `変数 ${displayText(variable.name)} のエポック ${variable.epoch} の DEK が配布されていません(自分宛ラップの欠落)`;
+}
+
+/**
  * Decrypts one already-verified value (§6.3 を通過した values.ts の産物)。
  * 復号文脈(AAD)の座標は申告 `aad` ではなく検証済みの値(genesis ハッシュ・
  * 要求環境・応答外側の variableId)から組む。epoch / version は値署名で検証
@@ -69,11 +82,7 @@ export function decryptVerifiedValue(input: {
     }
     const dek = input.deksByEpoch.get(variable.epoch);
     if (dek === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `変数 ${displayText(variable.name)} のエポック ${variable.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
-        ),
-      );
+      return yield* Effect.fail(cliError(missingWrapReason(variable)));
     }
     const nonce = decodeHex(variable.nonceHex);
     const ciphertext = decodeHex(variable.ciphertextHex);

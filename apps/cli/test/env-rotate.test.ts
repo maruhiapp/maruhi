@@ -21,6 +21,8 @@ import type { ChainEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
   decryptVariable,
+  signChainEntry,
+  SUITE_ID,
   importEncryptionKeyPair,
   importSigningPublicKey,
   unwrapDek,
@@ -193,6 +195,11 @@ interface ServerOptions {
    * モデル化)。timestamp は決定的なので、元のチェーンの延長として検証を通る。
    */
   readonly chainAfterRotateAttempt?: BuiltChain | undefined;
+  /**
+   * 受理した**後**に、さらに他メンバーのローテーションを 1 件追記する
+   * (現エポックが目標エポックを追い越す形のモデル化)。
+   */
+  readonly appendRotateAfterAccept?: { readonly epoch: number; readonly dek: Uint8Array };
 }
 
 interface ServerState {
@@ -240,6 +247,32 @@ function makeServer(options: ServerOptions): ServerState {
         signerKeyFingerprintHex: owner.fingerprintHex,
       });
     }
+  };
+
+  /** 他メンバーのローテーションを 1 件、現在のチェーンの末尾へ追記する。 */
+  const appendOtherRotate = async (target: {
+    readonly epoch: number;
+    readonly dek: Uint8Array;
+  }): Promise<void> => {
+    const operation = rotateEpochOp(ENV_ID, target.epoch, target.dek);
+    const resolved = typeof operation === "function" ? await operation(projectId) : operation;
+    const signed = await signChainEntry({
+      entry: {
+        ...resolved,
+        suite: SUITE_ID,
+        seq: entries.length + 1,
+        prevHashHex: hashes[hashes.length - 1] ?? "",
+        actor: { userId: owner.userId, keyFingerprintHex: owner.fingerprintHex },
+        timestampMs: Date.now(),
+      },
+      signingKey: owner.sigKeyPair.privateKey,
+    });
+    if (!signed.ok) {
+      throw new Error("failed to sign the concurrent rotate entry");
+    }
+    entries.push(signed.value);
+    hashes.push(await computeChainEntryHash(signed.value));
+    currentEpoch = target.epoch;
   };
 
   const handlers: MockHandler[] = [
@@ -296,6 +329,9 @@ function makeServer(options: ServerOptions): ServerState {
         return injected;
       }
       await acceptRotate(body);
+      if (options.appendRotateAfterAccept !== undefined) {
+        await appendOtherRotate(options.appendRotateAfterAccept);
+      }
       return (
         injectedAfterAccept ?? {
           status: 200,
@@ -1648,7 +1684,9 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     // 矛盾した申告自体は調査対象として残す(が、中断はしない)
-    expect(errors).toContain("申告された変数は再走査で epoch 2 に揃っていることを確認済み");
+    // 「揃っていることを確認した」とは言わない: 再走査が示すのは未完了集合に
+    // 残っていないことだけで、現エポックで書かれたのか削除されたのかは分からない
+    expect(errors).toContain("申告された変数は再走査の未完了集合に残っていない");
     // 中断していれば部分完了の報告経路へ到達しない = 残数も再開案内も出ない
     expect(env.logs.join("\n")).toContain("部分完了");
     expect(env.logs.join("\n")).toContain("未完了 1 変数");
@@ -1865,6 +1903,38 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("この実行の分は受理されていません");
     // 自分の分が受理されたと読ませない
     expect(errors).not.toContain("このローテーション自体は受理されています");
+  });
+
+  it("受理後にさらに他メンバーが進めていても、自分の分の受理を見落とさない", async () => {
+    // 受理 → 応答消失 → 確認までの間に別メンバーがさらにローテーション。
+    // 現エポックの一致で判定すると「受理されていません」と誤報告してしまうが、
+    // コミットメントは全エポック分が残るので自分の分は見分けられる
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // 受理はする(自分のエントリがチェーンに載る)が応答は 502。
+      // その後さらに他メンバーが epoch 3 まで進める
+      onRotateAfterAccept: () => ({ status: 502, bodyText: "bad gateway" }),
+      appendRotateAfterAccept: { epoch: 3, dek: dek3 },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "追い越し"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("このローテーション自体は受理されています");
+    expect(errors).toContain("再暗号化から再開します");
+    expect(errors).not.toContain("受理されていません");
   });
 
   it("受理されたか確認できない場合は、エポックが進んだ可能性を明示する", async () => {
@@ -2396,6 +2466,32 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("再暗号化を再開できません");
     expect(errors).toContain("--new-epoch を付けて実行してください");
+    expect(state.rotateBodies).toHaveLength(0);
+  });
+
+  it("開ける現在値が 1 つも無いなら、満たせない --new-epoch を勧めない", async () => {
+    // 自分宛ラップが 1 つも無い場合、--new-epoch へ進んでも
+    // ensureRotationIsUseful で弾かれる。勧めると 2 つの矛盾するエラーの間で
+    // 利用者を往復させることになる
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({ built: chainRotated, variables, deks: [], currentEpoch: 2 });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("開ける現在値が 1 つも無いため");
+    expect(errors).not.toContain("--new-epoch を付けて実行してください");
     expect(state.rotateBodies).toHaveLength(0);
   });
 
