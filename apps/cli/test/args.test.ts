@@ -69,6 +69,9 @@ describe("boolean オプションへの値の指定", () => {
     // 位置引数として残る)
     expect(await runCli(["pull", "--show", "false"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--show は値を取りません");
+    // pull は位置引数を取らないので「オプションより前に書け」とは言わない
+    // (そのとおり直すと今度は余分な引数で落ちる)
+    expect(env.errors.join("\n")).not.toContain("オプションより前に書いてください");
     expect(server.requests).toHaveLength(0);
     expect(env.logs).toHaveLength(0);
   });
@@ -179,7 +182,11 @@ describe("未宣言オプション(strict)", () => {
     // `-q` を `--q` に見立てて距離を測ると、無関係な長いオプションが候補に出る
     expect(await runCli(["pull", "-q"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("このコマンドが取るオプション: --env --project --server --show");
+    // 一覧には実行時のグローバルと否定形も含める(案内した `--no-show` が
+    // 一覧に出てこないのは不整合)
+    expect(errors).toContain(
+      "このコマンドが取るオプション: --env --help --no-show --project --server --show --version",
+    );
     expect(errors).not.toContain("のことですか?");
   });
 
@@ -367,6 +374,44 @@ describe("操作に適用されないオプション(env 固有)", () => {
   });
 });
 
+describe("空の値", () => {
+  it('空のオプション値(`--env ""`)は既定へフォールバックさせず落とす', async () => {
+    const { env, server } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
+
+    // gunshi は空の値を「未指定」に潰すため、`--env "$ENV"` の未設定形が
+    // **既定環境への書き込み**に化ける(取り消せない)
+    expect(await runCli(["push", "API_KEY", "--env", ""], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("オプション --env の値が空です");
+    expect(await runCli(["pull", "--project="], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("オプション --project の値が空です");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('空の位置引数(`config set server ""`)は設定を空で上書きしない', async () => {
+    const { env } = await startEnv();
+
+    // 位置引数は空文字列のまま束縛される(オプションと違って undefined へ
+    // 落ちない)ため、`config set defaultProject "$PROJ"` の未設定形が
+    // 既存の設定を消して成功を報告していた
+    expect(await runCli(["config", "set", "defaultEnvironment", ""], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("位置引数 value が空です");
+    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+    expect(env.logs).toContain("prod");
+  });
+
+  it("`--` より前にコマンド名が無い実行は、pull も復号もせずに落ちる", async () => {
+    const { env, server } = await startEnv();
+
+    // gunshi は `--` を跨いでコマンドを解決するため、`maruhi -- run printenv`
+    // は run として解決され、コマンド名そのものが実行対象として渡る
+    expect(await runCli(["--", "run", "printenv"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("コマンド名は `--` より前に書いてください");
+    expect(env.runnerCalls).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
+  });
+});
+
 describe("終了コードの一貫性", () => {
   it("値の無い `config set` も usage エラー(2)", async () => {
     const { env } = await startEnv();
@@ -510,6 +555,8 @@ describe("余分な位置引数", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("maruhi push は `--` の後ろの引数を取りません");
     expect(errors).not.toContain("位置引数は name だけです");
+    // 中身を伏せる以上、直し方は `--` の形でも添える
+    expect(errors).toContain("値は stdin から読みます");
     expect(server.requests).toHaveLength(0);
   });
 
@@ -583,6 +630,17 @@ describe("gunshi 由来の usage エラー", () => {
     expect(errors).not.toContain("s3cr3t");
   });
 
+  it("パーサ内部の例外は内部メッセージを出さない", async () => {
+    const { env } = await startEnv();
+
+    // 値の無い number オプションで gunshi 自身が TypeError を投げる。JS の
+    // 内部メッセージを `maruhi:` の顔で出さない(文面はこちらの語彙だけ)
+    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("引数を解釈できません");
+    expect(errors).not.toContain("Cannot read properties");
+  });
+
   it("未知のコマンドは日本語で落ち、使えるコマンドを示す", async () => {
     const { env } = await startEnv();
 
@@ -647,12 +705,14 @@ function checkContext(input: {
     inlineValue?: boolean;
   }[];
   readonly positionals?: readonly string[];
+  readonly values?: Readonly<Record<string, unknown>>;
 }) {
   return {
     args: input.args,
     tokens: input.tokens,
     positionals: input.positionals ?? ["demo"],
-    rest: [],
+    values: input.values ?? {},
+    explicit: {},
     commandPath: ["demo"],
   };
 }

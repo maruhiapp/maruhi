@@ -19,7 +19,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
   Keychain,
@@ -59,7 +59,8 @@ export function normalizeHttpOrigin(raw: string, label: string): Effect.Effect<s
   try {
     url = new URL(raw);
   } catch {
-    return Effect.fail(cliError(`${label}を解釈できません: ${raw}`));
+    // URL そのものは返さない(認証情報が埋まった URL を書かれる形もある)
+    return Effect.fail(usageError(`${label}を解釈できません(https:// で始まる URL)`));
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return Effect.fail(cliError(`${label}は http(s) で指定してください: ${raw}`));

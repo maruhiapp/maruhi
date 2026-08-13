@@ -425,8 +425,10 @@ describe("入力検証と defect の扱い", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: "https://maruhi.example", defaultEnvironment: "dev" });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
-    expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("プロジェクト ID の形式が不正");
+    // 書き方の誤りは usage エラー(2)。指定値そのものは返さない
+    expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("プロジェクト ID の形式が正しくありません");
+    expect(env.errors.join("\n")).not.toContain("not-hex");
     const env2 = await makeTestEnv();
     await seedConfig(env2, {
       server: "https://maruhi.example",
@@ -434,8 +436,9 @@ describe("入力検証と defect の扱い", () => {
     });
     env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // 環境 ID の形式検証はネットワークアクセス(セッション解決)より先に走る
-    expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("環境 ID の形式が不正");
+    expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(2);
+    expect(env2.errors.join("\n")).toContain("環境 ID の形式が正しくありません");
+    expect(env2.errors.join("\n")).not.toContain("!bad");
   });
 
   it("defect(バグ由来の throw)は usage エラー(2)でなく 1 で報告される", async () => {

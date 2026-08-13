@@ -14,6 +14,7 @@ import { ensureValueDisplayAllowed } from "./agent.ts";
 import {
   type ArgCheckContext,
   argsRejection,
+  type ArgsCheckOptions,
   type ArgTable,
   type ArgTokenShape,
   declaredOptionName,
@@ -69,25 +70,8 @@ type CliProgram = Effect.Effect<number | void, CliError, CliServices>;
 type Execute = (
   ctx: ArgCheckContext,
   program: CliProgram,
-  options?: {
-    /** 余分な位置引数を拒否するときに添えるコマンド固有の助言。 */
-    readonly strayPositionalHint?: string;
-    /** `--` の後ろを読むコマンドか(`maruhi run` だけ)。 */
-    readonly acceptsRest?: boolean;
-    /** この実行では取らない位置引数(`config get` の `value` — args.ts)。 */
-    readonly withoutPositionals?: readonly string[] | undefined;
-    /** `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。 */
-    readonly restRequired?: string;
-    /** `--` の後ろ(コマンド側で組み済みのもの — 2 度組まない)。 */
-    readonly rest?: readonly string[];
-    /**
-     * コマンド固有の拒否(env の操作別オプションの適用可否など)。共通検査
-     * (args.ts)**より先に**見る: そのオプションが操作にそもそも適用されない
-     * なら、綴りの助言を先に出しても次の実行でまた落ちるため。どちらで落ちても
-     * 実行はされないので、先に非 null を返した方の文面を出す。
-     */
-    readonly rejection?: string | null;
-  },
+  /** コマンドごとの検査の調整(型と既定は args.ts が持つ)。 */
+  options?: ArgsCheckOptions,
 ) => Promise<void>;
 
 function loginCommand(execute: Execute) {
@@ -539,7 +523,7 @@ function envCommand(execute: Execute) {
           }
           return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
         }),
-        { rejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args) },
+        { commandRejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args) },
       ),
   });
 }
@@ -809,14 +793,9 @@ export async function runCli(
     // コマンド固有の拒否を**先に**見る: そのオプションが操作にそもそも
     // 適用されないなら、綴りの助言(`--new-epoch` と書き直せ)を先に出しても
     // 次の実行でまた落ちる(`env create --new-epoch=false` の 2 度手間)
-    const rejection = argsRejection(ctx, {
-      strayPositionalHint: options?.strayPositionalHint,
-      acceptsRest: options?.acceptsRest,
-      withoutPositionals: options?.withoutPositionals,
-      restRequired: options?.restRequired,
-      commandRejection: options?.rejection,
-      rest: options?.rest,
-    });
+    // 検査の一覧は args.ts が持つ(ここで項目を転記すると、増やしたときに
+    // 渡し忘れた検査が黙って死ぬ)
+    const rejection = argsRejection(ctx, options);
     if (rejection !== null) {
       await reportUsageError([rejection]);
       // 引数の書き方の誤りは usage エラー(2)。gunshi の strict が落とす

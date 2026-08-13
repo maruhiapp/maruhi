@@ -42,6 +42,9 @@ const CLI_NAME = "maruhi";
 /** gunshi の否定形の接頭辞(`negatable: true` の boolean に付く)。 */
 const NEGATION_PREFIX = "no-";
 
+/** gunshi が全コマンドへ混ぜるオプション(引数表には現れないが受け付ける)。 */
+const GLOBAL_OPTIONS = ["--help", "--version"] as const;
+
 /** 引数表の 1 エントリ(判定に使う部分だけ)。 */
 interface ArgSchemaShape {
   readonly type?: string | undefined;
@@ -75,6 +78,10 @@ export interface ArgCheckContext {
   readonly args: ArgTable;
   readonly tokens: readonly ArgTokenShape[];
   readonly positionals: readonly string[];
+  /** 引数表を通した値(オプションの空の値は undefined へ落ちる)。 */
+  readonly values: Readonly<Record<string, unknown>>;
+  /** 明示的に書かれたか(「未指定」と「空指定」の区別はここにしか無い)。 */
+  readonly explicit: Readonly<Record<string, boolean>>;
   readonly commandPath: readonly string[];
 }
 
@@ -208,6 +215,10 @@ function booleanOptionOf(
 // 「フラグの値のつもりで書いた」と読める語。boolean の直後に置かれたこれらは
 // 位置引数ではなく値の指定と判断する。網羅は原理的に無理なので、**無効に
 // する正しい書き方**(`negatable` による `--no-<name>`)を必ず案内へ添える
+function isBooleanLiteral(token: ArgTokenShape): boolean {
+  return BOOLEAN_LITERALS.has((token.value ?? "").toLowerCase());
+}
+
 const BOOLEAN_LITERALS = new Set([
   "true",
   "false",
@@ -266,16 +277,17 @@ function booleanLiteralRejection(ctx: ArgCheckContext, booleans: BooleanSpelling
     if (token.kind === "option-terminator") {
       break;
     }
-    const option = previous === undefined ? undefined : booleanOptionOf(previous, booleans);
-    if (
-      token.kind === "positional" &&
-      previous !== undefined &&
-      option !== undefined &&
-      BOOLEAN_LITERALS.has((token.value ?? "").toLowerCase())
-    ) {
+    const flag = token.kind === "positional" && isBooleanLiteral(token) ? previous : undefined;
+    const option = flag === undefined ? undefined : booleanOptionOf(flag, booleans);
+    if (flag !== undefined && option !== undefined) {
       // 環境 ID が本当に `1` / `n` のような語である可能性は残る。並べ替えれば
-      // 通ることを示して手詰まりにしない
-      return `${booleanTakesNoValue(previous, option)}。その語が本当に位置引数なら、オプションより前に書いてください`;
+      // 通ることを示して手詰まりにしない(位置引数を取るコマンドに限る —
+      // 取らないコマンドで勧めると、そのとおり直しても余分な引数で落ちる)
+      const escape =
+        namesOfType(ctx.args, "positional").length > 0
+          ? "。その語が本当に位置引数なら、オプションより前に書いてください"
+          : "";
+      return `${booleanTakesNoValue(flag, option)}${escape}`;
     }
     previous = token;
   }
@@ -357,16 +369,77 @@ function strayPositionalRejection(
 }
 
 /**
+ * 明示されたのに**値が空**のオプション(`--env ""` / `--env=`)の拒否。
+ *
+ * gunshi の string / number は `token.value || default` で解決するため、空の値は
+ * 「未指定」に潰れて既定へフォールバックする。`maruhi push API_KEY --env "$ENV"`
+ * で ENV が未設定なら、書き込みは**既定環境**へ入る(取り消せない)。
+ * 「未指定」と「空指定」の区別は `ctx.explicit` にしか無い。
+ */
+function emptyOptionValueRejection(ctx: ArgCheckContext): string | null {
+  for (const [name, schema] of Object.entries(ctx.args)) {
+    if (schema.type === "positional" || schema.type === "boolean") {
+      continue;
+    }
+    if (ctx.explicit[name] === true && ctx.values[name] === undefined) {
+      return `オプション --${name} の値が空です(空の値は「未指定」と区別できないため受け付けません)`;
+    }
+  }
+  return null;
+}
+
+/**
+ * 空の位置引数(`maruhi config set server ""`)の拒否。
+ *
+ * 位置引数は空文字列のまま束縛される(オプションと違って undefined へ落ちない)
+ * ため、`config set defaultProject "$PROJ"` の未設定形が既存の設定を空で
+ * 上書きして成功を報告していた。
+ */
+function emptyPositionalRejection(ctx: ArgCheckContext): string | null {
+  for (const name of namesOfType(ctx.args, "positional")) {
+    if (ctx.values[name] === "") {
+      return `位置引数 ${name} が空です(空の値は受け付けません)`;
+    }
+  }
+  return null;
+}
+
+/**
+ * コマンド名が `--` の**後ろ**にある実行の拒否。gunshi は `--` を跨いで
+ * コマンドを解決する(`getPositionalTokens` は全 positional を見る)ため、
+ * `maruhi -- run printenv` は run として解決され、`--` の後ろの先頭
+ * (= コマンド名そのもの)が実行対象として渡ってしまう。
+ */
+function commandBeforeTerminatorRejection(
+  ctx: ArgCheckContext,
+  rest: readonly string[],
+): string | null {
+  if (ctx.commandPath.length === 0 || rest.length === 0) {
+    return null;
+  }
+  return positionalCount(ctx, rest) < ctx.commandPath.length
+    ? "コマンド名は `--` より前に書いてください(`--` の後ろはそのまま渡す引数です)"
+    : null;
+}
+
+/**
  * `--` の後ろの引数の拒否。これを読むのは `maruhi run` だけで、他のコマンド
  * では黙って捨てられる(`maruhi push NAME -- value` など)。
  */
-function strayRestRejection(rest: readonly string[], ctx: ArgCheckContext, acceptsRest: boolean) {
+function strayRestRejection(
+  rest: readonly string[],
+  ctx: ArgCheckContext,
+  acceptsRest: boolean,
+  hint: string | undefined,
+) {
   if (acceptsRest || rest.length === 0) {
     return null;
   }
+  // 中身を伏せる以上、直し方(コマンド固有の助言)は位置引数側と同じく必ず添える
   return strayArgumentsMessage(
     rest.length,
     `${commandLabel(ctx.commandPath)} は \`--\` の後ろの引数を取りません`,
+    hint ?? "",
   );
 }
 
@@ -388,39 +461,39 @@ function missingRestRejection(
   return rest.length === 0 || rest[0] === "" ? required : null;
 }
 
+/** How one command tunes the shared argument checks. */
+export interface ArgsCheckOptions {
+  /** 余分な位置引数を拒否するときに添えるコマンド固有の助言。 */
+  readonly strayPositionalHint?: string | undefined;
+  /** `--` の後ろを読むコマンドか(`maruhi run` だけ)。 */
+  readonly acceptsRest?: boolean | undefined;
+  /**
+   * **この実行では**取らない位置引数(既定は引数表の全 positional)。
+   * 操作によって数が変わるコマンド(`config get` は set 専用の optional
+   * positional `value` を取らない)が、引数表との差を伝えるために使う。
+   */
+  readonly withoutPositionals?: readonly string[] | undefined;
+  /**
+   * `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。渡すと
+   * 「実行対象が無い」実行を共通検査の中で(= より具体的な誤りの後に)落とす。
+   */
+  readonly restRequired?: string | undefined;
+  /**
+   * コマンド固有の拒否(env の操作別オプションの適用可否)。**共通検査より
+   * 先**に見るが、連鎖の中に置くので「共通検査を飛ばす」ことはできない。
+   */
+  readonly commandRejection?: string | null | undefined;
+  /** `--` の後ろ(コマンド側で組み済みなら渡す — 2 度組まない)。 */
+  readonly rest?: readonly string[] | undefined;
+}
+
 /**
  * Checks how the arguments were written; returns the rejection message to show,
  * or null when the invocation is well-formed.
  *
  * 呼ぶのは cli.ts の execute — コマンド本体より前に必ず通る。
  */
-export function argsRejection(
-  ctx: ArgCheckContext,
-  options?: {
-    /** 余分な位置引数を拒否するときに添えるコマンド固有の助言。 */
-    readonly strayPositionalHint?: string | undefined;
-    /** `--` の後ろを読むコマンドか(`maruhi run` だけ)。 */
-    readonly acceptsRest?: boolean | undefined;
-    /**
-     * **この実行では**取らない位置引数(既定は引数表の全 positional)。
-     * 操作によって数が変わるコマンド(`config get` は set 専用の optional
-     * positional `value` を取らない)が、引数表との差を伝えるために使う。
-     */
-    readonly withoutPositionals?: readonly string[] | undefined;
-    /**
-     * `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。渡すと
-     * 「実行対象が無い」実行を共通検査の中で(= より具体的な誤りの後に)落とす。
-     */
-    readonly restRequired?: string | undefined;
-    /**
-     * コマンド固有の拒否(env の操作別オプションの適用可否)。**共通検査より
-     * 先**に見るが、連鎖の中に置くので「共通検査を飛ばす」ことはできない。
-     */
-    readonly commandRejection?: string | null | undefined;
-    /** `--` の後ろ(コマンド側で組み済みなら渡す — 2 度組まない)。 */
-    readonly rest?: readonly string[] | undefined;
-  },
-): string | null {
+export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions): string | null {
   // boolean の綴り集合は 1 回だけ作って各検査へ渡す(トークンごとに引数表を
   // 走査し直さない)
   const booleans = booleanSpellings(ctx.args);
@@ -430,6 +503,9 @@ export function argsRejection(
     // 適用できないオプションは、綴りの助言より先に言う(そのとおり直しても
     // 次の実行でまた落ちるため)
     options?.commandRejection ??
+    commandBeforeTerminatorRejection(ctx, rest) ??
+    emptyOptionValueRejection(ctx) ??
+    emptyPositionalRejection(ctx) ??
     inlineValueRejection(ctx, booleans) ??
     booleanLiteralRejection(ctx, booleans) ??
     strayPositionalRejection(
@@ -439,7 +515,7 @@ export function argsRejection(
       options?.strayPositionalHint,
       options?.withoutPositionals ?? [],
     ) ??
-    strayRestRejection(rest, ctx, options?.acceptsRest === true) ??
+    strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint) ??
     missingRestRejection(rest, options?.restRequired)
   );
 }
@@ -536,12 +612,20 @@ function optionCandidates(
     return candidates.filter((candidate): candidate is string => typeof candidate === "string");
   }
   // 短縮形の未宣言オプションでは gunshi が候補を空で渡す(長い綴りの候補しか
-  // 持たない)。その場合は引数表から組む
-  return args === undefined
-    ? []
-    : Object.entries(args)
-        .filter(([, schema]) => schema.type !== "positional")
-        .map(([name]) => `--${name}`);
+  // 持たない)。その場合は引数表から組む — 実行時に混ぜられるグローバルと
+  // 否定形は引数表に無いので、こちらで補う(無いと、案内した `--no-x` が
+  // 一覧に出てこない)
+  if (args === undefined) {
+    return GLOBAL_OPTIONS;
+  }
+  const declared = Object.entries(args).flatMap(([name, schema]) =>
+    schema.type === "positional"
+      ? []
+      : schema.negatable === true
+        ? [`--${name}`, `--${NEGATION_PREFIX}${name}`]
+        : [`--${name}`],
+  );
+  return [...declared, ...GLOBAL_OPTIONS];
 }
 
 function stringValue(values: Readonly<Record<string, unknown>>, key: string): string | null {
@@ -651,9 +735,9 @@ export function usageErrorMessages(
   commands: CommandTable,
 ): readonly string[] {
   if (!(error instanceof AggregateError) || error.errors.length === 0) {
-    return [
-      error instanceof Error && error.message !== "" ? error.message : "引数を解釈できません",
-    ];
+    // 検証エラー以外(パーサ内部の例外など)は文面がこちらの語彙ではない —
+    // JS の内部メッセージを `maruhi:` の顔で出さない
+    return ["引数を解釈できません"];
   }
   const args = invokedArgs(argv, commands);
   // コマンド名を間違えた実行では、オプションは**エントリコマンドの**引数表と

@@ -2833,13 +2833,15 @@ describe("maruhi env rotate", () => {
     // **空文字列**は gunshi が undefined に落とすので、指定の有無は
     // ctx.explicit で判定しないと未指定と区別できない(空白のみの値は
     // truthy なので通ってしまい、この経路を素通りさせていた)
-    for (const value of ["", "  "]) {
-      expect(await runCli(["env", "rotate", ENV_ID, "--reason", value], env.layer)).toBe(1);
-      expect(env.errors.join("\n")).toContain("--reason が空です");
+    // 空文字列は共通の引数検査が usage エラー(2)で落とす(「未指定」と
+    // 区別できない値を既定へフォールバックさせない — args.ts)
+    for (const empty of [["--reason", ""], ["--reason="]]) {
+      expect(await runCli(["env", "rotate", ENV_ID, ...empty], env.layer)).toBe(2);
+      expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
       expect(env.logs.join("\n")).not.toContain("確認完了");
     }
-    // `--reason=` の形(値を = で繋いだ空指定)も同じ
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason="], env.layer)).toBe(1);
+    // 空白だけの理由は値としては非空なのでコマンド本体まで進み、そこで落ちる
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("--reason が空です");
     expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
