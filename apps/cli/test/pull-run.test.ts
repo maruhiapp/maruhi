@@ -259,6 +259,21 @@ describe("maruhi pull", () => {
     expect(env.logs).toContain("BETA=beta-value");
   });
 
+  it("--show=false / --show false は値を表示しない(usage エラーで落ちる)", async () => {
+    // gunshi は boolean のインライン値を読まずに true にし、空白区切りの値も
+    // 消費しない。塞がないと**書いたことと逆**に全シークレットが端末へ出る
+    // (直前のテストが、この配布データで --show が実際に値を出すことを示す)
+    const inline = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(2);
+    expect(inline.logs.join("\n")).not.toContain("alpha-value");
+    expect(inline.errors.join("\n")).toContain("--show は値を取りません");
+
+    const spaced = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show", "false"], spaced.layer)).toBe(2);
+    expect(spaced.logs.join("\n")).not.toContain("alpha-value");
+    expect(spaced.errors.join("\n")).toContain("余分な引数です: false");
+  });
+
   it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {
     // 悪意ある共同編集者が保存した値(ESC + BEL)+ 正当な複数行(PEM 風)
     const evil = "sk-\u001b[31mFAKE\u0007\nline2";
@@ -1403,5 +1418,17 @@ describe("maruhi run", () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["run"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("`--` の後に指定");
+  });
+
+  it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {
+    // 引数の書き方の検査(args.ts / strict)が子プロセスの引数に及ぶと、
+    // `maruhi run -- <cmd>` は任意のコマンドを実行できなくなる。`--` 以降は
+    // 位置引数トークンとして ctx.rest にだけ入る(ctx.positionals にも
+    // オプショントークンにも現れない)ため、検査の対象にならない
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(
+      await runCli(["run", "--", "printenv", "--show=false", "--shwo", "extra"], env.layer),
+    ).toBe(0);
+    expect(env.runnerCalls[0]?.command).toEqual(["printenv", "--show=false", "--shwo", "extra"]);
   });
 });

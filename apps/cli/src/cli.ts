@@ -11,6 +11,12 @@ import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
 import { ensureValueDisplayAllowed } from "./agent.ts";
+import {
+  type ArgCheckContext,
+  argsRejection,
+  type ArgTokenShape,
+  usageErrorMessages,
+} from "./args.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
 import {
@@ -51,8 +57,23 @@ export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
 
 type CliProgram = Effect.Effect<number | void, CliError, CliServices>;
 
-/** コマンド本体(Effect プログラム)を実行し、終了コードを蓄積する。 */
-type Execute = (program: CliProgram) => Promise<void>;
+/**
+ * 引数の書き方を検査してからコマンド本体(Effect プログラム)を実行し、
+ * 終了コードを蓄積する。ctx を必ず渡す形にしてあるので、新しいコマンドが
+ * 共通検査(args.ts)を通し忘れることがない。
+ */
+type Execute = (
+  ctx: ArgCheckContext,
+  program: CliProgram,
+  options?: {
+    /** 余分な位置引数を拒否するときに添えるコマンド固有の助言。 */
+    readonly strayPositionalHint?: string;
+    /** `--` の後ろを読むコマンドか(`maruhi run` だけ)。 */
+    readonly acceptsRest?: boolean;
+    /** コマンド固有の追加拒否(env の操作別オプションの適用可否)。 */
+    readonly rejection?: string | null;
+  },
+) => Promise<void>;
 
 function loginCommand(execute: Execute) {
   return define({
@@ -82,6 +103,7 @@ function loginCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const store = yield* ConfigStore;
           const config = yield* store.load;
@@ -120,6 +142,7 @@ function logoutCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const store = yield* ConfigStore;
           const config = yield* store.load;
@@ -143,6 +166,7 @@ function keyCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const context = yield* openSession(ctx.values.server);
           if (ctx.values.action === "generate") {
@@ -182,6 +206,7 @@ function projectCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           if (ctx.values.action === "init") {
             const context = yield* openSession(ctx.values.server);
@@ -390,8 +415,8 @@ function envRotate(
 
 /**
  * **操作専用**のオプション(ここに無い宣言済みオプションは両操作で使える)。
- * 「宣言されているか」は引数表から導くので、この表に載せ忘れても新しい
- * オプションが不明扱いで拒否されることはない。
+ * 未宣言かどうかは `CliOptions.strict` が引数表から判定するので、この表に
+ * 載せ忘れても新しいオプションが不明扱いで拒否されることはない。
  */
 const ENV_ACTION_FLAGS = {
   create: new Set<string>(["name"]),
@@ -401,132 +426,35 @@ const ENV_ACTION_FLAGS = {
 const ENV_OTHER_ACTION = { create: "rotate", rotate: "create" } as const;
 
 /**
- * env のオプション検査。gunshi は 1 コマンド 1 引数表なので、`create` と
- * `rotate` の両方のフラグが常に受理される。**黙って捨てない**ために 2 つを
- * 検査する:
+ * 操作に適用されないオプション(create への `--reason` 等)の拒否。gunshi は
+ * 1 コマンド 1 引数表なので、`create` と `rotate` の両方のフラグが常に受理
+ * される — 指定した意図が黙って無視されたことに気付けるようにする。
  *
- * 1. 未知のオプション(`--new-epochs` のような綴り間違い)。gunshi は未知の
- *    オプションを無視するため、放置すると「新エポックを必ず作る」つもりの
- *    実行が黙って弱い再開経路へ落ちる
- * 2. 操作に適用されないオプション(create への --reason 等)。指定した意図が
- *    無視されたことに気付けるようにする
- *
- * 3. boolean オプションへの値の指定(`--new-epoch=false`)。gunshi は boolean の
- *    インライン値を**読まずに true** にするため、放置すると `--new-epoch=false`
- *    が「必ず新エポック」として通り、書いたことと逆の結果になる(しかもチェーンは
- *    append-only なので取り消せない)
- *
- * 判定材料(`args`)は**引数表そのもの**を渡す — 手書きの一覧と二重管理にすると、
- * 次に増えたオプションが実装済みなのに拒否される。
+ * 書き方そのものの誤り(未宣言オプション・boolean への値・余分な位置引数)は
+ * コマンドに依らないので args.ts と `CliOptions.strict` が受け持つ。
  */
-type EnvFlagToken = {
-  readonly kind: string;
-  readonly name?: string | undefined;
-  readonly rawName?: string | undefined;
-  readonly inlineValue?: boolean | undefined;
-};
-type EnvArgTable = Readonly<Record<string, { readonly type?: string | undefined }>>;
-
-/**
- * 宣言はされているが、**その書き方では意図どおりに読まれない**オプションの拒否
- * (引数表の型から導く)。
- */
-function envSchemaRejection(
-  schema: { readonly type?: string | undefined },
-  typed: string,
-  inlineValue: boolean | undefined,
+function envActionFlagRejection(
+  action: string | undefined,
+  tokens: readonly ArgTokenShape[],
 ): string | null {
-  if (schema.type === "positional") {
-    // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
-    // (`env create dev --environment-id prod` は dev を作る)。環境 ID は
-    // チェーン履歴全体で一意(§6.2)なので、取り違えは永久に焼き付く
-    return `${typed} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
-  }
-  if (schema.type === "boolean" && inlineValue === true) {
-    return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
-  }
-  return null;
-}
-
-/** 1 トークン分の判定。拒否する場合はその理由(表示文)、問題なければ null。 */
-function envFlagRejection(
-  action: "create" | "rotate",
-  token: EnvFlagToken,
-  args: EnvArgTable,
-): string | null {
-  if (token.kind !== "option" || token.name === undefined) {
+  // 不明な操作(`env bogus`)はコマンド本体が報告する。適用可否をここで
+  // 語れるのは操作が確定している場合だけ
+  if (action !== "create" && action !== "rotate") {
     return null;
   }
-  const name = token.name;
-  // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
-  const typed = displayText(token.rawName ?? `--${name}`);
-  // `Object.hasOwn` で引く: `args["constructor"]` のようなプロトタイプ由来の
-  // 名前は truthy に見えてしまい、未知オプションの検査を素通りする
-  const schema = Object.hasOwn(args, name) ? args[name] : undefined;
-  if (schema === undefined) {
-    return `不明なオプションです: ${typed}`;
-  }
-  const shape = envSchemaRejection(schema, typed, token.inlineValue);
-  if (shape !== null) {
-    return shape;
-  }
   const otherAction = ENV_OTHER_ACTION[action];
-  if (ENV_ACTION_FLAGS[otherAction].has(name)) {
+  for (const token of tokens) {
+    if (token.kind !== "option" || token.name === undefined) {
+      continue;
+    }
+    if (!ENV_ACTION_FLAGS[otherAction].has(token.name)) {
+      continue;
+    }
+    // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
+    const typed = displayText(token.rawName ?? `--${token.name}`);
     return `${typed} は env ${action} では使えません(${otherAction} 用のオプションです)`;
   }
   return null;
-}
-
-function checkEnvFlags(
-  action: "create" | "rotate",
-  tokens: readonly EnvFlagToken[],
-  args: EnvArgTable,
-): Effect.Effect<void, CliError> {
-  for (const token of tokens) {
-    const rejection = envFlagRejection(action, token, args);
-    if (rejection !== null) {
-      return Effect.fail(cliError(rejection));
-    }
-  }
-  return Effect.void;
-}
-
-/**
- * 余分な位置引数の拒否。boolean は**空白区切りの値を読まない**ため、
- * `--new-epoch false` は「フラグ有効 + 位置引数 "false"」になり、無効にした
- * つもりが**必ず新エポック**になる(チェーンは append-only で取り消せない)。
- * 想定数は引数表から導く(先頭はサブコマンド名 `env`)。
- */
-function checkEnvPositionals(
-  action: "create" | "rotate",
-  positionals: readonly string[],
-  tokens: readonly EnvFlagToken[],
-  args: EnvArgTable,
-  /** 先頭に並ぶサブコマンド名の数(`env` の 1 段。入れ子が増えても追随する)。 */
-  commandDepth: number,
-): Effect.Effect<void, CliError> {
-  const declared = Object.values(args).filter((schema) => schema.type === "positional").length;
-  const expected = declared + commandDepth;
-  if (positionals.length <= expected) {
-    return Effect.void;
-  }
-  const extra = positionals.slice(expected).map(displayText).join(" ");
-  // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
-  // コマンドラインに無いオプションを探させることになる)
-  const booleans = new Set(
-    Object.entries(args)
-      .filter(([, schema]) => schema.type === "boolean")
-      .map(([name]) => name),
-  );
-  const usedBoolean = tokens.some(
-    (token) => token.kind === "option" && token.name !== undefined && booleans.has(token.name),
-  );
-  const hint = usedBoolean
-    ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
-    : "";
-  return Effect.fail(
-    cliError(`余分な引数です: ${extra}(env ${action} が取るのは環境 ID だけです)${hint}`),
-  );
 }
 
 function envCommand(execute: Execute) {
@@ -553,6 +481,7 @@ function envCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const action = ctx.values.action;
           if (action !== "create" && action !== "rotate") {
@@ -562,8 +491,8 @@ function envCommand(execute: Execute) {
           }
           const environmentId = ctx.values["environment-id"];
           // positional 未指定(undefined)は型で明示的に弾く。位置引数を**書かずに**
-          // `--environment-id` だけで渡した実行はここまで来ない(gunshi 自身が
-          // 必須 positional の欠落として usage エラーで落とす)
+          // `--environment-id` だけで渡した実行はここまで来ない(strict が未宣言
+          // オプションとして runner より前に落とす — args.ts)
           if (environmentId === undefined || !isEnvironmentId(environmentId)) {
             return yield* Effect.fail(
               cliError(
@@ -571,16 +500,6 @@ function envCommand(execute: Execute) {
               ),
             );
           }
-          // 判定材料は**引数表**(ctx.args)そのもの。ctx.values は「実際に渡された
-          // 値」しか持たないので、宣言の一覧としても型の参照元としても使えない
-          yield* checkEnvFlags(action, ctx.tokens, ctx.args);
-          yield* checkEnvPositionals(
-            action,
-            ctx.positionals,
-            ctx.tokens,
-            ctx.args,
-            ctx.commandPath.length,
-          );
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
             // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
@@ -596,6 +515,7 @@ function envCommand(execute: Execute) {
           }
           return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
         }),
+        { rejection: envActionFlagRejection(ctx.values.action, ctx.tokens) },
       ),
   });
 }
@@ -618,6 +538,7 @@ function pullCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const io = yield* CliIo;
           // 値の表示拒否(AI エージェント検出)はコマンド入口 = 復号前に検査する。
@@ -664,6 +585,7 @@ function pushCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const io = yield* CliIo;
           const context = yield* openEnvironment(ctx.values);
@@ -705,6 +627,7 @@ function runCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const context = yield* openEnvironment(ctx.values);
           const pulled = yield* pullVariables({
@@ -720,6 +643,14 @@ function runCommand(execute: Execute) {
           // 実行制御系変数名 denylist(run.ts)は検証済み name に適用される防衛層
           return yield* runOp({ command: ctx.rest, variables: pulled.variables });
         }),
+        {
+          // `maruhi run npm test`(`--` 忘れ)は位置引数として落ちる。run は
+          // 実行対象を `ctx.rest` からしか取らないので、書き方を示して案内する
+          strayPositionalHint:
+            "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)",
+          // `--` の後ろを読む唯一のコマンド(他コマンドでは黙って捨てられる)
+          acceptsRest: true,
+        },
       ),
   });
 }
@@ -735,6 +666,7 @@ function configCommand(execute: Execute) {
     },
     run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const io = yield* CliIo;
           const store = yield* ConfigStore;
@@ -781,8 +713,9 @@ function entryCommand(execute: Execute) {
   return define({
     name: "maruhi",
     description: "maruhi — ディスクレス secrets 管理 CLI",
-    run: () =>
+    run: (ctx) =>
       execute(
+        ctx,
         Effect.gen(function* () {
           const io = yield* CliIo;
           yield* io.log("使い方: maruhi <command> [options]");
@@ -805,7 +738,36 @@ export async function runCli(
 ): Promise<number> {
   let exitCode = 0;
 
-  const execute: Execute = async (program) => {
+  /** 診断 1 件以上を stderr へ出す(gunshi 自身の描画は止めてある)。 */
+  const reportUsageError = async (messages: readonly string[]): Promise<void> => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const io = yield* CliIo;
+        for (const message of messages) {
+          yield* io.logError(`maruhi: ${message}`);
+        }
+      }).pipe(Effect.provide(layer)),
+    );
+  };
+
+  const execute: Execute = async (ctx, program, options) => {
+    // 書き方の検査はコマンド本体より前 = 通信・復号より前に置く。
+    // `pull --show=false` のような「書いたことと逆」の実行を、値を復号して
+    // から拒否しない(復号された平文をそもそも作らない)
+    const rejection =
+      argsRejection(ctx, {
+        strayPositionalHint: options?.strayPositionalHint,
+        acceptsRest: options?.acceptsRest,
+      }) ??
+      options?.rejection ??
+      null;
+    if (rejection !== null) {
+      await reportUsageError([rejection]);
+      // 引数の書き方の誤りは usage エラー(2)。gunshi の strict が落とす
+      // 未宣言オプションと同じ終了コードで揃える
+      exitCode = 2;
+      return;
+    }
     const handled = program.pipe(
       Effect.map((code) => (typeof code === "number" ? code : 0)),
       Effect.catch((error) =>
@@ -830,32 +792,37 @@ export async function runCli(
     exitCode = await Effect.runPromise(handled);
   };
 
+  const subCommands = {
+    login: loginCommand(execute),
+    logout: logoutCommand(execute),
+    key: keyCommand(execute),
+    project: projectCommand(execute),
+    env: envCommand(execute),
+    pull: pullCommand(execute),
+    push: pushCommand(execute),
+    run: runCommand(execute),
+    config: configCommand(execute),
+  };
+
   try {
     await cli([...argv], entryCommand(execute), {
       name: "maruhi",
       version: CLI_VERSION,
       description: "maruhi — ディスクレス secrets 管理 CLI",
-      subCommands: {
-        login: loginCommand(execute),
-        logout: logoutCommand(execute),
-        key: keyCommand(execute),
-        project: projectCommand(execute),
-        env: envCommand(execute),
-        pull: pullCommand(execute),
-        push: pushCommand(execute),
-        run: runCommand(execute),
-        config: configCommand(execute),
-      },
+      // 未宣言のオプションを runner 実行前に検証エラーにする(既定は false =
+      // 黙って無視)。`maruhi pull --shwo` が `--show` なしで実行される形と、
+      // 位置引数の名前をオプションとして書いた形(`env create dev
+      // --environment-id prod`= 値が捨てられる)を全コマンドで塞ぐ。
+      // `--` の後ろ(`maruhi run -- cmd --flag`)は検査対象外
+      strict: true,
+      // gunshi 自身の描画(console.log = stdout)は止め、診断は下の catch から
+      // stderr へ 1 本化する
+      renderValidationErrors: null,
+      subCommands,
     });
   } catch (error) {
-    // 引数検証・未知コマンドは usage エラー(2)。メッセージは gunshi のものを使う
-    const message = error instanceof Error ? error.message : "引数を解釈できません";
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const io = yield* CliIo;
-        yield* io.logError(`maruhi: ${message}`);
-      }).pipe(Effect.provide(layer)),
-    );
+    // 引数検証・未知コマンドは usage エラー(2)
+    await reportUsageError(usageErrorMessages(error, argv, subCommands));
     return 2;
   }
   return exitCode;
