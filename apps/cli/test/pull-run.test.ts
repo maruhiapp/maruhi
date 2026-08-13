@@ -1414,10 +1414,23 @@ describe("maruhi run", () => {
     expect(await runCli(["run", "--", "false"], env.layer)).toBe(3);
   });
 
-  it("コマンド未指定はエラーになる", async () => {
+  it("コマンド未指定は pull も復号もせずにエラーになる", async () => {
+    // 実行対象が無い実行は書き方の誤り(usage エラー)。ここを通すと配布の
+    // 取得と全変数の復号まで進んでから同じことを言う = 使われない平文を作る
     const env = await startEnv([chainHandler(), pullHandler()]);
-    expect(await runCli(["run"], env.layer)).toBe(1);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("`--` の後に指定");
+    expect(server?.requests).toHaveLength(0);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("`--` だけで実行対象が無い場合も同じ", async () => {
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run", "--"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("`--` の後に指定");
+    expect(server?.requests).toHaveLength(0);
   });
 
   it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {

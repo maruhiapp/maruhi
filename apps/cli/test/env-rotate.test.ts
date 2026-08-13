@@ -2685,12 +2685,14 @@ describe("maruhi env rotate", () => {
     expect(server.requests.length).toBe(beforeSwap);
     // 操作専用でない宣言済みオプション(--project 等)は拒否しない。許可集合は
     // 引数表から導くので、手書きの一覧との二重管理で弾かれることがない
+    // (「拒否されない」ではなく**成功する**ことを固定する — 検査の緩みが
+    // ローテーション自体の失敗に化けても気付けるように)
     expect(
       await runCli(
         ["env", "rotate", ENV_ID, "--reason", "x", "--project", chainBase.projectId],
         env.layer,
       ),
-    ).not.toBe(2);
+    ).toBe(0);
     // 拒否された例では HTTP は一切起きていない(最後の 1 例だけが通信する)
     expect(server.requests.length).toBeGreaterThan(0);
   });

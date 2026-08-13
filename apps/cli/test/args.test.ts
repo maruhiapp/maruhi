@@ -15,6 +15,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { argsRejection } from "../src/args.ts";
 import { runCli } from "../src/cli.ts";
 import { makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
@@ -143,9 +144,64 @@ describe("未宣言オプション(strict)", () => {
     const { env } = await startEnv();
     const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
 
+    // 未宣言オプションは priority エラー(ヘッダ描画より前に throw する)
     expect(await runCli(["pull", "--shwo"], env.layer)).toBe(2);
+    // 必須位置引数の欠落は priority ではない = ヘッダ描画の経路を通る
+    expect(await runCli(["env", "rotate"], env.layer)).toBe(2);
     expect(stdout).not.toHaveBeenCalled();
     expect(env.errors.join("\n")).toContain("不明なオプションです: --shwo");
+  });
+
+  it("成功した実行の stdout はコマンドの出力だけ(バナーを混ぜない)", async () => {
+    const { env } = await startEnv();
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // `V=$(maruhi config get server)` がバナーを捕まえないこと
+    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(env.logs).toEqual(["prod"]);
+  });
+
+  it("値がオプションに化けた形は綴りを復元して出さない(短縮グループの展開)", async () => {
+    const { env } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
+
+    // `-hunter2` は短縮オプションのグループとして 1 文字ずつのトークンへ
+    // 展開される(`-h -u -n -t -e -r -2`)。綴りをそのまま返すと、拒否の診断が
+    // 平文を 1 文字ずつ並べて書き出すことになる
+    expect(await runCli(["push", "API_KEY", "-hunter2"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("綴りは表示しません");
+    expect(errors).not.toContain("-u");
+    expect(errors).not.toContain("-n");
+    expect(errors).not.toContain("-2");
+    // 同じ伏せ字が 7 行並ばないこと(重複は畳む)
+    expect(errors.split("\n").filter((line) => line.includes("不明なオプション"))).toHaveLength(1);
+  });
+
+  it("値がオプションに化けた形は綴りを復元して出さない(長いオプション名)", async () => {
+    const { env } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
+
+    // `-----BEGIN...` は 1 つの長いオプション名として読まれる
+    expect(await runCli(["push", "API_KEY", "-----BEGIN-RSA-PRIVATE-KEY-hunter2"], env.layer)).toBe(
+      2,
+    );
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("綴りは表示しません");
+    expect(errors).not.toContain("BEGIN");
+    expect(errors).not.toContain("hunter2");
+  });
+
+  it("コマンド名の綴り間違いでは、正しく綴られたオプションを不明扱いしない", async () => {
+    const { env } = await startEnv();
+
+    // 未解決のコマンドではエントリコマンドの引数表と突き合わされるため、
+    // 綴りの合っている --show まで不明として並ぶ(探させない)
+    expect(await runCli(["pul", "--show"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("不明なコマンドです: pul");
+    expect(errors).not.toContain("不明なオプションです");
   });
 });
 
@@ -258,13 +314,25 @@ describe("余分な位置引数", () => {
   it("`config get` の余分な引数は optional の value に吸われずに落ちる", async () => {
     const { env } = await startEnv();
 
-    // value は set 専用の optional positional。共通検査は引数表の最大数しか
+    // value は set 専用の optional positional。共通検査は引数表の**最大数**しか
     // 知らないため、get への余分なトークンはそこへ黙って束縛される
     expect(await runCli(["config", "get", "defaultEnvironment", "dev"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).toContain("maruhi config get が取る位置引数は key だけです");
+    expect(errors).toContain("maruhi config が取る位置引数は action key だけです");
     expect(env.logs).toHaveLength(0);
+  });
+
+  it("余分な引数が複数でも、個数と get の取る形を正しく言う", async () => {
+    const { env } = await startEnv();
+
+    // 操作ごとの差を共通検査へ伝えていないと、引数表の最大数で数えた結果
+    // 「1 個」と過少報告し、get が取らない value を取れるかのように案内する
+    expect(await runCli(["config", "get", "defaultEnvironment", "a", "b"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("余分な引数です(2 個");
+    expect(errors).toContain("maruhi config が取る位置引数は action key だけです");
+    expect(errors).not.toContain("value");
   });
 
   it("`config set` の余分な引数は設定を書き換えずに落ちる", async () => {
@@ -287,13 +355,93 @@ describe("gunshi 由来の usage エラー", () => {
     expect(await runCli(["env", "rotate"], env.layer)).toBe(2);
     // AggregateError.message は空になりうるので、内訳から作る
     expect(env.errors.join("\n").trim()).not.toBe("maruhi:");
-    expect(env.errors.join("\n")).toContain("environment-id");
+    expect(env.errors.join("\n")).toContain("位置引数 environment-id を指定してください");
   });
 
-  it("未知のコマンドは gunshi のメッセージで落ちる", async () => {
+  it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
+    const { env } = await startEnv();
+
+    // 期待する型は宣言(引数表)由来なので出してよいが、与えられた値
+    // (values.actual)は平文が混ざりうるので出さない
+    expect(await runCli(["login", "--github-poll-interval", "s3cr3t"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("オプション --github-poll-interval の値が number として読めません");
+    expect(errors).not.toContain("s3cr3t");
+  });
+
+  it("未知のコマンドは日本語で落ちる", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["bogus"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("bogus");
+    expect(env.errors.join("\n")).toContain("不明なコマンドです: bogus");
+  });
+
+  it("コマンド名の位置に値を書いた形は綴りを出さない", async () => {
+    const { env } = await startEnv();
+
+    expect(await runCli(["s3cr3t/value=with-symbols"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("不明なコマンドです(綴りは表示しません");
+    expect(errors).not.toContain("s3cr3t");
+  });
+
+  it("エントリコマンドの二重名(`maruhi maruhi`)を文面に出さない", async () => {
+    const { env } = await startEnv();
+
+    // エントリコマンドは自分自身の名前でもサブコマンドとして登録されている
+    expect(await runCli(["maruhi", "extra"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("maruhi は位置引数を取りません");
+    expect(errors).not.toContain("maruhi maruhi");
+  });
+});
+
+/** gunshi の CommandContext のうち、検査が見る部分だけを組む(単体検査用)。 */
+function checkContext(input: {
+  readonly args: Record<string, { readonly type?: string; readonly short?: string }>;
+  readonly tokens: readonly {
+    kind: string;
+    name?: string;
+    rawName?: string;
+    inlineValue?: boolean;
+  }[];
+  readonly positionals?: readonly string[];
+}) {
+  return {
+    args: input.args,
+    tokens: input.tokens,
+    positionals: input.positionals ?? ["demo"],
+    rest: [],
+    commandPath: ["demo"],
+  };
+}
+
+describe("引数検査の単体(CLI に短縮形が現れる前の防衛)", () => {
+  it("短縮形 boolean へのインライン値(`-s=false`)も拒否する", () => {
+    // args-tokens は `-s=false` を「名前つきトークン」+「**名前なしの**
+    // インライン値トークン」に割る(実測)。名前で引くだけの検査は素通りし、
+    // `--show=false` と同じ「書いたことと逆」がそのまま通る
+    const rejection = argsRejection(
+      checkContext({
+        args: { show: { type: "boolean", short: "s" } },
+        tokens: [
+          { kind: "option", name: "s", rawName: "-s" },
+          { kind: "option", inlineValue: true },
+        ],
+      }),
+    );
+    expect(rejection).toContain("-s は値を取りません");
+  });
+
+  it("短縮形 boolean の空白区切りの値も余分な位置引数として拒否する", () => {
+    const rejection = argsRejection(
+      checkContext({
+        args: { show: { type: "boolean", short: "s" } },
+        tokens: [{ kind: "option", name: "s", rawName: "-s" }],
+        positionals: ["demo", "false"],
+      }),
+    );
+    expect(rejection).toContain("余分な引数です(1 個");
+    expect(rejection).toContain("boolean オプションに値は付けられません");
   });
 });

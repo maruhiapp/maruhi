@@ -15,7 +15,6 @@ import {
   type ArgCheckContext,
   argsRejection,
   type ArgTokenShape,
-  strayArgumentsMessage,
   usageErrorMessages,
 } from "./args.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
@@ -71,7 +70,9 @@ type Execute = (
     readonly strayPositionalHint?: string;
     /** `--` の後ろを読むコマンドか(`maruhi run` だけ)。 */
     readonly acceptsRest?: boolean;
-    /** コマンド固有の追加拒否(env の操作別オプションの適用可否)。 */
+    /** この実行では取らない位置引数(`config get` の `value` — args.ts)。 */
+    readonly withoutPositionals?: readonly string[] | undefined;
+    /** コマンド固有の追加拒否(env の操作別オプションの適用可否など)。 */
     readonly rejection?: string | null;
   },
 ) => Promise<void>;
@@ -651,33 +652,17 @@ function runCommand(execute: Execute) {
             "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)",
           // `--` の後ろを読む唯一のコマンド(他コマンドでは黙って捨てられる)
           acceptsRest: true,
+          // 実行対象が無い実行(`maruhi run` / `maruhi run --`)も**書き方の
+          // 誤り**なので入口で落とす。ここを通すと pull と全変数の復号まで
+          // 進んでから runOp が同じことを言う(平文を作る意味が無い)。
+          // runOp 側の同じ検査は直接呼び出し向けの防衛線として残す
+          rejection:
+            ctx.rest.length === 0
+              ? "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)"
+              : null,
         },
       ),
   });
-}
-
-/**
- * `config get` へ渡した余分な位置引数の拒否。`value` は set 専用の optional
- * positional なので、共通検査(args.ts — 引数表の最大数しか知らない)を通った
- * 余分なトークンが get ではそこへ黙って束縛される。操作別の数はここで見る。
- */
-function configGetStrayValueRejection(
-  action: string | undefined,
-  positionals: readonly string[],
-  /** 先頭に並ぶサブコマンド名の数(`config` の 1 段。入れ子が増えても追随する)。 */
-  commandDepth: number,
-): string | null {
-  // 不明な操作(`config bogus`)はコマンド本体が報告する
-  if (action !== "get") {
-    return null;
-  }
-  // 正当な並びは [config, get, key](サブコマンド名 + action + key — args.ts)
-  const extras = positionals.length - (commandDepth + 2);
-  if (extras <= 0) {
-    return null;
-  }
-  // 中身は出さない(共通検査と同じ規律 — args.ts の strayArgumentsMessage)
-  return strayArgumentsMessage(extras, "maruhi config get が取る位置引数は key だけです");
 }
 
 function configCommand(execute: Execute) {
@@ -731,11 +716,10 @@ function configCommand(execute: Execute) {
           return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(get | set)`));
         }),
         {
-          rejection: configGetStrayValueRejection(
-            ctx.values.action,
-            ctx.positionals,
-            ctx.commandPath.length,
-          ),
+          // `value` は set 専用の optional positional。共通検査は引数表の
+          // **最大数**しか知らないので、get への余分なトークンはそのスロットへ
+          // 黙って束縛される。操作ごとの差はここで伝える
+          withoutPositionals: ctx.values.action === "get" ? ["value"] : undefined,
         },
       ),
   });
@@ -790,6 +774,7 @@ export async function runCli(
       argsRejection(ctx, {
         strayPositionalHint: options?.strayPositionalHint,
         acceptsRest: options?.acceptsRest,
+        withoutPositionals: options?.withoutPositionals,
       }) ??
       options?.rejection ??
       null;
@@ -847,9 +832,12 @@ export async function runCli(
       // --environment-id prod`= 値が捨てられる)を全コマンドで塞ぐ。
       // `--` の後ろ(`maruhi run -- cmd --flag`)は検査対象外
       strict: true,
-      // gunshi 自身の描画(console.log = stdout)は止め、診断は下の catch から
-      // stderr へ 1 本化する
+      // gunshi 自身の描画(いずれも console.log = **stdout**)は止め、診断は
+      // 下の catch から stderr へ 1 本化する。ヘッダ(バナー)は成功した実行
+      // でも毎回出るため、`V=$(maruhi config get server)` が値ではなくバナーを
+      // 捕まえていた — stdout はコマンドの出力だけにする
       renderValidationErrors: null,
+      renderHeader: null,
       subCommands,
     });
   } catch (error) {
