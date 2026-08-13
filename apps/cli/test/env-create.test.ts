@@ -304,6 +304,59 @@ describe("maruhi env create", () => {
     expect(second.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, other.userId].toSorted(),
     );
+    // 完了報告のメンバー数は**実際に登録したラップ集合**の大きさ(開始時のビューの
+    // 1 名ではない)。作り直した集合と食い違う数を報告しない
+    expect(env.logs.join("\n")).toContain("現メンバー 2 名へラップ済み");
+  });
+
+  it("ChainHeadConflict の再同期は延長検査付き(短縮・分岐チェーンへ再署名しない)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const other = await makeTestUser("user-other-4444");
+    // 初回に見えるチェーン(2 エントリ)より、409 後に配られるチェーンが短い =
+    // 巻き戻し。署名としては妥当でも、この状態でエントリを再署名し、巻き戻った
+    // メンバー集合でラップ集合を作り直してはならない(§6.3-2b)
+    const long = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(other, "reader") },
+    ]);
+    const short = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    let chainCalls = 0;
+    const bodies: CompositeCreateBody[] = [];
+    const env = await startEnv(
+      long.projectId,
+      [
+        onRequest("GET", `/projects/${long.projectId}/chain`, () => {
+          chainCalls += 1;
+          const built = chainCalls === 1 ? long : short;
+          return {
+            status: 200,
+            json: {
+              projectId: long.projectId,
+              entries: built.entries,
+              headSeq: built.entries.length,
+              headHashHex: built.hashes[built.hashes.length - 1],
+            },
+          };
+        }),
+        onRequest("POST", `/projects/${long.projectId}/environments`, (request) => {
+          bodies.push(request.body as CompositeCreateBody);
+          return {
+            status: 409,
+            json: {
+              _tag: "ChainHeadConflict",
+              currentHeadSeq: short.entries.length,
+              currentHeadHashHex: short.hashes[short.hashes.length - 1],
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("延長ではありません");
+    // 巻き戻ったビューでの再署名は行われない(送信は初回の 1 度きり)
+    expect(bodies).toHaveLength(1);
   });
 
   it("ChainHeadConflict リトライでメンバー集合が不変ならラップ集合を再利用する(§12-4)", async () => {
@@ -390,15 +443,108 @@ describe("maruhi env create", () => {
     expect(server.requests).toHaveLength(0);
   });
 
-  it("grant_server が有効なプロジェクトでは拒否する(Phase 2 未実装)", async () => {
+  it("reader は環境を作成できない(member 以上 — §6.2)。ラップを作る前に拒否する", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const reader = await makeTestUser("user-reader-5555");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(reader, "reader") },
+    ]);
+    const server = await MockServer.start([chainHandler(built.projectId, built)]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, reader);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    // サーバーの汎用 403 を待たない: 待つと DEK 生成 + 全メンバー分の HPKE
+    // ラップ・署名を済ませてから拒否されることになる(env rotate と同じ規律)
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("reader は環境を作成できません");
+    expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
+  it("作成する環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      // 未作成 ID を先回りで開示したスコープ
+      { actor: owner, operation: await grantServerOp(["staging"]) },
+    ]);
+    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("grant_server");
+  });
+
+  it("スコープが空の grant_server は全環境扱いで拒否する(§6.2 が空の意味を定めていない)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: await grantServerOp([]) },
+    ]);
+    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("開示スコープ");
+  });
+
+  it("別環境だけを開示した grant_server は、他環境の作成を止めない(§6.2 のスコープは部分集合)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: await grantServerOp(["dev"]) },
     ]);
-    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
-    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("grant_server");
+    let called = false;
+    const env = await startEnv(
+      built.projectId,
+      [
+        chainHandler(built.projectId, built),
+        onRequest("POST", `/projects/${built.projectId}/environments`, () => {
+          called = true;
+          return {
+            status: 200,
+            json: {
+              environmentId: "staging",
+              currentEpoch: 1,
+              headSeq: built.entries.length + 1,
+              headHashHex: "cd".repeat(32),
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    expect(called).toBe(true);
+  });
+
+  it("完了報告のエポックはサーバー申告ではなく構造的な 1 を出す(§12-4)", async () => {
+    // 受理後の事実をサーバーの自己申告から取ると、rotate 側で敷いた
+    // 「申告を真実源にしない」規律が create 側だけ緩む。create_environment が
+    // 確立するエポックは常に 1 なので、申告が何であれ 1 を出す
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const env = await startEnv(
+      built.projectId,
+      [
+        chainHandler(built.projectId, built),
+        onRequest("POST", `/projects/${built.projectId}/environments`, () => ({
+          status: 200,
+          json: {
+            environmentId: "staging",
+            // 嘘の申告(実サーバーは 1 を返す — composite-programs.ts)
+            currentEpoch: 7,
+            headSeq: built.entries.length + 1,
+            headHashHex: "cd".repeat(32),
+          },
+        })),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("epoch=1");
+    expect(logs).not.toContain("epoch=7");
   });
 
   it("チェーン観測済みの環境 ID は HTTP を呼ばず早期拒否する(履歴全体一意 — §6.2)", async () => {

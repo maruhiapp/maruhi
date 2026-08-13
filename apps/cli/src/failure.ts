@@ -166,6 +166,40 @@ const renderers: readonly Renderer[] = [
 ];
 
 /**
+ * サーバーが**自前のエラー本文で拒否した**か(= リクエストは届き、処理されて
+ * 拒否されたことが確定している)。これらの本文を返せるのは要求を処理した後の
+ * サーバーだけなので、受理の有無が確定する。
+ *
+ * ここに載らない失敗(転送エラー・応答の消失・解釈できない 5xx)は
+ * **受理されたかどうか不明**である — 既定を「不明」に倒すため、判定は
+ * 許可リストで行う(未知のエラーが黙って「確定」側に落ちない)。
+ */
+export function isServerRejection(error: unknown): boolean {
+  return [
+    ChainCapacityExceededError,
+    ChainHeadConflictError,
+    ChainEntryInvalidError,
+    ChainEntryTooLargeError,
+    CompositeRequiredError,
+    DataLimitExceededError,
+    DekWrapExistsError,
+    DekWrapNotFoundError,
+    DekWrapRejectedError,
+    EnvironmentConflictError,
+    EnvironmentNotFoundError,
+    EpochConflictError,
+    ForbiddenError,
+    PayloadMismatchError,
+    ProjectNotFoundError,
+    UnauthorizedError,
+    ValueTooLargeError,
+    VariableConflictError,
+    VariableNotFoundError,
+    VersionConflictError,
+  ].some((ctor) => error instanceof ctor);
+}
+
+/**
  * Collapses any failure into a user-facing {@link CliError}. Unknown failures
  * keep only their `Error#message`(our own code never puts secret material in
  * messages; crypto errors carry identifiers only by contract).

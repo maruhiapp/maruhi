@@ -181,8 +181,14 @@ function resolveTarget(input: {
   });
 }
 
-/** 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。 */
-function encryptAndSignPayload(input: {
+/**
+ * 暗号化(fresh nonce)+ §4.1 の値署名。宣言ヘッドは検証済みビューの現ヘッド。
+ *
+ * ローテーションの再暗号化(env-rotate.ts)も同じ実装を通す: 再暗号化は
+ * 「実行者が writer として署名する通常 push」(§7 / §4.1)であり、署名対象の
+ * 組み立てが 2 実装に割れると片方だけが規律を失う。
+ */
+export function encryptAndSignPayload(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly variableId: string;
@@ -437,7 +443,7 @@ function refreshEpochState(
  * 後退はすべて巻き戻し・equivocation の証拠であり、誤拒否はない。
  */
 function winnerValueRegression(
-  target: PushTarget,
+  variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
   currentVersion: number,
@@ -445,18 +451,18 @@ function winnerValueRegression(
   if (currentVersion < known.version || winner.version < known.version) {
     // このセッションで検証済みの latest からの後退 = 巻き戻しの証拠。採用して
     // prev を付け替えると、巻き戻しブランチへ自分の署名で連鎖してしまう
-    return `変数 ${target.variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
+    return `変数 ${variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
   }
   if (winner.version === known.version && winner.signedBytesHashHex !== known.signedBytesHashHex) {
     // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
-    return `変数 ${target.variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+    return `変数 ${variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
   }
   // エポック単調性(§4.1)は推移的なので、winner が検証済み latest より新しければ
   // 版番号のギャップに関わらず epoch 非減少を要求できる(レビューループ 2 [低] —
   // 版番号の選び方で隣接検査を迂回する旧エポック注入を塞ぐ)。正直サーバーは
   // 受理順にエポック非減少なので誤拒否はない
   if (winner.version > known.version && winner.epoch < known.epoch) {
-    return `変数 ${target.variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
+    return `変数 ${variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
   }
   // 隣接 predecessor を保持している場合は §6.3-6 の prev 実在一致も無償で検査できる
   // (レビューループ 1 [中] — pull の latest-only 制約の例外)
@@ -464,7 +470,7 @@ function winnerValueRegression(
     winner.version === known.version + 1 &&
     winner.prevValueSigHashHex !== known.signedBytesHashHex
   ) {
-    return `変数 ${target.variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    return `変数 ${variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
   }
   return null;
 }
@@ -477,18 +483,18 @@ function winnerValueRegression(
  * 誤拒否はない。
  */
 function winnerMetaRegression(
-  target: PushTarget,
+  variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
 ): string | null {
   if (winner.metaVersion < known.metaVersion) {
-    return `変数 ${target.variableId} の再取得ステートメント(metaVersion ${winner.metaVersion})が検証済みの最新(metaVersion ${known.metaVersion})より古く、メタデータ巻き戻しの証拠です`;
+    return `変数 ${variableId} の再取得ステートメント(metaVersion ${winner.metaVersion})が検証済みの最新(metaVersion ${known.metaVersion})より古く、メタデータ巻き戻しの証拠です`;
   }
   if (
     winner.metaVersion === known.metaVersion &&
     winner.metaSignedBytesHashHex !== known.metaSignedBytesHashHex
   ) {
-    return `変数 ${target.variableId} の metaVersion ${winner.metaVersion} に、検証済みのステートメントと異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+    return `変数 ${variableId} の metaVersion ${winner.metaVersion} に、検証済みのステートメントと異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
   }
   // 隣接 predecessor を保持している場合は prev 連鎖の一致も無償で検査できる
   // (winnerValueRegression の §6.3-6 検査の同型 — レビュー② [minor])
@@ -496,36 +502,48 @@ function winnerMetaRegression(
     winner.metaVersion === known.metaVersion + 1 &&
     winner.prevMetaSigHashHex !== known.metaSignedBytesHashHex
   ) {
-    return `変数 ${target.variableId} の metaVersion ${winner.metaVersion} の prev が検証済みの直前 metaVersion の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    return `変数 ${variableId} の metaVersion ${winner.metaVersion} の prev が検証済みの直前 metaVersion の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
   }
   return null;
 }
 
 function winnerRegression(
-  target: PushTarget,
+  variableId: string,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
   currentVersion: number,
 ): string | null {
   return (
-    winnerValueRegression(target, known, winner, currentVersion) ??
-    winnerMetaRegression(target, known, winner)
+    winnerValueRegression(variableId, known, winner, currentVersion) ??
+    winnerMetaRegression(variableId, known, winner)
   );
 }
 
-/** 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。 */
-function winnerInconsistency(
-  target: PushTarget,
+/**
+ * 409 winner の整合検査(§12-5)。null = 採用可、非 null = 拒否理由。
+ *
+ * 検査は 2 層: (1) 応答間の整合(再取得の最新が「存在すると分かっている
+ * version」より古い = サーバーの自己矛盾)、(2) 検証済み既知 latest からの
+ * 後退・同一座標の signed bytes 相違・隣接 prev の不一致。**ローテーションの
+ * 再暗号化(env-rotate.ts)も同じ検査を通す**: 勝者への prev 付け替えは push
+ * 経路と同型であり、片方だけが分岐した履歴への連鎖署名を許すと、床(SHOULD・
+ * 初回同期では不在)頼みの穴になる。
+ *
+ * `currentVersion` の出所は経路で異なる(push = 409 の申告、ローテーション =
+ * 409 の申告または**自分が受理させた version**)ため、文言は「既知の最新」で
+ * 統一する。
+ */
+export function winnerInconsistency(
+  variableId: string,
+  known: VerifiedPulledValue | null,
   winner: VerifiedPulledValue,
   currentVersion: number,
 ): string | null {
   if (winner.version < currentVersion) {
     // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
-    return `再取得した pull の最新 version(${winner.version})が 409 の申告(${currentVersion})より古く、不整合です`;
+    return `再取得した pull の最新 version(${winner.version})が既知の最新 version(${currentVersion})より古く、不整合です(サーバー応答の自己矛盾)`;
   }
-  return target.latest === null
-    ? null
-    : winnerRegression(target, target.latest, winner, currentVersion);
+  return known === null ? null : winnerRegression(variableId, known, winner, currentVersion);
 }
 
 /**
@@ -556,7 +574,12 @@ function adoptConflictWinner(
         ),
       );
     }
-    const inconsistency = winnerInconsistency(state.target, winner, currentVersion);
+    const inconsistency = winnerInconsistency(
+      state.target.variableId,
+      state.target.latest,
+      winner,
+      currentVersion,
+    );
     if (inconsistency !== null) {
       return yield* Effect.fail(cliError(inconsistency));
     }

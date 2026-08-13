@@ -597,7 +597,7 @@ describe("maruhi push", () => {
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("409 の申告(7)より古く、不整合");
+    expect(env.errors.join("\n")).toContain("既知の最新 version(7)より古く、不整合");
   });
 
   it("409 後の再取得で winner が欠落していたら拒否する(床の欠落検出が先に発火)", async () => {

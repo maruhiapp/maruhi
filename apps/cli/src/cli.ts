@@ -6,13 +6,13 @@
 
 import { hostname } from "node:os";
 
-import { isEnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
 import { ensureValueDisplayAllowed } from "./agent.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
-import type { CliServices } from "./context.ts";
+import type { CliServices, CommonFlags } from "./context.ts";
 import {
   loadCheckedFloor,
   openEnvironment,
@@ -22,6 +22,7 @@ import {
 } from "./context.ts";
 import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
+import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -228,14 +229,322 @@ function projectCommand(execute: Execute) {
   });
 }
 
+/** `maruhi env create <id>`: 複合リクエストによる環境作成(§12-4)。 */
+function envCreate(
+  flags: CommonFlags & { readonly name?: string | undefined },
+  environmentId: EnvironmentId,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openProject(flags);
+    const created = yield* envCreateOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      name: flags.name ?? environmentId,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+    });
+    yield* io.log(
+      // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り
+      // 直した場合、コマンド開始時のビューのメンバー数とは食い違いうる)
+      `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${created.memberCount} 名へラップ済み)`,
+    );
+  });
+}
+
+/**
+ * 部分完了 / 完了未検証の報告。エポックは進んでおり、旧エポックの DEK 保持者は
+ * 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で終わらせず、
+ * 成功終了にもしない。
+ */
+function reportPartialRotation(
+  environmentId: EnvironmentId,
+  summary: RotationSummary,
+  scope: string,
+  skipped: string,
+): Effect.Effect<number, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    // 中断した場合の残数は上限であって実測ではない(再走査へ到達していないため、
+    // 競合分が既に他メンバーによって新エポックで書かれている可能性が残る)。
+    // 断定せず「未確認を含む」と示す — 巡を使い切っただけの残数は再走査を
+    // 通った実測なので、そちらに但し書きを付けて疑わしく見せない
+    const scale =
+      summary.remaining > 0
+        ? `未完了 ${summary.remaining} 変数${summary.remainingExact ? "" : "(未確認を含む)"}`
+        : "完了を検証できませんでした";
+    yield* io.log(`部分完了: ${scope}(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`);
+    // 失敗の原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
+    // エラーだけ出して伝え損ねない)。「中断」と言えるのは再走査へ到達できず
+    // 途中で降りた場合だけで、巡を使い切った場合は最後まで走ったうえでの未完了である
+    const stopped = summary.remainingExact
+      ? "再暗号化が完了しませんでした"
+      : "再暗号化が中断しました";
+    const cause =
+      summary.failure === null
+        ? "並行 push との競合が解消しませんでした"
+        : `${stopped}: ${summary.failure}`;
+    yield* io.logError(
+      `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します(再実行は残りを再走査するため、実際の未完了数もそこで確定します)。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
+    );
+    return 1;
+  });
+}
+
+/**
+ * ローテーション結果の報告と終了コード。完了サマリは再暗号化の実績を報告し、
+ * 未完了分(部分完了)は警告として明示する — 「エポックだけ進んで再暗号化が
+ * 残っている」状態を成功の顔で終わらせない。
+ */
+function reportRotation(
+  environmentId: EnvironmentId,
+  summary: RotationSummary,
+  /** 新しいエポックを要求した実行か(--reason 指定 or --new-epoch)。 */
+  rotationRequested: boolean,
+): Effect.Effect<number, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* logWarnings(summary.warnings);
+    const skipped =
+      summary.alreadyCurrent === 0
+        ? ""
+        : `、並行更新により再暗号化不要 ${summary.alreadyCurrent} 変数`;
+    if (summary.mode === "up-to-date") {
+      // 確認のみ(未完了なし・新エポック未要求)。部分完了の案内が勧める
+      // 再実行の着地点でもあるので、何もしなかったことを明示する
+      yield* io.log(
+        `確認完了: 環境 ${environmentId} のアクティブ変数はすべて epoch ${summary.epoch} で暗号化されています(未完了の再暗号化はありません)。新しいエポックを作るには --reason を指定してください`,
+      );
+      return 0;
+    }
+    const scope =
+      summary.mode === "rotated"
+        ? `環境 ${environmentId} を epoch ${summary.previousEpoch} → ${summary.epoch} へローテーション`
+        : `環境 ${environmentId}(epoch ${summary.epoch})の再暗号化を再開`;
+    if (summary.remaining > 0 || summary.failure !== null) {
+      return yield* reportPartialRotation(environmentId, summary, `${scope}しました`, skipped);
+    }
+    if (summary.mode === "resumed") {
+      // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
+      // いないので、完了報告がローテーション成功に見えてはならない(退職者の
+      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
+      yield* io.log(
+        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)`,
+      );
+      if (!rotationRequested) {
+        // 理由なしの実行 = 「未完了があれば再開する」ことだけを要求している
+        return 0;
+      }
+      // ローテーションを要求した実行(--reason / --new-epoch)が再開へ切り替わった
+      // ので、**終了コードでも**成功と言わない: `maruhi env rotate prod --reason ...
+      // || exit 1` のようなスクリプトが、新エポックなしで成功と受け取る形を塞ぐ
+      yield* io.logError(
+        `警告: 要求されたローテーションは実行していません(未完了の再暗号化を先に片付けたため)。この実行の後に新しいエポックが必要な場合は、もう一度実行するか --new-epoch を付けて実行してください`,
+      );
+      return 1;
+    }
+    yield* io.log(`完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})`);
+    return 0;
+  });
+}
+
+/** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
+function envRotate(
+  flags: CommonFlags & {
+    readonly reason?: string | undefined;
+    readonly newEpoch?: boolean | undefined;
+  },
+  environmentId: EnvironmentId,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)
+    const context = yield* openEnvironment({ ...flags, env: environmentId });
+    const summary = yield* envRotateOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      recipient: context.recipient,
+      // 未指定(undefined)と空文字列は**別物**として渡す: `--reason "$UNSET"`
+      // のような空指定を「理由なしの確認実行」に潰すと、ローテーションを
+      // 要求した実行が何も送らないまま成功終了する(env-rotate の checkReasonLength)
+      reason: flags.reason,
+      forceNewEpoch: flags.newEpoch === true,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+    // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
+    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)。
+    // 空の --reason は envRotateOp が既に落としているので、ここに来る
+    // flags.reason !== undefined は必ず「中身のある理由の指定」である
+    return yield* reportRotation(
+      environmentId,
+      summary,
+      flags.newEpoch === true || flags.reason !== undefined,
+    );
+  });
+}
+
+/**
+ * **操作専用**のオプション(ここに無い宣言済みオプションは両操作で使える)。
+ * 「宣言されているか」は引数表から導くので、この表に載せ忘れても新しい
+ * オプションが不明扱いで拒否されることはない。
+ */
+const ENV_ACTION_FLAGS = {
+  create: new Set<string>(["name"]),
+  rotate: new Set<string>(["reason", "new-epoch"]),
+} as const;
+/** 「もう一方の操作」の対応表(三項演算子を判定と文面の 2 箇所へ散らさない)。 */
+const ENV_OTHER_ACTION = { create: "rotate", rotate: "create" } as const;
+
+/**
+ * env のオプション検査。gunshi は 1 コマンド 1 引数表なので、`create` と
+ * `rotate` の両方のフラグが常に受理される。**黙って捨てない**ために 2 つを
+ * 検査する:
+ *
+ * 1. 未知のオプション(`--new-epochs` のような綴り間違い)。gunshi は未知の
+ *    オプションを無視するため、放置すると「新エポックを必ず作る」つもりの
+ *    実行が黙って弱い再開経路へ落ちる
+ * 2. 操作に適用されないオプション(create への --reason 等)。指定した意図が
+ *    無視されたことに気付けるようにする
+ *
+ * 3. boolean オプションへの値の指定(`--new-epoch=false`)。gunshi は boolean の
+ *    インライン値を**読まずに true** にするため、放置すると `--new-epoch=false`
+ *    が「必ず新エポック」として通り、書いたことと逆の結果になる(しかもチェーンは
+ *    append-only なので取り消せない)
+ *
+ * 判定材料(`args`)は**引数表そのもの**を渡す — 手書きの一覧と二重管理にすると、
+ * 次に増えたオプションが実装済みなのに拒否される。
+ */
+type EnvFlagToken = {
+  readonly kind: string;
+  readonly name?: string | undefined;
+  readonly rawName?: string | undefined;
+  readonly inlineValue?: boolean | undefined;
+};
+type EnvArgTable = Readonly<Record<string, { readonly type?: string | undefined }>>;
+
+/**
+ * 宣言はされているが、**その書き方では意図どおりに読まれない**オプションの拒否
+ * (引数表の型から導く)。
+ */
+function envSchemaRejection(
+  schema: { readonly type?: string | undefined },
+  typed: string,
+  inlineValue: boolean | undefined,
+): string | null {
+  if (schema.type === "positional") {
+    // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
+    // (`env create dev --environment-id prod` は dev を作る)。環境 ID は
+    // チェーン履歴全体で一意(§6.2)なので、取り違えは永久に焼き付く
+    return `${typed} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
+  }
+  if (schema.type === "boolean" && inlineValue === true) {
+    return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+  }
+  return null;
+}
+
+/** 1 トークン分の判定。拒否する場合はその理由(表示文)、問題なければ null。 */
+function envFlagRejection(
+  action: "create" | "rotate",
+  token: EnvFlagToken,
+  args: EnvArgTable,
+): string | null {
+  if (token.kind !== "option" || token.name === undefined) {
+    return null;
+  }
+  const name = token.name;
+  // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
+  const typed = displayText(token.rawName ?? `--${name}`);
+  // `Object.hasOwn` で引く: `args["constructor"]` のようなプロトタイプ由来の
+  // 名前は truthy に見えてしまい、未知オプションの検査を素通りする
+  const schema = Object.hasOwn(args, name) ? args[name] : undefined;
+  if (schema === undefined) {
+    return `不明なオプションです: ${typed}`;
+  }
+  const shape = envSchemaRejection(schema, typed, token.inlineValue);
+  if (shape !== null) {
+    return shape;
+  }
+  const otherAction = ENV_OTHER_ACTION[action];
+  if (ENV_ACTION_FLAGS[otherAction].has(name)) {
+    return `${typed} は env ${action} では使えません(${otherAction} 用のオプションです)`;
+  }
+  return null;
+}
+
+function checkEnvFlags(
+  action: "create" | "rotate",
+  tokens: readonly EnvFlagToken[],
+  args: EnvArgTable,
+): Effect.Effect<void, CliError> {
+  for (const token of tokens) {
+    const rejection = envFlagRejection(action, token, args);
+    if (rejection !== null) {
+      return Effect.fail(cliError(rejection));
+    }
+  }
+  return Effect.void;
+}
+
+/**
+ * 余分な位置引数の拒否。boolean は**空白区切りの値を読まない**ため、
+ * `--new-epoch false` は「フラグ有効 + 位置引数 "false"」になり、無効にした
+ * つもりが**必ず新エポック**になる(チェーンは append-only で取り消せない)。
+ * 想定数は引数表から導く(先頭はサブコマンド名 `env`)。
+ */
+function checkEnvPositionals(
+  action: "create" | "rotate",
+  positionals: readonly string[],
+  tokens: readonly EnvFlagToken[],
+  args: EnvArgTable,
+  /** 先頭に並ぶサブコマンド名の数(`env` の 1 段。入れ子が増えても追随する)。 */
+  commandDepth: number,
+): Effect.Effect<void, CliError> {
+  const declared = Object.values(args).filter((schema) => schema.type === "positional").length;
+  const expected = declared + commandDepth;
+  if (positionals.length <= expected) {
+    return Effect.void;
+  }
+  const extra = positionals.slice(expected).map(displayText).join(" ");
+  // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
+  // コマンドラインに無いオプションを探させることになる)
+  const booleans = new Set(
+    Object.entries(args)
+      .filter(([, schema]) => schema.type === "boolean")
+      .map(([name]) => name),
+  );
+  const usedBoolean = tokens.some(
+    (token) => token.kind === "option" && token.name !== undefined && booleans.has(token.name),
+  );
+  const hint = usedBoolean
+    ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
+    : "";
+  return Effect.fail(
+    cliError(`余分な引数です: ${extra}(env ${action} が取るのは環境 ID だけです)${hint}`),
+  );
+}
+
 function envCommand(execute: Execute) {
   return define({
     name: "env",
-    description: "環境の管理(create)",
+    description: "環境の管理(create / rotate)",
     args: {
-      action: { type: "positional", description: "create" },
+      action: { type: "positional", description: "create | rotate" },
       "environment-id": { type: "positional", description: "環境 ID(例: dev / prod)" },
-      name: { type: "string", description: "表示名(省略時は環境 ID)" },
+      name: { type: "string", description: "表示名(create のみ。省略時は環境 ID)" },
+      reason: {
+        type: "string",
+        description: "ローテーションの理由(新しいエポックを作る場合は必須。チェーンに記録される)",
+      },
+      "new-epoch": {
+        type: "boolean",
+        description: "rotate: 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る",
+      },
       server: { type: "string", description: "サーバー URL(省略時は config の server)" },
       project: {
         type: "string",
@@ -245,35 +554,47 @@ function envCommand(execute: Execute) {
     run: (ctx) =>
       execute(
         Effect.gen(function* () {
-          if (ctx.values.action !== "create") {
-            return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(create)`));
+          const action = ctx.values.action;
+          if (action !== "create" && action !== "rotate") {
+            return yield* Effect.fail(
+              cliError(`不明な操作です: ${displayText(String(action))}(create | rotate)`),
+            );
           }
           const environmentId = ctx.values["environment-id"];
-          // positional 未指定(undefined)は型で明示的に弾く
+          // positional 未指定(undefined)は型で明示的に弾く。位置引数を**書かずに**
+          // `--environment-id` だけで渡した実行はここまで来ない(gunshi 自身が
+          // 必須 positional の欠落として usage エラーで落とす)
           if (environmentId === undefined || !isEnvironmentId(environmentId)) {
             return yield* Effect.fail(
               cliError(
-                `環境 ID を指定してください(例: maruhi env create dev)。指定値: ${String(environmentId)}`,
+                `環境 ID を指定してください(例: maruhi env ${action} dev)。指定値: ${displayText(String(environmentId))}`,
               ),
             );
           }
-          const io = yield* CliIo;
-          const context = yield* openProject({
-            server: ctx.values.server,
-            project: ctx.values.project,
-          });
-          const created = yield* envCreateOp({
-            client: context.client,
-            verified: context.verified,
-            environmentId,
-            name: ctx.values.name ?? environmentId,
-            signerUserId: context.session.userId,
-            signingKeyPair: context.masterKeys.sigKeyPair,
-            resync: context.resync,
-          });
-          yield* io.log(
-            `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${context.verified.state.members.size} 名へラップ済み)`,
+          // 判定材料は**引数表**(ctx.args)そのもの。ctx.values は「実際に渡された
+          // 値」しか持たないので、宣言の一覧としても型の参照元としても使えない
+          yield* checkEnvFlags(action, ctx.tokens, ctx.args);
+          yield* checkEnvPositionals(
+            action,
+            ctx.positionals,
+            ctx.tokens,
+            ctx.args,
+            ctx.commandPath.length,
           );
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "rotate") {
+            // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
+            // 落とすため、values だけでは「未指定」と区別できない。区別を失うと
+            // `--reason "$UNSET"` の実行が「確認だけ」の経路へ滑り込み、何も
+            // 送らないまま成功終了する(env-rotate の checkReasonLength が
+            // 空指定を落とせるよう、指定の有無は explicit で判定する)
+            const reason = ctx.explicit.reason ? (ctx.values.reason ?? "") : undefined;
+            return yield* envRotate(
+              { ...flags, reason, newEpoch: ctx.values["new-epoch"] },
+              environmentId,
+            );
+          }
+          return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
         }),
       ),
   });
