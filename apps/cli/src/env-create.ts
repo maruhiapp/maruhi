@@ -182,7 +182,7 @@ export function envCreateOp(input: {
               authorUserId: input.signerUserId,
               signingKey: input.signingKeyPair.privateKey,
             });
-            const created = yield* input.client.environments.create({
+            yield* input.client.environments.create({
               params: { projectId: state.verified.projectId },
               payload: {
                 parentHeadHashHex: state.verified.state.headHashHex,
@@ -191,9 +191,17 @@ export function envCreateOp(input: {
                 deks: state.deks,
               },
             });
-            // 実際に登録したラップ集合の大きさを返す(CAS リトライで作り直した
-            // 場合、呼び出し側の古いビューのメンバー数とは食い違いうる)
-            return { currentEpoch: created.currentEpoch, memberCount: state.deks.length };
+            // 作成直後の現エポックは**構造的に 1**(§12-4 — 同梱エントリは
+            // create_environment であり、サーバー側も 1 を返す)。応答申告の
+            // currentEpoch は使わない: 受理後の事実をサーバーの自己申告から
+            // 取ると、rotate 側で敷いた「申告を真実源にしない」規律が create
+            // 側だけ緩む。ここに rotate のような再同期での照合を足す必要は
+            // ない — この DEK を使う次のコマンドが、チェーン導出コミットメント
+            // との照合(§5.2 / deks.ts)を必ず通すためである。
+            //
+            // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで
+            // 作り直した場合、呼び出し側の古いビューのメンバー数とは食い違いうる)
+            return { currentEpoch: 1, memberCount: state.deks.length };
           }),
         classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
         // 親ヘッド CAS 失敗(並行追記): 再同期して新ヘッドでエントリを再署名する

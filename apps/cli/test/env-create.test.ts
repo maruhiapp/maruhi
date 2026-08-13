@@ -517,6 +517,36 @@ describe("maruhi env create", () => {
     expect(called).toBe(true);
   });
 
+  it("完了報告のエポックはサーバー申告ではなく構造的な 1 を出す(§12-4)", async () => {
+    // 受理後の事実をサーバーの自己申告から取ると、rotate 側で敷いた
+    // 「申告を真実源にしない」規律が create 側だけ緩む。create_environment が
+    // 確立するエポックは常に 1 なので、申告が何であれ 1 を出す
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const env = await startEnv(
+      built.projectId,
+      [
+        chainHandler(built.projectId, built),
+        onRequest("POST", `/projects/${built.projectId}/environments`, () => ({
+          status: 200,
+          json: {
+            environmentId: "staging",
+            // 嘘の申告(実サーバーは 1 を返す — composite-programs.ts)
+            currentEpoch: 7,
+            headSeq: built.entries.length + 1,
+            headHashHex: "cd".repeat(32),
+          },
+        })),
+      ],
+      owner,
+    );
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("epoch=1");
+    expect(logs).not.toContain("epoch=7");
+  });
+
   it("チェーン観測済みの環境 ID は HTTP を呼ばず早期拒否する(履歴全体一意 — §6.2)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
