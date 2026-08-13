@@ -132,6 +132,13 @@ export function buildInjectionEnv(
   });
 }
 
+/**
+ * 実行対象が無い場合の案内。入口の引数検査(cli.ts)と、この防衛線の
+ * 両方から出るので、文面は 1 か所に置く。
+ */
+export const RUN_COMMAND_REQUIRED =
+  "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)";
+
 /** `maruhi run`: inject decrypted variables into the child env and run the command. */
 export function runOp(input: {
   readonly command: readonly string[];
@@ -139,11 +146,7 @@ export function runOp(input: {
 }): Effect.Effect<number, CliError, ProcessRunner> {
   return Effect.gen(function* () {
     if (input.command.length === 0) {
-      return yield* Effect.fail(
-        cliError(
-          "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)",
-        ),
-      );
+      return yield* Effect.fail(cliError(RUN_COMMAND_REQUIRED));
     }
     const runner = yield* ProcessRunner;
     const extraEnv = yield* buildInjectionEnv(input.variables);

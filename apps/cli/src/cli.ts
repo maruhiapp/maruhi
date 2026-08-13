@@ -15,6 +15,8 @@ import {
   type ArgCheckContext,
   argsRejection,
   type ArgTokenShape,
+  restArguments,
+  typedName,
   usageErrorMessages,
 } from "./args.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
@@ -38,7 +40,7 @@ import { projectInitOp } from "./project-init.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
-import { runOp } from "./run.ts";
+import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { syncProject } from "./sync.ts";
 
@@ -189,7 +191,9 @@ function keyCommand(execute: Execute) {
             });
           }
           return yield* Effect.fail(
-            cliError(`不明な操作です: ${ctx.values.action}(generate | show | recover | recovery)`),
+            cliError(
+              `不明な操作です: ${displayText(String(ctx.values.action))}(generate | show | recover | recovery)`,
+            ),
           );
         }),
       ),
@@ -249,7 +253,7 @@ function projectCommand(execute: Execute) {
             return;
           }
           return yield* Effect.fail(
-            cliError(`不明な操作です: ${ctx.values.action}(init | verify)`),
+            cliError(`不明な操作です: ${displayText(String(ctx.values.action))}(init | verify)`),
           );
         }),
       ),
@@ -452,8 +456,7 @@ function envActionFlagRejection(
     if (!ENV_ACTION_FLAGS[otherAction].has(token.name)) {
       continue;
     }
-    // 打ったとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)
-    const typed = displayText(token.rawName ?? `--${token.name}`);
+    const typed = typedName(token);
     return `${typed} は env ${action} では使えません(${otherAction} 用のオプションです)`;
   }
   return null;
@@ -611,6 +614,13 @@ function pushCommand(execute: Execute) {
             `push しました: ${ctx.values.name}(version=${pushed.version}, epoch=${pushed.epoch})`,
           );
         }),
+        {
+          // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。
+          // 拒否した引数の中身は出さない(平文でありうる)ので、代わりに
+          // 「値は stdin から」を必ず添える — でないと直しようがない
+          strayPositionalHint:
+            '。値は stdin から読みます(例: printf %s "$SECRET" | maruhi push API_KEY)',
+        },
       ),
   });
 }
@@ -642,12 +652,17 @@ function runCommand(execute: Execute) {
           });
           yield* logWarnings(pulled.warnings);
           // `maruhi run` の環境変数名は検証済みステートメント経由(§4.2 / §12-7)。
-          // 実行制御系変数名 denylist(run.ts)は検証済み name に適用される防衛層
-          return yield* runOp({ command: ctx.rest, variables: pulled.variables });
+          // 実行制御系変数名 denylist(run.ts)は検証済み name に適用される防衛層。
+          // 子プロセスの引数は `ctx.rest` ではなくトークンから組む(空文字列の
+          // 引数が rest から落ちる gunshi の挙動 — args.ts の restArguments)
+          return yield* runOp({
+            command: restArguments(ctx.tokens),
+            variables: pulled.variables,
+          });
         }),
         {
           // `maruhi run npm test`(`--` 忘れ)は位置引数として落ちる。run は
-          // 実行対象を `ctx.rest` からしか取らないので、書き方を示して案内する
+          // 実行対象を `--` の後ろからしか取らないので、書き方を示して案内する
           strayPositionalHint:
             "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)",
           // `--` の後ろを読む唯一のコマンド(他コマンドでは黙って捨てられる)
@@ -656,10 +671,7 @@ function runCommand(execute: Execute) {
           // 誤り**なので入口で落とす。ここを通すと pull と全変数の復号まで
           // 進んでから runOp が同じことを言う(平文を作る意味が無い)。
           // runOp 側の同じ検査は直接呼び出し向けの防衛線として残す
-          rejection:
-            ctx.rest.length === 0
-              ? "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)"
-              : null,
+          rejection: restArguments(ctx.tokens).length === 0 ? RUN_COMMAND_REQUIRED : null,
         },
       ),
   });
@@ -683,7 +695,9 @@ function configCommand(execute: Execute) {
           const key = asConfigKey(ctx.values.key);
           if (key === null) {
             return yield* Effect.fail(
-              cliError(`不明な設定キーです: ${ctx.values.key}(${CONFIG_KEYS.join(" | ")})`),
+              cliError(
+                `不明な設定キーです: ${displayText(String(ctx.values.key))}(${CONFIG_KEYS.join(" | ")})`,
+              ),
             );
           }
           if (ctx.values.action === "get") {
@@ -713,7 +727,9 @@ function configCommand(execute: Execute) {
             yield* io.log(`${key} を設定しました`);
             return;
           }
-          return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(get | set)`));
+          return yield* Effect.fail(
+            cliError(`不明な操作です: ${displayText(String(ctx.values.action))}(get | set)`),
+          );
         }),
         {
           // `value` は set 専用の optional positional。共通検査は引数表の
@@ -769,15 +785,18 @@ export async function runCli(
   const execute: Execute = async (ctx, program, options) => {
     // 書き方の検査はコマンド本体より前 = 通信・復号より前に置く。
     // `pull --show=false` のような「書いたことと逆」の実行を、値を復号して
-    // から拒否しない(復号された平文をそもそも作らない)
+    // から拒否しない(復号された平文をそもそも作らない)。
+    //
+    // コマンド固有の拒否を**先に**見る: そのオプションが操作にそもそも
+    // 適用されないなら、綴りの助言(`--new-epoch` と書き直せ)を先に出しても
+    // 次の実行でまた落ちる(`env create --new-epoch=false` の 2 度手間)
     const rejection =
+      options?.rejection ??
       argsRejection(ctx, {
         strayPositionalHint: options?.strayPositionalHint,
         acceptsRest: options?.acceptsRest,
         withoutPositionals: options?.withoutPositionals,
-      }) ??
-      options?.rejection ??
-      null;
+      });
     if (rejection !== null) {
       await reportUsageError([rejection]);
       // 引数の書き方の誤りは usage エラー(2)。gunshi の strict が落とす

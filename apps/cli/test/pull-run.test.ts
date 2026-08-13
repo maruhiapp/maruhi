@@ -1433,6 +1433,15 @@ describe("maruhi run", () => {
     expect(server?.requests).toHaveLength(0);
   });
 
+  it("`--` の後ろの空文字列の引数も落とさずに渡す", async () => {
+    // gunshi の ctx.rest は値が truthy のものしか入れないため、空文字列の
+    // 引数は rest から落ちて positionals へ紛れ込む。素直に使うと子プロセスの
+    // 引数が黙って 1 つ減り、引数検査も誤爆する(トークンから組み直している)
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["run", "--", "printenv", "", "ALPHA"], env.layer)).toBe(0);
+    expect(env.runnerCalls[0]?.command).toEqual(["printenv", "", "ALPHA"]);
+  });
+
   it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {
     // 引数の書き方の検査(args.ts / strict)が子プロセスの引数に及ぶと、
     // `maruhi run -- <cmd>` は任意のコマンドを実行できなくなる。`--` 以降は

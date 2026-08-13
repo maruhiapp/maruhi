@@ -16,11 +16,17 @@
 // 判定材料は引数表(`ctx.args`)そのもの — 手書きの一覧と二重管理にすると、
 // 次に増えたオプションが実装済みなのに拒否される。
 //
-// 診断の規律: **argv の中身は原則として書き出さない**。拒否される引数は
-// 「値をオプション / 位置引数として書いてしまった」形でもありうるので、
-// 平文が stderr → CI・エージェントのログへ流れる経路を作らない
-// (CLAUDE.md: 平文値・鍵素材をログ・エラーメッセージに出力しない)。
-// 例外は「打ち間違いとして読める綴り」だけで、判定は echoableSpelling が持つ。
+// 診断の規律: **拒否した引数の中身は書き出さない**。拒否されるのは「値を
+// オプション / 位置引数として書いてしまった」形でもありうるので、平文が
+// stderr → CI・エージェントのログへ流れる経路を作らない(CLAUDE.md: 平文値・
+// 鍵素材をログ・エラーメッセージに出力しない)。
+//
+// 例外は 2 つだけで、いずれも**こちらの語彙**に収まるものに限る:
+// (a) オプション / コマンド名の綴り(echoableSpelling — 英字とハイフンだけ、
+//     20 字まで。数字や `_` を含む「値らしい」綴りは伏せる)
+// (b) 引数表由来の名前(宣言済みの位置引数名・オプション名・期待する型)
+// コマンドが意味的に受け取る識別子(config のキー・action)は値ではないので
+// 各コマンドが表示してよいが、端末出力の中和(displayText)は必ず通す。
 
 import {
   ArgsValidationErrorKeys,
@@ -48,12 +54,17 @@ export interface ArgTokenShape {
   readonly kind: string;
   readonly name?: string | undefined;
   readonly rawName?: string | undefined;
+  readonly value?: string | undefined;
   readonly inlineValue?: boolean | undefined;
 }
 
 /**
  * 検査に必要な CommandContext の部分。コマンドごとに型の違う `values` を
  * 含めないので、1 つの検査を全コマンドへ適用できる。
+ *
+ * 位置引数と `--` の後ろは **`ctx.positionals` / `ctx.rest` を使わず**
+ * トークンから数える(下記 restArguments を参照 — 空文字列の引数が
+ * 両者の間で入れ替わるため)。
  */
 export interface ArgCheckContext {
   readonly args: ArgTable;
@@ -64,8 +75,46 @@ export interface ArgCheckContext {
 }
 
 /** 打たれたとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)。 */
-function typedName(token: ArgTokenShape): string {
+export function typedName(token: ArgTokenShape): string {
   return displayText(token.rawName ?? `--${token.name ?? ""}`);
+}
+
+/**
+ * `--` の後ろの引数(`maruhi run` が子プロセスへ渡すもの)。
+ *
+ * gunshi の `ctx.rest` は使えない: 値が truthy のときだけ rest へ入れるため
+ * (`resolveArgs` の `terminated && token.value`)、**空文字列の引数が rest から
+ * 落ちて `ctx.positionals` へ紛れ込む**(実測: `run -- printenv "" x` →
+ * rest `["printenv","x"]` / positionals `["run",""]`)。子プロセスの引数が
+ * 黙って 1 つ減り、余分な位置引数の検査も誤爆する。トークンから組み直す。
+ */
+export function restArguments(tokens: readonly ArgTokenShape[]): readonly string[] {
+  const rest: string[] = [];
+  let terminated = false;
+  for (const token of tokens) {
+    if (token.kind === "option-terminator") {
+      terminated = true;
+      continue;
+    }
+    if (terminated) {
+      rest.push(token.value ?? "");
+    }
+  }
+  return rest;
+}
+
+/**
+ * `--` より前の位置引数の数(先頭にサブコマンド名を含む)。
+ *
+ * トークンを数えるだけでは足りない: パーサは引数表を知らないので、
+ * `--reason x` の `x` も positional トークンになる(`ctx.positionals` は
+ * 引数表を見て値として消費した後の並び)。一方 `ctx.positionals` には
+ * **`--` の後ろから落ちてきた分**(上記 restArguments の空文字列)が
+ * 紛れ込む。そこで「引数表を通した並びから、紛れ込んだ分を引く」で数える。
+ */
+function positionalCount(ctx: ArgCheckContext): number {
+  const leakedFromRest = restArguments(ctx.tokens).length - ctx.rest.length;
+  return ctx.positionals.length - leakedFromRest;
 }
 
 function namesOfType(args: ArgTable, type: string): readonly string[] {
@@ -74,19 +123,36 @@ function namesOfType(args: ArgTable, type: string): readonly string[] {
     .map(([name]) => name);
 }
 
-/** boolean として書かれうる綴り(宣言名 + 短縮形)。 */
-function booleanSpellings(args: ArgTable): ReadonlySet<string> {
-  const spellings = new Set<string>();
+/**
+ * boolean として書かれうる綴り。長い名前と短縮形を**別々に**持つ:
+ * 1 つの集合に混ぜると、ある boolean の短縮形と同じ名前を持つ別のオプション
+ * (例: 長い名前が `h` の string)を boolean と取り違える。
+ */
+function booleanSpellings(args: ArgTable): {
+  readonly names: ReadonlySet<string>;
+  readonly shorts: ReadonlySet<string>;
+} {
+  const names = new Set<string>();
+  const shorts = new Set<string>();
   for (const [name, schema] of Object.entries(args)) {
     if (schema.type !== "boolean") {
       continue;
     }
-    spellings.add(name);
+    names.add(name);
     if (schema.short !== undefined) {
-      spellings.add(schema.short);
+      shorts.add(schema.short);
     }
   }
-  return spellings;
+  return { names, shorts };
+}
+
+/** そのトークンは boolean オプションを指しているか(短縮形は綴りで見分ける)。 */
+function isBooleanToken(token: ArgTokenShape, args: ArgTable): boolean {
+  if (token.name === undefined) {
+    return false;
+  }
+  const { names, shorts } = booleanSpellings(args);
+  return token.rawName?.startsWith("--") === false ? shorts.has(token.name) : names.has(token.name);
 }
 
 /**
@@ -105,9 +171,6 @@ function commandLabel(commandPath: readonly string[]): string {
  * (チェーンは append-only なので取り消せない)。
  */
 function inlineValueRejection(ctx: ArgCheckContext): string | null {
-  // Set で引く: `args["constructor"]` のようなプロトタイプ由来の名前を
-  // 宣言済み boolean と取り違えない
-  const booleans = booleanSpellings(ctx.args);
   // 短縮形へのインライン値(`-s=false`)は「名前つきトークン」+「**名前なしの**
   // インライン値トークン」の 2 つに割れる(args-tokens 0.28.1 実測)。名前なし
   // トークンは直前のオプションのものなので、そこまで遡って判定する
@@ -120,7 +183,7 @@ function inlineValueRejection(ctx: ArgCheckContext): string | null {
     if (token.name !== undefined) {
       named = token;
     }
-    if (token.inlineValue !== true || named?.name === undefined || !booleans.has(named.name)) {
+    if (token.inlineValue !== true || named === undefined || !isBooleanToken(named, ctx.args)) {
       continue;
     }
     const typed = typedName(named);
@@ -144,11 +207,10 @@ function strayArgumentsMessage(count: number, shape: string, suffix = ""): strin
 /**
  * 余分な位置引数の拒否。boolean は**空白区切りの値を読まない**ため、
  * `--show false` は「フラグ有効 + 位置引数 "false"」になり、無効にした
- * つもりが値の表示になる。想定数は引数表から導く(`ctx.positionals` の
- * 先頭にはサブコマンド名が並ぶので、その段数 `commandPath.length` を足す)。
+ * つもりが値の表示になる。想定数は引数表から導く(先頭にはサブコマンド名が
+ * 並ぶので、その段数 `commandPath.length` を足す)。
  *
- * `--` の後ろ(`maruhi run -- cmd --flag`)は positional トークンとして
- * `ctx.rest` にだけ入り、`ctx.positionals` には現れないので影響しない。
+ * 数えるのは `--` より前だけ(`maruhi run -- cmd --flag` の後ろは対象外)。
  */
 function strayPositionalRejection(
   ctx: ArgCheckContext,
@@ -157,7 +219,8 @@ function strayPositionalRejection(
 ): string | null {
   const declared = namesOfType(ctx.args, "positional").filter((name) => !without.includes(name));
   const expected = declared.length + ctx.commandPath.length;
-  if (ctx.positionals.length <= expected) {
+  const count = positionalCount(ctx);
+  if (count <= expected) {
     return null;
   }
   const command = commandLabel(ctx.commandPath);
@@ -167,30 +230,26 @@ function strayPositionalRejection(
       : `${command} が取る位置引数は ${declared.join(" ")} だけです`;
   // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
   // コマンドラインに無いオプションを探させることになる)
-  const booleans = booleanSpellings(ctx.args);
   const usedBoolean = ctx.tokens.some(
-    (token) => token.kind === "option" && token.name !== undefined && booleans.has(token.name),
+    (token) => token.kind === "option" && isBooleanToken(token, ctx.args),
   );
   const booleanHint = usedBoolean
     ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
     : "";
-  return strayArgumentsMessage(
-    ctx.positionals.length - expected,
-    shape,
-    `${booleanHint}${hint ?? ""}`,
-  );
+  return strayArgumentsMessage(count - expected, shape, `${booleanHint}${hint ?? ""}`);
 }
 
 /**
- * `--` の後ろの引数(`ctx.rest`)の拒否。これを読むのは `maruhi run` だけで、
- * 他のコマンドでは黙って捨てられる(`maruhi push NAME -- value` など)。
+ * `--` の後ろの引数の拒否。これを読むのは `maruhi run` だけで、他のコマンド
+ * では黙って捨てられる(`maruhi push NAME -- value` など)。
  */
 function strayRestRejection(ctx: ArgCheckContext, acceptsRest: boolean): string | null {
-  if (acceptsRest || ctx.rest.length === 0) {
+  const rest = restArguments(ctx.tokens);
+  if (acceptsRest || rest.length === 0) {
     return null;
   }
   return strayArgumentsMessage(
-    ctx.rest.length,
+    rest.length,
     `${commandLabel(ctx.commandPath)} は \`--\` の後ろの引数を取りません`,
   );
 }
@@ -243,11 +302,14 @@ function invokedArgs(argv: readonly string[], commands: CommandTable): ArgTable 
   return undefined;
 }
 
-// 打ち間違いとして読める綴り。値がオプションに化けた形を弾く:
-// `-hunter2` は短縮グループとして 1 文字ずつのトークンへ展開され、
-// `-----BEGIN RSA...` は 1 つの長いオプション名になる(いずれも実測)
-const OPTION_SPELLING = /^(?:--[A-Za-z][\w-]{0,30}|-[A-Za-z0-9])$/;
-const COMMAND_SPELLING = /^[A-Za-z][\w-]{0,30}$/;
+// 診断へ返してよい綴り = **maruhi のオプション名の語彙**(英字とハイフンだけ・
+// 20 字まで)。gunshi が名前として受ける範囲より意図的に狭くして、値が
+// オプションに化けた形を弾く: `-hunter2` は短縮グループとして 1 文字ずつの
+// トークンへ展開され、`--sk_live_ab12` は数字と `_` を含み、
+// `-----BEGIN RSA...` は 1 つの長い名前になる(いずれも実測)。
+// この語彙を外れた綴りは打ち間違いとして案内せず、伏せる
+const OPTION_SPELLING = /^(?:--[A-Za-z][A-Za-z-]{0,18}|-[A-Za-z])$/;
+const COMMAND_SPELLING = /^[A-Za-z][A-Za-z-]{0,18}$/;
 
 /** 診断へ出してよい綴りなら表示形、そうでなければ null(= 伏せる)。 */
 function echoableSpelling(rawName: string, argv: readonly string[]): string | null {
