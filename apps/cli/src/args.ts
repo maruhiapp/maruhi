@@ -325,7 +325,20 @@ function isStrayBooleanLiteral(
   if (token.kind !== "positional" || !isBooleanLiteral(token)) {
     return false;
   }
-  return previous === undefined || valueTakingOption(previous, args) === undefined;
+  return previous === undefined || !consumesNextPositional(previous, args);
+}
+
+/**
+ * そのトークンは**次の位置引数を値として消費する**か。
+ *
+ * 「値を取るオプションか」だけでは足りない: インライン値を持つ形
+ * (`--reason=x`)は既に値を持っているので、次の位置引数は消費しない。
+ * 混同すると `env rotate --new-epoch --reason=x false` の `false` が
+ * 「`--reason` の値」と見なされ、boolean リテラルの検査を素通りする
+ * (= フラグは有効のまま、環境 `false` への不可逆な書き込みへ進む)。
+ */
+function consumesNextPositional(token: ArgTokenShape, args: ArgTable): boolean {
+  return token.inlineValue !== true && valueTakingOption(token, args) !== undefined;
 }
 
 /**

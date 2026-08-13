@@ -132,6 +132,19 @@ describe("boolean オプションへの値の指定", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("挟まったオプションがインライン値(`--reason=r`)でも拾う", async () => {
+    const { env, server } = await startEnv();
+
+    // インライン値を持つトークンは**次の位置引数を消費しない**。「値を取る
+    // オプションか」だけで判定すると、直後の literal を `--reason` の値と
+    // 見なして素通りし、環境 `false` への取り消せない書き込みへ進む
+    expect(await runCli(["env", "rotate", "--new-epoch", "--reason=r", "false"], env.layer)).toBe(
+      2,
+    );
+    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("boolean フラグより**前**に置いた位置引数は通す(案内した逃げ道)", async () => {
     const { env } = await startEnv();
 
