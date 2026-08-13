@@ -2070,6 +2070,68 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("ラップを持つメンバーによる再実行");
   });
 
+  it("巡の途中で現れた開けない値も、部分完了へ格下げせず証拠として中断する", async () => {
+    // 上のケースは初回 pull(ローテーション前)なので、失敗させても失うのは
+    // 「まだ始めていない実行」だけである。危ないのは**エポックが進んだ後**に
+    // 現れた場合で、ここを再走査の一時失敗と同じ扱いにすると「未確認を含む
+    // 部分完了 — 再実行すれば再開します」に化ける(差し替えの兆候が、
+    // 何度でも同じ結果を返す再実行の案内に潰される)
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    // 初回 pull には現れず、複合受理の後(= 巡末の再走査)にだけ現れる値。
+    // 署名は妥当だが暗号化に使われた鍵が違う(= AEAD 認証が通らない)
+    const tampered = await variableAt({
+      built: chainBase,
+      variableId: "vtamper",
+      name: "TAMPERED",
+      dek: dek3,
+      epoch: 1,
+      version: 1,
+      plaintext: "unreadable-here",
+      headSeq: 2,
+    });
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => {
+        variables.push(tampered);
+        return undefined;
+      },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "巡中"], env.layer)).toBe(1);
+    // 初回 pull のケースと違い、ここではローテーション自体は起きている
+    expect(state.rotateBodies).toHaveLength(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("サーバーによる差し替えの可能性");
+    expect(errors).toContain("再実行では解消しない証拠です");
+    // 「再実行すれば片付く」系の案内へ格下げしない
+    expect(errors).not.toContain("残りから再開します");
+    expect(errors).not.toContain("未確認を含む");
+  });
+
   it("復号できない値が 1 つあっても、再開は開ける分を再暗号化する(epoch は既に進んでいる)", async () => {
     // §12-7 の過渡状態にいるメンバー: epoch 2 のラップは持つが epoch 1 は持たない
     // (ローテーション後に追加された / epoch 1 の再ラップが未登録)。従来は
