@@ -819,7 +819,10 @@ describe("gunshi 由来の usage エラー", () => {
 
 /** gunshi の CommandContext のうち、検査が見る部分だけを組む(単体検査用)。 */
 function checkContext(input: {
-  readonly args: Record<string, { readonly type?: string; readonly short?: string }>;
+  readonly args: Record<
+    string,
+    { readonly type?: string; readonly short?: string; readonly negatable?: boolean }
+  >;
   readonly tokens: readonly {
     kind: string;
     name?: string;
@@ -835,7 +838,6 @@ function checkContext(input: {
     tokens: input.tokens,
     positionals: input.positionals ?? ["demo"],
     values: input.values ?? {},
-    explicit: {},
     commandPath: ["demo"],
   };
 }
@@ -879,5 +881,81 @@ describe("引数検査の単体(CLI に短縮形が現れる前の防衛)", () =
     );
     expect(rejection).toContain("余分な引数です(1 個");
     expect(rejection).toContain("boolean オプションに値は付けられません");
+  });
+
+  it("同じオプションの重複は、綴りが違っても(短縮形・否定形)拾う", () => {
+    // 短縮形と長い綴りは同じオプション。別物として数えると、
+    // `maruhi push K -e prod --env dev` が黙って片方だけへ書き込む
+    const short = argsRejection(
+      checkContext({
+        args: { env: { type: "string", short: "e" } },
+        tokens: [
+          { kind: "option", name: "e", rawName: "-e", value: "prod" },
+          { kind: "option", name: "env", rawName: "--env", value: "dev" },
+        ],
+      }),
+    );
+    expect(short).toContain("オプション --env を複数回指定しています");
+    // 打たれた値は診断に出さない
+    expect(short).not.toContain("prod");
+
+    const negated = argsRejection(
+      checkContext({
+        args: { show: { type: "boolean", negatable: true } },
+        tokens: [
+          { kind: "option", name: "no-show", rawName: "--no-show" },
+          { kind: "option", name: "show", rawName: "--show" },
+        ],
+      }),
+    );
+    expect(negated).toContain("否定形 --no-show も同じオプションです");
+  });
+
+  it("同じ値の重複でも落とす(値を判断材料にしない)", () => {
+    // 「同じ値なら通す」にすると、打たれた値によって結果が変わる検査になる。
+    // 重複していること自体を言えば、どちらを消しても直る
+    const rejection = argsRejection(
+      checkContext({
+        args: { env: { type: "string" } },
+        tokens: [
+          { kind: "option", name: "env", rawName: "--env", value: "dev" },
+          { kind: "option", name: "env", rawName: "--env", value: "dev" },
+        ],
+      }),
+    );
+    expect(rejection).toContain("オプション --env を複数回指定しています");
+  });
+
+  it("`--` の後ろの重複は子プロセスの引数なので対象外", () => {
+    const rejection = argsRejection(
+      checkContext({
+        args: { env: { type: "string" } },
+        tokens: [
+          { kind: "positional", value: "demo" },
+          { kind: "option-terminator" },
+          { kind: "positional", value: "cmd" },
+          { kind: "option", name: "env", rawName: "--env", value: "a" },
+          { kind: "option", name: "env", rawName: "--env", value: "b" },
+        ],
+      }),
+      { acceptsRest: true },
+    );
+    expect(rejection).toBeNull();
+  });
+
+  it("未宣言の綴り(グローバル含む)の重複はこの検査の担当外", () => {
+    // `--help` / `--version` は引数表に無い(gunshi が実行時に混ぜる)。
+    // 宣言名で引けない綴りを数えると、綴りごとに別物として数えることになり
+    // 一貫しない — 未宣言は strict と gunshi の担当
+    const rejection = argsRejection(
+      checkContext({
+        args: { env: { type: "string" } },
+        tokens: [
+          { kind: "option", name: "help", rawName: "--help" },
+          { kind: "option", name: "help", rawName: "--help" },
+        ],
+      }),
+    );
+    expect(rejection).toBeNull();
   });
 });

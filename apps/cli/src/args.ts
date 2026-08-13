@@ -82,8 +82,6 @@ export interface ArgCheckContext {
   readonly positionals: readonly string[];
   /** 引数表を通した値(オプションの空の値は undefined へ落ちる)。 */
   readonly values: Readonly<Record<string, unknown>>;
-  /** 明示的に書かれたか(「未指定」と「空指定」の区別はここにしか無い)。 */
-  readonly explicit: Readonly<Record<string, boolean>>;
   readonly commandPath: readonly string[];
 }
 
@@ -409,7 +407,6 @@ function strayPositionalRejection(
  * gunshi の string / number は `token.value || default` で解決するため、空の値は
  * 「未指定」に潰れて既定へフォールバックする。`maruhi push API_KEY --env "$ENV"`
  * で ENV が未設定なら、書き込みは**既定環境**へ入る(取り消せない)。
- * 「未指定」と「空指定」の区別は `ctx.explicit` にしか無い。
  */
 function emptyOptionValueRejection(ctx: ArgCheckContext): string | null {
   // 判定は**打たれたトークン**で行う。`ctx.values` が undefined かどうかで
@@ -423,6 +420,47 @@ function emptyOptionValueRejection(ctx: ArgCheckContext): string | null {
     if (declared !== undefined && hasEmptyValue(token, ctx.tokens[index + 1])) {
       return `オプション --${declared} の値が空です(空の値は「未指定」と区別できないため受け付けません)`;
     }
+  }
+  return null;
+}
+
+/**
+ * 同じオプションを 2 回以上書いた実行の拒否。
+ *
+ * gunshi は最後の指定で解決するため、前の指定は**黙って捨てられる**。
+ * `maruhi pull --no-show $FLAGS`(FLAGS に `--show` が入っている)は明示した
+ * `--no-show` を無視して全シークレットを端末へ出すし、
+ * `maruhi push API_KEY --env prod --env dev` は書いた 2 つのうち片方だけへ
+ * 書き込む(取り消せない)。どちらを意図したかは読み取れないので、
+ * 選ばずに落とす。
+ *
+ * 否定形(`--no-show`)は同じオプションの綴りなので同一視する
+ * (declaredOptionName)。値の一致は見ない — 打たれた値どうしの比較は
+ * 「同じ値なら通す」= 値によって結果が変わる検査になり、規律(打たれた語を
+ * 判断材料にしない)から外れる。
+ */
+function duplicateOptionRejection(ctx: ArgCheckContext): string | null {
+  const seen = new Set<string>();
+  for (const token of ctx.tokens) {
+    if (token.kind === "option-terminator") {
+      break;
+    }
+    const declared = declaredOptionName(token, ctx.args);
+    if (declared === undefined) {
+      // 未宣言の綴りは strict が、グローバル(`--help` / `--version`)は
+      // gunshi が受け持つ
+      continue;
+    }
+    if (seen.has(declared)) {
+      // 名前は引数表由来(= こちらの語彙)なので出してよい。何回・どの綴りで
+      // 書かれたかは言わない(打たれた綴りは値でもありうる)
+      const negation =
+        ctx.args[declared]?.negatable === true
+          ? `(否定形 --${NEGATION_PREFIX}${declared} も同じオプションです)`
+          : "";
+      return `オプション --${declared} を複数回指定しています${negation}。最後の 1 つ以外は黙って捨てられるため受け付けません — 1 回だけ書いてください`;
+    }
+    seen.add(declared);
   }
   return null;
 }
@@ -578,27 +616,31 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
   const booleans = booleanSpellings(ctx.args);
   // `--` の後ろの組み直しも 1 回だけ(位置引数の数え上げと 2 つの検査で使う)
   const rest = options?.rest ?? restArguments(ctx.tokens);
-  return (
-    // 適用できないオプションは、綴りの助言より先に言う(そのとおり直しても
-    // 次の実行でまた落ちるため)
-    // 並びは「実行の形そのもの → その操作で使えるか → 綴り」の順。
-    // 構造的な誤り(コマンド名の位置・空の値・`--` の後ろ)を先に言わないと、
-    // 操作別の指摘を直した次の実行でまた落ちる
-    commandBeforeTerminatorRejection(ctx, rest) ??
-    emptyOptionValueRejection(ctx) ??
-    strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint) ??
-    emptyPositionalRejection(ctx, rest, options?.withoutPositionals ?? []) ??
-    options?.commandRejection ??
-    inlineValueRejection(ctx, booleans) ??
-    booleanLiteralRejection(ctx, booleans) ??
-    strayPositionalRejection(
-      ctx,
-      booleans,
-      options?.strayPositionalHint,
-      options?.withoutPositionals ?? [],
-    ) ??
-    missingRestRejection(rest, options?.restRequired)
-  );
+  const without = options?.withoutPositionals ?? [];
+  // 並びは「実行の形そのもの → その操作で使えるか → 綴り」の順。構造的な誤り
+  // (コマンド名の位置・空の値・重複・`--` の後ろ)を先に言わないと、操作別の
+  // 指摘を直した次の実行でまた落ちる。適用できないオプション
+  // (commandRejection)も、綴りの助言より先に言う
+  const checks: readonly (() => string | null | undefined)[] = [
+    () => commandBeforeTerminatorRejection(ctx, rest),
+    () => emptyOptionValueRejection(ctx),
+    () => duplicateOptionRejection(ctx),
+    () =>
+      strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint),
+    () => emptyPositionalRejection(ctx, rest, without),
+    () => options?.commandRejection,
+    () => inlineValueRejection(ctx, booleans),
+    () => booleanLiteralRejection(ctx, booleans),
+    () => strayPositionalRejection(ctx, booleans, options?.strayPositionalHint, without),
+    () => missingRestRejection(rest, options?.restRequired),
+  ];
+  for (const check of checks) {
+    const rejection = check();
+    if (rejection !== null && rejection !== undefined) {
+      return rejection;
+    }
+  }
+  return null;
 }
 
 /** Command name → argument table, used to word usage errors. */

@@ -274,6 +274,24 @@ describe("maruhi pull", () => {
     expect(spaced.errors.join("\n")).toContain("--show は値を取りません");
   });
 
+  it("`--no-show --show` のような重複指定は値を表示せずに落ちる", async () => {
+    // gunshi は最後の指定で解決するため、明示した `--no-show` が黙って捨てられて
+    // 全シークレットが端末へ出る(`maruhi pull --no-show $FLAGS` の形)。
+    // どちらを意図したかは読み取れないので、選ばずに usage エラー(2)で落とす
+    const later = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--no-show", "--show"], later.layer)).toBe(2);
+    expect(later.logs.join("\n")).not.toContain("alpha-value");
+    expect(later.errors.join("\n")).toContain("--show を複数回指定しています");
+    // 否定形も同じオプションであることを案内する(片方を消せばよいと分かる)
+    expect(later.errors.join("\n")).toContain("--no-show");
+
+    // 逆順(最後が --no-show)も同じ扱い。「結果が安全な向きなら通す」に
+    // すると、書いた指定が捨てられていること自体が伝わらない
+    const earlier = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show", "--no-show"], earlier.layer)).toBe(2);
+    expect(earlier.errors.join("\n")).toContain("--show を複数回指定しています");
+  });
+
   it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {
     // 悪意ある共同編集者が保存した値(ESC + BEL)+ 正当な複数行(PEM 風)
     const evil = "sk-\u001b[31mFAKE\u0007\nline2";
