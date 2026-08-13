@@ -400,6 +400,51 @@ describe("空の値", () => {
     expect(env.logs).toContain("prod");
   });
 
+  it("空白だけの値も空として扱う(設定の上書き・実行対象)", async () => {
+    const { env, server } = await startEnv();
+
+    // `"$PROJ"` の未設定形は `""` にも `" "` にもなる。片方だけ塞ぐと
+    // 設定が空白で上書きされ、以後のコマンドが無関係なエラーで落ち続ける
+    expect(await runCli(["config", "set", "defaultEnvironment", "  "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("位置引数 value が空です");
+    expect(await runCli(["run", "--", "  "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
+    expect(env.runnerCalls).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("この実行が取らない位置引数(`config get` の value)を名指ししない", async () => {
+    const { env } = await startEnv();
+
+    // 空の値の指摘でも、その操作が取らない位置引数の名前を出さない
+    expect(await runCli(["config", "get", "defaultEnvironment", ""], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("位置引数 value が空です");
+    expect(errors).toContain("余分な引数です(1 個");
+  });
+
+  it("`--` の後ろの空文字列は、書いていない位置引数のせいにしない", async () => {
+    const { env } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
+
+    // `push -- ""` の "" は位置引数 name として束縛されるが、ユーザーが
+    // 書いたのは `--` の後ろ。そちらを指摘する
+    expect(await runCli(["push", "--", ""], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("maruhi push は `--` の後ろの引数を取りません");
+    expect(errors).not.toContain("位置引数 name が空です");
+  });
+
+  it("構造的な誤りは、その操作で使えるかより先に言う", async () => {
+    const { env } = await startEnv();
+
+    // 適用可否を先に出すと、そこを直した次の実行で「環境 ID が空」で落ちる
+    expect(await runCli(["env", "create", "", "--reason", "x"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("位置引数 environment-id が空です");
+    expect(errors).not.toContain("env create では使えません");
+  });
+
   it("`--` より前にコマンド名が無い実行は、pull も復号もせずに落ちる", async () => {
     const { env, server } = await startEnv();
 
@@ -630,15 +675,14 @@ describe("gunshi 由来の usage エラー", () => {
     expect(errors).not.toContain("s3cr3t");
   });
 
-  it("パーサ内部の例外は内部メッセージを出さない", async () => {
+  it("パーサ内部の例外は打ち間違いとして報告しない", async () => {
     const { env } = await startEnv();
 
-    // 値の無い number オプションで gunshi 自身が TypeError を投げる。JS の
-    // 内部メッセージを `maruhi:` の顔で出さない(文面はこちらの語彙だけ)
-    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("引数を解釈できません");
-    expect(errors).not.toContain("Cannot read properties");
+    // 値の無い number オプションで gunshi 自身が TypeError を投げる。これは
+    // バグであって書き方の誤りではないので、usage エラー(2)に化けさせず
+    // 内部エラー(1)として報告する(無言で飲まない — CLAUDE.md)
+    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("内部エラー");
   });
 
   it("未知のコマンドは日本語で落ち、使えるコマンドを示す", async () => {
@@ -673,15 +717,26 @@ describe("gunshi 由来の usage エラー", () => {
     expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
   });
 
-  it("自分の最長オプション名より長い綴りでも打ち間違いとして案内する", async () => {
+  it("長いオプション名の打ち間違いも候補として案内する", async () => {
     const { env } = await startEnv();
 
-    // `--github-poll-interval` は `--` の後ろ 20 字。語彙の長さ上限をそれ以下に
-    // すると、自分のオプションの打ち間違いが伏せ字になって直しようがなくなる
-    expect(await runCli(["login", "--github-poll-intervall", "3"], env.layer)).toBe(2);
+    // `--github-client-id` の 1 字違い。候補の語彙に長さの上限を設けると、
+    // 自分のオプションの打ち間違いが案内できなくなる
+    expect(await runCli(["login", "--github-client-idd", "x"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "不明なオプションです(--github-poll-interval のことですか?)",
+      "不明なオプションです(--github-client-id のことですか?)",
     );
+  });
+
+  it("隠しオプション(hidden)は候補に出さない", async () => {
+    const { env } = await startEnv();
+
+    // gunshi の usage が出さない内部向けの綴りを、打ち間違いの案内で広めない
+    expect(await runCli(["login", "--github-poll-intervall", "3"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).not.toContain("--github-poll-interval");
+    expect(errors).not.toContain("--github-base-url");
+    expect(errors).toContain("このコマンドが取るオプション:");
   });
 
   it("エントリコマンドの二重名(`maruhi maruhi`)を文面に出さない", async () => {

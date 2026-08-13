@@ -441,6 +441,16 @@ describe("入力検証と defect の扱い", () => {
     expect(env2.errors.join("\n")).not.toContain("!bad");
   });
 
+  it("config 由来の不正な ID は打ち間違いではなく、直す先を示して 1 で落ちる", async () => {
+    const env = await makeTestEnv();
+    // コマンドラインには何も書いていないので、2(書き方の誤り)で報告すると
+    // 「直す場所が無いのに usage エラー」になる
+    await seedConfig(env, { server: "https://maruhi.example", defaultProject: "not-hex" });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    expect(await runCli(["pull", "--env", "dev"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("config の defaultProject を直してください");
+  });
+
   it("defect(バグ由来の throw)は usage エラー(2)でなく 1 で報告される", async () => {
     const env = await makeTestEnv();
     env.breakConfigLoadWithDefect();

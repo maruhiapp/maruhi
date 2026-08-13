@@ -510,14 +510,12 @@ function envCommand(execute: Execute) {
           }
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
-            // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
-            // 落とすため、values だけでは「未指定」と区別できない。区別を失うと
-            // `--reason "$UNSET"` の実行が「確認だけ」の経路へ滑り込み、何も
-            // 送らないまま成功終了する(env-rotate の checkReasonLength が
-            // 空指定を落とせるよう、指定の有無は explicit で判定する)
-            const reason = ctx.explicit.reason ? (ctx.values.reason ?? "") : undefined;
+            // 空の `--reason`(`--reason ""` / `--reason=`)は共通の引数検査が
+            // 落とす(args.ts の emptyOptionValueRejection — 「未指定」と
+            // 区別できない値を既定へ潰さない)。ここへ来る undefined は
+            // **`--reason` 自体が無い**実行だけ
             return yield* envRotate(
-              { ...flags, reason, newEpoch: ctx.values["new-epoch"] },
+              { ...flags, reason: ctx.values.reason, newEpoch: ctx.values["new-epoch"] },
               environmentId,
             );
           }
@@ -863,9 +861,16 @@ export async function runCli(
       subCommands,
     });
   } catch (error) {
-    // 引数検証・未知コマンドは usage エラー(2)
-    await reportUsageError(usageErrorMessages(error, argv, subCommands));
-    return 2;
+    // 引数検証・未知コマンドは usage エラー(2)。それ以外(コマンド定義の
+    // 組み立てで throw した等のバグ)は 1 で報告する — 打ち間違いと区別できないと
+    // 直しようがないうえ、無言で飲むことにもなる(CLAUDE.md)
+    if (error instanceof AggregateError) {
+      await reportUsageError(usageErrorMessages(error, argv, subCommands));
+      return 2;
+    }
+    const message = error instanceof Error ? displayText(error.message) : String(error);
+    await reportUsageError([`内部エラー: ${message}`]);
+    return 1;
   }
   return exitCode;
 }

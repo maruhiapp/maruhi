@@ -272,8 +272,11 @@ describe("maruhi login", () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
-    expect(await runCli(["login", "--github-base-url", "http://evil.example"], env.layer)).toBe(1);
+    // 書き方の誤りは usage エラー(2)。URL そのものは返さない
+    // (`http://user:token@host` の形で認証情報が書かれうる)
+    expect(await runCli(["login", "--github-base-url", "http://evil.example"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("loopback");
+    expect(env.errors.join("\n")).not.toContain("evil.example");
   });
 
   it("client_id 未設定は設定手順を案内して失敗する", async () => {

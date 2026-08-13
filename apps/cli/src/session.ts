@@ -62,12 +62,14 @@ export function normalizeHttpOrigin(raw: string, label: string): Effect.Effect<s
     // URL そのものは返さない(認証情報が埋まった URL を書かれる形もある)
     return Effect.fail(usageError(`${label}を解釈できません(https:// で始まる URL)`));
   }
+  // どの分岐でも URL は返さない(`http://user:token@host/x?token=…` の形で
+  // 認証情報が書かれうる)。書き方の誤りなので終了コードも 2 で揃える
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return Effect.fail(cliError(`${label}は http(s) で指定してください: ${raw}`));
+    return Effect.fail(usageError(`${label}は http(s) で指定してください`));
   }
   if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
     return Effect.fail(
-      cliError(`${label}の http: は loopback のみ許可されます(平文送信になるため): ${raw}`),
+      usageError(`${label}の http: は loopback のみ許可されます(平文送信になるため)`),
     );
   }
   return Effect.succeed(url.origin);

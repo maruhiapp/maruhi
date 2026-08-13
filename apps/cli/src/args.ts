@@ -50,6 +50,8 @@ interface ArgSchemaShape {
   readonly type?: string | undefined;
   readonly short?: string | undefined;
   readonly negatable?: boolean | undefined;
+  /** usage に出さない宣言(テスト用・内部向け)。候補にも出さない。 */
+  readonly hidden?: boolean | undefined;
 }
 
 /** The command's full argument table (`ctx.args`): declared options and positionals. */
@@ -395,10 +397,17 @@ function emptyOptionValueRejection(ctx: ArgCheckContext): string | null {
  * ため、`config set defaultProject "$PROJ"` の未設定形が既存の設定を空で
  * 上書きして成功を報告していた。
  */
-function emptyPositionalRejection(ctx: ArgCheckContext): string | null {
+function emptyPositionalRejection(ctx: ArgCheckContext, without: readonly string[]): string | null {
   for (const name of namesOfType(ctx.args, "positional")) {
-    if (ctx.values[name] === "") {
-      return `位置引数 ${name} が空です(空の値は受け付けません)`;
+    if (without.includes(name)) {
+      // この実行では取らない位置引数(`config get` の `value`)を名指ししない
+      continue;
+    }
+    const value = ctx.values[name];
+    // 空白だけの値も空として扱う(`config set defaultProject "$PROJ"` の
+    // 未設定形は `""`、`" "` のどちらにもなりうる)
+    if (typeof value === "string" && value.trim() === "") {
+      return `位置引数 ${name} が空です(空白だけの値も受け付けません)`;
     }
   }
   return null;
@@ -458,7 +467,8 @@ function missingRestRejection(
   if (required === undefined) {
     return null;
   }
-  return rest.length === 0 || rest[0] === "" ? required : null;
+  // 空白だけのコマンド名も実行できない(`maruhi run -- "$CMD"` の未設定形)
+  return rest.length === 0 || (rest[0] ?? "").trim() === "" ? required : null;
 }
 
 /** How one command tunes the shared argument checks. */
@@ -502,10 +512,14 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
   return (
     // 適用できないオプションは、綴りの助言より先に言う(そのとおり直しても
     // 次の実行でまた落ちるため)
-    options?.commandRejection ??
+    // 並びは「実行の形そのもの → その操作で使えるか → 綴り」の順。
+    // 構造的な誤り(コマンド名の位置・空の値・`--` の後ろ)を先に言わないと、
+    // 操作別の指摘を直した次の実行でまた落ちる
     commandBeforeTerminatorRejection(ctx, rest) ??
     emptyOptionValueRejection(ctx) ??
-    emptyPositionalRejection(ctx) ??
+    strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint) ??
+    emptyPositionalRejection(ctx, options?.withoutPositionals ?? []) ??
+    options?.commandRejection ??
     inlineValueRejection(ctx, booleans) ??
     booleanLiteralRejection(ctx, booleans) ??
     strayPositionalRejection(
@@ -515,7 +529,6 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
       options?.strayPositionalHint,
       options?.withoutPositionals ?? [],
     ) ??
-    strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint) ??
     missingRestRejection(rest, options?.restRequired)
   );
 }
@@ -599,6 +612,19 @@ function suggestionText(
 }
 
 /**
+ * 隠しオプション(`hidden: true`)か。gunshi の usage は出さないので、
+ * 打ち間違いの案内でも出さない(内部向けの綴りを広めない)。
+ */
+function isHiddenOption(candidate: string, args: ArgTable | undefined): boolean {
+  if (args === undefined || !candidate.startsWith("--")) {
+    return false;
+  }
+  const name = candidate.slice(2);
+  const bare = name.startsWith(NEGATION_PREFIX) ? name.slice(NEGATION_PREFIX.length) : name;
+  return (Object.hasOwn(args, bare) ? args[bare]?.hidden : undefined) === true;
+}
+
+/**
  * このコマンドが取るオプションの綴り。gunshi がエラーに載せた候補
  * (`values.candidates`)を優先する — こちらの引数表には実行時に混ぜられる
  * グローバル(`--help` / `--version`)も否定形(`--no-x`)も現れないため。
@@ -609,7 +635,9 @@ function optionCandidates(
 ): readonly string[] {
   const candidates = values["candidates"];
   if (Array.isArray(candidates) && candidates.length > 0) {
-    return candidates.filter((candidate): candidate is string => typeof candidate === "string");
+    return candidates
+      .filter((candidate): candidate is string => typeof candidate === "string")
+      .filter((candidate) => !isHiddenOption(candidate, args));
   }
   // 短縮形の未宣言オプションでは gunshi が候補を空で渡す(長い綴りの候補しか
   // 持たない)。その場合は引数表から組む — 実行時に混ぜられるグローバルと
@@ -619,7 +647,7 @@ function optionCandidates(
     return GLOBAL_OPTIONS;
   }
   const declared = Object.entries(args).flatMap(([name, schema]) =>
-    schema.type === "positional"
+    schema.type === "positional" || schema.hidden === true
       ? []
       : schema.negatable === true
         ? [`--${name}`, `--${NEGATION_PREFIX}${name}`]
