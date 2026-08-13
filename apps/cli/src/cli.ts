@@ -561,7 +561,9 @@ function envCommand(execute: Execute) {
             );
           }
           const environmentId = ctx.values["environment-id"];
-          // positional 未指定(undefined)は型で明示的に弾く
+          // positional 未指定(undefined)は型で明示的に弾く。位置引数を**書かずに**
+          // `--environment-id` だけで渡した実行はここまで来ない(gunshi 自身が
+          // 必須 positional の欠落として usage エラーで落とす)
           if (environmentId === undefined || !isEnvironmentId(environmentId)) {
             return yield* Effect.fail(
               cliError(

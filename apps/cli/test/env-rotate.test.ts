@@ -2621,6 +2621,25 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "-q"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("不明なオプションです: -q");
     expect(env.errors.join("\n")).not.toContain("--q");
+    // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
+    // (`env rotate dev --environment-id other` は dev をローテーションする)。
+    // 環境 ID はチェーン履歴全体で一意(§6.2)なので取り違えは永久に焼き付く
+    const beforeSwap = server.requests.length;
+    expect(
+      await runCli(
+        ["env", "rotate", ENV_ID, "--reason", "x", "--environment-id", "other-env"],
+        env.layer,
+      ),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
+    // 位置引数を**書かずに** `--environment-id` だけで渡した実行は、gunshi 自身が
+    // 必須 positional の欠落として usage エラー(2)で落とす — 環境 ID 未指定の
+    // まま既定環境へ滑り込む経路が無いことの確認
+    expect(
+      await runCli(["env", "rotate", "--environment-id", ENV_ID, "--reason", "x"], env.layer),
+    ).toBe(2);
+    // 取り違えの検査は通信より前(誤った ID で var.read を残さない)
+    expect(server.requests.length).toBe(beforeSwap);
     // 操作専用でない宣言済みオプション(--project 等)は拒否しない。許可集合は
     // 引数表から導くので、手書きの一覧との二重管理で弾かれることがない
     expect(

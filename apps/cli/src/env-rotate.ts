@@ -673,7 +673,14 @@ function decryptTargets(input: {
       // 即時中断する — これを「別メンバーの再実行待ち」に潰すと、差し替えの
       // 兆候を良性の運用待ちとして報告し、--new-epoch で踏み越えるよう案内する
       // ことになる
-      if (!input.deksByEpoch.has(value.epoch)) {
+      //
+      // 「良性」と見なすのは**チェーン導出の現エポック以下**の欠落だけである:
+      // 現エポックを超える申告エポックの値は、手元に当該エポックのラップが無いのが
+      // 当然(deks.ts が上限超過のラップを拒否する)なので、この検査を素通りさせると
+      // 検証済みビューとの不整合が「別メンバー待ち」に化ける。上限超過は
+      // decryptVerifiedValue が pull / run と同じ文言で即時中断する
+      // (§6.3-4 の epoch-not-current-at-head が本線で、これは導出不整合への防衛線)
+      if (value.epoch <= input.chainEpoch && !input.deksByEpoch.has(value.epoch)) {
         undecryptable.push(missingWrapReason(value));
         continue;
       }
