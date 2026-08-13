@@ -120,6 +120,27 @@ describe("boolean オプションへの値の指定", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("boolean フラグとリテラルの間に別のオプションが挟まっても拾う", async () => {
+    const { env, server } = await startEnv();
+
+    // 直前のトークンだけを見ると、`--reason r` の値を挟んだ形を取り逃がす
+    // (余った literal が空の必須スロットへ入り、環境 `false` を回してしまう)
+    expect(
+      await runCli(["env", "rotate", "--new-epoch", "--reason", "r", "false"], env.layer),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("boolean フラグより**前**に置いた位置引数は通す(案内した逃げ道)", async () => {
+    const { env } = await startEnv();
+
+    // 「オプションより前に書いてください」と案内する以上、その形は通す
+    expect(
+      await runCli(["env", "rotate", "false", "--new-epoch", "--reason", "x"], env.layer),
+    ).not.toBe(2);
+  });
+
   it("否定形の綴り(`--no-show=false` / `--no-new-epoch off`)も同じ検査に掛かる", async () => {
     const { env, server } = await startEnv();
 
@@ -398,6 +419,16 @@ describe("空の値", () => {
     expect(env.errors.join("\n")).toContain("位置引数 value が空です");
     expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
     expect(env.logs).toContain("prod");
+  });
+
+  it("空白だけのオプション値も空として扱う", async () => {
+    const { env, server } = await startEnv();
+
+    // 位置引数側だけ trim していると、`--name "$NAME"` の未設定形が
+    // 空白だけの表示名で環境を作る(取り消せない)
+    expect(await runCli(["env", "create", "dev", "--name", "  "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("オプション --name の値が空です");
+    expect(server.requests).toHaveLength(0);
   });
 
   it("空白だけの値も空として扱う(設定の上書き・実行対象)", async () => {

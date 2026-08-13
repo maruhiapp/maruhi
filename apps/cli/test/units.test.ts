@@ -408,6 +408,29 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).toContain("MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定");
   });
 
+  it("MARUHI_TOKEN_ORIGIN の形式が不正なら実行の失敗(1)として直し先を示す", async () => {
+    let hit = false;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => {
+        hit = true;
+        return { status: 200, json: { userId: "u", orgs: [] } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    // 環境変数の値はコマンドラインの打ち間違いではないので usage(2)にせず、
+    // 直す先(環境変数)を言って 1 で終わる
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", "notaurl");
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    const text = env.errors.join("\n");
+    expect(text).toContain("MARUHI_TOKEN_ORIGIN 環境変数 を直してください");
+    // 値そのものは返さない(認証情報が埋まった URL を書かれる形もある)
+    expect(text).not.toContain("notaurl");
+    expect(hit).toBe(false);
+  });
+
   it("MARUHI_TOKEN_ORIGIN が接続先と一致しなければトークンを送らない", async () => {
     let hit = false;
     const server = await MockServer.start([

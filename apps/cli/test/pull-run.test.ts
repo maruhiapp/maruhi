@@ -1442,6 +1442,17 @@ describe("maruhi run", () => {
     expect(env.runnerCalls[0]?.command).toEqual(["printenv", "", "ALPHA"]);
   });
 
+  it("`--` の前の空の引数は、子プロセス側に空白の引数があっても拾う", async () => {
+    // rest 側の「こぼれ」の数え方を trim で緩めると、子プロセスの空白だけの
+    // 引数(`" "` — rest に残る)が maruhi 側の本物の空引数を隠して素通りする
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run", "", "--", "printenv", " "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("空の引数があります");
+    expect(server?.requests).toHaveLength(0);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
   it("入れ子の `--`(`npm test -- --watch`)も子プロセスへそのまま渡る", async () => {
     // args-tokens が出す option-terminator は先頭の 1 つだけで、内側の `--` は
     // 位置引数トークンになる。restArguments はそれを落とさない(落とすと

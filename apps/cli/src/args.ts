@@ -277,26 +277,57 @@ function booleanTakesNoValue(token: ArgTokenShape, option: BooleanOption): strin
  * 書き方なので、真偽値として読める語だけを拒否する。
  */
 function booleanLiteralRejection(ctx: ArgCheckContext, booleans: BooleanSpellings): string | null {
+  const flag = booleanFlagBeforeLiteral(ctx, booleans);
+  const option = flag === undefined ? undefined : booleanOptionOf(flag, booleans);
+  if (flag === undefined || option === undefined) {
+    return null;
+  }
+  // 環境 ID が本当に `1` / `n` のような語である可能性は残る。並べ替えれば
+  // 通ることを示して手詰まりにしない(位置引数を取るコマンドに限る —
+  // 取らないコマンドで勧めると、そのとおり直しても余分な引数で落ちる)
+  const escape =
+    namesOfType(ctx.args, "positional").length > 0
+      ? "。その語が本当に位置引数なら、オプションより前に書いてください"
+      : "";
+  return `${booleanTakesNoValue(flag, option)}${escape}`;
+}
+
+/**
+ * 真偽値らしい語を「値のつもりで」書かれた boolean フラグを探す。直前の
+ * トークンだけを見ると、間に値を取るオプションが挟まった形
+ * (`--new-epoch --reason r false`)を取り逃がすため、**その位置より前に
+ * boolean フラグがあったか**で判断する。
+ */
+function booleanFlagBeforeLiteral(
+  ctx: ArgCheckContext,
+  booleans: BooleanSpellings,
+): ArgTokenShape | undefined {
+  let flag: ArgTokenShape | undefined;
   let previous: ArgTokenShape | undefined;
   for (const token of ctx.tokens) {
     if (token.kind === "option-terminator") {
-      break;
+      return undefined;
     }
-    const flag = token.kind === "positional" && isBooleanLiteral(token) ? previous : undefined;
-    const option = flag === undefined ? undefined : booleanOptionOf(flag, booleans);
-    if (flag !== undefined && option !== undefined) {
-      // 環境 ID が本当に `1` / `n` のような語である可能性は残る。並べ替えれば
-      // 通ることを示して手詰まりにしない(位置引数を取るコマンドに限る —
-      // 取らないコマンドで勧めると、そのとおり直しても余分な引数で落ちる)
-      const escape =
-        namesOfType(ctx.args, "positional").length > 0
-          ? "。その語が本当に位置引数なら、オプションより前に書いてください"
-          : "";
-      return `${booleanTakesNoValue(flag, option)}${escape}`;
+    if (token.kind === "option") {
+      flag = booleanOptionOf(token, booleans) === undefined ? flag : token;
+    } else if (flag !== undefined && isStrayBooleanLiteral(token, previous, ctx.args)) {
+      return flag;
     }
     previous = token;
   }
-  return null;
+  return undefined;
+}
+
+/** 値として消費されておらず(`--reason r` の `r` は除く)、真偽値として読める語か。 */
+function isStrayBooleanLiteral(
+  token: ArgTokenShape,
+  previous: ArgTokenShape | undefined,
+  args: ArgTable,
+): boolean {
+  if (token.kind !== "positional" || !isBooleanLiteral(token)) {
+    return false;
+  }
+  return previous === undefined || valueTakingOption(previous, args) === undefined;
 }
 
 /**
@@ -348,7 +379,6 @@ function strayArgumentsMessage(count: number, shape: string, suffix = ""): strin
  */
 function strayPositionalRejection(
   ctx: ArgCheckContext,
-  rest: readonly string[],
   booleans: BooleanSpellings,
   hint: string | undefined,
   without: readonly string[],
@@ -404,11 +434,19 @@ function valueTakingOption(token: ArgTokenShape, args: ArgTable): string | undef
   return type === undefined || type === "positional" || type === "boolean" ? undefined : declared;
 }
 
+/**
+ * 空白だけの値も空として扱う(位置引数側と同じ — `"$VAR"` の未設定形は
+ * `""` にも `" "` にもなる)。
+ */
+function isBlank(value: string | undefined): boolean {
+  return (value ?? "").trim() === "";
+}
+
 /** `--env=` はインライン値が空、`--env ""` は次の位置引数トークンが空。 */
 function hasEmptyValue(token: ArgTokenShape, next: ArgTokenShape | undefined): boolean {
   return token.inlineValue === true
-    ? (token.value ?? "") === ""
-    : next?.kind === "positional" && next.value === "";
+    ? isBlank(token.value)
+    : next?.kind === "positional" && isBlank(next.value);
 }
 
 /**
@@ -437,7 +475,9 @@ function emptyPositionalRejection(
   }
   // どの宣言にも束縛されなかった空の引数(`maruhi "" pull` の "")。
   // gunshi は読み飛ばすので、黙って落とさないためにここで拾う
-  const leakedFromRest = rest.filter((value) => value.trim() === "").length;
+  // gunshi が positionals へこぼすのは falsy な値だけ(空白だけの引数は
+  // rest に残る)。trim で数えると、空白の子引数が本物の空引数を隠す
+  const leakedFromRest = rest.filter((value) => value === "").length;
   const empties = ctx.positionals.filter((value) => value.trim() === "").length;
   return empties > leakedFromRest ? "空の引数があります(空の値は受け付けません)" : null;
 }
@@ -553,7 +593,6 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
     booleanLiteralRejection(ctx, booleans) ??
     strayPositionalRejection(
       ctx,
-      rest,
       booleans,
       options?.strayPositionalHint,
       options?.withoutPositionals ?? [],
@@ -773,7 +812,9 @@ function validationMessage(
       return message;
     }
   }
-  return error instanceof Error ? error.message : String(error);
+  // 文面を持たないコード(customParse・conflict)は gunshi のものを使う。
+  // 唯一こちらの語彙でない経路なので、端末出力の中和は必ず通す
+  return displayText(error instanceof Error ? error.message : String(error));
 }
 
 /**

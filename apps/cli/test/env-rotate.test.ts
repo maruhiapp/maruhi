@@ -2842,10 +2842,10 @@ describe("maruhi env rotate", () => {
       expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
       expect(env.logs.join("\n")).not.toContain("確認完了");
     }
-    // 空白だけの理由は値としては非空なのでコマンド本体まで進むが、書き方の
-    // 誤りであることは変わらない(終了コードは同じ 2)
+    // 空白だけの値も共通検査が空として落とす(`"$VAR"` の未設定形は `""` にも
+    // `" "` にもなる)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--reason が空です");
+    expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
     expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });

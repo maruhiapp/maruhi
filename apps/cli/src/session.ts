@@ -57,14 +57,17 @@ const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 export function normalizeHttpOrigin(
   raw: string,
   label: string,
-  /** 値の出所。config 由来なら「打ち間違い」ではないので 1 + 直し先を示す。 */
-  source: { readonly configKey: string } | "flag" = "flag",
+  /**
+   * 値の出所。コマンドライン以外(config・環境変数)なら「打ち間違い」では
+   * ないので、usage エラー(2)にせず直し先を示す。
+   */
+  source: { readonly fix: string } | "flag" = "flag",
 ): Effect.Effect<string, CliError> {
   const reject = (message: string): Effect.Effect<never, CliError> =>
     Effect.fail(
       source === "flag"
         ? usageError(message)
-        : cliError(`${message} — config の ${source.configKey} を直してください`),
+        : cliError(`${message} — ${source.fix} を直してください`),
     );
   let url: URL;
   try {
@@ -102,7 +105,7 @@ export function resolveServerOrigin(
   return normalizeHttpOrigin(
     raw,
     "サーバー URL",
-    flag === undefined ? { configKey: "server" } : "flag",
+    flag === undefined ? { fix: "config の server" } : "flag",
   );
 }
 
@@ -133,7 +136,10 @@ export function resolveSession(
           ),
         );
       }
-      const expectedOrigin = yield* normalizeHttpOrigin(declaredOrigin, "MARUHI_TOKEN_ORIGIN");
+      // 環境変数もコマンドラインではない(直し先を示す)
+      const expectedOrigin = yield* normalizeHttpOrigin(declaredOrigin, "MARUHI_TOKEN_ORIGIN", {
+        fix: "MARUHI_TOKEN_ORIGIN 環境変数",
+      });
       if (expectedOrigin !== origin) {
         return yield* Effect.fail(
           cliError(

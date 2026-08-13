@@ -155,7 +155,9 @@ function logoutCommand(execute: Execute) {
 }
 
 /** `maruhi key` が取る操作(綴りの検査はセッションより前に行う)。 */
-const KEY_ACTIONS = new Set(["generate", "show", "recover", "recovery"]);
+const KEY_ACTIONS = ["generate", "show", "recover", "recovery"] as const;
+/** 操作の一覧は上の表が唯一の出所(文面と検査で二重管理しない)。 */
+const KEY_ACTION_HELP = `不明な操作です(${KEY_ACTIONS.join(" | ")})`;
 
 function keyCommand(execute: Execute) {
   return define({
@@ -175,10 +177,8 @@ function keyCommand(execute: Execute) {
           // 操作の綴りはセッション(キーチェーン / 通信)より前に検査する。
           // 後ろに置くと `key bogus` が「ログインしていません」で落ちて、
           // 打ち間違いが伝わらない
-          if (!KEY_ACTIONS.has(String(ctx.values.action))) {
-            return yield* Effect.fail(
-              usageError("不明な操作です(generate | show | recover | recovery)"),
-            );
+          if (!KEY_ACTIONS.some((action) => action === ctx.values.action)) {
+            return yield* Effect.fail(usageError(KEY_ACTION_HELP));
           }
           const context = yield* openSession(ctx.values.server);
           if (ctx.values.action === "generate") {
@@ -199,9 +199,7 @@ function keyCommand(execute: Execute) {
             });
           }
           // KEY_ACTIONS の全分岐を上で処理済み(到達しない)
-          return yield* Effect.fail(
-            usageError("不明な操作です(generate | show | recover | recovery)"),
-          );
+          return yield* Effect.fail(usageError(KEY_ACTION_HELP));
         }),
       ),
   });
