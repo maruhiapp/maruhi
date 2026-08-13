@@ -33,7 +33,7 @@ import { buildWrapSetForMembers, requireWritingMember, sameMemberSet } from "./d
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
+import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
@@ -378,6 +378,11 @@ function appendRotation(
         signingKeyPair: input.signingKeyPair,
       });
 
+    // 送信が「届いたかどうか不明」か(= 受理確認のプローブが要るか)。既定は不明で、
+    // サーバー自身のエラー本文で拒否された場合だけ確定へ倒す。CAS 競合
+    // (ChainHeadConflict)も確定側 — 受理されていないことが分かっているので、
+    // その後の recover の中断(並行ローテーション検出)にもプローブは要らない
+    let ambiguousSend = true;
     const attempted = yield* asOutcome(
       retryOnConflict<RotateState, AcceptedRotation, "head-conflict">(
         { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
@@ -406,7 +411,12 @@ function appendRotation(
                     deks: state.deks,
                   },
                 })
-                .pipe(Effect.mapError(mapRotateFailure(input.environmentId)));
+                .pipe(
+                  Effect.mapError((error) => {
+                    ambiguousSend = !isServerRejection(error);
+                    return mapRotateFailure(input.environmentId)(error);
+                  }),
+                );
               return { state };
             }),
           classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
@@ -440,6 +450,13 @@ function appendRotation(
       ),
     );
     if (attempted.kind === "failed") {
+      // 確定した拒否(サーバー自身のエラー本文)や、recover が下した中断
+      // (並行ローテーション検出 — 既に再同期してチェーンを見ている)は、
+      // 受理の有無が分かっているので追加のプローブも案内も要らない。
+      // 「そのまま再実行できます」を §7 の中断メッセージへ足さないための分岐でもある
+      if (!ambiguousSend) {
+        return yield* Effect.fail(attempted.error);
+      }
       // 送信の失敗を「何も起きなかった」と読ませない(describeSendFailure)
       return yield* Effect.fail(
         yield* describeSendFailure({
@@ -1140,8 +1157,13 @@ function runPushPass(input: {
         pushReencrypted({ context: input.context, view: input.view, target }),
       );
       if (attempt.kind === "failed") {
-        // 巡は止めない(残りの変数を旧エポックに取り残さない)
-        firstFailure ??= { variableId: target.value.variableId, message: attempt.error.message };
+        // 巡は止めない(残りの変数を旧エポックに取り残さない)。
+        // **どの変数がどう失敗したかは全件残す**: 原因として掲げられるのは 1 件
+        // だけなので、警告に出さないと恒久的に失敗する変数(値が大きすぎる等)の
+        // 理由がどの実行でも表に出ず、旧エポックのまま取り残され続ける
+        const message = `変数 ${displayText(target.value.name)} の再暗号化に失敗しました: ${attempt.error.message}`;
+        warnings.push(message);
+        firstFailure ??= { variableId: target.value.variableId, message };
         unfinishedIds.add(target.value.variableId);
         continue;
       }
@@ -1589,16 +1611,28 @@ function resumeReencryption(input: {
       chainEpoch: currentEpoch,
       warnings,
     });
-    const outcome = yield* reencryptCurrentValues({
-      context: reencryptContext(input.input, member, {
-        epoch: currentEpoch,
-        dek,
-        deksByEpoch: input.keys.deksByEpoch,
-      }),
-      view: input.pulled.verified,
-      targets,
-      sink: warnings,
-    });
+    // 押せる対象が 1 つも無いなら巡へ入らない。入っても空の push 巡と環境の
+    // 全再取得・全再検証を 1 往復して、既に分かっている原因へ戻るだけである
+    // (通常経路の ensureRotationIsUseful に相当する早期の切り上げ)
+    const outcome =
+      targets.length === 0
+        ? {
+            reencrypted: 0,
+            alreadyCurrent: 0,
+            remaining: stale.length,
+            remainingExact: true,
+            failure: `再暗号化できる値が 1 つもありません(${stale.length} 変数すべてについて自分宛のラップが不足しています)`,
+          }
+        : yield* reencryptCurrentValues({
+            context: reencryptContext(input.input, member, {
+              epoch: currentEpoch,
+              dek,
+              deksByEpoch: input.keys.deksByEpoch,
+            }),
+            view: input.pulled.verified,
+            targets,
+            sink: warnings,
+          });
     return {
       mode: "resumed",
       previousEpoch: currentEpoch,

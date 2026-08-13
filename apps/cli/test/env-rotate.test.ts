@@ -2469,6 +2469,43 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(0);
   });
 
+  it("恒久的に失敗する変数の理由は、原因欄に出なくても警告として残す", async () => {
+    // 原因として掲げられるのは 1 件だけ。2 件目以降を落とすと、恒久的に失敗する
+    // 変数(値が大きすぎる等)の理由がどの実行でも表に出ず、旧エポックのまま
+    // 取り残され続ける
+    const common = { built: chainBase, dek: dek1, epoch: 1, version: 1, headSeq: 2 } as const;
+    const variables = [
+      await variableAt({ ...common, variableId: "vaa", name: "TRANSIENT", plaintext: "a" }),
+      await variableAt({ ...common, variableId: "vbb", name: "TOO_BIG", plaintext: "b" }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onPush: (_call, variableId) =>
+        variableId === "vaa"
+          ? { status: 502, bodyText: "bad gateway" }
+          : { status: 413, json: { _tag: "ValueTooLarge", limitBytes: 8 } },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "混在失敗"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 変数名つきで両方の理由が残る(原因欄に出るのは片方だけでも)
+    expect(errors).toContain("変数 TRANSIENT の再暗号化に失敗しました");
+    expect(errors).toContain("変数 TOO_BIG の再暗号化に失敗しました");
+  });
+
   it("開ける現在値が 1 つも無いなら、満たせない --new-epoch を勧めない", async () => {
     // 自分宛ラップが 1 つも無い場合、--new-epoch へ進んでも
     // ensureRotationIsUseful で弾かれる。勧めると 2 つの矛盾するエラーの間で
@@ -2526,9 +2563,14 @@ describe("maruhi env rotate", () => {
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch", "false"], env.layer),
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("余分な引数です: false");
-    // 余分な位置引数一般(`env rotate dev garbage`)も黙って落とさない
+    // 余分な位置引数一般(`env rotate dev garbage`)も黙って落とさない。
+    // boolean を書いていない実行に boolean の助言は添えない(コマンドラインに
+    // 無いオプションを探させることになる)
+    const before = env.errors.length;
     expect(await runCli(["env", "rotate", ENV_ID, "garbage"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("余分な引数です: garbage");
+    const strayErrors = env.errors.slice(before).join("\n");
+    expect(strayErrors).toContain("余分な引数です: garbage");
+    expect(strayErrors).not.toContain("boolean オプションに値は付けられません");
     // プロトタイプ由来の名前で未知オプション検査を素通りさせない
     expect(await runCli(["env", "rotate", ENV_ID, "--constructor=x"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("不明なオプションです: --constructor");

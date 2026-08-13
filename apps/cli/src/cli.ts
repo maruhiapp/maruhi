@@ -472,6 +472,44 @@ function checkEnvFlags(
   return Effect.void;
 }
 
+/**
+ * 余分な位置引数の拒否。boolean は**空白区切りの値を読まない**ため、
+ * `--new-epoch false` は「フラグ有効 + 位置引数 "false"」になり、無効にした
+ * つもりが**必ず新エポック**になる(チェーンは append-only で取り消せない)。
+ * 想定数は引数表から導く(先頭はサブコマンド名 `env`)。
+ */
+function checkEnvPositionals(
+  action: "create" | "rotate",
+  positionals: readonly string[],
+  tokens: readonly EnvFlagToken[],
+  args: EnvArgTable,
+): Effect.Effect<void, CliError> {
+  const declared = Object.values(args).filter((schema) => schema.type === "positional").length;
+  if (positionals.length <= declared + 1) {
+    return Effect.void;
+  }
+  const extra = positionals
+    .slice(declared + 1)
+    .map(displayText)
+    .join(" ");
+  // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
+  // コマンドラインに無いオプションを探させることになる)
+  const booleans = new Set(
+    Object.entries(args)
+      .filter(([, schema]) => schema.type === "boolean")
+      .map(([name]) => name),
+  );
+  const usedBoolean = tokens.some(
+    (token) => token.kind === "option" && token.name !== undefined && booleans.has(token.name),
+  );
+  const hint = usedBoolean
+    ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
+    : "";
+  return Effect.fail(
+    cliError(`余分な引数です: ${extra}(env ${action} が取るのは環境 ID だけです)${hint}`),
+  );
+}
+
 function envCommand(execute: Execute) {
   return define({
     name: "env",
@@ -515,24 +553,7 @@ function envCommand(execute: Execute) {
           // 判定材料は**引数表**(ctx.args)そのもの。ctx.values は「実際に渡された
           // 値」しか持たないので、宣言の一覧としても型の参照元としても使えない
           yield* checkEnvFlags(action, ctx.tokens, ctx.args);
-          // 余分な位置引数も黙って落とさない。boolean は**空白区切りの値を読まない**
-          // ため、`--new-epoch false` は「フラグ有効 + 位置引数 "false"」になり、
-          // 無効にしたつもりが**必ず新エポック**になる(チェーンは append-only で
-          // 取り消せない)。想定数は引数表から導く(先頭はサブコマンド名 `env`)
-          const declaredPositionals = Object.values(ctx.args).filter(
-            (schema) => schema.type === "positional",
-          ).length;
-          if (ctx.positionals.length > declaredPositionals + 1) {
-            const extra = ctx.positionals
-              .slice(declaredPositionals + 1)
-              .map(displayText)
-              .join(" ");
-            return yield* Effect.fail(
-              cliError(
-                `余分な引数です: ${extra}(env ${action} が取るのは環境 ID だけです)。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください`,
-              ),
-            );
-          }
+          yield* checkEnvPositionals(action, ctx.positionals, ctx.tokens, ctx.args);
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
             // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
