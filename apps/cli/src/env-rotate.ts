@@ -184,7 +184,7 @@ function dedupeWarnings(warnings: readonly string[]): readonly string[] {
 function requireReason(reason: string | null): Effect.Effect<string, CliError> {
   if (reason === null) {
     return Effect.fail(
-      cliError(
+      usageError(
         "--reason にローテーションの理由を指定してください(チェーンの rotate_epoch エントリに記録され、後から書き換えられません)",
       ),
     );

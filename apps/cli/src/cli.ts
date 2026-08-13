@@ -107,18 +107,20 @@ function loginCommand(execute: Execute) {
           const store = yield* ConfigStore;
           const config = yield* store.load;
           const origin = yield* resolveServerOrigin(ctx.values.server, config);
+          // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
+          // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)。
+          // 形式の検査は**通信より前**に置く(後ろだと、書き方の誤りが
+          // 「サーバーへの接続に失敗しました」として報告される)
+          const githubBaseUrl =
+            ctx.values["github-base-url"] === undefined
+              ? undefined
+              : yield* normalizeHttpOrigin(ctx.values["github-base-url"], "GitHub base URL");
           // フラグ → config → サーバーの公開設定エンドポイント(AUTH_SPEC §4)
           const clientId = yield* resolveClientId({
             origin,
             explicit: ctx.values["github-client-id"],
             configured: config.githubClientId,
           });
-          // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
-          // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)
-          const githubBaseUrl =
-            ctx.values["github-base-url"] === undefined
-              ? undefined
-              : yield* normalizeHttpOrigin(ctx.values["github-base-url"], "GitHub base URL");
           const minIntervalSeconds = ctx.values["github-poll-interval"];
           yield* loginOp({
             origin,
@@ -152,6 +154,9 @@ function logoutCommand(execute: Execute) {
   });
 }
 
+/** `maruhi key` が取る操作(綴りの検査はセッションより前に行う)。 */
+const KEY_ACTIONS = new Set(["generate", "show", "recover", "recovery"]);
+
 function keyCommand(execute: Execute) {
   return define({
     name: "key",
@@ -167,6 +172,14 @@ function keyCommand(execute: Execute) {
       execute(
         ctx,
         Effect.gen(function* () {
+          // 操作の綴りはセッション(キーチェーン / 通信)より前に検査する。
+          // 後ろに置くと `key bogus` が「ログインしていません」で落ちて、
+          // 打ち間違いが伝わらない
+          if (!KEY_ACTIONS.has(String(ctx.values.action))) {
+            return yield* Effect.fail(
+              usageError("不明な操作です(generate | show | recover | recovery)"),
+            );
+          }
           const context = yield* openSession(ctx.values.server);
           if (ctx.values.action === "generate") {
             return yield* keyGenerateOp({ session: context.session, client: context.client });
@@ -185,6 +198,7 @@ function keyCommand(execute: Execute) {
               masterKeys,
             });
           }
+          // KEY_ACTIONS の全分岐を上で処理済み(到達しない)
           return yield* Effect.fail(
             usageError("不明な操作です(generate | show | recover | recovery)"),
           );
@@ -819,7 +833,7 @@ export async function runCli(
       Effect.catchDefect((defect) =>
         Effect.gen(function* () {
           const io = yield* CliIo;
-          const message = defect instanceof Error ? defect.message : String(defect);
+          const message = displayText(defect instanceof Error ? defect.message : String(defect));
           yield* io.logError(`maruhi: 内部エラー: ${message}`);
           return 1;
         }),
@@ -868,7 +882,7 @@ export async function runCli(
       await reportUsageError(usageErrorMessages(error, argv, subCommands));
       return 2;
     }
-    const message = error instanceof Error ? displayText(error.message) : String(error);
+    const message = displayText(error instanceof Error ? error.message : String(error));
     await reportUsageError([`内部エラー: ${message}`]);
     return 1;
   }

@@ -54,23 +54,32 @@ const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
  * device-flow test servers on localhost still pass). `label` names the URL in
  * error messages.
  */
-export function normalizeHttpOrigin(raw: string, label: string): Effect.Effect<string, CliError> {
+export function normalizeHttpOrigin(
+  raw: string,
+  label: string,
+  /** 値の出所。config 由来なら「打ち間違い」ではないので 1 + 直し先を示す。 */
+  source: { readonly configKey: string } | "flag" = "flag",
+): Effect.Effect<string, CliError> {
+  const reject = (message: string): Effect.Effect<never, CliError> =>
+    Effect.fail(
+      source === "flag"
+        ? usageError(message)
+        : cliError(`${message} — config の ${source.configKey} を直してください`),
+    );
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     // URL そのものは返さない(認証情報が埋まった URL を書かれる形もある)
-    return Effect.fail(usageError(`${label}を解釈できません(https:// で始まる URL)`));
+    return reject(`${label}を解釈できません(https:// で始まる URL)`);
   }
   // どの分岐でも URL は返さない(`http://user:token@host/x?token=…` の形で
   // 認証情報が書かれうる)。書き方の誤りなので終了コードも 2 で揃える
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return Effect.fail(usageError(`${label}は http(s) で指定してください`));
+    return reject(`${label}は http(s) で指定してください`);
   }
   if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
-    return Effect.fail(
-      usageError(`${label}の http: は loopback のみ許可されます(平文送信になるため)`),
-    );
+    return reject(`${label}の http: は loopback のみ許可されます(平文送信になるため)`);
   }
   return Effect.succeed(url.origin);
 }
@@ -90,7 +99,11 @@ export function resolveServerOrigin(
       ),
     );
   }
-  return normalizeHttpOrigin(raw, "サーバー URL");
+  return normalizeHttpOrigin(
+    raw,
+    "サーバー URL",
+    flag === undefined ? { configKey: "server" } : "flag",
+  );
 }
 
 const noSessionError = cliError(

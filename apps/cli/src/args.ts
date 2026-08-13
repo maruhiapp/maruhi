@@ -125,9 +125,12 @@ export function restArguments(tokens: readonly ArgTokenShape[]): readonly string
  * **`--` の後ろから落ちてきた分**(gunshi が rest へ載せない空文字列)が
  * 紛れ込む。そこで「引数表を通した並びから、紛れ込んだ分を引く」で数える。
  */
-function positionalCount(ctx: ArgCheckContext, rest: readonly string[]): number {
-  const leakedFromRest = rest.filter((value) => value === "").length;
-  return ctx.positionals.length - leakedFromRest;
+function positionalCount(ctx: ArgCheckContext): number {
+  // 空の位置引数は数に入れない: gunshi はコマンド解決で falsy な値を読み飛ばす
+  // (`maruhi "" pull` の "" は commandPath に入らない)一方 `ctx.positionals`
+  // には残るので、そのまま数えると全体が 1 つずれて無関係な引数を責める。
+  // `--` の後ろから紛れ込んだ空文字列も同じ扱いでよい
+  return ctx.positionals.filter((value) => value !== "").length;
 }
 
 function namesOfType(args: ArgTable, type: string): readonly string[] {
@@ -352,7 +355,7 @@ function strayPositionalRejection(
 ): string | null {
   const declared = namesOfType(ctx.args, "positional").filter((name) => !without.includes(name));
   const expected = declared.length + ctx.commandPath.length;
-  const count = positionalCount(ctx, rest);
+  const count = positionalCount(ctx);
   if (count <= expected) {
     return null;
   }
@@ -379,15 +382,33 @@ function strayPositionalRejection(
  * 「未指定」と「空指定」の区別は `ctx.explicit` にしか無い。
  */
 function emptyOptionValueRejection(ctx: ArgCheckContext): string | null {
-  for (const [name, schema] of Object.entries(ctx.args)) {
-    if (schema.type === "positional" || schema.type === "boolean") {
-      continue;
+  // 判定は**打たれたトークン**で行う。`ctx.values` が undefined かどうかで
+  // 見ると、そのオプションに `default` を付けた瞬間に検知が消える
+  // (空の値が既定へ解決されるため)= 塞いだはずの穴が黙って開く
+  for (const [index, token] of ctx.tokens.entries()) {
+    if (token.kind === "option-terminator") {
+      break;
     }
-    if (ctx.explicit[name] === true && ctx.values[name] === undefined) {
-      return `オプション --${name} の値が空です(空の値は「未指定」と区別できないため受け付けません)`;
+    const declared = valueTakingOption(token, ctx.args);
+    if (declared !== undefined && hasEmptyValue(token, ctx.tokens[index + 1])) {
+      return `オプション --${declared} の値が空です(空の値は「未指定」と区別できないため受け付けません)`;
     }
   }
   return null;
+}
+
+/** そのトークンが指す「値を取る」オプションの宣言名(boolean / 位置引数は除く)。 */
+function valueTakingOption(token: ArgTokenShape, args: ArgTable): string | undefined {
+  const declared = declaredOptionName(token, args);
+  const type = declared === undefined ? undefined : args[declared]?.type;
+  return type === undefined || type === "positional" || type === "boolean" ? undefined : declared;
+}
+
+/** `--env=` はインライン値が空、`--env ""` は次の位置引数トークンが空。 */
+function hasEmptyValue(token: ArgTokenShape, next: ArgTokenShape | undefined): boolean {
+  return token.inlineValue === true
+    ? (token.value ?? "") === ""
+    : next?.kind === "positional" && next.value === "";
 }
 
 /**
@@ -397,7 +418,11 @@ function emptyOptionValueRejection(ctx: ArgCheckContext): string | null {
  * ため、`config set defaultProject "$PROJ"` の未設定形が既存の設定を空で
  * 上書きして成功を報告していた。
  */
-function emptyPositionalRejection(ctx: ArgCheckContext, without: readonly string[]): string | null {
+function emptyPositionalRejection(
+  ctx: ArgCheckContext,
+  rest: readonly string[],
+  without: readonly string[],
+): string | null {
   for (const name of namesOfType(ctx.args, "positional")) {
     if (without.includes(name)) {
       // この実行では取らない位置引数(`config get` の `value`)を名指ししない
@@ -410,7 +435,11 @@ function emptyPositionalRejection(ctx: ArgCheckContext, without: readonly string
       return `位置引数 ${name} が空です(空白だけの値も受け付けません)`;
     }
   }
-  return null;
+  // どの宣言にも束縛されなかった空の引数(`maruhi "" pull` の "")。
+  // gunshi は読み飛ばすので、黙って落とさないためにここで拾う
+  const leakedFromRest = rest.filter((value) => value.trim() === "").length;
+  const empties = ctx.positionals.filter((value) => value.trim() === "").length;
+  return empties > leakedFromRest ? "空の引数があります(空の値は受け付けません)" : null;
 }
 
 /**
@@ -426,7 +455,7 @@ function commandBeforeTerminatorRejection(
   if (ctx.commandPath.length === 0 || rest.length === 0) {
     return null;
   }
-  return positionalCount(ctx, rest) < ctx.commandPath.length
+  return positionalCount(ctx) < ctx.commandPath.length
     ? "コマンド名は `--` より前に書いてください(`--` の後ろはそのまま渡す引数です)"
     : null;
 }
@@ -518,7 +547,7 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
     commandBeforeTerminatorRejection(ctx, rest) ??
     emptyOptionValueRejection(ctx) ??
     strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint) ??
-    emptyPositionalRejection(ctx, options?.withoutPositionals ?? []) ??
+    emptyPositionalRejection(ctx, rest, options?.withoutPositionals ?? []) ??
     options?.commandRejection ??
     inlineValueRejection(ctx, booleans) ??
     booleanLiteralRejection(ctx, booleans) ??

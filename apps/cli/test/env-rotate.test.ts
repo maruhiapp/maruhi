@@ -2814,7 +2814,9 @@ describe("maruhi env rotate", () => {
     // --new-epoch は必ずエントリを署名する = 理由が必須。満たしようのない
     // 引数検査のために全変数の暗号文を取りに行き、変数ごとの var.read を
     // 監査ログへ残さない(ensureRotatable と同じ規律)
-    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(1);
+    // 書き方の誤り(理由の欠落)は usage エラー(2)。同じ `--reason` の
+    // 誤りが終了コードで割れないようにする
+    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--reason にローテーションの理由を指定してください");
     expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
@@ -2856,7 +2858,7 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });

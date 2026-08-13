@@ -149,7 +149,7 @@ export function runOp(input: {
   return Effect.gen(function* () {
     // 空文字列は実行できない(`maruhi run -- "$CMD"` の CMD 未設定がこの形)。
     // 「引数が 1 つある」ことと「実行対象がある」ことは別
-    if (input.command.length === 0 || input.command[0] === "") {
+    if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
       // 書き方の誤り = usage エラー(2)。入口の検査と同じ扱いにする
       return yield* Effect.fail(usageError(RUN_COMMAND_REQUIRED));
     }

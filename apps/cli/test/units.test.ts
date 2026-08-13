@@ -226,6 +226,14 @@ describe("runOp", () => {
     run: () => Effect.succeed(0),
   });
 
+  it("実行対象が空白だけでも子プロセスを起動しない(入口の検査と同じ判定)", async () => {
+    const exit = await Effect.runPromiseExit(
+      runOp({ command: ["  "], variables: [] }).pipe(Effect.provide(spawnedNothing)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+  });
+
   it("実行対象が空文字列だけなら子プロセスを起動しない", async () => {
     // 入口の引数検査(cli.ts)と同じ判定をここでも持つ(直接呼び出し向けの
     // 防衛線)。`[""]` は「1 要素あるが実行できない」形

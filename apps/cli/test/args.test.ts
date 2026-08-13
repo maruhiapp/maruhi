@@ -413,6 +413,33 @@ describe("空の値", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("`default` を付けても空の値の検知が消えない(トークンで判定する)", () => {
+    // `ctx.values` が undefined かどうかで見ると、そのオプションに default を
+    // 足した瞬間に空の値が既定へ解決され、検知が黙って消える
+    const rejection = argsRejection(
+      checkContext({
+        args: { env: { type: "string" } },
+        tokens: [
+          { kind: "option", name: "env", rawName: "--env" },
+          { kind: "positional", value: "" },
+        ],
+        values: { env: "dev" },
+      }),
+    );
+    expect(rejection).toContain("オプション --env の値が空です");
+  });
+
+  it("先頭の空引数は、書いていない位置引数のせいにせず空として指摘する", async () => {
+    const { env } = await startEnv();
+
+    // gunshi はコマンド解決で falsy な位置引数を読み飛ばす。そのまま数えると
+    // 全体が 1 つずれて「pull は位置引数を取りません」と無関係な指摘になる
+    expect(await runCli(["", "pull"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("空の引数があります");
+    expect(errors).not.toContain("位置引数を取りません");
+  });
+
   it("この実行が取らない位置引数(`config get` の value)を名指ししない", async () => {
     const { env } = await startEnv();
 
@@ -420,7 +447,7 @@ describe("空の値", () => {
     expect(await runCli(["config", "get", "defaultEnvironment", ""], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("位置引数 value が空です");
-    expect(errors).toContain("余分な引数です(1 個");
+    expect(errors).toContain("空の引数があります");
   });
 
   it("`--` の後ろの空文字列は、書いていない位置引数のせいにしない", async () => {
@@ -458,6 +485,15 @@ describe("空の値", () => {
 });
 
 describe("終了コードの一貫性", () => {
+  it("操作の綴り間違いは、ログインやサーバー接続より前に落とす", async () => {
+    // セッション解決の後ろに置くと、`key bogus` が「ログインしていません」で
+    // 落ちて打ち間違いが伝わらない(しかも exit 1)
+    const env = await makeTestEnv();
+    expect(await runCli(["key", "bogus"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("不明な操作です(generate | show | recover | recovery)");
+    expect(env.errors.join("\n")).not.toContain("ログインしていません");
+  });
+
   it("値の無い `config set` も usage エラー(2)", async () => {
     const { env } = await startEnv();
 
@@ -757,6 +793,7 @@ function checkContext(input: {
     kind: string;
     name?: string;
     rawName?: string;
+    value?: string;
     inlineValue?: boolean;
   }[];
   readonly positionals?: readonly string[];
@@ -795,7 +832,7 @@ describe("引数検査の単体(CLI に短縮形が現れる前の防衛)", () =
     const rejection = argsRejection(
       checkContext({
         args: { h: { type: "string" }, help: { type: "boolean", short: "h" } },
-        tokens: [{ kind: "option", name: "h", rawName: "--h", inlineValue: true }],
+        tokens: [{ kind: "option", name: "h", rawName: "--h", value: "x", inlineValue: true }],
       }),
     );
     expect(rejection).toBeNull();
