@@ -74,7 +74,12 @@ type Execute = (
     readonly acceptsRest?: boolean;
     /** この実行では取らない位置引数(`config get` の `value` — args.ts)。 */
     readonly withoutPositionals?: readonly string[] | undefined;
-    /** コマンド固有の追加拒否(env の操作別オプションの適用可否など)。 */
+    /**
+     * コマンド固有の拒否(env の操作別オプションの適用可否など)。共通検査
+     * (args.ts)**より先に**見る: そのオプションが操作にそもそも適用されない
+     * なら、綴りの助言を先に出しても次の実行でまた落ちるため。どちらで落ちても
+     * 実行はされないので、先に非 null を返した方の文面を出す。
+     */
     readonly rejection?: string | null;
   },
 ) => Promise<void>;
@@ -431,6 +436,13 @@ const ENV_ACTION_FLAGS = {
 /** 「もう一方の操作」の対応表(三項演算子を判定と文面の 2 箇所へ散らさない)。 */
 const ENV_OTHER_ACTION = { create: "rotate", rotate: "create" } as const;
 
+/** env の操作(一覧の出所は上の表だけ — 操作が増えても narrowing が追随する)。 */
+type EnvAction = keyof typeof ENV_ACTION_FLAGS;
+
+function isEnvAction(action: string | undefined): action is EnvAction {
+  return action !== undefined && Object.hasOwn(ENV_ACTION_FLAGS, action);
+}
+
 /**
  * 操作に適用されないオプション(create への `--reason` 等)の拒否。gunshi は
  * 1 コマンド 1 引数表なので、`create` と `rotate` の両方のフラグが常に受理
@@ -445,7 +457,7 @@ function envActionFlagRejection(
 ): string | null {
   // 不明な操作(`env bogus`)はコマンド本体が報告する。適用可否をここで
   // 語れるのは操作が確定している場合だけ
-  if (action !== "create" && action !== "rotate") {
+  if (!isEnvAction(action)) {
     return null;
   }
   const otherAction = ENV_OTHER_ACTION[action];
@@ -637,8 +649,10 @@ function runCommand(execute: Execute) {
       },
       env: { type: "string", description: "環境 ID(省略時は config の defaultEnvironment)" },
     },
-    run: (ctx) =>
-      execute(
+    run: (ctx) => {
+      // `--` の後ろは 1 度だけ組む(検査と実行で食い違わせない)
+      const command = restArguments(ctx.tokens);
+      return execute(
         ctx,
         Effect.gen(function* () {
           const context = yield* openEnvironment(ctx.values);
@@ -655,10 +669,7 @@ function runCommand(execute: Execute) {
           // 実行制御系変数名 denylist(run.ts)は検証済み name に適用される防衛層。
           // 子プロセスの引数は `ctx.rest` ではなくトークンから組む(空文字列の
           // 引数が rest から落ちる gunshi の挙動 — args.ts の restArguments)
-          return yield* runOp({
-            command: restArguments(ctx.tokens),
-            variables: pulled.variables,
-          });
+          return yield* runOp({ command, variables: pulled.variables });
         }),
         {
           // `maruhi run npm test`(`--` 忘れ)は位置引数として落ちる。run は
@@ -667,13 +678,15 @@ function runCommand(execute: Execute) {
             "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)",
           // `--` の後ろを読む唯一のコマンド(他コマンドでは黙って捨てられる)
           acceptsRest: true,
-          // 実行対象が無い実行(`maruhi run` / `maruhi run --`)も**書き方の
-          // 誤り**なので入口で落とす。ここを通すと pull と全変数の復号まで
-          // 進んでから runOp が同じことを言う(平文を作る意味が無い)。
-          // runOp 側の同じ検査は直接呼び出し向けの防衛線として残す
-          rejection: restArguments(ctx.tokens).length === 0 ? RUN_COMMAND_REQUIRED : null,
+          // 実行対象が無い実行(`maruhi run` / `maruhi run --` / `--` の後ろが
+          // 空文字列 = `maruhi run -- "$CMD"` の未設定形)は**書き方の誤り**
+          // なので入口で落とす。ここを通すと pull と全変数の復号まで進んでから
+          // spawn が失敗する(平文を作る意味が無い)。runOp 側の同じ検査は
+          // 直接呼び出し向けの防衛線として残す
+          rejection: command.length === 0 || command[0] === "" ? RUN_COMMAND_REQUIRED : null,
         },
-      ),
+      );
+    },
   });
 }
 

@@ -23,7 +23,7 @@
 //
 // 例外は 2 つだけで、いずれも**こちらの語彙**に収まるものに限る:
 // (a) オプション / コマンド名の綴り(echoableSpelling — 英字とハイフンだけ、
-//     20 字まで。数字や `_` を含む「値らしい」綴りは伏せる)
+//     数字や `_` を含む「値らしい」綴りは伏せる)
 // (b) 引数表由来の名前(宣言済みの位置引数名・オプション名・期待する型)
 // コマンドが意味的に受け取る識別子(config のキー・action)は値ではないので
 // 各コマンドが表示してよいが、端末出力の中和(displayText)は必ず通す。
@@ -62,15 +62,14 @@ export interface ArgTokenShape {
  * 検査に必要な CommandContext の部分。コマンドごとに型の違う `values` を
  * 含めないので、1 つの検査を全コマンドへ適用できる。
  *
- * 位置引数と `--` の後ろは **`ctx.positionals` / `ctx.rest` を使わず**
- * トークンから数える(下記 restArguments を参照 — 空文字列の引数が
- * 両者の間で入れ替わるため)。
+ * `--` の後ろは **`ctx.rest` を使わず**トークンから組み直す(下記
+ * restArguments を参照 — 空文字列の引数が rest から落ちて positionals へ
+ * 紛れ込むため)。位置引数の数もその紛れ込みを引いて数える。
  */
 export interface ArgCheckContext {
   readonly args: ArgTable;
   readonly tokens: readonly ArgTokenShape[];
   readonly positionals: readonly string[];
-  readonly rest: readonly string[];
   readonly commandPath: readonly string[];
 }
 
@@ -109,11 +108,11 @@ export function restArguments(tokens: readonly ArgTokenShape[]): readonly string
  * トークンを数えるだけでは足りない: パーサは引数表を知らないので、
  * `--reason x` の `x` も positional トークンになる(`ctx.positionals` は
  * 引数表を見て値として消費した後の並び)。一方 `ctx.positionals` には
- * **`--` の後ろから落ちてきた分**(上記 restArguments の空文字列)が
+ * **`--` の後ろから落ちてきた分**(gunshi が rest へ載せない空文字列)が
  * 紛れ込む。そこで「引数表を通した並びから、紛れ込んだ分を引く」で数える。
  */
 function positionalCount(ctx: ArgCheckContext): number {
-  const leakedFromRest = restArguments(ctx.tokens).length - ctx.rest.length;
+  const leakedFromRest = restArguments(ctx.tokens).filter((value) => value === "").length;
   return ctx.positionals.length - leakedFromRest;
 }
 
@@ -146,14 +145,21 @@ function booleanSpellings(args: ArgTable): {
   return { names, shorts };
 }
 
+type BooleanSpellings = ReturnType<typeof booleanSpellings>;
+
 /** そのトークンは boolean オプションを指しているか(短縮形は綴りで見分ける)。 */
-function isBooleanToken(token: ArgTokenShape, args: ArgTable): boolean {
-  if (token.name === undefined) {
+function isBooleanToken(token: ArgTokenShape, booleans: BooleanSpellings): boolean {
+  if (token.kind !== "option" || token.name === undefined) {
     return false;
   }
-  const { names, shorts } = booleanSpellings(args);
-  return token.rawName?.startsWith("--") === false ? shorts.has(token.name) : names.has(token.name);
+  return token.rawName?.startsWith("--") === false
+    ? booleans.shorts.has(token.name)
+    : booleans.names.has(token.name);
 }
+
+// 「値として書かれた」と読める語。boolean の直後に置かれたこれらは、位置引数
+// ではなくフラグの値のつもりと判断する
+const BOOLEAN_LITERALS = new Set(["true", "false", "0", "1", "yes", "no", "on", "off"]);
 
 /**
  * 表示用のコマンド名。エントリコマンドは**自分自身の名前でも**サブコマンドと
@@ -165,12 +171,49 @@ function commandLabel(commandPath: readonly string[]): string {
   return [CLI_NAME, ...path].join(" ");
 }
 
+/** boolean へ値を付けたときの共通文面(インライン形・空白区切り形で同じ)。 */
+function booleanTakesNoValue(token: ArgTokenShape): string {
+  const typed = typedName(token);
+  return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+}
+
 /**
- * boolean オプションへの値の指定(`--new-epoch=false`)の拒否。gunshi は値を
+ * boolean オプションの**直後**に置かれた真偽値らしい語(`--new-epoch false`)の
+ * 拒否。gunshi は boolean の値を消費しないため、この語は位置引数として残る。
+ *
+ * 個数だけの検査では足りない: 必須の位置引数が空いていると、その語が**位置引数
+ * として受理されてしまう**。`maruhi env rotate --reason x --new-epoch false` は
+ * 環境 `false` のローテーション(フラグは有効のまま = 書いたことと逆)になり、
+ * チェーンは append-only なので取り消せない。
+ *
+ * `--new-epoch dev` のように「フラグの後ろに置いた本物の位置引数」は正当な
+ * 書き方なので、真偽値として読める語だけを拒否する。
+ */
+function booleanLiteralRejection(ctx: ArgCheckContext, booleans: BooleanSpellings): string | null {
+  let previous: ArgTokenShape | undefined;
+  for (const token of ctx.tokens) {
+    if (token.kind === "option-terminator") {
+      break;
+    }
+    if (
+      token.kind === "positional" &&
+      previous !== undefined &&
+      isBooleanToken(previous, booleans) &&
+      BOOLEAN_LITERALS.has((token.value ?? "").toLowerCase())
+    ) {
+      return booleanTakesNoValue(previous);
+    }
+    previous = token;
+  }
+  return null;
+}
+
+/**
+ * boolean オプションへのインライン値(`--new-epoch=false`)の拒否。gunshi は値を
  * 読まずにフラグを true にするため、放置すると書いたことと逆の結果になる
  * (チェーンは append-only なので取り消せない)。
  */
-function inlineValueRejection(ctx: ArgCheckContext): string | null {
+function inlineValueRejection(ctx: ArgCheckContext, booleans: BooleanSpellings): string | null {
   // 短縮形へのインライン値(`-s=false`)は「名前つきトークン」+「**名前なしの**
   // インライン値トークン」の 2 つに割れる(args-tokens 0.28.1 実測)。名前なし
   // トークンは直前のオプションのものなので、そこまで遡って判定する
@@ -183,11 +226,10 @@ function inlineValueRejection(ctx: ArgCheckContext): string | null {
     if (token.name !== undefined) {
       named = token;
     }
-    if (token.inlineValue !== true || named === undefined || !isBooleanToken(named, ctx.args)) {
+    if (token.inlineValue !== true || named === undefined || !isBooleanToken(named, booleans)) {
       continue;
     }
-    const typed = typedName(named);
-    return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+    return booleanTakesNoValue(named);
   }
   return null;
 }
@@ -214,6 +256,7 @@ function strayArgumentsMessage(count: number, shape: string, suffix = ""): strin
  */
 function strayPositionalRejection(
   ctx: ArgCheckContext,
+  booleans: BooleanSpellings,
   hint: string | undefined,
   without: readonly string[],
 ): string | null {
@@ -230,9 +273,7 @@ function strayPositionalRejection(
       : `${command} が取る位置引数は ${declared.join(" ")} だけです`;
   // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
   // コマンドラインに無いオプションを探させることになる)
-  const usedBoolean = ctx.tokens.some(
-    (token) => token.kind === "option" && isBooleanToken(token, ctx.args),
-  );
+  const usedBoolean = ctx.tokens.some((token) => isBooleanToken(token, booleans));
   const booleanHint = usedBoolean
     ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
     : "";
@@ -273,10 +314,15 @@ export function argsRejection(
     readonly withoutPositionals?: readonly string[] | undefined;
   },
 ): string | null {
+  // boolean の綴り集合は 1 回だけ作って各検査へ渡す(トークンごとに引数表を
+  // 走査し直さない)
+  const booleans = booleanSpellings(ctx.args);
   return (
-    inlineValueRejection(ctx) ??
+    inlineValueRejection(ctx, booleans) ??
+    booleanLiteralRejection(ctx, booleans) ??
     strayPositionalRejection(
       ctx,
+      booleans,
       options?.strayPositionalHint,
       options?.withoutPositionals ?? [],
     ) ??
@@ -294,7 +340,9 @@ function invokedArgs(argv: readonly string[], commands: CommandTable): ArgTable 
   // gunshi の resolveCommandTree も getPositionalTokens で全 positional を
   // 見るため、option-terminator の前で打ち切ると解決結果が食い違う
   for (const token of parseArgs([...argv])) {
-    if (token.kind !== "positional" || token.value === undefined) {
+    // gunshi の getPositionalTokens は falsy な値を落とす(`!!v`)。空文字列を
+    // コマンド名として扱うと、`maruhi "" env create …` で解決結果が食い違う
+    if (token.kind !== "positional" || token.value === undefined || token.value === "") {
       continue;
     }
     return Object.hasOwn(commands, token.value) ? commands[token.value]?.args : undefined;
@@ -302,14 +350,15 @@ function invokedArgs(argv: readonly string[], commands: CommandTable): ArgTable 
   return undefined;
 }
 
-// 診断へ返してよい綴り = **maruhi のオプション名の語彙**(英字とハイフンだけ・
-// 20 字まで)。gunshi が名前として受ける範囲より意図的に狭くして、値が
+// 診断へ返してよい綴り = **maruhi のオプション名の語彙**(英字とハイフンだけ。
+// 長さは自分の最長オプション名 `--github-poll-interval` = 20 字を超える余地を
+// 残す)。gunshi が名前として受ける範囲より意図的に狭くして、値が
 // オプションに化けた形を弾く: `-hunter2` は短縮グループとして 1 文字ずつの
 // トークンへ展開され、`--sk_live_ab12` は数字と `_` を含み、
 // `-----BEGIN RSA...` は 1 つの長い名前になる(いずれも実測)。
 // この語彙を外れた綴りは打ち間違いとして案内せず、伏せる
-const OPTION_SPELLING = /^(?:--[A-Za-z][A-Za-z-]{0,18}|-[A-Za-z])$/;
-const COMMAND_SPELLING = /^[A-Za-z][A-Za-z-]{0,18}$/;
+const OPTION_SPELLING = /^(?:--[A-Za-z][A-Za-z-]{0,30}|-[A-Za-z])$/;
+const COMMAND_SPELLING = /^[A-Za-z][A-Za-z-]{0,30}$/;
 
 /** 診断へ出してよい綴りなら表示形、そうでなければ null(= 伏せる)。 */
 function echoableSpelling(rawName: string, argv: readonly string[]): string | null {

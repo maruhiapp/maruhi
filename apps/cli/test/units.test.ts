@@ -3,7 +3,7 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeStdinValue, runCli } from "../src/cli.ts";
@@ -17,7 +17,7 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
-import { buildInjectionEnv } from "../src/run.ts";
+import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import { resolveServerOrigin } from "../src/session.ts";
 import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
@@ -219,6 +219,23 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
     value: typeof value === "string" ? new TextEncoder().encode(value) : value,
   };
 }
+
+describe("runOp", () => {
+  /** 子プロセスを起動しないランナー(起動まで到達したら分かるようにする)。 */
+  const spawnedNothing = Layer.succeed(ProcessRunner, {
+    run: () => Effect.succeed(0),
+  });
+
+  it("実行対象が空文字列だけなら子プロセスを起動しない", async () => {
+    // 入口の引数検査(cli.ts)と同じ判定をここでも持つ(直接呼び出し向けの
+    // 防衛線)。`[""]` は「1 要素あるが実行できない」形
+    const exit = await Effect.runPromiseExit(
+      runOp({ command: [""], variables: [] }).pipe(Effect.provide(spawnedNothing)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+  });
+});
 
 describe("buildInjectionEnv", () => {
   it("名前・値を検証して env map を作る", async () => {

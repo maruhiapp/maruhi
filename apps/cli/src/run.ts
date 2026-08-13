@@ -145,7 +145,9 @@ export function runOp(input: {
   readonly variables: readonly DecryptedVariable[];
 }): Effect.Effect<number, CliError, ProcessRunner> {
   return Effect.gen(function* () {
-    if (input.command.length === 0) {
+    // 空文字列は実行できない(`maruhi run -- "$CMD"` の CMD 未設定がこの形)。
+    // 「引数が 1 つある」ことと「実行対象がある」ことは別
+    if (input.command.length === 0 || input.command[0] === "") {
       return yield* Effect.fail(cliError(RUN_COMMAND_REQUIRED));
     }
     const runner = yield* ProcessRunner;

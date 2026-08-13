@@ -61,19 +61,42 @@ describe("boolean オプションへの値の指定", () => {
     expect(env.logs).toHaveLength(0);
   });
 
-  it("`pull --show false` は「フラグ有効 + 余分な位置引数」なので余分な引数として落ちる", async () => {
+  it("`pull --show false` は「フラグ有効 + 位置引数」なので値の指定として拒否する", async () => {
     const { env, server } = await startEnv();
 
     // 空白区切りの値は gunshi が消費しない(--show は true のまま、"false" が
     // 位置引数として残る)
     expect(await runCli(["pull", "--show", "false"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--show は値を取りません");
+    expect(server.requests).toHaveLength(0);
+    expect(env.logs).toHaveLength(0);
+  });
+
+  it("boolean の直後でも、真偽値として読めない語は位置引数として扱う", async () => {
+    const { env } = await startEnv();
+
+    // `--new-epoch dev` のように「フラグの後ろに置いた本物の位置引数」は正当。
+    // 真偽値らしい語だけを値の指定と見なす(pull は位置引数を取らないので
+    // 余分な引数として落ちる = boolean の文面にはならない)
+    expect(await runCli(["pull", "--show", "garbage"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("maruhi pull は位置引数を取りません");
-    // boolean を書いた実行なので、値を付けられない旨の助言を添える
     expect(errors).toContain("boolean オプションに値は付けられません");
+  });
+
+  it("位置引数が空いていると、boolean の値がそこへ吸い込まれる形も拒否する", async () => {
+    const { env, server } = await startEnv();
+
+    // `env rotate --reason x --new-epoch false` は環境 ID を書いていないため、
+    // 余った "false" が必須スロットへ入って個数検査を素通りする。通すと
+    // **環境 `false` に対して**、しかも --new-epoch 有効(書いたことと逆)で
+    // 取り消せないローテーションが走る
+    expect(
+      await runCli(["env", "rotate", "--reason", "x", "--new-epoch", "false"], env.layer),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
     expect(server.requests).toHaveLength(0);
-    expect(env.logs).toHaveLength(0);
   });
 
   it("string オプションのインライン値(`--env=ghost`)は拒否しない", async () => {
@@ -359,6 +382,18 @@ describe("余分な位置引数", () => {
     expect(errors).not.toContain("plaintext");
   });
 
+  it("`--` の後ろが空文字列だけなら、実行対象なしとして入口で落とす", async () => {
+    const { env, server } = await startEnv();
+
+    // `maruhi run -- "$CMD"`(CMD 未設定)がこの形。「引数が 1 つある」ことと
+    // 「実行対象がある」ことは別で、通すと pull と全変数の復号まで進んでから
+    // spawn が失敗する
+    expect(await runCli(["run", "--", ""], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
+    expect(env.runnerCalls).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("`--` の後ろの空文字列は余分な引数として数えない", async () => {
     const { env, server } = await startEnv();
     env.setStdin(new TextEncoder().encode("secret-value"));
@@ -456,6 +491,27 @@ describe("gunshi 由来の usage エラー", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("不明なコマンドです(綴りは表示しません");
     expect(errors).not.toContain("s3cr3t");
+  });
+
+  it("先頭の空引数があってもコマンドの解決は gunshi と一致する", async () => {
+    const { env } = await startEnv();
+
+    // gunshi は falsy な positional 値を読み飛ばして `env` を解決する。
+    // こちらが空文字列をコマンド名として扱うと引数表を引けず、位置引数の
+    // 取り違えという**専用の案内**が出せなくなる
+    expect(await runCli(["", "env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(
+      2,
+    );
+    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
+  });
+
+  it("自分の最長オプション名より長い綴りでも打ち間違いとして案内する", async () => {
+    const { env } = await startEnv();
+
+    // `--github-poll-interval` は `--` の後ろ 20 字。語彙の長さ上限をそれ以下に
+    // すると、自分のオプションの打ち間違いが伏せ字になって直しようがなくなる
+    expect(await runCli(["login", "--github-poll-intervall", "3"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("不明なオプションです: --github-poll-intervall");
   });
 
   it("エントリコマンドの二重名(`maruhi maruhi`)を文面に出さない", async () => {
