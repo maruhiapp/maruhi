@@ -59,8 +59,8 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   return "サーバーへの接続に失敗しました(ネットワーク・サーバー URL を確認してください)";
 }
 
+// CliError は toCliError の入口でそのまま返す(usage フラグを落とさないため)
 const renderers: readonly Renderer[] = [
-  when(isInstanceOf(CliError), (e) => e.message),
   when(
     isInstanceOf(UnauthorizedError),
     () =>
@@ -205,6 +205,10 @@ export function isServerRejection(error: unknown): boolean {
  * messages; crypto errors carry identifiers only by contract).
  */
 export function toCliError(error: unknown): CliError {
+  // 既に CliError なら、usage フラグ(終了コード 2)を落とさずそのまま返す
+  if (error instanceof CliError) {
+    return error;
+  }
   for (const render of renderers) {
     const message = render(error);
     if (message !== null) {

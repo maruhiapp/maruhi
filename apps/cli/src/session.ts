@@ -19,7 +19,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
   Keychain,
@@ -54,20 +54,35 @@ const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
  * device-flow test servers on localhost still pass). `label` names the URL in
  * error messages.
  */
-export function normalizeHttpOrigin(raw: string, label: string): Effect.Effect<string, CliError> {
+export function normalizeHttpOrigin(
+  raw: string,
+  label: string,
+  /**
+   * 値の出所。コマンドライン以外(config・環境変数)なら「打ち間違い」では
+   * ないので、usage エラー(2)にせず直し先を示す。
+   */
+  source: { readonly fix: string } | "flag" = "flag",
+): Effect.Effect<string, CliError> {
+  const reject = (message: string): Effect.Effect<never, CliError> =>
+    Effect.fail(
+      source === "flag"
+        ? usageError(message)
+        : cliError(`${message} — ${source.fix} を直してください`),
+    );
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return Effect.fail(cliError(`${label}を解釈できません: ${raw}`));
+    // URL そのものは返さない(認証情報が埋まった URL を書かれる形もある)
+    return reject(`${label}を解釈できません(https:// で始まる URL)`);
   }
+  // どの分岐でも URL は返さない(`http://user:token@host/x?token=…` の形で
+  // 認証情報が書かれうる)。書き方の誤りなので終了コードも 2 で揃える
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return Effect.fail(cliError(`${label}は http(s) で指定してください: ${raw}`));
+    return reject(`${label}は http(s) で指定してください`);
   }
   if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
-    return Effect.fail(
-      cliError(`${label}の http: は loopback のみ許可されます(平文送信になるため): ${raw}`),
-    );
+    return reject(`${label}の http: は loopback のみ許可されます(平文送信になるため)`);
   }
   return Effect.succeed(url.origin);
 }
@@ -87,7 +102,11 @@ export function resolveServerOrigin(
       ),
     );
   }
-  return normalizeHttpOrigin(raw, "サーバー URL");
+  return normalizeHttpOrigin(
+    raw,
+    "サーバー URL",
+    flag === undefined ? { fix: "config の server" } : "flag",
+  );
 }
 
 const noSessionError = cliError(
@@ -117,7 +136,10 @@ export function resolveSession(
           ),
         );
       }
-      const expectedOrigin = yield* normalizeHttpOrigin(declaredOrigin, "MARUHI_TOKEN_ORIGIN");
+      // 環境変数もコマンドラインではない(直し先を示す)
+      const expectedOrigin = yield* normalizeHttpOrigin(declaredOrigin, "MARUHI_TOKEN_ORIGIN", {
+        fix: "MARUHI_TOKEN_ORIGIN 環境変数",
+      });
       if (expectedOrigin !== origin) {
         return yield* Effect.fail(
           cliError(

@@ -32,7 +32,7 @@ import type { MaruhiClient } from "./api.ts";
 import { buildWrapSetForMembers, requireWritingMember, sameMemberSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { displayText, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
@@ -150,10 +150,12 @@ function checkReasonLength(reason: string | undefined): Effect.Effect<string | n
   if (reason === undefined) {
     return Effect.succeed(null);
   }
+  // 書き方の誤りは usage エラー(2)。値そのものが空の形は共通の引数検査が
+  // 先に落とすので、ここへ来るのは空白だけ / 長すぎるの 2 つ
   const trimmed = reason.trim();
   if (trimmed.length === 0) {
     return Effect.fail(
-      cliError(
+      usageError(
         "--reason が空です。ローテーションの理由を指定してください(値が空になる変数展開の可能性があります)。理由を書かずに未完了の再暗号化だけを再開する場合は --reason を付けずに実行してください",
       ),
     );
@@ -161,7 +163,7 @@ function checkReasonLength(reason: string | undefined): Effect.Effect<string | n
   const bytes = new TextEncoder().encode(trimmed).length;
   if (bytes > MAX_REASON_BYTES) {
     return Effect.fail(
-      cliError(
+      usageError(
         `--reason が長すぎます(${bytes} バイト)。チェーンエントリの自由文字列上限は UTF-8 で ${MAX_REASON_BYTES} バイトです(CRYPTO_SPEC §6.1)`,
       ),
     );
@@ -182,7 +184,7 @@ function dedupeWarnings(warnings: readonly string[]): readonly string[] {
 function requireReason(reason: string | null): Effect.Effect<string, CliError> {
   if (reason === null) {
     return Effect.fail(
-      cliError(
+      usageError(
         "--reason にローテーションの理由を指定してください(チェーンの rotate_epoch エントリに記録され、後から書き換えられません)",
       ),
     );

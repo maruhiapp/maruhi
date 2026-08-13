@@ -10,7 +10,7 @@ import { makeApiClient, type MaruhiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
 import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorViolation } from "./floor-evidence.ts";
 import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
@@ -58,7 +58,15 @@ export function resolveProjectId(
     );
   }
   if (!isProjectId(value)) {
-    return Effect.fail(cliError(`プロジェクト ID の形式が不正です: ${value}`));
+    // 指定値そのものは返さない(フラグにも値が書かれうる — args.ts の規律)。
+    // 出所で分ける: コマンドラインなら書き方の誤り(2)、config なら直す先は
+    // 設定ファイルなので実行の失敗(1)として、どこを直すかを言う
+    const shape = "プロジェクト ID の形式が正しくありません(64 桁の 16 進数)";
+    return Effect.fail(
+      flag === undefined
+        ? cliError(`${shape} — config の defaultProject を直してください`)
+        : usageError(shape),
+    );
   }
   return Effect.succeed(value);
 }
@@ -76,7 +84,12 @@ function resolveEnvironmentId(
     );
   }
   if (!isEnvironmentId(value)) {
-    return Effect.fail(cliError(`環境 ID の形式が不正です: ${value}`));
+    const shape = "環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで)";
+    return Effect.fail(
+      flag === undefined
+        ? cliError(`${shape} — config の defaultEnvironment を直してください`)
+        : usageError(shape),
+    );
   }
   return Effect.succeed(value);
 }

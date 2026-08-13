@@ -272,8 +272,30 @@ describe("maruhi login", () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
-    expect(await runCli(["login", "--github-base-url", "http://evil.example"], env.layer)).toBe(1);
+    // 書き方の誤りは usage エラー(2)。URL そのものは返さない
+    // (`http://user:token@host` の形で認証情報が書かれうる)
+    expect(await runCli(["login", "--github-base-url", "http://evil.example"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("loopback");
+    expect(env.errors.join("\n")).not.toContain("evil.example");
+  });
+
+  it("--github-base-url の形式検査は通信より前に走る(接続失敗として報告しない)", async () => {
+    // client_id を config に置かない = 通信で取りに行く経路。形式の検査を
+    // 後ろに置くと、書き方の誤りが「サーバーへの接続に失敗しました」になる
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    expect(await runCli(["login", "--github-base-url", "ftp://x.example"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("http(s) で指定してください");
+    expect(env.errors.join("\n")).not.toContain("接続に失敗");
+  });
+
+  it("config の server が不正な場合は、直す先を示して 1 で落ちる", async () => {
+    // コマンドラインに何も書いていないので「書き方の誤り(2)」ではない
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: "ftp://bad.example" });
+    expect(await runCli(["logout"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("config の server を直してください");
   });
 
   it("client_id 未設定は設定手順を案内して失敗する", async () => {

@@ -2638,6 +2638,9 @@ describe("maruhi env rotate", () => {
   });
 
   it("操作に適用されないオプション・綴り間違いは黙って捨てずに拒否する", async () => {
+    // 書き方そのものの誤り(未宣言オプション・boolean への値・余分な位置引数・
+    // 位置引数のオプション化)は全コマンド共通の検査が持つ(args.test.ts)。
+    // ここでは env 固有の適用可否と、rotate でも同じく落ちることを固定する
     const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
@@ -2645,15 +2648,14 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    // 綴り間違い(gunshi は未知オプションを無視するため、放置すると
-    // 「必ず新エポック」の意図が黙って弱い再開経路へ落ちる)
+    // 綴り間違い(放置すると「必ず新エポック」の意図が黙って弱い再開経路へ落ちる)
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epochs"], env.layer),
-    ).toBe(1);
+    ).toBe(2);
     expect(env.errors.join("\n")).toContain("不明なオプション");
-    // create 用のオプションを rotate に付けた場合も拒否する
+    // create 専用のオプションを rotate に付けた場合も拒否する(env 固有の検査)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--name", "n"], env.layer)).toBe(
-      1,
+      2,
     );
     expect(env.errors.join("\n")).toContain("env rotate では使えません");
     // boolean への値指定は拒否する。gunshi は値を読まずに true にするため、
@@ -2661,28 +2663,13 @@ describe("maruhi env rotate", () => {
     // なので取り消せない。インライン形(=)と空白区切り形の両方を塞ぐ
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch=false"], env.layer),
-    ).toBe(1);
+    ).toBe(2);
     expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
     // 空白区切りは「フラグ有効 + 余分な位置引数」になる(gunshi は値を消費しない)
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch", "false"], env.layer),
-    ).toBe(1);
-    expect(env.errors.join("\n")).toContain("余分な引数です: false");
-    // 余分な位置引数一般(`env rotate dev garbage`)も黙って落とさない。
-    // boolean を書いていない実行に boolean の助言は添えない(コマンドラインに
-    // 無いオプションを探させることになる)
-    const before = env.errors.length;
-    expect(await runCli(["env", "rotate", ENV_ID, "garbage"], env.layer)).toBe(1);
-    const strayErrors = env.errors.slice(before).join("\n");
-    expect(strayErrors).toContain("余分な引数です: garbage");
-    expect(strayErrors).not.toContain("boolean オプションに値は付けられません");
-    // プロトタイプ由来の名前で未知オプション検査を素通りさせない
-    expect(await runCli(["env", "rotate", ENV_ID, "--constructor=x"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --constructor");
-    // 打ったとおりの綴りで返す(短縮形を `--x` に書き換えて出さない)
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "-q"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: -q");
-    expect(env.errors.join("\n")).not.toContain("--q");
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
     // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
     // (`env rotate dev --environment-id other` は dev をローテーションする)。
     // 環境 ID はチェーン履歴全体で一意(§6.2)なので取り違えは永久に焼き付く
@@ -2692,25 +2679,21 @@ describe("maruhi env rotate", () => {
         ["env", "rotate", ENV_ID, "--reason", "x", "--environment-id", "other-env"],
         env.layer,
       ),
-    ).toBe(1);
-    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
-    // 位置引数を**書かずに** `--environment-id` だけで渡した実行は、gunshi 自身が
-    // 必須 positional の欠落として usage エラー(2)で落とす — 環境 ID 未指定の
-    // まま既定環境へ滑り込む経路が無いことの確認
-    expect(
-      await runCli(["env", "rotate", "--environment-id", ENV_ID, "--reason", "x"], env.layer),
     ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
     // 取り違えの検査は通信より前(誤った ID で var.read を残さない)
     expect(server.requests.length).toBe(beforeSwap);
     // 操作専用でない宣言済みオプション(--project 等)は拒否しない。許可集合は
     // 引数表から導くので、手書きの一覧との二重管理で弾かれることがない
+    // (「拒否されない」ではなく**成功する**ことを固定する — 検査の緩みが
+    // ローテーション自体の失敗に化けても気付けるように)
     expect(
       await runCli(
         ["env", "rotate", ENV_ID, "--reason", "x", "--project", chainBase.projectId],
         env.layer,
       ),
-    ).not.toBe(1);
-    // 拒否された 3 例では HTTP は一切起きていない(最後の 1 例だけが通信する)
+    ).toBe(0);
+    // 拒否された例では HTTP は一切起きていない(最後の 1 例だけが通信する)
     expect(server.requests.length).toBeGreaterThan(0);
   });
 
@@ -2831,7 +2814,9 @@ describe("maruhi env rotate", () => {
     // --new-epoch は必ずエントリを署名する = 理由が必須。満たしようのない
     // 引数検査のために全変数の暗号文を取りに行き、変数ごとの var.read を
     // 監査ログへ残さない(ensureRotatable と同じ規律)
-    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(1);
+    // 書き方の誤り(理由の欠落)は usage エラー(2)。同じ `--reason` の
+    // 誤りが終了コードで割れないようにする
+    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--reason にローテーションの理由を指定してください");
     expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
@@ -2850,14 +2835,17 @@ describe("maruhi env rotate", () => {
     // **空文字列**は gunshi が undefined に落とすので、指定の有無は
     // ctx.explicit で判定しないと未指定と区別できない(空白のみの値は
     // truthy なので通ってしまい、この経路を素通りさせていた)
-    for (const value of ["", "  "]) {
-      expect(await runCli(["env", "rotate", ENV_ID, "--reason", value], env.layer)).toBe(1);
-      expect(env.errors.join("\n")).toContain("--reason が空です");
+    // 空文字列は共通の引数検査が usage エラー(2)で落とす(「未指定」と
+    // 区別できない値を既定へフォールバックさせない — args.ts)
+    for (const empty of [["--reason", ""], ["--reason="]]) {
+      expect(await runCli(["env", "rotate", ENV_ID, ...empty], env.layer)).toBe(2);
+      expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
       expect(env.logs.join("\n")).not.toContain("確認完了");
     }
-    // `--reason=` の形(値を = で繋いだ空指定)も同じ
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason="], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("--reason が空です");
+    // 空白だけの値も共通検査が空として落とす(`"$VAR"` の未設定形は `""` にも
+    // `" "` にもなる)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
     expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
@@ -2870,7 +2858,7 @@ describe("maruhi env rotate", () => {
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });

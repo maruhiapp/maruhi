@@ -3,7 +3,7 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeStdinValue, runCli } from "../src/cli.ts";
@@ -17,7 +17,7 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
-import { buildInjectionEnv } from "../src/run.ts";
+import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import { resolveServerOrigin } from "../src/session.ts";
 import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
@@ -220,6 +220,33 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
   };
 }
 
+describe("runOp", () => {
+  /** 子プロセスを起動しないランナー(起動まで到達したら分かるようにする)。 */
+  const spawnedNothing = Layer.succeed(ProcessRunner, {
+    run: () => Effect.succeed(0),
+  });
+
+  it("実行対象が空白だけでも子プロセスを起動しない(入口の検査と同じ判定)", async () => {
+    const exit = await Effect.runPromiseExit(
+      runOp({ command: ["  "], variables: [] }).pipe(Effect.provide(spawnedNothing)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+  });
+
+  it("実行対象が空文字列だけなら子プロセスを起動しない", async () => {
+    // 入口の引数検査(cli.ts)と同じ判定をここでも持つ(直接呼び出し向けの
+    // 防衛線)。`[""]` は「1 要素あるが実行できない」形
+    const exit = await Effect.runPromiseExit(
+      runOp({ command: [""], variables: [] }).pipe(Effect.provide(spawnedNothing)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+    // 書き方の誤りは入口と同じ usage エラー(終了コード 2)として立てる
+    expect(JSON.stringify(exit)).toContain('"usage":true');
+  });
+});
+
 describe("buildInjectionEnv", () => {
   it("名前・値を検証して env map を作る", async () => {
     const env = await Effect.runPromise(
@@ -381,6 +408,29 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).toContain("MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定");
   });
 
+  it("MARUHI_TOKEN_ORIGIN の形式が不正なら実行の失敗(1)として直し先を示す", async () => {
+    let hit = false;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => {
+        hit = true;
+        return { status: 200, json: { userId: "u", orgs: [] } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    // 環境変数の値はコマンドラインの打ち間違いではないので usage(2)にせず、
+    // 直す先(環境変数)を言って 1 で終わる
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", "notaurl");
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    const text = env.errors.join("\n");
+    expect(text).toContain("MARUHI_TOKEN_ORIGIN 環境変数 を直してください");
+    // 値そのものは返さない(認証情報が埋まった URL を書かれる形もある)
+    expect(text).not.toContain("notaurl");
+    expect(hit).toBe(false);
+  });
+
   it("MARUHI_TOKEN_ORIGIN が接続先と一致しなければトークンを送らない", async () => {
     let hit = false;
     const server = await MockServer.start([
@@ -406,8 +456,10 @@ describe("入力検証と defect の扱い", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: "https://maruhi.example", defaultEnvironment: "dev" });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
-    expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("プロジェクト ID の形式が不正");
+    // 書き方の誤りは usage エラー(2)。指定値そのものは返さない
+    expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("プロジェクト ID の形式が正しくありません");
+    expect(env.errors.join("\n")).not.toContain("not-hex");
     const env2 = await makeTestEnv();
     await seedConfig(env2, {
       server: "https://maruhi.example",
@@ -415,8 +467,19 @@ describe("入力検証と defect の扱い", () => {
     });
     env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // 環境 ID の形式検証はネットワークアクセス(セッション解決)より先に走る
-    expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("環境 ID の形式が不正");
+    expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(2);
+    expect(env2.errors.join("\n")).toContain("環境 ID の形式が正しくありません");
+    expect(env2.errors.join("\n")).not.toContain("!bad");
+  });
+
+  it("config 由来の不正な ID は打ち間違いではなく、直す先を示して 1 で落ちる", async () => {
+    const env = await makeTestEnv();
+    // コマンドラインには何も書いていないので、2(書き方の誤り)で報告すると
+    // 「直す場所が無いのに usage エラー」になる
+    await seedConfig(env, { server: "https://maruhi.example", defaultProject: "not-hex" });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    expect(await runCli(["pull", "--env", "dev"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("config の defaultProject を直してください");
   });
 
   it("defect(バグ由来の throw)は usage エラー(2)でなく 1 で報告される", async () => {

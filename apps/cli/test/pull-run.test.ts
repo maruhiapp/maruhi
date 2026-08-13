@@ -259,6 +259,42 @@ describe("maruhi pull", () => {
     expect(env.logs).toContain("BETA=beta-value");
   });
 
+  it("--show=false / --show false は値を表示しない(usage エラーで落ちる)", async () => {
+    // gunshi は boolean のインライン値を読まずに true にし、空白区切りの値も
+    // 消費しない。塞がないと**書いたことと逆**に全シークレットが端末へ出る
+    // (直前のテストが、この配布データで --show が実際に値を出すことを示す)
+    const inline = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(2);
+    expect(inline.logs.join("\n")).not.toContain("alpha-value");
+    expect(inline.errors.join("\n")).toContain("--show は値を取りません");
+
+    const spaced = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show", "false"], spaced.layer)).toBe(2);
+    expect(spaced.logs.join("\n")).not.toContain("alpha-value");
+    expect(spaced.errors.join("\n")).toContain("--show は値を取りません");
+  });
+
+  it("`--no-show --show` のような重複指定は値を表示せずに落ちる", async () => {
+    // gunshi は最後の指定で解決するため、明示した `--no-show` が黙って捨てられて
+    // 全シークレットが端末へ出る(`maruhi pull --no-show $FLAGS` の形)。
+    // どちらを意図したかは読み取れないので、選ばずに usage エラー(2)で落とす
+    const later = await startEnv([chainHandler(), pullHandler()]);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["pull", "--no-show", "--show"], later.layer)).toBe(2);
+    expect(later.logs.join("\n")).not.toContain("alpha-value");
+    expect(later.errors.join("\n")).toContain("--show を複数回指定しています");
+    // 否定形も同じオプションであることを案内する(片方を消せばよいと分かる)
+    expect(later.errors.join("\n")).toContain("--no-show");
+    // 検査は通信より前(復号する平文をそもそも作らない)
+    expect(server?.requests).toHaveLength(0);
+
+    // 逆順(最後が --no-show)も同じ扱い。「結果が安全な向きなら通す」に
+    // すると、書いた指定が捨てられていること自体が伝わらない
+    const earlier = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show", "--no-show"], earlier.layer)).toBe(2);
+    expect(earlier.errors.join("\n")).toContain("--show を複数回指定しています");
+  });
+
   it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {
     // 悪意ある共同編集者が保存した値(ESC + BEL)+ 正当な複数行(PEM 風)
     const evil = "sk-\u001b[31mFAKE\u0007\nline2";
@@ -1399,9 +1435,63 @@ describe("maruhi run", () => {
     expect(await runCli(["run", "--", "false"], env.layer)).toBe(3);
   });
 
-  it("コマンド未指定はエラーになる", async () => {
+  it("コマンド未指定は pull も復号もせずにエラーになる", async () => {
+    // 実行対象が無い実行は書き方の誤り(usage エラー)。ここを通すと配布の
+    // 取得と全変数の復号まで進んでから同じことを言う = 使われない平文を作る
     const env = await startEnv([chainHandler(), pullHandler()]);
-    expect(await runCli(["run"], env.layer)).toBe(1);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("`--` の後に指定");
+    expect(server?.requests).toHaveLength(0);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("`--` だけで実行対象が無い場合も同じ", async () => {
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run", "--"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("`--` の後に指定");
+    expect(server?.requests).toHaveLength(0);
+  });
+
+  it("`--` の後ろの空文字列の引数も落とさずに渡す", async () => {
+    // gunshi の ctx.rest は値が truthy のものしか入れないため、空文字列の
+    // 引数は rest から落ちて positionals へ紛れ込む。素直に使うと子プロセスの
+    // 引数が黙って 1 つ減り、引数検査も誤爆する(トークンから組み直している)
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["run", "--", "printenv", "", "ALPHA"], env.layer)).toBe(0);
+    expect(env.runnerCalls[0]?.command).toEqual(["printenv", "", "ALPHA"]);
+  });
+
+  it("`--` の前の空の引数は、子プロセス側に空白の引数があっても拾う", async () => {
+    // rest 側の「こぼれ」の数え方を trim で緩めると、子プロセスの空白だけの
+    // 引数(`" "` — rest に残る)が maruhi 側の本物の空引数を隠して素通りする
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run", "", "--", "printenv", " "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("空の引数があります");
+    expect(server?.requests).toHaveLength(0);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("入れ子の `--`(`npm test -- --watch`)も子プロセスへそのまま渡る", async () => {
+    // args-tokens が出す option-terminator は先頭の 1 つだけで、内側の `--` は
+    // 位置引数トークンになる。restArguments はそれを落とさない(落とすと
+    // npm / cargo / docker 形式の引数転送が壊れる)
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["run", "--", "npm", "test", "--", "--watch"], env.layer)).toBe(0);
+    expect(env.runnerCalls[0]?.command).toEqual(["npm", "test", "--", "--watch"]);
+  });
+
+  it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {
+    // 引数の書き方の検査(args.ts / strict)が子プロセスの引数に及ぶと、
+    // `maruhi run -- <cmd>` は任意のコマンドを実行できなくなる。`--` 以降は
+    // 位置引数トークンとして ctx.rest にだけ入る(ctx.positionals にも
+    // オプショントークンにも現れない)ため、検査の対象にならない
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(
+      await runCli(["run", "--", "printenv", "--show=false", "--shwo", "extra"], env.layer),
+    ).toBe(0);
+    expect(env.runnerCalls[0]?.command).toEqual(["printenv", "--show=false", "--shwo", "extra"]);
   });
 });
