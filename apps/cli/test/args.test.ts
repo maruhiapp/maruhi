@@ -238,6 +238,18 @@ describe("余分な位置引数", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("`config get` の余分な引数は optional の value に吸われずに落ちる", async () => {
+    const { env } = await startEnv();
+
+    // value は set 専用の optional positional。共通検査は引数表の最大数しか
+    // 知らないため、get への余分なトークンはそこへ黙って束縛される
+    expect(await runCli(["config", "get", "defaultEnvironment", "dev"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("余分な引数です: dev");
+    expect(errors).toContain("maruhi config get が取る位置引数は key だけです");
+    expect(env.logs).toHaveLength(0);
+  });
+
   it("`config set` の余分な引数は設定を書き換えずに落ちる", async () => {
     const { env } = await startEnv();
 

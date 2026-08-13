@@ -655,6 +655,28 @@ function runCommand(execute: Execute) {
   });
 }
 
+/**
+ * `config get` へ渡した余分な位置引数の拒否。`value` は set 専用の optional
+ * positional なので、共通検査(args.ts — 引数表の最大数しか知らない)を通った
+ * 余分なトークンが get ではそこへ黙って束縛される。操作別の数はここで見る。
+ */
+function configGetStrayValueRejection(
+  action: string | undefined,
+  positionals: readonly string[],
+): string | null {
+  // 不明な操作(`config bogus`)はコマンド本体が報告する
+  if (action !== "get") {
+    return null;
+  }
+  // positionals は [config, get, key, ...余分](先頭はサブコマンド名 — args.ts)
+  const extras = positionals.slice(3);
+  if (extras.length === 0) {
+    return null;
+  }
+  const extra = extras.map(displayText).join(" ");
+  return `余分な引数です: ${extra}(maruhi config get が取る位置引数は key だけです)`;
+}
+
 function configCommand(execute: Execute) {
   return define({
     name: "config",
@@ -705,6 +727,7 @@ function configCommand(execute: Execute) {
           }
           return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(get | set)`));
         }),
+        { rejection: configGetStrayValueRejection(ctx.values.action, ctx.positionals) },
       ),
   });
 }
