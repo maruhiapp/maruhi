@@ -67,7 +67,7 @@ describe("boolean オプションへの値の指定", () => {
     // 位置引数として残る)
     expect(await runCli(["pull", "--show", "false"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です: false");
+    expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("maruhi pull は位置引数を取りません");
     // boolean を書いた実行なので、値を付けられない旨の助言を添える
     expect(errors).toContain("boolean オプションに値は付けられません");
@@ -203,12 +203,29 @@ describe("操作に適用されないオプション(env 固有)", () => {
 });
 
 describe("余分な位置引数", () => {
+  it("拒否した引数の**中身**は診断に出さない(平文の値が混ざりうる)", async () => {
+    const { env } = await startEnv();
+    // `push` の値は stdin から読むので、コマンドラインに書いた値は「余分な
+    // 引数」になる。打ち間違いを教えるために平文を書き出すと、CI や
+    // エージェントのログへ残る = この PR が塞ぐ漏洩と同種になる
+    const secret = "hunter2-plaintext-value";
+    env.setStdin(new TextEncoder().encode("secret-value"));
+
+    expect(await runCli(["push", "API_KEY", secret], env.layer)).toBe(2);
+    expect(await runCli(["push", "API_KEY", "--", secret], env.layer)).toBe(2);
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).not.toContain(secret);
+    // 個数と形は出す(打ち間違いの位置は分かる)
+    expect(output).toContain("余分な引数です(1 個");
+    expect(output).toContain("中身は表示しません");
+  });
+
   it("位置引数を取るコマンド(`key generate extra`)は宣言名を示して落ちる", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["key", "generate", "extra"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です: extra");
+    expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("maruhi key が取る位置引数は action だけです");
     // boolean を書いていない実行に boolean の助言は添えない(コマンドラインに
     // 無いオプションを探させることになる)
@@ -220,7 +237,7 @@ describe("余分な位置引数", () => {
 
     expect(await runCli(["run", "npm", "test"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です: npm test");
+    expect(errors).toContain("余分な引数です(2 個");
     expect(errors).toContain("`--` の後に並べてください");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
@@ -233,7 +250,7 @@ describe("余分な位置引数", () => {
     // 現れないまま消えるので、余分な引数として扱う
     expect(await runCli(["push", "API_KEY", "--", "value"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です: value");
+    expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("maruhi push は `--` の後ろの引数を取りません");
     expect(server.requests).toHaveLength(0);
   });
@@ -245,7 +262,7 @@ describe("余分な位置引数", () => {
     // 知らないため、get への余分なトークンはそこへ黙って束縛される
     expect(await runCli(["config", "get", "defaultEnvironment", "dev"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です: dev");
+    expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("maruhi config get が取る位置引数は key だけです");
     expect(env.logs).toHaveLength(0);
   });
@@ -256,7 +273,7 @@ describe("余分な位置引数", () => {
     expect(await runCli(["config", "set", "defaultEnvironment", "dev", "extra"], env.layer)).toBe(
       2,
     );
-    expect(env.errors.join("\n")).toContain("余分な引数です: extra");
+    expect(env.errors.join("\n")).toContain("余分な引数です(1 個");
     // 設定は書き換わっていない(検査がコマンド本体より前で効いている)
     expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
     expect(env.logs).toContain("prod");

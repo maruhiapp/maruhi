@@ -2669,7 +2669,7 @@ describe("maruhi env rotate", () => {
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch", "false"], env.layer),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("余分な引数です: false");
+    expect(env.errors.join("\n")).toContain("余分な引数です(1 個");
     // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
     // (`env rotate dev --environment-id other` は dev をローテーションする)。
     // 環境 ID はチェーン履歴全体で一意(§6.2)なので取り違えは永久に焼き付く

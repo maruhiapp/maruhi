@@ -271,7 +271,7 @@ describe("maruhi pull", () => {
     const spaced = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show", "false"], spaced.layer)).toBe(2);
     expect(spaced.logs.join("\n")).not.toContain("alpha-value");
-    expect(spaced.errors.join("\n")).toContain("余分な引数です: false");
+    expect(spaced.errors.join("\n")).toContain("余分な引数です(1 個");
   });
 
   it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {

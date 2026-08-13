@@ -15,6 +15,7 @@ import {
   type ArgCheckContext,
   argsRejection,
   type ArgTokenShape,
+  strayArgumentsMessage,
   usageErrorMessages,
 } from "./args.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
@@ -663,18 +664,20 @@ function runCommand(execute: Execute) {
 function configGetStrayValueRejection(
   action: string | undefined,
   positionals: readonly string[],
+  /** 先頭に並ぶサブコマンド名の数(`config` の 1 段。入れ子が増えても追随する)。 */
+  commandDepth: number,
 ): string | null {
   // 不明な操作(`config bogus`)はコマンド本体が報告する
   if (action !== "get") {
     return null;
   }
-  // positionals は [config, get, key, ...余分](先頭はサブコマンド名 — args.ts)
-  const extras = positionals.slice(3);
-  if (extras.length === 0) {
+  // 正当な並びは [config, get, key](サブコマンド名 + action + key — args.ts)
+  const extras = positionals.length - (commandDepth + 2);
+  if (extras <= 0) {
     return null;
   }
-  const extra = extras.map(displayText).join(" ");
-  return `余分な引数です: ${extra}(maruhi config get が取る位置引数は key だけです)`;
+  // 中身は出さない(共通検査と同じ規律 — args.ts の strayArgumentsMessage)
+  return strayArgumentsMessage(extras, "maruhi config get が取る位置引数は key だけです");
 }
 
 function configCommand(execute: Execute) {
@@ -727,7 +730,13 @@ function configCommand(execute: Execute) {
           }
           return yield* Effect.fail(cliError(`不明な操作です: ${ctx.values.action}(get | set)`));
         }),
-        { rejection: configGetStrayValueRejection(ctx.values.action, ctx.positionals) },
+        {
+          rejection: configGetStrayValueRejection(
+            ctx.values.action,
+            ctx.positionals,
+            ctx.commandPath.length,
+          ),
+        },
       ),
   });
 }

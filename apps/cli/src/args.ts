@@ -82,6 +82,19 @@ function inlineValueRejection(ctx: ArgCheckContext): string | null {
 }
 
 /**
+ * 余分な引数の共通文面。**中身は決して出さない**(個数と形だけを言う)。
+ *
+ * 拒否した引数は任意のユーザー入力であり、平文の値が混ざりうる —
+ * `maruhi push API_KEY "$SECRET"`(値は stdin から読むので、この書き方は
+ * 余分な引数になる)がその形。診断は CI やエージェントのログに残るため、
+ * 打ち間違いを教えるために平文をもう一度書き出す取引はしない
+ * (CLAUDE.md: 平文値・鍵素材をログ・エラーメッセージに出力しない)。
+ */
+export function strayArgumentsMessage(count: number, shape: string, suffix = ""): string {
+  return `余分な引数です(${count} 個。中身は表示しません — 平文の値が混ざりうるため)。${shape}${suffix}`;
+}
+
+/**
  * 余分な位置引数の拒否。boolean は**空白区切りの値を読まない**ため、
  * `--show false` は「フラグ有効 + 位置引数 "false"」になり、無効にした
  * つもりが値の表示になる。想定数は引数表から導く(`ctx.positionals` の
@@ -96,7 +109,6 @@ function strayPositionalRejection(ctx: ArgCheckContext, hint: string | undefined
   if (ctx.positionals.length <= expected) {
     return null;
   }
-  const extra = ctx.positionals.slice(expected).map(displayText).join(" ");
   const command = ["maruhi", ...ctx.commandPath].join(" ");
   const shape =
     declared.length === 0
@@ -111,7 +123,11 @@ function strayPositionalRejection(ctx: ArgCheckContext, hint: string | undefined
   const booleanHint = usedBoolean
     ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
     : "";
-  return `余分な引数です: ${extra}(${shape})${booleanHint}${hint ?? ""}`;
+  return strayArgumentsMessage(
+    ctx.positionals.length - expected,
+    shape,
+    `${booleanHint}${hint ?? ""}`,
+  );
 }
 
 /**
@@ -122,9 +138,8 @@ function strayRestRejection(ctx: ArgCheckContext, acceptsRest: boolean): string 
   if (acceptsRest || ctx.rest.length === 0) {
     return null;
   }
-  const extra = ctx.rest.map(displayText).join(" ");
   const command = ["maruhi", ...ctx.commandPath].join(" ");
-  return `余分な引数です: ${extra}(${command} は \`--\` の後ろの引数を取りません)`;
+  return strayArgumentsMessage(ctx.rest.length, `${command} は \`--\` の後ろの引数を取りません`);
 }
 
 /**
