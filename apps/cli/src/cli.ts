@@ -31,7 +31,7 @@ import {
 import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
@@ -74,6 +74,8 @@ type Execute = (
     readonly acceptsRest?: boolean;
     /** この実行では取らない位置引数(`config get` の `value` — args.ts)。 */
     readonly withoutPositionals?: readonly string[] | undefined;
+    /** `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。 */
+    readonly restRequired?: string;
     /**
      * コマンド固有の拒否(env の操作別オプションの適用可否など)。共通検査
      * (args.ts)**より先に**見る: そのオプションが操作にそもそも適用されない
@@ -196,9 +198,7 @@ function keyCommand(execute: Execute) {
             });
           }
           return yield* Effect.fail(
-            cliError(
-              `不明な操作です: ${displayText(String(ctx.values.action))}(generate | show | recover | recovery)`,
-            ),
+            usageError("不明な操作です(generate | show | recover | recovery)"),
           );
         }),
       ),
@@ -257,9 +257,7 @@ function projectCommand(execute: Execute) {
             }
             return;
           }
-          return yield* Effect.fail(
-            cliError(`不明な操作です: ${displayText(String(ctx.values.action))}(init | verify)`),
-          );
+          return yield* Effect.fail(usageError("不明な操作です(init | verify)"));
         }),
       ),
   });
@@ -488,6 +486,10 @@ function envCommand(execute: Execute) {
       },
       "new-epoch": {
         type: "boolean",
+        // 否定形(`--no-new-epoch`)を宣言する: gunshi は boolean へ書いた値を
+        // 読まないので、宣言しないと「無効にする書き方」が存在しないまま
+        // `--new-epoch false` のような形だけが増える
+        negatable: true,
         description: "rotate: 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る",
       },
       server: { type: "string", description: "サーバー URL(省略時は config の server)" },
@@ -502,18 +504,17 @@ function envCommand(execute: Execute) {
         Effect.gen(function* () {
           const action = ctx.values.action;
           if (action !== "create" && action !== "rotate") {
-            return yield* Effect.fail(
-              cliError(`不明な操作です: ${displayText(String(action))}(create | rotate)`),
-            );
+            return yield* Effect.fail(usageError("不明な操作です(create | rotate)"));
           }
           const environmentId = ctx.values["environment-id"];
           // positional 未指定(undefined)は型で明示的に弾く。位置引数を**書かずに**
           // `--environment-id` だけで渡した実行はここまで来ない(strict が未宣言
           // オプションとして runner より前に落とす — args.ts)
           if (environmentId === undefined || !isEnvironmentId(environmentId)) {
+            // 指定値そのものは出さない(位置引数には値が書かれうる — args.ts の規律)
             return yield* Effect.fail(
-              cliError(
-                `環境 ID を指定してください(例: maruhi env ${action} dev)。指定値: ${displayText(String(environmentId))}`,
+              usageError(
+                `環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで。例: maruhi env ${action} dev)`,
               ),
             );
           }
@@ -550,6 +551,9 @@ function pullCommand(execute: Execute) {
       env: { type: "string", description: "環境 ID(省略時は config の defaultEnvironment)" },
       show: {
         type: "boolean",
+        // 否定形(`--no-show`)を宣言する(既定と同じだが、明示的に「表示しない」
+        // と書けるようにする — `--show=false` を書きたくなる形の受け皿)
+        negatable: true,
         description: "値を端末に表示する(AI エージェント環境では拒否される)",
       },
     },
@@ -683,7 +687,7 @@ function runCommand(execute: Execute) {
           // なので入口で落とす。ここを通すと pull と全変数の復号まで進んでから
           // spawn が失敗する(平文を作る意味が無い)。runOp 側の同じ検査は
           // 直接呼び出し向けの防衛線として残す
-          rejection: command.length === 0 || command[0] === "" ? RUN_COMMAND_REQUIRED : null,
+          restRequired: RUN_COMMAND_REQUIRED,
         },
       );
     },
@@ -707,11 +711,7 @@ function configCommand(execute: Execute) {
           const store = yield* ConfigStore;
           const key = asConfigKey(ctx.values.key);
           if (key === null) {
-            return yield* Effect.fail(
-              cliError(
-                `不明な設定キーです: ${displayText(String(ctx.values.key))}(${CONFIG_KEYS.join(" | ")})`,
-              ),
-            );
+            return yield* Effect.fail(usageError(`不明な設定キーです(${CONFIG_KEYS.join(" | ")})`));
           }
           if (ctx.values.action === "get") {
             const config = yield* store.load;
@@ -721,7 +721,7 @@ function configCommand(execute: Execute) {
           if (ctx.values.action === "set") {
             const value = ctx.values.value;
             if (value === undefined) {
-              return yield* Effect.fail(cliError("設定する値を指定してください"));
+              return yield* Effect.fail(usageError("設定する値を指定してください"));
             }
             // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
             // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
@@ -740,9 +740,7 @@ function configCommand(execute: Execute) {
             yield* io.log(`${key} を設定しました`);
             return;
           }
-          return yield* Effect.fail(
-            cliError(`不明な操作です: ${displayText(String(ctx.values.action))}(get | set)`),
-          );
+          return yield* Effect.fail(usageError("不明な操作です(get | set)"));
         }),
         {
           // `value` は set 専用の optional positional。共通検査は引数表の
@@ -809,6 +807,7 @@ export async function runCli(
         strayPositionalHint: options?.strayPositionalHint,
         acceptsRest: options?.acceptsRest,
         withoutPositionals: options?.withoutPositionals,
+        restRequired: options?.restRequired,
       });
     if (rejection !== null) {
       await reportUsageError([rejection]);
@@ -822,8 +821,12 @@ export async function runCli(
       Effect.catch((error) =>
         Effect.gen(function* () {
           const io = yield* CliIo;
-          yield* io.logError(`maruhi: ${toCliError(error).message}`);
-          return 1;
+          const failure = toCliError(error);
+          yield* io.logError(`maruhi: ${failure.message}`);
+          // 引数の書き方の誤りは、コマンド本体が見つけた場合でも usage エラー
+          // (2)。実行の失敗(1)と混ぜると、スクリプトが打ち間違いを
+          // 「操作が失敗した」と読む
+          return failure.usage === true ? 2 : 1;
         }),
       ),
       // defect(バグ)を usage エラー(2)に化けさせない: runPromise の

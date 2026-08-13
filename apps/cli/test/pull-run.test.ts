@@ -1442,6 +1442,15 @@ describe("maruhi run", () => {
     expect(env.runnerCalls[0]?.command).toEqual(["printenv", "", "ALPHA"]);
   });
 
+  it("入れ子の `--`(`npm test -- --watch`)も子プロセスへそのまま渡る", async () => {
+    // args-tokens が出す option-terminator は先頭の 1 つだけで、内側の `--` は
+    // 位置引数トークンになる。restArguments はそれを落とさない(落とすと
+    // npm / cargo / docker 形式の引数転送が壊れる)
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["run", "--", "npm", "test", "--", "--watch"], env.layer)).toBe(0);
+    expect(env.runnerCalls[0]?.command).toEqual(["npm", "test", "--", "--watch"]);
+  });
+
   it("`--` の後ろは maruhi の引数検査を通らず、子プロセスへそのまま渡る", async () => {
     // 引数の書き方の検査(args.ts / strict)が子プロセスの引数に及ぶと、
     // `maruhi run -- <cmd>` は任意のコマンドを実行できなくなる。`--` 以降は

@@ -33,9 +33,10 @@ describe("maruhi config", () => {
     expect(raw).toEqual({ server: "https://maruhi.example" });
   });
 
-  it("未知キーの set は拒否する", async () => {
+  it("未知キーの set は usage エラー(2)で拒否する", async () => {
     const env = await makeTestEnv();
-    expect(await runCli(["config", "set", "token", "x"], env.layer)).toBe(1);
+    // 打ち間違いは実行の失敗(1)と区別する
+    expect(await runCli(["config", "set", "token", "x"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("不明な設定キー");
   });
 

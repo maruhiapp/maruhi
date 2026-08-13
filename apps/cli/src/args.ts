@@ -44,6 +44,7 @@ const CLI_NAME = "maruhi";
 interface ArgSchemaShape {
   readonly type?: string | undefined;
   readonly short?: string | undefined;
+  readonly negatable?: boolean | undefined;
 }
 
 /** gunshi の引数表(`ctx.args`)。宣言済みオプションと位置引数の完全な表。 */
@@ -111,8 +112,8 @@ export function restArguments(tokens: readonly ArgTokenShape[]): readonly string
  * **`--` の後ろから落ちてきた分**(gunshi が rest へ載せない空文字列)が
  * 紛れ込む。そこで「引数表を通した並びから、紛れ込んだ分を引く」で数える。
  */
-function positionalCount(ctx: ArgCheckContext): number {
-  const leakedFromRest = restArguments(ctx.tokens).filter((value) => value === "").length;
+function positionalCount(ctx: ArgCheckContext, rest: readonly string[]): number {
+  const leakedFromRest = rest.filter((value) => value === "").length;
   return ctx.positionals.length - leakedFromRest;
 }
 
@@ -122,44 +123,74 @@ function namesOfType(args: ArgTable, type: string): readonly string[] {
     .map(([name]) => name);
 }
 
+/** boolean オプション 1 つ(打たれた綴りから逆引きするための最小の情報)。 */
+interface BooleanOption {
+  /** 宣言名(否定形 `--no-<name>` の組み立てに使う)。 */
+  readonly name: string;
+  /** `negatable` 宣言があるか(= 無効にする書き方が存在するか)。 */
+  readonly negatable: boolean;
+}
+
 /**
- * boolean として書かれうる綴り。長い名前と短縮形を**別々に**持つ:
- * 1 つの集合に混ぜると、ある boolean の短縮形と同じ名前を持つ別のオプション
+ * boolean として書かれうる綴り → その宣言。長い名前と短縮形を**別々に**持つ:
+ * 1 つの表に混ぜると、ある boolean の短縮形と同じ名前を持つ別のオプション
  * (例: 長い名前が `h` の string)を boolean と取り違える。
  */
 function booleanSpellings(args: ArgTable): {
-  readonly names: ReadonlySet<string>;
-  readonly shorts: ReadonlySet<string>;
+  readonly long: ReadonlyMap<string, BooleanOption>;
+  readonly short: ReadonlyMap<string, BooleanOption>;
 } {
-  const names = new Set<string>();
-  const shorts = new Set<string>();
+  const long = new Map<string, BooleanOption>();
+  const short = new Map<string, BooleanOption>();
   for (const [name, schema] of Object.entries(args)) {
     if (schema.type !== "boolean") {
       continue;
     }
-    names.add(name);
+    const option: BooleanOption = { name, negatable: schema.negatable === true };
+    long.set(name, option);
     if (schema.short !== undefined) {
-      shorts.add(schema.short);
+      short.set(schema.short, option);
     }
   }
-  return { names, shorts };
+  return { long, short };
 }
 
 type BooleanSpellings = ReturnType<typeof booleanSpellings>;
 
-/** そのトークンは boolean オプションを指しているか(短縮形は綴りで見分ける)。 */
-function isBooleanToken(token: ArgTokenShape, booleans: BooleanSpellings): boolean {
+/** そのトークンが指す boolean オプション(短縮形は綴りで見分ける)。 */
+function booleanOptionOf(
+  token: ArgTokenShape,
+  booleans: BooleanSpellings,
+): BooleanOption | undefined {
   if (token.kind !== "option" || token.name === undefined) {
-    return false;
+    return undefined;
   }
   return token.rawName?.startsWith("--") === false
-    ? booleans.shorts.has(token.name)
-    : booleans.names.has(token.name);
+    ? booleans.short.get(token.name)
+    : booleans.long.get(token.name);
 }
 
-// 「値として書かれた」と読める語。boolean の直後に置かれたこれらは、位置引数
-// ではなくフラグの値のつもりと判断する
-const BOOLEAN_LITERALS = new Set(["true", "false", "0", "1", "yes", "no", "on", "off"]);
+// 「フラグの値のつもりで書いた」と読める語。boolean の直後に置かれたこれらは
+// 位置引数ではなく値の指定と判断する。網羅は原理的に無理なので、**無効に
+// する正しい書き方**(`negatable` による `--no-<name>`)を必ず案内へ添える
+const BOOLEAN_LITERALS = new Set([
+  "true",
+  "false",
+  "t",
+  "f",
+  "yes",
+  "no",
+  "y",
+  "n",
+  "on",
+  "off",
+  "0",
+  "1",
+  "enable",
+  "disable",
+  "enabled",
+  "disabled",
+]);
 
 /**
  * 表示用のコマンド名。エントリコマンドは**自分自身の名前でも**サブコマンドと
@@ -172,9 +203,13 @@ function commandLabel(commandPath: readonly string[]): string {
 }
 
 /** boolean へ値を付けたときの共通文面(インライン形・空白区切り形で同じ)。 */
-function booleanTakesNoValue(token: ArgTokenShape): string {
+function booleanTakesNoValue(token: ArgTokenShape, option: BooleanOption): string {
   const typed = typedName(token);
-  return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+  // 無効にする書き方を必ず示す(`negatable` があるなら否定形、無いなら外す)
+  const off = option.negatable
+    ? `無効にするなら --no-${option.name} と書いてください`
+    : "無効にするならオプション自体を外してください";
+  return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、${off}`;
 }
 
 /**
@@ -195,13 +230,14 @@ function booleanLiteralRejection(ctx: ArgCheckContext, booleans: BooleanSpelling
     if (token.kind === "option-terminator") {
       break;
     }
+    const option = previous === undefined ? undefined : booleanOptionOf(previous, booleans);
     if (
       token.kind === "positional" &&
       previous !== undefined &&
-      isBooleanToken(previous, booleans) &&
+      option !== undefined &&
       BOOLEAN_LITERALS.has((token.value ?? "").toLowerCase())
     ) {
-      return booleanTakesNoValue(previous);
+      return booleanTakesNoValue(previous, option);
     }
     previous = token;
   }
@@ -226,10 +262,11 @@ function inlineValueRejection(ctx: ArgCheckContext, booleans: BooleanSpellings):
     if (token.name !== undefined) {
       named = token;
     }
-    if (token.inlineValue !== true || named === undefined || !isBooleanToken(named, booleans)) {
+    const option = named === undefined ? undefined : booleanOptionOf(named, booleans);
+    if (token.inlineValue !== true || named === undefined || option === undefined) {
       continue;
     }
-    return booleanTakesNoValue(named);
+    return booleanTakesNoValue(named, option);
   }
   return null;
 }
@@ -256,13 +293,14 @@ function strayArgumentsMessage(count: number, shape: string, suffix = ""): strin
  */
 function strayPositionalRejection(
   ctx: ArgCheckContext,
+  rest: readonly string[],
   booleans: BooleanSpellings,
   hint: string | undefined,
   without: readonly string[],
 ): string | null {
   const declared = namesOfType(ctx.args, "positional").filter((name) => !without.includes(name));
   const expected = declared.length + ctx.commandPath.length;
-  const count = positionalCount(ctx);
+  const count = positionalCount(ctx, rest);
   if (count <= expected) {
     return null;
   }
@@ -273,7 +311,7 @@ function strayPositionalRejection(
       : `${command} が取る位置引数は ${declared.join(" ")} だけです`;
   // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
   // コマンドラインに無いオプションを探させることになる)
-  const usedBoolean = ctx.tokens.some((token) => isBooleanToken(token, booleans));
+  const usedBoolean = ctx.tokens.some((token) => booleanOptionOf(token, booleans) !== undefined);
   const booleanHint = usedBoolean
     ? "。boolean オプションに値は付けられません — 有効にするなら値なしで指定し、無効にするならオプション自体を外してください"
     : "";
@@ -284,8 +322,7 @@ function strayPositionalRejection(
  * `--` の後ろの引数の拒否。これを読むのは `maruhi run` だけで、他のコマンド
  * では黙って捨てられる(`maruhi push NAME -- value` など)。
  */
-function strayRestRejection(ctx: ArgCheckContext, acceptsRest: boolean): string | null {
-  const rest = restArguments(ctx.tokens);
+function strayRestRejection(rest: readonly string[], ctx: ArgCheckContext, acceptsRest: boolean) {
   if (acceptsRest || rest.length === 0) {
     return null;
   }
@@ -293,6 +330,24 @@ function strayRestRejection(ctx: ArgCheckContext, acceptsRest: boolean): string 
     rest.length,
     `${commandLabel(ctx.commandPath)} は \`--\` の後ろの引数を取りません`,
   );
+}
+
+/**
+ * `--` の後ろに実行対象が要るコマンド(`maruhi run`)で、それが無い場合の拒否。
+ * 空文字列は実行できない(`maruhi run -- "$CMD"` の未設定形)ので「引数が
+ * 1 つある」ことと「実行対象がある」ことを区別する。
+ *
+ * 共通検査の**中**に置く: コマンド側で先に判定すると、余分な位置引数のような
+ * より具体的な誤り(`maruhi run stray -- "" cmd`)がこの文面に潰される。
+ */
+function missingRestRejection(
+  rest: readonly string[],
+  required: string | undefined,
+): string | null {
+  if (required === undefined) {
+    return null;
+  }
+  return rest.length === 0 || rest[0] === "" ? required : null;
 }
 
 /**
@@ -312,21 +367,30 @@ export function argsRejection(
      * positional `value` を取らない)が、引数表との差を伝えるために使う。
      */
     readonly withoutPositionals?: readonly string[] | undefined;
+    /**
+     * `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。渡すと
+     * 「実行対象が無い」実行を共通検査の中で(= より具体的な誤りの後に)落とす。
+     */
+    readonly restRequired?: string | undefined;
   },
 ): string | null {
   // boolean の綴り集合は 1 回だけ作って各検査へ渡す(トークンごとに引数表を
   // 走査し直さない)
   const booleans = booleanSpellings(ctx.args);
+  // `--` の後ろの組み直しも 1 回だけ(位置引数の数え上げと 2 つの検査で使う)
+  const rest = restArguments(ctx.tokens);
   return (
     inlineValueRejection(ctx, booleans) ??
     booleanLiteralRejection(ctx, booleans) ??
     strayPositionalRejection(
       ctx,
+      rest,
       booleans,
       options?.strayPositionalHint,
       options?.withoutPositionals ?? [],
     ) ??
-    strayRestRejection(ctx, options?.acceptsRest === true)
+    strayRestRejection(rest, ctx, options?.acceptsRest === true) ??
+    missingRestRejection(rest, options?.restRequired)
   );
 }
 
@@ -350,41 +414,76 @@ function invokedArgs(argv: readonly string[], commands: CommandTable): ArgTable 
   return undefined;
 }
 
-// 診断へ返してよい綴り = **maruhi のオプション名の語彙**(英字とハイフンだけ。
-// 長さは自分の最長オプション名 `--github-poll-interval` = 20 字を超える余地を
-// 残す)。gunshi が名前として受ける範囲より意図的に狭くして、値が
-// オプションに化けた形を弾く: `-hunter2` は短縮グループとして 1 文字ずつの
-// トークンへ展開され、`--sk_live_ab12` は数字と `_` を含み、
-// `-----BEGIN RSA...` は 1 つの長い名前になる(いずれも実測)。
-// この語彙を外れた綴りは打ち間違いとして案内せず、伏せる
-const OPTION_SPELLING = /^(?:--[A-Za-z][A-Za-z-]{0,30}|-[A-Za-z])$/;
-const COMMAND_SPELLING = /^[A-Za-z][A-Za-z-]{0,30}$/;
-
-/** 診断へ出してよい綴りなら表示形、そうでなければ null(= 伏せる)。 */
-function echoableSpelling(rawName: string, argv: readonly string[]): string | null {
-  if (!OPTION_SPELLING.test(rawName)) {
-    return null;
+/**
+ * 打ち間違いの候補提示に使う編集距離。名前は高々数十字なので素直な DP。
+ */
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = row[0] ?? 0;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const above = row[j] ?? 0;
+      row[j] = Math.min(
+        above + 1,
+        (row[j - 1] ?? 0) + 1,
+        diagonal + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      diagonal = above;
+    }
   }
-  // 打たれたとおりの綴りが argv にある場合だけ出す。短縮グループの展開で
-  // 生まれた 1 文字トークン(`-hunter2` → `-u` `-n` …)は argv に無い =
-  // オプションではなく値を書いた形なので、綴りを復元して見せない
-  const typedByUser = argv.some((arg) => arg === rawName || arg.startsWith(`${rawName}=`));
-  return typedByUser ? displayText(rawName) : null;
+  return row[b.length] ?? 0;
+}
+
+/**
+ * 打ち間違いとして案内する編集距離の上限。3 まで許すと `--prj` に `--env` を、
+ * `bogus` に `login` を勧めるような**見当違いの候補**が出るので 2 に絞り、
+ * 外れた場合は候補一覧を出す。
+ */
+const SUGGESTION_DISTANCE = 2;
+
+/** 候補のうち最も近いもの(遠ければ null)。 */
+function nearest(typed: string, candidates: readonly string[]): string | null {
+  let best: string | null = null;
+  let bestDistance = SUGGESTION_DISTANCE + 1;
+  for (const candidate of candidates) {
+    const distance = editDistance(typed, candidate);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return bestDistance <= SUGGESTION_DISTANCE ? best : null;
+}
+
+/**
+ * 「候補」の文面。**打たれた綴りは出さず**、こちらの語彙(宣言名 / コマンド名)
+ * だけで案内する — 拒否された綴りは値でもありうるため(モジュール冒頭の規律)。
+ */
+function suggestionText(
+  typed: string | null,
+  candidates: readonly string[],
+  label: string,
+): string {
+  const guess = typed === null ? null : nearest(typed, candidates);
+  if (guess !== null) {
+    return `(${guess} のことですか?)`;
+  }
+  return candidates.length === 0 ? "" : `(${label}: ${candidates.toSorted().join(" ")})`;
+}
+
+/** このコマンドが取るオプションの綴り(位置引数は除く)。 */
+function optionCandidates(args: ArgTable | undefined): readonly string[] {
+  return args === undefined
+    ? []
+    : Object.entries(args)
+        .filter(([, schema]) => schema.type !== "positional")
+        .map(([name]) => `--${name}`);
 }
 
 function stringValue(values: Readonly<Record<string, unknown>>, key: string): string | null {
   const value = values[key];
   return typeof value === "string" ? value : null;
-}
-
-/** 打たれた綴り(出してよい形のときだけ)。 */
-function typedSpelling(
-  values: Readonly<Record<string, unknown>>,
-  argv: readonly string[],
-): string | null {
-  const name = stringValue(values, "name");
-  const rawName = stringValue(values, "rawName") ?? (name === null ? null : `--${name}`);
-  return rawName === null ? null : echoableSpelling(rawName, argv);
 }
 
 /** その名前は、このコマンドの**位置引数**として宣言されているか。 */
@@ -400,20 +499,21 @@ function isDeclaredPositional(args: ArgTable | undefined, name: string | null): 
 function unknownOptionMessage(
   values: Readonly<Record<string, unknown>>,
   args: ArgTable | undefined,
-  argv: readonly string[],
 ): string {
-  const spelled = typedSpelling(values, argv);
-  if (spelled === null) {
-    return "不明なオプションです(綴りは表示しません — オプションではなく値を書いた形の可能性があるため)";
-  }
+  const name = stringValue(values, "name");
   // 位置引数の名前をオプションとして書いた形(`env create dev --environment-id
   // prod`)は strict から見れば未宣言のオプションだが、打ち間違いではなく
-  // 「値が黙って捨てられる」形なので専用の案内を出す。環境 ID はチェーン履歴
-  // 全体で一意(§6.2)なので、取り違えは永久に焼き付く
-  if (isDeclaredPositional(args, stringValue(values, "name"))) {
-    return `${spelled} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
+  // 「値が黙って捨てられる」形なので専用の案内を出す。ここで出す名前は
+  // **引数表由来**(= こちらの語彙)なので伏せる必要がない。環境 ID は
+  // チェーン履歴全体で一意(§6.2)なので、取り違えは永久に焼き付く
+  if (isDeclaredPositional(args, name)) {
+    return `--${name} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
   }
-  return `不明なオプションです: ${spelled}`;
+  // 候補提示は長い綴りのときだけ(短縮形 `-q` を `--q` に見立てて比べると、
+  // 無関係な長いオプションが「のことですか?」で出てくる)
+  const rawName = stringValue(values, "rawName");
+  const typed = rawName !== null && rawName.startsWith("--") ? rawName : null;
+  return `不明なオプションです${suggestionText(typed, optionCandidates(args), "このコマンドが取るオプション")}`;
 }
 
 /**
@@ -425,11 +525,10 @@ function argsValidationMessage(
   code: string,
   values: Readonly<Record<string, unknown>>,
   args: ArgTable | undefined,
-  argv: readonly string[],
 ): string | null {
   const name = stringValue(values, "name");
   if (code === ArgsValidationErrorKeys.unknownOption) {
-    return unknownOptionMessage(values, args, argv);
+    return unknownOptionMessage(values, args);
   }
   if (name === null) {
     return null;
@@ -454,16 +553,14 @@ function argsValidationMessage(
 function validationMessage(
   error: unknown,
   args: ArgTable | undefined,
-  argv: readonly string[],
+  commands: CommandTable,
 ): string {
   if (isCommandNotFoundError(error)) {
-    const spelled = COMMAND_SPELLING.test(error.commandName)
-      ? `: ${displayText(error.commandName)}`
-      : "(綴りは表示しません — コマンド名ではなく値を書いた形の可能性があるため)";
-    return `不明なコマンドです${spelled}`;
+    const candidates = error.candidates.length > 0 ? error.candidates : Object.keys(commands);
+    return `不明なコマンドです${suggestionText(error.commandName, candidates, "使えるコマンド")}`;
   }
   if (isArgsValidationError(error) && error.code !== undefined) {
-    const message = argsValidationMessage(error.code, error.values, args, argv);
+    const message = argsValidationMessage(error.code, error.values, args);
     if (message !== null) {
       return message;
     }
@@ -503,7 +600,7 @@ export function usageErrorMessages(
         !isArgsValidationError(inner) ||
         inner.code !== ArgsValidationErrorKeys.unknownOption,
     )
-    .map((inner: unknown) => validationMessage(inner, args, argv));
+    .map((inner: unknown) => validationMessage(inner, args, commands));
   // 伏せ字の文面は同じ形に潰れるので重複を畳む(`-hunter2` は 6 トークンに割れる)
   return [...new Set(messages)];
 }

@@ -56,7 +56,8 @@ describe("boolean オプションへの値の指定", () => {
     // 通すと「表示しない」と書いた実行が全シークレットを端末に出す
     expect(await runCli(["pull", "--show=false"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--show は値を取りません");
-    expect(env.errors.join("\n")).toContain("無効にするならオプション自体を外してください");
+    // 「無効にする書き方」を必ず示す(negatable な否定形が宣言されている)
+    expect(env.errors.join("\n")).toContain("無効にするなら --no-show と書いてください");
     expect(server.requests).toHaveLength(0);
     expect(env.logs).toHaveLength(0);
   });
@@ -99,6 +100,28 @@ describe("boolean オプションへの値の指定", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("真偽値リテラルは `false` 以外の書き方も拾い、無効にする書き方を案内する", async () => {
+    const { env, server } = await startEnv();
+
+    // 網羅は原理的に無理なので、**正しい書き方**(negatable な否定形)を必ず
+    // 添える。`n` / `off` も同じ吸い込みを起こす
+    for (const literal of ["n", "off", "disable", "0"]) {
+      expect(
+        await runCli(["env", "rotate", "--reason", "x", "--new-epoch", literal], env.layer),
+      ).toBe(2);
+    }
+    expect(env.errors.join("\n")).toContain("無効にするなら --no-new-epoch と書いてください");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("否定形(`--no-show`)は宣言されていて、値の表示に進まない", async () => {
+    const { env } = await startEnv();
+
+    // `--show=false` の案内先が実在すること(案内だけして使えないのは不親切)
+    expect(await runCli(["pull", "--no-show"], env.layer)).not.toBe(2);
+    expect(env.errors.join("\n")).not.toContain("不明なオプションです");
+  });
+
   it("string オプションのインライン値(`--env=ghost`)は拒否しない", async () => {
     const { env } = await startEnv();
 
@@ -116,7 +139,9 @@ describe("未宣言オプション(strict)", () => {
     const { env, server } = await startEnv();
 
     expect(await runCli(["pull", "--shwo"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --shwo");
+    // 打たれた綴りは返さず、こちらの宣言名で「もしかして」を出す
+    expect(env.errors.join("\n")).toContain("不明なオプションです(--show のことですか?)");
+    expect(env.errors.join("\n")).not.toContain("--shwo");
     expect(server.requests).toHaveLength(0);
   });
 
@@ -127,39 +152,44 @@ describe("未宣言オプション(strict)", () => {
     // 綴り間違いを無視すると、prod のつもりの push が既定環境(config の
     // defaultEnvironment)へ入る。書き込みは取り消せない
     expect(await runCli(["push", "API_KEY", "--enve", "prod"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --enve");
+    expect(env.errors.join("\n")).toContain("不明なオプションです(--env のことですか?)");
     expect(server.requests).toHaveLength(0);
   });
 
-  it("短縮形は打ったとおりの綴りで返す(`-q` を `--q` と書き換えない)", async () => {
+  it("短縮形には見当違いの「もしかして」を出さず、取りうるオプションを示す", async () => {
     const { env } = await startEnv();
 
+    // `-q` を `--q` に見立てて距離を測ると、無関係な長いオプションが候補に出る
     expect(await runCli(["pull", "-q"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: -q");
-    expect(env.errors.join("\n")).not.toContain("--q");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("このコマンドが取るオプション: --env --project --server --show");
+    expect(errors).not.toContain("のことですか?");
   });
 
   it("プロトタイプ由来の名前(`--constructor`)でも未宣言として落ちる", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["pull", "--constructor=x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --constructor");
+    expect(env.errors.join("\n")).toContain("不明なオプションです");
+    expect(env.errors.join("\n")).not.toContain("--constructor");
   });
 
-  it("未宣言オプションが複数あればすべて報告する", async () => {
+  it("未宣言オプションが複数あれば、それぞれの候補を報告する", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["pull", "--shwo", "--prj", "x"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なオプションです: --shwo");
-    expect(errors).toContain("不明なオプションです: --prj");
+    // 近い綴りには候補を、遠い綴りには一覧を出す(それぞれ別の行になる)
+    expect(errors).toContain("--show のことですか?");
+    expect(errors).toContain("このコマンドが取るオプション:");
+    expect(errors.split("\n")).toHaveLength(2);
   });
 
   it("エントリコマンド(`maruhi --shwo`)でも落ちる", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["--shwo"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --shwo");
+    expect(env.errors.join("\n")).toContain("不明なオプションです");
     expect(env.logs).toHaveLength(0);
   });
 
@@ -172,7 +202,7 @@ describe("未宣言オプション(strict)", () => {
     // 必須位置引数の欠落は priority ではない = ヘッダ描画の経路を通る
     expect(await runCli(["env", "rotate"], env.layer)).toBe(2);
     expect(stdout).not.toHaveBeenCalled();
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --shwo");
+    expect(env.errors.join("\n")).toContain("不明なオプションです");
   });
 
   it("成功した実行の stdout はコマンドの出力だけ(バナーを混ぜない)", async () => {
@@ -194,11 +224,11 @@ describe("未宣言オプション(strict)", () => {
     // 平文を 1 文字ずつ並べて書き出すことになる
     expect(await runCli(["push", "API_KEY", "-hunter2"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("綴りは表示しません");
+    expect(errors).toContain("不明なオプションです");
     expect(errors).not.toContain("-u");
     expect(errors).not.toContain("-n");
     expect(errors).not.toContain("-2");
-    // 同じ伏せ字が 7 行並ばないこと(重複は畳む)
+    // 同じ文面が 7 行並ばないこと(重複は畳む)
     expect(errors.split("\n").filter((line) => line.includes("不明なオプション"))).toHaveLength(1);
   });
 
@@ -210,7 +240,7 @@ describe("未宣言オプション(strict)", () => {
     // `--sk_live_ab12` のような綴りは打ち間違いではなく値である可能性が高い
     expect(await runCli(["push", "API_KEY", "--sk_live_ab12"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("綴りは表示しません");
+    expect(errors).toContain("不明なオプションです");
     expect(errors).not.toContain("sk_live");
   });
 
@@ -223,7 +253,7 @@ describe("未宣言オプション(strict)", () => {
       2,
     );
     const errors = env.errors.join("\n");
-    expect(errors).toContain("綴りは表示しません");
+    expect(errors).toContain("不明なオプションです");
     expect(errors).not.toContain("BEGIN");
     expect(errors).not.toContain("hunter2");
   });
@@ -235,7 +265,7 @@ describe("未宣言オプション(strict)", () => {
     // 綴りの合っている --show まで不明として並ぶ(探させない)
     expect(await runCli(["pul", "--show"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なコマンドです: pul");
+    expect(errors).toContain("不明なコマンドです(pull のことですか?)");
     expect(errors).not.toContain("不明なオプションです");
   });
 });
@@ -288,8 +318,9 @@ describe("操作に適用されないオプション(env 固有)", () => {
   it("操作が不明なら適用可否は語らない(操作の誤りをコマンド本体が報告する)", async () => {
     const { env } = await startEnv();
 
-    expect(await runCli(["env", "bogus", "dev", "--reason", "x"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("不明な操作です: bogus");
+    // 打ち間違いは実行の失敗(1)ではなく usage エラー(2)
+    expect(await runCli(["env", "bogus", "dev", "--reason", "x"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("不明な操作です(create | rotate)");
   });
 
   it("その操作で使えないオプションは、書き方の助言より先に言う", async () => {
@@ -304,19 +335,47 @@ describe("操作に適用されないオプション(env 固有)", () => {
   });
 });
 
-describe("端末出力の中和", () => {
-  it("設定キー・操作名の制御文字は表示前に中和する", async () => {
+describe("終了コードの一貫性", () => {
+  it("値の無い `config set` も usage エラー(2)", async () => {
     const { env } = await startEnv();
 
-    // 行を消して偽の成功行を書くような ANSI 列を、そのまま端末へ流さない
-    const evil = "[2K\rmaruhi: OK";
-    expect(await runCli(["config", "get", evil], env.layer)).toBe(1);
-    expect(await runCli(["config", evil, "server"], env.layer)).toBe(1);
-    expect(await runCli(["key", evil], env.layer)).toBe(1);
-    expect(await runCli(["project", evil], env.layer)).toBe(1);
+    // gunshi は optional な positional の欠落を検証しない(コマンド本体が見る)。
+    // 「書き方の誤りは 2」を、パーサが落とした場合と揃える
+    expect(await runCli(["config", "set", "defaultEnvironment"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("設定する値を指定してください");
+  });
+
+  it("形式の合わない環境 ID は、指定値を出さずに usage エラー(2)", async () => {
+    const { env, server } = await startEnv();
+
+    // 位置引数には値が書かれうるので、指定値そのものは返さない
+    expect(await runCli(["env", "create", "sk-live-topsecret!"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("環境 ID の形式が正しくありません");
+    expect(errors).not.toContain("topsecret");
+    expect(server.requests).toHaveLength(0);
+  });
+});
+
+describe("端末出力の中和", () => {
+  it("設定キー・操作名は打たれた語を返さない(制御文字も値も端末へ流さない)", async () => {
+    const { env } = await startEnv();
+
+    // 行を消して偽の成功行を書くような ANSI 列を含む語。文面は取りうる値の
+    // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
+    const evil = "\u001b[2K\rmaruhi: OK";
+    // 打ち間違い(語が何も指していない)は usage エラー(2)
+    expect(await runCli(["config", "get", evil], env.layer)).toBe(2);
+    expect(await runCli(["config", evil, "server"], env.layer)).toBe(2);
+    expect(await runCli(["key", evil], env.layer)).toBe(2);
+    expect(await runCli(["project", evil], env.layer)).toBe(2);
     const output = [...env.logs, ...env.errors].join("\n");
-    expect(output).not.toContain("");
+    expect(output).not.toContain("\u001b");
     expect(output).not.toContain("\r");
+    expect(output).toContain("不明な設定キーです(server | githubClientId");
+    expect(output).toContain("不明な操作です(get | set)");
+    expect(output).toContain("不明な操作です(generate | show | recover | recovery)");
+    expect(output).toContain("不明な操作です(init | verify)");
   });
 });
 
@@ -353,9 +412,11 @@ describe("余分な位置引数", () => {
   it("`maruhi run npm test`(`--` 忘れ)は書き方を案内して落ち、子プロセスを起動しない", async () => {
     const { env, server } = await startEnv();
 
-    // 実行対象が `--` の後ろに無いので、まず「どこへ書くか」を案内する
+    // 余分な位置引数という具体的な誤りを、汎用の「実行対象が無い」より先に言う
     expect(await runCli(["run", "npm", "test"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("余分な引数です(2 個");
+    expect(errors).toContain("`--` の後に並べてください");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
   });
@@ -368,6 +429,19 @@ describe("余分な位置引数", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("`--` の後に並べてください");
+    expect(env.runnerCalls).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("`run` の具体的な誤り(余分な位置引数)は、汎用の「実行対象が無い」より先に言う", async () => {
+    const { env, server } = await startEnv();
+
+    // `--` の後ろの先頭が空でも、余分な位置引数という**書いてある誤り**を先に
+    // 報告する(コマンド固有の拒否が共通検査を飛ばすと、命令に反する文面が出る)
+    expect(await runCli(["run", "stray", "--", "", "printenv"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("余分な引数です(1 個");
+    expect(errors).not.toContain("実行するコマンドを `--` の後に指定してください");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
   });
@@ -477,19 +551,19 @@ describe("gunshi 由来の usage エラー", () => {
     expect(errors).not.toContain("s3cr3t");
   });
 
-  it("未知のコマンドは日本語で落ちる", async () => {
+  it("未知のコマンドは日本語で落ち、使えるコマンドを示す", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["bogus"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なコマンドです: bogus");
+    expect(env.errors.join("\n")).toContain("不明なコマンドです(使えるコマンド:");
   });
 
-  it("コマンド名の位置に値を書いた形は綴りを出さない", async () => {
+  it("コマンド名の位置に値を書いた形も綴りを出さない", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["s3cr3t/value=with-symbols"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なコマンドです(綴りは表示しません");
+    expect(errors).toContain("不明なコマンドです");
     expect(errors).not.toContain("s3cr3t");
   });
 
@@ -511,7 +585,9 @@ describe("gunshi 由来の usage エラー", () => {
     // `--github-poll-interval` は `--` の後ろ 20 字。語彙の長さ上限をそれ以下に
     // すると、自分のオプションの打ち間違いが伏せ字になって直しようがなくなる
     expect(await runCli(["login", "--github-poll-intervall", "3"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです: --github-poll-intervall");
+    expect(env.errors.join("\n")).toContain(
+      "不明なオプションです(--github-poll-interval のことですか?)",
+    );
   });
 
   it("エントリコマンドの二重名(`maruhi maruhi`)を文面に出さない", async () => {
