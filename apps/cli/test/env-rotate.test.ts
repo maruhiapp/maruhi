@@ -1937,6 +1937,49 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("受理されていません");
   });
 
+  it("削除済み環境への rotate(404)は確定した拒否として扱い、再実行を勧めない", async () => {
+    // サーバー自身のエラー本文で拒否された = 受理の有無は確定している。
+    // 受理確認のプローブ(チェーンの二重取得)も要らず、§7 の中断メッセージに
+    // 「そのまま再実行できます」を足してもいけない(404 は決定的で再発する)
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => ({
+        status: 404,
+        json: { _tag: "EnvironmentNotFound", environmentId: ENV_ID },
+      }),
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
+
+    const chainCallsBefore = server.requests.filter((request) =>
+      request.path.endsWith("/chain"),
+    ).length;
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "削除済み"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // §7 の専用メッセージが出る(汎用の「環境が見つかりません」に潰さない)
+    expect(errors).toContain("選択的なローテーション阻止の可能性");
+    expect(errors).not.toContain("そのまま再実行できます");
+    expect(errors).not.toContain("受理されています");
+    // 受理確認のためのチェーン再取得をしていない(初回同期の 1 回だけ)
+    const chainCalls = server.requests.filter((request) => request.path.endsWith("/chain")).length;
+    expect(chainCalls - chainCallsBefore).toBe(1);
+  });
+
   it("受理されたか確認できない場合は、エポックが進んだ可能性を明示する", async () => {
     const state = makeServer({
       built: chainBase,

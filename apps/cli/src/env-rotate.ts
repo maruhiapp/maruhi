@@ -378,11 +378,13 @@ function appendRotation(
         signingKeyPair: input.signingKeyPair,
       });
 
-    // 送信が「届いたかどうか不明」か(= 受理確認のプローブが要るか)。既定は不明で、
-    // サーバー自身のエラー本文で拒否された場合だけ確定へ倒す。CAS 競合
-    // (ChainHeadConflict)も確定側 — 受理されていないことが分かっているので、
-    // その後の recover の中断(並行ローテーション検出)にもプローブは要らない
-    let ambiguousSend = true;
+    // 送信が「届いたかどうか不明」か(= 受理確認のプローブが要るか)。**送信を
+    // 試みたときだけ**立てる: 署名の失敗など送信前の失敗にプローブを走らせると、
+    // ローカルな失敗に「届いているかもしれません」と付けてチェーンを取り直す。
+    // 送信した場合は「サーバー自身のエラー本文で拒否された」ときだけ確定側へ倒す
+    // (CAS 競合も確定側 — 受理されていないことが分かっているので、その後の
+    // recover の中断(並行ローテーション検出)にもプローブは要らない)
+    let ambiguousSend = false;
     const attempted = yield* asOutcome(
       retryOnConflict<RotateState, AcceptedRotation, "head-conflict">(
         { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
@@ -552,9 +554,18 @@ function ensureRotationIsUseful(targets: number, variables: number): Effect.Effe
   }
   return Effect.fail(
     cliError(
-      `再暗号化できる値が 1 つもありません(${variables} 変数すべてについて自分宛のラップが不足しています)。この状態でエポックを進めても現在値は旧エポックの DEK のまま取り残され、失効になりません — 当該エポックのラップを持つメンバーが実行してください`,
+      `${nothingDecryptable(variables)}。この状態でエポックを進めても現在値は旧エポックの DEK のまま取り残され、失効になりません — 当該エポックのラップを持つメンバーが実行してください`,
     ),
   );
+}
+
+/**
+ * 「1 つも開けない」ことの文面。**1 箇所に固定する**(通常経路の中断と再開経路の
+ * 早期切り上げが同じ事実を言うため — 割れると dedupeWarnings が同じ状況について
+ * 似て非なる 2 行を通す)。
+ */
+function nothingDecryptable(variables: number): string {
+  return `再暗号化できる値が 1 つもありません(${variables} 変数すべてについて自分宛のラップが不足しています)`;
 }
 
 /** タグ付き失敗からメッセージだけを取り出す(null 伝播)。 */
@@ -999,16 +1010,31 @@ function rescanEnvironment(input: {
         evidence: null,
       };
     }
-    // 開けない値があっても再走査自体は失敗させない: 完了判定は復号前の stale が
-    // 決めており(= 開けない値はそのまま未完了として数え上げられる)、ここで
-    // 落とすと**押せた分まで**「完了を検証できませんでした」に化ける
-    const decrypted = yield* decryptTargets({
-      verified: view,
-      environmentId,
-      values: stale,
-      deksByEpoch,
-      chainEpoch: environment.currentEpoch,
-    });
+    // 自分宛ラップの欠落(良性)では再走査自体を失敗させない: 完了判定は復号前の
+    // stale が決めており、ここで落とすと**押せた分まで**「完了を検証できません
+    // でした」に化ける。一方、ラップを持っているのに開けない場合(差し替え・
+    // ビュー不整合)は**証拠**として扱う — 初回 pull では即時中断する条件なので、
+    // 巡の途中で現れたときだけ「再実行で直る部分完了」へ格下げしてはならない
+    const attempted = yield* asOutcome(
+      decryptTargets({
+        verified: view,
+        environmentId,
+        values: stale,
+        deksByEpoch,
+        chainEpoch: environment.currentEpoch,
+      }),
+    );
+    if (attempted.kind === "failed") {
+      return {
+        view,
+        stale,
+        targets: [],
+        undecryptable: [],
+        alreadyCurrent: 0,
+        evidence: attempted.error.message,
+      };
+    }
+    const decrypted = attempted.value;
     for (const reason of decrypted.undecryptable) {
       input.collectWarning(undecryptableWarning(reason));
     }
@@ -1621,7 +1647,7 @@ function resumeReencryption(input: {
             alreadyCurrent: 0,
             remaining: stale.length,
             remainingExact: true,
-            failure: `再暗号化できる値が 1 つもありません(${stale.length} 変数すべてについて自分宛のラップが不足しています)`,
+            failure: nothingDecryptable(stale.length),
           }
         : yield* reencryptCurrentValues({
             context: reencryptContext(input.input, member, {

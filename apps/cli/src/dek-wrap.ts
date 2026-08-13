@@ -214,7 +214,7 @@ function ensureNoServerGrant(
   if (covering) {
     return Effect.fail(
       cliError(
-        `環境 ${displayText(environmentId)} は grant_server の開示スコープに含まれています。サーバー宛 DEK ラップは Phase 2 未実装のため、CLI からの${operation}は行えません — 失効(§7)のために今すぐローテーションが必要な場合は、先に revoke_server でサーバーへの開示を取り消してください`,
+        `環境 ${displayText(environmentId)} は grant_server の開示スコープに含まれています。サーバー宛 DEK ラップは Phase 2 未実装のため、CLI からの${operation}は行えません — 失効(§7)のために今すぐローテーションが必要な場合は、**owner に** revoke_server でサーバーへの開示を取り消してもらってください(revoke_server は owner 限定 — §6.2)`,
       ),
     );
   }

@@ -427,6 +427,27 @@ type EnvFlagToken = {
 };
 type EnvArgTable = Readonly<Record<string, { readonly type?: string | undefined }>>;
 
+/**
+ * 宣言はされているが、**その書き方では意図どおりに読まれない**オプションの拒否
+ * (引数表の型から導く)。
+ */
+function envSchemaRejection(
+  schema: { readonly type?: string | undefined },
+  typed: string,
+  inlineValue: boolean | undefined,
+): string | null {
+  if (schema.type === "positional") {
+    // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
+    // (`env create dev --environment-id prod` は dev を作る)。環境 ID は
+    // チェーン履歴全体で一意(§6.2)なので、取り違えは永久に焼き付く
+    return `${typed} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
+  }
+  if (schema.type === "boolean" && inlineValue === true) {
+    return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+  }
+  return null;
+}
+
 /** 1 トークン分の判定。拒否する場合はその理由(表示文)、問題なければ null。 */
 function envFlagRejection(
   action: "create" | "rotate",
@@ -441,15 +462,13 @@ function envFlagRejection(
   const typed = displayText(token.rawName ?? `--${name}`);
   // `Object.hasOwn` で引く: `args["constructor"]` のようなプロトタイプ由来の
   // 名前は truthy に見えてしまい、未知オプションの検査を素通りする
-  if (!Object.hasOwn(args, name)) {
-    return `不明なオプションです: ${typed}`;
-  }
-  const schema = args[name];
+  const schema = Object.hasOwn(args, name) ? args[name] : undefined;
   if (schema === undefined) {
     return `不明なオプションです: ${typed}`;
   }
-  if (schema.type === "boolean" && token.inlineValue === true) {
-    return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、無効にするならオプション自体を外してください`;
+  const shape = envSchemaRejection(schema, typed, token.inlineValue);
+  if (shape !== null) {
+    return shape;
   }
   const otherAction = ENV_OTHER_ACTION[action];
   if (ENV_ACTION_FLAGS[otherAction].has(name)) {
@@ -483,15 +502,15 @@ function checkEnvPositionals(
   positionals: readonly string[],
   tokens: readonly EnvFlagToken[],
   args: EnvArgTable,
+  /** 先頭に並ぶサブコマンド名の数(`env` の 1 段。入れ子が増えても追随する)。 */
+  commandDepth: number,
 ): Effect.Effect<void, CliError> {
   const declared = Object.values(args).filter((schema) => schema.type === "positional").length;
-  if (positionals.length <= declared + 1) {
+  const expected = declared + commandDepth;
+  if (positionals.length <= expected) {
     return Effect.void;
   }
-  const extra = positionals
-    .slice(declared + 1)
-    .map(displayText)
-    .join(" ");
+  const extra = positionals.slice(expected).map(displayText).join(" ");
   // boolean の助言は boolean を書いた実行にだけ添える(素の打ち間違いに付けると、
   // コマンドラインに無いオプションを探させることになる)
   const booleans = new Set(
@@ -553,7 +572,13 @@ function envCommand(execute: Execute) {
           // 判定材料は**引数表**(ctx.args)そのもの。ctx.values は「実際に渡された
           // 値」しか持たないので、宣言の一覧としても型の参照元としても使えない
           yield* checkEnvFlags(action, ctx.tokens, ctx.args);
-          yield* checkEnvPositionals(action, ctx.positionals, ctx.tokens, ctx.args);
+          yield* checkEnvPositionals(
+            action,
+            ctx.positionals,
+            ctx.tokens,
+            ctx.args,
+            ctx.commandPath.length,
+          );
           const flags = { server: ctx.values.server, project: ctx.values.project };
           if (action === "rotate") {
             // gunshi は空の値(`--reason ""` / `--reason=`)を **undefined** に
