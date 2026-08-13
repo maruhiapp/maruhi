@@ -59,8 +59,8 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   return "サーバーへの接続に失敗しました(ネットワーク・サーバー URL を確認してください)";
 }
 
+// CliError は toCliError の入口でそのまま返す(usage フラグを落とさないため)
 const renderers: readonly Renderer[] = [
-  when(isInstanceOf(CliError), (e) => e.message),
   when(
     isInstanceOf(UnauthorizedError),
     () =>

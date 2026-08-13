@@ -234,6 +234,8 @@ describe("runOp", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+    // 書き方の誤りは入口と同じ usage エラー(終了コード 2)として立てる
+    expect(JSON.stringify(exit)).toContain('"usage":true');
   });
 });
 

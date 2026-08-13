@@ -6,7 +6,7 @@
 import { Context, Effect } from "effect";
 
 import { decodeValueText, displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import type { DecryptedVariable } from "./pull.ts";
 
 /** Child-process boundary: spawn with injected env vars, inherit stdio. */
@@ -133,8 +133,10 @@ export function buildInjectionEnv(
 }
 
 /**
- * 実行対象が無い場合の案内。入口の引数検査(cli.ts)と、この防衛線の
- * 両方から出るので、文面は 1 か所に置く。
+ * Message shown when `maruhi run` has no command after `--`. Shared by the
+ * argument check at the CLI entry point and the guard in {@link runOp}.
+ *
+ * 文面を 1 か所に置く(2 実装が食い違わないように)。
  */
 export const RUN_COMMAND_REQUIRED =
   "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)";
@@ -148,7 +150,8 @@ export function runOp(input: {
     // 空文字列は実行できない(`maruhi run -- "$CMD"` の CMD 未設定がこの形)。
     // 「引数が 1 つある」ことと「実行対象がある」ことは別
     if (input.command.length === 0 || input.command[0] === "") {
-      return yield* Effect.fail(cliError(RUN_COMMAND_REQUIRED));
+      // 書き方の誤り = usage エラー(2)。入口の検査と同じ扱いにする
+      return yield* Effect.fail(usageError(RUN_COMMAND_REQUIRED));
     }
     const runner = yield* ProcessRunner;
     const extraEnv = yield* buildInjectionEnv(input.variables);

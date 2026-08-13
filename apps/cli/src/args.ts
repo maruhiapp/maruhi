@@ -16,17 +16,16 @@
 // 判定材料は引数表(`ctx.args`)そのもの — 手書きの一覧と二重管理にすると、
 // 次に増えたオプションが実装済みなのに拒否される。
 //
-// 診断の規律: **拒否した引数の中身は書き出さない**。拒否されるのは「値を
-// オプション / 位置引数として書いてしまった」形でもありうるので、平文が
-// stderr → CI・エージェントのログへ流れる経路を作らない(CLAUDE.md: 平文値・
-// 鍵素材をログ・エラーメッセージに出力しない)。
+// 診断の規律: **打たれた語は診断に出さない**。拒否されるのは「値をオプション /
+// 位置引数として書いてしまった」形でもありうるので、平文が stderr →
+// CI・エージェントのログへ流れる経路を作らない(CLAUDE.md: 平文値・鍵素材を
+// ログ・エラーメッセージに出力しない)。
 //
-// 例外は 2 つだけで、いずれも**こちらの語彙**に収まるものに限る:
-// (a) オプション / コマンド名の綴り(echoableSpelling — 英字とハイフンだけ、
-//     数字や `_` を含む「値らしい」綴りは伏せる)
-// (b) 引数表由来の名前(宣言済みの位置引数名・オプション名・期待する型)
-// コマンドが意味的に受け取る識別子(config のキー・action)は値ではないので
-// 各コマンドが表示してよいが、端末出力の中和(displayText)は必ず通す。
+// 出してよいのは**こちらの語彙**だけ: 引数表由来の名前(宣言済みのオプション /
+// 位置引数 / 期待する型)と、サブコマンド名。打ち間違いの案内は「打たれた綴りを
+// 返す」のではなく、**宣言名から編集距離で候補を出す**(suggestionText)。
+// 打たれた綴りをそのまま出すのは、それが宣言名と一致した場合だけ
+// (= もはやこちらの語彙)。
 
 import {
   ArgsValidationErrorKeys,
@@ -40,6 +39,9 @@ import { displayText } from "./display.ts";
 /** ブランド名 = 表示に使うコマンド名(`mh` で起動しても表記は maruhi)。 */
 const CLI_NAME = "maruhi";
 
+/** gunshi の否定形の接頭辞(`negatable: true` の boolean に付く)。 */
+const NEGATION_PREFIX = "no-";
+
 /** 引数表の 1 エントリ(判定に使う部分だけ)。 */
 interface ArgSchemaShape {
   readonly type?: string | undefined;
@@ -47,10 +49,10 @@ interface ArgSchemaShape {
   readonly negatable?: boolean | undefined;
 }
 
-/** gunshi の引数表(`ctx.args`)。宣言済みオプションと位置引数の完全な表。 */
+/** The command's full argument table (`ctx.args`): declared options and positionals. */
 export type ArgTable = Readonly<Record<string, ArgSchemaShape>>;
 
-/** gunshi の引数トークン(`ctx.tokens`)。打たれたとおりの並び。 */
+/** One parsed argument token (`ctx.tokens`), in the order it was typed. */
 export interface ArgTokenShape {
   readonly kind: string;
   readonly name?: string | undefined;
@@ -60,8 +62,10 @@ export interface ArgTokenShape {
 }
 
 /**
- * 検査に必要な CommandContext の部分。コマンドごとに型の違う `values` を
- * 含めないので、1 つの検査を全コマンドへ適用できる。
+ * The slice of gunshi's CommandContext the checks need.
+ *
+ * コマンドごとに型の違う `values` を含めないので、1 つの検査を全コマンドへ
+ * 適用できる。
  *
  * `--` の後ろは **`ctx.rest` を使わず**トークンから組み直す(下記
  * restArguments を参照 — 空文字列の引数が rest から落ちて positionals へ
@@ -74,13 +78,13 @@ export interface ArgCheckContext {
   readonly commandPath: readonly string[];
 }
 
-/** 打たれたとおりの綴りで返す(`-x` を `--x` と書き換えて出さない)。 */
+/** Renders an option token as it was typed (never rewrites `-x` into `--x`). */
 export function typedName(token: ArgTokenShape): string {
   return displayText(token.rawName ?? `--${token.name ?? ""}`);
 }
 
 /**
- * `--` の後ろの引数(`maruhi run` が子プロセスへ渡すもの)。
+ * The arguments after `--` (what `maruhi run` passes to the child process).
  *
  * gunshi の `ctx.rest` は使えない: 値が truthy のときだけ rest へ入れるため
  * (`resolveArgs` の `terminated && token.value`)、**空文字列の引数が rest から
@@ -146,13 +150,44 @@ function booleanSpellings(args: ArgTable): {
     if (schema.type !== "boolean") {
       continue;
     }
-    const option: BooleanOption = { name, negatable: schema.negatable === true };
+    const negatable = schema.negatable === true;
+    const option: BooleanOption = { name, negatable };
     long.set(name, option);
+    if (negatable) {
+      // 否定形も同じオプションの綴り。入れ忘れると `--no-show=false` /
+      // `--no-new-epoch off` が boolean の検査を素通りする(gunshi はトークン名を
+      // `no-<name>` のまま渡す)
+      long.set(`${NEGATION_PREFIX}${name}`, option);
+    }
     if (schema.short !== undefined) {
       short.set(schema.short, option);
     }
   }
   return { long, short };
+}
+
+/**
+ * Resolves the declared argument name a token spells (long, short, or the
+ * `--no-` negation), or undefined when the spelling is not declared.
+ */
+export function declaredOptionName(token: ArgTokenShape, args: ArgTable): string | undefined {
+  if (token.kind !== "option" || token.name === undefined) {
+    return undefined;
+  }
+  if (token.rawName?.startsWith("--") === false) {
+    const short = token.name;
+    return Object.entries(args).find(([, schema]) => schema.short === short)?.[0];
+  }
+  if (Object.hasOwn(args, token.name)) {
+    return token.name;
+  }
+  // `--no-x` は `x` の否定形(negatable 宣言のときだけ)
+  const bare = token.name.startsWith(NEGATION_PREFIX)
+    ? token.name.slice(NEGATION_PREFIX.length)
+    : null;
+  return bare !== null && Object.hasOwn(args, bare) && args[bare]?.negatable === true
+    ? bare
+    : undefined;
 }
 
 type BooleanSpellings = ReturnType<typeof booleanSpellings>;
@@ -205,11 +240,12 @@ function commandLabel(commandPath: readonly string[]): string {
 /** boolean へ値を付けたときの共通文面(インライン形・空白区切り形で同じ)。 */
 function booleanTakesNoValue(token: ArgTokenShape, option: BooleanOption): string {
   const typed = typedName(token);
-  // 無効にする書き方を必ず示す(`negatable` があるなら否定形、無いなら外す)
-  const off = option.negatable
-    ? `無効にするなら --no-${option.name} と書いてください`
-    : "無効にするならオプション自体を外してください";
-  return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。有効にするなら値なしで ${typed} と書き、${off}`;
+  // 有効 / 無効の**両方の書き方**を示す。打たれたのが否定形(`--no-x`)でも
+  // 「有効にするなら --no-x」と言わないよう、宣言名から組み立てる
+  const how = option.negatable
+    ? `有効にするなら --${option.name}、無効にするなら --${NEGATION_PREFIX}${option.name} と、いずれも値なしで書いてください`
+    : `有効にするなら値なしで --${option.name} と書き、無効にするならオプション自体を外してください`;
+  return `${typed} は値を取りません(指定した値は無視され、フラグは有効として扱われます)。${how}`;
 }
 
 /**
@@ -237,7 +273,9 @@ function booleanLiteralRejection(ctx: ArgCheckContext, booleans: BooleanSpelling
       option !== undefined &&
       BOOLEAN_LITERALS.has((token.value ?? "").toLowerCase())
     ) {
-      return booleanTakesNoValue(previous, option);
+      // 環境 ID が本当に `1` / `n` のような語である可能性は残る。並べ替えれば
+      // 通ることを示して手詰まりにしない
+      return `${booleanTakesNoValue(previous, option)}。その語が本当に位置引数なら、オプションより前に書いてください`;
     }
     previous = token;
   }
@@ -351,7 +389,9 @@ function missingRestRejection(
 }
 
 /**
- * 全コマンド共通の引数検査。拒否する場合はその理由(表示文)、問題なければ null。
+ * Checks how the arguments were written; returns the rejection message to show,
+ * or null when the invocation is well-formed.
+ *
  * 呼ぶのは cli.ts の execute — コマンド本体より前に必ず通る。
  */
 export function argsRejection(
@@ -372,14 +412,24 @@ export function argsRejection(
      * 「実行対象が無い」実行を共通検査の中で(= より具体的な誤りの後に)落とす。
      */
     readonly restRequired?: string | undefined;
+    /**
+     * コマンド固有の拒否(env の操作別オプションの適用可否)。**共通検査より
+     * 先**に見るが、連鎖の中に置くので「共通検査を飛ばす」ことはできない。
+     */
+    readonly commandRejection?: string | null | undefined;
+    /** `--` の後ろ(コマンド側で組み済みなら渡す — 2 度組まない)。 */
+    readonly rest?: readonly string[] | undefined;
   },
 ): string | null {
   // boolean の綴り集合は 1 回だけ作って各検査へ渡す(トークンごとに引数表を
   // 走査し直さない)
   const booleans = booleanSpellings(ctx.args);
   // `--` の後ろの組み直しも 1 回だけ(位置引数の数え上げと 2 つの検査で使う)
-  const rest = restArguments(ctx.tokens);
+  const rest = options?.rest ?? restArguments(ctx.tokens);
   return (
+    // 適用できないオプションは、綴りの助言より先に言う(そのとおり直しても
+    // 次の実行でまた落ちるため)
+    options?.commandRejection ??
     inlineValueRejection(ctx, booleans) ??
     booleanLiteralRejection(ctx, booleans) ??
     strayPositionalRejection(
@@ -394,7 +444,7 @@ export function argsRejection(
   );
 }
 
-/** usage エラーの文面を作るために引く、コマンド名 → 引数表の対応。 */
+/** Command name → argument table, used to word usage errors. */
 export type CommandTable = Readonly<Record<string, { readonly args?: ArgTable | undefined }>>;
 
 /** 打たれたコマンドの引数表(解決できなければ undefined)。 */
@@ -472,8 +522,21 @@ function suggestionText(
   return candidates.length === 0 ? "" : `(${label}: ${candidates.toSorted().join(" ")})`;
 }
 
-/** このコマンドが取るオプションの綴り(位置引数は除く)。 */
-function optionCandidates(args: ArgTable | undefined): readonly string[] {
+/**
+ * このコマンドが取るオプションの綴り。gunshi がエラーに載せた候補
+ * (`values.candidates`)を優先する — こちらの引数表には実行時に混ぜられる
+ * グローバル(`--help` / `--version`)も否定形(`--no-x`)も現れないため。
+ */
+function optionCandidates(
+  values: Readonly<Record<string, unknown>>,
+  args: ArgTable | undefined,
+): readonly string[] {
+  const candidates = values["candidates"];
+  if (Array.isArray(candidates) && candidates.length > 0) {
+    return candidates.filter((candidate): candidate is string => typeof candidate === "string");
+  }
+  // 短縮形の未宣言オプションでは gunshi が候補を空で渡す(長い綴りの候補しか
+  // 持たない)。その場合は引数表から組む
   return args === undefined
     ? []
     : Object.entries(args)
@@ -513,7 +576,7 @@ function unknownOptionMessage(
   // 無関係な長いオプションが「のことですか?」で出てくる)
   const rawName = stringValue(values, "rawName");
   const typed = rawName !== null && rawName.startsWith("--") ? rawName : null;
-  return `不明なオプションです${suggestionText(typed, optionCandidates(args), "このコマンドが取るオプション")}`;
+  return `不明なオプションです${suggestionText(typed, optionCandidates(values, args), "このコマンドが取るオプション")}`;
 }
 
 /**
@@ -556,7 +619,11 @@ function validationMessage(
   commands: CommandTable,
 ): string {
   if (isCommandNotFoundError(error)) {
-    const candidates = error.candidates.length > 0 ? error.candidates : Object.keys(commands);
+    // エントリコマンドは自分自身の名前でも登録されている(commandLabel と同じ
+    // 事情)。`maruhi maruhi` をサブコマンドとして勧めない
+    const candidates = (
+      error.candidates.length > 0 ? error.candidates : Object.keys(commands)
+    ).filter((candidate) => candidate !== CLI_NAME);
     return `不明なコマンドです${suggestionText(error.commandName, candidates, "使えるコマンド")}`;
   }
   if (isArgsValidationError(error) && error.code !== undefined) {
@@ -569,10 +636,11 @@ function validationMessage(
 }
 
 /**
- * gunshi が投げた usage エラー(strict の未宣言オプション検査を含む)を
- * 表示文の並びにする。gunshi 自身の描画は止めてある(cli.ts の
- * `renderValidationErrors: null` / `renderHeader: null`)ので、診断はすべて
- * この経路から stderr へ出る。
+ * Turns the usage error gunshi threw (including strict's unknown-option check)
+ * into the lines to show.
+ *
+ * gunshi 自身の描画は止めてある(cli.ts の `renderValidationErrors: null` /
+ * `renderHeader: null`)ので、診断はすべてこの経路から stderr へ出る。
  *
  * AggregateError の `message` は先頭 1 件ぶんしか持たない(引数解決の失敗では
  * 空文字列になる)ため、内訳を 1 件ずつ返す。

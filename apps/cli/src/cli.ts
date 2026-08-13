@@ -14,7 +14,9 @@ import { ensureValueDisplayAllowed } from "./agent.ts";
 import {
   type ArgCheckContext,
   argsRejection,
+  type ArgTable,
   type ArgTokenShape,
+  declaredOptionName,
   restArguments,
   typedName,
   usageErrorMessages,
@@ -76,6 +78,8 @@ type Execute = (
     readonly withoutPositionals?: readonly string[] | undefined;
     /** `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。 */
     readonly restRequired?: string;
+    /** `--` の後ろ(コマンド側で組み済みのもの — 2 度組まない)。 */
+    readonly rest?: readonly string[];
     /**
      * コマンド固有の拒否(env の操作別オプションの適用可否など)。共通検査
      * (args.ts)**より先に**見る: そのオプションが操作にそもそも適用されない
@@ -452,6 +456,7 @@ function isEnvAction(action: string | undefined): action is EnvAction {
 function envActionFlagRejection(
   action: string | undefined,
   tokens: readonly ArgTokenShape[],
+  args: ArgTable,
 ): string | null {
   // 不明な操作(`env bogus`)はコマンド本体が報告する。適用可否をここで
   // 語れるのは操作が確定している場合だけ
@@ -460,10 +465,11 @@ function envActionFlagRejection(
   }
   const otherAction = ENV_OTHER_ACTION[action];
   for (const token of tokens) {
-    if (token.kind !== "option" || token.name === undefined) {
-      continue;
-    }
-    if (!ENV_ACTION_FLAGS[otherAction].has(token.name)) {
+    // 打たれた綴り(短縮形・`--no-` の否定形)から宣言名へ戻して照合する。
+    // 綴りのまま引くと `env create --no-new-epoch` が rotate 専用として
+    // 弾かれず、指定した意図が黙って無視される
+    const declared = declaredOptionName(token, args);
+    if (declared === undefined || !ENV_ACTION_FLAGS[otherAction].has(declared)) {
       continue;
     }
     const typed = typedName(token);
@@ -533,7 +539,7 @@ function envCommand(execute: Execute) {
           }
           return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
         }),
-        { rejection: envActionFlagRejection(ctx.values.action, ctx.tokens) },
+        { rejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args) },
       ),
   });
 }
@@ -688,6 +694,8 @@ function runCommand(execute: Execute) {
           // spawn が失敗する(平文を作る意味が無い)。runOp 側の同じ検査は
           // 直接呼び出し向けの防衛線として残す
           restRequired: RUN_COMMAND_REQUIRED,
+          // 実行に使うものと同じ配列を渡す(検査と実行で 2 度組まない)
+          rest: command,
         },
       );
     },
@@ -801,14 +809,14 @@ export async function runCli(
     // コマンド固有の拒否を**先に**見る: そのオプションが操作にそもそも
     // 適用されないなら、綴りの助言(`--new-epoch` と書き直せ)を先に出しても
     // 次の実行でまた落ちる(`env create --new-epoch=false` の 2 度手間)
-    const rejection =
-      options?.rejection ??
-      argsRejection(ctx, {
-        strayPositionalHint: options?.strayPositionalHint,
-        acceptsRest: options?.acceptsRest,
-        withoutPositionals: options?.withoutPositionals,
-        restRequired: options?.restRequired,
-      });
+    const rejection = argsRejection(ctx, {
+      strayPositionalHint: options?.strayPositionalHint,
+      acceptsRest: options?.acceptsRest,
+      withoutPositionals: options?.withoutPositionals,
+      restRequired: options?.restRequired,
+      commandRejection: options?.rejection,
+      rest: options?.rest,
+    });
     if (rejection !== null) {
       await reportUsageError([rejection]);
       // 引数の書き方の誤りは usage エラー(2)。gunshi の strict が落とす

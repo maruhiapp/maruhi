@@ -57,7 +57,7 @@ describe("boolean オプションへの値の指定", () => {
     expect(await runCli(["pull", "--show=false"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--show は値を取りません");
     // 「無効にする書き方」を必ず示す(negatable な否定形が宣言されている)
-    expect(env.errors.join("\n")).toContain("無効にするなら --no-show と書いてください");
+    expect(env.errors.join("\n")).toContain("無効にするなら --no-show と、いずれも値なしで");
     expect(server.requests).toHaveLength(0);
     expect(env.logs).toHaveLength(0);
   });
@@ -110,7 +110,24 @@ describe("boolean オプションへの値の指定", () => {
         await runCli(["env", "rotate", "--reason", "x", "--new-epoch", literal], env.layer),
       ).toBe(2);
     }
-    expect(env.errors.join("\n")).toContain("無効にするなら --no-new-epoch と書いてください");
+    const literalErrors = env.errors.join("\n");
+    expect(literalErrors).toContain("無効にするなら --no-new-epoch と、いずれも値なしで");
+    // 環境 ID が本当にその語である可能性は残るので、逃げ道を示す
+    expect(literalErrors).toContain("その語が本当に位置引数なら、オプションより前に書いてください");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("否定形の綴り(`--no-show=false` / `--no-new-epoch off`)も同じ検査に掛かる", async () => {
+    const { env, server } = await startEnv();
+
+    // `negatable` を宣言すると綴りが増える。増えた綴りを検査の表へ入れ忘れると、
+    // 塞いだはずの形(値の指定・空きスロットへの吸い込み)がそこから復活する
+    expect(await runCli(["pull", "--no-show=false"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--no-show は値を取りません");
+    expect(
+      await runCli(["env", "rotate", "--reason", "x", "--no-new-epoch", "off"], env.layer),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--no-new-epoch は値を取りません");
     expect(server.requests).toHaveLength(0);
   });
 
@@ -164,6 +181,17 @@ describe("未宣言オプション(strict)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("このコマンドが取るオプション: --env --project --server --show");
     expect(errors).not.toContain("のことですか?");
+  });
+
+  it("候補にはグローバル(`--help`)や否定形(`--no-show`)も含める", async () => {
+    const { env } = await startEnv();
+
+    // 引数表(define の args)にはグローバルも否定形も現れない。gunshi が
+    // エラーへ載せた候補を使わないと、実在するオプションが候補から抜ける
+    expect(await runCli(["pull", "--hepl"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--help のことですか?");
+    expect(await runCli(["pull", "--no-shwo"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--no-show のことですか?");
   });
 
   it("プロトタイプ由来の名前(`--constructor`)でも未宣言として落ちる", async () => {
@@ -312,6 +340,10 @@ describe("操作に適用されないオプション(env 固有)", () => {
     expect(env.errors.join("\n")).toContain("--new-epoch は env create では使えません");
     expect(await runCli(["env", "rotate", "dev", "--name", "n"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--name は env rotate では使えません");
+    // 否定形の綴りでも「その操作では使えない」と言う(綴りのまま照合すると
+    // `--no-new-epoch` が create で素通りし、指定した意図が黙って無視される)
+    expect(await runCli(["env", "create", "dev", "--no-new-epoch"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--no-new-epoch は env create では使えません");
     expect(server.requests).toHaveLength(0);
   });
 
@@ -555,7 +587,11 @@ describe("gunshi 由来の usage エラー", () => {
     const { env } = await startEnv();
 
     expect(await runCli(["bogus"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なコマンドです(使えるコマンド:");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("不明なコマンドです(使えるコマンド:");
+    // エントリコマンドは自分自身の名前でも登録されている。`maruhi maruhi` を
+    // サブコマンドとして勧めない(余分な引数の文面と揃える)
+    expect(errors).not.toContain("maruhi project");
   });
 
   it("コマンド名の位置に値を書いた形も綴りを出さない", async () => {

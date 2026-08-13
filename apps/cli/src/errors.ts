@@ -19,10 +19,11 @@ export function cliError(message: string): CliError {
 }
 
 /**
- * 引数の書き方の誤り(終了コード 2)。パーサ層で落とせない「語が何も指して
- * いない」形 — 不明な操作 / 不明な設定キー / 形式の合わない ID — に使う。
- * 実行の失敗(1)と区別できないと、スクリプトが打ち間違いを実行失敗として
- * 扱ってしまう(`runCli` の JSDoc: 0 = 成功 / 1 = 失敗 / 2 = usage エラー)。
+ * Builds a {@link CliError} for a malformed invocation (exit code 2).
+ *
+ * パーサ層で落とせない「語が何も指していない」形 — 不明な操作 / 不明な設定
+ * キー / 形式の合わない ID — に使う。実行の失敗(1)と区別できないと、
+ * スクリプトが打ち間違いを実行失敗として扱ってしまう。
  */
 export function usageError(message: string): CliError {
   return new CliError({ message, usage: true });
