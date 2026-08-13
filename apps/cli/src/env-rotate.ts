@@ -274,6 +274,8 @@ function describeSendFailure(input: {
   readonly baseline: VerifiedProject;
   readonly environmentId: string;
   readonly newEpoch: number;
+  /** 自分が生成した DEK のコミットメント(受理されたのが**自分の**分かの判定)。 */
+  readonly dekCommitmentHex: string;
   readonly cause: string;
 }): Effect.Effect<CliError, never> {
   return Effect.gen(function* () {
@@ -289,8 +291,15 @@ function describeSendFailure(input: {
       );
     }
     if (probe.value.currentEpoch === input.newEpoch) {
+      // エポックが一致しても、それが**自分の**エントリとは限らない(並行して
+      // 他メンバーが同じエポックへローテーションした場合も一致する)。
+      // コミットメントで自分の DEK かどうかを見分ける — 見分けないと、
+      // 受理されていない自分の失効ローテーションを「受理済み」と報告してしまう
+      const mine = probe.value.dekCommitments.get(input.newEpoch) === input.dekCommitmentHex;
       return cliError(
-        `${input.cause}。ただしチェーンを確認したところ、**ローテーション自体は受理されています**(環境 ${input.environmentId} は epoch ${input.newEpoch})。現在値の再暗号化は 1 件も実行されていないため、旧エポックの DEK 保持者は現在値を読めるままです — maruhi env rotate ${input.environmentId} を再実行すると、エポックを進めずに再暗号化から再開します`,
+        mine
+          ? `${input.cause}。ただしチェーンを確認したところ、**このローテーション自体は受理されています**(環境 ${input.environmentId} は epoch ${input.newEpoch})。現在値の再暗号化は 1 件も実行されていないため、旧エポックの DEK 保持者は現在値を読めるままです — maruhi env rotate ${input.environmentId} を再実行すると、エポックを進めずに再暗号化から再開します`
+          : `${input.cause}。チェーン上の epoch ${input.newEpoch} は**他メンバーのローテーション**であり、この実行の分は受理されていません(生成した DEK は使用しません)— maruhi env rotate ${input.environmentId} を再実行してください(未完了の再暗号化があれば、エポックを進めずに再開します)`,
       );
     }
     return cliError(
@@ -435,6 +444,7 @@ function appendRotation(
           baseline: input.baseline,
           environmentId: input.environmentId,
           newEpoch: input.newEpoch,
+          dekCommitmentHex: input.dekCommitmentHex,
           cause: attempted.error.message,
         }),
       );
@@ -511,6 +521,45 @@ function decryptForRotation(input: {
 }
 
 /**
+ * 巡末の実態で裏を取った push 失敗だけを原因候補にする。並行削除(404)のように
+ * **その変数自体が解決している**失敗を原因として掲げると、実際に未完了で残って
+ * いる別の変数(競合など)の本当の原因を隠してしまう。
+ */
+/**
+ * 1 つも再暗号化できないならエポックを進めない。進めても全ての現在値が旧エポックの
+ * DEK のまま取り残されるだけで、**失効にならない**(自分宛ラップが 1 つも無い
+ * メンバー / 全ラップを落とす応答で、エポックだけが空回りする)。--new-epoch も
+ * 助けにならない — 開ける値が無い以上、再暗号化する材料が無い。
+ */
+function ensureRotationIsUseful(targets: number, variables: number): Effect.Effect<void, CliError> {
+  if (targets > 0 || variables === 0) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    cliError(
+      `再暗号化できる値が 1 つもありません(${variables} 変数すべてについて自分宛のラップが不足しています)。この状態でエポックを進めても現在値は旧エポックの DEK のまま取り残され、失効になりません — 当該エポックのラップを持つメンバーが実行してください`,
+    ),
+  );
+}
+
+/** タグ付き失敗からメッセージだけを取り出す(null 伝播)。 */
+function failureMessage(
+  failure: { readonly variableId: string; readonly message: string } | null,
+): string | null {
+  return failure === null ? null : failure.message;
+}
+
+function pendingFailure(
+  failure: { readonly variableId: string; readonly message: string } | null,
+  staleIds: ReadonlySet<string>,
+): string | null {
+  if (failure === null) {
+    return null;
+  }
+  return staleIds.has(failure.variableId) ? failure.message : null;
+}
+
+/**
  * 未完了の原因の優先順: push の失敗 > 開けない値 > 競合(既定文言 = null)。
  * 開けない値を競合に潰すと、存在しない並行 writer を追わせることになる —
  * 実際に要るのは「当該エポックのラップを持つ別メンバーによる再実行」である。
@@ -552,10 +601,18 @@ function stalledOnUndecryptable(pending: readonly ReencryptTarget[], pass: numbe
 }
 
 /**
+ * 「自分宛ラップが無い」理由文。**1 箇所に固定する**(下の undecryptableWarning と
+ * 同じ理由 — 文面が割れると dedupeWarnings が同じ変数を 2 回通す)。
+ */
+/**
  * 復号できなかった値の警告文。**1 箇所に固定する**: 同じ変数が経路ごとに
  * 少しずつ違う文面で警告されると、dedupeWarnings(集合)は別物として通してしまい、
  * 重複排除のために入れた仕組みがそのまま重複を出すことになる。
  */
+function missingWrapReason(value: VerifiedPulledValue): string {
+  return `変数 ${displayText(value.name)} のエポック ${value.epoch} の DEK が配布されていません(自分宛ラップの欠落)`;
+}
+
 function undecryptableWarning(reason: string): string {
   return `再暗号化できない値が残っています(${reason})。この変数は旧エポックの DEK のままです — 当該エポックのラップを持つメンバーによる再実行が必要です`;
 }
@@ -594,9 +651,7 @@ function decryptTargets(input: {
       // 兆候を良性の運用待ちとして報告し、--new-epoch で踏み越えるよう案内する
       // ことになる
       if (!input.deksByEpoch.has(value.epoch)) {
-        undecryptable.push(
-          `変数 ${displayText(value.name)} のエポック ${value.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
-        );
+        undecryptable.push(missingWrapReason(value));
         continue;
       }
       const plaintext = yield* decryptVerifiedValue({
@@ -917,16 +972,17 @@ function rescanEnvironment(input: {
       // 復号はしないが「開けるのか」は判定する: 自分宛ラップの有無は Map の
       // 参照だけで分かり、平文を作らずに済む。これを飛ばすと、最終巡で初めて
       // 判明する「開けない値だけが残った」状態の原因が既定文言(競合)に化ける
+      const missing = stale.filter((value) => !deksByEpoch.has(value.epoch)).map(missingWrapReason);
+      // 復号を試みる巡と同じく、変数ごとの警告も出す(原因としての報告だけだと、
+      // push の失敗が優先された巡でどの変数が取り残されたのか伝わらない)
+      for (const reason of missing) {
+        input.collectWarning(undecryptableWarning(reason));
+      }
       return {
         view,
         stale,
         targets: [],
-        undecryptable: stale
-          .filter((value) => !deksByEpoch.has(value.epoch))
-          .map(
-            (value) =>
-              `変数 ${displayText(value.name)} のエポック ${value.epoch} の DEK が配布されていません(自分宛ラップの欠落)`,
-          ),
+        undecryptable: missing,
         alreadyCurrent: reconciled.alreadyCurrent,
         evidence: null,
       };
@@ -1046,8 +1102,13 @@ interface PushPassResult {
   readonly unfinishedIds: ReadonlySet<string>;
   /** 受理された自分の書き込み(台帳の新しい基準)。 */
   readonly written: readonly VerifiedPulledValue[];
-  /** 個別に失敗した最初の原因(巡自体は止めない。数は unfinishedIds が持つ)。 */
-  readonly firstFailure: string | null;
+  /**
+   * 個別に失敗した最初の原因(巡自体は止めない。数は unfinishedIds が持つ)。
+   * **どの変数の失敗か**も持つ: 巡末の再走査でその変数が解決していた場合
+   * (並行削除の 404 など)、未完了の原因として掲げると別の変数の本当の原因を
+   * 隠してしまうため、呼び出し側が実態と突き合わせて捨てられるようにする。
+   */
+  readonly firstFailure: { readonly variableId: string; readonly message: string } | null;
   readonly warnings: readonly string[];
 }
 
@@ -1078,14 +1139,14 @@ function runPushPass(input: {
     const total = input.doneBefore + input.pending.length;
     let reencrypted = 0;
     const epochStaleIds = new Set<string>();
-    let firstFailure: string | null = null;
+    let firstFailure: { readonly variableId: string; readonly message: string } | null = null;
     for (const target of input.pending) {
       const attempt = yield* asOutcome(
         pushReencrypted({ context: input.context, view: input.view, target }),
       );
       if (attempt.kind === "failed") {
         // 巡は止めない(残りの変数を旧エポックに取り残さない)
-        firstFailure ??= attempt.error.message;
+        firstFailure ??= { variableId: target.value.variableId, message: attempt.error.message };
         unfinishedIds.add(target.value.variableId);
         continue;
       }
@@ -1102,7 +1163,10 @@ function runPushPass(input: {
         warnings.push(
           `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(他メンバーによる並行削除の可能性)。再取得でアクティブ集合から消えていれば対象から外し、まだ配布されていれば未完了として数えます`,
         );
-        firstFailure ??= `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(並行削除の可能性)`;
+        firstFailure ??= {
+          variableId: target.value.variableId,
+          message: `変数 ${displayText(target.value.name)} の再暗号化が 404 で拒否されました(並行削除の可能性)`,
+        };
         unfinishedIds.add(target.value.variableId);
         continue;
       }
@@ -1188,6 +1252,8 @@ type PassVerdict =
       readonly targets: readonly ReencryptTarget[];
       /** 開けなかった値の理由(未完了の原因として報告する)。 */
       readonly undecryptable: readonly string[];
+      /** まだ目標エポック未満のまま残っている変数 id(原因の取捨に使う)。 */
+      readonly staleIds: ReadonlySet<string>;
       readonly alreadyCurrent: number;
     }
   /**
@@ -1241,7 +1307,7 @@ function settlePass(input: {
       const pushFailure =
         input.pass.firstFailure === null
           ? ""
-          : `(併せて再暗号化中の失敗もありました: ${input.pass.firstFailure})`;
+          : `(併せて再暗号化中の失敗もありました: ${input.pass.firstFailure.message})`;
       return {
         warnings,
         verdict: {
@@ -1298,6 +1364,7 @@ function settlePass(input: {
         remaining: rescan.value.stale.length,
         targets: rescan.value.targets,
         undecryptable: rescan.value.undecryptable,
+        staleIds: new Set(rescan.value.stale.map((value) => value.variableId)),
         alreadyCurrent: rescan.value.alreadyCurrent,
       },
     } as const;
@@ -1403,13 +1470,16 @@ function reencryptCurrentValues(input: {
         // (完了を検証できている以上、部分完了として非ゼロ終了させない)
         noteResolvedFailure(
           warnings,
-          attempted.firstFailure ?? seenFailure,
+          failureMessage(attempted.firstFailure) ?? seenFailure,
           "再走査で完了を確認しました",
         );
         return outcome(0, null, true);
       }
-      blockingFailure = blockingCause(attempted.firstFailure, settled.verdict.undecryptable);
-      seenFailure ??= attempted.firstFailure;
+      blockingFailure = blockingCause(
+        pendingFailure(attempted.firstFailure, settled.verdict.staleIds),
+        settled.verdict.undecryptable,
+      );
+      seenFailure ??= failureMessage(attempted.firstFailure);
       if (stalledOnUndecryptable(pending, pass)) {
         // 未完了は残っているのに押せる対象が 1 つも無い = 復号できない値だけが
         // 残っている。残りの巡を回しても pull を繰り返すだけで前進しない
@@ -1640,6 +1710,7 @@ function rotateWithWarnings(
       chainEpoch: currentEpoch,
       warnings,
     });
+    yield* ensureRotationIsUseful(targets.length, pulled.variables.length);
     const dek = generateDek();
     const commitment = yield* Effect.tryPromise({
       try: () =>

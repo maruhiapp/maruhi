@@ -186,6 +186,13 @@ interface ServerOptions {
   readonly onPush?: (call: number, variableId: string) => MockResponse | undefined;
   /** pull 呼び出しごとの差し込み応答(undefined = 正常応答)。巡末の再走査を潰す用。 */
   readonly onPull?: (call: number) => MockResponse | undefined;
+  /** chain 取得ごとの差し込み応答(undefined = 正常応答)。受理確認を潰す用。 */
+  readonly onChain?: (call: number) => MockResponse | undefined;
+  /**
+   * rotate を試みた**後**に配信するチェーン(他メンバーの並行ローテーションの
+   * モデル化)。timestamp は決定的なので、元のチェーンの延長として検証を通る。
+   */
+  readonly chainAfterRotateAttempt?: BuiltChain | undefined;
 }
 
 interface ServerState {
@@ -212,17 +219,45 @@ function makeServer(options: ServerOptions): ServerState {
   let rotateCalls = 0;
   let pushCalls = 0;
   let pullCalls = 0;
+  let chainCalls = 0;
+
+  /** 受理: エントリをチェーンへ追記し、同梱ラップを配布集合へ入れる。 */
+  const acceptRotate = async (body: RotateBody): Promise<void> => {
+    entries.push(body.entry);
+    hashes.push(await computeChainEntryHash(body.entry));
+    currentEpoch = body.entry.payload.newEpoch;
+    for (const wrap of body.deks) {
+      if (wrap.recipientUserId !== owner.userId) {
+        continue;
+      }
+      deks.push({
+        suite: wrap.suite,
+        epoch: wrap.epoch,
+        encHex: wrap.encHex,
+        ciphertextHex: wrap.ciphertextHex,
+        signatureHex: wrap.signatureHex,
+        signerUserId: owner.userId,
+        signerKeyFingerprintHex: owner.fingerprintHex,
+      });
+    }
+  };
 
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
-      status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-      },
-    })),
+    onRequest("GET", `/projects/${projectId}/chain`, () => {
+      const injected = options.onChain?.(chainCalls);
+      chainCalls += 1;
+      return (
+        injected ?? {
+          status: 200,
+          json: {
+            projectId,
+            entries,
+            headSeq: entries.length,
+            headHashHex: hashes[hashes.length - 1],
+          },
+        }
+      );
+    }),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => {
       const injected = options.onPull?.(pullCalls);
       pullCalls += 1;
@@ -249,30 +284,18 @@ function makeServer(options: ServerOptions): ServerState {
       }
       const body = request.body as RotateBody;
       rotateBodies.push(body);
+      if (options.chainAfterRotateAttempt !== undefined) {
+        // 他メンバーが先に(あるいは並行して)追記した形へ差し替える
+        entries.splice(0, entries.length, ...options.chainAfterRotateAttempt.entries);
+        hashes.splice(0, hashes.length, ...options.chainAfterRotateAttempt.hashes);
+      }
       const injected = options.onRotate?.(rotateCalls);
       const injectedAfterAccept = options.onRotateAfterAccept?.(rotateCalls);
       rotateCalls += 1;
       if (injected !== undefined) {
         return injected;
       }
-      // 受理: エントリをチェーンへ追記し、同梱ラップを配布集合へ入れる
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
-      currentEpoch = body.entry.payload.newEpoch;
-      for (const wrap of body.deks) {
-        if (wrap.recipientUserId !== owner.userId) {
-          continue;
-        }
-        deks.push({
-          suite: wrap.suite,
-          epoch: wrap.epoch,
-          encHex: wrap.encHex,
-          ciphertextHex: wrap.ciphertextHex,
-          signatureHex: wrap.signatureHex,
-          signerUserId: owner.userId,
-          signerKeyFingerprintHex: owner.fingerprintHex,
-        });
-      }
+      await acceptRotate(body);
       return (
         injectedAfterAccept ?? {
           status: 200,
@@ -1787,6 +1810,90 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("再暗号化から再開します");
   });
 
+  it("1 つも再暗号化できないならエポックを進めない(空回りで失効にならない)", async () => {
+    // 自分宛のラップが 1 つも無いメンバー(あるいは全ラップを落とす応答)。
+    // ここでエポックだけ進めると、全ての現在値が旧エポックの DEK のまま残り、
+    // 失効にならないまま「ローテーションした」記録だけがチェーンに載る
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({ built: chainBase, variables, deks: [], currentEpoch: 1 });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "空回り"], env.layer)).toBe(1);
+    expect(state.rotateBodies).toHaveLength(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("再暗号化できる値が 1 つもありません");
+    expect(errors).toContain("失効になりません");
+  });
+
+  it("送信失敗の裏で進んでいたのが他メンバーのローテーションなら、そう伝える", async () => {
+    // epoch は目標値に達しているが、載っているのは他メンバーの DEK
+    // コミットメント — 自分の失効ローテーションは受理されていない
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // 送信は 502。裏では別メンバーが epoch 2 へローテーション済みにする
+      onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
+      chainAfterRotateAttempt: chainRotated,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "他メンバー"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("他メンバーのローテーション");
+    expect(errors).toContain("この実行の分は受理されていません");
+    // 自分の分が受理されたと読ませない
+    expect(errors).not.toContain("このローテーション自体は受理されています");
+  });
+
+  it("受理されたか確認できない場合は、エポックが進んだ可能性を明示する", async () => {
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
+      // 確認のためのチェーン再取得も落ちる(通信障害が続いている)
+      onChain: (call) => (call === 0 ? undefined : { status: 503, bodyText: "unavailable" }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "確認不能"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("エポックが既に 2 へ進んでいる可能性があります");
+    expect(errors).toContain("通信を復旧したうえで");
+  });
+
   it("複合の送信が失敗し、受理もされていなければ「そのまま再実行できる」と伝える", async () => {
     const state = makeServer({
       built: chainBase,
@@ -2311,13 +2418,24 @@ describe("maruhi env rotate", () => {
       1,
     );
     expect(env.errors.join("\n")).toContain("env rotate では使えません");
-    // boolean への値指定(`--new-epoch=false`)は拒否する。gunshi は値を読まずに
-    // true にするため、放置すると書いたことと逆(必ず新エポック)が起き、
-    // チェーンは append-only なので取り消せない
+    // boolean への値指定は拒否する。gunshi は値を読まずに true にするため、
+    // 放置すると書いたことと逆(必ず新エポック)が起き、チェーンは append-only
+    // なので取り消せない。インライン形(=)と空白区切り形の両方を塞ぐ
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch=false"], env.layer),
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
+    // 空白区切りは「フラグ有効 + 余分な位置引数」になる(gunshi は値を消費しない)
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch", "false"], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("余分な引数です: false");
+    // 余分な位置引数一般(`env rotate dev garbage`)も黙って落とさない
+    expect(await runCli(["env", "rotate", ENV_ID, "garbage"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("余分な引数です: garbage");
+    // プロトタイプ由来の名前で未知オプション検査を素通りさせない
+    expect(await runCli(["env", "rotate", ENV_ID, "--constructor=x"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("不明なオプションです: --constructor");
     // 打ったとおりの綴りで返す(短縮形を `--x` に書き換えて出さない)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "-q"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("不明なオプションです: -q");
