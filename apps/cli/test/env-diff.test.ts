@@ -6,7 +6,7 @@
 //     `var.read` を記録しない — AUDIT_SPEC §3.3)
 //  2. 差分の内容と件数、および**名前でソートされた安定な出力順**
 //     (ワイヤの並びを変えても出力が変わらない)
-//  3. 変数名は他メンバーが書いた平文メタデータなので ANSI / BEL / 改行を中和する
+//  3. 変数名は他メンバーが書いた平文メタデータなので ANSI / BEL / 改行を中和し、
 //     視覚的に同名でも正規化形が違えば別物として報告する(NFC / NFD)
 //  4. 2 環境ぶんの警告は環境 ID でラベルする(文面まで同一の警告が畳まれて
 //     片方の事実が消えない)
@@ -358,7 +358,7 @@ describe("maruhi env diff", () => {
 
   describe("書き方の誤り(usage エラー = 2)", () => {
     it("環境を 1 つしか書いていない実行を落とす(通信より前)", async () => {
-      const env = await startEnv(await handlersFor([], []));
+      const env = await startEnv([]);
 
       expect(await runCli(["env", "diff", DEV], env.layer)).toBe(2);
       expect(env.errors).toEqual([
@@ -368,7 +368,7 @@ describe("maruhi env diff", () => {
     });
 
     it("同じ環境 ID を 2 つ書いた実行を落とす(指定値は出さない)", async () => {
-      const env = await startEnv(await handlersFor([], []));
+      const env = await startEnv([]);
 
       expect(await runCli(["env", "diff", DEV, DEV], env.layer)).toBe(2);
       expect(env.errors).toEqual([
@@ -378,7 +378,7 @@ describe("maruhi env diff", () => {
     });
 
     it("2 つ目の環境 ID にも形式検査を掛ける(指定値は出さない)", async () => {
-      const env = await startEnv(await handlersFor([], []));
+      const env = await startEnv([]);
 
       expect(await runCli(["env", "diff", DEV, "not a valid id"], env.layer)).toBe(2);
       expect(env.errors).toEqual([
@@ -389,7 +389,7 @@ describe("maruhi env diff", () => {
     });
 
     it("create 専用の --name を diff で拒否する", async () => {
-      const env = await startEnv(await handlersFor([], []));
+      const env = await startEnv([]);
 
       expect(await runCli(["env", "diff", DEV, PROD, "--name", "x"], env.layer)).toBe(2);
       expect(env.errors).toEqual([
@@ -399,19 +399,19 @@ describe("maruhi env diff", () => {
     });
 
     it("rotate 専用の --reason / --new-epoch を diff で拒否する", async () => {
-      const withReason = await startEnv(await handlersFor([], []));
+      const withReason = await startEnv([]);
       expect(await runCli(["env", "diff", DEV, PROD, "--reason", "x"], withReason.layer)).toBe(2);
       expect(withReason.errors).toEqual([
         "maruhi: --reason は env diff では使えません(env rotate 用のオプションです)",
       ]);
 
-      const withEpoch = await startEnv(await handlersFor([], []));
+      const withEpoch = await startEnv([]);
       expect(await runCli(["env", "diff", DEV, PROD, "--new-epoch"], withEpoch.layer)).toBe(2);
       expect(withEpoch.errors).toEqual([
         "maruhi: --new-epoch は env diff では使えません(env rotate 用のオプションです)",
       ]);
       // 否定形(`--no-new-epoch`)も同じオプションの綴りとして拒否する
-      const negated = await startEnv(await handlersFor([], []));
+      const negated = await startEnv([]);
       expect(await runCli(["env", "diff", DEV, PROD, "--no-new-epoch"], negated.layer)).toBe(2);
       expect(negated.errors).toEqual([
         "maruhi: --no-new-epoch は env diff では使えません(env rotate 用のオプションです)",
@@ -419,20 +419,20 @@ describe("maruhi env diff", () => {
     });
 
     it("diff 専用の 3 つ目の位置引数は create / rotate では余分な引数になる", async () => {
-      const created = await startEnv(await handlersFor([], []));
+      const created = await startEnv([]);
       expect(await runCli(["env", "create", DEV, PROD], created.layer)).toBe(2);
       expect(created.errors[0]).toContain("余分な引数です(1 個");
       expect(created.errors[0]).toContain(
         "maruhi env が取る位置引数は action environment-id だけです",
       );
 
-      const rotated = await startEnv(await handlersFor([], []));
+      const rotated = await startEnv([]);
       expect(await runCli(["env", "rotate", DEV, PROD], rotated.layer)).toBe(2);
       expect(rotated.errors[0]).toContain("余分な引数です(1 個");
     });
 
     it("未知の操作では 3 つ目を除かない(操作名の誤りを先に報告する)", async () => {
-      const env = await startEnv(await handlersFor([], []));
+      const env = await startEnv([]);
 
       expect(await runCli(["env", "bogus", DEV, PROD], env.layer)).toBe(2);
       expect(env.errors).toEqual(["maruhi: 不明な操作です(create | rotate | diff)"]);
