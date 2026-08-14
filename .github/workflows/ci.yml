@@ -8,6 +8,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml が publish 前の品質ゲートとしてこのファイルを丸ごと再利用する
+  # (複製すると ci.yml の修正がリリース側に反映されず古いまま残るため)
+  workflow_call:
+
+# 既定の緩い権限に頼らない。テスト実行に必要なのは checkout のみ
+permissions:
+  contents: read
 
 env:
   # 「言わざる」原則(CLAUDE.md)はメンテナ環境の CI にも適用する:
@@ -18,13 +25,20 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # workflow_call 経由でリリースのゲートにもなるため上限を明示する
+    # (呼び出し側の release.yml は `uses:` job に timeout を掛けられない。
+    # 実測 10〜15 分 + 余裕。既定の 360 分だと hang がリリースを 6 時間塞ぐ)
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # React Doctor の diff モードと fallow audit が base ブランチとの比較を必要とする
           fetch-depth: 0
+          # 以後のステップは checkout 済みのローカル履歴だけを見る(認証付き git
+          # 操作はない)。依存・テストコードを走らせる job にトークンを残さない
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
 

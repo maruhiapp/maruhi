@@ -1,0 +1,318 @@
+# タグ駆動リリース(ADR-0015 / docs/RELEASING.md)
+#
+# `v*` タグの push で: 品質ゲート(ci.yml を丸ごと再利用)→ タグ ↔ apps/cli の
+# version 一致検査 → bun compile バイナリ 5 対象 → 実機スモーク(5 OS runner)→
+# GitHub Release(checksums.txt 添付)→ npm publish(trusted publishing + provenance)。
+# workflow_dispatch はドライラン: publish 以外を全部通す(タグ前の配管検証用)。
+#
+# 運用上の不変条件:
+# - publish はすべてのゲート(verify / version-check / smoke)の後。壊れたものは
+#   タグを打っても出ない
+# - タグの打ち直しはしない(既存 Release への上書きは gh release create が失敗する)。
+#   やり直しは rc を進める(docs/RELEASING.md)
+# - タグは main 系譜上のコミットにのみ有効(version-check が検査する。レビューを
+#   経ていないブランチコミットへ v タグを打てば publish できる経路を塞ぐ)
+# - 外部 action は commit SHA でピン留めする(contents: write / id-token: write を
+#   持つ特権経路のため、可変タグ経由の上流侵害を排除する。ADR-0011 の厳密ピン留めと
+#   同じ規律 — 更新は SHA を進める独立 PR で意図的に行う)
+name: release
+
+on:
+  push:
+    # `v*` だと vendor-... のような無関係のタグでもフル CI が走る
+    tags: ["v[0-9]*"]
+  # ドライラン(build + smoke + checksums まで。publish はしない)
+  workflow_dispatch:
+
+# 既定の緩い権限に頼らない。job ごとに必要最小限を明示する
+permissions: {}
+
+# 同一タグの再実行・連打で publish が並走しないよう直列化する。
+# cancel-in-progress は使わない: publish 途中の run を殺すと GitHub Release と
+# npm が食い違った中途半端な状態で止まりうる
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 「言わざる」原則(CLAUDE.md)を ci.yml と同様にリリース経路にも適用する
+  DO_NOT_TRACK: "1"
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  # 品質ゲート一式(bun audit + 11 ステップ)。ci.yml の workflow_call を呼ぶ
+  verify:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # バージョンの単一の出所は apps/cli/package.json(cli.ts が import)。
+  # タグと一致しない場合はここで止める(版のズレた成果物を作らない)
+  version-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # main 系譜の検査(下)に履歴が要る
+          fetch-depth: 0
+          # 以後の git fetch は public リポジトリの未認証で足りる。トークンを
+          # .git/config に残さない(依存コードを走らせる job と同じ規律)
+          persist-credentials: false
+
+      - name: Resolve version (tag ↔ apps/cli/package.json, ancestry)
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          VERSION=$(node -p "require('./apps/cli/package.json').version")
+          # canonical SemVer(scripts/shared.ts の SEMVER_PATTERN と同型)。緩い判定だと
+          # 先頭ゼロ等が最後の npm publish で初めて弾かれ、Release と npm が食い違う。
+          # 後続 job はこの output をシェルへ展開するため、形式検査は注入対策を兼ねる
+          SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+          if ! [[ "${VERSION}" =~ ${SEMVER_RE} ]]; then
+            echo "::error::apps/cli/package.json の version が SemVer ではありません: ${VERSION}"
+            exit 1
+          fi
+          if [ "${EVENT_NAME}" = "push" ] && [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::タグ ${GITHUB_REF_NAME} と apps/cli/package.json の version ${VERSION} が一致しません(docs/RELEASING.md)"
+            exit 1
+          fi
+          if [ "${EVENT_NAME}" = "push" ]; then
+            # タグが main 系譜上のコミットを指すことを強制する。これが無いと、
+            # レビューを経ていない任意のブランチコミットに v タグを打つだけで
+            # 正規の Release / npm publish(provenance 付き)まで到達できる。
+            # origin/main は checkout(fetch-depth: 0 = 全ブランチ・全履歴)が
+            # 取得済み — ここで再 fetch しない(persist-credentials: false の後の
+            # 手動 fetch は、リポジトリを private 化した瞬間に唯一壊れる行になる)
+            if ! git merge-base --is-ancestor HEAD origin/main; then
+              echo "::error::タグ ${GITHUB_REF_NAME} は main 上のコミットを指していません(docs/RELEASING.md)"
+              exit 1
+            fi
+          fi
+          case "${VERSION}" in
+            *-*) PRERELEASE=true ;;
+            *) PRERELEASE=false ;;
+          esac
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+  # 5 対象のクロスコンパイルと checksums.txt(生成は scripts/build-binaries.ts に
+  # 一元化。ここにビルド手順を複製しない)
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: version-check
+    permissions:
+      contents: read
+    outputs:
+      smoke-matrix: ${{ steps.smoke-matrix.outputs.matrix }}
+    steps:
+      # 依存コード(bun install / build)を実行する job にトークンを残さない
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # smoke matrix も TARGETS(scripts/shared.ts)から導出する: 対象を足すと
+      # 実 OS スモークが自動で付いてくる(表の複製で smoke 側だけ漏れ、クロス
+      # コンパイルしか通っていない成果物が公開される形を塞ぐ)
+      - name: Export smoke matrix (single source = scripts/shared.ts)
+        id: smoke-matrix
+        run: |
+          # echo の引数内のコマンド置換は失敗しても echo が exit 0 になり、後段の
+          # fromJson('') という遠い場所で壊れる。代入(-e で失敗が伝播する)を挟む
+          MATRIX=$(bun apps/cli/scripts/print-smoke-matrix.ts)
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries + checksums
+        run: bun run --filter @maruhi/cli build:binaries
+
+      # npm ステージングも同じ job で組む: 権限・信頼水準(contents: read で依存
+      # コードを実行)が同一で、job を分けても得るものがない。publish-npm との
+      # 分離(id-token の隔離)だけが本質で、それは維持されている
+      - name: Stage npm package (bundle)
+        run: bun run --filter @maruhi/cli build:npm
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: binaries
+          path: apps/cli/dist/
+          if-no-files-found: error
+          # publish-npm 単独失敗の復旧(失敗 job の re-run — docs/RELEASING.md)は
+          # アーティファクトの生存が前提。7 日だと「気づくのが遅れた」だけで
+          # 同一版での復旧が閉じる
+          retention-days: 30
+          # 「Re-run all jobs」の新 attempt で同名アーティファクトが 409 になり、
+          # タグ打ち直し禁止の下では rc を burn するしかなくなる罠を塞ぐ
+          overwrite: true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-package
+          path: apps/cli/dist-npm/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  # 実機スモーク: クロスコンパイルは「ビルドが通る」ことしか保証しないため、
+  # 全対象を実 OS runner で起動する。対象と runner の一覧は scripts/shared.ts の
+  # TARGETS が単一の出所(build job の output 経由で fromJSON)
+  smoke:
+    name: smoke (${{ matrix.target }})
+    needs: [version-check, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.build.outputs.smoke-matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      # 全アーカイブ(約 150MB)を落として 1 本だけ使う。download-artifact v4 は
+      # アーティファクト内の部分取得ができず、対象別アーティファクトに分けると
+      # upload 側に対象一覧の複製が戻ってきて単一出所(shared.ts TARGETS)が壊れる。
+      # 5 対象 × 低頻度リリースでは転送コストの方が安い(対象が増えたら見直す)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: binaries
+
+      # `${{ }}` を run へ直接展開しない(env 経由): 版文字列などの値がシェルとして
+      # 解釈される注入経路を作らない(GitHub の hardening ガイダンス)
+      - name: Launch check (--version / --help)
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: ${{ matrix.bin }}
+          EXPECTED_VERSION: ${{ needs.version-check.outputs.version }}
+        run: |
+          tar -xzf "maruhi-${TARGET}.tar.gz"
+          GOT="$(./"${BIN}" --version)"
+          echo "version: ${GOT}"
+          test "${GOT}" = "${EXPECTED_VERSION}"
+          ./"${BIN}" --help > /dev/null
+
+      # OS キーチェーン経路の観測。トークン未保存の logout は「キーチェーンに
+      # ありません」(= バックエンド到達 OK)か、バックエンド不在の型付きエラーの
+      # どちらかで exit 1 する — それ以外(クラッシュ・シグナル死・想定外の出力)を
+      # 赤にする。runner のキーチェーン事情(headless / 未ロック)は制御できないため
+      # リリースのゲートにはしない(continue-on-error)が、赤 = 実異常として見える
+      - name: Keychain probe (typed failure expected)
+        continue-on-error: true
+        shell: bash
+        env:
+          BIN: ${{ matrix.bin }}
+        run: |
+          set +e
+          OUT=$(./"${BIN}" logout --server https://keychain-probe.invalid 2>&1)
+          CODE=$?
+          set -e
+          echo "${OUT}"
+          echo "exit: ${CODE}"
+          # 明示分岐で先に注釈を出す(-e 下で素の test に失敗させると、クラッシュ
+          # 判別という本 step の目的の注釈が出ないまま落ちる)
+          if [ "${CODE}" != "1" ]; then
+            echo "::warning::型付きエラーの exit 1 ではない落ち方をした(exit ${CODE}。クラッシュ / シグナル死の疑い)"
+            exit 1
+          fi
+          case "${OUT}" in
+            *キーチェーン*) ;;
+            *) echo "::warning::キーチェーンの型付きエラー以外の出力で失敗した"; exit 1 ;;
+          esac
+
+  # GitHub Release の作成(checksums.txt 添付)。リリースノートは自動生成
+  # (ADR-0015: CHANGELOG は 1.0 まで新設しない)
+  publish-github:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # npm ステージングは build job 内(smoke 経由の前提)。壊れていれば build が
+    # 落ち、撤回不能な Release 作成まで到達しない
+    needs: [verify, version-check, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: binaries
+
+      # 生成(node:crypto)と独立の実装(coreutils)で照合してから公開する
+      - name: Verify checksums
+        run: sha256sum -c checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version-check.outputs.prerelease }}
+        run: |
+          FLAGS=(--generate-notes --verify-tag)
+          if [ "${PRERELEASE}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${FLAGS[@]}" \
+            maruhi-*.tar.gz checksums.txt
+
+  # npm publish(unscoped `maruhi`)。認証は trusted publishing(OIDC)のみ:
+  # 長命トークンを GitHub Secrets に置かない。provenance は明示フラグで強制する
+  # (bun publish は provenance 未対応 — oven-sh/bun#15601 — のため npm CLI を使う)。
+  # id-token: write はこの job だけに与え、実行するのはピン留め済み公式 action と
+  # npm CLI のみ(checkout もリポジトリ依存コードの実行もしない)
+  publish-npm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # build は npm-package アーティファクトの生成元(実行順は publish-github 経由で
+    # 直列化済み — これは依存の明示。暗黙の推移的依存だと publish-github の needs を
+    # 将来変えたとき、撤回不能な Release 作成後に download で落ちる形になる)
+    needs: [version-check, build, publish-github]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # npm trusted publishing(OIDC)と provenance の生成に必要
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: dist-npm
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      # trusted publishing は npm >= 11.5.1 が前提。満たさない場合は publish の
+      # 認証エラーより手前の明確なメッセージで止める
+      - name: Ensure npm >= 11.5.1
+        run: |
+          node -e '
+            const v = require("child_process").execSync("npm --version").toString().trim();
+            const [maj, min, pat] = v.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && pat >= 1)));
+            if (!ok) { console.error(`npm ${v} < 11.5.1: trusted publishing 不可`); process.exit(1); }
+            console.log(`npm ${v}`);
+          '
+
+      # upload/download-artifact はファイルモードを保持しない(公式ドキュメント)ため、
+      # ステージング時の実行ビットをここで戻す。install 時の bin は npm / bun が
+      # chmod するので実害は薄いが、公開 tarball 内のモードを正しく保つ
+      - name: Restore executable bit (lost in artifact roundtrip)
+        run: chmod +x ./dist-npm/bin.js
+
+      - name: Publish to npm (provenance)
+        env:
+          # プレリリース(v0.1.0-rc.1 等)は latest を動かさず next に置く
+          DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        # パスは必ず ./ 付きで渡す: 素の `dist-npm` は npm がレジストリの
+        # パッケージ名として解釈し ENOVERSIONS / E404 で落ちる(--dry-run で実証済み)
+        run: npm publish ./dist-npm --provenance --tag "${DIST_TAG}"

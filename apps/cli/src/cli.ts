@@ -10,6 +10,7 @@ import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
+import { version as packageVersion } from "../package.json";
 import { ensureValueDisplayAllowed } from "./agent.ts";
 import {
   type ArgCheckContext,
@@ -52,7 +53,11 @@ import { syncProject } from "./sync.ts";
 
 export type { CliServices } from "./context.ts";
 
-const CLI_VERSION = "0.0.0";
+// バージョンの単一の出所は apps/cli/package.json。リリース時はタグとの一致を
+// release workflow が検査する(docs/RELEASING.md)。named import は必須:
+// default import に変えるとマニフェスト全体(scripts・依存ピン)が npm 配布物と
+// 全バイナリへ埋め込まれる(実測。npm-dist.test.ts が成果物側で固定)
+const CLI_VERSION: string = packageVersion;
 
 /** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
 export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {

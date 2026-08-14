@@ -1,6 +1,6 @@
 {
   "name": "@maruhi/cli",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.1",
   "private": true,
   "license": "MIT",
   "bin": {
@@ -12,6 +12,9 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build:binaries": "bun scripts/build-binaries.ts",
+    "build:npm": "bun scripts/build-npm.ts",
+    "smoke-matrix": "bun scripts/print-smoke-matrix.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

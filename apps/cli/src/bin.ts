@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 // `maruhi` / `mh` バイナリのエントリポイント(Bun ランタイム)。
 
+// ランタイム検査は import ホイストより先に効かせる必要があるため、
+// 先頭の副作用 import で行う(runtime-guard.ts)
+import "./runtime-guard.ts";
 import { runCli } from "./cli.ts";
 import { liveLayer } from "./live.ts";
 
