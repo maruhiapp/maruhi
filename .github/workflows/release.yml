@@ -272,7 +272,10 @@ jobs:
   # npm CLI のみ(checkout もリポジトリ依存コードの実行もしない)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version-check, publish-github]
+    # build は npm-package アーティファクトの生成元(実行順は publish-github 経由で
+    # 直列化済み — これは依存の明示。暗黙の推移的依存だと publish-github の needs を
+    # 将来変えたとき、撤回不能な Release 作成後に download で落ちる形になる)
+    needs: [version-check, build, publish-github]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
