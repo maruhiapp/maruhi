@@ -36,6 +36,60 @@
    `npm view maruhi dist-tags` が期待どおりであること、npm ページに provenance
    バッジが出ていること
 
+## Homebrew tap の更新(安定版のみ。リリース完了後)
+
+tap は別リポジトリ `maruhiapp/homebrew-maruhi`。formula は**生成物**で、
+[`apps/cli/scripts/generate-formula.ts`](../apps/cli/scripts/generate-formula.ts) が
+Release の `checksums.txt` から作る(手で sha256 を書き写さない)。
+
+**プレリリース(`-rc.N`)は tap に載せない** — 生成器も既定で拒否する
+(`--allow-prerelease` で上書きできるが、通常は使わない)。
+
+### 初回のみ(所有者の人間タスク)
+
+1. GitHub で **`maruhiapp/homebrew-maruhi`** を作る(public。名前は `homebrew-` 接頭辞が必須 —
+   これで `brew install maruhiapp/maruhi/maruhi` が解決する)
+2. リポジトリ直下に `Formula/` ディレクトリを作る(README があると親切)
+3. 初回の formula を置いたら、**tap を取り込んで信頼を与えてから** audit を通す。
+   `brew audit` は formula の Ruby を読み込んで評価するので、未信頼 tap のままでは
+   formula を読めずに落ちる(Homebrew 6.0.0 の tap trust。信頼はマシンごとに 1 回):
+
+   ```sh
+   brew tap maruhiapp/maruhi
+   brew trust --tap maruhiapp/maruhi
+   brew audit --new maruhiapp/maruhi/maruhi   # --new は --strict と --online を含意する
+   ```
+
+   **リポジトリ側の CI が見ているのは `ruby -c`(構文)と golden 一致までで、Homebrew の
+   DSL 意味論(`on_macos` > `on_arm` のネスト、`bin.install_symlink`、`test do`)は tap が
+   できるまで実行されない**。指摘が出たら手で formula を直さず
+   `apps/cli/scripts/formula.ts` を直す(formula は生成物。手編集は次のリリースで消える)
+
+### 毎リリース
+
+```sh
+# 1. Release の checksums.txt から formula を生成(既定の出力は packaging/homebrew/maruhi.rb)
+bun apps/cli/scripts/generate-formula.ts --version v0.1.0
+
+# 2. tap リポジトリへコピーして push(内容の差分は version / url / sha256 の 4 対象ぶんだけ)
+cp packaging/homebrew/maruhi.rb ../homebrew-maruhi/Formula/maruhi.rb
+cd ../homebrew-maruhi && git add Formula/maruhi.rb && git commit -m "maruhi 0.1.0" && git push
+
+# 3. 実機で確認(既に tap 済みなら `brew update && brew upgrade maruhi`)。
+#    Homebrew 6.0.0 以降、サードパーティ tap は評価前に明示的な信頼が要る(マシンごとに 1 回)
+brew trust --tap maruhiapp/maruhi
+brew install maruhiapp/maruhi/maruhi
+maruhi --version && mh --version
+brew test maruhi
+```
+
+`--checksums <path>`(ローカルの `apps/cli/dist/checksums.txt` を使う)、`--out <path>`
+(tap のパスへ直接書く)も指定できる。`--version` を省略すると `apps/cli/package.json` の版を使う。
+
+自動 PR(release workflow から tap へ push)にしていないのは、cross-repo の書き込み資格情報を
+`contents: write` + `id-token: write` を持つリリース経路へ足すことになるため(ADR-0015 の
+権限最小化と釣り合わない)。リリース頻度が上がったら再検討する。
+
 ## ドライラン(タグを打つ前の配管検証)
 
 release workflow は `workflow_dispatch` で publish 以外(ビルド + 5 OS スモーク +
@@ -73,3 +127,13 @@ trusted publisher の設定 — workflow 名・org・allowed action)を直して
   (curl 取得なら付かない)。公証は公開準備の段階で対応(ROADMAP)
 - リリース成果物はソース由来のみ(バイナリ・バンドル JS・チェックサム)。
   `.dev.vars` 等の秘密がワークフローに入る経路はない
+- **install script はタグ固定の raw URL で配る**
+  (`raw.githubusercontent.com/maruhiapp/maruhi/<tag>/packaging/install.sh`)。
+  タグを打った時点でその版の script が公開されるので、リリース手順としての追加作業はない。
+  script 自体の検証は PR ごとに [`installer.yml`](../.github/workflows/installer.yml) が
+  実 OS 4 種で回している(実リリースには依存しない)
+- ただし **`--version` 省略時の「最新の安定版を解決する」分岐だけは CI で踏めない**
+  (プレリリース期間中は `releases/latest` が存在せず、ハーネスは `MARUHI_BASE_URL` 指定 =
+  解決を飛ばす経路で回るため)。**最初の安定版 `v0.1.0` を出した直後に、`--version` を付けずに
+  一度実行して確認すること**。壊れていても「タグを指定してください」の明示エラーに倒れる設計
+  だが、無言で古い版が入るような壊れ方はしない

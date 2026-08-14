@@ -10,10 +10,68 @@ Cloudflare を実行基盤とする、汎用のディスクレス secrets 管理
 
 ## インストール(CLI)
 
-配布形態の設計は [ADR-0015](docs/adr/0015-cli-distribution.md)。install script と
-brew tap は後続 PR で提供予定です。
+配布形態の設計は [ADR-0015](docs/adr/0015-cli-distribution.md)。
 
-### コンパイル済みバイナリ(推奨。Bun 不要)
+### install script(Linux / macOS。推奨。Bun 不要)
+
+```sh
+# V は Releases ページ(https://github.com/maruhiapp/maruhi/releases)の最新タグに置き換える。
+# プレリリース期間中(v0.1.0 まで)は releases/latest が存在しないため、タグの明示が必要です
+V=<最新タグ>
+curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/${V}/packaging/install.sh" -o maruhi-install.sh
+less maruhi-install.sh          # 中身を読んでから実行してください(下の信頼モデル参照)
+sh maruhi-install.sh --version "${V}"
+```
+
+`~/.local/bin` に `maruhi` と `mh`(`maruhi` への symlink)を置きます。sudo は使いません。
+安定版 `v0.1.0` 以降は `--version` を省略でき、最新の安定版が入ります。
+
+> install script が Release に同梱されるのは **`v0.1.0-rc.1` の次のリリースから**です。
+> `v0.1.0-rc.1` を入れる場合は、下の「手動でコンパイル済みバイナリを入れる」を使ってください
+> (それより前のタグを `${V}` に指定すると raw URL が 404 になります)。
+
+- 主なオプション: `--dir <path>`(既定 `~/.local/bin`)/ `--version <tag>`。
+  環境変数 `MARUHI_INSTALL_DIR` / `MARUHI_VERSION` も同じ。一覧は `sh maruhi-install.sh --help`
+- 一行で済ませる形(`curl | sh`)も動きます —
+  `curl -fsSL ".../${V}/packaging/install.sh" | sh -s -- --version "${V}"`。
+  ただし下記の信頼モデルを読んでから選んでください
+- 対応対象は linux-x64 / linux-arm64 / darwin-x64 / darwin-arm64。**Windows は対象外**です
+  (下の手動手順へ)
+
+<details>
+<summary><b>install script の信頼モデル</b>(secrets 管理ツールなので明示します)</summary>
+
+- 通信先は **github.com だけ**です。テレメトリ・外部送信は一切ありません(「言わざる」)。
+  例外は利用者自身が `MARUHI_BASE_URL` を指定した場合だけ(内部ミラー・検証用の口。既定では使いません)
+- tar.gz は `checksums.txt` の SHA-256 で**検証してから**展開します。検証に失敗した場合は
+  インストール先に部分ファイルを残さず、非 0 で終了します
+- ただし `checksums.txt` 自体は**まだ署名していません**。完全性の根拠は github.com への
+  TLS だけです(署名の導入は今後の課題)。無いものを「署名検証しています」とは書きません。
+  だからこそ `curl | sh` を既定にせず、**落として読んでから実行**する形を先に案内しています
+- シェルの設定ファイル(`~/.zshrc` 等)は書き換えません。PATH に足す行を表示するだけです
+- macOS バイナリは未公証ですが、**curl 取得なら Gatekeeper の隔離属性は付きません**
+  (ブラウザでダウンロードした場合は隔離されます)。公証は公開準備の段階で対応します
+
+</details>
+
+### Homebrew(macOS / Linuxbrew)
+
+> **準備中** — tap(`maruhiapp/homebrew-maruhi`)はまだ公開していません。formula は安定版
+> `v0.1.0` から提供します(プレリリースは tap に載せません)。それまでは上の install script を
+> お使いください。
+
+```sh
+# Homebrew 6.0.0 以降、サードパーティ tap はコードが評価される前に明示的な信頼が必要です
+# (それ以前の brew に `brew trust` は無いので、この行は不要)
+brew trust --tap maruhiapp/maruhi
+brew install maruhiapp/maruhi/maruhi
+```
+
+`brew trust` は maruhi 側の都合ではなく、tap の Ruby コードを走らせる前に利用者の同意を求める
+Homebrew の仕組みです(未信頼 tap の自動 tap は行われません)。
+
+<details>
+<summary><b>手動でコンパイル済みバイナリを入れる</b>(Windows はこちら)</summary>
 
 [GitHub Releases](https://github.com/maruhiapp/maruhi/releases) からプラットフォーム別の
 `maruhi-<os>-<arch>.tar.gz` を取得し、チェックサムを検証して展開します:
@@ -33,9 +91,11 @@ tar -xzf maruhi-darwin-arm64.tar.gz
 `mh` エイリアスが必要なら並べてリンクを張ってください: `ln -s maruhi mh`
 
 - **windows-x64 は experimental** です(Credential Manager 経路が未検証。キーチェーンに
-  問題がある場合も平文フォールバックせず型付きエラーで止まります)
+  問題がある場合も平文フォールバックせず型付きエラーで止まります)。scoop / winget は将来対応
 - macOS バイナリは未公証のため、**ブラウザで**ダウンロードすると Gatekeeper に隔離されます
-  (上記のように curl で取得すれば隔離属性は付きません)。公証は公開準備の段階で対応します
+  (上記のように curl で取得すれば隔離属性は付きません)
+
+</details>
 
 ### npm(Bun ランタイム必須)
 
