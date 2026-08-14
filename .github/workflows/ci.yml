@@ -8,6 +8,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml が publish 前の品質ゲートとしてこのファイルを丸ごと再利用する
+  # (複製すると ci.yml の修正がリリース側に反映されず古いまま残るため)
+  workflow_call:
+
+# 既定の緩い権限に頼らない。テスト実行に必要なのは checkout のみ
+permissions:
+  contents: read
 
 env:
   # 「言わざる」原則(CLAUDE.md)はメンテナ環境の CI にも適用する:

@@ -1,0 +1,218 @@
+# タグ駆動リリース(ADR-0015 / docs/RELEASING.md)
+#
+# `v*` タグの push で: 品質ゲート(ci.yml を丸ごと再利用)→ タグ ↔ apps/cli の
+# version 一致検査 → bun compile バイナリ 5 対象 → 実機スモーク(5 OS runner)→
+# GitHub Release(checksums.txt 添付)→ npm publish(trusted publishing + provenance)。
+# workflow_dispatch はドライラン: publish 以外を全部通す(タグ前の配管検証用)。
+#
+# 運用上の不変条件:
+# - publish はすべてのゲート(verify / version-check / smoke)の後。壊れたものは
+#   タグを打っても出ない
+# - タグの打ち直しはしない(既存 Release への上書きは gh release create が失敗する)。
+#   やり直しは rc を進める(docs/RELEASING.md)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # ドライラン(build + smoke + checksums まで。publish はしない)
+  workflow_dispatch:
+
+# 既定の緩い権限に頼らない。job ごとに必要最小限を明示する
+permissions: {}
+
+# 同一タグの再実行・連打で publish が並走しないよう直列化する。
+# cancel-in-progress は使わない: publish 途中の run を殺すと GitHub Release と
+# npm が食い違った中途半端な状態で止まりうる
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 「言わざる」原則(CLAUDE.md)を ci.yml と同様にリリース経路にも適用する
+  DO_NOT_TRACK: "1"
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  # 品質ゲート一式(bun audit + 11 ステップ)。ci.yml の workflow_call を呼ぶ
+  verify:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # バージョンの単一の出所は apps/cli/package.json(cli.ts が import)。
+  # タグと一致しない場合はここで止める(版のズレた成果物を作らない)
+  version-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version (tag ↔ apps/cli/package.json)
+        id: resolve
+        run: |
+          VERSION=$(node -p "require('./apps/cli/package.json').version")
+          if [ "${{ github.event_name }}" = "push" ] && [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::タグ ${GITHUB_REF_NAME} と apps/cli/package.json の version ${VERSION} が一致しません(docs/RELEASING.md)"
+            exit 1
+          fi
+          case "${VERSION}" in
+            *-*) PRERELEASE=true ;;
+            *) PRERELEASE=false ;;
+          esac
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+  # 5 対象のクロスコンパイルと checksums.txt(生成は scripts/build-binaries.ts に
+  # 一元化。ここにビルド手順を複製しない)
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: version-check
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binaries + checksums
+        run: bun run --filter @maruhi/cli build:binaries
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: apps/cli/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # 実機スモーク: クロスコンパイルは「ビルドが通る」ことしか保証しないため、
+  # 5 対象すべてを実 OS runner で起動する(darwin-x64 は Intel mac runner の
+  # 最終世代 macos-15-intel。2027-08 の retire 時に見直す)
+  smoke:
+    name: smoke (${{ matrix.target }})
+    needs: [version-check, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, runner: ubuntu-latest, bin: maruhi }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm, bin: maruhi }
+          - { target: darwin-x64, runner: macos-15-intel, bin: maruhi }
+          - { target: darwin-arm64, runner: macos-latest, bin: maruhi }
+          - { target: windows-x64, runner: windows-latest, bin: maruhi.exe }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+
+      - name: Launch check (--version / --help)
+        shell: bash
+        run: |
+          tar -xzf "maruhi-${{ matrix.target }}.tar.gz"
+          EXPECTED='${{ needs.version-check.outputs.version }}'
+          GOT="$(./${{ matrix.bin }} --version)"
+          echo "version: ${GOT}"
+          test "${GOT}" = "${EXPECTED}"
+          ./${{ matrix.bin }} --help > /dev/null
+
+      # OS キーチェーン到達性の観測(informational)。トークン未保存の logout は
+      # 「キーチェーンにありません」(= バックエンド到達 OK)か、バックエンド
+      # 不在の型付きエラーのどちらかで必ず非 0 終了する。runner のキーチェーン
+      # 事情(headless / 未ロック状態)で結果が割れるためゲートにはしない
+      - name: Keychain probe (informational)
+        continue-on-error: true
+        shell: bash
+        run: ./${{ matrix.bin }} logout --server https://keychain-probe.invalid || true
+
+  # GitHub Release の作成(checksums.txt 添付)。リリースノートは自動生成
+  # (ADR-0015: CHANGELOG は 1.0 まで新設しない)
+  publish-github:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, version-check, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+
+      # 生成(node:crypto)と独立の実装(coreutils)で照合してから公開する
+      - name: Verify checksums
+        run: sha256sum -c checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version-check.outputs.prerelease }}
+        run: |
+          FLAGS=(--generate-notes --verify-tag)
+          if [ "${PRERELEASE}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${FLAGS[@]}" \
+            maruhi-*.tar.gz checksums.txt
+
+  # npm publish(unscoped `maruhi`)。認証は trusted publishing(OIDC)のみ:
+  # 長命トークンを GitHub Secrets に置かない。provenance は明示フラグで強制する
+  # (bun publish は provenance 未対応 — oven-sh/bun#15601 — のため npm CLI を使う)
+  publish-npm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version-check, publish-github]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # npm trusted publishing(OIDC)と provenance の生成に必要
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Stage npm package (bundle)
+        run: bun run --filter @maruhi/cli build:npm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # trusted publishing は npm >= 11.5.1 が前提。満たさない場合は publish の
+      # 認証エラーより手前の明確なメッセージで止める
+      - name: Ensure npm >= 11.5.1
+        run: |
+          node -e '
+            const v = require("child_process").execSync("npm --version").toString().trim();
+            const [maj, min, pat] = v.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && pat >= 1)));
+            if (!ok) { console.error(`npm ${v} < 11.5.1: trusted publishing 不可`); process.exit(1); }
+            console.log(`npm ${v}`);
+          '
+
+      - name: Publish to npm (provenance)
+        env:
+          # プレリリース(v0.1.0-rc.1 等)は latest を動かさず next に置く
+          DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        run: npm publish apps/cli/dist-npm --provenance --tag "${DIST_TAG}"
