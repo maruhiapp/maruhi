@@ -12,7 +12,8 @@
 //     片方の事実が消えない)
 //  5. **前段は 1 回だけ**(チェーン同期は 1 回)で、1 つ目の pull が有界再同期で
 //     前進させたビューを 2 つ目の pull が引き継ぐ
-//  6. 環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)
+//  6. 環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)。
+//     差分があるときだけ、順に読むことによる標本のずれを stderr で注意書きする
 //  7. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
 //  8. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
 //     usage エラー(2)で、**通信より前**に落ちる
@@ -216,6 +217,23 @@ describe("maruhi env diff", () => {
     expect(lastServer().requests.filter((request) => request.path.endsWith("/chain"))).toHaveLength(
       1,
     );
+  });
+
+  it("差分があるときだけ標本のずれを注意書きする(stderr。差分ゼロなら黙る)", async () => {
+    // 2 環境は順に読むので、実行中の push は一時的に片側だけに見える = 偽の差分。
+    // 真に受けた「修正」は取り消せない push なので、差分があるときは必ず添える
+    const drifted = await startEnv(await handlersFor(["ONLY_DEV"], []));
+    expect(await runCli(["env", "diff", DEV, PROD], drifted.layer)).toBe(0);
+    const notices = drifted.errors.filter((line) => line.includes("同時ではなく順に読んでいます"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("push で埋める前にもう一度実行して確かめてください");
+    // 助言は stdout(差分一覧)へ混ぜない
+    expect(drifted.logs.some((line) => line.includes("同時ではなく順に読んでいます"))).toBe(false);
+
+    // 差分ゼロなら利用者が取る行動が無いので黙る
+    const clean = await startEnv(await handlersFor(["SAME"], ["SAME"]));
+    expect(await runCli(["env", "diff", DEV, PROD], clean.layer)).toBe(0);
+    expect(clean.errors.some((line) => line.includes("同時ではなく順に読んでいます"))).toBe(false);
   });
 
   it("環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)", async () => {
