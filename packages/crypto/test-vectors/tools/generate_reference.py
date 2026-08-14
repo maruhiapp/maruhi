@@ -205,7 +205,13 @@ PAYLOAD_FIELD_ORDER = {
     # (§6.2 create_environment)と rotate_epoch payload 末尾への dek_commitment_hex 追加
     "create_environment": ["environment_id", "dek_commitment_hex"],
     "rotate_epoch": ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
-    "grant_server": ["server_enc_pub_hex", "server_key_fingerprint_hex", "scope_environments_lp_hex"],
+    # 2026-08-12(セッション 22 / CRYPTO_SPEC 0.5-draft §6.2): grant_server payload の
+    # リースポリシー拡張。lease_policy_lp_hex を末尾に追加した 4 フィールドで確定
+    # (公開前が形式を確定できる最後の窓 — grandfathering を持たない)
+    "grant_server": [
+        "server_enc_pub_hex", "server_key_fingerprint_hex",
+        "scope_environments_lp_hex", "lease_policy_lp_hex",
+    ],
     "revoke_server": ["server_key_fingerprint_hex"],
 }
 
@@ -261,6 +267,26 @@ def scope_environments_lp_hex(environment_ids: list) -> str:
     return lp_encode(environment_ids).hex()
 
 
+def lease_policy_lp_hex(policy: list) -> str:
+    # grant_server の lease_policy(CRYPTO_SPEC §6.2 / §9.1): issuer 汎用の
+    # ワークロード ID フェデレーション制約のリスト。正規化は scope_environments と
+    # 同じ入れ子 LP で、階層は 3 段:
+    #   constraint_bytes = LP(claim_name, claim_value)
+    #   element_bytes    = LP(issuer_url, audience, LP(constraint_bytes...))
+    #   lease_policy_lp_hex = lower_hex(LP(element_bytes...))
+    # 内側の LP はバイト列としてそのまま外側 LP のフィールドになる(chain の
+    # payload_bytes → signed_bytes の入れ子と同型)。リスト順(要素・制約とも)は
+    # 署名対象バイト列の一部。空リスト = 「リース経路なし」で hex は空文字列
+    elements = []
+    for element in policy:
+        constraints = lp_encode([
+            lp_encode([c["claim_name"], c["claim_value"]])
+            for c in element["claim_constraints"]
+        ])
+        elements.append(lp_encode([element["issuer_url"], element["audience"], constraints]))
+    return lp_encode(elements).hex()
+
+
 def gen_chain_entries():
     owner_id = "user-owner-0001"
     member_id = "user-member-0002"
@@ -306,12 +332,40 @@ def gen_chain_entries():
         prev_hash_hex = entry["entry_hash_hex"]
 
     grant_scope = ["env-prod-0001", "env-dev-0002"]
-    grant_payload = {
-        "server_enc_pub_hex": server["enc_pub_hex"],
-        "server_key_fingerprint_hex": server["fp_hex"],
-        "scope_environments": grant_scope,  # 可読性のための平文表現(正規化対象は次行)
-        "scope_environments_lp_hex": scope_environments_lp_hex(grant_scope),
-    }
+    # 正規チェーンの lease_policy(CRYPTO_SPEC §6.2 / AUTH_SPEC §14-1):
+    # 同一 (issuer, audience) で claim 制約の異なる複数要素は正当な表現(完全一致のみの
+    # v1 で複数ブランチを許可する形)。要素・制約ともコードポイント昇順(SHOULD)。
+    # 値はすべてダミー(実在リポジトリを指さない)
+    grant_lease_policy = [
+        {
+            "issuer_url": "https://token.actions.githubusercontent.com",
+            "audience": "https://maruhi-dogfood.example.com",
+            "claim_constraints": [
+                {"claim_name": "ref", "claim_value": "refs/heads/main"},
+                {"claim_name": "repository", "claim_value": "acme-dummy/widget-app"},
+            ],
+        },
+        {
+            "issuer_url": "https://token.actions.githubusercontent.com",
+            "audience": "https://maruhi-dogfood.example.com",
+            "claim_constraints": [
+                {"claim_name": "sub",
+                 "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"},
+            ],
+        },
+    ]
+
+    def grant_payload_for(scope: list, policy: list) -> dict:
+        return {
+            "server_enc_pub_hex": server["enc_pub_hex"],
+            "server_key_fingerprint_hex": server["fp_hex"],
+            "scope_environments": scope,  # 可読性のための平文表現(正規化対象は *_lp_hex)
+            "scope_environments_lp_hex": scope_environments_lp_hex(scope),
+            "lease_policy": policy,  # 同上
+            "lease_policy_lp_hex": lease_policy_lp_hex(policy),
+        }
+
+    grant_payload = grant_payload_for(grant_scope, grant_lease_policy)
 
     t0 = 1754006400000  # 2025-08-01T00:00:00Z 相当の固定値(ダミー)
     add_entry(1, "genesis", owner_id, owner,
@@ -443,6 +497,31 @@ def gen_chain_entries():
     flat_scope = dict(grant_payload, **{
         "scope_environments_lp_hex": "".join(grant_scope).encode("utf-8").hex(),
     })
+    # lease_policy の順序も署名対象(要素順・制約順とも)
+    reordered_policy = list(reversed(grant_lease_policy))
+    reordered_lease_elements = dict(grant_payload, **{
+        "lease_policy": reordered_policy,
+        "lease_policy_lp_hex": lease_policy_lp_hex(reordered_policy),
+    })
+    reordered_claims_policy = [
+        dict(grant_lease_policy[0],
+             claim_constraints=list(reversed(grant_lease_policy[0]["claim_constraints"]))),
+        grant_lease_policy[1],
+    ]
+    reordered_lease_claims = dict(grant_payload, **{
+        "lease_policy": reordered_claims_policy,
+        "lease_policy_lp_hex": lease_policy_lp_hex(reordered_claims_policy),
+    })
+    # 3 段の入れ子 LP を使わず全文字列を 1 段の LP に平坦化した誤エンコード
+    # (要素・制約の境界が消える曖昧性の温床)
+    flat_lease_fields = []
+    for element in grant_lease_policy:
+        flat_lease_fields += [element["issuer_url"], element["audience"]]
+        for constraint in element["claim_constraints"]:
+            flat_lease_fields += [constraint["claim_name"], constraint["claim_value"]]
+    flat_lease = dict(grant_payload, **{
+        "lease_policy_lp_hex": lp_encode(flat_lease_fields).hex(),
+    })
     tampered_revoke_fp = bytearray(bytes.fromhex(server["fp_hex"]))
     tampered_revoke_fp[0] ^= 0x01
 
@@ -473,6 +552,37 @@ def gen_chain_entries():
             "grant-server-scope-flat-concat", e_grant, flat_scope,
             "scope を入れ子 LP でなく素の連結でエンコードしたバイト列では署名検証に失敗する(§2.1 の曖昧性排除)",
         ),
+        resign_variant(
+            "grant-server-lease-policy-reorder", e_grant, reordered_lease_elements,
+            "lease_policy の要素順を入れ替えると元の署名は検証に失敗する(要素順も署名対象 — §6.2)",
+        ),
+        resign_variant(
+            "grant-server-lease-claims-reorder", e_grant, reordered_lease_claims,
+            "lease_policy 内の claim 制約の順を入れ替えると元の署名は検証に失敗する(制約順も署名対象)",
+        ),
+        resign_variant(
+            "grant-server-lease-policy-flat-concat", e_grant, flat_lease,
+            "lease_policy を 3 段の入れ子 LP でなく 1 段の平坦 LP でエンコードしたバイト列では署名検証に失敗する(要素・制約の境界の曖昧性排除)",
+        ),
+        {
+            # 旧 3 フィールド形式(lease_policy_lp_hex なし)で組んだバイト列に対して
+            # 正規エントリの署名を検証 → 失敗すべき。旧形式実装が新チェーンを
+            # 検証できない(4 フィールドが必須である)ことの明示的な固定
+            "name": "grant-server-lease-policy-dropped",
+            "base_seq": e_grant["seq"],
+            "signed_bytes_hex": lp_encode([
+                suite, e_grant["seq"], e_grant["prev_hash_hex"], e_grant["op"],
+                e_grant["actor"]["user_id"], e_grant["actor"]["key_fingerprint_hex"],
+                lp_encode([grant_payload["server_enc_pub_hex"],
+                           grant_payload["server_key_fingerprint_hex"],
+                           grant_payload["scope_environments_lp_hex"]]),
+                e_grant["timestamp_ms"],
+            ]).hex(),
+            "signature_hex": e_grant["signature_hex"],
+            "verify_key_hex": owner["sig_pub_hex"],
+            "must_fail": True,
+            "note": "lease_policy_lp_hex を落とした旧 3 フィールド形式のバイト列では署名検証に失敗する(payload は 4 フィールドが正規形)",
+        },
         resign_variant(
             "change-role-tampered-new-role", e_change,
             {"target_user_id": admin_id, "new_role": "owner"},
@@ -570,6 +680,174 @@ def gen_chain_entries():
         }),
         t0 + 9000, "grant-scope-narrowed",
         "有効な grant のスコープを狭める再 grant は owner 署名でも拒否する(§7 のローテーション義務を迂回させない)",
+    )
+    # 再 grant 規則の二層化(2026-08-12 — §6.3): 判定はフィールドごとに独立。
+    # lease_policy を自由改訂(ここでは全削除)しても、scope 縮小は縮小のまま拒否される
+    add_authz(
+        "authz-grant-scope-narrowed-policy-revised", 10, head9, "grant_server",
+        owner_id, owner,
+        grant_payload_for(narrowed_scope, []),
+        t0 + 9000, "grant-scope-narrowed",
+        "scope 縮小 × lease_policy 全削除の再 grant も grant-scope-narrowed で拒否する(二層判定の独立性 — policy の改訂自由は scope 縮小を救済しない)",
+    )
+    # 検査順序の固定(role 規則 → 再 grant 規則): seq 9 時点の admin による
+    # scope 縮小の再 grant は、再 grant 規則より先に role 規則で拒否される
+    add_authz(
+        "authz-grant-role-precedes-scope-narrowed", 10, head9, "grant_server",
+        admin_id, admin,
+        grant_payload_for(narrowed_scope, grant_lease_policy),
+        t0 + 9000, "insufficient-role",
+        "role 不足 × scope 縮小の複合違反は role 規則が先に判定される(§6.2 の検査順序: role → 再 grant 規則)",
+    )
+
+    # サーバー鍵の一意性(2026-08-12 — §6.2 duplicate-server-key): サーバー enc
+    # 公開鍵が現メンバーの enc 公開鍵と一致する grant_server は拒否する
+    # (「鍵 → 主体」逆引きの一意性の受信者クラス横断版)。head12 時点の現メンバー:
+    # owner / admin。admin の enc 鍵をサーバー鍵として grant する形で固定する
+    # (FP は SHA-256(enc_pub)[:16] のサーバー鍵定義 — §9 — で整合させ、
+    # 拒否理由が payload 整合でなく鍵重複であることを保証する)
+    admin_enc_as_server_fp = sha256(bytes.fromhex(admin["enc_pub_hex"]))[:16].hex()
+
+    def duplicate_key_payload(scope: list, policy: list) -> dict:
+        return {
+            "server_enc_pub_hex": admin["enc_pub_hex"],
+            "server_key_fingerprint_hex": admin_enc_as_server_fp,
+            "scope_environments": scope,
+            "scope_environments_lp_hex": scope_environments_lp_hex(scope),
+            "lease_policy": policy,
+            "lease_policy_lp_hex": lease_policy_lp_hex(policy),
+        }
+
+    add_authz(
+        "authz-grant-duplicate-server-key", 13, head12, "grant_server", owner_id, owner,
+        duplicate_key_payload(grant_scope, []),
+        t0 + 12000, "duplicate-server-key",
+        "現メンバー(user-admin-0003)の enc 公開鍵をサーバー鍵として grant するエントリは owner 署名でも拒否する(§6.2 サーバー鍵の一意性。空 lease_policy は形式として有効 = 拒否理由が鍵重複であることの保証)",
+    )
+    # 検査順序の固定(role 規則 → 鍵重複): admin による鍵重複 grant は
+    # 鍵重複より先に role 規則で拒否される
+    add_authz(
+        "authz-grant-role-precedes-duplicate-server-key", 13, head12, "grant_server",
+        admin_id, admin,
+        duplicate_key_payload(grant_scope, []),
+        t0 + 12000, "insufficient-role",
+        "role 不足 × サーバー鍵重複の複合違反は role 規則が先に判定される(§6.2 の検査順序: role → 鍵重複)",
+    )
+
+    # lease_policy のサイズ上限(§6.2 — 合意規則): issuer 要素 8 以下、
+    # issuer あたり claim 制約 8 以下。超過は payload 構造検査(invalid-payload)
+    def dummy_policy_elements(count: int) -> list:
+        return [
+            {
+                "issuer_url": f"https://issuer-{i:02d}.example.com",
+                "audience": "https://maruhi-dogfood.example.com",
+                "claim_constraints": [
+                    {"claim_name": "sub", "claim_value": f"repo:acme-dummy/repo-{i:02d}"},
+                ],
+            }
+            for i in range(count)
+        ]
+
+    oversized_policy = dummy_policy_elements(9)
+    add_authz(
+        "authz-grant-lease-policy-too-many", 13, head12, "grant_server", owner_id, owner,
+        grant_payload_for(grant_scope, oversized_policy),
+        t0 + 12000, "invalid-payload",
+        "lease_policy が 9 要素(上限 8 超過)のエントリは署名が有効でも拒否する",
+    )
+    oversized_claims_policy = [
+        {
+            "issuer_url": "https://token.actions.githubusercontent.com",
+            "audience": "https://maruhi-dogfood.example.com",
+            "claim_constraints": [
+                {"claim_name": f"claim-{i:02d}", "claim_value": f"value-{i:02d}"}
+                for i in range(9)
+            ],
+        },
+    ]
+    add_authz(
+        "authz-grant-lease-claims-too-many", 13, head12, "grant_server", owner_id, owner,
+        grant_payload_for(grant_scope, oversized_claims_policy),
+        t0 + 12000, "invalid-payload",
+        "1 要素の claim 制約が 9 件(上限 8 超過)のエントリは拒否する",
+    )
+    add_authz(
+        "grant-lease-policy-too-many-precedes-role", 13, head12, "grant_server",
+        admin_id, admin,
+        grant_payload_for(grant_scope, oversized_policy),
+        t0 + 12000, "invalid-payload",
+        "サイズ上限違反 × role 不足(admin)の複合違反は構造検査が先に判定される(検証段順: 構造 → 認可。create-env-commitment-format-precedes-role と同型)",
+    )
+
+    # --- 拡張チェーン: 「再 grant 規則 → 鍵重複」の順序固定に要る前提状態 ------------
+    # 「有効 grant があり、かつサーバー enc 鍵が現メンバーの enc 鍵と一致する」状態は、
+    # grant(seq 9)の後にサーバー enc 鍵を流用したメンバーを追加することでのみ作れる
+    # (逆順は duplicate-server-key が先に grant を拒否する)。この add_member 自体は
+    # 現行の合意規則で**有効**である: §6.2 のメンバー鍵一意性の索引は現メンバーの鍵のみで、
+    # 有効 grant のサーバー鍵は対象外(仕様の明示的な線引き — 逆方向の衝突禁止は §6.2 の
+    # 「注意」の先送り事項のまま)。value-signature.json の tenure_extension と同じ
+    # 「派生チェーン」の運び方で、chain-entries 本体の正規チェーンは変更しない
+    sock_sig_sk = Ed25519PrivateKey.from_private_bytes(pat(0xB0, 32))
+    sock_sig_pub = sock_sig_sk.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    sock_fp = sha256(bytes.fromhex(server["enc_pub_hex"]) + sock_sig_pub)[:16]
+    sock = {
+        "sig_sk": sock_sig_sk,
+        "enc_pub_hex": server["enc_pub_hex"],  # サーバー enc 鍵の流用(意図的)
+        "sig_pub_hex": sock_sig_pub.hex(),
+        "fp_hex": sock_fp.hex(),
+    }
+    sock_id = "user-sock-0006"
+    sock_add_entry = build_entry(
+        10, "add_member", owner_id, owner,
+        {"target_user_id": sock_id, "enc_pub_hex": sock["enc_pub_hex"],
+         "sig_pub_hex": sock["sig_pub_hex"], "role": "reader"},
+        t0 + 9000, head9,
+    )
+    extended_chains = {
+        "server-key-member-sock": {
+            "description": (
+                "正規チェーン seq 1〜9(grant 有効)に、サーバー enc 鍵を流用したメンバー"
+                "(user-sock-0006)の add_member を追記した派生チェーン。この追記は現行の"
+                "合意規則で有効(§6.2 のメンバー鍵一意性はメンバー鍵のみを索引し、"
+                "grant_server のサーバー鍵は対象外)。「有効 grant × サーバー鍵 = メンバー鍵」"
+                "の状態を作り、再 grant 規則 → duplicate-server-key の検査順序を固定する"
+            ),
+            "base_seq": 9,
+            "entries": [sock_add_entry],
+            "keys": {
+                sock_id: {
+                    "enc_sk_seed_hex": pat(0x90, 32).hex(),  # = server_key の seed(流用)
+                    "sig_sk_seed_hex": pat(0xB0, 32).hex(),
+                    "enc_pub_hex": sock["enc_pub_hex"],
+                    "sig_pub_hex": sock["sig_pub_hex"],
+                    "key_fingerprint_hex": sock["fp_hex"],
+                },
+            },
+            "expected_members": {owner_id: "owner", admin_id: "admin", sock_id: "reader"},
+        },
+    }
+    sock_head = sock_add_entry["entry_hash_hex"]
+
+    def add_extended_authz(name, seq, prev_hex, payload, expected_reason, note):
+        entry = build_entry(seq, "grant_server", owner_id, owner, payload, t0 + 10000, prev_hex)
+        case = authz(name, entry, expected_reason, note)
+        case["verify_key_hex"] = owner["sig_pub_hex"]
+        case["chain"] = "server-key-member-sock"
+        authz_cases.append(case)
+
+    add_extended_authz(
+        "authz-grant-narrowed-precedes-duplicate-key", 11, sock_head,
+        grant_payload_for(narrowed_scope, grant_lease_policy),
+        "grant-scope-narrowed",
+        "scope 縮小 × サーバー鍵重複(sock メンバーが同鍵を保持)の複合違反は再 grant 規則が先に判定される(§6.2 の検査順序: 再 grant 規則 → 鍵重複)",
+    )
+    add_extended_authz(
+        "authz-grant-duplicate-key-on-regrant", 11, sock_head,
+        grant_payload_for(grant_scope, []),
+        "duplicate-server-key",
+        "scope 不変(再 grant 規則は通過)でも、サーバー鍵が現メンバーの鍵と重複していれば拒否する(lease_policy の改訂自由は鍵重複検査を迂回しない)",
     )
 
     # 環境ライフサイクルのチェーン束縛(2026-08-03 — CRYPTO_SPEC §6.2):
@@ -777,6 +1055,15 @@ def gen_chain_entries():
         "env-dev-0002": "2",
         "env-stage-0003": "1",
     }
+
+    def grant_state(scope: list, policy: list) -> dict:
+        return {
+            "server_key_fingerprint_hex": server["fp_hex"],
+            "server_enc_pub_hex": server["enc_pub_hex"],
+            "scope_environments": scope,
+            "lease_policy": policy,
+        }
+
     valid_appends = [
         {
             "name": "readd-removed-member-same-key",
@@ -788,6 +1075,7 @@ def gen_chain_entries():
                                  t0 + 12000, head12),
             "expected_members": {owner_id: "owner", admin_id: "admin", member_id: "member"},
             "expected_environments": base_environments,
+            "expected_server_grants": [],
             "note": "削除済みメンバーを同一 user_id・同一鍵で再追加する(同一人物の復帰)は受理される(§6.2 の禁止範囲は現メンバー集合のみ)",
         },
         {
@@ -801,6 +1089,7 @@ def gen_chain_entries():
             "expected_members": {owner_id: "owner", admin_id: "admin",
                                  "user-newcomer-0005": "member"},
             "expected_environments": base_environments,
+            "expected_server_grants": [],
             "note": "削除済みメンバーの鍵を別 user_id で再登録することも拒否されない(admin/owner の add_member 権限内の行為と等価 — §6.2)",
         },
         {
@@ -809,6 +1098,7 @@ def gen_chain_entries():
                                  create_env_payload("env-fresh-0004"), t0 + 12000, head12),
             "expected_members": {owner_id: "owner", admin_id: "admin"},
             "expected_environments": dict(base_environments, **{"env-fresh-0004": "1"}),
+            "expected_server_grants": [],
             "note": "未使用 ID の create_environment は受理され、環境はエポック 1 で環境集合に加わる(§6.2)",
         },
         {
@@ -817,7 +1107,21 @@ def gen_chain_entries():
                                  rotate_payload("env-stage-0003", 2), t0 + 12000, head12),
             "expected_members": {owner_id: "owner", admin_id: "admin"},
             "expected_environments": dict(base_environments, **{"env-stage-0003": "2"}),
+            "expected_server_grants": [],
             "note": "create_environment 済み(エポック 1)の環境への初回 rotate(new_epoch 2)は受理される(create → rotate の境界)",
+        },
+        {
+            # 再 grant 二層規則の受理側(2026-08-12 — §6.3): scope 不変のまま
+            # lease_policy を縮小(ここでは全削除 = 空リスト)する再 grant は受理され、
+            # 導出状態の lease_policy が置換される。ポリシーはリース経路の ACL であり
+            # 既知 DEK 集合を変えないため、締め付けに全環境ローテーションを課さない
+            "name": "regrant-lease-policy-revised",
+            "entry": build_entry(10, "grant_server", owner_id, owner,
+                                 grant_payload_for(grant_scope, []), t0 + 9000, head9),
+            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_environments": {"env-prod-0001": "2", "env-dev-0002": "1"},
+            "expected_server_grants": [grant_state(grant_scope, [])],
+            "note": "scope 不変 × lease_policy 全削除の再 grant は受理され、ポリシーが空(リース経路なし)へ置換される(§6.3 再 grant 二層化の受理側。seq 9 のヘッドへの追記)",
         },
     ]
 
@@ -847,13 +1151,7 @@ def gen_chain_entries():
         {
             "after_seq": 9,
             "members": {owner_id: "owner", admin_id: "admin"},
-            "server_grants": [
-                {
-                    "server_key_fingerprint_hex": server["fp_hex"],
-                    "server_enc_pub_hex": server["enc_pub_hex"],
-                    "scope_environments": grant_scope,
-                }
-            ],
+            "server_grants": [grant_state(grant_scope, grant_lease_policy)],
             "environments": {
                 "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
                 "env-dev-0002": env_state("env-dev-0002", 1, 8, {1: 8}),
@@ -885,6 +1183,7 @@ def gen_chain_entries():
                 "key_fingerprint": "SHA-256(enc_pub(32B) || sig_pub(32B)) の先頭 16 バイト(固定長のため素の連結)",
                 "server_key_fingerprint": "SHA-256(server_enc_pub(32B)) の先頭 16 バイト(サーバーは enc 鍵のみ。§9)→ 要レビュー",
                 "scope_environments": "environment_id のリストを LP エンコード(入れ子 LP)し、その hex 小文字文字列を scope_environments_lp_hex として payload に載せる。リストの順序は署名対象の一部(検証は as-signed 順で再構築)→ 要レビュー",
+                "lease_policy": "constraint = LP(claim_name, claim_value)、element = LP(issuer_url, audience, LP(constraint...))、lease_policy_lp_hex = lower_hex(LP(element...))(3 段の入れ子 LP — §6.2)。リスト順(要素・制約とも)は署名対象の一部。空リストは hex 空文字列 = リース経路なし。上限: 要素 8 / 要素あたり制約 8 / 各文字列 1024 バイト(§6.1)→ 要レビュー",
                 "dek_commitment": "dek_commitment_hex = lower_hex(SHA-256(LP(\"maruhi/v1/dek-commit\", project_id, environment_id, epoch, dek_hex)))(§5.2)。project_id = genesis エントリハッシュ。形式は hex 小文字 64 文字(形式検査は payload 構造検査の段 — §6.2)。内容の照合は受信者の §5.2 検証が担い、チェーン検証は形式のみ検査する",
             },
             "keys": {
@@ -934,6 +1233,7 @@ def gen_chain_entries():
             "entries": entries,
             "expected_head_states": expected_head_states,
             "valid_appends": valid_appends,
+            "extended_chains": extended_chains,
             "negative": negatives,
         },
     )
@@ -1082,6 +1382,62 @@ def gen_dek_wrap_signature():
         ),
     ]
 
+    # --- 受信者クラス server(CRYPTO_SPEC §9 / AUTH_SPEC §12-6。2026-08-12)---------
+    # サーバー宛ラップの登録署名: signed_bytes の recipient_user_id 位置には
+    # サーバー鍵 FP(hex 小文字)を用いる(HPKE info と同じ置き換え — §9)。
+    # recipient_enc_pub_hex はサーバー enc 公開鍵。ラップ本体は dek-wrap.json の
+    # server-basic ベクターと同一(ラップ → 登録署名が一続きの実データ)
+    server_wrap = next(v for v in dek_wrap["vectors"] if v["name"] == "server-basic")
+    server_ctx = {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/dek-wrap-sig",
+        "project_id": server_wrap["project_id"],
+        "environment_id": server_wrap["environment_id"],
+        "epoch": server_wrap["epoch"],
+        "recipient_user_id": server_wrap["server_key_fingerprint_hex"],
+        "recipient_enc_pub_hex": dek_wrap["server_keypair"]["pkSm_hex"],
+        "enc_hex": server_wrap["enc_hex"],
+        "ciphertext_hex": server_wrap["ciphertext_hex"],
+        "signer_user_id": "user-owner-0001",
+    }
+    server_signed = wrap_signature_signed_bytes(server_ctx)
+    server_sig = owner["sig_sk"].sign(server_signed)
+
+    def server_negative(name, overrides, note):
+        ctx = dict(server_ctx, **overrides)
+        return {
+            "name": name,
+            "base": "server-basic",
+            "context": ctx,
+            "verify_signed_bytes_hex": wrap_signature_signed_bytes(ctx).hex(),
+            "signature_hex": server_sig.hex(),
+            "verify_key_hex": owner["sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    wrong_server_fp_first_byte = bytes.fromhex(server_wrap["server_key_fingerprint_hex"])[0] ^ 0x01
+    wrong_server_fp = (
+        f"{wrong_server_fp_first_byte:02x}{server_wrap['server_key_fingerprint_hex'][2:]}"
+    )
+    negatives += [
+        server_negative(
+            "server-transplant-recipient-class",
+            {"recipient_user_id": wrap["recipient_user_id"]},
+            "recipient 位置をサーバー鍵 FP からメンバー user_id へ差し替えると署名検証に失敗する(受信者クラス間の移植拒否 — §9)",
+        ),
+        server_negative(
+            "server-transplant-fp",
+            {"recipient_user_id": wrong_server_fp},
+            "別サーバー鍵の FP への差し替えは署名検証に失敗する",
+        ),
+        server_negative(
+            "server-recipient-key-mismatch",
+            {"recipient_enc_pub_hex": dek_wrap["recipient_keypair"]["pkRm_hex"]},
+            "サーバー enc 公開鍵の差し替え(メンバー鍵へ)は署名検証に失敗する(recipient_enc_pub_hex も署名対象)",
+        ),
+    ]
+
     write(
         "dek-wrap-signature.json",
         {
@@ -1102,13 +1458,21 @@ def gen_dek_wrap_signature():
                 "sig_pub_hex": member["sig_pub_hex"],
                 "note": "wrong-signer-key negative 用(chain-entries.json の user-member-0002)",
             },
+            "server_recipient_note": "受信者クラス server(§9 / AUTH_SPEC §12-6。2026-08-12): recipient_user_id 位置にサーバー鍵 FP(hex 小文字)、recipient_enc_pub_hex にサーバー enc 公開鍵。server-basic とその負例が固定する",
             "vectors": [
                 dict(
                     base_ctx,
                     name="basic",
                     signed_bytes_hex=base_signed.hex(),
                     signature_hex=base_sig.hex(),
-                )
+                ),
+                dict(
+                    server_ctx,
+                    name="server-basic",
+                    recipient_class="server",
+                    signed_bytes_hex=server_signed.hex(),
+                    signature_hex=server_sig.hex(),
+                ),
             ],
             "negative": negatives,
         },

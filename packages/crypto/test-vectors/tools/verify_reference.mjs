@@ -47,9 +47,29 @@ const PAYLOAD_FIELD_ORDER = {
   change_role: ["target_user_id", "new_role"],
   create_environment: ["environment_id", "dek_commitment_hex"],
   rotate_epoch: ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
-  grant_server: ["server_enc_pub_hex", "server_key_fingerprint_hex", "scope_environments_lp_hex"],
+  // 2026-08-12(CRYPTO_SPEC 0.5-draft §6.2): lease_policy_lp_hex を末尾に追加した
+  // 4 フィールドが正規形
+  grant_server: [
+    "server_enc_pub_hex",
+    "server_key_fingerprint_hex",
+    "scope_environments_lp_hex",
+    "lease_policy_lp_hex",
+  ],
   revoke_server: ["server_key_fingerprint_hex"],
 };
+
+// grant_server の lease_policy の入れ子 LP(§6.2 — 3 段。generate_reference.py と同一定義)
+function leasePolicyLp(policy) {
+  return lpEncode(
+    policy.map((element) =>
+      lpEncode([
+        element.issuer_url,
+        element.audience,
+        lpEncode(element.claim_constraints.map((c) => lpEncode([c.claim_name, c.claim_value]))),
+      ]),
+    ),
+  );
+}
 // メタステートメントの署名フィールド順(CRYPTO_SPEC §4.2 の LP 引数列)
 const VAR_SIGNED_FIELDS_ORDER = [
   "domain",
@@ -189,6 +209,13 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       "chain: grant_server scope nested LP",
       toHex(lpEncode(e7.payload.scope_environments)) === e7.payload.scope_environments_lp_hex,
     );
+    // lease_policy: 3 段の入れ子 LP(§6.2)。構造化表現からの再構築が lp_hex と一致する
+    check(
+      "chain: grant_server lease_policy nested LP",
+      toHex(leasePolicyLp(e7.payload.lease_policy)) === e7.payload.lease_policy_lp_hex,
+    );
+    // 空ポリシーは空バイト列の hex = 空文字列(regrant-lease-policy-revised が使う形)
+    check("chain: empty lease_policy encodes to empty hex", toHex(leasePolicyLp([])) === "");
   }
   // §5.2 の DEK コミットメント: environment_deks のダミー DEK からの再計算が
   // 掲載値と一致し、create_environment / rotate_epoch の payload がそれを載せている
@@ -262,10 +289,60 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       sigOk &&
         toHex(payloadBytes) === e.payload_bytes_hex &&
         toHex(signed) === e.signed_bytes_hex &&
-        e.prev_hash_hex === doc.entries.at(-1).entry_hash_hex &&
+        // 追記の接続点は seq が指す正規エントリの直後(seq 13 = 末尾ヘッド、
+        // seq 10 = seq 9 ヘッドへの再 grant 追記 — regrant-lease-policy-revised)
+        e.prev_hash_hex === doc.entries[e.seq - 2].entry_hash_hex &&
         toHex(entryBytes) === e.entry_bytes_hex &&
         (await sha256(entryBytes)) === e.entry_hash_hex,
     );
+  }
+  // extended_chains: 正規チェーンの途中ヘッドへ追記した派生チェーン(認可 negative の
+  // 前提状態)。エントリ自体の正規化・署名・接続点を正規チェーンと同水準で検査する
+  for (const [chainName, ext] of Object.entries(doc.extended_chains ?? {})) {
+    let prev = doc.entries[ext.base_seq - 1].entry_hash_hex;
+    let seq = ext.base_seq;
+    for (const e of ext.entries) {
+      seq += 1;
+      const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
+      const signed = lpEncode([
+        e.suite,
+        e.seq,
+        e.prev_hash_hex,
+        e.op,
+        e.actor.user_id,
+        e.actor.key_fingerprint_hex,
+        payloadBytes,
+        e.timestamp_ms,
+      ]);
+      const sigOk = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(doc.keys[e.actor.user_id].sig_pub_hex),
+        fromHex(e.signature_hex),
+        signed,
+      );
+      const entryBytes = lpEncode([
+        e.suite,
+        e.seq,
+        e.prev_hash_hex,
+        e.op,
+        e.actor.user_id,
+        e.actor.key_fingerprint_hex,
+        payloadBytes,
+        e.timestamp_ms,
+        e.signature_hex,
+      ]);
+      check(
+        `chain extended ${chainName} seq ${e.seq} (signature must be VALID)`,
+        sigOk &&
+          e.seq === seq &&
+          e.prev_hash_hex === prev &&
+          toHex(payloadBytes) === e.payload_bytes_hex &&
+          toHex(signed) === e.signed_bytes_hex &&
+          toHex(entryBytes) === e.entry_bytes_hex &&
+          (await sha256(entryBytes)) === e.entry_hash_hex,
+      );
+      prev = e.entry_hash_hex;
+    }
   }
   for (const n of doc.negative) {
     if (n.name === "prev-hash-mismatch") {
@@ -293,9 +370,15 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         fromHex(e.signature_hex),
         signed,
       );
+      // chain 指定つきは派生チェーン(extended_chains)の末尾へ接続する negative。
+      // 接続点の prev が派生チェーンの最終エントリと一致することも固定する
+      const expectedPrev =
+        n.chain === undefined ? null : doc.extended_chains[n.chain].entries.at(-1).entry_hash_hex;
       check(
         `chain authz negative: ${n.name} (signature must be VALID)`,
-        sigOk && toHex(signed) === e.signed_bytes_hex,
+        sigOk &&
+          toHex(signed) === e.signed_bytes_hex &&
+          (expectedPrev === null || e.prev_hash_hex === expectedPrev),
       );
       continue;
     }
@@ -335,17 +418,30 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       base.ciphertext_hex === dekWrap.vectors[0].ciphertext_hex &&
       base.recipient_enc_pub_hex === dekWrap.recipient_keypair.pkRm_hex,
   );
-  const bytes = signedBytes(base);
-  check("dek-wrap-sig: signed bytes reconstruction", toHex(bytes) === base.signed_bytes_hex);
-  check("dek-wrap-sig: domain embeds suite", base.domain === `${base.suite}/dek-wrap-sig`);
-  check("dek-wrap-sig: signer identity bound", base.signer_user_id === doc.signer.user_id);
-  const ok = await crypto.subtle.verify(
-    "Ed25519",
-    await importSigPub(doc.signer.sig_pub_hex),
-    fromHex(base.signature_hex),
-    bytes,
+  // 受信者クラス server(§9 / §12-6): recipient 位置 = サーバー鍵 FP、
+  // recipient_enc_pub = サーバー enc 公開鍵、ラップ本体は server-basic と同一
+  const serverVector = doc.vectors.find((v) => v.name === "server-basic");
+  const serverWrap = dekWrap.vectors.find((v) => v.name === "server-basic");
+  check(
+    "dek-wrap-sig: server wrap body matches dek-wrap.json",
+    serverVector.enc_hex === serverWrap.enc_hex &&
+      serverVector.ciphertext_hex === serverWrap.ciphertext_hex &&
+      serverVector.recipient_enc_pub_hex === dekWrap.server_keypair.pkSm_hex &&
+      serverVector.recipient_user_id === dekWrap.server_keypair.server_key_fingerprint_hex,
   );
-  check("dek-wrap-sig: Ed25519 signature", ok);
+  for (const v of doc.vectors) {
+    const bytes = signedBytes(v);
+    check(`dek-wrap-sig: ${v.name} signed bytes reconstruction`, toHex(bytes) === v.signed_bytes_hex);
+    check(`dek-wrap-sig: ${v.name} domain embeds suite`, v.domain === `${v.suite}/dek-wrap-sig`);
+    check(`dek-wrap-sig: ${v.name} signer identity bound`, v.signer_user_id === doc.signer.user_id);
+    const ok = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(doc.signer.sig_pub_hex),
+      fromHex(v.signature_hex),
+      bytes,
+    );
+    check(`dek-wrap-sig: ${v.name} Ed25519 signature`, ok);
+  }
   for (const n of doc.negative) {
     const reconstructed = signedBytes(n.context);
     const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
@@ -830,28 +926,60 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 // --- dek-wrap.json(panva hpke で Open)--------------------------------------
 {
   const doc = read("dek-wrap.json");
-  const base = doc.vectors[0];
   const suite = new HPKE.CipherSuite(
     HPKE.KEM_DHKEM_X25519_HKDF_SHA256,
     HPKE.KDF_HKDF_SHA256,
     HPKE.AEAD_AES_256_GCM,
   );
-  // KeyPair 渡しの Open を標準とする(CRYPTO_SPEC §2。非抽出鍵と両立する経路)
-  const keyPair = {
-    privateKey: await suite.DeserializePrivateKey(fromHex(doc.recipient_keypair.skRm_hex), false),
-    publicKey: await suite.DeserializePublicKey(fromHex(doc.recipient_keypair.pkRm_hex)),
+  // KeyPair 渡しの Open を標準とする(CRYPTO_SPEC §2。非抽出鍵と両立する経路)。
+  // 受信者クラスごとに鍵ペアを解決する(basic = メンバー鍵、server-basic = サーバー鍵)
+  const keyPairs = {
+    basic: {
+      privateKey: await suite.DeserializePrivateKey(fromHex(doc.recipient_keypair.skRm_hex), false),
+      publicKey: await suite.DeserializePublicKey(fromHex(doc.recipient_keypair.pkRm_hex)),
+    },
+    "server-basic": {
+      privateKey: await suite.DeserializePrivateKey(fromHex(doc.server_keypair.skSm_hex), false),
+      publicKey: await suite.DeserializePublicKey(fromHex(doc.server_keypair.pkSm_hex)),
+    },
   };
-  const open = (infoHex, encHex, ctHex) =>
-    suite.Open(keyPair, fromHex(encHex), fromHex(ctHex), {
+  const vectorByName = (name) => doc.vectors.find((v) => v.name === name);
+  const open = (baseName, infoHex, encHex, ctHex) =>
+    suite.Open(keyPairs[baseName], fromHex(encHex), fromHex(ctHex), {
       info: fromHex(infoHex),
-      aad: fromHex(base.aad_hex),
+      aad: fromHex(vectorByName(baseName).aad_hex),
     });
-  const dek = await open(base.info_hex, base.enc_hex, base.ciphertext_hex);
-  check("dek-wrap: panva open == DEK", toHex(new Uint8Array(dek)) === base.dek_hex);
+  for (const v of doc.vectors) {
+    const dek = await open(v.name, v.info_hex, v.enc_hex, v.ciphertext_hex);
+    check(`dek-wrap: ${v.name} panva open == DEK`, toHex(new Uint8Array(dek)) === v.dek_hex);
+  }
+  // サーバー鍵 FP: SHA-256(pkSm)[:16](§9)と info の recipient 位置の一致
+  {
+    const digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", fromHex(doc.server_keypair.pkSm_hex)),
+    );
+    const fp = toHex(digest.slice(0, 16));
+    const serverVector = vectorByName("server-basic");
+    check(
+      "dek-wrap: server key fingerprint",
+      fp === doc.server_keypair.server_key_fingerprint_hex &&
+        toHex(
+          lpEncode([
+            serverVector.domain,
+            serverVector.project_id,
+            serverVector.environment_id,
+            serverVector.epoch,
+            fp,
+          ]),
+        ) === serverVector.info_hex,
+    );
+  }
   for (const n of doc.negative) {
+    const base = vectorByName(n.base);
     let failed = false;
     try {
       await open(
+        n.base,
         n.open_info_hex ?? base.info_hex,
         n.enc_hex ?? base.enc_hex,
         n.ciphertext_hex ?? base.ciphertext_hex,
