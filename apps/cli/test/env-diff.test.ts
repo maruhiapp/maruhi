@@ -13,6 +13,9 @@
 //  6. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
 //     usage エラー(2)で、**通信より前**に落ちる
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -204,6 +207,27 @@ describe("maruhi env diff", () => {
     expect(
       lastServer().requests.filter((request) => request.path.endsWith("/pull/metadata")),
     ).toHaveLength(2);
+    // 前段は 1 回だけ = チェーン同期も 1 回だけ(環境ごとに開くと §6.3 検証が
+    // 2 度走り、食い違う 2 つの検証済みビューで比較しかねない)
+    expect(lastServer().requests.filter((request) => request.path.endsWith("/chain"))).toHaveLength(
+      1,
+    );
+  });
+
+  it("環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)", async () => {
+    const env = await startEnv(await handlersFor(["ONLY_DEV"], ["ONLY_PROD"]));
+
+    expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
+    // 床ファイルは全コマンド共通のチェーン床ヘッドだけを持つ。値を読んでいない
+    // 以上、環境・変数の床レコードを作らない(値のダイジェストを要するため)
+    const floor: unknown = JSON.parse(
+      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
+    );
+    expect(floor).toMatchObject({
+      v: 1,
+      chainHead: { seq: chain.entries.length, hashHex: chain.hashes[chain.entries.length - 1] },
+      environments: {},
+    });
   });
 
   it("ワイヤの並びが変わっても出力は変わらない(名前でソートして安定させる)", async () => {
