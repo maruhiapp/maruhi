@@ -4,6 +4,7 @@
 import {
   computeServerKeyFingerprint,
   computeUserKeyFingerprint,
+  deriveEncryptionKeyPair,
   exportEncryptionPrivateKey,
   exportEncryptionPublicKey,
   exportSigningPrivateSeed,
@@ -19,6 +20,7 @@ import {
   wrapDek,
 } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
+import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 interface VectorUserKeys {
@@ -55,6 +57,34 @@ async function fingerprintChecks(c: Checks): Promise<void> {
   // 長さ検証: 32 バイト以外は InvalidInput
   const bad = await computeUserKeyFingerprint(new Uint8Array(31), new Uint8Array(32));
   c.push("keys: fingerprint rejects bad length", !bad.ok && bad.error.kind === "InvalidInput");
+}
+
+async function deriveChecks(c: Checks): Promise<void> {
+  // RFC 9180 DeriveKeyPair: dek-wrap.json の server_keypair(hpke-js で導出)と
+  // 同じ ikm から同じ公開鍵が導出される(デプロイメント keypair — §9 — の
+  // 「secret 1 本 → keypair」経路の固定。RFC 公式ベクターは rfc9180.ts が担う)
+  const serverKeys = dekWrapVectors.server_keypair;
+  const derived = await deriveEncryptionKeyPair({ ikm: fromHex(serverKeys.ikmS_hex) });
+  if (!derived.ok) {
+    c.push("keys: derive server keypair from ikm", false, "derive failed");
+  } else {
+    const pub = await exportEncryptionPublicKey(derived.value.publicKey);
+    const fp = await computeServerKeyFingerprint(pub);
+    c.push("keys: derive server keypair from ikm", toHex(pub) === serverKeys.pkSm_hex);
+    c.push(
+      "keys: derived server fingerprint",
+      fp.ok && toHex(fp.value) === serverKeys.server_key_fingerprint_hex,
+    );
+    // 非抽出が既定(サーバー側の運用姿勢): エクスポートは KeyExportFailed
+    const denied = await exportEncryptionPrivateKey(derived.value.privateKey);
+    c.push(
+      "keys: derived private key is non-extractable by default",
+      !denied.ok && denied.error.kind === "KeyExportFailed",
+    );
+  }
+  // ikm 長不正は InvalidInput(throw しない)
+  const badIkm = await deriveEncryptionKeyPair({ ikm: new Uint8Array(31) });
+  c.push("keys: derive rejects bad ikm length", !badIkm.ok && badIkm.error.kind === "InvalidInput");
 }
 
 async function vectorImportChecks(c: Checks): Promise<void> {
@@ -231,6 +261,7 @@ async function lockedExportChecks(c: Checks): Promise<void> {
 export async function keysChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   await fingerprintChecks(c);
+  await deriveChecks(c);
   await vectorImportChecks(c);
   await generationChecks(c);
   await encExportChecks(c);

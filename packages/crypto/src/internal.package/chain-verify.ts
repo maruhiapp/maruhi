@@ -28,6 +28,11 @@ const SHA256_BYTES = 32;
 // 合意規則。巨大 payload による検証クライアントの資源消費(可用性)対策
 const MAX_FIELD_BYTES = 1024;
 const MAX_SCOPE_ENVIRONMENTS = 256;
+// lease_policy の上限(CRYPTO_SPEC §6.2。2026-08-12): 要素 8・要素あたり claim
+// 制約 8(各文字列は MAX_FIELD_BYTES)。仕様適合 grant_server エントリの正規化
+// サイズが §6.4 の受理ポリシー上限を数学的に下回り続けるように選ばれた合意規則
+const MAX_LEASE_POLICY_ISSUERS = 8;
+const MAX_LEASE_CLAIM_CONSTRAINTS = 8;
 
 interface MutableEnvironmentState {
   currentEpoch: number;
@@ -175,17 +180,52 @@ function shapeRotateEpoch(p: {
   );
 }
 
+/**
+ * lease_policy の 1 制約の形状(§6.2)。claim_name は識別子(非空)、claim_value は
+ * データ位置(rotate_epoch の reason と同じく空文字列を許す — OIDC claim の値は
+ * 空文字列でありうる)。どちらも §6.1 の 1024 バイト上限に服する
+ */
+function shapeLeaseClaimConstraint(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isBoundedId(value.claimName) &&
+    typeof value.claimValue === "string" &&
+    withinFieldBytes(value.claimValue)
+  );
+}
+
+function shapeLeasePolicyIssuer(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isBoundedId(value.issuerUrl) &&
+    isBoundedId(value.audience) &&
+    Array.isArray(value.claimConstraints) &&
+    value.claimConstraints.length <= MAX_LEASE_CLAIM_CONSTRAINTS &&
+    value.claimConstraints.every((constraint) => shapeLeaseClaimConstraint(constraint))
+  );
+}
+
 function shapeGrantServer(p: {
   serverEncPubHex: unknown;
   serverKeyFingerprintHex: unknown;
   scopeEnvironmentIds: unknown;
+  leasePolicy: unknown;
 }): boolean {
   return (
     isHexOfLength(p.serverEncPubHex, 32) &&
     isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES) &&
     Array.isArray(p.scopeEnvironmentIds) &&
     p.scopeEnvironmentIds.length <= MAX_SCOPE_ENVIRONMENTS &&
-    p.scopeEnvironmentIds.every((id) => isBoundedId(id))
+    p.scopeEnvironmentIds.every((id) => isBoundedId(id)) &&
+    // lease_policy(§6.2。2026-08-12): 構造のみ合意規則(評価意味論は AUTH_SPEC §14)。
+    // 旧 3 フィールド形式(leasePolicy 欠落)はここで invalid-payload になる
+    Array.isArray(p.leasePolicy) &&
+    p.leasePolicy.length <= MAX_LEASE_POLICY_ISSUERS &&
+    p.leasePolicy.every((element) => shapeLeasePolicyIssuer(element))
   );
 }
 
@@ -391,6 +431,9 @@ async function applyGrantServer(
   state: MutableChainState,
   actorRole: Role,
 ): Promise<ChainInvalidReason | null> {
+  // 認可段の検査順序(§6.2。2026-08-12 — ベクターで固定): role 規則 →
+  // 再 grant 規則(§6.3)→ サーバー鍵の重複。FP 整合は payload 自体の
+  // 自己整合(§9)であり role の直後に検査する(従来位置を維持)
   if (actorRole !== "owner") {
     return "insufficient-role";
   }
@@ -400,10 +443,12 @@ async function applyGrantServer(
   if (encodeHex(digest.slice(0, FINGERPRINT_BYTES)) !== entry.payload.serverKeyFingerprintHex) {
     return "invalid-payload";
   }
-  // 同一サーバー鍵への再 grant はスコープ拡大(旧 ⊆ 新)のみ受理する(2026-08-02
-  // 所有者裁定)。縮小を許すと revoke_server + rotate_epoch(§7 の全環境ローテー
-  // ション義務)を迂回して「開示を止めたつもり」になれてしまうため、縮小は必ず
-  // 失効経路を通す。拡大は未開示環境を足すだけなので無害
+  // 同一サーバー鍵への再 grant の二層判定(2026-08-02 所有者裁定。2026-08-12 二層化):
+  // 開示スコープはスコープ拡大(旧 ⊆ 新)のみ受理する。縮小を許すと revoke_server +
+  // rotate_epoch(§7 の全環境ローテーション義務)を迂回して「開示を止めたつもり」に
+  // なれてしまうため、縮小は必ず失効経路を通す。拡大は未開示環境を足すだけなので無害。
+  // 一方 lease_policy は自由改訂(縮小・全削除を含む): ポリシーはリース経路(§9.1)の
+  // ACL であり、サーバーの既知 DEK 集合を変えない(§6.3 — 判定はフィールドごとに独立)
   const existing = state.serverGrants.get(entry.payload.serverKeyFingerprintHex);
   if (existing !== undefined) {
     const newScope = new Set(entry.payload.scopeEnvironmentIds);
@@ -411,10 +456,22 @@ async function applyGrantServer(
       return "grant-scope-narrowed";
     }
   }
+  // サーバー鍵の一意性(§6.2。2026-08-12): サーバー enc 公開鍵が現メンバーの
+  // enc 公開鍵と一致する grant は拒否する(「鍵 → 主体」逆引きの一意性の
+  // 受信者クラス横断版)。逆方向(有効 grant のサーバー鍵を add_member に流用)は
+  // 仕様の明示的な対象外のまま(§6.2 メンバー鍵一意性の「注意」)
+  if (state.memberEncPubs.has(entry.payload.serverEncPubHex)) {
+    return "duplicate-server-key";
+  }
   state.serverGrants.set(entry.payload.serverKeyFingerprintHex, {
     serverKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
     serverEncPubHex: entry.payload.serverEncPubHex,
     scopeEnvironmentIds: [...entry.payload.scopeEnvironmentIds],
+    leasePolicy: entry.payload.leasePolicy.map((element) => ({
+      issuerUrl: element.issuerUrl,
+      audience: element.audience,
+      claimConstraints: element.claimConstraints.map((constraint) => ({ ...constraint })),
+    })),
   });
   return null;
 }

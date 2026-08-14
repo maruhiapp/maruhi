@@ -30,7 +30,26 @@ interface VectorNegative {
   readonly expected_prev_hash_hex?: string;
   readonly entry?: VectorEntry;
   readonly expected_reason?: string;
+  /** 認可 negative の前提チェーン(extended_chains のキー。無指定 = 正規チェーン)。 */
+  readonly chain?: string;
   readonly must_fail: boolean;
+}
+
+/** grant_server payload / 導出状態の lease_policy のベクター表現(§6.2)。 */
+export interface VectorLeasePolicyIssuer {
+  readonly issuer_url: string;
+  readonly audience: string;
+  readonly claim_constraints: readonly {
+    readonly claim_name: string;
+    readonly claim_value: string;
+  }[];
+}
+
+interface VectorServerGrant {
+  readonly server_key_fingerprint_hex: string;
+  readonly server_enc_pub_hex: string;
+  readonly scope_environments: readonly string[];
+  readonly lease_policy: readonly VectorLeasePolicyIssuer[];
 }
 
 interface VectorValidAppend {
@@ -39,7 +58,17 @@ interface VectorValidAppend {
   readonly expected_members: Readonly<Record<string, string>>;
   /** 受理後の環境ごとの現エポック(§6.2 環境ライフサイクル — 2026-08-03)。 */
   readonly expected_environments: Readonly<Record<string, string>>;
+  /** 受理後の有効 grant 集合(§6.2 再 grant 二層 — 2026-08-12)。 */
+  readonly expected_server_grants: readonly VectorServerGrant[];
   readonly note?: string;
+}
+
+/** 正規チェーンの途中ヘッドへ追記した派生チェーン(認可 negative の前提状態)。 */
+interface VectorExtendedChain {
+  readonly description: string;
+  readonly base_seq: number;
+  readonly entries: readonly VectorEntry[];
+  readonly expected_members: Readonly<Record<string, string>>;
 }
 
 interface VectorEnvironmentState {
@@ -52,11 +81,7 @@ interface VectorEnvironmentState {
 interface VectorHeadState {
   readonly after_seq: number;
   readonly members: Readonly<Record<string, string>>;
-  readonly server_grants: readonly {
-    readonly server_key_fingerprint_hex: string;
-    readonly server_enc_pub_hex: string;
-    readonly scope_environments: readonly string[];
-  }[];
+  readonly server_grants: readonly VectorServerGrant[];
   readonly environments: Readonly<Record<string, VectorEnvironmentState>>;
 }
 
@@ -64,6 +89,9 @@ export const vectorEntries = chainVectors.entries as readonly VectorEntry[];
 export const vectorNegatives = chainVectors.negative as readonly VectorNegative[];
 export const vectorHeadStates = chainVectors.expected_head_states as readonly VectorHeadState[];
 export const vectorValidAppends = chainVectors.valid_appends as readonly VectorValidAppend[];
+export const vectorExtendedChains = chainVectors.extended_chains as Readonly<
+  Record<string, VectorExtendedChain>
+>;
 export const vectorKeys = chainVectors.keys as Readonly<
   Record<
     string,
@@ -136,15 +164,25 @@ function toOperation(op: string, payload: Readonly<Record<string, unknown>>): Ch
           dekCommitmentHex: str(payload, "dek_commitment_hex"),
         },
       };
-    case "grant_server":
+    case "grant_server": {
+      const leasePolicy = payload["lease_policy"] as readonly VectorLeasePolicyIssuer[];
       return {
         op,
         payload: {
           serverEncPubHex: str(payload, "server_enc_pub_hex"),
           serverKeyFingerprintHex: str(payload, "server_key_fingerprint_hex"),
           scopeEnvironmentIds: payload["scope_environments"] as readonly string[],
+          leasePolicy: leasePolicy.map((element) => ({
+            issuerUrl: element.issuer_url,
+            audience: element.audience,
+            claimConstraints: element.claim_constraints.map((constraint) => ({
+              claimName: constraint.claim_name,
+              claimValue: constraint.claim_value,
+            })),
+          })),
         },
       };
+    }
     case "revoke_server":
       return {
         op,

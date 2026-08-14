@@ -431,7 +431,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   );
   for (const v of doc.vectors) {
     const bytes = signedBytes(v);
-    check(`dek-wrap-sig: ${v.name} signed bytes reconstruction`, toHex(bytes) === v.signed_bytes_hex);
+    check(
+      `dek-wrap-sig: ${v.name} signed bytes reconstruction`,
+      toHex(bytes) === v.signed_bytes_hex,
+    );
     check(`dek-wrap-sig: ${v.name} domain embeds suite`, v.domain === `${v.suite}/dek-wrap-sig`);
     check(`dek-wrap-sig: ${v.name} signer identity bound`, v.signer_user_id === doc.signer.user_id);
     const ok = await crypto.subtle.verify(
