@@ -450,13 +450,14 @@ function envDiff(
   });
 }
 
-/** `maruhi env` が取る操作(一覧の出所はここだけ — 検査・文面・description が共有する)。 */
+/**
+ * `maruhi env` が取る操作。**一覧の出所はここだけ**で、綴りの検査・不明な操作の
+ * 文面・コマンドと位置引数の description がすべてこれを読む(KEY_ACTIONS と同じ形)。
+ */
 const ENV_ACTIONS = ["create", "rotate", "diff"] as const;
 
-/** env の操作(一覧の出所は上の表だけ — 操作が増えても narrowing が追随する)。 */
 type EnvAction = (typeof ENV_ACTIONS)[number];
 
-/** 操作の一覧は上の表が唯一の出所(文面と検査で二重管理しない)。 */
 const ENV_ACTION_HELP = `不明な操作です(${ENV_ACTIONS.join(" | ")})`;
 
 /**

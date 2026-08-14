@@ -2,10 +2,10 @@
 // 床検査 → 環境床ハンドル。config ファイルはコマンドごとに前段で 1 回だけ読む
 // (旧 cli.ts はコマンド本体 / openProject / openSession で 3 回読んでいた)。
 //
-// 前段は鍵の要否で 2 つに分かれるが、**同期と床の意味論は attachProject に
-// 一本化**してある(2 系統に割ると、いずれ黙って食い違う):
-//   openProject         = 鍵あり(値を暗号化・復号・署名するコマンド)
-//   openMetadataProject = 鍵なし(平文メタデータしか読まないコマンド — env diff)
+// 前段は master 鍵の要否で 2 つに分かれるが、**同期と床の意味論は attachProject
+// に一本化**してある:
+//   openProjectWith         = 鍵あり(値を暗号化・復号・署名するコマンド)
+//   openMetadataProjectWith = 鍵なし(平文メタデータしか読まないコマンド — env diff)
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -141,6 +141,7 @@ export interface ProjectContextBase extends SessionContext {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }
 
+/** 値を扱うコマンドの前段の成果(上記 + master 鍵と自分宛ラップの受信者)。 */
 export interface ProjectContext extends ProjectContextBase {
   readonly masterKeys: MasterKeys;
   readonly recipient: DekRecipient;
@@ -206,7 +207,8 @@ export function loadCheckedFloor(
 /**
  * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → 床ヘッドの前進。
  * 鍵の有無で分かれるのは呼び出し側だけで、床の意味論はここに一本化する
- * (2 系統に割ると、いずれ黙って食い違う)。
+ * (2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は全コマンド共通で、
+ * env diff のような値を読まないコマンドでも従来どおり行う。
  */
 function attachProject(
   context: SessionContext,
