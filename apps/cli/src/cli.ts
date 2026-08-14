@@ -461,6 +461,18 @@ type EnvAction = (typeof ENV_ACTIONS)[number];
 const ENV_ACTION_HELP = `不明な操作です(${ENV_ACTIONS.join(" | ")})`;
 
 /**
+ * ENV_ACTIONS の分岐漏れを**型で**捕まえる(引数が never なので、操作を足して
+ * 分岐を書き忘れると呼び出し位置がコンパイルエラーになる)。
+ *
+ * 実行時のフォールバックでは足りない: env の分岐は最後が envCreate なので、
+ * 新しい操作が黙って**環境作成 = チェーンへの取り消せない追記**へ落ちる。
+ * keyCommand は末尾の usageError で同じ穴を塞いでいるが、あちらは実行時。
+ */
+function unhandledEnvAction(action: never): CliError {
+  return usageError(`${ENV_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
+}
+
+/**
  * **操作専用**のオプション(ここに無い宣言済みオプションは全操作で使える)。
  * 未宣言かどうかは `CliOptions.strict` が引数表から判定するので、この表に
  * 載せ忘れても新しいオプションが不明扱いで拒否されることはない。
@@ -639,7 +651,12 @@ function envCommand(execute: Execute) {
               environmentId,
             );
           }
-          return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
+          if (action === "create") {
+            return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
+          }
+          // ENV_ACTIONS の全分岐を上で処理済み(到達しない)。操作を足して
+          // ここを書き忘れると**コンパイルエラー**になる
+          return yield* Effect.fail(unhandledEnvAction(action));
         }),
         {
           commandRejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
