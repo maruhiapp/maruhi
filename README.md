@@ -41,7 +41,9 @@ tar -xzf maruhi-darwin-arm64.tar.gz
 
 CLI は OS キーチェーン(`Bun.secrets`)等の Bun 固有 API に依存するため、npm 版の実行には
 [Bun](https://bun.sh) が必要です(最低バージョンはリポジトリの [`.bun-version`](.bun-version) と同じ。
-公開パッケージの `engines.bun` も同ファイルから導出されます。Node.js で起動した場合は案内を出して終了します):
+公開パッケージの `engines.bun` も同ファイルから導出されます)。Bun が無い環境では、
+Node.js で起動した場合は案内を出して終了し、Unix で直接 `maruhi` を叩いた場合は shebang 解決の段階で
+`env: 'bun': No such file or directory` になります(いずれも Bun の導入で解消):
 
 ```sh
 # プレリリース期間中(v0.1.0 まで)は dist-tag `next` を指定する。

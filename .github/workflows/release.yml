@@ -86,8 +86,10 @@ jobs:
           if [ "${EVENT_NAME}" = "push" ]; then
             # タグが main 系譜上のコミットを指すことを強制する。これが無いと、
             # レビューを経ていない任意のブランチコミットに v タグを打つだけで
-            # 正規の Release / npm publish(provenance 付き)まで到達できる
-            git fetch origin main --quiet
+            # 正規の Release / npm publish(provenance 付き)まで到達できる。
+            # origin/main は checkout(fetch-depth: 0 = 全ブランチ・全履歴)が
+            # 取得済み — ここで再 fetch しない(persist-credentials: false の後の
+            # 手動 fetch は、リポジトリを private 化した瞬間に唯一壊れる行になる)
             if ! git merge-base --is-ancestor HEAD origin/main; then
               echo "::error::タグ ${GITHUB_REF_NAME} は main 上のコミットを指していません(docs/RELEASING.md)"
               exit 1
@@ -137,14 +139,31 @@ jobs:
       - name: Build binaries + checksums
         run: bun run --filter @maruhi/cli build:binaries
 
+      # npm ステージングも同じ job で組む: 権限・信頼水準(contents: read で依存
+      # コードを実行)が同一で、job を分けても得るものがない。publish-npm との
+      # 分離(id-token の隔離)だけが本質で、それは維持されている
+      - name: Stage npm package (bundle)
+        run: bun run --filter @maruhi/cli build:npm
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binaries
           path: apps/cli/dist/
           if-no-files-found: error
-          retention-days: 7
+          # publish-npm 単独失敗の復旧(失敗 job の re-run — docs/RELEASING.md)は
+          # アーティファクトの生存が前提。7 日だと「気づくのが遅れた」だけで
+          # 同一版での復旧が閉じる
+          retention-days: 30
           # 「Re-run all jobs」の新 attempt で同名アーティファクトが 409 になり、
           # タグ打ち直し禁止の下では rc を burn するしかなくなる罠を塞ぐ
+          overwrite: true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-package
+          path: apps/cli/dist-npm/
+          if-no-files-found: error
+          retention-days: 30
           overwrite: true
 
   # 実機スモーク: クロスコンパイルは「ビルドが通る」ことしか保証しないため、
@@ -216,9 +235,9 @@ jobs:
   # (ADR-0015: CHANGELOG は 1.0 まで新設しない)
   publish-github:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # stage-npm を前提に含める: Release 作成は撤回不能(タグ打ち直し禁止)なので、
-    # npm ステージングが壊れている状態で Release だけ先に出て npm と食い違う形を塞ぐ
-    needs: [verify, version-check, smoke, stage-npm]
+    # npm ステージングは build job 内(smoke 経由の前提)。壊れていれば build が
+    # 落ち、撤回不能な Release 作成まで到達しない
+    needs: [verify, version-check, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -246,42 +265,6 @@ jobs:
             "${FLAGS[@]}" \
             maruhi-*.tar.gz checksums.txt
 
-  # npm 配布物の組み立て。publish と分離して OIDC 権限なしで行う:
-  # bun install / bundle は依存コードを実行するため、id-token: write を持つ job で
-  # 走らせない(依存侵害時に trusted publishing のトークン発行へ届く面を消す)。
-  # `if` を付けずドライラン(workflow_dispatch)でも通す — 副作用はなく、
-  # ここが壊れる形をタグ前に検出できる
-  stage-npm:
-    needs: version-check
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      # 依存コード(bun install / build)を実行する job にトークンを残さない
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Stage npm package (bundle)
-        run: bun run --filter @maruhi/cli build:npm
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: npm-package
-          path: apps/cli/dist-npm/
-          if-no-files-found: error
-          retention-days: 7
-          # binaries 側と同じ: re-run 時の 409 を塞ぐ
-          overwrite: true
-
   # npm publish(unscoped `maruhi`)。認証は trusted publishing(OIDC)のみ:
   # 長命トークンを GitHub Secrets に置かない。provenance は明示フラグで強制する
   # (bun publish は provenance 未対応 — oven-sh/bun#15601 — のため npm CLI を使う)。
@@ -289,7 +272,7 @@ jobs:
   # npm CLI のみ(checkout もリポジトリ依存コードの実行もしない)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version-check, stage-npm, publish-github]
+    needs: [version-check, publish-github]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
