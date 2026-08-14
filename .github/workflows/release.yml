@@ -10,6 +10,9 @@
 #   タグを打っても出ない
 # - タグの打ち直しはしない(既存 Release への上書きは gh release create が失敗する)。
 #   やり直しは rc を進める(docs/RELEASING.md)
+# - 外部 action は commit SHA でピン留めする(contents: write / id-token: write を
+#   持つ特権経路のため、可変タグ経由の上流侵害を排除する。ADR-0011 の厳密ピン留めと
+#   同じ規律 — 更新は SHA を進める独立 PR で意図的に行う)
 name: release
 
 on:
@@ -52,7 +55,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Resolve version (tag ↔ apps/cli/package.json)
         id: resolve
@@ -88,9 +91,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
 
@@ -100,7 +103,7 @@ jobs:
       - name: Build binaries + checksums
         run: bun run --filter @maruhi/cli build:binaries
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binaries
           path: apps/cli/dist/
@@ -126,7 +129,7 @@ jobs:
     timeout-minutes: 10
     permissions: {}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: binaries
 
@@ -178,7 +181,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: binaries
 
@@ -213,9 +216,9 @@ jobs:
       # npm trusted publishing(OIDC)と provenance の生成に必要
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
 
@@ -225,7 +228,7 @@ jobs:
       - name: Stage npm package (bundle)
         run: bun run --filter @maruhi/cli build:npm
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
