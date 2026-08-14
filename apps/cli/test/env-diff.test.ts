@@ -21,9 +21,13 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { EnvironmentId } from "@maruhi/core";
+import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { displayText } from "../src/display.ts";
+import { reportEnvironmentDiff } from "../src/env-diff.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
 import {
   buildChain,
@@ -219,21 +223,70 @@ describe("maruhi env diff", () => {
     );
   });
 
-  it("差分があるときだけ標本のずれを注意書きする(stderr。差分ゼロなら黙る)", async () => {
+  it("標本のずれは差分の有無によらず注意書きする(stderr。助言だけ結論に合わせる)", async () => {
     // 2 環境は順に読むので、実行中の push は一時的に片側だけに見える = 偽の差分。
-    // 真に受けた「修正」は取り消せない push なので、差分があるときは必ず添える
+    // 真に受けた「修正」は取り消せない push なので、埋める前の再確認を促す
     const drifted = await startEnv(await handlersFor(["ONLY_DEV"], []));
     expect(await runCli(["env", "diff", DEV, PROD], drifted.layer)).toBe(0);
-    const notices = drifted.errors.filter((line) => line.includes("同時ではなく順に読んでいます"));
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain("push で埋める前にもう一度実行して確かめてください");
+    const driftNotices = drifted.errors.filter((line) =>
+      line.includes("同時ではなく順に読んでいます"),
+    );
+    expect(driftNotices).toHaveLength(1);
+    expect(driftNotices[0]).toContain("push で埋める前にもう一度実行して確かめてください");
     // 助言は stdout(差分一覧)へ混ぜない
     expect(drifted.logs.some((line) => line.includes("同時ではなく順に読んでいます"))).toBe(false);
 
-    // 差分ゼロなら利用者が取る行動が無いので黙る
+    // **差分ゼロでも黙らない**: 1 つ目を読んだ後の削除は「両方にある」と報告
+    // されて差分ゼロで終わる = 実在する差分の見落としになるため、その結論こそ
+    // 覆されうる
     const clean = await startEnv(await handlersFor(["SAME"], ["SAME"]));
     expect(await runCli(["env", "diff", DEV, PROD], clean.layer)).toBe(0);
-    expect(clean.errors.some((line) => line.includes("同時ではなく順に読んでいます"))).toBe(false);
+    const cleanNotices = clean.errors.filter((line) =>
+      line.includes("同時ではなく順に読んでいます"),
+    );
+    expect(cleanNotices).toHaveLength(1);
+    expect(cleanNotices[0]).toContain("差分ゼロを「揃っている」の根拠にする場合");
+    expect(cleanNotices[0]).not.toContain("push で埋める前に");
+  });
+
+  it("環境 ID も端末中和する(EnvironmentId はブランド付きではない)", async () => {
+    // `EnvironmentId` は Schema.String.check の別名で、未検証の string がそのまま
+    // 代入できる(型は検証を強制しない)。CLI 側は requireEnvironmentId を通すが、
+    // 表示側がその不変条件に寄りかからないことを直接固定する
+    const env = await makeTestEnv();
+    await Effect.runPromise(
+      reportEnvironmentDiff({
+        firstEnvironmentId: "\u001b[2Kdev" as EnvironmentId,
+        secondEnvironmentId: "prod\u0007" as EnvironmentId,
+        onlyInFirst: ["ONLY_DEV"],
+        onlyInSecond: [],
+        shared: 0,
+        warnings: [],
+      }).pipe(Effect.provide(env.layer)),
+    );
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u0007");
+    expect(env.logs).toContain("環境 \uFFFD[2Kdev のみにある変数: 1");
+    expect(env.logs).toContain(
+      "同期・検証 OK: 環境 \uFFFD[2Kdev = 1 変数 / 環境 prod\uFFFD = 0 変数",
+    );
+  });
+
+  it("警告のラベルの環境 ID も端末中和する", async () => {
+    const env = await makeTestEnv();
+    await Effect.runPromise(
+      reportEnvironmentDiff({
+        firstEnvironmentId: "dev" as EnvironmentId,
+        secondEnvironmentId: "\u001b[2Kprod" as EnvironmentId,
+        onlyInFirst: [],
+        onlyInSecond: [],
+        shared: 0,
+        // envDiffOp の labelWarnings が組む形(環境 ID を前置したもの)
+        warnings: [`環境 ${displayText("\u001b[2Kprod")}: 変数 v1 の名前が…`],
+      }).pipe(Effect.provide(env.layer)),
+    );
+    expect(env.errors.join("\n")).not.toContain("\u001b");
   });
 
   it("環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)", async () => {

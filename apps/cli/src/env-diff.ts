@@ -21,12 +21,15 @@
 //
 // **標本のずれ(検査済みと偽らない)**: 2 環境は 2 回の pull で**順に**読む。
 // 2 環境を同時に読む API は無いため、1 つ目と 2 つ目の間に他メンバーの push が
-// 挟まると、その変数は一時的に片側だけに見える = **偽の差分**になる。ここで
+// 挟まると、その変数は一時的に片側だけに見える = **偽の差分**になる。逆向きも
+// ある: 1 つ目を読んだ後に片側から変数が削除されると、両方にあると報告されて
+// 差分ゼロで終わる = **実在する差分の見落とし**になる。ここで
 // 揃えているのは検証に使うチェーンビューであって、変数集合の同時性ではない
 // (前者は §6.3 の検証が別々の履歴に対して行われるのを防ぐためのもので、
 // 後者は保証できない)。偽の差分を真に受けた利用者の「修正」は push であり、
-// チェーンへの取り消せない追記 — かつ新しい値を古い値で上書きしうる — なので、
-// 差分があるときは報告に注意書きを添える(reportEnvironmentDiff)。
+// チェーンへの取り消せない追記 — かつ新しい値を古い値で上書きしうる — であり、
+// 見落としの側は「揃っている」と読ませる。どちらの結論も覆されうるので、
+// 注意書きは**差分の有無によらず常に**添える(reportEnvironmentDiff)。
 //
 // AI エージェント検出(agent.ts)は掛けない: agent.ts の線引きは「値を端末に
 // 表示する操作」であり、変数名は平文メタデータで、`--show` なしの `maruhi pull`
@@ -91,8 +94,7 @@ function labelWarnings(
   environmentId: EnvironmentId,
   warnings: readonly string[],
 ): readonly string[] {
-  // 環境 ID は isEnvironmentId(英数字 + _ -)を通っているので端末中和は要らない
-  return warnings.map((warning) => `環境 ${environmentId}: ${warning}`);
+  return warnings.map((warning) => `環境 ${displayText(environmentId)}: ${warning}`);
 }
 
 /**
@@ -154,12 +156,14 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
   return Effect.gen(function* () {
     const io = yield* CliIo;
     yield* logWarnings(diff.warnings);
+    const first = displayText(diff.firstEnvironmentId);
+    const second = displayText(diff.secondEnvironmentId);
     yield* io.log(
-      `同期・検証 OK: 環境 ${diff.firstEnvironmentId} = ${diff.onlyInFirst.length + diff.shared} 変数 / 環境 ${diff.secondEnvironmentId} = ${diff.onlyInSecond.length + diff.shared} 変数`,
+      `同期・検証 OK: 環境 ${first} = ${diff.onlyInFirst.length + diff.shared} 変数 / 環境 ${second} = ${diff.onlyInSecond.length + diff.shared} 変数`,
     );
     const sides = [
-      { environmentId: diff.firstEnvironmentId, names: diff.onlyInFirst },
-      { environmentId: diff.secondEnvironmentId, names: diff.onlyInSecond },
+      { environmentId: first, names: diff.onlyInFirst },
+      { environmentId: second, names: diff.onlyInSecond },
     ];
     for (const side of sides) {
       // 件数は名前が 0 件でも必ず出す(出力の形を実行ごとに変えない)
@@ -171,13 +175,17 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
     yield* io.log(
       `両方にある変数: ${diff.shared}(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)`,
     );
-    // 標本のずれの注意書きは**差分があるときだけ**、かつ stderr へ出す:
-    // 助言であってコマンドの出力ではない(stdout は差分一覧だけに保つ)し、
-    // 差分ゼロの実行では利用者が取る行動が無いので言うことがない
-    if (diff.onlyInFirst.length + diff.onlyInSecond.length > 0) {
-      yield* io.logError(
-        "注意: 2 つの環境は同時ではなく順に読んでいます(2 環境を同時に読む API はありません)。実行中に他のメンバーが push すると、その変数が一時的に片側だけに見えることがあります — 心当たりのない差分は、push で埋める前にもう一度実行して確かめてください(push はチェーンへの追記で取り消せず、新しい値を古い値で上書きしうるため)",
-      );
-    }
+    // 標本のずれの注意書きは**常に**出す(stderr — 助言であってコマンドの出力
+    // ではないので stdout の差分一覧には混ぜない)。差分ゼロのときに黙ると、
+    // **skew が最も危険な向き**を隠すことになる: 1 つ目を読んだ後に片側から
+    // 変数が削除されると、両方にあると報告されて差分ゼロで終わる = 実在する
+    // 差分を「揃っている」と読ませる。助言だけを結論に合わせて変える
+    const advice =
+      diff.onlyInFirst.length + diff.onlyInSecond.length > 0
+        ? "心当たりのない差分は、push で埋める前にもう一度実行して確かめてください(push はチェーンへの追記で取り消せず、新しい値を古い値で上書きしうるため)"
+        : "差分ゼロを「揃っている」の根拠にする場合は、もう一度実行して確かめてください";
+    yield* io.logError(
+      `注意: 2 つの環境は同時ではなく順に読んでいます(2 環境を同時に読む API はありません)。実行中に他のメンバーが push / 削除を行うと、実在しない差分が出ることも、実在する差分が出ないこともあります — ${advice}`,
+    );
   });
 }

@@ -336,8 +336,10 @@ export interface EnvironmentPairContext extends ProjectContextBase {
  * 履歴に対するものなのか言えなくなる(片方だけが再同期で前進した状態を
  * 「差分」として報告しかねない)。プロジェクト前段は 1 回だけにする。
  *
- * 環境 ID の形式検証は呼び出し側(位置引数を受ける側)が済ませている前提で、
- * 型(EnvironmentId)がそれを要求する。
+ * 環境 ID の形式検証は呼び出し側(位置引数を受ける側)が済ませている前提。
+ * ただし `EnvironmentId` は**ブランド付きではない**(Schema.String.check の
+ * 別名)ので、型は検証を強制しない — 表示側は環境 ID も displayText を通す
+ * (env-diff.ts)。
  */
 export function openMetadataEnvironmentPair(
   flags: CommonFlags,
