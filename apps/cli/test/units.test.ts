@@ -1,12 +1,12 @@
 // 細部のユニットテスト: device flow のポーリング規則(RFC 8628 §3.5)、
 // キーチェーンレコードの codec、run の注入検証、stdin 正規化、
-// MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
+// MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
 import { Effect, Exit, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { normalizeStdinValue, runCli } from "../src/cli.ts";
+import { normalizeStdinValue, optionRestrictedTo, runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
 import { decodeValueText } from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
@@ -487,5 +487,40 @@ describe("入力検証と defect の扱い", () => {
     env.breakConfigLoadWithDefect();
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("内部エラー");
+  });
+});
+
+describe("操作専用オプションの適用可否(optionRestrictedTo)", () => {
+  // 実際の ENV_ACTION_FLAGS は互いに素なので、**共有**の形はコマンドラインから
+  // 到達できない。表を差し替えてここで固定する(将来オプションを共有させた
+  // ときに、共有元のどちらでも拒否される回帰を止める)
+  const ACTIONS = ["create", "rotate", "diff"] as const;
+  const FLAGS = {
+    create: new Set(["name"]),
+    // `name` は create と rotate が**共有**する想定の表
+    rotate: new Set(["reason", "name"]),
+    diff: new Set<string>(),
+  };
+
+  it("どの操作にも属さないオプションは全操作で使える(--server / --project の形)", () => {
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "diff", "server")).toBeNull();
+  });
+
+  it("その操作自身が持つオプションは使える", () => {
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "rotate", "reason")).toBeNull();
+  });
+
+  it("持たない操作では、使える操作の一覧を返す(診断で名指しするため)", () => {
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "diff", "reason")).toEqual(["rotate"]);
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "create", "reason")).toEqual(["rotate"]);
+  });
+
+  it("複数の操作が共有するオプションは、共有元のどちらでも使える", () => {
+    // 「**他の**操作の分」だけを数えると、共有元の両方でこれが非 null になり、
+    // 宣言したとおりに使えないオプションが生まれる
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "create", "name")).toBeNull();
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "rotate", "name")).toBeNull();
+    // 共有していない操作では、持ち主がすべて挙がる
+    expect(optionRestrictedTo(ACTIONS, FLAGS, "diff", "name")).toEqual(["create", "rotate"]);
   });
 });

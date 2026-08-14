@@ -478,13 +478,36 @@ function isEnvAction(action: string | undefined): action is EnvAction {
 }
 
 /**
+ * Given an action → action-specific-options table, reports whether `action` may
+ * use `declared`: null when it may, otherwise the actions the option is
+ * restricted to (for naming them in the diagnostic).
+ *
+ * 判定は「そのオプションを**持つ操作**(自分を含む)」で行う。**「他の操作の分」
+ * だけを数えてはならない**: それだと 1 つのオプションを複数の操作が共有する形で、
+ * 共有元のどちらでも拒否される(= 宣言したとおりに使えない)。
+ *
+ * 表を引数に取るのはその形をテストから固定するため — 実際の ENV_ACTION_FLAGS は
+ * 互いに素なので、共有の形はコマンドラインからは到達できない。
+ */
+export function optionRestrictedTo<A extends string>(
+  actions: readonly A[],
+  flags: Readonly<Record<A, ReadonlySet<string>>>,
+  action: A,
+  declared: string,
+): readonly A[] | null {
+  const owners = actions.filter((owner) => flags[owner].has(declared));
+  // 持ち主が居ない = 全操作で使える共通オプション(--server / --project)。
+  // 自分が持ち主なら当然使える(共有していても)
+  return owners.length === 0 || owners.includes(action) ? null : owners;
+}
+
+/**
  * 操作に適用されないオプション(create への `--reason` 等)の拒否。gunshi は
  * 1 コマンド 1 引数表なので、**全操作**のフラグが常に受理される — 指定した
  * 意図が黙って無視されたことに気付けるようにする。
  *
  * 操作は 3 つ以上あるので「もう一方の操作」では足りない。そのオプションを
- * 持つ操作を表から引いて名指しする(操作が増えても文面が嘘にならない。
- * 1 つのオプションを複数の操作が共有する形にも耐える)。
+ * 使える操作を表から引いて名指しする(操作が増えても文面が嘘にならない)。
  *
  * 書き方そのものの誤り(未宣言オプション・boolean への値・余分な位置引数)は
  * コマンドに依らないので args.ts と `CliOptions.strict` が受け持つ。
@@ -507,12 +530,8 @@ function envActionFlagRejection(
     if (declared === undefined) {
       continue;
     }
-    // そのオプションを持つ**他の**操作。1 つも無ければ全操作で使える共通
-    // オプション(--server / --project)なので通す
-    const owners = ENV_ACTIONS.filter(
-      (other) => other !== action && ENV_ACTION_FLAGS[other].has(declared),
-    );
-    if (owners.length === 0) {
+    const owners = optionRestrictedTo(ENV_ACTIONS, ENV_ACTION_FLAGS, action, declared);
+    if (owners === null) {
       continue;
     }
     const usable = owners.map((owner) => `env ${owner}`).join(" / ");
