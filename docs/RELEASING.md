@@ -57,7 +57,10 @@ release workflow は `workflow_dispatch` で publish 以外(ビルド + 5 OS ス
 rc を進める必要はない。npm 側はその版を未消費なので、原因(初回なら大抵
 trusted publisher の設定 — workflow 名・org・allowed action)を直して、同じ run の
 **失敗した job を re-run** すれば同一版で復旧できる(re-run はアーティファクトの
-保持期間 = **30 日以内**。過ぎたら rc を進めるしかない)。Release 先行 → npm 後行の
+保持期間 = **30 日以内**。過ぎたら rc を進めるしかない)。
+ただし **re-run で直るのは設定・環境起因のみ**。コード修正が要る失敗は re-run では
+直らない(run はタグ時点の workflow と成果物で走る)ので、直して rc を進める
+(v0.1.0-rc.1 の bin 正規化バグが実例)。Release 先行 → npm 後行の
 順序はこの復旧を可能にするためのもの(逆だと publish 済み npm 版は再試行できない)。
 なお **OIDC(trusted publishing)経路はドライランでは検証できない**(publish を
 実行して初めて認証が走る)。最初のタグの前に、初回設定(上記 1〜3)を再確認すること。
