@@ -6,10 +6,11 @@
 //
 // 引数: 出力ディレクトリ(省略時 dist-npm。テストが一時ディレクトリを渡す)
 
-import { spawnSync } from "node:child_process";
 import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { run, SEMVER_PATTERN } from "./shared.ts";
 
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 const outDirArg = process.argv[2] ?? "dist-npm";
@@ -22,7 +23,7 @@ const workspaceManifest = JSON.parse(await readFile(join(cliRoot, "package.json"
 const version = workspaceManifest.version;
 // タグ照合(release.yml)と npm の版形式の前提。壊れた版を publish 直前より
 // 手前で止める
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(version)) {
+if (!SEMVER_PATTERN.test(version)) {
   throw new Error(`apps/cli/package.json の version が SemVer ではない: ${version}`);
 }
 
@@ -31,14 +32,7 @@ const bunVersion = (await readFile(join(cliRoot, "../../.bun-version"), "utf8"))
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 
-const build = spawnSync(
-  "bun",
-  ["build", "--target=bun", "src/bin.ts", "--outfile", join(outDir, "bin.js")],
-  { cwd: cliRoot, stdio: "inherit" },
-);
-if (build.error !== undefined || build.status !== 0) {
-  throw new Error(`bun build に失敗: ${build.error?.message ?? `exit ${build.status}`}`);
-}
+run("bun", ["build", "--target=bun", "src/bin.ts", "--outfile", join(outDir, "bin.js")], cliRoot);
 
 const bundle = await readFile(join(outDir, "bin.js"), "utf8");
 // shebang(#!/usr/bin/env bun)は bin 実行の要。bun build が落とす退行に気づけるよう検査する

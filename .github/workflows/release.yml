@@ -55,9 +55,19 @@ jobs:
 
       - name: Resolve version (tag ↔ apps/cli/package.json)
         id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           VERSION=$(node -p "require('./apps/cli/package.json').version")
-          if [ "${{ github.event_name }}" = "push" ] && [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+          # canonical SemVer(scripts/shared.ts の SEMVER_PATTERN と同型)。緩い判定だと
+          # 先頭ゼロ等が最後の npm publish で初めて弾かれ、Release と npm が食い違う。
+          # 後続 job はこの output をシェルへ展開するため、形式検査は注入対策を兼ねる
+          SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+          if ! [[ "${VERSION}" =~ ${SEMVER_RE} ]]; then
+            echo "::error::apps/cli/package.json の version が SemVer ではありません: ${VERSION}"
+            exit 1
+          fi
+          if [ "${EVENT_NAME}" = "push" ] && [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
             echo "::error::タグ ${GITHUB_REF_NAME} と apps/cli/package.json の version ${VERSION} が一致しません(docs/RELEASING.md)"
             exit 1
           fi
@@ -119,24 +129,43 @@ jobs:
         with:
           name: binaries
 
+      # `${{ }}` を run へ直接展開しない(env 経由): 版文字列などの値がシェルとして
+      # 解釈される注入経路を作らない(GitHub の hardening ガイダンス)
       - name: Launch check (--version / --help)
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: ${{ matrix.bin }}
+          EXPECTED_VERSION: ${{ needs.version-check.outputs.version }}
         run: |
-          tar -xzf "maruhi-${{ matrix.target }}.tar.gz"
-          EXPECTED='${{ needs.version-check.outputs.version }}'
-          GOT="$(./${{ matrix.bin }} --version)"
+          tar -xzf "maruhi-${TARGET}.tar.gz"
+          GOT="$(./"${BIN}" --version)"
           echo "version: ${GOT}"
-          test "${GOT}" = "${EXPECTED}"
-          ./${{ matrix.bin }} --help > /dev/null
+          test "${GOT}" = "${EXPECTED_VERSION}"
+          ./"${BIN}" --help > /dev/null
 
-      # OS キーチェーン到達性の観測(informational)。トークン未保存の logout は
-      # 「キーチェーンにありません」(= バックエンド到達 OK)か、バックエンド
-      # 不在の型付きエラーのどちらかで必ず非 0 終了する。runner のキーチェーン
-      # 事情(headless / 未ロック状態)で結果が割れるためゲートにはしない
-      - name: Keychain probe (informational)
+      # OS キーチェーン経路の観測。トークン未保存の logout は「キーチェーンに
+      # ありません」(= バックエンド到達 OK)か、バックエンド不在の型付きエラーの
+      # どちらかで exit 1 する — それ以外(クラッシュ・シグナル死・想定外の出力)を
+      # 赤にする。runner のキーチェーン事情(headless / 未ロック)は制御できないため
+      # リリースのゲートにはしない(continue-on-error)が、赤 = 実異常として見える
+      - name: Keychain probe (typed failure expected)
         continue-on-error: true
         shell: bash
-        run: ./${{ matrix.bin }} logout --server https://keychain-probe.invalid || true
+        env:
+          BIN: ${{ matrix.bin }}
+        run: |
+          set +e
+          OUT=$(./"${BIN}" logout --server https://keychain-probe.invalid 2>&1)
+          CODE=$?
+          set -e
+          echo "${OUT}"
+          echo "exit: ${CODE}"
+          test "${CODE}" = "1"
+          case "${OUT}" in
+            *キーチェーン*) ;;
+            *) echo "::warning::キーチェーンの型付きエラー以外の落ち方をした"; exit 1 ;;
+          esac
 
   # GitHub Release の作成(checksums.txt 添付)。リリースノートは自動生成
   # (ADR-0015: CHANGELOG は 1.0 まで新設しない)

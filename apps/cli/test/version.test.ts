@@ -8,12 +8,24 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import packageJson from "../package.json";
+import { SEMVER_PATTERN } from "../scripts/shared.ts";
 
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("CLI のバージョン(単一の出所 = package.json)", () => {
   it("version はタグ照合・npm publish の前提となる SemVer である", () => {
-    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/);
+    expect(packageJson.version).toMatch(SEMVER_PATTERN);
+  });
+
+  it("SemVer 判定は npm が拒む形(先頭ゼロ等)を通さない", () => {
+    // 緩い判定だと GitHub Release 作成後の npm publish で初めて弾かれ、
+    // Release と npm が食い違う(release.yml の version-check も同型)
+    for (const bad of ["01.2.3", "1.2", "1.2.3-", "1.2.3-01", "v1.2.3"]) {
+      expect(bad).not.toMatch(SEMVER_PATTERN);
+    }
+    for (const good of ["0.1.0", "0.1.0-rc.1", "1.2.3-beta.11"]) {
+      expect(good).toMatch(SEMVER_PATTERN);
+    }
   });
 
   it("`maruhi --version` は package.json の version をそのまま出力する", () => {

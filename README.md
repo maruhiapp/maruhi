@@ -19,9 +19,12 @@ brew tap は後続 PR で提供予定です。
 `maruhi-<os>-<arch>.tar.gz` を取得し、チェックサムを検証して展開します:
 
 ```sh
-# 例: Apple Silicon mac(linux-x64 / linux-arm64 / darwin-x64 / windows-x64 も同様)
-curl -fsSLO https://github.com/maruhiapp/maruhi/releases/latest/download/maruhi-darwin-arm64.tar.gz
-curl -fsSLO https://github.com/maruhiapp/maruhi/releases/latest/download/checksums.txt
+# 例: Apple Silicon mac(linux-x64 / linux-arm64 / darwin-x64 / windows-x64 も同様)。
+# V は Releases ページの最新タグに置き換える(プレリリース期間中は
+# releases/latest が存在しないため、タグ URL を使う)
+V=v0.1.0-rc.1
+curl -fsSLO "https://github.com/maruhiapp/maruhi/releases/download/${V}/maruhi-darwin-arm64.tar.gz"
+curl -fsSLO "https://github.com/maruhiapp/maruhi/releases/download/${V}/checksums.txt"
 shasum -a 256 --ignore-missing -c checksums.txt   # Linux では sha256sum --ignore-missing -c
 tar -xzf maruhi-darwin-arm64.tar.gz
 ./maruhi --version

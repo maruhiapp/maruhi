@@ -7,11 +7,12 @@
 //   インストーラ側でリンクを張る。ADR-0015)
 //   checksums.txt(`sha256sum -c` 互換: "<hex 64 桁><space><space><ファイル名>")
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { run } from "./shared.ts";
 
 const TARGETS = [
   { bunTarget: "bun-linux-x64", name: "linux-x64", bin: "maruhi" },
@@ -23,16 +24,6 @@ const TARGETS = [
 
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 const distDir = join(cliRoot, "dist");
-
-function run(command: string, args: readonly string[], cwd: string): void {
-  const result = spawnSync(command, [...args], { cwd, stdio: "inherit" });
-  if (result.error !== undefined) {
-    throw new Error(`${command} の起動に失敗: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} が exit ${result.status ?? "signal"} で失敗`);
-  }
-}
 
 await rm(distDir, { recursive: true, force: true });
 await mkdir(distDir, { recursive: true });
