@@ -152,6 +152,10 @@ jobs:
     timeout-minutes: 10
     permissions: {}
     steps:
+      # 全アーカイブ(約 150MB)を落として 1 本だけ使う。download-artifact v4 は
+      # アーティファクト内の部分取得ができず、対象別アーティファクトに分けると
+      # upload 側に対象一覧の複製が戻ってきて単一出所(shared.ts TARGETS)が壊れる。
+      # 5 対象 × 低頻度リリースでは転送コストの方が安い(対象が増えたら見直す)
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: binaries
@@ -299,8 +303,16 @@ jobs:
             console.log(`npm ${v}`);
           '
 
+      # upload/download-artifact はファイルモードを保持しない(公式ドキュメント)ため、
+      # ステージング時の実行ビットをここで戻す。install 時の bin は npm / bun が
+      # chmod するので実害は薄いが、公開 tarball 内のモードを正しく保つ
+      - name: Restore executable bit (lost in artifact roundtrip)
+        run: chmod +x ./dist-npm/bin.js
+
       - name: Publish to npm (provenance)
         env:
           # プレリリース(v0.1.0-rc.1 等)は latest を動かさず next に置く
           DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
-        run: npm publish dist-npm --provenance --tag "${DIST_TAG}"
+        # パスは必ず ./ 付きで渡す: 素の `dist-npm` は npm がレジストリの
+        # パッケージ名として解釈し ENOVERSIONS / E404 で落ちる(--dry-run で実証済み)
+        run: npm publish ./dist-npm --provenance --tag "${DIST_TAG}"
