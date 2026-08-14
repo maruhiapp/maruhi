@@ -29,7 +29,7 @@ const MAX_ATTEMPTS = 5;
 export const REVOKE_ROTATION_REASON = "server-revoked";
 
 export interface RevokeSummary {
-  /** チェーンへ追記したか(false = 有効 grant がなく、失効後の続きから再開)。 */
+  /** チェーンへ追記したか(false = 有効 grant がない・並行 revoke 済みで、失効後の続きから再開)。 */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string | null;
   /** ローテーションを実行した環境(環境 ID → 結果)。 */
@@ -148,6 +148,8 @@ function lastRevokeSeq(verified: VerifiedProject): number | null {
 interface RevokeState {
   readonly verified: VerifiedProject;
   readonly target: string;
+  /** 並行 revoke で既に失効済み — 追記せずローテーションへ進む。 */
+  readonly alreadyRevoked: boolean;
 }
 
 export function serverRevokeOp<R>(input: {
@@ -173,49 +175,53 @@ export function serverRevokeOp<R>(input: {
 
     if (target !== null) {
       revokedFingerprint = target.serverKeyFingerprintHex;
-      verified = yield* retryOnConflict<RevokeState, VerifiedProject, "head-conflict">(
-        { verified, target: target.serverKeyFingerprintHex },
+      const outcome = yield* retryOnConflict<
+        RevokeState,
+        { readonly verified: VerifiedProject; readonly appended: boolean },
+        "head-conflict"
+      >(
+        { verified, target: target.serverKeyFingerprintHex, alreadyRevoked: false },
         {
           maxAttempts: MAX_ATTEMPTS,
           attempt: (state) =>
-            Effect.gen(function* () {
-              const entry = yield* signRevokeEntry({
-                verified: state.verified,
-                actor,
-                serverKeyFingerprintHex: state.target,
-                signingKeyPair: input.signingKeyPair,
-              });
-              yield* input.client.membership
-                .append({
-                  params: { projectId: state.verified.projectId },
-                  payload: { parentHeadHashHex: state.verified.state.headHashHex, entry },
-                })
-                .pipe(
-                  Effect.mapError((error) =>
-                    error instanceof ChainHeadConflictError ? error : toCliError(error),
-                  ),
-                );
-              return state.verified;
-            }),
+            state.alreadyRevoked
+              ? Effect.succeed({ verified: state.verified, appended: false })
+              : Effect.gen(function* () {
+                  const entry = yield* signRevokeEntry({
+                    verified: state.verified,
+                    actor,
+                    serverKeyFingerprintHex: state.target,
+                    signingKeyPair: input.signingKeyPair,
+                  });
+                  yield* input.client.membership
+                    .append({
+                      params: { projectId: state.verified.projectId },
+                      payload: { parentHeadHashHex: state.verified.state.headHashHex, entry },
+                    })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        error instanceof ChainHeadConflictError ? error : toCliError(error),
+                      ),
+                    );
+                  return { verified: state.verified, appended: true };
+                }),
           classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
           recover: (state) =>
             Effect.gen(function* () {
               const resynced = yield* resyncExtended(input.resync, state.verified);
               yield* requireOwner(resynced, input.signerUserId);
               // 並行 revoke で既に失効していたら追記せず先へ(ローテーションは行う)
-              if (!resynced.state.serverGrants.has(state.target)) {
-                return yield* Effect.fail(
-                  cliError(
-                    "対象の grant は再同期後のチェーンに存在しません(並行 revoke の可能性)。再実行するとローテーションの続きから再開します",
-                  ),
-                );
-              }
-              return { verified: resynced, target: state.target };
+              return {
+                verified: resynced,
+                target: state.target,
+                alreadyRevoked: !resynced.state.serverGrants.has(state.target),
+              };
             }),
           exhaustedMessage: `revoke_server のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
         },
       );
-      appended = true;
+      verified = outcome.verified;
+      appended = outcome.appended;
       // 受理後の再同期で失効の掲載を確認(サーバー申告を真実源にしない)
       verified = yield* resyncExtended(input.resync, verified);
       if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {
