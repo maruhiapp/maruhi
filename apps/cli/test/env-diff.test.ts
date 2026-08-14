@@ -27,7 +27,7 @@ import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { reportEnvironmentDiff } from "../src/env-diff.ts";
+import { reportEnvironmentDiff, reportEnvironmentWarnings } from "../src/env-diff.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
 import {
   buildChain,
@@ -267,8 +267,6 @@ describe("maruhi env diff", () => {
         onlyInFirst: ["ONLY_DEV"],
         onlyInSecond: [],
         shared: 0,
-        firstWarnings: [],
-        secondWarnings: [],
       }).pipe(Effect.provide(env.layer)),
     );
     const output = [...env.logs, ...env.errors].join("\n");
@@ -280,25 +278,18 @@ describe("maruhi env diff", () => {
     );
   });
 
-  it("警告のラベルに使う環境 ID も端末中和する", async () => {
+  it("警告はラベルの環境 ID も本文も端末中和する", async () => {
     const env = await makeTestEnv();
     await Effect.runPromise(
-      reportEnvironmentDiff({
-        firstEnvironmentId: "dev" as EnvironmentId,
-        secondEnvironmentId: "\u001b[2Kprod" as EnvironmentId,
-        onlyInFirst: [],
-        onlyInSecond: [],
-        shared: 0,
-        firstWarnings: [],
-        // 警告そのものは values.ts が組む生の文面(ラベル付けは報告側の仕事)
-        secondWarnings: ["変数 v1 の名前が NFC 正規形ではありません"],
-      }).pipe(Effect.provide(env.layer)),
+      // 環境 ID は EnvironmentId 型でも検証済みとは限らず、警告本文も将来の
+      // 産出元が中和済みとは限らない — 組み立てた行を丸ごと通す
+      reportEnvironmentWarnings("\u001b[2Kprod" as EnvironmentId, [
+        "変数 v1\u0007 の名前が NFC 正規形ではありません",
+      ]).pipe(Effect.provide(env.layer)),
     );
-    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
-    expect(warnings).toEqual([
-      "警告: 環境 \uFFFD[2Kprod: 変数 v1 の名前が NFC 正規形ではありません",
+    expect(env.errors).toEqual([
+      "警告: 環境 \uFFFD[2Kprod: 変数 v1\uFFFD の名前が NFC 正規形ではありません",
     ]);
-    expect(env.errors.join("\n")).not.toContain("\u001b");
   });
 
   it("環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)", async () => {
@@ -482,6 +473,24 @@ describe("maruhi env diff", () => {
     // 1 つ目の pull で seq 3 まで前進したことは記録されている(openProject
     // 時点の seq 2 のままにしない)
     expect(floor).toMatchObject({ chainHead: { seq: 3, hashHex: chain.hashes[2] } });
+  });
+
+  it("2 つ目の pull が失敗しても、1 つ目で集めた警告は必ず吐く", async () => {
+    // 警告を戻り値で持ち回って最後にまとめて出すと、失敗経路で黙って消える
+    // (env-rotate が同じ形を明示的に避けている)
+    const dev = [await variableOf(DEV, "var-dev-0", "CAFE\u0301")];
+    const env = await startEnv([
+      pullMetadataHandlerOf(DEV, devStatement, dev),
+      onRequest("GET", `/projects/${chain.projectId}/environments/${PROD}/pull/metadata`, () => ({
+        status: 503,
+        json: { error: "unavailable" },
+      })),
+    ]);
+
+    expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(1);
+    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`警告: 環境 ${DEV}: `);
   });
 
   it("master 鍵が無い端末でも実行できる(復号しないため要求しない)", async () => {
