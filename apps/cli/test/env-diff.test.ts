@@ -65,6 +65,12 @@ beforeAll(async () => {
       actor: owner,
       operation: createEnvironmentOp(PROD, crypto.getRandomValues(new Uint8Array(32))),
     },
+    // 4 つ目: 2 回の pull がそれぞれ有界再同期を起こす形(seq 2 → 3 → 4)を
+    // 作るためだけの追加エントリ。diff の対象ではない
+    {
+      actor: owner,
+      operation: createEnvironmentOp("staging", crypto.getRandomValues(new Uint8Array(32))),
+    },
   ]);
   devStatement = await environmentStatementOf(DEV);
   prodStatement = await environmentStatementOf(PROD);
@@ -429,6 +435,26 @@ describe("maruhi env diff", () => {
       // 値を読んでいないので環境の床レコードは作らない
       environments: {},
     });
+  });
+
+  it("床へ残すのは 2 つ目の pull まで含めた最終ビューのヘッド", async () => {
+    // 2 回の pull がそれぞれ有界再同期を起こす: seq 2 →(dev)→ 3 →(prod)→ 4。
+    // 1 つ目のビューで止めると、2 つ目が確立した前進を床に残し損ねる
+    const dev = [await variableOf(DEV, "var-dev-0", "ONLY_DEV", 3)];
+    const prod = [await variableOf(PROD, "var-prod-0", "ONLY_PROD", 4)];
+    const env = await startEnv(
+      [
+        pullMetadataHandlerOf(DEV, devStatement, dev),
+        pullMetadataHandlerOf(PROD, prodStatement, prod),
+      ],
+      [2, 3, 4],
+    );
+
+    expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
+    const floor: unknown = JSON.parse(
+      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
+    );
+    expect(floor).toMatchObject({ chainHead: { seq: 4, hashHex: chain.hashes[3] } });
   });
 
   it("master 鍵が無い端末でも実行できる(復号しないため要求しない)", async () => {
