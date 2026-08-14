@@ -393,7 +393,7 @@ describe("操作に適用されないオプション(env 固有)", () => {
 
     // 打ち間違いは実行の失敗(1)ではなく usage エラー(2)
     expect(await runCli(["env", "bogus", "dev", "--reason", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明な操作です(create | rotate)");
+    expect(env.errors.join("\n")).toContain("不明な操作です(create | rotate | diff)");
   });
 
   it("その操作で使えないオプションは、書き方の助言より先に言う", async () => {
