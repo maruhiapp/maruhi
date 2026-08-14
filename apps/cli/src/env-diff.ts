@@ -63,8 +63,12 @@ export interface EnvironmentDiff {
   readonly onlyInSecond: readonly string[];
   /** 両方にある名前の数。**値が一致することは含意しない**(復号しないため)。 */
   readonly shared: number;
-  /** 2 環境ぶんの SHOULD 警告(環境 ID でラベル済み)。 */
-  readonly warnings: readonly string[];
+  /**
+   * 環境ごとの SHOULD 警告。**ラベル付けと端末中和は報告側**が行う(組み立て
+   * 済みの文字列を持つと、中和済みかどうかが呼び出し元ごとに変わる)。
+   */
+  readonly firstWarnings: readonly string[];
+  readonly secondWarnings: readonly string[];
 }
 
 /**
@@ -83,18 +87,6 @@ function sortedNames(names: Iterable<string>): readonly string[] {
  */
 function namesOf(variables: readonly VerifiedActiveStatement[]): ReadonlySet<string> {
   return new Set(variables.map((variable) => variable.name));
-}
-
-/**
- * 2 環境ぶんの警告は同じ行になりうる(variable_id は**環境内**で一意なので、
- * 別環境の別変数について文面まで同一の警告が立つ)。集合で畳むと片方の事実が
- * 黙って消えるため、重複排除ではなく環境 ID でラベルする。
- */
-function labelWarnings(
-  environmentId: EnvironmentId,
-  warnings: readonly string[],
-): readonly string[] {
-  return warnings.map((warning) => `環境 ${displayText(environmentId)}: ${warning}`);
 }
 
 /**
@@ -137,10 +129,8 @@ export function envDiffOp(input: {
       onlyInFirst: sortedNames([...firstNames].filter((name) => !secondNames.has(name))),
       onlyInSecond: sortedNames([...secondNames].filter((name) => !firstNames.has(name))),
       shared: [...firstNames].filter((name) => secondNames.has(name)).length,
-      warnings: [
-        ...labelWarnings(input.first.environmentId, first.warnings),
-        ...labelWarnings(input.second.environmentId, second.warnings),
-      ],
+      firstWarnings: first.warnings,
+      secondWarnings: second.warnings,
     };
   });
 }
@@ -149,15 +139,23 @@ export function envDiffOp(input: {
  * 差分の報告。一覧は stdout(コマンドの出力)、警告は stderr(logWarnings)へ
  * 分ける — 「stdout はコマンドの出力だけ」の規律。
  *
- * 変数名は**他メンバーが書いた平文メタデータ**で ANSI / BEL を仕込まれうる
- * ため、必ず displayText を通す(pull の formatPulledLine と同じ扱い)。
+ * 端末へ出す文字列の中和は**この関数に集約する**。変数名は他メンバーが書いた
+ * 平文メタデータで ANSI / BEL を仕込まれうるし(pull の formatPulledLine と
+ * 同じ扱い)、環境 ID も `EnvironmentId` がブランド付きではない以上、型では
+ * 検証済みを保証できない — 警告のラベル付けをここで行うのもそのため。
  */
 export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    yield* logWarnings(diff.warnings);
     const first = displayText(diff.firstEnvironmentId);
     const second = displayText(diff.secondEnvironmentId);
+    // 2 環境ぶんの警告は同じ行になりうる(variable_id は**環境内**で一意なので、
+    // 別環境の別変数について文面まで同一の警告が立つ)。集合で畳むと片方の
+    // 事実が黙って消えるため、重複排除ではなく環境 ID でラベルする
+    yield* logWarnings([
+      ...diff.firstWarnings.map((warning) => `環境 ${first}: ${warning}`),
+      ...diff.secondWarnings.map((warning) => `環境 ${second}: ${warning}`),
+    ]);
     yield* io.log(
       `同期・検証 OK: 環境 ${first} = ${diff.onlyInFirst.length + diff.shared} 変数 / 環境 ${second} = ${diff.onlyInSecond.length + diff.shared} 変数`,
     );

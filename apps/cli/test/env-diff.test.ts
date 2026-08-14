@@ -26,7 +26,6 @@ import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { displayText } from "../src/display.ts";
 import { reportEnvironmentDiff } from "../src/env-diff.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
 import {
@@ -261,7 +260,8 @@ describe("maruhi env diff", () => {
         onlyInFirst: ["ONLY_DEV"],
         onlyInSecond: [],
         shared: 0,
-        warnings: [],
+        firstWarnings: [],
+        secondWarnings: [],
       }).pipe(Effect.provide(env.layer)),
     );
     const output = [...env.logs, ...env.errors].join("\n");
@@ -273,7 +273,7 @@ describe("maruhi env diff", () => {
     );
   });
 
-  it("警告のラベルの環境 ID も端末中和する", async () => {
+  it("警告のラベルに使う環境 ID も端末中和する", async () => {
     const env = await makeTestEnv();
     await Effect.runPromise(
       reportEnvironmentDiff({
@@ -282,10 +282,15 @@ describe("maruhi env diff", () => {
         onlyInFirst: [],
         onlyInSecond: [],
         shared: 0,
-        // envDiffOp の labelWarnings が組む形(環境 ID を前置したもの)
-        warnings: [`環境 ${displayText("\u001b[2Kprod")}: 変数 v1 の名前が…`],
+        firstWarnings: [],
+        // 警告そのものは values.ts が組む生の文面(ラベル付けは報告側の仕事)
+        secondWarnings: ["変数 v1 の名前が NFC 正規形ではありません"],
       }).pipe(Effect.provide(env.layer)),
     );
+    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    expect(warnings).toEqual([
+      "警告: 環境 \uFFFD[2Kprod: 変数 v1 の名前が NFC 正規形ではありません",
+    ]);
     expect(env.errors.join("\n")).not.toContain("\u001b");
   });
 
