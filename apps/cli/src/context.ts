@@ -314,6 +314,28 @@ export function openEnvironment(
   });
 }
 
+/**
+ * 検証済みビューのチェーンヘッドを床へ記録する(§6.3 規則 (a) の材料)。
+ * `mergeHead` は単調なので後退はせず、冪等。
+ *
+ * pull / push は commitPull / commitPush の中で同じヘッドを書くが、**値を
+ * 読まないコマンドはその経路を通らない**。有界再同期でビューが前進した場合、
+ * 記録しないと「検証済みの最新ヘッド」が openProject 時点のまま残り、
+ * その間への巻き戻しを次回以降に検出できない(床は SHOULD だが、pull / push が
+ * 保っている材料をこのコマンドだけ落とす理由はない)。
+ */
+export function commitVerifiedHead(
+  projectId: string,
+  verified: VerifiedProject,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.flatMap(FloorStore, (store) =>
+    store.commitHead(projectId, {
+      seq: verified.state.headSeq,
+      hashHex: verified.state.headHashHex,
+    }),
+  );
+}
+
 /** 1 環境ぶんの床ハンドル(環境 ID と組で持ち、取り違えを書けなくする)。 */
 export interface EnvironmentHandle {
   readonly environmentId: EnvironmentId;

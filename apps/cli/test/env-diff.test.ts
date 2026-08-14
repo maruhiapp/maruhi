@@ -419,6 +419,16 @@ describe("maruhi env diff", () => {
     expect(env.errors.some((line) => line.includes("チェーン上に存在しません"))).toBe(false);
     expect(env.logs).toContain("  ONLY_DEV");
     expect(env.logs).toContain("  ONLY_PROD");
+    // 前進したヘッドは床へ残す。openProject 時点(seq 2)のままだと、その間への
+    // 巻き戻しを次回以降に検出できない(pull / push は同じヘッドを書いている)
+    const floor: unknown = JSON.parse(
+      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
+    );
+    expect(floor).toMatchObject({
+      chainHead: { seq: 3, hashHex: chain.hashes[2] },
+      // 値を読んでいないので環境の床レコードは作らない
+      environments: {},
+    });
   });
 
   it("master 鍵が無い端末でも実行できる(復号しないため要求しない)", async () => {

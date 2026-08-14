@@ -89,6 +89,13 @@ function namesOf(variables: readonly VerifiedActiveStatement[]): ReadonlySet<str
   return new Set(variables.map((variable) => variable.name));
 }
 
+/** 比較の結果と、検証に使った最終ビュー(床のヘッド記録に使う)。 */
+export interface EnvironmentDiffResult {
+  readonly diff: EnvironmentDiff;
+  /** 2 回の pull を経た最終ビュー(有界再同期で前進していることがある)。 */
+  readonly verified: VerifiedProject;
+}
+
 /**
  * Compares the variable **names** of two environments in one project, using
  * only metadata pulls (no values, no DEKs, no `var.read`).
@@ -104,7 +111,7 @@ export function envDiffOp(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly first: DiffTarget;
   readonly second: DiffTarget;
-}): Effect.Effect<EnvironmentDiff, CliError> {
+}): Effect.Effect<EnvironmentDiffResult, CliError> {
   return Effect.gen(function* () {
     const first = yield* pullVerifiedEnvironmentMetadata({
       client: input.client,
@@ -124,13 +131,17 @@ export function envDiffOp(input: {
     const firstNames = namesOf(first.variables);
     const secondNames = namesOf(second.variables);
     return {
-      firstEnvironmentId: input.first.environmentId,
-      secondEnvironmentId: input.second.environmentId,
-      onlyInFirst: sortedNames([...firstNames].filter((name) => !secondNames.has(name))),
-      onlyInSecond: sortedNames([...secondNames].filter((name) => !firstNames.has(name))),
-      shared: [...firstNames].filter((name) => secondNames.has(name)).length,
-      firstWarnings: first.warnings,
-      secondWarnings: second.warnings,
+      diff: {
+        firstEnvironmentId: input.first.environmentId,
+        secondEnvironmentId: input.second.environmentId,
+        onlyInFirst: sortedNames([...firstNames].filter((name) => !secondNames.has(name))),
+        onlyInSecond: sortedNames([...secondNames].filter((name) => !firstNames.has(name))),
+        shared: [...firstNames].filter((name) => secondNames.has(name)).length,
+        firstWarnings: first.warnings,
+        secondWarnings: second.warnings,
+      },
+      // 2 つ目の pull を経たビュー(1 つ目より更に前進していることがある)
+      verified: second.verified,
     };
   });
 }
