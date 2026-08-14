@@ -456,5 +456,20 @@ describe("maruhi env diff", () => {
       expect(env.errors).toEqual(["maruhi: 不明な操作です(create | rotate | diff)"]);
       expect(lastServer().requests).toEqual([]);
     });
+
+    it("未知の操作 + 空の位置引数は、空の方を先に報告する(構造的な誤りが先)", async () => {
+      const env = await startEnv([]);
+
+      // 3 つ目を除かないので、空の位置引数の検査もこのスロットを見る。args.ts は
+      // 構造的な誤り(空の値・重複・`--` の位置)を操作別の指摘より先に言う設計
+      // なので、ここで「不明な操作です」が後回しになるのは**意図どおり**
+      // (直して再実行すれば操作名の誤りが出る)。名指しされる位置引数名が
+      // その操作に無いものである点は許容する — 空の引数を渡した事実は本当
+      expect(await runCli(["env", "bogus", DEV, " "], env.layer)).toBe(2);
+      expect(env.errors).toEqual([
+        "maruhi: 位置引数 other-environment-id が空です(空白だけの値も受け付けません)",
+      ]);
+      expect(lastServer().requests).toEqual([]);
+    });
   });
 });

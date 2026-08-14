@@ -645,7 +645,14 @@ function envCommand(execute: Execute) {
           commandRejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
           // 3 つ目の位置引数は diff 専用。**既知の非 diff 操作のときだけ**除く:
           // 未知の操作でも除くと `env bogus a b` が「余分な引数です」で落ちて、
-          // 本当の誤り(操作名の綴り)が伝わらない(config の get / set と同じ形)
+          // 本当の誤り(操作名の綴り)が伝わらない(config の get / set と同じ形)。
+          //
+          // 効くのは**余分な位置引数の検査だけではない**: `without` は空の位置
+          // 引数の検査(args.ts の emptyPositionalRejection)にも渡るので、
+          // 未知の操作に空の 3 つ目を書くと「位置引数 other-environment-id が
+          // 空です」が「不明な操作です」より先に出る。args.ts は構造的な誤りを
+          // 操作別の指摘より先に言う並び順なのでこれは意図どおりで、空の引数を
+          // 渡した事実自体は本当(直して再実行すれば操作名の誤りが出る)
           withoutPositionals:
             isEnvAction(ctx.values.action) && ctx.values.action !== "diff"
               ? ["other-environment-id"]
