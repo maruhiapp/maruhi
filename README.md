@@ -15,7 +15,7 @@ Cloudflare を実行基盤とする、汎用のディスクレス secrets 管理
 ### install script(Linux / macOS。推奨。Bun 不要)
 
 ```sh
-# V は [Releases ページ](https://github.com/maruhiapp/maruhi/releases) の最新タグに置き換える。
+# V は Releases ページ(https://github.com/maruhiapp/maruhi/releases)の最新タグに置き換える。
 # プレリリース期間中(v0.1.0 まで)は releases/latest が存在しないため、タグの明示が必要です
 V=<最新タグ>
 curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/${V}/packaging/install.sh" -o maruhi-install.sh

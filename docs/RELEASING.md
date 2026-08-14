@@ -50,11 +50,20 @@ Release の `checksums.txt` から作る(手で sha256 を書き写さない)。
 1. GitHub で **`maruhiapp/homebrew-maruhi`** を作る(public。名前は `homebrew-` 接頭辞が必須 —
    これで `brew install maruhiapp/maruhi/maruhi` が解決する)
 2. リポジトリ直下に `Formula/` ディレクトリを作る(README があると親切)
-3. 初回の formula を置いたら `brew audit --strict --new maruhiapp/maruhi/maruhi` を一度通す。
-   **本 PR の CI が見ているのは `ruby -c`(構文)と golden 一致までで、Homebrew の DSL 意味論
-   (`on_macos` > `on_arm` のネスト、`bin.install_symlink`、`test do`)は tap ができるまで
-   実行されない**。指摘が出たら手で formula を直さず `apps/cli/scripts/formula.ts` を直す
-   (formula は生成物。手編集は次のリリースで消える)
+3. 初回の formula を置いたら、**tap を取り込んで信頼を与えてから** audit を通す。
+   `brew audit` は formula の Ruby を読み込んで評価するので、未信頼 tap のままでは
+   formula を読めずに落ちる(Homebrew 6.0.0 の tap trust。信頼はマシンごとに 1 回):
+
+   ```sh
+   brew tap maruhiapp/maruhi
+   brew trust --tap maruhiapp/maruhi
+   brew audit --new maruhiapp/maruhi/maruhi   # --new は --strict と --online を含意する
+   ```
+
+   **リポジトリ側の CI が見ているのは `ruby -c`(構文)と golden 一致までで、Homebrew の
+   DSL 意味論(`on_macos` > `on_arm` のネスト、`bin.install_symlink`、`test do`)は tap が
+   できるまで実行されない**。指摘が出たら手で formula を直さず
+   `apps/cli/scripts/formula.ts` を直す(formula は生成物。手編集は次のリリースで消える)
 
 ### 毎リリース
 
