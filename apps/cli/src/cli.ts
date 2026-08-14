@@ -10,6 +10,7 @@ import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
+import packageJson from "../package.json";
 import { ensureValueDisplayAllowed } from "./agent.ts";
 import {
   type ArgCheckContext,
@@ -52,7 +53,9 @@ import { syncProject } from "./sync.ts";
 
 export type { CliServices } from "./context.ts";
 
-const CLI_VERSION = "0.0.0";
+// バージョンの単一の出所は apps/cli/package.json。リリース時はタグとの一致を
+// release workflow が検査する(docs/RELEASING.md)
+const CLI_VERSION: string = packageJson.version;
 
 /** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
 export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
