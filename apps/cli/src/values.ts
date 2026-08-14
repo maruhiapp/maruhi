@@ -887,3 +887,44 @@ export function pullVerifiedEnvironmentMetadata(input: {
     }),
   );
 }
+
+/**
+ * 環境一覧の署名済みステートメントから「検証済みの削除済み環境」の集合を返す
+ * (§12-4 — 削除も署名付きステートメント)。検証に失敗した・座標が合わない・
+ * status が deleted でないステートメントは含めない(fail-closed — 呼び出し側は
+ * 削除を信用せず対象に残す。サーバーの申告だけで黙ってスキップしない §7)。
+ */
+export function verifiedDeletedEnvironments(
+  verified: VerifiedProject,
+  environments: readonly {
+    readonly environmentId: string;
+    readonly statement: DistributedEnvironmentMetaStatement;
+  }[],
+): Effect.Effect<ReadonlySet<string>, CliError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const deleted = new Set<string>();
+      for (const environment of environments) {
+        const statement = environment.statement;
+        if (
+          statement.environmentId !== environment.environmentId ||
+          statement.status !== "deleted"
+        ) {
+          continue;
+        }
+        const outcome = await verifyStatement(
+          verified,
+          environment.environmentId,
+          { kind: "environment" },
+          statement,
+          `環境 ${displayText(environment.environmentId)} の削除ステートメント`,
+        );
+        if (outcome.kind === "ok") {
+          deleted.add(environment.environmentId);
+        }
+      }
+      return deleted;
+    },
+    catch: () => cliError("環境ステートメントの検証に失敗しました"),
+  });
+}

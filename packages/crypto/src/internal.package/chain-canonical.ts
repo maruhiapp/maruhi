@@ -7,11 +7,41 @@
 //   entry_hash   = SHA-256(entry_bytes)
 // バイナリ値(prev_hash / 公開鍵 / FP / 署名)は hex 小文字文字列として LP に載せる。
 // grant_server の scope_environments は環境 ID リストの LP の hex 文字列(入れ子 LP)。
+// grant_server の lease_policy は 3 段の入れ子 LP の hex 文字列(§6.2。2026-08-12)。
 
 import { encodeHex } from "./bytes.ts";
-import type { ChainEntry, ChainOperation, UnsignedChainEntry } from "./chain-types.ts";
+import type {
+  ChainEntry,
+  ChainOperation,
+  LeasePolicyIssuer,
+  UnsignedChainEntry,
+} from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import { sha256 } from "./hash.ts";
+
+/**
+ * Canonical bytes of a grant_server lease policy (CRYPTO_SPEC §6.2): a
+ * three-level nested length-prefixed encoding —
+ * `constraint = LP(claim_name, claim_value)`,
+ * `element = LP(issuer_url, audience, LP(constraint...))`,
+ * `policy = LP(element...)`. Fixed by chain-entries.json. The empty policy
+ * encodes to the empty byte string ("no lease path").
+ */
+function canonicalLeasePolicyBytes(policy: readonly LeasePolicyIssuer[]): Uint8Array {
+  return encodeLengthPrefixed(
+    policy.map((element) =>
+      encodeLengthPrefixed([
+        element.issuerUrl,
+        element.audience,
+        encodeLengthPrefixed(
+          element.claimConstraints.map((constraint) =>
+            encodeLengthPrefixed([constraint.claimName, constraint.claimValue]),
+          ),
+        ),
+      ]),
+    ),
+  );
+}
 
 /**
  * Canonical payload bytes for a chain operation: the length-prefixed encoding
@@ -45,7 +75,13 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
     case "grant_server": {
       const p = operation.payload;
       const scopeLpHex = encodeHex(encodeLengthPrefixed(p.scopeEnvironmentIds));
-      return encodeLengthPrefixed([p.serverEncPubHex, p.serverKeyFingerprintHex, scopeLpHex]);
+      const leasePolicyLpHex = encodeHex(canonicalLeasePolicyBytes(p.leasePolicy));
+      return encodeLengthPrefixed([
+        p.serverEncPubHex,
+        p.serverKeyFingerprintHex,
+        scopeLpHex,
+        leasePolicyLpHex,
+      ]);
     }
     case "revoke_server": {
       return encodeLengthPrefixed([operation.payload.serverKeyFingerprintHex]);

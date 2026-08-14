@@ -8,6 +8,7 @@ import { dekCommitmentChecks } from "./checks/dek-commitment.ts";
 import { dekWrapSignatureChecks } from "./checks/dek-wrap-signature.ts";
 import { dekWrapChecks } from "./checks/dek-wrap.ts";
 import { encodingChecks } from "./checks/encoding.ts";
+import { fingerprintWordsChecks } from "./checks/fingerprint-words.ts";
 import { keysChecks } from "./checks/keys.ts";
 import { metadataSignatureChecks } from "./checks/metadata-signature.ts";
 import { recoveryChecks } from "./checks/recovery.ts";
@@ -22,6 +23,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   const groups: CheckResult[][] = [];
   groups.push(await encodingChecks());
   groups.push(await keysChecks());
+  groups.push(await fingerprintWordsChecks());
   groups.push(await variableChecks());
   groups.push(await dekWrapChecks());
   groups.push(await dekWrapSignatureChecks());

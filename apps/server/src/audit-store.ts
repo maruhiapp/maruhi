@@ -204,6 +204,10 @@ const mirrorTails: {
   grant_server: (entry) => ({
     event: "chain.server_granted",
     targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+    // lease_policy は意図的に写さない(AUDIT_SPEC §1-2 / AUTH_SPEC §14-4):
+    // claim_value にはリポジトリ名等の外部識別子が現れるため、監査行には
+    // 持ち込まない。ポリシーの真実源はチェーン(grant payload)で、chain_seq で
+    // 突合できる。スコープ(内部 environment_id 集合)は §3.4 のとおり写す
     payload: { scopeEnvironmentIds: entry.payload.scopeEnvironmentIds },
   }),
   revoke_server: (entry) => ({

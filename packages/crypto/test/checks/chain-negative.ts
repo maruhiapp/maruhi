@@ -17,8 +17,10 @@ import {
 import {
   toTypedEntry,
   typedEntries,
+  serverGrantsMatchVector,
   vectorEntries,
   vectorEnvironmentDeks,
+  vectorExtendedChains,
   vectorKeys,
   vectorNegatives,
   vectorValidAppends,
@@ -108,6 +110,30 @@ function payloadTamperVariants(): readonly TamperVariant[] {
       },
       expect: "bad-signature",
     },
+    // lease_policy の順序(要素・制約とも)も署名対象(§6.2。2026-08-12)
+    {
+      name: "grant-server-lease-policy-reorder",
+      entry: {
+        ...eGrant,
+        payload: { ...eGrant.payload, leasePolicy: eGrant.payload.leasePolicy.toReversed() },
+      },
+      expect: "bad-signature",
+    },
+    {
+      name: "grant-server-lease-claims-reorder",
+      entry: {
+        ...eGrant,
+        payload: {
+          ...eGrant.payload,
+          leasePolicy: eGrant.payload.leasePolicy.map((element, index) =>
+            index === 0
+              ? { ...element, claimConstraints: element.claimConstraints.toReversed() }
+              : element,
+          ),
+        },
+      },
+      expect: "bad-signature",
+    },
     {
       name: "change-role-tampered-new-role",
       entry: { ...eChange, payload: { ...eChange.payload, newRole: "owner" } },
@@ -188,9 +214,11 @@ async function tamperedChecks(c: Checks): Promise<void> {
     new Set([
       ...payloadVariants.map((variant) => variant.name),
       ...headerVariants.map((variant) => variant.name),
-      // bytesLevelChecks が担う 2 件
+      // bytesLevelChecks が担う 4 件(この実装からは生成されないバイト列)
       "field-order-swap",
       "grant-server-scope-flat-concat",
+      "grant-server-lease-policy-flat-concat",
+      "grant-server-lease-policy-dropped",
     ]),
   );
   for (const variant of [...payloadVariants, ...headerVariants]) {
@@ -215,8 +243,15 @@ async function tamperedChecks(c: Checks): Promise<void> {
 
 async function bytesLevelChecks(c: Checks): Promise<void> {
   // 正規化の順序・入れ子 LP を崩したバイト列は、この実装からは生成されず
-  // (canonical bytes と不一致)、元の署名も通らないことを確認する
-  for (const name of ["field-order-swap", "grant-server-scope-flat-concat"]) {
+  // (canonical bytes と不一致)、元の署名も通らないことを確認する。
+  // lease-policy-flat-concat は 3 段入れ子の平坦化、lease-policy-dropped は
+  // 旧 3 フィールド形式(4 フィールドが正規形であることの固定 — §6.2)
+  for (const name of [
+    "field-order-swap",
+    "grant-server-scope-flat-concat",
+    "grant-server-lease-policy-flat-concat",
+    "grant-server-lease-policy-dropped",
+  ]) {
     const vector = negativeByName(name);
     if (
       vector?.signed_bytes_hex === undefined ||
@@ -246,6 +281,21 @@ async function bytesLevelChecks(c: Checks): Promise<void> {
   }
 }
 
+/** 認可 negative の前提チェーン: 正規プレフィックス、または extended_chains の派生。 */
+function authzPrefix(chainName: string | undefined, seq: number): readonly ChainEntry[] {
+  if (chainName === undefined) {
+    return typedEntries.slice(0, seq - 1);
+  }
+  const extended = vectorExtendedChains[chainName];
+  if (extended === undefined) {
+    throw new Error(`chain vector extended chain ${chainName} missing`);
+  }
+  return [
+    ...typedEntries.slice(0, extended.base_seq),
+    ...extended.entries.map((entry) => toTypedEntry(entry)),
+  ];
+}
+
 async function authorizationChecks(c: Checks): Promise<void> {
   // kind = "authorization": 署名・連鎖は有効で、§6.2 の権限規則のみで拒否すべき
   for (const vector of vectorNegatives) {
@@ -253,11 +303,28 @@ async function authorizationChecks(c: Checks): Promise<void> {
       continue;
     }
     const entry = toTypedEntry(vector.entry);
-    const prefix = typedEntries.slice(0, entry.seq - 1);
+    const prefix = authzPrefix(vector.chain, entry.seq);
     const result = await verifyChain([...prefix, entry]);
     c.push(
       `chain authz: ${vector.name}`,
       failsWith(result, entry.seq, vector.expected_reason ?? ""),
+    );
+  }
+}
+
+async function extendedChainChecks(c: Checks): Promise<void> {
+  // extended_chains: 派生チェーン自体が受理されること(許容側の境界)。
+  // server-key-member-sock は「add_member の鍵一意性の索引は現メンバーの鍵のみで、
+  // 有効 grant のサーバー鍵は対象外」という §6.2 の線引きを固定する
+  for (const [name, extended] of Object.entries(vectorExtendedChains)) {
+    const chain = [
+      ...typedEntries.slice(0, extended.base_seq),
+      ...extended.entries.map((entry) => toTypedEntry(entry)),
+    ];
+    const result = await verifyChain(chain);
+    c.push(
+      `chain extended: ${name} verifies`,
+      result.ok && membersMatch(result.value, extended.expected_members),
     );
   }
 }
@@ -336,6 +403,7 @@ function semanticCases(
           serverEncPubHex: memberKeys.enc_pub_hex,
           serverKeyFingerprintHex: memberKeys.key_fingerprint_hex,
           scopeEnvironmentIds: ["env-prod-0001"],
+          leasePolicy: [],
         },
       },
       expect: "invalid-payload",
@@ -434,6 +502,14 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
   );
 }
 
+/** 導出状態の有効 grant 集合が期待(scope + lease_policy 込み)と一致するか。 */
+function serverGrantsMatch(
+  state: ChainState,
+  expected: Parameters<typeof serverGrantsMatchVector>[1],
+): boolean {
+  return serverGrantsMatchVector(state.serverGrants, expected);
+}
+
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
   // 合意規則の許容側の境界をベクター(valid_appends)で固定する:
   // (1) メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2)—
@@ -442,12 +518,15 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
   //     create 済み環境(エポック 1)への初回 rotate(new_epoch 2)は受理される
   for (const append of vectorValidAppends) {
     const entry = toTypedEntry(append.entry);
-    const result = await verifyChain([...typedEntries, entry]);
+    // 接続点は entry の seq が指す正規エントリの直後(seq 13 = 末尾ヘッド、
+    // seq 10 = seq 9 ヘッドへの再 grant 追記 — regrant-lease-policy-revised)
+    const result = await verifyChain([...typedEntries.slice(0, entry.seq - 1), entry]);
     c.push(
       `chain valid append: ${append.name}`,
       result.ok &&
         membersMatch(result.value, append.expected_members) &&
-        environmentsMatch(result.value, append.expected_environments),
+        environmentsMatch(result.value, append.expected_environments) &&
+        serverGrantsMatch(result.value, append.expected_server_grants),
     );
   }
 
@@ -698,10 +777,11 @@ async function malformedInputChecks(c: Checks): Promise<void> {
 async function regrantWideningCheck(c: Checks): Promise<void> {
   // 再 grant のスコープ拡大(旧 ⊆ 新)は受理され、スコープが更新される。
   // 縮小の拒否(grant-scope-narrowed)はベクター authz-grant-scope-narrowed が固定する
+  const check = "chain semantic: re-grant widening accepted";
   const eGrant = entryAt(9);
   const owner = vectorKeys["user-owner-0001"];
   if (eGrant.op !== "grant_server" || owner === undefined) {
-    c.push("chain semantic: re-grant widening accepted", false, "setup failed");
+    c.push(check, false, "setup failed");
     return;
   }
   const widened = await signAs("user-owner-0001", {
@@ -716,15 +796,23 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
       scopeEnvironmentIds: [...eGrant.payload.scopeEnvironmentIds, "env-stage-0003"],
     },
   });
-  const result =
-    widened === undefined ? undefined : await verifyChain([...typedEntries.slice(0, 9), widened]);
-  const grant =
-    result !== undefined && result.ok
-      ? result.value.serverGrants.get(eGrant.payload.serverKeyFingerprintHex)
-      : undefined;
+  if (widened === undefined) {
+    c.push(check, false, "signing failed");
+    return;
+  }
+  const result = await verifyChain([...typedEntries.slice(0, 9), widened]);
+  if (!result.ok) {
+    c.push(check, false, "widened re-grant must verify");
+    return;
+  }
+  const grant = result.value.serverGrants.get(eGrant.payload.serverKeyFingerprintHex);
   c.push(
-    "chain semantic: re-grant widening accepted",
-    grant !== undefined && grant.scopeEnvironmentIds.length === 3,
+    check,
+    grant !== undefined &&
+      grant.scopeEnvironmentIds.length === 3 &&
+      // 二層判定の独立: scope だけ触った再 grant でも lease_policy は新 payload の値
+      // (ここでは元と同じ 2 要素)に置換される
+      grant.leasePolicy.length === eGrant.payload.leasePolicy.length,
   );
 }
 
@@ -804,6 +892,7 @@ export async function chainNegativeChecks(): Promise<CheckResult[]> {
   await tamperedChecks(c);
   await bytesLevelChecks(c);
   await authorizationChecks(c);
+  await extendedChainChecks(c);
   await framingChecks(c);
   await semanticChecks(c);
   await regrantWideningCheck(c);

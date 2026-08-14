@@ -112,6 +112,47 @@ maruhi key generate   # 初回のみ: master 鍵の生成 + リカバリーコ�
 
 以降は `maruhi project init` → `maruhi env create` → `maruhi push` / `maruhi run` へ。
 
+## サーバー鍵の設定(オプション — `maruhi server grant` の前提)
+
+サーバー宛の鍵ラップ(CRYPTO_SPEC §9 — プロジェクト owner が明示的に
+`maruhi server grant` した環境の DEK をサーバーへ開示する機能)を使う場合のみ
+必要。使わない限りこの節は丸ごと飛ばしてよい(未設定でも他の全機能は動き、
+サーバーは暗号文の保管庫のまま)。
+
+### 鍵素材(IKM)の登録
+
+32 バイトの乱数を hex(64 文字)で生成し、Workers Secret として登録する:
+
+```sh
+openssl rand -hex 32 | bunx wrangler secret put SERVER_ENC_KEY_IKM
+```
+
+サーバーはこの IKM から X25519 鍵ペアを決定論的に導出する(RFC 9180
+DeriveKeyPair)。IKM は秘密鍵素材そのものなので**手元に控えを残さない**
+(パイプで直接登録し、シェル履歴・ファイルに残さない)。
+
+### フィンガープリントの控え(照合の基準づくり)
+
+登録後、サーバー鍵のフィンガープリント(FP)を確認して安全な場所に控える:
+
+```sh
+curl <デプロイ URL>/auth/config
+# → {"githubClientId":"...","serverKeyFingerprintHex":"<hex 32 文字>","serverEncPubHex":"<hex 64 文字>"}
+```
+
+`maruhi server grant` は開示に先立ち、サーバーが配布する鍵の FP を 12 語の
+ワード列で表示して所有者に確認を求める(CRYPTO_SPEC §9 の確認の儀式)。その
+照合基準がこの控えである(非対話実行では `--expect-fingerprint <hex 32 文字>` に
+渡す)。デプロイ直後の、経路の確かなうちに控えるのがこの手順の要点。
+
+### IKM の変更 = サーバー鍵の変更
+
+`SERVER_ENC_KEY_IKM` を put し直すとサーバー鍵そのものが変わる(旧鍵宛の
+ラップは新鍵では開封できず、FP も変わる)。既に grant 済みのプロジェクトが
+ある状態で変更した場合は、各プロジェクトで `maruhi server revoke` →
+`maruhi server grant` をやり直すこと(revoke は全環境の強制ローテーションを
+伴う — CRYPTO_SPEC §7)。
+
 ## 更新(バージョンアップ)
 
 ```sh
@@ -153,6 +194,12 @@ vars の値で置き換えられて移行が無効になる(対話デプロイ�
   一致しているか確認する(http/https・末尾スラッシュ・サブドメインまで完全一致)
 - **`bun run deploy` のマイグレーション適用が `couldn't find DB` を返す**:
   `database_id` の記入漏れ(手順 2)
+- **`/auth/config` に `serverKeyFingerprintHex` が出ない /
+  `maruhi server grant` が「デプロイメント keypair が設定されていません」**:
+  `SERVER_ENC_KEY_IKM` が未登録、または値が hex 64 文字になっていない
+  (形式不正は「未設定」として扱われる — 503 にはならない)。
+  `openssl rand -hex 32` の出力をそのまま `wrangler secret put` すること
+  (改行や引用符の混入に注意)
 
 ## 備考
 

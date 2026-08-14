@@ -275,7 +275,7 @@ export function openProject(
 }
 
 /** 環境単位の床ハンドル(コマンド内の pull / push が検査・コミットに使う)。 */
-function floorHandleFor(
+export function floorHandleFor(
   context: ProjectContextBase,
   environmentId: string,
 ): Effect.Effect<FloorHandle, never, CliServices> {

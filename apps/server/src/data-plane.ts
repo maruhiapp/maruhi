@@ -39,6 +39,14 @@ export type DataActor = AuditActor;
 export type WireSuite = "maruhi/v1";
 
 /**
+ * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の
+ * 現メンバー、server = 有効な grant_server のサーバー鍵。省略時は member。
+ * server クラスでは recipientUserId 位置にサーバー鍵 FP(hex 小文字)が入る
+ * (HPKE info / §5.1 署名対象と同じ置き換え — CRYPTO_SPEC §9)。
+ */
+export type DekRecipientClass = "member" | "server";
+
+/**
  * 1 受信者宛のラップ済み DEK(AUTH_SPEC §12-6。ワイヤ表現と構造一致)。
  * signatureHex は登録署名(CRYPTO_SPEC §5.1)— 署名者は API 呼び出し主体と
  * 厳密一致(§12-6)のため、ワイヤ・RPC 境界に署名者 ID は載せない。
@@ -46,6 +54,7 @@ export type WireSuite = "maruhi/v1";
 export interface DekWrapInput {
   readonly suite: WireSuite;
   readonly epoch: number;
+  readonly recipientClass?: DekRecipientClass;
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
@@ -56,6 +65,7 @@ export interface DekWrapInput {
 /** 保存済みラップの参照(§12-6 の修復経路の削除単位)。 */
 export interface DekWrapRefInput {
   readonly epoch: number;
+  readonly recipientClass?: DekRecipientClass;
   readonly recipientUserId: string;
 }
 
@@ -224,10 +234,12 @@ export type EnvironmentConflictReason = "duplicate-name";
 
 export type DekWrapRejectReason =
   | "recipient-not-member"
+  | "recipient-not-granted"
   | "recipient-key-mismatch"
   | "recipient-missing"
   | "duplicate-recipient"
   | "epoch-out-of-range"
+  | "scope-out-of-range"
   | "signature-invalid";
 
 /**
@@ -447,6 +459,7 @@ export function dataEvent(
     | "epoch"
     | "version"
     | "targetUserId"
+    | "targetKeyFingerprintHex"
     | "payload"
     | "actorKeyFingerprintHex"
   >,

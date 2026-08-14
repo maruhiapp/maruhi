@@ -29,6 +29,7 @@ export type ChainInvalidReason =
   | "unknown-environment"
   | "unknown-server-grant"
   | "grant-scope-narrowed"
+  | "duplicate-server-key"
   | "epoch-out-of-sequence";
 
 /**

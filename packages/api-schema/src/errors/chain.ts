@@ -26,6 +26,7 @@ const CHAIN_INVALID_REASONS = [
   "unknown-environment",
   "unknown-server-grant",
   "grant-scope-narrowed",
+  "duplicate-server-key",
   "epoch-out-of-sequence",
 ] as const satisfies readonly ChainInvalidReason[];
 

@@ -5,7 +5,7 @@
   "description": "テストベクターの参照生成・検証ツール(使い捨て。製品コードではない)。ワークスペース外の独立プロジェクトとして bun install する(bunfig.toml 参照)",
   "type": "module",
   "scripts": {
-    "generate": "python3 generate_reference.py && bun run generate-dek-wrap.mjs",
+    "generate": "bun run generate-dek-wrap.mjs && python3 generate_reference.py",
     "verify": "bun run verify_reference.mjs"
   },
   "devDependencies": {

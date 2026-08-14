@@ -8,16 +8,19 @@ import {
   toTypedEntry,
   vectorEntries,
   type VectorEntry,
+  vectorExtendedChains,
   vectorNegatives,
 } from "@maruhi/crypto/test-support";
 
-export { vectorEntries };
+export { vectorEntries, vectorExtendedChains };
 export type { VectorEntry };
 
 interface VectorAuthzNegative {
   readonly name: string;
   readonly entry: VectorEntry;
   readonly expected_reason: string;
+  /** 前提チェーン(extended_chains のキー。無指定 = 正規チェーン)。 */
+  readonly chain?: string;
 }
 
 /** 認可系 negative(完全なエントリを持ち、API 経由の追記拒否テストに再利用できる) */
@@ -26,7 +29,14 @@ export const vectorAuthzNegatives: readonly VectorAuthzNegative[] = vectorNegati
     negative.kind === "authorization" &&
     negative.entry !== undefined &&
     negative.expected_reason !== undefined
-      ? [{ name: negative.name, entry: negative.entry, expected_reason: negative.expected_reason }]
+      ? [
+          {
+            name: negative.name,
+            entry: negative.entry,
+            expected_reason: negative.expected_reason,
+            ...(negative.chain === undefined ? {} : { chain: negative.chain }),
+          },
+        ]
       : [],
 );
 

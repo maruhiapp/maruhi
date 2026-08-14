@@ -4,9 +4,11 @@
 // stdin(argv に平文値を載せない)、値の表示は pull --show のみで、AI
 // エージェント検出時は拒否する(agent.ts)。`maruhi run` は許可される。
 
+import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
 import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
+import type { LeasePolicyIssuer } from "@maruhi/crypto";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
@@ -27,6 +29,7 @@ import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.
 import type { CliServices, CommonFlags } from "./context.ts";
 import {
   commitVerifiedHead,
+  floorHandleFor,
   loadCheckedFloor,
   openEnvironment,
   openMetadataEnvironmentPair,
@@ -40,7 +43,7 @@ import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
 import { projectInitOp } from "./project-init.ts";
@@ -48,6 +51,13 @@ import { type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
+import { serverGrantOp } from "./server-grant.ts";
+import {
+  REVOKE_ROTATION_REASON,
+  type RevokeRotateMode,
+  type RevokeSummary,
+  serverRevokeOp,
+} from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { syncProject } from "./sync.ts";
 
@@ -543,6 +553,18 @@ function envActionFlagRejection(
   if (!isEnvAction(action)) {
     return null;
   }
+  return actionFlagRejection("env", ENV_ACTIONS, ENV_ACTION_FLAGS, action, tokens, args);
+}
+
+/** envActionFlagRejection / serverActionFlagRejection の共通本体。 */
+function actionFlagRejection<A extends string>(
+  command: string,
+  actions: readonly A[],
+  flags: Readonly<Record<A, ReadonlySet<string>>>,
+  action: A,
+  tokens: readonly ArgTokenShape[],
+  args: ArgTable,
+): string | null {
   for (const token of tokens) {
     // 打たれた綴り(短縮形・`--no-` の否定形)から宣言名へ戻して照合する。
     // 綴りのまま引くと `env create --no-new-epoch` が rotate 専用として
@@ -551,12 +573,12 @@ function envActionFlagRejection(
     if (declared === undefined) {
       continue;
     }
-    const owners = optionRestrictedTo(ENV_ACTIONS, ENV_ACTION_FLAGS, action, declared);
+    const owners = optionRestrictedTo(actions, flags, action, declared);
     if (owners === null) {
       continue;
     }
-    const usable = owners.map((owner) => `env ${owner}`).join(" / ");
-    return `${typedName(token)} は env ${action} では使えません(${usable} 用のオプションです)`;
+    const usable = owners.map((owner) => `${command} ${owner}`).join(" / ");
+    return `${typedName(token)} は ${command} ${action} では使えません(${usable} 用のオプションです)`;
   }
   return null;
 }
@@ -683,6 +705,449 @@ function envCommand(execute: Execute) {
             isEnvAction(ctx.values.action) && ctx.values.action !== "diff"
               ? ["other-environment-id"]
               : undefined,
+        },
+      ),
+  });
+}
+
+/**
+ * `maruhi server` が取る操作。一覧の出所はここだけ(ENV_ACTIONS と同じ形)。
+ */
+const SERVER_ACTIONS = ["grant", "revoke"] as const;
+
+type ServerAction = (typeof SERVER_ACTIONS)[number];
+
+const SERVER_ACTION_HELP = `不明な操作です(${SERVER_ACTIONS.join(" | ")})`;
+
+function isServerAction(action: string | undefined): action is ServerAction {
+  return SERVER_ACTIONS.some((known) => known === action);
+}
+
+/** SERVER_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
+function unhandledServerAction(action: never): CliError {
+  return usageError(`${SERVER_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
+}
+
+/** 操作専用のオプション(ENV_ACTION_FLAGS と同じ形)。 */
+const SERVER_ACTION_FLAGS: Readonly<Record<ServerAction, ReadonlySet<string>>> = {
+  grant: new Set(["environments", "lease-policy", "expect-fingerprint"]),
+  revoke: new Set(["fingerprint"]),
+};
+
+function serverActionFlagRejection(
+  action: string | undefined,
+  tokens: readonly ArgTokenShape[],
+  args: ArgTable,
+): string | null {
+  if (!isServerAction(action)) {
+    return null;
+  }
+  return actionFlagRejection("server", SERVER_ACTIONS, SERVER_ACTION_FLAGS, action, tokens, args);
+}
+
+/**
+ * `--environments dev,prod` の解釈(grant では必須 — 最小開示の既定として
+ * 環境は明示指定。session-22 §2 の裁定)。空要素は書き間違いとして拒否する。
+ */
+function parseEnvironmentsFlag(
+  value: string | undefined,
+): Effect.Effect<readonly EnvironmentId[], CliError> {
+  if (value === undefined) {
+    return Effect.fail(
+      usageError(
+        "grant には --environments が必須です(開示する環境をカンマ区切りで明示 — 例: --environments dev,prod)",
+      ),
+    );
+  }
+  const ids = value.split(",").map((part) => part.trim());
+  if (ids.length === 0 || ids.some((id) => id.length === 0)) {
+    return Effect.fail(
+      usageError("--environments の形式が正しくありません(カンマ区切りの環境 ID。空要素は不可)"),
+    );
+  }
+  const invalid = ids.filter((id) => !isEnvironmentId(id));
+  if (invalid.length > 0) {
+    return Effect.fail(
+      usageError(
+        "--environments に形式の正しくない環境 ID が含まれています(英数字で始まり、英数字と _ - が続く 64 字まで)",
+      ),
+    );
+  }
+  return Effect.succeed(ids as readonly EnvironmentId[]);
+}
+
+/**
+ * サーバー鍵 FP を受けるフラグの形式検証(hex 小文字 32 文字 = 16 バイト)。
+ * エラーは**打たれたフラグ名**で報告する(grant の --expect-fingerprint と
+ * revoke の --fingerprint で共用 — 存在しないフラグ名を指して混乱させない)。
+ */
+function parseFingerprintFlag(
+  flagName: string,
+  value: string | undefined,
+): Effect.Effect<string | null, CliError> {
+  if (value === undefined) {
+    return Effect.succeed(null);
+  }
+  if (!/^[0-9a-f]{32}$/.test(value)) {
+    return Effect.fail(
+      usageError(
+        `${flagName} の形式が正しくありません(サーバー鍵 FP は hex 小文字 32 文字 — /auth/config の serverKeyFingerprintHex)`,
+      ),
+    );
+  }
+  return Effect.succeed(value);
+}
+
+// lease_policy(CRYPTO_SPEC §6.2)のファイル入力の上限。合意規則の値と同じ
+// (超過はチェーン検証 invalid-payload になるため、入力段で先に落とす)
+const MAX_LEASE_POLICY_ISSUERS = 8;
+const MAX_LEASE_CLAIM_CONSTRAINTS = 8;
+const MAX_LEASE_FIELD_BYTES = 1024;
+
+function leaseFieldOk(value: unknown, allowEmpty: boolean): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  if (!allowEmpty && value.length === 0) {
+    return false;
+  }
+  return new TextEncoder().encode(value).length <= MAX_LEASE_FIELD_BYTES;
+}
+
+/**
+ * lease_policy ファイル(JSON)の解釈と正規化。ファイル形式は camelCase +
+ * claimConstraints をオブジェクト(claim 名 → 値)で書く — 同一 claim の矛盾する
+ * 重複制約(完全一致 AND では常に偽)を構造的に表現できなくするため。
+ * チェーン形式(順序付き配列)への変換で §6.2 の SHOULD(コードポイント昇順・
+ * 重複なし)を適用する。
+ */
+function parseLeasePolicy(content: string): readonly LeasePolicyIssuer[] | string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return "JSON として解釈できません";
+  }
+  if (!Array.isArray(parsed)) {
+    return "トップレベルは要素の配列である必要があります";
+  }
+  if (parsed.length > MAX_LEASE_POLICY_ISSUERS) {
+    return `要素は ${MAX_LEASE_POLICY_ISSUERS} 個以下です(合意規則 — CRYPTO_SPEC §6.2)`;
+  }
+  const elements: LeasePolicyIssuer[] = [];
+  for (const element of parsed) {
+    const result = parseLeaseElement(element);
+    if (typeof result === "string") {
+      return result;
+    }
+    elements.push(result);
+  }
+  return canonicalizeLeaseElements(elements);
+}
+
+/** lease_policy の 1 要素の解釈(不正なら理由の文字列)。 */
+function parseLeaseElement(element: unknown): LeasePolicyIssuer | string {
+  if (typeof element !== "object" || element === null || Array.isArray(element)) {
+    return "各要素は { issuerUrl, audience, claimConstraints } のオブジェクトである必要があります";
+  }
+  const record = element as Record<string, unknown>;
+  if (!leaseFieldOk(record["issuerUrl"], false) || !leaseFieldOk(record["audience"], false)) {
+    return `issuerUrl / audience は非空の文字列(${MAX_LEASE_FIELD_BYTES} バイト以下)である必要があります`;
+  }
+  const claimConstraints = parseLeaseConstraints(record["claimConstraints"] ?? {});
+  if (typeof claimConstraints === "string") {
+    return claimConstraints;
+  }
+  return {
+    issuerUrl: record["issuerUrl"] as string,
+    audience: record["audience"] as string,
+    claimConstraints,
+  };
+}
+
+/** claimConstraints オブジェクトの解釈と昇順ソート(不正なら理由の文字列)。 */
+function parseLeaseConstraints(
+  value: unknown,
+): { claimName: string; claimValue: string }[] | string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "claimConstraints は { claim 名: 値 } のオブジェクトである必要があります";
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_LEASE_CLAIM_CONSTRAINTS) {
+    return `claimConstraints は要素あたり ${MAX_LEASE_CLAIM_CONSTRAINTS} 件以下です(合意規則)`;
+  }
+  const claimConstraints: { claimName: string; claimValue: string }[] = [];
+  for (const [claimName, claimValue] of entries) {
+    if (!leaseFieldOk(claimName, false) || !leaseFieldOk(claimValue, true)) {
+      return `claim 制約の名前は非空・値は文字列(いずれも ${MAX_LEASE_FIELD_BYTES} バイト以下)である必要があります`;
+    }
+    claimConstraints.push({ claimName, claimValue });
+  }
+  // 制約はコードポイント昇順(§6.2 の SHOULD)。名前はオブジェクトキーなので一意
+  claimConstraints.sort((a, b) => (a.claimName < b.claimName ? -1 : 1));
+  return claimConstraints;
+}
+
+/**
+ * 要素のコードポイント昇順 + 重複除去(SHOULD。評価は存在量化 — AUTH_SPEC §14-1 —
+ * なので順序・重複は意味論に影響しないが、署名対象バイト列を決定論にする)。
+ */
+function canonicalizeLeaseElements(
+  elements: readonly LeasePolicyIssuer[],
+): readonly LeasePolicyIssuer[] {
+  const canonical = elements
+    .map((element) => ({ element, key: JSON.stringify(element) }))
+    .toSorted((a, b) => (a.key < b.key ? -1 : 1));
+  const deduped: LeasePolicyIssuer[] = [];
+  let previousKey: string | null = null;
+  for (const { element, key } of canonical) {
+    if (key !== previousKey) {
+      deduped.push(element);
+      previousKey = key;
+    }
+  }
+  return deduped;
+}
+
+/** `--lease-policy <file>` の読み込み(省略時は空 = リース経路なし)。 */
+function loadLeasePolicy(
+  path: string | undefined,
+): Effect.Effect<readonly LeasePolicyIssuer[], CliError> {
+  if (path === undefined) {
+    return Effect.succeed([]);
+  }
+  return Effect.gen(function* () {
+    const content = yield* Effect.tryPromise({
+      try: () => readFile(path, "utf8"),
+      catch: () => usageError("--lease-policy のファイルを読み込めません(パスを確認してください)"),
+    });
+    const parsed = parseLeasePolicy(content);
+    if (typeof parsed === "string") {
+      return yield* Effect.fail(usageError(`--lease-policy の内容が不正です: ${parsed}`));
+    }
+    return parsed;
+  });
+}
+
+/** `maruhi server grant --environments <ids> [--lease-policy <file>]`(§9 / §12-6)。 */
+function serverGrant(
+  flags: CommonFlags & {
+    readonly environments?: string | undefined;
+    readonly leasePolicyPath?: string | undefined;
+    readonly expectFingerprint?: string | undefined;
+  },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
+    const leasePolicy = yield* loadLeasePolicy(flags.leasePolicyPath);
+    const expectFingerprintHex = yield* parseFingerprintFlag(
+      "--expect-fingerprint",
+      flags.expectFingerprint,
+    );
+    const context = yield* openProject(flags);
+    const summary = yield* serverGrantOp({
+      client: context.client,
+      verified: context.verified,
+      environmentIds,
+      leasePolicy,
+      expectFingerprintHex,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      recipient: context.recipient,
+      resync: context.resync,
+    });
+    const policyNote =
+      summary.leasePolicyCount === 0
+        ? "リース経路なし(lease_policy は空)"
+        : `lease_policy ${summary.leasePolicyCount} 要素`;
+    yield* io.log(
+      `完了: サーバー鍵 ${summary.serverKeyFingerprintHex} への開示が有効です(scope=${summary.scopeEnvironmentIds.join(", ")}、${policyNote})。バックフィル: 新規 ${summary.registered} 件、登録済み ${summary.alreadyRegistered} 件`,
+    );
+    // §9: 開示中であることを常時明示する(失効経路もその場で案内する)
+    yield* io.log(
+      "注意: 開示スコープ内の環境のエポック DEK はサーバーに開示されています(CRYPTO_SPEC §9)。取り消すには maruhi server revoke を実行してください(全環境ローテーションを伴います — §7)",
+    );
+  });
+}
+
+/** `maruhi server revoke [--fingerprint <hex>]`(§7 / §9)。 */
+function serverRevoke(
+  flags: CommonFlags & { readonly fingerprint?: string | undefined },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const fingerprintHex =
+      flags.fingerprint === undefined
+        ? null
+        : yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
+    const context = yield* openProject(flags);
+    // 1 環境のローテーション(PR-1 の envRotateOp の再利用): revoke の追記や先行の
+    // rotate でチェーンは前進しているので、各環境は再同期済みビューで開始する。
+    // force = §7 の強制(新エポック必須)/ verify = 失効より後にエポックが進んだ
+    // 環境の検証パス(未完了の再暗号化があれば再開、なければ確認のみ)
+    const rotate = (environmentId: string, mode: RevokeRotateMode) =>
+      Effect.gen(function* () {
+        if (!isEnvironmentId(environmentId)) {
+          return yield* Effect.fail(cliErrorForInvalidChainEnvironmentId());
+        }
+        const floorHandle = yield* floorHandleFor(context, environmentId);
+        const verified = yield* context.resync;
+        return yield* envRotateOp({
+          client: context.client,
+          verified,
+          environmentId,
+          recipient: context.recipient,
+          reason: mode === "force" ? REVOKE_ROTATION_REASON : undefined,
+          forceNewEpoch: mode === "force",
+          signerUserId: context.session.userId,
+          signingKeyPair: context.masterKeys.sigKeyPair,
+          resync: context.resync,
+          floor: floorHandle,
+        });
+      });
+    const summary = yield* serverRevokeOp({
+      client: context.client,
+      verified: context.verified,
+      fingerprintHex,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      rotate,
+    });
+    yield* reportRevokeOutcome(io, summary);
+    return yield* reportRevokeRotations(io, summary);
+  });
+}
+
+/** revoke の追記結果とスキップ・確認済み環境の報告(終了コードには影響しない部分)。 */
+function reportRevokeOutcome(
+  io: CliIoShape,
+  summary: RevokeSummary,
+): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
+    if (summary.appended) {
+      yield* io.log(
+        `revoke_server をチェーンへ追記しました(FP=${summary.serverKeyFingerprintHex ?? ""})。全環境の強制ローテーションを実行します(§7)`,
+      );
+    } else if (summary.serverKeyFingerprintHex !== null) {
+      // 対象の grant はあったが、CAS 競合の再同期で既に失効済みと判明した
+      // (並行 revoke)。誰かが同じ鍵を失効させた事実は運用上重要なので明示する
+      yield* io.log(
+        `対象の grant(FP=${summary.serverKeyFingerprintHex})は並行実行により既に失効済みでした — 追記せず、全環境ローテーションへ進みます(§7)`,
+      );
+    } else {
+      yield* io.log(
+        "有効な grant はありません — 失効後の全環境ローテーションの続きから再開します(中断復旧)",
+      );
+    }
+    if (summary.skippedDeleted.length > 0) {
+      yield* io.log(
+        `削除済み環境(署名済み削除ステートメントを検証済み)のためスキップ: ${summary.skippedDeleted.join(", ")}`,
+      );
+    }
+    if (summary.alreadyRotated.length > 0) {
+      yield* io.log(
+        `ローテーション済み(失効より後のエポック・未完了の再暗号化なしを確認): ${summary.alreadyRotated.join(", ")}`,
+      );
+    }
+  });
+}
+
+/** revoke のローテーション結果の報告と終了コードの導出。 */
+function reportRevokeRotations(
+  io: CliIoShape,
+  summary: RevokeSummary,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    let exitCode = 0;
+    for (const item of summary.rotated) {
+      const code = yield* reportRotation(
+        item.environmentId as EnvironmentId,
+        item.summary,
+        item.forcedNewEpoch,
+      );
+      if (code !== 0) {
+        exitCode = 1;
+      }
+    }
+    for (const failure of summary.failed) {
+      // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
+      // よる選択的なローテーション阻止を不可視にしない)
+      yield* io.logError(
+        `警告: 環境 ${displayText(failure.environmentId)} のローテーションに失敗しました: ${failure.message} — 解消して maruhi server revoke を再実行すると続きから再開します(環境を削除済みの場合は、検証済みの削除ステートメントを確認してください)`,
+      );
+      exitCode = 1;
+    }
+    if (exitCode === 0) {
+      yield* io.log("完了: 失効と全環境ローテーションが完了しました");
+    }
+    return exitCode;
+  });
+}
+
+/** チェーン導出の環境 ID が CLI の形式検査に通らない場合の防衛(通常は到達しない)。 */
+function cliErrorForInvalidChainEnvironmentId(): CliError {
+  return usageError(
+    "チェーン導出の環境 ID が CLI の形式検査に通りません(サーバー受理ポリシーと矛盾するチェーンです)",
+  );
+}
+
+function serverCommand(execute: Execute) {
+  return define({
+    name: "server",
+    description: `サーバーへの選択的開示の管理(${SERVER_ACTIONS.join(" / ")} — CRYPTO_SPEC §9)`,
+    args: {
+      action: { type: "positional", description: SERVER_ACTIONS.join(" | ") },
+      environments: {
+        type: "string",
+        description:
+          "開示する環境 ID のカンマ区切り(grant では必須 — 最小開示の既定として環境は明示指定)",
+      },
+      "lease-policy": {
+        type: "string",
+        description:
+          "ワークロードリースポリシーの JSON ファイル(grant のみ。省略時はリース経路なし)",
+      },
+      "expect-fingerprint": {
+        type: "string",
+        description:
+          "帯域外で控えたサーバー鍵 FP(hex 32 文字。grant のみ — 指定時は対話確認の代わりに照合する)",
+      },
+      fingerprint: {
+        type: "string",
+        description: "失効対象のサーバー鍵 FP(revoke のみ。有効な grant が 1 つなら省略可)",
+      },
+      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
+      project: {
+        type: "string",
+        description: "プロジェクト ID(省略時は config の defaultProject)",
+      },
+    },
+    run: (ctx) =>
+      execute(
+        ctx,
+        Effect.gen(function* () {
+          const action = ctx.values.action;
+          if (!isServerAction(action)) {
+            return yield* Effect.fail(usageError(SERVER_ACTION_HELP));
+          }
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "grant") {
+            return yield* serverGrant({
+              ...flags,
+              environments: ctx.values.environments,
+              leasePolicyPath: ctx.values["lease-policy"],
+              expectFingerprint: ctx.values["expect-fingerprint"],
+            });
+          }
+          if (action === "revoke") {
+            return yield* serverRevoke({ ...flags, fingerprint: ctx.values.fingerprint });
+          }
+          return yield* Effect.fail(unhandledServerAction(action));
+        }),
+        {
+          commandRejection: serverActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
         },
       ),
   });
@@ -997,6 +1462,7 @@ export async function runCli(
     key: keyCommand(execute),
     project: projectCommand(execute),
     env: envCommand(execute),
+    server: serverCommand(execute),
     pull: pullCommand(execute),
     push: pushCommand(execute),
     run: runCommand(execute),

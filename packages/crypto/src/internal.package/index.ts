@@ -27,6 +27,8 @@ export {
   type EnvironmentChainState,
   type GenesisPayload,
   type GrantServerPayload,
+  type LeaseClaimConstraint,
+  type LeasePolicyIssuer,
   type RemoveMemberPayload,
   type RevokeServerPayload,
   type Role,
@@ -102,9 +104,12 @@ export {
   type ValuePredecessor,
   verifyDistributedValue,
 } from "./value-verify.ts";
+export { BIP39_ENGLISH_WORDS } from "./bip39-english.ts";
+export { FINGERPRINT_WORD_COUNT, fingerprintToWords } from "./fingerprint-words.ts";
 export {
   computeServerKeyFingerprint,
   computeUserKeyFingerprint,
+  deriveEncryptionKeyPair,
   type EncryptionKey,
   type EncryptionKeyPair,
   exportEncryptionPrivateKey,

@@ -7,9 +7,8 @@
 // 両方を再署名**(seq / prev / 宣言ヘッド変更 — §12-4)してリトライする。
 //
 // ラップ集合の生成は dek-wrap.ts の共有実装(env-rotate.ts と共通)。
-// grant_server が有効なプロジェクトは拒否する: サーバー宛ラップのデータ
-// プレーンは Phase 2 未実装で、メンバー宛のみの登録は §7 の開示契約を
-// 黙って破ることになるため。
+// grant_server が有効で作成環境が開示スコープに含まれる場合、完全集合は
+// サーバー鍵宛ラップを含む(§12-4 — 2026-08-12 の受信者クラス server 実装)。
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import { ChainHeadConflictError } from "@maruhi/api-schema";
@@ -19,7 +18,7 @@ import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@ma
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { buildWrapSetForMembers, requireWritingMember, sameMemberSet } from "./dek-wrap.ts";
+import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -33,10 +32,9 @@ function ensureCreatable(
   signerUserId: string,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // grant ガード(作成しようとしている ID が既存 grant のスコープに載っている
-    // 場合だけ義務が生じる)+ メンバー性 + role は env rotate と共有。role を
-    // ここで落とさないと、reader は DEK 生成と全メンバー分の HPKE ラップ・署名を
-    // 済ませて複合を送ってから、サーバーの汎用 403 を受け取ることになる
+    // メンバー性 + role は env rotate と共有。role をここで落とさないと、
+    // reader は DEK 生成と全受信者分の HPKE ラップ・署名を済ませて複合を
+    // 送ってから、サーバーの汎用 403 を受け取ることになる
     const member = yield* requireWritingMember({
       verified,
       environmentId,
@@ -144,7 +142,7 @@ export function envCreateOp(input: {
     if (!commitment.ok) {
       return yield* Effect.fail(cliError("DEK コミットメントの計算に失敗しました"));
     }
-    const deks = yield* buildWrapSetForMembers({
+    const deks = yield* buildWrapCompleteSet({
       verified: input.verified,
       environmentId: input.environmentId,
       epoch: 1,
@@ -220,9 +218,9 @@ export function envCreateOp(input: {
               input.environmentId,
               input.signerUserId,
             );
-            const rebuiltDeks = sameMemberSet(state.verified, resynced)
+            const rebuiltDeks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
               ? state.deks
-              : yield* buildWrapSetForMembers({
+              : yield* buildWrapCompleteSet({
                   verified: resynced,
                   environmentId: input.environmentId,
                   epoch: 1,

@@ -24,6 +24,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { CSRF_HEADER, GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
 import { D1AuditRepo, IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
+import { ServerKey } from "./server-key.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
 const STATE_COOKIE = "__Host-maruhi_oauth_state";
@@ -133,7 +134,21 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // 公開情報のみ。client_secret 等をこの応答に足さないこと(検査条件には
         // 含む — 200 が「client_id / secret とも登録済み」の確認として機能する)
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
-        return { githubClientId: env.GITHUB_CLIENT_ID };
+        // デプロイメント keypair(CRYPTO_SPEC §9)が設定済みなら公開面を加える
+        // (AUTH_SPEC §4 — serverKeyFingerprintHex は grant_server 実行時の照合
+        // 対象。serverEncPubHex は §9 の「サーバーが配布する enc 公開鍵」の
+        // 配布チャネルで、どちらも公開情報)。未設定なら両フィールドを省略する
+        const serverKey = yield* ServerKey;
+        const serverKeyInfo = yield* serverKey.info;
+        return {
+          githubClientId: env.GITHUB_CLIENT_ID,
+          ...(serverKeyInfo === null
+            ? {}
+            : {
+                serverKeyFingerprintHex: serverKeyInfo.serverKeyFingerprintHex,
+                serverEncPubHex: serverKeyInfo.serverEncPubHex,
+              }),
+        };
       }),
     )
     .handle("githubStart", ({ request }) =>
