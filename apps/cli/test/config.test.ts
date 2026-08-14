@@ -68,5 +68,10 @@ describe("maruhi config", () => {
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("使い方");
+    // 一覧は登録済みサブコマンドから導く(手書きだと、コマンドを増やしたときに
+    // ヘルプだけ古いまま残る)。エントリコマンド自身(`maruhi`)は出さない
+    expect(env.logs).toContain(
+      "commands: login / logout / key / project / env / pull / push / run / config",
+    );
   });
 });
