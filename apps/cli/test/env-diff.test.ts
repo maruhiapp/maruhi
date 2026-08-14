@@ -12,10 +12,11 @@
 //     片方の事実が消えない)
 //  5. **前段は 1 回だけ**(チェーン同期は 1 回)で、1 つ目の pull が有界再同期で
 //     前進させたビューを 2 つ目の pull が引き継ぐ
-//  6. 環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)。
-//     差分があるときだけ、順に読むことによる標本のずれを stderr で注意書きする
-//  7. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
-//  8. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
+//  6. 環境のメタ水準の床はコミットしない(チェーン床のヘッドは pull ごとに前進)
+//  7. 順に読むことによる標本のずれを、**差分の有無によらず** stderr で開示する
+//     (差分ゼロこそ、ずれに覆されうる結論)
+//  8. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
+//  9. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
 //     usage エラー(2)で、**通信より前**に落ちる
 
 import { readFile } from "node:fs/promises";
@@ -455,6 +456,32 @@ describe("maruhi env diff", () => {
       await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
     );
     expect(floor).toMatchObject({ chainHead: { seq: 4, hashHex: chain.hashes[3] } });
+  });
+
+  it("2 つ目の pull が失敗しても、1 つ目が確立した前進は床に残る", async () => {
+    // pull / push は応答ごとに床へヘッドを書く。まとめて最後に書くと、
+    // 2 つ目が落ちた実行で 1 つ目の有界再同期の成果を捨てることになる
+    const dev = [await variableOf(DEV, "var-dev-0", "ONLY_DEV", 3)];
+    const env = await startEnv(
+      [
+        pullMetadataHandlerOf(DEV, devStatement, dev),
+        // 2 つ目の環境は取得できない(ネットワーク障害・認可失敗の代表)
+        onRequest("GET", `/projects/${chain.projectId}/environments/${PROD}/pull/metadata`, () => ({
+          status: 503,
+          json: { error: "unavailable" },
+        })),
+      ],
+      [2, 3],
+    );
+
+    // 実行そのものは失敗する(1)
+    expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(1);
+    const floor: unknown = JSON.parse(
+      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
+    );
+    // 1 つ目の pull で seq 3 まで前進したことは記録されている(openProject
+    // 時点の seq 2 のままにしない)
+    expect(floor).toMatchObject({ chainHead: { seq: 3, hashHex: chain.hashes[2] } });
   });
 
   it("master 鍵が無い端末でも実行できる(復号しないため要求しない)", async () => {

@@ -40,6 +40,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { CliServices } from "./context.ts";
 import { displayText, logWarnings } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedActiveStatement } from "./floor-check.ts";
@@ -89,13 +90,6 @@ function namesOf(variables: readonly VerifiedActiveStatement[]): ReadonlySet<str
   return new Set(variables.map((variable) => variable.name));
 }
 
-/** 比較の結果と、検証に使った最終ビュー(床のヘッド記録に使う)。 */
-export interface EnvironmentDiffResult {
-  readonly diff: EnvironmentDiff;
-  /** 2 回の pull を経た最終ビュー(有界再同期で前進していることがある)。 */
-  readonly verified: VerifiedProject;
-}
-
 /**
  * Compares the variable **names** of two environments in one project, using
  * only metadata pulls (no values, no DEKs, no `var.read`).
@@ -111,7 +105,13 @@ export function envDiffOp(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly first: DiffTarget;
   readonly second: DiffTarget;
-}): Effect.Effect<EnvironmentDiffResult, CliError> {
+  /**
+   * 検証済みチェーンヘッドの記録。**pull ごとに**呼ぶ: 最後にまとめて呼ぶと、
+   * 2 つ目の pull が失敗した実行で 1 つ目の有界再同期が確立した前進を落とす
+   * (pull / push は応答ごとの accept の中で同じヘッドを書いている)。
+   */
+  readonly commitHead: (verified: VerifiedProject) => Effect.Effect<void, CliError, CliServices>;
+}): Effect.Effect<EnvironmentDiff, CliError, CliServices> {
   return Effect.gen(function* () {
     const first = yield* pullVerifiedEnvironmentMetadata({
       client: input.client,
@@ -120,6 +120,7 @@ export function envDiffOp(input: {
       resync: input.resync,
       floor: input.first.floor,
     });
+    yield* input.commitHead(first.verified);
     const second = yield* pullVerifiedEnvironmentMetadata({
       client: input.client,
       // 1 つ目の検証に使ったビュー(前進していることがある)を引き継ぐ
@@ -128,20 +129,17 @@ export function envDiffOp(input: {
       resync: input.resync,
       floor: input.second.floor,
     });
+    yield* input.commitHead(second.verified);
     const firstNames = namesOf(first.variables);
     const secondNames = namesOf(second.variables);
     return {
-      diff: {
-        firstEnvironmentId: input.first.environmentId,
-        secondEnvironmentId: input.second.environmentId,
-        onlyInFirst: sortedNames([...firstNames].filter((name) => !secondNames.has(name))),
-        onlyInSecond: sortedNames([...secondNames].filter((name) => !firstNames.has(name))),
-        shared: [...firstNames].filter((name) => secondNames.has(name)).length,
-        firstWarnings: first.warnings,
-        secondWarnings: second.warnings,
-      },
-      // 2 つ目の pull を経たビュー(1 つ目より更に前進していることがある)
-      verified: second.verified,
+      firstEnvironmentId: input.first.environmentId,
+      secondEnvironmentId: input.second.environmentId,
+      onlyInFirst: sortedNames([...firstNames].filter((name) => !secondNames.has(name))),
+      onlyInSecond: sortedNames([...secondNames].filter((name) => !firstNames.has(name))),
+      shared: [...firstNames].filter((name) => secondNames.has(name)).length,
+      firstWarnings: first.warnings,
+      secondWarnings: second.warnings,
     };
   });
 }

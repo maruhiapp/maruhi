@@ -440,18 +440,17 @@ function envDiff(
     // 前段(チェーン同期 + §6.3 検証)は 1 回だけ。master 鍵は要求しない
     // (復号しないため — context.ts の openMetadataProjectWith)
     const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
-    const result = yield* envDiffOp({
+    const diff = yield* envDiffOp({
       client: context.client,
       verified: context.verified,
       resync: context.resync,
       first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
       second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
+      // 環境のメタ水準の床は作らない(値を読んでいないため)が、**チェーン床の
+      // ヘッド**は pull / push と同じく前進させる。記録は pull ごと(envDiffOp)
+      commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
     });
-    // 環境のメタ水準の床は作らない(値を読んでいないため)が、**チェーン床の
-    // ヘッド**は pull / push と同じく前進させる。有界再同期でビューが前進した
-    // 場合、ここで記録しないと検証済みの最新ヘッドが openProject 時点のまま残る
-    yield* commitVerifiedHead(context.projectId, result.verified);
-    yield* reportEnvironmentDiff(result.diff);
+    yield* reportEnvironmentDiff(diff);
   });
 }
 
