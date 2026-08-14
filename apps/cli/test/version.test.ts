@@ -32,6 +32,9 @@ describe("CLI のバージョン(単一の出所 = package.json)", () => {
     const result = spawnSync("bun", ["src/bin.ts", "--version"], {
       cwd: cliRoot,
       encoding: "utf8",
+      // spawnSync はイベントループを塞ぐため vitest のタイムアウトが効かない。
+      // hang 時は子を殺してテストを失敗させる
+      timeout: 10_000,
     });
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(packageJson.version);

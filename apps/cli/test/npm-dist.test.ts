@@ -22,6 +22,9 @@ describe("npm 配布物のステージング(build-npm)", () => {
     const result = spawnSync("bun", ["scripts/build-npm.ts", outDir], {
       cwd: cliRoot,
       encoding: "utf8",
+      // spawnSync はイベントループを塞ぐため vitest の hook タイムアウト(下の
+      // 30s)は同期呼び出しを中断できない。hook 上限より手前で子を殺す
+      timeout: 25_000,
     });
     if (result.status !== 0) {
       throw new Error(`build-npm.ts が失敗: ${result.stderr}`);
@@ -54,14 +57,26 @@ describe("npm 配布物のステージング(build-npm)", () => {
   it("バンドルは Bun で動き、--version が workspace の版を出す", () => {
     const result = spawnSync("bun", [join(outDir, "bin.js"), "--version"], {
       encoding: "utf8",
+      timeout: 10_000,
     });
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(packageJson.version);
   });
 
+  it("バンドルに workspace マニフェスト全体を埋め込まない", async () => {
+    // cli.ts の package.json import は現状 tree-shake され version だけが残る
+    // (named / default とも実測)。これはバンドラ挙動であり保証ではないため、
+    // 退行すると scripts・依存ピン等の開発用マニフェスト全体が npm 配布物と
+    // 全バイナリへ複製される — その成果物側の性質をここで固定する
+    const bundle = await readFile(join(outDir, "bin.js"), "utf8");
+    expect(bundle).toContain(packageJson.version);
+    expect(bundle).not.toContain('"devDependencies"');
+  });
+
   it("Node.js で起動すると Bun 必須の案内で exit 1(深部の ReferenceError にしない)", () => {
     const result = spawnSync("node", [join(outDir, "bin.js"), "--version"], {
       encoding: "utf8",
+      timeout: 10_000,
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Bun");

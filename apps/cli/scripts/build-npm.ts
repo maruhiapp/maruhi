@@ -18,7 +18,6 @@ const outDir = isAbsolute(outDirArg) ? outDirArg : resolve(cliRoot, outDirArg);
 
 const workspaceManifest = JSON.parse(await readFile(join(cliRoot, "package.json"), "utf8")) as {
   version: string;
-  description?: string;
 };
 const version = workspaceManifest.version;
 // タグ照合(release.yml)と npm の版形式の前提。壊れた版を publish 直前より

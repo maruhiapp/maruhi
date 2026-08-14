@@ -25,6 +25,10 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # workflow_call 経由でリリースのゲートにもなるため上限を明示する
+    # (呼び出し側の release.yml は `uses:` job に timeout を掛けられない。
+    # 実測 10〜15 分 + 余裕。既定の 360 分だと hang がリリースを 6 時間塞ぐ)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
