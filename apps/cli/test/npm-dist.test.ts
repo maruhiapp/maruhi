@@ -67,11 +67,13 @@ describe("npm 配布物のステージング(build-npm)", () => {
     // cli.ts の package.json import が named import(version のみ)である限り
     // tree-shake され、default import に戻すと scripts・依存ピン等のマニフェスト
     // 全体が npm 配布物と全バイナリへ複製される(実測: bun 1.3.14)。
-    // 注意: bun はオブジェクトリテラルのキーをクォートなし(devDependencies:)で
-    // 埋め込むため、検査はクォートなしのトークンで行う
+    // 検査トークンは自マニフェスト固有の scripts 名にする: "devDependencies" だと
+    // 将来バンドルされる依存のコード側に現れて false-fail しうる。また bun は
+    // オブジェクトリテラルのキーを可能ならクォートなしで埋め込むため、
+    // '"devDependencies"' のようなクォート付き検査はそもそも火を吹かない
     const bundle = await readFile(join(outDir, "bin.js"), "utf8");
     expect(bundle).toContain(packageJson.version);
-    expect(bundle).not.toContain("devDependencies");
+    expect(bundle).not.toContain("build:binaries");
   });
 
   it("Node.js で起動すると Bun 必須の案内で exit 1(深部の ReferenceError にしない)", () => {
