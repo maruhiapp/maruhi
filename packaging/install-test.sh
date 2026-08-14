@@ -77,6 +77,11 @@ ARCHIVE="maruhi-${TARGET}.tar.gz"
   echo "成果物がありません: ${DIST}/checksums.txt" >&2
   exit 2
 }
+# ローカルの http fixture 用(install.sh 自体は curl / tar / sha256 系だけを要求する)
+command -v python3 >/dev/null || {
+  echo "python3 が必要です(ローカルの http fixture を立てるため)" >&2
+  exit 2
+}
 
 cleanup() {
   if [[ -n ${SERVER_PID} ]]; then kill "${SERVER_PID}" 2>/dev/null || true; fi
@@ -98,25 +103,30 @@ new_case() {
 
 start_server() {
   local log="${WORK}/server.log"
-  # port 0 = OS 任せの空きポート(並列実行での衝突を作らない)。起動ログから拾う
-  python3 -m http.server 0 --bind 127.0.0.1 --directory "${WORK}/serve" >"${log}" 2>&1 &
+  # port 0 = OS 任せの空きポート(並列実行での衝突を作らない)。
+  # `python3 -m http.server` の起動メッセージは解析しない — stdout がファイルへ
+  # 向くとブロックバッファされ、文言も版で変わる(CI で実際に踏んだ)。
+  # ポートは自分で取って flush して出す
+  python3 -u -c '
+import functools, http.server, socketserver, sys
+
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+    print(httpd.server_address[1], flush=True)
+    httpd.serve_forever()
+' "${WORK}/serve" >"${log}" 2>&1 &
   SERVER_PID=$!
   local i
   for ((i = 0; i < 100; i++)); do
-    if grep -qE 'port [0-9]+' "${log}" 2>/dev/null; then break; fi
-    if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-      cat "${log}" >&2
-      echo "http サーバーが起動直後に落ちました" >&2
-      exit 2
-    fi
+    PORT="$(head -n 1 "${log}" 2>/dev/null || true)"
+    if [[ ${PORT} =~ ^[0-9]+$ ]]; then return; fi
+    if ! kill -0 "${SERVER_PID}" 2>/dev/null; then break; fi
     sleep 0.1
   done
-  PORT="$(sed -nE 's/.*port ([0-9]+).*/\1/p' "${log}" | head -1)"
-  [[ -n ${PORT} ]] || {
-    cat "${log}" >&2
-    echo "http サーバーのポートを取得できません" >&2
-    exit 2
-  }
+  PORT=""
+  cat "${log}" >&2
+  echo "http サーバーを起動できません" >&2
+  exit 2
 }
 
 pass() { echo "  ok: $1"; }

@@ -51,12 +51,13 @@ sh maruhi-install.sh --version "${V}"
 
 ### Homebrew(macOS / Linuxbrew)
 
+> **準備中** — tap(`maruhiapp/homebrew-maruhi`)はまだ公開していません。formula は安定版
+> `v0.1.0` から提供します(プレリリースは tap に載せません)。それまでは上の install script を
+> お使いください。
+
 ```sh
 brew install maruhiapp/maruhi/maruhi
 ```
-
-> tap(`maruhiapp/homebrew-maruhi`)は準備中です。formula は安定版 `v0.1.0` から提供します
-> (プレリリースは tap に載せません)。それまでは install script をお使いください。
 
 <details>
 <summary><b>手動でコンパイル済みバイナリを入れる</b>(Windows はこちら)</summary>
