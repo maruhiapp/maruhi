@@ -8,6 +8,42 @@ Cloudflare を実行基盤とする、汎用のディスクレス secrets 管理
 
 > **Status**: 開発中(pre-release)。API・仕様は予告なく変わります。
 
+## インストール(CLI)
+
+配布形態の設計は [ADR-0015](docs/adr/0015-cli-distribution.md)。install script と
+brew tap は後続 PR で提供予定です。
+
+### コンパイル済みバイナリ(推奨。Bun 不要)
+
+[GitHub Releases](https://github.com/maruhiapp/maruhi/releases) からプラットフォーム別の
+`maruhi-<os>-<arch>.tar.gz` を取得し、チェックサムを検証して展開します:
+
+```sh
+# 例: Apple Silicon mac(linux-x64 / linux-arm64 / darwin-x64 / windows-x64 も同様)
+curl -fsSLO https://github.com/maruhiapp/maruhi/releases/latest/download/maruhi-darwin-arm64.tar.gz
+curl -fsSLO https://github.com/maruhiapp/maruhi/releases/latest/download/checksums.txt
+shasum -a 256 --ignore-missing -c checksums.txt   # Linux では sha256sum --ignore-missing -c
+tar -xzf maruhi-darwin-arm64.tar.gz
+./maruhi --version
+```
+
+`mh` エイリアスが必要なら並べてリンクを張ってください: `ln -s maruhi mh`
+
+- **windows-x64 は experimental** です(Credential Manager 経路が未検証。キーチェーンに
+  問題がある場合も平文フォールバックせず型付きエラーで止まります)
+- macOS バイナリは未公証のため、**ブラウザで**ダウンロードすると Gatekeeper に隔離されます
+  (上記のように curl で取得すれば隔離属性は付きません)。公証は公開準備の段階で対応します
+
+### npm(Bun ランタイム必須)
+
+CLI は OS キーチェーン(`Bun.secrets`)等の Bun 固有 API に依存するため、npm 版の実行には
+[Bun](https://bun.sh) >= 1.3.14 が必要です(Node.js で起動した場合は案内を出して終了します):
+
+```sh
+bun install -g maruhi        # プレリリース期間中は: bun install -g maruhi@next
+maruhi --version             # mh --version も同じ
+```
+
 ## ドキュメント
 
 - [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — 暗号仕様(唯一の正)
