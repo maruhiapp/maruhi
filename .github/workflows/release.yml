@@ -309,6 +309,28 @@ jobs:
       - name: Restore executable bit (lost in artifact roundtrip)
         run: chmod +x ./dist-npm/bin.js
 
+      # npm は publish 時の正規化(auto-correct)でマニフェストを黙って書き換え、
+      # 警告のみ・exit 0 で publish を続行する(v0.1.0-rc.1 で bin が 2 本とも
+      # 剥がされたのを実測)。vitest 側の固定は「こちらが渡す入力」しか守れない
+      # ため、npm 側の規則変更はここで publish 前に赤にする
+      - name: Reject npm-side manifest auto-correction (dry-run)
+        env:
+          DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        run: |
+          set +e
+          OUT=$(npm publish ./dist-npm --dry-run --tag "${DIST_TAG}" 2>&1)
+          CODE=$?
+          set -e
+          echo "${OUT}"
+          if [ "${CODE}" != "0" ]; then
+            echo "::error::npm publish --dry-run 自体が失敗した(exit ${CODE})"
+            exit 1
+          fi
+          if echo "${OUT}" | grep -q "auto-corrected"; then
+            echo "::error::npm が publish 時にマニフェストを自動修正した(bin 等が剥がされる恐れ。npm pkg fix の差分を確認)"
+            exit 1
+          fi
+
       - name: Publish to npm (provenance)
         env:
           # プレリリース(v0.1.0-rc.1 等)は latest を動かさず next に置く

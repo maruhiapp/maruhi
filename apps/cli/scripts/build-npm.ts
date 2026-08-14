@@ -49,7 +49,10 @@ await writeFile(
         "Diskless, end-to-end encrypted secrets manager CLI. Requires the Bun runtime (https://bun.sh).",
       license: "MIT",
       type: "module",
-      bin: { maruhi: "./bin.js", mh: "./bin.js" },
+      // `./` 接頭辞を付けない: npm 11 は publish 時の正規化で `./bin.js` を
+      // invalid と判定し bin エントリごと黙って削除する(v0.1.0-rc.1 で実測。
+      // コマンドが 1 本も入らないパッケージが出るところだった)
+      bin: { maruhi: "bin.js", mh: "bin.js" },
       engines: { bun: `>=${bunVersion}` },
       repository: {
         type: "git",

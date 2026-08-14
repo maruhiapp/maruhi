@@ -48,6 +48,11 @@ describe("npm 配布物のステージング(build-npm)", () => {
     expect(manifest.version).toBe(packageJson.version);
     expect(manifest.private).toBeUndefined();
     expect(Object.keys(manifest.bin).toSorted()).toEqual(["maruhi", "mh"]);
+    // 値は `./` なしの相対パスであること: npm 11 は `./bin.js` を publish 時の
+    // 正規化で invalid と判定し、bin エントリごと黙って削除する(v0.1.0-rc.1 の
+    // publish 失敗時に実測 — 通っていたらコマンドの入らないパッケージが出ていた)
+    expect(manifest.bin["maruhi"]).toBe("bin.js");
+    expect(manifest.bin["mh"]).toBe("bin.js");
     // workspace 依存と effect beta はバンドルに畳む(ADR-0015)。依存が復活すると
     // 未 publish の @maruhi/* を指して壊れるため、依存なしを固定する
     expect(manifest.dependencies).toBeUndefined();
