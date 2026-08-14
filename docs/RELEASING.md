@@ -40,6 +40,10 @@ release workflow は `workflow_dispatch` で publish 以外(ビルド + 5 OS ス
 チェックサム)を全部通せる。workflow を触った PR では、マージ前にブランチ指定で
 一度回すこと。
 
+例外(bootstrap): `workflow_dispatch` は workflow が **default branch に存在して
+初めて**使えるため、release.yml を新設・改名する PR 自体ではマージ前に回せない。
+その場合はマージ直後・タグを打つ**前**に main でドライランを一度回す。
+
 ## やり直し
 
 **タグの打ち直しはしない**(既存タグへの再 push は Release 作成が失敗して止まる。

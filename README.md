@@ -43,9 +43,13 @@ CLI は OS キーチェーン(`Bun.secrets`)等の Bun 固有 API に依存す�
 [Bun](https://bun.sh) >= 1.3.14 が必要です(Node.js で起動した場合は案内を出して終了します):
 
 ```sh
-bun install -g maruhi        # プレリリース期間中は: bun install -g maruhi@next
+# プレリリース期間中(v0.1.0 まで)は dist-tag `next` を指定する。
+# 素の `maruhi` は現状プレースホルダ(0.0.1)を指すため注意
+bun install -g maruhi@next
 maruhi --version             # mh --version も同じ
 ```
+
+安定版(`v0.1.0`)以降は `bun install -g maruhi` で入ります。
 
 ## ドキュメント
 

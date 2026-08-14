@@ -14,7 +14,8 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    # `v*` だと vendor-... のような無関係のタグでもフル CI が走る
+    tags: ["v[0-9]*"]
   # ドライラン(build + smoke + checksums まで。publish はしない)
   workflow_dispatch:
 
