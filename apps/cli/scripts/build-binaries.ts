@@ -12,15 +12,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { run } from "./shared.ts";
-
-const TARGETS = [
-  { bunTarget: "bun-linux-x64", name: "linux-x64", bin: "maruhi" },
-  { bunTarget: "bun-linux-arm64", name: "linux-arm64", bin: "maruhi" },
-  { bunTarget: "bun-darwin-x64", name: "darwin-x64", bin: "maruhi" },
-  { bunTarget: "bun-darwin-arm64", name: "darwin-arm64", bin: "maruhi" },
-  { bunTarget: "bun-windows-x64", name: "windows-x64", bin: "maruhi.exe" },
-] as const;
+import { run, TARGETS } from "./shared.ts";
 
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 const distDir = join(cliRoot, "dist");

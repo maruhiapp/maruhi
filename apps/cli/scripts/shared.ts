@@ -1,6 +1,28 @@
-// build-binaries.ts / build-npm.ts で共有する部品。
+// build-binaries.ts / build-npm.ts / print-smoke-matrix.ts で共有する部品。
 
 import { spawnSync } from "node:child_process";
+
+/**
+ * リリース対象の単一の出所。バイナリ生成(build-binaries.ts)と release.yml の
+ * smoke matrix(print-smoke-matrix.ts → fromJSON)の両方がここから導出される。
+ * 対象を足すと実 OS スモークが自動で付いてくる — 表を複製して smoke 側だけ漏れ、
+ * クロスコンパイルしか通っていない成果物が公開される形を構造的に塞ぐ。
+ *
+ * runner はスモークに使う GitHub ホスト runner のラベル。darwin-x64 は Intel mac
+ * の最終世代 macos-15-intel(2027-08 retire。その際ここを見直す)。
+ */
+export const TARGETS = [
+  { bunTarget: "bun-linux-x64", name: "linux-x64", bin: "maruhi", runner: "ubuntu-latest" },
+  { bunTarget: "bun-linux-arm64", name: "linux-arm64", bin: "maruhi", runner: "ubuntu-24.04-arm" },
+  { bunTarget: "bun-darwin-x64", name: "darwin-x64", bin: "maruhi", runner: "macos-15-intel" },
+  { bunTarget: "bun-darwin-arm64", name: "darwin-arm64", bin: "maruhi", runner: "macos-latest" },
+  {
+    bunTarget: "bun-windows-x64",
+    name: "windows-x64",
+    bin: "maruhi.exe",
+    runner: "windows-latest",
+  },
+] as const;
 
 /**
  * Canonical SemVer(build metadata なし。タグに `+` は使わない運用)。

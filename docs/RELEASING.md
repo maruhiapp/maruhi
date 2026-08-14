@@ -13,6 +13,8 @@
    - Workflow filename: `release.yml`(Environment は空欄)
    - 2026-05-20 以降の新規設定は allowed action の明示が必要 — 「publish」を選ぶ
 3. GitHub Secrets への npm トークン登録は**不要**(OIDC のみ。長命トークンは置かない)
+4. (推奨)GitHub の tag ruleset で `v*` タグの作成を管理者に制限する
+   (workflow 側でも「タグ = main 系譜上のコミット」を検査するが、多層防御)
 
 ## 通常のリリース
 

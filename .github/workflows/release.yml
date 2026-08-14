@@ -10,6 +10,8 @@
 #   タグを打っても出ない
 # - タグの打ち直しはしない(既存 Release への上書きは gh release create が失敗する)。
 #   やり直しは rc を進める(docs/RELEASING.md)
+# - タグは main 系譜上のコミットにのみ有効(version-check が検査する。レビューを
+#   経ていないブランチコミットへ v タグを打てば publish できる経路を塞ぐ)
 # - 外部 action は commit SHA でピン留めする(contents: write / id-token: write を
 #   持つ特権経路のため、可変タグ経由の上流侵害を排除する。ADR-0011 の厳密ピン留めと
 #   同じ規律 — 更新は SHA を進める独立 PR で意図的に行う)
@@ -56,8 +58,11 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # main 系譜の検査(下)に履歴が要る
+          fetch-depth: 0
 
-      - name: Resolve version (tag ↔ apps/cli/package.json)
+      - name: Resolve version (tag ↔ apps/cli/package.json, ancestry)
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -75,6 +80,16 @@ jobs:
             echo "::error::タグ ${GITHUB_REF_NAME} と apps/cli/package.json の version ${VERSION} が一致しません(docs/RELEASING.md)"
             exit 1
           fi
+          if [ "${EVENT_NAME}" = "push" ]; then
+            # タグが main 系譜上のコミットを指すことを強制する。これが無いと、
+            # レビューを経ていない任意のブランチコミットに v タグを打つだけで
+            # 正規の Release / npm publish(provenance 付き)まで到達できる
+            git fetch origin main --quiet
+            if ! git merge-base --is-ancestor HEAD origin/main; then
+              echo "::error::タグ ${GITHUB_REF_NAME} は main 上のコミットを指していません(docs/RELEASING.md)"
+              exit 1
+            fi
+          fi
           case "${VERSION}" in
             *-*) PRERELEASE=true ;;
             *) PRERELEASE=false ;;
@@ -90,6 +105,8 @@ jobs:
     needs: version-check
     permissions:
       contents: read
+    outputs:
+      smoke-matrix: ${{ steps.smoke-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -99,6 +116,13 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # smoke matrix も TARGETS(scripts/shared.ts)から導出する: 対象を足すと
+      # 実 OS スモークが自動で付いてくる(表の複製で smoke 側だけ漏れ、クロス
+      # コンパイルしか通っていない成果物が公開される形を塞ぐ)
+      - name: Export smoke matrix (single source = scripts/shared.ts)
+        id: smoke-matrix
+        run: echo "matrix=$(bun apps/cli/scripts/print-smoke-matrix.ts)" >> "$GITHUB_OUTPUT"
 
       - name: Build binaries + checksums
         run: bun run --filter @maruhi/cli build:binaries
@@ -111,20 +135,15 @@ jobs:
           retention-days: 7
 
   # 実機スモーク: クロスコンパイルは「ビルドが通る」ことしか保証しないため、
-  # 5 対象すべてを実 OS runner で起動する(darwin-x64 は Intel mac runner の
-  # 最終世代 macos-15-intel。2027-08 の retire 時に見直す)
+  # 全対象を実 OS runner で起動する。対象と runner の一覧は scripts/shared.ts の
+  # TARGETS が単一の出所(build job の output 経由で fromJSON)
   smoke:
     name: smoke (${{ matrix.target }})
     needs: [version-check, build]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { target: linux-x64, runner: ubuntu-latest, bin: maruhi }
-          - { target: linux-arm64, runner: ubuntu-24.04-arm, bin: maruhi }
-          - { target: darwin-x64, runner: macos-15-intel, bin: maruhi }
-          - { target: darwin-arm64, runner: macos-latest, bin: maruhi }
-          - { target: windows-x64, runner: windows-latest, bin: maruhi.exe }
+        include: ${{ fromJson(needs.build.outputs.smoke-matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     permissions: {}
@@ -203,18 +222,16 @@ jobs:
             "${FLAGS[@]}" \
             maruhi-*.tar.gz checksums.txt
 
-  # npm publish(unscoped `maruhi`)。認証は trusted publishing(OIDC)のみ:
-  # 長命トークンを GitHub Secrets に置かない。provenance は明示フラグで強制する
-  # (bun publish は provenance 未対応 — oven-sh/bun#15601 — のため npm CLI を使う)
-  publish-npm:
+  # npm 配布物の組み立て。publish と分離して OIDC 権限なしで行う:
+  # bun install / bundle は依存コードを実行するため、id-token: write を持つ job で
+  # 走らせない(依存侵害時に trusted publishing のトークン発行へ届く面を消す)
+  stage-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version-check, publish-github]
+    needs: version-check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-      # npm trusted publishing(OIDC)と provenance の生成に必要
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -227,6 +244,32 @@ jobs:
 
       - name: Stage npm package (bundle)
         run: bun run --filter @maruhi/cli build:npm
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-package
+          path: apps/cli/dist-npm/
+          if-no-files-found: error
+          retention-days: 7
+
+  # npm publish(unscoped `maruhi`)。認証は trusted publishing(OIDC)のみ:
+  # 長命トークンを GitHub Secrets に置かない。provenance は明示フラグで強制する
+  # (bun publish は provenance 未対応 — oven-sh/bun#15601 — のため npm CLI を使う)。
+  # id-token: write はこの job だけに与え、実行するのはピン留め済み公式 action と
+  # npm CLI のみ(checkout もリポジトリ依存コードの実行もしない)
+  publish-npm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version-check, stage-npm, publish-github]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # npm trusted publishing(OIDC)と provenance の生成に必要
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: dist-npm
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -248,4 +291,4 @@ jobs:
         env:
           # プレリリース(v0.1.0-rc.1 等)は latest を動かさず next に置く
           DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
-        run: npm publish apps/cli/dist-npm --provenance --tag "${DIST_TAG}"
+        run: npm publish dist-npm --provenance --tag "${DIST_TAG}"
