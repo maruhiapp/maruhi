@@ -40,7 +40,8 @@ tar -xzf maruhi-darwin-arm64.tar.gz
 ### npm(Bun ランタイム必須)
 
 CLI は OS キーチェーン(`Bun.secrets`)等の Bun 固有 API に依存するため、npm 版の実行には
-[Bun](https://bun.sh) >= 1.3.14 が必要です(Node.js で起動した場合は案内を出して終了します):
+[Bun](https://bun.sh) が必要です(最低バージョンはリポジトリの [`.bun-version`](.bun-version) と同じ。
+公開パッケージの `engines.bun` も同ファイルから導出されます。Node.js で起動した場合は案内を出して終了します):
 
 ```sh
 # プレリリース期間中(v0.1.0 まで)は dist-tag `next` を指定する。

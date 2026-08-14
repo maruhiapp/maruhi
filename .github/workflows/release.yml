@@ -61,6 +61,9 @@ jobs:
         with:
           # main 系譜の検査(下)に履歴が要る
           fetch-depth: 0
+          # 以後の git fetch は public リポジトリの未認証で足りる。トークンを
+          # .git/config に残さない(依存コードを走らせる job と同じ規律)
+          persist-credentials: false
 
       - name: Resolve version (tag ↔ apps/cli/package.json, ancestry)
         id: resolve
@@ -108,7 +111,10 @@ jobs:
     outputs:
       smoke-matrix: ${{ steps.smoke-matrix.outputs.matrix }}
     steps:
+      # 依存コード(bun install / build)を実行する job にトークンを残さない
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -137,6 +143,9 @@ jobs:
           path: apps/cli/dist/
           if-no-files-found: error
           retention-days: 7
+          # 「Re-run all jobs」の新 attempt で同名アーティファクトが 409 になり、
+          # タグ打ち直し禁止の下では rc を burn するしかなくなる罠を塞ぐ
+          overwrite: true
 
   # 実機スモーク: クロスコンパイルは「ビルドが通る」ことしか保証しないため、
   # 全対象を実 OS runner で起動する。対象と runner の一覧は scripts/shared.ts の
@@ -249,7 +258,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      # 依存コード(bun install / build)を実行する job にトークンを残さない
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -267,6 +279,8 @@ jobs:
           path: apps/cli/dist-npm/
           if-no-files-found: error
           retention-days: 7
+          # binaries 側と同じ: re-run 時の 409 を塞ぐ
+          overwrite: true
 
   # npm publish(unscoped `maruhi`)。認証は trusted publishing(OIDC)のみ:
   # 長命トークンを GitHub Secrets に置かない。provenance は明示フラグで強制する

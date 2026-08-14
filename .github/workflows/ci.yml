@@ -34,6 +34,9 @@ jobs:
         with:
           # React Doctor の diff モードと fallow audit が base ブランチとの比較を必要とする
           fetch-depth: 0
+          # 以後のステップは checkout 済みのローカル履歴だけを見る(認証付き git
+          # 操作はない)。依存・テストコードを走らせる job にトークンを残さない
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
