@@ -61,8 +61,8 @@ bun apps/cli/scripts/generate-formula.ts --version v0.1.0
 cp packaging/homebrew/maruhi.rb ../homebrew-maruhi/Formula/maruhi.rb
 cd ../homebrew-maruhi && git add Formula/maruhi.rb && git commit -m "maruhi 0.1.0" && git push
 
-# 3. 実機で確認
-brew untap maruhiapp/maruhi 2>/dev/null; brew install maruhiapp/maruhi/maruhi
+# 3. 実機で確認(既に tap 済みなら `brew update && brew upgrade maruhi`)
+brew install maruhiapp/maruhi/maruhi
 maruhi --version && mh --version
 brew test maruhi
 ```

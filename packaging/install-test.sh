@@ -116,6 +116,9 @@ with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
     httpd.serve_forever()
 ' "${WORK}/serve" >"${log}" 2>&1 &
   SERVER_PID=$!
+  # 後始末の kill で bash が「Terminated」の非同期通知を出し、python プログラム
+  # 全体がログ末尾に流れる(実 runner で確認)。ジョブ表から外して黙らせる
+  disown "${SERVER_PID}" 2>/dev/null || true
   local i
   for ((i = 0; i < 100; i++)); do
     PORT="$(head -n 1 "${log}" 2>/dev/null || true)"
