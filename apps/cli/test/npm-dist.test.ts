@@ -64,13 +64,14 @@ describe("npm 配布物のステージング(build-npm)", () => {
   });
 
   it("バンドルに workspace マニフェスト全体を埋め込まない", async () => {
-    // cli.ts の package.json import は現状 tree-shake され version だけが残る
-    // (named / default とも実測)。これはバンドラ挙動であり保証ではないため、
-    // 退行すると scripts・依存ピン等の開発用マニフェスト全体が npm 配布物と
-    // 全バイナリへ複製される — その成果物側の性質をここで固定する
+    // cli.ts の package.json import が named import(version のみ)である限り
+    // tree-shake され、default import に戻すと scripts・依存ピン等のマニフェスト
+    // 全体が npm 配布物と全バイナリへ複製される(実測: bun 1.3.14)。
+    // 注意: bun はオブジェクトリテラルのキーをクォートなし(devDependencies:)で
+    // 埋め込むため、検査はクォートなしのトークンで行う
     const bundle = await readFile(join(outDir, "bin.js"), "utf8");
     expect(bundle).toContain(packageJson.version);
-    expect(bundle).not.toContain('"devDependencies"');
+    expect(bundle).not.toContain("devDependencies");
   });
 
   it("Node.js で起動すると Bun 必須の案内で exit 1(深部の ReferenceError にしない)", () => {

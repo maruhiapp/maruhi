@@ -122,7 +122,11 @@ jobs:
       # コンパイルしか通っていない成果物が公開される形を塞ぐ)
       - name: Export smoke matrix (single source = scripts/shared.ts)
         id: smoke-matrix
-        run: echo "matrix=$(bun apps/cli/scripts/print-smoke-matrix.ts)" >> "$GITHUB_OUTPUT"
+        run: |
+          # echo の引数内のコマンド置換は失敗しても echo が exit 0 になり、後段の
+          # fromJson('') という遠い場所で壊れる。代入(-e で失敗が伝播する)を挟む
+          MATRIX=$(bun apps/cli/scripts/print-smoke-matrix.ts)
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
 
       - name: Build binaries + checksums
         run: bun run --filter @maruhi/cli build:binaries
@@ -184,17 +188,24 @@ jobs:
           set -e
           echo "${OUT}"
           echo "exit: ${CODE}"
-          test "${CODE}" = "1"
+          # 明示分岐で先に注釈を出す(-e 下で素の test に失敗させると、クラッシュ
+          # 判別という本 step の目的の注釈が出ないまま落ちる)
+          if [ "${CODE}" != "1" ]; then
+            echo "::warning::型付きエラーの exit 1 ではない落ち方をした(exit ${CODE}。クラッシュ / シグナル死の疑い)"
+            exit 1
+          fi
           case "${OUT}" in
             *キーチェーン*) ;;
-            *) echo "::warning::キーチェーンの型付きエラー以外の落ち方をした"; exit 1 ;;
+            *) echo "::warning::キーチェーンの型付きエラー以外の出力で失敗した"; exit 1 ;;
           esac
 
   # GitHub Release の作成(checksums.txt 添付)。リリースノートは自動生成
   # (ADR-0015: CHANGELOG は 1.0 まで新設しない)
   publish-github:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [verify, version-check, smoke]
+    # stage-npm を前提に含める: Release 作成は撤回不能(タグ打ち直し禁止)なので、
+    # npm ステージングが壊れている状態で Release だけ先に出て npm と食い違う形を塞ぐ
+    needs: [verify, version-check, smoke, stage-npm]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -224,9 +235,10 @@ jobs:
 
   # npm 配布物の組み立て。publish と分離して OIDC 権限なしで行う:
   # bun install / bundle は依存コードを実行するため、id-token: write を持つ job で
-  # 走らせない(依存侵害時に trusted publishing のトークン発行へ届く面を消す)
+  # 走らせない(依存侵害時に trusted publishing のトークン発行へ届く面を消す)。
+  # `if` を付けずドライラン(workflow_dispatch)でも通す — 副作用はなく、
+  # ここが壊れる形をタグ前に検出できる
   stage-npm:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: version-check
     runs-on: ubuntu-latest
     timeout-minutes: 10

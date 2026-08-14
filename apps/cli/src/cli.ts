@@ -54,9 +54,9 @@ import { syncProject } from "./sync.ts";
 export type { CliServices } from "./context.ts";
 
 // バージョンの単一の出所は apps/cli/package.json。リリース時はタグとの一致を
-// release workflow が検査する(docs/RELEASING.md)。named import で取り込みを
-// version に限定する(マニフェスト全体が配布物へ埋まらないことはバンドラの
-// tree-shake 頼みにせず npm-dist.test.ts が成果物側で固定している)
+// release workflow が検査する(docs/RELEASING.md)。named import は必須:
+// default import に変えるとマニフェスト全体(scripts・依存ピン)が npm 配布物と
+// 全バイナリへ埋め込まれる(実測。npm-dist.test.ts が成果物側で固定)
 const CLI_VERSION: string = packageVersion;
 
 /** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
