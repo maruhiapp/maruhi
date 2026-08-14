@@ -15,10 +15,9 @@ Cloudflare を実行基盤とする、汎用のディスクレス secrets 管理
 ### install script(Linux / macOS。推奨。Bun 不要)
 
 ```sh
-# V は Releases ページ(https://github.com/maruhiapp/maruhi/releases)の最新タグ。
-# プレリリース期間中(v0.1.0 まで)は releases/latest が存在しないため、
-# タグの明示が必要です(まだタグが無い時期は raw URL も 404 になります)
-V=v0.1.0-rc.1
+# V は [Releases ページ](https://github.com/maruhiapp/maruhi/releases) の最新タグに置き換える。
+# プレリリース期間中(v0.1.0 まで)は releases/latest が存在しないため、タグの明示が必要です
+V=<最新タグ>
 curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/${V}/packaging/install.sh" -o maruhi-install.sh
 less maruhi-install.sh          # 中身を読んでから実行してください(下の信頼モデル参照)
 sh maruhi-install.sh --version "${V}"
@@ -26,6 +25,10 @@ sh maruhi-install.sh --version "${V}"
 
 `~/.local/bin` に `maruhi` と `mh`(`maruhi` への symlink)を置きます。sudo は使いません。
 安定版 `v0.1.0` 以降は `--version` を省略でき、最新の安定版が入ります。
+
+> install script が Release に同梱されるのは **`v0.1.0-rc.1` の次のリリースから**です。
+> `v0.1.0-rc.1` を入れる場合は、下の「手動でコンパイル済みバイナリを入れる」を使ってください
+> (それより前のタグを `${V}` に指定すると raw URL が 404 になります)。
 
 - 主なオプション: `--dir <path>`(既定 `~/.local/bin`)/ `--version <tag>`。
   環境変数 `MARUHI_INSTALL_DIR` / `MARUHI_VERSION` も同じ。一覧は `sh maruhi-install.sh --help`
