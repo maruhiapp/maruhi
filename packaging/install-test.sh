@@ -10,8 +10,9 @@
 # 同じ unix 4 対象の実 runner でこれを回す。
 #
 # 負例は「checksums.txt を 1 文字改竄」「アーカイブを 1 バイト改竄」「アセット
-# 不在」「版の不一致」の 4 種。いずれも非 0 終了で、インストール先に部分ファイルを
-# 残さないことまで検査する(検証をすり抜けても気づけない形を作らない)。
+# 不在」「置き換え先が通常ファイルでない」「版の不一致」の 5 種。いずれも非 0 終了で、
+# インストール先に部分ファイルを残さないことまで検査する(検証をすり抜けても
+# 気づけない形を作らない)。
 set -euo pipefail
 
 DIST=""
@@ -223,6 +224,27 @@ case_reinstall_and_foreign_mh() {
   check "再インストール: 上書きできる" test "$("${dest}/maruhi" --version)" = "${VERSION}"
 }
 
+# ---- 正例 4: 既存の mh が「他人を指す symlink」なら張り替えない -----------------
+# link_alias で `ln -sf` に到達しうる唯一の分岐。通常ファイルの分岐(正例 3)とは
+# 別経路なので個別に踏む
+case_foreign_mh_symlink() {
+  local dir dest out
+  dir="$(new_case foreign-mh-symlink)"
+  dest="${WORK}/dest/foreign-mh-symlink"
+  mkdir -p "${dest}"
+  printf '#!/bin/sh\necho other\n' >"${dest}/other-tool"
+  chmod 755 "${dest}/other-tool"
+  ln -s other-tool "${dest}/mh"
+  if ! out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
+    fail "他人の mh symlink: 失敗した"
+    echo "${out}" >&2
+    return
+  fi
+  check "他人の mh symlink: 張り替えていない" test "$(readlink "${dest}/mh")" = "other-tool"
+  check "他人の mh symlink: 警告した" grep -q "maruhi 以外を指す symlink" <<<"${out}"
+  check "他人の mh symlink: maruhi 自体は入る" test -x "${dest}/maruhi"
+}
+
 # ---- 負例 1: checksums.txt を 1 文字改竄(変異検証の本体)----------------------
 case_tampered_checksums() {
   local dir dest out
@@ -294,7 +316,23 @@ case_missing_asset() {
   assert_clean_dest "${dest}" "アセット不在"
 }
 
-# ---- 負例 4: 版の不一致(アセット取り違えの検出)-------------------------------
+# ---- 負例 4: 置き換え先が通常ファイルでない(mv が中へ潜り込む形を塞ぐ)--------
+case_dest_not_a_file() {
+  local dir dest out
+  dir="$(new_case dest-not-a-file)"
+  dest="${WORK}/dest/dest-not-a-file"
+  mkdir -p "${dest}/maruhi"
+  if out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
+    fail "置き換え先が非ファイル: インストールが成功してしまった"
+    echo "${out}" >&2
+    return
+  fi
+  pass "置き換え先が非ファイル: 非 0 で終了した"
+  check "置き換え先が非ファイル: 理由を報告した" grep -q "通常ファイルではありません" <<<"${out}"
+  check "置き換え先が非ファイル: 中へ潜り込んでいない" test -z "$(ls -A "${dest}/maruhi")"
+}
+
+# ---- 負例 5: 版の不一致(アセット取り違えの検出)-------------------------------
 case_version_mismatch() {
   local dir dest out
   dir="$(new_case version-mismatch)"
@@ -316,9 +354,11 @@ echo "http fixture: http://127.0.0.1:${PORT}/"
 case_http_ok
 case_file_ok
 case_reinstall_and_foreign_mh
+case_foreign_mh_symlink
 case_tampered_checksums
 case_tampered_archive
 case_missing_asset
+case_dest_not_a_file
 case_version_mismatch
 
 if [[ ${FAILURES} -gt 0 ]]; then

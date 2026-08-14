@@ -50,6 +50,11 @@ Release の `checksums.txt` から作る(手で sha256 を書き写さない)。
 1. GitHub で **`maruhiapp/homebrew-maruhi`** を作る(public。名前は `homebrew-` 接頭辞が必須 —
    これで `brew install maruhiapp/maruhi/maruhi` が解決する)
 2. リポジトリ直下に `Formula/` ディレクトリを作る(README があると親切)
+3. 初回の formula を置いたら `brew audit --strict --new maruhiapp/maruhi/maruhi` を一度通す。
+   **本 PR の CI が見ているのは `ruby -c`(構文)と golden 一致までで、Homebrew の DSL 意味論
+   (`on_macos` > `on_arm` のネスト、`bin.install_symlink`、`test do`)は tap ができるまで
+   実行されない**。指摘が出たら手で formula を直さず `apps/cli/scripts/formula.ts` を直す
+   (formula は生成物。手編集は次のリリースで消える)
 
 ### 毎リリース
 
@@ -61,7 +66,9 @@ bun apps/cli/scripts/generate-formula.ts --version v0.1.0
 cp packaging/homebrew/maruhi.rb ../homebrew-maruhi/Formula/maruhi.rb
 cd ../homebrew-maruhi && git add Formula/maruhi.rb && git commit -m "maruhi 0.1.0" && git push
 
-# 3. 実機で確認(既に tap 済みなら `brew update && brew upgrade maruhi`)
+# 3. 実機で確認(既に tap 済みなら `brew update && brew upgrade maruhi`)。
+#    Homebrew 6.0.0 以降、サードパーティ tap は評価前に明示的な信頼が要る(マシンごとに 1 回)
+brew trust --tap maruhiapp/maruhi
 brew install maruhiapp/maruhi/maruhi
 maruhi --version && mh --version
 brew test maruhi
@@ -113,3 +120,8 @@ trusted publisher の設定 — workflow 名・org・allowed action)を直して
   タグを打った時点でその版の script が公開されるので、リリース手順としての追加作業はない。
   script 自体の検証は PR ごとに [`installer.yml`](../.github/workflows/installer.yml) が
   実 OS 4 種で回している(実リリースには依存しない)
+- ただし **`--version` 省略時の「最新の安定版を解決する」分岐だけは CI で踏めない**
+  (プレリリース期間中は `releases/latest` が存在せず、ハーネスは `MARUHI_BASE_URL` 指定 =
+  解決を飛ばす経路で回るため)。**最初の安定版 `v0.1.0` を出した直後に、`--version` を付けずに
+  一度実行して確認すること**。壊れていても「タグを指定してください」の明示エラーに倒れる設計
+  だが、無言で古い版が入るような壊れ方はしない

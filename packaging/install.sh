@@ -187,9 +187,11 @@ normalize_version() {
     v[0-9]*) ;;
     *) die "版は v0.1.0 / 0.1.0 の形で指定してください: ${VERSION}" ;;
   esac
-  # URL に載る値。想定外の文字をここで弾く
+  # URL に載る値。想定外の文字をここで弾く。`+`(build metadata)は生成側の
+  # SEMVER_PATTERN(scripts/shared.ts)も除外している = タグに使わない運用なので、
+  # 取得側の受理範囲もそこへ揃える
   case "${VERSION}" in
-    *[!A-Za-z0-9.+-]*) die "版に使えない文字が含まれています: ${VERSION}" ;;
+    *[!A-Za-z0-9.-]*) die "版に使えない文字が含まれています: ${VERSION}" ;;
   esac
 }
 
@@ -203,7 +205,11 @@ resolve_version() {
   else
     # GitHub API(未認証 60 req/h・JSON 解析)には依存せず、releases/latest の
     # リダイレクト先タグを見る。プレリリースは latest にならないので、rc 期間中は
-    # ここで解決できない = 推測せず明示エラーにする
+    # ここで解決できない = 推測せず明示エラーにする。
+    #
+    # 成功側の分岐は安定版が出るまで CI で踏めない(ハーネスは MARUHI_BASE_URL 指定 =
+    # 解決を飛ばす経路で回る)。失敗側は「タグを指定してください」の明示エラーで、
+    # 危険側には倒れない。初回の安定版タグ後に手動で一度確認する(docs/RELEASING.md)
     resolved="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${RELEASES_URL}/latest" 2>/dev/null)" || resolved=""
     case "${resolved}" in
       */releases/tag/?*) VERSION="${resolved##*/releases/tag/}" ;;
@@ -278,6 +284,12 @@ install_binary() {
   mkdir -p "${INSTALL_DIR}" || die "インストール先を作れません: ${INSTALL_DIR}"
   INSTALL_DIR="$(cd "${INSTALL_DIR}" && pwd)"
   [ -w "${INSTALL_DIR}" ] || die "書き込めません: ${INSTALL_DIR}(--dir で変更してください。この script は sudo を呼びません)"
+
+  # 置き換え先が通常ファイル以外(例: ディレクトリ)だと mv がその中へ潜り込み、
+  # 「入ったつもりで入っていない」状態になる。先に止める
+  if [ -e "${INSTALL_DIR}/maruhi" ] && [ ! -f "${INSTALL_DIR}/maruhi" ]; then
+    die "${INSTALL_DIR}/maruhi が通常ファイルではありません。退けてからやり直すか --dir で別の場所を指定してください"
+  fi
 
   # 同一ディレクトリ内へ置いてから rename する: 途中状態の実行ファイルを
   # 見せず、実行中バイナリの上書き(ETXTBSY)も避ける

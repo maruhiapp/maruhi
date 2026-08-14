@@ -15,8 +15,9 @@ Cloudflare を実行基盤とする、汎用のディスクレス secrets 管理
 ### install script(Linux / macOS。推奨。Bun 不要)
 
 ```sh
-# V は Releases ページの最新タグ。プレリリース期間中(v0.1.0 まで)は
-# releases/latest が存在しないため、タグの明示が必要です
+# V は Releases ページ(https://github.com/maruhiapp/maruhi/releases)の最新タグ。
+# プレリリース期間中(v0.1.0 まで)は releases/latest が存在しないため、
+# タグの明示が必要です(まだタグが無い時期は raw URL も 404 になります)
 V=v0.1.0-rc.1
 curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/${V}/packaging/install.sh" -o maruhi-install.sh
 less maruhi-install.sh          # 中身を読んでから実行してください(下の信頼モデル参照)
@@ -37,7 +38,8 @@ sh maruhi-install.sh --version "${V}"
 <details>
 <summary><b>install script の信頼モデル</b>(secrets 管理ツールなので明示します)</summary>
 
-- 通信先は **github.com だけ**です。テレメトリ・外部送信は一切ありません(「言わざる」)
+- 通信先は **github.com だけ**です。テレメトリ・外部送信は一切ありません(「言わざる」)。
+  例外は利用者自身が `MARUHI_BASE_URL` を指定した場合だけ(内部ミラー・検証用の口。既定では使いません)
 - tar.gz は `checksums.txt` の SHA-256 で**検証してから**展開します。検証に失敗した場合は
   インストール先に部分ファイルを残さず、非 0 で終了します
 - ただし `checksums.txt` 自体は**まだ署名していません**。完全性の根拠は github.com への
@@ -56,8 +58,14 @@ sh maruhi-install.sh --version "${V}"
 > お使いください。
 
 ```sh
+# Homebrew 6.0.0 以降、サードパーティ tap はコードが評価される前に明示的な信頼が必要です
+# (それ以前の brew に `brew trust` は無いので、この行は不要)
+brew trust --tap maruhiapp/maruhi
 brew install maruhiapp/maruhi/maruhi
 ```
+
+`brew trust` は maruhi 側の都合ではなく、tap の Ruby コードを走らせる前に利用者の同意を求める
+Homebrew の仕組みです(未信頼 tap の自動 tap は行われません)。
 
 <details>
 <summary><b>手動でコンパイル済みバイナリを入れる</b>(Windows はこちら)</summary>
