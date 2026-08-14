@@ -1026,4 +1026,74 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
     });
     expect(reRegistered.status).toBe(204);
   });
+
+  it("rejects a server wrap for a revoked grant with 422 (失効済み grant は not-granted)", async () => {
+    const dek1 = await createEnvironmentOk(fixture, ENV, "App");
+    const fpHex = await grantServer([ENV]);
+    await appendOperation(fixture, OWNER, {
+      op: "revoke_server",
+      payload: { serverKeyFingerprintHex: fpHex },
+    });
+    const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
+    const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
+      deks: [wrap],
+    });
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["reason"]).toBe("recipient-not-granted");
+  });
+
+  it("rejects a wrap deletion whose recipientClass does not match the stored row (監査列の操縦を塞ぐ)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // member のラップを server クラスで指す削除: 保存行の class と不一致 = 404。
+    // 素通しにすると member の ULID が target_key_fingerprint 列へ載り、
+    // (target_user_id, seq) 索引からこの削除が消える(AUDIT_SPEC §1-2)
+    const crossClass = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientClass: "server", recipientUserId: OWNER }],
+    });
+    expect(crossClass.status).toBe(404);
+    expect(((await crossClass.json()) as Record<string, unknown>)["_tag"]).toBe("DekWrapNotFound");
+
+    // 逆方向: server のラップを member クラス(省略時既定)で指す削除も 404
+    const fpHex = await grantServer([ENV]);
+    const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
+      deks: [await serverWrap({ epoch: 1, dek: makeDek(), fpHex })],
+    });
+    expect(registered.status).toBe(204);
+    const reverse = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [{ epoch: 1, recipientUserId: fpHex }],
+    });
+    expect(reverse.status).toBe(404);
+
+    // どちらの試行も削除・監査行を残していない(検証フェーズで全体が拒否される)
+    const deleted = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
+    );
+    expect(deleted[0]?.["n"]).toBe(0);
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ? AND epoch = 1",
+      ENV,
+    );
+    expect(rows[0]?.["n"]).toBe(ALL_MEMBERS.length + 1);
+  });
+
+  it("rejects class-only-differing refs in one deletion request (1 行に監査 2 行を積ませない)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // 同一 (epoch, recipient) を member / server の両クラスで指す: 重複検出は
+    // クラス込みキーで通過するが、server 側が保存行と不一致 = 404 で全体拒否
+    const response = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
+      wraps: [
+        { epoch: 1, recipientUserId: OWNER },
+        { epoch: 1, recipientClass: "server", recipientUserId: OWNER },
+      ],
+    });
+    expect(response.status).toBe(404);
+    const deleted = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
+    );
+    expect(deleted[0]?.["n"]).toBe(0);
+  });
 });

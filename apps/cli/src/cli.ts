@@ -43,7 +43,7 @@ import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
 import { projectInitOp } from "./project-init.ts";
@@ -52,7 +52,12 @@ import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
-import { REVOKE_ROTATION_REASON, serverRevokeOp } from "./server-revoke.ts";
+import {
+  REVOKE_ROTATION_REASON,
+  type RevokeRotateMode,
+  type RevokeSummary,
+  serverRevokeOp,
+} from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { syncProject } from "./sync.ts";
 
@@ -771,15 +776,22 @@ function parseEnvironmentsFlag(
   return Effect.succeed(ids as readonly EnvironmentId[]);
 }
 
-/** `--expect-fingerprint` の形式検証(hex 小文字 32 文字 = 16 バイト)。 */
-function parseExpectFingerprint(value: string | undefined): Effect.Effect<string | null, CliError> {
+/**
+ * サーバー鍵 FP を受けるフラグの形式検証(hex 小文字 32 文字 = 16 バイト)。
+ * エラーは**打たれたフラグ名**で報告する(grant の --expect-fingerprint と
+ * revoke の --fingerprint で共用 — 存在しないフラグ名を指して混乱させない)。
+ */
+function parseFingerprintFlag(
+  flagName: string,
+  value: string | undefined,
+): Effect.Effect<string | null, CliError> {
   if (value === undefined) {
     return Effect.succeed(null);
   }
   if (!/^[0-9a-f]{32}$/.test(value)) {
     return Effect.fail(
       usageError(
-        "--expect-fingerprint の形式が正しくありません(サーバー鍵 FP は hex 小文字 32 文字 — /auth/config の serverKeyFingerprintHex)",
+        `${flagName} の形式が正しくありません(サーバー鍵 FP は hex 小文字 32 文字 — /auth/config の serverKeyFingerprintHex)`,
       ),
     );
   }
@@ -929,7 +941,10 @@ function serverGrant(
     const io = yield* CliIo;
     const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
     const leasePolicy = yield* loadLeasePolicy(flags.leasePolicyPath);
-    const expectFingerprintHex = yield* parseExpectFingerprint(flags.expectFingerprint);
+    const expectFingerprintHex = yield* parseFingerprintFlag(
+      "--expect-fingerprint",
+      flags.expectFingerprint,
+    );
     const context = yield* openProject(flags);
     const summary = yield* serverGrantOp({
       client: context.client,
@@ -963,11 +978,15 @@ function serverRevoke(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const fingerprintHex =
-      flags.fingerprint === undefined ? null : yield* parseExpectFingerprint(flags.fingerprint);
+      flags.fingerprint === undefined
+        ? null
+        : yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
     const context = yield* openProject(flags);
     // 1 環境のローテーション(PR-1 の envRotateOp の再利用): revoke の追記や先行の
-    // rotate でチェーンは前進しているので、各環境は再同期済みビューで開始する
-    const rotate = (environmentId: string) =>
+    // rotate でチェーンは前進しているので、各環境は再同期済みビューで開始する。
+    // force = §7 の強制(新エポック必須)/ verify = 失効より後にエポックが進んだ
+    // 環境の検証パス(未完了の再暗号化があれば再開、なければ確認のみ)
+    const rotate = (environmentId: string, mode: RevokeRotateMode) =>
       Effect.gen(function* () {
         if (!isEnvironmentId(environmentId)) {
           return yield* Effect.fail(cliErrorForInvalidChainEnvironmentId());
@@ -979,8 +998,8 @@ function serverRevoke(
           verified,
           environmentId,
           recipient: context.recipient,
-          reason: REVOKE_ROTATION_REASON,
-          forceNewEpoch: true,
+          reason: mode === "force" ? REVOKE_ROTATION_REASON : undefined,
+          forceNewEpoch: mode === "force",
           signerUserId: context.session.userId,
           signingKeyPair: context.masterKeys.sigKeyPair,
           resync: context.resync,
@@ -996,23 +1015,58 @@ function serverRevoke(
       resync: context.resync,
       rotate,
     });
+    yield* reportRevokeOutcome(io, summary);
+    return yield* reportRevokeRotations(io, summary);
+  });
+}
+
+/** revoke の追記結果とスキップ・確認済み環境の報告(終了コードには影響しない部分)。 */
+function reportRevokeOutcome(
+  io: CliIoShape,
+  summary: RevokeSummary,
+): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
     if (summary.appended) {
       yield* io.log(
         `revoke_server をチェーンへ追記しました(FP=${summary.serverKeyFingerprintHex ?? ""})。全環境の強制ローテーションを実行します(§7)`,
+      );
+    } else if (summary.serverKeyFingerprintHex !== null) {
+      // 対象の grant はあったが、CAS 競合の再同期で既に失効済みと判明した
+      // (並行 revoke)。誰かが同じ鍵を失効させた事実は運用上重要なので明示する
+      yield* io.log(
+        `対象の grant(FP=${summary.serverKeyFingerprintHex})は並行実行により既に失効済みでした — 追記せず、全環境ローテーションへ進みます(§7)`,
       );
     } else {
       yield* io.log(
         "有効な grant はありません — 失効後の全環境ローテーションの続きから再開します(中断復旧)",
       );
     }
-    if (summary.alreadyRotated.length > 0) {
+    if (summary.skippedDeleted.length > 0) {
       yield* io.log(
-        `ローテーション済み(失効より後のエポック): ${summary.alreadyRotated.join(", ")}`,
+        `削除済み環境(署名済み削除ステートメントを検証済み)のためスキップ: ${summary.skippedDeleted.join(", ")}`,
       );
     }
+    if (summary.alreadyRotated.length > 0) {
+      yield* io.log(
+        `ローテーション済み(失効より後のエポック・未完了の再暗号化なしを確認): ${summary.alreadyRotated.join(", ")}`,
+      );
+    }
+  });
+}
+
+/** revoke のローテーション結果の報告と終了コードの導出。 */
+function reportRevokeRotations(
+  io: CliIoShape,
+  summary: RevokeSummary,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
     let exitCode = 0;
     for (const item of summary.rotated) {
-      const code = yield* reportRotation(item.environmentId as EnvironmentId, item.summary, true);
+      const code = yield* reportRotation(
+        item.environmentId as EnvironmentId,
+        item.summary,
+        item.forcedNewEpoch,
+      );
       if (code !== 0) {
         exitCode = 1;
       }

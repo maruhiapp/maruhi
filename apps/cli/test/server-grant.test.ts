@@ -334,6 +334,82 @@ describe("maruhi server grant", () => {
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
 
+  it("/auth/config の FP と enc 公開鍵の再計算 FP が一致しなければ中止する(儀式の前提の自己整合)", async () => {
+    const built = await builtWithTwoEpochs();
+    const state = await makeGrantServer({
+      built,
+      deksByEnvironment: {},
+      // FP は本物・enc 公開鍵は別物: 悪意あるサーバーが「利用者が控えで確認済みの
+      // FP」に任意の鍵を組み合わせる形。再計算照合が落とさなければ儀式が無意味になる
+      authConfig: {
+        githubClientId: "dummy-client-id",
+        serverKeyFingerprintHex: serverFpHex,
+        serverEncPubHex: "5b".repeat(32),
+      },
+    });
+    const env = await startGrantEnv(state, built.projectId, owner);
+    expect(
+      await runCli(
+        ["server", "grant", "--environments", ENV_ID, "--expect-fingerprint", serverFpHex],
+        env.layer,
+      ),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain("自己矛盾");
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies).toHaveLength(0);
+  });
+
+  it("複数環境のスコープは全環境 × 全エポックをバックフィルする", async () => {
+    const ENV_B = "env-app-2";
+    const dekB = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
+    ]);
+    const common = { projectId: built.projectId, recipient: owner, signer: owner };
+    const state = await makeGrantServer({
+      built,
+      deksByEnvironment: {
+        [ENV_ID]: [await wrapDekFor({ ...common, environmentId: ENV_ID, epoch: 1, dek: dek1 })],
+        [ENV_B]: [await wrapDekFor({ ...common, environmentId: ENV_B, epoch: 1, dek: dekB })],
+      },
+    });
+    const env = await startGrantEnv(state, built.projectId, owner);
+
+    expect(
+      await runCli(
+        [
+          "server",
+          "grant",
+          "--environments",
+          `${ENV_ID},${ENV_B}`,
+          "--expect-fingerprint",
+          serverFpHex,
+        ],
+        env.layer,
+      ),
+    ).toBe(0);
+
+    expect(state.appendedEntries).toHaveLength(1);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "grant_server") throw new Error("grant entry missing");
+    expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID, ENV_B]);
+
+    // 環境ごとに 1 リクエスト × 各 1 エポックのサーバー宛ラップ
+    const byEnvironment = new Map(
+      state.registerBodies.map((body) => [body.environmentId, body.deks]),
+    );
+    expect([...byEnvironment.keys()].toSorted()).toEqual([ENV_ID, ENV_B]);
+    for (const deks of byEnvironment.values()) {
+      const wraps = deks as readonly { recipientClass?: string; recipientUserId: string }[];
+      expect(wraps).toHaveLength(1);
+      expect(wraps[0]?.recipientClass).toBe("server");
+      expect(wraps[0]?.recipientUserId).toBe(serverFpHex);
+    }
+    expect(env.logs.join("\n")).toContain("バックフィル: 新規 2 件、登録済み 0 件");
+  });
+
   it("owner 以外は拒否する(§6.2)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

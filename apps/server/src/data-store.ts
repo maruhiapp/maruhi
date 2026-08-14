@@ -218,11 +218,16 @@ interface DataStoreShape {
   readonly countWrapsForEpoch: (environmentId: string, epoch: number) => Effect.Effect<number>;
   /** プロジェクト全体の DEK ラップ行数(現在保存中の量。§12-8)。 */
   readonly countWrapRows: Effect.Effect<number>;
-  readonly wrapExists: (
+  /**
+   * 保存済みラップの受信者クラス(行がなければ null)。削除経路はこの値と
+   * リクエストの class を突合する — クライアント申告の class をそのまま監査列の
+   * 選択に使わせない(AUDIT_SPEC §1-2 の列意味論をワイヤ入力から切り離す)。
+   */
+  readonly wrapStoredRecipientClass: (
     environmentId: string,
     epoch: number,
     recipientUserId: string,
-  ) => Effect.Effect<boolean>;
+  ) => Effect.Effect<string | null>;
   readonly listWrapsForRecipient: (
     environmentId: string,
     recipientUserId: string,
@@ -648,17 +653,17 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     const row = sql.exec("SELECT COUNT(*) AS n FROM dek_wraps").toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "n");
   }),
-  wrapExists: (environmentId: string, epoch: number, recipientUserId: string) =>
+  wrapStoredRecipientClass: (environmentId: string, epoch: number, recipientUserId: string) =>
     Effect.sync(() => {
-      const rows = sql
+      const row = sql
         .exec(
-          "SELECT 1 FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? LIMIT 1",
+          "SELECT recipient_class FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? LIMIT 1",
           environmentId,
           epoch,
           recipientUserId,
         )
-        .toArray();
-      return rows.length > 0;
+        .toArray()[0];
+      return row === undefined ? null : stringColumn(row, "recipient_class");
     }),
   listWrapsForRecipient: (environmentId: string, recipientUserId: string) =>
     Effect.sync(() =>

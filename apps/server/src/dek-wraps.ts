@@ -22,9 +22,10 @@ export function wrapRecipientClass(ref: {
 /**
  * (epoch × 受信者クラス × recipient) の重複検出キー。ラップの登録と削除は同じ
  * 一意性単位を共有する(書式をここに一本化し、両経路の受理境界がズレないように
- * する)。保存行の一意性は (environment, epoch, recipient_user_id) のまま —
- * member の user_id(ULID)と server の FP(hex 32 文字)は形式が交わらないため
- * クラス跨ぎの衝突は構造上生じないが、論理キーにはクラスを含めて明示する。
+ * する)。保存行の一意性は (environment, epoch, recipient_user_id) のまま。
+ * member の user_id(ULID)と server の FP(hex 小文字 32 文字)は実際上
+ * 形式が交わらないが、型はそれを保証しない — クラスの真実源は保存行の
+ * recipient_class 列であり、削除経路は保存値との突合で守る(programs-dek)。
  */
 export function wrapRefKey(ref: {
   readonly epoch: number;
@@ -219,7 +220,14 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
         continue;
       }
       for (const wrap of epochWraps) {
-        if (yield* store.wrapExists(environmentId, epoch, wrap.recipientUserId)) {
+        // 存在検査は保存キー (environment, epoch, recipient_user_id) と同粒度 —
+        // class 違いの同一 ID も挿入すれば主キー衝突なので、ここで 409 に倒す
+        const stored = yield* store.wrapStoredRecipientClass(
+          environmentId,
+          epoch,
+          wrap.recipientUserId,
+        );
+        if (stored !== null) {
           return yield* rejectData({
             kind: "dek-wrap-exists",
             epoch,

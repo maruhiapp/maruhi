@@ -125,8 +125,19 @@ function ensureGrantable(input: {
   return rejection !== null ? Effect.fail(cliError(rejection)) : Effect.succeed({ existing });
 }
 
+/** オブジェクトのキー順に依存しない正規形(配列形)で比較する。 */
+function canonicalPolicyKey(policy: readonly LeasePolicyIssuer[]): string {
+  return JSON.stringify(
+    policy.map((element) => [
+      element.issuerUrl,
+      element.audience,
+      element.claimConstraints.map((constraint) => [constraint.claimName, constraint.claimValue]),
+    ]),
+  );
+}
+
 function samePolicy(a: readonly LeasePolicyIssuer[], b: readonly LeasePolicyIssuer[]): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return canonicalPolicyKey(a) === canonicalPolicyKey(b);
 }
 
 function sameScope(a: readonly string[], b: readonly string[]): boolean {
