@@ -25,14 +25,17 @@ import {
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
 import {
+  commitVerifiedHead,
   loadCheckedFloor,
   openEnvironment,
+  openMetadataEnvironmentPair,
   openProject,
   openSession,
   resolveProjectId,
 } from "./context.ts";
 import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
+import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -423,28 +426,104 @@ function envRotate(
 }
 
 /**
- * **操作専用**のオプション(ここに無い宣言済みオプションは両操作で使える)。
+ * `maruhi env diff <a> <b>`: 2 環境の**変数名の集合**を比較する(値は取得も
+ * 復号もしない)。差分があっても終了コードは 0 のまま: 「差分あり」は成功した
+ * 実行の**報告内容**であって実行の失敗ではなく、1 に混ぜると検証失敗・床違反
+ * (= サーバー不正の証拠)や通信失敗と区別できなくなる。
+ */
+function envDiff(
+  flags: CommonFlags,
+  environmentId: EnvironmentId,
+  otherEnvironmentId: EnvironmentId,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 前段(チェーン同期 + §6.3 検証)は 1 回だけ。master 鍵は要求しない
+    // (復号しないため — context.ts の openMetadataProjectWith)
+    const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
+    const diff = yield* envDiffOp({
+      client: context.client,
+      verified: context.verified,
+      resync: context.resync,
+      first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
+      second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
+      // 環境のメタ水準の床は作らない(値を読んでいないため)が、**チェーン床の
+      // ヘッド**は pull / push と同じく前進させる。記録は pull ごと(envDiffOp)
+      commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
+    });
+    yield* reportEnvironmentDiff(diff);
+  });
+}
+
+/**
+ * `maruhi env` が取る操作。**一覧の出所はここだけ**で、綴りの検査・不明な操作の
+ * 文面・コマンドと位置引数の description がすべてこれを読む(KEY_ACTIONS と同じ形)。
+ */
+const ENV_ACTIONS = ["create", "rotate", "diff"] as const;
+
+type EnvAction = (typeof ENV_ACTIONS)[number];
+
+const ENV_ACTION_HELP = `不明な操作です(${ENV_ACTIONS.join(" | ")})`;
+
+/**
+ * ENV_ACTIONS の分岐漏れを**型で**捕まえる(引数が never なので、操作を足して
+ * 分岐を書き忘れると呼び出し位置がコンパイルエラーになる)。
+ *
+ * 実行時のフォールバックでは足りない: env の分岐は最後が envCreate なので、
+ * 新しい操作が黙って**環境作成 = チェーンへの取り消せない追記**へ落ちる。
+ * keyCommand は末尾の usageError で同じ穴を塞いでいるが、あちらは実行時。
+ */
+function unhandledEnvAction(action: never): CliError {
+  return usageError(`${ENV_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
+}
+
+/**
+ * **操作専用**のオプション(ここに無い宣言済みオプションは全操作で使える)。
  * 未宣言かどうかは `CliOptions.strict` が引数表から判定するので、この表に
  * 載せ忘れても新しいオプションが不明扱いで拒否されることはない。
  */
-const ENV_ACTION_FLAGS = {
-  create: new Set<string>(["name"]),
-  rotate: new Set<string>(["reason", "new-epoch"]),
-} as const;
-/** 「もう一方の操作」の対応表(三項演算子を判定と文面の 2 箇所へ散らさない)。 */
-const ENV_OTHER_ACTION = { create: "rotate", rotate: "create" } as const;
-
-/** env の操作(一覧の出所は上の表だけ — 操作が増えても narrowing が追随する)。 */
-type EnvAction = keyof typeof ENV_ACTION_FLAGS;
+const ENV_ACTION_FLAGS: Readonly<Record<EnvAction, ReadonlySet<string>>> = {
+  create: new Set(["name"]),
+  rotate: new Set(["reason", "new-epoch"]),
+  // diff は専用オプションを持たない(差分の有無を終了コードへ載せる
+  // `--exit-code` は今回入れない — 裁定は「差分あり = 成功(0)」)
+  diff: new Set(),
+};
 
 function isEnvAction(action: string | undefined): action is EnvAction {
-  return action !== undefined && Object.hasOwn(ENV_ACTION_FLAGS, action);
+  return ENV_ACTIONS.some((known) => known === action);
+}
+
+/**
+ * Given an action → action-specific-options table, reports whether `action` may
+ * use `declared`: null when it may, otherwise the actions the option is
+ * restricted to (for naming them in the diagnostic).
+ *
+ * 判定は「そのオプションを**持つ操作**(自分を含む)」で行う。**「他の操作の分」
+ * だけを数えてはならない**: それだと 1 つのオプションを複数の操作が共有する形で、
+ * 共有元のどちらでも拒否される(= 宣言したとおりに使えない)。
+ *
+ * 表を引数に取るのはその形をテストから固定するため — 実際の ENV_ACTION_FLAGS は
+ * 互いに素なので、共有の形はコマンドラインからは到達できない。
+ */
+export function optionRestrictedTo<A extends string>(
+  actions: readonly A[],
+  flags: Readonly<Record<A, ReadonlySet<string>>>,
+  action: A,
+  declared: string,
+): readonly A[] | null {
+  const owners = actions.filter((owner) => flags[owner].has(declared));
+  // 持ち主が居ない = 全操作で使える共通オプション(--server / --project)。
+  // 自分が持ち主なら当然使える(共有していても)
+  return owners.length === 0 || owners.includes(action) ? null : owners;
 }
 
 /**
  * 操作に適用されないオプション(create への `--reason` 等)の拒否。gunshi は
- * 1 コマンド 1 引数表なので、`create` と `rotate` の両方のフラグが常に受理
- * される — 指定した意図が黙って無視されたことに気付けるようにする。
+ * 1 コマンド 1 引数表なので、**全操作**のフラグが常に受理される — 指定した
+ * 意図が黙って無視されたことに気付けるようにする。
+ *
+ * 操作は 3 つ以上あるので「もう一方の操作」では足りない。そのオプションを
+ * 使える操作を表から引いて名指しする(操作が増えても文面が嘘にならない)。
  *
  * 書き方そのものの誤り(未宣言オプション・boolean への値・余分な位置引数)は
  * コマンドに依らないので args.ts と `CliOptions.strict` が受け持つ。
@@ -459,28 +538,63 @@ function envActionFlagRejection(
   if (!isEnvAction(action)) {
     return null;
   }
-  const otherAction = ENV_OTHER_ACTION[action];
   for (const token of tokens) {
     // 打たれた綴り(短縮形・`--no-` の否定形)から宣言名へ戻して照合する。
     // 綴りのまま引くと `env create --no-new-epoch` が rotate 専用として
     // 弾かれず、指定した意図が黙って無視される
     const declared = declaredOptionName(token, args);
-    if (declared === undefined || !ENV_ACTION_FLAGS[otherAction].has(declared)) {
+    if (declared === undefined) {
       continue;
     }
-    const typed = typedName(token);
-    return `${typed} は env ${action} では使えません(${otherAction} 用のオプションです)`;
+    const owners = optionRestrictedTo(ENV_ACTIONS, ENV_ACTION_FLAGS, action, declared);
+    if (owners === null) {
+      continue;
+    }
+    const usable = owners.map((owner) => `env ${owner}`).join(" / ");
+    return `${typedName(token)} は env ${action} では使えません(${usable} 用のオプションです)`;
   }
   return null;
+}
+
+/**
+ * 位置引数で受けた環境 ID の形式検証。**指定値そのものはエラーに出さない**
+ * (位置引数には値が書かれうる — args.ts の規律)。
+ *
+ * positional 未指定(undefined)も型で明示的に弾く。位置引数を**書かずに**
+ * `--environment-id` だけで渡した実行はここまで来ない(strict が未宣言
+ * オプションとして runner より前に落とす — args.ts)。
+ */
+function requireEnvironmentId(
+  value: string | undefined,
+  action: EnvAction,
+): Effect.Effect<EnvironmentId, CliError> {
+  if (value === undefined || !isEnvironmentId(value)) {
+    const example = action === "diff" ? "dev prod" : "dev";
+    return Effect.fail(
+      usageError(
+        `環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで。例: maruhi env ${action} ${example})`,
+      ),
+    );
+  }
+  return Effect.succeed(value);
 }
 
 function envCommand(execute: Execute) {
   return define({
     name: "env",
-    description: "環境の管理(create / rotate)",
+    description: `環境の管理(${ENV_ACTIONS.join(" / ")})`,
     args: {
-      action: { type: "positional", description: "create | rotate" },
+      action: { type: "positional", description: ENV_ACTIONS.join(" | ") },
       "environment-id": { type: "positional", description: "環境 ID(例: dev / prod)" },
+      "other-environment-id": {
+        type: "positional",
+        // diff 専用の 3 つ目。**required: false が必須**: gunshi の positional は
+        // 既定で必須なので、付け忘れると create / rotate が必須検査で落ちる。
+        // optional は必須検査が効かないため、diff で欠けている場合は本体が
+        // usage エラーにする(`config set` の「設定する値を…」と同型)
+        required: false,
+        description: "比較するもう一方の環境 ID(diff のみ)",
+      },
       name: { type: "string", description: "表示名(create のみ。省略時は環境 ID)" },
       reason: {
         type: "string",
@@ -505,22 +619,32 @@ function envCommand(execute: Execute) {
         ctx,
         Effect.gen(function* () {
           const action = ctx.values.action;
-          if (action !== "create" && action !== "rotate") {
-            return yield* Effect.fail(usageError("不明な操作です(create | rotate)"));
+          // 操作の綴りは環境 ID の形式検査より前に見る(`env bogus` が
+          // 「環境 ID の形式が…」で落ちると、打ち間違いが伝わらない)
+          if (!isEnvAction(action)) {
+            return yield* Effect.fail(usageError(ENV_ACTION_HELP));
           }
-          const environmentId = ctx.values["environment-id"];
-          // positional 未指定(undefined)は型で明示的に弾く。位置引数を**書かずに**
-          // `--environment-id` だけで渡した実行はここまで来ない(strict が未宣言
-          // オプションとして runner より前に落とす — args.ts)
-          if (environmentId === undefined || !isEnvironmentId(environmentId)) {
-            // 指定値そのものは出さない(位置引数には値が書かれうる — args.ts の規律)
-            return yield* Effect.fail(
-              usageError(
-                `環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで。例: maruhi env ${action} dev)`,
-              ),
-            );
-          }
+          const environmentId = yield* requireEnvironmentId(ctx.values["environment-id"], action);
           const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "diff") {
+            const other = ctx.values["other-environment-id"];
+            if (other === undefined) {
+              return yield* Effect.fail(
+                usageError("比較する環境を 2 つ指定してください(例: maruhi env diff dev prod)"),
+              );
+            }
+            const otherEnvironmentId = yield* requireEnvironmentId(other, action);
+            if (otherEnvironmentId === environmentId) {
+              // 同じ環境どうしの比較は必ず空になる = 要求そのものが書き間違い。
+              // 指定値は出さない(位置引数には値が書かれうる)
+              return yield* Effect.fail(
+                usageError(
+                  "同じ環境 ID を 2 つ指定しています。比較する 2 つの環境を指定してください",
+                ),
+              );
+            }
+            return yield* envDiff(flags, environmentId, otherEnvironmentId);
+          }
           if (action === "rotate") {
             // 空の `--reason`(`--reason ""` / `--reason=`)は共通の引数検査が
             // 落とす(args.ts の emptyOptionValueRejection — 「未指定」と
@@ -531,9 +655,30 @@ function envCommand(execute: Execute) {
               environmentId,
             );
           }
-          return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
+          if (action === "create") {
+            return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
+          }
+          // ENV_ACTIONS の全分岐を上で処理済み(到達しない)。操作を足して
+          // ここを書き忘れると**コンパイルエラー**になる
+          return yield* Effect.fail(unhandledEnvAction(action));
         }),
-        { commandRejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args) },
+        {
+          commandRejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
+          // 3 つ目の位置引数は diff 専用。**既知の非 diff 操作のときだけ**除く:
+          // 未知の操作でも除くと `env bogus a b` が「余分な引数です」で落ちて、
+          // 本当の誤り(操作名の綴り)が伝わらない(config の get / set と同じ形)。
+          //
+          // 効くのは**余分な位置引数の検査だけではない**: `without` は空の位置
+          // 引数の検査(args.ts の emptyPositionalRejection)にも渡るので、
+          // 未知の操作に空の 3 つ目を書くと「位置引数 other-environment-id が
+          // 空です」が「不明な操作です」より先に出る。args.ts は構造的な誤りを
+          // 操作別の指摘より先に言う並び順なのでこれは意図どおりで、空の引数を
+          // 渡した事実自体は本当(直して再実行すれば操作名の誤りが出る)
+          withoutPositionals:
+            isEnvAction(ctx.values.action) && ctx.values.action !== "diff"
+              ? ["other-environment-id"]
+              : undefined,
+        },
       ),
   });
 }
@@ -754,7 +899,7 @@ function configCommand(execute: Execute) {
   });
 }
 
-function entryCommand(execute: Execute) {
+function entryCommand(execute: Execute, commands: readonly string[]) {
   return define({
     name: "maruhi",
     description: "maruhi — ディスクレス secrets 管理 CLI",
@@ -764,9 +909,9 @@ function entryCommand(execute: Execute) {
         Effect.gen(function* () {
           const io = yield* CliIo;
           yield* io.log("使い方: maruhi <command> [options]");
-          yield* io.log(
-            "commands: login / logout / key / project / env / pull / push / run / config",
-          );
+          // 一覧は登録済みサブコマンドから導く(手書きすると、コマンドを
+          // 増やしたときにヘルプだけ古いまま残る)
+          yield* io.log(`commands: ${commands.join(" / ")}`);
           yield* io.log("詳細: maruhi <command> --help");
         }),
       ),
@@ -854,7 +999,7 @@ export async function runCli(
   };
 
   try {
-    await cli([...argv], entryCommand(execute), {
+    await cli([...argv], entryCommand(execute, Object.keys(subCommands)), {
       name: "maruhi",
       version: CLI_VERSION,
       description: "maruhi — ディスクレス secrets 管理 CLI",

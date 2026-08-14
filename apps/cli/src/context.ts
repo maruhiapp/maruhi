@@ -1,8 +1,13 @@
 // コマンド前段の共通化: ID 検証 → セッション → master 鍵 → §6.3 同期検査 →
 // 床検査 → 環境床ハンドル。config ファイルはコマンドごとに前段で 1 回だけ読む
 // (旧 cli.ts はコマンド本体 / openProject / openSession で 3 回読んでいた)。
+//
+// 前段は master 鍵の要否で 2 つに分かれるが、**同期と床の意味論は attachProject
+// に一本化**してある:
+//   openProjectWith         = 鍵あり(値を暗号化・復号・署名するコマンド)
+//   openMetadataProjectWith = 鍵なし(平文メタデータしか読まないコマンド — env diff)
 
-import { isEnvironmentId, isProjectId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
@@ -123,15 +128,23 @@ export function openSession(
   });
 }
 
-export interface ProjectContext extends SessionContext {
-  readonly masterKeys: MasterKeys;
-  readonly recipient: DekRecipient;
+/**
+ * 鍵素材を要さない前段の成果(ID 検証 → セッション → §6.3 同期検査 → 床検査)。
+ * 平文メタデータしか読まないコマンドはここまでで足りる(env diff)。
+ */
+export interface ProjectContextBase extends SessionContext {
   readonly projectId: string;
   readonly verified: VerifiedProject;
   /** openProject 時点のローカル床(§6.3。床なし = null)。 */
   readonly floor: ProjectFloor | null;
   /** 再同期(チェーン全再検証)。pull / push / env create が競合・future head 時に使う。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
+}
+
+/** 値を扱うコマンドの前段の成果(上記 + master 鍵と自分宛ラップの受信者)。 */
+export interface ProjectContext extends ProjectContextBase {
+  readonly masterKeys: MasterKeys;
+  readonly recipient: DekRecipient;
 }
 
 export interface CheckedFloor {
@@ -191,6 +204,24 @@ export function loadCheckedFloor(
   });
 }
 
+/**
+ * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → 床ヘッドの前進。
+ * 鍵の有無で分かれるのは呼び出し側だけで、床の意味論はここに一本化する
+ * (2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は全コマンド共通で、
+ * env diff のような値を読まないコマンドでも従来どおり行う。
+ */
+function attachProject(
+  context: SessionContext,
+  projectId: string,
+): Effect.Effect<ProjectContextBase, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const resync = syncProject(context.client, projectId);
+    const synced = yield* resync;
+    const checked = yield* loadCheckedFloor(projectId, synced, resync);
+    return { ...context, projectId, verified: checked.verified, floor: checked.floor, resync };
+  });
+}
+
 /** データ系コマンド共通の前段(ロード済み config 版)。 */
 function openProjectWith(
   config: CliConfig,
@@ -200,24 +231,36 @@ function openProjectWith(
     // プロジェクト ID の形式検証はネットワークアクセスより先に行う
     const projectId = yield* resolveProjectId(flags.project, config);
     const context = yield* openSessionWith(config, flags.server);
+    // master 鍵の読み込みは同期(通信)・床の前進より**前**のまま置く: 鍵の無い
+    // 端末で実行された書き込み系コマンドを、サーバーへ 1 往復してから落とさない
     const masterKeys = yield* loadMasterKeys(context.session);
-    const resync = syncProject(context.client, projectId);
-    const synced = yield* resync;
-    const checked = yield* loadCheckedFloor(projectId, synced, resync);
+    const base = yield* attachProject(context, projectId);
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,
       encKeyPair: masterKeys.encKeyPair,
     };
-    return {
-      ...context,
-      masterKeys,
-      recipient,
-      projectId,
-      verified: checked.verified,
-      floor: checked.floor,
-      resync,
-    };
+    return { ...base, masterKeys, recipient };
+  });
+}
+
+/**
+ * 平文メタデータしか読まないコマンドの前段(**master 鍵を要求しない**)。
+ *
+ * openProject との差は loadMasterKeys の有無だけで、同期・床検査は attachProject
+ * に一本化してある。鍵を要求しないのは「復号しないから」だけが理由ではない:
+ * MARUHI_TOKEN 経由のセッション(キーチェーンを持たない実行 — session.ts)でも
+ * パリティチェックを走らせられるようにするためで、`project verify` が既に
+ * 同じ形の鍵なし読み取りコマンドである。
+ */
+function openMetadataProjectWith(
+  config: CliConfig,
+  flags: CommonFlags,
+): Effect.Effect<ProjectContextBase, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const projectId = yield* resolveProjectId(flags.project, config);
+    const context = yield* openSessionWith(config, flags.server);
+    return yield* attachProject(context, projectId);
   });
 }
 
@@ -233,7 +276,7 @@ export function openProject(
 
 /** 環境単位の床ハンドル(コマンド内の pull / push が検査・コミットに使う)。 */
 function floorHandleFor(
-  context: ProjectContext,
+  context: ProjectContextBase,
   environmentId: string,
 ): Effect.Effect<FloorHandle, never, CliServices> {
   return Effect.map(FloorStore, (store) =>
@@ -268,5 +311,71 @@ export function openEnvironment(
     const context = yield* openProjectWith(config, flags);
     const floorHandle = yield* floorHandleFor(context, environmentId);
     return { ...context, environmentId, floorHandle };
+  });
+}
+
+/**
+ * 検証済みビューのチェーンヘッドを床へ記録する(§6.3 規則 (a) の材料)。
+ * `mergeHead` は単調なので後退はせず、冪等。
+ *
+ * pull / push は commitPull / commitPush の中で同じヘッドを書くが、**値を
+ * 読まないコマンドはその経路を通らない**。有界再同期でビューが前進した場合、
+ * 記録しないと「検証済みの最新ヘッド」が openProject 時点のまま残り、
+ * その間への巻き戻しを次回以降に検出できない(床は SHOULD だが、pull / push が
+ * 保っている材料をこのコマンドだけ落とす理由はない)。
+ */
+export function commitVerifiedHead(
+  projectId: string,
+  verified: VerifiedProject,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.flatMap(FloorStore, (store) =>
+    store.commitHead(projectId, {
+      seq: verified.state.headSeq,
+      hashHex: verified.state.headHashHex,
+    }),
+  );
+}
+
+/** 1 環境ぶんの床ハンドル(環境 ID と組で持ち、取り違えを書けなくする)。 */
+export interface EnvironmentHandle {
+  readonly environmentId: EnvironmentId;
+  /** 環境単位の床ハンドル(§6.3)。 */
+  readonly floorHandle: FloorHandle;
+}
+
+/** 2 環境を 1 つのプロジェクト前段で開いた結果(env diff)。 */
+export interface EnvironmentPairContext extends ProjectContextBase {
+  readonly first: EnvironmentHandle;
+  readonly second: EnvironmentHandle;
+}
+
+/**
+ * 2 環境をまたぐメタデータのみコマンド(env diff)の前段: **1 プロジェクト +
+ * 環境ごとの床ハンドル**。config はここで 1 回だけ読む。
+ *
+ * openEnvironment を環境ごとに呼ぶと、チェーン同期と §6.3 検証が環境の数だけ
+ * 走る。**食い違う 2 つの検証済みビュー**で比較すると、その比較結果がどの
+ * 履歴に対するものなのか言えなくなる(片方だけが再同期で前進した状態を
+ * 「差分」として報告しかねない)。プロジェクト前段は 1 回だけにする。
+ *
+ * 環境 ID の形式検証は呼び出し側(位置引数を受ける側)が済ませている前提。
+ * ただし `EnvironmentId` は**ブランド付きではない**(Schema.String.check の
+ * 別名)ので、型は検証を強制しない — 表示側は環境 ID も displayText を通す
+ * (env-diff.ts)。
+ */
+export function openMetadataEnvironmentPair(
+  flags: CommonFlags,
+  first: EnvironmentId,
+  second: EnvironmentId,
+): Effect.Effect<EnvironmentPairContext, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const store = yield* ConfigStore;
+    const config = yield* store.load;
+    const context = yield* openMetadataProjectWith(config, flags);
+    return {
+      ...context,
+      first: { environmentId: first, floorHandle: yield* floorHandleFor(context, first) },
+      second: { environmentId: second, floorHandle: yield* floorHandleFor(context, second) },
+    };
   });
 }
