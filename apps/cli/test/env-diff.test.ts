@@ -7,10 +7,14 @@
 //  2. 差分の内容と件数、および**名前でソートされた安定な出力順**
 //     (ワイヤの並びを変えても出力が変わらない)
 //  3. 変数名は他メンバーが書いた平文メタデータなので ANSI / BEL / 改行を中和する
+//     視覚的に同名でも正規化形が違えば別物として報告する(NFC / NFD)
 //  4. 2 環境ぶんの警告は環境 ID でラベルする(文面まで同一の警告が畳まれて
 //     片方の事実が消えない)
-//  5. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
-//  6. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
+//  5. **前段は 1 回だけ**(チェーン同期は 1 回)で、1 つ目の pull が有界再同期で
+//     前進させたビューを 2 つ目の pull が引き継ぐ
+//  6. 環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)
+//  7. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
+//  8. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
 //     usage エラー(2)で、**通信より前**に落ちる
 
 import { readFile } from "node:fs/promises";
@@ -274,6 +278,30 @@ describe("maruhi env diff", () => {
     expect(env.logs).toContain("  LINE\uFFFDBREAK");
     // 生の制御文字がどの出力行にも残っていないこと
     expect(env.logs.some((line) => /\p{Cc}/u.test(line))).toBe(false);
+  });
+
+  it("視覚的に同名でも正規化形が違えば別の変数として報告する(NFC / NFD)", async () => {
+    // 端末上は同じ「CAFÉ」に見えるが、byte-exact では別物。パリティチェックは
+    // まさにここで誤解が起きやすいので、一致扱いにせず両側の差分として出し、
+    // 非 NFC の側には §12-1 の SHOULD 警告を添える(検出は values.ts のまま)
+    const nfc = "CAF\u00C9";
+    const nfd = "CAFE\u0301";
+    expect(nfd.normalize("NFC")).toBe(nfc);
+    const env = await startEnv([
+      pullMetadataHandlerOf(DEV, devStatement, [await variableOf(DEV, "var-dev-0", nfc)]),
+      pullMetadataHandlerOf(PROD, prodStatement, [await variableOf(PROD, "var-prod-0", nfd)]),
+    ]);
+
+    expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
+    expect(env.logs).toContain(`  ${nfc}`);
+    expect(env.logs).toContain(`  ${nfd}`);
+    expect(env.logs).toContain(
+      "両方にある変数: 0(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)",
+    );
+    // 警告が立つのは非 NFC を配布した側だけ
+    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`警告: 環境 ${PROD}: `);
   });
 
   it("2 環境ぶんの警告は環境 ID でラベルする(同一文面が畳まれて消えない)", async () => {

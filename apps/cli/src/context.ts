@@ -1,6 +1,11 @@
 // コマンド前段の共通化: ID 検証 → セッション → master 鍵 → §6.3 同期検査 →
 // 床検査 → 環境床ハンドル。config ファイルはコマンドごとに前段で 1 回だけ読む
 // (旧 cli.ts はコマンド本体 / openProject / openSession で 3 回読んでいた)。
+//
+// 前段は鍵の要否で 2 つに分かれるが、**同期と床の意味論は attachProject に
+// 一本化**してある(2 系統に割ると、いずれ黙って食い違う):
+//   openProject         = 鍵あり(値を暗号化・復号・署名するコマンド)
+//   openMetadataProject = 鍵なし(平文メタデータしか読まないコマンド — env diff)
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
