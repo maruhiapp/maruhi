@@ -191,6 +191,18 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       }
     },
   },
+  {
+    // 受信者クラス server(AUTH_SPEC §12-6。2026-08-12): dek_wraps に受信者
+    // クラス列を追加する。server 行の recipient_user_id 列にはサーバー鍵 FP
+    // (hex 小文字 32 文字)が入る — member の user_id(ULID 26 文字)と形式が
+    // 交わらないため、主キー (environment_id, epoch, recipient_user_id) は
+    // クラス跨ぎでも衝突しない(列名は歴史的経緯で user_id のまま。意味は
+    // 「受信者クラス内の受信者識別子」)
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE dek_wraps ADD COLUMN recipient_class TEXT NOT NULL DEFAULT 'member'");
+    },
+  },
 ];
 
 /**

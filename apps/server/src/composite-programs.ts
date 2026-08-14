@@ -36,7 +36,11 @@ import type { DataActor, DekWrapInput, MetaStatementInput } from "./data-plane.t
 import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
-import { dekRegisteredEvent, ensureWrapSetAcceptable } from "./dek-wraps.ts";
+import {
+  dekRegisteredEvent,
+  ensureWrapSetAcceptable,
+  expectedWrapRecipientCount,
+} from "./dek-wraps.ts";
 import { ensureEnvironmentQuota, requireActiveEnvironment } from "./quotas.ts";
 import { ensureMetaStatementSignature, ensureNfcName } from "./verify-meta.ts";
 
@@ -97,8 +101,10 @@ const ensureCompositeWrapSet = (input: {
     // 完全一致(§12-6 の初回登録)を個数で明示要求する: checkWrapSets は
     // リクエストに現れたエポックしか見ないため、空集合が素通りしないように。
     // 受信者・重複は検査済みなので個数一致 = 完全一致(理由コードの判定順も
-    // 旧・環境作成プログラムと同じ「個別検査 → 完全性」を保つ)
-    if (input.deks.length !== input.appliedState.members.size) {
+    // 旧・環境作成プログラムと同じ「個別検査 → 完全性」を保つ)。対象は
+    // 現メンバー集合 + 開示スコープ内の有効 grant_server のサーバー鍵
+    // (§12-4 — 2026-08-12 改訂。dek-wraps.ts の期待数定義を共有する)
+    if (input.deks.length !== expectedWrapRecipientCount(input.appliedState, input.environmentId)) {
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
     }
   });

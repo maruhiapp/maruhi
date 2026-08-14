@@ -232,11 +232,24 @@ export type DistributedEnvironmentMetaStatement =
   typeof DistributedEnvironmentMetaStatementSchema.Type;
 
 /**
+ * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の
+ * 現メンバー(user_id + enc 公開鍵で同定)、server = 有効な grant_server の
+ * サーバー鍵(FP + enc 公開鍵で同定 — user_id を持たない)。省略時は member
+ * (受信者クラス導入前のワイヤと同形)。
+ */
+export const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
+
+/**
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
  * recipient is identified by both user id and encryption public key; the
  * server requires both to match the chain-derived member exactly.
  * `signatureHex` is the per-wrap registration signature (CRYPTO_SPEC §5.1);
  * the signer must be the calling principal, so the wire carries no signer id.
+ *
+ * 受信者クラス server(2026-08-12)では recipientUserId 位置に**サーバー鍵 FP
+ * (hex 小文字 32 文字)**を運ぶ — HPKE info / §5.1 署名対象の recipient_user_id
+ * 位置と同じ置き換え(CRYPTO_SPEC §9)。同定は FP + enc 公開鍵の両方が
+ * チェーン導出の有効 grant_server の payload と厳密一致すること。
  *
  * recipientUserId の上限はチェーン合意規則の自由文字列上限(CRYPTO_SPEC §6.1 の
  * 1024 バイト)に揃える — add_member の対象はここより狭く検証されないため、
@@ -245,6 +258,7 @@ export type DistributedEnvironmentMetaStatement =
 export const WrappedDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
+  recipientClass: Schema.optionalKey(DekRecipientClassSchema),
   recipientUserId: BoundedUserId,
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
@@ -277,10 +291,12 @@ export type RecipientDek = typeof RecipientDekSchema.Type;
 /**
  * Reference naming one stored wrap — the unit of the admin-only deletion in
  * the §12-6 repair path (delete a poisoned wrap, then re-register the missing
- * one through the append path).
+ * one through the append path). 受信者クラス server の行は recipientUserId
+ * 位置にサーバー鍵 FP を運ぶ(WrappedDekSchema と同じ規約)。
  */
 export const DekWrapRefSchema = Schema.Struct({
   epoch: PositiveInt,
+  recipientClass: Schema.optionalKey(DekRecipientClassSchema),
   recipientUserId: BoundedUserId,
 });
 

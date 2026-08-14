@@ -222,6 +222,7 @@ describe("チェーンミラー(§3.4)", () => {
         serverEncPubHex,
         serverKeyFingerprintHex,
         scopeEnvironmentIds: [ENV],
+        leasePolicy: [],
       },
     });
     await appendOperation(fixture, OWNER, {

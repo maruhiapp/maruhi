@@ -81,6 +81,13 @@ export interface Env {
   readonly GITHUB_CLIENT_ID: string;
   /** GitHub OAuth App の client_secret(Workers Secret / .dev.vars。ダミー値のみコミット可)。 */
   readonly GITHUB_CLIENT_SECRET: string;
+  /**
+   * デプロイメント keypair の入力鍵材料(Workers Secret / .dev.vars。32 バイト
+   * hex — CRYPTO_SPEC §9)。keypair は RFC 9180 DeriveKeyPair で起動時に導出する
+   * (server-key.ts)。未設定 = 選択的開示なしの純粋 E2EE デプロイメント(既定)。
+   * secret を欠いたデプロイでは実行時に undefined。
+   */
+  readonly SERVER_ENC_KEY_IKM?: string;
 }
 
 // ---------------------------------------------------------------------------

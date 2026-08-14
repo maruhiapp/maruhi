@@ -2,6 +2,7 @@
 // vitest-pool-workers(workerd 実環境)で SELF 経由の実経路を検証する。
 // スタブは GitHub API のみ(vitest.config.ts の outboundService フェイク)。
 
+import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { createExecutionContext, createScheduledController, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -670,5 +671,57 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
     expect(response.status).toBe(503);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("SetupIncomplete");
+  });
+});
+
+describe("GET /auth/config のサーバー鍵公開面(AUTH_SPEC §4 / CRYPTO_SPEC §9)", () => {
+  // デプロイメント keypair の ikm(ダミー)。keypair は RFC 9180 DeriveKeyPair で
+  // 導出されるため、同じ ikm からは常に同じ公開面が得られる(決定論)
+  const IKM_HEX = "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30";
+
+  it("returns the fingerprint and enc pub when the deployment keypair is configured", async () => {
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), {
+      ...env,
+      SERVER_ENC_KEY_IKM: IKM_HEX,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, string>;
+    expect(body["serverEncPubHex"]).toMatch(/^[0-9a-f]{64}$/);
+    expect(body["serverKeyFingerprintHex"]).toMatch(/^[0-9a-f]{32}$/);
+    // FP = SHA-256(enc_pub)[:16](§9)の整合を再計算で確認する(CLI の照合と同じ計算)
+    const pub = decodeHex(body["serverEncPubHex"] ?? "");
+    if (pub === null) throw new Error("serverEncPubHex is not hex");
+    const fp = await computeServerKeyFingerprint(pub);
+    if (!fp.ok) throw new Error("fingerprint failed");
+    expect(encodeHex(fp.value)).toBe(body["serverKeyFingerprintHex"]);
+    // 導出は決定論的: 別の env オブジェクト(サービス再構築)でも同じ公開面
+    const again = await worker.fetch(incoming(`${BASE}/auth/config`), {
+      ...env,
+      SERVER_ENC_KEY_IKM: IKM_HEX,
+    });
+    expect(await again.json()).toEqual(body);
+  });
+
+  it("omits the fields when the secret is absent (pure-E2EE deployment is the default)", async () => {
+    // テスト既定のバインディングに SERVER_ENC_KEY_IKM はない(vitest.config.ts)
+    const response = await SELF.fetch(`${BASE}/auth/config`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ githubClientId: env.GITHUB_CLIENT_ID });
+  });
+
+  it("treats a malformed ikm as unconfigured (fields omitted, login stays available)", async () => {
+    // 非 hex・長さ不正・大文字 hex(decodeHex は小文字のみ)はすべて未設定扱い。
+    // GitHub OAuth の 503 と違い fail-closed にしない(サーバー鍵は任意機能で、
+    // ログイン経路を塞ぐ理由がない)。トラブルシュートは SELF_HOSTING.md
+    for (const bad of ["not-hex", "abcd", "ab".repeat(31), "AB".repeat(32)]) {
+      const response = await worker.fetch(incoming(`${BASE}/auth/config`), {
+        ...env,
+        SERVER_ENC_KEY_IKM: bad,
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body["serverKeyFingerprintHex"]).toBeUndefined();
+      expect(body["serverEncPubHex"]).toBeUndefined();
+    }
   });
 });

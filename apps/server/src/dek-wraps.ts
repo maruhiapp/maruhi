@@ -6,21 +6,48 @@ import { decodeHex, importSigningPublicKey, verifyDekWrapSignature } from "@maru
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
-import type { DataActor, DataRejection, DekWrapInput } from "./data-plane.ts";
+import type { DataActor, DataRejection, DekRecipientClass, DekWrapInput } from "./data-plane.ts";
 import { dataEvent, rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
 
+/** ワイヤ・RPC 境界で省略された受信者クラスの既定は member(AUTH_SPEC §12-6)。 */
+export function wrapRecipientClass(ref: {
+  readonly recipientClass?: DekRecipientClass;
+}): DekRecipientClass {
+  return ref.recipientClass ?? "member";
+}
+
 /**
- * (epoch × recipient) の重複検出キー。ラップの登録と削除は同じ一意性単位を
- * 共有する(書式をここに一本化し、両経路の受理境界がズレないようにする)。
+ * (epoch × 受信者クラス × recipient) の重複検出キー。ラップの登録と削除は同じ
+ * 一意性単位を共有する(書式をここに一本化し、両経路の受理境界がズレないように
+ * する)。保存行の一意性は (environment, epoch, recipient_user_id) のまま —
+ * member の user_id(ULID)と server の FP(hex 32 文字)は形式が交わらないため
+ * クラス跨ぎの衝突は構造上生じないが、論理キーにはクラスを含めて明示する。
  */
 export function wrapRefKey(ref: {
   readonly epoch: number;
+  readonly recipientClass?: DekRecipientClass;
   readonly recipientUserId: string;
 }): string {
-  return `${ref.epoch}:${ref.recipientUserId}`;
+  return `${ref.epoch}:${wrapRecipientClass(ref)}:${ref.recipientUserId}`;
+}
+
+/**
+ * (環境, エポック) のラップ完全集合の期待受信者数(AUTH_SPEC §12-4 / §12-6 —
+ * 2026-08-12 改訂): 現メンバー全員 + 当該環境が開示スコープに含まれる有効な
+ * grant_server のサーバー鍵。初回登録の完全一致と複合リクエストの個数検査の
+ * 両方がこの 1 定義を使う(受理境界をズラさない)。
+ */
+export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
+  let grants = 0;
+  for (const grant of state.serverGrants.values()) {
+    if (grant.scopeEnvironmentIds.includes(environmentId)) {
+      grants += 1;
+    }
+  }
+  return state.members.size + grants;
 }
 
 /** 1 リクエストのラップ件数上限(登録・削除の両経路で共通)。ok なら null。 */
@@ -35,15 +62,29 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
   return null;
 }
 
-/** 1 ラップの検査(認知的複雑度の分割)。ok なら null。 */
-function checkOneWrap(
+/**
+ * 受信者の同定(クラス別 — AUTH_SPEC §12-6)。member = user_id + enc 公開鍵の
+ * 両方が現メンバーと厳密一致。server = recipientUserId 位置のサーバー鍵 FP +
+ * enc 公開鍵の両方がチェーン導出の有効 grant_server の payload と厳密一致し、
+ * かつ対象環境が開示スコープに含まれること(スコープ外は 422)。
+ */
+function checkWrapRecipient(
   state: ChainState,
-  currentEpoch: number,
+  environmentId: string,
   wrap: DekWrapInput,
-  seen: Set<string>,
 ): DataRejection | null {
-  if (wrap.epoch < 1 || wrap.epoch > currentEpoch) {
-    return { kind: "dek-wrap-rejected", reason: "epoch-out-of-range" };
+  if (wrapRecipientClass(wrap) === "server") {
+    const grant = state.serverGrants.get(wrap.recipientUserId);
+    if (grant === undefined) {
+      return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
+    }
+    if (grant.serverEncPubHex !== wrap.recipientEncPubHex) {
+      return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
+    }
+    if (!grant.scopeEnvironmentIds.includes(environmentId)) {
+      return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
+    }
+    return null;
   }
   const member = state.members.get(wrap.recipientUserId);
   if (member === undefined) {
@@ -51,6 +92,24 @@ function checkOneWrap(
   }
   if (member.encPubHex !== wrap.recipientEncPubHex) {
     return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
+  }
+  return null;
+}
+
+/** 1 ラップの検査(認知的複雑度の分割)。ok なら null。 */
+function checkOneWrap(
+  state: ChainState,
+  environmentId: string,
+  currentEpoch: number,
+  wrap: DekWrapInput,
+  seen: Set<string>,
+): DataRejection | null {
+  if (wrap.epoch < 1 || wrap.epoch > currentEpoch) {
+    return { kind: "dek-wrap-rejected", reason: "epoch-out-of-range" };
+  }
+  const recipientRejection = checkWrapRecipient(state, environmentId, wrap);
+  if (recipientRejection !== null) {
+    return recipientRejection;
   }
   const key = wrapRefKey(wrap);
   if (seen.has(key)) {
@@ -62,6 +121,7 @@ function checkOneWrap(
 
 function checkWrapRecipients(
   state: ChainState,
+  environmentId: string,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
 ): DataRejection | null {
@@ -71,7 +131,7 @@ function checkWrapRecipients(
   }
   const seen = new Set<string>();
   for (const wrap of wraps) {
-    const rejection = checkOneWrap(state, currentEpoch, wrap, seen);
+    const rejection = checkOneWrap(state, environmentId, currentEpoch, wrap, seen);
     if (rejection !== null) {
       return rejection;
     }
@@ -140,9 +200,10 @@ const ensureWrapSignatures = (
   });
 
 /**
- * エポックごとの集合検査(§12-6): 初回登録(既存ラップなし)は現メンバー集合と
- * 完全一致(受信者検査済みなので個数一致 = 完全)、既存エポックへの追記は
- * 既存 (エポック, 受信者) との重複を拒否する。
+ * エポックごとの集合検査(§12-6): 初回登録(既存ラップなし)は現メンバー集合 +
+ * 開示スコープ内の有効 grant_server のサーバー鍵との完全一致(受信者検査済み
+ * なので個数一致 = 完全 — 判定は受信者クラスを跨いで同一に適用する)、既存
+ * エポックへの追記は既存 (エポック, 受信者) との重複を拒否する。
  */
 const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly DekWrapInput[]) =>
   Effect.gen(function* () {
@@ -152,7 +213,7 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
       const epochWraps = wraps.filter((wrap) => wrap.epoch === epoch);
       const existing = yield* store.countWrapsForEpoch(environmentId, epoch);
       if (existing === 0) {
-        if (epochWraps.length !== state.members.size) {
+        if (epochWraps.length !== expectedWrapRecipientCount(state, environmentId)) {
           return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
         }
         continue;
@@ -186,7 +247,7 @@ export const ensureWrapSetAcceptable = (
   wraps: readonly DekWrapInput[],
 ) =>
   Effect.gen(function* () {
-    const rejection = checkWrapRecipients(state, currentEpoch, wraps);
+    const rejection = checkWrapRecipients(state, environmentId, currentEpoch, wraps);
     if (rejection !== null) {
       return yield* rejectData(rejection);
     }
@@ -197,8 +258,11 @@ export const ensureWrapSetAcceptable = (
 
 /**
  * dek.registered(AUDIT_SPEC §3.3): 1 受信者 1 行(§5.1 の列構造 = 1 行 1
- * target)。受信者は target_user_id に載せ、(target_user_id, seq) の索引で
- * 「この受信者宛のラップの登録履歴」をそのまま引けるようにする。
+ * target)。member 受信者は target_user_id に載せ、(target_user_id, seq) の
+ * 索引で「この受信者宛のラップの登録履歴」をそのまま引けるようにする。
+ * server 受信者は user_id を持たない(§2 のアクターモデル)ため、サーバー鍵
+ * FP を target_key_fingerprint に載せる(chain.server_granted — §3.4 — と
+ * 同じ列。user_id 列にプロバイダ外識別子を混ぜない)。
  * actor_key_fingerprint には登録署名の署名者 FP を写す(§3.3 — セッション 07
  * 裁定 B「E の署名者 FP を写して突合可能にする」)。
  */
@@ -212,7 +276,9 @@ export function dekRegisteredEvent(
   return dataEvent(actor, nowMs, "dek.registered", {
     environmentId,
     epoch: wrap.epoch,
-    targetUserId: wrap.recipientUserId,
+    ...(wrapRecipientClass(wrap) === "server"
+      ? { targetKeyFingerprintHex: wrap.recipientUserId }
+      : { targetUserId: wrap.recipientUserId }),
     actorKeyFingerprintHex: signer.keyFingerprintHex,
   });
 }

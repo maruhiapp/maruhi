@@ -9,6 +9,7 @@ export {
   vectorEntries,
   type VectorEntry,
   vectorEnvironmentDeks,
+  vectorExtendedChains,
   vectorKeys,
   vectorNegatives,
 } from "../checks/chain-vector.ts";

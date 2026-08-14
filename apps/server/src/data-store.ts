@@ -664,9 +664,11 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     Effect.sync(() =>
       sql
         .exec(
+          // 配布は本人宛のみ(§12-6)。server クラスの行は識別子形式が交わらない
+          // ため user_id では引けないが、クラス条件を明示して境界を固定する
           `SELECT suite, epoch, enc_hex, ciphertext_hex, signature_hex, signer_user_id, signer_key_fingerprint
            FROM dek_wraps
-           WHERE environment_id = ? AND recipient_user_id = ? ORDER BY epoch`,
+           WHERE environment_id = ? AND recipient_class = 'member' AND recipient_user_id = ? ORDER BY epoch`,
           environmentId,
           recipientUserId,
         )
@@ -850,11 +852,12 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   insertWrap: (environmentId, wrap, signer, nowMs) => {
     sql.exec(
       `INSERT INTO dek_wraps
-         (environment_id, epoch, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex, ciphertext_hex,
+         (environment_id, epoch, recipient_class, recipient_user_id, suite, recipient_enc_pub_hex, enc_hex, ciphertext_hex,
           signature_hex, signer_user_id, signer_key_fingerprint, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       environmentId,
       wrap.epoch,
+      wrap.recipientClass ?? "member",
       wrap.recipientUserId,
       wrap.suite,
       wrap.recipientEncPubHex,

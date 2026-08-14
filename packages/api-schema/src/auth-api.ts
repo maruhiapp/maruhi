@@ -35,9 +35,17 @@ const Redirect = HttpApiSchema.Empty(302);
  * Public (unauthenticated) server configuration (AUTH_SPEC §4). The GitHub
  * OAuth client_id is public information — it appears in the authorize URL —
  * so exposing it lets a self-hosted CLI resolve it from the server URL alone.
+ *
+ * serverKeyFingerprintHex(AUTH_SPEC §4 — 2026-08-12)はデプロイメント keypair
+ * (CRYPTO_SPEC §9)が設定済みの場合のみ載る。grant_server 実行時の照合対象。
+ * serverEncPubHex は §9 の「サーバーが配布する enc 公開鍵」の配布チャネル
+ * (公開鍵は公開情報。FP はその SHA-256 先頭 16 バイトで、CLI は両者の整合を
+ * 再計算検証する)。
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
+  serverKeyFingerprintHex: Schema.optionalKey(Schema.String),
+  serverEncPubHex: Schema.optionalKey(Schema.String),
 });
 
 /** Result of the device-flow exchange (AUTH_SPEC §4): the raw token, shown once. */

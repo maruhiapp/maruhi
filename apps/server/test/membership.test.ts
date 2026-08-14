@@ -39,6 +39,7 @@ import {
   toWireEntry,
   vectorAuthzNegatives,
   vectorEntries,
+  vectorExtendedChains,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
 import {
@@ -47,6 +48,7 @@ import {
   signEntryAt,
   signMetaStatementAs,
   wrapDekForAll,
+  wrapDekToServer,
 } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
@@ -110,21 +112,44 @@ function vectorDek(environmentId: string, epoch: number): Uint8Array {
  * ため、再生・negative とも複合経由になる。ラップ集合はベクターのダミー DEK を
  * 現メンバー集合(recipients)へ実 HPKE でラップし、actor 自身が署名する。
  */
+/** 有効 grant の追跡(replayVectorChain 用): FP → enc 公開鍵 + 開示スコープ。 */
+interface TrackedServerGrant {
+  readonly encPubHex: string;
+  readonly scope: readonly string[];
+}
+
 async function submitComposite(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
   recipients: readonly string[],
   headers?: Record<string, string>,
+  serverRecipients?: readonly { readonly fpHex: string; readonly encPubHex: string }[],
 ): Promise<Response> {
   const environmentId = entry.payload.environmentId;
   const epoch = entry.op === "create_environment" ? 1 : entry.payload.newEpoch;
+  const dek = vectorDek(environmentId, epoch);
   const deks = await wrapDekForAll({
     projectId: vectorProjectId,
     environmentId,
     epoch,
-    dek: vectorDek(environmentId, epoch),
+    dek,
     recipientUserIds: recipients,
     signerUserId: entry.actor.userId,
   });
+  // 開示スコープ内の有効 grant があるときの完全集合はサーバー鍵宛を含む
+  // (AUTH_SPEC §12-4 — 2026-08-12 改訂)
+  for (const server of serverRecipients ?? []) {
+    deks.push(
+      await wrapDekToServer({
+        projectId: vectorProjectId,
+        environmentId,
+        epoch,
+        dek,
+        serverKeyFingerprintHex: server.fpHex,
+        serverEncPubHex: server.encPubHex,
+        signerUserId: entry.actor.userId,
+      }),
+    );
+  }
   const url =
     entry.op === "create_environment"
       ? `${BASE}/projects/${vectorProjectId}/environments`
@@ -162,6 +187,7 @@ async function submitComposite(
  */
 async function replayVectorChain(upTo: number): Promise<readonly string[]> {
   const members: string[] = [];
+  const serverGrants = new Map<string, TrackedServerGrant>();
   for (const vector of vectorEntries) {
     if (vector.seq > upTo) {
       break;
@@ -174,7 +200,11 @@ async function replayVectorChain(upTo: number): Promise<readonly string[]> {
       continue;
     }
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
-      const response = await submitComposite(entry, members);
+      const environmentId = entry.payload.environmentId;
+      const serverRecipients = [...serverGrants.entries()]
+        .filter(([, grant]) => grant.scope.includes(environmentId))
+        .map(([fpHex, grant]) => ({ fpHex, encPubHex: grant.encPubHex }));
+      const response = await submitComposite(entry, members, undefined, serverRecipients);
       expect(response.status).toBe(200);
       continue;
     }
@@ -187,7 +217,38 @@ async function replayVectorChain(upTo: number): Promise<readonly string[]> {
       if (index >= 0) {
         members.splice(index, 1);
       }
+    } else if (entry.op === "grant_server") {
+      serverGrants.set(entry.payload.serverKeyFingerprintHex, {
+        encPubHex: entry.payload.serverEncPubHex,
+        scope: entry.payload.scopeEnvironmentIds,
+      });
+    } else if (entry.op === "revoke_server") {
+      serverGrants.delete(entry.payload.serverKeyFingerprintHex);
     }
+  }
+  return members;
+}
+
+/**
+ * 認可 negative の前提チェーンを再生する: chain 指定つきは正規チェーンの
+ * base_seq までを再生した後、派生チェーン(extended_chains)のエントリを
+ * 汎用 append で受理させる(受理されること自体も §6.2 の許容側の固定)。
+ */
+async function replayNegativePrefix(negative: {
+  readonly entry: { readonly seq: number };
+  readonly chain?: string;
+}): Promise<readonly string[]> {
+  if (negative.chain === undefined) {
+    return replayVectorChain(negative.entry.seq - 1);
+  }
+  const extended = vectorExtendedChains[negative.chain];
+  if (extended === undefined) {
+    throw new Error(`missing extended chain ${negative.chain}`);
+  }
+  const members = await replayVectorChain(extended.base_seq);
+  for (const vector of extended.entries) {
+    const response = await appendEntry(vectorProjectId, vector.prev_hash_hex, toWireEntry(vector));
+    expect(response.status).toBe(200);
   }
   return members;
 }
@@ -694,7 +755,7 @@ describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 nega
       : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
     it(label, async () => {
       const failingSeq = negative.entry.seq;
-      await replayVectorChain(failingSeq - 1);
+      await replayNegativePrefix(negative);
       const response = await appendEntry(
         vectorProjectId,
         negative.entry.prev_hash_hex,

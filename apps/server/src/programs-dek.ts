@@ -14,6 +14,7 @@ import {
   checkWrapRequestCount,
   dekRegisteredEvent,
   ensureWrapSetAcceptable,
+  wrapRecipientClass,
   wrapRefKey,
 } from "./dek-wraps.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
@@ -86,10 +87,14 @@ export const deleteDekWrapsProgram = (
       }
       audit.appendManySync(
         refs.map((ref) =>
+          // server 受信者は user_id を持たないため FP を target_key_fingerprint に
+          // 載せる(dek.registered — dek-waps.ts — と同じ書き分け。AUDIT_SPEC §3.3)
           dataEvent(actor, now, "dek.deleted", {
             environmentId,
             epoch: ref.epoch,
-            targetUserId: ref.recipientUserId,
+            ...(wrapRecipientClass(ref) === "server"
+              ? { targetKeyFingerprintHex: ref.recipientUserId }
+              : { targetUserId: ref.recipientUserId }),
           }),
         ),
       );

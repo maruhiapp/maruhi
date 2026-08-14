@@ -4,13 +4,21 @@
 
 import { Schema } from "effect";
 
-/** Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6). */
+/**
+ * Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6).
+ * 受信者クラス server(2026-08-12): FP に一致する有効 grant がない =
+ * `recipient-not-granted`、grant はあるが対象環境が開示スコープ外 =
+ * `scope-out-of-range`(いずれも 422)。enc 公開鍵の不一致はクラス共通の
+ * `recipient-key-mismatch`。
+ */
 export const DekWrapRejectReasonSchema = Schema.Literals([
   "recipient-not-member",
+  "recipient-not-granted",
   "recipient-key-mismatch",
   "recipient-missing",
   "duplicate-recipient",
   "epoch-out-of-range",
+  "scope-out-of-range",
   "signature-invalid",
 ]);
 
