@@ -17,6 +17,7 @@ import {
 import {
   toTypedEntry,
   typedEntries,
+  serverGrantsMatchVector,
   vectorEntries,
   vectorEnvironmentDeks,
   vectorExtendedChains,
@@ -504,48 +505,9 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
 /** 導出状態の有効 grant 集合が期待(scope + lease_policy 込み)と一致するか。 */
 function serverGrantsMatch(
   state: ChainState,
-  expected: readonly {
-    readonly server_key_fingerprint_hex: string;
-    readonly server_enc_pub_hex: string;
-    readonly scope_environments: readonly string[];
-    readonly lease_policy: readonly {
-      readonly issuer_url: string;
-      readonly audience: string;
-      readonly claim_constraints: readonly {
-        readonly claim_name: string;
-        readonly claim_value: string;
-      }[];
-    }[];
-  }[],
+  expected: Parameters<typeof serverGrantsMatchVector>[1],
 ): boolean {
-  return (
-    state.serverGrants.size === expected.length &&
-    expected.every((grant) => {
-      const actual = state.serverGrants.get(grant.server_key_fingerprint_hex);
-      return (
-        actual !== undefined &&
-        actual.serverEncPubHex === grant.server_enc_pub_hex &&
-        actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",") &&
-        actual.leasePolicy.length === grant.lease_policy.length &&
-        actual.leasePolicy.every((element, index) => {
-          const expectedElement = grant.lease_policy[index];
-          return (
-            expectedElement !== undefined &&
-            element.issuerUrl === expectedElement.issuer_url &&
-            element.audience === expectedElement.audience &&
-            element.claimConstraints.length === expectedElement.claim_constraints.length &&
-            element.claimConstraints.every(
-              (constraint, constraintIndex) =>
-                constraint.claimName ===
-                  expectedElement.claim_constraints[constraintIndex]?.claim_name &&
-                constraint.claimValue ===
-                  expectedElement.claim_constraints[constraintIndex]?.claim_value,
-            )
-          );
-        })
-      );
-    })
-  );
+  return serverGrantsMatchVector(state.serverGrants, expected);
 }
 
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
@@ -815,10 +777,11 @@ async function malformedInputChecks(c: Checks): Promise<void> {
 async function regrantWideningCheck(c: Checks): Promise<void> {
   // 再 grant のスコープ拡大(旧 ⊆ 新)は受理され、スコープが更新される。
   // 縮小の拒否(grant-scope-narrowed)はベクター authz-grant-scope-narrowed が固定する
+  const check = "chain semantic: re-grant widening accepted";
   const eGrant = entryAt(9);
   const owner = vectorKeys["user-owner-0001"];
   if (eGrant.op !== "grant_server" || owner === undefined) {
-    c.push("chain semantic: re-grant widening accepted", false, "setup failed");
+    c.push(check, false, "setup failed");
     return;
   }
   const widened = await signAs("user-owner-0001", {
@@ -833,14 +796,18 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
       scopeEnvironmentIds: [...eGrant.payload.scopeEnvironmentIds, "env-stage-0003"],
     },
   });
-  const result =
-    widened === undefined ? undefined : await verifyChain([...typedEntries.slice(0, 9), widened]);
-  const grant =
-    result !== undefined && result.ok
-      ? result.value.serverGrants.get(eGrant.payload.serverKeyFingerprintHex)
-      : undefined;
+  if (widened === undefined) {
+    c.push(check, false, "signing failed");
+    return;
+  }
+  const result = await verifyChain([...typedEntries.slice(0, 9), widened]);
+  if (!result.ok) {
+    c.push(check, false, "widened re-grant must verify");
+    return;
+  }
+  const grant = result.value.serverGrants.get(eGrant.payload.serverKeyFingerprintHex);
   c.push(
-    "chain semantic: re-grant widening accepted",
+    check,
     grant !== undefined &&
       grant.scopeEnvironmentIds.length === 3 &&
       // 二層判定の独立: scope だけ触った再 grant でも lease_policy は新 payload の値

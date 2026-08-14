@@ -1,6 +1,6 @@
 // chain-entries.json のベクターを @maruhi/crypto の型付きエントリへ変換するヘルパ。
 
-import type { ChainEntry, ChainOperation, Role } from "../../src/index.ts";
+import type { ChainEntry, ChainOperation, Role, ServerGrant } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
 
 export interface VectorEntry {
@@ -36,7 +36,7 @@ interface VectorNegative {
 }
 
 /** grant_server payload / 導出状態の lease_policy のベクター表現(§6.2)。 */
-export interface VectorLeasePolicyIssuer {
+interface VectorLeasePolicyIssuer {
   readonly issuer_url: string;
   readonly audience: string;
   readonly claim_constraints: readonly {
@@ -83,6 +83,38 @@ interface VectorHeadState {
   readonly members: Readonly<Record<string, string>>;
   readonly server_grants: readonly VectorServerGrant[];
   readonly environments: Readonly<Record<string, VectorEnvironmentState>>;
+}
+
+/**
+ * 導出状態の有効 grant 集合がベクター期待(snake_case)と一致するか
+ * (§6.2 — scope + lease_policy 込み。chain.ts / chain-negative.ts で共用)。
+ */
+export function serverGrantsMatchVector(
+  serverGrants: ReadonlyMap<string, ServerGrant>,
+  expected: readonly VectorServerGrant[],
+): boolean {
+  return (
+    serverGrants.size === expected.length &&
+    expected.every((grant) => {
+      const actual = serverGrants.get(grant.server_key_fingerprint_hex);
+      return (
+        actual !== undefined &&
+        actual.serverEncPubHex === grant.server_enc_pub_hex &&
+        actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",") &&
+        // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
+        JSON.stringify(
+          actual.leasePolicy.map((element) => ({
+            issuer_url: element.issuerUrl,
+            audience: element.audience,
+            claim_constraints: element.claimConstraints.map((constraint) => ({
+              claim_name: constraint.claimName,
+              claim_value: constraint.claimValue,
+            })),
+          })),
+        ) === JSON.stringify(grant.lease_policy)
+      );
+    })
+  );
 }
 
 export const vectorEntries = chainVectors.entries as readonly VectorEntry[];

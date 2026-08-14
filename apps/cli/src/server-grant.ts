@@ -61,6 +61,50 @@ export interface GrantSummary {
   readonly alreadyRegistered: number;
 }
 
+/** スコープの各環境がチェーン上に存在するか(不成立なら理由の文字列)。 */
+function scopeExistsRejection(verified: VerifiedProject, scope: readonly string[]): string | null {
+  for (const environmentId of scope) {
+    if (!verified.state.environments.has(environmentId)) {
+      return `環境 ${environmentId} はチェーン上に存在しません(create_environment 未観測)。--environments には存在する環境 ID を指定してください`;
+    }
+  }
+  return null;
+}
+
+/**
+ * duplicate-server-key(§6.2)の早期検査: サーバー enc 公開鍵が現メンバーの
+ * enc 公開鍵と一致する grant は合意規則で無効になる。
+ */
+function duplicateServerKeyRejection(
+  verified: VerifiedProject,
+  serverEncPubHex: string,
+): string | null {
+  for (const chainMember of verified.state.members.values()) {
+    if (chainMember.encPubHex === serverEncPubHex) {
+      return "サーバー enc 公開鍵が現メンバーの enc 公開鍵と一致しています(合意規則 duplicate-server-key — CRYPTO_SPEC §6.2)。デプロイメントの鍵設定を確認してください";
+    }
+  }
+  return null;
+}
+
+/**
+ * 再 grant 二層(§6.3): scope は拡大のみ。縮小には revoke_server(全環境
+ * ローテーション義務つき)を案内する。lease_policy は自由改訂。
+ */
+function scopeNarrowedRejection(
+  existing: ServerGrant | null,
+  scope: readonly string[],
+): string | null {
+  if (existing === null) {
+    return null;
+  }
+  const missing = existing.scopeEnvironmentIds.filter((id) => !scope.includes(id));
+  if (missing.length === 0) {
+    return null;
+  }
+  return `開示スコープは拡大のみ可能です(再 grant 規則 — CRYPTO_SPEC §6.3)。既存 grant のスコープに含まれる環境が指定から欠けています: ${missing.join(", ")}。縮小するには maruhi server revoke(全環境ローテーションを伴う — §7)を実行してから grant し直してください`;
+}
+
 /** grant_server 実行前の検査一式(再同期後のリトライでも同じ検査を通す)。 */
 function ensureGrantable(input: {
   readonly verified: VerifiedProject;
@@ -68,49 +112,17 @@ function ensureGrantable(input: {
   readonly scope: readonly string[];
   readonly serverConfig: ServerKeyConfig;
 }): Effect.Effect<{ readonly existing: ServerGrant | null }, CliError> {
-  return Effect.gen(function* () {
-    const member = input.verified.state.members.get(input.signerUserId);
-    if (member === undefined || member.role !== "owner") {
-      return yield* Effect.fail(
-        cliError("grant_server は owner のみが実行できます(CRYPTO_SPEC §6.2)"),
-      );
-    }
-    for (const environmentId of input.scope) {
-      if (!input.verified.state.environments.has(environmentId)) {
-        return yield* Effect.fail(
-          cliError(
-            `環境 ${environmentId} はチェーン上に存在しません(create_environment 未観測)。--environments には存在する環境 ID を指定してください`,
-          ),
-        );
-      }
-    }
-    // duplicate-server-key(§6.2)の早期検査: サーバー enc 公開鍵が現メンバーの
-    // enc 公開鍵と一致する grant は合意規則で無効になる
-    for (const chainMember of input.verified.state.members.values()) {
-      if (chainMember.encPubHex === input.serverConfig.serverEncPubHex) {
-        return yield* Effect.fail(
-          cliError(
-            "サーバー enc 公開鍵が現メンバーの enc 公開鍵と一致しています(合意規則 duplicate-server-key — CRYPTO_SPEC §6.2)。デプロイメントの鍵設定を確認してください",
-          ),
-        );
-      }
-    }
-    // 再 grant 二層(§6.3): scope は拡大のみ。縮小には revoke_server(全環境
-    // ローテーション義務つき)を案内する。lease_policy は自由改訂
-    const existing =
-      input.verified.state.serverGrants.get(input.serverConfig.serverKeyFingerprintHex) ?? null;
-    if (existing !== null) {
-      const missing = existing.scopeEnvironmentIds.filter((id) => !input.scope.includes(id));
-      if (missing.length > 0) {
-        return yield* Effect.fail(
-          cliError(
-            `開示スコープは拡大のみ可能です(再 grant 規則 — CRYPTO_SPEC §6.3)。既存 grant のスコープに含まれる環境が指定から欠けています: ${missing.join(", ")}。縮小するには maruhi server revoke(全環境ローテーションを伴う — §7)を実行してから grant し直してください`,
-          ),
-        );
-      }
-    }
-    return { existing };
-  });
+  const member = input.verified.state.members.get(input.signerUserId);
+  if (member === undefined || member.role !== "owner") {
+    return Effect.fail(cliError("grant_server は owner のみが実行できます(CRYPTO_SPEC §6.2)"));
+  }
+  const existing =
+    input.verified.state.serverGrants.get(input.serverConfig.serverKeyFingerprintHex) ?? null;
+  const rejection =
+    scopeExistsRejection(input.verified, input.scope) ??
+    duplicateServerKeyRejection(input.verified, input.serverConfig.serverEncPubHex) ??
+    scopeNarrowedRejection(existing, input.scope);
+  return rejection !== null ? Effect.fail(cliError(rejection)) : Effect.succeed({ existing });
 }
 
 function samePolicy(a: readonly LeasePolicyIssuer[], b: readonly LeasePolicyIssuer[]): boolean {
@@ -348,36 +360,32 @@ function backfillEnvironment(input: {
       wraps.push(built.wrap);
     }
 
+    // 登録(409 = DekWrapExists は「登録済み」として吸収 — 再実行の収束)
     const register = (deks: readonly WrappedDek[]) =>
-      input.client.deks.register({
-        params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-        payload: { deks },
-      });
+      input.client.deks
+        .register({
+          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+          payload: { deks },
+        })
+        .pipe(
+          Effect.map(() => ({ kind: "ok" }) as const),
+          Effect.catch((error) =>
+            error instanceof DekWrapExistsError
+              ? Effect.succeed({ kind: "exists" } as const)
+              : Effect.fail(toCliError(error)),
+          ),
+        );
 
     // 一括 → 409 ならエポック単位(バッチは原子的受理のため、部分登録済みの
     // 再実行では一括が 409 になる)
-    const batch = yield* register(wraps).pipe(
-      Effect.map(() => ({ kind: "ok" }) as const),
-      Effect.catch((error) =>
-        error instanceof DekWrapExistsError
-          ? Effect.succeed({ kind: "exists" } as const)
-          : Effect.fail(toCliError(error)),
-      ),
-    );
+    const batch = yield* register(wraps);
     if (batch.kind === "ok") {
       return { registered: wraps.length, alreadyRegistered: 0 };
     }
     let registered = 0;
     let alreadyRegistered = 0;
     for (const wrap of wraps) {
-      const single = yield* register([wrap]).pipe(
-        Effect.map(() => ({ kind: "ok" }) as const),
-        Effect.catch((error) =>
-          error instanceof DekWrapExistsError
-            ? Effect.succeed({ kind: "exists" } as const)
-            : Effect.fail(toCliError(error)),
-        ),
-      );
+      const single = yield* register([wrap]);
       if (single.kind === "ok") {
         registered += 1;
       } else {

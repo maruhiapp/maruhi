@@ -548,6 +548,18 @@ function envActionFlagRejection(
   if (!isEnvAction(action)) {
     return null;
   }
+  return actionFlagRejection("env", ENV_ACTIONS, ENV_ACTION_FLAGS, action, tokens, args);
+}
+
+/** envActionFlagRejection / serverActionFlagRejection の共通本体。 */
+function actionFlagRejection<A extends string>(
+  command: string,
+  actions: readonly A[],
+  flags: Readonly<Record<A, ReadonlySet<string>>>,
+  action: A,
+  tokens: readonly ArgTokenShape[],
+  args: ArgTable,
+): string | null {
   for (const token of tokens) {
     // 打たれた綴り(短縮形・`--no-` の否定形)から宣言名へ戻して照合する。
     // 綴りのまま引くと `env create --no-new-epoch` が rotate 専用として
@@ -556,12 +568,12 @@ function envActionFlagRejection(
     if (declared === undefined) {
       continue;
     }
-    const owners = optionRestrictedTo(ENV_ACTIONS, ENV_ACTION_FLAGS, action, declared);
+    const owners = optionRestrictedTo(actions, flags, action, declared);
     if (owners === null) {
       continue;
     }
-    const usable = owners.map((owner) => `env ${owner}`).join(" / ");
-    return `${typedName(token)} は env ${action} では使えません(${usable} 用のオプションです)`;
+    const usable = owners.map((owner) => `${command} ${owner}`).join(" / ");
+    return `${typedName(token)} は ${command} ${action} では使えません(${usable} 用のオプションです)`;
   }
   return null;
 }
@@ -725,19 +737,7 @@ function serverActionFlagRejection(
   if (!isServerAction(action)) {
     return null;
   }
-  for (const token of tokens) {
-    const declared = declaredOptionName(token, args);
-    if (declared === undefined) {
-      continue;
-    }
-    const owners = optionRestrictedTo(SERVER_ACTIONS, SERVER_ACTION_FLAGS, action, declared);
-    if (owners === null) {
-      continue;
-    }
-    const usable = owners.map((owner) => `server ${owner}`).join(" / ");
-    return `${typedName(token)} は server ${action} では使えません(${usable} 用のオプションです)`;
-  }
-  return null;
+  return actionFlagRejection("server", SERVER_ACTIONS, SERVER_ACTION_FLAGS, action, tokens, args);
 }
 
 /**
@@ -824,49 +824,74 @@ function parseLeasePolicy(content: string): readonly LeasePolicyIssuer[] | strin
   }
   const elements: LeasePolicyIssuer[] = [];
   for (const element of parsed) {
-    if (typeof element !== "object" || element === null || Array.isArray(element)) {
-      return "各要素は { issuerUrl, audience, claimConstraints } のオブジェクトである必要があります";
+    const result = parseLeaseElement(element);
+    if (typeof result === "string") {
+      return result;
     }
-    const record = element as Record<string, unknown>;
-    if (!leaseFieldOk(record["issuerUrl"], false) || !leaseFieldOk(record["audience"], false)) {
-      return `issuerUrl / audience は非空の文字列(${MAX_LEASE_FIELD_BYTES} バイト以下)である必要があります`;
-    }
-    const constraintsValue = record["claimConstraints"] ?? {};
-    if (
-      typeof constraintsValue !== "object" ||
-      constraintsValue === null ||
-      Array.isArray(constraintsValue)
-    ) {
-      return "claimConstraints は { claim 名: 値 } のオブジェクトである必要があります";
-    }
-    const entries = Object.entries(constraintsValue as Record<string, unknown>);
-    if (entries.length > MAX_LEASE_CLAIM_CONSTRAINTS) {
-      return `claimConstraints は要素あたり ${MAX_LEASE_CLAIM_CONSTRAINTS} 件以下です(合意規則)`;
-    }
-    const claimConstraints: { claimName: string; claimValue: string }[] = [];
-    for (const [claimName, claimValue] of entries) {
-      if (!leaseFieldOk(claimName, false) || !leaseFieldOk(claimValue, true)) {
-        return `claim 制約の名前は非空・値は文字列(いずれも ${MAX_LEASE_FIELD_BYTES} バイト以下)である必要があります`;
-      }
-      claimConstraints.push({ claimName, claimValue });
-    }
-    // 制約はコードポイント昇順(§6.2 の SHOULD)。名前はオブジェクトキーなので一意
-    claimConstraints.sort((a, b) => (a.claimName < b.claimName ? -1 : 1));
-    elements.push({
-      issuerUrl: record["issuerUrl"] as string,
-      audience: record["audience"] as string,
-      claimConstraints,
-    });
+    elements.push(result);
   }
-  // 要素もコードポイント昇順 + 重複除去(SHOULD。評価は存在量化 — AUTH_SPEC §14-1 —
-  // なので順序・重複は意味論に影響しないが、署名対象バイト列を決定論にする)
+  return canonicalizeLeaseElements(elements);
+}
+
+/** lease_policy の 1 要素の解釈(不正なら理由の文字列)。 */
+function parseLeaseElement(element: unknown): LeasePolicyIssuer | string {
+  if (typeof element !== "object" || element === null || Array.isArray(element)) {
+    return "各要素は { issuerUrl, audience, claimConstraints } のオブジェクトである必要があります";
+  }
+  const record = element as Record<string, unknown>;
+  if (!leaseFieldOk(record["issuerUrl"], false) || !leaseFieldOk(record["audience"], false)) {
+    return `issuerUrl / audience は非空の文字列(${MAX_LEASE_FIELD_BYTES} バイト以下)である必要があります`;
+  }
+  const claimConstraints = parseLeaseConstraints(record["claimConstraints"] ?? {});
+  if (typeof claimConstraints === "string") {
+    return claimConstraints;
+  }
+  return {
+    issuerUrl: record["issuerUrl"] as string,
+    audience: record["audience"] as string,
+    claimConstraints,
+  };
+}
+
+/** claimConstraints オブジェクトの解釈と昇順ソート(不正なら理由の文字列)。 */
+function parseLeaseConstraints(
+  value: unknown,
+): { claimName: string; claimValue: string }[] | string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "claimConstraints は { claim 名: 値 } のオブジェクトである必要があります";
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_LEASE_CLAIM_CONSTRAINTS) {
+    return `claimConstraints は要素あたり ${MAX_LEASE_CLAIM_CONSTRAINTS} 件以下です(合意規則)`;
+  }
+  const claimConstraints: { claimName: string; claimValue: string }[] = [];
+  for (const [claimName, claimValue] of entries) {
+    if (!leaseFieldOk(claimName, false) || !leaseFieldOk(claimValue, true)) {
+      return `claim 制約の名前は非空・値は文字列(いずれも ${MAX_LEASE_FIELD_BYTES} バイト以下)である必要があります`;
+    }
+    claimConstraints.push({ claimName, claimValue });
+  }
+  // 制約はコードポイント昇順(§6.2 の SHOULD)。名前はオブジェクトキーなので一意
+  claimConstraints.sort((a, b) => (a.claimName < b.claimName ? -1 : 1));
+  return claimConstraints;
+}
+
+/**
+ * 要素のコードポイント昇順 + 重複除去(SHOULD。評価は存在量化 — AUTH_SPEC §14-1 —
+ * なので順序・重複は意味論に影響しないが、署名対象バイト列を決定論にする)。
+ */
+function canonicalizeLeaseElements(
+  elements: readonly LeasePolicyIssuer[],
+): readonly LeasePolicyIssuer[] {
   const canonical = elements
     .map((element) => ({ element, key: JSON.stringify(element) }))
     .toSorted((a, b) => (a.key < b.key ? -1 : 1));
   const deduped: LeasePolicyIssuer[] = [];
+  let previousKey: string | null = null;
   for (const { element, key } of canonical) {
-    if (deduped.length === 0 || JSON.stringify(deduped[deduped.length - 1]) !== key) {
+    if (key !== previousKey) {
       deduped.push(element);
+      previousKey = key;
     }
   }
   return deduped;

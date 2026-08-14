@@ -12,6 +12,7 @@ import {
   verifyChain,
 } from "../../src/index.ts";
 import {
+  serverGrantsMatchVector,
   toTypedEntry,
   typedEntries,
   vectorEntries,
@@ -105,27 +106,8 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
     Object.entries(expected.members).every(
       ([userId, role]) => state.members.get(userId)?.role === role,
     );
-  const grantsMatch =
-    state.serverGrants.size === expected.server_grants.length &&
-    expected.server_grants.every((grant) => {
-      const actual = state.serverGrants.get(grant.server_key_fingerprint_hex);
-      return (
-        actual !== undefined &&
-        actual.serverEncPubHex === grant.server_enc_pub_hex &&
-        actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",") &&
-        // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
-        JSON.stringify(
-          actual.leasePolicy.map((element) => ({
-            issuer_url: element.issuerUrl,
-            audience: element.audience,
-            claim_constraints: element.claimConstraints.map((constraint) => ({
-              claim_name: constraint.claimName,
-              claim_value: constraint.claimValue,
-            })),
-          })),
-        ) === JSON.stringify(grant.lease_policy)
-      );
-    });
+  // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
+  const grantsMatch = serverGrantsMatchVector(state.serverGrants, expected.server_grants);
   // 環境集合はチェーン導出(§6.2): 期待に無い環境が導出されてもならない
   // (「未観測なら初期値 1」の廃止 — 2026-08-03)
   const environmentsMatch =

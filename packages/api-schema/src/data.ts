@@ -237,7 +237,7 @@ export type DistributedEnvironmentMetaStatement =
  * サーバー鍵(FP + enc 公開鍵で同定 — user_id を持たない)。省略時は member
  * (受信者クラス導入前のワイヤと同形)。
  */
-export const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
+const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
 
 /**
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The

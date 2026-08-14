@@ -54,7 +54,7 @@ function recipientEncPubHex(recipient: WrapRecipient): string {
  * スコープに含まれる有効 grant のサーバー鍵。順序は決定論(member を user_id
  * 昇順 → server を FP 昇順)。
  */
-export function wrapRecipientsFor(
+function wrapRecipientsFor(
   verified: VerifiedProject,
   environmentId: string,
 ): readonly WrapRecipient[] {

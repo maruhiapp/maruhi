@@ -181,6 +181,29 @@ async function submitComposite(
   });
 }
 
+/** 再生の op を追いながら現メンバー / 有効 grant を更新する(複合のラップ集合の導出)。 */
+function trackReplayState(
+  entry: ReturnType<typeof toWireEntry>,
+  members: string[],
+  serverGrants: Map<string, TrackedServerGrant>,
+): void {
+  if (entry.op === "add_member") {
+    members.push(entry.payload.targetUserId);
+  } else if (entry.op === "remove_member") {
+    const index = members.indexOf(entry.payload.targetUserId);
+    if (index >= 0) {
+      members.splice(index, 1);
+    }
+  } else if (entry.op === "grant_server") {
+    serverGrants.set(entry.payload.serverKeyFingerprintHex, {
+      encPubHex: entry.payload.serverEncPubHex,
+      scope: entry.payload.scopeEnvironmentIds,
+    });
+  } else if (entry.op === "revoke_server") {
+    serverGrants.delete(entry.payload.serverKeyFingerprintHex);
+  }
+}
+
 /**
  * ベクターの seq 1..upTo をサーバーへ再生する(init + append + 複合。actor ごとの
  * PAT)。複合のラップ集合が要る現メンバー集合は op を追いながら導出する。
@@ -210,21 +233,7 @@ async function replayVectorChain(upTo: number): Promise<readonly string[]> {
     }
     const response = await appendEntry(vectorProjectId, vector.prev_hash_hex, entry);
     expect(response.status).toBe(200);
-    if (entry.op === "add_member") {
-      members.push(entry.payload.targetUserId);
-    } else if (entry.op === "remove_member") {
-      const index = members.indexOf(entry.payload.targetUserId);
-      if (index >= 0) {
-        members.splice(index, 1);
-      }
-    } else if (entry.op === "grant_server") {
-      serverGrants.set(entry.payload.serverKeyFingerprintHex, {
-        encPubHex: entry.payload.serverEncPubHex,
-        scope: entry.payload.scopeEnvironmentIds,
-      });
-    } else if (entry.op === "revoke_server") {
-      serverGrants.delete(entry.payload.serverKeyFingerprintHex);
-    }
+    trackReplayState(entry, members, serverGrants);
   }
   return members;
 }
