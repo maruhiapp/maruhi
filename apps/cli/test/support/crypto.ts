@@ -3,7 +3,12 @@
 // チェーン組立・ワイヤ値の共通コアは @maruhi/crypto/test-support
 // (server テスト支援と共有 — session-11 §5 裁定)。
 
-import type { ChainOperation, EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
+import type {
+  ChainOperation,
+  EncryptionKeyPair,
+  GrantServerPayload,
+  SigningKeyPair,
+} from "@maruhi/crypto";
 import {
   computeDekCommitment,
   computeUserKeyFingerprint,
@@ -158,9 +163,16 @@ export function rotateEpochOp(
 /** grant_server(サーバー鍵はランダム生成。FP = SHA-256(enc)[:16] — §9)。 */
 export async function grantServerOp(
   scopeEnvironmentIds: readonly string[],
+  leasePolicy: GrantServerPayload["leasePolicy"] = [],
+  serverEncPubHex?: string,
 ): Promise<ChainOperation> {
-  const serverPair = await generateEncryptionKeyPair({ extractable: true });
-  const serverEncPub = await exportEncryptionPublicKey(serverPair.publicKey);
+  let serverEncPub: Uint8Array;
+  if (serverEncPubHex === undefined) {
+    const serverPair = await generateEncryptionKeyPair({ extractable: true });
+    serverEncPub = await exportEncryptionPublicKey(serverPair.publicKey);
+  } else {
+    serverEncPub = hexBytes(serverEncPubHex);
+  }
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", serverEncPub as BufferSource),
   );
@@ -170,8 +182,14 @@ export async function grantServerOp(
       serverEncPubHex: encodeHex(serverEncPub),
       serverKeyFingerprintHex: encodeHex(digest.slice(0, 16)),
       scopeEnvironmentIds: [...scopeEnvironmentIds],
+      leasePolicy,
     },
   };
+}
+
+/** revoke_server(§6.2 — 失効対象はサーバー鍵 FP で指す)。 */
+export function revokeServerOp(serverKeyFingerprintHex: string): ChainOperation {
+  return { op: "revoke_server", payload: { serverKeyFingerprintHex } };
 }
 
 /** RecipientDek 形(配布応答)のワイヤ表現。 */

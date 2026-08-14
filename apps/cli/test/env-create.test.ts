@@ -463,27 +463,84 @@ describe("maruhi env create", () => {
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("作成する環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {
+  it("作成する環境が grant_server の開示スコープに入っていれば、完全集合にサーバー宛ラップを含めて成功する(§12-4)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
-      // 未作成 ID を先回りで開示したスコープ
+      // 未作成 ID を先回りで開示したスコープ(スコープの存在検査は合意規則にない)
       { actor: owner, operation: await grantServerOp(["staging"]) },
     ]);
-    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
-    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("grant_server");
+    const grantEntry = built.entries[1];
+    if (grantEntry?.op !== "grant_server") throw new Error("grant entry missing");
+    const bodies: unknown[] = [];
+    const env = await startEnv(
+      built.projectId,
+      [
+        chainHandler(built.projectId, built),
+        onRequest("POST", `/projects/${built.projectId}/environments`, (request) => {
+          bodies.push(request.body);
+          return {
+            status: 200,
+            json: {
+              environmentId: "staging",
+              currentEpoch: 1,
+              headSeq: built.entries.length + 1,
+              headHashHex: "cd".repeat(32),
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    const body = bodies[0] as {
+      deks: readonly {
+        recipientClass?: string;
+        recipientUserId: string;
+        recipientEncPubHex: string;
+      }[];
+    };
+    // 完全集合 = 現メンバー(owner)+ スコープ内 grant のサーバー鍵。
+    // サーバー宛は recipient 位置にサーバー鍵 FP(CRYPTO_SPEC §9)
+    expect(body.deks).toHaveLength(2);
+    const serverWrap = body.deks.find((wrap) => wrap.recipientClass === "server");
+    expect(serverWrap?.recipientUserId).toBe(grantEntry.payload.serverKeyFingerprintHex);
+    expect(serverWrap?.recipientEncPubHex).toBe(grantEntry.payload.serverEncPubHex);
   });
 
-  it("スコープが空の grant_server は全環境扱いで拒否する(§6.2 が空の意味を定めていない)", async () => {
+  it("スコープが空の grant_server はどの環境も対象にしない(サーバー宛ラップなしで作成できる)", async () => {
+    // §6.2 は空スコープの意味を定めないが、完全集合の判定(§12-4)は
+    // 「スコープに含まれる環境」なので空 = 対象なし。クライアントとサーバーで
+    // 同じ includes 判定を使う(割れると複合が恒常的に 422 になる)
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: await grantServerOp([]) },
     ]);
-    const env = await startEnv(built.projectId, [chainHandler(built.projectId, built)], owner);
-    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("開示スコープ");
+    const bodies: unknown[] = [];
+    const env = await startEnv(
+      built.projectId,
+      [
+        chainHandler(built.projectId, built),
+        onRequest("POST", `/projects/${built.projectId}/environments`, (request) => {
+          bodies.push(request.body);
+          return {
+            status: 200,
+            json: {
+              environmentId: "staging",
+              currentEpoch: 1,
+              headSeq: built.entries.length + 1,
+              headHashHex: "cd".repeat(32),
+            },
+          };
+        }),
+      ],
+      owner,
+    );
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
+    const body = bodies[0] as { deks: readonly { recipientClass?: string }[] };
+    expect(body.deks).toHaveLength(1);
+    expect(body.deks.every((wrap) => wrap.recipientClass === undefined)).toBe(true);
   });
 
   it("別環境だけを開示した grant_server は、他環境の作成を止めない(§6.2 のスコープは部分集合)", async () => {

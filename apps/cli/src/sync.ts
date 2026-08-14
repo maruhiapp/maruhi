@@ -50,6 +50,12 @@ export interface VerifiedProject {
    * 消さない — session-14 裁定 A)。
    */
   readonly keyHistory: ReadonlyMap<string, readonly KeyBinding[]>;
+  /**
+   * 検証済みチェーンのエントリ列(seq 順)。導出状態に現れない履歴事実
+   * (例: 最後の revoke_server の seq — server revoke の中断復旧の基準)を
+   * 参照する読み取り専用ビュー。
+   */
+  readonly entries: readonly ChainEntry[];
 }
 
 function bindingKey(binding: KeyBinding): string {
@@ -180,7 +186,7 @@ export function syncProject(
           }(検証済みチェーンから鍵索引を構築できません)`,
         ),
     });
-    return { projectId, state, history, keyHistory } satisfies VerifiedProject;
+    return { projectId, state, history, keyHistory, entries } satisfies VerifiedProject;
   });
 }
 

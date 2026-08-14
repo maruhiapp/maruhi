@@ -34,6 +34,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
+  removeMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
@@ -1456,23 +1457,27 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("epoch 2 未満の DEK のまま");
   });
 
-  it("再開経路でも前進した検証ビューでガードを再適用する(pull 中に grant_server が有効化された場合)", async () => {
-    // 4 エントリ目に grant_server。初回の同期では 3 エントリしか見えず、
-    // 環境ステートメントが seq 4 を宣言する(future head)ため有界再同期が走る
+  it("再開経路でも前進した検証ビューでガードを再適用する(pull 中に自分が削除された場合)", async () => {
+    // 4 エントリ目で実行者(member)を削除。初回の同期では 3 エントリしか見えず、
+    // 環境ステートメントが seq 4 を宣言する(future head)ため有界再同期が走る。
+    // 旧テストは grant_server の有効化で拒否を固定していたが、受信者クラス server
+    // の実装(2026-08-12)で grant は再開を止めなくなった(再開経路は push のみで
+    // ラップ集合を作らない)。ガードの再適用そのものは在籍・role で固定し続ける
+    const runner = await makeTestUser("user-member-3333");
     const granted = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
-      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-      { actor: owner, operation: await grantServerOp([ENV_ID]) },
+      { actor: owner, operation: addMemberOp(runner, "member") },
+      { actor: runner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: runner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+      { actor: owner, operation: removeMemberOp(runner) },
     ]);
     const futureEnvStatement = await environmentStatementFor({
       projectId: granted.projectId,
       environmentId: ENV_ID,
       name: ENV_ID,
       author: owner,
-      head: headOf(granted, 4),
+      head: headOf(granted, 5),
     });
-    const common = { projectId: granted.projectId, environmentId: ENV_ID };
     const variables = [
       await variableAt({
         built: granted,
@@ -1482,15 +1487,15 @@ describe("maruhi env rotate", () => {
         epoch: 1,
         version: 1,
         plaintext: "key-abc",
-        headSeq: 2,
+        headSeq: 3,
       }),
     ];
     let chainCalls = 0;
     const pushPaths: string[] = [];
     const handlers: MockHandler[] = [
       onRequest("GET", `/projects/${granted.projectId}/chain`, () => {
-        // 初回は grant_server を含まない 3 エントリ、再同期で 4 エントリ
-        const count = chainCalls === 0 ? 3 : 4;
+        // 初回は削除を含まない 4 エントリ(runner は在籍・epoch 2)、再同期で 5
+        const count = chainCalls === 0 ? 4 : 5;
         chainCalls += 1;
         return {
           status: 200,
@@ -1523,12 +1528,11 @@ describe("maruhi env rotate", () => {
     const server = await MockServer.start(handlers);
     servers.push(server);
     const env = await makeTestEnv();
-    seedSession(env, server.origin, owner);
+    seedSession(env, server.origin, runner);
     await seedConfig(env, { server: server.origin, defaultProject: granted.projectId });
-    void common;
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("grant_server");
+    expect(env.errors.join("\n")).toContain("チェーン導出メンバーではありません");
     // 再開経路でも書き込みには進んでいない
     expect(pushPaths).toHaveLength(0);
   });
@@ -2697,18 +2701,46 @@ describe("maruhi env rotate", () => {
     expect(server.requests.length).toBeGreaterThan(0);
   });
 
-  it("対象環境が grant_server の開示スコープに入っていれば拒否する(Phase 2 未実装)", async () => {
+  it("対象環境が grant_server の開示スコープに入っていれば、完全集合にサーバー宛ラップを含めてローテーションする(§12-4 / §7)", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: await grantServerOp([ENV_ID]) },
     ]);
-    const state = makeServer({ built, variables: [], deks: [], currentEpoch: 1 });
+    const grantEntry = built.entries[2];
+    if (grantEntry?.op !== "grant_server") throw new Error("grant entry missing");
+    const state = makeServer({
+      built,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
     const env = await startEnv(state.handlers, owner);
 
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "テスト"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("grant_server");
-    expect(state.rotateBodies).toHaveLength(0);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "grant あり"], env.layer)).toBe(0);
+    expect(state.rotateBodies).toHaveLength(1);
+    const body = state.rotateBodies[0] as {
+      deks: readonly {
+        recipientClass?: string;
+        recipientUserId: string;
+        recipientEncPubHex: string;
+      }[];
+    };
+    // 完全集合 = 現メンバー(owner)+ スコープ内 grant のサーバー鍵(§7 の
+    // 再ラップ義務 — 再ラップしなければリース経路が停止する)
+    expect(body.deks).toHaveLength(2);
+    const serverWrap = body.deks.find((wrap) => wrap.recipientClass === "server");
+    expect(serverWrap?.recipientUserId).toBe(grantEntry.payload.serverKeyFingerprintHex);
+    expect(serverWrap?.recipientEncPubHex).toBe(grantEntry.payload.serverEncPubHex);
   });
 
   it("別環境だけを開示した grant_server は、この環境の失効ローテーションを止めない(§7)", async () => {
