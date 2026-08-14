@@ -10,3 +10,8 @@ coverage/
 
 # fallow のローカルキャッシュ(コミットする baseline は fallow-baselines/)
 .fallow/
+
+# Homebrew formula は生成物(apps/cli/scripts/generate-formula.ts が Release の
+# checksums.txt から作り、tap リポジトリへコピーする — docs/RELEASING.md)。
+# 形の例は packaging/homebrew/maruhi.example.rb をコミットしている
+packaging/homebrew/maruhi.rb

@@ -1,0 +1,136 @@
+# install script(packaging/install.sh)と Homebrew formula の検証。
+#
+# 実リリースには依存しない: `build:binaries` の成果物を実 OS runner へ配り、
+# ローカルの http / file:// から install.sh を実走させる(正例 + 改竄の負例)。
+# GitHub Releases に何も出ていない段階でも、この workflow だけで
+# 「入る / 改竄されたら入らない」が回る。
+#
+# 対象 runner は release.yml の smoke と同じ表(scripts/shared.ts の TARGETS)から
+# windows を除いた 4 種。install.sh 側の対応表との一致は
+# apps/cli/test/installer.test.ts が固定する。
+#
+# 外部 action は commit SHA でピン留めする(release.yml と同じ規律)。
+name: installer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+env:
+  # 「言わざる」原則(CLAUDE.md)を ci.yml / release.yml と同様に適用する
+  DO_NOT_TRACK: "1"
+  WRANGLER_SEND_METRICS: "false"
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 検証用の成果物(リリースと同じ生成経路)と、シェル・formula の静的検査
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # 依存コード(bun install / build)を実行する job にトークンを残さない
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # ubuntu runner にプリインストール済み(新規依存を増やさない)。
+      # install.sh は POSIX sh として検査する — 実行シェルが dash / busybox でも
+      # 壊れないことがこの script の前提
+      - name: Shellcheck (install script + テストハーネス)
+        run: |
+          shellcheck --shell=sh packaging/install.sh
+          shellcheck packaging/install-test.sh
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve version (単一の出所 = apps/cli/package.json)
+        id: version
+        run: |
+          VERSION=$(node -p "require('./apps/cli/package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # 対象表の単一の出所は scripts/shared.ts。ここでは windows を落とすだけで、
+      # 一覧そのものを YAML へ複製しない(release.yml の smoke と同じ導出)
+      - name: Export unix install matrix (single source = scripts/shared.ts)
+        id: matrix
+        run: |
+          MATRIX=$(bun apps/cli/scripts/print-smoke-matrix.ts |
+            jq -c '[.[] | select(.target | startswith("windows") | not)]')
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries + checksums
+        run: bun run --filter @maruhi/cli build:binaries
+
+      # 実物の checksums.txt から formula を組み、ruby で構文を確かめる。
+      # example(golden)側の構文も同時に見る — 生成器の出力形は
+      # apps/cli/test/installer.test.ts が example との一致で固定している
+      - name: Generate + syntax-check Homebrew formula
+        run: |
+          bun apps/cli/scripts/generate-formula.ts \
+            --checksums apps/cli/dist/checksums.txt \
+            --allow-prerelease \
+            --out "${RUNNER_TEMP}/maruhi.rb"
+          ruby -c "${RUNNER_TEMP}/maruhi.rb"
+          ruby -c packaging/homebrew/maruhi.example.rb
+
+      # 全対象を 1 アーティファクトで配る(release.yml の smoke と同じ理由:
+      # 対象別に分けると upload 側へ対象一覧の複製が戻ってくる)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-fixtures
+          path: apps/cli/dist/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  # 実 OS でのインストール。正例(http / file://・再インストール・他人の mh)と
+  # 負例(checksums 1 文字改竄・アーカイブ 1 バイト改竄・アセット不在・版の不一致)を
+  # packaging/install-test.sh が回す
+  install:
+    name: install (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.build.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: installer-fixtures
+          path: fixtures
+
+      # `${{ }}` を run へ直接展開しない(env 経由)。GitHub の hardening ガイダンス
+      - name: install.sh end-to-end (正例 + 改竄の負例)
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          bash packaging/install-test.sh \
+            --dist fixtures \
+            --target "${TARGET}" \
+            --version "${VERSION}"

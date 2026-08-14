@@ -36,6 +36,44 @@
    `npm view maruhi dist-tags` が期待どおりであること、npm ページに provenance
    バッジが出ていること
 
+## Homebrew tap の更新(安定版のみ。リリース完了後)
+
+tap は別リポジトリ `maruhiapp/homebrew-maruhi`。formula は**生成物**で、
+[`apps/cli/scripts/generate-formula.ts`](../apps/cli/scripts/generate-formula.ts) が
+Release の `checksums.txt` から作る(手で sha256 を書き写さない)。
+
+**プレリリース(`-rc.N`)は tap に載せない** — 生成器も既定で拒否する
+(`--allow-prerelease` で上書きできるが、通常は使わない)。
+
+### 初回のみ(所有者の人間タスク)
+
+1. GitHub で **`maruhiapp/homebrew-maruhi`** を作る(public。名前は `homebrew-` 接頭辞が必須 —
+   これで `brew install maruhiapp/maruhi/maruhi` が解決する)
+2. リポジトリ直下に `Formula/` ディレクトリを作る(README があると親切)
+
+### 毎リリース
+
+```sh
+# 1. Release の checksums.txt から formula を生成(既定の出力は packaging/homebrew/maruhi.rb)
+bun apps/cli/scripts/generate-formula.ts --version v0.1.0
+
+# 2. tap リポジトリへコピーして push(内容の差分は version / url / sha256 の 4 対象ぶんだけ)
+cp packaging/homebrew/maruhi.rb ../homebrew-maruhi/Formula/maruhi.rb
+cd ../homebrew-maruhi && git add Formula/maruhi.rb && git commit -m "maruhi 0.1.0" && git push
+
+# 3. 実機で確認
+brew untap maruhiapp/maruhi 2>/dev/null; brew install maruhiapp/maruhi/maruhi
+maruhi --version && mh --version
+brew test maruhi
+```
+
+`--checksums <path>`(ローカルの `apps/cli/dist/checksums.txt` を使う)、`--out <path>`
+(tap のパスへ直接書く)も指定できる。`--version` を省略すると `apps/cli/package.json` の版を使う。
+
+自動 PR(release workflow から tap へ push)にしていないのは、cross-repo の書き込み資格情報を
+`contents: write` + `id-token: write` を持つリリース経路へ足すことになるため(ADR-0015 の
+権限最小化と釣り合わない)。リリース頻度が上がったら再検討する。
+
 ## ドライラン(タグを打つ前の配管検証)
 
 release workflow は `workflow_dispatch` で publish 以外(ビルド + 5 OS スモーク +
@@ -70,3 +108,8 @@ trusted publisher の設定 — workflow 名・org・allowed action)を直して
   (curl 取得なら付かない)。公証は公開準備の段階で対応(ROADMAP)
 - リリース成果物はソース由来のみ(バイナリ・バンドル JS・チェックサム)。
   `.dev.vars` 等の秘密がワークフローに入る経路はない
+- **install script はタグ固定の raw URL で配る**
+  (`raw.githubusercontent.com/maruhiapp/maruhi/<tag>/packaging/install.sh`)。
+  タグを打った時点でその版の script が公開されるので、リリース手順としての追加作業はない。
+  script 自体の検証は PR ごとに [`installer.yml`](../.github/workflows/installer.yml) が
+  実 OS 4 種で回している(実リリースには依存しない)
