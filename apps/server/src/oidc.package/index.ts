@@ -9,4 +9,9 @@
 // 構造として保証する。
 
 export { makeJwksCache } from "./jwks.ts";
-export { makeOidcVerifier, OidcVerifier, type VerifiedOidcToken } from "./verifier.ts";
+export {
+  makeOidcVerifier,
+  OIDC_CLOCK_SKEW_MS,
+  OidcVerifier,
+  type VerifiedOidcToken,
+} from "./verifier.ts";

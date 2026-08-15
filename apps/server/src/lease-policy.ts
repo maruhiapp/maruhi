@@ -17,6 +17,13 @@ import type { LeasePolicyIssuer, ServerGrant } from "@maruhi/crypto";
 import type { VerifiedOidcToken } from "./oidc.package/index.ts";
 
 /**
+ * ポリシー評価が読むトークンの部分。VerifiedOidcToken(worker 側)と RPC の
+ * LeaseTokenFacts(DO 側)の共通部分であり、評価が時刻系フィールドに依存
+ * しないこと(時刻検証は認証段で完了済み — §14-1)を型で固定する。
+ */
+type PolicyEvaluationToken = Pick<VerifiedOidcToken, "issuer" | "audiences" | "claims">;
+
+/**
  * claim 制約 1 件の評価(v1 = 完全一致のみ — §14-1)。
  *
  * **文字列以外の claim 値は決して一致しない**: 数値・真偽・配列を文字列へ
@@ -41,7 +48,7 @@ function claimMatches(
  * 許すため。単一文字列の `aud` は verifier が 1 要素配列へ正規化しており、
  * その場合この判定は完全一致に退化する。
  */
-function elementMatches(element: LeasePolicyIssuer, token: VerifiedOidcToken): boolean {
+function elementMatches(element: LeasePolicyIssuer, token: PolicyEvaluationToken): boolean {
   return (
     element.issuerUrl === token.issuer &&
     token.audiences.includes(element.audience) &&
@@ -54,7 +61,7 @@ function elementMatches(element: LeasePolicyIssuer, token: VerifiedOidcToken): b
  * 意味するため常に false になる(その grant はサーバー鍵宛ラップの登録のみを
  * 許す — CRYPTO_SPEC §6.2)。
  */
-export function leasePolicyAuthorizes(grant: ServerGrant, token: VerifiedOidcToken): boolean {
+export function leasePolicyAuthorizes(grant: ServerGrant, token: PolicyEvaluationToken): boolean {
   return grant.leasePolicy.some((element) => elementMatches(element, token));
 }
 

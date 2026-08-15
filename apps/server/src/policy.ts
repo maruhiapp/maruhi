@@ -5,6 +5,8 @@
 // 仕様適合エントリを拒否することはない(チェーン分裂を生まない)。値の引き上げは
 // 過去チェーンの有効性に影響しない。
 
+import { OIDC_CLOCK_SKEW_MS } from "./oidc.package/index.ts";
+
 /** §6.4: 1 エントリの正規化バイト列(entry_bytes)の受理上限。 */
 export const MAX_ENTRY_CANONICAL_BYTES = 1 * 1024 * 1024;
 
@@ -102,3 +104,14 @@ export const MAX_LEASES_PER_WINDOW = 300;
  * auth.login_failed と同じ規律(超過は不記録。プローブによる監査ログ肥大の遮断)。
  */
 export const MAX_LEASE_DENIED_ROWS_PER_WINDOW = 100;
+
+/**
+ * §14-1 の先着束縛(2026-08-15 裁定 — docs/notes/session-24.md): 束縛行の
+ * 保持余裕。行の生存期限は「トークンの exp + この余裕」で、余裕は**時刻検証の
+ * clock skew 以上**でなければならない(仕様の必須要件): 時刻検証がまだ受理
+ * しうるトークンの束縛行が先に失効すると、その差分の間だけリプレイが通る —
+ * PyPI trusted publishing の 2026 年監査が同型の不整合(JWT 検証 leeway 30 秒 >
+ * リプレイキャッシュ余命 5 秒)を指摘した先例。skew から導出することで
+ * この不変条件を構造的に満たす(2 倍は GC 実行時刻のずれへの追加余裕)。
+ */
+export const LEASE_BINDING_RETENTION_MARGIN_MS = 2 * OIDC_CLOCK_SKEW_MS;

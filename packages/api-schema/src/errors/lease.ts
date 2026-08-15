@@ -35,6 +35,13 @@ import { Schema } from "effect";
  *   `claims_digest` (CRYPTO_SPEC §9.1) is not uniquely determined. Distinct
  *   from `missing-claim`: the `aud` claim *is* present, and an operator
  *   reading the reason code should not go looking for a claim that exists
+ * - `token-replayed` — the token was already used to issue a lease to a
+ *   *different* ephemeral key (first-use binding — AUTH_SPEC §14-1 の先着束縛,
+ *   2026-08-15 裁定). Retrying with the same token never succeeds; a runtime
+ *   issuer (GitHub Actions) should mint a fresh token and retry once. Unlike
+ *   the other reasons this is checked after authorization (it needs the
+ *   project's binding state), which keeps existence hiding intact: only a
+ *   caller whose token already matches an on-chain lease policy can reach it
  */
 export const LeaseUnauthorizedReasonSchema = Schema.Literals([
   "malformed-token",
@@ -47,12 +54,16 @@ export const LeaseUnauthorizedReasonSchema = Schema.Literals([
   "token-not-yet-valid",
   "missing-claim",
   "ambiguous-audience",
+  "token-replayed",
 ]);
 
 /**
- * 401: the presented OIDC token failed verification (AUTH_SPEC §14-1 / §14-3).
- * Only authentication-stage failures are 401 — everything about *this
- * project's* grant, policy and scope is 404 (§14-1 の存在秘匿).
+ * 401: the presented OIDC token cannot be used (AUTH_SPEC §14-1 / §14-3).
+ * Everything here is attributable to the presented credential alone —
+ * everything about *this project's* grant, policy and scope is 404 (§14-1 の
+ * 存在秘匿). `token-replayed` is the one reason produced after authorization
+ * (see its note above); it still reveals nothing a policy-matching token
+ * holder would not learn from a successful lease.
  */
 export class LeaseUnauthorizedError extends Schema.TaggedError<LeaseUnauthorizedError>()(
   "LeaseUnauthorized",

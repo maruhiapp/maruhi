@@ -21,7 +21,9 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { toWireVariable } from "./data-http.ts";
+import { sha256Hex } from "./ids.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";
+import { LEASE_BINDING_RETENTION_MARGIN_MS } from "./policy.ts";
 import type { LeaseOutcome, LeaseTokenFacts } from "./programs-lease.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -79,6 +81,12 @@ function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
     case "unavailable": {
       return Effect.fail(new LeaseUnavailableError({ reason: rejection.reason }));
     }
+    // 先着束縛違反(§14-1)は 404 に畳まない: 提示資格情報に帰属する失敗であり、
+    // 正規ジョブ側で起きたとき(= トークンが盗まれて先に使われた)に診断可能で
+    // あることが可視化の半分。認可通過後にのみ到達するため存在秘匿と両立する
+    case "replayed": {
+      return Effect.fail(new LeaseUnauthorizedError({ reason: "token-replayed" }));
+    }
     case "not-found": {
       return Effect.fail(new ProjectNotFoundError({ projectId }));
     }
@@ -92,12 +100,20 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
       const verifier = yield* OidcVerifier;
       const token = yield* verifier.verify(payload.oidcToken, Date.now());
       const claimsDigestHex = yield* claimsDigestFor(token);
+      // 先着束縛(§14-1)の重複キー = トークン生バイト列の SHA-256。トークン
+      // 本体は DO へ渡さない(渡るのはハッシュ・検証済み claim・生存期限のみ)。
+      // 生存期限は「時刻検証がこのトークンを受理しうる最終時刻」以上
+      // (policy.ts の余裕は clock skew から導出 — 受理窓より短い束縛保持は
+      // その差分だけリプレイ窓になる)
+      const tokenHashHex = yield* Effect.promise(() => sha256Hex(payload.oidcToken));
       const facts: LeaseTokenFacts = {
         issuer: token.issuer,
         subject: token.subject,
         audiences: token.audiences,
         claims: token.claims,
         claimsDigestHex,
+        tokenHashHex,
+        bindingExpiresAtMs: token.expiresAtSec * 1000 + LEASE_BINDING_RETENTION_MARGIN_MS,
       };
       // 2. 認可以降は DO の 1 RPC(監査を同一 permit・同一同期ブロックで書く)
       const env = yield* WorkerEnv;

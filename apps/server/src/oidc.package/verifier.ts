@@ -33,8 +33,14 @@ const SUPPORTED_ISSUERS: readonly string[] = ["https://token.actions.githubuserc
 /** 許可アルゴリズム(§14-1)。対称鍵 alg と `none` はここに無い。 */
 const ALLOWED_ALGS: readonly AllowedAlg[] = ["RS256", "ES256"];
 
-/** 時刻検証の許容ずれ(§14-1: ±60 秒)。 */
-const CLOCK_SKEW_MS = 60 * 1000;
+/**
+ * 時刻検証の許容ずれ(§14-1: ±60 秒)。公開しているのは先着束縛(§14-1)の
+ * 保持余裕(policy.ts の LEASE_BINDING_RETENTION_MARGIN_MS)がこの値**以上**で
+ * あることを導出で保証するため — 受理窓より短い束縛保持はリプレイ窓になる
+ * (session-24 §2 の PyPI 監査の先例)。
+ */
+export const OIDC_CLOCK_SKEW_MS = 60 * 1000;
+const CLOCK_SKEW_MS = OIDC_CLOCK_SKEW_MS;
 
 /**
  * 検証済みトークンのうち、リース経路が使う値だけを取り出したもの。
@@ -47,6 +53,11 @@ export interface VerifiedOidcToken {
   /** `aud` は文字列 / 配列の両形を取るため、常に配列へ正規化する。 */
   readonly audiences: readonly string[];
   readonly claims: Readonly<Record<string, unknown>>;
+  /**
+   * 検証済み `exp`(秒)。先着束縛(§14-1)の束縛行の生存期限の入力になる —
+   * 生存期限は「時刻検証がこのトークンを受理しうる最終時刻」以上を要する。
+   */
+  readonly expiresAtSec: number;
 }
 
 export interface OidcVerifierShape {
@@ -251,10 +262,12 @@ export function makeOidcVerifier(
         yield* checkTimes(parsed.claims, nowMs);
         const subject = stringClaim(parsed.claims, "sub");
         const audiences = audiencesOf(parsed.claims);
-        if (subject === null || audiences === null) {
+        // exp は checkTimes が存在・型を検証済み(null はここに到達しない)
+        const expiresAtSec = numericClaim(parsed.claims, "exp");
+        if (subject === null || audiences === null || expiresAtSec === null) {
           return yield* unauthorized("missing-claim");
         }
-        return { issuer, subject, audiences, claims: parsed.claims };
+        return { issuer, subject, audiences, claims: parsed.claims, expiresAtSec };
       }),
   };
 }

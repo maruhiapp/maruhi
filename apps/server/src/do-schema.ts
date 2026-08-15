@@ -164,6 +164,21 @@ const LEASE_WINDOWS_DDL = `CREATE TABLE IF NOT EXISTS lease_windows (
    )`;
 
 /**
+ * ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定 —
+ * docs/notes/session-24.md)。発行時に「OIDC トークンの SHA-256 ハッシュ →
+ * 一時公開鍵」を記録し、同一トークン + 別鍵の再要求を拒否する材料にする。
+ * `expires_at` は「時刻検証が当該トークンを受理しうる最終時刻 + 余裕」
+ * (policy.ts の LEASE_BINDING_RETENTION_MARGIN_MS)で、行数は発行レート窓
+ * (300 回/時)と GC(data-store.ts — 記録時に期限切れを削除)で有界。
+ * トークン本体・claim は保存しない(ハッシュと公開鍵のみ — どちらも非機密)。
+ */
+const LEASE_BINDINGS_DDL = `CREATE TABLE IF NOT EXISTS lease_bindings (
+     token_hash_hex TEXT PRIMARY KEY,
+     ephemeral_pub_hex TEXT NOT NULL,
+     expires_at INTEGER NOT NULL
+   )`;
+
+/**
  * A single ordered migration step for the project DO's SQLite schema.
  *
  * `tables` lists the tables this step introduces — the test reset helper
@@ -226,6 +241,13 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     tables: ["lease_windows"],
     apply(sql) {
       sql.exec(LEASE_WINDOWS_DDL);
+    },
+  },
+  {
+    // ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定)
+    tables: ["lease_bindings"],
+    apply(sql) {
+      sql.exec(LEASE_BINDINGS_DDL);
     },
   },
 ];
