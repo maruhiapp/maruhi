@@ -50,6 +50,8 @@ interface VectorServerGrant {
   readonly server_enc_pub_hex: string;
   readonly scope_environments: readonly string[];
   readonly lease_policy: readonly VectorLeasePolicyIssuer[];
+  /** 有効 grant を確立したエントリの seq(再 grant で前進 — §6.3 / AUDIT_SPEC §3.5)。 */
+  readonly grant_seq: number;
 }
 
 interface VectorValidAppend {
@@ -100,6 +102,7 @@ export function serverGrantsMatchVector(
       return (
         actual !== undefined &&
         actual.serverEncPubHex === grant.server_enc_pub_hex &&
+        actual.grantSeq === grant.grant_seq &&
         actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",") &&
         // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
         JSON.stringify(

@@ -156,6 +156,14 @@ export interface ChainMember {
 export interface ServerGrant {
   readonly serverKeyFingerprintHex: string;
   readonly serverEncPubHex: string;
+  /**
+   * Seq of the `grant_server` entry that established this active grant — it
+   * moves forward on a re-grant (CRYPTO_SPEC §6.3 の再 grant 二層規則). This
+   * is the sole source of `server.lease_issued`'s `grant_chain_seq` (AUDIT_SPEC
+   * §3.5): deriving it here keeps the re-grant rules in the chain verifier
+   * rather than duplicating them in the server.
+   */
+  readonly grantSeq: number;
   readonly scopeEnvironmentIds: readonly string[];
   /** Lease policy of the latest accepted grant for this key (CRYPTO_SPEC §6.2). */
   readonly leasePolicy: readonly LeasePolicyIssuer[];

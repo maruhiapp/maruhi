@@ -153,3 +153,15 @@ export {
 
 // §9: 選択的開示(サーバー鍵)
 export { computeServerKeyFingerprint } from "./internal.package/index.ts";
+
+// §9.1: ワークロードリース — リースラップ(§5 と同一プリミティブ。info に
+// claims_digest を束縛)。ラップは応答スコープであり永続化しない
+export {
+  buildLeaseClaimsBytes,
+  buildLeaseWrapInfo,
+  computeLeaseClaimsDigest,
+  type LeaseClaims,
+  type LeaseWrapContext,
+  unwrapLeaseDek,
+  wrapLeaseDek,
+} from "./internal.package/index.ts";

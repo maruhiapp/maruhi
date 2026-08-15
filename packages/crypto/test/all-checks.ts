@@ -10,6 +10,7 @@ import { dekWrapChecks } from "./checks/dek-wrap.ts";
 import { encodingChecks } from "./checks/encoding.ts";
 import { fingerprintWordsChecks } from "./checks/fingerprint-words.ts";
 import { keysChecks } from "./checks/keys.ts";
+import { leaseWrapChecks } from "./checks/lease-wrap.ts";
 import { metadataSignatureChecks } from "./checks/metadata-signature.ts";
 import { recoveryChecks } from "./checks/recovery.ts";
 import { rfc9180Checks } from "./checks/rfc9180.ts";
@@ -28,6 +29,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await dekWrapChecks());
   groups.push(await dekWrapSignatureChecks());
   groups.push(await dekCommitmentChecks());
+  groups.push(await leaseWrapChecks());
   groups.push(await rfc9180Checks());
   groups.push(await chainChecks());
   groups.push(await chainNegativeChecks());
