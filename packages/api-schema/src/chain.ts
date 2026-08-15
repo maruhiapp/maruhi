@@ -103,6 +103,23 @@ export const RotateEpochEntrySchema = Schema.Struct({
   }),
 });
 
+/**
+ * One exact-match claim constraint of a grant_server lease policy element
+ * (CRYPTO_SPEC §6.2)。サイズ上限(要素 8 / 制約 8 / 各文字列 1024 バイト)は
+ * 合意規則であり verifyChain が検査する(Schema へ重複させない — 冒頭の方針)。
+ */
+const LeaseClaimConstraintSchema = Schema.Struct({
+  claimName: Schema.String,
+  claimValue: Schema.String,
+});
+
+/** One issuer element of a grant_server lease policy (CRYPTO_SPEC §6.2 / §9.1). */
+const LeasePolicyIssuerSchema = Schema.Struct({
+  issuerUrl: Schema.String,
+  audience: Schema.String,
+  claimConstraints: Schema.Array(LeaseClaimConstraintSchema),
+});
+
 const GrantServerEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("grant_server"),
@@ -110,6 +127,9 @@ const GrantServerEntrySchema = Schema.Struct({
     serverEncPubHex: PublicKeyHex,
     serverKeyFingerprintHex: KeyFingerprintHex,
     scopeEnvironmentIds: Schema.Array(Schema.String),
+    // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 3 段入れ子 LP は
+    // crypto 側 — 順序は署名対象の一部なのでオブジェクトでなく配列で保つ)
+    leasePolicy: Schema.Array(LeasePolicyIssuerSchema),
   }),
 });
 

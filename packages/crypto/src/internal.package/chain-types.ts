@@ -68,6 +68,28 @@ export interface RotateEpochPayload {
   readonly dekCommitmentHex: string;
 }
 
+/**
+ * One exact-match claim constraint of a lease policy element (CRYPTO_SPEC
+ * §6.2). v1 evaluation semantics (exact match only) live in AUTH_SPEC §14;
+ * the chain consensus rules fix the structure only.
+ */
+export interface LeaseClaimConstraint {
+  readonly claimName: string;
+  readonly claimValue: string;
+}
+
+/**
+ * One issuer element of a grant_server lease policy (CRYPTO_SPEC §6.2 /
+ * §9.1): an issuer-generic workload identity federation constraint. All
+ * claim constraints of an element must match (AND); any one element matching
+ * authorizes the lease (existential — AUTH_SPEC §14-1).
+ */
+export interface LeasePolicyIssuer {
+  readonly issuerUrl: string;
+  readonly audience: string;
+  readonly claimConstraints: readonly LeaseClaimConstraint[];
+}
+
 export interface GrantServerPayload {
   readonly serverEncPubHex: string;
   readonly serverKeyFingerprintHex: string;
@@ -81,6 +103,17 @@ export interface GrantServerPayload {
    * obligation.
    */
   readonly scopeEnvironmentIds: readonly string[];
+  /**
+   * Workload lease policy (CRYPTO_SPEC §6.2, 2026-08-12): the on-chain
+   * authorization source for the §9.1 lease path. Canonicalized as a
+   * three-level nested length-prefixed encoding whose lowercase-hex form is
+   * the fourth payload field — element and constraint order are part of the
+   * signed bytes. An empty list means "no lease path" (the grant only allows
+   * server-directed wrap registration). Unlike the scope, a re-grant may
+   * revise the lease policy freely (§6.3 — it is an ACL over the lease path
+   * and does not change the set of DEKs the server already knows).
+   */
+  readonly leasePolicy: readonly LeasePolicyIssuer[];
 }
 
 export interface RevokeServerPayload {
@@ -124,6 +157,8 @@ export interface ServerGrant {
   readonly serverKeyFingerprintHex: string;
   readonly serverEncPubHex: string;
   readonly scopeEnvironmentIds: readonly string[];
+  /** Lease policy of the latest accepted grant for this key (CRYPTO_SPEC §6.2). */
+  readonly leasePolicy: readonly LeasePolicyIssuer[];
 }
 
 /**

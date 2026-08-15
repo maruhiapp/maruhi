@@ -191,6 +191,8 @@ export function makeDek(): Uint8Array {
 export interface WireWrappedDek {
   readonly suite: string;
   readonly epoch: number;
+  /** 受信者クラス(AUTH_SPEC §12-6。省略 = member)。 */
+  readonly recipientClass?: "member" | "server";
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
@@ -317,6 +319,34 @@ export async function wrapDekTo(input: {
     encHex: encodeHex(wrapped.enc),
     ciphertextHex: encodeHex(wrapped.ciphertext),
   });
+}
+
+/**
+ * 受信者クラス server のラップ(AUTH_SPEC §12-6 / CRYPTO_SPEC §9): HPKE info と
+ * 登録署名の recipient 位置にサーバー鍵 FP を用いる。ラップ・署名の組み立ては
+ * member と同じ経路(recipientUserId 位置の置き換えのみ)で、ワイヤに
+ * recipientClass: "server" を付ける。
+ */
+export async function wrapDekToServer(input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly dek: Uint8Array;
+  readonly serverKeyFingerprintHex: string;
+  readonly serverEncPubHex: string;
+  /** 登録署名の署名者。API を呼ぶ主体と一致させる(§12-6 の受理条件)。 */
+  readonly signerUserId: string;
+}): Promise<WireWrappedDek> {
+  const wrap = await wrapDekTo({
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    epoch: input.epoch,
+    dek: input.dek,
+    recipientUserId: input.serverKeyFingerprintHex,
+    recipientEncPubHex: input.serverEncPubHex,
+    signerUserId: input.signerUserId,
+  });
+  return { ...wrap, recipientClass: "server" };
 }
 
 /** DEK を複数受信者へラップする(環境作成・ローテーションの完全集合用)。 */

@@ -31,6 +31,7 @@ import { environmentsLive } from "./handlers-environments.ts";
 import { membershipLive } from "./handlers-membership.ts";
 import { variablesLive } from "./handlers-variables.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
+import { makeServerKey, ServerKey } from "./server-key.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
 export { ProjectChainDO } from "./chain-do.ts";
@@ -46,13 +47,20 @@ const platformContext = Layer.mergeAll(
   Path.layer,
 );
 
-type RequestServices = DbServices | WorkerEnv | GitHubApi | SessionService | TokenService;
+type RequestServices =
+  | DbServices
+  | WorkerEnv
+  | GitHubApi
+  | SessionService
+  | TokenService
+  | ServerKey;
 
 function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
   return dbServices.pipe(
     Context.add(WorkerEnv, env),
     Context.add(GitHubApi, makeGitHubApi(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET)),
+    Context.add(ServerKey, makeServerKey(env.SERVER_ENC_KEY_IKM)),
     Context.add(SessionService, makeSessionService(Context.get(dbServices, SessionRepo))),
     Context.add(TokenService, makeTokenService(Context.get(dbServices, TokenRepo))),
   );

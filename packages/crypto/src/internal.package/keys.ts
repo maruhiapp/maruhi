@@ -42,6 +42,29 @@ export async function generateEncryptionKeyPair(options?: {
   return hpkeSuite().GenerateKeyPair(options?.extractable ?? false);
 }
 
+/**
+ * Derives an encryption key pair deterministically from 32 bytes of input
+ * keying material (RFC 9180 `DeriveKeyPair` — a standard HPKE API, verified
+ * against the RFC 9180 official vectors in this package's tests). Used for
+ * the deployment server key (CRYPTO_SPEC §9): the Workers Secret stores the
+ * ikm and the keypair is re-derived at startup, so a single 32-byte secret
+ * yields both keys. The private key stays non-extractable unless requested.
+ */
+export async function deriveEncryptionKeyPair(input: {
+  readonly ikm: Uint8Array;
+  readonly extractable?: boolean;
+}): Promise<CryptoResult<EncryptionKeyPair>> {
+  if (input.ikm.length !== X25519_KEY_BYTES) {
+    return invalidInput("encryption key ikm length");
+  }
+  try {
+    const pair = await hpkeSuite().DeriveKeyPair(input.ikm, input.extractable ?? false);
+    return { ok: true, value: pair };
+  } catch {
+    return { ok: false, error: { kind: "KeyImportFailed", key: "encryption-private" } };
+  }
+}
+
 /** Generates a user signing key pair (Ed25519, for membership log entries). */
 export async function generateSigningKeyPair(options?: {
   readonly extractable?: boolean;

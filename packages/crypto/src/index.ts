@@ -18,9 +18,15 @@ export {
   SUITE_ID,
 } from "./internal.package/index.ts";
 
-// §3: 鍵階層 — マスター鍵ペア・DEK の生成、鍵の入出力、ユーザー鍵フィンガープリント
+// §3: 鍵階層 — マスター鍵ペア・DEK の生成、鍵の入出力、ユーザー鍵フィンガープリント、
+// FP のワード表示(BIP39 英語 12 語 — 帯域外照合の表示符号化。辞書は §3 の固定
+// 辞書として公開する — 完全性はテストが upstream 既知ハッシュで固定)
 export {
+  BIP39_ENGLISH_WORDS,
   computeUserKeyFingerprint,
+  deriveEncryptionKeyPair,
+  FINGERPRINT_WORD_COUNT,
+  fingerprintToWords,
   type EncryptionKey,
   type EncryptionKeyPair,
   exportEncryptionPrivateKey,
@@ -121,6 +127,8 @@ export {
   type EnvironmentStateAtSeq,
   type GenesisPayload,
   type GrantServerPayload,
+  type LeaseClaimConstraint,
+  type LeasePolicyIssuer,
   type MemberStateAtSeq,
   type RemoveMemberPayload,
   type RevokeServerPayload,

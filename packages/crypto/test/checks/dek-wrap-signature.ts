@@ -49,42 +49,38 @@ function contextOf(v: VectorContext): DekWrapSignatureContext {
 }
 
 async function vectorChecks(c: Checks): Promise<void> {
-  // 正規化バイト列がベクターと一致(ドメイン文字列 = suite の束縛を含む)
-  c.push(
-    "dek-wrap-sig: signed bytes construction",
-    toHex(buildDekWrapSignatureBytes(contextOf(base))) === base.signed_bytes_hex,
-  );
-
-  // 署名方向: ベクターの署名者 seed で署名し、期待署名と一致(Ed25519 は決定論的)
   const signer = await importSigningKeyPair({
     publicKey: fromHex(vectors.signer.sig_pub_hex),
     privateSeed: fromHex(vectors.signer.sig_sk_seed_hex),
   });
-  if (!signer.ok) {
-    c.push("dek-wrap-sig: vector sign", false, "signer key import failed");
-    return;
-  }
-  const signed = await signDekWrap({
-    context: contextOf(base),
-    signingKey: signer.value.privateKey,
-  });
-  c.push(
-    "dek-wrap-sig: vector sign == signature",
-    signed.ok && signed.value === base.signature_hex,
-  );
-
-  // 検証方向: 正例が通る
   const verifyKey = await importSigningPublicKey(fromHex(vectors.signer.sig_pub_hex));
-  if (!verifyKey.ok) {
-    c.push("dek-wrap-sig: vector verify", false, "verify key import failed");
+  if (!signer.ok || !verifyKey.ok) {
+    c.push("dek-wrap-sig: vector keys", false, "signer key import failed");
     return;
   }
-  const verified = await verifyDekWrapSignature({
-    context: contextOf(base),
-    signatureHex: base.signature_hex,
-    signerPublicKey: verifyKey.value,
-  });
-  c.push("dek-wrap-sig: vector verify", verified.ok);
+  // 正例は member クラス(basic)と server クラス(server-basic — recipient 位置に
+  // サーバー鍵 FP)の両方(§5.1 / §9)。Ed25519 は決定論的なので署名方向も完全一致
+  for (const vector of vectors.vectors) {
+    // 正規化バイト列がベクターと一致(ドメイン文字列 = suite の束縛を含む)
+    c.push(
+      `dek-wrap-sig: ${vector.name} signed bytes construction`,
+      toHex(buildDekWrapSignatureBytes(contextOf(vector))) === vector.signed_bytes_hex,
+    );
+    const signed = await signDekWrap({
+      context: contextOf(vector),
+      signingKey: signer.value.privateKey,
+    });
+    c.push(
+      `dek-wrap-sig: ${vector.name} sign == signature`,
+      signed.ok && signed.value === vector.signature_hex,
+    );
+    const verified = await verifyDekWrapSignature({
+      context: contextOf(vector),
+      signatureHex: vector.signature_hex,
+      signerPublicKey: verifyKey.value,
+    });
+    c.push(`dek-wrap-sig: ${vector.name} verify`, verified.ok);
+  }
 }
 
 async function negativeChecks(c: Checks): Promise<void> {

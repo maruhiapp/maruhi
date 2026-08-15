@@ -29,7 +29,7 @@ import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@ma
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { buildWrapSetForMembers, requireWritingMember, sameMemberSet } from "./dek-wrap.ts";
+import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
@@ -193,9 +193,10 @@ function requireReason(reason: string | null): Effect.Effect<string, CliError> {
 }
 
 /**
- * ローテーション可能性の早期検査: grant_server 未対応・環境のチェーン存在・
- * 自分が現メンバーであること・role が member 以上であること(§6.2)。
- * pull(値の取得 = var.read の記録)より前に落とす。
+ * ローテーション可能性の早期検査: 環境のチェーン存在・自分が現メンバーである
+ * こと・role が member 以上であること(§6.2)。pull(値の取得 = var.read の
+ * 記録)より前に落とす。grant_server 有効時はラップ完全集合がサーバー鍵宛を
+ * 含む(buildWrapCompleteSet — §12-4 / §7 の再ラップ義務)。
  */
 function ensureRotatable(
   verified: VerifiedProject,
@@ -203,9 +204,7 @@ function ensureRotatable(
   signerUserId: string,
 ): Effect.Effect<ChainMember, CliError> {
   return Effect.gen(function* () {
-    // grant ガード + メンバー性 + role(member 以上)は env create と共有
-    // (§7: grant_server が有効なら新エポック DEK をサーバー鍵へも再ラップしなければ
-    // リース経路が停止する。メンバー宛だけの完全集合で黙って進めない)
+    // メンバー性 + role(member 以上)は env create と共有
     const member = yield* requireWritingMember({
       verified,
       environmentId,
@@ -371,7 +370,7 @@ function appendRotation(
 > {
   return Effect.gen(function* () {
     const buildWraps = (verified: VerifiedProject) =>
-      buildWrapSetForMembers({
+      buildWrapCompleteSet({
         verified,
         environmentId: input.environmentId,
         epoch: input.newEpoch,
@@ -444,7 +443,7 @@ function appendRotation(
                   ),
                 );
               }
-              const deks = sameMemberSet(state.verified, resynced)
+              const deks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
                 ? state.deks
                 : yield* buildWraps(resynced);
               return { verified: resynced, member, deks };
@@ -1601,8 +1600,9 @@ function resumeReencryption(input: {
     const { currentEpoch, stale, warnings } = input;
     const environmentId = input.input.environmentId;
     // 前進した検証ビューでガードを再適用する(初回検査から pull までの間に
-    // grant_server の有効化・role 変更・削除が起きていれば、古い検証状態の
-    // まま再開経路だけが素通りしてしまう — Cursor Security Reviewer 指摘)
+    // role 変更・削除が起きていれば、古い検証状態のまま再開経路だけが素通り
+    // してしまう — Cursor Security Reviewer 指摘。再開経路は push のみで
+    // ラップ集合を作らないため、grant の有効化はここでは義務を生まない)
     const member = yield* ensureRotatable(
       input.pulled.verified,
       environmentId,

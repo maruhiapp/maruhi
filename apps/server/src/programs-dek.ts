@@ -14,6 +14,7 @@ import {
   checkWrapRequestCount,
   dekRegisteredEvent,
   ensureWrapSetAcceptable,
+  wrapRecipientClass,
   wrapRefKey,
 } from "./dek-wraps.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
@@ -68,7 +69,17 @@ export const deleteDekWrapsProgram = (
         return yield* rejectData({ kind: "dek-wrap-rejected", reason: "duplicate-recipient" });
       }
       seen.add(key);
-      if (!(yield* store.wrapExists(environmentId, ref.epoch, ref.recipientUserId))) {
+      // 保存済み行の受信者クラスと突合する: クライアント申告の class を監査列の
+      // 選択(下の dek.deleted の書き分け)にそのまま使わせない。不一致 =
+      // そのクラスのラップは存在しない(404 と同じ扱い — 黙って成功させない)。
+      // これで「class 違いの同一 (epoch, recipient) ref」も片方が必ずここで落ち、
+      // 1 行の削除に監査 2 行が積まれる形も同時に塞がる
+      const stored = yield* store.wrapStoredRecipientClass(
+        environmentId,
+        ref.epoch,
+        ref.recipientUserId,
+      );
+      if (stored === null || stored !== wrapRecipientClass(ref)) {
         return yield* rejectData({
           kind: "dek-wrap-not-found",
           epoch: ref.epoch,
@@ -86,10 +97,16 @@ export const deleteDekWrapsProgram = (
       }
       audit.appendManySync(
         refs.map((ref) =>
+          // server 受信者は user_id を持たないため FP を target_key_fingerprint に
+          // 載せる(dek.registered — dek-wraps.ts — と同じ書き分け。AUDIT_SPEC §3.3)。
+          // ここで ref の class を使ってよいのは、上の検証フェーズで保存行の
+          // recipient_class と一致することを確認済みだからである
           dataEvent(actor, now, "dek.deleted", {
             environmentId,
             epoch: ref.epoch,
-            targetUserId: ref.recipientUserId,
+            ...(wrapRecipientClass(ref) === "server"
+              ? { targetKeyFingerprintHex: ref.recipientUserId }
+              : { targetUserId: ref.recipientUserId }),
           }),
         ),
       );
