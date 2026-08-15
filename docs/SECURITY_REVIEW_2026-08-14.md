@@ -99,7 +99,7 @@
 
 **場所**: `apps/server/src/handlers-auth.ts`、`apps/server/src/auth.package/github.ts`(`6b839cc` 時点)
 
-**内容**: 未認証で叩ける POST であり、リクエストごとにサーバーが GitHub の check-token API(Basic 認証 = client_id:client_secret)へアウトバウンド呼び出しを行う。この API の呼び出し枠は OAuth App 単位でレート制限されるため、第三者がゴミトークンを流し込むとデプロイメントの枠が枯渇し、**正規ユーザーのログイン(device 交換)が失敗する**可用性攻撃が成立する。ボディは 512 バイト上限(api-schema)で肥大は防いでいるが、リクエストレートの制限がない。`auth.login_failed` の記録上限(L-4)は D1 書き込みを守るだけで、アウトバウンド呼び出しは毎回発生する。
+**内容**: 未認証で叩ける POST であり、リクエストごとにサーバーが GitHub の check-token API(Basic 認証 = client_id:client_secret)へアウトバウンド呼び出しを行う。この API の呼び出し枠は OAuth App 単位でレート制限されるため、第三者がゴミトークンを流し込むとデプロイメントの枠が枯渇し、**正規ユーザーのログイン(device 交換)が失敗する**可用性攻撃が成立する。ボディのトークンフィールドは 512 文字上限(api-schema)で肥大は防いでいるが、リクエストレートの制限がない。`auth.login_failed` の記録上限(L-4)は D1 書き込みを守るだけで、アウトバウンド呼び出しは毎回発生する。
 
 **推奨対応**: (1) GitHub トークンの形式事前検査(`gh[a-z]_` プレフィックス。不一致は GitHub へ問い合わせず即 400)で無差別洪水の大半を遮断する。(2) セルフホスト手順(`docs/SELF_HOSTING.md`)に Cloudflare のレート制限ルール(`/auth/device/exchange` への per-IP 制限)の推奨設定を記載する。サーバー内の per-IP 固定窓(D1 or DO)は書き込み増幅と天秤にかけて検討。
 
@@ -342,7 +342,7 @@ M-2 / A-1 / L-1 / L-3 / L-5 / A-3 / A-4 の修正差分そのものを、独立�
 
 **内容**: L-3 は device/exchange のみを対象としたが、web OAuth の callback も同型の「未認証 → GitHub アウトバウンド」を持つ。state はクッキーとクエリの双方に攻撃者自身が載せられる自己束縛(double-submit)であり、`/auth/github/start` で 1 度 state を得れば、以後は callback 1 リクエストごとに code 交換(正規フローは成功後の `/user`・`/user/emails` を含め最大 3 呼び出し)を誘発できる。しかも `code` / `state` クエリには**サイズ上限が一切なかった**(device/exchange は 512 文字 + 形式検査)。OAuth の code 形式は仕様が定めないため、device/exchange のような形式検査による遮断はできない。
 
-**対応(実施済み)**: `code` / `state` に 512 文字上限を追加(形式検査は不能のため長さのみ。増幅自体は上限内の code で依然誘発できるため、これは肥大入力の遮断であって主対策は運用レート制限)。`SELF_HOSTING.md` の per-IP レート制限推奨表に callback を追加し、「未認証エンドポイントは 2 つ」という誤記(`/auth/config` / `/auth/github/start` も未認証)を「外部アウトバウンドを誘発する未認証面は 3 つ」に訂正。AUTH_SPEC §4 の形式事前検査の項に callback への言及を追記。**残余は L-3 と同一**(形式適合・上限内の洪水への per-IP 制限は運用側)のため、深刻度・状態も L-3 に合わせる。
+**対応(実施済み)**: `code` / `state` に 512 文字上限を追加(形式検査は不能のため長さのみ。増幅自体は上限内の code で依然誘発できるため、これは肥大入力の遮断であって主対策は運用レート制限)。`SELF_HOSTING.md` の per-IP レート制限推奨表に callback を追加し、「未認証エンドポイントは 2 つ」という誤記(`/auth/config` / `/auth/github/start` も未認証)を「費用の掛かる処理を第三者が誘発できる未認証面 3 つ」の正確な列挙に訂正。AUTH_SPEC §4 の形式事前検査の項に callback への言及を追記。**残余は L-3 と同一**(形式適合・上限内の洪水への per-IP 制限は運用側)のため、深刻度・状態も L-3 に合わせる。
 
 ### 2 巡目で検証し「不成立」を確認した主な攻撃仮説(記録)
 
