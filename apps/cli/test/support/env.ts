@@ -21,6 +21,7 @@ import {
   type StoredToken,
   tokenEntryName,
 } from "../../src/keychain.ts";
+import { makeFilePinStore, PinStore, pinsDirOf } from "../../src/pins.ts";
 import { ProcessRunner } from "../../src/run.ts";
 import type { TestUser } from "./crypto.ts";
 
@@ -40,6 +41,8 @@ export interface TestEnv {
   readonly configPath: string;
   /** ローカル床(§6.3)のディレクトリ(<configDir>/floor)。 */
   readonly floorDir: string;
+  /** 招待ピン(§6.3 (a) アンカー + 発行ピン)のディレクトリ(<configDir>/invites)。 */
+  readonly pinsDir: string;
   /** promptLine に表示されたプロンプト文字列(検査用)。 */
   readonly prompts: string[];
   setStdin(bytes: Uint8Array): void;
@@ -84,7 +87,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const fileStore = makeFileConfigStore(configPath);
   const floorDir = floorDirOf(configPath);
   const floorStore = makeFileFloorStore(floorDir);
+  const pinsDir = pinsDirOf(configPath);
+  const pinStore = makeFilePinStore(pinsDir);
   const layer = Layer.mergeAll(
+    Layer.succeed(PinStore, pinStore),
     Layer.succeed(FloorStore, {
       load: (projectId) => floorStore.load(projectId),
       commitHead: (projectId, head) => floorStore.commitHead(projectId, head),
@@ -159,6 +165,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     runnerCalls,
     configPath,
     floorDir,
+    pinsDir,
     prompts,
     setStdin(bytes) {
       stdin = bytes;

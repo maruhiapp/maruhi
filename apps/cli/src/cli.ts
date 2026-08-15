@@ -7,8 +7,8 @@
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
-import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
-import type { LeasePolicyIssuer } from "@maruhi/crypto";
+import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
@@ -26,13 +26,15 @@ import {
   usageErrorMessages,
 } from "./args.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
-import type { CliServices, CommonFlags } from "./context.ts";
+import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
 import {
+  checkInviteAnchor,
   commitVerifiedHead,
   floorHandleFor,
   loadCheckedFloor,
   openEnvironment,
   openMetadataEnvironmentPair,
+  openMetadataProject,
   openProject,
   openSession,
   resolveProjectId,
@@ -43,21 +45,34 @@ import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { type InviteRole, parseInviteAcceptInput } from "./invite-link.ts";
+import {
+  type AcceptTarget,
+  inviteAcceptOp,
+  inviteCreateOp,
+  inviteListOp,
+  inviteRevokeOp,
+} from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
+import {
+  MEMBER_REMOVED_ROTATION_REASON,
+  memberAddOp,
+  memberChangeRoleOp,
+  memberRemoveOp,
+  ROLE_DEMOTED_ROTATION_REASON,
+  type MemberAddSummary,
+} from "./member.ts";
+import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
+import { type SweepOutcome, type SweepRotateMode } from "./rotation-sweep.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
-import {
-  REVOKE_ROTATION_REASON,
-  type RevokeRotateMode,
-  type RevokeSummary,
-  serverRevokeOp,
-} from "./server-revoke.ts";
+import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { syncProject } from "./sync.ts";
 
@@ -260,6 +275,8 @@ function projectCommand(execute: Execute) {
               synced,
               syncProject(context.client, projectId),
             )).verified;
+            // 招待リンクアンカーの機械照合(§6.3 (a) / §6.5)も verify の一部
+            yield* checkInviteAnchor(projectId, verified);
             yield* io.log(`チェーン検証 OK(head seq=${verified.state.headSeq})`);
             yield* io.log(`head: ${verified.state.headHashHex}`);
             yield* io.log(`メンバー(${verified.state.members.size}):`);
@@ -777,23 +794,21 @@ function parseEnvironmentsFlag(
 }
 
 /**
- * サーバー鍵 FP を受けるフラグの形式検証(hex 小文字 32 文字 = 16 バイト)。
- * エラーは**打たれたフラグ名**で報告する(grant の --expect-fingerprint と
- * revoke の --fingerprint で共用 — 存在しないフラグ名を指して混乱させない)。
+ * 鍵 FP を受けるフラグの形式検証(hex 小文字 32 文字 = 16 バイト)。
+ * エラーは**打たれたフラグ名**で報告する(grant の --expect-fingerprint /
+ * revoke の --fingerprint / invite・member の FP フラグで共用 — 存在しない
+ * フラグ名を指して混乱させない)。`hint` は FP の出所の案内(鍵種別ごと)。
  */
 function parseFingerprintFlag(
   flagName: string,
   value: string | undefined,
+  hint = "サーバー鍵 FP は hex 小文字 32 文字 — /auth/config の serverKeyFingerprintHex",
 ): Effect.Effect<string | null, CliError> {
   if (value === undefined) {
     return Effect.succeed(null);
   }
   if (!/^[0-9a-f]{32}$/.test(value)) {
-    return Effect.fail(
-      usageError(
-        `${flagName} の形式が正しくありません(サーバー鍵 FP は hex 小文字 32 文字 — /auth/config の serverKeyFingerprintHex)`,
-      ),
-    );
+    return Effect.fail(usageError(`${flagName} の形式が正しくありません(${hint})`));
   }
   return Effect.succeed(value);
 }
@@ -982,30 +997,7 @@ function serverRevoke(
         ? null
         : yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
     const context = yield* openProject(flags);
-    // 1 環境のローテーション(PR-1 の envRotateOp の再利用): revoke の追記や先行の
-    // rotate でチェーンは前進しているので、各環境は再同期済みビューで開始する。
-    // force = §7 の強制(新エポック必須)/ verify = 失効より後にエポックが進んだ
-    // 環境の検証パス(未完了の再暗号化があれば再開、なければ確認のみ)
-    const rotate = (environmentId: string, mode: RevokeRotateMode) =>
-      Effect.gen(function* () {
-        if (!isEnvironmentId(environmentId)) {
-          return yield* Effect.fail(cliErrorForInvalidChainEnvironmentId());
-        }
-        const floorHandle = yield* floorHandleFor(context, environmentId);
-        const verified = yield* context.resync;
-        return yield* envRotateOp({
-          client: context.client,
-          verified,
-          environmentId,
-          recipient: context.recipient,
-          reason: mode === "force" ? REVOKE_ROTATION_REASON : undefined,
-          forceNewEpoch: mode === "force",
-          signerUserId: context.session.userId,
-          signingKeyPair: context.masterKeys.sigKeyPair,
-          resync: context.resync,
-          floor: floorHandle,
-        });
-      });
+    // 1 環境のローテーション(PR-1 の envRotateOp の再利用 — sweepRotateFor)
     const summary = yield* serverRevokeOp({
       client: context.client,
       verified: context.verified,
@@ -1013,7 +1005,7 @@ function serverRevoke(
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
-      rotate,
+      rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
     });
     yield* reportRevokeOutcome(io, summary);
     return yield* reportRevokeRotations(io, summary);
@@ -1148,6 +1140,579 @@ function serverCommand(execute: Execute) {
         }),
         {
           commandRejection: serverActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
+        },
+      ),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// invite(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 — B1b)
+// ---------------------------------------------------------------------------
+
+const INVITE_ACTIONS = ["create", "accept", "list", "revoke"] as const;
+
+type InviteAction = (typeof INVITE_ACTIONS)[number];
+
+const INVITE_ACTION_HELP = `不明な操作です(${INVITE_ACTIONS.join(" | ")})`;
+
+function isInviteAction(action: string | undefined): action is InviteAction {
+  return INVITE_ACTIONS.some((known) => known === action);
+}
+
+/** INVITE_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
+function unhandledInviteAction(action: never): CliError {
+  return usageError(`${INVITE_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
+}
+
+const INVITE_ACTION_FLAGS: Readonly<Record<InviteAction, ReadonlySet<string>>> = {
+  create: new Set(["role"]),
+  accept: new Set(["inviter-fingerprint"]),
+  list: new Set([]),
+  revoke: new Set([]),
+};
+
+function inviteActionFlagRejection(
+  action: string | undefined,
+  tokens: readonly ArgTokenShape[],
+  args: ArgTable,
+): string | null {
+  if (!isInviteAction(action)) {
+    return null;
+  }
+  return actionFlagRejection("invite", INVITE_ACTIONS, INVITE_ACTION_FLAGS, action, tokens, args);
+}
+
+const INVITE_ROLES = ["reader", "member", "admin"] as const;
+
+function isInviteRole(value: string | undefined): value is InviteRole {
+  return INVITE_ROLES.some((known) => known === value);
+}
+
+/** ユーザー鍵 FP フラグ(CRYPTO_SPEC §3)— 共用パーサに出所の案内だけを差す。 */
+function parseUserFingerprintFlag(
+  flagName: string,
+  value: string | undefined,
+): Effect.Effect<string | null, CliError> {
+  return parseFingerprintFlag(
+    flagName,
+    value,
+    "ユーザー鍵 FP は hex 小文字 32 文字 — maruhi key show の key fingerprint",
+  );
+}
+
+/** `maruhi invite create --role <r>`(§15-2 発行 + §15-3 リンク組み立て)。 */
+function inviteCreate(
+  flags: CommonFlags & { readonly role?: string | undefined },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    if (!isInviteRole(flags.role)) {
+      return yield* Effect.fail(
+        usageError(
+          `--role を指定してください(${INVITE_ROLES.join(" | ")} — owner は招待経由で付与できません。AUTH_SPEC §15-1)`,
+        ),
+      );
+    }
+    // リンク材料(ヘッド・自分の FP)はチェーン導出 — master 鍵は不要
+    const context = yield* openMetadataProject(flags);
+    yield* inviteCreateOp({
+      client: context.client,
+      verified: context.verified,
+      origin: context.origin,
+      role: flags.role,
+      sessionUserId: context.session.userId,
+    });
+  });
+}
+
+/** `invite accept` の入力拒否理由 → usage 文言。 */
+function acceptInputRejectionMessage(
+  reason: "unsupported-version" | "missing-or-invalid-fragment-params" | "not-a-link-or-token",
+): string {
+  if (reason === "unsupported-version") {
+    return "この招待リンクの形式バージョンには対応していません(maruhi CLI を更新してください)";
+  }
+  if (reason === "missing-or-invalid-fragment-params") {
+    return "招待リンクのフラグメント(# 以降)が不完全または不正です。リンクが途中で切れずにコピーされているか確認してください(壊れたリンクをアンカーなしで受諾することはできません)";
+  }
+  return "招待リンク(…/invite#v=1&…)または招待トークン(maruhi_inv_…)を指定してください。リンクはシェルに解釈されないよう引用符で囲んでください";
+}
+
+/** `invite accept` の入力(リンク | トークン + --project)の解決。 */
+function resolveAcceptTarget(
+  rawTarget: string | undefined,
+  projectFlag: string | undefined,
+): Effect.Effect<AcceptTarget, CliError> {
+  if (rawTarget === undefined) {
+    return Effect.fail(
+      usageError(
+        "受諾する招待リンクまたはトークンを指定してください(リンクはシェルに解釈されないよう引用符で囲んでください)",
+      ),
+    );
+  }
+  const parsed = parseInviteAcceptInput(rawTarget);
+  if (parsed.kind === "rejected") {
+    return Effect.fail(usageError(acceptInputRejectionMessage(parsed.reason)));
+  }
+  if (parsed.kind === "token") {
+    // 受諾署名(CRYPTO_SPEC §6.5)は project_id を署名対象に含むため、リンク
+    // なしの受諾にはプロジェクト ID の帯域外供給が必須(config の
+    // defaultProject へはフォールバックしない — 別プロジェクトへの署名を
+    // 黙って作らない)
+    if (projectFlag === undefined) {
+      return Effect.fail(
+        usageError(
+          "生トークンでの受諾には --project <プロジェクト ID> が必須です(受諾署名はプロジェクト ID を署名対象に含みます — CRYPTO_SPEC §6.5)。招待リンクで受諾する場合は不要です",
+        ),
+      );
+    }
+    if (!isProjectId(projectFlag)) {
+      return Effect.fail(usageError("プロジェクト ID の形式が正しくありません(64 桁の 16 進数)"));
+    }
+    return Effect.succeed({ kind: "token", token: parsed.token, projectId: projectFlag });
+  }
+  if (projectFlag !== undefined && projectFlag !== parsed.link.projectId) {
+    return Effect.fail(
+      usageError(
+        "--project が招待リンクの p(プロジェクト ID)と一致しません。リンクで受諾する場合 --project は不要です",
+      ),
+    );
+  }
+  return Effect.succeed({ kind: "link", link: parsed.link });
+}
+
+/** `maruhi invite accept <link|token>`(§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5)。 */
+function inviteAccept(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly target: string | undefined;
+  readonly inviterFingerprint?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const target = yield* resolveAcceptTarget(flags.target, flags.project);
+    const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
+      "--inviter-fingerprint",
+      flags.inviterFingerprint,
+    );
+    const context = yield* openSession(flags.server);
+    yield* inviteAcceptOp({
+      client: context.client,
+      session: context.session,
+      target,
+      expectInviterFingerprintHex,
+      keyGenerate: keyGenerateOp({ session: context.session, client: context.client }),
+    });
+  });
+}
+
+/** `maruhi invite list`(受諾ブロックの §6.5 独立検証 + 発行ピン突合)。 */
+function inviteList(flags: CommonFlags): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const context = yield* openMetadataProject(flags);
+    const store = yield* PinStore;
+    const loaded = yield* store.load(context.projectId);
+    const summary = yield* inviteListOp({
+      client: context.client,
+      verified: context.verified,
+      pins: loaded.pins,
+      nowMs: Date.now(),
+    });
+    // 署名検証失敗・ピン不一致は「読み取りの成功」ではなく証拠の検出 — 0 に
+    // しない(スクリプトが健全性チェックとして使える)
+    return summary.integrityFailures > 0 ? 1 : 0;
+  });
+}
+
+function inviteCommand(execute: Execute) {
+  return define({
+    name: "invite",
+    description: `招待の管理(${INVITE_ACTIONS.join(" / ")} — AUTH_SPEC §15 / CRYPTO_SPEC §6.5)`,
+    args: {
+      action: { type: "positional", description: INVITE_ACTIONS.join(" | ") },
+      target: {
+        type: "positional",
+        required: false,
+        description: "accept: 招待リンクまたはトークン / revoke: 招待 id",
+      },
+      role: {
+        type: "string",
+        description: `付与する role(create では必須 — ${INVITE_ROLES.join(" | ")})`,
+      },
+      "inviter-fingerprint": {
+        type: "string",
+        description:
+          "帯域外で控えた招待者の鍵 FP(hex 32 文字。accept のみ — 指定時は対話確認の代わりにリンクの if= と照合する)",
+      },
+      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
+      project: {
+        type: "string",
+        description:
+          "プロジェクト ID(create / list / revoke は省略時 config の defaultProject。accept は生トークン受諾時のみ必須)",
+      },
+    },
+    run: (ctx) =>
+      execute(
+        ctx,
+        Effect.gen(function* () {
+          const action = ctx.values.action;
+          if (!isInviteAction(action)) {
+            return yield* Effect.fail(usageError(INVITE_ACTION_HELP));
+          }
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "create") {
+            return yield* inviteCreate({ ...flags, role: ctx.values.role });
+          }
+          if (action === "accept") {
+            return yield* inviteAccept({
+              ...flags,
+              target: ctx.values.target,
+              inviterFingerprint: ctx.values["inviter-fingerprint"],
+            });
+          }
+          if (action === "list") {
+            return yield* inviteList(flags);
+          }
+          if (action === "revoke") {
+            const inviteId = ctx.values.target;
+            if (inviteId === undefined) {
+              return yield* Effect.fail(
+                usageError(
+                  "失効させる招待 id を指定してください(maruhi invite list で確認できます)",
+                ),
+              );
+            }
+            const context = yield* openMetadataProject(flags);
+            return yield* inviteRevokeOp({
+              client: context.client,
+              verified: context.verified,
+              inviteId,
+            });
+          }
+          return yield* Effect.fail(unhandledInviteAction(action));
+        }),
+        {
+          commandRejection: inviteActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
+          // 2 つ目の位置引数は accept / revoke 専用(env diff の 3 つ目と同じ形)
+          withoutPositionals:
+            isInviteAction(ctx.values.action) &&
+            ctx.values.action !== "accept" &&
+            ctx.values.action !== "revoke"
+              ? ["target"]
+              : undefined,
+        },
+      ),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// member(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 — B1b)
+// ---------------------------------------------------------------------------
+
+const MEMBER_ACTIONS = ["add", "remove", "change-role"] as const;
+
+type MemberAction = (typeof MEMBER_ACTIONS)[number];
+
+const MEMBER_ACTION_HELP = `不明な操作です(${MEMBER_ACTIONS.join(" | ")})`;
+
+function isMemberAction(action: string | undefined): action is MemberAction {
+  return MEMBER_ACTIONS.some((known) => known === action);
+}
+
+/** MEMBER_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
+function unhandledMemberAction(action: never): CliError {
+  return usageError(`${MEMBER_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
+}
+
+const MEMBER_ACTION_FLAGS: Readonly<Record<MemberAction, ReadonlySet<string>>> = {
+  add: new Set(["expect-fingerprint"]),
+  remove: new Set([]),
+  "change-role": new Set(["role"]),
+};
+
+function memberActionFlagRejection(
+  action: string | undefined,
+  tokens: readonly ArgTokenShape[],
+  args: ArgTable,
+): string | null {
+  if (!isMemberAction(action)) {
+    return null;
+  }
+  return actionFlagRejection("member", MEMBER_ACTIONS, MEMBER_ACTION_FLAGS, action, tokens, args);
+}
+
+const MEMBER_ROLES = ["reader", "member", "admin", "owner"] as const;
+
+function isMemberRole(value: string | undefined): value is Role {
+  return MEMBER_ROLES.some((known) => known === value);
+}
+
+/** sweep 結果(§7 の全環境走査)の報告と終了コードの導出(remove / 降格共通)。 */
+function reportMemberSweep(
+  sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] },
+  rerunCommand: string,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (sweep.skippedDeleted.length > 0) {
+      yield* io.log(
+        `削除済み環境(署名済み削除ステートメントを検証済み)のためスキップ: ${sweep.skippedDeleted.join(", ")}`,
+      );
+    }
+    if (sweep.alreadyRotated.length > 0) {
+      yield* io.log(
+        `ローテーション済み(義務エントリより後のエポック・未完了の再暗号化なしを確認): ${sweep.alreadyRotated.join(", ")}`,
+      );
+    }
+    let exitCode = 0;
+    for (const item of sweep.rotated) {
+      const code = yield* reportRotation(
+        item.environmentId as EnvironmentId,
+        item.summary,
+        item.forcedNewEpoch,
+      );
+      if (code !== 0) {
+        exitCode = 1;
+      }
+    }
+    for (const failure of sweep.failed) {
+      // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
+      // よる選択的なローテーション阻止を不可視にしない)
+      yield* io.logError(
+        `警告: 環境 ${displayText(failure.environmentId)} のローテーションに失敗しました: ${failure.message} — 解消して ${rerunCommand} を再実行すると続きから再開します(環境を削除済みの場合は、検証済みの削除ステートメントを確認してください)`,
+      );
+      exitCode = 1;
+    }
+    return exitCode;
+  });
+}
+
+/**
+ * §7 の全環境走査へ注入する 1 環境ローテーション(server revoke / member
+ * remove / change-role で共用)。義務エントリの追記や先行の rotate でチェーンは
+ * 前進しているので、各環境は再同期済みビューで開始する。force = §7 の強制
+ * (新エポック必須)/ verify = 検証パス(未完了の再暗号化があれば再開)。
+ */
+function sweepRotateFor(
+  context: ProjectContext,
+  reason: string,
+): (
+  environmentId: string,
+  mode: SweepRotateMode,
+) => Effect.Effect<RotationSummary, CliError, CliServices> {
+  return (environmentId: string, mode: SweepRotateMode) =>
+    Effect.gen(function* () {
+      if (!isEnvironmentId(environmentId)) {
+        return yield* Effect.fail(cliErrorForInvalidChainEnvironmentId());
+      }
+      const floorHandle = yield* floorHandleFor(context, environmentId);
+      const verified = yield* context.resync;
+      return yield* envRotateOp({
+        client: context.client,
+        verified,
+        environmentId,
+        recipient: context.recipient,
+        reason: mode === "force" ? reason : undefined,
+        forceNewEpoch: mode === "force",
+        signerUserId: context.session.userId,
+        signingKeyPair: context.masterKeys.sigKeyPair,
+        resync: context.resync,
+        floor: floorHandle,
+      });
+    });
+}
+
+/** `maruhi member add [invite-id]`(§6.5 の相互確認 + add_member + バックフィル)。 */
+function memberAdd(
+  flags: CommonFlags & {
+    readonly invite?: string | undefined;
+    readonly expectFingerprint?: string | undefined;
+  },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const expectFingerprintHex = yield* parseUserFingerprintFlag(
+      "--expect-fingerprint",
+      flags.expectFingerprint,
+    );
+    const context = yield* openProject(flags);
+    const store = yield* PinStore;
+    const loaded = yield* store.load(context.projectId);
+    const summary = yield* memberAddOp({
+      client: context.client,
+      verified: context.verified,
+      inviteId: flags.invite ?? null,
+      expectFingerprintHex,
+      pins: loaded.pins,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      recipient: context.recipient,
+      resync: context.resync,
+    });
+    return yield* reportMemberAdd(io, summary);
+  });
+}
+
+/** member add の結果報告と終了コード(バックフィル失敗 = 部分完了)。 */
+function reportMemberAdd(
+  io: CliIoShape,
+  summary: MemberAddSummary,
+): Effect.Effect<number, CliError> {
+  return Effect.gen(function* () {
+    const repaired = summary.repaired > 0 ? `、旧鍵ラップの修復 ${summary.repaired} 件` : "";
+    yield* io.log(
+      `メンバー追加: ${displayText(summary.targetUserId)}(role=${summary.role})。バックフィル: 新規 ${summary.registered} 件、登録済み ${summary.alreadyRegistered} 件${repaired}`,
+    );
+    if (summary.failed.length === 0) {
+      yield* io.log(
+        "完了: 新メンバーに全環境 × 全エポックの DEK ラップを配布しました(CRYPTO_SPEC §7)。新メンバー側で maruhi pull を実行し、復号できることを確認してもらってください",
+      );
+      return 0;
+    }
+    for (const failure of summary.failed) {
+      yield* io.logError(
+        `警告: 環境 ${displayText(failure.environmentId)} のバックフィルに失敗しました: ${failure.message} — 解消して maruhi member add を再実行すると続きから再開します(409 = 登録済みとして収束します)`,
+      );
+    }
+    return 1;
+  });
+}
+
+/** `maruhi member remove <user-id>`(§7 — 全環境の強制ローテーションを伴う)。 */
+function memberRemove(
+  flags: CommonFlags & { readonly target: string },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openProject(flags);
+    const summary = yield* memberRemoveOp({
+      client: context.client,
+      verified: context.verified,
+      targetUserId: flags.target,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      rotate: sweepRotateFor(context, MEMBER_REMOVED_ROTATION_REASON),
+    });
+    if (summary.appended) {
+      yield* io.log(
+        `remove_member をチェーンへ追記しました(target=${displayText(summary.targetUserId)})。全環境の強制ローテーションを実行します(CRYPTO_SPEC §7)`,
+      );
+    } else {
+      yield* io.log(
+        "対象は既に削除済みでした — 追記せず、全環境ローテーションの続きから再開します(中断復旧)",
+      );
+    }
+    const exitCode = yield* reportMemberSweep(summary, "maruhi member remove");
+    if (exitCode === 0) {
+      yield* io.log("完了: メンバー削除と全環境ローテーションが完了しました");
+    }
+    return exitCode;
+  });
+}
+
+/** `maruhi member change-role <user-id> --role <r>`(降格は §7 のローテーション義務)。 */
+function memberChangeRole(
+  flags: CommonFlags & { readonly target: string; readonly role?: string | undefined },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (!isMemberRole(flags.role)) {
+      return yield* Effect.fail(
+        usageError(`--role を指定してください(${MEMBER_ROLES.join(" | ")})`),
+      );
+    }
+    const context = yield* openProject(flags);
+    const summary = yield* memberChangeRoleOp({
+      client: context.client,
+      verified: context.verified,
+      targetUserId: flags.target,
+      newRole: flags.role,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      rotate: sweepRotateFor(context, ROLE_DEMOTED_ROTATION_REASON),
+    });
+    if (summary.appended) {
+      yield* io.log(
+        `change_role をチェーンへ追記しました(target=${displayText(summary.targetUserId)}、role=${summary.newRole})`,
+      );
+    } else {
+      yield* io.log("対象は既に指定の role です — 追記していません");
+    }
+    if (summary.sweep === null) {
+      yield* io.log("完了: role を変更しました(ローテーション義務はありません)");
+      return 0;
+    }
+    yield* io.log(
+      "member 未満への降格のため、全環境の強制ローテーションを実行します(CRYPTO_SPEC §7 — エポックアンカーの健全性)",
+    );
+    const exitCode = yield* reportMemberSweep(summary.sweep, "maruhi member change-role");
+    if (exitCode === 0) {
+      yield* io.log("完了: 降格と全環境ローテーションが完了しました");
+    }
+    return exitCode;
+  });
+}
+
+function memberCommand(execute: Execute) {
+  return define({
+    name: "member",
+    description: `メンバーの管理(${MEMBER_ACTIONS.join(" / ")} — CRYPTO_SPEC §6.2 / §6.5 / §7)`,
+    args: {
+      action: { type: "positional", description: MEMBER_ACTIONS.join(" | ") },
+      target: {
+        type: "positional",
+        required: false,
+        description: "add: 招待 id(受諾済みが 1 件なら省略可)/ remove・change-role: 対象 user_id",
+      },
+      role: {
+        type: "string",
+        description: `新しい role(change-role では必須 — ${MEMBER_ROLES.join(" | ")})`,
+      },
+      "expect-fingerprint": {
+        type: "string",
+        description:
+          "帯域外で控えた受諾者の鍵 FP(hex 32 文字。add のみ — 指定時は対話確認の代わりに照合する)",
+      },
+      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
+      project: {
+        type: "string",
+        description: "プロジェクト ID(省略時は config の defaultProject)",
+      },
+    },
+    run: (ctx) =>
+      execute(
+        ctx,
+        Effect.gen(function* () {
+          const action = ctx.values.action;
+          if (!isMemberAction(action)) {
+            return yield* Effect.fail(usageError(MEMBER_ACTION_HELP));
+          }
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "add") {
+            return yield* memberAdd({
+              ...flags,
+              invite: ctx.values.target,
+              expectFingerprint: ctx.values["expect-fingerprint"],
+            });
+          }
+          const target = ctx.values.target;
+          if (target === undefined || target.length === 0) {
+            return yield* Effect.fail(
+              usageError(
+                "対象の user_id を指定してください(maruhi project verify のメンバー一覧で確認できます)",
+              ),
+            );
+          }
+          if (action === "remove") {
+            return yield* memberRemove({ ...flags, target });
+          }
+          if (action === "change-role") {
+            return yield* memberChangeRole({ ...flags, target, role: ctx.values.role });
+          }
+          return yield* Effect.fail(unhandledMemberAction(action));
+        }),
+        {
+          commandRejection: memberActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
         },
       ),
   });
@@ -1463,6 +2028,8 @@ export async function runCli(
     project: projectCommand(execute),
     env: envCommand(execute),
     server: serverCommand(execute),
+    invite: inviteCommand(execute),
+    member: memberCommand(execute),
     pull: pullCommand(execute),
     push: pushCommand(execute),
     run: runCommand(execute),

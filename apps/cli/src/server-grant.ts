@@ -17,31 +17,24 @@
 // grant を検出 → 追記スキップ → バックフィル(409 = 登録済み)」で収束する。
 // A2 のリースは不足時に 503 `server-wraps-missing` へ倒れる(AUTH_SPEC §14-3)。
 
-import { ChainHeadConflictError, DekWrapExistsError, type WrappedDek } from "@maruhi/api-schema";
+import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, LeasePolicyIssuer, ServerGrant, SigningKeyPair } from "@maruhi/crypto";
-import {
-  computeServerKeyFingerprint,
-  decodeHex,
-  encodeHex,
-  fingerprintToWords,
-  signChainEntry,
-  SUITE_ID,
-} from "@maruhi/crypto";
+import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { wrapAndSignFor } from "./dek-wrap.ts";
+import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "./backfill.ts";
+import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import type { DekRecipient } from "./deks.ts";
-import { environmentKeysFor } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
-const CONFIRM_ATTEMPTS = 3;
 
 /** サーバー鍵の公開面(`/auth/config` — AUTH_SPEC §4)。 */
 interface ServerKeyConfig {
@@ -180,24 +173,6 @@ function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConf
   });
 }
 
-/** FP の BIP39 12 語(§3)。表示・確認の材料。 */
-function fingerprintWords(fingerprintHex: string): Effect.Effect<readonly string[], CliError> {
-  return Effect.gen(function* () {
-    const bytes = decodeHex(fingerprintHex);
-    if (bytes === null) {
-      return yield* Effect.fail(cliError("サーバー鍵 FP の形式が不正です"));
-    }
-    const words = yield* Effect.tryPromise({
-      try: () => fingerprintToWords(bytes),
-      catch: () => cliError("FP ワード表示の計算に失敗しました(暗号処理エラー)"),
-    });
-    if (!words.ok) {
-      return yield* Effect.fail(cliError("FP ワード表示の計算に失敗しました"));
-    }
-    return words.value;
-  });
-}
-
 /**
  * サーバー鍵確認の儀式(§9): FP のワード表示と、デプロイメントの公開設定との
  * 照合の明示確認。メンバー鍵に課している真正性確認(§6.5)をサーバー鍵にだけ
@@ -215,11 +190,11 @@ function confirmServerKey(input: {
 }): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const words = yield* fingerprintWords(input.fingerprintHex);
+    const words = yield* fingerprintWords(input.fingerprintHex, "サーバー鍵 FP の形式が不正です");
     const lines = [
       "サーバー鍵フィンガープリント(SHA-256(enc 公開鍵) 先頭 16 バイト — CRYPTO_SPEC §9):",
       `  hex:  ${input.fingerprintHex}`,
-      "  word: " + words.map((word, index) => `${String(index + 1).padStart(2)}.${word}`).join(" "),
+      "  word: " + formatWordList(words),
       "この語列が、デプロイ時に控えたサーバー鍵 FP(docs/SELF_HOSTING.md の記録手順)と一致することを帯域外の記録で照合してください。",
     ];
     for (const line of lines) {
@@ -247,28 +222,17 @@ function confirmServerKey(input: {
         ),
       );
     }
-    const lastWord = words[words.length - 1];
-    if (lastWord === undefined) {
-      return yield* Effect.fail(cliError("FP ワード表示の計算に失敗しました"));
-    }
-    for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
-      const answer = yield* io.promptLine({
-        prompt: `照合できたら、表示された 12 語の最後の語を入力してください(${attempt}/${CONFIRM_ATTEMPTS}): `,
-      });
-      if (answer.trim() === lastWord) {
-        return;
-      }
-      yield* io.logError("入力が一致しません。表示された語列の最後の語を入力してください");
-    }
-    return yield* Effect.fail(
-      cliError(
+    return yield* confirmByLastWord({
+      words,
+      promptText: "照合できたら、表示された 12 語の最後の語を入力してください",
+      mismatchText: "入力が一致しません。表示された語列の最後の語を入力してください",
+      exhaustedText:
         "サーバー鍵 FP の確認に失敗しました(語の再入力が一致しません)。grant は実行していません — 帯域外の控えと照合できてから再実行してください",
-      ),
-    );
+    });
   });
 }
 
-/** grant_server エントリを現ヘッドの直後に署名する。 */
+/** grant_server エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
 function signGrantEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -278,49 +242,29 @@ function signGrantEntry(input: {
   readonly leasePolicy: readonly LeasePolicyIssuer[];
 }): Effect.Effect<ChainEntry, CliError> {
   return Effect.gen(function* () {
-    const member = input.verified.state.members.get(input.signerUserId);
-    if (member === undefined) {
-      return yield* Effect.fail(cliError("チェーン導出メンバーではありません"));
-    }
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            op: "grant_server",
-            actor: { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
-            payload: {
-              serverEncPubHex: input.serverConfig.serverEncPubHex,
-              serverKeyFingerprintHex: input.serverConfig.serverKeyFingerprintHex,
-              scopeEnvironmentIds: input.scope,
-              leasePolicy: input.leasePolicy,
-            },
-            timestampMs: Date.now(),
-          },
-          signingKey: input.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError("grant_server エントリの署名に失敗しました"),
+    return yield* signEntryAtHead({
+      verified: input.verified,
+      signerUserId: input.signerUserId,
+      operation: {
+        op: "grant_server",
+        payload: {
+          serverEncPubHex: input.serverConfig.serverEncPubHex,
+          serverKeyFingerprintHex: input.serverConfig.serverKeyFingerprintHex,
+          scopeEnvironmentIds: input.scope,
+          leasePolicy: input.leasePolicy,
+        },
+      },
+      signingKeyPair: input.signingKeyPair,
+      failureText: "grant_server エントリの署名に失敗しました",
     });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("grant_server エントリの署名に失敗しました"));
-    }
-    return signed.value;
   });
 }
 
-/** バックフィル 1 環境分の結果。 */
-interface BackfillResult {
-  readonly registered: number;
-  readonly alreadyRegistered: number;
-}
-
 /**
- * 1 環境の全エポック(1〜現エポック)のサーバー宛ラップを登録する。まず一括で
- * 送り、409(登録済みスロットあり)ならエポック単位に落として 409 = 登録済みと
- * して続行する(サーバー宛ラップの一覧 API は存在しない — 配布は本人宛のみ
- * §12-6 — ため、「409 を完了扱い」が唯一かつ十分な照合手段)。
+ * 1 環境の全エポック(1〜現エポック)のサーバー宛ラップを登録する(共有核 =
+ * backfill.ts)。エポック単位の 409 は「登録済み」として吸収する(サーバー宛
+ * ラップの一覧 API は存在しない — 配布は本人宛のみ §12-6 — ため、「409 を
+ * 完了扱い」が唯一かつ十分な照合手段)。
  */
 function backfillEnvironment(input: {
   readonly client: MaruhiClient;
@@ -330,80 +274,16 @@ function backfillEnvironment(input: {
   readonly grant: ServerGrant;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<BackfillResult, CliError> {
-  return Effect.gen(function* () {
-    const keys = yield* environmentKeysFor({
-      client: input.client,
-      verified: input.verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-    });
-    const wraps: WrappedDek[] = [];
-    for (let epoch = 1; epoch <= keys.currentEpoch; epoch += 1) {
-      const dek = keys.deksByEpoch.get(epoch);
-      if (dek === undefined) {
-        // §7: 全メンバーは全エポックの DEK を受け取る。欠けは毒ラップ・欠落の
-        // 兆候なので黙って飛ばさない(§12-6 の修復経路を案内)
-        return yield* Effect.fail(
-          cliError(
-            `環境 ${input.environmentId} の epoch ${epoch} の DEK ラップが自分宛に存在しません(§7 の全エポック配布と矛盾)。修復経路(ラップの再登録)で解消してから再実行してください`,
-          ),
-        );
-      }
-      const built = yield* Effect.tryPromise({
-        try: () =>
-          wrapAndSignFor({
-            projectId: input.verified.projectId,
-            environmentId: input.environmentId,
-            epoch,
-            dek,
-            recipient: { kind: "server", grant: input.grant },
-            signerUserId: input.signerUserId,
-            signingKeyPair: input.signingKeyPair,
-          }),
-        catch: () => cliError("サーバー宛 DEK ラップ生成が失敗しました(暗号処理エラー)"),
-      });
-      if (built.kind === "failed") {
-        return yield* Effect.fail(
-          cliError(`サーバー宛 DEK ラップ生成に失敗しました(${built.reason})`),
-        );
-      }
-      wraps.push(built.wrap);
-    }
-
-    // 登録(409 = DekWrapExists は「登録済み」として吸収 — 再実行の収束)
-    const register = (deks: readonly WrappedDek[]) =>
-      input.client.deks
-        .register({
-          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-          payload: { deks },
-        })
-        .pipe(
-          Effect.map(() => ({ kind: "ok" }) as const),
-          Effect.catch((error) =>
-            error instanceof DekWrapExistsError
-              ? Effect.succeed({ kind: "exists" } as const)
-              : Effect.fail(toCliError(error)),
-          ),
-        );
-
-    // 一括 → 409 ならエポック単位(バッチは原子的受理のため、部分登録済みの
-    // 再実行では一括が 409 になる)
-    const batch = yield* register(wraps);
-    if (batch.kind === "ok") {
-      return { registered: wraps.length, alreadyRegistered: 0 };
-    }
-    let registered = 0;
-    let alreadyRegistered = 0;
-    for (const wrap of wraps) {
-      const single = yield* register([wrap]);
-      if (single.kind === "ok") {
-        registered += 1;
-      } else {
-        alreadyRegistered += 1;
-      }
-    }
-    return { registered, alreadyRegistered };
+}): Effect.Effect<BackfillEnvironmentOutcome, CliError> {
+  return backfillEnvironmentFor({
+    client: input.client,
+    verified: input.verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    wrapRecipient: { kind: "server", grant: input.grant },
+    recipientLabel: "サーバー宛",
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
   });
 }
 
@@ -467,16 +347,7 @@ export function serverGrantOp(input: {
                 scope,
                 leasePolicy: input.leasePolicy,
               });
-              yield* input.client.membership
-                .append({
-                  params: { projectId: state.verified.projectId },
-                  payload: { parentHeadHashHex: state.verified.state.headHashHex, entry },
-                })
-                .pipe(
-                  Effect.mapError((error) =>
-                    error instanceof ChainHeadConflictError ? error : toCliError(error),
-                  ),
-                );
+              yield* appendEntry(input.client, state.verified, entry);
               return state.verified;
             }),
           classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),

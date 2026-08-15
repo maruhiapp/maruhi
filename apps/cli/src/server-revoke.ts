@@ -19,40 +19,29 @@
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { ChainEntry, SigningKeyPair } from "@maruhi/crypto";
-import { signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import type { RotationSummary } from "./env-rotate.ts";
+import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
 import { retryOnConflict } from "./retry.ts";
+import {
+  type SweepOutcome,
+  type SweepRotate,
+  sweepRotations,
+  verifiedDeletedEnvironmentSet,
+} from "./rotation-sweep.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
-import { verifiedDeletedEnvironments } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 
 /** revoke 後の全環境ローテーションでチェーンに記録される理由(§6.2 payload)。 */
 export const REVOKE_ROTATION_REASON = "server-revoked";
 
-/** ローテーション注入のモード: force = 新エポック必須 / verify = 再開・確認のみ。 */
-export type RevokeRotateMode = "force" | "verify";
-
-export interface RevokeSummary {
+export interface RevokeSummary extends SweepOutcome {
   /** チェーンへ追記したか(false = 有効 grant がない・並行 revoke 済みで、失効後の続きから再開)。 */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string | null;
-  /** ローテーション(強制 or 再開)を実行した環境(環境 ID → 結果)。 */
-  readonly rotated: readonly {
-    readonly environmentId: string;
-    readonly summary: RotationSummary;
-    /** 新エポックを要求した実行か(true = 強制 / false = 検証パスの再開)。 */
-    readonly forcedNewEpoch: boolean;
-  }[];
-  /** ローテーションに失敗した環境(§7 — 黙ってスキップしない)。 */
-  readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
-  /** 失効より後のエポックで、未完了の再暗号化がないことを**確認済み**の環境。 */
-  readonly alreadyRotated: readonly string[];
   /** 検証済みの削除ステートメントによりスキップした環境。 */
   readonly skippedDeleted: readonly string[];
 }
@@ -60,12 +49,12 @@ export interface RevokeSummary {
 function requireOwner(
   verified: VerifiedProject,
   signerUserId: string,
-): Effect.Effect<{ readonly userId: string; readonly keyFingerprintHex: string }, CliError> {
+): Effect.Effect<void, CliError> {
   const member = verified.state.members.get(signerUserId);
   if (member === undefined || member.role !== "owner") {
     return Effect.fail(cliError("revoke_server は owner のみが実行できます(CRYPTO_SPEC §6.2)"));
   }
-  return Effect.succeed({ userId: member.userId, keyFingerprintHex: member.keyFingerprintHex });
+  return Effect.void;
 }
 
 /** 失効対象の grant を選ぶ(複数あるときは --fingerprint で明示)。 */
@@ -101,53 +90,23 @@ function selectGrant(
     : Effect.succeed({ serverKeyFingerprintHex: only.serverKeyFingerprintHex });
 }
 
-/** revoke_server エントリを現ヘッドの直後に署名する。 */
+/** revoke_server エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
 function signRevokeEntry(input: {
   readonly verified: VerifiedProject;
-  readonly actor: { readonly userId: string; readonly keyFingerprintHex: string };
+  readonly signerUserId: string;
   readonly serverKeyFingerprintHex: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
-  return Effect.gen(function* () {
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            op: "revoke_server",
-            actor: input.actor,
-            payload: { serverKeyFingerprintHex: input.serverKeyFingerprintHex },
-            timestampMs: Date.now(),
-          },
-          signingKey: input.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError("revoke_server エントリの署名に失敗しました"),
-    });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("revoke_server エントリの署名に失敗しました"));
-    }
-    return signed.value;
+  return signEntryAtHead({
+    verified: input.verified,
+    signerUserId: input.signerUserId,
+    operation: {
+      op: "revoke_server",
+      payload: { serverKeyFingerprintHex: input.serverKeyFingerprintHex },
+    },
+    signingKeyPair: input.signingKeyPair,
+    failureText: "revoke_server エントリの署名に失敗しました",
   });
-}
-
-/**
- * 「失効後にまだローテーションされていない環境」の導出(中断復旧の基準)。
- * revoke の seq より現エポックの開始 seq が前 = その環境の現 DEK は失効した
- * サーバー鍵に開示されたまま。チェーンだけから決まるので進捗ファイルは不要。
- * 開始 seq が導出できない環境は fail-closed で対象に含める(applyCreateEnvironment
- * の不変条件が崩れたとき、環境が黙って失効対象から外れる形にしない)。
- */
-function pendingEnvironmentsAfter(verified: VerifiedProject, revokeSeq: number): readonly string[] {
-  const pending: string[] = [];
-  for (const [environmentId, environment] of verified.state.environments) {
-    const startSeq = environment.epochStartSeqs.get(environment.currentEpoch);
-    if (startSeq === undefined || startSeq < revokeSeq) {
-      pending.push(environmentId);
-    }
-  }
-  return pending.toSorted();
 }
 
 /** チェーン上の最後の revoke_server の seq(存在しなければ null)。 */
@@ -181,13 +140,10 @@ export function serverRevokeOp<R>(input: {
    * verify = reason なし + forceNewEpoch なし(未完了の再暗号化があれば再開、
    * なければ確認のみ — 新エポックは作らない)。
    */
-  readonly rotate: (
-    environmentId: string,
-    mode: RevokeRotateMode,
-  ) => Effect.Effect<RotationSummary, CliError, R>;
+  readonly rotate: SweepRotate<R>;
 }): Effect.Effect<RevokeSummary, CliError, R> {
   return Effect.gen(function* () {
-    const actor = yield* requireOwner(input.verified, input.signerUserId);
+    yield* requireOwner(input.verified, input.signerUserId);
     const target = yield* selectGrant(input.verified, input.fingerprintHex);
 
     let verified = input.verified;
@@ -210,20 +166,11 @@ export function serverRevokeOp<R>(input: {
               : Effect.gen(function* () {
                   const entry = yield* signRevokeEntry({
                     verified: state.verified,
-                    actor,
+                    signerUserId: input.signerUserId,
                     serverKeyFingerprintHex: state.target,
                     signingKeyPair: input.signingKeyPair,
                   });
-                  yield* input.client.membership
-                    .append({
-                      params: { projectId: state.verified.projectId },
-                      payload: { parentHeadHashHex: state.verified.state.headHashHex, entry },
-                    })
-                    .pipe(
-                      Effect.mapError((error) =>
-                        error instanceof ChainHeadConflictError ? error : toCliError(error),
-                      ),
-                    );
+                  yield* appendEntry(input.client, state.verified, entry);
                   return { verified: state.verified, appended: true };
                 }),
           classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
@@ -269,10 +216,7 @@ export function serverRevokeOp<R>(input: {
     // **署名済み削除ステートメントの検証**のみ — サーバーの 404 申告だけで
     // 黙ってスキップしない(§7)。検証できなければ対象に残り、失敗として
     // 表面化する
-    const listed = yield* input.client.environments
-      .list({ params: { projectId: verified.projectId } })
-      .pipe(Effect.mapError(toCliError));
-    const deletedVerified = yield* verifiedDeletedEnvironments(verified, listed.environments);
+    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, verified);
     const skippedDeleted = [...verified.state.environments.keys()]
       .filter((environmentId) => deletedVerified.has(environmentId))
       .toSorted();
@@ -280,7 +224,7 @@ export function serverRevokeOp<R>(input: {
     const sweep = yield* sweepRotations({
       rotate: input.rotate,
       verified,
-      revokeSeq,
+      baselineSeq: revokeSeq,
       deletedVerified,
     });
 
@@ -290,81 +234,5 @@ export function serverRevokeOp<R>(input: {
       ...sweep,
       skippedDeleted,
     };
-  });
-}
-
-/** 1 環境のローテーションの結果化(失敗は投げずに集める — §7 の全環境走査用)。 */
-function rotateOutcome<R>(
-  rotate: (
-    environmentId: string,
-    mode: RevokeRotateMode,
-  ) => Effect.Effect<RotationSummary, CliError, R>,
-  environmentId: string,
-  mode: RevokeRotateMode,
-): Effect.Effect<
-  | { readonly kind: "ok"; readonly summary: RotationSummary }
-  | { readonly kind: "failed"; readonly message: string },
-  never,
-  R
-> {
-  return rotate(environmentId, mode).pipe(
-    Effect.map((summary) => ({ kind: "ok", summary }) as const),
-    Effect.catch((error) => Effect.succeed({ kind: "failed", message: error.message } as const)),
-  );
-}
-
-/**
- * §7 の全環境走査: pending は強制ローテーション、それ以外は検証パス
- * (未完了の再暗号化の再開 or 完了確認)。1 環境の失敗で残りを止めない
- * (失敗は集めて報告し、再実行で続きから再開する)。
- */
-function sweepRotations<R>(input: {
-  readonly rotate: (
-    environmentId: string,
-    mode: RevokeRotateMode,
-  ) => Effect.Effect<RotationSummary, CliError, R>;
-  readonly verified: VerifiedProject;
-  readonly revokeSeq: number;
-  readonly deletedVerified: ReadonlySet<string>;
-}): Effect.Effect<Pick<RevokeSummary, "rotated" | "failed" | "alreadyRotated">, never, R> {
-  return Effect.gen(function* () {
-    const pendingSet = new Set(pendingEnvironmentsAfter(input.verified, input.revokeSeq));
-    const candidates = [...input.verified.state.environments.keys()]
-      .filter((environmentId) => !input.deletedVerified.has(environmentId))
-      .toSorted();
-    const rotated: {
-      readonly environmentId: string;
-      readonly summary: RotationSummary;
-      readonly forcedNewEpoch: boolean;
-    }[] = [];
-    const failed: { readonly environmentId: string; readonly message: string }[] = [];
-    const alreadyRotated: string[] = [];
-    for (const environmentId of candidates.filter((id) => pendingSet.has(id))) {
-      const result = yield* rotateOutcome(input.rotate, environmentId, "force");
-      if (result.kind === "ok") {
-        rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: true });
-      } else {
-        failed.push({ environmentId, message: result.message });
-      }
-    }
-    // エポックは失効より後に始まっているが、その回の**再暗号化が完了したか**は
-    // チェーンからは分からない(§12-7 の過渡状態)。検証パスで確かめる
-    for (const environmentId of candidates.filter((id) => !pendingSet.has(id))) {
-      const result = yield* rotateOutcome(input.rotate, environmentId, "verify");
-      if (result.kind !== "ok") {
-        failed.push({ environmentId, message: result.message });
-      } else if (
-        result.summary.mode === "up-to-date" &&
-        result.summary.remaining === 0 &&
-        result.summary.failure === null
-      ) {
-        alreadyRotated.push(environmentId);
-      } else {
-        // 再開した(または部分完了が残った)— 表示・終了コードは呼び出し側の
-        // reportRotation が RotationSummary から導く
-        rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: false });
-      }
-    }
-    return { rotated, failed, alreadyRotated: alreadyRotated.toSorted() };
   });
 }
