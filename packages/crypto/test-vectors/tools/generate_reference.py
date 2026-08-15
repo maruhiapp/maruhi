@@ -1056,12 +1056,18 @@ def gen_chain_entries():
         "env-stage-0003": "1",
     }
 
-    def grant_state(scope: list, policy: list) -> dict:
+    # grant_seq(2026-08-15 / Wave 2 A2): 当該サーバー鍵の**有効 grant を確立した
+    # エントリの seq**。再 grant では最新の grant_server エントリの seq に置き換わる。
+    # AUDIT_SPEC §3.5 の server.lease_issued payload の grant_chain_seq は
+    # この導出値が唯一の出所であり(サーバー側で再 grant 二層規則を再実装しない
+    # ため)、導出状態の一部としてベクターで固定する
+    def grant_state(scope: list, policy: list, grant_seq: int) -> dict:
         return {
             "server_key_fingerprint_hex": server["fp_hex"],
             "server_enc_pub_hex": server["enc_pub_hex"],
             "scope_environments": scope,
             "lease_policy": policy,
+            "grant_seq": grant_seq,
         }
 
     valid_appends = [
@@ -1120,8 +1126,10 @@ def gen_chain_entries():
                                  grant_payload_for(grant_scope, []), t0 + 9000, head9),
             "expected_members": {owner_id: "owner", admin_id: "admin"},
             "expected_environments": {"env-prod-0001": "2", "env-dev-0002": "1"},
-            "expected_server_grants": [grant_state(grant_scope, [])],
-            "note": "scope 不変 × lease_policy 全削除の再 grant は受理され、ポリシーが空(リース経路なし)へ置換される(§6.3 再 grant 二層化の受理側。seq 9 のヘッドへの追記)",
+            # grant_seq は再 grant エントリ自身の seq(10)へ前進する — 有効 grant を
+            # 確立したエントリが置き換わるため(seq 9 のままにする実装はここで落ちる)
+            "expected_server_grants": [grant_state(grant_scope, [], 10)],
+            "note": "scope 不変 × lease_policy 全削除の再 grant は受理され、ポリシーが空(リース経路なし)へ置換される(§6.3 再 grant 二層化の受理側。seq 9 のヘッドへの追記)。導出 grant_seq は再 grant エントリの seq へ前進する",
         },
     ]
 
@@ -1151,7 +1159,7 @@ def gen_chain_entries():
         {
             "after_seq": 9,
             "members": {owner_id: "owner", admin_id: "admin"},
-            "server_grants": [grant_state(grant_scope, grant_lease_policy)],
+            "server_grants": [grant_state(grant_scope, grant_lease_policy, 9)],
             "environments": {
                 "env-prod-0001": env_state("env-prod-0001", 2, 3, {1: 3, 2: 4}),
                 "env-dev-0002": env_state("env-dev-0002", 1, 8, {1: 8}),

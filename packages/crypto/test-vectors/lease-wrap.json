@@ -1,0 +1,94 @@
+{
+  "description": "CRYPTO_SPEC §9.1: ワークロードリースのリースラップ(HPKE Base mode 単発 Seal、§5 と同一プリミティブ)。info に claims_digest を束縛し、リース応答の別ワークロード文脈への転用を復号失敗にする。Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)",
+  "info_fields_order": ["domain", "project_id", "environment_id", "epoch", "claims_digest_hex"],
+  "claims_digest_fields_order": ["domain", "issuer_url", "subject", "audience"],
+  "persistence_note": "リースラップは永続化しない(dek_wraps に入らない — §9.1)。応答スコープのみに存在するため、§5.1 の登録署名は伴わない(署名者はチェーン上のメンバーであり、サーバー生成のラップに帰属署名は存在しえない)",
+  "provenance_note": "座標(project / environment / epoch)と basic の DEK は dek-wrap.json の server-basic と同一。サーバーが自分宛ラップを開封し、同じ DEK をワークロード一時鍵へ再ラップした形を実データで表す(§9.1 — サーバーは値を復号しない)",
+  "workload_keypair": {
+    "ikmW_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+    "skWm_hex": "02f98d833736e7d8277f59b0d5df9f98597ae3ba1fb82e3d12cce54af6a2ef5f",
+    "pkWm_hex": "36953ddc729566b9b0885788d74e85e28ff31fb88408f93a6b012ac42ae7b910",
+    "note": "ワークロードの一時 X25519 鍵。ベクターの決定論のため DeriveKeyPair(ikmW) で固定するが、実運用では毎回ランダム生成しジョブ終了とともに破棄する(§9.1)"
+  },
+  "claims": {
+    "domain": "maruhi/v1/lease-claims",
+    "issuer_url": "https://token.actions.githubusercontent.com",
+    "audience": "https://maruhi.example",
+    "subject": "repo:maruhi-example/demo:ref:refs/heads/main",
+    "lp_hex": "000000166d61727568692f76312f6c656173652d636c61696d730000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002c7265706f3a6d61727568692d6578616d706c652f64656d6f3a7265663a726566732f68656164732f6d61696e0000001668747470733a2f2f6d61727568692e6578616d706c65",
+    "claims_digest_hex": "dbfb681d84df3f03099d821c9592fff34a84911b97a72322e317519278544a18",
+    "other_subject": "repo:maruhi-example/demo:ref:refs/heads/feature-x",
+    "other_lp_hex": "000000166d61727568692f76312f6c656173652d636c61696d730000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d000000317265706f3a6d61727568692d6578616d706c652f64656d6f3a7265663a726566732f68656164732f666561747572652d780000001668747470733a2f2f6d61727568692e6578616d706c65",
+    "other_claims_digest_hex": "1cf9b6256281057b048b04f33c50b54feeea5cc9fcbc0c3792a27eb75cb2b4d8",
+    "note": "claims_digest_hex = lower_hex(SHA-256(LP(domain, issuer_url, subject, audience)))。検証済み OIDC トークンの issuer / sub / aud から、サーバーとワークロードが独立に同じ値を計算する。other_* は同一 issuer / audience・別 subject(別ブランチ)の文脈で、info-claims-digest-mismatch の材料"
+  },
+  "vectors": [
+    {
+      "name": "basic",
+      "domain": "maruhi/v1/lease-wrap",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "epoch": 3,
+      "claims_digest_hex": "dbfb681d84df3f03099d821c9592fff34a84911b97a72322e317519278544a18",
+      "info_hex": "000000146d61727568692f76312f6c656173652d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000004064626662363831643834646633663033303939643832316339353932666666333461383439313162393761373233323265333137353139323738353434613138",
+      "dek_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "ikmE_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f",
+      "aad_hex": "",
+      "enc_hex": "918529227164fc5aeb4ec162ea8387ad783aad41ddfbdceff31a11ca2f544e32",
+      "ciphertext_hex": "6aff752a3a9038a8984fc17e16b16350c5a5f0e3049631af6f046085c3e50270291859c1d2ab3c9a481b4a0b21007879",
+      "note": "現エポックのリースラップ。DEK は dek-wrap.json の server-basic と同一(サーバーが開封して再ラップした DEK)"
+    },
+    {
+      "name": "prior-epoch",
+      "domain": "maruhi/v1/lease-wrap",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "epoch": 2,
+      "claims_digest_hex": "dbfb681d84df3f03099d821c9592fff34a84911b97a72322e317519278544a18",
+      "info_hex": "000000146d61727568692f76312f6c656173652d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001320000004064626662363831643834646633663033303939643832316339353932666666333461383439313162393761373233323265333137353139323738353434613138",
+      "dek_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "ikmE_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "aad_hex": "",
+      "enc_hex": "b259f6ee92dcba0111850b13b3f6dccc827726f9b08235ab62922b6b3f3f2a19",
+      "ciphertext_hex": "9e41ea6d3e500ab9a72adfd66e4d2824889a05f81c79dc43a0fde46e74a65343ac429a0967cd6cfe5de260a767d0f864",
+      "note": "同一リース応答に含まれる過去エポック分(§14-2: 最新値が使用する全エポック + 現エポック)。エポックごとに DEK も info も独立であることを固定する"
+    }
+  ],
+  "negative": [
+    {
+      "name": "info-project-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000146d61727568692f76312f6c656173652d777261700000000970726f6a2d303030320000000d656e762d70726f642d3030303100000001330000004064626662363831643834646633663033303939643832316339353932666666333461383439313162393761373233323265333137353139323738353434613138",
+      "must_fail": true,
+      "note": "別プロジェクトへの移植は Open 失敗"
+    },
+    {
+      "name": "info-environment-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000146d61727568692f76312f6c656173652d777261700000000970726f6a2d303030310000000c656e762d6465762d3030303200000001330000004064626662363831643834646633663033303939643832316339353932666666333461383439313162393761373233323265333137353139323738353434613138",
+      "must_fail": true,
+      "note": "別環境への移植は Open 失敗(開示スコープを跨いだ再利用の遮断)"
+    },
+    {
+      "name": "info-epoch-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000146d61727568692f76312f6c656173652d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001340000004064626662363831643834646633663033303939643832316339353932666666333461383439313162393761373233323265333137353139323738353434613138",
+      "must_fail": true,
+      "note": "別エポックへの移植は Open 失敗"
+    },
+    {
+      "name": "info-claims-digest-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000146d61727568692f76312f6c656173652d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000004031636639623632353632383130353762303438623034663333633530623534666565656135636339666362633063333739326132376562373563623262346438",
+      "must_fail": true,
+      "note": "別ワークロード文脈(同一 issuer / audience・別 subject)の claims_digest では Open 失敗。リース応答を別ジョブへ転用できないことの中核(§9.1)"
+    },
+    {
+      "name": "info-dek-wrap-domain",
+      "base": "basic",
+      "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000004064626662363831643834646633663033303939643832316339353932666666333461383439313162393761373233323265333137353139323738353434613138",
+      "must_fail": true,
+      "note": "ドメイン文字列を §5 の dek-wrap に差し替えた info では Open 失敗(永続ラップとリースラップのドメイン分離)"
+    }
+  ]
+}

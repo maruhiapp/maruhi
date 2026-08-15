@@ -994,6 +994,95 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- lease-wrap.json(panva hpke で Open)-------------------------------------
+// §9.1 のリースラップ。dek-wrap と同じ「生成 = hpke-js / 検証 = panva」の
+// 突き合わせに加えて、(1) claims_digest の LP + SHA-256 を WebCrypto で独立に
+// 再計算し、(2) info が仕様のフィールド順で組まれていること、(3) 座標と DEK が
+// dek-wrap.json の server-basic を引き継いでいること(サーバーが自分宛ラップを
+// 開封して再ラップした形)を検査する
+{
+  const doc = read("lease-wrap.json");
+  const dekWrap = read("dek-wrap.json");
+  const suite = new HPKE.CipherSuite(
+    HPKE.KEM_DHKEM_X25519_HKDF_SHA256,
+    HPKE.KDF_HKDF_SHA256,
+    HPKE.AEAD_AES_256_GCM,
+  );
+  // KeyPair 渡しの Open(CRYPTO_SPEC §2。非抽出鍵と両立する経路)
+  const workloadKeyPair = {
+    privateKey: await suite.DeserializePrivateKey(fromHex(doc.workload_keypair.skWm_hex), false),
+    publicKey: await suite.DeserializePublicKey(fromHex(doc.workload_keypair.pkWm_hex)),
+  };
+  const vectorByName = (name) => doc.vectors.find((v) => v.name === name);
+
+  // claims_digest = lower_hex(SHA-256(LP(domain, issuer_url, subject, audience)))
+  const digestOf = async (sub) => {
+    const lp = lpEncode([doc.claims.domain, doc.claims.issuer_url, sub, doc.claims.audience]);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", lp));
+    return { lpHex: toHex(lp), digestHex: toHex(digest) };
+  };
+  {
+    const primary = await digestOf(doc.claims.subject);
+    const other = await digestOf(doc.claims.other_subject);
+    check(
+      "lease-wrap: claims_digest LP + SHA-256",
+      primary.lpHex === doc.claims.lp_hex &&
+        primary.digestHex === doc.claims.claims_digest_hex &&
+        other.lpHex === doc.claims.other_lp_hex &&
+        other.digestHex === doc.claims.other_claims_digest_hex,
+    );
+    check(
+      "lease-wrap: claims_digest domain embeds suite",
+      doc.claims.domain === "maruhi/v1/lease-claims",
+    );
+  }
+
+  // 座標・DEK の引き継ぎ(§9.1 の「サーバーは DEK の仲介者」の実データ表現)
+  {
+    const serverWrap = dekWrap.vectors.find((v) => v.name === "server-basic");
+    const basic = vectorByName("basic");
+    check(
+      "lease-wrap: coordinates and DEK match dek-wrap.json server-basic",
+      basic.project_id === serverWrap.project_id &&
+        basic.environment_id === serverWrap.environment_id &&
+        basic.epoch === serverWrap.epoch &&
+        basic.dek_hex === serverWrap.dek_hex,
+    );
+  }
+
+  for (const v of doc.vectors) {
+    // info はベクター宣言でなく仕様のフィールド順から組み直して照合する
+    // (JSON 由来の順序で検証すると順序を独立に固定できない — session-15 レビュー③)
+    check(
+      `lease-wrap: ${v.name} info reconstruction`,
+      toHex(lpEncode([v.domain, v.project_id, v.environment_id, v.epoch, v.claims_digest_hex])) ===
+        v.info_hex,
+    );
+    check(`lease-wrap: ${v.name} domain embeds suite`, v.domain === "maruhi/v1/lease-wrap");
+    const dek = await suite.Open(workloadKeyPair, fromHex(v.enc_hex), fromHex(v.ciphertext_hex), {
+      info: fromHex(v.info_hex),
+      aad: fromHex(v.aad_hex),
+    });
+    check(`lease-wrap: ${v.name} panva open == DEK`, toHex(new Uint8Array(dek)) === v.dek_hex);
+  }
+
+  for (const n of doc.negative) {
+    const base = vectorByName(n.base);
+    let failed = false;
+    try {
+      await suite.Open(
+        workloadKeyPair,
+        fromHex(n.enc_hex ?? base.enc_hex),
+        fromHex(n.ciphertext_hex ?? base.ciphertext_hex),
+        { info: fromHex(n.open_info_hex ?? base.info_hex), aad: fromHex(base.aad_hex) },
+      );
+    } catch {
+      failed = true;
+    }
+    check(`lease-wrap negative: ${n.name}`, failed === n.must_fail);
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);
