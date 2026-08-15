@@ -156,15 +156,28 @@ export function unconvergedMandates(
   return results;
 }
 
-/** 義務種別ごとの収束コマンドの案内(行動可能な警告 — B2 裁定)。 */
-function mandateAdvice(mandate: UnconvergedMandate): string {
+/**
+ * 義務種別ごとの収束コマンドの案内(行動可能な警告 — B2 裁定)。義務の契機が
+ * 現チェーン状態で取り消されている(対象の再追加・再昇格、有効な grant の存在)
+ * 場合は元コマンドを名指ししない — 再実行は残りのローテーションの完了ではなく
+ * チェーン状態の再変更(再削除・再降格・有効 grant の失効)を引き起こす。
+ * その場合は環境ごとの強制ローテーション(reason は義務種別と同じ固定文字列)
+ * だけを案内する。
+ */
+function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): string {
   if (mandate.kind === "member-removed") {
-    return `maruhi member remove ${displayText(mandate.target)} の再実行`;
+    if (!verified.state.members.has(mandate.target)) {
+      return `maruhi member remove ${displayText(mandate.target)} の再実行`;
+    }
+  } else if (mandate.kind === "role-demoted") {
+    const member = verified.state.members.get(mandate.target);
+    if (member !== undefined && ROLE_RANK[member.role] < ROLE_RANK.member) {
+      return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)`;
+    }
+  } else if (verified.state.serverGrants.size === 0) {
+    return "maruhi server revoke の再実行";
   }
-  if (mandate.kind === "role-demoted") {
-    return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)`;
-  }
-  return "maruhi server revoke の再実行";
+  return `未収束の各環境での maruhi env rotate <環境 ID> --reason ${mandate.kind} の実行`;
 }
 
 /**
@@ -204,7 +217,7 @@ export function warnUnconvergedMandates(input: {
     );
     for (const mandate of filtered) {
       yield* io.logError(
-        `  ${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq}): 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(mandate)}で収束します`,
+        `  ${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq}): 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(input.verified, mandate)}で収束します`,
       );
     }
   });

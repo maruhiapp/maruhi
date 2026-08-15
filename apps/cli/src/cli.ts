@@ -284,13 +284,28 @@ function projectVerify(
     // verify の一部(常時警告 — rotation-sweep.ts — の詳細表示。候補ゼロなら
     // 通信なしで確定する)
     const candidates = unconvergedMandates(verified, new Set());
-    const pending =
+    // 削除済み環境のフィルタ(環境一覧の GET + 削除ステートメント検証)の失敗で
+    // verify 全体を失敗にしない: チェーン検証は既に成功しており、一時的な取得
+    // 失敗を「プロジェクトが壊れている」と誤読させない(warnUnconvergedMandates
+    // と同じ SHOULD の規律 — その旨だけ告げて続行する)
+    const deletedVerified =
       candidates.length === 0
-        ? candidates
-        : unconvergedMandates(
-            verified,
-            yield* verifiedDeletedEnvironmentSet(context.client, verified),
+        ? new Set<string>()
+        : yield* verifiedDeletedEnvironmentSet(context.client, verified).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                yield* io.logError(
+                  `注意: 未収束のローテーション義務の候補がありますが、削除済み環境の検証に失敗したため確定できません(${error.message})`,
+                );
+                return null;
+              }),
+            ),
           );
+    if (deletedVerified === null) {
+      return;
+    }
+    const pending =
+      candidates.length === 0 ? candidates : unconvergedMandates(verified, deletedVerified);
     if (pending.length === 0) {
       yield* io.log("ローテーション義務: 未収束なし(CRYPTO_SPEC §7)");
       return;
