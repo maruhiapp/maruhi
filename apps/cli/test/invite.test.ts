@@ -235,6 +235,54 @@ describe("maruhi invite create", () => {
     expect(issueCalls).toHaveLength(0);
   });
 
+  it("エージェント環境では発行そのものを拒否する(トークン生値がトランスクリプトへ残る)", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    const issueCalls: unknown[] = [];
+    const server = await start([
+      chainHandler(built),
+      onRequest("POST", `/projects/${built.projectId}/invites`, (request) => {
+        issueCalls.push(request.body);
+        return {
+          status: 200,
+          json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
+        };
+      }),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, inviter);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    env.setAgent({ isAgent: true, name: "test-agent" });
+
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("招待の発行を拒否しました");
+    // 発行 POST の前に拒否する(サーバー側に pending を作らない)
+    expect(issueCalls).toHaveLength(0);
+  });
+
+  it("発行ピンの保存失敗(破損ピンファイル)でも発行は成立し、リンクを表示して警告する", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    const server = await start([
+      chainHandler(built),
+      onRequest("POST", `/projects/${built.projectId}/invites`, () => ({
+        status: 200,
+        json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, inviter);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    // 破損ピンファイル(merge は上書きを拒否する — pins.ts の規律)
+    await mkdir(env.pinsDir, { recursive: true });
+    await writeFile(join(env.pinsDir, `${built.projectId}.json`), "{ broken");
+
+    // リンクは一度しか表示されない: ピン保存の失敗で成立済みの発行を落とさない
+    expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain(`#v=1&t=${TOKEN}&`);
+    expect(env.errors.join("\n")).toContain("発行ピンを保存できませんでした");
+    // 破損ファイルは上書きされない(検出可能性を保存)
+    expect(await readFile(join(env.pinsDir, `${built.projectId}.json`), "utf8")).toBe("{ broken");
+  });
+
   it("429 の 2 種(pending 上限 / レート制限)を区別して表示する", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
     for (const [json, fragment] of [
@@ -520,6 +568,84 @@ describe("maruhi invite accept", () => {
       expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
       expect(env.errors.join("\n")).toContain(fragment);
     }
+  });
+
+  it("受諾が成立しなければアンカーをピン留めしない(410 でピンファイルを作らない)", async () => {
+    // 受諾前にピン留めすると、失敗する受諾(失効・偽トークン)を含む細工リンクの
+    // 投入だけで既存アンカーを差し替えられる(自己 DoS / 置換)— §15-3 追補の回帰
+    const server = await start([
+      onRequest("POST", "/invites/accept", () => ({
+        status: 410,
+        json: { _tag: "InviteGone", reason: "expired" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, acceptor);
+    await seedConfig(env, { server: server.origin });
+    env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
+    await expect(readPins(env, PROJECT_ID)).rejects.toThrow(); // ピンファイル不在
+  });
+
+  it("機械照合済みアンカーは再受諾でも上書きせず、未照合アンカーは最新の受諾で置き換える", async () => {
+    const verifiedAnchor = {
+      headSeq: 9,
+      headHashHex: "12".repeat(32),
+      inviterUserId: "user-original-77",
+      inviterKeyFingerprintHex: "34".repeat(16),
+      verifiedAtSeq: 9,
+    };
+    const server = await start([acceptHandler(() => undefined)]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, acceptor);
+    await seedConfig(env, { server: server.origin });
+    await mkdir(env.pinsDir, { recursive: true });
+    await writeFile(
+      join(env.pinsDir, `${PROJECT_ID}.json`),
+      JSON.stringify({ v: 1, anchor: verifiedAnchor, issued: {} }),
+    );
+    env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect((await readPins(env, PROJECT_ID))["anchor"]).toEqual(verifiedAnchor);
+    expect(env.logs.join("\n")).toContain("既存のアンカーを維持します");
+
+    // 未照合(verifiedAtSeq: null)のアンカーは最後の正規受諾が勝つ
+    const env2 = await makeTestEnv();
+    seedSession(env2, server.origin, acceptor);
+    await seedConfig(env2, { server: server.origin });
+    await mkdir(env2.pinsDir, { recursive: true });
+    await writeFile(
+      join(env2.pinsDir, `${PROJECT_ID}.json`),
+      JSON.stringify({ v: 1, anchor: { ...verifiedAnchor, verifiedAtSeq: null }, issued: {} }),
+    );
+    env2.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+
+    expect(await runCli(["invite", "accept", linkFor()], env2.layer)).toBe(0);
+    expect((await readPins(env2, PROJECT_ID))["anchor"]).toEqual({
+      headSeq: 3,
+      headHashHex: "cd".repeat(32),
+      inviterUserId: inviter.userId,
+      inviterKeyFingerprintHex: inviter.fingerprintHex,
+      verifiedAtSeq: null,
+    });
+  });
+
+  it("ピンファイル破損時は受諾を成立させたまま警告し、破損ファイルを上書きしない", async () => {
+    // 受諾はサーバー側で成立済み(トークン消費済み)— ピン留め失敗で失敗扱いに
+    // すると「再実行」の導線が 410(accepted)へ誘導する誤案内になる
+    const server = await start([acceptHandler(() => undefined)]);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, acceptor);
+    await seedConfig(env, { server: server.origin });
+    await mkdir(env.pinsDir, { recursive: true });
+    await writeFile(join(env.pinsDir, `${PROJECT_ID}.json`), "{ broken");
+    env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
+
+    expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("アンカーをピン留めできませんでした");
+    expect(await readFile(join(env.pinsDir, `${PROJECT_ID}.json`), "utf8")).toBe("{ broken");
   });
 
   it("リンク申告 r と応答 role の不一致は警告し、応答 projectId の不一致は拒否する", async () => {

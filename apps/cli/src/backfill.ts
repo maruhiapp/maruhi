@@ -67,10 +67,12 @@ export function backfillEnvironmentFor(input: {
       const dek = keys.deksByEpoch.get(epoch);
       if (dek === undefined) {
         // §7: 全メンバーは全エポックの DEK を受け取る。欠けは毒ラップ・欠落の
-        // 兆候なので黙って飛ばさない(§12-6 の修復経路を案内)
+        // 兆候なので黙って飛ばさない(§12-6 の修復経路を案内)。単純な再実行では
+        // 解消しない(自分宛ラップが無い限り毎回同じ欠けに当たる)ため、
+        // 「再実行してください」とは言わない(pullfrog レビュー反映)
         return yield* Effect.fail(
           cliError(
-            `環境 ${input.environmentId} の epoch ${epoch} の DEK ラップが自分宛に存在しません(§7 の全エポック配布と矛盾)。修復経路(ラップの再登録)で解消してから再実行してください`,
+            `環境 ${input.environmentId} の epoch ${epoch} の DEK ラップが自分宛に存在しません(§7 の全エポック配布と矛盾)。全エポックのラップを保持する別のメンバーがこの操作を実行するか、修復経路(自分宛ラップの再登録)で欠けを解消してから再実行してください`,
           ),
         );
       }

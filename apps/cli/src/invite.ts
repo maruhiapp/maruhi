@@ -166,6 +166,18 @@ export function inviteCreateOp(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const pinStore = yield* PinStore;
+    // 招待トークンの生値はリンクとして表示される(それが機能)が、AI エージェント
+    // 環境では表示 = トランスクリプトへの残留であり、人対人チャネルで渡す前に
+    // 第三者(エージェント基盤・ログ)へ漏れる経路になる。生値は再表示不可の
+    // ため「発行して表示しない」形は取れない — 発行そのものを拒否する
+    // (値表示 — agent.ts — ・リカバリーコード発行と同じ線引き)
+    if (io.agentProfile().isAgent) {
+      return yield* Effect.fail(
+        cliError(
+          "AI エージェント環境を検出したため、招待の発行を拒否しました(招待リンクのトークン生値が実行ログ・トランスクリプトに残ります)。人間の対話端末で maruhi invite create を実行してください",
+        ),
+      );
+    }
     const inviter = input.verified.state.members.get(input.sessionUserId);
     if (inviter === undefined || ROLE_RANK[inviter.role] < ROLE_RANK.admin) {
       return yield* Effect.fail(
@@ -210,13 +222,23 @@ export function inviteCreateOp(input: {
       role: issued.role,
     });
     // 発行ピン: member add 時にサーバー申告の一覧行(token_hash・role)と突合する
-    // 材料(pins.ts)。トークン生値は保存しない
+    // 材料(pins.ts)。トークン生値は保存しない。ピンは SHOULD 水準のローカル
+    // 防衛なので、保存失敗(破損ファイル等)で成立済みの発行を失敗扱いにしない
+    // (リンクは一度しか表示できない — ここで落とすと pending 枠だけ消費する)
     const tokenHashHex = yield* tokenHashHexOf(issued.token);
-    yield* pinStore.saveIssuedPin(input.verified.projectId, issued.id, {
-      tokenHashHex,
-      role: issued.role,
-      expiresAtMs: issued.expiresAtMs,
-    });
+    yield* pinStore
+      .saveIssuedPin(input.verified.projectId, issued.id, {
+        tokenHashHex,
+        role: issued.role,
+        expiresAtMs: issued.expiresAtMs,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          io.logError(
+            `警告: 発行ピンを保存できませんでした(${error.message})。member add 時の機械突合は儀式の表示照合のみに劣化します`,
+          ),
+        ),
+      );
     yield* io.log(link);
     yield* io.logError(
       `招待を発行しました(id=${displayText(issued.id)}、role=${issued.role}、期限=${formatDateTimeUtc(issued.expiresAtMs)})`,
@@ -387,8 +409,8 @@ export function inviteAcceptOp(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
 
-    // §15-3 の順序: アンカーのピン留め → (相互確認)→ 鍵生成〔未生成時〕→
-    // 受諾署名 → 受諾
+    // §15-3 の順序: 相互確認 → 鍵生成〔未生成時〕→ 受諾署名 → 受諾 →
+    // アンカーのピン留め(受諾成立後のみ — 同節の 2026-08-15 追補)
     const { projectId, token } =
       input.target.kind === "link"
         ? yield* prepareLinkAccept(input.target.link, input.expectInviterFingerprintHex)
@@ -450,6 +472,11 @@ export function inviteAcceptOp(input: {
       );
     }
 
+    // アンカーのピン留めは受諾の成立(+ p の突合)後(pinAnchorAfterAccept 参照)
+    if (input.target.kind === "link") {
+      yield* pinAnchorAfterAccept(input.target.link);
+    }
+
     yield* reportAcceptOutcome({
       accepted,
       fingerprintHex: masterKeys.fingerprintHex,
@@ -460,29 +487,76 @@ export function inviteAcceptOp(input: {
 }
 
 /**
- * リンク受諾の前段(§15-3 / §6.3 (a) / §6.5): アンカーのピン留め → 招待者 FP の
- * 相互確認。受諾が後で失敗してもアンカーが残るのは無害(メンバーにならなければ
- * 同期自体が 404 で、検査は発火しない)。
+ * リンク受諾の前段(§6.5): 招待者 FP の相互確認。アンカーのピン留めは
+ * **受諾の成立後**に行う(pinAnchorAfterAccept — pullfrog レビュー反映):
+ * 受諾成立前に書くと、在籍中のプロジェクトの projectId を持つ細工リンクを
+ * 開いただけ(受諾は署名検証 422 / 410 で失敗する)で正規アンカーが偽の
+ * ヘッドへ差し替わり、以後の全同期が硬い証拠として恒久失敗する自己 DoS 経路に
+ * なる。初回同期(add_member 後)より前に書ければアンカーの目的は満たされる。
  */
 function prepareLinkAccept(
   link: InviteLinkData,
   expectInviterFingerprintHex: string | null,
-): Effect.Effect<
-  { readonly projectId: string; readonly token: string },
-  CliError,
-  CliIo | PinStore
-> {
+): Effect.Effect<{ readonly projectId: string; readonly token: string }, CliError, CliIo> {
   return Effect.gen(function* () {
-    const pinStore = yield* PinStore;
-    yield* pinStore.saveAnchor(link.projectId, {
-      headSeq: link.headSeq,
-      headHashHex: link.headHashHex,
-      inviterUserId: link.inviterUserId,
-      inviterKeyFingerprintHex: link.inviterKeyFingerprintHex,
-      verifiedAtSeq: null,
-    });
     yield* confirmInviterFingerprint({ link, expectInviterFingerprintHex });
     return { projectId: link.projectId, token: link.token };
+  });
+}
+
+/**
+ * 受諾成立後のアンカーのピン留め(§6.3 (a))。**機械照合に成功済み
+ * (verifiedAtSeq ≠ null)の既存アンカーは上書きしない**: チェーンは
+ * append-only であり検証済みアンカーの包含検査は以後も常に成立する(古くても
+ * 無害・検出力は同等)ため、置換には利得がなく、上書き経路を一切残さない方が
+ * 攻撃面が狭い(再招待の新アンカーより検証済みの実績を優先 — pullfrog
+ * レビュー反映)。未照合アンカーは最新の受諾で置き換える(最後の正規受諾が勝つ)。
+ */
+function pinAnchorAfterAccept(
+  link: InviteLinkData,
+): Effect.Effect<void, CliError, CliIo | PinStore> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const pinStore = yield* PinStore;
+    // ここへ来た時点で受諾はサーバー側で成立している。ピンは SHOULD 水準の
+    // ローカル防衛なので、ピン留めの失敗で受諾を失敗扱いにしない — トークンは
+    // 消費済みで、「再実行」は 410(accepted)にしかならない。破損ファイルは
+    // 上書きしない(pins.ts の merge 規律)まま、警告して劣化を明示する
+    const warnUnpinned = (detail: string) =>
+      io.logError(
+        `警告: 招待リンクアンカーをピン留めできませんでした(${detail})。初回同期の機械照合(CRYPTO_SPEC §6.3 (a))は行われません — 招待者との儀式(FP ワードの帯域外照合)を必ず実施してください`,
+      );
+    const loaded = yield* pinStore
+      .load(link.projectId)
+      .pipe(
+        Effect.catch((error) =>
+          Effect.succeed({ pins: null, state: "error", detail: error.message } as const),
+        ),
+      );
+    if (loaded.state === "error") {
+      return yield* warnUnpinned(loaded.detail);
+    }
+    if (loaded.state === "corrupt") {
+      return yield* warnUnpinned(
+        "既存のピンファイルが破損しています — 内容を確認し、意図しない改変なら削除してください",
+      );
+    }
+    const existing = loaded.pins?.anchor ?? null;
+    if (existing !== null && existing.verifiedAtSeq !== null) {
+      yield* io.log(
+        "このプロジェクトには機械照合済みの招待リンクアンカーが既にあります — 既存のアンカーを維持します(検証済みアンカーは上書きしません)",
+      );
+      return;
+    }
+    yield* pinStore
+      .saveAnchor(link.projectId, {
+        headSeq: link.headSeq,
+        headHashHex: link.headHashHex,
+        inviterUserId: link.inviterUserId,
+        inviterKeyFingerprintHex: link.inviterKeyFingerprintHex,
+        verifiedAtSeq: null,
+      })
+      .pipe(Effect.catch((error) => warnUnpinned(error.message)));
   });
 }
 

@@ -45,7 +45,7 @@ import {
   wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 const TOKEN = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
@@ -113,6 +113,7 @@ interface AddServerState {
     readonly environmentId: string;
     readonly wraps: readonly { epoch: number; recipientUserId: string }[];
   }[];
+  readonly counters: { appendAttempts: number; registerAttempts: number };
 }
 
 /** dek_wraps ルート(/environments/:id/deks)のメソッド別ハンドラ。 */
@@ -145,6 +146,12 @@ async function makeAddServer(input: {
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
+  /** チェーン追記への差し込み(409 等)。undefined = 受理。 */
+  readonly onAppend?: (call: number) => MockResponse | undefined;
+  /** onAppend の差し込み時に、以後のチェーンをこの形へ差し替える(並行追記)。 */
+  readonly chainAfterConflict?: BuiltChain;
+  /** dek_wraps 登録への差し込み(呼び出し回数ベース)。undefined = 通常処理。 */
+  readonly onRegister?: (call: number) => MockResponse | undefined;
 }): Promise<AddServerState> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -155,6 +162,7 @@ async function makeAddServer(input: {
     environmentId: string;
     wraps: readonly { epoch: number; recipientUserId: string }[];
   }[] = [];
+  const counters = { appendAttempts: 0, registerAttempts: 0 };
   const occupied = new Set(input.occupiedSlots ?? []);
   const listedStatements = input.listedStatements ?? [
     await environmentStatementFor({
@@ -179,6 +187,15 @@ async function makeAddServer(input: {
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
+      }
+      const injected = input.onAppend?.(counters.appendAttempts);
+      counters.appendAttempts += 1;
+      if (injected !== undefined) {
+        if (input.chainAfterConflict !== undefined) {
+          entries.splice(0, entries.length, ...input.chainAfterConflict.entries);
+          hashes.splice(0, hashes.length, ...input.chainAfterConflict.hashes);
+        }
+        return injected;
       }
       const body = request.body as { readonly entry: ChainEntry };
       appendedEntries.push(body.entry);
@@ -205,6 +222,11 @@ async function makeAddServer(input: {
     })),
     onDeksRoute(projectId, "GET", () => ({ status: 200, json: { deks: input.ownDeks } })),
     onDeksRoute(projectId, "POST", (environmentId, request) => {
+      const injected = input.onRegister?.(counters.registerAttempts);
+      counters.registerAttempts += 1;
+      if (injected !== undefined) {
+        return injected;
+      }
       const body = request.body as { readonly deks: readonly WrappedDek[] };
       const conflict = body.deks.find((wrap) =>
         occupied.has(`${environmentId}:${wrap.epoch}:${wrap.recipientUserId}`),
@@ -247,7 +269,7 @@ async function makeAddServer(input: {
       return { status: 204 };
     }),
   ];
-  return { handlers, appendedEntries, registerBodies, removeBodies };
+  return { handlers, appendedEntries, registerBodies, removeBodies, counters };
 }
 
 function invitationRow(
@@ -337,6 +359,114 @@ describe("maruhi member add", () => {
     expect(env.logs.join("\n")).toContain(
       "完了: 新メンバーに全環境 × 全エポックの DEK ラップを配布しました",
     );
+  });
+
+  it("ChainHeadConflict(409)は再同期して add_member を再署名し、リトライする(§12-4)", async () => {
+    const passerby = await makeTestUser("user-passerby-5555");
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+    ]);
+    // 送信と並行して他メンバーの追記で伸びたチェーン(同一 prefix の延長)
+    const concurrent = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: inviter, operation: addMemberOp(passerby, "reader") },
+    ]);
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(0);
+
+    // 追記は 2 回試行(409 → 再同期 + 再署名 → 受理)。受理エントリは新ヘッドの子
+    expect(state.counters.appendAttempts).toBe(2);
+    expect(state.appendedEntries).toHaveLength(1);
+    const entry = state.appendedEntries[0];
+    if (entry?.op !== "add_member") throw new Error("add_member entry missing");
+    expect(entry.seq).toBe(concurrent.entries.length + 1);
+    expect(entry.payload.targetUserId).toBe(acceptor.userId);
+    // バックフィルも完了する
+    expect(
+      state.registerBodies.flatMap((body) => body.deks.map((wrap) => wrap.recipientUserId)),
+    ).toEqual([acceptor.userId]);
+  });
+
+  it("修復経路の削除後に再登録が失敗したら、スロットが空である事実を明示して失敗する", async () => {
+    // 削除 → 再登録は原子的でない: 間で失敗すると対象はそのエポックのラップを
+    // 一つも持たない。汎用文言に紛れると気づけない(pullfrog レビュー反映)
+    const oldKeys = await makeTestUser(acceptor.userId);
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: inviter, operation: addMemberOp(oldKeys, "member") },
+      { actor: inviter, operation: removeMemberOp(oldKeys) },
+      { actor: inviter, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+    ]);
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      currentEpoch: 2,
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 2,
+          dek: dek2,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+      occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
+      // 呼び出し順: 0 = 一括(409)→ 1 = epoch1 単発(409)→ 削除 → 2 = 再登録
+      onRegister: (call) => (call === 2 ? { status: 500, json: {} } : undefined),
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(1);
+    // 削除は実行済み = スロットは空
+    expect(state.removeBodies).toEqual([
+      { environmentId: ENV_ID, wraps: [{ epoch: 1, recipientUserId: acceptor.userId }] },
+    ]);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("スロットは空のままです");
+    expect(errors).toContain("maruhi member add を再実行すると続きから再開します");
   });
 
   it("儀式(最終語再入力)を通しても追加でき、エージェント環境ではフラグなしを拒否する", async () => {
@@ -475,6 +605,52 @@ describe("maruhi member add", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("旧鍵宛の残存ラップは修復経路");
     expect(logs).toContain("旧鍵ラップの修復 1 件");
+  });
+
+  it("completed 行は id 明示で再開でき、id なしの再実行はその導線を案内する(Cursor bot 指摘の回帰)", async () => {
+    // add_member 済み(サーバーが行を completed へ更新済み)+ バックフィル中断の形
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: inviter, operation: addMemberOp(acceptor, "member") },
+    ]);
+    const acceptance = await acceptanceFor(built.projectId, acceptor);
+    const completedRow = invitationRow(built.projectId, acceptance, { status: "completed" });
+    const ownDeks = [
+      await wrapDekFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        dek: dek1,
+        recipient: inviter,
+        signer: inviter,
+      }),
+    ];
+
+    // id なし: completed は自動選択しない(過去メンバーの行が蓄積するため)が、
+    // 再開の導線(id 明示)をエラーで案内する
+    const state1 = await makeAddServer({ built, invitation: completedRow, ownDeks });
+    const env1 = await startAddEnv(state1, built.projectId);
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env1.layer),
+    ).toBe(1);
+    expect(env1.errors.join("\n")).toContain("maruhi member add <招待id> と id を明示して");
+    expect(state1.appendedEntries).toHaveLength(0);
+
+    // id 明示: completed 行 + 同一鍵在籍 → 追記せずバックフィルのみ再開する
+    const state2 = await makeAddServer({ built, invitation: completedRow, ownDeks });
+    const env2 = await startAddEnv(state2, built.projectId);
+    expect(
+      await runCli(
+        ["member", "add", INVITE_ID, "--expect-fingerprint", acceptor.fingerprintHex],
+        env2.layer,
+      ),
+    ).toBe(0);
+    expect(state2.appendedEntries).toHaveLength(0);
+    expect(
+      state2.registerBodies.flatMap((body) => body.deks.map((wrap) => wrap.recipientUserId)),
+    ).toEqual([acceptor.userId]);
+    expect(env2.logs.join("\n")).toContain("既に同一鍵で在籍しています");
   });
 
   it("受諾署名の検証失敗・発行ピン不一致は追記前に中止する", async () => {

@@ -55,28 +55,47 @@ export const ROLE_DEMOTED_ROTATION_REASON = "role-demoted";
 // ---------------------------------------------------------------------------
 
 /**
- * チェーン上の最後の「ローテーション義務エントリ」の seq(存在しなければ null):
- * `remove_member`(常に義務 — §7)、または「直前 role が member 以上 →
+ * **対象 user_id の**最後の「ローテーション義務エントリ」の seq(存在しなければ
+ * null): `remove_member`(常に義務 — §7)、または「直前 role が member 以上 →
  * newRole が member 未満」の `change_role`(降格の義務 — §7)。直前 role は
  * 検証済み履歴(memberStateAt の inclusive 規約 — seq-1 で適用前)から取る。
+ *
+ * 対象スコープにするのは、各コマンドが収束させる義務を**自分の操作の分**に
+ * 限定するため(Cursor bot 指摘): 大域の最終義務を基準にすると、born-reader への
+ * no-op 再実行が**他人の**未収束義務を拾って全環境ローテーションを開始する。
+ * 対象の義務エントリ以降のローテーションは対象の偽造可能座標を閉じる(§7)ため、
+ * 対象スコープでも自分の義務を過小に満たすことはない(他人の未収束義務は
+ * その操作の再実行、または B2 の要ローテーション検出の責務)。
  */
-function lastRotationMandateSeq(verified: VerifiedProject): number | null {
+function lastRotationMandateSeqFor(verified: VerifiedProject, targetUserId: string): number | null {
   for (let index = verified.entries.length - 1; index >= 0; index -= 1) {
     const entry = verified.entries[index];
-    if (entry === undefined) {
+    if (entry === undefined || !mandatesRotationFor(verified, entry, targetUserId)) {
       continue;
     }
-    if (entry.op === "remove_member") {
-      return entry.seq;
-    }
-    if (entry.op === "change_role" && ROLE_RANK[entry.payload.newRole] < ROLE_RANK.member) {
-      const before = verified.history.memberStateAt(entry.payload.targetUserId, entry.seq - 1);
-      if (before !== undefined && ROLE_RANK[before.role] >= ROLE_RANK.member) {
-        return entry.seq;
-      }
-    }
+    return entry.seq;
   }
   return null;
+}
+
+/** entry が対象 user_id のローテーション義務エントリか(§7)。 */
+function mandatesRotationFor(
+  verified: VerifiedProject,
+  entry: ChainEntry,
+  targetUserId: string,
+): boolean {
+  if (entry.op === "remove_member") {
+    return entry.payload.targetUserId === targetUserId;
+  }
+  if (
+    entry.op === "change_role" &&
+    entry.payload.targetUserId === targetUserId &&
+    ROLE_RANK[entry.payload.newRole] < ROLE_RANK.member
+  ) {
+    const before = verified.history.memberStateAt(targetUserId, entry.seq - 1);
+    return before !== undefined && ROLE_RANK[before.role] >= ROLE_RANK.member;
+  }
+  return false;
 }
 
 /** §7 の全環境走査(remove / 降格の共有後段。基準 seq は呼び出し側が導出する)。 */
@@ -240,8 +259,13 @@ function selectInvitation(
   const accepted = rows.filter(withAcceptance).filter((row) => row.status === "accepted");
   const first = accepted[0];
   if (first === undefined) {
+    // completed 行は自動選択しない(過去メンバー全員の行が completed のまま
+    // 蓄積するため曖昧)。add_member 済み招待のバックフィル再開は id 明示の
+    // 経路が受ける — その導線をここで示す(Cursor bot 指摘)
     return Effect.fail(
-      cliError("受諾済み(accepted)の招待がありません。maruhi invite list で状態を確認してください"),
+      cliError(
+        "受諾済み(accepted)の招待がありません。add_member まで完了した招待のバックフィルを再開する場合は、maruhi invite list で id を確認し、maruhi member add <招待id> と id を明示してください",
+      ),
     );
   }
   if (accepted.length > 1) {
@@ -459,7 +483,16 @@ function backfillMemberEnvironment(input: {
               error instanceof DekWrapNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
             ),
           );
-        const retried = yield* register([wrap]);
+        // 削除 → 再登録は原子的でない: ここで再登録が失敗するとスロットは
+        // 空のまま残る。汎用の失敗文言に紛れさせず状態を明示する(再実行は
+        // 空スロットへの直登録になるため、そのまま復旧経路になる)
+        const retried = yield* register([wrap]).pipe(
+          Effect.mapError((error) =>
+            cliError(
+              `修復経路で旧ラップの削除後、新鍵ラップの再登録に失敗しました — epoch ${wrap.epoch} のスロットは空のままです(対象はこのエポックを復号できません。再実行は空スロットへの直登録として復旧します): ${error.message}`,
+            ),
+          ),
+        );
         // 削除と再登録の間に並行実行が登録した場合、受理検査(§12-6 の受信者
         // 一致)は現チェーンの鍵で通っているため、新鍵ラップとして収束済み
         return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
@@ -807,9 +840,9 @@ export function memberRemoveOp<R>(input: {
       );
     }
 
-    // remove エントリ(今回の追記 or 履歴上のもの)が基準になる。ここで null は
-    // 「削除は確認済みなのに義務エントリがない」= 導出の内部矛盾
-    const baselineSeq = lastRotationMandateSeq(verified);
+    // 対象の remove エントリ(今回の追記 or 履歴上のもの)が基準になる。ここで
+    // null は「削除は確認済みなのに義務エントリがない」= 導出の内部矛盾
+    const baselineSeq = lastRotationMandateSeqFor(verified, input.targetUserId);
     if (baselineSeq === null) {
       return yield* Effect.fail(
         cliError("ローテーション義務エントリをチェーン上に確認できません(導出の内部矛盾)"),
@@ -996,11 +1029,11 @@ export function memberChangeRoleOp<R>(input: {
       return { appended, targetUserId: input.targetUserId, newRole: input.newRole, sweep: null };
     }
     // member 未満への降格は全環境ローテーション義務(§7 — エポックアンカーの
-    // 健全性)。alreadyChanged からの再開でも、義務エントリがチェーンにあれば
-    // sweep が force / verify を分類して収束させる。義務エントリがない場合
-    // (最初から reader として追加されたメンバーへの no-op 再実行)は義務自体が
-    // 発生していないので何もしない
-    const baselineSeq = lastRotationMandateSeq(verified);
+    // 健全性)。alreadyChanged からの再開でも、**対象の**義務エントリがチェーンに
+    // あれば sweep が force / verify を分類して収束させる。対象の義務エントリが
+    // ない場合(最初から reader として追加されたメンバーへの no-op 再実行)は
+    // 義務自体が発生していないので何もしない — 他人の未収束義務をここで拾わない
+    const baselineSeq = lastRotationMandateSeqFor(verified, input.targetUserId);
     if (baselineSeq === null) {
       return { appended, targetUserId: input.targetUserId, newRole: input.newRole, sweep: null };
     }

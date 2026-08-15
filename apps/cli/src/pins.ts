@@ -230,11 +230,21 @@ export function makeFilePinStore(dir: string): PinStoreShape {
     Effect.tryPromise({
       try: async () => {
         const loaded = await loadRaw(projectId);
-        // 破損は空からの再構築(fail-open — 読み手が警告を出す)
+        if (loaded.state === "corrupt") {
+          // 破損ファイルへの書き込みは拒否する(床の「書き込み失敗を fail-open に
+          // しない」と同じ規律)。空からの再構築にすると、検証済みアンカーが
+          // 破損 1 回 + 次の書き込みで黙って失われ、「アンカーが最初から無い」と
+          // 区別できなくなる(§6.3 (a) の検出そのものがアンカーに依存する —
+          // pullfrog レビュー反映)
+          throw new Error("corrupt");
+        }
         const base: InvitePins = loaded.pins ?? { v: 1, anchor: null, issued: {} };
         await write(projectId, apply(base));
       },
-      catch: () => cliError(`招待ピンファイルを書き込めません: ${pathOf(projectId)}`),
+      catch: () =>
+        cliError(
+          `招待ピンファイルを書き込めません(破損または I/O 失敗): ${pathOf(projectId)} — 内容を確認し、意図しない改変なら削除してから再実行してください`,
+        ),
     });
 
   return {

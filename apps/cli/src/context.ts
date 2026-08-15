@@ -235,10 +235,14 @@ export function checkInviteAnchor(
     if (anchor === null) {
       return;
     }
+    // 拒否文言には検証材料の所在(ピンファイル)まで含める: 硬い証拠での恒久
+    // 停止に対し、調査・復旧(帯域外確認のうえでの手動対処)へ辿り着ける導線を
+    // 残す(pullfrog レビュー反映)
+    const evidenceHint = `検証材料は設定ディレクトリの invites/${projectId}.json(ピン留めアンカー)と配布チェーンです`;
     if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
       return yield* Effect.fail(
         cliError(
-          `招待リンクアンカーの照合に失敗しました: 配布されたチェーンが、招待リンクに埋め込まれた検証済みヘッド(seq=${anchor.headSeq})を含みません(CRYPTO_SPEC §6.3 帯域外アンカー (a))。サーバーによる巻き戻し・fork 配布の疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください`,
+          `招待リンクアンカーの照合に失敗しました: 配布されたチェーンが、招待リンクに埋め込まれた検証済みヘッド(seq=${anchor.headSeq})を含みません(CRYPTO_SPEC §6.3 帯域外アンカー (a))。サーバーによる巻き戻し・fork 配布の疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください。${evidenceHint}`,
         ),
       );
     }
@@ -246,7 +250,7 @@ export function checkInviteAnchor(
     if (inviter === undefined || inviter.keyFingerprintHex !== anchor.inviterKeyFingerprintHex) {
       return yield* Effect.fail(
         cliError(
-          "招待リンクアンカーの照合に失敗しました: リンクの招待者(user_id + 鍵 FP)が、ピン留めヘッド時点のチェーン上のメンバーと一致しません(CRYPTO_SPEC §6.5 の機械照合)。招待リンクまたは配布チェーンが偽造された疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください",
+          `招待リンクアンカーの照合に失敗しました: リンクの招待者(user_id + 鍵 FP)が、ピン留めヘッド時点のチェーン上のメンバーと一致しません(CRYPTO_SPEC §6.5 の機械照合)。招待リンクまたは配布チェーンが偽造された疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください。${evidenceHint}`,
         ),
       );
     }

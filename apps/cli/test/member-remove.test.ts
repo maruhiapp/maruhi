@@ -33,7 +33,7 @@ import {
   wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -75,6 +75,7 @@ interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
   readonly rotateBodies: RotateBody[];
+  readonly counters: { appendAttempts: number };
 }
 
 /**
@@ -86,12 +87,17 @@ async function makeRemoveServer(input: {
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
+  /** チェーン追記への差し込み(409 等)。undefined = 受理。 */
+  readonly onAppend?: (call: number) => MockResponse | undefined;
+  /** onAppend の差し込み時に、以後のチェーンをこの形へ差し替える(並行追記)。 */
+  readonly chainAfterConflict?: BuiltChain;
 }): Promise<RemoveServerState> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
   const rotateBodies: RotateBody[] = [];
+  const counters = { appendAttempts: 0 };
   const environments = input.environments;
   const listedStatements = await Promise.all(
     Object.keys(environments).map((environmentId) =>
@@ -118,6 +124,15 @@ async function makeRemoveServer(input: {
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
+      }
+      const injected = input.onAppend?.(counters.appendAttempts);
+      counters.appendAttempts += 1;
+      if (injected !== undefined) {
+        if (input.chainAfterConflict !== undefined) {
+          entries.splice(0, entries.length, ...input.chainAfterConflict.entries);
+          hashes.splice(0, hashes.length, ...input.chainAfterConflict.hashes);
+        }
+        return injected;
       }
       const body = request.body as { readonly entry: ChainEntry };
       appendedEntries.push(body.entry);
@@ -204,7 +219,7 @@ async function makeRemoveServer(input: {
       };
     },
   ];
-  return { handlers, appendedEntries, rotateBodies };
+  return { handlers, appendedEntries, rotateBodies, counters };
 }
 
 async function startEnv(
@@ -235,6 +250,7 @@ describe("maruhi member remove", () => {
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: addMemberOp(target, "member") },
+      { actor: owner, operation: addMemberOp(admin2, "member") },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -251,17 +267,63 @@ describe("maruhi member remove", () => {
     if (entry?.op !== "remove_member") throw new Error("remove entry missing");
     expect(entry.payload.targetUserId).toBe(target.userId);
 
-    // §7: 強制ローテーション。ラップ完全集合は削除後の現メンバー(owner のみ)
+    // §7: 強制ローテーション。ラップ完全集合 = 削除後の現メンバー全員(実行者
+    // だけでなく継続メンバー admin2 も含む)。削除対象は含まれない
     expect(state.rotateBodies).toHaveLength(1);
     const rotate = state.rotateBodies[0];
     if (rotate === undefined) throw new Error("rotate body missing");
     expect(rotate.entry.payload.newEpoch).toBe(2);
     expect(rotate.entry.payload.reason).toBe("member-removed");
-    expect(rotate.deks.map((wrap) => wrap.recipientUserId)).toEqual([owner.userId]);
+    expect(rotate.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
+      [owner.userId, admin2.userId].toSorted(),
+    );
 
     const logs = env.logs.join("\n");
     expect(logs).toContain("remove_member をチェーンへ追記しました");
     expect(logs).toContain("完了: メンバー削除と全環境ローテーションが完了しました");
+  });
+
+  it("ChainHeadConflict(409)の再同期で並行削除を検出したら、追記せず sweep へ進む(§12-4)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+    ]);
+    // 送信と並行して別の owner 端末が同じ対象を削除していた(延長チェーン)
+    const concurrent = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+      { actor: owner, operation: removeMemberOp(target) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: {
+        [ENV_ID]: { currentEpoch: 1, deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)] },
+      },
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
+    // 追記の試行は 1 回(409)のみ — 再同期で削除済みを検出し、二重追記しない
+    expect(state.counters.appendAttempts).toBe(1);
+    expect(state.appendedEntries).toHaveLength(0);
+    // §7 の義務(sweep)は自分の分として履行する
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
+    expect(env.logs.join("\n")).toContain("対象は既に削除済みでした");
   });
 
   it("中断復旧: 対象が既に非メンバー(remove 記録あり)なら追記せず sweep を再開する", async () => {
@@ -448,6 +510,35 @@ describe("maruhi member change-role", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("role-demoted");
     expect(env.logs.join("\n")).toContain("対象は既に指定の role です");
+  });
+
+  it("born-reader への no-op 再実行は、他人の未収束義務があっても sweep を拾わない(対象スコープの基準)", async () => {
+    // target は最初から reader(自身の降格義務なし)。他人(admin2)の remove が
+    // 後段にあり、そのローテーションは未収束 — Cursor bot 指摘の回帰: 大域基準だと
+    // この no-op が admin2 の義務を拾って全環境ローテーションを開始してしまう
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "reader") },
+      { actor: owner, operation: addMemberOp(admin2, "member") },
+      { actor: owner, operation: removeMemberOp(admin2) },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: {
+        [ENV_ID]: { currentEpoch: 1, deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)] },
+      },
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(
+      await runCli(["member", "change-role", target.userId, "--role", "reader"], env.layer),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.rotateBodies).toHaveLength(0);
+    expect(env.logs.join("\n")).toContain(
+      "完了: role を変更しました(ローテーション義務はありません)",
+    );
   });
 
   it("自分自身の member 未満への降格は拒否する(§7 の義務を本人が履行できない)", async () => {
