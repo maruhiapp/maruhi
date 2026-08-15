@@ -252,6 +252,24 @@ describe("maruhi pull", () => {
     expect(output).not.toContain("beta-value");
   });
 
+  it("自分宛ラップの欠けエポックを警告する(§7 の全エポック配布との差分 — B2 の本人側検出)", async () => {
+    // 全アクティブ値は epoch 2 = 復号は成功する(現在値だけでは永遠に顕在化
+    // しない静かな欠け)。epoch 1 の自分宛ラップが無いことを SHOULD 警告する
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ variables: [fixture.entryAlpha], deks: [fixture.wraps[1]] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("自分宛の DEK ラップがエポック 1 に存在しません");
+    expect(errors).toContain("maruhi member add の再実行");
+
+    // 全エポックが揃っていれば警告しない(誤検知なし)
+    const complete = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull"], complete.layer)).toBe(0);
+    expect(complete.errors.join("\n")).not.toContain("自分宛の DEK ラップがエポック");
+  });
+
   it("--show は人間には値を表示する", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show"], env.layer)).toBe(0);

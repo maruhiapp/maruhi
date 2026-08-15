@@ -346,6 +346,10 @@ describe("maruhi member remove", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("対象は既に削除済みでした");
+    // 収束系コマンドでは未収束義務の常時警告(rotation-sweep.ts — B2)を出さない:
+    // このチェーンは同期時点で未収束(remove 後の rotate なし)だが、自分の
+    // sweep 報告が同じ事実をより正確に伝えるため二重に警告しない
+    expect(env.errors.join("\n")).not.toContain("未収束のローテーション義務");
   });
 
   it("中断復旧: 削除後にローテーション済み・再暗号化完了なら確認のみで何も変えない(冪等)", async () => {
