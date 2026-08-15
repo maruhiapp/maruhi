@@ -17,6 +17,7 @@ CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし�
 | `dek-commitment.json` | §5.2 エポック DEK のコミットメント(SHA-256 + §2.1 LP) | Python 3 標準ライブラリ(`tools/generate_reference.py`。DEK・座標は dek-wrap.json の basic ベクターを読み込む) |
 | `value-signature.json` | §4.1 値の書き込み署名(Ed25519 + §2.1 LP) | Python 3 + pyca/cryptography(`tools/generate_reference.py`。チェーン・鍵・DEK は chain-entries.json の正規チェーンを読み込む) |
 | `metadata-signature.json` | §4.2 変数・環境メタデータの署名付きステートメント(Ed25519 + §2.1 LP) | Python 3 + pyca/cryptography(`tools/generate_reference.py`。チェーン・鍵は chain-entries.json の正規チェーンを読み込む) |
+| `lease-wrap.json` | §9.1 ワークロードリースのリースラップ(HPKE 単発 Seal + claims_digest) | hpke-js(`tools/generate-lease-wrap.mjs`。ekm derandomize で Seal 方向を固定。座標・DEK は dek-wrap.json の `server-basic` を読み込む) |
 
 ## 期待値の算出方法(独立参照ツール)
 
@@ -24,6 +25,7 @@ CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし�
 
 - `tools/generate_reference.py` — Python 3.11 + pyca/cryptography。encoding / variable-encryption / chain-entries / recovery-wrap を生成
 - `tools/generate-dek-wrap.mjs` — hpke-js(@hpke/core 1.9.0 + @hpke/dhkem-x25519 1.8.0)。dek-wrap を生成。panva hpke は意図的に Seal の derandomize 手段を持たないため(docs/notes/spike-c.md)、Seal 方向の固定には ekm を注入できる hpke-js を使う。hpke-js 自体は RFC 9180 公式ベクターで Seal 方向まで一致することを spike-c で検証済み
+- `tools/generate-lease-wrap.mjs` — 同じく hpke-js。lease-wrap を生成する。dek-wrap.json を読み、その `server-basic` と同一の座標・DEK をワークロード一時鍵へ再ラップする(§9.1 の「サーバーは自分宛ラップを開封して再ラップするだけ」を実データで表す)
 - `tools/verify_reference.mjs` — 生成系とさらに別の実装系による突き合わせ検証: WebCrypto(Bun)で encoding / AES-GCM / HKDF / Ed25519 / SHA-256 を、**panva hpke(実装が採用予定のライブラリ)の KeyPair 渡し Open** で dek-wrap を検証する。全 PASS を確認してからコミットする
 
 再生成・再検証(`tools/` ディレクトリで実行):
@@ -31,8 +33,9 @@ CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし�
 ```sh
 cd tools
 bun install            # hpke-js / panva hpke(厳密ピン)
-bun run generate       # generate-dek-wrap.mjs → python3 generate_reference.py(この順が正:
-                       #   generate_reference.py は dek-wrap.json を読んで §5.1 ベクターを作る)
+bun run generate       # generate-dek-wrap.mjs → generate-lease-wrap.mjs →
+                       #   python3 generate_reference.py(この順が正: generate-lease-wrap.mjs と
+                       #   generate_reference.py はともに dek-wrap.json を読む)
 bun run verify         # verify_reference.mjs(exit 0 = 全検証通過)
 oxfmt ../*.json        # リポジトリの整形を適用(コミット済みベクターは oxfmt 済みの形)
 ```
@@ -75,6 +78,8 @@ oxfmt ../*.json        # リポジトリの整形を適用(コミット済みベ
 16. **grant_server payload のリースポリシー拡張 + サーバー鍵の一意性 + 再 grant 二層化(2026-08-12 セッション 22 = CRYPTO_SPEC 0.5-draft §6.2 / §6.3。Wave 2 A1 でベクター化)**: `grant_server` の payload 正規化フィールド順は `[server_enc_pub_hex, server_key_fingerprint_hex, scope_environments_lp_hex, lease_policy_lp_hex]` の 4 フィールド(旧 3 フィールド形式は無効 — negative `grant-server-lease-policy-dropped` が「旧形式のバイト列では正規署名が検証に失敗する」ことを固定し、正規チェーン seq 9 自体が新形式でしか検証できない)。`lease_policy` の正規化は **3 段の入れ子 LP**: `constraint = LP(claim_name, claim_value)` → `element = LP(issuer_url, audience, LP(constraint...))` → `lease_policy_lp_hex = lower_hex(LP(element...))`(素の平坦化は negative `grant-server-lease-policy-flat-concat` で拒否を固定)。リスト順は要素・制約とも署名対象の一部(negative `grant-server-lease-policy-reorder` / `grant-server-lease-claims-reorder`)。空リスト = hex 空文字列 = 「リース経路なし」。サイズ上限(合意規則): 要素 8 以下(negative `authz-grant-lease-policy-too-many`)・要素あたり claim 制約 8 以下(negative `authz-grant-lease-claims-too-many`)・各文字列は §6.1 の 1024 バイト上限。形式検査は構造段で認可に先行する(negative `grant-lease-policy-too-many-precedes-role`)。**サーバー鍵の一意性**: サーバー enc 公開鍵が現メンバーの enc 公開鍵と一致する grant は拒否(理由 `duplicate-server-key` — negative `authz-grant-duplicate-server-key`)。**再 grant の二層判定**: scope_environments は拡大のみ(既存 negative `authz-grant-scope-narrowed` + 二層独立の `authz-grant-scope-narrowed-policy-revised`)、lease_policy は自由改訂(positive `valid_appends` の `regrant-lease-policy-revised` — seq 9 ヘッドへの追記で、valid_appends の接続点は「entry の seq が指す正規エントリの直後」に一般化した)。**検査順序 = role → 再 grant 規則 → 鍵重複**(negative `authz-grant-role-precedes-scope-narrowed` / `authz-grant-role-precedes-duplicate-server-key` / `authz-grant-narrowed-precedes-duplicate-key`)。「有効 grant × サーバー鍵 = メンバー鍵」の順序固定用の前提状態は **`extended_chains`**(新セクション)の派生チェーン `server-key-member-sock` が作る: 正規チェーン seq 9 の直後にサーバー enc 鍵を流用した add_member を追記する — この追記自体は**有効**(§6.2 のメンバー鍵一意性の索引は現メンバーの鍵のみで、有効 grant のサーバー鍵は対象外という仕様の明示的な線引きを同時に固定する)。派生チェーン上の negative は `chain` フィールドで参照する(value-signature.json の `tenure_extension` と同じ運び方)。`expected_head_states` の server_grants と `valid_appends` の `expected_server_grants` は lease_policy を含む。**このベクター自体も PR レビューでの人間確認対象**(実装より先行してコミット)
 
 17. **受信者クラス server の DEK ラップ / 登録署名(2026-08-12 セッション 22 = CRYPTO_SPEC §9 / AUTH_SPEC §12-6。Wave 2 A1 でベクター化)**: サーバーを受信者とする永続ラップでは、HPKE info(§5)の `recipient_user_id` 位置に**サーバー鍵 FP(hex 小文字)**を用いる(サーバーは user_id を持たない)。dek-wrap.json の `server_keypair`(DeriveKeyPair(ikmS))+ 正例 `server-basic`(basic と同一のエポック DEK をサーバー鍵へラップ)+ 移植負例 3 件(`server-info-member-user-id` = FP 位置へのメンバー user_id、`server-info-fp-mismatch` = 別サーバー鍵の FP、`member-info-server-fp` = メンバー宛ラップへのサーバー FP の逆方向移植)で固定。§5.1 の登録署名も同じ置き換え(signed_bytes の recipient_user_id 位置 = サーバー鍵 FP、recipient_enc_pub_hex = サーバー enc 公開鍵)— dek-wrap-signature.json の正例 `server-basic` + 負例(`server-transplant-recipient-class` / `server-transplant-fp` / `server-recipient-key-mismatch`)で固定。**このベクター自体も PR レビューでの人間確認対象**(実装より先行してコミット)
+
+18. **ワークロードリースのリースラップ + grant_seq(2026-08-15 セッション 22 = CRYPTO_SPEC §9.1 / AUTH_SPEC §14。Wave 2 A2 でベクター化)**: リースラップは §5 と同一プリミティブ(HPKE Base mode 単発 Seal)で、`info = LP("<suite>/lease-wrap", project_id, environment_id, epoch, claims_digest_hex)`。`claims_digest_hex = lower_hex(SHA-256(LP("<suite>/lease-claims", issuer_url, subject, audience)))` — 検証済み OIDC トークンの issuer / sub / aud から、サーバーとワークロードが独立に計算できる(`claims` セクションが LP バイト列と digest を固定)。正例は `basic`(現エポック。座標と DEK は dek-wrap.json の `server-basic` と同一 = サーバーが自分宛ラップを開封して再ラップした形)と `prior-epoch`(同一応答に載る過去エポック分 — §14-2)。負例は info 不一致 5 件: `info-project-mismatch` / `info-environment-mismatch` / `info-epoch-mismatch` / `info-claims-digest-mismatch`(同一 issuer / audience・別 subject = 別ブランチの文脈。リース応答の別ジョブへの転用が復号失敗になることの中核)/ `info-dek-wrap-domain`(§5 の永続ラップとのドメイン分離)。**リースラップは永続化されないため §5.1 の登録署名を伴わない**(署名者はチェーン上のメンバーであり、サーバー生成のラップに帰属署名は存在しえない — §9.1)。**ポリシー不一致・失効後の拒否は本ベクターの対象外**: これらはチェーン認可の挙動であり、chain-entries.json の grant / revoke 系ベクターが規則側を、サーバーテストが理由コードごとの拒否を固定する。あわせて chain-entries.json の導出 grant 状態へ **`grant_seq`**(当該サーバー鍵の有効 grant を確立したエントリの seq)を追加した — AUDIT_SPEC §3.5 の `server.lease_issued.grant_chain_seq` の唯一の出所であり、サーバー側で再 grant 二層規則を再実装しないため導出状態に置く(`valid_appends` の `regrant-lease-policy-revised` が「再 grant で seq 9 → 10 へ前進する」ことを固定する)。**このベクター自体も PR レビューでの人間確認対象**(実装より先行してコミット)
 
 ## panva hpke の制約と検証方針(spike-c の知見)
 

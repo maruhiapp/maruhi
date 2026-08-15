@@ -57,6 +57,15 @@ export {
   verifyDekWrapSignature,
 } from "./dek-wrap-sign.ts";
 export {
+  buildLeaseClaimsBytes,
+  buildLeaseWrapInfo,
+  computeLeaseClaimsDigest,
+  type LeaseClaims,
+  type LeaseWrapContext,
+  unwrapLeaseDek,
+  wrapLeaseDek,
+} from "./lease-wrap.ts";
+export {
   generateRecoverySecret,
   unwrapMasterSecret,
   type WrappedMasterSecret,

@@ -18,6 +18,10 @@ export default defineConfig({
           // 差し替えて渡す — auth.test.ts)
           GITHUB_CLIENT_ID: "dummy-github-client-id",
           GITHUB_CLIENT_SECRET: "dummy-github-client-secret",
+          // デプロイメント keypair の IKM(CRYPTO_SPEC §9)。本番では Workers
+          // Secret。リース経路(§14)のテストは、この IKM から導出される実鍵で
+          // サーバー宛ラップを作り、サーバーがそれを開封できることまで検証する
+          SERVER_ENC_KEY_IKM: "b0".repeat(32),
           // D1 マイグレーション(test 側で applyD1Migrations に渡す)。
           // パスは設定ファイル基準(ルートの vitest run でも壊れないよう絶対化)
           // Miniflare bindings は Record<string, Json>。D1Migration[] は JSON 互換だが

@@ -5,6 +5,7 @@
 //   実行時ミラーもここ)
 // - data.ts: データプレーン(AUTH_SPEC §12)
 // - deks.ts: DEK ラップ登録・修復(AUTH_SPEC §12-6)
+// - lease.ts: ワークロードリース(AUTH_SPEC §14)
 
 export {
   AuthFlowError,
@@ -53,3 +54,10 @@ export {
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
 } from "./deks.ts";
+export {
+  LeaseRateLimitedError,
+  LeaseUnauthorizedError,
+  LeaseUnauthorizedReasonSchema,
+  LeaseUnavailableError,
+  LeaseUnavailableReasonSchema,
+} from "./lease.ts";

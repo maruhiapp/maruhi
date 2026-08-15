@@ -28,8 +28,10 @@ import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
 import { authLive } from "./handlers-auth.ts";
 import { deksLive } from "./handlers-deks.ts";
 import { environmentsLive } from "./handlers-environments.ts";
+import { leaseLive } from "./handlers-lease.ts";
 import { membershipLive } from "./handlers-membership.ts";
 import { variablesLive } from "./handlers-variables.ts";
+import { makeOidcVerifier, OidcVerifier } from "./oidc.package/index.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
 import { WorkerEnv } from "./worker-env.ts";
@@ -53,7 +55,8 @@ type RequestServices =
   | GitHubApi
   | SessionService
   | TokenService
-  | ServerKey;
+  | ServerKey
+  | OidcVerifier;
 
 function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
@@ -61,6 +64,9 @@ function buildServices(env: Env): Context.Context<RequestServices> {
     Context.add(WorkerEnv, env),
     Context.add(GitHubApi, makeGitHubApi(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET)),
     Context.add(ServerKey, makeServerKey(env.SERVER_ENC_KEY_IKM)),
+    // OIDC verifier(AUTH_SPEC §14-1)。JWKS キャッシュを isolate 単位で
+    // 抱えるため env ごとに 1 つだけ作る(handlerCache と同じ寿命)
+    Context.add(OidcVerifier, makeOidcVerifier()),
     Context.add(SessionService, makeSessionService(Context.get(dbServices, SessionRepo))),
     Context.add(TokenService, makeTokenService(Context.get(dbServices, TokenRepo))),
   );
@@ -87,6 +93,7 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(environmentsLive),
     Layer.provide(variablesLive),
     Layer.provide(deksLive),
+    Layer.provide(leaseLive),
     Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
     Layer.provide(platformContext),
     Layer.provide(Layer.succeedContext(services)),

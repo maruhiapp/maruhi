@@ -17,6 +17,11 @@
 //   667         → primary: false のみ
 //   668         → /user/emails が 404(user:email スコープなし相当)
 // 自 App 外トークン: gh-token-other-app-<n>(/user では有効、check-token では 404)。
+//
+// GitHub Actions の OIDC issuer(AUTH_SPEC §14-1 のリース経路)も同じ
+// outboundService が受ける — discovery / JWKS は support/oidc-issuer.ts。
+
+import { fakeOidcIssuer } from "./oidc-issuer.ts";
 
 interface OutboundRequest {
   readonly url: string;
@@ -196,7 +201,8 @@ async function handleApi(request: OutboundRequest, url: URL): Promise<Response |
 
 export async function fakeGitHub(request: OutboundRequest): Promise<Response> {
   const url = new URL(request.url);
-  const handled = (await handleOAuth(request, url)) ?? (await handleApi(request, url));
+  const handled =
+    (await handleOAuth(request, url)) ?? (await handleApi(request, url)) ?? fakeOidcIssuer(url);
   return (
     handled ?? new Response(`unexpected outbound request in tests: ${request.url}`, { status: 500 })
   );

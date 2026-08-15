@@ -466,6 +466,10 @@ async function applyGrantServer(
   state.serverGrants.set(entry.payload.serverKeyFingerprintHex, {
     serverKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
     serverEncPubHex: entry.payload.serverEncPubHex,
+    // 再 grant では有効 grant を確立したエントリが置き換わるため seq も前進する
+    // (AUDIT_SPEC §3.5 の grant_chain_seq の出所 — chain-entries.json の
+    // valid_appends `regrant-lease-policy-revised` が 9 → 10 の前進を固定する)
+    grantSeq: entry.seq,
     scopeEnvironmentIds: [...entry.payload.scopeEnvironmentIds],
     leasePolicy: entry.payload.leasePolicy.map((element) => ({
       issuerUrl: element.issuerUrl,

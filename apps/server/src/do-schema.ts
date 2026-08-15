@@ -153,6 +153,17 @@ const PROJECT_DO_DDL = [
 ];
 
 /**
+ * ワークロードリースの固定窓カウンタ(AUTH_SPEC §14-3 / AUDIT_SPEC §3.5)。
+ * `kind` は "issued"(発行の窓)/ "denied"(拒否記録の窓)の 2 行だけ。
+ * 窓は「開始時刻 + 件数」のベストエフォート方式(§13-3 の先例と同型)。
+ */
+const LEASE_WINDOWS_DDL = `CREATE TABLE IF NOT EXISTS lease_windows (
+     kind TEXT PRIMARY KEY,
+     window_start INTEGER NOT NULL,
+     count INTEGER NOT NULL
+   )`;
+
+/**
  * A single ordered migration step for the project DO's SQLite schema.
  *
  * `tables` lists the tables this step introduces — the test reset helper
@@ -201,6 +212,16 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     tables: [],
     apply(sql) {
       sql.exec("ALTER TABLE dek_wraps ADD COLUMN recipient_class TEXT NOT NULL DEFAULT 'member'");
+    },
+  },
+  {
+    // ワークロードリースの固定窓カウンタ(AUTH_SPEC §14-3。2026-08-15)。
+    // 発行(1 時間 300 回 / プロジェクト)と拒否記録(同 100 行 — AUDIT_SPEC
+    // §3.5 の lease_denied の上限)を 1 テーブルの 2 行で持つ。窓の状態は
+    // 監査ログ(append-only)には置けない — 上書き更新が必要なため
+    tables: ["lease_windows"],
+    apply(sql) {
+      sql.exec(LEASE_WINDOWS_DDL);
     },
   },
 ];

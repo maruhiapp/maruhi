@@ -34,6 +34,8 @@ export {
   DistributedVariableMetaStatementSchema,
   type EncryptedPayload,
   EncryptedPayloadSchema,
+  type LeasedDek,
+  LeasedDekSchema,
   type RecipientDek,
   RecipientDekSchema,
   RenameEnvironmentMetaStatementSchema,
@@ -53,6 +55,7 @@ export {
   variablesGroup,
   VariableVersionSchema,
 } from "./data-api.ts";
+export { leaseGroup, LeaseRequestSchema, LeaseResponseSchema } from "./lease-api.ts";
 export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
@@ -74,6 +77,11 @@ export {
   EpochConflictError,
   ForbiddenError,
   ForbiddenReasonSchema,
+  LeaseRateLimitedError,
+  LeaseUnauthorizedError,
+  LeaseUnauthorizedReasonSchema,
+  LeaseUnavailableError,
+  LeaseUnavailableReasonSchema,
   MetaStatementRejectedError,
   MetaVersionConflictError,
   NameNotNfcError,

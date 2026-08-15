@@ -448,7 +448,8 @@
                 }
               ]
             }
-          ]
+          ],
+          "grant_seq": 9
         }
       ],
       "environments": {
@@ -706,10 +707,11 @@
           "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
           "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
           "scope_environments": ["env-prod-0001", "env-dev-0002"],
-          "lease_policy": []
+          "lease_policy": [],
+          "grant_seq": 10
         }
       ],
-      "note": "scope 不変 × lease_policy 全削除の再 grant は受理され、ポリシーが空(リース経路なし)へ置換される(§6.3 再 grant 二層化の受理側。seq 9 のヘッドへの追記)"
+      "note": "scope 不変 × lease_policy 全削除の再 grant は受理され、ポリシーが空(リース経路なし)へ置換される(§6.3 再 grant 二層化の受理側。seq 9 のヘッドへの追記)。導出 grant_seq は再 grant エントリの seq へ前進する"
     }
   ],
   "extended_chains": {
