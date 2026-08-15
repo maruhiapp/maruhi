@@ -129,7 +129,7 @@ export interface UnconvergedMandate extends RotationMandate {
  * なお「エポックは進んだが再暗号化が未完」はチェーンから見えない残余で、
  * その検出は各義務コマンドの再実行(sweep の検証パス)が担う。
  */
-export function unconvergedMandates(
+function unconvergedMandates(
   verified: VerifiedProject,
   deletedVerified: ReadonlySet<string>,
 ): readonly UnconvergedMandate[] {
@@ -156,59 +156,107 @@ export function unconvergedMandates(
   return results;
 }
 
-/** 義務種別ごとの収束コマンドの案内(行動可能な警告 — B2 裁定)。 */
-function mandateAdvice(mandate: UnconvergedMandate): string {
-  if (mandate.kind === "member-removed") {
-    return `maruhi member remove ${displayText(mandate.target)} の再実行`;
-  }
-  if (mandate.kind === "role-demoted") {
-    return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)`;
-  }
-  return "maruhi server revoke の再実行";
+/**
+ * 巻き戻された義務(対象が再追加・再昇格・再 grant 済み)の案内。義務コマンドの
+ * 再実行を案内すると**現役の対象へ元の破壊的操作を再適用させてしまう**
+ * (Cursor bot 指摘)ため、負っているのはローテーションだけであることを明示し、
+ * 非破壊の env rotate へ誘導する。義務自体は残る(remove/降格の残余は
+ * エポックアンカーの健全性 — §7 — であり、対象の復帰では消えない)。
+ */
+function reversedAdvice(state: string): string {
+  return `${state} — 対象への操作は再実行せず、当該環境を maruhi env rotate <環境> --new-epoch --reason ... で個別にローテーションすると収束します`;
 }
 
 /**
- * 未収束のローテーション義務の常時警告(B2 裁定)。全コマンドのチェーン同期後に
- * 呼ぶ(収束系コマンド — member remove / change-role / server revoke / env
- * rotate — は自分の sweep 報告が担うため呼ばない)。チェーン導出のみの前段
- * 判定が空なら通信ゼロで終わり、候補があるときだけ削除済み環境の検証済み
- * フィルタ(環境一覧の GET 1 回)を行う。警告は SHOULD — 取得・検証の失敗で
- * コマンド自体を止めない(その旨だけ告げて続行する)。
+ * 義務種別ごとの収束コマンドの案内(行動可能な警告 — B2 裁定)。対象の現在
+ * 状態を見て、巻き戻し済み(再追加・再昇格・再 grant)なら破壊的操作の
+ * 再実行を案内しない。
  */
-export function warnUnconvergedMandates(input: {
+function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): string {
+  if (mandate.kind === "member-removed") {
+    if (verified.state.members.has(mandate.target)) {
+      return reversedAdvice("対象は再追加済みです");
+    }
+    return `maruhi member remove ${displayText(mandate.target)} の再実行で収束します`;
+  }
+  if (mandate.kind === "role-demoted") {
+    const member = verified.state.members.get(mandate.target);
+    if (member !== undefined && ROLE_RANK[member.role] >= ROLE_RANK.member) {
+      return reversedAdvice("対象は member 以上へ再昇格済みです");
+    }
+    return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)で収束します`;
+  }
+  if (verified.state.serverGrants.has(mandate.target)) {
+    return reversedAdvice("対象のサーバー鍵は再 grant 済みです");
+  }
+  return "maruhi server revoke の再実行で収束します";
+}
+
+/**
+ * 未収束義務の解決: チェーン導出のみの前段判定が空なら通信ゼロで空を返し、
+ * 候補があるときだけ削除済み環境の検証済みフィルタ(環境一覧の GET 1 回)を
+ * 行う。取得・検証の失敗は null(= 判定不能。注意は出力済み)— 呼び出し側の
+ * コマンドを失敗させない(チェーン検証自体は成功している — Cursor bot 指摘)。
+ * 常時警告(warnUnconvergedMandates)と project verify の詳細表示が共有する。
+ */
+export function resolveUnconvergedMandates(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-}): Effect.Effect<void, never, CliIo> {
+}): Effect.Effect<readonly UnconvergedMandate[] | null, never, CliIo> {
   return Effect.gen(function* () {
     const candidates = unconvergedMandates(input.verified, new Set());
     if (candidates.length === 0) {
-      return;
+      return candidates;
     }
     const io = yield* CliIo;
-    const filtered = yield* verifiedDeletedEnvironmentSet(input.client, input.verified).pipe(
+    return yield* verifiedDeletedEnvironmentSet(input.client, input.verified).pipe(
       Effect.map((deletedVerified) => unconvergedMandates(input.verified, deletedVerified)),
       Effect.catch((error) =>
         Effect.gen(function* () {
           yield* io.logError(
             `注意: 未収束のローテーション義務の候補がありますが、削除済み環境の検証に失敗したため確定できません(${error.message})`,
           );
-          return [] as readonly UnconvergedMandate[];
+          return null;
         }),
       ),
     );
-    if (filtered.length === 0) {
+  });
+}
+
+/** 1 義務ぶんの警告行(常時警告と project verify の詳細表示で共通)。 */
+export function describeUnconvergedMandate(
+  verified: VerifiedProject,
+  mandate: UnconvergedMandate,
+): string {
+  return `${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq}): 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(verified, mandate)}`;
+}
+
+/**
+ * 未収束のローテーション義務の常時警告(B2 裁定)。全コマンドのチェーン同期後に
+ * 呼ぶ(収束系コマンド — member remove / change-role / server revoke / env
+ * rotate — は自分の sweep 報告が担うため呼ばない)。警告は SHOULD — 取得・
+ * 検証の失敗でコマンド自体を止めない(その旨だけ告げて続行する)。
+ */
+export function warnUnconvergedMandates(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+}): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const filtered = yield* resolveUnconvergedMandates(input);
+    if (filtered === null || filtered.length === 0) {
       return;
     }
+    const io = yield* CliIo;
     yield* io.logError(
       "警告: 未収束のローテーション義務があります(CRYPTO_SPEC §7)— 旧 DEK の保持者が現在値を読める可能性が残っています:",
     );
     for (const mandate of filtered) {
-      yield* io.logError(
-        `  ${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq}): 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(mandate)}で収束します`,
-      );
+      yield* io.logError(`  ${describeUnconvergedMandate(input.verified, mandate)}`);
     }
   });
 }
+
+/** 削除済み環境の検証済み集合(環境一覧の GET 1 回 + 削除ステートメント検証 — §7)。 */
 export function verifiedDeletedEnvironmentSet(
   client: MaruhiClient,
   verified: VerifiedProject,

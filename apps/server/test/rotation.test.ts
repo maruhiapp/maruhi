@@ -16,7 +16,9 @@
 //   取り下げは admin 以上(member = 403)・有効フラグなし 404・all-or-nothing・
 //   重複対の畳み込み・空列挙 400
 // - revoke_server 変種: 候補 = grant スコープ内のみ、(a) = 区間内の
-//   server.lease_issued(発行時点のアクティブ変数)
+//   server.lease_issued(発行時点のアクティブ変数)、拡大再 grant は
+//   「環境ごとの開示窓」(拡大 seq 起点 — 最初のスコープ固定でも区間開始への
+//   繰り上げでもない)
 // - B1a: 409 が占有ラップの保存済み enc 公開鍵を運ぶ / add_member 受理時の
 //   旧鍵宛ラップ掃除(dek.deleted actor = system + 原因 payload。同一鍵の
 //   再追加は掃除しない・他メンバーのラップは触らない)
@@ -490,6 +492,112 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
     expect(byVariable.has(outVar)).toBe(false);
     // member 変種の列(target_user_id)は使わない
     expect(flags.every((flag) => flag.targetUserId === undefined)).toBe(true);
+  });
+
+  it("拡大再 grant で加わった環境は「拡大 seq からの開示窓」で検出される(§4.1 変種)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // 拡大で後から加わる環境と、拡大**前**に削除される変数を用意する
+    const widenEnv = "env-widened";
+    const widenDek = makeDek();
+    const widenDeks = await wrapDekForAll({
+      projectId,
+      environmentId: widenEnv,
+      epoch: 1,
+      dek: widenDek,
+      recipientUserIds: ALL_MEMBERS,
+      signerUserId: OWNER,
+    });
+    expect(
+      (
+        await createEnvironmentComposite(fixture, {
+          environmentId: widenEnv,
+          name: "Widened",
+          deks: widenDeks,
+          dekCommitmentHex: await commitmentOf(projectId, widenEnv, 1, widenDek),
+        })
+      ).status,
+    ).toBe(200);
+    const preVar = "var-deleted-before-widen";
+    const preStatement = await createVariableAsOwner({
+      dek: widenDek,
+      environmentId: widenEnv,
+      variableId: preVar,
+      name: "PRE_WIDEN",
+    });
+
+    const key = await deploymentKey();
+    const leasePolicy = [
+      {
+        issuerUrl: OIDC_ISSUER,
+        audience: LEASE_AUDIENCE,
+        claimConstraints: [{ claimName: "sub", claimValue: LEASE_SUBJECT }],
+      },
+    ];
+    await appendOperation(fixture, OWNER, {
+      op: "grant_server",
+      payload: {
+        serverEncPubHex: key.encPubHex,
+        serverKeyFingerprintHex: key.fingerprintHex,
+        scopeEnvironmentIds: [ENV],
+        leasePolicy,
+      },
+    });
+    // 最初の grant の後・拡大の前に preVar を削除(存在期間が窓の手前で閉じる)
+    const preDelete = await signMetaStatementAs(OWNER, projectId, {
+      suite: "maruhi/v1" as const,
+      environmentId: widenEnv,
+      variableId: preVar,
+      name: "PRE_WIDEN",
+      status: "deleted" as const,
+      metaVersion: 2,
+      prevMetaSigHashHex: await metaSignedBytesHashOf(projectId, preStatement, OWNER),
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    });
+    expect(
+      (
+        await requestJson("DELETE", `/environments/${widenEnv}/variables/${preVar}`, token(OWNER), {
+          statement: preDelete,
+        })
+      ).status,
+    ).toBe(204);
+    // 拡大再 grant(チェーン合意規則は同一鍵 FP への拡大のみ受理 — CRYPTO_SPEC §6.2)
+    await appendOperation(fixture, OWNER, {
+      op: "grant_server",
+      payload: {
+        serverEncPubHex: key.encPubHex,
+        serverKeyFingerprintHex: key.fingerprintHex,
+        scopeEnvironmentIds: [ENV, widenEnv],
+        leasePolicy,
+      },
+    });
+    // 窓の内側で生きている変数(拡大後に作成)
+    const widenVar = "var-in-window";
+    await createVariableAsOwner({
+      dek: widenDek,
+      environmentId: widenEnv,
+      variableId: widenVar,
+      name: "IN_WINDOW",
+    });
+    await appendOperation(fixture, OWNER, {
+      op: "revoke_server",
+      payload: { serverKeyFingerprintHex: key.fingerprintHex },
+    });
+
+    const flags = await readFlags(OWNER);
+    const byVariable = new Map(flags.map((flag) => [flag.variableId, flag]));
+    // 拡大で加わった環境の変数は検出される(最初のスコープへの固定は fail open)
+    expect(byVariable.get(widenVar)).toMatchObject({
+      environmentId: widenEnv,
+      basis: "readable",
+      targetServerKeyFingerprintHex: key.fingerprintHex,
+    });
+    // 最初のスコープの環境は従来どおり検出される
+    expect(byVariable.get(VAR)).toMatchObject({ environmentId: ENV, basis: "readable" });
+    // 拡大前に削除された変数は窓と重ならない(窓を区間開始まで繰り上げない —
+    // 繰り上げると grant #1 と拡大の間に存在した preVar へ誤検出が出る)
+    expect(byVariable.has(preVar)).toBe(false);
   });
 });
 

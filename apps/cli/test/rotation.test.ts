@@ -9,7 +9,9 @@
 //     操作エンドポイントへ送り、404(有効フラグなし)は導線つきで報告する
 //  3. 未収束のローテーション義務(義務エントリより後に現エポックが始まって
 //     いない環境)はコマンドの同期後に常時警告される(収束済みなら出ない)。
-//     project verify は同じ導出の詳細を表示する
+//     project verify は同じ導出の詳細を表示する。案内は対象の現在状態に適応し
+//     (再追加済みなら破壊的操作の再実行を勧めない)、削除済み環境の検証失敗は
+//     注意のみでコマンドを失敗させない(チェーン検証は成功している)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -102,6 +104,8 @@ async function makeRotationServer(input: {
   readonly onDismiss?: () => { status: number; json?: unknown } | undefined;
   /** メタデータ pull の可否(false = 404 — 名前解決の劣化経路)。 */
   readonly metadataAvailable?: boolean;
+  /** 環境一覧 GET の可否(false = 500 — 削除済み環境検証の失敗経路)。 */
+  readonly environmentsAvailable?: boolean;
 }): Promise<RotationServerState> {
   const projectId = input.built.projectId;
   const currentEpoch = input.currentEpoch ?? 1;
@@ -144,12 +148,16 @@ async function makeRotationServer(input: {
         headHashHex: input.built.hashes[input.built.hashes.length - 1],
       },
     })),
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
-      status: 200,
-      json: {
-        environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
-      },
-    })),
+    onRequest("GET", `/projects/${projectId}/environments`, () =>
+      input.environmentsAvailable === false
+        ? { status: 500, json: { message: "injected environments failure" } }
+        : {
+            status: 200,
+            json: {
+              environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
+            },
+          },
+    ),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () =>
       input.metadataAvailable === false
         ? { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: ENV_ID } }
@@ -345,6 +353,43 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).toContain(ENV_ID);
     // 行動可能な警告(B2 裁定): 収束コマンドを名指しする
     expect(errors).toContain(`maruhi member remove ${target.userId} の再実行`);
+  });
+
+  it("巻き戻された義務(対象が再追加済み)には破壊的操作の再実行を案内しない", async () => {
+    // remove の後に同一鍵で再追加(ローテーションはまだ)— 義務は残るが、
+    // member remove の再実行を案内すると現役メンバーを削除させてしまう
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+      { actor: owner, operation: removeMemberOp(target) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+    ]);
+    const state = await makeRotationServer({ built, currentEpoch: 1, flags: [] });
+    const env = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("未収束のローテーション義務");
+    expect(errors).toContain("対象は再追加済みです");
+    expect(errors).toContain("maruhi env rotate");
+    expect(errors).not.toContain("の再実行で収束します");
+  });
+
+  it("project verify は削除済み環境の検証失敗で失敗しない(注意を出して未収束判定だけ保留する)", async () => {
+    const built = await unconvergedChain();
+    const state = await makeRotationServer({
+      built,
+      currentEpoch: 1,
+      flags: [],
+      environmentsAvailable: false,
+    });
+    const env = await startEnv(state, built.projectId);
+    // チェーン検証は成功しているので exit 0(Cursor bot 指摘 — 検証失敗は注意のみ)
+    expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("チェーン検証 OK");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("確定できません");
+    expect(errors).not.toContain("未収束のローテーション義務:");
   });
 
   it("project verify は同じ導出の詳細を表示する(収束済みなら未収束なし)", async () => {

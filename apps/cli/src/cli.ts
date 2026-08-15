@@ -70,10 +70,10 @@ import { type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import {
+  describeUnconvergedMandate,
+  resolveUnconvergedMandates,
   type SweepOutcome,
   type SweepRotateMode,
-  unconvergedMandates,
-  verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 import {
   reportRotationFlagCount,
@@ -282,22 +282,19 @@ function projectVerify(
     }
     // 未収束のローテーション義務(§7 — チェーン導出 + 検証済み削除の除外)も
     // verify の一部(常時警告 — rotation-sweep.ts — の詳細表示。候補ゼロなら
-    // 通信なしで確定する)
-    const candidates = unconvergedMandates(verified, new Set());
-    const pending =
-      candidates.length === 0
-        ? candidates
-        : unconvergedMandates(
-            verified,
-            yield* verifiedDeletedEnvironmentSet(context.client, verified),
-          );
+    // 通信なしで確定する)。削除済み環境の検証失敗は「確定できません」の注意
+    // だけで verify 自体は成功扱い(チェーン検証は済んでいる — Cursor bot 指摘)
+    const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
+    if (pending === null) {
+      return;
+    }
     if (pending.length === 0) {
       yield* io.log("ローテーション義務: 未収束なし(CRYPTO_SPEC §7)");
       return;
     }
     for (const mandate of pending) {
       yield* io.logError(
-        `未収束のローテーション義務: ${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq})— 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} の現エポックが義務エントリより前に始まっています(旧 DEK 保持者が現在値を読める可能性)`,
+        `未収束のローテーション義務: ${describeUnconvergedMandate(verified, mandate)}(旧 DEK 保持者が現在値を読める可能性)`,
       );
     }
   });
