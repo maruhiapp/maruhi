@@ -209,9 +209,10 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     // 「受信者クラス内の受信者識別子」)。member の user_id と「実際上形式が
     // 交わらない」ことは型でも合意規則でも保証されない(add_member の対象
     // user_id は自由文字列 — AUTH_SPEC §11-1)ため、主キー
-    // (environment_id, epoch, recipient_user_id) のクラス跨ぎ衝突は受理段の
-    // 保存粒度重複検出(dek-wraps.ts の wrapStorageKey)が 422 で拒否して守る
-    // (セキュリティレビュー 2026-08-14 A-1)
+    // (environment_id, epoch, recipient_user_id) のクラス跨ぎ衝突は受理段が
+    // 守る: 初回登録はリクエスト内の保存粒度重複検出(dek-wraps.ts の
+    // wrapStorageKey = 422)、既存エポックへの追記はクラス無視の保存存在検査
+    // (= 409)(セキュリティレビュー 2026-08-14 A-1)
     tables: [],
     apply(sql) {
       sql.exec("ALTER TABLE dek_wraps ADD COLUMN recipient_class TEXT NOT NULL DEFAULT 'member'");

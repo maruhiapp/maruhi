@@ -170,6 +170,20 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects an oversized code at the wire schema, before any outbound call (追補 3 A-6)", async () => {
+    // code / state クエリの 512 文字上限(api-schema)。超過はワイヤ Schema の
+    // 400 で落ち、ハンドラ(= GitHub への code 交換)に到達しない — 到達して
+    // いれば fake GitHub 経由で code-exchange-failed になるので、その不在が
+    // 遮断位置の裏取りになる
+    const state = "ab".repeat(16);
+    const response = await SELF.fetch(
+      `${BASE}/auth/github/callback?code=${"c".repeat(513)}&state=${state}`,
+      { headers: { cookie: `${STATE_COOKIE}=${state}` }, redirect: "manual" },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain("code-exchange-failed");
+  });
+
   it("rejects an invalid authorization code with 400 (code-exchange-failed)", async () => {
     const state = "ab".repeat(16);
     const response = await SELF.fetch(
@@ -789,5 +803,6 @@ describe("共通セキュリティヘッダー(index.ts withSecurityHeaders — 
     expect(response.status).toBe(413);
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("strict-transport-security")).toBe("max-age=31536000");
   });
 });

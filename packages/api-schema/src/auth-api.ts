@@ -123,11 +123,11 @@ export const authGroup = HttpApiGroup.make("auth")
   )
   .add(
     HttpApiEndpoint.get("githubCallback", "/auth/github/callback", {
-      // 未認証で到達でき、リクエストごとに GitHub へのアウトバウンド(code 交換
-      // + /user)を伴うため、クエリに明示的な上限を課す(device/exchange と同じ
-      // 論拠 — セキュリティレビュー L-3 / 追補 3 A-6)。code の形式は OAuth 仕様が
-      // 定めないため長さのみ検査する(実 GitHub の code / state はこの上限より
-      // 桁違いに短い)
+      // 未認証で到達でき、リクエストごとに GitHub へのアウトバウンド(code 交換。
+      // 成功時はさらに /user・/user/emails)を伴うため、クエリに明示的な上限
+      // (512 文字)を課す(device/exchange と同じ論拠 — セキュリティレビュー
+      // L-3 / 追補 3 A-6)。code の形式は OAuth 仕様が定めないため長さのみ検査
+      // する(実 GitHub の code / state はこの上限より桁違いに短い)
       query: {
         code: Schema.String.check(Schema.isMaxLength(512)),
         state: Schema.String.check(Schema.isMaxLength(512)),
