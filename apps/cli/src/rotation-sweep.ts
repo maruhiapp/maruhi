@@ -181,7 +181,11 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
   }
   if (mandate.kind === "role-demoted") {
     const member = verified.state.members.get(mandate.target);
-    if (member !== undefined && ROLE_RANK[member.role] >= ROLE_RANK.member) {
+    if (member === undefined) {
+      // 降格後に削除された対象へ change-role は再実行できない(現メンバー限定)
+      return reversedAdvice("対象は削除済みです");
+    }
+    if (ROLE_RANK[member.role] >= ROLE_RANK.member) {
       return reversedAdvice("対象は member 以上へ再昇格済みです");
     }
     return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)で収束します`;

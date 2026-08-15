@@ -375,6 +375,32 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).not.toContain("の再実行で収束します");
   });
 
+  it("降格後に削除された対象へは change-role の再実行を案内しない(現メンバー限定の操作)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+      {
+        actor: owner,
+        operation: {
+          op: "change_role",
+          payload: { targetUserId: target.userId, newRole: "reader" },
+        },
+      },
+      { actor: owner, operation: removeMemberOp(target) },
+    ]);
+    const state = await makeRotationServer({ built, currentEpoch: 1, flags: [] });
+    const env = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    // 降格義務の行は env rotate へ誘導(change-role は対象不在で再実行不能)
+    expect(errors).toContain("role-demoted");
+    expect(errors).toContain("対象は削除済みです");
+    expect(errors).not.toContain("maruhi member change-role");
+    // 削除義務の行は従来どおり member remove の再実行を案内する
+    expect(errors).toContain(`maruhi member remove ${target.userId} の再実行`);
+  });
+
   it("project verify は削除済み環境の検証失敗で失敗しない(注意を出して未収束判定だけ保留する)", async () => {
     const built = await unconvergedChain();
     const state = await makeRotationServer({
