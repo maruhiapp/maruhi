@@ -44,6 +44,16 @@ const JWKS_TTL_MS = 15 * 60 * 1000;
 const FORCED_REFRESH_COOLDOWN_MS = 60 * 1000;
 
 /**
+ * 再取得が**失敗**した後、次の再取得を試みるまでの間隔。issuer 障害中は
+ * `fetchedAtMs` が TTL を過ぎたままになるため、これがないと猶予窓の残り
+ * (最長 6 時間弱)にわたって「未認証リクエスト 1 本 = issuer への外向き
+ * fetch 1 回(各 5 秒タイムアウト)」が続く。`inFlight` が畳むのは**同時**
+ * リクエストだけで、逐次リクエストは畳まれない。増幅が効くのは issuer が
+ * すでに弱っているときなので、最も避けたい形になる(pullfrog 指摘 — PR #65)。
+ */
+const FAILED_REFRESH_COOLDOWN_MS = 60 * 1000;
+
+/**
  * 再取得に失敗したときに、最後に成功した JWKS を使い続けてよい上限。
  * 可用性(issuer 障害中も CI を止めない)と失効追随(issuer が鍵を失効させて
  * から受理しなくなるまでの遅れ)のトレードオフであり、6 時間は現実的な障害
@@ -197,6 +207,8 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
   // 既存の good 値を壊さないための構造(冒頭コメントの 2 番目の理由)
   const lastGoodDiscovery = new Map<string, CachedDiscovery>();
   const lastGoodJwks = new Map<string, CachedJwks>();
+  // 直近の再取得失敗の時刻(issuer 障害中の再試行を間引く)。成功で消える
+  const lastFailureAtMs = new Map<string, number>();
   const inFlight = new Map<string, Promise<CachedJwks>>();
   const discoveryInFlight = new Map<string, Promise<CachedDiscovery>>();
 
@@ -302,18 +314,32 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     if (cached !== undefined && isUsable(cached, kid)) {
       return cached;
     }
+    // 直近の再取得が失敗しているなら、クールダウンが明けるまで叩き直さない。
+    // TTL 切れ + issuer 障害の状態では `isUsable` が最初の分岐(TTL)で false を
+    // 返し、強制リフレッシュのクールダウンには到達しないため、失敗側に独立の
+    // 間隔が要る(pullfrog 指摘 — PR #65)
+    const failedAt = lastFailureAtMs.get(issuer);
+    if (failedAt !== undefined && now() - failedAt < FAILED_REFRESH_COOLDOWN_MS) {
+      if (isWithinGrace(cached)) {
+        return cached;
+      }
+      throw new Error("jwks: refresh is cooling down after a failure");
+    }
     const forcedRefreshAtMs = forcedRefreshStamp(cached);
     try {
-      return await refresh(issuer, forcedRefreshAtMs);
+      const loaded = await refresh(issuer, forcedRefreshAtMs);
+      lastFailureAtMs.delete(issuer);
+      return loaded;
     } catch (error) {
+      lastFailureAtMs.set(issuer, now());
       // stale-while-revalidate: 猶予窓内の good 値があればそれで検証を続ける。
       // 署名検証自体は必ず行われる(鍵が 1 つも無いときだけ拒否する)
       if (!isWithinGrace(cached)) {
         throw error;
       }
       // **失敗した強制リフレッシュもクールダウンの起点にする**(Cursor Bugbot の
-      // 指摘への追加対応 — PR #65)。ここを据え置くと、未知 kid を連打する
-      // 未認証の呼び出し元が 1 リクエストにつき 1 回 issuer を叩かせられる
+      // 指摘)。TTL 内の未知 kid 連打で 1 リクエスト 1 fetch にしないための、
+      // 上の失敗クールダウンとは独立な不変条件
       const held = { ...cached, forcedRefreshAtMs };
       lastGoodJwks.set(issuer, held);
       return held;

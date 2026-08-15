@@ -145,14 +145,22 @@ describe("JWKS キャッシュ(§14-1)", () => {
     expect(log.urls.length).toBe(afterFailure);
   });
 
-  it("does not cache a failed fetch (the next call retries)", async () => {
+  it("does not cache a failed fetch permanently (retries once the cooldown lapses)", async () => {
     let failing = true;
     const log = stubFetch({ failJwks: () => failing });
-    const cache = makeJwksCache();
+    let currentMs = 1_000_000;
+    const cache = makeJwksCache(() => currentMs);
     expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
+
+    // good 値が無い状態でも失敗クールダウン中は叩き直さない(cold + issuer 障害
+    // でも「1 リクエスト = 1 fetch」にしない)。この間は即座に失敗する
     failing = false;
+    expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
+    expect(log.urls.filter((url) => url.endsWith("/jwks")).length).toBe(1);
+
+    // クールダウン明けには取り直し、失敗が居座っていないことが確かめられる
+    currentMs += 61_000;
     expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
-    // 失敗した取得が居座らず、2 回目は本当に取り直している
     expect(log.urls.filter((url) => url.endsWith("/jwks")).length).toBe(2);
   });
 
@@ -171,6 +179,36 @@ describe("JWKS キャッシュ(§14-1)", () => {
     // 猶予窓(6 時間)を越えたら、もう受理しない
     currentMs += 6 * 60 * 60 * 1000;
     expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
+  });
+
+  it("does not re-fetch on every request while the issuer stays down (増幅の遮断)", async () => {
+    // TTL 切れ + issuer 障害では `isUsable` が TTL の分岐で false を返し、
+    // 強制リフレッシュのクールダウンには到達しない。失敗側に独立の間隔が
+    // ないと、猶予窓の残り(最長 6 時間弱)にわたって「未認証リクエスト 1 本 =
+    // 外向き fetch 1 回」が続く(pullfrog 指摘 — PR #65)
+    let failing = false;
+    const log = stubFetch({ failJwks: () => failing });
+    let currentMs = 1_000_000;
+    const cache = makeJwksCache(() => currentMs);
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+
+    // TTL(15 分)を越え、issuer が落ちる
+    failing = true;
+    currentMs += 20 * 60 * 1000;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+    const afterFirstFailure = log.urls.length;
+
+    // 障害中の後続リクエストは stale で応じ、issuer を叩き直さない
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+    }
+    expect(log.urls.length).toBe(afterFirstFailure);
+
+    // クールダウン(60 秒)明けには 1 回だけ再試行し、復旧を拾う
+    currentMs += 61_000;
+    failing = false;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+    expect(log.urls.length).toBe(afterFirstFailure + 1);
   });
 
   it("aborts a hanging JWKS fetch instead of holding the request open", async () => {

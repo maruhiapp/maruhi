@@ -498,33 +498,76 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
   it("returns a byte-identical 404 body for every cause (存在秘匿の中核)", async () => {
     // 各ケースがステータスコードしか見ていないと、将来どれか 1 分岐に
     // フィールドが増えても検出できない(pullfrog 指摘)。本 PR の中核主張なので
-    // ボディまで同一であることを 1 本で固定する
+    // ボディまで同一であることを 1 本で固定する。
+    //
+    // **4 分岐を別々に踏ませる**: 空 lease_policy にすると policy-mismatch が
+    // 先に成立して scope-out-of-range / environment-not-found に到達せず、
+    // 同じ経路の body を 2 回集めるだけになる(pullfrog 指摘)。実在するポリシーを
+    // 張り、トークンとリクエスト環境の側で分岐を撃ち分ける。踏んだ分岐は
+    // lease_denied の reason で事後確認する(黙って縮退したら落ちる)
     const workload = await workloadKeyPair();
-    const bodyOf = async (environmentId?: string): Promise<string> => {
+    const bodyOf = async (
+      input: {
+        readonly environmentId?: string;
+        readonly subject?: string;
+        readonly project?: string;
+      } = {},
+    ): Promise<string> => {
       const response = await requestLease({
-        oidcToken: await makeOidcToken(),
+        oidcToken: await makeOidcToken(
+          input.subject === undefined ? {} : { subject: input.subject },
+        ),
         ephemeralPubHex: workload.publicKeyHex,
-        ...(environmentId === undefined ? {} : { environmentId }),
+        ...(input.environmentId === undefined ? {} : { environmentId: input.environmentId }),
+        ...(input.project === undefined ? {} : { project: input.project }),
       });
       expect(response.status).toBe(404);
       return response.text();
     };
 
-    // (a) 未知プロジェクト(そもそも初期化されていない)
-    const bodies = [await bodyOf()];
+    // (a) 未知プロジェクト。**別 DO** を引くので監査は残らない(下の突合対象外)
+    const unknownProject = "f".repeat(64);
+    const bodies = [await bodyOf({ project: unknownProject })];
+
     // (b) grant なし
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     bodies.push(await bodyOf());
-    // (c) ポリシー不一致(空ポリシー = リース経路なし)
-    await grantServer({ scope: [ENV], leasePolicy: [] });
-    await backfillServerWrap(1, dek);
-    bodies.push(await bodyOf());
-    // (d) スコープ外 / 未作成の環境
-    bodies.push(await bodyOf("env-never-created-0009"));
 
-    expect(new Set(bodies).size).toBe(1);
-    // ボディが運ぶのは呼び出し元自身の入力(projectId)の反響のみ
-    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ _tag: "ProjectNotFound", projectId });
+    // 実在ポリシー + スコープに「ENV と、未作成の環境 ID」を入れる
+    const uncreated = "env-in-scope-uncreated";
+    await grantServer({ scope: [ENV, uncreated] });
+    await backfillServerWrap(1, dek);
+
+    // (c) ポリシー不一致(別ブランチの subject)
+    bodies.push(await bodyOf({ subject: "repo:maruhi-test/demo:ref:refs/heads/feature-x" }));
+    // (d) スコープ外の環境(ポリシーは一致する)
+    bodies.push(await bodyOf({ environmentId: "env-out-of-scope-0009" }));
+    // (e) スコープ内だが未作成の環境
+    bodies.push(await bodyOf({ environmentId: uncreated }));
+
+    // ボディが運ぶのは呼び出し元自身の入力(projectId)の反響のみ。(a) だけは
+    // 入力した ID が違うので、その 1 点を除いて全ケースが同一であることを見る
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({
+      _tag: "ProjectNotFound",
+      projectId: unknownProject,
+    });
+    expect(new Set(bodies.slice(1)).size).toBe(1);
+    expect(JSON.parse(bodies[1] ?? "{}")).toEqual({ _tag: "ProjectNotFound", projectId });
+
+    // 4 分岐を本当に別々に踏んだことを監査で裏取りする
+    const denied = await queryProjectDo(
+      projectId,
+      "SELECT payload FROM audit_events WHERE event = 'server.lease_denied' ORDER BY seq",
+    );
+    const reasons = denied.map(
+      (row) => (JSON.parse(String(row["payload"])) as { reason: string }).reason,
+    );
+    expect(reasons).toEqual([
+      "no-grant",
+      "policy-mismatch",
+      "scope-out-of-range",
+      "environment-not-found",
+    ]);
   });
 
   it("authorizes when any policy element matches (existential — §14-1)", async () => {
