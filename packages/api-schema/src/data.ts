@@ -302,3 +302,25 @@ export const DekWrapRefSchema = Schema.Struct({
 
 /** Reference naming one stored wrap (§12-6 repair path). */
 export type DekWrapRef = typeof DekWrapRefSchema.Type;
+
+/**
+ * One leased epoch DEK (CRYPTO_SPEC §9.1 / AUTH_SPEC §14-2): the server
+ * opened its own server-addressed wrap and re-sealed the DEK to the
+ * workload's ephemeral public key.
+ *
+ * Deliberately **not** a `RecipientDek`: a lease wrap is server-generated,
+ * response-scoped and never persisted (§9.1), so it carries no §5.1
+ * registration signature and no signer identity — those describe a wrap a
+ * chain member registered, which a lease wrap never is. Keeping the two wire
+ * types apart stops a lease response from being mistaken for distributable
+ * wrap material.
+ */
+export const LeasedDekSchema = Schema.Struct({
+  suite: SuiteSchema,
+  epoch: PositiveInt,
+  encHex: HpkeEncHex,
+  ciphertextHex: WrappedDekCiphertextHex,
+});
+
+/** One leased epoch DEK, sealed to the workload's ephemeral key. */
+export type LeasedDek = typeof LeasedDekSchema.Type;

@@ -23,6 +23,7 @@ import {
   ProjectNotFoundError,
 } from "./errors/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
+import { leaseGroup } from "./lease-api.ts";
 
 /** Chain head after a successful initialization or append. */
 export const ChainHeadSchema = Schema.Struct({
@@ -101,4 +102,6 @@ export const maruhiApi = HttpApi.make("maruhi")
   .add(authGroup)
   .add(environmentsGroup)
   .add(variablesGroup)
-  .add(deksGroup);
+  .add(deksGroup)
+  // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
+  .add(leaseGroup);
