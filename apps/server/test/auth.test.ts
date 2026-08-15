@@ -178,7 +178,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-201" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test201" }),
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { token: string; tokenId: string; userId: string };
@@ -201,7 +201,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "not-a-token" }),
+      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
     });
     expect(response.status).toBe(400);
     const body = (await response.json()) as { reason: string };
@@ -209,12 +209,12 @@ describe("POST /auth/device/exchange(§4)", () => {
   });
 
   it("rejects a token issued to a different OAuth App (§4-4 audience 検証)", async () => {
-    // フェイク GitHub: gh-token-other-app-* は /user では有効だが check-token では 404。
+    // フェイク GitHub: gho_otherapp* は /user では有効だが check-token では 404。
     // /user 検証止まりの実装(confused-deputy)ではこのテストが緑にならない
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-other-app-201" }),
+      body: JSON.stringify({ githubAccessToken: "gho_otherapp201" }),
     });
     expect(response.status).toBe(400);
     const body = (await response.json()) as { reason: string };
@@ -249,7 +249,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const first = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "seed" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "seed" }),
     });
     expect(first.status).toBe(200);
     const { userId } = (await first.json()) as { userId: string };
@@ -264,7 +264,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const overflow = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "one-too-many" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "one-too-many" }),
     });
     expect(overflow.status).toBe(429);
 
@@ -272,7 +272,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const rotate = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "seed" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "seed" }),
     });
     expect(rotate.status).toBe(200);
   });
@@ -283,7 +283,7 @@ describe("POST /auth/device/exchange(§4)", () => {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({
-        githubAccessToken: "gh-token-205",
+        githubAccessToken: "gho_test205",
         scopes: Array.from({ length: 101 }, () => ({ project: "*", permission: "read" })),
       }),
     });
@@ -294,7 +294,7 @@ describe("POST /auth/device/exchange(§4)", () => {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({
-        githubAccessToken: "gh-token-205",
+        githubAccessToken: "gho_test205",
         scopes: [{ project: "x".repeat(500_000), permission: "read" }],
       }),
     });
@@ -304,9 +304,24 @@ describe("POST /auth/device/exchange(§4)", () => {
     const longName = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-205", tokenName: "n".repeat(129) }),
+      body: JSON.stringify({ githubAccessToken: "gho_test205", tokenName: "n".repeat(129) }),
     });
     expect(longName.status).toBe(400);
+
+    // GitHub トークン形式(gh?_ プレフィックス)を満たさない入力はワイヤ Schema で
+    // 400(§4 の形式事前検査 — セキュリティレビュー L-3)。ハンドラに到達しない
+    // ため auth.login_failed も記録されない = GitHub check-token API への
+    // アウトバウンド呼び出しの前で落ちていることの裏取り
+    const malformed = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "not-a-github-token" }),
+    });
+    expect(malformed.status).toBe(400);
+    const failedRows = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
+    ).first<{ n: number }>();
+    expect(failedRows?.n).toBe(0);
   });
 });
 
@@ -660,7 +675,7 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
         method: "POST",
         headers: JSON_HEADERS,
         // ガードはトークン検証より先に走る(値は Schema を満たせば何でもよい)
-        body: JSON.stringify({ githubAccessToken: "gh-token-901" }),
+        body: JSON.stringify({ githubAccessToken: "gho_test901" }),
       }),
       missing as typeof env,
     );

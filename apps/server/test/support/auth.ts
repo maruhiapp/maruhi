@@ -69,7 +69,7 @@ export async function seedOrgMember(
   ]);
 }
 
-/** device flow 交換(実経路)で PAT を得る。GitHub 側はフェイク(gh-token-<id>)。 */
+/** device flow 交換(実経路)で PAT を得る。GitHub 側はフェイク(gho_test<id>)。 */
 export async function deviceToken(
   githubId: number,
   scopes?: readonly TokenScope[],
@@ -78,7 +78,7 @@ export async function deviceToken(
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({
-      githubAccessToken: `gh-token-${githubId}`,
+      githubAccessToken: `gho_test${githubId}`,
       ...(scopes === undefined ? {} : { scopes }),
     }),
   });

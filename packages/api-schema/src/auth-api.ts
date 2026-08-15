@@ -131,9 +131,20 @@ export const authGroup = HttpApiGroup.make("auth")
   .add(
     HttpApiEndpoint.post("deviceExchange", "/auth/device/exchange", {
       // 認証前に到達できる書き込み系のため、フィールドに明示的な上限を課す
-      // (D1 への肥大 JSON 蓄積の遮断。AUTH_SPEC §6)
+      // (D1 への肥大 JSON 蓄積の遮断。AUTH_SPEC §6)。
+      // 形式事前検査(AUTH_SPEC §3 — 2026-08-15): GitHub のトークンは
+      // `gh<種別 1 文字>_` プレフィックス + Base62/`_` 本体で発行される。
+      // 交換はリクエストごとにサーバーから GitHub check-token API への
+      // アウトバウンド呼び出しを伴い、その枠は OAuth App 単位のレート制限を
+      // 受けるため、形式を満たさない入力はここで落として GitHub へ出さない
+      // (無差別洪水によるログイン可用性の枯渇の遮断 — セキュリティレビュー L-3)
       payload: Schema.Struct({
-        githubAccessToken: Schema.String.check(Schema.isMaxLength(512)),
+        githubAccessToken: Schema.String.check(
+          Schema.isMaxLength(512),
+          Schema.isPattern(/^gh[a-z]_[A-Za-z0-9_]+$/, {
+            description: "GitHub token (gh?_ prefix + base62 body)",
+          }),
+        ),
         tokenName: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
         scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
       }),
