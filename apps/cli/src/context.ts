@@ -22,6 +22,7 @@ import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
+import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
 import {
   type CliSession,
@@ -264,20 +265,35 @@ export function checkInviteAnchor(
 }
 
 /**
+ * 前段のオプション。`quietMandateWarning` は未収束ローテーション義務の常時警告
+ * (rotation-sweep.ts — B2 裁定)の抑制で、**収束系コマンド専用**(member
+ * remove / change-role / server revoke / env rotate — 自分の sweep 報告が
+ * 同じ事実をより正確に伝えるため、同期時点の警告は二重表示のノイズになる)。
+ */
+export interface OpenProjectOptions {
+  readonly quietMandateWarning?: boolean;
+}
+
+/**
  * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → アンカー機械照合 →
- * 床ヘッドの前進。鍵の有無で分かれるのは呼び出し側だけで、床の意味論はここに
- * 一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は全コマンド
- * 共通で、env diff のような値を読まないコマンドでも従来どおり行う。
+ * 床ヘッドの前進 → 未収束ローテーション義務の常時警告(§7 / B2 裁定 — §9 の
+ * 開示常時明示と同じ規律)。鍵の有無で分かれるのは呼び出し側だけで、床の
+ * 意味論はここに一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの
+ * 前進は全コマンド共通で、env diff のような値を読まないコマンドでも従来どおり行う。
  */
 function attachProject(
   context: SessionContext,
   projectId: string,
+  options?: OpenProjectOptions,
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
     const resync = syncProject(context.client, projectId);
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
     yield* checkInviteAnchor(projectId, checked.verified);
+    if (options?.quietMandateWarning !== true) {
+      yield* warnUnconvergedMandates({ client: context.client, verified: checked.verified });
+    }
     return { ...context, projectId, verified: checked.verified, floor: checked.floor, resync };
   });
 }
@@ -286,6 +302,7 @@ function attachProject(
 function openProjectWith(
   config: CliConfig,
   flags: CommonFlags,
+  options?: OpenProjectOptions,
 ): Effect.Effect<ProjectContext, CliError, CliServices> {
   return Effect.gen(function* () {
     // プロジェクト ID の形式検証はネットワークアクセスより先に行う
@@ -294,7 +311,7 @@ function openProjectWith(
     // master 鍵の読み込みは同期(通信)・床の前進より**前**のまま置く: 鍵の無い
     // 端末で実行された書き込み系コマンドを、サーバーへ 1 往復してから落とさない
     const masterKeys = yield* loadMasterKeys(context.session);
-    const base = yield* attachProject(context, projectId);
+    const base = yield* attachProject(context, projectId, options);
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,
@@ -327,10 +344,11 @@ function openMetadataProjectWith(
 /** データ系コマンド共通の前段: ID 検証 → セッション → master 鍵 → §6.3 同期検査 → 床検査。 */
 export function openProject(
   flags: CommonFlags,
+  options?: OpenProjectOptions,
 ): Effect.Effect<ProjectContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const store = yield* ConfigStore;
-    return yield* openProjectWith(yield* store.load, flags);
+    return yield* openProjectWith(yield* store.load, flags, options);
   });
 }
 
@@ -378,12 +396,13 @@ export interface EnvironmentContext extends ProjectContext {
  */
 export function openEnvironment(
   flags: CommonFlags,
+  options?: OpenProjectOptions,
 ): Effect.Effect<EnvironmentContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const store = yield* ConfigStore;
     const config = yield* store.load;
     const environmentId = yield* resolveEnvironmentId(flags.env, config);
-    const context = yield* openProjectWith(config, flags);
+    const context = yield* openProjectWith(config, flags, options);
     const floorHandle = yield* floorHandleFor(context, environmentId);
     return { ...context, environmentId, floorHandle };
   });

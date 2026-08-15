@@ -78,6 +78,8 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               params.environmentId,
               params.variableId,
               toValueInput(payload.value),
+              // 再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false)
+              payload.reencryption === true,
             ),
         });
       }),

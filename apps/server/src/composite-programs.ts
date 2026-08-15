@@ -23,7 +23,7 @@
 import type { ChainEntry, ChainMember, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { AuditEventInput } from "./audit-store.ts";
+import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
 import { AuditStore } from "./audit-store.ts";
 import {
   ensureParentHead,
@@ -118,6 +118,9 @@ interface CompositeWriteContext {
   readonly audit: {
     readonly appendSync: (event: AuditEventInput) => void;
     readonly appendManySync: (events: readonly AuditEventInput[]) => void;
+    // 受理副作用(chain-accept.ts)の検出入力。複合の op(create_environment /
+    // rotate_epoch)では読まれないが、受理経路の型面を 1 つに保つ
+    readonly readRotationSync: AuditRotationRead;
   };
   readonly actor: DataActor;
   readonly member: ChainMember;

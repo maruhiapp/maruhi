@@ -4,6 +4,8 @@
 
 import { Schema } from "effect";
 
+import { EncPubHex } from "../hex.ts";
+
 /**
  * Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6).
  * 受信者クラス server(2026-08-12): FP に一致する有効 grant がない =
@@ -40,10 +42,23 @@ export class DekWrapRejectedError extends Schema.TaggedError<DekWrapRejectedErro
  * Overwriting is forbidden (§12-6: replacing a valid wrap with an
  * undecryptable blob would be an availability attack the server cannot
  * detect).
+ *
+ * `storedRecipientEncPubHex` carries the occupying wrap's stored recipient
+ * X25519 public key (§12-6, 2026-08-15 — non-secret: every historical member
+ * key is already distributed to members via the chain). A client repairing a
+ * re-added member's backfill compares it against the accepted key to decide
+ * between "already registered" (equal) and the delete-then-re-register repair
+ * path (different) — decryptability of an HPKE wrap is equivalent to enc-key
+ * equality, so this comparison is exact. Optional: servers predating the
+ * addendum omit it, and clients then fall back to key-history heuristics.
  */
 export class DekWrapExistsError extends Schema.TaggedError<DekWrapExistsError>()(
   "DekWrapExists",
-  { epoch: Schema.Number, recipientUserId: Schema.String },
+  {
+    epoch: Schema.Number,
+    recipientUserId: Schema.String,
+    storedRecipientEncPubHex: Schema.optionalKey(EncPubHex),
+  },
   { httpApiStatus: 409 },
 ) {}
 

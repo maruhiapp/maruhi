@@ -49,6 +49,8 @@ export interface VerifiedMetaEvidence {
 /** 検証済み tombstone(deleted ステートメント)。 */
 export interface VerifiedTombstone extends VerifiedMetaEvidence {
   readonly variableId: string;
+  /** 検証済み deleted ステートメントの name(直前 active 名を保持 — §4.2)。 */
+  readonly name: string;
 }
 
 /** 床検査の入力(§6.3 の検証を全通過した pull 応答のダイジェスト)。 */

@@ -74,12 +74,12 @@ export const deleteDekWrapsProgram = (
       // そのクラスのラップは存在しない(404 と同じ扱い — 黙って成功させない)。
       // これで「class 違いの同一 (epoch, recipient) ref」も片方が必ずここで落ち、
       // 1 行の削除に監査 2 行が積まれる形も同時に塞がる
-      const stored = yield* store.wrapStoredRecipientClass(
+      const stored = yield* store.wrapStoredRecipient(
         environmentId,
         ref.epoch,
         ref.recipientUserId,
       );
-      if (stored === null || stored !== wrapRecipientClass(ref)) {
+      if (stored === null || stored.recipientClass !== wrapRecipientClass(ref)) {
         return yield* rejectData({
           kind: "dek-wrap-not-found",
           epoch: ref.epoch,

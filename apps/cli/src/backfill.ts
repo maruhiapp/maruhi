@@ -18,8 +18,14 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
 
-/** 登録試行の結果(409 = 既存スロット)。 */
-export type RegisterOutcome = { readonly kind: "ok" } | { readonly kind: "exists" };
+/**
+ * 登録試行の結果(409 = 既存スロット)。`storedRecipientEncPubHex` は 409 が
+ * 運ぶ占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6 — 2026-08-15。
+ * 追補以前のサーバーは載せない = null)。
+ */
+export type RegisterOutcome =
+  | { readonly kind: "ok" }
+  | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string | null };
 
 /** エポック単位 409 の解決(呼び出し側の意味論)。 */
 export type SlotConflictResolution = "already-registered" | "repaired";
@@ -51,9 +57,14 @@ export function backfillEnvironmentFor(input: {
   readonly signingKeyPair: SigningKeyPair;
   /**
    * エポック単位 409 の解決(省略 = 登録済み扱い)。member add の再追加修復は
-   * ここで削除 → 再登録を行う(§12-6 の修復経路)。
+   * ここで削除 → 再登録を行う(§12-6 の修復経路)。第 2 引数は 409 が運ぶ
+   * 占有ラップの保存済み受信者 enc 公開鍵(旧サーバーは null — フォールバック
+   * 判定の入力)。
    */
-  readonly onSlotConflict?: (wrap: WrappedDek) => Effect.Effect<SlotConflictResolution, CliError>;
+  readonly onSlotConflict?: (
+    wrap: WrappedDek,
+    storedRecipientEncPubHex: string | null,
+  ) => Effect.Effect<SlotConflictResolution, CliError>;
 }): Effect.Effect<BackfillEnvironmentOutcome, CliError> {
   return Effect.gen(function* () {
     const keys = yield* environmentKeysFor({
@@ -117,7 +128,7 @@ export function backfillEnvironmentFor(input: {
       const resolution =
         input.onSlotConflict === undefined
           ? ("already-registered" as const)
-          : yield* input.onSlotConflict(wrap);
+          : yield* input.onSlotConflict(wrap, single.storedRecipientEncPubHex);
       if (resolution === "repaired") {
         repaired += 1;
       } else {
@@ -139,10 +150,13 @@ export function registerWraps(
 ): (deks: readonly WrappedDek[]) => Effect.Effect<RegisterOutcome, CliError> {
   return (deks) =>
     client.deks.register({ params: { projectId, environmentId }, payload: { deks } }).pipe(
-      Effect.map(() => ({ kind: "ok" }) as const),
+      Effect.map((): RegisterOutcome => ({ kind: "ok" })),
       Effect.catch((error) =>
         error instanceof DekWrapExistsError
-          ? Effect.succeed({ kind: "exists" } as const)
+          ? Effect.succeed<RegisterOutcome>({
+              kind: "exists",
+              storedRecipientEncPubHex: error.storedRecipientEncPubHex ?? null,
+            })
           : Effect.fail(toCliError(error)),
       ),
     );

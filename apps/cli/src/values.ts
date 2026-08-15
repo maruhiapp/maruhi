@@ -386,6 +386,9 @@ async function verifyDeletedStatements(
     }
     tombstones.push({
       variableId: statement.variableId,
+      // deleted は直前 active 名を保持する(§4.2)— 削除済み変数の表示名の
+      // 検証済みの唯一の源(要ローテーションフラグの名前解決 — AUDIT_SPEC §7)
+      name: statement.name,
       status: "deleted",
       ...metaEvidenceFields(statement, result.value.signedBytesHashHex),
     });
@@ -770,6 +773,8 @@ export interface VerifiedEnvironmentMetadata {
   /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。 */
   readonly verified: VerifiedProject;
   readonly variables: readonly VerifiedActiveStatement[];
+  /** 検証済み tombstone(削除済み変数の名前解決の唯一の源 — AUDIT_SPEC §7)。 */
+  readonly tombstones: readonly VerifiedTombstone[];
   readonly warnings: readonly string[];
 }
 
@@ -883,6 +888,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
     ({ view, value }) => ({
       verified: view,
       variables: value.variables,
+      tombstones: value.tombstones,
       warnings: value.warnings,
     }),
   );

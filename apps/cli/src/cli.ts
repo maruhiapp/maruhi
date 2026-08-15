@@ -7,7 +7,7 @@
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
-import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
@@ -69,7 +69,18 @@ import { projectInitOp } from "./project-init.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
-import { type SweepOutcome, type SweepRotateMode } from "./rotation-sweep.ts";
+import {
+  type SweepOutcome,
+  type SweepRotateMode,
+  unconvergedMandates,
+  verifiedDeletedEnvironmentSet,
+} from "./rotation-sweep.ts";
+import {
+  reportRotationFlagCount,
+  resolveDismissTargets,
+  rotationDismissOp,
+  rotationListOp,
+} from "./rotation.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
@@ -238,6 +249,60 @@ function keyCommand(execute: Execute) {
   });
 }
 
+/** `maruhi project verify`: チェーン検証 + 床・アンカー検査 + 状態表示。 */
+function projectVerify(
+  serverFlag: string | undefined,
+  projectFlag: string | undefined,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openSession(serverFlag);
+    const projectId = yield* resolveProjectId(projectFlag, context.config);
+    const synced = yield* syncProject(context.client, projectId);
+    // チェーン床の検査(§6.3 規則 (a))も verify の一部
+    const verified = (yield* loadCheckedFloor(
+      projectId,
+      synced,
+      syncProject(context.client, projectId),
+    )).verified;
+    // 招待リンクアンカーの機械照合(§6.3 (a) / §6.5)も verify の一部
+    yield* checkInviteAnchor(projectId, verified);
+    yield* io.log(`チェーン検証 OK(head seq=${verified.state.headSeq})`);
+    yield* io.log(`head: ${verified.state.headHashHex}`);
+    yield* io.log(`メンバー(${verified.state.members.size}):`);
+    for (const member of verified.state.members.values()) {
+      yield* io.log(
+        `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
+      );
+    }
+    for (const [environmentId, environment] of verified.state.environments) {
+      yield* io.log(
+        `環境 ${environmentId}: epoch=${environment.currentEpoch}(作成 seq=${environment.createdAtSeq})`,
+      );
+    }
+    // 未収束のローテーション義務(§7 — チェーン導出 + 検証済み削除の除外)も
+    // verify の一部(常時警告 — rotation-sweep.ts — の詳細表示。候補ゼロなら
+    // 通信なしで確定する)
+    const candidates = unconvergedMandates(verified, new Set());
+    const pending =
+      candidates.length === 0
+        ? candidates
+        : unconvergedMandates(
+            verified,
+            yield* verifiedDeletedEnvironmentSet(context.client, verified),
+          );
+    if (pending.length === 0) {
+      yield* io.log("ローテーション義務: 未収束なし(CRYPTO_SPEC §7)");
+      return;
+    }
+    for (const mandate of pending) {
+      yield* io.logError(
+        `未収束のローテーション義務: ${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq})— 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} の現エポックが義務エントリより前に始まっています(旧 DEK 保持者が現在値を読める可能性)`,
+      );
+    }
+  });
+}
+
 function projectCommand(execute: Execute) {
   return define({
     name: "project",
@@ -265,32 +330,7 @@ function projectCommand(execute: Execute) {
             return;
           }
           if (ctx.values.action === "verify") {
-            const io = yield* CliIo;
-            const context = yield* openSession(ctx.values.server);
-            const projectId = yield* resolveProjectId(ctx.values.project, context.config);
-            const synced = yield* syncProject(context.client, projectId);
-            // チェーン床の検査(§6.3 規則 (a))も verify の一部
-            const verified = (yield* loadCheckedFloor(
-              projectId,
-              synced,
-              syncProject(context.client, projectId),
-            )).verified;
-            // 招待リンクアンカーの機械照合(§6.3 (a) / §6.5)も verify の一部
-            yield* checkInviteAnchor(projectId, verified);
-            yield* io.log(`チェーン検証 OK(head seq=${verified.state.headSeq})`);
-            yield* io.log(`head: ${verified.state.headHashHex}`);
-            yield* io.log(`メンバー(${verified.state.members.size}):`);
-            for (const member of verified.state.members.values()) {
-              yield* io.log(
-                `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
-              );
-            }
-            for (const [environmentId, environment] of verified.state.environments) {
-              yield* io.log(
-                `環境 ${environmentId}: epoch=${environment.currentEpoch}(作成 seq=${environment.createdAtSeq})`,
-              );
-            }
-            return;
+            return yield* projectVerify(ctx.values.server, ctx.values.project);
           }
           return yield* Effect.fail(usageError("不明な操作です(init | verify)"));
         }),
@@ -428,8 +468,13 @@ function envRotate(
   environmentId: EnvironmentId,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)
-    const context = yield* openEnvironment({ ...flags, env: environmentId });
+    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)。
+    // 収束系コマンドなので未収束義務の常時警告は抑制する(このコマンド自身の
+    // ローテーション報告が同じ事実を伝える — context.ts の OpenProjectOptions)
+    const context = yield* openEnvironment(
+      { ...flags, env: environmentId },
+      { quietMandateWarning: true },
+    );
     const summary = yield* envRotateOp({
       client: context.client,
       verified: context.verified,
@@ -996,7 +1041,8 @@ function serverRevoke(
       flags.fingerprint === undefined
         ? null
         : yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
-    const context = yield* openProject(flags);
+    // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
+    const context = yield* openProject(flags, { quietMandateWarning: true });
     // 1 環境のローテーション(PR-1 の envRotateOp の再利用 — sweepRotateFor)
     const summary = yield* serverRevokeOp({
       client: context.client,
@@ -1008,7 +1054,16 @@ function serverRevoke(
       rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
     });
     yield* reportRevokeOutcome(io, summary);
-    return yield* reportRevokeRotations(io, summary);
+    const exitCode = yield* reportRevokeRotations(io, summary);
+    // 要ローテーションフラグの件数と導線(B2 — AUDIT_SPEC §4.1 の revoke 変種)
+    if (summary.serverKeyFingerprintHex !== null) {
+      yield* reportRotationFlagCount({
+        client: context.client,
+        projectId: context.projectId,
+        target: { kind: "server", fingerprintHex: summary.serverKeyFingerprintHex },
+      });
+    }
+    return exitCode;
   });
 }
 
@@ -1582,7 +1637,8 @@ function memberRemove(
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const context = yield* openProject(flags);
+    // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
+    const context = yield* openProject(flags, { quietMandateWarning: true });
     const summary = yield* memberRemoveOp({
       client: context.client,
       verified: context.verified,
@@ -1605,6 +1661,13 @@ function memberRemove(
     if (exitCode === 0) {
       yield* io.log("完了: メンバー削除と全環境ローテーションが完了しました");
     }
+    // 要ローテーションフラグの件数と導線(B2 — AUDIT_SPEC §4.1。ローテーションは
+    // 新しい DEK を配るだけで、既読の値そのものは取り消せない)
+    yield* reportRotationFlagCount({
+      client: context.client,
+      projectId: context.projectId,
+      target: { kind: "member", userId: summary.targetUserId },
+    });
     return exitCode;
   });
 }
@@ -1620,7 +1683,8 @@ function memberChangeRole(
         usageError(`--role を指定してください(${MEMBER_ROLES.join(" | ")})`),
       );
     }
-    const context = yield* openProject(flags);
+    // 収束系コマンド: 未収束義務の常時警告は抑制(降格の sweep 報告が担う)
+    const context = yield* openProject(flags, { quietMandateWarning: true });
     const summary = yield* memberChangeRoleOp({
       client: context.client,
       verified: context.verified,
@@ -1713,6 +1777,97 @@ function memberCommand(execute: Execute) {
         }),
         {
           commandRejection: memberActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
+        },
+      ),
+  });
+}
+
+/** `maruhi rotation` が取る操作(一覧の出所はここだけ — ENV_ACTIONS と同じ形)。 */
+const ROTATION_ACTIONS = ["list", "dismiss"] as const;
+
+const ROTATION_ACTION_HELP = `不明な操作です(${ROTATION_ACTIONS.join(" | ")})`;
+
+function isRotationAction(action: string | undefined): action is (typeof ROTATION_ACTIONS)[number] {
+  return ROTATION_ACTIONS.some((known) => known === action);
+}
+
+/**
+ * `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §7 — Wave 2 B2)。
+ * どちらも master 鍵を要求しない(フラグは非機密メタデータで、名前解決も
+ * 検証済みステートメントの読み取りのみ — project verify と同じ鍵なしクラス)。
+ * dismiss の権限(admin 以上 × admin スコープ)はサーバー側が強制する。
+ */
+function rotationCommand(execute: Execute) {
+  return define({
+    name: "rotation",
+    description: `要ローテーションフラグの管理(${ROTATION_ACTIONS.join(" / ")} — AUDIT_SPEC §4.1)`,
+    args: {
+      action: { type: "positional", description: ROTATION_ACTIONS.join(" | ") },
+      variable: {
+        type: "positional",
+        required: false,
+        description: "dismiss: 取り下げる variableId(--all の場合は指定しない)",
+      },
+      env: {
+        type: "string",
+        description: "dismiss: 対象の環境 ID(--all と併用すると当該環境に絞る)",
+      },
+      all: {
+        type: "boolean",
+        description: "dismiss: 現在有効な全フラグを取り下げる(リスク受容の明示)",
+      },
+      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
+      project: {
+        type: "string",
+        description: "プロジェクト ID(省略時は config の defaultProject)",
+      },
+    },
+    run: (ctx) =>
+      execute(
+        ctx,
+        Effect.gen(function* () {
+          const action = ctx.values.action;
+          if (!isRotationAction(action)) {
+            return yield* Effect.fail(usageError(ROTATION_ACTION_HELP));
+          }
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "list") {
+            const context = yield* openMetadataProject(flags);
+            return yield* rotationListOp(context);
+          }
+          // dismiss: 対象の形式はネットワークより先に検査する
+          const environmentId = ctx.values.env;
+          if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
+            return yield* Effect.fail(
+              usageError(
+                "--env の環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで)",
+              ),
+            );
+          }
+          const variableId = ctx.values.variable;
+          if (variableId !== undefined && !isVariableId(variableId)) {
+            return yield* Effect.fail(usageError("variableId の形式が正しくありません"));
+          }
+          const context = yield* openMetadataProject(flags);
+          const resolved = yield* resolveDismissTargets({
+            client: context.client,
+            projectId: context.projectId,
+            all: ctx.values.all === true,
+            environmentId: environmentId ?? null,
+            variableId: variableId ?? null,
+          });
+          return yield* rotationDismissOp({
+            client: context.client,
+            projectId: context.projectId,
+            targets: resolved.targets,
+          });
+        }),
+        {
+          // 2 つ目の位置引数(variable)は dismiss 専用(envCommand の diff と同じ形)
+          withoutPositionals:
+            isRotationAction(ctx.values.action) && ctx.values.action !== "dismiss"
+              ? ["variable"]
+              : undefined,
         },
       ),
   });
@@ -2030,6 +2185,7 @@ export async function runCli(
     server: serverCommand(execute),
     invite: inviteCommand(execute),
     member: memberCommand(execute),
+    rotation: rotationCommand(execute),
     pull: pullCommand(execute),
     push: pushCommand(execute),
     run: runCommand(execute),

@@ -37,6 +37,7 @@ import { CliIo } from "./io.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
+  rotationMandates,
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
@@ -57,45 +58,22 @@ export const ROLE_DEMOTED_ROTATION_REASON = "role-demoted";
 /**
  * **対象 user_id の**最後の「ローテーション義務エントリ」の seq(存在しなければ
  * null): `remove_member`(常に義務 — §7)、または「直前 role が member 以上 →
- * newRole が member 未満」の `change_role`(降格の義務 — §7)。直前 role は
- * 検証済み履歴(memberStateAt の inclusive 規約 — seq-1 で適用前)から取る。
+ * newRole が member 未満」の `change_role`(降格の義務 — §7)。導出の本体は
+ * rotation-sweep.ts の rotationMandates(未収束の常時警告と同じ 1 導出 —
+ * 判定のズレを構造的に防ぐ)。
  *
  * 対象スコープにするのは、各コマンドが収束させる義務を**自分の操作の分**に
  * 限定するため(Cursor bot 指摘): 大域の最終義務を基準にすると、born-reader への
  * no-op 再実行が**他人の**未収束義務を拾って全環境ローテーションを開始する。
  * 対象の義務エントリ以降のローテーションは対象の偽造可能座標を閉じる(§7)ため、
  * 対象スコープでも自分の義務を過小に満たすことはない(他人の未収束義務は
- * その操作の再実行、または B2 の要ローテーション検出の責務)。
+ * 常時警告 — rotation-sweep.ts — とその操作の再実行の責務)。
  */
 function lastRotationMandateSeqFor(verified: VerifiedProject, targetUserId: string): number | null {
-  for (let index = verified.entries.length - 1; index >= 0; index -= 1) {
-    const entry = verified.entries[index];
-    if (entry === undefined || !mandatesRotationFor(verified, entry, targetUserId)) {
-      continue;
-    }
-    return entry.seq;
-  }
-  return null;
-}
-
-/** entry が対象 user_id のローテーション義務エントリか(§7)。 */
-function mandatesRotationFor(
-  verified: VerifiedProject,
-  entry: ChainEntry,
-  targetUserId: string,
-): boolean {
-  if (entry.op === "remove_member") {
-    return entry.payload.targetUserId === targetUserId;
-  }
-  if (
-    entry.op === "change_role" &&
-    entry.payload.targetUserId === targetUserId &&
-    ROLE_RANK[entry.payload.newRole] < ROLE_RANK.member
-  ) {
-    const before = verified.history.memberStateAt(targetUserId, entry.seq - 1);
-    return before !== undefined && ROLE_RANK[before.role] >= ROLE_RANK.member;
-  }
-  return false;
+  const mandates = rotationMandates(verified).filter(
+    (mandate) => mandate.kind !== "server-revoked" && mandate.target === targetUserId,
+  );
+  return mandates[mandates.length - 1]?.seq ?? null;
 }
 
 /** §7 の全環境走査(remove / 降格の共有後段。基準 seq は呼び出し側が導出する)。 */
@@ -438,12 +416,16 @@ interface MemberBackfillResult {
  * 1 環境の全エポックの新メンバー宛バックフィル(CRYPTO_SPEC §7 — 新規メンバーは
  * 履歴も読める。共有核 = backfill.ts)。
  *
- * **再追加の自動修復(B1b 裁定)**: 対象 user_id の鍵履歴に受諾鍵と異なる鍵が
- * ある(= 過去に別鍵で在籍していた)場合、エポック単位の 409 は「旧在籍時の
- * 旧鍵ラップがスロットを占有している」疑いがある。放置すると再追加メンバーは
- * 当該エポックを復号できない(409 を登録済み扱いにすると不可視化する)ため、
- * §12-6 の修復経路(削除 → 再登録)で新鍵ラップへ置換する。占有ラップが並行
- * 実行の新鍵ラップだったとしても、削除 → 再登録は同内容への収束であり安全。
+ * **再追加の自動修復(B1b 裁定 + B2 の §12-6 追補)**: エポック単位の 409 は
+ * 「旧在籍時の旧鍵ラップがスロットを占有している」可能性がある。放置すると
+ * 再追加メンバーは当該エポックを復号できない(409 を登録済み扱いにすると
+ * 不可視化する)ため、旧鍵ラップと判定したら §12-6 の修復経路(削除 → 再登録)で
+ * 新鍵ラップへ置換する。判定は 409 応答の保存済み受信者 enc 公開鍵
+ * (`storedRecipientEncPubHex` — AUTH_SPEC §12-6)と受諾鍵の**厳密比較**を優先し
+ * (復号可能性 = enc 鍵一致そのもの)、応答に無い場合(追補以前のセルフホスト
+ * サーバー)に限り従来の鍵履歴ヒューリスティック(`staleWrapSuspected`)へ
+ * フォールバックする。ヒューリスティック経路で占有ラップが実は現行鍵だった
+ * としても、削除 → 再登録は同内容への収束であり安全。
  */
 function backfillMemberEnvironment(input: {
   readonly client: MaruhiClient;
@@ -465,9 +447,15 @@ function backfillMemberEnvironment(input: {
     recipientLabel: "新メンバー宛",
     signerUserId: input.signerUserId,
     signingKeyPair: input.signingKeyPair,
-    onSlotConflict: (wrap) =>
+    onSlotConflict: (wrap, storedRecipientEncPubHex) =>
       Effect.gen(function* () {
-        if (!input.staleWrapSuspected) {
+        // 占有スロットが旧鍵ラップか: 応答の保存済み enc 公開鍵との厳密比較を
+        // 優先(一致 = 現行鍵で登録済み = 冪等)。無い場合のみ推定へ劣化
+        const staleWrap =
+          storedRecipientEncPubHex === null
+            ? input.staleWrapSuspected
+            : storedRecipientEncPubHex !== input.target.encPubHex;
+        if (!staleWrap) {
           return "already-registered" as const;
         }
         // 修復経路(§12-6): 占有スロットを削除して新鍵ラップを再登録する
@@ -683,7 +671,11 @@ export function memberAddOp(input: {
     }
 
     // 再追加(過去在籍が別鍵)の検出: 鍵履歴に受諾鍵と異なる束縛があるか。
-    // ある場合のみ、バックフィルの 409 を旧鍵ラップの疑いとして自動修復する
+    // 409 の判定は応答の保存済み enc 公開鍵との厳密比較が優先で(AUTH_SPEC
+    // §12-6 追補)、このヒューリスティックは応答にフィールドが無い旧サーバー
+    // への 409 だけに使うフォールバックである。なお追補済みサーバーは
+    // add_member 受理時に旧鍵宛ラップを自動掃除するため(同追補)、通常は
+    // 409 自体が「現行鍵で登録済み」しか意味しない
     const staleWrapSuspected = (verified.keyHistory.get(target.userId) ?? []).some(
       (binding) =>
         binding.encPubHex !== row.acceptance.inviteeEncPubHex ||
@@ -691,7 +683,7 @@ export function memberAddOp(input: {
     );
     if (staleWrapSuspected) {
       yield* io.log(
-        "対象 user_id は過去に別の鍵で在籍していました。旧鍵宛の残存ラップは修復経路(削除 → 再登録)で新鍵へ置換します(CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
+        "対象 user_id は過去に別の鍵で在籍していました。旧鍵宛の残存ラップが見つかった場合は修復経路(削除 → 再登録)で新鍵へ置換します(CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
       );
     }
 

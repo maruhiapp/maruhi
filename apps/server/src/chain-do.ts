@@ -69,12 +69,15 @@ import {
 } from "./programs-environment.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
 import { leaseProgram } from "./programs-lease.ts";
+import type { RotationDismissTargetInput } from "./programs-rotation.ts";
+import { dismissRotationFlagsProgram, rotationFlagsProgram } from "./programs-rotation.ts";
 import {
   createVariableProgram,
   deleteVariableProgram,
   pushVersionProgram,
   renameVariableProgram,
 } from "./programs-variable.ts";
+import type { EffectiveRotationFlag } from "./rotation-detect.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
 
 export interface Env {
@@ -170,9 +173,18 @@ const insertAccepted = (entry: ChainEntry, applied: VerifiedChainView, canonical
   Effect.gen(function* () {
     const chainStore = yield* ChainStore;
     const audit = yield* AuditStore;
+    // 受理副作用(chain-accept.ts): add_member の旧鍵ラップ掃除がラップ行を
+    // 削除するため、汎用チェーン受理もデータストアの書き込み面を渡す
+    const dataStore = yield* DataStore;
     const nowMs = Date.now();
     yield* Effect.sync(() =>
-      insertAcceptedEntrySync({ chainStore, audit }, entry, applied, canonicalBytes, nowMs),
+      insertAcceptedEntrySync(
+        { chainStore, audit, dataStore },
+        entry,
+        applied,
+        canonicalBytes,
+        nowMs,
+      ),
     );
   });
 
@@ -234,7 +246,7 @@ const appendProgram = (
   entry: ChainEntry,
   callerUserId: string,
   cache: StateCache,
-): Effect.Effect<ChainHeadValue, DataRejectedError, ChainStore | AuditStore> =>
+): Effect.Effect<ChainHeadValue, DataRejectedError, ChainStore | AuditStore | DataStore> =>
   Effect.gen(function* () {
     // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
     // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
@@ -483,9 +495,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     variableId: string,
     value: ValueInput,
+    reencryption: boolean,
   ): Promise<DataOutcome<VariableVersionValue>> {
     return this.#runData(
-      pushVersionProgram(actor, environmentId, variableId, value, this.#stateCache),
+      pushVersionProgram(actor, environmentId, variableId, value, reencryption, this.#stateCache),
     );
   }
 
@@ -553,6 +566,21 @@ export class ProjectChainDO extends DurableObject<Env> {
     refs: readonly DekWrapRefInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runData(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
+  }
+
+  // --- 要ローテーションフラグ RPC(AUDIT_SPEC §4.1 / §7 — Wave 2 B2) ----
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  rotationFlags(actor: DataActor): Promise<DataOutcome<readonly EffectiveRotationFlag[]>> {
+    return this.#runData(rotationFlagsProgram(actor, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  dismissRotationFlags(
+    actor: DataActor,
+    targets: readonly RotationDismissTargetInput[],
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
   }
 
   // --- ワークロードリース RPC(AUTH_SPEC §14) ---------------------------

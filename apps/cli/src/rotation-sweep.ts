@@ -13,9 +13,12 @@
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { ROLE_RANK } from "./dek-wrap.ts";
+import { displayText } from "./display.ts";
 import type { RotationSummary } from "./env-rotate.ts";
 import type { CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { CliIo } from "./io.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { verifiedDeletedEnvironments } from "./values.ts";
 
@@ -64,11 +67,148 @@ function pendingEnvironmentsAfter(
   return pending.toSorted();
 }
 
+// ---------------------------------------------------------------------------
+// ローテーション義務の一般化導出(§7 の 3 種)と未収束の常時警告(B2 裁定 —
+// 「誰も見ない verify 限定の警告は検出にならない」。§9 の開示常時明示と同じ規律)
+// ---------------------------------------------------------------------------
+
+/** §7 のローテーション義務エントリ(全 3 種)。 */
+export interface RotationMandate {
+  readonly kind: "member-removed" | "role-demoted" | "server-revoked";
+  /** member 系 = 対象 user_id / server-revoked = サーバー鍵 FP。 */
+  readonly target: string;
+  readonly seq: number;
+}
+
 /**
- * 検証済みの削除環境集合(除外の唯一の根拠 — §7)。環境一覧を取得し、署名済み
- * 削除ステートメントの検証に通ったものだけを返す。検証できない環境は走査対象に
- * 残り、rotate の失敗として表面化する。
+ * チェーン上の全ローテーション義務エントリ(§7): `remove_member`(常に)、
+ * member 未満への降格 `change_role`(直前 role が member 以上 — 検証済み履歴の
+ * memberStateAt で判定)、`revoke_server`(常に)。member.ts の対象スコープ判定と
+ * 未収束警告(下記)が同じ 1 導出を共有する(判定のズレを構造的に防ぐ)。
  */
+export function rotationMandates(verified: VerifiedProject): readonly RotationMandate[] {
+  const mandates: RotationMandate[] = [];
+  for (const entry of verified.entries) {
+    if (entry.op === "remove_member") {
+      mandates.push({ kind: "member-removed", target: entry.payload.targetUserId, seq: entry.seq });
+      continue;
+    }
+    if (entry.op === "revoke_server") {
+      mandates.push({
+        kind: "server-revoked",
+        target: entry.payload.serverKeyFingerprintHex,
+        seq: entry.seq,
+      });
+      continue;
+    }
+    if (entry.op === "change_role" && ROLE_RANK[entry.payload.newRole] < ROLE_RANK.member) {
+      const before = verified.history.memberStateAt(entry.payload.targetUserId, entry.seq - 1);
+      if (before !== undefined && ROLE_RANK[before.role] >= ROLE_RANK.member) {
+        mandates.push({
+          kind: "role-demoted",
+          target: entry.payload.targetUserId,
+          seq: entry.seq,
+        });
+      }
+    }
+  }
+  return mandates;
+}
+
+/** 未収束の義務(義務エントリより後に現エポックが始まっていない環境が残る)。 */
+export interface UnconvergedMandate extends RotationMandate {
+  readonly pendingEnvironmentIds: readonly string[];
+}
+
+/**
+ * 未収束のローテーション義務の導出(チェーン導出のみ)。環境 E が義務 M に
+ * ついて未収束 = E は M より前に作成され(後に作成された環境の DEK を対象は
+ * 知り得ない)、E の現エポックの開始 seq が M より前(= M 後のローテーションが
+ * まだ)。開始 seq が導出できない環境は fail-closed で未収束に含める
+ * (pendingEnvironmentsAfter と同じ規律)。削除済み(検証済み)環境は除外。
+ * なお「エポックは進んだが再暗号化が未完」はチェーンから見えない残余で、
+ * その検出は各義務コマンドの再実行(sweep の検証パス)が担う。
+ */
+export function unconvergedMandates(
+  verified: VerifiedProject,
+  deletedVerified: ReadonlySet<string>,
+): readonly UnconvergedMandate[] {
+  const mandates = rotationMandates(verified);
+  if (mandates.length === 0) {
+    return [];
+  }
+  const results: UnconvergedMandate[] = [];
+  for (const mandate of mandates) {
+    const pending: string[] = [];
+    for (const [environmentId, environment] of verified.state.environments) {
+      if (deletedVerified.has(environmentId) || environment.createdAtSeq > mandate.seq) {
+        continue;
+      }
+      const startSeq = environment.epochStartSeqs.get(environment.currentEpoch);
+      if (startSeq === undefined || startSeq < mandate.seq) {
+        pending.push(environmentId);
+      }
+    }
+    if (pending.length > 0) {
+      results.push({ ...mandate, pendingEnvironmentIds: pending.toSorted() });
+    }
+  }
+  return results;
+}
+
+/** 義務種別ごとの収束コマンドの案内(行動可能な警告 — B2 裁定)。 */
+function mandateAdvice(mandate: UnconvergedMandate): string {
+  if (mandate.kind === "member-removed") {
+    return `maruhi member remove ${displayText(mandate.target)} の再実行`;
+  }
+  if (mandate.kind === "role-demoted") {
+    return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)`;
+  }
+  return "maruhi server revoke の再実行";
+}
+
+/**
+ * 未収束のローテーション義務の常時警告(B2 裁定)。全コマンドのチェーン同期後に
+ * 呼ぶ(収束系コマンド — member remove / change-role / server revoke / env
+ * rotate — は自分の sweep 報告が担うため呼ばない)。チェーン導出のみの前段
+ * 判定が空なら通信ゼロで終わり、候補があるときだけ削除済み環境の検証済み
+ * フィルタ(環境一覧の GET 1 回)を行う。警告は SHOULD — 取得・検証の失敗で
+ * コマンド自体を止めない(その旨だけ告げて続行する)。
+ */
+export function warnUnconvergedMandates(input: {
+  readonly client: MaruhiClient;
+  readonly verified: VerifiedProject;
+}): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const candidates = unconvergedMandates(input.verified, new Set());
+    if (candidates.length === 0) {
+      return;
+    }
+    const io = yield* CliIo;
+    const filtered = yield* verifiedDeletedEnvironmentSet(input.client, input.verified).pipe(
+      Effect.map((deletedVerified) => unconvergedMandates(input.verified, deletedVerified)),
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          yield* io.logError(
+            `注意: 未収束のローテーション義務の候補がありますが、削除済み環境の検証に失敗したため確定できません(${error.message})`,
+          );
+          return [] as readonly UnconvergedMandate[];
+        }),
+      ),
+    );
+    if (filtered.length === 0) {
+      return;
+    }
+    yield* io.logError(
+      "警告: 未収束のローテーション義務があります(CRYPTO_SPEC §7)— 旧 DEK の保持者が現在値を読める可能性が残っています:",
+    );
+    for (const mandate of filtered) {
+      yield* io.logError(
+        `  ${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq}): 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(mandate)}で収束します`,
+      );
+    }
+  });
+}
 export function verifiedDeletedEnvironmentSet(
   client: MaruhiClient,
   verified: VerifiedProject,

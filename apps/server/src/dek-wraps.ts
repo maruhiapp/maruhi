@@ -236,16 +236,17 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
       for (const wrap of epochWraps) {
         // 存在検査は保存キー (environment, epoch, recipient_user_id) と同粒度 —
         // class 違いの同一 ID も挿入すれば主キー衝突なので、ここで 409 に倒す
-        const stored = yield* store.wrapStoredRecipientClass(
-          environmentId,
-          epoch,
-          wrap.recipientUserId,
-        );
+        const stored = yield* store.wrapStoredRecipient(environmentId, epoch, wrap.recipientUserId);
         if (stored !== null) {
+          // 占有ラップの保存済み受信者 enc 公開鍵を載せる(AUTH_SPEC §12-6 —
+          // 2026-08-15)。非機密(チェーン配布済みの公開情報)で、再追加
+          // バックフィルのクライアントが「登録済み(同一鍵)/ 旧鍵ラップ
+          // (修復対象)」を推定でなく厳密比較で判定する材料になる
           return yield* rejectData({
             kind: "dek-wrap-exists",
             epoch,
             recipientUserId: wrap.recipientUserId,
+            storedRecipientEncPubHex: stored.recipientEncPubHex,
           });
         }
       }

@@ -25,6 +25,7 @@ import {
   NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
+  RotationFlagNotFoundError,
   ValueSignatureRejectedError,
   ValueTooLargeError,
   VariableConflictError,
@@ -215,6 +216,7 @@ type DataApiError =
   | DekWrapRejectedError
   | DekWrapExistsError
   | DekWrapNotFoundError
+  | RotationFlagNotFoundError
   | DataLimitExceededError;
 
 // kind ごとの小さな写像(§11-2: 未初期化と非メンバーは区別せず 404 に畳む)。
@@ -263,11 +265,21 @@ const rejectionErrors = {
   "name-not-nfc": () => new NameNotNfcError(),
   "dek-wrap-rejected": (rejection) => new DekWrapRejectedError({ reason: rejection.reason }),
   "dek-wrap-exists": (rejection) =>
-    new DekWrapExistsError({ epoch: rejection.epoch, recipientUserId: rejection.recipientUserId }),
+    new DekWrapExistsError({
+      epoch: rejection.epoch,
+      recipientUserId: rejection.recipientUserId,
+      // 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6 — 2026-08-15)
+      storedRecipientEncPubHex: rejection.storedRecipientEncPubHex,
+    }),
   "dek-wrap-not-found": (rejection) =>
     new DekWrapNotFoundError({
       epoch: rejection.epoch,
       recipientUserId: rejection.recipientUserId,
+    }),
+  "rotation-flag-not-found": (rejection) =>
+    new RotationFlagNotFoundError({
+      environmentId: rejection.environmentId,
+      variableId: rejection.variableId,
     }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),

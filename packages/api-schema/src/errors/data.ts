@@ -173,6 +173,8 @@ export const DataLimitResourceSchema = Schema.Literals([
   "project-ciphertext-bytes",
   "dek-wraps-per-request",
   "dek-wrap-rows",
+  // 取り下げ対象の列挙上限(AUDIT_SPEC §7 の取り下げ操作 — Wave 2 B2)
+  "rotation-dismissals-per-request",
 ]);
 
 /** 422: accepting the request would exceed a §12-8 count / size limit. */

@@ -87,6 +87,16 @@ interface ResourceCounts {
 }
 
 /**
+ * 保存済みラップの受信者情報(存在検査 + 上書き禁止 409 の応答材料 —
+ * AUTH_SPEC §12-6)。クラスは削除経路の突合、enc 公開鍵は 409 応答に載せる
+ * `storedRecipientEncPubHex` の唯一の源。
+ */
+interface StoredWrapRecipient {
+  readonly recipientClass: string;
+  readonly recipientEncPubHex: string;
+}
+
+/**
  * 書き込みの同期関数群。1 操作の全書き込み(監査追記を含む)を 1 つの同期
  * ブロック(= 同一イベントループタスク)にまとめて呼ぶことで、クラッシュ時の
  * 部分書き込みを構造的に防ぐ(DO SQLite の書き込みはタスク単位で原子コミット)。
@@ -151,6 +161,23 @@ export interface DataWriteOps {
   ) => void;
   /** §12-6 修復経路: 1 ラップの削除(存在検証は呼び出し側が済ませる)。 */
   readonly deleteWrap: (environmentId: string, epoch: number, recipientUserId: string) => void;
+  /**
+   * §12-6 の再追加受理時掃除(2026-08-15): 対象 user_id 宛(受信者クラス
+   * member)で受信者 enc 公開鍵が `keepEncPubHex` と一致しないラップを削除し、
+   * 削除した (環境, エポック) を返す(dek.deleted の監査行の材料)。現行チェーン
+   * 鍵のラップは対象にならない(上書き禁止の不変条件は不変)。add_member 受理の
+   * 書き込みフェーズ(単一タスク)内から呼ぶ。
+   */
+  readonly deleteStaleMemberWraps: (
+    recipientUserId: string,
+    keepEncPubHex: string,
+  ) => readonly StaleWrapRef[];
+}
+
+/** 掃除で削除されたラップの座標(dek.deleted 監査行の材料)。 */
+export interface StaleWrapRef {
+  readonly environmentId: string;
+  readonly epoch: number;
 }
 
 interface DataStoreShape {
@@ -221,15 +248,16 @@ interface DataStoreShape {
   /** プロジェクト全体の DEK ラップ行数(現在保存中の量。§12-8)。 */
   readonly countWrapRows: Effect.Effect<number>;
   /**
-   * 保存済みラップの受信者クラス(行がなければ null)。削除経路はこの値と
-   * リクエストの class を突合する — クライアント申告の class をそのまま監査列の
-   * 選択に使わせない(AUDIT_SPEC §1-2 の列意味論をワイヤ入力から切り離す)。
+   * 保存済みラップの受信者クラスと enc 公開鍵(行がなければ null)。削除経路は
+   * クラスとリクエストの class を突合する — クライアント申告の class をそのまま
+   * 監査列の選択に使わせない(AUDIT_SPEC §1-2 の列意味論をワイヤ入力から切り離す)。
+   * enc 公開鍵は上書き禁止 409 の応答材料(AUTH_SPEC §12-6 — 2026-08-15)。
    */
-  readonly wrapStoredRecipientClass: (
+  readonly wrapStoredRecipient: (
     environmentId: string,
     epoch: number,
     recipientUserId: string,
-  ) => Effect.Effect<string | null>;
+  ) => Effect.Effect<StoredWrapRecipient | null>;
   readonly listWrapsForRecipient: (
     environmentId: string,
     recipientUserId: string,
@@ -710,17 +738,22 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     const row = sql.exec("SELECT COUNT(*) AS n FROM dek_wraps").toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "n");
   }),
-  wrapStoredRecipientClass: (environmentId: string, epoch: number, recipientUserId: string) =>
+  wrapStoredRecipient: (environmentId: string, epoch: number, recipientUserId: string) =>
     Effect.sync(() => {
       const row = sql
         .exec(
-          "SELECT recipient_class FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? LIMIT 1",
+          "SELECT recipient_class, recipient_enc_pub_hex FROM dek_wraps WHERE environment_id = ? AND epoch = ? AND recipient_user_id = ? LIMIT 1",
           environmentId,
           epoch,
           recipientUserId,
         )
         .toArray()[0];
-      return row === undefined ? null : stringColumn(row, "recipient_class");
+      return row === undefined
+        ? null
+        : {
+            recipientClass: stringColumn(row, "recipient_class"),
+            recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
+          };
     }),
   // 配布は本人宛のみ(§12-6)。server クラスの行は識別子形式が交わらないため
   // user_id では引けないが、クラス条件を明示して境界を固定する
@@ -1061,6 +1094,36 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       epoch,
       recipientUserId,
     );
+  },
+  // SELECT → DELETE の 2 文だが同一同期タスク内(permit 下・原子コミット)。
+  // 走査は主キー前方一致を使えない(recipient は主キー第 3 成分)ため全行
+  // 走査になるが、行数は §12-8 の累積上限が束縛し、add_member は低頻度の
+  // 管理操作である
+  deleteStaleMemberWraps: (recipientUserId, keepEncPubHex) => {
+    const stale = sql
+      .exec(
+        `SELECT environment_id, epoch FROM dek_wraps
+         WHERE recipient_user_id = ? AND recipient_class = 'member'
+           AND recipient_enc_pub_hex != ?
+         ORDER BY environment_id, epoch`,
+        recipientUserId,
+        keepEncPubHex,
+      )
+      .toArray()
+      .map((row) => ({
+        environmentId: stringColumn(row, "environment_id"),
+        epoch: numberColumn(row, "epoch"),
+      }));
+    if (stale.length > 0) {
+      sql.exec(
+        `DELETE FROM dek_wraps
+         WHERE recipient_user_id = ? AND recipient_class = 'member'
+           AND recipient_enc_pub_hex != ?`,
+        recipientUserId,
+        keepEncPubHex,
+      );
+    }
+    return stale;
   },
 });
 
