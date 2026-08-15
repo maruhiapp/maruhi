@@ -219,7 +219,10 @@ export function sameWrapRecipientSet(
  * Role に member 未満の値が増えたとき、否定形の判定は無言で素通りしてしまう。
  * `satisfies Record<Role, number>` なら、値が増えた時点でここが型エラーになる。
  */
-const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies Record<Role, number>;
+export const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies Record<
+  Role,
+  number
+>;
 
 /**
  * 複合操作(環境作成・ローテーション)の共通ガード: 自分がチェーン導出の

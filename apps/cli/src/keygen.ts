@@ -24,6 +24,7 @@ import type { HttpClient } from "effect/unstable/http";
 import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
 import { Keychain, type StoredMasterKey } from "./keychain.ts";
 import { issueRecoveryAfterKeygen } from "./recovery.ts";
@@ -112,6 +113,13 @@ export function keyShowOp(input: {
     yield* io.log(`enc public key:  ${keys.record.encPubHex}`);
     yield* io.log(`sig public key:  ${keys.record.sigPubHex}`);
     yield* io.log(`key fingerprint: ${keys.fingerprintHex}`);
+    // FP のワード表示(§3): 招待の相互確認(§6.5)で自分の語列を読み上げる
+    // 再表示経路(受諾時の表示を逃した・後日の通話で照合する場合)
+    const words = yield* fingerprintWords(
+      keys.fingerprintHex,
+      "鍵フィンガープリントの形式が不正です",
+    );
+    yield* io.log(`fp words:        ${formatWordList(words)}`);
     // 保管リマインダ(ROADMAP の紛失対策 UX): 登録状態を常に表示し、未登録は
     // 発行コマンドを案内する。status はブロブを運ばない(AUTH_SPEC §13-2)。
     // show の本務はローカル鍵の表示なので、状態確認の失敗はコマンドを失敗させず

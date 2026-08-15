@@ -16,6 +16,7 @@ import { cliError } from "./errors.ts";
 import { floorDirOf, FloorStore, makeFileFloorStore } from "./floor.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { KEYCHAIN_SERVICE, Keychain, type KeychainShape } from "./keychain.ts";
+import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import { ProcessRunner, type ProcessRunnerShape } from "./run.ts";
 
 const keychainUnavailable = () =>
@@ -297,6 +298,8 @@ export function liveLayer(): Layer.Layer<CliServices> {
     Layer.succeed(ConfigStore, makeFileConfigStore(configPath)),
     // ローカル床(§6.3)は設定と同系の非機密置き場(<config dir>/floor)
     Layer.succeed(FloorStore, makeFileFloorStore(floorDirOf(configPath))),
+    // 招待のアンカー・発行ピン(§6.3 (a))も同系(<config dir>/invites)
+    Layer.succeed(PinStore, makeFilePinStore(pinsDirOf(configPath))),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     FetchHttpClient.layer,

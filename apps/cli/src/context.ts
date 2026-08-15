@@ -21,6 +21,7 @@ import { formatFloorViolation } from "./floor-evidence.ts";
 import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
+import { type InviteAnchor, PinStore } from "./pins.ts";
 import type { ProcessRunner } from "./run.ts";
 import {
   type CliSession,
@@ -36,6 +37,7 @@ export type CliServices =
   | Keychain
   | ConfigStore
   | FloorStore
+  | PinStore
   | CliIo
   | ProcessRunner
   | HttpClient.HttpClient;
@@ -205,10 +207,67 @@ export function loadCheckedFloor(
 }
 
 /**
- * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → 床ヘッドの前進。
- * 鍵の有無で分かれるのは呼び出し側だけで、床の意味論はここに一本化する
- * (2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は全コマンド共通で、
- * env diff のような値を読まないコマンドでも従来どおり行う。
+ * 招待リンクアンカーの機械照合(CRYPTO_SPEC §6.3 帯域外アンカー (a) / §6.5)。
+ * 受諾時にピン留めした「genesis(= projectId、syncProject の genesis 一致検査が
+ * 担う)・招待者の検証済みヘッド・招待者 user_id + 鍵 FP」を、検証済みチェーン
+ * と突合する:
+ *   (i) ヘッド包含 — 配布チェーンがピン留めヘッドを当該 seq に含むこと
+ *   (ii) 招待者 FP — ピン留めヘッド時点で招待者がその鍵でメンバーであること
+ * add_member 前(非メンバー)は同期自体が 404 のためここへ到達しない — 初回
+ * 同期がそのまま初回照合になる(§11-2 のタイミング制約に従う設計)。アンカーが
+ * 存在する限り毎同期検査する(検査は 2 参照のみで、常時検査が厳密に強い)。
+ */
+export function checkInviteAnchor(
+  projectId: string,
+  verified: VerifiedProject,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const store = yield* PinStore;
+    const loaded = yield* store.load(projectId);
+    if (loaded.state === "corrupt") {
+      yield* io.logError(
+        "警告: 招待ピンファイルを読み取れません(破損)。アンカー検査なしで続行します — ローカル状態が意図せず改変・削除された可能性があります。心当たりがない場合は注意してください",
+      );
+      return;
+    }
+    const anchor: InviteAnchor | null = loaded.pins?.anchor ?? null;
+    if (anchor === null) {
+      return;
+    }
+    // 拒否文言には検証材料の所在(ピンファイル)まで含める: 硬い証拠での恒久
+    // 停止に対し、調査・復旧(帯域外確認のうえでの手動対処)へ辿り着ける導線を
+    // 残す(pullfrog レビュー反映)
+    const evidenceHint = `検証材料は設定ディレクトリの invites/${projectId}.json(ピン留めアンカー)と配布チェーンです`;
+    if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
+      return yield* Effect.fail(
+        cliError(
+          `招待リンクアンカーの照合に失敗しました: 配布されたチェーンが、招待リンクに埋め込まれた検証済みヘッド(seq=${anchor.headSeq})を含みません(CRYPTO_SPEC §6.3 帯域外アンカー (a))。サーバーによる巻き戻し・fork 配布の疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください。${evidenceHint}`,
+        ),
+      );
+    }
+    const inviter = verified.history.memberStateAt(anchor.inviterUserId, anchor.headSeq);
+    if (inviter === undefined || inviter.keyFingerprintHex !== anchor.inviterKeyFingerprintHex) {
+      return yield* Effect.fail(
+        cliError(
+          `招待リンクアンカーの照合に失敗しました: リンクの招待者(user_id + 鍵 FP)が、ピン留めヘッド時点のチェーン上のメンバーと一致しません(CRYPTO_SPEC §6.5 の機械照合)。招待リンクまたは配布チェーンが偽造された疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください。${evidenceHint}`,
+        ),
+      );
+    }
+    if (anchor.verifiedAtSeq === null) {
+      yield* io.log(
+        "招待リンクアンカーの機械照合に成功しました(genesis 一致・ヘッド包含・招待者 FP — CRYPTO_SPEC §6.3 / §6.5)",
+      );
+      yield* store.saveAnchor(projectId, { ...anchor, verifiedAtSeq: verified.state.headSeq });
+    }
+  });
+}
+
+/**
+ * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → アンカー機械照合 →
+ * 床ヘッドの前進。鍵の有無で分かれるのは呼び出し側だけで、床の意味論はここに
+ * 一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は全コマンド
+ * 共通で、env diff のような値を読まないコマンドでも従来どおり行う。
  */
 function attachProject(
   context: SessionContext,
@@ -218,6 +277,7 @@ function attachProject(
     const resync = syncProject(context.client, projectId);
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
+    yield* checkInviteAnchor(projectId, checked.verified);
     return { ...context, projectId, verified: checked.verified, floor: checked.floor, resync };
   });
 }
@@ -271,6 +331,21 @@ export function openProject(
   return Effect.gen(function* () {
     const store = yield* ConfigStore;
     return yield* openProjectWith(yield* store.load, flags);
+  });
+}
+
+/**
+ * 平文メタデータ・チェーンしか読まないコマンドの前段(master 鍵を要求しない)。
+ * invite create / list / revoke が使う: リンク材料(ヘッド・自分の FP)は
+ * すべてチェーン導出であり、鍵素材なしの端末(MARUHI_TOKEN 実行)でも
+ * 招待の発行・管理を行える(env diff / project verify と同じ鍵なしクラス)。
+ */
+export function openMetadataProject(
+  flags: CommonFlags,
+): Effect.Effect<ProjectContextBase, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const store = yield* ConfigStore;
+    return yield* openMetadataProjectWith(yield* store.load, flags);
   });
 }
 

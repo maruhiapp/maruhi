@@ -71,7 +71,7 @@ describe("maruhi config", () => {
     // 一覧は登録済みサブコマンドから導く(手書きだと、コマンドを増やしたときに
     // ヘルプだけ古いまま残る)。エントリコマンド自身(`maruhi`)は出さない
     expect(env.logs).toContain(
-      "commands: login / logout / key / project / env / server / pull / push / run / config",
+      "commands: login / logout / key / project / env / server / invite / member / pull / push / run / config",
     );
   });
 });
