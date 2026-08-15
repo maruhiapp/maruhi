@@ -3,10 +3,10 @@
 //
 // - create: 招待の発行 + §15-3 リンクの組み立て(アンカー = 発行時点の検証済み
 //   ヘッド)+ 発行ピンの保存(member add 時のサーバー申告突合の材料)
-// - accept: リンク解釈 → アンカーのピン留め(§6.3 (a))→ 招待者 FP の相互確認
-//   (§6.5 受諾者側 — 受諾時はリンクの `if=` を表示。チェーンとの機械照合は
-//   add_member 後の初回同期 = context.ts)→ 鍵生成〔未生成時・ガード付き〕→
-//   受諾署名 → 受諾 → 自分の FP ワード表示(招待者への読み上げ材料)
+// - accept: リンク解釈 → 招待者 FP の相互確認(§6.5 受諾者側 — 受諾時はリンクの
+//   `if=` を表示。チェーンとの機械照合は add_member 後の初回同期 = context.ts)
+//   → 鍵生成〔未生成時・ガード付き〕→ 受諾署名 → 受諾 → アンカーのピン留め
+//   (§6.3 (a) — 受諾成立後のみ)→ 自分の FP ワード表示(招待者への読み上げ材料)
 // - list: 受諾ブロックの §6.5 独立検証 + FP ワード表示 + 発行ピン突合
 // - revoke: 失効
 //
@@ -472,15 +472,16 @@ export function inviteAcceptOp(input: {
       );
     }
 
-    // アンカーのピン留めは受諾の成立(+ p の突合)後(pinAnchorAfterAccept 参照)
-    if (input.target.kind === "link") {
-      yield* pinAnchorAfterAccept(input.target.link);
-    }
+    // アンカーのピン留めは受諾の成立(+ p の突合)後(pinAnchorAfterAccept 参照)。
+    // anchored はピン留めの実否(リンク受諾か、ではなく)— 警告で劣化を明示した
+    // 直後に「機械照合が行われます」と案内する矛盾出力を作らない
+    const anchored =
+      input.target.kind === "link" ? yield* pinAnchorAfterAccept(input.target.link) : false;
 
     yield* reportAcceptOutcome({
       accepted,
       fingerprintHex: masterKeys.fingerprintHex,
-      anchored: input.target.kind === "link",
+      anchored,
     });
     return { projectId: accepted.projectId, role: accepted.role };
   });
@@ -511,10 +512,14 @@ function prepareLinkAccept(
  * 無害・検出力は同等)ため、置換には利得がなく、上書き経路を一切残さない方が
  * 攻撃面が狭い(再招待の新アンカーより検証済みの実績を優先 — pullfrog
  * レビュー反映)。未照合アンカーは最新の受諾で置き換える(最後の正規受諾が勝つ)。
+ *
+ * 戻り値 = アンカーが有効に存在するか(保存成功 or 検証済み維持)。呼び出し側の
+ * 完了報告が「初回同期で機械照合される」と案内してよいかの根拠になる — 警告で
+ * 劣化を明示した直後に照合を約束する矛盾出力を作らない(pullfrog レビュー反映)。
  */
 function pinAnchorAfterAccept(
   link: InviteLinkData,
-): Effect.Effect<void, CliError, CliIo | PinStore> {
+): Effect.Effect<boolean, CliError, CliIo | PinStore> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const pinStore = yield* PinStore;
@@ -534,21 +539,30 @@ function pinAnchorAfterAccept(
         ),
       );
     if (loaded.state === "error") {
-      return yield* warnUnpinned(loaded.detail);
+      yield* warnUnpinned(loaded.detail);
+      return false;
     }
     if (loaded.state === "corrupt") {
-      return yield* warnUnpinned(
+      yield* warnUnpinned(
         "既存のピンファイルが破損しています — 内容を確認し、意図しない改変なら削除してください",
       );
+      return false;
     }
     const existing = loaded.pins?.anchor ?? null;
     if (existing !== null && existing.verifiedAtSeq !== null) {
       yield* io.log(
         "このプロジェクトには機械照合済みの招待リンクアンカーが既にあります — 既存のアンカーを維持します(検証済みアンカーは上書きしません)",
       );
-      return;
+      return true;
     }
-    yield* pinStore
+    if (existing !== null) {
+      // 未照合アンカーの置換は正規の再招待でも起きるが、痕跡ゼロだと偽リンクに
+      // よる差し替え(DoS 経路)が監査不能になる — 一行で顕在化させる
+      yield* io.log(
+        "未照合の既存アンカーを、この受諾のリンクアンカーで置き換えます(最後の正規受諾を優先)",
+      );
+    }
+    return yield* pinStore
       .saveAnchor(link.projectId, {
         headSeq: link.headSeq,
         headHashHex: link.headHashHex,
@@ -556,7 +570,10 @@ function pinAnchorAfterAccept(
         inviterKeyFingerprintHex: link.inviterKeyFingerprintHex,
         verifiedAtSeq: null,
       })
-      .pipe(Effect.catch((error) => warnUnpinned(error.message)));
+      .pipe(
+        Effect.map(() => true),
+        Effect.catch((error) => warnUnpinned(error.message).pipe(Effect.map(() => false))),
+      );
   });
 }
 
@@ -621,7 +638,7 @@ function reportAcceptOutcome(input: {
     yield* io.log(
       input.anchored
         ? "招待者が member add を完了すると参加が確定します。参加後の初回同期で、リンクアンカー(genesis・ヘッド・招待者 FP)の機械照合が自動的に行われます"
-        : "招待者が member add を完了すると参加が確定します(アンカーなし受諾のため、初回同期の機械照合は行われません)",
+        : "招待者が member add を完了すると参加が確定します(アンカーのピン留めがないため、初回同期の機械照合は行われません — 儀式の帯域外照合が唯一の防衛です)",
     );
   });
 }

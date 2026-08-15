@@ -630,6 +630,10 @@ describe("maruhi invite accept", () => {
       inviterKeyFingerprintHex: inviter.fingerprintHex,
       verifiedAtSeq: null,
     });
+    // 置換は痕跡を残す(偽リンクによる差し替え = DoS 経路の監査可能性)
+    expect(env2.logs.join("\n")).toContain(
+      "未照合の既存アンカーを、この受諾のリンクアンカーで置き換えます",
+    );
   });
 
   it("ピンファイル破損時は受諾を成立させたまま警告し、破損ファイルを上書きしない", async () => {
@@ -646,6 +650,10 @@ describe("maruhi invite accept", () => {
     expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("アンカーをピン留めできませんでした");
     expect(await readFile(join(env.pinsDir, `${PROJECT_ID}.json`), "utf8")).toBe("{ broken");
+    // 完了報告が警告と矛盾しない: 機械照合の約束を出さず、劣化を案内する
+    const logs = env.logs.join("\n");
+    expect(logs).not.toContain("初回同期で、リンクアンカー");
+    expect(logs).toContain("初回同期の機械照合は行われません");
   });
 
   it("リンク申告 r と応答 role の不一致は警告し、応答 projectId の不一致は拒否する", async () => {
