@@ -18,6 +18,8 @@ import type {
   ValueInput,
   WireSuite,
 } from "./data-plane.ts";
+import { LEASE_WINDOW_MS } from "./policy.ts";
+import type { StoredServerWrap } from "./server-key.ts";
 
 interface EnvironmentRow {
   readonly environmentId: string;
@@ -232,8 +234,38 @@ interface DataStoreShape {
     environmentId: string,
     recipientUserId: string,
   ) => Effect.Effect<readonly RecipientDekValue[]>;
+  /**
+   * サーバー鍵 FP 宛のラップ(受信者クラス server)を全エポック分返す
+   * (AUTH_SPEC §14 のリース経路 — CRYPTO_SPEC §9.1)。listWrapsForRecipient と
+   * 分けているのは配布の意味論が違うため: あちらは**受信者本人への配布**で
+   * 登録署名と署名者情報を運ぶが、こちらは**サーバー自身が開封する材料**であり
+   * 応答へは出ない(開封 → 再ラップの結果だけが出る — server-key.ts)。
+   */
+  readonly listServerWraps: (
+    environmentId: string,
+    serverKeyFingerprintHex: string,
+  ) => Effect.Effect<readonly StoredServerWrap[]>;
+  /**
+   * 固定窓カウンタの参照・更新(§14-3 / AUDIT_SPEC §3.5)。窓が切れていれば
+   * 開始時刻を now に巻き直して 1 から数え直す。DO の permit 下で直列化されて
+   * いるため read-modify-write の競合は起きない。
+   */
+  readonly consumeLeaseWindow: (
+    kind: LeaseWindowKind,
+    limit: number,
+    nowMs: number,
+  ) => Effect.Effect<LeaseWindowDecision>;
 
   readonly write: DataWriteOps;
+}
+
+/** 固定窓の種別(§14-3 発行 / AUDIT_SPEC §3.5 拒否記録)。 */
+type LeaseWindowKind = "issued" | "denied";
+
+/** 固定窓の判定結果(超過時は窓の残り秒数を返す — §13-3 の先例と同型)。 */
+interface LeaseWindowDecision {
+  readonly allowed: boolean;
+  readonly retryAfterSeconds: number;
 }
 
 export class DataStore extends Context.Service<DataStore, DataStoreShape>()("DataStore") {}
@@ -665,30 +697,106 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         .toArray()[0];
       return row === undefined ? null : stringColumn(row, "recipient_class");
     }),
+  // 配布は本人宛のみ(§12-6)。server クラスの行は識別子形式が交わらないため
+  // user_id では引けないが、クラス条件を明示して境界を固定する
   listWrapsForRecipient: (environmentId: string, recipientUserId: string) =>
     Effect.sync(() =>
-      sql
-        .exec(
-          // 配布は本人宛のみ(§12-6)。server クラスの行は識別子形式が交わらない
-          // ため user_id では引けないが、クラス条件を明示して境界を固定する
-          `SELECT suite, epoch, enc_hex, ciphertext_hex, signature_hex, signer_user_id, signer_key_fingerprint
-           FROM dek_wraps
-           WHERE environment_id = ? AND recipient_class = 'member' AND recipient_user_id = ? ORDER BY epoch`,
-          environmentId,
-          recipientUserId,
-        )
-        .toArray()
-        .map((row) => ({
-          suite: storedSuite(columnValue(row, "suite")),
-          epoch: numberColumn(row, "epoch"),
-          encHex: stringColumn(row, "enc_hex"),
-          ciphertextHex: stringColumn(row, "ciphertext_hex"),
-          signatureHex: stringColumn(row, "signature_hex"),
-          signerUserId: stringColumn(row, "signer_user_id"),
-          signerKeyFingerprintHex: stringColumn(row, "signer_key_fingerprint"),
-        })),
+      selectWrapRows(sql, {
+        environmentId,
+        recipientClass: "member",
+        recipientUserId,
+        extraColumns: "signature_hex, signer_user_id, signer_key_fingerprint",
+      }).map((row) => ({
+        ...wrapBodyOf(row),
+        signatureHex: stringColumn(row, "signature_hex"),
+        signerUserId: stringColumn(row, "signer_user_id"),
+        signerKeyFingerprintHex: stringColumn(row, "signer_key_fingerprint"),
+      })),
     ),
+  // FP でも絞るのは、失効 → 別鍵での再 grant を挟んだ環境に旧サーバー鍵宛の
+  // 行が残っていた場合に、現行鍵で開封できない行を掴まないため(開封失敗は
+  // 毒ラップと区別できず、503 の理由を濁らせる)
+  listServerWraps: (environmentId: string, serverKeyFingerprintHex: string) =>
+    Effect.sync(() =>
+      selectWrapRows(sql, {
+        environmentId,
+        recipientClass: "server",
+        recipientUserId: serverKeyFingerprintHex,
+      }).map((row) => wrapBodyOf(row)),
+    ),
+  consumeLeaseWindow: (kind: LeaseWindowKind, limit: number, nowMs: number) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec("SELECT window_start, count FROM lease_windows WHERE kind = ?", kind)
+        .toArray()[0];
+      const windowStart = row === undefined ? 0 : numberColumn(row, "window_start");
+      const count = row === undefined ? 0 : numberColumn(row, "count");
+      const elapsed = nowMs - windowStart;
+      if (row === undefined || elapsed >= LEASE_WINDOW_MS || elapsed < 0) {
+        // 窓切れ、初回、または時計が巻き戻った場合は now から数え直す
+        sql.exec(
+          `INSERT INTO lease_windows (kind, window_start, count) VALUES (?, ?, 1)
+           ON CONFLICT(kind) DO UPDATE SET window_start = excluded.window_start, count = 1`,
+          kind,
+          nowMs,
+        );
+        return { allowed: true, retryAfterSeconds: 0 };
+      }
+      if (count >= limit) {
+        return {
+          allowed: false,
+          retryAfterSeconds: Math.ceil((LEASE_WINDOW_MS - elapsed) / 1000),
+        };
+      }
+      sql.exec("UPDATE lease_windows SET count = count + 1 WHERE kind = ?", kind);
+      return { allowed: true, retryAfterSeconds: 0 };
+    }),
 });
+
+/**
+ * ラップ行の共通 SELECT(配布とリース材料で列だけが違う)。並びは epoch 昇順。
+ */
+function selectWrapRows(
+  sql: SqlStorage,
+  query: {
+    readonly environmentId: string;
+    readonly recipientClass: "member" | "server";
+    readonly recipientUserId: string;
+    readonly extraColumns?: string;
+  },
+): readonly Record<string, SqlStorageValue>[] {
+  const extra = query.extraColumns === undefined ? "" : `, ${query.extraColumns}`;
+  return sql
+    .exec(
+      `SELECT suite, epoch, enc_hex, ciphertext_hex${extra}
+       FROM dek_wraps
+       WHERE environment_id = ? AND recipient_class = ? AND recipient_user_id = ?
+       ORDER BY epoch`,
+      query.environmentId,
+      query.recipientClass,
+      query.recipientUserId,
+    )
+    .toArray();
+}
+
+/**
+ * ラップ行の共通部。`storedSuite` は未知スイートを defect にする(v1 の書き込み
+ * 経路では生まれない値であり、黙って v1 として配布・再ラップしない — §13-5 の
+ * リカバリーブロブと同じ規律)。
+ */
+function wrapBodyOf(row: Record<string, SqlStorageValue>): {
+  readonly suite: WireSuite;
+  readonly epoch: number;
+  readonly encHex: string;
+  readonly ciphertextHex: string;
+} {
+  return {
+    suite: storedSuite(columnValue(row, "suite")),
+    epoch: numberColumn(row, "epoch"),
+    encHex: stringColumn(row, "enc_hex"),
+    ciphertextHex: stringColumn(row, "ciphertext_hex"),
+  };
+}
 
 /** ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。 */
 function insertStatementRow(

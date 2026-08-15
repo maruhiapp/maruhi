@@ -67,12 +67,15 @@ import {
   pullEnvironmentProgram,
   renameEnvironmentProgram,
 } from "./programs-environment.ts";
+import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
+import { leaseProgram } from "./programs-lease.ts";
 import {
   createVariableProgram,
   deleteVariableProgram,
   pushVersionProgram,
   renameVariableProgram,
 } from "./programs-variable.ts";
+import { makeServerKey, ServerKey } from "./server-key.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
@@ -264,7 +267,7 @@ const snapshotProgram = (
 // Durable Object(ManagedRuntime パターン。spike-b の確立形)
 // ---------------------------------------------------------------------------
 
-type DoServices = ChainStore | DataStore | AuditStore;
+type DoServices = ChainStore | DataStore | AuditStore | ServerKey;
 
 /** データプレーンの拒否を RPC outcome へ畳む(成功は ok 側)。 */
 const toDataOutcome = <T, R>(
@@ -292,6 +295,10 @@ export class ProjectChainDO extends DurableObject<Env> {
         chainStoreLayer(ctx.storage.sql, this.#stateCache),
         dataStoreLayer(ctx.storage.sql),
         auditStoreLayer(ctx.storage.sql),
+        // リースの開封 + 再ラップは DO 内で行う(programs-lease.ts の冒頭:
+        // 監査の原子性)。worker 側の ServerKey とは別インスタンスだが、
+        // 同じ Workers Secret から同じ keypair を導出する
+        Layer.sync(ServerKey, () => makeServerKey(env.SERVER_ENC_KEY_IKM)),
       ),
     );
   }
@@ -529,5 +536,36 @@ export class ProjectChainDO extends DurableObject<Env> {
     refs: readonly DekWrapRefInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runData(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
+  }
+
+  // --- ワークロードリース RPC(AUTH_SPEC §14) ---------------------------
+
+  /**
+   * リースの認可・開封・再ラップ・監査(programs-lease.ts)。OIDC 検証は
+   * worker 側で完了済みで、ここへ来るのは検証済みトークンの事実だけである
+   * (認証と認可の分離 — §14-3 の「認証失敗のみ 401」を構造で保つ)。
+   *
+   * 他の RPC と違い DataOutcome ではなく LeaseOutcome を返す: リースの拒否
+   * 語彙(404 / 429 / 503)はデータプレーンの DataRejection と重ならず、
+   * 無理に畳むと worker 側の写像表が両方の意味を持つことになるため。
+   */
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  issueLease(
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+  ): Promise<LeaseOutcome> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        this.#invalidateCachesOnDefect(
+          leaseProgram(environmentId, ephemeralPubHex, facts, this.#stateCache).pipe(
+            Effect.match({
+              onSuccess: (value: LeaseValue): LeaseOutcome => ({ kind: "ok", value }),
+              onFailure: (rejection): LeaseOutcome => ({ kind: "rejected", rejection }),
+            }),
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -43,6 +43,7 @@ import type {
   DataActor,
   DataOutcome,
   DataRejection,
+  EnvironmentPullValue,
   MetaStatementInput,
   ValueInput,
 } from "./data-plane.ts";
@@ -147,6 +148,44 @@ export function toMetaStatementInput(statement: {
     chainHeadHashHex: statement.chainHeadHashHex,
     chainHeadSeq: statement.chainHeadSeq,
     signatureHex: statement.signatureHex,
+  };
+}
+
+/**
+ * DO の保存行 → ワイヤの DistributedEncryptedPayload(§12-2 / §12-7)。AAD は
+ * 保存座標から再構成する(保存時に座標一致を検査済みなので、これは同値の
+ * 自己記述表現)。suite は保存行の値を返す(CRYPTO_SPEC §2 設計原則 4)。
+ * 署名ブロックと writer / ステートメント + author(受理時点の user_id + 鍵 FP)は
+ * 保存行をそのまま返す — 現メンバー集合から再導出しない(削除済み writer /
+ * author の過去データの検証可能性)。サーバー再計算の signed_bytes ハッシュは
+ * 値・ステートメントとも配布しない。
+ */
+export function toWireVariable(
+  projectId: string,
+  environmentId: string,
+  row: EnvironmentPullValue["variables"][number],
+) {
+  return {
+    variableId: row.variableId,
+    statement: row.statement,
+    value: {
+      suite: row.suite,
+      aad: {
+        projectId,
+        environmentId,
+        epoch: row.epoch,
+        variableId: row.variableId,
+        version: row.version,
+      },
+      nonceHex: row.nonceHex,
+      ciphertextHex: row.ciphertextHex,
+      prevValueSigHashHex: row.prevValueSigHashHex,
+      chainHeadHashHex: row.chainHeadHashHex,
+      chainHeadSeq: row.chainHeadSeq,
+      signatureHex: row.signatureHex,
+      writerUserId: row.writerUserId,
+      writerKeyFingerprintHex: row.writerKeyFingerprintHex,
+    },
   };
 }
 
