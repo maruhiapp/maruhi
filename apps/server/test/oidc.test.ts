@@ -125,6 +125,26 @@ describe("JWKS キャッシュ(§14-1)", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("keeps a TTL-valid document — and advances the cooldown — when a forced refresh fails", async () => {
+    let failing = false;
+    const log = stubFetch({ failJwks: () => failing });
+    const cache = makeJwksCache();
+
+    // 既知 kid で温める(discovery + JWKS)
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+
+    // issuer 側の障害中に未知 kid(攻撃者が自由に指定できる)が強制
+    // リフレッシュを誘発しても、TTL 内の旧ドキュメントを失わない:
+    // 未知 kid は 401(null)、既知 kid は 503 に落ちず検証できたまま
+    failing = true;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "never-existed"))).toBeNull();
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+    // 失敗した強制リフレッシュもクールダウンの起点になる(issuer を叩き続けない)
+    const afterFailure = log.urls.length;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "still-missing"))).toBeNull();
+    expect(log.urls.length).toBe(afterFailure);
+  });
+
   it("does not cache a failed fetch (the next call retries)", async () => {
     let failing = true;
     const log = stubFetch({ failJwks: () => failing });
@@ -151,24 +171,6 @@ describe("JWKS キャッシュ(§14-1)", () => {
     // 猶予窓(6 時間)を越えたら、もう受理しない
     currentMs += 6 * 60 * 60 * 1000;
     expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
-  });
-
-  it("never lets a failed forced refresh evict a TTL-valid cache", async () => {
-    // 未知 kid は署名検証の**前**に読まれるため、未認証の攻撃者が強制リフレッシュを
-    // 誘発できる。失敗した取得が既存キャッシュを壊す設計だと、存在しない kid を
-    // 投げるだけで正当なトークンを 503 に落とせてしまう(Cursor Bugbot 指摘 / PR #65)
-    let failing = false;
-    stubFetch({ failJwks: () => failing });
-    let currentMs = 1_000_000;
-    const cache = makeJwksCache(() => currentMs);
-    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
-
-    // 攻撃者: 存在しない kid で強制リフレッシュを誘発し、その取得は失敗する
-    failing = true;
-    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "attacker-chosen"))).toBeNull();
-
-    // 正当なトークンは TTL 内のキャッシュでそのまま検証できる(503 に落ちない)
-    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
   });
 
   it("aborts a hanging JWKS fetch instead of holding the request open", async () => {

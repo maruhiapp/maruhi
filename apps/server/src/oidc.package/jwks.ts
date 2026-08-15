@@ -270,15 +270,21 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     if (cached !== undefined && isUsable(cached, kid)) {
       return cached;
     }
+    const forcedRefreshAtMs = forcedRefreshStamp(cached);
     try {
-      return await refresh(issuer, forcedRefreshStamp(cached));
+      return await refresh(issuer, forcedRefreshAtMs);
     } catch (error) {
       // stale-while-revalidate: 猶予窓内の good 値があればそれで検証を続ける。
       // 署名検証自体は必ず行われる(鍵が 1 つも無いときだけ拒否する)
-      if (isWithinGrace(cached)) {
-        return cached;
+      if (!isWithinGrace(cached)) {
+        throw error;
       }
-      throw error;
+      // **失敗した強制リフレッシュもクールダウンの起点にする**(Cursor Bugbot の
+      // 指摘への追加対応 — PR #65)。ここを据え置くと、未知 kid を連打する
+      // 未認証の呼び出し元が 1 リクエストにつき 1 回 issuer を叩かせられる
+      const held = { ...cached, forcedRefreshAtMs };
+      lastGoodJwks.set(issuer, held);
+      return held;
     }
   };
 
