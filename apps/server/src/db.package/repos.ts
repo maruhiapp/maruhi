@@ -710,7 +710,14 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
 /** §15-1 起草値: 招待の有効期間(発行 + 7 日)。 */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** §15-2 起草値: 発行の固定窓(1 時間 30 回 / プロジェクト)。 */
+/**
+ * §15-2 起草値: 発行のレート窓(1 時間 30 回 / プロジェクト)。実装形は
+ * 「直近 1 時間の invitations 行数」の lookback 計数(auth.login_failed —
+ * audit.ts — と同じ、追加の窓状態を持たない形)。任意の 1 時間区間で 30 を
+ * 超えない = 仕様の固定窓より緩む方向には決してならない(バケット境界の
+ * リセットが無い分だけ厳しい側)。retryAfterSeconds は最古の窓内発行が
+ * 窓から抜ける時刻から導出する。
+ */
 const INVITE_ISSUE_WINDOW_MS = 60 * 60 * 1000;
 export const INVITE_ISSUE_WINDOW_LIMIT = 30;
 
@@ -720,9 +727,10 @@ export const MAX_PENDING_INVITES_PER_PROJECT = 100;
 interface InviteRepoShape {
   /**
    * 発行(§15-2)。受理ポリシーの判定順は仕様の記載順に固定: pending 上限 →
-   * 固定窓。読み → 挿入の 2 段で、並行発行では僅かに超過しうるベストエフォート
-   * (recovery の取得計数と同じ性質)。受理時は invite.created(AUDIT_SPEC
-   * §3.2)を挿入と同一 batch で記録する。
+   * レート窓(lookback 計数 — INVITE_ISSUE_WINDOW_MS の注記参照)。読み → 挿入の
+   * 2 段で、並行発行では僅かに超過しうるベストエフォート(recovery の取得計数と
+   * 同じ性質)。受理時は invite.created(AUDIT_SPEC §3.2)を挿入と同一 batch で
+   * 記録する。
    */
   readonly create: (
     input: {
@@ -744,10 +752,12 @@ interface InviteRepoShape {
   /**
    * 受諾の単回使用 CAS(pending → accepted — §15-1)。条件付き UPDATE と、
    * `changes() = 1` でガードした invite.accepted の INSERT…SELECT を同一 batch
-   * で発行する(AUDIT_SPEC §5.2 の同一トランザクション原則)。D1 batch は
-   * 単一トランザクション・逐次実行なので、changes() は直前の UPDATE の勝敗を
-   * 正確に返す — CAS 敗北時は監査行も 0 行のまま。戻り値は勝敗のみ(敗北理由の
-   * 導出は呼び出し側が再読みで行う)。
+   * で発行する(AUDIT_SPEC §5.2 の同一トランザクション原則)。D1 は batch を
+   * 逐次・非並行・単一トランザクションと文書化しており、その逐次性から
+   * changes() は直前の UPDATE の結果を参照する(RETURNING 文の消化順序までは
+   * 明文化されていないため、この性質は invites.test.ts の CAS 敗北テストで
+   * 実挙動としても固定する)— CAS 敗北時は監査行も 0 行のまま。戻り値は勝敗
+   * のみ(敗北理由の導出は呼び出し側が再読みで行う)。
    */
   readonly acceptCas: (
     input: InviteAcceptInput,

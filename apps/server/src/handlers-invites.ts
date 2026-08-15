@@ -40,6 +40,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { ensureKeyMaterialAccess, ensureTokenScopeForProject } from "./authz.ts";
 import { unwrapDataOutcome } from "./data-http.ts";
 import type { DataOutcome } from "./data-plane.ts";
+import { roleAtLeast } from "./data-plane.ts";
 import { INVITE_TTL_MS, InviteRepo } from "./db.package/index.ts";
 import { randomBase62, sha256Hex, ulid } from "./ids.ts";
 import type { InvitationRecord } from "./invite-domain.ts";
@@ -47,9 +48,6 @@ import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 /** 招待トークンのワイヤ形式(api-schema の InviteTokenSchema と対)。 */
 const INVITE_TOKEN_PREFIX = "maruhi_inv_";
-
-/** チェーン role の下限判定(CRYPTO_SPEC §6.2 の 4 段)。 */
-const ROLE_RANK: Record<Role, number> = { reader: 0, member: 1, admin: 2, owner: 3 };
 
 /**
  * プロジェクト配下エンドポイント共通の前段: トークンスコープ admin(スコープ外
@@ -68,7 +66,7 @@ const requireProjectInviteAdmin = <Endpoint extends HttpApiEndpoint.Top>(
       projectStub(env, projectId).memberRoleFor(principal.userId),
     );
     const role = yield* unwrapDataOutcome(outcome, projectId, endpoint);
-    if (ROLE_RANK[role] < ROLE_RANK.admin) {
+    if (!roleAtLeast(role, "admin")) {
       return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
     }
     return { principal, role };
