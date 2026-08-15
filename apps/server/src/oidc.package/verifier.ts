@@ -140,11 +140,29 @@ function decodeSegments(token: string): DecodedSegments | null {
   };
 }
 
-/** 形式と `alg` 許可リストの検査(段 1〜2)。 */
+/**
+ * 形式・`crit`・`alg` 許可リストの検査(段 1〜2)。
+ *
+ * **`crit`(RFC 7515 §4.1.11)は存在するだけで拒否する**: crit は
+ * 「理解できないなら受理してはならない拡張」の宣言であり、本実装は拡張を
+ * 1 つも実装していないため、いかなる crit 値も「理解できない」に該当する。
+ * この検査を落とした実装は 2025〜2026 に複数の主要ライブラリで CVE になった
+ * (Authlib CVE-2025-59420 / PyJWT CVE-2026-32597 / fast-jwt CVE-2026-35042)。
+ *
+ * `typ` は**検査しない**(意図的): RFC 7519 §5.1 で任意であり、cross-JWT
+ * 混同の緩和は issuer 許可リスト + audience 一致 + claim 制約が既に強く担って
+ * いる。加えて maruhi 自身は JWT を発行しない(AUTH_SPEC §1-3 / §6 — セッションも
+ * API トークンも不透明なランダム値)ため、取り違える相手方の JWT が存在しない。
+ * 得るものがないのに issuer 側の実装差で正当なトークンを落とすリスクだけを
+ * 負うため、ここは緩いままにする。
+ */
 function parseToken(token: string): Effect.Effect<ParsedToken, LeaseUnauthorizedError> {
   const decoded = decodeSegments(token);
   if (decoded === null) {
     return unauthorized("malformed-token");
+  }
+  if (decoded.header["crit"] !== undefined) {
+    return unauthorized("unsupported-crit");
   }
   const alg = decoded.header["alg"];
   if (typeof alg !== "string" || !ALLOWED_ALGS.includes(alg as AllowedAlg)) {

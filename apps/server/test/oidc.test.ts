@@ -135,6 +135,54 @@ describe("JWKS キャッシュ(§14-1)", () => {
     // 失敗した取得が居座らず、2 回目は本当に取り直している
     expect(log.urls.filter((url) => url.endsWith("/jwks")).length).toBe(2);
   });
+
+  it("serves the last good JWKS while a refresh keeps failing (stale-while-revalidate)", async () => {
+    let failing = false;
+    stubFetch({ failJwks: () => failing });
+    let currentMs = 1_000_000;
+    const cache = makeJwksCache(() => currentMs);
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+
+    // TTL(15 分)を越え、かつ issuer が落ちている状態
+    failing = true;
+    currentMs += 20 * 60 * 1000;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+
+    // 猶予窓(6 時間)を越えたら、もう受理しない
+    currentMs += 6 * 60 * 60 * 1000;
+    expect((await run(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
+  });
+
+  it("never lets a failed forced refresh evict a TTL-valid cache", async () => {
+    // 未知 kid は署名検証の**前**に読まれるため、未認証の攻撃者が強制リフレッシュを
+    // 誘発できる。失敗した取得が既存キャッシュを壊す設計だと、存在しない kid を
+    // 投げるだけで正当なトークンを 503 に落とせてしまう(Cursor Bugbot 指摘 / PR #65)
+    let failing = false;
+    stubFetch({ failJwks: () => failing });
+    let currentMs = 1_000_000;
+    const cache = makeJwksCache(() => currentMs);
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+
+    // 攻撃者: 存在しない kid で強制リフレッシュを誘発し、その取得は失敗する
+    failing = true;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "attacker-chosen"))).toBeNull();
+
+    // 正当なトークンは TTL 内のキャッシュでそのまま検証できる(503 に落ちない)
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+  });
+
+  it("aborts a hanging JWKS fetch instead of holding the request open", async () => {
+    // 未認証経路から誘発される外部 fetch なので、応答しない issuer に
+    // リクエストを張り付かせない(AbortSignal.timeout)
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new Error("aborted"));
+        });
+      })) as typeof fetch;
+    const result = await run(makeJwksCache().resolveKey(OIDC_ISSUER, OIDC_KID));
+    expect(result.ok).toBe(false);
+  }, 20_000);
 });
 
 const nowMs = (): number => Date.now();
@@ -199,6 +247,17 @@ describe("OIDC verifier(§14-1)", () => {
       .replaceAll("=", "");
     const result = await run(verifier.verify(`${header}.${segment}.AAAA`, nowMs()));
     expect(result.ok === false && result.error).toMatchObject({ reason: "malformed-token" });
+  });
+
+  it("rejects a JWS that declares a crit extension (RFC 7515 §4.1.11)", async () => {
+    // crit は「理解できないなら受理してはならない拡張」の宣言であり、本実装は
+    // 拡張を 1 つも持たないためいかなる crit 値も拒否する。この検査の欠落は
+    // 2025〜2026 に Authlib / PyJWT / fast-jwt で CVE になっている
+    stubFetch();
+    const verifier = makeOidcVerifier(makeJwksCache());
+    const token = await makeOidcToken({ crit: ["exp"] });
+    const result = await run(verifier.verify(token, nowMs()));
+    expect(result.ok === false && result.error).toMatchObject({ reason: "unsupported-crit" });
   });
 
   it("rejects a non-string sub / missing sub as a claim problem, not a signature problem", async () => {

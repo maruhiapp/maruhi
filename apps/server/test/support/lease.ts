@@ -80,6 +80,8 @@ export interface TokenOptions {
   readonly tamperSignature?: boolean;
   /** exp / iat を省く(missing-claim の検査用)。 */
   readonly omit?: readonly string[];
+  /** JOSE ヘッダーへ `crit` を載せる(RFC 7515 §4.1.11 の拒否検査用)。 */
+  readonly crit?: readonly string[];
 }
 
 /**
@@ -94,6 +96,7 @@ export async function makeOidcToken(options: TokenOptions = {}): Promise<string>
     alg: options.alg ?? "ES256",
     typ: "JWT",
     ...(options.kid === null ? {} : { kid: options.kid ?? OIDC_KID }),
+    ...(options.crit === undefined ? {} : { crit: options.crit }),
   };
   const omit = new Set(options.omit ?? []);
   const claims: Record<string, unknown> = {

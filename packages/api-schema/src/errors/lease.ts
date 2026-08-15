@@ -21,6 +21,9 @@ import { Schema } from "effect";
  * - `malformed-token` — not a compact JWS, or the header / payload is not JSON
  * - `unsupported-alg` — `alg` outside the RS256 / ES256 allowlist (`none` and
  *   the symmetric algorithms land here)
+ * - `unsupported-crit` — the JOSE header declares a `crit` extension. RFC 7515
+ *   §4.1.11 requires rejecting a JWS whose critical extensions the recipient
+ *   does not implement, and this deployment implements none
  * - `unsupported-issuer` — `iss` outside this deployment's static issuer list
  * - `unknown-key` — no JWKS key matches the token's `kid`
  * - `signature-invalid` — the signature does not verify under the JWKS key
@@ -32,6 +35,7 @@ import { Schema } from "effect";
 export const LeaseUnauthorizedReasonSchema = Schema.Literals([
   "malformed-token",
   "unsupported-alg",
+  "unsupported-crit",
   "unsupported-issuer",
   "unknown-key",
   "signature-invalid",

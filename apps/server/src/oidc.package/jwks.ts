@@ -5,13 +5,28 @@
 // 任意の issuer 文字列で外部 fetch を誘発できると増幅攻撃になる。issuer の
 // 許可リスト照合は fetch より前に行う(verifier.ts の判定順)。
 //
-// 取得失敗は fail-closed(§14-1)。ただし応答は 401 ではなく 503
+// **stale-while-revalidate**(2026-08-15): 再取得に失敗しても、猶予窓
+// (STALE_GRACE_MS)内に取得できていた JWKS があればそれで検証を続ける。
+// これは fail-closed(§14-1)と矛盾しない — 署名検証は必ず実施し、鍵が
+// 1 つも無い場合にだけ拒否する。この設計にする理由は 2 つ:
+//   1. issuer / ネットワークの一過性障害が、全プロジェクトの全 CI ジョブの
+//      停止に直結するのを避ける(TTL 15 分に対し障害は数分〜数時間ありうる)
+//   2. **未知 kid による強制リフレッシュを攻撃者が誘発できる**(kid は署名
+//      検証の前に読まれる)。失敗した取得がキャッシュを破棄する設計だと、
+//      未認証の攻撃者が存在しない kid を投げるだけで TTL 内の正常な鍵を
+//      落とし、以後の正当なトークンを 503 に落とせてしまう。最後に成功した
+//      JWKS を保持し、失敗が既存キャッシュを**決して**壊さない構造にする
+//      (Cursor Bugbot の指摘と同じ経路 — PR #65)
+// 猶予窓は「issuer が鍵を失効させてから、それを受理しなくなるまでの上限」でも
+// あるため、可用性と失効追随のトレードオフとして明示的な定数に置く。
+//
+// 鍵が 1 つも無いときだけ拒否し、応答は 401 ではなく 503
 // `oidc-jwks-unavailable` にする(errors/lease.ts の理由コード参照 — 一過性の
 // 障害を「資格情報が不正」と伝えない)。
 //
 // キャッシュは isolate 内メモリ。DO ストレージにも D1 にも置かない:
 // JWKS は公開情報であり、永続化しても得られるのは cold start 時の 1 往復の
-// 節約だけで、失効した鍵を掴み続ける危険と保存物の管理コストに見合わない。
+// 節約だけで、保存物の管理コストに見合わない。
 
 import { Effect } from "effect";
 
@@ -28,8 +43,23 @@ const JWKS_TTL_MS = 15 * 60 * 1000;
  */
 const FORCED_REFRESH_COOLDOWN_MS = 60 * 1000;
 
+/**
+ * 再取得に失敗したときに、最後に成功した JWKS を使い続けてよい上限。
+ * 可用性(issuer 障害中も CI を止めない)と失効追随(issuer が鍵を失効させて
+ * から受理しなくなるまでの遅れ)のトレードオフであり、6 時間は現実的な障害
+ * (数分〜数時間)を覆いつつ、失効の遅れを 1 日未満に抑える値として置く。
+ */
+const STALE_GRACE_MS = 6 * 60 * 60 * 1000;
+
 /** 取得したドキュメントのサイズ上限(肥大応答によるメモリ消費の遮断)。 */
 const MAX_DOCUMENT_BYTES = 256 * 1024;
+
+/**
+ * 1 回の取得のタイムアウト。未認証経路(リース)から誘発される外部 fetch で
+ * あり、応答しない issuer にリクエストを張り付かせない(jose の
+ * `timeoutDuration` 既定と同値)。
+ */
+const FETCH_TIMEOUT_MS = 5_000;
 
 /** 解決済みの検証鍵(JWK と、その JWK から導いたアルゴリズム束縛)。 */
 export interface ResolvedVerificationKey {
@@ -63,7 +93,10 @@ interface CachedDiscovery {
 }
 
 async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url, { headers: { accept: "application/json" } });
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error("jwks fetch: non-ok response");
   }
@@ -128,8 +161,12 @@ function selectJwk(keys: readonly Jwk[], kid: string | null): Jwk | null {
  * cold start の突入で同じ issuer を同時に叩かない。
  */
 export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
-  const discovery = new Map<string, Promise<CachedDiscovery>>();
-  const jwks = new Map<string, Promise<CachedJwks>>();
+  // **最後に成功した値**と**取得中の Promise**を分けて持つ。失敗した取得が
+  // 既存の good 値を壊さないための構造(冒頭コメントの 2 番目の理由)
+  const lastGoodDiscovery = new Map<string, CachedDiscovery>();
+  const lastGoodJwks = new Map<string, CachedJwks>();
+  const inFlight = new Map<string, Promise<CachedJwks>>();
+  const discoveryInFlight = new Map<string, Promise<CachedDiscovery>>();
 
   const loadDiscovery = async (issuer: string): Promise<CachedDiscovery> => {
     const document = await fetchJson(
@@ -142,19 +179,33 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     return { jwksUri, fetchedAtMs: now() };
   };
 
+  /**
+   * discovery は `jwks_uri` の解決にしか使わず、その値は実質不変。取得に
+   * 失敗しても最後に成功した値があればそれを使い続ける(鮮度の上限は JWKS 側の
+   * 猶予窓が握るため、ここに独立の窓は置かない)。
+   */
   const discoveryFor = async (issuer: string): Promise<CachedDiscovery> => {
-    const cached = discovery.get(issuer);
-    if (cached !== undefined) {
-      const settled = await cached.catch(() => null);
-      if (settled !== null && now() - settled.fetchedAtMs < DISCOVERY_TTL_MS) {
-        return settled;
-      }
+    const cached = lastGoodDiscovery.get(issuer);
+    if (cached !== undefined && now() - cached.fetchedAtMs < DISCOVERY_TTL_MS) {
+      return cached;
     }
-    const pending = loadDiscovery(issuer);
-    discovery.set(issuer, pending);
-    // 失敗した Promise を残すと以後の再取得まで同じ失敗を返し続けるため捨てる
-    pending.catch(() => discovery.delete(issuer));
-    return pending;
+    const pending =
+      discoveryInFlight.get(issuer) ??
+      loadDiscovery(issuer)
+        .then((loaded) => {
+          lastGoodDiscovery.set(issuer, loaded);
+          return loaded;
+        })
+        .finally(() => discoveryInFlight.delete(issuer));
+    discoveryInFlight.set(issuer, pending);
+    try {
+      return await pending;
+    } catch (error) {
+      if (cached !== undefined) {
+        return cached;
+      }
+      throw error;
+    }
   };
 
   const loadJwks = async (issuer: string, forcedRefreshAtMs: number): Promise<CachedJwks> => {
@@ -181,18 +232,54 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     return now() - cached.forcedRefreshAtMs < FORCED_REFRESH_COOLDOWN_MS;
   };
 
+  /** 取得中の Promise を共有する(cold start の突入で同じ issuer を同時に叩かない)。 */
+  const refresh = (issuer: string, forcedRefreshAtMs: number): Promise<CachedJwks> => {
+    const existing = inFlight.get(issuer);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const pending = loadJwks(issuer, forcedRefreshAtMs)
+      // good 値の更新は**成功時だけ**。失敗は既存の good 値に触れない
+      .then((loaded) => {
+        lastGoodJwks.set(issuer, loaded);
+        return loaded;
+      })
+      .finally(() => inFlight.delete(issuer));
+    inFlight.set(issuer, pending);
+    return pending;
+  };
+
+  /**
+   * 再取得の起点にする forcedRefreshAtMs。TTL 内なのに取り直す = 未知 kid に
+   * よる強制リフレッシュなので、その時刻をクールダウンの起点として記録する
+   * (TTL 切れの通常更新では据え置く)。
+   */
+  const forcedRefreshStamp = (cached: CachedJwks | undefined): number => {
+    if (cached === undefined) {
+      return 0;
+    }
+    return now() - cached.fetchedAtMs < JWKS_TTL_MS ? now() : cached.forcedRefreshAtMs;
+  };
+
+  /** 猶予窓内の good 値か(stale-while-revalidate の受理条件)。 */
+  const isWithinGrace = (cached: CachedJwks | undefined): cached is CachedJwks =>
+    cached !== undefined && now() - cached.fetchedAtMs < STALE_GRACE_MS;
+
   const jwksFor = async (issuer: string, kid: string | null): Promise<CachedJwks> => {
-    const cached = await (jwks.get(issuer)?.catch(() => null) ?? Promise.resolve(null));
-    if (cached !== null && isUsable(cached, kid)) {
+    const cached = lastGoodJwks.get(issuer);
+    if (cached !== undefined && isUsable(cached, kid)) {
       return cached;
     }
-    // TTL 内なのに取り直す = 未知 kid による強制リフレッシュ。その時刻を
-    // 記録してクールダウンの起点にする(TTL 切れの通常更新では据え置く)
-    const forced = cached !== null && now() - cached.fetchedAtMs < JWKS_TTL_MS;
-    const pending = loadJwks(issuer, forced ? now() : (cached?.forcedRefreshAtMs ?? 0));
-    jwks.set(issuer, pending);
-    pending.catch(() => jwks.delete(issuer));
-    return pending;
+    try {
+      return await refresh(issuer, forcedRefreshStamp(cached));
+    } catch (error) {
+      // stale-while-revalidate: 猶予窓内の good 値があればそれで検証を続ける。
+      // 署名検証自体は必ず行われる(鍵が 1 つも無いときだけ拒否する)
+      if (isWithinGrace(cached)) {
+        return cached;
+      }
+      throw error;
+    }
   };
 
   return {
