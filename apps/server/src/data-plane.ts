@@ -352,8 +352,9 @@ export type DataOutcome<T> =
 
 const ROLE_RANK: Record<Role, number> = { reader: 1, member: 2, admin: 3, owner: 4 };
 
-/** チェーン role の下限判定(reader < member < admin < owner)。 */
-function roleAtLeast(role: Role, minimum: Role): boolean {
+/** チェーン role の下限判定(reader < member < admin < owner)。招待 API の
+ * worker 側水準判定(handlers-invites.ts)とも共有する(rank 表を増殖させない)。 */
+export function roleAtLeast(role: Role, minimum: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 

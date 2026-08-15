@@ -2659,6 +2659,152 @@ def gen_metadata_signature():
 
 
 # ---------------------------------------------------------------------------
+# 3.9 invite-accept-signature.json — §6.5 招待受諾署名(Ed25519 + §2.1 LP)
+#
+# signed_bytes = LP(domain, project_id, invite_token_hash_hex,
+#                   invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)
+#   domain = "<suite>/invite-accept"(suite の束縛はドメイン文字列 — §5.1 と同型)
+#   invite_token_hash_hex = lower_hex(SHA-256(招待トークン 256-bit 乱数))。
+#   トークン生値は署名対象にもサーバー保存にも載せない(AUTH_SPEC §15)
+#   検証鍵は署名対象自身が運ぶ invitee_sig_pub_hex(受諾署名は「この鍵ペアの
+#   保持者がこの招待にこの鍵で参加する意思」の帰属・文脈束縛 — §6.5。検証鍵を
+#   署名対象外から与える形は「宣言鍵と検証鍵の不一致」を許すため作らない)
+
+INVITE_ACCEPT_FIELDS_ORDER = [
+    "domain", "project_id", "invite_token_hash_hex",
+    "invitee_user_id", "invitee_enc_pub_hex", "invitee_sig_pub_hex",
+]
+
+
+def invite_accept_signed_bytes(ctx: dict) -> bytes:
+    return lp_encode([
+        ctx["domain"], ctx["project_id"], ctx["invite_token_hash_hex"],
+        ctx["invitee_user_id"], ctx["invitee_enc_pub_hex"], ctx["invitee_sig_pub_hex"],
+    ])
+
+
+def gen_invite_accept_signature():
+    # 受諾者は未登録ユーザー = チェーン外の新規ダミー鍵(seed は他ベクターと非重複)。
+    # 鍵すり替え・署名者不一致役は chain-entries.json の user-member-0002 と同一鍵
+    invitee = make_user(pat(0xA4, 32), pat(0xB4, 32))
+    other = make_user(pat(0x30, 32), pat(0x40, 32))  # = chain-entries user-member-0002
+
+    invite_token = pat(0xE0, 32)  # ダミー 256-bit 招待トークン生値(ハッシュ導出の検査用)
+    other_token = pat(0xF4, 32)   # 別招待のトークン(transplant-token 用)
+
+    base_ctx = {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/invite-accept",
+        "project_id": "proj-0001",
+        "invite_token_hash_hex": sha256(invite_token).hex(),
+        "invitee_user_id": "user-invitee-0004",
+        "invitee_enc_pub_hex": invitee["enc_pub_hex"],
+        "invitee_sig_pub_hex": invitee["sig_pub_hex"],
+    }
+    base_signed = invite_accept_signed_bytes(base_ctx)
+    base_sig = invitee["sig_sk"].sign(base_signed)
+
+    tampered_sig = bytearray(base_sig)
+    tampered_sig[-1] ^= 0x01
+
+    def negative(name, overrides, note, signature=None):
+        # overrides を適用した文脈で signed_bytes を再構築し、「元の署名」
+        # (signature 指定時はその署名)を検証 → 失敗すべき。検証鍵は常に
+        # 文脈内の invitee_sig_pub_hex(§6.5 の自己束縛)
+        ctx = dict(base_ctx, **overrides)
+        return {
+            "name": name,
+            "base": "basic",
+            "context": ctx,
+            "verify_signed_bytes_hex": invite_accept_signed_bytes(ctx).hex(),
+            "signature_hex": (signature if signature is not None else base_sig).hex(),
+            "verify_key_hex": ctx["invitee_sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        negative(
+            "tampered-signature",
+            {},
+            "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
+            signature=bytes(tampered_sig),
+        ),
+        negative(
+            "transplant-token",
+            {"invite_token_hash_hex": sha256(other_token).hex()},
+            "別招待(別トークンハッシュ)への受諾署名の移植は検証に失敗する(単回使用の同一招待上の衝突顕在化 — §6.5 — を署名面で支える)",
+        ),
+        negative(
+            "transplant-project",
+            {"project_id": "proj-0002"},
+            "別プロジェクトの招待への移植は検証に失敗する(project_id はサーバーが保存行から再構成する — AUTH_SPEC §15-2)",
+        ),
+        negative(
+            "transplant-invitee",
+            {"invitee_user_id": "user-member-0002"},
+            "受諾者 user_id の差し替えは同一鍵でも検証に失敗する(呼び出し主体 = invitee_user_id の受理条件を署名側でも束縛する)",
+        ),
+        negative(
+            "enc-key-mismatch",
+            {"invitee_enc_pub_hex": other["enc_pub_hex"]},
+            "enc 公開鍵のすり替えは検証に失敗する(リンク横取りの「静かな鍵すり替え」の署名面の遮断)",
+        ),
+        negative(
+            "sig-key-mismatch",
+            {"invitee_sig_pub_hex": other["sig_pub_hex"]},
+            "sig 公開鍵のすり替えは検証に失敗する(検証鍵は署名対象内の宣言鍵 — すり替えた鍵では正規受諾者の署名は通らない)",
+        ),
+        negative(
+            "wrong-signer-key",
+            {},
+            "invitee_sig_pub 以外の鍵で作った署名は検証に失敗する(署名者不一致)",
+            signature=other["sig_sk"].sign(base_signed),
+        ),
+        negative(
+            "suite-mismatch",
+            {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-accept"},
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+    ]
+
+    write(
+        "invite-accept-signature.json",
+        {
+            "description": "CRYPTO_SPEC §6.5: 招待受諾署名(Ed25519)。signed_bytes = LP(\"<suite>/invite-accept\", project_id, invite_token_hash_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)。invite_token_hash_hex = lower_hex(SHA-256(invite_token))。検証鍵は署名対象内の invitee_sig_pub_hex",
+            "signed_fields_order": INVITE_ACCEPT_FIELDS_ORDER,
+            "binary_encoding": "トークンハッシュ・invitee の enc/sig 公開鍵は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+            "invitee": {
+                "user_id": "user-invitee-0004",
+                "enc_seed_hex": pat(0xA4, 32).hex(),
+                "sig_sk_seed_hex": pat(0xB4, 32).hex(),
+                "enc_pub_hex": invitee["enc_pub_hex"],
+                "sig_pub_hex": invitee["sig_pub_hex"],
+                "key_fingerprint_hex": invitee["fp_hex"],
+                "note": "未登録ユーザーの新規ダミー鍵(チェーン外)。受諾署名の署名者",
+            },
+            "other_signer": {
+                "user_id": "user-member-0002",
+                "enc_pub_hex": other["enc_pub_hex"],
+                "sig_pub_hex": other["sig_pub_hex"],
+                "note": "鍵すり替え・署名者不一致の negative 用(chain-entries.json の user-member-0002 と同一のダミー鍵)",
+            },
+            "invite_token_hex": invite_token.hex(),
+            "invite_token_note": "ダミー 256-bit 招待トークン生値。invite_token_hash_hex = lower_hex(SHA-256(invite_token)) の導出検査用。実システムでは生値はサーバー保存・署名対象に載らない(AUTH_SPEC §15)",
+            "vectors": [
+                dict(
+                    base_ctx,
+                    name="basic",
+                    signed_bytes_hex=base_signed.hex(),
+                    signature_hex=base_sig.hex(),
+                ),
+            ],
+            "negative": negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. recovery-wrap.json — §8 リカバリーコードによる master 秘密鍵ラップ
 
 def gen_recovery_wrap():
@@ -2737,4 +2883,5 @@ if __name__ == "__main__":
     gen_dek_commitment()
     gen_value_signature()  # chain-entries.json / 上記の出力を参照するため後段で生成
     gen_metadata_signature()  # 同上(chain-entries.json を参照)
+    gen_invite_accept_signature()
     gen_recovery_wrap()

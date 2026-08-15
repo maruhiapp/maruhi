@@ -132,6 +132,8 @@ export type CryptoError =
   | { readonly kind: "SignFailed" }
   /** DEK-wrap registration signature verification failed (CRYPTO_SPEC §5.1). */
   | { readonly kind: "DekWrapSignatureInvalid" }
+  /** Invite-acceptance signature verification failed (CRYPTO_SPEC §6.5). */
+  | { readonly kind: "InviteAcceptSignatureInvalid" }
   /**
    * An unwrapped DEK does not match the chain-published commitment for its
    * (environment, epoch) coordinates (CRYPTO_SPEC §5.2 — poison wrap).

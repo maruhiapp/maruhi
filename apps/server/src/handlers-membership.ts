@@ -31,7 +31,7 @@ import {
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
 import { unwrapDataOutcome } from "./data-http.ts";
 import type { DataOutcome } from "./data-plane.ts";
-import { OrgRepo, ProjectRepo } from "./db.package/index.ts";
+import { InviteRepo, OrgRepo, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -185,6 +185,27 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           ),
         );
         const head = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
+        // AUTH_SPEC §15-2: add_member 受理時、target = invitee の accepted 招待を
+        // completed へ突合する(導出状態の更新であり真実源はチェーン。§15-4:
+        // 証跡は chain.member_added — 独立の監査イベントは書かない)。DO 受理と
+        // D1 更新は別トランザクションであり、この時点でチェーンは確定済み —
+        // 突合の D1 障害を応答へ伝播させると「成功した追記が 500 に見え、同じ
+        // 親ヘッドでの再試行が ChainHeadConflict になる」ため、ここに限り defect
+        // を握って前進する(無言の握り潰しの禁止に対する明示例外: 失敗の帰結は
+        // 「招待が accepted のまま一覧に残る」という可視・可修復な導出状態の
+        // 欠落のみで、管理者が失効で掃除できる — 欠落側に倒す)
+        if (payload.entry.op === "add_member") {
+          const target = payload.entry.payload;
+          const invites = yield* InviteRepo;
+          yield* invites
+            .completeAccepted({
+              projectId: params.projectId,
+              inviteeUserId: target.targetUserId,
+              inviteeEncPubHex: target.encPubHex,
+              inviteeSigPubHex: target.sigPubHex,
+            })
+            .pipe(Effect.catchDefect(() => Effect.void));
+        }
         return {
           projectId: params.projectId,
           headSeq: head.headSeq,

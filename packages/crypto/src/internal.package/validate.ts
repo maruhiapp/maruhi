@@ -8,7 +8,7 @@
 // コードは呼び出し側がパラメータで注入し、本モジュールは共通の検査ロジックのみを
 // 持つ。
 
-import { decodeHex } from "./bytes.ts";
+import { decodeHex, encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
@@ -29,6 +29,25 @@ export function invalidInput(field: string): {
 /** 指定文字数の hex 小文字文字列か(decodeHex は小文字のみ受理)。 */
 export function isLowercaseHexOfLength(value: string, length: number): boolean {
   return value.length === length && decodeHex(value) !== null;
+}
+
+/**
+ * Ed25519 署名の共有コア(dek-wrap-sign / invite-accept-sign の sign)。
+ * WebCrypto 署名と hex 化のみを担い、署名対象の構造検証は呼び出し側が先に行う。
+ * WebCrypto 例外の message は伝播させない(errors.ts の絶対規則)。
+ */
+export async function signEd25519Over(
+  signedBytes: Uint8Array,
+  signingKey: CryptoKey,
+): Promise<CryptoResult<string>> {
+  try {
+    const signature = new Uint8Array(
+      await crypto.subtle.sign("Ed25519", signingKey, signedBytes as BufferSource),
+    );
+    return { ok: true, value: encodeHex(signature) };
+  } catch {
+    return { ok: false, error: { kind: "SignFailed" } };
+  }
 }
 
 /**

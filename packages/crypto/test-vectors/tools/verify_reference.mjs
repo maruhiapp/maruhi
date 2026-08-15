@@ -458,6 +458,68 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- invite-accept-signature.json ---------------------------------------------
+{
+  const doc = read("invite-accept-signature.json");
+  const importSigPub = (hex) =>
+    crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  // 署名フィールド順は仕様のハードコードを正とする(dek-wrap-sig と同じ規律)
+  const signedBytes = (ctx) =>
+    lpEncode([
+      ctx.domain,
+      ctx.project_id,
+      ctx.invite_token_hash_hex,
+      ctx.invitee_user_id,
+      ctx.invitee_enc_pub_hex,
+      ctx.invitee_sig_pub_hex,
+    ]);
+  const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  const base = doc.vectors[0];
+  // invite_token_hash_hex がダミートークン生値の SHA-256 であること(導出の固定)
+  check(
+    "invite-accept-sig: token hash derivation",
+    (await sha256hex(fromHex(doc.invite_token_hex))) === base.invite_token_hash_hex,
+  );
+  // 受諾者の宣言鍵が invitee ブロックと一致(署名者 = invitee の自己束縛)
+  check(
+    "invite-accept-sig: invitee keys bound",
+    base.invitee_enc_pub_hex === doc.invitee.enc_pub_hex &&
+      base.invitee_sig_pub_hex === doc.invitee.sig_pub_hex &&
+      base.invitee_user_id === doc.invitee.user_id,
+  );
+  for (const v of doc.vectors) {
+    const bytes = signedBytes(v);
+    check(
+      `invite-accept-sig: ${v.name} signed bytes reconstruction`,
+      toHex(bytes) === v.signed_bytes_hex,
+    );
+    check(
+      `invite-accept-sig: ${v.name} domain embeds suite`,
+      v.domain === `${v.suite}/invite-accept`,
+    );
+    const ok = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(v.invitee_sig_pub_hex),
+      fromHex(v.signature_hex),
+      bytes,
+    );
+    check(`invite-accept-sig: ${v.name} Ed25519 signature`, ok);
+  }
+  for (const n of doc.negative) {
+    const reconstructed = signedBytes(n.context);
+    const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
+    // 検証鍵は常に署名対象内の宣言鍵(§6.5 の自己束縛)であることを固定する
+    const selfBound = n.verify_key_hex === n.context.invitee_sig_pub_hex;
+    const verified = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(n.verify_key_hex),
+      fromHex(n.signature_hex),
+      reconstructed,
+    );
+    check(`invite-accept-sig negative: ${n.name}`, bytesMatch && selfBound && verified === false);
+  }
+}
+
 // --- dek-commitment.json -------------------------------------------------------
 {
   const doc = read("dek-commitment.json");

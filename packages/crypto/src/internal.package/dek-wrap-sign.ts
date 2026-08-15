@@ -12,10 +12,14 @@
 // 署名の意味論は帰属であり鮮度証明ではない(タイムスタンプ・ノンスを含めない —
 // §5.1)。既存部品(Ed25519 + §2.1 LP エンコーダ)のみで構成する。
 
-import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
-import { invalidInput, isLowercaseHexOfLength, verifyEd25519Over } from "./validate.ts";
+import {
+  invalidInput,
+  isLowercaseHexOfLength,
+  signEd25519Over,
+  verifyEd25519Over,
+} from "./validate.ts";
 
 const ENC_PUB_HEX_LENGTH = 32 * 2;
 const HPKE_ENC_HEX_LENGTH = 32 * 2;
@@ -99,18 +103,7 @@ export async function signDekWrap(input: {
   if (field !== null) {
     return invalidInput(field);
   }
-  try {
-    const signature = new Uint8Array(
-      await crypto.subtle.sign(
-        "Ed25519",
-        input.signingKey,
-        buildDekWrapSignatureBytes(input.context) as BufferSource,
-      ),
-    );
-    return { ok: true, value: encodeHex(signature) };
-  } catch {
-    return { ok: false, error: { kind: "SignFailed" } };
-  }
+  return signEd25519Over(buildDekWrapSignatureBytes(input.context), input.signingKey);
 }
 
 /**

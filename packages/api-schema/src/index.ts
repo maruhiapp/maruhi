@@ -55,6 +55,16 @@ export {
   variablesGroup,
   VariableVersionSchema,
 } from "./data-api.ts";
+export {
+  InvitationSummarySchema,
+  InviteAcceptanceSchema,
+  InviteAcceptResultSchema,
+  InviteIssueResultSchema,
+  InviteRoleSchema,
+  invitesGroup,
+  InviteStatusSchema,
+  InviteTokenSchema,
+} from "./invites-api.ts";
 export { leaseGroup, LeaseRequestSchema, LeaseResponseSchema } from "./lease-api.ts";
 export {
   AuthFlowError,
@@ -77,6 +87,12 @@ export {
   EpochConflictError,
   ForbiddenError,
   ForbiddenReasonSchema,
+  InviteGoneError,
+  InviteGoneReasonSchema,
+  InviteNotFoundError,
+  InvitePendingLimitError,
+  InviteRateLimitedError,
+  InviteSignatureInvalidError,
   LeaseRateLimitedError,
   LeaseUnauthorizedError,
   LeaseUnauthorizedReasonSchema,

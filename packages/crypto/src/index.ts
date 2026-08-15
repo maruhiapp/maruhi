@@ -141,6 +141,15 @@ export {
   verifyChainWithHistory,
 } from "./internal.package/index.ts";
 
+// §6.5: 招待の暗号面 — 受諾署名(チェーン外の追加証跡。相互確認の表示は §3 の
+// fingerprintToWords、リンクアンカーは §6.3 — いずれも既存 export)
+export {
+  buildInviteAcceptSignedBytes,
+  type InviteAcceptSignatureContext,
+  signInviteAccept,
+  verifyInviteAcceptSignature,
+} from "./internal.package/index.ts";
+
 // §7: エポックとメンバーシップ変更 — export 面なし(ワークフロー規定のみ)
 
 // §8: リカバリーコード

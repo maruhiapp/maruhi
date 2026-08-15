@@ -151,6 +151,49 @@ export const projects = sqliteTable(
   (t) => [index("proj_org").on(t.orgId)],
 );
 
+export const invitations = sqliteTable(
+  "invitations",
+  {
+    /** ULID */
+    id: text("id").primaryKey(),
+    /**
+     * genesis ハッシュ(AUTH_SPEC §15-1)。projects への FK は張らない: 招待は
+     * チェーン(DO)の role で認可され、projects 行は org 帰属メタデータに
+     * すぎない(§11-3 の部分失敗修復中でも招待は成立してよい)
+     */
+    projectId: text("project_id").notNull(),
+    /**
+     * 招待トークン(提示文字列全体 `maruhi_inv_…`)の SHA-256(hex)。生値は
+     * 発行応答で一度だけ返す(§5 / §6 の PAT と同じ規律。CRYPTO_SPEC §6.5 の
+     * 「256-bit 乱数」はエントロピーの規定であり、ハッシュ入力は PAT と同じく
+     * 提示文字列の UTF-8 バイト)
+     */
+    tokenHash: text("token_hash").notNull(),
+    /** 'reader' | 'member' | 'admin'(招待経由で owner は付与しない — §15-1) */
+    role: text("role").notNull(),
+    inviterUserId: text("inviter_user_id").notNull(),
+    /** 'pending' | 'accepted' | 'completed' | 'revoked'(期限切れは expires_at からの導出) */
+    status: text("status").notNull(),
+    /** 発行 + 7 日(§15-1 起草値) */
+    expiresAt: integer("expires_at").notNull(),
+    // 受諾ブロック(status が accepted 以降 — §15-1)
+    inviteeUserId: text("invitee_user_id"),
+    inviteeEncPub: text("invitee_enc_pub"),
+    inviteeSigPub: text("invitee_sig_pub"),
+    /** CRYPTO_SPEC §6.5 の受諾署名(hex)。招待者クライアントの独立検証の材料 */
+    acceptSignature: text("accept_signature"),
+    acceptedAt: integer("accepted_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("inv_token_hash").on(t.tokenHash),
+    // pending 上限(status 条件)と一覧
+    index("inv_project_status").on(t.projectId, t.status),
+    // 発行の固定窓レート制限(created_at 範囲)
+    index("inv_project_created").on(t.projectId, t.createdAt),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // D1 側監査イベント(AUDIT_SPEC §3.1〜§3.2。保存先の裁定は §5.2 案 A)
 //
