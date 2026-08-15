@@ -99,7 +99,7 @@ api_tokens (
    - **audience 検証(2026-08-02 追加)**: 持ち込まれたトークンの検証は check-token API(`POST /applications/{client_id}/token`、Basic 認証 = client_id:client_secret)で行い、**自分の OAuth App に対して発行されたトークンであること**まで確認する。`GET /user` による有効性確認だけでは、他のアプリ向けに発行された(漏洩・流用)トークンで他人のアカウントに解決できてしまう(confused-deputy)
 5. GitHub トークンは両側で即時破棄。CLI は maruhi トークンのみを OS キーチェーンに保存する
 
-- **公開設定エンドポイント `GET /auth/config`(2026-08-03 セッション 11 裁定 B。2026-08-10 セッション 19 で実装)**: 未認証で `{ githubClientId }` を返す。client_id は公開情報(authorize URL のクエリに平文で現れる)であり、未認証面の増加は許容する(裁定 (ii))。サーバーが未設定(§3 の自己診断条件 — client_secret の未登録を含む)の場合は 503 `SetupIncomplete` を返す。**サーバー鍵 FP の公開(2026-08-12 起草)**: デプロイメント keypair(CRYPTO_SPEC §9)が設定済みの場合、応答に `serverKeyFingerprintHex` を加える — grant_server 実行時の照合対象(同 §9 のサーバー鍵確認)
+- **公開設定エンドポイント `GET /auth/config`(2026-08-03 セッション 11 裁定 B。2026-08-10 セッション 19 で実装)**: 未認証で `{ githubClientId }` を返す。client_id は公開情報(authorize URL のクエリに平文で現れる)であり、未認証面の増加は許容する(裁定 (ii))。サーバーが未設定(§3 の自己診断条件 — client_secret の未登録を含む)の場合は 503 `SetupIncomplete` を返す。**サーバー鍵 FP の公開(2026-08-12 起草。実装は 2026-08-13 の PR #63 でマージ済み)**: デプロイメント keypair(CRYPTO_SPEC §9)が設定済みの場合、応答に `serverKeyFingerprintHex` と `serverEncPubHex`(32 バイト hex)を加える — 前者は grant_server 実行時の照合対象(同 §9 のサーバー鍵確認)、後者は同 §9 の「サーバーが配布する enc 公開鍵」の配布チャネル(grant_server payload に載せる公開鍵そのもの)。どちらも公開情報であり、未設定のデプロイメントでは両フィールドとも省略する
 - **CLI の client_id 解決順**: `--github-client-id` フラグ → config の `githubClientId` → `GET /auth/config`。導入後も config の `githubClientId` は上書き手段として残す(GHES・テスト用 — 裁定 (iii))
 
 ## 5. セッション
