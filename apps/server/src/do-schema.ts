@@ -253,7 +253,14 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     },
   },
   {
-    // ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定)
+    // ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定)。
+    // 注: このステップの DDL 列名は同 PR 内で token_hash_hex → binding_key_hex に
+    // 修正した(pullfrog レビュー — 生トークンではなく signing input をハッシュ
+    // する変更に伴う改名)。末尾追記のみの規則の例外だが、本ステップは未マージ・
+    // 未デプロイで適用済みの外部 DO が存在しないため in-place 編集が正しい
+    // (rename ステップの追記は誰も持たないテーブルに恒久ノイズを残す)。
+    // ローカル wrangler dev で中間コミットを適用済みの場合のみ永続ストレージの
+    // 破棄が必要(詳細は docs/notes/session-24.md §9)
     tables: ["lease_bindings"],
     apply(sql) {
       sql.exec(LEASE_BINDINGS_DDL);
