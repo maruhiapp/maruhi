@@ -516,10 +516,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       fromHex(n.signature_hex),
       reconstructed,
     );
-    check(
-      `invite-accept-sig negative: ${n.name}`,
-      bytesMatch && selfBound && verified === false,
-    );
+    check(`invite-accept-sig negative: ${n.name}`, bytesMatch && selfBound && verified === false);
   }
 }
 
