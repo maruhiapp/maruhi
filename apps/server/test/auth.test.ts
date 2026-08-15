@@ -620,7 +620,11 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
   it("returns the configured client_id without authentication", async () => {
     const response = await SELF.fetch(`${BASE}/auth/config`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ githubClientId: env.GITHUB_CLIENT_ID });
+    // テスト既定のバインディングはサーバー鍵も設定済み(リース経路 §14 の
+    // テストが実鍵を要するため — vitest.config.ts)。client_id が未認証で
+    // 返ることがこのテストの主題であり、鍵の公開面は下の describe が固定する
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["githubClientId"]).toBe(env.GITHUB_CLIENT_ID);
   });
 
   it("returns 503 SetupIncomplete while the client_id is still the placeholder", async () => {
@@ -703,8 +707,10 @@ describe("GET /auth/config のサーバー鍵公開面(AUTH_SPEC §4 / CRYPTO_SP
   });
 
   it("omits the fields when the secret is absent (pure-E2EE deployment is the default)", async () => {
-    // テスト既定のバインディングに SERVER_ENC_KEY_IKM はない(vitest.config.ts)
-    const response = await SELF.fetch(`${BASE}/auth/config`);
+    // 既定バインディングは設定済みなので、未設定デプロイメントは env から
+    // SERVER_ENC_KEY_IKM を落として組み立てる(secret を欠いたデプロイ = 実行時 undefined)
+    const { SERVER_ENC_KEY_IKM: _omitted, ...withoutKey } = env;
+    const response = await worker.fetch(incoming(`${BASE}/auth/config`), withoutKey as typeof env);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ githubClientId: env.GITHUB_CLIENT_ID });
   });
