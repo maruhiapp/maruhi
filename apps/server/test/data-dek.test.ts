@@ -996,6 +996,94 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
     expect(full.status).toBe(200);
   });
 
+  it("rejects a cross-class recipient collision with 422 duplicate-recipient, not a defect (セキュリティレビュー A-1)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    const fpHex = await grantServer([ENV]);
+
+    // add_member の対象 user_id は意図的に存在検証されない自由文字列(AUTH_SPEC
+    // §11-1)なので、admin は「user_id = 有効 grant のサーバー鍵 FP」という
+    // メンバーをチェーンに追加できる(鍵は別物なのでメンバー鍵一意性にも
+    // 触れない)。以降この環境の完全集合は member としての fpHex 宛と server と
+    // しての fpHex 宛の両方を要求するが、保存行の主キーは (environment, epoch,
+    // recipient_user_id) なので両方は書けない
+    const encPair = await generateEncryptionKeyPair();
+    const sigPair = await generateSigningKeyPair();
+    const sockEncPubHex = encodeHex(await exportEncryptionPublicKey(encPair.publicKey));
+    const sockSigPubHex = encodeHex(await exportSigningPublicKey(sigPair.publicKey));
+    await appendOperation(fixture, OWNER, {
+      op: "add_member",
+      payload: {
+        targetUserId: fpHex,
+        encPubHex: sockEncPubHex,
+        sigPubHex: sockSigPubHex,
+        role: "member",
+      },
+    });
+
+    const dek2 = makeDek();
+    const memberWraps = await wrapDekForAll({
+      projectId,
+      environmentId: ENV,
+      epoch: 2,
+      dek: dek2,
+      recipientUserIds: ALL_MEMBERS,
+      signerUserId: MEMBER,
+    });
+    const sockWrap = await wrapDekTo({
+      projectId,
+      environmentId: ENV,
+      epoch: 2,
+      dek: dek2,
+      recipientUserId: fpHex,
+      recipientEncPubHex: sockEncPubHex,
+      signerUserId: MEMBER,
+    });
+    // 受理前の検査で 422(duplicate-recipient)に倒れること。修正前は受理段を
+    // 通過して書き込みフェーズの主キー違反 = defect(500)になっていた
+    const response = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 2,
+      deks: [
+        ...memberWraps,
+        sockWrap,
+        await serverWrap({ epoch: 2, dek: dek2, fpHex, signerUserId: MEMBER }),
+      ],
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      actorUserId: MEMBER,
+    });
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["reason"]).toBe("duplicate-recipient");
+
+    // 受理段で倒れるため書き込みフェーズには入らない(epoch 2 の行は 1 行も
+    // 作られない)。なお衝突が存在する限り完全集合は本質的に充足不能なので、
+    // ローテーション自体は塞がったまま — これは下の運用復旧で解く
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ? AND epoch = 2",
+      ENV,
+    );
+    expect(rows[0]?.["n"]).toBe(0);
+
+    // 運用復旧(レビュー A-1 の「影響と緩和要素」): 衝突メンバーを
+    // remove_member すれば完全集合が再び充足可能になり、ローテーションが通る
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: fpHex },
+    });
+    const recovered = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 2,
+      deks: [
+        ...memberWraps,
+        await serverWrap({ epoch: 2, dek: dek2, fpHex, signerUserId: MEMBER }),
+      ],
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      actorUserId: MEMBER,
+    });
+    expect(recovered.status).toBe(200);
+  });
+
   it("repairs a server wrap through delete → re-register (§12-6 の修復経路)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);

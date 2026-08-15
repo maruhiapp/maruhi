@@ -11,10 +11,12 @@
 // variableId・表示名はステートメントが運ぶため、AAD 座標検査の期待 variableId は
 // ステートメントの variableId を使う(URL に variableId を持たない唯一の値経路)。
 
-import { maruhiApi } from "@maruhi/api-schema";
+import { ForbiddenError, maruhiApi } from "@maruhi/api-schema";
+import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { statefulGetCsrfViolated } from "./auth.package/index.ts";
 import {
   callProjectData,
   checkAadCoordinates,
@@ -120,14 +122,23 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }).pipe(Effect.as(noContent)),
     )
-    .handle("pull", ({ params, endpoint }) =>
-      callProjectData<EnvironmentPullValue>()({
-        endpoint,
-        projectId: params.projectId,
-        permission: "read",
-        invoke: (stub, actor) => stub.pullEnvironment(actor, params.environmentId),
-      }).pipe(
-        Effect.map((pulled) => ({
+    .handle("pull", ({ params, endpoint, request }) =>
+      Effect.gen(function* () {
+        // GET だが変数ごとの var.read 監査の記録という状態を持つ(§12-7 /
+        // AUDIT_SPEC §3.3)— 第三者サイトが被害者のセッションで偽の var.read を
+        // 刻む監査証跡の汚染の遮断(論拠は statefulGetCsrfViolated の JSDoc)。
+        // メタデータのみモード(pullMetadata)は監査を記録しないため対象外
+        const principal = yield* (yield* RequestAuth).principal;
+        if (statefulGetCsrfViolated(principal, request.headers)) {
+          return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
+        }
+        const pulled = yield* callProjectData<EnvironmentPullValue>()({
+          endpoint,
+          projectId: params.projectId,
+          permission: "read",
+          invoke: (stub, actor) => stub.pullEnvironment(actor, params.environmentId),
+        });
+        return {
           environmentId: pulled.environmentId,
           currentEpoch: pulled.currentEpoch,
           statement: pulled.statement,
@@ -136,8 +147,8 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           ),
           deletedVariables: pulled.deletedVariables,
           deks: pulled.deks,
-        })),
-      ),
+        };
+      }),
     )
     // メタデータのみモード(§12-7): 認可は pull と同一(read × reader)。
     // 値・DEK を返さず、var.read は記録されない(AUDIT_SPEC §3.3)

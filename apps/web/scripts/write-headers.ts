@@ -38,10 +38,15 @@ const csp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+// HSTS(セキュリティレビュー L-5): workers.dev はプリロード済みだが、routes で
+// custom domain を割り当てた場合の初回接続ダウングレードを塞ぐ。includeSubDomains
+// は付けない(_headers はこのアプリの応答にしか効かず、デプロイ先ゾーンの
+// サブドメイン構成はセルフホスト側の管轄のため、越権のリスクだけがある)
 const headers = `/*
   Content-Security-Policy: ${csp}
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000
 `;
 
 writeFileSync(join(publicDir, "_headers"), headers);

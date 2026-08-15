@@ -172,13 +172,39 @@ async function capRequestBody(request: Request): Promise<Request | null> {
   });
 }
 
+/**
+ * 全応答に付ける共通セキュリティヘッダー(セキュリティレビュー L-5)。
+ * - `X-Content-Type-Options: nosniff` — JSON のみの API で HTML は返さないが、
+ *   MIME スニッフィングの余地を将来の退行込みで塞ぐ
+ * - `Cache-Control: no-store` — 応答にはトークン生値(device 交換)・暗号文・
+ *   ラップが載る。経路上のキャッシュ(ブラウザ・共有プロキシ)に残さない。
+ *   ルートが自前のキャッシュ方針を設定した場合はそちらを優先する(現状は皆無)
+ * - `Strict-Transport-Security` — API worker も routes で custom domain を
+ *   割り当てうる(セッションクッキー・OAuth フローを持つオリジン)ため、web の
+ *   `_headers` と同様に初回接続ダウングレードを塞ぐ。includeSubDomains を
+ *   付けない理由も web 側(write-headers.ts)と同じ
+ */
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("strict-transport-security", "max-age=31536000");
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "no-store");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const cappedRequest = await capRequestBody(request);
     if (cappedRequest === null) {
-      return new Response(null, { status: 413 });
+      return withSecurityHeaders(new Response(null, { status: 413 }));
     }
-    return handlerFor(env).handler(cappedRequest);
+    return withSecurityHeaders(await handlerFor(env).handler(cappedRequest));
   },
   // 期限切れセッション行の定期掃除(wrangler.jsonc の triggers.crons)。
   // resolve 時の掃除(auth.package/session.ts)は「提示された行」しか消せない

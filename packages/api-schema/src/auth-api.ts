@@ -123,7 +123,15 @@ export const authGroup = HttpApiGroup.make("auth")
   )
   .add(
     HttpApiEndpoint.get("githubCallback", "/auth/github/callback", {
-      query: { code: Schema.String, state: Schema.String },
+      // 未認証で到達でき、リクエストごとに GitHub へのアウトバウンド(code 交換。
+      // 成功時はさらに /user・/user/emails)を伴うため、クエリに明示的な上限
+      // (512 文字)を課す(device/exchange と同じ論拠 — セキュリティレビュー
+      // L-3 / 追補 3 A-6)。code の形式は OAuth 仕様が定めないため長さのみ検査
+      // する(実 GitHub の code / state はこの上限より桁違いに短い)
+      query: {
+        code: Schema.String.check(Schema.isMaxLength(512)),
+        state: Schema.String.check(Schema.isMaxLength(512)),
+      },
       success: Redirect,
       error: [AuthFlowError],
     }),
@@ -131,9 +139,21 @@ export const authGroup = HttpApiGroup.make("auth")
   .add(
     HttpApiEndpoint.post("deviceExchange", "/auth/device/exchange", {
       // 認証前に到達できる書き込み系のため、フィールドに明示的な上限を課す
-      // (D1 への肥大 JSON 蓄積の遮断。AUTH_SPEC §6)
+      // (D1 への肥大 JSON 蓄積の遮断。AUTH_SPEC §6)。
+      // 形式事前検査(AUTH_SPEC §4 — 2026-08-15): GitHub のトークンは
+      // `gh<種別 1 文字>_` プレフィックス + Base62/`_` 本体で発行される。
+      // 交換はリクエストごとにサーバーから GitHub check-token API への
+      // アウトバウンド呼び出しを伴い、その枠は OAuth App 単位のレート制限を
+      // 受けるため、形式を満たさない入力はここで落として GitHub へ出さない。
+      // これが遮断するのは無差別・形式不明の洪水までで、形式適合の洪水への
+      // 対策(per-IP レート制限)は運用側に置く(SELF_HOSTING.md — L-3)
       payload: Schema.Struct({
-        githubAccessToken: Schema.String.check(Schema.isMaxLength(512)),
+        githubAccessToken: Schema.String.check(
+          Schema.isMaxLength(512),
+          Schema.isPattern(/^gh[a-z]_[A-Za-z0-9_]+$/, {
+            description: "GitHub token (gh?_ prefix + base62 body)",
+          }),
+        ),
         tokenName: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
         scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
       }),

@@ -217,7 +217,7 @@ describe("device flow(§3.1)", () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-bogus" }),
+      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
     });
     expect(response.status).toBe(400);
     const events = await auditRows("user_audit_events");

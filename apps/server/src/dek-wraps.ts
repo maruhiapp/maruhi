@@ -20,12 +20,9 @@ export function wrapRecipientClass(ref: {
 }
 
 /**
- * (epoch × 受信者クラス × recipient) の重複検出キー。ラップの登録と削除は同じ
- * 一意性単位を共有する(書式をここに一本化し、両経路の受理境界がズレないように
- * する)。保存行の一意性は (environment, epoch, recipient_user_id) のまま。
- * member の user_id(ULID)と server の FP(hex 小文字 32 文字)は実際上
- * 形式が交わらないが、型はそれを保証しない — クラスの真実源は保存行の
- * recipient_class 列であり、削除経路は保存値との突合で守る(programs-dek)。
+ * (epoch × 受信者クラス × recipient) の重複検出キー(削除経路 — programs-dek)。
+ * クラスの真実源は保存行の recipient_class 列であり、削除経路はこのキーの
+ * 重複検出に加えて保存値とのクラス突合で守る。
  */
 export function wrapRefKey(ref: {
   readonly epoch: number;
@@ -33,6 +30,21 @@ export function wrapRefKey(ref: {
   readonly recipientUserId: string;
 }): string {
   return `${ref.epoch}:${wrapRecipientClass(ref)}:${ref.recipientUserId}`;
+}
+
+/**
+ * **登録経路**の重複検出キー = 保存行の一意性単位 (environment, epoch,
+ * recipient_user_id) と同粒度(クラスを含まない)。member の user_id(ULID)と
+ * server の FP(hex 小文字 32 文字)は実際上形式が交わらないが、add_member の
+ * 対象 user_id は意図的に存在検証されない自由文字列(AUTH_SPEC §11-1)なので
+ * 型も合意規則もそれを保証しない。クラス込みのキーで検査すると「member の
+ * user_id = 有効 grant のサーバー鍵 FP」の衝突集合が受理段を通過し、書き込み
+ * フェーズの主キー違反 = defect(500)で当該環境のローテーション・作成が
+ * 塞がる — セキュリティレビュー(2026-08-14)A-1。受理前にここで 422
+ * (duplicate-recipient)に倒す。
+ */
+function wrapStorageKey(ref: { readonly epoch: number; readonly recipientUserId: string }): string {
+  return `${ref.epoch}:${ref.recipientUserId}`;
 }
 
 /**
@@ -112,7 +124,9 @@ function checkOneWrap(
   if (recipientRejection !== null) {
     return recipientRejection;
   }
-  const key = wrapRefKey(wrap);
+  // 保存粒度(クラス無視)での重複検出。クラス違いの同一 (epoch, recipient) も
+  // 保存行としては共存できないため、同一クラスの重複と同じ理由で拒否する
+  const key = wrapStorageKey(wrap);
   if (seen.has(key)) {
     return { kind: "dek-wrap-rejected", reason: "duplicate-recipient" };
   }

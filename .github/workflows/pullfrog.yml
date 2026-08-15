@@ -21,12 +21,15 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # 外部 action は commit SHA でピン留めする(release.yml と同じ規律。
+      # 多数のプロバイダ API キーを env で渡す特権経路のため、可変タグ経由の
+      # 上流侵害を排除する)。更新はタグではなく SHA の差し替えで行うこと
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 1
       - name: Run agent
-        uses: pullfrog/pullfrog@v0
+        uses: pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90 # v0.1.57
         with:
           prompt: ${{ inputs.prompt }}
         env:

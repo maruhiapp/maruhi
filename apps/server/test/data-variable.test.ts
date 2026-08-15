@@ -5,6 +5,7 @@
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
+import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,7 +14,7 @@ import {
   MAX_VERSIONS_PER_VARIABLE,
 } from "../src/policy.ts";
 import { projectBytesExceeded } from "../src/quotas.ts";
-import { deviceToken } from "./support/auth.ts";
+import { deviceToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
   encryptValue,
@@ -23,6 +24,7 @@ import {
 } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
+  dataUrl,
   deleteEnvironmentRequest,
   MEMBER,
   OWNER,
@@ -633,5 +635,53 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
     expect(removed.status).toBe(204);
     const gone = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
     expect(gone.status).toBe(404);
+  });
+});
+
+describe("セッション主体の一括 pull の CSRF ヘッダー(§12-7 — セキュリティレビュー L-1)", () => {
+  it("requires the CSRF header for session pulls with values; bearer and metadata-only are exempt", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const session = await loginSession(9001);
+    const headers = sessionHeaders(session);
+
+    // ヘッダーなしのセッション pull(値付き)は 403。Lax クッキーはクロスサイトの
+    // トップレベル遷移でも同送されるため、これを許すと第三者サイトが被害者の
+    // セッションで偽の var.read を刻める(監査証跡の汚染)
+    const withoutCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), {
+      headers: { cookie: headers["cookie"] ?? "" },
+    });
+    expect(withoutCsrf.status).toBe(403);
+    const body = (await withoutCsrf.json()) as Record<string, unknown>;
+    expect(body["reason"]).toBe("csrf-header-required");
+
+    // 拒否された pull は var.read を 1 行も記録しない(読んでいないものを
+    // 読んだと記録しない — AUDIT_SPEC §3.3)
+    const reads = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
+    );
+    expect(reads[0]?.["n"]).toBe(0);
+
+    // ヘッダーありのセッション pull は従来どおり 200 で、今度は var.read が
+    // 記録される(positive control — 監査記録経路そのものが生きていることの裏取り)
+    const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
+    expect(withCsrf.status).toBe(200);
+    const readsAfter = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
+    );
+    expect(readsAfter[0]?.["n"]).toBe(1);
+
+    // Bearer はクロスサイトで付与できないため対象外(ヘッダーなしで 200)
+    const bearerPull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(bearerPull.status).toBe(200);
+
+    // メタデータのみモードは var.read を記録しないため対象外(セッション +
+    // ヘッダーなしで 200 — §12-7)
+    const metadata = await SELF.fetch(dataUrl(`/environments/${ENV}/pull/metadata`), {
+      headers: { cookie: headers["cookie"] ?? "" },
+    });
+    expect(metadata.status).toBe(200);
   });
 });

@@ -58,7 +58,7 @@ function fakeGitHub(input: {
 
 describe("maruhi login", () => {
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
-    const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github-token-value" });
+    const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);
     let receivedGithubToken = "";
     let receivedTokenName = "";
@@ -94,7 +94,7 @@ describe("maruhi login", () => {
     expect(env.logs.join("\n")).toContain("ABCD-1234");
     expect(env.logs.join("\n")).toContain("https://github.example/login/device");
     // GitHub トークンはサーバーへ渡され、キーチェーンには保存されない(§4-5)
-    expect(receivedGithubToken).toBe("gho_github-token-value");
+    expect(receivedGithubToken).toBe("gho_github_token_value");
     expect(receivedTokenName).toBe("cli-test");
     const stored = env.keychain.get(tokenEntryName(maruhi.origin));
     expect(stored).toBeDefined();
@@ -103,7 +103,7 @@ describe("maruhi login", () => {
       userId: "user-0001",
       tokenId: "tok_1",
     });
-    expect(stored).not.toContain("gho_github-token-value");
+    expect(stored).not.toContain("gho_github_token_value");
     // トークン生値は端末出力にも出ない
     expect(env.logs.join("\n")).not.toContain("maruhi_pat_issued");
   });

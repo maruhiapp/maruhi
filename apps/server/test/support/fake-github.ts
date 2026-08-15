@@ -10,13 +10,15 @@
 // - check-token(POST /applications/{client_id}/token)は Basic 認証 + 自 App 発行
 //   トークンのみ 200(それ以外 404)
 //
-// 決定論的な対応: code-<n> → gh-token-<n> → GitHub user { id: n, login: user<n> }。
+// 決定論的な対応: code-<n> → gho_test<n> → GitHub user { id: n, login: user<n> }
+// (実 GitHub の OAuth トークンと同じ `gho_` プレフィックス形 — device/exchange の
+// ワイヤ Schema がこの形式を要求するため、フェイクも実形式に合わせる)。
 // メール応答は ID 帯で分岐(§3-3 の verified/primary フィルタを判別可能にする):
 //   通常        → [{ primary: true, verified: true }]
 //   666         → verified: false のみ
 //   667         → primary: false のみ
 //   668         → /user/emails が 404(user:email スコープなし相当)
-// 自 App 外トークン: gh-token-other-app-<n>(/user では有効、check-token では 404)。
+// 自 App 外トークン: gho_otherapp<n>(/user では有効、check-token では 404)。
 //
 // GitHub Actions の OIDC issuer(AUTH_SPEC §14-1 のリース経路)も同じ
 // outboundService が受ける — discovery / JWKS は support/oidc-issuer.ts。
@@ -42,7 +44,7 @@ function formEncodedFallback(request: OutboundRequest): Response | null {
   if ((request.headers.get("accept") ?? "").includes("application/json")) {
     return null;
   }
-  return new Response("access_token=gh-token-0&token_type=bearer", {
+  return new Response("access_token=gho_test0&token_type=bearer", {
     headers: { "content-type": "application/x-www-form-urlencoded" },
   });
 }
@@ -60,7 +62,7 @@ function exchangeCodeResponse(params: URLSearchParams): Response {
   // GitHub は不正 code でも 200 + error ボディを返す(実挙動に合わせる)
   return match === null
     ? json({ error: "bad_verification_code" })
-    : json({ access_token: `gh-token-${match[1]}` });
+    : json({ access_token: `gho_test${match[1]}` });
 }
 
 async function exchangeCode(request: OutboundRequest): Promise<Response> {
@@ -74,7 +76,7 @@ async function exchangeCode(request: OutboundRequest): Promise<Response> {
 /** Bearer トークンから GitHub ユーザー ID を引く(other-app トークンも /user では有効)。 */
 function githubUserId(request: OutboundRequest): number | null {
   const auth = request.headers.get("authorization") ?? "";
-  const match = /^Bearer gh-token-(?:other-app-)?(\d+)$/.exec(auth);
+  const match = /^Bearer gho_(?:test|otherapp)(\d+)$/.exec(auth);
   return match === null ? null : Number(match[1]);
 }
 
@@ -130,7 +132,7 @@ function checkAppToken(
   if (!basicAuthMatches(request, clientIdFromPath)) {
     return json({ message: "Bad credentials" }, 401);
   }
-  const match = /^gh-token-(\d+)$/.exec(body.access_token ?? "");
+  const match = /^gho_test(\d+)$/.exec(body.access_token ?? "");
   if (match === null) {
     // 他 App 発行・不正トークンはいずれも 404(実 GitHub の挙動)
     return json({ message: "Not Found" }, 404);

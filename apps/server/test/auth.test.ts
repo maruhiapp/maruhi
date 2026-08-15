@@ -60,16 +60,25 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
       redirect: "manual",
     });
     expect(callback.status).toBe(302);
-    const cookie = callback.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE}=`));
+    // Set-Cookie は 2 本(セッションの付与 + state の失効)がそのまま残ること。
+    // 応答は index.ts の withSecurityHeaders(new Headers コピー → new Response)
+    // を通るため、複数 Set-Cookie の保全はここで固定する(L-5 の退行ガード)
+    const setCookies = callback.headers.getSetCookie();
+    expect(setCookies).toHaveLength(2);
+    const cookie = setCookies.find((c) => c.startsWith(`${SESSION_COOKIE}=`));
     expect(cookie).toBeDefined();
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("Secure");
     expect(cookie).toContain("Path=/");
     expect(cookie).toContain("SameSite=Lax");
     expect(cookie).toContain("Max-Age=2592000");
+    // state クッキーは失効される(§3-2 の使い捨て)
+    const stateCookie = setCookies.find((c) => c.startsWith(`${STATE_COOKIE}=`));
+    expect(stateCookie).toBeDefined();
+    expect(stateCookie).toContain("Max-Age=0");
   });
 
-  it("creates the user + personal org, issues a DB-backed session and clears the state cookie", async () => {
+  it("creates the user + personal org and issues a DB-backed session", async () => {
     const session = await loginSession(101);
     expect(session).toMatch(/^[0-9a-f]{64}$/);
 
@@ -161,6 +170,20 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects an oversized code at the wire schema, before any outbound call (追補 3 A-6)", async () => {
+    // code / state クエリの 512 文字上限(api-schema)。超過はワイヤ Schema の
+    // 400 で落ち、ハンドラ(= GitHub への code 交換)に到達しない — 到達して
+    // いれば fake GitHub 経由で code-exchange-failed になるので、その不在が
+    // 遮断位置の裏取りになる
+    const state = "ab".repeat(16);
+    const response = await SELF.fetch(
+      `${BASE}/auth/github/callback?code=${"c".repeat(513)}&state=${state}`,
+      { headers: { cookie: `${STATE_COOKIE}=${state}` }, redirect: "manual" },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain("code-exchange-failed");
+  });
+
   it("rejects an invalid authorization code with 400 (code-exchange-failed)", async () => {
     const state = "ab".repeat(16);
     const response = await SELF.fetch(
@@ -178,7 +201,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-201" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test201" }),
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { token: string; tokenId: string; userId: string };
@@ -201,7 +224,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "not-a-token" }),
+      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
     });
     expect(response.status).toBe(400);
     const body = (await response.json()) as { reason: string };
@@ -209,12 +232,12 @@ describe("POST /auth/device/exchange(§4)", () => {
   });
 
   it("rejects a token issued to a different OAuth App (§4-4 audience 検証)", async () => {
-    // フェイク GitHub: gh-token-other-app-* は /user では有効だが check-token では 404。
+    // フェイク GitHub: gho_otherapp* は /user では有効だが check-token では 404。
     // /user 検証止まりの実装(confused-deputy)ではこのテストが緑にならない
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-other-app-201" }),
+      body: JSON.stringify({ githubAccessToken: "gho_otherapp201" }),
     });
     expect(response.status).toBe(400);
     const body = (await response.json()) as { reason: string };
@@ -249,7 +272,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const first = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "seed" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "seed" }),
     });
     expect(first.status).toBe(200);
     const { userId } = (await first.json()) as { userId: string };
@@ -264,7 +287,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const overflow = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "one-too-many" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "one-too-many" }),
     });
     expect(overflow.status).toBe(429);
 
@@ -272,7 +295,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     const rotate = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-204", tokenName: "seed" }),
+      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "seed" }),
     });
     expect(rotate.status).toBe(200);
   });
@@ -283,7 +306,7 @@ describe("POST /auth/device/exchange(§4)", () => {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({
-        githubAccessToken: "gh-token-205",
+        githubAccessToken: "gho_test205",
         scopes: Array.from({ length: 101 }, () => ({ project: "*", permission: "read" })),
       }),
     });
@@ -294,7 +317,7 @@ describe("POST /auth/device/exchange(§4)", () => {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({
-        githubAccessToken: "gh-token-205",
+        githubAccessToken: "gho_test205",
         scopes: [{ project: "x".repeat(500_000), permission: "read" }],
       }),
     });
@@ -304,9 +327,27 @@ describe("POST /auth/device/exchange(§4)", () => {
     const longName = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gh-token-205", tokenName: "n".repeat(129) }),
+      body: JSON.stringify({ githubAccessToken: "gho_test205", tokenName: "n".repeat(129) }),
     });
     expect(longName.status).toBe(400);
+  });
+
+  it("rejects a malformed GitHub token before any outbound call (§4 形式事前検査 — L-3)", async () => {
+    // gh?_ プレフィックス形式を満たさない入力はワイヤ Schema で 400。ハンドラに
+    // 到達しないため auth.login_failed も記録されない = GitHub check-token API
+    // へのアウトバウンド呼び出しの前で落ちていることの裏取り(形式適合の
+    // 不正トークンが従来どおりハンドラ経由で 400 + login_failed になることは
+    // 上の "rejects an invalid GitHub token" と audit-d1.test.ts が固定する)
+    const malformed = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "not-a-github-token" }),
+    });
+    expect(malformed.status).toBe(400);
+    const failedRows = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
+    ).first<{ n: number }>();
+    expect(failedRows?.n).toBe(0);
   });
 });
 
@@ -660,7 +701,7 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
         method: "POST",
         headers: JSON_HEADERS,
         // ガードはトークン検証より先に走る(値は Schema を満たせば何でもよい)
-        body: JSON.stringify({ githubAccessToken: "gh-token-901" }),
+        body: JSON.stringify({ githubAccessToken: "gho_test901" }),
       }),
       missing as typeof env,
     );
@@ -729,5 +770,39 @@ describe("GET /auth/config のサーバー鍵公開面(AUTH_SPEC §4 / CRYPTO_SP
       expect(body["serverKeyFingerprintHex"]).toBeUndefined();
       expect(body["serverEncPubHex"]).toBeUndefined();
     }
+  });
+});
+
+describe("共通セキュリティヘッダー(index.ts withSecurityHeaders — セキュリティレビュー L-5)", () => {
+  it("attaches nosniff / no-store / HSTS to every API response, including errors", async () => {
+    // 応答にはトークン生値・暗号文・ラップが載る経路があるため、全応答に
+    // nosniff + no-store を付与する。HSTS は API worker にも custom domain を
+    // routes で割り当てうるため(セッションクッキー・OAuth フローを持つ
+    // オリジン)、web の _headers と同様に付ける
+    const response = await SELF.fetch(`${BASE}/auth/config`);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("strict-transport-security")).toBe("max-age=31536000");
+    // エラー応答(未認証 401)にも同じヘッダーが付く
+    const unauthorized = await SELF.fetch(`${BASE}/auth/me`);
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(unauthorized.headers.get("cache-control")).toBe("no-store");
+    expect(unauthorized.headers.get("strict-transport-security")).toBe("max-age=31536000");
+  });
+
+  it("attaches the headers to the pre-router 413 path too (capRequestBody)", async () => {
+    // HTTP 境界の生ボディ上限(8 MiB)超過はルーター前の素の 413 で返る。
+    // この経路も withSecurityHeaders を通ることを固定する
+    const oversized = new Uint8Array(8 * 1024 * 1024 + 1);
+    const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: oversized,
+    });
+    expect(response.status).toBe(413);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("strict-transport-security")).toBe("max-age=31536000");
   });
 });
