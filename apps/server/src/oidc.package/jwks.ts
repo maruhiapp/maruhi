@@ -51,7 +51,12 @@ const FORCED_REFRESH_COOLDOWN_MS = 60 * 1000;
  */
 const STALE_GRACE_MS = 6 * 60 * 60 * 1000;
 
-/** 取得したドキュメントのサイズ上限(肥大応答によるメモリ消費の遮断)。 */
+/**
+ * 取得したドキュメントのサイズ上限(**バイト**)。実測バイト数で打ち切る —
+ * `Response.text()` の結果長は UTF-16 コード単位であってバイト数ではなく、
+ * かつその時点で本体はすでに全部メモリに載っている。ストリームを読みながら
+ * 閾値超過で中断することで、初めて「肥大応答によるメモリ消費の遮断」になる。
+ */
 const MAX_DOCUMENT_BYTES = 256 * 1024;
 
 /**
@@ -71,9 +76,9 @@ export interface JwksCacheShape {
   /**
    * issuer の JWKS から `kid` に対応する検証鍵を解決する。未知 kid は
    * クールダウン内で 1 度だけ強制リフレッシュしてから判定する(鍵ローテーション
-   * 追随)。見つからなければ null(= 401 unknown-key)、取得自体に失敗したら
-   * "jwks-unavailable"(= 503。理由は読まれず 503 へ写るだけなので、
-   * server-key.ts の ResealFailure と同じ文字列リテラルの形にしている)。
+   * 追随)。見つからなければ null(= 401 unknown-key)、使える鍵が 1 つも
+   * 得られなければ "jwks-unavailable"(= 503。理由は読まれず 503 へ写るだけ
+   * なので、server-key.ts の ResealFailure と同じ文字列リテラルの形にしている)。
    */
   readonly resolveKey: (
     issuer: string,
@@ -92,19 +97,46 @@ interface CachedDiscovery {
   readonly fetchedAtMs: number;
 }
 
+/** 上限バイトまで読み、超えたら中断する(超過は例外)。 */
+async function readWithinLimit(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    total += value.length;
+    if (total > MAX_DOCUMENT_BYTES) {
+      await reader.cancel();
+      throw new Error("jwks fetch: document too large");
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
 async function fetchJson(url: string): Promise<unknown> {
   const response = await fetch(url, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    // **リダイレクトを追わない**: `jwks_uri` を issuer と同一オリジンに固定する
+    // 検査(jwksUriOf)は明示的なセキュリティ制御であり、その URL が別オリジンへ
+    // 302 したら追従してしまっては固定が抜ける。3xx は ok=false で拒否される
+    redirect: "manual",
   });
-  if (!response.ok) {
+  if (!response.ok || response.body === null) {
     throw new Error("jwks fetch: non-ok response");
   }
-  const text = await response.text();
-  if (text.length > MAX_DOCUMENT_BYTES) {
-    throw new Error("jwks fetch: document too large");
-  }
-  return JSON.parse(text) as unknown;
+  const bytes = await readWithinLimit(response.body);
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
 }
 
 /**

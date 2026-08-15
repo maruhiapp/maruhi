@@ -37,7 +37,10 @@ import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 function claimsDigestFor(token: VerifiedOidcToken): Effect.Effect<string, LeaseUnauthorizedError> {
   const audience = token.audiences.length === 1 ? token.audiences[0] : undefined;
   if (audience === undefined) {
-    return Effect.fail(new LeaseUnauthorizedError({ reason: "missing-claim" }));
+    // `aud` は存在する(複数あるだけ)ので missing-claim ではない — 運用者が
+    // 理由コードを頼りに「存在する claim」を探しに行かないよう別語彙にする
+    // (pullfrog 指摘 — PR #65)
+    return Effect.fail(new LeaseUnauthorizedError({ reason: "ambiguous-audience" }));
   }
   return Effect.flatMap(
     Effect.promise(() =>

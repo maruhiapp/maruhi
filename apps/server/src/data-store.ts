@@ -246,15 +246,21 @@ interface DataStoreShape {
     serverKeyFingerprintHex: string,
   ) => Effect.Effect<readonly StoredServerWrap[]>;
   /**
-   * 固定窓カウンタの参照・更新(§14-3 / AUDIT_SPEC §3.5)。窓が切れていれば
-   * 開始時刻を now に巻き直して 1 から数え直す。DO の permit 下で直列化されて
-   * いるため read-modify-write の競合は起きない。
+   * 固定窓の**判定のみ**(消費しない — §14-3 / AUDIT_SPEC §3.5)。窓が切れて
+   * いれば 0 から数え直した扱いになる。判定と消費を分けているのは、
+   * 「窓を消費してよいのは実際に発行した(記録した)ときだけ」という規律を
+   * 呼び出し側で表現するため(pullfrog 指摘 — PR #65)。
    */
-  readonly consumeLeaseWindow: (
+  readonly checkLeaseWindow: (
     kind: LeaseWindowKind,
     limit: number,
     nowMs: number,
   ) => Effect.Effect<LeaseWindowDecision>;
+  /**
+   * 固定窓の消費(1 件計上)。窓が切れていれば開始時刻を now に巻き直す。
+   * DO の permit 下で直列化されているため、判定 → 消費の間に割り込みはない。
+   */
+  readonly recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => void;
 
   readonly write: DataWriteOps;
 }
@@ -724,34 +730,53 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         recipientUserId: serverKeyFingerprintHex,
       }).map((row) => wrapBodyOf(row)),
     ),
-  consumeLeaseWindow: (kind: LeaseWindowKind, limit: number, nowMs: number) =>
+  checkLeaseWindow: (kind: LeaseWindowKind, limit: number, nowMs: number) =>
     Effect.sync(() => {
-      const row = sql
-        .exec("SELECT window_start, count FROM lease_windows WHERE kind = ?", kind)
-        .toArray()[0];
-      const windowStart = row === undefined ? 0 : numberColumn(row, "window_start");
-      const count = row === undefined ? 0 : numberColumn(row, "count");
-      const elapsed = nowMs - windowStart;
-      if (row === undefined || elapsed >= LEASE_WINDOW_MS || elapsed < 0) {
-        // 窓切れ、初回、または時計が巻き戻った場合は now から数え直す
-        sql.exec(
-          `INSERT INTO lease_windows (kind, window_start, count) VALUES (?, ?, 1)
-           ON CONFLICT(kind) DO UPDATE SET window_start = excluded.window_start, count = 1`,
-          kind,
-          nowMs,
-        );
+      const current = leaseWindowRow(sql, kind, nowMs);
+      // 窓切れ・初回・時計の巻き戻しはいずれも「0 から数え直し」= 常に許可
+      if (current === null || current.count < limit) {
         return { allowed: true, retryAfterSeconds: 0 };
       }
-      if (count >= limit) {
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.ceil((LEASE_WINDOW_MS - elapsed) / 1000),
-        };
-      }
-      sql.exec("UPDATE lease_windows SET count = count + 1 WHERE kind = ?", kind);
-      return { allowed: true, retryAfterSeconds: 0 };
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.ceil((LEASE_WINDOW_MS - current.elapsed) / 1000),
+      };
     }),
+  recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => {
+    if (leaseWindowRow(sql, kind, nowMs) === null) {
+      sql.exec(
+        `INSERT INTO lease_windows (kind, window_start, count) VALUES (?, ?, 1)
+         ON CONFLICT(kind) DO UPDATE SET window_start = excluded.window_start, count = 1`,
+        kind,
+        nowMs,
+      );
+      return;
+    }
+    sql.exec("UPDATE lease_windows SET count = count + 1 WHERE kind = ?", kind);
+  },
 });
+
+/**
+ * 現在有効な固定窓の行(窓切れ・初回・時計の巻き戻しは null = 数え直し)。
+ * 判定と消費が同じ「有効な窓」の定義を共有するための 1 箇所。
+ */
+function leaseWindowRow(
+  sql: SqlStorage,
+  kind: LeaseWindowKind,
+  nowMs: number,
+): { readonly count: number; readonly elapsed: number } | null {
+  const row = sql
+    .exec("SELECT window_start, count FROM lease_windows WHERE kind = ?", kind)
+    .toArray()[0];
+  if (row === undefined) {
+    return null;
+  }
+  const elapsed = nowMs - numberColumn(row, "window_start");
+  if (elapsed >= LEASE_WINDOW_MS || elapsed < 0) {
+    return null;
+  }
+  return { count: numberColumn(row, "count"), elapsed };
+}
 
 /**
  * ラップ行の共通 SELECT(配布とリース材料で列だけが違う)。並びは epoch 昇順。

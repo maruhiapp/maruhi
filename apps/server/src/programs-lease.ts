@@ -11,7 +11,11 @@
 //
 // 判定順(§14-3。OIDC 検証は worker 側で完了済み = ここは認可以降):
 //   1. チェーン導出の有効 grant(サーバー鍵 FP で同定)+ lease_policy の
-//      存在量化 + 開示スコープ → いずれの不一致も一律 404(§11-2 の存在秘匿)
+//      存在量化 + 開示スコープ → いずれの不一致も一律 404(§11-2 の存在秘匿)。
+//      **区別できないのは応答(ステータス + ボディ)であってレイテンシではない**:
+//      未知プロジェクトはストレージ 1 読みで短絡し、実在プロジェクトはチェーン
+//      検証と監査書き込みを行うため測定可能な差がある。タイミングは脅威モデル外
+//      (未認証面で定数時間を狙うのは非現実的)という判断(pullfrog 指摘)
 //   2. 環境の存在(削除済みは 404 — §12-4 と同じ扱い)
 //   3. レート制限(429)— 認可の後(errors/lease.ts の論拠)
 //   4. サーバー宛ラップの存在(欠落 = 503 server-wraps-missing)
@@ -83,7 +87,7 @@ export type LeaseOutcome =
 const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
-    const decision = yield* store.consumeLeaseWindow(
+    const decision = yield* store.checkLeaseWindow(
       "denied",
       MAX_LEASE_DENIED_ROWS_PER_WINDOW,
       nowMs,
@@ -93,6 +97,7 @@ const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
     }
     const audit = yield* AuditStore;
     yield* Effect.sync(() => {
+      store.recordLeaseWindowUse("denied", nowMs);
       audit.appendSync({
         event: "server.lease_denied",
         serverTs: nowMs,
@@ -132,9 +137,13 @@ export const leaseProgram = (
       });
     }
     // 未初期化プロジェクトは監査を残さず 404 にする: 未認証経路が任意の
-    // プロジェクト ID で DO 行を作れると、監査ログの肥大 DoS になる
-    // (プロジェクト ID は genesis ハッシュ = 実質ケーパビリティであり、
-    // 存在するプロジェクトへのプローブは下の固定窓上限が束縛する)
+    // プロジェクト ID で DO 行を作れると、監査ログの肥大 DoS になる。
+    // プロジェクト ID は genesis ハッシュ = 実質ケーパビリティであり推測できない。
+    // **なお下の固定窓が束縛するのは監査行の本数であってプローブ自体ではない**
+    // (許可 issuer の有効トークンを 1 枚持つ者は、既知のプロジェクト ID へ
+    // 要求を繰り返してチェーン導出のコストを課し、100 行/時を使い切った後は
+    // 以降の拒否が記録されない状態を作れる)。要求レート自体の上限は未実装で、
+    // AUDIT_SPEC §3.5 の記録上限とは別の設計判断として申し送る(pullfrog 指摘)
     const chain = yield* loadInitializedChain.pipe(
       Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
     );
@@ -163,9 +172,14 @@ export const leaseProgram = (
       }),
     );
 
-    // 3. レート制限(認可の後 — 存在秘匿のため。errors/lease.ts)
+    // 3. レート制限の**判定**(認可の後 — 存在秘匿のため。errors/lease.ts)。
+    // 消費は「実際にリースを発行したとき」だけ行う(下の 6)。ここで消費すると、
+    // サーバー宛ラップ欠落(4)や開封失敗(5)で 503 になるプロジェクトの CI が
+    // 再試行のたびに枠を食い、300 回目以降は「直せる診断」である 503 が無関係な
+    // 429 に化ける — §14-3 が 503 をわざわざ設けた意図が打ち消される
+    // (pullfrog 指摘 — PR #65)
     const store = yield* DataStore;
-    const window = yield* store.consumeLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
+    const window = yield* store.checkLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
     if (!window.allowed) {
       yield* recordDenied("rate-limited", facts.claimsDigestHex, nowMs);
       return yield* Effect.fail<LeaseRejection>({
@@ -238,6 +252,8 @@ export const leaseProgram = (
     // ワークロードへの開示は server.* 系が担う — §14-4)
     const audit = yield* AuditStore;
     yield* Effect.sync(() => {
+      // 6. 窓の消費は発行と同一同期ブロックで(記録した分だけ数える)
+      store.recordLeaseWindowUse("issued", nowMs);
       audit.appendManySync([
         ...leases.map((lease) => ({
           event: "server.dek_unwrapped",

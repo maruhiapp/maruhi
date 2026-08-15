@@ -35,6 +35,7 @@ import { hexBytes, wrapDekToServer } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
+  deleteEnvironmentRequest,
   OWNER,
   projectId,
   requestJson,
@@ -212,9 +213,11 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     expect(response.status).toBe(200);
     const body = (await response.json()) as LeaseBody;
 
-    // 応答はチェーンを同梱する(非メンバーはチェーン API から 404 — §11-2)
-    expect(body.chain.length).toBeGreaterThan(0);
-    expect(body.headSeq).toBeGreaterThan(0);
+    // 応答はチェーンを同梱する(非メンバーはチェーン API から 404 — §11-2)。
+    // 長さはフィクスチャから正確に決まるので値で固定する(pullfrog 指摘)
+    const stored = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries");
+    expect(body.chain.length).toBe(stored[0]?.["n"]);
+    expect(body.headSeq).toBe(body.chain.length);
     expect(body.currentEpoch).toBe(1);
 
     // リースラップは登録署名も署名者情報も持たない(サーバー生成・応答スコープ
@@ -356,6 +359,18 @@ describe("ワークロードリース: OIDC 検証(§14-1 の認証段 — 401)"
     });
   }
 
+  it("rejects a multi-audience token with ambiguous-audience, not missing-claim", async () => {
+    // `aud` は存在する(複数あるだけ)。運用者が理由コードを頼りに存在する
+    // claim を探しに行かないよう別語彙にしてある(pullfrog 指摘)
+    const workload = await workloadKeyPair();
+    const response = await requestLease({
+      oidcToken: await makeOidcToken({ audience: [LEASE_AUDIENCE, "https://other.example"] }),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ reason: "ambiguous-audience" });
+  });
+
   it("records no lease_denied for tokens that fail signature verification (AUDIT_SPEC §3.5)", async () => {
     const workload = await workloadKeyPair();
     await requestLease({
@@ -464,6 +479,54 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
     expect(rows[0]?.["n"]).toBe(0);
   });
 
+  it("hides a deleted environment that is still inside the disclosure scope", async () => {
+    // 判定順コメントが列挙する 5 つの 404 分岐のうち、これだけ未検証だった
+    // (pullfrog 指摘)。スコープには入っているが tombstone 済みの環境
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await grantServer({ scope: [ENV] });
+    await backfillServerWrap(1, dek);
+    const deleted = await deleteEnvironmentRequest(fixture, ENV, OWNER);
+    expect(deleted.status).toBe(204);
+    const workload = await workloadKeyPair();
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("returns a byte-identical 404 body for every cause (存在秘匿の中核)", async () => {
+    // 各ケースがステータスコードしか見ていないと、将来どれか 1 分岐に
+    // フィールドが増えても検出できない(pullfrog 指摘)。本 PR の中核主張なので
+    // ボディまで同一であることを 1 本で固定する
+    const workload = await workloadKeyPair();
+    const bodyOf = async (environmentId?: string): Promise<string> => {
+      const response = await requestLease({
+        oidcToken: await makeOidcToken(),
+        ephemeralPubHex: workload.publicKeyHex,
+        ...(environmentId === undefined ? {} : { environmentId }),
+      });
+      expect(response.status).toBe(404);
+      return response.text();
+    };
+
+    // (a) 未知プロジェクト(そもそも初期化されていない)
+    const bodies = [await bodyOf()];
+    // (b) grant なし
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    bodies.push(await bodyOf());
+    // (c) ポリシー不一致(空ポリシー = リース経路なし)
+    await grantServer({ scope: [ENV], leasePolicy: [] });
+    await backfillServerWrap(1, dek);
+    bodies.push(await bodyOf());
+    // (d) スコープ外 / 未作成の環境
+    bodies.push(await bodyOf("env-never-created-0009"));
+
+    expect(new Set(bodies).size).toBe(1);
+    // ボディが運ぶのは呼び出し元自身の入力(projectId)の反響のみ
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ _tag: "ProjectNotFound", projectId });
+  });
+
   it("authorizes when any policy element matches (existential — §14-1)", async () => {
     // 一致しない要素が先頭にあっても、後続の一致する要素で認可される
     const dek = await createEnvironmentOk(fixture, ENV, "App");
@@ -559,6 +622,17 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
   });
 });
 
+/** 変数 1 本 + エポック 2 まで進め、grant と全エポックのバックフィルを済ませる。 */
+async function twoEpochProject(): Promise<{ readonly fpHex: string }> {
+  const dek1 = await createEnvironmentOk(fixture, ENV, "App");
+  await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
+  const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
+  const fpHex = await grantServer({ scope: [ENV] });
+  await backfillServerWrap(1, dek1);
+  await backfillServerWrap(2, dek2);
+  return { fpHex };
+}
+
 describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)", () => {
   it("returns 503 server-wraps-missing when the grant is valid but the re-wrap is pending", async () => {
     // grant はあるがバックフィルしていない = CRYPTO_SPEC §7 の再ラップ未了。
@@ -593,18 +667,8 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
     expect(await response.json()).toMatchObject({ reason: "server-wraps-missing" });
   });
 
-  it("records dek_unwrapped per epoch and lease_issued once per environment, and no var.read", async () => {
-    const dek1 = await createEnvironmentOk(fixture, ENV, "App");
-    await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
-    const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
-    const fpHex = await grantServer({ scope: [ENV] });
-    await backfillServerWrap(1, dek1);
-    await backfillServerWrap(2, dek2);
-    const readsBefore = await queryProjectDo(
-      projectId,
-      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
-    );
-
+  it("records dek_unwrapped per epoch, actor = the server key", async () => {
+    const { fpHex } = await twoEpochProject();
     const workload = await workloadKeyPair();
     expect(
       (
@@ -623,27 +687,56 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
     expect(unwrapped[0]?.["actor_type"]).toBe("server");
     expect(unwrapped[0]?.["actor_key_fingerprint"]).toBe(fpHex);
     expect(unwrapped[0]?.["environment_id"]).toBe(ENV);
+  });
+
+  it("records lease_issued once per environment with the derived grant_chain_seq", async () => {
+    const { fpHex } = await twoEpochProject();
+    const workload = await workloadKeyPair();
+    await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
 
     const issued = await queryProjectDo(
       projectId,
-      "SELECT environment_id, variable_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'server.lease_issued'",
+      "SELECT variable_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'server.lease_issued'",
     );
     // 環境単位 1 行(変数粒度の選択がない — §3.5)
     expect(issued.length).toBe(1);
     expect(issued[0]?.["variable_id"]).toBeNull();
     expect(issued[0]?.["actor_key_fingerprint"]).toBe(fpHex);
     const payload = JSON.parse(String(issued[0]?.["payload"])) as Record<string, unknown>;
-    // grant_chain_seq はチェーン導出の grant_seq(サーバー側で再実装しない)
-    expect(typeof payload["grantChainSeq"]).toBe("number");
+    // grant_chain_seq はチェーン導出の grant_seq(サーバー側で再実装しない)。
+    // **値で固定する**: 本 PR で新設した導出値であり、型だけ見ていると誤った
+    // seq(再 grant 前の古い seq 等)が載っても素通りする(pullfrog 指摘)
+    const granted = await queryProjectDo(
+      projectId,
+      "SELECT chain_seq FROM audit_events WHERE event = 'chain.server_granted'",
+    );
+    expect(granted.length).toBe(1);
+    expect(payload["grantChainSeq"]).toBe(granted[0]?.["chain_seq"]);
     expect(typeof payload["claimsDigest"]).toBe("string");
     expect(payload["epochs"]).toEqual([1, 2]);
+  });
 
-    // var.read は増えない(人間 actor の読み取りの証跡 — §14-4 / AUDIT_SPEC §3.3)
-    const readsAfter = await queryProjectDo(
+  it("records no var.read for a lease (§14-4)", async () => {
+    await twoEpochProject();
+    const before = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
     );
-    expect(readsAfter[0]?.["n"]).toBe(readsBefore[0]?.["n"]);
+    const workload = await workloadKeyPair();
+    await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    // var.read は人間 actor の読み取りの証跡であり、ワークロードへの開示は
+    // server.* 系が担う(AUDIT_SPEC §3.3 / §14-4)
+    const after = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
+    );
+    expect(after[0]?.["n"]).toBe(before[0]?.["n"]);
   });
 });
 
@@ -733,7 +826,48 @@ describe("ワークロードリース: 受理ポリシー(§14-3)", () => {
     });
     expect(response.status).toBe(429);
     const body = (await response.json()) as { retryAfterSeconds: number };
-    expect(body.retryAfterSeconds).toBeGreaterThan(0);
+    // 窓は直前に window_start = now で仕込んだので、残りは窓長(1 時間)近傍と
+    // 決まっている。> 0 だけだと桁違いの退行を捕まえられない(pullfrog 指摘)
+    expect(body.retryAfterSeconds).toBeGreaterThan(3500);
+    expect(body.retryAfterSeconds).toBeLessThanOrEqual(3600);
+  });
+
+  it("does not consume the window when the lease cannot be issued (503 stays diagnosable)", async () => {
+    // 窓を 503 経路で消費すると、バックフィル漏れのプロジェクトの CI が再試行の
+    // たびに枠を食い、300 回目以降は「直せる診断」の 503 が無関係な 429 に
+    // 化ける(pullfrog 指摘)。消費は実際に発行したときだけ
+    await createEnvironmentOk(fixture, ENV, "App");
+    await grantServer({ scope: [ENV] }); // バックフィルしない = server-wraps-missing
+    const workload = await workloadKeyPair();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await requestLease({
+        oidcToken: await makeOidcToken(),
+        ephemeralPubHex: workload.publicKeyHex,
+      });
+      expect(response.status).toBe(503);
+    }
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT count FROM lease_windows WHERE kind = 'issued'",
+    );
+    expect(rows.length).toBe(0);
+  });
+
+  it("consumes exactly one window slot per issued lease", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await requestLease({
+        oidcToken: await makeOidcToken(),
+        ephemeralPubHex: workload.publicKeyHex,
+      });
+      expect(response.status).toBe(200);
+    }
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT count FROM lease_windows WHERE kind = 'issued'",
+    );
+    expect(rows[0]?.["count"]).toBe(2);
   });
 
   it("does not let an unauthorized caller consume the project's lease window", async () => {

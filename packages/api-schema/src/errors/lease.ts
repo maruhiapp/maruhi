@@ -31,6 +31,10 @@ import { Schema } from "effect";
  * - `token-not-yet-valid` — `iat` / `nbf` is in the future (beyond the skew)
  * - `missing-claim` — a claim the lease path requires (`iss` / `sub` / `aud` /
  *   `exp` / `iat`) is absent or not a string
+ * - `ambiguous-audience` — the token carries several audiences, so the
+ *   `claims_digest` (CRYPTO_SPEC §9.1) is not uniquely determined. Distinct
+ *   from `missing-claim`: the `aud` claim *is* present, and an operator
+ *   reading the reason code should not go looking for a claim that exists
  */
 export const LeaseUnauthorizedReasonSchema = Schema.Literals([
   "malformed-token",
@@ -42,6 +46,7 @@ export const LeaseUnauthorizedReasonSchema = Schema.Literals([
   "token-expired",
   "token-not-yet-valid",
   "missing-claim",
+  "ambiguous-audience",
 ]);
 
 /**
