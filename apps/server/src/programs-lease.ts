@@ -119,6 +119,18 @@ export const leaseProgram = (
     const serverKey = yield* ServerKey;
     const serverKeyInfo = yield* serverKey.info;
     const nowMs = Date.now();
+    // 0. サーバー鍵が未設定のデプロイメントは**プロジェクトを読む前**に落とす。
+    // 順序が重要: チェーンのロード(未初期化 = 404)を先に置くと、鍵なし
+    // デプロイメントで「未知 = 404 / 実在 = 503」の差ができてプロジェクトの
+    // 存在が漏れる(§11-2)。先に落とせば全リクエストが一様に 503 になり、
+    // 何も漏れない。理由が 404 でないのは、設定の欠落は「このプロジェクトは
+    // 存在しない」ではないため(秘密鍵なしでは開封経路自体が存在しない)
+    if (serverKeyInfo === null) {
+      return yield* Effect.fail<LeaseRejection>({
+        kind: "unavailable",
+        reason: "server-key-unconfigured",
+      });
+    }
     // 未初期化プロジェクトは監査を残さず 404 にする: 未認証経路が任意の
     // プロジェクト ID で DO 行を作れると、監査ログの肥大 DoS になる
     // (プロジェクト ID は genesis ハッシュ = 実質ケーパビリティであり、
@@ -126,18 +138,8 @@ export const leaseProgram = (
     const chain = yield* loadInitializedChain.pipe(
       Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
     );
-    if (serverKeyInfo === null) {
-      // サーバー鍵未設定のデプロイメント。チェーンに grant があるかを見る前に
-      // 落とす(grant の有無を漏らさない)— ただし理由は 503 で返す:
-      // 設定の欠落は「このプロジェクトは存在しない」ではないため
-      return yield* Effect.fail<LeaseRejection>({
-        kind: "unavailable",
-        reason: "server-key-unconfigured",
-      });
-    }
-    const { state } = yield* deriveStoredState(chain, cache).pipe(
-      Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
-    );
+    // 導出は失敗しない(保存済みチェーンの検証失敗は defect — chain-store.ts)
+    const { state } = yield* deriveStoredState(chain, cache);
 
     // 1. 認可: 自サーバー鍵の有効 grant × lease_policy(存在量化)× 開示スコープ。
     // 一致するのは常に「自分の FP の grant」— サーバーは自分宛ラップしか

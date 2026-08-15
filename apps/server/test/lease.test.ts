@@ -21,9 +21,15 @@ import {
   unwrapLeaseDek,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
+import { Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { AuditStore } from "../src/audit-store.ts";
+import { ChainStore } from "../src/chain-store.ts";
+import { DataStore } from "../src/data-store.ts";
 import { MAX_LEASES_PER_WINDOW } from "../src/policy.ts";
+import { leaseProgram } from "../src/programs-lease.ts";
+import { makeServerKey, ServerKey } from "../src/server-key.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import { hexBytes, wrapDekToServer } from "./support/data-crypto.ts";
 import {
@@ -638,6 +644,55 @@ describe("ワークロードリース: 503 と監査(§14-3 / AUDIT_SPEC §3.5)"
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
     );
     expect(readsAfter[0]?.["n"]).toBe(readsBefore[0]?.["n"]);
+  });
+});
+
+describe("ワークロードリース: サーバー鍵未設定のデプロイメント(§14-3)", () => {
+  // DO は自分の env から keypair を導出する(chain-do.ts)ため、worker へ別 env を
+  // 渡しても DO 側は変わらない。ここはプログラム単位で「鍵なしなら**チェーンを
+  // 読む前に**落ちる」ことを検査する — 順序が崩れると「未知 = 404 / 実在 = 503」の
+  // 差ができ、未認証のリース面がプロジェクトの存在確認に使えてしまう(§11-2)
+  it("fails before touching the chain store (順序が存在秘匿を決める)", async () => {
+    let chainLoads = 0;
+    const chainStore = ChainStore.of({
+      load: Effect.sync(() => {
+        chainLoads += 1;
+        throw new Error("chain must not be read when the server key is unconfigured");
+      }),
+      insertSync: () => {
+        throw new Error("unreachable");
+      },
+    });
+    const outcome = await Effect.runPromise(
+      leaseProgram(
+        ENV,
+        "00".repeat(32),
+        {
+          issuer: OIDC_ISSUER,
+          subject: LEASE_SUBJECT,
+          audiences: [LEASE_AUDIENCE],
+          claims: {},
+          claimsDigestHex: "00".repeat(32),
+        },
+        { current: null, chain: null },
+      ).pipe(
+        Effect.match({
+          onSuccess: () => ({ ok: true as const }),
+          onFailure: (rejection) => ({ ok: false as const, rejection }),
+        }),
+        // makeServerKey(undefined) = 未設定デプロイメント。DataStore / AuditStore は
+        // 到達しないため、この経路では参照されないことも同時に固定される
+        Effect.provideService(ServerKey, makeServerKey(undefined)),
+        Effect.provideService(ChainStore, chainStore),
+        Effect.provideService(DataStore, undefined as never),
+        Effect.provideService(AuditStore, undefined as never),
+      ),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      rejection: { kind: "unavailable", reason: "server-key-unconfigured" },
+    });
+    expect(chainLoads).toBe(0);
   });
 });
 
