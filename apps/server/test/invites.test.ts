@@ -729,6 +729,28 @@ describe("invite list / revoke", () => {
     expect(audits.filter((r) => r.event === "invite.completed")).toHaveLength(0);
   });
 
+  it("add_member still succeeds when the reconciliation write fails (catchDefect guard)", async () => {
+    const issued = await issueInvite(fixture, OWNER, "member");
+    const keys = await makeInviteeKeys();
+    expect((await acceptAs(fixture, STRANGER, keys, issued.token)).status).toBe(200);
+    // 突合の D1 書き込みを決定的に失敗させる(テーブルを一時退避)。ガードを
+    // 外すと確定済み append が 500 になり appendOperation 内の 200 expect が落ちる
+    await env.DB.prepare("ALTER TABLE invitations RENAME TO invitations_hidden").run();
+    await appendOperation(fixture, OWNER, {
+      op: "add_member",
+      payload: {
+        targetUserId: STRANGER,
+        encPubHex: keys.encPubHex,
+        sigPubHex: keys.sigPubHex,
+        role: "member",
+      },
+    });
+    await env.DB.prepare("ALTER TABLE invitations_hidden RENAME TO invitations").run();
+    // 突合は欠落し、招待は accepted のまま残る(可視・失効で修復できる状態 —
+    // handlers-membership.ts のコメントが宣言する「欠落側に倒す」の実挙動)
+    expect(mustRow(await inviteRow(issued.id)).status).toBe("accepted");
+  });
+
   it("leaves an accepted invite untouched when add_member carries different keys", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
