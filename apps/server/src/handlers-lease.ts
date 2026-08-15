@@ -21,7 +21,6 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { toWireVariable } from "./data-http.ts";
-import { sha256Hex } from "./ids.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";
 import { LEASE_BINDING_RETENTION_MARGIN_MS } from "./policy.ts";
 import type { LeaseOutcome, LeaseTokenFacts } from "./programs-lease.ts";
@@ -100,19 +99,19 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
       const verifier = yield* OidcVerifier;
       const token = yield* verifier.verify(payload.oidcToken, Date.now());
       const claimsDigestHex = yield* claimsDigestFor(token);
-      // 先着束縛(§14-1)の重複キー = トークン生バイト列の SHA-256。トークン
-      // 本体は DO へ渡さない(渡るのはハッシュ・検証済み claim・生存期限のみ)。
-      // 生存期限は「時刻検証がこのトークンを受理しうる最終時刻」以上
-      // (policy.ts の余裕は clock skew から導出 — 受理窓より短い束縛保持は
-      // その差分だけリプレイ窓になる)
-      const tokenHashHex = yield* Effect.promise(() => sha256Hex(payload.oidcToken));
+      // 先着束縛(§14-1)のキーは verifier が署名対象バイト列(signing input)
+      // から計算済み(生トークンのハッシュではない — VerifiedOidcToken の
+      // signingInputHashHex の doc)。DO へ渡るのはこのハッシュ・検証済み claim・
+      // 生存期限のみで、トークン本体は渡さない。生存期限は「時刻検証がこの
+      // トークンを受理しうる最終時刻」以上(policy.ts の余裕は clock skew から
+      // 導出 — 受理窓より短い束縛保持はその差分だけリプレイ窓になる)
       const facts: LeaseTokenFacts = {
         issuer: token.issuer,
         subject: token.subject,
         audiences: token.audiences,
         claims: token.claims,
         claimsDigestHex,
-        tokenHashHex,
+        bindingKeyHex: token.signingInputHashHex,
         bindingExpiresAtMs: token.expiresAtSec * 1000 + LEASE_BINDING_RETENTION_MARGIN_MS,
       };
       // 2. 認可以降は DO の 1 RPC(監査を同一 permit・同一同期ブロックで書く)

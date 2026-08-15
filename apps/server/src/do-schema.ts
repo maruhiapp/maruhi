@@ -165,15 +165,24 @@ const LEASE_WINDOWS_DDL = `CREATE TABLE IF NOT EXISTS lease_windows (
 
 /**
  * ワークロードリースの先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定 —
- * docs/notes/session-24.md)。発行時に「OIDC トークンの SHA-256 ハッシュ →
- * 一時公開鍵」を記録し、同一トークン + 別鍵の再要求を拒否する材料にする。
+ * docs/notes/session-24.md)。発行時に「束縛キー → 一時公開鍵」を記録し、
+ * 同一キー + 別鍵の再要求を拒否する材料にする。
+ *
+ * `binding_key_hex` は **JWS signing input(`header.payload`)の SHA-256** で
+ * あって、生トークンのハッシュ**ではない**: 生トークンの署名セグメントは署名の
+ * 保護外で可鍛(base64url 末尾ビット / ES256 s-malleability)であり、それを
+ * キーにすると 1 文字編集で束縛を素通りできる(verifier.ts の
+ * signingInputHashHex の doc — 2026-08-15 pullfrog レビュー)。列名を
+ * token_hash ではなく binding_key にしているのは、この「何をハッシュするか」の
+ * 取り違えを名前の段階で防ぐため。
+ *
  * `expires_at` は「時刻検証が当該トークンを受理しうる最終時刻 + 余裕」
  * (policy.ts の LEASE_BINDING_RETENTION_MARGIN_MS)で、行数は発行レート窓
  * (300 回/時)と GC(data-store.ts — 記録時に期限切れを削除)で有界。
  * トークン本体・claim は保存しない(ハッシュと公開鍵のみ — どちらも非機密)。
  */
 const LEASE_BINDINGS_DDL = `CREATE TABLE IF NOT EXISTS lease_bindings (
-     token_hash_hex TEXT PRIMARY KEY,
+     binding_key_hex TEXT PRIMARY KEY,
      ephemeral_pub_hex TEXT NOT NULL,
      expires_at INTEGER NOT NULL
    )`;

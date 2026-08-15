@@ -99,18 +99,22 @@ async function grantServer(input: {
 }
 
 /** owner がサーバー宛ラップをバックフィルする(§12-6 の grant 直後経路)。 */
-async function backfillServerWrap(epoch: number, dek: Uint8Array): Promise<void> {
+async function backfillServerWrap(
+  epoch: number,
+  dek: Uint8Array,
+  environmentId: string = ENV,
+): Promise<void> {
   const key = await deploymentKey();
   const wrap = await wrapDekToServer({
     projectId,
-    environmentId: ENV,
+    environmentId,
     epoch,
     dek,
     serverKeyFingerprintHex: key.fingerprintHex,
     serverEncPubHex: key.encPubHex,
     signerUserId: OWNER,
   });
-  const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
+  const response = await requestJson("POST", `/environments/${environmentId}/deks`, token(OWNER), {
     deks: [wrap],
   });
   expect(response.status).toBe(204);
@@ -170,6 +174,43 @@ function requireFirst<T>(items: readonly T[], what: string): T {
     throw new Error(`lease response has no ${what}`);
   }
   return first;
+}
+
+/** サーバーの decodeBase64Url と同じ寛容デコード(atob 経由)で得る binary string。 */
+function decodeBase64UrlToBinary(segment: string): string {
+  const padded = segment
+    .replaceAll("-", "+")
+    .replaceAll("_", "/")
+    .padEnd(segment.length + ((4 - (segment.length % 4)) % 4), "=");
+  return atob(padded);
+}
+
+/**
+ * 署名セグメントの末尾 1 文字を「サーバーと同じ寛容デコードで同一バイト列に
+ * なる別文字」へ差し替える(base64url 末尾グループの未使用ビットの可鍛性)。
+ * 変異トークンは署名対象(header.payload)も署名バイト列も変えないため署名検証を
+ * 通過するが、生文字列としては別物になる。先着束縛が生トークンをハッシュして
+ * いた場合に破れることを示すための攻撃者操作の再現。
+ */
+function malleateSignatureSegment(compactJws: string): string {
+  const parts = compactJws.split(".");
+  const [header, payload, sig] = parts;
+  if (parts.length !== 3 || header === undefined || payload === undefined || sig === undefined) {
+    throw new Error("not a compact JWS");
+  }
+  const target = decodeBase64UrlToBinary(sig);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const lastIndex = sig.length - 1;
+  for (const candidate of alphabet) {
+    if (candidate === sig[lastIndex]) {
+      continue;
+    }
+    const mutated = sig.slice(0, lastIndex) + candidate;
+    if (decodeBase64UrlToBinary(mutated) === target) {
+      return `${header}.${payload}.${mutated}`;
+    }
+  }
+  throw new Error("no byte-identical alternative for the final signature character");
 }
 
 /** ワークロード側の claims_digest を計算する(サーバーと独立の再計算 — §9.1)。 */
@@ -813,7 +854,7 @@ describe("ワークロードリース: サーバー鍵未設定のデプロイ�
           audiences: [LEASE_AUDIENCE],
           claims: {},
           claimsDigestHex: "00".repeat(32),
-          tokenHashHex: "11".repeat(32),
+          bindingKeyHex: "11".repeat(32),
           bindingExpiresAtMs: Date.now() + 300_000,
         },
         { current: null, chain: null },
@@ -1019,6 +1060,44 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
     }
   });
 
+  it("locks a token to one ephemeral key across environments (project-wide binding — クライアント義務)", async () => {
+    // 束縛はトークン単位でプロジェクト DO を跨がず共有される(environmentId は
+    // キーに含まない)。エンドポイントは環境単位なので、1 トークンで N 環境を
+    // リースするジョブは**全リクエストで同じ一時鍵**を提示しなければならない。
+    // これは A3 の義務(トークンあたり一時鍵は 1 つ・リクエストごとに
+    // ローテーションしない — AUTH_SPEC §14-1)。ランタイム再発行できない
+    // 事前発行型 issuer(GitLab 等)で特に効くため、緩いうちに固定する。
+    const SECOND = "env-second-0002";
+    const dek1 = await createEnvironmentOk(fixture, ENV, "App");
+    const dek2 = await createEnvironmentOk(fixture, SECOND, "App2");
+    await grantServer({ scope: [ENV, SECOND] });
+    await backfillServerWrap(1, dek1, ENV);
+    await backfillServerWrap(1, dek2, SECOND);
+
+    const oidcToken = await makeOidcToken();
+    const workload = await workloadKeyPair();
+    // 同一トークン + 同一鍵なら複数環境をリースできる
+    for (const environmentId of [ENV, SECOND]) {
+      const response = await requestLease({
+        oidcToken,
+        ephemeralPubHex: workload.publicKeyHex,
+        environmentId,
+      });
+      expect(response.status).toBe(200);
+    }
+    // 別環境で鍵をローテーションすると 401(束縛はトークン単位・鍵固定であり、
+    // 未束縛環境への「自分の鍵でのリース」を許さない = 盗難トークンで別環境を
+    // 引く経路も同時に塞ぐ)
+    const rotated = await workloadKeyPair();
+    const replay = await requestLease({
+      oidcToken,
+      ephemeralPubHex: rotated.publicKeyHex,
+      environmentId: SECOND,
+    });
+    expect(replay.status).toBe(401);
+    expect(await replay.json()).toMatchObject({ reason: "token-replayed" });
+  });
+
   it("keeps the binding alive as long as time validation can accept the token (PyPI 監査の同型の穴の回避)", async () => {
     // exp が過去でも skew(±60 秒)内なら時刻検証は通る。束縛の保持期間が
     // 受理窓より短いと、その差分だけがリプレイ窓になる(policy.ts の保持余裕を
@@ -1047,7 +1126,7 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
     await readyProject();
     await queryProjectDo(
       projectId,
-      "INSERT INTO lease_bindings (token_hash_hex, ephemeral_pub_hex, expires_at) VALUES ('aa', 'bb', ?)",
+      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('aa', 'bb', ?)",
       Date.now() - 1000,
     );
     const workload = await workloadKeyPair();
@@ -1060,8 +1139,38 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
       ).status,
     ).toBe(200);
     // 期限切れ行は発行時に GC され、残るのは今回の束縛だけ
-    const rows = await queryProjectDo(projectId, "SELECT token_hash_hex FROM lease_bindings");
+    const rows = await queryProjectDo(projectId, "SELECT binding_key_hex FROM lease_bindings");
     expect(rows.length).toBe(1);
-    expect(rows[0]?.["token_hash_hex"]).not.toBe("aa");
+    expect(rows[0]?.["binding_key_hex"]).not.toBe("aa");
+  });
+
+  it("binds on the signed material, not the raw token: a malleated signature segment cannot dodge the binding", async () => {
+    // 🚨 リグレッションガード(2026-08-15 pullfrog 指摘): 束縛キーが生トークンの
+    // ハッシュだと、署名で保護されない第 3 セグメントの base64url 末尾を
+    // 「デコード結果が同一になる別文字」へ差し替えるだけで、署名検証・
+    // claims_digest を一切変えずにハッシュだけ変えられ、束縛照合が空振りして
+    // リプレイが通る。束縛キーを signing input(header.payload)のハッシュに
+    // することでこの経路が閉じることを固定する。
+    await readyProject();
+    const oidcToken = await makeOidcToken();
+    const legit = await workloadKeyPair();
+    expect((await requestLease({ oidcToken, ephemeralPubHex: legit.publicKeyHex })).status).toBe(
+      200,
+    );
+
+    const malleated = malleateSignatureSegment(oidcToken);
+    // 前提の確認: 変異トークンは生文字列としては別物(素朴なハッシュは別値になる)
+    expect(malleated).not.toBe(oidcToken);
+
+    const thief = await workloadKeyPair();
+    const replay = await requestLease({
+      oidcToken: malleated,
+      ephemeralPubHex: thief.publicKeyHex,
+    });
+    // 変異は署名検証を通過する(= signature-invalid ではない)が、signing input が
+    // 不変なので束縛に当たって token-replayed になる。ここが 200 に戻ると、
+    // まさに 1 文字編集でのリプレイ回避が復活したことを意味する
+    expect(replay.status).toBe(401);
+    expect(await replay.json()).toMatchObject({ reason: "token-replayed" });
   });
 });

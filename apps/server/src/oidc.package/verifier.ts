@@ -14,6 +14,7 @@
 //   5. 必須 claim の存在と時刻検証(clock skew ±60 秒)
 
 import { LeaseUnauthorizedError, LeaseUnavailableError } from "@maruhi/api-schema";
+import { encodeHex } from "@maruhi/crypto";
 import { Context, Effect } from "effect";
 
 import { decodeBase64Url, decodeBase64UrlJson } from "./base64url.ts";
@@ -58,6 +59,20 @@ export interface VerifiedOidcToken {
    * 生存期限は「時刻検証がこのトークンを受理しうる最終時刻」以上を要する。
    */
   readonly expiresAtSec: number;
+  /**
+   * 先着束縛(§14-1)のキー = JWS signing input(`header.payload`)の SHA-256。
+   *
+   * **生トークン文字列をハッシュしてはならない**: 生トークンは第 3 セグメント
+   * (署名)を含むが、そこは署名の**保護外**であり可鍛である — base64url の
+   * 末尾グループの未使用ビット(WHATWG forgiving-base64 decode が捨てる)で、
+   * デコード結果のバイト列を変えずに文字だけ差し替えられる(RS256 の末尾 1 文字は
+   * 15 通りの同値、ES256 はさらに `s`-malleability を持つ)。生トークンを束縛
+   * キーにすると、署名検証・claims_digest を一切変えずにハッシュだけ変える 1 文字
+   * 編集で束縛照合を空振りさせられ、リプレイ防御が丸ごと無効化される
+   * (2026-08-15 pullfrog レビュー指摘)。signing input は issuer が実際に署名した
+   * バイト列そのもので、妥当性を保つ変異に対して不変であり、この経路を閉じる。
+   */
+  readonly signingInputHashHex: string;
 }
 
 export interface OidcVerifierShape {
@@ -267,7 +282,20 @@ export function makeOidcVerifier(
         if (subject === null || audiences === null || expiresAtSec === null) {
           return yield* unauthorized("missing-claim");
         }
-        return { issuer, subject, audiences, claims: parsed.claims, expiresAtSec };
+        // 先着束縛キーは**署名対象バイト列**のハッシュ(生トークンではない —
+        // signingInputHashHex の doc)。署名検証を通過した後にのみ計算する
+        const digest = yield* Effect.promise(() =>
+          crypto.subtle.digest("SHA-256", new Uint8Array(parsed.signingInput)),
+        );
+        const signingInputHashHex = encodeHex(new Uint8Array(digest));
+        return {
+          issuer,
+          subject,
+          audiences,
+          claims: parsed.claims,
+          expiresAtSec,
+          signingInputHashHex,
+        };
       }),
   };
 }

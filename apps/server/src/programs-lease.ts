@@ -16,10 +16,14 @@
 //      未知プロジェクトはストレージ 1 読みで短絡し、実在プロジェクトはチェーン
 //      検証と監査書き込みを行うため測定可能な差がある。タイミングは脅威モデル外
 //      (未認証面で定数時間を狙うのは非現実的)という判断(pullfrog 指摘)
+//   1.5 先着束縛(§14-1。2026-08-15 裁定)— 同一トークン + 別鍵は 401
+//      `token-replayed`。認可の直後・環境存在の判定より前(束縛済みトークンの
+//      コピー保持者に、環境の実在によらず一様 401 を返す — §14-3)。読み取りのみで
+//      レート窓を消費しない
 //   2. 環境の存在(削除済みは 404 — §12-4 と同じ扱い)
 //   3. レート制限(429)— 認可の後(errors/lease.ts の論拠)
 //   4. サーバー宛ラップの存在(欠落 = 503 server-wraps-missing)
-//   5. 開封 → 再ラップ → 監査 → 応答
+//   5. 開封 → 再ラップ → 監査 → 応答(先着束縛の記録も同一同期ブロック)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -50,12 +54,14 @@ export interface LeaseTokenFacts {
   /** CRYPTO_SPEC §9.1 の claims_digest_hex(worker が crypto で計算済み)。 */
   readonly claimsDigestHex: string;
   /**
-   * 先着束縛(§14-1。2026-08-15 裁定)の重複キー = OIDC トークン生バイト列の
-   * SHA-256(hex 小文字。worker が計算済み)。jti でないのは意図的 —
-   * jti の有無・意味論は issuer 依存で、トークンハッシュは issuer に何も
-   * 要求しない(docs/notes/session-24.md §4)。トークン本体は DO へ渡さない。
+   * 先着束縛(§14-1。2026-08-15 裁定)の重複キー = JWS signing input
+   * (`header.payload`)の SHA-256(hex 小文字。worker の verifier が署名検証
+   * 通過後に計算済み — VerifiedOidcToken.signingInputHashHex)。**生トークンの
+   * ハッシュではない**: 生トークンの署名セグメントは可鍛で、束縛を素通りできる
+   * (同 doc)。jti でもない — jti の有無・意味論は issuer 依存で、signing input
+   * ハッシュは issuer に何も要求しない(docs/notes/session-24.md §4)。
    */
-  readonly tokenHashHex: string;
+  readonly bindingKeyHex: string;
   /**
    * 束縛行の生存期限(ms)。worker が「トークンの exp + 保持余裕
    * (policy.ts — 時刻検証の clock skew 以上であることを導出で保証)」で計算する。
@@ -139,7 +145,7 @@ const denyWithAudit = (reason: string, facts: LeaseTokenFacts, nowMs: number) =>
 const rejectReplayedToken = (facts: LeaseTokenFacts, ephemeralPubHex: string, nowMs: number) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
-    const boundPubHex = yield* store.leaseBinding(facts.tokenHashHex, nowMs);
+    const boundPubHex = yield* store.leaseBinding(facts.bindingKeyHex, nowMs);
     if (boundPubHex !== null && boundPubHex !== ephemeralPubHex) {
       yield* recordDenied("token-replayed", facts.claimsDigestHex, nowMs);
       return yield* Effect.fail<LeaseRejection>({ kind: "replayed" });
@@ -297,7 +303,7 @@ export const leaseProgram = (
       // どちらの中間状態も作らない — §14-1)
       store.recordLeaseWindowUse("issued", nowMs);
       store.recordLeaseBinding(
-        facts.tokenHashHex,
+        facts.bindingKeyHex,
         ephemeralPubHex,
         facts.bindingExpiresAtMs,
         nowMs,
