@@ -1039,8 +1039,7 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
       signerUserId: MEMBER,
     });
     // 受理前の検査で 422(duplicate-recipient)に倒れること。修正前は受理段を
-    // 通過して書き込みフェーズの主キー違反 = 500 になり、衝突が解消されるまで
-    // 当該環境のローテーション・作成(§7 の失効ローテーション含む)が塞がった
+    // 通過して書き込みフェーズの主キー違反 = defect(500)になっていた
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -1056,13 +1055,33 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
     const body = (await response.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("duplicate-recipient");
 
-    // ロールバックにより不整合は残らない: 環境は epoch 1 のまま操作可能
+    // 受理段で倒れるため書き込みフェーズには入らない(epoch 2 の行は 1 行も
+    // 作られない)。なお衝突が存在する限り完全集合は本質的に充足不能なので、
+    // ローテーション自体は塞がったまま — これは下の運用復旧で解く
     const rows = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ? AND epoch = 2",
       ENV,
     );
     expect(rows[0]?.["n"]).toBe(0);
+
+    // 運用復旧(レビュー A-1 の「影響と緩和要素」): 衝突メンバーを
+    // remove_member すれば完全集合が再び充足可能になり、ローテーションが通る
+    await appendOperation(fixture, OWNER, {
+      op: "remove_member",
+      payload: { targetUserId: fpHex },
+    });
+    const recovered = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 2,
+      deks: [
+        ...memberWraps,
+        await serverWrap({ epoch: 2, dek: dek2, fpHex, signerUserId: MEMBER }),
+      ],
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      actorUserId: MEMBER,
+    });
+    expect(recovered.status).toBe(200);
   });
 
   it("repairs a server wrap through delete → re-register (§12-6 の修復経路)", async () => {

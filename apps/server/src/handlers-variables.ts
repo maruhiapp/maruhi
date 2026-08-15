@@ -16,7 +16,7 @@ import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { CSRF_HEADER } from "./auth.package/index.ts";
+import { statefulGetCsrfViolated } from "./auth.package/index.ts";
 import {
   callProjectData,
   checkAadCoordinates,
@@ -125,14 +125,11 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     .handle("pull", ({ params, endpoint, request }) =>
       Effect.gen(function* () {
         // GET だが変数ごとの var.read 監査の記録という状態を持つ(§12-7 /
-        // AUDIT_SPEC §3.3)。Lax セッションクッキーはクロスサイトのトップ
-        // レベル遷移でも同送されるため、セッション主体には recoveryGet
-        // (handlers-auth.ts)と同じ CSRF ヘッダーを要求する — 第三者サイトが
-        // 被害者のセッションで偽の var.read を刻む監査証跡の汚染の遮断。
-        // Bearer はクロスサイトで付与できないため対象外。メタデータのみモード
-        // (pullMetadata)は監査を記録しないため対象外
+        // AUDIT_SPEC §3.3)— 第三者サイトが被害者のセッションで偽の var.read を
+        // 刻む監査証跡の汚染の遮断(論拠は statefulGetCsrfViolated の JSDoc)。
+        // メタデータのみモード(pullMetadata)は監査を記録しないため対象外
         const principal = yield* (yield* RequestAuth).principal;
-        if (principal.kind === "session" && request.headers[CSRF_HEADER] !== "1") {
+        if (statefulGetCsrfViolated(principal, request.headers)) {
           return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
         }
         const pulled = yield* callProjectData<EnvironmentPullValue>()({

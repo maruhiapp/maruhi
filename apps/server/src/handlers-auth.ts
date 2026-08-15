@@ -21,7 +21,12 @@ import type { Cookies } from "effect/unstable/http";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { CSRF_HEADER, GitHubApi, parseBearerToken, SESSION_COOKIE } from "./auth.package/index.ts";
+import {
+  GitHubApi,
+  parseBearerToken,
+  SESSION_COOKIE,
+  statefulGetCsrfViolated,
+} from "./auth.package/index.ts";
 import { D1AuditRepo, IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { ServerKey } from "./server-key.ts";
@@ -315,11 +320,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
-        // GET だが取得計数という状態を持つ(§13-3)。Lax セッションクッキーは
-        // クロスサイトのトップレベル遷移でも同送されるため、セッション主体には
-        // 書き込み系と同じ CSRF ヘッダーを要求する(第三者サイトからの窓消費 =
-        // 可用性いやがらせの遮断)。Bearer はクロスサイトで付与できないため対象外
-        if (principal.kind === "session" && request.headers[CSRF_HEADER] !== "1") {
+        // GET だが取得計数という状態を持つ(§13-2 の明示規定。計数は §13-3)—
+        // 第三者サイトからの窓消費 = 可用性いやがらせの遮断(論拠は
+        // statefulGetCsrfViolated の JSDoc)
+        if (statefulGetCsrfViolated(principal, request.headers)) {
           return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
         }
         const recovery = yield* RecoveryRepo;

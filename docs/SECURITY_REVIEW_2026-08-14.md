@@ -25,17 +25,18 @@
 | M-2 | Medium | CI | **修正済み(2026-08-15)** | `pullfrog.yml` が可変タグ参照のまま多数の AI プロバイダ API キーを保持(SHA ピン留め規律の例外) |
 | L-1 | Low | server | **修正済み(2026-08-15)** | セッション認証の `GET …/pull`(var.read 監査を記録)に CSRF ヘッダー要求がなく、クロスサイトから監査記録を強制発火できる |
 | L-2 | Low | server | 現 main でも有効 | API トークンに有効期限がない(`expires_at` 常に NULL) |
-| L-3 | Low | server | **修正済み(2026-08-15)** | `/auth/device/exchange`(未認証)にレート制限がなく、GitHub check-token API の枠を第三者が消費できる(ログイン可用性) |
+| L-3 | Low | server | **緩和済み(2026-08-15)** | `/auth/device/exchange`(未認証)にレート制限がなく、GitHub check-token API の枠を第三者が消費できる(ログイン可用性) |
 | L-4 | Low | server | 現 main でも有効 | `auth.login_failed` の記録上限がグローバル固定窓のため、洪水で標的型失敗の記録を抑制できる(設計文書化済み) |
 | L-5 | Low | web / server | **修正済み(2026-08-15)** | HSTS 未設定(custom domain 時)・API 応答にセキュリティヘッダーなし |
-| A-1 | Low | server / crypto | **修正済み(2026-08-15)** | 受信者クラスを跨ぐ識別子衝突(member の user_id = サーバー鍵 FP)でラップ完全集合の初回登録が defect(500)になり、当該環境のローテーション・作成が塞がる |
+| A-1 | Low | server / crypto | **是正済み(2026-08-15)** | 受信者クラスを跨ぐ識別子衝突(member の user_id = サーバー鍵 FP)でラップ完全集合の初回登録が defect(500)になり、当該環境のローテーション・作成が塞がる |
 | I-1 | Info | packaging | — | `checksums.txt` が未署名(TLS のみ)— 文書化・ROADMAP 済みの追認 |
 | I-2 | Info | server | — | チェーン追記ごとの全チェーン再検証(最大 10,000 × Ed25519)の DO CPU 上限内の実測未確認 |
 | I-3 | Info | .claude | — | リモート開発環境の SessionStart フックが `curl \| bash` で Bun を導入(開発環境限定) |
 | A-2 | Info | api-schema / docs | **解決済み(PR #65)** | `/auth/config` が返す `serverEncPubHex` が AUTH_SPEC §4 の応答定義に明記されていない(仕様先行規律の追随漏れ)→ PR #65 の `50452f6` が §4 へ明記 |
 | A-3 | Info | cli | **修正済み(2026-08-15)** | `server grant --expect-fingerprint` は帯域外の控えを渡す前提であり、`/auth/config` から取った値を渡すと照合が自己言及になる(運用ドキュメントで明示すべき) |
-| A-4 | Info | server | 新規(追補 2) | 有効な OIDC トークン 1 枚で任意プロジェクト ID の DO(空テーブル群)を実体化できる(監査行は残らないがストレージを消費)— コード内申し送りに DO 生成の側面を追記すべき |
+| A-4 | Info | server | 新規(追補 2)・申し送り追記済み | 有効な OIDC トークン 1 枚で任意プロジェクト ID の DO(空テーブル群)を実体化できる(監査行は残らないがストレージを消費)— コード内申し送りに DO 生成の側面を追記すべき |
 | A-5 | Info | crypto / cli | 新規(追補 2) | A3(ワークロード実装)への申し送り: claims digest は `computeLeaseClaimsDigest` を使うこと(builder 直接使用は空フィールドガードを迂回)・DEK 長の検証は §5.2 コミットメント照合が担う層であること・リプレイ非保証(§9.1)が裁定待ちであること |
+| A-6 | Low | server | **緩和済み(追補 3)** | `/auth/github/callback` も L-3 と同型の未認証アウトバウンド増幅(state 自己束縛のため 1 リクエスト = 最大 2 呼び出し)で、クエリに入力上限がなかった — 上限追加 + 運用レート制限の対象化 |
 
 ---
 
@@ -57,9 +58,9 @@
 
 ### M-2. `pullfrog.yml` のピン留め漏れ + 多数のシークレット(Medium)
 
-> **状態(2026-08-15 追記)**: **修正済み** — 両 action を commit SHA でピン留めした(`actions/checkout` = `d23441a4`〔v6.1.0〕、`pullfrog/pullfrog` = `0657d542`〔v0.1.57〕。`git ls-remote` でタグ → commit を解決)。未使用プロバイダキー行の削除は見送り(未設定シークレットは空のまま渡り実害がない。削るかは運用判断)。
+> **状態(2026-08-15 追記)**: **修正済み** — 両 action を commit SHA でピン留めした(`actions/checkout` = `d23441a4`〔v6.1.0〕、`pullfrog/pullfrog` = `0657d542`〔v0.1.57〕。`git ls-remote` でタグ → commit を解決し、いずれも軽量タグ = commit SHA そのものであることを確認)。未使用プロバイダキー行の削除は見送り(未設定シークレットは空のまま渡り実害がない。削るかは運用判断)。**残余 2 点**(追補 3): (1) ファイル冒頭の「DO NOT EDIT」が示すとおり、pullfrog のテンプレート再生成でピンが `@v0` へ静かに戻りうる。`uses:` の SHA 形式を検査する CI ステップは未導入(将来の改善候補)。(2) checkout のピンはベンダーテンプレートの major(v6)を維持したため、他ワークフローの v4.4.0 と 2 系統になる(意図的 — テンプレートの想定 major を変えない)。
 
-**場所**: `.github/workflows/pullfrog.yml:24-42`(**現 main でも同様**)
+**場所**: `.github/workflows/pullfrog.yml:24-42`(`6b839cc` 時点)
 
 **内容**: `actions/checkout@v6`・`pullfrog/pullfrog@v0` が**可変タグ参照**のまま、`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `OPENAI_API_KEY` ほか多数のプロバイダ API キーを env で渡している。`release.yml` 自身が「外部 action は commit SHA でピン留めする(特権経路のため。可変タグ経由の上流侵害を排除)」という規律を明文化しており(`ci.yml` / `installer.yml` も遵守)、シークレットを最も多く保持するこのワークフローだけが例外になっている。上流タグの差し替え(アカウント侵害・リポジトリ移譲)でシークレットの持ち出しが成立する。`workflow_dispatch` 限定(起動には write 権限が必要)・`contents: read` である点は緩和要素。
 
@@ -67,9 +68,9 @@
 
 ### L-1. セッション認証の `GET …/pull` に CSRF ヘッダー要求がない(Low)
 
-> **状態(2026-08-15 追記)**: **修正済み** — 推奨対応どおり、セッション主体の値付き pull に `x-maruhi-csrf: 1` を要求(`handlers-variables.ts`。Bearer・メタデータのみモードは対象外)。AUTH_SPEC §12-7 に規定を追記し、§11-4 の CSRF 記述を「状態を持つ GET」の明示規定を含む形へ改めた。テストで 403 + `var.read` 不記録を固定。
+> **状態(2026-08-15 追記)**: **修正済み** — 推奨対応どおり、セッション主体の値付き pull に `x-maruhi-csrf: 1` を要求(検査述語は `auth.package` の `statefulGetCsrfViolated` に一本化し、リカバリーブロブ GET と共有。Bearer・メタデータのみモードは対象外)。AUTH_SPEC §12-7 に規定を追記し、§11-4 の CSRF 記述を「状態を持つ GET」の明示規定一覧を含む形へ改めた(「状態」= 監査行・計数への書き込み。DO 実体化などインフラ面は A-4 のプローブレート設計判断に属することも明記)。テストで 403 + `var.read` 不記録と、成功時に `var.read` が記録されること(positive control)の両方を固定。
 
-**場所**(**現 main でも同様**):
+**場所**(`6b839cc` 時点):
 - `packages/api-schema/src/data-api.ts`(`GET /projects/:projectId/environments/:environmentId/pull`)
 - `apps/server/src/programs-environment.ts`(pull が変数ごとに `var.read` 監査を記録)
 - `apps/server/src/auth.package/middleware.ts`(CSRF 検査は GET/HEAD/OPTIONS を免除)
@@ -94,9 +95,9 @@
 
 ### L-3. `/auth/device/exchange` のレート制限なし(未認証アウトバウンド増幅)(Low)
 
-> **状態(2026-08-15 追記)**: **修正済み** — 推奨対応の両方を実施。(1) トークン形式の事前検査(`gh[a-z]_` プレフィックス + Base62/`_` 本体)をワイヤ Schema(`api-schema/src/auth-api.ts`)で強制し、形式不正は GitHub へ問い合わせず 400。AUTH_SPEC §4 に追記。(2) `SELF_HOSTING.md` に未認証エンドポイント(device/exchange・lease)への Cloudflare per-IP レート制限ルールの推奨設定を記載。
+> **状態(2026-08-15 追記)**: **緩和済み** — 推奨対応の両方を実施した。(1) トークン形式の事前検査(`gh[a-z]_` プレフィックス + Base62/`_` 本体)をワイヤ Schema(`api-schema/src/auth-api.ts`)で強制し、形式不正は GitHub へ問い合わせず 400。AUTH_SPEC §4 に追記。(2) `SELF_HOSTING.md` に未認証アウトバウンド誘発面(device/exchange・callback・lease)への Cloudflare per-IP レート制限ルールの推奨設定を記載。**「修正済み」としないのは**(追補 3): 形式検査が遮断するのは無差別・形式不明の洪水までで、形式適合トークンの標的型洪水にはサーバー側の対抗がなく、per-IP 制限は運用側の任意設定のため(サーバー内 per-IP 窓の見送り判断は本指摘の推奨対応に記載のとおり)。なお形式は共有 Schema なので導出クライアント(CLI)の送信側でも同時に強制される(意図どおりの対称性)。
 
-**場所**: `apps/server/src/handlers-auth.ts`、`apps/server/src/auth.package/github.ts`(**現 main でも同様**)
+**場所**: `apps/server/src/handlers-auth.ts`、`apps/server/src/auth.package/github.ts`(`6b839cc` 時点)
 
 **内容**: 未認証で叩ける POST であり、リクエストごとにサーバーが GitHub の check-token API(Basic 認証 = client_id:client_secret)へアウトバウンド呼び出しを行う。この API の呼び出し枠は OAuth App 単位でレート制限されるため、第三者がゴミトークンを流し込むとデプロイメントの枠が枯渇し、**正規ユーザーのログイン(device 交換)が失敗する**可用性攻撃が成立する。ボディは 512 バイト上限(api-schema)で肥大は防いでいるが、リクエストレートの制限がない。`auth.login_failed` の記録上限(L-4)は D1 書き込みを守るだけで、アウトバウンド呼び出しは毎回発生する。
 
@@ -112,9 +113,9 @@
 
 ### L-5. HSTS・セキュリティヘッダーの不足(Low)
 
-> **状態(2026-08-15 追記)**: **修正済み** — web の `_headers` に `Strict-Transport-Security: max-age=31536000` を追加、API worker の全応答に `X-Content-Type-Options: nosniff` + `Cache-Control: no-store` を付与(`index.ts` の `withSecurityHeaders`。リース応答〔チェーン + 暗号文を含む未認証応答〕にも効く)。**推奨からの逸脱 1 点**: HSTS の `includeSubDomains` は付けなかった — セルフホストで apex にマウントされた場合、無関係なサブドメインへ 1 年間ブラウザ側に固着する副作用があり、配布物の既定としては過剰なため(必要なゾーンでは運用側で付加できる)。
+> **状態(2026-08-15 追記)**: **修正済み** — web の `_headers` と API worker の全応答の両方に `Strict-Transport-Security: max-age=31536000` を追加(API 側も routes で custom domain を割り当てうる、セッションクッキー・OAuth フローを持つオリジンのため — 追補 3 で web のみだった非対称を解消)。API worker の全応答に `X-Content-Type-Options: nosniff` + `Cache-Control: no-store` を付与(`index.ts` の `withSecurityHeaders`。リース応答〔チェーン + 暗号文を含む未認証応答〕・ルーター前の 413 経路にも効く)。302 + 複数 Set-Cookie がラッパを跨いで保全されることはテストで固定。**推奨からの逸脱 1 点**: HSTS の `includeSubDomains` は付けなかった — セルフホストで apex にマウントされた場合、無関係なサブドメインへ 1 年間ブラウザ側に固着する副作用があり、配布物の既定としては過剰なため(必要なゾーンでは運用側で付加できる)。
 
-**場所**: `apps/web/scripts/write-headers.ts:41-45`、`apps/server/src/index.ts`(API 応答)(**現 main でも同様**)
+**場所**: `apps/web/scripts/write-headers.ts:41-45`、`apps/server/src/index.ts`(API 応答)(`6b839cc` 時点)
 
 **内容**: web の `_headers` に `Strict-Transport-Security` がない。`workers.dev` は HSTS プリロード済みのため既定 URL では実害がないが、**custom domain を routes で割り当てた場合**は初回接続のダウングレードが理論上可能。API worker の応答には `X-Content-Type-Options: nosniff` 等が一切付かない(JSON API のみで HTML を返さないため実害は小さい)。
 
@@ -223,7 +224,7 @@
 
 ### A-1. 受信者クラスを跨ぐ識別子衝突でラップ完全集合の初回登録が defect になる(Low・新規)
 
-> **状態(2026-08-15 追記)**: **修正済み** — 推奨対応どおり、登録経路の重複検出キーを保存行の一意性単位(epoch × recipient、クラス無視)へ変更し、受理前の 422(`duplicate-recipient`)で拒否(`dek-wraps.ts`)。衝突集合の複合ローテーションが 422 になりロールバックで不整合が残らないことをテストで固定(修正を外すと 500 で失敗することを変異検証済み)。削除経路は従来どおり(クラス込みキー + 保存行とのクラス突合)。より根本的な add_member 対象 user_id の受理ポリシー形式検査は仕様側の判断を要するため未着手のまま。なお A2(PR #65)のリース経路の本稼働により、本指摘の影響には「§7 の失効ローテーション・リース可用性の閉塞」が加わっていた(修正の優先度を繰り上げた理由)。
+> **状態(2026-08-15 追記)**: **是正済み(defect の解消)** — 推奨対応どおり、登録経路の重複検出キーを保存行の一意性単位(epoch × recipient、クラス無視)へ変更し、受理前の 422(`duplicate-recipient`)で拒否(`dek-wraps.ts`。修正を外すとテストが 500 で失敗することを変異検証済み)。削除経路は従来どおり(クラス込みキー + 保存行とのクラス突合)。**「修正済み」ではなく「是正済み」とするのは**(追補 3): 衝突が存在する限り完全集合は本質的に充足不能(member と server は別鍵なので 1 行が両者を兼ねられない)であり、**新エポックの閉塞そのものは 422 化では解けない**ため。既存エポックへの衝突メンバー宛バックフィルも同根で 409 に固定される。是正の意味は「不透明な defect → 診断可能な型付き拒否」への転換であり、復旧は「影響と緩和要素」記載の運用手段(衝突メンバーの remove_member または revoke_server)による — **remove_member 後にローテーションが通ることまでテストで固定した**。根本(add_member 対象 user_id の受理ポリシー形式検査)は仕様側の判断を要するため未着手のまま。なお A2(PR #65)のリース経路の本稼働により、本指摘の影響には「§7 の失効ローテーション・リース可用性の閉塞」が加わっていた(対応の優先度を繰り上げた理由)。
 
 **場所**: `apps/server/src/dek-wraps.ts`(`checkWrapSets` の初回登録分岐・`wrapRefKey`)、`apps/server/src/do-schema.ts`(dek_wraps の主キーは `(environment_id, epoch, recipient_user_id)` のまま — `recipient_class` は主キー外)
 
@@ -313,7 +314,7 @@ PR #64(本文書の追加)の後にマージされた PR #65(Phase 2 Wave 2 A2 �
 
 **場所**: `apps/server/src/chain-do.ts`(コンストラクタの `ensureProjectDoTables`)、`apps/server/src/programs-lease.ts`(プローブレート上限の申し送りコメント)
 
-**内容**: lease は唯一の未認証エンドポイントであり、許可 issuer の有効トークンを 1 枚持つ者が任意の 64 hex プロジェクト ID を投げると、未初期化 404 で監査行は残らないものの、**空テーブル群を持つ DO 自体は生成される**(ストレージコスト)。プロジェクト ID は genesis ハッシュで推測不能・OIDC 検証通過が前提という緩和はあり、コードには「要求レート自体の上限は未実装」という近縁の申し送りが既にあるが、「DO が実体化される」側面は明示されていない。
+**内容**: lease は唯一の未認証エンドポイントであり、許可 issuer の有効トークンを 1 枚持つ者が任意の 64 hex プロジェクト ID を投げると、未初期化 404 で監査行は残らないものの、**空テーブル群を持つ DO 自体は生成される**(ストレージコスト)。プロジェクト ID は genesis ハッシュで推測不能・OIDC 検証通過が前提という緩和はあり、コードには「要求レート自体の上限は未実装」という近縁の申し送りが既にあるが、「DO が実体化される」側面は明示されていない。なお同型の DO 実体化は**認証済み**の GET(環境一覧・メタデータのみ pull 等 — セッション主体は任意プロジェクト ID でスコープ検査なし)にもあり、Lax クッキーのトップレベル遷移で第三者が発火させうる(追補 3)。いずれも影響はストレージ消費のみで、対策はプローブレート上限と同じ設計判断に属する(AUTH_SPEC §11-4 の「状態を持つ GET」の定義がこれを対象外とすることは仕様側に明記した)。
 
 **推奨対応**: `programs-lease.ts` の申し送りコメントへ 1 行追記(プローブレート上限の設計判断に DO 生成コストを含める)。対策自体はプローブレート上限と同じ判断に属するため申し送りのまま。→ **コメント追記は実施済み(2026-08-15)**。残るのはプローブレート上限そのものの設計判断(既存の申し送りと同一)。
 
@@ -331,6 +332,28 @@ PR #65 が明示的に申し送った未決事項(実装バグではなく仕様
 
 ---
 
+## 追補 3(2026-08-15): フォローアップ修正の自己レビュー
+
+M-2 / A-1 / L-1 / L-3 / L-5 / A-3 / A-4 の修正差分そのものを、独立した 2 巡のレビュー(1 巡目 = 単一パスの全面レビュー、2 巡目 = 敵対的レビュー + 規律整合レビューの並行)にかけた。結果は本文の各状態注記に反映済み(L-3 の「緩和済み」への格下げ、A-1 の「是正済み」への限定、M-2 の残余 2 点、A-4 の適用範囲の拡張)。新規指摘は 1 件:
+
+### A-6. `/auth/github/callback` の未認証アウトバウンド増幅と入力上限の欠如(Low・新規)
+
+**場所**: `packages/api-schema/src/auth-api.ts`(`githubCallback` の query)、`apps/server/src/handlers-auth.ts`(callback ハンドラ)
+
+**内容**: L-3 は device/exchange のみを対象としたが、web OAuth の callback も同型の「未認証 → GitHub アウトバウンド」を持つ。state はクッキーとクエリの双方に攻撃者自身が載せられる自己束縛(double-submit)であり、`/auth/github/start` で 1 度 state を得れば、以後は callback 1 リクエストごとに code 交換(+ 成功時 `/user`)の外部呼び出しを誘発できる。しかも `code` / `state` クエリには**サイズ上限が一切なかった**(device/exchange は 512 バイト + 形式検査)。OAuth の code 形式は仕様が定めないため、device/exchange のような形式検査による遮断はできない。
+
+**対応(実施済み)**: `code` / `state` に 512 バイト上限を追加(形式検査は不能のため長さのみ)。`SELF_HOSTING.md` の per-IP レート制限推奨表に callback を追加し、「未認証エンドポイントは 2 つ」という誤記(`/auth/config` / `/auth/github/start` も未認証)を「外部アウトバウンドを誘発する未認証面は 3 つ」に訂正。AUTH_SPEC §4 の形式事前検査の項に callback への言及を追記。**残余は L-3 と同一**(形式適合・上限内の洪水への per-IP 制限は運用側)のため、深刻度・状態も L-3 に合わせる。
+
+### 2 巡目で検証し「不成立」を確認した主な攻撃仮説(記録)
+
+- L-1: ヘッダー名の大小文字迂回(effect の Headers は全キー小文字正規化)・principal.kind の第 4 の値(型上 3 値で anonymous は 401 先行)・CORS 経由のヘッダー付与(CORS 不在で preflight 不能)
+- L-3: パターンの ReDoS(単一文字クラス + アンカーで線形)・実トークンの誤弾き(`gh[a-z]_` は gho/ghp/ghu/ghs/ghr を包含。`github_pat_` は check-token でどのみち 404 になる経路のため機能欠落なし)
+- A-1: 削除経路との受理境界のズレ(削除は保存行クラス突合で必ず片方が 404)・epoch の数値表現によるキー衝突(`PositiveInt` Schema + 十進表記の単射性)
+- L-5: 204/null ボディ・ストリーミング応答の再ラップ(`new Response(body, …)` は両方合法)・静的資産のキャッシュ破壊(API worker に assets バインディングなし)
+- テスト改名(`gho_test<n>` 等)による検証力低下(「不正トークン」系はすべて形式適合のまま check-token 経路を通ることを確認)
+
+---
+
 ## 仕様上の既知の残余(参照)
 
 以下は実装の不備ではなく、CRYPTO_SPEC §14.3 が明示する v1 の非保証であり、本レビューでは再指摘しない: 可用性(G8)、平文の正しさ(G9)、床なし初回同期クライアントへの巻き戻し配布、split view の機構的未検出、在籍区間内座標への共謀注入(特にメタステートメントの前進注入)、既読値の取り消し不能。緩和(帯域外アンカー・ヘッドゴシップ・環境マニフェスト)は Phase 2 の責務として仕様に計画済み。
@@ -338,7 +361,7 @@ PR #65 が明示的に申し送った未決事項(実装バグではなく仕様
 ## 推奨する対応順序(2026-08-15 改訂)
 
 1. ~~M-1~~ — **PR #63 で解消済み**
-2. ~~M-2 / A-1 / L-1 / L-3 / L-5 / A-3~~ — **2026-08-15 のフォローアップで修正済み**(各指摘の状態注記を参照。A-1 は A2 のリース本稼働により優先度を繰り上げて対応した)
+2. ~~M-2 / A-1 / L-1 / L-3 / L-5 / A-3 / A-6~~ — **2026-08-15 のフォローアップで対応済み**(各指摘の状態注記を参照 — L-3 / A-6 は「緩和」・A-1 は「是正」に留まる。A-1 は A2 のリース本稼働により優先度を繰り上げて対応した)
 3. ~~A-2~~ — **PR #65 で解消済み**(追補 2 で検証)
 4. **OIDC リプレイの裁定**(追補 2)— コード変更ではなく所有者判断。**A3(CI クライアント)実装前に必要**
 5. **L-2 / L-4** — Phase 2 のトークン管理 UI / 監査 UI 設計・仕様改訂と同時に

@@ -179,10 +179,15 @@ async function capRequestBody(request: Request): Promise<Request | null> {
  * - `Cache-Control: no-store` — 応答にはトークン生値(device 交換)・暗号文・
  *   ラップが載る。経路上のキャッシュ(ブラウザ・共有プロキシ)に残さない。
  *   ルートが自前のキャッシュ方針を設定した場合はそちらを優先する(現状は皆無)
+ * - `Strict-Transport-Security` — API worker も routes で custom domain を
+ *   割り当てうる(セッションクッキー・OAuth フローを持つオリジン)ため、web の
+ *   `_headers` と同様に初回接続ダウングレードを塞ぐ。includeSubDomains を
+ *   付けない理由も web 側(write-headers.ts)と同じ
  */
 function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("x-content-type-options", "nosniff");
+  headers.set("strict-transport-security", "max-age=31536000");
   if (!headers.has("cache-control")) {
     headers.set("cache-control", "no-store");
   }

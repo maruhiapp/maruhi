@@ -663,9 +663,15 @@ describe("セッション主体の一括 pull の CSRF ヘッダー(§12-7 — �
     );
     expect(reads[0]?.["n"]).toBe(0);
 
-    // ヘッダーありのセッション pull は従来どおり 200
+    // ヘッダーありのセッション pull は従来どおり 200 で、今度は var.read が
+    // 記録される(positive control — 監査記録経路そのものが生きていることの裏取り)
     const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
     expect(withCsrf.status).toBe(200);
+    const readsAfter = await queryProjectDo(
+      projectId,
+      "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
+    );
+    expect(readsAfter[0]?.["n"]).toBe(1);
 
     // Bearer はクロスサイトで付与できないため対象外(ヘッダーなしで 200)
     const bearerPull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));

@@ -15,8 +15,11 @@ import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/unstable/
 import type { HttpApiMiddleware } from "effect/unstable/httpapi";
 
 export const SESSION_COOKIE = "__Host-maruhi_session";
-/** CSRF 対抗ヘッダー。状態を持つ GET(リカバリーブロブ取得)もハンドラ側で要求する。 */
-export const CSRF_HEADER = "x-maruhi-csrf";
+/**
+ * CSRF 対抗ヘッダー。状態を持つ GET(値付き一括 pull・リカバリーブロブ取得)も
+ * ハンドラ側で要求する(下の statefulGetCsrfViolated がヘッダー名ごと閉じ込める)。
+ */
+const CSRF_HEADER = "x-maruhi-csrf";
 // RFC 7235: auth-scheme は大文字小文字を区別しない。空白の連続も許容する
 const BEARER_PATTERN = /^bearer\s+(\S+)$/i;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -60,6 +63,22 @@ function csrfViolated(request: HttpServerRequest.HttpServerRequest, principal: P
     !SAFE_METHODS.has(request.method) &&
     request.headers[CSRF_HEADER] !== "1"
   );
+}
+
+/**
+ * 状態を持つ GET のセッション主体 CSRF 検査(AUTH_SPEC §11-4 の明示規定一覧)。
+ * ミドルウェアの検査(上の csrfViolated)は GET を免除するため、GET だが状態を
+ * 持つエンドポイント — 値付き一括 pull(§12-7)・リカバリーブロブ取得(§13-2)—
+ * はハンドラがこれを呼んで同じ 403(csrf-header-required)を返す。
+ * `SameSite=Lax` のセッションクッキーはクロスサイトのトップレベル遷移でも
+ * 同送されるが、カスタムヘッダーは CORS 不在のためクロスサイトから送れない
+ * (§5)。Bearer はクロスサイトで付与できないため対象外。
+ */
+export function statefulGetCsrfViolated(
+  principal: Principal,
+  headers: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return principal.kind === "session" && headers[CSRF_HEADER] !== "1";
 }
 
 /**
