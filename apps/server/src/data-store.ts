@@ -261,6 +261,25 @@ interface DataStoreShape {
    * DO の permit 下で直列化されているため、判定 → 消費の間に割り込みはない。
    */
   readonly recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => void;
+  /**
+   * 先着束縛(AUTH_SPEC §14-1。2026-08-15 裁定)の照会: 生存期限内の束縛行が
+   * あれば束縛先の一時公開鍵を返す。期限切れ行は**行の物理削除(GC)に依存せず**
+   * expires_at 条件で無視する — 判定の正しさを GC のタイミングから切り離す。
+   * `bindingKeyHex` は JWS signing input のハッシュ(生トークンのハッシュでは
+   * ない — programs-lease.ts の LeaseTokenFacts.bindingKeyHex の doc)。
+   */
+  readonly leaseBinding: (bindingKeyHex: string, nowMs: number) => Effect.Effect<string | null>;
+  /**
+   * 先着束縛の記録(発行・監査・窓消費と同一の同期ブロックで呼ぶ — §14-1)。
+   * 既存行(同一キー + 同一鍵の冪等リトライ)は上書きしない。あわせて
+   * 期限切れ行を GC する(行数の上界 = 発行レート窓 × 保持期間 — policy.ts)。
+   */
+  readonly recordLeaseBinding: (
+    bindingKeyHex: string,
+    ephemeralPubHex: string,
+    expiresAtMs: number,
+    nowMs: number,
+  ) => void;
 
   readonly write: DataWriteOps;
 }
@@ -753,6 +772,34 @@ const makeWrapQueries = (sql: SqlStorage) => ({
       return;
     }
     sql.exec("UPDATE lease_windows SET count = count + 1 WHERE kind = ?", kind);
+  },
+  leaseBinding: (bindingKeyHex: string, nowMs: number) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          "SELECT ephemeral_pub_hex FROM lease_bindings WHERE binding_key_hex = ? AND expires_at > ?",
+          bindingKeyHex,
+          nowMs,
+        )
+        .toArray()[0];
+      return row === undefined ? null : stringColumn(row, "ephemeral_pub_hex");
+    }),
+  recordLeaseBinding: (
+    bindingKeyHex: string,
+    ephemeralPubHex: string,
+    expiresAtMs: number,
+    nowMs: number,
+  ) => {
+    // GC を先に置くことで、期限切れの同一キー残骸が主キー衝突で新しい束縛の
+    // 記録を妨げない(照会側は expires_at 条件で既に無視している)
+    sql.exec("DELETE FROM lease_bindings WHERE expires_at <= ?", nowMs);
+    sql.exec(
+      `INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at)
+       VALUES (?, ?, ?) ON CONFLICT(binding_key_hex) DO NOTHING`,
+      bindingKeyHex,
+      ephemeralPubHex,
+      expiresAtMs,
+    );
   },
 });
 

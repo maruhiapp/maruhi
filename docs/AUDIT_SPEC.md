@@ -123,7 +123,7 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 |---|---|---|
 | `server.dek_unwrapped` | environment_id, epoch | サーバーがラップ済み DEK を復号した(リース発行に伴う) |
 | `server.lease_issued` ★ | environment_id, payload = { grant_chain_seq, claims_digest, epochs } | ワークロードリースの発行(AUTH_SPEC §14)。**環境単位 1 行**(リースは環境単位配布であり変数粒度の選択がない)。外部識別子(リポジトリ名等)は書かない — 一致したポリシーはチェーン(grant payload)が保持し、grant_chain_seq + claims_digest で突合する(§1-2 の禁止情報をリース経路でも増やさない) |
-| `server.lease_denied` | payload = { reason, claims_digest? } | **OIDC 署名検証を通過した後の拒否のみ**を記録し、固定窓の全体上限(1 時間 100 行、超過は不記録)を適用する — `auth.login_failed` と同じ規律(§3.1)。actor は `{ type: "system" }`(maruhi 上の識別を持たない外部ワークロードであり、サーバー鍵の行使でもない) |
+| `server.lease_denied` | payload = { reason, claims_digest? } | **OIDC 署名検証を通過した後の拒否のみ**を記録し、固定窓の全体上限(1 時間 100 行、超過は不記録)を適用する — `auth.login_failed` と同じ規律(§3.1)。actor は `{ type: "system" }`(maruhi 上の識別を持たない外部ワークロードであり、サーバー鍵の行使でもない)。reason には先着束縛違反 `token-replayed`(AUTH_SPEC §14-1 — 2026-08-15 裁定)を含む — この行の claims_digest は正規ワークロードの発行行と同一になるため、所有者は**どのワークロードのトークンが盗まれたか**を突合できる |
 | `server.value_decrypted` ★ | variable_id, environment_id, epoch, version | **予約(v1 リース経路では発生しない)**: リースにおいてサーバーは値を復号しない(CRYPTO_SPEC §9.1)。push 型同期アドオン(将来 — libsodium 例外の裁定を要する)を導入する場合に有効化する。1 変数 1 行 |
 
 `revoke_server` 時の要ローテーション検出は §4.1 の revoke_server 変種(区間 = grant 区間、候補 = grant スコープ内、実読み取り = `server.lease_issued`〔発行時点の環境内アクティブ変数の全てをランク (a) に含める — 環境単位配布の帰結〕+ `server.value_decrypted`〔予約〕)で行う。

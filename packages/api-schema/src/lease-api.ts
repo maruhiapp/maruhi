@@ -91,8 +91,11 @@ export const LeaseResponseSchema = Schema.Struct({
  * server-addressed wraps — it never decrypts a value (§9.1).
  *
  * 判定順(§14-3): OIDC 検証(401)→ lease_policy 一致 + 開示スコープ
- * (不一致は一律 404)→ レート制限(429)→ サーバー宛ラップの存在(503)。
- * レート制限を認可の後ろに置くのは §11-2 の存在秘匿のため(errors/lease.ts)。
+ * (不一致は一律 404)→ 先着束縛(同一トークン + 別鍵は 401 `token-replayed` —
+ * §14-1。2026-08-15 裁定)→ 環境の存在(404)→ レート制限(429)→ サーバー宛
+ * ラップの存在(503)。レート制限を認可の後ろに置くのは §11-2 の存在秘匿のため
+ * (errors/lease.ts)。`token-replayed` は認可通過後にのみ到達する唯一の 401 で、
+ * 存在秘匿と両立する(errors/lease.ts の LeaseUnauthorizedReasonSchema)。
  */
 export const leaseGroup = HttpApiGroup.make("lease").add(
   HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {

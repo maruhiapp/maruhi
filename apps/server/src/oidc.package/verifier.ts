@@ -14,6 +14,7 @@
 //   5. 必須 claim の存在と時刻検証(clock skew ±60 秒)
 
 import { LeaseUnauthorizedError, LeaseUnavailableError } from "@maruhi/api-schema";
+import { encodeHex } from "@maruhi/crypto";
 import { Context, Effect } from "effect";
 
 import { decodeBase64Url, decodeBase64UrlJson } from "./base64url.ts";
@@ -33,8 +34,14 @@ const SUPPORTED_ISSUERS: readonly string[] = ["https://token.actions.githubuserc
 /** 許可アルゴリズム(§14-1)。対称鍵 alg と `none` はここに無い。 */
 const ALLOWED_ALGS: readonly AllowedAlg[] = ["RS256", "ES256"];
 
-/** 時刻検証の許容ずれ(§14-1: ±60 秒)。 */
-const CLOCK_SKEW_MS = 60 * 1000;
+/**
+ * 時刻検証の許容ずれ(§14-1: ±60 秒)。公開しているのは先着束縛(§14-1)の
+ * 保持余裕(policy.ts の LEASE_BINDING_RETENTION_MARGIN_MS)がこの値**以上**で
+ * あることを導出で保証するため — 受理窓より短い束縛保持はリプレイ窓になる
+ * (session-24 §2 の PyPI 監査の先例)。
+ */
+export const OIDC_CLOCK_SKEW_MS = 60 * 1000;
+const CLOCK_SKEW_MS = OIDC_CLOCK_SKEW_MS;
 
 /**
  * 検証済みトークンのうち、リース経路が使う値だけを取り出したもの。
@@ -47,6 +54,25 @@ export interface VerifiedOidcToken {
   /** `aud` は文字列 / 配列の両形を取るため、常に配列へ正規化する。 */
   readonly audiences: readonly string[];
   readonly claims: Readonly<Record<string, unknown>>;
+  /**
+   * 検証済み `exp`(秒)。先着束縛(§14-1)の束縛行の生存期限の入力になる —
+   * 生存期限は「時刻検証がこのトークンを受理しうる最終時刻」以上を要する。
+   */
+  readonly expiresAtSec: number;
+  /**
+   * 先着束縛(§14-1)のキー = JWS signing input(`header.payload`)の SHA-256。
+   *
+   * **生トークン文字列をハッシュしてはならない**: 生トークンは第 3 セグメント
+   * (署名)を含むが、そこは署名の**保護外**であり可鍛である — base64url の
+   * 末尾グループの未使用ビット(WHATWG forgiving-base64 decode が捨てる)で、
+   * デコード結果のバイト列を変えずに文字だけ差し替えられる(RS256 の末尾 1 文字は
+   * 15 通りの同値、ES256 はさらに `s`-malleability を持つ)。生トークンを束縛
+   * キーにすると、署名検証・claims_digest を一切変えずにハッシュだけ変える 1 文字
+   * 編集で束縛照合を空振りさせられ、リプレイ防御が丸ごと無効化される
+   * (2026-08-15 pullfrog レビュー指摘)。signing input は issuer が実際に署名した
+   * バイト列そのもので、妥当性を保つ変異に対して不変であり、この経路を閉じる。
+   */
+  readonly signingInputHashHex: string;
 }
 
 export interface OidcVerifierShape {
@@ -251,10 +277,25 @@ export function makeOidcVerifier(
         yield* checkTimes(parsed.claims, nowMs);
         const subject = stringClaim(parsed.claims, "sub");
         const audiences = audiencesOf(parsed.claims);
-        if (subject === null || audiences === null) {
+        // exp は checkTimes が存在・型を検証済み(null はここに到達しない)
+        const expiresAtSec = numericClaim(parsed.claims, "exp");
+        if (subject === null || audiences === null || expiresAtSec === null) {
           return yield* unauthorized("missing-claim");
         }
-        return { issuer, subject, audiences, claims: parsed.claims };
+        // 先着束縛キーは**署名対象バイト列**のハッシュ(生トークンではない —
+        // signingInputHashHex の doc)。署名検証を通過した後にのみ計算する
+        const digest = yield* Effect.promise(() =>
+          crypto.subtle.digest("SHA-256", new Uint8Array(parsed.signingInput)),
+        );
+        const signingInputHashHex = encodeHex(new Uint8Array(digest));
+        return {
+          issuer,
+          subject,
+          audiences,
+          claims: parsed.claims,
+          expiresAtSec,
+          signingInputHashHex,
+        };
       }),
   };
 }

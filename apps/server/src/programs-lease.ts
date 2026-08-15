@@ -16,10 +16,14 @@
 //      未知プロジェクトはストレージ 1 読みで短絡し、実在プロジェクトはチェーン
 //      検証と監査書き込みを行うため測定可能な差がある。タイミングは脅威モデル外
 //      (未認証面で定数時間を狙うのは非現実的)という判断(pullfrog 指摘)
+//   1.5 先着束縛(§14-1。2026-08-15 裁定)— 同一トークン + 別鍵は 401
+//      `token-replayed`。認可の直後・環境存在の判定より前(束縛済みトークンの
+//      コピー保持者に、環境の実在によらず一様 401 を返す — §14-3)。読み取りのみで
+//      レート窓を消費しない
 //   2. 環境の存在(削除済みは 404 — §12-4 と同じ扱い)
 //   3. レート制限(429)— 認可の後(errors/lease.ts の論拠)
 //   4. サーバー宛ラップの存在(欠落 = 503 server-wraps-missing)
-//   5. 開封 → 再ラップ → 監査 → 応答
+//   5. 開封 → 再ラップ → 監査 → 応答(先着束縛の記録も同一同期ブロック)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -49,6 +53,20 @@ export interface LeaseTokenFacts {
   readonly claims: Readonly<Record<string, unknown>>;
   /** CRYPTO_SPEC §9.1 の claims_digest_hex(worker が crypto で計算済み)。 */
   readonly claimsDigestHex: string;
+  /**
+   * 先着束縛(§14-1。2026-08-15 裁定)の重複キー = JWS signing input
+   * (`header.payload`)の SHA-256(hex 小文字。worker の verifier が署名検証
+   * 通過後に計算済み — VerifiedOidcToken.signingInputHashHex)。**生トークンの
+   * ハッシュではない**: 生トークンの署名セグメントは可鍛で、束縛を素通りできる
+   * (同 doc)。jti でもない — jti の有無・意味論は issuer 依存で、signing input
+   * ハッシュは issuer に何も要求しない(docs/notes/session-24.md §4)。
+   */
+  readonly bindingKeyHex: string;
+  /**
+   * 束縛行の生存期限(ms)。worker が「トークンの exp + 保持余裕
+   * (policy.ts — 時刻検証の clock skew 以上であることを導出で保証)」で計算する。
+   */
+  readonly bindingExpiresAtMs: number;
 }
 
 /**
@@ -70,7 +88,11 @@ export type LeaseRejection =
   | {
       readonly kind: "unavailable";
       readonly reason: "server-wraps-missing" | "server-key-unconfigured";
-    };
+    }
+  // 先着束縛違反(§14-1): 同一トークンが既に別の一時鍵へ発行済み。worker 側で
+  // 401 `token-replayed` になる(404 に畳まない — 正規ジョブ側の失敗を診断可能に
+  // 保つのが先着束縛の可視化の半分。存在秘匿とは両立: 認可通過後にのみ到達する)
+  | { readonly kind: "replayed" };
 
 /** RPC 境界を渡るリース結果。 */
 export type LeaseOutcome =
@@ -112,6 +134,22 @@ const denyWithAudit = (reason: string, facts: LeaseTokenFacts, nowMs: number) =>
   Effect.gen(function* () {
     yield* recordDenied(reason, facts.claimsDigestHex, nowMs);
     return yield* Effect.fail<LeaseRejection>({ kind: "not-found" });
+  });
+
+/**
+ * 先着束縛の判定段(§14-1。2026-08-15 裁定 — docs/notes/session-24.md): 同一
+ * トークンが既に**別の**一時鍵へ発行済みなら拒否する。同一トークン + 同一鍵は
+ * 通す(応答喪失後の正規リトライの冪等性 — トークンをランタイム再発行できない
+ * 事前発行型 issuer を壊さない)。判定は読み取りのみでレート窓を消費しない。
+ */
+const rejectReplayedToken = (facts: LeaseTokenFacts, ephemeralPubHex: string, nowMs: number) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const boundPubHex = yield* store.leaseBinding(facts.bindingKeyHex, nowMs);
+    if (boundPubHex !== null && boundPubHex !== ephemeralPubHex) {
+      yield* recordDenied("token-replayed", facts.claimsDigestHex, nowMs);
+      return yield* Effect.fail<LeaseRejection>({ kind: "replayed" });
+    }
   });
 
 export const leaseProgram = (
@@ -167,6 +205,12 @@ export const leaseProgram = (
       return yield* denyWithAudit("scope-out-of-range", facts, nowMs);
     }
 
+    // 1.5 先着束縛(§14-1)。認可の直後・環境存在の判定より**前**に置く —
+    // 束縛済みトークンのコピー保持者には対象環境の実在・削除状態によらず一様に
+    // 401 を返し、環境の存在情報を与えない(§14-3)
+    yield* rejectReplayedToken(facts, ephemeralPubHex, nowMs);
+    const store = yield* DataStore;
+
     // 2. 環境の存在(削除済み tombstone は 404)
     yield* requireActiveEnvironment(environmentId).pipe(
       Effect.matchEffect({
@@ -181,7 +225,6 @@ export const leaseProgram = (
     // 再試行のたびに枠を食い、300 回目以降は「直せる診断」である 503 が無関係な
     // 429 に化ける — §14-3 が 503 をわざわざ設けた意図が打ち消される
     // (pullfrog 指摘 — PR #65)
-    const store = yield* DataStore;
     const window = yield* store.checkLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
     if (!window.allowed) {
       yield* recordDenied("rate-limited", facts.claimsDigestHex, nowMs);
@@ -255,8 +298,16 @@ export const leaseProgram = (
     // ワークロードへの開示は server.* 系が担う — §14-4)
     const audit = yield* AuditStore;
     yield* Effect.sync(() => {
-      // 6. 窓の消費は発行と同一同期ブロックで(記録した分だけ数える)
+      // 6. 窓の消費・先着束縛の記録は発行と同一同期ブロックで(記録した分だけ
+      // 数える / 発行なしに束縛だけが残る・発行されたのに束縛が残らない、の
+      // どちらの中間状態も作らない — §14-1)
       store.recordLeaseWindowUse("issued", nowMs);
+      store.recordLeaseBinding(
+        facts.bindingKeyHex,
+        ephemeralPubHex,
+        facts.bindingExpiresAtMs,
+        nowMs,
+      );
       audit.appendManySync([
         ...leases.map((lease) => ({
           event: "server.dek_unwrapped",
