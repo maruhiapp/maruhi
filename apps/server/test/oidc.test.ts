@@ -125,6 +125,26 @@ describe("JWKS キャッシュ(§14-1)", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("keeps a TTL-valid document when a forced refresh for an unknown kid fails", async () => {
+    let failing = false;
+    const log = stubFetch({ failJwks: () => failing });
+    const cache = makeJwksCache();
+
+    // 既知 kid で温める(discovery + JWKS)
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+
+    // issuer 側の障害中に未知 kid(攻撃者が自由に指定できる)が強制
+    // リフレッシュを誘発しても、TTL 内の旧ドキュメントを失わない:
+    // 未知 kid は 401(null)、既知 kid は 503 に落ちず検証できたまま
+    failing = true;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "never-existed"))).toBeNull();
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, OIDC_KID))).not.toBeNull();
+    // 失敗した強制リフレッシュもクールダウンの起点になる(issuer を叩き続けない)
+    const afterFailure = log.urls.length;
+    expect(await Effect.runPromise(cache.resolveKey(OIDC_ISSUER, "still-missing"))).toBeNull();
+    expect(log.urls.length).toBe(afterFailure);
+  });
+
   it("does not cache a failed fetch (the next call retries)", async () => {
     let failing = true;
     const log = stubFetch({ failJwks: () => failing });

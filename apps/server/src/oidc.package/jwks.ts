@@ -153,7 +153,12 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     const pending = loadDiscovery(issuer);
     discovery.set(issuer, pending);
     // 失敗した Promise を残すと以後の再取得まで同じ失敗を返し続けるため捨てる
-    pending.catch(() => discovery.delete(issuer));
+    // (後続の取得がすでにエントリを差し替えていたら消さない)
+    pending.catch(() => {
+      if (discovery.get(issuer) === pending) {
+        discovery.delete(issuer);
+      }
+    });
     return pending;
   };
 
@@ -189,10 +194,25 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
     // TTL 内なのに取り直す = 未知 kid による強制リフレッシュ。その時刻を
     // 記録してクールダウンの起点にする(TTL 切れの通常更新では据え置く)
     const forced = cached !== null && now() - cached.fetchedAtMs < JWKS_TTL_MS;
-    const pending = loadJwks(issuer, forced ? now() : (cached?.forcedRefreshAtMs ?? 0));
-    jwks.set(issuer, pending);
-    pending.catch(() => jwks.delete(issuer));
-    return pending;
+    const forcedRefreshAtMs = forced ? now() : (cached?.forcedRefreshAtMs ?? 0);
+    // 強制リフレッシュの失敗では TTL 内の旧ドキュメントへ巻き戻す(クール
+    // ダウンだけ進める): kid は署名検証前の攻撃者制御値であり、偽 kid の
+    // 失敗取得で有効なキャッシュを失うと既知鍵の検証まで 503 に落ちる
+    const entry: Promise<CachedJwks> = loadJwks(issuer, forcedRefreshAtMs).catch((error) => {
+      if (forced && cached !== null) {
+        return { ...cached, forcedRefreshAtMs };
+      }
+      throw error;
+    });
+    jwks.set(issuer, entry);
+    // 失敗した Promise を残すと以後の再取得まで同じ失敗を返し続けるため捨てる
+    // (後続の取得がすでにエントリを差し替えていたら消さない)
+    entry.catch(() => {
+      if (jwks.get(issuer) === entry) {
+        jwks.delete(issuer);
+      }
+    });
+    return entry;
   };
 
   return {
