@@ -642,6 +642,19 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
     expect(body["githubClientId"]).toBe(env.GITHUB_CLIENT_ID);
   });
 
+  it("attaches the common security headers to every API response (セキュリティレビュー L-5)", async () => {
+    // 応答にはトークン生値・暗号文・ラップが載る経路があるため、全応答に
+    // nosniff + no-store を付与する(index.ts の withSecurityHeaders)
+    const response = await SELF.fetch(`${BASE}/auth/config`);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    // エラー応答(未認証 401)にも同じヘッダーが付く
+    const unauthorized = await SELF.fetch(`${BASE}/auth/me`);
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(unauthorized.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("returns 503 SetupIncomplete while the client_id is still the placeholder", async () => {
     const unconfigured = { ...env, GITHUB_CLIENT_ID: PLACEHOLDER };
     const response = await worker.fetch(incoming(`${BASE}/auth/config`), unconfigured);
