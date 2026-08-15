@@ -57,6 +57,11 @@ export class CryptoDekWrapSignatureError extends Data.TaggedError(
   "CryptoDekWrapSignature",
 )<object> {}
 
+/** Invite-acceptance signature verification failed (CRYPTO_SPEC §6.5). */
+export class CryptoInviteAcceptSignatureError extends Data.TaggedError(
+  "CryptoInviteAcceptSignature",
+)<object> {}
+
 /**
  * An unwrapped DEK does not match the chain-published commitment for its
  * coordinates (CRYPTO_SPEC §5.2 — poison wrap).
@@ -100,6 +105,7 @@ export type WrappedCryptoError =
   | CryptoDekUnwrapError
   | CryptoSignError
   | CryptoDekWrapSignatureError
+  | CryptoInviteAcceptSignatureError
   | CryptoDekCommitmentError
   | CryptoValueInvalidError
   | CryptoMetaStatementInvalidError
@@ -126,6 +132,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoSignError();
     case "DekWrapSignatureInvalid":
       return new CryptoDekWrapSignatureError();
+    case "InviteAcceptSignatureInvalid":
+      return new CryptoInviteAcceptSignatureError();
     case "DekCommitmentMismatch":
       return new CryptoDekCommitmentError();
     case "ValueInvalid":

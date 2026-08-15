@@ -57,6 +57,12 @@ export {
   verifyDekWrapSignature,
 } from "./dek-wrap-sign.ts";
 export {
+  buildInviteAcceptSignedBytes,
+  type InviteAcceptSignatureContext,
+  signInviteAccept,
+  verifyInviteAcceptSignature,
+} from "./invite-accept-sign.ts";
+export {
   buildLeaseClaimsBytes,
   buildLeaseWrapInfo,
   computeLeaseClaimsDigest,
