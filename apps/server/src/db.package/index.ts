@@ -8,8 +8,12 @@ export { D1AuditRepo, LOGIN_FAILED_WINDOW_LIMIT, LOGIN_FAILED_WINDOW_MS } from "
 export {
   type DbServices,
   IdentityRepo,
+  INVITE_ISSUE_WINDOW_LIMIT,
+  INVITE_TTL_MS,
+  InviteRepo,
   isUniqueConflict,
   makeDbServices,
+  MAX_PENDING_INVITES_PER_PROJECT,
   OrgRepo,
   ProjectRepo,
   RECOVERY_FETCH_LIMIT,

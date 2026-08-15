@@ -28,6 +28,7 @@ import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
 import { authLive } from "./handlers-auth.ts";
 import { deksLive } from "./handlers-deks.ts";
 import { environmentsLive } from "./handlers-environments.ts";
+import { invitesLive } from "./handlers-invites.ts";
 import { leaseLive } from "./handlers-lease.ts";
 import { membershipLive } from "./handlers-membership.ts";
 import { variablesLive } from "./handlers-variables.ts";
@@ -93,6 +94,7 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(environmentsLive),
     Layer.provide(variablesLive),
     Layer.provide(deksLive),
+    Layer.provide(invitesLive),
     Layer.provide(leaseLive),
     Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
     Layer.provide(platformContext),

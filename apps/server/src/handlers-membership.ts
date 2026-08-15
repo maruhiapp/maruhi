@@ -31,7 +31,7 @@ import {
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
 import { unwrapDataOutcome } from "./data-http.ts";
 import type { DataOutcome } from "./data-plane.ts";
-import { OrgRepo, ProjectRepo } from "./db.package/index.ts";
+import { InviteRepo, OrgRepo, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -185,6 +185,21 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           ),
         );
         const head = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
+        // AUTH_SPEC §15-2: add_member 受理時、target = invitee の accepted 招待を
+        // completed へ突合する(導出状態の更新であり真実源はチェーン。§15-4:
+        // 証跡は chain.member_added — 独立の監査イベントは書かない)。DO 受理と
+        // D1 更新は別トランザクションであり、ここで失敗しても真実源(チェーン)は
+        // 確定済み — 突合は次の add_member 受理では再実行されないが、招待は
+        // accepted のまま一覧に残り、管理者が失効で掃除できる(欠落側に倒す)
+        if (payload.entry.op === "add_member") {
+          const invites = yield* InviteRepo;
+          yield* invites.completeAccepted({
+            projectId: params.projectId,
+            inviteeUserId: payload.entry.payload.targetUserId,
+            inviteeEncPubHex: payload.entry.payload.encPubHex,
+            inviteeSigPubHex: payload.entry.payload.sigPubHex,
+          });
+        }
         return {
           projectId: params.projectId,
           headSeq: head.headSeq,

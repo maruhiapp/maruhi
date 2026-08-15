@@ -58,24 +58,25 @@ async function vectorChecks(c: Checks): Promise<void> {
     ),
   );
   c.push("invite-accept-sig: token hash derivation", tokenHash === base.invite_token_hash_hex);
-  // Ed25519 は決定論的なので署名方向も完全一致
+  // Ed25519 は決定論的なので署名方向も完全一致(算出 → まとめて判定の順)
   for (const vector of vectors.vectors) {
-    c.push(
-      `invite-accept-sig: ${vector.name} signed bytes construction`,
-      toHex(buildInviteAcceptSignedBytes(contextOf(vector))) === vector.signed_bytes_hex,
-    );
+    const builtHex = toHex(buildInviteAcceptSignedBytes(contextOf(vector)));
     const signed = await signInviteAccept({
       context: contextOf(vector),
       signingKey: invitee.value.privateKey,
     });
-    c.push(
-      `invite-accept-sig: ${vector.name} sign == signature`,
-      signed.ok && signed.value === vector.signature_hex,
-    );
     const verified = await verifyInviteAcceptSignature({
       context: contextOf(vector),
       signatureHex: vector.signature_hex,
     });
+    c.push(
+      `invite-accept-sig: ${vector.name} signed bytes construction`,
+      builtHex === vector.signed_bytes_hex,
+    );
+    c.push(
+      `invite-accept-sig: ${vector.name} sign == signature`,
+      signed.ok && signed.value === vector.signature_hex,
+    );
     c.push(`invite-accept-sig: ${vector.name} verify`, verified.ok);
   }
 }

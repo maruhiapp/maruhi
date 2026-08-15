@@ -56,6 +56,30 @@ export function ensureTokenScopeForProject(
 }
 
 /**
+ * 鍵素材クラスの操作のトークン条件(AUTH_SPEC §13-2): セッション主体は常に可、
+ * トークン主体は `*` × admin スコープを含む場合のみ可。リカバリーブロブの
+ * 登録・再発行・取得(スコープ限定トークンにラップの置換 = 可用性攻撃や要監視の
+ * ブロブ取得を許さない)に加え、招待の受諾にも適用する(B1a 裁定 — 受諾は
+ * 「自分の公開鍵を自分の user_id に束縛して宣言する」鍵宣言クラスの操作であり、
+ * CI 等の露出しやすい文脈に置かれるスコープ限定トークンの窃取と招待リンクの
+ * 複合で攻撃者鍵を束縛する経路を、FP 相互確認 — CRYPTO_SPEC §6.5 — の手前で
+ * 塞ぐ。§15-2 の「認証済み主体」より狭い — AUTH_SPEC 追補の提案は PR 申し送り)。
+ */
+export function ensureKeyMaterialAccess(
+  principal: AuthenticatedPrincipal,
+): Effect.Effect<void, ForbiddenError> {
+  if (principal.kind === "session") {
+    return Effect.void;
+  }
+  const allowed = principal.scopes.some(
+    (scope) => scope.project === "*" && scope.permission === "admin",
+  );
+  return allowed
+    ? Effect.void
+    : Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
+}
+
+/**
  * プロジェクト作成(init): まだ存在しないプロジェクトなので存在秘匿の対象外。
  * スコープ不足はすべて 403。必要水準は admin(AUTH_SPEC §6)。
  */

@@ -5,6 +5,7 @@
 //   実行時ミラーもここ)
 // - data.ts: データプレーン(AUTH_SPEC §12)
 // - deks.ts: DEK ラップ登録・修復(AUTH_SPEC §12-6)
+// - invites.ts: 招待(AUTH_SPEC §15)
 // - lease.ts: ワークロードリース(AUTH_SPEC §14)
 
 export {
@@ -54,6 +55,14 @@ export {
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
 } from "./deks.ts";
+export {
+  InviteGoneError,
+  InviteGoneReasonSchema,
+  InviteNotFoundError,
+  InvitePendingLimitError,
+  InviteRateLimitedError,
+  InviteSignatureInvalidError,
+} from "./invites.ts";
 export {
   LeaseRateLimitedError,
   LeaseUnauthorizedError,

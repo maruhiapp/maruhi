@@ -9,8 +9,8 @@
 //   必要な getOrCreateUser(§1-5)が成立しない。D1 の atomic batch を使う
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
-import { parseTokenScopes } from "@maruhi/core";
-import { and, count, eq, isNull, lte, ne } from "drizzle-orm";
+import { auditPayloadWith, parseTokenScopes } from "@maruhi/core";
+import { and, count, eq, gt, gte, inArray, isNull, lte, min, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -24,13 +24,23 @@ import type {
   VerifiedIdentity,
 } from "../auth-domain.ts";
 import { ulid } from "../ids.ts";
+import type {
+  InvitationRecord,
+  InviteAcceptInput,
+  InviteCompletionTarget,
+  InviteIssueDecision,
+  InviteRole,
+  InviteStatus,
+} from "../invite-domain.ts";
 import type { D1AuditActor } from "./audit.ts";
 import { D1AuditRepo, makeD1AuditRepo, orgAuditInsert, userAuditInsert } from "./audit.ts";
 import {
   apiTokens,
+  invitations,
   linkedIdentities,
   memberships,
   organizations,
+  orgAuditEvents,
   projects,
   recoveryWraps,
   sessions,
@@ -694,6 +704,311 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
 }
 
 // ---------------------------------------------------------------------------
+// InviteRepo(AUTH_SPEC §15。招待レコードと invite.* 監査の同一 batch 追記)
+// ---------------------------------------------------------------------------
+
+/** §15-1 起草値: 招待の有効期間(発行 + 7 日)。 */
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** §15-2 起草値: 発行の固定窓(1 時間 30 回 / プロジェクト)。 */
+const INVITE_ISSUE_WINDOW_MS = 60 * 60 * 1000;
+export const INVITE_ISSUE_WINDOW_LIMIT = 30;
+
+/** §15-2 起草値: pending 招待の上限(プロジェクトあたり 100。期限切れは数えない)。 */
+export const MAX_PENDING_INVITES_PER_PROJECT = 100;
+
+interface InviteRepoShape {
+  /**
+   * 発行(§15-2)。受理ポリシーの判定順は仕様の記載順に固定: pending 上限 →
+   * 固定窓。読み → 挿入の 2 段で、並行発行では僅かに超過しうるベストエフォート
+   * (recovery の取得計数と同じ性質)。受理時は invite.created(AUDIT_SPEC
+   * §3.2)を挿入と同一 batch で記録する。
+   */
+  readonly create: (
+    input: {
+      readonly id: string;
+      readonly projectId: string;
+      readonly tokenHashHex: string;
+      readonly role: InviteRole;
+      readonly inviterUserId: string;
+    },
+    nowMs: number,
+    actor: D1AuditActor,
+  ) => Effect.Effect<InviteIssueDecision>;
+  /** トークンハッシュによる解決(受諾経路 — トークン保持が capability)。 */
+  readonly findByTokenHash: (tokenHashHex: string) => Effect.Effect<InvitationRecord | null>;
+  /** プロジェクト配下の id 解決(失効経路)。 */
+  readonly findById: (projectId: string, id: string) => Effect.Effect<InvitationRecord | null>;
+  /** 一覧(§15-2)。受諾ブロック込み — 招待者クライアントの §6.5 独立検証の材料。 */
+  readonly listForProject: (projectId: string) => Effect.Effect<readonly InvitationRecord[]>;
+  /**
+   * 受諾の単回使用 CAS(pending → accepted — §15-1)。条件付き UPDATE と、
+   * `changes() = 1` でガードした invite.accepted の INSERT…SELECT を同一 batch
+   * で発行する(AUDIT_SPEC §5.2 の同一トランザクション原則)。D1 batch は
+   * 単一トランザクション・逐次実行なので、changes() は直前の UPDATE の勝敗を
+   * 正確に返す — CAS 敗北時は監査行も 0 行のまま。戻り値は勝敗のみ(敗北理由の
+   * 導出は呼び出し側が再読みで行う)。
+   */
+  readonly acceptCas: (
+    input: InviteAcceptInput,
+    nowMs: number,
+    actor: D1AuditActor,
+  ) => Effect.Effect<boolean>;
+  /**
+   * 失効の CAS(pending | accepted → revoked)。期限切れ pending の失効も許す
+   * (管理操作の掃除)。受理時は invite.revoked を同一 batch で記録する
+   * (acceptCas と同じ changes() ガード)。completed / revoked へは効かない
+   * (呼び出し側が再読みで 410 を導出する)。
+   */
+  readonly revokeCas: (
+    projectId: string,
+    id: string,
+    payload: { readonly role: InviteRole },
+    nowMs: number,
+    actor: D1AuditActor,
+  ) => Effect.Effect<boolean>;
+  /**
+   * add_member 受理時の accepted → completed 突合(§15-2。導出状態の更新であり
+   * 真実源はチェーン。§15-4: 証跡は chain.member_added — 独立イベントを書かない)。
+   * 鍵一致条件(enc / sig 両方)は「この受諾がこの add_member によって成就した」
+   * ことの精密化 — 別鍵の accepted 招待は据え置かれ、一覧で可視のまま残る。
+   */
+  readonly completeAccepted: (target: InviteCompletionTarget) => Effect.Effect<void>;
+}
+
+export class InviteRepo extends Context.Service<InviteRepo, InviteRepoShape>()("InviteRepo") {}
+
+/** 行 → ドメイン表現(受諾ブロックは 5 列すべて揃っているときのみ)。 */
+function toInvitationRecord(row: {
+  readonly id: string;
+  readonly projectId: string;
+  readonly tokenHash: string;
+  readonly role: string;
+  readonly inviterUserId: string;
+  readonly status: string;
+  readonly expiresAt: number;
+  readonly inviteeUserId: string | null;
+  readonly inviteeEncPub: string | null;
+  readonly inviteeSigPub: string | null;
+  readonly acceptSignature: string | null;
+  readonly acceptedAt: number | null;
+  readonly createdAt: number;
+}): InvitationRecord {
+  const acceptance =
+    row.inviteeUserId !== null &&
+    row.inviteeEncPub !== null &&
+    row.inviteeSigPub !== null &&
+    row.acceptSignature !== null &&
+    row.acceptedAt !== null
+      ? {
+          inviteeUserId: row.inviteeUserId,
+          inviteeEncPubHex: row.inviteeEncPub,
+          inviteeSigPubHex: row.inviteeSigPub,
+          acceptSignatureHex: row.acceptSignature,
+          acceptedAtMs: row.acceptedAt,
+        }
+      : null;
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    tokenHashHex: row.tokenHash,
+    role: row.role as InviteRole,
+    inviterUserId: row.inviterUserId,
+    status: row.status as InviteStatus,
+    expiresAtMs: row.expiresAt,
+    createdAtMs: row.createdAt,
+    acceptance,
+  };
+}
+
+function makeInviteRepo(db: Db): InviteRepoShape {
+  const findWhere = async (condition: ReturnType<typeof and>) => {
+    const row = await db.select().from(invitations).where(condition).get();
+    return row === undefined ? null : toInvitationRecord(row);
+  };
+  /**
+   * invite.* 監査行の INSERT…SELECT(AUDIT_SPEC §3.2 / §5.2)。直前の条件付き
+   * UPDATE が 1 行に効いたときだけ挿入される(changes() ガード)。FROM は対象
+   * 招待行そのもの(project_id を保存行から写す — ワイヤ申告値から組まない)。
+   * org_id は載せない: invite.* の読み取り軸は org admin ではなくチェーン role
+   * admin(AUDIT_SPEC §7)。
+   */
+  const guardedAuditInsert = (input: {
+    readonly inviteId: string;
+    readonly event: "invite.accepted" | "invite.revoked";
+    readonly actor: D1AuditActor;
+    readonly targetUserId: string | null;
+    readonly payload: Readonly<Record<string, unknown>>;
+    readonly nowMs: number;
+  }) =>
+    db.insert(orgAuditEvents).select(
+      db
+        .select({
+          serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
+          event: sql<string>`${input.event}`.as("event"),
+          actorType: sql<string>`'user'`.as("actor_type"),
+          actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
+          actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as(
+            "actor_api_token_id",
+          ),
+          targetUserId: sql<string | null>`${input.targetUserId}`.as("target_user_id"),
+          projectId: invitations.projectId,
+          payload: sql<string>`${JSON.stringify(auditPayloadWith(input.actor, input.payload))}`.as(
+            "payload",
+          ),
+        })
+        .from(invitations)
+        .where(and(eq(invitations.id, input.inviteId), sql`changes() = 1`)),
+    );
+  return {
+    create: (input, nowMs, actor) =>
+      run(async () => {
+        // 判定順は §15-2 の記載順に固定: pending 上限(期限内のみ数える —
+        // 期限切れ pending が上限を恒久に食い潰さないため)→ 発行の固定窓
+        const pendingRow = await db
+          .select({ n: count() })
+          .from(invitations)
+          .where(
+            and(
+              eq(invitations.projectId, input.projectId),
+              eq(invitations.status, "pending"),
+              gt(invitations.expiresAt, nowMs),
+            ),
+          )
+          .get();
+        if ((pendingRow?.n ?? 0) >= MAX_PENDING_INVITES_PER_PROJECT) {
+          return { kind: "pending-limit", limit: MAX_PENDING_INVITES_PER_PROJECT } as const;
+        }
+        const windowRow = await db
+          .select({ n: count(), oldest: min(invitations.createdAt) })
+          .from(invitations)
+          .where(
+            and(
+              eq(invitations.projectId, input.projectId),
+              gte(invitations.createdAt, nowMs - INVITE_ISSUE_WINDOW_MS),
+            ),
+          )
+          .get();
+        if ((windowRow?.n ?? 0) >= INVITE_ISSUE_WINDOW_LIMIT) {
+          const oldest = windowRow?.oldest ?? nowMs;
+          const remainingMs = oldest + INVITE_ISSUE_WINDOW_MS - nowMs;
+          return {
+            kind: "rate-limited",
+            retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+          } as const;
+        }
+        await db.batch([
+          db.insert(invitations).values({
+            id: input.id,
+            projectId: input.projectId,
+            tokenHash: input.tokenHashHex,
+            role: input.role,
+            inviterUserId: input.inviterUserId,
+            status: "pending",
+            expiresAt: nowMs + INVITE_TTL_MS,
+            createdAt: nowMs,
+          }),
+          orgAuditInsert(db, nowMs, {
+            event: "invite.created",
+            actor,
+            projectId: input.projectId,
+            payload: { inviteId: input.id, role: input.role },
+          }),
+        ]);
+        return { kind: "created" } as const;
+      }),
+    findByTokenHash: (tokenHashHex) =>
+      run(() => findWhere(eq(invitations.tokenHash, tokenHashHex))),
+    findById: (projectId, id) =>
+      run(() => findWhere(and(eq(invitations.id, id), eq(invitations.projectId, projectId)))),
+    listForProject: (projectId) =>
+      run(async () => {
+        const rows = await db
+          .select()
+          .from(invitations)
+          .where(eq(invitations.projectId, projectId))
+          .orderBy(invitations.createdAt, invitations.id);
+        return rows.map(toInvitationRecord);
+      }),
+    acceptCas: (input, nowMs, actor) =>
+      run(async () => {
+        const results = await db.batch([
+          db
+            .update(invitations)
+            .set({
+              status: "accepted",
+              inviteeUserId: input.inviteeUserId,
+              inviteeEncPub: input.inviteeEncPubHex,
+              inviteeSigPub: input.inviteeSigPubHex,
+              acceptSignature: input.acceptSignatureHex,
+              acceptedAt: nowMs,
+            })
+            .where(
+              and(
+                eq(invitations.id, input.inviteId),
+                eq(invitations.status, "pending"),
+                gt(invitations.expiresAt, nowMs),
+              ),
+            )
+            .returning({ id: invitations.id }),
+          guardedAuditInsert({
+            inviteId: input.inviteId,
+            event: "invite.accepted",
+            actor,
+            targetUserId: input.inviteeUserId,
+            payload: {
+              inviteId: input.inviteId,
+              inviteeKeyFingerprintHex: input.inviteeKeyFingerprintHex,
+            },
+            nowMs,
+          }),
+        ]);
+        return results[0].length === 1;
+      }),
+    revokeCas: (projectId, id, payload, nowMs, actor) =>
+      run(async () => {
+        const results = await db.batch([
+          db
+            .update(invitations)
+            .set({ status: "revoked" })
+            .where(
+              and(
+                eq(invitations.id, id),
+                eq(invitations.projectId, projectId),
+                inArray(invitations.status, ["pending", "accepted"]),
+              ),
+            )
+            .returning({ id: invitations.id }),
+          guardedAuditInsert({
+            inviteId: id,
+            event: "invite.revoked",
+            actor,
+            targetUserId: null,
+            payload: { inviteId: id, role: payload.role },
+            nowMs,
+          }),
+        ]);
+        return results[0].length === 1;
+      }),
+    completeAccepted: (target) =>
+      run(async () => {
+        await db
+          .update(invitations)
+          .set({ status: "completed" })
+          .where(
+            and(
+              eq(invitations.projectId, target.projectId),
+              eq(invitations.inviteeUserId, target.inviteeUserId),
+              eq(invitations.status, "accepted"),
+              eq(invitations.inviteeEncPub, target.inviteeEncPubHex),
+              eq(invitations.inviteeSigPub, target.inviteeSigPubHex),
+            ),
+          );
+      }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 束ね: D1 binding からリポジトリ一式の Context を作る
 // ---------------------------------------------------------------------------
 
@@ -704,6 +1019,7 @@ export type DbServices =
   | OrgRepo
   | ProjectRepo
   | RecoveryRepo
+  | InviteRepo
   | D1AuditRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
@@ -715,6 +1031,7 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(OrgRepo, makeOrgRepo(db)),
     Context.add(ProjectRepo, makeProjectRepo(db)),
     Context.add(RecoveryRepo, makeRecoveryRepo(db)),
+    Context.add(InviteRepo, makeInviteRepo(db)),
     Context.add(D1AuditRepo, makeD1AuditRepo(db)),
   );
 }

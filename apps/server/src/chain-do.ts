@@ -20,7 +20,7 @@
 // - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
 //   AuditStore)の背後に隔離する。DDL は do-schema.ts(コンストラクタで適用)
 
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainEntry, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
 import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
@@ -52,7 +52,7 @@ import type {
   ValueInput,
   VariableVersionValue,
 } from "./data-plane.ts";
-import { rejectData } from "./data-plane.ts";
+import { rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
 import {
@@ -263,6 +263,18 @@ const snapshotProgram = (
     headHashHex: chain.headHashHex,
   }));
 
+/**
+ * 呼び出し主体のチェーン導出 role(招待 API — AUTH_SPEC §15-2 — の認可入力)。
+ * 下限は reader(= メンバーであること): 非メンバーは not-member で拒否され
+ * worker が 404 に写す(§11-2)。admin / owner の水準判定は worker 側が行う
+ * (role=admin の招待は owner のみ、等のエンドポイント別規則)。
+ */
+const memberRoleProgram = (
+  callerUserId: string,
+  cache: StateCache,
+): Effect.Effect<Role, DataRejectedError, ChainStore> =>
+  Effect.map(requireMemberState(callerUserId, "reader", cache), (context) => context.member.role);
+
 // ---------------------------------------------------------------------------
 // Durable Object(ManagedRuntime パターン。spike-b の確立形)
 // ---------------------------------------------------------------------------
@@ -386,6 +398,11 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runData(snapshotProgram(callerUserId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  memberRoleFor(callerUserId: string): Promise<DataOutcome<Role>> {
+    return this.#runData(memberRoleProgram(callerUserId, this.#stateCache));
   }
 
   // --- データプレーン RPC(AUTH_SPEC §12) -------------------------------

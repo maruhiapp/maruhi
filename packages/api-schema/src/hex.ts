@@ -46,6 +46,9 @@ export const ValueSignatureHex = hexString(64);
 /** メタステートメント署名(Ed25519 — CRYPTO_SPEC §4.2)。 */
 export const MetaSignatureHex = hexString(64);
 
+/** 招待受諾署名(Ed25519 — CRYPTO_SPEC §6.5)。 */
+export const InviteAcceptSignatureHex = hexString(64);
+
 /**
  * 1 始まりの整数(epoch / version / チェーン seq — CRYPTO_SPEC §3 / §4 / §6)。
  * hex ではないが、チェーンヘッド系フィールド(hash + seq の対)の共有定義として

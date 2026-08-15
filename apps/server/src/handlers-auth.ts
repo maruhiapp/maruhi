@@ -14,7 +14,7 @@ import {
   SetupIncompleteError,
   TokenLimitError,
 } from "@maruhi/api-schema";
-import type { AuthenticatedPrincipal, TokenScope } from "@maruhi/core";
+import type { TokenScope } from "@maruhi/core";
 import { auditActorOf, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect } from "effect";
 import type { Cookies } from "effect/unstable/http";
@@ -27,6 +27,7 @@ import {
   SESSION_COOKIE,
   statefulGetCsrfViolated,
 } from "./auth.package/index.ts";
+import { ensureKeyMaterialAccess } from "./authz.ts";
 import { D1AuditRepo, IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { ServerKey } from "./server-key.ts";
@@ -108,26 +109,6 @@ function recordLoginFailed(
       Date.now(),
     ),
   );
-}
-
-/**
- * 鍵素材管理操作(リカバリーブロブの登録・再発行・取得)のトークン条件
- * (AUTH_SPEC §13-2): セッション主体は常に可、トークン主体は `*` × admin
- * スコープを含む場合のみ可。スコープ限定トークンにラップの置換(可用性攻撃)や
- * 要監視のブロブ取得を許さない。
- */
-function ensureKeyMaterialAccess(
-  principal: AuthenticatedPrincipal,
-): Effect.Effect<void, ForbiddenError> {
-  if (principal.kind === "session") {
-    return Effect.void;
-  }
-  const allowed = principal.scopes.some(
-    (scope) => scope.project === "*" && scope.permission === "admin",
-  );
-  return allowed
-    ? Effect.void
-    : Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
 }
 
 export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
