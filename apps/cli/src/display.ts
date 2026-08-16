@@ -21,8 +21,11 @@ const CONTROL_CHARS = /\p{Cc}/gu;
 // 孤立サロゲート(Cs)も含める: 逃がさないと端末・エンコード側で U+FFFD に
 // 化け、やはり表示と実際の名前が食い違う(対になったサロゲートは 1 つの
 // コードポイントとして扱われるため、この類は孤立したものだけに当たる)。
+// 行区切り・段落区切り(U+2028 / U+2029)も含める: 端末では無害に描かれることが
+// 多いが、改行として扱う描画先(エディタ・ログビューア)へ貼られると名前が
+// 割れて見える。「表示された名前 = 実際の名前」を全域で成り立たせる。
 // バックスラッシュと引用符は可逆性と、引用符で囲んだ表示を閉じられないことに要る
-const ESCAPABLE = /[\\"]|\p{Cc}|\p{Cf}|\p{Cs}/gu;
+const ESCAPABLE = /[\\"]|\p{Cc}|\p{Cf}|\p{Cs}|\p{Zl}|\p{Zp}/gu;
 
 /** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
 export function displayText(value: string): string {
