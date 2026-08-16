@@ -163,10 +163,14 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
    重複を沈黙で解決し、**打った順で結果が変わる**(実測: `--show --no-show` は first-wins で
    `true`、`--no-show --show` は `false`)。`maruhi pull --no-show $FLAGS` の形は順序に依存
    させてはいけないので、値を取るフラグと同じく `atMost(1)` を付ける
-7. **「stdout が汚れていない」検査は実 fd を捕捉しないと空振りする**(レビュー指摘):
-   注入した `Console` の出力だけを見ていると、ライブラリが `Console` を迂回して
-   `process.stdout` へ書いた場合を捕まえられない。スパイクは実行中だけ
-   `process.stdout.write` を差し替えて捕捉し、正常系で stdout に**出る**ことも同時に固定した
+7. **「stdout はコマンドの出力だけ」は 3 経路を分離して初めて検査できる**(レビュー指摘):
+   `Console` の出力だけを見る形だと検査が空振りし、逆に陽性対照を
+   `process.stdout.write` の直叩きで作ると、スパイクが実証すべき規律(出力も Effect の
+   サービス経由)自体を破る。現行のスパイクは 3 つに分けている —
+   **コマンドの出力** = `Stdio` の stdout Sink(ハーネスは `Stdio.layerTest({ stdout })` で捕捉)、
+   **ヘルプ・診断** = `Console`(全メソッドを stderr へ)、
+   **迂回された書き込み** = `process.stdout.write` の差し替え(`SpikeOutcome.bypassed`)。
+   混線するとテストが落ちる(実測: 陽性対照を外すと 1 件 fail)
 8. **`InvalidValue.expected` も値を含みうる**(レビュー指摘): 上流の `Param.filter` は
    `expected: onNone(a)` を組み立てる(effect 自身の JSDoc 例が `Expected even number, got ${n}`)。
    危険なフィールドは `UnexpectedArgument.arguments` / `InvalidValue.value` の 2 つではなく **3 つ**。

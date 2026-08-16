@@ -172,10 +172,9 @@ const ensureTerminator = (strayCount: number) =>
     if (argv.includes("--")) {
       return;
     }
-    const stray = strayCount;
-    if (stray > 0) {
+    if (strayCount > 0) {
       return yield* new TerminatorRequired({
-        message: `maruhi: 余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`,
+        message: `maruhi: 余分な引数です(${strayCount} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`,
       });
     }
   });
