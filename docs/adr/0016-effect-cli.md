@@ -18,7 +18,25 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
 6. **`env` / `server` / `invite` / `member` は真の入れ子サブコマンドにする**。gunshi の 1 段制約のために操作を位置引数にしていた結果必要だった「その操作に適用されないオプション」の拒否機構(`ENV_ACTION_FLAGS` / `optionRestrictedTo` / `actionFlagRejection` / `withoutPositionals`)は廃止する
 7. **値表示(`pull --show`)の境界は fail-closed の 2 層にする**。一次境界 = `stdin` と `stdout` の**両方が端末**か(`Stdio.stdinIsTerminal` / `stdoutIsTerminal`)。二次層 = 既知エージェントの環境変数(**std-env を直接依存**・厳密ピン・同期 API)。判定材料はいずれも Effect のサービス経由で取り、`process.*` を直に読まない。
 
-   **適用範囲は「値を表示する経路」に限る(要裁定)**: CLI には他に `isAgent` を見るゲートが 9 か所ある(`invite.ts:174/321/361/597`、`recovery.ts:57/152/260`、`member.ts:302`、`server-grant.ts:218`)。FP 確認の儀式(`invite` / `member` / `server-grant`)は対話入力を要するので TTY 必須と親和的だが、`invite create` / `recovery` の発行系を TTY 必須にすると **CI 運用が変わる**(非 TTY で落ちるようになる)。**本 ADR ではこの 9 か所は deny-list のまま据え置き**、反転させるかは所有者の裁定として保留する。裁定時は、非 TTY で落ちるようになるコマンドの一覧を本 ADR の Consequences へ追記する
+   **適用範囲(2026-08-16 所有者裁定)**: CLI には他に `isAgent` を見るゲートが 9 か所ある。
+   **儀式系(人間の帯域外確認が操作の本質)を一次境界へ移し、残りは deny-list のまま据え置く**:
+
+   | 移す(TTY 一次境界) | 据え置く(deny-list) |
+   |---|---|
+   | `invite.ts:321` 招待者 FP 確認の儀式 | `invite.ts:174` 招待トークンの生値表示(= 発行拒否) |
+   | `member.ts:302` 受諾鍵 FP 確認の儀式 | `invite.ts:361` エージェント環境での鍵新規生成 |
+   | `server-grant.ts:218` サーバー鍵確認の儀式 | `invite.ts:597` 生トークンでの受諾 |
+   | | `recovery.ts:57/152/260` リカバリーコードの発行・入力・保存確認 |
+
+   儀式系は「人間が指紋を目視で照合する」ことが要件そのものなので、TTY 必須は要件の言い換えになる。
+   一方の発行系を TTY 必須にすると **CI 運用が変わる**(非 TTY で落ちる)ため、今回は動かさない。
+
+   **申し送り(次の裁定候補)**: 据え置き側のうち `invite.ts:174`(生トークンを端末へ表示)と
+   `recovery.ts:57/152`(リカバリーコードの表示・stdin 入力)は、**`pull --show` と同じ
+   「値・鍵素材が端末を通る」クラス**である。deny-list のままだと、未知のエージェント下では
+   一次境界の保護を受けない。一貫性の観点では移す候補だが、`maruhi invite create` /
+   `maruhi recovery issue` が CI で落ちるようになるため、運用影響を見てから別途裁定する
+
 8. **`maruhi run` は `--` を必須のままとする**。判定は `Stdio.args` を読む Effect(`TerminatorRequired`、exit 2)で行う
 9. **stdout はコマンドの出力だけ**。ヘルプ・診断は `Console` を差し替えて stderr へ寄せる
 10. **移行は段階的に行う**。スパイクの 3 コマンド(`pull` / `run` / `env create`)を src へ昇格させる PR を先頭に、操作フラグ機構を持つコマンド(`env rotate` / `diff`、`server`、`invite`、`member`)、残りの順で進める。全 14 サブコマンドの一括移行は行わない

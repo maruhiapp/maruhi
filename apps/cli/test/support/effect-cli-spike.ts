@@ -367,7 +367,10 @@ export async function runSpikeCli(
   // **実 fd を捕捉する**(レビュー指摘): 注入した Console 経由の出力だけを
   // 見ていると「stdout が汚れていない」という検査が空振りする。ライブラリが
   // Console を迂回して process.stdout へ書いた場合も捕まえる
-  const realWrite = process.stdout.write.bind(process.stdout);
+  // 束縛ラッパー(`bind`)ではなく**元のメソッドそのもの**を控える(レビュー指摘)。
+  // bind したものを戻すと呼ぶたびに 1 段ずつ積まれ、プロトタイプ上の write を
+  // 隠したままになる。呼び出しは `process.stdout` 上なので `this` は保たれる
+  const realWrite = process.stdout.write;
   process.stdout.write = ((chunk: string | Uint8Array): boolean => {
     stdout.push(typeof chunk === "string" ? chunk.replace(/\n$/, "") : String(chunk));
     return true;
