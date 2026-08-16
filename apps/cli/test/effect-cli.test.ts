@@ -239,6 +239,28 @@ describe("maruhi 固有の規律", () => {
     expect(help.env.errors.join("\n")).toContain("FLAGS");
   });
 
+  it("`--` の後ろの `-h` は子プロセスの引数(ヘルプ要求として読まない)", async () => {
+    // 全 argv を見ると、maruhi の書き方の誤りに**子プロセス向けのフラグ**が
+    // 混ざっただけで全文ヘルプが出てしまい、肝心の診断が埋もれる
+    const { env } = await startEnv();
+    expect(await runCli(["run", "stray", "--", "printenv", "-h"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("余分な引数です(1 個");
+    expect(errors).not.toContain("FLAGS");
+  });
+
+  it("内部エラー(defect)は message を出さず、型の名前だけを添える", async () => {
+    // 上流・未知の Error の message は打たれた値を埋め込んだ文面でも到達しうる
+    // (`Invalid value: <平文>`)。制御文字の中和だけでは規律を守れないので、
+    // 素通しにしない。無言でも飲まない(型の名前は argv から作れない語彙)
+    const { env } = await startEnv();
+    env.breakConfigLoadWithDefect();
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("maruhi: 内部エラー(Error)");
+    expect(errors).not.toContain("config load defect");
+  });
+
   it("`maruhi run` は `--` の後ろからしか実行対象を取らない", async () => {
     const missing = await startEnv();
     expect(await runCli(["run"], missing.env.layer)).toBe(2);

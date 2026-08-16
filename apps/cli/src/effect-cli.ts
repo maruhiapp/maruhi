@@ -406,10 +406,13 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
   if (failure instanceof CliError) {
     return io.logError(`maruhi: ${failure.message}`);
   }
-  // defect(バグ)や上流の未知エラー。message は argv 由来の値を含みうるので
-  // 端末出力の中和(displayText)を必ず通す
-  const message = displayText(failure instanceof Error ? failure.message : String(failure));
-  return io.logError(`maruhi: 内部エラー: ${message}`);
+  // defect(バグ)や上流の未知エラー。**message は出さない**: 打たれた値を
+  // 埋め込んだ文面(`Invalid value: <平文>`)でも到達しうるので、制御文字の
+  // 中和だけでは規律(打たれた値を診断に出さない)を守れない。無言では飲まず
+  // (CLAUDE.md)、代わりに**型の名前**だけを添える — コード由来の語彙なので
+  // argv からは作れず、どの層で壊れたかの手掛かりにはなる
+  const kind = failure instanceof Error ? failure.constructor.name : typeof failure;
+  return io.logError(`maruhi: 内部エラー(${displayText(kind)})`);
 }
 
 /**
@@ -430,8 +433,12 @@ export async function runEffectCli(
     commandExitCode = code;
   });
   // ヘルプの分量だけを決める(`--help` を明示した実行は全文、書き方の誤りに
-  // 添えるのは使い方 1 行 — 決定 3)。引数の**検査**には一切使わない
-  const helpRequested = argv.includes("--help") || argv.includes("-h");
+  // 添えるのは使い方 1 行 — 決定 3)。引数の**検査**には一切使わない。
+  // `--` の後ろは**子プロセスの引数**なので見ない: `maruhi run stray -- cmd -h`
+  // の `-h` は cmd のもので、maruhi へのヘルプ要求ではない
+  const terminator = argv.indexOf("--");
+  const ownArgs = terminator < 0 ? argv : argv.slice(0, terminator);
+  const helpRequested = ownArgs.includes("--help") || ownArgs.includes("-h");
 
   const program = Effect.gen(function* () {
     const io = yield* CliIo;
