@@ -484,7 +484,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
       }),
     ]);
     const env = await makeTestEnv();
-    env.setEnvVar("MARUHI_TOKEN", "<redacted:maruhi-token>");
+    // 貼り付けで前後に空白・改行が混じるのは普通なので、そこで破れないこと
+    env.setEnvVar("MARUHI_TOKEN", "  <redacted:maruhi-token>\n");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", maruhi.origin);
     const exit = await Effect.runPromiseExit(
       resolveSession(maruhi.origin).pipe(Effect.provide(env.layer)),

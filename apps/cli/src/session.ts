@@ -141,7 +141,10 @@ function sessionFromEnvToken(input: {
     // 環境変数へ貼る経路は現実的で、そのまま送ると 401 になり
     // 「失効・スコープ・接続先を確認してください」という**別の原因**の案内へ
     // 送られてしまう(キーチェーン側と同じ値に同じ診断を出す)
-    if (REDACTED_PLACEHOLDER_TEXT.test(input.rawToken)) {
+    // 前後の空白を落としてから見る: 貼り付けで改行や空白が混じるのはごく普通で、
+    // 完全一致だけだとこのガードの目的(貼り間違いを名指しする)が空白ひとつで
+    // 破れる。送るのは従来どおり生値のまま(本物のトークンの扱いは変えない)
+    if (REDACTED_PLACEHOLDER_TEXT.test(input.rawToken.trim())) {
       return yield* Effect.fail(cliError(redactedPlaceholderEnvTokenMessage));
     }
     const envToken = Redacted.make(input.rawToken, { label: "maruhi-token" });
