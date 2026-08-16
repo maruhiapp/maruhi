@@ -108,13 +108,30 @@ export function hasRedactedPlaceholder(json: string): boolean {
   }
 }
 
+const placeholderCause =
+  "キーチェーンのレコードに伏字(<redacted>)が保存されています。これは maruhi の不具合(保存時に秘密を取り出し忘れた状態)です";
+
 /**
- * 伏字保存を検出したときの文言(トークン・master 鍵で共通の原因説明)。
+ * トークンレコードに伏字が保存されていたときの文言。
  *
- * 「再ログイン / 再生成で直る」とは言わない — 直らないため。
+ * 復旧手段は**レコードの種類で違う**ので分けている。トークンは `maruhi login`
+ * が無条件に上書きするため、再ログインで直る(直らないと書くと、唯一の
+ * 1 コマンド復旧から利用者を遠ざけてしまう)。
  */
-export const redactedPlaceholderMessage =
-  "キーチェーンのレコードに伏字(<redacted>)が保存されています。これは maruhi の不具合(保存時に秘密を取り出し忘れた状態)で、再ログインや鍵の再生成では直りません。お手数ですが不具合として報告してください";
+export const redactedPlaceholderTokenMessage =
+  `${placeholderCause}。\`maruhi login\` で再ログインすると正しいレコードで上書きされます。併せて不具合として報告してください` as const;
+
+/**
+ * master 鍵レコードに伏字が保存されていたときの文言。
+ *
+ * こちらは再生成で直らない: 上書き防止ガード({@link masterKeyEntryName} の
+ * エントリが存在する時点で `key generate` / `key recover` は拒否される —
+ * 鍵を失うと復号可能性を失うため)に阻まれる。OS キーチェーンからエントリを
+ * 手で消す以外に道が無いので、消すべきエントリ名まで書く。
+ */
+export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
+  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${entryName}" を手で削除したうえで \`maruhi key recover\` を実行してください。併せて不具合として報告してください`;
+}
 
 /** Parses a stored token record; null when the shape is corrupt. */
 export function parseStoredToken(json: string): StoredToken | null {

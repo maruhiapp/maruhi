@@ -22,7 +22,7 @@ import {
   Keychain,
   masterKeyEntryName,
   parseStoredToken,
-  redactedPlaceholderMessage,
+  redactedPlaceholderTokenMessage,
   serializeStoredToken,
   type StoredToken,
   tokenEntryName,
@@ -207,7 +207,7 @@ export function logoutOp(input: {
       return yield* Effect.fail(
         cliError(
           redacted
-            ? `${redactedPlaceholderMessage}(使えないレコードなので削除しました。サーバー側の失効は行えていません)`
+            ? `${redactedPlaceholderTokenMessage}(使えないレコードなので削除しました。サーバー側の失効は行えていません)`
             : "キーチェーンのトークンレコードが壊れていたため削除しました(サーバー側の失効は行えていません)",
         ),
       );

@@ -31,7 +31,8 @@ import {
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
-  redactedPlaceholderMessage,
+  redactedPlaceholderMasterKeyMessage,
+  redactedPlaceholderTokenMessage,
   serializeStoredMasterKey,
   serializeStoredToken,
   tokenEntryName,
@@ -304,7 +305,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 正常なレコード・壊れた JSON では立たない
     expect(hasRedactedPlaceholder(masterRecordJson({}))).toBe(false);
     expect(hasRedactedPlaceholder("not json")).toBe(false);
-    expect(redactedPlaceholderMessage).toContain("再ログインや鍵の再生成では直りません");
+    // 復旧手段はレコードの種類で違う。トークンは再ログインで上書きされるので
+    // そう案内し、master 鍵は上書き防止ガードに阻まれるので手動削除を案内する
+    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` で再ログイン");
+    const masterMessage = redactedPlaceholderMasterKeyMessage("master::https://x::u1");
+    expect(masterMessage).toContain("master::https://x::u1");
+    expect(masterMessage).toContain("手で削除");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
@@ -321,8 +327,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("再ログインや鍵の再生成では直りません");
-    expect(dump).not.toContain("`maruhi login` で再ログインしてください");
+    expect(dump).toContain("伏字(<redacted>)が保存されています");
+    // 「壊れています」の汎用文言ではなく、原因を名指しした文言になる
+    expect(dump).not.toContain("キーチェーンのトークンレコードが壊れています");
   });
 
   it("key generate の保存 → loadMasterKeys の読み戻し → 鍵として実使用できる", async () => {
@@ -565,12 +572,26 @@ function nextBlockState(line: string, inBlock: boolean): boolean {
   return close > open ? false : inBlock;
 }
 
+/** 行内の全出現位置(1 つ目だけ見ると、実コードの後ろの言及を見落とす)。 */
+function occurrences(line: string): readonly number[] {
+  const found: number[] = [];
+  let from = 0;
+  for (;;) {
+    const at = line.indexOf(SPELLING, from);
+    if (at < 0) {
+      return found;
+    }
+    found.push(at);
+    from = at + SPELLING.length;
+  }
+}
+
 function commentMentions(source: string): readonly number[] {
   const lines: number[] = [];
   let inBlock = false;
   for (const [index, line] of source.split("\n").entries()) {
-    const at = line.indexOf(SPELLING);
-    if (at >= 0 && mentionIsCommented(line, at, inBlock)) {
+    // 同じ行に実コードの剥がしと言及が同居する形を取りこぼさない
+    if (occurrences(line).some((at) => mentionIsCommented(line, at, inBlock))) {
       lines.push(index + 1);
     }
     inBlock = nextBlockState(line, inBlock);
@@ -636,7 +657,7 @@ describe("Redacted を剥がす箇所の棚卸し", () => {
     // 綴りが現れない持ち出し方はすべて棚卸しに映らない:
     //   `import { Redacted as R }` → `R.value(x)`
     //   `import * as R from "effect/Redacted"` → `R.value(x)`
-    //   `const { value } = Redacted`
+    //   `const { value } = Redacted` / `const R = Redacted`
     // `effect` から名前空間 `Redacted` を取る形だけを許す規律に固定する
     const offenders: string[] = [];
     for (const name of await srcFiles()) {
@@ -648,6 +669,10 @@ describe("Redacted を剥がす箇所の棚卸し", () => {
       // 綴りを残さずに剥がせてしまう。入口ごと塞ぐ
       if (/from\s+"effect\/Redacted"/.test(source)) {
         offenders.push(`${name}(effect/Redacted の深い import)`);
+      }
+      // `const R = Redacted` のローカル別名も同じ(以降 `R.value(x)` と書ける)
+      if (/(?:const|let|var)\s+\w+\s*=\s*Redacted\s*[;\n]/.test(source)) {
+        offenders.push(`${name}(ローカル別名)`);
       }
       if (/\{[^}]*\bvalue\b[^}]*\}\s*=\s*Redacted\b/.test(source)) {
         offenders.push(`${name}(分割代入)`);

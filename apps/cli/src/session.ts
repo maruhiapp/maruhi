@@ -27,7 +27,8 @@ import {
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
-  redactedPlaceholderMessage,
+  redactedPlaceholderMasterKeyMessage,
+  redactedPlaceholderTokenMessage,
   type StoredMasterKey,
   tokenEntryName,
 } from "./keychain.ts";
@@ -185,7 +186,7 @@ export function resolveSession(
       // 通るので同じ伏字を書き直すだけで、案内どおりに操作しても直らない
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
-          ? cliError(redactedPlaceholderMessage)
+          ? cliError(redactedPlaceholderTokenMessage)
           : cliError(
               "キーチェーンのトークンレコードが壊れています。`maruhi login` で再ログインしてください",
             ),
@@ -223,7 +224,8 @@ export function ensureNoStoredMasterKey(
 export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, CliError, Keychain> {
   return Effect.gen(function* () {
     const keychain = yield* Keychain;
-    const stored = yield* keychain.get(masterKeyEntryName(session.origin, session.userId));
+    const entryName = masterKeyEntryName(session.origin, session.userId);
+    const stored = yield* keychain.get(entryName);
     if (stored === null) {
       return yield* Effect.fail(
         cliError("master 鍵がありません。`maruhi key generate` で生成してください"),
@@ -233,7 +235,7 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     if (record === null) {
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
-          ? cliError(redactedPlaceholderMessage)
+          ? cliError(redactedPlaceholderMasterKeyMessage(entryName))
           : cliError("キーチェーンの master 鍵レコードが壊れています"),
       );
     }
