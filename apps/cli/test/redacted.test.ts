@@ -321,6 +321,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // エスケープ規則の説明が実装と一致していること(ずれると、逃がされた名前を
     // 「そのままの名前」と誤解させ、削除対象を見つけられない)
     expect(masterMessage).toContain("印字可能 ASCII 以外");
+    // 削除後の手順は**両方**示す: どちらが使えるかは利用者の状況(リカバリー
+    // コードの有無)で決まる。片方だけだと、持たない利用者は実行できない案内へ
+    // 送られる
+    expect(masterMessage).toContain("`maruhi key recover`");
+    expect(masterMessage).toContain("`maruhi key generate`");
+    expect(masterMessage).toContain("復号できなくなる");
     // 制御文字入りの user_id: 端末へ生で流さず、かつ**復元できる**形にする。
     // 置換文字へ潰すと「実在しない名前のエントリを消せ」と案内することになり、
     // 唯一の復旧手順(手動削除)が実行不能になる
