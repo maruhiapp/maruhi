@@ -355,6 +355,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 壊れた表記になり、エントリ名を復元できない
     const astral = escapeText("a\u{E0001}b");
     expect(astral).toBe("a\\u{e0001}b");
+    // 孤立サロゲート: 逃がさないと U+FFFD に化けて名前が食い違う。
+    // 対になったサロゲート(通常の絵文字等)は 1 コードポイント扱いで壊さない
+    expect(escapeText("a\uD800b")).toBe("a\\u{d800}b");
+    expect(escapeText("a\u{1F600}b")).toBe("a\u{1F600}b");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {

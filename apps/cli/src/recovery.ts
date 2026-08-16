@@ -213,6 +213,20 @@ export function recoverMasterKeyOp(input: {
   });
 }
 
+/**
+ * 復号済みブロブの解釈。**平文の鍵素材(hex)を持つ文字列をこの関数の外へ
+ * 出さない**ために切り出してある: 呼び出し側にはレコードと真偽値しか渡らず、
+ * エラーメッセージの組み立てから物理的に届かない(この経路は master 秘密鍵が
+ * 素の文字列として現れる唯一の場所)。
+ */
+function readRecoveryBlob(bytes: Uint8Array): {
+  readonly record: StoredMasterKey | null;
+  readonly placeholder: boolean;
+} {
+  const blob = new TextDecoder().decode(bytes);
+  return { record: parseStoredMasterKey(blob), placeholder: hasRedactedPlaceholder(blob) };
+}
+
 function unwrapWithPromptedCode(input: {
   readonly nonce: Uint8Array;
   readonly ciphertext: Uint8Array;
@@ -246,8 +260,8 @@ function unwrapWithPromptedCode(input: {
         yield* io.logError("復号できません。コードが正しいか確認してください");
         continue;
       }
-      const blob = new TextDecoder().decode(unwrapped.value);
-      const record = parseStoredMasterKey(blob);
+      const parsed = readRecoveryBlob(unwrapped.value);
+      const record = parsed.record;
       if (record === null) {
         // 復号は成功したのに中身が壊れている = 登録時のブロブが不正(コードの
         // 誤りではないので再入力させない)。伏字保存はここでも区別する:
@@ -257,7 +271,7 @@ function unwrapWithPromptedCode(input: {
         // デバイスでは実行できない — 案内としても成立しない
         return yield* Effect.fail(
           cliError(
-            hasRedactedPlaceholder(blob)
+            parsed.placeholder
               ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
                 // レコードではない(この経路は ensureNoStoredMasterKey を通って
                 // いるので、キーチェーンに master 鍵は存在しない)

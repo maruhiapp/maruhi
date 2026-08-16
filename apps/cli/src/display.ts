@@ -18,8 +18,11 @@ const CONTROL_CHARS = /\p{Cc}/gu;
 // + 引用符。Cf を含めるのは、双方向上書き(U+202A〜U+202E / U+2066〜U+2069)が
 // 端末上で文字列の見た目の順序を変え、ゼロ幅文字(U+200B 等)が見えないまま
 // 名前を変えるため — どちらも「表示された名前 = 実際の名前」を破る。
+// 孤立サロゲート(Cs)も含める: 逃がさないと端末・エンコード側で U+FFFD に
+// 化け、やはり表示と実際の名前が食い違う(対になったサロゲートは 1 つの
+// コードポイントとして扱われるため、この類は孤立したものだけに当たる)。
 // バックスラッシュと引用符は可逆性と、引用符で囲んだ表示を閉じられないことに要る
-const ESCAPABLE = /[\\"]|\p{Cc}|\p{Cf}/gu;
+const ESCAPABLE = /[\\"]|\p{Cc}|\p{Cf}|\p{Cs}/gu;
 
 /** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
 export function displayText(value: string): string {
