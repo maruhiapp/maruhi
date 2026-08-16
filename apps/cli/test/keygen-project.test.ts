@@ -117,7 +117,13 @@ describe("maruhi key", () => {
       }),
     );
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("スイートが未知");
+    const message = env.errors.join("\n");
+    // 原因(どのスイートか)は名指しする
+    expect(message).toContain("maruhi/v2");
+    // 破損と違い**消してはいけない**: 将来版が書いた鍵を消させると恒久喪失に
+    // なる。上書き防止ガード(ensureNoStoredMasterKey)側と同じ案内を出す
+    expect(message).toContain("このレコードは残してください");
+    expect(message).not.toContain("手で削除してください");
   });
 
   it("show は公開鍵と FP のみ表示し、リカバリー登録状態を出す", async () => {

@@ -26,7 +26,11 @@ import { CliIo } from "./io.ts";
 // 決める)で、潰すと正しい名前を壊す。上に挙げたものは順序・可視性を操るだけで
 // 文字の綴りには要らないので、そこで線を引く(正確な一致が要る場面は
 // {@link escapeText} の許可制を使う)
-const CONTROL_CHARS = /\p{Cc}|[\u061C\u200B\u200E\u200F\u202A-\u202E\u2066-\u2069\u2028\u2029]/gu;
+//
+// 表示名(displayText)と値(displayValue)のどちらにも同じ危険があるので、この一覧は
+// **一箇所で持つ** — 別々に書くと、片方だけ足された状態で気づかれずに残る
+const ORDER_BREAKING = "\\u061C\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069\\u2028\\u2029";
+const CONTROL_CHARS = new RegExp(`\\p{Cc}|[${ORDER_BREAKING}]`, "gu");
 // escapeText が素通しする範囲 = 印字可能 ASCII(U+0020〜U+007E)から
 // バックスラッシュと引用符を除いたもの。それ以外は一律に逃がす。
 // バックスラッシュは可逆性(逃がした表記と元から同じ見た目の文字列が衝突しない)、
@@ -67,8 +71,11 @@ export function escapeText(value: string): string {
 // 値の表示(pull --show)用: 端末インジェクションの媒介(ESC・BEL・C1・
 // CR 等)は中和しつつ、正当なシークレット(複数行 PEM 鍵など)を壊さないよう
 // タブ(\t)と改行(\n)だけは残す。値は共同編集者(正当な書き手)が保存する
-// ため、悪意ある値による他メンバーの端末改ざんを防ぐ(サーバー偽造とは別脅威)
-const VALUE_CONTROL_CHARS = /[^\P{Cc}\t\n]/gu;
+// ため、悪意ある値による他メンバーの端末改ざんを防ぐ(サーバー偽造とは別脅威)。
+// 順序を壊す文字({@link ORDER_BREAKING})も同じ脅威で、値だけ素通しにすると
+// 「表示された値 = 実際の値」が値の側で崩れる(綴りに要る ZWNJ / ZWJ は
+// displayText と同じく残す)
+const VALUE_CONTROL_CHARS = new RegExp(`[^\\P{Cc}\\t\\n]|[${ORDER_BREAKING}]`, "gu");
 
 /** Neutralizes injection-capable control chars in a secret value, keeping \t and \n. */
 function displayValue(value: string): string {

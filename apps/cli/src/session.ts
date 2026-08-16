@@ -135,8 +135,9 @@ const noSessionError = cliError(
  * {@link CliSession} の Redacted としてしか流れないようにする。
  */
 function sessionFromEnvToken(input: {
+  /** 前後の空白を落とした値(呼び出し側で trim 済み — 判定と送信で同じ値を使う)。 */
+  readonly token: string;
   readonly origin: string;
-  readonly rawToken: string;
   readonly declaredOrigin: string | undefined;
 }): Effect.Effect<CliSession, CliError, HttpClient.HttpClient> {
   return Effect.gen(function* () {
@@ -145,18 +146,10 @@ function sessionFromEnvToken(input: {
     // 環境変数へ貼る経路は現実的で、そのまま送ると 401 になり
     // 「失効・スコープ・接続先を確認してください」という**別の原因**の案内へ
     // 送られてしまう(キーチェーン側と同じ値に同じ診断を出す)
-    // 前後の空白を落としてから見る: 貼り付けで改行や空白が混じるのはごく普通で、
-    // 完全一致だけだとこのガードの目的(貼り間違いを名指しする)が空白ひとつで
-    // 破れる。送るのは従来どおり生値のまま(本物のトークンの扱いは変えない)
-    // 前後の空白は落として扱う。貼り付けで改行や空白が混じるのはごく普通で、
-    // 判定だけを trim して送信は生値のままにすると (a) 伏字の検出と送る値が
-    // 食い違い、(b) 空白つきの本物のトークンの成否がヘッダー正規化の実装依存に
-    // なる。両方を同じ値にすれば、どちらの疑いも残らない
-    const rawToken = input.rawToken.trim();
-    if (REDACTED_PLACEHOLDER_TEXT.test(rawToken)) {
+    if (REDACTED_PLACEHOLDER_TEXT.test(input.token)) {
       return yield* Effect.fail(cliError(redactedPlaceholderEnvTokenMessage));
     }
-    const envToken = Redacted.make(rawToken, { label: "maruhi-token" });
+    const envToken = Redacted.make(input.token, { label: "maruhi-token" });
     // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
     // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
     // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を
@@ -200,11 +193,15 @@ export function resolveSession(
 ): Effect.Effect<CliSession, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const rawEnvToken = io.envVar("MARUHI_TOKEN");
-    if (rawEnvToken !== undefined && rawEnvToken.length > 0) {
+    // 前後の空白はここで一度だけ落とす。貼り付けで改行や空白が混じるのはごく
+    // 普通で、判定と送信で違う値を使うと (a) 伏字の検出と送る値が食い違い、
+    // (b) 空白つきの値の成否がヘッダー正規化の実装依存になる。空白だけの
+    // MARUHI_TOKEN は未設定と同じ扱い — 空トークンで往復させない
+    const envToken = io.envVar("MARUHI_TOKEN")?.trim();
+    if (envToken !== undefined && envToken.length > 0) {
       return yield* sessionFromEnvToken({
         origin,
-        rawToken: rawEnvToken,
+        token: envToken,
         declaredOrigin: io.envVar("MARUHI_TOKEN_ORIGIN"),
       });
     }
@@ -328,13 +325,18 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     }
     // 記録は解釈できたが鍵素材として読み込めない場合も同じ行き止まり
     // (上書き防止ガードが全コマンドを拒否する)なので、同じ出口を案内する。
-    // **その 1 種類だけ**を写す: 未知スイートは別の原因(将来版で書かれた鍵)で
-    // あり、消せば新しい maruhi でも失うため削除を勧めてはいけない。
+    // 原因で分ける理由は refusalFor と同じ: 破損なら消して作り直せるが、未知
+    // スイート(将来版が書いた鍵)は消せば新しい maruhi でも失う。同じ状態に
+    // 対して二つのコマンドが違う案内を出さないよう、写像もそちらへ合わせる。
     // importMasterKeys 自身は保存前の自己検証にも使われる — そちらは残存
     // エントリが無く削除の案内が的外れになるため、写像はここで行う
     return yield* importMasterKeys(record).pipe(
       Effect.mapError((error) =>
-        error === corruptKeyError ? cliError(corruptMasterKeyMessage(entryName)) : error,
+        cliError(
+          error === corruptKeyError
+            ? corruptMasterKeyMessage(entryName)
+            : foreignMasterKeyMessage(record.suite),
+        ),
       ),
     );
   });

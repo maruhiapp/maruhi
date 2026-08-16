@@ -321,6 +321,41 @@ describe("showValues(復号後の防衛線)", () => {
     const allowed = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: true });
     expect(Exit.isSuccess(allowed)).toBe(true);
   });
+
+  it("表示する値でも並び順を壊す文字は中和する(名前側と同じ扱い)", async () => {
+    // 値は共同編集者が書くので、悪意ある値で他メンバーの端末表示を偽装できる。
+    // ANSI だけ潰しても双方向上書き・ゼロ幅は残るため、名前側(displayText)と
+    // 同じ一覧で中和されることを固定する — 片方だけ足された状態を作らない
+    const logs: string[] = [];
+    const capturingIo = Layer.succeed(CliIo, {
+      log: (line: string) => {
+        logs.push(line);
+        return Effect.void;
+      },
+      logError: () => Effect.void,
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+    });
+    const exit = await Effect.runPromiseExit(
+      showValues([variable("SECRET", "a\u202Eb\u200Bc\u2028d\u200Ce\nf")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            capturingIo,
+            Layer.succeed(AgentProfileRef, { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(true),
+              stdoutIsTerminal: Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す
+    expect(logs).toEqual(["SECRET=a\uFFFDb\uFFFDc\uFFFDd\u200Ce\nf"]);
+  });
 });
 
 describe("buildInjectionEnv", () => {
@@ -513,6 +548,26 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("MARUHI_TOKEN での認証に失敗");
+  });
+
+  it("空白だけの MARUHI_TOKEN は未設定として扱う(空トークンで往復させない)", async () => {
+    let hit = false;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => {
+        hit = true;
+        return { status: 200, json: { userId: "u", orgs: [] } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    // 判定を trim 後の値で行わないと、`Bearer `(空)を送ってから 401 になり、
+    // 「失効・スコープ・接続先を確認してください」という別原因の案内へ落ちる
+    env.setEnvVar("MARUHI_TOKEN", " \n");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    expect(hit).toBe(false);
+    expect(env.errors.join("\n")).toContain("ログインしていません");
   });
 
   it("MARUHI_TOKEN_ORIGIN 未指定なら MARUHI_TOKEN を使わず案内する", async () => {
