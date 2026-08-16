@@ -83,8 +83,9 @@ const NonBlank = Schema.String.check(Schema.isPattern(/\S/, { message: NON_BLANK
  * `noUncheckedIndexedAccess: true` なので結果は `string | undefined` =
  * context.ts の {@link CommonFlags} とそのまま噛み合う(Option へ変換しない)。
  */
-function singleValued(name: string) {
+function singleValued(name: string, description: string) {
   return Flag.string(name).pipe(
+    Flag.withDescription(description),
     Flag.withSchema(NonBlank),
     Flag.atMost(1),
     Flag.map((values) => values[0]),
@@ -99,8 +100,9 @@ function singleValued(name: string) {
  * `--no-show --show` は `false`)。`maruhi pull --no-show $FLAGS` の `$FLAGS` に
  * `--show` が混ざる形(ef7cba1)は順序に依存させてはいけない。
  */
-function singleFlag(name: string) {
+function singleFlag(name: string, description: string) {
   return Flag.boolean(name).pipe(
+    Flag.withDescription(description),
     Flag.atMost(1),
     Flag.map((values) => values[0] ?? false),
   );
@@ -128,12 +130,15 @@ function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
 
 /** 全 3 コマンドが取る共通フラグ(context.ts の CommonFlags と同じ名前)。 */
 const commonFlags = () => ({
-  server: singleValued("server"),
-  project: singleValued("project"),
-  env: singleValued("env"),
+  server: singleValued("server", "サーバー URL(省略時は config の server)"),
+  project: singleValued("project", "プロジェクト ID(省略時は config の defaultProject)"),
+  env: singleValued("env", "環境 ID(省略時は config の defaultEnvironment)"),
 });
 
-const pullConfig = { ...commonFlags(), show: singleFlag("show") };
+const pullConfig = {
+  ...commonFlags(),
+  show: singleFlag("show", "値を端末に表示する(対話端末でのみ許可される)"),
+};
 
 const runConfig = {
   ...commonFlags(),
@@ -142,6 +147,7 @@ const runConfig = {
   // (`maruhi run -- "$CMD"` の未設定形)を落とす。どちらも宣言で、
   // 2 つ目以降の空文字列は**子プロセスの引数として保つ**
   command: Argument.string("command").pipe(
+    Argument.withDescription("`--` の後に並べる実行対象(そのまま子プロセスへ渡す)"),
     Argument.atLeast(1),
     Argument.filter(
       (command) => (command[0] ?? "").trim() !== "",
@@ -151,11 +157,14 @@ const runConfig = {
 };
 
 const envCreateConfig = {
-  server: singleValued("server"),
-  project: singleValued("project"),
-  name: singleValued("name"),
+  server: singleValued("server", "サーバー URL(省略時は config の server)"),
+  project: singleValued("project", "プロジェクト ID(省略時は config の defaultProject)"),
+  name: singleValued("name", "表示名(省略時は環境 ID)"),
   // キーは**打つときの綴り**にする(specOf が診断名としてそのまま使う)
-  "environment-id": Argument.string("environment-id").pipe(Argument.withSchema(NonBlank)),
+  "environment-id": Argument.string("environment-id").pipe(
+    Argument.withDescription("環境 ID(例: dev / prod)"),
+    Argument.withSchema(NonBlank),
+  ),
 };
 
 /** commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。 */

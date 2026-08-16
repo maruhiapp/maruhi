@@ -286,7 +286,12 @@ describe("maruhi 固有の規律", () => {
 
     const help = await startEnv();
     expect(await runCli(["pull", "--help"], help.env.layer)).toBe(0);
-    expect(help.env.errors.join("\n")).toContain("FLAGS");
+    const full = help.env.errors.join("\n");
+    expect(full).toContain("FLAGS");
+    // 宣言の説明文はヘルプに出る(gunshi 側の各コマンドと同じ水準を保つ —
+    // 昇格時に説明を落とすと、ヘルプが名前と型だけの一覧に痩せる)
+    expect(full).toContain("サーバー URL(省略時は config の server)");
+    expect(full).toContain("値を端末に表示する");
   });
 
   it("`--` の後ろの `-h` は子プロセスの引数(ヘルプ要求として読まない)", async () => {
