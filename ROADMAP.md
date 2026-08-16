@@ -37,6 +37,8 @@
 - 環境間パリティチェック(環境モデル決定が前提)
 - 監査ログ UI、Web ダッシュボード
 - CLI 配布: npm / brew tap / インストールスクリプト、macOS 公証(Apple Developer Program は公開 2〜3 週前に登録)、npm provenance、チェックサム公開
+- 運用側デプロイを Alchemy v2 へ載せる(ADR-0012。現状は素の wrangler 経路のみが実在 — セルフホスト配布物はこのまま維持する)。spike-b / セッション 03 の申し送り: ① state store が常設 worker + secret を張る設計を運用として受け入れるか `state:` を差し替えるか ② worker 名が Alchemy の命名規則(`<stack>-<resource>-<stage>-<hash>`)になるので stage / 命名の明示設定 ③ ソースを Alchemy 非依存に保つため **Async Worker 形式に固定**(Effect ネイティブな Worker/DO 記述を使うと wrangler 経路が壊れる)
+- ユーザーに見える文言を英語へ統一(ADR-0017)。CLI はコマンド単位で ADR-0016 の引数層移行と同じ PR で行う(テストが日本語の部分文字列で挙動を固定しているため一括置換は危険)。web(`Root.tsx` の `lang="ja"`)・docs サイト・README は別作業
 - docs サイト(Blume)
 
 ## Phase 3: エージェント(方針は ADR-0014。優先度順)
