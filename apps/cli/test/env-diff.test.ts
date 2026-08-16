@@ -567,13 +567,16 @@ describe("maruhi env diff", () => {
     });
 
     it("diff 専用の 3 つ目の位置引数は create / rotate では余分な引数になる", async () => {
+      // create は effect/unstable/cli 側(ADR-0016 の第 1 段階)。入れ子の
+      // サブコマンドなので「取る位置引数は environment-id だけ」と言える
       const created = await startEnv([]);
       expect(await runCli(["env", "create", DEV, PROD], created.layer)).toBe(2);
-      expect(created.errors[0]).toContain("余分な引数です(1 個");
-      expect(created.errors[0]).toContain(
-        "maruhi env が取る位置引数は action environment-id だけです",
+      expect(created.errors.join("\n")).toContain("余分な引数です(1 個");
+      expect(created.errors.join("\n")).toContain(
+        "maruhi env create が取る位置引数は environment-id だけです",
       );
 
+      // rotate は gunshi のまま(1 引数表なので 3 つ目は diff 専用として除く)
       const rotated = await startEnv([]);
       expect(await runCli(["env", "rotate", DEV, PROD], rotated.layer)).toBe(2);
       expect(rotated.errors[0]).toContain("余分な引数です(1 個");

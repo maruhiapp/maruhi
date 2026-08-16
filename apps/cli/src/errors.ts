@@ -4,14 +4,23 @@
 // 鍵素材・トークン生値を含めない。文脈は識別子(プロジェクト ID・変数名・
 // エポック・鍵フィンガープリント等)のみで表現する。
 
-import { Data } from "effect";
+import { Data, Runtime } from "effect";
 
 /** A user-facing CLI failure. The message never carries secret material. */
 export class CliError extends Data.TaggedError("CliError")<{
   readonly message: string;
   /** 引数の書き方の誤り(usage エラー = 終了コード 2)か。 */
   readonly usage?: boolean;
-}> {}
+}> {
+  /**
+   * 終了コードは**エラー型自身が持つ**(ADR-0016 決定 4)。ランナーに
+   * 「usage は 2、失敗は 1」の写像表を置かないための Effect の機構で、
+   * `Runtime.defaultTeardown`(= `runMain` の既定 teardown)がこれを読む。
+   */
+  override get [Runtime.errorExitCode](): number {
+    return this.usage === true ? 2 : 1;
+  }
+}
 
 /** Builds a {@link CliError} from a user-facing message. */
 export function cliError(message: string): CliError {

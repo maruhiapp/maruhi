@@ -14,6 +14,7 @@ export {
   AuthConfigSchema,
   authGroup,
   DeviceExchangeResultSchema,
+  MAX_TOKEN_NAME_LENGTH,
   MeSchema,
   RecoveryStatusSchema,
   RecoveryWrapResultSchema,

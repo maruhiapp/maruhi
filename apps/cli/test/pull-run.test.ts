@@ -277,32 +277,56 @@ describe("maruhi pull", () => {
     expect(env.logs).toContain("BETA=beta-value");
   });
 
-  it("--show=false / --show false は値を表示しない(usage エラーで落ちる)", async () => {
+  it("コマンドの出力は CliIo だけを通る(実 fd を直に叩く経路を作らない)", async () => {
+    // 引数層を移した先(effect/unstable/cli)は出力を `Console` / `Stdio` の
+    // サービス経由で行うが、上流が描画経路を増やしたときに実 fd へ素通りする
+    // 穴ができうる。**復号した値**が現れる唯一のコマンドで安全網を張る
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const bypassed: string[] = [];
+    // 束縛ラッパーではなく元のメソッドそのものを控える(戻すたびに 1 段積まない)
+    const realWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      bypassed.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      expect(await runCli(["pull", "--show"], env.layer)).toBe(0);
+    } finally {
+      process.stdout.write = realWrite;
+    }
+    // 窓には vitest のレポータ出力も混ざるので、**maruhi の語**で判定する
+    const written = bypassed.join("");
+    expect(written).not.toContain("alpha-value");
+    expect(written).not.toContain("beta-value");
+    expect(written).not.toContain("同期・検証 OK");
+  });
+
+  it("--show=false / --show false は**書いたとおり**に読まれ、値を表示しない", async () => {
     // gunshi は boolean のインライン値を読まずに true にし、空白区切りの値も
-    // 消費しない。塞がないと**書いたことと逆**に全シークレットが端末へ出る
-    // (直前のテストが、この配布データで --show が実際に値を出すことを示す)
+    // 消費しなかった(= 表示しないと書いた実行が全シークレットを出す)。
+    // effect/unstable/cli は両方とも false として読む — 拒否ではなく**正しく
+    // 読まれる**ことが直り方(直前のテストが、この配布データで --show が
+    // 実際に値を出すことを示す)
     const inline = await startEnv([chainHandler(), pullHandler()]);
-    expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(2);
+    expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(0);
     expect(inline.logs.join("\n")).not.toContain("alpha-value");
-    expect(inline.errors.join("\n")).toContain("--show は値を取りません");
+    expect(inline.logs.join("\n")).toContain("同期・検証 OK");
 
     const spaced = await startEnv([chainHandler(), pullHandler()]);
-    expect(await runCli(["pull", "--show", "false"], spaced.layer)).toBe(2);
+    expect(await runCli(["pull", "--show", "false"], spaced.layer)).toBe(0);
     expect(spaced.logs.join("\n")).not.toContain("alpha-value");
-    expect(spaced.errors.join("\n")).toContain("--show は値を取りません");
   });
 
   it("`--no-show --show` のような重複指定は値を表示せずに落ちる", async () => {
     // gunshi は最後の指定で解決するため、明示した `--no-show` が黙って捨てられて
     // 全シークレットが端末へ出る(`maruhi pull --no-show $FLAGS` の形)。
-    // どちらを意図したかは読み取れないので、選ばずに usage エラー(2)で落とす
+    // effect の素の Flag.boolean は first-wins で沈黙するので、どちらにしても
+    // **打った順で結果が変わる**。Flag.atMost(1) が順序に依らず落とす
     const later = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["pull", "--no-show", "--show"], later.layer)).toBe(2);
     expect(later.logs.join("\n")).not.toContain("alpha-value");
     expect(later.errors.join("\n")).toContain("--show を複数回指定しています");
-    // 否定形も同じオプションであることを案内する(片方を消せばよいと分かる)
-    expect(later.errors.join("\n")).toContain("--no-show");
     // 検査は通信より前(復号する平文をそもそも作らない)
     expect(server?.requests).toHaveLength(0);
 
@@ -311,6 +335,16 @@ describe("maruhi pull", () => {
     const earlier = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show", "--no-show"], earlier.layer)).toBe(2);
     expect(earlier.errors.join("\n")).toContain("--show を複数回指定しています");
+
+    // 同じ綴りの重複も落ちる(`--show --show`)
+    const same = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--show", "--show"], same.layer)).toBe(2);
+    expect(same.logs.join("\n")).not.toContain("alpha-value");
+
+    // 単独の `--no-show` は書いたとおり false として通る(拒否するのは重複だけ)
+    const single = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["pull", "--no-show"], single.layer)).toBe(0);
+    expect(single.logs.join("\n")).not.toContain("alpha-value");
   });
 
   it("--show は値の ANSI/制御シーケンスを中和し、改行は保持する", async () => {
@@ -381,6 +415,36 @@ describe("maruhi pull", () => {
     expect(env.logs.join("\n")).not.toContain("alpha-value");
     // 拒否はコマンド入口(復号前)で確定する: 同期・復号・メタデータ表示に進まない
     expect(env.logs.join("\n")).not.toContain("同期・検証 OK");
+  });
+
+  it("**未知**のエージェントでも --show は拒否される(TTY が一次境界 = fail-closed)", async () => {
+    // deny-list(既知の環境変数)では素通りしていた形。stdout がパイプ・
+    // リダイレクトなら、検出リストに無くても値は見せない
+    // (`maruhi pull --show > secrets.txt` が拒否されるのも同じ判定)
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    env.setAgent({ isAgent: false });
+    env.setTerminal({ stdout: false });
+    expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("値の表示は対話端末でのみ許可されます");
+    expect(env.logs.join("\n")).not.toContain("alpha-value");
+    // 復号より前に確定する(平文をそもそも作らない)
+    expect(env.logs.join("\n")).not.toContain("同期・検証 OK");
+  });
+
+  it("stdin が端末でない実行(CI・ヒアドキュメント)も拒否される", async () => {
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    env.setTerminal({ stdin: false });
+    expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("値の表示は対話端末でのみ許可されます");
+    expect(env.logs.join("\n")).not.toContain("alpha-value");
+  });
+
+  it("値を表示しない pull は端末でなくても通る(拒否は --show だけ)", async () => {
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    env.setAgent({ isAgent: true, name: "cursor" });
+    env.setTerminal({ stdin: false, stdout: false });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("同期・検証 OK");
   });
 
   it("署名者を偽装したラップ(signerUserId の虚偽申告)を拒否する", async () => {
@@ -1434,6 +1498,9 @@ describe("maruhi run", () => {
   it("AI エージェント検出時でも run は許可される(線引き)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });
+    // 端末でなくても通す(CI / パイプ)。run は値を**見せる**経路ではなく、
+    // 子プロセスの環境変数へ注入する消費経路なので TTY 境界の対象外
+    env.setTerminal({ stdin: false, stdout: false });
     expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
   });
@@ -1482,14 +1549,31 @@ describe("maruhi run", () => {
   });
 
   it("`--` の前の空の引数は、子プロセス側に空白の引数があっても拾う", async () => {
-    // rest 側の「こぼれ」の数え方を trim で緩めると、子プロセスの空白だけの
-    // 引数(`" "` — rest に残る)が maruhi 側の本物の空引数を隠して素通りする
+    // `--` の前後は 1 つの配列に混ざる(上流のパーサ)ので、先頭の空文字列が
+    // 実行対象の位置に来る。`Argument.filter` が「実行対象が空」として落とす
+    // — 子プロセスの空白だけの引数(`" "`)は落とさない(2 つ目以降はそのまま渡す)
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "", "--", "printenv", " "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("空の引数があります");
+    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
     expect(server?.requests).toHaveLength(0);
     expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("`--` の**前**に置いた実行対象は子プロセスにならない(`--` の後ろだけを取る)", async () => {
+    // 上流のパーサは `--` の前後の位置引数を 1 つの配列にまとめるため、宣言だけ
+    // では `maruhi run stray -- printenv` が **stray の実行**に化ける。
+    // `Stdio.args` の `--` 位置と個数を突き合わせて落とす(ADR-0016 決定 8)
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const server = servers[servers.length - 1];
+    expect(await runCli(["run", "stray", "--", "printenv"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("余分な引数です(1 個");
+    expect(errors).toContain("`--` の後に並べてください");
+    // 中身は出さない(位置引数には平文が書かれうる)
+    expect(errors).not.toContain("stray");
+    expect(env.runnerCalls).toHaveLength(0);
+    expect(server?.requests).toHaveLength(0);
   });
 
   it("入れ子の `--`(`npm test -- --watch`)も子プロセスへそのまま渡る", async () => {

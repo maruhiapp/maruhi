@@ -1,4 +1,5 @@
-// maruhi の診断を **Effect の機構(`CliOutput.Formatter`)として**実装する。
+// maruhi の診断を **Effect の機構(`CliOutput.Formatter`)として**実装する
+// (ADR-0016 決定 3)。
 //
 // なぜ差し替えが要るか: effect/unstable/cli の既定の文面は**打たれた値を
 // そのまま含む**(`Invalid value for flag --env: "  "` /
@@ -14,25 +15,26 @@
 //
 // 出してよいのは**こちらの語彙**だけ: 宣言名・候補・個数。危険なのは
 // `UnexpectedArgument.arguments` と `InvalidValue.value`、そして
-// **`InvalidValue.expected`**(レビュー指摘): 上流の `Param.filter` は
-// `expected: onNone(a)` を組み立てるので、`onNone` に値を埋め込む書き方
-// (effect 自身の JSDoc 例が `Expected even number, got ${n}`)をすると
-// 期待値の側から平文が漏れる。**こちらが書いた文面と一致したときだけ**出す。
+// **`InvalidValue.expected`**: 上流の `Param.filter` は `expected: onNone(a)` を
+// 組み立てるので、`onNone` に値を埋め込む書き方(effect 自身の JSDoc 例が
+// `Expected even number, got ${n}`)をすると期待値の側から平文が漏れる。
+// **こちらが書いた文面と一致したときだけ**出す。
 
 import type { HelpDoc } from "effect/unstable/cli";
 import { CliError, CliOutput } from "effect/unstable/cli";
 
-/** 診断の文面を組むためのコマンド宣言(検査そのものは Flag / Argument 側)。 */
+import { RUN_COMMAND_REQUIRED } from "./run.ts";
+
+/**
+ * 診断の文面を組むためのコマンド宣言(検査そのものは Flag / Argument 側)。
+ *
+ * 中身は effect-cli.ts が**コマンド定義そのものから導く**(手書きの写しを
+ * 持たない — 宣言を足したときに診断だけ古いまま残る形を作らない)。
+ */
 export interface CommandSpec {
   readonly flags: readonly string[];
   readonly positionals: readonly string[];
-  /** 余分な引数を拒否するときに添えるコマンド固有の助言。 */
-  readonly strayHint?: string | undefined;
 }
-
-/** `maruhi run` の実行対象が無い / 空のときの案内(src/run.ts と同じ文面)。 */
-export const RUN_COMMAND_REQUIRED =
-  "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)";
 
 /** 空・空白だけの値を拒む Schema の文面(宣言側とここで同じ定数を使う)。 */
 export const NON_BLANK_MESSAGE = "空でない値(空白だけの値も受け付けません)";
@@ -74,7 +76,7 @@ function unexpectedArgumentMessage(
   const shape = takesNone
     ? `maruhi ${commandKey} は位置引数を取りません`
     : `maruhi ${commandKey} が取る位置引数は ${spec.positionals.join(" ")} だけです`;
-  return `余分な引数です(${error.arguments.length} 個。中身は表示しません — 平文の値が混ざりうるため)。${shape}${spec?.strayHint ?? ""}`;
+  return `余分な引数です(${error.arguments.length} 個。中身は表示しません — 平文の値が混ざりうるため)。${shape}`;
 }
 
 /**
@@ -97,6 +99,22 @@ function invalidValueMessage(error: CliError.InvalidValue): string {
   return error.kind === "argument"
     ? `位置引数 ${name} の値が受け付けられません${detail}`
     : `オプション --${name} の値が受け付けられません${detail}`;
+}
+
+/**
+ * `UserError` は**こちらが書いた `userMessage` のときだけ**出す。
+ *
+ * `message` は `userMessage` が空だと **`cause` の message** へ落ちる(上流の
+ * 宣言どおり)。`cause` は `Flag.mapEffect` / `Argument.mapEffect` に渡した
+ * 任意の失敗なので、打たれた値を含みうる — `InvalidValue.expected` を
+ * {@link SAFE_EXPECTATIONS} で塞いだのと同じ理由で、素通しにはしない。
+ *
+ * 現行の宣言(effect-cli.ts)は `mapEffect` を使っていないので到達しないが、
+ * **足した瞬間に穴が開く**位置なのでここで縛っておく。
+ */
+function userErrorMessage(error: CliError.UserError): string {
+  const authored = error.userMessage ?? "";
+  return authored === "" ? "引数の書き方が正しくありません" : authored;
 }
 
 function unknownSubcommandMessage(error: CliError.UnknownSubcommand): string {
@@ -135,7 +153,7 @@ export function describeError(
     return unknownSubcommandMessage(error);
   }
   if (error instanceof CliError.UserError) {
-    return error.message;
+    return userErrorMessage(error);
   }
   return "引数の書き方が正しくありません";
 }

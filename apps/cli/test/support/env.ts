@@ -6,9 +6,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Stdio } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
+import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
 import { cliError } from "../../src/errors.ts";
@@ -47,6 +48,12 @@ export interface TestEnv {
   readonly prompts: string[];
   setStdin(bytes: Uint8Array): void;
   /**
+   * 端末判定(`Stdio`)の偽装。値の表示可否の**一次境界**なので、既定は
+   * 「人間の対話端末」= stdin / stdout の両方が端末。パイプ・リダイレクト・
+   * CI・未知のエージェントを再現するときに false を渡す。
+   */
+  setTerminal(input: { readonly stdin?: boolean; readonly stdout?: boolean }): void;
+  /**
    * promptLine が順に返す応答をキューする(枯渇後は失敗 = EOF 相当)。
    * 関数は応答時点で評価される(表示済みログから値を導く応答のため —
    * リカバリーコードの保存確認等)。
@@ -79,6 +86,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const promptResponses: (string | (() => string))[] = [];
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
+  // 既定は「人間が対話端末で実行した」形(値の表示が許される唯一の形)
+  let stdinIsTerminal = true;
+  let stdoutIsTerminal = true;
   let runnerExitCode = 0;
   let keychainWritable = true;
   let floorPushCommittable = true;
@@ -90,6 +100,14 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const pinsDir = pinsDirOf(configPath);
   const pinStore = makeFilePinStore(pinsDir);
   const layer = Layer.mergeAll(
+    // argv は runCli が実行ごとに渡す(effect-cli.ts が Stdio へ載せ替える)。
+    // ここで固定するのは端末判定 — 値の表示可否の一次境界(agent-gate.ts)
+    Stdio.layerTest({
+      stdinIsTerminal: Effect.sync(() => stdinIsTerminal),
+      stdoutIsTerminal: Effect.sync(() => stdoutIsTerminal),
+    }),
+    // 二次層(既知エージェントの検出結果)。本番は live.ts が std-env から供給する
+    Layer.sync(AgentProfileRef, () => agent),
     Layer.succeed(PinStore, pinStore),
     Layer.succeed(FloorStore, {
       load: (projectId) => floorStore.load(projectId),
@@ -169,6 +187,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
     prompts,
     setStdin(bytes) {
       stdin = bytes;
+    },
+    setTerminal({ stdin: isStdinTerminal, stdout: isStdoutTerminal }) {
+      stdinIsTerminal = isStdinTerminal ?? stdinIsTerminal;
+      stdoutIsTerminal = isStdoutTerminal ?? stdoutIsTerminal;
     },
     setPromptResponses(lines) {
       promptResponses.length = 0;

@@ -3,13 +3,16 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer, Schema, Stdio } from "effect";
+import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AgentProfileRef } from "../src/agent-gate.ts";
 import { normalizeStdinValue, optionRestrictedTo, runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
-import { decodeValueText } from "../src/display.ts";
+import { decodeValueText, showValues } from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
+import { CliIo } from "../src/io.ts";
 import {
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -247,6 +250,64 @@ describe("runOp", () => {
   });
 });
 
+describe("showValues(復号後の防衛線)", () => {
+  /** 出力を捨てる CliIo(この検査は「表示に至らないこと」だけを見る)。 */
+  const silentIo = Layer.succeed(CliIo, {
+    log: () => Effect.void,
+    logError: () => Effect.void,
+    readStdin: Effect.succeed(new Uint8Array(0)),
+    promptLine: () => Effect.succeed(""),
+    envVar: () => undefined,
+    agentProfile: () => ({ isAgent: false }),
+  });
+
+  const showOne = (input: {
+    readonly agent?: { readonly isAgent: boolean; readonly name?: string };
+    readonly stdinIsTerminal: boolean;
+    readonly stdoutIsTerminal: boolean;
+  }) =>
+    Effect.runPromiseExit(
+      showValues([variable("SECRET", "plaintext-value")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            silentIo,
+            Layer.succeed(AgentProfileRef, input.agent ?? { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(input.stdinIsTerminal),
+              stdoutIsTerminal: Effect.succeed(input.stdoutIsTerminal),
+            }),
+          ),
+        ),
+      ),
+    );
+
+  it("入口の検査を通らない直接呼び出しでも、端末以外では表示しない", async () => {
+    // 本線は pull の入口(復号前)。ここは showValues を直接呼ぶ将来の経路が
+    // 入口検査を欠いても表示に至らせない防衛線で、**両層とも同じ判定**
+    // (一次 = TTY / 二次 = エージェント検出)であることを固定する
+    const piped = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: false });
+    expect(Exit.isFailure(piped)).toBe(true);
+    expect(JSON.stringify(piped)).toContain("対話端末でのみ許可されます");
+    expect(JSON.stringify(piped)).not.toContain("plaintext-value");
+
+    const headless = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: true });
+    expect(Exit.isFailure(headless)).toBe(true);
+
+    const agent = await showOne({
+      agent: { isAgent: true, name: "claude" },
+      stdinIsTerminal: true,
+      stdoutIsTerminal: true,
+    });
+    expect(Exit.isFailure(agent)).toBe(true);
+    expect(JSON.stringify(agent)).toContain("AI エージェント環境を検出");
+  });
+
+  it("人間の対話端末では表示する(検査が空振りしていない陽性対照)", async () => {
+    const allowed = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: true });
+    expect(Exit.isSuccess(allowed)).toBe(true);
+  });
+});
+
 describe("buildInjectionEnv", () => {
   it("名前・値を検証して env map を作る", async () => {
     const env = await Effect.runPromise(
@@ -317,7 +378,7 @@ describe("decodeValueText(値デコード方針の一本化)", () => {
 });
 
 describe("toCliError(サーバー由来文字列の端末中和)", () => {
-  it("エラー Schema の自由文字列 ID と未知エラーの message を中和する", () => {
+  it("エラー Schema の自由文字列 ID を中和する", () => {
     // ワイヤ上無制約の Schema.String 列(悪意あるサーバーが ANSI/改行を埋められる)
     const notFound = toCliError(
       new ProjectNotFoundError({ projectId: "x\u001b[31mred\u001b[0m\nfake" }),
@@ -325,10 +386,53 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(notFound.message).not.toContain("\u001b");
     expect(notFound.message).not.toContain("\n");
     expect(notFound.message).toContain("x\uFFFD[31mred\uFFFD[0m\uFFFDfake");
-    // 未知エラー fallback(応答本文の断片を含みうる)も無条件に中和する
-    const unknown = toCliError(new Error("boom\u001b]0;pwned\u0007"));
+  });
+
+  it("宣言を尽くした先の未知エラーは message を出さず、型の名前だけを添える", () => {
+    // 型付きクライアントの失敗 3 種(宣言済みエラー / HttpClientError /
+    // SchemaError)はすべて写像済みなので、ここへ来るのは本当の未知だけ。
+    // message は応答本文の断片を含みうるため、中和ではなく**出さない**
+    const unknown = toCliError(new Error("boom sk-live-SUPER-SECRET \u001b]0;pwned\u0007"));
+    expect(unknown.message).toBe("予期しないエラー(Error)");
+    expect(unknown.message).not.toContain("sk-live-SUPER-SECRET");
     expect(unknown.message).not.toContain("\u001b");
-    expect(unknown.message).not.toContain("\u0007");
+  });
+
+  it("接続失敗は専用の写像が受け持つ(未知へ落ちない)", () => {
+    // 「未知 fallback を絞ると接続失敗の手掛かりが消える」ことにならない根拠:
+    // 転送レベルの失敗は HttpClientError の写像が名前付きで説明する
+    const transport = new HttpClientError.HttpClientError({
+      reason: new HttpClientError.TransportError({
+        request: HttpClientRequest.get("https://maruhi.example/chain"),
+        cause: new Error("connect ECONNREFUSED 127.0.0.1:9"),
+      }),
+    });
+    const rendered = toCliError(transport);
+    expect(rendered.message).toContain("サーバーへの接続に失敗しました");
+    expect(rendered.message).not.toContain("予期しないエラー");
+    // 下位の cause の文面(ホスト・ポート等)は素通ししない
+    expect(rendered.message).not.toContain("ECONNREFUSED");
+  });
+
+  it("応答のスキーマ不一致は「場所と期待」だけを出す(値は出さない)", async () => {
+    // 上流(effect rc.109)の整形は期待した型と場所しか出さない。応答本文には
+    // 変数名も暗号文も載るので、**値を含む整形に変わったらここが落ちる**
+    const Payload = Schema.Struct({ version: Schema.Number });
+    const exit = await Effect.runPromiseExit(
+      Schema.decodeUnknownEffect(Payload)({ version: "sk-live-SUPER-SECRET" }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (!Exit.isFailure(exit)) return;
+    const rendered = toCliError(Cause.squash(exit.cause));
+    expect(rendered.message).toContain("スキーマと一致しないデータがあります");
+    expect(rendered.message).toContain("Expected number");
+    expect(rendered.message).toContain('["version"]');
+    expect(rendered.message).not.toContain("sk-live-SUPER-SECRET");
+    // 同じチャネルにリクエストの encode 失敗も流れてくる(向きは型から分からない)
+    // ので、誘導先は両向きを並べる。サーバー原因への一方的な誘導へ戻ったら落ちる
+    expect(rendered.message).toContain("指定した値");
+    // 改行は 1 行へ畳んでから中和する(置換文字で読めなくならない)
+    expect(rendered.message).not.toContain("\uFFFD");
   });
 });
 
@@ -486,7 +590,11 @@ describe("入力検証と defect の扱い", () => {
     const env = await makeTestEnv();
     env.breakConfigLoadWithDefect();
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("内部エラー");
+    // 型の名前だけを添える形を**厳密に**固定する(`内部エラー` の部分一致だけだと
+    // `内部エラー: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
+    expect(env.errors.join("\n")).toContain("maruhi: 内部エラー(Error)");
+    // defect の message は出さない — 打たれた値を埋め込んだ文面でも到達しうる
+    expect(env.errors.join("\n")).not.toContain("config load defect");
   });
 });
 

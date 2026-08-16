@@ -4,12 +4,19 @@
 //   Credential Manager)。キーチェーン不在環境では型付きエラーで案内し、
 //   平文ファイルへのフォールバックは行わない(ディスクレス不変条件)
 // - ProcessRunner = Bun.spawn(環境変数へのメモリ注入のみ。stdio は継承)
-// - エージェント検出 = gunshi/agent の getAgentProfile
+// - エージェント検出 = std-env の agentInfo(gunshi/agent の実体と同一 —
+//   ADR-0016 決定 7 の二次層。一次境界は Stdio の TTY 判定)
+// - Stdio = @effect/platform-bun(argv と端末の有無。`process.*` を直に読む
+//   のはこの実装の中だけ = 引数層はサービス経由で受け取る)
 
+// サブモジュールを直に読む(パッケージの index は BunRedis 等まで巻き込み、
+// `bun` モジュールを解決できない環境 — Node で走る vitest — で落ちる)
+import * as BunStdio from "@effect/platform-bun/BunStdio";
 import { Duration, Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { getAgentProfile } from "gunshi/agent";
+import { agentInfo } from "std-env";
 
+import { type AgentProfile, AgentProfileRef } from "./agent-gate.ts";
 import type { CliServices } from "./cli.ts";
 import { ConfigStore, defaultConfigPath, makeFileConfigStore } from "./config.ts";
 import { cliError } from "./errors.ts";
@@ -243,6 +250,19 @@ function nextChunk(stdin: NodeJS.ReadStream): Promise<string | null> {
   });
 }
 
+/**
+ * AI コーディングエージェントの検出(二次層)。
+ *
+ * `gunshi/agent` は std-env の `agentInfo` の薄いラッパにすぎなかったので、
+ * 乗り換えても検出規則は変わらない(`CLAUDECODE` / `CURSOR_AGENT` /
+ * `GEMINI_CLI` / `AI_AGENT` ほかの環境変数表)。`agentInfo` はモジュール
+ * 初期化時に 1 回だけ評価される同期の値。
+ */
+function detectAgentProfile(): AgentProfile {
+  const name = agentInfo.name;
+  return name === undefined ? { isAgent: false } : { isAgent: true, name };
+}
+
 function makeLiveIo(): CliIoShape {
   // 非 TTY 入力の行リーダーはプロセスで 1 つ(プロンプト間で未消費行を保持する)
   const readPipedLine = makeStdinLineReader(process.stdin);
@@ -286,7 +306,7 @@ function makeLiveIo(): CliIoShape {
           ),
       }),
     envVar: (name) => process.env[name],
-    agentProfile: getAgentProfile,
+    agentProfile: detectAgentProfile,
   };
 }
 
@@ -294,6 +314,10 @@ function makeLiveIo(): CliIoShape {
 export function liveLayer(): Layer.Layer<CliServices> {
   const configPath = defaultConfigPath((name) => process.env[name]);
   return Layer.mergeAll(
+    // argv と端末の有無(引数層と値の表示可否の判定材料)
+    BunStdio.layer,
+    // 値の表示可否の二次層(一次境界は上の Stdio による TTY 判定)
+    Layer.succeed(AgentProfileRef, detectAgentProfile()),
     Layer.succeed(Keychain, makeBunKeychain()),
     Layer.succeed(ConfigStore, makeFileConfigStore(configPath)),
     // ローカル床(§6.3)は設定と同系の非機密置き場(<config dir>/floor)
