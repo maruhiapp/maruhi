@@ -1,0 +1,409 @@
+// `maruhi audit`(AUDIT_SPEC §6 / §7 — C1)の統合テスト。
+//
+// 固定する性質:
+//  1. list は監査行を表示し、変数の表示名は検証済みステートメントからのみ解決
+//     する。payload の名前スナップショット(サーバー申告)は「記録」として
+//     区別表示され、表示名の位置に昇格しない(TCB 規律 — AUDIT_SPEC §7)
+//  2. chain.* ミラー行は検証済みチェーンと突合され(共有写像 chainMirrorEvent)、
+//     一致は 突合=OK、不一致は警告 + 終了コード 1(改竄の証拠 — §6)
+//  3. verify はミラーの全単射検証(§1-5): 欠落(削除の隠蔽)・改変・重複の
+//     いずれも検出して終了コード 1
+//  4. invites / self は D1 側の行を表示し、self は要監視イベント
+//     (auth.recovery_blob_fetched — §3.1)の含意を添える
+//  5. 引数の書き方の誤り(self への --project・limit の範囲外・不明な操作)は
+//     通信より前に usage エラー(2)
+
+import { chainMirrorEvent } from "@maruhi/core";
+import type { ChainEntry } from "@maruhi/crypto";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { runCli } from "../src/cli.ts";
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  environmentStatementFor,
+  genesisOp,
+  headOf,
+  makeTestUser,
+  statementFor,
+  type TestUser,
+} from "./support/crypto.ts";
+import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+
+const ENV_ID = "env-audit-1";
+const BASE_TS = 1_755_000_000_000;
+
+let owner: TestUser;
+let member: TestUser;
+let dek1: Uint8Array;
+
+const servers: MockServer[] = [];
+
+beforeAll(async () => {
+  owner = await makeTestUser("user-owner-1111");
+  member = await makeTestUser("user-member-2222");
+  dek1 = crypto.getRandomValues(new Uint8Array(32));
+});
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.close()));
+});
+
+/** ベースチェーン(genesis → 環境作成 → メンバー追加。未収束義務なし)。 */
+async function baseChain(): Promise<BuiltChain> {
+  return buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+    { actor: owner, operation: addMemberOp(member, "member") },
+  ]);
+}
+
+type WireRow = Record<string, unknown>;
+
+/** undefined の項目を落として割り当てる(ワイヤの optionalKey と同型)。 */
+function assignPresent(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) {
+      target[key] = value;
+    }
+  }
+}
+
+/** 検証済みエントリ → ワイヤのミラー行(サーバーと同じ共有写像から構成)。 */
+function wireMirrorRow(entry: ChainEntry, seq: number): WireRow {
+  const record = chainMirrorEvent(entry, BASE_TS + seq);
+  const actor: Record<string, unknown> = { type: record.actorType };
+  assignPresent(actor, {
+    userId: record.actorUserId,
+    keyFingerprintHex: record.actorKeyFingerprintHex,
+  });
+  const row: WireRow = { seq, serverTs: record.serverTs, event: record.event, actor };
+  assignPresent(row, {
+    clientTs: record.clientTs,
+    targetUserId: record.targetUserId,
+    targetKeyFingerprintHex: record.targetKeyFingerprintHex,
+    environmentId: record.environmentId,
+    epoch: record.epoch,
+    chainSeq: record.chainSeq,
+    payload: record.payload,
+  });
+  return row;
+}
+
+/** チェーン全エントリのミラー行(監査 seq = chain seq に揃える)。 */
+function mirrorRowsOf(built: BuiltChain): WireRow[] {
+  return built.entries.map((entry) => wireMirrorRow(entry, entry.seq));
+}
+
+/**
+ * 監査イベントエンドポイントのモック: event / before / limit をサーバーと同じ
+ * 意味論(seq 降順・カーソル前進)で適用する。
+ */
+function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
+  return (request) => {
+    if (request.method !== "GET" || request.path !== `/projects/${projectId}/audit/events`) {
+      return null;
+    }
+    const eventFilter = request.query["event"];
+    const before = request.query["before"];
+    const limit = Number(request.query["limit"] ?? "50");
+    const filtered = rows()
+      .filter((row) => (eventFilter === undefined ? true : row["event"] === eventFilter))
+      .filter((row) => (before === undefined ? true : (row["seq"] as number) < Number(before)))
+      .toSorted((a, b) => (b["seq"] as number) - (a["seq"] as number))
+      .slice(0, limit);
+    return { status: 200, json: { events: filtered } };
+  };
+}
+
+interface AuditServerInput {
+  readonly built: BuiltChain;
+  readonly rows: readonly WireRow[];
+  /** メタデータ pull の可否(false = 404 — 名前解決の劣化経路)。 */
+  readonly metadataAvailable?: boolean;
+}
+
+async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHandler[]> {
+  const projectId = input.built.projectId;
+  const envStatement = await environmentStatementFor({
+    projectId,
+    environmentId: ENV_ID,
+    name: ENV_ID,
+    author: owner,
+    head: headOf(input.built, 2),
+  });
+  const activeStatement = await statementFor({
+    projectId,
+    environmentId: ENV_ID,
+    variableId: "va",
+    name: "ALPHA",
+    author: owner,
+    head: headOf(input.built, 2),
+  });
+  return [
+    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+      status: 200,
+      json: {
+        projectId,
+        entries: input.built.entries as readonly ChainEntry[],
+        headSeq: input.built.entries.length,
+        headHashHex: input.built.hashes[input.built.hashes.length - 1],
+      },
+    })),
+    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () =>
+      input.metadataAvailable === false
+        ? { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: ENV_ID } }
+        : {
+            status: 200,
+            json: {
+              environmentId: ENV_ID,
+              currentEpoch: 1,
+              statement: envStatement,
+              variables: [activeStatement],
+              deletedVariables: [],
+            },
+          },
+    ),
+    auditEventsHandler(projectId, () => input.rows),
+  ];
+}
+
+async function startEnv(handlers: readonly MockHandler[], projectId?: string): Promise<TestEnv> {
+  const server = await MockServer.start([...handlers]);
+  servers.push(server);
+  const env = await makeTestEnv();
+  seedSession(env, server.origin, owner);
+  await seedConfig(env, {
+    server: server.origin,
+    ...(projectId === undefined ? {} : { defaultProject: projectId }),
+  });
+  return env;
+}
+
+/** var.version_pushed の行(名前解決・payload 表示の検査用)。 */
+function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
+  return {
+    seq,
+    serverTs: BASE_TS + seq,
+    event: "var.version_pushed",
+    actor: { type: "user", userId: member.userId },
+    environmentId: ENV_ID,
+    variableId: "va",
+    epoch: 1,
+    version: 2,
+    ...(payload === undefined ? {} : { payload }),
+  };
+}
+
+describe("maruhi audit(list)", () => {
+  it("行を表示し、名前は検証済みステートメントから解決、ミラー行は突合 OK", async () => {
+    const built = await baseChain();
+    // payload の名前スナップショットはサーバー申告 — 表示名の位置に昇格しない
+    const rows = [...mirrorRowsOf(built), pushRow(4, { name: "EVIL_NAME" })];
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+
+    expect(await runCli(["audit"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    // 新しい順(seq 降順)
+    const positions = [4, 3, 2, 1].map((seq) => logs.indexOf(`seq=${seq}\t`));
+    expect(positions.every((index) => index >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].toSorted((a, b) => a - b));
+    // ミラー行の突合(共有写像どおりの行は OK)
+    expect(logs).toContain("chain.genesis");
+    expect(logs).toContain("chain.member_added");
+    expect(logs).toContain("突合=OK");
+    // 表示名は検証済みステートメント由来のみ。payload のスナップショットは
+    // 「記録=」の中にだけ現れる
+    expect(logs).toContain("var=ALPHA(va)");
+    expect(logs).not.toContain("var=EVIL_NAME");
+    expect(logs).toContain("EVIL_NAME");
+    expect(env.errors.join("\n")).not.toContain("一致しません");
+  });
+
+  it("メタデータを取得できない環境は識別子表示へ劣化する(一覧は止めない)", async () => {
+    const built = await baseChain();
+    const rows = [...mirrorRowsOf(built), pushRow(4)];
+    const env = await startEnv(
+      await makeAuditServer({ built, rows, metadataAvailable: false }),
+      built.projectId,
+    );
+    expect(await runCli(["audit"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("var=va");
+    expect(env.logs.join("\n")).not.toContain("ALPHA");
+    expect(env.errors.join("\n")).toContain("検証済みメタデータを取得できません");
+  });
+
+  it("改竄されたミラー行(actor の差し替え)は警告 + 終了コード 1", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const tampered = rows[2];
+    if (tampered === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    rows[2] = { ...tampered, actor: { type: "user", userId: "user-evil-9999" } };
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit"], env.layer)).toBe(1);
+    expect(env.logs.join("\n")).toContain("突合=不一致");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("ミラー行が検証済みチェーンと一致しません");
+    expect(errors).toContain("actor.user_id");
+  });
+
+  it("--event と --before / --limit をそのままクエリへ写す", async () => {
+    const built = await baseChain();
+    const rows = [...mirrorRowsOf(built), pushRow(4)];
+    const handlers = await makeAuditServer({ built, rows });
+    const server = await MockServer.start([...handlers]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(
+      await runCli(
+        ["audit", "--event", "var.version_pushed", "--limit", "10", "--before", "9"],
+        env.layer,
+      ),
+    ).toBe(0);
+    const audit = server.requests.find((request) => request.path.endsWith("/audit/events"));
+    expect(audit?.query).toMatchObject({ event: "var.version_pushed", limit: "10", before: "9" });
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("var.version_pushed");
+    expect(logs).not.toContain("chain.genesis");
+  });
+});
+
+describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => {
+  it("全単射 + 全フィールド一致なら OK(終了コード 0)", async () => {
+    const built = await baseChain();
+    const env = await startEnv(
+      await makeAuditServer({ built, rows: mirrorRowsOf(built) }),
+      built.projectId,
+    );
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).toContain("ミラー全単射検証 OK");
+  });
+
+  it("ミラー行の欠落(削除の隠蔽)を検出する", async () => {
+    const built = await baseChain();
+    // seq=3(add_member)のミラーを落とす — per-row 突合では原理的に見えない欠落
+    const rows = mirrorRowsOf(built).filter((row) => row["seq"] !== 3);
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("対応するミラー行がありません");
+    expect(errors).toContain("chain_seq=3");
+  });
+
+  it("ミラー行の改変(鍵 FP の差し替え)を検出する", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const genesis = rows[0];
+    if (genesis === undefined) {
+      throw new Error("fixture is missing the genesis mirror row");
+    }
+    rows[0] = {
+      ...genesis,
+      actor: {
+        ...(genesis["actor"] as Record<string, unknown>),
+        keyFingerprintHex: "ab".repeat(16),
+      },
+    };
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("actor.key_fingerprint");
+  });
+
+  it("同一 chain_seq への重複ミラー行を検出する", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const duplicated = rows[2];
+    if (duplicated === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    rows.push({ ...duplicated, seq: 9 });
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("重複");
+  });
+});
+
+describe("maruhi audit invites / self", () => {
+  it("invites は D1 側の invite.* 行を表示する", async () => {
+    const built = await baseChain();
+    const handlers = [
+      ...(await makeAuditServer({ built, rows: mirrorRowsOf(built) })),
+      onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
+        status: 200,
+        json: {
+          events: [
+            {
+              seq: 12,
+              serverTs: BASE_TS,
+              event: "invite.created",
+              actor: { type: "user", userId: owner.userId },
+              projectId: built.projectId,
+              payload: { inviteId: "inv-0001", role: "member" },
+            },
+          ],
+        },
+      })),
+    ];
+    const env = await startEnv(handlers, built.projectId);
+    expect(await runCli(["audit", "invites"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("invite.created");
+    expect(logs).toContain("inv-0001");
+  });
+
+  it("self はアカウント系イベントを表示し、要監視イベントの含意を添える", async () => {
+    const handlers = [
+      onRequest("GET", "/auth/audit/events", () => ({
+        status: 200,
+        json: {
+          events: [
+            {
+              seq: 2,
+              serverTs: BASE_TS + 2,
+              event: "auth.recovery_blob_fetched",
+              actor: { type: "user", userId: owner.userId },
+            },
+            {
+              seq: 1,
+              serverTs: BASE_TS + 1,
+              event: "auth.token_created",
+              actor: { type: "user", userId: owner.userId },
+              payload: { name: "cli:host" },
+            },
+          ],
+        },
+      })),
+    ];
+    const env = await startEnv(handlers);
+    expect(await runCli(["audit", "self"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("auth.recovery_blob_fetched");
+    expect(logs).toContain("auth.token_created");
+    expect(logs).toContain("リカバリーコードを再発行");
+  });
+});
+
+describe("引数の書き方の検査(通信より前)", () => {
+  it("audit self への --project は操作専用オプションとして拒否する(exit 2)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["audit", "self", "--project", "x"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("audit self では使えません");
+  });
+
+  it("limit の範囲外・不明な操作は usage エラー(exit 2)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["audit", "--limit", "0"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--limit は 1〜200 の整数");
+    const env2 = await makeTestEnv();
+    expect(await runCli(["audit", "bogus"], env2.layer)).toBe(2);
+    expect(env2.errors.join("\n")).toContain("不明な操作です");
+  });
+});

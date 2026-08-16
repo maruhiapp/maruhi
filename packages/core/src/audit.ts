@@ -1,4 +1,5 @@
-// 監査アクターの共有型と写像(AUDIT_SPEC §2)。
+// 監査アクターの共有型と写像(AUDIT_SPEC §2)、およびチェーンミラーの写像
+// (§3.4)。
 //
 // アイデンティティ規則(§1-2)の関門: 監査ログ(D1 側)とメンバーシップログの
 // ミラー・データ系イベント(DO 側)のアクターは**内部 user_id と鍵フィンガー
@@ -6,6 +7,13 @@
 // 実装であり、GitHub ID・login・メール等のプロバイダ情報をこの型に足さないこと。
 // DO 用(apps/server data-plane.ts の DataActor)/ D1 用(db.package/audit.ts の
 // D1AuditActor)の入力型はこの型から派生する。
+//
+// チェーンミラーの写像(chainMirrorEvent)がここにあるのは、**サーバーの
+// ミラー追記と CLI のミラー検証(`maruhi audit verify` — AUDIT_SPEC §1-5 /
+// §6 の緩和策)が同一実装を共有する**ため。写像が二重管理になると、検証器の
+// ドリフトが改竄の誤検出(または見逃し)になる。
+
+import type { ChainEntry, ChainOp } from "@maruhi/crypto";
 
 import type { AuthenticatedPrincipal } from "./auth.ts";
 
@@ -43,5 +51,103 @@ export function auditPayloadWith(
   return {
     ...payload,
     ...(actor.authMethod === undefined ? {} : { authMethod: actor.authMethod }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// チェーンミラー(AUDIT_SPEC §3.4): 受理済みエントリ → 監査イベント。
+// actor はチェーンエントリの actor(user_id + 鍵 FP)をそのまま写し、
+// クライアント時刻(entry.timestampMs)とサーバー受理時刻の両方を持つ。
+// ---------------------------------------------------------------------------
+
+/**
+ * One audit event (AUDIT_SPEC §5.1 columns; unspecified fields are absent /
+ * NULL). Shared between the server-side append input (apps/server
+ * audit-store.ts) and the client-side mirror verifier, so the mirror mapping
+ * below produces the exact shape the server persists.
+ */
+export interface AuditEventRecord {
+  readonly event: string;
+  readonly serverTs: number;
+  readonly clientTs?: number;
+  readonly actorType: "user" | "server" | "system";
+  readonly actorUserId?: string;
+  readonly actorKeyFingerprintHex?: string;
+  readonly actorApiTokenId?: string;
+  readonly targetUserId?: string;
+  readonly targetKeyFingerprintHex?: string;
+  readonly environmentId?: string;
+  readonly variableId?: string;
+  readonly epoch?: number;
+  readonly version?: number;
+  readonly chainSeq?: number;
+  readonly payload?: Readonly<Record<string, unknown>>;
+}
+
+type MirrorTail = Pick<
+  AuditEventRecord,
+  "event" | "targetUserId" | "targetKeyFingerprintHex" | "environmentId" | "epoch" | "payload"
+>;
+
+// op ごとの写像(§3.4 の表)。genesis の target は作成者 = actor(在籍区間の
+// 開始点を Q1 の索引で引けるようにするため)
+const mirrorTails: {
+  readonly [K in ChainOp]: (entry: Extract<ChainEntry, { op: K }>) => MirrorTail;
+} = {
+  genesis: (entry) => ({ event: "chain.genesis", targetUserId: entry.actor.userId }),
+  add_member: (entry) => ({
+    event: "chain.member_added",
+    targetUserId: entry.payload.targetUserId,
+    payload: { role: entry.payload.role },
+  }),
+  remove_member: (entry) => ({
+    event: "chain.member_removed",
+    targetUserId: entry.payload.targetUserId,
+  }),
+  change_role: (entry) => ({
+    event: "chain.role_changed",
+    targetUserId: entry.payload.targetUserId,
+    payload: { newRole: entry.payload.newRole },
+  }),
+  // dek_commitment は payload に写す(AUDIT_SPEC §3.4。2026-08-03 — 監査行と
+  // チェーン掲載コミットメントの突合用)
+  create_environment: (entry) => ({
+    event: "chain.environment_created",
+    environmentId: entry.payload.environmentId,
+    epoch: 1,
+    payload: { dekCommitmentHex: entry.payload.dekCommitmentHex },
+  }),
+  rotate_epoch: (entry) => ({
+    event: "chain.epoch_rotated",
+    environmentId: entry.payload.environmentId,
+    epoch: entry.payload.newEpoch,
+    payload: { reason: entry.payload.reason, dekCommitmentHex: entry.payload.dekCommitmentHex },
+  }),
+  grant_server: (entry) => ({
+    event: "chain.server_granted",
+    targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+    // lease_policy は意図的に写さない(AUDIT_SPEC §1-2 / AUTH_SPEC §14-4):
+    // claim_value にはリポジトリ名等の外部識別子が現れるため、監査行には
+    // 持ち込まない。ポリシーの真実源はチェーン(grant payload)で、chain_seq で
+    // 突合できる。スコープ(内部 environment_id 集合)は §3.4 のとおり写す
+    payload: { scopeEnvironmentIds: entry.payload.scopeEnvironmentIds },
+  }),
+  revoke_server: (entry) => ({
+    event: "chain.server_revoked",
+    targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+  }),
+};
+
+/** 受理済みチェーンエントリを §3.4 のミラーイベントへ写す。 */
+export function chainMirrorEvent(entry: ChainEntry, serverTs: number): AuditEventRecord {
+  const tail = mirrorTails[entry.op](entry as never);
+  return {
+    ...tail,
+    serverTs,
+    clientTs: entry.timestampMs,
+    chainSeq: entry.seq,
+    actorType: "user",
+    actorUserId: entry.actor.userId,
+    actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
   };
 }

@@ -1,18 +1,21 @@
-// D1 側監査ログの追記(AUDIT_SPEC §3.1〜§3.2 / §5.2 案 A)。
+// D1 側監査ログの追記と読み取り(AUDIT_SPEC §3.1〜§3.2 / §5.2 案 A / §7)。
 //
-// - append-only(§1-4): この層は追記のみを公開する(更新・削除の口を作らない)。
-//   読み取り API は Phase 2 の監査ログ UI と同時に設計する(§6・§7)
+// - append-only(§1-4): この層は追記と読み取りのみを公開する(更新・削除の
+//   口を作らない)
 // - 主データ書き込みと同一トランザクションでの追記(§5.2 の採用理由 (2))は、
 //   各リポジトリが自分の batch へ挿入文(userAuditInsert / orgAuditInsert)を
 //   同梱することで実現する。単独追記(login_failed 等、主データ書き込みを
 //   伴わないイベント)だけが D1AuditRepo を使う
+// - 読み取り(§7 — C1)は invite.* の project_id スコープ(権限軸は worker が
+//   チェーン role admin で強制)と user 系の本人軸のみ。org admin 軸は org 管理
+//   API の導入時に同時実装する(C1 裁定)
 // - アイデンティティ規則(§1-2): actor / target は内部 user_id(+ maruhi 発行
 //   トークン id)と auth_method 種別名のみ。プロバイダ ID・login・メールを
 //   この層に持ち込まないこと
 
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
-import { and, count, eq, gte } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, lt, or, type SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
@@ -75,6 +78,32 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
 
+// ---------------------------------------------------------------------------
+// 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
+// ---------------------------------------------------------------------------
+
+/** ページ指定(seq 降順。beforeSeq より小さい行のみ)。 */
+interface D1AuditReadPage {
+  readonly beforeSeq: number | null;
+  readonly limit: number;
+}
+
+/** D1 監査行の読み取り形(共通列のうち C1 の応答が運ぶもの。NULL は null)。 */
+export interface D1StoredAuditEventRow {
+  readonly seq: number;
+  readonly serverTs: number;
+  readonly event: string;
+  readonly actorType: string;
+  readonly actorUserId: string | null;
+  readonly actorApiTokenId: string | null;
+  readonly targetUserId: string | null;
+  readonly projectId: string | null;
+  readonly payload: Readonly<Record<string, unknown>> | null;
+}
+
+/** invite ライフサイクルのイベント名(§3.2)。org 系イベントを混入させない。 */
+export const INVITE_AUDIT_EVENTS = ["invite.created", "invite.accepted", "invite.revoked"] as const;
+
 interface D1AuditRepoShape {
   /** 単独イベントの追記(主データ書き込みを伴わないイベント用)。 */
   readonly appendUserEvent: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
@@ -83,9 +112,71 @@ interface D1AuditRepoShape {
    * 落とす(SHOULD 記録 — 洪水そのものは窓内の上限到達として観測できる)。
    */
   readonly appendLoginFailed: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
+  /**
+   * invite.* の project_id スコープ読み取り(§7 の例外規定)。権限軸(当該
+   * プロジェクトのチェーン role admin 以上 × トークンスコープ admin)は
+   * worker 側ハンドラが強制する — この層は述語のみを持つ。
+   */
+  readonly readProjectInviteEvents: (
+    projectId: string,
+    page: D1AuditReadPage,
+  ) => Effect.Effect<readonly D1StoredAuditEventRow[]>;
+  /**
+   * user 系(§3.1)の本人軸読み取り(§6: 本人のみ)。actor または target が
+   * 本人の行だけを返す。auth.login_failed は actor user_id を持たない(§3.1)
+   * ため、どの本人軸にも現れない(運営者ビューの領分 — L-4)。
+   */
+  readonly readUserEventsFor: (
+    userId: string,
+    page: D1AuditReadPage,
+  ) => Effect.Effect<readonly D1StoredAuditEventRow[]>;
 }
 
 export class D1AuditRepo extends Context.Service<D1AuditRepo, D1AuditRepoShape>()("D1AuditRepo") {}
+
+/** payload 列(JSON)の防御的 parse(壊れた行は null 扱い — 読み取りを defect にしない)。 */
+function parseStoredPayload(value: string | null): Readonly<Record<string, unknown>> | null {
+  if (value === null) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
+
+/** ページ条件(seq 降順 + beforeSeq カーソル)を述語に合成して読む。 */
+async function selectAuditPage(
+  db: Db,
+  table: D1AuditTable,
+  predicate: SQL | undefined,
+  page: D1AuditReadPage,
+): Promise<readonly D1StoredAuditEventRow[]> {
+  const where = page.beforeSeq === null ? predicate : and(predicate, lt(table.seq, page.beforeSeq));
+  const rows = await db
+    .select({
+      seq: table.seq,
+      serverTs: table.serverTs,
+      event: table.event,
+      actorType: table.actorType,
+      actorUserId: table.actorUserId,
+      actorApiTokenId: table.actorApiTokenId,
+      targetUserId: table.targetUserId,
+      projectId: table.projectId,
+      payload: table.payload,
+    })
+    .from(table)
+    .where(where)
+    .orderBy(desc(table.seq))
+    .limit(page.limit);
+  return rows.map((row) => ({ ...row, payload: parseStoredPayload(row.payload) }));
+}
 
 export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
   return {
@@ -110,5 +201,29 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
         }
         await userAuditInsert(db, serverTs, event);
       }),
+    readProjectInviteEvents: (projectId, page) =>
+      Effect.promise(() =>
+        selectAuditPage(
+          db,
+          orgAuditEvents,
+          // イベント名の絞りは invite.* のみ(§7): 同じ project_id を持つ org 系
+          // イベント(org.project_created 等)は org admin 軸の領分であり、
+          // プロジェクト監査の経路に混入させない
+          and(
+            eq(orgAuditEvents.projectId, projectId),
+            inArray(orgAuditEvents.event, [...INVITE_AUDIT_EVENTS]),
+          ),
+          page,
+        ),
+      ),
+    readUserEventsFor: (userId, page) =>
+      Effect.promise(() =>
+        selectAuditPage(
+          db,
+          userAuditEvents,
+          or(eq(userAuditEvents.actorUserId, userId), eq(userAuditEvents.targetUserId, userId)),
+          page,
+        ),
+      ),
   };
 }

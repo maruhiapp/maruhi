@@ -239,4 +239,6 @@ export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns,
   index("oae_target").on(t.targetUserId, t.seq),
   index("oae_event").on(t.event, t.seq),
   index("oae_org").on(t.orgId, t.seq),
+  // invite.* の project_id スコープ読み取り(AUDIT_SPEC §7 — C1)のページング用
+  index("oae_project").on(t.projectId, t.seq),
 ]);

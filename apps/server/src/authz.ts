@@ -56,6 +56,25 @@ export function ensureTokenScopeForProject(
 }
 
 /**
+ * 非表明のスコープ水準判定(実効権限 = min(スコープ, チェーン role) のスコープ
+ * 半分を**確かめるだけ**の形 — 監査読み取りのクラス 2 可視性の材料。AUDIT_SPEC
+ * §6 の可視性クラスはチェーン role で定義されるが、盗まれた read スコープの
+ * トークンに同僚の読み取りパターン(クラス 2)を開示しないため、スコープ側も
+ * admin を要求する)。セッション主体はスコープを持たない(本人のフルパワー)。
+ */
+export function tokenScopeAllowsForProject(
+  principal: AuthenticatedPrincipal,
+  projectId: string,
+  required: TokenPermission,
+): boolean {
+  if (principal.kind !== "token") {
+    return true;
+  }
+  const granted = scopePermissionFor(principal.scopes, projectId);
+  return granted !== null && permissionAtLeast(granted, required);
+}
+
+/**
  * 鍵素材クラスの操作のトークン条件(AUTH_SPEC §13-2): セッション主体は常に可、
  * トークン主体は `*` × admin スコープを含む場合のみ可。リカバリーブロブの
  * 登録・再発行・取得(スコープ限定トークンにラップの置換 = 可用性攻撃や要監視の

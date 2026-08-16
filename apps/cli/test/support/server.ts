@@ -24,6 +24,8 @@ interface ResponseWriter {
 export interface MockRequest {
   readonly method: string;
   readonly path: string;
+  /** クエリ文字列(監査読み取り API のフィルタ・カーソル検査用)。重複キーは後勝ち。 */
+  readonly query: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly headers: Readonly<Record<string, string | string[] | undefined>>;
 }
@@ -112,9 +114,11 @@ export class MockServer {
     const server = createServer((request, response) => {
       void (async () => {
         const raw = await readBody(request);
+        const url = new URL(request.url ?? "/", "http://localhost");
         const mockRequest: MockRequest = {
           method: request.method ?? "GET",
-          path: new URL(request.url ?? "/", "http://localhost").pathname,
+          path: url.pathname,
+          query: Object.fromEntries(url.searchParams),
           body: parseBody(raw, String(request.headers["content-type"] ?? "")),
           headers: request.headers,
         };

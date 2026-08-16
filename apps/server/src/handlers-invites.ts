@@ -24,7 +24,6 @@ import {
   maruhiApi,
 } from "@maruhi/api-schema";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
-import type { Role } from "@maruhi/crypto";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -34,43 +33,16 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { ensureKeyMaterialAccess, ensureTokenScopeForProject } from "./authz.ts";
-import { unwrapDataOutcome } from "./data-http.ts";
-import type { DataOutcome } from "./data-plane.ts";
-import { roleAtLeast } from "./data-plane.ts";
+import { ensureKeyMaterialAccess } from "./authz.ts";
+import { requireProjectChainAdmin } from "./data-http.ts";
 import { INVITE_TTL_MS, InviteRepo } from "./db.package/index.ts";
 import { randomBase62, sha256Hex, ulid } from "./ids.ts";
 import type { InvitationRecord } from "./invite-domain.ts";
-import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 /** 招待トークンのワイヤ形式(api-schema の InviteTokenSchema と対)。 */
 const INVITE_TOKEN_PREFIX = "maruhi_inv_";
-
-/**
- * プロジェクト配下エンドポイント共通の前段: トークンスコープ admin(スコープ外
- * 404)→ DO の memberRoleFor(非メンバー 404 — §11-2)→ チェーン role admin
- * 以上(未満 403)。通過したら呼び出し主体の role を返す(owner 限定判定用)。
- */
-const requireProjectInviteAdmin = <Endpoint extends HttpApiEndpoint.Top>(
-  projectId: string,
-  endpoint: Endpoint,
-) =>
-  Effect.gen(function* () {
-    const principal = yield* (yield* RequestAuth).principal;
-    yield* ensureTokenScopeForProject(principal, projectId, "admin");
-    const env = yield* WorkerEnv;
-    const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
-      projectStub(env, projectId).memberRoleFor(principal.userId),
-    );
-    const role = yield* unwrapDataOutcome(outcome, projectId, endpoint);
-    if (!roleAtLeast(role, "admin")) {
-      return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
-    }
-    return { principal, role };
-  });
 
 /**
  * 使用不能理由の導出(§15-1: 期限切れは expires_at からの導出)。判定順は
@@ -134,7 +106,7 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
   handlers
     .handle("issue", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
-        const { principal, role } = yield* requireProjectInviteAdmin(params.projectId, endpoint);
+        const { principal, role } = yield* requireProjectChainAdmin(params.projectId, endpoint);
         // §15-2: role = admin の招待の発行は owner のみ(add_member 権限表と同水準)
         if (payload.role === "admin" && role !== "owner") {
           return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
@@ -243,7 +215,7 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
     )
     .handle("list", ({ params, endpoint }) =>
       Effect.gen(function* () {
-        yield* requireProjectInviteAdmin(params.projectId, endpoint);
+        yield* requireProjectChainAdmin(params.projectId, endpoint);
         const invites = yield* InviteRepo;
         const records = yield* invites.listForProject(params.projectId);
         return { invitations: records.map(toSummary) };
@@ -251,7 +223,7 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
     )
     .handle("revoke", ({ params, endpoint }) =>
       Effect.gen(function* () {
-        const { principal } = yield* requireProjectInviteAdmin(params.projectId, endpoint);
+        const { principal } = yield* requireProjectChainAdmin(params.projectId, endpoint);
         const invites = yield* InviteRepo;
         const record = yield* invites.findById(params.projectId, params.id);
         if (record === null) {

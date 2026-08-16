@@ -25,6 +25,14 @@ import {
   typedName,
   usageErrorMessages,
 } from "./args.ts";
+import {
+  type AuditListFilters,
+  auditInvitesOp,
+  auditListOp,
+  type AuditPageOptions,
+  auditSelfOp,
+  auditVerifyOp,
+} from "./audit.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
 import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
 import {
@@ -1870,6 +1878,199 @@ function rotationCommand(execute: Execute) {
   });
 }
 
+/** `maruhi audit` が取る操作(一覧の出所はここだけ — ENV_ACTIONS と同じ形)。 */
+const AUDIT_ACTIONS = ["list", "invites", "self", "verify"] as const;
+
+type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+const AUDIT_ACTION_HELP = `不明な操作です(${AUDIT_ACTIONS.join(" | ")} — 省略時は list)`;
+
+function isAuditAction(action: string | undefined): action is AuditAction {
+  return AUDIT_ACTIONS.some((known) => known === action);
+}
+
+/** AUDIT_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
+function unhandledAuditAction(action: never): CliError {
+  return usageError(`${AUDIT_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
+}
+
+/**
+ * 操作専用のオプション(ENV_ACTION_FLAGS と同じ形)。`--project` は self 以外の
+ * 共有(self はアカウント全域でプロジェクトを取らない — 黙って無視しない)。
+ */
+const AUDIT_ACTION_FLAGS: Readonly<Record<AuditAction, ReadonlySet<string>>> = {
+  list: new Set(["limit", "before", "event", "actor", "target", "env", "var", "project"]),
+  invites: new Set(["limit", "before", "project"]),
+  self: new Set(["limit", "before"]),
+  verify: new Set(["project"]),
+};
+
+function auditActionFlagRejection(
+  action: string | undefined,
+  tokens: readonly ArgTokenShape[],
+  args: ArgTable,
+): string | null {
+  // 省略時の既定(list)は本体と同じ解釈で検査する
+  const resolved = action ?? "list";
+  if (!isAuditAction(resolved)) {
+    return null;
+  }
+  return actionFlagRejection("audit", AUDIT_ACTIONS, AUDIT_ACTION_FLAGS, resolved, tokens, args);
+}
+
+/** ページ指定フラグの検査(limit 1〜200・before ≥ 1 の整数)。 */
+/** 未指定は許容し、指定時は [1, max] の整数のみ通す(max = null は上限なし)。 */
+function outsideIntRange(value: number | undefined, max: number | null): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  return !Number.isInteger(value) || value < 1 || (max !== null && value > max);
+}
+
+function parseAuditPage(
+  limit: number | undefined,
+  before: number | undefined,
+): Effect.Effect<AuditPageOptions, CliError> {
+  if (outsideIntRange(limit, 200)) {
+    return Effect.fail(
+      usageError("--limit は 1〜200 の整数で指定してください(AUDIT_SPEC §7 の上限)"),
+    );
+  }
+  if (outsideIntRange(before, null)) {
+    return Effect.fail(usageError("--before は 1 以上の整数(監査 seq カーソル)で指定してください"));
+  }
+  return Effect.succeed({ limit: limit ?? null, before: before ?? null });
+}
+
+interface AuditFilterFlags {
+  readonly event: string | undefined;
+  readonly actor: string | undefined;
+  readonly target: string | undefined;
+  readonly env: string | undefined;
+  readonly var: string | undefined;
+}
+
+/** 未指定は許容し、指定時は非空かつ max 文字以内のみ通す。 */
+function boundedFlagValue(value: string | undefined, max: number): boolean {
+  return value === undefined || (value.length > 0 && value.length <= max);
+}
+
+/** フィルタフラグの最初の書き方の誤り(なければ null)。 */
+function auditFilterProblem(values: AuditFilterFlags): string | null {
+  if (!boundedFlagValue(values.event, 64)) {
+    return "--event はイベント名(領域.動詞 — 例: var.version_pushed)で指定してください";
+  }
+  if (!boundedFlagValue(values.actor, 1024)) {
+    return "--actor は対象の user_id で指定してください";
+  }
+  if (!boundedFlagValue(values.target, 1024)) {
+    return "--target は対象の user_id で指定してください";
+  }
+  if (values.env !== undefined && !isEnvironmentId(values.env)) {
+    return "--env の環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで)";
+  }
+  if (values.var !== undefined && !isVariableId(values.var)) {
+    return "--var の variableId の形式が正しくありません";
+  }
+  return null;
+}
+
+/** list のフィルタフラグの検査(形式はネットワークより先に見る)。 */
+function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFilters, CliError> {
+  const problem = auditFilterProblem(values);
+  if (problem !== null) {
+    return Effect.fail(usageError(problem));
+  }
+  return Effect.succeed({
+    event: values.event ?? null,
+    actorUserId: values.actor ?? null,
+    targetUserId: values.target ?? null,
+    environmentId: values.env ?? null,
+    variableId: values.var ?? null,
+  });
+}
+
+/**
+ * `maruhi audit [list|invites|self|verify]`(AUDIT_SPEC §6 / §7 — C1)。
+ * master 鍵を要求しない(監査行は非機密メタデータで、名前解決・ミラー突合も
+ * 検証済み材料の読み取りのみ — rotation list と同じ鍵なしクラス)。可視性
+ * クラス・invite.* の権限軸はサーバー側が強制する。
+ */
+function auditCommand(execute: Execute) {
+  return define({
+    name: "audit",
+    description: `監査イベントの閲覧と検証(${AUDIT_ACTIONS.join(" / ")} — AUDIT_SPEC §7)`,
+    args: {
+      action: {
+        type: "positional",
+        required: false,
+        description: `${AUDIT_ACTIONS.join(" | ")}(省略時は list)`,
+      },
+      limit: { type: "number", description: "1 ページの件数(1〜200。既定 50)" },
+      before: {
+        type: "number",
+        description: "この監査 seq より古い行から表示する(前ページ末尾の seq を渡して遡る)",
+      },
+      event: {
+        type: "string",
+        description: "list: イベント種別で絞る(例: var.version_pushed / chain.member_added)",
+      },
+      actor: {
+        type: "string",
+        description:
+          "list: actor の user_id で絞る(admin 未満は自分の user_id のみ — AUDIT_SPEC §6)",
+      },
+      target: { type: "string", description: "list: 対象(target)の user_id で絞る" },
+      env: { type: "string", description: "list: 環境 ID で絞る" },
+      var: { type: "string", description: "list: variableId で絞る" },
+      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
+      project: {
+        type: "string",
+        description: "プロジェクト ID(省略時は config の defaultProject。self では不要)",
+      },
+    },
+    run: (ctx) =>
+      execute(
+        ctx,
+        Effect.gen(function* () {
+          const action = ctx.values.action ?? "list";
+          if (!isAuditAction(action)) {
+            return yield* Effect.fail(usageError(AUDIT_ACTION_HELP));
+          }
+          const page = yield* parseAuditPage(ctx.values.limit, ctx.values.before);
+          const flags = { server: ctx.values.server, project: ctx.values.project };
+          if (action === "self") {
+            const context = yield* openSession(ctx.values.server);
+            return yield* auditSelfOp(context, page);
+          }
+          if (action === "invites") {
+            const context = yield* openMetadataProject(flags);
+            return yield* auditInvitesOp(context, page);
+          }
+          if (action === "verify") {
+            const context = yield* openMetadataProject(flags);
+            return yield* auditVerifyOp(context);
+          }
+          if (action === "list") {
+            const filters = yield* parseAuditFilters({
+              event: ctx.values.event,
+              actor: ctx.values.actor,
+              target: ctx.values.target,
+              env: ctx.values.env,
+              var: ctx.values.var,
+            });
+            const context = yield* openMetadataProject(flags);
+            return yield* auditListOp(context, page, filters);
+          }
+          return yield* Effect.fail(unhandledAuditAction(action));
+        }),
+        {
+          commandRejection: auditActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
+        },
+      ),
+  });
+}
+
 function pullCommand(execute: Execute) {
   return define({
     name: "pull",
@@ -2183,6 +2384,7 @@ export async function runCli(
     invite: inviteCommand(execute),
     member: memberCommand(execute),
     rotation: rotationCommand(execute),
+    audit: auditCommand(execute),
     pull: pullCommand(execute),
     push: pushCommand(execute),
     run: runCommand(execute),

@@ -49,15 +49,16 @@ function fetchRotationFlags(
 }
 
 /** 変数名の解決結果(検証済みステートメント由来のみ — 解決不能は null)。 */
-type NameIndex = ReadonlyMap<string, string>;
+export type NameIndex = ReadonlyMap<string, string>;
 
 /**
- * フラグに現れる環境ごとに検証済みメタデータ(active + tombstone)を取得し、
+ * 一覧に現れる環境ごとに検証済みメタデータ(active + tombstone)を取得し、
  * variableId → 表示名の索引を作る。取得・検証に失敗した環境(検証済み削除
  * など)は索引なし = 識別子表示へ劣化する(警告つき — 表示は SHOULD であり
- * フラグ一覧自体を止めない)。
+ * 一覧自体を止めない)。`maruhi audit` の表示名解決(同じ TCB 規律 —
+ * AUDIT_SPEC §7)と共用する。
  */
-function resolveNames(
+export function resolveNames(
   context: ProjectContextBase,
   environmentIds: readonly string[],
 ): Effect.Effect<ReadonlyMap<string, NameIndex>, never, CliServices> {

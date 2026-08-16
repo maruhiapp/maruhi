@@ -34,6 +34,7 @@ import {
 } from "@maruhi/api-schema";
 import type { TokenPermission } from "@maruhi/core";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
+import type { Role } from "@maruhi/crypto";
 import { Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import type { HttpApiEndpoint } from "effect/unstable/httpapi";
@@ -48,6 +49,7 @@ import type {
   MetaStatementInput,
   ValueInput,
 } from "./data-plane.ts";
+import { roleAtLeast } from "./data-plane.ts";
 import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
@@ -381,3 +383,28 @@ export const callProjectData =
       );
       return yield* unwrapDataOutcome(outcome, options.projectId, options.endpoint);
     });
+
+/**
+ * D1 バックのプロジェクト配下エンドポイント共通の前段(招待 API — AUTH_SPEC
+ * §15-2 — と invite.* 監査読み取り — AUDIT_SPEC §7 — が共用): トークンスコープ
+ * admin(スコープ外 404 — §11-2)→ DO の memberRoleFor(非メンバー 404)→
+ * チェーン role admin 以上(未満 403)。通過したら呼び出し主体と role を返す
+ * (owner 限定判定用)。
+ */
+export const requireProjectChainAdmin = <Endpoint extends HttpApiEndpoint.Top>(
+  projectId: string,
+  endpoint: Endpoint,
+) =>
+  Effect.gen(function* () {
+    const principal = yield* (yield* RequestAuth).principal;
+    yield* ensureTokenScopeForProject(principal, projectId, "admin");
+    const env = yield* WorkerEnv;
+    const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
+      projectStub(env, projectId).memberRoleFor(principal.userId),
+    );
+    const role = yield* unwrapDataOutcome(outcome, projectId, endpoint);
+    if (!roleAtLeast(role, "admin")) {
+      return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
+    }
+    return { principal, role };
+  });

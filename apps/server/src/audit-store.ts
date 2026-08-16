@@ -1,34 +1,23 @@
-// 監査ログの追記ストア(AUDIT_SPEC §5.1)とチェーンミラーの写像(§3.4)。
+// 監査ログの追記ストア(AUDIT_SPEC §5.1)と読み取り面(§7 — C1)。
 //
-// - append-only: このサービスは追記のみを公開する(更新・削除の口を作らない —
-//   AUDIT_SPEC §1-4)。読み取りは Phase 2 の監査ログ UI と同時に設計する(§6)
+// - append-only: このサービスは追記と読み取りのみを公開する(更新・削除の口を
+//   作らない — AUDIT_SPEC §1-4)
 // - seq は単調・無欠番。次 seq は DO インスタンスメモリに保持し(初期化時に
 //   MAX(seq) を 1 回だけ読む。DO 再起動で再読込)、同期 SQL なので await 境界を
 //   またがない
 // - アイデンティティ規則(§1-2): actor / target は内部 user_id と鍵 FP のみ。
 //   プロバイダ ID・メールをこの層に持ち込まないこと
+// - チェーンミラーの写像(§3.4)は @maruhi/core の chainMirrorEvent(CLI の
+//   ミラー検証 — `maruhi audit verify` — と同一実装を共有する)
 
-import type { ChainEntry, ChainOp } from "@maruhi/crypto";
+import type { AuditEventRecord } from "@maruhi/core";
 import { Context, Layer } from "effect";
 
-/** 監査イベント 1 行の入力(列は AUDIT_SPEC §5.1、未指定は NULL)。 */
-export interface AuditEventInput {
-  readonly event: string;
-  readonly serverTs: number;
-  readonly clientTs?: number;
-  readonly actorType: "user" | "server" | "system";
-  readonly actorUserId?: string;
-  readonly actorKeyFingerprintHex?: string;
-  readonly actorApiTokenId?: string;
-  readonly targetUserId?: string;
-  readonly targetKeyFingerprintHex?: string;
-  readonly environmentId?: string;
-  readonly variableId?: string;
-  readonly epoch?: number;
-  readonly version?: number;
-  readonly chainSeq?: number;
-  readonly payload?: Readonly<Record<string, unknown>>;
-}
+/**
+ * 監査イベント 1 行の入力(列は AUDIT_SPEC §5.1、未指定は NULL)。
+ * 共有のレコード型(@maruhi/core — チェーンミラーの写像と同居)の別名。
+ */
+export type AuditEventInput = AuditEventRecord;
 
 // ---------------------------------------------------------------------------
 // 要ローテーション検出の読み取り面(AUDIT_SPEC §4.1 / §4.2 の Q1〜Q6)。
@@ -97,6 +86,84 @@ export interface AuditRotationRead {
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
 }
 
+// ---------------------------------------------------------------------------
+// 汎用読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング + フィルタ。
+// 可視性クラス(§6)は SQL の WHERE で強制する: クラス 2 の行は admin 未満の
+// 結果・件数・ページングのどこにも現れない(「存在しないかのように振る舞う」)。
+// ---------------------------------------------------------------------------
+
+/**
+ * クラス 1(チェーン role reader 以上 = 全メンバー)のイベント名(§6)。
+ * **明示 allowlist の default-deny**: ここに無いイベント(var.read /
+ * dek.registered / dek.deleted、および将来追加されるイベント)はクラス 2 扱いで
+ * admin 未満には見えない — イベントを増やしたときに安全側へ倒す。
+ */
+export const CLASS1_EVENTS: readonly string[] = [
+  "chain.genesis",
+  "chain.member_added",
+  "chain.member_removed",
+  "chain.role_changed",
+  "chain.environment_created",
+  "chain.epoch_rotated",
+  "chain.server_granted",
+  "chain.server_revoked",
+  "env.created",
+  "env.renamed",
+  "env.deleted",
+  "var.created",
+  "var.renamed",
+  "var.deleted",
+  "var.version_pushed",
+  "server.dek_unwrapped",
+  "server.lease_issued",
+  "server.lease_denied",
+  "server.value_decrypted",
+  "rotation.recommended",
+  "rotation.dismissed",
+];
+
+/**
+ * 可視性の指定(§6)。admin = 全行(呼び出し側で「チェーン role admin 以上 ×
+ * トークンスコープ admin」を確認済み)、class1-or-self = クラス 1 の行 +
+ * 本人が actor の行(クラスに依らず本人閲覧可)。
+ */
+type AuditVisibility =
+  | { readonly kind: "admin" }
+  | { readonly kind: "class1-or-self"; readonly selfUserId: string };
+
+/** 汎用読み取りのクエリ(§7 のフィルタ語彙のみ。null = フィルタなし)。 */
+interface AuditEventsQuery {
+  /** このカーソルより小さい seq のみ(新しい順ページングの前進)。 */
+  readonly beforeSeq: number | null;
+  readonly limit: number;
+  readonly event: string | null;
+  readonly actorUserId: string | null;
+  readonly targetUserId: string | null;
+  readonly variableId: string | null;
+  readonly environmentId: string | null;
+  readonly visibility: AuditVisibility;
+}
+
+/** 保存行の読み取り形(§5.1 の全列。NULL は null)。 */
+export interface StoredAuditEventRow {
+  readonly seq: number;
+  readonly serverTs: number;
+  readonly clientTs: number | null;
+  readonly event: string;
+  readonly actorType: string;
+  readonly actorUserId: string | null;
+  readonly actorKeyFingerprintHex: string | null;
+  readonly actorApiTokenId: string | null;
+  readonly targetUserId: string | null;
+  readonly targetKeyFingerprintHex: string | null;
+  readonly environmentId: string | null;
+  readonly variableId: string | null;
+  readonly epoch: number | null;
+  readonly version: number | null;
+  readonly chainSeq: number | null;
+  readonly payload: Readonly<Record<string, unknown>> | null;
+}
+
 interface AuditStoreShape {
   /**
    * 同期追記。データ書き込みと同じ同期ブロック(= 同一イベントループタスク)で
@@ -120,6 +187,12 @@ interface AuditStoreShape {
   readonly resetSeqCacheSync: () => void;
   /** 要ローテーション検出・フラグ導出の読み取り(§4.1。追記の口は増やさない)。 */
   readonly readRotationSync: AuditRotationRead;
+  /**
+   * 汎用読み取り(§7 — C1): seq 降順(新しい順)+ フィルタ + 可視性クラス。
+   * 可視性は WHERE 句で強制するため、admin 未満のページはクラス 2 の行を
+   * スキップした穴のない limit 件になる(件数・カーソルに漏れない — §7)。
+   */
+  readonly queryEventsSync: (query: AuditEventsQuery) => readonly StoredAuditEventRow[];
 }
 
 export class AuditStore extends Context.Service<AuditStore, AuditStoreShape>()("AuditStore") {}
@@ -219,8 +292,70 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
       nextSeqCache = null;
     },
     readRotationSync: makeRotationRead(sql),
+    queryEventsSync: (query) => queryEvents(sql, query),
   };
 };
+
+/** queryEventsSync の SELECT 列(StoredAuditEventRow と同順)。 */
+const EVENT_ROW_COLUMNS = `seq, server_ts, client_ts, event, actor_type, actor_user_id,
+  actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,
+  environment_id, variable_id, epoch, version, chain_seq, payload`;
+
+function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredAuditEventRow[] {
+  const conditions: string[] = [];
+  const bindings: (string | number)[] = [];
+  const filter = (clause: string, value: string | number | null): void => {
+    if (value !== null) {
+      conditions.push(clause);
+      bindings.push(value);
+    }
+  };
+  filter("seq < ?", query.beforeSeq);
+  filter("event = ?", query.event);
+  filter("actor_user_id = ?", query.actorUserId);
+  filter("target_user_id = ?", query.targetUserId);
+  filter("variable_id = ?", query.variableId);
+  filter("environment_id = ?", query.environmentId);
+  if (query.visibility.kind === "class1-or-self") {
+    // §6 / §7: クラス 2 の行は admin 未満に対して存在しないかのように振る舞う。
+    // 本人が actor の行はクラスに依らず本人が閲覧可
+    conditions.push(`(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR actor_user_id = ?)`);
+    bindings.push(...CLASS1_EVENTS, query.visibility.selfUserId);
+  }
+  const where = conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`;
+  return sql
+    .exec(
+      `SELECT ${EVENT_ROW_COLUMNS} FROM audit_events${where} ORDER BY seq DESC LIMIT ?`,
+      ...bindings,
+      query.limit,
+    )
+    .toArray()
+    .map(toStoredRow);
+}
+
+const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
+const numberOrNull = (value: unknown): number | null => (value === null ? null : Number(value));
+
+function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
+  return {
+    seq: Number(row["seq"]),
+    serverTs: Number(row["server_ts"]),
+    clientTs: numberOrNull(row["client_ts"]),
+    event: String(row["event"]),
+    actorType: String(row["actor_type"]),
+    actorUserId: textOrNull(row["actor_user_id"]),
+    actorKeyFingerprintHex: textOrNull(row["actor_key_fingerprint"]),
+    actorApiTokenId: textOrNull(row["actor_api_token_id"]),
+    targetUserId: textOrNull(row["target_user_id"]),
+    targetKeyFingerprintHex: textOrNull(row["target_key_fingerprint"]),
+    environmentId: textOrNull(row["environment_id"]),
+    variableId: textOrNull(row["variable_id"]),
+    epoch: numberOrNull(row["epoch"]),
+    version: numberOrNull(row["version"]),
+    chainSeq: numberOrNull(row["chain_seq"]),
+    payload: parsePayload(row["payload"]),
+  };
+}
 
 /** payload 列(JSON)の防御的 parse(壊れた行は null 扱い — 検出を defect にしない)。 */
 function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null {
@@ -343,78 +478,3 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
 
 export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
   Layer.sync(AuditStore, () => makeAuditStore(sql));
-
-// ---------------------------------------------------------------------------
-// チェーンミラー(AUDIT_SPEC §3.4): 受理済みエントリ → 監査イベント。
-// actor はチェーンエントリの actor(user_id + 鍵 FP)をそのまま写し、
-// クライアント時刻(entry.timestampMs)とサーバー受理時刻の両方を持つ。
-// バックフィルはしない(§3.4 の 2026-08-02 裁定 — 導入前のチェーンは存在しない)。
-// ---------------------------------------------------------------------------
-
-type MirrorTail = Pick<
-  AuditEventInput,
-  "event" | "targetUserId" | "targetKeyFingerprintHex" | "environmentId" | "epoch" | "payload"
->;
-
-// op ごとの写像(§3.4 の表)。genesis の target は作成者 = actor(在籍区間の
-// 開始点を Q1 の索引で引けるようにするため)
-const mirrorTails: {
-  readonly [K in ChainOp]: (entry: Extract<ChainEntry, { op: K }>) => MirrorTail;
-} = {
-  genesis: (entry) => ({ event: "chain.genesis", targetUserId: entry.actor.userId }),
-  add_member: (entry) => ({
-    event: "chain.member_added",
-    targetUserId: entry.payload.targetUserId,
-    payload: { role: entry.payload.role },
-  }),
-  remove_member: (entry) => ({
-    event: "chain.member_removed",
-    targetUserId: entry.payload.targetUserId,
-  }),
-  change_role: (entry) => ({
-    event: "chain.role_changed",
-    targetUserId: entry.payload.targetUserId,
-    payload: { newRole: entry.payload.newRole },
-  }),
-  // dek_commitment は payload に写す(AUDIT_SPEC §3.4。2026-08-03 — 監査行と
-  // チェーン掲載コミットメントの突合用)
-  create_environment: (entry) => ({
-    event: "chain.environment_created",
-    environmentId: entry.payload.environmentId,
-    epoch: 1,
-    payload: { dekCommitmentHex: entry.payload.dekCommitmentHex },
-  }),
-  rotate_epoch: (entry) => ({
-    event: "chain.epoch_rotated",
-    environmentId: entry.payload.environmentId,
-    epoch: entry.payload.newEpoch,
-    payload: { reason: entry.payload.reason, dekCommitmentHex: entry.payload.dekCommitmentHex },
-  }),
-  grant_server: (entry) => ({
-    event: "chain.server_granted",
-    targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
-    // lease_policy は意図的に写さない(AUDIT_SPEC §1-2 / AUTH_SPEC §14-4):
-    // claim_value にはリポジトリ名等の外部識別子が現れるため、監査行には
-    // 持ち込まない。ポリシーの真実源はチェーン(grant payload)で、chain_seq で
-    // 突合できる。スコープ(内部 environment_id 集合)は §3.4 のとおり写す
-    payload: { scopeEnvironmentIds: entry.payload.scopeEnvironmentIds },
-  }),
-  revoke_server: (entry) => ({
-    event: "chain.server_revoked",
-    targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
-  }),
-};
-
-/** 受理済みチェーンエントリを §3.4 のミラーイベントへ写す。 */
-export function chainMirrorEvent(entry: ChainEntry, serverTs: number): AuditEventInput {
-  const tail = mirrorTails[entry.op](entry as never);
-  return {
-    ...tail,
-    serverTs,
-    clientTs: entry.timestampMs,
-    chainSeq: entry.seq,
-    actorType: "user",
-    actorUserId: entry.actor.userId,
-    actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
-  };
-}
