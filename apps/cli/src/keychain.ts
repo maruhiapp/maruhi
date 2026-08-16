@@ -18,6 +18,7 @@
 
 import { Context, type Effect, Redacted } from "effect";
 
+import { displayText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 
 /** OS keychain boundary. Names are scoped by {@link tokenEntryName} / {@link masterKeyEntryName}. */
@@ -84,11 +85,12 @@ function isRedactedPlaceholder(value: string): boolean {
  * 冒頭の注記のとおり、直列化で剥がし忘れると "<redacted>" が保存される。
  * これは**型では止まらない**唯一の経路なので、読み側でも見る。
  *
- * 検出結果を**呼び出し側が区別できる形**で出すのが要点: 「壊れたレコード」と
- * 同じ扱いにすると、トークンなら「再ログインしてください」と案内することに
- * なるが、再ログインは同じ直列化を通るので**同じ伏字を書き直すだけ**で、
- * 利用者はループから抜けられない。これは maruhi 側のバグであり、利用者の
- * 操作では直らないことを言い切る必要がある。
+ * 検出結果を**呼び出し側が区別できる形**で出すのが要点: 汎用の「レコードが
+ * 壊れています」に混ぜると、原因(maruhi 側の不具合)も、レコード種別ごとに
+ * 違う復旧手順も伝わらない。復旧可否は**どのビルドが書いたか**で変わる:
+ * 旧ビルドが書いたレコードを修正版で読んだのなら上書きで直り、現行版に
+ * 不具合が残っていれば書き直しても再発する。どちらも起こりうるので、
+ * 文言は両方を示す。
  *
  * 生値がこの形になることはない(トークンは `maruhi_pat_` / `maruhi_inv_`
  * 接頭辞、鍵素材は hex)ため、誤検出しない。
@@ -108,18 +110,21 @@ export function hasRedactedPlaceholder(json: string): boolean {
   }
 }
 
-const placeholderCause =
+/** 伏字保存の原因説明(復旧手順はレコード種別ごとに呼び出し側が足す)。 */
+export const placeholderCause =
   "キーチェーンのレコードに伏字(<redacted>)が保存されています。これは maruhi の不具合(保存時に秘密を取り出し忘れた状態)です";
 
 /**
  * トークンレコードに伏字が保存されていたときの文言。
  *
  * 復旧手段は**レコードの種類で違う**ので分けている。トークンは `maruhi login`
- * が無条件に上書きするため、再ログインで直る(直らないと書くと、唯一の
- * 1 コマンド復旧から利用者を遠ざけてしまう)。
+ * が無条件に上書きするため、旧ビルドが書いたレコードなら再ログインで直る
+ * (直らないと書き切ると、唯一の 1 コマンド復旧から利用者を遠ざけてしまう)。
+ * ただし現行版に不具合が残っていれば同じ伏字を書き直すだけなので、再発したら
+ * それが判断材料になることまで書く。
  */
 export const redactedPlaceholderTokenMessage =
-  `${placeholderCause}。\`maruhi login\` で再ログインすると正しいレコードで上書きされます。併せて不具合として報告してください` as const;
+  `${placeholderCause}。旧バージョンが書いたレコードであれば \`maruhi login\` で正しく上書きされます。再ログインしても再発する場合は現行版の不具合なので、報告してください` as const;
 
 /**
  * master 鍵レコードに伏字が保存されていたときの文言。
@@ -130,7 +135,9 @@ export const redactedPlaceholderTokenMessage =
  * 手で消す以外に道が無いので、消すべきエントリ名まで書く。
  */
 export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
-  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${entryName}" を手で削除したうえで \`maruhi key recover\` を実行してください。併せて不具合として報告してください`;
+  // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
+  // 必ず中和する — 他の user_id 出力と同じ規律(display.ts)
+  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${displayText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください。併せて不具合として報告してください`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

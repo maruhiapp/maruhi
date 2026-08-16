@@ -290,10 +290,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     ).not.toBeNull();
   });
 
-  it("伏字保存は「壊れたレコード」と別の診断になる(再ログインを勧めない)", async () => {
-    // 「壊れています → 再ログインしてください」と案内すると、再ログインは
-    // 同じ直列化を通るので同じ伏字を書き直すだけ。利用者は案内どおりに操作
-    // してもループから抜けられないので、maruhi 側の不具合だと言い切る
+  it("伏字保存はレコード種別ごとに復旧手順が違う診断になる", async () => {
+    // 汎用の「壊れています」に混ぜると、原因も復旧手順も伝わらない。
+    // 復旧可否はレコード種別で違う(トークンは上書きで直りうる / master 鍵は
+    // 上書き防止ガードに阻まれる)ので、文言もそこで分ける
     expect(
       hasRedactedPlaceholder(
         JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
@@ -307,7 +307,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(hasRedactedPlaceholder("not json")).toBe(false);
     // 復旧手段はレコードの種類で違う。トークンは再ログインで上書きされるので
     // そう案内し、master 鍵は上書き防止ガードに阻まれるので手動削除を案内する
-    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` で再ログイン");
+    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` で正しく上書き");
+    // 「必ず直る」と言い切らない(現行版に不具合が残っていれば再発する)
+    expect(redactedPlaceholderTokenMessage).toContain("再発する場合は現行版の不具合");
     const masterMessage = redactedPlaceholderMasterKeyMessage("master::https://x::u1");
     expect(masterMessage).toContain("master::https://x::u1");
     expect(masterMessage).toContain("手で削除");
@@ -540,15 +542,31 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
  *
  * 文字列リテラル中の `https://` に続く実コードも違反側に落ちるが、その場合は
  * 行を分ければよく、見落とす方向には外れない。
+ *
+ * **守備範囲**: この番人が守るのは「正直な変更が数えられる状態」であって、
+ * 意図的な隠蔽ではない(文字列リテラルへの埋め込み、動的な間接呼び出し等は
+ * 検出しない)。偶発しうる形 — 書式化による行折り、コメントでの言及、別名 —
+ * を塞ぐことに絞っている。
  */
 const SPELLING = "Redacted.value";
+// 書式化で `Redacted\n  .value` へ折られても取りこぼさない(空白を跨いで照合)。
+// 折れた形を数え損ねるのは fail-open なので、ここは必ず緩く照合する
+const SPELLING_PATTERN = /Redacted\s*\.\s*value/g;
 // 文字列リテラルなので、コメント記号をそのまま書いてよい(読む対象は src/ 配下
 // であって、このテストファイル自身ではない)
 const LINE_COMMENT = "//";
 const BLOCK_OPEN = "/*";
 const BLOCK_CLOSE = "*/";
 
-/** 行内の位置 `at` の出現がコメントの内側か(疑わしきは true = 違反側)。 */
+/**
+ * 行内の位置 `at` の出現がコメントの内側か(疑わしきは true = 違反側)。
+ *
+ * 文字列リテラル中の言及は**見ていない**(既知の限界)。素朴な引用符の数え上げ
+ * では `${Redacted.value(code)}` のようなテンプレート補間 — 文字列の中にある
+ * コード — を誤って違反にしてしまい、正当な書き方を禁じることになる。
+ * 文字列に綴りを埋めるのは偶発しない形なので、この番人の守備範囲外とする
+ * ({@link commentMentions} 参照)。
+ */
 function mentionIsCommented(line: string, at: number, inBlock: boolean): boolean {
   if (inBlock) {
     return true;
@@ -626,7 +644,7 @@ async function collectUnwrapSites(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const name of files) {
     const source = await readFile(join(SRC_DIR, name), "utf8");
-    const matches = source.match(/Redacted\.value/g);
+    const matches = source.match(SPELLING_PATTERN);
     if (matches !== null) {
       // キーは src/ からの相対パス(サブディレクトリを区別できる形)
       counts[name.replaceAll("\\", "/")] = matches.length;

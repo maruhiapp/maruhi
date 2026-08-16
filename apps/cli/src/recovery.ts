@@ -27,8 +27,10 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
+  hasRedactedPlaceholder,
   Keychain,
   parseStoredMasterKey,
+  placeholderCause,
   serializeStoredMasterKey,
   type StoredMasterKey,
 } from "./keychain.ts";
@@ -244,13 +246,20 @@ function unwrapWithPromptedCode(input: {
         yield* io.logError("復号できません。コードが正しいか確認してください");
         continue;
       }
-      const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped.value));
+      const blob = new TextDecoder().decode(unwrapped.value);
+      const record = parseStoredMasterKey(blob);
       if (record === null) {
         // 復号は成功したのに中身が壊れている = 登録時のブロブが不正(コードの
-        // 誤りではないので再入力させない)
+        // 誤りではないので再入力させない)。伏字保存はここでも区別する:
+        // ブロブは serializeStoredMasterKey の 3 つ目のシンクであり、同じ
+        // 剥がし忘れが届きうる。しかも `maruhi key recovery` での再登録は
+        // master 鍵の読み込み(= 復元済みであること)を要するため、鍵を失った
+        // デバイスでは実行できない — 案内としても成立しない
         return yield* Effect.fail(
           cliError(
-            "復号したブロブを master 鍵レコードとして解釈できません。`maruhi key recovery` で再登録してください",
+            hasRedactedPlaceholder(blob)
+              ? `${placeholderCause}。登録済みのリカバリーブロブが壊れているため、このコードでは復元できません。master 鍵が残っている別のデバイスで \`maruhi key recovery\` を実行して再登録してください。併せて不具合として報告してください`
+              : "復号したブロブを master 鍵レコードとして解釈できません。`maruhi key recovery` で再登録してください",
           ),
         );
       }
