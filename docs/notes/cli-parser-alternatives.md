@@ -138,7 +138,51 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 判断: **rc へ上げてから CLI を移行する**。beta のまま移行すると、移行直後に rc 追随の差分を
 同じファイル群へもう一度かける二度手間になる。上げる代償は実測上ゼロだった。
 
-## 6. 再現手順
+## 6. 移行スパイク(pull / run / env create)の実測
+
+`apps/cli/test/support/effect-cli-spike.ts` に 3 コマンドを effect/unstable/cli で組み、
+`apps/cli/test/effect-cli-spike.test.ts`(22 件)で maruhi の規律が保たれるかを固定した。
+本番の `src/cli.ts` は gunshi のまま(スパイクは測定用。採用時に src へ昇格させる)。
+
+### 分かったこと
+
+1. **12 形すべてで期待どおりの終了コードと診断になった**(22/22 green)。
+   `--show=false` / `--show false` は書いたとおり `false` として読まれ、
+   `--` の後ろの空文字列は保たれ、`--no-show --show` は落ちる
+2. **`env` が真のサブコマンドになる**。gunshi は 1 段しか組めないため maruhi は
+   create / rotate / diff を**位置引数**にしており、1 つの引数表に全操作のフラグが
+   同居していた。その結果必要だった「その操作に適用されないオプション」の拒否
+   (`cli.ts` の `ENV_ACTION_FLAGS` / `optionRestrictedTo` / `actionFlagRejection` /
+   `envActionFlagRejection` / `withoutPositionals`。server / invite / member にも同型が
+   ある)は、入れ子のサブコマンドにすると**機構ごと不要**になる
+3. **既定の英文をそのまま出してはいけない**(重要)。`UnexpectedArgument.arguments` と
+   `InvalidValue.value` は**打たれた値そのもの**を持つ。`maruhi push API_KEY "$SECRET"`
+   の余分な位置引数は平文なので、`renderErrors: false` にしたうえで**構造化フィールドの
+   うち安全なものだけ**(宣言名・候補・個数)から診断を組み直す必要がある。
+   スパイクではこれをテストで固定した(値が stderr に出ないことの検査)
+4. `Console` を差し替えるとヘルプ・診断が stdout を汚さない(`--help` でも stdout 0 行)
+5. `ShowHelp.errors` は**複数の誤りを配列で**返す。gunshi のように 1 件ずつではない
+
+### 残る自前検査(パーサの正しさではなく maruhi の方針)
+
+スパイクの `preflight` は 3 つだけ: **重複指定・空の値・空の位置引数**。
+加えて `maruhi run` の「実行対象は `--` の後ろから」も方針側(`restOnlyRejection` /
+`missingRestRejection`)。効果は測ったとおりで、args.ts の大半はパーサ側へ移る。
+
+### args.ts 911 行の帰属(関数単位の概算)
+
+| 区分 | 関数数 | 行数 |
+|---|---|---|
+| パーサが構造的に塞ぐため**不要**(boolean の値・rest の再構築・位置引数の数え直し・候補生成・gunshi のエラー写像) | 27 | **525** |
+| maruhi の方針として**残る**(重複・空の値・空の位置引数・rest 必須・値を出さない診断) | 12 | 222 |
+
+`restArguments`(gunshi が `--` の後ろの空文字列を落とす回避)・`editDistance` / `nearest` /
+`suggestionText`(候補生成 — effect は `suggestions` を構造化して返す)・
+`booleanSpellings` 系 5 関数(boolean への値の検出)・`usageErrorMessages` 系 3 関数
+(gunshi の `AggregateError` の解体)がまとめて消える。
+これは**関数単位の帰属による概算**であって、実際に削除して測った数字ではない。
+
+## 7. 再現手順
 
 ```bash
 mkdir probe && cd probe && bun init -y
