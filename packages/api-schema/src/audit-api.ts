@@ -23,7 +23,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ForbiddenError, ProjectNotFoundError } from "./errors/index.ts";
-import { hexString, KeyFingerprintHex, PositiveInt } from "./hex.ts";
+import { hexPattern, hexString, KeyFingerprintHex, PositiveInt } from "./hex.ts";
 
 /** ページの最大件数(AUDIT_SPEC §7: limit ≤ 200。超過は Schema の 400)。 */
 export const MAX_AUDIT_EVENTS_PAGE_LIMIT = 200;
@@ -31,8 +31,16 @@ export const MAX_AUDIT_EVENTS_PAGE_LIMIT = 200;
 /** limit 省略時の既定件数(サーバー側で適用)。 */
 export const DEFAULT_AUDIT_EVENTS_PAGE_LIMIT = 50;
 
-/** 行識別子・カーソルの形式(16 バイト hex — §5.1 row_id)。 */
-const RowIdHex = hexString(16);
+/** 行識別子(row_id)のバイト数(§5.1)。 */
+const ROW_ID_BYTES = 16;
+
+/**
+ * 行識別子・カーソルの形式(16 バイト小文字 hex — §5.1 row_id)。CLI の
+ * 通信前検査が Schema と同じ形式を共有するための export(形式の複製を防ぐ)。
+ */
+export const AUDIT_ROW_ID_PATTERN = hexPattern(ROW_ID_BYTES);
+
+const RowIdHex = hexString(ROW_ID_BYTES);
 
 /** The recorded actor of an audit event (AUDIT_SPEC §2). */
 export const AuditActorSchema = Schema.Struct({

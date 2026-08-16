@@ -10,10 +10,15 @@
 
 import { Schema } from "effect";
 
+/** Pattern for an exact-length lowercase-hex string (`bytes` decoded bytes). */
+export function hexPattern(bytes: number): RegExp {
+  return new RegExp(`^[0-9a-f]{${bytes * 2}}$`);
+}
+
 /** Schema for an exact-length lowercase-hex string (`bytes` decoded bytes). */
 export function hexString(bytes: number): Schema.String {
   return Schema.String.check(
-    Schema.isPattern(new RegExp(`^[0-9a-f]{${bytes * 2}}$`), {
+    Schema.isPattern(hexPattern(bytes), {
       description: `lowercase hex (${bytes} bytes)`,
     }),
   );

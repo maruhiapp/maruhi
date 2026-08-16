@@ -26,6 +26,7 @@ export {
   auditActorOf,
   type AuditEventRecord,
   auditPayloadWith,
+  CHAIN_MIRROR_EVENTS,
   chainMirrorEvent,
 } from "./audit.ts";
 export {

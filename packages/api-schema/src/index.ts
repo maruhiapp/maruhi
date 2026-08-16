@@ -2,6 +2,7 @@
 // API 境界の型は EncryptedPayload 系のみ。平文のシークレットを表す型を置かないこと。
 
 export {
+  AUDIT_ROW_ID_PATTERN,
   AuditActorSchema,
   AuditEventSchema,
   AuditEventsPageSchema,

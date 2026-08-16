@@ -89,42 +89,68 @@ type MirrorTail = Pick<
   "event" | "targetUserId" | "targetKeyFingerprintHex" | "environmentId" | "epoch" | "payload"
 >;
 
+/**
+ * op → ミラーイベント名(§3.4)。ChainOp の全域マップ(型で網羅を強制)であり、
+ * mirrorTails と CHAIN_MIRROR_EVENTS の両方がここから名前を取る — op が増えた
+ * ときに片方だけ更新されて検証器がドリフトする形(誤検出・見逃し)を塞ぐ。
+ */
+const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
+  genesis: "chain.genesis",
+  add_member: "chain.member_added",
+  remove_member: "chain.member_removed",
+  change_role: "chain.role_changed",
+  create_environment: "chain.environment_created",
+  rotate_epoch: "chain.epoch_rotated",
+  grant_server: "chain.server_granted",
+  revoke_server: "chain.server_revoked",
+};
+
+/**
+ * All chain-mirror audit event names (AUDIT_SPEC §3.4) — the image of
+ * `chainMirrorEvent`. Derived from the exhaustive per-op map so the mirror
+ * verifier (`maruhi audit verify`) cannot silently miss a future ChainOp.
+ */
+export const CHAIN_MIRROR_EVENTS: readonly string[] = Object.values(MIRROR_EVENT_NAME);
+
 // op ごとの写像(§3.4 の表)。genesis の target は作成者 = actor(在籍区間の
 // 開始点を Q1 の索引で引けるようにするため)
 const mirrorTails: {
   readonly [K in ChainOp]: (entry: Extract<ChainEntry, { op: K }>) => MirrorTail;
 } = {
-  genesis: (entry) => ({ event: "chain.genesis", targetUserId: entry.actor.userId }),
+  genesis: (entry) => ({
+    event: MIRROR_EVENT_NAME.genesis,
+    targetUserId: entry.actor.userId,
+  }),
   add_member: (entry) => ({
-    event: "chain.member_added",
+    event: MIRROR_EVENT_NAME.add_member,
     targetUserId: entry.payload.targetUserId,
     payload: { role: entry.payload.role },
   }),
   remove_member: (entry) => ({
-    event: "chain.member_removed",
+    event: MIRROR_EVENT_NAME.remove_member,
     targetUserId: entry.payload.targetUserId,
   }),
   change_role: (entry) => ({
-    event: "chain.role_changed",
+    event: MIRROR_EVENT_NAME.change_role,
     targetUserId: entry.payload.targetUserId,
     payload: { newRole: entry.payload.newRole },
   }),
   // dek_commitment は payload に写す(AUDIT_SPEC §3.4。2026-08-03 — 監査行と
   // チェーン掲載コミットメントの突合用)
   create_environment: (entry) => ({
-    event: "chain.environment_created",
+    event: MIRROR_EVENT_NAME.create_environment,
     environmentId: entry.payload.environmentId,
     epoch: 1,
     payload: { dekCommitmentHex: entry.payload.dekCommitmentHex },
   }),
   rotate_epoch: (entry) => ({
-    event: "chain.epoch_rotated",
+    event: MIRROR_EVENT_NAME.rotate_epoch,
     environmentId: entry.payload.environmentId,
     epoch: entry.payload.newEpoch,
     payload: { reason: entry.payload.reason, dekCommitmentHex: entry.payload.dekCommitmentHex },
   }),
   grant_server: (entry) => ({
-    event: "chain.server_granted",
+    event: MIRROR_EVENT_NAME.grant_server,
     targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
     // lease_policy は意図的に写さない(AUDIT_SPEC §1-2 / AUTH_SPEC §14-4):
     // claim_value にはリポジトリ名等の外部識別子が現れるため、監査行には
@@ -133,7 +159,7 @@ const mirrorTails: {
     payload: { scopeEnvironmentIds: entry.payload.scopeEnvironmentIds },
   }),
   revoke_server: (entry) => ({
-    event: "chain.server_revoked",
+    event: MIRROR_EVENT_NAME.revoke_server,
     targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
   }),
 };

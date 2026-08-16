@@ -419,6 +419,27 @@ describe("invite.* の読み取り(§7 の例外規定 — D1)", () => {
     expect((await fetchInvites(token(STRANGER))).status).toBe(404);
   });
 
+  it("row_id を持たない歴史行(デプロイ間隙の旧コード書き込み)は補填して返す(500 にしない)", async () => {
+    const inviteId = await issueInvite("member");
+    // マイグレーション適用後・新 worker 配信前の旧コードが書く形(row_id なし)
+    // を直接シードする。補填(読み取り前段の遅延 backfill)が無いと id の
+    // Schema encode が失敗し、このページは恒久に 500/400 になる(pullfrog 指摘)
+    await env.DB.prepare(
+      "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (99, 'invite.created', 'user', ?, ?, '{\"inviteId\":\"legacy\"}')",
+    )
+      .bind(OWNER, projectId)
+      .run();
+    const { status, events } = await fetchInvites(token(OWNER), { limit: "200" });
+    expect(status).toBe(200);
+    const ids = events.map((event) => event.id);
+    for (const id of ids) {
+      expect(id).toMatch(/^[0-9a-f]{32}$/);
+    }
+    expect(new Set(ids).size).toBe(ids.length);
+    const inviteIds = events.map((event) => event.payload?.["inviteId"]);
+    expect(inviteIds).toEqual(expect.arrayContaining(["legacy", inviteId]));
+  });
+
   it("invite.* 以外の org 系イベント・他プロジェクトの行は混入しない(述語の純度)", async () => {
     const inviteId = await issueInvite("member");
     // 同じ project_id を持つ org 系イベント(org admin 軸の領分)と、他

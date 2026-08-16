@@ -15,7 +15,7 @@
 
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
-import { and, count, desc, eq, gte, inArray, lt, or, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
@@ -98,7 +98,7 @@ interface D1AuditReadPage {
 /** D1 監査行の読み取り形(共通列のうち C1 の応答が運ぶもの。NULL は null)。 */
 export interface D1StoredAuditEventRow {
   readonly seq: number;
-  /** ワイヤ行識別子(row_id)。backfill 済みのため常在(欠損行は空文字列)。 */
+  /** ワイヤ行識別子(row_id)。読み取り前段の遅延 backfill により常在。 */
   readonly rowId: string;
   readonly serverTs: number;
   readonly event: string;
@@ -162,6 +162,24 @@ function parseStoredPayload(value: string | null): Readonly<Record<string, unkno
 type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
 
 /**
+ * row_id の遅延 backfill。マイグレーション(20260816030340)の backfill 後も、
+ * デプロイ間隙(`db:migrate` 適用後・旧 worker 稼働中、およびロールバック時)に
+ * 旧コードが row_id なしの行を書く窓が残る。その行をワイヤへ出すと `id` の
+ * Schema encode が失敗して読み取りが恒久 500 になる(pullfrog 指摘)ため、
+ * 読み取りの前段でマイグレーションと同一の文を冪等に再適用する。
+ * 監査内容の列には触れない(§1-4 の append-only は内容の不変性 — row_id は
+ * サーバー採番の合成識別子で、この補填は §5.1 backfill の繰り延べにすぎない)。
+ * randomblob は行ごとに評価され、WHERE row_id IS NULL は一意索引の NULL
+ * エントリを seek するため、補填対象が無い定常状態では実質無コスト。
+ */
+async function backfillMissingRowIds(db: Db, table: D1AuditTable): Promise<void> {
+  await db
+    .update(table)
+    .set({ rowId: sql`lower(hex(randomblob(16)))` })
+    .where(isNull(table.rowId));
+}
+
+/**
  * ページ条件(seq 降順 + row_id カーソル)を述語に合成して読む。カーソルの
  * row_id → seq 解決は**同じ可視性述語つき**で行う(述語外の行の id を差しても
  * 「不明」と同一 = 空ページ。存在オラクルにしない — AUDIT_SPEC §7)。
@@ -172,6 +190,7 @@ async function selectAuditPage(
   predicate: SQL | undefined,
   page: D1AuditReadPage,
 ): Promise<readonly D1StoredAuditEventRow[]> {
+  await backfillMissingRowIds(db, table);
   let where = predicate;
   if (page.beforeRowId !== null) {
     const cursor = await db
@@ -207,6 +226,7 @@ async function selectAuditPage(
     .limit(page.limit);
   return rows.map((row) => ({
     ...row,
+    // 直前の遅延 backfill により実行時は常に非 NULL(型の絞り込みのみ)
     rowId: row.rowId ?? "",
     payload: parseStoredPayload(row.payload),
   }));

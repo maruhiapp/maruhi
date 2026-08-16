@@ -18,7 +18,7 @@
 
 import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import type { AuditEventRecord } from "@maruhi/core";
-import { chainMirrorEvent } from "@maruhi/core";
+import { CHAIN_MIRROR_EVENTS, chainMirrorEvent } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -458,17 +458,9 @@ export function auditSelfOp(
 // verify(ミラー全単射検証)
 // ---------------------------------------------------------------------------
 
-/** §3.4 のミラーイベント名(chainMirrorEvent の像と一対一)。 */
-const MIRROR_EVENTS: readonly string[] = [
-  "chain.genesis",
-  "chain.member_added",
-  "chain.member_removed",
-  "chain.role_changed",
-  "chain.environment_created",
-  "chain.epoch_rotated",
-  "chain.server_granted",
-  "chain.server_revoked",
-];
+// §3.4 のミラーイベント名は共有写像(@maruhi/core の CHAIN_MIRROR_EVENTS —
+// ChainOp の全域マップから導出)を使う。手書きリストだと将来の op 追加時に
+// ここだけ漏れ、連続性検査が正直なサーバーを偽造と誤断定する(pullfrog 指摘)
 
 const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
 // チェーン受理ポリシー(10,000 エントリ)÷ ページ 200 = 50 ページが理論最大。
@@ -609,7 +601,7 @@ export function auditVerifyOp(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const rows: WireAuditEvent[] = [];
-    for (const event of MIRROR_EVENTS) {
+    for (const event of CHAIN_MIRROR_EVENTS) {
       rows.push(...(yield* fetchAllMirrorRows(context.client, context.projectId, event)));
     }
     const headSeq = context.verified.state.headSeq;

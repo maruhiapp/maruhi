@@ -7,7 +7,11 @@
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
-import { MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
+import {
+  AUDIT_ROW_ID_PATTERN,
+  DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
+  MAX_AUDIT_EVENTS_PAGE_LIMIT,
+} from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
 import { Effect, Layer } from "effect";
@@ -1919,7 +1923,6 @@ function auditActionFlagRejection(
   return actionFlagRejection("audit", AUDIT_ACTIONS, AUDIT_ACTION_FLAGS, resolved, tokens, args);
 }
 
-/** ページ指定フラグの検査(limit 1〜200・before ≥ 1 の整数)。 */
 /** 未指定は許容し、指定時は [1, max] の整数のみ通す。 */
 function outsideIntRange(value: number | undefined, max: number): boolean {
   if (value === undefined) {
@@ -1939,9 +1942,9 @@ function parseAuditPage(
       ),
     );
   }
-  // カーソルは行 id(16 バイト hex — AUDIT_SPEC §5.1 row_id)。前ページ末尾の
-  // 「続きを見るには」案内が示す値をそのまま渡す
-  if (before !== undefined && !/^[0-9a-f]{32}$/.test(before)) {
+  // カーソルは行 id(AUDIT_SPEC §5.1 row_id — 形式は api-schema の Schema と
+  // 共有)。前ページ末尾の「続きを見るには」案内が示す値をそのまま渡す
+  if (before !== undefined && !AUDIT_ROW_ID_PATTERN.test(before)) {
     return Effect.fail(
       usageError(
         "--before は前ページ末尾の行 id(hex 小文字 32 文字 — 「続きを見るには」の案内に表示される値)で指定してください",
@@ -2015,7 +2018,10 @@ function auditCommand(execute: Execute) {
         required: false,
         description: `${AUDIT_ACTIONS.join(" | ")}(省略時は list)`,
       },
-      limit: { type: "number", description: "1 ページの件数(1〜200。既定 50)" },
+      limit: {
+        type: "number",
+        description: `1 ページの件数(1〜${MAX_AUDIT_EVENTS_PAGE_LIMIT}。既定 ${DEFAULT_AUDIT_EVENTS_PAGE_LIMIT})`,
+      },
       before: {
         type: "string",
         description:
