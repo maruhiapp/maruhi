@@ -33,7 +33,9 @@ import {
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { CliIo } from "../src/io.ts";
 import {
+  classifyUnreadableMasterKey,
   corruptMasterKeyMessage,
+  foreignSuiteMasterKeyMessage,
   hasRedactedPlaceholder,
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -409,9 +411,28 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(displayText("a\u202Eb")).toBe("a\uFFFDb");
     expect(displayText("a\u2066b")).toBe("a\uFFFDb");
     expect(displayText("a\u2028b")).toBe("a\uFFFDb");
+    // 双方向マークとゼロ幅スペースも同様(順序・可視性を操るだけで綴りに要らない)
+    for (const hostile of ["\u200E", "\u200F", "\u061C", "\u200B"]) {
+      expect(displayText(`a${hostile}b`)).toBe("a\uFFFDb");
+    }
     // ZWNJ / ZWJ はペルシア語・デーヴァナーガリー・絵文字連結に必要なので保つ
+    // (こちらは文字の結合そのものを決める)
     expect(displayText("a\u200Cb")).toBe("a\u200Cb");
     expect(displayText("a\u200Db")).toBe("a\u200Db");
+  });
+
+  it("将来版が書いた master 鍵レコードには削除を勧めない", () => {
+    // 形が変われば現行の parse は落ちるが、それは破損ではなく別版の正しい鍵。
+    // 「消してください」と案内すると、リカバリーコードが無い利用者は復元できない
+    const future = JSON.stringify({ suite: "maruhi/v2", kemPubHex: "aa", kemSkHex: "bb" });
+    expect(parseStoredMasterKey(future)).toBeNull();
+    expect(classifyUnreadableMasterKey(future)).toBe("foreign-suite");
+    const message = foreignSuiteMasterKeyMessage("maruhi/v2");
+    expect(message).toContain("残してください");
+    expect(message).not.toContain("削除");
+    // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
+    expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
+    expect(classifyUnreadableMasterKey(masterRecordJson({ encSkHex: "" }))).toBe("corrupt");
   });
 
   it("読めない master 鍵レコードも行き止まりにしない", () => {

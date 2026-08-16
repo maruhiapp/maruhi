@@ -22,7 +22,10 @@ import type { CliConfig } from "./config.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
+  classifyUnreadableMasterKey,
   corruptMasterKeyMessage,
+  declaredSuiteOf,
+  foreignSuiteMasterKeyMessage,
   hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
@@ -145,10 +148,15 @@ function sessionFromEnvToken(input: {
     // 前後の空白を落としてから見る: 貼り付けで改行や空白が混じるのはごく普通で、
     // 完全一致だけだとこのガードの目的(貼り間違いを名指しする)が空白ひとつで
     // 破れる。送るのは従来どおり生値のまま(本物のトークンの扱いは変えない)
-    if (REDACTED_PLACEHOLDER_TEXT.test(input.rawToken.trim())) {
+    // 前後の空白は落として扱う。貼り付けで改行や空白が混じるのはごく普通で、
+    // 判定だけを trim して送信は生値のままにすると (a) 伏字の検出と送る値が
+    // 食い違い、(b) 空白つきの本物のトークンの成否がヘッダー正規化の実装依存に
+    // なる。両方を同じ値にすれば、どちらの疑いも残らない
+    const rawToken = input.rawToken.trim();
+    if (REDACTED_PLACEHOLDER_TEXT.test(rawToken)) {
       return yield* Effect.fail(cliError(redactedPlaceholderEnvTokenMessage));
     }
-    const envToken = Redacted.make(input.rawToken, { label: "maruhi-token" });
+    const envToken = Redacted.make(rawToken, { label: "maruhi-token" });
     // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
     // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
     // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を
@@ -237,7 +245,20 @@ function refusalFor(existing: string, entryName: string, refusal: string): strin
   if (hasRedactedPlaceholder(existing)) {
     return redactedPlaceholderMasterKeyMessage(entryName);
   }
-  return parseStoredMasterKey(existing) === null ? corruptMasterKeyMessage(entryName) : refusal;
+  return parseStoredMasterKey(existing) === null
+    ? unreadableMasterKeyMessage(existing, entryName)
+    : refusal;
+}
+
+/**
+ * 読めないレコードの文言。**削除を勧めるのは破損と判定できたときだけ**
+ * (将来版が書いたレコードを消させない — keychain.ts の分類を参照)。
+ */
+function unreadableMasterKeyMessage(stored: string, entryName: string): string {
+  if (classifyUnreadableMasterKey(stored) === "foreign-suite") {
+    return foreignSuiteMasterKeyMessage(declaredSuiteOf(stored) ?? "不明");
+  }
+  return corruptMasterKeyMessage(entryName);
 }
 
 /**
@@ -284,7 +305,7 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
           ? cliError(redactedPlaceholderMasterKeyMessage(entryName))
-          : cliError(corruptMasterKeyMessage(entryName)),
+          : cliError(unreadableMasterKeyMessage(stored, entryName)),
       );
     }
     // 記録は解釈できたが鍵素材として読み込めない場合も同じ行き止まり

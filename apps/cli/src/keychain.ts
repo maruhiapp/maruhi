@@ -16,6 +16,7 @@
 // {@link serializeStoredToken} / {@link serializeStoredMasterKey} を通し、
 // 直列化の直前で明示的に剥がす。
 
+import { SUITE_ID } from "@maruhi/crypto";
 import { Context, type Effect, Redacted } from "effect";
 
 import { escapeText } from "./display.ts";
@@ -171,6 +172,49 @@ function manualDeletionGuidance(entryName: string): string {
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
   return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除してください(名前は印字可能 ASCII 以外を \\u{16 進} — 4 桁以上、補助面はより長い — 、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
+}
+
+/**
+ * 読めないレコードの分類。
+ *
+ * **削除を勧めてよいかの判定**であり、ここを誤ると鍵を恒久的に失わせる:
+ * 将来版の maruhi が別の形で書いたレコードは現行の {@link parseStoredMasterKey}
+ * を通らない(形が変われば必須フィールドの検査で落ちる)が、それは破損では
+ * なく**その版では正しい鍵**である。区別せずに「消してください」と案内すると、
+ * リカバリーコードが無い利用者は復元できなくなる。
+ *
+ * JSON として読めて `suite` が現行と違うなら、破損ではなく別形式として扱う
+ * (スイート名が読めた時点で「maruhi が書いた別版のレコード」と分かる)。
+ */
+export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign-suite" {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (isRecord(value) && nonEmptyString(value["suite"]) && value["suite"] !== SUITE_ID) {
+      return "foreign-suite";
+    }
+  } catch {
+    return "corrupt";
+  }
+  return "corrupt";
+}
+
+/**
+ * 別スイート(将来版が書いた可能性がある)のレコードに当たったときの文言。
+ *
+ * **削除を勧めない**。消すと、その版へ上げれば使えたはずの鍵を失う。
+ */
+export function foreignSuiteMasterKeyMessage(suite: string): string {
+  return `キーチェーンの master 鍵レコードは未知のスイート(${escapeText(suite)})です。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください`;
+}
+
+/** レコードから宣言スイートだけを取り出す(読めなければ null)。 */
+export function declaredSuiteOf(json: string): string | null {
+  try {
+    const value: unknown = JSON.parse(json);
+    return isRecord(value) && nonEmptyString(value["suite"]) ? value["suite"] : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
