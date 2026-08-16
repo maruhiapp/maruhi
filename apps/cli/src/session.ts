@@ -22,10 +22,12 @@ import type { CliConfig } from "./config.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
+  hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
+  redactedPlaceholderMessage,
   type StoredMasterKey,
   tokenEntryName,
 } from "./keychain.ts";
@@ -179,10 +181,14 @@ export function resolveSession(
     }
     const record = parseStoredToken(stored);
     if (record === null) {
+      // 伏字保存は「壊れたレコード」と区別する: 再ログインは同じ直列化を
+      // 通るので同じ伏字を書き直すだけで、案内どおりに操作しても直らない
       return yield* Effect.fail(
-        cliError(
-          "キーチェーンのトークンレコードが壊れています。`maruhi login` で再ログインしてください",
-        ),
+        hasRedactedPlaceholder(stored)
+          ? cliError(redactedPlaceholderMessage)
+          : cliError(
+              "キーチェーンのトークンレコードが壊れています。`maruhi login` で再ログインしてください",
+            ),
       );
     }
     return {
@@ -225,7 +231,11 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     }
     const record = parseStoredMasterKey(stored);
     if (record === null) {
-      return yield* Effect.fail(cliError("キーチェーンの master 鍵レコードが壊れています"));
+      return yield* Effect.fail(
+        hasRedactedPlaceholder(stored)
+          ? cliError(redactedPlaceholderMessage)
+          : cliError("キーチェーンの master 鍵レコードが壊れています"),
+      );
     }
     return yield* importMasterKeys(record);
   });

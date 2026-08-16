@@ -74,19 +74,47 @@ function nonEmptyString(value: unknown): value is string {
 // `Redacted.toString()` / `toJSON()` の出力そのもの(ラベル付きも含む)。
 const REDACTED_PLACEHOLDER = /^<redacted(?::[^>]*)?>$/;
 
-/**
- * 読み出し境界での伏字保存の検出。
- *
- * 冒頭の注記のとおり、直列化で剥がし忘れると "<redacted>" が保存される。
- * これは**型では止まらない**唯一の経路なので、読み側でも 1 度だけ見る:
- * 検出しないと、トークンなら「401 = 失効したので再ログインを」、master 鍵なら
- * 「鍵素材を読み込めません」という**原因を取り違えた診断**に化け、真因
- * (保存側のバグ)へ辿り着けない。生値がこの形になることはない
- * (トークンは `maruhi_pat_` / `maruhi_inv_` 接頭辞、鍵素材は hex)。
- */
 function isRedactedPlaceholder(value: string): boolean {
   return REDACTED_PLACEHOLDER.test(value);
 }
+
+/**
+ * 保存済みレコードに伏字が書かれているか(読み出し境界での検出)。
+ *
+ * 冒頭の注記のとおり、直列化で剥がし忘れると "<redacted>" が保存される。
+ * これは**型では止まらない**唯一の経路なので、読み側でも見る。
+ *
+ * 検出結果を**呼び出し側が区別できる形**で出すのが要点: 「壊れたレコード」と
+ * 同じ扱いにすると、トークンなら「再ログインしてください」と案内することに
+ * なるが、再ログインは同じ直列化を通るので**同じ伏字を書き直すだけ**で、
+ * 利用者はループから抜けられない。これは maruhi 側のバグであり、利用者の
+ * 操作では直らないことを言い切る必要がある。
+ *
+ * 生値がこの形になることはない(トークンは `maruhi_pat_` / `maruhi_inv_`
+ * 接頭辞、鍵素材は hex)ため、誤検出しない。
+ */
+export function hasRedactedPlaceholder(json: string): boolean {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (!isRecord(value)) {
+      return false;
+    }
+    return ["token", "encSkHex", "sigSkSeedHex"].some((name) => {
+      const field = value[name];
+      return typeof field === "string" && isRedactedPlaceholder(field);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 伏字保存を検出したときの文言(トークン・master 鍵で共通の原因説明)。
+ *
+ * 「再ログイン / 再生成で直る」とは言わない — 直らないため。
+ */
+export const redactedPlaceholderMessage =
+  "キーチェーンのレコードに伏字(<redacted>)が保存されています。これは maruhi の不具合(保存時に秘密を取り出し忘れた状態)で、再ログインや鍵の再生成では直りません。お手数ですが不具合として報告してください";
 
 /** Parses a stored token record; null when the shape is corrupt. */
 export function parseStoredToken(json: string): StoredToken | null {

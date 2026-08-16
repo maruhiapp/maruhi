@@ -18,9 +18,11 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
+  hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
   parseStoredToken,
+  redactedPlaceholderMessage,
   serializeStoredToken,
   type StoredToken,
   tokenEntryName,
@@ -200,10 +202,13 @@ export function logoutOp(input: {
     const record = parseStoredToken(stored);
     if (record === null) {
       // 壊れたレコードは失効を呼べないが、残しても使えないため削除する
+      const redacted = hasRedactedPlaceholder(stored);
       yield* keychain.remove(entryName);
       return yield* Effect.fail(
         cliError(
-          "キーチェーンのトークンレコードが壊れていたため削除しました(サーバー側の失効は行えていません)",
+          redacted
+            ? `${redactedPlaceholderMessage}(使えないレコードなので削除しました。サーバー側の失効は行えていません)`
+            : "キーチェーンのトークンレコードが壊れていたため削除しました(サーバー側の失効は行えていません)",
         ),
       );
     }

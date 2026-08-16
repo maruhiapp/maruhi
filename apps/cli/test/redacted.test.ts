@@ -27,9 +27,11 @@ import { type DisplayableVariable, formatPulledLine, showValues } from "../src/d
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { CliIo } from "../src/io.ts";
 import {
+  hasRedactedPlaceholder,
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
+  redactedPlaceholderMessage,
   serializeStoredMasterKey,
   serializeStoredToken,
   tokenEntryName,
@@ -287,6 +289,42 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     ).not.toBeNull();
   });
 
+  it("伏字保存は「壊れたレコード」と別の診断になる(再ログインを勧めない)", async () => {
+    // 「壊れています → 再ログインしてください」と案内すると、再ログインは
+    // 同じ直列化を通るので同じ伏字を書き直すだけ。利用者は案内どおりに操作
+    // してもループから抜けられないので、maruhi 側の不具合だと言い切る
+    expect(
+      hasRedactedPlaceholder(
+        JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
+      ),
+    ).toBe(true);
+    expect(hasRedactedPlaceholder(masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" }))).toBe(
+      true,
+    );
+    // 正常なレコード・壊れた JSON では立たない
+    expect(hasRedactedPlaceholder(masterRecordJson({}))).toBe(false);
+    expect(hasRedactedPlaceholder("not json")).toBe(false);
+    expect(redactedPlaceholderMessage).toContain("再ログインや鍵の再生成では直りません");
+  });
+
+  it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    // 直列化の剥がし忘れ(= 保存側のバグ)を再現する
+    env.keychain.set(
+      tokenEntryName(maruhi.origin),
+      JSON.stringify({ token: "<redacted:maruhi-token>", userId: "u1", tokenId: "t1" }),
+    );
+    const exit = await Effect.runPromiseExit(
+      resolveSession(maruhi.origin).pipe(Effect.provide(env.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const dump = JSON.stringify(exit);
+    expect(dump).toContain("再ログインや鍵の再生成では直りません");
+    expect(dump).not.toContain("`maruhi login` で再ログインしてください");
+  });
+
   it("key generate の保存 → loadMasterKeys の読み戻し → 鍵として実使用できる", async () => {
     // master 鍵側のキーチェーン往復。伏字が保存されていれば hex の decode か
     // WebCrypto のインポートで落ち、「保存はできたのに復号できない」形になる
@@ -483,48 +521,59 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
 };
 
 /**
- * `Redacted.value` の出現箇所を数える(ファイル → 件数)。
+ * 綴り(`Redacted` + `.value`)が**コメントの内側**に現れる行番号。
  *
- * 設計方針は **fail-closed に倒す**こと。この表は「剥がす箇所を数えられる
- * 状態」を保つ唯一の仕掛けなので、見落とす方向の欠陥は仕掛けを無意味にする:
+ * 判定は保守的に「疑わしきは違反」へ倒す。見落とす(コメント内の言及を
+ * 見逃す)と、それが件数の「隠れ枠」になり、後から実際の剥がしへ差し替えても
+ * 件数が動かない相殺が成立してしまう:
  *
- * - **再帰で歩く**。非再帰だと将来 src/ 配下にディレクトリが増えたとき、
- *   その中の剥がし箇所が表から丸ごと消える
- * - **コメントを落とさない**。正しく落とすには字句解析が要り、素朴な正規表現は
- *   文字列リテラル中の `//`(例: session.ts の `https://`)を境に行末までを
- *   消してしまう — その行に足された剥がしが**見えなくなる**。コメントでの
- *   言及は件数を増やすだけ(= 表の更新を促す)で、安全な側に外れる
- * - **`(` を要求しない**。`map(Redacted.value)` のような point-free 渡しも
- *   剥がしであり、括弧を要求すると取りこぼす
+ * - 同じ行に先行する行コメント記号があればコメント内とみなす
+ * - ブロックコメントは開閉を追い、**同じ行で開いた場合も**その行の以降を
+ *   コメント内として扱う(1 行で開閉する形を含む)
  *
- * この規律の帰結として、コメントに `Redacted` + `.value` と書くとこの表が
- * 動く。実装側のコメントは「剥がす」と日本語で書き、綴りを避けている。
+ * 文字列リテラル中の `https://` に続く実コードも違反側に落ちるが、その場合は
+ * 行を分ければよく、見落とす方向には外れない。
  */
-/**
- * 綴り `Redacted` + `.value` が**コメントの内側**に現れる行番号。
- *
- * 判定は保守的に「疑わしきは違反」へ倒す: 同じ行に先行する `//` があれば
- * コメント内とみなす(文字列リテラル中の `https://` に続く実コードも違反に
- * なるが、その場合は行を分ければよく、見落とす方向には外れない)。ブロック
- * コメントは開始・終了トークンの素朴な開閉で追う。
- */
+const SPELLING = "Redacted.value";
+// 文字列リテラルなので、コメント記号をそのまま書いてよい(読む対象は src/ 配下
+// であって、このテストファイル自身ではない)
+const LINE_COMMENT = "//";
+const BLOCK_OPEN = "/*";
+const BLOCK_CLOSE = "*/";
+
+/** 行内の位置 `at` の出現がコメントの内側か(疑わしきは true = 違反側)。 */
+function mentionIsCommented(line: string, at: number, inBlock: boolean): boolean {
+  if (inBlock) {
+    return true;
+  }
+  const lineComment = line.indexOf(LINE_COMMENT);
+  if (lineComment >= 0 && lineComment < at) {
+    return true;
+  }
+  // 同じ行で開いたブロックコメント(1 行で開閉する形を含む)
+  const blockOpen = line.indexOf(BLOCK_OPEN);
+  return blockOpen >= 0 && blockOpen < at;
+}
+
+/** 行を読み終えた後のブロックコメント状態。 */
+function nextBlockState(line: string, inBlock: boolean): boolean {
+  const open = line.lastIndexOf(BLOCK_OPEN);
+  const close = line.lastIndexOf(BLOCK_CLOSE);
+  if (open > close) {
+    return true;
+  }
+  return close > open ? false : inBlock;
+}
+
 function commentMentions(source: string): readonly number[] {
-  const SPELLING = "Redacted.value";
   const lines: number[] = [];
   let inBlock = false;
   for (const [index, line] of source.split("\n").entries()) {
     const at = line.indexOf(SPELLING);
-    const lineComment = line.indexOf("//");
-    if (at >= 0 && (inBlock || (lineComment >= 0 && lineComment < at))) {
+    if (at >= 0 && mentionIsCommented(line, at, inBlock)) {
       lines.push(index + 1);
     }
-    const open = line.lastIndexOf("/*");
-    const close = line.lastIndexOf("*/");
-    if (open > close) {
-      inBlock = true;
-    } else if (close > open) {
-      inBlock = false;
-    }
+    inBlock = nextBlockState(line, inBlock);
   }
   return lines;
 }
@@ -535,6 +584,22 @@ async function srcFiles(): Promise<readonly string[]> {
   return entries.filter((name) => name.endsWith(".ts")).toSorted();
 }
 
+/**
+ * `Redacted.value` の出現箇所を数える(ファイル → 件数)。
+ *
+ * 設計方針は **fail-closed に倒す**こと。この表は「剥がす箇所を数えられる
+ * 状態」を保つ唯一の仕掛けなので、見落とす方向の欠陥は仕掛けを無意味にする:
+ *
+ * - **再帰で歩く**。非再帰だと将来 src/ 配下にディレクトリが増えたとき、
+ *   その中の剥がし箇所が表から丸ごと消える
+ * - **コメントを落とさない**。正しく落とすには字句解析が要り、素朴な正規表現は
+ *   文字列リテラル中の行コメント記号(例: session.ts の `https://`)を境に
+ *   行末までを消してしまう — その行に足された剥がしが**見えなくなる**。
+ *   コメント内の言及は {@link commentMentions} が別途禁じているので、単純に
+ *   数えて構わない
+ * - **`(` を要求しない**。`map(Redacted.value)` のような point-free 渡しも
+ *   剥がしであり、括弧を要求すると取りこぼす
+ */
 async function collectUnwrapSites(): Promise<Record<string, number>> {
   const files = await srcFiles();
   const counts: Record<string, number> = {};
@@ -567,15 +632,22 @@ describe("Redacted を剥がす箇所の棚卸し", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("Redacted は別名・分割代入で持ち出さない(照合をすり抜ける形)", async () => {
-    // `import { Redacted as R }` → `R.value(x)` も
-    // `const { value } = Redacted` も綴りが現れず棚卸しに映らない。
-    // 名前空間 `Redacted` 経由の呼び出しだけを使う規律を固定する
+  it("Redacted は別名・深い import・分割代入で持ち出さない(照合をすり抜ける形)", async () => {
+    // 綴りが現れない持ち出し方はすべて棚卸しに映らない:
+    //   `import { Redacted as R }` → `R.value(x)`
+    //   `import * as R from "effect/Redacted"` → `R.value(x)`
+    //   `const { value } = Redacted`
+    // `effect` から名前空間 `Redacted` を取る形だけを許す規律に固定する
     const offenders: string[] = [];
     for (const name of await srcFiles()) {
       const source = await readFile(join(SRC_DIR, name), "utf8");
       if (/\bRedacted\s+as\s+\w+/.test(source)) {
         offenders.push(`${name}(別名 import)`);
+      }
+      // 深い import(`effect/Redacted`)は名前空間名を自由に付け替えられるため、
+      // 綴りを残さずに剥がせてしまう。入口ごと塞ぐ
+      if (/from\s+"effect\/Redacted"/.test(source)) {
+        offenders.push(`${name}(effect/Redacted の深い import)`);
       }
       if (/\{[^}]*\bvalue\b[^}]*\}\s*=\s*Redacted\b/.test(source)) {
         offenders.push(`${name}(分割代入)`);
