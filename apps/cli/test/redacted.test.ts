@@ -672,10 +672,11 @@ function scanComments(source: string, mask: boolean[]): void {
  * 見るので、`Redacted\n  .value` のように行を跨いだ形も 1 件と数える。判定側だけ
  * 行単位だとその形を違反にできず、件数だけ増える「隠れ枠」が残る。
  *
- * 文字列リテラルは追わない。素朴に追うと `${Redacted.value(code)}` のような
- * テンプレート補間(文字列の中のコード)を誤って除外してしまう。結果として
- * 文字列中の行コメント記号以降が違反側に倒れることがあるが、行末で復帰する
- * うえ見落とす方向ではない。
+ * 文字列リテラルは追わない。追うには引用符・エスケープ・テンプレート補間の
+ * 入れ子まで扱う必要があり、その実装を誤ると**コメントを文字列と誤認して
+ * 言及を見逃す** = fail-open を作る。追わなければ外れ方は常に逆
+ * (文字列中のコメント記号に続く実コードを違反と誤検出する)で、行を分ければ
+ * 済むうえ行末で復帰する。番人としては、誤検出する側に倒すのが正しい。
  */
 function commentMask(source: string): readonly boolean[] {
   const mask = Array.from({ length: source.length }, () => false);
@@ -761,7 +762,13 @@ describe("Redacted を剥がす箇所の棚卸し", () => {
       const source = await readFile(join(SRC_DIR, name), "utf8");
       offenders.push(...commentMentions(source).map((line) => `${name}:${line}`));
     }
-    expect(offenders).toEqual([]);
+    // 走査は文字列リテラルを追わないため、文字列中の `https://` のような
+    // コメント記号に続く**実コード**も違反側に落ちうる(見落とす方向には
+    // 外れない代わりの誤検出)。落ちた側がどちらか分かるように書いておく
+    expect(
+      offenders,
+      "コメント内で綴りに言及しているか、文字列リテラル中のコメント記号に続けて実際の剥がしを書いています。後者なら行を分けてください",
+    ).toEqual([]);
   });
 
   it("Redacted は別名・深い import・分割代入で持ち出さない(照合をすり抜ける形)", async () => {
