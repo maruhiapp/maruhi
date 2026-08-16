@@ -500,6 +500,35 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
  * この規律の帰結として、コメントに `Redacted` + `.value` と書くとこの表が
  * 動く。実装側のコメントは「剥がす」と日本語で書き、綴りを避けている。
  */
+/**
+ * 綴り `Redacted` + `.value` が**コメントの内側**に現れる行番号。
+ *
+ * 判定は保守的に「疑わしきは違反」へ倒す: 同じ行に先行する `//` があれば
+ * コメント内とみなす(文字列リテラル中の `https://` に続く実コードも違反に
+ * なるが、その場合は行を分ければよく、見落とす方向には外れない)。ブロック
+ * コメントは開始・終了トークンの素朴な開閉で追う。
+ */
+function commentMentions(source: string): readonly number[] {
+  const SPELLING = "Redacted.value";
+  const lines: number[] = [];
+  let inBlock = false;
+  for (const [index, line] of source.split("\n").entries()) {
+    const at = line.indexOf(SPELLING);
+    const lineComment = line.indexOf("//");
+    if (at >= 0 && (inBlock || (lineComment >= 0 && lineComment < at))) {
+      lines.push(index + 1);
+    }
+    const open = line.lastIndexOf("/*");
+    const close = line.lastIndexOf("*/");
+    if (open > close) {
+      inBlock = true;
+    } else if (close > open) {
+      inBlock = false;
+    }
+  }
+  return lines;
+}
+
 /** src/ 配下の .ts を再帰で列挙する(src/ からの相対パス、安定順)。 */
 async function srcFiles(): Promise<readonly string[]> {
   const entries = await readdir(SRC_DIR, { recursive: true });
@@ -525,33 +554,31 @@ describe("Redacted を剥がす箇所の棚卸し", () => {
     expect(await collectUnwrapSites()).toEqual(EXPECTED_UNWRAP_SITES);
   });
 
-  it("コメントに綴りが無い(件数が純粋にコード由来であること)", async () => {
-    // 件数はコード由来の 1 つの整数に集約されるため、同じファイルで
-    // 「散文の言及を 1 つ消して実際の剥がしを 1 つ足す」と件数が動かず
-    // 表が素通りする。綴りをコメントから締め出せばこの相殺は起こらない
-    // (実装側のコメントは「剥がす」と日本語で書く規律 — collectUnwrapSites)
+  it("綴りは必ずコードに現れる(コメント内の言及を許さない)", async () => {
+    // 件数はファイルごとの整数 1 つに集約されるため、散文の言及が「隠れ枠」に
+    // なる: 言及を 1 つ消して実際の剥がしを 1 つ足すと件数が動かず表が素通り
+    // する。行頭コメントだけでなく**行末コメント**も禁じないと枠は残るので、
+    // 出現位置がコメントの内側かどうかで判定する
     const offenders: string[] = [];
     for (const name of await srcFiles()) {
       const source = await readFile(join(SRC_DIR, name), "utf8");
-      for (const [index, line] of source.split("\n").entries()) {
-        // 行コメント・ブロックコメント本体という保守的な部分集合。取りこぼしは
-        // 「コード扱いで数えられる」= 安全側に外れる
-        if (/^\s*(?:\/\/|\*)/.test(line) && line.includes("Redacted.value")) {
-          offenders.push(`${name}:${index + 1}`);
-        }
-      }
+      offenders.push(...commentMentions(source).map((line) => `${name}:${line}`));
     }
     expect(offenders).toEqual([]);
   });
 
-  it("Redacted を分割代入で取り出していない(照合をすり抜ける形)", async () => {
-    // `const { value } = Redacted` は綴りが現れないため棚卸しに映らない。
-    // 名前空間経由の `Redacted.value` だけを使う規律を固定する
+  it("Redacted は別名・分割代入で持ち出さない(照合をすり抜ける形)", async () => {
+    // `import { Redacted as R }` → `R.value(x)` も
+    // `const { value } = Redacted` も綴りが現れず棚卸しに映らない。
+    // 名前空間 `Redacted` 経由の呼び出しだけを使う規律を固定する
     const offenders: string[] = [];
     for (const name of await srcFiles()) {
       const source = await readFile(join(SRC_DIR, name), "utf8");
+      if (/\bRedacted\s+as\s+\w+/.test(source)) {
+        offenders.push(`${name}(別名 import)`);
+      }
       if (/\{[^}]*\bvalue\b[^}]*\}\s*=\s*Redacted\b/.test(source)) {
-        offenders.push(name);
+        offenders.push(`${name}(分割代入)`);
       }
     }
     expect(offenders).toEqual([]);
