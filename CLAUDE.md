@@ -19,7 +19,7 @@ E2EE(ゼロ知識)がデフォルト。ブランド表記は常に小文字の `
 - シークレットの平文をディスクに書かない。`maruhi run -- <cmd>` は子プロセスの環境変数へのメモリ注入のみで値を渡す
 - `.env` 系ファイルの生成・出力機能を作らない(エクスポートは将来の SOPS 互換のみ、明示操作)
 - CLI が永続化してよいのは: maruhi API トークン(OS キーチェーン)、master 秘密鍵(OS キーチェーン)、非機密の設定のみ
-- `gunshi/agent` による AI エージェント環境検出時、値を表示する系のコマンド(例: 値の cat / export)は拒否しメッセージを出す
+- 値を表示する系のコマンド(例: 値の cat / export)は AI エージェント環境で拒否しメッセージを出す。**現行実装は `gunshi/agent` による deny-list**(`apps/cli/src/agent.ts` / `io.ts`)— 現行コードを触るときはこれが現実。**移行後の目標(ADR-0016。未実装)**は fail-closed の 2 層で、一次境界が「stdin と stdout の両方が端末か」(`Stdio` サービス)、二次層が既知エージェント検出(std-env)。判定材料は Effect のサービス経由で取り `process.*` を直に読まない、も移行後の規律
 - 平文値・鍵素材をログ・エラーメッセージ・クラッシュレポートに出力しない
 
 ### Web ダッシュボードは Trusted Computing Base である
@@ -57,7 +57,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 | アプリ基盤 | Effect v4 系(ピン留め) |
 | DB | Drizzle v1(`drizzle-kit` migrations、Effect サービス境界内に隔離)。D1 + DO SQLite |
 | フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
-| CLI | Gunshi(引数パース)+ Effect(実装)+ HttpApi 導出型付きクライアント |
+| CLI | **現行**: Gunshi(引数パース)+ Effect(実装)/ **移行先**: `effect/unstable/cli`(ADR-0016。未実装)+ HttpApi 導出型付きクライアント |
 | IaC | Alchemy v2 Effect スタイル(運用側)。セルフホスト配布物は素の wrangler 両対応を維持 |
 | docs | Blume(`apps/docs`) |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
