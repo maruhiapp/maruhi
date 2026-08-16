@@ -67,6 +67,12 @@ export {
 } from "./invites-api.ts";
 export { leaseGroup, LeaseRequestSchema, LeaseResponseSchema } from "./lease-api.ts";
 export {
+  RotationDismissTargetSchema,
+  RotationFlagBasisSchema,
+  RotationFlagSchema,
+  rotationGroup,
+} from "./rotation-api.ts";
+export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
   ChainCapacityExceededError,
@@ -107,6 +113,7 @@ export {
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
   ResourceConflictReasonSchema,
+  RotationFlagNotFoundError,
   SetupIncompleteError,
   SetupIncompleteReasonSchema,
   TokenLimitError,

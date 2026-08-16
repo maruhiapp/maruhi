@@ -1,7 +1,7 @@
 # maruhi 監査ログ仕様書 (AUDIT_SPEC)
 
-Version: 0.7-draft
-Status: 0.6 までは所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認。0.6 = §5.2 案 A の D1 実装と §3.1 の記録細則 — 2026-08-10 セッション 21、マージをもって承認)。0.7-draft = Phase 2 機能裁定の起草(2026-08-12 セッション 22): §3.2 invite.* / §3.5 ワークロードリースへの改訂 / §4.1 revoke_server 変種の入力更新 / §6 可視性クラス(未決 #1 の解消)/ §7 読み取り API — **本改訂 PR のマージをもって所有者承認とする**
+Version: 0.8-draft
+Status: 0.6 までは所有者承認済み(0.3 は 2026-08-02 の PR #18 マージで承認。§3.3 の `dek.registered` への署名者鍵 FP の追加は CRYPTO_SPEC §5.1 として PR #21 で承認済み。§3.3 の署名付きデータ操作への actor 鍵 FP 拡張と §3.4 の `chain.environment_created` は CRYPTO_SPEC 0.4-draft の波及として 2026-08-04 の PR #27 マージで承認。0.6 = §5.2 案 A の D1 実装と §3.1 の記録細則 — 2026-08-10 セッション 21、マージをもって承認)。0.7-draft = Phase 2 機能裁定の起草(2026-08-12 セッション 22): §3.2 invite.* / §3.5 ワークロードリースへの改訂 / §4.1 revoke_server 変種の入力更新 / §6 可視性クラス(未決 #1 の解消)/ §7 読み取り API — **本改訂 PR のマージをもって所有者承認とする**。0.8-draft = Wave 2 B2 の所有者裁定(2026-08-15 セッション 25): §3.3 `rotation.recommended` / `rotation.dismissed` の記録粒度・actor・取り下げ権限、`dek.deleted` の自動掃除変種(AUTH_SPEC §12-6)、`var.version_pushed` の再暗号化マーカー payload / §4.1 手順 5 の解消導出からのマーカー付き push の除外(義務ローテーションの再暗号化 push による全自動誤解消 — 仕様内部の矛盾 — の解消)/ §7 取り下げ操作エンドポイント — **本改訂を含む実装 PR のマージをもって所有者承認とする**
 
 この文書は maruhi の監査ログ(何を・誰が・いつ)の設計を定める。
 CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーション検出)と AUTH_SPEC(§2 データモデル)を前提とする。
@@ -89,14 +89,18 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 | `var.read` ★ | variable_id, environment_id, epoch, version | **暗号文の配布**に対して記録する(pull / Web での取得)。一括 pull は変数ごとに 1 行(§4 のクエリ要件のため)。**メタデータのみモード(AUTH_SPEC §12-7)は暗号文を配布しないため記録しない**(読んでいないものを読んだと記録しない — 2026-08-10) |
 | `dek.registered` | environment_id, epoch, target_user_id(受信者), **actor_key_fingerprint(署名者鍵 FP)** | DEK ラップの登録(AUTH_SPEC §12-6。**複合リクエストの同梱分 — 環境作成のエポック 1・ローテーションの新エポック(同 §12-4。2026-08-03)— を含む**)。actor_key_fingerprint には登録署名(CRYPTO_SPEC §5.1)の署名者鍵 FP を写す(署名との突合用。セッション 07 裁定 B) |
 | `dek.deleted` | environment_id, epoch, target_user_id(受信者) | admin による毒ラップの削除(AUTH_SPEC §12-6 の修復経路) |
-| `rotation.recommended` | target_user_id, 対象 (variable × environment) 集合, 根拠種別 | §4 の算出結果の永続化(UI / CLI 表示用) |
-| `rotation.dismissed` | 対象 (variable × environment) | 人間による明示的な取り下げ(append-only の打ち消しイベント) |
+| `rotation.recommended` | target_user_id(remove 変種)/ target_key_fingerprint(revoke_server 変種), variable_id, environment_id, payload = { basis, triggerChainSeq } | §4 の算出結果の永続化(UI / CLI 表示用)。**1 (variable × environment) 1 行**(2026-08-15 明確化 — §4.2 Q5 の索引要件から。集合を 1 行に畳まない) |
+| `rotation.dismissed` | variable_id, environment_id | 人間による明示的な取り下げ(append-only の打ち消しイベント)。1 対 1 行 |
 
 - `var.read` の粒度と量: CI からの定期 pull で最も高頻度になるイベント。v1 は素直に 1 変数 1 行で記録し、ドッグフーディングで量を実測してから集約(例: 同一 (actor, variable, environment) の読みを日単位で 1 行に丸める)を判断する。**要ローテーション検出に必要なのは「期間内に読んだか否か」だけなので、集約しても検出は劣化しない**
 - **`var.read` の意味論(2026-08-10 セッション 20)**: 記録条件は「暗号文を応答に含めて返したこと」であり、名前解決・一覧などメタデータだけを返す読み取りは対象外(AUTH_SPEC §12-7 のメタデータのみモード)。これは §4 の「確実に取得した」ランク(在籍区間内の `var.read` の有無)の入力純度を守るための規律である — 値を取得していないメンバーの解決操作が `var.read` に混入すると、要ローテーション検出が「取得した」を過大申告し、監査ログを読む人間を誤らせる
 - **actor_key_fingerprint を持つデータ系イベント(2026-08-03 セッション 12 改訂)**: データ系イベントの actor は原則 user_id(+ トークン id / auth_method)のみで鍵 FP を持たない(FP を持つのはチェーンミラー §3.4)としてきたが、この例外は「**クライアント署名を伴う操作**」の類型として一般化する — `dek.registered`(登録署名 = CRYPTO_SPEC §5.1。2026-08-02 セッション 09)に加え、`var.version_pushed` / `var.created`(値の書き込み署名 = 同 §4.1)、`var.renamed` / `var.deleted` / `env.created` / `env.renamed` / `env.deleted`(メタステートメント署名 = 同 §4.2)が署名者鍵 FP を actor_key_fingerprint 列に写す。監査行(サーバー管理データ)とチェーン外署名(クライアント署名 = サーバーが偽造できない)を突合可能にするための記録であり、§2 のアクターモデル(type=user の key_fingerprint)の範囲内である。`dek.deleted` は署名を伴わない操作のため引き続き FP を持たない(この非対称は「FP = 署名の証跡」の意味論を保つためであり、均しにいかない)
 - `dek.registered` / `dek.deleted` の粒度は **1 受信者 1 行**(2026-08-02 セッション 08 提案): §5.1 の列構造は 1 行 1 target(target_user_id は単値)であり、受信者ごとの行にすることで「この受信者宛のラップがいつ登録・削除されたか」を索引(target_user_id, seq)でそのまま引ける。登録はローテーション・メンバー追加時のみの低頻度イベントで、行数は AUTH_SPEC §12-8 のラップ行数上限が束縛する。v1 の要ローテーション検出(§4.1)には関与しない(候補集合は全メンバー × 全環境で算出するため)が、将来の環境スコープ role(CRYPTO_SPEC 未決 #11)で「誰がどのエポックの DEK を受け取ったか」が候補集合の入力になった場合の証跡を確保する
-- 「新バージョン push」は要ローテーションフラグの解消条件でもある(§4)
+- 「新バージョン push」は要ローテーションフラグの解消条件でもある(§4。ただし再暗号化マーカー付き push を除く — 下記)
+- **`var.version_pushed` の再暗号化マーカー(2026-08-15 セッション 25 所有者裁定 — Wave 2 B2)**: push リクエストの `reencryption` 申告(AUTH_SPEC §12-5 — writer の自己申告。サーバーは検証不能)を payload に写す(`{ reencryption: true }`。未申告・false は写さない)。§4.1 手順 5 の解消導出はマーカー付き push を解消と見なさない — CRYPTO_SPEC §7 の義務ローテーションは全アクティブ変数の再暗号化 = 通常 push を伴うため、これを除外しないと `remove_member` 直後の必須 sweep が記録直後の全フラグを自動解消してしまい、検出の目的(上流 credential のローテーション促し)が壊れる。「上流が実際にローテーションされた」ことの検証は E2EE では原理的に不可能であり(サーバーは平文を見られない)、解消シグナルは本質的に writer 申告である — マーカーはその申告の粒度を「push した」から「新しい値を push した」へ正すもの。虚偽の失敗方向は安全側(§12-5)
+- **`rotation.recommended` の記録細則(2026-08-15 セッション 25 所有者裁定)**: actor は `{ type: "system" }`(検出は削除・失効エントリの受理に伴うサーバーの導出処理であり、削除実行者の行為ではない — 実行者は同時に記録されるチェーンミラーが保持し、payload の `triggerChainSeq` で突合できる)。payload の `basis` は `"read"`(§4.1 手順 3 の (a) 確実に取得した)| `"readable"`((b) 取得可能だった)。`chain_seq` 列は使わない(§5.1 のとおりチェーンミラー専有 — トリガーの chain seq は payload に載せる)。追記は §4.1 のとおり削除・失効エントリの受理と同一トランザクション(ミラーと同じ規律 — クラッシュでフラグだけ欠ける形を作らない)
+- **`rotation.dismissed` の発行権限と導線(2026-08-15 セッション 25 所有者裁定 — §6 未規定部分の解消)**: 取り下げを宣言できるのは**チェーン role admin 以上 × トークンスコープ admin**(§12-3 のラップ削除と同水準 — 実ローテーションなしにクラス 1 の警告を全メンバーから消すリスク受容のガバナンス操作)。§7 のとおり生イベントの追記 API は作らず、専用の操作エンドポイント(対象 (variable × environment) の列挙 1 件以上、サーバー側でイベント生成)で行う。**現在有効なフラグ(§4.1 手順 5 の導出)が無い対への取り下げは 404 で拒否する**(黙って成功させない規律 — 破棄対象の実在しない打ち消しイベントを積まない)。actor は取り下げた本人(type=user)
+- **`dek.deleted` の自動掃除変種(2026-08-15 セッション 25 所有者裁定 — AUTH_SPEC §12-6 の再追加受理時掃除)**: `add_member` 受理に伴うサーバーの旧鍵宛ラップ掃除は、admin の修復経路と同じ `dek.deleted` を actor `{ type: "system" }` + payload `{ cause: "member-readded", triggerChainSeq }` で記録する(署名を伴わない自動処理のため FP は持たない — 「FP = 署名の証跡」の意味論は不変。人間の削除操作と機械的な不変条件強制を actor 種別で区別する)
 
 ### 3.4 チェーン操作のミラー ★
 
@@ -138,9 +142,9 @@ org ロールはプロジェクトアクセスに関与しない(AUTH_SPEC §9-2
 2. **候補集合(閲覧可能だった集合)**: v1 は全メンバーが全環境・全エポックの DEK を受け取る(CRYPTO_SPEC §3)ため、「在籍区間と存在期間が重なる全 (variable × environment)」が閲覧可能だった集合になる。`var.created` 〜 `var.deleted`(未削除なら現在まで)の存在区間と在籍区間の重なりで判定する。**削除済み変数も含める**(上流 credential は変数を消しても失効しない)
 3. **根拠のランク付け**: 候補集合を 2 水準に分ける — (a) **確実に取得した**: 在籍区間内に M の `var.read` があるもの(API トークン経由を含む。actor.user_id で照合)、(b) **取得可能だった**: それ以外の候補全部。UI / CLI は (a) を強調表示する
 4. **結果の永続化**: `rotation.recommended` イベントとして追記し、UI / CLI は「要ローテーション」フラグとして表示する
-5. **フラグの解消**: 対象 (variable × environment) への `var.version_pushed`(= 上流をローテーションして新しい値を入れた)または `rotation.dismissed` で解消。解消状態はイベント列から導出する(フラグ自体を可変ストアに持たない)
+5. **フラグの解消**: 対象 (variable × environment) への `var.version_pushed`(= 上流をローテーションして新しい値を入れた。**再暗号化マーカー付き — §3.3 — を除く**: 義務ローテーションの再暗号化は同一平文の再 push であり上流の失効ではない。除外しないと手順 4 の直後に走る必須 sweep が全フラグを自動解消する — 2026-08-15 セッション 25 所有者裁定)または `rotation.dismissed` で解消。解消はイベントの seq 順で判定する(recommended より**後の** seq の解消イベントだけが効く)。解消状態はイベント列から導出する(フラグ自体を可変ストアに持たない)
 
-**`revoke_server` の変種**: 同じ骨格で次を差し替える — 手順 1 の区間は当該サーバー鍵 FP の `chain.server_granted` 〜 `chain.server_revoked`(再 grant があれば区間ごと)。手順 2 の候補は各 grant のスコープ(対象環境の部分集合。CRYPTO_SPEC §6.2)に含まれる環境の変数に限定。手順 3 の (a) は `var.read` の代わりに `server.lease_issued`(actor_key_fingerprint = サーバー鍵 FP で照合。発行時点の環境内アクティブ変数の全てを (a) に含める — 環境単位配布)および `server.value_decrypted`(予約 — §3.5)を使う。手順 4〜5 は同じ。
+**`revoke_server` の変種**: 同じ骨格で次を差し替える — 手順 1 の区間は当該サーバー鍵 FP の `chain.server_granted` 〜 `chain.server_revoked`(再 grant があれば区間ごと)。手順 2 の候補は各 grant のスコープ(対象環境の部分集合。CRYPTO_SPEC §6.2)に含まれる環境の変数に限定。スコープは**環境ごとの開示窓**として扱う: チェーン合意規則は同一鍵 FP への拡大再 grant を受理する(縮小のみ拒否)ため、拡大で後から加わった環境は「その環境を最初に含めた grant の seq」〜失効が窓になる(最初のスコープに固定すると拡大分が検出から漏れ、区間開始まで繰り上げると拡大前に削除された変数へ誤検出が出る — 2026-08-15 レビュー指摘)。手順 3 の (a) は `var.read` の代わりに `server.lease_issued`(actor_key_fingerprint = サーバー鍵 FP で照合。発行時点の環境内アクティブ変数の全てを (a) に含める — 環境単位配布)および `server.value_decrypted`(予約 — §3.5)を使う。手順 4〜5 は同じ。
 
 環境スコープ role(CRYPTO_SPEC 未決事項 #11)が入った場合は、手順 2 の「全環境」が「M がアクセス権を持っていた環境」に狭まる。チェーンミラーが role / スコープを写しているため、この拡張はクエリの変更だけで成立する(スキーマ変更不要)。
 
@@ -228,6 +232,7 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 
 - 監査イベントの読み取りは HttpApi で公開する(ドメイン型のみ。Drizzle 型を出さない = ADR-0006)。追記 API は**公開しない**(イベントは各操作のサーバー側処理が生成する。クライアントが任意のイベントを書ける口を作らない)
 - **読み取り API の形(2026-08-12 起草 — Phase 2)**: project DO 側は seq カーソルページング(limit ≤ 200)+ フィルタ(event 種別 / actor_user_id / target_user_id / variable_id / environment_id)。§6 の可視性クラスは認可段で強制し、クラス 2 の行・フィルタは admin 未満に対して**存在しないかのように振る舞う**(件数・ページングにも漏らさない)。要ローテーションフラグは独立の導出ビューエンドポイント(§4.1 の 5 の導出をサーバーが実行し、現在有効な集合を返す)。ユーザー系・org 系(D1)は同型のカーソルページング(本人 / org admin)。**例外: invite.*(保存は D1 — §3.2)の読み取りは org admin 軸に属さない**: プロジェクト監査の経路の一部として project_id スコープの D1 クエリで提供し、権限軸は当該プロジェクトの**チェーン role admin 以上**(§6 クラス 2 と同一)とする — org admin であることは invite.* の閲覧権限を与えず、チェーン role admin は org admin でなくても閲覧できる(2026-08-12 レビュー反映 — 保存先と権限軸を独立に定める)。CLI は `maruhi audit`、Web は監査 UI が消費する(Phase 2 C1 / W2)
+- **取り下げの操作エンドポイント(2026-08-15 セッション 25 所有者裁定 — Wave 2 B2)**: `rotation.dismissed` は追記 API の例外ではなく**専用の操作エンドポイント**(`POST /projects/:projectId/rotation/dismissals` — 対象 (variable × environment) の列挙 1 件以上、all-or-nothing)として提供する。イベントはサーバー側処理が生成し(本節の原則のまま)、権限・対象検証は §3.3 の記録細則(admin 以上 × admin スコープ、有効フラグなしは 404)。要ローテーションフラグの導出ビュー(上記)は本エンドポイントの取り下げ対象の発見経路を兼ねる。CLI は `maruhi rotation list` / `maruhi rotation dismiss`(フラグビューと取り下げ — Wave 2 B2 で前倒し実装。生イベントの `maruhi audit` は C1 のまま)。表示名の解決はクライアントが検証済みメタステートメント(削除済み変数の tombstone ステートメントを含む — AUTH_SPEC §12-7)で行い、ビュー応答は識別子のみを運ぶ
 - 例外: 将来 CLI / クライアントが「クライアント側でしか観測できない事象」を報告する必要が出た場合(例: エージェント環境検出による拒否)は、専用の狭い報告エンドポイントとして設計し、本仕様を改訂する
 
 ## 8. 未決事項

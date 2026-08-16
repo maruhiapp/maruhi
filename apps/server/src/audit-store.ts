@@ -30,6 +30,73 @@ export interface AuditEventInput {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
+// ---------------------------------------------------------------------------
+// 要ローテーション検出の読み取り面(AUDIT_SPEC §4.1 / §4.2 の Q1〜Q6)。
+// 追記と読み取りのみを公開する(§1-4)— 更新・削除の口は引き続き作らない。
+// すべて同期: 検出はチェーン受理の書き込みフェーズ(単一タスク)内で走り、
+// ミラー追記と同一トランザクションで rotation.recommended を書く(§4.1)。
+// ---------------------------------------------------------------------------
+
+/** Q1: 対象 user_id の在籍区間イベント(chain.genesis / member_added / removed)。 */
+export interface MembershipEventRow {
+  readonly seq: number;
+  readonly event: string;
+}
+
+/** Q6: サーバー鍵 FP の grant 区間イベント(chain.server_granted / revoked)。 */
+export interface GrantEventRow {
+  readonly seq: number;
+  readonly event: string;
+  /** chain.server_granted の payload から。revoked 行は空配列。 */
+  readonly scopeEnvironmentIds: readonly string[];
+}
+
+/** Q2: 変数の存在区間イベント(var.created / var.deleted)。 */
+export interface VariableLifecycleRow {
+  readonly seq: number;
+  readonly event: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+}
+
+/** Q3: 対象 user_id の var.read。 */
+export interface VariableReadRow {
+  readonly seq: number;
+  readonly environmentId: string;
+  readonly variableId: string;
+}
+
+/** Q6: サーバー鍵 FP の開示行使(server.lease_issued / value_decrypted〔予約〕)。 */
+export interface ServerAccessRow {
+  readonly seq: number;
+  readonly event: string;
+  readonly environmentId: string;
+  /** server.lease_issued は環境単位配布のため null(§3.5)。 */
+  readonly variableId: string | null;
+}
+
+/** Q5: フラグ導出の入力行(rotation.recommended / dismissed / var.version_pushed)。 */
+export interface RotationFlagSourceRow {
+  readonly seq: number;
+  readonly serverTs: number;
+  readonly event: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly targetUserId: string | null;
+  readonly targetKeyFingerprintHex: string | null;
+  readonly payload: Readonly<Record<string, unknown>> | null;
+}
+
+/** 検出・フラグ導出が使う同期読み取り面(索引は §4.2 / do-schema.ts)。 */
+export interface AuditRotationRead {
+  readonly membershipEventsFor: (targetUserId: string) => readonly MembershipEventRow[];
+  readonly serverGrantEventsFor: (fpHex: string) => readonly GrantEventRow[];
+  readonly variableLifecycles: () => readonly VariableLifecycleRow[];
+  readonly variableReadsBy: (actorUserId: string) => readonly VariableReadRow[];
+  readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
+  readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
+}
+
 interface AuditStoreShape {
   /**
    * 同期追記。データ書き込みと同じ同期ブロック(= 同一イベントループタスク)で
@@ -51,6 +118,8 @@ interface AuditStoreShape {
    * 必ずこれを呼び、次の追記を MAX(seq) の再読込から続ける。
    */
   readonly resetSeqCacheSync: () => void;
+  /** 要ローテーション検出・フラグ導出の読み取り(§4.1。追記の口は増やさない)。 */
+  readonly readRotationSync: AuditRotationRead;
 }
 
 export class AuditStore extends Context.Service<AuditStore, AuditStoreShape>()("AuditStore") {}
@@ -149,8 +218,128 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
     resetSeqCacheSync: () => {
       nextSeqCache = null;
     },
+    readRotationSync: makeRotationRead(sql),
   };
 };
+
+/** payload 列(JSON)の防御的 parse(壊れた行は null 扱い — 検出を defect にしない)。 */
+function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** chain.server_granted の payload から開示スコープを取り出す(それ以外は空)。 */
+function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] {
+  const scope = payload?.["scopeEnvironmentIds"];
+  return Array.isArray(scope) ? scope.filter((id): id is string => typeof id === "string") : [];
+}
+
+const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
+  // Q1: (target_user_id, seq) 索引(ae_target)
+  membershipEventsFor: (targetUserId) =>
+    sql
+      .exec(
+        `SELECT seq, event FROM audit_events
+         WHERE target_user_id = ?
+           AND event IN ('chain.genesis', 'chain.member_added', 'chain.member_removed')
+         ORDER BY seq`,
+        targetUserId,
+      )
+      .toArray()
+      .map((row) => ({ seq: Number(row["seq"]), event: String(row["event"]) })),
+  // Q6: (target_key_fingerprint, seq) 索引(ae_target_fp)
+  serverGrantEventsFor: (fpHex) =>
+    sql
+      .exec(
+        `SELECT seq, event, payload FROM audit_events
+         WHERE target_key_fingerprint = ?
+           AND event IN ('chain.server_granted', 'chain.server_revoked')
+         ORDER BY seq`,
+        fpHex,
+      )
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        event: String(row["event"]),
+        scopeEnvironmentIds: scopeOf(parsePayload(row["payload"])),
+      })),
+  // Q2: (event, seq) 索引(ae_event)
+  variableLifecycles: () =>
+    sql
+      .exec(
+        `SELECT seq, event, environment_id, variable_id FROM audit_events
+         WHERE event IN ('var.created', 'var.deleted') ORDER BY seq`,
+      )
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        event: String(row["event"]),
+        environmentId: String(row["environment_id"]),
+        variableId: String(row["variable_id"]),
+      })),
+  // Q3: (actor_user_id, seq) 索引(ae_actor)
+  variableReadsBy: (actorUserId) =>
+    sql
+      .exec(
+        `SELECT seq, environment_id, variable_id FROM audit_events
+         WHERE actor_user_id = ? AND event = 'var.read' ORDER BY seq`,
+        actorUserId,
+      )
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        environmentId: String(row["environment_id"]),
+        variableId: String(row["variable_id"]),
+      })),
+  // Q6 の (a) 入力: (actor_key_fingerprint, seq) 索引(ae_actor_fp)
+  serverAccessEventsBy: (actorFpHex) =>
+    sql
+      .exec(
+        `SELECT seq, event, environment_id, variable_id FROM audit_events
+         WHERE actor_key_fingerprint = ?
+           AND event IN ('server.lease_issued', 'server.value_decrypted')
+         ORDER BY seq`,
+        actorFpHex,
+      )
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        event: String(row["event"]),
+        environmentId: String(row["environment_id"]),
+        variableId: row["variable_id"] === null ? null : String(row["variable_id"]),
+      })),
+  // Q5: (event, seq) 索引(ae_event)
+  rotationFlagEvents: () =>
+    sql
+      .exec(
+        `SELECT seq, server_ts, event, environment_id, variable_id,
+                target_user_id, target_key_fingerprint, payload
+         FROM audit_events
+         WHERE event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
+         ORDER BY seq`,
+      )
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        serverTs: Number(row["server_ts"]),
+        event: String(row["event"]),
+        environmentId: String(row["environment_id"]),
+        variableId: String(row["variable_id"]),
+        targetUserId: row["target_user_id"] === null ? null : String(row["target_user_id"]),
+        targetKeyFingerprintHex:
+          row["target_key_fingerprint"] === null ? null : String(row["target_key_fingerprint"]),
+        payload: parsePayload(row["payload"]),
+      })),
+});
 
 export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>
   Layer.sync(AuditStore, () => makeAuditStore(sql));

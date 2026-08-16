@@ -7,6 +7,7 @@ import {
   DekWrapExistsError,
   environmentsGroup,
   membershipGroup,
+  rotationGroup,
   variablesGroup,
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit } from "effect";
@@ -479,14 +480,25 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       const error = Effect.runSync(
         Effect.flip(
           unwrapDataOutcome(
-            rejectedOutcome({ kind: "dek-wrap-exists", epoch: 2, recipientUserId: READER }),
+            rejectedOutcome({
+              kind: "dek-wrap-exists",
+              epoch: 2,
+              recipientUserId: READER,
+              storedRecipientEncPubHex: "ab".repeat(32),
+            }),
             projectId,
             endpoint,
           ),
         ),
       );
       expect(error).toBeInstanceOf(DekWrapExistsError);
-      expect(error).toMatchObject({ epoch: 2, recipientUserId: READER });
+      // 409 は占有ラップの保存済み受信者 enc 公開鍵を運ぶ(AUTH_SPEC §12-6 —
+      // 2026-08-15。再追加バックフィルの修復判定の材料)
+      expect(error).toMatchObject({
+        epoch: 2,
+        recipientUserId: READER,
+        storedRecipientEncPubHex: "ab".repeat(32),
+      });
     }
   });
 
@@ -556,8 +568,18 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "meta-version-conflict": { kind: "meta-version-conflict", currentMetaVersion: 2 },
     "name-not-nfc": { kind: "name-not-nfc" },
     "dek-wrap-rejected": { kind: "dek-wrap-rejected", reason: "duplicate-recipient" },
-    "dek-wrap-exists": { kind: "dek-wrap-exists", epoch: 2, recipientUserId: READER },
+    "dek-wrap-exists": {
+      kind: "dek-wrap-exists",
+      epoch: 2,
+      recipientUserId: READER,
+      storedRecipientEncPubHex: "ab".repeat(32),
+    },
     "dek-wrap-not-found": { kind: "dek-wrap-not-found", epoch: 2, recipientUserId: READER },
+    "rotation-flag-not-found": {
+      kind: "rotation-flag-not-found",
+      environmentId: "env-contract",
+      variableId: "var-contract",
+    },
     "limit-exceeded": { kind: "limit-exceeded", resource: "variables", limit: 100 },
   } as const satisfies {
     readonly [K in DataRejection["kind"]]: Extract<DataRejection, { kind: K }>;
@@ -588,6 +610,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "dek-wrap-rejected": "DekWrapRejected",
     "dek-wrap-exists": "DekWrapExists",
     "dek-wrap-not-found": "DekWrapNotFound",
+    "rotation-flag-not-found": "RotationFlagNotFound",
     "limit-exceeded": "DataLimitExceeded",
   } as const satisfies Record<DataRejection["kind"], string>;
 
@@ -599,6 +622,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     environments: environmentsGroup,
     variables: variablesGroup,
     deks: deksGroup,
+    rotation: rotationGroup,
   }).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
       Object.values(representativeRejections).map((rejection) => ({
@@ -649,7 +673,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     );
     // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
     // 追加したらこの数を更新する(membership 3 / environments 5 / variables 6 /
-    // deks 3)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(17);
+    // deks 3 / rotation 2)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(19);
   });
 });

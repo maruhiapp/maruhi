@@ -317,7 +317,14 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId/versions",
       {
         params: variableParams,
-        payload: Schema.Struct({ value: EncryptedPayloadSchema }),
+        // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5 — 2026-08-15)。
+        // 「直前バージョンと同一平文の新エポックへの再暗号化(CRYPTO_SPEC §7)」の
+        // writer 自己申告で、受理判定・値署名には影響しない。要ローテーション
+        // 検出の解消導出(AUDIT_SPEC §4.1-5)だけがこれを読む
+        payload: Schema.Struct({
+          value: EncryptedPayloadSchema,
+          reencryption: Schema.optionalKey(Schema.Boolean),
+        }),
         success: VariableVersionSchema,
         error: [
           ProjectNotFoundError,

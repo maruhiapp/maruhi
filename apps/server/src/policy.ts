@@ -71,6 +71,13 @@ export const MAX_DEK_WRAPS_PER_REQUEST = 10_000;
  */
 export const MAX_PROJECT_DEK_WRAP_ROWS = 1_000_000;
 
+/**
+ * AUDIT_SPEC §7 の取り下げ操作: 1 リクエストの取り下げ対象数。DEK ラップの
+ * リクエスト上限と同値に取る(取り下げ対象の理論上限 = フラグの対象
+ * (variable × environment) 数は同じ量スケールに束縛される)。
+ */
+export const MAX_ROTATION_DISMISSALS_PER_REQUEST = 10_000;
+
 // ---------------------------------------------------------------------------
 // ワークロードリースの受理ポリシー(AUTH_SPEC §14-3 / AUDIT_SPEC §3.5)。
 // §12-8 と同じ性格 = 合意規則ではない(セルフホストでの引き上げは自由)。

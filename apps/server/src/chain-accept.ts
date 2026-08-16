@@ -10,17 +10,19 @@ import type { ChainInvalidError } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { AuditEventInput } from "./audit-store.ts";
+import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
 import { chainMirrorEvent } from "./audit-store.ts";
 import type { StoredChain, VerifiedChainView } from "./chain-store.ts";
 import { canonicalBytesOf, verifyChainEffect } from "./chain-store.ts";
 import type { DataRejectedError } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
+import type { StaleWrapRef } from "./data-store.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
   MAX_ENTRY_CANONICAL_BYTES,
 } from "./policy.ts";
+import { detectMemberRemoval, detectServerRevocation } from "./rotation-detect.ts";
 
 /** ChainInvalid(検証・エンコーダ失敗)→ chain-entry-invalid 拒否。 */
 const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>
@@ -120,14 +122,29 @@ export interface ChainAcceptStores {
   readonly chainStore: {
     readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
   };
-  readonly audit: { readonly appendSync: (event: AuditEventInput) => void };
+  readonly audit: {
+    readonly appendSync: (event: AuditEventInput) => void;
+    readonly appendManySync: (events: readonly AuditEventInput[]) => void;
+    readonly readRotationSync: AuditRotationRead;
+  };
+  readonly dataStore: {
+    readonly write: {
+      readonly deleteStaleMemberWraps: (
+        recipientUserId: string,
+        keepEncPubHex: string,
+      ) => readonly StaleWrapRef[];
+    };
+  };
 }
 
 /**
- * 受理済みエントリの挿入 + §3.4 の監査ミラー(同期)。チェーン挿入とミラー追記を
- * 同一同期ブロック(= 同一タスク)で原子コミットするために、呼び出し側の
- * 書き込みフェーズ内から呼ぶ。serverTs(nowMs)は必ず引数で受け取り、取得
- * タイミング(全検査後・書き込みフェーズ直前)を全経路で統一する。
+ * 受理済みエントリの挿入 + §3.4 の監査ミラー + op 別の受理副作用(同期)。
+ * チェーン挿入・ミラー追記・副作用を同一同期ブロック(= 同一タスク)で原子
+ * コミットするために、呼び出し側の書き込みフェーズ内から呼ぶ。serverTs(nowMs)は
+ * 必ず引数で受け取り、取得タイミング(全検査後・書き込みフェーズ直前)を全経路で
+ * 統一する。副作用をここに置くのは、受理経路が将来増えても「remove を受理したのに
+ * フラグが出ない」「再追加を受理したのに旧鍵ラップが残る」形を構造的に防ぐため
+ * (受理 4 手順の共有と同じ理由)。
  */
 export function insertAcceptedEntrySync(
   stores: ChainAcceptStores,
@@ -138,4 +155,71 @@ export function insertAcceptedEntrySync(
 ): void {
   stores.chainStore.insertSync(entry, applied.state.headHashHex, canonicalBytes);
   stores.audit.appendSync(chainMirrorEvent(entry, nowMs));
+  applyAcceptanceSideEffectsSync(stores, entry, nowMs);
+}
+
+/**
+ * op 別の受理副作用(ミラー追記の後・同一タスク内)。
+ *
+ * - `add_member`: 再追加の旧鍵宛ラップ掃除(AUTH_SPEC §12-6 — §6.3 の
+ *   「ラップ先 = 現メンバー鍵と厳密一致」不変条件へのストレージ収束)。
+ *   削除は dek.deleted(actor = system + 原因 payload — AUDIT_SPEC §3.3)
+ * - `remove_member` / `revoke_server`: 要ローテーション検出(AUDIT_SPEC §4.1)。
+ *   検出はミラー追記の**後**に読む — 対象の在籍 / grant 区間は直前に書いた
+ *   ミラー行で閉じている
+ */
+function applyAcceptanceSideEffectsSync(
+  stores: ChainAcceptStores,
+  entry: ChainEntry,
+  nowMs: number,
+): void {
+  if (entry.op === "add_member") {
+    const stale = stores.dataStore.write.deleteStaleMemberWraps(
+      entry.payload.targetUserId,
+      entry.payload.encPubHex,
+    );
+    if (stale.length > 0) {
+      stores.audit.appendManySync(
+        stale.map((ref) => ({
+          event: "dek.deleted",
+          serverTs: nowMs,
+          actorType: "system" as const,
+          targetUserId: entry.payload.targetUserId,
+          environmentId: ref.environmentId,
+          epoch: ref.epoch,
+          payload: { cause: "member-readded", triggerChainSeq: entry.seq },
+        })),
+      );
+    }
+    return;
+  }
+  if (entry.op === "remove_member") {
+    appendDetected(
+      stores,
+      detectMemberRemoval({
+        read: stores.audit.readRotationSync,
+        targetUserId: entry.payload.targetUserId,
+        triggerChainSeq: entry.seq,
+        nowMs,
+      }),
+    );
+    return;
+  }
+  if (entry.op === "revoke_server") {
+    appendDetected(
+      stores,
+      detectServerRevocation({
+        read: stores.audit.readRotationSync,
+        serverKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+        triggerChainSeq: entry.seq,
+        nowMs,
+      }),
+    );
+  }
+}
+
+function appendDetected(stores: ChainAcceptStores, events: readonly AuditEventInput[]): void {
+  if (events.length > 0) {
+    stores.audit.appendManySync(events);
+  }
 }

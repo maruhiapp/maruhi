@@ -271,7 +271,8 @@ export type DataLimitResource =
   | "meta-versions"
   | "project-ciphertext-bytes"
   | "dek-wraps-per-request"
-  | "dek-wrap-rows";
+  | "dek-wrap-rows"
+  | "rotation-dismissals-per-request";
 
 export type DataRejection =
   | { readonly kind: "not-initialized" }
@@ -321,11 +322,26 @@ export type DataRejection =
   | { readonly kind: "meta-version-conflict"; readonly currentMetaVersion: number }
   | { readonly kind: "name-not-nfc" }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
-  | { readonly kind: "dek-wrap-exists"; readonly epoch: number; readonly recipientUserId: string }
+  | {
+      readonly kind: "dek-wrap-exists";
+      readonly epoch: number;
+      readonly recipientUserId: string;
+      /**
+       * 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6 — 2026-08-15)。
+       * 非機密(全歴史鍵はチェーン配布済み)。再追加バックフィルの 409 で、
+       * クライアントが登録済み / 旧鍵ラップを厳密比較で判定する材料。
+       */
+      readonly storedRecipientEncPubHex: string;
+    }
   | {
       readonly kind: "dek-wrap-not-found";
       readonly epoch: number;
       readonly recipientUserId: string;
+    }
+  | {
+      readonly kind: "rotation-flag-not-found";
+      readonly environmentId: string;
+      readonly variableId: string;
     }
   | {
       readonly kind: "limit-exceeded";

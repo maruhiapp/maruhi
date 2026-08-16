@@ -156,6 +156,26 @@ export function pullVariables(input: {
     });
     const deksByEpoch = keys.deksByEpoch;
 
+    // §7 の全エポック配布との差分検査(未完了バックフィルの本人側検出 — B2 裁定):
+    // 全メンバーは 1〜現エポックの全 DEK を自分宛に持つはずで、欠けは常に
+    // member add のバックフィル中断・修復未了の兆候(誤検知なし)。現在値の
+    // 復号に必要なエポックの欠けは decryptVerifiedValue が硬い失敗として止める
+    // ので、ここは履歴エポックの静かな欠け(現在値だけでは永遠に顕在化しない)を
+    // SHOULD 警告として拾う
+    const missingEpochs: number[] = [];
+    for (let epoch = 1; epoch <= keys.currentEpoch; epoch += 1) {
+      if (!deksByEpoch.has(epoch)) {
+        missingEpochs.push(epoch);
+      }
+    }
+    const warnings =
+      missingEpochs.length === 0
+        ? pulled.warnings
+        : [
+            ...pulled.warnings,
+            `警告: 自分宛の DEK ラップがエポック ${missingEpochs.join(", ")} に存在しません(CRYPTO_SPEC §7 の全エポック配布と不整合)。member add のバックフィルが中断した可能性があります — 当該エポックの履歴バージョンを復号できません。全エポックのラップを保持する管理者に maruhi member add の再実行(または修復経路での再登録)を依頼してください`,
+          ];
+
     const results: DecryptedVariable[] = [];
     for (const variable of pulled.variables) {
       // 同名 active の重複はステートメント検証(values.ts)が解決拒否済み
@@ -175,6 +195,6 @@ export function pullVariables(input: {
         value: plaintext,
       });
     }
-    return { variables: results, warnings: pulled.warnings };
+    return { variables: results, warnings };
   });
 }

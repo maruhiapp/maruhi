@@ -52,6 +52,10 @@ function variableIdUnavailable(
  * writer は受理時点のチェーン導出メンバー(値署名の検証に使った鍵の持ち主 —
  * CRYPTO_SPEC §4.1)。監査は chain-derived writer FP のみを写す(AUDIT_SPEC §3.3 —
  * 署名・signed bytes・hash・nonce・暗号文は監査に載せない)。
+ *
+ * `reencryption` は writer 申告の再暗号化マーカー(AUTH_SPEC §12-5)。true の
+ * ときだけ payload に写す(§3.3 — 未申告・false は写さない)。受理判定には
+ * 一切関与しない — 読むのは要ローテーション検出の解消導出(§4.1-5)だけ。
  */
 function writeVersionWithAudit(
   write: DataWriteOps,
@@ -61,6 +65,7 @@ function writeVersionWithAudit(
   environmentId: string,
   variableId: string,
   value: ValueInput,
+  reencryption: boolean,
   signedBytesHashHex: string,
   nowMs: number,
 ): void {
@@ -80,6 +85,7 @@ function writeVersionWithAudit(
       epoch: value.epoch,
       version: value.version,
       actorKeyFingerprintHex: writer.keyFingerprintHex,
+      ...(reencryption ? { payload: { reencryption: true } } : {}),
     }),
   );
 }
@@ -166,6 +172,7 @@ export const createVariableProgram = (
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
+      // 作成は定義上、再暗号化ではない(マーカーの申告面も持たない — §12-5)
       writeVersionWithAudit(
         store.write,
         audit.appendSync,
@@ -174,6 +181,7 @@ export const createVariableProgram = (
         environmentId,
         input.variableId,
         input.value,
+        false,
         signedBytesHashHex,
         now,
       );
@@ -190,6 +198,7 @@ export const pushVersionProgram = (
   environmentId: string,
   variableId: string,
   value: ValueInput,
+  reencryption: boolean,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -232,6 +241,7 @@ export const pushVersionProgram = (
         environmentId,
         variableId,
         value,
+        reencryption,
         signedBytesHashHex,
         now,
       );

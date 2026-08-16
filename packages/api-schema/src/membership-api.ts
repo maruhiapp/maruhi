@@ -25,6 +25,7 @@ import {
 import { PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";
 import { leaseGroup } from "./lease-api.ts";
+import { rotationGroup } from "./rotation-api.ts";
 
 /** Chain head after a successful initialization or append. */
 export const ChainHeadSchema = Schema.Struct({
@@ -105,5 +106,6 @@ export const maruhiApi = HttpApi.make("maruhi")
   .add(variablesGroup)
   .add(deksGroup)
   .add(invitesGroup)
+  .add(rotationGroup)
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
   .add(leaseGroup);

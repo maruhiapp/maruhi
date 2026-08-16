@@ -206,7 +206,12 @@ interface ServerOptions {
 interface ServerState {
   readonly handlers: readonly MockHandler[];
   readonly rotateBodies: RotateBody[];
-  readonly pushes: { readonly variableId: string; readonly value: WireDistributedValue }[];
+  readonly pushes: {
+    readonly variableId: string;
+    readonly value: WireDistributedValue;
+    /** リクエストの再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false として記録)。 */
+    readonly reencryption: boolean;
+  }[];
 }
 
 /**
@@ -222,7 +227,7 @@ function makeServer(options: ServerOptions): ServerState {
   const deletedVariables = options.deletedVariables ?? [];
   const deks = options.deks;
   const rotateBodies: RotateBody[] = [];
-  const pushes: { variableId: string; value: WireDistributedValue }[] = [];
+  const pushes: { variableId: string; value: WireDistributedValue; reencryption: boolean }[] = [];
   let currentEpoch = options.currentEpoch;
   let rotateCalls = 0;
   let pushCalls = 0;
@@ -355,7 +360,10 @@ function makeServer(options: ServerOptions): ServerState {
         return null;
       }
       const variableId = request.path.slice(prefix.length, -"/versions".length);
-      const body = request.body as { readonly value: WireDistributedValue };
+      const body = request.body as {
+        readonly value: WireDistributedValue;
+        readonly reencryption?: boolean;
+      };
       const injected = options.onPush?.(pushCalls, variableId);
       pushCalls += 1;
       if (injected !== undefined) {
@@ -367,7 +375,7 @@ function makeServer(options: ServerOptions): ServerState {
         writerUserId: owner.userId,
         writerKeyFingerprintHex: owner.fingerprintHex,
       };
-      pushes.push({ variableId, value: stored });
+      pushes.push({ variableId, value: stored, reencryption: body.reencryption === true });
       const index = variables.findIndex((variable) => variable.variableId === variableId);
       const target = variables[index];
       if (target !== undefined) {
@@ -880,6 +888,9 @@ describe("maruhi env rotate", () => {
     if (pushed === undefined) throw new Error("resume push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(dek2, pushed.value)).toBe("key-abc");
+    // 再暗号化 push は自己申告マーカーを伴う(AUTH_SPEC §12-5 — 要ローテーション
+    // フラグの解消 — AUDIT_SPEC §4.1-5 — と見なされないため)
+    expect(pushed.reencryption).toBe(true);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("要求されたローテーションは実行していません");
     // 何も要求していない実行に「要求を実行せず切り替えた」と言わない
@@ -979,6 +990,8 @@ describe("maruhi env rotate", () => {
     const pushed = state.pushes[0];
     if (pushed === undefined) throw new Error("push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 3, version: 2 });
+    // 強制ローテーションの再暗号化 push も自己申告マーカーを伴う(§12-5)
+    expect(pushed.reencryption).toBe(true);
     expect(env.logs.join("\n")).toContain("epoch 2 → 3");
   });
 

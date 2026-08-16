@@ -7,6 +7,7 @@
 // - deks.ts: DEK ラップ登録・修復(AUTH_SPEC §12-6)
 // - invites.ts: 招待(AUTH_SPEC §15)
 // - lease.ts: ワークロードリース(AUTH_SPEC §14)
+// - rotation.ts: 要ローテーションフラグ(AUDIT_SPEC §4.1 / §7)
 
 export {
   AuthFlowError,
@@ -70,3 +71,4 @@ export {
   LeaseUnavailableError,
   LeaseUnavailableReasonSchema,
 } from "./lease.ts";
+export { RotationFlagNotFoundError } from "./rotation.ts";

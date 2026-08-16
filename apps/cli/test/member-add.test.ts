@@ -145,6 +145,12 @@ async function makeAddServer(input: {
   readonly ownDeks: readonly WireRecipientDek[];
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
+  /**
+   * スロット → 保存済み受信者 enc 公開鍵(hex)。指定したスロットの 409 は
+   * `storedRecipientEncPubHex` を運ぶ(AUTH_SPEC §12-6 追補後のサーバー)。
+   * 未指定のスロットはフィールドなしの 409(追補以前のサーバー)。
+   */
+  readonly occupiedSlotEncPub?: Readonly<Record<string, string>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
   /** チェーン追記への差し込み(409 等)。undefined = 受理。 */
   readonly onAppend?: (call: number) => MockResponse | undefined;
@@ -232,12 +238,16 @@ async function makeAddServer(input: {
         occupied.has(`${environmentId}:${wrap.epoch}:${wrap.recipientUserId}`),
       );
       if (conflict !== undefined) {
+        const slot = `${environmentId}:${conflict.epoch}:${conflict.recipientUserId}`;
+        const storedEncPub = input.occupiedSlotEncPub?.[slot];
         return {
           status: 409,
           json: {
             _tag: "DekWrapExists",
             epoch: conflict.epoch,
             recipientUserId: conflict.recipientUserId,
+            // AUTH_SPEC §12-6 追補後のサーバーだけが載せる(省略可フィールド)
+            ...(storedEncPub === undefined ? {} : { storedRecipientEncPubHex: storedEncPub }),
           },
         };
       }
@@ -603,7 +613,104 @@ describe("maruhi member add", () => {
     expect(registered).toContainEqual([1, acceptor.encPubHex]);
     expect(registered).toContainEqual([2, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("旧鍵宛の残存ラップは修復経路");
+    expect(logs).toContain("旧鍵宛の残存ラップが見つかった場合は修復経路");
+    expect(logs).toContain("旧鍵ラップの修復 1 件");
+  });
+
+  it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
+    // PR #69 レビューの本丸: 「過去に別鍵で在籍 + 直前の member add が現行鍵で
+    // 部分完了」の再実行。鍵履歴ヒューリスティックは stale を疑う(旧判定なら
+    // 誤削除)が、409 が保存済み enc 公開鍵(= 現行鍵)を運ぶため厳密比較で
+    // 登録済みと判定できる(AUTH_SPEC §12-6 追補)
+    const oldKeys = await makeTestUser(acceptor.userId);
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: inviter, operation: addMemberOp(oldKeys, "member") },
+      { actor: inviter, operation: removeMemberOp(oldKeys) },
+      { actor: inviter, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+      // 現行鍵での再追加は受理済み(前回実行の中断)— バックフィルのみの再開
+      { actor: inviter, operation: addMemberOp(acceptor, "member") },
+    ]);
+    const slot = `${ENV_ID}:1:${acceptor.userId}`;
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      currentEpoch: 2,
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 2,
+          dek: dek2,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+      // 前回実行が epoch 1 を**現行鍵で**登録済み(部分完了)
+      occupiedSlots: [slot],
+      occupiedSlotEncPub: { [slot]: acceptor.encPubHex },
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(0);
+    // 一致 = 登録済み(冪等)。削除(誤削除)は 1 件も発動しない
+    expect(state.removeBodies).toHaveLength(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("登録済み 1 件");
+    expect(logs).not.toContain("旧鍵ラップの修復");
+  });
+
+  it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する(フィールド優先)", async () => {
+    // 鍵履歴に別鍵はない(ヒューリスティックは stale を疑わない)が、409 の
+    // フィールドが別鍵を申告する形。フィールドがヒューリスティックに**優先**
+    // することを固定する(比較を外して推定へ戻す変異でこのテストだけが落ちる)
+    const strangerKeys = await makeTestUser("user-someone-else");
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+    ]);
+    const slot = `${ENV_ID}:1:${acceptor.userId}`;
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      ownDeks: [
+        await wrapDekFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: inviter,
+          signer: inviter,
+        }),
+      ],
+      occupiedSlots: [slot],
+      occupiedSlotEncPub: { [slot]: strangerKeys.encPubHex },
+    });
+    const env = await startAddEnv(state, built.projectId);
+
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(0);
+    // 不一致 = 修復(削除 → 再登録)。鍵履歴ゲートに依存しない
+    expect(state.removeBodies).toEqual([
+      { environmentId: ENV_ID, wraps: [{ epoch: 1, recipientUserId: acceptor.userId }] },
+    ]);
+    const registered = state.registerBodies.flatMap((body) =>
+      body.deks.map((wrap) => [wrap.epoch, wrap.recipientEncPubHex] as const),
+    );
+    expect(registered).toContainEqual([1, acceptor.encPubHex]);
+    const logs = env.logs.join("\n");
     expect(logs).toContain("旧鍵ラップの修復 1 件");
   });
 

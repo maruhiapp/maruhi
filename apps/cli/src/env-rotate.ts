@@ -756,7 +756,10 @@ function pushReencrypted(input: {
           environmentId: environmentId,
           variableId: latest.variableId,
         },
-        payload: { value: signed.payload },
+        // reencryption = 再暗号化マーカー(AUTH_SPEC §12-5 — SHOULD): この push は
+        // 同一平文の新エポック再暗号化であり、要ローテーションフラグの解消
+        // (上流 credential の更新 — AUDIT_SPEC §4.1-5)と見なされてはならない
+        payload: { value: signed.payload, reencryption: true },
       })
       .pipe(
         Effect.map(() => ({ kind: "pushed" }) as const),
