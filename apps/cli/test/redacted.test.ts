@@ -358,9 +358,17 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 孤立サロゲート: 逃がさないと U+FFFD に化けて名前が食い違う。
     // 対になったサロゲート(通常の絵文字等)は 1 コードポイント扱いで壊さない
     expect(escapeText("a\uD800b")).toBe("a\\u{d800}b");
-    expect(escapeText("a\u{1F600}b")).toBe("a\u{1F600}b");
-    // 行区切り・段落区切りも逃がす(貼り先によっては名前が割れて見える)
+    // 許可制なので、非 ASCII は絵文字も含めて一律に逃がす(可読性ではなく
+    // 「操作対象としての一致」が目的)
+    expect(escapeText("a\u{1F600}b")).toBe("a\\u{1f600}b");
     expect(escapeText("a\u2028b\u2029c")).toBe("a\\u{2028}b\\u{2029}c");
+    // 見た目が同じ同形異字も別物として現れる(文字クラスでは区別できない類)
+    expect(escapeText("\u0430")).toBe("\\u{0430}");
+    expect(escapeText("a")).toBe("a");
+    // 非改行スペース等も素通ししない(通常の空白と見分けがつかないため)
+    expect(escapeText("a\u00A0b")).toBe("a\\u{00a0}b");
+    // 印字可能 ASCII はそのまま(冗長にしない)
+    expect(escapeText("master::https://x::u1")).toBe("master::https://x::u1");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {

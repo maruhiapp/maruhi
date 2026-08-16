@@ -14,18 +14,11 @@ import { CliIo } from "./io.ts";
 
 // Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
 const CONTROL_CHARS = /\p{Cc}/gu;
-// escapeText が逃がす対象: 制御文字(Cc)+ **書式文字(Cf)** + バックスラッシュ
-// + 引用符。Cf を含めるのは、双方向上書き(U+202A〜U+202E / U+2066〜U+2069)が
-// 端末上で文字列の見た目の順序を変え、ゼロ幅文字(U+200B 等)が見えないまま
-// 名前を変えるため — どちらも「表示された名前 = 実際の名前」を破る。
-// 孤立サロゲート(Cs)も含める: 逃がさないと端末・エンコード側で U+FFFD に
-// 化け、やはり表示と実際の名前が食い違う(対になったサロゲートは 1 つの
-// コードポイントとして扱われるため、この類は孤立したものだけに当たる)。
-// 行区切り・段落区切り(U+2028 / U+2029)も含める: 端末では無害に描かれることが
-// 多いが、改行として扱う描画先(エディタ・ログビューア)へ貼られると名前が
-// 割れて見える。「表示された名前 = 実際の名前」を全域で成り立たせる。
-// バックスラッシュと引用符は可逆性と、引用符で囲んだ表示を閉じられないことに要る
-const ESCAPABLE = /[\\"]|\p{Cc}|\p{Cf}|\p{Cs}|\p{Zl}|\p{Zp}/gu;
+// escapeText が素通しする範囲 = 印字可能 ASCII(U+0020〜U+007E)から
+// バックスラッシュと引用符を除いたもの。それ以外は一律に逃がす。
+// バックスラッシュは可逆性(逃がした表記と元から同じ見た目の文字列が衝突しない)、
+// 引用符は引用符で囲んだ表示を閉じられないことに要る
+const ESCAPABLE = /[^\u0020-\u007E]|["\\]/gu;
 
 /** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
 export function displayText(value: string): string {
@@ -33,28 +26,27 @@ export function displayText(value: string): string {
 }
 
 /**
- * Escapes control characters as `\uXXXX` for safe *and reversible* display.
- *
- * 逃がす対象は制御文字だけでは足りない: 双方向上書き・ゼロ幅といった書式文字は
- * 「見た目」を変えるので、そのまま出すと表示された名前と実際の名前が食い違う。
+ * Escapes everything outside printable ASCII (plus `\` and `"`) as `\u{XXXX}`,
+ * so the rendered text is exactly reconstructible.
  *
  * {@link displayText} は置換文字に潰すため、**利用者が元の文字列を復元できない**。
  * 「この名前のエントリを消してください」のように文字列そのものを操作対象として
  * 案内する場面では潰してはいけない(消せない名前を案内することになる)ので、
  * 端末へ流しても危険のない形にエスケープしたうえで原文を保つ。
+ *
+ * **許可制(allow-list)にしている理由**: 危険な文字を列挙して逃がす形では
+ * 閉じない。制御文字・書式文字・孤立サロゲート・行区切りと足していっても、
+ * 最後に同形異字(Latin `a` U+0061 と Cyrillic `а` U+0430 など)が残り、これは
+ * **見た目が同一なので文字クラスでは区別できない**。「表示された名前 = 実際の
+ * 名前」を本当に成り立たせるには、安全と分かっている範囲だけを素通しし、
+ * 残りを一律に逃がすしかない。非 ASCII の user_id は冗長な表記になるが、
+ * この関数の目的は可読性ではなく**操作対象としての一致**なので、そちらを取る。
  */
 export function escapeText(value: string): string {
   return value.replace(ESCAPABLE, (char) =>
     char === "\\" || char === '"'
-      ? // バックスラッシュと引用符も必ず逃がす。逃がさないと (a) 文字列
-        // "\\u000a"(6 文字)と実際の改行が同じ出力になり可逆でなくなる、
-        // (b) 引用符で囲んだ表示を閉じて、その後ろに maruhi 自身の案内に
-        // 見える文を継ぎ足せる(user_id はサーバー配布の自由文字列)
-        `\\${char}`
-      : // 波括弧つきの形にする。補助面(U+FFFF 超)の書式文字は 16 進が 5 桁に
-        // なるため、`\uXXXX` の 4 桁形では壊れた表記になり**戻せない** —
-        // 可逆性はこの関数の存在理由そのもの
-        `\\u{${(char.codePointAt(0) ?? 0xff_fd).toString(16).padStart(4, "0")}}`,
+      ? `\\${char}`
+      : `\\u{${(char.codePointAt(0) ?? 0xff_fd).toString(16).padStart(4, "0")}}`,
   );
 }
 
