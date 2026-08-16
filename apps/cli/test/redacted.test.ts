@@ -500,9 +500,14 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
  * この規律の帰結として、コメントに `Redacted` + `.value` と書くとこの表が
  * 動く。実装側のコメントは「剥がす」と日本語で書き、綴りを避けている。
  */
-async function collectUnwrapSites(): Promise<Record<string, number>> {
+/** src/ 配下の .ts を再帰で列挙する(src/ からの相対パス、安定順)。 */
+async function srcFiles(): Promise<readonly string[]> {
   const entries = await readdir(SRC_DIR, { recursive: true });
-  const files = entries.filter((name) => name.endsWith(".ts")).toSorted();
+  return entries.filter((name) => name.endsWith(".ts")).toSorted();
+}
+
+async function collectUnwrapSites(): Promise<Record<string, number>> {
+  const files = await srcFiles();
   const counts: Record<string, number> = {};
   for (const name of files) {
     const source = await readFile(join(SRC_DIR, name), "utf8");
@@ -518,6 +523,38 @@ async function collectUnwrapSites(): Promise<Record<string, number>> {
 describe("Redacted を剥がす箇所の棚卸し", () => {
   it("剥がす箇所が増えていない(増やすなら EXPECTED_UNWRAP_SITES を更新する)", async () => {
     expect(await collectUnwrapSites()).toEqual(EXPECTED_UNWRAP_SITES);
+  });
+
+  it("コメントに綴りが無い(件数が純粋にコード由来であること)", async () => {
+    // 件数はコード由来の 1 つの整数に集約されるため、同じファイルで
+    // 「散文の言及を 1 つ消して実際の剥がしを 1 つ足す」と件数が動かず
+    // 表が素通りする。綴りをコメントから締め出せばこの相殺は起こらない
+    // (実装側のコメントは「剥がす」と日本語で書く規律 — collectUnwrapSites)
+    const offenders: string[] = [];
+    for (const name of await srcFiles()) {
+      const source = await readFile(join(SRC_DIR, name), "utf8");
+      for (const [index, line] of source.split("\n").entries()) {
+        // 行コメント・ブロックコメント本体という保守的な部分集合。取りこぼしは
+        // 「コード扱いで数えられる」= 安全側に外れる
+        if (/^\s*(?:\/\/|\*)/.test(line) && line.includes("Redacted.value")) {
+          offenders.push(`${name}:${index + 1}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("Redacted を分割代入で取り出していない(照合をすり抜ける形)", async () => {
+    // `const { value } = Redacted` は綴りが現れないため棚卸しに映らない。
+    // 名前空間経由の `Redacted.value` だけを使う規律を固定する
+    const offenders: string[] = [];
+    for (const name of await srcFiles()) {
+      const source = await readFile(join(SRC_DIR, name), "utf8");
+      if (/\{[^}]*\bvalue\b[^}]*\}\s*=\s*Redacted\b/.test(source)) {
+        offenders.push(name);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("トークンを Bearer に載せるのに剥がしていない(上流の bearerToken を使う)", async () => {
