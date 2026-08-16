@@ -89,6 +89,36 @@ describe("maruhi login", () => {
     expect(maruhi.requests).toHaveLength(0);
   });
 
+  it("client_id が config に無くても、長すぎる --token-name は /auth/config より前に落とす", async () => {
+    // client_id がフラグにも config にも無いと resolveClientId は
+    // `/auth/config` を引く。検査がそれより後ろだと (a) 無駄な往復が先に起き、
+    // (b) その取得が失敗したとき書き方の誤りが「接続に失敗しました」に化ける。
+    // 検査は**どの通信よりも前**であることをこのケースで固定する
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    const code = await runCli(
+      [
+        "login",
+        "--token-name",
+        "n".repeat(129),
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(2);
+    expect(env.errors.join("\n")).toContain("--token-name は 128 文字以内で指定してください");
+    // /auth/config も device flow も起こさない
+    expect(maruhi.requests).toHaveLength(0);
+    expect(github.polls()).toBe(0);
+  });
+
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
     const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);

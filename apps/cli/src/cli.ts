@@ -160,6 +160,13 @@ function loginCommand(execute: Execute) {
       execute(
         ctx,
         Effect.gen(function* () {
+          // **どの通信よりも先**に見る。上限は api-schema と共有する
+          // (MAX_TOKEN_NAME_LENGTH)。ここで見ないと、長すぎる名前は device flow
+          // (**ブラウザでの承認**)を完走した後にリクエストの encode 失敗として
+          // 現れる。`resolveClientId` より後ろでも駄目で、あちらは client_id が
+          // フラグにも config にも無いとき `/auth/config` を引く(= 往復が先に
+          // 起きるうえ、その取得が失敗すると書き方の誤りが接続失敗に隠れる)
+          const tokenName = yield* requireTokenName(ctx.values["token-name"]);
           const store = yield* ConfigStore;
           const config = yield* store.load;
           const origin = yield* resolveServerOrigin(ctx.values.server, config);
@@ -177,11 +184,6 @@ function loginCommand(execute: Execute) {
             explicit: ctx.values["github-client-id"],
             configured: config.githubClientId,
           });
-          // 上限は api-schema と共有する(MAX_TOKEN_NAME_LENGTH)。ここで見ないと、
-          // 長すぎる名前は device flow(**ブラウザでの承認**)を完走した後に
-          // リクエストの encode 失敗として現れる — 書き方の誤りは通信より前に
-          // 落とす、という直上の --github-base-url と同じ規律
-          const tokenName = yield* requireTokenName(ctx.values["token-name"]);
           const minIntervalSeconds = ctx.values["github-poll-interval"];
           yield* loginOp({
             origin,
