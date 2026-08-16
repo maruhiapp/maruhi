@@ -318,6 +318,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const masterMessage = redactedPlaceholderMasterKeyMessage("master::https://x::u1");
     expect(masterMessage).toContain("master::https://x::u1");
     expect(masterMessage).toContain("手で削除");
+    // エスケープ規則の説明が実装と一致していること(ずれると、逃がされた名前を
+    // 「そのままの名前」と誤解させ、削除対象を見つけられない)
+    expect(masterMessage).toContain("印字可能 ASCII 以外");
     // 制御文字入りの user_id: 端末へ生で流さず、かつ**復元できる**形にする。
     // 置換文字へ潰すと「実在しない名前のエントリを消せ」と案内することになり、
     // 唯一の復旧手順(手動削除)が実行不能になる
@@ -577,8 +580,9 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "push.ts": 2,
   // Base32 化の入力(産物は再び包む)
   "recovery-code.ts": 1,
-  // ラップ / アンラップの鍵導出入力(暗号境界)2 + コード表示 1 + 保存確認の照合 1
-  "recovery.ts": 4,
+  // ラップ / アンラップの鍵導出入力(暗号境界)2 + コード表示 1 +
+  // 保存確認の照合 1 + 入力されたコードの解釈 1
+  "recovery.ts": 5,
   // 子プロセス env への注入直前
   "run.ts": 1,
   // master 秘密鍵のインポート(hex → 非抽出 CryptoKey)

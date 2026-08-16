@@ -235,11 +235,17 @@ function unwrapWithPromptedCode(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
-      const answer = yield* io.promptLine({
-        prompt: "リカバリーコードを入力してください: ",
-        secret: true,
-      });
-      const secret = parseRecoveryCode(answer);
+      // 入力されたコードは鍵素材そのもの。**入口で包む**(素の string のまま
+      // 置くと、同じブロックにある logError へ 1 行で載せられてしまい、
+      // 剥がす箇所の棚卸しにも現れない)。剥がすのは解釈の直前だけ
+      const answer = Redacted.make(
+        yield* io.promptLine({
+          prompt: "リカバリーコードを入力してください: ",
+          secret: true,
+        }),
+        { label: "recovery-code" },
+      );
+      const secret = parseRecoveryCode(Redacted.value(answer));
       if (secret === null) {
         yield* io.logError(
           "コードの形式が不正です(4 文字 × 13 グループ。ハイフン・空白・大文字小文字は無視されます)",
