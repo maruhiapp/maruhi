@@ -7,6 +7,7 @@
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
+import { MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
 import { Effect, Layer } from "effect";
@@ -1931,9 +1932,11 @@ function parseAuditPage(
   limit: number | undefined,
   before: number | undefined,
 ): Effect.Effect<AuditPageOptions, CliError> {
-  if (outsideIntRange(limit, 200)) {
+  if (outsideIntRange(limit, MAX_AUDIT_EVENTS_PAGE_LIMIT)) {
     return Effect.fail(
-      usageError("--limit は 1〜200 の整数で指定してください(AUDIT_SPEC §7 の上限)"),
+      usageError(
+        `--limit は 1〜${MAX_AUDIT_EVENTS_PAGE_LIMIT} の整数で指定してください(AUDIT_SPEC §7 の上限)`,
+      ),
     );
   }
   if (outsideIntRange(before, null)) {

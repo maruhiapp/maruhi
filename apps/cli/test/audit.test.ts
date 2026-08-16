@@ -329,6 +329,56 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("重複");
   });
+
+  it("偽のトークン経由表示(actor.api_token_id の付与)を検出する", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const tampered = rows[2];
+    if (tampered === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    rows[2] = {
+      ...tampered,
+      actor: { ...(tampered["actor"] as Record<string, unknown>), apiTokenId: "tok-evil" },
+    };
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("actor.api_token_id");
+  });
+
+  it("到達し得ない chain_seq を名乗る偽造行は連続性違反として検出する(恒久すり抜けの遮断)", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const template = rows[2];
+    if (template === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    // head(3)の遠く先を名乗る偽造行 — 旧実装では「未検証」に数えられるだけで
+    // exit 0 +「検証 OK」になっていた(pullfrog 指摘)
+    rows.push({ ...template, seq: 50, chainSeq: 50000 });
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("連続していません");
+    expect(env.logs.join("\n")).not.toContain("ミラー全単射検証 OK");
+  });
+
+  it("head 直後から連続する新しい行は偽造断定しないが、OK とも言わない(exit 1 + 再実行案内)", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const template = rows[2];
+    if (template === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    // 同期直後にチェーンが 1 エントリ伸びた形(chain_seq = head + 1)
+    rows.push({ ...template, seq: 4, chainSeq: 4 });
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("ミラー検証未完");
+    expect(errors).not.toContain("連続していません");
+    expect(env.logs.join("\n")).not.toContain("ミラー全単射検証 OK");
+  });
 });
 
 describe("maruhi audit invites / self", () => {

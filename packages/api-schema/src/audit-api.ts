@@ -62,6 +62,7 @@ export const AuditEventSchema = Schema.Struct({
   epoch: Schema.optionalKey(PositiveInt),
   version: Schema.optionalKey(PositiveInt),
   chainSeq: Schema.optionalKey(PositiveInt),
+  orgId: Schema.optionalKey(Schema.String),
   projectId: Schema.optionalKey(Schema.String),
   /** 記録どおりの補足 JSON(サーバー申告 — 冒頭コメントの検証規律を参照)。 */
   payload: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),

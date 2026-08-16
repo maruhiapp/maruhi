@@ -16,6 +16,7 @@
 // 昇格しない)。chain.* 行は検証済みチェーンとの突合結果をラベルで示す。
 // 平文値・鍵素材はこのモジュールを通らない。
 
+import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import type { AuditEventRecord } from "@maruhi/core";
 import { chainMirrorEvent } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -124,6 +125,10 @@ function mirrorMismatches(entry: ChainEntry, observed: WireAuditEvent): readonly
     expected.targetKeyFingerprintHex,
     observed.targetKeyFingerprintHex,
   );
+  // 写像はミラー行に api_token_id を設定しない(§3.4 の actor はチェーン
+  // エントリの写し)。期待は常に undefined だが、偽の「トークン経由」表示への
+  // 誤導(pullfrog 指摘)を塞ぐため明示的に突合する
+  check("actor.api_token_id", expected.actorApiTokenId, observed.actor.apiTokenId);
   check("environment_id", expected.environmentId, observed.environmentId);
   check("variable_id", expected.variableId, observed.variableId);
   check("epoch", expected.epoch, observed.epoch);
@@ -152,8 +157,12 @@ function mirrorTrustOf(
     return { label: "突合=不一致", mismatches: ["chain_seq: ミラー行が chain_seq を持ちません"] };
   }
   if (observed.chainSeq > headSeq) {
-    // 同期後にチェーンが伸びた正直なレースでも起きる — 証拠にはしない
-    return { label: "突合=未検証(ローカルのチェーンより新しい)", mismatches: [] };
+    // 同期後にチェーンが伸びた正直なレースでも起きる — 単独では証拠にしないが、
+    // 偽造との区別(head 直後からの連続性)は verify が確定する
+    return {
+      label: "突合=未検証(ローカルのチェーンより新しい — maruhi audit verify で確定してください)",
+      mismatches: [],
+    };
   }
   const entry = entries.get(observed.chainSeq);
   if (entry === undefined) {
@@ -260,16 +269,13 @@ function continuationHint(
   requestedLimit: number | null,
   command: string,
 ): string | null {
-  const pageSize = requestedLimit ?? DEFAULT_PAGE_LIMIT;
+  const pageSize = requestedLimit ?? DEFAULT_AUDIT_EVENTS_PAGE_LIMIT;
   const last = events[events.length - 1];
   if (last === undefined || events.length < pageSize) {
     return null;
   }
   return `続きを見るには: ${command} --before ${last.seq}`;
 }
-
-/** サーバー既定のページ件数(api-schema の DEFAULT_AUDIT_EVENTS_PAGE_LIMIT と対)。 */
-const DEFAULT_PAGE_LIMIT = 50;
 
 // ---------------------------------------------------------------------------
 // list
@@ -460,7 +466,7 @@ const MIRROR_EVENTS: readonly string[] = [
   "chain.server_revoked",
 ];
 
-const VERIFY_PAGE_LIMIT = 200;
+const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
 // チェーン受理ポリシー(10,000 エントリ)÷ ページ 200 = 50 ページが理論最大。
 // カーソルが前進しないサーバーで無限ループしないための硬い上限
 const VERIFY_MAX_PAGES_PER_EVENT = 100;
@@ -514,26 +520,47 @@ function fetchAllMirrorRows(
 interface MirrorBuckets {
   readonly byChainSeq: ReadonlyMap<number, readonly WireAuditEvent[]>;
   readonly problems: readonly string[];
-  /** ローカルのチェーンより新しい行(同期後の伸長 — 証拠ではない)。 */
-  readonly unverifiable: number;
+  /** head 直後から連続する「ローカルのチェーンより新しい」行数(未検証)。 */
+  readonly aheadRows: number;
+}
+
+/**
+ * head より新しい行の連続性検査。正直な伸長(同期とページ取得の間にチェーンが
+ * 進んだ)なら、その行の chain_seq は head+1 から欠番・重複なく連続する — ミラーは
+ * 受理と同一トランザクションで書かれ、seq は無欠番だからである(§3.4 / §5.1)。
+ * 連続しない・重複する行は「実在しないエントリを名乗る偽造行」の証拠として
+ * 扱う(pullfrog 指摘 — 到達し得ない chain_seq による検証回避を塞ぐ)。
+ */
+function aheadContiguityProblems(ahead: readonly number[], headSeq: number): readonly string[] {
+  const problems: string[] = [];
+  let expected = headSeq + 1;
+  for (const chainSeq of [...ahead].toSorted((a, b) => a - b)) {
+    if (chainSeq !== expected) {
+      problems.push(
+        `chain_seq=${chainSeq}: ローカルのチェーン(head seq=${headSeq})より新しいミラー行が head 直後から連続していません(期待 ${expected})— 正直な伸長なら欠番・重複なく連続するため、実在しないエントリを名乗る偽造行の証拠です`,
+      );
+    }
+    expected = chainSeq + 1;
+  }
+  return problems;
 }
 
 /** 取得した chain.* 行を chain_seq で索引化する(検証の前段の純関数)。 */
 function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): MirrorBuckets {
   const byChainSeq = new Map<number, WireAuditEvent[]>();
   const problems: string[] = [];
-  let unverifiable = 0;
+  const ahead: number[] = [];
   for (const row of rows) {
     if (row.chainSeq === undefined) {
       problems.push(`seq=${row.seq}: ミラー行が chain_seq を持ちません(${displayText(row.event)})`);
     } else if (row.chainSeq > headSeq) {
-      // 同期とページ取得の間にチェーンが伸びた正直なレースでも起きる
-      unverifiable += 1;
+      ahead.push(row.chainSeq);
     } else {
       byChainSeq.set(row.chainSeq, [...(byChainSeq.get(row.chainSeq) ?? []), row]);
     }
   }
-  return { byChainSeq, problems, unverifiable };
+  problems.push(...aheadContiguityProblems(ahead, headSeq));
+  return { byChainSeq, problems, aheadRows: ahead.length };
 }
 
 /** 1 エントリ分の全単射 + 写像一致の検査(空 = 問題なし)。 */
@@ -581,22 +608,27 @@ export function auditVerifyOp(
         entryMirrorProblems(entry, buckets.byChainSeq.get(entry.seq) ?? []),
       ),
     ];
-    if (problems.length === 0) {
-      const raceNote =
-        buckets.unverifiable === 0
-          ? ""
-          : `(ローカルのチェーンより新しい ${buckets.unverifiable} 行は未検証 — 再実行で検証できます)`;
+    if (problems.length === 0 && buckets.aheadRows === 0) {
       yield* io.log(
-        `ミラー全単射検証 OK: チェーン ${headSeq} エントリ ↔ chain.* ミラー行が写像(AUDIT_SPEC §3.4)どおり一致しました${raceNote}`,
+        `ミラー全単射検証 OK: チェーン ${headSeq} エントリ ↔ chain.* ミラー行が写像(AUDIT_SPEC §3.4)どおり一致しました`,
       );
       return 0;
+    }
+    if (buckets.aheadRows > 0) {
+      // 未検証の行が残る限り「OK」とは言わない(pullfrog 指摘 — 偽造行が
+      // 未検証枠に恒久に居座る形を、成功終了で覆い隠さない)
+      yield* io.logError(
+        `ミラー検証未完: ${buckets.aheadRows} 行はローカルのチェーンより新しく、今回の実行では検証できませんでした(同期直後にチェーンが伸びた場合に起きえます)。maruhi audit verify を再実行してください — 再実行しても解消しない場合、そのミラー行はチェーンに実在しないエントリを名乗っています(偽造の疑い)`,
+      );
     }
     for (const problem of problems) {
       yield* io.logError(`ミラー検証失敗: ${problem}`);
     }
-    yield* io.logError(
-      `ミラー検証で ${problems.length} 件の不一致を検出しました。監査ログはサーバー管理データであり(AUDIT_SPEC §6)、この不一致はサーバーによる改竄・破損の証拠です — 配布チェーン(署名付き・検証済み)側が真であり、監査ログを信用しないでください`,
-    );
+    if (problems.length > 0) {
+      yield* io.logError(
+        `ミラー検証で ${problems.length} 件の不一致を検出しました。監査ログはサーバー管理データであり(AUDIT_SPEC §6)、この不一致はサーバーによる改竄・破損の証拠です — 配布チェーン(署名付き・検証済み)側が真であり、監査ログを信用しないでください`,
+      );
+    }
     return 1;
   });
 }

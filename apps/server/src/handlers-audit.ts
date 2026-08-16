@@ -41,6 +41,7 @@ function toWireD1Event(row: D1StoredAuditEventRow): AuditEventValue {
       ...(row.actorApiTokenId === null ? {} : { apiTokenId: row.actorApiTokenId }),
     },
     ...(row.targetUserId === null ? {} : { targetUserId: row.targetUserId }),
+    ...(row.orgId === null ? {} : { orgId: row.orgId }),
     ...(row.projectId === null ? {} : { projectId: row.projectId }),
     // JSON.parse 由来の値は実行時に必ず JSON 語彙(encode 時の Schema.Json
     // 検証が最終防衛)。unknown → Json は型のみの狭め

@@ -97,6 +97,7 @@ export interface D1StoredAuditEventRow {
   readonly actorUserId: string | null;
   readonly actorApiTokenId: string | null;
   readonly targetUserId: string | null;
+  readonly orgId: string | null;
   readonly projectId: string | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
@@ -168,6 +169,10 @@ async function selectAuditPage(
       actorUserId: table.actorUserId,
       actorApiTokenId: table.actorApiTokenId,
       targetUserId: table.targetUserId,
+      // org_id は本 PR の 2 経路では常に NULL(invite.* は意図的に持たず、
+      // user 系に書き手がいない)が、この helper は両テーブル汎用であり、
+      // 将来の org admin 軸で黙って欠落しないよう射影から落とさない
+      orgId: table.orgId,
       projectId: table.projectId,
       payload: table.payload,
     })

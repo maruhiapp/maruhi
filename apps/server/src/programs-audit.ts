@@ -61,6 +61,8 @@ export interface AuditEventValue {
   readonly epoch?: number;
   readonly version?: number;
   readonly chainSeq?: number;
+  /** org 系列(D1 行のみ。project DO 行では常に欠落)。 */
+  readonly orgId?: string;
   readonly payload?: Readonly<Record<string, Schema.Json>>;
 }
 
