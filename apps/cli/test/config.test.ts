@@ -69,9 +69,11 @@ describe("maruhi config", () => {
     expect(await runCli([], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("使い方");
     // 一覧は登録済みサブコマンドから導く(手書きだと、コマンドを増やしたときに
-    // ヘルプだけ古いまま残る)。エントリコマンド自身(`maruhi`)は出さない
+    // ヘルプだけ古いまま残る)。エントリコマンド自身(`maruhi`)は出さない。
+    // 移行済み(effect/unstable/cli 側)のコマンドは gunshi の表に居ないので
+    // 末尾へ合流する — 一覧から消えないことがここの要点
     expect(env.logs).toContain(
-      "commands: login / logout / key / project / env / server / invite / member / rotation / audit / pull / push / run / config",
+      "commands: login / logout / key / project / env / server / invite / member / rotation / audit / push / config / pull / run",
     );
   });
 });

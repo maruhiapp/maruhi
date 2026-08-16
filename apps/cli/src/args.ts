@@ -1,15 +1,22 @@
-// 引数の**書き方**の検査(全コマンド共通)と、gunshi の usage エラーの整形。
+// 引数の**書き方**の検査(**gunshi に残っているコマンド**共通)と、gunshi の
+// usage エラーの整形。
+//
+// ADR-0016 の第 1 段階で `pull` / `run` / `env create` は
+// `effect/unstable/cli`(effect-cli.ts)へ移した。あちらは同じ形を**宣言**
+// (`Flag.atMost(1)` / `Flag.withSchema` / `Argument.atLeast(1)`)で落とすので、
+// このモジュールは通らない。残り 11 コマンドと `env rotate` / `env diff` が
+// 移るまで、両方が並走する。
 //
 // gunshi 0.37.1 は「宣言と食い違う書き方」をいくつか黙って通す。いずれも
 // **書いたことと逆の結果**になりうるので、値を扱う前に落とす:
 //
-// 1. 未宣言のオプション(`maruhi pull --shwo`)は無視される = `--show` なしで
-//    実行される。位置引数の名前をオプションとして書いた形(`env create dev
-//    --environment-id prod`)も値が捨てられる。どちらも `CliOptions.strict`
-//    (cli.ts)が **runner 実行前**の検証エラーにするので、ここでは扱わない
-//    — 診断文だけ usageErrorMessages が受け持つ
-// 2. boolean へのインライン値(`--show=false`)は値を**読まずに true** になる
-// 3. boolean への空白区切りの値(`--show false`)は値が消費されないため
+// 1. 未宣言のオプション(`maruhi push API_KEY --enve prod`)は無視される =
+//    既定環境への書き込みになる。位置引数の名前をオプションとして書いた形
+//    (`env rotate --environment-id prod`)も値が捨てられる。どちらも
+//    `CliOptions.strict`(cli.ts)が **runner 実行前**の検証エラーにするので、
+//    ここでは扱わない — 診断文だけ usageErrorMessages が受け持つ
+// 2. boolean へのインライン値(`--new-epoch=false`)は値を**読まずに true** になる
+// 3. boolean への空白区切りの値(`--new-epoch false`)は値が消費されないため
 //    「フラグ有効 + 余分な位置引数」になる
 //
 // 2 / 3 は**宣言済み**オプションの書き方の問題なので strict では塞がらない。
@@ -99,7 +106,7 @@ export function typedName(token: ArgTokenShape): string {
  * rest `["printenv","x"]` / positionals `["run",""]`)。子プロセスの引数が
  * 黙って 1 つ減り、余分な位置引数の検査も誤爆する。トークンから組み直す。
  */
-export function restArguments(tokens: readonly ArgTokenShape[]): readonly string[] {
+function restArguments(tokens: readonly ArgTokenShape[]): readonly string[] {
   const rest: string[] = [];
   let terminated = false;
   for (const token of tokens) {
@@ -534,34 +541,48 @@ function emptyPositionalRejection(
 }
 
 /**
- * コマンド名が `--` の**後ろ**にある実行の拒否。gunshi は `--` を跨いで
+ * コマンド名が `--` の**後ろ**にある実行の文面。gunshi は `--` を跨いで
  * コマンドを解決する(`getPositionalTokens` は全 positional を見る)ため、
  * `maruhi -- run printenv` は run として解決され、`--` の後ろの先頭
  * (= コマンド名そのもの)が実行対象として渡ってしまう。
  */
-function commandBeforeTerminatorRejection(
-  ctx: ArgCheckContext,
-  rest: readonly string[],
-): string | null {
-  if (ctx.commandPath.length === 0 || rest.length === 0) {
-    return null;
+export const TERMINATOR_BEFORE_COMMAND =
+  "コマンド名は `--` より前に書いてください(`--` の後ろはそのまま渡す引数です)";
+
+/**
+ * Reports whether the command name was typed after `--`.
+ *
+ * 判定は cli.ts の入口(コマンドの振り分けより前)で行う。**全コマンドに
+ * 一様に効かせる**ため、そしてどこへ振り分けても直し方(コマンド名を前に
+ * 出す)を言えるようにするため — 移行先の引数層は `--` を跨がないので、
+ * そちらへ渡すと「余分な引数です」としか言えない。
+ */
+export function commandNameAfterTerminator(argv: readonly string[]): boolean {
+  let terminated = false;
+  for (const token of parseArgs([...argv])) {
+    if (token.kind === "option-terminator") {
+      terminated = true;
+      continue;
+    }
+    // 空の位置引数は gunshi のコマンド解決が読み飛ばす(`!!v`)ので数えない
+    if (token.kind === "positional" && token.value !== undefined && token.value !== "") {
+      return terminated;
+    }
   }
-  return positionalCount(ctx) < ctx.commandPath.length
-    ? "コマンド名は `--` より前に書いてください(`--` の後ろはそのまま渡す引数です)"
-    : null;
+  return false;
 }
 
 /**
- * `--` の後ろの引数の拒否。これを読むのは `maruhi run` だけで、他のコマンド
- * では黙って捨てられる(`maruhi push NAME -- value` など)。
+ * `--` の後ろの引数の拒否。gunshi 側に残るコマンドは**どれも `--` の後ろを
+ * 読まない**(読む唯一のコマンドだった `maruhi run` は effect/unstable/cli へ
+ * 移した)ので、黙って捨てずに落とす(`maruhi push NAME -- value` など)。
  */
 function strayRestRejection(
   rest: readonly string[],
   ctx: ArgCheckContext,
-  acceptsRest: boolean,
   hint: string | undefined,
 ) {
-  if (acceptsRest || rest.length === 0) {
+  if (rest.length === 0) {
     return null;
   }
   // 中身を伏せる以上、直し方(コマンド固有の助言)は位置引数側と同じく必ず添える
@@ -572,31 +593,10 @@ function strayRestRejection(
   );
 }
 
-/**
- * `--` の後ろに実行対象が要るコマンド(`maruhi run`)で、それが無い場合の拒否。
- * 空文字列は実行できない(`maruhi run -- "$CMD"` の未設定形)ので「引数が
- * 1 つある」ことと「実行対象がある」ことを区別する。
- *
- * 共通検査の**中**に置く: コマンド側で先に判定すると、余分な位置引数のような
- * より具体的な誤り(`maruhi run stray -- "" cmd`)がこの文面に潰される。
- */
-function missingRestRejection(
-  rest: readonly string[],
-  required: string | undefined,
-): string | null {
-  if (required === undefined) {
-    return null;
-  }
-  // 空白だけのコマンド名も実行できない(`maruhi run -- "$CMD"` の未設定形)
-  return rest.length === 0 || (rest[0] ?? "").trim() === "" ? required : null;
-}
-
 /** How one command tunes the shared argument checks. */
 export interface ArgsCheckOptions {
   /** 余分な位置引数を拒否するときに添えるコマンド固有の助言。 */
   readonly strayPositionalHint?: string | undefined;
-  /** `--` の後ろを読むコマンドか(`maruhi run` だけ)。 */
-  readonly acceptsRest?: boolean | undefined;
   /**
    * **この実行では**取らない位置引数(既定は引数表の全 positional)。
    * 操作によって数が変わるコマンド(`config get` は set 専用の optional
@@ -604,17 +604,10 @@ export interface ArgsCheckOptions {
    */
   readonly withoutPositionals?: readonly string[] | undefined;
   /**
-   * `--` の後ろに実行対象が必須なコマンド(`maruhi run`)の案内文。渡すと
-   * 「実行対象が無い」実行を共通検査の中で(= より具体的な誤りの後に)落とす。
-   */
-  readonly restRequired?: string | undefined;
-  /**
    * コマンド固有の拒否(env の操作別オプションの適用可否)。**共通検査より
    * 先**に見るが、連鎖の中に置くので「共通検査を飛ばす」ことはできない。
    */
   readonly commandRejection?: string | null | undefined;
-  /** `--` の後ろ(コマンド側で組み済みなら渡す — 2 度組まない)。 */
-  readonly rest?: readonly string[] | undefined;
 }
 
 /**
@@ -628,24 +621,21 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
   // 走査し直さない)
   const booleans = booleanSpellings(ctx.args);
   // `--` の後ろの組み直しも 1 回だけ(位置引数の数え上げと 2 つの検査で使う)
-  const rest = options?.rest ?? restArguments(ctx.tokens);
+  const rest = restArguments(ctx.tokens);
   const without = options?.withoutPositionals ?? [];
   // 並びは「実行の形そのもの → その操作で使えるか → 綴り」の順。構造的な誤り
   // (コマンド名の位置・空の値・重複・`--` の後ろ)を先に言わないと、操作別の
   // 指摘を直した次の実行でまた落ちる。適用できないオプション
   // (commandRejection)も、綴りの助言より先に言う
   const checks: readonly (() => string | null | undefined)[] = [
-    () => commandBeforeTerminatorRejection(ctx, rest),
     () => emptyOptionValueRejection(ctx),
     () => duplicateOptionRejection(ctx),
-    () =>
-      strayRestRejection(rest, ctx, options?.acceptsRest === true, options?.strayPositionalHint),
+    () => strayRestRejection(rest, ctx, options?.strayPositionalHint),
     () => emptyPositionalRejection(ctx, rest, without),
     () => options?.commandRejection,
     () => inlineValueRejection(ctx, booleans),
     () => booleanLiteralRejection(ctx, booleans),
     () => strayPositionalRejection(ctx, booleans, options?.strayPositionalHint, without),
-    () => missingRestRejection(rest, options?.restRequired),
   ];
   for (const check of checks) {
     const rejection = check();
@@ -659,21 +649,37 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
 /** Command name → argument table, used to word usage errors. */
 export type CommandTable = Readonly<Record<string, { readonly args?: ArgTable | undefined }>>;
 
+/**
+ * Resolves the command path the way gunshi does: the non-empty positional
+ * tokens, in order.
+ *
+ * コマンドの解決に自前の argv 走査を書かないため、パースは gunshi の
+ * `parseArgs` に任せる。`--` は跨ぐ: gunshi の resolveCommandTree も
+ * getPositionalTokens で全 positional を見るため、option-terminator の前で
+ * 打ち切ると解決結果が食い違う。falsy な値(空文字列)は gunshi 側が
+ * 落とす(`!!v`)ので、ここでも落とす — `maruhi "" env create …` の解決を
+ * 食い違わせないため。
+ *
+ * 引数表を渡さないので、**値を取るオプションの値も位置引数として並ぶ**
+ * (`--name x create` の `x`)。呼び出し側はその前提で使う。
+ */
+export function commandTokens(argv: readonly string[]): readonly string[] {
+  const names: string[] = [];
+  for (const token of parseArgs([...argv])) {
+    if (token.kind === "positional" && token.value !== undefined && token.value !== "") {
+      names.push(token.value);
+    }
+  }
+  return names;
+}
+
 /** 打たれたコマンドの引数表(解決できなければ undefined)。 */
 function invokedArgs(argv: readonly string[], commands: CommandTable): ArgTable | undefined {
-  // コマンドの解決は gunshi と同じ「最初の位置引数」で行う(自前の argv 走査を
-  // 書かないため、パースは gunshi の parseArgs に任せる)。`--` は跨ぐ:
-  // gunshi の resolveCommandTree も getPositionalTokens で全 positional を
-  // 見るため、option-terminator の前で打ち切ると解決結果が食い違う
-  for (const token of parseArgs([...argv])) {
-    // gunshi の getPositionalTokens は falsy な値を落とす(`!!v`)。空文字列を
-    // コマンド名として扱うと、`maruhi "" env create …` で解決結果が食い違う
-    if (token.kind !== "positional" || token.value === undefined || token.value === "") {
-      continue;
-    }
-    return Object.hasOwn(commands, token.value) ? commands[token.value]?.args : undefined;
+  const name = commandTokens(argv)[0];
+  if (name === undefined) {
+    return undefined;
   }
-  return undefined;
+  return Object.hasOwn(commands, name) ? commands[name]?.args : undefined;
 }
 
 /**
@@ -854,11 +860,14 @@ function validationMessage(
   commands: CommandTable,
 ): string {
   if (isCommandNotFoundError(error)) {
-    // エントリコマンドは自分自身の名前でも登録されている(commandLabel と同じ
-    // 事情)。`maruhi maruhi` をサブコマンドとして勧めない
-    const candidates = (
-      error.candidates.length > 0 ? error.candidates : Object.keys(commands)
-    ).filter((candidate) => candidate !== CLI_NAME);
+    // 候補は gunshi が載せたものと**こちらの表**の合流。gunshi の候補は自身の
+    // subCommands しか知らないため、別の引数層へ移したコマンド(ADR-0016)が
+    // 抜ける = 実在するコマンドについて嘘をつく。エントリコマンドは自分自身の
+    // 名前でも登録されている(commandLabel と同じ事情)ので、`maruhi maruhi` を
+    // サブコマンドとしては勧めない
+    const candidates = [...new Set([...error.candidates, ...Object.keys(commands)])].filter(
+      (candidate) => candidate !== CLI_NAME,
+    );
     return `不明なコマンドです${suggestionText(error.commandName, candidates, "使えるコマンド")}`;
   }
   if (isArgsValidationError(error) && error.code !== undefined) {

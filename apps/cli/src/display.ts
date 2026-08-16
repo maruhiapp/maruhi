@@ -6,9 +6,9 @@
 // してから表示する。値(--show)は対象外: 値はメンバーが E2EE で書いた
 // データでサーバーには偽造できず、改変すれば復号失敗に落ちる。
 
-import { Effect } from "effect";
+import { Effect, type Stdio } from "effect";
 
-import { ensureValueDisplayAllowed } from "./agent.ts";
+import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 
@@ -78,15 +78,17 @@ export function decodeValueText(value: Uint8Array): string | null {
   }
 }
 
-/** 値の端末表示(pull --show)。エージェント検出時は agent.ts が拒否する。 */
+/** 値の端末表示(pull --show)。表示可否は agent-gate.ts が拒否する。 */
 export function showValues(
   variables: readonly DisplayableVariable[],
-): Effect.Effect<void, CliError, CliIo> {
+): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     // コマンド入口(復号前)の検査が本線。復号後のこの検査は、showValues を
-    // 直接呼ぶ将来の経路が入口検査を欠いても表示に至らせない防衛線
-    yield* ensureValueDisplayAllowed(io.agentProfile());
+    // 直接呼ぶ将来の経路が入口検査を欠いても表示に至らせない防衛線。
+    // **両方**を新しい gate(TTY 一次境界)に揃える — 片方を deny-list の
+    // まま残すと、防衛線側だけ未知のエージェントに素通りされる
+    yield* ensureValueDisplayAllowed;
     // 全値のデコードを出力より前に完了させる(all-or-nothing)。1 値でも不正
     // UTF-8 なら何も表示せず失敗し、部分出力(前半の値だけ画面に残る)を作らない
     const lines: string[] = [];

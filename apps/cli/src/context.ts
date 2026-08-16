@@ -8,7 +8,7 @@
 //   openMetadataProjectWith = 鍵なし(平文メタデータしか読まないコマンド — env diff)
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
-import { Effect } from "effect";
+import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
@@ -33,7 +33,14 @@ import {
 } from "./session.ts";
 import { resyncExtended, syncProject, type VerifiedProject } from "./sync.ts";
 
-/** Services every CLI command may need (production wiring lives in live.ts). */
+/**
+ * Services every CLI command may need (production wiring lives in live.ts).
+ *
+ * `Stdio` は引数層(ADR-0016)の判定材料 — argv と端末の有無 — の出所。
+ * `process.argv` / `process.stdout.isTTY` を直に読まないための境界で、値の
+ * 表示可否(agent-gate.ts)がこれを要求するため、コマンド本体からも見える
+ * ここに置く。本番は `@effect/platform-bun`、テストは `Stdio.layerTest`。
+ */
 export type CliServices =
   | Keychain
   | ConfigStore
@@ -41,6 +48,7 @@ export type CliServices =
   | PinStore
   | CliIo
   | ProcessRunner
+  | Stdio.Stdio
   | HttpClient.HttpClient;
 
 /** データ系コマンド共通のフラグ(サーバー / プロジェクト / 環境の上書き)。 */

@@ -5,15 +5,23 @@
 // この境界に集約する。本番実装は live.ts。
 //
 // 絶対規則: log / logError に平文値・鍵素材を渡さない(呼び出し側の責務。
-// 値の表示は pull --show の明示経路のみで、agent 検出時は拒否される)。
+// 値の表示は pull --show の明示経路のみで、人間の対話端末以外では拒否される
+// — agent-gate.ts)。
 
 import { Context, type Effect } from "effect";
-import type { getAgentProfile } from "gunshi/agent";
 
+import type { AgentProfile } from "./agent-gate.ts";
 import type { CliError } from "./errors.ts";
 
-/** Agent-detection profile (`gunshi/agent`). */
-export type AgentProfile = ReturnType<typeof getAgentProfile>;
+/**
+ * Agent-detection profile.
+ *
+ * 実体は agent-gate.ts(検出は live.ts が std-env で行う)。値の表示可否の
+ * **一次境界は TTY** で、この profile は二次層 — 据え置きの deny-list ゲート
+ * (invite / member / recovery / server grant。ADR-0016 決定 7 の裁定)が
+ * `agentProfile()` として読む。
+ */
+export type { AgentProfile };
 
 /** I/O boundary for CLI commands (stdout / stderr / stdin / env / agent detection). */
 export interface CliIoShape {

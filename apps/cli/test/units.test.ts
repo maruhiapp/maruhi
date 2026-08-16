@@ -3,13 +3,15 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Effect, Exit, Layer } from "effect";
+import { Effect, Exit, Layer, Stdio } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AgentProfileRef } from "../src/agent-gate.ts";
 import { normalizeStdinValue, optionRestrictedTo, runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
-import { decodeValueText } from "../src/display.ts";
+import { decodeValueText, showValues } from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
+import { CliIo } from "../src/io.ts";
 import {
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -244,6 +246,64 @@ describe("runOp", () => {
     expect(JSON.stringify(exit)).toContain("`--` の後に指定");
     // 書き方の誤りは入口と同じ usage エラー(終了コード 2)として立てる
     expect(JSON.stringify(exit)).toContain('"usage":true');
+  });
+});
+
+describe("showValues(復号後の防衛線)", () => {
+  /** 出力を捨てる CliIo(この検査は「表示に至らないこと」だけを見る)。 */
+  const silentIo = Layer.succeed(CliIo, {
+    log: () => Effect.void,
+    logError: () => Effect.void,
+    readStdin: Effect.succeed(new Uint8Array(0)),
+    promptLine: () => Effect.succeed(""),
+    envVar: () => undefined,
+    agentProfile: () => ({ isAgent: false }),
+  });
+
+  const showOne = (input: {
+    readonly agent?: { readonly isAgent: boolean; readonly name?: string };
+    readonly stdinIsTerminal: boolean;
+    readonly stdoutIsTerminal: boolean;
+  }) =>
+    Effect.runPromiseExit(
+      showValues([variable("SECRET", "plaintext-value")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            silentIo,
+            Layer.succeed(AgentProfileRef, input.agent ?? { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(input.stdinIsTerminal),
+              stdoutIsTerminal: Effect.succeed(input.stdoutIsTerminal),
+            }),
+          ),
+        ),
+      ),
+    );
+
+  it("入口の検査を通らない直接呼び出しでも、端末以外では表示しない", async () => {
+    // 本線は pull の入口(復号前)。ここは showValues を直接呼ぶ将来の経路が
+    // 入口検査を欠いても表示に至らせない防衛線で、**両層とも同じ判定**
+    // (一次 = TTY / 二次 = エージェント検出)であることを固定する
+    const piped = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: false });
+    expect(Exit.isFailure(piped)).toBe(true);
+    expect(JSON.stringify(piped)).toContain("対話端末でのみ許可されます");
+    expect(JSON.stringify(piped)).not.toContain("plaintext-value");
+
+    const headless = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: true });
+    expect(Exit.isFailure(headless)).toBe(true);
+
+    const agent = await showOne({
+      agent: { isAgent: true, name: "claude" },
+      stdinIsTerminal: true,
+      stdoutIsTerminal: true,
+    });
+    expect(Exit.isFailure(agent)).toBe(true);
+    expect(JSON.stringify(agent)).toContain("AI エージェント環境を検出");
+  });
+
+  it("人間の対話端末では表示する(検査が空振りしていない陽性対照)", async () => {
+    const allowed = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: true });
+    expect(Exit.isSuccess(allowed)).toBe(true);
   });
 });
 

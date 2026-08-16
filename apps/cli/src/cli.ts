@@ -1,8 +1,12 @@
-// maruhi CLI のコマンド定義(Gunshi)と Effect 実行の結線。
+// maruhi CLI のコマンド定義と Effect 実行の結線。
 //
-// コマンド階層は 1 段(サブコマンド + positional の action)。値の入力は
-// stdin(argv に平文値を載せない)、値の表示は pull --show のみで、AI
-// エージェント検出時は拒否する(agent.ts)。`maruhi run` は許可される。
+// **移行中**(ADR-0016 の第 1 段階): `pull` / `run` / `env create` は
+// `effect/unstable/cli`(effect-cli.ts)、残りは Gunshi のまま。runCli が
+// 解決済みのコマンド名で振り分ける(migratedCommandKey)。
+//
+// Gunshi 側のコマンド階層は 1 段(サブコマンド + positional の action)。
+// 値の入力は stdin(argv に平文値を載せない)、値の表示は pull --show のみで、
+// 対話端末以外では拒否する(agent-gate.ts)。`maruhi run` は許可される。
 
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -17,16 +21,17 @@ import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
-import { version as packageVersion } from "../package.json";
-import { ensureValueDisplayAllowed } from "./agent.ts";
 import {
   type ArgCheckContext,
   argsRejection,
   type ArgsCheckOptions,
   type ArgTable,
   type ArgTokenShape,
+  commandNameAfterTerminator,
+  commandTokens,
+  type CommandTable,
   declaredOptionName,
-  restArguments,
+  TERMINATOR_BEFORE_COMMAND,
   typedName,
   usageErrorMessages,
 } from "./args.ts";
@@ -52,8 +57,8 @@ import {
   openSession,
   resolveProjectId,
 } from "./context.ts";
-import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
-import { envCreateOp } from "./env-create.ts";
+import { displayText, logWarnings } from "./display.ts";
+import { COMMAND_SPECS, envCreateCommand, runEffectCli } from "./effect-cli.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
@@ -79,7 +84,6 @@ import {
 } from "./member.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
-import { type PulledVariables, pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import {
@@ -94,19 +98,13 @@ import {
   rotationDismissOp,
   rotationListOp,
 } from "./rotation.ts";
-import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { syncProject } from "./sync.ts";
+import { CLI_VERSION } from "./version.ts";
 
 export type { CliServices } from "./context.ts";
-
-// バージョンの単一の出所は apps/cli/package.json。リリース時はタグとの一致を
-// release workflow が検査する(docs/RELEASING.md)。named import は必須:
-// default import に変えるとマニフェスト全体(scripts・依存ピン)が npm 配布物と
-// 全バイナリへ埋め込まれる(実測。npm-dist.test.ts が成果物側で固定)
-const CLI_VERSION: string = packageVersion;
 
 /** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
 export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
@@ -345,31 +343,6 @@ function projectCommand(execute: Execute) {
           return yield* Effect.fail(usageError("不明な操作です(init | verify)"));
         }),
       ),
-  });
-}
-
-/** `maruhi env create <id>`: 複合リクエストによる環境作成(§12-4)。 */
-function envCreate(
-  flags: CommonFlags & { readonly name?: string | undefined },
-  environmentId: EnvironmentId,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openProject(flags);
-    const created = yield* envCreateOp({
-      client: context.client,
-      verified: context.verified,
-      environmentId,
-      name: flags.name ?? environmentId,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-    });
-    yield* io.log(
-      // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り
-      // 直した場合、コマンド開始時のビューのメンバー数とは食い違いうる)
-      `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${created.memberCount} 名へラップ済み)`,
-    );
   });
 }
 
@@ -755,7 +728,9 @@ function envCommand(execute: Execute) {
             );
           }
           if (action === "create") {
-            return yield* envCreate({ ...flags, name: ctx.values.name }, environmentId);
+            // 本体は effect-cli.ts と共有する(引数層が 2 つある移行中に、
+            // 実装まで 2 つ持つと片方だけ直す事故が起きる)
+            return yield* envCreateCommand({ ...flags, name: ctx.values.name }, environmentId);
           }
           // ENV_ACTIONS の全分岐を上で処理済み(到達しない)。操作を足して
           // ここを書き忘れると**コンパイルエラー**になる
@@ -2087,59 +2062,6 @@ function auditCommand(execute: Execute) {
   });
 }
 
-function pullCommand(execute: Execute) {
-  return define({
-    name: "pull",
-    description: "同期検査(§6.3)+ 配布時検証(§5.1)+ 復号し、メタデータを表示する",
-    args: {
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject)",
-      },
-      env: { type: "string", description: "環境 ID(省略時は config の defaultEnvironment)" },
-      show: {
-        type: "boolean",
-        // 否定形(`--no-show`)を宣言する(既定と同じだが、明示的に「表示しない」
-        // と書けるようにする — `--show=false` を書きたくなる形の受け皿)
-        negatable: true,
-        description: "値を端末に表示する(AI エージェント環境では拒否される)",
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const io = yield* CliIo;
-          // 値の表示拒否(AI エージェント検出)はコマンド入口 = 復号前に検査する。
-          // 環境全体を復号してから拒否しない(復号された平文を作らない)
-          if (ctx.values.show === true) {
-            yield* ensureValueDisplayAllowed(io.agentProfile());
-          }
-          const context = yield* openEnvironment(ctx.values);
-          const pulled: PulledVariables = yield* pullVariables({
-            client: context.client,
-            verified: context.verified,
-            environmentId: context.environmentId,
-            recipient: context.recipient,
-            resync: context.resync,
-            floor: context.floorHandle,
-          });
-          yield* logWarnings(pulled.warnings);
-          yield* io.log(
-            `同期・検証 OK: ${pulled.variables.length} 変数(環境 ${context.environmentId})`,
-          );
-          for (const variable of pulled.variables) {
-            yield* io.log(formatPulledLine(variable));
-          }
-          if (ctx.values.show === true) {
-            yield* showValues(pulled.variables);
-          }
-        }),
-      ),
-  });
-}
-
 function pushCommand(execute: Execute) {
   return define({
     name: "push",
@@ -2187,61 +2109,6 @@ function pushCommand(execute: Execute) {
             '。値は stdin から読みます(例: printf %s "$SECRET" | maruhi push API_KEY)',
         },
       ),
-  });
-}
-
-function runCommand(execute: Execute) {
-  return define({
-    name: "run",
-    description: "pull + 復号した値を子プロセスの環境変数へメモリ注入してコマンドを実行する",
-    args: {
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject)",
-      },
-      env: { type: "string", description: "環境 ID(省略時は config の defaultEnvironment)" },
-    },
-    run: (ctx) => {
-      // `--` の後ろは 1 度だけ組む(検査と実行で食い違わせない)
-      const command = restArguments(ctx.tokens);
-      return execute(
-        ctx,
-        Effect.gen(function* () {
-          const context = yield* openEnvironment(ctx.values);
-          const pulled = yield* pullVariables({
-            client: context.client,
-            verified: context.verified,
-            environmentId: context.environmentId,
-            recipient: context.recipient,
-            resync: context.resync,
-            floor: context.floorHandle,
-          });
-          yield* logWarnings(pulled.warnings);
-          // `maruhi run` の環境変数名は検証済みステートメント経由(§4.2 / §12-7)。
-          // 実行制御系変数名 denylist(run.ts)は検証済み name に適用される防衛層。
-          // 子プロセスの引数は `ctx.rest` ではなくトークンから組む(空文字列の
-          // 引数が rest から落ちる gunshi の挙動 — args.ts の restArguments)
-          return yield* runOp({ command, variables: pulled.variables });
-        }),
-        {
-          // `maruhi run npm test`(`--` 忘れ)は位置引数として落ちる。run は
-          // 実行対象を `--` の後ろからしか取らないので、書き方を示して案内する
-          strayPositionalHint:
-            "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)",
-          // `--` の後ろを読む唯一のコマンド(他コマンドでは黙って捨てられる)
-          acceptsRest: true,
-          // 実行対象が無い実行(`maruhi run` / `maruhi run --` / `--` の後ろが
-          // 空文字列 = `maruhi run -- "$CMD"` の未設定形)は**書き方の誤り**
-          // なので入口で落とす。ここを通すと pull と全変数の復号まで進んでから
-          // spawn が失敗する(平文を作る意味が無い)。runOp 側の同じ検査は
-          // 直接呼び出し向けの防衛線として残す
-          restRequired: RUN_COMMAND_REQUIRED,
-          // 実行に使うものと同じ配列を渡す(検査と実行で 2 度組まない)
-          rest: command,
-        },
-      );
-    },
   });
 }
 
@@ -2323,6 +2190,30 @@ function entryCommand(execute: Execute, commands: readonly string[]) {
 }
 
 /**
+ * `effect/unstable/cli` へ移した 3 コマンド(ADR-0016 の第 1 段階)への振り分け。
+ * 戻り値は診断の宛先(解決済みのコマンド段)にそのまま使う。
+ *
+ * コマンドの解決は **gunshi と同じ規則**(args.ts の commandTokens)で行う。
+ * 自前の argv 走査を持たないためと、振り分けから漏れた形が gunshi 側で
+ * 「不明なコマンドです」になる — 実在するコマンドについて嘘をつく — のを
+ * 避けるため。`maruhi -- run printenv` のように `--` の後ろへコマンド名を
+ * 書いた形もここで拾い、移行先が「`--` を跨がない」判定で落とす。
+ *
+ * `env` は create だけを移したので、`env create` の並びのときだけ新しい経路へ
+ * 渡す。移行途中なので `maruhi env --name x create dev` のような**操作名より
+ * 前にフラグを書いた形**(commandTokens には値も並ぶ)は gunshi 側の env
+ * コマンドが受け持つ — rotate / diff と同じ引数表のまま。次段でコマンドごと移す。
+ */
+function migratedCommandKey(argv: readonly string[]): string | null {
+  const tokens = commandTokens(argv);
+  const head = tokens[0];
+  if (head === "pull" || head === "run") {
+    return head;
+  }
+  return head === "env" && tokens[1] === "create" ? "env create" : null;
+}
+
+/**
  * Runs the maruhi CLI against `argv` with the given service layer and
  * returns the process exit code (0 = success, 1 = failure, 2 = usage error).
  */
@@ -2343,6 +2234,22 @@ export async function runCli(
       }).pipe(Effect.provide(layer)),
     );
   };
+
+  // コマンド名が `--` の**後ろ**にある実行(`maruhi -- run printenv`)は、
+  // どのコマンドへ振り分けるかを決めるより先に落とす。gunshi は `--` を跨いで
+  // コマンドを解決するため、通すと「`--` の後ろの先頭 = コマンド名そのもの」が
+  // 実行対象として渡る。移行先(effect/unstable/cli)は跨がないが、そちらでは
+  // 「余分な引数です」としか言えない — 直し方(コマンド名を前に出す)を
+  // 伝えられる位置はここだけなので、振り分けの手前に置く
+  if (commandNameAfterTerminator(argv)) {
+    await reportUsageError([TERMINATOR_BEFORE_COMMAND]);
+    return 2;
+  }
+
+  const migrated = migratedCommandKey(argv);
+  if (migrated !== null) {
+    return await runEffectCli(migrated, argv, layer);
+  }
 
   const execute: Execute = async (ctx, program, options) => {
     // 書き方の検査はコマンド本体より前 = 通信・復号より前に置く。
@@ -2401,14 +2308,29 @@ export async function runCli(
     member: memberCommand(execute),
     rotation: rotationCommand(execute),
     audit: auditCommand(execute),
-    pull: pullCommand(execute),
     push: pushCommand(execute),
-    run: runCommand(execute),
     config: configCommand(execute),
   };
 
+  // コマンドの一覧は「gunshi に残っているもの + 移行済みのもの」。登録済みの
+  // 表から導くのは変わらないが、移行済みのコマンドは gunshi の subCommands に
+  // 居ないので、ここで合流させる — ヘルプの一覧と**打ち間違いの候補**の両方が
+  // これを読む。合流させないと `maruhi pul` が「不明なコマンドです」の候補に
+  // pull を出せず、実在するコマンドについて嘘をつく
+  // (段は先頭だけ: `env create` は `env` として既に並んでいる)
+  const migratedNames = [
+    ...new Set(Object.keys(COMMAND_SPECS).map((key) => key.split(" ")[0] ?? key)),
+  ].filter((name) => !Object.hasOwn(subCommands, name));
+  const knownCommands: CommandTable = {
+    ...subCommands,
+    // 移行済みは引数表を持たない(gunshi の execute へは来ない)。候補の
+    // 名前としてだけ並べる
+    ...Object.fromEntries(migratedNames.map((name) => [name, {}])),
+  };
+  const commandNames = Object.keys(knownCommands);
+
   try {
-    await cli([...argv], entryCommand(execute, Object.keys(subCommands)), {
+    await cli([...argv], entryCommand(execute, commandNames), {
       name: "maruhi",
       version: CLI_VERSION,
       description: "maruhi — ディスクレス secrets 管理 CLI",
@@ -2431,7 +2353,7 @@ export async function runCli(
     // 組み立てで throw した等のバグ)は 1 で報告する — 打ち間違いと区別できないと
     // 直しようがないうえ、無言で飲むことにもなる(CLAUDE.md)
     if (error instanceof AggregateError) {
-      await reportUsageError(usageErrorMessages(error, argv, subCommands));
+      await reportUsageError(usageErrorMessages(error, argv, knownCommands));
       return 2;
     }
     const message = displayText(error instanceof Error ? error.message : String(error));

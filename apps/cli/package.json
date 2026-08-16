@@ -19,11 +19,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@effect/platform-bun": "4.0.0-rc.109",
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
     "effect": "4.0.0-rc.109",
-    "gunshi": "0.37.1"
+    "gunshi": "0.37.1",
+    "std-env": "4.2.0"
   },
   "devDependencies": {
     "@types/bun": "1.3.14"
