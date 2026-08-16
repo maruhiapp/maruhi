@@ -14,9 +14,12 @@ import { CliIo } from "./io.ts";
 
 // Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
 const CONTROL_CHARS = /\p{Cc}/gu;
-// escapeText が逃がす対象: 制御文字 + バックスラッシュ + 引用符(可逆性と、
-// 引用符で囲んだ表示を閉じられないことの両方に要る)
-const ESCAPABLE = /[\\"]|\p{Cc}/gu;
+// escapeText が逃がす対象: 制御文字(Cc)+ **書式文字(Cf)** + バックスラッシュ
+// + 引用符。Cf を含めるのは、双方向上書き(U+202A〜U+202E / U+2066〜U+2069)が
+// 端末上で文字列の見た目の順序を変え、ゼロ幅文字(U+200B 等)が見えないまま
+// 名前を変えるため — どちらも「表示された名前 = 実際の名前」を破る。
+// バックスラッシュと引用符は可逆性と、引用符で囲んだ表示を閉じられないことに要る
+const ESCAPABLE = /[\\"]|\p{Cc}|\p{Cf}/gu;
 
 /** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
 export function displayText(value: string): string {
@@ -25,6 +28,9 @@ export function displayText(value: string): string {
 
 /**
  * Escapes control characters as `\uXXXX` for safe *and reversible* display.
+ *
+ * 逃がす対象は制御文字だけでは足りない: 双方向上書き・ゼロ幅といった書式文字は
+ * 「見た目」を変えるので、そのまま出すと表示された名前と実際の名前が食い違う。
  *
  * {@link displayText} は置換文字に潰すため、**利用者が元の文字列を復元できない**。
  * 「この名前のエントリを消してください」のように文字列そのものを操作対象として

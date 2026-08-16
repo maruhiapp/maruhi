@@ -343,6 +343,14 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // エスケープしてある旨を文面に明記する(書かないと、表示どおりの名前を
     // 探して見つけられず、唯一の復旧手順が実行できない)
     expect(injected).toContain("エスケープして表示しています");
+    // (c) 書式文字: 双方向上書き・ゼロ幅は見た目を変えるため、制御文字と同じく
+    //     逃がす。素通しすると「表示された名前 = 実際の名前」が破れ、案内が
+    //     指すエントリを探せない(端末上の並び順まで変えられる)
+    const bidi = redactedPlaceholderMasterKeyMessage("master::x::u\u202Ea\u200Bb");
+    expect(bidi).not.toContain("\u202E");
+    expect(bidi).not.toContain("\u200B");
+    expect(bidi).toContain("\\u202e");
+    expect(bidi).toContain("\\u200b");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
