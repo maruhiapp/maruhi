@@ -16,8 +16,9 @@ gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて
 比較対象のコマンド定義はいずれも同型: `pull`(boolean `--show` / string `--env`(別名 `-e`)/ integer `--limit`)、
 `run`(可変長 positional)、`env create <environment-id>`。
 
-- 環境: Bun 1.3.14 / effect 4.0.0-beta.107(**リポジトリのピンと同一**)/ @stricli/core 1.3.0 / gunshi 0.37.1
+- 環境: Bun 1.3.14 / effect 4.0.0-beta.107 と **4.0.0-rc.109 の両方**(下記 §5)/ @stricli/core 1.3.0 / gunshi 0.37.1
 - 判定: 「拒否」= パース段階で型付きエラー、「沈黙」= エラーなしで**書いたのと違う値**が通る
+- effect は beta.107 と rc.109 で **12 形すべて同一の挙動**。プローブのソースも無改修で通った
 
 ## 2. 結果
 
@@ -55,9 +56,8 @@ gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて
 | @stricli/core 1.3.0 | **0** | 36 KB | 2026-07-16 |
 | util.parseArgs | **0**(Bun 内蔵) | — | — |
 
-`@effect/platform-bun` は **4.0.0-beta.107** が存在し、リポジトリがピンしている effect と版が一致する
-(`FileSystem` / `Path` / `Stdio` / `Terminal` / `ChildProcessSpawner` を `BunServices.layer` で供給)。
-なお effect には既に `4.0.0-rc.109` タグがあり、beta → rc の追随は別途の独立 PR 案件(ADR-0011)。
+`@effect/platform-bun` は effect と同じ版番号で出ており(beta.107 / rc.109 の両方が存在)、
+`FileSystem` / `Path` / `Stdio` / `Terminal` / `ChildProcessSpawner` を `BunServices.layer` で供給する。
 
 ### エージェント検出は gunshi のロックインではない
 
@@ -113,15 +113,36 @@ gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて
 
 ### 見積もりと段取り(提案)
 
-- まず `pull` / `run` / `env create`(= 危険な形が集中する 3 コマンド)だけを移植する spike PR で、
-  args.ts のどれだけが消えるかを実測する。全 14 サブコマンドの一括移行はレビュー単位として大きすぎる
-- ADR 化はその実測の後(ADR-0011「未安定依存」の下に CLI 引数層の決定として追記する形を想定)
+1. **effect を rc.109 へ上げる**(§5。本メモと同時に実施済み)。移行先を rc の API に固定してから書く
+2. `pull` / `run` / `env create`(= 危険な形が集中する 3 コマンド)だけを移植する spike PR で、
+   args.ts のどれだけが消えるかを実測する。全 14 サブコマンドの一括移行はレビュー単位として大きすぎる
+3. ADR 化はその実測の後(ADR-0011「未安定依存」の下に CLI 引数層の決定として追記する形を想定)
 
-## 5. 再現手順
+## 5. effect 4.0.0-beta.107 → 4.0.0-rc.109(実測)
+
+effect v4 は 2026-08 に rc へ入った(`rc.108` / `rc.109`。beta の最終は `beta.107` = 本リポジトリのピン)。
+CLI 移行を書く前に上げておくべきかを判断するため、全ワークスペースの `effect` を rc.109 に差し替えて品質ゲートを回した。
+
+| 検査 | 結果 |
+|---|---|
+| `tsc --noEmit`(全 7 ワークスペース) | 通過(**ソース変更ゼロ**) |
+| `vitest run`(全体) | 48 ファイル / **1488 件すべて通過**(workerd 実環境のサーバー / DO テストを含む) |
+| oxlint / ImportLint / fallow audit | 通過 |
+| `effect/unstable/cli` の 12 形プローブ | beta.107 と**完全に同一** |
+
+特筆すべきは `apps/server/test/data-policy.test.ts` の**ドリフト検出器が green のまま通ったこと**。
+これは「全 14 エンドポイント × 全エラー種で `Schema.is` / `endpoint.error` 由来の fail/die 判定が宣言と厳密一致するか」を
+見るもので、PR #49 で beta.107 に対して手動検証した契約導出の自動再実行にあたる。
+つまり **rc.109 でも HttpApi のエラー契約の意味は変わっていない**(手動再検証は不要)。
+
+判断: **rc へ上げてから CLI を移行する**。beta のまま移行すると、移行直後に rc 追随の差分を
+同じファイル群へもう一度かける二度手間になる。上げる代償は実測上ゼロだった。
+
+## 6. 再現手順
 
 ```bash
 mkdir probe && cd probe && bun init -y
-bun add effect@4.0.0-beta.107 @effect/platform-bun@4.0.0-beta.107 gunshi@0.37.1 @stricli/core@1.3.0
+bun add effect@4.0.0-rc.109 @effect/platform-bun@4.0.0-rc.109 gunshi@0.37.1 @stricli/core@1.3.0
 # 各候補に同じ argv(上表の 12 形)を食わせ、値・エラー・stdout バイト数を記録する
 ```
 
