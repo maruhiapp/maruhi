@@ -141,6 +141,18 @@ describe("秘密は素朴な出力経路で伏字になる", () => {
 // 2. キーチェーン往復(保存 → 読み戻し → 実使用)
 // ---------------------------------------------------------------------------
 
+/** master 鍵レコードの JSON(指定フィールドだけ差し替える)。 */
+function masterRecordJson(overrides: Record<string, string>): string {
+  return JSON.stringify({
+    suite: "maruhi/v1",
+    encPubHex: "aa".repeat(32),
+    encSkHex: "bb".repeat(32),
+    sigPubHex: "cc".repeat(32),
+    sigSkSeedHex: "dd".repeat(32),
+    ...overrides,
+  });
+}
+
 describe("キーチェーン往復は伏字保存で壊れていない", () => {
   it("serializeStoredToken は生値を書く(JSON.stringify の伏字保存を踏んでいない)", () => {
     const record = parseStoredToken(
@@ -153,15 +165,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
   });
 
   it("master 鍵レコードは秘密側だけ伏字になり、公開側は素のまま残る", () => {
-    const record = parseStoredMasterKey(
-      JSON.stringify({
-        suite: "maruhi/v1",
-        encPubHex: "aa".repeat(32),
-        encSkHex: "bb".repeat(32),
-        sigPubHex: "cc".repeat(32),
-        sigSkSeedHex: "dd".repeat(32),
-      }),
-    );
+    const record = parseStoredMasterKey(masterRecordJson({}));
     if (record === null) throw new Error("expected a parsed master-key record");
     const json = JSON.stringify(record);
     // 秘密側は出ない
@@ -175,15 +179,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
   });
 
   it("serializeStoredMasterKey は生値を書く(伏字保存で鍵を失っていない)", () => {
-    const record = parseStoredMasterKey(
-      JSON.stringify({
-        suite: "maruhi/v1",
-        encPubHex: "aa".repeat(32),
-        encSkHex: "bb".repeat(32),
-        sigPubHex: "cc".repeat(32),
-        sigSkSeedHex: "dd".repeat(32),
-      }),
-    );
+    const record = parseStoredMasterKey(masterRecordJson({}));
     if (record === null) throw new Error("expected a parsed master-key record");
     const serialized = serializeStoredMasterKey(record);
     expect(serialized).toContain("bb".repeat(32));
@@ -267,6 +263,28 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
       }).pipe(Effect.provide(FetchHttpClient.layer)),
     );
     expect(authorizations).toEqual(["Bearer maruhi_pat_issued_real"]);
+  });
+
+  it("伏字が保存されていたら読み出し境界で壊れたレコードとして弾く", () => {
+    // 直列化での剥がし忘れは型で止まらない唯一の経路。読み側で検出しないと
+    // 「401 = 失効したので再ログインを」「鍵素材を読み込めません」という
+    // 原因を取り違えた診断になり、真因(保存側)へ辿り着けない
+    for (const placeholder of ["<redacted>", "<redacted:maruhi-token>"]) {
+      expect(
+        parseStoredToken(JSON.stringify({ token: placeholder, userId: "u1", tokenId: "t1" })),
+      ).toBeNull();
+    }
+    expect(
+      parseStoredMasterKey(masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" })),
+    ).toBeNull();
+    expect(
+      parseStoredMasterKey(masterRecordJson({ sigSkSeedHex: "<redacted:master-sig-seed>" })),
+    ).toBeNull();
+    // 正常なレコードは通る(検出が過剰に効いていない陽性対照)
+    expect(parseStoredMasterKey(masterRecordJson({}))).not.toBeNull();
+    expect(
+      parseStoredToken(JSON.stringify({ token: "maruhi_pat_x", userId: "u1", tokenId: "t1" })),
+    ).not.toBeNull();
   });
 
   it("key generate の保存 → loadMasterKeys の読み戻し → 鍵として実使用できる", async () => {
@@ -464,14 +482,30 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "session.ts": 2,
 };
 
+/**
+ * コメントを落としてから数える。JSDoc や行コメントで `Redacted.value(` に
+ * 言及しただけで件数が動くと、表の更新が「実際に剥がす箇所が増えたのか、
+ * 説明を書いただけか」を区別できなくなる(この表の価値は件数の意味にある)。
+ * コメント内の記述は実行されないので、落とす方向に fail-open は無い。
+ */
+function stripComments(source: string): string {
+  return source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/.*$/gm, "");
+}
+
 async function collectUnwrapSites(): Promise<Record<string, number>> {
-  const files = (await readdir(SRC_DIR)).filter((name) => name.endsWith(".ts")).toSorted();
+  // **再帰**で歩く: 非再帰だと将来 src/ 配下にディレクトリが増えたとき、
+  // その中の剥がし箇所がこの棚卸しから丸ごと消える(fail-open)。この表は
+  // 「剥がす箇所を数えられる状態」を保つための唯一の仕掛けなので、
+  // 見落とす方向の欠陥は表そのものを無意味にする
+  const entries = await readdir(SRC_DIR, { recursive: true });
+  const files = entries.filter((name) => name.endsWith(".ts")).toSorted();
   const counts: Record<string, number> = {};
   for (const name of files) {
-    const source = await readFile(join(SRC_DIR, name), "utf8");
+    const source = stripComments(await readFile(join(SRC_DIR, name), "utf8"));
     const matches = source.match(/Redacted\.value\(/g);
     if (matches !== null) {
-      counts[name] = matches.length;
+      // キーは src/ からの相対パス(サブディレクトリを区別できる形)
+      counts[name.replaceAll("\\", "/")] = matches.length;
     }
   }
   return counts;

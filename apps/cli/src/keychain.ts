@@ -71,6 +71,23 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+// `Redacted.toString()` / `toJSON()` の出力そのもの(ラベル付きも含む)。
+const REDACTED_PLACEHOLDER = /^<redacted(?::[^>]*)?>$/;
+
+/**
+ * 読み出し境界での伏字保存の検出。
+ *
+ * 冒頭の注記のとおり、直列化で剥がし忘れると "<redacted>" が保存される。
+ * これは**型では止まらない**唯一の経路なので、読み側でも 1 度だけ見る:
+ * 検出しないと、トークンなら「401 = 失効したので再ログインを」、master 鍵なら
+ * 「鍵素材を読み込めません」という**原因を取り違えた診断**に化け、真因
+ * (保存側のバグ)へ辿り着けない。生値がこの形になることはない
+ * (トークンは `maruhi_pat_` / `maruhi_inv_` 接頭辞、鍵素材は hex)。
+ */
+function isRedactedPlaceholder(value: string): boolean {
+  return REDACTED_PLACEHOLDER.test(value);
+}
+
 /** Parses a stored token record; null when the shape is corrupt. */
 export function parseStoredToken(json: string): StoredToken | null {
   try {
@@ -78,6 +95,7 @@ export function parseStoredToken(json: string): StoredToken | null {
     if (
       isRecord(value) &&
       nonEmptyString(value["token"]) &&
+      !isRedactedPlaceholder(value["token"]) &&
       nonEmptyString(value["userId"]) &&
       nonEmptyString(value["tokenId"])
     ) {
@@ -118,8 +136,10 @@ export function parseStoredMasterKey(json: string): StoredMasterKey | null {
       nonEmptyString(value["suite"]) &&
       nonEmptyString(value["encPubHex"]) &&
       nonEmptyString(value["encSkHex"]) &&
+      !isRedactedPlaceholder(value["encSkHex"]) &&
       nonEmptyString(value["sigPubHex"]) &&
-      nonEmptyString(value["sigSkSeedHex"])
+      nonEmptyString(value["sigSkSeedHex"]) &&
+      !isRedactedPlaceholder(value["sigSkSeedHex"])
     ) {
       return {
         suite: value["suite"],
