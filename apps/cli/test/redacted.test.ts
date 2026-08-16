@@ -425,6 +425,30 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(message).toContain("`maruhi key generate`");
   });
 
+  it("読めない master 鍵に「鍵がある」と言わない(伏字以外の破損も同じ出口)", async () => {
+    // 「既にある」と言ってよいのは読めるレコードが実在するときだけ。読めない
+    // 記録に拒否文言を返すと、事実に反するうえ出口も示さないまま
+    // generate / recover / show の全部が塞がる
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    const entryName = masterKeyEntryName(maruhi.origin, "u1");
+    env.keychain.set(entryName, '{"suite":"maruhi/v1","encPubHex":"zz"}');
+    const session = {
+      origin: maruhi.origin,
+      userId: "u1",
+      token: Redacted.make("maruhi_pat_stored"),
+    };
+    const exit = await Effect.runPromiseExit(
+      ensureNoStoredMasterKey(session, "master 鍵は既に存在します").pipe(Effect.provide(env.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const dump = JSON.stringify(exit);
+    expect(dump).toContain("読み取れません");
+    expect(dump).toContain("手で削除");
+    expect(dump).not.toContain("master 鍵は既に存在します");
+  });
+
   it("伏字の master 鍵は「鍵がある」と報告しない(上書き防止ガードでも区別する)", async () => {
     // このガードは key generate / key recover の**両方**が最初に当たる場所。
     // 「既に存在します」と言うと、使えない鍵を「ある」と報告したうえで、

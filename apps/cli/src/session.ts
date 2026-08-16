@@ -227,6 +227,20 @@ export function resolveSession(
 }
 
 /**
+ * 既存レコードに対する拒否文言の選択。
+ *
+ * 伏字・破損・正常で原因も出口も違う: 伏字と破損は「手で消す」出口を示す必要が
+ * あり、正常な鍵だけが本来の上書き拒否({@link ensureNoStoredMasterKey} の
+ * 呼び出し側が渡す文言)に当たる。
+ */
+function refusalFor(existing: string, entryName: string, refusal: string): string {
+  if (hasRedactedPlaceholder(existing)) {
+    return redactedPlaceholderMasterKeyMessage(entryName);
+  }
+  return parseStoredMasterKey(existing) === null ? corruptMasterKeyMessage(entryName) : refusal;
+}
+
+/**
  * Fails when a master key is already stored for (origin, userId); returns the
  * keychain entry name otherwise. keygen / recover 共通の上書き防止ガード
  * (鍵を失うと復号可能性を失うため、上書きは常に拒否する)。
@@ -245,11 +259,10 @@ export function ensureNoStoredMasterKey(
     const entryName = masterKeyEntryName(session.origin, session.userId);
     const existing = yield* keychain.get(entryName);
     if (existing !== null) {
-      return yield* Effect.fail(
-        hasRedactedPlaceholder(existing)
-          ? cliError(redactedPlaceholderMasterKeyMessage(entryName))
-          : cliError(refusal),
-      );
+      // 「既にある」と言ってよいのは**読めるレコードが実在するとき**だけ。
+      // 読めない記録に対して拒否文言(使える鍵がある)を返すと、事実に反する
+      // うえ出口も示さないまま generate / recover / show の全部が塞がる
+      return yield* Effect.fail(cliError(refusalFor(existing, entryName, refusal)));
     }
     return entryName;
   });
@@ -288,7 +301,14 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
   });
 }
 
-const corruptKeyError = cliError(
+/**
+ * 鍵素材そのものを読み込めない({@link importMasterKeys} の失敗)。
+ *
+ * 呼び出し側が「どの成果物が壊れているか」で文言を差し替えられるよう公開する
+ * — 同じ失敗でも、キーチェーンのレコード由来かリカバリーブロブ由来かで
+ * 指すべき対象と復旧手順が変わる。
+ */
+export const corruptKeyError = cliError(
   "キーチェーンの master 鍵レコードが壊れています(鍵素材を読み込めません)",
 );
 

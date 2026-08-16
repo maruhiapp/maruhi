@@ -38,6 +38,7 @@ import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
+  corruptKeyError,
   importMasterKeys,
   loadMasterKeys,
   type MasterKeys,
@@ -206,12 +207,29 @@ export function recoverMasterKeyOp(input: {
       ciphertext,
       userId: input.session.userId,
     });
-    const validated = yield* importMasterKeys(record);
+    // ブロブは解釈できたが鍵素材として読み込めない場合、壊れているのは
+    // **サーバー登録済みのブロブ**。既定の文言はキーチェーンのレコードを指すが、
+    // この経路は ensureNoStoredMasterKey を通っており、このデバイスに master 鍵の
+    // エントリは存在しない — 無い物を指した診断になってしまう。
+    // 未知スイート等は原因も出口も違うので、この 1 種類だけを写す
+    const validated = yield* importMasterKeys(record).pipe(
+      Effect.mapError((error) =>
+        error === corruptKeyError ? cliError(brokenRecoveryBlobMessage) : error,
+      ),
+    );
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
     yield* io.log("master 鍵を復元し、OS キーチェーンに保存しました");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
   });
 }
+
+/** ブロブが使えないときの共通の出口(このデバイスでは直せない)。 */
+const reRegisterGuidance =
+  "このコードでは復元できません。master 鍵が残っている別のデバイスで `maruhi key recovery` を実行して再登録してください。";
+
+/** ブロブは解釈できたが鍵素材が読み込めないときの文言。 */
+const brokenRecoveryBlobMessage =
+  `登録済みのリカバリーブロブの鍵素材を読み込めません(記録が壊れています)。${reRegisterGuidance}` as const;
 
 /**
  * 復号済みブロブの解釈。**平文の鍵素材(hex)を持つ文字列をこの関数の外へ
@@ -281,7 +299,7 @@ function unwrapWithPromptedCode(input: {
               ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
                 // レコードではない(この経路は ensureNoStoredMasterKey を通って
                 // いるので、キーチェーンに master 鍵は存在しない)
-                `${placeholderCause("登録済みのリカバリーブロブ")}。このコードでは復元できません。master 鍵が残っている別のデバイスで \`maruhi key recovery\` を実行して再登録してください。併せて不具合として報告してください`
+                `${placeholderCause("登録済みのリカバリーブロブ")}。${reRegisterGuidance}併せて不具合として報告してください`
               : "復号したブロブを master 鍵レコードとして解釈できません。`maruhi key recovery` で再登録してください",
           ),
         );
