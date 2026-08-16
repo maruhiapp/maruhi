@@ -27,6 +27,7 @@ import {
   type StoredToken,
   tokenEntryName,
 } from "./keychain.ts";
+import { envTokenStatus } from "./session.ts";
 
 /**
  * GitHub OAuth App client_id の解決(AUTH_SPEC §4): `--github-client-id`
@@ -226,13 +227,19 @@ export function logoutOp(input: {
     );
     yield* io.log("ログアウトしました(トークンを失効し、キーチェーンから削除しました)");
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
-    // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する
-    // 判定は resolveSession と同じ形にする(trim 後に空なら未設定扱い)。
-    // ここだけ生値で見ると、空白だけの MARUHI_TOKEN で「引き続き認証されます」と
-    // 言った直後に次のコマンドが「ログインしていません」で落ちる
-    if ((io.envVar("MARUHI_TOKEN") ?? "").trim().length > 0) {
+    // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
+    // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは
+    // 違う結論(空白だけの値・origin 不一致でも「認証されます」)を出してしまう
+    const envToken = yield* envTokenStatus(input.origin);
+    if (envToken === "active") {
       yield* io.log(
-        "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きその トークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)",
+        "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きそのトークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)",
+      );
+    } else if (envToken === "inactive") {
+      // 設定はされているがこの origin には効かない。この状態は**キーチェーンへ
+      // 落ちずに失敗する**ので、消し忘れを「ログインしていません」以外の言葉で示す
+      yield* io.log(
+        "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN がこのサーバーと一致しないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN を対象サーバーに合わせてください)",
       );
     }
   });

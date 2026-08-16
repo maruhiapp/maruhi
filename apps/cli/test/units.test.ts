@@ -402,7 +402,7 @@ describe("showValues(復号後の防衛線)", () => {
     // 中和したことは黙らない: 表示と実際の値が別物であることを名指しする
     // (値そのものは警告に載せない)
     expect(errors.join("\n")).toContain("SECRET");
-    expect(errors.join("\n")).toContain("実際の値と一致しません");
+    expect(errors.join("\n")).toContain("実際の値と一致しない");
   });
 });
 

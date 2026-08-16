@@ -123,7 +123,8 @@ describe("maruhi key", () => {
     // 破損と違い**消してはいけない**: 将来版が書いた鍵を消させると恒久喪失に
     // なる。上書き防止ガード(ensureNoStoredMasterKey)側と同じ案内を出す
     expect(message).toContain("このレコードは残してください");
-    expect(message).not.toContain("手で削除してください");
+    // 逃げ道は条件付きでのみ示す(リカバリーコードがあるときだけ消してよい)
+    expect(message).toContain("リカバリーコードを持っている場合に限り");
   });
 
   it("show は公開鍵と FP のみ表示し、リカバリー登録状態を出す", async () => {

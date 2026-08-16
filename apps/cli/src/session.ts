@@ -185,6 +185,36 @@ function sessionFromEnvToken(input: {
 }
 
 /**
+ * MARUHI_TOKEN がこの origin に効くか。
+ *
+ * logout の案内({@link resolveSession} の次の一手)がセッション解決と食い違わない
+ * ようにするための判定で、規則(trim / origin 束縛)をここに一本化する。
+ * - `active`: 次のコマンドもこの環境変数で認証される
+ * - `inactive`: 設定はされているがこの origin には使えない(MARUHI_TOKEN_ORIGIN が
+ *   未設定・不正・不一致)。この状態では**キーチェーンへ落ちずに失敗する**ので、
+ *   「引き続き認証されます」と言ってはいけない
+ */
+export type EnvTokenStatus = "unset" | "active" | "inactive";
+
+export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const token = io.envVar("MARUHI_TOKEN")?.trim();
+    if (token === undefined || token.length === 0) {
+      return "unset";
+    }
+    const declared = io.envVar("MARUHI_TOKEN_ORIGIN");
+    if (declared === undefined || declared.length === 0) {
+      return "inactive";
+    }
+    const expected = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
+      fix: "MARUHI_TOKEN_ORIGIN 環境変数",
+    }).pipe(Effect.catch(() => Effect.succeed(null)));
+    return expected === origin ? "active" : "inactive";
+  });
+}
+
+/**
  * Resolves the authenticated session for `origin`. The MARUHI_TOKEN env path
  * resolves the user id via `GET /auth/me` (the keychain record carries it).
  */
@@ -260,7 +290,7 @@ function refusalFor(
           ? corruptMasterKeyMessage(entryName)
           : // 未知スイート等、読めない理由が破損と言い切れないものは
             // 削除を勧めない(将来版が書いた鍵を消させない)
-            foreignMasterKeyMessage(record.suite),
+            foreignMasterKeyMessage(record.suite, entryName),
       ),
     ),
   );
@@ -272,7 +302,7 @@ function refusalFor(
  */
 function unreadableMasterKeyMessage(stored: string, entryName: string): string {
   return classifyUnreadableMasterKey(stored) === "foreign"
-    ? foreignMasterKeyMessage(declaredSuiteOf(stored))
+    ? foreignMasterKeyMessage(declaredSuiteOf(stored), entryName)
     : corruptMasterKeyMessage(entryName);
 }
 
@@ -335,7 +365,7 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
         cliError(
           error === corruptKeyError
             ? corruptMasterKeyMessage(entryName)
-            : foreignMasterKeyMessage(record.suite),
+            : foreignMasterKeyMessage(record.suite, entryName),
         ),
       ),
     );

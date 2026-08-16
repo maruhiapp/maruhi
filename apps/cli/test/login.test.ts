@@ -434,9 +434,29 @@ describe("maruhi logout", () => {
       JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
     );
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", maruhi.origin);
     expect(await runCli(["logout"], env.layer)).toBe(0);
     expect(env.keychain.size).toBe(0);
     expect(env.logs.join("\n")).toContain("MARUHI_TOKEN が設定されているため");
+  });
+
+  it("MARUHI_TOKEN_ORIGIN が一致しない場合は「使われない」と案内する", async () => {
+    // resolveSession は origin 束縛を要求し、一致しなければ**キーチェーンへ
+    // 落ちずに失敗する**。ここで「引き続き認証されます」と言うと、次の
+    // コマンドが失敗する理由と食い違う
+    const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    env.keychain.set(
+      tokenEntryName(maruhi.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+    );
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
+    expect(await runCli(["logout"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("認証には使われません");
+    expect(logs).not.toContain("引き続きそのトークンで認証されます");
   });
 
   it("空白だけの MARUHI_TOKEN では警告しない(セッション解決と同じ判定)", async () => {

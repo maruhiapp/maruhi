@@ -221,11 +221,17 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
 /**
  * 現行版では読めない(将来版が書いた可能性がある)レコードの文言。
  *
- * **削除を勧めない**。消すと、その版へ上げれば使えたはずの鍵を失う。
+ * **既定では削除を勧めない**。消すと、その版へ上げれば使えたはずの鍵を失う。
+ *
+ * ただし「残してください」だけで終えると、実際には壊れているレコード(形は
+ * オブジェクトだがスイートを失った等)に当たった利用者が、更新しても直らない
+ * まま `key generate` / `key recover` / `key show` の全部を塞がれる。分類は
+ * 保守的なままにして、**条件付きの逃げ道**を併記する: リカバリーコードがあれば
+ * 元の master 鍵をそのまま復元できるので、この記録を消しても失うものが無い。
  */
-export function foreignMasterKeyMessage(suite: string | null): string {
+export function foreignMasterKeyMessage(suite: string | null, entryName: string): string {
   const named = suite === null ? "" : `(${escapeText(suite)})`;
-  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください`;
+  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください。更新しても直らず、かつリカバリーコードを持っている場合に限り、OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除して \`maruhi key recover\` で元の鍵を復元できます(コードが無い場合は消さないでください。復号可能性を失います)`;
 }
 
 /** レコードから宣言スイートだけを取り出す(読めなければ null)。 */

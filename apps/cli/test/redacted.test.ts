@@ -434,9 +434,13 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const future = JSON.stringify({ suite: "maruhi/v2", kemPubHex: "aa", kemSkHex: "bb" });
     expect(parseStoredMasterKey(future)).toBeNull();
     expect(classifyUnreadableMasterKey(future)).toBe("foreign");
-    const message = foreignMasterKeyMessage("maruhi/v2");
+    const message = foreignMasterKeyMessage("maruhi/v2", "master::https://x::u1");
     expect(message).toContain("残してください");
-    expect(message).not.toContain("削除");
+    // 既定は「消さない」。ただし行き止まりにはしない: リカバリーコードがある
+    // ときに限り、消して復元できることと消すべきエントリ名まで示す
+    expect(message).toContain("リカバリーコードを持っている場合に限り");
+    expect(message).toContain("master::https://x::u1");
+    expect(message).toContain("コードが無い場合は消さないでください");
     // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
     expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
     expect(classifyUnreadableMasterKey(masterRecordJson({ encSkHex: "" }))).toBe("corrupt");
