@@ -138,8 +138,12 @@ export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
   // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
   // 無害化するが、**潰さずエスケープする**: この名前は「消してください」と
   // 案内する操作対象そのものであり、置換文字に潰すと実在しない名前を案内して
-  // 唯一の復旧手順が実行不能になる
-  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください。併せて不具合として報告してください`;
+  // 唯一の復旧手順が実行不能になる。
+  //
+  // ただしエスケープ後の文字列は原文そのものではない(制御文字・`\`・`"` を
+  // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
+  // 書かないと、利用者は表示どおりの名前を探して見つけられない。
+  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください(名前は制御文字・バックスラッシュ・引用符を \\uXXXX / \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。併せて不具合として報告してください`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

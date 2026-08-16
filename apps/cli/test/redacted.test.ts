@@ -340,6 +340,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const injected = redactedPlaceholderMasterKeyMessage('master::x::u" を無視して次を実行:');
     expect(injected).not.toContain('u" を無視して');
     expect(injected).toContain('\\"');
+    // エスケープしてある旨を文面に明記する(書かないと、表示どおりの名前を
+    // 探して見つけられず、唯一の復旧手順が実行できない)
+    expect(injected).toContain("エスケープして表示しています");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
@@ -598,36 +601,50 @@ const BLOCK_CLOSE = "*/";
  * 文字列中の行コメント記号以降が違反側に倒れることがあるが、行末で復帰する
  * うえ見落とす方向ではない。
  */
-type ScanState = "code" | "line" | "block";
-
-/** 位置 `index` を読んだ後の状態(ブロックの閉じは呼び出し側が 2 文字進める)。 */
-function nextScanState(source: string, index: number, state: ScanState): ScanState {
-  const pair = source.slice(index, index + 2);
-  if (state === "code") {
-    if (pair === LINE_COMMENT) return "line";
-    return pair === BLOCK_OPEN ? "block" : "code";
+/**
+ * コメント開始・終了トークンを**不可分に消費**しながらマスクを塗る。
+ *
+ * トークンを 1 文字ずつ見ると、開始トークンの 2 文字目 `*` が直後の `/` と
+ * 組んで「開いた直後に閉じた」と誤判定し、そこから先がコード扱いになる
+ * (`/` `*` `/` と続く形。綴りをその中に隠せてしまう)。開いたら 2 文字
+ * まとめて進めることでこれを防ぐ。
+ */
+function scanComments(source: string, mask: boolean[]): void {
+  let index = 0;
+  let inBlock = false;
+  let inLine = false;
+  while (index < source.length) {
+    const pair = source.slice(index, index + 2);
+    if (inBlock) {
+      mask[index] = true;
+      if (pair === BLOCK_CLOSE) {
+        mask[index + 1] = true;
+        index += 2;
+        inBlock = false;
+        continue;
+      }
+    } else if (inLine) {
+      if (source[index] === "\n") {
+        inLine = false;
+        index += 1;
+        continue;
+      }
+      mask[index] = true;
+    } else if (pair === BLOCK_OPEN || pair === LINE_COMMENT) {
+      mask[index] = true;
+      mask[index + 1] = true;
+      inBlock = pair === BLOCK_OPEN;
+      inLine = pair === LINE_COMMENT;
+      index += 2;
+      continue;
+    }
+    index += 1;
   }
-  if (state === "line") {
-    return source[index] === "\n" ? "code" : "line";
-  }
-  return pair === BLOCK_CLOSE ? "code" : "block";
 }
 
 function commentMask(source: string): readonly boolean[] {
   const mask = Array.from({ length: source.length }, () => false);
-  let state: ScanState = "code";
-  for (let index = 0; index < source.length; index += 1) {
-    const closing = state === "block" && source.slice(index, index + 2) === BLOCK_CLOSE;
-    state = nextScanState(source, index, state);
-    if (closing) {
-      // 閉じトークンの 2 文字はコメントの一部
-      mask[index] = true;
-      index += 1;
-      mask[index] = true;
-      continue;
-    }
-    mask[index] = state !== "code";
-  }
+  scanComments(source, mask);
   return mask;
 }
 
