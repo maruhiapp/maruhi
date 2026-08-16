@@ -43,7 +43,7 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
-import { loadMasterKeys, resolveSession } from "../src/session.ts";
+import { ensureNoStoredMasterKey, loadMasterKeys, resolveSession } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -391,6 +391,30 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(dump).toContain("キーチェーンのレコードに伏字(<redacted>)が入っています");
     // 「壊れています」の汎用文言ではなく、原因を名指しした文言になる
     expect(dump).not.toContain("キーチェーンのトークンレコードが壊れています");
+  });
+
+  it("伏字の master 鍵は「鍵がある」と報告しない(上書き防止ガードでも区別する)", async () => {
+    // このガードは key generate / key recover の**両方**が最初に当たる場所。
+    // 「既に存在します」と言うと、使えない鍵を「ある」と報告したうえで、
+    // 消すべきエントリ名は別コマンドまで出てこない
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    const entryName = masterKeyEntryName(maruhi.origin, "u1");
+    env.keychain.set(entryName, masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" }));
+    const session = {
+      origin: maruhi.origin,
+      userId: "u1",
+      token: Redacted.make("maruhi_pat_stored"),
+    };
+    const exit = await Effect.runPromiseExit(
+      ensureNoStoredMasterKey(session, "master 鍵は既に存在します").pipe(Effect.provide(env.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const dump = JSON.stringify(exit);
+    expect(dump).toContain("伏字(<redacted>)が入っています");
+    expect(dump).toContain("手で削除");
+    expect(dump).not.toContain("master 鍵は既に存在します");
   });
 
   it("key generate の保存 → loadMasterKeys の読み戻し → 鍵として実使用できる", async () => {

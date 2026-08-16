@@ -205,6 +205,11 @@ export function resolveSession(
  * Fails when a master key is already stored for (origin, userId); returns the
  * keychain entry name otherwise. keygen / recover 共通の上書き防止ガード
  * (鍵を失うと復号可能性を失うため、上書きは常に拒否する)。
+ *
+ * 伏字レコードはここでも区別する: このガードは読み出し境界の中で**最初に**
+ * 当たる場所であり(`key generate` / `key recover` の両方がここで止まる)、
+ * 「鍵は既に存在します」と言ってしまうと、実際には使えない鍵を「ある」と
+ * 報告したうえで、真の診断(消すべきエントリ名)は別コマンドまで出てこない。
  */
 export function ensureNoStoredMasterKey(
   session: CliSession,
@@ -215,7 +220,11 @@ export function ensureNoStoredMasterKey(
     const entryName = masterKeyEntryName(session.origin, session.userId);
     const existing = yield* keychain.get(entryName);
     if (existing !== null) {
-      return yield* Effect.fail(cliError(refusal));
+      return yield* Effect.fail(
+        hasRedactedPlaceholder(existing)
+          ? cliError(redactedPlaceholderMasterKeyMessage(entryName))
+          : cliError(refusal),
+      );
     }
     return entryName;
   });
