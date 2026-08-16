@@ -178,14 +178,6 @@ function splitAtTerminator(argv: readonly string[]): {
     : { head: argv.slice(0, index), rest: argv.slice(index + 1) };
 }
 
-/**
- * パーサが黙って通してしまう「maruhi の規律違反」を、コマンド本体より前に
- * 落とす。effect/unstable/cli が構造的に塞ぐ形(未宣言オプション・boolean
- * への値・`--` 跨ぎ・位置引数の過不足)はここに書かない — 二重管理になる。
- *
- * ここに残るのは**パーサの正しさではなく maruhi の方針**である 3 つだけ:
- * 重複指定・空の値・空の位置引数。
- */
 interface HeadScan {
   /** 宣言名 → 打たれた回数(綴りではなく宣言名で数える)。 */
   readonly counts: ReadonlyMap<string, number>;
@@ -312,6 +304,15 @@ function missingRestRejection(rest: readonly string[] | null, spec: CommandSpec)
   return command.length === 0 || isBlank(command[0]) ? spec.restRequired : null;
 }
 
+/**
+ * パーサが黙って通してしまう「maruhi の規律違反」を、コマンド本体より前に
+ * 落とす。effect/unstable/cli が構造的に塞ぐ形(未宣言オプション・boolean
+ * への値・`--` 跨ぎ・位置引数の過不足)はここに書かない — 二重管理になる。
+ *
+ * ここに残るのは**パーサの正しさではなく maruhi の方針**である 3 つだけ:
+ * 重複指定・空の値・空の位置引数(+ `maruhi run` の「実行対象は `--` の
+ * 後ろから」)。
+ */
 function preflight(argv: readonly string[], commandKey: string): string | null {
   const spec = SPECS[commandKey];
   if (spec === undefined) {
