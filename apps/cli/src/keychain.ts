@@ -110,9 +110,19 @@ export function hasRedactedPlaceholder(json: string): boolean {
   }
 }
 
-/** 伏字保存の原因説明(復旧手順はレコード種別ごとに呼び出し側が足す)。 */
-export const placeholderCause =
-  "キーチェーンのレコードに伏字(<redacted>)が保存されています。これは maruhi の不具合(保存時に秘密を取り出し忘れた状態)です";
+/**
+ * 伏字混入の原因説明(復旧手順は種別ごとに呼び出し側が足す)。
+ *
+ * 壊れている成果物を引数で受けるのは、経路によって**別の物**が壊れているため:
+ * キーチェーンのレコードの場合と、サーバー登録済みのリカバリーブロブの場合が
+ * ある。前者の文面を後者で使うと、存在しないキーチェーンのレコードを指して
+ * 調査を誤らせる。
+ */
+export function placeholderCause(artifact: string): string {
+  return `${artifact}に伏字(<redacted>)が入っています。これは maruhi の不具合(秘密を取り出し忘れた状態で書き出されたもの)です`;
+}
+
+const keychainPlaceholderCause = placeholderCause("キーチェーンのレコード");
 
 /**
  * トークンレコードに伏字が保存されていたときの文言。
@@ -124,7 +134,7 @@ export const placeholderCause =
  * それが判断材料になることまで書く。
  */
 export const redactedPlaceholderTokenMessage =
-  `${placeholderCause}。旧バージョンが書いたレコードであれば \`maruhi login\` で正しく上書きされます。再ログインしても再発する場合は現行版の不具合なので、報告してください` as const;
+  `${keychainPlaceholderCause}。旧バージョンが書いたレコードであれば \`maruhi login\` で正しく上書きされます。再ログインしても再発する場合は現行版の不具合なので、報告してください` as const;
 
 /**
  * master 鍵レコードに伏字が保存されていたときの文言。
@@ -143,7 +153,7 @@ export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(制御文字・`\`・`"` を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください(名前は制御文字・バックスラッシュ・引用符を \\uXXXX / \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。併せて不具合として報告してください`;
+  return `${keychainPlaceholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください(名前は制御文字・書式文字〔双方向上書き・ゼロ幅等〕を \\u{XXXX}、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。併せて不具合として報告してください`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

@@ -45,7 +45,10 @@ export function escapeText(value: string): string {
         // (b) 引用符で囲んだ表示を閉じて、その後ろに maruhi 自身の案内に
         // 見える文を継ぎ足せる(user_id はサーバー配布の自由文字列)
         `\\${char}`
-      : `\\u${(char.codePointAt(0) ?? 0xff_fd).toString(16).padStart(4, "0")}`,
+      : // 波括弧つきの形にする。補助面(U+FFFF 超)の書式文字は 16 進が 5 桁に
+        // なるため、`\uXXXX` の 4 桁形では壊れた表記になり**戻せない** —
+        // 可逆性はこの関数の存在理由そのもの
+        `\\u{${(char.codePointAt(0) ?? 0xff_fd).toString(16).padStart(4, "0")}}`,
   );
 }
 

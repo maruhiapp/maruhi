@@ -323,8 +323,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 唯一の復旧手順(手動削除)が実行不能になる
     const hostile = redactedPlaceholderMasterKeyMessage("master::https://x::u\u001b[31m\n1");
     expect(hostile).not.toContain("\u001b");
-    expect(hostile).toContain("\\u001b");
-    expect(hostile).toContain("\\u000a");
+    expect(hostile).toContain("\\u{001b}");
+    expect(hostile).toContain("\\u{000a}");
     // 潰していない(元の文字列が読み取れる)
     expect(hostile).not.toContain("\uFFFD");
   });
@@ -349,8 +349,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const bidi = redactedPlaceholderMasterKeyMessage("master::x::u\u202Ea\u200Bb");
     expect(bidi).not.toContain("\u202E");
     expect(bidi).not.toContain("\u200B");
-    expect(bidi).toContain("\\u202e");
-    expect(bidi).toContain("\\u200b");
+    expect(bidi).toContain("\\u{202e}");
+    expect(bidi).toContain("\\u{200b}");
+    // 補助面(16 進 5 桁)でも戻せる形であること。4 桁固定の `\uXXXX` だと
+    // 壊れた表記になり、エントリ名を復元できない
+    const astral = escapeText("a\u{E0001}b");
+    expect(astral).toBe("a\\u{e0001}b");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
@@ -367,7 +371,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("伏字(<redacted>)が保存されています");
+    expect(dump).toContain("キーチェーンのレコードに伏字(<redacted>)が入っています");
     // 「壊れています」の汎用文言ではなく、原因を名指しした文言になる
     expect(dump).not.toContain("キーチェーンのトークンレコードが壊れています");
   });

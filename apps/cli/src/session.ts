@@ -182,8 +182,9 @@ export function resolveSession(
     }
     const record = parseStoredToken(stored);
     if (record === null) {
-      // 伏字保存は「壊れたレコード」と区別する: 再ログインは同じ直列化を
-      // 通るので同じ伏字を書き直すだけで、案内どおりに操作しても直らない
+      // 伏字保存は「壊れたレコード」と区別する: 原因(maruhi の不具合)も、
+      // 復旧手順(旧ビルドが書いたものなら再ログインで上書きされる)も、
+      // 汎用の「壊れています」では伝わらない
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
           ? cliError(redactedPlaceholderTokenMessage)

@@ -258,7 +258,10 @@ function unwrapWithPromptedCode(input: {
         return yield* Effect.fail(
           cliError(
             hasRedactedPlaceholder(blob)
-              ? `${placeholderCause}。登録済みのリカバリーブロブが壊れているため、このコードでは復元できません。master 鍵が残っている別のデバイスで \`maruhi key recovery\` を実行して再登録してください。併せて不具合として報告してください`
+              ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
+                // レコードではない(この経路は ensureNoStoredMasterKey を通って
+                // いるので、キーチェーンに master 鍵は存在しない)
+                `${placeholderCause("登録済みのリカバリーブロブ")}。このコードでは復元できません。master 鍵が残っている別のデバイスで \`maruhi key recovery\` を実行して再登録してください。併せて不具合として報告してください`
               : "復号したブロブを master 鍵レコードとして解釈できません。`maruhi key recovery` で再登録してください",
           ),
         );
