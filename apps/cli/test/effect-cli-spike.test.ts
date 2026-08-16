@@ -142,7 +142,11 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
   it("11b. 空白だけの値も落ちる(Schema の宣言 1 つで両方)", async () => {
     const outcome = await runSpikeCli(["pull", "--env", "  "]);
     expect(outcome.exitCode).toBe(2);
-    expect(outcome.stderr.join("\n")).toContain("オプション --env の値が受け付けられません");
+    // 許可リスト(SAFE_EXPECTATIONS)が生きていることを**陽性側でも**固定する:
+    // 文面を片側だけ直すと括弧が黙って落ちるだけになり、診断が静かに劣化する
+    expect(outcome.stderr.join("\n")).toContain(
+      "オプション --env の値が受け付けられません(空でない値",
+    );
     // 打たれた値(空白)は診断に出さない
     expect(outcome.stderr.join("\n")).not.toContain('"  "');
   });
@@ -183,11 +187,15 @@ describe("maruhi 固有の規律", () => {
     // (実 fd を捕捉しているので、Console を迂回した書き込みも捕まる)
     const ok = await runSpikeCli(["pull"]);
     expect(ok.exitCode).toBe(0);
+    // コマンド本体の出力は Stdio の stdout Sink に来る(process.* の直叩きではない)
     expect(ok.stdout).toEqual(["同期・検証 OK: 0 変数"]);
     expect(ok.stderr).toEqual([]);
+    // Console / Stdio を迂回して実 fd へ書いたものは無い
+    expect(ok.bypassed).toEqual([]);
 
     const rejected = await runSpikeCli(["pull", "--shwo"]);
     expect(rejected.stdout).toEqual([]);
+    expect(rejected.bypassed).toEqual([]);
     expect(rejected.stderr.length).toBeGreaterThan(0);
 
     const help = await runSpikeCli(["pull", "--help"]);
@@ -195,6 +203,7 @@ describe("maruhi 固有の規律", () => {
     // `V=$(maruhi config get server)` がバナーを捕まえた事故と同じ形を塞ぐ
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toEqual([]);
+    expect(help.bypassed).toEqual([]);
     expect(help.stderr.join("\n")).toContain("maruhi pull");
   });
 
@@ -214,10 +223,17 @@ describe("maruhi 固有の規律", () => {
 
     // 個数は**余分な引数だけ**を数える(オプションの値を数えない)。
     // 中身を出さない方針では個数が唯一の手がかりなのでずらさない
-    const withFlag = await runSpikeCli(["run", "--env", "prod", "npm", "test"]);
-    expect(withFlag.exitCode).toBe(2);
-    expect(withFlag.stderr.join("\n")).toContain("余分な引数です(2 個");
-    expectNoSecretLeak(withFlag.stderr, ["prod", "npm", "test"]);
+    // 個数はパーサが解決した rest の長さ(宣言の写しを持たない)。
+    // フラグの値は数に入らず、位置が前後しても同じ数になる
+    for (const argv of [
+      ["run", "--env", "prod", "npm", "test"],
+      ["run", "npm", "test", "--env", "prod"],
+    ]) {
+      const withFlag = await runSpikeCli(argv);
+      expect(withFlag.exitCode, argv.join(" ")).toBe(2);
+      expect(withFlag.stderr.join("\n")).toContain("余分な引数です(2 個");
+      expectNoSecretLeak(withFlag.stderr, ["prod", "npm", "test"]);
+    }
   });
 
   it("既知の AI エージェントでは pull --show を拒否する(復号より前・exit 1)", async () => {

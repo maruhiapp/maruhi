@@ -36,7 +36,9 @@ import {
   Path,
   Runtime,
   Schema,
+  Sink,
   Stdio,
+  Stream,
   Terminal,
 } from "effect";
 import { Argument, CliConfig, CliError, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -65,6 +67,12 @@ const SPECS: Readonly<Record<string, CommandSpec>> = {
   "env create": { flags: ["server", "project", "name"], positionals: ["environment-id"] },
 };
 
+/** バイト列で来た書き込みも読める形にする(`String(chunk)` はバイト値の羅列になる)。 */
+function decodeChunk(chunk: string | Uint8Array): string {
+  const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+  return text.replace(/\n$/, "");
+}
+
 /** 記録された 1 回の実行(引数層が何を解決したか)。 */
 export interface SpikeInvocation {
   readonly command: string;
@@ -75,8 +83,12 @@ export interface SpikeInvocation {
 /** スパイク実行の結果。stderr は Console 呼び出し単位、stdout は実ストリームへの書き込み単位で捕捉する。 */
 export interface SpikeOutcome {
   readonly exitCode: number;
+  /** コマンド本体の出力(`Stdio` の stdout Sink 経由)。 */
   readonly stdout: readonly string[];
+  /** ヘルプ・診断(`Console` 経由)。 */
   readonly stderr: readonly string[];
+  /** `Console` も `Stdio` も通さず実 fd へ書かれたもの(あってはならない)。 */
+  readonly bypassed: readonly string[];
   readonly invoked: SpikeInvocation | null;
 }
 
@@ -147,51 +159,43 @@ export class TerminatorRequired extends Data.TaggedError("TerminatorRequired")<{
   override readonly [Runtime.errorExitCode] = 2;
 }
 
-/** `maruhi run` が取るオプション(いずれも値を取る)。値を余分な引数と数えないため。 */
-const RUN_VALUE_FLAGS: ReadonlySet<string> = new Set(["--server", "--project", "--env"]);
-
 /**
- * `--` より前の余分な引数の数。**オプションの値は数えない**(レビュー指摘:
- * `maruhi run --env prod npm test` を 3 個と報告していた)。中身を出さない
- * 方針では個数が唯一の手がかりなので、ずれると診断の価値が落ちる。
- *
- * 先頭は `run`(このコマンドは 1 段)。
+ * `--` が無い実行の拒否。**個数はパーサが計算済みのものを使う**(レビュー指摘):
+ * `--` が無い分岐では可変長引数 `rest` がそのまま余分な位置引数なので
+ * (`--env prod` の `prod` はフラグの値として食べられている)、宣言の写しを
+ * 持たずに数えられる。写しを持つと、値を取るフラグを足したときに黙ってずれる。
  */
-function strayCountBeforeTerminator(argv: readonly string[]): number {
-  let stray = 0;
-  for (let index = 1; index < argv.length; index += 1) {
-    const token = argv[index] ?? "";
-    if (token.startsWith("-")) {
-      // `--env=prod` は次のトークンを食べない
-      if (RUN_VALUE_FLAGS.has(token)) {
-        index += 1;
-      }
-      continue;
+const ensureTerminator = (strayCount: number) =>
+  Effect.gen(function* () {
+    const stdio = yield* Stdio.Stdio;
+    const argv = yield* stdio.args;
+    if (argv.includes("--")) {
+      return;
     }
-    stray += 1;
-  }
-  return stray;
-}
-
-const ensureTerminator = Effect.gen(function* () {
-  const stdio = yield* Stdio.Stdio;
-  const argv = yield* stdio.args;
-  if (argv.includes("--")) {
-    return;
-  }
-  const stray = strayCountBeforeTerminator(argv);
-  if (stray > 0) {
-    return yield* new TerminatorRequired({
-      message: `maruhi: 余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`,
-    });
-  }
-});
+    const stray = strayCount;
+    if (stray > 0) {
+      return yield* new TerminatorRequired({
+        message: `maruhi: 余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`,
+      });
+    }
+  });
 
 /* -------------------------------------------------------------------------- */
 /* コマンド定義                                                                */
 /* -------------------------------------------------------------------------- */
 
-function makeCommands(record: (invocation: SpikeInvocation) => void, emit: (line: string) => void) {
+/**
+ * コマンド本体の出力(stdout)。**`Stdio` サービスの Sink 経由**で書く
+ * (レビュー指摘: `process.stdout.write` の直叩きは、このスパイクが実証しようと
+ * している規律「判定材料も出力も Effect のサービス経由」自体を破る)。
+ */
+const emitLine = (line: string) =>
+  Effect.gen(function* () {
+    const stdio = yield* Stdio.Stdio;
+    yield* Stream.fromIterable([`${line}\n`]).pipe(Stream.run(stdio.stdout()));
+  });
+
+function makeCommands(record: (invocation: SpikeInvocation) => void) {
   const pull = Command.make(
     "pull",
     {
@@ -207,9 +211,7 @@ function makeCommands(record: (invocation: SpikeInvocation) => void, emit: (line
           yield* valueDisplayRejection;
         }
         record({ command: "pull", values });
-        // コマンドの出力は stdout(捕捉して「stdout が汚れていない」検査を
-        // 空振りさせない — レビュー指摘)
-        emit("同期・検証 OK: 0 変数");
+        yield* emitLine("同期・検証 OK: 0 変数");
       }),
   );
 
@@ -233,9 +235,9 @@ function makeCommands(record: (invocation: SpikeInvocation) => void, emit: (line
     },
     (values) =>
       Effect.gen(function* () {
-        // 通信・復号より前(コマンド本体の先頭)で落とす
-        yield* ensureTerminator;
         const { rest, ...flags } = values;
+        // 通信・復号より前(コマンド本体の先頭)で落とす
+        yield* ensureTerminator(rest.length);
         record({ command: "run", values: flags, rest: [...rest] });
       }),
   );
@@ -249,9 +251,9 @@ function makeCommands(record: (invocation: SpikeInvocation) => void, emit: (line
       environmentId: Argument.string("environment-id").pipe(Argument.withSchema(NonBlank)),
     },
     (values) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         record({ command: "env create", values });
-        emit("環境を作成しました");
+        yield* emitLine("環境を作成しました");
       }),
   );
 
@@ -291,16 +293,12 @@ export async function runSpikeCli(
 ): Promise<SpikeOutcome> {
   const stdout: string[] = [];
   const stderr: string[] = [];
+  const bypassed: string[] = [];
   let invoked: SpikeInvocation | null = null;
 
-  const root = makeCommands(
-    (invocation) => {
-      invoked = invocation;
-    },
-    (line) => {
-      process.stdout.write(`${line}\n`);
-    },
-  );
+  const root = makeCommands((invocation) => {
+    invoked = invocation;
+  });
 
   // 描画(ヘルプ・診断)は effect/unstable/cli 自身が Console 経由で行う。
   // Console は**全メソッド**を stderr へ寄せる — stdout はコマンドの出力だけ。
@@ -339,6 +337,13 @@ export async function runSpikeCli(
       args: Effect.succeed([...argv]),
       stdinIsTerminal: Effect.succeed(options?.stdinIsTerminal ?? true),
       stdoutIsTerminal: Effect.succeed(options?.stdoutIsTerminal ?? true),
+      // コマンド本体の出力はここへ来る(= 決定 9 の「stdout はコマンドの出力だけ」)
+      stdout: () =>
+        Sink.forEach((chunk: string | Uint8Array) =>
+          Effect.sync(() => {
+            stdout.push(decodeChunk(chunk));
+          }),
+        ),
     }),
     Layer.succeed(
       Terminal.Terminal,
@@ -364,15 +369,15 @@ export async function runSpikeCli(
     CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] }),
   );
 
-  // **実 fd を捕捉する**(レビュー指摘): 注入した Console 経由の出力だけを
-  // 見ていると「stdout が汚れていない」という検査が空振りする。ライブラリが
-  // Console を迂回して process.stdout へ書いた場合も捕まえる
+  // **迂回の安全網**: Console も Stdio も通さずに実 fd へ書くコードがあれば
+  // ここで捕まえる(コマンド本体の出力は Stdio の Sink 側に入るので、
+  // 「コマンドの出力」と「迂回された書き込み」をテストが区別できる)
   // 束縛ラッパー(`bind`)ではなく**元のメソッドそのもの**を控える(レビュー指摘)。
   // bind したものを戻すと呼ぶたびに 1 段ずつ積まれ、プロトタイプ上の write を
   // 隠したままになる。呼び出しは `process.stdout` 上なので `this` は保たれる
   const realWrite = process.stdout.write;
   process.stdout.write = ((chunk: string | Uint8Array): boolean => {
-    stdout.push(typeof chunk === "string" ? chunk.replace(/\n$/, "") : String(chunk));
+    bypassed.push(decodeChunk(chunk));
     return true;
   }) as typeof process.stdout.write;
 
@@ -398,7 +403,7 @@ export async function runSpikeCli(
   });
 
   if (Exit.isSuccess(exit)) {
-    return { exitCode, stdout, stderr, invoked };
+    return { exitCode, stdout, stderr, bypassed, invoked };
   }
 
   // ShowHelp は effect 側が Formatter 経由で描画済み。それ以外は**こちらが
@@ -412,5 +417,5 @@ export async function runSpikeCli(
   } else if (!(failure instanceof CliError.ShowHelp)) {
     stderr.push("maruhi: 内部エラー");
   }
-  return { exitCode, stdout, stderr, invoked };
+  return { exitCode, stdout, stderr, bypassed, invoked };
 }
