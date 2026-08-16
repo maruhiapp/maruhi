@@ -26,8 +26,9 @@ export function displayText(value: string): string {
 }
 
 /**
- * Escapes everything outside printable ASCII (plus `\` and `"`) as `\u{XXXX}`,
- * so the rendered text is exactly reconstructible.
+ * Escapes everything outside printable ASCII as `\u{...}` (hex, at least four
+ * digits — supplementary-plane code points take more), and `\` / `"` as `\\` /
+ * `\"`, so the rendered text is exactly reconstructible.
  *
  * {@link displayText} は置換文字に潰すため、**利用者が元の文字列を復元できない**。
  * 「この名前のエントリを消してください」のように文字列そのものを操作対象として
