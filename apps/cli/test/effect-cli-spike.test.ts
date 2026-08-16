@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { ValueDisplayRefused } from "./support/agent-gate.ts";
 import { describeError } from "./support/cli-formatter.ts";
+import { maruhiTeardown } from "./support/cli-teardown.ts";
 import { runSpikeCli, TerminatorRequired } from "./support/effect-cli-spike.ts";
 
 /** 診断に平文が混ざっていないことの共通検査(打たれた値を語彙にしない)。 */
@@ -55,7 +56,23 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expectNoSecretLeak(outcome.stderr, ["prod", "dev"]);
   });
 
-  it("4b. 値を取るオプションの重複は Flag.atMost(1) が落とす(自前の走査なし)", async () => {
+  it("4b. **boolean の重複**も落とす(--show / --no-show の混在。順序に依存しない)", async () => {
+    // `maruhi pull --no-show $FLAGS`($FLAGS に --show)= 全シークレットの表示。
+    // 素の Flag.boolean は重複を沈黙で解決し、**打った順で結果が変わる**
+    // (実測: `--show --no-show` は first-wins で true)。順序に依らず落とす
+    for (const argv of [
+      ["pull", "--show", "--no-show"],
+      ["pull", "--no-show", "--show"],
+      ["pull", "--show", "--show"],
+    ]) {
+      const outcome = await runSpikeCli(argv);
+      expect(outcome.exitCode, argv.join(" ")).toBe(2);
+      expect(outcome.invoked, argv.join(" ")).toBeNull();
+      expect(outcome.stderr.join("\n")).toContain("オプション --show を複数回指定しています");
+    }
+  });
+
+  it("4c. 値を取るオプションの重複も Flag.atMost(1) が落とす(自前の走査なし)", async () => {
     // `maruhi push K --env prod --env dev` は書いた 2 つのうち片方だけへ
     // 書き込む(取り消せない)。宣言で落とす
     const outcome = await runSpikeCli(["run", "--env", "prod", "--env", "dev", "--", "printenv"]);
@@ -142,6 +159,13 @@ describe("maruhi 固有の規律", () => {
   });
 
   it("stdout はコマンドの出力だけ(診断もヘルプも stderr)", async () => {
+    // 検査が空振りしないことを先に固定する: 正常系では stdout に**出る**
+    // (実 fd を捕捉しているので、Console を迂回した書き込みも捕まる)
+    const ok = await runSpikeCli(["pull"]);
+    expect(ok.exitCode).toBe(0);
+    expect(ok.stdout).toEqual(["同期・検証 OK: 0 変数"]);
+    expect(ok.stderr).toEqual([]);
+
     const rejected = await runSpikeCli(["pull", "--shwo"]);
     expect(rejected.stdout).toEqual([]);
     expect(rejected.stderr.length).toBeGreaterThan(0);
@@ -167,6 +191,13 @@ describe("maruhi 固有の規律", () => {
     expect(strayed.exitCode).toBe(2);
     expect(strayed.stderr.join("\n")).toContain("実行するコマンドは `--` の後に並べてください");
     expectNoSecretLeak(strayed.stderr, ["npm", "test"]);
+
+    // 個数は**余分な引数だけ**を数える(オプションの値を数えない)。
+    // 中身を出さない方針では個数が唯一の手がかりなのでずらさない
+    const withFlag = await runSpikeCli(["run", "--env", "prod", "npm", "test"]);
+    expect(withFlag.exitCode).toBe(2);
+    expect(withFlag.stderr.join("\n")).toContain("余分な引数です(2 個");
+    expectNoSecretLeak(withFlag.stderr, ["prod", "npm", "test"]);
   });
 
   it("既知の AI エージェントでは pull --show を拒否する(復号より前・exit 1)", async () => {
@@ -262,6 +293,24 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
     expect(message).not.toContain("SUPER_SECRET_VALUE");
   });
 
+  it("**expected** に埋め込まれた値も出さない(filter の onNone 経由の漏れ)", () => {
+    // 上流の Param.filter は `expected: onNone(a)` を組み立てるので、
+    // `(n) => \`Expected even number, got ${n}\`` のような onNone を書くと
+    // 期待値の側から平文が漏れる。こちらが書いた文面と一致しない expected は出さない
+    const message = describeError(
+      new CliError.InvalidValue({
+        option: "env",
+        value: "SUPER_SECRET_VALUE",
+        expected: "Expected even number, got SUPER_SECRET_VALUE",
+        kind: "flag",
+      }),
+      "pull",
+      { pull: { flags: ["env"], positionals: [] } },
+    );
+    expect(message).toBe("オプション --env の値が受け付けられません");
+    expect(message).not.toContain("SUPER_SECRET_VALUE");
+  });
+
   it("UnexpectedArgument は個数だけを出す", () => {
     const message = describeError(
       new CliError.UnexpectedArgument({ arguments: ["SECRET_A", "SECRET_B"] }),
@@ -293,5 +342,32 @@ describe("Effect の機構に載せた部分", () => {
       (code) => codes.push(code),
     );
     expect(codes).toEqual([2]);
+  });
+
+  it("ShowHelp は上流が exit 1 を宣言するので teardown で 2 へ読み替える", () => {
+    // 上流: ShowHelp[Runtime.errorExitCode] = errors.length ? 1 : 0。
+    // 既定の teardown のままだと**書き方の誤りが exit 1** になり、
+    // maruhi の 0/1/2 契約が崩れる(本番は runMain にこの teardown を渡す)
+    const withErrors = Exit.fail(
+      new CliError.ShowHelp({
+        commandPath: ["maruhi", "pull"],
+        errors: [new CliError.UnrecognizedOption({ option: "--shwo", suggestions: [] })],
+      }),
+    );
+    const defaultCodes: number[] = [];
+    Runtime.defaultTeardown(withErrors, (code) => defaultCodes.push(code));
+    expect(defaultCodes).toEqual([1]);
+
+    const codes: number[] = [];
+    maruhiTeardown(withErrors, (code) => codes.push(code));
+    expect(codes).toEqual([2]);
+
+    // `--help` / `--version`(errors 空)は誤りではない
+    const helpCodes: number[] = [];
+    maruhiTeardown(
+      Exit.fail(new CliError.ShowHelp({ commandPath: ["maruhi"], errors: [] })),
+      (code) => helpCodes.push(code),
+    );
+    expect(helpCodes).toEqual([0]);
   });
 });

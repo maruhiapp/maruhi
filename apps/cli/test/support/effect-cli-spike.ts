@@ -42,8 +42,19 @@ import {
 import { Argument, CliConfig, CliError, Command, Flag, GlobalFlag } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { type AgentProfile, AgentProfileRef, valueDisplayRejection } from "./agent-gate.ts";
-import { type CommandSpec, formatterLayer, RUN_COMMAND_REQUIRED } from "./cli-formatter.ts";
+import {
+  type AgentProfile,
+  AgentProfileRef,
+  ValueDisplayRefused,
+  valueDisplayRejection,
+} from "./agent-gate.ts";
+import {
+  type CommandSpec,
+  formatterLayer,
+  NON_BLANK_MESSAGE,
+  RUN_COMMAND_REQUIRED,
+} from "./cli-formatter.ts";
+import { maruhiTeardown } from "./cli-teardown.ts";
 
 const RUN_STRAY_HINT =
   "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)";
@@ -87,9 +98,7 @@ export interface SpikeOptions {
  * Schema の宣言 1 つになる。`maruhi push API_KEY --env "$ENV"` で ENV が
  * 未設定のとき、既定環境へ黙って書き込む事故を塞ぐ。
  */
-const NonBlank = Schema.String.check(
-  Schema.isPattern(/\S/, { message: "空でない値(空白だけの値も受け付けません)" }),
-);
+const NonBlank = Schema.String.check(Schema.isPattern(/\S/, { message: NON_BLANK_MESSAGE }));
 
 /**
  * 値を取るオプション 1 つ。
@@ -103,6 +112,21 @@ function singleValued(name: string) {
     Flag.withSchema(NonBlank),
     Flag.atMost(1),
     Flag.map((values) => values[0]),
+  );
+}
+
+/**
+ * boolean オプション 1 つ。
+ *
+ * **boolean にも `atMost(1)` が要る**(レビュー指摘): 素の `Flag.boolean` は
+ * 重複を沈黙で解決する(実測: `--show --no-show` は first-wins で `true`)。
+ * `maruhi pull --no-show $FLAGS` の `$FLAGS` に `--show` が混ざる形(ef7cba1)
+ * は**打った順で結果が変わる**ので、順序に依存させずに落とす。
+ */
+function singleFlag(name: string) {
+  return Flag.boolean(name).pipe(
+    Flag.atMost(1),
+    Flag.map((values) => values[0] ?? false),
   );
 }
 
@@ -123,13 +147,39 @@ export class TerminatorRequired extends Data.TaggedError("TerminatorRequired")<{
   override readonly [Runtime.errorExitCode] = 2;
 }
 
+/** `maruhi run` が取るオプション(いずれも値を取る)。値を余分な引数と数えないため。 */
+const RUN_VALUE_FLAGS: ReadonlySet<string> = new Set(["--server", "--project", "--env"]);
+
+/**
+ * `--` より前の余分な引数の数。**オプションの値は数えない**(レビュー指摘:
+ * `maruhi run --env prod npm test` を 3 個と報告していた)。中身を出さない
+ * 方針では個数が唯一の手がかりなので、ずれると診断の価値が落ちる。
+ *
+ * 先頭は `run`(このコマンドは 1 段)。
+ */
+function strayCountBeforeTerminator(argv: readonly string[]): number {
+  let stray = 0;
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (token.startsWith("-")) {
+      // `--env=prod` は次のトークンを食べない
+      if (RUN_VALUE_FLAGS.has(token)) {
+        index += 1;
+      }
+      continue;
+    }
+    stray += 1;
+  }
+  return stray;
+}
+
 const ensureTerminator = Effect.gen(function* () {
   const stdio = yield* Stdio.Stdio;
   const argv = yield* stdio.args;
   if (argv.includes("--")) {
     return;
   }
-  const stray = argv.slice(1).filter((token) => !token.startsWith("-")).length;
+  const stray = strayCountBeforeTerminator(argv);
   if (stray > 0) {
     return yield* new TerminatorRequired({
       message: `maruhi: 余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`,
@@ -141,14 +191,14 @@ const ensureTerminator = Effect.gen(function* () {
 /* コマンド定義                                                                */
 /* -------------------------------------------------------------------------- */
 
-function makeCommands(record: (invocation: SpikeInvocation) => void) {
+function makeCommands(record: (invocation: SpikeInvocation) => void, emit: (line: string) => void) {
   const pull = Command.make(
     "pull",
     {
       server: singleValued("server"),
       project: singleValued("project"),
       env: singleValued("env"),
-      show: Flag.boolean("show"),
+      show: singleFlag("show"),
     },
     (values) =>
       Effect.gen(function* () {
@@ -157,6 +207,9 @@ function makeCommands(record: (invocation: SpikeInvocation) => void) {
           yield* valueDisplayRejection;
         }
         record({ command: "pull", values });
+        // コマンドの出力は stdout(捕捉して「stdout が汚れていない」検査を
+        // 空振りさせない — レビュー指摘)
+        emit("同期・検証 OK: 0 変数");
       }),
   );
 
@@ -195,7 +248,11 @@ function makeCommands(record: (invocation: SpikeInvocation) => void) {
       name: singleValued("name"),
       environmentId: Argument.string("environment-id").pipe(Argument.withSchema(NonBlank)),
     },
-    (values) => Effect.sync(() => record({ command: "env create", values })),
+    (values) =>
+      Effect.sync(() => {
+        record({ command: "env create", values });
+        emit("環境を作成しました");
+      }),
   );
 
   // gunshi は 1 段(サブコマンド + positional の action)しか組めないため、
@@ -224,21 +281,6 @@ function commandKeyOf(argv: readonly string[]): string {
 }
 
 /**
- * 終了コード。実行の失敗は `Runtime.errorExitCode` をエラー型から読む。
- *
- * 例外は `ShowHelp` の 1 つだけ: effect は「誤りを含むヘルプ表示」を 1 と
- * するが、maruhi は**書き方の誤りを 2**(実行の失敗と区別できないと、
- * スクリプトが打ち間違いを「操作が失敗した」と読む)。ここだけ読み替える。
- */
-function exitCodeOf(failure: unknown): number {
-  if (failure instanceof CliError.ShowHelp) {
-    return failure.errors.length > 0 ? 2 : 0;
-  }
-  const marked = failure as { readonly [Runtime.errorExitCode]?: number } | null;
-  return marked?.[Runtime.errorExitCode] ?? 1;
-}
-
-/**
  * Runs the spike CLI and returns the exit code with captured streams.
  *
  * stdout はコマンドの出力だけ、診断とヘルプは stderr、書き方の誤りは exit 2。
@@ -251,9 +293,14 @@ export async function runSpikeCli(
   const stderr: string[] = [];
   let invoked: SpikeInvocation | null = null;
 
-  const root = makeCommands((invocation) => {
-    invoked = invocation;
-  });
+  const root = makeCommands(
+    (invocation) => {
+      invoked = invocation;
+    },
+    (line) => {
+      process.stdout.write(`${line}\n`);
+    },
+  );
 
   // 描画(ヘルプ・診断)は effect/unstable/cli 自身が Console 経由で行う。
   // Console を差し替えて stderr へ寄せる — stdout はコマンドの出力だけ
@@ -295,25 +342,50 @@ export async function runSpikeCli(
     CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] }),
   );
 
-  const exit = await Effect.runPromise(
-    Command.runWith(root, { version: "0.0.0-spike" })([...argv]).pipe(
-      Effect.provideService(AgentProfileRef, options?.agent ?? { isAgent: false }),
-      Effect.provide(services),
-      Effect.exit,
-    ),
-  );
+  // **実 fd を捕捉する**(レビュー指摘): 注入した Console 経由の出力だけを
+  // 見ていると「stdout が汚れていない」という検査が空振りする。ライブラリが
+  // Console を迂回して process.stdout へ書いた場合も捕まえる
+  const realWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    stdout.push(typeof chunk === "string" ? chunk.replace(/\n$/, "") : String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
 
-  if (Exit.isSuccess(exit)) {
-    return { exitCode: 0, stdout, stderr, invoked };
+  let exit: Exit.Exit<void, unknown>;
+  try {
+    exit = await Effect.runPromise(
+      Command.runWith(root, { version: "0.0.0-spike" })([...argv]).pipe(
+        Effect.provideService(AgentProfileRef, options?.agent ?? { isAgent: false }),
+        Effect.provide(services),
+        Effect.exit,
+      ),
+    );
+  } finally {
+    process.stdout.write = realWrite;
   }
 
+  // 終了コードは**本番と同じ teardown**を通して決める(ハーネスで手計算しない
+  // — レビュー指摘。ShowHelp は上流が exit 1 を宣言しているため、読み替えが
+  // teardown に載っていないと本番だけ 1 になる)
+  let exitCode = 0;
+  maruhiTeardown(exit, (code) => {
+    exitCode = code;
+  });
+
+  if (Exit.isSuccess(exit)) {
+    return { exitCode, stdout, stderr, invoked };
+  }
+
+  // ShowHelp は effect 側が Formatter 経由で描画済み。それ以外は**こちらが
+  // 文面を書いた型付きエラーだけ**を出す(上流や未知の Error の message は
+  // argv 由来の値を含みうるので素通しにしない — レビュー指摘)
   const failure: unknown = Cause.squash(exit.cause);
-  // ShowHelp / UserError は effect 側が Formatter 経由で描画済み。
-  // それ以外(コマンド本体の型付きエラー)はここで 1 行にして出す
-  if (!(failure instanceof CliError.ShowHelp) && failure instanceof Error) {
+  if (failure instanceof ValueDisplayRefused || failure instanceof TerminatorRequired) {
     stderr.push(
       failure.message.startsWith("maruhi:") ? failure.message : `maruhi: ${failure.message}`,
     );
+  } else if (!(failure instanceof CliError.ShowHelp)) {
+    stderr.push("maruhi: 内部エラー");
   }
-  return { exitCode: exitCodeOf(failure), stdout, stderr, invoked };
+  return { exitCode, stdout, stderr, invoked };
 }

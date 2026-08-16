@@ -138,12 +138,12 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 ## 6. 移行スパイク(pull / run / env create)の実測
 
 `apps/cli/test/support/effect-cli-spike.ts` に 3 コマンドを effect/unstable/cli で組み、
-`apps/cli/test/effect-cli-spike.test.ts`(28 件)で maruhi の規律が保たれるかを固定した。
+`apps/cli/test/effect-cli-spike.test.ts`(31 件)で maruhi の規律が保たれるかを固定した。
 本番の `src/cli.ts` は gunshi のまま(スパイクは測定用。採用時に src へ昇格させる)。
 
 ### 分かったこと
 
-1. **12 形すべてで期待どおりの終了コードと診断になった**(28/28 green)。
+1. **12 形すべてで期待どおりの終了コードと診断になった**(31/31 green)。
    `--show=false` / `--show false` は書いたとおり `false` として読まれ、
    `--` の後ろの空文字列は保たれ、`--no-show --show` は落ちる
 2. **`env` が真のサブコマンドになる**。gunshi は 1 段しか組めないため maruhi は
@@ -159,7 +159,24 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
    スパイクではこれをテストで固定した(値が stderr に出ないことの検査)
 4. `Console` を差し替えるとヘルプ・診断が stdout を汚さない(`--help` でも stdout 0 行)
 5. `ShowHelp.errors` は**複数の誤りを配列で**返す。gunshi のように 1 件ずつではない
-6. **既定では組み込みグローバルフラグが勝手に生える**(実測): `--help` / `--version` に加えて
+6. **`Flag.atMost(1)` は boolean にも要る**(レビュー指摘で判明): 素の `Flag.boolean` は
+   重複を沈黙で解決し、**打った順で結果が変わる**(実測: `--show --no-show` は first-wins で
+   `true`、`--no-show --show` は `false`)。`maruhi pull --no-show $FLAGS` の形は順序に依存
+   させてはいけないので、値を取るフラグと同じく `atMost(1)` を付ける
+7. **「stdout が汚れていない」検査は実 fd を捕捉しないと空振りする**(レビュー指摘):
+   注入した `Console` の出力だけを見ていると、ライブラリが `Console` を迂回して
+   `process.stdout` へ書いた場合を捕まえられない。スパイクは実行中だけ
+   `process.stdout.write` を差し替えて捕捉し、正常系で stdout に**出る**ことも同時に固定した
+8. **`InvalidValue.expected` も値を含みうる**(レビュー指摘): 上流の `Param.filter` は
+   `expected: onNone(a)` を組み立てる(effect 自身の JSDoc 例が `Expected even number, got ${n}`)。
+   危険なフィールドは `UnexpectedArgument.arguments` / `InvalidValue.value` の 2 つではなく **3 つ**。
+   Formatter は**こちらが書いた文面と一致した expected だけ**を出す
+9. **終了コードは teardown に載せないと本番で崩れる**(レビュー指摘): 上流は
+   `ShowHelp[Runtime.errorExitCode] = errors.length ? 1 : 0` を宣言しているので、既定のままだと
+   **書き方の誤りが exit 1**。`makeRunMain({ teardown })` が上流の唯一のフック
+   (`CliConfig` は builtIns しか持たない)なので、そこで 2 へ読み替える。
+   ハーネスで手計算すると本番の起動経路を検査できない
+10. **既定では組み込みグローバルフラグが勝手に生える**(実測): `--help` / `--version` に加えて
    `--wizard` / `--completions` / `--log-level` が全コマンドに付き、**`maruhi pull --wizard` は
    対話ウィザードが実際に起動する**。`CliConfig.layer({ builtIns: [Help, Version] })` で
    絞ると `UnrecognizedOption` になることを確認し、スパイクではそう設定した(ADR-0016 決定 5)
@@ -167,7 +184,7 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 ### 残る自前検査 → **ほぼ全部 Effect の宣言に置き換わった**(2 巡目の実測)
 
 1 巡目のスパイクでは重複・空の値・rest 必須を自前の `preflight` で書いていたが、
-Effect の機構で宣言できることが分かったので**全部消した**(28 件 green)。
+Effect の機構で宣言できることが分かったので**全部消した**(31 件 green)。
 
 | maruhi の規律 | 1 巡目(自前) | 2 巡目(Effect の宣言) |
 |---|---|---|

@@ -4,19 +4,21 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
 
 **Context**: gunshi 0.37.1 は「宣言と食い違う書き方を黙って通し、**書いたことと逆の結果**になる」形を複数持つ(実測 12 形。`docs/notes/cli-parser-alternatives.md` §2)。`--show=false` を読まずに `true` にする、同一オプションの重複を last-wins で沈黙して捨てる、`--` の後ろの空文字列を rest から落とす、`--` を跨いでコマンドを解決する、など。maruhi はこれを `apps/cli/src/args.ts`(911 行)と各コマンドのテストで外側から塞いできたが、レビュー 7〜10 巡目まで新しい抜けが出続けた(08b8a98 / 0ea3a34 / ef7cba1)。特に ef7cba1 の形(`maruhi pull --no-show $FLAGS` の `$FLAGS` に `--show` が混ざると**全シークレットが端末へ出る**)は、パーサの沈黙がそのまま秘密の漏洩に化ける。
 
-一方 effect v4 は CLI を本体同梱の unstable モジュール(`effect/unstable/cli`)として持つ。同じ 12 形を beta.107 / rc.109 の両方で実測したところ **10 形が構造的に消え**、残る 2 形(重複指定の沈黙・ヘルプの出力先)も Effect の機構で塞げることを、3 コマンド(`pull` / `run` / `env create`)のスパイク(`apps/cli/test/support/` + 適合検査 28 件)で確認した。effect は 4.0.0-rc.109 へ追随済み(ADR-0011 の系。ソース変更ゼロ・全ゲート green)。
+一方 effect v4 は CLI を本体同梱の unstable モジュール(`effect/unstable/cli`)として持つ。同じ 12 形を beta.107 / rc.109 の両方で実測したところ **10 形が構造的に消え**、残る 2 形(重複指定の沈黙・ヘルプの出力先)も Effect の機構で塞げることを、3 コマンド(`pull` / `run` / `env create`)のスパイク(`apps/cli/test/support/` + 適合検査 31 件)で確認した。effect は 4.0.0-rc.109 へ追随済み(ADR-0011 の系。ソース変更ゼロ・全ゲート green)。
 
 また `gunshi/agent`(AI エージェント環境の検出)は std-env の `agentInfo` の薄いラッパにすぎず、gunshi 固有のロックインではないことも確認した。
 
 **Decision**:
 
 1. **引数層は `effect/unstable/cli`。gunshi は完全に廃止する**(`gunshi/agent` を含む)。追加依存は `@effect/platform-bun`(`BunServices.layer` が `FileSystem` / `Path` / `Stdio` / `Terminal` / `Crypto` / `ChildProcessSpawner` を供給)のみで、版は `effect` と同一(現行 4.0.0-rc.109)に揃えて厳密ピンする
-2. **引数の検査に自前の走査を書かない**。すべて宣言で表す: 重複指定 = `Flag.atMost(1)`、空・空白だけの値 = `Flag.withSchema`(Schema)、`maruhi run` の実行対象必須 = `Argument.atLeast(1)` + `Argument.filter`。`args.ts` の走査群(boolean への値の検出・rest の再構築・位置引数の数え直し・候補生成・gunshi のエラー写像)は削除する(関数単位の概算で 525 行 / 911 行)
-3. **診断は `CliOutput.Formatter` を実装して `CliOutput.layer` で差し込む**。`renderErrors` は既定のままとし、**描画の呼び出しは上流(`showHelp` → `Console`)に残す** — ランナー側に描画の分岐を書き足す形にすると、上流が経路を増やしたときに素通りする穴ができる。文面に出してよいのは**宣言名・候補・個数・期待する型のみ**。`UnexpectedArgument.arguments` と `InvalidValue.value` は**打たれた値そのもの**(平文でありうる)なので出さない。`formatHelpDoc` は `--help` を明示した実行のみ全文、誤りに添えるときは使い方 1 行
-4. **終了コードはエラー型が `Runtime.errorExitCode` で持つ**(`runMain` の既定 teardown が読む)。ランナーに写像表を置かない。例外は `ShowHelp`(errors 非空)だけで、effect の 1 を maruhi の **2(書き方の誤り)** に読み替える
+2. **引数の検査に自前の走査を書かない**。すべて宣言で表す: 重複指定 = `Flag.atMost(1)`(**boolean にも必ず付ける** — 素の `Flag.boolean` は重複を沈黙で解決し、打った順で結果が変わる)、空・空白だけの値 = `Flag.withSchema`(Schema)、`maruhi run` の実行対象必須 = `Argument.atLeast(1)` + `Argument.filter`。`args.ts` の走査群(boolean への値の検出・rest の再構築・位置引数の数え直し・候補生成・gunshi のエラー写像)は削除する(関数単位の概算で 525 行 / 911 行)
+3. **診断は `CliOutput.Formatter` を実装して `CliOutput.layer` で差し込む**。`renderErrors` は既定のままとし、**描画の呼び出しは上流(`showHelp` → `Console`)に残す** — ランナー側に描画の分岐を書き足す形にすると、上流が経路を増やしたときに素通りする穴ができる。文面に出してよいのは**宣言名・候補・個数・期待する型のみ**。`UnexpectedArgument.arguments` / `InvalidValue.value` に加えて **`InvalidValue.expected`**(上流の `Param.filter` が `onNone(a)` をそのまま入れる)も打たれた値を含みうるので、`expected` は**こちらが書いた文面と一致したときだけ**出す。`formatHelpDoc` は `--help` を明示した実行のみ全文、誤りに添えるときは使い方 1 行
+4. **終了コードはエラー型が `Runtime.errorExitCode` で持つ**。ランナーに写像表を置かない。例外は `ShowHelp` だけで、上流が `errors.length ? 1 : 0` を宣言している(= **書き方の誤りが exit 1 になる**)ため、`makeRunMain({ teardown })` に渡す **teardown で 2 へ読み替える**(`CliConfig` には終了コードの設定が無く、上流が用意しているフックはこれだけ)。ハーネス側で手計算すると本番の起動経路を検査できないので、テストも同じ teardown を通す
 5. **組み込みグローバルフラグは `CliConfig` で `--help` / `--version` だけに絞る**。既定では `--wizard` / `--completions` / `--log-level` が全コマンドへ生え、**`maruhi pull --wizard` は対話ウィザードが実際に起動する**(実測)。宣言していない対話経路・出力経路を secrets ツールに持たせない。シェル補完が必要になったら明示コマンド(`maruhi completions`)として別途決める
 6. **`env` / `server` / `invite` / `member` は真の入れ子サブコマンドにする**。gunshi の 1 段制約のために操作を位置引数にしていた結果必要だった「その操作に適用されないオプション」の拒否機構(`ENV_ACTION_FLAGS` / `optionRestrictedTo` / `actionFlagRejection` / `withoutPositionals`)は廃止する
-7. **値表示(`pull --show`)の境界は fail-closed の 2 層にする**。一次境界 = `stdin` と `stdout` の**両方が端末**か(`Stdio.stdinIsTerminal` / `stdoutIsTerminal`)。二次層 = 既知エージェントの環境変数(**std-env を直接依存**・厳密ピン・同期 API)。判定材料はいずれも Effect のサービス経由で取り、`process.*` を直に読まない
+7. **値表示(`pull --show`)の境界は fail-closed の 2 層にする**。一次境界 = `stdin` と `stdout` の**両方が端末**か(`Stdio.stdinIsTerminal` / `stdoutIsTerminal`)。二次層 = 既知エージェントの環境変数(**std-env を直接依存**・厳密ピン・同期 API)。判定材料はいずれも Effect のサービス経由で取り、`process.*` を直に読まない。
+
+   **適用範囲は「値を表示する経路」に限る(要裁定)**: CLI には他に `isAgent` を見るゲートが 9 か所ある(`invite.ts:174/321/361/597`、`recovery.ts:57/152/260`、`member.ts:302`、`server-grant.ts:218`)。FP 確認の儀式(`invite` / `member` / `server-grant`)は対話入力を要するので TTY 必須と親和的だが、`invite create` / `recovery` の発行系を TTY 必須にすると **CI 運用が変わる**(非 TTY で落ちるようになる)。**本 ADR ではこの 9 か所は deny-list のまま据え置き**、反転させるかは所有者の裁定として保留する。裁定時は、非 TTY で落ちるようになるコマンドの一覧を本 ADR の Consequences へ追記する
 8. **`maruhi run` は `--` を必須のままとする**。判定は `Stdio.args` を読む Effect(`TerminatorRequired`、exit 2)で行う
 9. **stdout はコマンドの出力だけ**。ヘルプ・診断は `Console` を差し替えて stderr へ寄せる
 10. **移行は段階的に行う**。スパイクの 3 コマンド(`pull` / `run` / `env create`)を src へ昇格させる PR を先頭に、操作フラグ機構を持つコマンド(`env rotate` / `diff`、`server`、`invite`、`member`)、残りの順で進める。全 14 サブコマンドの一括移行は行わない

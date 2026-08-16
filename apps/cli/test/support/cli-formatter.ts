@@ -12,8 +12,12 @@
 // ランナーに if 文を書き足す形にすると、上流が描画を増やしたときに
 // 素通りする経路ができる。
 //
-// 出してよいのは**こちらの語彙**だけ: 宣言名・候補・個数・期待する型。
-// 危険なのは `UnexpectedArgument.arguments` と `InvalidValue.value`。
+// 出してよいのは**こちらの語彙**だけ: 宣言名・候補・個数。危険なのは
+// `UnexpectedArgument.arguments` と `InvalidValue.value`、そして
+// **`InvalidValue.expected`**(レビュー指摘): 上流の `Param.filter` は
+// `expected: onNone(a)` を組み立てるので、`onNone` に値を埋め込む書き方
+// (effect 自身の JSDoc 例が `Expected even number, got ${n}`)をすると
+// 期待値の側から平文が漏れる。**こちらが書いた文面と一致したときだけ**出す。
 
 import type { HelpDoc } from "effect/unstable/cli";
 import { CliError, CliOutput } from "effect/unstable/cli";
@@ -29,6 +33,16 @@ export interface CommandSpec {
 /** `maruhi run` の実行対象が無い / 空のときの案内(src/run.ts と同じ文面)。 */
 export const RUN_COMMAND_REQUIRED =
   "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)";
+
+/** 空・空白だけの値を拒む Schema の文面(宣言側とここで同じ定数を使う)。 */
+export const NON_BLANK_MESSAGE = "空でない値(空白だけの値も受け付けません)";
+
+/**
+ * そのまま出してよい `expected` の全体集合。
+ *
+ * ここに無い文面は**こちらが書いたものではない**(= 値を含みうる)ので出さない。
+ */
+const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE]);
 
 function bareName(name: string): string {
   return name.replace(/^-+/, "");
@@ -66,8 +80,9 @@ function unexpectedArgumentMessage(
 /**
  * 値の伴う `InvalidValue` を、**値を出さずに**説明する。
  *
- * `expected` は宣言側の語彙(`at most 1 value` / `at least 1 value` /
- * Schema や `Argument.filter` に書いたメッセージ)なので出してよい。
+ * `expected` は「宣言側の語彙だから安全」とは限らない(上記のとおり
+ * `Param.filter` は `onNone(a)` をそのまま `expected` にする)。判定できるのは
+ * 上流が組み立てる定型(`at most` / `at least`)と、**こちらが書いた定数**だけ。
  */
 function invalidValueMessage(error: CliError.InvalidValue): string {
   const name = bareName(error.option);
@@ -78,9 +93,10 @@ function invalidValueMessage(error: CliError.InvalidValue): string {
     return RUN_COMMAND_REQUIRED;
   }
   const expectation = error.expected.replace("Schema validation failed: ", "");
+  const detail = SAFE_EXPECTATIONS.has(expectation) ? `(${expectation})` : "";
   return error.kind === "argument"
-    ? `位置引数 ${name} の値が受け付けられません(${expectation})`
-    : `オプション --${name} の値が受け付けられません(${expectation})`;
+    ? `位置引数 ${name} の値が受け付けられません${detail}`
+    : `オプション --${name} の値が受け付けられません${detail}`;
 }
 
 function unknownSubcommandMessage(error: CliError.UnknownSubcommand): string {
