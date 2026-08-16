@@ -428,6 +428,9 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(rendered.message).toContain("Expected number");
     expect(rendered.message).toContain('["version"]');
     expect(rendered.message).not.toContain("sk-live-SUPER-SECRET");
+    // 同じチャネルにリクエストの encode 失敗も流れてくる(向きは型から分からない)
+    // ので、誘導先は両向きを並べる。サーバー原因への一方的な誘導へ戻ったら落ちる
+    expect(rendered.message).toContain("指定した値");
     // 改行は 1 行へ畳んでから中和する(置換文字で読めなくならない)
     expect(rendered.message).not.toContain("\uFFFD");
   });

@@ -58,7 +58,9 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
  * **向きは型からは分からない**(レビュー指摘): 上流は応答の decode だけでなく
  * リクエストの encode(`encodePayload` / `encodeParams` / `encodeHeaders` /
  * `encodeQuery`)も**同じエラーチャネル**へ流すので、`Schema.isSchemaError` は
- * 両方を捕まえる。したがって文面で**サーバー側の異常と断定しない** — 実際、
+ * 両方を捕まえる。したがって文面で**サーバー側の異常と断定しない**し、
+ * 誘導先も両向きを並べる(リクエスト側 = 指定した値 / 応答側 = バージョン整合。
+ * 「バージョン整合」だけだと断定を外した前半と裏腹にサーバーへ誘導する) — 実際、
  * `--token-name` の長すぎる値はここへ encode 失敗として届いていた(現在は
  * 引数層が通信より前に落とす。cli.ts の requireTokenName)。
  * リクエスト側の値は引数層で検査する、が塞ぎ方であって、この写像ではない。
@@ -74,7 +76,7 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
  */
 function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
-  return `スキーマと一致しないデータがあります(${detail})。サーバーと CLI のバージョン整合を確認してください`;
+  return `スキーマと一致しないデータがあります(${detail})。指定した値と、CLI とサーバーのバージョン整合を確認してください`;
 }
 
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
