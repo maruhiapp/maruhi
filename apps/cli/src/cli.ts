@@ -62,7 +62,7 @@ import { COMMAND_SPECS, envCreateCommand, runEffectCli } from "./effect-cli.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
+import { internalErrorKind, toCliError } from "./failure.ts";
 import { type InviteRole, parseInviteAcceptInput } from "./invite-link.ts";
 import {
   type AcceptTarget,
@@ -2196,8 +2196,8 @@ function entryCommand(execute: Execute, commands: readonly string[]) {
  * コマンドの解決は **gunshi と同じ規則**(args.ts の commandTokens)で行う。
  * 自前の argv 走査を持たないためと、振り分けから漏れた形が gunshi 側で
  * 「不明なコマンドです」になる — 実在するコマンドについて嘘をつく — のを
- * 避けるため。`maruhi -- run printenv` のように `--` の後ろへコマンド名を
- * 書いた形もここで拾い、移行先が「`--` を跨がない」判定で落とす。
+ * 避けるため。`--` の後ろはコマンドの段ではないので見ない(先頭のコマンド名を
+ * `--` の後ろへ書いた形は commandNameAfterTerminator が手前で落とす)。
  *
  * `env` は create だけを移したので、`env create` の並びのときだけ新しい経路へ
  * 渡す。移行途中なので `maruhi env --name x create dev` のような**操作名より
@@ -2211,6 +2211,19 @@ function migratedCommandKey(argv: readonly string[]): string | null {
     return head;
   }
   return head === "env" && tokens[1] === "create" ? "env create" : null;
+}
+
+/**
+ * 内部エラー(バグ)の報告と終了コード。**message は出さない** — 打たれた値を
+ * 埋め込んだ文面でも到達しうるので、型の名前だけを添える(failure.ts の
+ * internalErrorKind)。無言で飲まないための最後の網でもある。
+ */
+async function reportInternalError(
+  report: (messages: readonly string[]) => Promise<void>,
+  error: unknown,
+): Promise<number> {
+  await report([`内部エラー(${internalErrorKind(error)})`]);
+  return 1;
 }
 
 /**
@@ -2248,7 +2261,15 @@ export async function runCli(
 
   const migrated = migratedCommandKey(argv);
   if (migrated !== null) {
-    return await runEffectCli(migrated, argv, layer);
+    // コマンド本体の defect は runEffectCli の中(`Effect.exit` + reportFailure)
+    // が拾う。ここで受けるのは層の構築や logError 自体の失敗 = reject だけだが、
+    // bin.ts は runCli を await するだけなので、拾わないと maruhi の文面ではなく
+    // Bun の unhandled rejection が出る。内部エラーの報告経路を 1 本に保つ
+    try {
+      return await runEffectCli(migrated, argv, layer);
+    } catch (error) {
+      return await reportInternalError(reportUsageError, error);
+    }
   }
 
   const execute: Execute = async (ctx, program, options) => {
@@ -2287,8 +2308,10 @@ export async function runCli(
       Effect.catchDefect((defect) =>
         Effect.gen(function* () {
           const io = yield* CliIo;
-          const message = displayText(defect instanceof Error ? defect.message : String(defect));
-          yield* io.logError(`maruhi: 内部エラー: ${message}`);
+          // defect の message は出さない(打たれた値を埋め込んだ文面でも到達
+          // しうる)。型の名前だけを添える — 移行先(effect-cli.ts の
+          // reportFailure)と同じ形で、内部エラーの見え方を 1 つに保つ
+          yield* io.logError(`maruhi: 内部エラー(${internalErrorKind(defect)})`);
           return 1;
         }),
       ),
@@ -2356,9 +2379,7 @@ export async function runCli(
       await reportUsageError(usageErrorMessages(error, argv, knownCommands));
       return 2;
     }
-    const message = displayText(error instanceof Error ? error.message : String(error));
-    await reportUsageError([`内部エラー: ${message}`]);
-    return 1;
+    return await reportInternalError(reportUsageError, error);
   }
   return exitCode;
 }

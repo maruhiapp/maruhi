@@ -650,15 +650,20 @@ export function argsRejection(ctx: ArgCheckContext, options?: ArgsCheckOptions):
 export type CommandTable = Readonly<Record<string, { readonly args?: ArgTable | undefined }>>;
 
 /**
- * Resolves the command path the way gunshi does: the non-empty positional
- * tokens, in order.
+ * Resolves the command path from the tokens **before** `--`: the non-empty
+ * positional tokens, in order.
  *
  * コマンドの解決に自前の argv 走査を書かないため、パースは gunshi の
- * `parseArgs` に任せる。`--` は跨ぐ: gunshi の resolveCommandTree も
- * getPositionalTokens で全 positional を見るため、option-terminator の前で
- * 打ち切ると解決結果が食い違う。falsy な値(空文字列)は gunshi 側が
- * 落とす(`!!v`)ので、ここでも落とす — `maruhi "" env create …` の解決を
- * 食い違わせないため。
+ * `parseArgs` に任せる。falsy な値(空文字列)は gunshi 側が落とす(`!!v`)
+ * ので、ここでも落とす — `maruhi "" env create …` の解決を食い違わせないため。
+ *
+ * **`--` の後ろは見ない**: そこはコマンドの段ではなく、そのまま渡す引数だから。
+ * 先頭のコマンド名が `--` の後ろにある形は {@link commandNameAfterTerminator}
+ * が振り分けより手前で落とすので、1 つ目のトークンについては「跨ぐ / 跨がない」
+ * で結果が変わらない(= gunshi の resolveCommandTree と一致する)。一方
+ * **2 つ目以降**(`maruhi env -- create dev` の `create`)まで拾うと、
+ * サブコマンドとして解決されていない語を解決済みとして扱うことになり、
+ * 診断が「操作は認識されていて位置引数が多い」という嘘になる。
  *
  * 引数表を渡さないので、**値を取るオプションの値も位置引数として並ぶ**
  * (`--name x create` の `x`)。呼び出し側はその前提で使う。
@@ -666,6 +671,9 @@ export type CommandTable = Readonly<Record<string, { readonly args?: ArgTable | 
 export function commandTokens(argv: readonly string[]): readonly string[] {
   const names: string[] = [];
   for (const token of parseArgs([...argv])) {
+    if (token.kind === "option-terminator") {
+      break;
+    }
     if (token.kind === "positional" && token.value !== undefined && token.value !== "") {
       names.push(token.value);
     }

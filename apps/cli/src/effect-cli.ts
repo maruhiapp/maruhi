@@ -47,9 +47,10 @@ import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-forma
 import { maruhiTeardown } from "./cli-teardown.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
 import { openEnvironment, openProject } from "./context.ts";
-import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
+import { formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { CliError, usageError } from "./errors.ts";
+import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
@@ -189,7 +190,7 @@ function commandAfterTerminator(
     if (stray > 0) {
       return yield* Effect.fail(
         usageError(
-          `余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_TERMINATOR_HINT}`,
+          `余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は \`--\` より前に位置引数を取りません${RUN_TERMINATOR_HINT}`,
         ),
       );
     }
@@ -409,10 +410,9 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
   // defect(バグ)や上流の未知エラー。**message は出さない**: 打たれた値を
   // 埋め込んだ文面(`Invalid value: <平文>`)でも到達しうるので、制御文字の
   // 中和だけでは規律(打たれた値を診断に出さない)を守れない。無言では飲まず
-  // (CLAUDE.md)、代わりに**型の名前**だけを添える — コード由来の語彙なので
-  // argv からは作れず、どの層で壊れたかの手掛かりにはなる
-  const kind = failure instanceof Error ? failure.constructor.name : typeof failure;
-  return io.logError(`maruhi: 内部エラー(${displayText(kind)})`);
+  // (CLAUDE.md)、型の名前だけを添える(failure.ts の internalErrorKind —
+  // gunshi 側の defect 経路と同じ形)
+  return io.logError(`maruhi: 内部エラー(${internalErrorKind(failure)})`);
 }
 
 /**

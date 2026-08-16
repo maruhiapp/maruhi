@@ -200,6 +200,19 @@ export function isServerRejection(error: unknown): boolean {
 }
 
 /**
+ * Names the *type* of an internal failure (defect) without echoing its message.
+ *
+ * defect の `message` は打たれた値を埋め込んだ文面(`Invalid value: <平文>`)
+ * でも到達しうるので、制御文字の中和だけでは規律(打たれた値を診断に出さない)
+ * を守れない。かといって無言で飲むのも禁止(CLAUDE.md)なので、**コード由来の
+ * 語彙**である型の名前だけを手掛かりとして残す — argv からは作れず、
+ * `bun build --compile` は minify しないので配布バイナリでも潰れない。
+ */
+export function internalErrorKind(failure: unknown): string {
+  return displayText(failure instanceof Error ? failure.constructor.name : typeof failure);
+}
+
+/**
  * Collapses any failure into a user-facing {@link CliError}. Unknown failures
  * keep only their `Error#message`(our own code never puts secret material in
  * messages; crypto errors carry identifiers only by contract).

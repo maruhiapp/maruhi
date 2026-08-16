@@ -101,6 +101,22 @@ function invalidValueMessage(error: CliError.InvalidValue): string {
     : `オプション --${name} の値が受け付けられません${detail}`;
 }
 
+/**
+ * `UserError` は**こちらが書いた `userMessage` のときだけ**出す。
+ *
+ * `message` は `userMessage` が空だと **`cause` の message** へ落ちる(上流の
+ * 宣言どおり)。`cause` は `Flag.mapEffect` / `Argument.mapEffect` に渡した
+ * 任意の失敗なので、打たれた値を含みうる — `InvalidValue.expected` を
+ * {@link SAFE_EXPECTATIONS} で塞いだのと同じ理由で、素通しにはしない。
+ *
+ * 現行の宣言(effect-cli.ts)は `mapEffect` を使っていないので到達しないが、
+ * **足した瞬間に穴が開く**位置なのでここで縛っておく。
+ */
+function userErrorMessage(error: CliError.UserError): string {
+  const authored = error.userMessage ?? "";
+  return authored === "" ? "引数の書き方が正しくありません" : authored;
+}
+
 function unknownSubcommandMessage(error: CliError.UnknownSubcommand): string {
   const guess = error.suggestions[0];
   return `不明なコマンドです${guess === undefined ? "" : `(${guess} のことですか?)`}`;
@@ -137,7 +153,7 @@ export function describeError(
     return unknownSubcommandMessage(error);
   }
   if (error instanceof CliError.UserError) {
-    return error.message;
+    return userErrorMessage(error);
   }
   return "引数の書き方が正しくありません";
 }

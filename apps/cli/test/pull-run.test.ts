@@ -277,6 +277,30 @@ describe("maruhi pull", () => {
     expect(env.logs).toContain("BETA=beta-value");
   });
 
+  it("コマンドの出力は CliIo だけを通る(実 fd を直に叩く経路を作らない)", async () => {
+    // 引数層を移した先(effect/unstable/cli)は出力を `Console` / `Stdio` の
+    // サービス経由で行うが、上流が描画経路を増やしたときに実 fd へ素通りする
+    // 穴ができうる。**復号した値**が現れる唯一のコマンドで安全網を張る
+    const env = await startEnv([chainHandler(), pullHandler()]);
+    const bypassed: string[] = [];
+    // 束縛ラッパーではなく元のメソッドそのものを控える(戻すたびに 1 段積まない)
+    const realWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      bypassed.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      expect(await runCli(["pull", "--show"], env.layer)).toBe(0);
+    } finally {
+      process.stdout.write = realWrite;
+    }
+    // 窓には vitest のレポータ出力も混ざるので、**maruhi の語**で判定する
+    const written = bypassed.join("");
+    expect(written).not.toContain("alpha-value");
+    expect(written).not.toContain("beta-value");
+    expect(written).not.toContain("同期・検証 OK");
+  });
+
   it("--show=false / --show false は**書いたとおり**に読まれ、値を表示しない", async () => {
     // gunshi は boolean のインライン値を読まずに true にし、空白区切りの値も
     // 消費しなかった(= 表示しないと書いた実行が全シークレットを出す)。

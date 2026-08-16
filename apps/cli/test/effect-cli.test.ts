@@ -157,6 +157,22 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("段の 2 つ目が `--` の後ろにある形は、解決済みのふりをした診断を出さない", async () => {
+    // `maruhi env -- create dev`: 上流の lexer は最初の `--` で切るので
+    // `create` はサブコマンドとして解決されない(= `env` 段の余りになる)。
+    // 振り分けが `--` を跨いで「env create」と決めると、診断が
+    // 「操作は認識されていて位置引数が多い」という**嘘**になる
+    const { env, server } = await startEnv();
+    expect(await runCli(["env", "--", "create", "dev"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    // 実際に足りないもの(`--` より前の位置引数)を言う
+    expect(errors).toContain("位置引数 action を指定してください");
+    // 「操作は認識されていて位置引数が多い」という嘘をつかない
+    expect(errors).not.toContain("maruhi env create");
+    expect(errors).not.toContain("余分な引数です");
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("11. オプションへの空 / 空白だけの値は落ちる(既定へ黙って落ちない)", async () => {
     // `maruhi push API_KEY --env "$ENV"` で ENV が未設定のとき、既定環境へ
     // 黙って書き込む事故と同じ形。Schema の宣言 1 つで両方を落とす
@@ -224,6 +240,40 @@ describe("maruhi 固有の規律", () => {
     expect(rejected.env.logs).toEqual([]);
     expect(rejected.env.errors.length).toBeGreaterThan(0);
     expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it("**迂回された書き込み**の安全網(Console も CliIo も通さない実 fd 書き込み)", async () => {
+    // `console.log` の spy だけでは、`Console` を経由せず実 fd へ書く経路
+    // (上流が描画メソッドを増やす・Stdio の Sink が実 stdout を掴む)を
+    // 捕まえられない。collectingConsole は Console の**全メソッド**を潰す
+    // 設計だが、塞げていることを確かめる側の網もここに要る
+    const bypassed: string[] = [];
+    // 束縛ラッパー(`bind`)ではなく**元のメソッドそのもの**を控える: bind した
+    // ものを戻すと呼ぶたびに 1 段ずつ積まれ、プロトタイプ上の write を隠す
+    const realWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      bypassed.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      // 診断(exit 2)・ヘルプ(exit 0)・実行の失敗(exit 1 — このハーネスの
+      // サーバーは何も応答しない)の 3 経路すべてで実 fd を触らない
+      const rejected = await startEnv();
+      expect(await runCli(["pull", "--shwo"], rejected.env.layer)).toBe(2);
+      const help = await startEnv();
+      expect(await runCli(["pull", "--help"], help.env.layer)).toBe(0);
+      const failed = await startEnv();
+      expect(await runCli(["pull"], failed.env.layer)).toBe(1);
+    } finally {
+      process.stdout.write = realWrite;
+    }
+    // この窓には vitest のレポータ出力も混ざる(await を挟むため)。**maruhi の
+    // 語が実 fd に現れないこと**で判定する — 検査したい性質はそちらで、
+    // 「誰も書かないこと」ではない
+    const written = bypassed.join("");
+    for (const marker of ["使い方: maruhi", "不明なオプション", "FLAGS", "maruhi:"]) {
+      expect(written, marker).not.toContain(marker);
+    }
   });
 
   it("誤りに添えるヘルプは使い方 1 行だけ(--help は全文)", async () => {
