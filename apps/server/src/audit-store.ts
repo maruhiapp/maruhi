@@ -11,6 +11,7 @@
 //   ミラー検証 — `maruhi audit verify` — と同一実装を共有する)
 
 import type { AuditEventRecord } from "@maruhi/core";
+import { CHAIN_MIRROR_EVENTS } from "@maruhi/core";
 import { Context, Layer } from "effect";
 
 import { randomHex } from "./ids.ts";
@@ -96,19 +97,18 @@ export interface AuditRotationRead {
 
 /**
  * クラス 1(チェーン role reader 以上 = 全メンバー)のイベント名(§6)。
- * **明示 allowlist の default-deny**: ここに無いイベント(var.read /
- * dek.registered / dek.deleted、および将来追加されるイベント)はクラス 2 扱いで
- * admin 未満には見えない — イベントを増やしたときに安全側へ倒す。
+ * chain.* は §6 の定義どおり**全部**クラス 1 なので共有写像の像
+ * (CHAIN_MIRROR_EVENTS — ChainOp の全域マップ由来)から導出する: 将来の
+ * op 追加でここだけ漏れると、そのミラー行が admin 未満に不可視になり、
+ * 全メンバー実行可能なはずの `maruhi audit verify` が健全なサーバーを
+ * 「欠落 = 削除の隠蔽」と誤断定する(pullfrog 指摘)。
+ * **chain.* 以外は明示 allowlist の default-deny**: ここに無いイベント
+ * (var.read / dek.registered / dek.deleted、および将来追加される非 chain
+ * イベント)はクラス 2 扱いで admin 未満には見えない — イベントを増やした
+ * ときに安全側へ倒す。
  */
 export const CLASS1_EVENTS: readonly string[] = [
-  "chain.genesis",
-  "chain.member_added",
-  "chain.member_removed",
-  "chain.role_changed",
-  "chain.environment_created",
-  "chain.epoch_rotated",
-  "chain.server_granted",
-  "chain.server_revoked",
+  ...CHAIN_MIRROR_EVENTS,
   "env.created",
   "env.renamed",
   "env.deleted",

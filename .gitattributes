@@ -1,2 +1,7 @@
 # drizzle-kit が再生成するスキーマスナップショット(レビュー対象は migration.sql)
 apps/server/drizzle/*/snapshot.json linguist-generated=true
+
+# ソースは常にテキスト diff(制御バイトの混入で git がバイナリ判定し、
+# 挙動の変更が diff に現れなくなる事故を防ぐ — PR #71 レビュー指摘)
+*.ts diff
+*.tsx diff
