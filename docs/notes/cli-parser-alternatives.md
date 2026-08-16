@@ -41,7 +41,7 @@ gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて
 
 - effect/unstable/cli は失敗を `ShowHelp` で包み、`ShowHelp.errors` に**型付きエラーを配列で**持つ。
   gunshi のように 1 件ずつではなく、複数の書き方の誤りを一度に返せる。
-  exit code は errors 非空で 1(maruhi の usage=2 へは自前写像が必要)
+  exit code は errors 非空で 1(maruhi の usage=2 は `Runtime.errorExitCode` をエラー型に持たせて表す — §7)
 - effect/unstable/cli の `DuplicateOption` は**宣言の衝突**(親子コマンドで同名フラグ)を指すもので、
   ユーザーが同じオプションを 2 回打った場合は発火しない。#4 は「first-wins の沈黙」のまま
 - ヘルプは `Console.log` 経由なので、`Console` サービスを差し替えれば stdout を汚さない
@@ -59,7 +59,7 @@ gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて
 `@effect/platform-bun` は effect と同じ版番号で出ており(beta.107 / rc.109 の両方が存在)、
 `FileSystem` / `Path` / `Stdio` / `Terminal` / `ChildProcessSpawner` を `BunServices.layer` で供給する。
 
-### エージェント検出は gunshi のロックインではない
+### エージェント検出は gunshi のロックインではない(→ §8 で再設計)
 
 `gunshi/agent` の実体は **std-env 4.1.0 の `agentInfo` の薄いラッパ**(`lib/agent.js` は std-env をインライン化したもの)。
 検出は環境変数表(`CLAUDECODE` / `CLAUDE_CODE` / `CURSOR_AGENT` / `CODEX_SANDBOX` / `GEMINI_CLI` /
@@ -102,14 +102,11 @@ gunshi で実際に踏んだ 12 形を、同じ argv で各候補に食わせて
 
 1. **`effect/unstable/cli` への移行を第一候補とする**。理由は「gunshi 由来の穴が 10/12 消える」ことに加え、
    引数層が Effect の型付きエラーに統一され、`args.ts` の相当部分と `runCli` のブリッジが不要になること
-2. 移行しても**残る自前検査**(これは維持する):
-   - 重複オプションの拒否(#4。argv の事前走査 = 宣言名で数える。現行 ef7cba1 の規律をそのまま移植)
-   - 平文値・打たれた綴りを診断に出さない規律(`displayText` / 編集距離による候補提示)
-   - 空白だけの値の拒否、操作に適用されないオプションの拒否(`optionRestrictedTo`)、`--reason` の長さ検査
-   - usage エラー = exit 2 の写像(`ShowHelp.errors` → maruhi の診断 → 2)
-   - ヘルプを stdout に出さないための `Console` 差し替え(実測済み)
+2. 検査は**すべて Effect の宣言に載せる**(§6 の 2 巡目で実測)。自前で残るのは
+   診断文の組み直し(値を出さないため)と、`maruhi run` の `--` 必須(方針)だけ
 3. **`@stricli/core` は「Effect 結線より引数の厳密さを優先する」場合の対抗案**として残す
-4. エージェント検出は gunshi から切り離せる(std-env 直接依存 or 自前表)。**どちらにするかは要裁定**
+4. エージェント検出は**一次境界を TTY に置き換える**(§8)。env の名前表は二次層に降り、
+   ライブラリ選択は安全境界を決める選択ではなくなる
 
 ### 見積もりと段取り(提案)
 
@@ -141,12 +138,12 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 ## 6. 移行スパイク(pull / run / env create)の実測
 
 `apps/cli/test/support/effect-cli-spike.ts` に 3 コマンドを effect/unstable/cli で組み、
-`apps/cli/test/effect-cli-spike.test.ts`(22 件)で maruhi の規律が保たれるかを固定した。
+`apps/cli/test/effect-cli-spike.test.ts`(26 件)で maruhi の規律が保たれるかを固定した。
 本番の `src/cli.ts` は gunshi のまま(スパイクは測定用。採用時に src へ昇格させる)。
 
 ### 分かったこと
 
-1. **12 形すべてで期待どおりの終了コードと診断になった**(22/22 green)。
+1. **12 形すべてで期待どおりの終了コードと診断になった**(26/26 green)。
    `--show=false` / `--show false` は書いたとおり `false` として読まれ、
    `--` の後ろの空文字列は保たれ、`--no-show --show` は落ちる
 2. **`env` が真のサブコマンドになる**。gunshi は 1 段しか組めないため maruhi は
@@ -163,11 +160,25 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 4. `Console` を差し替えるとヘルプ・診断が stdout を汚さない(`--help` でも stdout 0 行)
 5. `ShowHelp.errors` は**複数の誤りを配列で**返す。gunshi のように 1 件ずつではない
 
-### 残る自前検査(パーサの正しさではなく maruhi の方針)
+### 残る自前検査 → **ほぼ全部 Effect の宣言に置き換わった**(2 巡目の実測)
 
-スパイクの `preflight` は 3 つだけ: **重複指定・空の値・空の位置引数**。
-加えて `maruhi run` の「実行対象は `--` の後ろから」も方針側(`restOnlyRejection` /
-`missingRestRejection`)。効果は測ったとおりで、args.ts の大半はパーサ側へ移る。
+1 巡目のスパイクでは重複・空の値・rest 必須を自前の `preflight` で書いていたが、
+Effect の機構で宣言できることが分かったので**全部消した**(26 件 green)。
+
+| maruhi の規律 | 1 巡目(自前) | 2 巡目(Effect の宣言) |
+|---|---|---|
+| 同じオプションの重複 | 宣言名で数える走査 | `Flag.atMost(1)` |
+| 空 / 空白だけの値 | `isBlank` の走査 | `Flag.withSchema(NonBlank)`(Schema) |
+| 実行対象のない `run` | rest の自前検査 | `Argument.atLeast(1)` |
+| 実行対象が空文字列(`run -- "$CMD"` の未設定形) | 同上 | `Argument.filter`(2 つ目以降の空文字列は子プロセスの引数として保つ) |
+| usage=2 / 失敗=1 | ランナー内の写像 | `Runtime.errorExitCode` をエラー型が持つ(`runMain` の既定 teardown が読む) |
+
+**残る自前は 2 つだけ**:
+
+1. **診断文の組み直し**(避けられない。§6 の 3 を参照)
+2. `maruhi run` の「実行対象は `--` の後ろからしか取らない」(6 行)。これは
+   パーサの正しさではなく方針(`maruhi run npm test --env x` の `--env` が
+   maruhi のものか子のものか読めなくなる)。方針を緩めるなら丸ごと消える
 
 ### args.ts 911 行の帰属(関数単位の概算)
 
@@ -182,7 +193,90 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 (gunshi の `AggregateError` の解体)がまとめて消える。
 これは**関数単位の帰属による概算**であって、実際に削除して測った数字ではない。
 
-## 7. 再現手順
+## 7. Effect の機構で賄える箇所の棚卸し(CLI 全体)
+
+引数層以外も洗い出した。いずれも実在を確認済み(effect 4.0.0-rc.109 / `@effect/platform-bun`)。
+
+| 今の自前実装 | Effect の機構 | 効果 |
+|---|---|---|
+| トークン・master 鍵・復号値を素の `string` / `Uint8Array` で持つ | **`Redacted`**(`toString` / `toJSON` が伏字を返す。`Redacted.value` で明示的に取り出す。`wipeUnsafe` で破棄も可) | 「平文をログ・エラーに出さない」が**型で担保**される。今は人手のレビューとテスト頼み。`Flag.redacted` もあるので値を取るフラグは最初から包める |
+| `live.ts` の `stdin.setRawMode(true)` 手書きノーエコー入力(リカバリーコード) | **`Prompt.password` / `Prompt.hidden`** | 端末制御を持たなくてよい |
+| `run.ts` の `Bun.spawn` ラッパ(`ProcessRunner` サービス) | **`effect/unstable/process`**(`ChildProcess` + `BunChildProcessSpawner`)。`env` / `extendEnv: false` / `stdio: "inherit"` を宣言で持つ | 子プロセス env の注入が Effect の API に載る。`extendEnv: false` は maruhi の denylist の考え方と同型 |
+| `config.ts` / `floor.ts` / `pins.ts` の `node:fs/promises` 直呼び | **`FileSystem` / `Path`**(+ `BunFileSystem`) | テストが一時ディレクトリ不要に(`FileSystem.layerNoop`) |
+| `io.ts` の `envVar`(`MARUHI_TOKEN` 等の env 読み) | **`Config` / `ConfigProvider`** | 設定の出所が 1 つになる |
+| `io.ts` の `stdin.isTTY` 直読み | **`Stdio.stdinIsTerminal` / `stdoutIsTerminal`** | 端末判定がサービス化され、テストで偽装できる(§8 の一次境界) |
+| `device-flow.ts` のポーリング間隔(下限固定) | **`Schedule`** | 間隔・上限・ジッタが宣言になる |
+| `config.json` のパース | **`Schema`** | api-schema と同じ語彙に揃う |
+
+**置き換わらないもの**(正直に記録する):
+
+- `retry.ts` の `retryOnConflict` — CAS 競合の「分類 → 回復(再同期・再署名の材料づくり)→ 再試行」で、
+  回復がドメイン固有。`Effect.retry` + `Schedule` には落ちない。**残す**
+- 診断文の組み直し(§6 の 3)
+- `keychain.ts`(`Bun.secrets`)— Effect に鍵ストアの抽象はない
+
+## 8. エージェント検出の再設計(徹底調査の結果)
+
+### 8-1. 分かったこと
+
+- **Effect には無い**。effect 4.0.0-rc.109 のソース全体に `CLAUDECODE` / `isAgent` 等は 0 件で、
+  CLI モジュールにも該当機能はない。CLI ライブラリ一般の機能でもない
+- **`Bun.isAIAgent()` は現行の Bun(1.3.14 = latest かつ本リポジトリのピン)に存在しない**(実測: `undefined`)。
+  agents.md の提案スレッドで「Bun が実装済み」と言及されているが、公開 API としては未到達。**将来の観測対象**
+- **専用パッケージが複数ある**(いずれも依存ゼロ):
+  `@vercel/detect-agent` 1.2.5(cursor / claude / cowork / devin / replit / gemini / codex / antigravity /
+  augment-cli / opencode / github-copilot / v0)、`std-env` 4.2.0(`agentInfo`)、`ai-agent-detect`、`is-ai-agent`
+- **環境変数の標準化は進行中で未確定**。`AGENT` を推す提案(agentsmd/agents.md #136。Goose / Amp が実装済み)と
+  `AI_AGENT`(std-env / @vercel/detect-agent が読む)が併存し、Claude Code は `CLAUDECODE=1`、
+  Cursor は `CURSOR_AGENT=1`、Gemini CLI は `GEMINI_CLI=1` と各社独自。
+  VS Code / Copilot は「エージェントはユーザーと同一環境で動くべき」として**反対**している
+- 各ライブラリの検出範囲は**互いに部分集合ではない**(std-env は kiro / pi / auggie を持ち、
+  vercel は cowork / antigravity / v0 / github-copilot を持つ)。`@vercel/detect-agent` は
+  `/opt/.devin` のようなファイル存在も見るため **async** で、セキュリティ判定としては重い
+
+### 8-2. 核心: deny-list は fail-open である
+
+現行の `gunshi/agent` は「**既知の**エージェントの環境変数に一致したら拒否」する deny-list で、
+**境界の定義が上流のリストに依存**する。リストに無い新しいエージェント・自作ハーネス・
+CI・ログ収集経路は**素通り**する。上の調査のとおり標準化は未確定で、各社独自変数が乱立しており、
+「リストが常に正しい」という前提自体が持たない。
+
+### 8-3. 再設計: 一次境界を「人間の対話端末か」にする(fail-closed)
+
+maruhi の要件は元々「**値を見てよいのは人間が対話端末で実行したときだけ**」である。
+それをそのまま判定にする:
+
+1. **一次境界 = TTY**: `stdin` と `stdout` の**両方**が端末か(`Stdio.stdinIsTerminal` /
+   `stdoutIsTerminal`。Effect のサービスなのでテストで偽装できる)。
+   エージェント・CI・パイプ・リダイレクトはすべて**既定で拒否**になる
+2. **二次層 = 既知エージェントの env**: 名前が分かると診断が親切になり、
+   PTY を割り当てて実行するエージェントも捕まえられる
+
+**実測(このセッション = 実際に Claude Code の中)**: `stdin/stdout/stderr の isTTY はすべて false`。
+一方で環境変数は `CLAUDECODE` と `AI_AGENT` の両方が立っていた。
+つまり**どちらの信号でも捕まる**が、**未知のエージェントを止められるのは TTY 側だけ**である。
+
+副次的な効果として `maruhi pull --show > secrets.txt` も拒否される。
+これは平文をディスクへ落とす操作であり、ディスクレス不変条件からは**拒否が正しい**。
+
+スパイクでは `apps/cli/test/support/agent-gate.ts` にこの設計を実装し、
+「未知のエージェント(`isAgent: false`)でも stdout が端末でなければ拒否」をテストで固定した。
+
+### 8-4. ライブラリ選択の格が下がる
+
+一次境界が TTY になると、env の名前表は**二次層**に降りる。したがって
+「どのライブラリを使うか」はもはや安全境界を決める選択ではなくなり、次の順で薄く扱える:
+
+1. **`@vercel/detect-agent`**(依存ゼロ・検出範囲が広い・Vercel 保守)。ただし
+   `determineAgent()` が async でファイル存在も見る
+2. **`std-env`**(依存ゼロ・同期・現行 `gunshi/agent` と同一実体 = 挙動が変わらない)
+3. 将来 `Bun.isAIAgent()` が入ったら依存ゼロで置き換える
+
+**推奨は 2(std-env・同期・現行と同一挙動)を厳密ピンで直接依存**。二次層なので
+検出漏れが即座に境界の穴にはならない。加えて検出表のスナップショットテストを置けば、
+上流が縮小したときに CI で気づける。
+
+## 9. 再現手順
 
 ```bash
 mkdir probe && cd probe && bun init -y

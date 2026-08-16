@@ -8,9 +8,11 @@
 // 本番の CLI(src/cli.ts)は gunshi のまま。ここが green であることは
 // 「移行しても失われる規律が無い」ことの根拠になる。
 
+import { Exit, Runtime } from "effect";
 import { CliError } from "effect/unstable/cli";
 import { describe, expect, it } from "vitest";
 
+import { ValueDisplayRefused } from "./support/agent-gate.ts";
 import { describeError, runSpikeCli } from "./support/effect-cli-spike.ts";
 
 /** 診断に平文が混ざっていないことの共通検査(打たれた値を語彙にしない)。 */
@@ -52,13 +54,13 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expectNoSecretLeak(outcome.stderr, ["prod", "dev"]);
   });
 
-  it("4b. 否定形と肯定形の混在も同じオプションとして数える", async () => {
-    // `maruhi pull --no-show $FLAGS`(FLAGS に --show)= 全シークレットの表示。
-    // gunshi は last-wins で黙って表示側に倒れていた(ef7cba1)
-    const outcome = await runSpikeCli(["pull", "--no-show", "--show"]);
+  it("4b. 値を取るオプションの重複は Flag.atMost(1) が落とす(自前の走査なし)", async () => {
+    // `maruhi push K --env prod --env dev` は書いた 2 つのうち片方だけへ
+    // 書き込む(取り消せない)。宣言で落とす
+    const outcome = await runSpikeCli(["run", "--env", "prod", "--env", "dev", "--", "printenv"]);
     expect(outcome.exitCode).toBe(2);
     expect(outcome.invoked).toBeNull();
-    expect(outcome.stderr.join("\n")).toContain("オプション --show を複数回指定しています");
+    expect(outcome.stderr.join("\n")).toContain("オプション --env を複数回指定しています");
   });
 
   it("5. `--` の後ろの空文字列が落ちない(gunshi は rest から落としていた)", async () => {
@@ -96,13 +98,15 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
   it("11. オプションへの空の値は落ちる(既定へ黙って落ちない)", async () => {
     const outcome = await runSpikeCli(["pull", "--env", ""]);
     expect(outcome.exitCode).toBe(2);
-    expect(outcome.stderr.join("\n")).toContain("オプション --env の値が空です");
+    expect(outcome.stderr.join("\n")).toContain("オプション --env の値が受け付けられません");
   });
 
-  it("11b. 空白だけの値も空として落ちる", async () => {
+  it("11b. 空白だけの値も落ちる(Schema の宣言 1 つで両方)", async () => {
     const outcome = await runSpikeCli(["pull", "--env", "  "]);
     expect(outcome.exitCode).toBe(2);
-    expect(outcome.stderr.join("\n")).toContain("オプション --env の値が空です");
+    expect(outcome.stderr.join("\n")).toContain("オプション --env の値が受け付けられません");
+    // 打たれた値(空白)は診断に出さない
+    expect(outcome.stderr.join("\n")).not.toContain('"  "');
   });
 
   it("12. 余分な位置引数は個数だけを言い、中身は出さない", async () => {
@@ -143,10 +147,11 @@ describe("maruhi 固有の規律", () => {
     expectNoSecretLeak(strayed.stderr, ["npm", "test"]);
   });
 
-  it("AI エージェント環境では pull --show を拒否する(復号より前・exit 1)", async () => {
+  it("既知の AI エージェントでは pull --show を拒否する(復号より前・exit 1)", async () => {
     const outcome = await runSpikeCli(["pull", "--show"], {
       agent: { isAgent: true, name: "claude" },
     });
+    // 終了コードはエラー型が持つ(Runtime.errorExitCode = 1)。
     // 書き方の誤り(2)ではなく実行の拒否(1)
     expect(outcome.exitCode).toBe(1);
     expect(outcome.stderr.join("\n")).toContain("AI エージェント環境を検出したため");
@@ -154,10 +159,46 @@ describe("maruhi 固有の規律", () => {
     expect(outcome.stderr.join("\n")).not.toContain("run --");
   });
 
-  it("エージェント環境でも値を表示しない実行は通る", async () => {
+  it("**未知**のエージェントでも拒否する(TTY が一次境界 = fail-closed)", async () => {
+    // エージェント検出のリストに載っていない = isAgent: false でも、
+    // 出力がパイプ・リダイレクトなら値は見せない。deny-list では素通りしていた形
+    const outcome = await runSpikeCli(["pull", "--show"], {
+      agent: { isAgent: false },
+      stdoutIsTerminal: false,
+    });
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr.join("\n")).toContain("値の表示は対話端末でのみ許可されます");
+  });
+
+  it("stdin が端末でない実行(CI・ヒアドキュメント)も拒否する", async () => {
+    const outcome = await runSpikeCli(["pull", "--show"], {
+      agent: { isAgent: false },
+      stdinIsTerminal: false,
+    });
+    expect(outcome.exitCode).toBe(1);
+  });
+
+  it("人間の対話端末では通る", async () => {
+    const outcome = await runSpikeCli(["pull", "--show"], {
+      agent: { isAgent: false },
+      stdinIsTerminal: true,
+      stdoutIsTerminal: true,
+    });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.invoked?.values["show"]).toBe(true);
+  });
+
+  it("エージェント環境でも値を表示しない実行は通る(run への注入は許可のまま)", async () => {
     const outcome = await runSpikeCli(["pull"], { agent: { isAgent: true, name: "claude" } });
     expect(outcome.exitCode).toBe(0);
     expect(outcome.invoked?.command).toBe("pull");
+
+    const injected = await runSpikeCli(["run", "--", "printenv", "MY_VAR"], {
+      agent: { isAgent: true, name: "claude" },
+      stdoutIsTerminal: false,
+    });
+    expect(injected.exitCode).toBe(0);
+    expect(injected.invoked?.rest).toEqual(["printenv", "MY_VAR"]);
   });
 });
 
@@ -194,7 +235,7 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
       }),
       "pull",
     );
-    expect(message).toContain("オプション --limit の値が integer として読めません");
+    expect(message).toContain("オプション --limit の値が受け付けられません");
     expect(message).not.toContain("SUPER_SECRET_VALUE");
   });
 
@@ -206,5 +247,18 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
     expect(message).toContain("2 個");
     expect(message).not.toContain("SECRET_A");
     expect(message).not.toContain("SECRET_B");
+  });
+});
+
+describe("Effect の機構に載せた部分", () => {
+  it("終了コードはエラー型が持つ(runMain の既定 teardown が読む値と同じ)", () => {
+    // ランナー側に「usage は 2、失敗は 1」の写像表を書かないための機構。
+    // Runtime.defaultTeardown = BunRuntime.runMain が使う既定の teardown
+    const codes: number[] = [];
+    Runtime.defaultTeardown(
+      Exit.fail(new ValueDisplayRefused({ message: "値の表示は拒否されました" })),
+      (code) => codes.push(code),
+    );
+    expect(codes).toEqual([1]);
   });
 });
