@@ -372,8 +372,10 @@ describe("maruhi pull", () => {
     // ESC / BEL は端末へ生で流れない
     expect(output).not.toContain("\u001b");
     expect(output).not.toContain("\u0007");
-    // 改行は保持(複数行シークレットが壊れない)
-    expect(output).toContain("SECRET=sk-\uFFFD[31mFAKE\uFFFD\nline2");
+    // 改行は保持(複数行シークレットが壊れない)。ただし 2 行目以降は印を付けて
+    // 出力する: 素で流すと値の側で `NAME=value` の行を偽造できる
+    expect(output).toContain("SECRET= (2 行の値");
+    expect(output).toContain("| sk-\uFFFD[31mFAKE\uFFFD\n| line2");
   });
 
   it("不正 UTF-8 の値があると --show は失敗し、正常な値も一切出力しない", async () => {

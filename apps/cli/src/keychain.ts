@@ -183,10 +183,13 @@ function manualDeletionGuidance(entryName: string): string {
  * なく**その版では正しい鍵**である。区別せずに「消してください」と案内すると、
  * リカバリーコードが無い利用者は復元できなくなる。
  *
- * 判定は**削除を勧めない側へ倒す**: 「JSON ですらない」か「現行スイートを
- * 名乗っているのに読めない」ときだけ破損とみなし、それ以外は別形式扱いにする。
+ * 判定は**削除を勧めない側へ倒す**: 「JSON ですらない」「JSON オブジェクトで
+ * すらない」「現行スイートを名乗っているのに読めない」ときだけ破損とみなし、
+ * それ以外(スイートが違う・無い・入れ子になっている等)は別形式扱いにする。
  * 将来の形がスイートをどこに置くかは今の実装からは分からないので、特定の
- * フィールド名に賭けない。
+ * フィールド名に賭けない。逆に、レコードがオブジェクトであることは形式に
+ * 依らない最低限の前提なので、そこまでは破損と言い切ってよい(言い切らないと
+ * 更新しても直らない案内で行き止まりにする)。
  */
 export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign" {
   let value: unknown;
@@ -196,8 +199,17 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
     // JSON ですらない = どの版の maruhi も書かない形。消して安全
     return "corrupt";
   }
+  // JSON のスカラー(null・数値・文字列・真偽値)= どの版の maruhi も鍵
+  // レコードとして書かない形。ここを「別形式かもしれない」に倒すと、消して
+  // よいはずの記録に「消さずに更新してください」と案内することになり、更新
+  // しても永久に直らないまま generate / recover / show の全部を塞いでしまう
+  // (逃げ道が無い)。配列は object 側 = 残す側に残す — 将来版が鍵を複数
+  // 持つ入れ物として使う形は考えられる
+  if (!isRecord(value)) {
+    return "corrupt";
+  }
   // 現行スイートを名乗っているのに読めない = 本当に壊れている
-  if (isRecord(value) && value["suite"] === SUITE_ID) {
+  if (value["suite"] === SUITE_ID) {
     return "corrupt";
   }
   // それ以外(スイートが違う・無い・入れ子になっている等)は**別形式かも

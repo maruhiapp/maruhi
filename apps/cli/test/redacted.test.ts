@@ -415,10 +415,17 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     for (const hostile of ["\u200E", "\u200F", "\u061C", "\u200B"]) {
       expect(displayText(`a${hostile}b`)).toBe("a\uFFFDb");
     }
+    // 見えないまま挿入できる書式文字も同様(API_KEY と API<U+FEFF>KEY を
+    // 同じ見た目にできる)
+    for (const invisible of ["\uFEFF", "\u2060", "\u00AD", "\u180E", "\uFFF9"]) {
+      expect(displayText(`a${invisible}b`)).toBe("a\uFFFDb");
+    }
     // ZWNJ / ZWJ はペルシア語・デーヴァナーガリー・絵文字連結に必要なので保つ
     // (こちらは文字の結合そのものを決める)
     expect(displayText("a\u200Cb")).toBe("a\u200Cb");
     expect(displayText("a\u200Db")).toBe("a\u200Db");
+    // 絵文字の表示形を決める異体字セレクタも保つ(潰すと絵文字が変わる)
+    expect(displayText("\u2764\uFE0F")).toBe("\u2764\uFE0F");
   });
 
   it("将来版が書いた master 鍵レコードには削除を勧めない", () => {
@@ -437,6 +444,15 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // (将来の形がどこに置くかは今の実装からは分からない)
     expect(classifyUnreadableMasterKey('{"key":{"suite":"maruhi/v2"}}')).toBe("foreign");
     expect(classifyUnreadableMasterKey("{}")).toBe("foreign");
+    // ただし JSON オブジェクトですらない形は破損側に倒す。ここを「別形式」に
+    // すると「消さずに更新してください」と案内することになり、更新しても
+    // 直らないまま generate / recover / show の全部が塞がる(逃げ道が無い)
+    for (const scalar of ["null", "123", '"str"', "true"]) {
+      expect(classifyUnreadableMasterKey(scalar)).toBe("corrupt");
+    }
+    // 配列は残す側: 将来版が鍵を複数持つ入れ物として使う形は考えられるので、
+    // 「オブジェクトでない」だけを根拠に消させない
+    expect(classifyUnreadableMasterKey("[]")).toBe("foreign");
   });
 
   it("読めない master 鍵レコードも行き止まりにしない", () => {

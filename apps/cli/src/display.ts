@@ -20,18 +20,28 @@ import { CliIo } from "./io.ts";
 //   U+200E / U+200F / U+061C(双方向マーク)
 //     — いずれも端末上で表示順を入れ替えられる。偽行・誘導文の混入と同じ脅威で、
 //       ANSI エスケープだけ潰しても閉じない
-//   U+200B(ゼロ幅スペース)— 見えないまま別名を同じ見た目にできる
+//   U+200B(ゼロ幅スペース)/ U+FEFF(ゼロ幅非改行スペース)/ U+2060〜U+2064
+//   (単語結合子・不可視演算子)/ U+00AD(ソフトハイフン)/ U+180E
+//     — いずれも**見えないまま挿入できる**。API_KEY と API<U+FEFF>KEY が同じ
+//       見た目になり、綴りには要らない
+//   U+FFF9〜U+FFFB(行間注釈)— 本文と注釈の境界を作り、表示を分岐させられる
 //   U+2028 / U+2029(行・段落区切り)— 描画先によっては改行として扱われる
 //
 // Cf(書式文字)を一括では潰さない: ZWNJ(U+200C)/ ZWJ(U+200D)はペルシア語・
 // デーヴァナーガリー・絵文字連結の**正当な表示に必要**(文字の結合そのものを
 // 決める)で、潰すと正しい名前を壊す。上に挙げたものは順序・可視性を操るだけで
-// 文字の綴りには要らないので、そこで線を引く(正確な一致が要る場面は
-// {@link escapeText} の許可制を使う)
+// 文字の綴りには要らないので、そこで線を引く。同じ理由で、絵文字の表示形を
+// 決める異体字セレクタ(U+FE00〜U+FE0F)とアラビア数字の書式接頭辞
+// (U+0600〜U+0605 等)も潰さない。
+//
+// これは**列挙(deny-list)であり閉じない** — 同形異字のように文字クラスでは
+// 区別できないものが残る。「表示された文字列 = 実際の文字列」を厳密に要求する
+// 場面では、この関数ではなく {@link escapeText} の許可制を使う
 //
 // 表示名(displayText)と値(displayValue)のどちらにも同じ危険があるので、この一覧は
 // **一箇所で持つ** — 別々に書くと、片方だけ足された状態で気づかれずに残る
-const ORDER_BREAKING = "\\u061C\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069\\u2028\\u2029";
+const ORDER_BREAKING =
+  "\\u00AD\\u061C\\u180E\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\u2028\\u2029\\uFEFF\\uFFF9-\\uFFFB";
 const CONTROL_CHARS = new RegExp(`\\p{Cc}|[${ORDER_BREAKING}]`, "gu");
 // escapeText が素通しする範囲 = 印字可能 ASCII(U+0020〜U+007E)から
 // バックスラッシュと引用符を除いたもの。それ以外は一律に逃がす。
@@ -171,7 +181,7 @@ export function showValues(
       if (shown !== text) {
         altered.push(displayText(variable.name));
       }
-      lines.push(`${displayText(variable.name)}=${shown}`);
+      lines.push(...renderValue(displayText(variable.name), shown));
     }
     for (const line of lines) {
       yield* io.log(line);
@@ -184,6 +194,30 @@ export function showValues(
       yield* io.logError(warnAlteredDisplay(altered));
     }
   });
+}
+
+/** 複数行の値の各行に付ける印(`NAME=` の行と見分けられる形にする)。 */
+const CONTINUATION = "| ";
+
+/**
+ * 1 変数の表示行。
+ *
+ * 改行は正当な値(複数行 PEM 鍵など)に要るので潰さないが、**素のまま流すと
+ * 値の側で行を偽造できる**: 値に `x\nDATABASE_URL=...` を書いた共同編集者は、
+ * 存在しない変数の行を画面に作れる(値は E2EE なのでサーバーには偽造できない
+ * が、書き手には書ける)。中和の対象にすると本物の複数行シークレットが壊れる
+ * ため、潰す代わりに**枠に入れて出所を明示する** — 2 行目以降に印を付ければ、
+ * どの行が値の続きかが表示だけで分かる。
+ */
+function renderValue(name: string, shown: string): readonly string[] {
+  const parts = shown.split("\n");
+  if (parts.length === 1) {
+    return [`${name}=${shown}`];
+  }
+  return [
+    `${name}= (${parts.length} 行の値。以下の各行の先頭 "${CONTINUATION}" は maruhi が付けた印です)`,
+    ...parts.map((line) => `${CONTINUATION}${line}`),
+  ];
 }
 
 /** 中和で表示が変わった旨の警告(値そのものは載せない)。 */

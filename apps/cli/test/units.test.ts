@@ -322,6 +322,41 @@ describe("showValues(復号後の防衛線)", () => {
     expect(Exit.isSuccess(allowed)).toBe(true);
   });
 
+  it("値の改行で `NAME=value` の行を偽造できない", async () => {
+    // 値は共同編集者が書ける。改行をそのまま流すと、存在しない変数の行を
+    // 画面に作れる(pull --show を見て貼る利用者を騙せる)
+    const logs: string[] = [];
+    const capturingIo = Layer.succeed(CliIo, {
+      log: (line: string) => {
+        logs.push(line);
+        return Effect.void;
+      },
+      logError: () => Effect.void,
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+    });
+    const exit = await Effect.runPromiseExit(
+      showValues([variable("SECRET", "x\nDATABASE_URL=postgres://attacker/")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            capturingIo,
+            Layer.succeed(AgentProfileRef, { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(true),
+              stdoutIsTerminal: Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    // 偽造された行は `NAME=value` の形では出ない(印が付く)
+    expect(logs).not.toContain("DATABASE_URL=postgres://attacker/");
+    expect(logs).toContain("| DATABASE_URL=postgres://attacker/");
+  });
+
   it("表示する値でも並び順を壊す文字は中和する(名前側と同じ扱い)", async () => {
     // 値は共同編集者が書くので、悪意ある値で他メンバーの端末表示を偽装できる。
     // ANSI だけ潰しても双方向上書き・ゼロ幅は残るため、名前側(displayText)と
@@ -357,8 +392,13 @@ describe("showValues(復号後の防衛線)", () => {
       ),
     );
     expect(Exit.isSuccess(exit)).toBe(true);
-    // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す
-    expect(logs).toEqual(["SECRET=a\uFFFDb\uFFFDc\uFFFDd\u200Ce\nf"]);
+    // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す。改行を含む値は
+    // 2 行目以降に印を付けて出す(値の側で `NAME=value` の行を偽造させない)
+    expect(logs).toEqual([
+      'SECRET= (2 行の値。以下の各行の先頭 "| " は maruhi が付けた印です)',
+      "| a\uFFFDb\uFFFDc\uFFFDd\u200Ce",
+      "| f",
+    ]);
     // 中和したことは黙らない: 表示と実際の値が別物であることを名指しする
     // (値そのものは警告に載せない)
     expect(errors.join("\n")).toContain("SECRET");
