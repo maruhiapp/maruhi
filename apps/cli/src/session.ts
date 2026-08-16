@@ -125,10 +125,6 @@ const noSessionError = cliError(
 );
 
 /**
- * Resolves the authenticated session for `origin`. The MARUHI_TOKEN env path
- * resolves the user id via `GET /auth/me` (the keychain record carries it).
- */
-/**
  * MARUHI_TOKEN 経路のセッション解決(キーチェーン不在環境・CI 用)。
  *
  * 環境変数は平文の string が入ってくる唯一の起点なので、入口で包み、以降は
@@ -183,6 +179,10 @@ function sessionFromEnvToken(input: {
   });
 }
 
+/**
+ * Resolves the authenticated session for `origin`. The MARUHI_TOKEN env path
+ * resolves the user id via `GET /auth/me` (the keychain record carries it).
+ */
 export function resolveSession(
   origin: string,
 ): Effect.Effect<CliSession, CliError, Keychain | CliIo | HttpClient.HttpClient> {
