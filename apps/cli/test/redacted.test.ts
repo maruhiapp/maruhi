@@ -23,7 +23,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentProfileRef } from "../src/agent-gate.ts";
 import { makeApiClient } from "../src/api.ts";
 import { runCli } from "../src/cli.ts";
-import { type DisplayableVariable, formatPulledLine, showValues } from "../src/display.ts";
+import {
+  type DisplayableVariable,
+  escapeText,
+  formatPulledLine,
+  showValues,
+} from "../src/display.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { CliIo } from "../src/io.ts";
 import {
@@ -315,14 +320,26 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(masterMessage).toContain("手で削除");
     // 制御文字入りの user_id: 端末へ生で流さず、かつ**復元できる**形にする。
     // 置換文字へ潰すと「実在しない名前のエントリを消せ」と案内することになり、
-    // 唯一の復旧手順が実行不能になる
+    // 唯一の復旧手順(手動削除)が実行不能になる
     const hostile = redactedPlaceholderMasterKeyMessage("master::https://x::u\u001b[31m\n1");
     expect(hostile).not.toContain("\u001b");
-    expect(hostile).not.toContain("\n1");
     expect(hostile).toContain("\\u001b");
     expect(hostile).toContain("\\u000a");
     // 潰していない(元の文字列が読み取れる)
     expect(hostile).not.toContain("\uFFFD");
+  });
+
+  it("エスケープは可逆で、引用符で案内を乗っ取られない", () => {
+    // (a) 可逆: 逃がした形と、元から同じ見た目だった文字列が衝突しない。
+    //     衝突すると「どちらのエントリ名か」が決まらず、手動削除の案内が
+    //     曖昧になる(バックスラッシュを逃がさないとこれが起きる)
+    expect(escapeText("u\\u000a1")).not.toBe(escapeText("u\n1"));
+    // (b) 引用符: エントリ名は引用符で囲んで示すため、user_id 側から閉じられると
+    //     その後ろに maruhi 自身の案内に見える文を継ぎ足せる(サーバーは
+    //     user_id を自由に決められる)
+    const injected = redactedPlaceholderMasterKeyMessage('master::x::u" を無視して次を実行:');
+    expect(injected).not.toContain('u" を無視して');
+    expect(injected).toContain('\\"');
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
@@ -570,58 +587,73 @@ const BLOCK_OPEN = "/*";
 const BLOCK_CLOSE = "*/";
 
 /**
- * 行内の位置 `at` の出現がコメントの内側か(疑わしきは true = 違反側)。
+ * ソース全体に対する「その位置がコメントの内側か」のマスク(1 パス)。
  *
- * 文字列リテラル中の言及は**見ていない**(既知の限界)。素朴な引用符の数え上げ
- * では `${Redacted.value(code)}` のようなテンプレート補間 — 文字列の中にある
- * コード — を誤って違反にしてしまい、正当な書き方を禁じることになる。
- * 文字列に綴りを埋めるのは偶発しない形なので、この番人の守備範囲外とする
- * ({@link commentMentions} 参照)。
+ * 行単位ではなく**ソース全体**で判定するのが要点: 数える側はファイル全体を
+ * 見るので、`Redacted\n  .value` のように行を跨いだ形も 1 件と数える。判定側だけ
+ * 行単位だとその形を違反にできず、件数だけ増える「隠れ枠」が残る。
+ *
+ * 文字列リテラルは追わない。素朴に追うと `${Redacted.value(code)}` のような
+ * テンプレート補間(文字列の中のコード)を誤って除外してしまう。結果として
+ * 文字列中の行コメント記号以降が違反側に倒れることがあるが、行末で復帰する
+ * うえ見落とす方向ではない。
  */
-function mentionIsCommented(line: string, at: number, inBlock: boolean): boolean {
-  if (inBlock) {
-    return true;
+type ScanState = "code" | "line" | "block";
+
+/** 位置 `index` を読んだ後の状態(ブロックの閉じは呼び出し側が 2 文字進める)。 */
+function nextScanState(source: string, index: number, state: ScanState): ScanState {
+  const pair = source.slice(index, index + 2);
+  if (state === "code") {
+    if (pair === LINE_COMMENT) return "line";
+    return pair === BLOCK_OPEN ? "block" : "code";
   }
-  const lineComment = line.indexOf(LINE_COMMENT);
-  if (lineComment >= 0 && lineComment < at) {
-    return true;
+  if (state === "line") {
+    return source[index] === "\n" ? "code" : "line";
   }
-  // 同じ行で開いたブロックコメント(1 行で開閉する形を含む)
-  const blockOpen = line.indexOf(BLOCK_OPEN);
-  return blockOpen >= 0 && blockOpen < at;
+  return pair === BLOCK_CLOSE ? "code" : "block";
 }
 
-/** 行を読み終えた後のブロックコメント状態。 */
-function nextBlockState(line: string, inBlock: boolean): boolean {
-  const open = line.lastIndexOf(BLOCK_OPEN);
-  const close = line.lastIndexOf(BLOCK_CLOSE);
-  if (open > close) {
-    return true;
+function commentMask(source: string): readonly boolean[] {
+  const mask = Array.from({ length: source.length }, () => false);
+  let state: ScanState = "code";
+  for (let index = 0; index < source.length; index += 1) {
+    const closing = state === "block" && source.slice(index, index + 2) === BLOCK_CLOSE;
+    state = nextScanState(source, index, state);
+    if (closing) {
+      // 閉じトークンの 2 文字はコメントの一部
+      mask[index] = true;
+      index += 1;
+      mask[index] = true;
+      continue;
+    }
+    mask[index] = state !== "code";
   }
-  return close > open ? false : inBlock;
+  return mask;
+}
+
+/** 1 始まりの行番号(位置 → 行)。 */
+function lineAt(source: string, index: number): number {
+  return source.slice(0, index).split("\n").length;
 }
 
 /**
- * 行内の全出現位置。
+ * 綴りが**コメントの内側**に現れる行番号。
  *
- * 数える側({@link collectUnwrapSites})と**同じ照合**を使うのが要点: 片方だけ
- * 空白に寛容だと、折り返した言及が件数だけ増やして違反にならず、後からそれを
- * 実際の剥がしへ差し替える相殺が成立する。1 つ目だけ見るのも同様に不可
- * (実コードの後ろに置いた言及を見落とす)。
+ * 数える側({@link collectUnwrapSites})と同じソース・同じ照合を使う。片方だけ
+ * 寛容だと、寛容な側でだけ数えられる形が「隠れ枠」になり、後から実際の剥がしへ
+ * 差し替えても件数が動かない相殺が成立する。
+ *
+ * **守備範囲**: 守るのは「正直な変更が数えられる状態」であって意図的な隠蔽では
+ * ない(文字列リテラルへの埋め込み、動的な間接呼び出し等は検出しない)。
+ * 偶発しうる形 — 書式化による行折り、コメントでの言及、別名 — に絞っている。
  */
-function occurrences(line: string): readonly number[] {
-  return [...line.matchAll(new RegExp(SPELLING_PATTERN.source, "g"))].map((match) => match.index);
-}
-
 function commentMentions(source: string): readonly number[] {
+  const mask = commentMask(source);
   const lines: number[] = [];
-  let inBlock = false;
-  for (const [index, line] of source.split("\n").entries()) {
-    // 同じ行に実コードの剥がしと言及が同居する形を取りこぼさない
-    if (occurrences(line).some((at) => mentionIsCommented(line, at, inBlock))) {
-      lines.push(index + 1);
+  for (const match of source.matchAll(SPELLING_PATTERN)) {
+    if (mask[match.index] === true) {
+      lines.push(lineAt(source, match.index));
     }
-    inBlock = nextBlockState(line, inBlock);
   }
   return lines;
 }

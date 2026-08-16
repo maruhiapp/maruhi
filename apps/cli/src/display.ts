@@ -14,6 +14,9 @@ import { CliIo } from "./io.ts";
 
 // Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
 const CONTROL_CHARS = /\p{Cc}/gu;
+// escapeText が逃がす対象: 制御文字 + バックスラッシュ + 引用符(可逆性と、
+// 引用符で囲んだ表示を閉じられないことの両方に要る)
+const ESCAPABLE = /[\\"]|\p{Cc}/gu;
 
 /** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
 export function displayText(value: string): string {
@@ -29,9 +32,14 @@ export function displayText(value: string): string {
  * 端末へ流しても危険のない形にエスケープしたうえで原文を保つ。
  */
 export function escapeText(value: string): string {
-  return value.replace(
-    CONTROL_CHARS,
-    (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, "0") ?? "fffd"}`,
+  return value.replace(ESCAPABLE, (char) =>
+    char === "\\" || char === '"'
+      ? // バックスラッシュと引用符も必ず逃がす。逃がさないと (a) 文字列
+        // "\\u000a"(6 文字)と実際の改行が同じ出力になり可逆でなくなる、
+        // (b) 引用符で囲んだ表示を閉じて、その後ろに maruhi 自身の案内に
+        // 見える文を継ぎ足せる(user_id はサーバー配布の自由文字列)
+        `\\${char}`
+      : `\\u${(char.codePointAt(0) ?? 0xff_fd).toString(16).padStart(4, "0")}`,
   );
 }
 
