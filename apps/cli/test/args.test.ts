@@ -751,7 +751,9 @@ describe("gunshi 由来の usage エラー", () => {
     // バグであって書き方の誤りではないので、usage エラー(2)に化けさせず
     // 内部エラー(1)として報告する(無言で飲まない — CLAUDE.md)
     expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("内部エラー");
+    // 型の名前だけを添える(message は出さない)。部分一致だと元の
+    // `内部エラー: <上流の message>` にも当たってしまうので厳密に固定する
+    expect(env.errors.join("\n")).toContain("内部エラー(TypeError)");
   });
 
   it("未知のコマンドは日本語で落ち、使えるコマンドを示す", async () => {

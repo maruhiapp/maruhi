@@ -546,7 +546,11 @@ describe("入力検証と defect の扱い", () => {
     const env = await makeTestEnv();
     env.breakConfigLoadWithDefect();
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("内部エラー");
+    // 型の名前だけを添える形を**厳密に**固定する(`内部エラー` の部分一致だけだと
+    // `内部エラー: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
+    expect(env.errors.join("\n")).toContain("maruhi: 内部エラー(Error)");
+    // defect の message は出さない — 打たれた値を埋め込んだ文面でも到達しうる
+    expect(env.errors.join("\n")).not.toContain("config load defect");
   });
 });
 
