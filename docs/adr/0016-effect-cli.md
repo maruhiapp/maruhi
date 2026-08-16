@@ -4,7 +4,7 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
 
 **Context**: gunshi 0.37.1 は「宣言と食い違う書き方を黙って通し、**書いたことと逆の結果**になる」形を複数持つ(実測 12 形。`docs/notes/cli-parser-alternatives.md` §2)。`--show=false` を読まずに `true` にする、同一オプションの重複を last-wins で沈黙して捨てる、`--` の後ろの空文字列を rest から落とす、`--` を跨いでコマンドを解決する、など。maruhi はこれを `apps/cli/src/args.ts`(911 行)と各コマンドのテストで外側から塞いできたが、レビュー 7〜10 巡目まで新しい抜けが出続けた(08b8a98 / 0ea3a34 / ef7cba1)。特に ef7cba1 の形(`maruhi pull --no-show $FLAGS` の `$FLAGS` に `--show` が混ざると**全シークレットが端末へ出る**)は、パーサの沈黙がそのまま秘密の漏洩に化ける。
 
-一方 effect v4 は CLI を本体同梱の unstable モジュール(`effect/unstable/cli`)として持つ。同じ 12 形を beta.107 / rc.109 の両方で実測したところ **10 形が構造的に消え**、残る 2 形(重複指定の沈黙・ヘルプの出力先)も Effect の機構で塞げることを、3 コマンド(`pull` / `run` / `env create`)のスパイク(`apps/cli/test/support/` + 適合検査 31 件)で確認した。effect は 4.0.0-rc.109 へ追随済み(ADR-0011 の系。ソース変更ゼロ・全ゲート green)。
+一方 effect v4 は CLI を本体同梱の unstable モジュール(`effect/unstable/cli`)として持つ。同じ 12 形を beta.107 / rc.109 の両方で実測したところ **10 形が構造的に消え**、残る 2 形(重複指定の沈黙・ヘルプの出力先)も Effect の機構で塞げることを、3 コマンド(`pull` / `run` / `env create`)のスパイク(`apps/cli/test/support/` + 適合検査 32 件)で確認した。effect は 4.0.0-rc.109 へ追随済み(ADR-0011 の系。ソース変更ゼロ・全ゲート green)。
 
 また `gunshi/agent`(AI エージェント環境の検出)は std-env の `agentInfo` の薄いラッパにすぎず、gunshi 固有のロックインではないことも確認した。
 

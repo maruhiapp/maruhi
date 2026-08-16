@@ -72,7 +72,7 @@ export interface SpikeInvocation {
   readonly rest?: readonly string[] | undefined;
 }
 
-/** スパイク実行の結果。stdout / stderr は行単位で捕捉する。 */
+/** スパイク実行の結果。stderr は Console 呼び出し単位、stdout は実ストリームへの書き込み単位で捕捉する。 */
 export interface SpikeOutcome {
   readonly exitCode: number;
   readonly stdout: readonly string[];
@@ -303,11 +303,33 @@ export async function runSpikeCli(
   );
 
   // 描画(ヘルプ・診断)は effect/unstable/cli 自身が Console 経由で行う。
-  // Console を差し替えて stderr へ寄せる — stdout はコマンドの出力だけ
-  const capturingConsole: Console.Console = Object.assign(Object.create(console), {
-    log: (...args: ReadonlyArray<unknown>) => stderr.push(args.join(" ")),
-    error: (...args: ReadonlyArray<unknown>) => stderr.push(args.join(" ")),
-  });
+  // Console は**全メソッド**を stderr へ寄せる — stdout はコマンドの出力だけ。
+  // log / error だけの部分上書き(プロトタイプで素の console に落とす形)だと、
+  // 上流が描画メソッドを増やしたときに実ストリームへ素通りする穴ができる
+  const toStderr = (...args: ReadonlyArray<unknown>) => {
+    stderr.push(args.join(" "));
+  };
+  const capturingConsole: Console.Console = {
+    assert: toStderr,
+    clear: toStderr,
+    count: toStderr,
+    countReset: toStderr,
+    debug: toStderr,
+    dir: toStderr,
+    dirxml: toStderr,
+    error: toStderr,
+    group: toStderr,
+    groupCollapsed: toStderr,
+    groupEnd: toStderr,
+    info: toStderr,
+    log: toStderr,
+    table: toStderr,
+    time: toStderr,
+    timeEnd: toStderr,
+    timeLog: toStderr,
+    trace: toStderr,
+    warn: toStderr,
+  };
 
   const services = Layer.mergeAll(
     FileSystem.layerNoop({}),

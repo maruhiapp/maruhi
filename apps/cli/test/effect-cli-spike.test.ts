@@ -81,6 +81,26 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     expect(outcome.stderr.join("\n")).toContain("オプション --env を複数回指定しています");
   });
 
+  it("4c. boolean の --show / --no-show の混在も落ちる(ef7cba1 の形)", async () => {
+    // `maruhi pull --no-show $FLAGS` に `--show` が混ざると全シークレットを
+    // 表示していた事故(ef7cba1)。first-wins の沈黙で解決させず、
+    // どちらの順序でも拒否することを固定する
+    for (const argv of [
+      ["pull", "--no-show", "--show"],
+      ["pull", "--show", "--no-show"],
+    ]) {
+      const outcome = await runSpikeCli(argv);
+      expect(outcome.exitCode, argv.join(" ")).toBe(2);
+      expect(outcome.invoked, argv.join(" ")).toBeNull();
+      expect(outcome.stderr.join("\n")).toContain("オプション --show を複数回指定しています");
+    }
+
+    // 単独の --no-show は書いたとおり false として通る(拒否するのは重複だけ)
+    const single = await runSpikeCli(["pull", "--no-show"]);
+    expect(single.exitCode).toBe(0);
+    expect(single.invoked?.values["show"]).toBe(false);
+  });
+
   it("5. `--` の後ろの空文字列が落ちない(gunshi は rest から落としていた)", async () => {
     const outcome = await runSpikeCli(["run", "--", "printenv", "", "x"]);
     expect(outcome.exitCode).toBe(0);
