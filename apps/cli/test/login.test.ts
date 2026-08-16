@@ -439,6 +439,21 @@ describe("maruhi logout", () => {
     expect(env.logs.join("\n")).toContain("MARUHI_TOKEN が設定されているため");
   });
 
+  it("空白だけの MARUHI_TOKEN では警告しない(セッション解決と同じ判定)", async () => {
+    // resolveSession は trim 後に空なら未設定として扱う。ここだけ生値で見ると
+    // 「引き続き認証されます」と言った直後に「ログインしていません」で落ちる
+    const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    env.keychain.set(
+      tokenEntryName(maruhi.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+    );
+    env.setEnvVar("MARUHI_TOKEN", " \n");
+    expect(await runCli(["logout"], env.layer)).toBe(0);
+    expect(env.logs.join("\n")).not.toContain("MARUHI_TOKEN が設定されているため");
+  });
+
   it("トークン未保存はエラーメッセージで案内する", async () => {
     const maruhi = await start([]);
     const env = await makeTestEnv();

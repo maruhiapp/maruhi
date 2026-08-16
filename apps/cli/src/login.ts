@@ -227,7 +227,10 @@ export function logoutOp(input: {
     yield* io.log("ログアウトしました(トークンを失効し、キーチェーンから削除しました)");
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
     // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する
-    if ((io.envVar("MARUHI_TOKEN") ?? "").length > 0) {
+    // 判定は resolveSession と同じ形にする(trim 後に空なら未設定扱い)。
+    // ここだけ生値で見ると、空白だけの MARUHI_TOKEN で「引き続き認証されます」と
+    // 言った直後に次のコマンドが「ログインしていません」で落ちる
+    if ((io.envVar("MARUHI_TOKEN") ?? "").trim().length > 0) {
       yield* io.log(
         "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きその トークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)",
       );

@@ -327,12 +327,16 @@ describe("showValues(復号後の防衛線)", () => {
     // ANSI だけ潰しても双方向上書き・ゼロ幅は残るため、名前側(displayText)と
     // 同じ一覧で中和されることを固定する — 片方だけ足された状態を作らない
     const logs: string[] = [];
+    const errors: string[] = [];
     const capturingIo = Layer.succeed(CliIo, {
       log: (line: string) => {
         logs.push(line);
         return Effect.void;
       },
-      logError: () => Effect.void,
+      logError: (line: string) => {
+        errors.push(line);
+        return Effect.void;
+      },
       readStdin: Effect.succeed(new Uint8Array(0)),
       promptLine: () => Effect.succeed(""),
       envVar: () => undefined,
@@ -355,6 +359,10 @@ describe("showValues(復号後の防衛線)", () => {
     expect(Exit.isSuccess(exit)).toBe(true);
     // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す
     expect(logs).toEqual(["SECRET=a\uFFFDb\uFFFDc\uFFFDd\u200Ce\nf"]);
+    // 中和したことは黙らない: 表示と実際の値が別物であることを名指しする
+    // (値そのものは警告に載せない)
+    expect(errors.join("\n")).toContain("SECRET");
+    expect(errors.join("\n")).toContain("実際の値と一致しません");
   });
 });
 

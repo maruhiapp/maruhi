@@ -3,8 +3,10 @@
 // 変数の表示名・user_id 等はサーバー配布の非認証メタデータ(自由文字列)で、
 // 改行・ANSI エスケープを含められる。生のまま端末へ流すと偽行・誘導文の
 // 混入(端末インジェクション)になるため、制御文字を可視の代替文字に置換
-// してから表示する。値(--show)は対象外: 値はメンバーが E2EE で書いた
-// データでサーバーには偽造できず、改変すれば復号失敗に落ちる。
+// してから表示する。値(--show)はサーバーに偽造できない(E2EE で書かれ、
+// 改変すれば復号に失敗する)が、共同編集者は書けるため別の脅威として同じ
+// 中和をかける。ただし値は利用者がコピーして使うものなので、中和が起きた
+// ときは「表示 = 実際の値」でないことを警告で明示する(showValues)。
 
 import { Effect, Redacted, type Stdio } from "effect";
 
@@ -150,6 +152,8 @@ export function showValues(
     // 全値のデコードを出力より前に完了させる(all-or-nothing)。1 値でも不正
     // UTF-8 なら何も表示せず失敗し、部分出力(前半の値だけ画面に残る)を作らない
     const lines: string[] = [];
+    // 中和で表示が原文と変わった変数(名前だけ集める。値は運ばない)
+    const altered: string[] = [];
     for (const variable of variables) {
       // 剥がす理由: 値の表示がこのコマンドの機能そのもの。**必ず上の
       // ensureValueDisplayAllowed(TTY 一次境界 + エージェント二次層)を
@@ -163,10 +167,26 @@ export function showValues(
           ),
         );
       }
-      lines.push(`${displayText(variable.name)}=${displayValue(text)}`);
+      const shown = displayValue(text);
+      if (shown !== text) {
+        altered.push(displayText(variable.name));
+      }
+      lines.push(`${displayText(variable.name)}=${shown}`);
     }
     for (const line of lines) {
       yield* io.log(line);
     }
+    // 中和は端末インジェクションを防ぐために必要だが、**黙って**行うと
+    // 「画面の文字列 = 実際の値」が崩れたことに気づけない(コピーして使うと
+    // 壊れた値を貼る)。中和が起きたときだけ、原文が別物であることと、
+    // 実際の値を渡す手段(run の環境変数注入)を stderr で名指しする
+    if (altered.length > 0) {
+      yield* io.logError(warnAlteredDisplay(altered));
+    }
   });
+}
+
+/** 中和で表示が変わった旨の警告(値そのものは載せない)。 */
+function warnAlteredDisplay(names: readonly string[]): string {
+  return `警告: 次の変数の値には端末表示に使えない文字(制御文字・並び順を操る文字)が含まれるため、表示では \uFFFD に置き換えています。表示された文字列は実際の値と一致しません(実際の値は \`maruhi run -- <コマンド>\` の環境変数注入で渡してください): ${names.join(", ")}`;
 }
