@@ -49,13 +49,19 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
 }
 
 /**
- * 応答の**スキーマ不一致**(`Schema.SchemaError`)。
+ * スキーマ不一致(`Schema.SchemaError`)。
  *
  * 型付きクライアントの失敗は `HttpApiClient` の宣言どおり
  * 「エンドポイントの宣言済みエラー | `HttpClientError` | `Schema.SchemaError`」
- * の 3 種で、前 2 つは上の写像が受け持つ。**残る 1 種がこれ**で、
- * 「サーバーが返した本文が契約と食い違う」= サーバーと CLI の版ずれ、あるいは
- * サーバー不正の兆候という、利用者に伝える価値のある事実を指す。
+ * の 3 種で、前 2 つは上の写像が受け持つ。**残る 1 種がこれ**。
+ *
+ * **向きは型からは分からない**(レビュー指摘): 上流は応答の decode だけでなく
+ * リクエストの encode(`encodePayload` / `encodeParams` / `encodeHeaders` /
+ * `encodeQuery`)も**同じエラーチャネル**へ流すので、`Schema.isSchemaError` は
+ * 両方を捕まえる。したがって文面で**サーバー側の異常と断定しない** — 実際、
+ * `--token-name` の長すぎる値はここへ encode 失敗として届いていた(現在は
+ * 引数層が通信より前に落とす。cli.ts の requireTokenName)。
+ * リクエスト側の値は引数層で検査する、が塞ぎ方であって、この写像ではない。
  *
  * `message` を通してよい根拠(実測。rc.109 で 8 形を確認): 上流の整形は
  * **期待した型と場所だけ**を出し、**食い違った値そのものは出さない**
@@ -68,7 +74,7 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
  */
 function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
-  return `サーバー応答がスキーマと一致しません(${detail})。サーバーと CLI のバージョン整合を確認してください`;
+  return `スキーマと一致しないデータがあります(${detail})。サーバーと CLI のバージョン整合を確認してください`;
 }
 
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
@@ -239,9 +245,9 @@ export function internalErrorKind(failure: unknown): string {
 }
 
 /**
- * Collapses any failure into a user-facing {@link CliError}. Unknown failures
- * keep only their `Error#message`(our own code never puts secret material in
- * messages; crypto errors carry identifiers only by contract).
+ * Collapses any failure into a user-facing {@link CliError}. Failures that no
+ * renderer claims are reported by **type name only** — never by their message
+ * (see the comment at the fallback).
  */
 export function toCliError(error: unknown): CliError {
   // 既に CliError なら、usage フラグ(終了コード 2)を落とさずそのまま返す

@@ -424,7 +424,7 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     if (!Exit.isFailure(exit)) return;
     const rendered = toCliError(Cause.squash(exit.cause));
-    expect(rendered.message).toContain("サーバー応答がスキーマと一致しません");
+    expect(rendered.message).toContain("スキーマと一致しないデータがあります");
     expect(rendered.message).toContain("Expected number");
     expect(rendered.message).toContain('["version"]');
     expect(rendered.message).not.toContain("sk-live-SUPER-SECRET");

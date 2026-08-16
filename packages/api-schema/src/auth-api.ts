@@ -32,6 +32,16 @@ import { hexString } from "./hex.ts";
 const Redirect = HttpApiSchema.Empty(302);
 
 /**
+ * トークン名の上限(`deviceExchange` の payload)。
+ *
+ * **CLI の引数層と共有する**: ここだけに書くと、`maruhi login --token-name` の
+ * 長すぎる値が device flow(ブラウザでの承認)を完走した後の encode 失敗として
+ * 初めて現れる。書き方の誤りは通信より前に落とす(CLI 側の規律)ため、上限を
+ * export して両側が同じ値を見る。
+ */
+export const MAX_TOKEN_NAME_LENGTH = 128;
+
+/**
  * Public (unauthenticated) server configuration (AUTH_SPEC §4). The GitHub
  * OAuth client_id is public information — it appears in the authorize URL —
  * so exposing it lets a self-hosted CLI resolve it from the server URL alone.
@@ -154,7 +164,9 @@ export const authGroup = HttpApiGroup.make("auth")
             description: "GitHub token (gh?_ prefix + base62 body)",
           }),
         ),
-        tokenName: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+        tokenName: Schema.optionalKey(
+          Schema.String.check(Schema.isMaxLength(MAX_TOKEN_NAME_LENGTH)),
+        ),
         scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
       }),
       success: DeviceExchangeResultSchema,

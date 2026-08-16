@@ -15,6 +15,7 @@ import {
   AUDIT_ROW_ID_PATTERN,
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
+  MAX_TOKEN_NAME_LENGTH,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
@@ -176,17 +177,35 @@ function loginCommand(execute: Execute) {
             explicit: ctx.values["github-client-id"],
             configured: config.githubClientId,
           });
+          // 上限は api-schema と共有する(MAX_TOKEN_NAME_LENGTH)。ここで見ないと、
+          // 長すぎる名前は device flow(**ブラウザでの承認**)を完走した後に
+          // リクエストの encode 失敗として現れる — 書き方の誤りは通信より前に
+          // 落とす、という直上の --github-base-url と同じ規律
+          const tokenName = yield* requireTokenName(ctx.values["token-name"]);
           const minIntervalSeconds = ctx.values["github-poll-interval"];
           yield* loginOp({
             origin,
             clientId,
-            tokenName: ctx.values["token-name"] ?? `cli:${hostname()}`,
+            tokenName,
             ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
             ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
           });
         }),
       ),
   });
+}
+
+/**
+ * `--token-name` の長さ検査(**指定値そのものはエラーに出さない**)。
+ *
+ * 上限は `@maruhi/api-schema` の宣言と同じ定数を見る(CLI 側に数字を写すと、
+ * 宣言を緩めたときにこちらだけ古い上限で拒否し続ける)。
+ */
+function requireTokenName(value: string | undefined): Effect.Effect<string, CliError> {
+  const name = value ?? `cli:${hostname()}`;
+  return name.length > MAX_TOKEN_NAME_LENGTH
+    ? Effect.fail(usageError(`--token-name は ${MAX_TOKEN_NAME_LENGTH} 文字以内で指定してください`))
+    : Effect.succeed(name);
 }
 
 function logoutCommand(execute: Execute) {

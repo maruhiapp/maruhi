@@ -57,6 +57,38 @@ function fakeGitHub(input: {
 }
 
 describe("maruhi login", () => {
+  it("長すぎる --token-name は device flow より前に落とす(ブラウザ承認を無駄にしない)", async () => {
+    // 上限(api-schema の MAX_TOKEN_NAME_LENGTH)を引数層で見ないと、長すぎる
+    // 名前は **ブラウザでの承認を完走した後**にリクエストの encode 失敗として
+    // 現れる。しかも Schema のエラーは応答側と同じ型なので、診断が
+    // 「サーバー側の異常」に見えてしまう(--github-base-url と同じ規律)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--token-name",
+        "n".repeat(129),
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    // 書き方の誤りは usage エラー(2)
+    expect(code).toBe(2);
+    expect(env.errors.join("\n")).toContain("--token-name は 128 文字以内で指定してください");
+    // device flow は開始すらしない(ブラウザ承認を求めない)
+    expect(github.polls()).toBe(0);
+    expect(env.logs.join("\n")).not.toContain("承認を待っています");
+    expect(maruhi.requests).toHaveLength(0);
+  });
+
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
     const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);
