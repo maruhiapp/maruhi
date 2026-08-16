@@ -483,26 +483,30 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
 };
 
 /**
- * コメントを落としてから数える。JSDoc や行コメントで `Redacted.value(` に
- * 言及しただけで件数が動くと、表の更新が「実際に剥がす箇所が増えたのか、
- * 説明を書いただけか」を区別できなくなる(この表の価値は件数の意味にある)。
- * コメント内の記述は実行されないので、落とす方向に fail-open は無い。
+ * `Redacted.value` の出現箇所を数える(ファイル → 件数)。
+ *
+ * 設計方針は **fail-closed に倒す**こと。この表は「剥がす箇所を数えられる
+ * 状態」を保つ唯一の仕掛けなので、見落とす方向の欠陥は仕掛けを無意味にする:
+ *
+ * - **再帰で歩く**。非再帰だと将来 src/ 配下にディレクトリが増えたとき、
+ *   その中の剥がし箇所が表から丸ごと消える
+ * - **コメントを落とさない**。正しく落とすには字句解析が要り、素朴な正規表現は
+ *   文字列リテラル中の `//`(例: session.ts の `https://`)を境に行末までを
+ *   消してしまう — その行に足された剥がしが**見えなくなる**。コメントでの
+ *   言及は件数を増やすだけ(= 表の更新を促す)で、安全な側に外れる
+ * - **`(` を要求しない**。`map(Redacted.value)` のような point-free 渡しも
+ *   剥がしであり、括弧を要求すると取りこぼす
+ *
+ * この規律の帰結として、コメントに `Redacted` + `.value` と書くとこの表が
+ * 動く。実装側のコメントは「剥がす」と日本語で書き、綴りを避けている。
  */
-function stripComments(source: string): string {
-  return source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/.*$/gm, "");
-}
-
 async function collectUnwrapSites(): Promise<Record<string, number>> {
-  // **再帰**で歩く: 非再帰だと将来 src/ 配下にディレクトリが増えたとき、
-  // その中の剥がし箇所がこの棚卸しから丸ごと消える(fail-open)。この表は
-  // 「剥がす箇所を数えられる状態」を保つための唯一の仕掛けなので、
-  // 見落とす方向の欠陥は表そのものを無意味にする
   const entries = await readdir(SRC_DIR, { recursive: true });
   const files = entries.filter((name) => name.endsWith(".ts")).toSorted();
   const counts: Record<string, number> = {};
   for (const name of files) {
-    const source = stripComments(await readFile(join(SRC_DIR, name), "utf8"));
-    const matches = source.match(/Redacted\.value\(/g);
+    const source = await readFile(join(SRC_DIR, name), "utf8");
+    const matches = source.match(/Redacted\.value/g);
     if (matches !== null) {
       // キーは src/ からの相対パス(サブディレクトリを区別できる形)
       counts[name.replaceAll("\\", "/")] = matches.length;
