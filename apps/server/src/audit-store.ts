@@ -13,6 +13,8 @@
 import type { AuditEventRecord } from "@maruhi/core";
 import { Context, Layer } from "effect";
 
+import { randomHex } from "./ids.ts";
+
 /**
  * 監査イベント 1 行の入力(列は AUDIT_SPEC §5.1、未指定は NULL)。
  * 共有のレコード型(@maruhi/core — チェーンミラーの写像と同居)の別名。
@@ -133,8 +135,12 @@ type AuditVisibility =
 
 /** 汎用読み取りのクエリ(§7 のフィルタ語彙のみ。null = フィルタなし)。 */
 interface AuditEventsQuery {
-  /** このカーソルより小さい seq のみ(新しい順ページングの前進)。 */
-  readonly beforeSeq: number | null;
+  /**
+   * ページングカーソル = 前ページ末尾行の row_id(§7 — 不透明)。解決は
+   * 閲覧者の可視性述語つきで行い、不可視・不明な id は空ページとして振る舞う
+   * (存在オラクルにしない)。
+   */
+  readonly beforeRowId: string | null;
   readonly limit: number;
   readonly event: string | null;
   readonly actorUserId: string | null;
@@ -147,6 +153,8 @@ interface AuditEventsQuery {
 /** 保存行の読み取り形(§5.1 の全列。NULL は null)。 */
 export interface StoredAuditEventRow {
   readonly seq: number;
+  /** ワイヤ行識別子(§5.1 row_id — 16 バイト乱数 hex)。 */
+  readonly rowId: string;
   readonly serverTs: number;
   readonly clientTs: number | null;
   readonly event: string;
@@ -198,20 +206,20 @@ interface AuditStoreShape {
 export class AuditStore extends Context.Service<AuditStore, AuditStoreShape>()("AuditStore") {}
 
 const INSERT_COLUMNS = `INSERT INTO audit_events (
-    seq, server_ts, client_ts, event, actor_type, actor_user_id,
+    seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
     actor_key_fingerprint, actor_api_token_id, target_user_id,
     target_key_fingerprint, environment_id, variable_id, epoch, version,
     chain_seq, payload
   ) VALUES `;
 
-/** 1 行分のプレースホルダ(seq + eventBindings の 15 値 = 16 列)。 */
-const VALUES_ROW = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+/** 1 行分のプレースホルダ(seq + row_id + eventBindings の 15 値 = 17 列)。 */
+const VALUES_ROW = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 /**
- * multi-row INSERT の 1 文あたり行数。16 列 × 6 行 = 96 バインドで、SQLite の
+ * multi-row INSERT の 1 文あたり行数。17 列 × 5 行 = 85 バインドで、SQLite の
  * バインド変数上限(保守的に 100 と見る)を下回るように取る。
  */
-const APPEND_CHUNK_ROWS = 6;
+const APPEND_CHUNK_ROWS = 5;
 
 function orNull(value: string | number | undefined): string | number | null {
   return value === undefined ? null : value;
@@ -265,7 +273,8 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
     appendSync: (event) => {
       const seq = nextSeq();
       try {
-        sql.exec(INSERT_COLUMNS + VALUES_ROW, seq, ...eventBindings(event));
+        // row_id = ワイヤ行識別子(16 バイト乱数 — AUDIT_SPEC §5.1 / §7)
+        sql.exec(INSERT_COLUMNS + VALUES_ROW, seq, randomHex(16), ...eventBindings(event));
       } catch (error) {
         nextSeqCache = null;
         throw error;
@@ -279,7 +288,11 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
           const seq = nextSeq();
           sql.exec(
             INSERT_COLUMNS + chunk.map(() => VALUES_ROW).join(", "),
-            ...chunk.flatMap((event, index) => [seq + index, ...eventBindings(event)]),
+            ...chunk.flatMap((event, index) => [
+              seq + index,
+              randomHex(16),
+              ...eventBindings(event),
+            ]),
           );
           nextSeqCache = seq + chunk.length;
         }
@@ -297,9 +310,46 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
 };
 
 /** queryEventsSync の SELECT 列(StoredAuditEventRow と同順)。 */
-const EVENT_ROW_COLUMNS = `seq, server_ts, client_ts, event, actor_type, actor_user_id,
+const EVENT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
   actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,
   environment_id, variable_id, epoch, version, chain_seq, payload`;
+
+/** 可視性クラス(§6)の WHERE 条件(本クエリとカーソル解決で共用)。 */
+function visibilityCondition(
+  visibility: AuditVisibility,
+): { readonly clause: string; readonly bindings: readonly string[] } | null {
+  if (visibility.kind === "admin") {
+    return null;
+  }
+  // §6 / §7: クラス 2 の行は admin 未満に対して存在しないかのように振る舞う。
+  // 本人が actor の行はクラスに依らず本人が閲覧可
+  return {
+    clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR actor_user_id = ?)`,
+    bindings: [...CLASS1_EVENTS, visibility.selfUserId],
+  };
+}
+
+/**
+ * カーソル(row_id)→ 内部 seq の解決。**閲覧者の可視性述語つき**で引く:
+ * 不可視な行の id をカーソルに差しても「不明な id」と同一(null)に振る舞い、
+ * カーソル探索を存在オラクルにしない(§7。id は 128-bit 乱数で推測も不能)。
+ */
+function resolveCursorSeq(
+  sql: SqlStorage,
+  rowId: string,
+  visibility: AuditVisibility,
+): number | null {
+  const condition = visibilityCondition(visibility);
+  const where = condition === null ? "" : ` AND ${condition.clause}`;
+  const row = sql
+    .exec(
+      `SELECT seq FROM audit_events WHERE row_id = ?${where}`,
+      rowId,
+      ...(condition?.bindings ?? []),
+    )
+    .toArray()[0];
+  return row === undefined ? null : Number(row["seq"]);
+}
 
 function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredAuditEventRow[] {
   const conditions: string[] = [];
@@ -310,17 +360,23 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
       bindings.push(value);
     }
   };
-  filter("seq < ?", query.beforeSeq);
+  if (query.beforeRowId !== null) {
+    const beforeSeq = resolveCursorSeq(sql, query.beforeRowId, query.visibility);
+    if (beforeSeq === null) {
+      // 不明・不可視なカーソルは空ページ(ページング終端と同じ形 — §7)
+      return [];
+    }
+    filter("seq < ?", beforeSeq);
+  }
   filter("event = ?", query.event);
   filter("actor_user_id = ?", query.actorUserId);
   filter("target_user_id = ?", query.targetUserId);
   filter("variable_id = ?", query.variableId);
   filter("environment_id = ?", query.environmentId);
-  if (query.visibility.kind === "class1-or-self") {
-    // §6 / §7: クラス 2 の行は admin 未満に対して存在しないかのように振る舞う。
-    // 本人が actor の行はクラスに依らず本人が閲覧可
-    conditions.push(`(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR actor_user_id = ?)`);
-    bindings.push(...CLASS1_EVENTS, query.visibility.selfUserId);
+  const visibility = visibilityCondition(query.visibility);
+  if (visibility !== null) {
+    conditions.push(visibility.clause);
+    bindings.push(...visibility.bindings);
   }
   const where = conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`;
   return sql
@@ -339,6 +395,7 @@ const numberOrNull = (value: unknown): number | null => (value === null ? null :
 function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
   return {
     seq: Number(row["seq"]),
+    rowId: String(row["row_id"]),
     serverTs: Number(row["server_ts"]),
     clientTs: numberOrNull(row["client_ts"]),
     event: String(row["event"]),

@@ -19,6 +19,7 @@ import { and, count, desc, eq, gte, inArray, lt, or, type SQL } from "drizzle-or
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
+import { randomHex } from "../ids.ts";
 import { orgAuditEvents, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
@@ -46,6 +47,8 @@ export interface D1AuditEventInput {
 function rowOf(event: D1AuditEventInput, serverTs: number) {
   const payload = auditPayloadWith(event.actor, event.payload);
   return {
+    // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id — §7 の不透明カーソル)
+    rowId: randomHex(16),
     serverTs,
     event: event.event,
     actorType: "user",
@@ -82,15 +85,21 @@ export const LOGIN_FAILED_WINDOW_LIMIT = 100;
 // 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
 // ---------------------------------------------------------------------------
 
-/** ページ指定(seq 降順。beforeSeq より小さい行のみ)。 */
+/**
+ * ページ指定(seq 降順)。beforeRowId は前ページ末尾行の row_id(§7 の不透明
+ * カーソル)。解決は各読み取りの可視性述語つきで行い、述語外・不明な id は
+ * 空ページとして振る舞う(存在オラクルにしない)。
+ */
 interface D1AuditReadPage {
-  readonly beforeSeq: number | null;
+  readonly beforeRowId: string | null;
   readonly limit: number;
 }
 
 /** D1 監査行の読み取り形(共通列のうち C1 の応答が運ぶもの。NULL は null)。 */
 export interface D1StoredAuditEventRow {
   readonly seq: number;
+  /** ワイヤ行識別子(row_id)。backfill 済みのため常在(欠損行は空文字列)。 */
+  readonly rowId: string;
   readonly serverTs: number;
   readonly event: string;
   readonly actorType: string;
@@ -152,17 +161,33 @@ function parseStoredPayload(value: string | null): Readonly<Record<string, unkno
 
 type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
 
-/** ページ条件(seq 降順 + beforeSeq カーソル)を述語に合成して読む。 */
+/**
+ * ページ条件(seq 降順 + row_id カーソル)を述語に合成して読む。カーソルの
+ * row_id → seq 解決は**同じ可視性述語つき**で行う(述語外の行の id を差しても
+ * 「不明」と同一 = 空ページ。存在オラクルにしない — AUDIT_SPEC §7)。
+ */
 async function selectAuditPage(
   db: Db,
   table: D1AuditTable,
   predicate: SQL | undefined,
   page: D1AuditReadPage,
 ): Promise<readonly D1StoredAuditEventRow[]> {
-  const where = page.beforeSeq === null ? predicate : and(predicate, lt(table.seq, page.beforeSeq));
+  let where = predicate;
+  if (page.beforeRowId !== null) {
+    const cursor = await db
+      .select({ seq: table.seq })
+      .from(table)
+      .where(and(predicate, eq(table.rowId, page.beforeRowId)))
+      .get();
+    if (cursor === undefined) {
+      return [];
+    }
+    where = and(predicate, lt(table.seq, cursor.seq));
+  }
   const rows = await db
     .select({
       seq: table.seq,
+      rowId: table.rowId,
       serverTs: table.serverTs,
       event: table.event,
       actorType: table.actorType,
@@ -180,7 +205,11 @@ async function selectAuditPage(
     .where(where)
     .orderBy(desc(table.seq))
     .limit(page.limit);
-  return rows.map((row) => ({ ...row, payload: parseStoredPayload(row.payload) }));
+  return rows.map((row) => ({
+    ...row,
+    rowId: row.rowId ?? "",
+    payload: parseStoredPayload(row.payload),
+  }));
 }
 
 export function makeD1AuditRepo(db: Db): D1AuditRepoShape {

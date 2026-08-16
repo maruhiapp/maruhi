@@ -46,7 +46,8 @@ import {
 registerDataScenario();
 
 interface WireAuditEvent {
-  readonly seq: number;
+  readonly id: string;
+  readonly seq?: number;
   readonly serverTs: number;
   readonly clientTs?: number;
   readonly event: string;
@@ -121,9 +122,13 @@ describe("可視性クラス(§6)の強制", () => {
     expect(
       events.some((event) => event.event === "var.read" && event.actor.userId !== READER),
     ).toBe(false);
-    // 可視条件そのもの(allowlist ∨ 本人)を全行で検査する
+    // 可視条件そのもの(allowlist ∨ 本人)を全行で検査する。admin 未満の
+    // 応答は seq(無欠番採番の序数)を運ばず、行識別子は不透明な row id のみ
+    // (AUDIT_SPEC §7 — 序数からのクラス 2 件数推論の遮断)
     for (const event of events) {
       expect(CLASS1_EVENTS.includes(event.event) || event.actor.userId === READER).toBe(true);
+      expect(event.seq).toBeUndefined();
+      expect(event.id).toMatch(/^[0-9a-f]{32}$/);
     }
   });
 
@@ -142,6 +147,10 @@ describe("可視性クラス(§6)の強制", () => {
       .map((event) => event.actor.userId)
       .toSorted();
     expect(readActors).toEqual([MEMBER, READER].toSorted());
+    // admin 可視の応答には保存 seq が載る(§6 の「欠番 = 削除の痕跡」検知の材料)
+    for (const event of events) {
+      expect(event.seq).toBeGreaterThan(0);
+    }
   });
 
   it("read スコープのトークンでは admin ユーザーも他人のクラス 2 を見ない(min(スコープ, role))", async () => {
@@ -251,22 +260,23 @@ describe("ページング境界(§7: seq 降順・limit ≤ 200・カーソル�
     await seedProjectActivity();
     const full = await fetchEvents(token(OWNER), { limit: "200" });
     expect(full.events.length).toBeGreaterThan(8);
-    const seqs = full.events.map((event) => event.seq);
+    const seqs = full.events.map((event) => event.seq ?? 0);
+    expect(seqs.every((seq) => seq > 0)).toBe(true);
     expect(seqs).toEqual([...seqs].toSorted((a, b) => b - a));
     const paged: WireAuditEvent[] = [];
-    let before: number | null = null;
+    let before: string | null = null;
     // カーソルが前進しない退行でハングしないための硬い上限(全件 < 4 × 50)
     for (let pages = 0; ; pages += 1) {
       expect(pages).toBeLessThan(50);
       const page = await fetchEvents(token(OWNER), {
         limit: "4",
-        ...(before === null ? {} : { before: String(before) }),
+        ...(before === null ? {} : { before }),
       });
       paged.push(...page.events);
       if (page.events.length < 4) {
         break;
       }
-      before = page.events[page.events.length - 1]?.seq ?? null;
+      before = page.events[page.events.length - 1]?.id ?? null;
     }
     expect(paged).toEqual(full.events);
   });
@@ -278,13 +288,13 @@ describe("ページング境界(§7: seq 降順・limit ≤ 200・カーソル�
     // 挟まっている状態で、2 件ページの連結が全可視列と一致し、最終ページ以外は
     // きっちり 2 件になる(= 隠れた行がページを短くしない)
     const paged: WireAuditEvent[] = [];
-    let before: number | null = null;
+    let before: string | null = null;
     // カーソルが前進しない退行でハングしないための硬い上限
     for (let pages = 0; ; pages += 1) {
       expect(pages).toBeLessThan(50);
       const page = await fetchEvents(token(READER), {
         limit: "2",
-        ...(before === null ? {} : { before: String(before) }),
+        ...(before === null ? {} : { before }),
       });
       if (paged.length + page.events.length < full.events.length) {
         expect(page.events.length).toBe(2);
@@ -293,13 +303,15 @@ describe("ページング境界(§7: seq 降順・limit ≤ 200・カーソル�
       if (page.events.length < 2) {
         break;
       }
-      before = page.events[page.events.length - 1]?.seq ?? null;
+      before = page.events[page.events.length - 1]?.id ?? null;
     }
     expect(paged).toEqual(full.events);
   });
 
   it("limit の範囲外・不正なカーソルは Schema の 400", async () => {
     await seedProjectActivity();
+    // before は 32 桁小文字 hex の row id のみ(数値 seq・短い/大文字の hex は
+    // Schema で拒否 — AUDIT_SPEC §7 の不透明カーソル)
     for (const query of [
       "limit=0",
       "limit=201",
@@ -307,10 +319,36 @@ describe("ページング境界(§7: seq 降順・limit ≤ 200・カーソル�
       "limit=abc",
       "before=0",
       "before=x",
+      `before=${"a".repeat(31)}`,
+      `before=${"A".repeat(32)}`,
     ]) {
       const response = await requestJson("GET", `/audit/events?${query}`, token(OWNER));
       expect(response.status, query).toBe(400);
     }
+  });
+
+  it("可視性の外・不明な row id のカーソルは空ページ(存在オラクルにしない)", async () => {
+    await seedProjectActivity();
+    // OWNER として READER 非可視の行(他人が actor の var.read — クラス 2)の
+    // id を取得し、READER のカーソルとして差す
+    const admin = await fetchEvents(token(OWNER), { limit: "200" });
+    const hidden = admin.events.find(
+      (event) => event.event === "var.read" && event.actor.userId === MEMBER,
+    );
+    expect(hidden).toBeDefined();
+    const probe = await fetchEvents(token(READER), { before: hidden?.id ?? "" });
+    // 「実在するが非可視」は「存在しない id」と同じ応答(空ページ)— 空でない
+    // 応答や 4xx の差が出ると id の実在オラクルになる
+    expect(probe.status).toBe(200);
+    expect(probe.events).toEqual([]);
+    const unknown = await fetchEvents(token(READER), { before: "0".repeat(32) });
+    expect(unknown.status).toBe(200);
+    expect(unknown.events).toEqual([]);
+    // 可視な行の id なら続きが返る(カーソルとして機能していることの対照)
+    const visible = await fetchEvents(token(READER), { limit: "1" });
+    expect(visible.events.length).toBe(1);
+    const rest = await fetchEvents(token(READER), { before: visible.events[0]?.id ?? "" });
+    expect(rest.events.length).toBeGreaterThan(0);
   });
 });
 
@@ -352,12 +390,17 @@ describe("invite.* の読み取り(§7 の例外規定 — D1)", () => {
       expect(INVITE_AUDIT_EVENTS).toContain(event.event);
       expect(event.payload?.["inviteId"]).toBe(inviteId);
     }
-    // ページング(before カーソル)
+    // ページング(before カーソル = row id)。D1 応答は seq を誰にも運ばない
+    // (グローバル連番はテナント横断の序数 — AUDIT_SPEC §7)
+    for (const event of events) {
+      expect(event.seq).toBeUndefined();
+      expect(event.id).toMatch(/^[0-9a-f]{32}$/);
+    }
     const first = await fetchInvites(token(OWNER), { limit: "1" });
     expect(eventNames(first.events)).toEqual(["invite.revoked"]);
     const second = await fetchInvites(token(OWNER), {
       limit: "1",
-      before: String(first.events[0]?.seq ?? 0),
+      before: first.events[0]?.id ?? "",
     });
     expect(eventNames(second.events)).toEqual(["invite.created"]);
   });
@@ -403,8 +446,15 @@ describe("user 系の本人閲覧(§3.1 / §6 — self)", () => {
     expect(response.status).toBe(200);
     const { events } = (await response.json()) as { events: readonly WireAuditEvent[] };
     expect(events.length).toBeGreaterThan(0);
-    const seqs = events.map((event) => event.seq);
-    expect(seqs).toEqual([...seqs].toSorted((a, b) => b - a));
+    // 新しい順(server_ts 非増加)。seq は D1 応答に載せない(§7)ため、行の
+    // 同一性は不透明な row id で確認する
+    const times = events.map((event) => event.serverTs);
+    expect(times).toEqual([...times].toSorted((a, b) => b - a));
+    const ids = events.map((event) => event.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const event of events) {
+      expect(event.seq).toBeUndefined();
+    }
     // 実発行経路の証跡: device 交換(setup)+ 今回の Web ログイン
     expect(eventNames(events)).toEqual(
       expect.arrayContaining(["auth.token_created", "auth.login_succeeded"]),

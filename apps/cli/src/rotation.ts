@@ -32,7 +32,6 @@ interface RotationFlagView {
   readonly basis: "read" | "readable";
   readonly targetUserId?: string;
   readonly targetServerKeyFingerprintHex?: string;
-  readonly seq: number;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
 }
@@ -133,9 +132,14 @@ export function rotationListOp(
     for (const environmentId of environmentIds) {
       yield* io.log(`環境 ${displayText(environmentId)}:`);
       const index = names.get(environmentId);
+      // 表示順は検出時刻 →(同一 sweep で同時刻の場合)variableId の安定ソート。
+      // 監査 seq はワイヤに載らない(AUDIT_SPEC §7 — 序数の非漏洩)
       const rows = flags
         .filter((flag) => flag.environmentId === environmentId)
-        .toSorted((a, b) => a.seq - b.seq);
+        .toSorted(
+          (a, b) =>
+            a.recommendedAtMs - b.recommendedAtMs || a.variableId.localeCompare(b.variableId),
+        );
       for (const flag of rows) {
         const name = index?.get(flag.variableId);
         const label =

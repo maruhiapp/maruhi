@@ -24,7 +24,13 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         projectId: params.projectId,
         permission: "read",
         invoke: (stub, actor) => stub.rotationFlags(actor),
-      }).pipe(Effect.map((flags) => ({ flags }))),
+      }).pipe(
+        // 監査 seq はワイヤに載せない(AUDIT_SPEC §7 — 2026-08-16 C1 裁定。
+        // Schema の余剰プロパティ無視に頼らず境界で明示的に落とす)
+        Effect.map((flags) => ({
+          flags: flags.map(({ seq: _seq, ...flag }) => flag),
+        })),
+      ),
     )
     .handle("dismiss", ({ params, payload, endpoint }) =>
       callProjectData<void>()({

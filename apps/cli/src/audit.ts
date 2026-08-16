@@ -33,7 +33,10 @@ import { type NameIndex, resolveNames } from "./rotation.ts";
 
 /** ワイヤの監査イベント(api-schema の AuditEventSchema の受信形)。 */
 interface WireAuditEvent {
-  readonly seq: number;
+  /** 行識別子 = row_id(不透明。--before カーソルに使う)。 */
+  readonly id: string;
+  /** 保存採番(admin 可視の project 応答のみ — AUDIT_SPEC §7)。 */
+  readonly seq?: number;
   readonly serverTs: number;
   readonly clientTs?: number;
   readonly event: string;
@@ -54,10 +57,10 @@ interface WireAuditEvent {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
-/** list / invites / self 共通のページ指定。 */
+/** list / invites / self 共通のページ指定。before は前ページ末尾行の id。 */
 export interface AuditPageOptions {
   readonly limit: number | null;
-  readonly before: number | null;
+  readonly before: string | null;
 }
 
 /** list のフィルタ(AUDIT_SPEC §7 の語彙)。 */
@@ -253,7 +256,8 @@ function formatEventLine(
 ): string {
   const target = describeTarget(event);
   return [
-    `seq=${event.seq}`,
+    // seq は admin 可視の応答にのみ載る(§7 — 非 admin には序数を出さない)
+    ...(event.seq === undefined ? [] : [`seq=${event.seq}`]),
     formatTs(event.serverTs),
     displayText(event.event),
     `actor=${describeActor(event)}`,
@@ -274,7 +278,7 @@ function continuationHint(
   if (last === undefined || events.length < pageSize) {
     return null;
   }
-  return `続きを見るには: ${command} --before ${last.seq}`;
+  return `続きを見るには: ${command} --before ${last.id}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +339,7 @@ function renderListEvent(
   const trust = event.event.startsWith("chain.") ? mirrorTrustOf(event, entries, headSeq) : null;
   const warnings = (trust?.mismatches ?? []).map(
     (mismatch) =>
-      `警告: seq=${event.seq} のミラー行が検証済みチェーンと一致しません — ${mismatch}(監査ログはサーバー管理データであり、この不一致はサーバーによる改竄・破損の証拠です — AUDIT_SPEC §6)`,
+      `警告: 監査行 ${event.id} のミラー行が検証済みチェーンと一致しません — ${mismatch}(監査ログはサーバー管理データであり、この不一致はサーバーによる改竄・破損の証拠です — AUDIT_SPEC §6)`,
   );
   return { line: formatEventLine(event, name, trust), warnings };
 }
@@ -376,7 +380,7 @@ export function auditListOp(
 // ---------------------------------------------------------------------------
 
 /** ページ指定 → クエリ(未指定キーは送らない = サーバー既定に任せる)。 */
-function pageQueryOf(page: AuditPageOptions): { before?: number; limit?: number } {
+function pageQueryOf(page: AuditPageOptions): { before?: string; limit?: number } {
   return {
     ...(page.before === null ? {} : { before: page.before }),
     ...(page.limit === null ? {} : { limit: page.limit }),
@@ -471,7 +475,11 @@ const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
 // カーソルが前進しないサーバーで無限ループしないための硬い上限
 const VERIFY_MAX_PAGES_PER_EVENT = 100;
 
-/** 1 イベント種別の全ページ取得(seq 降順。カーソル非前進はサーバー矛盾として拒否)。 */
+/**
+ * 1 イベント種別の全ページ取得(新しい順。カーソルは行 id)。同じ行 id が
+ * 再登場したらサーバー応答の矛盾(カーソル非前進・行の重複配布)として拒否する
+ * — id は不透明で序数比較ができないため、前進性は集合の非重複で検査する。
+ */
 function fetchAllMirrorRows(
   client: MaruhiClient,
   projectId: string,
@@ -479,7 +487,8 @@ function fetchAllMirrorRows(
 ): Effect.Effect<readonly WireAuditEvent[], CliError> {
   return Effect.gen(function* () {
     const rows: WireAuditEvent[] = [];
-    let before: number | null = null;
+    const seen = new Set<string>();
+    let before: string | null = null;
     for (let pageCount = 0; pageCount < VERIFY_MAX_PAGES_PER_EVENT; pageCount += 1) {
       const cursor = before;
       const page: readonly WireAuditEvent[] = yield* client.audit
@@ -496,19 +505,20 @@ function fetchAllMirrorRows(
           Effect.map((response) => response.events as readonly WireAuditEvent[]),
         );
       for (const row of page) {
-        if (cursor !== null && row.seq >= cursor) {
+        if (seen.has(row.id)) {
           return yield* Effect.fail(
             cliError(
-              `監査ログのページングが前進しません(event=${displayText(event)}, before=${cursor} に seq=${row.seq} が返りました)— サーバー応答の矛盾です。ミラー検証を中断します`,
+              `監査ログのページングが前進しません(event=${displayText(event)}, 行 ${displayText(row.id)} が重複して返りました)— サーバー応答の矛盾です。ミラー検証を中断します`,
             ),
           );
         }
+        seen.add(row.id);
         rows.push(row);
       }
       if (page.length < VERIFY_PAGE_LIMIT) {
         return rows;
       }
-      before = page[page.length - 1]?.seq ?? null;
+      before = page[page.length - 1]?.id ?? null;
     }
     return yield* Effect.fail(
       cliError("監査ログのページ数が理論上限を超えました — サーバー応答の矛盾です"),
@@ -552,7 +562,9 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   const ahead: number[] = [];
   for (const row of rows) {
     if (row.chainSeq === undefined) {
-      problems.push(`seq=${row.seq}: ミラー行が chain_seq を持ちません(${displayText(row.event)})`);
+      problems.push(
+        `監査行 ${displayText(row.id)}: ミラー行が chain_seq を持ちません(${displayText(row.event)})`,
+      );
     } else if (row.chainSeq > headSeq) {
       ahead.push(row.chainSeq);
     } else {
@@ -576,11 +588,11 @@ function entryMirrorProblems(
   }
   if (matched.length > 1) {
     return [
-      `chain_seq=${entry.seq}(op=${entry.op}): ミラー行が ${matched.length} 行あります(重複 — seq ${matched.map((row) => row.seq).join(", ")})`,
+      `chain_seq=${entry.seq}(op=${entry.op}): ミラー行が ${matched.length} 行あります(重複 — 行 ${matched.map((row) => displayText(row.id)).join(", ")})`,
     ];
   }
   return mirrorMismatches(entry, observed).map(
-    (mismatch) => `chain_seq=${entry.seq}(監査 seq=${observed.seq}): ${mismatch}`,
+    (mismatch) => `chain_seq=${entry.seq}(監査行 ${displayText(observed.id)}): ${mismatch}`,
   );
 }
 

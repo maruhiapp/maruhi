@@ -29,10 +29,13 @@ function actorTypeOf(stored: string): AuditActorValue["type"] {
   return stored === "server" || stored === "system" ? stored : "user";
 }
 
-/** D1 監査行 → ワイヤの AuditEventSchema 形(NULL 列はキーごと落とす)。 */
+/**
+ * D1 監査行 → ワイヤ形。`seq` は**誰にも**載せない(§7 — D1 の autoincrement は
+ * デプロイメント全域の共有採番で、序数はテナント・ユーザーを跨ぐ活動量を漏らす)。
+ */
 function toWireD1Event(row: D1StoredAuditEventRow): AuditEventValue {
   return {
-    seq: row.seq,
+    id: row.rowId,
     serverTs: row.serverTs,
     event: row.event,
     actor: {
@@ -65,7 +68,7 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
           permission: "read",
           invoke: (stub, actor) =>
             stub.auditEvents(actor, {
-              ...(query.before === undefined ? {} : { beforeSeq: query.before }),
+              ...(query.before === undefined ? {} : { beforeRowId: query.before }),
               ...(query.limit === undefined ? {} : { limit: query.limit }),
               ...(query.event === undefined ? {} : { event: query.event }),
               ...(query.actorUserId === undefined ? {} : { actorUserId: query.actorUserId }),
@@ -83,7 +86,7 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
         yield* requireProjectChainAdmin(params.projectId, endpoint);
         const audit = yield* D1AuditRepo;
         const rows = yield* audit.readProjectInviteEvents(params.projectId, {
-          beforeSeq: query.before ?? null,
+          beforeRowId: query.before ?? null,
           limit: resolvePageLimit(query.limit),
         });
         return { events: rows.map(toWireD1Event) };
@@ -97,7 +100,7 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
         yield* ensureKeyMaterialAccess(principal);
         const audit = yield* D1AuditRepo;
         const rows = yield* audit.readUserEventsFor(principal.userId, {
-          beforeSeq: query.before ?? null,
+          beforeRowId: query.before ?? null,
           limit: resolvePageLimit(query.limit),
         });
         return { events: rows.map(toWireD1Event) };

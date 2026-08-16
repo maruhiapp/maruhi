@@ -266,6 +266,22 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec(LEASE_BINDINGS_DDL);
     },
   },
+
+  {
+    // 監査行のワイヤ識別子 row_id(AUDIT_SPEC §5.1 / §7 — 2026-08-16 C1 裁定)。
+    // 16 バイト乱数 hex。無欠番採番 seq をワイヤに出すと admin 未満が可視行の
+    // seq 差分からクラス 2 の件数・時刻窓を推論できるため、行識別子・カーソルは
+    // この乱数を使う(seq は admin 可視の応答にのみ載る)。既存行は SQLite の
+    // randomblob で backfill する(randomblob は行ごとに評価される)。UNIQUE
+    // 索引は NULL を重複可とするため作成順は backfill の前後どちらでもよいが、
+    // 追記経路(audit-store.ts)は常に値を生成するので NULL は残らない
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE audit_events ADD COLUMN row_id TEXT");
+      sql.exec("UPDATE audit_events SET row_id = lower(hex(randomblob(16))) WHERE row_id IS NULL");
+      sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS ae_row_id ON audit_events (row_id)");
+    },
+  },
 ];
 
 /**

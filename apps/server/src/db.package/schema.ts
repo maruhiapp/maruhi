@@ -210,6 +210,8 @@ export const invitations = sqliteTable(
 /** user / org 監査テーブルの共通列(Drizzle の列オブジェクト共有パターン)。 */
 const auditEventColumns = {
   seq: integer("seq").primaryKey({ autoIncrement: true }),
+  /** ワイヤ行識別子(16 バイト乱数 hex — AUDIT_SPEC §5.1 / §7。seq はワイヤに出さない) */
+  rowId: text("row_id"),
   /** サーバー受理時刻(unix ms) */
   serverTs: integer("server_ts").notNull(),
   /** AUDIT_SPEC §3 のイベント名(`領域.動詞`) */
@@ -228,6 +230,7 @@ const auditEventColumns = {
 
 /** 認証系イベント(AUDIT_SPEC §3.1)。 */
 export const userAuditEvents = sqliteTable("user_audit_events", auditEventColumns, (t) => [
+  uniqueIndex("uae_row_id").on(t.rowId),
   index("uae_actor").on(t.actorUserId, t.seq),
   index("uae_target").on(t.targetUserId, t.seq),
   index("uae_event").on(t.event, t.seq),
@@ -235,6 +238,7 @@ export const userAuditEvents = sqliteTable("user_audit_events", auditEventColumn
 
 /** org 系イベント(AUDIT_SPEC §3.2)。 */
 export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns, (t) => [
+  uniqueIndex("oae_row_id").on(t.rowId),
   index("oae_actor").on(t.actorUserId, t.seq),
   index("oae_target").on(t.targetUserId, t.seq),
   index("oae_event").on(t.event, t.seq),

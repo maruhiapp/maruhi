@@ -24,7 +24,8 @@ import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
 
 /** 読み取りクエリ(RPC 境界を渡る)。フィルタ語彙は AUDIT_SPEC §7 のとおり。 */
 export interface AuditEventsQueryInput {
-  readonly beforeSeq?: number;
+  /** ページングカーソル = 前ページ末尾行の id(row_id — §7 の不透明カーソル)。 */
+  readonly beforeRowId?: string;
   readonly limit?: number;
   readonly event?: string;
   readonly actorUserId?: string;
@@ -49,7 +50,10 @@ export interface AuditActorValue {
 
 /** 監査イベント 1 行(ワイヤの AuditEventSchema と構造一致)。 */
 export interface AuditEventValue {
-  readonly seq: number;
+  /** ワイヤ行識別子(row_id — §5.1 / §7)。 */
+  readonly id: string;
+  /** 保存採番。admin 可視の project DO 応答のみ(§7 — 序数の非漏洩)。 */
+  readonly seq?: number;
   readonly serverTs: number;
   readonly clientTs?: number;
   readonly event: string;
@@ -75,10 +79,16 @@ function spreadIf<K extends string, V>(key: K, value: V | null): { readonly [P i
   return value === null ? {} : ({ [key]: value } as { [P in K]: V });
 }
 
-/** 保存行 → RPC 値。NULL 列はキーごと落とす(ワイヤの optionalKey と同型)。 */
-function toAuditEventValue(row: StoredAuditEventRow): AuditEventValue {
+/**
+ * 保存行 → RPC 値。NULL 列はキーごと落とす(ワイヤの optionalKey と同型)。
+ * `seq` は admin 可視のときだけ載せる(§7: 無欠番採番の序数は admin 未満に
+ * クラス 2 の件数を漏らす。§6 の「欠番 = 削除の痕跡」検知は全行が見える
+ * admin にだけ意味がある)。
+ */
+function toAuditEventValue(row: StoredAuditEventRow, includeSeq: boolean): AuditEventValue {
   return {
-    seq: row.seq,
+    id: row.rowId,
+    ...(includeSeq ? { seq: row.seq } : {}),
     serverTs: row.serverTs,
     ...spreadIf("clientTs", row.clientTs),
     event: row.event,
@@ -122,7 +132,7 @@ export const auditEventsProgram = (
     return yield* Effect.sync((): readonly AuditEventValue[] =>
       audit
         .queryEventsSync({
-          beforeSeq: query.beforeSeq ?? null,
+          beforeRowId: query.beforeRowId ?? null,
           limit: resolvePageLimit(query.limit),
           event: query.event ?? null,
           actorUserId: query.actorUserId ?? null,
@@ -133,6 +143,6 @@ export const auditEventsProgram = (
             ? { kind: "admin" }
             : { kind: "class1-or-self", selfUserId: actor.userId },
         })
-        .map(toAuditEventValue),
+        .map((row) => toAuditEventValue(row, adminVisibility)),
     );
   });

@@ -413,7 +413,8 @@ describe("org.project_created(§3.2)と禁止情報(§1-2)", () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
       for (const [column, value] of Object.entries(row)) {
-        if (column === "server_ts" || column === "seq" || value === null) {
+        // row_id はランダム hex — 偶然に数字列を含みうるため走査から除外する
+        if (column === "server_ts" || column === "seq" || column === "row_id" || value === null) {
           continue;
         }
         const text = String(value);

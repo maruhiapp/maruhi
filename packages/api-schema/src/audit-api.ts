@@ -23,13 +23,16 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ForbiddenError, ProjectNotFoundError } from "./errors/index.ts";
-import { KeyFingerprintHex, PositiveInt } from "./hex.ts";
+import { hexString, KeyFingerprintHex, PositiveInt } from "./hex.ts";
 
 /** ページの最大件数(AUDIT_SPEC §7: limit ≤ 200。超過は Schema の 400)。 */
 export const MAX_AUDIT_EVENTS_PAGE_LIMIT = 200;
 
 /** limit 省略時の既定件数(サーバー側で適用)。 */
 export const DEFAULT_AUDIT_EVENTS_PAGE_LIMIT = 50;
+
+/** 行識別子・カーソルの形式(16 バイト hex — §5.1 row_id)。 */
+const RowIdHex = hexString(16);
 
 /** The recorded actor of an audit event (AUDIT_SPEC §2). */
 export const AuditActorSchema = Schema.Struct({
@@ -50,7 +53,19 @@ export const AuditActorSchema = Schema.Struct({
  * 行)の配布が encode 失敗で 500 になる(監査の忠実返却を壊す)。
  */
 export const AuditEventSchema = Schema.Struct({
-  seq: PositiveInt,
+  /**
+   * ワイヤ行識別子 = 16 バイト乱数(AUDIT_SPEC §5.1 row_id)。ページング
+   * カーソル(before)にもこれを使う。採番 seq と独立で序数距離を運ばない
+   * (§7 — 件数非漏洩)。
+   */
+  id: RowIdHex,
+  /**
+   * 保存採番(§5.1 — 無欠番)。**admin 可視(チェーン role admin ×
+   * トークンスコープ admin)の project DO 応答にのみ**載る(§6 の
+   * 「欠番 = 削除の痕跡」検知の材料)。D1 経路(invites / self)は常に欠落
+   * (デプロイメント全域の autoincrement 序数を漏らさない — §7)。
+   */
+  seq: Schema.optionalKey(PositiveInt),
   serverTs: Schema.Number,
   clientTs: Schema.optionalKey(Schema.Number),
   event: Schema.String,
@@ -73,12 +88,8 @@ export const AuditEventsPageSchema = Schema.Struct({
   events: Schema.Array(AuditEventSchema),
 });
 
-// クエリ文字列の数値(カーソル・limit)。QueryConstraint(string への encode)
-// を満たすため NumberFromString ベースで定義する
-const SeqCursorFromString = Schema.NumberFromString.check(
-  Schema.isInt(),
-  Schema.isGreaterThanOrEqualTo(1),
-);
+// クエリ文字列の limit。QueryConstraint(string への encode)を満たすため
+// NumberFromString ベースで定義する
 const PageLimitFromString = Schema.NumberFromString.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(1),
@@ -92,10 +103,13 @@ const EventNameFilter = Schema.String.check(Schema.isMaxLength(64));
 const UserIdFilter = Schema.String.check(Schema.isMaxLength(1024));
 const IdFilter = Schema.String.check(Schema.isMaxLength(64));
 
-/** カーソルページングのクエリ(全エンドポイント共通)。 */
+/**
+ * カーソルページングのクエリ(全エンドポイント共通)。before は前ページ
+ * 末尾行の `id`(不透明な row_id)で、その行より古い行から返す。閲覧者に
+ * 不可視・不明な id は「空ページ」として振る舞う(存在オラクルにしない — §7)。
+ */
 const pageQuery = {
-  /** このカーソルより小さい seq のみを返す(新しい順に遡る)。 */
-  before: Schema.optionalKey(SeqCursorFromString),
+  before: Schema.optionalKey(RowIdHex),
   limit: Schema.optionalKey(PageLimitFromString),
 };
 

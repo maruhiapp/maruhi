@@ -83,7 +83,6 @@ interface WireFlag {
   readonly basis: "read" | "readable";
   readonly targetUserId?: string;
   readonly targetServerKeyFingerprintHex?: string;
-  readonly seq: number;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
 }
@@ -212,7 +211,6 @@ function flagFor(overrides: Partial<WireFlag> & { readonly variableId: string })
     environmentId: ENV_ID,
     basis: "readable",
     targetUserId: target.userId,
-    seq: 10,
     recommendedAtMs: 1_700_000_000_000,
     triggerChainSeq: 4,
     ...overrides,
@@ -226,8 +224,8 @@ describe("maruhi rotation list", () => {
       built,
       currentEpoch: 2,
       flags: [
-        flagFor({ variableId: "va", basis: "read", seq: 10 }),
-        flagFor({ variableId: "vdel", basis: "readable", seq: 11 }),
+        flagFor({ variableId: "va", basis: "read" }),
+        flagFor({ variableId: "vdel", basis: "readable" }),
       ],
     });
     const env = await startEnv(state, built.projectId);
@@ -293,12 +291,12 @@ describe("maruhi rotation dismiss", () => {
       built,
       currentEpoch: 2,
       flags: [
-        // 同一対の複数フラグ(再削除)は 1 対に畳む
-        flagFor({ variableId: "va", seq: 10 }),
-        flagFor({ variableId: "va", seq: 12 }),
-        flagFor({ variableId: "vdel", seq: 11 }),
+        // 同一対の複数フラグ(再削除 — 推奨時刻が異なる)は 1 対に畳む
+        flagFor({ variableId: "va" }),
+        flagFor({ variableId: "va", recommendedAtMs: 1_700_000_100_000 }),
+        flagFor({ variableId: "vdel" }),
         // 別環境のフラグは --env の絞り込みで除外される
-        flagFor({ variableId: "vother", environmentId: "env-other", seq: 13 }),
+        flagFor({ variableId: "vother", environmentId: "env-other" }),
       ],
     });
     const env = await startEnv(state, built.projectId);

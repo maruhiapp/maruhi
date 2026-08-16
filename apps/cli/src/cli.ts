@@ -1920,17 +1920,17 @@ function auditActionFlagRejection(
 }
 
 /** ページ指定フラグの検査(limit 1〜200・before ≥ 1 の整数)。 */
-/** 未指定は許容し、指定時は [1, max] の整数のみ通す(max = null は上限なし)。 */
-function outsideIntRange(value: number | undefined, max: number | null): boolean {
+/** 未指定は許容し、指定時は [1, max] の整数のみ通す。 */
+function outsideIntRange(value: number | undefined, max: number): boolean {
   if (value === undefined) {
     return false;
   }
-  return !Number.isInteger(value) || value < 1 || (max !== null && value > max);
+  return !Number.isInteger(value) || value < 1 || value > max;
 }
 
 function parseAuditPage(
   limit: number | undefined,
-  before: number | undefined,
+  before: string | undefined,
 ): Effect.Effect<AuditPageOptions, CliError> {
   if (outsideIntRange(limit, MAX_AUDIT_EVENTS_PAGE_LIMIT)) {
     return Effect.fail(
@@ -1939,8 +1939,14 @@ function parseAuditPage(
       ),
     );
   }
-  if (outsideIntRange(before, null)) {
-    return Effect.fail(usageError("--before は 1 以上の整数(監査 seq カーソル)で指定してください"));
+  // カーソルは行 id(16 バイト hex — AUDIT_SPEC §5.1 row_id)。前ページ末尾の
+  // 「続きを見るには」案内が示す値をそのまま渡す
+  if (before !== undefined && !/^[0-9a-f]{32}$/.test(before)) {
+    return Effect.fail(
+      usageError(
+        "--before は前ページ末尾の行 id(hex 小文字 32 文字 — 「続きを見るには」の案内に表示される値)で指定してください",
+      ),
+    );
   }
   return Effect.succeed({ limit: limit ?? null, before: before ?? null });
 }
@@ -2011,8 +2017,9 @@ function auditCommand(execute: Execute) {
       },
       limit: { type: "number", description: "1 ページの件数(1〜200。既定 50)" },
       before: {
-        type: "number",
-        description: "この監査 seq より古い行から表示する(前ページ末尾の seq を渡して遡る)",
+        type: "string",
+        description:
+          "この行より古い行から表示する(前ページ末尾の行 id — 続きの案内に表示される値 — を渡して遡る)",
       },
       event: {
         type: "string",

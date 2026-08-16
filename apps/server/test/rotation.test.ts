@@ -77,7 +77,6 @@ interface WireRotationFlag {
   readonly basis: "read" | "readable";
   readonly targetUserId?: string;
   readonly targetServerKeyFingerprintHex?: string;
-  readonly seq: number;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
 }

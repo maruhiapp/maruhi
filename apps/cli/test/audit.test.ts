@@ -63,6 +63,11 @@ async function baseChain(): Promise<BuiltChain> {
 
 type WireRow = Record<string, unknown>;
 
+/** 決定的な 32 桁 hex 行 id(テスト用 — 実サーバーはランダム採番)。 */
+function idOf(seq: number): string {
+  return seq.toString(16).padStart(32, "0");
+}
+
 /** undefined の項目を落として割り当てる(ワイヤの optionalKey と同型)。 */
 function assignPresent(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(source)) {
@@ -80,7 +85,13 @@ function wireMirrorRow(entry: ChainEntry, seq: number): WireRow {
     userId: record.actorUserId,
     keyFingerprintHex: record.actorKeyFingerprintHex,
   });
-  const row: WireRow = { seq, serverTs: record.serverTs, event: record.event, actor };
+  const row: WireRow = {
+    id: idOf(seq),
+    seq,
+    serverTs: record.serverTs,
+    event: record.event,
+    actor,
+  };
   assignPresent(row, {
     clientTs: record.clientTs,
     targetUserId: record.targetUserId,
@@ -100,7 +111,7 @@ function mirrorRowsOf(built: BuiltChain): WireRow[] {
 
 /**
  * 監査イベントエンドポイントのモック: event / before / limit をサーバーと同じ
- * 意味論(seq 降順・カーソル前進)で適用する。
+ * 意味論(seq 降順・row id カーソルの解決、不明な id は空ページ)で適用する。
  */
 function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
   return (request) => {
@@ -110,9 +121,17 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
     const eventFilter = request.query["event"];
     const before = request.query["before"];
     const limit = Number(request.query["limit"] ?? "50");
+    let cursorSeq = Number.POSITIVE_INFINITY;
+    if (before !== undefined) {
+      const cursor = rows().find((row) => row["id"] === before);
+      if (cursor === undefined) {
+        return { status: 200, json: { events: [] } };
+      }
+      cursorSeq = cursor["seq"] as number;
+    }
     const filtered = rows()
       .filter((row) => (eventFilter === undefined ? true : row["event"] === eventFilter))
-      .filter((row) => (before === undefined ? true : (row["seq"] as number) < Number(before)))
+      .filter((row) => (row["seq"] as number) < cursorSeq)
       .toSorted((a, b) => (b["seq"] as number) - (a["seq"] as number))
       .slice(0, limit);
     return { status: 200, json: { events: filtered } };
@@ -186,6 +205,7 @@ async function startEnv(handlers: readonly MockHandler[], projectId?: string): P
 /** var.version_pushed の行(名前解決・payload 表示の検査用)。 */
 function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
   return {
+    id: idOf(seq),
     seq,
     serverTs: BASE_TS + seq,
     event: "var.version_pushed",
@@ -254,7 +274,8 @@ describe("maruhi audit(list)", () => {
 
   it("--event と --before / --limit をそのままクエリへ写す", async () => {
     const built = await baseChain();
-    const rows = [...mirrorRowsOf(built), pushRow(4)];
+    // seq=9 の行を置き、そこから前(seq < 9)を row id カーソルで要求する
+    const rows = [...mirrorRowsOf(built), pushRow(4), pushRow(9)];
     const handlers = await makeAuditServer({ built, rows });
     const server = await MockServer.start([...handlers]);
     servers.push(server);
@@ -264,13 +285,20 @@ describe("maruhi audit(list)", () => {
 
     expect(
       await runCli(
-        ["audit", "--event", "var.version_pushed", "--limit", "10", "--before", "9"],
+        ["audit", "--event", "var.version_pushed", "--limit", "10", "--before", idOf(9)],
         env.layer,
       ),
     ).toBe(0);
     const audit = server.requests.find((request) => request.path.endsWith("/audit/events"));
-    expect(audit?.query).toMatchObject({ event: "var.version_pushed", limit: "10", before: "9" });
+    expect(audit?.query).toMatchObject({
+      event: "var.version_pushed",
+      limit: "10",
+      before: idOf(9),
+    });
     const logs = env.logs.join("\n");
+    // カーソル行(seq=9)自身は含まれず、seq=4 の行だけが返る
+    expect(logs).toContain("seq=4\t");
+    expect(logs).not.toContain("seq=9\t");
     expect(logs).toContain("var.version_pushed");
     expect(logs).not.toContain("chain.genesis");
   });
@@ -324,7 +352,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     if (duplicated === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    rows.push({ ...duplicated, seq: 9 });
+    rows.push({ ...duplicated, id: idOf(9), seq: 9 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("重複");
@@ -355,7 +383,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     }
     // head(3)の遠く先を名乗る偽造行 — 旧実装では「未検証」に数えられるだけで
     // exit 0 +「検証 OK」になっていた(pullfrog 指摘)
-    rows.push({ ...template, seq: 50, chainSeq: 50000 });
+    rows.push({ ...template, id: idOf(50), seq: 50, chainSeq: 50000 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
@@ -371,7 +399,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
       throw new Error("fixture is missing the add_member mirror row");
     }
     // 同期直後にチェーンが 1 エントリ伸びた形(chain_seq = head + 1)
-    rows.push({ ...template, seq: 4, chainSeq: 4 });
+    rows.push({ ...template, id: idOf(4), seq: 4, chainSeq: 4 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
@@ -389,9 +417,10 @@ describe("maruhi audit invites / self", () => {
       onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
         status: 200,
         json: {
+          // D1 応答は seq を運ばない(AUDIT_SPEC §7 — グローバル連番の非開示)
           events: [
             {
-              seq: 12,
+              id: idOf(12),
               serverTs: BASE_TS,
               event: "invite.created",
               actor: { type: "user", userId: owner.userId },
@@ -414,15 +443,16 @@ describe("maruhi audit invites / self", () => {
       onRequest("GET", "/auth/audit/events", () => ({
         status: 200,
         json: {
+          // D1 応答は seq を運ばない(AUDIT_SPEC §7)
           events: [
             {
-              seq: 2,
+              id: idOf(2),
               serverTs: BASE_TS + 2,
               event: "auth.recovery_blob_fetched",
               actor: { type: "user", userId: owner.userId },
             },
             {
-              seq: 1,
+              id: idOf(1),
               serverTs: BASE_TS + 1,
               event: "auth.token_created",
               actor: { type: "user", userId: owner.userId },
