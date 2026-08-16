@@ -26,7 +26,8 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
    | `invite.ts:321` 招待者 FP 確認の儀式 | `invite.ts:174` 招待トークンの生値表示(= 発行拒否) |
    | `member.ts:302` 受諾鍵 FP 確認の儀式 | `invite.ts:361` エージェント環境での鍵新規生成 |
    | `server-grant.ts:218` サーバー鍵確認の儀式 | `invite.ts:597` 生トークンでの受諾 |
-   | | `recovery.ts:57/152/260` リカバリーコードの発行・入力・保存確認 |
+   | | `recovery.ts:57/152` リカバリーコードの発行・入力(いずれも**失敗**する) |
+   | | `recovery.ts:260` 鍵生成後の発行を**黙ってスキップ**(`io.log` して継続。失敗しない) |
 
    儀式系は「人間が指紋を目視で照合する」ことが要件そのものなので、TTY 必須は要件の言い換えになる。
    一方の発行系を TTY 必須にすると **CI 運用が変わる**(非 TTY で落ちる)ため、今回は動かさない。
@@ -35,7 +36,10 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
    `recovery.ts:57/152`(リカバリーコードの表示・stdin 入力)は、**`pull --show` と同じ
    「値・鍵素材が端末を通る」クラス**である。deny-list のままだと、未知のエージェント下では
    一次境界の保護を受けない。一貫性の観点では移す候補だが、`maruhi invite create` /
-   `maruhi recovery issue` が CI で落ちるようになるため、運用影響を見てから別途裁定する
+   `maruhi recovery issue` が CI で落ちるようになるため、運用影響を見てから別途裁定する。
+   裁定の際は **`recovery.ts:260` の性質の違い**に注意する — ここだけは拒否ではなく
+   **黙ってスキップ**なので、一次境界へ移すと非 TTY で「リカバリーコードが発行されないまま
+   処理が進む」既定になる(失敗する 2 か所とは影響の出方が違う)
 
 8. **`maruhi run` は `--` を必須のままとする**。判定は `Stdio.args` を読む Effect(`TerminatorRequired`、exit 2)で行う
 9. **stdout はコマンドの出力だけ**。ヘルプ・診断は `Console` を差し替えて stderr へ寄せる
@@ -43,4 +47,16 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
 
 **Rationale**: (1) gunshi 由来の危険な形が**構造的に**消える — 外側で塞ぎ続ける方式は、レビュー 4 巡ぶんの実績が示すとおり抜けが尽きない。(2) 引数層が Effect の型付きエラー(`Schema.TaggedError`)に統一され、現行 `runCli` の `Execute` ブリッジ・`Effect.runPromise` の往復・defect を usage エラーに化けさせない防御が不要になる。(3) 検査・診断・終了コード・端末判定がすべて Effect の差し替え点に載るため、自前実装が「文面そのもの」だけに縮む。(4) エージェント検出の deny-list は **fail-open** である — 環境変数の標準化は未確定(`AGENT` と `AI_AGENT` が併存、Claude Code / Cursor / Gemini CLI は各社独自、VS Code / Copilot は反対の立場)で、検出ライブラリの範囲も互いに部分集合ではない。「知っているものを止める」から「人間の端末だけ通す」へ反転させれば、**未知のエージェントも既定で止まる**。実測でも Claude Code 実行下は `stdin/stdout/stderr` の `isTTY` がすべて false だった。
 
-**Consequences**: 既存の CLI テストは**引数の書き方を検査するもの(`args.test.ts` と各コマンドの同型ケース)が大半不要になる**。移行 PR では削除ではなく「宣言(`Flag` / `Argument`)で同じ形が落ちること」を確かめる検査へ置き換え、危険な形(重複指定・空の値・`--` の後ろの空文字列・値の表示可否)は必ず残す。ADR-0015 の npm 配布バンドルには `@effect/platform-bun` も畳まれる(利用者の依存グラフへ伝播させない方針は変わらない)。`Bun.secrets` / `Bun.spawn` は引き続き `live.ts` にのみ置く(ADR-0004 の範囲内)。`effect/unstable/cli` は unstable モジュールであり rc → stable で API が動きうる(ADR-0011 の系: 厳密ピン + 更新は独立 PR。beta.107 → rc.109 では 12 形の挙動もプローブのソースも無改修だった)。UX の変更点は 2 つ: **`maruhi pull --show > secrets.txt` が拒否される**(平文をディスクへ落とす操作であり、ディスクレス不変条件からは拒否が正しい)、**引数の誤りに添えるヘルプが使い方 1 行になる**。依存は `@effect/platform-bun`(+ `@effect/platform-node-shared`)と `std-env` が増え、`gunshi` が消える。バンドルの実質増分は約 190KB(単体バイナリ 62〜96MB に対して誤差)。退避経路: パーサだけを `@stricli/core`(依存ゼロ・重複指定と boolean への値をパーサ自身が拒否する唯一の候補)へ差し替える — その場合 Effect との結線は現行と同じく自前に戻る。`Bun.isAIAgent()` は Zig の内部実装で公開 JS API ではないため採用しない(Bun 1.4 で JS へ露出したら二次層の実装として再判断する。検出範囲は std-env より狭い)。
+**Consequences**: 既存の CLI テストは**引数の書き方を検査するもの(`args.test.ts` と各コマンドの同型ケース)が大半不要になる**。移行 PR では削除ではなく「宣言(`Flag` / `Argument`)で同じ形が落ちること」を確かめる検査へ置き換え、危険な形(重複指定・空の値・`--` の後ろの空文字列・値の表示可否)は必ず残す。ADR-0015 の npm 配布バンドルには `@effect/platform-bun` も畳まれる(利用者の依存グラフへ伝播させない方針は変わらない)。`Bun.secrets` / `Bun.spawn` は引き続き `live.ts` にのみ置く(ADR-0004 の範囲内)。`effect/unstable/cli` は unstable モジュールであり rc → stable で API が動きうる(ADR-0011 の系: 厳密ピン + 更新は独立 PR。beta.107 → rc.109 では 12 形の挙動もプローブのソースも無改修だった)。UX の変更点は 3 つ:
+
+1. **`maruhi pull --show > secrets.txt` が拒否される**(平文をディスクへ落とす操作であり、ディスクレス不変条件からは拒否が正しい)
+2. **引数の誤りに添えるヘルプが使い方 1 行になる**
+3. **儀式系 3 か所で「stdin は端末だが stdout をパイプする」形が拒否される**(決定 7 の裁定分)。一次境界は stdin と stdout の**両方**が端末であることを要求するため。影響を受けるのは指紋の帯域外照合を CLI に任せる経路だけで、**フラグを渡す CI 経路は影響を受けない**(儀式は指紋フラグが無いときにのみ到達する):
+
+   | コマンド | 影響を受ける形 | 回避 |
+   |---|---|---|
+   | `maruhi invite accept <link>` | `\| tee audit.log` のように stdout をパイプ | `--inviter-fingerprint <fp>` を渡す |
+   | `maruhi member add` | 同上 | `--expect-fingerprint <fp>` を渡す |
+   | `maruhi server grant` | 同上 | `--expect-fingerprint <fp>` を渡す |
+
+   指紋を目視照合する儀式で stdout をパイプされると人間が語を読めないため、拒否が正しい。依存は `@effect/platform-bun`(+ `@effect/platform-node-shared`)と `std-env` が増え、`gunshi` が消える。バンドルの実質増分は約 190KB(単体バイナリ 62〜96MB に対して誤差)。退避経路: パーサだけを `@stricli/core`(依存ゼロ・重複指定と boolean への値をパーサ自身が拒否する唯一の候補)へ差し替える — その場合 Effect との結線は現行と同じく自前に戻る。`Bun.isAIAgent()` は Zig の内部実装で公開 JS API ではないため採用しない(Bun 1.4 で JS へ露出したら二次層の実装として再判断する。検出範囲は std-env より狭い)。
