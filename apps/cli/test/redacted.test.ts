@@ -16,13 +16,16 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Effect, Redacted } from "effect";
+import { Effect, Exit, Layer, Redacted, Stdio } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AgentProfileRef } from "../src/agent-gate.ts";
 import { makeApiClient } from "../src/api.ts";
 import { runCli } from "../src/cli.ts";
+import { type DisplayableVariable, formatPulledLine, showValues } from "../src/display.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
+import { CliIo } from "../src/io.ts";
 import { parseStoredToken, serializeStoredToken, tokenEntryName } from "../src/keychain.ts";
 import { resolveSession } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
@@ -90,6 +93,20 @@ describe("秘密は素朴な出力経路で伏字になる", () => {
     expect(JSON.stringify({ link })).not.toContain("maruhi_inv_");
     // 剥がせば本物のリンクが得られる(伏字が機能を壊していないこと)
     expect(Redacted.value(link)).toContain("maruhi_inv_");
+  });
+
+  it("復号値(Uint8Array)も伏字になる — pull の結果をうっかり出力しても漏れない", () => {
+    const value = Redacted.make(new TextEncoder().encode("plaintext-value"), {
+      label: "variable-value",
+    });
+    const variable = { variableId: "v1", name: "SECRET", version: 1, epoch: 1, value };
+    expect(`${value}`).toBe("<redacted:variable-value>");
+    expect(JSON.stringify(variable)).not.toContain("plaintext-value");
+    expect(JSON.stringify(variable)).toContain("<redacted:variable-value>");
+    // 一覧行はバイト長だけを載せる(値そのものは出さない)
+    const line = formatPulledLine(variable);
+    expect(line).toContain("(15 bytes)");
+    expect(line).not.toContain("plaintext-value");
   });
 
   it("解釈したリンク・生トークンの token も包まれている", () => {
@@ -212,6 +229,91 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. 復号値は表示ゲートの「後ろ」でしか剥がされない
+// ---------------------------------------------------------------------------
+
+/**
+ * 剥がしを**観測可能**にした変数を 1 つ作る。
+ *
+ * `Redacted.wipeUnsafe` 後の `Redacted.value` は defect を投げる(上流仕様)。
+ * これを利用すると「剥がしたかどうか」を外から判定できる: ゲートで拒否される
+ * なら型付きエラー(CliError)で落ち、ゲートを通ったなら defect で落ちる。
+ * ゼロ化ではなくハンドル無効化としてテスト内でのみ使う(本番コードは
+ * wipeUnsafe を使わない — defect 経路を自分で作らないため)。
+ */
+function wipedVariable(): DisplayableVariable {
+  const value = Redacted.make(new TextEncoder().encode("plaintext-value"), {
+    label: "variable-value",
+  });
+  Redacted.wipeUnsafe(value);
+  return { name: "SECRET", version: 1, epoch: 1, value };
+}
+
+describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
+  /** 出力を捨てる CliIo(ここでは「表示に至らないこと」だけを見る)。 */
+  const silentIo = Layer.succeed(CliIo, {
+    log: () => Effect.void,
+    logError: () => Effect.void,
+    readStdin: Effect.succeed(new Uint8Array(0)),
+    promptLine: () => Effect.succeed(""),
+    envVar: () => undefined,
+    agentProfile: () => ({ isAgent: false }),
+  });
+
+  const showWiped = (input: {
+    readonly isAgent: boolean;
+    readonly stdinIsTerminal: boolean;
+    readonly stdoutIsTerminal: boolean;
+  }) =>
+    Effect.runPromiseExit(
+      showValues([wipedVariable()]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            silentIo,
+            Layer.succeed(AgentProfileRef, { isAgent: input.isAgent }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(input.stdinIsTerminal),
+              stdoutIsTerminal: Effect.succeed(input.stdoutIsTerminal),
+            }),
+          ),
+        ),
+      ),
+    );
+
+  it("非 TTY / 既知エージェントでは、剥がす前に型付きエラーで落ちる", async () => {
+    // 剥がしていれば defect(Unable to get redacted value)になるはず。
+    // そうならず CliError で落ちる = 判定がゲートの手前で確定している
+    for (const rejected of [
+      { isAgent: false, stdinIsTerminal: true, stdoutIsTerminal: false },
+      { isAgent: false, stdinIsTerminal: false, stdoutIsTerminal: true },
+      { isAgent: true, stdinIsTerminal: true, stdoutIsTerminal: true },
+    ]) {
+      const exit = await showWiped(rejected);
+      expect(Exit.isFailure(exit)).toBe(true);
+      const dump = JSON.stringify(exit);
+      // 型付きエラー(Fail)で落ちる = ゲートで確定した。剥がしに到達して
+      // いれば wipe 済みハンドルが defect(Die)を投げるのでここが変わる
+      expect(dump).toContain('"_tag":"Fail"');
+      expect(dump).not.toContain('"_tag":"Die"');
+      expect(dump).not.toContain("plaintext-value");
+    }
+  });
+
+  it("人間の対話端末でだけ剥がしに到達する(ゲートが空振りしていない陽性対照)", async () => {
+    // 同じ入力でゲートを通すと、今度は剥がしに到達して defect になる。
+    // これが無いと上のテストは「そもそも剥がさない実装」でも通ってしまう
+    const exit = await showWiped({
+      isAgent: false,
+      stdinIsTerminal: true,
+      stdoutIsTerminal: true,
+    });
+    expect(Exit.isFailure(exit)).toBe(true);
+    // wipe 済みハンドルの剥がしに到達した証拠(defect = Die)
+    expect(JSON.stringify(exit)).toContain('"_tag":"Die"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. 剥がす箇所の棚卸し
 // ---------------------------------------------------------------------------
 
@@ -223,6 +325,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
  * 「なぜここで剥がすか」を実装側のコメントに残し、この表を更新すること。
  */
 const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
+  // 一覧行のバイト長(値は載せない)+ --show の表示(ゲート通過後)
+  "display.ts": 2,
   // ワイヤ境界: 招待受諾要求 / 受諾署名のハッシュ入力 / リンクの表示
   "invite.ts": 3,
   // リンク文字列の組み立て(結果は再び包む)
@@ -231,6 +335,10 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "keychain.ts": 1,
   // device exchange のワイヤ境界(GitHub トークン)
   "login.ts": 1,
+  // 暗号境界(平文 → 暗号文)
+  "push.ts": 1,
+  // 子プロセス env への注入直前
+  "run.ts": 1,
 };
 
 async function collectUnwrapSites(): Promise<Record<string, number>> {

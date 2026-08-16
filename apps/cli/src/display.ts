@@ -6,7 +6,7 @@
 // してから表示する。値(--show)は対象外: 値はメンバーが E2EE で書いた
 // データでサーバーには偽造できず、改変すれば復号失敗に落ちる。
 
-import { Effect, type Stdio } from "effect";
+import { Effect, Redacted, type Stdio } from "effect";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -40,12 +40,19 @@ export interface DisplayableVariable {
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
-  readonly value: Uint8Array;
+  readonly value: Redacted.Redacted<Uint8Array>;
 }
 
-/** pull のメタデータ一覧 1 行。 */
+/**
+ * pull のメタデータ一覧 1 行。
+ *
+ * 剥がす理由: **バイト長だけ**を読む(値は行に載せない)。この行は --show の
+ * 有無に関わらず出るため値表示ゲートの手前にあり、ここで値そのものを出力に
+ * 混ぜてはならない。
+ */
 export function formatPulledLine(variable: DisplayableVariable): string {
-  return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${variable.value.byteLength} bytes)`;
+  const byteLength = Redacted.value(variable.value).byteLength;
+  return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${byteLength} bytes)`;
 }
 
 /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
@@ -93,7 +100,11 @@ export function showValues(
     // UTF-8 なら何も表示せず失敗し、部分出力(前半の値だけ画面に残る)を作らない
     const lines: string[] = [];
     for (const variable of variables) {
-      const text = decodeValueText(variable.value);
+      // 剥がす理由: 値の表示がこのコマンドの機能そのもの。**必ず上の
+      // ensureValueDisplayAllowed(TTY 一次境界 + エージェント二次層)を
+      // 通った後**で剥がす — ゲートより前に剥がすと、拒否される環境でも
+      // 平文がメモリ上の文字列として組み上がってしまう
+      const text = decodeValueText(Redacted.value(variable.value));
       if (text === null) {
         return yield* Effect.fail(
           cliError(

@@ -46,7 +46,7 @@ import {
   signValue,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
@@ -196,7 +196,7 @@ export function encryptAndSignPayload(input: {
   readonly version: number;
   readonly prevValueSigHashHex: string;
   readonly dek: Uint8Array;
-  readonly value: Uint8Array;
+  readonly value: Redacted.Redacted<Uint8Array>;
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
 }) {
@@ -209,7 +209,10 @@ export function encryptAndSignPayload(input: {
   };
   return Effect.gen(function* () {
     const encrypted = yield* Effect.tryPromise({
-      try: () => encryptVariable({ dek: input.dek, context, plaintext: input.value }),
+      // 剥がす理由: 暗号化の入力(平文 → 暗号文)。産物は暗号文なので、
+      // 剥がした平文はこの呼び出しの外へ出ない
+      try: () =>
+        encryptVariable({ dek: input.dek, context, plaintext: Redacted.value(input.value) }),
       catch: () => cliError("値の暗号化に失敗しました"),
     });
     if (!encrypted.ok) {
@@ -298,7 +301,7 @@ interface PushInput {
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly name: string;
-  readonly value: Uint8Array;
+  readonly value: Redacted.Redacted<Uint8Array>;
   readonly verified: VerifiedProject;
   /** 再同期(チェーン全再検証)。呼び出し側は resyncExtended で延長検査を通す。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;

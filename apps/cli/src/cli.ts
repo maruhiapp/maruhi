@@ -19,7 +19,7 @@ import {
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { LeasePolicyIssuer, Role } from "@maruhi/crypto";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { cli, define } from "gunshi";
 
 import {
@@ -2102,7 +2102,11 @@ function pushCommand(execute: Execute) {
         Effect.gen(function* () {
           const io = yield* CliIo;
           const context = yield* openEnvironment(ctx.values);
-          const value = normalizeStdinValue(yield* io.readStdin);
+          // stdin は平文が素の bytes で入ってくる起点。ここで包み、以降は
+          // Redacted としてしか流さない(剥がすのは push.ts の暗号境界のみ)
+          const value = Redacted.make(normalizeStdinValue(yield* io.readStdin), {
+            label: "variable-value",
+          });
           const pushed = yield* pushVariable({
             client: context.client,
             environmentId: context.environmentId,

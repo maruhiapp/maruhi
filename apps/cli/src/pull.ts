@@ -7,11 +7,13 @@
 // variableId)で組み立てる(session-07 §5 / session-14 裁定 G)。
 //
 // 平文はメモリ上の Uint8Array のみ。ディスクへ書く経路はこのモジュールに
-// 存在しない(ディスクレス不変条件)。
+// 存在しない(ディスクレス不変条件)。復号の産物は `Redacted` で包み、
+// ログ・エラー・テンプレート展開へ素で流れないようにする(剥がすのは
+// 注入直前 = run.ts、表示ゲートの後ろ = display.ts、暗号境界 = push.ts のみ)。
 
 import type { EnvironmentId } from "@maruhi/core";
 import { decodeHex, decryptVariable } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
@@ -28,7 +30,8 @@ export interface DecryptedVariable {
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
-  readonly value: Uint8Array;
+  /** 平文バイト列(メモリ上のみ。剥がす箇所は run / show / 再暗号化に限る)。 */
+  readonly value: Redacted.Redacted<Uint8Array>;
 }
 
 /** 復号済み変数と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
@@ -67,7 +70,7 @@ export function decryptVerifiedValue(input: {
   readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
   /** チェーン導出の現エポック(申告エポックの上限 — 導出不整合への防衛線)。 */
   readonly chainEpoch: number;
-}): Effect.Effect<Uint8Array, CliError> {
+}): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
   return Effect.gen(function* () {
     const variable = input.variable;
     // 値署名の検証(§6.3-4)が「宣言ヘッド時点の現エポック = 値の epoch」を
@@ -115,7 +118,8 @@ export function decryptVerifiedValue(input: {
         ),
       );
     }
-    return plaintext.value;
+    // 復号の産物はここで包む。以降、平文は Redacted としてしか流れない
+    return Redacted.make(plaintext.value, { label: "variable-value" });
   });
 }
 

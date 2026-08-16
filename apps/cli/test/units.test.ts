@@ -232,7 +232,9 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
     name,
     version: 1,
     epoch: 1,
-    value: typeof value === "string" ? new TextEncoder().encode(value) : value,
+    value: Redacted.make(typeof value === "string" ? new TextEncoder().encode(value) : value, {
+      label: "variable-value",
+    }),
   };
 }
 

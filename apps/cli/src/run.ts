@@ -3,7 +3,7 @@
 // 中間経路を作らない。エージェント検出時も run は許可される(値の表示では
 // なく、サンクションされた消費経路であるため — タスク裁定)。
 
-import { Context, Effect } from "effect";
+import { Context, Effect, Redacted } from "effect";
 
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
@@ -110,8 +110,11 @@ export function buildInjectionEnv(
           ),
         );
       }
+      // 剥がす理由: 子プロセス env への注入(この関数の産物)。注入の直前だけで
+      // 剥がし、平文は返り値の env map にのみ現れる。エラーメッセージは
+      // 変数名しか運ばない(下の 3 分岐とも値を含めない)
       // デコード方針は display.ts に一本化(fatal — pull --show と共通)
-      const value = decodeValueText(variable.value);
+      const value = decodeValueText(Redacted.value(variable.value));
       if (value === null) {
         return yield* Effect.fail(
           cliError(

@@ -26,7 +26,7 @@ import {
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
@@ -101,8 +101,12 @@ interface RotateInput {
 /** 再暗号化 1 変数分の材料(検証済み最新値 + その平文)。 */
 interface ReencryptTarget {
   readonly value: VerifiedPulledValue;
-  /** メモリ上のみ。ディスク・ログ・エラーメッセージへ出す経路を持たない。 */
-  readonly plaintext: Uint8Array;
+  /**
+   * メモリ上のみ。ディスク・ログ・エラーメッセージへ出す経路を持たない。
+   * 再暗号化のため値そのものを持つ(DEK だけの話ではない)ので `Redacted` で包む
+   * — 剥がすのは encryptAndSignPayload の内側(暗号境界)だけ。
+   */
+  readonly plaintext: Redacted.Redacted<Uint8Array>;
 }
 
 interface ReencryptOutcome {
