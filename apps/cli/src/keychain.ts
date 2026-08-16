@@ -13,7 +13,8 @@
 // `toJSON()` は "<redacted>" を返すため、レコードをそのまま stringify すると
 // 型エラーにならないまま伏字がキーチェーンへ書かれる(トークンなら次回認証
 // 失敗、master 鍵なら復号不能)。永続化は必ずこのファイルの
-// {@link serializeStoredToken} を通し、直列化の直前で明示的に剥がす。
+// {@link serializeStoredToken} / {@link serializeStoredMasterKey} を通し、
+// 直列化の直前で明示的に剥がす。
 
 import { Context, type Effect, Redacted } from "effect";
 
@@ -48,13 +49,18 @@ export interface StoredToken {
   readonly tokenId: string;
 }
 
-/** The master keypair record stored in the keychain (CRYPTO_SPEC §3). */
+/**
+ * The master keypair record stored in the keychain (CRYPTO_SPEC §3).
+ *
+ * 秘密側(`encSkHex` / `sigSkSeedHex`)だけを包む。公開鍵とスイートは
+ * 署名文脈・FP 計算・招待受諾のペイロードで広く使う非機密なので素のまま。
+ */
 export interface StoredMasterKey {
   readonly suite: string;
   readonly encPubHex: string;
-  readonly encSkHex: string;
+  readonly encSkHex: Redacted.Redacted<string>;
   readonly sigPubHex: string;
-  readonly sigSkSeedHex: string;
+  readonly sigSkSeedHex: Redacted.Redacted<string>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,13 +124,32 @@ export function parseStoredMasterKey(json: string): StoredMasterKey | null {
       return {
         suite: value["suite"],
         encPubHex: value["encPubHex"],
-        encSkHex: value["encSkHex"],
+        encSkHex: Redacted.make(value["encSkHex"], { label: "master-enc-sk" }),
         sigPubHex: value["sigPubHex"],
-        sigSkSeedHex: value["sigSkSeedHex"],
+        sigSkSeedHex: Redacted.make(value["sigSkSeedHex"], { label: "master-sig-seed" }),
       };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Serializes a master-key record, unwrapping the private halves.
+ *
+ * 剥がす理由: {@link serializeStoredToken} と同じ — キーチェーンとリカバリー
+ * ブロブへ書くのは生値でなければならない。`JSON.stringify` に
+ * {@link StoredMasterKey} をそのまま渡すと秘密側が "<redacted>" になり、
+ * **鍵を復元できないレコードが保存される**(型は通り、復号が要るまで
+ * 気づけない)。保存・ラップの全経路をこの 1 関数へ集約する。
+ */
+export function serializeStoredMasterKey(record: StoredMasterKey): string {
+  return JSON.stringify({
+    suite: record.suite,
+    encPubHex: record.encPubHex,
+    encSkHex: Redacted.value(record.encSkHex),
+    sigPubHex: record.sigPubHex,
+    sigSkSeedHex: Redacted.value(record.sigSkSeedHex),
+  });
 }

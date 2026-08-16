@@ -195,7 +195,7 @@ export function encryptAndSignPayload(input: {
   readonly epoch: number;
   readonly version: number;
   readonly prevValueSigHashHex: string;
-  readonly dek: Uint8Array;
+  readonly dek: Redacted.Redacted<Uint8Array>;
   readonly value: Redacted.Redacted<Uint8Array>;
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
@@ -212,7 +212,11 @@ export function encryptAndSignPayload(input: {
       // 剥がす理由: 暗号化の入力(平文 → 暗号文)。産物は暗号文なので、
       // 剥がした平文はこの呼び出しの外へ出ない
       try: () =>
-        encryptVariable({ dek: input.dek, context, plaintext: Redacted.value(input.value) }),
+        encryptVariable({
+          dek: Redacted.value(input.dek),
+          context,
+          plaintext: Redacted.value(input.value),
+        }),
       catch: () => cliError("値の暗号化に失敗しました"),
     });
     if (!encrypted.ok) {
@@ -315,7 +319,7 @@ interface PushInput {
 interface PushState {
   readonly verified: VerifiedProject;
   readonly epoch: number;
-  readonly deks: ReadonlyMap<number, Uint8Array>;
+  readonly deks: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly target: PushTarget;
   readonly warnings: readonly string[];
 }

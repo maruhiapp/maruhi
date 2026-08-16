@@ -38,7 +38,13 @@ export interface CliSession {
   readonly userId: string;
 }
 
-/** The master keypair loaded from the keychain, imported and ready to use. */
+/**
+ * The master keypair loaded from the keychain, imported and ready to use.
+ *
+ * `encKeyPair` / `sigKeyPair` は `Redacted` で包まない: どちらも
+ * `extractable: false` でインポートした CryptoKey であり、値を取り出す口が
+ * WebCrypto の側に無い(既に不透明)。包む対象は hex を持つ `record` のほう。
+ */
 export interface MasterKeys {
   readonly record: StoredMasterKey;
   readonly encKeyPair: EncryptionKeyPair;
@@ -240,9 +246,12 @@ export function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterK
       return yield* Effect.fail(cliError(`master 鍵レコードのスイートが未知です(${record.suite})`));
     }
     const encPub = decodeHex(record.encPubHex);
-    const encSk = decodeHex(record.encSkHex);
+    // 剥がす理由: 鍵素材のインポート(hex → bytes → 非抽出 CryptoKey)。
+    // 産物の encKeyPair / sigKeyPair は extractable: false なので、ここを
+    // 通った後の鍵は既に不透明(Redacted の対象外 — MasterKeys の注記参照)
+    const encSk = decodeHex(Redacted.value(record.encSkHex));
     const sigPub = decodeHex(record.sigPubHex);
-    const sigSeed = decodeHex(record.sigSkSeedHex);
+    const sigSeed = decodeHex(Redacted.value(record.sigSkSeedHex));
     if (encPub === null || encSk === null || sigPub === null || sigSeed === null) {
       return yield* Effect.fail(corruptKeyError);
     }

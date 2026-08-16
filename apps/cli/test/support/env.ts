@@ -19,6 +19,7 @@ import {
   Keychain,
   masterKeyEntryName,
   type StoredMasterKey,
+  serializeStoredMasterKey,
   serializeStoredToken,
   type StoredToken,
   tokenEntryName,
@@ -233,14 +234,15 @@ export function seedSession(env: TestEnv, origin: string, user: TestUser): void 
   const master: StoredMasterKey = {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
-    encSkHex: user.encSkHex,
+    encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
-    sigSkSeedHex: user.sigSkSeedHex,
+    sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
   };
   // JSON.stringify(token) は使えない — Redacted.toJSON() が伏字を返し、
   // 「シードしたのに認証できない」テストになる(本番の login.ts と同じ罠)
   env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
-  env.keychain.set(masterKeyEntryName(origin, user.userId), JSON.stringify(master));
+  // master 鍵も JSON.stringify は使えない(秘密側が伏字で保存され復号不能になる)
+  env.keychain.set(masterKeyEntryName(origin, user.userId), serializeStoredMasterKey(master));
 }
 
 /** config.json に server(+ 任意の既定)を書いた状態を作る。 */

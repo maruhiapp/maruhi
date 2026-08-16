@@ -15,7 +15,7 @@ import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
@@ -125,7 +125,8 @@ export function envCreateOp(input: {
     const member = yield* ensureCreatable(input.verified, input.environmentId, input.signerUserId);
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
     const name = input.name.normalize("NFC");
-    const dek = generateDek();
+    // 生成直後に包む(以降 DEK は Redacted としてしか流れない)
+    const dek = Redacted.make(generateDek(), { label: "dek" });
     const commitment = yield* Effect.tryPromise({
       try: () =>
         computeDekCommitment({
@@ -135,7 +136,8 @@ export function envCreateOp(input: {
             environmentId: input.environmentId,
             epoch: 1,
           },
-          dek,
+          // 剥がす理由: コミットメント計算の入力(暗号境界)。産物はハッシュ
+          dek: Redacted.value(dek),
         }),
       catch: () => cliError("DEK コミットメントの計算に失敗しました"),
     });

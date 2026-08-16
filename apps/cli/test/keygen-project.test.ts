@@ -1,6 +1,7 @@
 // key generate / show と project init(genesis)/ verify のテスト。
 
 import { computeChainEntryHash, verifyChain, type ChainEntry } from "@maruhi/crypto";
+import { Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -77,13 +78,19 @@ describe("maruhi key", () => {
     expect(stored).toBeDefined();
     const record = parseStoredMasterKey(stored ?? "");
     expect(record).not.toBeNull();
-    expect(record?.suite).toBe("maruhi/v1");
-    expect(record?.encSkHex).toHaveLength(64);
+    if (record === null) throw new Error("expected a parsed master-key record");
+    expect(record.suite).toBe("maruhi/v1");
+    // 秘密側は Redacted。生値の検査(長さ・出力への非混入)は剥がして行う
+    const encSkHex = Redacted.value(record.encSkHex);
+    const sigSkSeedHex = Redacted.value(record.sigSkSeedHex);
+    expect(encSkHex).toHaveLength(64);
+    // 伏字が保存されていない = 鍵を復元できるレコードが書かれている
+    expect(stored).toContain(encSkHex);
     // 出力に秘密鍵素材が漏れない
     const output = env.logs.join("\n");
     expect(output).toContain("key fingerprint:");
-    expect(output).not.toContain(record?.encSkHex ?? "impossible");
-    expect(output).not.toContain(record?.sigSkSeedHex ?? "impossible");
+    expect(output).not.toContain(encSkHex);
+    expect(output).not.toContain(sigSkSeedHex);
   });
 
   it("既存鍵の上書きを拒否する", async () => {

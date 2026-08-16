@@ -18,7 +18,7 @@ import {
   generateSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
@@ -26,7 +26,7 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
-import { Keychain, type StoredMasterKey } from "./keychain.ts";
+import { Keychain, serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import { issueRecoveryAfterKeygen } from "./recovery.ts";
 import {
   type CliSession,
@@ -83,14 +83,16 @@ export function keyGenerateOp(input: {
     const record: StoredMasterKey = {
       suite: SUITE_ID,
       encPubHex: encodeHex(encPub),
-      encSkHex: encodeHex(encSk.value),
+      encSkHex: Redacted.make(encodeHex(encSk.value), { label: "master-enc-sk" }),
       sigPubHex: encodeHex(sigPub),
-      sigSkSeedHex: encodeHex(sigSeed.value),
+      sigSkSeedHex: Redacted.make(encodeHex(sigSeed.value), { label: "master-sig-seed" }),
     };
     // 保存「前」にレコードを再インポートして自己検証する(検証失敗の壊れた
     // レコードをキーチェーンに残さない — レビューループ 1 [低])
     const validated = yield* importMasterKeys(record);
-    yield* keychain.set(entryName, JSON.stringify(record));
+    // JSON.stringify(record) は使わない — 秘密側が伏字で保存され、鍵を
+    // 復元できないレコードがキーチェーンに残る(keychain.ts の注記)
+    yield* keychain.set(entryName, serializeStoredMasterKey(record));
     yield* io.log("master keypair を生成し、OS キーチェーンに保存しました");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
     yield* io.log(

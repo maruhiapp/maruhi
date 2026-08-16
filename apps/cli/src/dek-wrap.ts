@@ -24,7 +24,7 @@ import {
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -77,7 +77,7 @@ export async function wrapAndSignFor(input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly epoch: number;
-  readonly dek: Uint8Array;
+  readonly dek: Redacted.Redacted<Uint8Array>;
   readonly recipient: WrapRecipient;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
@@ -97,7 +97,8 @@ export async function wrapAndSignFor(input: {
   }
   const wrapped = await wrapDek({
     recipientPublicKey: recipientKey.value,
-    dek,
+    // 剥がす理由: HPKE ラップの入力(暗号境界)。産物はラップ済み暗号文
+    dek: Redacted.value(dek),
     context: {
       projectId: input.projectId,
       environmentId,
@@ -152,7 +153,7 @@ export function buildWrapCompleteSet(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly epoch: number;
-  readonly dek: Uint8Array;
+  readonly dek: Redacted.Redacted<Uint8Array>;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<readonly WrappedDek[], CliError> {

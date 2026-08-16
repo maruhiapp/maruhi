@@ -19,14 +19,19 @@ import {
   unwrapMasterSecret,
   wrapMasterSecret,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { Keychain, parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
+import {
+  Keychain,
+  parseStoredMasterKey,
+  serializeStoredMasterKey,
+  type StoredMasterKey,
+} from "./keychain.ts";
 import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
 import {
   type CliSession,
@@ -66,12 +71,16 @@ export function issueRecoveryCodeOp(input: {
       );
     }
 
-    const secret = generateRecoverySecret();
-    const blob = new TextEncoder().encode(JSON.stringify(input.masterKeys.record));
+    const secret = Redacted.make(generateRecoverySecret(), { label: "recovery-secret" });
+    // JSON.stringify(record) は使わない — 秘密側が伏字のままラップされ、
+    // 「復元できたのに鍵が使えない」リカバリーブロブを登録してしまう
+    // (キーチェーン保存と同じ罠。keychain.ts の注記)
+    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.masterKeys.record));
     const wrapped = yield* Effect.tryPromise({
       try: () =>
         wrapMasterSecret({
-          recoverySecret: secret,
+          // 剥がす理由: リカバリーラップの鍵導出入力(暗号境界)
+          recoverySecret: Redacted.value(secret),
           userId: input.session.userId,
           masterSecretBlob: blob,
         }),
@@ -98,7 +107,10 @@ export function issueRecoveryCodeOp(input: {
     yield* io.logError("");
     yield* io.logError("リカバリーコードを発行しました。今すぐ安全な場所に保管してください:");
     yield* io.logError("");
-    yield* io.logError(`    ${code}`);
+    // 剥がす理由: コードの表示が発行の機能そのもの(二度と表示されない)。
+    // 表示可否はこの関数の冒頭のエージェントゲートで判定済みで、剥がすのは
+    // その後ろ。出力先が stderr であることも意図的に維持する(上の注記)
+    yield* io.logError(`    ${Redacted.value(code)}`);
     yield* io.logError("");
     yield* io.logError(
       "推奨: 印刷またはパスワードマネージャへの保存。このコードは二度と表示されません",
@@ -112,10 +124,12 @@ export function issueRecoveryCodeOp(input: {
 }
 
 /** 表示したコードの最終グループの再入力で保存を確認する(紛失対策 UX)。 */
-function confirmCodeSaved(code: string): Effect.Effect<void, CliError, CliIo> {
+function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const groups = code.split("-");
+    // 剥がす理由: 最終グループの照合材料。既に表示済みのコードであり、
+    // ここで取り出す部分文字列は出力せず比較にしか使わない
+    const groups = Redacted.value(code).split("-");
     const last = groups[groups.length - 1] ?? "";
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
       const answer = yield* io.promptLine({
@@ -191,7 +205,7 @@ export function recoverMasterKeyOp(input: {
       userId: input.session.userId,
     });
     const validated = yield* importMasterKeys(record);
-    yield* keychain.set(entryName, JSON.stringify(record));
+    yield* keychain.set(entryName, serializeStoredMasterKey(record));
     yield* io.log("master 鍵を復元し、OS キーチェーンに保存しました");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
   });
@@ -219,7 +233,8 @@ function unwrapWithPromptedCode(input: {
       const unwrapped = yield* Effect.tryPromise({
         try: () =>
           unwrapMasterSecret({
-            recoverySecret: secret,
+            // 剥がす理由: リカバリーブロブ復号の鍵導出入力(暗号境界)
+            recoverySecret: Redacted.value(secret),
             userId: input.userId,
             wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
           }),

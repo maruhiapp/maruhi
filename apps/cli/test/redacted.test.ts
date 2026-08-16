@@ -26,8 +26,16 @@ import { runCli } from "../src/cli.ts";
 import { type DisplayableVariable, formatPulledLine, showValues } from "../src/display.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { CliIo } from "../src/io.ts";
-import { parseStoredToken, serializeStoredToken, tokenEntryName } from "../src/keychain.ts";
-import { resolveSession } from "../src/session.ts";
+import {
+  masterKeyEntryName,
+  parseStoredMasterKey,
+  parseStoredToken,
+  serializeStoredMasterKey,
+  serializeStoredToken,
+  tokenEntryName,
+} from "../src/keychain.ts";
+import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
+import { loadMasterKeys, resolveSession } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -144,6 +152,61 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(serialized).not.toContain("<redacted");
   });
 
+  it("master 鍵レコードは秘密側だけ伏字になり、公開側は素のまま残る", () => {
+    const record = parseStoredMasterKey(
+      JSON.stringify({
+        suite: "maruhi/v1",
+        encPubHex: "aa".repeat(32),
+        encSkHex: "bb".repeat(32),
+        sigPubHex: "cc".repeat(32),
+        sigSkSeedHex: "dd".repeat(32),
+      }),
+    );
+    if (record === null) throw new Error("expected a parsed master-key record");
+    const json = JSON.stringify(record);
+    // 秘密側は出ない
+    expect(json).not.toContain("bb".repeat(32));
+    expect(json).not.toContain("dd".repeat(32));
+    expect(`${record.encSkHex}`).toBe("<redacted:master-enc-sk>");
+    expect(`${record.sigSkSeedHex}`).toBe("<redacted:master-sig-seed>");
+    // 公開側は素のまま(署名文脈・FP 計算・招待ペイロードで使う)
+    expect(json).toContain("aa".repeat(32));
+    expect(json).toContain("cc".repeat(32));
+  });
+
+  it("serializeStoredMasterKey は生値を書く(伏字保存で鍵を失っていない)", () => {
+    const record = parseStoredMasterKey(
+      JSON.stringify({
+        suite: "maruhi/v1",
+        encPubHex: "aa".repeat(32),
+        encSkHex: "bb".repeat(32),
+        sigPubHex: "cc".repeat(32),
+        sigSkSeedHex: "dd".repeat(32),
+      }),
+    );
+    if (record === null) throw new Error("expected a parsed master-key record");
+    const serialized = serializeStoredMasterKey(record);
+    expect(serialized).toContain("bb".repeat(32));
+    expect(serialized).toContain("dd".repeat(32));
+    expect(serialized).not.toContain("<redacted");
+    // 直列化 → 再解釈で秘密側が戻る(往復が閉じている)
+    const reparsed = parseStoredMasterKey(serialized);
+    if (reparsed === null) throw new Error("expected a reparsed master-key record");
+    expect(Redacted.value(reparsed.encSkHex)).toBe("bb".repeat(32));
+    expect(Redacted.value(reparsed.sigSkSeedHex)).toBe("dd".repeat(32));
+  });
+
+  it("リカバリーコードは伏字になり、剥がせば元の秘密へ戻る", () => {
+    const secret = new Uint8Array(32).fill(9);
+    const code = formatRecoveryCode(Redacted.make(secret));
+    expect(`${code}`).toBe("<redacted:recovery-code>");
+    expect(JSON.stringify({ code })).not.toMatch(/[A-Z2-7]{4}-[A-Z2-7]{4}/);
+    const parsed = parseRecoveryCode(Redacted.value(code));
+    if (parsed === null) throw new Error("expected a parsed recovery secret");
+    expect(`${parsed}`).toBe("<redacted:recovery-secret>");
+    expect(Redacted.value(parsed)).toEqual(secret);
+  });
+
   it("login の保存 → resolveSession の読み戻し → Bearer ヘッダーでの実使用", async () => {
     // 3 段を 1 本で通す。どこかで伏字が混ざれば「保存はできたのに認証に失敗する」
     // 形で必ずここが落ちる(型検査では捕まらない経路)
@@ -204,6 +267,53 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
       }).pipe(Effect.provide(FetchHttpClient.layer)),
     );
     expect(authorizations).toEqual(["Bearer maruhi_pat_issued_real"]);
+  });
+
+  it("key generate の保存 → loadMasterKeys の読み戻し → 鍵として実使用できる", async () => {
+    // master 鍵側のキーチェーン往復。伏字が保存されていれば hex の decode か
+    // WebCrypto のインポートで落ち、「保存はできたのに復号できない」形になる
+    const maruhi = await start([
+      onRequest("GET", "/auth/recovery/status", () => ({
+        status: 200,
+        json: { registered: false, updatedAtMs: null },
+      })),
+      onRequest("PUT", "/auth/recovery", () => ({ status: 204 })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    env.keychain.set(
+      tokenEntryName(maruhi.origin),
+      JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+    );
+    // 保存確認プロンプト(表示されたコードの最終グループ)へ遅延評価で答える
+    env.setPromptResponses([
+      () => {
+        const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
+        if (line === undefined) throw new Error("recovery code line not found");
+        const groups = line.trim().split("-");
+        return groups[groups.length - 1] ?? "";
+      },
+    ]);
+
+    // (a) 保存
+    expect(await runCli(["key", "generate"], env.layer)).toBe(0);
+    const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"));
+    expect(stored).toBeDefined();
+    expect(stored).not.toContain("<redacted");
+
+    // (b) 読み戻し + (c) 実使用: loadMasterKeys は hex を decode して
+    // 非抽出 CryptoKey へインポートするので、成功 = 鍵として使える
+    const keys = await Effect.runPromise(
+      loadMasterKeys({
+        origin: maruhi.origin,
+        userId: "user-0001",
+        token: Redacted.make("maruhi_pat_stored"),
+      }).pipe(Effect.provide(env.layer)),
+    );
+    // keygen が表示した FP と一致する(同じ鍵が戻っている)
+    expect(env.logs.join("\n")).toContain(`key fingerprint: ${keys.fingerprintHex}`);
+    expect(keys.encKeyPair.privateKey.extractable).toBe(false);
+    expect(keys.sigKeyPair.privateKey.extractable).toBe(false);
   });
 
   it("MARUHI_TOKEN 経路のトークンも包まれ、生値のまま送られる", async () => {
@@ -325,20 +435,33 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
  * 「なぜここで剥がすか」を実装側のコメントに残し、この表を更新すること。
  */
 const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
+  // HPKE ラップの入力(暗号境界)
+  "dek-wrap.ts": 1,
   // 一覧行のバイト長(値は載せない)+ --show の表示(ゲート通過後)
   "display.ts": 2,
+  // DEK コミットメント計算の入力(暗号境界。産物はハッシュ)
+  "env-create.ts": 1,
+  "env-rotate.ts": 1,
   // ワイヤ境界: 招待受諾要求 / 受諾署名のハッシュ入力 / リンクの表示
   "invite.ts": 3,
   // リンク文字列の組み立て(結果は再び包む)
   "invite-link.ts": 1,
-  // キーチェーンへの直列化(唯一の永続化経路)
-  "keychain.ts": 1,
+  // 直列化 = 唯一の永続化経路(トークン 1 + master 鍵の秘密側 2)
+  "keychain.ts": 3,
   // device exchange のワイヤ境界(GitHub トークン)
   "login.ts": 1,
-  // 暗号境界(平文 → 暗号文)
-  "push.ts": 1,
+  // 復号の鍵入力(暗号境界)
+  "pull.ts": 1,
+  // 暗号化の鍵入力と平文入力(暗号境界)
+  "push.ts": 2,
+  // Base32 化の入力(産物は再び包む)
+  "recovery-code.ts": 1,
+  // ラップ / アンラップの鍵導出入力(暗号境界)2 + コード表示 1 + 保存確認の照合 1
+  "recovery.ts": 4,
   // 子プロセス env への注入直前
   "run.ts": 1,
+  // master 秘密鍵のインポート(hex → 非抽出 CryptoKey)
+  "session.ts": 2,
 };
 
 async function collectUnwrapSites(): Promise<Record<string, number>> {

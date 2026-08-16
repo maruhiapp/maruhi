@@ -67,7 +67,7 @@ export function decryptVerifiedValue(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly variable: VerifiedPulledValue;
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   /** チェーン導出の現エポック(申告エポックの上限 — 導出不整合への防衛線)。 */
   readonly chainEpoch: number;
 }): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
@@ -97,7 +97,8 @@ export function decryptVerifiedValue(input: {
     const plaintext = yield* Effect.tryPromise({
       try: () =>
         decryptVariable({
-          dek,
+          // 剥がす理由: 復号の鍵入力(暗号境界)
+          dek: Redacted.value(dek),
           context: {
             projectId: input.verified.projectId,
             environmentId: input.environmentId,

@@ -22,7 +22,7 @@ import {
   verifyDekCommitment,
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
@@ -165,13 +165,13 @@ function verifyAndUnwrapDeks(input: {
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly deks: readonly RecipientDek[];
-}): Effect.Effect<ReadonlyMap<number, Uint8Array>, CliError> {
+}): Effect.Effect<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
   return Effect.gen(function* () {
     // 環境の存在自体がチェーン導出(§6.2。「未観測なら 1」の既定値は廃止):
     // チェーンに無い環境の配布はファントム環境として全体を拒否する
     const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
     const chainEpoch = environment.currentEpoch;
-    const byEpoch = new Map<number, Uint8Array>();
+    const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
     for (const wrap of input.deks) {
       if (wrap.suite !== SUITE_ID) {
         // Schema の Literal ピンで現状は到達しないが、検証座標に申告 suite を
@@ -215,7 +215,9 @@ function verifyAndUnwrapDeks(input: {
       if (result.kind === "rejected") {
         return yield* Effect.fail(cliError(result.message));
       }
-      byEpoch.set(wrap.epoch, result.dek);
+      // 開封済み DEK はここで包む(§5.2 コミットメント照合を通った後 —
+      // 照合前の DEK は verifyAndUnwrapOne の内側から出ない)
+      byEpoch.set(wrap.epoch, Redacted.make(result.dek, { label: "dek" }));
     }
     return byEpoch;
   });
@@ -227,7 +229,7 @@ function verifyAndUnwrapDeks(input: {
  */
 export interface EnvironmentKeys {
   readonly currentEpoch: number;
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
 }
 
 /**
@@ -249,7 +251,7 @@ export function environmentKeysFor(input: {
   /** 値付き pull の同梱ラップ(verified と同じビューで検証する前提の生ワイヤ形)。 */
   readonly prefetched?: readonly RecipientDek[] | null | undefined;
   /** このセッションで検証・開封済みの既知集合(現エポックがあれば再取得しない)。 */
-  readonly cached?: ReadonlyMap<number, Uint8Array> | undefined;
+  readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> | undefined;
 }): Effect.Effect<EnvironmentKeys, CliError> {
   return Effect.gen(function* () {
     // 現エポックはチェーン導出値(§6.2 — 環境未作成はここで止まる)

@@ -26,7 +26,7 @@ import {
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
-import { Effect, type Redacted } from "effect";
+import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
@@ -356,7 +356,7 @@ function appendRotation(
     readonly member: ChainMember;
     readonly reason: string;
     readonly newEpoch: number;
-    readonly dek: Uint8Array;
+    readonly dek: Redacted.Redacted<Uint8Array>;
     readonly dekCommitmentHex: string;
   },
 ): Effect.Effect<
@@ -534,7 +534,7 @@ function decryptForRotation(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly values: readonly VerifiedPulledValue[];
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly chainEpoch: number;
   readonly warnings: string[];
 }): Effect.Effect<readonly ReencryptTarget[], CliError> {
@@ -665,7 +665,7 @@ function decryptTargets(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly values: readonly VerifiedPulledValue[];
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly chainEpoch: number;
 }): Effect.Effect<DecryptOutcome, CliError> {
   return Effect.gen(function* () {
@@ -1092,8 +1092,8 @@ interface ReencryptContext {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** 再暗号化の目標エポック(ローテーション後の新エポック / 再開時の現エポック)。 */
   readonly epoch: number;
-  readonly dek: Uint8Array;
-  readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+  readonly dek: Redacted.Redacted<Uint8Array>;
+  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly writerUserId: string;
   /** 自分の鍵 FP(受理済みの自分の書き込みを台帳へ記録するときの帰属)。 */
   readonly writerKeyFingerprintHex: string;
@@ -1124,8 +1124,8 @@ function reencryptContext(
   member: ChainMember,
   epochMaterial: {
     readonly epoch: number;
-    readonly dek: Uint8Array;
-    readonly deksByEpoch: ReadonlyMap<number, Uint8Array>;
+    readonly dek: Redacted.Redacted<Uint8Array>;
+    readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   },
 ): ReencryptContext {
   return {
@@ -1590,7 +1590,7 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
 function resumeReencryption(input: {
   readonly input: RotateInput;
   readonly pulled: { readonly verified: VerifiedProject };
-  readonly keys: { readonly deksByEpoch: ReadonlyMap<number, Uint8Array> };
+  readonly keys: { readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> };
   readonly currentEpoch: number;
   readonly stale: readonly VerifiedPulledValue[];
   /** 指定された理由(null = `--reason` 未指定)。警告の文面にだけ効く。 */
@@ -1791,7 +1791,8 @@ function rotateWithWarnings(
       warnings,
     });
     yield* ensureRotationIsUseful(targets.length, pulled.variables.length);
-    const dek = generateDek();
+    // 生成直後に包む(以降 DEK は Redacted としてしか流れない)
+    const dek = Redacted.make(generateDek(), { label: "dek" });
     const commitment = yield* Effect.tryPromise({
       try: () =>
         computeDekCommitment({
@@ -1801,7 +1802,8 @@ function rotateWithWarnings(
             environmentId: input.environmentId,
             epoch: newEpoch,
           },
-          dek,
+          // 剥がす理由: コミットメント計算の入力(暗号境界)。産物はハッシュ
+          dek: Redacted.value(dek),
         }),
       catch: () => cliError("DEK コミットメントの計算に失敗しました"),
     });
@@ -1825,7 +1827,7 @@ function rotateWithWarnings(
     );
     // 新エポックの DEK は生成元(自分)が保持している。チェーン導出コミットメントとの
     // 照合は appendRotation が済ませている(§5.2)
-    const deksByEpoch = new Map<number, Uint8Array>(keys.deksByEpoch);
+    const deksByEpoch = new Map<number, Redacted.Redacted<Uint8Array>>(keys.deksByEpoch);
     deksByEpoch.set(newEpoch, dek);
     const outcome = yield* reencryptCurrentValues({
       // 帰属は受理時点のメンバー行(CAS リトライで再署名していれば更新済み)
