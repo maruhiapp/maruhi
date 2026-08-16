@@ -7,11 +7,11 @@
 // 呼び出し側には outcome への畳み込みだけを残す(A-4 の写像一本化と対)。
 
 import type { ChainInvalidError } from "@maruhi/core";
+import { chainMirrorEvent } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
-import { chainMirrorEvent } from "./audit-store.ts";
 import type { StoredChain, VerifiedChainView } from "./chain-store.ts";
 import { canonicalBytesOf, verifyChainEffect } from "./chain-store.ts";
 import type { DataRejectedError } from "./data-plane.ts";

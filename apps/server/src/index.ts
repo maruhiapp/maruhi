@@ -25,6 +25,7 @@ import {
 import type { Env } from "./chain-do.ts";
 import type { DbServices } from "./db.package/index.ts";
 import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
+import { auditLive } from "./handlers-audit.ts";
 import { authLive } from "./handlers-auth.ts";
 import { deksLive } from "./handlers-deks.ts";
 import { environmentsLive } from "./handlers-environments.ts";
@@ -97,6 +98,7 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(deksLive),
     Layer.provide(invitesLive),
     Layer.provide(rotationLive),
+    Layer.provide(auditLive),
     Layer.provide(leaseLive),
     Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
     Layer.provide(platformContext),

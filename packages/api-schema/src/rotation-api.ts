@@ -36,8 +36,12 @@ export const RotationFlagBasisSchema = Schema.Literals(["read", "readable"]);
  * one row per (variable × environment)). Exactly one of `targetUserId`
  * (remove_member variant) / `targetServerKeyFingerprintHex` (revoke_server
  * variant) is present. `triggerChainSeq` is the chain seq of the removal /
- * revocation entry that produced the flag; `seq` is the audit seq of the
- * recommendation row (resolution ordering anchor — §4.1 step 5).
+ * revocation entry that produced the flag.
+ *
+ * 監査 seq は運ばない(2026-08-16 C1 裁定 — AUDIT_SPEC §7): 無欠番採番の
+ * 序数はクラス 2 行の件数を漏らすため、クラス 1 ビューにも載せない。解消の
+ * seq 順判定(§4.1 手順 5)はサーバー内部の導出であり、表示順は
+ * recommendedAtMs で足りる。
  */
 export const RotationFlagSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
@@ -45,7 +49,6 @@ export const RotationFlagSchema = Schema.Struct({
   basis: RotationFlagBasisSchema,
   targetUserId: Schema.optionalKey(Schema.String),
   targetServerKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
-  seq: PositiveInt,
   recommendedAtMs: Schema.Number,
   triggerChainSeq: PositiveInt,
 });

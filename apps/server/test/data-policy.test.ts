@@ -3,6 +3,7 @@
 // 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
 
 import {
+  auditGroup,
   deksGroup,
   DekWrapExistsError,
   environmentsGroup,
@@ -623,6 +624,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     variables: variablesGroup,
     deks: deksGroup,
     rotation: rotationGroup,
+    // audit.self は DO を経由しない(D1 のみ)が、写像と宣言の対応表としては
+    // 同じ規律で固定する(宣言に無い拒否はすべて die 判定になる)
+    audit: auditGroup,
   }).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
       Object.values(representativeRejections).map((rejection) => ({
@@ -673,7 +677,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     );
     // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
     // 追加したらこの数を更新する(membership 3 / environments 5 / variables 6 /
-    // deks 3 / rotation 2)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(19);
+    // deks 3 / rotation 2 / audit 3)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(22);
   });
 });

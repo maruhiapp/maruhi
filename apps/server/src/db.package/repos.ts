@@ -23,7 +23,7 @@ import type {
   UserOrg,
   VerifiedIdentity,
 } from "../auth-domain.ts";
-import { ulid } from "../ids.ts";
+import { randomHex, ulid } from "../ids.ts";
 import type {
   InvitationRecord,
   InviteAcceptInput,
@@ -854,6 +854,9 @@ function makeInviteRepo(db: Db): InviteRepoShape {
     db.insert(orgAuditEvents).select(
       db
         .select({
+          // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。この文の挿入は高々 1 行
+          // (id の一意条件)なので、文の構築時に採番した定数で足りる
+          rowId: sql<string>`${randomHex(16)}`.as("row_id"),
           serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
           event: sql<string>`${input.event}`.as("event"),
           actorType: sql<string>`'user'`.as("actor_type"),

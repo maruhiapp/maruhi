@@ -55,6 +55,8 @@ import type {
 import { rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
+import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
+import { auditEventsProgram } from "./programs-audit.ts";
 import {
   deleteDekWrapsProgram,
   listMyDekWrapsProgram,
@@ -581,6 +583,16 @@ export class ProjectChainDO extends DurableObject<Env> {
     targets: readonly RotationDismissTargetInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runData(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
+  }
+
+  // --- 監査イベント読み取り RPC(AUDIT_SPEC §6 / §7 — C1) ---------------
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  auditEvents(
+    actor: DataActor,
+    query: AuditEventsQueryInput,
+  ): Promise<DataOutcome<readonly AuditEventValue[]>> {
+    return this.#runData(auditEventsProgram(actor, query, this.#stateCache));
   }
 
   // --- ワークロードリース RPC(AUTH_SPEC §14) ---------------------------

@@ -2,6 +2,15 @@
 // API 境界の型は EncryptedPayload 系のみ。平文のシークレットを表す型を置かないこと。
 
 export {
+  AUDIT_ROW_ID_PATTERN,
+  AuditActorSchema,
+  AuditEventSchema,
+  AuditEventsPageSchema,
+  auditGroup,
+  DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
+  MAX_AUDIT_EVENTS_PAGE_LIMIT,
+} from "./audit-api.ts";
+export {
   AuthConfigSchema,
   authGroup,
   DeviceExchangeResultSchema,

@@ -23,6 +23,8 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         endpoint,
         projectId: params.projectId,
         permission: "read",
+        // 監査 seq は導出結果そのものが持たない(AUDIT_SPEC §7 — 2026-08-16
+        // C1 裁定。境界 strip ではなく型から消して書き忘れの余地を無くす)
         invoke: (stub, actor) => stub.rotationFlags(actor),
       }).pipe(Effect.map((flags) => ({ flags }))),
     )

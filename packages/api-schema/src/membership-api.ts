@@ -8,6 +8,7 @@ import { ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
+import { auditGroup } from "./audit-api.ts";
 import { authGroup } from "./auth-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ChainEntrySchema } from "./chain.ts";
@@ -107,5 +108,6 @@ export const maruhiApi = HttpApi.make("maruhi")
   .add(deksGroup)
   .add(invitesGroup)
   .add(rotationGroup)
+  .add(auditGroup)
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
   .add(leaseGroup);
