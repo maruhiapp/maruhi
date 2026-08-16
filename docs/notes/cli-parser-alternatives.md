@@ -138,12 +138,12 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 ## 6. 移行スパイク(pull / run / env create)の実測
 
 `apps/cli/test/support/effect-cli-spike.ts` に 3 コマンドを effect/unstable/cli で組み、
-`apps/cli/test/effect-cli-spike.test.ts`(28 件)で maruhi の規律が保たれるかを固定した。
+`apps/cli/test/effect-cli-spike.test.ts`(29 件)で maruhi の規律が保たれるかを固定した。
 本番の `src/cli.ts` は gunshi のまま(スパイクは測定用。採用時に src へ昇格させる)。
 
 ### 分かったこと
 
-1. **12 形すべてで期待どおりの終了コードと診断になった**(28/28 green)。
+1. **12 形すべてで期待どおりの終了コードと診断になった**(29/29 green)。
    `--show=false` / `--show false` は書いたとおり `false` として読まれ、
    `--` の後ろの空文字列は保たれ、`--no-show --show` は落ちる
 2. **`env` が真のサブコマンドになる**。gunshi は 1 段しか組めないため maruhi は
@@ -167,7 +167,7 @@ CLI 移行を書く前に上げておくべきかを判断するため、全ワ�
 ### 残る自前検査 → **ほぼ全部 Effect の宣言に置き換わった**(2 巡目の実測)
 
 1 巡目のスパイクでは重複・空の値・rest 必須を自前の `preflight` で書いていたが、
-Effect の機構で宣言できることが分かったので**全部消した**(28 件 green)。
+Effect の機構で宣言できることが分かったので**全部消した**(29 件 green)。
 
 | maruhi の規律 | 1 巡目(自前) | 2 巡目(Effect の宣言) |
 |---|---|---|

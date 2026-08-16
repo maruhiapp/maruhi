@@ -61,7 +61,7 @@ export interface SpikeInvocation {
   readonly rest?: readonly string[] | undefined;
 }
 
-/** スパイク実行の結果。stdout / stderr は行単位で捕捉する。 */
+/** スパイク実行の結果。stderr は Console 呼び出し単位、stdout は実ストリームへの書き込み単位で捕捉する。 */
 export interface SpikeOutcome {
   readonly exitCode: number;
   readonly stdout: readonly string[];
@@ -148,7 +148,14 @@ function makeCommands(record: (invocation: SpikeInvocation) => void) {
       server: singleValued("server"),
       project: singleValued("project"),
       env: singleValued("env"),
-      show: Flag.boolean("show"),
+      // boolean にも `atMost(1)` を掛けて重複を拒否する。`--no-show` はパーサ内で
+      // --show と同じ宣言に解決される(negated)ため、`--no-show --show` の混在も
+      // 2 回の指定として落ちる — ef7cba1(pull --no-show $FLAGS が全シークレットを
+      // 表示)の形そのもの。素の Flag.boolean は first-wins で沈黙する
+      show: Flag.boolean("show").pipe(
+        Flag.atMost(1),
+        Flag.map((values) => values[0] ?? false),
+      ),
     },
     (values) =>
       Effect.gen(function* () {
@@ -256,11 +263,33 @@ export async function runSpikeCli(
   });
 
   // 描画(ヘルプ・診断)は effect/unstable/cli 自身が Console 経由で行う。
-  // Console を差し替えて stderr へ寄せる — stdout はコマンドの出力だけ
-  const capturingConsole: Console.Console = Object.assign(Object.create(console), {
-    log: (...args: ReadonlyArray<unknown>) => stderr.push(args.join(" ")),
-    error: (...args: ReadonlyArray<unknown>) => stderr.push(args.join(" ")),
-  });
+  // Console は**全メソッド**を stderr へ寄せる — stdout はコマンドの出力だけ。
+  // log / error だけの部分上書き(プロトタイプで素の console に落とす形)だと、
+  // 上流が描画メソッドを増やしたときに実ストリームへ素通りする穴ができる
+  const toStderr = (...args: ReadonlyArray<unknown>) => {
+    stderr.push(args.join(" "));
+  };
+  const capturingConsole: Console.Console = {
+    assert: toStderr,
+    clear: toStderr,
+    count: toStderr,
+    countReset: toStderr,
+    debug: toStderr,
+    dir: toStderr,
+    dirxml: toStderr,
+    error: toStderr,
+    group: toStderr,
+    groupCollapsed: toStderr,
+    groupEnd: toStderr,
+    info: toStderr,
+    log: toStderr,
+    table: toStderr,
+    time: toStderr,
+    timeEnd: toStderr,
+    timeLog: toStderr,
+    trace: toStderr,
+    warn: toStderr,
+  };
 
   const services = Layer.mergeAll(
     FileSystem.layerNoop({}),
@@ -295,25 +324,38 @@ export async function runSpikeCli(
     CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] }),
   );
 
-  const exit = await Effect.runPromise(
-    Command.runWith(root, { version: "0.0.0-spike" })([...argv]).pipe(
-      Effect.provideService(AgentProfileRef, options?.agent ?? { isAgent: false }),
-      Effect.provide(services),
-      Effect.exit,
-    ),
-  );
+  // stdout の検査は**実ストリームへの書き込み**を捕捉して行う。Console の
+  // 差し替えだけだと stdout には何も入りようがなく、「stdout は空」の検査が
+  // 恒真になる(Console を経ない process.stdout 直書きも見えない)
+  const realStdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+    return true;
+  }) as typeof process.stdout.write;
 
-  if (Exit.isSuccess(exit)) {
-    return { exitCode: 0, stdout, stderr, invoked };
-  }
-
-  const failure: unknown = Cause.squash(exit.cause);
-  // ShowHelp / UserError は effect 側が Formatter 経由で描画済み。
-  // それ以外(コマンド本体の型付きエラー)はここで 1 行にして出す
-  if (!(failure instanceof CliError.ShowHelp) && failure instanceof Error) {
-    stderr.push(
-      failure.message.startsWith("maruhi:") ? failure.message : `maruhi: ${failure.message}`,
+  try {
+    const exit = await Effect.runPromise(
+      Command.runWith(root, { version: "0.0.0-spike" })([...argv]).pipe(
+        Effect.provideService(AgentProfileRef, options?.agent ?? { isAgent: false }),
+        Effect.provide(services),
+        Effect.exit,
+      ),
     );
+
+    if (Exit.isSuccess(exit)) {
+      return { exitCode: 0, stdout, stderr, invoked };
+    }
+
+    const failure: unknown = Cause.squash(exit.cause);
+    // ShowHelp / UserError は effect 側が Formatter 経由で描画済み。
+    // それ以外(コマンド本体の型付きエラー)はここで 1 行にして出す
+    if (!(failure instanceof CliError.ShowHelp) && failure instanceof Error) {
+      stderr.push(
+        failure.message.startsWith("maruhi:") ? failure.message : `maruhi: ${failure.message}`,
+      );
+    }
+    return { exitCode: exitCodeOf(failure), stdout, stderr, invoked };
+  } finally {
+    process.stdout.write = realStdoutWrite;
   }
-  return { exitCode: exitCodeOf(failure), stdout, stderr, invoked };
 }
