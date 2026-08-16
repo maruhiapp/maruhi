@@ -12,15 +12,25 @@ import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 
-// Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
-const CONTROL_CHARS = /\p{Cc}/gu;
+// Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)に
+// 加えて、**行と並び順の整合性を壊す**もの:
+//   U+202A〜U+202E(双方向の埋め込み・上書き)/ U+2066〜U+2069(分離)
+//     — 端末上で表示順を入れ替えられる。偽行・誘導文の混入と同じ脅威で、
+//       ANSI エスケープだけ潰しても閉じない
+//   U+2028 / U+2029(行・段落区切り)— 描画先によっては改行として扱われる
+//
+// Cf(書式文字)を一括では潰さない: ZWNJ(U+200C)/ ZWJ(U+200D)はペルシア語・
+// デーヴァナーガリー・絵文字連結の**正当な表示に必要**で、潰すと正しい名前を
+// 壊す。表示名に正当な用途が無いものだけを選ぶ(正確な一致が要る場面は
+// {@link escapeText} の許可制を使う)
+const CONTROL_CHARS = /\p{Cc}|[\u202A-\u202E\u2066-\u2069\u2028\u2029]/gu;
 // escapeText が素通しする範囲 = 印字可能 ASCII(U+0020〜U+007E)から
 // バックスラッシュと引用符を除いたもの。それ以外は一律に逃がす。
 // バックスラッシュは可逆性(逃がした表記と元から同じ見た目の文字列が衝突しない)、
 // 引用符は引用符で囲んだ表示を閉じられないことに要る
 const ESCAPABLE = /[^\u0020-\u007E]|["\\]/gu;
 
-/** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
+/** Replaces control and order-breaking characters for safe terminal display. */
 export function displayText(value: string): string {
   return value.replace(CONTROL_CHARS, "\uFFFD");
 }

@@ -24,6 +24,7 @@ import { AgentProfileRef } from "../src/agent-gate.ts";
 import { makeApiClient } from "../src/api.ts";
 import { runCli } from "../src/cli.ts";
 import {
+  displayText,
   type DisplayableVariable,
   escapeText,
   formatPulledLine,
@@ -32,6 +33,7 @@ import {
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { CliIo } from "../src/io.ts";
 import {
+  corruptMasterKeyMessage,
   hasRedactedPlaceholder,
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -399,6 +401,28 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(dump).toContain("キーチェーンのレコードに伏字(<redacted>)が入っています");
     // 「壊れています」の汎用文言ではなく、原因を名指しした文言になる
     expect(dump).not.toContain("キーチェーンのトークンレコードが壊れています");
+  });
+
+  it("displayText は並び順を壊す文字も潰すが、正当な書式文字は保つ", () => {
+    // 双方向上書きは表示順を入れ替えられる: ANSI エスケープだけ潰しても
+    // 「偽行・誘導文の混入」は閉じない(pull の一覧で名前を偽装できる)
+    expect(displayText("a\u202Eb")).toBe("a\uFFFDb");
+    expect(displayText("a\u2066b")).toBe("a\uFFFDb");
+    expect(displayText("a\u2028b")).toBe("a\uFFFDb");
+    // ZWNJ / ZWJ はペルシア語・デーヴァナーガリー・絵文字連結に必要なので保つ
+    expect(displayText("a\u200Cb")).toBe("a\u200Cb");
+    expect(displayText("a\u200Db")).toBe("a\u200Db");
+  });
+
+  it("読めない master 鍵レコードも行き止まりにしない", () => {
+    // 上書き防止ガードはレコードの存在だけを見るので、読めない記録が残る限り
+    // generate / recover / show の全部が拒否される。伏字の場合と同じ出口
+    // (エントリ名を示して手で消す)を案内する
+    const message = corruptMasterKeyMessage("master::https://x::u1");
+    expect(message).toContain("master::https://x::u1");
+    expect(message).toContain("手で削除");
+    expect(message).toContain("`maruhi key recover`");
+    expect(message).toContain("`maruhi key generate`");
   });
 
   it("伏字の master 鍵は「鍵がある」と報告しない(上書き防止ガードでも区別する)", async () => {

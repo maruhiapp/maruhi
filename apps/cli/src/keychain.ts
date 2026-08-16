@@ -153,6 +153,40 @@ export const redactedPlaceholderEnvTokenMessage =
   "MARUHI_TOKEN の値が伏字(<redacted>)そのものです。これは maruhi が伏せた表示をトークンとして貼り付けた状態で、認証には使えません。`maruhi login` で発行したトークンの生値を設定してください" as const;
 
 /**
+ * 「手で消してから、こう進む」の共通部分(伏字・破損のどちらでも同じ出口)。
+ *
+ * 削除後の手順を**両方**示すのが要点: どちらが使えるかは利用者の状況で決まる。
+ * リカバリーコードがあれば `key recover` が元の鍵を戻して復号可能性を保てるが、
+ * 無ければ `key generate` で作り直すしかない(その場合は既存の値を復号できず、
+ * 自分宛ラップの再配布が要る)。`key recover` だけを案内すると、コードを持たない
+ * 利用者は実行できない案内へ送られる。
+ */
+function manualDeletionGuidance(entryName: string): string {
+  // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
+  // 無害化するが、**潰さずエスケープする**: この名前は「消してください」と
+  // 案内する操作対象そのものであり、置換文字に潰すと実在しない名前を案内して
+  // 唯一の復旧手順が実行不能になる。
+  //
+  // ただしエスケープ後の文字列は原文そのものではない(印字可能 ASCII 以外を
+  // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
+  // 書かないと、利用者は表示どおりの名前を探して見つけられない。
+  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除してください(名前は印字可能 ASCII 以外を \\u{16 進} — 4 桁以上、補助面はより長い — 、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
+}
+
+/**
+ * master 鍵レコードが壊れていて読めないときの文言(伏字以外の破損)。
+ *
+ * 伏字の場合と同じく**行き止まりにしない**のが要点: 上書き防止ガードは
+ * レコードの存在だけを見るので、読めない記録が残っている限り
+ * `key generate` / `key recover` / `key show` の全部が拒否され、CLI からは
+ * 何もできなくなる。原因は違っても出口(手で消す)は同じなので、消すべき
+ * エントリ名と、その後に取れる手を示す。
+ */
+export function corruptMasterKeyMessage(entryName: string): string {
+  return `キーチェーンの master 鍵レコードを読み取れません(記録が壊れています)。${manualDeletionGuidance(entryName)}`;
+}
+
+/**
  * master 鍵レコードに伏字が保存されていたときの文言。
  *
  * こちらはコマンドだけでは直らない: 上書き防止ガード({@link masterKeyEntryName}
@@ -175,7 +209,7 @@ export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(制御文字・`\`・`"` を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `${keychainPlaceholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除してください(名前は印字可能 ASCII 以外を \\u{16 進} — 4 桁以上、補助面はより長い — 、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。併せて不具合として報告してください`;
+  return `${keychainPlaceholderCause}。${manualDeletionGuidance(entryName)}併せて不具合として報告してください`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

@@ -22,6 +22,7 @@ import type { CliConfig } from "./config.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
+  corruptMasterKeyMessage,
   hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
@@ -270,10 +271,20 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
           ? cliError(redactedPlaceholderMasterKeyMessage(entryName))
-          : cliError("キーチェーンの master 鍵レコードが壊れています"),
+          : cliError(corruptMasterKeyMessage(entryName)),
       );
     }
-    return yield* importMasterKeys(record);
+    // 記録は解釈できたが鍵素材として読み込めない場合も同じ行き止まり
+    // (上書き防止ガードが全コマンドを拒否する)なので、同じ出口を案内する。
+    // **その 1 種類だけ**を写す: 未知スイートは別の原因(将来版で書かれた鍵)で
+    // あり、消せば新しい maruhi でも失うため削除を勧めてはいけない。
+    // importMasterKeys 自身は保存前の自己検証にも使われる — そちらは残存
+    // エントリが無く削除の案内が的外れになるため、写像はここで行う
+    return yield* importMasterKeys(record).pipe(
+      Effect.mapError((error) =>
+        error === corruptKeyError ? cliError(corruptMasterKeyMessage(entryName)) : error,
+      ),
+    );
   });
 }
 
