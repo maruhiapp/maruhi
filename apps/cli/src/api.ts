@@ -5,7 +5,7 @@
 // ヘッダーにのみ乗り、ログ・エラーへは出さない。
 
 import { maruhiApi } from "@maruhi/api-schema";
-import type { Effect } from "effect";
+import type { Effect, Redacted } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 
@@ -16,17 +16,20 @@ export type MaruhiClient = HttpApiClient.ForApi<typeof maruhiApi>;
  * Derives the typed client. `token` is attached as a Bearer header when
  * present (authConfig and deviceExchange are the only unauthenticated calls
  * the CLI makes).
+ *
+ * 上流の `bearerToken` は `Redacted` をそのまま受ける(ヘッダー組み立ての
+ * 内側で剥がす)ため、CLI 側に剥がす箇所を作らずに済む — 手書きの
+ * Authorization ヘッダー(テンプレート展開)は伏字をそのまま送ってしまう形
+ * なので使わない。
  */
 export function makeApiClient(options: {
   readonly baseUrl: string;
-  readonly token?: string;
+  readonly token?: Redacted.Redacted<string>;
 }): Effect.Effect<MaruhiClient, never, HttpClient.HttpClient> {
   const token = options.token;
   return HttpApiClient.make(maruhiApi, {
     baseUrl: options.baseUrl,
     transformClient:
-      token === undefined
-        ? undefined
-        : HttpClient.mapRequest(HttpClientRequest.setHeader("authorization", `Bearer ${token}`)),
+      token === undefined ? undefined : HttpClient.mapRequest(HttpClientRequest.bearerToken(token)),
   });
 }

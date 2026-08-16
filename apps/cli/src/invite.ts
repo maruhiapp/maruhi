@@ -29,7 +29,7 @@ import {
   SUITE_ID,
   verifyInviteAcceptSignature,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
@@ -45,13 +45,18 @@ import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import type { VerifiedProject } from "./sync.ts";
 
-/** 提示トークン全体の SHA-256(PAT / 招待で共通のハッシュ入力定義 — §15-1)。 */
-export function tokenHashHexOf(token: string): Effect.Effect<string, CliError> {
+/**
+ * 提示トークン全体の SHA-256(PAT / 招待で共通のハッシュ入力定義 — §15-1)。
+ *
+ * 剥がす理由: ハッシュ入力にトークンのバイト列そのものが要る。戻り値は
+ * ハッシュ(生値を含まない)なので、剥がした生値はこの関数の外へ出ない。
+ */
+export function tokenHashHexOf(token: Redacted.Redacted<string>): Effect.Effect<string, CliError> {
   return Effect.tryPromise({
     try: async () => {
       const digest = await crypto.subtle.digest(
         "SHA-256",
-        new TextEncoder().encode(token) as BufferSource,
+        new TextEncoder().encode(Redacted.value(token)) as BufferSource,
       );
       return encodeHex(new Uint8Array(digest));
     },
@@ -146,7 +151,8 @@ export function verifyAcceptanceBlock(input: {
 
 export interface InviteCreateSummary {
   readonly id: string;
-  readonly link: string;
+  /** 発行リンク(トークン生値を内包する — 表示以外の用途で剥がさない)。 */
+  readonly link: Redacted.Redacted<string>;
   readonly role: InviteRole;
   readonly expiresAtMs: number;
 }
@@ -211,9 +217,11 @@ export function inviteCreateOp(input: {
           return toCliError(error);
         }),
       );
+    // ワイヤから来た生トークンはここで包み、以降 Redacted としてしか流さない
+    const issuedToken = Redacted.make(issued.token, { label: "invite-token" });
     const link = buildInviteLink({
       origin: input.origin,
-      token: issued.token,
+      token: issuedToken,
       projectId: input.verified.projectId,
       headHashHex: input.verified.state.headHashHex,
       headSeq: input.verified.state.headSeq,
@@ -225,7 +233,7 @@ export function inviteCreateOp(input: {
     // 材料(pins.ts)。トークン生値は保存しない。ピンは SHOULD 水準のローカル
     // 防衛なので、保存失敗(破損ファイル等)で成立済みの発行を失敗扱いにしない
     // (リンクは一度しか表示できない — ここで落とすと pending 枠だけ消費する)
-    const tokenHashHex = yield* tokenHashHexOf(issued.token);
+    const tokenHashHex = yield* tokenHashHexOf(issuedToken);
     yield* pinStore
       .saveIssuedPin(input.verified.projectId, issued.id, {
         tokenHashHex,
@@ -239,7 +247,9 @@ export function inviteCreateOp(input: {
           ),
         ),
       );
-    yield* io.log(link);
+    // 剥がす理由: リンクの表示がこのコマンドの機能そのもの。表示可否は上の
+    // エージェントゲート(この関数の冒頭)で既に判定済みで、剥がすのはその後ろ
+    yield* io.log(Redacted.value(link));
     yield* io.logError(
       `招待を発行しました(id=${displayText(issued.id)}、role=${issued.role}、期限=${formatDateTimeUtc(issued.expiresAtMs)})`,
     );
@@ -270,7 +280,11 @@ export interface InviteAcceptSummary {
 /** 受諾コマンドの入力(リンク or 生トークン + --project)。 */
 export type AcceptTarget =
   | { readonly kind: "link"; readonly link: InviteLinkData }
-  | { readonly kind: "token"; readonly token: string; readonly projectId: string };
+  | {
+      readonly kind: "token";
+      readonly token: Redacted.Redacted<string>;
+      readonly projectId: string;
+    };
 
 /**
  * 受諾者側の相互確認(§6.5): リンクの `if=` から招待者 FP のワード列を表示し、
@@ -445,7 +459,8 @@ export function inviteAcceptOp(input: {
     const accepted = yield* input.client.invites
       .accept({
         payload: {
-          token,
+          // 剥がす理由: 受諾要求のワイヤ境界(サーバーは生トークンを検証する)
+          token: Redacted.value(token),
           encPubHex: masterKeys.record.encPubHex,
           sigPubHex: masterKeys.record.sigPubHex,
           signatureHex: signature.value,
@@ -498,7 +513,11 @@ export function inviteAcceptOp(input: {
 function prepareLinkAccept(
   link: InviteLinkData,
   expectInviterFingerprintHex: string | null,
-): Effect.Effect<{ readonly projectId: string; readonly token: string }, CliError, CliIo> {
+): Effect.Effect<
+  { readonly projectId: string; readonly token: Redacted.Redacted<string> },
+  CliError,
+  CliIo
+> {
   return Effect.gen(function* () {
     yield* confirmInviterFingerprint({ link, expectInviterFingerprintHex });
     return { projectId: link.projectId, token: link.token };
@@ -582,9 +601,13 @@ function pinAnchorAfterAccept(
  * 受諾者側チェックが両方失われる)ため、対話環境でのみ明示の了解つきで許す。
  */
 function prepareTokenAccept(
-  target: { readonly token: string; readonly projectId: string },
+  target: { readonly token: Redacted.Redacted<string>; readonly projectId: string },
   expectInviterFingerprintHex: string | null,
-): Effect.Effect<{ readonly projectId: string; readonly token: string }, CliError, CliIo> {
+): Effect.Effect<
+  { readonly projectId: string; readonly token: Redacted.Redacted<string> },
+  CliError,
+  CliIo
+> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     if (expectInviterFingerprintHex !== null) {

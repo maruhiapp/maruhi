@@ -21,18 +21,20 @@ import {
   SUITE_ID,
   verifyInviteAcceptSignature,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { tokenHashHexOf } from "../src/invite.ts";
-import { tokenEntryName, type StoredToken } from "../src/keychain.ts";
+import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
 import { buildChain, genesisOp, makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const TOKEN = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
+/** Redacted 版(リンク組み立て・ハッシュ計算など包んだ API へ渡す用)。 */
+const TOKEN_REDACTED = Redacted.make(TOKEN);
 const INVITE_ID = "inv-0001";
 
 let inviter: TestUser;
@@ -50,7 +52,7 @@ beforeAll(async () => {
   const words = await fingerprintToWords(bytes);
   if (!words.ok) throw new Error("inviter fp words");
   inviterWords = words.value;
-  tokenHashHex = await Effect.runPromise(tokenHashHexOf(TOKEN));
+  tokenHashHex = await Effect.runPromise(tokenHashHexOf(TOKEN_REDACTED));
 });
 
 afterEach(async () => {
@@ -82,11 +84,11 @@ function chainHandler(built: {
 /** ログイン済み(master 鍵なし)の状態をシードする — 鍵生成経路のテスト用。 */
 function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
-    token: "maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123",
+    token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
   };
-  env.keychain.set(tokenEntryName(origin), JSON.stringify(token));
+  env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
 }
 
 /** 受諾者側の pins ファイル(アンカー)を読み出す。 */
@@ -99,16 +101,18 @@ describe("invite link(§15-3)", () => {
   const PROJECT_ID = "ab".repeat(32);
 
   function sampleLink(): string {
-    return buildInviteLink({
-      origin: "https://maruhi.example",
-      token: TOKEN,
-      projectId: PROJECT_ID,
-      headHashHex: "cd".repeat(32),
-      headSeq: 7,
-      inviterUserId: "user-inviter-11",
-      inviterKeyFingerprintHex: "ef".repeat(16),
-      role: "member",
-    });
+    return Redacted.value(
+      buildInviteLink({
+        origin: "https://maruhi.example",
+        token: TOKEN_REDACTED,
+        projectId: PROJECT_ID,
+        headHashHex: "cd".repeat(32),
+        headSeq: 7,
+        inviterUserId: "user-inviter-11",
+        inviterKeyFingerprintHex: "ef".repeat(16),
+        role: "member",
+      }),
+    );
   }
 
   it("組み立て → 解釈がラウンドトリップする(パラメータ順は仕様の記載順)", () => {
@@ -118,8 +122,12 @@ describe("invite link(§15-3)", () => {
     );
     const parsed = parseInviteAcceptInput(link);
     if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
-    expect(parsed.link).toEqual({
-      token: TOKEN,
+    // トークンは剥がして突合する: toEqual は Redacted の中身を見ないため
+    // (own プロパティが無く、値の違う 2 つが等価判定される)、包んだまま
+    // 比較すると「どんなトークンでも通る」空の表明になる
+    expect(Redacted.value(parsed.link.token)).toBe(TOKEN);
+    expect({ ...parsed.link, token: undefined }).toEqual({
+      token: undefined,
       projectId: PROJECT_ID,
       headHashHex: "cd".repeat(32),
       headSeq: 7,
@@ -137,7 +145,9 @@ describe("invite link(§15-3)", () => {
   });
 
   it("生トークンはトークンとして解釈し、それ以外の文字列は拒否する", () => {
-    expect(parseInviteAcceptInput(TOKEN)).toEqual({ kind: "token", token: TOKEN });
+    const asToken = parseInviteAcceptInput(TOKEN);
+    if (asToken.kind !== "token") throw new Error(`expected token, got ${asToken.kind}`);
+    expect(Redacted.value(asToken.token)).toBe(TOKEN);
     expect(parseInviteAcceptInput("maruhi_inv_short")).toEqual({
       kind: "rejected",
       reason: "not-a-link-or-token",
@@ -185,7 +195,7 @@ describe("maruhi invite create", () => {
     expect(issued).toEqual([{ role: "member" }]);
     const expectedLink = buildInviteLink({
       origin: server.origin,
-      token: TOKEN,
+      token: TOKEN_REDACTED,
       projectId: built.projectId,
       headHashHex: built.hashes[0] ?? "",
       headSeq: 1,
@@ -193,7 +203,7 @@ describe("maruhi invite create", () => {
       inviterKeyFingerprintHex: inviter.fingerprintHex,
       role: "member",
     });
-    expect(env.logs).toContain(expectedLink);
+    expect(env.logs).toContain(Redacted.value(expectedLink));
     // 発行ピン(§6.5 の招待者側対応物): token_hash と role を非機密ローカルへ
     const pins = await readPins(env, built.projectId);
     expect(pins["issued"]).toEqual({
@@ -306,16 +316,18 @@ describe("maruhi invite accept", () => {
   const PROJECT_ID = "ab".repeat(32);
 
   function linkFor(role: "reader" | "member" | "admin" | null = "member"): string {
-    const link = buildInviteLink({
-      origin: "https://maruhi.example",
-      token: TOKEN,
-      projectId: PROJECT_ID,
-      headHashHex: "cd".repeat(32),
-      headSeq: 3,
-      inviterUserId: inviter.userId,
-      inviterKeyFingerprintHex: inviter.fingerprintHex,
-      role: role ?? "member",
-    });
+    const link = Redacted.value(
+      buildInviteLink({
+        origin: "https://maruhi.example",
+        token: TOKEN_REDACTED,
+        projectId: PROJECT_ID,
+        headHashHex: "cd".repeat(32),
+        headSeq: 3,
+        inviterUserId: inviter.userId,
+        inviterKeyFingerprintHex: inviter.fingerprintHex,
+        role: role ?? "member",
+      }),
+    );
     return role === null ? link.replace("&r=member", "") : link;
   }
 

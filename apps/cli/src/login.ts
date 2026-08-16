@@ -8,7 +8,7 @@
 // - logout は自トークンの失効(§6 v1 線引き)+ キーチェーンからの削除
 
 import { SetupIncompleteError } from "@maruhi/api-schema";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
@@ -21,6 +21,7 @@ import {
   Keychain,
   masterKeyEntryName,
   parseStoredToken,
+  serializeStoredToken,
   type StoredToken,
   tokenEntryName,
 } from "./keychain.ts";
@@ -96,22 +97,30 @@ export function loginOp(input: {
     const client = yield* makeApiClient({ baseUrl: input.origin });
     const exchanged = yield* client.auth
       .deviceExchange({
-        payload: { githubAccessToken, tokenName: input.tokenName },
+        // 剥がす理由: exchange のワイヤ境界。GitHub トークンの生値はここで
+        // 一度だけ本文に載り、以後 CLI 側には残らない(AUTH_SPEC §4-5)
+        payload: {
+          githubAccessToken: Redacted.value(githubAccessToken),
+          tokenName: input.tokenName,
+        },
       })
       .pipe(Effect.mapError(toCliError));
 
+    const issuedToken = Redacted.make(exchanged.token, { label: "maruhi-token" });
     const record: StoredToken = {
-      token: exchanged.token,
+      token: issuedToken,
       userId: exchanged.userId,
       tokenId: exchanged.tokenId,
     };
-    yield* keychain.set(tokenEntryName(input.origin), JSON.stringify(record)).pipe(
+    // JSON.stringify(record) は使わない — Redacted.toJSON() が伏字を返し、
+    // "<redacted>" がキーチェーンへ書かれる(keychain.ts の注記)
+    yield* keychain.set(tokenEntryName(input.origin), serializeStoredToken(record)).pipe(
       // 保存できないなら発行済みトークンを孤児化させない: サーバー側の失効を
       // 試みてから失敗させる(元エラー = キーチェーン不達を優先しつつ、失効の
       // 成否を正確に報告する — 失効成功を無条件に主張しない)
       Effect.catch((setError) =>
         Effect.gen(function* () {
-          const authed = yield* makeApiClient({ baseUrl: input.origin, token: exchanged.token });
+          const authed = yield* makeApiClient({ baseUrl: input.origin, token: issuedToken });
           const revoked = yield* authed.auth.revokeToken({}).pipe(
             Effect.map(() => true),
             Effect.catch(() => Effect.succeed(false)),
@@ -130,7 +139,7 @@ export function loginOp(input: {
       `ログインしました(user: ${displayText(exchanged.userId)})。トークンは OS キーチェーンに保存されました`,
     );
     yield* io.log(`同名トークン(${input.tokenName})の再ログインは旧トークンの失効を伴います`);
-    yield* nextStepHint(input.origin, exchanged.userId, exchanged.token);
+    yield* nextStepHint(input.origin, exchanged.userId, issuedToken);
   });
 }
 
@@ -142,7 +151,7 @@ export function loginOp(input: {
 function nextStepHint(
   origin: string,
   userId: string,
-  token: string,
+  token: Redacted.Redacted<string>,
 ): Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;

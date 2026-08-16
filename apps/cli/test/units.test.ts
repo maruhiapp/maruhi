@@ -3,7 +3,7 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Cause, Effect, Exit, Layer, Schema, Stdio } from "effect";
+import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
 import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -17,6 +17,7 @@ import {
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
+  serializeStoredToken,
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
@@ -60,7 +61,7 @@ describe("pollDeviceFlow", () => {
         },
       }),
     );
-    expect(token).toBe("gho_x");
+    expect(Redacted.value(token)).toBe("gho_x");
     expect(polls).toBe(2);
   });
 
@@ -171,7 +172,19 @@ describe("pollDeviceFlow", () => {
 describe("keychain record codecs", () => {
   it("トークン・master 鍵レコードの往復と破損検出", () => {
     const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1" };
-    expect(parseStoredToken(JSON.stringify(token))).toEqual(token);
+    const parsed = parseStoredToken(JSON.stringify(token));
+    if (parsed === null) throw new Error("expected a parsed token record");
+    // 生値の突合は必ず剥がして行う(包んだままの toEqual は中身を見ない)
+    expect(Redacted.value(parsed.token)).toBe("maruhi_pat_x");
+    expect({ userId: parsed.userId, tokenId: parsed.tokenId }).toEqual({
+      userId: "u1",
+      tokenId: "t1",
+    });
+    // 保存側との往復: serializeStoredToken → parseStoredToken で生値が戻る
+    // (直列化が伏字を書いていればここで落ちる)
+    const reparsed = parseStoredToken(serializeStoredToken(parsed));
+    if (reparsed === null) throw new Error("expected a reparsed token record");
+    expect(Redacted.value(reparsed.token)).toBe("maruhi_pat_x");
     expect(parseStoredToken("not json")).toBeNull();
     expect(parseStoredToken(JSON.stringify({ token: "x" }))).toBeNull();
     expect(parseStoredMasterKey(JSON.stringify({ suite: "maruhi/v1" }))).toBeNull();

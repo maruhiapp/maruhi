@@ -14,7 +14,7 @@ import {
   importSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
@@ -34,7 +34,7 @@ import {
 export interface CliSession {
   /** Normalized server origin (keychain scoping key and API base URL). */
   readonly origin: string;
-  readonly token: string;
+  readonly token: Redacted.Redacted<string>;
   readonly userId: string;
 }
 
@@ -122,8 +122,11 @@ export function resolveSession(
 ): Effect.Effect<CliSession, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const envToken = io.envVar("MARUHI_TOKEN");
-    if (envToken !== undefined && envToken.length > 0) {
+    // env は素の string で入ってくる唯一の起点。ここで包み、以降は
+    // CliSession.token(Redacted)としてしか流れないようにする
+    const rawEnvToken = io.envVar("MARUHI_TOKEN");
+    if (rawEnvToken !== undefined && rawEnvToken.length > 0) {
+      const envToken = Redacted.make(rawEnvToken, { label: "maruhi-token" });
       // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
       // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
       // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を

@@ -12,8 +12,14 @@
 // 招待は 7 日で失効するため(§15-1)、Web 受諾画面が別 origin に載る将来が
 // 来ても、その時点で旧リンクは全て失効済みであり移行問題は構造的に生じない。
 // 解釈側は origin に依存しない(フラグメントのみを読む)。
+//
+// `t=` は招待トークンの生値なので `Redacted` で運ぶ。組み立て済みリンクも
+// トークンを内包する以上ただの表示可能文字列ではないため `Redacted<string>`
+// で返し、剥がすのは表示の直前(invite.ts — エージェントゲートの後ろ)だけに
+// 限る。
 
 import { isProjectId } from "@maruhi/core";
+import { Redacted } from "effect";
 
 /** 招待トークンのワイヤ形式(api-schema の InviteTokenSchema と同一)。 */
 const INVITE_TOKEN = /^maruhi_inv_[0-9A-Za-z]{43}$/;
@@ -27,7 +33,7 @@ export type InviteRole = (typeof ROLES)[number];
 
 /** リンクが運ぶアンカー + 相互確認材料(§15-3 の p/h/s/iu/if)。 */
 export interface InviteLinkData {
-  readonly token: string;
+  readonly token: Redacted.Redacted<string>;
   readonly projectId: string;
   readonly headHashHex: string;
   readonly headSeq: number;
@@ -40,22 +46,28 @@ export interface InviteLinkData {
 /** `maruhi invite accept <link|token>` の入力の解釈結果。 */
 export type InviteAcceptInput =
   | { readonly kind: "link"; readonly link: InviteLinkData }
-  | { readonly kind: "token"; readonly token: string };
+  | { readonly kind: "token"; readonly token: Redacted.Redacted<string> };
 
-/** §15-3 のリンクを組み立てる(パラメータ順は仕様の記載順で固定)。 */
+/**
+ * §15-3 のリンクを組み立てる(パラメータ順は仕様の記載順で固定)。
+ *
+ * 戻り値もトークンを内包するため `Redacted` のまま返す。剥がすのは表示側。
+ */
 export function buildInviteLink(input: {
   readonly origin: string;
-  readonly token: string;
+  readonly token: Redacted.Redacted<string>;
   readonly projectId: string;
   readonly headHashHex: string;
   readonly headSeq: number;
   readonly inviterUserId: string;
   readonly inviterKeyFingerprintHex: string;
   readonly role: InviteRole;
-}): string {
+}): Redacted.Redacted<string> {
   const params = [
     ["v", "1"],
-    ["t", input.token],
+    // 剥がす理由: リンク文字列そのものの組み立て。結果は再び Redacted で包み、
+    // 生の文字列がこの関数の外へ出ないようにする
+    ["t", Redacted.value(input.token)],
     ["p", input.projectId],
     ["h", input.headHashHex],
     ["s", String(input.headSeq)],
@@ -64,7 +76,7 @@ export function buildInviteLink(input: {
     ["r", input.role],
   ] as const;
   const fragment = params.map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
-  return `${input.origin}/invite#${fragment}`;
+  return Redacted.make(`${input.origin}/invite#${fragment}`, { label: "invite-link" });
 }
 
 /** 解釈失敗の理由(呼び出し側がエラーメッセージへ写す)。 */
@@ -125,7 +137,15 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
   ) {
     return null;
   }
-  return { token, projectId, headHashHex, headSeq, inviterUserId, inviterKeyFingerprintHex, role };
+  return {
+    token: Redacted.make(token, { label: "invite-token" }),
+    projectId,
+    headHashHex,
+    headSeq,
+    inviterUserId,
+    inviterKeyFingerprintHex,
+    role,
+  };
 }
 
 export function parseInviteAcceptInput(
@@ -133,7 +153,7 @@ export function parseInviteAcceptInput(
 ): InviteAcceptInput | { readonly kind: "rejected"; readonly reason: InviteInputRejection } {
   const trimmed = raw.trim();
   if (INVITE_TOKEN.test(trimmed)) {
-    return { kind: "token", token: trimmed };
+    return { kind: "token", token: Redacted.make(trimmed, { label: "invite-token" }) };
   }
   const hashIndex = trimmed.indexOf("#");
   if (hashIndex < 0) {

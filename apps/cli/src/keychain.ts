@@ -7,8 +7,15 @@
 //
 // 本番実装は Bun.secrets(live.ts。macOS Keychain / Linux libsecret /
 // Windows Credential Manager)。テストはインメモリ実装(test/support)。
+//
+// 保存レコードの秘密フィールドは `Redacted` で包む(ログ・エラーへの漏出を
+// 型で止める)。**ただし `JSON.stringify` は伏字を保存する** — `Redacted` の
+// `toJSON()` は "<redacted>" を返すため、レコードをそのまま stringify すると
+// 型エラーにならないまま伏字がキーチェーンへ書かれる(トークンなら次回認証
+// 失敗、master 鍵なら復号不能)。永続化は必ずこのファイルの
+// {@link serializeStoredToken} を通し、直列化の直前で明示的に剥がす。
 
-import { Context, type Effect } from "effect";
+import { Context, type Effect, Redacted } from "effect";
 
 import type { CliError } from "./errors.ts";
 
@@ -36,7 +43,7 @@ export function masterKeyEntryName(origin: string, userId: string): string {
 
 /** The maruhi API token record stored in the keychain (AUTH_SPEC §4-5). */
 export interface StoredToken {
-  readonly token: string;
+  readonly token: Redacted.Redacted<string>;
   readonly userId: string;
   readonly tokenId: string;
 }
@@ -68,12 +75,32 @@ export function parseStoredToken(json: string): StoredToken | null {
       nonEmptyString(value["userId"]) &&
       nonEmptyString(value["tokenId"])
     ) {
-      return { token: value["token"], userId: value["userId"], tokenId: value["tokenId"] };
+      return {
+        token: Redacted.make(value["token"], { label: "maruhi-token" }),
+        userId: value["userId"],
+        tokenId: value["tokenId"],
+      };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Serializes a token record for the keychain, unwrapping the token.
+ *
+ * 剥がす理由: キーチェーンへ書くのは生値でなければならない。`JSON.stringify`
+ * に {@link StoredToken} をそのまま渡すと `Redacted.toJSON()` が働いて
+ * "<redacted>" が保存され、次回のログインまで気づけない(型は通る)。
+ * 保存経路をこの 1 関数に集約し、剥がす箇所を数えられる状態に保つ。
+ */
+export function serializeStoredToken(record: StoredToken): string {
+  return JSON.stringify({
+    token: Redacted.value(record.token),
+    userId: record.userId,
+    tokenId: record.tokenId,
+  });
 }
 
 /** Parses a stored master-key record; null when the shape is corrupt. */
