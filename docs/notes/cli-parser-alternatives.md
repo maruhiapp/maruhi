@@ -173,12 +173,20 @@ Effect の機構で宣言できることが分かったので**全部消した**
 | 実行対象が空文字列(`run -- "$CMD"` の未設定形) | 同上 | `Argument.filter`(2 つ目以降の空文字列は子プロセスの引数として保つ) |
 | usage=2 / 失敗=1 | ランナー内の写像 | `Runtime.errorExitCode` をエラー型が持つ(`runMain` の既定 teardown が読む) |
 
-**残る自前は 2 つだけ**:
+**診断も `--` 必須も Effect の機構に載せた**(3 巡目):
 
-1. **診断文の組み直し**(避けられない。§6 の 3 を参照)
-2. `maruhi run` の「実行対象は `--` の後ろからしか取らない」(6 行)。これは
-   パーサの正しさではなく方針(`maruhi run npm test --env x` の `--env` が
-   maruhi のものか子のものか読めなくなる)。方針を緩めるなら丸ごと消える
+| 残っていた自前 | Effect の機構 | 置き場所 |
+|---|---|---|
+| 診断文の組み直し(ランナー内の描画ループ) | **`CliOutput.Formatter`** を実装して `CliOutput.layer` で差し込む | `test/support/cli-formatter.ts` |
+| `maruhi run` の `--` 必須(ランナーの事前走査) | **`Stdio.args`** を読む Effect + `Runtime.errorExitCode = 2` を持つ型付きエラー | `TerminatorRequired`(コマンド本体の先頭で `yield*`) |
+
+Formatter にした利点は「文面だけを差し替えて、**描画の呼び出しは上流に残す**」こと。
+ランナーに if 文を足す形だと、上流が描画経路を増やしたときに素通りする穴ができる。
+`formatHelpDoc` は `--help` を明示した実行では既定フォーマッタの全文、
+書き方の誤りに添えるときは使い方の 1 行だけ、と出し分ける。
+
+**自前として残るのは「文面そのもの」だけ**になった(値を出さない語彙は maruhi 固有の要件で、
+どのライブラリも肩代わりしない)。
 
 ### args.ts 911 行の帰属(関数単位の概算)
 
@@ -221,8 +229,15 @@ Effect の機構で宣言できることが分かったので**全部消した**
 
 - **Effect には無い**。effect 4.0.0-rc.109 のソース全体に `CLAUDECODE` / `isAgent` 等は 0 件で、
   CLI モジュールにも該当機能はない。CLI ライブラリ一般の機能でもない
-- **`Bun.isAIAgent()` は現行の Bun(1.3.14 = latest かつ本リポジトリのピン)に存在しない**(実測: `undefined`)。
-  agents.md の提案スレッドで「Bun が実装済み」と言及されているが、公開 API としては未到達。**将来の観測対象**
+- **Bun の `isAIAgent()` は内部実装(Zig)であって公開 JS API ではない**。
+  `src/output.zig` の `Output.isAIAgent()` で、**`bun test` の出力を減らす**ために使われている
+  (PR #21135。2025-07-18 マージ。`CLAUDECODE=1` / `REPL_ID=1` / `IS_CODE_AGENT=1` を見る。
+  後に `AGENT=1` も追加)。`Bun.isAIAgent` は 1.3.14 で `undefined`(実測)、公式ドキュメントにも記載なし。
+  **Bun 1.4 の公開情報は 2026-08-16 時点で見つからない**(npm の latest は 1.3.14 / 2026-05-13、
+  canary は 1.3.13-canary。ブログにも 1.4 のアナウンスなし)。
+  リリースされたら「JS へ露出したか」を確認する価値はあるが、
+  仮に露出しても**検出範囲は std-env より狭い**(Bun は 4 変数、std-env は 12 種)。
+  いずれにせよ二次層なので設計は依存しない
 - **専用パッケージが複数ある**(いずれも依存ゼロ):
   `@vercel/detect-agent` 1.2.5(cursor / claude / cowork / devin / replit / gemini / codex / antigravity /
   augment-cli / opencode / github-copilot / v0)、`std-env` 4.2.0(`agentInfo`)、`ai-agent-detect`、`is-ai-agent`

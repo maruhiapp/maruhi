@@ -9,12 +9,14 @@
 // 3. 書き方の誤り = exit 2、実行の失敗 = exit 1
 // 4. 値を扱う前に落とす(復号された平文をそもそも作らない)
 //
-// **自前実装は置かない**方針で組んである。引数の検査はすべて Effect の宣言:
-// - 重複指定  → `Flag.atMost(1)`
+// **自前実装は置かない**方針で組んである。すべて Effect の機構:
+// - 重複指定         → `Flag.atMost(1)`
 // - 空 / 空白だけの値 → `Flag.withSchema(NonBlank)`(Schema)
-// - 実行対象の必須   → `Argument.atLeast(1)`
+// - 実行対象の必須   → `Argument.atLeast(1)` / `Argument.filter`
+// - 診断の文面       → `CliOutput.Formatter`(cli-formatter.ts)
 // - 終了コード       → `Runtime.errorExitCode`(エラー型が自分で持つ)
 // - 対話端末の判定   → `Stdio.stdinIsTerminal` / `stdoutIsTerminal`
+// - argv の参照      → `Stdio.args`(process.argv を直に読まない)
 //
 // 本番の src/cli.ts は触っていない(gunshi のまま)。ここは測定用の実装で、
 // 採用が決まったら src へ昇格させる。オペレーション本体(pullVariables /
@@ -26,6 +28,7 @@
 import {
   Cause,
   Console,
+  Data,
   Effect,
   Exit,
   FileSystem,
@@ -40,18 +43,7 @@ import { Argument, CliError, Command, Flag } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { type AgentProfile, AgentProfileRef, valueDisplayRejection } from "./agent-gate.ts";
-
-/** コマンドごとの宣言(診断の文面を組むためだけに持つ — 検査は Flag 側)。 */
-interface CommandSpec {
-  readonly flags: readonly string[];
-  readonly positionals: readonly string[];
-  /** 余分な引数を拒否するときに添えるコマンド固有の助言。 */
-  readonly strayHint?: string | undefined;
-}
-
-/** `maruhi run` の実行対象が無い / 空のときの案内(src/run.ts と同じ文面)。 */
-const RUN_COMMAND_REQUIRED =
-  "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)";
+import { type CommandSpec, formatterLayer, RUN_COMMAND_REQUIRED } from "./cli-formatter.ts";
 
 const RUN_STRAY_HINT =
   "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)";
@@ -114,6 +106,37 @@ function singleValued(name: string) {
   );
 }
 
+/**
+ * `maruhi run` に `--` が無い実行の拒否。
+ *
+ * **パーサの正しさではなく方針**: `--` を挟まないと `maruhi run npm test
+ * --env prod` の `--env` が maruhi のものか子プロセスのものか読めない
+ * (effect/unstable/cli は maruhi のものとして食べ、子には渡らない)。
+ * 「書いたことと逆」を作らないため、`--` を必須にする。
+ *
+ * 判定材料は `Stdio.args`(process.argv を直に読まない)。終了コードは
+ * エラー型が持つ(書き方の誤り = 2)。
+ */
+export class TerminatorRequired extends Data.TaggedError("TerminatorRequired")<{
+  readonly message: string;
+}> {
+  override readonly [Runtime.errorExitCode] = 2;
+}
+
+const ensureTerminator = Effect.gen(function* () {
+  const stdio = yield* Stdio.Stdio;
+  const argv = yield* stdio.args;
+  if (argv.includes("--")) {
+    return;
+  }
+  const stray = argv.slice(1).filter((token) => !token.startsWith("-")).length;
+  if (stray > 0) {
+    return yield* new TerminatorRequired({
+      message: `maruhi: 余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`,
+    });
+  }
+});
+
 /* -------------------------------------------------------------------------- */
 /* コマンド定義                                                                */
 /* -------------------------------------------------------------------------- */
@@ -156,7 +179,9 @@ function makeCommands(record: (invocation: SpikeInvocation) => void) {
       ),
     },
     (values) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        // 通信・復号より前(コマンド本体の先頭)で落とす
+        yield* ensureTerminator;
         const { rest, ...flags } = values;
         record({ command: "run", values: flags, rest: [...rest] });
       }),
@@ -185,103 +210,6 @@ function makeCommands(record: (invocation: SpikeInvocation) => void) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* 診断(構造化フィールドから組み直す — パーサの英文をそのまま出さない)      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * `ShowHelp.errors` を maruhi の文面へ写す。
- *
- * **ここだけは自前**である必要がある: effect/unstable/cli の既定の文面は
- * 打たれた値をそのまま含む(`Invalid value for flag --env: "  "` /
- * `Unexpected positional argument: "..."`)。位置引数・オプション値には
- * 平文が書かれうる(`maruhi push API_KEY "$SECRET"` の形)ので、既定の描画は
- * 使わず(`renderErrors: false`)、**構造化フィールドのうち安全なものだけ**
- * から組み直す。安全なのは宣言名・候補・個数。
- */
-function bareName(name: string): string {
-  return name.replace(/^-+/, "");
-}
-
-function unrecognizedOptionMessage(
-  error: CliError.UnrecognizedOption,
-  spec: CommandSpec | undefined,
-): string {
-  // 位置引数の名前をオプションとして書いた形は、直し方が違う
-  const option = bareName(error.option);
-  if (spec?.positionals.includes(option) === true) {
-    return `--${option} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
-  }
-  const guess = error.suggestions[0];
-  if (guess !== undefined) {
-    return `不明なオプションです(--${bareName(guess)} のことですか?)`;
-  }
-  const declared = (spec?.flags ?? []).map((name) => `--${name}`);
-  return `不明なオプションです(このコマンドが取るオプション: ${declared.join(" ")})`;
-}
-
-function unexpectedArgumentMessage(
-  error: CliError.UnexpectedArgument,
-  spec: CommandSpec | undefined,
-  commandKey: string,
-): string {
-  const takesNone = spec === undefined || spec.positionals.length === 0;
-  const shape = takesNone
-    ? `maruhi ${commandKey} は位置引数を取りません`
-    : `maruhi ${commandKey} が取る位置引数は ${spec.positionals.join(" ")} だけです`;
-  return `余分な引数です(${error.arguments.length} 個。中身は表示しません — 平文の値が混ざりうるため)。${shape}${spec?.strayHint ?? ""}`;
-}
-
-/**
- * 値の伴う `InvalidValue` を、**値を出さずに**説明する。
- *
- * `expected` は宣言側の語彙(`at most 1 value` / `at least 1 value` /
- * Schema のメッセージ)なので出してよい。`value` は打たれた値なので出さない。
- */
-function invalidValueMessage(error: CliError.InvalidValue): string {
-  const name = bareName(error.option);
-  if (error.expected.includes("at most")) {
-    return `オプション --${name} を複数回指定しています。どちらの指定を意図したか読み取れないため受け付けません — 1 回だけ書いてください`;
-  }
-  if (error.expected.includes("at least") || error.expected === RUN_COMMAND_REQUIRED) {
-    return RUN_COMMAND_REQUIRED;
-  }
-  const expectation = error.expected.replace("Schema validation failed: ", "");
-  return error.kind === "argument"
-    ? `位置引数 ${name} の値が受け付けられません(${expectation})`
-    : `オプション --${name} の値が受け付けられません(${expectation})`;
-}
-
-function unknownSubcommandMessage(error: CliError.UnknownSubcommand): string {
-  const guess = error.suggestions[0];
-  return `不明なコマンドです${guess === undefined ? "" : `(${guess} のことですか?)`}`;
-}
-
-// 判定は instanceof で行う(`_tag` への直接アクセスは oxlint が禁止する —
-// src/failure.ts と同じ規律)。
-export function describeError(error: CliError.NonShowHelpErrors, commandKey: string): string {
-  const spec = SPECS[commandKey];
-  if (error instanceof CliError.UnrecognizedOption) {
-    return unrecognizedOptionMessage(error, spec);
-  }
-  if (error instanceof CliError.UnexpectedArgument) {
-    return unexpectedArgumentMessage(error, spec, commandKey);
-  }
-  if (error instanceof CliError.InvalidValue) {
-    return invalidValueMessage(error);
-  }
-  if (error instanceof CliError.MissingArgument) {
-    return `位置引数 ${bareName(error.argument)} を指定してください`;
-  }
-  if (error instanceof CliError.MissingOption) {
-    return `オプション --${bareName(error.option)} を指定してください`;
-  }
-  if (error instanceof CliError.UnknownSubcommand) {
-    return unknownSubcommandMessage(error);
-  }
-  return "引数の書き方が正しくありません";
-}
-
-/* -------------------------------------------------------------------------- */
 /* ランナー                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -296,20 +224,18 @@ function commandKeyOf(argv: readonly string[]): string {
 }
 
 /**
- * `maruhi run` は `--` の後ろからしか実行対象を取らない。
+ * 終了コード。実行の失敗は `Runtime.errorExitCode` をエラー型から読む。
  *
- * これはパーサの正しさではなく **maruhi の方針**(`maruhi run npm test --env x`
- * の `--env` が maruhi のものか子プロセスのものか読めなくなる)。Effect の
- * 宣言では表せないので、ここだけ argv を見る。方針を緩めるなら丸ごと消える。
+ * 例外は `ShowHelp` の 1 つだけ: effect は「誤りを含むヘルプ表示」を 1 と
+ * するが、maruhi は**書き方の誤りを 2**(実行の失敗と区別できないと、
+ * スクリプトが打ち間違いを「操作が失敗した」と読む)。ここだけ読み替える。
  */
-function terminatorRequired(argv: readonly string[], commandKey: string): string | null {
-  if (commandKey !== "run" || argv.includes("--")) {
-    return null;
+function exitCodeOf(failure: unknown): number {
+  if (failure instanceof CliError.ShowHelp) {
+    return failure.errors.length > 0 ? 2 : 0;
   }
-  const strayCount = argv.slice(1).filter((token) => !token.startsWith("-")).length;
-  return strayCount === 0
-    ? null
-    : `余分な引数です(${strayCount} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は位置引数を取りません${RUN_STRAY_HINT}`;
+  const marked = failure as { readonly [Runtime.errorExitCode]?: number } | null;
+  return marked?.[Runtime.errorExitCode] ?? 1;
 }
 
 /**
@@ -325,20 +251,12 @@ export async function runSpikeCli(
   const stderr: string[] = [];
   let invoked: SpikeInvocation | null = null;
 
-  const commandKey = commandKeyOf(argv);
-  const rejection = terminatorRequired(argv, commandKey);
-  if (rejection !== null) {
-    stderr.push(`maruhi: ${rejection}`);
-    return { exitCode: 2, stdout, stderr, invoked };
-  }
-
   const root = makeCommands((invocation) => {
     invoked = invocation;
   });
 
-  // ヘルプ描画(Console.log)を stderr へ寄せる。これをしないと
-  // `V=$(maruhi config get server)` がヘルプ本文を捕まえる(gunshi の
-  // renderHeader と同じ事故 — 出所が違うだけで形は同じ)
+  // 描画(ヘルプ・診断)は effect/unstable/cli 自身が Console 経由で行う。
+  // Console を差し替えて stderr へ寄せる — stdout はコマンドの出力だけ
   const capturingConsole: Console.Console = Object.assign(Object.create(console), {
     log: (...args: ReadonlyArray<unknown>) => stderr.push(args.join(" ")),
     error: (...args: ReadonlyArray<unknown>) => stderr.push(args.join(" ")),
@@ -347,9 +265,9 @@ export async function runSpikeCli(
   const services = Layer.mergeAll(
     FileSystem.layerNoop({}),
     Path.layer,
-    // TTY の有無は Effect のサービス経由で差し替える(process.stdout.isTTY を
-    // 直に読まない)。エージェント検出の一次境界がこれ(agent-gate.ts)
+    // argv も TTY の有無も Effect のサービス経由(process.* を直に読まない)
     Stdio.layerTest({
+      args: Effect.succeed([...argv]),
       stdinIsTerminal: Effect.succeed(options?.stdinIsTerminal ?? true),
       stdoutIsTerminal: Effect.succeed(options?.stdoutIsTerminal ?? true),
     }),
@@ -368,10 +286,12 @@ export async function runSpikeCli(
       ChildProcessSpawner.make(() => Effect.die("スパイクでは子プロセスを起動しない")),
     ),
     Layer.succeed(Console.Console, capturingConsole),
+    // 診断の文面は Formatter で差し替える(ランナーに描画を書かない)
+    formatterLayer(commandKeyOf(argv), SPECS, argv.includes("--help") || argv.includes("-h")),
   );
 
   const exit = await Effect.runPromise(
-    Command.runWith(root, { version: "0.0.0-spike", renderErrors: false })([...argv]).pipe(
+    Command.runWith(root, { version: "0.0.0-spike" })([...argv]).pipe(
       Effect.provideService(AgentProfileRef, options?.agent ?? { isAgent: false }),
       Effect.provide(services),
       Effect.exit,
@@ -383,30 +303,12 @@ export async function runSpikeCli(
   }
 
   const failure: unknown = Cause.squash(exit.cause);
-  if (failure instanceof CliError.ShowHelp) {
-    if (failure.errors.length === 0) {
-      // `--help` / `--version` は誤りではない(exit 0)。本文は stderr 側
-      return { exitCode: 0, stdout, stderr, invoked };
-    }
-    for (const error of failure.errors) {
-      stderr.push(`maruhi: ${describeError(error, commandKey)}`);
-    }
-    return { exitCode: 2, stdout, stderr, invoked };
+  // ShowHelp / UserError は effect 側が Formatter 経由で描画済み。
+  // それ以外(コマンド本体の型付きエラー)はここで 1 行にして出す
+  if (!(failure instanceof CliError.ShowHelp) && failure instanceof Error) {
+    stderr.push(
+      failure.message.startsWith("maruhi:") ? failure.message : `maruhi: ${failure.message}`,
+    );
   }
-
-  // 終了コードはエラー型が自分で持つ(Runtime.errorExitCode)。写像表を
-  // ランナー側に書かない — runMain の既定 teardown が同じ値を読む
-  const message = failure instanceof Error ? failure.message : "内部エラー";
-  return {
-    exitCode: exitCodeOf(failure),
-    stdout: stdout,
-    stderr: [...stderr, `maruhi: ${message}`],
-    invoked,
-  };
-}
-
-/** `Runtime.errorExitCode` を持つエラーはその値、無ければ実行の失敗(1)。 */
-function exitCodeOf(failure: unknown): number {
-  const marked = failure as { readonly [Runtime.errorExitCode]?: number } | null;
-  return marked?.[Runtime.errorExitCode] ?? 1;
+  return { exitCode: exitCodeOf(failure), stdout, stderr, invoked };
 }

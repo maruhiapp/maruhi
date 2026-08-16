@@ -13,7 +13,8 @@ import { CliError } from "effect/unstable/cli";
 import { describe, expect, it } from "vitest";
 
 import { ValueDisplayRefused } from "./support/agent-gate.ts";
-import { describeError, runSpikeCli } from "./support/effect-cli-spike.ts";
+import { describeError } from "./support/cli-formatter.ts";
+import { runSpikeCli, TerminatorRequired } from "./support/effect-cli-spike.ts";
 
 /** 診断に平文が混ざっていないことの共通検査(打たれた値を語彙にしない)。 */
 function expectNoSecretLeak(stderr: readonly string[], secrets: readonly string[]): void {
@@ -234,6 +235,7 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
         kind: "flag",
       }),
       "pull",
+      { pull: { flags: ["limit"], positionals: [] } },
     );
     expect(message).toContain("オプション --limit の値が受け付けられません");
     expect(message).not.toContain("SUPER_SECRET_VALUE");
@@ -243,6 +245,7 @@ describe("診断の写像(構造化フィールドからの組み直し)", () =>
     const message = describeError(
       new CliError.UnexpectedArgument({ arguments: ["SECRET_A", "SECRET_B"] }),
       "pull",
+      { pull: { flags: [], positionals: [] } },
     );
     expect(message).toContain("2 個");
     expect(message).not.toContain("SECRET_A");
@@ -260,5 +263,14 @@ describe("Effect の機構に載せた部分", () => {
       (code) => codes.push(code),
     );
     expect(codes).toEqual([1]);
+  });
+
+  it("書き方の誤りは 2、実行の拒否は 1 — どちらもエラー型が持つ", () => {
+    const codes: number[] = [];
+    Runtime.defaultTeardown(
+      Exit.fail(new TerminatorRequired({ message: "maruhi: `--` を書いてください" })),
+      (code) => codes.push(code),
+    );
+    expect(codes).toEqual([2]);
   });
 });
