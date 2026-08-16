@@ -75,6 +75,12 @@ function nonEmptyString(value: unknown): value is string {
 // `Redacted.toString()` / `toJSON()` の出力そのもの(ラベル付きも含む)。
 const REDACTED_PLACEHOLDER = /^<redacted(?::[^>]*)?>$/;
 
+/**
+ * 保存レコード以外(環境変数など)で伏字そのものを受け取っていないか見るための
+ * 公開版。値の出所は違っても、混入した文字列は同じなので判定を共有する。
+ */
+export const REDACTED_PLACEHOLDER_TEXT: RegExp = REDACTED_PLACEHOLDER;
+
 function isRedactedPlaceholder(value: string): boolean {
   return REDACTED_PLACEHOLDER.test(value);
 }
@@ -135,6 +141,16 @@ const keychainPlaceholderCause = placeholderCause("キーチェーンのレコ�
  */
 export const redactedPlaceholderTokenMessage =
   `${keychainPlaceholderCause}。旧バージョンが書いたレコードであれば \`maruhi login\` で正しく上書きされます。再ログインしても再発する場合は現行版の不具合なので、報告してください` as const;
+
+/**
+ * MARUHI_TOKEN に伏字そのものが入っていたときの文言。
+ *
+ * こちらは maruhi の不具合ではなく**貼り間違い**が原因: 出力に現れた伏字を
+ * トークンだと思って環境変数へ入れた形。直し方も違う(再ログインでも鍵の
+ * 削除でもなく、本物のトークンを入れ直す)ので、文面を分ける。
+ */
+export const redactedPlaceholderEnvTokenMessage =
+  "MARUHI_TOKEN の値が伏字(<redacted>)そのものです。これは maruhi が伏せた表示をトークンとして貼り付けた状態で、認証には使えません。`maruhi login` で発行したトークンの生値を設定してください" as const;
 
 /**
  * master 鍵レコードに伏字が保存されていたときの文言。

@@ -27,6 +27,8 @@ import {
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
+  REDACTED_PLACEHOLDER_TEXT,
+  redactedPlaceholderEnvTokenMessage,
   redactedPlaceholderMasterKeyMessage,
   redactedPlaceholderTokenMessage,
   type StoredMasterKey,
@@ -126,54 +128,73 @@ const noSessionError = cliError(
  * Resolves the authenticated session for `origin`. The MARUHI_TOKEN env path
  * resolves the user id via `GET /auth/me` (the keychain record carries it).
  */
+/**
+ * MARUHI_TOKEN 経路のセッション解決(キーチェーン不在環境・CI 用)。
+ *
+ * 環境変数は平文の string が入ってくる唯一の起点なので、入口で包み、以降は
+ * {@link CliSession} の Redacted としてしか流れないようにする。
+ */
+function sessionFromEnvToken(input: {
+  readonly origin: string;
+  readonly rawToken: string;
+  readonly declaredOrigin: string | undefined;
+}): Effect.Effect<CliSession, CliError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    // 伏字そのものが入っていたら、通信する前に理由を名指しする。`Redacted` を
+    // 導入した以上、出力で見た "<redacted:maruhi-token>" をトークンだと思って
+    // 環境変数へ貼る経路は現実的で、そのまま送ると 401 になり
+    // 「失効・スコープ・接続先を確認してください」という**別の原因**の案内へ
+    // 送られてしまう(キーチェーン側と同じ値に同じ診断を出す)
+    if (REDACTED_PLACEHOLDER_TEXT.test(input.rawToken)) {
+      return yield* Effect.fail(cliError(redactedPlaceholderEnvTokenMessage));
+    }
+    const envToken = Redacted.make(input.rawToken, { label: "maruhi-token" });
+    // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
+    // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
+    // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を
+    // MARUHI_TOKEN_ORIGIN で明示させ、解決 origin と一致するときのみ送る
+    if (input.declaredOrigin === undefined || input.declaredOrigin.length === 0) {
+      return yield* Effect.fail(
+        cliError(
+          "MARUHI_TOKEN を使うには MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定してください(トークンを意図しない別オリジンへ送らないため)",
+        ),
+      );
+    }
+    // 環境変数もコマンドラインではない(直し先を示す)
+    const expectedOrigin = yield* normalizeHttpOrigin(input.declaredOrigin, "MARUHI_TOKEN_ORIGIN", {
+      fix: "MARUHI_TOKEN_ORIGIN 環境変数",
+    });
+    if (expectedOrigin !== input.origin) {
+      return yield* Effect.fail(
+        cliError(
+          `MARUHI_TOKEN_ORIGIN(${expectedOrigin})が接続先(${input.origin})と一致しません。トークンをこのオリジンへ送信しません`,
+        ),
+      );
+    }
+    const client = yield* makeApiClient({ baseUrl: input.origin, token: envToken });
+    const me = yield* client.auth
+      .me({})
+      .pipe(
+        Effect.mapError(() =>
+          cliError("MARUHI_TOKEN での認証に失敗しました(失効・スコープ・接続先を確認してください)"),
+        ),
+      );
+    return { origin: input.origin, token: envToken, userId: me.userId } satisfies CliSession;
+  });
+}
+
 export function resolveSession(
   origin: string,
 ): Effect.Effect<CliSession, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // env は素の string で入ってくる唯一の起点。ここで包み、以降は
-    // CliSession.token(Redacted)としてしか流れないようにする
     const rawEnvToken = io.envVar("MARUHI_TOKEN");
     if (rawEnvToken !== undefined && rawEnvToken.length > 0) {
-      const envToken = Redacted.make(rawEnvToken, { label: "maruhi-token" });
-      // MARUHI_TOKEN は接続先 origin に束縛する: これを要求しないと --server /
-      // 設定で解決した任意の origin へ Bearer トークンを送ってしまう
-      // (誘導された攻撃者オリジンへのトークン漏えい)。対象 origin を
-      // MARUHI_TOKEN_ORIGIN で明示させ、解決 origin と一致するときのみ送る
-      const declaredOrigin = io.envVar("MARUHI_TOKEN_ORIGIN");
-      if (declaredOrigin === undefined || declaredOrigin.length === 0) {
-        return yield* Effect.fail(
-          cliError(
-            "MARUHI_TOKEN を使うには MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定してください(トークンを意図しない別オリジンへ送らないため)",
-          ),
-        );
-      }
-      // 環境変数もコマンドラインではない(直し先を示す)
-      const expectedOrigin = yield* normalizeHttpOrigin(declaredOrigin, "MARUHI_TOKEN_ORIGIN", {
-        fix: "MARUHI_TOKEN_ORIGIN 環境変数",
-      });
-      if (expectedOrigin !== origin) {
-        return yield* Effect.fail(
-          cliError(
-            `MARUHI_TOKEN_ORIGIN(${expectedOrigin})が接続先(${origin})と一致しません。トークンをこのオリジンへ送信しません`,
-          ),
-        );
-      }
-      const client = yield* makeApiClient({ baseUrl: origin, token: envToken });
-      const me = yield* client.auth
-        .me({})
-        .pipe(
-          Effect.mapError(() =>
-            cliError(
-              "MARUHI_TOKEN での認証に失敗しました(失効・スコープ・接続先を確認してください)",
-            ),
-          ),
-        );
-      return {
+      return yield* sessionFromEnvToken({
         origin,
-        token: envToken,
-        userId: me.userId,
-      } satisfies CliSession;
+        rawToken: rawEnvToken,
+        declaredOrigin: io.envVar("MARUHI_TOKEN_ORIGIN"),
+      });
     }
     const keychain = yield* Keychain;
     const stored = yield* keychain.get(tokenEntryName(origin));

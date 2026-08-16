@@ -472,6 +472,31 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(keys.sigKeyPair.privateKey.extractable).toBe(false);
   });
 
+  it("MARUHI_TOKEN に伏字が入っていたら、通信する前に理由を名指しする", async () => {
+    // Redacted を入れた以上、出力で見た伏字をトークンだと思って環境変数へ
+    // 貼る経路は現実的。そのまま送ると 401 になり「失効・スコープ・接続先を
+    // 確認してください」という別の原因の案内へ送られてしまう
+    const requests: string[] = [];
+    const maruhi = await start([
+      onRequest("GET", "/auth/me", (request) => {
+        requests.push(request.path);
+        return { status: 200, json: { userId: "u", orgs: [] } };
+      }),
+    ]);
+    const env = await makeTestEnv();
+    env.setEnvVar("MARUHI_TOKEN", "<redacted:maruhi-token>");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", maruhi.origin);
+    const exit = await Effect.runPromiseExit(
+      resolveSession(maruhi.origin).pipe(Effect.provide(env.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const dump = JSON.stringify(exit);
+    expect(dump).toContain("伏字(<redacted>)そのものです");
+    expect(dump).not.toContain("失効・スコープ・接続先");
+    // 通信より前に落ちる(無駄な往復も、誤認された 401 も作らない)
+    expect(requests).toEqual([]);
+  });
+
   it("MARUHI_TOKEN 経路のトークンも包まれ、生値のまま送られる", async () => {
     const authorizations: (string | undefined)[] = [];
     const maruhi = await start([
