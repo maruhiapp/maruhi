@@ -3,7 +3,8 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Effect, Exit, Layer, Stdio } from "effect";
+import { Cause, Effect, Exit, Layer, Schema, Stdio } from "effect";
+import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";
@@ -377,7 +378,7 @@ describe("decodeValueText(値デコード方針の一本化)", () => {
 });
 
 describe("toCliError(サーバー由来文字列の端末中和)", () => {
-  it("エラー Schema の自由文字列 ID と未知エラーの message を中和する", () => {
+  it("エラー Schema の自由文字列 ID を中和する", () => {
     // ワイヤ上無制約の Schema.String 列(悪意あるサーバーが ANSI/改行を埋められる)
     const notFound = toCliError(
       new ProjectNotFoundError({ projectId: "x\u001b[31mred\u001b[0m\nfake" }),
@@ -385,10 +386,50 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(notFound.message).not.toContain("\u001b");
     expect(notFound.message).not.toContain("\n");
     expect(notFound.message).toContain("x\uFFFD[31mred\uFFFD[0m\uFFFDfake");
-    // 未知エラー fallback(応答本文の断片を含みうる)も無条件に中和する
-    const unknown = toCliError(new Error("boom\u001b]0;pwned\u0007"));
+  });
+
+  it("宣言を尽くした先の未知エラーは message を出さず、型の名前だけを添える", () => {
+    // 型付きクライアントの失敗 3 種(宣言済みエラー / HttpClientError /
+    // SchemaError)はすべて写像済みなので、ここへ来るのは本当の未知だけ。
+    // message は応答本文の断片を含みうるため、中和ではなく**出さない**
+    const unknown = toCliError(new Error("boom sk-live-SUPER-SECRET \u001b]0;pwned\u0007"));
+    expect(unknown.message).toBe("予期しないエラー(Error)");
+    expect(unknown.message).not.toContain("sk-live-SUPER-SECRET");
     expect(unknown.message).not.toContain("\u001b");
-    expect(unknown.message).not.toContain("\u0007");
+  });
+
+  it("接続失敗は専用の写像が受け持つ(未知へ落ちない)", () => {
+    // 「未知 fallback を絞ると接続失敗の手掛かりが消える」ことにならない根拠:
+    // 転送レベルの失敗は HttpClientError の写像が名前付きで説明する
+    const transport = new HttpClientError.HttpClientError({
+      reason: new HttpClientError.TransportError({
+        request: HttpClientRequest.get("https://maruhi.example/chain"),
+        cause: new Error("connect ECONNREFUSED 127.0.0.1:9"),
+      }),
+    });
+    const rendered = toCliError(transport);
+    expect(rendered.message).toContain("サーバーへの接続に失敗しました");
+    expect(rendered.message).not.toContain("予期しないエラー");
+    // 下位の cause の文面(ホスト・ポート等)は素通ししない
+    expect(rendered.message).not.toContain("ECONNREFUSED");
+  });
+
+  it("応答のスキーマ不一致は「場所と期待」だけを出す(値は出さない)", async () => {
+    // 上流(effect rc.109)の整形は期待した型と場所しか出さない。応答本文には
+    // 変数名も暗号文も載るので、**値を含む整形に変わったらここが落ちる**
+    const Payload = Schema.Struct({ version: Schema.Number });
+    const exit = await Effect.runPromiseExit(
+      Schema.decodeUnknownEffect(Payload)({ version: "sk-live-SUPER-SECRET" }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (!Exit.isFailure(exit)) return;
+    const rendered = toCliError(Cause.squash(exit.cause));
+    expect(rendered.message).toContain("サーバー応答がスキーマと一致しません");
+    expect(rendered.message).toContain("Expected number");
+    expect(rendered.message).toContain('["version"]');
+    expect(rendered.message).not.toContain("sk-live-SUPER-SECRET");
+    // 改行は 1 行へ畳んでから中和する(置換文字で読めなくならない)
+    expect(rendered.message).not.toContain("\uFFFD");
   });
 });
 

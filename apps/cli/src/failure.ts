@@ -32,6 +32,7 @@ import {
   VersionConflictError,
 } from "@maruhi/api-schema";
 import { ChainInvalidError } from "@maruhi/core";
+import { Schema } from "effect";
 import { HttpClientError } from "effect/unstable/http";
 
 import { displayText } from "./display.ts";
@@ -45,6 +46,29 @@ function when<T>(guard: (error: unknown) => error is T, render: (error: T) => st
 
 function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
   return (error: unknown): error is T => error instanceof ctor;
+}
+
+/**
+ * 応答の**スキーマ不一致**(`Schema.SchemaError`)。
+ *
+ * 型付きクライアントの失敗は `HttpApiClient` の宣言どおり
+ * 「エンドポイントの宣言済みエラー | `HttpClientError` | `Schema.SchemaError`」
+ * の 3 種で、前 2 つは上の写像が受け持つ。**残る 1 種がこれ**で、
+ * 「サーバーが返した本文が契約と食い違う」= サーバーと CLI の版ずれ、あるいは
+ * サーバー不正の兆候という、利用者に伝える価値のある事実を指す。
+ *
+ * `message` を通してよい根拠(実測。rc.109 で 8 形を確認): 上流の整形は
+ * **期待した型と場所だけ**を出し、**食い違った値そのものは出さない**
+ * (`Expected number at ["variables"][0]["version"]`)。応答本文には変数名も
+ * 暗号文も載るので、ここが値を含む整形に変わったら診断が漏洩経路になる —
+ * その性質は units.test.ts が**負の検査**で固定する(上流が変えたら落ちる)。
+ *
+ * 改行は 1 行へ畳んでから中和する(`displayText` は改行も置換文字にするため、
+ * 畳まないと `Expected number\uFFFD at …` になって読めない)。
+ */
+function renderSchemaFailure(error: Schema.SchemaError): string {
+  const detail = displayText(error.message.replace(/\s+/g, " ").trim());
+  return `サーバー応答がスキーマと一致しません(${detail})。サーバーと CLI のバージョン整合を確認してください`;
 }
 
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
@@ -163,6 +187,8 @@ const renderers: readonly Renderer[] = [
   ),
   when(isInstanceOf(TokenLimitError), (e) => `API トークンの発行上限に達しています(${e.limit} 本)`),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
+  // 型付きクライアントの失敗の 3 種目(上の 2 種と合わせて宣言を尽くす)
+  when(Schema.isSchemaError, renderSchemaFailure),
 ];
 
 /**
@@ -228,9 +254,9 @@ export function toCliError(error: unknown): CliError {
       return cliError(message);
     }
   }
-  if (error instanceof Error) {
-    // 未知エラーの message は応答本文の断片等を含みうる — 無条件に中和する
-    return cliError(`予期しないエラー: ${displayText(error.message)}`);
-  }
-  return cliError("予期しないエラーが発生しました");
+  // ここへ来るのは**宣言を尽くした先の未知**だけ(型付きクライアントの失敗 3 種は
+  // 上で写像済み)。未知の message は素通しにしない — 応答本文の断片や打たれた値を
+  // 含む文面でも到達しうるので、制御文字の中和だけでは規律を守れない。無言でも
+  // 飲まず、型の名前(コード由来の語彙)を手掛かりに残す
+  return cliError(`予期しないエラー(${internalErrorKind(error)})`);
 }
