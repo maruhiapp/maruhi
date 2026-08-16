@@ -120,6 +120,27 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
 });
 
 describe("maruhi 固有の規律", () => {
+  it("宣言していない組み込みフラグは生やさない(--wizard / --completions / --log-level)", async () => {
+    // effect/unstable/cli の既定は help / version / wizard / completions /
+    // log-level を全コマンドへ足す。`maruhi pull --wizard` は**対話ウィザードが
+    // 起動する**(実測)。宣言していない対話経路・出力経路を secrets ツールに
+    // 持たせないため CliConfig で help / version だけに絞る
+    for (const argv of [
+      ["pull", "--wizard"],
+      ["pull", "--completions", "bash"],
+      ["pull", "--log-level", "all"],
+    ]) {
+      const outcome = await runSpikeCli(argv);
+      expect(outcome.exitCode, argv.join(" ")).toBe(2);
+      expect(outcome.invoked, argv.join(" ")).toBeNull();
+      expect(outcome.stderr.join("\n")).toContain("不明なオプションです");
+    }
+
+    // --help / --version は残す
+    expect((await runSpikeCli(["pull", "--help"])).exitCode).toBe(0);
+    expect((await runSpikeCli(["--version"])).exitCode).toBe(0);
+  });
+
   it("stdout はコマンドの出力だけ(診断もヘルプも stderr)", async () => {
     const rejected = await runSpikeCli(["pull", "--shwo"]);
     expect(rejected.stdout).toEqual([]);

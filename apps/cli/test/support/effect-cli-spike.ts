@@ -39,7 +39,7 @@ import {
   Stdio,
   Terminal,
 } from "effect";
-import { Argument, CliError, Command, Flag } from "effect/unstable/cli";
+import { Argument, CliConfig, CliError, Command, Flag, GlobalFlag } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { type AgentProfile, AgentProfileRef, valueDisplayRejection } from "./agent-gate.ts";
@@ -288,6 +288,11 @@ export async function runSpikeCli(
     Layer.succeed(Console.Console, capturingConsole),
     // 診断の文面は Formatter で差し替える(ランナーに描画を書かない)
     formatterLayer(commandKeyOf(argv), SPECS, argv.includes("--help") || argv.includes("-h")),
+    // 組み込みグローバルフラグは **--help / --version だけ**に絞る。
+    // 既定は wizard / completions / log-level も全コマンドへ生える(実測:
+    // `maruhi pull --wizard` は対話ウィザードが起動する)。secrets ツールに
+    // 宣言していない対話経路・出力経路を勝手に持たせない
+    CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] }),
   );
 
   const exit = await Effect.runPromise(
