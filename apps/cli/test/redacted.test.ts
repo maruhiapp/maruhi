@@ -35,7 +35,7 @@ import { CliIo } from "../src/io.ts";
 import {
   classifyUnreadableMasterKey,
   corruptMasterKeyMessage,
-  foreignSuiteMasterKeyMessage,
+  foreignMasterKeyMessage,
   hasRedactedPlaceholder,
   masterKeyEntryName,
   parseStoredMasterKey,
@@ -426,13 +426,17 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 「消してください」と案内すると、リカバリーコードが無い利用者は復元できない
     const future = JSON.stringify({ suite: "maruhi/v2", kemPubHex: "aa", kemSkHex: "bb" });
     expect(parseStoredMasterKey(future)).toBeNull();
-    expect(classifyUnreadableMasterKey(future)).toBe("foreign-suite");
-    const message = foreignSuiteMasterKeyMessage("maruhi/v2");
+    expect(classifyUnreadableMasterKey(future)).toBe("foreign");
+    const message = foreignMasterKeyMessage("maruhi/v2");
     expect(message).toContain("残してください");
     expect(message).not.toContain("削除");
     // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
     expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
     expect(classifyUnreadableMasterKey(masterRecordJson({ encSkHex: "" }))).toBe("corrupt");
+    // スイートを名乗らない・入れ子にした形も削除を勧めない側へ倒す
+    // (将来の形がどこに置くかは今の実装からは分からない)
+    expect(classifyUnreadableMasterKey('{"key":{"suite":"maruhi/v2"}}')).toBe("foreign");
+    expect(classifyUnreadableMasterKey("{}")).toBe("foreign");
   });
 
   it("読めない master 鍵レコードも行き止まりにしない", () => {
@@ -468,6 +472,29 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(dump).toContain("読み取れません");
     expect(dump).toContain("手で削除");
     expect(dump).not.toContain("master 鍵は既に存在します");
+  });
+
+  it("形は整っていても鍵素材が読めないなら「鍵がある」と言わない", async () => {
+    // 保存形の検査(非空文字列)は通るが hex として壊れているレコード。
+    // 形だけで判定すると「既に存在します」と返し、loadMasterKeys では失敗する
+    // という食い違いが起き、出口も示されない
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    const entryName = masterKeyEntryName(maruhi.origin, "u1");
+    env.keychain.set(entryName, masterRecordJson({ encSkHex: "zzzz" }));
+    const session = {
+      origin: maruhi.origin,
+      userId: "u1",
+      token: Redacted.make("maruhi_pat_stored"),
+    };
+    const exit = await Effect.runPromiseExit(
+      ensureNoStoredMasterKey(session, "master 鍵は既に存在します").pipe(Effect.provide(env.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const dump = JSON.stringify(exit);
+    expect(dump).not.toContain("master 鍵は既に存在します");
+    expect(dump).toContain("手で削除");
   });
 
   it("伏字の master 鍵は「鍵がある」と報告しない(上書き防止ガードでも区別する)", async () => {

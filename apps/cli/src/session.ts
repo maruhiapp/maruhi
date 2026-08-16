@@ -25,7 +25,7 @@ import {
   classifyUnreadableMasterKey,
   corruptMasterKeyMessage,
   declaredSuiteOf,
-  foreignSuiteMasterKeyMessage,
+  foreignMasterKeyMessage,
   hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
@@ -237,17 +237,36 @@ export function resolveSession(
 /**
  * 既存レコードに対する拒否文言の選択。
  *
- * 伏字・破損・正常で原因も出口も違う: 伏字と破損は「手で消す」出口を示す必要が
- * あり、正常な鍵だけが本来の上書き拒否({@link ensureNoStoredMasterKey} の
- * 呼び出し側が渡す文言)に当たる。
+ * 「既に存在します」と言ってよいのは**実際に使える鍵があるとき**だけ。形だけ
+ * 整っていて鍵素材が読めないレコードにこれを返すと、事実に反するうえ出口も
+ * 示さないまま generate / recover / show の全部が塞がる。判定は保存形の検査で
+ * 止めず、実際にインポートまで試して決める(コマンド 1 回に 1 度だけ)。
  */
-function refusalFor(existing: string, entryName: string, refusal: string): string {
+function refusalFor(
+  existing: string,
+  entryName: string,
+  refusal: string,
+): Effect.Effect<string, never> {
   if (hasRedactedPlaceholder(existing)) {
-    return redactedPlaceholderMasterKeyMessage(entryName);
+    return Effect.succeed(redactedPlaceholderMasterKeyMessage(entryName));
   }
-  return parseStoredMasterKey(existing) === null
-    ? unreadableMasterKeyMessage(existing, entryName)
-    : refusal;
+  const record = parseStoredMasterKey(existing);
+  if (record === null) {
+    return Effect.succeed(unreadableMasterKeyMessage(existing, entryName));
+  }
+  return importMasterKeys(record).pipe(
+    // インポートできた = 本当に使える鍵。ここだけが本来の上書き拒否
+    Effect.as(refusal),
+    Effect.catch((error) =>
+      Effect.succeed(
+        error === corruptKeyError
+          ? corruptMasterKeyMessage(entryName)
+          : // 未知スイート等、読めない理由が破損と言い切れないものは
+            // 削除を勧めない(将来版が書いた鍵を消させない)
+            foreignMasterKeyMessage(record.suite),
+      ),
+    ),
+  );
 }
 
 /**
@@ -255,10 +274,9 @@ function refusalFor(existing: string, entryName: string, refusal: string): strin
  * (将来版が書いたレコードを消させない — keychain.ts の分類を参照)。
  */
 function unreadableMasterKeyMessage(stored: string, entryName: string): string {
-  if (classifyUnreadableMasterKey(stored) === "foreign-suite") {
-    return foreignSuiteMasterKeyMessage(declaredSuiteOf(stored) ?? "不明");
-  }
-  return corruptMasterKeyMessage(entryName);
+  return classifyUnreadableMasterKey(stored) === "foreign"
+    ? foreignMasterKeyMessage(declaredSuiteOf(stored))
+    : corruptMasterKeyMessage(entryName);
 }
 
 /**
@@ -283,7 +301,7 @@ export function ensureNoStoredMasterKey(
       // 「既にある」と言ってよいのは**読めるレコードが実在するとき**だけ。
       // 読めない記録に対して拒否文言(使える鍵がある)を返すと、事実に反する
       // うえ出口も示さないまま generate / recover / show の全部が塞がる
-      return yield* Effect.fail(cliError(refusalFor(existing, entryName, refusal)));
+      return yield* Effect.fail(cliError(yield* refusalFor(existing, entryName, refusal)));
     }
     return entryName;
   });

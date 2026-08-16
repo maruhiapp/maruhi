@@ -183,28 +183,37 @@ function manualDeletionGuidance(entryName: string): string {
  * なく**その版では正しい鍵**である。区別せずに「消してください」と案内すると、
  * リカバリーコードが無い利用者は復元できなくなる。
  *
- * JSON として読めて `suite` が現行と違うなら、破損ではなく別形式として扱う
- * (スイート名が読めた時点で「maruhi が書いた別版のレコード」と分かる)。
+ * 判定は**削除を勧めない側へ倒す**: 「JSON ですらない」か「現行スイートを
+ * 名乗っているのに読めない」ときだけ破損とみなし、それ以外は別形式扱いにする。
+ * 将来の形がスイートをどこに置くかは今の実装からは分からないので、特定の
+ * フィールド名に賭けない。
  */
-export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign-suite" {
+export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign" {
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(json);
-    if (isRecord(value) && nonEmptyString(value["suite"]) && value["suite"] !== SUITE_ID) {
-      return "foreign-suite";
-    }
+    value = JSON.parse(json);
   } catch {
+    // JSON ですらない = どの版の maruhi も書かない形。消して安全
     return "corrupt";
   }
-  return "corrupt";
+  // 現行スイートを名乗っているのに読めない = 本当に壊れている
+  if (isRecord(value) && value["suite"] === SUITE_ID) {
+    return "corrupt";
+  }
+  // それ以外(スイートが違う・無い・入れ子になっている等)は**別形式かも
+  // しれない**。単一のフィールド名に賭けて「消してよい」と判定しない —
+  // 誤れば鍵の恒久喪失で、取り違えの代償が両側で釣り合わない
+  return "foreign";
 }
 
 /**
- * 別スイート(将来版が書いた可能性がある)のレコードに当たったときの文言。
+ * 現行版では読めない(将来版が書いた可能性がある)レコードの文言。
  *
  * **削除を勧めない**。消すと、その版へ上げれば使えたはずの鍵を失う。
  */
-export function foreignSuiteMasterKeyMessage(suite: string): string {
-  return `キーチェーンの master 鍵レコードは未知のスイート(${escapeText(suite)})です。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください`;
+export function foreignMasterKeyMessage(suite: string | null): string {
+  const named = suite === null ? "" : `(${escapeText(suite)})`;
+  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください`;
 }
 
 /** レコードから宣言スイートだけを取り出す(読めなければ null)。 */
