@@ -313,6 +313,16 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const masterMessage = redactedPlaceholderMasterKeyMessage("master::https://x::u1");
     expect(masterMessage).toContain("master::https://x::u1");
     expect(masterMessage).toContain("手で削除");
+    // 制御文字入りの user_id: 端末へ生で流さず、かつ**復元できる**形にする。
+    // 置換文字へ潰すと「実在しない名前のエントリを消せ」と案内することになり、
+    // 唯一の復旧手順が実行不能になる
+    const hostile = redactedPlaceholderMasterKeyMessage("master::https://x::u\u001b[31m\n1");
+    expect(hostile).not.toContain("\u001b");
+    expect(hostile).not.toContain("\n1");
+    expect(hostile).toContain("\\u001b");
+    expect(hostile).toContain("\\u000a");
+    // 潰していない(元の文字列が読み取れる)
+    expect(hostile).not.toContain("\uFFFD");
   });
 
   it("伏字を保存したキーチェーンから読むと、その診断が出る(実経路)", async () => {
@@ -548,9 +558,10 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
  * 検出しない)。偶発しうる形 — 書式化による行折り、コメントでの言及、別名 —
  * を塞ぐことに絞っている。
  */
-const SPELLING = "Redacted.value";
-// 書式化で `Redacted\n  .value` へ折られても取りこぼさない(空白を跨いで照合)。
-// 折れた形を数え損ねるのは fail-open なので、ここは必ず緩く照合する
+// 綴り(`Redacted` + `.value`)の照合。書式化で `Redacted\n  .value` へ折られても
+// 取りこぼさないよう空白を跨ぐ — 折れた形を数え損ねるのは fail-open になる。
+// 数える側と言及を禁じる側の**両方**がこの 1 つを使う(片方だけ寛容だと相殺が
+// 成立する)
 const SPELLING_PATTERN = /Redacted\s*\.\s*value/g;
 // 文字列リテラルなので、コメント記号をそのまま書いてよい(読む対象は src/ 配下
 // であって、このテストファイル自身ではない)
@@ -590,18 +601,16 @@ function nextBlockState(line: string, inBlock: boolean): boolean {
   return close > open ? false : inBlock;
 }
 
-/** 行内の全出現位置(1 つ目だけ見ると、実コードの後ろの言及を見落とす)。 */
+/**
+ * 行内の全出現位置。
+ *
+ * 数える側({@link collectUnwrapSites})と**同じ照合**を使うのが要点: 片方だけ
+ * 空白に寛容だと、折り返した言及が件数だけ増やして違反にならず、後からそれを
+ * 実際の剥がしへ差し替える相殺が成立する。1 つ目だけ見るのも同様に不可
+ * (実コードの後ろに置いた言及を見落とす)。
+ */
 function occurrences(line: string): readonly number[] {
-  const found: number[] = [];
-  let from = 0;
-  for (;;) {
-    const at = line.indexOf(SPELLING, from);
-    if (at < 0) {
-      return found;
-    }
-    found.push(at);
-    from = at + SPELLING.length;
-  }
+  return [...line.matchAll(new RegExp(SPELLING_PATTERN.source, "g"))].map((match) => match.index);
 }
 
 function commentMentions(source: string): readonly number[] {

@@ -18,7 +18,7 @@
 
 import { Context, type Effect, Redacted } from "effect";
 
-import { displayText } from "./display.ts";
+import { escapeText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 
 /** OS keychain boundary. Names are scoped by {@link tokenEntryName} / {@link masterKeyEntryName}. */
@@ -136,8 +136,10 @@ export const redactedPlaceholderTokenMessage =
  */
 export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
   // entryName は user_id(サーバー配布の自由文字列)を含む。端末へ出す前に
-  // 必ず中和する — 他の user_id 出力と同じ規律(display.ts)
-  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${displayText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください。併せて不具合として報告してください`;
+  // 無害化するが、**潰さずエスケープする**: この名前は「消してください」と
+  // 案内する操作対象そのものであり、置換文字に潰すと実在しない名前を案内して
+  // 唯一の復旧手順が実行不能になる
+  return `${placeholderCause}。master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除したうえで \`maruhi key recover\` を実行してください。併せて不具合として報告してください`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

@@ -20,6 +20,21 @@ export function displayText(value: string): string {
   return value.replace(CONTROL_CHARS, "\uFFFD");
 }
 
+/**
+ * Escapes control characters as `\uXXXX` for safe *and reversible* display.
+ *
+ * {@link displayText} は置換文字に潰すため、**利用者が元の文字列を復元できない**。
+ * 「この名前のエントリを消してください」のように文字列そのものを操作対象として
+ * 案内する場面では潰してはいけない(消せない名前を案内することになる)ので、
+ * 端末へ流しても危険のない形にエスケープしたうえで原文を保つ。
+ */
+export function escapeText(value: string): string {
+  return value.replace(
+    CONTROL_CHARS,
+    (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, "0") ?? "fffd"}`,
+  );
+}
+
 // 値の表示(pull --show)用: 端末インジェクションの媒介(ESC・BEL・C1・
 // CR 等)は中和しつつ、正当なシークレット(複数行 PEM 鍵など)を壊さないよう
 // タブ(\t)と改行(\n)だけは残す。値は共同編集者(正当な書き手)が保存する
