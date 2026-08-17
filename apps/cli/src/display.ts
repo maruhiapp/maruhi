@@ -63,6 +63,18 @@ export function displayText(value: string): string {
 }
 
 /**
+ * English count phrase with a regular plural: `countNoun(1, "variable")` →
+ * "1 variable"、`countNoun(2, "variable")` → "2 variables"。
+ *
+ * ADR-0017 の英語化で件数を文面へ埋める箇所が増えた。テンプレートに複数形を
+ * 直書きすると「1 variables」になる — 数える側がここを通ることで単複を揃える
+ * (不規則変化の名詞が要るようになったら、その時に引数を増やす)。
+ */
+export function countNoun(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+/**
  * Escapes everything outside printable ASCII as `\u{...}` (hex, at least four
  * digits — supplementary-plane code points take more), and `\` / `"` as `\\` /
  * `\"`, so the rendered text is exactly reconstructible.
@@ -80,18 +92,6 @@ export function displayText(value: string): string {
  * 残りを一律に逃がすしかない。非 ASCII の user_id は冗長な表記になるが、
  * この関数の目的は可読性ではなく**操作対象としての一致**なので、そちらを取る。
  */
-/**
- * English count phrase with a regular plural: `countNoun(1, "variable")` →
- * "1 variable"、`countNoun(2, "variable")` → "2 variables"。
- *
- * ADR-0017 の英語化で件数を文面へ埋める箇所が増えた。テンプレートに複数形を
- * 直書きすると「1 variables」になる — 数える側がここを通ることで単複を揃える
- * (不規則変化の名詞が要るようになったら、その時に引数を増やす)。
- */
-export function countNoun(count: number, singular: string): string {
-  return `${count} ${singular}${count === 1 ? "" : "s"}`;
-}
-
 export function escapeText(value: string): string {
   return value.replace(ESCAPABLE, (char) =>
     char === "\\" || char === '"'

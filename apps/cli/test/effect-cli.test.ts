@@ -433,16 +433,25 @@ describe("終了コードは Effect の機構に載る", () => {
     expect(defaultCodes).toEqual([1]);
 
     const codes: number[] = [];
-    maruhiTeardown(withErrors, (code) => codes.push(code));
+    maruhiTeardown(false)(withErrors, (code) => codes.push(code));
     expect(codes).toEqual([2]);
 
-    // `--help` / `--version`(errors 空)は誤りではない
+    // `--help` / `--version` を明示した実行(errors 空)は誤りではない
     const helpCodes: number[] = [];
-    maruhiTeardown(
+    maruhiTeardown(true)(
       Exit.fail(new EffectCliError.ShowHelp({ commandPath: ["maruhi"], errors: [] })),
       (code) => helpCodes.push(code),
     );
     expect(helpCodes).toEqual([0]);
+
+    // errors 空でもヘルプ・バージョンを明示していない実行 = サブコマンド必須の
+    // 親コマンド単体(`maruhi env`)。gunshi 時代と同じく書き方の誤り(2)
+    const bareCodes: number[] = [];
+    maruhiTeardown(false)(
+      Exit.fail(new EffectCliError.ShowHelp({ commandPath: ["maruhi", "env"], errors: [] })),
+      (code) => bareCodes.push(code),
+    );
+    expect(bareCodes).toEqual([2]);
   });
 });
 
@@ -578,13 +587,35 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     expect(env.errors.join("\n")).toContain("--environment-id is a positional argument");
   });
 
-  it("`maruhi env` 単体は env 段のヘルプ(usage 1 行)を stderr へ出す", async () => {
-    // 上流は「サブコマンド未指定」を errors 空の ShowHelp にする(= `--help` と
-    // 同じ扱い、exit 0)。stdout は汚さない(コマンドの出力だけ — 決定 9)
+  it("`maruhi env` 単体は usage エラー(2)で、env 段の使い方を stderr へ出す", async () => {
+    // 上流は「サブコマンド未指定」を errors 空の ShowHelp(exit 0)にするが、
+    // maruhi では書き方の誤り(gunshi 時代の「不明な操作です」も exit 2)。
+    // teardown が「ヘルプ・バージョンの明示なし」で読み分ける(cli-teardown.ts)。
+    // stdout は汚さない(コマンドの出力だけ — 決定 9)
     const { env, server } = await startEnv();
-    expect(await runCli(["env"], env.layer)).toBe(0);
+    expect(await runCli(["env"], env.layer)).toBe(2);
     expect(env.logs).toEqual([]);
     expect(env.errors.join("\n")).toContain("maruhi env");
+    expect(server.requests).toHaveLength(0);
+
+    // `--help` の明示は誤りではない(exit 0 のまま)
+    const help = await startEnv();
+    expect(await runCli(["env", "--help"], help.env.layer)).toBe(0);
+    expect(help.env.errors.join("\n")).toContain("maruhi env");
+    expect(help.server.requests).toHaveLength(0);
+  });
+
+  it("親の段に書いたフラグは、置き場所(サブコマンドの後ろ)を案内して落ちる", async () => {
+    // gunshi は操作名より前のフラグも通した(1 つの引数表)。effect の入れ子
+    // では親の段のフラグは未宣言になる — 「フラグが存在しない」と嘘をつかず、
+    // 直し方を言う
+    const { env, server } = await startEnv();
+    expect(
+      await runCli(["server", "--project", "abc", "grant", "--environments", "dev"], env.layer),
+    ).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("write the subcommand first and its flags after it");
+    expect(errors).toContain("maruhi server grant");
     expect(server.requests).toHaveLength(0);
   });
 });

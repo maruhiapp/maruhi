@@ -58,6 +58,7 @@ function bareName(name: string): string {
 function unrecognizedOptionMessage(
   error: CliError.UnrecognizedOption,
   spec: CommandSpec | undefined,
+  commandKey: string,
 ): string {
   // 位置引数の名前をオプションとして書いた形は、直し方が違う
   const option = bareName(error.option);
@@ -67,6 +68,19 @@ function unrecognizedOptionMessage(
   const guess = error.suggestions[0];
   if (guess !== undefined) {
     return `Unknown flag (did you mean --${bareName(guess)}?)`;
+  }
+  return undeclaredFlagMessage(spec, commandKey);
+}
+
+/** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
+function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string): string {
+  // 入れ子の段(サブコマンドを持つ親)は自分のフラグを持たない。gunshi 時代は
+  // 操作名より前に書いたフラグも通ったため、その形で来た利用者に「フラグが
+  // 存在しない」と嘘をつかず、**置き場所**を案内する
+  const subcommands = spec?.subcommands ?? [];
+  const first = subcommands[0];
+  if (first !== undefined) {
+    return `Unknown flag (maruhi ${commandKey} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. maruhi ${commandKey} ${first} --flag …)`;
   }
   // 実行時に混ぜられるグローバル(--help / --version)は宣言の表に現れない
   // ので、ここで補う(無いと、実在するフラグが一覧から抜ける)
@@ -157,7 +171,7 @@ export function describeError(
 ): string {
   const spec = specs[commandKey];
   if (error instanceof CliError.UnrecognizedOption) {
-    return unrecognizedOptionMessage(error, spec);
+    return unrecognizedOptionMessage(error, spec, commandKey);
   }
   if (error instanceof CliError.UnexpectedArgument) {
     return unexpectedArgumentMessage(error, spec, commandKey);

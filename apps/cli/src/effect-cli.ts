@@ -357,29 +357,44 @@ const memberChangeRoleConfig = {
 };
 
 /**
+ * 入れ子の段(グループ)→ サブコマンド名 → 宣言。**この表が唯一の出所**で、
+ * COMMAND_SPECS(振り分けのキーと診断の宣言・サブコマンド一覧)をここから
+ * 導く — 親の段を手書きの写しで持つと、サブコマンドを足したときに振り分けと
+ * 診断だけ古いまま残る。makeRootCommand の `Command.make(名前)` はこのキーと
+ * 同じ綴りを使う(食い違いは effect-cli.test.ts の適合検査で落ちる)。
+ */
+const GROUP_CONFIGS: Readonly<
+  Record<string, Readonly<Record<string, Readonly<Record<string, Param.Any>>>>>
+> = {
+  env: { create: envCreateConfig, rotate: envRotateConfig, diff: envDiffConfig },
+  server: { grant: serverGrantConfig, revoke: serverRevokeConfig },
+  invite: {
+    create: inviteCreateConfig,
+    accept: inviteAcceptConfig,
+    list: inviteListConfig,
+    revoke: inviteRevokeConfig,
+  },
+  member: {
+    add: memberAddConfig,
+    remove: memberRemoveConfig,
+    "change-role": memberChangeRoleConfig,
+  },
+};
+
+/**
  * commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。
- * 入れ子の段(`env` / `server` / `invite`)は subcommands を持ち、不明な
- * サブコマンドの診断が「取りうる操作の一覧」を出すのに使う(cli-formatter.ts)。
+ * 入れ子の段は subcommands を持ち、不明なサブコマンドの診断が「取りうる
+ * 操作の一覧」を出すのに使う(cli-formatter.ts)。
  */
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
   run: specOf(runConfig),
-  env: { flags: [], positionals: [], subcommands: ["create", "rotate", "diff"] },
-  "env create": specOf(envCreateConfig),
-  "env rotate": specOf(envRotateConfig),
-  "env diff": specOf(envDiffConfig),
-  server: { flags: [], positionals: [], subcommands: ["grant", "revoke"] },
-  "server grant": specOf(serverGrantConfig),
-  "server revoke": specOf(serverRevokeConfig),
-  invite: { flags: [], positionals: [], subcommands: ["create", "accept", "list", "revoke"] },
-  "invite create": specOf(inviteCreateConfig),
-  "invite accept": specOf(inviteAcceptConfig),
-  "invite list": specOf(inviteListConfig),
-  "invite revoke": specOf(inviteRevokeConfig),
-  member: { flags: [], positionals: [], subcommands: ["add", "remove", "change-role"] },
-  "member add": specOf(memberAddConfig),
-  "member remove": specOf(memberRemoveConfig),
-  "member change-role": specOf(memberChangeRoleConfig),
+  ...Object.fromEntries(
+    Object.entries(GROUP_CONFIGS).flatMap(([group, subcommands]) => [
+      [group, { flags: [], positionals: [], subcommands: Object.keys(subcommands) }],
+      ...Object.entries(subcommands).map(([name, config]) => [`${group} ${name}`, specOf(config)]),
+    ]),
+  ),
 };
 
 /**
@@ -1361,6 +1376,9 @@ export async function runEffectCli(
   const terminator = argv.indexOf("--");
   const ownArgs = terminator < 0 ? argv : argv.slice(0, terminator);
   const helpRequested = ownArgs.includes("--help") || ownArgs.includes("-h");
+  // teardown の読み分け材料(cli-teardown.ts): ヘルプ・バージョンの明示が
+  // なければ、errors 空の ShowHelp(親コマンド単体)は書き方の誤り(2)
+  const infoRequested = helpRequested || ownArgs.includes("--version") || ownArgs.includes("-v");
 
   const program = Effect.gen(function* () {
     const io = yield* CliIo;
@@ -1388,7 +1406,7 @@ export async function runEffectCli(
   let exitCode = 0;
   // 本番もテストも同じ teardown を通す(ShowHelp の exit 1 → 2 の読み替えが
   // 片方でしか効かない形を作らない — cli-teardown.ts)
-  maruhiTeardown(exit, (code) => {
+  maruhiTeardown(infoRequested)(exit, (code) => {
     exitCode = code;
   });
   // `maruhi run` は子プロセスの終了コードを引き継ぐ。`Command.runWith` は
