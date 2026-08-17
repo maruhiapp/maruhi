@@ -39,16 +39,16 @@ function ensureCreatable(
       verified,
       environmentId,
       signerUserId,
-      operation: "環境作成",
+      operation: "create an environment",
       forbidden:
-        "reader は環境を作成できません(create_environment は member 以上 — CRYPTO_SPEC §6.2)",
+        "A reader cannot create environments (create_environment requires the member role or above — CRYPTO_SPEC §6.2)",
     });
     // environment_id はチェーン履歴全体で一意(合意規則 duplicate-environment —
     // CRYPTO_SPEC §6.2)。サーバーの 422 を待たずクライアントでも早期検出する
     if (verified.state.environments.has(environmentId)) {
       return yield* Effect.fail(
         cliError(
-          `環境 ID ${environmentId} はチェーン上で使用済みです(create_environment 観測済み — 削除済み環境の ID も再利用できません)。別の ID を使ってください`,
+          `Environment ID ${environmentId} is already used on the chain (a create_environment entry was observed — IDs of deleted environments cannot be reused either). Use a different ID`,
         ),
       );
     }
@@ -85,14 +85,14 @@ function signCreateEntry(input: {
           },
           signingKey: input.signingKeyPair.privateKey,
         }),
-      catch: () => cliError("create_environment エントリの署名に失敗しました"),
+      catch: () => cliError("Failed to sign the create_environment entry"),
     });
     if (!signed.ok) {
-      return yield* Effect.fail(cliError("create_environment エントリの署名に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to sign the create_environment entry"));
     }
     // op の絞り込み(signChainEntry は入力の op を保存する)
     if (signed.value.op !== "create_environment") {
-      return yield* Effect.fail(cliError("create_environment エントリの署名に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to sign the create_environment entry"));
     }
     return signed.value;
   });
@@ -139,10 +139,10 @@ export function envCreateOp(input: {
           // 剥がす理由: コミットメント計算の入力(暗号境界)。産物はハッシュ
           dek: Redacted.value(dek),
         }),
-      catch: () => cliError("DEK コミットメントの計算に失敗しました"),
+      catch: () => cliError("Failed to compute the DEK commitment"),
     });
     if (!commitment.ok) {
-      return yield* Effect.fail(cliError("DEK コミットメントの計算に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to compute the DEK commitment"));
     }
     const deks = yield* buildWrapCompleteSet({
       verified: input.verified,
@@ -232,7 +232,7 @@ export function envCreateOp(input: {
                 });
             return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
           }),
-        exhaustedMessage: `環境作成のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+        exhaustedMessage: `The environment creation's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
       },
     );
   });

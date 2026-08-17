@@ -254,7 +254,7 @@ describe("runOp", () => {
       runOp({ command: ["  "], variables: [] }).pipe(Effect.provide(spawnedNothing)),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+    expect(JSON.stringify(exit)).toContain("Specify the command to run after `--`");
   });
 
   it("実行対象が空文字列だけなら子プロセスを起動しない", async () => {
@@ -264,7 +264,7 @@ describe("runOp", () => {
       runOp({ command: [""], variables: [] }).pipe(Effect.provide(spawnedNothing)),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("`--` の後に指定");
+    expect(JSON.stringify(exit)).toContain("Specify the command to run after `--`");
     // 書き方の誤りは入口と同じ usage エラー(終了コード 2)として立てる
     expect(JSON.stringify(exit)).toContain('"usage":true');
   });

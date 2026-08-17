@@ -306,7 +306,7 @@ describe("maruhi env create", () => {
     );
     // 完了報告のメンバー数は**実際に登録したラップ集合**の大きさ(開始時のビューの
     // 1 名ではない)。作り直した集合と食い違う数を報告しない
-    expect(env.logs.join("\n")).toContain("現メンバー 2 名へラップ済み");
+    expect(env.logs.join("\n")).toContain("DEK wrapped for 2 current members");
   });
 
   it("ChainHeadConflict の再同期は延長検査付き(短縮・分岐チェーンへ再署名しない)", async () => {
@@ -459,7 +459,7 @@ describe("maruhi env create", () => {
     // サーバーの汎用 403 を待たない: 待つと DEK 生成 + 全メンバー分の HPKE
     // ラップ・署名を済ませてから拒否されることになる(env rotate と同じ規律)
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("reader は環境を作成できません");
+    expect(env.errors.join("\n")).toContain("A reader cannot create environments");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
@@ -617,7 +617,7 @@ describe("maruhi env create", () => {
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
 
     expect(await runCli(["env", "create", "burned"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("使用済み");
+    expect(env.errors.join("\n")).toContain("already used on the chain");
     // 環境作成の HTTP 呼び出しは発生していない(チェーン取得のみ)
     expect(
       server.requests.filter((request) => request.method === "POST").map((request) => request.path),

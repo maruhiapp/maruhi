@@ -112,7 +112,9 @@ export function reportEnvironmentWarnings(
   environmentId: EnvironmentId,
   warnings: readonly string[],
 ): Effect.Effect<void, CliError, CliIo> {
-  return logWarnings(warnings.map((warning) => displayText(`環境 ${environmentId}: ${warning}`)));
+  return logWarnings(
+    warnings.map((warning) => displayText(`environment ${environmentId}: ${warning}`)),
+  );
 }
 
 /**
@@ -185,7 +187,7 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
     const first = displayText(diff.firstEnvironmentId);
     const second = displayText(diff.secondEnvironmentId);
     yield* io.log(
-      `同期・検証 OK: 環境 ${first} = ${diff.onlyInFirst.length + diff.shared} 変数 / 環境 ${second} = ${diff.onlyInSecond.length + diff.shared} 変数`,
+      `Synced and verified: environment ${first} = ${diff.onlyInFirst.length + diff.shared} variables / environment ${second} = ${diff.onlyInSecond.length + diff.shared} variables`,
     );
     const sides = [
       { environmentId: first, names: diff.onlyInFirst },
@@ -193,13 +195,13 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
     ];
     for (const side of sides) {
       // 件数は名前が 0 件でも必ず出す(出力の形を実行ごとに変えない)
-      yield* io.log(`環境 ${side.environmentId} のみにある変数: ${side.names.length}`);
+      yield* io.log(`Variables only in environment ${side.environmentId}: ${side.names.length}`);
       for (const name of side.names) {
         yield* io.log(`  ${displayText(name)}`);
       }
     }
     yield* io.log(
-      `両方にある変数: ${diff.shared}(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)`,
+      `Variables in both: ${diff.shared} (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)`,
     );
     // 標本のずれの注意書きは**常に**出す(stderr — 助言であってコマンドの出力
     // ではないので stdout の差分一覧には混ぜない)。差分ゼロのときに黙ると、
@@ -208,10 +210,10 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
     // 差分を「揃っている」と読ませる。助言だけを結論に合わせて変える
     const advice =
       diff.onlyInFirst.length + diff.onlyInSecond.length > 0
-        ? "心当たりのない差分は、push で埋める前にもう一度実行して確かめてください(push はチェーンへの追記で取り消せず、新しい値を古い値で上書きしうるため)"
-        : "差分ゼロを「揃っている」の根拠にする場合は、もう一度実行して確かめてください";
+        ? "For differences you cannot explain, run this again to confirm before filling them in with a push (a push is an irreversible chain append and may overwrite a newer value with an older one)"
+        : "Before treating zero differences as proof the environments are in sync, run this again to confirm";
     yield* io.logError(
-      `注意: 2 つの環境は同時ではなく順に読んでいます(2 環境を同時に読む API はありません)。実行中に他のメンバーが push / 削除を行うと、実在しない差分が出ることも、実在する差分が出ないこともあります — ${advice}`,
+      `Note: the two environments are read sequentially, not atomically (there is no API that reads two environments at once). If another member pushes or deletes during the run, differences may appear that do not exist, and real differences may not appear — ${advice}`,
     );
   });
 }

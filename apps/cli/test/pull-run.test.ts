@@ -326,7 +326,7 @@ describe("maruhi pull", () => {
     const server = servers[servers.length - 1];
     expect(await runCli(["pull", "--no-show", "--show"], later.layer)).toBe(2);
     expect(later.logs.join("\n")).not.toContain("alpha-value");
-    expect(later.errors.join("\n")).toContain("--show を複数回指定しています");
+    expect(later.errors.join("\n")).toContain("Flag --show was specified more than once");
     // 検査は通信より前(復号する平文をそもそも作らない)
     expect(server?.requests).toHaveLength(0);
 
@@ -334,7 +334,7 @@ describe("maruhi pull", () => {
     // すると、書いた指定が捨てられていること自体が伝わらない
     const earlier = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show", "--no-show"], earlier.layer)).toBe(2);
-    expect(earlier.errors.join("\n")).toContain("--show を複数回指定しています");
+    expect(earlier.errors.join("\n")).toContain("Flag --show was specified more than once");
 
     // 同じ綴りの重複も落ちる(`--show --show`)
     const same = await startEnv([chainHandler(), pullHandler()]);
@@ -1528,7 +1528,7 @@ describe("maruhi run", () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("`--` の後に指定");
+    expect(env.errors.join("\n")).toContain("Specify the command to run after `--`");
     expect(server?.requests).toHaveLength(0);
     expect(env.runnerCalls).toHaveLength(0);
   });
@@ -1537,7 +1537,7 @@ describe("maruhi run", () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "--"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("`--` の後に指定");
+    expect(env.errors.join("\n")).toContain("Specify the command to run after `--`");
     expect(server?.requests).toHaveLength(0);
   });
 
@@ -1557,7 +1557,7 @@ describe("maruhi run", () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "", "--", "printenv", " "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
+    expect(env.errors.join("\n")).toContain("Specify the command to run after `--`");
     expect(server?.requests).toHaveLength(0);
     expect(env.runnerCalls).toHaveLength(0);
   });
@@ -1570,8 +1570,8 @@ describe("maruhi run", () => {
     const server = servers[servers.length - 1];
     expect(await runCli(["run", "stray", "--", "printenv"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).toContain("`--` の後に並べてください");
+    expect(errors).toContain("Unexpected extra arguments (1;");
+    expect(errors).toContain("Write the command to run after `--`");
     // 中身は出さない(位置引数には平文が書かれうる)
     expect(errors).not.toContain("stray");
     expect(env.runnerCalls).toHaveLength(0);

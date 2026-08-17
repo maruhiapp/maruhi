@@ -48,19 +48,16 @@ import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.
 import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
 import {
   checkInviteAnchor,
-  commitVerifiedHead,
   floorHandleFor,
   loadCheckedFloor,
   openEnvironment,
-  openMetadataEnvironmentPair,
   openMetadataProject,
   openProject,
   openSession,
   resolveProjectId,
 } from "./context.ts";
 import { displayText, logWarnings } from "./display.ts";
-import { COMMAND_SPECS, envCreateCommand, runEffectCli } from "./effect-cli.ts";
-import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
+import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
 import { envRotateOp, type RotationSummary } from "./env-rotate.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
@@ -87,6 +84,7 @@ import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
+import { reportRotation } from "./rotation-report.ts";
 import {
   describeUnconvergedMandate,
   resolveUnconvergedMandates,
@@ -368,213 +366,6 @@ function projectCommand(execute: Execute) {
 }
 
 /**
- * 部分完了 / 完了未検証の報告。エポックは進んでおり、旧エポックの DEK 保持者は
- * 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で終わらせず、
- * 成功終了にもしない。
- */
-function reportPartialRotation(
-  environmentId: EnvironmentId,
-  summary: RotationSummary,
-  scope: string,
-  skipped: string,
-): Effect.Effect<number, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // 中断した場合の残数は上限であって実測ではない(再走査へ到達していないため、
-    // 競合分が既に他メンバーによって新エポックで書かれている可能性が残る)。
-    // 断定せず「未確認を含む」と示す — 巡を使い切っただけの残数は再走査を
-    // 通った実測なので、そちらに但し書きを付けて疑わしく見せない
-    const scale =
-      summary.remaining > 0
-        ? `未完了 ${summary.remaining} 変数${summary.remainingExact ? "" : "(未確認を含む)"}`
-        : "完了を検証できませんでした";
-    yield* io.log(`部分完了: ${scope}(再暗号化 ${summary.reencrypted} 変数${skipped}、${scale})`);
-    // 失敗の原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
-    // エラーだけ出して伝え損ねない)。「中断」と言えるのは再走査へ到達できず
-    // 途中で降りた場合だけで、巡を使い切った場合は最後まで走ったうえでの未完了である
-    const stopped = summary.remainingExact
-      ? "再暗号化が完了しませんでした"
-      : "再暗号化が中断しました";
-    const cause =
-      summary.failure === null
-        ? "並行 push との競合が解消しませんでした"
-        : `${stopped}: ${summary.failure}`;
-    yield* io.logError(
-      `警告: 環境 ${environmentId} の再暗号化が完了していません(${cause})。未再暗号化の現在値は epoch ${summary.epoch} 未満の DEK のままです — 原因を解消したうえで maruhi env rotate ${environmentId} を再実行すると、エポックを進めずに残りから再開します(再実行は残りを再走査するため、実際の未完了数もそこで確定します)。ただし原因が検証失敗・ローカル床違反(= サーバー応答の矛盾)である場合、再実行では解消しません — 配布された証拠を調査してください`,
-    );
-    return 1;
-  });
-}
-
-/**
- * ローテーション結果の報告と終了コード。完了サマリは再暗号化の実績を報告し、
- * 未完了分(部分完了)は警告として明示する — 「エポックだけ進んで再暗号化が
- * 残っている」状態を成功の顔で終わらせない。
- */
-function reportRotation(
-  environmentId: EnvironmentId,
-  summary: RotationSummary,
-  /** 新しいエポックを要求した実行か(--reason 指定 or --new-epoch)。 */
-  rotationRequested: boolean,
-): Effect.Effect<number, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* logWarnings(summary.warnings);
-    const skipped =
-      summary.alreadyCurrent === 0
-        ? ""
-        : `、並行更新により再暗号化不要 ${summary.alreadyCurrent} 変数`;
-    if (summary.mode === "up-to-date") {
-      // 確認のみ(未完了なし・新エポック未要求)。部分完了の案内が勧める
-      // 再実行の着地点でもあるので、何もしなかったことを明示する
-      yield* io.log(
-        `確認完了: 環境 ${environmentId} のアクティブ変数はすべて epoch ${summary.epoch} で暗号化されています(未完了の再暗号化はありません)。新しいエポックを作るには --reason を指定してください`,
-      );
-      return 0;
-    }
-    const scope =
-      summary.mode === "rotated"
-        ? `環境 ${environmentId} を epoch ${summary.previousEpoch} → ${summary.epoch} へローテーション`
-        : `環境 ${environmentId}(epoch ${summary.epoch})の再暗号化を再開`;
-    if (summary.remaining > 0 || summary.failure !== null) {
-      return yield* reportPartialRotation(environmentId, summary, `${scope}しました`, skipped);
-    }
-    if (summary.mode === "resumed") {
-      // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
-      // いないので、完了報告がローテーション成功に見えてはならない(退職者の
-      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
-      yield* io.log(
-        `完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})。**新しいエポックは作成していません**(epoch は ${summary.epoch} のまま)`,
-      );
-      if (!rotationRequested) {
-        // 理由なしの実行 = 「未完了があれば再開する」ことだけを要求している
-        return 0;
-      }
-      // ローテーションを要求した実行(--reason / --new-epoch)が再開へ切り替わった
-      // ので、**終了コードでも**成功と言わない: `maruhi env rotate prod --reason ...
-      // || exit 1` のようなスクリプトが、新エポックなしで成功と受け取る形を塞ぐ
-      yield* io.logError(
-        `警告: 要求されたローテーションは実行していません(未完了の再暗号化を先に片付けたため)。この実行の後に新しいエポックが必要な場合は、もう一度実行するか --new-epoch を付けて実行してください`,
-      );
-      return 1;
-    }
-    yield* io.log(`完了: ${scope}しました(再暗号化 ${summary.reencrypted} 変数${skipped})`);
-    return 0;
-  });
-}
-
-/** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
-function envRotate(
-  flags: CommonFlags & {
-    readonly reason?: string | undefined;
-    readonly newEpoch?: boolean | undefined;
-  },
-  environmentId: EnvironmentId,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // 環境床(§6.3)を使うため環境コンテキストで開く(env は positional 優先)。
-    // 収束系コマンドなので未収束義務の常時警告は抑制する(このコマンド自身の
-    // ローテーション報告が同じ事実を伝える — context.ts の OpenProjectOptions)
-    const context = yield* openEnvironment(
-      { ...flags, env: environmentId },
-      { quietMandateWarning: true },
-    );
-    const summary = yield* envRotateOp({
-      client: context.client,
-      verified: context.verified,
-      environmentId,
-      recipient: context.recipient,
-      // 未指定(undefined)と空文字列は**別物**として渡す: `--reason "$UNSET"`
-      // のような空指定を「理由なしの確認実行」に潰すと、ローテーションを
-      // 要求した実行が何も送らないまま成功終了する(env-rotate の checkReasonLength)
-      reason: flags.reason,
-      forceNewEpoch: flags.newEpoch === true,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
-    // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
-    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)。
-    // 空の --reason は envRotateOp が既に落としているので、ここに来る
-    // flags.reason !== undefined は必ず「中身のある理由の指定」である
-    return yield* reportRotation(
-      environmentId,
-      summary,
-      flags.newEpoch === true || flags.reason !== undefined,
-    );
-  });
-}
-
-/**
- * `maruhi env diff <a> <b>`: 2 環境の**変数名の集合**を比較する(値は取得も
- * 復号もしない)。差分があっても終了コードは 0 のまま: 「差分あり」は成功した
- * 実行の**報告内容**であって実行の失敗ではなく、1 に混ぜると検証失敗・床違反
- * (= サーバー不正の証拠)や通信失敗と区別できなくなる。
- */
-function envDiff(
-  flags: CommonFlags,
-  environmentId: EnvironmentId,
-  otherEnvironmentId: EnvironmentId,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // 前段(チェーン同期 + §6.3 検証)は 1 回だけ。master 鍵は要求しない
-    // (復号しないため — context.ts の openMetadataProjectWith)
-    const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
-    const diff = yield* envDiffOp({
-      client: context.client,
-      verified: context.verified,
-      resync: context.resync,
-      first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
-      second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
-      // 環境のメタ水準の床は作らない(値を読んでいないため)が、**チェーン床の
-      // ヘッド**は pull / push と同じく前進させる。記録は pull ごと(envDiffOp)
-      commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
-    });
-    yield* reportEnvironmentDiff(diff);
-  });
-}
-
-/**
- * `maruhi env` が取る操作。**一覧の出所はここだけ**で、綴りの検査・不明な操作の
- * 文面・コマンドと位置引数の description がすべてこれを読む(KEY_ACTIONS と同じ形)。
- */
-const ENV_ACTIONS = ["create", "rotate", "diff"] as const;
-
-type EnvAction = (typeof ENV_ACTIONS)[number];
-
-const ENV_ACTION_HELP = `不明な操作です(${ENV_ACTIONS.join(" | ")})`;
-
-/**
- * ENV_ACTIONS の分岐漏れを**型で**捕まえる(引数が never なので、操作を足して
- * 分岐を書き忘れると呼び出し位置がコンパイルエラーになる)。
- *
- * 実行時のフォールバックでは足りない: env の分岐は最後が envCreate なので、
- * 新しい操作が黙って**環境作成 = チェーンへの取り消せない追記**へ落ちる。
- * keyCommand は末尾の usageError で同じ穴を塞いでいるが、あちらは実行時。
- */
-function unhandledEnvAction(action: never): CliError {
-  return usageError(`${ENV_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
-}
-
-/**
- * **操作専用**のオプション(ここに無い宣言済みオプションは全操作で使える)。
- * 未宣言かどうかは `CliOptions.strict` が引数表から判定するので、この表に
- * 載せ忘れても新しいオプションが不明扱いで拒否されることはない。
- */
-const ENV_ACTION_FLAGS: Readonly<Record<EnvAction, ReadonlySet<string>>> = {
-  create: new Set(["name"]),
-  rotate: new Set(["reason", "new-epoch"]),
-  // diff は専用オプションを持たない(差分の有無を終了コードへ載せる
-  // `--exit-code` は今回入れない — 裁定は「差分あり = 成功(0)」)
-  diff: new Set(),
-};
-
-function isEnvAction(action: string | undefined): action is EnvAction {
-  return ENV_ACTIONS.some((known) => known === action);
-}
-
-/**
  * Given an action → action-specific-options table, reports whether `action` may
  * use `declared`: null when it may, otherwise the actions the option is
  * restricted to (for naming them in the diagnostic).
@@ -583,8 +374,9 @@ function isEnvAction(action: string | undefined): action is EnvAction {
  * だけを数えてはならない**: それだと 1 つのオプションを複数の操作が共有する形で、
  * 共有元のどちらでも拒否される(= 宣言したとおりに使えない)。
  *
- * 表を引数に取るのはその形をテストから固定するため — 実際の ENV_ACTION_FLAGS は
- * 互いに素なので、共有の形はコマンドラインからは到達できない。
+ * 表を引数に取るのはその形をテストから固定するため — 実際の表
+ * (SERVER / INVITE / MEMBER / AUDIT の *_ACTION_FLAGS)は互いに素なので、
+ * 共有の形はコマンドラインからは到達できない。
  */
 export function optionRestrictedTo<A extends string>(
   actions: readonly A[],
@@ -598,31 +390,7 @@ export function optionRestrictedTo<A extends string>(
   return owners.length === 0 || owners.includes(action) ? null : owners;
 }
 
-/**
- * 操作に適用されないオプション(create への `--reason` 等)の拒否。gunshi は
- * 1 コマンド 1 引数表なので、**全操作**のフラグが常に受理される — 指定した
- * 意図が黙って無視されたことに気付けるようにする。
- *
- * 操作は 3 つ以上あるので「もう一方の操作」では足りない。そのオプションを
- * 使える操作を表から引いて名指しする(操作が増えても文面が嘘にならない)。
- *
- * 書き方そのものの誤り(未宣言オプション・boolean への値・余分な位置引数)は
- * コマンドに依らないので args.ts と `CliOptions.strict` が受け持つ。
- */
-function envActionFlagRejection(
-  action: string | undefined,
-  tokens: readonly ArgTokenShape[],
-  args: ArgTable,
-): string | null {
-  // 不明な操作(`env bogus`)はコマンド本体が報告する。適用可否をここで
-  // 語れるのは操作が確定している場合だけ
-  if (!isEnvAction(action)) {
-    return null;
-  }
-  return actionFlagRejection("env", ENV_ACTIONS, ENV_ACTION_FLAGS, action, tokens, args);
-}
-
-/** envActionFlagRejection / serverActionFlagRejection の共通本体。 */
+/** server / invite / member / audit の *ActionFlagRejection の共通本体。 */
 function actionFlagRejection<A extends string>(
   command: string,
   actions: readonly A[],
@@ -647,135 +415,6 @@ function actionFlagRejection<A extends string>(
     return `${typedName(token)} は ${command} ${action} では使えません(${usable} 用のオプションです)`;
   }
   return null;
-}
-
-/**
- * 位置引数で受けた環境 ID の形式検証。**指定値そのものはエラーに出さない**
- * (位置引数には値が書かれうる — args.ts の規律)。
- *
- * positional 未指定(undefined)も型で明示的に弾く。位置引数を**書かずに**
- * `--environment-id` だけで渡した実行はここまで来ない(strict が未宣言
- * オプションとして runner より前に落とす — args.ts)。
- */
-function requireEnvironmentId(
-  value: string | undefined,
-  action: EnvAction,
-): Effect.Effect<EnvironmentId, CliError> {
-  if (value === undefined || !isEnvironmentId(value)) {
-    const example = action === "diff" ? "dev prod" : "dev";
-    return Effect.fail(
-      usageError(
-        `環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで。例: maruhi env ${action} ${example})`,
-      ),
-    );
-  }
-  return Effect.succeed(value);
-}
-
-function envCommand(execute: Execute) {
-  return define({
-    name: "env",
-    description: `環境の管理(${ENV_ACTIONS.join(" / ")})`,
-    args: {
-      action: { type: "positional", description: ENV_ACTIONS.join(" | ") },
-      "environment-id": { type: "positional", description: "環境 ID(例: dev / prod)" },
-      "other-environment-id": {
-        type: "positional",
-        // diff 専用の 3 つ目。**required: false が必須**: gunshi の positional は
-        // 既定で必須なので、付け忘れると create / rotate が必須検査で落ちる。
-        // optional は必須検査が効かないため、diff で欠けている場合は本体が
-        // usage エラーにする(`config set` の「設定する値を…」と同型)
-        required: false,
-        description: "比較するもう一方の環境 ID(diff のみ)",
-      },
-      name: { type: "string", description: "表示名(create のみ。省略時は環境 ID)" },
-      reason: {
-        type: "string",
-        description: "ローテーションの理由(新しいエポックを作る場合は必須。チェーンに記録される)",
-      },
-      "new-epoch": {
-        type: "boolean",
-        // 否定形(`--no-new-epoch`)を宣言する: gunshi は boolean へ書いた値を
-        // 読まないので、宣言しないと「無効にする書き方」が存在しないまま
-        // `--new-epoch false` のような形だけが増える
-        negatable: true,
-        description: "rotate: 未完了の再暗号化があっても再開で済ませず、必ず新しいエポックを作る",
-      },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject)",
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const action = ctx.values.action;
-          // 操作の綴りは環境 ID の形式検査より前に見る(`env bogus` が
-          // 「環境 ID の形式が…」で落ちると、打ち間違いが伝わらない)
-          if (!isEnvAction(action)) {
-            return yield* Effect.fail(usageError(ENV_ACTION_HELP));
-          }
-          const environmentId = yield* requireEnvironmentId(ctx.values["environment-id"], action);
-          const flags = { server: ctx.values.server, project: ctx.values.project };
-          if (action === "diff") {
-            const other = ctx.values["other-environment-id"];
-            if (other === undefined) {
-              return yield* Effect.fail(
-                usageError("比較する環境を 2 つ指定してください(例: maruhi env diff dev prod)"),
-              );
-            }
-            const otherEnvironmentId = yield* requireEnvironmentId(other, action);
-            if (otherEnvironmentId === environmentId) {
-              // 同じ環境どうしの比較は必ず空になる = 要求そのものが書き間違い。
-              // 指定値は出さない(位置引数には値が書かれうる)
-              return yield* Effect.fail(
-                usageError(
-                  "同じ環境 ID を 2 つ指定しています。比較する 2 つの環境を指定してください",
-                ),
-              );
-            }
-            return yield* envDiff(flags, environmentId, otherEnvironmentId);
-          }
-          if (action === "rotate") {
-            // 空の `--reason`(`--reason ""` / `--reason=`)は共通の引数検査が
-            // 落とす(args.ts の emptyOptionValueRejection — 「未指定」と
-            // 区別できない値を既定へ潰さない)。ここへ来る undefined は
-            // **`--reason` 自体が無い**実行だけ
-            return yield* envRotate(
-              { ...flags, reason: ctx.values.reason, newEpoch: ctx.values["new-epoch"] },
-              environmentId,
-            );
-          }
-          if (action === "create") {
-            // 本体は effect-cli.ts と共有する(引数層が 2 つある移行中に、
-            // 実装まで 2 つ持つと片方だけ直す事故が起きる)
-            return yield* envCreateCommand({ ...flags, name: ctx.values.name }, environmentId);
-          }
-          // ENV_ACTIONS の全分岐を上で処理済み(到達しない)。操作を足して
-          // ここを書き忘れると**コンパイルエラー**になる
-          return yield* Effect.fail(unhandledEnvAction(action));
-        }),
-        {
-          commandRejection: envActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
-          // 3 つ目の位置引数は diff 専用。**既知の非 diff 操作のときだけ**除く:
-          // 未知の操作でも除くと `env bogus a b` が「余分な引数です」で落ちて、
-          // 本当の誤り(操作名の綴り)が伝わらない(config の get / set と同じ形)。
-          //
-          // 効くのは**余分な位置引数の検査だけではない**: `without` は空の位置
-          // 引数の検査(args.ts の emptyPositionalRejection)にも渡るので、
-          // 未知の操作に空の 3 つ目を書くと「位置引数 other-environment-id が
-          // 空です」が「不明な操作です」より先に出る。args.ts は構造的な誤りを
-          // 操作別の指摘より先に言う並び順なのでこれは意図どおりで、空の引数を
-          // 渡した事実自体は本当(直して再実行すれば操作名の誤りが出る)
-          withoutPositionals:
-            isEnvAction(ctx.values.action) && ctx.values.action !== "diff"
-              ? ["other-environment-id"]
-              : undefined,
-        },
-      ),
-  });
 }
 
 /**
@@ -2215,7 +1854,7 @@ function entryCommand(execute: Execute, commands: readonly string[]) {
 }
 
 /**
- * `effect/unstable/cli` へ移した 3 コマンド(ADR-0016 の第 1 段階)への振り分け。
+ * `effect/unstable/cli` へ移したコマンド(ADR-0016 第 1〜2 段階)への振り分け。
  * 戻り値は診断の宛先(解決済みのコマンド段)にそのまま使う。
  *
  * コマンドの解決は **gunshi と同じ規則**(args.ts の commandTokens)で行う。
@@ -2224,18 +1863,20 @@ function entryCommand(execute: Execute, commands: readonly string[]) {
  * 避けるため。`--` の後ろはコマンドの段ではないので見ない(先頭のコマンド名を
  * `--` の後ろへ書いた形は commandNameAfterTerminator が手前で落とす)。
  *
- * `env` は create だけを移したので、`env create` の並びのときだけ新しい経路へ
- * 渡す。移行途中なので `maruhi env --name x create dev` のような**操作名より
- * 前にフラグを書いた形**(commandTokens には値も並ぶ)は gunshi 側の env
- * コマンドが受け持つ — rotate / diff と同じ引数表のまま。次段でコマンドごと移す。
+ * 入れ子の段(`env`)は先頭のコマンド名で丸ごと移行済みへ振り分ける。2 語目が
+ * 既知のサブコマンドなら診断の宛先をその段(`env rotate`)まで確定し、そうで
+ * なければ親の段(`env`)のまま渡す — 不明なサブコマンドの診断は effect 側
+ * (UnknownSubcommand)が受け持つ。段の一覧は COMMAND_SPECS から引く
+ * (手書きの写しを持たない)。
  */
 function migratedCommandKey(argv: readonly string[]): string | null {
   const tokens = commandTokens(argv);
   const head = tokens[0];
-  if (head === "pull" || head === "run") {
-    return head;
+  if (head === undefined || !Object.hasOwn(COMMAND_SPECS, head)) {
+    return null;
   }
-  return head === "env" && tokens[1] === "create" ? "env create" : null;
+  const nested = tokens[1] === undefined ? null : `${head} ${tokens[1]}`;
+  return nested !== null && Object.hasOwn(COMMAND_SPECS, nested) ? nested : head;
 }
 
 /**
@@ -2350,7 +1991,6 @@ export async function runCli(
     logout: logoutCommand(execute),
     key: keyCommand(execute),
     project: projectCommand(execute),
-    env: envCommand(execute),
     server: serverCommand(execute),
     invite: inviteCommand(execute),
     member: memberCommand(execute),

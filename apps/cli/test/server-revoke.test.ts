@@ -493,7 +493,7 @@ describe("maruhi server revoke", () => {
     expect(state.rotateBodies).toHaveLength(0);
     expect(state.pushes).toEqual([{ environmentId: ENV_ID, variableId: "var-stale-1" }]);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("再暗号化を再開");
+    expect(logs).toContain("resumed re-encryption");
     expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
     // 「ローテーション済み」扱いにはならない(見せかけの完了で exit 0 にしない)
     expect(logs).not.toContain("ローテーション済み(失効より後のエポック");

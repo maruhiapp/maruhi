@@ -1,6 +1,13 @@
-// `effect/unstable/cli` へ移した引数層(ADR-0016 の第 1 段階: pull / run /
-// env create の 3 コマンド)。残る 11 コマンドと `env rotate` / `env diff` は
-// gunshi のまま(cli.ts)で、この分割状態は移行が進むまで続く。
+// `effect/unstable/cli` へ移した引数層(ADR-0016 第 1 段階: pull / run /
+// env create、第 2 段階: env rotate / env diff)。残るコマンドは gunshi のまま
+// (cli.ts)で、この分割状態は移行が進むまで続く。
+//
+// `env` は**真の入れ子サブコマンド**(ADR-0016 決定 6): gunshi の 1 段制約の
+// ために操作を位置引数にしていた結果必要だった「その操作に適用されない
+// オプション」の拒否機構(ENV_ACTION_FLAGS / optionRestrictedTo /
+// actionFlagRejection / withoutPositionals)は、宣言が操作ごとに分かれることで
+// 機構ごと不要になった。「その操作に無いフラグは usage エラー(exit 2)」の
+// 性質は宣言 + teardown が保つ(effect-cli.test.ts が固定する)。
 //
 // 規律(ADR-0016 の決定):
 //
@@ -18,7 +25,7 @@
 // 6. **stdout はコマンドの出力だけ**。コマンド本体の出力は `CliIo.log`、
 //    ヘルプ・診断は `Console`(= `CliIo.logError` = stderr)へ分ける
 
-import { isEnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import {
   Cause,
   Console,
@@ -46,19 +53,27 @@ import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
-import { openEnvironment, openProject } from "./context.ts";
+import {
+  commitVerifiedHead,
+  openEnvironment,
+  openMetadataEnvironmentPair,
+  openProject,
+} from "./context.ts";
 import { formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
+import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
+import { envRotateOp } from "./env-rotate.ts";
 import { CliError, usageError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
+import { reportRotation } from "./rotation-report.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { CLI_VERSION } from "./version.ts";
 
 /** `--` を書き忘れた実行に添える案内(実行対象の渡し方は 1 つだけ)。 */
 const RUN_TERMINATOR_HINT =
-  "。実行するコマンドは `--` の後に並べてください(例: maruhi run -- printenv MY_VAR)";
+  ". Write the command to run after `--` (example: maruhi run -- printenv MY_VAR)";
 
 /* -------------------------------------------------------------------------- */
 /* 宣言(検査は Effect の機構に載せる — 自前の走査を書かない)                 */
@@ -128,16 +143,24 @@ function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
 /* コマンド定義                                                                */
 /* -------------------------------------------------------------------------- */
 
-/** 全 3 コマンドが取る共通フラグ(context.ts の CommonFlags と同じ名前)。 */
+/** 環境系コマンドが取る共通フラグ(context.ts の CommonFlags と同じ名前)。 */
 const commonFlags = () => ({
-  server: singleValued("server", "サーバー URL(省略時は config の server)"),
-  project: singleValued("project", "プロジェクト ID(省略時は config の defaultProject)"),
-  env: singleValued("env", "環境 ID(省略時は config の defaultEnvironment)"),
+  ...projectFlags(),
+  env: singleValued("env", "Environment ID (defaults to config defaultEnvironment)"),
+});
+
+/** プロジェクト水準のコマンドが取る共通フラグ(env は取らない)。 */
+const projectFlags = () => ({
+  server: singleValued("server", "Server URL (defaults to config server)"),
+  project: singleValued("project", "Project ID (defaults to config defaultProject)"),
 });
 
 const pullConfig = {
   ...commonFlags(),
-  show: singleFlag("show", "値を端末に表示する(対話端末でのみ許可される)"),
+  show: singleFlag(
+    "show",
+    "Print values to the terminal (only allowed on an interactive terminal)",
+  ),
 };
 
 const runConfig = {
@@ -147,7 +170,7 @@ const runConfig = {
   // (`maruhi run -- "$CMD"` の未設定形)を落とす。どちらも宣言で、
   // 2 つ目以降の空文字列は**子プロセスの引数として保つ**
   command: Argument.string("command").pipe(
-    Argument.withDescription("`--` の後に並べる実行対象(そのまま子プロセスへ渡す)"),
+    Argument.withDescription("The command to run, written after `--` (passed to the child as-is)"),
     Argument.atLeast(1),
     Argument.filter(
       (command) => (command[0] ?? "").trim() !== "",
@@ -156,22 +179,53 @@ const runConfig = {
   ),
 };
 
+/** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
+const environmentIdArgument = (name: string, description: string) =>
+  Argument.string(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
+
 const envCreateConfig = {
-  server: singleValued("server", "サーバー URL(省略時は config の server)"),
-  project: singleValued("project", "プロジェクト ID(省略時は config の defaultProject)"),
-  name: singleValued("name", "表示名(省略時は環境 ID)"),
+  ...projectFlags(),
+  name: singleValued("name", "Display name (defaults to the environment ID)"),
   // キーは**打つときの綴り**にする(specOf が診断名としてそのまま使う)
-  "environment-id": Argument.string("environment-id").pipe(
-    Argument.withDescription("環境 ID(例: dev / prod)"),
-    Argument.withSchema(NonBlank),
+  "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
+};
+
+const envRotateConfig = {
+  ...projectFlags(),
+  reason: singleValued(
+    "reason",
+    "Rotation reason (required when creating a new epoch; recorded on the chain)",
+  ),
+  "new-epoch": singleFlag(
+    "new-epoch",
+    "Always create a new epoch, even when incomplete re-encryption could be resumed instead",
+  ),
+  "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
+};
+
+const envDiffConfig = {
+  ...projectFlags(),
+  "environment-id": environmentIdArgument("environment-id", "First environment ID to compare"),
+  // gunshi では 1 段制約のため optional な 3 つ目の位置引数だったが、diff 専用の
+  // サブコマンドになったので**必須**として宣言できる(欠落は MissingArgument)
+  "other-environment-id": environmentIdArgument(
+    "other-environment-id",
+    "Second environment ID to compare",
   ),
 };
 
-/** commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。 */
+/**
+ * commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。
+ * 入れ子の段(`env`)は subcommands を持ち、不明なサブコマンドの診断が
+ * 「取りうる操作の一覧」を出すのに使う(cli-formatter.ts)。
+ */
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
   run: specOf(runConfig),
+  env: { flags: [], positionals: [], subcommands: ["create", "rotate", "diff"] },
   "env create": specOf(envCreateConfig),
+  "env rotate": specOf(envRotateConfig),
+  "env diff": specOf(envDiffConfig),
 };
 
 /**
@@ -199,7 +253,7 @@ function commandAfterTerminator(
     if (stray > 0) {
       return yield* Effect.fail(
         usageError(
-          `余分な引数です(${stray} 個。中身は表示しません — 平文の値が混ざりうるため)。maruhi run は \`--\` より前に位置引数を取りません${RUN_TERMINATOR_HINT}`,
+          `Unexpected extra arguments (${stray}; contents not shown — they may contain plaintext values). maruhi run takes no positional arguments before \`--\`${RUN_TERMINATOR_HINT}`,
         ),
       );
     }
@@ -210,11 +264,10 @@ function commandAfterTerminator(
 /**
  * `maruhi env create <id>` の本体(複合リクエスト — §12-4)。
  *
- * **移行中は gunshi 側の env コマンド(cli.ts)も同じ本体を呼ぶ**: 引数層が
- * 2 つある間に実装まで 2 つ持つと、片方だけ直す事故が起きる。次段で env を
- * まるごと移したときにこの共有は消える。
+ * 第 1 段階の移行中は gunshi 側の env コマンド(cli.ts)も同じ本体を呼んで
+ * いたが、第 2 段階で env がまるごと移ったので共有は解消した。
  */
-export function envCreateCommand(
+function envCreateCommand(
   flags: CommonFlags & { readonly name?: string | undefined },
   environmentId: string,
 ): Effect.Effect<void, CliError, CliServices> {
@@ -233,20 +286,94 @@ export function envCreateCommand(
     yield* io.log(
       // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り
       // 直した場合、コマンド開始時のビューのメンバー数とは食い違いうる)
-      `環境を作成しました: ${environmentId}(epoch=${created.currentEpoch}、DEK を現メンバー ${created.memberCount} 名へラップ済み)`,
+      `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${created.memberCount} current members)`,
     );
   });
 }
 
 /** 位置引数で受けた環境 ID の形式検証(**指定値そのものはエラーに出さない**)。 */
-function requireEnvironmentId(value: string): Effect.Effect<string, CliError> {
+function requireEnvironmentId(
+  value: string,
+  example: string,
+): Effect.Effect<EnvironmentId, CliError> {
   return isEnvironmentId(value)
     ? Effect.succeed(value)
     : Effect.fail(
         usageError(
-          "環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで。例: maruhi env create dev)",
+          `Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: ${example})`,
         ),
       );
+}
+
+/** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
+function envRotateCommand(
+  flags: CommonFlags & {
+    readonly reason?: string | undefined;
+    readonly newEpoch?: boolean | undefined;
+  },
+  environmentId: EnvironmentId,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 環境床(§6.3)を使うため環境コンテキストで開く(環境は位置引数で確定)。
+    // 収束系コマンドなので未収束義務の常時警告は抑制する(このコマンド自身の
+    // ローテーション報告が同じ事実を伝える — context.ts の OpenProjectOptions)
+    const context = yield* openEnvironment(
+      { ...flags, env: environmentId },
+      { quietMandateWarning: true },
+    );
+    const summary = yield* envRotateOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      recipient: context.recipient,
+      // 未指定(undefined)と空文字列は**別物**として渡す: 空の `--reason` は
+      // 宣言(NonBlank)が exit 2 で落とすので、ここへ来る undefined は
+      // **`--reason` 自体が無い**実行だけ(env-rotate の checkReasonLength は
+      // 防衛線として残る)
+      reason: flags.reason,
+      forceNewEpoch: flags.newEpoch === true,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+    // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
+    // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)
+    return yield* reportRotation(
+      environmentId,
+      summary,
+      flags.newEpoch === true || flags.reason !== undefined,
+    );
+  });
+}
+
+/**
+ * `maruhi env diff <a> <b>`: 2 環境の**変数名の集合**を比較する(値は取得も
+ * 復号もしない)。差分があっても終了コードは 0 のまま: 「差分あり」は成功した
+ * 実行の**報告内容**であって実行の失敗ではなく、1 に混ぜると検証失敗・床違反
+ * (= サーバー不正の証拠)や通信失敗と区別できなくなる。
+ */
+function envDiffCommand(
+  flags: CommonFlags,
+  environmentId: EnvironmentId,
+  otherEnvironmentId: EnvironmentId,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 前段(チェーン同期 + §6.3 検証)は 1 回だけ。master 鍵は要求しない
+    // (復号しないため — context.ts の openMetadataProjectWith)
+    const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
+    const diff = yield* envDiffOp({
+      client: context.client,
+      verified: context.verified,
+      resync: context.resync,
+      first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
+      second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
+      // 環境のメタ水準の床は作らない(値を読んでいないため)が、**チェーン床の
+      // ヘッド**は pull / push と同じく前進させる。記録は pull ごと(envDiffOp)
+      commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
+    });
+    yield* reportEnvironmentDiff(diff);
+  });
 }
 
 /**
@@ -283,7 +410,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         yield* showValues(pulled.variables);
       }
     }),
-  ).pipe(Command.withDescription("同期検査(§6.3)+ 配布時検証(§5.1)+ 復号し、メタデータを表示する"));
+  ).pipe(
+    Command.withDescription(
+      "Sync-check (§6.3) + distribution verification (§5.1) + decrypt, then print metadata",
+    ),
+  );
 
   const run = Command.make("run", runConfig, (values) =>
     Effect.gen(function* () {
@@ -306,24 +437,70 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "pull + 復号した値を子プロセスの環境変数へメモリ注入してコマンドを実行する",
+      "pull + inject decrypted values into the child process environment (memory only) and run the command",
     ),
   );
 
   const envCreate = Command.make("create", envCreateConfig, (values) =>
     Effect.gen(function* () {
       // 形式は宣言(NonBlank)を通った後の追加検査。ネットワークより前に見る
-      const environmentId = yield* requireEnvironmentId(values["environment-id"]);
+      const environmentId = yield* requireEnvironmentId(
+        values["environment-id"],
+        "maruhi env create dev",
+      );
       yield* envCreateCommand(values, environmentId);
     }),
-  ).pipe(Command.withDescription("環境を作成する(複合リクエスト — §12-4)"));
+  ).pipe(Command.withDescription("Create an environment (compound request — §12-4)"));
+
+  const envRotate = Command.make("rotate", envRotateConfig, (values) =>
+    Effect.gen(function* () {
+      const environmentId = yield* requireEnvironmentId(
+        values["environment-id"],
+        "maruhi env rotate dev",
+      );
+      const { reason, "new-epoch": newEpoch, ...flags } = values;
+      onExitCode(yield* envRotateCommand({ ...flags, reason, newEpoch }, environmentId));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Rotate the environment's epoch DEK, or resume incomplete re-encryption (§7)",
+    ),
+  );
+
+  const envDiff = Command.make("diff", envDiffConfig, (values) =>
+    Effect.gen(function* () {
+      const environmentId = yield* requireEnvironmentId(
+        values["environment-id"],
+        "maruhi env diff dev prod",
+      );
+      const otherEnvironmentId = yield* requireEnvironmentId(
+        values["other-environment-id"],
+        "maruhi env diff dev prod",
+      );
+      if (otherEnvironmentId === environmentId) {
+        // 同じ環境どうしの比較は必ず空になる = 要求そのものが書き間違い。
+        // 指定値は出さない(位置引数には値が書かれうる)
+        return yield* Effect.fail(
+          usageError(
+            "The same environment ID was written twice. Specify two different environments to compare",
+          ),
+        );
+      }
+      yield* envDiffCommand(values, environmentId, otherEnvironmentId);
+    }),
+  ).pipe(
+    Command.withDescription("Compare the variable-name sets of two environments (names only)"),
+  );
 
   // gunshi は 1 段(サブコマンド + positional の action)しか組めないため、
   // maruhi は create / rotate / diff を**位置引数**にしていた。その結果
   // 1 つの引数表に全操作のフラグが同居し、「その操作に適用されない
   // オプション」の拒否(cli.ts の ENV_ACTION_FLAGS / optionRestrictedTo)を
   // 自前で書く必要があった。入れ子のサブコマンドはその機構ごと不要にする
-  const env = Command.make("env").pipe(Command.withSubcommands([envCreate]));
+  const env = Command.make("env").pipe(
+    Command.withDescription("Manage environments (create / rotate / diff)"),
+    Command.withSubcommands([envCreate, envRotate, envDiff]),
+  );
 
   return Command.make("maruhi").pipe(Command.withSubcommands([pull, run, env]));
 }
@@ -421,7 +598,7 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
   // 中和だけでは規律(打たれた値を診断に出さない)を守れない。無言では飲まず
   // (CLAUDE.md)、型の名前だけを添える(failure.ts の internalErrorKind —
   // gunshi 側の defect 経路と同じ形)
-  return io.logError(`maruhi: 内部エラー(${internalErrorKind(failure)})`);
+  return io.logError(`maruhi: internal error (${internalErrorKind(failure)})`);
 }
 
 /**

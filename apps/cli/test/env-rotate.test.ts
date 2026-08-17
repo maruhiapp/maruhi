@@ -579,7 +579,7 @@ describe("maruhi env rotate", () => {
     // prev は検証済み直前 version の signed bytes ハッシュ(§4.1 の連鎖)
     expect(pushedA.value.prevValueSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(env.logs.join("\n")).toContain("epoch 1 → 2");
-    expect(env.logs.join("\n")).toContain("再暗号化 2 変数");
+    expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
   });
 
   it("中断復旧: 複合受理後にクラッシュした状態から、エポックを進めず残りの再暗号化を再開する", async () => {
@@ -647,14 +647,14 @@ describe("maruhi env rotate", () => {
     expect(resumed.value.aad).toMatchObject({ epoch: 2, version: 2 });
     expect(await decryptWire(newDek, resumed.value)).toBe("key-abc");
     // 再開であることは明示される(--reason はチェーンに記録されない旨も)
-    expect(env.errors.join("\n")).toContain("再暗号化が未完了");
-    expect(env.logs.join("\n")).toContain("再暗号化を再開");
+    expect(env.errors.join("\n")).toContain("with incomplete re-encryption");
+    expect(env.logs.join("\n")).toContain("resumed re-encryption");
     // 再開は「要求されたローテーション」ではない: 新エポックを作っていない事実を
     // 完了報告が隠さない(退職者削除後の実行が成功扱いに見える形を塞ぐ)
-    expect(env.logs.join("\n")).toContain("新しいエポックは作成していません");
-    expect(env.errors.join("\n")).toContain("要求されたローテーションは実行していません");
+    expect(env.logs.join("\n")).toContain("No new epoch was created");
+    expect(env.errors.join("\n")).toContain("the requested rotation was not performed");
     // 要求があった実行では「要求を実行せず切り替えた」と明示する
-    expect(env.errors.join("\n")).toContain("要求されたローテーションは実行せず");
+    expect(env.errors.join("\n")).toContain("The requested rotation will not be performed");
   });
 
   it("ローテーション後の push 失敗は、エポックが進んだ事実を部分完了として報告する", async () => {
@@ -694,13 +694,13 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(1);
     // 巡を使い切った(= 毎巡の再走査は通っている)ので、残数は実測である。
     // 「中断」とも「未確認を含む」とも言わない
-    expect(env.logs.join("\n")).toContain("部分完了");
-    expect(env.logs.join("\n")).toContain("未完了 1 変数");
-    expect(env.logs.join("\n")).not.toContain("未確認を含む");
+    expect(env.logs.join("\n")).toContain("Partial completion");
+    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).not.toContain("may include unconfirmed ones");
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化が完了しませんでした");
-    expect(errors).not.toContain("再暗号化が中断しました");
-    expect(errors).toContain("再実行すると、エポックを進めずに残りから再開します");
+    expect(errors).toContain("re-encryption did not complete");
+    expect(errors).not.toContain("re-encryption was interrupted");
+    expect(errors).toContain("resume from the remainder without advancing the epoch");
   });
 
   it("部分完了の原因は最新の失敗を出す(解消済みの一時失敗が本当の原因を隠さない)", async () => {
@@ -741,9 +741,9 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "原因の鮮度"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain(
-      "再暗号化が完了しませんでした: 変数 DATABASE_URL の再暗号化が 404 で拒否されました(並行削除の可能性)",
+      "re-encryption did not complete: Re-encryption of variable DATABASE_URL was rejected with 404 (possible concurrent deletion)",
     );
-    expect(errors).not.toContain("再暗号化が完了しませんでした: サーバー");
+    expect(errors).not.toContain("re-encryption did not complete: Failed to re-encrypt");
   });
 
   it("解消した一時失敗は原因として残さない(解けない競合は競合として報告する)", async () => {
@@ -797,10 +797,10 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     // 残っているのは競合分だけなので、原因は競合である。解消済みの 502 を
     // 掲げると、調査が検証失敗・床違反の方向へ誤誘導される
-    expect(errors).toContain("並行 push との競合が解消しませんでした");
-    expect(errors).not.toContain("再暗号化が完了しませんでした");
+    expect(errors).toContain("conflicts with concurrent pushes did not resolve");
+    expect(errors).not.toContain("re-encryption did not complete");
     // 解消した失敗が起きた事実自体は警告として残す
-    expect(errors).toContain("再暗号化の途中で失敗がありました");
+    expect(errors).toContain("There were failures during re-encryption");
   });
 
   it("巡末の再走査に到達できなかった場合だけ、残数を「未確認を含む」として報告する", async () => {
@@ -838,8 +838,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再走査失敗"], env.layer)).toBe(1);
     // 競合分が他メンバーの手で解決している可能性が残るので、断定しない
-    expect(env.logs.join("\n")).toContain("未完了 1 変数(未確認を含む)");
-    expect(env.errors.join("\n")).toContain("再暗号化が中断しました");
+    expect(env.logs.join("\n")).toContain("1 variables incomplete (may include unconfirmed ones)");
+    expect(env.errors.join("\n")).toContain("re-encryption was interrupted");
   });
 
   it("理由なしの再実行は再開だけを要求している(再暗号化済みの変数は対象にせず成功終了)", async () => {
@@ -892,10 +892,10 @@ describe("maruhi env rotate", () => {
     // フラグの解消 — AUDIT_SPEC §4.1-5 — と見なされないため)
     expect(pushed.reencryption).toBe(true);
     const errors = env.errors.join("\n");
-    expect(errors).not.toContain("要求されたローテーションは実行していません");
+    expect(errors).not.toContain("the requested rotation was not performed");
     // 何も要求していない実行に「要求を実行せず切り替えた」と言わない
-    expect(errors).toContain("再暗号化が未完了です。この再暗号化を再開します");
-    expect(errors).not.toContain("要求されたローテーションは実行せず");
+    expect(errors).toContain("with incomplete re-encryption. Resuming this re-encryption");
+    expect(errors).not.toContain("The requested rotation will not be performed");
   });
 
   it("完了検証: 初回 pull 以降に他メンバーが作った変数も再暗号化してから完了とする", async () => {
@@ -1114,7 +1114,7 @@ describe("maruhi env rotate", () => {
     const env = await startEnv(handlers, owner);
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "並行"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("並行ローテーション");
+    expect(env.errors.join("\n")).toContain("concurrent rotation");
     // 並行ローテーションを検出した時点で止まる(上限まで再送しない)
     expect(rotateBodies).toHaveLength(1);
   });
@@ -1167,7 +1167,7 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     // 勝者は現エポックで受理済み = 再暗号化不要。上書きしに行かない
     expect(state.pushes).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
+    expect(env.logs.join("\n")).toContain("1 variables already re-encrypted by concurrent updates");
   });
 
   it("409 の勝者が分岐した履歴へ連鎖していたら、prev を付け替えず中断する(§12-5)", async () => {
@@ -1221,11 +1221,11 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("分岐した履歴への連鎖");
     // 中断でも収集済みの警告は失わない(床なしの但し書きは中断時こそ効く)
-    expect(errors).toContain("欠落も検出できません");
+    expect(errors).toContain("the omission cannot be detected");
     // 暗号学的証拠は「再実行で直る失敗」ではない: 部分完了 + 再開案内へ
     // 潰さず、調査を促す即時中断として出す(push 経路と同じ扱い)
-    expect(errors).toContain("再実行では解消しない証拠です");
-    expect(env.logs.join("\n")).not.toContain("部分完了");
+    expect(errors).toContain("This is evidence that re-running will not resolve");
+    expect(env.logs.join("\n")).not.toContain("Partial completion");
   });
 
   it("最終巡の競合も再取得で確かめる(勝者が現エポックなら未完了と誤報しない)", async () => {
@@ -1272,8 +1272,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.pushes).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
-    expect(env.errors.join("\n")).not.toContain("完了していません");
+    expect(env.logs.join("\n")).toContain("1 variables already re-encrypted by concurrent updates");
+    expect(env.errors.join("\n")).not.toContain("has not completed");
   });
 
   it("再暗号化中の並行削除(404)は警告して続行する(残りの変数を巻き添えにしない)", async () => {
@@ -1344,10 +1344,10 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "削除レース"], env.layer)).toBe(0);
     // 削除された変数は対象から外れ、残りは再暗号化される
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
-    expect(env.errors.join("\n")).toContain("並行削除");
+    expect(env.errors.join("\n")).toContain("deleted concurrently by another member");
     // 404 は中断原因として記録され、完了時は「起きたが解決した」warning になる
     // (部分完了の原因が「並行 push との競合」に化けない)
-    expect(env.errors.join("\n")).toContain("404 で拒否されました");
+    expect(env.errors.join("\n")).toContain("rejected with 404");
   });
 
   it("404 を返し続けながら変数を配布し続けるサーバーでは、404 が部分完了の原因として出る", async () => {
@@ -1390,11 +1390,11 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "404 継続"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
-    expect(env.logs.join("\n")).toContain("部分完了");
+    expect(env.logs.join("\n")).toContain("Partial completion");
     expect(errors).toContain(
-      "再暗号化が完了しませんでした: 変数 API_KEY の再暗号化が 404 で拒否されました(並行削除の可能性)",
+      "re-encryption did not complete: Re-encryption of variable API_KEY was rejected with 404 (possible concurrent deletion)",
     );
-    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
+    expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
   });
 
   it("409 の申告より古い値しか配布されない応答は、勝者として採用せず中断する(§12-5)", async () => {
@@ -1461,13 +1461,13 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "競合"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
     // 「完了」の顔で終わらせない(サマリ自体が部分完了を名乗る)
-    expect(env.logs.join("\n")).toContain("部分完了");
-    expect(env.logs.some((line) => line.startsWith("完了:"))).toBe(false);
-    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    expect(env.logs.join("\n")).toContain("Partial completion");
+    expect(env.logs.some((line) => line.startsWith("Done:"))).toBe(false);
+    expect(env.logs.join("\n")).toContain("1 variables incomplete");
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化が完了していません");
+    expect(errors).toContain("has not completed");
     // 旧エポックの DEK 保持者が現在値を読めるままであることを明示する
-    expect(errors).toContain("epoch 2 未満の DEK のまま");
+    expect(errors).toContain("DEKs older than epoch 2");
   });
 
   it("再開経路でも前進した検証ビューでガードを再適用する(pull 中に自分が削除された場合)", async () => {
@@ -1545,7 +1545,7 @@ describe("maruhi env rotate", () => {
     await seedConfig(env, { server: server.origin, defaultProject: granted.projectId });
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("チェーン導出メンバーではありません");
+    expect(env.errors.join("\n")).toContain("not a chain-derived member");
     // 再開経路でも書き込みには進んでいない
     expect(pushPaths).toHaveLength(0);
   });
@@ -1581,9 +1581,9 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     // 申告を鵜呑みにして「他メンバーが並行ローテーションした」と報告しない。
     // チェーン導出の現エポックが変わっていない以上、これは応答の矛盾である
-    expect(errors).not.toContain("並行ローテーション");
-    expect(errors).toContain("サーバー応答とチェーンの矛盾");
-    expect(errors).toContain("再実行では解消しません");
+    expect(errors).not.toContain("concurrent rotation");
+    expect(errors).toContain("the server's response contradicts the chain");
+    expect(errors).toContain("re-running will not resolve this");
   });
 
   it("EpochConflict の申告があっても、再走査で全変数が揃っていれば完了とする(警告は残す)", async () => {
@@ -1633,11 +1633,11 @@ describe("maruhi env rotate", () => {
     // ない。揃っている事実を「応答が矛盾している」中断で覆い隠さない
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.pushes).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("再暗号化不要 1 変数");
+    expect(env.logs.join("\n")).toContain("1 variables already re-encrypted by concurrent updates");
     const errors = env.errors.join("\n");
     // 矛盾した申告自体は調査対象として残す(中断はしない)
-    expect(errors).toContain("サーバー応答とチェーンの矛盾");
-    expect(errors).not.toContain("再実行では解消しません");
+    expect(errors).toContain("the server's response contradicts the chain");
+    expect(errors).not.toContain("re-running will not resolve this");
   });
 
   it("EpochConflict を申告された変数が解消していれば、残りは普通の部分完了として案内する", async () => {
@@ -1703,11 +1703,11 @@ describe("maruhi env rotate", () => {
     // 矛盾した申告自体は調査対象として残す(が、中断はしない)
     // 「揃っていることを確認した」とは言わない: 再走査が示すのは未完了集合に
     // 残っていないことだけで、現エポックで書かれたのか削除されたのかは分からない
-    expect(errors).toContain("申告された変数は再走査の未完了集合に残っていない");
+    expect(errors).toContain("The reported variable is not in the rescanned incomplete set");
     // 中断していれば部分完了の報告経路へ到達しない = 残数も再開案内も出ない
-    expect(env.logs.join("\n")).toContain("部分完了");
-    expect(env.logs.join("\n")).toContain("未完了 1 変数");
-    expect(errors).toContain("再実行すると、エポックを進めずに残りから再開します");
+    expect(env.logs.join("\n")).toContain("Partial completion");
+    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(errors).toContain("resume from the remainder without advancing the epoch");
   });
 
   it("EpochConflict でチェーンが実際に進んでいれば、矛盾ではなく並行ローテーションとして扱う", async () => {
@@ -1771,8 +1771,8 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     // 強制再同期でチェーンが実際に進んでいることを確認したので、これは
     // サーバーの矛盾ではない(良性のレースを不正と誤認しない)
-    expect(errors).toContain("並行ローテーション");
-    expect(errors).not.toContain("サーバー応答とチェーンの矛盾");
+    expect(errors).toContain("concurrent rotation");
+    expect(errors).not.toContain("the server's response contradicts the chain");
     expect(pushPaths).toHaveLength(1);
   });
 
@@ -1820,8 +1820,8 @@ describe("maruhi env rotate", () => {
     // 開ける値は新エポックへ、開けない値は未完了として報告する
     expect(state.pushes.map((push) => push.variableId)).toEqual(["vbb"]);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化できない値が残っています");
-    expect(env.logs.join("\n")).toContain("部分完了");
+    expect(errors).toContain("Some values cannot be re-encrypted");
+    expect(env.logs.join("\n")).toContain("Partial completion");
   });
 
   it("複合の送信が失敗しても、受理されていれば「エポックは進んだ」と報告する", async () => {
@@ -1861,8 +1861,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "応答消失"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("ローテーション自体は受理されています");
-    expect(errors).toContain("再暗号化から再開します");
+    expect(errors).toContain("this rotation itself was accepted");
+    expect(errors).toContain("resume re-encryption without advancing the epoch");
   });
 
   it("1 つも再暗号化できないならエポックを進めない(空回りで失効にならない)", async () => {
@@ -1887,8 +1887,8 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "空回り"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化できる値が 1 つもありません");
-    expect(errors).toContain("失効になりません");
+    expect(errors).toContain("No values can be re-encrypted");
+    expect(errors).toContain("nothing is actually revoked");
   });
 
   it("送信失敗の裏で進んでいたのが他メンバーのローテーションなら、そう伝える", async () => {
@@ -1916,10 +1916,10 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "他メンバー"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("他メンバーのローテーション");
-    expect(errors).toContain("この実行の分は受理されていません");
+    expect(errors).toContain("another member's rotation");
+    expect(errors).toContain("this run's entry was not accepted");
     // 自分の分が受理されたと読ませない
-    expect(errors).not.toContain("このローテーション自体は受理されています");
+    expect(errors).not.toContain("this rotation itself was accepted");
   });
 
   it("受理後にさらに他メンバーが進めていても、自分の分の受理を見落とさない", async () => {
@@ -1949,9 +1949,9 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "追い越し"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("このローテーション自体は受理されています");
-    expect(errors).toContain("再暗号化から再開します");
-    expect(errors).not.toContain("受理されていません");
+    expect(errors).toContain("this rotation itself was accepted");
+    expect(errors).toContain("resume re-encryption without advancing the epoch");
+    expect(errors).not.toContain("was not accepted");
   });
 
   it("削除済み環境への rotate(404)は確定した拒否として扱い、再実行を勧めない", async () => {
@@ -1989,9 +1989,9 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "削除済み"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     // §7 の専用メッセージが出る(汎用の「環境が見つかりません」に潰さない)
-    expect(errors).toContain("選択的なローテーション阻止の可能性");
-    expect(errors).not.toContain("そのまま再実行できます");
-    expect(errors).not.toContain("受理されています");
+    expect(errors).toContain("may be selectively blocking rotation");
+    expect(errors).not.toContain("safe to simply re-run");
+    expect(errors).not.toContain("was accepted");
     // 受理確認のためのチェーン再取得をしていない(初回同期の 1 回だけ)
     const chainCalls = server.requests.filter((request) => request.path.endsWith("/chain")).length;
     expect(chainCalls - chainCallsBefore).toBe(1);
@@ -2020,8 +2020,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "確認不能"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("エポックが既に 2 へ進んでいる可能性があります");
-    expect(errors).toContain("通信を復旧したうえで");
+    expect(errors).toContain("may already have advanced to epoch 2");
+    expect(errors).toContain("Restore connectivity and re-run");
   });
 
   it("複合の送信が失敗し、受理もされていなければ「そのまま再実行できる」と伝える", async () => {
@@ -2045,8 +2045,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "未達"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("受理されていません");
-    expect(errors).toContain("そのまま再実行できます");
+    expect(errors).toContain("was not accepted");
+    expect(errors).toContain("safe to simply re-run");
   });
 
   it("ラップを持っているのに開けない値は、差し替えの疑いとして即時中断する", async () => {
@@ -2083,8 +2083,8 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("サーバーによる差し替えの可能性");
     // 良性の欠落として扱わない = 踏み越える手段を案内しない
-    expect(errors).not.toContain("--new-epoch を付けて実行してください");
-    expect(errors).not.toContain("ラップを持つメンバーによる再実行");
+    expect(errors).not.toContain("run with --new-epoch");
+    expect(errors).not.toContain("a member holding wraps");
   });
 
   it("巡の途中で現れた開けない値も、部分完了へ格下げせず証拠として中断する", async () => {
@@ -2143,10 +2143,10 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("サーバーによる差し替えの可能性");
-    expect(errors).toContain("再実行では解消しない証拠です");
+    expect(errors).toContain("This is evidence that re-running will not resolve");
     // 「再実行すれば片付く」系の案内へ格下げしない
-    expect(errors).not.toContain("残りから再開します");
-    expect(errors).not.toContain("未確認を含む");
+    expect(errors).not.toContain("resume from the remainder");
+    expect(errors).not.toContain("may include unconfirmed ones");
   });
 
   it("復号できない値が 1 つあっても、再開は開ける分を再暗号化する(epoch は既に進んでいる)", async () => {
@@ -2195,15 +2195,15 @@ describe("maruhi env rotate", () => {
     if (pushed === undefined) throw new Error("push missing");
     expect(pushed.value.aad).toMatchObject({ epoch: 3 });
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化できない値が残っています");
+    expect(errors).toContain("Some values cannot be re-encrypted");
     expect(errors).toContain("エポック 1 の DEK が配布されていません");
     // 原因が既定文言(競合)に化けない
-    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
-    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
+    expect(env.logs.join("\n")).toContain("1 variables incomplete");
     // 同じ変数の警告は 1 回だけ(再開経路と巡末の再走査で文面が割れると
     // dedupeWarnings が別物として通してしまう)
     expect(
-      env.errors.filter((line) => line.includes("再暗号化できない値が残っています")),
+      env.errors.filter((line) => line.includes("Some values cannot be re-encrypted")),
     ).toHaveLength(1);
   });
 
@@ -2289,11 +2289,13 @@ describe("maruhi env rotate", () => {
     // 初回同期(床なし): 対象集合の出所はサーバー応答しかなく、一貫した
     // 欠落は検出できない。失効目的のローテーションではこれを黙らない
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床なし"], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("欠落も検出できません");
+    expect(env.errors.join("\n")).toContain("the omission cannot be detected");
 
     // 2 回目(床あり)では出ない
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床あり"], env.layer)).toBe(0);
-    const secondRunErrors = env.errors.filter((line) => line.includes("欠落も検出できません"));
+    const secondRunErrors = env.errors.filter((line) =>
+      line.includes("the omission cannot be detected"),
+    );
     expect(secondRunErrors).toHaveLength(1);
   });
 
@@ -2440,7 +2442,7 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "毒変数"], env.layer)).toBe(1);
     // 後続の 2 変数は新エポックへ移っている(部分完了は毒変数のみ)
     expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vbb", "vcc"]);
-    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    expect(env.logs.join("\n")).toContain("1 variables incomplete");
   });
 
   it("押せる対象が尽きて打ち切った巡でも、原因を競合に潰さず報告する", async () => {
@@ -2503,8 +2505,8 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("エポック 1 の DEK が配布されていません");
-    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
-    expect(env.logs.join("\n")).toContain("未完了 1 変数");
+    expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
+    expect(env.logs.join("\n")).toContain("1 variables incomplete");
   });
 
   it("最終巡(復号しない巡)でも、開けない値をラップの有無だけで原因として拾う", async () => {
@@ -2555,8 +2557,8 @@ describe("maruhi env rotate", () => {
     expect(state.pushes).toHaveLength(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("エポック 1 の DEK が配布されていません");
-    expect(errors).not.toContain("並行 push との競合が解消しませんでした");
-    expect(env.logs.join("\n")).toContain("未完了 2 変数");
+    expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
+    expect(env.logs.join("\n")).toContain("2 variables incomplete");
   });
 
   it("現エポックの DEK が無くて再開できない場合、--new-epoch の逃げ道を案内する", async () => {
@@ -2586,8 +2588,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("再暗号化を再開できません");
-    expect(errors).toContain("--new-epoch を付けて実行してください");
+    expect(errors).toContain("Cannot resume the incomplete re-encryption");
+    expect(errors).toContain("run with --new-epoch");
     expect(state.rotateBodies).toHaveLength(0);
   });
 
@@ -2624,8 +2626,8 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "混在失敗"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     // 変数名つきで両方の理由が残る(原因欄に出るのは片方だけでも)
-    expect(errors).toContain("変数 TRANSIENT の再暗号化に失敗しました");
-    expect(errors).toContain("変数 TOO_BIG の再暗号化に失敗しました");
+    expect(errors).toContain("Failed to re-encrypt variable TRANSIENT");
+    expect(errors).toContain("Failed to re-encrypt variable TOO_BIG");
   });
 
   it("開ける現在値が 1 つも無いなら、満たせない --new-epoch を勧めない", async () => {
@@ -2649,8 +2651,8 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "退職者削除"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("開ける現在値が 1 つも無いため");
-    expect(errors).not.toContain("--new-epoch を付けて実行してください");
+    expect(errors).toContain("You cannot open any current value");
+    expect(errors).not.toContain("run with --new-epoch");
     expect(state.rotateBodies).toHaveLength(0);
   });
 
@@ -2669,26 +2671,28 @@ describe("maruhi env rotate", () => {
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epochs"], env.layer),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプション");
+    expect(env.errors.join("\n")).toContain("Unknown flag");
     // create 専用のオプションを rotate に付けた場合も拒否する(env 固有の検査)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--name", "n"], env.layer)).toBe(
       2,
     );
-    expect(env.errors.join("\n")).toContain("env rotate では使えません");
-    // boolean への値指定は拒否する。gunshi は値を読まずに true にするため、
-    // 放置すると書いたことと逆(必ず新エポック)が起き、チェーンは append-only
-    // なので取り消せない。インライン形(=)と空白区切り形の両方を塞ぐ
+    expect(env.errors.join("\n")).toContain("Unknown flag");
+    // boolean への値指定: effect/unstable/cli はインライン形(`=false`)も
+    // 空白区切り形(`--new-epoch false`)も boolean の値として**解釈する**
+    // (gunshi のように値を捨てて true にしない)。「書いたことと逆が黙って
+    // 起きる」危険はなくなったので、これらは誤りではなく書いたとおりの
+    // 通常実行になる(ADR-0016 の移行で挙動が変わった点)
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch=false"], env.layer),
-    ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
-    // 空白区切りは「フラグ有効 + 余分な位置引数」になる(gunshi は値を消費しない)
+    ).toBe(0);
+    expect(env.logs.join("\n")).toContain("epoch 1 → 2");
     expect(
       await runCli(["env", "rotate", ENV_ID, "--reason", "x", "--new-epoch", "false"], env.layer),
-    ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
-    // 位置引数の名前をオプションとして書いても gunshi は値を捨てる
-    // (`env rotate dev --environment-id other` は dev をローテーションする)。
+    ).toBe(0);
+    // 値は捨てられて余分な位置引数になるのではなく、フラグの値として消費される
+    expect(env.errors.join("\n")).not.toContain("Unexpected extra arguments");
+    // 位置引数の名前をオプションとして書く形は値を捨てずに拒否する
+    // (`env rotate dev --environment-id other` が dev をローテーションする形を塞ぐ)。
     // 環境 ID はチェーン履歴全体で一意(§6.2)なので取り違えは永久に焼き付く
     const beforeSwap = server.requests.length;
     expect(
@@ -2697,7 +2701,7 @@ describe("maruhi env rotate", () => {
         env.layer,
       ),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
+    expect(env.errors.join("\n")).toContain("--environment-id is a positional argument");
     // 取り違えの検査は通信より前(誤った ID で var.read を残さない)
     expect(server.requests.length).toBe(beforeSwap);
     // 操作専用でない宣言済みオプション(--project 等)は拒否しない。許可集合は
@@ -2710,7 +2714,7 @@ describe("maruhi env rotate", () => {
         env.layer,
       ),
     ).toBe(0);
-    // 拒否された例では HTTP は一切起きていない(最後の 1 例だけが通信する)
+    // 拒否された例では HTTP は一切起きていない(通信するのは通常実行の 2 例だけ)
     expect(server.requests.length).toBeGreaterThan(0);
   });
 
@@ -2817,8 +2821,8 @@ describe("maruhi env rotate", () => {
     // 案内どおりに再実行した利用者が理由を求められ、指定すると二度目の
     // ローテーションになってしまう
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("確認完了");
-    expect(env.logs.join("\n")).toContain("新しいエポックを作るには --reason");
+    expect(env.logs.join("\n")).toContain("Check complete");
+    expect(env.logs.join("\n")).toContain("To create a new epoch, pass --reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
@@ -2862,7 +2866,7 @@ describe("maruhi env rotate", () => {
     // 書き方の誤り(理由の欠落)は usage エラー(2)。同じ `--reason` の
     // 誤りが終了コードで割れないようにする
     expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--reason にローテーションの理由を指定してください");
+    expect(env.errors.join("\n")).toContain("Specify the rotation reason with --reason");
     expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
   });
@@ -2884,13 +2888,13 @@ describe("maruhi env rotate", () => {
     // 区別できない値を既定へフォールバックさせない — args.ts)
     for (const empty of [["--reason", ""], ["--reason="]]) {
       expect(await runCli(["env", "rotate", ENV_ID, ...empty], env.layer)).toBe(2);
-      expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
-      expect(env.logs.join("\n")).not.toContain("確認完了");
+      expect(env.errors.join("\n")).toContain("Unacceptable value for flag --reason");
+      expect(env.logs.join("\n")).not.toContain("Check complete");
     }
     // 空白だけの値も共通検査が空として落とす(`"$VAR"` の未設定形は `""` にも
     // `" "` にもなる)
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
+    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --reason");
     expect(state.rotateBodies).toHaveLength(0);
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });

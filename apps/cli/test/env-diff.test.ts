@@ -208,14 +208,14 @@ describe("maruhi env diff", () => {
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
     // 差分の内容・件数と、名前でソートされた並び
     expect(env.logs).toEqual([
-      `同期・検証 OK: 環境 ${DEV} = 4 変数 / 環境 ${PROD} = 2 変数`,
-      `環境 ${DEV} のみにある変数: 3`,
+      `Synced and verified: environment ${DEV} = 4 variables / environment ${PROD} = 2 variables`,
+      `Variables only in environment ${DEV}: 3`,
       "  ALPHA",
       "  MIKE",
       "  ZULU",
-      `環境 ${PROD} のみにある変数: 1`,
+      `Variables only in environment ${PROD}: 1`,
       "  PROD_ONLY",
-      "両方にある変数: 1(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)",
+      "Variables in both: 1 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     ]);
     // 値 pull / DEK 配布は 1 度も叩かない(pullMetadata だけ)
     expectNoValueFetches();
@@ -235,12 +235,16 @@ describe("maruhi env diff", () => {
     const drifted = await startEnv(await handlersFor(["ONLY_DEV"], []));
     expect(await runCli(["env", "diff", DEV, PROD], drifted.layer)).toBe(0);
     const driftNotices = drifted.errors.filter((line) =>
-      line.includes("同時ではなく順に読んでいます"),
+      line.includes("read sequentially, not atomically"),
     );
     expect(driftNotices).toHaveLength(1);
-    expect(driftNotices[0]).toContain("push で埋める前にもう一度実行して確かめてください");
+    expect(driftNotices[0]).toContain(
+      "run this again to confirm before filling them in with a push",
+    );
     // 助言は stdout(差分一覧)へ混ぜない
-    expect(drifted.logs.some((line) => line.includes("同時ではなく順に読んでいます"))).toBe(false);
+    expect(drifted.logs.some((line) => line.includes("read sequentially, not atomically"))).toBe(
+      false,
+    );
 
     // **差分ゼロでも黙らない**: 1 つ目を読んだ後の削除は「両方にある」と報告
     // されて差分ゼロで終わる = 実在する差分の見落としになるため、その結論こそ
@@ -248,11 +252,13 @@ describe("maruhi env diff", () => {
     const clean = await startEnv(await handlersFor(["SAME"], ["SAME"]));
     expect(await runCli(["env", "diff", DEV, PROD], clean.layer)).toBe(0);
     const cleanNotices = clean.errors.filter((line) =>
-      line.includes("同時ではなく順に読んでいます"),
+      line.includes("read sequentially, not atomically"),
     );
     expect(cleanNotices).toHaveLength(1);
-    expect(cleanNotices[0]).toContain("差分ゼロを「揃っている」の根拠にする場合");
-    expect(cleanNotices[0]).not.toContain("push で埋める前に");
+    expect(cleanNotices[0]).toContain(
+      "Before treating zero differences as proof the environments are in sync",
+    );
+    expect(cleanNotices[0]).not.toContain("before filling them in with a push");
   });
 
   it("環境 ID も端末中和する(EnvironmentId はブランド付きではない)", async () => {
@@ -272,9 +278,9 @@ describe("maruhi env diff", () => {
     const output = [...env.logs, ...env.errors].join("\n");
     expect(output).not.toContain("\u001b");
     expect(output).not.toContain("\u0007");
-    expect(env.logs).toContain("環境 \uFFFD[2Kdev のみにある変数: 1");
+    expect(env.logs).toContain("Variables only in environment \uFFFD[2Kdev: 1");
     expect(env.logs).toContain(
-      "同期・検証 OK: 環境 \uFFFD[2Kdev = 1 変数 / 環境 prod\uFFFD = 0 変数",
+      "Synced and verified: environment \uFFFD[2Kdev = 1 variables / environment prod\uFFFD = 0 variables",
     );
   });
 
@@ -288,7 +294,7 @@ describe("maruhi env diff", () => {
       ]).pipe(Effect.provide(env.layer)),
     );
     expect(env.errors).toEqual([
-      "警告: 環境 \uFFFD[2Kprod: 変数 v1\uFFFD の名前が NFC 正規形ではありません",
+      "警告: environment \uFFFD[2Kprod: 変数 v1\uFFFD の名前が NFC 正規形ではありません",
     ]);
   });
 
@@ -324,10 +330,10 @@ describe("maruhi env diff", () => {
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
     expect(env.logs).toEqual([
-      `同期・検証 OK: 環境 ${DEV} = 2 変数 / 環境 ${PROD} = 2 変数`,
-      `環境 ${DEV} のみにある変数: 0`,
-      `環境 ${PROD} のみにある変数: 0`,
-      "両方にある変数: 2(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)",
+      `Synced and verified: environment ${DEV} = 2 variables / environment ${PROD} = 2 variables`,
+      `Variables only in environment ${DEV}: 0`,
+      `Variables only in environment ${PROD}: 0`,
+      "Variables in both: 2 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     ]);
   });
 
@@ -338,7 +344,7 @@ describe("maruhi env diff", () => {
     expect(env.logs).toContain("  API_KEY");
     expect(env.logs).toContain("  api_key");
     expect(env.logs).toContain(
-      "両方にある変数: 0(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)",
+      "Variables in both: 0 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     );
   });
 
@@ -370,12 +376,12 @@ describe("maruhi env diff", () => {
     expect(env.logs).toContain(`  ${nfc}`);
     expect(env.logs).toContain(`  ${nfd}`);
     expect(env.logs).toContain(
-      "両方にある変数: 0(名前が一致するだけです — 値を取得も復号もしていないため、値が同じかどうかは比較していません)",
+      "Variables in both: 0 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     );
     // 警告が立つのは非 NFC を配布した側だけ
     const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`警告: 環境 ${PROD}: `);
+    expect(warnings[0]).toContain(`警告: environment ${PROD}: `);
   });
 
   it("2 環境ぶんの警告は環境 ID でラベルする(同一文面が畳まれて消えない)", async () => {
@@ -392,8 +398,8 @@ describe("maruhi env diff", () => {
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
     const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
     expect(warnings).toHaveLength(2);
-    expect(warnings[0]).toContain(`警告: 環境 ${DEV}: `);
-    expect(warnings[1]).toContain(`警告: 環境 ${PROD}: `);
+    expect(warnings[0]).toContain(`警告: environment ${DEV}: `);
+    expect(warnings[1]).toContain(`警告: environment ${PROD}: `);
   });
 
   it("1 つ目の pull が前進させたビューを 2 つ目の pull へ渡す", async () => {
@@ -490,7 +496,7 @@ describe("maruhi env diff", () => {
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(1);
     const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`警告: 環境 ${DEV}: `);
+    expect(warnings[0]).toContain(`警告: environment ${DEV}: `);
   });
 
   it("master 鍵が無い端末でも実行できる(復号しないため要求しない)", async () => {
@@ -510,7 +516,8 @@ describe("maruhi env diff", () => {
 
       expect(await runCli(["env", "diff", DEV], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: 比較する環境を 2 つ指定してください(例: maruhi env diff dev prod)",
+        "Usage: maruhi env diff [flags] <environment-id> <other-environment-id>",
+        "maruhi: Missing positional argument other-environment-id",
       ]);
       expect(lastServer().requests).toEqual([]);
     });
@@ -520,7 +527,7 @@ describe("maruhi env diff", () => {
 
       expect(await runCli(["env", "diff", DEV, DEV], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: 同じ環境 ID を 2 つ指定しています。比較する 2 つの環境を指定してください",
+        "maruhi: The same environment ID was written twice. Specify two different environments to compare",
       ]);
       expect(lastServer().requests).toEqual([]);
     });
@@ -530,7 +537,7 @@ describe("maruhi env diff", () => {
 
       expect(await runCli(["env", "diff", DEV, "not a valid id"], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: 環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで。例: maruhi env diff dev prod)",
+        "maruhi: Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: maruhi env diff dev prod)",
       ]);
       expect(env.errors[0]).not.toContain("not a valid id");
       expect(lastServer().requests).toEqual([]);
@@ -541,7 +548,8 @@ describe("maruhi env diff", () => {
 
       expect(await runCli(["env", "diff", DEV, PROD, "--name", "x"], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: --name は env diff では使えません(env create 用のオプションです)",
+        "Usage: maruhi env diff [flags] <environment-id> <other-environment-id>",
+        "maruhi: Unknown flag (flags this command accepts: --server --project --help --version)",
       ]);
       expect(lastServer().requests).toEqual([]);
     });
@@ -550,19 +558,22 @@ describe("maruhi env diff", () => {
       const withReason = await startEnv([]);
       expect(await runCli(["env", "diff", DEV, PROD, "--reason", "x"], withReason.layer)).toBe(2);
       expect(withReason.errors).toEqual([
-        "maruhi: --reason は env diff では使えません(env rotate 用のオプションです)",
+        "Usage: maruhi env diff [flags] <environment-id> <other-environment-id>",
+        "maruhi: Unknown flag (flags this command accepts: --server --project --help --version)",
       ]);
 
       const withEpoch = await startEnv([]);
       expect(await runCli(["env", "diff", DEV, PROD, "--new-epoch"], withEpoch.layer)).toBe(2);
       expect(withEpoch.errors).toEqual([
-        "maruhi: --new-epoch は env diff では使えません(env rotate 用のオプションです)",
+        "Usage: maruhi env diff [flags] <environment-id> <other-environment-id>",
+        "maruhi: Unknown flag (flags this command accepts: --server --project --help --version)",
       ]);
       // 否定形(`--no-new-epoch`)も同じオプションの綴りとして拒否する
       const negated = await startEnv([]);
       expect(await runCli(["env", "diff", DEV, PROD, "--no-new-epoch"], negated.layer)).toBe(2);
       expect(negated.errors).toEqual([
-        "maruhi: --no-new-epoch は env diff では使えません(env rotate 用のオプションです)",
+        "Usage: maruhi env diff [flags] <environment-id> <other-environment-id>",
+        "maruhi: Unknown flag (flags this command accepts: --server --project --help --version)",
       ]);
     });
 
@@ -571,36 +582,38 @@ describe("maruhi env diff", () => {
       // サブコマンドなので「取る位置引数は environment-id だけ」と言える
       const created = await startEnv([]);
       expect(await runCli(["env", "create", DEV, PROD], created.layer)).toBe(2);
-      expect(created.errors.join("\n")).toContain("余分な引数です(1 個");
+      expect(created.errors.join("\n")).toContain("Unexpected extra arguments (1");
       expect(created.errors.join("\n")).toContain(
-        "maruhi env create が取る位置引数は environment-id だけです",
+        "maruhi env create only takes these positional arguments: environment-id",
       );
 
       // rotate は gunshi のまま(1 引数表なので 3 つ目は diff 専用として除く)
       const rotated = await startEnv([]);
       expect(await runCli(["env", "rotate", DEV, PROD], rotated.layer)).toBe(2);
-      expect(rotated.errors[0]).toContain("余分な引数です(1 個");
+      expect(rotated.errors.join("\n")).toContain("Unexpected extra arguments (1");
     });
 
     it("未知の操作では 3 つ目を除かない(操作名の誤りを先に報告する)", async () => {
       const env = await startEnv([]);
 
       expect(await runCli(["env", "bogus", DEV, PROD], env.layer)).toBe(2);
-      expect(env.errors).toEqual(["maruhi: 不明な操作です(create | rotate | diff)"]);
+      expect(env.errors).toEqual([
+        "Usage: maruhi env <subcommand> [flags]",
+        "maruhi: Unknown subcommand (expected one of: create | rotate | diff)",
+      ]);
       expect(lastServer().requests).toEqual([]);
     });
 
-    it("未知の操作 + 空の位置引数は、空の方を先に報告する(構造的な誤りが先)", async () => {
+    it("未知の操作 + 空の位置引数は、操作名の誤りを先に報告する(usage エラー = 2)", async () => {
       const env = await startEnv([]);
 
-      // 3 つ目を除かないので、空の位置引数の検査もこのスロットを見る。args.ts は
-      // 構造的な誤り(空の値・重複・`--` の位置)を操作別の指摘より先に言う設計
-      // なので、ここで「不明な操作です」が後回しになるのは**意図どおり**
-      // (直して再実行すれば操作名の誤りが出る)。名指しされる位置引数名が
-      // その操作に無いものである点は許容する — 空の引数を渡した事実は本当
+      // effect/unstable/cli への移行(ADR-0016)後は、サブコマンドの解決が
+      // 位置引数の検査より先に走るため、未知の操作がまず報告される
+      // (直して再実行すれば空の位置引数の誤りが出る)。終了コードは同じ 2
       expect(await runCli(["env", "bogus", DEV, " "], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: 位置引数 other-environment-id が空です(空白だけの値も受け付けません)",
+        "Usage: maruhi env <subcommand> [flags]",
+        "maruhi: Unknown subcommand (expected one of: create | rotate | diff)",
       ]);
       expect(lastServer().requests).toEqual([]);
     });
