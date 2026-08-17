@@ -46,9 +46,9 @@ TMP_DIR=""
 PARTIAL_FILE=""
 
 log() { printf '%s\n' "$*"; }
-warn() { printf 'maruhi: 警告: %s\n' "$*" >&2; }
+warn() { printf 'maruhi: warning: %s\n' "$*" >&2; }
 die() {
-  printf 'maruhi: エラー: %s\n' "$*" >&2
+  printf 'maruhi: error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -63,27 +63,30 @@ usage() {
   cat <<EOF
 maruhi install script (Unix)
 
-使い方:
+Usage:
   sh install.sh [--version <tag>] [--dir <path>]
-  curl -fsSL <この script の URL> | sh -s -- --version <tag>
+  curl -fsSL <URL of this script> | sh -s -- --version <tag>
 
-オプション:
-  --version <tag>   入れる版(例: v0.1.0-rc.1)。省略時は最新の安定版を
-                    ${RELEASES_URL}/latest から解決する。
-                    プレリリース期間中は latest が存在しないため指定が必要
-  --dir <path>      インストール先(既定: ~/.local/bin)。sudo は呼ばない
-  -h, --help        このヘルプ
+Options:
+  --version <tag>   Version to install (example: v0.1.0-rc.1). If omitted, the
+                    latest stable release is resolved from
+                    ${RELEASES_URL}/latest.
+                    During the pre-release period latest does not exist, so a
+                    tag is required
+  --dir <path>      Install directory (default: ~/.local/bin). Does not invoke sudo
+  -h, --help        Show this help
 
-環境変数:
-  MARUHI_VERSION      --version と同じ(--version が優先)
-  MARUHI_INSTALL_DIR  --dir と同じ(--dir が優先)
-  MARUHI_BASE_URL     アセットの取得元ディレクトリを差し替える(内部ミラー・
-                      ローカル検証用。例: file:///path/to/dist)。指定時は
-                      GitHub のタグ解決をせず、版指定は起動確認の期待値としてのみ使う
+Environment variables:
+  MARUHI_VERSION      Same as --version (--version wins)
+  MARUHI_INSTALL_DIR  Same as --dir (--dir wins)
+  MARUHI_BASE_URL     Override the asset download directory (internal mirrors
+                      and local verification; example: file:///path/to/dist).
+                      When set, GitHub tag resolution is skipped and a version
+                      flag is used only as the expected value for the startup check
 
-対応対象: ${SUPPORTED_TARGETS}
-Windows は対象外(README の手動手順を参照)。
-github.com からの取得以外の通信はしない。
+Supported targets: ${SUPPORTED_TARGETS}
+Windows is not supported (see the manual steps in the README).
+This script does not talk to anything other than github.com.
 EOF
 }
 
@@ -92,13 +95,13 @@ parse_args() {
     case "$1" in
       --version)
         shift
-        [ $# -gt 0 ] || die "--version にタグが必要です(例: --version v0.1.0-rc.1)"
+        [ $# -gt 0 ] || die "--version requires a tag (example: --version v0.1.0-rc.1)"
         VERSION="$1"
         ;;
       --version=*) VERSION="${1#--version=}" ;;
       --dir)
         shift
-        [ $# -gt 0 ] || die "--dir にパスが必要です"
+        [ $# -gt 0 ] || die "--dir requires a path"
         INSTALL_DIR="$1"
         ;;
       --dir=*) INSTALL_DIR="${1#--dir=}" ;;
@@ -106,7 +109,7 @@ parse_args() {
         usage
         exit 0
         ;;
-      *) die "不明な引数: $1(--help でヘルプ)" ;;
+      *) die "unknown argument: $1 (see --help)" ;;
     esac
     shift
   done
@@ -116,7 +119,7 @@ require_tools() {
   local cmd
   for cmd in curl tar grep mktemp uname; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
-      die "${cmd} が必要です"
+      die "${cmd} is required"
     fi
   done
   # Linux は coreutils の sha256sum、macOS は shasum。どちらも無ければ入れない
@@ -126,7 +129,7 @@ require_tools() {
   elif command -v shasum >/dev/null 2>&1; then
     SHA_TOOL="shasum"
   else
-    die "sha256sum も shasum も見つかりません。チェックサム検証なしでは入れません"
+    die "neither sha256sum nor shasum was found. Will not install without checksum verification"
   fi
 }
 
@@ -134,7 +137,7 @@ sha_check() {
   case "${SHA_TOOL}" in
     sha256sum) sha256sum -c "$1" ;;
     shasum) shasum -a 256 -c "$1" ;;
-    *) die "内部エラー: 未知のチェックサムツール ${SHA_TOOL}" ;;
+    *) die "internal error: unknown checksum tool ${SHA_TOOL}" ;;
   esac
 }
 
@@ -148,13 +151,13 @@ detect_target() {
       # 実行時に "not found" という無関係に見える形で失敗する
       for musl in /lib/ld-musl-*.so.1; do
         if [ -e "${musl}" ]; then
-          die "musl libc 環境(Alpine 等)向けのバイナリは未提供です。glibc 環境か、Bun 経由(bun install -g maruhi)をご検討ください"
+          die "no binary is published for musl libc (Alpine and similar). Use a glibc environment, or install via Bun (bun install -g maruhi)"
         fi
       done
       case "${arch}" in
         x86_64 | amd64) TARGET="linux-x64" ;;
         aarch64 | arm64) TARGET="linux-arm64" ;;
-        *) die "未対応の CPU アーキテクチャ: ${arch}(対応: ${SUPPORTED_TARGETS})" ;;
+        *) die "unsupported CPU architecture: ${arch} (supported: ${SUPPORTED_TARGETS})" ;;
       esac
       ;;
     Darwin)
@@ -168,13 +171,13 @@ detect_target() {
             TARGET="darwin-x64"
           fi
           ;;
-        *) die "未対応の CPU アーキテクチャ: ${arch}(対応: ${SUPPORTED_TARGETS})" ;;
+        *) die "unsupported CPU architecture: ${arch} (supported: ${SUPPORTED_TARGETS})" ;;
       esac
       ;;
     MINGW* | MSYS* | CYGWIN* | Windows_NT)
-      die "Windows はこの script の対象外です。README の手動 tar 手順を参照してください: https://github.com/${REPO}"
+      die "Windows is not supported by this script. See the README for the manual tar steps: https://github.com/${REPO}"
       ;;
-    *) die "未対応の OS: ${os}(対応: ${SUPPORTED_TARGETS})" ;;
+    *) die "unsupported OS: ${os} (supported: ${SUPPORTED_TARGETS})" ;;
   esac
 }
 
@@ -185,13 +188,13 @@ normalize_version() {
   esac
   case "${VERSION}" in
     v[0-9]*) ;;
-    *) die "版は v0.1.0 / 0.1.0 の形で指定してください: ${VERSION}" ;;
+    *) die "specify the version as v0.1.0 or 0.1.0: ${VERSION}" ;;
   esac
   # URL に載る値。想定外の文字をここで弾く。`+`(build metadata)は生成側の
   # SEMVER_PATTERN(scripts/shared.ts)も除外している = タグに使わない運用なので、
   # 取得側の受理範囲もそこへ揃える
   case "${VERSION}" in
-    *[!A-Za-z0-9.-]*) die "版に使えない文字が含まれています: ${VERSION}" ;;
+    *[!A-Za-z0-9.-]*) die "version contains characters that are not allowed: ${VERSION}" ;;
   esac
 }
 
@@ -208,13 +211,13 @@ resolve_version() {
     # ここで解決できない = 推測せず明示エラーにする。
     #
     # 成功側の分岐は安定版が出るまで CI で踏めない(ハーネスは MARUHI_BASE_URL 指定 =
-    # 解決を飛ばす経路で回る)。失敗側は「タグを指定してください」の明示エラーで、
+    # 解決を飛ばす経路で回る)。失敗側はタグを指定するよう求める明示エラーで、
     # 危険側には倒れない。初回の安定版タグ後に手動で一度確認する(docs/RELEASING.md)
     resolved="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${RELEASES_URL}/latest" 2>/dev/null)" || resolved=""
     case "${resolved}" in
       */releases/tag/?*) VERSION="${resolved##*/releases/tag/}" ;;
       *)
-        die "最新の安定版を解決できませんでした。プレリリース期間中は releases/latest が存在しません — --version v0.1.0-rc.1 のようにタグを指定してください(一覧: ${RELEASES_URL})"
+        die "could not resolve the latest stable release. During the pre-release period, releases/latest does not exist — pass a tag such as --version v0.1.0-rc.1 (list: ${RELEASES_URL})"
         ;;
     esac
     normalize_version
@@ -234,14 +237,14 @@ fetch() {
   # -f: HTTP エラーを非 0 に / -L: リダイレクト追従(Release アセットは
   # objects.githubusercontent.com へ 302)/ --retry: 一時障害のみ再試行
   if ! curl -fsSL --retry 3 --retry-delay 1 -o "$2" "$1"; then
-    die "取得に失敗しました: $1"
+    die "download failed: $1"
   fi
 }
 
 download_and_verify() {
   local pattern matches
   ARCHIVE="maruhi-${TARGET}.tar.gz"
-  TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maruhi-install.XXXXXX")" || die "作業ディレクトリを作れません"
+  TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maruhi-install.XXXXXX")" || die "could not create a working directory"
   trap cleanup EXIT INT TERM
 
   fetch "${BASE_URL}/checksums.txt" "${TMP_DIR}/checksums.txt"
@@ -254,49 +257,49 @@ download_and_verify() {
   pattern="^[0-9a-f]{64}  maruhi-${TARGET}\.tar\.gz\$"
   matches="$(grep -E -c "${pattern}" "${TMP_DIR}/checksums.txt" || true)"
   if [ "${matches}" != "1" ]; then
-    die "checksums.txt に ${ARCHIVE} の行が 1 行だけ見つかりません(${matches:-0} 行)。取得元を確認してください: ${BASE_URL}/checksums.txt"
+    die "checksums.txt does not contain exactly one line for ${ARCHIVE} (${matches:-0} lines). Check the source: ${BASE_URL}/checksums.txt"
   fi
   grep -E "${pattern}" "${TMP_DIR}/checksums.txt" >"${TMP_DIR}/checksums.filtered"
 
   if ! (cd "${TMP_DIR}" && sha_check checksums.filtered); then
-    die "SHA-256 が一致しません(${ARCHIVE})。取得元・通信経路を確認してください。何もインストールしていません"
+    die "SHA-256 mismatch (${ARCHIVE}). Check the source and the network path. Nothing was installed"
   fi
 }
 
 extract_and_check() {
   local got
   mkdir -p "${TMP_DIR}/extract"
-  tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}/extract" || die "アーカイブを展開できません(${ARCHIVE})"
+  tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}/extract" || die "could not extract the archive (${ARCHIVE})"
   BINARY="${TMP_DIR}/extract/maruhi"
-  [ -f "${BINARY}" ] || die "アーカイブの中身が想定と違います(maruhi が入っていません)"
+  [ -f "${BINARY}" ] || die "archive contents are not what was expected (maruhi is missing)"
   chmod 755 "${BINARY}"
 
   # インストール先へ触る前に起動を確認する。対象の取り違え・libc 不整合を
   # 「何も残さない失敗」として扱えるのはこの順序のときだけ
-  got="$("${BINARY}" --version)" || die "取得したバイナリを起動できませんでした(対象: ${TARGET})"
+  got="$("${BINARY}" --version)" || die "could not run the downloaded binary (target: ${TARGET})"
   if [ -n "${EXPECTED_VERSION}" ] && [ "${got}" != "${EXPECTED_VERSION}" ]; then
-    die "版が一致しません(期待 ${EXPECTED_VERSION} / 実際 ${got})。アセットの取り違えの可能性があります"
+    die "version mismatch (expected ${EXPECTED_VERSION} / got ${got}). The assets may have been mixed up"
   fi
   INSTALLED_VERSION="${got}"
 }
 
 install_binary() {
-  mkdir -p "${INSTALL_DIR}" || die "インストール先を作れません: ${INSTALL_DIR}"
+  mkdir -p "${INSTALL_DIR}" || die "could not create the install directory: ${INSTALL_DIR}"
   INSTALL_DIR="$(cd "${INSTALL_DIR}" && pwd)"
-  [ -w "${INSTALL_DIR}" ] || die "書き込めません: ${INSTALL_DIR}(--dir で変更してください。この script は sudo を呼びません)"
+  [ -w "${INSTALL_DIR}" ] || die "cannot write to ${INSTALL_DIR} (change it with --dir. This script does not invoke sudo)"
 
   # 置き換え先が通常ファイル以外(例: ディレクトリ)だと mv がその中へ潜り込み、
   # 「入ったつもりで入っていない」状態になる。先に止める
   if [ -e "${INSTALL_DIR}/maruhi" ] && [ ! -f "${INSTALL_DIR}/maruhi" ]; then
-    die "${INSTALL_DIR}/maruhi が通常ファイルではありません。退けてからやり直すか --dir で別の場所を指定してください"
+    die "${INSTALL_DIR}/maruhi is not a regular file. Move it aside and retry, or pick another location with --dir"
   fi
 
   # 同一ディレクトリ内へ置いてから rename する: 途中状態の実行ファイルを
   # 見せず、実行中バイナリの上書き(ETXTBSY)も避ける
   PARTIAL_FILE="${INSTALL_DIR}/.maruhi.install.$$"
-  cp "${BINARY}" "${PARTIAL_FILE}" || die "インストール先へコピーできません: ${INSTALL_DIR}"
+  cp "${BINARY}" "${PARTIAL_FILE}" || die "could not copy to the install directory: ${INSTALL_DIR}"
   chmod 755 "${PARTIAL_FILE}"
-  mv -f "${PARTIAL_FILE}" "${INSTALL_DIR}/maruhi" || die "設置に失敗しました: ${INSTALL_DIR}/maruhi"
+  mv -f "${PARTIAL_FILE}" "${INSTALL_DIR}/maruhi" || die "failed to install: ${INSTALL_DIR}/maruhi"
   PARTIAL_FILE=""
 }
 
@@ -308,25 +311,25 @@ link_alias() {
     case "${current}" in
       maruhi | "${INSTALL_DIR}/maruhi") ln -sf maruhi "${link}" ;;
       *)
-        warn "${link} は maruhi 以外を指す symlink のため触りません(現在: ${current})"
+        warn "${link} is a symlink that does not point to maruhi; leaving it alone (currently: ${current})"
         return 0
         ;;
     esac
   elif [ -e "${link}" ]; then
-    warn "${link} が既にあります(symlink ではない)。mh エイリアスは作りません"
+    warn "${link} already exists (not a symlink). Will not create the mh alias"
     return 0
   else
     # 相対 symlink にする(ディレクトリごと移動しても壊れない)
-    ln -s maruhi "${link}" || die "mh の symlink を作れません: ${link}"
+    ln -s maruhi "${link}" || die "could not create the mh symlink: ${link}"
   fi
   MH_LINKED="1"
 }
 
 report() {
   local rc_hint path_line
-  log "maruhi ${INSTALLED_VERSION} を ${INSTALL_DIR}/maruhi に入れました(${TARGET})"
+  log "installed maruhi ${INSTALLED_VERSION} to ${INSTALL_DIR}/maruhi (${TARGET})"
   if [ "${MH_LINKED}" = "1" ]; then
-    log "エイリアス: ${INSTALL_DIR}/mh -> maruhi"
+    log "alias: ${INSTALL_DIR}/mh -> maruhi"
   fi
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*) ;;
@@ -348,18 +351,18 @@ report() {
           path_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
           ;;
         *)
-          rc_hint="シェルの設定ファイル"
+          rc_hint="your shell config file"
           path_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
           ;;
       esac
       log ""
-      log "${INSTALL_DIR} は PATH にありません。次の行を ${rc_hint} に足してください:"
+      log "${INSTALL_DIR} is not on PATH. Add the following line to ${rc_hint}:"
       log "  ${path_line}"
-      log "(この script は設定ファイルを書き換えません)"
+      log "(this script does not modify your config files)"
       ;;
   esac
   log ""
-  log "次: maruhi --help"
+  log "next: maruhi --help"
 }
 
 main() {
@@ -369,7 +372,7 @@ main() {
   BASE_URL="${MARUHI_BASE_URL:-}"
 
   if [ -z "${INSTALL_DIR}" ]; then
-    [ -n "${HOME:-}" ] || die "HOME が未設定です。--dir でインストール先を指定してください"
+    [ -n "${HOME:-}" ] || die "HOME is unset. Pass an install directory with --dir"
     INSTALL_DIR="${HOME}/.local/bin"
   fi
 
