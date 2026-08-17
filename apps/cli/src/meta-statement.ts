@@ -124,18 +124,18 @@ export function signCreateStatement(
     const context = createStatementContext(input);
     const signature = yield* Effect.tryPromise({
       try: () => signMetaStatement({ context, signingKey: input.signingKey }),
-      catch: () => cliError("メタステートメントの署名に失敗しました"),
+      catch: () => cliError("Failed to sign the meta statement"),
     });
     if (!signature.ok) {
-      return yield* Effect.fail(cliError("メタステートメントの署名に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to sign the meta statement"));
     }
     // 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3)
     const metaSigHash = yield* Effect.tryPromise({
       try: () => computeMetaSignedBytesHash(context),
-      catch: () => cliError("メタステートメント署名対象のハッシュ計算に失敗しました"),
+      catch: () => cliError("Failed to compute the meta-statement signed-bytes hash"),
     });
     if (!metaSigHash.ok) {
-      return yield* Effect.fail(cliError("メタステートメント署名対象のハッシュ計算に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to compute the meta-statement signed-bytes hash"));
     }
     return {
       statement: toWireStatement(context, signature.value),

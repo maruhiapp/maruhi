@@ -315,23 +315,23 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(hasRedactedPlaceholder("not json")).toBe(false);
     // 復旧手段はレコードの種類で違う。トークンは再ログインで上書きされるので
     // そう案内し、master 鍵は上書き防止ガードに阻まれるので手動削除を案内する
-    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` で正しく上書き");
+    expect(redactedPlaceholderTokenMessage).toContain("`maruhi login` overwrites it correctly");
     // 「必ず直る」と言い切らない(現行版に不具合が残っていれば再発する)
-    expect(redactedPlaceholderTokenMessage).toContain("再発する場合は現行版の不具合");
+    expect(redactedPlaceholderTokenMessage).toContain("If it recurs after re-login");
     const masterMessage = redactedPlaceholderMasterKeyMessage("master::https://x::u1");
     expect(masterMessage).toContain("master::https://x::u1");
-    expect(masterMessage).toContain("手で削除");
+    expect(masterMessage).toContain("by hand");
     // エスケープ規則の説明が実装と一致していること(ずれると、逃がされた名前を
     // 「そのままの名前」と誤解させ、削除対象を見つけられない)
-    expect(masterMessage).toContain("印字可能 ASCII 以外");
+    expect(masterMessage).toContain("outside printable ASCII");
     // 桁数を断定しない(補助面は 4 桁を超える)
-    expect(masterMessage).toContain("4 桁以上");
+    expect(masterMessage).toContain("at least 4 digits");
     // 削除後の手順は**両方**示す: どちらが使えるかは利用者の状況(リカバリー
     // コードの有無)で決まる。片方だけだと、持たない利用者は実行できない案内へ
     // 送られる
     expect(masterMessage).toContain("`maruhi key recover`");
     expect(masterMessage).toContain("`maruhi key generate`");
-    expect(masterMessage).toContain("復号できなくなる");
+    expect(masterMessage).toContain("become undecryptable");
     // 制御文字入りの user_id: 端末へ生で流さず、かつ**復元できる**形にする。
     // 置換文字へ潰すと「実在しない名前のエントリを消せ」と案内することになり、
     // 唯一の復旧手順(手動削除)が実行不能になる
@@ -356,7 +356,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(injected).toContain('\\"');
     // エスケープしてある旨を文面に明記する(書かないと、表示どおりの名前を
     // 探して見つけられず、唯一の復旧手順が実行できない)
-    expect(injected).toContain("エスケープして表示しています");
+    expect(injected).toContain("displayed escaped");
     // (c) 書式文字: 双方向上書き・ゼロ幅は見た目を変えるため、制御文字と同じく
     //     逃がす。素通しすると「表示された名前 = 実際の名前」が破れ、案内が
     //     指すエントリを探せない(端末上の並び順まで変えられる)
@@ -399,9 +399,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("キーチェーンのレコードに伏字(<redacted>)が入っています");
+    expect(dump).toContain("The keychain record contains the redaction placeholder (<redacted>)");
     // 「壊れています」の汎用文言ではなく、原因を名指しした文言になる
-    expect(dump).not.toContain("キーチェーンのトークンレコードが壊れています");
+    expect(dump).not.toContain("The keychain token record is corrupt");
   });
 
   it("displayText は並び順を壊す文字も潰すが、正当な書式文字は保つ", () => {
@@ -434,24 +434,24 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(parseStoredMasterKey(future)).toBeNull();
     expect(classifyUnreadableMasterKey(future)).toBe("foreign");
     const message = foreignMasterKeyMessage("maruhi/v2", "master::https://x::u1");
-    expect(message).toContain("残してください");
+    expect(message).toContain("keep this record");
     // 既定は「消さない」。ただし行き止まりにもしない: 逃げ道は**可逆**な形
     // (値を控えてから消す)でだけ示す。リカバリーコードを条件にすると、
     // ブロブも新形式のときに「消してから復元できない」に落ちる
-    expect(message).toContain("値を控えてから");
+    expect(message).toContain("Copy down the value first");
     // 逃げ道の要は可逆性。破棄の指示を足すときに**置き換えて**しまうと、
     // 何のための控えかが消える(両方が要る)
-    expect(message).toContain("元へ戻せます");
+    expect(message).toContain("you can put it back");
     // 控えは master 秘密鍵そのもの。作らせる以上、消す指示まで書く
     // (この PR の主題は「鍵素材を残さない」こと — 手作業の控えも同じ)
     // 破棄の条件は**手で戻す必要が消えたとき**。`key recover` の成功に読める
     // 書き方にしない(この経路では recover 自体が失敗しうる)
-    expect(message).toContain("元へ戻す必要が無くなったら");
+    expect(message).toContain("once it is no longer needed");
     expect(message).toContain("master::https://x::u1");
-    expect(message).toContain("控えずに消さないでください");
-    expect(message).not.toContain("リカバリーコードがあれば");
+    expect(message).toContain("Never delete without the copy");
+    expect(message).not.toContain("if you have your recovery code");
     // エントリ名はエスケープ表記である旨まで書く(書かないと名前を探せない)
-    expect(message).toContain("エスケープを戻したもの");
+    expect(message).toContain("the unescaped form");
     // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
     expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
     // 現行の形が揃っているのに読めない = 中身の破損(消してよい)
@@ -483,16 +483,16 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // (エントリ名を示して手で消す)を案内する
     const message = corruptMasterKeyMessage("master::https://x::u1");
     expect(message).toContain("master::https://x::u1");
-    expect(message).toContain("手で削除");
+    expect(message).toContain("by hand");
     // 破損側でも削除は**可逆**にしておく: parseStoredMasterKey は hex の中身まで
     // 見ないので、形の揃った将来形式のレコードが decodeHex で落ちて「破損」に
     // 見えることがある(鍵素材は無事かもしれない)
-    expect(message).toContain("値を控えてから");
-    expect(message).toContain("元へ戻せます");
+    expect(message).toContain("Copy down the value first");
+    expect(message).toContain("you can put it back");
     // 控えを作らせる以上、消す指示まで書く(別形式側と同じ義務)
     // 破棄の条件は**手で戻す必要が消えたとき**。`key recover` の成功に読める
     // 書き方にしない(この経路では recover 自体が失敗しうる)
-    expect(message).toContain("元へ戻す必要が無くなったら");
+    expect(message).toContain("once it is no longer needed");
     expect(message).toContain("`maruhi key recover`");
     expect(message).toContain("`maruhi key generate`");
   });
@@ -527,8 +527,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("読み取れません");
-    expect(dump).toContain("手で削除");
+    expect(dump).toContain("Cannot read the keychain master-key record");
+    expect(dump).toContain("by hand");
     expect(dump).not.toContain("master 鍵は既に存在します");
   });
 
@@ -552,7 +552,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
     expect(dump).not.toContain("master 鍵は既に存在します");
-    expect(dump).toContain("手で削除");
+    expect(dump).toContain("by hand");
   });
 
   it("伏字の master 鍵は「鍵がある」と報告しない(上書き防止ガードでも区別する)", async () => {
@@ -574,8 +574,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("伏字(<redacted>)が入っています");
-    expect(dump).toContain("手で削除");
+    expect(dump).toContain("contains the redaction placeholder (<redacted>)");
+    expect(dump).toContain("by hand");
     expect(dump).not.toContain("master 鍵は既に存在します");
   });
 
@@ -628,7 +628,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
 
   it("MARUHI_TOKEN に伏字が入っていたら、通信する前に理由を名指しする", async () => {
     // Redacted を入れた以上、出力で見た伏字をトークンだと思って環境変数へ
-    // 貼る経路は現実的。そのまま送ると 401 になり「失効・スコープ・接続先を
+    // 貼る経路は現実的。そのまま送ると 401 になり「revocation, scope, and the target serverを
     // 確認してください」という別の原因の案内へ送られてしまう
     const requests: string[] = [];
     const maruhi = await start([
@@ -646,8 +646,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
-    expect(dump).toContain("伏字(<redacted>)そのものです");
-    expect(dump).not.toContain("失効・スコープ・接続先");
+    expect(dump).toContain("redaction placeholder (<redacted>) itself");
+    expect(dump).not.toContain("revocation, scope, and the target server");
     // 通信より前に落ちる(無駄な往復も、誤認された 401 も作らない)
     expect(requests).toEqual([]);
   });

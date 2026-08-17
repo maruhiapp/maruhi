@@ -176,27 +176,27 @@ export type FloorViolation =
 export function floorViolationLabel(violation: FloorViolation): string {
   switch (violation.kind) {
     case "chain-shortened":
-      return "チェーンの短縮(巻き戻し)";
+      return "chain shortening (a rollback)";
     case "chain-diverged":
-      return "検証済みチェーンヘッドと異なる分岐の配布(equivocation の即時証拠)";
+      return "distribution of a branch diverging from the verified chain head (immediate evidence of equivocation)";
     case "variable-omitted":
-      return "検証済み変数の欠落(選択的な応答の切り詰め)";
+      return "omission of a verified variable (selective response truncation)";
     case "value-rollback":
-      return "値バージョンの巻き戻し";
+      return "a value-version rollback";
     case "value-equivocation":
-      return "同一 version への異なる signed bytes の配布(equivocation の証拠)";
+      return "different signed bytes served for the same version (evidence of equivocation)";
     case "value-epoch-regression":
-      return "エポックの後退(§4.1 単調性違反)";
+      return "an epoch regression (a §4.1 monotonicity violation)";
     case "stale-epoch-injection":
-      return "pull 時点エポック基準未満の前進 version(旧エポック鍵による前進注入の証拠)";
+      return "an advanced version below the pull-time epoch baseline (evidence of forward injection with an old epoch key)";
     case "meta-rollback":
-      return "メタステートメントの巻き戻し";
+      return "a meta-statement rollback";
     case "meta-equivocation":
-      return "同一 metaVersion への異なる signed bytes の配布(equivocation の証拠)";
+      return "different signed bytes served for the same metaVersion (evidence of equivocation)";
     case "deletion-revoked":
-      return "削除の無断取り消し";
+      return "an unauthorized undeletion";
     case "tombstone-mismatch":
-      return "削除済み変数の tombstone の差し替え";
+      return "replacement of a deleted variable's tombstone";
   }
 }
 

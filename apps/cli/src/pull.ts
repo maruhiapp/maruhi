@@ -50,7 +50,7 @@ export function missingWrapReason(variable: {
   readonly name: string;
   readonly epoch: number;
 }): string {
-  return `変数 ${displayText(variable.name)} のエポック ${variable.epoch} の DEK が配布されていません(自分宛ラップの欠落)`;
+  return `No DEK for epoch ${variable.epoch} of variable ${displayText(variable.name)} was distributed (your wrap is missing)`;
 }
 
 /**
@@ -79,7 +79,7 @@ export function decryptVerifiedValue(input: {
     if (variable.epoch > input.chainEpoch) {
       return yield* Effect.fail(
         cliError(
-          `変数 ${displayText(variable.name)} の申告エポック ${variable.epoch} がチェーン上の現エポック(${input.chainEpoch})を超えています(検証済みビューとの不整合)`,
+          `Variable ${displayText(variable.name)} declares epoch ${variable.epoch}, beyond the chain's current epoch (${input.chainEpoch}) (inconsistent with the verified view)`,
         ),
       );
     }
@@ -91,7 +91,7 @@ export function decryptVerifiedValue(input: {
     const ciphertext = decodeHex(variable.ciphertextHex);
     if (nonce === null || ciphertext === null) {
       return yield* Effect.fail(
-        cliError(`変数 ${displayText(variable.name)} の暗号文形式が不正です`),
+        cliError(`Variable ${displayText(variable.name)} has a malformed ciphertext`),
       );
     }
     const plaintext = yield* Effect.tryPromise({
@@ -110,12 +110,12 @@ export function decryptVerifiedValue(input: {
           ciphertext,
         }),
       catch: () =>
-        cliError(`変数 ${displayText(variable.name)} の復号処理が失敗しました(暗号処理エラー)`),
+        cliError(`Decryption of variable ${displayText(variable.name)} failed (crypto error)`),
     });
     if (!plaintext.ok) {
       return yield* Effect.fail(
         cliError(
-          `変数 ${displayText(variable.name)} を復号できません(文脈不一致または暗号文破損 — サーバーによる差し替えの可能性)`,
+          `Cannot decrypt variable ${displayText(variable.name)} (context mismatch or corrupted ciphertext — possibly replaced by the server)`,
         ),
       );
     }
@@ -178,7 +178,7 @@ export function pullVariables(input: {
         ? pulled.warnings
         : [
             ...pulled.warnings,
-            `警告: 自分宛の DEK ラップがエポック ${missingEpochs.join(", ")} に存在しません(CRYPTO_SPEC §7 の全エポック配布と不整合)。member add のバックフィルが中断した可能性があります — 当該エポックの履歴バージョンを復号できません。全エポックのラップを保持する管理者に maruhi member add の再実行(または修復経路での再登録)を依頼してください`,
+            `Warning: no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A member-add backfill may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator who holds wraps for all epochs to re-run maruhi member add (or re-register through the repair path)`,
           ];
 
     const results: DecryptedVariable[] = [];

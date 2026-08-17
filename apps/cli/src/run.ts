@@ -86,7 +86,7 @@ export function buildInjectionEnv(
       if (seenUpper.has(upper)) {
         return yield* Effect.fail(
           cliError(
-            `変数名が大文字小文字の違いだけで衝突しています(Windows では同一の環境変数になります): ${displayText(variable.name)}`,
+            `Variable names collide differing only by letter case (they become the same env var on Windows): ${displayText(variable.name)}`,
           ),
         );
       }
@@ -99,14 +99,14 @@ export function buildInjectionEnv(
       if (!SAFE_ENV_NAME.test(variable.name)) {
         return yield* Effect.fail(
           cliError(
-            `変数名を環境変数として注入できません(名前は英数字と _ のみ、先頭は英字か _): ${displayText(variable.name)}`,
+            `The variable name cannot be injected as an env var (names may use only alphanumerics and _, starting with a letter or _): ${displayText(variable.name)}`,
           ),
         );
       }
       if (isDeniedEnvName(variable.name)) {
         return yield* Effect.fail(
           cliError(
-            `変数名 ${displayText(variable.name)} は実行制御系の環境変数のため注入を拒否します(変数を改名してください)`,
+            `Refusing to inject variable name ${displayText(variable.name)}: it is an execution-control env var (rename the variable)`,
           ),
         );
       }
@@ -118,14 +118,14 @@ export function buildInjectionEnv(
       if (value === null) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${displayText(variable.name)} の値が UTF-8 として不正です(環境変数として注入できません)`,
+            `The value of variable ${displayText(variable.name)} is not valid UTF-8 (it cannot be injected as an env var)`,
           ),
         );
       }
       if (value.includes("\0")) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${displayText(variable.name)} の値に NUL が含まれます(環境変数として注入できません)`,
+            `The value of variable ${displayText(variable.name)} contains NUL (it cannot be injected as an env var)`,
           ),
         );
       }

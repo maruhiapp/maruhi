@@ -151,7 +151,7 @@ function failureOutcome<T>(
   const reason = error.reason ?? error.kind;
   return {
     kind: "rejected",
-    message: `${label} の検証に失敗しました(reason=${reason})。サーバーによる差し替え・偽造の可能性があります`,
+    message: `Verification of ${label} failed (reason=${reason}). It may have been replaced or forged by the server`,
   };
 }
 
@@ -221,13 +221,13 @@ async function verifyOne(
   if (!coordinatesMatch(verified, environmentId, variable)) {
     return {
       kind: "rejected",
-      message: `変数 ${displayText(variable.variableId)} の申告 AAD 座標が要求文脈と一致しません(サーバー応答の不整合)`,
+      message: `Variable ${displayText(variable.variableId)} declares AAD coordinates that do not match the requested context (an inconsistent server response)`,
     };
   }
   if (statement.environmentId !== environmentId || statement.variableId !== variable.variableId) {
     return {
       kind: "rejected",
-      message: `変数 ${displayText(variable.variableId)} のステートメント座標が要求文脈と一致しません(名前の付け替え・移植の可能性)`,
+      message: `Variable ${displayText(variable.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
     };
   }
   // 名前 → variableId の対応は検証済みステートメント経由が必須(§4.2 / §12-7)
@@ -236,7 +236,7 @@ async function verifyOne(
     environmentId,
     { kind: "variable", variableId: variable.variableId },
     statement,
-    `変数 ${displayText(variable.variableId)} のメタステートメント`,
+    `variable ${displayText(variable.variableId)}'s meta statement`,
   );
   if (verifiedStatement.kind !== "ok") {
     return verifiedStatement;
@@ -244,7 +244,7 @@ async function verifyOne(
   if (statement.status !== "active") {
     return {
       kind: "rejected",
-      message: `変数 ${displayText(variable.variableId)} に deleted ステートメントが値付きで配布されました(削除の無断取り消しの可能性)`,
+      message: `Variable ${displayText(variable.variableId)} was served a deleted statement together with a value (a possible unauthorized undeletion)`,
     };
   }
   const result = await verifyDistributedValue({
@@ -269,7 +269,7 @@ async function verifyOne(
   if (!result.ok) {
     return failureOutcome(
       verified,
-      `変数 ${displayText(statement.name)} の値署名`,
+      `variable ${displayText(statement.name)}'s value signature`,
       payload.chainHeadSeq,
       result.error,
     );
@@ -317,7 +317,7 @@ async function verifyEnvironmentStatement(
   if (statement.environmentId !== environmentId) {
     return {
       kind: "rejected",
-      message: `環境ステートメントの座標が要求環境 ${environmentId} と一致しません(移植の可能性)`,
+      message: `The environment statement's coordinates do not match the requested environment ${environmentId} (possible transplantation)`,
     };
   }
   const result = await verifyStatement(
@@ -325,7 +325,7 @@ async function verifyEnvironmentStatement(
     environmentId,
     { kind: "environment" },
     statement,
-    `環境 ${environmentId} のメタステートメント`,
+    `environment ${environmentId}'s meta statement`,
   );
   if (result.kind !== "ok") {
     return result;
@@ -333,7 +333,7 @@ async function verifyEnvironmentStatement(
   if (statement.status !== "active") {
     return {
       kind: "rejected",
-      message: `環境 ${environmentId} に deleted ステートメントが配布されました(削除済み環境の配布 — サーバー応答の不整合)`,
+      message: `Environment ${environmentId} was served a deleted statement (distribution of a deleted environment — an inconsistent server response)`,
     };
   }
   return {
@@ -358,20 +358,20 @@ async function verifyDeletedStatements(
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
-        message: `削除済み変数 ${displayText(statement.variableId)} のステートメント座標が要求環境と一致しません`,
+        message: `Deleted variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested environment`,
       };
     }
     if (seen.has(statement.variableId) || activeIds.has(statement.variableId)) {
       return {
         kind: "rejected",
-        message: `変数 ${displayText(statement.variableId)} が active と deleted の両方で配布されました(削除の無断取り消し = equivocation の運搬形)`,
+        message: `Variable ${displayText(statement.variableId)} was served as both active and deleted (an unauthorized undeletion = equivocation in transit)`,
       };
     }
     seen.add(statement.variableId);
     if (statement.status !== "deleted") {
       return {
         kind: "rejected",
-        message: `削除済み一覧に active ステートメントが配布されました: ${displayText(statement.variableId)}`,
+        message: `An active statement was served in the deleted list: ${displayText(statement.variableId)}`,
       };
     }
     const result = await verifyStatement(
@@ -379,7 +379,7 @@ async function verifyDeletedStatements(
       environmentId,
       { kind: "variable", variableId: statement.variableId },
       statement,
-      `削除済み変数 ${displayText(statement.variableId)} のメタステートメント`,
+      `deleted variable ${displayText(statement.variableId)}'s meta statement`,
     );
     if (result.kind !== "ok") {
       return result;
@@ -405,12 +405,12 @@ function checkVerifiedNames(
   for (const value of values) {
     // 一意性は byte-exact 比較(§12-1。全受理名が NFC ならば NFC 一致と同値)
     if (seenNames.has(value.name)) {
-      return `同名の active ステートメントが複数検証に通りました(サーバー equivocation): ${displayText(value.name)}。名前解決を拒否します`;
+      return `Multiple active statements with the same name passed verification (server equivocation): ${displayText(value.name)}. Refusing name resolution`;
     }
     seenNames.add(value.name);
     if (value.name.normalize("NFC") !== value.name) {
       warnings.push(
-        `変数 ${displayText(value.variableId)} の名前が NFC 正規形ではありません(正規サーバーは受理しない形 — 視覚的に同名の変数が並存しうるため注意してください)`,
+        `Variable ${displayText(value.variableId)} has a name that is not NFC-normalized (an honest server would not accept it — beware that visually identical names may coexist)`,
       );
     }
   }
@@ -435,13 +435,13 @@ async function verifyActiveStatements(
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
-        message: `変数 ${displayText(statement.variableId)} のステートメント座標が要求文脈と一致しません(名前の付け替え・移植の可能性)`,
+        message: `Variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
       };
     }
     if (seenIds.has(statement.variableId)) {
       return {
         kind: "rejected",
-        message: `変数 ID が同一応答内で重複しています(サーバー応答の不整合): ${statement.variableId}`,
+        message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
       };
     }
     seenIds.add(statement.variableId);
@@ -450,7 +450,7 @@ async function verifyActiveStatements(
       environmentId,
       { kind: "variable", variableId: statement.variableId },
       statement,
-      `変数 ${displayText(statement.variableId)} のメタステートメント`,
+      `variable ${displayText(statement.variableId)}'s meta statement`,
     );
     if (outcome.kind !== "ok") {
       return outcome;
@@ -458,7 +458,7 @@ async function verifyActiveStatements(
     if (statement.status !== "active") {
       return {
         kind: "rejected",
-        message: `変数 ${displayText(statement.variableId)} に deleted ステートメントがアクティブ一覧で配布されました(削除の無断取り消しの可能性)`,
+        message: `Variable ${displayText(statement.variableId)} was served a deleted statement in the active list (a possible unauthorized undeletion)`,
       };
     }
     values.push({
@@ -487,7 +487,7 @@ async function verifyActiveVariables(
     if (seenIds.has(variable.variableId)) {
       return {
         kind: "rejected",
-        message: `変数 ID が同一応答内で重複しています(サーバー応答の不整合): ${variable.variableId}`,
+        message: `Duplicate variable IDs within one response (an inconsistent server response): ${variable.variableId}`,
       };
     }
     seenIds.add(variable.variableId);
@@ -529,7 +529,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   return Effect.gen(function* () {
     const environment = yield* Effect.tryPromise({
       try: () => verifyEnvironmentStatement(verified, environmentId, pull.statement),
-      catch: () => cliError("環境ステートメントの検証が失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Environment-statement verification failed to run (crypto error)"),
     });
     if (environment.kind === "future") {
       return { kind: "future" } as const;
@@ -539,7 +539,8 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
     }
     const actives = yield* Effect.tryPromise({
       try: verifyActives,
-      catch: () => cliError("変数ステートメント・値署名の検証が失敗しました(暗号処理エラー)"),
+      catch: () =>
+        cliError("Variable-statement / value-signature verification failed to run (crypto error)"),
     });
     if (actives.kind === "future") {
       return { kind: "future" } as const;
@@ -550,7 +551,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
     const deleted = yield* Effect.tryPromise({
       try: () =>
         verifyDeletedStatements(verified, environmentId, pull.deletedVariables, actives.value.ids),
-      catch: () => cliError("削除済み変数ステートメントの検証が失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Deleted-variable-statement verification failed to run (crypto error)"),
     });
     if (deleted.kind === "future") {
       return { kind: "future" } as const;
@@ -757,7 +758,7 @@ export function pullVerifiedEnvironment(input: {
           snapshot: value.snapshot,
         }),
       divergedMessage:
-        "再同期後もチェーンに存在しないヘッドへ束縛された値またはステートメントが配布されています(チェーン分岐または偽造の証拠)",
+        "A value or statement bound to a head that still does not exist on the chain after a re-sync was served (evidence of chain divergence or forgery)",
     }),
     ({ view, wire, value }) => ({
       verified: view,
@@ -883,7 +884,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
           tombstones: value.tombstones,
         }),
       divergedMessage:
-        "再同期後もチェーンに存在しないヘッドへ束縛されたステートメントが配布されています(チェーン分岐または偽造の証拠)",
+        "A statement bound to a head that still does not exist on the chain after a re-sync was served (evidence of chain divergence or forgery)",
     }),
     ({ view, value }) => ({
       verified: view,
@@ -923,7 +924,7 @@ export function verifiedDeletedEnvironments(
           environment.environmentId,
           { kind: "environment" },
           statement,
-          `環境 ${displayText(environment.environmentId)} の削除ステートメント`,
+          `environment ${displayText(environment.environmentId)}'s deletion statement`,
         );
         if (outcome.kind === "ok") {
           deleted.add(environment.environmentId);
@@ -931,6 +932,6 @@ export function verifiedDeletedEnvironments(
       }
       return deleted;
     },
-    catch: () => cliError("環境ステートメントの検証に失敗しました"),
+    catch: () => cliError("Environment-statement verification failed"),
   });
 }

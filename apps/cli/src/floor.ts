@@ -453,7 +453,7 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
       },
       catch: () =>
         cliError(
-          `ローカル床ファイルを書き込めません: ${join(dir, `${projectId}.json`)}(巻き戻し検出を継続できないため中断します)`,
+          `Cannot write the local floor file: ${join(dir, `${projectId}.json`)} (aborting because rollback detection cannot continue)`,
         ),
     });
 
@@ -462,7 +462,7 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
       Effect.tryPromise({
         try: () => readFloorFile(pathOf(projectId)),
         catch: () =>
-          cliError(`ローカル床ファイルを読み取れません: ${join(dir, `${projectId}.json`)}`),
+          cliError(`Cannot read the local floor file: ${join(dir, `${projectId}.json`)}`),
       }),
     commitHead: (projectId, head) => Effect.asVoid(write(projectId, applyHead(head))),
     commitPull: (projectId, commit) =>

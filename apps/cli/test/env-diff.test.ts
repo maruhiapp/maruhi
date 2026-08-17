@@ -290,11 +290,11 @@ describe("maruhi env diff", () => {
       // 環境 ID は EnvironmentId 型でも検証済みとは限らず、警告本文も将来の
       // 産出元が中和済みとは限らない — 組み立てた行を丸ごと通す
       reportEnvironmentWarnings("\u001b[2Kprod" as EnvironmentId, [
-        "変数 v1\u0007 の名前が NFC 正規形ではありません",
+        "変数 v1\u0007 の名前が not NFC-normalized",
       ]).pipe(Effect.provide(env.layer)),
     );
     expect(env.errors).toEqual([
-      "警告: environment \uFFFD[2Kprod: 変数 v1\uFFFD の名前が NFC 正規形ではありません",
+      "Warning: environment \uFFFD[2Kprod: 変数 v1\uFFFD の名前が not NFC-normalized",
     ]);
   });
 
@@ -379,9 +379,9 @@ describe("maruhi env diff", () => {
       "Variables in both: 0 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     );
     // 警告が立つのは非 NFC を配布した側だけ
-    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    const warnings = env.errors.filter((line) => line.includes("not NFC-normalized"));
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`警告: environment ${PROD}: `);
+    expect(warnings[0]).toContain(`Warning: environment ${PROD}: `);
   });
 
   it("2 環境ぶんの警告は環境 ID でラベルする(同一文面が畳まれて消えない)", async () => {
@@ -396,10 +396,10 @@ describe("maruhi env diff", () => {
     ]);
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
-    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    const warnings = env.errors.filter((line) => line.includes("not NFC-normalized"));
     expect(warnings).toHaveLength(2);
-    expect(warnings[0]).toContain(`警告: environment ${DEV}: `);
-    expect(warnings[1]).toContain(`警告: environment ${PROD}: `);
+    expect(warnings[0]).toContain(`Warning: environment ${DEV}: `);
+    expect(warnings[1]).toContain(`Warning: environment ${PROD}: `);
   });
 
   it("1 つ目の pull が前進させたビューを 2 つ目の pull へ渡す", async () => {
@@ -420,7 +420,7 @@ describe("maruhi env diff", () => {
     // 2 つ目の pull にそのビューを渡さないと、prod は「チェーン上に存在しない」
     // 環境のまま照合され、比較が別々の履歴に対するものになる
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
-    expect(env.errors.some((line) => line.includes("チェーン上に存在しません"))).toBe(false);
+    expect(env.errors.some((line) => line.includes("does not exist on the chain"))).toBe(false);
     expect(env.logs).toContain("  ONLY_DEV");
     expect(env.logs).toContain("  ONLY_PROD");
     // 前進したヘッドは床へ残す。openProject 時点(seq 2)のままだと、その間への
@@ -494,9 +494,9 @@ describe("maruhi env diff", () => {
     ]);
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(1);
-    const warnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    const warnings = env.errors.filter((line) => line.includes("not NFC-normalized"));
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`警告: environment ${DEV}: `);
+    expect(warnings[0]).toContain(`Warning: environment ${DEV}: `);
   });
 
   it("master 鍵が無い端末でも実行できる(復号しないため要求しない)", async () => {
@@ -507,7 +507,7 @@ describe("maruhi env diff", () => {
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
     expect(env.logs).toContain("  ONLY_DEV");
-    expect(env.errors.some((line) => line.includes("master 鍵がありません"))).toBe(false);
+    expect(env.errors.some((line) => line.includes("No master key"))).toBe(false);
   });
 
   describe("書き方の誤り(usage エラー = 2)", () => {

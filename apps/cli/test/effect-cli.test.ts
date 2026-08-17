@@ -79,7 +79,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
       // 引数層は通り、環境 ID の形式検査(コマンド本体)で落ちる = `--show` は
       // 値を取るオプションとして読まれている
       expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
-      expect(env.errors.join("\n")).toContain("環境 ID の形式が正しくありません");
+      expect(env.errors.join("\n")).toContain("Invalid environment ID");
       expect(server.requests).toHaveLength(0);
     }
   });
@@ -134,7 +134,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     // gunshi は `--` を跨いで run として解決し、`--` の後ろの先頭
     // (= コマンド名そのもの)を実行対象として渡していた
     expect(await runCli(["--", "run", "printenv"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("コマンド名は `--` より前に書いてください");
+    expect(env.errors.join("\n")).toContain("Write the command name before `--`");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
   });
@@ -598,15 +598,19 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     expect(same.server.requests).toHaveLength(0);
   });
 
-  it("先頭の空引数があってもコマンドの解決は effect 側と一致する(振り分けの整合)", async () => {
-    // gunshi は falsy な positional を読み飛ばす。migratedCommandKey も同じ規則
-    // (commandTokens)で解決しないと、診断の宛先(env create の宣言)がずれて
-    // 位置引数の取り違えという**専用の案内**が出せなくなる
+  it("先頭の空引数は不明なコマンドとして落ち、無関係なフラグの指摘を重ねない", async () => {
+    // 先頭の "" はコマンド名として解決できない(root の UnknownSubcommand)。
+    // このときフラグは root の宣言と突き合わされているので、後続のフラグを
+    // 不明扱いで並べない(formatErrors の畳み込み — 第 3 段階 ④ で、gunshi の
+    // 読み飛ばしに合わせていた旧挙動から「空のトークンも 1 つの引数」へ揃えた)
     const { env } = await startEnv();
     expect(await runCli(["", "env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(
       2,
     );
-    expect(env.errors.join("\n")).toContain("--environment-id is a positional argument");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand");
+    expect(errors).not.toContain("Unknown flag");
+    expectNoLeak(env, ["prod"]);
   });
 
   it("`maruhi env` 単体は usage エラー(2)で、env 段の使い方を stderr へ出す", async () => {
@@ -925,5 +929,539 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     const errors = env.errors.join("\n");
     expect(errors).toContain("Unexpected extra arguments (1;");
     expect(server.requests).toHaveLength(0);
+  });
+});
+
+describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②)", () => {
+  it("不明な操作は取りうる操作の一覧を出し、ログインやサーバー接続より前に落ちる", async () => {
+    // セッション解決の後ろに置くと、`key bogus` が「Not logged in」で
+    // 落ちて打ち間違いが伝わらない(しかも exit 1)。effect ではサブコマンド
+    // 解決がハンドラより前 = 構造的にセッションへ到達しない
+    const key = await makeTestEnv();
+    expect(await runCli(["key", "bogus"], key.layer)).toBe(2);
+    expect(key.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: generate | show | recover | recovery)",
+    );
+    expect(key.errors.join("\n")).not.toContain("Not logged in");
+
+    const project = await makeTestEnv();
+    expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
+    expect(project.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: init | verify)",
+    );
+  });
+
+  it("操作名は打たれた語を返さない(制御文字も値も端末へ流さない)", async () => {
+    // 行を消して偽の成功行を書くような ANSI 列を含む語。文面は取りうる操作の
+    // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
+    const evil = "[2K\rmaruhi: OK";
+    for (const command of ["key", "project"]) {
+      const { env } = await startEnv();
+      expect(await runCli([command, evil], env.layer), command).toBe(2);
+      const output = [...env.logs, ...env.errors].join("\n");
+      expect(output, command).toContain("Unknown subcommand");
+      expect(output, command).not.toContain("");
+      expect(output, command).not.toContain("\r");
+    }
+  });
+
+  it("葉は位置引数を取らない(`key generate extra` は余分な引数として落ちる)", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["key", "generate", "extra"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unexpected extra arguments (1;");
+    expect(errors).toContain("maruhi key generate takes no positional arguments");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("bare `maruhi key` / `maruhi project` は usage エラー(2)", async () => {
+    for (const command of ["key", "project"]) {
+      const { env, server } = await startEnv();
+      expect(await runCli([command], env.layer), command).toBe(2);
+      expect(env.logs, command).toEqual([]);
+      expect(env.errors.join("\n"), command).toContain(`maruhi ${command}`);
+      expect(server.requests, command).toHaveLength(0);
+    }
+  });
+});
+
+describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSubcommand)", () => {
+  it("コマンド名の綴り間違いでは、正しく綴られたオプションを不明扱いしない", async () => {
+    // 未解決のコマンドではフラグが root の宣言と突き合わされるため、綴りの
+    // 合っている --show まで不明として並ぶ(探させない — formatErrors が
+    // UnknownSubcommand と同時の UnrecognizedOption を畳む)
+    const { env } = await startEnv();
+    expect(await runCli(["pul", "--show"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand (did you mean pull?)");
+    expect(errors).not.toContain("Unknown flag");
+  });
+
+  it("未知のコマンドは取りうるコマンドの一覧を出す", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["bogus"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | project | rotation | audit | config)",
+    );
+  });
+
+  it("コマンド名の位置に値を書いた形も綴りを出さない", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["s3cr3t/value=with-symbols"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand");
+    expect(errors).not.toContain("s3cr3t");
+  });
+
+  it("コマンド名より前に書いたフラグは、自己矛盾せず置き場所を案内する", async () => {
+    // `maruhi --show pull`(gunshi が通していた形)。振り分けの葉(pull)の
+    // 宣言で診断を組むと「--show を拒否しつつ受け付ける一覧に --show を載せる」
+    // 自己矛盾になる — root の宣言(置き場所の案内)で組む(レビュー指摘)
+    const { env, server } = await startEnv();
+    expect(await runCli(["--show", "pull"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("write the subcommand first and its flags after it");
+    expect(errors).not.toContain("flags this command accepts");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("`--version` の出力は stdout、`--help` 併記時はヘルプが勝ち stderr へ出る", async () => {
+    // `V=$(maruhi --version)` はコマンドの出力(gunshi 時代からの契約)。
+    // `--help --version` は上流で Help が勝つ = 集めた行はヘルプ本文なので
+    // stdout へ流さない(決定 9 / ADR-0016 追記 2)
+    const version = await startEnv();
+    expect(await runCli(["--version"], version.env.layer)).toBe(0);
+    expect(version.env.logs.join("\n")).toMatch(/^\d+\.\d+\.\d+/);
+    expect(version.env.errors).toEqual([]);
+
+    const both = await startEnv();
+    expect(await runCli(["--help", "--version"], both.env.layer)).toBe(0);
+    expect(both.env.logs).toEqual([]);
+    expect(both.env.errors.join("\n")).toContain("maruhi");
+
+    // ビルトインは最優先で短絡する(上流仕様)= 同じ argv の書き方の誤りは
+    // 報告されない。値を書き込む経路には到達しないため受容し、挙動として固定
+    // する(ADR-0016 追記 7)
+    const swallowed = await startEnv();
+    expect(await runCli(["--version", "--bogus"], swallowed.env.layer)).toBe(0);
+    expect(swallowed.env.logs.join("\n")).toMatch(/^\d+\.\d+\.\d+/);
+    expect(swallowed.server.requests).toHaveLength(0);
+  });
+
+  it("エントリコマンドの二重名(`maruhi maruhi`)をコマンドとして勧めない", async () => {
+    // gunshi はエントリコマンドを自分自身の名前でも登録していた。effect の
+    // root に `maruhi` サブコマンドは無い = ただの未知のコマンド
+    const { env } = await startEnv();
+    expect(await runCli(["maruhi", "extra"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand");
+    expect(errors).not.toContain("maruhi maruhi");
+  });
+});
+
+describe("login / logout の移行(ADR-0016 第 3 段階 ④)", () => {
+  it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
+    // 期待する型は宣言由来なので出してよいが、与えられた値は平文が混ざりうる
+    // ので出さない
+    const { env, server } = await startEnv();
+    expect(await runCli(["login", "--github-poll-interval", "s3cr3t"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unacceptable value for flag --github-poll-interval");
+    expectNoLeak(env, ["s3cr3t"]);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("値の無い number は usage エラー(2)になる(gunshi は内部エラー = 1 だった)", async () => {
+    // gunshi では値の無い number オプションで gunshi 自身が TypeError を投げ、
+    // 内部エラー(exit 1)として報告していた(args.test.ts の旧ケース)。
+    // effect では InvalidValue = 書き方の誤り(exit 2)— 移行後の正へ更新
+    const { env, server } = await startEnv();
+    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --github-poll-interval");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("長いオプション名の打ち間違いも候補として案内する", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["login", "--github-client-idd", "x"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unknown flag (did you mean --github-client-id?)");
+  });
+
+  it("隠しオプション(hidden)はヘルプにも候補にも出さない", async () => {
+    // 内部向けの綴り(--github-base-url / --github-poll-interval)を広めない。
+    // 上流の typo 候補は hidden を除外し(実測)、こちらの一覧(specOf)も
+    // hidden を除外する
+    const typo = await startEnv();
+    expect(await runCli(["login", "--github-poll-intervall", "3"], typo.env.layer)).toBe(2);
+    const errors = typo.env.errors.join("\n");
+    expect(errors).not.toContain("--github-poll-interval");
+    expect(errors).not.toContain("--github-base-url");
+    expect(errors).toContain("Unknown flag");
+
+    const help = await startEnv();
+    expect(await runCli(["login", "--help"], help.env.layer)).toBe(0);
+    const full = help.env.errors.join("\n");
+    expect(full).toContain("--token-name");
+    expect(full).not.toContain("--github-base-url");
+    expect(full).not.toContain("--github-poll-interval");
+  });
+
+  it("logout は位置引数を取らない", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["logout", "extra"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("maruhi logout takes no positional arguments");
+    expect(server.requests).toHaveLength(0);
+  });
+});
+
+describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 ③)", () => {
+  it("bare `maruhi audit` は list として実行される(現行仕様の維持)", async () => {
+    // ハンドラ付き親(実測済み): bare 親は list を実行し、コマンド本体
+    // (通信)まで進む = usage エラー(2)にならない
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit"], env.layer)).toBe(1);
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("bare `maruhi audit` でも list のフラグが使える(`audit --limit 5`)", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit", "--limit", "5"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).not.toContain("Unknown flag");
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("`audit --help` の usage はサブコマンドを任意(`[subcommand]`)と描く", async () => {
+    // bare `maruhi audit` = list が動く以上、上流の一律 `<subcommand>`(必須)
+    // は嘘になる(Pullfrog レビューの指摘)。判定は宣言駆動 — フラグと
+    // サブコマンドの両方を持つ段(ハンドラ付き親)だけを直す
+    const help = await startEnv();
+    expect(await runCli(["audit", "--help"], help.env.layer)).toBe(0);
+    const full = help.env.errors.join("\n");
+    expect(full).toContain("maruhi audit [subcommand]");
+    expect(full).not.toContain("<subcommand>");
+
+    // 通常の親(bare がエラーになる段)は従来どおり必須と描く
+    const env = await startEnv();
+    expect(await runCli(["env", "--help"], env.env.layer)).toBe(0);
+    expect(env.env.errors.join("\n")).toContain("maruhi env <subcommand>");
+  });
+
+  it("audit の書き方の誤りは通信より前に落ちる(範囲外・型違い・不明な操作)", async () => {
+    const range = await startEnv();
+    expect(await runCli(["audit", "--limit", "0"], range.env.layer)).toBe(2);
+    expect(range.env.errors.join("\n")).toContain("--limit must be an integer between 1 and 200");
+    expect(range.server.requests).toHaveLength(0);
+
+    // 値の無い / 数として読めない number は gunshi では内部エラー(exit 1)
+    // だったが、effect では InvalidValue = usage エラー(exit 2)になる
+    const typed = await startEnv();
+    expect(await runCli(["audit", "--limit", "s3cr3t"], typed.env.layer)).toBe(2);
+    const typedErrors = typed.env.errors.join("\n");
+    expect(typedErrors).toContain("Unacceptable value for flag --limit");
+    expectNoLeak(typed.env, ["s3cr3t"]);
+    expect(typed.server.requests).toHaveLength(0);
+
+    const bogus = await startEnv();
+    expect(await runCli(["audit", "bogus"], bogus.env.layer)).toBe(2);
+    expect(bogus.env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: list | invites | self | verify)",
+    );
+    expect(bogus.server.requests).toHaveLength(0);
+  });
+
+  it("自段のフラグをサブコマンドより前に書いた形は、自己矛盾せず置き場所を案内する", async () => {
+    // `audit --limit 5 list`(gunshi が通していた形)。上流は親のローカル
+    // フラグをサブコマンドへ継承しない = 未宣言として報告するが、bare 親
+    // (= list)の宣言に同じフラグがあるため、「受け付ける一覧」に載せると
+    // 自己矛盾になる(レビュー第 2 巡の指摘)
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit", "--limit", "5", "list"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("--limit belongs after the subcommand");
+    expect(errors).not.toContain("flags this command accepts");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("その操作に無いフラグは usage エラー(2)で落ちる(AUDIT_ACTION_FLAGS の置き換え)", async () => {
+    // gunshi 時代の optionRestrictedTo / auditActionFlagRejection が受け持って
+    // いた形。宣言が操作ごとに分かれたので、未宣言フラグとして構造的に落ちる
+    for (const argv of [
+      ["audit", "verify", "--limit", "5"],
+      ["audit", "self", "--project", "x"],
+      ["audit", "invites", "--event", "var.version_pushed"],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain("Unknown flag");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("audit list のフィルタの形式検査は通信より前に落ちる", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit", "--env", "!bad"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Invalid environment ID for --env");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("bare `maruhi rotation` / 不明な操作は usage エラー(2)", async () => {
+    const bare = await startEnv();
+    expect(await runCli(["rotation"], bare.env.layer)).toBe(2);
+    expect(bare.env.logs).toEqual([]);
+    expect(bare.env.errors.join("\n")).toContain("maruhi rotation");
+
+    const bogus = await startEnv();
+    expect(await runCli(["rotation", "bogus"], bogus.env.layer)).toBe(2);
+    expect(bogus.env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: list | dismiss)",
+    );
+  });
+
+  it("rotation dismiss の boolean(--all)は重複を拒否し、値は書いたとおりに読む", async () => {
+    // gunshi に最後まで残っていた boolean。`--all=false` は gunshi では
+    // **値を読まずに true**(全フラグの取り下げに化ける)だったが、effect は
+    // 書いたとおり false として読む(12 形の #2)。重複は atMost(1) が落とす
+    for (const argv of [
+      ["rotation", "dismiss", "--all", "--no-all"],
+      ["rotation", "dismiss", "--all", "--all"],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain(
+        "Flag --all was specified more than once",
+      );
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+
+    // `--all=false` は「--all を書いていない」実行として読まれ、引数層は通る
+    // (対象未指定はコマンド本体が exit 1 で報告する — 書いたことと逆にならない)。
+    // 退行(true に化ける)と resolveAllTargets が必ず通信するので、
+    // 「対象未指定の案内 + 通信ゼロ」で判別する(Pullfrog 指摘のテスト強化)
+    const explicit = await startEnv();
+    expect(await runCli(["rotation", "dismiss", "--all=false"], explicit.env.layer)).toBe(1);
+    expect(explicit.env.errors.join("\n")).not.toContain("Unknown flag");
+    expect(explicit.env.errors.join("\n")).toContain("Specify what to dismiss");
+    expect(explicit.server.requests).toHaveLength(0);
+  });
+
+  it("rotation dismiss の対象の欠落・--all との矛盾は通信より前に落ちる", async () => {
+    // 前段の同期より後ろに置くと、案内が接続エラーに隠れる(このハーネスの
+    // サーバーは 404 しか返さない)うえ往復が無駄になる
+    const missing = await startEnv();
+    expect(await runCli(["rotation", "dismiss"], missing.env.layer)).toBe(1);
+    expect(missing.env.errors.join("\n")).toContain("Specify what to dismiss");
+    expect(missing.server.requests).toHaveLength(0);
+
+    const contradictory = await startEnv();
+    expect(
+      await runCli(
+        ["rotation", "dismiss", "--all", "va1234567890123456789012", "--env", "prod"],
+        contradictory.env.layer,
+      ),
+    ).toBe(1);
+    expect(contradictory.env.errors.join("\n")).toContain(
+      "--all cannot be combined with a variableId",
+    );
+    expect(contradictory.server.requests).toHaveLength(0);
+  });
+
+  it("rotation dismiss の対象の形式検査は通信より前に落ちる(値は出さない)", async () => {
+    const env1 = await startEnv();
+    expect(
+      await runCli(["rotation", "dismiss", "sk-live-x!", "--env", "prod"], env1.env.layer),
+    ).toBe(2);
+    expect(env1.env.errors.join("\n")).toContain("Invalid variableId");
+    expectNoLeak(env1.env, ["sk-live-x!"]);
+    expect(env1.server.requests).toHaveLength(0);
+
+    const env2 = await startEnv();
+    expect(await runCli(["rotation", "dismiss", "--all", "--env", "!bad"], env2.env.layer)).toBe(2);
+    expect(env2.env.errors.join("\n")).toContain("Invalid environment ID for --env");
+    expect(env2.server.requests).toHaveLength(0);
+  });
+});
+
+describe("push の移行(ADR-0016 第 3 段階 ①)", () => {
+  it("余分な引数は中身を出さず、値の渡し方(stdin)を必ず添える", async () => {
+    // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した
+    // 引数の中身は出さない(平文でありうる)代わりに、直し方を必ず添える —
+    // でないと直しようがない(args.test.ts の旧ケースの規律)
+    const secret = "hunter2-plaintext-value";
+    for (const argv of [
+      ["push", "API_KEY", secret],
+      // `--` の後ろも push は読まない(読むのは run だけ)。黙って捨てずに落とす
+      ["push", "API_KEY", "--", secret],
+      ["push", "API_KEY", "--", ""],
+    ]) {
+      const { env, server } = await startEnv();
+      env.setStdin(new TextEncoder().encode("secret-value"));
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      const errors = env.errors.join("\n");
+      expect(errors).toContain("Unexpected extra arguments (1;");
+      expect(errors).toContain("contents not shown");
+      expect(errors).toContain("Values are read from stdin");
+      expectNoLeak(env, [secret]);
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("変数名の欠落・空 / 空白だけの変数名は宣言で落ちる", async () => {
+    const missing = await startEnv();
+    expect(await runCli(["push"], missing.env.layer)).toBe(2);
+    expect(missing.env.errors.join("\n")).toContain("Missing positional argument name");
+    expect(missing.server.requests).toHaveLength(0);
+
+    const blank = await startEnv();
+    expect(await runCli(["push", "  "], blank.env.layer)).toBe(2);
+    expect(blank.env.errors.join("\n")).toContain(
+      "Unacceptable value for positional argument name",
+    );
+    expect(blank.server.requests).toHaveLength(0);
+  });
+
+  it("位置引数の名前をオプションとして書いた形(`--name`)は直し方まで案内する", async () => {
+    const { env, server } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
+    expect(await runCli(["push", "--name", "API_KEY"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--name is a positional argument");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("空 / 空白だけのオプション値は既定へ潰さず落とす(既定環境への書き込み事故)", async () => {
+    // gunshi は空の値を「未指定」に潰すため、`--env "$ENV"` の未設定形が
+    // **既定環境への書き込み**に化けた(取り消せない)。宣言(NonBlank)が塞ぐ
+    for (const argv of [
+      ["push", "API_KEY", "--env", ""],
+      ["push", "API_KEY", "--env", "  "],
+      ["push", "API_KEY", "--project="],
+    ]) {
+      const { env, server } = await startEnv();
+      env.setStdin(new TextEncoder().encode("secret-value"));
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n")).toContain("Unacceptable value for flag");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("値がオプションに化けた形は綴りを復元して出さない(平文の漏洩経路)", async () => {
+    // `-hunter2`(短縮グループ)・`--sk_live_ab12`・`-----BEGIN...`(長い綴り)
+    // のような「値のつもりの語」を、拒否の診断が書き出さないこと。候補は
+    // **宣言名**からしか出さない(cli-formatter.ts の規律)
+    // `-hunter2` は使わない: 短縮グループの先頭 `-h` は組み込みの help に
+    // 解決され、ヘルプ表示(exit 0)になる — 何も漏れないが拒否の検査には
+    // ならないため、help に当たらない先頭文字で同じ形を固定する
+    for (const [typed, fragment] of [
+      ["-xunter2", "unter2"],
+      ["--sk_live_ab12", "sk_live"],
+      ["-----BEGIN-RSA-PRIVATE-KEY-hunter2", "BEGIN"],
+      ["--constructor=x", "constructor"],
+    ] as const) {
+      const { env, server } = await startEnv();
+      env.setStdin(new TextEncoder().encode("secret-value"));
+      expect(await runCli(["push", "API_KEY", typed], env.layer), typed).toBe(2);
+      const errors = env.errors.join("\n");
+      expect(errors, typed).toContain("Unknown flag");
+      expect(errors, typed).not.toContain(fragment);
+      expect(server.requests, typed).toHaveLength(0);
+    }
+  });
+});
+
+describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () => {
+  it("不明な操作・bare `maruhi config` は usage エラー(2)", async () => {
+    const bogus = await startEnv();
+    expect(await runCli(["config", "bogus"], bogus.env.layer)).toBe(2);
+    expect(bogus.env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: get | set)",
+    );
+
+    const bare = await startEnv();
+    expect(await runCli(["config"], bare.env.layer)).toBe(2);
+    expect(bare.env.logs).toEqual([]);
+    expect(bare.env.errors.join("\n")).toContain("maruhi config");
+  });
+
+  it("不明な設定キーは打たれた語を返さず、取りうるキーの一覧を出す", async () => {
+    // 行を消して偽の成功行を書くような ANSI 列を含む語。文面は取りうる値の
+    // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
+    const evil = "[2K\rmaruhi: OK";
+    const get = await startEnv();
+    expect(await runCli(["config", "get", evil], get.env.layer)).toBe(2);
+    const getOutput = [...get.env.logs, ...get.env.errors].join("\n");
+    expect(getOutput).toContain("Unknown config key (server | githubClientId");
+    expect(getOutput).not.toContain("");
+    expect(getOutput).not.toContain("\r");
+
+    // 操作名の位置に書かれた語も返さない(不明なサブコマンドの診断)
+    const action = await startEnv();
+    expect(await runCli(["config", evil, "server"], action.env.layer)).toBe(2);
+    const actionOutput = [...action.env.logs, ...action.env.errors].join("\n");
+    expect(actionOutput).toContain("Unknown subcommand");
+    expect(actionOutput).not.toContain("");
+    expect(actionOutput).not.toContain("\r");
+  });
+
+  it("`config set` の空 / 空白だけの値は既存の設定を上書きせずに落ちる", async () => {
+    // `config set defaultProject "$PROJ"` の未設定形が既存の設定を空で
+    // 上書きして成功を報告する事故(gunshi 時代は args.ts の走査、いまは宣言)
+    for (const value of ["", "  "]) {
+      const { env } = await startEnv();
+      expect(await runCli(["config", "set", "defaultEnvironment", value], env.layer)).toBe(2);
+      expect(env.errors.join("\n")).toContain("Unacceptable value for positional argument value");
+      expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+      expect(env.logs).toContain("prod");
+    }
+  });
+
+  it("値の無い `config set` は宣言(必須位置引数)で落ちる", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["config", "set", "defaultEnvironment"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Missing positional argument value");
+  });
+
+  it("`--` の後ろのトークンは位置引数の空きを埋める(ADR-0016 追記 8)", async () => {
+    // 上流はパーサが `--` の前後の位置引数を 1 つの配列に畳む。`-` で始まる
+    // 値を位置引数として書く POSIX の逃げ道として機能し、黙って捨てられる
+    // トークンは無い(空きを超える分は余分な位置引数 = exit 2 のまま)
+    const { env } = await startEnv();
+    expect(await runCli(["config", "set", "--", "defaultEnvironment", "dev"], env.layer)).toBe(0);
+    expect(env.logs).toContain("Set defaultEnvironment");
+    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+    expect(env.logs).toContain("dev");
+  });
+
+  it("`config get` の余分な引数は落ち、設定も読み出しも壊さない", async () => {
+    const single = await startEnv();
+    expect(await runCli(["config", "get", "defaultEnvironment", "dev"], single.env.layer)).toBe(2);
+    const errors = single.env.errors.join("\n");
+    expect(errors).toContain("Unexpected extra arguments (1;");
+    expect(errors).toContain("maruhi config get only takes these positional arguments: key");
+    expect(single.env.logs).toHaveLength(0);
+
+    // 個数は過少報告しない(gunshi 時代は optional スロットが 1 つ吸っていた)
+    const multiple = await startEnv();
+    expect(
+      await runCli(["config", "get", "defaultEnvironment", "a", "b"], multiple.env.layer),
+    ).toBe(2);
+    expect(multiple.env.errors.join("\n")).toContain("Unexpected extra arguments (2;");
+
+    // set の余分な引数も設定を書き換えない
+    const set = await startEnv();
+    expect(
+      await runCli(["config", "set", "defaultEnvironment", "dev", "extra"], set.env.layer),
+    ).toBe(2);
+    expect(set.env.errors.join("\n")).toContain("Unexpected extra arguments (1;");
+    expect(await runCli(["config", "get", "defaultEnvironment"], set.env.layer)).toBe(0);
+    expect(set.env.logs).toContain("prod");
+  });
+
+  it("成功した実行の stdout はコマンドの出力(値)だけ", async () => {
+    const { env } = await startEnv();
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // `V=$(maruhi config get server)` が値以外を捕まえないこと
+    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(env.logs).toEqual(["prod"]);
   });
 });

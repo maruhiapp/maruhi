@@ -62,3 +62,16 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
    指紋を目視照合する儀式で stdout をパイプされると人間が語を読めないため、拒否が正しい。
 
 依存は `@effect/platform-bun`(+ `@effect/platform-node-shared`)と `std-env` が増え、`gunshi` が消える。バンドルの実質増分は約 190KB(単体バイナリ 62〜96MB に対して誤差)。退避経路: パーサだけを `@stricli/core`(依存ゼロ・重複指定と boolean への値をパーサ自身が拒否する唯一の候補)へ差し替える — その場合 Effect との結線は現行と同じく自前に戻る。`Bun.isAIAgent()` は Zig の内部実装で公開 JS API ではないため採用しない(Bun 1.4 で JS へ露出したら二次層の実装として再判断する。検出範囲は std-env より狭い)。
+
+---
+
+**追記(2026-08-17 — 第 3 段階の完了と裁定)**: 全コマンドの移行が完了し、gunshi は依存から削除した(決定 1・2 の実施)。移行中に必要になった裁定を記録する:
+
+1. **bare `maruhi audit` = list を維持**。実測により、ハンドラ付き親(`Command.make(name, config, handler)` + `Command.withSubcommands`)は bare 実行でハンドラを実行し、サブコマンド指定時は子だけが走り、不明なサブコマンドは `UnknownSubcommand`(teardown で exit 2)になることを確認した。親は list と同じ宣言を持つので `maruhi audit --limit 5` も従来どおり通る(診断用の COMMAND_SPECS にも親の宣言を流し込む — effect-cli.ts の GROUP_PARENT_CONFIGS)
+2. **bare `maruhi`(引数なし)は exit 0 のまま、出力は stdout → stderr へ変更**。bare root はヘルプ要求として扱う(`maruhi --help` と同じ)。gunshi 時代の exit 0 と「使い方 + コマンド一覧」を保ちつつ、出力先は決定 9(stdout はコマンドの出力だけ)に合わせる。bare の**サブコマンド段**(`maruhi env` 単体)は従来どおり書き方の誤り(exit 2)。例外として **`--version` の出力だけは stdout**(`V=$(maruhi --version)` はコマンドの出力であり、gunshi 時代からの契約 — version.test.ts)
+3. **hidden フラグ**(login の `--github-base-url` / `--github-poll-interval`)は `Param.makeSingle({ hidden: true })` で構築する。実測: 上流のヘルプ描画・typo 候補の両方が hidden を除外する。maruhi 側の診断一覧(specOf)もラッパ(Map / Variadic / Transform / Optional)を葉まで辿って hidden を除外する
+4. **`--` より前にコマンド名が無い実行の専用診断は残す**(`maruhi -- run printenv`)。effect 側の診断は「余分な引数」としか言えず、直し方(コマンド名を前に出す)を伝えられないため。gunshi の `parseArgs` に依存していた走査(旧 args.ts の `commandTokens` / `commandNameAfterTerminator`)は、runCli 内の最小の自前字句(`--` までのトークン分類のみ。決定 2 の禁じる「検査の走査」ではなく振り分けの材料)へ置き換えた
+5. **args.ts は全体を削除した**。notes/cli-parser-alternatives.md §6 の帰属表は「12 関数 / 222 行が方針として残る」と概算していたが、スパイク 2〜3 巡目の実測どおり全てが宣言(`Flag.atMost(1)` / `withSchema` / `Argument.atLeast(1)`)と Formatter に置き換わり、残ったのは上記 4 の最小字句(約 30 行、cli.ts)だけだった
+6. 決定 6 の拒否機構の残り(audit の `AUDIT_ACTION_FLAGS` / `optionRestrictedTo` / `actionFlagRejection`)も宣言の分離で不要になり削除した
+7. **挙動の変更点**: 値の無い / 数として読めない number フラグは gunshi の内部エラー(exit 1)から `InvalidValue`(usage = exit 2)へ。`rotation dismiss --all=false` は「値を読まずに true」から「書いたとおり false」へ(12 形の #2)。先頭の空引数(`maruhi "" pull`)は読み飛ばしから root の `UnknownSubcommand`(exit 2)へ。`maruhi maruhi` はただの未知のコマンドになった。`maruhi audit --limit 5 list` のように **audit のフラグをサブコマンドより前に書いた形は exit 2** になる(上流は親のローカルフラグをサブコマンドへ継承しない)— 診断は置き場所(サブコマンドの後ろ、または bare `maruhi audit`)を案内する。また **`--version` / `--help` はビルトインとして最優先で短絡する**(上流仕様): 同じ argv に混ざった書き方の誤り(`maruhi --version --bogus`)は報告されず exit 0 になる。値を書き込む経路には到達しないため受容する(テストで固定)
+8. **`--` の後ろのトークンは位置引数の空きを埋める**(上流実測: パーサが `[...result.arguments, ...afterEndOfOptions]` へ畳む — 決定 8 の実装コメントに記載済みの同じ性質)。`maruhi config set -- defaultEnvironment dev` は exit 0 で通り、`maruhi member remove -- -user-with-dash` のように **`-` で始まる位置引数を書く POSIX の逃げ道**として機能する。黙って捨てられるトークンは無い — 位置引数の空きを超える分は従来どおり余分な位置引数(exit 2)。`run` だけは決定 8 のとおり `--` の後ろを実行コマンド列として特別扱いする(effect-cli.ts の commandAfterTerminator)。この畳み込みは受容し、テストで固定する(Pullfrog レビューの指摘を受けた裁定)

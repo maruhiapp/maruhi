@@ -1,6 +1,6 @@
 // 細部のユニットテスト: device flow のポーリング規則(RFC 8628 §3.5)、
 // キーチェーンレコードの codec、run の注入検証、stdin 正規化、
-// MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
+// MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
@@ -8,7 +8,7 @@ import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";
-import { normalizeStdinValue, optionRestrictedTo, runCli } from "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
 import { decodeValueText, showValues } from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
@@ -21,6 +21,7 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
+import { normalizeStdinValue } from "../src/push.ts";
 import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import {
   cryptoBackendUsable,
@@ -93,7 +94,7 @@ describe("pollDeviceFlow", () => {
       }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("有効期限");
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
   });
 
   it("device flow 開始応答の欠損(device_code なし)を検出する", async () => {
@@ -105,7 +106,7 @@ describe("pollDeviceFlow", () => {
       startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("device flow");
+    expect(JSON.stringify(exit)).toContain("device-flow start response");
   });
 
   it("サーバーが interval 0 を返しても下限(既定 5 秒)に丸める(ビジースピン防止)", async () => {
@@ -170,7 +171,7 @@ describe("pollDeviceFlow", () => {
       }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("有効期限");
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
   });
 });
 
@@ -307,7 +308,7 @@ describe("showValues(復号後の防衛線)", () => {
     // (一次 = TTY / 二次 = エージェント検出)であることを固定する
     const piped = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: false });
     expect(Exit.isFailure(piped)).toBe(true);
-    expect(JSON.stringify(piped)).toContain("対話端末でのみ許可されます");
+    expect(JSON.stringify(piped)).toContain("only allowed on an interactive terminal");
     expect(JSON.stringify(piped)).not.toContain("plaintext-value");
 
     const headless = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: true });
@@ -319,7 +320,7 @@ describe("showValues(復号後の防衛線)", () => {
       stdoutIsTerminal: true,
     });
     expect(Exit.isFailure(agent)).toBe(true);
-    expect(JSON.stringify(agent)).toContain("AI エージェント環境を検出");
+    expect(JSON.stringify(agent)).toContain("AI agent environment was detected");
   });
 
   it("人間の対話端末では表示する(検査が空振りしていない陽性対照)", async () => {
@@ -392,7 +393,7 @@ describe("showValues(復号後の防衛線)", () => {
       ),
     );
     expect(Exit.isSuccess(exit)).toBe(true);
-    expect(logs[0]).toContain("2 行の値。末尾に改行あり");
+    expect(logs[0]).toContain("2-line value with a trailing newline");
     expect(logs).toEqual([logs[0], "| a", "| b"]);
   });
 
@@ -434,14 +435,14 @@ describe("showValues(復号後の防衛線)", () => {
     // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す。改行を含む値は
     // 2 行目以降に印を付けて出す(値の側で `NAME=value` の行を偽造させない)
     expect(logs).toEqual([
-      'SECRET= (2 行の値。以下の各行の先頭 "| " は maruhi が付けた印です)',
+      'SECRET= (a 2-line value; the leading "| " on each line below is a marker added by maruhi)',
       "| a\uFFFDb\uFFFDc\uFFFDd\u200Ce",
       "| f",
     ]);
     // 中和したことは黙らない: 表示と実際の値が別物であることを名指しする
     // (値そのものは警告に載せない)
     expect(errors.join("\n")).toContain("SECRET");
-    expect(errors.join("\n")).toContain("実際の値と一致しない");
+    expect(errors.join("\n")).toContain("do not match the actual values");
   });
 });
 
@@ -471,7 +472,7 @@ describe("buildInjectionEnv", () => {
     for (const name of ["BASH_FUNC_ls%%", "evil()", "a b", "my-secret", "1abc"]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
-      expect(JSON.stringify(exit)).toContain("英数字と _ のみ");
+      expect(JSON.stringify(exit)).toContain("only alphanumerics and _");
     }
   });
 
@@ -480,10 +481,10 @@ describe("buildInjectionEnv", () => {
       buildInjectionEnv([variable("Secret_A", "x"), variable("SECRET_A", "y")]),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("大文字小文字の違い");
+    expect(JSON.stringify(exit)).toContain("differing only by letter case");
   });
 
-  it("実行制御系の環境変数名(PATH / LD_* / NODE_OPTIONS 等)への注入を拒否する", async () => {
+  it("execution-controlの環境変数名(PATH / LD_* / NODE_OPTIONS 等)への注入を拒否する", async () => {
     // "Path" は Windows の大文字小文字非区別への防衛(大文字化して比較)
     for (const name of [
       "PATH",
@@ -497,7 +498,7 @@ describe("buildInjectionEnv", () => {
     ]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
-      expect(JSON.stringify(exit)).toContain("実行制御系");
+      expect(JSON.stringify(exit)).toContain("execution-control");
     }
   });
 });
@@ -530,7 +531,7 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     // SchemaError)はすべて写像済みなので、ここへ来るのは本当の未知だけ。
     // message は応答本文の断片を含みうるため、中和ではなく**出さない**
     const unknown = toCliError(new Error("boom sk-live-SUPER-SECRET \u001b]0;pwned\u0007"));
-    expect(unknown.message).toBe("予期しないエラー(Error)");
+    expect(unknown.message).toBe("Unexpected error (Error)");
     expect(unknown.message).not.toContain("sk-live-SUPER-SECRET");
     expect(unknown.message).not.toContain("\u001b");
   });
@@ -545,8 +546,8 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
       }),
     });
     const rendered = toCliError(transport);
-    expect(rendered.message).toContain("サーバーへの接続に失敗しました");
-    expect(rendered.message).not.toContain("予期しないエラー");
+    expect(rendered.message).toContain("Failed to connect to the server");
+    expect(rendered.message).not.toContain("Unexpected error");
     // 下位の cause の文面(ホスト・ポート等)は素通ししない
     expect(rendered.message).not.toContain("ECONNREFUSED");
   });
@@ -561,13 +562,13 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     if (!Exit.isFailure(exit)) return;
     const rendered = toCliError(Cause.squash(exit.cause));
-    expect(rendered.message).toContain("スキーマと一致しないデータがあります");
+    expect(rendered.message).toContain("does not match the schema");
     expect(rendered.message).toContain("Expected number");
     expect(rendered.message).toContain('["version"]');
     expect(rendered.message).not.toContain("sk-live-SUPER-SECRET");
     // 同じチャネルにリクエストの encode 失敗も流れてくる(向きは型から分からない)
     // ので、誘導先は両向きを並べる。サーバー原因への一方的な誘導へ戻ったら落ちる
-    expect(rendered.message).toContain("指定した値");
+    expect(rendered.message).toContain("values you provided");
     // 改行は 1 行へ畳んでから中和する(置換文字で読めなくならない)
     expect(rendered.message).not.toContain("\uFFFD");
   });
@@ -585,7 +586,7 @@ describe("normalizeStdinValue", () => {
 describe("cryptoBackendUsable", () => {
   it("動く環境では true(破損の診断を環境のせいにしない)", async () => {
     // この判定は「鍵が読めない」原因が鍵か環境かを分ける。動く環境で false を
-    // 返すと、本当に壊れたレコードの診断まで「環境が非対応です・消さないで
+    // 返すと、本当に壊れたレコードの診断まで「環境が非対応です・do not delete
     // ください」に化け、唯一の復旧手順(手で消す)へ辿り着けなくなる
     expect(await Effect.runPromise(cryptoBackendUsable())).toBe(true);
   });
@@ -593,10 +594,10 @@ describe("cryptoBackendUsable", () => {
   it("環境起因の共通文言は「何が無事か」を含まない(経路ごとに違うため)", () => {
     // 保存済みの鍵を指せるのはキーチェーン経路だけ。recover / generate は
     // まだ何も保存していないので、共通部分がここまで書くと無い物を指す
-    expect(unsupportedCryptoCause).not.toContain("消さないで");
-    expect(unsupportedCryptoCause).not.toContain("保存");
-    // キーチェーン経路の文言だけが「消さないでください」を持つ
-    expect(unsupportedCryptoMessage).toContain("消さないでください");
+    expect(unsupportedCryptoCause).not.toContain("do not delete");
+    expect(unsupportedCryptoCause).not.toContain("stored");
+    // キーチェーン経路の文言だけが「do not delete it」を持つ
+    expect(unsupportedCryptoMessage).toContain("do not delete it");
   });
 });
 
@@ -617,7 +618,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     // key show は session 解決 + master 鍵を要求する。master 鍵がないため
     // エラーになるが、セッション解決(/auth/me)自体は通ることを検証する
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("master 鍵がありません");
+    expect(env.errors.join("\n")).toContain("No master key");
   });
 
   it("環境変数がキーチェーンより優先される", async () => {
@@ -652,7 +653,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("MARUHI_TOKEN での認証に失敗");
+    expect(env.errors.join("\n")).toContain("Authentication with MARUHI_TOKEN failed");
   });
 
   it("空白だけの MARUHI_TOKEN は未設定として扱う(空トークンで往復させない)", async () => {
@@ -667,12 +668,12 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
     // 判定を trim 後の値で行わないと、`Bearer `(空)を送ってから 401 になり、
-    // 「失効・スコープ・接続先を確認してください」という別原因の案内へ落ちる
+    // 「revocation, scope, and the target serverを確認してください」という別原因の案内へ落ちる
     env.setEnvVar("MARUHI_TOKEN", " \n");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(hit).toBe(false);
-    expect(env.errors.join("\n")).toContain("ログインしていません");
+    expect(env.errors.join("\n")).toContain("Not logged in");
   });
 
   it("MARUHI_TOKEN_ORIGIN 未指定なら MARUHI_TOKEN を使わず案内する", async () => {
@@ -684,7 +685,9 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定");
+    expect(env.errors.join("\n")).toContain(
+      "requires MARUHI_TOKEN_ORIGIN to name the target server origin",
+    );
   });
 
   it("MARUHI_TOKEN_ORIGIN の形式が不正なら実行の失敗(1)として直し先を示す", async () => {
@@ -704,7 +707,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "notaurl");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const text = env.errors.join("\n");
-    expect(text).toContain("MARUHI_TOKEN_ORIGIN 環境変数 を直してください");
+    expect(text).toContain("fix the MARUHI_TOKEN_ORIGIN env var");
     // 値そのものは返さない(認証情報が埋まった URL を書かれる形もある)
     expect(text).not.toContain("notaurl");
     expect(hit).toBe(false);
@@ -724,7 +727,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("一致しません");
+    expect(env.errors.join("\n")).toContain("does not match the connection target");
     // トークンは接続先へ送信されない
     expect(hit).toBe(false);
   });
@@ -737,7 +740,7 @@ describe("入力検証と defect の扱い", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // 書き方の誤りは usage エラー(2)。指定値そのものは返さない
     expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("プロジェクト ID の形式が正しくありません");
+    expect(env.errors.join("\n")).toContain("Invalid project ID");
     expect(env.errors.join("\n")).not.toContain("not-hex");
     const env2 = await makeTestEnv();
     await seedConfig(env2, {
@@ -747,7 +750,7 @@ describe("入力検証と defect の扱い", () => {
     env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // 環境 ID の形式検証はネットワークアクセス(セッション解決)より先に走る
     expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(2);
-    expect(env2.errors.join("\n")).toContain("環境 ID の形式が正しくありません");
+    expect(env2.errors.join("\n")).toContain("Invalid environment ID");
     expect(env2.errors.join("\n")).not.toContain("!bad");
   });
 
@@ -758,52 +761,17 @@ describe("入力検証と defect の扱い", () => {
     await seedConfig(env, { server: "https://maruhi.example", defaultProject: "not-hex" });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     expect(await runCli(["pull", "--env", "dev"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("config の defaultProject を直してください");
+    expect(env.errors.join("\n")).toContain("fix defaultProject in your config");
   });
 
   it("defect(バグ由来の throw)は usage エラー(2)でなく 1 で報告される", async () => {
     const env = await makeTestEnv();
     env.breakConfigLoadWithDefect();
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    // 型の名前だけを添える形を**厳密に**固定する(`内部エラー` の部分一致だけだと
-    // `内部エラー: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
-    expect(env.errors.join("\n")).toContain("maruhi: 内部エラー(Error)");
+    // 型の名前だけを添える形を**厳密に**固定する(部分一致だけだと
+    // `internal error: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
+    expect(env.errors.join("\n")).toContain("maruhi: internal error (Error)");
     // defect の message は出さない — 打たれた値を埋め込んだ文面でも到達しうる
     expect(env.errors.join("\n")).not.toContain("config load defect");
-  });
-});
-
-describe("操作専用オプションの適用可否(optionRestrictedTo)", () => {
-  // 実際の ENV_ACTION_FLAGS は互いに素なので、**共有**の形はコマンドラインから
-  // 到達できない。表を差し替えてここで固定する(将来オプションを共有させた
-  // ときに、共有元のどちらでも拒否される回帰を止める)
-  const ACTIONS = ["create", "rotate", "diff"] as const;
-  const FLAGS = {
-    create: new Set(["name"]),
-    // `name` は create と rotate が**共有**する想定の表
-    rotate: new Set(["reason", "name"]),
-    diff: new Set<string>(),
-  };
-
-  it("どの操作にも属さないオプションは全操作で使える(--server / --project の形)", () => {
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "diff", "server")).toBeNull();
-  });
-
-  it("その操作自身が持つオプションは使える", () => {
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "rotate", "reason")).toBeNull();
-  });
-
-  it("持たない操作では、使える操作の一覧を返す(診断で名指しするため)", () => {
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "diff", "reason")).toEqual(["rotate"]);
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "create", "reason")).toEqual(["rotate"]);
-  });
-
-  it("複数の操作が共有するオプションは、共有元のどちらでも使える", () => {
-    // 「**他の**操作の分」だけを数えると、共有元の両方でこれが非 null になり、
-    // 宣言したとおりに使えないオプションが生まれる
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "create", "name")).toBeNull();
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "rotate", "name")).toBeNull();
-    // 共有していない操作では、持ち主がすべて挙がる
-    expect(optionRestrictedTo(ACTIONS, FLAGS, "diff", "name")).toEqual(["create", "rotate"]);
   });
 });

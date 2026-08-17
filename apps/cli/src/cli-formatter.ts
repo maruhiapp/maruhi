@@ -36,6 +36,12 @@ export interface CommandSpec {
   readonly positionals: readonly string[];
   /** 入れ子サブコマンドを持つ段の、サブコマンド名の一覧(葉は省略)。 */
   readonly subcommands?: readonly string[];
+  /**
+   * 余分な位置引数の拒否に添えるコマンド固有の直し方(push の stdin 案内)。
+   * 中身を伏せる以上、直し方を添えないと打ち間違いを直せない(args.test.ts の
+   * 旧ケースが固定していた規律)。
+   */
+  readonly strayHint?: string;
 }
 
 /** 空・空白だけの値を拒む Schema の文面(宣言側とここで同じ定数を使う)。 */
@@ -55,6 +61,11 @@ function bareName(name: string): string {
   return name.replace(/^-+/, "");
 }
 
+/** 表示用のコマンド名(root 段 — 空のキー — は `maruhi` 単体)。 */
+function commandLabel(commandKey: string): string {
+  return commandKey === "" ? "maruhi" : `maruhi ${commandKey}`;
+}
+
 function unrecognizedOptionMessage(
   error: CliError.UnrecognizedOption,
   specs: Readonly<Record<string, CommandSpec>>,
@@ -67,12 +78,25 @@ function unrecognizedOptionMessage(
   // 載せる自己矛盾の診断になる(Bugbot 指摘)。親の段の宣言を引ければ、
   // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
   const errorKey = (error.command ?? []).slice(1).join(" ");
+  // root(errorKey が空)も root の spec(空のキー)で組む: `maruhi --show
+  // pull` のようにフラグをコマンド名より前に書いた形で、振り分けの葉
+  // (commandKey)の宣言へ落とすと「--show を拒否しつつ受け付ける一覧に
+  // --show を載せる」自己矛盾の診断になる。root spec は置き場所(サブコマンド
+  // の後ろ)の案内に分岐する
   const spec = specs[errorKey] ?? specs[commandKey];
-  const errorCommandKey = errorKey !== "" && specs[errorKey] !== undefined ? errorKey : commandKey;
+  const errorCommandKey = specs[errorKey] !== undefined ? errorKey : commandKey;
   // 位置引数の名前をオプションとして書いた形は、直し方が違う
   const option = bareName(error.option);
   if (spec?.positionals.includes(option) === true) {
     return `--${option} is a positional argument (it cannot be written as a flag). Write the value as a positional argument instead`;
+  }
+  // 解決済みの段の宣言に**在る**フラグが未宣言として報告された = 書いた位置が
+  // サブコマンドより前(`audit --limit 5 list` — 上流は親のローカルフラグを
+  // サブコマンドへ継承しない)。「存在しない」とも「受け付ける一覧」とも
+  // 言わない — 同じフラグを拒否しつつ一覧に載せる自己矛盾の診断になる
+  // (レビュー第 2 巡の指摘)。置き場所だけを案内する
+  if (spec?.flags.includes(option) === true) {
+    return `Unknown flag position (--${option} belongs after the subcommand — e.g. ${commandLabel(errorCommandKey)} --${option} …)`;
   }
   const guess = error.suggestions[0];
   if (guess !== undefined) {
@@ -83,13 +107,15 @@ function unrecognizedOptionMessage(
 
 /** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
 function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string): string {
-  // 入れ子の段(サブコマンドを持つ親)は自分のフラグを持たない。gunshi 時代は
-  // 操作名より前に書いたフラグも通ったため、その形で来た利用者に「フラグが
-  // 存在しない」と嘘をつかず、**置き場所**を案内する
-  const subcommands = spec?.subcommands ?? [];
+  // 入れ子の段(サブコマンドを持つ親)は**普通は**自分のフラグを持たない。
+  // gunshi 時代は操作名より前に書いたフラグも通ったため、その形で来た利用者に
+  // 「フラグが存在しない」と嘘をつかず、**置き場所**を案内する。例外は
+  // 親自身が宣言を持つ段(bare `audit` = list)で、そちらは葉と同じく
+  // 受け付けるフラグの一覧を出す
+  const subcommands = (spec?.flags.length ?? 0) === 0 ? (spec?.subcommands ?? []) : [];
   const first = subcommands[0];
   if (first !== undefined) {
-    return `Unknown flag (maruhi ${commandKey} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. maruhi ${commandKey} ${first} --flag …)`;
+    return `Unknown flag (${commandLabel(commandKey)} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. ${commandLabel(commandKey)} ${first} --flag …)`;
   }
   // 実行時に混ぜられるグローバル(--help / --version)は宣言の表に現れない
   // ので、ここで補う(無いと、実在するフラグが一覧から抜ける)
@@ -104,9 +130,9 @@ function unexpectedArgumentMessage(
 ): string {
   const takesNone = spec === undefined || spec.positionals.length === 0;
   const shape = takesNone
-    ? `maruhi ${commandKey} takes no positional arguments`
-    : `maruhi ${commandKey} only takes these positional arguments: ${spec.positionals.join(" ")}`;
-  return `Unexpected extra arguments (${error.arguments.length}; contents not shown — they may contain plaintext values). ${shape}`;
+    ? `${commandLabel(commandKey)} takes no positional arguments`
+    : `${commandLabel(commandKey)} only takes these positional arguments: ${spec.positionals.join(" ")}`;
+  return `Unexpected extra arguments (${error.arguments.length}; contents not shown — they may contain plaintext values). ${shape}${spec?.strayHint ?? ""}`;
 }
 
 /**
@@ -219,13 +245,38 @@ function maruhiFormatter(
   const describe = (error: CliError.CliError): string =>
     `maruhi: ${describeError(error, commandKey, specs)}`;
   const fallback = CliOutput.defaultFormatter({ colors: false });
+  // bare 実行でハンドラが走る親(audit = list)では、サブコマンドは必須では
+  // ない。上流の usage は一律 `<subcommand>`(必須)と描くので `[subcommand]`
+  // へ直す。判定は宣言駆動(フラグとサブコマンドの両方を持つ段 = ハンドラ付き
+  // 親だけが該当し、root や通常の親 — flags が空 — には触れない)
+  const spec = specs[commandKey];
+  const optionalSubcommand = (spec?.flags.length ?? 0) > 0 && (spec?.subcommands?.length ?? 0) > 0;
+  const adjustUsage = (text: string): string =>
+    optionalSubcommand ? text.replace("<subcommand>", "[subcommand]") : text;
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
-      helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`,
-    formatVersion: fallback.formatVersion,
+      adjustUsage(helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`),
+    // `--version` は**版番号だけ**を出す(gunshi 時代からの契約 —
+    // version.test.ts が固定。`V=$(maruhi --version)` がそのまま使える形)
+    formatVersion: (_name: string, version: string) => version,
     formatError: describe,
     formatCliError: describe,
-    formatErrors: (errors: ReadonlyArray<CliError.CliError>) => errors.map(describe).join("\n"),
+    // コマンド名が解決できなかった実行では、フラグは root の宣言と突き合わ
+    // されるため、正しく綴られたフラグまで不明として並ぶ。誤りはコマンド名の
+    // 方なので、綴りの合っているフラグを探させない(gunshi 時代の
+    // usageErrorMessages と同じ規律)
+    formatErrors: (errors: ReadonlyArray<CliError.CliError>) => {
+      // 抑えるのは **root 段**(コマンド名そのものが解決できなかった実行)
+      // だけ: 深い段の UnknownSubcommand(`server abc` の abc)では、親の段に
+      // 書いたフラグへの置き場所の案内が同時に要る
+      const commandNotFound = errors.some(
+        (error) => error instanceof CliError.UnknownSubcommand && (error.parent ?? []).length <= 1,
+      );
+      const shown = commandNotFound
+        ? errors.filter((error) => !(error instanceof CliError.UnrecognizedOption))
+        : errors;
+      return shown.map(describe).join("\n");
+    },
   };
 }
 

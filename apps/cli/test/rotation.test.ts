@@ -7,7 +7,7 @@
 //     応答に名前を混ぜない(TCB 規律 — AUDIT_SPEC §7)
 //  2. dismiss は単一対 / --all(--env で絞り込み・対単位の畳み込み)を
 //     操作エンドポイントへ送り、404(有効フラグなし)は導線つきで報告する
-//  3. 未収束のローテーション義務(義務エントリより後に現エポックが始まって
+//  3. unconverged rotation mandate(義務エントリより後に現エポックが始まって
 //     いない環境)はコマンドの同期後に常時警告される(収束済みなら出ない)。
 //     project verify は同じ導出の詳細を表示する。案内は対象の現在状態に適応し
 //     (再追加済みなら破壊的操作の再実行を勧めない)、削除済み環境の検証失敗は
@@ -232,17 +232,17 @@ describe("maruhi rotation list", () => {
 
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("要ローテーションフラグ: 2 件");
+    expect(logs).toContain("Rotation flags: 2 active flags");
     // 名前解決: active はステートメント、削除済みは tombstone の name(§4.2)
-    expect(logs).toContain("ALPHA(va)");
-    expect(logs).toContain("DELETED_KEY(vdel)");
-    expect(logs).toContain("確実に取得した(read)");
-    expect(logs).toContain("取得可能だった(readable)");
+    expect(logs).toContain("ALPHA (va)");
+    expect(logs).toContain("DELETED_KEY (vdel)");
+    expect(logs).toContain("read (confirmed fetch)");
+    expect(logs).toContain("readable (fetch was possible)");
     expect(logs).toContain(`member:${target.userId}`);
     // 解消の導線(push で解消 / 削除済みは dismiss)
     expect(logs).toContain("maruhi rotation dismiss");
     // 収束済みチェーンなので未収束警告は出ない
-    expect(env.errors.join("\n")).not.toContain("未収束のローテーション義務");
+    expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
   });
 
   it("メタデータを取得できない環境は識別子のまま表示へ劣化する(一覧自体は止めない)", async () => {
@@ -257,7 +257,7 @@ describe("maruhi rotation list", () => {
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("va");
     expect(env.logs.join("\n")).not.toContain("ALPHA");
-    expect(env.errors.join("\n")).toContain("検証済みメタデータを取得できません");
+    expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
   });
 
   it("フラグが無ければその旨だけを表示する", async () => {
@@ -265,7 +265,7 @@ describe("maruhi rotation list", () => {
     const state = await makeRotationServer({ built, currentEpoch: 2, flags: [] });
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("現在有効な要ローテーションフラグはありません");
+    expect(env.logs.join("\n")).toContain("No rotation flags are currently active");
   });
 });
 
@@ -282,7 +282,7 @@ describe("maruhi rotation dismiss", () => {
     expect(state.dismissBodies).toEqual([
       { targets: [{ environmentId: ENV_ID, variableId: "vdel" }] },
     ]);
-    expect(env.logs.join("\n")).toContain("1 件の要ローテーションフラグを取り下げました");
+    expect(env.logs.join("\n")).toContain("Dismissed 1 rotation flag (");
   });
 
   it("--all は現在有効な全フラグを対単位に畳んで取り下げる(--env で絞り込み)", async () => {
@@ -309,7 +309,7 @@ describe("maruhi rotation dismiss", () => {
         ],
       },
     ]);
-    expect(env.logs.join("\n")).toContain("2 件の要ローテーションフラグを取り下げました");
+    expect(env.logs.join("\n")).toContain("Dismissed 2 rotation flags (");
   });
 
   it("有効フラグの無い対の 404 は導線つきで報告する(all-or-nothing の中止)", async () => {
@@ -326,7 +326,7 @@ describe("maruhi rotation dismiss", () => {
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "dismiss", "va", "--env", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("現在有効なフラグがありません");
+    expect(errors).toContain("No active flag for variable");
     expect(errors).toContain("maruhi rotation list");
   });
 
@@ -335,7 +335,7 @@ describe("maruhi rotation dismiss", () => {
     const state = await makeRotationServer({ built, currentEpoch: 2, flags: [] });
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "dismiss"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("取り下げ対象を指定してください");
+    expect(env.errors.join("\n")).toContain("Specify what to dismiss");
   });
 });
 
@@ -346,11 +346,13 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("未収束のローテーション義務");
-    expect(errors).toContain(`member-removed(target=${target.userId}`);
+    expect(errors).toContain("unconverged rotation mandate");
+    expect(errors).toContain(`member-removed (target=${target.userId}`);
     expect(errors).toContain(ENV_ID);
     // 行動可能な警告(B2 裁定): 収束コマンドを名指しする
-    expect(errors).toContain(`maruhi member remove ${target.userId} の再実行`);
+    expect(errors).toContain(
+      `re-running maruhi member remove ${target.userId} converges the mandate`,
+    );
   });
 
   it("巻き戻された義務(対象が再追加済み)には破壊的操作の再実行を案内しない", async () => {
@@ -367,10 +369,10 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("未収束のローテーション義務");
-    expect(errors).toContain("対象は再追加済みです");
+    expect(errors).toContain("unconverged rotation mandate");
+    expect(errors).toContain("the target has been re-added");
     expect(errors).toContain("maruhi env rotate");
-    expect(errors).not.toContain("の再実行で収束します");
+    expect(errors).not.toContain("re-running maruhi member remove");
   });
 
   it("降格後に削除された対象へは change-role の再実行を案内しない(現メンバー限定の操作)", async () => {
@@ -393,10 +395,12 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     const errors = env.errors.join("\n");
     // 降格義務の行は env rotate へ誘導(change-role は対象不在で再実行不能)
     expect(errors).toContain("role-demoted");
-    expect(errors).toContain("対象は削除済みです");
+    expect(errors).toContain("the target has been removed");
     expect(errors).not.toContain("maruhi member change-role");
     // 削除義務の行は従来どおり member remove の再実行を案内する
-    expect(errors).toContain(`maruhi member remove ${target.userId} の再実行`);
+    expect(errors).toContain(
+      `re-running maruhi member remove ${target.userId} converges the mandate`,
+    );
   });
 
   it("project verify は削除済み環境の検証失敗で失敗しない(注意を出して未収束判定だけ保留する)", async () => {
@@ -410,10 +414,10 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     const env = await startEnv(state, built.projectId);
     // チェーン検証は成功しているので exit 0(Cursor bot 指摘 — 検証失敗は注意のみ)
     expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("チェーン検証 OK");
+    expect(env.logs.join("\n")).toContain("Chain verification OK");
     const errors = env.errors.join("\n");
-    expect(errors).toContain("確定できません");
-    expect(errors).not.toContain("未収束のローテーション義務:");
+    expect(errors).toContain("cannot be confirmed");
+    expect(errors).not.toContain("Unconverged rotation mandate:");
   });
 
   it("project verify は同じ導出の詳細を表示する(収束済みなら未収束なし)", async () => {
@@ -423,7 +427,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(await runCli(["project", "verify", "--project", unconverged.projectId], env.layer)).toBe(
       0,
     );
-    expect(env.errors.join("\n")).toContain("未収束のローテーション義務: member-removed");
+    expect(env.errors.join("\n")).toContain("Unconverged rotation mandate: member-removed");
 
     const converged = await convergedChain();
     const convergedState = await makeRotationServer({
@@ -435,6 +439,6 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(
       await runCli(["project", "verify", "--project", converged.projectId], convergedEnv.layer),
     ).toBe(0);
-    expect(convergedEnv.logs.join("\n")).toContain("ローテーション義務: 未収束なし");
+    expect(convergedEnv.logs.join("\n")).toContain("Rotation mandates: none unconverged");
   });
 });

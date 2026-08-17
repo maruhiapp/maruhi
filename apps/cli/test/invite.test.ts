@@ -499,7 +499,7 @@ describe("maruhi invite accept", () => {
       signatureHex: body.signatureHex,
     });
     expect(verified.ok).toBe(true);
-    expect(env.logs.join("\n")).toContain("master keypair を生成し");
+    expect(env.logs.join("\n")).toContain("Generated the master keypair");
   });
 
   it("鍵未生成ガード: リカバリー登録済みなら生成せず key recover へ誘導する", async () => {

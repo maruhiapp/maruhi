@@ -19,7 +19,7 @@ import { Effect } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices, ProjectContextBase } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
-import { displayText } from "./display.ts";
+import { countNoun, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -82,7 +82,7 @@ export function resolveNames(
       );
       if (attempted.kind === "failed") {
         yield* io.logError(
-          `注意: 環境 ${displayText(environmentId)} の検証済みメタデータを取得できません(${attempted.message})— 変数は識別子のまま表示します`,
+          `Note: could not fetch verified metadata for environment ${displayText(environmentId)} (${attempted.message}) — variables are shown by identifier only`,
         );
         continue;
       }
@@ -110,7 +110,7 @@ function describeTarget(flag: RotationFlagView): string {
 }
 
 function describeBasis(basis: "read" | "readable"): string {
-  return basis === "read" ? "確実に取得した(read)" : "取得可能だった(readable)";
+  return basis === "read" ? "read (confirmed fetch)" : "readable (fetch was possible)";
 }
 
 /** `maruhi rotation list`: 現在有効なフラグの表示(全メンバー — クラス 1)。 */
@@ -121,16 +121,16 @@ export function rotationListOp(
     const io = yield* CliIo;
     const flags = yield* fetchRotationFlags(context.client, context.projectId);
     if (flags.length === 0) {
-      yield* io.log("現在有効な要ローテーションフラグはありません");
+      yield* io.log("No rotation flags are currently active");
       return 0;
     }
     const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
     const names = yield* resolveNames(context, environmentIds);
     yield* io.log(
-      `要ローテーションフラグ: ${flags.length} 件(上流 credential のローテーション推奨 — AUDIT_SPEC §4.1)`,
+      `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
     );
     for (const environmentId of environmentIds) {
-      yield* io.log(`環境 ${displayText(environmentId)}:`);
+      yield* io.log(`Environment ${displayText(environmentId)}:`);
       const index = names.get(environmentId);
       // 表示順は検出時刻 →(同一 sweep で同時刻の場合)variableId の安定ソート。
       // 監査 seq はワイヤに載らない(AUDIT_SPEC §7 — 序数の非漏洩)
@@ -145,14 +145,14 @@ export function rotationListOp(
         const label =
           name === undefined
             ? displayText(flag.variableId)
-            : `${displayText(name)}(${displayText(flag.variableId)})`;
+            : `${displayText(name)} (${displayText(flag.variableId)})`;
         yield* io.log(
-          `  ${label}\t根拠=${describeBasis(flag.basis)}\t対象=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}`,
+          `  ${label}\tbasis=${describeBasis(flag.basis)}\ttarget=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}`,
         );
       }
     }
     yield* io.log(
-      "解消: 上流の credential をローテーションし、新しい値を maruhi push で保存すると解消されます(義務ローテーションの再暗号化では解消されません)。push できない対(削除済み変数など)は、リスク受容の明示として maruhi rotation dismiss で取り下げてください(admin)",
+      "To resolve: rotate the upstream credential and save the new value with maruhi push (the mandated re-encryption alone does not resolve a flag). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with maruhi rotation dismiss as an explicit acceptance of risk (admin)",
     );
     return 0;
   });
@@ -192,12 +192,50 @@ function resolveAllTargets(input: {
       return yield* Effect.fail(
         cliError(
           input.environmentId === null
-            ? "現在有効な要ローテーションフラグはありません(取り下げる対象がありません)"
-            : "指定環境に現在有効な要ローテーションフラグはありません(取り下げる対象がありません)",
+            ? "No rotation flags are currently active (nothing to dismiss)"
+            : "No rotation flags are currently active in the specified environment (nothing to dismiss)",
         ),
       );
     }
     return { targets };
+  });
+}
+
+/** dismiss の要求形(**通信なしで**確定する部分 — 引数だけから決まる)。 */
+export type DismissRequest =
+  | { readonly kind: "all"; readonly environmentId: string | null }
+  | { readonly kind: "single"; readonly environmentId: string; readonly variableId: string };
+
+/**
+ * `maruhi rotation dismiss` の要求の解釈。ネットワークを要さない検査
+ * (`--all` と変数 id の矛盾・対象の欠落)はここで落とす — 前段の同期より
+ * 後ろに置くと、案内が接続エラーに隠れるうえ往復が無駄になる(レビュー
+ * 第 4 巡の指摘)。
+ */
+export function parseDismissRequest(input: {
+  readonly all: boolean;
+  readonly environmentId: string | null;
+  readonly variableId: string | null;
+}): Effect.Effect<DismissRequest, CliError> {
+  if (input.all) {
+    if (input.variableId !== null) {
+      return Effect.fail(
+        cliError("--all cannot be combined with a variableId (use one or the other)"),
+      );
+    }
+    return Effect.succeed({ kind: "all", environmentId: input.environmentId });
+  }
+  if (input.environmentId === null || input.variableId === null) {
+    return Effect.fail(
+      cliError(
+        "Specify what to dismiss: maruhi rotation dismiss <variableId> --env <environmentId> (or --all for every flag)",
+      ),
+    );
+  }
+  return Effect.succeed({
+    kind: "single",
+    environmentId: input.environmentId,
+    variableId: input.variableId,
   });
 }
 
@@ -208,34 +246,17 @@ function resolveAllTargets(input: {
 export function resolveDismissTargets(input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
-  readonly all: boolean;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
+  readonly request: DismissRequest;
 }): Effect.Effect<DismissTargets, CliError> {
-  return Effect.gen(function* () {
-    if (input.all) {
-      if (input.variableId !== null) {
-        return yield* Effect.fail(
-          cliError("--all と変数 id の同時指定はできません(どちらか一方を使ってください)"),
-        );
-      }
-      return yield* resolveAllTargets({
-        client: input.client,
-        projectId: input.projectId,
-        environmentId: input.environmentId,
-      });
-    }
-    if (input.environmentId === null || input.variableId === null) {
-      return yield* Effect.fail(
-        cliError(
-          "取り下げ対象を指定してください: maruhi rotation dismiss <variableId> --env <environmentId>(または --all で全フラグ)",
-        ),
-      );
-    }
-    return {
-      targets: [{ environmentId: input.environmentId, variableId: input.variableId }],
-    };
-  });
+  if (input.request.kind === "all") {
+    return resolveAllTargets({
+      client: input.client,
+      projectId: input.projectId,
+      environmentId: input.request.environmentId,
+    });
+  }
+  const { environmentId, variableId } = input.request;
+  return Effect.succeed({ targets: [{ environmentId, variableId }] });
 }
 
 /** `maruhi rotation dismiss`: 取り下げの実行(admin — サーバー側で権限検査)。 */
@@ -253,14 +274,14 @@ export function rotationDismissOp(input: {
           Effect.fail(
             error instanceof RotationFlagNotFoundError
               ? cliError(
-                  `環境 ${displayText(error.environmentId)} の変数 ${displayText(error.variableId)} に現在有効なフラグがありません(取り下げは全体を中止しました — maruhi rotation list で現在の対象を確認してください)`,
+                  `No active flag for variable ${displayText(error.variableId)} in environment ${displayText(error.environmentId)} (the dismissal was aborted as a whole — check the current targets with maruhi rotation list)`,
                 )
               : toCliError(error),
           ),
         ),
       );
     yield* io.log(
-      `${input.targets.length} 件の要ローテーションフラグを取り下げました(rotation.dismissed — 監査ログに記録されます)`,
+      `Dismissed ${countNoun(input.targets.length, "rotation flag")} (rotation.dismissed — recorded in the audit log)`,
     );
     return 0;
   });
@@ -284,7 +305,7 @@ export function reportRotationFlagCount(input: {
       Effect.catch((error) =>
         Effect.gen(function* () {
           yield* io.logError(
-            `注意: 要ローテーションフラグの取得に失敗しました(${error.message})— maruhi rotation list で確認してください`,
+            `Note: failed to fetch rotation flags (${error.message}) — check with maruhi rotation list`,
           );
           return null;
         }),
@@ -302,7 +323,7 @@ export function reportRotationFlagCount(input: {
       return;
     }
     yield* io.log(
-      `要ローテーションフラグ: 対象宛に ${count} 件が有効です(暗号は既読の値を取り消せません — 上流 credential のローテーションを推奨。maruhi rotation list で確認できます)`,
+      `Rotation flags: ${countNoun(count, "active flag")} targeting the removed party (encryption cannot revoke already-read values — rotating the upstream credentials is recommended. See maruhi rotation list)`,
     );
   });
 }

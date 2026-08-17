@@ -27,6 +27,10 @@ describe("maruhi config", () => {
   it("set → get が往復し、ファイルには known key のみ永続化される", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
+    // 報告文は**設定キー名**を言う(宣言オブジェクトの取り違え — レビュー指摘 —
+    // の回帰検査。Effect の内部表現が stdout へ出る形を固定で塞ぐ)
+    expect(env.logs).toContain("Set server");
+    expect(env.logs.join("\n")).not.toContain("_id");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
     expect(env.logs).toContain("https://maruhi.example");
     const raw = JSON.parse(await readFile(env.configPath, "utf8")) as Record<string, string>;
@@ -37,7 +41,7 @@ describe("maruhi config", () => {
     const env = await makeTestEnv();
     // 打ち間違いは実行の失敗(1)と区別する
     expect(await runCli(["config", "set", "token", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明な設定キー");
+    expect(env.errors.join("\n")).toContain("Unknown config key");
   });
 
   it("壊れた設定ファイルは get で報告され、set で作り直せる", async () => {
@@ -47,7 +51,7 @@ describe("maruhi config", () => {
     await mkdir(dirname(env.configPath), { recursive: true });
     await writeFile(env.configPath, "{ broken json");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("壊れています");
+    expect(env.errors.join("\n")).toContain("corrupt");
     // set は破棄して作り直せる(非機密のみのファイル)
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
@@ -61,19 +65,41 @@ describe("maruhi config", () => {
     await mkdir(dirname(env.configPath), { recursive: true });
     await writeFile(env.configPath, "[]");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("壊れています");
+    expect(env.errors.join("\n")).toContain("corrupt");
   });
 
-  it("サブコマンドなしは使い方を表示する", async () => {
+  it("サブコマンドなしは使い方を表示する(exit 0・出力は stderr)", async () => {
+    // bare `maruhi` はヘルプ要求として扱う(第 3 段階の裁定 — gunshi 時代の
+    // exit 0 を維持。出力先は決定 9 に合わせて stdout → stderr へ変更)。
+    // 一覧はコマンド定義から描かれる(手書きだと、コマンドを増やしたときに
+    // ヘルプだけ古いまま残る)
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("使い方");
-    // 一覧は登録済みサブコマンドから導く(手書きだと、コマンドを増やしたときに
-    // ヘルプだけ古いまま残る)。エントリコマンド自身(`maruhi`)は出さない。
-    // 移行済み(effect/unstable/cli 側)のコマンドは gunshi の表に居ないので
-    // 末尾へ合流する — 一覧から消えないことがここの要点
-    expect(env.logs).toContain(
-      "commands: login / logout / key / project / rotation / audit / push / config / pull / run / env / server / invite / member",
-    );
+    expect(env.logs).toEqual([]);
+    const help = env.errors.join("\n");
+    expect(help).toContain("maruhi <subcommand>");
+    // 部分一致だと他コマンドの説明文("run the command…" 等)で満たされて
+    // しまい、一覧からの脱落を検出できない(Pullfrog 指摘)。SUBCOMMANDS
+    // 節に**行として**並んでいることを見る
+    const section = help.slice(help.indexOf("SUBCOMMANDS"));
+    expect(section).toContain("SUBCOMMANDS");
+    for (const command of [
+      "login",
+      "logout",
+      "pull",
+      "run",
+      "push",
+      "env",
+      "server",
+      "invite",
+      "member",
+      "key",
+      "project",
+      "rotation",
+      "audit",
+      "config",
+    ]) {
+      expect(section, command).toMatch(new RegExp(`^\\s+${command} `, "m"));
+    }
   });
 });

@@ -64,7 +64,7 @@ describe("decodeProjectFloor(スキーマの厳格デコード)", () => {
     ["JSON でない", "not-json"],
     ["配列", "[]"],
     ["スキーマバージョン不一致", JSON.stringify({ ...sampleFloor(), v: 2 })],
-    ["チェーンヘッド欠落", JSON.stringify({ v: 1, environments: {} })],
+    ["chain head欠落", JSON.stringify({ v: 1, environments: {} })],
     [
       "hash が hex64 でない",
       JSON.stringify({ v: 1, chainHead: { seq: 1, hashHex: "zz" }, environments: {} }),
@@ -294,7 +294,7 @@ describe("makeFileFloorStore(fail-open 読み込みと原子コミット)", () =
       }),
     );
     // vb は床上 deleted(終端)。並行 push の遅延コミットが active を書こうと
-    // しても保持される(削除の無断取り消しの検出材料を失わない)
+    // しても保持される(unauthorized undeletionの検出材料を失わない)
     await Effect.runPromise(
       store.commitPush(PROJECT_ID, {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -482,11 +482,13 @@ describe("makeFileFloorStore(fail-open 読み込みと原子コミット)", () =
   it("missing は ENOENT のみ: それ以外の読み取りエラーは初回と同一視しない", async () => {
     // 床ファイルのパスにディレクトリを置く(readFile → EISDIR)
     await mkdir(join(dir, `${PROJECT_ID}.json`));
-    await expect(Effect.runPromise(store.load(PROJECT_ID))).rejects.toThrow("読み取れません");
+    await expect(Effect.runPromise(store.load(PROJECT_ID))).rejects.toThrow(
+      "Cannot read the local floor file",
+    );
     // 書き込み経路も空からの作り直しをせず中断する(床の無警告全消去を防ぐ)
     await expect(
       Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A })),
-    ).rejects.toThrow("書き込めません");
+    ).rejects.toThrow("Cannot write the local floor file");
   });
 
   it("書き込みは temp + rename(コミット後のファイルは常に完全な JSON)", async () => {

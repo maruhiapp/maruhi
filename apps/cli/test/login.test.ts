@@ -82,10 +82,10 @@ describe("maruhi login", () => {
     );
     // 書き方の誤りは usage エラー(2)
     expect(code).toBe(2);
-    expect(env.errors.join("\n")).toContain("--token-name は 128 文字以内で指定してください");
+    expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");
     // device flow は開始すらしない(ブラウザ承認を求めない)
     expect(github.polls()).toBe(0);
-    expect(env.logs.join("\n")).not.toContain("承認を待っています");
+    expect(env.logs.join("\n")).not.toContain("Waiting for approval");
     expect(maruhi.requests).toHaveLength(0);
   });
 
@@ -113,7 +113,7 @@ describe("maruhi login", () => {
       env.layer,
     );
     expect(code).toBe(2);
-    expect(env.errors.join("\n")).toContain("--token-name は 128 文字以内で指定してください");
+    expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");
     // /auth/config も device flow も起こさない
     expect(maruhi.requests).toHaveLength(0);
     expect(github.polls()).toBe(0);
@@ -224,7 +224,7 @@ describe("maruhi login", () => {
       env.layer,
     );
     expect(code).toBe(0);
-    expect(env.errors.join("\n")).toContain("`maruhi key recovery` で発行してください");
+    expect(env.errors.join("\n")).toContain("issue one with `maruhi key recovery`");
   });
 
   it("ログイン後の案内は状態確認に失敗してもログインを失敗させず、スキップを明示する", async () => {
@@ -245,7 +245,7 @@ describe("maruhi login", () => {
     );
     expect(code).toBe(0);
     // 無言のスキップにしない(CLAUDE.md: catch で無言に飲まない)
-    expect(env.errors.join("\n")).toContain("次の一歩の案内をスキップしました");
+    expect(env.errors.join("\n")).toContain("skipped the next-step hint");
   });
 
   it("ブラウザ側の拒否(access_denied)はエラーで終了する", async () => {
@@ -263,7 +263,7 @@ describe("maruhi login", () => {
       env.layer,
     );
     expect(code).toBe(1);
-    expect(env.errors.join("\n")).toContain("認可が拒否");
+    expect(env.errors.join("\n")).toContain("authorization was denied");
     expect(env.keychain.size).toBe(0);
   });
 
@@ -324,8 +324,8 @@ describe("maruhi login", () => {
       ),
     ).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("失効にも失敗しました");
-    expect(errors).not.toContain("失効させました)");
+    expect(errors).toContain("revoking the issued token also failed");
+    expect(errors).not.toContain("has been revoked on the server");
     // 同名再ログインによるローテーション失効の案内がある
     expect(errors).toContain("cli-test");
   });
@@ -343,13 +343,13 @@ describe("maruhi login", () => {
 
   it("--github-base-url の形式検査は通信より前に走る(接続失敗として報告しない)", async () => {
     // client_id を config に置かない = 通信で取りに行く経路。形式の検査を
-    // 後ろに置くと、書き方の誤りが「サーバーへの接続に失敗しました」になる
+    // 後ろに置くと、書き方の誤りが「Failed to connect to the server」になる
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     expect(await runCli(["login", "--github-base-url", "ftp://x.example"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("http(s) で指定してください");
-    expect(env.errors.join("\n")).not.toContain("接続に失敗");
+    expect(env.errors.join("\n")).toContain("must be http(s)");
+    expect(env.errors.join("\n")).not.toContain("Failed to connect");
   });
 
   it("config の server が不正な場合は、直す先を示して 1 で落ちる", async () => {
@@ -357,7 +357,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: "ftp://bad.example" });
     expect(await runCli(["logout"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("config の server を直してください");
+    expect(env.errors.join("\n")).toContain("fix server in your config");
   });
 
   it("client_id 未設定は設定手順を案内して失敗する", async () => {
@@ -437,16 +437,16 @@ describe("maruhi logout", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", maruhi.origin);
     expect(await runCli(["logout"], env.layer)).toBe(0);
     expect(env.keychain.size).toBe(0);
-    expect(env.logs.join("\n")).toContain("MARUHI_TOKEN が設定されているため");
+    expect(env.logs.join("\n")).toContain("MARUHI_TOKEN is set");
   });
 
   it("MARUHI_TOKEN が伏字・MARUHI_TOKEN_ORIGIN 未設定なら原因ごとに案内する", async () => {
     // どちらも次のコマンドが失敗する状態だが、直し方が違う(貼り直す / 足す)
     for (const [token, origin, expected] of [
-      ["<redacted:maruhi-token>", "https://x.example", "伏字"],
-      ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN が未設定"],
+      ["<redacted:maruhi-token>", "https://x.example", "redaction placeholder"],
+      ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN is not set"],
       // 形が使えない理由は解決側の文言をそのまま出す(言い換えない)
-      ["maruhi_pat_env", "not-a-url", "解釈できません"],
+      ["maruhi_pat_env", "not-a-url", "Cannot parse"],
       ["maruhi_pat_env", "http://remote.example", "loopback"],
     ] as const) {
       const maruhi = await start([
@@ -465,7 +465,7 @@ describe("maruhi logout", () => {
       expect(await runCli(["logout"], env.layer)).toBe(0);
       const logs = env.logs.join("\n");
       expect(logs).toContain(expected);
-      expect(logs).not.toContain("引き続きそのトークンで認証されます");
+      expect(logs).not.toContain("stays authenticated with that token");
     }
   });
 
@@ -484,13 +484,13 @@ describe("maruhi logout", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
     expect(await runCli(["logout"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("認証には使われません");
-    expect(logs).not.toContain("引き続きそのトークンで認証されます");
+    expect(logs).toContain("not used for authentication");
+    expect(logs).not.toContain("stays authenticated with that token");
   });
 
   it("空白だけの MARUHI_TOKEN では警告しない(セッション解決と同じ判定)", async () => {
     // resolveSession は trim 後に空なら未設定として扱う。ここだけ生値で見ると
-    // 「引き続き認証されます」と言った直後に「ログインしていません」で落ちる
+    // 「引き続き認証されます」と言った直後に「Not logged in」で落ちる
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -500,7 +500,7 @@ describe("maruhi logout", () => {
     );
     env.setEnvVar("MARUHI_TOKEN", " \n");
     expect(await runCli(["logout"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).not.toContain("MARUHI_TOKEN が設定されているため");
+    expect(env.logs.join("\n")).not.toContain("MARUHI_TOKEN is set");
   });
 
   it("トークン未保存はエラーメッセージで案内する", async () => {
@@ -508,7 +508,7 @@ describe("maruhi logout", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     expect(await runCli(["logout"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("キーチェーンにありません");
+    expect(env.errors.join("\n")).toContain("No token for this server in the keychain");
   });
 });
 
@@ -576,7 +576,7 @@ describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
 
     const code = await runCli(["login"], env.layer);
     expect(code).toBe(1);
-    expect(env.errors.join("\n")).toContain("初期セットアップが未完了");
+    expect(env.errors.join("\n")).toContain("self-hosting setup is incomplete");
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
 

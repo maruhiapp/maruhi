@@ -1,4 +1,4 @@
-// クライアント同期検査(§6.3)のテスト: verifyChain 委譲・genesis ハッシュ =
+// クライアント同期検査(§6.3)のテスト: verifyChain 委譲・genesis hash =
 // プロジェクト ID 検証・ヘッド整合・鍵履歴索引(削除済みメンバー含む)。
 
 import { Effect, Exit, Redacted } from "effect";
@@ -130,10 +130,10 @@ describe("syncProject (§6.3)", () => {
     ]);
     const exit = await runSync(server.origin, built.projectId);
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(failureMessage(exit)).toContain("チェーン検証に失敗");
+    expect(failureMessage(exit)).toContain("Chain verification failed");
   });
 
-  it("genesis ハッシュがプロジェクト ID と一致しない差し替えを拒否する(§6.4)", async () => {
+  it("genesis hashがプロジェクト ID と一致しない差し替えを拒否する(§6.4)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     // 有効だが「別プロジェクト」(member が作成者の genesis)のチェーンを、
     // 要求したプロジェクト ID で配布する = サーバーによる差し替え
@@ -146,7 +146,7 @@ describe("syncProject (§6.3)", () => {
     ]);
     const exit = await runSync(server.origin, built.projectId);
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(failureMessage(exit)).toContain("genesis ハッシュ");
+    expect(failureMessage(exit)).toContain("genesis hash");
   });
 
   it("サーバー申告ヘッドと導出ヘッドの不一致を拒否する", async () => {
@@ -167,7 +167,7 @@ describe("syncProject (§6.3)", () => {
     ]);
     const exit = await runSync(server.origin, built.projectId);
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(failureMessage(exit)).toContain("チェーンヘッド");
+    expect(failureMessage(exit)).toContain("chain head");
   });
 
   it("seq は正しいがハッシュだけ虚偽の申告ヘッドも拒否する", async () => {
@@ -188,6 +188,6 @@ describe("syncProject (§6.3)", () => {
     ]);
     const exit = await runSync(server.origin, built.projectId);
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(failureMessage(exit)).toContain("チェーンヘッド");
+    expect(failureMessage(exit)).toContain("chain head");
   });
 });

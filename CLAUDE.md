@@ -57,7 +57,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 | アプリ基盤 | Effect v4 系(ピン留め) |
 | DB | Drizzle v1(`drizzle-kit` migrations、Effect サービス境界内に隔離)。D1 + DO SQLite |
 | フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
-| CLI | **移行中**(ADR-0016): `effect/unstable/cli`(pull / run / env / server / invite / member は移行済み)+ Gunshi(login / logout / key / project / rotation / audit / push / config)+ Effect(実装)。移行先は HttpApi 導出型付きクライアント |
+| CLI | `effect/unstable/cli` + Effect(実装)。**移行完了**(ADR-0016 — gunshi は廃止済み)。移行先は HttpApi 導出型付きクライアント |
 | IaC | Alchemy v2 Effect スタイル(運用側)。セルフホスト配布物は素の wrangler 両対応を維持 |
 | docs | Blume(`apps/docs`) |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |

@@ -261,13 +261,13 @@ describe("maruhi pull", () => {
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("自分宛の DEK ラップがエポック 1 に存在しません");
-    expect(errors).toContain("maruhi member add の再実行");
+    expect(errors).toContain("no DEK wraps for you exist at epochs 1");
+    expect(errors).toContain("re-run maruhi member add");
 
     // 全エポックが揃っていれば警告しない(誤検知なし)
     const complete = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], complete.layer)).toBe(0);
-    expect(complete.errors.join("\n")).not.toContain("自分宛の DEK ラップがエポック");
+    expect(complete.errors.join("\n")).not.toContain("no DEK wraps for you exist at epochs");
   });
 
   it("--show は人間には値を表示する", async () => {
@@ -298,7 +298,7 @@ describe("maruhi pull", () => {
     const written = bypassed.join("");
     expect(written).not.toContain("alpha-value");
     expect(written).not.toContain("beta-value");
-    expect(written).not.toContain("同期・検証 OK");
+    expect(written).not.toContain("Sync and verification OK");
   });
 
   it("--show=false / --show false は**書いたとおり**に読まれ、値を表示しない", async () => {
@@ -310,7 +310,7 @@ describe("maruhi pull", () => {
     const inline = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show=false"], inline.layer)).toBe(0);
     expect(inline.logs.join("\n")).not.toContain("alpha-value");
-    expect(inline.logs.join("\n")).toContain("同期・検証 OK");
+    expect(inline.logs.join("\n")).toContain("Sync and verification OK");
 
     const spaced = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull", "--show", "false"], spaced.layer)).toBe(0);
@@ -374,7 +374,7 @@ describe("maruhi pull", () => {
     expect(output).not.toContain("\u0007");
     // 改行は保持(複数行シークレットが壊れない)。ただし 2 行目以降は印を付けて
     // 出力する: 素で流すと値の側で `NAME=value` の行を偽造できる
-    expect(output).toContain("SECRET= (2 行の値");
+    expect(output).toContain("SECRET= (a 2-line value");
     expect(output).toContain("| sk-\uFFFD[31mFAKE\uFFFD\n| line2");
   });
 
@@ -401,7 +401,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("UTF-8 として不正のため表示できません");
+    expect(env.errors.join("\n")).toContain("not valid UTF-8 and cannot be displayed");
     // all-or-nothing: 先に並ぶ ALPHA(正常デコード可)も部分出力しない
     expect(env.logs.join("\n")).not.toContain("ALPHA=alpha-value");
   });
@@ -411,12 +411,12 @@ describe("maruhi pull", () => {
     env.setAgent({ isAgent: true, name: "cursor" });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("AI エージェント環境を検出");
+    expect(errors).toContain("AI agent environment was detected");
     // 値表示の迂回になる run を勧めない(エージェントに迂回レシピを渡さない)
     expect(errors).not.toContain("maruhi run");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
     // 拒否はコマンド入口(復号前)で確定する: 同期・復号・メタデータ表示に進まない
-    expect(env.logs.join("\n")).not.toContain("同期・検証 OK");
+    expect(env.logs.join("\n")).not.toContain("Sync and verification OK");
   });
 
   it("**未知**のエージェントでも --show は拒否される(TTY が一次境界 = fail-closed)", async () => {
@@ -427,17 +427,21 @@ describe("maruhi pull", () => {
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdout: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("値の表示は対話端末でのみ許可されます");
+    expect(env.errors.join("\n")).toContain(
+      "Displaying values is only allowed on an interactive terminal",
+    );
     expect(env.logs.join("\n")).not.toContain("alpha-value");
     // 復号より前に確定する(平文をそもそも作らない)
-    expect(env.logs.join("\n")).not.toContain("同期・検証 OK");
+    expect(env.logs.join("\n")).not.toContain("Sync and verification OK");
   });
 
   it("stdin が端末でない実行(CI・ヒアドキュメント)も拒否される", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setTerminal({ stdin: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("値の表示は対話端末でのみ許可されます");
+    expect(env.errors.join("\n")).toContain(
+      "Displaying values is only allowed on an interactive terminal",
+    );
     expect(env.logs.join("\n")).not.toContain("alpha-value");
   });
 
@@ -446,7 +450,7 @@ describe("maruhi pull", () => {
     env.setAgent({ isAgent: true, name: "cursor" });
     env.setTerminal({ stdin: false, stdout: false });
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("同期・検証 OK");
+    expect(env.logs.join("\n")).toContain("Sync and verification OK");
   });
 
   it("署名者を偽装したラップ(signerUserId の虚偽申告)を拒否する", async () => {
@@ -467,7 +471,7 @@ describe("maruhi pull", () => {
     };
     const env = await startEnv([chainHandler(), pullHandler({ deks: [lying, fixture.wraps[1]] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("登録署名が検証できません");
+    expect(env.errors.join("\n")).toContain("registration signature does not verify");
   });
 
   it("チェーン履歴に存在しない署名者のラップを拒否する", async () => {
@@ -485,7 +489,7 @@ describe("maruhi pull", () => {
       pullHandler({ deks: [foreign, fixture.wraps[1]] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("署名者がチェーン履歴に存在しません");
+    expect(env.errors.join("\n")).toContain("signer does not exist in the chain history");
   });
 
   it("署名 bit 反転を拒否する", async () => {
@@ -499,13 +503,13 @@ describe("maruhi pull", () => {
       pullHandler({ deks: [{ ...wrap, signatureHex: flipped }, fixture.wraps[1]] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("登録署名が検証できません");
+    expect(env.errors.join("\n")).toContain("registration signature does not verify");
   });
 
   it("申告エポックの DEK が配布されていない変数はエラーになる", async () => {
     const env = await startEnv([chainHandler(), pullHandler({ deks: [fixture.wraps[1]] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("DEK が配布されていません");
+    expect(env.errors.join("\n")).toContain("your wrap is missing");
   });
 
   it("別変数の暗号文の差し替え(メタデータと AAD の不一致)は復号より前に拒否される", async () => {
@@ -519,7 +523,9 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("申告 AAD 座標が要求文脈と一致しません");
+    expect(env.errors.join("\n")).toContain(
+      "declares AAD coordinates that do not match the requested context",
+    );
   });
 
   it("チェーン現エポックを超えるラップ(ファントムエポック)を拒否する", async () => {
@@ -538,7 +544,7 @@ describe("maruhi pull", () => {
       pullHandler({ deks: [...fixture.wraps, phantom] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("現エポック(2)を超えるエポック 3");
+    expect(env.errors.join("\n")).toContain("beyond the chain's current epoch (2)");
   });
 
   it("チェーン現エポックを超える申告エポックの変数を拒否する", async () => {
@@ -581,7 +587,7 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([chainHandler(), pullHandler({ deks: [poison, fixture.wraps[1]] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("コミットメントと一致しません");
+    expect(env.errors.join("\n")).toContain("does not match the commitment on the chain");
   });
 
   it("push 前(listMine 経由)でもコミットメント不一致の DEK を拒否する(§5.2 の機密性側)", async () => {
@@ -621,7 +627,7 @@ describe("maruhi pull", () => {
     ]);
     env.setStdin(new TextEncoder().encode("new-value"));
     expect(await runCli(["push", "GAMMA"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("コミットメントと一致しません");
+    expect(env.errors.join("\n")).toContain("does not match the commitment on the chain");
   });
 
   it("チェーンに create_environment がない環境(ファントム環境)の配布を拒否する", async () => {
@@ -686,7 +692,7 @@ describe("maruhi pull", () => {
       pullHandler({ deks: [wrongFp, fixture.wraps[1]] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("署名者がチェーン履歴に存在しません");
+    expect(env.errors.join("\n")).toContain("signer does not exist in the chain history");
   });
 
   it("同一エポックの DEK ラップの重複を拒否する", async () => {
@@ -695,7 +701,7 @@ describe("maruhi pull", () => {
       pullHandler({ deks: [fixture.wraps[0], fixture.wraps[0], fixture.wraps[1]] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("重複しています");
+    expect(env.errors.join("\n")).toContain("Duplicate DEK wraps");
   });
 
   it("別環境の座標で暗号化された暗号文の差し替えは復号より前に拒否される", async () => {
@@ -719,7 +725,9 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("申告 AAD 座標が要求文脈と一致しません");
+    expect(env.errors.join("\n")).toContain(
+      "declares AAD coordinates that do not match the requested context",
+    );
   });
 
   it("削除→新鍵で再追加されたメンバーの過去署名は当時の鍵で検証できる(§5.1)", async () => {
@@ -839,7 +847,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("同名の active ステートメント");
+    expect(env.errors.join("\n")).toContain("Multiple active statements with the same name");
   });
 
   it("値署名の bit 反転を復号より前に拒否する(§4.1)", async () => {
@@ -952,7 +960,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("変数 ID が同一応答内で重複");
+    expect(env.errors.join("\n")).toContain("Duplicate variable IDs within one response");
   });
 
   it("未同期区間で追加された新規メンバーが書いた値は有界再同期を経て受理する(レビューループ 1 [低])", async () => {
@@ -1056,7 +1064,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    // 初回同期 + future head の再同期でチェーンは 2 回取得される
+    // first sync + future head の再同期でチェーンは 2 回取得される
     expect(chainCalls).toBe(2);
     expect(env.logs.join("\n")).toContain("ALPHA");
   });
@@ -1107,7 +1115,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("延長ではありません");
+    expect(env.errors.join("\n")).toContain("not an extension of the verified view");
   });
 
   it("seq が自ビュー以下でハッシュが一致しないヘッドの宣言は即時拒否する(§6.3-2a)", async () => {
@@ -1144,7 +1152,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("メタステートメント の検証に失敗");
+    expect(env.errors.join("\n")).toContain("meta statement failed");
   });
 
   it("名前の付け替え(name だけ差し替えたステートメント)を拒否する(name-swap の運搬形)", async () => {
@@ -1168,7 +1176,9 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("ステートメント座標が要求文脈と一致しません");
+    expect(env.errors.join("\n")).toContain(
+      "statement coordinates that do not match the requested context",
+    );
   });
 
   it("author の虚偽申告(署名は別人のまま)を拒否する(§4.2 の帰属)", async () => {
@@ -1196,7 +1206,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       pullHandler({ statement: { ...fixture.envStatement, signatureHex: flipped } }),
     ]);
     expect(await runCli(["pull"], tampered.layer)).toBe(1);
-    expect(tampered.errors.join("\n")).toContain("メタステートメント の検証に失敗");
+    expect(tampered.errors.join("\n")).toContain("meta statement failed");
 
     // deleted ステートメントの配布(削除済み環境の pull はサーバーでは 404 のはず)
     const deletedStatement = await pullEnvStatement(fixture.built.projectId);
@@ -1218,7 +1228,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     ]);
     void deletedStatement;
     expect(await runCli(["pull"], deleted.layer)).toBe(1);
-    expect(deleted.errors.join("\n")).toContain("deleted ステートメントが配布されました");
+    expect(deleted.errors.join("\n")).toContain("was served a deleted statement");
   });
 
   it("削除済み変数の tombstone は検証され、active との併置(無断復活の運搬形)は拒否する", async () => {
@@ -1241,7 +1251,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     const revived = { ...tombstone, variableId: fixture.entryAlpha.variableId };
     const conflict = await startEnv([chainHandler(), pullHandler({ deletedVariables: [revived] })]);
     expect(await runCli(["pull"], conflict.layer)).toBe(1);
-    expect(conflict.errors.join("\n")).toContain("active と deleted の両方で配布されました");
+    expect(conflict.errors.join("\n")).toContain("served as both active and deleted");
 
     // tombstone の署名改竄も拒否(配布し続ける以上、検証もし続ける)
     const flipped = `${tombstone.signatureHex.slice(0, -1)}${
@@ -1252,7 +1262,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       pullHandler({ deletedVariables: [{ ...tombstone, signatureHex: flipped }] }),
     ]);
     expect(await runCli(["pull"], tampered.layer)).toBe(1);
-    expect(tampered.errors.join("\n")).toContain("メタステートメント の検証に失敗");
+    expect(tampered.errors.join("\n")).toContain("meta statement failed");
   });
 
   it("非 NFC 名の配布は警告される(SHOULD — §12-1。処理は継続する)", async () => {
@@ -1276,7 +1286,7 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("NFC 正規形ではありません");
+    expect(env.errors.join("\n")).toContain("not NFC-normalized");
   });
 
   it("削除済み author のステートメントは在籍中ヘッドで検証できる(§6.3-1 の対)", async () => {
@@ -1393,8 +1403,8 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       writer: owner,
       head: headOf(built, 3),
     });
-    // メタの前進注入のうち「削除後ヘッドの宣言」は在籍検査で落ちる(§6.3-3。
-    // 在籍中ヘッドを宣言する前進注入はエポックアンカーがなく v1 未検出 — §14.3-5)
+    // メタのforward injectionのうち「削除後ヘッドの宣言」は在籍検査で落ちる(§6.3-3。
+    // 在籍中ヘッドを宣言するforward injectionはエポックアンカーがなく v1 未検出 — §14.3-5)
     const forgedStatement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

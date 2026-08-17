@@ -33,7 +33,7 @@ export function signEntryAtHead(input: {
   return Effect.gen(function* () {
     const actor = input.verified.state.members.get(input.signerUserId);
     if (actor === undefined) {
-      return yield* Effect.fail(cliError("チェーン導出メンバーではありません"));
+      return yield* Effect.fail(cliError("Not a chain-derived member"));
     }
     const signed = yield* Effect.tryPromise({
       try: () =>

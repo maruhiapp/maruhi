@@ -89,11 +89,11 @@ export async function wrapAndSignFor(input: {
   const encPubHex = recipientEncPubHex(recipient);
   const recipientKeyBytes = decodeHex(encPubHex);
   if (recipientKeyBytes === null) {
-    return { kind: "failed", reason: "受信者の enc 公開鍵 hex を復号できません" };
+    return { kind: "failed", reason: "Cannot decode the recipient's enc public-key hex" };
   }
   const recipientKey = await importEncryptionPublicKey(recipientKeyBytes);
   if (!recipientKey.ok) {
-    return { kind: "failed", reason: "受信者の enc 公開鍵を読み込めません" };
+    return { kind: "failed", reason: "Cannot load the recipient's enc public key" };
   }
   const wrapped = await wrapDek({
     recipientPublicKey: recipientKey.value,
@@ -107,7 +107,7 @@ export async function wrapAndSignFor(input: {
     },
   });
   if (!wrapped.ok) {
-    return { kind: "failed", reason: "HPKE ラップに失敗しました" };
+    return { kind: "failed", reason: "The HPKE wrap failed" };
   }
   const encHex = encodeHex(wrapped.value.enc);
   const ciphertextHex = encodeHex(wrapped.value.ciphertext);
@@ -126,7 +126,7 @@ export async function wrapAndSignFor(input: {
     signingKey: input.signingKeyPair.privateKey,
   });
   if (!signature.ok) {
-    return { kind: "failed", reason: "登録署名の作成に失敗しました" };
+    return { kind: "failed", reason: "Failed to create the registration signature" };
   }
   return {
     kind: "ok",
@@ -164,8 +164,8 @@ export function buildWrapCompleteSet(input: {
       // 識別子はチェーン由来の自由文字列 — 端末へ出す前に必ず中和する
       const label =
         recipient.kind === "member"
-          ? `メンバー ${displayText(recipient.member.userId)}`
-          : `サーバー鍵 ${displayText(recipient.grant.serverKeyFingerprintHex)}`;
+          ? `member ${displayText(recipient.member.userId)}`
+          : `server key ${displayText(recipient.grant.serverKeyFingerprintHex)}`;
       const built = yield* Effect.tryPromise({
         try: () =>
           wrapAndSignFor({
@@ -177,11 +177,11 @@ export function buildWrapCompleteSet(input: {
             signerUserId: input.signerUserId,
             signingKeyPair: input.signingKeyPair,
           }),
-        catch: () => cliError(`${label} 宛の DEK ラップ生成が失敗しました(暗号処理エラー)`),
+        catch: () => cliError(`DEK-wrap generation for ${label} failed (crypto error)`),
       });
       if (built.kind === "failed") {
         return yield* Effect.fail(
-          cliError(`${label} 宛の DEK ラップ生成に失敗しました(${built.reason})`),
+          cliError(`Failed to generate the DEK wrap for ${label} (${built.reason})`),
         );
       }
       wraps.push(built.wrap);

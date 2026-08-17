@@ -40,7 +40,7 @@ import {
 
 // WebCrypto の reject は defect にせず型付きの失敗へ写す(未検査の外部
 // メッセージを「内部エラー」として端末に流さない)
-const keygenFailed = () => cliError("鍵の生成に失敗しました(暗号処理エラー)");
+const keygenFailed = () => cliError("Failed to generate the keypair (crypto error)");
 
 /** `maruhi key generate`: create and store the master keypair for the session user. */
 export function keyGenerateOp(input: {
@@ -52,7 +52,7 @@ export function keyGenerateOp(input: {
     const keychain = yield* Keychain;
     const entryName = yield* ensureNoStoredMasterKey(
       input.session,
-      "master 鍵は既に存在します。上書きすると既存プロジェクトの復号可能性を失うため拒否します(`maruhi key show` で確認できます)",
+      "A master key already exists. Overwriting it would destroy the ability to decrypt existing projects, so this is refused (check it with `maruhi key show`)",
     );
 
     const encPair = yield* Effect.tryPromise({
@@ -80,7 +80,9 @@ export function keyGenerateOp(input: {
       catch: keygenFailed,
     });
     if (!encSk.ok || !sigSeed.ok) {
-      return yield* Effect.fail(cliError("鍵の生成に失敗しました(秘密鍵をシリアライズできません)"));
+      return yield* Effect.fail(
+        cliError("Failed to generate the keypair (cannot serialize the private keys)"),
+      );
     }
 
     const record: StoredMasterKey = {
@@ -102,10 +104,10 @@ export function keyGenerateOp(input: {
           Effect.fail(
             cliError(
               usable
-                ? "生成した鍵を読み込めませんでした(キーチェーンには何も保存していません)。maruhi の不具合として報告してください"
+                ? "Could not load the generated key back (nothing was stored in the keychain). Report this as a maruhi bug"
                 : // 保存前なので「保存されている鍵」は指せない。無事な物(=
                   // 何も書いていないこと)を言い、次の一手だけ共有する
-                  `${unsupportedCryptoCause}。キーチェーンには何も保存していません。${retryOnSupportedRuntime}`,
+                  `${unsupportedCryptoCause}. Nothing was stored in the keychain. ${retryOnSupportedRuntime}`,
             ),
           ),
         ),
@@ -114,10 +116,10 @@ export function keyGenerateOp(input: {
     // JSON.stringify(record) は使わない — 秘密側が伏字で保存され、鍵を
     // 復元できないレコードがキーチェーンに残る(keychain.ts の注記)
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
-    yield* io.log("master keypair を生成し、OS キーチェーンに保存しました");
+    yield* io.log("Generated the master keypair and stored it in the OS keychain");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
     yield* io.log(
-      "注意: この鍵を失うと参加プロジェクトの値を復号できなくなります。リカバリーコードが唯一の復元手段です",
+      "Note: losing this key means you can no longer decrypt values in the projects you joined. The recovery code is the only way to restore it",
     );
     yield* issueRecoveryAfterKeygen({ session: input.session, client: input.client });
   });
@@ -138,10 +140,7 @@ export function keyShowOp(input: {
     yield* io.log(`key fingerprint: ${keys.fingerprintHex}`);
     // FP のワード表示(§3): 招待の相互確認(§6.5)で自分の語列を読み上げる
     // 再表示経路(受諾時の表示を逃した・後日の通話で照合する場合)
-    const words = yield* fingerprintWords(
-      keys.fingerprintHex,
-      "鍵フィンガープリントの形式が不正です",
-    );
+    const words = yield* fingerprintWords(keys.fingerprintHex, "The key fingerprint is malformed");
     yield* io.log(`fp words:        ${formatWordList(words)}`);
     // 保管リマインダ(ROADMAP の紛失対策 UX): 登録状態を常に表示し、未登録は
     // 発行コマンドを案内する。status はブロブを運ばない(AUTH_SPEC §13-2)。
@@ -151,18 +150,18 @@ export function keyShowOp(input: {
       .recoveryStatus({})
       .pipe(Effect.catch(() => Effect.succeed(null)));
     if (status === null) {
-      yield* io.log("recovery:        確認できませんでした");
+      yield* io.log("recovery:        could not be checked");
       yield* io.logError(
-        "注意: リカバリー登録状態を確認できません(サーバーに接続できないかトークンが失効しています)。鍵情報の表示には影響しません",
+        "Note: the recovery registration status could not be checked (the server is unreachable or the token is revoked). This does not affect the key information shown above",
       );
     } else if (status.registered) {
       const updated =
-        status.updatedAtMs === null ? "" : `(更新: ${formatDateUtc(status.updatedAtMs)})`;
-      yield* io.log(`recovery:        登録済み${updated}`);
+        status.updatedAtMs === null ? "" : ` (updated: ${formatDateUtc(status.updatedAtMs)})`;
+      yield* io.log(`recovery:        registered${updated}`);
     } else {
-      yield* io.log("recovery:        未登録");
+      yield* io.log("recovery:        not registered");
       yield* io.logError(
-        "注意: リカバリーコードが未登録です。この鍵を失うと復元できません — `maruhi key recovery` で発行してください",
+        "Note: no recovery code is registered. If you lose this key it cannot be restored — issue one with `maruhi key recovery`",
       );
     }
   });

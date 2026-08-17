@@ -164,7 +164,7 @@ function unconvergedMandates(
  * エポックアンカーの健全性 — §7 — であり、対象の復帰では消えない)。
  */
 function reversedAdvice(state: string): string {
-  return `${state} — 対象への操作は再実行せず、当該環境を maruhi env rotate <環境> --new-epoch --reason ... で個別にローテーションすると収束します`;
+  return `${state} — do not re-run the operation against the target; rotating the affected environment individually with maruhi env rotate <environment> --new-epoch --reason ... converges the mandate`;
 }
 
 /**
@@ -175,25 +175,25 @@ function reversedAdvice(state: string): string {
 function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): string {
   if (mandate.kind === "member-removed") {
     if (verified.state.members.has(mandate.target)) {
-      return reversedAdvice("対象は再追加済みです");
+      return reversedAdvice("the target has been re-added");
     }
-    return `maruhi member remove ${displayText(mandate.target)} の再実行で収束します`;
+    return `re-running maruhi member remove ${displayText(mandate.target)} converges the mandate`;
   }
   if (mandate.kind === "role-demoted") {
     const member = verified.state.members.get(mandate.target);
     if (member === undefined) {
       // 降格後に削除された対象へ change-role は再実行できない(現メンバー限定)
-      return reversedAdvice("対象は削除済みです");
+      return reversedAdvice("the target has been removed");
     }
     if (ROLE_RANK[member.role] >= ROLE_RANK.member) {
-      return reversedAdvice("対象は member 以上へ再昇格済みです");
+      return reversedAdvice("the target has been re-promoted to member or above");
     }
-    return `maruhi member change-role ${displayText(mandate.target)} の再実行(降格時の role を指定)で収束します`;
+    return `re-running maruhi member change-role ${displayText(mandate.target)} (specifying the demoted role) converges the mandate`;
   }
   if (verified.state.serverGrants.has(mandate.target)) {
-    return reversedAdvice("対象のサーバー鍵は再 grant 済みです");
+    return reversedAdvice("the target server key has been re-granted");
   }
-  return "maruhi server revoke の再実行で収束します";
+  return "re-running maruhi server revoke converges the mandate";
 }
 
 /**
@@ -218,7 +218,7 @@ export function resolveUnconvergedMandates(input: {
       Effect.catch((error) =>
         Effect.gen(function* () {
           yield* io.logError(
-            `注意: 未収束のローテーション義務の候補がありますが、削除済み環境の検証に失敗したため確定できません(${error.message})`,
+            `Note: there are candidate unconverged rotation mandates, but they cannot be confirmed because verification of a deleted environment failed (${error.message})`,
           );
           return null;
         }),
@@ -232,7 +232,7 @@ export function describeUnconvergedMandate(
   verified: VerifiedProject,
   mandate: UnconvergedMandate,
 ): string {
-  return `${mandate.kind}(target=${displayText(mandate.target)}, seq=${mandate.seq}): 環境 ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(verified, mandate)}`;
+  return `${mandate.kind} (target=${displayText(mandate.target)}, seq=${mandate.seq}): environments ${mandate.pendingEnvironmentIds.map(displayText).join(", ")} — ${mandateAdvice(verified, mandate)}`;
 }
 
 /**
@@ -252,7 +252,7 @@ export function warnUnconvergedMandates(input: {
     }
     const io = yield* CliIo;
     yield* io.logError(
-      "警告: 未収束のローテーション義務があります(CRYPTO_SPEC §7)— 旧 DEK の保持者が現在値を読める可能性が残っています:",
+      "Warning: there are unconverged rotation mandates (CRYPTO_SPEC §7) — holders of the old DEKs may still be able to read current values:",
     );
     for (const mandate of filtered) {
       yield* io.logError(`  ${describeUnconvergedMandate(input.verified, mandate)}`);

@@ -24,7 +24,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices, ProjectContextBase, SessionContext } from "./context.ts";
-import { displayText } from "./display.ts";
+import { countNoun, displayText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -100,7 +100,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 }
 
 function describeValue(value: unknown): string {
-  return displayText(value === undefined ? "(なし)" : JSON.stringify(value));
+  return displayText(value === undefined ? "(none)" : JSON.stringify(value));
 }
 
 /**
@@ -114,7 +114,7 @@ function mirrorMismatches(entry: ChainEntry, observed: WireAuditEvent): readonly
   const reasons: string[] = [];
   const check = (label: string, want: unknown, got: unknown): void => {
     if (!jsonEqual(want, got)) {
-      reasons.push(`${label}: 期待 ${describeValue(want)} / 記録 ${describeValue(got)}`);
+      reasons.push(`${label}: expected ${describeValue(want)} / recorded ${describeValue(got)}`);
     }
   };
   check("event", expected.event, observed.event);
@@ -157,27 +157,27 @@ function mirrorTrustOf(
   headSeq: number,
 ): MirrorTrust {
   if (observed.chainSeq === undefined) {
-    return { label: "突合=不一致", mismatches: ["chain_seq: ミラー行が chain_seq を持ちません"] };
+    return { label: "mirror=mismatch", mismatches: ["chain_seq: the mirror row has no chain_seq"] };
   }
   if (observed.chainSeq > headSeq) {
     // 同期後にチェーンが伸びた正直なレースでも起きる — 単独では証拠にしないが、
     // 偽造との区別(head 直後からの連続性)は verify が確定する
     return {
-      label: "突合=未検証(ローカルのチェーンより新しい — maruhi audit verify で確定してください)",
+      label: "mirror=unverified (newer than the local chain — confirm with maruhi audit verify)",
       mismatches: [],
     };
   }
   const entry = entries.get(observed.chainSeq);
   if (entry === undefined) {
     return {
-      label: "突合=不一致",
-      mismatches: [`chain_seq: 検証済みチェーンに seq=${observed.chainSeq} のエントリがありません`],
+      label: "mirror=mismatch",
+      mismatches: [`chain_seq: the verified chain has no entry at seq=${observed.chainSeq}`],
     };
   }
   const mismatches = mirrorMismatches(entry, observed);
   return mismatches.length === 0
-    ? { label: "突合=OK", mismatches }
-    : { label: "突合=不一致", mismatches };
+    ? { label: "mirror=OK", mismatches }
+    : { label: "mirror=mismatch", mismatches };
 }
 
 // ---------------------------------------------------------------------------
@@ -196,8 +196,8 @@ function describeActor(event: WireAuditEvent): string {
   if (actor.type === "system") {
     return "system";
   }
-  const id = actor.userId === undefined ? "(不明)" : displayText(actor.userId);
-  const viaToken = actor.apiTokenId === undefined ? "" : "(トークン経由)";
+  const id = actor.userId === undefined ? "(unknown)" : displayText(actor.userId);
+  const viaToken = actor.apiTokenId === undefined ? "" : " (via token)";
   return `user:${id}${viaToken}`;
 }
 
@@ -221,7 +221,7 @@ function coordinateParts(event: WireAuditEvent, resolvedName: string | null): re
     const label =
       resolvedName === null
         ? displayText(event.variableId)
-        : `${displayText(resolvedName)}(${displayText(event.variableId)})`;
+        : `${displayText(resolvedName)} (${displayText(event.variableId)})`;
     parts.push(`var=${label}`);
   }
   if (event.epoch !== undefined) {
@@ -238,12 +238,16 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
   const parts: string[] = [];
   if (event.chainSeq !== undefined || trust !== null) {
     const seqPart = event.chainSeq === undefined ? "" : `chain_seq=${event.chainSeq}`;
-    parts.push(trust === null ? seqPart : `${seqPart}(${trust.label})`);
+    if (trust === null) {
+      parts.push(seqPart);
+    } else {
+      parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
+    }
   }
   if (event.payload !== undefined) {
     // 記録内容(サーバー申告)であることを明示する接頭辞。名前スナップショット
     // を含みうるが、表示名の位置(var= ラベル)には昇格しない(TCB 規律)
-    parts.push(`記録=${displayText(JSON.stringify(event.payload))}`);
+    parts.push(`recorded=${displayText(JSON.stringify(event.payload))}`);
   }
   return parts;
 }
@@ -278,7 +282,7 @@ function continuationHint(
   if (last === undefined || events.length < pageSize) {
     return null;
   }
-  return `続きを見るには: ${command} --before ${last.id}`;
+  return `To continue: ${command} --before ${last.id}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +343,7 @@ function renderListEvent(
   const trust = event.event.startsWith("chain.") ? mirrorTrustOf(event, entries, headSeq) : null;
   const warnings = (trust?.mismatches ?? []).map(
     (mismatch) =>
-      `警告: 監査行 ${event.id} のミラー行が検証済みチェーンと一致しません — ${mismatch}(監査ログはサーバー管理データであり、この不一致はサーバーによる改竄・破損の証拠です — AUDIT_SPEC §6)`,
+      `Warning: audit row ${event.id} has a mirror row that does not match the verified chain — ${mismatch} (the audit log is server-managed data, so this mismatch is evidence of server-side tampering or corruption — AUDIT_SPEC §6)`,
   );
   return { line: formatEventLine(event, name, trust), warnings };
 }
@@ -353,7 +357,7 @@ export function auditListOp(
     const io = yield* CliIo;
     const events = yield* fetchProjectEvents(context.client, context.projectId, page, filters);
     if (events.length === 0) {
-      yield* io.log("監査イベントはありません(フィルタ・カーソルに一致する行なし)");
+      yield* io.log("No audit events (no rows match the filter / cursor)");
       return 0;
     }
     const names = yield* resolveNames(context, environmentIdsForNames(events));
@@ -426,7 +430,7 @@ export function auditInvitesOp(
       query: pageQueryOf(page),
     }),
     page,
-    emptyMessage: "招待の監査イベントはありません",
+    emptyMessage: "No invite audit events",
     command: "maruhi audit invites",
   }).pipe(Effect.as(0));
 }
@@ -441,13 +445,13 @@ export function auditSelfOp(
     const events = yield* fetchAndRenderD1Events({
       request: context.client.audit.self({ query: pageQueryOf(page) }),
       page,
-      emptyMessage: "アカウントの監査イベントはありません",
+      emptyMessage: "No account audit events",
       command: "maruhi audit self",
     });
     // 要監視イベント(AUDIT_SPEC §3.1)の含意はここで一度だけ添える
     if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
       yield* io.log(
-        "注意: auth.recovery_blob_fetched(ラップ済み master 秘密鍵の取得)が含まれています。心当たりのない取得がある場合はリカバリーコードを再発行し(maruhi key recovery)、トークン・セッションを失効させてください",
+        "Note: auth.recovery_blob_fetched (a fetch of the wrapped master private key) is present. If you do not recognize a fetch, reissue your recovery code (maruhi key recovery) and revoke your tokens and sessions",
       );
     }
     return 0;
@@ -500,7 +504,7 @@ function fetchAllMirrorRows(
         if (seen.has(row.id)) {
           return yield* Effect.fail(
             cliError(
-              `監査ログのページングが前進しません(event=${displayText(event)}, 行 ${displayText(row.id)} が重複して返りました)— サーバー応答の矛盾です。ミラー検証を中断します`,
+              `Audit-log paging is not advancing (event=${displayText(event)}, row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
             ),
           );
         }
@@ -513,7 +517,9 @@ function fetchAllMirrorRows(
       before = page[page.length - 1]?.id ?? null;
     }
     return yield* Effect.fail(
-      cliError("監査ログのページ数が理論上限を超えました — サーバー応答の矛盾です"),
+      cliError(
+        "The audit log exceeded the theoretical page-count limit — the server response contradicts itself",
+      ),
     );
   });
 }
@@ -539,7 +545,7 @@ function aheadContiguityProblems(ahead: readonly number[], headSeq: number): rea
   for (const chainSeq of [...ahead].toSorted((a, b) => a - b)) {
     if (chainSeq !== expected) {
       problems.push(
-        `chain_seq=${chainSeq}: ローカルのチェーン(head seq=${headSeq})より新しいミラー行が head 直後から連続していません(期待 ${expected})— 正直な伸長なら欠番・重複なく連続するため、実在しないエントリを名乗る偽造行の証拠です`,
+        `chain_seq=${chainSeq}: mirror rows newer than the local chain (head seq=${headSeq}) are not contiguous from just after the head (expected ${expected}) — an honest extension is contiguous with no gaps or duplicates, so this is evidence of forged rows claiming nonexistent entries`,
       );
     }
     expected = chainSeq + 1;
@@ -555,7 +561,7 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   for (const row of rows) {
     if (row.chainSeq === undefined) {
       problems.push(
-        `監査行 ${displayText(row.id)}: ミラー行が chain_seq を持ちません(${displayText(row.event)})`,
+        `Audit row ${displayText(row.id)}: the mirror row has no chain_seq (${displayText(row.event)})`,
       );
     } else if (row.chainSeq > headSeq) {
       ahead.push(row.chainSeq);
@@ -575,16 +581,16 @@ function entryMirrorProblems(
   const observed = matched[0];
   if (observed === undefined) {
     return [
-      `chain_seq=${entry.seq}(op=${entry.op}): 対応するミラー行がありません(欠落 — ミラーはチェーン受理と同一トランザクションで書かれるため、削除の隠蔽の証拠です)`,
+      `chain_seq=${entry.seq} (op=${entry.op}): no corresponding mirror row (a missing row — mirrors are written in the same transaction as chain acceptance, so this is evidence of a concealed deletion)`,
     ];
   }
   if (matched.length > 1) {
     return [
-      `chain_seq=${entry.seq}(op=${entry.op}): ミラー行が ${matched.length} 行あります(重複 — 行 ${matched.map((row) => displayText(row.id)).join(", ")})`,
+      `chain_seq=${entry.seq} (op=${entry.op}): ${countNoun(matched.length, "mirror row")} found (duplicates — rows ${matched.map((row) => displayText(row.id)).join(", ")})`,
     ];
   }
   return mirrorMismatches(entry, observed).map(
-    (mismatch) => `chain_seq=${entry.seq}(監査行 ${displayText(observed.id)}): ${mismatch}`,
+    (mismatch) => `chain_seq=${entry.seq} (audit row ${displayText(observed.id)}): ${mismatch}`,
   );
 }
 
@@ -614,7 +620,7 @@ export function auditVerifyOp(
     ];
     if (problems.length === 0 && buckets.aheadRows === 0) {
       yield* io.log(
-        `ミラー全単射検証 OK: チェーン ${headSeq} エントリ ↔ chain.* ミラー行が写像(AUDIT_SPEC §3.4)どおり一致しました`,
+        `Mirror bijection verification OK: chain entries 1..${headSeq} \u2194 chain.* mirror rows match the mapping (AUDIT_SPEC §3.4)`,
       );
       return 0;
     }
@@ -622,15 +628,15 @@ export function auditVerifyOp(
       // 未検証の行が残る限り「OK」とは言わない(pullfrog 指摘 — 偽造行が
       // 未検証枠に恒久に居座る形を、成功終了で覆い隠さない)
       yield* io.logError(
-        `ミラー検証未完: ${buckets.aheadRows} 行はローカルのチェーンより新しく、今回の実行では検証できませんでした(同期直後にチェーンが伸びた場合に起きえます)。maruhi audit verify を再実行してください — 再実行しても解消しない場合、そのミラー行はチェーンに実在しないエントリを名乗っています(偽造の疑い)`,
+        `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run maruhi audit verify — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
       );
     }
     for (const problem of problems) {
-      yield* io.logError(`ミラー検証失敗: ${problem}`);
+      yield* io.logError(`Mirror verification failure: ${problem}`);
     }
     if (problems.length > 0) {
       yield* io.logError(
-        `ミラー検証で ${problems.length} 件の不一致を検出しました。監査ログはサーバー管理データであり(AUDIT_SPEC §6)、この不一致はサーバーによる改竄・破損の証拠です — 配布チェーン(署名付き・検証済み)側が真であり、監査ログを信用しないでください`,
+        `Mirror verification found ${countNoun(problems.length, "problem")}. The audit log is server-managed data (AUDIT_SPEC §6) and these mismatches are evidence of server-side tampering or corruption — the distributed chain (signed and verified) is the truth; do not trust the audit log`,
       );
     }
     return 1;

@@ -1,6 +1,6 @@
 // ローカル床の結線テスト(CRYPTO_SPEC §6.3 規則 (a)(b)(c) — session-12 §8-5 の
 // 床項目)。同一 TestEnv(= 同一の床ファイル)に対してモックサーバーを差し替え、
-// セッション(プロセス実行)を跨ぐ巻き戻し・欠落・前進注入の永続検出を検査する。
+// セッション(プロセス実行)を跨ぐ巻き戻し・欠落・forward injectionの永続検出を検査する。
 //
 // フェーズ 1 は常に正直な応答で床を確立し、フェーズ 2 以降で改竄された配布を
 // 与える。改竄はすべて正規鍵の有効署名付き(署名検証は通る)— 床だけが検出
@@ -254,7 +254,7 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
       ],
       deks: [wrap1],
     });
-    expect(env.errors.join("\n")).toContain("初回同期");
+    expect(env.errors.join("\n")).toContain("first sync");
     const floor = await readFloorFile(env);
     expect(floor.chainHead).toEqual({ seq: 2, hashHex: chain1.hashes[1] });
     const record = floor.environments[ENV_ID];
@@ -283,8 +283,8 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("破損");
-    expect(errors).not.toContain("初回同期");
+    expect(errors).toContain("corrupt");
+    expect(errors).not.toContain("first sync");
     const floor = await readFloorFile(env);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 1 });
   });
@@ -313,12 +313,12 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("値バージョンの巻き戻し");
+    expect(errors).toContain("value-version rollback");
     // fork 証拠: 床側と配布側の signed bytes ハッシュ・宣言ヘッド・座標
     expect(errors).toContain(await valueHashOf(v2, owner.userId));
     expect(errors).toContain(await valueHashOf(v1, owner.userId));
     expect(errors).toContain(`variable=vb`);
-    expect(errors).toContain(`宣言ヘッド: seq=2`);
+    expect(errors).toContain(`declared head: seq=2`);
     // 平文値は証拠に含まれない
     expect(errors).not.toContain("old");
     expect(errors).not.toContain("new");
@@ -347,7 +347,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("値バージョンの巻き戻し");
+    expect(env.errors.join("\n")).toContain("value-version rollback");
   });
 
   it("拒否された pull は床を前進させない(更新順序の規範 — 検査は前回基準)", async () => {
@@ -388,7 +388,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("メタステートメントの巻き戻し");
+    expect(env.errors.join("\n")).toContain("meta-statement rollback");
   });
 
   it("環境 metaVersion の後退を拒否する", async () => {
@@ -418,7 +418,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("メタステートメントの巻き戻し");
+    expect(env.errors.join("\n")).toContain("meta-statement rollback");
   });
 
   it("環境メタの同一 metaVersion への異なる signed bytes(環境名の付け替え)を拒否する", async () => {
@@ -448,9 +448,9 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("metaVersion への異なる signed bytes");
+    expect(errors).toContain("signed bytes served for the same metaVersion");
     // 環境メタの証拠座標は環境まで(variable= を含まない)
-    expect(errors).toContain(`座標: project=${projectId} environment=${ENV_ID}\n`);
+    expect(errors).toContain(`coordinates: project=${projectId} environment=${ENV_ID}\n`);
   });
 
   it("エポックの後退(前進 version への床エポック未満の配布)を拒否する", async () => {
@@ -467,7 +467,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
       chain2,
     );
 
-    // version 4 > 床 3 だが epoch 1 < 床の epoch 2(§4.1 単調性違反)
+    // version 4 > 床 3 だが epoch 1 < 床の epoch 2(§4.1 monotonicity violation)
     const v4e1 = await valueOf({ variableId: "va", version: 4, epoch: 1, plaintext: "regressed" });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -478,7 +478,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("単調性違反");
+    expect(env.errors.join("\n")).toContain("monotonicity violation");
   });
 
   it("チェーン長の後退(短縮)を拒否する(有界再同期でも解決しない場合)", async () => {
@@ -502,7 +502,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("チェーンの短縮");
+    expect(errors).toContain("chain shortening");
     expect(errors).toContain(`seq=3 hash=${chain2.hashes[2]}`);
     expect(errors).toContain(`seq=2 hash=${chain1.hashes[1]}`);
   });
@@ -566,7 +566,7 @@ describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
     await twoVariablePhases(env);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("欠落");
+    expect(errors).toContain("omission of a verified variable");
     expect(errors).toContain("variable=vb");
   });
 
@@ -575,7 +575,7 @@ describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
     await twoVariablePhases(env);
     expect(await runCli(["run", "--", "printenv"], env.layer)).toBe(1);
     expect(env.runnerCalls).toHaveLength(0);
-    expect(env.errors.join("\n")).toContain("欠落");
+    expect(env.errors.join("\n")).toContain("omission of a verified variable");
   });
 
   it("push: 欠落した配布では push しない(解決 pull で床検査が発火)", async () => {
@@ -583,7 +583,7 @@ describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
     await twoVariablePhases(env);
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "ALPHA"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("欠落");
+    expect(env.errors.join("\n")).toContain("omission of a verified variable");
   });
 
   it("tombstone の欠落(削除記録の隠蔽)を拒否する", async () => {
@@ -612,12 +612,12 @@ describe("欠落の永続検出(§6.3 規則 (a) / session-12 §8-5)", () => {
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("欠落");
+    expect(errors).toContain("omission of a verified variable");
     expect(errors).toContain("variable=vd");
   });
 });
 
-describe("前進注入の床検出と誤拒否なし(§6.3 規則 (c) / session-12 §12 ループ 2 の両縁)", () => {
+describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / session-12 §12 ループ 2 の両縁)", () => {
   it("ローテーション前の正当な旧エポック新版は受理し、基準前進後の旧エポック新版は拒否する", async () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -653,7 +653,7 @@ describe("前進注入の床検出と誤拒否なし(§6.3 規則 (c) / session-
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 1 });
 
     // フェーズ 3: 基準 2 の下で、床の version より新しい v3 が epoch 1 のまま =
-    // 旧エポック鍵による前進注入の形(規則 (c) の検出側の縁)
+    // 旧エポック鍵によるforward injectionの形(規則 (c) の検出側の縁)
     const v3 = await valueOf({
       variableId: "vb",
       version: 3,
@@ -671,8 +671,8 @@ describe("前進注入の床検出と誤拒否なし(§6.3 規則 (c) / session-
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("前進注入");
-    expect(errors).toContain("pull 時点エポック基準=2");
+    expect(errors).toContain("forward injection");
+    expect(errors).toContain("pull-time epoch baseline=2");
   });
 
   it("床にない新規変数にも規則 (c) を適用する(基準未満のエポックの新規配布は注入の形)", async () => {
@@ -709,9 +709,9 @@ describe("前進注入の床検出と誤拒否なし(§6.3 規則 (c) / session-
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("前進注入");
+    expect(errors).toContain("forward injection");
     expect(errors).toContain("variable=vc");
-    expect(errors).toContain("version=0(0 = 床に記録なし)");
+    expect(errors).toContain("version=0 (0 = no floor record)");
   });
 });
 
@@ -770,7 +770,7 @@ describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §1
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("metaVersion への異なる signed bytes");
+    expect(errors).toContain("signed bytes served for the same metaVersion");
   });
 });
 
@@ -804,7 +804,7 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
     ["同一 metaVersion", 2],
     ["metaVersion 後退", 1],
   ])(
-    "削除の無断取り消し(deleted 記録済みの active 配布 — %s)を拒否する",
+    "unauthorized undeletion(deleted 記録済みの active 配布 — %s)を拒否する",
     async (_label, metaVersion) => {
       const env = await makeTestEnv();
       await establishFloor(env, {
@@ -825,11 +825,11 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
         }),
       ]);
       expect(await runCli(["pull"], env.layer)).toBe(1);
-      expect(env.errors.join("\n")).toContain("削除の無断取り消し");
+      expect(env.errors.join("\n")).toContain("unauthorized undeletion");
     },
   );
 
-  it("tombstone の差し替え(deleted は終端状態 — 床との厳密一致を要求)を拒否する", async () => {
+  it("tombstone(deleted は終端状態 — 床との厳密一致を要求)を拒否する", async () => {
     const env = await makeTestEnv();
     await establishFloor(env, {
       variables: [],
@@ -848,7 +848,7 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
       pullHandlerFor({ variables: [], deletedVariables: [forged], deks: [wrap1] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("tombstone の差し替え");
+    expect(env.errors.join("\n")).toContain("tombstone");
   });
 });
 
@@ -866,7 +866,7 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
     await startPhase(env, [chainHandlerFor([chainB]), pullHandlerFor({ variables: [], deks: [] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("異なる分岐の配布");
+    expect(errors).toContain("distribution of a branch diverging");
     expect(errors).toContain(chain1.hashes[1] as string);
     expect(errors).toContain(chainB.hashes[1] as string);
   });
@@ -919,7 +919,7 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
     });
 
     // 宣言ヘッド seq 3 は chain1 より先だが、再同期しても chain1 のまま =
-    // 存在しないヘッドへの束縛(分岐または偽造の証拠)
+    // 存在しないヘッドへの束縛(chain divergence or forgery)
     const forged = await encryptValueFor({
       dek: dek1,
       projectId,
@@ -939,7 +939,7 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("分岐または偽造の証拠");
+    expect(env.errors.join("\n")).toContain("chain divergence or forgery");
   });
 });
 
@@ -974,11 +974,11 @@ describe("push 受理後の床前進(§6.3 — 自分の書き込みの巻き戻
       pullHandlerFor({ variables: [entry], deks: [wrap1] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("値バージョンの巻き戻し");
+    expect(env.errors.join("\n")).toContain("value-version rollback");
   });
 });
 
-describe("メタの前進注入は床でも検出されない(§14.3-5 — 非保証の明示)", () => {
+describe("メタのforward injectionは床でも検出されない(§14.3-5 — 非保証の明示)", () => {
   it("前進 metaVersion の注入(名前の付け替え)は床があっても受理される(既知の残余)", async () => {
     // メタステートメントはエポックアンカーを持たず(§4.2)、値の規則 (c) に
     // 相当する検出は構造的に存在しない。床の保証は巻き戻し検出のみであり、
@@ -1010,8 +1010,8 @@ describe("メタの前進注入は床でも検出されない(§14.3-5 — 非�
     expect(env.logs.join("\n")).toContain("BETA_INJECTED");
   });
 
-  it("環境メタの前進注入も床では検出されない(§14.3-5 — 任意の変数・環境のメタに成立)", async () => {
-    // §14.3-5: 前進注入は攻撃鍵が在籍区間中に author 資格を持っていた任意の
+  it("環境メタのforward injectionも床では検出されない(§14.3-5 — 任意の変数・環境のメタに成立)", async () => {
+    // §14.3-5: forward injectionは攻撃鍵が在籍区間中に author 資格を持っていた任意の
     // 変数・環境のメタに成立する。変数側と同様、環境側も非検出を固定する
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });

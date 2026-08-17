@@ -243,7 +243,7 @@ export function makeFilePinStore(dir: string): PinStoreShape {
       },
       catch: () =>
         cliError(
-          `招待ピンファイルを書き込めません(破損または I/O 失敗): ${pathOf(projectId)} — 内容を確認し、意図しない改変なら削除してから再実行してください`,
+          `Cannot write the invite-pin file (corrupt or an I/O failure): ${pathOf(projectId)} — inspect it, and if the modification was unintended, delete it and re-run`,
         ),
     });
 
@@ -251,14 +251,16 @@ export function makeFilePinStore(dir: string): PinStoreShape {
     load: (projectId) =>
       Effect.tryPromise({
         try: () => loadRaw(projectId),
-        catch: () => cliError(`招待ピンファイルを読み取れません: ${pathOf(projectId)}`),
+        catch: () => cliError(`Cannot read the invite-pin file: ${pathOf(projectId)}`),
       }),
     saveAnchor: (projectId, anchor) => merge(projectId, (pins) => ({ ...pins, anchor })),
     saveIssuedPin: (projectId, inviteId, pin) => {
       // 形式外 id を書くと次回ロードが全体破損になる(厳格デコード)ため手前で拒否
       if (!INVITE_ID.test(inviteId)) {
         return Effect.fail(
-          cliError("サーバー応答の招待 id が想定形式ではないため、発行ピンを保存できません"),
+          cliError(
+            "Cannot save the issuance pin because the invite id in the server response is not in the expected form",
+          ),
         );
       }
       return merge(projectId, (pins) => {

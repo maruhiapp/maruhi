@@ -139,17 +139,14 @@ export function formatPulledLine(variable: DisplayableVariable): string {
 }
 
 /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
-// 追記(ADR-0017 の申し送り): このプレフィックスは共有ヘルパのため
-// コマンド単位の英語化(決定 4)に乗らず、移行済みコマンドでは
-// 「警告: <英語本文>」の混在行になる(PR #75 Pullfrog 指摘)。effect-cli.ts が
-// 直接書く「Warning: …」との不統一も同根。共有モジュールの英語化 PR で
-// 本文と一緒に「Warning: 」へ倒す — ここだけ先に倒すと、gunshi に残る
-// コマンドの側が逆向きの混在(「Warning: <日本語本文>」)になるため据え置く。
+// プレフィックスは effect-cli.ts が直接書く「Warning: …」と同じ(共有
+// モジュールの一括英語化 — 第 3 段階の最終コミット — で PR #75 Pullfrog 指摘の
+// 混在を解消した)。
 export function logWarnings(warnings: readonly string[]): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     for (const warning of warnings) {
-      yield* io.logError(`警告: ${warning}`);
+      yield* io.logError(`Warning: ${warning}`);
     }
   });
 }
@@ -199,7 +196,7 @@ export function showValues(
       if (text === null) {
         return yield* Effect.fail(
           cliError(
-            `変数 ${displayText(variable.name)} の値は UTF-8 として不正のため表示できません(バイナリ値は --show の対象外です)`,
+            `The value of variable ${displayText(variable.name)} is not valid UTF-8 and cannot be displayed (binary values are outside the scope of --show)`,
           ),
         );
       }
@@ -244,9 +241,9 @@ function renderValue(name: string, shown: string): readonly string[] {
   if (parts.length === 1 && !trailingNewline) {
     return [`${name}=${shown}`];
   }
-  const trailing = trailingNewline ? "。末尾に改行あり" : "";
+  const trailing = trailingNewline ? " with a trailing newline" : "";
   return [
-    `${name}= (${parts.length} 行の値${trailing}。以下の各行の先頭 "${CONTINUATION}" は maruhi が付けた印です)`,
+    `${name}= (a ${parts.length}-line value${trailing}; the leading "${CONTINUATION}" on each line below is a marker added by maruhi)`,
     ...parts.map((line) => `${CONTINUATION}${line}`),
   ];
 }
@@ -259,5 +256,5 @@ function renderValue(name: string, shown: string): readonly string[] {
  * 「run を使えば渡せます」と書くと、直後に拒否される手順へ送ることになる。
  */
 function warnAlteredDisplay(names: readonly string[]): string {
-  return `警告: 次の変数の値には端末表示に使えない文字(制御文字・並び順を操る文字)が含まれるため、表示では \uFFFD に置き換えています。表示された文字列は実際の値と一致しないので、コピーして使わないでください。実際の値をプロセスへ渡すには \`maruhi run -- <コマンド>\` を使ってください(ただし NUL を含む値は環境変数として渡せないため run も拒否します): ${names.join(", ")}`;
+  return `Warning: the values of these variables contain characters unusable in terminal output (control characters or ordering-manipulation characters), shown as \uFFFD instead. The displayed strings do not match the actual values — do not copy and use them. To pass the actual values to a process, use \`maruhi run -- <command>\` (though values containing NUL cannot be passed as env vars, so run rejects them too): ${names.join(", ")}`;
 }
