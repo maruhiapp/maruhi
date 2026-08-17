@@ -330,9 +330,23 @@ async function probeCryptoRoundTrip(): Promise<boolean> {
   return encPair.ok && sigPair.ok && fingerprint.ok;
 }
 
-/** 環境側が原因のときの文言(**消させない**のが要点)。 */
+/**
+ * 環境側が原因のときの共通部分(原因と、どの経路でも同じ次の一手)。
+ *
+ * **「何が無事か」は経路ごとに違う**ので、そこは共有しない: 保存済みの鍵を
+ * 指せるのはキーチェーン経路だけで、recover(まだ保存していない)や
+ * generate(これから作る)で「保存されている鍵を消さないでください」と言うと、
+ * 存在しない物を指した診断になる。
+ */
+export const unsupportedCryptoCause =
+  "この環境の WebCrypto が master 鍵に必要なアルゴリズム(Ed25519 / HPKE)に対応していないため、鍵を読み込めません" as const;
+
+/** 環境側が原因のときの次の一手(どの経路でも同じ)。 */
+export const retryOnSupportedRuntime = "対応する環境(新しい Bun / OS)で再実行してください" as const;
+
+/** キーチェーンの鍵を読み込めないときの環境起因の文言(**消させない**のが要点)。 */
 export const unsupportedCryptoMessage =
-  "この環境の WebCrypto が master 鍵に必要なアルゴリズム(Ed25519 / HPKE)に対応していないため、鍵を読み込めません。保存されている鍵は壊れていない可能性が高いので、消さないでください。対応する環境(新しい Bun / OS)で再実行してください" as const;
+  `${unsupportedCryptoCause}。保存されている鍵は壊れていない可能性が高いので、消さないでください。${retryOnSupportedRuntime}` as const;
 
 /** インポート失敗の文言。原因(鍵素材・別形式・環境)ごとに出口が違う。 */
 function importFailureMessage(input: {

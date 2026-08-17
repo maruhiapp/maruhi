@@ -42,7 +42,8 @@ import {
   corruptKeyError,
   cryptoBackendUsable,
   importMasterKeys,
-  unsupportedCryptoMessage,
+  retryOnSupportedRuntime,
+  unsupportedCryptoCause,
   loadMasterKeys,
   type MasterKeys,
 } from "./session.ts";
@@ -255,9 +256,20 @@ function blobFailureMessage(error: CliError, suite: string): Effect.Effect<strin
     return Effect.succeed(foreignRecoveryBlobMessage(suite));
   }
   return Effect.map(cryptoBackendUsable(), (usable) =>
-    usable ? brokenRecoveryBlobMessage : unsupportedCryptoMessage,
+    usable ? brokenRecoveryBlobMessage : unsupportedCryptoOnRecover,
   );
 }
+
+/**
+ * 環境が非対応のときの文言(この経路版)。
+ *
+ * この経路は ensureNoStoredMasterKey を通っており、このデバイスに鍵は無い —
+ * 「保存されている鍵を消さないでください」は指す物が無い。代わりに**無事な物**
+ * (コードとブロブ)を名指しする: 書かないと、失敗をコードのせいだと思って
+ * 唯一の復元手段を捨てられる。
+ */
+const unsupportedCryptoOnRecover =
+  `${unsupportedCryptoCause}。入力したリカバリーコードと登録済みのブロブは無事です — 捨てないでください。${retryOnSupportedRuntime}` as const;
 
 /** ブロブは解釈できたが鍵素材が読み込めないときの文言。 */
 const brokenRecoveryBlobMessage =

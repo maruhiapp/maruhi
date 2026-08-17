@@ -33,7 +33,8 @@ import {
   ensureNoStoredMasterKey,
   cryptoBackendUsable,
   importMasterKeys,
-  unsupportedCryptoMessage,
+  retryOnSupportedRuntime,
+  unsupportedCryptoCause,
   loadMasterKeys,
 } from "./session.ts";
 
@@ -102,7 +103,9 @@ export function keyGenerateOp(input: {
             cliError(
               usable
                 ? "生成した鍵を読み込めませんでした(キーチェーンには何も保存していません)。maruhi の不具合として報告してください"
-                : unsupportedCryptoMessage,
+                : // 保存前なので「保存されている鍵」は指せない。無事な物(=
+                  // 何も書いていないこと)を言い、次の一手だけ共有する
+                  `${unsupportedCryptoCause}。キーチェーンには何も保存していません。${retryOnSupportedRuntime}`,
             ),
           ),
         ),

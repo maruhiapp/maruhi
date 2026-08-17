@@ -22,7 +22,12 @@ import {
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
 import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
-import { cryptoBackendUsable, resolveServerOrigin } from "../src/session.ts";
+import {
+  cryptoBackendUsable,
+  resolveServerOrigin,
+  unsupportedCryptoCause,
+  unsupportedCryptoMessage,
+} from "../src/session.ts";
 import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
@@ -583,6 +588,15 @@ describe("cryptoBackendUsable", () => {
     // 返すと、本当に壊れたレコードの診断まで「環境が非対応です・消さないで
     // ください」に化け、唯一の復旧手順(手で消す)へ辿り着けなくなる
     expect(await Effect.runPromise(cryptoBackendUsable())).toBe(true);
+  });
+
+  it("環境起因の共通文言は「何が無事か」を含まない(経路ごとに違うため)", () => {
+    // 保存済みの鍵を指せるのはキーチェーン経路だけ。recover / generate は
+    // まだ何も保存していないので、共通部分がここまで書くと無い物を指す
+    expect(unsupportedCryptoCause).not.toContain("消さないで");
+    expect(unsupportedCryptoCause).not.toContain("保存");
+    // キーチェーン経路の文言だけが「消さないでください」を持つ
+    expect(unsupportedCryptoMessage).toContain("消さないでください");
   });
 });
 
