@@ -4,7 +4,7 @@ maruhi への貢献に興味を持っていただきありがとうございま�
 
 ## 開発セットアップ
 
-- ランタイムは Bun 1.4 系(バージョンピン留め)です
+- ランタイムは Bun です。版は `.bun-version` で厳密ピン(現行 1.3.14)。ADR-0004 の 1.4 系は未到達です
 - `bun install` で依存をインストールします
 - コミット前に品質ゲートをすべて通してください: `bun run check`(oxfmt → oxlint → tsc → ImportLint → fallow → React Doctor → テスト)
 
