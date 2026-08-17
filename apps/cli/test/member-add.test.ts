@@ -614,7 +614,7 @@ describe("maruhi member add", () => {
     expect(registered).toContainEqual([2, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
     expect(logs).toContain("If leftover wraps addressed to the old key are found, the repair path");
-    expect(logs).toContain("1 old-key wraps repaired");
+    expect(logs).toContain("1 old-key wrap repaired");
   });
 
   it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
@@ -711,7 +711,7 @@ describe("maruhi member add", () => {
     );
     expect(registered).toContainEqual([1, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("1 old-key wraps repaired");
+    expect(logs).toContain("1 old-key wrap repaired");
   });
 
   it("completed 行は id 明示で再開でき、id なしの再実行はその導線を案内する(Cursor bot 指摘の回帰)", async () => {

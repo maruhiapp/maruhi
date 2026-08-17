@@ -31,7 +31,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
-import { displayText, logWarnings } from "./display.ts";
+import { countNoun, displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
@@ -570,7 +570,7 @@ function ensureRotationIsUseful(targets: number, variables: number): Effect.Effe
  * 似て非なる 2 行を通す)。
  */
 function nothingDecryptable(variables: number): string {
-  return `No values can be re-encrypted (wraps addressed to you are missing for all ${variables} variables)`;
+  return `No values can be re-encrypted (wraps addressed to you are missing for all ${countNoun(variables, "variable")})`;
 }
 
 /** タグ付き失敗からメッセージだけを取り出す(null 伝播)。 */
@@ -1375,7 +1375,7 @@ function settlePass(input: {
         },
       } as const;
     }
-    const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${input.reencrypted} variables`;
+    const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${countNoun(input.reencrypted, "variable")}`;
     if (rescan.value.evidence !== null) {
       // 暗号学的証拠は最優先の即時中断(再実行では解消しない)。エポックが
       // 進んでいる文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない
@@ -1636,7 +1636,7 @@ function resumeReencryption(input: {
         ? "Resuming this re-encryption (no new epoch will be created)"
         : "**The requested rotation will not be performed**; switching to resuming this re-encryption (no new epoch is created, and since this path appends no chain entry, --reason is not recorded either)";
     yield* io.logError(
-      `Warning: after the rotation to epoch ${currentEpoch}, environment ${environmentId} still has ${stale.length} variables with incomplete re-encryption. ${switched}. If a new epoch is strictly required (e.g. after removing a departed member), run with --new-epoch — this also counters responses that fake an incomplete state to suppress rotations`,
+      `Warning: after the rotation to epoch ${currentEpoch}, environment ${environmentId} still has ${countNoun(stale.length, "variable")} with incomplete re-encryption. ${switched}. If a new epoch is strictly required (e.g. after removing a departed member), run with --new-epoch — this also counters responses that fake an incomplete state to suppress rotations`,
     );
     // 開けない値があっても再開自体は止めない: **エポックは既に進んでいる**ので、
     // 「エポックだけ進んで再暗号化が完了しない状態を作らない」という通常経路の
@@ -1811,7 +1811,7 @@ function rotateWithWarnings(
       return yield* Effect.fail(cliError("Failed to compute the DEK commitment"));
     }
     yield* io.log(
-      `Rotating environment ${input.environmentId} (epoch ${currentEpoch} → ${newEpoch}, ${targets.length} variables targeted)`,
+      `Rotating environment ${input.environmentId} (epoch ${currentEpoch} → ${newEpoch}, ${countNoun(targets.length, "variable")} targeted)`,
     );
     const rotated = yield* appendRotation({
       ...input,
@@ -1823,7 +1823,7 @@ function rotateWithWarnings(
       dekCommitmentHex: commitment.value,
     });
     yield* io.log(
-      `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${rotated.memberCount} current members)`,
+      `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,
     );
     // 新エポックの DEK は生成元(自分)が保持している。チェーン導出コミットメントとの
     // 照合は appendRotation が済ませている(§5.2)

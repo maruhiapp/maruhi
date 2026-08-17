@@ -65,7 +65,7 @@ import {
   openProject,
   openSession,
 } from "./context.ts";
-import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
+import { countNoun, displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
@@ -440,7 +440,7 @@ function envCreateCommand(
     yield* io.log(
       // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り
       // 直した場合、コマンド開始時のビューのメンバー数とは食い違いうる)
-      `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${created.memberCount} current members)`,
+      `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${countNoun(created.memberCount, "current member")})`,
     );
   });
 }
@@ -594,7 +594,7 @@ function serverGrantCommand(
     const policyNote =
       summary.leasePolicyCount === 0
         ? "no lease path (lease_policy is empty)"
-        : `lease_policy has ${summary.leasePolicyCount} elements`;
+        : `lease_policy has ${countNoun(summary.leasePolicyCount, "element")}`;
     yield* io.log(
       `Done: disclosure to server key ${summary.serverKeyFingerprintHex} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
     );
@@ -627,8 +627,14 @@ function serverRevokeCommand(
       resync: context.resync,
       rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
     });
-    yield* reportRevokeOutcome(io, summary);
-    const exitCode = yield* reportRevokeRotations(io, summary);
+    yield* reportRevokeAppend(io, summary);
+    const exitCode = yield* reportSweepOutcome(summary, {
+      rerunCommand: "maruhi server revoke",
+      alreadyRotatedBasis: "the revocation",
+    });
+    if (exitCode === 0) {
+      yield* io.log("Done: the revocation and the rotation of every environment completed");
+    }
     // 要ローテーションフラグの件数と導線(B2 — AUDIT_SPEC §4.1 の revoke 変種)
     if (summary.serverKeyFingerprintHex !== null) {
       yield* reportRotationFlagCount({
@@ -641,70 +647,23 @@ function serverRevokeCommand(
   });
 }
 
-/** revoke の追記結果とスキップ・確認済み環境の報告(終了コードには影響しない部分)。 */
-function reportRevokeOutcome(
-  io: CliIoShape,
-  summary: RevokeSummary,
-): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    if (summary.appended) {
-      yield* io.log(
-        `Appended revoke_server to the chain (FP=${summary.serverKeyFingerprintHex ?? ""}). Forcing a rotation of every environment (§7)`,
-      );
-    } else if (summary.serverKeyFingerprintHex !== null) {
-      // 対象の grant はあったが、CAS 競合の再同期で既に失効済みと判明した
-      // (並行 revoke)。誰かが同じ鍵を失効させた事実は運用上重要なので明示する
-      yield* io.log(
-        `The targeted grant (FP=${summary.serverKeyFingerprintHex}) was already revoked by a concurrent run — skipping the append and proceeding to rotate every environment (§7)`,
-      );
-    } else {
-      yield* io.log(
-        "No active grant — resuming the post-revocation rotation of every environment from where it left off (crash recovery)",
-      );
-    }
-    if (summary.skippedDeleted.length > 0) {
-      yield* io.log(
-        `Skipped deleted environments (signed deletion statements verified): ${summary.skippedDeleted.join(", ")}`,
-      );
-    }
-    if (summary.alreadyRotated.length > 0) {
-      yield* io.log(
-        `Already rotated (epoch newer than the revocation, no incomplete re-encryption confirmed): ${summary.alreadyRotated.join(", ")}`,
-      );
-    }
-  });
-}
-
-/** revoke のローテーション結果の報告と終了コードの導出。 */
-function reportRevokeRotations(
-  io: CliIoShape,
-  summary: RevokeSummary,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    let exitCode = 0;
-    for (const item of summary.rotated) {
-      const code = yield* reportRotation(
-        item.environmentId as EnvironmentId,
-        item.summary,
-        item.forcedNewEpoch,
-      );
-      if (code !== 0) {
-        exitCode = 1;
-      }
-    }
-    for (const failure of summary.failed) {
-      // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
-      // よる選択的なローテーション阻止を不可視にしない)
-      yield* io.logError(
-        `Warning: rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run maruhi server revoke to resume (if the environment was deleted, check for a verified deletion statement)`,
-      );
-      exitCode = 1;
-    }
-    if (exitCode === 0) {
-      yield* io.log("Done: the revocation and the rotation of every environment completed");
-    }
-    return exitCode;
-  });
+/** revoke の追記結果の報告(sweep 共通部分は reportSweepOutcome が受け持つ)。 */
+function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effect<void, CliError> {
+  if (summary.appended) {
+    return io.log(
+      `Appended revoke_server to the chain (FP=${summary.serverKeyFingerprintHex ?? ""}). Forcing a rotation of every environment (§7)`,
+    );
+  }
+  if (summary.serverKeyFingerprintHex !== null) {
+    // 対象の grant はあったが、CAS 競合の再同期で既に失効済みと判明した
+    // (並行 revoke)。誰かが同じ鍵を失効させた事実は運用上重要なので明示する
+    return io.log(
+      `The targeted grant (FP=${summary.serverKeyFingerprintHex}) was already revoked by a concurrent run — skipping the append and proceeding to rotate every environment (§7)`,
+    );
+  }
+  return io.log(
+    "No active grant — resuming the post-revocation rotation of every environment from where it left off (crash recovery)",
+  );
 }
 
 /** `maruhi invite create --role <r>`(§15-2 発行 + §15-3 リンク組み立て)。 */
@@ -825,10 +784,18 @@ function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, 
   });
 }
 
-/** sweep 結果(§7 の全環境走査)の報告と終了コードの導出(remove / 降格共通)。 */
-function reportMemberSweep(
+/**
+ * sweep 結果(§7 の全環境走査)の報告と終了コードの導出(server revoke /
+ * member remove / change-role 共通)。
+ *
+ * `alreadyRotatedBasis` は「どの時点より後のエポックなら回転済みと確認したか」
+ * の言い分け(revoke = 失効・member = 義務エントリ)。報告の形と §7 の
+ * 「rotate の失敗を黙ってスキップしない」規律は 1 か所に保つ — 二重に持つと
+ * 片方だけ直る。
+ */
+function reportSweepOutcome(
   sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] },
-  rerunCommand: string,
+  options: { readonly rerunCommand: string; readonly alreadyRotatedBasis: string },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -839,7 +806,7 @@ function reportMemberSweep(
     }
     if (sweep.alreadyRotated.length > 0) {
       yield* io.log(
-        `Already rotated (epoch newer than the mandate entry, no incomplete re-encryption confirmed): ${sweep.alreadyRotated.join(", ")}`,
+        `Already rotated (epoch newer than ${options.alreadyRotatedBasis}, no incomplete re-encryption confirmed): ${sweep.alreadyRotated.join(", ")}`,
       );
     }
     let exitCode = 0;
@@ -857,7 +824,7 @@ function reportMemberSweep(
       // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
       // よる選択的なローテーション阻止を不可視にしない)
       yield* io.logError(
-        `Warning: rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
+        `Warning: rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
       );
       exitCode = 1;
     }
@@ -902,7 +869,8 @@ function reportMemberAdd(
   summary: MemberAddSummary,
 ): Effect.Effect<number, CliError> {
   return Effect.gen(function* () {
-    const repaired = summary.repaired > 0 ? `, ${summary.repaired} old-key wraps repaired` : "";
+    const repaired =
+      summary.repaired > 0 ? `, ${countNoun(summary.repaired, "old-key wrap")} repaired` : "";
     yield* io.log(
       `Added member ${displayText(summary.targetUserId)} (role=${summary.role}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered${repaired}`,
     );
@@ -947,7 +915,10 @@ function memberRemoveCommand(
         "The target was already removed — skipping the append and resuming the rotation of every environment (crash recovery)",
       );
     }
-    const exitCode = yield* reportMemberSweep(summary, "maruhi member remove");
+    const exitCode = yield* reportSweepOutcome(summary, {
+      rerunCommand: "maruhi member remove",
+      alreadyRotatedBasis: "the mandate entry",
+    });
     if (exitCode === 0) {
       yield* io.log("Done: the member removal and the rotation of every environment completed");
     }
@@ -997,7 +968,10 @@ function memberChangeRoleCommand(
     yield* io.log(
       "Demotion below member forces a rotation of every environment (CRYPTO_SPEC §7 — epoch-anchor soundness)",
     );
-    const exitCode = yield* reportMemberSweep(summary.sweep, "maruhi member change-role");
+    const exitCode = yield* reportSweepOutcome(summary.sweep, {
+      rerunCommand: "maruhi member change-role",
+      alreadyRotatedBasis: "the mandate entry",
+    });
     if (exitCode === 0) {
       yield* io.log("Done: the demotion and the rotation of every environment completed");
     }

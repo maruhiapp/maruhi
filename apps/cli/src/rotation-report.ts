@@ -8,7 +8,7 @@
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import { logWarnings } from "./display.ts";
+import { countNoun, logWarnings } from "./display.ts";
 import type { RotationSummary } from "./env-rotate.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
@@ -32,10 +32,10 @@ function reportPartialRotation(
     // 通った実測なので、そちらに但し書きを付けて疑わしく見せない
     const scale =
       summary.remaining > 0
-        ? `${summary.remaining} variables incomplete${summary.remainingExact ? "" : " (may include unconfirmed ones)"}`
+        ? `${countNoun(summary.remaining, "variable")} incomplete${summary.remainingExact ? "" : " (may include unconfirmed ones)"}`
         : "completion could not be verified";
     yield* io.log(
-      `Partial completion: ${scope} (re-encrypted ${summary.reencrypted} variables${skipped}, ${scale})`,
+      `Partial completion: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped}, ${scale})`,
     );
     // 失敗の原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
     // エラーだけ出して伝え損ねない)。「中断」と言えるのは再走査へ到達できず
@@ -71,7 +71,7 @@ export function reportRotation(
     const skipped =
       summary.alreadyCurrent === 0
         ? ""
-        : `, ${summary.alreadyCurrent} variables already re-encrypted by concurrent updates`;
+        : `, ${countNoun(summary.alreadyCurrent, "variable")} already re-encrypted by concurrent updates`;
     if (summary.mode === "up-to-date") {
       // 確認のみ(未完了なし・新エポック未要求)。部分完了の案内が勧める
       // 再実行の着地点でもあるので、何もしなかったことを明示する
@@ -92,7 +92,7 @@ export function reportRotation(
       // いないので、完了報告がローテーション成功に見えてはならない(退職者の
       // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
       yield* io.log(
-        `Done: ${scope} (re-encrypted ${summary.reencrypted} variables${skipped}). **No new epoch was created** (epoch remains ${summary.epoch})`,
+        `Done: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped}). **No new epoch was created** (epoch remains ${summary.epoch})`,
       );
       if (!rotationRequested) {
         // 理由なしの実行 = 「未完了があれば再開する」ことだけを要求している
@@ -106,7 +106,9 @@ export function reportRotation(
       );
       return 1;
     }
-    yield* io.log(`Done: ${scope} (re-encrypted ${summary.reencrypted} variables${skipped})`);
+    yield* io.log(
+      `Done: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped})`,
+    );
     return 0;
   });
 }

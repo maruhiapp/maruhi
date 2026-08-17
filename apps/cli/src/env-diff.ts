@@ -50,7 +50,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices } from "./context.ts";
-import { displayText, logWarnings } from "./display.ts";
+import { countNoun, displayText, logWarnings } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedActiveStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
@@ -187,7 +187,7 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
     const first = displayText(diff.firstEnvironmentId);
     const second = displayText(diff.secondEnvironmentId);
     yield* io.log(
-      `Synced and verified: environment ${first} = ${diff.onlyInFirst.length + diff.shared} variables / environment ${second} = ${diff.onlyInSecond.length + diff.shared} variables`,
+      `Synced and verified: environment ${first} = ${countNoun(diff.onlyInFirst.length + diff.shared, "variable")} / environment ${second} = ${countNoun(diff.onlyInSecond.length + diff.shared, "variable")}`,
     );
     const sides = [
       { environmentId: first, names: diff.onlyInFirst },

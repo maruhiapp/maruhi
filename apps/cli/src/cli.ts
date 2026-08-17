@@ -341,8 +341,8 @@ function projectCommand(execute: Execute) {
  * 共有元のどちらでも拒否される(= 宣言したとおりに使えない)。
  *
  * 表を引数に取るのはその形をテストから固定するため — 実際の表
- * (SERVER / INVITE / MEMBER / AUDIT の *_ACTION_FLAGS)は互いに素なので、
- * 共有の形はコマンドラインからは到達できない。
+ * (AUDIT_ACTION_FLAGS。第 2 段階の移行で残る利用者は audit だけ)は互いに
+ * 素なので、共有の形はコマンドラインからは到達できない。
  */
 export function optionRestrictedTo<A extends string>(
   actions: readonly A[],
@@ -383,7 +383,7 @@ function actionFlagRejection<A extends string>(
   return null;
 }
 
-/** `maruhi rotation` が取る操作(一覧の出所はここだけ — ENV_ACTIONS と同じ形)。 */
+/** `maruhi rotation` が取る操作(一覧の出所はここだけ — KEY_ACTIONS と同じ形)。 */
 const ROTATION_ACTIONS = ["list", "dismiss"] as const;
 
 const ROTATION_ACTION_HELP = `不明な操作です(${ROTATION_ACTIONS.join(" | ")})`;
@@ -474,7 +474,7 @@ function rotationCommand(execute: Execute) {
   });
 }
 
-/** `maruhi audit` が取る操作(一覧の出所はここだけ — ENV_ACTIONS と同じ形)。 */
+/** `maruhi audit` が取る操作(一覧の出所はここだけ — KEY_ACTIONS と同じ形)。 */
 const AUDIT_ACTIONS = ["list", "invites", "self", "verify"] as const;
 
 type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -485,14 +485,15 @@ function isAuditAction(action: string | undefined): action is AuditAction {
   return AUDIT_ACTIONS.some((known) => known === action);
 }
 
-/** AUDIT_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
+/** AUDIT_ACTIONS の分岐漏れを型で捕まえる(引数が never の網羅検査)。 */
 function unhandledAuditAction(action: never): CliError {
   return usageError(`${AUDIT_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
 }
 
 /**
- * 操作専用のオプション(ENV_ACTION_FLAGS と同じ形)。`--project` は self 以外の
- * 共有(self はアカウント全域でプロジェクトを取らない — 黙って無視しない)。
+ * 操作専用のオプション(gunshi の 1 段制約による操作フラグ表 — audit が最後の
+ * 利用者)。`--project` は self 以外の共有(self はアカウント全域でプロジェクトを
+ * 取らない — 黙って無視しない)。
  */
 const AUDIT_ACTION_FLAGS: Readonly<Record<AuditAction, ReadonlySet<string>>> = {
   list: new Set(["limit", "before", "event", "actor", "target", "env", "var", "project"]),

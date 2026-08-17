@@ -280,7 +280,7 @@ describe("maruhi env diff", () => {
     expect(output).not.toContain("\u0007");
     expect(env.logs).toContain("Variables only in environment \uFFFD[2Kdev: 1");
     expect(env.logs).toContain(
-      "Synced and verified: environment \uFFFD[2Kdev = 1 variables / environment prod\uFFFD = 0 variables",
+      "Synced and verified: environment \uFFFD[2Kdev = 1 variable / environment prod\uFFFD = 0 variables",
     );
   });
 

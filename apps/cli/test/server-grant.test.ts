@@ -523,7 +523,7 @@ describe("maruhi server grant", () => {
         ],
       },
     ]);
-    expect(env.logs.join("\n")).toContain("lease_policy has 1 elements");
+    expect(env.logs.join("\n")).toContain("lease_policy has 1 element");
   });
 
   it("--environments は必須(最小開示の既定)・不正な JSON ファイルは usage エラー", async () => {

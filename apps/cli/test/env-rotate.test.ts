@@ -695,7 +695,7 @@ describe("maruhi env rotate", () => {
     // 巡を使い切った(= 毎巡の再走査は通っている)ので、残数は実測である。
     // 「中断」とも「未確認を含む」とも言わない
     expect(env.logs.join("\n")).toContain("Partial completion");
-    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete");
     expect(env.logs.join("\n")).not.toContain("may include unconfirmed ones");
     const errors = env.errors.join("\n");
     expect(errors).toContain("re-encryption did not complete");
@@ -838,7 +838,7 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "再走査失敗"], env.layer)).toBe(1);
     // 競合分が他メンバーの手で解決している可能性が残るので、断定しない
-    expect(env.logs.join("\n")).toContain("1 variables incomplete (may include unconfirmed ones)");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete (may include unconfirmed ones)");
     expect(env.errors.join("\n")).toContain("re-encryption was interrupted");
   });
 
@@ -1167,7 +1167,7 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     // 勝者は現エポックで受理済み = 再暗号化不要。上書きしに行かない
     expect(state.pushes).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("1 variables already re-encrypted by concurrent updates");
+    expect(env.logs.join("\n")).toContain("1 variable already re-encrypted by concurrent updates");
   });
 
   it("409 の勝者が分岐した履歴へ連鎖していたら、prev を付け替えず中断する(§12-5)", async () => {
@@ -1272,7 +1272,7 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.pushes).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("1 variables already re-encrypted by concurrent updates");
+    expect(env.logs.join("\n")).toContain("1 variable already re-encrypted by concurrent updates");
     expect(env.errors.join("\n")).not.toContain("has not completed");
   });
 
@@ -1463,7 +1463,7 @@ describe("maruhi env rotate", () => {
     // 「完了」の顔で終わらせない(サマリ自体が部分完了を名乗る)
     expect(env.logs.join("\n")).toContain("Partial completion");
     expect(env.logs.some((line) => line.startsWith("Done:"))).toBe(false);
-    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete");
     const errors = env.errors.join("\n");
     expect(errors).toContain("has not completed");
     // 旧エポックの DEK 保持者が現在値を読めるままであることを明示する
@@ -1633,7 +1633,7 @@ describe("maruhi env rotate", () => {
     // ない。揃っている事実を「応答が矛盾している」中断で覆い隠さない
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
     expect(state.pushes).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("1 variables already re-encrypted by concurrent updates");
+    expect(env.logs.join("\n")).toContain("1 variable already re-encrypted by concurrent updates");
     const errors = env.errors.join("\n");
     // 矛盾した申告自体は調査対象として残す(中断はしない)
     expect(errors).toContain("the server's response contradicts the chain");
@@ -1706,7 +1706,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("The reported variable is not in the rescanned incomplete set");
     // 中断していれば部分完了の報告経路へ到達しない = 残数も再開案内も出ない
     expect(env.logs.join("\n")).toContain("Partial completion");
-    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete");
     expect(errors).toContain("resume from the remainder without advancing the epoch");
   });
 
@@ -2199,7 +2199,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("エポック 1 の DEK が配布されていません");
     // 原因が既定文言(競合)に化けない
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
-    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete");
     // 同じ変数の警告は 1 回だけ(再開経路と巡末の再走査で文面が割れると
     // dedupeWarnings が別物として通してしまう)
     expect(
@@ -2442,7 +2442,7 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "毒変数"], env.layer)).toBe(1);
     // 後続の 2 変数は新エポックへ移っている(部分完了は毒変数のみ)
     expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vbb", "vcc"]);
-    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete");
   });
 
   it("押せる対象が尽きて打ち切った巡でも、原因を競合に潰さず報告する", async () => {
@@ -2506,7 +2506,7 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("エポック 1 の DEK が配布されていません");
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
-    expect(env.logs.join("\n")).toContain("1 variables incomplete");
+    expect(env.logs.join("\n")).toContain("1 variable incomplete");
   });
 
   it("最終巡(復号しない巡)でも、開けない値をラップの有無だけで原因として拾う", async () => {
