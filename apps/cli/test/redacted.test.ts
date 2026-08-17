@@ -440,9 +440,14 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // (値を控えてから消す)でだけ示す。リカバリーコードを条件にすると、
     // ブロブも新形式のときに「消してから復元できない」に落ちる
     expect(message).toContain("値を控えてから");
+    // 逃げ道の要は可逆性。破棄の指示を足すときに**置き換えて**しまうと、
+    // 何のための控えかが消える(両方が要る)
+    expect(message).toContain("元へ戻せます");
     // 控えは master 秘密鍵そのもの。作らせる以上、消す指示まで書く
     // (この PR の主題は「鍵素材を残さない」こと — 手作業の控えも同じ)
-    expect(message).toContain("復元できたら必ず破棄してください");
+    // 破棄の条件は**手で戻す必要が消えたとき**。`key recover` の成功に読める
+    // 書き方にしない(この経路では recover 自体が失敗しうる)
+    expect(message).toContain("元へ戻す必要が無くなったら");
     expect(message).toContain("master::https://x::u1");
     expect(message).toContain("控えずに消さないでください");
     expect(message).not.toContain("リカバリーコードがあれば");
@@ -484,6 +489,11 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 見ないので、形の揃った将来形式のレコードが decodeHex で落ちて「破損」に
     // 見えることがある(鍵素材は無事かもしれない)
     expect(message).toContain("値を控えてから");
+    expect(message).toContain("元へ戻せます");
+    // 控えを作らせる以上、消す指示まで書く(別形式側と同じ義務)
+    // 破棄の条件は**手で戻す必要が消えたとき**。`key recover` の成功に読める
+    // 書き方にしない(この経路では recover 自体が失敗しうる)
+    expect(message).toContain("元へ戻す必要が無くなったら");
     expect(message).toContain("`maruhi key recover`");
     expect(message).toContain("`maruhi key generate`");
   });

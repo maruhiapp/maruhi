@@ -188,7 +188,7 @@ function manualDeletionGuidance(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(印字可能 ASCII 以外を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**手で削除してください(控えがあれば元へ戻せます。控えは master 秘密鍵そのものなので、復元できたら必ず破棄してください — 端末のスクロールバックに残る形は避けてください)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
+  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**手で削除してください(控えがあれば元へ戻せます。控えは master 秘密鍵そのものなので、**元へ戻す必要が無くなったら**(鍵が再び使える状態になったら)必ず破棄してください — 端末のスクロールバックに残る形は避けてください)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
 }
 
 /** 現行形式のフィールドが揃っているか(値の中身は問わない)。 */
@@ -263,7 +263,7 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
  */
 export function foreignMasterKeyMessage(suite: string | null, entryName: string): string {
   const named = suite === null ? "" : `(${escapeText(suite)})`;
-  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください。更新しても直らない場合のみ、OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**削除すれば、\`maruhi key generate\` / \`maruhi key recover\` を試せます(控えは master 秘密鍵そのものなので、復元できたら必ず破棄してください — 端末のスクロールバックに残る形は避けてください。控えずに消さないでください — リカバリーコードがあっても、登録済みのブロブが同じ新しい形式なら復元できません)。併せて不具合として報告してください`;
+  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください。更新しても直らない場合のみ、OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**削除すれば、\`maruhi key generate\` / \`maruhi key recover\` を試せます(控えがあれば元へ戻せます。控えは master 秘密鍵そのものなので、**元へ戻す必要が無くなったら**(鍵が再び使える状態になったら)必ず破棄してください — 端末のスクロールバックに残る形は避けてください。控えずに消さないでください — リカバリーコードがあっても、登録済みのブロブが同じ新しい形式なら復元できません)。併せて不具合として報告してください`;
 }
 
 /** レコードから宣言スイートだけを取り出す(読めなければ null)。 */
