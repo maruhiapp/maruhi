@@ -51,15 +51,15 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 
 | 層 | 技術 |
 |---|---|
-| ランタイム(dev/CLI) | Bun 1.4 系(バージョンピン留め) |
+| ランタイム(dev/CLI) | Bun 1.3.14(`.bun-version` で厳密ピン。ADR-0004 の 1.4 系は未到達) |
 | サーバー実行環境 | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | サーバー HTTP 層 | Effect v4 `@effect/platform` HttpApi(Hono 不使用) |
-| アプリ基盤 | Effect v4 系(ピン留め) |
+| アプリ基盤 | Effect v4 系(ピン留め。現行 `4.0.0-rc.109`) |
 | DB | Drizzle v1(`drizzle-kit` migrations、Effect サービス境界内に隔離)。D1 + DO SQLite |
 | フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
-| CLI | `effect/unstable/cli` + Effect(実装)。**移行完了**(ADR-0016 — gunshi は廃止済み)。移行先は HttpApi 導出型付きクライアント |
-| IaC | Alchemy v2 Effect スタイル(運用側)。セルフホスト配布物は素の wrangler 両対応を維持 |
-| docs | Blume(`apps/docs`) |
+| CLI | `effect/unstable/cli` + Effect(実装)。gunshi は廃止済み(ADR-0016)。HttpApi 導出型付きクライアント |
+| IaC | 現行デプロイは素の wrangler。Alchemy v2 は ADR-0012 決定済み・未投入。セルフホスト配布物は wrangler のまま |
+| docs | Blume は ADR-0008 決定済み。`apps/docs` はスタブ |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
 
 ## モノレポ構成(予定)
@@ -71,9 +71,9 @@ packages/
   api-schema/    # HttpApi 定義(サーバー実装とクライアント導出の共有源)
 apps/
   server/        # Workers + DO + D1。Effect HttpApi
-  cli/           # Gunshi + Effect。`maruhi` / `mh` バイナリ
+  cli/           # `effect/unstable/cli` + Effect。`maruhi` / `mh` バイナリ
   web/           # FunStack ダッシュボード + ランディング
-  docs/          # Blume
+  docs/          # Blume 予定(ADR-0008)。現状スタブ
 ```
 
 ## 品質ゲート(コミット前に必ず通す)
@@ -90,7 +90,7 @@ apps/
 - 新規依存の追加は最小限。追加時は理由をコミットメッセージに書く
 - **ユーザーに見える文言はすべて英語**(CLI の出力・web UI・docs・README — ADR-0017)。i18n 機構は持たない。境界は「配布物からユーザーが読むか」で、コメント・ADR・仕様書・コミットメッセージは日本語のままでよい
 - コード内コメント・**内部**ドキュメント(ADR / notes / 仕様書)は日本語可、公開 API の JSDoc は英語
-- 未安定依存(Bun 1.4 / Effect v4 / Alchemy v2 / FunStack)のバージョンは厳密にピン留め。更新は独立した PR で意図的に行う
+- 未安定依存(Bun / Effect v4 / Alchemy v2 / FunStack)のバージョンは厳密にピン留め。更新は独立した PR で意図的に行う
 
 ## 参照ドキュメント
 
