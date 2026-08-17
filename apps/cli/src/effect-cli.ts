@@ -127,6 +127,7 @@ import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
 import {
+  parseDismissRequest,
   reportRotationFlagCount,
   resolveDismissTargets,
   rotationDismissOp,
@@ -1603,6 +1604,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           usageError("Invalid variableId (see maruhi rotation list for the current targets)"),
         );
       }
+      // 要求の形(--all と変数 id の矛盾・対象の欠落)も通信より前に確定する
+      const request = yield* parseDismissRequest({
+        all: values.all,
+        environmentId: environmentId ?? null,
+        variableId: variableId ?? null,
+      });
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,
@@ -1610,9 +1617,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const resolved = yield* resolveDismissTargets({
         client: context.client,
         projectId: context.projectId,
-        all: values.all,
-        environmentId: environmentId ?? null,
-        variableId: variableId ?? null,
+        request,
       });
       onExitCode(
         yield* rotationDismissOp({

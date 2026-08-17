@@ -201,6 +201,44 @@ function resolveAllTargets(input: {
   });
 }
 
+/** dismiss の要求形(**通信なしで**確定する部分 — 引数だけから決まる)。 */
+export type DismissRequest =
+  | { readonly kind: "all"; readonly environmentId: string | null }
+  | { readonly kind: "single"; readonly environmentId: string; readonly variableId: string };
+
+/**
+ * `maruhi rotation dismiss` の要求の解釈。ネットワークを要さない検査
+ * (`--all` と変数 id の矛盾・対象の欠落)はここで落とす — 前段の同期より
+ * 後ろに置くと、案内が接続エラーに隠れるうえ往復が無駄になる(レビュー
+ * 第 4 巡の指摘)。
+ */
+export function parseDismissRequest(input: {
+  readonly all: boolean;
+  readonly environmentId: string | null;
+  readonly variableId: string | null;
+}): Effect.Effect<DismissRequest, CliError> {
+  if (input.all) {
+    if (input.variableId !== null) {
+      return Effect.fail(
+        cliError("--all cannot be combined with a variableId (use one or the other)"),
+      );
+    }
+    return Effect.succeed({ kind: "all", environmentId: input.environmentId });
+  }
+  if (input.environmentId === null || input.variableId === null) {
+    return Effect.fail(
+      cliError(
+        "Specify what to dismiss: maruhi rotation dismiss <variableId> --env <environmentId> (or --all for every flag)",
+      ),
+    );
+  }
+  return Effect.succeed({
+    kind: "single",
+    environmentId: input.environmentId,
+    variableId: input.variableId,
+  });
+}
+
 /**
  * `maruhi rotation dismiss` の対象解決: `--all` は現在有効な全フラグ
  * (`--env` 指定時は当該環境のみ)、個別指定は (--env, variableId) の 1 対。
@@ -208,34 +246,17 @@ function resolveAllTargets(input: {
 export function resolveDismissTargets(input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
-  readonly all: boolean;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
+  readonly request: DismissRequest;
 }): Effect.Effect<DismissTargets, CliError> {
-  return Effect.gen(function* () {
-    if (input.all) {
-      if (input.variableId !== null) {
-        return yield* Effect.fail(
-          cliError("--all cannot be combined with a variableId (use one or the other)"),
-        );
-      }
-      return yield* resolveAllTargets({
-        client: input.client,
-        projectId: input.projectId,
-        environmentId: input.environmentId,
-      });
-    }
-    if (input.environmentId === null || input.variableId === null) {
-      return yield* Effect.fail(
-        cliError(
-          "Specify what to dismiss: maruhi rotation dismiss <variableId> --env <environmentId> (or --all for every flag)",
-        ),
-      );
-    }
-    return {
-      targets: [{ environmentId: input.environmentId, variableId: input.variableId }],
-    };
-  });
+  if (input.request.kind === "all") {
+    return resolveAllTargets({
+      client: input.client,
+      projectId: input.projectId,
+      environmentId: input.request.environmentId,
+    });
+  }
+  const { environmentId, variableId } = input.request;
+  return Effect.succeed({ targets: [{ environmentId, variableId }] });
 }
 
 /** `maruhi rotation dismiss`: 取り下げの実行(admin — サーバー側で権限検査)。 */

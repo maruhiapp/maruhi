@@ -1038,6 +1038,14 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
     expect(await runCli(["--help", "--version"], both.env.layer)).toBe(0);
     expect(both.env.logs).toEqual([]);
     expect(both.env.errors.join("\n")).toContain("maruhi");
+
+    // ビルトインは最優先で短絡する(上流仕様)= 同じ argv の書き方の誤りは
+    // 報告されない。値を書き込む経路には到達しないため受容し、挙動として固定
+    // する(ADR-0016 追記 7)
+    const swallowed = await startEnv();
+    expect(await runCli(["--version", "--bogus"], swallowed.env.layer)).toBe(0);
+    expect(swallowed.env.logs.join("\n")).toMatch(/^\d+\.\d+\.\d+/);
+    expect(swallowed.server.requests).toHaveLength(0);
   });
 
   it("エントリコマンドの二重名(`maruhi maruhi`)をコマンドとして勧めない", async () => {
@@ -1214,6 +1222,27 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     const explicit = await startEnv();
     expect(await runCli(["rotation", "dismiss", "--all=false"], explicit.env.layer)).toBe(1);
     expect(explicit.env.errors.join("\n")).not.toContain("Unknown flag");
+  });
+
+  it("rotation dismiss の対象の欠落・--all との矛盾は通信より前に落ちる", async () => {
+    // 前段の同期より後ろに置くと、案内が接続エラーに隠れる(このハーネスの
+    // サーバーは 404 しか返さない)うえ往復が無駄になる
+    const missing = await startEnv();
+    expect(await runCli(["rotation", "dismiss"], missing.env.layer)).toBe(1);
+    expect(missing.env.errors.join("\n")).toContain("Specify what to dismiss");
+    expect(missing.server.requests).toHaveLength(0);
+
+    const contradictory = await startEnv();
+    expect(
+      await runCli(
+        ["rotation", "dismiss", "--all", "va1234567890123456789012", "--env", "prod"],
+        contradictory.env.layer,
+      ),
+    ).toBe(1);
+    expect(contradictory.env.errors.join("\n")).toContain(
+      "--all cannot be combined with a variableId",
+    );
+    expect(contradictory.server.requests).toHaveLength(0);
   });
 
   it("rotation dismiss の対象の形式検査は通信より前に落ちる(値は出さない)", async () => {
