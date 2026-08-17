@@ -40,7 +40,9 @@ import {
   type CliSession,
   ensureNoStoredMasterKey,
   corruptKeyError,
+  cryptoBackendUsable,
   importMasterKeys,
+  unsupportedCryptoMessage,
   loadMasterKeys,
   type MasterKeys,
 } from "./session.ts";
@@ -214,14 +216,10 @@ export function recoverMasterKeyOp(input: {
     // エントリは存在しない — 無い物を指した診断になってしまう。
     // 未知スイート等は原因も出口も違うので、この 1 種類だけを写す
     const validated = yield* importMasterKeys(record).pipe(
-      Effect.mapError((error) =>
-        error === corruptKeyError
-          ? cliError(brokenRecoveryBlobMessage)
-          : // 未知スイート = より新しい maruhi が別デバイスで登録したブロブ。
-            // 破損ではないので「壊れています」とは言わず、出口(更新する / 鍵の
-            // 残るデバイスで再登録する)を示す。ここを写さないと案内の無い
-            // 行き止まりになる(キーチェーン側は既に写している)
-            cliError(foreignRecoveryBlobMessage(record.suite)),
+      Effect.catch((error) =>
+        Effect.flatMap(blobFailureMessage(error, record.suite), (message) =>
+          Effect.fail(cliError(message)),
+        ),
       ),
     );
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
@@ -242,6 +240,24 @@ const reRegisterAction =
  * (付けると、使えるコードを捨てさせる)。
  */
 const reRegisterGuidance = `このコードでは復元できません。${reRegisterAction}`;
+
+/**
+ * ブロブから鍵を読み込めないときの文言。
+ *
+ * キーチェーン側({@link importFailureMessage})と同じ三分岐:
+ * - 未知スイート: より新しい maruhi が別デバイスで登録した。更新すれば同じ
+ *   コードで復元できるので「このコードでは復元できません」とは言わない
+ * - 環境が非対応: ブロブもコードも無事。**捨てさせない**
+ * - それ以外: 本当に壊れている(再登録が要る)
+ */
+function blobFailureMessage(error: CliError, suite: string): Effect.Effect<string> {
+  if (error !== corruptKeyError) {
+    return Effect.succeed(foreignRecoveryBlobMessage(suite));
+  }
+  return Effect.map(cryptoBackendUsable(), (usable) =>
+    usable ? brokenRecoveryBlobMessage : unsupportedCryptoMessage,
+  );
+}
 
 /** ブロブは解釈できたが鍵素材が読み込めないときの文言。 */
 const brokenRecoveryBlobMessage =

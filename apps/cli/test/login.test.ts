@@ -445,6 +445,7 @@ describe("maruhi logout", () => {
     for (const [token, origin, expected] of [
       ["<redacted:maruhi-token>", "https://x.example", "伏字"],
       ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN が未設定"],
+      ["maruhi_pat_env", "not-a-url", "URL として解釈できない"],
     ] as const) {
       const maruhi = await start([
         onRequest("POST", "/auth/token/revoke", () => ({ status: 204 })),

@@ -22,7 +22,7 @@ import {
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
 import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
-import { resolveServerOrigin } from "../src/session.ts";
+import { cryptoBackendUsable, resolveServerOrigin } from "../src/session.ts";
 import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
@@ -574,6 +574,15 @@ describe("normalizeStdinValue", () => {
     expect(decode(normalizeStdinValue(new TextEncoder().encode("v\r\n")))).toBe("v");
     expect(decode(normalizeStdinValue(new TextEncoder().encode("v\n\n")))).toBe("v\n");
     expect(decode(normalizeStdinValue(new TextEncoder().encode("v")))).toBe("v");
+  });
+});
+
+describe("cryptoBackendUsable", () => {
+  it("動く環境では true(破損の診断を環境のせいにしない)", async () => {
+    // この判定は「鍵が読めない」原因が鍵か環境かを分ける。動く環境で false を
+    // 返すと、本当に壊れたレコードの診断まで「環境が非対応です・消さないで
+    // ください」に化け、唯一の復旧手順(手で消す)へ辿り着けなくなる
+    expect(await Effect.runPromise(cryptoBackendUsable())).toBe(true);
   });
 });
 

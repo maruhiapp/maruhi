@@ -199,6 +199,8 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
       return "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きそのトークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)";
     case "placeholder":
       return `注意: ${redactedPlaceholderEnvTokenMessage}(このままでは次のコマンドが失敗します)`;
+    case "originInvalid":
+      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN を URL として解釈できないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、`https://` で始まる origin を設定してください)";
     case "originMissing":
       return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN が未設定のため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN に対象サーバーの origin を設定してください)";
     case "originMismatch":

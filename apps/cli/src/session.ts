@@ -10,6 +10,8 @@ import {
   computeUserKeyFingerprint,
   decodeHex,
   encodeHex,
+  generateEncryptionKeyPair,
+  generateSigningKeyPair,
   importEncryptionKeyPair,
   importSigningKeyPair,
   SUITE_ID,
@@ -199,6 +201,7 @@ export type EnvTokenStatus =
   | "active"
   | "placeholder"
   | "originMissing"
+  | "originInvalid"
   | "originMismatch";
 
 export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, never, CliIo> {
@@ -216,10 +219,15 @@ export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, ne
     if (declared === undefined || declared.length === 0) {
       return "originMissing";
     }
+    // 形が不正(URL として解釈できない・http: が loopback でない)と、
+    // 形は正しいが別 origin を指しているのは別の直し方になる。sessionFromEnvToken
+    // も別の文言で失敗するので、ここで一緒くたにすると案内が食い違う
     const expected = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
       fix: "MARUHI_TOKEN_ORIGIN 環境変数",
     }).pipe(Effect.catch(() => Effect.succeed(null)));
-    // 不正な形(正規化できない)も「合っていない」側: 直し先は同じ環境変数
+    if (expected === null) {
+      return "originInvalid";
+    }
     return expected === origin ? "active" : "originMismatch";
   });
 }
@@ -272,6 +280,47 @@ export function resolveSession(
 }
 
 /**
+ * 「レコードが壊れている」と言い切る前の環境確認。
+ *
+ * {@link importMasterKeys} の失敗は**鍵素材が壊れている場合と、この環境の
+ * WebCrypto が必要なアルゴリズム(Ed25519 / HPKE)を持たない場合の両方**で
+ * 起きる(crypto 側は例外を一様に失敗へ畳む)。区別せず「消してください」と
+ * 案内すると、無事な鍵を消させて復号可能性を永久に失わせる。
+ *
+ * そこで**同じ操作を新しい鍵で試す**: 生成すらできないなら原因は鍵ではなく環境。
+ * 判定は失敗経路でだけ走るので、通常の実行に費用はかからない。
+ */
+export function cryptoBackendUsable(): Effect.Effect<boolean> {
+  return Effect.tryPromise({
+    try: async () => {
+      await generateEncryptionKeyPair();
+      await generateSigningKeyPair();
+      return true;
+    },
+    catch: () => null,
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+}
+
+/** 環境側が原因のときの文言(**消させない**のが要点)。 */
+export const unsupportedCryptoMessage =
+  "この環境の WebCrypto が master 鍵に必要なアルゴリズム(Ed25519 / HPKE)に対応していないため、鍵を読み込めません。保存されている鍵は壊れていない可能性が高いので、消さないでください。対応する環境(新しい Bun / OS)で再実行してください" as const;
+
+/** インポート失敗の文言。原因(鍵素材・別形式・環境)ごとに出口が違う。 */
+function importFailureMessage(input: {
+  readonly error: CliError;
+  readonly suite: string;
+  readonly entryName: string;
+}): Effect.Effect<string> {
+  if (input.error !== corruptKeyError) {
+    // 未知スイート等: 破損ではないので削除を勧めない
+    return Effect.succeed(foreignMasterKeyMessage(input.suite, input.entryName));
+  }
+  return Effect.map(cryptoBackendUsable(), (usable) =>
+    usable ? corruptMasterKeyMessage(input.entryName) : unsupportedCryptoMessage,
+  );
+}
+
+/**
  * 既存レコードに対する拒否文言の選択。
  *
  * 「既に存在します」と言ってよいのは**実際に使える鍵があるとき**だけ。形だけ
@@ -294,15 +343,8 @@ function refusalFor(
   return importMasterKeys(record).pipe(
     // インポートできた = 本当に使える鍵。ここだけが本来の上書き拒否
     Effect.as(refusal),
-    Effect.catch((error) =>
-      Effect.succeed(
-        error === corruptKeyError
-          ? corruptMasterKeyMessage(entryName)
-          : // 未知スイート等、読めない理由が破損と言い切れないものは
-            // 削除を勧めない(将来版が書いた鍵を消させない)
-            foreignMasterKeyMessage(record.suite, entryName),
-      ),
-    ),
+    // 読めない理由(破損 / 別形式 / 環境)で出口が違う — importFailureMessage に任せる
+    Effect.catch((error) => importFailureMessage({ error, suite: record.suite, entryName })),
   );
 }
 
@@ -371,11 +413,9 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     // importMasterKeys 自身は保存前の自己検証にも使われる — そちらは残存
     // エントリが無く削除の案内が的外れになるため、写像はここで行う
     return yield* importMasterKeys(record).pipe(
-      Effect.mapError((error) =>
-        cliError(
-          error === corruptKeyError
-            ? corruptMasterKeyMessage(entryName)
-            : foreignMasterKeyMessage(record.suite, entryName),
+      Effect.catch((error) =>
+        Effect.flatMap(importFailureMessage({ error, suite: record.suite, entryName }), (message) =>
+          Effect.fail(cliError(message)),
         ),
       ),
     );
