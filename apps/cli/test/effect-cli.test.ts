@@ -928,6 +928,59 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
   });
 });
 
+describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②)", () => {
+  it("不明な操作は取りうる操作の一覧を出し、ログインやサーバー接続より前に落ちる", async () => {
+    // セッション解決の後ろに置くと、`key bogus` が「ログインしていません」で
+    // 落ちて打ち間違いが伝わらない(しかも exit 1)。effect ではサブコマンド
+    // 解決がハンドラより前 = 構造的にセッションへ到達しない
+    const key = await makeTestEnv();
+    expect(await runCli(["key", "bogus"], key.layer)).toBe(2);
+    expect(key.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: generate | show | recover | recovery)",
+    );
+    expect(key.errors.join("\n")).not.toContain("ログインしていません");
+
+    const project = await makeTestEnv();
+    expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
+    expect(project.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: init | verify)",
+    );
+  });
+
+  it("操作名は打たれた語を返さない(制御文字も値も端末へ流さない)", async () => {
+    // 行を消して偽の成功行を書くような ANSI 列を含む語。文面は取りうる操作の
+    // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
+    const evil = "[2K\rmaruhi: OK";
+    for (const command of ["key", "project"]) {
+      const { env } = await startEnv();
+      expect(await runCli([command, evil], env.layer), command).toBe(2);
+      const output = [...env.logs, ...env.errors].join("\n");
+      expect(output, command).toContain("Unknown subcommand");
+      expect(output, command).not.toContain("");
+      expect(output, command).not.toContain("\r");
+    }
+  });
+
+  it("葉は位置引数を取らない(`key generate extra` は余分な引数として落ちる)", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["key", "generate", "extra"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unexpected extra arguments (1;");
+    expect(errors).toContain("maruhi key generate takes no positional arguments");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("bare `maruhi key` / `maruhi project` は usage エラー(2)", async () => {
+    for (const command of ["key", "project"]) {
+      const { env, server } = await startEnv();
+      expect(await runCli([command], env.layer), command).toBe(2);
+      expect(env.logs, command).toEqual([]);
+      expect(env.errors.join("\n"), command).toContain(`maruhi ${command}`);
+      expect(server.requests, command).toHaveLength(0);
+    }
+  });
+});
+
 describe("push の移行(ADR-0016 第 3 段階 ①)", () => {
   it("余分な引数は中身を出さず、値の渡し方(stdin)を必ず添える", async () => {
     // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した

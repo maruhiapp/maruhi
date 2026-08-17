@@ -37,7 +37,7 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
     return matched === undefined
       ? {
           kind: "rejected",
-          message: `org が見つかりません: ${flag}(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
+          message: `Org not found: ${flag} (your orgs: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
         }
       : { kind: "ok", org: matched };
   }
@@ -48,7 +48,7 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
     return {
       kind: "rejected",
       message:
-        "所属する org がありません(サインアップ時にパーソナル org が自動作成されるはずです。サーバー側の状態を確認してください)",
+        "You do not belong to any org (a personal org should have been auto-created at sign-up — check the server-side state)",
     };
   }
   if (orgs.length === 1) {
@@ -57,7 +57,7 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
   }
   return {
     kind: "rejected",
-    message: `複数の org に所属しています。--org <slug> で指定してください(所属 org: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
+    message: `You belong to multiple orgs. Specify one with --org <slug> (your orgs: ${orgs.map((o) => displayText(o.slug)).join(", ")})`,
   };
 }
 
@@ -95,15 +95,15 @@ export function projectInitOp(input: {
     const signed = yield* Effect.tryPromise({
       try: () =>
         signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
-      catch: () => cliError("genesis エントリの署名に失敗しました"),
+      catch: () => cliError("Failed to sign the genesis entry"),
     });
     if (!signed.ok) {
-      return yield* Effect.fail(cliError("genesis エントリの署名に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to sign the genesis entry"));
     }
     // クライアント側で予見したプロジェクト ID(genesis ハッシュ — §6.4)
     const expectedProjectId = yield* Effect.tryPromise({
       try: () => computeChainEntryHash(signed.value),
-      catch: () => cliError("genesis ハッシュの計算に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to compute the genesis hash (crypto error)"),
     });
 
     const head = yield* input.client.membership
@@ -114,13 +114,13 @@ export function projectInitOp(input: {
     if (head.projectId !== expectedProjectId || head.headHashHex !== expectedProjectId) {
       return yield* Effect.fail(
         cliError(
-          "サーバーが返したプロジェクト ID が genesis ハッシュと一致しません(サーバー応答の不整合)",
+          "The project ID returned by the server does not match the genesis hash (inconsistent server response)",
         ),
       );
     }
 
-    yield* io.log(`プロジェクトを作成しました: ${head.projectId}`);
-    yield* io.log(`既定にするには: maruhi config set defaultProject ${head.projectId}`);
+    yield* io.log(`Created project ${head.projectId}`);
+    yield* io.log(`To make it the default: maruhi config set defaultProject ${head.projectId}`);
     return { projectId: head.projectId };
   });
 }

@@ -59,12 +59,15 @@ import { maruhiTeardown } from "./cli-teardown.ts";
 import { asConfigKey, CONFIG_KEYS, type ConfigKey, ConfigStore } from "./config.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
 import {
+  checkInviteAnchor,
   commitVerifiedHead,
+  loadCheckedFloor,
   openEnvironment,
   openMetadataEnvironmentPair,
   openMetadataProject,
   openProject,
   openSession,
+  resolveProjectId,
 } from "./context.ts";
 import { countNoun, displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
@@ -86,7 +89,7 @@ import {
   inviteRevokeOp,
 } from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
-import { keyGenerateOp } from "./keygen.ts";
+import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
 import {
   MEMBER_REMOVED_ROTATION_REASON,
@@ -97,15 +100,20 @@ import {
   ROLE_DEMOTED_ROTATION_REASON,
 } from "./member.ts";
 import { PinStore } from "./pins.ts";
+import { projectInitOp } from "./project-init.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
+import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
+import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
 import { reportRotationFlagCount } from "./rotation.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
+import { loadMasterKeys } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
+import { syncProject } from "./sync.ts";
 import { CLI_VERSION } from "./version.ts";
 
 /** `--` を書き忘れた実行に添える案内(実行対象の渡し方は 1 つだけ)。 */
@@ -192,6 +200,11 @@ const projectFlags = () => ({
   project: singleValued("project", "Project ID (defaults to config defaultProject)"),
 });
 
+/** セッション水準のコマンドが取る共通フラグ(project も env も取らない)。 */
+const serverOnlyFlags = () => ({
+  server: singleValued("server", "Server URL (defaults to config server)"),
+});
+
 const pullConfig = {
   ...commonFlags(),
   show: singleFlag(
@@ -254,6 +267,24 @@ const configSetConfig = {
     Argument.withDescription("Value to set"),
     Argument.withSchema(NonBlank),
   ),
+};
+
+const keyGenerateConfig = serverOnlyFlags();
+const keyShowConfig = serverOnlyFlags();
+const keyRecoverConfig = serverOnlyFlags();
+const keyRecoveryConfig = serverOnlyFlags();
+
+const projectInitConfig = {
+  ...serverOnlyFlags(),
+  org: singleValued(
+    "org",
+    "Org to create the project in (needed only when you belong to multiple orgs)",
+  ),
+};
+
+const projectVerifyConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued("project", "Project ID to verify (defaults to config defaultProject)"),
 };
 
 /** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
@@ -421,6 +452,13 @@ const GROUP_CONFIGS: Readonly<
     remove: memberRemoveConfig,
     "change-role": memberChangeRoleConfig,
   },
+  key: {
+    generate: keyGenerateConfig,
+    show: keyShowConfig,
+    recover: keyRecoverConfig,
+    recovery: keyRecoveryConfig,
+  },
+  project: { init: projectInitConfig, verify: projectVerifyConfig },
   config: { get: configGetConfig, set: configSetConfig },
 };
 
@@ -524,6 +562,59 @@ function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
   return key === null
     ? Effect.fail(usageError(`Unknown config key (${CONFIG_KEYS.join(" | ")})`))
     : Effect.succeed(key);
+}
+
+/** `maruhi project verify`: チェーン検証 + 床・アンカー検査 + 状態表示。 */
+function projectVerify(
+  serverFlag: string | undefined,
+  projectFlag: string | undefined,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openSession(serverFlag);
+    const projectId = yield* resolveProjectId(projectFlag, context.config);
+    const synced = yield* syncProject(context.client, projectId);
+    // チェーン床の検査(§6.3 規則 (a))も verify の一部
+    const verified = (yield* loadCheckedFloor(
+      projectId,
+      synced,
+      syncProject(context.client, projectId),
+    )).verified;
+    // 招待リンクアンカーの機械照合(§6.3 (a) / §6.5)も verify の一部
+    yield* checkInviteAnchor(projectId, verified);
+    yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
+    yield* io.log(`head: ${verified.state.headHashHex}`);
+    yield* io.log(`Members (${verified.state.members.size}):`);
+    for (const member of verified.state.members.values()) {
+      yield* io.log(
+        `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
+      );
+    }
+    for (const [environmentId, environment] of verified.state.environments) {
+      yield* io.log(
+        `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq})`,
+      );
+    }
+    // 未収束のローテーション義務(§7 — チェーン導出 + 検証済み削除の除外)も
+    // verify の一部(常時警告 — rotation-sweep.ts — の詳細表示。候補ゼロなら
+    // 通信なしで確定する)。削除済み環境の検証失敗は「確定できません」の注意
+    // だけで verify 自体は成功扱い(チェーン検証は済んでいる — Cursor bot 指摘)
+    const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
+    if (pending === null) {
+      return;
+    }
+    if (pending.length === 0) {
+      yield* io.log("Rotation mandates: none unconverged (CRYPTO_SPEC §7)");
+      return;
+    }
+    for (const mandate of pending) {
+      // describeUnconvergedMandate の本文は共有モジュール(rotation-sweep.ts)の
+      // 文言 — 英語化は共有モジュールの一括英語化(最終コミット)で行う
+      yield* io.logError(
+        `Unconverged rotation mandate: ${describeUnconvergedMandate(verified, mandate)} (holders of the old DEK may still be able to read current values)`,
+      );
+    }
+  });
 }
 
 /** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
@@ -1142,15 +1233,85 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const keyGenerate = Command.make("generate", keyGenerateConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* keyGenerateOp({ session: context.session, client: context.client });
+    }),
+  ).pipe(Command.withDescription("Generate the master keypair and store it in the OS keychain"));
+
+  const keyShow = Command.make("show", keyShowConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* keyShowOp({ session: context.session, client: context.client });
+    }),
+  ).pipe(Command.withDescription("Print the public keys and fingerprint (never the private keys)"));
+
+  const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* recoverMasterKeyOp({ session: context.session, client: context.client });
+    }),
+  ).pipe(Command.withDescription("Restore the master key from a recovery code (CRYPTO_SPEC §8)"));
+
+  const keyRecovery = Command.make("recovery", keyRecoveryConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      const masterKeys = yield* loadMasterKeys(context.session);
+      yield* issueRecoveryCodeOp({
+        session: context.session,
+        client: context.client,
+        masterKeys,
+      });
+    }),
+  ).pipe(Command.withDescription("Issue (or reissue) the recovery code (CRYPTO_SPEC §8)"));
+
+  const key = Command.make("key").pipe(
+    Command.withDescription(
+      "Manage the master keypair (generate / show / recover / recovery — CRYPTO_SPEC §3 / §8)",
+    ),
+    Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery]),
+  );
+
+  const projectInit = Command.make("init", projectInitConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      const masterKeys = yield* loadMasterKeys(context.session);
+      yield* projectInitOp({
+        client: context.client,
+        session: context.session,
+        masterKeys,
+        ...(values.org === undefined ? {} : { orgFlag: values.org }),
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Create a project (sign and submit the genesis entry — AUTH_SPEC §11-3)",
+    ),
+  );
+
+  const projectVerifyCommand = Command.make("verify", projectVerifyConfig, (values) =>
+    projectVerify(values.server, values.project),
+  ).pipe(
+    Command.withDescription(
+      "Verify the chain, local floor, and invite anchor, then print the project state",
+    ),
+  );
+
+  const project = Command.make("project").pipe(
+    Command.withDescription("Manage projects (init / verify)"),
+    Command.withSubcommands([projectInit, projectVerifyCommand]),
+  );
+
   const configGet = Command.make("get", configGetConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
       const store = yield* ConfigStore;
-      const key = yield* requireConfigKey(values.key);
+      const configKey = yield* requireConfigKey(values.key);
       const config = yield* store.load;
       // stdout はコマンドの出力(値)だけ: `V=$(maruhi config get server)` が
       // 値以外を捕まえない(決定 9)
-      yield* io.log(config[key] ?? "");
+      yield* io.log(config[configKey] ?? "");
     }),
   ).pipe(Command.withDescription("Print one non-secret config value"));
 
@@ -1158,7 +1319,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Effect.gen(function* () {
       const io = yield* CliIo;
       const store = yield* ConfigStore;
-      const key = yield* requireConfigKey(values.key);
+      const configKey = yield* requireConfigKey(values.key);
       // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
       // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
       // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す
@@ -1172,7 +1333,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           }),
         ),
       );
-      yield* store.save({ ...config, [key]: values.value });
+      yield* store.save({ ...config, [configKey]: values.value });
       yield* io.log(`Set ${key}`);
     }),
   ).pipe(Command.withDescription("Set one non-secret config value"));
@@ -1377,7 +1538,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   return Command.make("maruhi").pipe(
-    Command.withSubcommands([pull, run, push, env, server, invite, member, config]),
+    Command.withSubcommands([pull, run, push, env, server, invite, member, key, project, config]),
   );
 }
 

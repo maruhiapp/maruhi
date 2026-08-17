@@ -99,7 +99,7 @@ describe("maruhi key", () => {
     queueSaveConfirmation(env);
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
     expect(await runCli(["key", "generate"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("既に存在します");
+    expect(env.errors.join("\n")).toContain("already exists");
   });
 
   it("未知スイートの master 鍵レコードを拒否する", async () => {
@@ -136,7 +136,7 @@ describe("maruhi key", () => {
     const output = env.logs.join("\n");
     expect(output).toContain(user.encPubHex);
     expect(output).toContain(user.fingerprintHex);
-    expect(output).toContain("recovery:        登録済み");
+    expect(output).toContain("recovery:        registered");
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(user.sigSkSeedHex);
   });
@@ -149,8 +149,8 @@ describe("maruhi key", () => {
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["key", "show"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain(user.fingerprintHex);
-    expect(env.logs.join("\n")).toContain("recovery:        確認できませんでした");
-    expect(env.errors.join("\n")).toContain("リカバリー登録状態を確認できません");
+    expect(env.logs.join("\n")).toContain("recovery:        could not be checked");
+    expect(env.errors.join("\n")).toContain("recovery registration status could not be checked");
   });
 
   it("show はリカバリー未登録なら発行を促す(保管リマインダ)", async () => {
@@ -159,8 +159,8 @@ describe("maruhi key", () => {
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["key", "show"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("recovery:        未登録");
-    expect(env.errors.join("\n")).toContain("`maruhi key recovery` で発行してください");
+    expect(env.logs.join("\n")).toContain("recovery:        not registered");
+    expect(env.errors.join("\n")).toContain("issue one with `maruhi key recovery`");
   });
 
   it("show は制御文字を含む userId をサニタイズする", async () => {
@@ -220,7 +220,7 @@ describe("maruhi project init", () => {
     const verified = await verifyChain([body?.entry as ChainEntry]);
     expect(verified.ok).toBe(true);
     const hash = await computeChainEntryHash(body?.entry as ChainEntry);
-    expect(env.logs.join("\n")).toContain(`プロジェクトを作成しました: ${hash}`);
+    expect(env.logs.join("\n")).toContain(`Created project ${hash}`);
   });
 
   it("サーバーが genesis ハッシュと異なる ID を返したら失敗する", async () => {
@@ -237,7 +237,7 @@ describe("maruhi project init", () => {
     await seedConfig(env, { server: maruhi.origin });
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["project", "init"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("genesis ハッシュと一致しません");
+    expect(env.errors.join("\n")).toContain("does not match the genesis hash");
   });
 
   it("org が空の場合は状態異常として正確に報告する(「複数所属」と言わない)", async () => {
@@ -248,8 +248,8 @@ describe("maruhi project init", () => {
     seedSession(env, maruhi.origin, user);
     expect(await runCli(["project", "init"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("所属する org がありません");
-    expect(errors).not.toContain("複数の org");
+    expect(errors).toContain("do not belong to any org");
+    expect(errors).not.toContain("multiple orgs");
   });
 
   it("複数 org は --org 必須。slug 指定で作成できる", async () => {
@@ -300,7 +300,7 @@ describe("maruhi project verify", () => {
     seedSession(env, maruhi.origin, owner);
     expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    expect(output).toContain("チェーン検証 OK");
+    expect(output).toContain("Chain verification OK");
     expect(output).toContain(owner.userId);
     expect(output).toContain(member.userId);
     expect(output).toContain(`fp=${member.fingerprintHex}`);

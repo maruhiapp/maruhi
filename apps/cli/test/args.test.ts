@@ -223,18 +223,6 @@ describe("空の値", () => {
     );
     expect(rejection).toContain("オプション --env の値が空です");
   });
-
-  it("先頭の空引数は、書いていない位置引数のせいにせず空として指摘する", async () => {
-    const { env } = await startEnv();
-
-    // gunshi はコマンド解決で falsy な位置引数を読み飛ばす。そのまま数えると
-    // 全体が 1 つずれて「key は位置引数を取りません」と無関係な指摘になる
-    expect(await runCli(["", "key", "show"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("空の引数があります");
-    expect(errors).not.toContain("位置引数を取りません");
-  });
-
   it("構造的な誤りは、その操作で使えるかより先に言う", async () => {
     const { env } = await startEnv();
 
@@ -255,49 +243,6 @@ describe("空の値", () => {
     expect(env.errors.join("\n")).toContain("コマンド名は `--` より前に書いてください");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
-  });
-});
-
-describe("終了コードの一貫性", () => {
-  it("操作の綴り間違いは、ログインやサーバー接続より前に落とす", async () => {
-    // セッション解決の後ろに置くと、`key bogus` が「ログインしていません」で
-    // 落ちて打ち間違いが伝わらない(しかも exit 1)
-    const env = await makeTestEnv();
-    expect(await runCli(["key", "bogus"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明な操作です(generate | show | recover | recovery)");
-    expect(env.errors.join("\n")).not.toContain("ログインしていません");
-  });
-});
-
-describe("端末出力の中和", () => {
-  it("設定キー・操作名は打たれた語を返さない(制御文字も値も端末へ流さない)", async () => {
-    const { env } = await startEnv();
-
-    // 行を消して偽の成功行を書くような ANSI 列を含む語。文面は取りうる値の
-    // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
-    const evil = "\u001b[2K\rmaruhi: OK";
-    // 打ち間違い(語が何も指していない)は usage エラー(2)
-    expect(await runCli(["key", evil], env.layer)).toBe(2);
-    expect(await runCli(["project", evil], env.layer)).toBe(2);
-    const output = [...env.logs, ...env.errors].join("\n");
-    expect(output).not.toContain("\u001b");
-    expect(output).not.toContain("\r");
-    expect(output).toContain("不明な操作です(generate | show | recover | recovery)");
-    expect(output).toContain("不明な操作です(init | verify)");
-  });
-});
-
-describe("余分な位置引数", () => {
-  it("位置引数を取るコマンド(`key generate extra`)は宣言名を示して落ちる", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["key", "generate", "extra"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).toContain("maruhi key が取る位置引数は action だけです");
-    // boolean を書いていない実行に boolean の助言は添えない(コマンドラインに
-    // 無いオプションを探させることになる)
-    expect(errors).not.toContain("boolean オプションに値は付けられません");
   });
 });
 

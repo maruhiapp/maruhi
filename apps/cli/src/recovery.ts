@@ -53,7 +53,7 @@ import {
 const PROMPT_ATTEMPTS = 3;
 
 const agentRefusalMessage =
-  "AI エージェント環境を検出したため、リカバリーコードの発行を拒否しました(コードは鍵素材であり、表示は人間の対話端末に限ります)";
+  "Refused to issue a recovery code because an AI agent environment was detected (the code is key material; it may only be shown on a human interactive terminal)";
 
 /**
  * Issues (or reissues) the recovery code: generate → wrap → register →
@@ -75,7 +75,7 @@ export function issueRecoveryCodeOp(input: {
     const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
     if (status.registered) {
       yield* io.logError(
-        "既存のリカバリー登録を置き換えます(これまでのリカバリーコードは無効になります)",
+        "Replacing the existing recovery registration (previous recovery codes become invalid)",
       );
     }
 
@@ -92,10 +92,10 @@ export function issueRecoveryCodeOp(input: {
           userId: input.session.userId,
           masterSecretBlob: blob,
         }),
-      catch: () => cliError("リカバリーブロブの暗号化に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to encrypt the recovery blob (crypto error)"),
     });
     if (!wrapped.ok) {
-      return yield* Effect.fail(cliError("リカバリーラップの作成に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to create the recovery wrap"));
     }
     yield* input.client.auth
       .recoveryPut({
@@ -113,7 +113,7 @@ export function issueRecoveryCodeOp(input: {
     // stderr なら確認プロンプトと同じ画面に出て、確認の儀式も成立する
     const code = formatRecoveryCode(secret);
     yield* io.logError("");
-    yield* io.logError("リカバリーコードを発行しました。今すぐ安全な場所に保管してください:");
+    yield* io.logError("Issued your recovery code. Store it somewhere safe now:");
     yield* io.logError("");
     // 剥がす理由: コードの表示が発行の機能そのもの(二度と表示されない)。
     // 表示可否はこの関数の冒頭のエージェントゲートで判定済みで、剥がすのは
@@ -121,13 +121,13 @@ export function issueRecoveryCodeOp(input: {
     yield* io.logError(`    ${Redacted.value(code)}`);
     yield* io.logError("");
     yield* io.logError(
-      "推奨: 印刷またはパスワードマネージャへの保存。このコードは二度と表示されません",
+      "Recommended: print it or save it in a password manager. This code will never be shown again",
     );
     yield* io.logError(
-      "このコードと GitHub 認証で、鍵を失ったデバイスから master 鍵を復元できます(`maruhi key recover`)",
+      "With this code plus GitHub authentication, you can restore the master key on a device that lost it (`maruhi key recover`)",
     );
     yield* confirmCodeSaved(code);
-    yield* io.logError("保存確認が完了しました");
+    yield* io.logError("Save confirmation complete");
   });
 }
 
@@ -141,16 +141,16 @@ function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, 
     const last = groups[groups.length - 1] ?? "";
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
       const answer = yield* io.promptLine({
-        prompt: `保存の確認のため、コードの最後のグループ(${groups.length} 番目の 4 文字)を入力してください: `,
+        prompt: `To confirm you saved the code, enter its last group (group ${groups.length}, 4 characters): `,
       });
       if (answer.trim().toUpperCase() === last) {
         return;
       }
-      yield* io.logError("一致しません。表示されたコードを確認してください");
+      yield* io.logError("It does not match. Check the code shown above");
     }
     return yield* Effect.fail(
       cliError(
-        "保存確認に失敗しました。リカバリー登録自体は完了しています — 上に表示されたコードを保管し直すか、`maruhi key recovery` で再発行してください",
+        "Save confirmation failed. The recovery registration itself is complete — store the code shown above, or reissue it with `maruhi key recovery`",
       ),
     );
   });
@@ -174,27 +174,27 @@ export function recoverMasterKeyOp(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "AI エージェント環境を検出したため、リカバリーコードの入力を拒否しました(コードは鍵素材です。復元は人間の対話端末で実行してください)",
+          "Refused to read a recovery code because an AI agent environment was detected (the code is key material; run the recovery on a human interactive terminal)",
         ),
       );
     }
     const entryName = yield* ensureNoStoredMasterKey(
       input.session,
-      "master 鍵は既にこのデバイスにあります。上書きすると既存の鍵を失うため拒否します(`maruhi key show` で確認できます)",
+      "A master key already exists on this device. Overwriting it would lose the existing key, so this is refused (check it with `maruhi key show`)",
     );
 
     const wrap = yield* input.client.auth.recoveryGet({}).pipe(
       Effect.catchTag("RecoveryWrapNotFound", () =>
         Effect.fail(
           cliError(
-            "リカバリーが未登録です。鍵が残っているデバイスで `maruhi key recovery` を実行して登録してください",
+            "No recovery is registered. Run `maruhi key recovery` on a device that still has the key to register one",
           ),
         ),
       ),
       Effect.catchTag("RecoveryRateLimited", (error) =>
         Effect.fail(
           cliError(
-            `リカバリーブロブの取得回数が上限に達しました。${error.retryAfterSeconds} 秒後に再試行してください`,
+            `The recovery-blob fetch limit was reached. Retry after ${error.retryAfterSeconds} seconds`,
           ),
         ),
       ),
@@ -203,7 +203,7 @@ export function recoverMasterKeyOp(input: {
     const nonce = decodeHex(wrap.nonceHex);
     const ciphertext = decodeHex(wrap.ciphertextHex);
     if (nonce === null || ciphertext === null) {
-      return yield* Effect.fail(cliError("サーバーの応答が不正です(hex を解釈できません)"));
+      return yield* Effect.fail(cliError("The server response is malformed (cannot decode hex)"));
     }
 
     // コード入力 → 復号はローカル再試行(取得レート制限の窓を消費しない)
@@ -226,14 +226,14 @@ export function recoverMasterKeyOp(input: {
       ),
     );
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
-    yield* io.log("master 鍵を復元し、OS キーチェーンに保存しました");
+    yield* io.log("Restored the master key and stored it in the OS keychain");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
   });
 }
 
 /** 再登録の手順そのもの(どの原因でも同じ)。 */
 const reRegisterAction =
-  "master 鍵が残っている別のデバイスで `maruhi key recovery` を実行して再登録してください。";
+  "re-register by running `maruhi key recovery` on another device that still has the master key.";
 
 /**
  * ブロブが使えないときの共通の出口(このデバイスでは直せない)。
@@ -242,7 +242,7 @@ const reRegisterAction =
  * ブロブは更新すれば同じコードで復元できるので、この文言を付けてはいけない
  * (付けると、使えるコードを捨てさせる)。
  */
-const reRegisterGuidance = `このコードでは復元できません。${reRegisterAction}`;
+const reRegisterGuidance = `This code cannot restore the key — ${reRegisterAction}`;
 
 /**
  * ブロブが破損しているときの文言。
@@ -267,7 +267,7 @@ function corruptBlobMessage(): Effect.Effect<string> {
  * 唯一の復元手段を捨てられる。
  */
 const unsupportedCryptoOnRecover =
-  `${unsupportedCryptoCause}。入力したリカバリーコードと登録済みのブロブは無事です — 捨てないでください。${retryOnSupportedRuntime}` as const;
+  `${unsupportedCryptoCause}。The recovery code you entered and the registered blob are intact — do not discard them. ${retryOnSupportedRuntime}` as const;
 
 /**
  * ブロブは解釈できたが鍵素材が読み込めないときの文言。
@@ -281,7 +281,7 @@ const unsupportedCryptoOnRecover =
  * 先に更新を促し、再登録はその後の手段として置く。
  */
 const brokenRecoveryBlobMessage =
-  `登録済みのリカバリーブロブの鍵素材を読み込めません(記録が壊れているか、このバージョンが知らない形式です)。まず maruhi を最新版へ更新して再実行してください(いま入力したリカバリーコードはそのまま使える可能性があります — 捨てないでください)。更新しても直らない場合は、${reRegisterAction}` as const;
+  `Cannot load the key material in the registered recovery blob (the record is corrupt, or in a format this version does not know). First update maruhi to the latest version and re-run (the recovery code you just entered may still work — do not discard it). If updating does not fix it, ${reRegisterAction}` as const;
 
 /**
  * ブロブが現行版の知らないスイートで書かれていたときの文言。
@@ -292,7 +292,7 @@ const brokenRecoveryBlobMessage =
  */
 function foreignRecoveryBlobMessage(suite: string | null): string {
   const named = suite === null ? "" : `(${escapeText(suite)})`;
-  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください(いま入力したリカバリーコードはそのまま使えます — 捨てないでください)。更新できない場合は、${reRegisterAction}`;
+  return `The registered recovery blob cannot be read by this version${named}. It may have been written by a newer maruhi — update maruhi to the latest version and re-run (the recovery code you just entered still works — do not discard it). If you cannot update, ${reRegisterAction}`;
 }
 
 /**
@@ -333,7 +333,7 @@ function unwrapWithPromptedCode(input: {
       // 剥がす箇所の棚卸しにも現れない)。剥がすのは解釈の直前だけ
       const answer = Redacted.make(
         yield* io.promptLine({
-          prompt: "リカバリーコードを入力してください: ",
+          prompt: "Enter your recovery code: ",
           secret: true,
         }),
         { label: "recovery-code" },
@@ -341,7 +341,7 @@ function unwrapWithPromptedCode(input: {
       const secret = parseRecoveryCode(Redacted.value(answer));
       if (secret === null) {
         yield* io.logError(
-          "コードの形式が不正です(4 文字 × 13 グループ。ハイフン・空白・大文字小文字は無視されます)",
+          "The code is malformed (13 groups of 4 characters; hyphens, spaces, and letter case are ignored)",
         );
         continue;
       }
@@ -353,10 +353,10 @@ function unwrapWithPromptedCode(input: {
             userId: input.userId,
             wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
           }),
-        catch: () => cliError("リカバリーブロブの復号に失敗しました(暗号処理エラー)"),
+        catch: () => cliError("Failed to decrypt the recovery blob (crypto error)"),
       });
       if (!unwrapped.ok) {
-        yield* io.logError("復号できません。コードが正しいか確認してください");
+        yield* io.logError("Cannot decrypt. Check that the code is correct");
         continue;
       }
       const parsed = readRecoveryBlob(unwrapped.value);
@@ -374,21 +374,21 @@ function unwrapWithPromptedCode(input: {
               ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
                 // レコードではない(この経路は ensureNoStoredMasterKey を通って
                 // いるので、キーチェーンに master 鍵は存在しない)
-                `${placeholderCause("登録済みのリカバリーブロブ")}。${reRegisterGuidance}併せて不具合として報告してください`
+                `${placeholderCause("登録済みのリカバリーブロブ")}。${reRegisterGuidance} Also report this as a maruhi bug`
               : // 形が違うだけかもしれない(将来版が書いたブロブ)。キーチェーン側と
                 // 同じ分類を使い、破損と言い切れないものには更新を先に案内する。
                 // 破損側でも再登録は**鍵が残っている別のデバイス**でしか実行
                 // できない(このデバイスには鍵が無い)ので、その断りを落とさない
                 parsed.classification === "foreign"
                 ? foreignRecoveryBlobMessage(parsed.declaredSuite)
-                : `復号したブロブを master 鍵レコードとして解釈できません。${reRegisterGuidance}`,
+                : `Cannot interpret the decrypted blob as a master-key record. ${reRegisterGuidance}`,
           ),
         );
       }
       return record;
     }
     return yield* Effect.fail(
-      cliError("リカバリーコードの入力に連続で失敗しました。コードを確認して再実行してください"),
+      cliError("Recovery-code entry failed repeatedly. Check the code and re-run"),
     );
   });
 }
@@ -405,7 +405,7 @@ export function issueRecoveryAfterKeygen(input: {
     const io = yield* CliIo;
     if (io.agentProfile().isAgent) {
       yield* io.log(
-        "AI エージェント環境のため、リカバリーコードの発行をスキップしました。人間の対話端末で `maruhi key recovery` を実行してください(発行するまで鍵の紛失に備えられません)",
+        "Skipped issuing a recovery code because this is an AI agent environment. Run `maruhi key recovery` on a human interactive terminal (until then you are not protected against key loss)",
       );
       return;
     }
@@ -413,7 +413,7 @@ export function issueRecoveryAfterKeygen(input: {
     yield* issueRecoveryCodeOp({ session: input.session, client: input.client, masterKeys }).pipe(
       Effect.mapError((error) =>
         cliError(
-          `${error.message}(master 鍵の生成は完了しています。リカバリーコードは \`maruhi key recovery\` で改めて発行できます)`,
+          `${error.message} (the master key generation itself is complete; you can issue a recovery code later with \`maruhi key recovery\`)`,
         ),
       ),
     );

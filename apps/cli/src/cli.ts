@@ -45,26 +45,15 @@ import {
 } from "./audit.ts";
 import { ConfigStore } from "./config.ts";
 import type { CliServices } from "./context.ts";
-import {
-  checkInviteAnchor,
-  loadCheckedFloor,
-  openMetadataProject,
-  openSession,
-  resolveProjectId,
-} from "./context.ts";
+import { openMetadataProject, openSession } from "./context.ts";
 import { displayText } from "./display.ts";
 import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
-import { projectInitOp } from "./project-init.ts";
-import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
-import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
 import { resolveDismissTargets, rotationDismissOp, rotationListOp } from "./rotation.ts";
-import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
-import { syncProject } from "./sync.ts";
+import { normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { CLI_VERSION } from "./version.ts";
 
 export type { CliServices } from "./context.ts";
@@ -178,143 +167,6 @@ function logoutCommand(execute: Execute) {
           const config = yield* store.load;
           const origin = yield* resolveServerOrigin(ctx.values.server, config);
           yield* logoutOp({ origin });
-        }),
-      ),
-  });
-}
-
-/** `maruhi key` が取る操作(綴りの検査はセッションより前に行う)。 */
-const KEY_ACTIONS = ["generate", "show", "recover", "recovery"] as const;
-/** 操作の一覧は上の表が唯一の出所(文面と検査で二重管理しない)。 */
-const KEY_ACTION_HELP = `不明な操作です(${KEY_ACTIONS.join(" | ")})`;
-
-function keyCommand(execute: Execute) {
-  return define({
-    name: "key",
-    description: "master keypair の管理(generate / show / recover / recovery)",
-    args: {
-      action: {
-        type: "positional",
-        description: "generate | show | recover(コードから復元)| recovery(コードの発行・再発行)",
-      },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          // 操作の綴りはセッション(キーチェーン / 通信)より前に検査する。
-          // 後ろに置くと `key bogus` が「ログインしていません」で落ちて、
-          // 打ち間違いが伝わらない
-          if (!KEY_ACTIONS.some((action) => action === ctx.values.action)) {
-            return yield* Effect.fail(usageError(KEY_ACTION_HELP));
-          }
-          const context = yield* openSession(ctx.values.server);
-          if (ctx.values.action === "generate") {
-            return yield* keyGenerateOp({ session: context.session, client: context.client });
-          }
-          if (ctx.values.action === "show") {
-            return yield* keyShowOp({ session: context.session, client: context.client });
-          }
-          if (ctx.values.action === "recover") {
-            return yield* recoverMasterKeyOp({ session: context.session, client: context.client });
-          }
-          if (ctx.values.action === "recovery") {
-            const masterKeys = yield* loadMasterKeys(context.session);
-            return yield* issueRecoveryCodeOp({
-              session: context.session,
-              client: context.client,
-              masterKeys,
-            });
-          }
-          // KEY_ACTIONS の全分岐を上で処理済み(到達しない)
-          return yield* Effect.fail(usageError(KEY_ACTION_HELP));
-        }),
-      ),
-  });
-}
-
-/** `maruhi project verify`: チェーン検証 + 床・アンカー検査 + 状態表示。 */
-function projectVerify(
-  serverFlag: string | undefined,
-  projectFlag: string | undefined,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openSession(serverFlag);
-    const projectId = yield* resolveProjectId(projectFlag, context.config);
-    const synced = yield* syncProject(context.client, projectId);
-    // チェーン床の検査(§6.3 規則 (a))も verify の一部
-    const verified = (yield* loadCheckedFloor(
-      projectId,
-      synced,
-      syncProject(context.client, projectId),
-    )).verified;
-    // 招待リンクアンカーの機械照合(§6.3 (a) / §6.5)も verify の一部
-    yield* checkInviteAnchor(projectId, verified);
-    yield* io.log(`チェーン検証 OK(head seq=${verified.state.headSeq})`);
-    yield* io.log(`head: ${verified.state.headHashHex}`);
-    yield* io.log(`メンバー(${verified.state.members.size}):`);
-    for (const member of verified.state.members.values()) {
-      yield* io.log(
-        `  ${displayText(member.userId)}\t${member.role}\tfp=${member.keyFingerprintHex}`,
-      );
-    }
-    for (const [environmentId, environment] of verified.state.environments) {
-      yield* io.log(
-        `環境 ${environmentId}: epoch=${environment.currentEpoch}(作成 seq=${environment.createdAtSeq})`,
-      );
-    }
-    // 未収束のローテーション義務(§7 — チェーン導出 + 検証済み削除の除外)も
-    // verify の一部(常時警告 — rotation-sweep.ts — の詳細表示。候補ゼロなら
-    // 通信なしで確定する)。削除済み環境の検証失敗は「確定できません」の注意
-    // だけで verify 自体は成功扱い(チェーン検証は済んでいる — Cursor bot 指摘)
-    const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
-    if (pending === null) {
-      return;
-    }
-    if (pending.length === 0) {
-      yield* io.log("ローテーション義務: 未収束なし(CRYPTO_SPEC §7)");
-      return;
-    }
-    for (const mandate of pending) {
-      yield* io.logError(
-        `未収束のローテーション義務: ${describeUnconvergedMandate(verified, mandate)}(旧 DEK 保持者が現在値を読める可能性)`,
-      );
-    }
-  });
-}
-
-function projectCommand(execute: Execute) {
-  return define({
-    name: "project",
-    description: "プロジェクトの管理(init / verify)",
-    args: {
-      action: { type: "positional", description: "init | verify" },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      org: { type: "string", description: "init 時の所属 org(複数所属時のみ必要)" },
-      project: { type: "string", description: "verify 対象のプロジェクト ID" },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          if (ctx.values.action === "init") {
-            const context = yield* openSession(ctx.values.server);
-            const masterKeys = yield* loadMasterKeys(context.session);
-            const org = ctx.values.org;
-            yield* projectInitOp({
-              client: context.client,
-              session: context.session,
-              masterKeys,
-              ...(org === undefined ? {} : { orgFlag: org }),
-            });
-            return;
-          }
-          if (ctx.values.action === "verify") {
-            return yield* projectVerify(ctx.values.server, ctx.values.project);
-          }
-          return yield* Effect.fail(usageError("不明な操作です(init | verify)"));
         }),
       ),
   });
@@ -823,8 +675,6 @@ export async function runCli(
   const subCommands = {
     login: loginCommand(execute),
     logout: logoutCommand(execute),
-    key: keyCommand(execute),
-    project: projectCommand(execute),
     rotation: rotationCommand(execute),
     audit: auditCommand(execute),
   };

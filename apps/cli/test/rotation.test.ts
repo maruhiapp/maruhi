@@ -410,7 +410,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     const env = await startEnv(state, built.projectId);
     // チェーン検証は成功しているので exit 0(Cursor bot 指摘 — 検証失敗は注意のみ)
     expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("チェーン検証 OK");
+    expect(env.logs.join("\n")).toContain("Chain verification OK");
     const errors = env.errors.join("\n");
     expect(errors).toContain("確定できません");
     expect(errors).not.toContain("未収束のローテーション義務:");
@@ -423,7 +423,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(await runCli(["project", "verify", "--project", unconverged.projectId], env.layer)).toBe(
       0,
     );
-    expect(env.errors.join("\n")).toContain("未収束のローテーション義務: member-removed");
+    expect(env.errors.join("\n")).toContain("Unconverged rotation mandate: member-removed");
 
     const converged = await convergedChain();
     const convergedState = await makeRotationServer({
@@ -435,6 +435,6 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(
       await runCli(["project", "verify", "--project", converged.projectId], convergedEnv.layer),
     ).toBe(0);
-    expect(convergedEnv.logs.join("\n")).toContain("ローテーション義務: 未収束なし");
+    expect(convergedEnv.logs.join("\n")).toContain("Rotation mandates: none unconverged");
   });
 });
