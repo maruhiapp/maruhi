@@ -447,7 +447,14 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(message).toContain("エスケープを戻したもの");
     // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
     expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
+    // 現行の形が揃っているのに読めない = 中身の破損(消してよい)
     expect(classifyUnreadableMasterKey(masterRecordJson({ encSkHex: "" }))).toBe("corrupt");
+    // スイートが現行でも、**フィールドの形が違えば**将来の形かもしれない。
+    // SUITE_ID は暗号スイートの識別子であって保存形式の版ではないので、
+    // それを根拠に削除を勧めない
+    expect(classifyUnreadableMasterKey('{"suite":"maruhi/v1","keys":{"enc":"aa"}}')).toBe(
+      "foreign",
+    );
     // スイートを名乗らない・入れ子にした形も削除を勧めない側へ倒す
     // (将来の形がどこに置くかは今の実装からは分からない)
     expect(classifyUnreadableMasterKey('{"key":{"suite":"maruhi/v2"}}')).toBe("foreign");
@@ -482,7 +489,18 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     const entryName = masterKeyEntryName(maruhi.origin, "u1");
-    env.keychain.set(entryName, '{"suite":"maruhi/v1","encPubHex":"zz"}');
+    // 現行形式のフィールドが**揃っている**のに読めない = 中身の破損
+    // (揃っていない形は将来の形かもしれないので、削除を勧める側に倒さない)
+    env.keychain.set(
+      entryName,
+      JSON.stringify({
+        suite: "maruhi/v1",
+        encPubHex: "zz",
+        encSkHex: "",
+        sigPubHex: "zz",
+        sigSkSeedHex: "",
+      }),
+    );
     const session = {
       origin: maruhi.origin,
       userId: "u1",

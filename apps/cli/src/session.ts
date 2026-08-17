@@ -10,6 +10,10 @@ import {
   computeUserKeyFingerprint,
   decodeHex,
   encodeHex,
+  exportEncryptionPrivateKey,
+  exportEncryptionPublicKey,
+  exportSigningPrivateSeed,
+  exportSigningPublicKey,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
   importEncryptionKeyPair,
@@ -293,18 +297,37 @@ export function resolveSession(
  * 起きる(crypto 側は例外を一様に失敗へ畳む)。区別せず「消してください」と
  * 案内すると、無事な鍵を消させて復号可能性を永久に失わせる。
  *
- * そこで**同じ操作を新しい鍵で試す**: 生成すらできないなら原因は鍵ではなく環境。
+ * そこで**同じ操作を新しい鍵で試す**: 使い捨ての鍵で生成 → 書き出し →
+ * 読み込みまで通らないなら、原因は保存された鍵ではなく環境。
+ *
+ * **生成だけを試すのでは足りない**: ここで守りたい失敗は import 側
+ * (`importKey` / HPKE の DeserializePrivateKey)で起きる。生成できても
+ * 読み込みができない環境では「生成は通る = 環境は正常」と誤判定し、無事な鍵に
+ * 削除を勧めてしまう。{@link importMasterKeys} が踏むのと同じ順序で確かめる。
  * 判定は失敗経路でだけ走るので、通常の実行に費用はかからない。
  */
 export function cryptoBackendUsable(): Effect.Effect<boolean> {
   return Effect.tryPromise({
-    try: async () => {
-      await generateEncryptionKeyPair();
-      await generateSigningKeyPair();
-      return true;
-    },
+    try: probeCryptoRoundTrip,
     catch: () => null,
   }).pipe(Effect.catch(() => Effect.succeed(false)));
+}
+
+/** 使い捨ての鍵で生成 → 書き出し → 読み込みを一巡する(鍵素材は外に出さない)。 */
+async function probeCryptoRoundTrip(): Promise<boolean> {
+  const enc = await generateEncryptionKeyPair({ extractable: true });
+  const sig = await generateSigningKeyPair({ extractable: true });
+  const encSk = await exportEncryptionPrivateKey(enc.privateKey);
+  const sigSeed = await exportSigningPrivateSeed(sig.privateKey);
+  if (!encSk.ok || !sigSeed.ok) {
+    return false;
+  }
+  const encPub = await exportEncryptionPublicKey(enc.publicKey);
+  const sigPub = await exportSigningPublicKey(sig.publicKey);
+  const encPair = await importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk.value });
+  const sigPair = await importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed.value });
+  const fingerprint = await computeUserKeyFingerprint(encPub, sigPub);
+  return encPair.ok && sigPair.ok && fingerprint.ok;
 }
 
 /** 環境側が原因のときの文言(**消させない**のが要点)。 */

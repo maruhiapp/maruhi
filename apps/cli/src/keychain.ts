@@ -16,7 +16,6 @@
 // {@link serializeStoredToken} / {@link serializeStoredMasterKey} を通し、
 // 直列化の直前で明示的に剥がす。
 
-import { SUITE_ID } from "@maruhi/crypto";
 import { Context, type Effect, Redacted } from "effect";
 
 import { escapeText } from "./display.ts";
@@ -185,6 +184,13 @@ function manualDeletionGuidance(entryName: string): string {
   return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} を手で削除してください。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
 }
 
+/** 現行形式のフィールドが揃っているか(値の中身は問わない)。 */
+function hasCurrentMasterKeyShape(value: Record<string, unknown>): boolean {
+  return ["suite", "encPubHex", "encSkHex", "sigPubHex", "sigSkSeedHex"].every(
+    (field) => typeof value[field] === "string",
+  );
+}
+
 /**
  * 読めないレコードの分類。
  *
@@ -219,8 +225,14 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
   if (!isRecord(value)) {
     return "corrupt";
   }
-  // 現行スイートを名乗っているのに読めない = 本当に壊れている
-  if (value["suite"] === SUITE_ID) {
+  // 現行の形のフィールドが**揃っている**のに読めない = 中身が壊れている
+  // (parseStoredMasterKey は値が空・型違いのときだけ落ちる)。
+  //
+  // ここで `suite === SUITE_ID` を根拠にしてはいけない: SUITE_ID は**暗号
+  // スイートの識別子**であって保存形式の版ではない。スイートを変えずに
+  // レコードの形だけ変えた将来版は、この判定では「壊れている」に落ちて
+  // 削除を勧められる — 分類が防ごうとしている鍵の恒久喪失そのもの
+  if (hasCurrentMasterKeyShape(value)) {
     return "corrupt";
   }
   // それ以外(スイートが違う・無い・入れ子になっている等)は**別形式かも
