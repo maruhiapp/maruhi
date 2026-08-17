@@ -59,16 +59,22 @@ import {
   openMetadataEnvironmentPair,
   openProject,
 } from "./context.ts";
-import { formatPulledLine, logWarnings, showValues } from "./display.ts";
+import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
 import { CliError, usageError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
+import { parseFingerprintFlag } from "./fingerprint-flag.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
+import { loadLeasePolicy } from "./lease-policy.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { reportRotation } from "./rotation-report.ts";
+import { reportRotationFlagCount } from "./rotation.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
+import { serverGrantOp } from "./server-grant.ts";
+import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
+import { sweepRotateFor } from "./sweep-rotate.ts";
 import { CLI_VERSION } from "./version.ts";
 
 /** `--` を書き忘れた実行に添える案内(実行対象の渡し方は 1 つだけ)。 */
@@ -214,10 +220,34 @@ const envDiffConfig = {
   ),
 };
 
+const serverGrantConfig = {
+  ...projectFlags(),
+  environments: singleValued(
+    "environments",
+    "Comma-separated environment IDs to disclose (required — least disclosure, environments are explicit)",
+  ),
+  "lease-policy": singleValued(
+    "lease-policy",
+    "Path to a workload lease-policy JSON file (defaults to no lease path)",
+  ),
+  "expect-fingerprint": singleValued(
+    "expect-fingerprint",
+    "Server key fingerprint noted out of band (32 hex chars; replaces the interactive check)",
+  ),
+};
+
+const serverRevokeConfig = {
+  ...projectFlags(),
+  fingerprint: singleValued(
+    "fingerprint",
+    "Server key fingerprint to revoke (may be omitted when exactly one grant is active)",
+  ),
+};
+
 /**
  * commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。
- * 入れ子の段(`env`)は subcommands を持ち、不明なサブコマンドの診断が
- * 「取りうる操作の一覧」を出すのに使う(cli-formatter.ts)。
+ * 入れ子の段(`env` / `server`)は subcommands を持ち、不明なサブコマンドの
+ * 診断が「取りうる操作の一覧」を出すのに使う(cli-formatter.ts)。
  */
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
@@ -226,6 +256,9 @@ export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   "env create": specOf(envCreateConfig),
   "env rotate": specOf(envRotateConfig),
   "env diff": specOf(envDiffConfig),
+  server: { flags: [], positionals: [], subcommands: ["grant", "revoke"] },
+  "server grant": specOf(serverGrantConfig),
+  "server revoke": specOf(serverRevokeConfig),
 };
 
 /**
@@ -377,6 +410,183 @@ function envDiffCommand(
 }
 
 /**
+ * `--environments dev,prod` の解釈(grant では必須 — 最小開示の既定として
+ * 環境は明示指定。session-22 §2 の裁定)。空要素は書き間違いとして拒否する。
+ */
+function parseEnvironmentsFlag(
+  value: string | undefined,
+): Effect.Effect<readonly EnvironmentId[], CliError> {
+  if (value === undefined) {
+    return Effect.fail(
+      usageError(
+        "grant requires --environments (list the environments to disclose, comma-separated — e.g. --environments dev,prod)",
+      ),
+    );
+  }
+  const ids = value.split(",").map((part) => part.trim());
+  if (ids.length === 0 || ids.some((id) => id.length === 0)) {
+    return Effect.fail(
+      usageError(
+        "--environments is malformed (comma-separated environment IDs; empty items are not allowed)",
+      ),
+    );
+  }
+  const invalid = ids.filter((id) => !isEnvironmentId(id));
+  if (invalid.length > 0) {
+    return Effect.fail(
+      usageError(
+        "--environments contains malformed environment IDs (each must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)",
+      ),
+    );
+  }
+  return Effect.succeed(ids as readonly EnvironmentId[]);
+}
+
+/** `maruhi server grant --environments <ids> [--lease-policy <file>]`(§9 / §12-6)。 */
+function serverGrantCommand(
+  flags: CommonFlags & {
+    readonly environments?: string | undefined;
+    readonly leasePolicyPath?: string | undefined;
+    readonly expectFingerprint?: string | undefined;
+  },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
+    const leasePolicy = yield* loadLeasePolicy(flags.leasePolicyPath);
+    const expectFingerprintHex = yield* parseFingerprintFlag(
+      "--expect-fingerprint",
+      flags.expectFingerprint,
+    );
+    const context = yield* openProject(flags);
+    const summary = yield* serverGrantOp({
+      client: context.client,
+      verified: context.verified,
+      environmentIds,
+      leasePolicy,
+      expectFingerprintHex,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      recipient: context.recipient,
+      resync: context.resync,
+    });
+    const policyNote =
+      summary.leasePolicyCount === 0
+        ? "no lease path (lease_policy is empty)"
+        : `lease_policy has ${summary.leasePolicyCount} elements`;
+    yield* io.log(
+      `Done: disclosure to server key ${summary.serverKeyFingerprintHex} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
+    );
+    // §9: 開示中であることを常時明示する(失効経路もその場で案内する)
+    yield* io.log(
+      "Note: the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run maruhi server revoke (it forces a rotation of every environment — §7)",
+    );
+  });
+}
+
+/** `maruhi server revoke [--fingerprint <hex>]`(§7 / §9)。 */
+function serverRevokeCommand(
+  flags: CommonFlags & { readonly fingerprint?: string | undefined },
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const fingerprintHex =
+      flags.fingerprint === undefined
+        ? null
+        : yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
+    // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
+    const context = yield* openProject(flags, { quietMandateWarning: true });
+    // 1 環境のローテーション(PR-1 の envRotateOp の再利用 — sweepRotateFor)
+    const summary = yield* serverRevokeOp({
+      client: context.client,
+      verified: context.verified,
+      fingerprintHex,
+      signerUserId: context.session.userId,
+      signingKeyPair: context.masterKeys.sigKeyPair,
+      resync: context.resync,
+      rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
+    });
+    yield* reportRevokeOutcome(io, summary);
+    const exitCode = yield* reportRevokeRotations(io, summary);
+    // 要ローテーションフラグの件数と導線(B2 — AUDIT_SPEC §4.1 の revoke 変種)
+    if (summary.serverKeyFingerprintHex !== null) {
+      yield* reportRotationFlagCount({
+        client: context.client,
+        projectId: context.projectId,
+        target: { kind: "server", fingerprintHex: summary.serverKeyFingerprintHex },
+      });
+    }
+    return exitCode;
+  });
+}
+
+/** revoke の追記結果とスキップ・確認済み環境の報告(終了コードには影響しない部分)。 */
+function reportRevokeOutcome(
+  io: CliIoShape,
+  summary: RevokeSummary,
+): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
+    if (summary.appended) {
+      yield* io.log(
+        `Appended revoke_server to the chain (FP=${summary.serverKeyFingerprintHex ?? ""}). Forcing a rotation of every environment (§7)`,
+      );
+    } else if (summary.serverKeyFingerprintHex !== null) {
+      // 対象の grant はあったが、CAS 競合の再同期で既に失効済みと判明した
+      // (並行 revoke)。誰かが同じ鍵を失効させた事実は運用上重要なので明示する
+      yield* io.log(
+        `The targeted grant (FP=${summary.serverKeyFingerprintHex}) was already revoked by a concurrent run — skipping the append and proceeding to rotate every environment (§7)`,
+      );
+    } else {
+      yield* io.log(
+        "No active grant — resuming the post-revocation rotation of every environment from where it left off (crash recovery)",
+      );
+    }
+    if (summary.skippedDeleted.length > 0) {
+      yield* io.log(
+        `Skipped deleted environments (signed deletion statements verified): ${summary.skippedDeleted.join(", ")}`,
+      );
+    }
+    if (summary.alreadyRotated.length > 0) {
+      yield* io.log(
+        `Already rotated (epoch newer than the revocation, no incomplete re-encryption confirmed): ${summary.alreadyRotated.join(", ")}`,
+      );
+    }
+  });
+}
+
+/** revoke のローテーション結果の報告と終了コードの導出。 */
+function reportRevokeRotations(
+  io: CliIoShape,
+  summary: RevokeSummary,
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    let exitCode = 0;
+    for (const item of summary.rotated) {
+      const code = yield* reportRotation(
+        item.environmentId as EnvironmentId,
+        item.summary,
+        item.forcedNewEpoch,
+      );
+      if (code !== 0) {
+        exitCode = 1;
+      }
+    }
+    for (const failure of summary.failed) {
+      // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
+      // よる選択的なローテーション阻止を不可視にしない)
+      yield* io.logError(
+        `Warning: rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run maruhi server revoke to resume (if the environment was deleted, check for a verified deletion statement)`,
+      );
+      exitCode = 1;
+    }
+    if (exitCode === 0) {
+      yield* io.log("Done: the revocation and the rotation of every environment completed");
+    }
+    return exitCode;
+  });
+}
+
+/**
  * コマンド本体。ハンドラは `Effect<void>` しか返せない(`Command.runWith` が
  * 値を捨てる)ので、子プロセスの終了コードは `onExitCode` で持ち出す。
  */
@@ -502,7 +712,42 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Command.withSubcommands([envCreate, envRotate, envDiff]),
   );
 
-  return Command.make("maruhi").pipe(Command.withSubcommands([pull, run, env]));
+  const serverGrant = Command.make("grant", serverGrantConfig, (values) =>
+    serverGrantCommand({
+      server: values.server,
+      project: values.project,
+      environments: values.environments,
+      leasePolicyPath: values["lease-policy"],
+      expectFingerprint: values["expect-fingerprint"],
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Disclose epoch DEKs of selected environments to the server (CRYPTO_SPEC §9)",
+    ),
+  );
+
+  const serverRevoke = Command.make("revoke", serverRevokeConfig, (values) =>
+    Effect.gen(function* () {
+      onExitCode(
+        yield* serverRevokeCommand({
+          server: values.server,
+          project: values.project,
+          fingerprint: values.fingerprint,
+        }),
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Revoke a server disclosure and force-rotate every environment (§7 / §9)",
+    ),
+  );
+
+  const server = Command.make("server").pipe(
+    Command.withDescription("Manage selective disclosure to the server (grant / revoke — §9)"),
+    Command.withSubcommands([serverGrant, serverRevoke]),
+  );
+
+  return Command.make("maruhi").pipe(Command.withSubcommands([pull, run, env, server]));
 }
 
 /* -------------------------------------------------------------------------- */

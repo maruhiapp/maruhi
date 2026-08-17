@@ -58,7 +58,7 @@ export interface GrantSummary {
 function scopeExistsRejection(verified: VerifiedProject, scope: readonly string[]): string | null {
   for (const environmentId of scope) {
     if (!verified.state.environments.has(environmentId)) {
-      return `環境 ${environmentId} はチェーン上に存在しません(create_environment 未観測)。--environments には存在する環境 ID を指定してください`;
+      return `Environment ${environmentId} does not exist on the chain (no create_environment observed). Pass existing environment IDs to --environments`;
     }
   }
   return null;
@@ -74,7 +74,7 @@ function duplicateServerKeyRejection(
 ): string | null {
   for (const chainMember of verified.state.members.values()) {
     if (chainMember.encPubHex === serverEncPubHex) {
-      return "サーバー enc 公開鍵が現メンバーの enc 公開鍵と一致しています(合意規則 duplicate-server-key — CRYPTO_SPEC §6.2)。デプロイメントの鍵設定を確認してください";
+      return "The server enc public key equals a current member's enc public key (consensus rule duplicate-server-key — CRYPTO_SPEC §6.2). Check the deployment's key configuration";
     }
   }
   return null;
@@ -95,7 +95,7 @@ function scopeNarrowedRejection(
   if (missing.length === 0) {
     return null;
   }
-  return `開示スコープは拡大のみ可能です(再 grant 規則 — CRYPTO_SPEC §6.3)。既存 grant のスコープに含まれる環境が指定から欠けています: ${missing.join(", ")}。縮小するには maruhi server revoke(全環境ローテーションを伴う — §7)を実行してから grant し直してください`;
+  return `The disclosure scope can only grow (re-grant rule — CRYPTO_SPEC §6.3). Environments in the existing grant's scope are missing from this invocation: ${missing.join(", ")}. To narrow the scope, run maruhi server revoke (which rotates every environment — §7) and grant again`;
 }
 
 /** grant_server 実行前の検査一式(再同期後のリトライでも同じ検査を通す)。 */
@@ -107,7 +107,7 @@ function ensureGrantable(input: {
 }): Effect.Effect<{ readonly existing: ServerGrant | null }, CliError> {
   const member = input.verified.state.members.get(input.signerUserId);
   if (member === undefined || member.role !== "owner") {
-    return Effect.fail(cliError("grant_server は owner のみが実行できます(CRYPTO_SPEC §6.2)"));
+    return Effect.fail(cliError("Only an owner can run grant_server (CRYPTO_SPEC §6.2)"));
   }
   const existing =
     input.verified.state.serverGrants.get(input.serverConfig.serverKeyFingerprintHex) ?? null;
@@ -150,22 +150,22 @@ function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConf
     if (encPubHex === undefined || fingerprintHex === undefined) {
       return yield* Effect.fail(
         cliError(
-          "サーバーにデプロイメント keypair が設定されていません(/auth/config に serverKeyFingerprintHex がありません)。docs/SELF_HOSTING.md の手順で SERVER_ENC_KEY_IKM を登録してください",
+          "The server has no deployment keypair configured (/auth/config has no serverKeyFingerprintHex). Register SERVER_ENC_KEY_IKM following docs/SELF_HOSTING.md",
         ),
       );
     }
     const encPub = decodeHex(encPubHex);
     if (encPub === null || encPub.length !== 32) {
-      return yield* Effect.fail(cliError("/auth/config の serverEncPubHex が不正な形式です"));
+      return yield* Effect.fail(cliError("serverEncPubHex in /auth/config is malformed"));
     }
     const computed = yield* Effect.tryPromise({
       try: () => computeServerKeyFingerprint(encPub),
-      catch: () => cliError("サーバー鍵 FP の計算に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to compute the server key fingerprint (crypto error)"),
     });
     if (!computed.ok || encodeHex(computed.value) !== fingerprintHex) {
       return yield* Effect.fail(
         cliError(
-          "サーバー配布の enc 公開鍵と serverKeyFingerprintHex が一致しません(応答が自己矛盾しています)。デプロイメントの設定または経路を確認してください",
+          "The server-provided enc public key does not match serverKeyFingerprintHex (the response contradicts itself). Check the deployment configuration or the transport path",
         ),
       );
     }
@@ -190,12 +190,15 @@ function confirmServerKey(input: {
 }): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const words = yield* fingerprintWords(input.fingerprintHex, "サーバー鍵 FP の形式が不正です");
+    const words = yield* fingerprintWords(
+      input.fingerprintHex,
+      "The server key fingerprint is malformed",
+    );
     const lines = [
-      "サーバー鍵フィンガープリント(SHA-256(enc 公開鍵) 先頭 16 バイト — CRYPTO_SPEC §9):",
+      "Server key fingerprint (first 16 bytes of SHA-256(enc public key) — CRYPTO_SPEC §9):",
       `  hex:  ${input.fingerprintHex}`,
       "  word: " + formatWordList(words),
-      "この語列が、デプロイ時に控えたサーバー鍵 FP(docs/SELF_HOSTING.md の記録手順)と一致することを帯域外の記録で照合してください。",
+      "Check against your out-of-band record that this word list matches the server key fingerprint noted at deploy time (see the recording step in docs/SELF_HOSTING.md).",
     ];
     for (const line of lines) {
       yield* io.log(line);
@@ -204,12 +207,12 @@ function confirmServerKey(input: {
       if (input.expectFingerprintHex !== input.fingerprintHex) {
         return yield* Effect.fail(
           cliError(
-            "--expect-fingerprint がサーバー配布の鍵の FP と一致しません。デプロイメントの鍵が想定と異なります — grant を中止しました(鍵が正しいか帯域外で確認してください)",
+            "--expect-fingerprint does not match the fingerprint of the server-provided key. The deployment's key is not the one you expected — the grant was aborted (verify the key out of band)",
           ),
         );
       }
       yield* io.log(
-        "--expect-fingerprint と一致しました(帯域外の控えとの照合済みとして続行します)",
+        "--expect-fingerprint matches (continuing; the out-of-band record counts as checked)",
       );
       return;
     }
@@ -218,16 +221,16 @@ function confirmServerKey(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "AI エージェント環境を検出したため、サーバー鍵確認の儀式を実行できません。人間が実行するか、帯域外で控えた FP を --expect-fingerprint で明示してください",
+          "An AI agent environment was detected, so the server-key confirmation ceremony cannot run. Have a human run this, or pass the fingerprint noted out of band via --expect-fingerprint",
         ),
       );
     }
     return yield* confirmByLastWord({
       words,
-      promptText: "照合できたら、表示された 12 語の最後の語を入力してください",
-      mismatchText: "入力が一致しません。表示された語列の最後の語を入力してください",
+      promptText: "Once checked, type the last of the 12 words shown above",
+      mismatchText: "That does not match. Type the last word of the list shown above",
       exhaustedText:
-        "サーバー鍵 FP の確認に失敗しました(語の再入力が一致しません)。grant は実行していません — 帯域外の控えと照合できてから再実行してください",
+        "Server key fingerprint confirmation failed (the re-typed word does not match). The grant was not performed — re-run once you can check against your out-of-band record",
     });
   });
 }
@@ -255,7 +258,7 @@ function signGrantEntry(input: {
         },
       },
       signingKeyPair: input.signingKeyPair,
-      failureText: "grant_server エントリの署名に失敗しました",
+      failureText: "Failed to sign the grant_server entry",
     });
   });
 }
@@ -281,7 +284,7 @@ function backfillEnvironment(input: {
     environmentId: input.environmentId,
     recipient: input.recipient,
     wrapRecipient: { kind: "server", grant: input.grant },
-    recipientLabel: "サーバー宛",
+    recipientLabel: "server-addressed",
     signerUserId: input.signerUserId,
     signingKeyPair: input.signingKeyPair,
   });
@@ -330,7 +333,7 @@ export function serverGrantOp(input: {
     let verified = input.verified;
     if (unchanged) {
       yield* io.log(
-        "同一内容(scope / lease_policy とも)の有効な grant が既に存在します — チェーン追記をスキップし、バックフィルのみ実行します(中断復旧)",
+        "An active grant with identical content (both scope and lease_policy) already exists — skipping the chain append and running only the backfill (crash recovery)",
       );
     } else {
       const appended = yield* retryOnConflict<GrantState, VerifiedProject, "head-conflict">(
@@ -364,7 +367,7 @@ export function serverGrantOp(input: {
               });
               return { verified: resynced };
             }),
-          exhaustedMessage: `grant_server のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+          exhaustedMessage: `grant_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
         },
       );
       // 受理後の再同期で grant の掲載を確認する(サーバー申告を真実源にしない)
@@ -373,18 +376,20 @@ export function serverGrantOp(input: {
       if (granted === undefined) {
         return yield* Effect.fail(
           cliError(
-            "grant_server の受理後の再同期で grant を確認できません(サーバー応答の矛盾)。配布されたチェーンを調査してください",
+            "The resync after grant_server was accepted does not show the grant (the server's response contradicts the chain). Investigate the served chain",
           ),
         );
       }
       yield* io.log(
-        `grant_server をチェーンへ追記しました(seq=${verified.state.headSeq}、scope=${scope.join(", ")})`,
+        `Appended grant_server to the chain (seq=${verified.state.headSeq}, scope=${scope.join(", ")})`,
       );
     }
 
     const grant = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
     if (grant === undefined) {
-      return yield* Effect.fail(cliError("有効な grant を確認できません(再同期の結果と矛盾)"));
+      return yield* Effect.fail(
+        cliError("Cannot confirm an active grant (contradicts the resync result)"),
+      );
     }
 
     // バックフィル(開示スコープ内の全環境 × 全エポック — AUTH_SPEC §12-6)

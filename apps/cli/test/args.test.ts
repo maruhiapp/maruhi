@@ -435,14 +435,9 @@ describe("空の値", () => {
   it("構造的な誤りは、その操作で使えるかより先に言う", async () => {
     const { env } = await startEnv();
 
-    // 適用可否(--fingerprint は revoke 用)を先に出すと、そこを直した次の
+    // 適用可否(--limit は verify 用ではない)を先に出すと、そこを直した次の
     // 実行で「空の引数」で落ちる = 2 度手間になる
-    expect(
-      await runCli(
-        ["server", "grant", "", "--fingerprint", "aaaabbbbccccddddeeeeffff00001111"],
-        env.layer,
-      ),
-    ).toBe(2);
+    expect(await runCli(["audit", "verify", "", "--limit", "5"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("空の引数があります");
     expect(errors).not.toContain("使えません");

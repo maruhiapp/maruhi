@@ -588,3 +588,101 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     expect(server.requests).toHaveLength(0);
   });
 });
+
+describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ②)", () => {
+  it("その操作に無いフラグは usage エラー(2)で落ちる(拒否機構の置き換え)", async () => {
+    // gunshi 時代の SERVER_ACTION_FLAGS / serverActionFlagRejection の置き換え
+    for (const argv of [
+      ["server", "revoke", "--environments", "dev"],
+      ["server", "revoke", "--lease-policy", "policy.json"],
+      ["server", "revoke", "--expect-fingerprint", "aaaabbbbccccddddeeeeffff00001111"],
+      [
+        "server",
+        "grant",
+        "--environments",
+        "dev",
+        "--fingerprint",
+        "aaaabbbbccccddddeeeeffff00001111",
+      ],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain("Unknown flag");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("不明な操作は取りうる操作の一覧を出す", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["server", "bogus"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unknown subcommand (expected one of: grant | revoke)");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("重複指定・空 / 空白だけの値は落ちる(宣言による拒否)", async () => {
+    for (const argv of [
+      ["server", "grant", "--environments", "dev", "--environments", "prod"],
+      ["server", "revoke", "--fingerprint", "aaaa", "--fingerprint", "bbbb"],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain("was specified more than once");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+    for (const value of ["", "  "]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(["server", "grant", "--environments", value], env.layer)).toBe(2);
+      expect(env.errors.join("\n")).toContain(
+        "Unacceptable value for flag --environments (expected: a non-empty value",
+      );
+      expect(server.requests).toHaveLength(0);
+    }
+  });
+
+  it("grant は --environments 必須・FP フラグは形式検査で落ちる(値は出さない)", async () => {
+    const missing = await startEnv();
+    expect(await runCli(["server", "grant"], missing.env.layer)).toBe(2);
+    expect(missing.env.errors.join("\n")).toContain("grant requires --environments");
+    expect(missing.server.requests).toHaveLength(0);
+
+    // FP の形式検査は宣言(NonBlank)を通った後の共用パーサ(fingerprint-flag.ts)。
+    // 打たれた値そのものは診断に出さない
+    const badFp = await startEnv();
+    expect(
+      await runCli(
+        ["server", "grant", "--environments", "dev", "--expect-fingerprint", "sk-live-hunter2"],
+        badFp.env.layer,
+      ),
+    ).toBe(2);
+    const errors = badFp.env.errors.join("\n");
+    expect(errors).toContain("--expect-fingerprint is malformed");
+    expectNoLeak(badFp.env, ["sk-live-hunter2"]);
+    expect(badFp.server.requests).toHaveLength(0);
+
+    const badRevoke = await startEnv();
+    expect(
+      await runCli(["server", "revoke", "--fingerprint", "sk-live-hunter2"], badRevoke.env.layer),
+    ).toBe(2);
+    expect(badRevoke.env.errors.join("\n")).toContain("--fingerprint is malformed");
+    expectNoLeak(badRevoke.env, ["sk-live-hunter2"]);
+    expect(badRevoke.server.requests).toHaveLength(0);
+  });
+
+  it("--environments の形式検査は通信より前に落ちる", async () => {
+    for (const value of ["dev,,prod", "dev,!bad"]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(["server", "grant", "--environments", value], env.layer), value).toBe(2);
+      expect(server.requests, value).toHaveLength(0);
+    }
+  });
+
+  it("server は位置引数を取らない(操作を位置引数で書いた旧形は落ちる)", async () => {
+    const { env, server } = await startEnv();
+    // 旧 gunshi 形の名残(`server grant extra`)= grant 段の余分な位置引数
+    expect(await runCli(["server", "grant", "extra", "--environments", "dev"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unexpected extra arguments (1;");
+    expect(errors).toContain("maruhi server grant takes no positional arguments");
+    expect(server.requests).toHaveLength(0);
+  });
+});

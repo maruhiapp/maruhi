@@ -52,7 +52,7 @@ function requireOwner(
 ): Effect.Effect<void, CliError> {
   const member = verified.state.members.get(signerUserId);
   if (member === undefined || member.role !== "owner") {
-    return Effect.fail(cliError("revoke_server は owner のみが実行できます(CRYPTO_SPEC §6.2)"));
+    return Effect.fail(cliError("Only an owner can run revoke_server (CRYPTO_SPEC §6.2)"));
   }
   return Effect.void;
 }
@@ -71,7 +71,7 @@ function selectGrant(
     if (found === undefined) {
       return Effect.fail(
         cliError(
-          "--fingerprint に一致する有効な grant がありません(maruhi project verify で有効な grant の FP を確認してください)",
+          "No active grant matches --fingerprint (check the fingerprints of active grants with maruhi project verify)",
         ),
       );
     }
@@ -80,7 +80,7 @@ function selectGrant(
   if (grants.length > 1) {
     return Effect.fail(
       cliError(
-        `有効な grant が複数あります(${grants.map((grant) => grant.serverKeyFingerprintHex).join(", ")})。--fingerprint で失効対象を指定してください`,
+        `Multiple grants are active (${grants.map((grant) => grant.serverKeyFingerprintHex).join(", ")}). Specify which one to revoke with --fingerprint`,
       ),
     );
   }
@@ -105,7 +105,7 @@ function signRevokeEntry(input: {
       payload: { serverKeyFingerprintHex: input.serverKeyFingerprintHex },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "revoke_server エントリの署名に失敗しました",
+    failureText: "Failed to sign the revoke_server entry",
   });
 }
 
@@ -185,7 +185,7 @@ export function serverRevokeOp<R>(input: {
                 alreadyRevoked: !resynced.state.serverGrants.has(state.target),
               };
             }),
-          exhaustedMessage: `revoke_server のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+          exhaustedMessage: `revoke_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
         },
       );
       verified = outcome.verified;
@@ -195,7 +195,7 @@ export function serverRevokeOp<R>(input: {
       if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {
         return yield* Effect.fail(
           cliError(
-            "revoke_server の受理後の再同期で grant が失効していません(サーバー応答の矛盾)。配布されたチェーンを調査してください",
+            "The resync after revoke_server was accepted still shows the grant as active (the server's response contradicts the chain). Investigate the served chain",
           ),
         );
       }
@@ -207,7 +207,7 @@ export function serverRevokeOp<R>(input: {
     if (revokeSeq === null) {
       return yield* Effect.fail(
         cliError(
-          "有効な grant_server がなく、チェーン上に revoke_server もありません(失効するものがありません)",
+          "There is no active grant_server and no revoke_server on the chain (nothing to revoke)",
         ),
       );
     }

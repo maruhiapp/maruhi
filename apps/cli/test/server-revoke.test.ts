@@ -361,8 +361,8 @@ describe("maruhi server revoke", () => {
     expect(rotate.deks.every((wrap) => wrap.recipientClass === undefined)).toBe(true);
 
     const logs = env.logs.join("\n");
-    expect(logs).toContain(`revoke_server をチェーンへ追記しました(FP=${serverFpA})`);
-    expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(logs).toContain(`Appended revoke_server to the chain (FP=${serverFpA})`);
+    expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });
 
   it("中断復旧: revoke 追記済み・ローテーション未了なら、追記せずローテーションだけを再開する", async () => {
@@ -390,8 +390,8 @@ describe("maruhi server revoke", () => {
     expect(state.rotateBodies[0]?.entry.payload.newEpoch).toBe(2);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("server-revoked");
     const logs = env.logs.join("\n");
-    expect(logs).toContain("有効な grant はありません");
-    expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(logs).toContain("No active grant — resuming the post-revocation rotation");
+    expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });
 
   it("CAS 競合で並行 revoke を検出したら、追記せずローテーションへ継続する", async () => {
@@ -437,8 +437,10 @@ describe("maruhi server revoke", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("server-revoked");
     const logs = env.logs.join("\n");
-    expect(logs).toContain(`対象の grant(FP=${serverFpA})は並行実行により既に失効済みでした`);
-    expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(logs).toContain(
+      `The targeted grant (FP=${serverFpA}) was already revoked by a concurrent run`,
+    );
+    expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });
 
   it("中断復旧: エポックは進んだが再暗号化未完なら、新エポックを作らず再開して完了させる", async () => {
@@ -494,9 +496,9 @@ describe("maruhi server revoke", () => {
     expect(state.pushes).toEqual([{ environmentId: ENV_ID, variableId: "var-stale-1" }]);
     const logs = env.logs.join("\n");
     expect(logs).toContain("resumed re-encryption");
-    expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
     // 「ローテーション済み」扱いにはならない(見せかけの完了で exit 0 にしない)
-    expect(logs).not.toContain("ローテーション済み(失効より後のエポック");
+    expect(logs).not.toContain("Already rotated (epoch newer than the revocation");
   });
 
   it("中断復旧: 失効後に全環境が回転済み・再暗号化完了なら、確認のみで何も変えない(冪等)", async () => {
@@ -524,9 +526,9 @@ describe("maruhi server revoke", () => {
     expect(state.pushes).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain(
-      `ローテーション済み(失効より後のエポック・未完了の再暗号化なしを確認): ${ENV_ID}`,
+      `Already rotated (epoch newer than the revocation, no incomplete re-encryption confirmed): ${ENV_ID}`,
     );
-    expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });
 
   it("削除済み環境は検証済みの削除ステートメントがある場合のみスキップし、残りをローテーションする", async () => {
@@ -575,9 +577,9 @@ describe("maruhi server revoke", () => {
     expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_ID]);
     const logs = env.logs.join("\n");
     expect(logs).toContain(
-      `削除済み環境(署名済み削除ステートメントを検証済み)のためスキップ: ${GONE_ID}`,
+      `Skipped deleted environments (signed deletion statements verified): ${GONE_ID}`,
     );
-    expect(logs).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });
 
   it("複数環境で 1 環境のローテーションが失敗しても残りを完了し、exit 1 で失敗を報告する", async () => {
@@ -611,8 +613,10 @@ describe("maruhi server revoke", () => {
     expect(state.appendedEntries).toHaveLength(1);
     expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_A]);
     const errors = env.errors.join("\n");
-    expect(errors).toContain(`環境 ${ENV_B} のローテーションに失敗しました`);
-    expect(env.logs.join("\n")).not.toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(errors).toContain(`Warning: rotation of environment ${ENV_B} failed`);
+    expect(env.logs.join("\n")).not.toContain(
+      "Done: the revocation and the rotation of every environment completed",
+    );
   });
 
   it("owner 以外は拒否する(§6.2)", async () => {
@@ -625,7 +629,7 @@ describe("maruhi server revoke", () => {
     const env = await startRevokeEnv(state, built.projectId, member);
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("revoke_server は owner のみが実行できます");
+    expect(env.errors.join("\n")).toContain("Only an owner can run revoke_server");
     expect(state.appendedEntries).toHaveLength(0);
   });
 
@@ -640,21 +644,21 @@ describe("maruhi server revoke", () => {
     const state1 = await makeRevokeServer({ built });
     const env1 = await startRevokeEnv(state1, built.projectId, owner);
     expect(await runCli(["server", "revoke"], env1.layer)).toBe(1);
-    expect(env1.errors.join("\n")).toContain("有効な grant が複数あります");
+    expect(env1.errors.join("\n")).toContain("Multiple grants are active");
     expect(state1.appendedEntries).toHaveLength(0);
 
     // 一致しない FP → エラー(--fingerprint の名でエラーを報告する)
     const state2 = await makeRevokeServer({ built });
     const env2 = await startRevokeEnv(state2, built.projectId, owner);
     expect(await runCli(["server", "revoke", "--fingerprint", "0".repeat(32)], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("--fingerprint に一致する有効な grant がありません");
+    expect(env2.errors.join("\n")).toContain("No active grant matches --fingerprint");
     expect(state2.appendedEntries).toHaveLength(0);
 
     // 形式不正 → --fingerprint(存在しない --expect-fingerprint ではなく)を名指し
     const state3 = await makeRevokeServer({ built });
     const env3 = await startRevokeEnv(state3, built.projectId, owner);
     expect(await runCli(["server", "revoke", "--fingerprint", "XYZ"], env3.layer)).toBe(2);
-    expect(env3.errors.join("\n")).toContain("--fingerprint の形式が正しくありません");
+    expect(env3.errors.join("\n")).toContain("--fingerprint is malformed");
 
     // B を指定 → B だけを失効(環境なし = ローテーション対象なしで完了)
     const state4 = await makeRevokeServer({ built });
@@ -664,7 +668,9 @@ describe("maruhi server revoke", () => {
     const revoke = state4.appendedEntries[0];
     if (revoke?.op !== "revoke_server") throw new Error("revoke entry missing");
     expect(revoke.payload.serverKeyFingerprintHex).toBe(serverFpB);
-    expect(env4.logs.join("\n")).toContain("完了: 失効と全環境ローテーションが完了しました");
+    expect(env4.logs.join("\n")).toContain(
+      "Done: the revocation and the rotation of every environment completed",
+    );
   });
 
   it("有効な grant も過去の revoke_server もなければエラー(失効するものがない)", async () => {
@@ -673,7 +679,9 @@ describe("maruhi server revoke", () => {
     const env = await startRevokeEnv(state, built.projectId, owner);
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("失効するものがありません");
+    expect(env.errors.join("\n")).toContain(
+      "There is no active grant_server and no revoke_server on the chain (nothing to revoke)",
+    );
     expect(state.appendedEntries).toHaveLength(0);
   });
 });
