@@ -618,6 +618,29 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     expect(errors).toContain("maruhi server grant");
     expect(server.requests).toHaveLength(0);
   });
+
+  it("振り分けが葉まで解決した実行でも、親の段のフラグには置き場所を案内する", async () => {
+    // `--new-epoch rotate` / `--project=abc grant` はサブコマンド名が argv に
+    // 残るため、診断の宛先(commandKey)は葉へ解決する。宣言の選択を
+    // commandKey で行うと、拒否したフラグを「このコマンドが受け付ける一覧」に
+    // 載せる自己矛盾の診断になる — 上流が報告する段(UnrecognizedOption.command)
+    // で選ぶことを固定する(Bugbot 指摘)
+    const envRotate = await startEnv();
+    expect(await runCli(["env", "--new-epoch", "rotate", "dev"], envRotate.env.layer)).toBe(2);
+    const rotateErrors = envRotate.env.errors.join("\n");
+    expect(rotateErrors).toContain("write the subcommand first and its flags after it");
+    expect(rotateErrors).not.toContain("flags this command accepts");
+    expect(envRotate.server.requests).toHaveLength(0);
+
+    const grant = await startEnv();
+    expect(
+      await runCli(["server", "--project=abc", "grant", "--environments", "dev"], grant.env.layer),
+    ).toBe(2);
+    const grantErrors = grant.env.errors.join("\n");
+    expect(grantErrors).toContain("write the subcommand first and its flags after it");
+    expect(grantErrors).not.toContain("flags this command accepts");
+    expect(grant.server.requests).toHaveLength(0);
+  });
 });
 
 describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ②)", () => {

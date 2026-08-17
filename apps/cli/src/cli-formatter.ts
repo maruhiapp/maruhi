@@ -57,9 +57,18 @@ function bareName(name: string): string {
 
 function unrecognizedOptionMessage(
   error: CliError.UnrecognizedOption,
-  spec: CommandSpec | undefined,
+  specs: Readonly<Record<string, CommandSpec>>,
   commandKey: string,
 ): string {
+  // 宣言の選択は**上流が報告した段**(`error.command` — どの段でそのフラグが
+  // 未宣言だったか)を優先する。振り分けのキーは argv からの推定なので、
+  // `maruhi env --new-epoch rotate dev` のように**親の段に書いたフラグ**でも
+  // 葉(`env rotate`)へ解決してしまい、拒否したフラグを「受け付ける一覧」に
+  // 載せる自己矛盾の診断になる(Bugbot 指摘)。親の段の宣言を引ければ、
+  // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
+  const errorKey = (error.command ?? []).slice(1).join(" ");
+  const spec = specs[errorKey] ?? specs[commandKey];
+  const errorCommandKey = errorKey !== "" && specs[errorKey] !== undefined ? errorKey : commandKey;
   // 位置引数の名前をオプションとして書いた形は、直し方が違う
   const option = bareName(error.option);
   if (spec?.positionals.includes(option) === true) {
@@ -69,7 +78,7 @@ function unrecognizedOptionMessage(
   if (guess !== undefined) {
     return `Unknown flag (did you mean --${bareName(guess)}?)`;
   }
-  return undeclaredFlagMessage(spec, commandKey);
+  return undeclaredFlagMessage(spec, errorCommandKey);
 }
 
 /** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
@@ -171,7 +180,7 @@ export function describeError(
 ): string {
   const spec = specs[commandKey];
   if (error instanceof CliError.UnrecognizedOption) {
-    return unrecognizedOptionMessage(error, spec, commandKey);
+    return unrecognizedOptionMessage(error, specs, commandKey);
   }
   if (error instanceof CliError.UnexpectedArgument) {
     return unexpectedArgumentMessage(error, spec, commandKey);
