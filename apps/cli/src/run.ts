@@ -142,7 +142,7 @@ export function buildInjectionEnv(
  * 文面を 1 か所に置く(2 実装が食い違わないように)。
  */
 export const RUN_COMMAND_REQUIRED =
-  "実行するコマンドを `--` の後に指定してください(例: maruhi run -- printenv MY_VAR)";
+  "Specify the command to run after `--` (example: maruhi run -- printenv MY_VAR)";
 
 /** `maruhi run`: inject decrypted variables into the child env and run the command. */
 export function runOp(input: {

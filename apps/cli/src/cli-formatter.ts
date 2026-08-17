@@ -1,5 +1,5 @@
 // maruhi の診断を **Effect の機構(`CliOutput.Formatter`)として**実装する
-// (ADR-0016 決定 3)。
+// (ADR-0016 決定 3)。文言は英語(ADR-0017)。
 //
 // なぜ差し替えが要るか: effect/unstable/cli の既定の文面は**打たれた値を
 // そのまま含む**(`Invalid value for flag --env: "  "` /
@@ -34,10 +34,12 @@ import { RUN_COMMAND_REQUIRED } from "./run.ts";
 export interface CommandSpec {
   readonly flags: readonly string[];
   readonly positionals: readonly string[];
+  /** 入れ子サブコマンドを持つ段の、サブコマンド名の一覧(葉は省略)。 */
+  readonly subcommands?: readonly string[];
 }
 
 /** 空・空白だけの値を拒む Schema の文面(宣言側とここで同じ定数を使う)。 */
-export const NON_BLANK_MESSAGE = "空でない値(空白だけの値も受け付けません)";
+export const NON_BLANK_MESSAGE = "a non-empty value (whitespace-only values are not accepted)";
 
 /**
  * そのまま出してよい `expected` の全体集合。
@@ -46,25 +48,53 @@ export const NON_BLANK_MESSAGE = "空でない値(空白だけの値も受け付
  */
 const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE]);
 
+/** 組み込みのグローバルフラグ(CliConfig の builtIns — 宣言の表には現れない)。 */
+const GLOBAL_FLAGS = ["--help", "--version"] as const;
+
 function bareName(name: string): string {
   return name.replace(/^-+/, "");
 }
 
 function unrecognizedOptionMessage(
   error: CliError.UnrecognizedOption,
-  spec: CommandSpec | undefined,
+  specs: Readonly<Record<string, CommandSpec>>,
+  commandKey: string,
 ): string {
+  // 宣言の選択は**上流が報告した段**(`error.command` — どの段でそのフラグが
+  // 未宣言だったか)を優先する。振り分けのキーは argv からの推定なので、
+  // `maruhi env --new-epoch rotate dev` のように**親の段に書いたフラグ**でも
+  // 葉(`env rotate`)へ解決してしまい、拒否したフラグを「受け付ける一覧」に
+  // 載せる自己矛盾の診断になる(Bugbot 指摘)。親の段の宣言を引ければ、
+  // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
+  const errorKey = (error.command ?? []).slice(1).join(" ");
+  const spec = specs[errorKey] ?? specs[commandKey];
+  const errorCommandKey = errorKey !== "" && specs[errorKey] !== undefined ? errorKey : commandKey;
   // 位置引数の名前をオプションとして書いた形は、直し方が違う
   const option = bareName(error.option);
   if (spec?.positionals.includes(option) === true) {
-    return `--${option} は位置引数です(オプションとしては指定できません)。値は位置引数として並べてください`;
+    return `--${option} is a positional argument (it cannot be written as a flag). Write the value as a positional argument instead`;
   }
   const guess = error.suggestions[0];
   if (guess !== undefined) {
-    return `不明なオプションです(--${bareName(guess)} のことですか?)`;
+    return `Unknown flag (did you mean --${bareName(guess)}?)`;
   }
-  const declared = (spec?.flags ?? []).map((name) => `--${name}`);
-  return `不明なオプションです(このコマンドが取るオプション: ${declared.join(" ")})`;
+  return undeclaredFlagMessage(spec, errorCommandKey);
+}
+
+/** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
+function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string): string {
+  // 入れ子の段(サブコマンドを持つ親)は自分のフラグを持たない。gunshi 時代は
+  // 操作名より前に書いたフラグも通ったため、その形で来た利用者に「フラグが
+  // 存在しない」と嘘をつかず、**置き場所**を案内する
+  const subcommands = spec?.subcommands ?? [];
+  const first = subcommands[0];
+  if (first !== undefined) {
+    return `Unknown flag (maruhi ${commandKey} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. maruhi ${commandKey} ${first} --flag …)`;
+  }
+  // 実行時に混ぜられるグローバル(--help / --version)は宣言の表に現れない
+  // ので、ここで補う(無いと、実在するフラグが一覧から抜ける)
+  const declared = [...(spec?.flags ?? []).map((name) => `--${name}`), ...GLOBAL_FLAGS];
+  return `Unknown flag (flags this command accepts: ${declared.join(" ")})`;
 }
 
 function unexpectedArgumentMessage(
@@ -74,9 +104,9 @@ function unexpectedArgumentMessage(
 ): string {
   const takesNone = spec === undefined || spec.positionals.length === 0;
   const shape = takesNone
-    ? `maruhi ${commandKey} は位置引数を取りません`
-    : `maruhi ${commandKey} が取る位置引数は ${spec.positionals.join(" ")} だけです`;
-  return `余分な引数です(${error.arguments.length} 個。中身は表示しません — 平文の値が混ざりうるため)。${shape}`;
+    ? `maruhi ${commandKey} takes no positional arguments`
+    : `maruhi ${commandKey} only takes these positional arguments: ${spec.positionals.join(" ")}`;
+  return `Unexpected extra arguments (${error.arguments.length}; contents not shown — they may contain plaintext values). ${shape}`;
 }
 
 /**
@@ -89,16 +119,16 @@ function unexpectedArgumentMessage(
 function invalidValueMessage(error: CliError.InvalidValue): string {
   const name = bareName(error.option);
   if (error.expected.includes("at most")) {
-    return `オプション --${name} を複数回指定しています。どちらの指定を意図したか読み取れないため受け付けません — 1 回だけ書いてください`;
+    return `Flag --${name} was specified more than once. Which occurrence you meant cannot be determined, so the invocation is rejected — write it exactly once`;
   }
   if (error.expected.includes("at least") || error.expected === RUN_COMMAND_REQUIRED) {
     return RUN_COMMAND_REQUIRED;
   }
   const expectation = error.expected.replace("Schema validation failed: ", "");
-  const detail = SAFE_EXPECTATIONS.has(expectation) ? `(${expectation})` : "";
+  const detail = SAFE_EXPECTATIONS.has(expectation) ? ` (expected: ${expectation})` : "";
   return error.kind === "argument"
-    ? `位置引数 ${name} の値が受け付けられません${detail}`
-    : `オプション --${name} の値が受け付けられません${detail}`;
+    ? `Unacceptable value for positional argument ${name}${detail}`
+    : `Unacceptable value for flag --${name}${detail}`;
 }
 
 /**
@@ -114,12 +144,27 @@ function invalidValueMessage(error: CliError.InvalidValue): string {
  */
 function userErrorMessage(error: CliError.UserError): string {
   const authored = error.userMessage ?? "";
-  return authored === "" ? "引数の書き方が正しくありません" : authored;
+  return authored === "" ? "Invalid command-line arguments" : authored;
 }
 
-function unknownSubcommandMessage(error: CliError.UnknownSubcommand): string {
+/**
+ * 不明なサブコマンド。候補(編集距離)があればそれを、無ければ**その段が取る
+ * サブコマンドの一覧**を出す — gunshi 時代の「不明な操作です(create | rotate |
+ * diff)」と同じ水準を保つ(打ち間違いの直し先を探させない)。
+ */
+function unknownSubcommandMessage(
+  error: CliError.UnknownSubcommand,
+  specs: Readonly<Record<string, CommandSpec>>,
+): string {
   const guess = error.suggestions[0];
-  return `不明なコマンドです${guess === undefined ? "" : `(${guess} のことですか?)`}`;
+  if (guess !== undefined) {
+    return `Unknown subcommand (did you mean ${guess}?)`;
+  }
+  // 親の段(`["maruhi", "env"]` → `env`)の宣言からサブコマンド一覧を引く
+  const parentKey = (error.parent ?? []).slice(1).join(" ");
+  const known = specs[parentKey]?.subcommands ?? [];
+  const listed = known.length === 0 ? "" : ` (expected one of: ${known.join(" | ")})`;
+  return `Unknown subcommand${listed}`;
 }
 
 /**
@@ -135,7 +180,7 @@ export function describeError(
 ): string {
   const spec = specs[commandKey];
   if (error instanceof CliError.UnrecognizedOption) {
-    return unrecognizedOptionMessage(error, spec);
+    return unrecognizedOptionMessage(error, specs, commandKey);
   }
   if (error instanceof CliError.UnexpectedArgument) {
     return unexpectedArgumentMessage(error, spec, commandKey);
@@ -144,18 +189,18 @@ export function describeError(
     return invalidValueMessage(error);
   }
   if (error instanceof CliError.MissingArgument) {
-    return `位置引数 ${bareName(error.argument)} を指定してください`;
+    return `Missing positional argument ${bareName(error.argument)}`;
   }
   if (error instanceof CliError.MissingOption) {
-    return `オプション --${bareName(error.option)} を指定してください`;
+    return `Missing required flag --${bareName(error.option)}`;
   }
   if (error instanceof CliError.UnknownSubcommand) {
-    return unknownSubcommandMessage(error);
+    return unknownSubcommandMessage(error, specs);
   }
   if (error instanceof CliError.UserError) {
     return userErrorMessage(error);
   }
-  return "引数の書き方が正しくありません";
+  return "Invalid command-line arguments";
 }
 
 /**
@@ -176,7 +221,7 @@ function maruhiFormatter(
   const fallback = CliOutput.defaultFormatter({ colors: false });
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
-      helpRequested ? fallback.formatHelpDoc(doc) : `使い方: ${doc.usage}`,
+      helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`,
     formatVersion: fallback.formatVersion,
     formatError: describe,
     formatCliError: describe,

@@ -211,9 +211,9 @@ describe("maruhi server grant", () => {
     expect(wraps.every((wrap) => wrap.recipientEncPubHex === SERVER_ENC_PUB_HEX)).toBe(true);
 
     const logs = env.logs.join("\n");
-    expect(logs).toContain("バックフィル: 新規 2 件、登録済み 0 件");
+    expect(logs).toContain("Backfill: 2 newly registered, 0 already registered");
     // §9: 開示中の常時明示 + ワード表示
-    expect(logs).toContain("サーバーに開示されています");
+    expect(logs).toContain("disclosed to the server");
     expect(logs).toContain(serverFpWords[11] ?? "");
   });
 
@@ -263,8 +263,8 @@ describe("maruhi server grant", () => {
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies.map((body) => body.deks.length)).toEqual([2, 1, 1]);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("チェーン追記をスキップ");
-    expect(logs).toContain("バックフィル: 新規 1 件、登録済み 1 件");
+    expect(logs).toContain("skipping the chain append");
+    expect(logs).toContain("Backfill: 1 newly registered, 1 already registered");
   });
 
   it("対話の儀式: 12 語の最終語の再入力で確認する(誤入力 3 回で中止・追記なし)", async () => {
@@ -287,7 +287,7 @@ describe("maruhi server grant", () => {
     env2.setPromptResponses(["wrong", "wrong", "wrong"]);
     expect(await runCli(["server", "grant", "--environments", ENV_ID], env2.layer)).toBe(1);
     expect(state2.appendedEntries).toHaveLength(0);
-    expect(env2.errors.join("\n")).toContain("確認に失敗しました");
+    expect(env2.errors.join("\n")).toContain("Server key fingerprint confirmation failed");
   });
 
   it("--expect-fingerprint の不一致は儀式で中止する(追記なし)", async () => {
@@ -302,7 +302,7 @@ describe("maruhi server grant", () => {
       ),
     ).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "--expect-fingerprint がサーバー配布の鍵の FP と一致しません",
+      "--expect-fingerprint does not match the fingerprint of the server-provided key",
     );
     expect(state.appendedEntries).toHaveLength(0);
   });
@@ -354,7 +354,9 @@ describe("maruhi server grant", () => {
         env.layer,
       ),
     ).toBe(1);
-    expect(env.errors.join("\n")).toContain("自己矛盾");
+    expect(env.errors.join("\n")).toContain(
+      "The server-provided enc public key does not match serverKeyFingerprintHex",
+    );
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies).toHaveLength(0);
   });
@@ -407,7 +409,7 @@ describe("maruhi server grant", () => {
       expect(wraps[0]?.recipientClass).toBe("server");
       expect(wraps[0]?.recipientUserId).toBe(serverFpHex);
     }
-    expect(env.logs.join("\n")).toContain("バックフィル: 新規 2 件、登録済み 0 件");
+    expect(env.logs.join("\n")).toContain("Backfill: 2 newly registered, 0 already registered");
   });
 
   it("owner 以外は拒否する(§6.2)", async () => {
@@ -435,7 +437,7 @@ describe("maruhi server grant", () => {
         env.layer,
       ),
     ).toBe(1);
-    expect(env.errors.join("\n")).toContain("owner のみ");
+    expect(env.errors.join("\n")).toContain("Only an owner can run grant_server");
   });
 
   it("再 grant のスコープ縮小は revoke を案内して拒否する(二層規則 — §6.3)", async () => {
@@ -468,7 +470,7 @@ describe("maruhi server grant", () => {
       ),
     ).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("拡大のみ");
+    expect(errors).toContain("The disclosure scope can only grow");
     expect(errors).toContain("env-two-2");
     expect(state.appendedEntries).toHaveLength(0);
   });
@@ -521,7 +523,7 @@ describe("maruhi server grant", () => {
         ],
       },
     ]);
-    expect(env.logs.join("\n")).toContain("lease_policy 1 要素");
+    expect(env.logs.join("\n")).toContain("lease_policy has 1 element");
   });
 
   it("--environments は必須(最小開示の既定)・不正な JSON ファイルは usage エラー", async () => {
@@ -529,7 +531,7 @@ describe("maruhi server grant", () => {
     const state = await makeGrantServer({ built, deksByEnvironment: {} });
     const env = await startGrantEnv(state, built.projectId, owner);
     expect(await runCli(["server", "grant"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--environments が必須");
+    expect(env.errors.join("\n")).toContain("grant requires --environments");
 
     const badPath = join(dirname(env.configPath), "bad-policy.json");
     await mkdir(dirname(badPath), { recursive: true });
@@ -540,6 +542,6 @@ describe("maruhi server grant", () => {
         env.layer,
       ),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("JSON として解釈できません");
+    expect(env.errors.join("\n")).toContain("--lease-policy content is invalid: not valid JSON");
   });
 });

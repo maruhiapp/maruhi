@@ -1,11 +1,11 @@
 // 引数の**書き方**の検査(**gunshi に残っているコマンド**共通)と、gunshi の
 // usage エラーの整形。
 //
-// ADR-0016 の第 1 段階で `pull` / `run` / `env create` は
-// `effect/unstable/cli`(effect-cli.ts)へ移した。あちらは同じ形を**宣言**
-// (`Flag.atMost(1)` / `Flag.withSchema` / `Argument.atLeast(1)`)で落とすので、
-// このモジュールは通らない。残り 11 コマンドと `env rotate` / `env diff` が
-// 移るまで、両方が並走する。
+// ADR-0016 の第 1〜2 段階で `pull` / `run` / `env` / `server` / `invite` /
+// `member` は `effect/unstable/cli`(effect-cli.ts)へ移した。あちらは同じ形を
+// **宣言**(`Flag.atMost(1)` / `Flag.withSchema` / `Argument.atLeast(1)`)で
+// 落とすので、このモジュールは通らない。残り(login / logout / key / project /
+// rotation / audit / push / config)が移るまで、両方が並走する。
 //
 // gunshi 0.37.1 は「宣言と食い違う書き方」をいくつか黙って通す。いずれも
 // **書いたことと逆の結果**になりうるので、値を扱う前に落とす:

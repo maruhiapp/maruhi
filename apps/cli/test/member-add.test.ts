@@ -367,7 +367,7 @@ describe("maruhi member add", () => {
     expect(wraps.every((wrap) => wrap.recipientEncPubHex === acceptor.encPubHex)).toBe(true);
     expect(state.removeBodies).toHaveLength(0);
     expect(env.logs.join("\n")).toContain(
-      "完了: 新メンバーに全環境 × 全エポックの DEK ラップを配布しました",
+      "Done: DEK wraps for every environment × every epoch were distributed to the new member (CRYPTO_SPEC §7)",
     );
   });
 
@@ -475,8 +475,8 @@ describe("maruhi member add", () => {
       { environmentId: ENV_ID, wraps: [{ epoch: 1, recipientUserId: acceptor.userId }] },
     ]);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("スロットは空のままです");
-    expect(errors).toContain("maruhi member add を再実行すると続きから再開します");
+    expect(errors).toContain("slot remains empty");
+    expect(errors).toContain("re-run maruhi member add to resume");
   });
 
   it("儀式(最終語再入力)を通しても追加でき、エージェント環境ではフラグなしを拒否する", async () => {
@@ -510,7 +510,7 @@ describe("maruhi member add", () => {
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
-    expect(env.logs.join("\n")).toContain(`role:    member(このメンバーに付与されます)`);
+    expect(env.logs.join("\n")).toContain(`role:    member (will be granted to this member)`);
 
     // エージェント環境: --expect-fingerprint なしは拒否(儀式を代行させない)
     const state2 = await makeAddServer({
@@ -521,7 +521,7 @@ describe("maruhi member add", () => {
     const env2 = await startAddEnv(state2, built.projectId);
     env2.setAgent({ isAgent: true });
     expect(await runCli(["member", "add"], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("儀式を実行できません");
+    expect(env2.errors.join("\n")).toContain("the acceptance-key confirmation ceremony cannot run");
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
@@ -557,8 +557,8 @@ describe("maruhi member add", () => {
     // 同一鍵の在籍では削除(修復)を発動しない — 鍵履歴ゲート
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("既に同一鍵で在籍しています");
-    expect(logs).toContain("登録済み 1 件");
+    expect(logs).toContain("already a member with the same key");
+    expect(logs).toContain("1 already registered");
   });
 
   it("再追加(過去在籍が別鍵): 409 スロットを削除 → 再登録で新鍵へ修復する", async () => {
@@ -613,8 +613,8 @@ describe("maruhi member add", () => {
     expect(registered).toContainEqual([1, acceptor.encPubHex]);
     expect(registered).toContainEqual([2, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("旧鍵宛の残存ラップが見つかった場合は修復経路");
-    expect(logs).toContain("旧鍵ラップの修復 1 件");
+    expect(logs).toContain("If leftover wraps addressed to the old key are found, the repair path");
+    expect(logs).toContain("1 old-key wrap repaired");
   });
 
   it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と一致すれば、別鍵の在籍歴があっても削除しない(誤削除の遮断)", async () => {
@@ -667,8 +667,8 @@ describe("maruhi member add", () => {
     // 一致 = 登録済み(冪等)。削除(誤削除)は 1 件も発動しない
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("登録済み 1 件");
-    expect(logs).not.toContain("旧鍵ラップの修復");
+    expect(logs).toContain("1 already registered");
+    expect(logs).not.toContain("old-key wraps repaired");
   });
 
   it("B1a: 409 の保存済み enc 公開鍵が受諾鍵と不一致なら、鍵履歴に関わらず修復する(フィールド優先)", async () => {
@@ -711,7 +711,7 @@ describe("maruhi member add", () => {
     );
     expect(registered).toContainEqual([1, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("旧鍵ラップの修復 1 件");
+    expect(logs).toContain("1 old-key wrap repaired");
   });
 
   it("completed 行は id 明示で再開でき、id なしの再実行はその導線を案内する(Cursor bot 指摘の回帰)", async () => {
@@ -741,7 +741,7 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env1.layer),
     ).toBe(1);
-    expect(env1.errors.join("\n")).toContain("maruhi member add <招待id> と id を明示して");
+    expect(env1.errors.join("\n")).toContain("pass it explicitly: maruhi member add <invite-id>");
     expect(state1.appendedEntries).toHaveLength(0);
 
     // id 明示: completed 行 + 同一鍵在籍 → 追記せずバックフィルのみ再開する
@@ -757,7 +757,7 @@ describe("maruhi member add", () => {
     expect(
       state2.registerBodies.flatMap((body) => body.deks.map((wrap) => wrap.recipientUserId)),
     ).toEqual([acceptor.userId]);
-    expect(env2.logs.join("\n")).toContain("既に同一鍵で在籍しています");
+    expect(env2.logs.join("\n")).toContain("already a member with the same key");
   });
 
   it("受諾署名の検証失敗・発行ピン不一致は追記前に中止する", async () => {
@@ -780,7 +780,7 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env1.layer),
     ).toBe(1);
-    expect(env1.errors.join("\n")).toContain("受諾署名の検証に失敗しました");
+    expect(env1.errors.join("\n")).toContain("The acceptance signature failed verification");
     expect(state1.appendedEntries).toHaveLength(0);
 
     // 発行ピンと role が食い違うサーバー申告(role 改竄)
@@ -802,7 +802,7 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env2.layer),
     ).toBe(1);
-    expect(env2.errors.join("\n")).toContain("発行時のローカル記録と一致しません");
+    expect(env2.errors.join("\n")).toContain("does not match the local record from issuance");
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
@@ -859,7 +859,7 @@ describe("maruhi member add", () => {
     expect(await runCli(["member", "add", "--expect-fingerprint", "0".repeat(32)], env.layer)).toBe(
       1,
     );
-    expect(env.errors.join("\n")).toContain("受諾の横取りの可能性");
+    expect(env.errors.join("\n")).toContain("The acceptance may have been hijacked");
     expect(state.appendedEntries).toHaveLength(0);
   });
 });

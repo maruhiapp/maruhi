@@ -138,7 +138,7 @@ function appendWithCas(input: {
           const rechecked = yield* input.recheck(resynced);
           return { verified: resynced, already: rechecked.already };
         }),
-      exhaustedMessage: `${input.opLabel} のチェーンヘッド競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+      exhaustedMessage: `${input.opLabel}'s chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
     },
   );
 }
@@ -154,7 +154,7 @@ function resolveActorAndTarget(
 > {
   const actor = verified.state.members.get(signerUserId);
   if (actor === undefined) {
-    return Effect.fail(cliError("このプロジェクトのチェーン導出メンバーではありません"));
+    return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
   return Effect.succeed({ actor, target: verified.state.members.get(targetUserId) });
 }
@@ -166,10 +166,10 @@ function targetedOpRejection(input: {
   readonly operation: string;
 }): string | null {
   if (ROLE_RANK[input.actor.role] < ROLE_RANK.admin) {
-    return `${input.operation}は admin 以上のみが実行できます(CRYPTO_SPEC §6.2)`;
+    return `Only admins and above can run ${input.operation} (CRYPTO_SPEC §6.2)`;
   }
   if (ROLE_RANK[input.target.role] >= ROLE_RANK.admin && input.actor.role !== "owner") {
-    return `admin / owner を対象とする${input.operation}は owner のみが実行できます(CRYPTO_SPEC §6.2)`;
+    return `Only an owner can run ${input.operation} against an admin / owner (CRYPTO_SPEC §6.2)`;
   }
   return null;
 }
@@ -219,16 +219,20 @@ function selectInvitation(
     const row = rows.find((candidate) => candidate.id === inviteId);
     if (row === undefined) {
       return Effect.fail(
-        cliError("指定の招待が見つかりません(maruhi invite list で id を確認してください)"),
+        cliError("The specified invite was not found (check the id with maruhi invite list)"),
       );
     }
     if (row.status === "revoked") {
-      return Effect.fail(cliError("指定の招待は失効済みです(受諾ブロックがあっても使用しません)"));
+      return Effect.fail(
+        cliError(
+          "The specified invite has been revoked (its acceptance block, if any, will not be used)",
+        ),
+      );
     }
     if (!withAcceptance(row)) {
       return Effect.fail(
         cliError(
-          "指定の招待はまだ受諾されていません(受諾後に maruhi invite list で確認してください)",
+          "The specified invite has not been accepted yet (check with maruhi invite list after acceptance)",
         ),
       );
     }
@@ -242,14 +246,14 @@ function selectInvitation(
     // 経路が受ける — その導線をここで示す(Cursor bot 指摘)
     return Effect.fail(
       cliError(
-        "受諾済み(accepted)の招待がありません。add_member まで完了した招待のバックフィルを再開する場合は、maruhi invite list で id を確認し、maruhi member add <招待id> と id を明示してください",
+        "There is no accepted invite. To resume the backfill of an invite that completed through add_member, look up the id with maruhi invite list and pass it explicitly: maruhi member add <invite-id>",
       ),
     );
   }
   if (accepted.length > 1) {
     return Effect.fail(
       cliError(
-        `受諾済みの招待が複数あります(${accepted.map((row) => displayText(row.id)).join(", ")})。対象の招待 id を指定してください`,
+        `Multiple invites have been accepted (${accepted.map((row) => displayText(row.id)).join(", ")}). Specify which invite id to add`,
       ),
     );
   }
@@ -272,16 +276,16 @@ function confirmInviteeFingerprint(input: {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
       input.fingerprintHex,
-      "受諾鍵のフィンガープリント形式が不正です",
+      "The acceptance key's fingerprint is malformed",
     );
     const lines = [
-      "受諾者の鍵フィンガープリント(CRYPTO_SPEC §6.5 の相互確認):",
+      "Acceptor's key fingerprint (mutual confirmation — CRYPTO_SPEC §6.5):",
       `  invitee: ${displayText(input.targetUserId)}`,
-      `  role:    ${input.role}(このメンバーに付与されます)`,
+      `  role:    ${input.role} (will be granted to this member)`,
       `  hex:  ${input.fingerprintHex}`,
       "  word: " + formatWordList(words),
-      "この語列が、受諾者本人が帯域外(通話等)で読み上げる 12 語と一致することを照合してください。",
-      "一致しない場合、受諾は横取りされています(攻撃者の鍵の混入)— add_member を中止し、招待を失効させてください。",
+      "Check that this word list matches the 12 words the acceptor reads to you out of band (e.g. over a call).",
+      "If they do not match, the acceptance has been hijacked (an attacker's key was injected) — abort add_member and revoke the invite.",
     ];
     for (const line of lines) {
       yield* io.log(line);
@@ -290,29 +294,29 @@ function confirmInviteeFingerprint(input: {
       if (input.expectFingerprintHex !== input.fingerprintHex) {
         return yield* Effect.fail(
           cliError(
-            "--expect-fingerprint が受諾鍵の FP と一致しません。受諾の横取りの可能性があります — add_member を中止しました(招待を失効させ、再発行してください)",
+            "--expect-fingerprint does not match the acceptance key's fingerprint. The acceptance may have been hijacked — add_member was aborted (revoke the invite and reissue)",
           ),
         );
       }
       yield* io.log(
-        "--expect-fingerprint と一致しました(帯域外の控えとの照合済みとして続行します)",
+        "--expect-fingerprint matches (continuing; the out-of-band record counts as checked)",
       );
       return;
     }
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "AI エージェント環境を検出したため、受諾鍵 FP 確認の儀式を実行できません。人間が実行するか、帯域外で控えた受諾鍵 FP を --expect-fingerprint で明示してください",
+          "An AI agent environment was detected, so the acceptance-key confirmation ceremony cannot run. Have a human run this, or pass the acceptance key fingerprint noted out of band via --expect-fingerprint",
         ),
       );
     }
     return yield* confirmByLastWord({
       words,
       promptText:
-        "帯域外(通話等)で受諾者本人の読み上げと照合できたら、表示された 12 語の最後の語を入力してください",
-      mismatchText: "入力が一致しません。表示された語列の最後の語を入力してください",
+        "Once you have checked against the acceptor's out-of-band read-out (e.g. a call), type the last of the 12 words shown above",
+      mismatchText: "That does not match. Type the last word of the list shown above",
       exhaustedText:
-        "受諾鍵 FP の確認に失敗しました(語の再入力が一致しません)。add_member は実行していません — 受諾者本人と照合できてから再実行してください",
+        "Acceptance key fingerprint confirmation failed (the re-typed word does not match). add_member was not performed — re-run once you can check with the acceptor",
     });
   });
 }
@@ -320,10 +324,10 @@ function confirmInviteeFingerprint(input: {
 /** add_member の実行者 role 規則(§6.2)の早期検査(不成立なら理由の文字列)。 */
 function addActorRejection(actor: ChainMember | undefined, role: Role): string | null {
   if (actor === undefined || ROLE_RANK[actor.role] < ROLE_RANK.admin) {
-    return "add_member は admin 以上のみが実行できます(CRYPTO_SPEC §6.2)";
+    return "Only admins and above can run add_member (CRYPTO_SPEC §6.2)";
   }
   if (ROLE_RANK[role] >= ROLE_RANK.admin && actor.role !== "owner") {
-    return "role = admin の add_member は owner のみが実行できます(CRYPTO_SPEC §6.2)";
+    return "Only an owner can run a role=admin add_member (CRYPTO_SPEC §6.2)";
   }
   return null;
 }
@@ -338,7 +342,7 @@ function duplicateMemberKeyRejection(
       member.encPubHex === acceptance.inviteeEncPubHex ||
       member.sigPubHex === acceptance.inviteeSigPubHex
     ) {
-      return `受諾鍵が現メンバー ${displayText(member.userId)} の鍵と一致しています(合意規則 duplicate-member-key — CRYPTO_SPEC §6.2)。この受諾では add_member できません`;
+      return `The acceptance key equals current member ${displayText(member.userId)}'s key (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`;
     }
   }
   return null;
@@ -368,7 +372,7 @@ function ensureAddable(input: {
       }
       return yield* Effect.fail(
         cliError(
-          "対象 user_id は既に**別の鍵**で在籍しています(受諾ブロックとチェーンの不一致)。別の受諾の add_member 済みか、受諾の取り違えの可能性があります — maruhi invite list と maruhi project verify で状態を確認してください",
+          "The target user_id is already a member with a **different key** (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with maruhi invite list and maruhi project verify",
         ),
       );
     }
@@ -401,7 +405,7 @@ function signAddMemberEntry(input: {
       },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "add_member エントリの署名に失敗しました",
+    failureText: "Failed to sign the add_member entry",
   });
 }
 
@@ -444,7 +448,7 @@ function backfillMemberEnvironment(input: {
     environmentId: input.environmentId,
     recipient: input.recipient,
     wrapRecipient: { kind: "member", member: input.target },
-    recipientLabel: "新メンバー宛",
+    recipientLabel: "new-member-addressed",
     signerUserId: input.signerUserId,
     signingKeyPair: input.signingKeyPair,
     onSlotConflict: (wrap, storedRecipientEncPubHex) =>
@@ -477,7 +481,7 @@ function backfillMemberEnvironment(input: {
         const retried = yield* register([wrap]).pipe(
           Effect.mapError((error) =>
             cliError(
-              `修復経路で旧ラップの削除後、新鍵ラップの再登録に失敗しました — epoch ${wrap.epoch} のスロットは空のままです(対象はこのエポックを復号できません。再実行は空スロットへの直登録として復旧します): ${error.message}`,
+              `After the repair path deleted the old wrap, re-registering the new-key wrap failed — the epoch ${wrap.epoch} slot remains empty (the target cannot decrypt this epoch; a re-run recovers it as a direct registration into the empty slot): ${error.message}`,
             ),
           ),
         );
@@ -520,13 +524,13 @@ function prepareMemberAdd(input: {
     if (pin !== undefined && (pin.tokenHashHex !== row.tokenHashHex || pin.role !== row.role)) {
       return yield* Effect.fail(
         cliError(
-          "サーバー申告の招待行(token_hash / role)が発行時のローカル記録と一致しません。行のすり替え・role の改竄の可能性があります — add_member を中止しました",
+          "The server's claim for the invite row (token_hash / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
         ),
       );
     }
     if (pin === undefined) {
       yield* io.logError(
-        "注意: この招待の発行時ピンがこの端末にありません(別デバイスでの発行など)。表示される role が発行時の意図と一致することを確認してください",
+        "Note: this machine has no issuance pin for this invite (it may have been issued on another device). Confirm that the displayed role matches what was intended at issuance",
       );
     }
 
@@ -539,7 +543,7 @@ function prepareMemberAdd(input: {
     if (!acceptanceVerified.ok) {
       return yield* Effect.fail(
         cliError(
-          "受諾署名の検証に失敗しました(CRYPTO_SPEC §6.5)。この受諾ブロックは信用できません — add_member を中止しました(招待を失効させてください)",
+          "The acceptance signature failed verification (CRYPTO_SPEC §6.5). This acceptance block cannot be trusted — add_member was aborted (revoke the invite)",
         ),
       );
     }
@@ -622,7 +626,7 @@ export function memberAddOp(input: {
     let appended = false;
     if (alreadyAdded) {
       yield* io.log(
-        "対象は既に同一鍵で在籍しています — add_member をスキップし、バックフィルのみ実行します(中断復旧)",
+        "The target is already a member with the same key — skipping add_member and running only the backfill (crash recovery)",
       );
     } else {
       const outcome = yield* appendWithCas({
@@ -660,13 +664,13 @@ export function memberAddOp(input: {
     ) {
       return yield* Effect.fail(
         cliError(
-          "add_member の受理後の再同期でメンバーの掲載(受諾鍵との一致)を確認できません(サーバー応答の矛盾)。配布されたチェーンを調査してください",
+          "The resync after add_member was accepted does not show the member (with the acceptance key) on the chain (the server's response contradicts the chain). Investigate the served chain",
         ),
       );
     }
     if (appended) {
       yield* io.log(
-        `add_member をチェーンへ追記しました(target=${displayText(target.userId)}、role=${row.role}、seq=${verified.state.headSeq})`,
+        `Appended add_member to the chain (target=${displayText(target.userId)}, role=${row.role}, seq=${verified.state.headSeq})`,
       );
     }
 
@@ -683,7 +687,7 @@ export function memberAddOp(input: {
     );
     if (staleWrapSuspected) {
       yield* io.log(
-        "対象 user_id は過去に別の鍵で在籍していました。旧鍵宛の残存ラップが見つかった場合は修復経路(削除 → 再登録)で新鍵へ置換します(CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
+        "The target user_id was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
       );
     }
 
@@ -721,7 +725,7 @@ function ensureRemovable(input: {
     if (input.targetUserId === input.signerUserId) {
       return yield* Effect.fail(
         cliError(
-          "自分自身は削除できません。削除後の全環境ローテーション(CRYPTO_SPEC §7)を本人が実行できなくなります — 別の admin / owner に削除を依頼してください",
+          "You cannot remove yourself. You would be unable to run the post-removal rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to remove you",
         ),
       );
     }
@@ -740,24 +744,24 @@ function ensureRemovable(input: {
       if (!removedBefore) {
         return yield* Effect.fail(
           cliError(
-            "対象はメンバーではなく、チェーン上に削除記録もありません(user_id を確認してください)",
+            "The target is not a member and the chain has no removal record for it (check the user_id)",
           ),
         );
       }
       if (ROLE_RANK[actor.role] < ROLE_RANK.member) {
         return yield* Effect.fail(
-          cliError("ローテーションの再開には member 以上の role が必要です(CRYPTO_SPEC §6.2)"),
+          cliError("Resuming the rotation requires the member role or above (CRYPTO_SPEC §6.2)"),
         );
       }
       return { alreadyRemoved: true };
     }
-    const rejection = targetedOpRejection({ actor, target, operation: "remove_member " });
+    const rejection = targetedOpRejection({ actor, target, operation: "remove_member" });
     if (rejection !== null) {
       return yield* Effect.fail(cliError(rejection));
     }
     if (target.role === "owner" && ownersCount(input.verified) === 1) {
       return yield* Effect.fail(
-        cliError("最後の owner は削除できません(CRYPTO_SPEC §6.2 last-owner-protected)"),
+        cliError("The last owner cannot be removed (CRYPTO_SPEC §6.2 last-owner-protected)"),
       );
     }
     return { alreadyRemoved: false };
@@ -776,7 +780,7 @@ function signRemoveEntry(input: {
     signerUserId: input.signerUserId,
     operation: { op: "remove_member", payload: { targetUserId: input.targetUserId } },
     signingKeyPair: input.signingKeyPair,
-    failureText: "remove_member エントリの署名に失敗しました",
+    failureText: "Failed to sign the remove_member entry",
   });
 }
 
@@ -827,7 +831,7 @@ export function memberRemoveOp<R>(input: {
     if (verified.state.members.has(input.targetUserId)) {
       return yield* Effect.fail(
         cliError(
-          "remove_member の受理後の再同期で対象が削除されていません(サーバー応答の矛盾)。配布されたチェーンを調査してください",
+          "The resync after remove_member was accepted still shows the target as a member (the server's response contradicts the chain). Investigate the served chain",
         ),
       );
     }
@@ -837,7 +841,9 @@ export function memberRemoveOp<R>(input: {
     const baselineSeq = lastRotationMandateSeqFor(verified, input.targetUserId);
     if (baselineSeq === null) {
       return yield* Effect.fail(
-        cliError("ローテーション義務エントリをチェーン上に確認できません(導出の内部矛盾)"),
+        cliError(
+          "Cannot find the rotation-mandate entry on the chain (internal contradiction in the derivation)",
+        ),
       );
     }
     const sweep = yield* sweepAfterMandate({
@@ -873,20 +879,20 @@ function changeRoleRuleRejection(input: {
   const base = targetedOpRejection({
     actor: input.actor,
     target: input.target,
-    operation: "change_role ",
+    operation: "change_role",
   });
   if (base !== null) {
     return base;
   }
   if (ROLE_RANK[input.newRole] >= ROLE_RANK.admin && input.actor.role !== "owner") {
-    return "admin / owner への変更は owner のみが実行できます(CRYPTO_SPEC §6.2)";
+    return "Only an owner can change a role to admin / owner (CRYPTO_SPEC §6.2)";
   }
   if (
     input.target.role === "owner" &&
     input.newRole !== "owner" &&
     ownersCount(input.verified) === 1
   ) {
-    return "最後の owner は降格できません(CRYPTO_SPEC §6.2 last-owner-protected)";
+    return "The last owner cannot be demoted (CRYPTO_SPEC §6.2 last-owner-protected)";
   }
   return null;
 }
@@ -905,9 +911,7 @@ function ensureRoleChangeable(input: {
       input.targetUserId,
     );
     if (target === undefined) {
-      return yield* Effect.fail(
-        cliError("対象がメンバーに見つかりません(user_id を確認してください)"),
-      );
+      return yield* Effect.fail(cliError("The target is not a member (check the user_id)"));
     }
     if (
       input.targetUserId === input.signerUserId &&
@@ -916,7 +920,7 @@ function ensureRoleChangeable(input: {
     ) {
       return yield* Effect.fail(
         cliError(
-          "自分自身を member 未満へ降格できません。降格後の全環境ローテーション(CRYPTO_SPEC §7)を本人が実行できなくなります — 別の admin / owner に降格を依頼してください",
+          "You cannot demote yourself below member. You would be unable to run the post-demotion rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to demote you",
         ),
       );
     }
@@ -954,7 +958,7 @@ function signChangeRoleEntry(input: {
       payload: { targetUserId: input.targetUserId, newRole: input.newRole },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "change_role エントリの署名に失敗しました",
+    failureText: "Failed to sign the change_role entry",
   });
 }
 
@@ -1010,7 +1014,7 @@ export function memberChangeRoleOp<R>(input: {
     if (target === undefined || target.role !== input.newRole) {
       return yield* Effect.fail(
         cliError(
-          "change_role の受理後の再同期で対象の role を確認できません(サーバー応答の矛盾)。配布されたチェーンを調査してください",
+          "The resync after change_role was accepted does not show the target's new role (the server's response contradicts the chain). Investigate the served chain",
         ),
       );
     }

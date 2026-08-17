@@ -1,7 +1,8 @@
 // 引数の**書き方**の検査(src/args.ts + gunshi の `CliOptions.strict`)。
 //
-// **対象は gunshi に残っているコマンド**(ADR-0016 の第 1 段階で移したのは
-// pull / run / env create の 3 つだけ。移行先の同型検査は effect-cli.test.ts)。
+// **対象は gunshi に残っているコマンド**(ADR-0016 の第 1〜2 段階で
+// pull / run / env は effect/unstable/cli へ移した。移行先の同型検査は
+// effect-cli.test.ts)。
 //
 // gunshi 0.37.1 が黙って通し、**書いたことと逆の結果**になる 4 形を塞ぐ:
 //
@@ -51,15 +52,15 @@ async function startEnv(): Promise<{ env: TestEnv; server: MockServer; owner: Te
 }
 
 describe("boolean オプションへの値の指定", () => {
-  it("`env rotate --new-epoch=false` は usage エラーで落ちる(通信にも進まない)", async () => {
+  // 移行前は `env rotate --new-epoch` が主な車両だったが、env は
+  // effect/unstable/cli へ移した(effect-cli.test.ts が同じ形を宣言で固定する)。
+  // gunshi に残る boolean は rotation dismiss の --all だけなので、以降の
+  // CLI 水準の検査は rotation を車両にする(negatable の綴りは単体検査で固定)
+  it("`rotation dismiss --all=false` は値を読まずに true へ化けるため拒否する", async () => {
     const { env, server } = await startEnv();
 
-    // gunshi は boolean のインライン値を**読まずに true** にするため、
-    // 通すと「新しいエポックを作らない」と書いた実行が新エポックを作る
-    expect(await runCli(["env", "rotate", "dev", "--new-epoch=false"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
-    // 「無効にする書き方」を必ず示す(negatable な否定形が宣言されている)
-    expect(env.errors.join("\n")).toContain("無効にするなら --no-new-epoch と、いずれも値なしで");
+    expect(await runCli(["rotation", "dismiss", "--all=false"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--all は値を取りません");
     expect(server.requests).toHaveLength(0);
     expect(env.logs).toHaveLength(0);
   });
@@ -78,10 +79,10 @@ describe("boolean オプションへの値の指定", () => {
   it("boolean の直後でも、真偽値として読めない語は位置引数として扱う", async () => {
     const { env } = await startEnv();
 
-    // `--new-epoch dev` のように「フラグの後ろに置いた本物の位置引数」は正当。
-    // 真偽値らしい語だけを値の指定と見なす(ここでは位置引数の数を超えるので
-    // 余分な引数として落ちる = boolean の文面にはならない)
-    expect(await runCli(["env", "rotate", "dev", "--new-epoch", "garbage"], env.layer)).toBe(2);
+    // `--all garbage` の garbage は真偽値らしくないので位置引数として扱う。
+    // ここでは位置引数の数を超えるので余分な引数として落ちる = boolean の
+    // 文面にはならないが、boolean を書いた実行なので助言は添える
+    expect(await runCli(["rotation", "dismiss", "var-1", "--all", "garbage"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("余分な引数です(1 個");
     expect(errors).toContain("boolean オプションに値は付けられません");
@@ -90,30 +91,29 @@ describe("boolean オプションへの値の指定", () => {
   it("位置引数が空いていると、boolean の値がそこへ吸い込まれる形も拒否する", async () => {
     const { env, server } = await startEnv();
 
-    // `env rotate --reason x --new-epoch false` は環境 ID を書いていないため、
-    // 余った "false" が必須スロットへ入って個数検査を素通りする。通すと
-    // **環境 `false` に対して**、しかも --new-epoch 有効(書いたことと逆)で
-    // 取り消せないローテーションが走る
+    // `rotation dismiss --all false` は variable を書いていないため、余った
+    // "false" が optional スロットへ入って個数検査を素通りする。通すと
+    // **変数 `false` の取り下げ**(書いたことと逆 = --all は有効のまま)になる
     expect(
-      await runCli(["env", "rotate", "--reason", "x", "--new-epoch", "false"], env.layer),
+      await runCli(["rotation", "dismiss", "--env", "prod", "--all", "false"], env.layer),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
+    expect(env.errors.join("\n")).toContain("--all は値を取りません");
     expect(server.requests).toHaveLength(0);
   });
 
-  it("真偽値リテラルは `false` 以外の書き方も拾い、無効にする書き方を案内する", async () => {
+  it("真偽値リテラルは `false` 以外の書き方も拾い、正しい書き方を案内する", async () => {
     const { env, server } = await startEnv();
 
-    // 網羅は原理的に無理なので、**正しい書き方**(negatable な否定形)を必ず
-    // 添える。`n` / `off` も同じ吸い込みを起こす
+    // 網羅は原理的に無理なので、**正しい書き方**を必ず添える。`n` / `off` も
+    // 同じ吸い込みを起こす
     for (const literal of ["n", "off", "disable", "0"]) {
-      expect(
-        await runCli(["env", "rotate", "--reason", "x", "--new-epoch", literal], env.layer),
-      ).toBe(2);
+      expect(await runCli(["rotation", "dismiss", "--all", literal], env.layer)).toBe(2);
     }
     const literalErrors = env.errors.join("\n");
-    expect(literalErrors).toContain("無効にするなら --no-new-epoch と、いずれも値なしで");
-    // 環境 ID が本当にその語である可能性は残るので、逃げ道を示す
+    expect(literalErrors).toContain(
+      "有効にするなら値なしで --all と書き、無効にするならオプション自体を外してください",
+    );
+    // 変数 ID が本当にその語である可能性は残るので、逃げ道を示す
     expect(literalErrors).toContain("その語が本当に位置引数なら、オプションより前に書いてください");
     expect(server.requests).toHaveLength(0);
   });
@@ -121,65 +121,43 @@ describe("boolean オプションへの値の指定", () => {
   it("boolean フラグとリテラルの間に別のオプションが挟まっても拾う", async () => {
     const { env, server } = await startEnv();
 
-    // 直前のトークンだけを見ると、`--reason r` の値を挟んだ形を取り逃がす
-    // (余った literal が空の必須スロットへ入り、環境 `false` を回してしまう)
+    // 直前のトークンだけを見ると、`--env prod` の値を挟んだ形を取り逃がす
+    // (余った literal が空の optional スロットへ入り、変数 `false` を取り下げる)
     expect(
-      await runCli(["env", "rotate", "--new-epoch", "--reason", "r", "false"], env.layer),
+      await runCli(["rotation", "dismiss", "--all", "--env", "prod", "false"], env.layer),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
+    expect(env.errors.join("\n")).toContain("--all は値を取りません");
     expect(server.requests).toHaveLength(0);
   });
 
-  it("挟まったオプションがインライン値(`--reason=r`)でも拾う", async () => {
+  it("挟まったオプションがインライン値(`--env=prod`)でも拾う", async () => {
     const { env, server } = await startEnv();
 
     // インライン値を持つトークンは**次の位置引数を消費しない**。「値を取る
-    // オプションか」だけで判定すると、直後の literal を `--reason` の値と
-    // 見なして素通りし、環境 `false` への取り消せない書き込みへ進む
-    expect(await runCli(["env", "rotate", "--new-epoch", "--reason=r", "false"], env.layer)).toBe(
+    // オプションか」だけで判定すると、直後の literal を `--env` の値と
+    // 見なして素通りする
+    expect(await runCli(["rotation", "dismiss", "--all", "--env=prod", "false"], env.layer)).toBe(
       2,
     );
-    expect(env.errors.join("\n")).toContain("--new-epoch は値を取りません");
+    expect(env.errors.join("\n")).toContain("--all は値を取りません");
     expect(server.requests).toHaveLength(0);
   });
 
   it("boolean フラグより**前**に置いた位置引数は通す(案内した逃げ道)", async () => {
     const { env } = await startEnv();
 
-    // 「オプションより前に書いてください」と案内する以上、その形は通す
-    expect(
-      await runCli(["env", "rotate", "false", "--new-epoch", "--reason", "x"], env.layer),
-    ).not.toBe(2);
+    // 「オプションより前に書いてください」と案内する以上、その形は引数層を通す
+    // (コマンド本体 = 通信まで進み、実行の失敗(1)になる)
+    expect(await runCli(["rotation", "dismiss", "false", "--all"], env.layer)).not.toBe(2);
+    expect(env.errors.join("\n")).not.toContain("値を取りません");
   });
 
-  it("否定形の綴り(`--no-new-epoch off`)も同じ検査に掛かる", async () => {
-    const { env, server } = await startEnv();
-
-    // `negatable` を宣言すると綴りが増える。増えた綴りを検査の表へ入れ忘れると、
-    // 塞いだはずの形(値の指定・空きスロットへの吸い込み)がそこから復活する
-    expect(await runCli(["env", "rotate", "dev", "--no-new-epoch=false"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--no-new-epoch は値を取りません");
-    expect(
-      await runCli(["env", "rotate", "--reason", "x", "--no-new-epoch", "off"], env.layer),
-    ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--no-new-epoch は値を取りません");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("否定形(`--no-new-epoch`)は宣言されていて、書き方の誤りにならない", async () => {
-    const { env } = await startEnv();
-
-    // `--new-epoch=false` の案内先が実在すること(案内だけして使えないのは不親切)
-    expect(await runCli(["env", "rotate", "dev", "--no-new-epoch"], env.layer)).not.toBe(2);
-    expect(env.errors.join("\n")).not.toContain("不明なオプションです");
-  });
-
-  it("string オプションのインライン値(`--reason=x`)は拒否しない", async () => {
+  it("string オプションのインライン値(`--env=prod`)は拒否しない", async () => {
     const { env } = await startEnv();
 
     // boolean だけの検査であることの確認(= 誤検知で正当な書き方を塞がない)。
     // 引数層は通り、コマンド本体(通信)まで進んで別の理由で落ちる
-    expect(await runCli(["env", "rotate", "dev", "--reason=x"], env.layer)).not.toBe(2);
+    expect(await runCli(["rotation", "dismiss", "--env=prod", "--all"], env.layer)).not.toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("値を取りません");
     expect(errors).not.toContain("余分な引数です");
@@ -211,15 +189,13 @@ describe("未宣言オプション(strict)", () => {
     expect(errors).not.toContain("のことですか?");
   });
 
-  it("候補にはグローバル(`--help`)や否定形(`--no-new-epoch`)も含める", async () => {
+  it("候補にはグローバル(`--help`)も含める", async () => {
     const { env } = await startEnv();
 
-    // 引数表(define の args)にはグローバルも否定形も現れない。gunshi が
-    // エラーへ載せた候補を使わないと、実在するオプションが候補から抜ける
-    expect(await runCli(["env", "rotate", "dev", "--hepl"], env.layer)).toBe(2);
+    // 引数表(define の args)にはグローバルが現れない。gunshi がエラーへ
+    // 載せた候補を使わないと、実在するオプションが候補から抜ける
+    expect(await runCli(["push", "API_KEY", "--hepl"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("--help のことですか?");
-    expect(await runCli(["env", "rotate", "dev", "--no-new-epock"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--no-new-epoch のことですか?");
   });
 
   it("プロトタイプ由来の名前(`--constructor`)でも未宣言として落ちる", async () => {
@@ -327,18 +303,7 @@ describe("未宣言オプション(strict)", () => {
 });
 
 describe("位置引数の名前のオプション化", () => {
-  it("`env create dev --environment-id prod` は値を捨てずに落ち、専用の案内を出す", async () => {
-    const { env, server } = await startEnv();
-
-    // gunshi は値を捨てるため、通すと dev が作られる。環境 ID は
-    // チェーン履歴全体で一意(§6.2)なので取り違えは永久に焼き付く
-    expect(await runCli(["env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
-    expect(env.errors.join("\n")).toContain("値は位置引数として並べてください");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("env 以外でも同じ(`push --name API_KEY` は変数名の取り違えとして落ちる)", async () => {
+  it("`push --name API_KEY` は変数名の取り違えとして落ちる", async () => {
     const { env, server } = await startEnv();
     env.setStdin(new TextEncoder().encode("secret-value"));
 
@@ -346,34 +311,18 @@ describe("位置引数の名前のオプション化", () => {
     expect(env.errors.join("\n")).toContain("--name は位置引数です");
     expect(server.requests).toHaveLength(0);
   });
-
-  it("位置引数を書かずにオプションだけで渡した実行も落ちる(既定環境へ滑り込まない)", async () => {
-    const { env, server } = await startEnv();
-
-    expect(await runCli(["env", "rotate", "--environment-id", "prod"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
-    expect(server.requests).toHaveLength(0);
-  });
 });
 
-describe("操作に適用されないオプション(env 固有)", () => {
-  it("相手の操作専用のオプションは黙って捨てずに落ちる(両方向)", async () => {
+describe("操作に適用されないオプション(gunshi に残るコマンド)", () => {
+  // env は effect/unstable/cli の入れ子サブコマンドへ移したので、この機構
+  // (actionFlagRejection)を通らない — あちらでは「そのコマンドが取らない
+  // オプション」= 未宣言として構造的に落ちる(effect-cli.test.ts)。
+  // gunshi に残るコマンドのうち、車両には audit を使う(server / invite は移行済み)
+  it("相手の操作専用のオプションは黙って捨てずに落ちる", async () => {
     const { env, server } = await startEnv();
 
-    // gunshi は 1 コマンド 1 引数表なので rotate / diff 両方のフラグが常に
-    // 受理される。指定した意図が無視されたことに気付けるようにする
-    // (create は effect/unstable/cli の入れ子サブコマンドへ移したので、
-    // 「そのコマンドが取らないオプション」= 未宣言として落ちる — 機構ごと不要)
-    expect(await runCli(["env", "diff", "dev", "prod", "--reason", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--reason は env diff では使えません");
-    expect(await runCli(["env", "diff", "dev", "prod", "--new-epoch"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--new-epoch は env diff では使えません");
-    expect(await runCli(["env", "rotate", "dev", "--name", "n"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--name は env rotate では使えません");
-    // 否定形の綴りでも「その操作では使えない」と言う(綴りのまま照合すると
-    // `--no-new-epoch` が diff で素通りし、指定した意図が黙って無視される)
-    expect(await runCli(["env", "diff", "dev", "prod", "--no-new-epoch"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--no-new-epoch は env diff では使えません");
+    expect(await runCli(["audit", "verify", "--limit", "5"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--limit は audit verify では使えません");
     expect(server.requests).toHaveLength(0);
   });
 
@@ -381,19 +330,8 @@ describe("操作に適用されないオプション(env 固有)", () => {
     const { env } = await startEnv();
 
     // 打ち間違いは実行の失敗(1)ではなく usage エラー(2)
-    expect(await runCli(["env", "bogus", "dev", "--reason", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明な操作です(create | rotate | diff)");
-  });
-
-  it("その操作で使えないオプションは、書き方の助言より先に言う", async () => {
-    const { env } = await startEnv();
-
-    // 綴りの助言(値なしで --new-epoch と書け)を先に出すと、そのとおり直した
-    // 次の実行が「diff では使えません」で落ちる = 2 度手間になる
-    expect(await runCli(["env", "diff", "dev", "prod", "--new-epoch=false"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("--new-epoch は env diff では使えません");
-    expect(errors).not.toContain("値を取りません");
+    expect(await runCli(["audit", "bogus", "--event", "x"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("不明な操作です");
   });
 });
 
@@ -425,24 +363,23 @@ describe("空の値", () => {
 
   it("空白だけのオプション値も空として扱う", async () => {
     const { env, server } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
 
-    // 位置引数側だけ trim していると、`--reason "$REASON"` の未設定形が
-    // 空白だけの理由でチェーンへ追記される(取り消せない)
-    expect(await runCli(["env", "rotate", "dev", "--reason", "  "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("オプション --reason の値が空です");
+    // 位置引数側だけ trim していると、`--env "$ENV"` の未設定形が空白だけの
+    // 環境指定として既定へ潰れず、誤った先へ書き込まれる(取り消せない)
+    expect(await runCli(["push", "API_KEY", "--env", "  "], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("オプション --env の値が空です");
     expect(server.requests).toHaveLength(0);
   });
 
-  it("空白だけの値も空として扱う(設定の上書き・実行対象)", async () => {
+  it("空白だけの値も空として扱う(設定の上書き)", async () => {
     const { env, server } = await startEnv();
 
     // `"$PROJ"` の未設定形は `""` にも `" "` にもなる。片方だけ塞ぐと
     // 設定が空白で上書きされ、以後のコマンドが無関係なエラーで落ち続ける
+    // (実行対象側の空白は units.test.ts の runOp と effect-cli.test.ts が固定)
     expect(await runCli(["config", "set", "defaultEnvironment", "  "], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("位置引数 value が空です");
-    expect(await runCli(["run", "--", "  "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
-    expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
   });
 
@@ -498,11 +435,12 @@ describe("空の値", () => {
   it("構造的な誤りは、その操作で使えるかより先に言う", async () => {
     const { env } = await startEnv();
 
-    // 適用可否を先に出すと、そこを直した次の実行で「環境 ID が空」で落ちる
-    expect(await runCli(["env", "rotate", "", "--name", "n"], env.layer)).toBe(2);
+    // 適用可否(--limit は verify 用ではない)を先に出すと、そこを直した次の
+    // 実行で「空の引数」で落ちる = 2 度手間になる
+    expect(await runCli(["audit", "verify", "", "--limit", "5"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("位置引数 environment-id が空です");
-    expect(errors).not.toContain("env rotate では使えません");
+    expect(errors).toContain("空の引数があります");
+    expect(errors).not.toContain("使えません");
   });
 
   it("`--` より前にコマンド名が無い実行は、pull も復号もせずに落ちる", async () => {
@@ -534,17 +472,6 @@ describe("終了コードの一貫性", () => {
     // 「書き方の誤りは 2」を、パーサが落とした場合と揃える
     expect(await runCli(["config", "set", "defaultEnvironment"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("設定する値を指定してください");
-  });
-
-  it("形式の合わない環境 ID は、指定値を出さずに usage エラー(2)", async () => {
-    const { env, server } = await startEnv();
-
-    // 位置引数には値が書かれうるので、指定値そのものは返さない
-    expect(await runCli(["env", "create", "sk-live-topsecret!"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("環境 ID の形式が正しくありません");
-    expect(errors).not.toContain("topsecret");
-    expect(server.requests).toHaveLength(0);
   });
 });
 
@@ -600,43 +527,6 @@ describe("余分な位置引数", () => {
     expect(errors).not.toContain("boolean オプションに値は付けられません");
   });
 
-  it("`maruhi run npm test`(`--` 忘れ)は書き方を案内して落ち、子プロセスを起動しない", async () => {
-    const { env, server } = await startEnv();
-
-    // 余分な位置引数という具体的な誤りを、汎用の「実行対象が無い」より先に言う
-    expect(await runCli(["run", "npm", "test"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(2 個");
-    expect(errors).toContain("`--` の後に並べてください");
-    expect(env.runnerCalls).toHaveLength(0);
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("`--` の前に置いた余分な引数は、実行対象があっても落とす", async () => {
-    const { env, server } = await startEnv();
-
-    // 実行対象はあるので「`--` の後に書け」ではなく、余分な引数として拒否する
-    expect(await runCli(["run", "stray", "--", "printenv"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).toContain("`--` の後に並べてください");
-    expect(env.runnerCalls).toHaveLength(0);
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("`run` の具体的な誤り(余分な位置引数)は、汎用の「実行対象が無い」より先に言う", async () => {
-    const { env, server } = await startEnv();
-
-    // `--` の後ろの先頭が空でも、余分な位置引数という**書いてある誤り**を先に
-    // 報告する(コマンド固有の拒否が共通検査を飛ばすと、命令に反する文面が出る)
-    expect(await runCli(["run", "stray", "--", "", "printenv"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).not.toContain("実行するコマンドを `--` の後に指定してください");
-    expect(env.runnerCalls).toHaveLength(0);
-    expect(server.requests).toHaveLength(0);
-  });
-
   it("`push` の余分な引数には値の渡し方を添える(中身を出さない代わりの案内)", async () => {
     const { env } = await startEnv();
     env.setStdin(new TextEncoder().encode("secret-value"));
@@ -645,18 +535,6 @@ describe("余分な位置引数", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("値は stdin から読みます");
     expect(errors).not.toContain("plaintext");
-  });
-
-  it("`--` の後ろが空文字列だけなら、実行対象なしとして入口で落とす", async () => {
-    const { env, server } = await startEnv();
-
-    // `maruhi run -- "$CMD"`(CMD 未設定)がこの形。「引数が 1 つある」ことと
-    // 「実行対象がある」ことは別で、通すと pull と全変数の復号まで進んでから
-    // spawn が失敗する
-    expect(await runCli(["run", "--", ""], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("実行するコマンドを `--` の後に指定してください");
-    expect(env.runnerCalls).toHaveLength(0);
-    expect(server.requests).toHaveLength(0);
   });
 
   it("`--` の後ろの空文字列は余分な引数として数えない", async () => {
@@ -727,10 +605,10 @@ describe("gunshi 由来の usage エラー", () => {
   it("必須位置引数の欠落は空メッセージにならない(内訳を stderr へ出す)", async () => {
     const { env } = await startEnv();
 
-    expect(await runCli(["env", "rotate"], env.layer)).toBe(2);
+    expect(await runCli(["push"], env.layer)).toBe(2);
     // AggregateError.message は空になりうるので、内訳から作る
     expect(env.errors.join("\n").trim()).not.toBe("maruhi:");
-    expect(env.errors.join("\n")).toContain("位置引数 environment-id を指定してください");
+    expect(env.errors.join("\n")).toContain("位置引数 name を指定してください");
   });
 
   it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
@@ -774,18 +652,6 @@ describe("gunshi 由来の usage エラー", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("不明なコマンドです");
     expect(errors).not.toContain("s3cr3t");
-  });
-
-  it("先頭の空引数があってもコマンドの解決は gunshi と一致する", async () => {
-    const { env } = await startEnv();
-
-    // gunshi は falsy な positional 値を読み飛ばして `env` を解決する。
-    // こちらが空文字列をコマンド名として扱うと引数表を引けず、位置引数の
-    // 取り違えという**専用の案内**が出せなくなる
-    expect(await runCli(["", "env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(
-      2,
-    );
-    expect(env.errors.join("\n")).toContain("--environment-id は位置引数です");
   });
 
   it("長いオプション名の打ち間違いも候補として案内する", async () => {
@@ -861,6 +727,58 @@ describe("引数検査の単体(CLI に短縮形が現れる前の防衛)", () =
       }),
     );
     expect(rejection).toContain("-s は値を取りません");
+  });
+
+  it("negatable な boolean は有効 / 無効の両方の書き方を案内する", () => {
+    // CLI 水準の車両(env rotate --new-epoch)は effect/unstable/cli へ移った
+    // ので、negatable の文面と否定形の綴りは単体で固定する(gunshi へ negatable
+    // を再導入したときに案内が欠ける形を防ぐ)
+    const inline = argsRejection(
+      checkContext({
+        args: { "new-epoch": { type: "boolean", negatable: true } },
+        tokens: [
+          {
+            kind: "option",
+            name: "new-epoch",
+            rawName: "--new-epoch",
+            value: "false",
+            inlineValue: true,
+          },
+        ],
+      }),
+    );
+    expect(inline).toContain("--new-epoch は値を取りません");
+    expect(inline).toContain("無効にするなら --no-new-epoch と、いずれも値なしで");
+  });
+
+  it("否定形の綴り(`--no-x=false` / `--no-x off`)も boolean の検査に掛かる", () => {
+    // negatable を宣言すると綴りが増える。増えた綴りを検査の表へ入れ忘れると、
+    // 塞いだはずの形(値の指定・空きスロットへの吸い込み)がそこから復活する
+    const inline = argsRejection(
+      checkContext({
+        args: { "new-epoch": { type: "boolean", negatable: true } },
+        tokens: [
+          {
+            kind: "option",
+            name: "no-new-epoch",
+            rawName: "--no-new-epoch",
+            value: "false",
+            inlineValue: true,
+          },
+        ],
+      }),
+    );
+    expect(inline).toContain("--no-new-epoch は値を取りません");
+    const spaced = argsRejection(
+      checkContext({
+        args: { "new-epoch": { type: "boolean", negatable: true } },
+        tokens: [
+          { kind: "option", name: "no-new-epoch", rawName: "--no-new-epoch" },
+          { kind: "positional", value: "off" },
+        ],
+      }),
+    );
+    expect(spaced).toContain("--no-new-epoch は値を取りません");
   });
 
   it("boolean の短縮形と同じ名前を持つ別のオプションを boolean 扱いしない", () => {

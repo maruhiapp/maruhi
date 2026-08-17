@@ -19,8 +19,15 @@ import { CliError } from "effect/unstable/cli";
 const USAGE_EXIT_CODE = 2;
 
 /**
- * Teardown that maps CLI usage errors to exit code 2 and defers everything else
- * to {@link Runtime.defaultTeardown}.
+ * Builds the teardown that maps CLI usage errors to exit code 2 and defers
+ * everything else to {@link Runtime.defaultTeardown}.
+ *
+ * `infoRequested` = 起動 argv(`--` より前)に `--help` / `-h` / `--version` /
+ * `-v` があったか。上流は **errors が空の `ShowHelp`** を 2 つの意味で使う —
+ * 明示のヘルプ・バージョン表示(誤りではない = 0)と、サブコマンド必須の親
+ * コマンドを単体で打った形(`maruhi env` — 書き方の誤り = 2)。上流の
+ * エラー型だけでは区別できないので、起動時の要求の有無で読み分ける
+ * (gunshi 時代の `maruhi env` も「不明な操作です」の exit 2 だった)。
  *
  * `(exit, onExit) => void` なので `BunRuntime.runMain({ teardown })` へ渡す形でも、
  * `Effect.exit` の結果へ直接適用する形でも同じ判定になる(cli.ts は後者。
@@ -28,17 +35,19 @@ const USAGE_EXIT_CODE = 2;
  * 中断された `Bun.secrets` の pending なネイティブ呼び出しがイベントループを
  * 生かし続け、プロセスが終了しないことを実測している)。
  */
-export const maruhiTeardown: Runtime.Teardown = <E, A>(
-  exit: Exit.Exit<E, A>,
-  onExit: (code: number) => void,
-): void => {
-  if (Exit.isFailure(exit)) {
-    const failure: unknown = Cause.squash(exit.cause);
-    // errors が空 = `--help` / `--version`(誤りではない)。上流の 0 に従う
-    if (failure instanceof CliError.ShowHelp && failure.errors.length > 0) {
-      onExit(USAGE_EXIT_CODE);
-      return;
+export function maruhiTeardown(infoRequested: boolean): Runtime.Teardown {
+  return <E, A>(exit: Exit.Exit<E, A>, onExit: (code: number) => void): void => {
+    if (Exit.isFailure(exit)) {
+      const failure: unknown = Cause.squash(exit.cause);
+      if (failure instanceof CliError.ShowHelp) {
+        // errors あり = 書き方の誤り。errors 空でも、ヘルプ・バージョンを
+        // 明示していない実行(サブコマンド未指定の親コマンド単体)は誤り
+        if (failure.errors.length > 0 || !infoRequested) {
+          onExit(USAGE_EXIT_CODE);
+          return;
+        }
+      }
     }
-  }
-  Runtime.defaultTeardown(exit, onExit);
-};
+    Runtime.defaultTeardown(exit, onExit);
+  };
+}

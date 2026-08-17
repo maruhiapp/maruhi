@@ -60,7 +60,7 @@ export function tokenHashHexOf(token: Redacted.Redacted<string>): Effect.Effect<
       );
       return encodeHex(new Uint8Array(digest));
     },
-    catch: () => cliError("トークンハッシュの計算に失敗しました(暗号処理エラー)"),
+    catch: () => cliError("Failed to compute the token hash (crypto error)"),
   });
 }
 
@@ -124,7 +124,7 @@ export function verifyAcceptanceBlock(input: {
           },
           signatureHex: input.acceptance.signatureHex,
         }),
-      catch: () => cliError("受諾署名の検証に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to verify the acceptance signature (crypto error)"),
     });
     if (!verified.ok) {
       return { ok: false } as const;
@@ -136,7 +136,7 @@ export function verifyAcceptanceBlock(input: {
     }
     const fingerprint = yield* Effect.tryPromise({
       try: () => computeUserKeyFingerprint(enc, sig),
-      catch: () => cliError("受諾鍵のフィンガープリント計算に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to compute the acceptance key's fingerprint (crypto error)"),
     });
     if (!fingerprint.ok) {
       return { ok: false } as const;
@@ -180,20 +180,20 @@ export function inviteCreateOp(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "AI エージェント環境を検出したため、招待の発行を拒否しました(招待リンクのトークン生値が実行ログ・トランスクリプトに残ります)。人間の対話端末で maruhi invite create を実行してください",
+          "An AI agent environment was detected, so the invite was not issued (the invite link's raw token would persist in execution logs and transcripts). Run maruhi invite create on a human interactive terminal",
         ),
       );
     }
     const inviter = input.verified.state.members.get(input.sessionUserId);
     if (inviter === undefined || ROLE_RANK[inviter.role] < ROLE_RANK.admin) {
       return yield* Effect.fail(
-        cliError("招待の発行は admin 以上のみが実行できます(AUTH_SPEC §15-2)"),
+        cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"),
       );
     }
     if (input.role === "admin" && inviter.role !== "owner") {
       return yield* Effect.fail(
         cliError(
-          "role = admin の招待の発行は owner のみです(CRYPTO_SPEC §6.2 の add_member 権限表と同水準)",
+          "Only an owner can issue a role=admin invite (same level as the add_member permission table in CRYPTO_SPEC §6.2)",
         ),
       );
     }
@@ -206,12 +206,12 @@ export function inviteCreateOp(input: {
         Effect.mapError((error) => {
           if (error instanceof InvitePendingLimitError) {
             return cliError(
-              `保留中の招待が上限(${error.limit})に達しています。不要な招待を maruhi invite revoke で失効させてから再発行してください`,
+              `Pending invites have reached the limit (${error.limit}). Revoke unneeded invites with maruhi invite revoke, then issue again`,
             );
           }
           if (error instanceof InviteRateLimitedError) {
             return cliError(
-              `招待の発行がレート制限に達しました。約 ${error.retryAfterSeconds} 秒後に再実行してください`,
+              `Invite issuance hit the rate limit. Retry in about ${error.retryAfterSeconds} seconds`,
             );
           }
           return toCliError(error);
@@ -243,7 +243,7 @@ export function inviteCreateOp(input: {
       .pipe(
         Effect.catch((error) =>
           io.logError(
-            `警告: 発行ピンを保存できませんでした(${error.message})。member add 時の機械突合は儀式の表示照合のみに劣化します`,
+            `Warning: could not save the issuance pin (${error.message}). The machine cross-check at member add degrades to the ceremony's visual comparison only`,
           ),
         ),
       );
@@ -251,13 +251,13 @@ export function inviteCreateOp(input: {
     // エージェントゲート(この関数の冒頭)で既に判定済みで、剥がすのはその後ろ
     yield* io.log(Redacted.value(link));
     yield* io.logError(
-      `招待を発行しました(id=${displayText(issued.id)}、role=${issued.role}、期限=${formatDateTimeUtc(issued.expiresAtMs)})`,
+      `Issued an invite (id=${displayText(issued.id)}, role=${issued.role}, expires=${formatDateTimeUtc(issued.expiresAtMs)})`,
     );
     yield* io.logError(
-      "このリンクは一度だけ表示されます(サーバーはハッシュしか持たず再表示できません)。招待相手に人対人のチャネルで渡してください",
+      "This link is shown only once (the server stores only a hash and cannot re-display it). Hand it to the invitee over a person-to-person channel",
     );
     yield* io.logError(
-      "相手の受諾後: maruhi invite list で受諾を確認し、受諾者本人と FP ワードを帯域外(通話等)で照合してから maruhi member add を実行してください(CRYPTO_SPEC §6.5 の相互確認)",
+      "After they accept: confirm the acceptance with maruhi invite list, check the FP words with the acceptor out of band (e.g. a call), then run maruhi member add (mutual confirmation — CRYPTO_SPEC §6.5)",
     );
     return { id: issued.id, link, role: issued.role, expiresAtMs: issued.expiresAtMs };
   });
@@ -305,15 +305,15 @@ function confirmInviterFingerprint(input: {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
       input.link.inviterKeyFingerprintHex,
-      "リンクの招待者 FP(if=)の形式が不正です",
+      "The link's inviter fingerprint (if=) is malformed",
     );
     const lines = [
-      "招待者の鍵フィンガープリント(リンクの if= — CRYPTO_SPEC §6.5 の相互確認):",
+      "Inviter's key fingerprint (if= in the link — mutual confirmation, CRYPTO_SPEC §6.5):",
       `  inviter: ${displayText(input.link.inviterUserId)}`,
       `  hex:  ${input.link.inviterKeyFingerprintHex}`,
       "  word: " + formatWordList(words),
-      "この語列が、招待者本人が帯域外(通話等)で読み上げる 12 語と一致することを照合してください。",
-      "一致しない場合、このリンクは差し替えられています(攻撃者のプロジェクトへの誘導 = 逆方向フィッシング)— 受諾を中止してください。",
+      "Check that this word list matches the 12 words the inviter reads to you out of band (e.g. over a call).",
+      "If they do not match, the link has been swapped (luring you into an attacker's project = reverse phishing) — abort the acceptance.",
     ];
     for (const line of lines) {
       yield* io.log(line);
@@ -322,12 +322,12 @@ function confirmInviterFingerprint(input: {
       if (input.expectInviterFingerprintHex !== input.link.inviterKeyFingerprintHex) {
         return yield* Effect.fail(
           cliError(
-            "--inviter-fingerprint がリンクの招待者 FP(if=)と一致しません。リンクが改竄されている可能性があります — 受諾を中止しました(招待者に再発行を依頼してください)",
+            "--inviter-fingerprint does not match the link's inviter fingerprint (if=). The link may have been tampered with — the acceptance was aborted (ask the inviter to reissue)",
           ),
         );
       }
       yield* io.log(
-        "--inviter-fingerprint と一致しました(帯域外の控えとの照合済みとして続行します)",
+        "--inviter-fingerprint matches (continuing; the out-of-band record counts as checked)",
       );
       return;
     }
@@ -335,17 +335,17 @@ function confirmInviterFingerprint(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "AI エージェント環境を検出したため、招待者 FP 確認の儀式を実行できません。人間が実行するか、帯域外で控えた招待者 FP を --inviter-fingerprint で明示してください",
+          "An AI agent environment was detected, so the inviter-fingerprint confirmation ceremony cannot run. Have a human run this, or pass the inviter fingerprint noted out of band via --inviter-fingerprint",
         ),
       );
     }
     return yield* confirmByLastWord({
       words,
       promptText:
-        "帯域外(通話等)で招待者本人の読み上げと照合できたら、表示された 12 語の最後の語を入力してください",
-      mismatchText: "入力が一致しません。表示された語列の最後の語を入力してください",
+        "Once you have checked against the inviter's out-of-band read-out (e.g. a call), type the last of the 12 words shown above",
+      mismatchText: "That does not match. Type the last word of the list shown above",
       exhaustedText:
-        "招待者 FP の確認に失敗しました(語の再入力が一致しません)。受諾は実行していません — 招待者本人と照合できてから再実行してください",
+        "Inviter fingerprint confirmation failed (the re-typed word does not match). The acceptance was not performed — re-run once you can check with the inviter",
     });
   });
 }
@@ -375,7 +375,7 @@ function ensureMasterKeysForAccept(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "master 鍵がありません。AI エージェント環境では鍵の新規生成を行いません(リカバリーコードの発行・保管は人間の対話端末が必要です)。人間の端末で受諾するか、既存の鍵を `maruhi key recover` で復元してから再実行してください",
+          "No master key is present. Key generation is not performed in AI agent environments (issuing and storing the recovery code needs a human interactive terminal). Accept on a human terminal, or restore an existing key with `maruhi key recover` and re-run",
         ),
       );
     }
@@ -383,23 +383,23 @@ function ensureMasterKeysForAccept(input: {
     if (status.registered) {
       return yield* Effect.fail(
         cliError(
-          "この端末に master 鍵がありませんが、リカバリー登録が既に存在します(別のデバイスで鍵を生成済みです)。新しい鍵を作ると既存の鍵と分岐します — `maruhi key recover` でこの端末へ復元してから再実行してください(鍵もリカバリーコードも失った場合のみ、明示的に `maruhi key generate` で作り直してください)",
+          "This machine has no master key, but a recovery registration already exists (a key was generated on another device). Creating a new key would diverge from the existing one — restore it onto this machine with `maruhi key recover` and re-run (only if both the key and the recovery code are lost, explicitly rebuild with `maruhi key generate`)",
         ),
       );
     }
     yield* io.log(
-      "この端末に master 鍵がありません。新しい鍵(= 新しい暗号アイデンティティ)を生成して受諾へ進みます。",
+      "This machine has no master key. A new key (= a new cryptographic identity) will be generated before proceeding to accept.",
     );
     yield* io.log(
-      "別のデバイスで maruhi を使用中の場合はここで中断し、旧デバイスで `maruhi key recovery` を実行してリカバリーコードを発行 → この端末で `maruhi key recover` を実行してください。",
+      "If you already use maruhi on another device, stop here: run `maruhi key recovery` on the old device to issue a recovery code, then run `maruhi key recover` on this machine.",
     );
     const answer = yield* io.promptLine({
-      prompt: "新しい鍵を生成する場合は yes を入力してください: ",
+      prompt: "Type yes to generate a new key: ",
     });
     if (answer.trim().toLowerCase() !== "yes") {
       return yield* Effect.fail(
         cliError(
-          "鍵の生成を中止しました(受諾は実行していません)。準備ができたら再実行してください",
+          "Key generation was cancelled (the acceptance was not performed). Re-run when ready",
         ),
       );
     }
@@ -450,10 +450,10 @@ export function inviteAcceptOp(input: {
           },
           signingKey: masterKeys.sigKeyPair.privateKey,
         }),
-      catch: () => cliError("受諾署名の作成に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to create the acceptance signature (crypto error)"),
     });
     if (!signature.ok) {
-      return yield* Effect.fail(cliError("受諾署名の作成に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to create the acceptance signature"));
     }
 
     const accepted = yield* input.client.invites
@@ -473,7 +473,7 @@ export function inviteAcceptOp(input: {
     if (accepted.projectId !== projectId) {
       return yield* Effect.fail(
         cliError(
-          "受諾応答のプロジェクト ID が受諾署名の対象と一致しません(サーバー応答の矛盾)。この受諾は信用しないでください",
+          "The acceptance response's project ID does not match what the acceptance signature was bound to (the server's response contradicts itself). Do not trust this acceptance",
         ),
       );
     }
@@ -483,7 +483,7 @@ export function inviteAcceptOp(input: {
       input.target.link.role !== accepted.role
     ) {
       yield* io.logError(
-        `警告: リンク申告の role(${input.target.link.role})と実際の role(${accepted.role})が一致しません。リンクの改竄または招待の作り直しの可能性があります — 招待者に確認してください`,
+        `Warning: the role declared in the link (${input.target.link.role}) does not match the actual role (${accepted.role}). The link may have been tampered with, or the invite was re-created — check with the inviter`,
       );
     }
 
@@ -548,7 +548,7 @@ function pinAnchorAfterAccept(
     // 上書きしない(pins.ts の merge 規律)まま、警告して劣化を明示する
     const warnUnpinned = (detail: string) =>
       io.logError(
-        `警告: 招待リンクアンカーをピン留めできませんでした(${detail})。初回同期の機械照合(CRYPTO_SPEC §6.3 (a))は行われません — 招待者との儀式(FP ワードの帯域外照合)を必ず実施してください`,
+        `Warning: could not pin the invite link anchor (${detail}). The machine check on first sync (CRYPTO_SPEC §6.3 (a)) will not run — be sure to perform the ceremony with the inviter (out-of-band FP word comparison)`,
       );
     const loaded = yield* pinStore
       .load(link.projectId)
@@ -563,14 +563,14 @@ function pinAnchorAfterAccept(
     }
     if (loaded.state === "corrupt") {
       yield* warnUnpinned(
-        "既存のピンファイルが破損しています — 内容を確認し、意図しない改変なら削除してください",
+        "the existing pin file is corrupt — inspect it, and delete it if the change was not intentional",
       );
       return false;
     }
     const existing = loaded.pins?.anchor ?? null;
     if (existing !== null && existing.verifiedAtSeq !== null) {
       yield* io.log(
-        "このプロジェクトには機械照合済みの招待リンクアンカーが既にあります — 既存のアンカーを維持します(検証済みアンカーは上書きしません)",
+        "This project already has a machine-verified invite link anchor — keeping the existing anchor (verified anchors are never overwritten)",
       );
       return true;
     }
@@ -578,7 +578,7 @@ function pinAnchorAfterAccept(
       // 未照合アンカーの置換は正規の再招待でも起きるが、痕跡ゼロだと偽リンクに
       // よる差し替え(DoS 経路)が監査不能になる — 一行で顕在化させる
       yield* io.log(
-        "未照合の既存アンカーを、この受諾のリンクアンカーで置き換えます(最後の正規受諾を優先)",
+        "Replacing the unverified existing anchor with this acceptance's link anchor (the latest legitimate acceptance wins)",
       );
     }
     return yield* pinStore
@@ -613,25 +613,25 @@ function prepareTokenAccept(
     if (expectInviterFingerprintHex !== null) {
       return yield* Effect.fail(
         usageError(
-          "--inviter-fingerprint はリンク受諾専用です(生トークンには照合対象の if= がありません)。招待リンクで受諾してください",
+          "--inviter-fingerprint is only for link acceptance (a raw token has no if= to check against). Accept with the invite link",
         ),
       );
     }
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "AI エージェント環境を検出したため、生トークンでの受諾を拒否しました(アンカー・招待者 FP の照合材料がありません)。招待リンクで受諾してください",
+          "An AI agent environment was detected, so acceptance with a raw token was refused (there is no anchor or inviter fingerprint to check against). Accept with the invite link",
         ),
       );
     }
     yield* io.logError(
-      "警告: 生トークンでの受諾はリンクアンカー(巻き戻し検出 — CRYPTO_SPEC §6.3)と招待者 FP 照合(§6.5)の両方を失います。可能な限り招待リンクで受諾してください",
+      "Warning: accepting with a raw token loses both the link anchor (rollback detection — CRYPTO_SPEC §6.3) and the inviter fingerprint check (§6.5). Accept with the invite link whenever possible",
     );
     const answer = yield* io.promptLine({
-      prompt: "アンカーなしで受諾する場合は yes を入力してください: ",
+      prompt: "Type yes to accept without an anchor: ",
     });
     if (answer.trim().toLowerCase() !== "yes") {
-      return yield* Effect.fail(cliError("受諾を中止しました"));
+      return yield* Effect.fail(cliError("The acceptance was cancelled"));
     }
     return { projectId: target.projectId, token: target.token };
   });
@@ -646,22 +646,22 @@ function reportAcceptOutcome(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     yield* io.log(
-      `招待を受諾しました(project=${input.accepted.projectId}、role=${input.accepted.role})`,
+      `Accepted the invite (project=${input.accepted.projectId}, role=${input.accepted.role})`,
     );
     const ownWords = yield* fingerprintWords(
       input.fingerprintHex,
-      "鍵フィンガープリントの形式が不正です",
+      "The key fingerprint is malformed",
     );
-    yield* io.log("あなたの鍵フィンガープリント(招待者が member add 時に照合します):");
+    yield* io.log("Your key fingerprint (the inviter checks this at member add):");
     yield* io.log(`  hex:  ${input.fingerprintHex}`);
     yield* io.log("  word: " + formatWordList(ownWords));
     yield* io.log(
-      "この 12 語を帯域外(通話等)で招待者本人に読み上げてください(§6.5 の相互確認 — 1 回の通話で双方向の照合が成立します。後から再表示するには maruhi key show)",
+      "Read these 12 words to the inviter out of band (e.g. over a call) (§6.5 mutual confirmation — one call completes the check in both directions. To show them again later, run maruhi key show)",
     );
     yield* io.log(
       input.anchored
-        ? "招待者が member add を完了すると参加が確定します。参加後の初回同期で、リンクアンカー(genesis・ヘッド・招待者 FP)の機械照合が自動的に行われます"
-        : "招待者が member add を完了すると参加が確定します(アンカーのピン留めがないため、初回同期の機械照合は行われません — 儀式の帯域外照合が唯一の防衛です)",
+        ? "Your membership becomes final once the inviter completes member add. On the first sync after joining, the link anchor (genesis, head, inviter FP) is machine-checked automatically"
+        : "Your membership becomes final once the inviter completes member add (no anchor was pinned, so the first-sync machine check will not run — the out-of-band ceremony is the only defense)",
     );
   });
 }
@@ -669,33 +669,31 @@ function reportAcceptOutcome(input: {
 /** 受諾エラーの文言マップ(理由コードを運用手順に翻訳する)。 */
 function acceptErrorToCliError(error: unknown): CliError {
   if (error instanceof InviteNotFoundError) {
-    return cliError(
-      "未知の招待トークンです。リンク(またはトークン)が完全にコピーされているか確認してください",
-    );
+    return cliError("Unknown invite token. Check that the link (or token) was copied completely");
   }
   if (error instanceof InviteGoneError) {
     switch (error.reason) {
       case "accepted":
       case "completed":
         return cliError(
-          "この招待は既に受諾されています。あなたの受諾でない場合はリンクの横取りの可能性があります — 招待者に連絡し、当該招待の失効(maruhi invite revoke)と再発行を依頼してください(CRYPTO_SPEC §6.5 の単回使用による衝突の顕在化)",
+          "This invite has already been accepted. If that acceptance was not yours, the link may have been intercepted — contact the inviter and ask them to revoke this invite (maruhi invite revoke) and reissue (single use surfaces collisions — CRYPTO_SPEC §6.5)",
         );
       case "revoked":
-        return cliError("この招待は失効済みです。招待者に再発行を依頼してください");
+        return cliError("This invite has been revoked. Ask the inviter to reissue");
       case "expired":
-        return cliError("この招待は期限切れです。招待者に再発行を依頼してください");
+        return cliError("This invite has expired. Ask the inviter to reissue");
       default:
-        return cliError("この招待は使用できない状態です。招待者に再発行を依頼してください");
+        return cliError("This invite is not usable. Ask the inviter to reissue");
     }
   }
   if (error instanceof InviteSignatureInvalidError) {
     return cliError(
-      "受諾署名がサーバー検証で拒否されました。リンクの p(プロジェクト ID)が改竄されているか、リンクが壊れています — 招待者にリンクの再発行を依頼してください",
+      "The acceptance signature was rejected by server verification. The link's p (project ID) was tampered with, or the link is broken — ask the inviter to reissue the link",
     );
   }
   if (error instanceof ForbiddenError) {
     return cliError(
-      "この認証情報では受諾できません。受諾にはセッションまたは全プロジェクトスコープ(*)× admin のトークンが必要です(AUTH_SPEC §15-2 — スコープ限定トークンは不可)。`maruhi login` でログインし直してください",
+      "These credentials cannot accept the invite. Acceptance needs a session, or an all-project-scope (*) × admin token (AUTH_SPEC §15-2 — scope-limited tokens are not allowed). Log in again with `maruhi login`",
     );
   }
   return toCliError(error);
@@ -728,12 +726,12 @@ export function inviteListOp(input: {
     const rows = [...listed].toSorted((a, b) => a.createdAtMs - b.createdAtMs);
     let integrityFailures = 0;
     if (rows.length === 0) {
-      yield* io.log("招待はありません");
+      yield* io.log("No invites");
       return { rows: 0, integrityFailures };
     }
     for (const row of rows) {
       yield* io.log(
-        `${displayText(row.id)}\t${displayStatus(row, input.nowMs)}\trole=${row.role}\t発行=${formatDateTimeUtc(row.createdAtMs)}\t期限=${formatDateTimeUtc(row.expiresAtMs)}`,
+        `${displayText(row.id)}\t${displayStatus(row, input.nowMs)}\trole=${row.role}\tissued=${formatDateTimeUtc(row.createdAtMs)}\texpires=${formatDateTimeUtc(row.expiresAtMs)}`,
       );
       // 発行ピン突合(§6.5 の招待者側対応物): サーバー申告の行が発行時の
       // token_hash・role と食い違えば、行のすり替え・role の虚偽申告の兆候
@@ -741,7 +739,7 @@ export function inviteListOp(input: {
       if (pin !== undefined && (pin.tokenHashHex !== row.tokenHashHex || pin.role !== row.role)) {
         integrityFailures += 1;
         yield* io.logError(
-          `警告: 招待 ${displayText(row.id)} のサーバー申告(token_hash / role)が発行時のローカル記録と一致しません。行のすり替え・role の改竄の可能性があります — この招待で member add を実行しないでください`,
+          `Warning: the server's claim for invite ${displayText(row.id)} (token_hash / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — do not run member add with this invite`,
         );
       }
       if (row.acceptance !== null) {
@@ -753,15 +751,17 @@ export function inviteListOp(input: {
         if (!verified.ok) {
           integrityFailures += 1;
           yield* io.logError(
-            `警告: 招待 ${displayText(row.id)} の受諾署名が検証に失敗しました(CRYPTO_SPEC §6.5)。この受諾ブロックは信用できません — member add を実行せず、招待を失効させてください`,
+            `Warning: the acceptance signature for invite ${displayText(row.id)} failed verification (CRYPTO_SPEC §6.5). This acceptance block cannot be trusted — do not run member add; revoke the invite`,
           );
           continue;
         }
         const words = yield* fingerprintWords(
           verified.fingerprintHex,
-          "受諾鍵のフィンガープリント形式が不正です",
+          "The acceptance key's fingerprint is malformed",
         );
-        yield* io.log(`  受諾: ${displayText(row.acceptance.inviteeUserId)}(署名検証 OK)`);
+        yield* io.log(
+          `  accepted: ${displayText(row.acceptance.inviteeUserId)} (signature verified)`,
+        );
         yield* io.log(`  fp:   ${verified.fingerprintHex}`);
         yield* io.log("  word: " + formatWordList(words));
       }
@@ -782,18 +782,18 @@ export function inviteRevokeOp(input: {
       .pipe(
         Effect.mapError((error) => {
           if (error instanceof InviteNotFoundError) {
-            return cliError("招待が見つかりません(maruhi invite list で id を確認してください)");
+            return cliError("Invite not found (check the id with maruhi invite list)");
           }
           if (error instanceof InviteGoneError) {
             return error.reason === "completed"
               ? cliError(
-                  "この招待は add_member まで完了しています。参加を取り消すには maruhi member remove を実行してください(全環境ローテーションを伴います — CRYPTO_SPEC §7)",
+                  "This invite has completed through add_member. To undo the membership, run maruhi member remove (it rotates every environment — CRYPTO_SPEC §7)",
                 )
-              : cliError("この招待は既に失効済みです");
+              : cliError("This invite is already revoked");
           }
           return toCliError(error);
         }),
       );
-    yield* io.log("招待を失効させました");
+    yield* io.log("Revoked the invite");
   });
 }

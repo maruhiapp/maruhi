@@ -248,9 +248,7 @@ export function requireWritingMember(input: {
     const member = input.verified.state.members.get(input.signerUserId);
     if (member === undefined) {
       return yield* Effect.fail(
-        cliError(
-          `このプロジェクトのチェーン導出メンバーではありません(${input.operation}を行えません)`,
-        ),
+        cliError(`You are not a chain-derived member of this project (cannot ${input.operation})`),
       );
     }
     if (ROLE_RANK[member.role] < ROLE_RANK.member) {
