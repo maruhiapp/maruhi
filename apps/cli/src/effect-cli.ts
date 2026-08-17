@@ -1,7 +1,7 @@
 // `effect/unstable/cli` へ移した引数層(ADR-0016 第 1 段階: pull / run /
 // env create、第 2 段階: env rotate / diff、server、invite、member、
-// 第 3 段階: push、config)。残るコマンド(login / logout / key / project /
-// rotation / audit)は gunshi のまま(cli.ts)で、この分割状態は移行が進むまで続く。
+// 第 3 段階: push、config、key、project、rotation、audit)。残るコマンド
+// (login / logout)は gunshi のまま(cli.ts)で、この分割状態は移行が進むまで続く。
 //
 // `env` / `server` / `invite` / `member` は**真の入れ子サブコマンド**
 // (ADR-0016 決定 6): gunshi の 1 段制約のために操作を位置引数にしていた結果
@@ -27,7 +27,12 @@
 // 6. **stdout はコマンドの出力だけ**。コマンド本体の出力は `CliIo.log`、
 //    ヘルプ・診断は `Console`(= `CliIo.logError` = stderr)へ分ける
 
-import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import {
+  AUDIT_ROW_ID_PATTERN,
+  DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
+  MAX_AUDIT_EVENTS_PAGE_LIMIT,
+} from "@maruhi/api-schema";
+import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import {
   Cause,
@@ -54,6 +59,14 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
+import {
+  type AuditListFilters,
+  auditInvitesOp,
+  auditListOp,
+  type AuditPageOptions,
+  auditSelfOp,
+  auditVerifyOp,
+} from "./audit.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
 import { asConfigKey, CONFIG_KEYS, type ConfigKey, ConfigStore } from "./config.ts";
@@ -107,7 +120,12 @@ import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
-import { reportRotationFlagCount } from "./rotation.ts";
+import {
+  reportRotationFlagCount,
+  resolveDismissTargets,
+  rotationDismissOp,
+  rotationListOp,
+} from "./rotation.ts";
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
@@ -268,6 +286,70 @@ const configSetConfig = {
     Argument.withSchema(NonBlank),
   ),
 };
+
+const rotationListConfig = { ...projectFlags() };
+
+const rotationDismissConfig = {
+  ...projectFlags(),
+  env: singleValued(
+    "env",
+    "Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)",
+  ),
+  all: singleFlag("all", "Dismiss every currently-active flag (an explicit acceptance of risk)"),
+  // gunshi では optional な 2 つ目の位置引数だった(--all の実行では取らない)。
+  // atMost(1) が「--all なら省略」を宣言で表す
+  variable: Argument.string("variable").pipe(
+    Argument.withDescription("variableId to dismiss (omit when using --all)"),
+    Argument.withSchema(NonBlank),
+    Argument.atMost(1),
+    Argument.map((values) => values[0]),
+  ),
+};
+
+/** audit のページ指定フラグ(list / invites / self 共通)。 */
+const auditPageFlags = () => ({
+  limit: Flag.integer("limit").pipe(
+    Flag.withDescription(
+      `Page size (1-${MAX_AUDIT_EVENTS_PAGE_LIMIT}; default ${DEFAULT_AUDIT_EVENTS_PAGE_LIMIT})`,
+    ),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+  before: singleValued(
+    "before",
+    "Show rows older than this row id (pass the value printed by the continuation hint at the end of the previous page)",
+  ),
+});
+
+/**
+ * `maruhi audit`(親)と `maruhi audit list` が共有する宣言。**bare `audit` =
+ * list**(現行仕様)を保つため、親コマンド自身がこの宣言とハンドラを持つ
+ * (実測: ハンドラ付き親 + withSubcommands で、bare 親はハンドラを実行し、
+ * サブコマンド指定時は子だけが走る)。
+ */
+const auditListConfig = {
+  ...projectFlags(),
+  ...auditPageFlags(),
+  event: singleValued(
+    "event",
+    "Filter by event kind (e.g. var.version_pushed / chain.member_added)",
+  ),
+  actor: singleValued(
+    "actor",
+    "Filter by actor user_id (below admin, only your own user_id — AUDIT_SPEC §6)",
+  ),
+  target: singleValued("target", "Filter by target user_id"),
+  env: singleValued("env", "Filter by environment ID"),
+  var: singleValued("var", "Filter by variableId"),
+};
+
+const auditInvitesConfig = { ...projectFlags(), ...auditPageFlags() };
+
+// self はアカウント全域でプロジェクトを取らない(--project は宣言に無い =
+// Unknown flag。gunshi 時代の AUDIT_ACTION_FLAGS の置き換え)
+const auditSelfConfig = { ...serverOnlyFlags(), ...auditPageFlags() };
+
+const auditVerifyConfig = { ...projectFlags() };
 
 const keyGenerateConfig = serverOnlyFlags();
 const keyShowConfig = serverOnlyFlags();
@@ -459,7 +541,23 @@ const GROUP_CONFIGS: Readonly<
     recovery: keyRecoveryConfig,
   },
   project: { init: projectInitConfig, verify: projectVerifyConfig },
+  rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
+  audit: {
+    list: auditListConfig,
+    invites: auditInvitesConfig,
+    self: auditSelfConfig,
+    verify: auditVerifyConfig,
+  },
   config: { get: configGetConfig, set: configSetConfig },
+};
+
+/**
+ * 親の段自身が宣言(とハンドラ)を持つグループ。bare `maruhi audit` = list を
+ * 保つ audit だけで、診断(`audit --bogus` の未宣言フラグ)も親の段の宣言で
+ * 組めるよう COMMAND_SPECS の親エントリへ流し込む。
+ */
+const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Param.Any>>>> = {
+  audit: auditListConfig,
 };
 
 /**
@@ -473,7 +571,16 @@ export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   push: { ...specOf(pushConfig), strayHint: PUSH_STDIN_HINT },
   ...Object.fromEntries(
     Object.entries(GROUP_CONFIGS).flatMap(([group, subcommands]) => [
-      [group, { flags: [], positionals: [], subcommands: Object.keys(subcommands) }],
+      [
+        group,
+        {
+          // 親自身が宣言を持つ段(audit)は、その宣言を診断にも使う
+          ...(GROUP_PARENT_CONFIGS[group] === undefined
+            ? { flags: [], positionals: [] }
+            : specOf(GROUP_PARENT_CONFIGS[group])),
+          subcommands: Object.keys(subcommands),
+        },
+      ],
       ...Object.entries(subcommands).map(([name, config]) => [`${group} ${name}`, specOf(config)]),
     ]),
   ),
@@ -554,6 +661,89 @@ function requireEnvironmentId(
           `Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: ${example})`,
         ),
       );
+}
+
+/** 環境 ID の形(--env フラグ用の文面。指定値そのものはエラーに出さない)。 */
+const ENV_FLAG_SHAPE_MESSAGE =
+  "Invalid environment ID for --env (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)";
+
+/** 未指定は許容し、指定時は [1, max] の整数のみ通す。 */
+function outsideIntRange(value: number | undefined, max: number): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  return !Number.isInteger(value) || value < 1 || value > max;
+}
+
+function parseAuditPage(
+  limit: number | undefined,
+  before: string | undefined,
+): Effect.Effect<AuditPageOptions, CliError> {
+  if (outsideIntRange(limit, MAX_AUDIT_EVENTS_PAGE_LIMIT)) {
+    return Effect.fail(
+      usageError(
+        `--limit must be an integer between 1 and ${MAX_AUDIT_EVENTS_PAGE_LIMIT} (the AUDIT_SPEC §7 cap)`,
+      ),
+    );
+  }
+  // カーソルは行 id(AUDIT_SPEC §5.1 row_id — 形式は api-schema の Schema と
+  // 共有)。前ページ末尾の「To continue:」案内が示す値をそのまま渡す
+  if (before !== undefined && !AUDIT_ROW_ID_PATTERN.test(before)) {
+    return Effect.fail(
+      usageError(
+        "--before must be a row id (32 lowercase hex chars — the value printed by the continuation hint at the end of the previous page)",
+      ),
+    );
+  }
+  return Effect.succeed({ limit: limit ?? null, before: before ?? null });
+}
+
+interface AuditFilterFlags {
+  readonly event: string | undefined;
+  readonly actor: string | undefined;
+  readonly target: string | undefined;
+  readonly env: string | undefined;
+  readonly var: string | undefined;
+}
+
+/** 未指定は許容し、指定時は非空かつ max 文字以内のみ通す。 */
+function boundedFlagValue(value: string | undefined, max: number): boolean {
+  return value === undefined || (value.length > 0 && value.length <= max);
+}
+
+/** フィルタフラグの最初の書き方の誤り(なければ null)。 */
+function auditFilterProblem(values: AuditFilterFlags): string | null {
+  if (!boundedFlagValue(values.event, 64)) {
+    return "--event must be an event name (area.verb — e.g. var.version_pushed)";
+  }
+  if (!boundedFlagValue(values.actor, 1024)) {
+    return "--actor must be a user_id";
+  }
+  if (!boundedFlagValue(values.target, 1024)) {
+    return "--target must be a user_id";
+  }
+  if (values.env !== undefined && !isEnvironmentId(values.env)) {
+    return ENV_FLAG_SHAPE_MESSAGE;
+  }
+  if (values.var !== undefined && !isVariableId(values.var)) {
+    return "--var is not a valid variableId";
+  }
+  return null;
+}
+
+/** list のフィルタフラグの検査(形式はネットワークより先に見る)。 */
+function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFilters, CliError> {
+  const problem = auditFilterProblem(values);
+  if (problem !== null) {
+    return Effect.fail(usageError(problem));
+  }
+  return Effect.succeed({
+    event: values.event ?? null,
+    actorUserId: values.actor ?? null,
+    targetUserId: values.target ?? null,
+    environmentId: values.env ?? null,
+    variableId: values.var ?? null,
+  });
 }
 
 /** 位置引数で受けた設定キーの検証(**指定値そのものはエラーに出さない**)。 */
@@ -1233,6 +1423,142 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const rotationList = Command.make("list", rotationListConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openMetadataProject(values);
+      onExitCode(yield* rotationListOp(context));
+    }),
+  ).pipe(Command.withDescription("List currently-active rotation flags (AUDIT_SPEC §4.1)"));
+
+  const rotationDismiss = Command.make("dismiss", rotationDismissConfig, (values) =>
+    Effect.gen(function* () {
+      // 対象の形式はネットワークより先に検査する
+      const environmentId = values.env;
+      if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
+        return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+      }
+      const variableId = values.variable;
+      if (variableId !== undefined && !isVariableId(variableId)) {
+        return yield* Effect.fail(
+          usageError("Invalid variableId (see maruhi rotation list for the current targets)"),
+        );
+      }
+      const context = yield* openMetadataProject({
+        server: values.server,
+        project: values.project,
+      });
+      const resolved = yield* resolveDismissTargets({
+        client: context.client,
+        projectId: context.projectId,
+        all: values.all,
+        environmentId: environmentId ?? null,
+        variableId: variableId ?? null,
+      });
+      onExitCode(
+        yield* rotationDismissOp({
+          client: context.client,
+          projectId: context.projectId,
+          targets: resolved.targets,
+        }),
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Dismiss rotation flags without rotating (an explicit acceptance of risk — admin)",
+    ),
+  );
+
+  // list / dismiss とも master 鍵を要求しない(フラグは非機密メタデータで、
+  // 名前解決も検証済みステートメントの読み取りのみ — project verify と同じ
+  // 鍵なしクラス)。dismiss の権限(admin 以上 × admin スコープ)はサーバー側が
+  // 強制する
+  const rotation = Command.make("rotation").pipe(
+    Command.withDescription("Manage rotation flags (list / dismiss — AUDIT_SPEC §4.1)"),
+    Command.withSubcommands([rotationList, rotationDismiss]),
+  );
+
+  /**
+   * audit list の本体(bare `maruhi audit` と `maruhi audit list` が共有する)。
+   * master 鍵を要求しない(監査行は非機密メタデータ — rotation list と同じ
+   * 鍵なしクラス)。可視性クラス・invite.* の権限軸はサーバー側が強制する。
+   */
+  const runAuditList = (values: {
+    readonly server?: string | undefined;
+    readonly project?: string | undefined;
+    readonly limit?: number | undefined;
+    readonly before?: string | undefined;
+    readonly event?: string | undefined;
+    readonly actor?: string | undefined;
+    readonly target?: string | undefined;
+    readonly env?: string | undefined;
+    readonly var?: string | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const page = yield* parseAuditPage(values.limit, values.before);
+      const filters = yield* parseAuditFilters({
+        event: values.event,
+        actor: values.actor,
+        target: values.target,
+        env: values.env,
+        var: values.var,
+      });
+      const context = yield* openMetadataProject({
+        server: values.server,
+        project: values.project,
+      });
+      onExitCode(yield* auditListOp(context, page, filters));
+    });
+
+  const auditList = Command.make("list", auditListConfig, runAuditList).pipe(
+    Command.withDescription(
+      "List audit events, cross-checking chain.* mirror rows (AUDIT_SPEC §7)",
+    ),
+  );
+
+  const auditInvites = Command.make("invites", auditInvitesConfig, (values) =>
+    Effect.gen(function* () {
+      const page = yield* parseAuditPage(values.limit, values.before);
+      const context = yield* openMetadataProject({
+        server: values.server,
+        project: values.project,
+      });
+      onExitCode(yield* auditInvitesOp(context, page));
+    }),
+  ).pipe(Command.withDescription("List invite.* audit events (chain-role admin)"));
+
+  const auditSelf = Command.make("self", auditSelfConfig, (values) =>
+    Effect.gen(function* () {
+      const page = yield* parseAuditPage(values.limit, values.before);
+      const context = yield* openSession(values.server);
+      onExitCode(yield* auditSelfOp(context, page));
+    }),
+  ).pipe(Command.withDescription("List your own account audit events (AUDIT_SPEC §3.1)"));
+
+  const auditVerify = Command.make("verify", auditVerifyConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openMetadataProject({
+        server: values.server,
+        project: values.project,
+      });
+      onExitCode(yield* auditVerifyOp(context));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Verify the chain ↔ mirror bijection (detects missing / forged / altered rows)",
+    ),
+  );
+
+  // **bare `maruhi audit` = list**(現行仕様の維持 — 第 3 段階の裁定)。
+  // 親自身が list の宣言とハンドラを持つ(実測: ハンドラ付き親 +
+  // withSubcommands で、bare 親はハンドラを実行し、サブコマンド指定時は
+  // 子だけが走る。不明なサブコマンドは UnknownSubcommand で exit 2)
+  const audit = Command.make("audit", auditListConfig, runAuditList).pipe(
+    Command.withDescription(
+      "View and verify audit events (list / invites / self / verify — AUDIT_SPEC §7). Bare `maruhi audit` runs list",
+    ),
+    Command.withSubcommands([auditList, auditInvites, auditSelf, auditVerify]),
+  );
+
   const keyGenerate = Command.make("generate", keyGenerateConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openSession(values.server);
@@ -1538,7 +1864,20 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   return Command.make("maruhi").pipe(
-    Command.withSubcommands([pull, run, push, env, server, invite, member, key, project, config]),
+    Command.withSubcommands([
+      pull,
+      run,
+      push,
+      env,
+      server,
+      invite,
+      member,
+      key,
+      project,
+      rotation,
+      audit,
+      config,
+    ]),
   );
 }
 

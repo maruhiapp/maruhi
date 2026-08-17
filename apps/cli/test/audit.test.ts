@@ -234,13 +234,13 @@ describe("maruhi audit(list)", () => {
     // ミラー行の突合(共有写像どおりの行は OK)
     expect(logs).toContain("chain.genesis");
     expect(logs).toContain("chain.member_added");
-    expect(logs).toContain("突合=OK");
+    expect(logs).toContain("mirror=OK");
     // 表示名は検証済みステートメント由来のみ。payload のスナップショットは
     // 「記録=」の中にだけ現れる
-    expect(logs).toContain("var=ALPHA(va)");
+    expect(logs).toContain("var=ALPHA (va)");
     expect(logs).not.toContain("var=EVIL_NAME");
     expect(logs).toContain("EVIL_NAME");
-    expect(env.errors.join("\n")).not.toContain("一致しません");
+    expect(env.errors.join("\n")).not.toContain("does not match the verified chain");
   });
 
   it("メタデータを取得できない環境は識別子表示へ劣化する(一覧は止めない)", async () => {
@@ -253,7 +253,7 @@ describe("maruhi audit(list)", () => {
     expect(await runCli(["audit"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("var=va");
     expect(env.logs.join("\n")).not.toContain("ALPHA");
-    expect(env.errors.join("\n")).toContain("検証済みメタデータを取得できません");
+    expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
   });
 
   it("改竄されたミラー行(actor の差し替え)は警告 + 終了コード 1", async () => {
@@ -266,9 +266,9 @@ describe("maruhi audit(list)", () => {
     rows[2] = { ...tampered, actor: { type: "user", userId: "user-evil-9999" } };
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit"], env.layer)).toBe(1);
-    expect(env.logs.join("\n")).toContain("突合=不一致");
+    expect(env.logs.join("\n")).toContain("mirror=mismatch");
     const errors = env.errors.join("\n");
-    expect(errors).toContain("ミラー行が検証済みチェーンと一致しません");
+    expect(errors).toContain("does not match the verified chain");
     expect(errors).toContain("actor.user_id");
   });
 
@@ -312,7 +312,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
       built.projectId,
     );
     expect(await runCli(["audit", "verify"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("ミラー全単射検証 OK");
+    expect(env.logs.join("\n")).toContain("Mirror bijection verification OK");
   });
 
   it("ミラー行の欠落(削除の隠蔽)を検出する", async () => {
@@ -322,7 +322,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("対応するミラー行がありません");
+    expect(errors).toContain("no corresponding mirror row");
     expect(errors).toContain("chain_seq=3");
   });
 
@@ -355,7 +355,7 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     rows.push({ ...duplicated, id: idOf(9), seq: 9 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("重複");
+    expect(env.errors.join("\n")).toContain("duplicates");
   });
 
   it("偽のトークン経由表示(actor.api_token_id の付与)を検出する", async () => {
@@ -387,8 +387,8 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("連続していません");
-    expect(env.logs.join("\n")).not.toContain("ミラー全単射検証 OK");
+    expect(errors).toContain("not contiguous");
+    expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
   it("head 直後から連続する新しい行は偽造断定しないが、OK とも言わない(exit 1 + 再実行案内)", async () => {
@@ -403,9 +403,9 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("ミラー検証未完");
-    expect(errors).not.toContain("連続していません");
-    expect(env.logs.join("\n")).not.toContain("ミラー全単射検証 OK");
+    expect(errors).toContain("Mirror verification incomplete");
+    expect(errors).not.toContain("not contiguous");
+    expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 });
 
@@ -467,7 +467,7 @@ describe("maruhi audit invites / self", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("auth.recovery_blob_fetched");
     expect(logs).toContain("auth.token_created");
-    expect(logs).toContain("リカバリーコードを再発行");
+    expect(logs).toContain("reissue your recovery code");
   });
 });
 
@@ -475,15 +475,15 @@ describe("引数の書き方の検査(通信より前)", () => {
   it("audit self への --project は操作専用オプションとして拒否する(exit 2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["audit", "self", "--project", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("audit self では使えません");
+    expect(env.errors.join("\n")).toContain("Unknown flag");
   });
 
   it("limit の範囲外・不明な操作は usage エラー(exit 2)", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["audit", "--limit", "0"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--limit は 1〜200 の整数");
+    expect(env.errors.join("\n")).toContain("--limit must be an integer between 1 and 200");
     const env2 = await makeTestEnv();
     expect(await runCli(["audit", "bogus"], env2.layer)).toBe(2);
-    expect(env2.errors.join("\n")).toContain("不明な操作です");
+    expect(env2.errors.join("\n")).toContain("Unknown subcommand");
   });
 });

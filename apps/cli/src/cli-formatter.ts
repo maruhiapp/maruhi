@@ -89,10 +89,12 @@ function unrecognizedOptionMessage(
 
 /** 候補も出せない未宣言フラグの文面(段の種類 — 親 / 葉 — で直し方が違う)。 */
 function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string): string {
-  // 入れ子の段(サブコマンドを持つ親)は自分のフラグを持たない。gunshi 時代は
-  // 操作名より前に書いたフラグも通ったため、その形で来た利用者に「フラグが
-  // 存在しない」と嘘をつかず、**置き場所**を案内する
-  const subcommands = spec?.subcommands ?? [];
+  // 入れ子の段(サブコマンドを持つ親)は**普通は**自分のフラグを持たない。
+  // gunshi 時代は操作名より前に書いたフラグも通ったため、その形で来た利用者に
+  // 「フラグが存在しない」と嘘をつかず、**置き場所**を案内する。例外は
+  // 親自身が宣言を持つ段(bare `audit` = list)で、そちらは葉と同じく
+  // 受け付けるフラグの一覧を出す
+  const subcommands = (spec?.flags.length ?? 0) === 0 ? (spec?.subcommands ?? []) : [];
   const first = subcommands[0];
   if (first !== undefined) {
     return `Unknown flag (maruhi ${commandKey} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. maruhi ${commandKey} ${first} --flag …)`;

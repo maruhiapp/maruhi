@@ -981,6 +981,119 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
   });
 });
 
+describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 ③)", () => {
+  it("bare `maruhi audit` は list として実行される(現行仕様の維持)", async () => {
+    // ハンドラ付き親(実測済み): bare 親は list を実行し、コマンド本体
+    // (通信)まで進む = usage エラー(2)にならない
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit"], env.layer)).toBe(1);
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("bare `maruhi audit` でも list のフラグが使える(`audit --limit 5`)", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit", "--limit", "5"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).not.toContain("Unknown flag");
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
+  it("audit の書き方の誤りは通信より前に落ちる(範囲外・型違い・不明な操作)", async () => {
+    const range = await startEnv();
+    expect(await runCli(["audit", "--limit", "0"], range.env.layer)).toBe(2);
+    expect(range.env.errors.join("\n")).toContain("--limit must be an integer between 1 and 200");
+    expect(range.server.requests).toHaveLength(0);
+
+    // 値の無い / 数として読めない number は gunshi では内部エラー(exit 1)
+    // だったが、effect では InvalidValue = usage エラー(exit 2)になる
+    const typed = await startEnv();
+    expect(await runCli(["audit", "--limit", "s3cr3t"], typed.env.layer)).toBe(2);
+    const typedErrors = typed.env.errors.join("\n");
+    expect(typedErrors).toContain("Unacceptable value for flag --limit");
+    expectNoLeak(typed.env, ["s3cr3t"]);
+    expect(typed.server.requests).toHaveLength(0);
+
+    const bogus = await startEnv();
+    expect(await runCli(["audit", "bogus"], bogus.env.layer)).toBe(2);
+    expect(bogus.env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: list | invites | self | verify)",
+    );
+    expect(bogus.server.requests).toHaveLength(0);
+  });
+
+  it("その操作に無いフラグは usage エラー(2)で落ちる(AUDIT_ACTION_FLAGS の置き換え)", async () => {
+    // gunshi 時代の optionRestrictedTo / auditActionFlagRejection が受け持って
+    // いた形。宣言が操作ごとに分かれたので、未宣言フラグとして構造的に落ちる
+    for (const argv of [
+      ["audit", "verify", "--limit", "5"],
+      ["audit", "self", "--project", "x"],
+      ["audit", "invites", "--event", "var.version_pushed"],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain("Unknown flag");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("audit list のフィルタの形式検査は通信より前に落ちる", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit", "--env", "!bad"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Invalid environment ID for --env");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("bare `maruhi rotation` / 不明な操作は usage エラー(2)", async () => {
+    const bare = await startEnv();
+    expect(await runCli(["rotation"], bare.env.layer)).toBe(2);
+    expect(bare.env.logs).toEqual([]);
+    expect(bare.env.errors.join("\n")).toContain("maruhi rotation");
+
+    const bogus = await startEnv();
+    expect(await runCli(["rotation", "bogus"], bogus.env.layer)).toBe(2);
+    expect(bogus.env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: list | dismiss)",
+    );
+  });
+
+  it("rotation dismiss の boolean(--all)は重複を拒否し、値は書いたとおりに読む", async () => {
+    // gunshi に最後まで残っていた boolean。`--all=false` は gunshi では
+    // **値を読まずに true**(全フラグの取り下げに化ける)だったが、effect は
+    // 書いたとおり false として読む(12 形の #2)。重複は atMost(1) が落とす
+    for (const argv of [
+      ["rotation", "dismiss", "--all", "--no-all"],
+      ["rotation", "dismiss", "--all", "--all"],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain(
+        "Flag --all was specified more than once",
+      );
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+
+    // `--all=false` は「--all を書いていない」実行として読まれ、引数層は通る
+    // (対象未指定はコマンド本体が exit 1 で報告する — 書いたことと逆にならない)
+    const explicit = await startEnv();
+    expect(await runCli(["rotation", "dismiss", "--all=false"], explicit.env.layer)).toBe(1);
+    expect(explicit.env.errors.join("\n")).not.toContain("Unknown flag");
+  });
+
+  it("rotation dismiss の対象の形式検査は通信より前に落ちる(値は出さない)", async () => {
+    const env1 = await startEnv();
+    expect(
+      await runCli(["rotation", "dismiss", "sk-live-x!", "--env", "prod"], env1.env.layer),
+    ).toBe(2);
+    expect(env1.env.errors.join("\n")).toContain("Invalid variableId");
+    expectNoLeak(env1.env, ["sk-live-x!"]);
+    expect(env1.server.requests).toHaveLength(0);
+
+    const env2 = await startEnv();
+    expect(await runCli(["rotation", "dismiss", "--all", "--env", "!bad"], env2.env.layer)).toBe(2);
+    expect(env2.env.errors.join("\n")).toContain("Invalid environment ID for --env");
+    expect(env2.server.requests).toHaveLength(0);
+  });
+});
+
 describe("push の移行(ADR-0016 第 3 段階 ①)", () => {
   it("余分な引数は中身を出さず、値の渡し方(stdin)を必ず添える", async () => {
     // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した

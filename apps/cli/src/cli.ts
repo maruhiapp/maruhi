@@ -1,8 +1,8 @@
 // maruhi CLI のコマンド定義と Effect 実行の結線。
 //
 // **移行中**(ADR-0016 の第 1〜3 段階): `pull` / `run` / `env` / `server` /
-// `invite` / `member` / `push` / `config` は `effect/unstable/cli`
-// (effect-cli.ts)、残り(login / logout / key / project / rotation / audit)は
+// `invite` / `member` / `push` / `config` / `key` / `project` / `rotation` /
+// `audit` は `effect/unstable/cli`(effect-cli.ts)、残り(login / logout)は
 // Gunshi のまま。runCli が解決済みのコマンド名で振り分ける(migratedCommandKey)。
 //
 // Gunshi 側のコマンド階層は 1 段(サブコマンド + positional の action)。
@@ -11,13 +11,7 @@
 
 import { hostname } from "node:os";
 
-import {
-  AUDIT_ROW_ID_PATTERN,
-  DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
-  MAX_AUDIT_EVENTS_PAGE_LIMIT,
-  MAX_TOKEN_NAME_LENGTH,
-} from "@maruhi/api-schema";
-import { isEnvironmentId, isVariableId } from "@maruhi/core";
+import { MAX_TOKEN_NAME_LENGTH } from "@maruhi/api-schema";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
@@ -25,34 +19,19 @@ import {
   type ArgCheckContext,
   argsRejection,
   type ArgsCheckOptions,
-  type ArgTable,
-  type ArgTokenShape,
   commandNameAfterTerminator,
   commandTokens,
   type CommandTable,
-  declaredOptionName,
   TERMINATOR_BEFORE_COMMAND,
-  typedName,
   usageErrorMessages,
 } from "./args.ts";
-import {
-  type AuditListFilters,
-  auditInvitesOp,
-  auditListOp,
-  type AuditPageOptions,
-  auditSelfOp,
-  auditVerifyOp,
-} from "./audit.ts";
 import { ConfigStore } from "./config.ts";
 import type { CliServices } from "./context.ts";
-import { openMetadataProject, openSession } from "./context.ts";
-import { displayText } from "./display.ts";
 import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
-import { resolveDismissTargets, rotationDismissOp, rotationListOp } from "./rotation.ts";
 import { normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { CLI_VERSION } from "./version.ts";
 
@@ -181,9 +160,9 @@ function logoutCommand(execute: Execute) {
  * だけを数えてはならない**: それだと 1 つのオプションを複数の操作が共有する形で、
  * 共有元のどちらでも拒否される(= 宣言したとおりに使えない)。
  *
- * 表を引数に取るのはその形をテストから固定するため — 実際の表
- * (AUDIT_ACTION_FLAGS。第 2 段階の移行で残る利用者は audit だけ)は互いに
- * 素なので、共有の形はコマンドラインからは到達できない。
+ * 表を引数に取るのはその形をテストから固定するため。第 3 段階 ③ の audit
+ * 移行で CLI 側の利用者は消えた — units.test.ts の単体検査ごと、最終コミット
+ * (gunshi 廃止)で削除する(トラップ 11 の申し送り)。
  */
 export function optionRestrictedTo<A extends string>(
   actions: readonly A[],
@@ -195,329 +174,6 @@ export function optionRestrictedTo<A extends string>(
   // 持ち主が居ない = 全操作で使える共通オプション(--server / --project)。
   // 自分が持ち主なら当然使える(共有していても)
   return owners.length === 0 || owners.includes(action) ? null : owners;
-}
-
-/** auditActionFlagRejection の共通本体(第 2 段階の移行で利用者は audit だけになった)。 */
-function actionFlagRejection<A extends string>(
-  command: string,
-  actions: readonly A[],
-  flags: Readonly<Record<A, ReadonlySet<string>>>,
-  action: A,
-  tokens: readonly ArgTokenShape[],
-  args: ArgTable,
-): string | null {
-  for (const token of tokens) {
-    // 打たれた綴り(短縮形・`--no-` の否定形)から宣言名へ戻して照合する。
-    // 綴りのまま引くと `env create --no-new-epoch` が rotate 専用として
-    // 弾かれず、指定した意図が黙って無視される
-    const declared = declaredOptionName(token, args);
-    if (declared === undefined) {
-      continue;
-    }
-    const owners = optionRestrictedTo(actions, flags, action, declared);
-    if (owners === null) {
-      continue;
-    }
-    const usable = owners.map((owner) => `${command} ${owner}`).join(" / ");
-    return `${typedName(token)} は ${command} ${action} では使えません(${usable} 用のオプションです)`;
-  }
-  return null;
-}
-
-/** `maruhi rotation` が取る操作(一覧の出所はここだけ — KEY_ACTIONS と同じ形)。 */
-const ROTATION_ACTIONS = ["list", "dismiss"] as const;
-
-const ROTATION_ACTION_HELP = `不明な操作です(${ROTATION_ACTIONS.join(" | ")})`;
-
-function isRotationAction(action: string | undefined): action is (typeof ROTATION_ACTIONS)[number] {
-  return ROTATION_ACTIONS.some((known) => known === action);
-}
-
-/**
- * `maruhi rotation list|dismiss`(AUDIT_SPEC §4.1 / §7 — Wave 2 B2)。
- * どちらも master 鍵を要求しない(フラグは非機密メタデータで、名前解決も
- * 検証済みステートメントの読み取りのみ — project verify と同じ鍵なしクラス)。
- * dismiss の権限(admin 以上 × admin スコープ)はサーバー側が強制する。
- */
-function rotationCommand(execute: Execute) {
-  return define({
-    name: "rotation",
-    description: `要ローテーションフラグの管理(${ROTATION_ACTIONS.join(" / ")} — AUDIT_SPEC §4.1)`,
-    args: {
-      action: { type: "positional", description: ROTATION_ACTIONS.join(" | ") },
-      variable: {
-        type: "positional",
-        required: false,
-        description: "dismiss: 取り下げる variableId(--all の場合は指定しない)",
-      },
-      env: {
-        type: "string",
-        description: "dismiss: 対象の環境 ID(--all と併用すると当該環境に絞る)",
-      },
-      all: {
-        type: "boolean",
-        description: "dismiss: 現在有効な全フラグを取り下げる(リスク受容の明示)",
-      },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject)",
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const action = ctx.values.action;
-          if (!isRotationAction(action)) {
-            return yield* Effect.fail(usageError(ROTATION_ACTION_HELP));
-          }
-          const flags = { server: ctx.values.server, project: ctx.values.project };
-          if (action === "list") {
-            const context = yield* openMetadataProject(flags);
-            return yield* rotationListOp(context);
-          }
-          // dismiss: 対象の形式はネットワークより先に検査する
-          const environmentId = ctx.values.env;
-          if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
-            return yield* Effect.fail(
-              usageError(
-                "--env の環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで)",
-              ),
-            );
-          }
-          const variableId = ctx.values.variable;
-          if (variableId !== undefined && !isVariableId(variableId)) {
-            return yield* Effect.fail(usageError("variableId の形式が正しくありません"));
-          }
-          const context = yield* openMetadataProject(flags);
-          const resolved = yield* resolveDismissTargets({
-            client: context.client,
-            projectId: context.projectId,
-            all: ctx.values.all === true,
-            environmentId: environmentId ?? null,
-            variableId: variableId ?? null,
-          });
-          return yield* rotationDismissOp({
-            client: context.client,
-            projectId: context.projectId,
-            targets: resolved.targets,
-          });
-        }),
-        {
-          // 2 つ目の位置引数(variable)は dismiss 専用(envCommand の diff と同じ形)
-          withoutPositionals:
-            isRotationAction(ctx.values.action) && ctx.values.action !== "dismiss"
-              ? ["variable"]
-              : undefined,
-        },
-      ),
-  });
-}
-
-/** `maruhi audit` が取る操作(一覧の出所はここだけ — KEY_ACTIONS と同じ形)。 */
-const AUDIT_ACTIONS = ["list", "invites", "self", "verify"] as const;
-
-type AuditAction = (typeof AUDIT_ACTIONS)[number];
-
-const AUDIT_ACTION_HELP = `不明な操作です(${AUDIT_ACTIONS.join(" | ")} — 省略時は list)`;
-
-function isAuditAction(action: string | undefined): action is AuditAction {
-  return AUDIT_ACTIONS.some((known) => known === action);
-}
-
-/** AUDIT_ACTIONS の分岐漏れを型で捕まえる(引数が never の網羅検査)。 */
-function unhandledAuditAction(action: never): CliError {
-  return usageError(`${AUDIT_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
-}
-
-/**
- * 操作専用のオプション(gunshi の 1 段制約による操作フラグ表 — audit が最後の
- * 利用者)。`--project` は self 以外の共有(self はアカウント全域でプロジェクトを
- * 取らない — 黙って無視しない)。
- */
-const AUDIT_ACTION_FLAGS: Readonly<Record<AuditAction, ReadonlySet<string>>> = {
-  list: new Set(["limit", "before", "event", "actor", "target", "env", "var", "project"]),
-  invites: new Set(["limit", "before", "project"]),
-  self: new Set(["limit", "before"]),
-  verify: new Set(["project"]),
-};
-
-function auditActionFlagRejection(
-  action: string | undefined,
-  tokens: readonly ArgTokenShape[],
-  args: ArgTable,
-): string | null {
-  // 省略時の既定(list)は本体と同じ解釈で検査する
-  const resolved = action ?? "list";
-  if (!isAuditAction(resolved)) {
-    return null;
-  }
-  return actionFlagRejection("audit", AUDIT_ACTIONS, AUDIT_ACTION_FLAGS, resolved, tokens, args);
-}
-
-/** 未指定は許容し、指定時は [1, max] の整数のみ通す。 */
-function outsideIntRange(value: number | undefined, max: number): boolean {
-  if (value === undefined) {
-    return false;
-  }
-  return !Number.isInteger(value) || value < 1 || value > max;
-}
-
-function parseAuditPage(
-  limit: number | undefined,
-  before: string | undefined,
-): Effect.Effect<AuditPageOptions, CliError> {
-  if (outsideIntRange(limit, MAX_AUDIT_EVENTS_PAGE_LIMIT)) {
-    return Effect.fail(
-      usageError(
-        `--limit は 1〜${MAX_AUDIT_EVENTS_PAGE_LIMIT} の整数で指定してください(AUDIT_SPEC §7 の上限)`,
-      ),
-    );
-  }
-  // カーソルは行 id(AUDIT_SPEC §5.1 row_id — 形式は api-schema の Schema と
-  // 共有)。前ページ末尾の「続きを見るには」案内が示す値をそのまま渡す
-  if (before !== undefined && !AUDIT_ROW_ID_PATTERN.test(before)) {
-    return Effect.fail(
-      usageError(
-        "--before は前ページ末尾の行 id(hex 小文字 32 文字 — 「続きを見るには」の案内に表示される値)で指定してください",
-      ),
-    );
-  }
-  return Effect.succeed({ limit: limit ?? null, before: before ?? null });
-}
-
-interface AuditFilterFlags {
-  readonly event: string | undefined;
-  readonly actor: string | undefined;
-  readonly target: string | undefined;
-  readonly env: string | undefined;
-  readonly var: string | undefined;
-}
-
-/** 未指定は許容し、指定時は非空かつ max 文字以内のみ通す。 */
-function boundedFlagValue(value: string | undefined, max: number): boolean {
-  return value === undefined || (value.length > 0 && value.length <= max);
-}
-
-/** フィルタフラグの最初の書き方の誤り(なければ null)。 */
-function auditFilterProblem(values: AuditFilterFlags): string | null {
-  if (!boundedFlagValue(values.event, 64)) {
-    return "--event はイベント名(領域.動詞 — 例: var.version_pushed)で指定してください";
-  }
-  if (!boundedFlagValue(values.actor, 1024)) {
-    return "--actor は対象の user_id で指定してください";
-  }
-  if (!boundedFlagValue(values.target, 1024)) {
-    return "--target は対象の user_id で指定してください";
-  }
-  if (values.env !== undefined && !isEnvironmentId(values.env)) {
-    return "--env の環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで)";
-  }
-  if (values.var !== undefined && !isVariableId(values.var)) {
-    return "--var の variableId の形式が正しくありません";
-  }
-  return null;
-}
-
-/** list のフィルタフラグの検査(形式はネットワークより先に見る)。 */
-function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFilters, CliError> {
-  const problem = auditFilterProblem(values);
-  if (problem !== null) {
-    return Effect.fail(usageError(problem));
-  }
-  return Effect.succeed({
-    event: values.event ?? null,
-    actorUserId: values.actor ?? null,
-    targetUserId: values.target ?? null,
-    environmentId: values.env ?? null,
-    variableId: values.var ?? null,
-  });
-}
-
-/**
- * `maruhi audit [list|invites|self|verify]`(AUDIT_SPEC §6 / §7 — C1)。
- * master 鍵を要求しない(監査行は非機密メタデータで、名前解決・ミラー突合も
- * 検証済み材料の読み取りのみ — rotation list と同じ鍵なしクラス)。可視性
- * クラス・invite.* の権限軸はサーバー側が強制する。
- */
-function auditCommand(execute: Execute) {
-  return define({
-    name: "audit",
-    description: `監査イベントの閲覧と検証(${AUDIT_ACTIONS.join(" / ")} — AUDIT_SPEC §7)`,
-    args: {
-      action: {
-        type: "positional",
-        required: false,
-        description: `${AUDIT_ACTIONS.join(" | ")}(省略時は list)`,
-      },
-      limit: {
-        type: "number",
-        description: `1 ページの件数(1〜${MAX_AUDIT_EVENTS_PAGE_LIMIT}。既定 ${DEFAULT_AUDIT_EVENTS_PAGE_LIMIT})`,
-      },
-      before: {
-        type: "string",
-        description:
-          "この行より古い行から表示する(前ページ末尾の行 id — 続きの案内に表示される値 — を渡して遡る)",
-      },
-      event: {
-        type: "string",
-        description: "list: イベント種別で絞る(例: var.version_pushed / chain.member_added)",
-      },
-      actor: {
-        type: "string",
-        description:
-          "list: actor の user_id で絞る(admin 未満は自分の user_id のみ — AUDIT_SPEC §6)",
-      },
-      target: { type: "string", description: "list: 対象(target)の user_id で絞る" },
-      env: { type: "string", description: "list: 環境 ID で絞る" },
-      var: { type: "string", description: "list: variableId で絞る" },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject。self では不要)",
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const action = ctx.values.action ?? "list";
-          if (!isAuditAction(action)) {
-            return yield* Effect.fail(usageError(AUDIT_ACTION_HELP));
-          }
-          const page = yield* parseAuditPage(ctx.values.limit, ctx.values.before);
-          const flags = { server: ctx.values.server, project: ctx.values.project };
-          if (action === "self") {
-            const context = yield* openSession(ctx.values.server);
-            return yield* auditSelfOp(context, page);
-          }
-          if (action === "invites") {
-            const context = yield* openMetadataProject(flags);
-            return yield* auditInvitesOp(context, page);
-          }
-          if (action === "verify") {
-            const context = yield* openMetadataProject(flags);
-            return yield* auditVerifyOp(context);
-          }
-          if (action === "list") {
-            const filters = yield* parseAuditFilters({
-              event: ctx.values.event,
-              actor: ctx.values.actor,
-              target: ctx.values.target,
-              env: ctx.values.env,
-              var: ctx.values.var,
-            });
-            const context = yield* openMetadataProject(flags);
-            return yield* auditListOp(context, page, filters);
-          }
-          return yield* Effect.fail(unhandledAuditAction(action));
-        }),
-        {
-          commandRejection: auditActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
-        },
-      ),
-  });
 }
 
 function entryCommand(execute: Execute, commands: readonly string[]) {
@@ -675,8 +331,6 @@ export async function runCli(
   const subCommands = {
     login: loginCommand(execute),
     logout: logoutCommand(execute),
-    rotation: rotationCommand(execute),
-    audit: auditCommand(execute),
   };
 
   // コマンドの一覧は「gunshi に残っているもの + 移行済みのもの」。登録済みの

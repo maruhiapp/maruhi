@@ -232,12 +232,12 @@ describe("maruhi rotation list", () => {
 
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    expect(logs).toContain("要ローテーションフラグ: 2 件");
+    expect(logs).toContain("Rotation flags: 2 active flags");
     // 名前解決: active はステートメント、削除済みは tombstone の name(§4.2)
-    expect(logs).toContain("ALPHA(va)");
-    expect(logs).toContain("DELETED_KEY(vdel)");
-    expect(logs).toContain("確実に取得した(read)");
-    expect(logs).toContain("取得可能だった(readable)");
+    expect(logs).toContain("ALPHA (va)");
+    expect(logs).toContain("DELETED_KEY (vdel)");
+    expect(logs).toContain("read (confirmed fetch)");
+    expect(logs).toContain("readable (fetch was possible)");
     expect(logs).toContain(`member:${target.userId}`);
     // 解消の導線(push で解消 / 削除済みは dismiss)
     expect(logs).toContain("maruhi rotation dismiss");
@@ -257,7 +257,7 @@ describe("maruhi rotation list", () => {
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("va");
     expect(env.logs.join("\n")).not.toContain("ALPHA");
-    expect(env.errors.join("\n")).toContain("検証済みメタデータを取得できません");
+    expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
   });
 
   it("フラグが無ければその旨だけを表示する", async () => {
@@ -265,7 +265,7 @@ describe("maruhi rotation list", () => {
     const state = await makeRotationServer({ built, currentEpoch: 2, flags: [] });
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("現在有効な要ローテーションフラグはありません");
+    expect(env.logs.join("\n")).toContain("No rotation flags are currently active");
   });
 });
 
@@ -282,7 +282,7 @@ describe("maruhi rotation dismiss", () => {
     expect(state.dismissBodies).toEqual([
       { targets: [{ environmentId: ENV_ID, variableId: "vdel" }] },
     ]);
-    expect(env.logs.join("\n")).toContain("1 件の要ローテーションフラグを取り下げました");
+    expect(env.logs.join("\n")).toContain("Dismissed 1 rotation flag (");
   });
 
   it("--all は現在有効な全フラグを対単位に畳んで取り下げる(--env で絞り込み)", async () => {
@@ -309,7 +309,7 @@ describe("maruhi rotation dismiss", () => {
         ],
       },
     ]);
-    expect(env.logs.join("\n")).toContain("2 件の要ローテーションフラグを取り下げました");
+    expect(env.logs.join("\n")).toContain("Dismissed 2 rotation flags (");
   });
 
   it("有効フラグの無い対の 404 は導線つきで報告する(all-or-nothing の中止)", async () => {
@@ -326,7 +326,7 @@ describe("maruhi rotation dismiss", () => {
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "dismiss", "va", "--env", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("現在有効なフラグがありません");
+    expect(errors).toContain("No active flag for variable");
     expect(errors).toContain("maruhi rotation list");
   });
 
@@ -335,7 +335,7 @@ describe("maruhi rotation dismiss", () => {
     const state = await makeRotationServer({ built, currentEpoch: 2, flags: [] });
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "dismiss"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("取り下げ対象を指定してください");
+    expect(env.errors.join("\n")).toContain("Specify what to dismiss");
   });
 });
 
