@@ -48,17 +48,24 @@ web(`apps/web/src/Root.tsx` の `<html lang="ja">`)と docs サイトは CLI と
 - `docs/SELF_HOSTING.md` — セルフホスト利用者向けの検証済み runbook(ADR-0014 の上級者経路。セッション 19 で実デプロイ検証済み)
 - `packaging/install.sh` のユーザー可視メッセージ(`warn` / `die` / `printf` / `--help`)。スクリプト内コメントは内部なので日本語のまま
 - `apps/web/src/Root.tsx` の `lang="en"`(web の可視文字列に日本語は無く、日本語はコメントのみ = 決定 3 で維持)
-- GitHub Release のリリースノート — `docs/RELEASING.md` に「英語で書く」を一行で固定(決定 1)
+- GitHub Release の公開本文は英語(決定 1)。手段は下の裁定 3
 
 **内部(日本語のまま)**:
 
 - `docs/CRYPTO_SPEC.md` / `AUTH_SPEC.md` / `AUDIT_SPEC.md`
-- `docs/RELEASING.md` 本体(所有者向けの運用手順。上記の一行だけ追加)
+- `docs/RELEASING.md` 本体(所有者向けの運用手順)
 - `docs/notes/` / `docs/adr/`(本追記を除く)
 - `CLAUDE.md` / `AGENTS.md`
-- コード内コメント全般
+- コード内コメント全般。**`packaging/install.sh` のヘッダコメントも含む**(裁定 2)
 - `packaging/homebrew/maruhi.example.rb` のコメント(`desc` は既に英語)
 - `packaging/install-test.sh` のラベル文字列(CI 内部。install.sh の文言を grep で固定している箇所だけ道連れに更新)
-- npm の `package.json` に `description` フィールドは無い(追加しない)
+- ワークスペースの `apps/cli/package.json` に `description` フィールドは無い(追加しない)。npm へ出すマニフェストは `apps/cli/scripts/build-npm.ts` が組み立て、`description` と同梱 `README.md` は**既に英語**(今回の対象外。英語のまま維持する)
 
 docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダのみ)。サイト構築時に英語で書く旨を ROADMAP に残した。
+
+**裁定**:
+
+1. `SELF_HOSTING.md` / `CONTRIBUTING.md` / `install.sh` のユーザー可視メッセージは、決定 3 の境界「配布物からユーザーが読む」側。`CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC` / `RELEASING.md` 本体 / `docs/notes` / ADR 本体 / `CLAUDE.md` は内部
+2. **`install.sh` のコメントは日本語のまま**。README は `less` してから実行する形を先に案内するが、利用者が読む信頼モデルの正は README の英語の trust-model 節である。スクリプトを開いたときに走る処理の説明(コメント)はメンテナ向けであり、実行時に出る文言(`usage` / `die` / `warn`)だけがユーザー可視。ヘッダ 5〜16 行をコメントだからといって英語化しない(決定 3 の「ソースに書いてあるか」ではなく「配布物からユーザーが読むか」)
+3. **GitHub Release の公開本文は英語**(決定 1)。現行の `release.yml` は `gh release create --generate-notes` で、本文はマージ済み PR タイトルから組まれる。決定 3 はコミットメッセージと PR 説明を日本語のままとしており、PR タイトル英語化も `--notes-file` 化もこの追記では採らない。公開前に所有者が Release 本文を英語へ直す(RELEASING.md に固定)。仕組み側の変更は別判断
+4. `SELF_HOSTING.md` の見出し英訳に伴い、生きている内部文書(`AUTH_SPEC` / `SECURITY_REVIEW_2026-08-14.md`)の見出し参照だけ英語見出し名へ追随する。セッションノート(`docs/notes/`)は日付付きログなので触らない
