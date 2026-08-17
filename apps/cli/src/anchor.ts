@@ -183,8 +183,16 @@ export function checkRepositoryAnchor(input: {
     for (const [environmentId, anchoredEpoch] of Object.entries(anchor.environments)) {
       // 環境の存在自体がチェーン導出(§6.2)。アンカー済み環境の不在は、
       // create_environment を含む区間ごと巻き戻された形なので同じ証拠
+      // (文言は分ける — 後退と不在では観測した事実が違う)
       const environment = verified.state.environments.get(environmentId);
-      if (environment === undefined || environment.currentEpoch < anchoredEpoch) {
+      if (environment === undefined) {
+        return yield* Effect.fail(
+          cliError(
+            `Repository-anchor check failed: anchored environment ${environmentId} does not exist on the distributed chain. This suggests a rollback past the environment's creation — do not trust this response. ${evidenceHint}`,
+          ),
+        );
+      }
+      if (environment.currentEpoch < anchoredEpoch) {
         return yield* Effect.fail(
           cliError(
             `Repository-anchor check failed: environment ${environmentId} has a chain-derived epoch below the anchored epoch (${anchoredEpoch}). This suggests distribution of a pre-rotation view (a leaked credential could be re-deployed) — do not trust this response. ${evidenceHint}`,

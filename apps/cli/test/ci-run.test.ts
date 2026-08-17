@@ -190,9 +190,20 @@ function oidcHandler(state: OidcIssuance): MockHandler {
     const audience = request.query["audience"] ?? "";
     state.audiences.push(audience);
     state.issued += 1;
+    // sub を発行ごとに変える: claims_digest は iss / sub / aud のみを束縛する
+    // ため、jti だけの違いでは「再試行後に古いトークンの claims を使い回す」
+    // 実装がすり抜ける(digest が同じになる)。sub が変われば、正しい実装
+    // (2 本目のトークンの claims で digest を計算)だけが開封に成功する
     return {
       status: 200,
-      json: { value: fakeJwt({ iss: ISSUER, sub: SUBJECT, aud: audience, jti: state.issued }) },
+      json: {
+        value: fakeJwt({
+          iss: ISSUER,
+          sub: `${SUBJECT}/run/${state.issued}`,
+          aud: audience,
+          jti: state.issued,
+        }),
+      },
     };
   };
 }
@@ -206,6 +217,8 @@ interface LeaseResponseOverrides {
   readonly declaredProjectId?: string;
   readonly currentEpoch?: number;
   readonly variables?: readonly PullEntry[];
+  /** 追加のリースラップ(重複エポック・チェーン外エポックの負例用)。 */
+  readonly extraLeases?: readonly { readonly epoch: number; readonly dek: Uint8Array }[];
 }
 
 /** 提示トークンの claims(サーバーと同じ経路)+ 上書き(転用形の偽装用)。 */
@@ -263,26 +276,38 @@ async function leaseResponseFor(
   overrides?: LeaseResponseOverrides,
 ): Promise<unknown> {
   const { built, dek1, dek2, envStatement, entryAlpha, entryBeta } = fixture;
+  const resolved = {
+    declaredProjectId: built.projectId,
+    currentEpoch: 2,
+    entries: built.entries,
+    variables: [entryAlpha, entryBeta] as readonly PullEntry[],
+    dekForEpoch: (_epoch: number, dek: Uint8Array) => dek,
+    extraLeases: [] as readonly { readonly epoch: number; readonly dek: Uint8Array }[],
+    ...overrides,
+  };
   const claimsDigestHex = await leaseClaimsDigestOf(body.oidcToken, overrides);
   const wrapFor = (epoch: number, dek: Uint8Array) =>
     leaseWrapFor({
       ephemeralPubHex: body.ephemeralPubHex,
       claimsDigestHex,
       epoch,
-      dek: overrides?.dekForEpoch?.(epoch, dek) ?? dek,
+      dek: resolved.dekForEpoch(epoch, dek),
     });
-  const entries = overrides?.entries ?? built.entries;
   return {
-    projectId: overrides?.declaredProjectId ?? built.projectId,
+    projectId: resolved.declaredProjectId,
     environmentId: ENV_ID,
-    currentEpoch: overrides?.currentEpoch ?? 2,
-    chain: entries,
-    headSeq: entries.length,
+    currentEpoch: resolved.currentEpoch,
+    chain: resolved.entries,
+    headSeq: resolved.entries.length,
     headHashHex: built.hashes[built.hashes.length - 1],
     statement: envStatement,
-    variables: overrides?.variables ?? [entryAlpha, entryBeta],
+    variables: resolved.variables,
     deletedVariables: [],
-    leases: [await wrapFor(1, dek1), await wrapFor(2, dek2)],
+    leases: [
+      await wrapFor(1, dek1),
+      await wrapFor(2, dek2),
+      ...(await Promise.all(resolved.extraLeases.map((extra) => wrapFor(extra.epoch, extra.dek)))),
+    ],
   };
 }
 
@@ -480,6 +505,26 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expect(env.errors.join("\n")).toContain("the chain derives epoch 2");
     expect(env.runnerCalls).toHaveLength(0);
   });
+
+  it("同一エポックの重複リースラップを拒否する", async () => {
+    const { env, server } = await startCiEnv([
+      leaseHandler({ extraLeases: [{ epoch: 1, dek: fixture.dek1 }] }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("Duplicate leased DEKs");
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("チェーン導出現エポックを超えるエポックのリースラップを拒否する", async () => {
+    const { env, server } = await startCiEnv([
+      leaseHandler({
+        extraLeases: [{ epoch: 3, dek: crypto.getRandomValues(new Uint8Array(32)) }],
+      }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("beyond the chain's current epoch");
+    expect(env.runnerCalls).toHaveLength(0);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -600,6 +645,25 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("maruhi env rotate / maruhi server grant");
   });
+
+  it("404 は lease 特有の一様応答として直し先(座標 / grant / ポリシー)を案内する", async () => {
+    // §14-1 の存在秘匿: 未知プロジェクト・grant なし・ポリシー不一致・スコープ外は
+    // すべて同じ 404。メンバー向けの「Project not found — check the ID and your
+    // access」ではなく、CI で最も起きやすいポリシー不一致まで並べて案内する
+    const { env, server } = await startCiEnv([
+      flakyLeaseHandler(99, {
+        status: 404,
+        json: { _tag: "ProjectNotFound", projectId: fixture.built.projectId },
+      }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    const output = env.errors.join("\n");
+    expect(output).toContain("lease-policy mismatch");
+    expect(output).toContain("maruhi server grant --lease-policy");
+    // 再試行しない(資格情報でも一過性でもない)
+    expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(1);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -679,6 +743,25 @@ describe("maruhi ci run --anchor(リポジトリアンカー — CRYPTO_SPEC §6
     const { env, server } = await startCiEnv([leaseHandler()]);
     expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("below the anchored epoch");
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("チェーン長を超える seq のピン留めヘッド(古いビューの配布)を拒否する", async () => {
+    const path = await anchorFile({
+      ...validAnchor(),
+      headSeq: fixture.built.entries.length + 5,
+    });
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("does not contain the anchored head");
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("アンカー済み環境がチェーンに無い配布(作成以前への巻き戻し)を拒否する", async () => {
+    const path = await anchorFile({ ...validAnchor(), environments: { ghost: 1 } });
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("does not exist on the distributed chain");
     expect(env.runnerCalls).toHaveLength(0);
   });
 

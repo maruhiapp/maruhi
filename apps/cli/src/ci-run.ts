@@ -15,7 +15,7 @@
 // agent-gate(値表示ゲート)の対象外である(run と同じサンクションされた
 // 消費経路 — ADR-0016 決定 7)。
 
-import { LeaseUnauthorizedError } from "@maruhi/api-schema";
+import { LeaseUnauthorizedError, ProjectNotFoundError } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import type { LeaseClaims } from "@maruhi/crypto";
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
@@ -70,17 +70,31 @@ type IssueOutcome =
   | { readonly kind: "ok"; readonly response: LeaseResponseWire }
   | { readonly kind: "replayed" };
 
+/**
+ * lease の 404 は**一様応答**であり(AUTH_SPEC §14-1 の存在秘匿)、CI で最も
+ * 起きやすい実因はプロジェクト ID の誤りではなくポリシー不一致(リポジトリ
+ * 移転・別ブランチ実行)である。共通写像(failure.ts)の「Project not found —
+ * check the ID and your access」はメンバー向けの導線で、ここでは誤った直し先へ
+ * 送るため、lease 専用の案内に差し替える。
+ */
+const LEASE_NOT_FOUND_MESSAGE =
+  "The server answered 404 for the lease. The lease endpoint folds these into one uniform answer (existence hiding — AUTH_SPEC §14-1): unknown project, no active grant, a lease-policy mismatch (issuer / audience / claim constraints), and an out-of-scope or unknown environment. Check --server, --project, and --env in the workflow, and that a project owner granted this workload's identity with `maruhi server grant --lease-policy`";
+
 /** 発行の 1 試行。`token-replayed` だけを再試行可能として分類する。 */
 function attemptLease(
   input: Parameters<typeof issueLease>[0],
 ): Effect.Effect<IssueOutcome, CliError> {
   return issueLease(input).pipe(
     Effect.map((response) => ({ kind: "ok", response }) as const),
-    Effect.catch((error) =>
-      error instanceof LeaseUnauthorizedError && error.reason === "token-replayed"
-        ? Effect.succeed({ kind: "replayed" } as const)
-        : Effect.fail(toCliError(error)),
-    ),
+    Effect.catch((error) => {
+      if (error instanceof LeaseUnauthorizedError && error.reason === "token-replayed") {
+        return Effect.succeed({ kind: "replayed" } as const);
+      }
+      if (error instanceof ProjectNotFoundError) {
+        return Effect.fail(cliError(LEASE_NOT_FOUND_MESSAGE));
+      }
+      return Effect.fail(toCliError(error));
+    }),
   );
 }
 

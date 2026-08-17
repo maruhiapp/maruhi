@@ -36,7 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: maruhiapp/maruhi/actions/setup-maruhi@main
+      # Pin the action to a tag or commit SHA — it installs the binary that
+      # will hold your decrypted secrets in memory. Do not use a mutable ref
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@v0.1.0-rc.1
         with:
           # Required while no stable release exists (releases/latest cannot
           # be resolved during the pre-release period)
@@ -135,6 +137,12 @@ epoch numbers — no key material and no secret values.
 
 ## Failure modes worth knowing
 
+- 404: the lease endpoint answers a **uniform 404** for an unknown project,
+  a missing grant, a lease-policy mismatch (issuer / audience / claim
+  constraints), and an out-of-scope or unknown environment (existence
+  hiding). If your coordinates look right, the most common cause is a policy
+  mismatch — e.g. the workflow runs on a branch or repository the policy does
+  not list. Fix the policy with `maruhi server grant --lease-policy`.
 - `token-replayed` (401): the OIDC token was already bound to a different
   ephemeral key (first-use binding). `maruhi ci run` automatically mints a
   fresh token and retries **once**; if it happens again, treat it as a signal
