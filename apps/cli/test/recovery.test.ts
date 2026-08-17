@@ -354,6 +354,20 @@ describe("maruhi key recover(復元)", () => {
         expected: "最新版へ更新",
         notExpected: "このコードでは復元できません",
       },
+      {
+        // 形は現行のまま符号化だけ違う = parse は通り、hex の解釈で落ちる。
+        // このフォークでは「壊れている」と「将来版の符号化」を観測で区別
+        // できないので、断定して再登録(= コードの失効)へ送らない
+        blob: JSON.stringify({
+          suite: "maruhi/v1",
+          encPubHex: "aa".repeat(32),
+          encSkHex: "not-hex+/=",
+          sigPubHex: "bb".repeat(32),
+          sigSkSeedHex: "cc".repeat(32),
+        }),
+        expected: "捨てないでください",
+        notExpected: "このコードでは復元できません",
+      },
     ] as const;
     for (const testCase of cases) {
       const user = await makeTestUser("user-0001");

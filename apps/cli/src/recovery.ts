@@ -41,7 +41,6 @@ import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
-  corruptKeyError,
   cryptoBackendUsable,
   importMasterKeys,
   retryOnSupportedRuntime,
@@ -219,10 +218,11 @@ export function recoverMasterKeyOp(input: {
     // エントリは存在しない — 無い物を指した診断になってしまう。
     // 未知スイート等は原因も出口も違うので、この 1 種類だけを写す
     const validated = yield* importMasterKeys(record).pipe(
-      Effect.catch((error) =>
-        Effect.flatMap(blobFailureMessage(error, record.suite), (message) =>
-          Effect.fail(cliError(message)),
-        ),
+      Effect.catchTag("MasterKeyUnknownSuite", (error) =>
+        Effect.fail(cliError(foreignRecoveryBlobMessage(error.suite))),
+      ),
+      Effect.catchTag("MasterKeyCorrupt", () =>
+        Effect.flatMap(corruptBlobMessage(), (message) => Effect.fail(cliError(message))),
       ),
     );
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
@@ -245,18 +245,14 @@ const reRegisterAction =
 const reRegisterGuidance = `このコードでは復元できません。${reRegisterAction}`;
 
 /**
- * ブロブから鍵を読み込めないときの文言。
+ * ブロブが破損しているときの文言。
  *
- * キーチェーン側({@link importFailureMessage})と同じ三分岐:
- * - 未知スイート: より新しい maruhi が別デバイスで登録した。更新すれば同じ
- *   コードで復元できるので「このコードでは復元できません」とは言わない
- * - 環境が非対応: ブロブもコードも無事。**捨てさせない**
- * - それ以外: 本当に壊れている(再登録が要る)
+ * 未知スイート(より新しい maruhi が別デバイスで登録した)は破損ではないので
+ * ここには来ない — 分岐は呼び出し側の {@link Effect.catchTag} が型で見分ける。
+ * 残る 2 つを区別する: 環境が非対応ならブロブもコードも無事(**捨てさせない**)、
+ * そうでなければ本当に壊れている(再登録が要る)。
  */
-function blobFailureMessage(error: CliError, suite: string): Effect.Effect<string> {
-  if (error !== corruptKeyError) {
-    return Effect.succeed(foreignRecoveryBlobMessage(suite));
-  }
+function corruptBlobMessage(): Effect.Effect<string> {
   return Effect.map(cryptoBackendUsable(), (usable) =>
     usable ? brokenRecoveryBlobMessage : unsupportedCryptoOnRecover,
   );
@@ -273,9 +269,19 @@ function blobFailureMessage(error: CliError, suite: string): Effect.Effect<strin
 const unsupportedCryptoOnRecover =
   `${unsupportedCryptoCause}。入力したリカバリーコードと登録済みのブロブは無事です — 捨てないでください。${retryOnSupportedRuntime}` as const;
 
-/** ブロブは解釈できたが鍵素材が読み込めないときの文言。 */
+/**
+ * ブロブは解釈できたが鍵素材が読み込めないときの文言。
+ *
+ * **原因を「壊れている」と断定しない**: このフォークは形が現行と同じブロブ
+ * (= parse を通ったもの)しか来ないため、「本当に壊れている」のと「スイートを
+ * 変えずに符号化だけ変えた将来版が書いた」のを**観測では区別できない**
+ * (suite は暗号スイートの識別子であって保存形式の版ではない — keychain.ts の
+ * 注記と同じ理由)。断定して `reRegisterGuidance`(「このコードでは復元できません」)を
+ * 付けると、別デバイスでの再登録で**使えるコードを失効させてしまう**。
+ * 先に更新を促し、再登録はその後の手段として置く。
+ */
 const brokenRecoveryBlobMessage =
-  `登録済みのリカバリーブロブの鍵素材を読み込めません(記録が壊れています)。${reRegisterGuidance}` as const;
+  `登録済みのリカバリーブロブの鍵素材を読み込めません(記録が壊れているか、このバージョンが知らない形式です)。まず maruhi を最新版へ更新して再実行してください(いま入力したリカバリーコードはそのまま使える可能性があります — 捨てないでください)。更新しても直らない場合は、${reRegisterAction}` as const;
 
 /**
  * ブロブが現行版の知らないスイートで書かれていたときの文言。

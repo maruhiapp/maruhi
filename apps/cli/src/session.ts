@@ -20,12 +20,11 @@ import {
   importSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Data, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
-import { escapeText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
@@ -348,18 +347,15 @@ export const retryOnSupportedRuntime = "対応する環境(新しい Bun / OS)�
 export const unsupportedCryptoMessage =
   `${unsupportedCryptoCause}。保存されている鍵は壊れていない可能性が高いので、消さないでください。${retryOnSupportedRuntime}` as const;
 
-/** インポート失敗の文言。原因(鍵素材・別形式・環境)ごとに出口が違う。 */
-function importFailureMessage(input: {
-  readonly error: CliError;
-  readonly suite: string;
-  readonly entryName: string;
-}): Effect.Effect<string> {
-  if (input.error !== corruptKeyError) {
-    // 未知スイート等: 破損ではないので削除を勧めない
-    return Effect.succeed(foreignMasterKeyMessage(input.suite, input.entryName));
-  }
+/**
+ * 破損と判定されたときの文言。**環境が原因でないことを確かめてから**決める。
+ *
+ * 別形式(未知スイート)は破損ではないので、この関数には来ない — 分岐は
+ * 呼び出し側の {@link Effect.catchTag} が型で見分ける。
+ */
+function corruptOrEnvironmentMessage(entryName: string): Effect.Effect<string> {
   return Effect.map(cryptoBackendUsable(), (usable) =>
-    usable ? corruptMasterKeyMessage(input.entryName) : unsupportedCryptoMessage,
+    usable ? corruptMasterKeyMessage(entryName) : unsupportedCryptoMessage,
   );
 }
 
@@ -386,8 +382,12 @@ function refusalFor(
   return importMasterKeys(record).pipe(
     // インポートできた = 本当に使える鍵。ここだけが本来の上書き拒否
     Effect.as(refusal),
-    // 読めない理由(破損 / 別形式 / 環境)で出口が違う — importFailureMessage に任せる
-    Effect.catch((error) => importFailureMessage({ error, suite: record.suite, entryName })),
+    // 読めない理由(破損 / 別形式 / 環境)で出口が違う。タグで分けるので、
+    // 失敗の種類が増えれば型検査がここを指す
+    Effect.catchTag("MasterKeyUnknownSuite", (error) =>
+      Effect.succeed(foreignMasterKeyMessage(error.suite, entryName)),
+    ),
+    Effect.catchTag("MasterKeyCorrupt", () => corruptOrEnvironmentMessage(entryName)),
   );
 }
 
@@ -456,8 +456,11 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     // importMasterKeys 自身は保存前の自己検証にも使われる — そちらは残存
     // エントリが無く削除の案内が的外れになるため、写像はここで行う
     return yield* importMasterKeys(record).pipe(
-      Effect.catch((error) =>
-        Effect.flatMap(importFailureMessage({ error, suite: record.suite, entryName }), (message) =>
+      Effect.catchTag("MasterKeyUnknownSuite", (error) =>
+        Effect.fail(cliError(foreignMasterKeyMessage(error.suite, entryName))),
+      ),
+      Effect.catchTag("MasterKeyCorrupt", () =>
+        Effect.flatMap(corruptOrEnvironmentMessage(entryName), (message) =>
           Effect.fail(cliError(message)),
         ),
       ),
@@ -468,26 +471,43 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
 /**
  * 鍵素材そのものを読み込めない({@link importMasterKeys} の失敗)。
  *
- * 呼び出し側が「どの成果物が壊れているか」で文言を差し替えられるよう公開する
- * — 同じ失敗でも、キーチェーンのレコード由来かリカバリーブロブ由来かで
- * 指すべき対象と復旧手順が変わる。
+ * 呼び出し側が「どの成果物が壊れているか」で文言を差し替えられるよう、
+ * **型で**区別する — 同じ失敗でも、キーチェーンのレコード由来かリカバリー
+ * ブロブ由来かで指すべき対象と復旧手順が変わる。
+ *
+ * 値の同一性比較(`error === corruptKeyError`)ではなくタグにしてあるのは、
+ * この分岐の取り違えが「消してよい / 消してはいけない」を反転させ、鍵の
+ * 恒久喪失に直結するため。網羅性を型検査に見てもらう。
  */
-export const corruptKeyError = cliError(
-  "キーチェーンの master 鍵レコードが壊れています(鍵素材を読み込めません)",
-);
+class MasterKeyCorrupt extends Data.TaggedError("MasterKeyCorrupt")<{
+  /** 原因の内訳(hex を解釈できない / WebCrypto が読めない)。文言には出さない。 */
+  readonly reason: "hex" | "import";
+}> {}
+
+/** レコードが現行版の知らないスイートを名乗っている(破損ではない)。 */
+class MasterKeyUnknownSuite extends Data.TaggedError("MasterKeyUnknownSuite")<{
+  readonly suite: string;
+}> {}
+
+/**
+ * {@link importMasterKeys} の失敗。文言は呼び出し側が経路に合わせて決める。
+ *
+ * クラス自体は公開しない: 呼び出し側は `Effect.catchTag` のタグ名で分けるので
+ * 構築子を要らず、公開すると「どこでも作れる失敗」になる(生成元は 1 つに保つ)。
+ */
+export type MasterKeyImportError = MasterKeyCorrupt | MasterKeyUnknownSuite;
 
 /**
  * Imports a stored master-key record into usable (non-extractable) key
  * objects. keygen は保存前の自己検証にも使う(壊れたレコードを書かない)。
  */
-export function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterKeys, CliError> {
+export function importMasterKeys(
+  record: StoredMasterKey,
+): Effect.Effect<MasterKeys, MasterKeyImportError> {
   return Effect.gen(function* () {
     if (record.suite !== SUITE_ID) {
       // 将来スイートの鍵レコードを v1 として黙って解釈しない
-      // スイート名はレコード由来の自由文字列。端末へ出す前にエスケープする
-      return yield* Effect.fail(
-        cliError(`master 鍵レコードのスイートが未知です(${escapeText(record.suite)})`),
-      );
+      return yield* Effect.fail(new MasterKeyUnknownSuite({ suite: record.suite }));
     }
     const encPub = decodeHex(record.encPubHex);
     // 剥がす理由: 鍵素材のインポート(hex → bytes → 非抽出 CryptoKey)。
@@ -497,23 +517,23 @@ export function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterK
     const sigPub = decodeHex(record.sigPubHex);
     const sigSeed = decodeHex(Redacted.value(record.sigSkSeedHex));
     if (encPub === null || encSk === null || sigPub === null || sigSeed === null) {
-      return yield* Effect.fail(corruptKeyError);
+      return yield* Effect.fail(new MasterKeyCorrupt({ reason: "hex" }));
     }
-    // WebCrypto の reject(壊れた鍵素材のインポート例外)も corruptKeyError に写す
+    // WebCrypto の reject(壊れた鍵素材のインポート例外)も破損として扱う
     const encKeyPair = yield* Effect.tryPromise({
       try: () => importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
-      catch: () => corruptKeyError,
+      catch: () => new MasterKeyCorrupt({ reason: "import" }),
     });
     const sigKeyPair = yield* Effect.tryPromise({
       try: () => importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
-      catch: () => corruptKeyError,
+      catch: () => new MasterKeyCorrupt({ reason: "import" }),
     });
     const fingerprint = yield* Effect.tryPromise({
       try: () => computeUserKeyFingerprint(encPub, sigPub),
-      catch: () => corruptKeyError,
+      catch: () => new MasterKeyCorrupt({ reason: "import" }),
     });
     if (!encKeyPair.ok || !sigKeyPair.ok || !fingerprint.ok) {
-      return yield* Effect.fail(corruptKeyError);
+      return yield* Effect.fail(new MasterKeyCorrupt({ reason: "import" }));
     }
     return {
       record,

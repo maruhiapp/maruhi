@@ -166,6 +166,13 @@ function quotedEntryName(entryName: string): string {
 /**
  * 「手で消してから、こう進む」の共通部分(伏字・破損のどちらでも同じ出口)。
  *
+ * **控えてから消させる**のが要点: 破損の判定は完全ではない。
+ * parseStoredMasterKey は hex の中身までは検査しないので、形の揃った
+ * 将来形式のレコードが decodeHex で落ちて「破損」に見えることがある
+ * (鍵素材そのものは無事かもしれない)。分類のどちら側に本当は属していても
+ * 安全にするには、削除を可逆にしておくしかない — 別形式側の文言
+ * ({@link foreignMasterKeyMessage})と同じ扱いに揃える。
+ *
  * 削除後の手順を**両方**示すのが要点: どちらが使えるかは利用者の状況で決まる。
  * リカバリーコードがあれば `key recover` が元の鍵を戻して復号可能性を保てるが、
  * 無ければ `key generate` で作り直すしかない(その場合は既存の値を復号できず、
@@ -181,7 +188,7 @@ function manualDeletionGuidance(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(印字可能 ASCII 以外を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} を手で削除してください。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
+  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**手で削除してください(控えがあれば元へ戻せます)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
 }
 
 /** 現行形式のフィールドが揃っているか(値の中身は問わない)。 */

@@ -477,6 +477,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const message = corruptMasterKeyMessage("master::https://x::u1");
     expect(message).toContain("master::https://x::u1");
     expect(message).toContain("手で削除");
+    // 破損側でも削除は**可逆**にしておく: parseStoredMasterKey は hex の中身まで
+    // 見ないので、形の揃った将来形式のレコードが decodeHex で落ちて「破損」に
+    // 見えることがある(鍵素材は無事かもしれない)
+    expect(message).toContain("値を控えてから");
     expect(message).toContain("`maruhi key recover`");
     expect(message).toContain("`maruhi key generate`");
   });
