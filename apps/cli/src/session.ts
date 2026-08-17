@@ -197,38 +197,44 @@ function sessionFromEnvToken(input: {
  * (足す・直す・消す)、ひとまとめにせず区別して返す。
  */
 export type EnvTokenStatus =
-  | "unset"
-  | "active"
-  | "placeholder"
-  | "originMissing"
-  | "originInvalid"
-  | "originMismatch";
+  | { readonly kind: "unset" }
+  | { readonly kind: "active" }
+  | { readonly kind: "placeholder" }
+  | { readonly kind: "originMissing" }
+  /** 形が使えない。**理由は正規化側の文言をそのまま運ぶ** — 「URL として
+   * 解釈できない」と「http: が loopback でない」を自前で言い分けると、
+   * 次のコマンドが出す拒否理由と食い違う */
+  | { readonly kind: "originInvalid"; readonly reason: string }
+  | { readonly kind: "originMismatch" };
 
 export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const token = io.envVar("MARUHI_TOKEN")?.trim();
     if (token === undefined || token.length === 0) {
-      return "unset";
+      return { kind: "unset" };
     }
     // 伏字そのものを貼った状態(sessionFromEnvToken が名指しで拒否する)
     if (REDACTED_PLACEHOLDER_TEXT.test(token)) {
-      return "placeholder";
+      return { kind: "placeholder" };
     }
     const declared = io.envVar("MARUHI_TOKEN_ORIGIN");
     if (declared === undefined || declared.length === 0) {
-      return "originMissing";
+      return { kind: "originMissing" };
     }
-    // 形が不正(URL として解釈できない・http: が loopback でない)と、
-    // 形は正しいが別 origin を指しているのは別の直し方になる。sessionFromEnvToken
-    // も別の文言で失敗するので、ここで一緒くたにすると案内が食い違う
-    const expected = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
+    // 形が使えないのと、形は正しいが別 origin を指しているのは直し方が違う。
+    // 前者の理由は**正規化側の文言をそのまま運ぶ**(自前で言い換えると、
+    // 次のコマンドが出す拒否理由と食い違う)
+    const normalized = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
       fix: "MARUHI_TOKEN_ORIGIN 環境変数",
-    }).pipe(Effect.catch(() => Effect.succeed(null)));
-    if (expected === null) {
-      return "originInvalid";
+    }).pipe(
+      Effect.map((value) => ({ ok: true, value }) as const),
+      Effect.catch((error) => Effect.succeed({ ok: false, reason: error.message } as const)),
+    );
+    if (!normalized.ok) {
+      return { kind: "originInvalid", reason: normalized.reason };
     }
-    return expected === origin ? "active" : "originMismatch";
+    return normalized.value === origin ? { kind: "active" } : { kind: "originMismatch" };
   });
 }
 

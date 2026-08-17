@@ -192,7 +192,7 @@ function nextStepHint(
  * 別々(貼り直す・足す・合わせる)なので、原因ごとに言い分ける。
  */
 function envTokenNotice(status: EnvTokenStatus): string | null {
-  switch (status) {
+  switch (status.kind) {
     case "unset":
       return null;
     case "active":
@@ -200,7 +200,8 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
     case "placeholder":
       return `注意: ${redactedPlaceholderEnvTokenMessage}(このままでは次のコマンドが失敗します)`;
     case "originInvalid":
-      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN を URL として解釈できないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、`https://` で始まる origin を設定してください)";
+      // 理由は解決側の文言をそのまま使う(言い換えると次の失敗と食い違う)
+      return `注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN を使えないため認証には使われません(${status.reason})。このままでは次のコマンドが失敗します。環境変数を解除するか、指摘の点を直してください`;
     case "originMissing":
       return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN が未設定のため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN に対象サーバーの origin を設定してください)";
     case "originMismatch":

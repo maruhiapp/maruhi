@@ -31,7 +31,9 @@ import { issueRecoveryAfterKeygen } from "./recovery.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
+  cryptoBackendUsable,
   importMasterKeys,
+  unsupportedCryptoMessage,
   loadMasterKeys,
 } from "./session.ts";
 
@@ -88,8 +90,24 @@ export function keyGenerateOp(input: {
       sigSkSeedHex: Redacted.make(encodeHex(sigSeed.value), { label: "master-sig-seed" }),
     };
     // 保存「前」にレコードを再インポートして自己検証する(検証失敗の壊れた
-    // レコードをキーチェーンに残さない — レビューループ 1 [低])
-    const validated = yield* importMasterKeys(record);
+    // レコードをキーチェーンに残さない — レビューループ 1 [低])。
+    // 失敗の文言は**この経路専用**にする: 既定の文言はキーチェーンのレコードを
+    // 指して削除を促すが、ここはまだ何も保存していない — 無い物の削除を案内する
+    // ことになる。原因が環境(WebCrypto 非対応)なら鍵の問題ではないので、
+    // それだけは言い分ける
+    const validated = yield* importMasterKeys(record).pipe(
+      Effect.catch(() =>
+        Effect.flatMap(cryptoBackendUsable(), (usable) =>
+          Effect.fail(
+            cliError(
+              usable
+                ? "生成した鍵を読み込めませんでした(キーチェーンには何も保存していません)。maruhi の不具合として報告してください"
+                : unsupportedCryptoMessage,
+            ),
+          ),
+        ),
+      ),
+    );
     // JSON.stringify(record) は使わない — 秘密側が伏字で保存され、鍵を
     // 復元できないレコードがキーチェーンに残る(keychain.ts の注記)
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
