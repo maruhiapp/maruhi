@@ -130,18 +130,17 @@ describe("秘密は素朴な出力経路で伏字になる", () => {
   });
 
   it("解釈したリンク・生トークンの token も包まれている", () => {
-    const raw = Redacted.value(
-      buildInviteLink({
-        origin: "https://maruhi.example",
-        token: Redacted.make("maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01"),
-        projectId: "ab".repeat(32),
-        headHashHex: "cd".repeat(32),
-        headSeq: 1,
-        inviterUserId: "user-inviter-11",
-        inviterKeyFingerprintHex: "ef".repeat(16),
-        role: "member",
-      }),
-    );
+    // 引数層(Argument.redacted)から届く形をそのまま使う(剥がさない)
+    const raw = buildInviteLink({
+      origin: "https://maruhi.example",
+      token: Redacted.make("maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01"),
+      projectId: "ab".repeat(32),
+      headHashHex: "cd".repeat(32),
+      headSeq: 1,
+      inviterUserId: "user-inviter-11",
+      inviterKeyFingerprintHex: "ef".repeat(16),
+      role: "member",
+    });
     const parsed = parseInviteAcceptInput(raw);
     if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
     expect(`${parsed.link.token}`).toBe("<redacted:invite-token>");
@@ -781,8 +780,9 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "env-rotate.ts": 1,
   // ワイヤ境界: 招待受諾要求 / 受諾署名のハッシュ入力 / リンクの表示
   "invite.ts": 3,
-  // リンク文字列の組み立て(結果は再び包む)
-  "invite-link.ts": 1,
+  // リンク文字列の組み立て(結果は再び包む)1 +
+  // accept 入力(リンク | トークン)の構文解釈(トークンは再び包んで返す)1
+  "invite-link.ts": 2,
   // 直列化 = 唯一の永続化経路(トークン 1 + master 鍵の秘密側 2)
   "keychain.ts": 3,
   // device exchange のワイヤ境界(GitHub トークン)

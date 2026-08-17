@@ -317,7 +317,7 @@ describe("操作に適用されないオプション(gunshi に残るコマン�
   // env は effect/unstable/cli の入れ子サブコマンドへ移したので、この機構
   // (actionFlagRejection)を通らない — あちらでは「そのコマンドが取らない
   // オプション」= 未宣言として構造的に落ちる(effect-cli.test.ts)。
-  // gunshi に残る server / invite / member / audit のうち、車両には audit を使う
+  // gunshi に残るコマンドのうち、車両には audit を使う(server / invite は移行済み)
   it("相手の操作専用のオプションは黙って捨てずに落ちる", async () => {
     const { env, server } = await startEnv();
 

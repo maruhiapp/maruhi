@@ -16,7 +16,7 @@ import {
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_TOKEN_NAME_LENGTH,
 } from "@maruhi/api-schema";
-import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId, isVariableId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import { Effect, Layer, Redacted } from "effect";
 import { cli, define } from "gunshi";
@@ -59,14 +59,6 @@ import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { parseUserFingerprintFlag } from "./fingerprint-flag.ts";
-import { type InviteRole, parseInviteAcceptInput } from "./invite-link.ts";
-import {
-  type AcceptTarget,
-  inviteAcceptOp,
-  inviteCreateOp,
-  inviteListOp,
-  inviteRevokeOp,
-} from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
@@ -411,252 +403,6 @@ function actionFlagRejection<A extends string>(
     return `${typedName(token)} は ${command} ${action} では使えません(${usable} 用のオプションです)`;
   }
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// invite(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 — B1b)
-// ---------------------------------------------------------------------------
-
-const INVITE_ACTIONS = ["create", "accept", "list", "revoke"] as const;
-
-type InviteAction = (typeof INVITE_ACTIONS)[number];
-
-const INVITE_ACTION_HELP = `不明な操作です(${INVITE_ACTIONS.join(" | ")})`;
-
-function isInviteAction(action: string | undefined): action is InviteAction {
-  return INVITE_ACTIONS.some((known) => known === action);
-}
-
-/** INVITE_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
-function unhandledInviteAction(action: never): CliError {
-  return usageError(`${INVITE_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
-}
-
-const INVITE_ACTION_FLAGS: Readonly<Record<InviteAction, ReadonlySet<string>>> = {
-  create: new Set(["role"]),
-  accept: new Set(["inviter-fingerprint"]),
-  list: new Set([]),
-  revoke: new Set([]),
-};
-
-function inviteActionFlagRejection(
-  action: string | undefined,
-  tokens: readonly ArgTokenShape[],
-  args: ArgTable,
-): string | null {
-  if (!isInviteAction(action)) {
-    return null;
-  }
-  return actionFlagRejection("invite", INVITE_ACTIONS, INVITE_ACTION_FLAGS, action, tokens, args);
-}
-
-const INVITE_ROLES = ["reader", "member", "admin"] as const;
-
-function isInviteRole(value: string | undefined): value is InviteRole {
-  return INVITE_ROLES.some((known) => known === value);
-}
-
-/** `maruhi invite create --role <r>`(§15-2 発行 + §15-3 リンク組み立て)。 */
-function inviteCreate(
-  flags: CommonFlags & { readonly role?: string | undefined },
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    if (!isInviteRole(flags.role)) {
-      return yield* Effect.fail(
-        usageError(
-          `--role を指定してください(${INVITE_ROLES.join(" | ")} — owner は招待経由で付与できません。AUTH_SPEC §15-1)`,
-        ),
-      );
-    }
-    // リンク材料(ヘッド・自分の FP)はチェーン導出 — master 鍵は不要
-    const context = yield* openMetadataProject(flags);
-    yield* inviteCreateOp({
-      client: context.client,
-      verified: context.verified,
-      origin: context.origin,
-      role: flags.role,
-      sessionUserId: context.session.userId,
-    });
-  });
-}
-
-/** `invite accept` の入力拒否理由 → usage 文言。 */
-function acceptInputRejectionMessage(
-  reason: "unsupported-version" | "missing-or-invalid-fragment-params" | "not-a-link-or-token",
-): string {
-  if (reason === "unsupported-version") {
-    return "この招待リンクの形式バージョンには対応していません(maruhi CLI を更新してください)";
-  }
-  if (reason === "missing-or-invalid-fragment-params") {
-    return "招待リンクのフラグメント(# 以降)が不完全または不正です。リンクが途中で切れずにコピーされているか確認してください(壊れたリンクをアンカーなしで受諾することはできません)";
-  }
-  return "招待リンク(…/invite#v=1&…)または招待トークン(maruhi_inv_…)を指定してください。リンクはシェルに解釈されないよう引用符で囲んでください";
-}
-
-/** `invite accept` の入力(リンク | トークン + --project)の解決。 */
-function resolveAcceptTarget(
-  rawTarget: string | undefined,
-  projectFlag: string | undefined,
-): Effect.Effect<AcceptTarget, CliError> {
-  if (rawTarget === undefined) {
-    return Effect.fail(
-      usageError(
-        "受諾する招待リンクまたはトークンを指定してください(リンクはシェルに解釈されないよう引用符で囲んでください)",
-      ),
-    );
-  }
-  const parsed = parseInviteAcceptInput(rawTarget);
-  if (parsed.kind === "rejected") {
-    return Effect.fail(usageError(acceptInputRejectionMessage(parsed.reason)));
-  }
-  if (parsed.kind === "token") {
-    // 受諾署名(CRYPTO_SPEC §6.5)は project_id を署名対象に含むため、リンク
-    // なしの受諾にはプロジェクト ID の帯域外供給が必須(config の
-    // defaultProject へはフォールバックしない — 別プロジェクトへの署名を
-    // 黙って作らない)
-    if (projectFlag === undefined) {
-      return Effect.fail(
-        usageError(
-          "生トークンでの受諾には --project <プロジェクト ID> が必須です(受諾署名はプロジェクト ID を署名対象に含みます — CRYPTO_SPEC §6.5)。招待リンクで受諾する場合は不要です",
-        ),
-      );
-    }
-    if (!isProjectId(projectFlag)) {
-      return Effect.fail(usageError("プロジェクト ID の形式が正しくありません(64 桁の 16 進数)"));
-    }
-    return Effect.succeed({ kind: "token", token: parsed.token, projectId: projectFlag });
-  }
-  if (projectFlag !== undefined && projectFlag !== parsed.link.projectId) {
-    return Effect.fail(
-      usageError(
-        "--project が招待リンクの p(プロジェクト ID)と一致しません。リンクで受諾する場合 --project は不要です",
-      ),
-    );
-  }
-  return Effect.succeed({ kind: "link", link: parsed.link });
-}
-
-/** `maruhi invite accept <link|token>`(§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5)。 */
-function inviteAccept(flags: {
-  readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly target: string | undefined;
-  readonly inviterFingerprint?: string | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const target = yield* resolveAcceptTarget(flags.target, flags.project);
-    const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
-      "--inviter-fingerprint",
-      flags.inviterFingerprint,
-    );
-    const context = yield* openSession(flags.server);
-    yield* inviteAcceptOp({
-      client: context.client,
-      session: context.session,
-      target,
-      expectInviterFingerprintHex,
-      keyGenerate: keyGenerateOp({ session: context.session, client: context.client }),
-    });
-  });
-}
-
-/** `maruhi invite list`(受諾ブロックの §6.5 独立検証 + 発行ピン突合)。 */
-function inviteList(flags: CommonFlags): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const context = yield* openMetadataProject(flags);
-    const store = yield* PinStore;
-    const loaded = yield* store.load(context.projectId);
-    const summary = yield* inviteListOp({
-      client: context.client,
-      verified: context.verified,
-      pins: loaded.pins,
-      nowMs: Date.now(),
-    });
-    // 署名検証失敗・ピン不一致は「読み取りの成功」ではなく証拠の検出 — 0 に
-    // しない(スクリプトが健全性チェックとして使える)
-    return summary.integrityFailures > 0 ? 1 : 0;
-  });
-}
-
-function inviteCommand(execute: Execute) {
-  return define({
-    name: "invite",
-    description: `招待の管理(${INVITE_ACTIONS.join(" / ")} — AUTH_SPEC §15 / CRYPTO_SPEC §6.5)`,
-    args: {
-      action: { type: "positional", description: INVITE_ACTIONS.join(" | ") },
-      target: {
-        type: "positional",
-        required: false,
-        description: "accept: 招待リンクまたはトークン / revoke: 招待 id",
-      },
-      role: {
-        type: "string",
-        description: `付与する role(create では必須 — ${INVITE_ROLES.join(" | ")})`,
-      },
-      "inviter-fingerprint": {
-        type: "string",
-        description:
-          "帯域外で控えた招待者の鍵 FP(hex 32 文字。accept のみ — 指定時は対話確認の代わりにリンクの if= と照合する)",
-      },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description:
-          "プロジェクト ID(create / list / revoke は省略時 config の defaultProject。accept は生トークン受諾時のみ必須)",
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const action = ctx.values.action;
-          if (!isInviteAction(action)) {
-            return yield* Effect.fail(usageError(INVITE_ACTION_HELP));
-          }
-          const flags = { server: ctx.values.server, project: ctx.values.project };
-          if (action === "create") {
-            return yield* inviteCreate({ ...flags, role: ctx.values.role });
-          }
-          if (action === "accept") {
-            return yield* inviteAccept({
-              ...flags,
-              target: ctx.values.target,
-              inviterFingerprint: ctx.values["inviter-fingerprint"],
-            });
-          }
-          if (action === "list") {
-            return yield* inviteList(flags);
-          }
-          if (action === "revoke") {
-            const inviteId = ctx.values.target;
-            if (inviteId === undefined) {
-              return yield* Effect.fail(
-                usageError(
-                  "失効させる招待 id を指定してください(maruhi invite list で確認できます)",
-                ),
-              );
-            }
-            const context = yield* openMetadataProject(flags);
-            return yield* inviteRevokeOp({
-              client: context.client,
-              verified: context.verified,
-              inviteId,
-            });
-          }
-          return yield* Effect.fail(unhandledInviteAction(action));
-        }),
-        {
-          commandRejection: inviteActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
-          // 2 つ目の位置引数は accept / revoke 専用(env diff の 3 つ目と同じ形)
-          withoutPositionals:
-            isInviteAction(ctx.values.action) &&
-            ctx.values.action !== "accept" &&
-            ctx.values.action !== "revoke"
-              ? ["target"]
-              : undefined,
-        },
-      ),
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,7 +1258,6 @@ export async function runCli(
     logout: logoutCommand(execute),
     key: keyCommand(execute),
     project: projectCommand(execute),
-    invite: inviteCommand(execute),
     member: memberCommand(execute),
     rotation: rotationCommand(execute),
     audit: auditCommand(execute),

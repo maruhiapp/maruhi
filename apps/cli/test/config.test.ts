@@ -73,7 +73,7 @@ describe("maruhi config", () => {
     // 移行済み(effect/unstable/cli 側)のコマンドは gunshi の表に居ないので
     // 末尾へ合流する — 一覧から消えないことがここの要点
     expect(env.logs).toContain(
-      "commands: login / logout / key / project / invite / member / rotation / audit / push / config / pull / run / env / server",
+      "commands: login / logout / key / project / member / rotation / audit / push / config / pull / run / env / server / invite",
     );
   });
 });

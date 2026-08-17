@@ -686,3 +686,83 @@ describe("server の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     expect(server.requests).toHaveLength(0);
   });
 });
+
+describe("invite の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階 ③)", () => {
+  it("その操作に無いフラグは usage エラー(2)で落ちる(拒否機構の置き換え)", async () => {
+    for (const argv of [
+      ["invite", "list", "--role", "member"],
+      ["invite", "create", "--inviter-fingerprint", "aaaabbbbccccddddeeeeffff00001111"],
+      ["invite", "revoke", "inv-1", "--role", "member"],
+    ]) {
+      const { env, server } = await startEnv();
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n"), argv.join(" ")).toContain("Unknown flag");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("不明な操作は取りうる操作の一覧を出す", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["invite", "bogus"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: create | accept | list | revoke)",
+    );
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("create は --role 必須・重複指定は落ちる", async () => {
+    const missing = await startEnv();
+    expect(await runCli(["invite", "create"], missing.env.layer)).toBe(2);
+    expect(missing.env.errors.join("\n")).toContain("Specify --role");
+    expect(missing.server.requests).toHaveLength(0);
+
+    const dup = await startEnv();
+    expect(
+      await runCli(["invite", "create", "--role", "member", "--role", "admin"], dup.env.layer),
+    ).toBe(2);
+    expect(dup.env.errors.join("\n")).toContain("Flag --role was specified more than once");
+    expect(dup.server.requests).toHaveLength(0);
+  });
+
+  it("accept の対象は必須で、解釈できない入力は中身を出さずに落ちる", async () => {
+    const missing = await startEnv();
+    expect(await runCli(["invite", "accept"], missing.env.layer)).toBe(2);
+    expect(missing.env.errors.join("\n")).toContain("Missing positional argument target");
+    expect(missing.server.requests).toHaveLength(0);
+
+    // リンクでもトークンでもない入力(平文の値でありうる)は診断に出さない。
+    // 対象は Argument.redacted で受けている(トークン生値を内包しうるため)
+    const garbage = await startEnv();
+    const typed = "sk-live-hunter2-plaintext";
+    expect(await runCli(["invite", "accept", typed], garbage.env.layer)).toBe(2);
+    const errors = garbage.env.errors.join("\n");
+    expect(errors).toContain("Specify an invite link");
+    expectNoLeak(garbage.env, [typed]);
+    expect(garbage.server.requests).toHaveLength(0);
+  });
+
+  it("生トークンの受諾は --project 必須(既定プロジェクトへ黙って署名しない)", async () => {
+    const { env, server } = await startEnv();
+    const token = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
+    expect(await runCli(["invite", "accept", token], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Accepting with a raw token requires --project");
+    // トークン生値は診断に出さない
+    expectNoLeak(env, [token]);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("revoke の招待 id は必須・空を受け付けない", async () => {
+    const missing = await startEnv();
+    expect(await runCli(["invite", "revoke"], missing.env.layer)).toBe(2);
+    expect(missing.env.errors.join("\n")).toContain("Missing positional argument invite-id");
+    expect(missing.server.requests).toHaveLength(0);
+
+    const blank = await startEnv();
+    expect(await runCli(["invite", "revoke", "  "], blank.env.layer)).toBe(2);
+    expect(blank.env.errors.join("\n")).toContain(
+      "Unacceptable value for positional argument invite-id",
+    );
+    expect(blank.server.requests).toHaveLength(0);
+  });
+});

@@ -149,9 +149,13 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
 }
 
 export function parseInviteAcceptInput(
-  raw: string,
+  raw: Redacted.Redacted<string>,
 ): InviteAcceptInput | { readonly kind: "rejected"; readonly reason: InviteInputRejection } {
-  const trimmed = raw.trim();
+  // 剥がす理由: リンク / トークンの構文解釈にはバイト列そのものが要る。入力は
+  // 引数層(`Argument.redacted` — ADR-0016 第 2 段階の invite 移行)から
+  // Redacted のまま届き、生値はこの関数の外へ出ない — トークンは再び Redacted で
+  // 包んで返し、リンクの他パラメータ(p/h/s/iu/if/r)は非機密メタデータである
+  const trimmed = Redacted.value(raw).trim();
   if (INVITE_TOKEN.test(trimmed)) {
     return { kind: "token", token: Redacted.make(trimmed, { label: "invite-token" }) };
   }

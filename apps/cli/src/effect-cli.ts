@@ -25,7 +25,7 @@
 // 6. **stdout はコマンドの出力だけ**。コマンド本体の出力は `CliIo.log`、
 //    ヘルプ・診断は `Console`(= `CliIo.logError` = stderr)へ分ける
 
-import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import {
   Cause,
   Console,
@@ -34,6 +34,7 @@ import {
   FileSystem,
   Layer,
   Path,
+  Redacted,
   Schema,
   Stdio,
   Terminal,
@@ -57,7 +58,9 @@ import {
   commitVerifiedHead,
   openEnvironment,
   openMetadataEnvironmentPair,
+  openMetadataProject,
   openProject,
+  openSession,
 } from "./context.ts";
 import { displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
 import { envCreateOp } from "./env-create.ts";
@@ -65,9 +68,23 @@ import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
 import { CliError, usageError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
-import { parseFingerprintFlag } from "./fingerprint-flag.ts";
+import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
+import {
+  type InviteInputRejection,
+  type InviteRole,
+  parseInviteAcceptInput,
+} from "./invite-link.ts";
+import {
+  type AcceptTarget,
+  inviteAcceptOp,
+  inviteCreateOp,
+  inviteListOp,
+  inviteRevokeOp,
+} from "./invite.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
+import { keyGenerateOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
+import { PinStore } from "./pins.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { reportRotation } from "./rotation-report.ts";
 import { reportRotationFlagCount } from "./rotation.ts";
@@ -244,10 +261,52 @@ const serverRevokeConfig = {
   ),
 };
 
+/** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
+const INVITE_ROLES = ["reader", "member", "admin"] as const;
+
+function isInviteRole(value: string | undefined): value is InviteRole {
+  return INVITE_ROLES.some((known) => known === value);
+}
+
+const inviteCreateConfig = {
+  ...projectFlags(),
+  role: singleValued("role", `Role to grant (required — ${INVITE_ROLES.join(" | ")})`),
+};
+
+const inviteAcceptConfig = {
+  server: singleValued("server", "Server URL (defaults to config server)"),
+  project: singleValued(
+    "project",
+    "Project ID (only required when accepting with a raw token — a link carries it)",
+  ),
+  "inviter-fingerprint": singleValued(
+    "inviter-fingerprint",
+    "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link's if= instead of the interactive ceremony)",
+  ),
+  // 招待リンクはトークン生値を内包する = ただの表示可能文字列ではない。
+  // `Argument.redacted` で受け、Redacted のまま invite-link.ts の解釈境界へ
+  // 渡す(PR #74 の申し送り — 剥がすのは既存の境界だけ)
+  target: Argument.redacted("target").pipe(
+    Argument.withDescription(
+      "Invite link or token (quote the link so the shell does not interpret it)",
+    ),
+  ),
+};
+
+const inviteListConfig = { ...projectFlags() };
+
+const inviteRevokeConfig = {
+  ...projectFlags(),
+  "invite-id": Argument.string("invite-id").pipe(
+    Argument.withDescription("Invite id to revoke (see maruhi invite list)"),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /**
  * commandKey → 診断用の宣言。キーは runCli の振り分けが返すものと同じ。
- * 入れ子の段(`env` / `server`)は subcommands を持ち、不明なサブコマンドの
- * 診断が「取りうる操作の一覧」を出すのに使う(cli-formatter.ts)。
+ * 入れ子の段(`env` / `server` / `invite`)は subcommands を持ち、不明な
+ * サブコマンドの診断が「取りうる操作の一覧」を出すのに使う(cli-formatter.ts)。
  */
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
@@ -259,6 +318,11 @@ export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   server: { flags: [], positionals: [], subcommands: ["grant", "revoke"] },
   "server grant": specOf(serverGrantConfig),
   "server revoke": specOf(serverRevokeConfig),
+  invite: { flags: [], positionals: [], subcommands: ["create", "accept", "list", "revoke"] },
+  "invite create": specOf(inviteCreateConfig),
+  "invite accept": specOf(inviteAcceptConfig),
+  "invite list": specOf(inviteListConfig),
+  "invite revoke": specOf(inviteRevokeConfig),
 };
 
 /**
@@ -586,6 +650,124 @@ function reportRevokeRotations(
   });
 }
 
+/** `maruhi invite create --role <r>`(§15-2 発行 + §15-3 リンク組み立て)。 */
+function inviteCreateCommand(
+  flags: CommonFlags & { readonly role?: string | undefined },
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    if (!isInviteRole(flags.role)) {
+      return yield* Effect.fail(
+        usageError(
+          `Specify --role (${INVITE_ROLES.join(" | ")} — owner cannot be granted via an invite. AUTH_SPEC §15-1)`,
+        ),
+      );
+    }
+    // リンク材料(ヘッド・自分の FP)はチェーン導出 — master 鍵は不要
+    const context = yield* openMetadataProject(flags);
+    yield* inviteCreateOp({
+      client: context.client,
+      verified: context.verified,
+      origin: context.origin,
+      role: flags.role,
+      sessionUserId: context.session.userId,
+    });
+  });
+}
+
+/** `invite accept` の入力拒否理由 → usage 文言。 */
+function acceptInputRejectionMessage(reason: InviteInputRejection): string {
+  if (reason === "unsupported-version") {
+    return "This invite link's format version is not supported (update the maruhi CLI)";
+  }
+  if (reason === "missing-or-invalid-fragment-params") {
+    return "The invite link's fragment (after #) is incomplete or invalid. Check that the link was copied without truncation (a broken link cannot be accepted without its anchor)";
+  }
+  return "Specify an invite link (…/invite#v=1&…) or an invite token (maruhi_inv_…). Quote the link so the shell does not interpret it";
+}
+
+/**
+ * `invite accept` の入力(リンク | トークン + --project)の解決。
+ *
+ * 入力は引数層から `Redacted` のまま届く(リンクはトークン生値を内包する)。
+ * 構文解釈は invite-link.ts の境界に任せ、ここでは剥がさない。
+ */
+function resolveAcceptTarget(
+  rawTarget: Redacted.Redacted<string>,
+  projectFlag: string | undefined,
+): Effect.Effect<AcceptTarget, CliError> {
+  const parsed = parseInviteAcceptInput(rawTarget);
+  if (parsed.kind === "rejected") {
+    return Effect.fail(usageError(acceptInputRejectionMessage(parsed.reason)));
+  }
+  if (parsed.kind === "token") {
+    // 受諾署名(CRYPTO_SPEC §6.5)は project_id を署名対象に含むため、リンク
+    // なしの受諾にはプロジェクト ID の帯域外供給が必須(config の
+    // defaultProject へはフォールバックしない — 別プロジェクトへの署名を
+    // 黙って作らない)
+    if (projectFlag === undefined) {
+      return Effect.fail(
+        usageError(
+          "Accepting with a raw token requires --project <project ID> (the acceptance signature binds the project ID — CRYPTO_SPEC §6.5). Not needed when accepting with an invite link",
+        ),
+      );
+    }
+    if (!isProjectId(projectFlag)) {
+      return Effect.fail(usageError("Invalid project ID (64 hex digits)"));
+    }
+    return Effect.succeed({ kind: "token", token: parsed.token, projectId: projectFlag });
+  }
+  if (projectFlag !== undefined && projectFlag !== parsed.link.projectId) {
+    return Effect.fail(
+      usageError(
+        "--project does not match the link's p (project ID). --project is not needed when accepting with a link",
+      ),
+    );
+  }
+  return Effect.succeed({ kind: "link", link: parsed.link });
+}
+
+/** `maruhi invite accept <link|token>`(§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5)。 */
+function inviteAcceptCommand(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly target: Redacted.Redacted<string>;
+  readonly inviterFingerprint?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const target = yield* resolveAcceptTarget(flags.target, flags.project);
+    const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
+      "--inviter-fingerprint",
+      flags.inviterFingerprint,
+    );
+    const context = yield* openSession(flags.server);
+    yield* inviteAcceptOp({
+      client: context.client,
+      session: context.session,
+      target,
+      expectInviterFingerprintHex,
+      keyGenerate: keyGenerateOp({ session: context.session, client: context.client }),
+    });
+  });
+}
+
+/** `maruhi invite list`(受諾ブロックの §6.5 独立検証 + 発行ピン突合)。 */
+function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const context = yield* openMetadataProject(flags);
+    const store = yield* PinStore;
+    const loaded = yield* store.load(context.projectId);
+    const summary = yield* inviteListOp({
+      client: context.client,
+      verified: context.verified,
+      pins: loaded.pins,
+      nowMs: Date.now(),
+    });
+    // 署名検証失敗・ピン不一致は「読み取りの成功」ではなく証拠の検出 — 0 に
+    // しない(スクリプトが健全性チェックとして使える)
+    return summary.integrityFailures > 0 ? 1 : 0;
+  });
+}
+
 /**
  * コマンド本体。ハンドラは `Effect<void>` しか返せない(`Command.runWith` が
  * 値を捨てる)ので、子プロセスの終了コードは `onExitCode` で持ち出す。
@@ -747,7 +929,48 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Command.withSubcommands([serverGrant, serverRevoke]),
   );
 
-  return Command.make("maruhi").pipe(Command.withSubcommands([pull, run, env, server]));
+  const inviteCreate = Command.make("create", inviteCreateConfig, (values) =>
+    inviteCreateCommand(values),
+  ).pipe(Command.withDescription("Issue an invite and build the invite link (AUTH_SPEC §15)"));
+
+  const inviteAccept = Command.make("accept", inviteAcceptConfig, (values) =>
+    inviteAcceptCommand({
+      server: values.server,
+      project: values.project,
+      target: values.target,
+      inviterFingerprint: values["inviter-fingerprint"],
+    }),
+  ).pipe(Command.withDescription("Accept an invite link or token (§15-3 / CRYPTO_SPEC §6.5)"));
+
+  const inviteList = Command.make("list", inviteListConfig, (values) =>
+    Effect.gen(function* () {
+      onExitCode(yield* inviteListCommand(values));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "List invites, independently verifying acceptance blocks (§6.5) and issuance pins",
+    ),
+  );
+
+  const inviteRevoke = Command.make("revoke", inviteRevokeConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openMetadataProject(values);
+      yield* inviteRevokeOp({
+        client: context.client,
+        verified: context.verified,
+        inviteId: values["invite-id"],
+      });
+    }),
+  ).pipe(Command.withDescription("Revoke an invite"));
+
+  const invite = Command.make("invite").pipe(
+    Command.withDescription(
+      "Manage invites (create / accept / list / revoke — AUTH_SPEC §15 / CRYPTO_SPEC §6.5)",
+    ),
+    Command.withSubcommands([inviteCreate, inviteAccept, inviteList, inviteRevoke]),
+  );
+
+  return Command.make("maruhi").pipe(Command.withSubcommands([pull, run, env, server, invite]));
 }
 
 /* -------------------------------------------------------------------------- */
