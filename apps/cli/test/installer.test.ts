@@ -44,7 +44,7 @@ describe("install script(packaging/install.sh)", () => {
 
   it("windows は install script の対象にしない(README の手動手順へ誘導する)", () => {
     expect(installScript).not.toMatch(/TARGET="windows/);
-    expect(installScript).toContain("Windows はこの script の対象外です");
+    expect(installScript).toContain("Windows is not supported by this script");
   });
 
   it("`mh` は maruhi への相対 symlink として張る(ADR-0015 裁定 7)", () => {

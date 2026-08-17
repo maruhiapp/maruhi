@@ -121,6 +121,7 @@ trusted publisher の設定 — workflow 名・org・allowed action)を直して
 
 ## 注意
 
+- **GitHub Release の公開本文は英語**(ADR-0017 決定 1)。workflow は `gh release create --generate-notes` で PR タイトルから本文を組む(`--draft` なし = タグ push 時点で公開済み)。所有者は公開直後に Release 本文を英語へ直す(`--draft` 化や `--notes-file` 化、PR タイトルの英語化は別判断)
 - **windows-x64 は experimental**(Credential Manager 経路が未検証。fail-closed
   設計のため危険側には壊れない — ADR-0015)
 - **macOS は未公証**。ブラウザでダウンロードすると Gatekeeper に隔離される

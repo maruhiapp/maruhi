@@ -249,9 +249,9 @@
 
 ### A-3. `--expect-fingerprint` の自己言及照合の注意(Info・新規)
 
-> **状態(2026-08-15 追記)**: **修正済み** — `SELF_HOSTING.md` の「フィンガープリントの控え」節に、grant 実行時の `/auth/config` 再取得値を渡すと照合が自己言及になる旨の注意書きを追加した。
+> **状態(2026-08-15 追記)**: **修正済み** — `SELF_HOSTING.md` の "Record the fingerprint (the comparison baseline)" 節に、grant 実行時の `/auth/config` 再取得値を渡すと照合が自己言及になる旨の注意書きを追加した。
 
-`server grant` の確認の儀式は AI エージェント環境で拒否され、非対話では `--expect-fingerprint` に**帯域外で控えた FP** を渡す設計になっている。「デプロイ直後に FP を控え、それを照合基準にする(非対話は `--expect-fingerprint` に渡す)」ことは `docs/SELF_HOSTING.md` の「フィンガープリントの控え」節と CLI ヘルプ(「帯域外で控えたサーバー鍵 FP」)が**既に記載済み**である。残る差分は 1 点のみ: **grant 実行時に `/auth/config` から機械取得した値をそのまま渡すと照合が自己言及になり儀式が無意味化する**(デプロイ直後の取得は trust-on-first-use のアンカーとして意図された手順であり、grant 時の再取得とは意味が異なる)ことの明示。`SELF_HOSTING.md` の同節に注意書きを 1 行足すことを推奨。
+`server grant` の確認の儀式は AI エージェント環境で拒否され、非対話では `--expect-fingerprint` に**帯域外で控えた FP** を渡す設計になっている。「デプロイ直後に FP を控え、それを照合基準にする(非対話は `--expect-fingerprint` に渡す)」ことは `docs/SELF_HOSTING.md` の "Record the fingerprint (the comparison baseline)" 節と CLI ヘルプ(「帯域外で控えたサーバー鍵 FP」)が**既に記載済み**である。残る差分は 1 点のみ: **grant 実行時に `/auth/config` から機械取得した値をそのまま渡すと照合が自己言及になり儀式が無意味化する**(デプロイ直後の取得は trust-on-first-use のアンカーとして意図された手順であり、grant 時の再取得とは意味が異なる)ことの明示。`SELF_HOSTING.md` の同節に注意書きを 1 行足すことを推奨。
 
 ### 追補で検査して問題なしと確認した項目
 

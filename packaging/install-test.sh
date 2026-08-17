@@ -214,7 +214,7 @@ case_reinstall_and_foreign_mh() {
     return
   fi
   check "再インストール: 他人の mh を残した" test "$("${dest}/mh")" = "other"
-  check "再インストール: mh について警告した" grep -q "mh が既にあります" <<<"${out}"
+  check "再インストール: mh について警告した" grep -q "already exists (not a symlink)" <<<"${out}"
   # 2 回目(既存の maruhi を上書き)
   if ! out="$(run_install "file://${dir}" "${dest}" --version "${VERSION}")"; then
     fail "再インストール: 2 回目が失敗した"
@@ -241,7 +241,7 @@ case_foreign_mh_symlink() {
     return
   fi
   check "他人の mh symlink: 張り替えていない" test "$(readlink "${dest}/mh")" = "other-tool"
-  check "他人の mh symlink: 警告した" grep -q "maruhi 以外を指す symlink" <<<"${out}"
+  check "他人の mh symlink: 警告した" grep -q "does not point to maruhi" <<<"${out}"
   check "他人の mh symlink: maruhi 自体は入る" test -x "${dest}/maruhi"
 }
 
@@ -312,7 +312,7 @@ case_missing_asset() {
     return
   fi
   pass "アセット不在: 非 0 で終了した"
-  check "アセット不在: 取得失敗として報告した" grep -q "取得に失敗" <<<"${out}"
+  check "アセット不在: 取得失敗として報告した" grep -q "download failed" <<<"${out}"
   assert_clean_dest "${dest}" "アセット不在"
 }
 
@@ -328,7 +328,7 @@ case_dest_not_a_file() {
     return
   fi
   pass "置き換え先が非ファイル: 非 0 で終了した"
-  check "置き換え先が非ファイル: 理由を報告した" grep -q "通常ファイルではありません" <<<"${out}"
+  check "置き換え先が非ファイル: 理由を報告した" grep -q "is not a regular file" <<<"${out}"
   check "置き換え先が非ファイル: 中へ潜り込んでいない" test -z "$(ls -A "${dest}/maruhi")"
 }
 
@@ -343,7 +343,7 @@ case_version_mismatch() {
     return
   fi
   pass "版の不一致: 非 0 で終了した"
-  check "版の不一致: 版の不一致として報告した" grep -q "版が一致しません" <<<"${out}"
+  check "版の不一致: 版の不一致として報告した" grep -q "version mismatch" <<<"${out}"
   assert_clean_dest "${dest}" "版の不一致"
 }
 

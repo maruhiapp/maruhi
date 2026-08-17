@@ -1,255 +1,278 @@
-# maruhi セルフホストガイド
+# maruhi self-hosting guide
 
-自分の Cloudflare アカウントに maruhi サーバーを立てる手順。素の wrangler のみで完結する
-(ADR-0012 のセルフホスト経路。Alchemy は不要)。所要はおよそ 10 分、うち maruhi 固有の
-作業は GitHub OAuth App の作成だけ。
+How to run the maruhi server on your own Cloudflare account. The path is
+plain wrangler only (the self-hosting path in ADR-0012; Alchemy is not required).
+It takes about 10 minutes; the only maruhi-specific work is creating a GitHub
+OAuth App.
 
-このガイドが初回セットアップウィザードの正である(AUTH_SPEC §3。ADR-0014:
-セルフホストは上級者経路であり、検証済みのコピー&ペースト可能な手順書を最小の形とする)。
-手順は 2026-08-10(セッション 19)に wrangler 4.120 で実デプロイ検証済み。
-2026-08-11 改訂(手順 3 のマイグレーション統合・client_id の Workers Secret 化 —
-AUTH_SPEC §3-2)は実デプロイでの再検証待ち。
+This guide is the source of truth for first-time setup (AUTH_SPEC §3. ADR-0014:
+self-hosting is an advanced path, and the verified copy-pasteable runbook is the
+minimal form). The steps were verified with a real deploy on 2026-08-10
+(session 19) against wrangler 4.120.
+The 2026-08-11 revision (folding migrations into step 3, and making client_id a
+Workers Secret — AUTH_SPEC §3-2) is waiting on re-verification against a real
+deploy.
 
-## 立つもの
+## What comes up
 
-- **Workers**: `maruhi-server`(API サーバー。Effect HttpApi)
-- **Durable Objects**: `ProjectChainDO`(プロジェクトごとのメンバーシップチェーン・
-  暗号化データ・監査ログ。SQLite バック — Workers 無料プランで利用可)
-- **D1**: `maruhi`(ユーザー・セッション・トークン等の認証系メタデータ)
-- **cron**: 期限切れセッション行の日次掃除
+- **Workers**: `maruhi-server` (the API server. Effect HttpApi)
+- **Durable Objects**: `ProjectChainDO` (per-project membership chain,
+  encrypted data, and audit log. SQLite-backed — available on the Workers free
+  plan)
+- **D1**: `maruhi` (auth metadata: users, sessions, tokens, and so on)
+- **cron**: daily cleanup of expired session rows
 
-シークレットの平文はどこにも置かれない(E2EE — サーバーは暗号文しか保存しない)。
+Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only).
 
-## 前提
+## Prerequisites
 
-- Cloudflare アカウント(無料プランで可)
-- GitHub アカウント(認証は GitHub OAuth のみ — AUTH_SPEC)
-- Bun 1.3.14(リポジトリの `engines` にピン留め。wrangler は依存に含まれる)
+- A Cloudflare account (the free plan is enough)
+- A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
+- Bun 1.3.14 (pinned in the repository `engines`. wrangler is a dependency)
 
-## 手順
+## Steps
 
-### 1. リポジトリ取得と Cloudflare 認証
+### 1. Clone the repository and authenticate to Cloudflare
 
 ```sh
-git clone <このリポジトリ> && cd maruhi
+git clone <this-repository> && cd maruhi
 bun install
 cd apps/server
-bunx wrangler login   # ブラウザで認可(CI では CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)
+bunx wrangler login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)
 ```
 
-テレメトリを送りたくない場合は `WRANGLER_SEND_METRICS=false` を環境に設定する
-(maruhi 自身は一切のテレメトリを実装しない — CLAUDE.md「言わざる」)。
+If you do not want wrangler to send telemetry, set `WRANGLER_SEND_METRICS=false`
+in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing"; Japanese).
 
-### 2. D1 データベース作成
+### 2. Create the D1 database
 
 ```sh
 bunx wrangler d1 create maruhi
 ```
 
-出力される `database_id`(UUID)を `wrangler.jsonc` の `d1_databases[0].database_id`
-(プレースホルダ `00000000-…`)に記入する。
+Write the printed `database_id` (UUID) into `wrangler.jsonc` at
+`d1_databases[0].database_id` (placeholder `00000000-…`).
 
-### 3. 初回デプロイ(マイグレーション適用 + URL の確定)
+### 3. First deploy (apply migrations + pin the URL)
 
 ```sh
 bun run deploy   # = bun run db:migrate && wrangler deploy
 ```
 
-deploy スクリプトは D1 マイグレーションの適用(バインディング名 `DB` を参照 —
-DB 名を変えていても動く)とデプロイを常にこの順で行う。drizzle のフォルダ形式
-(`drizzle/<name>/migration.sql`)は `wrangler.jsonc` の `migrations_pattern` で
-wrangler にそのまま認識される。
+The deploy script always applies D1 migrations first (it refers to the binding
+name `DB`, so it still works if you rename the database) and then deploys.
+drizzle's folder layout (`drizzle/<name>/migration.sql`) is picked up by wrangler
+as-is via `migrations_pattern` in `wrangler.jsonc`.
 
-出力の `https://maruhi-server.<あなたのサブドメイン>.workers.dev` を控える
-(以下「`<デプロイ URL>`」はこの `https://` を含む URL 全体を指す)。
-GitHub OAuth のコールバック URL はこのデプロイ URL から決まるため、**OAuth App の
-作成より先にデプロイする**(この時点ではまだ OAuth 未設定なので、認証系エンドポイントは
-503 `SetupIncomplete` を返す — 正常)。
+Note the printed `https://maruhi-server.<your-subdomain>.workers.dev`
+(below, `<deploy-url>` means this entire URL, including `https://`).
+The GitHub OAuth callback URL is derived from this deploy URL, so **deploy before
+you create the OAuth App** (OAuth is not configured yet at this point, so auth
+endpoints return 503 `SetupIncomplete` — that is expected).
 
-### 4. GitHub OAuth App 作成
+### 4. Create a GitHub OAuth App
 
-https://github.com/settings/applications/new で作成する:
+Create one at https://github.com/settings/applications/new:
 
-| 項目 | 値 |
+| Field | Value |
 |---|---|
-| Application name | 任意(例: `maruhi (self-hosted)`) |
-| Homepage URL | 手順 3 のデプロイ URL |
-| Authorization callback URL | `<デプロイ URL>/auth/github/callback` |
-| **Enable Device Flow** | **必ずチェックする**(CLI ログインが device flow — チェック漏れが最頻の詰まりどころ) |
+| Application name | Anything (example: `maruhi (self-hosted)`) |
+| Homepage URL | The deploy URL from step 3 |
+| Authorization callback URL | `<deploy-url>/auth/github/callback` |
+| **Enable Device Flow** | **Must be checked** (CLI login is device flow — leaving this off is the most common stuck point) |
 
-作成後、client_id を控え、"Generate a new client secret" で client_secret を発行する。
+After creating it, copy the client_id and issue a client_secret with
+"Generate a new client secret".
 
-### 5. client_id / client_secret の登録
+### 5. Register client_id / client_secret
 
-両方とも Workers Secret として登録する(**リポジトリ・設定ファイルに書かない**。
-client_id は公開情報だが、登録経路を secret に統一することで `wrangler.jsonc` の
-編集と再デプロイを不要にしている — AUTH_SPEC §3-2):
-
-```sh
-bunx wrangler secret put GITHUB_CLIENT_ID       # プロンプトに貼り付け
-bunx wrangler secret put GITHUB_CLIENT_SECRET   # 同上
-```
-
-`secret put` は即時反映される(再デプロイ不要)。
-
-### 6. 動作確認
+Register both as Workers Secrets (**do not write them into the repository or
+config files**. client_id is public information, but routing registration through
+secrets means you never have to edit `wrangler.jsonc` and redeploy —
+AUTH_SPEC §3-2):
 
 ```sh
-curl <デプロイ URL>/auth/config
-# → {"githubClientId":"<あなたの client_id>"} なら設定完了
-#   (200 は client_id / client_secret の両方が登録済みであることを意味する)
-# → 503 {"_tag":"SetupIncomplete",...} なら手順 5 の secret put 漏れ
-#   (登録済み一覧は `bunx wrangler secret list` で確認できる — 値は表示されない)
+bunx wrangler secret put GITHUB_CLIENT_ID       # paste at the prompt
+bunx wrangler secret put GITHUB_CLIENT_SECRET   # same
 ```
 
-### 7. CLI から接続
+`secret put` takes effect immediately (no redeploy).
+
+### 6. Smoke-check
 
 ```sh
-maruhi config set server <デプロイ URL>
-maruhi login          # client_id はサーバーから自動解決(GET /auth/config)
-maruhi key generate   # 初回のみ: master 鍵の生成 + リカバリーコード発行(人間の端末で)
+curl <deploy-url>/auth/config
+# → {"githubClientId":"<your-client-id>"} means setup is complete
+#   (200 means both client_id and client_secret are registered)
+# → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
+#   (list registered secrets with `bunx wrangler secret list` — values are not shown)
 ```
 
-以降は `maruhi project init` → `maruhi env create` → `maruhi push` / `maruhi run` へ。
+### 7. Connect from the CLI
 
-## サーバー鍵の設定(オプション — `maruhi server grant` の前提)
+```sh
+maruhi config set server <deploy-url>
+maruhi login          # client_id is resolved from the server (GET /auth/config)
+maruhi key generate   # first time only: generate the master key + issue a recovery code (on a human's machine)
+```
 
-サーバー宛の鍵ラップ(CRYPTO_SPEC §9 — プロジェクト owner が明示的に
-`maruhi server grant` した環境の DEK をサーバーへ開示する機能)を使う場合のみ
-必要。使わない限りこの節は丸ごと飛ばしてよい(未設定でも他の全機能は動き、
-サーバーは暗号文の保管庫のまま)。
+From there: `maruhi project init` → `maruhi env create` → `maruhi push` / `maruhi run`.
 
-### 鍵素材(IKM)の登録
+## Server key setup (optional — required for `maruhi server grant`)
 
-32 バイトの乱数を hex(64 文字)で生成し、Workers Secret として登録する:
+Needed only if you use server-side key wrap (CRYPTO_SPEC §9 — the owner of a
+project explicitly runs `maruhi server grant` to disclose that environment's DEK
+to the server). Skip this entire section if you do not (everything else still
+works with the secret unset, and the server remains a ciphertext store).
+
+### Register the key material (IKM)
+
+Generate 32 bytes of randomness as hex (64 characters) and register it as a
+Workers Secret:
 
 ```sh
 openssl rand -hex 32 | bunx wrangler secret put SERVER_ENC_KEY_IKM
 ```
 
-サーバーはこの IKM から X25519 鍵ペアを決定論的に導出する(RFC 9180
-DeriveKeyPair)。IKM は秘密鍵素材そのものなので**手元に控えを残さない**
-(パイプで直接登録し、シェル履歴・ファイルに残さない)。
+The server derives an X25519 keypair from this IKM deterministically (RFC 9180
+DeriveKeyPair). The IKM is private-key material, so **do not keep a local copy**
+(pipe it straight into registration; do not leave it in shell history or a file).
 
-### フィンガープリントの控え(照合の基準づくり)
+### Record the fingerprint (the comparison baseline)
 
-登録後、サーバー鍵のフィンガープリント(FP)を確認して安全な場所に控える:
+After registration, read the server-key fingerprint (FP) and store it somewhere
+safe:
 
 ```sh
-curl <デプロイ URL>/auth/config
-# → {"githubClientId":"...","serverKeyFingerprintHex":"<hex 32 文字>","serverEncPubHex":"<hex 64 文字>"}
+curl <deploy-url>/auth/config
+# → {"githubClientId":"...","serverKeyFingerprintHex":"<32-char hex>","serverEncPubHex":"<64-char hex>"}
 ```
 
-`maruhi server grant` は開示に先立ち、サーバーが配布する鍵の FP を 12 語の
-ワード列で表示して所有者に確認を求める(CRYPTO_SPEC §9 の確認の儀式)。その
-照合基準がこの控えである(非対話実行では `--expect-fingerprint <hex 32 文字>` に
-渡す)。デプロイ直後の、経路の確かなうちに控えるのがこの手順の要点。
+Before disclosing anything, `maruhi server grant` shows the FP of the key the
+server distributes as a 12-word phrase and asks the owner to confirm it
+(CRYPTO_SPEC §9 confirmation ritual). That comparison baseline is this recorded
+value (non-interactive runs pass `--expect-fingerprint <32-char hex>`).
+The point of this step is to record it right after deploy, while the path is
+still trustworthy.
 
-> **注意**: grant 実行時に `/auth/config` から取り直した値をそのまま
-> `--expect-fingerprint` に渡してはならない。照合が「サーバーの申告と
-> サーバーの申告の突き合わせ」になり(自己言及)、儀式が無意味化する。
-> デプロイ直後の取得は trust-on-first-use のアンカーとして意図された手順で
-> あり、grant 時の再取得とは意味が異なる。渡してよいのは帯域外に控えた値だけ。
+> **Caution**: do not take a fresh value from `/auth/config` at grant time and
+> pass it straight to `--expect-fingerprint`. That turns the check into
+> "the server's claim versus the server's claim" (self-referential) and the
+> ritual becomes meaningless.
+> Fetching it right after deploy is intended as a trust-on-first-use anchor,
+> which is a different act from re-fetching it at grant time. The only value you
+> may pass is one you recorded out of band.
 
-### IKM の変更 = サーバー鍵の変更
+### Changing the IKM = changing the server key
 
-`SERVER_ENC_KEY_IKM` を put し直すとサーバー鍵そのものが変わる(旧鍵宛の
-ラップは新鍵では開封できず、FP も変わる)。既に grant 済みのプロジェクトが
-ある状態で変更した場合は、各プロジェクトで `maruhi server revoke` →
-`maruhi server grant` をやり直すこと(revoke は全環境の強制ローテーションを
-伴う — CRYPTO_SPEC §7)。
+Putting a new `SERVER_ENC_KEY_IKM` changes the server key itself (wraps addressed
+to the old key will not open under the new one, and the FP changes too). If you
+change it while any project already has a grant, re-run `maruhi server revoke` →
+`maruhi server grant` on each of those projects (revoke forces a rotation of
+every environment — CRYPTO_SPEC §7).
 
-## 推奨する堅牢化(オプション): 未認証エンドポイントのレート制限
+## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
-maruhi の未認証面のうち、費用の掛かる処理を第三者が誘発できるのは次の 3 つ
-(ほかの未認証面 `/auth/config` / `/auth/github/start` は自己完結の軽量応答)。
-いずれもサーバー側の防御(入力サイズ上限・形式事前検査・プロジェクト単位の
-固定窓・JWKS の TTL キャッシュ)を持つが、**送信元 IP 単位**の制限は
-Cloudflare 側でしか掛けられない。ダッシュボードの
-Security → WAF → Rate limiting rules で以下の追加を推奨する。
-**Free プランはルール 1 つまでなので、その場合は `/auth/device/exchange` を
-選ぶ**(表のうち、枠の枯渇が特定の呼び出し元の劣化ではなく**デプロイメント
-全体のログイン停止**につながる唯一の面のため):
+Of maruhi's unauthenticated surface, the following three are the ones where a
+third party can trigger work that costs money (the other unauthenticated surfaces
+`/auth/config` / `/auth/github/start` are self-contained lightweight responses).
+All three already have server-side defenses (input size caps, format pre-checks,
+a fixed window per project, and a TTL cache for JWKS), but **per-source-IP**
+limits can only be applied on the Cloudflare side. Add the following in the
+dashboard under Security → WAF → Rate limiting rules.
+**The Free plan allows only one rule, so in that case pick
+`/auth/device/exchange`** (it is the only surface in the table where exhausting
+the quota stops login for the **entire deployment**, not merely degrades one
+caller):
 
-| パス | 推奨制限 | 理由 |
+| Path | Recommended limit | Why |
 |---|---|---|
-| `/auth/device/exchange` | 10 リクエスト / 分 / IP | リクエストごとに GitHub check-token API へのアウトバウンド呼び出しを伴い、その枠は OAuth App 単位。形式を満たすトークンの洪水で枠が枯れると正規ユーザーのログイン(device 交換)が失敗する(形式不正はサーバー側で 400 即応済み) |
-| `/auth/github/callback` | 30 リクエスト / 分 / IP | リクエストごとに GitHub への code 交換 1 回(正規フローは成功後の `/user`・`/user/emails` を含め最大 3 回)を誘発でき、code の中身はサーバーでは検証できないため形式検査では遮断できない。**ブラウザの対話ログイン経路なので、オフィス NAT 等の共有 egress を想定して device/exchange より緩めにする** |
-| `/projects/*/environments/*/lease` | 60 リクエスト / 分 / IP | サーバー側の窓(300 発/時)はプロジェクト単位で、送信元を選ばない。CI の正常リトライを妨げない程度の per-IP 上限を足すと、単一送信元の暴走・嫌がらせを手前で吸収できる(こちらの外部呼び出し〔issuer の JWKS 取得〕は TTL キャッシュ + クールダウン済みで、リクエストごとには発生しない) |
+| `/auth/device/exchange` | 10 requests / min / IP | Each request makes an outbound call to GitHub's check-token API, and that quota is per OAuth App. A flood of well-formed tokens can exhaust the quota and fail legitimate user logins (device exchange) (malformed tokens already get an immediate 400 from the server) |
+| `/auth/github/callback` | 30 requests / min / IP | Each request can trigger one GitHub code exchange (the legitimate flow is at most 3 calls including `/user` and `/user/emails` after success), and the server cannot validate the code contents so format checks cannot block it. **This is the browser interactive login path, so loosen it relative to device/exchange to allow shared egress such as office NAT** |
+| `/projects/*/environments/*/lease` | 60 requests / min / IP | The server-side window (300 calls / hour) is per project and does not care who is calling. A modest per-IP cap that does not interfere with normal CI retries absorbs a single source running wild or being abusive (the external call here — fetching the issuer's JWKS — is already TTL-cached with a cooldown, and does not happen on every request) |
 
-CLI / CI 経路(device/exchange・lease)は送信元 IP が分散しリトライも容易な
-ため、per-IP 制限が正常運用を妨げることは実際上ない。callback だけは共有
-egress の同時ログインが集中しうるため、上の推奨値を下回らないこと。
+CLI / CI paths (device/exchange and lease) have spread-out source IPs and easy
+retries, so per-IP limits almost never get in the way of normal operation.
+callback is the exception: concurrent logins behind shared egress can bunch up,
+so do not go below the recommended value above.
 
-## 更新(バージョンアップ)
+## Updates (version upgrades)
 
 ```sh
 git pull
 bun install
 cd apps/server
-bun run deploy   # マイグレーション適用 → デプロイ(常にこの順で自動実行)
+bun run deploy   # apply migrations → deploy (always this order, automatic)
 ```
 
-手順 2 で行った `wrangler.jsonc` のローカル編集(`database_id`)は自分のフォークに
-コミットしておくこと(upstream 側でこのファイルが更新されると `git pull` が
-未コミットの編集と衝突する。コミットしない運用なら pull 後に再適用する)。
-client_id / client_secret は Workers Secret 側に保存されているため更新の影響を受けない。
+Commit the local edit to `wrangler.jsonc` from step 2 (`database_id`) to your
+own fork (if upstream changes this file, `git pull` will collide with an
+uncommitted edit. If you do not commit it, re-apply the edit after pull).
+client_id / client_secret live in Workers Secrets, so updates do not touch them.
 
-**2026-08-11 改訂をまたぐ更新(1 回だけの移行作業)**: 旧手順では client_id を
-`wrangler.jsonc` の `vars.GITHUB_CLIENT_ID` に記入していた。旧手順で立てた
-インスタンスは、この改訂以降のコードへ更新してデプロイする**前に**
-`bunx wrangler secret put GITHUB_CLIENT_ID` で client_id を Workers Secret として
-登録すること(新しい `wrangler.jsonc` には vars がないため、未登録のままデプロイ
-すると認証系エンドポイントが 503 `SetupIncomplete` になる。その場合も secret put
-すれば即時復旧する — 再デプロイ不要)。あわせて、`git pull` のマージ衝突を解消する
-際は自分のフォークの `vars.GITHUB_CLIENT_ID` ブロックを**残さず削除**(upstream 側を
-採用)すること — vars が残っていると、デプロイのたびに登録済みの同名 secret が
-vars の値で置き換えられて移行が無効になる(対話デプロイでは wrangler が確認を
-求めるが、非対話デプロイでは**警告のみで続行する** — `--strict` 指定時を除き
-エラーにはならないため、警告の見落としに注意)。
+**One-time migration when crossing the 2026-08-11 revision**: the old steps put
+client_id in `wrangler.jsonc` as `vars.GITHUB_CLIENT_ID`. Instances stood up
+with those old steps must register client_id as a Workers Secret with
+`bunx wrangler secret put GITHUB_CLIENT_ID` **before** updating to code from
+this revision and deploying (the new `wrangler.jsonc` has no vars, so deploying
+without the secret makes auth endpoints return 503 `SetupIncomplete`. A secret
+put still recovers immediately — no redeploy). When resolving a `git pull` merge
+conflict, **delete** your fork's `vars.GITHUB_CLIENT_ID` block rather than
+keeping it (take upstream) — if vars remain, every deploy overwrites the
+already-registered secret of the same name with the vars value and the migration
+is undone (interactive deploys ask for confirmation, but non-interactive deploys
+**continue after a warning only** — they do not error unless `--strict` is set,
+so do not miss the warning).
 
-## トラブルシューティング
+## Troubleshooting
 
-- **`/auth/config` / `/auth/github/start` / `/auth/device/exchange` が 503
-  `SetupIncomplete`**: `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` のどちらかが
-  未登録(`wrangler secret put` 漏れ — 手順 5。旧手順で立てたインスタンスの
-  更新後に起きた場合は「更新」節の移行作業を参照)。登録済みシークレットの一覧は
-  `bunx wrangler secret list` で確認できる(値は表示されない)
-- **CLI ログインで GitHub が `device_flow_disabled` を返す**: OAuth App の
-  "Enable Device Flow" が未チェック(手順 4)
-- **ブラウザログインで GitHub のエラーページに飛ぶ**: コールバック URL の不一致。
-  OAuth App の Authorization callback URL が `<デプロイ URL>/auth/github/callback` と
-  一致しているか確認する(http/https・末尾スラッシュ・サブドメインまで完全一致)
-- **`bun run deploy` のマイグレーション適用が `couldn't find DB` を返す**:
-  `database_id` の記入漏れ(手順 2)
-- **`/auth/config` に `serverKeyFingerprintHex` が出ない /
-  `maruhi server grant` が「デプロイメント keypair が設定されていません」**:
-  `SERVER_ENC_KEY_IKM` が未登録、または値が hex 64 文字になっていない
-  (形式不正は「未設定」として扱われる — 503 にはならない)。
-  `openssl rand -hex 32` の出力をそのまま `wrangler secret put` すること
-  (改行や引用符の混入に注意)
+- **`/auth/config` / `/auth/github/start` / `/auth/device/exchange` return 503
+  `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
+  unregistered (a missed `wrangler secret put` — step 5. If this happened after
+  updating an instance stood up with the old steps, see the migration in
+  "Updates"). List registered secrets with `bunx wrangler secret list` (values
+  are not shown)
+- **CLI login, GitHub returns `device_flow_disabled`**: "Enable Device Flow" is
+  unchecked on the OAuth App (step 4)
+- **Browser login lands on a GitHub error page**: callback URL mismatch.
+  Confirm the OAuth App Authorization callback URL is exactly
+  `<deploy-url>/auth/github/callback` (full match on http/https, trailing slash,
+  and subdomain)
+- **`bun run deploy` migration apply returns `couldn't find DB`**:
+  `database_id` was not filled in (step 2)
+- **`/auth/config` has no `serverKeyFingerprintHex` /
+  `maruhi server grant` says "The server has no deployment keypair configured"**:
+  `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
+  (a malformed value is treated as unset — this is not a 503).
+  Pipe the output of `openssl rand -hex 32` straight into `wrangler secret put`
+  (watch for stray newlines or quotes)
 
-## 備考
+## Notes
 
-- **client_secret のローテーション**: GitHub 側で新 secret を発行 →
-  `wrangler secret put GITHUB_CLIENT_SECRET`(put は即時反映。再デプロイ不要)→
-  GitHub 側で旧 secret を削除
-- **独自ドメイン**: `wrangler.jsonc` に `routes` を追加してよい。OAuth コールバックは
-  リクエスト origin から導出されるため、**GitHub OAuth App のコールバック URL も
-  同じドメインへ更新する**こと
-- **Deploy to Cloudflare ボタン**: リポジトリ公開(Phase 2)後に README へ設置予定。
-  ボタン対応の前提工事(マイグレーションの deploy 統合・バインディング名参照・
-  client_id の secret 化 = デプロイ後の設定が secret put ×2 だけで完結)は済んでいる。
-  未検証点は 3 つあり、公開リポジトリでしか検証できないため公開時に実検証する:
-  ① ボタンのモノレポ対応(リポジトリルート URL で `apps/server/wrangler.jsonc` が
-  検出され D1 が自動プロビジョニングされるか)。② ボタンのビルドパイプラインが
-  `apps/server` の `deploy` スクリプト(マイグレーション込み)を実行するか —
-  既定の素の `wrangler deploy` に落ちるとマイグレーション未適用のまま公開され、
-  DB を触る全エンドポイントが 500 になる。セットアップページで deploy コマンドの
-  上書き指定が必要になる可能性が高い。③ コミット済みのプレースホルダ
-  `database_id`(`00000000-…`)をボタンのプロビジョニングが実 ID へ差し替えるか —
-  Cloudflare のドキュメントは既定値の記載を推奨し「新規作成リソースの ID で
-  構成を更新する」とあるが、wrangler 単体の自動プロビジョニングは database_id が
-  埋まっているとその UUID をそのまま参照するため、ボタン側が差し替えない場合は
-  存在しない UUID への API エラーで失敗する(その場合プレースホルダの削除が必要)
-- 認証以外も含む API 仕様は `docs/AUTH_SPEC.md`、暗号仕様は `docs/CRYPTO_SPEC.md` を参照
+- **Rotating client_secret**: issue a new secret on the GitHub side →
+  `wrangler secret put GITHUB_CLIENT_SECRET` (put takes effect immediately; no
+  redeploy) → delete the old secret on the GitHub side
+- **Custom domain**: you may add `routes` to `wrangler.jsonc`. The OAuth callback
+  is derived from the request origin, so **update the GitHub OAuth App callback
+  URL to the same domain**
+- **Deploy to Cloudflare button**: planned for the README after the repository
+  goes public (Phase 2). Prerequisite work for the button (folding migrations
+  into deploy, referring to the binding name, and putting client_id in a secret
+  so post-deploy setup is just secret put ×2) is done.
+  Three points remain unverified and can only be verified against a public
+  repository, so they will be checked at public release:
+  (1) whether the button's monorepo support detects `apps/server/wrangler.jsonc`
+  from the repository-root URL and auto-provisions D1. (2) whether the button's
+  build pipeline runs the `apps/server` `deploy` script (including migrations) —
+  if it falls back to a plain `wrangler deploy`, the app is published with
+  migrations unapplied and every endpoint that touches the DB returns 500.
+  The setup page will likely need the deploy command overridden. (3) whether the
+  button's provisioning replaces the committed placeholder
+  `database_id` (`00000000-…`) with the real ID —
+  Cloudflare's docs recommend documenting a default and "update the config with
+  the ID of the newly created resource", but wrangler's own auto-provisioning
+  uses a filled-in database_id as-is, so if the button does not replace it the
+  deploy fails with an API error against a UUID that does not exist (in that
+  case the placeholder has to be removed)
+- For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md` (Japanese); for the
+  crypto spec see `docs/CRYPTO_SPEC.md` (Japanese)
