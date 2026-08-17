@@ -267,7 +267,7 @@ function corruptBlobMessage(): Effect.Effect<string> {
  * 唯一の復元手段を捨てられる。
  */
 const unsupportedCryptoOnRecover =
-  `${unsupportedCryptoCause}。The recovery code you entered and the registered blob are intact — do not discard them. ${retryOnSupportedRuntime}` as const;
+  `${unsupportedCryptoCause}. The recovery code you entered and the registered blob are intact — do not discard them. ${retryOnSupportedRuntime}` as const;
 
 /**
  * ブロブは解釈できたが鍵素材が読み込めないときの文言。
@@ -374,7 +374,7 @@ function unwrapWithPromptedCode(input: {
               ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
                 // レコードではない(この経路は ensureNoStoredMasterKey を通って
                 // いるので、キーチェーンに master 鍵は存在しない)
-                `${placeholderCause("登録済みのリカバリーブロブ")}。${reRegisterGuidance} Also report this as a maruhi bug`
+                `${placeholderCause("The registered recovery blob")}. ${reRegisterGuidance} Also report this as a maruhi bug`
               : // 形が違うだけかもしれない(将来版が書いたブロブ)。キーチェーン側と
                 // 同じ分類を使い、破損と言い切れないものには更新を先に案内する。
                 // 破損側でも再登録は**鍵が残っている別のデバイス**でしか実行

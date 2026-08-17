@@ -1733,7 +1733,7 @@ describe("maruhi env rotate", () => {
     const pushPaths: string[] = [];
     const handlers: MockHandler[] = [
       onRequest("GET", `/projects/${chainBase.projectId}/chain`, () => {
-        // 初回同期は epoch 2。再暗号化の途中で他メンバーが epoch 3 へ進める
+        // first syncは epoch 2。再暗号化の途中で他メンバーが epoch 3 へ進める
         const built = chainCalls === 0 ? chainRotated : rotatedTwice;
         chainCalls += 1;
         return {
@@ -1992,7 +1992,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("may be selectively blocking rotation");
     expect(errors).not.toContain("safe to simply re-run");
     expect(errors).not.toContain("was accepted");
-    // 受理確認のためのチェーン再取得をしていない(初回同期の 1 回だけ)
+    // 受理確認のためのチェーン再取得をしていない(first syncの 1 回だけ)
     const chainCalls = server.requests.filter((request) => request.path.endsWith("/chain")).length;
     expect(chainCalls - chainCallsBefore).toBe(1);
   });
@@ -2081,7 +2081,7 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "通常"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("サーバーによる差し替えの可能性");
+    expect(errors).toContain("possibly replaced by the server");
     // 良性の欠落として扱わない = 踏み越える手段を案内しない
     expect(errors).not.toContain("run with --new-epoch");
     expect(errors).not.toContain("a member holding wraps");
@@ -2142,7 +2142,7 @@ describe("maruhi env rotate", () => {
     // 初回 pull のケースと違い、ここではローテーション自体は起きている
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("サーバーによる差し替えの可能性");
+    expect(errors).toContain("possibly replaced by the server");
     expect(errors).toContain("This is evidence that re-running will not resolve");
     // 「再実行すれば片付く」系の案内へ格下げしない
     expect(errors).not.toContain("resume from the remainder");
@@ -2196,7 +2196,7 @@ describe("maruhi env rotate", () => {
     expect(pushed.value.aad).toMatchObject({ epoch: 3 });
     const errors = env.errors.join("\n");
     expect(errors).toContain("Some values cannot be re-encrypted");
-    expect(errors).toContain("エポック 1 の DEK が配布されていません");
+    expect(errors).toContain("No DEK for epoch 1");
     // 原因が既定文言(競合)に化けない
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
@@ -2286,7 +2286,7 @@ describe("maruhi env rotate", () => {
     });
     const env = await startEnv(state.handlers, owner);
 
-    // 初回同期(床なし): 対象集合の出所はサーバー応答しかなく、一貫した
+    // first sync(床なし): 対象集合の出所はサーバー応答しかなく、一貫した
     // 欠落は検出できない。失効目的のローテーションではこれを黙らない
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床なし"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("the omission cannot be detected");
@@ -2383,7 +2383,7 @@ describe("maruhi env rotate", () => {
     const env = await startEnv(state.handlers, owner);
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "重複"], env.layer)).toBe(1);
-    const nfcWarnings = env.errors.filter((line) => line.includes("NFC 正規形ではありません"));
+    const nfcWarnings = env.errors.filter((line) => line.includes("not NFC-normalized"));
     expect(nfcWarnings).toHaveLength(1);
   });
 
@@ -2506,7 +2506,7 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("エポック 1 の DEK が配布されていません");
+    expect(errors).toContain("No DEK for epoch 1");
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
     expect(env.logs.join("\n")).toContain("1 variable incomplete");
   });
@@ -2558,7 +2558,7 @@ describe("maruhi env rotate", () => {
     // 打ち切りは起きず、最終巡の復号なし再走査まで到達する
     expect(state.pushes).toHaveLength(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("エポック 1 の DEK が配布されていません");
+    expect(errors).toContain("No DEK for epoch 1");
     expect(errors).not.toContain("conflicts with concurrent pushes did not resolve");
     expect(env.logs.join("\n")).toContain("2 variables incomplete");
   });
@@ -2919,7 +2919,7 @@ describe("maruhi env rotate", () => {
     const env = await startEnv(state.handlers, owner);
 
     expect(await runCli(["env", "rotate", "staging", "--reason", "テスト"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("チェーン上に存在しません");
+    expect(env.errors.join("\n")).toContain("does not exist on the chain");
     expect(state.rotateBodies).toHaveLength(0);
   });
 });

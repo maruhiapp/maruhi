@@ -343,12 +343,12 @@ describe("maruhi login", () => {
 
   it("--github-base-url の形式検査は通信より前に走る(接続失敗として報告しない)", async () => {
     // client_id を config に置かない = 通信で取りに行く経路。形式の検査を
-    // 後ろに置くと、書き方の誤りが「サーバーへの接続に失敗しました」になる
+    // 後ろに置くと、書き方の誤りが「Failed to connect to the server」になる
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     expect(await runCli(["login", "--github-base-url", "ftp://x.example"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("http(s) で指定してください");
+    expect(env.errors.join("\n")).toContain("must be http(s)");
     expect(env.errors.join("\n")).not.toContain("接続に失敗");
   });
 
@@ -357,7 +357,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: "ftp://bad.example" });
     expect(await runCli(["logout"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("config の server を直してください");
+    expect(env.errors.join("\n")).toContain("fix server in your config");
   });
 
   it("client_id 未設定は設定手順を案内して失敗する", async () => {
@@ -443,10 +443,10 @@ describe("maruhi logout", () => {
   it("MARUHI_TOKEN が伏字・MARUHI_TOKEN_ORIGIN 未設定なら原因ごとに案内する", async () => {
     // どちらも次のコマンドが失敗する状態だが、直し方が違う(貼り直す / 足す)
     for (const [token, origin, expected] of [
-      ["<redacted:maruhi-token>", "https://x.example", "伏字"],
+      ["<redacted:maruhi-token>", "https://x.example", "redaction placeholder"],
       ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN is not set"],
       // 形が使えない理由は解決側の文言をそのまま出す(言い換えない)
-      ["maruhi_pat_env", "not-a-url", "解釈できません"],
+      ["maruhi_pat_env", "not-a-url", "Cannot parse"],
       ["maruhi_pat_env", "http://remote.example", "loopback"],
     ] as const) {
       const maruhi = await start([
@@ -490,7 +490,7 @@ describe("maruhi logout", () => {
 
   it("空白だけの MARUHI_TOKEN では警告しない(セッション解決と同じ判定)", async () => {
     // resolveSession は trim 後に空なら未設定として扱う。ここだけ生値で見ると
-    // 「引き続き認証されます」と言った直後に「ログインしていません」で落ちる
+    // 「引き続き認証されます」と言った直後に「Not logged in」で落ちる
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -576,7 +576,7 @@ describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
 
     const code = await runCli(["login"], env.layer);
     expect(code).toBe(1);
-    expect(env.errors.join("\n")).toContain("初期セットアップが未完了");
+    expect(env.errors.join("\n")).toContain("self-hosting setup is incomplete");
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
 

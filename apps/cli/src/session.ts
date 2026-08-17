@@ -86,24 +86,24 @@ export function normalizeHttpOrigin(
 ): Effect.Effect<string, CliError> {
   const reject = (message: string): Effect.Effect<never, CliError> =>
     Effect.fail(
-      source === "flag"
-        ? usageError(message)
-        : cliError(`${message} — ${source.fix} を直してください`),
+      source === "flag" ? usageError(message) : cliError(`${message} — fix ${source.fix}`),
     );
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     // URL そのものは返さない(認証情報が埋まった URL を書かれる形もある)
-    return reject(`${label}を解釈できません(https:// で始まる URL)`);
+    return reject(`Cannot parse ${label} (use a URL starting with https://)`);
   }
   // どの分岐でも URL は返さない(`http://user:token@host/x?token=…` の形で
   // 認証情報が書かれうる)。書き方の誤りなので終了コードも 2 で揃える
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return reject(`${label}は http(s) で指定してください`);
+    return reject(`${label} must be http(s)`);
   }
   if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
-    return reject(`${label}の http: は loopback のみ許可されます(平文送信になるため)`);
+    return reject(
+      `http: for ${label} is only allowed on loopback (it would otherwise transmit in cleartext)`,
+    );
   }
   return Effect.succeed(url.origin);
 }
@@ -119,19 +119,19 @@ export function resolveServerOrigin(
   if (raw === undefined) {
     return Effect.fail(
       cliError(
-        "サーバー URL が未設定です。--server <url> を指定するか、`maruhi config set server <url>` で設定してください",
+        "No server URL is configured. Pass --server <url> or set it with `maruhi config set server <url>`",
       ),
     );
   }
   return normalizeHttpOrigin(
     raw,
-    "サーバー URL",
-    flag === undefined ? { fix: "config の server" } : "flag",
+    "the server URL",
+    flag === undefined ? { fix: "server in your config" } : "flag",
   );
 }
 
 const noSessionError = cliError(
-  "ログインしていません。`maruhi login` を実行してください(キーチェーン不在環境では MARUHI_TOKEN 環境変数でトークンを渡せます)",
+  "Not logged in. Run `maruhi login` (in environments without a keychain, pass a token via the MARUHI_TOKEN env var)",
 );
 
 /**
@@ -163,18 +163,18 @@ function sessionFromEnvToken(input: {
     if (input.declaredOrigin === undefined || input.declaredOrigin.length === 0) {
       return yield* Effect.fail(
         cliError(
-          "MARUHI_TOKEN を使うには MARUHI_TOKEN_ORIGIN で対象サーバー origin を指定してください(トークンを意図しない別オリジンへ送らないため)",
+          "Using MARUHI_TOKEN requires MARUHI_TOKEN_ORIGIN to name the target server origin (so the token is never sent to an unintended origin)",
         ),
       );
     }
     // 環境変数もコマンドラインではない(直し先を示す)
     const expectedOrigin = yield* normalizeHttpOrigin(input.declaredOrigin, "MARUHI_TOKEN_ORIGIN", {
-      fix: "MARUHI_TOKEN_ORIGIN 環境変数",
+      fix: "the MARUHI_TOKEN_ORIGIN env var",
     });
     if (expectedOrigin !== input.origin) {
       return yield* Effect.fail(
         cliError(
-          `MARUHI_TOKEN_ORIGIN(${expectedOrigin})が接続先(${input.origin})と一致しません。トークンをこのオリジンへ送信しません`,
+          `MARUHI_TOKEN_ORIGIN (${expectedOrigin}) does not match the connection target (${input.origin}). The token will not be sent to this origin`,
         ),
       );
     }
@@ -183,7 +183,9 @@ function sessionFromEnvToken(input: {
       .me({})
       .pipe(
         Effect.mapError(() =>
-          cliError("MARUHI_TOKEN での認証に失敗しました(失効・スコープ・接続先を確認してください)"),
+          cliError(
+            "Authentication with MARUHI_TOKEN failed (check revocation, scope, and the target server)",
+          ),
         ),
       );
     return { origin: input.origin, token: envToken, userId: me.userId } satisfies CliSession;
@@ -229,7 +231,7 @@ export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, ne
     // 前者の理由は**正規化側の文言をそのまま運ぶ**(自前で言い換えると、
     // 次のコマンドが出す拒否理由と食い違う)
     const normalized = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
-      fix: "MARUHI_TOKEN_ORIGIN 環境変数",
+      fix: "the MARUHI_TOKEN_ORIGIN env var",
     }).pipe(
       Effect.map((value) => ({ ok: true, value }) as const),
       Effect.catch((error) => Effect.succeed({ ok: false, reason: error.message } as const)),
@@ -275,9 +277,7 @@ export function resolveSession(
       return yield* Effect.fail(
         hasRedactedPlaceholder(stored)
           ? cliError(redactedPlaceholderTokenMessage)
-          : cliError(
-              "キーチェーンのトークンレコードが壊れています。`maruhi login` で再ログインしてください",
-            ),
+          : cliError("The keychain token record is corrupt. Log in again with `maruhi login`"),
       );
     }
     return {
@@ -338,14 +338,14 @@ async function probeCryptoRoundTrip(): Promise<boolean> {
  * 存在しない物を指した診断になる。
  */
 export const unsupportedCryptoCause =
-  "この環境の WebCrypto が master 鍵に必要なアルゴリズム(Ed25519 / HPKE)に対応していないため、鍵を読み込めません" as const;
+  "This environment's WebCrypto does not support the algorithms the master key needs (Ed25519 / HPKE), so the key cannot be loaded" as const;
 
 /** 環境側が原因のときの次の一手(どの経路でも同じ)。 */
-export const retryOnSupportedRuntime = "対応する環境(新しい Bun / OS)で再実行してください" as const;
+export const retryOnSupportedRuntime = "Re-run on a supported runtime (a newer Bun / OS)" as const;
 
 /** キーチェーンの鍵を読み込めないときの環境起因の文言(**消させない**のが要点)。 */
 export const unsupportedCryptoMessage =
-  `${unsupportedCryptoCause}。保存されている鍵は壊れていない可能性が高いので、消さないでください。${retryOnSupportedRuntime}` as const;
+  `${unsupportedCryptoCause}. The stored key is most likely intact — do not delete it. ${retryOnSupportedRuntime}` as const;
 
 /**
  * 破損と判定されたときの文言。**環境が原因でないことを確かめてから**決める。
@@ -436,9 +436,7 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
     const entryName = masterKeyEntryName(session.origin, session.userId);
     const stored = yield* keychain.get(entryName);
     if (stored === null) {
-      return yield* Effect.fail(
-        cliError("master 鍵がありません。`maruhi key generate` で生成してください"),
-      );
+      return yield* Effect.fail(cliError("No master key. Generate one with `maruhi key generate`"));
     }
     const record = parseStoredMasterKey(stored);
     if (record === null) {

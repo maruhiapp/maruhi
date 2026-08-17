@@ -100,12 +100,14 @@ async function buildKeyHistory(
       const enc = decodeHex(entry.payload.encPubHex);
       const sig = decodeHex(entry.payload.sigPubHex);
       if (enc === null || sig === null) {
-        throw new ChainDerivationError(`add_member(seq=${entry.seq})の公開鍵 hex を復号できません`);
+        throw new ChainDerivationError(
+          `Cannot decode the public-key hex in add_member (seq=${entry.seq})`,
+        );
       }
       const fingerprint = await computeUserKeyFingerprint(enc, sig);
       if (!fingerprint.ok) {
         throw new ChainDerivationError(
-          `add_member(seq=${entry.seq})の鍵フィンガープリントを計算できません`,
+          `Cannot compute the key fingerprint for add_member (seq=${entry.seq})`,
         );
       }
       add(entry.payload.targetUserId, {
@@ -135,7 +137,7 @@ export function syncProject(
     const entries: readonly ChainEntry[] = snapshot.entries;
     const verified = yield* Effect.tryPromise({
       try: () => verifyChainWithHistory(entries),
-      catch: () => cliError("チェーン検証の実行に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Chain verification failed to run (crypto error)"),
     });
     if (!verified.ok) {
       const { seq, reason } =
@@ -144,7 +146,7 @@ export function syncProject(
           : { seq: 0, reason: "invalid-payload" };
       return yield* Effect.fail(
         cliError(
-          `チェーン検証に失敗しました(seq=${seq}, reason=${reason})。サーバーが不正なチェーンを配布している可能性があります`,
+          `Chain verification failed (seq=${seq}, reason=${reason}). The server may be distributing an invalid chain`,
         ),
       );
     }
@@ -154,16 +156,16 @@ export function syncProject(
     // 同じ ID で配布する差し替えをここで機械的に検出する
     const genesis = entries[0];
     if (genesis === undefined) {
-      return yield* Effect.fail(cliError("チェーンが空です"));
+      return yield* Effect.fail(cliError("The chain is empty"));
     }
     const genesisHash = yield* Effect.tryPromise({
       try: () => computeChainEntryHash(genesis),
-      catch: () => cliError("genesis ハッシュの計算に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to compute the genesis hash (crypto error)"),
     });
     if (genesisHash !== projectId) {
       return yield* Effect.fail(
         cliError(
-          `genesis ハッシュがプロジェクト ID と一致しません(サーバーによるチェーン差し替えの疑い): expected=${projectId} actual=${genesisHash}`,
+          `The genesis hash does not match the project ID (suspected server-side chain replacement): expected=${projectId} actual=${genesisHash}`,
         ),
       );
     }
@@ -172,7 +174,7 @@ export function syncProject(
     if (state.headSeq !== snapshot.headSeq || state.headHashHex !== snapshot.headHashHex) {
       return yield* Effect.fail(
         cliError(
-          "サーバー申告のチェーンヘッドが取得エントリと一致しません(応答が自己矛盾しています)",
+          "The server-declared chain head does not match the fetched entries (the response contradicts itself)",
         ),
       );
     }
@@ -181,9 +183,9 @@ export function syncProject(
       try: () => buildKeyHistory(entries),
       catch: (error) =>
         cliError(
-          `チェーン導出の不整合: ${
+          `Chain-derivation inconsistency: ${
             error instanceof ChainDerivationError ? error.message : String(error)
-          }(検証済みチェーンから鍵索引を構築できません)`,
+          } (cannot build the key index from the verified chain)`,
         ),
     });
     return { projectId, state, history, keyHistory, entries } satisfies VerifiedProject;
@@ -207,7 +209,7 @@ function ensureExtensionOf(
   ) {
     return Effect.fail(
       cliError(
-        `再同期したチェーンが検証済みビュー(seq=${previous.state.headSeq})の延長ではありません(サーバーによるチェーン差し替え / 分岐の証拠)`,
+        `The re-synced chain is not an extension of the verified view (seq=${previous.state.headSeq}) (evidence of server-side chain replacement / divergence)`,
       ),
     );
   }

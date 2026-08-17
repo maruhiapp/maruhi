@@ -63,12 +63,12 @@ async function verifyAndUnwrapOne(input: {
   if (signerKeyBytes === null) {
     return {
       kind: "rejected",
-      message: `署名者がチェーン履歴に存在しません(signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
+      message: `The signer does not exist in the chain history (signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
     };
   }
   const signerKey = await importSigningPublicKey(signerKeyBytes);
   if (!signerKey.ok) {
-    return { kind: "rejected", message: "署名者の公開鍵を読み込めません" };
+    return { kind: "rejected", message: "Cannot load the signer's public key" };
   }
   const verifiedSignature = await verifyDekWrapSignature({
     context: {
@@ -88,13 +88,13 @@ async function verifyAndUnwrapOne(input: {
   if (!verifiedSignature.ok) {
     return {
       kind: "rejected",
-      message: `DEK ラップの登録署名が検証できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
+      message: `The DEK wrap's registration signature does not verify (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
     };
   }
   const enc = decodeHex(wrap.encHex);
   const ciphertext = decodeHex(wrap.ciphertextHex);
   if (enc === null || ciphertext === null) {
-    return { kind: "rejected", message: `DEK ラップの形式が不正です(epoch=${wrap.epoch})` };
+    return { kind: "rejected", message: `The DEK wrap is malformed (epoch=${wrap.epoch})` };
   }
   const dek = await unwrapDek({
     recipientKeyPair: recipient.encKeyPair,
@@ -109,7 +109,7 @@ async function verifyAndUnwrapOne(input: {
   if (!dek.ok) {
     return {
       kind: "rejected",
-      message: `DEK を復号できません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。ラップが自分の鍵宛でないか、破損しています`,
+      message: `Cannot decrypt the DEK (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). The wrap is not addressed to your key, or it is corrupt`,
     };
   }
   // §5.2 / §6.3: コミットメント照合に成功するまで DEK を使用しない。座標は
@@ -127,7 +127,7 @@ async function verifyAndUnwrapOne(input: {
   if (!commitment.ok) {
     return {
       kind: "rejected",
-      message: `DEK がチェーン上のコミットメントと一致しません(epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})。毒ラップ(偽 DEK)の可能性があります — 管理者による修復(ラップ削除 → 再登録)が必要です`,
+      message: `The DEK does not match the commitment on the chain (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). This may be a poisoned wrap (a fake DEK) — an administrator must repair it (delete the wrap, then re-register)`,
     };
   }
   return { kind: "ok", dek: dek.value };
@@ -142,7 +142,7 @@ export function requireChainEnvironment(
   if (environment === undefined) {
     return Effect.fail(
       cliError(
-        `環境 ${environmentId} がチェーン上に存在しません(create_environment 未観測)。作成直後の可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
+        `Environment ${environmentId} does not exist on the chain (no create_environment observed). It may have just been created — if re-running does not resolve this, the server response contradicts the chain`,
       ),
     );
   }
@@ -176,18 +176,18 @@ function verifyAndUnwrapDeks(input: {
       if (wrap.suite !== SUITE_ID) {
         // Schema の Literal ピンで現状は到達しないが、検証座標に申告 suite を
         // 使う以上、CLI 側でも明示的に固定する(将来の union 化への防衛)
-        return yield* Effect.fail(cliError(`未知のスイートの DEK ラップです(${wrap.suite})`));
+        return yield* Effect.fail(cliError(`The DEK wrap uses an unknown suite (${wrap.suite})`));
       }
       if (wrap.epoch > chainEpoch) {
         return yield* Effect.fail(
           cliError(
-            `チェーン上の現エポック(${chainEpoch})を超えるエポック ${wrap.epoch} の DEK ラップが配布されました。直後にローテーションが行われた可能性があります — 再実行して解消しない場合、サーバー応答とチェーンが矛盾しています`,
+            `A DEK wrap for epoch ${wrap.epoch}, beyond the chain's current epoch (${chainEpoch}), was served. A rotation may have just happened — if re-running does not resolve this, the server response contradicts the chain`,
           ),
         );
       }
       if (byEpoch.has(wrap.epoch)) {
         return yield* Effect.fail(
-          cliError(`同一エポックの DEK ラップが重複しています(epoch=${wrap.epoch})`),
+          cliError(`Duplicate DEK wraps for the same epoch (epoch=${wrap.epoch})`),
         );
       }
       // チェーン導出のコミットメント(§5.2)。1 ≤ epoch ≤ 現エポックの全エポックは
@@ -196,7 +196,7 @@ function verifyAndUnwrapDeks(input: {
       if (expectedCommitmentHex === undefined) {
         return yield* Effect.fail(
           cliError(
-            `エポック ${wrap.epoch} のコミットメントがチェーン上に存在しません(チェーン導出の不整合)`,
+            `No commitment for epoch ${wrap.epoch} exists on the chain (a chain-derivation inconsistency)`,
           ),
         );
       }
@@ -209,8 +209,7 @@ function verifyAndUnwrapDeks(input: {
             wrap,
             expectedCommitmentHex,
           }),
-        catch: () =>
-          cliError(`DEK ラップの検証が失敗しました(epoch=${wrap.epoch} — 暗号処理エラー)`),
+        catch: () => cliError(`DEK-wrap verification failed (epoch=${wrap.epoch} — crypto error)`),
       });
       if (result.kind === "rejected") {
         return yield* Effect.fail(cliError(result.message));

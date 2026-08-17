@@ -354,7 +354,7 @@ describe("maruhi env create", () => {
     );
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("延長ではありません");
+    expect(env.errors.join("\n")).toContain("not an extension of the verified view");
     // 巻き戻ったビューでの再署名は行われない(送信は初回の 1 度きり)
     expect(bodies).toHaveLength(1);
   });

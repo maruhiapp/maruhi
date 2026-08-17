@@ -51,7 +51,7 @@ export class AgentProfileRef extends Context.Reference<AgentProfile>("cli/AgentP
 function agentRejection(name: string | undefined): CliError {
   const detected = name === undefined ? "" : `: ${name}`;
   return cliError(
-    `AI エージェント環境を検出したため、値の表示を拒否しました${detected}。値を確認する必要がある場合は、人間が対話端末で実行してください`,
+    `Refused to display values because an AI agent environment was detected${detected}. If you need to inspect a value, run this yourself on an interactive terminal`,
   );
 }
 
@@ -76,7 +76,7 @@ export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdi
       // 「知っているものを止める」ではなく「人間の端末だけ通す」
       return yield* Effect.fail(
         cliError(
-          "値の表示は対話端末でのみ許可されます(パイプ・リダイレクト・CI・AI エージェントでは拒否されます)。人間が対話端末で実行してください",
+          "Displaying values is only allowed on an interactive terminal (pipes, redirects, CI, and AI agents are refused). Run this as a human on an interactive terminal",
         ),
       );
     }

@@ -28,7 +28,7 @@ import { ProcessRunner, type ProcessRunnerShape } from "./run.ts";
 
 const keychainUnavailable = () =>
   cliError(
-    "OS キーチェーンにアクセスできません(この環境ではトークン・鍵を保存できません)。平文ファイルへの保存は行いません — トークンは MARUHI_TOKEN 環境変数で渡せます",
+    "Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN env var instead",
   );
 
 // keyring デーモン不在の headless Linux では Bun.secrets の書き込みが応答なしで
@@ -70,7 +70,7 @@ function makeBunProcessRunner(): ProcessRunnerShape {
           });
           return await child.exited;
         },
-        catch: () => cliError(`コマンドを起動できません: ${command[0] ?? ""}`),
+        catch: () => cliError(`Cannot start the command: ${command[0] ?? ""}`),
       }),
   };
 }
@@ -284,7 +284,7 @@ function makeLiveIo(): CliIoShape {
         }
         return merged;
       },
-      catch: () => cliError("stdin を読み取れません"),
+      catch: () => cliError("Cannot read stdin"),
     }),
     promptLine: ({ prompt, secret }) =>
       Effect.tryPromise({
@@ -301,8 +301,8 @@ function makeLiveIo(): CliIoShape {
         catch: (error) =>
           cliError(
             error instanceof PromptInterruptedError
-              ? "入力が中断されました"
-              : "対話入力を読み取れません(非対話環境では実行できない操作です)",
+              ? "The input was interrupted"
+              : "Cannot read interactive input (this operation cannot run in a non-interactive environment)",
           ),
       }),
     envVar: (name) => process.env[name],

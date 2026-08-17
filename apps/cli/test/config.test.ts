@@ -64,16 +64,33 @@ describe("maruhi config", () => {
     expect(env.errors.join("\n")).toContain("corrupt");
   });
 
-  it("サブコマンドなしは使い方を表示する", async () => {
+  it("サブコマンドなしは使い方を表示する(exit 0・出力は stderr)", async () => {
+    // bare `maruhi` はヘルプ要求として扱う(第 3 段階の裁定 — gunshi 時代の
+    // exit 0 を維持。出力先は決定 9 に合わせて stdout → stderr へ変更)。
+    // 一覧はコマンド定義から描かれる(手書きだと、コマンドを増やしたときに
+    // ヘルプだけ古いまま残る)
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("使い方");
-    // 一覧は登録済みサブコマンドから導く(手書きだと、コマンドを増やしたときに
-    // ヘルプだけ古いまま残る)。エントリコマンド自身(`maruhi`)は出さない。
-    // 移行済み(effect/unstable/cli 側)のコマンドは gunshi の表に居ないので
-    // 末尾へ合流する — 一覧から消えないことがここの要点
-    expect(env.logs).toContain(
-      "commands: login / logout / pull / run / push / env / server / invite / member / key / project / rotation / audit / config",
-    );
+    expect(env.logs).toEqual([]);
+    const help = env.errors.join("\n");
+    expect(help).toContain("maruhi <subcommand>");
+    for (const command of [
+      "login",
+      "logout",
+      "pull",
+      "run",
+      "push",
+      "env",
+      "server",
+      "invite",
+      "member",
+      "key",
+      "project",
+      "rotation",
+      "audit",
+      "config",
+    ]) {
+      expect(help, command).toContain(command);
+    }
   });
 });

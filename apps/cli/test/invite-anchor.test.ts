@@ -2,7 +2,7 @@
 // context.ts の attachProject / project verify)の統合テスト。
 //
 // 固定する性質:
-//  1. add_member 後の初回同期で、ピン留めした「ヘッド包含 + 招待者 FP の在籍」を
+//  1. add_member 後のfirst syncで、ピン留めした「ヘッド包含 + 招待者 FP の在籍」を
 //     機械照合し、成功時は verifiedAtSeq を永続化する(以後も検査は継続)
 //  2. ヘッド不包含(巻き戻し・fork 配布)・招待者 FP 不一致(偽造リンク /
 //     偽造チェーン)は硬い証拠として拒否する
@@ -73,7 +73,7 @@ async function seedAnchor(
   );
 }
 
-describe("招待リンクアンカーの機械照合(初回同期 — §6.3 (a) / §6.5)", () => {
+describe("招待リンクアンカーの機械照合(first sync — §6.3 (a) / §6.5)", () => {
   it("ヘッド包含 + 招待者 FP の在籍が一致すれば照合成功し、verifiedAtSeq を永続化する", async () => {
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -89,7 +89,7 @@ describe("招待リンクアンカーの機械照合(初回同期 — §6.3 (a) 
     });
 
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("招待リンクアンカーの機械照合に成功しました");
+    expect(env.logs.join("\n")).toContain("Invite-link anchor check passed");
 
     const pins = JSON.parse(
       await readFile(join(env.pinsDir, `${built.projectId}.json`), "utf8"),
@@ -99,7 +99,7 @@ describe("招待リンクアンカーの機械照合(初回同期 — §6.3 (a) 
     // 2 回目は成功メッセージを繰り返さない(検査自体は毎回走る)
     env.logs.length = 0;
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).not.toContain("機械照合に成功しました");
+    expect(env.logs.join("\n")).not.toContain("Invite-link anchor check passed");
   });
 
   it("ピン留めヘッドを含まないチェーン(巻き戻し・fork 配布)を拒否する", async () => {
@@ -118,7 +118,9 @@ describe("招待リンクアンカーの機械照合(初回同期 — §6.3 (a) 
     });
 
     expect(await runCli(["project", "verify"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("検証済みヘッド(seq=2)を含みません");
+    expect(env.errors.join("\n")).toContain(
+      "does not contain the verified head pinned in the invite link (seq=2)",
+    );
   });
 
   it("招待者 FP がピン留めヘッド時点の在籍と一致しないチェーンを拒否する", async () => {
@@ -137,7 +139,7 @@ describe("招待リンクアンカーの機械照合(初回同期 — §6.3 (a) 
     });
 
     expect(await runCli(["project", "verify"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("チェーン上のメンバーと一致しません");
+    expect(env.errors.join("\n")).toContain("does not match the chain member at the pinned head");
   });
 
   it("ピンファイルの破損は fail-open(警告 + アンカー検査なしで続行)", async () => {
@@ -150,6 +152,6 @@ describe("招待リンクアンカーの機械照合(初回同期 — §6.3 (a) 
     await writeFile(join(env.pinsDir, `${built.projectId}.json`), "{broken");
 
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("招待ピンファイルを読み取れません(破損)");
+    expect(env.errors.join("\n")).toContain("cannot read the invite-pin file (it is corrupt)");
   });
 });

@@ -237,7 +237,9 @@ function maruhiFormatter(
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
       helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`,
-    formatVersion: fallback.formatVersion,
+    // `--version` は**版番号だけ**を出す(gunshi 時代からの契約 —
+    // version.test.ts が固定。`V=$(maruhi --version)` がそのまま使える形)
+    formatVersion: (_name: string, version: string) => version,
     formatError: describe,
     formatCliError: describe,
     // コマンド名が解決できなかった実行では、フラグは root の宣言と突き合わ

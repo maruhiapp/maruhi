@@ -69,7 +69,7 @@ export function resolveProjectId(
   if (value === undefined) {
     return Effect.fail(
       cliError(
-        "プロジェクトが未指定です。--project <id> か `maruhi config set defaultProject <id>` を使ってください",
+        "No project specified. Use --project <id> or `maruhi config set defaultProject <id>`",
       ),
     );
   }
@@ -77,10 +77,10 @@ export function resolveProjectId(
     // 指定値そのものは返さない(フラグにも値が書かれうる — args.ts の規律)。
     // 出所で分ける: コマンドラインなら書き方の誤り(2)、config なら直す先は
     // 設定ファイルなので実行の失敗(1)として、どこを直すかを言う
-    const shape = "プロジェクト ID の形式が正しくありません(64 桁の 16 進数)";
+    const shape = "Invalid project ID (64 hex digits)";
     return Effect.fail(
       flag === undefined
-        ? cliError(`${shape} — config の defaultProject を直してください`)
+        ? cliError(`${shape} — fix defaultProject in your config`)
         : usageError(shape),
     );
   }
@@ -95,15 +95,16 @@ function resolveEnvironmentId(
   if (value === undefined) {
     return Effect.fail(
       cliError(
-        "環境が未指定です。--env <id> か `maruhi config set defaultEnvironment <id>` を使ってください",
+        "No environment specified. Use --env <id> or `maruhi config set defaultEnvironment <id>`",
       ),
     );
   }
   if (!isEnvironmentId(value)) {
-    const shape = "環境 ID の形式が正しくありません(英数字で始まり、英数字と _ - が続く 64 字まで)";
+    const shape =
+      "Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)";
     return Effect.fail(
       flag === undefined
-        ? cliError(`${shape} — config の defaultEnvironment を直してください`)
+        ? cliError(`${shape} — fix defaultEnvironment in your config`)
         : usageError(shape),
     );
   }
@@ -185,11 +186,11 @@ export function loadCheckedFloor(
     const loaded = yield* store.load(projectId);
     if (loaded.state === "missing") {
       yield* io.logError(
-        "注意: このプロジェクトのローカル床がまだありません(初回同期)。巻き戻し・欠落の永続検出は次回以降の実行から有効になります",
+        "Note: this project has no local floor yet (first sync). Persistent rollback / omission detection takes effect from the next run",
       );
     } else if (loaded.state === "corrupt") {
       yield* io.logError(
-        "警告: ローカル床ファイルを読み取れません(破損)。床なしとして続行します — ローカル状態が意図せず改変・削除された可能性があります。心当たりがない場合は注意してください",
+        "Warning: cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
       );
     }
     let view = verified;
@@ -236,7 +237,7 @@ export function checkInviteAnchor(
     const loaded = yield* store.load(projectId);
     if (loaded.state === "corrupt") {
       yield* io.logError(
-        "警告: 招待ピンファイルを読み取れません(破損)。アンカー検査なしで続行します — ローカル状態が意図せず改変・削除された可能性があります。心当たりがない場合は注意してください",
+        "Warning: cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
       );
       return;
     }
@@ -247,11 +248,11 @@ export function checkInviteAnchor(
     // 拒否文言には検証材料の所在(ピンファイル)まで含める: 硬い証拠での恒久
     // 停止に対し、調査・復旧(帯域外確認のうえでの手動対処)へ辿り着ける導線を
     // 残す(pullfrog レビュー反映)
-    const evidenceHint = `検証材料は設定ディレクトリの invites/${projectId}.json(ピン留めアンカー)と配布チェーンです`;
+    const evidenceHint = `The verification material is invites/${projectId}.json (the pinned anchor) in the config directory, plus the distributed chain`;
     if (verified.history.entryHashAt(anchor.headSeq) !== anchor.headHashHex) {
       return yield* Effect.fail(
         cliError(
-          `招待リンクアンカーの照合に失敗しました: 配布されたチェーンが、招待リンクに埋め込まれた検証済みヘッド(seq=${anchor.headSeq})を含みません(CRYPTO_SPEC §6.3 帯域外アンカー (a))。サーバーによる巻き戻し・fork 配布の疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください。${evidenceHint}`,
+          `Invite-link anchor check failed: the distributed chain does not contain the verified head pinned in the invite link (seq=${anchor.headSeq}) (CRYPTO_SPEC §6.3 out-of-band anchor (a)). This suggests a server-side rollback or fork distribution — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`,
         ),
       );
     }
@@ -259,13 +260,13 @@ export function checkInviteAnchor(
     if (inviter === undefined || inviter.keyFingerprintHex !== anchor.inviterKeyFingerprintHex) {
       return yield* Effect.fail(
         cliError(
-          `招待リンクアンカーの照合に失敗しました: リンクの招待者(user_id + 鍵 FP)が、ピン留めヘッド時点のチェーン上のメンバーと一致しません(CRYPTO_SPEC §6.5 の機械照合)。招待リンクまたは配布チェーンが偽造された疑いがあります — このチェーンを信用せず、招待者と帯域外で確認してください。${evidenceHint}`,
+          `Invite-link anchor check failed: the link's inviter (user_id + key FP) does not match the chain member at the pinned head (the CRYPTO_SPEC §6.5 mechanical check). The invite link or the distributed chain may be forged — do not trust this chain; confirm with the inviter out of band. ${evidenceHint}`,
         ),
       );
     }
     if (anchor.verifiedAtSeq === null) {
       yield* io.log(
-        "招待リンクアンカーの機械照合に成功しました(genesis 一致・ヘッド包含・招待者 FP — CRYPTO_SPEC §6.3 / §6.5)",
+        "Invite-link anchor check passed (genesis match, head inclusion, inviter FP — CRYPTO_SPEC §6.3 / §6.5)",
       );
       yield* store.saveAnchor(projectId, { ...anchor, verifiedAtSeq: verified.state.headSeq });
     }

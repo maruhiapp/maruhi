@@ -28,19 +28,19 @@ function coordinateLine(coordinates: FloorEvidenceCoordinates, variableId?: stri
   if (variableId !== undefined && variableId !== null) {
     parts.push(`variable=${variableId}`);
   }
-  return `  座標: ${parts.join(" ")}`;
+  return `  coordinates: ${parts.join(" ")}`;
 }
 
 function floorVariableLines(violation: Extract<FloorViolation, { kind: "variable-omitted" }>) {
   const floor = violation.floor;
   return floor.status === "active"
     ? [
-        `  床の記録(過去に検証済み): status=active version=${floor.version} epoch=${floor.epoch}`,
+        `  floor record (previously verified): status=active version=${floor.version} epoch=${floor.epoch}`,
         `    value_signed_bytes_hash=${floor.valueSigHashHex}`,
         `    metaVersion=${floor.metaVersion} meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ]
     : [
-        `  床の記録(過去に検証済み): status=deleted metaVersion=${floor.metaVersion}`,
+        `  floor record (previously verified): status=deleted metaVersion=${floor.metaVersion}`,
         `    meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ];
 }
@@ -61,18 +61,18 @@ function pulledValueLines(pulled: {
   readonly writerKeyFingerprintHex: string;
 }): readonly string[] {
   return [
-    `  今回の配布: version=${pulled.version} epoch=${pulled.epoch}`,
+    `  this distribution: version=${pulled.version} epoch=${pulled.epoch}`,
     `    value_signed_bytes_hash=${pulled.valueSigHashHex}`,
-    `    宣言ヘッド: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
+    `    declared head: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
     // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
-    `    writer 署名: writer=${displayText(pulled.writerUserId)} fp=${pulled.writerKeyFingerprintHex}`,
+    `    writer signature: writer=${displayText(pulled.writerUserId)} fp=${pulled.writerKeyFingerprintHex}`,
     `    signature=${pulled.signatureHex}`,
   ];
 }
 
 function valueEvidenceLines(violation: ValueViolation): readonly string[] {
   return [
-    `  床の記録(過去に検証済み): version=${violation.floor.version} epoch=${violation.floor.epoch}`,
+    `  floor record (previously verified): version=${violation.floor.version} epoch=${violation.floor.epoch}`,
     `    value_signed_bytes_hash=${violation.floor.valueSigHashHex}`,
     ...pulledValueLines(violation.pulled),
   ];
@@ -85,13 +85,13 @@ type MetaViolation = Extract<
 
 function metaEvidenceLines(violation: MetaViolation): readonly string[] {
   return [
-    `  床の記録(過去に検証済み): metaVersion=${violation.floor.metaVersion}`,
+    `  floor record (previously verified): metaVersion=${violation.floor.metaVersion}`,
     `    meta_signed_bytes_hash=${violation.floor.metaSigHashHex}`,
-    `  今回の配布: status=${violation.pulled.status} metaVersion=${violation.pulled.metaVersion}`,
+    `  this distribution: status=${violation.pulled.status} metaVersion=${violation.pulled.metaVersion}`,
     `    meta_signed_bytes_hash=${violation.pulled.metaSigHashHex}`,
-    `    宣言ヘッド: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
+    `    declared head: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
     // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
-    `    author 署名: author=${displayText(violation.pulled.authorUserId)} fp=${violation.pulled.authorKeyFingerprintHex}`,
+    `    author signature: author=${displayText(violation.pulled.authorUserId)} fp=${violation.pulled.authorKeyFingerprintHex}`,
     `    signature=${violation.pulled.signatureHex}`,
   ];
 }
@@ -105,14 +105,14 @@ function chainEvidenceLines(
   const divergedLine =
     violation.kind === "chain-diverged"
       ? [
-          `  今回のチェーンの同 seq のエントリハッシュ: ${violation.actualHashHex === "" ? "(存在しない)" : violation.actualHashHex}`,
+          `  this chain's entry hash at that seq: ${violation.actualHashHex === "" ? "(absent)" : violation.actualHashHex}`,
         ]
       : [];
   return [
     coordinateLine(coordinates),
-    `  床の記録(過去に検証済みのヘッド): ${headText(violation.floorHead.seq, violation.floorHead.hashHex)}`,
+    `  floor record (previously verified head): ${headText(violation.floorHead.seq, violation.floorHead.hashHex)}`,
     ...divergedLine,
-    `  今回の同期ヘッド: ${headText(violation.syncedHead.seq, violation.syncedHead.hashHex)}`,
+    `  this sync's head: ${headText(violation.syncedHead.seq, violation.syncedHead.hashHex)}`,
   ];
 }
 
@@ -126,8 +126,8 @@ function variableEvidenceLines(
   if (violation.kind === "stale-epoch-injection") {
     return [
       coordinateLine(coordinates, violation.variableId),
-      `  規則 (c) の基準: pull 時点エポック基準=${violation.baselineEpoch}(前回成功 pull 時点のチェーン導出現エポック)`,
-      `  床の記録 version=${violation.floorVersion}(0 = 床に記録なし)`,
+      `  rule (c) baseline: pull-time epoch baseline=${violation.baselineEpoch} (the chain-derived current epoch at the last successful pull)`,
+      `  floor record version=${violation.floorVersion} (0 = no floor record)`,
       ...pulledValueLines(violation.pulled),
     ];
   }
@@ -161,8 +161,8 @@ export function formatFloorViolation(
   violation: FloorViolation,
 ): string {
   return [
-    `ローカル床検査で不整合を検出しました: ${floorViolationLabel(violation)}`,
+    `The local floor check detected an inconsistency: ${floorViolationLabel(violation)}`,
     ...evidenceLines(coordinates, violation),
-    "  これは過去に検証済みの署名データと今回の配布の矛盾であり、サーバーの equivocation または署名鍵漏洩の証拠です(CRYPTO_SPEC §14.2-5)。この出力とローカル床ファイルを保全し、プロジェクト管理者に提示してください",
+    "  This is a contradiction between previously verified signed data and this distribution — evidence of server equivocation or a leaked signing key (CRYPTO_SPEC §14.2-5). Preserve this output and the local floor file, and present them to the project administrators",
   ].join("\n");
 }

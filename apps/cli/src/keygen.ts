@@ -107,7 +107,7 @@ export function keyGenerateOp(input: {
                 ? "Could not load the generated key back (nothing was stored in the keychain). Report this as a maruhi bug"
                 : // 保存前なので「保存されている鍵」は指せない。無事な物(=
                   // 何も書いていないこと)を言い、次の一手だけ共有する
-                  `${unsupportedCryptoCause}。Nothing was stored in the keychain. ${retryOnSupportedRuntime}`,
+                  `${unsupportedCryptoCause}. Nothing was stored in the keychain. ${retryOnSupportedRuntime}`,
             ),
           ),
         ),

@@ -76,124 +76,128 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
  */
 function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
-  return `スキーマと一致しないデータがあります(${detail})。指定した値と、CLI とサーバーのバージョン整合を確認してください`;
+  return `Some data does not match the schema (${detail}). Check the values you provided, and that the CLI and server versions match`;
 }
 
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   const status = error.response?.status;
   if (status === 413) {
     // スキーマ外の素の 413(HTTP 生ボディ上限 — session-07 §5 の申し送り分岐)
-    return "サーバーがリクエストサイズで拒否しました(HTTP 413)。値が大きすぎます";
+    return "The server rejected the request for its size (HTTP 413). The value is too large";
   }
   if (status !== undefined) {
-    return `サーバー応答を解釈できません(HTTP ${status})。サーバー URL と CLI のバージョン整合を確認してください`;
+    return `Cannot interpret the server response (HTTP ${status}). Check the server URL, and that the CLI and server versions match`;
   }
-  return "サーバーへの接続に失敗しました(ネットワーク・サーバー URL を確認してください)";
+  return "Failed to connect to the server (check your network and the server URL)";
 }
 
 // CliError は toCliError の入口でそのまま返す(usage フラグを落とさないため)
 const renderers: readonly Renderer[] = [
   when(
     isInstanceOf(UnauthorizedError),
-    () =>
-      "認証に失敗しました(トークンが失効している可能性があります)。`maruhi login` で再ログインしてください",
+    () => "Authentication failed (the token may be revoked). Log in again with `maruhi login`",
   ),
-  when(isInstanceOf(ForbiddenError), (e) => `権限が不足しています(${e.reason})`),
+  when(isInstanceOf(ForbiddenError), (e) => `Insufficient permission (${e.reason})`),
   // エラー Schema の ID / field 列はワイヤ上無制約の Schema.String(サーバーが
   // 自由に埋められる)— reason / op / resource(Literals)と異なり中和が必要
   when(
     isInstanceOf(ProjectNotFoundError),
     (e) =>
-      `プロジェクトが見つかりません: ${displayText(e.projectId)}(非メンバーには存在自体が秘匿されます。ID とアクセス権を確認してください)`,
+      `Project not found: ${displayText(e.projectId)} (its existence is hidden from non-members; check the ID and your access)`,
   ),
   when(
     isInstanceOf(EnvironmentNotFoundError),
-    (e) => `環境が見つかりません: ${displayText(e.environmentId)}`,
+    (e) => `Environment not found: ${displayText(e.environmentId)}`,
   ),
   when(
     isInstanceOf(VariableNotFoundError),
-    (e) => `変数が見つかりません: ${displayText(e.variableId)}`,
+    (e) => `Variable not found: ${displayText(e.variableId)}`,
   ),
   when(
     isInstanceOf(ProjectAlreadyInitializedError),
-    (e) => `プロジェクトは初期化済みです: ${displayText(e.projectId)}`,
+    (e) => `The project is already initialized: ${displayText(e.projectId)}`,
   ),
   when(
     isInstanceOf(ChainHeadConflictError),
-    (e) =>
-      `チェーンヘッドが競合しました(現ヘッド seq=${e.currentHeadSeq})。再同期してやり直してください`,
+    (e) => `The chain head conflicted (current head seq=${e.currentHeadSeq}). Re-sync and retry`,
   ),
   when(
     isInstanceOf(ChainEntryInvalidError),
-    (e) => `チェーンエントリがサーバー検証で拒否されました(seq=${e.seq}, reason=${e.reason})`,
+    (e) =>
+      `The chain entry was rejected by server-side validation (seq=${e.seq}, reason=${e.reason})`,
   ),
   when(
     isInstanceOf(ChainEntryTooLargeError),
-    (e) => `チェーンエントリが大きすぎます(上限 ${e.limitBytes} バイト)`,
+    (e) => `The chain entry is too large (limit ${e.limitBytes} bytes)`,
   ),
   when(
     isInstanceOf(ChainCapacityExceededError),
     (e) =>
-      `チェーン容量の上限に達しています(最大 ${e.maxEntries} エントリ / ${e.maxTotalBytes} バイト)`,
+      `The chain capacity limit is reached (max ${e.maxEntries} entries / ${e.maxTotalBytes} bytes)`,
   ),
   when(
     isInstanceOf(CompositeRequiredError),
-    (e) => `この操作(${e.op})は複合エンドポイント経由でのみ受理されます(AUTH_SPEC §12-4)`,
+    (e) =>
+      `This operation (${e.op}) is only accepted through the compound endpoint (AUTH_SPEC §12-4)`,
   ),
   when(
     isInstanceOf(ChainInvalidError),
     (e) =>
-      `チェーン検証に失敗しました(seq=${e.seq}, reason=${e.reason})。サーバーが不正なチェーンを配布している可能性があります`,
+      `Chain verification failed (seq=${e.seq}, reason=${e.reason}). The server may be distributing an invalid chain`,
   ),
   when(
     isInstanceOf(EnvironmentConflictError),
-    (e) => `環境が競合しています: ${displayText(e.environmentId)}(${e.reason})`,
+    (e) => `Environment conflict: ${displayText(e.environmentId)} (${e.reason})`,
   ),
   when(
     isInstanceOf(VariableConflictError),
-    (e) => `変数が競合しています: ${displayText(e.variableId)}(${e.reason})`,
+    (e) => `Variable conflict: ${displayText(e.variableId)} (${e.reason})`,
   ),
   when(
     isInstanceOf(VersionConflictError),
     (e) =>
-      `バージョンが競合しました(現在 version=${e.currentVersion})。リトライ上限に達したため中断します`,
+      `Version conflict (current version=${e.currentVersion}). Giving up after the retry limit`,
   ),
   when(
     isInstanceOf(EpochConflictError),
-    (e) =>
-      `エポックが競合しました(現在 epoch=${e.currentEpoch})。リトライ上限に達したため中断します`,
+    (e) => `Epoch conflict (current epoch=${e.currentEpoch}). Giving up after the retry limit`,
   ),
   when(
     isInstanceOf(PayloadMismatchError),
-    (e) => `申告 AAD が保存先座標と一致しません(${displayText(e.field)})`,
+    (e) => `The declared AAD does not match the storage coordinates (${displayText(e.field)})`,
   ),
   when(
     isInstanceOf(ValueTooLargeError),
-    (e) => `値が大きすぎます(暗号文の上限 ${e.limitBytes} バイト)`,
+    (e) => `The value is too large (ciphertext limit ${e.limitBytes} bytes)`,
   ),
   when(
     isInstanceOf(DataLimitExceededError),
-    (e) => `サーバーの受理上限を超えます(${e.resource} の上限 ${e.limit})`,
+    (e) => `Exceeds a server acceptance limit (${e.resource} limit ${e.limit})`,
   ),
-  when(isInstanceOf(DekWrapRejectedError), (e) => `DEK ラップ登録が拒否されました(${e.reason})`),
+  when(
+    isInstanceOf(DekWrapRejectedError),
+    (e) => `The DEK-wrap registration was rejected (${e.reason})`,
+  ),
   // recipientUserId はサーバー応答の自由文字列 — 端末へ出す前に中和する
   when(
     isInstanceOf(DekWrapExistsError),
     (e) =>
-      `DEK ラップが既に存在します(epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})。上書きは禁止されています`,
+      `A DEK wrap already exists (epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)}). Overwriting is forbidden`,
   ),
   when(
     isInstanceOf(DekWrapNotFoundError),
-    (e) =>
-      `DEK ラップが見つかりません(epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
+    (e) => `DEK wrap not found (epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
   ),
-  when(isInstanceOf(AuthFlowError), (e) => `認証フローに失敗しました(${e.reason})`),
+  when(isInstanceOf(AuthFlowError), (e) => `The authentication flow failed (${e.reason})`),
   when(
     isInstanceOf(SetupIncompleteError),
     (e) =>
-      `サーバーのセルフホスト初期セットアップが未完了です(${e.reason})。サーバー管理者は docs/SELF_HOSTING.md の手順で GitHub OAuth App を登録してください`,
+      `The server's self-hosting setup is incomplete (${e.reason}). The server administrator should register a GitHub OAuth App following docs/SELF_HOSTING.md`,
   ),
-  when(isInstanceOf(TokenLimitError), (e) => `API トークンの発行上限に達しています(${e.limit} 本)`),
+  when(
+    isInstanceOf(TokenLimitError),
+    (e) => `The API-token issuance limit is reached (${e.limit} tokens)`,
+  ),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
   // 型付きクライアントの失敗の 3 種目(上の 2 種と合わせて宣言を尽くす)
   when(Schema.isSchemaError, renderSchemaFailure),
@@ -266,5 +270,5 @@ export function toCliError(error: unknown): CliError {
   // 上で写像済み)。未知の message は素通しにしない — 応答本文の断片や打たれた値を
   // 含む文面でも到達しうるので、制御文字の中和だけでは規律を守れない。無言でも
   // 飲まず、型の名前(コード由来の語彙)を手掛かりに残す
-  return cliError(`予期しないエラー(${internalErrorKind(error)})`);
+  return cliError(`Unexpected error (${internalErrorKind(error)})`);
 }

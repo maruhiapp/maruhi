@@ -125,10 +125,10 @@ export function hasRedactedPlaceholder(json: string): boolean {
  * 調査を誤らせる。
  */
 export function placeholderCause(artifact: string): string {
-  return `${artifact}に伏字(<redacted>)が入っています。これは maruhi の不具合(秘密を取り出し忘れた状態で書き出されたもの)です`;
+  return `${artifact} contains the redaction placeholder (<redacted>). This is a maruhi bug (the record was written without unwrapping the secret)`;
 }
 
-const keychainPlaceholderCause = placeholderCause("キーチェーンのレコード");
+const keychainPlaceholderCause = placeholderCause("The keychain record");
 
 /**
  * トークンレコードに伏字が保存されていたときの文言。
@@ -140,7 +140,7 @@ const keychainPlaceholderCause = placeholderCause("キーチェーンのレコ�
  * それが判断材料になることまで書く。
  */
 export const redactedPlaceholderTokenMessage =
-  `${keychainPlaceholderCause}。旧バージョンが書いたレコードであれば \`maruhi login\` で正しく上書きされます。再ログインしても再発する場合は現行版の不具合なので、報告してください` as const;
+  `${keychainPlaceholderCause}. If an older maruhi wrote the record, \`maruhi login\` overwrites it correctly. If it recurs after re-login, the bug is in the current version — report it` as const;
 
 /**
  * MARUHI_TOKEN に伏字そのものが入っていたときの文言。
@@ -150,7 +150,7 @@ export const redactedPlaceholderTokenMessage =
  * 削除でもなく、本物のトークンを入れ直す)ので、文面を分ける。
  */
 export const redactedPlaceholderEnvTokenMessage =
-  "MARUHI_TOKEN の値が伏字(<redacted>)そのものです。これは maruhi が伏せた表示をトークンとして貼り付けた状態で、認証には使えません。`maruhi login` で発行したトークンの生値を設定してください" as const;
+  "MARUHI_TOKEN is the redaction placeholder (<redacted>) itself. maruhi's redacted display was pasted as if it were a token; it cannot authenticate. Set the raw token issued by `maruhi login`" as const;
 
 /**
  * エントリ名の表示(エスケープ + 「エスケープしてある」旨の注記)。
@@ -160,7 +160,7 @@ export const redactedPlaceholderEnvTokenMessage =
  * 場所が増えたので、注記ごと一箇所に閉じ込める。
  */
 function quotedEntryName(entryName: string): string {
-  return `"${escapeText(entryName)}"(名前は印字可能 ASCII 以外を \\u{16 進} — 4 桁以上、補助面はより長い — 、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)`;
+  return `"${escapeText(entryName)}" (characters outside printable ASCII in the name are displayed escaped as \\u{hex} — at least 4 digits, more for supplementary planes — and backslashes / quotes as \\\\ / \\"; the actual entry name is the unescaped form)`;
 }
 
 /**
@@ -188,7 +188,7 @@ function manualDeletionGuidance(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(印字可能 ASCII 以外を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**手で削除してください(控えがあれば元へ戻せます。控えは master 秘密鍵そのものなので、**元へ戻す必要が無くなったら**(鍵が再び使える状態になったら)必ず破棄してください — 端末のスクロールバックに残る形は避けてください)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
+  return `Because of overwrite protection, the master key cannot be repaired by \`maruhi key generate\` / \`maruhi key recover\`. **Copy down the value first**, then delete the entry ${quotedEntryName(entryName)} of service "${KEYCHAIN_SERVICE}" from the OS keychain by hand (with the copy you can put it back; the copy is the master private key itself, so destroy it once it is no longer needed — the key is usable again — and avoid forms that linger in terminal scrollback). After deletion, if you have your recovery code, \`maruhi key recover\` restores the original key (you keep the ability to decrypt existing values). Without it, \`maruhi key generate\` creates a new key, but existing project values become undecryptable — ask an administrator to re-distribute wraps for you (re-run \`maruhi member add\`). `;
 }
 
 /** 現行形式のフィールドが揃っているか(値の中身は問わない)。 */
@@ -263,7 +263,7 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
  */
 export function foreignMasterKeyMessage(suite: string | null, entryName: string): string {
   const named = suite === null ? "" : `(${escapeText(suite)})`;
-  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください。更新しても直らない場合のみ、OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**削除すれば、\`maruhi key generate\` / \`maruhi key recover\` を試せます(控えがあれば元へ戻せます。控えは master 秘密鍵そのものなので、**元へ戻す必要が無くなったら**(鍵が再び使える状態になったら)必ず破棄してください — 端末のスクロールバックに残る形は避けてください。控えずに消さないでください — リカバリーコードがあっても、登録済みのブロブが同じ新しい形式なら復元できません)。併せて不具合として報告してください`;
+  return `The keychain master-key record cannot be read by this version${named}. It may have been written by a newer maruhi — keep this record (deleting it makes the key unrecoverable). Update maruhi to the latest version and re-run. Only if updating does not fix it: **copy down the value first**, then delete the entry ${quotedEntryName(entryName)} of service "${KEYCHAIN_SERVICE}" from the OS keychain so you can try \`maruhi key generate\` / \`maruhi key recover\` (with the copy you can put it back; the copy is the master private key itself, so destroy it once it is no longer needed — the key is usable again — and avoid forms that linger in terminal scrollback. Never delete without the copy — even with a recovery code, the registered blob may be in the same new format and unrestorable). Also report this as a maruhi bug`;
 }
 
 /** レコードから宣言スイートだけを取り出す(読めなければ null)。 */
@@ -286,7 +286,7 @@ export function declaredSuiteOf(json: string): string | null {
  * エントリ名と、その後に取れる手を示す。
  */
 export function corruptMasterKeyMessage(entryName: string): string {
-  return `キーチェーンの master 鍵レコードを読み取れません(記録が壊れています)。${manualDeletionGuidance(entryName)}`;
+  return `Cannot read the keychain master-key record (the record is corrupt). ${manualDeletionGuidance(entryName)}`;
 }
 
 /**
@@ -312,7 +312,7 @@ export function redactedPlaceholderMasterKeyMessage(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(制御文字・`\`・`"` を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `${keychainPlaceholderCause}。${manualDeletionGuidance(entryName)}併せて不具合として報告してください`;
+  return `${keychainPlaceholderCause}. ${manualDeletionGuidance(entryName)}Also report this as a maruhi bug`;
 }
 
 /** Parses a stored token record; null when the shape is corrupt. */

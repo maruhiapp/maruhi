@@ -240,7 +240,7 @@ describe("maruhi push", () => {
     expect(createCalls).toHaveLength(1);
     const body = createCalls[0] as CreateBody;
     // 作成は metaVersion 1 のステートメントを同梱する(§12-5): author 署名付き・
-    // prev 空・宣言ヘッド = 最後に検証したチェーンヘッド
+    // prev 空・宣言ヘッド = 最後に検証したchain head
     expect(body.statement.name).toBe("API_KEY");
     expect(body.statement.status).toBe("active");
     expect(body.statement.metaVersion).toBe(1);
@@ -255,7 +255,7 @@ describe("maruhi push", () => {
       version: 1,
     });
     // 値署名ブロック(§4.1): 新規変数は prev 空、宣言ヘッド = 最後に検証した
-    // チェーンヘッド、writer = 自分(署名は master sig 鍵)
+    // chain head、writer = 自分(署名は master sig 鍵)
     expect(body.value.prevValueSigHashHex).toBe("");
     expect(body.value.chainHeadSeq).toBe(chainV1.entries.length);
     expect(body.value.chainHeadHashHex).toBe(headOf(chainV1, chainV1.entries.length).hashHex);
@@ -430,7 +430,7 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     // セッション 16 以降は初回 pull がコミットした床の規則が先に検出する
     // (floor-check.ts の文言 — 共有モジュールの英語化まで日本語のまま)
-    expect(env.errors.join("\n")).toContain("巻き戻し");
+    expect(env.errors.join("\n")).toContain("rollback");
   });
 
   it("409 後の winner の prev が検証済み直前 version と連鎖しなければ拒否する(レビューループ 1 [中])", async () => {
@@ -569,7 +569,7 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("単調性違反");
+    expect(env.errors.join("\n")).toContain("monotonicity violation");
   });
 
   it("409 後の再取得が申告 currentVersion より古ければ不整合として拒否する", async () => {
@@ -654,7 +654,7 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("欠落");
+    expect(env.errors.join("\n")).toContain("omission of a verified variable");
   });
 
   it("409 後の再取得が同一 version で異なる signed bytes を返したら equivocation として拒否する", async () => {
@@ -718,7 +718,7 @@ describe("maruhi push", () => {
     expect(chainV2.projectId).toBe(chainV1.projectId);
     const createBodies: CreateBody[] = [];
     const server = await MockServer.start([
-      // 初回同期はローテーション前(epoch 1)、再同期でローテーション後が見える
+      // first syncはローテーション前(epoch 1)、再同期でローテーション後が見える
       chainHandlerOf([chainV1, chainV2]),
       deksHandlerOf([[wrap1], [wrap1, wrap2]]),
       pullMetadataHandlerOf([[]]),
@@ -893,7 +893,7 @@ describe("maruhi push", () => {
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("HTTP 413");
-    expect(env.errors.join("\n")).toContain("大きすぎます");
+    expect(env.errors.join("\n")).toContain("too large");
   });
 
   it("create 経路への VersionConflict(異常応答)も名前から再解決して自壊しない", async () => {
@@ -996,7 +996,7 @@ describe("maruhi push", () => {
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("同名の active ステートメント");
+    expect(env.errors.join("\n")).toContain("Multiple active statements with the same name");
   });
 
   it("409 後の再取得ステートメントが metaVersion 巻き戻しなら拒否する(§12-5 のメタ同型)", async () => {
@@ -1087,7 +1087,7 @@ describe("maruhi push", () => {
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     // セッション 16 以降は初回 pull がコミットした床の規則 (a) が先に検出する
     // (floor-check.ts の文言 — 共有モジュールの英語化まで日本語のまま)
-    expect(env.errors.join("\n")).toContain("巻き戻し");
+    expect(env.errors.join("\n")).toContain("rollback");
   });
 
   it("409 後の再取得が隣接 metaVersion で prev 不一致なら拒否する(分岐履歴への連鎖)", async () => {
@@ -1440,7 +1440,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("concurrent rename");
   });
 
-  it("メタデータ解決の応答に deleted ステートメントがアクティブ一覧で混ざっていたら拒否する(§12-7)", async () => {
+  it("メタデータ解決の応答に deleted statement in the active listで混ざっていたら拒否する(§12-7)", async () => {
     // メタデータのみ pull にも値付き pull と同じ検証規律が掛かる(削除の無断
     // 取り消しの運搬形。値がない分、検証はステートメント側だけで完結する)
     const deletedStatement = await statementFor({
@@ -1458,6 +1458,6 @@ describe("maruhi push", () => {
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("deleted ステートメントがアクティブ一覧");
+    expect(env.errors.join("\n")).toContain("deleted statement in the active list");
   });
 });

@@ -30,10 +30,10 @@ export function fingerprintWords(
     }
     const words = yield* Effect.tryPromise({
       try: () => fingerprintToWords(bytes),
-      catch: () => cliError("FP ワード表示の計算に失敗しました(暗号処理エラー)"),
+      catch: () => cliError("Failed to compute the fingerprint word list (crypto error)"),
     });
     if (!words.ok) {
-      return yield* Effect.fail(cliError("FP ワード表示の計算に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to compute the fingerprint word list"));
     }
     return words.value;
   });
@@ -60,7 +60,7 @@ export function confirmByLastWord(input: {
     const io = yield* CliIo;
     const lastWord = input.words[input.words.length - 1];
     if (lastWord === undefined) {
-      return yield* Effect.fail(cliError("FP ワード表示の計算に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to compute the fingerprint word list"));
     }
     for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
       const answer = yield* io.promptLine({

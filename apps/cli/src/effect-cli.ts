@@ -1,7 +1,7 @@
-// `effect/unstable/cli` へ移した引数層(ADR-0016 第 1 段階: pull / run /
+// `effect/unstable/cli` の引数層(ADR-0016 — 第 1 段階: pull / run /
 // env create、第 2 段階: env rotate / diff、server、invite、member、
-// 第 3 段階: push、config、key、project、rotation、audit)。残るコマンド
-// (login / logout)は gunshi のまま(cli.ts)で、この分割状態は移行が進むまで続く。
+// 第 3 段階: push、config、key、project、rotation、audit、login、logout)。
+// **移行は完了し、gunshi は廃止済み**(決定 1)。エントリは cli.ts の runCli。
 //
 // `env` / `server` / `invite` / `member` は**真の入れ子サブコマンド**
 // (ADR-0016 決定 6): gunshi の 1 段制約のために操作を位置引数にしていた結果
@@ -1461,7 +1461,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       });
       yield* logWarnings(pulled.warnings);
       yield* io.log(
-        `同期・検証 OK: ${pulled.variables.length} 変数(環境 ${context.environmentId})`,
+        `Sync and verification OK: ${countNoun(pulled.variables.length, "variable")} (environment ${context.environmentId})`,
       );
       for (const variable of pulled.variables) {
         yield* io.log(formatPulledLine(variable));
@@ -2065,14 +2065,20 @@ const unusedEnvironment = Layer.mergeAll(
     Terminal.make({
       columns: Effect.succeed(80),
       rows: Effect.succeed(24),
-      readInput: Effect.die("引数層は対話入力を使わない(対話は CliIo.promptLine)"),
-      readLine: Effect.die("引数層は対話入力を使わない(対話は CliIo.promptLine)"),
+      readInput: Effect.die(
+        "the argument layer must not read interactive input (interaction goes through CliIo.promptLine)",
+      ),
+      readLine: Effect.die(
+        "the argument layer must not read interactive input (interaction goes through CliIo.promptLine)",
+      ),
       display: () => Effect.void,
     }),
   ),
   Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make(() => Effect.die("子プロセスの起動は ProcessRunner(run.ts)")),
+    ChildProcessSpawner.make(() =>
+      Effect.die("child processes are spawned only through ProcessRunner (run.ts)"),
+    ),
   ),
 );
 
@@ -2164,10 +2170,18 @@ export async function runEffectCli(
   // の `-h` は cmd のもので、maruhi へのヘルプ要求ではない
   const terminator = argv.indexOf("--");
   const ownArgs = terminator < 0 ? argv : argv.slice(0, terminator);
-  const helpRequested = ownArgs.includes("--help") || ownArgs.includes("-h");
+  // **bare `maruhi`(引数なし)はヘルプ要求として扱う**(第 3 段階の裁定 —
+  // ADR-0016 追記)。gunshi 時代の bare `maruhi` は使い方 + コマンド一覧を
+  // exit 0 で出しており、これを維持する。出力先だけは stdout → stderr へ
+  // 変わる(決定 9: stdout はコマンドの出力だけ — `maruhi --help` と同じ扱い)。
+  // bare の**サブコマンド段**(`maruhi env` 単体)はこれに含めない: そちらは
+  // gunshi 時代から書き方の誤り(exit 2)で、teardown が読み分ける
+  const bareRoot = ownArgs.length === 0;
+  const helpRequested = bareRoot || ownArgs.includes("--help") || ownArgs.includes("-h");
+  const versionRequested = ownArgs.includes("--version") || ownArgs.includes("-v");
   // teardown の読み分け材料(cli-teardown.ts): ヘルプ・バージョンの明示が
   // なければ、errors 空の ShowHelp(親コマンド単体)は書き方の誤り(2)
-  const infoRequested = helpRequested || ownArgs.includes("--version") || ownArgs.includes("-v");
+  const infoRequested = helpRequested || versionRequested;
 
   const program = Effect.gen(function* () {
     const io = yield* CliIo;
@@ -2182,7 +2196,10 @@ export async function runEffectCli(
       Effect.exit,
     );
     for (const line of diagnostics) {
-      yield* io.logError(line);
+      // `--version` の出力だけは**コマンドの出力**(stdout)。`V=$(maruhi
+      // --version)` はスクリプトの正当な使い方で、ヘルプ・診断(stderr)とは
+      // 役割が違う。失敗した実行(書き方の誤りとの併記)は stderr のまま
+      yield* versionRequested && Exit.isSuccess(exit) ? io.log(line) : io.logError(line);
     }
     if (Exit.isFailure(exit)) {
       yield* reportFailure(io, exit.cause);

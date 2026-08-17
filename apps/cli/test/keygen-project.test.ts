@@ -122,9 +122,9 @@ describe("maruhi key", () => {
     expect(message).toContain("maruhi/v2");
     // 破損と違い**消してはいけない**: 将来版が書いた鍵を消させると恒久喪失に
     // なる。上書き防止ガード(ensureNoStoredMasterKey)側と同じ案内を出す
-    expect(message).toContain("このレコードは残してください");
-    // 逃げ道は**可逆**な形でのみ示す(値を控えてから消す)
-    expect(message).toContain("値を控えてから");
+    expect(message).toContain("keep this record");
+    // 逃げ道は**可逆**な形でのみ示す(Copy down the value first消す)
+    expect(message).toContain("opy down the value first");
   });
 
   it("show は公開鍵と FP のみ表示し、リカバリー登録状態を出す", async () => {
@@ -223,7 +223,7 @@ describe("maruhi project init", () => {
     expect(env.logs.join("\n")).toContain(`Created project ${hash}`);
   });
 
-  it("サーバーが genesis ハッシュと異なる ID を返したら失敗する", async () => {
+  it("サーバーが genesis hashと異なる ID を返したら失敗する", async () => {
     const user = await makeTestUser("user-0001");
     const bogus = "ab".repeat(32);
     const maruhi = await start([

@@ -79,7 +79,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
       // 引数層は通り、環境 ID の形式検査(コマンド本体)で落ちる = `--show` は
       // 値を取るオプションとして読まれている
       expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
-      expect(env.errors.join("\n")).toContain("環境 ID の形式が正しくありません");
+      expect(env.errors.join("\n")).toContain("Invalid environment ID");
       expect(server.requests).toHaveLength(0);
     }
   });
@@ -134,7 +134,7 @@ describe("gunshi で踏んだ形が effect/unstable/cli で落ちる", () => {
     // gunshi は `--` を跨いで run として解決し、`--` の後ろの先頭
     // (= コマンド名そのもの)を実行対象として渡していた
     expect(await runCli(["--", "run", "printenv"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("コマンド名は `--` より前に書いてください");
+    expect(env.errors.join("\n")).toContain("Write the command name before `--`");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
   });
@@ -934,7 +934,7 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
 
 describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②)", () => {
   it("不明な操作は取りうる操作の一覧を出し、ログインやサーバー接続より前に落ちる", async () => {
-    // セッション解決の後ろに置くと、`key bogus` が「ログインしていません」で
+    // セッション解決の後ろに置くと、`key bogus` が「Not logged in」で
     // 落ちて打ち間違いが伝わらない(しかも exit 1)。effect ではサブコマンド
     // 解決がハンドラより前 = 構造的にセッションへ到達しない
     const key = await makeTestEnv();
@@ -942,7 +942,7 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
     expect(key.errors.join("\n")).toContain(
       "Unknown subcommand (expected one of: generate | show | recover | recovery)",
     );
-    expect(key.errors.join("\n")).not.toContain("ログインしていません");
+    expect(key.errors.join("\n")).not.toContain("Not logged in");
 
     const project = await makeTestEnv();
     expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
