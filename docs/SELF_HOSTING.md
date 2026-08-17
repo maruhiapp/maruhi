@@ -42,7 +42,7 @@ bunx wrangler login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / 
 ```
 
 If you do not want wrangler to send telemetry, set `WRANGLER_SEND_METRICS=false`
-in the environment (maruhi itself implements no telemetry — CLAUDE.md "say nothing").
+in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing"; Japanese).
 
 ### 2. Create the D1 database
 
@@ -274,5 +274,5 @@ so do not miss the warning).
   uses a filled-in database_id as-is, so if the button does not replace it the
   deploy fails with an API error against a UUID that does not exist (in that
   case the placeholder has to be removed)
-- For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md`; for the
-  crypto spec see `docs/CRYPTO_SPEC.md`
+- For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md` (Japanese); for the
+  crypto spec see `docs/CRYPTO_SPEC.md` (Japanese)

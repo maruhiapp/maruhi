@@ -67,5 +67,5 @@ docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダ�
 
 1. `SELF_HOSTING.md` / `CONTRIBUTING.md` / `install.sh` のユーザー可視メッセージは、決定 3 の境界「配布物からユーザーが読む」側。`CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC` / `RELEASING.md` 本体 / `docs/notes` / ADR 本体 / `CLAUDE.md` は内部
 2. **`install.sh` のコメントは日本語のまま**。README は `less` してから実行する形を先に案内するが、利用者が読む信頼モデルの正は README の英語の trust-model 節である。スクリプトを開いたときに走る処理の説明(コメント)はメンテナ向けであり、実行時に出る文言(`usage` / `die` / `warn`)だけがユーザー可視。ヘッダ 5〜16 行をコメントだからといって英語化しない(決定 3 の「ソースに書いてあるか」ではなく「配布物からユーザーが読むか」)
-3. **GitHub Release の公開本文は英語**(決定 1)。現行の `release.yml` は `gh release create --generate-notes` で、本文はマージ済み PR タイトルから組まれる。決定 3 はコミットメッセージと PR 説明を日本語のままとしており、PR タイトル英語化も `--notes-file` 化もこの追記では採らない。公開前に所有者が Release 本文を英語へ直す(RELEASING.md に固定)。仕組み側の変更は別判断
+3. **GitHub Release の公開本文は英語**(決定 1)。現行の `release.yml` は `gh release create --generate-notes` で、本文はマージ済み PR タイトルから組まれる(`--draft` なし = タグ push 時点で公開済み)。決定 3 はコミットメッセージと PR 説明を日本語のままとしており、PR タイトル英語化も `--notes-file` 化も `--draft` 化もこの追記では採らない。所有者は公開直後に Release 本文を英語へ直す(RELEASING.md に固定)。仕組み側の変更は別判断
 4. `SELF_HOSTING.md` の見出し英訳に伴い、生きている内部文書(`AUTH_SPEC` / `SECURITY_REVIEW_2026-08-14.md`)の見出し参照だけ英語見出し名へ追随する。セッションノート(`docs/notes/`)は日付付きログなので触らない
