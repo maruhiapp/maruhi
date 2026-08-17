@@ -1130,6 +1130,22 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     expect(server.requests.length).toBeGreaterThan(0);
   });
 
+  it("`audit --help` の usage はサブコマンドを任意(`[subcommand]`)と描く", async () => {
+    // bare `maruhi audit` = list が動く以上、上流の一律 `<subcommand>`(必須)
+    // は嘘になる(Pullfrog レビューの指摘)。判定は宣言駆動 — フラグと
+    // サブコマンドの両方を持つ段(ハンドラ付き親)だけを直す
+    const help = await startEnv();
+    expect(await runCli(["audit", "--help"], help.env.layer)).toBe(0);
+    const full = help.env.errors.join("\n");
+    expect(full).toContain("maruhi audit [subcommand]");
+    expect(full).not.toContain("<subcommand>");
+
+    // 通常の親(bare がエラーになる段)は従来どおり必須と描く
+    const env = await startEnv();
+    expect(await runCli(["env", "--help"], env.env.layer)).toBe(0);
+    expect(env.env.errors.join("\n")).toContain("maruhi env <subcommand>");
+  });
+
   it("audit の書き方の誤りは通信より前に落ちる(範囲外・型違い・不明な操作)", async () => {
     const range = await startEnv();
     expect(await runCli(["audit", "--limit", "0"], range.env.layer)).toBe(2);
@@ -1218,10 +1234,14 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     }
 
     // `--all=false` は「--all を書いていない」実行として読まれ、引数層は通る
-    // (対象未指定はコマンド本体が exit 1 で報告する — 書いたことと逆にならない)
+    // (対象未指定はコマンド本体が exit 1 で報告する — 書いたことと逆にならない)。
+    // 退行(true に化ける)と resolveAllTargets が必ず通信するので、
+    // 「対象未指定の案内 + 通信ゼロ」で判別する(Pullfrog 指摘のテスト強化)
     const explicit = await startEnv();
     expect(await runCli(["rotation", "dismiss", "--all=false"], explicit.env.layer)).toBe(1);
     expect(explicit.env.errors.join("\n")).not.toContain("Unknown flag");
+    expect(explicit.env.errors.join("\n")).toContain("Specify what to dismiss");
+    expect(explicit.server.requests).toHaveLength(0);
   });
 
   it("rotation dismiss の対象の欠落・--all との矛盾は通信より前に落ちる", async () => {
@@ -1397,6 +1417,17 @@ describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () 
     const { env } = await startEnv();
     expect(await runCli(["config", "set", "defaultEnvironment"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Missing positional argument value");
+  });
+
+  it("`--` の後ろのトークンは位置引数の空きを埋める(ADR-0016 追記 8)", async () => {
+    // 上流はパーサが `--` の前後の位置引数を 1 つの配列に畳む。`-` で始まる
+    // 値を位置引数として書く POSIX の逃げ道として機能し、黙って捨てられる
+    // トークンは無い(空きを超える分は余分な位置引数 = exit 2 のまま)
+    const { env } = await startEnv();
+    expect(await runCli(["config", "set", "--", "defaultEnvironment", "dev"], env.layer)).toBe(0);
+    expect(env.logs).toContain("Set defaultEnvironment");
+    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+    expect(env.logs).toContain("dev");
   });
 
   it("`config get` の余分な引数は落ち、設定も読み出しも壊さない", async () => {

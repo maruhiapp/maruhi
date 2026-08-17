@@ -1440,7 +1440,7 @@ describe("maruhi push", () => {
     expect(env.errors.join("\n")).toContain("concurrent rename");
   });
 
-  it("メタデータ解決の応答に deleted statement in the active listで混ざっていたら拒否する(§12-7)", async () => {
+  it("メタデータ解決の応答のアクティブ一覧に deleted ステートメントが混ざっていたら拒否する(§12-7)", async () => {
     // メタデータのみ pull にも値付き pull と同じ検証規律が掛かる(削除の無断
     // 取り消しの運搬形。値がない分、検証はステートメント側だけで完結する)
     const deletedStatement = await statementFor({

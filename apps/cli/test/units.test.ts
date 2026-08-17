@@ -476,7 +476,7 @@ describe("buildInjectionEnv", () => {
     }
   });
 
-  it("differing only by letter caseだけの名前の衝突を拒否する(Windows の非区別対策)", async () => {
+  it("大文字小文字の違いだけの名前の衝突を拒否する(Windows の非区別対策)", async () => {
     const exit = await Effect.runPromiseExit(
       buildInjectionEnv([variable("Secret_A", "x"), variable("SECRET_A", "y")]),
     );

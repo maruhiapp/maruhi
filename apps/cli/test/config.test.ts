@@ -78,6 +78,11 @@ describe("maruhi config", () => {
     expect(env.logs).toEqual([]);
     const help = env.errors.join("\n");
     expect(help).toContain("maruhi <subcommand>");
+    // 部分一致だと他コマンドの説明文("run the command…" 等)で満たされて
+    // しまい、一覧からの脱落を検出できない(Pullfrog 指摘)。SUBCOMMANDS
+    // 節に**行として**並んでいることを見る
+    const section = help.slice(help.indexOf("SUBCOMMANDS"));
+    expect(section).toContain("SUBCOMMANDS");
     for (const command of [
       "login",
       "logout",
@@ -94,7 +99,7 @@ describe("maruhi config", () => {
       "audit",
       "config",
     ]) {
-      expect(help, command).toContain(command);
+      expect(section, command).toMatch(new RegExp(`^\\s+${command} `, "m"));
     }
   });
 });

@@ -245,9 +245,17 @@ function maruhiFormatter(
   const describe = (error: CliError.CliError): string =>
     `maruhi: ${describeError(error, commandKey, specs)}`;
   const fallback = CliOutput.defaultFormatter({ colors: false });
+  // bare 実行でハンドラが走る親(audit = list)では、サブコマンドは必須では
+  // ない。上流の usage は一律 `<subcommand>`(必須)と描くので `[subcommand]`
+  // へ直す。判定は宣言駆動(フラグとサブコマンドの両方を持つ段 = ハンドラ付き
+  // 親だけが該当し、root や通常の親 — flags が空 — には触れない)
+  const spec = specs[commandKey];
+  const optionalSubcommand = (spec?.flags.length ?? 0) > 0 && (spec?.subcommands?.length ?? 0) > 0;
+  const adjustUsage = (text: string): string =>
+    optionalSubcommand ? text.replace("<subcommand>", "[subcommand]") : text;
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
-      helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`,
+      adjustUsage(helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`),
     // `--version` は**版番号だけ**を出す(gunshi 時代からの契約 —
     // version.test.ts が固定。`V=$(maruhi --version)` がそのまま使える形)
     formatVersion: (_name: string, version: string) => version,
