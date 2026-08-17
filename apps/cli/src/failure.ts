@@ -20,6 +20,9 @@ import {
   EnvironmentNotFoundError,
   EpochConflictError,
   ForbiddenError,
+  LeaseRateLimitedError,
+  LeaseUnauthorizedError,
+  LeaseUnavailableError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
@@ -77,6 +80,21 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
 function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
   return `Some data does not match the schema (${detail}). Check the values you provided, and that the CLI and server versions match`;
+}
+
+/**
+ * 503 `LeaseUnavailable`(AUTH_SPEC §14-3)の理由別の案内。3 理由とも
+ * 「資格情報の異常ではなく、発行できない状態」であり、次の一手が違う —
+ * 401 と混ぜず、理由ごとに直す先(再実行 / 管理者 / デプロイ設定)を言う。
+ */
+function renderLeaseUnavailable(error: LeaseUnavailableError): string {
+  if (error.reason === "oidc-jwks-unavailable") {
+    return "The server could not fetch the OIDC issuer's signing keys (oidc-jwks-unavailable). This is a transient issuer or network condition, not a problem with your credentials — retry the job later";
+  }
+  if (error.reason === "server-key-unconfigured") {
+    return "This deployment has no server key configured (server-key-unconfigured), so leases cannot be issued. The server administrator should complete the setup in docs/SELF_HOSTING.md";
+  }
+  return "The lease is authorized, but the epoch DEKs have not been re-wrapped to the server key yet (server-wraps-missing). An administrator should complete the pending rotation or grant backfill (maruhi env rotate / maruhi server grant), then retry";
 }
 
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
@@ -188,6 +206,19 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(DekWrapNotFoundError),
     (e) => `DEK wrap not found (epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
   ),
+  // Lease 系(AUTH_SPEC §14-3)。reason は Literals(サーバーが自由に埋め
+  // られない)なのでそのまま載せる。トークン値・外部識別子は運ばない
+  when(
+    isInstanceOf(LeaseUnauthorizedError),
+    (e) =>
+      `The OIDC token was rejected by the lease endpoint (${e.reason}). Check the token's issuer, audience, and validity window (AUTH_SPEC §14-1)`,
+  ),
+  when(
+    isInstanceOf(LeaseRateLimitedError),
+    (e) =>
+      `The project's lease rate limit is exhausted (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — re-run the job later; retrying immediately only consumes the window`,
+  ),
+  when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
   when(isInstanceOf(AuthFlowError), (e) => `The authentication flow failed (${e.reason})`),
   when(
     isInstanceOf(SetupIncompleteError),

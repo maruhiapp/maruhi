@@ -771,6 +771,8 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
  * 「なぜここで剥がすか」を実装側のコメントに残し、この表を更新すること。
  */
 const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
+  // ワイヤ境界: lease リクエストの oidcToken フィールド(A3 — AUTH_SPEC §14-2)
+  "ci-run.ts": 1,
   // HPKE ラップの入力(暗号境界)
   "dek-wrap.ts": 1,
   // 一覧行のバイト長(値は載せない)+ --show の表示(ゲート通過後)
@@ -787,6 +789,8 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "keychain.ts": 3,
   // device exchange のワイヤ境界(GitHub トークン)
   "login.ts": 1,
+  // 自 OIDC トークンの claims 読み出し(payload セグメントの decode — A3)
+  "oidc-github.ts": 1,
   // 復号の鍵入力(暗号境界)
   "pull.ts": 1,
   // 暗号化の鍵入力と平文入力(暗号境界)

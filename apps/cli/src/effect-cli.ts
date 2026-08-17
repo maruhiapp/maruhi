@@ -64,6 +64,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
+import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import {
   type AuditListFilters,
   auditInvitesOp,
@@ -72,6 +73,7 @@ import {
   auditSelfOp,
   auditVerifyOp,
 } from "./audit.ts";
+import { ciRunOp } from "./ci-run.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
 import { asConfigKey, CONFIG_KEYS, type ConfigKey, ConfigStore } from "./config.ts";
@@ -290,20 +292,48 @@ const pullConfig = {
   ),
 };
 
-const runConfig = {
-  ...commonFlags(),
+/** `run` / `ci run` 共通の実行対象(`--` の後ろ)の宣言。 */
+const runCommandArgument = () =>
   // `--` の後ろはここに入る(空文字列も保持される)。`atLeast(1)` が
   // 「実行対象のない実行」を、`filter` が「実行対象が空文字列」
   // (`maruhi run -- "$CMD"` の未設定形)を落とす。どちらも宣言で、
   // 2 つ目以降の空文字列は**子プロセスの引数として保つ**
-  command: Argument.string("command").pipe(
+  Argument.string("command").pipe(
     Argument.withDescription("The command to run, written after `--` (passed to the child as-is)"),
     Argument.atLeast(1),
     Argument.filter(
       (command) => (command[0] ?? "").trim() !== "",
       () => RUN_COMMAND_REQUIRED,
     ),
+  );
+
+const runConfig = {
+  ...commonFlags(),
+  command: runCommandArgument(),
+};
+
+/**
+ * `maruhi ci run` の宣言(session-25 §1 / §2): 通常の run と違い config
+ * ファイルを読まないため、server / project / env は**フラグで必須**。宣言上は
+ * optional(singleValued)にし、欠落の診断は本体側で CI 特有の直し方
+ * (「config へ」ではなく「フラグを書く」)を言う。
+ */
+const ciRunConfig = {
+  server: singleValued("server", "Server URL (required — CI mode reads no config file)"),
+  project: singleValued(
+    "project",
+    "Project ID = the pinned genesis hash (required — CRYPTO_SPEC §9.1 verification duty (1))",
   ),
+  env: singleValued("env", "Environment ID to lease (required)"),
+  audience: singleValued(
+    "audience",
+    "OIDC audience to request (defaults to the server origin — AUTH_SPEC §14-1)",
+  ),
+  anchor: singleValued(
+    "anchor",
+    "Path to the committed repository anchor file (generate with `maruhi project anchor` — CRYPTO_SPEC §6.3)",
+  ),
+  command: runCommandArgument(),
 };
 
 /**
@@ -445,6 +475,11 @@ const projectInitConfig = {
 const projectVerifyConfig = {
   ...serverOnlyFlags(),
   project: singleValued("project", "Project ID to verify (defaults to config defaultProject)"),
+};
+
+const projectAnchorConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued("project", "Project ID to anchor (defaults to config defaultProject)"),
 };
 
 /** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
@@ -618,7 +653,8 @@ const GROUP_CONFIGS: Readonly<
     recover: keyRecoverConfig,
     recovery: keyRecoveryConfig,
   },
-  project: { init: projectInitConfig, verify: projectVerifyConfig },
+  project: { init: projectInitConfig, verify: projectVerifyConfig, anchor: projectAnchorConfig },
+  ci: { run: ciRunConfig },
   rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
   audit: {
     list: auditListConfig,
@@ -986,6 +1022,59 @@ function envDiffCommand(
       commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
     });
     yield* reportEnvironmentDiff(diff);
+  });
+}
+
+/**
+ * `maruhi ci run` の必須フラグの解決(session-25 §2): config ファイルへ
+ * フォールバックしない(CI ランナーに永続 config は無く、genesis 固定は
+ * ワークフロー YAML のレビューに置く)。診断も「config を設定する」ではなく
+ * 「フラグを書く」を言う。
+ */
+function requireCiFlag(value: string | undefined, flag: string): Effect.Effect<string, CliError> {
+  return value === undefined
+    ? Effect.fail(
+        usageError(
+          `ci run requires ${flag} (CI mode reads no config file — pass --server, --project, and --env explicitly in the workflow)`,
+        ),
+      )
+    : Effect.succeed(value);
+}
+
+/** `maruhi ci run -- <cmd>` の本体(検証は ci-run.ts / lease-client.ts)。 */
+function ciRunCommand(values: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly env?: string | undefined;
+  readonly audience?: string | undefined;
+  readonly anchor?: string | undefined;
+  readonly command: readonly string[];
+}): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 形式検証はすべてネットワーク・鍵生成より先(既存コマンドと同じ規律)
+    const origin = yield* normalizeHttpOrigin(
+      yield* requireCiFlag(values.server, "--server"),
+      "the server URL",
+    );
+    const projectFlag = yield* requireCiFlag(values.project, "--project");
+    if (!isProjectId(projectFlag)) {
+      return yield* Effect.fail(
+        usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
+      );
+    }
+    const envFlag = yield* requireCiFlag(values.env, "--env");
+    if (!isEnvironmentId(envFlag)) {
+      return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+    }
+    return yield* ciRunOp({
+      origin,
+      projectId: projectFlag,
+      environmentId: envFlag,
+      // audience の既定はサーバーの正規化 origin(AUTH_SPEC §14-1 の推奨値)
+      audience: values.audience ?? origin,
+      anchorPath: values.anchor,
+      command: values.command,
+    });
   });
 }
 
@@ -1789,9 +1878,49 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const projectAnchor = Command.make("anchor", projectAnchorConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      // 前段は verify と同じ鍵なしクラス(チェーン同期 + §6.3 検査 + 床 +
+      // 招待アンカーの機械照合)— アンカーは検証済みビューからだけ作る
+      const context = yield* openMetadataProject({
+        server: values.server,
+        project: values.project,
+      });
+      // stdout はコマンドの出力(アンカー JSON)だけ(決定 9): リダイレクトで
+      // そのままリポジトリへコミットできる。内容は非機密(ハッシュ・連番・
+      // エポック番号のみ — anchor.ts)
+      yield* io.log(formatRepositoryAnchor(buildRepositoryAnchor(context.verified)).trimEnd());
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Print the repository anchor JSON — commit it and pass to `ci run --anchor` (CRYPTO_SPEC §6.3)",
+    ),
+  );
+
   const project = Command.make("project").pipe(
-    Command.withDescription("Manage projects (init / verify)"),
-    Command.withSubcommands([projectInit, projectVerifyCommand]),
+    Command.withDescription("Manage projects (init / verify / anchor)"),
+    Command.withSubcommands([projectInit, projectVerifyCommand, projectAnchor]),
+  );
+
+  const ciRun = Command.make("run", ciRunConfig, (values) =>
+    Effect.gen(function* () {
+      const { command: parsed, ...flags } = values;
+      // 通信・鍵生成より前(コマンド本体の先頭)で落とす(run と同じ `--` 規律)
+      const command = yield* commandAfterTerminator(parsed);
+      onExitCode(yield* ciRunCommand({ ...flags, command }));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Lease the environment via OIDC (no login, no keychain), verify it, and run the command with injected values (CRYPTO_SPEC §9.1)",
+    ),
+  );
+
+  const ci = Command.make("ci").pipe(
+    Command.withDescription(
+      "Workload-lease commands for CI jobs (run — CRYPTO_SPEC §9.1 / AUTH_SPEC §14)",
+    ),
+    Command.withSubcommands([ciRun]),
   );
 
   const configGet = Command.make("get", configGetConfig, (values) =>
@@ -2035,6 +2164,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       pull,
       run,
       push,
+      ci,
       env,
       server,
       invite,
