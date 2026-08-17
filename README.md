@@ -1,138 +1,142 @@
 # maruhi ㊙
 
-Cloudflare を実行基盤とする、汎用のディスクレス secrets 管理ツール。
+A general-purpose, diskless secrets manager that runs on Cloudflare.
 
-- **セルフホスト可能** — 自分の Cloudflare アカウントに `wrangler deploy` 一発で立つサーバーレス構成(Workers + Durable Objects + D1)
-- **E2EE(ゼロ知識)がデフォルト** — 暗号化・復号はすべてクライアントで行われ、平文のシークレットはサーバーに到達しない
-- **ディスクレス CLI** — `maruhi run -- <cmd>` は子プロセスの環境変数へのメモリ注入のみで値を渡し、平文をディスクに書かない
+- **Self-hostable** — a serverless stack (Workers + Durable Objects + D1) that comes up on your own Cloudflare account with a single `wrangler deploy`
+- **E2EE (zero-knowledge) by default** — encryption and decryption happen entirely on the client; plaintext secrets never reach the server
+- **Diskless CLI** — `maruhi run -- <cmd>` injects values into a child process's environment in memory only, and never writes plaintext to disk
 
-> **Status**: 開発中(pre-release)。API・仕様は予告なく変わります。
+> **Status**: in development (pre-release). APIs and specs may change without notice.
 
-## インストール(CLI)
+## Install (CLI)
 
-配布形態の設計は [ADR-0015](docs/adr/0015-cli-distribution.md)。
+The distribution design is recorded in [ADR-0015](docs/adr/0015-cli-distribution.md) (Japanese).
 
-### install script(Linux / macOS。推奨。Bun 不要)
+### install script (Linux / macOS. Recommended. Bun not required)
 
 ```sh
-# V は Releases ページ(https://github.com/maruhiapp/maruhi/releases)の最新タグに置き換える。
-# プレリリース期間中(v0.1.0 まで)は releases/latest が存在しないため、タグの明示が必要です
-V=<最新タグ>
+# Replace V with the latest tag on the Releases page
+# (https://github.com/maruhiapp/maruhi/releases).
+# During the pre-release period (until v0.1.0), releases/latest does not exist,
+# so you must specify the tag explicitly
+V=<latest-tag>
 curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/${V}/packaging/install.sh" -o maruhi-install.sh
-less maruhi-install.sh          # 中身を読んでから実行してください(下の信頼モデル参照)
+less maruhi-install.sh          # read the script before running it (see the trust model below)
 sh maruhi-install.sh --version "${V}"
 ```
 
-`~/.local/bin` に `maruhi` と `mh`(`maruhi` への symlink)を置きます。sudo は使いません。
-安定版 `v0.1.0` 以降は `--version` を省略でき、最新の安定版が入ります。
+This places `maruhi` and `mh` (a symlink to `maruhi`) in `~/.local/bin`. It does not use sudo.
+From stable `v0.1.0` onward you can omit `--version` and the latest stable release is installed.
 
-> install script が Release に同梱されるのは **`v0.1.0-rc.1` の次のリリースから**です。
-> `v0.1.0-rc.1` を入れる場合は、下の「手動でコンパイル済みバイナリを入れる」を使ってください
-> (それより前のタグを `${V}` に指定すると raw URL が 404 になります)。
+> The install script is bundled with a Release starting with **the release after `v0.1.0-rc.1`**.
+> To install `v0.1.0-rc.1`, use "Install a prebuilt binary by hand" below
+> (pointing `${V}` at an earlier tag makes the raw URL 404).
 
-- 主なオプション: `--dir <path>`(既定 `~/.local/bin`)/ `--version <tag>`。
-  環境変数 `MARUHI_INSTALL_DIR` / `MARUHI_VERSION` も同じ。一覧は `sh maruhi-install.sh --help`
-- 一行で済ませる形(`curl | sh`)も動きます —
-  `curl -fsSL ".../${V}/packaging/install.sh" | sh -s -- --version "${V}"`。
-  ただし下記の信頼モデルを読んでから選んでください
-- 対応対象は linux-x64 / linux-arm64 / darwin-x64 / darwin-arm64。**Windows は対象外**です
-  (下の手動手順へ)
+- Main options: `--dir <path>` (default `~/.local/bin`) / `--version <tag>`.
+  The environment variables `MARUHI_INSTALL_DIR` / `MARUHI_VERSION` do the same. Full list: `sh maruhi-install.sh --help`
+- A one-liner (`curl | sh`) also works —
+  `curl -fsSL ".../${V}/packaging/install.sh" | sh -s -- --version "${V}"`.
+  Read the trust model below before choosing that form
+- Supported targets are linux-x64 / linux-arm64 / darwin-x64 / darwin-arm64. **Windows is not supported**
+  (use the manual steps below)
 
 <details>
-<summary><b>install script の信頼モデル</b>(secrets 管理ツールなので明示します)</summary>
+<summary><b>Trust model for the install script</b> (stated explicitly because this is a secrets manager)</summary>
 
-- 通信先は **github.com だけ**です。テレメトリ・外部送信は一切ありません(「言わざる」)。
-  例外は利用者自身が `MARUHI_BASE_URL` を指定した場合だけ(内部ミラー・検証用の口。既定では使いません)
-- tar.gz は `checksums.txt` の SHA-256 で**検証してから**展開します。検証に失敗した場合は
-  インストール先に部分ファイルを残さず、非 0 で終了します
-- ただし `checksums.txt` 自体は**まだ署名していません**。完全性の根拠は github.com への
-  TLS だけです(署名の導入は今後の課題)。無いものを「署名検証しています」とは書きません。
-  だからこそ `curl | sh` を既定にせず、**落として読んでから実行**する形を先に案内しています
-- シェルの設定ファイル(`~/.zshrc` 等)は書き換えません。PATH に足す行を表示するだけです
-- macOS バイナリは未公証ですが、**curl 取得なら Gatekeeper の隔離属性は付きません**
-  (ブラウザでダウンロードした場合は隔離されます)。公証は公開準備の段階で対応します
+- The only host this script talks to is **github.com**. There is no telemetry and no outbound traffic of any kind ("say nothing").
+  The only exception is when you yourself set `MARUHI_BASE_URL` (an internal-mirror / verification hook; unused by default)
+- Each tar.gz is **verified** against the SHA-256 in `checksums.txt` **before** extraction. If verification fails, the
+  script leaves no partial files in the install directory and exits non-zero
+- `checksums.txt` itself is **not signed yet**. Integrity rests only on TLS to github.com
+  (signing is future work). We do not claim "signature verification" for something that does not exist.
+  That is why `curl | sh` is not the default, and why the first instructions are **download, read, then run**
+- The script does not edit shell config files (`~/.zshrc` and similar). It only prints a line to add to PATH
+- macOS binaries are not notarized, but **a curl download does not receive Gatekeeper's quarantine attribute**
+  (a browser download does). Notarization lands as part of the public-release preparation
 
 </details>
 
-### Homebrew(macOS / Linuxbrew)
+### Homebrew (macOS / Linuxbrew)
 
-> **準備中** — tap(`maruhiapp/homebrew-maruhi`)はまだ公開していません。formula は安定版
-> `v0.1.0` から提供します(プレリリースは tap に載せません)。それまでは上の install script を
-> お使いください。
+> **Not ready yet** — the tap (`maruhiapp/homebrew-maruhi`) is not published. The formula ships from
+> stable `v0.1.0` (prereleases are not added to the tap). Until then, use the install script above.
 
 ```sh
-# Homebrew 6.0.0 以降、サードパーティ tap はコードが評価される前に明示的な信頼が必要です
-# (それ以前の brew に `brew trust` は無いので、この行は不要)
+# Homebrew 6.0.0 and later require an explicit trust grant before third-party tap
+# code is evaluated (older brew has no `brew trust`, so skip this line)
 brew trust --tap maruhiapp/maruhi
 brew install maruhiapp/maruhi/maruhi
 ```
 
-`brew trust` は maruhi 側の都合ではなく、tap の Ruby コードを走らせる前に利用者の同意を求める
-Homebrew の仕組みです(未信頼 tap の自動 tap は行われません)。
+`brew trust` is Homebrew's mechanism for asking the user to consent before running the tap's Ruby
+code; it is not a maruhi-specific requirement (untrusted taps are not auto-tapped).
 
 <details>
-<summary><b>手動でコンパイル済みバイナリを入れる</b>(Windows はこちら)</summary>
+<summary><b>Install a prebuilt binary by hand</b> (this is the Windows path)</summary>
 
-[GitHub Releases](https://github.com/maruhiapp/maruhi/releases) からプラットフォーム別の
-`maruhi-<os>-<arch>.tar.gz` を取得し、チェックサムを検証して展開します:
+Download the platform-specific `maruhi-<os>-<arch>.tar.gz` from
+[GitHub Releases](https://github.com/maruhiapp/maruhi/releases), verify the checksum, and extract:
 
 ```sh
-# 例: Apple Silicon mac(linux-x64 / linux-arm64 / darwin-x64 / windows-x64 も同様)。
-# V は Releases ページの最新タグに置き換える(プレリリース期間中は
-# releases/latest が存在しないため、タグ URL を使う)
+# Example: Apple Silicon Mac (linux-x64 / linux-arm64 / darwin-x64 / windows-x64 are the same).
+# Replace V with the latest tag on the Releases page (during the pre-release
+# period, releases/latest does not exist, so use a tag URL)
 V=v0.1.0-rc.1
 curl -fsSLO "https://github.com/maruhiapp/maruhi/releases/download/${V}/maruhi-darwin-arm64.tar.gz"
 curl -fsSLO "https://github.com/maruhiapp/maruhi/releases/download/${V}/checksums.txt"
-shasum -a 256 --ignore-missing -c checksums.txt   # Linux では sha256sum --ignore-missing -c
+shasum -a 256 --ignore-missing -c checksums.txt   # on Linux: sha256sum --ignore-missing -c
 tar -xzf maruhi-darwin-arm64.tar.gz
 ./maruhi --version
 ```
 
-`mh` エイリアスが必要なら並べてリンクを張ってください: `ln -s maruhi mh`
+If you want the `mh` alias, link it next to the binary: `ln -s maruhi mh`
 
-- **windows-x64 は experimental** です(Credential Manager 経路が未検証。キーチェーンに
-  問題がある場合も平文フォールバックせず型付きエラーで止まります)。scoop / winget は将来対応
-- macOS バイナリは未公証のため、**ブラウザで**ダウンロードすると Gatekeeper に隔離されます
-  (上記のように curl で取得すれば隔離属性は付きません)
+- **windows-x64 is experimental** (the Credential Manager path is unverified. If the keychain
+  has a problem, maruhi does not fall back to plaintext; it stops with a typed error). scoop / winget are future work
+- macOS binaries are not notarized, so a **browser** download is quarantined by Gatekeeper
+  (a curl download, as above, does not get the quarantine attribute)
 
 </details>
 
-### npm(Bun ランタイム必須)
+### npm (Bun runtime required)
 
-CLI は OS キーチェーン(`Bun.secrets`)等の Bun 固有 API に依存するため、npm 版の実行には
-[Bun](https://bun.sh) が必要です(最低バージョンはリポジトリの [`.bun-version`](.bun-version) と同じ。
-公開パッケージの `engines.bun` も同ファイルから導出されます)。Bun が無い環境では、
-Node.js で起動した場合は案内を出して終了し、Unix で直接 `maruhi` を叩いた場合は shebang 解決の段階で
-`env: bun: No such file or directory` の形のエラーになります(表記は OS の env 実装で多少異なる。
-いずれも Bun の導入で解消):
+The CLI depends on Bun-specific APIs such as the OS keychain (`Bun.secrets`), so the npm package
+needs [Bun](https://bun.sh). The minimum version matches the repository [`.bun-version`](.bun-version);
+the published package's `engines.bun` is derived from the same file. Without Bun:
+starting under Node.js prints a hint and exits; invoking `maruhi` directly on Unix fails at shebang
+resolution as `env: bun: No such file or directory` (wording varies with the OS `env` implementation.
+Either way, installing Bun fixes it):
 
 ```sh
-# プレリリース期間中(v0.1.0 まで)は dist-tag `next` を指定する。
-# 素の `maruhi` は現状プレースホルダ(0.0.1)を指すため注意
+# During the pre-release period (until v0.1.0), pass the dist-tag `next`.
+# Bare `maruhi` currently points at the placeholder (0.0.1) — be careful
 bun install -g maruhi@next
-maruhi --version             # mh --version も同じ
+maruhi --version             # mh --version is the same
 ```
 
-安定版(`v0.1.0`)以降は `bun install -g maruhi` で入ります。
+From the stable release (`v0.1.0`) onward, `bun install -g maruhi` is enough.
 
-## ドキュメント
+## Docs
 
-- [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — 暗号仕様(唯一の正)
-- [docs/AUTH_SPEC.md](docs/AUTH_SPEC.md) — 認証・アイデンティティ仕様
-- [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — セルフホスト手順
-- [docs/adr/](docs/adr/) — 設計判断の記録(ADR)
+- [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — crypto specification (sole source of truth; Japanese)
+- [docs/AUTH_SPEC.md](docs/AUTH_SPEC.md) — authentication and identity specification (Japanese)
+- [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — self-hosting guide
+- [docs/adr/](docs/adr/) — architecture decision records (Japanese)
 
-## ライセンス
+## License
 
-本リポジトリは部位ごとにライセンスが異なります([ADR-0003](docs/adr/0003-license-fsl-mit.md))。
+This repository uses different licenses per area ([ADR-0003](docs/adr/0003-license-fsl-mit.md); Japanese).
 
-| 対象 | ライセンス |
+| Area | License |
 |---|---|
-| `apps/server`・`apps/web` を含むリポジトリ既定 | [FSL-1.1-MIT](LICENSE.md) |
-| `apps/cli`・`packages/crypto`・`packages/core`・`packages/api-schema` | MIT(各ディレクトリの `LICENSE`) |
+| Repository default, including `apps/server` and `apps/web` | [FSL-1.1-MIT](LICENSE.md) |
+| `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema` | MIT (`LICENSE` in each directory) |
 
-FSL-1.1-MIT(Functional Source License)は、競合するホスト型サービスとしての提供のみを制限するライセンスです。セルフホスト・社内利用・改変・再配布は自由で、公開から 2 年後に自動的に MIT へ変換されます。OSI 定義の「オープンソース」ではなく source-available / Fair Source です。
+FSL-1.1-MIT (Functional Source License) only restricts offering the software as a competing hosted
+service. Self-hosting, internal use, modification, and redistribution are unrestricted, and the
+license converts to MIT automatically two years after publication. It is not OSI "open source";
+it is source-available / Fair Source.
 
-## 貢献
+## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。すべてのコミットに DCO の `Signed-off-by` が必要です。
+See [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a DCO `Signed-off-by`.

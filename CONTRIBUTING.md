@@ -1,43 +1,43 @@
-# maruhi への貢献
+# Contributing to maruhi
 
-maruhi への貢献に興味を持っていただきありがとうございます。Issue・Pull Request を歓迎します。
+Thanks for your interest in contributing to maruhi. Issues and pull requests are welcome.
 
-## 開発セットアップ
+## Development setup
 
-- ランタイムは Bun です。版は `.bun-version` で厳密ピン(現行 1.3.14)。ADR-0004 の 1.4 系は未到達です
-- `bun install` で依存をインストールします
-- コミット前に品質ゲートをすべて通してください: `bun run check`(oxfmt → oxlint → tsc → ImportLint → fallow → React Doctor → テスト)
+- The runtime is Bun, pinned exactly by `.bun-version` (currently 1.3.14). The 1.4 series from ADR-0004 has not been reached yet
+- Install dependencies with `bun install`
+- Run the full quality gate before committing: `bun run check` (oxfmt → oxlint → tsc → ImportLint → fallow → React Doctor → tests)
 
-開発ルールの詳細は [CLAUDE.md](CLAUDE.md) と [docs/adr/](docs/adr/) を参照してください。特に:
+For development rules, see [CLAUDE.md](CLAUDE.md) (Japanese) and [docs/adr/](docs/adr/) (Japanese). In particular:
 
-- 暗号仕様は [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) が唯一の正です。`packages/crypto` への変更は必ず人間レビューとテストベクター(`test-vectors/`)による検証を経ます
-- 平文のシークレットがサーバー API・ディスク・ログを通らないこと(ディスクレス不変条件)を破る変更は受け付けられません
+- The crypto specification [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) (Japanese) is the sole source of truth. Changes to `packages/crypto` must go through human review and verification against the test vectors (`test-vectors/`)
+- Changes that let plaintext secrets pass through the server API, disk, or logs (the diskless invariant) will not be accepted
 
-## ライセンス構成と貢献の取り扱い
+## License layout and how contributions are treated
 
-本リポジトリは部位ごとにライセンスが異なります([ADR-0003](docs/adr/0003-license-fsl-mit.md)):
+This repository uses different licenses per area ([ADR-0003](docs/adr/0003-license-fsl-mit.md); Japanese):
 
-- リポジトリ既定(`apps/server`・`apps/web` を含む): [FSL-1.1-MIT](LICENSE.md)
-- `apps/cli`・`packages/crypto`・`packages/core`・`packages/api-schema`: MIT(各ディレクトリの `LICENSE`)
+- Repository default (including `apps/server` and `apps/web`): [FSL-1.1-MIT](LICENSE.md)
+- `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema`: MIT (`LICENSE` in each directory)
 
-Pull Request を送ることで、あなたの貢献が変更対象ディレクトリに適用されるライセンスの下で提供されることに同意したものとみなします。
+By submitting a pull request, you agree that your contribution is offered under the license that applies to the directory you change.
 
-## DCO(Developer Certificate of Origin)
+## DCO (Developer Certificate of Origin)
 
-すべてのコミットに、[DCO 1.1](https://developercertificate.org/) への同意を示す `Signed-off-by` トレーラーが必要です。`-s` フラグで自動付与できます:
+Every commit needs a `Signed-off-by` trailer showing agreement with [DCO 1.1](https://developercertificate.org/). The `-s` flag adds it automatically:
 
 ```sh
 git commit -s
 ```
 
-トレーラーは次の形式で、実名またはあなたを特定できる一貫した名義と有効なメールアドレスを使ってください:
+The trailer must look like the following, using your real name or a consistent identity that identifies you, and a valid email address:
 
 ```
 Signed-off-by: Your Name <your@example.com>
 ```
 
 <details>
-<summary>Developer Certificate of Origin 1.1(全文)</summary>
+<summary>Developer Certificate of Origin 1.1 (full text)</summary>
 
 ```
 Developer Certificate of Origin
@@ -78,6 +78,6 @@ By making a contribution to this project, I certify that:
 
 </details>
 
-## セキュリティ
+## Security
 
-脆弱性を発見した場合は、公開 issue に詳細を書かず、GitHub の Private Vulnerability Reporting(Security タブ → Report a vulnerability)から報告してください。
+If you find a vulnerability, do not put details in a public issue. Report it through GitHub Private Vulnerability Reporting (Security tab → Report a vulnerability).
