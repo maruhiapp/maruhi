@@ -421,7 +421,7 @@ describe("巻き戻しの永続検出(§6.3 規則 (a) / session-12 §8-5)", () 
     expect(env.errors.join("\n")).toContain("meta-statement rollback");
   });
 
-  it("環境メタの同一 signed bytes served for the same metaVersion(環境名の付け替え)を拒否する", async () => {
+  it("環境メタの同一 metaVersion への異なる signed bytes(環境名の付け替え)を拒否する", async () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -751,7 +751,7 @@ describe("同一座標の signed bytes 相違の証拠化(§6.3 規則 (b) / §1
     expect(errors).toContain(await valueHashOf(replaced, owner.userId));
   });
 
-  it("同一 signed bytes served for the same metaVersion(名前の付け替え)を拒否する", async () => {
+  it("同一 metaVersion への異なる signed bytes(名前の付け替え)を拒否する", async () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const original = await statementOf({ variableId: "vb", name: "BETA" });
