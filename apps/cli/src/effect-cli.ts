@@ -2196,8 +2196,12 @@ export async function runEffectCli(
     for (const line of diagnostics) {
       // `--version` の出力だけは**コマンドの出力**(stdout)。`V=$(maruhi
       // --version)` はスクリプトの正当な使い方で、ヘルプ・診断(stderr)とは
-      // 役割が違う。失敗した実行(書き方の誤りとの併記)は stderr のまま
-      yield* versionRequested && Exit.isSuccess(exit) ? io.log(line) : io.logError(line);
+      // 役割が違う。失敗した実行(書き方の誤りとの併記)は stderr のまま。
+      // `--help` が併記された実行は上流で Help が勝つ = 集めた行はヘルプ本文
+      // なので stdout へ流さない(レビュー第 3 巡の指摘)
+      yield* versionRequested && !helpRequested && Exit.isSuccess(exit)
+        ? io.log(line)
+        : io.logError(line);
     }
     if (Exit.isFailure(exit)) {
       yield* reportFailure(io, exit.cause);

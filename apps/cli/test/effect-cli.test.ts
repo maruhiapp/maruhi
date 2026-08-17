@@ -1025,6 +1025,21 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
     expect(server.requests).toHaveLength(0);
   });
 
+  it("`--version` の出力は stdout、`--help` 併記時はヘルプが勝ち stderr へ出る", async () => {
+    // `V=$(maruhi --version)` はコマンドの出力(gunshi 時代からの契約)。
+    // `--help --version` は上流で Help が勝つ = 集めた行はヘルプ本文なので
+    // stdout へ流さない(決定 9 / ADR-0016 追記 2)
+    const version = await startEnv();
+    expect(await runCli(["--version"], version.env.layer)).toBe(0);
+    expect(version.env.logs.join("\n")).toMatch(/^\d+\.\d+\.\d+/);
+    expect(version.env.errors).toEqual([]);
+
+    const both = await startEnv();
+    expect(await runCli(["--help", "--version"], both.env.layer)).toBe(0);
+    expect(both.env.logs).toEqual([]);
+    expect(both.env.errors.join("\n")).toContain("maruhi");
+  });
+
   it("エントリコマンドの二重名(`maruhi maruhi`)をコマンドとして勧めない", async () => {
     // gunshi はエントリコマンドを自分自身の名前でも登録していた。effect の
     // root に `maruhi` サブコマンドは無い = ただの未知のコマンド
