@@ -479,10 +479,9 @@ export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, C
  * この分岐の取り違えが「消してよい / 消してはいけない」を反転させ、鍵の
  * 恒久喪失に直結するため。網羅性を型検査に見てもらう。
  */
-class MasterKeyCorrupt extends Data.TaggedError("MasterKeyCorrupt")<{
-  /** 原因の内訳(hex を解釈できない / WebCrypto が読めない)。文言には出さない。 */
-  readonly reason: "hex" | "import";
-}> {}
+// 内訳(hex を解釈できない / WebCrypto が読めない)は持たない: 呼び出し側は
+// どちらでも同じ出口へ案内するので、読まれない payload を運ばない
+class MasterKeyCorrupt extends Data.TaggedError("MasterKeyCorrupt")<Record<never, never>> {}
 
 /** レコードが現行版の知らないスイートを名乗っている(破損ではない)。 */
 class MasterKeyUnknownSuite extends Data.TaggedError("MasterKeyUnknownSuite")<{
@@ -517,23 +516,23 @@ export function importMasterKeys(
     const sigPub = decodeHex(record.sigPubHex);
     const sigSeed = decodeHex(Redacted.value(record.sigSkSeedHex));
     if (encPub === null || encSk === null || sigPub === null || sigSeed === null) {
-      return yield* Effect.fail(new MasterKeyCorrupt({ reason: "hex" }));
+      return yield* Effect.fail(new MasterKeyCorrupt());
     }
     // WebCrypto の reject(壊れた鍵素材のインポート例外)も破損として扱う
     const encKeyPair = yield* Effect.tryPromise({
       try: () => importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
-      catch: () => new MasterKeyCorrupt({ reason: "import" }),
+      catch: () => new MasterKeyCorrupt(),
     });
     const sigKeyPair = yield* Effect.tryPromise({
       try: () => importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
-      catch: () => new MasterKeyCorrupt({ reason: "import" }),
+      catch: () => new MasterKeyCorrupt(),
     });
     const fingerprint = yield* Effect.tryPromise({
       try: () => computeUserKeyFingerprint(encPub, sigPub),
-      catch: () => new MasterKeyCorrupt({ reason: "import" }),
+      catch: () => new MasterKeyCorrupt(),
     });
     if (!encKeyPair.ok || !sigKeyPair.ok || !fingerprint.ok) {
-      return yield* Effect.fail(new MasterKeyCorrupt({ reason: "import" }));
+      return yield* Effect.fail(new MasterKeyCorrupt());
     }
     return {
       record,

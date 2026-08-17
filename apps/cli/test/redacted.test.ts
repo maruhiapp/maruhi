@@ -440,6 +440,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // (値を控えてから消す)でだけ示す。リカバリーコードを条件にすると、
     // ブロブも新形式のときに「消してから復元できない」に落ちる
     expect(message).toContain("値を控えてから");
+    // 控えは master 秘密鍵そのもの。作らせる以上、消す指示まで書く
+    // (この PR の主題は「鍵素材を残さない」こと — 手作業の控えも同じ)
+    expect(message).toContain("復元できたら必ず破棄してください");
     expect(message).toContain("master::https://x::u1");
     expect(message).toContain("控えずに消さないでください");
     expect(message).not.toContain("リカバリーコードがあれば");
