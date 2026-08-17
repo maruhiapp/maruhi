@@ -517,6 +517,28 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     }
   });
 
+  it("rotate: boolean フラグの後ろに置いた位置引数は消費されない(順序の固定)", async () => {
+    // 上流は boolean の直後のトークンを **真偽値リテラルのときだけ**値として
+    // 消費する(asBooleanLiteral)。通常の環境 ID はストリームに残るので、
+    // フラグを先に書いた形も引数層を通る(Pullfrog 指摘のテスト固定)
+    const ordered = await startEnv();
+    expect(
+      await runCli(["env", "rotate", "--new-epoch", "dev", "--reason", "x"], ordered.env.layer),
+    ).toBe(1);
+    expect(ordered.env.errors.join("\n")).not.toContain("Missing positional argument");
+    expect(ordered.server.requests.length).toBeGreaterThan(0);
+
+    // 残余: 環境 ID が真偽値リテラルと同形(`on` / `off` 等)だと boolean の
+    // 値として消費され、必須位置引数の欠落として**大きな音で**落ちる
+    // (gunshi は消費しなかった形。黙って別環境を回すのではなく exit 2)
+    const literal = await startEnv();
+    expect(
+      await runCli(["env", "rotate", "--new-epoch", "on", "--reason", "x"], literal.env.layer),
+    ).toBe(2);
+    expect(literal.env.errors.join("\n")).toContain("Missing positional argument environment-id");
+    expect(literal.server.requests).toHaveLength(0);
+  });
+
   it("rotate: boolean への値は書いたとおりに読まれる(gunshi は読まずに true にした)", async () => {
     // `--new-epoch=false` は effect では **false として解釈される**(12 形の #2)。
     // 引数層は通り、コマンド本体(通信)まで進む = 拒否ではなく正しい解釈

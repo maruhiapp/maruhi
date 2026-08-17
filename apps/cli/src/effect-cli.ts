@@ -626,10 +626,7 @@ function serverRevokeCommand(
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const fingerprintHex =
-      flags.fingerprint === undefined
-        ? null
-        : yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
+    const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
     // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
     const context = yield* openProject(flags, { quietMandateWarning: true });
     // 1 環境のローテーション(PR-1 の envRotateOp の再利用 — sweepRotateFor)

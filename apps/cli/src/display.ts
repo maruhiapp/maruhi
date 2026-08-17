@@ -139,6 +139,12 @@ export function formatPulledLine(variable: DisplayableVariable): string {
 }
 
 /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
+// 追記(ADR-0017 の申し送り): このプレフィックスは共有ヘルパのため
+// コマンド単位の英語化(決定 4)に乗らず、移行済みコマンドでは
+// 「警告: <英語本文>」の混在行になる(PR #75 Pullfrog 指摘)。effect-cli.ts が
+// 直接書く「Warning: …」との不統一も同根。共有モジュールの英語化 PR で
+// 本文と一緒に「Warning: 」へ倒す — ここだけ先に倒すと、gunshi に残る
+// コマンドの側が逆向きの混在(「Warning: <日本語本文>」)になるため据え置く。
 export function logWarnings(warnings: readonly string[]): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
