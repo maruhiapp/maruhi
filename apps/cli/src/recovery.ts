@@ -230,9 +230,18 @@ export function recoverMasterKeyOp(input: {
   });
 }
 
-/** ブロブが使えないときの共通の出口(このデバイスでは直せない)。 */
-const reRegisterGuidance =
-  "このコードでは復元できません。master 鍵が残っている別のデバイスで `maruhi key recovery` を実行して再登録してください。";
+/** 再登録の手順そのもの(どの原因でも同じ)。 */
+const reRegisterAction =
+  "master 鍵が残っている別のデバイスで `maruhi key recovery` を実行して再登録してください。";
+
+/**
+ * ブロブが使えないときの共通の出口(このデバイスでは直せない)。
+ *
+ * 「このコードでは復元できません」は**破損・伏字の場合にだけ真**。未知スイートの
+ * ブロブは更新すれば同じコードで復元できるので、この文言を付けてはいけない
+ * (付けると、使えるコードを捨てさせる)。
+ */
+const reRegisterGuidance = `このコードでは復元できません。${reRegisterAction}`;
 
 /** ブロブは解釈できたが鍵素材が読み込めないときの文言。 */
 const brokenRecoveryBlobMessage =
@@ -246,7 +255,7 @@ const brokenRecoveryBlobMessage =
  * ブロブ由来の自由文字列なので、端末へ出す前にエスケープする。
  */
 function foreignRecoveryBlobMessage(suite: string): string {
-  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません(${escapeText(suite)})。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください。${reRegisterGuidance}`;
+  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません(${escapeText(suite)})。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください(いま入力したリカバリーコードはそのまま使えます — 捨てないでください)。更新できない場合は、${reRegisterAction}`;
 }
 
 /**

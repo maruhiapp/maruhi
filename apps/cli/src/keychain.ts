@@ -154,6 +154,17 @@ export const redactedPlaceholderEnvTokenMessage =
   "MARUHI_TOKEN の値が伏字(<redacted>)そのものです。これは maruhi が伏せた表示をトークンとして貼り付けた状態で、認証には使えません。`maruhi login` で発行したトークンの生値を設定してください" as const;
 
 /**
+ * エントリ名の表示(エスケープ + 「エスケープしてある」旨の注記)。
+ *
+ * 注記を落とすと、印字可能 ASCII 以外を含む user_id では**表示された名前が
+ * 実在しない**ため、唯一の復旧手順(手で消す)が実行できない。名前を出す
+ * 場所が増えたので、注記ごと一箇所に閉じ込める。
+ */
+function quotedEntryName(entryName: string): string {
+  return `"${escapeText(entryName)}"(名前は印字可能 ASCII 以外を \\u{16 進} — 4 桁以上、補助面はより長い — 、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)`;
+}
+
+/**
  * 「手で消してから、こう進む」の共通部分(伏字・破損のどちらでも同じ出口)。
  *
  * 削除後の手順を**両方**示すのが要点: どちらが使えるかは利用者の状況で決まる。
@@ -171,7 +182,7 @@ function manualDeletionGuidance(entryName: string): string {
   // ただしエスケープ後の文字列は原文そのものではない(印字可能 ASCII 以外を
   // 含む user_id では表記が変わる)。**エスケープしてある旨を文面に明記する** —
   // 書かないと、利用者は表示どおりの名前を探して見つけられない。
-  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除してください(名前は印字可能 ASCII 以外を \\u{16 進} — 4 桁以上、補助面はより長い — 、バックスラッシュと引用符を \\\\ / \\" の形にエスケープして表示しています。実際のエントリ名はエスケープを戻したものです)。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
+  return `master 鍵は上書き防止のため \`maruhi key generate\` / \`maruhi key recover\` では直せません。OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} を手で削除してください。削除後、リカバリーコードがあれば \`maruhi key recover\` で元の鍵を復元できます(既存の値を復号し続けられます)。無い場合は \`maruhi key generate\` で新しい鍵を作れますが、既存プロジェクトの値は復号できなくなるため、管理者に自分宛ラップの再配布(\`maruhi member add\` の再実行)を依頼してください。`;
 }
 
 /**
@@ -225,13 +236,15 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
  *
  * ただし「残してください」だけで終えると、実際には壊れているレコード(形は
  * オブジェクトだがスイートを失った等)に当たった利用者が、更新しても直らない
- * まま `key generate` / `key recover` / `key show` の全部を塞がれる。分類は
- * 保守的なままにして、**条件付きの逃げ道**を併記する: リカバリーコードがあれば
- * 元の master 鍵をそのまま復元できるので、この記録を消しても失うものが無い。
+ * まま `key generate` / `key recover` / `key show` の全部を塞がれる。そこで
+ * 逃げ道は残すが、**リカバリーコードを条件にしない**: 新しい版がこのレコードを
+ * 書いたなら、サーバーのリカバリーブロブも同じ形式で書かれている見込みが高く、
+ * `key recover` も同じ理由で失敗する(消した後に気づくと恒久喪失)。条件では
+ * なく**可逆性**で安全にする — 消す前に値を控えれば、戻せる。
  */
 export function foreignMasterKeyMessage(suite: string | null, entryName: string): string {
   const named = suite === null ? "" : `(${escapeText(suite)})`;
-  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください。更新しても直らず、かつリカバリーコードを持っている場合に限り、OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ "${escapeText(entryName)}" を手で削除して \`maruhi key recover\` で元の鍵を復元できます(コードが無い場合は消さないでください。復号可能性を失います)`;
+  return `キーチェーンの master 鍵レコードをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、このレコードは残してください(消すと復元できなくなります)。maruhi を最新版へ更新してから再実行してください。更新しても直らない場合のみ、OS キーチェーンからサービス "${KEYCHAIN_SERVICE}" のエントリ ${quotedEntryName(entryName)} の**値を控えてから**削除すれば、\`maruhi key generate\` / \`maruhi key recover\` を試せます(控えがあれば元へ戻せます。控えずに消さないでください — リカバリーコードがあっても、登録済みのブロブが同じ新しい形式なら復元できません)。併せて不具合として報告してください`;
 }
 
 /** レコードから宣言スイートだけを取り出す(読めなければ null)。 */

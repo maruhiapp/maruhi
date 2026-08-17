@@ -326,6 +326,10 @@ describe("maruhi key recover(復元)", () => {
     expect(errors).toContain("maruhi/v2");
     expect(errors).toContain("最新版へ更新");
     expect(errors).toContain("`maruhi key recovery`");
+    // 未知スイートは「このコードでは復元できません」ではない(更新すれば
+    // そのまま使える)。破損用の文言を混ぜると、使えるコードを捨てさせる
+    expect(errors).not.toContain("このコードでは復元できません");
+    expect(errors).toContain("捨てないでください");
     // キーチェーンには何も書かない
     expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
   });

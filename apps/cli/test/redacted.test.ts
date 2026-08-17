@@ -436,11 +436,15 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(classifyUnreadableMasterKey(future)).toBe("foreign");
     const message = foreignMasterKeyMessage("maruhi/v2", "master::https://x::u1");
     expect(message).toContain("残してください");
-    // 既定は「消さない」。ただし行き止まりにはしない: リカバリーコードがある
-    // ときに限り、消して復元できることと消すべきエントリ名まで示す
-    expect(message).toContain("リカバリーコードを持っている場合に限り");
+    // 既定は「消さない」。ただし行き止まりにもしない: 逃げ道は**可逆**な形
+    // (値を控えてから消す)でだけ示す。リカバリーコードを条件にすると、
+    // ブロブも新形式のときに「消してから復元できない」に落ちる
+    expect(message).toContain("値を控えてから");
     expect(message).toContain("master::https://x::u1");
-    expect(message).toContain("コードが無い場合は消さないでください");
+    expect(message).toContain("控えずに消さないでください");
+    expect(message).not.toContain("リカバリーコードがあれば");
+    // エントリ名はエスケープ表記である旨まで書く(書かないと名前を探せない)
+    expect(message).toContain("エスケープを戻したもの");
     // 本当に壊れているものは従来どおり破損扱い(削除の出口を示す)
     expect(classifyUnreadableMasterKey("not json")).toBe("corrupt");
     expect(classifyUnreadableMasterKey(masterRecordJson({ encSkHex: "" }))).toBe("corrupt");
