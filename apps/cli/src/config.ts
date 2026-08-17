@@ -107,7 +107,7 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
         }
         return config;
       },
-      catch: () => cliError(`設定ファイルを読み取れません(壊れています): ${path}`),
+      catch: () => cliError(`Cannot read the config file (it is corrupt): ${path}`),
     }),
     save: (config) =>
       Effect.tryPromise({
@@ -118,7 +118,7 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
           await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
           await rename(temp, path);
         },
-        catch: () => cliError(`設定ファイルを書き込めません: ${path}`),
+        catch: () => cliError(`Cannot write the config file: ${path}`),
       }),
   };
 }

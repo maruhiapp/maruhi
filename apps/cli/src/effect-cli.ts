@@ -1,7 +1,7 @@
 // `effect/unstable/cli` へ移した引数層(ADR-0016 第 1 段階: pull / run /
-// env create、第 2 段階: env rotate / diff、server、invite、member)。残る
-// コマンド(login / logout / key / project / rotation / audit / push / config)
-// は gunshi のまま(cli.ts)で、この分割状態は移行が進むまで続く。
+// env create、第 2 段階: env rotate / diff、server、invite、member、
+// 第 3 段階: push、config)。残るコマンド(login / logout / key / project /
+// rotation / audit)は gunshi のまま(cli.ts)で、この分割状態は移行が進むまで続く。
 //
 // `env` / `server` / `invite` / `member` は**真の入れ子サブコマンド**
 // (ADR-0016 決定 6): gunshi の 1 段制約のために操作を位置引数にしていた結果
@@ -56,6 +56,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
+import { asConfigKey, CONFIG_KEYS, type ConfigKey, ConfigStore } from "./config.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
 import {
   commitVerifiedHead,
@@ -70,7 +71,7 @@ import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
 import { CliError, usageError } from "./errors.ts";
-import { internalErrorKind } from "./failure.ts";
+import { internalErrorKind, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
 import {
   type InviteInputRejection,
@@ -97,6 +98,7 @@ import {
 } from "./member.ts";
 import { PinStore } from "./pins.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
+import { normalizeStdinValue, pushVariable } from "./push.ts";
 import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
 import { reportRotationFlagCount } from "./rotation.ts";
@@ -211,6 +213,46 @@ const runConfig = {
       (command) => (command[0] ?? "").trim() !== "",
       () => RUN_COMMAND_REQUIRED,
     ),
+  ),
+};
+
+/**
+ * `maruhi push` の余分な位置引数に添える固有の直し方(第 3 段階 ①)。
+ *
+ * `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した引数の
+ * 中身は出さない(平文でありうる)ので、代わりに「値は stdin から」を必ず
+ * 添える — でないと直しようがない(cli-formatter.ts の strayHint)。
+ */
+const PUSH_STDIN_HINT =
+  '. Values are read from stdin (example: printf %s "$SECRET" | maruhi push API_KEY)';
+
+const pushConfig = {
+  ...commonFlags(),
+  name: Argument.string("name").pipe(
+    Argument.withDescription("Variable name (the display name; becomes the env var name)"),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+/** 設定キーの位置引数(config のサブコマンド共通)。 */
+const configKeyArgument = () =>
+  Argument.string("key").pipe(
+    Argument.withDescription(`Config key (${CONFIG_KEYS.join(" | ")})`),
+    Argument.withSchema(NonBlank),
+  );
+
+const configGetConfig = {
+  key: configKeyArgument(),
+};
+
+const configSetConfig = {
+  key: configKeyArgument(),
+  // 空 / 空白だけの値は宣言(NonBlank)で拒否する: `config set defaultProject
+  // "$PROJ"` の未設定形が既存の設定を空で上書きして成功を報告する事故を塞ぐ
+  // (gunshi 時代は args.ts の emptyPositionalRejection が受け持っていた)
+  value: Argument.string("value").pipe(
+    Argument.withDescription("Value to set"),
+    Argument.withSchema(NonBlank),
   ),
 };
 
@@ -379,6 +421,7 @@ const GROUP_CONFIGS: Readonly<
     remove: memberRemoveConfig,
     "change-role": memberChangeRoleConfig,
   },
+  config: { get: configGetConfig, set: configSetConfig },
 };
 
 /**
@@ -389,6 +432,7 @@ const GROUP_CONFIGS: Readonly<
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
   run: specOf(runConfig),
+  push: { ...specOf(pushConfig), strayHint: PUSH_STDIN_HINT },
   ...Object.fromEntries(
     Object.entries(GROUP_CONFIGS).flatMap(([group, subcommands]) => [
       [group, { flags: [], positionals: [], subcommands: Object.keys(subcommands) }],
@@ -472,6 +516,14 @@ function requireEnvironmentId(
           `Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: ${example})`,
         ),
       );
+}
+
+/** 位置引数で受けた設定キーの検証(**指定値そのものはエラーに出さない**)。 */
+function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
+  const key = asConfigKey(value);
+  return key === null
+    ? Effect.fail(usageError(`Unknown config key (${CONFIG_KEYS.join(" | ")})`))
+    : Effect.succeed(key);
 }
 
 /** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
@@ -1056,6 +1108,82 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const push = Command.make("push", pushConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      const context = yield* openEnvironment(values);
+      // stdin は平文が素の bytes で入ってくる起点。ここで包み、以降は
+      // Redacted としてしか流さない(剥がすのは push.ts の暗号境界のみ)
+      const value = Redacted.make(normalizeStdinValue(yield* io.readStdin), {
+        label: "variable-value",
+      });
+      const pushed = yield* pushVariable({
+        client: context.client,
+        environmentId: context.environmentId,
+        recipient: context.recipient,
+        name: values.name,
+        value,
+        verified: context.verified,
+        resync: context.resync,
+        // 値署名(§4.1)/ 作成時のステートメント著者署名(§4.2):
+        // writer / author = 自分の内部 user_id、鍵 = master sig 鍵
+        writerUserId: context.session.userId,
+        signingKey: context.masterKeys.sigKeyPair.privateKey,
+        floor: context.floorHandle,
+      });
+      yield* logWarnings(pushed.warnings);
+      yield* io.log(
+        `Pushed ${displayText(values.name)} (version=${pushed.version}, epoch=${pushed.epoch})`,
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Encrypt the value read from stdin and push it (one trailing newline is stripped)",
+    ),
+  );
+
+  const configGet = Command.make("get", configGetConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      const store = yield* ConfigStore;
+      const key = yield* requireConfigKey(values.key);
+      const config = yield* store.load;
+      // stdout はコマンドの出力(値)だけ: `V=$(maruhi config get server)` が
+      // 値以外を捕まえない(決定 9)
+      yield* io.log(config[key] ?? "");
+    }),
+  ).pipe(Command.withDescription("Print one non-secret config value"));
+
+  const configSet = Command.make("set", configSetConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      const store = yield* ConfigStore;
+      const key = yield* requireConfigKey(values.key);
+      // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
+      // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
+      // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す
+      const config = yield* store.load.pipe(
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            yield* io.logError(
+              `Warning: ${toCliError(error).message} — discarding the existing config and recreating it with only this key`,
+            );
+            return {};
+          }),
+        ),
+      );
+      yield* store.save({ ...config, [key]: values.value });
+      yield* io.log(`Set ${key}`);
+    }),
+  ).pipe(Command.withDescription("Set one non-secret config value"));
+
+  const config = Command.make("config").pipe(
+    Command.withDescription(
+      "Manage non-secret settings (get / set); secrets are never stored here",
+    ),
+    Command.withSubcommands([configGet, configSet]),
+  );
+
   const envCreate = Command.make("create", envCreateConfig, (values) =>
     Effect.gen(function* () {
       // 形式は宣言(NonBlank)を通った後の追加検査。ネットワークより前に見る
@@ -1249,7 +1377,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   return Command.make("maruhi").pipe(
-    Command.withSubcommands([pull, run, env, server, invite, member]),
+    Command.withSubcommands([pull, run, push, env, server, invite, member, config]),
   );
 }
 

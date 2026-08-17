@@ -1,8 +1,8 @@
 // maruhi CLI のコマンド定義と Effect 実行の結線。
 //
-// **移行中**(ADR-0016 の第 1〜2 段階): `pull` / `run` / `env` / `server` /
-// `invite` / `member` は `effect/unstable/cli`(effect-cli.ts)、残り
-// (login / logout / key / project / rotation / audit / push / config)は
+// **移行中**(ADR-0016 の第 1〜3 段階): `pull` / `run` / `env` / `server` /
+// `invite` / `member` / `push` / `config` は `effect/unstable/cli`
+// (effect-cli.ts)、残り(login / logout / key / project / rotation / audit)は
 // Gunshi のまま。runCli が解決済みのコマンド名で振り分ける(migratedCommandKey)。
 //
 // Gunshi 側のコマンド階層は 1 段(サブコマンド + positional の action)。
@@ -18,7 +18,7 @@ import {
   MAX_TOKEN_NAME_LENGTH,
 } from "@maruhi/api-schema";
 import { isEnvironmentId, isVariableId } from "@maruhi/core";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
 import {
@@ -43,17 +43,16 @@ import {
   auditSelfOp,
   auditVerifyOp,
 } from "./audit.ts";
-import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
+import { ConfigStore } from "./config.ts";
 import type { CliServices } from "./context.ts";
 import {
   checkInviteAnchor,
   loadCheckedFloor,
-  openEnvironment,
   openMetadataProject,
   openSession,
   resolveProjectId,
 } from "./context.ts";
-import { displayText, logWarnings } from "./display.ts";
+import { displayText } from "./display.ts";
 import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
@@ -61,7 +60,6 @@ import { CliIo } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
 import { projectInitOp } from "./project-init.ts";
-import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
 import { resolveDismissTargets, rotationDismissOp, rotationListOp } from "./rotation.ts";
@@ -70,15 +68,6 @@ import { syncProject } from "./sync.ts";
 import { CLI_VERSION } from "./version.ts";
 
 export type { CliServices } from "./context.ts";
-
-/** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
-export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
-  if (bytes.length > 0 && bytes[bytes.length - 1] === 0x0a) {
-    const end = bytes.length > 1 && bytes[bytes.length - 2] === 0x0d ? -2 : -1;
-    return bytes.slice(0, end);
-  }
-  return bytes;
-}
 
 type CliProgram = Effect.Effect<number | void, CliError, CliServices>;
 
@@ -679,118 +668,6 @@ function auditCommand(execute: Execute) {
   });
 }
 
-function pushCommand(execute: Execute) {
-  return define({
-    name: "push",
-    description: "stdin から読んだ値を暗号化して push する(末尾の改行 1 つは除去)",
-    args: {
-      name: { type: "positional", description: "変数名(表示名。環境変数名になる)" },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject)",
-      },
-      env: { type: "string", description: "環境 ID(省略時は config の defaultEnvironment)" },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const io = yield* CliIo;
-          const context = yield* openEnvironment(ctx.values);
-          // stdin は平文が素の bytes で入ってくる起点。ここで包み、以降は
-          // Redacted としてしか流さない(剥がすのは push.ts の暗号境界のみ)
-          const value = Redacted.make(normalizeStdinValue(yield* io.readStdin), {
-            label: "variable-value",
-          });
-          const pushed = yield* pushVariable({
-            client: context.client,
-            environmentId: context.environmentId,
-            recipient: context.recipient,
-            name: ctx.values.name,
-            value,
-            verified: context.verified,
-            resync: context.resync,
-            // 値署名(§4.1)/ 作成時のステートメント著者署名(§4.2):
-            // writer / author = 自分の内部 user_id、鍵 = master sig 鍵
-            writerUserId: context.session.userId,
-            signingKey: context.masterKeys.sigKeyPair.privateKey,
-            floor: context.floorHandle,
-          });
-          yield* logWarnings(pushed.warnings);
-          yield* io.log(
-            `push しました: ${ctx.values.name}(version=${pushed.version}, epoch=${pushed.epoch})`,
-          );
-        }),
-        {
-          // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。
-          // 拒否した引数の中身は出さない(平文でありうる)ので、代わりに
-          // 「値は stdin から」を必ず添える — でないと直しようがない
-          strayPositionalHint:
-            '。値は stdin から読みます(例: printf %s "$SECRET" | maruhi push API_KEY)',
-        },
-      ),
-  });
-}
-
-function configCommand(execute: Execute) {
-  return define({
-    name: "config",
-    description: "非機密設定の管理(get / set)。シークレットはここに保存されない",
-    args: {
-      action: { type: "positional", description: "get | set" },
-      key: { type: "positional", description: `設定キー(${CONFIG_KEYS.join(" | ")})` },
-      value: { type: "positional", description: "set 時の値", required: false },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const io = yield* CliIo;
-          const store = yield* ConfigStore;
-          const key = asConfigKey(ctx.values.key);
-          if (key === null) {
-            return yield* Effect.fail(usageError(`不明な設定キーです(${CONFIG_KEYS.join(" | ")})`));
-          }
-          if (ctx.values.action === "get") {
-            const config = yield* store.load;
-            yield* io.log(config[key] ?? "");
-            return;
-          }
-          if (ctx.values.action === "set") {
-            const value = ctx.values.value;
-            if (value === undefined) {
-              return yield* Effect.fail(usageError("設定する値を指定してください"));
-            }
-            // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
-            // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
-            // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す
-            const config = yield* store.load.pipe(
-              Effect.catch((error) =>
-                Effect.gen(function* () {
-                  yield* io.logError(
-                    `警告: ${toCliError(error).message} — 既存の設定を破棄し、このキーのみで作り直します`,
-                  );
-                  return {} satisfies CliConfig;
-                }),
-              ),
-            );
-            yield* store.save({ ...config, [key]: value });
-            yield* io.log(`${key} を設定しました`);
-            return;
-          }
-          return yield* Effect.fail(usageError("不明な操作です(get | set)"));
-        }),
-        {
-          // `value` は set 専用の optional positional。共通検査は引数表の
-          // **最大数**しか知らないので、get への余分なトークンはそのスロットへ
-          // 黙って束縛される。操作ごとの差はここで伝える
-          withoutPositionals: ctx.values.action === "get" ? ["value"] : undefined,
-        },
-      ),
-  });
-}
-
 function entryCommand(execute: Execute, commands: readonly string[]) {
   return define({
     name: "maruhi",
@@ -950,8 +827,6 @@ export async function runCli(
     project: projectCommand(execute),
     rotation: rotationCommand(execute),
     audit: auditCommand(execute),
-    push: pushCommand(execute),
-    config: configCommand(execute),
   };
 
   // コマンドの一覧は「gunshi に残っているもの + 移行済みのもの」。登録済みの

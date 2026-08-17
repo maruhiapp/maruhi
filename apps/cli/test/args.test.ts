@@ -165,129 +165,12 @@ describe("boolean オプションへの値の指定", () => {
 });
 
 describe("未宣言オプション(strict)", () => {
-  it("`push --enve prod` は既定環境への書き込みに化けず、usage エラーになる", async () => {
-    const { env, server } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // 綴り間違いを無視すると、prod のつもりの push が既定環境(config の
-    // defaultEnvironment)へ入る。書き込みは取り消せない
-    expect(await runCli(["push", "API_KEY", "--enve", "prod"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです(--env のことですか?)");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("短縮形には見当違いの「もしかして」を出さず、取りうるオプションを示す", async () => {
-    const { env } = await startEnv();
-
-    // `-q` を `--q` に見立てて距離を測ると、無関係な長いオプションが候補に出る
-    expect(await runCli(["push", "API_KEY", "-q"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    // 一覧には実行時のグローバル(引数表に現れない `--help` / `--version`)も含める
-    expect(errors).toContain(
-      "このコマンドが取るオプション: --env --help --project --server --version",
-    );
-    expect(errors).not.toContain("のことですか?");
-  });
-
-  it("候補にはグローバル(`--help`)も含める", async () => {
-    const { env } = await startEnv();
-
-    // 引数表(define の args)にはグローバルが現れない。gunshi がエラーへ
-    // 載せた候補を使わないと、実在するオプションが候補から抜ける
-    expect(await runCli(["push", "API_KEY", "--hepl"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--help のことですか?");
-  });
-
-  it("プロトタイプ由来の名前(`--constructor`)でも未宣言として落ちる", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["push", "API_KEY", "--constructor=x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明なオプションです");
-    expect(env.errors.join("\n")).not.toContain("--constructor");
-  });
-
-  it("未宣言オプションが複数あれば、それぞれの候補を報告する", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["push", "API_KEY", "--enve", "x", "--prj", "y"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    // 近い綴りには候補を、遠い綴りには一覧を出す(それぞれ別の行になる)
-    expect(errors).toContain("--env のことですか?");
-    expect(errors).toContain("このコマンドが取るオプション:");
-    expect(errors.split("\n")).toHaveLength(2);
-  });
-
   it("エントリコマンド(`maruhi --shwo`)でも落ちる", async () => {
     const { env } = await startEnv();
 
     expect(await runCli(["--shwo"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("不明なオプションです");
     expect(env.logs).toHaveLength(0);
-  });
-
-  it("gunshi 自身の描画は使わない(診断は stdout ではなく stderr の 1 経路)", async () => {
-    const { env } = await startEnv();
-    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
-
-    // 未宣言オプションは priority エラー(ヘッダ描画より前に throw する)
-    expect(await runCli(["push", "API_KEY", "--enve", "x"], env.layer)).toBe(2);
-    // 必須位置引数の欠落は priority ではない = ヘッダ描画の経路を通る
-    expect(await runCli(["env", "rotate"], env.layer)).toBe(2);
-    expect(stdout).not.toHaveBeenCalled();
-    expect(env.errors.join("\n")).toContain("不明なオプションです");
-  });
-
-  it("成功した実行の stdout はコマンドの出力だけ(バナーを混ぜない)", async () => {
-    const { env } = await startEnv();
-    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
-
-    // `V=$(maruhi config get server)` がバナーを捕まえないこと
-    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
-    expect(stdout).not.toHaveBeenCalled();
-    expect(env.logs).toEqual(["prod"]);
-  });
-
-  it("値がオプションに化けた形は綴りを復元して出さない(短縮グループの展開)", async () => {
-    const { env } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // `-hunter2` は短縮オプションのグループとして 1 文字ずつのトークンへ
-    // 展開される(`-h -u -n -t -e -r -2`)。綴りをそのまま返すと、拒否の診断が
-    // 平文を 1 文字ずつ並べて書き出すことになる
-    expect(await runCli(["push", "API_KEY", "-hunter2"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なオプションです");
-    expect(errors).not.toContain("-u");
-    expect(errors).not.toContain("-n");
-    expect(errors).not.toContain("-2");
-    // 同じ文面が 7 行並ばないこと(重複は畳む)
-    expect(errors.split("\n").filter((line) => line.includes("不明なオプション"))).toHaveLength(1);
-  });
-
-  it("値らしい綴り(数字や _ を含む)は、`--` を付けて書かれても出さない", async () => {
-    const { env } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // 診断へ返してよいのは maruhi のオプション名の語彙(英字とハイフン)だけ。
-    // `--sk_live_ab12` のような綴りは打ち間違いではなく値である可能性が高い
-    expect(await runCli(["push", "API_KEY", "--sk_live_ab12"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なオプションです");
-    expect(errors).not.toContain("sk_live");
-  });
-
-  it("値がオプションに化けた形は綴りを復元して出さない(長いオプション名)", async () => {
-    const { env } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // `-----BEGIN...` は 1 つの長いオプション名として読まれる
-    expect(await runCli(["push", "API_KEY", "-----BEGIN-RSA-PRIVATE-KEY-hunter2"], env.layer)).toBe(
-      2,
-    );
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なオプションです");
-    expect(errors).not.toContain("BEGIN");
-    expect(errors).not.toContain("hunter2");
   });
 
   it("コマンド名の綴り間違いでは、正しく綴られたオプションを不明扱いしない", async () => {
@@ -299,17 +182,6 @@ describe("未宣言オプション(strict)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("不明なコマンドです(pull のことですか?)");
     expect(errors).not.toContain("不明なオプションです");
-  });
-});
-
-describe("位置引数の名前のオプション化", () => {
-  it("`push --name API_KEY` は変数名の取り違えとして落ちる", async () => {
-    const { env, server } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    expect(await runCli(["push", "--name", "API_KEY"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--name は位置引数です");
-    expect(server.requests).toHaveLength(0);
   });
 });
 
@@ -336,53 +208,6 @@ describe("操作に適用されないオプション(gunshi に残るコマン�
 });
 
 describe("空の値", () => {
-  it('空のオプション値(`--env ""`)は既定へフォールバックさせず落とす', async () => {
-    const { env, server } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // gunshi は空の値を「未指定」に潰すため、`--env "$ENV"` の未設定形が
-    // **既定環境への書き込み**に化ける(取り消せない)
-    expect(await runCli(["push", "API_KEY", "--env", ""], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("オプション --env の値が空です");
-    expect(await runCli(["push", "API_KEY", "--project="], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("オプション --project の値が空です");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it('空の位置引数(`config set server ""`)は設定を空で上書きしない', async () => {
-    const { env } = await startEnv();
-
-    // 位置引数は空文字列のまま束縛される(オプションと違って undefined へ
-    // 落ちない)ため、`config set defaultProject "$PROJ"` の未設定形が
-    // 既存の設定を消して成功を報告していた
-    expect(await runCli(["config", "set", "defaultEnvironment", ""], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("位置引数 value が空です");
-    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
-    expect(env.logs).toContain("prod");
-  });
-
-  it("空白だけのオプション値も空として扱う", async () => {
-    const { env, server } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // 位置引数側だけ trim していると、`--env "$ENV"` の未設定形が空白だけの
-    // 環境指定として既定へ潰れず、誤った先へ書き込まれる(取り消せない)
-    expect(await runCli(["push", "API_KEY", "--env", "  "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("オプション --env の値が空です");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("空白だけの値も空として扱う(設定の上書き)", async () => {
-    const { env, server } = await startEnv();
-
-    // `"$PROJ"` の未設定形は `""` にも `" "` にもなる。片方だけ塞ぐと
-    // 設定が空白で上書きされ、以後のコマンドが無関係なエラーで落ち続ける
-    // (実行対象側の空白は units.test.ts の runOp と effect-cli.test.ts が固定)
-    expect(await runCli(["config", "set", "defaultEnvironment", "  "], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("位置引数 value が空です");
-    expect(server.requests).toHaveLength(0);
-  });
-
   it("`default` を付けても空の値の検知が消えない(トークンで判定する)", () => {
     // `ctx.values` が undefined かどうかで見ると、そのオプションに default を
     // 足した瞬間に空の値が既定へ解決され、検知が黙って消える
@@ -408,28 +233,6 @@ describe("空の値", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("空の引数があります");
     expect(errors).not.toContain("位置引数を取りません");
-  });
-
-  it("この実行が取らない位置引数(`config get` の value)を名指ししない", async () => {
-    const { env } = await startEnv();
-
-    // 空の値の指摘でも、その操作が取らない位置引数の名前を出さない
-    expect(await runCli(["config", "get", "defaultEnvironment", ""], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).not.toContain("位置引数 value が空です");
-    expect(errors).toContain("空の引数があります");
-  });
-
-  it("`--` の後ろの空文字列は、書いていない位置引数のせいにしない", async () => {
-    const { env } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // `push -- ""` の "" は位置引数 name として束縛されるが、ユーザーが
-    // 書いたのは `--` の後ろ。そちらを指摘する
-    expect(await runCli(["push", "--", ""], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("maruhi push は `--` の後ろの引数を取りません");
-    expect(errors).not.toContain("位置引数 name が空です");
   });
 
   it("構造的な誤りは、その操作で使えるかより先に言う", async () => {
@@ -464,15 +267,6 @@ describe("終了コードの一貫性", () => {
     expect(env.errors.join("\n")).toContain("不明な操作です(generate | show | recover | recovery)");
     expect(env.errors.join("\n")).not.toContain("ログインしていません");
   });
-
-  it("値の無い `config set` も usage エラー(2)", async () => {
-    const { env } = await startEnv();
-
-    // gunshi は optional な positional の欠落を検証しない(コマンド本体が見る)。
-    // 「書き方の誤りは 2」を、パーサが落とした場合と揃える
-    expect(await runCli(["config", "set", "defaultEnvironment"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("設定する値を指定してください");
-  });
 });
 
 describe("端末出力の中和", () => {
@@ -483,38 +277,17 @@ describe("端末出力の中和", () => {
     // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
     const evil = "\u001b[2K\rmaruhi: OK";
     // 打ち間違い(語が何も指していない)は usage エラー(2)
-    expect(await runCli(["config", "get", evil], env.layer)).toBe(2);
-    expect(await runCli(["config", evil, "server"], env.layer)).toBe(2);
     expect(await runCli(["key", evil], env.layer)).toBe(2);
     expect(await runCli(["project", evil], env.layer)).toBe(2);
     const output = [...env.logs, ...env.errors].join("\n");
     expect(output).not.toContain("\u001b");
     expect(output).not.toContain("\r");
-    expect(output).toContain("不明な設定キーです(server | githubClientId");
-    expect(output).toContain("不明な操作です(get | set)");
     expect(output).toContain("不明な操作です(generate | show | recover | recovery)");
     expect(output).toContain("不明な操作です(init | verify)");
   });
 });
 
 describe("余分な位置引数", () => {
-  it("拒否した引数の**中身**は診断に出さない(平文の値が混ざりうる)", async () => {
-    const { env } = await startEnv();
-    // `push` の値は stdin から読むので、コマンドラインに書いた値は「余分な
-    // 引数」になる。打ち間違いを教えるために平文を書き出すと、CI や
-    // エージェントのログへ残る = この PR が塞ぐ漏洩と同種になる
-    const secret = "hunter2-plaintext-value";
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    expect(await runCli(["push", "API_KEY", secret], env.layer)).toBe(2);
-    expect(await runCli(["push", "API_KEY", "--", secret], env.layer)).toBe(2);
-    const output = [...env.logs, ...env.errors].join("\n");
-    expect(output).not.toContain(secret);
-    // 個数と形は出す(打ち間違いの位置は分かる)
-    expect(output).toContain("余分な引数です(1 個");
-    expect(output).toContain("中身は表示しません");
-  });
-
   it("位置引数を取るコマンド(`key generate extra`)は宣言名を示して落ちる", async () => {
     const { env } = await startEnv();
 
@@ -526,91 +299,9 @@ describe("余分な位置引数", () => {
     // 無いオプションを探させることになる)
     expect(errors).not.toContain("boolean オプションに値は付けられません");
   });
-
-  it("`push` の余分な引数には値の渡し方を添える(中身を出さない代わりの案内)", async () => {
-    const { env } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    expect(await runCli(["push", "API_KEY", "plaintext"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("値は stdin から読みます");
-    expect(errors).not.toContain("plaintext");
-  });
-
-  it("`--` の後ろの空文字列は余分な引数として数えない", async () => {
-    const { env, server } = await startEnv();
-    env.setStdin(new TextEncoder().encode("secret-value"));
-
-    // gunshi は `--` の後ろの空文字列を rest ではなく positionals へ入れる。
-    // 素直に数えると `run -- cmd ""` のような正当な実行を誤って拒否する
-    expect(await runCli(["push", "API_KEY", "--", ""], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("maruhi push は `--` の後ろの引数を取りません");
-    expect(errors).not.toContain("位置引数は name だけです");
-    // 中身を伏せる以上、直し方は `--` の形でも添える
-    expect(errors).toContain("値は stdin から読みます");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("`--` の後ろを読まないコマンドでは、その引数も黙って捨てずに落ちる", async () => {
-    const { env, server } = await startEnv();
-
-    // `ctx.rest` を読むのは run だけ。他コマンドでは位置引数にも values にも
-    // 現れないまま消えるので、余分な引数として扱う
-    expect(await runCli(["push", "API_KEY", "--", "value"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).toContain("maruhi push は `--` の後ろの引数を取りません");
-    expect(server.requests).toHaveLength(0);
-  });
-
-  it("`config get` の余分な引数は optional の value に吸われずに落ちる", async () => {
-    const { env } = await startEnv();
-
-    // value は set 専用の optional positional。共通検査は引数表の**最大数**しか
-    // 知らないため、get への余分なトークンはそこへ黙って束縛される
-    expect(await runCli(["config", "get", "defaultEnvironment", "dev"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(1 個");
-    expect(errors).toContain("maruhi config が取る位置引数は action key だけです");
-    expect(env.logs).toHaveLength(0);
-  });
-
-  it("余分な引数が複数でも、個数と get の取る形を正しく言う", async () => {
-    const { env } = await startEnv();
-
-    // 操作ごとの差を共通検査へ伝えていないと、引数表の最大数で数えた結果
-    // 「1 個」と過少報告し、get が取らない value を取れるかのように案内する
-    expect(await runCli(["config", "get", "defaultEnvironment", "a", "b"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("余分な引数です(2 個");
-    expect(errors).toContain("maruhi config が取る位置引数は action key だけです");
-    expect(errors).not.toContain("value");
-  });
-
-  it("`config set` の余分な引数は設定を書き換えずに落ちる", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["config", "set", "defaultEnvironment", "dev", "extra"], env.layer)).toBe(
-      2,
-    );
-    expect(env.errors.join("\n")).toContain("余分な引数です(1 個");
-    // 設定は書き換わっていない(検査がコマンド本体より前で効いている)
-    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
-    expect(env.logs).toContain("prod");
-  });
 });
 
 describe("gunshi 由来の usage エラー", () => {
-  it("必須位置引数の欠落は空メッセージにならない(内訳を stderr へ出す)", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["push"], env.layer)).toBe(2);
-    // AggregateError.message は空になりうるので、内訳から作る
-    expect(env.errors.join("\n").trim()).not.toBe("maruhi:");
-    expect(env.errors.join("\n")).toContain("位置引数 name を指定してください");
-  });
-
   it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
     const { env } = await startEnv();
 

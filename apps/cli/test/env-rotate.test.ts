@@ -1219,7 +1219,7 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "分岐"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("分岐した履歴への連鎖");
+    expect(errors).toContain("chaining onto a diverged history");
     // 中断でも収集済みの警告は失わない(床なしの但し書きは中断時こそ効く)
     expect(errors).toContain("the omission cannot be detected");
     // 暗号学的証拠は「再実行で直る失敗」ではない: 部分完了 + 再開案内へ
@@ -1428,7 +1428,7 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "自己矛盾"], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
-    expect(env.errors.join("\n")).toContain("既知の最新 version");
+    expect(env.errors.join("\n")).toContain("known latest version");
   });
 
   it("競合が解消しないまま残った再暗号化は、部分完了として警告し非ゼロで終わる", async () => {
@@ -2253,7 +2253,7 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     expect(state.pushes).toHaveLength(0);
-    expect(env.errors.join("\n")).toContain("分岐した履歴への連鎖");
+    expect(env.errors.join("\n")).toContain("chaining onto a diverged history");
   });
 
   it("床のない実行では、応答から落とされた変数を検出できない旨を警告する", async () => {
@@ -2350,7 +2350,9 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(1);
     // 床がなくても、自分が署名した version からの後退は巻き戻しの証拠
-    expect(env.errors.join("\n")).toContain("既知の最新 version(2)より古く、不整合");
+    expect(env.errors.join("\n")).toContain(
+      "older than the known latest version (2) — inconsistent",
+    );
   });
 
   it("巡を跨いで同じ SHOULD 警告を重複表示しない", async () => {

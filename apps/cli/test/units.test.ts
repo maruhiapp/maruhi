@@ -8,7 +8,7 @@ import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";
-import { normalizeStdinValue, optionRestrictedTo, runCli } from "../src/cli.ts";
+import { optionRestrictedTo, runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
 import { decodeValueText, showValues } from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
@@ -21,6 +21,7 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
+import { normalizeStdinValue } from "../src/push.ts";
 import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import {
   cryptoBackendUsable,
@@ -765,9 +766,9 @@ describe("入力検証と defect の扱い", () => {
     const env = await makeTestEnv();
     env.breakConfigLoadWithDefect();
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    // 型の名前だけを添える形を**厳密に**固定する(`内部エラー` の部分一致だけだと
-    // `内部エラー: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
-    expect(env.errors.join("\n")).toContain("maruhi: 内部エラー(Error)");
+    // 型の名前だけを添える形を**厳密に**固定する(部分一致だけだと
+    // `internal error: <上流の message>` に戻しても通ってしまい、規律の歯が無くなる)
+    expect(env.errors.join("\n")).toContain("maruhi: internal error (Error)");
     // defect の message は出さない — 打たれた値を埋め込んだ文面でも到達しうる
     expect(env.errors.join("\n")).not.toContain("config load defect");
   });

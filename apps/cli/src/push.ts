@@ -65,6 +65,15 @@ import {
 
 const MAX_ATTEMPTS = 5;
 
+/** stdin の値: 末尾の改行 1 つ(LF / CRLF)は落とす(`echo` 由来の混入対策)。 */
+export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
+  if (bytes.length > 0 && bytes[bytes.length - 1] === 0x0a) {
+    const end = bytes.length > 1 && bytes[bytes.length - 2] === 0x0d ? -2 : -1;
+    return bytes.slice(0, end);
+  }
+  return bytes;
+}
+
 /** Result of an accepted push. */
 export interface PushedVersion {
   readonly variableId: string;
@@ -137,7 +146,7 @@ function resolveTarget(input: {
     if (matches.length > 1) {
       return yield* Effect.fail(
         cliError(
-          `同名の active ステートメントが複数検証に通りました(サーバー equivocation): ${input.name}。解決を拒否します`,
+          `Multiple active statements with the same name passed verification (server equivocation): ${input.name}. Refusing to resolve the push target`,
         ),
       );
     }
@@ -157,7 +166,7 @@ function resolveTarget(input: {
       // 変数単位の証拠になる)。誤った prev で作成へ倒さず明示エラーにする
       return yield* Effect.fail(
         cliError(
-          `名前解決した変数 ${existing.variableId}(${input.name})が値付き pull に存在しません(他メンバーによる並行削除、またはサーバー応答の不整合)。再実行してください`,
+          `The resolved variable ${existing.variableId} (${input.name}) is missing from the value-carrying pull (a concurrent deletion by another member, or an inconsistent server response). Re-run the command`,
         ),
       );
     }
@@ -168,7 +177,7 @@ function resolveTarget(input: {
       // name(§12-2)なので byte-exact 比較で足りる
       return yield* Effect.fail(
         cliError(
-          `名前解決した変数 ${existing.variableId} の名前が、値取得までに ${displayText(input.name)} から ${displayText(latest.name)} へ変わっています(他メンバーによる並行 rename)。再実行してください`,
+          `The resolved variable ${existing.variableId} was renamed from ${displayText(input.name)} to ${displayText(latest.name)} before the value fetch (a concurrent rename by another member). Re-run the command`,
         ),
       );
     }
@@ -217,10 +226,10 @@ export function encryptAndSignPayload(input: {
           context,
           plaintext: Redacted.value(input.value),
         }),
-      catch: () => cliError("値の暗号化に失敗しました"),
+      catch: () => cliError("Failed to encrypt the value"),
     });
     if (!encrypted.ok) {
-      return yield* Effect.fail(cliError("値の暗号化に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to encrypt the value"));
     }
     const nonceHex = encodeHex(encrypted.value.nonce);
     const ciphertextHex = encodeHex(encrypted.value.ciphertext);
@@ -236,19 +245,21 @@ export function encryptAndSignPayload(input: {
     } as const;
     const signature = yield* Effect.tryPromise({
       try: () => signValue({ context: signatureContext, signingKey: input.signingKey }),
-      catch: () => cliError("値署名の作成に失敗しました"),
+      catch: () => cliError("Failed to create the value signature"),
     });
     if (!signature.ok) {
-      return yield* Effect.fail(cliError("値署名の作成に失敗しました"));
+      return yield* Effect.fail(cliError("Failed to create the value signature"));
     }
     // 自分の署名対象の signed bytes ハッシュ(受理されたらローカル床に昇格する
     // — サーバー申告ではなく自計算値。次 version の prev の根拠と同じ姿勢)
     const signedBytesHash = yield* Effect.tryPromise({
       try: () => computeValueSignedBytesHash(signatureContext),
-      catch: () => cliError("値署名対象のハッシュ計算に失敗しました"),
+      catch: () => cliError("Failed to compute the value-signature signed-bytes hash"),
     });
     if (!signedBytesHash.ok) {
-      return yield* Effect.fail(cliError("値署名対象のハッシュ計算に失敗しました"));
+      return yield* Effect.fail(
+        cliError("Failed to compute the value-signature signed-bytes hash"),
+      );
     }
     return {
       payload: {
@@ -356,7 +367,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     if (dek === undefined) {
       return yield* Effect.fail(
         cliError(
-          `現エポック ${state.epoch} の DEK が自分宛に登録されていません(ローテーション後の再ラップ待ちの可能性)`,
+          `No DEK for the current epoch ${state.epoch} is registered for you (possibly awaiting a re-wrap after a rotation)`,
         ),
       );
     }
@@ -406,7 +417,9 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     const latest = state.target.latest;
     if (latest === null) {
       return yield* Effect.fail(
-        cliError(`変数 ${state.target.variableId} の検証済み最新値がありません(内部不整合)`),
+        cliError(
+          `Variable ${state.target.variableId} has no verified latest value (internal inconsistency)`,
+        ),
       );
     }
     const accepted = yield* input.client.variables.push({
@@ -458,18 +471,18 @@ function winnerValueRegression(
   if (currentVersion < known.version || winner.version < known.version) {
     // このセッションで検証済みの latest からの後退 = 巻き戻しの証拠。採用して
     // prev を付け替えると、巻き戻しブランチへ自分の署名で連鎖してしまう
-    return `変数 ${variableId} の 409 応答 / 再取得(version ${Math.min(currentVersion, winner.version)})が検証済みの最新(version ${known.version})より古く、バージョン巻き戻しの証拠です`;
+    return `The 409 response / re-fetch for variable ${variableId} (version ${Math.min(currentVersion, winner.version)}) is older than the verified latest (version ${known.version}) — evidence of a version rollback`;
   }
   if (winner.version === known.version && winner.signedBytesHashHex !== known.signedBytesHashHex) {
     // 同一座標に内容の異なる 2 つの有効署名 = equivocation の暗号学的証拠
-    return `変数 ${variableId} の version ${winner.version} に、検証済みの値と異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+    return `Variable ${variableId} version ${winner.version} was served with signed bytes different from the verified value (evidence of server equivocation)`;
   }
   // エポック単調性(§4.1)は推移的なので、winner が検証済み latest より新しければ
   // 版番号のギャップに関わらず epoch 非減少を要求できる(レビューループ 2 [低] —
   // 版番号の選び方で隣接検査を迂回する旧エポック注入を塞ぐ)。正直サーバーは
   // 受理順にエポック非減少なので誤拒否はない
   if (winner.version > known.version && winner.epoch < known.epoch) {
-    return `変数 ${variableId} の version ${winner.version} の epoch(${winner.epoch})が検証済みの直前 version(${known.epoch})から後退しています(§4.1 のエポック単調性違反)`;
+    return `Variable ${variableId} version ${winner.version} has an epoch (${winner.epoch}) that regressed from the verified predecessor version's (${known.epoch}) — an epoch-monotonicity violation (§4.1)`;
   }
   // 隣接 predecessor を保持している場合は §6.3-6 の prev 実在一致も無償で検査できる
   // (レビューループ 1 [中] — pull の latest-only 制約の例外)
@@ -477,7 +490,7 @@ function winnerValueRegression(
     winner.version === known.version + 1 &&
     winner.prevValueSigHashHex !== known.signedBytesHashHex
   ) {
-    return `変数 ${variableId} の version ${winner.version} の prev が検証済みの直前 version の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    return `Variable ${variableId} version ${winner.version} has a prev that does not match the verified predecessor version's signed-bytes hash (chaining onto a diverged history — evidence of equivocation)`;
   }
   return null;
 }
@@ -495,13 +508,13 @@ function winnerMetaRegression(
   winner: VerifiedPulledValue,
 ): string | null {
   if (winner.metaVersion < known.metaVersion) {
-    return `変数 ${variableId} の再取得ステートメント(metaVersion ${winner.metaVersion})が検証済みの最新(metaVersion ${known.metaVersion})より古く、メタデータ巻き戻しの証拠です`;
+    return `The re-fetched statement for variable ${variableId} (metaVersion ${winner.metaVersion}) is older than the verified latest (metaVersion ${known.metaVersion}) — evidence of a metadata rollback`;
   }
   if (
     winner.metaVersion === known.metaVersion &&
     winner.metaSignedBytesHashHex !== known.metaSignedBytesHashHex
   ) {
-    return `変数 ${variableId} の metaVersion ${winner.metaVersion} に、検証済みのステートメントと異なる signed bytes が配布されました(サーバー equivocation の証拠)`;
+    return `Variable ${variableId} metaVersion ${winner.metaVersion} was served with signed bytes different from the verified statement (evidence of server equivocation)`;
   }
   // 隣接 predecessor を保持している場合は prev 連鎖の一致も無償で検査できる
   // (winnerValueRegression の §6.3-6 検査の同型 — レビュー② [minor])
@@ -509,7 +522,7 @@ function winnerMetaRegression(
     winner.metaVersion === known.metaVersion + 1 &&
     winner.prevMetaSigHashHex !== known.metaSignedBytesHashHex
   ) {
-    return `変数 ${variableId} の metaVersion ${winner.metaVersion} の prev が検証済みの直前 metaVersion の signed bytes ハッシュと一致しません(分岐した履歴への連鎖 — equivocation の証拠)`;
+    return `Variable ${variableId} metaVersion ${winner.metaVersion} has a prev that does not match the verified predecessor metaVersion's signed-bytes hash (chaining onto a diverged history — evidence of equivocation)`;
   }
   return null;
 }
@@ -548,7 +561,7 @@ export function winnerInconsistency(
 ): string | null {
   if (winner.version < currentVersion) {
     // 409 が申告した最新より古い値しか配布されない = 応答間の不整合
-    return `再取得した pull の最新 version(${winner.version})が既知の最新 version(${currentVersion})より古く、不整合です(サーバー応答の自己矛盾)`;
+    return `The re-fetched pull's latest version (${winner.version}) is older than the known latest version (${currentVersion}) — inconsistent (the server response contradicts itself)`;
   }
   return known === null ? null : winnerRegression(variableId, known, winner, currentVersion);
 }
@@ -577,7 +590,7 @@ function adoptConflictWinner(
     if (winner === undefined) {
       return yield* Effect.fail(
         cliError(
-          `バージョン競合の勝者(変数 ${state.target.variableId})が再取得した pull に存在しません(他メンバーによる並行削除、またはサーバー応答の不整合)`,
+          `The version-conflict winner (variable ${state.target.variableId}) is missing from the re-fetched pull (a concurrent deletion by another member, or an inconsistent server response)`,
         ),
       );
     }
@@ -653,7 +666,7 @@ function nextState(
           // EpochConflict 申告はチェーンと矛盾している(リトライで解けない)
           return yield* Effect.fail(
             cliError(
-              `サーバーがエポック競合を申告しましたが、チェーン上の現エポックは ${keys.currentEpoch} のままです(サーバー応答とチェーンの矛盾)`,
+              `The server reported an epoch conflict, but the chain-derived current epoch is still ${keys.currentEpoch} (the server response contradicts the chain)`,
             ),
           );
         }
@@ -687,7 +700,7 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
       attempt: (state) => attemptOnce(normalized, state),
       classify: classifyPushConflict,
       recover: (state, conflict) => nextState(normalized, state, conflict),
-      exhaustedMessage: `push の競合が解消しません(${MAX_ATTEMPTS} 回試行)。時間をおいて再実行してください`,
+      exhaustedMessage: `The push conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
     });
     // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
     // 書き込みの巻き戻しも検出できる)。規則 (c) 基準は動かさない。
@@ -703,7 +716,7 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
           hashHex: acceptedState.verified.state.headHashHex,
         },
       )
-      .pipe(Effect.mapError((error) => cliError(`push は受理されましたが、${error.message}`)));
+      .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
     return {
       variableId: outcome.accepted.variableId,
       version: outcome.accepted.version,

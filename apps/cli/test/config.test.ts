@@ -37,7 +37,7 @@ describe("maruhi config", () => {
     const env = await makeTestEnv();
     // 打ち間違いは実行の失敗(1)と区別する
     expect(await runCli(["config", "set", "token", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("不明な設定キー");
+    expect(env.errors.join("\n")).toContain("Unknown config key");
   });
 
   it("壊れた設定ファイルは get で報告され、set で作り直せる", async () => {
@@ -47,7 +47,7 @@ describe("maruhi config", () => {
     await mkdir(dirname(env.configPath), { recursive: true });
     await writeFile(env.configPath, "{ broken json");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("壊れています");
+    expect(env.errors.join("\n")).toContain("corrupt");
     // set は破棄して作り直せる(非機密のみのファイル)
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
@@ -61,7 +61,7 @@ describe("maruhi config", () => {
     await mkdir(dirname(env.configPath), { recursive: true });
     await writeFile(env.configPath, "[]");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("壊れています");
+    expect(env.errors.join("\n")).toContain("corrupt");
   });
 
   it("サブコマンドなしは使い方を表示する", async () => {
@@ -73,7 +73,7 @@ describe("maruhi config", () => {
     // 移行済み(effect/unstable/cli 側)のコマンドは gunshi の表に居ないので
     // 末尾へ合流する — 一覧から消えないことがここの要点
     expect(env.logs).toContain(
-      "commands: login / logout / key / project / rotation / audit / push / config / pull / run / env / server / invite / member",
+      "commands: login / logout / key / project / rotation / audit / pull / run / push / env / server / invite / member / config",
     );
   });
 });

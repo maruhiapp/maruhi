@@ -36,6 +36,12 @@ export interface CommandSpec {
   readonly positionals: readonly string[];
   /** 入れ子サブコマンドを持つ段の、サブコマンド名の一覧(葉は省略)。 */
   readonly subcommands?: readonly string[];
+  /**
+   * 余分な位置引数の拒否に添えるコマンド固有の直し方(push の stdin 案内)。
+   * 中身を伏せる以上、直し方を添えないと打ち間違いを直せない(args.test.ts の
+   * 旧ケースが固定していた規律)。
+   */
+  readonly strayHint?: string;
 }
 
 /** 空・空白だけの値を拒む Schema の文面(宣言側とここで同じ定数を使う)。 */
@@ -106,7 +112,7 @@ function unexpectedArgumentMessage(
   const shape = takesNone
     ? `maruhi ${commandKey} takes no positional arguments`
     : `maruhi ${commandKey} only takes these positional arguments: ${spec.positionals.join(" ")}`;
-  return `Unexpected extra arguments (${error.arguments.length}; contents not shown — they may contain plaintext values). ${shape}`;
+  return `Unexpected extra arguments (${error.arguments.length}; contents not shown — they may contain plaintext values). ${shape}${spec?.strayHint ?? ""}`;
 }
 
 /**

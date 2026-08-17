@@ -927,3 +927,177 @@ describe("member の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段�
     expect(server.requests).toHaveLength(0);
   });
 });
+
+describe("push の移行(ADR-0016 第 3 段階 ①)", () => {
+  it("余分な引数は中身を出さず、値の渡し方(stdin)を必ず添える", async () => {
+    // `maruhi push API_KEY "$SECRET"` は最も起こりやすい書き間違い。拒否した
+    // 引数の中身は出さない(平文でありうる)代わりに、直し方を必ず添える —
+    // でないと直しようがない(args.test.ts の旧ケースの規律)
+    const secret = "hunter2-plaintext-value";
+    for (const argv of [
+      ["push", "API_KEY", secret],
+      // `--` の後ろも push は読まない(読むのは run だけ)。黙って捨てずに落とす
+      ["push", "API_KEY", "--", secret],
+      ["push", "API_KEY", "--", ""],
+    ]) {
+      const { env, server } = await startEnv();
+      env.setStdin(new TextEncoder().encode("secret-value"));
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      const errors = env.errors.join("\n");
+      expect(errors).toContain("Unexpected extra arguments (1;");
+      expect(errors).toContain("contents not shown");
+      expect(errors).toContain("Values are read from stdin");
+      expectNoLeak(env, [secret]);
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("変数名の欠落・空 / 空白だけの変数名は宣言で落ちる", async () => {
+    const missing = await startEnv();
+    expect(await runCli(["push"], missing.env.layer)).toBe(2);
+    expect(missing.env.errors.join("\n")).toContain("Missing positional argument name");
+    expect(missing.server.requests).toHaveLength(0);
+
+    const blank = await startEnv();
+    expect(await runCli(["push", "  "], blank.env.layer)).toBe(2);
+    expect(blank.env.errors.join("\n")).toContain(
+      "Unacceptable value for positional argument name",
+    );
+    expect(blank.server.requests).toHaveLength(0);
+  });
+
+  it("位置引数の名前をオプションとして書いた形(`--name`)は直し方まで案内する", async () => {
+    const { env, server } = await startEnv();
+    env.setStdin(new TextEncoder().encode("secret-value"));
+    expect(await runCli(["push", "--name", "API_KEY"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("--name is a positional argument");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("空 / 空白だけのオプション値は既定へ潰さず落とす(既定環境への書き込み事故)", async () => {
+    // gunshi は空の値を「未指定」に潰すため、`--env "$ENV"` の未設定形が
+    // **既定環境への書き込み**に化けた(取り消せない)。宣言(NonBlank)が塞ぐ
+    for (const argv of [
+      ["push", "API_KEY", "--env", ""],
+      ["push", "API_KEY", "--env", "  "],
+      ["push", "API_KEY", "--project="],
+    ]) {
+      const { env, server } = await startEnv();
+      env.setStdin(new TextEncoder().encode("secret-value"));
+      expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
+      expect(env.errors.join("\n")).toContain("Unacceptable value for flag");
+      expect(server.requests, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("値がオプションに化けた形は綴りを復元して出さない(平文の漏洩経路)", async () => {
+    // `-hunter2`(短縮グループ)・`--sk_live_ab12`・`-----BEGIN...`(長い綴り)
+    // のような「値のつもりの語」を、拒否の診断が書き出さないこと。候補は
+    // **宣言名**からしか出さない(cli-formatter.ts の規律)
+    // `-hunter2` は使わない: 短縮グループの先頭 `-h` は組み込みの help に
+    // 解決され、ヘルプ表示(exit 0)になる — 何も漏れないが拒否の検査には
+    // ならないため、help に当たらない先頭文字で同じ形を固定する
+    for (const [typed, fragment] of [
+      ["-xunter2", "unter2"],
+      ["--sk_live_ab12", "sk_live"],
+      ["-----BEGIN-RSA-PRIVATE-KEY-hunter2", "BEGIN"],
+      ["--constructor=x", "constructor"],
+    ] as const) {
+      const { env, server } = await startEnv();
+      env.setStdin(new TextEncoder().encode("secret-value"));
+      expect(await runCli(["push", "API_KEY", typed], env.layer), typed).toBe(2);
+      const errors = env.errors.join("\n");
+      expect(errors, typed).toContain("Unknown flag");
+      expect(errors, typed).not.toContain(fragment);
+      expect(server.requests, typed).toHaveLength(0);
+    }
+  });
+});
+
+describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () => {
+  it("不明な操作・bare `maruhi config` は usage エラー(2)", async () => {
+    const bogus = await startEnv();
+    expect(await runCli(["config", "bogus"], bogus.env.layer)).toBe(2);
+    expect(bogus.env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: get | set)",
+    );
+
+    const bare = await startEnv();
+    expect(await runCli(["config"], bare.env.layer)).toBe(2);
+    expect(bare.env.logs).toEqual([]);
+    expect(bare.env.errors.join("\n")).toContain("maruhi config");
+  });
+
+  it("不明な設定キーは打たれた語を返さず、取りうるキーの一覧を出す", async () => {
+    // 行を消して偽の成功行を書くような ANSI 列を含む語。文面は取りうる値の
+    // 一覧だけで、打たれた語は出さない(位置引数には値が書かれうる)
+    const evil = "[2K\rmaruhi: OK";
+    const get = await startEnv();
+    expect(await runCli(["config", "get", evil], get.env.layer)).toBe(2);
+    const getOutput = [...get.env.logs, ...get.env.errors].join("\n");
+    expect(getOutput).toContain("Unknown config key (server | githubClientId");
+    expect(getOutput).not.toContain("");
+    expect(getOutput).not.toContain("\r");
+
+    // 操作名の位置に書かれた語も返さない(不明なサブコマンドの診断)
+    const action = await startEnv();
+    expect(await runCli(["config", evil, "server"], action.env.layer)).toBe(2);
+    const actionOutput = [...action.env.logs, ...action.env.errors].join("\n");
+    expect(actionOutput).toContain("Unknown subcommand");
+    expect(actionOutput).not.toContain("");
+    expect(actionOutput).not.toContain("\r");
+  });
+
+  it("`config set` の空 / 空白だけの値は既存の設定を上書きせずに落ちる", async () => {
+    // `config set defaultProject "$PROJ"` の未設定形が既存の設定を空で
+    // 上書きして成功を報告する事故(gunshi 時代は args.ts の走査、いまは宣言)
+    for (const value of ["", "  "]) {
+      const { env } = await startEnv();
+      expect(await runCli(["config", "set", "defaultEnvironment", value], env.layer)).toBe(2);
+      expect(env.errors.join("\n")).toContain("Unacceptable value for positional argument value");
+      expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+      expect(env.logs).toContain("prod");
+    }
+  });
+
+  it("値の無い `config set` は宣言(必須位置引数)で落ちる", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["config", "set", "defaultEnvironment"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Missing positional argument value");
+  });
+
+  it("`config get` の余分な引数は落ち、設定も読み出しも壊さない", async () => {
+    const single = await startEnv();
+    expect(await runCli(["config", "get", "defaultEnvironment", "dev"], single.env.layer)).toBe(2);
+    const errors = single.env.errors.join("\n");
+    expect(errors).toContain("Unexpected extra arguments (1;");
+    expect(errors).toContain("maruhi config get only takes these positional arguments: key");
+    expect(single.env.logs).toHaveLength(0);
+
+    // 個数は過少報告しない(gunshi 時代は optional スロットが 1 つ吸っていた)
+    const multiple = await startEnv();
+    expect(
+      await runCli(["config", "get", "defaultEnvironment", "a", "b"], multiple.env.layer),
+    ).toBe(2);
+    expect(multiple.env.errors.join("\n")).toContain("Unexpected extra arguments (2;");
+
+    // set の余分な引数も設定を書き換えない
+    const set = await startEnv();
+    expect(
+      await runCli(["config", "set", "defaultEnvironment", "dev", "extra"], set.env.layer),
+    ).toBe(2);
+    expect(set.env.errors.join("\n")).toContain("Unexpected extra arguments (1;");
+    expect(await runCli(["config", "get", "defaultEnvironment"], set.env.layer)).toBe(0);
+    expect(set.env.logs).toContain("prod");
+  });
+
+  it("成功した実行の stdout はコマンドの出力(値)だけ", async () => {
+    const { env } = await startEnv();
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // `V=$(maruhi config get server)` が値以外を捕まえないこと
+    expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(env.logs).toEqual(["prod"]);
+  });
+});
