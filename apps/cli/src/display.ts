@@ -210,12 +210,17 @@ const CONTINUATION = "| ";
  * どの行が値の続きかが表示だけで分かる。
  */
 function renderValue(name: string, shown: string): readonly string[] {
-  const parts = shown.split("\n");
-  if (parts.length === 1) {
+  // 末尾の改行は行を増やさない(`"a\nb\n"` は 2 行 + 末尾改行)。素朴に split
+  // すると空の 3 行目を作り、行数の申告も 1 つずれる。改行の有無は値の一部
+  // なので、捨てずに見出しで述べる
+  const trailingNewline = shown.endsWith("\n");
+  const parts = (trailingNewline ? shown.slice(0, -1) : shown).split("\n");
+  if (parts.length === 1 && !trailingNewline) {
     return [`${name}=${shown}`];
   }
+  const trailing = trailingNewline ? "。末尾に改行あり" : "";
   return [
-    `${name}= (${parts.length} 行の値。以下の各行の先頭 "${CONTINUATION}" は maruhi が付けた印です)`,
+    `${name}= (${parts.length} 行の値${trailing}。以下の各行の先頭 "${CONTINUATION}" は maruhi が付けた印です)`,
     ...parts.map((line) => `${CONTINUATION}${line}`),
   ];
 }

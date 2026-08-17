@@ -23,6 +23,7 @@ import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
+import { escapeText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -214,7 +215,13 @@ export function recoverMasterKeyOp(input: {
     // 未知スイート等は原因も出口も違うので、この 1 種類だけを写す
     const validated = yield* importMasterKeys(record).pipe(
       Effect.mapError((error) =>
-        error === corruptKeyError ? cliError(brokenRecoveryBlobMessage) : error,
+        error === corruptKeyError
+          ? cliError(brokenRecoveryBlobMessage)
+          : // 未知スイート = より新しい maruhi が別デバイスで登録したブロブ。
+            // 破損ではないので「壊れています」とは言わず、出口(更新する / 鍵の
+            // 残るデバイスで再登録する)を示す。ここを写さないと案内の無い
+            // 行き止まりになる(キーチェーン側は既に写している)
+            cliError(foreignRecoveryBlobMessage(record.suite)),
       ),
     );
     yield* keychain.set(entryName, serializeStoredMasterKey(record));
@@ -230,6 +237,17 @@ const reRegisterGuidance =
 /** ブロブは解釈できたが鍵素材が読み込めないときの文言。 */
 const brokenRecoveryBlobMessage =
   `登録済みのリカバリーブロブの鍵素材を読み込めません(記録が壊れています)。${reRegisterGuidance}` as const;
+
+/**
+ * ブロブが現行版の知らないスイートで書かれていたときの文言。
+ *
+ * キーチェーンのレコードと違い**消すものは無い**(ブロブはサーバー側にあり、
+ * このデバイスに鍵は保存されていない)ので、削除の警告は要らない。スイート名は
+ * ブロブ由来の自由文字列なので、端末へ出す前にエスケープする。
+ */
+function foreignRecoveryBlobMessage(suite: string): string {
+  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません(${escapeText(suite)})。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください。${reRegisterGuidance}`;
+}
 
 /**
  * 復号済みブロブの解釈。**平文の鍵素材(hex)を持つ文字列をこの関数の外へ

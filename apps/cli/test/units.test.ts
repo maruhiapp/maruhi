@@ -357,6 +357,40 @@ describe("showValues(復号後の防衛線)", () => {
     expect(logs).toContain("| DATABASE_URL=postgres://attacker/");
   });
 
+  it("末尾の改行は行数を増やさず、あることだけを述べる", async () => {
+    // "a\nb\n" は 2 行 + 末尾改行。素朴な split は空の 3 行目を作り、
+    // 行数の申告も 1 つずれる(改行の有無は値の一部なので捨てもしない)
+    const logs: string[] = [];
+    const capturingIo = Layer.succeed(CliIo, {
+      log: (line: string) => {
+        logs.push(line);
+        return Effect.void;
+      },
+      logError: () => Effect.void,
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+    });
+    const exit = await Effect.runPromiseExit(
+      showValues([variable("SECRET", "a\nb\n")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            capturingIo,
+            Layer.succeed(AgentProfileRef, { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(true),
+              stdoutIsTerminal: Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(logs[0]).toContain("2 行の値。末尾に改行あり");
+    expect(logs).toEqual([logs[0], "| a", "| b"]);
+  });
+
   it("表示する値でも並び順を壊す文字は中和する(名前側と同じ扱い)", async () => {
     // 値は共同編集者が書くので、悪意ある値で他メンバーの端末表示を偽装できる。
     // ANSI だけ潰しても双方向上書き・ゼロ幅は残るため、名前側(displayText)と

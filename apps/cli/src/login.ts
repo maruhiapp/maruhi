@@ -22,12 +22,13 @@ import {
   Keychain,
   masterKeyEntryName,
   parseStoredToken,
+  redactedPlaceholderEnvTokenMessage,
   redactedPlaceholderTokenMessage,
   serializeStoredToken,
   type StoredToken,
   tokenEntryName,
 } from "./keychain.ts";
-import { envTokenStatus } from "./session.ts";
+import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
 
 /**
  * GitHub OAuth App client_id の解決(AUTH_SPEC §4): `--github-client-id`
@@ -184,6 +185,27 @@ function nextStepHint(
   );
 }
 
+/**
+ * ログアウト後に MARUHI_TOKEN が残っていることの案内(残らないなら null)。
+ *
+ * `active` 以外はどれも**キーチェーンへ落ちずに失敗する**状態だが、直し方は
+ * 別々(貼り直す・足す・合わせる)なので、原因ごとに言い分ける。
+ */
+function envTokenNotice(status: EnvTokenStatus): string | null {
+  switch (status) {
+    case "unset":
+      return null;
+    case "active":
+      return "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きそのトークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)";
+    case "placeholder":
+      return `注意: ${redactedPlaceholderEnvTokenMessage}(このままでは次のコマンドが失敗します)`;
+    case "originMissing":
+      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN が未設定のため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN に対象サーバーの origin を設定してください)";
+    case "originMismatch":
+      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN がこのサーバーと一致しないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN を対象サーバーに合わせてください)";
+  }
+}
+
 /** `maruhi logout`: revoke the presented token, then remove it from the keychain. */
 export function logoutOp(input: {
   readonly origin: string;
@@ -230,17 +252,9 @@ export function logoutOp(input: {
     // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
     // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは
     // 違う結論(空白だけの値・origin 不一致でも「認証されます」)を出してしまう
-    const envToken = yield* envTokenStatus(input.origin);
-    if (envToken === "active") {
-      yield* io.log(
-        "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きそのトークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)",
-      );
-    } else if (envToken === "inactive") {
-      // 設定はされているがこの origin には効かない。この状態は**キーチェーンへ
-      // 落ちずに失敗する**ので、消し忘れを「ログインしていません」以外の言葉で示す
-      yield* io.log(
-        "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN がこのサーバーと一致しないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN を対象サーバーに合わせてください)",
-      );
+    const notice = envTokenNotice(yield* envTokenStatus(input.origin));
+    if (notice !== null) {
+      yield* io.log(notice);
     }
   });
 }

@@ -19,6 +19,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
+import { escapeText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
@@ -188,13 +189,17 @@ function sessionFromEnvToken(input: {
  * MARUHI_TOKEN がこの origin に効くか。
  *
  * logout の案内({@link resolveSession} の次の一手)がセッション解決と食い違わない
- * ようにするための判定で、規則(trim / origin 束縛)をここに一本化する。
- * - `active`: 次のコマンドもこの環境変数で認証される
- * - `inactive`: 設定はされているがこの origin には使えない(MARUHI_TOKEN_ORIGIN が
- *   未設定・不正・不一致)。この状態では**キーチェーンへ落ちずに失敗する**ので、
- *   「引き続き認証されます」と言ってはいけない
+ * ようにするための判定で、規則(trim / 伏字の検出 / origin 束縛)をここに
+ * 一本化する。`active` 以外はいずれも**キーチェーンへ落ちずに失敗する**状態で、
+ * 「引き続き認証されます」と言ってはいけない。原因ごとに直し方が違うので
+ * (足す・直す・消す)、ひとまとめにせず区別して返す。
  */
-export type EnvTokenStatus = "unset" | "active" | "inactive";
+export type EnvTokenStatus =
+  | "unset"
+  | "active"
+  | "placeholder"
+  | "originMissing"
+  | "originMismatch";
 
 export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, never, CliIo> {
   return Effect.gen(function* () {
@@ -203,14 +208,19 @@ export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, ne
     if (token === undefined || token.length === 0) {
       return "unset";
     }
+    // 伏字そのものを貼った状態(sessionFromEnvToken が名指しで拒否する)
+    if (REDACTED_PLACEHOLDER_TEXT.test(token)) {
+      return "placeholder";
+    }
     const declared = io.envVar("MARUHI_TOKEN_ORIGIN");
     if (declared === undefined || declared.length === 0) {
-      return "inactive";
+      return "originMissing";
     }
     const expected = yield* normalizeHttpOrigin(declared, "MARUHI_TOKEN_ORIGIN", {
       fix: "MARUHI_TOKEN_ORIGIN 環境変数",
     }).pipe(Effect.catch(() => Effect.succeed(null)));
-    return expected === origin ? "active" : "inactive";
+    // 不正な形(正規化できない)も「合っていない」側: 直し先は同じ環境変数
+    return expected === origin ? "active" : "originMismatch";
   });
 }
 
@@ -391,7 +401,10 @@ export function importMasterKeys(record: StoredMasterKey): Effect.Effect<MasterK
   return Effect.gen(function* () {
     if (record.suite !== SUITE_ID) {
       // 将来スイートの鍵レコードを v1 として黙って解釈しない
-      return yield* Effect.fail(cliError(`master 鍵レコードのスイートが未知です(${record.suite})`));
+      // スイート名はレコード由来の自由文字列。端末へ出す前にエスケープする
+      return yield* Effect.fail(
+        cliError(`master 鍵レコードのスイートが未知です(${escapeText(record.suite)})`),
+      );
     }
     const encPub = decodeHex(record.encPubHex);
     // 剥がす理由: 鍵素材のインポート(hex → bytes → 非抽出 CryptoKey)。

@@ -440,6 +440,32 @@ describe("maruhi logout", () => {
     expect(env.logs.join("\n")).toContain("MARUHI_TOKEN が設定されているため");
   });
 
+  it("MARUHI_TOKEN が伏字・MARUHI_TOKEN_ORIGIN 未設定なら原因ごとに案内する", async () => {
+    // どちらも次のコマンドが失敗する状態だが、直し方が違う(貼り直す / 足す)
+    for (const [token, origin, expected] of [
+      ["<redacted:maruhi-token>", "https://x.example", "伏字"],
+      ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN が未設定"],
+    ] as const) {
+      const maruhi = await start([
+        onRequest("POST", "/auth/token/revoke", () => ({ status: 204 })),
+      ]);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+      env.keychain.set(
+        tokenEntryName(maruhi.origin),
+        JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+      );
+      env.setEnvVar("MARUHI_TOKEN", token);
+      if (origin !== undefined) {
+        env.setEnvVar("MARUHI_TOKEN_ORIGIN", origin);
+      }
+      expect(await runCli(["logout"], env.layer)).toBe(0);
+      const logs = env.logs.join("\n");
+      expect(logs).toContain(expected);
+      expect(logs).not.toContain("引き続きそのトークンで認証されます");
+    }
+  });
+
   it("MARUHI_TOKEN_ORIGIN が一致しない場合は「使われない」と案内する", async () => {
     // resolveSession は origin 束縛を要求し、一致しなければ**キーチェーンへ
     // 落ちずに失敗する**。ここで「引き続き認証されます」と言うと、次の
