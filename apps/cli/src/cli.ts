@@ -1,8 +1,9 @@
 // maruhi CLI のコマンド定義と Effect 実行の結線。
 //
-// **移行中**(ADR-0016 の第 1 段階): `pull` / `run` / `env create` は
-// `effect/unstable/cli`(effect-cli.ts)、残りは Gunshi のまま。runCli が
-// 解決済みのコマンド名で振り分ける(migratedCommandKey)。
+// **移行中**(ADR-0016 の第 1〜2 段階): `pull` / `run` / `env` / `server` /
+// `invite` / `member` は `effect/unstable/cli`(effect-cli.ts)、残り
+// (login / logout / key / project / rotation / audit / push / config)は
+// Gunshi のまま。runCli が解決済みのコマンド名で振り分ける(migratedCommandKey)。
 //
 // Gunshi 側のコマンド階層は 1 段(サブコマンド + positional の action)。
 // 値の入力は stdin(argv に平文値を載せない)、値の表示は pull --show のみで、
@@ -16,8 +17,7 @@ import {
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_TOKEN_NAME_LENGTH,
 } from "@maruhi/api-schema";
-import { type EnvironmentId, isEnvironmentId, isVariableId } from "@maruhi/core";
-import type { Role } from "@maruhi/crypto";
+import { isEnvironmentId, isVariableId } from "@maruhi/core";
 import { Effect, Layer, Redacted } from "effect";
 import { cli, define } from "gunshi";
 
@@ -44,13 +44,12 @@ import {
   auditVerifyOp,
 } from "./audit.ts";
 import { asConfigKey, type CliConfig, CONFIG_KEYS, ConfigStore } from "./config.ts";
-import type { CliServices, CommonFlags } from "./context.ts";
+import type { CliServices } from "./context.ts";
 import {
   checkInviteAnchor,
   loadCheckedFloor,
   openEnvironment,
   openMetadataProject,
-  openProject,
   openSession,
   resolveProjectId,
 } from "./context.ts";
@@ -58,36 +57,15 @@ import { displayText, logWarnings } from "./display.ts";
 import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
 import { type CliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
-import { parseUserFingerprintFlag } from "./fingerprint-flag.ts";
-import { CliIo, type CliIoShape } from "./io.ts";
+import { CliIo } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loginOp, logoutOp, resolveClientId } from "./login.ts";
-import {
-  MEMBER_REMOVED_ROTATION_REASON,
-  memberAddOp,
-  memberChangeRoleOp,
-  memberRemoveOp,
-  ROLE_DEMOTED_ROTATION_REASON,
-  type MemberAddSummary,
-} from "./member.ts";
-import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
-import { reportRotation } from "./rotation-report.ts";
-import {
-  describeUnconvergedMandate,
-  resolveUnconvergedMandates,
-  type SweepOutcome,
-} from "./rotation-sweep.ts";
-import {
-  reportRotationFlagCount,
-  resolveDismissTargets,
-  rotationDismissOp,
-  rotationListOp,
-} from "./rotation.ts";
+import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
+import { resolveDismissTargets, rotationDismissOp, rotationListOp } from "./rotation.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
-import { sweepRotateFor } from "./sweep-rotate.ts";
 import { syncProject } from "./sync.ts";
 import { CLI_VERSION } from "./version.ts";
 
@@ -378,7 +356,7 @@ export function optionRestrictedTo<A extends string>(
   return owners.length === 0 || owners.includes(action) ? null : owners;
 }
 
-/** server / invite / member / audit の *ActionFlagRejection の共通本体。 */
+/** auditActionFlagRejection の共通本体(第 2 段階の移行で利用者は audit だけになった)。 */
 function actionFlagRejection<A extends string>(
   command: string,
   actions: readonly A[],
@@ -403,295 +381,6 @@ function actionFlagRejection<A extends string>(
     return `${typedName(token)} は ${command} ${action} では使えません(${usable} 用のオプションです)`;
   }
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// member(CRYPTO_SPEC §6.2 / §6.5 / §7、AUTH_SPEC §12-6 — B1b)
-// ---------------------------------------------------------------------------
-
-const MEMBER_ACTIONS = ["add", "remove", "change-role"] as const;
-
-type MemberAction = (typeof MEMBER_ACTIONS)[number];
-
-const MEMBER_ACTION_HELP = `不明な操作です(${MEMBER_ACTIONS.join(" | ")})`;
-
-function isMemberAction(action: string | undefined): action is MemberAction {
-  return MEMBER_ACTIONS.some((known) => known === action);
-}
-
-/** MEMBER_ACTIONS の分岐漏れを型で捕まえる(unhandledEnvAction と同じ形)。 */
-function unhandledMemberAction(action: never): CliError {
-  return usageError(`${MEMBER_ACTION_HELP}(未対応の操作: ${displayText(String(action))})`);
-}
-
-const MEMBER_ACTION_FLAGS: Readonly<Record<MemberAction, ReadonlySet<string>>> = {
-  add: new Set(["expect-fingerprint"]),
-  remove: new Set([]),
-  "change-role": new Set(["role"]),
-};
-
-function memberActionFlagRejection(
-  action: string | undefined,
-  tokens: readonly ArgTokenShape[],
-  args: ArgTable,
-): string | null {
-  if (!isMemberAction(action)) {
-    return null;
-  }
-  return actionFlagRejection("member", MEMBER_ACTIONS, MEMBER_ACTION_FLAGS, action, tokens, args);
-}
-
-const MEMBER_ROLES = ["reader", "member", "admin", "owner"] as const;
-
-function isMemberRole(value: string | undefined): value is Role {
-  return MEMBER_ROLES.some((known) => known === value);
-}
-
-/** sweep 結果(§7 の全環境走査)の報告と終了コードの導出(remove / 降格共通)。 */
-function reportMemberSweep(
-  sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] },
-  rerunCommand: string,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    if (sweep.skippedDeleted.length > 0) {
-      yield* io.log(
-        `削除済み環境(署名済み削除ステートメントを検証済み)のためスキップ: ${sweep.skippedDeleted.join(", ")}`,
-      );
-    }
-    if (sweep.alreadyRotated.length > 0) {
-      yield* io.log(
-        `ローテーション済み(義務エントリより後のエポック・未完了の再暗号化なしを確認): ${sweep.alreadyRotated.join(", ")}`,
-      );
-    }
-    let exitCode = 0;
-    for (const item of sweep.rotated) {
-      const code = yield* reportRotation(
-        item.environmentId as EnvironmentId,
-        item.summary,
-        item.forcedNewEpoch,
-      );
-      if (code !== 0) {
-        exitCode = 1;
-      }
-    }
-    for (const failure of sweep.failed) {
-      // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
-      // よる選択的なローテーション阻止を不可視にしない)
-      yield* io.logError(
-        `警告: 環境 ${displayText(failure.environmentId)} のローテーションに失敗しました: ${failure.message} — 解消して ${rerunCommand} を再実行すると続きから再開します(環境を削除済みの場合は、検証済みの削除ステートメントを確認してください)`,
-      );
-      exitCode = 1;
-    }
-    return exitCode;
-  });
-}
-
-/** `maruhi member add [invite-id]`(§6.5 の相互確認 + add_member + バックフィル)。 */
-function memberAdd(
-  flags: CommonFlags & {
-    readonly invite?: string | undefined;
-    readonly expectFingerprint?: string | undefined;
-  },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const expectFingerprintHex = yield* parseUserFingerprintFlag(
-      "--expect-fingerprint",
-      flags.expectFingerprint,
-    );
-    const context = yield* openProject(flags);
-    const store = yield* PinStore;
-    const loaded = yield* store.load(context.projectId);
-    const summary = yield* memberAddOp({
-      client: context.client,
-      verified: context.verified,
-      inviteId: flags.invite ?? null,
-      expectFingerprintHex,
-      pins: loaded.pins,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      recipient: context.recipient,
-      resync: context.resync,
-    });
-    return yield* reportMemberAdd(io, summary);
-  });
-}
-
-/** member add の結果報告と終了コード(バックフィル失敗 = 部分完了)。 */
-function reportMemberAdd(
-  io: CliIoShape,
-  summary: MemberAddSummary,
-): Effect.Effect<number, CliError> {
-  return Effect.gen(function* () {
-    const repaired = summary.repaired > 0 ? `、旧鍵ラップの修復 ${summary.repaired} 件` : "";
-    yield* io.log(
-      `メンバー追加: ${displayText(summary.targetUserId)}(role=${summary.role})。バックフィル: 新規 ${summary.registered} 件、登録済み ${summary.alreadyRegistered} 件${repaired}`,
-    );
-    if (summary.failed.length === 0) {
-      yield* io.log(
-        "完了: 新メンバーに全環境 × 全エポックの DEK ラップを配布しました(CRYPTO_SPEC §7)。新メンバー側で maruhi pull を実行し、復号できることを確認してもらってください",
-      );
-      return 0;
-    }
-    for (const failure of summary.failed) {
-      yield* io.logError(
-        `警告: 環境 ${displayText(failure.environmentId)} のバックフィルに失敗しました: ${failure.message} — 解消して maruhi member add を再実行すると続きから再開します(409 = 登録済みとして収束します)`,
-      );
-    }
-    return 1;
-  });
-}
-
-/** `maruhi member remove <user-id>`(§7 — 全環境の強制ローテーションを伴う)。 */
-function memberRemove(
-  flags: CommonFlags & { readonly target: string },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // 収束系コマンド: 未収束義務の常時警告は抑制(自分の sweep 報告が担う)
-    const context = yield* openProject(flags, { quietMandateWarning: true });
-    const summary = yield* memberRemoveOp({
-      client: context.client,
-      verified: context.verified,
-      targetUserId: flags.target,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      rotate: sweepRotateFor(context, MEMBER_REMOVED_ROTATION_REASON),
-    });
-    if (summary.appended) {
-      yield* io.log(
-        `remove_member をチェーンへ追記しました(target=${displayText(summary.targetUserId)})。全環境の強制ローテーションを実行します(CRYPTO_SPEC §7)`,
-      );
-    } else {
-      yield* io.log(
-        "対象は既に削除済みでした — 追記せず、全環境ローテーションの続きから再開します(中断復旧)",
-      );
-    }
-    const exitCode = yield* reportMemberSweep(summary, "maruhi member remove");
-    if (exitCode === 0) {
-      yield* io.log("完了: メンバー削除と全環境ローテーションが完了しました");
-    }
-    // 要ローテーションフラグの件数と導線(B2 — AUDIT_SPEC §4.1。ローテーションは
-    // 新しい DEK を配るだけで、既読の値そのものは取り消せない)
-    yield* reportRotationFlagCount({
-      client: context.client,
-      projectId: context.projectId,
-      target: { kind: "member", userId: summary.targetUserId },
-    });
-    return exitCode;
-  });
-}
-
-/** `maruhi member change-role <user-id> --role <r>`(降格は §7 のローテーション義務)。 */
-function memberChangeRole(
-  flags: CommonFlags & { readonly target: string; readonly role?: string | undefined },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    if (!isMemberRole(flags.role)) {
-      return yield* Effect.fail(
-        usageError(`--role を指定してください(${MEMBER_ROLES.join(" | ")})`),
-      );
-    }
-    // 収束系コマンド: 未収束義務の常時警告は抑制(降格の sweep 報告が担う)
-    const context = yield* openProject(flags, { quietMandateWarning: true });
-    const summary = yield* memberChangeRoleOp({
-      client: context.client,
-      verified: context.verified,
-      targetUserId: flags.target,
-      newRole: flags.role,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      rotate: sweepRotateFor(context, ROLE_DEMOTED_ROTATION_REASON),
-    });
-    if (summary.appended) {
-      yield* io.log(
-        `change_role をチェーンへ追記しました(target=${displayText(summary.targetUserId)}、role=${summary.newRole})`,
-      );
-    } else {
-      yield* io.log("対象は既に指定の role です — 追記していません");
-    }
-    if (summary.sweep === null) {
-      yield* io.log("完了: role を変更しました(ローテーション義務はありません)");
-      return 0;
-    }
-    yield* io.log(
-      "member 未満への降格のため、全環境の強制ローテーションを実行します(CRYPTO_SPEC §7 — エポックアンカーの健全性)",
-    );
-    const exitCode = yield* reportMemberSweep(summary.sweep, "maruhi member change-role");
-    if (exitCode === 0) {
-      yield* io.log("完了: 降格と全環境ローテーションが完了しました");
-    }
-    return exitCode;
-  });
-}
-
-function memberCommand(execute: Execute) {
-  return define({
-    name: "member",
-    description: `メンバーの管理(${MEMBER_ACTIONS.join(" / ")} — CRYPTO_SPEC §6.2 / §6.5 / §7)`,
-    args: {
-      action: { type: "positional", description: MEMBER_ACTIONS.join(" | ") },
-      target: {
-        type: "positional",
-        required: false,
-        description: "add: 招待 id(受諾済みが 1 件なら省略可)/ remove・change-role: 対象 user_id",
-      },
-      role: {
-        type: "string",
-        description: `新しい role(change-role では必須 — ${MEMBER_ROLES.join(" | ")})`,
-      },
-      "expect-fingerprint": {
-        type: "string",
-        description:
-          "帯域外で控えた受諾者の鍵 FP(hex 32 文字。add のみ — 指定時は対話確認の代わりに照合する)",
-      },
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      project: {
-        type: "string",
-        description: "プロジェクト ID(省略時は config の defaultProject)",
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const action = ctx.values.action;
-          if (!isMemberAction(action)) {
-            return yield* Effect.fail(usageError(MEMBER_ACTION_HELP));
-          }
-          const flags = { server: ctx.values.server, project: ctx.values.project };
-          if (action === "add") {
-            return yield* memberAdd({
-              ...flags,
-              invite: ctx.values.target,
-              expectFingerprint: ctx.values["expect-fingerprint"],
-            });
-          }
-          const target = ctx.values.target;
-          if (target === undefined || target.length === 0) {
-            return yield* Effect.fail(
-              usageError(
-                "対象の user_id を指定してください(maruhi project verify のメンバー一覧で確認できます)",
-              ),
-            );
-          }
-          if (action === "remove") {
-            return yield* memberRemove({ ...flags, target });
-          }
-          if (action === "change-role") {
-            return yield* memberChangeRole({ ...flags, target, role: ctx.values.role });
-          }
-          return yield* Effect.fail(unhandledMemberAction(action));
-        }),
-        {
-          commandRejection: memberActionFlagRejection(ctx.values.action, ctx.tokens, ctx.args),
-        },
-      ),
-  });
 }
 
 /** `maruhi rotation` が取る操作(一覧の出所はここだけ — ENV_ACTIONS と同じ形)。 */
@@ -1258,7 +947,6 @@ export async function runCli(
     logout: logoutCommand(execute),
     key: keyCommand(execute),
     project: projectCommand(execute),
-    member: memberCommand(execute),
     rotation: rotationCommand(execute),
     audit: auditCommand(execute),
     push: pushCommand(execute),

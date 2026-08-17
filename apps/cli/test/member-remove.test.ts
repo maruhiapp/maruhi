@@ -279,8 +279,10 @@ describe("maruhi member remove", () => {
     );
 
     const logs = env.logs.join("\n");
-    expect(logs).toContain("remove_member をチェーンへ追記しました");
-    expect(logs).toContain("完了: メンバー削除と全環境ローテーションが完了しました");
+    expect(logs).toContain("Appended remove_member to the chain");
+    expect(logs).toContain(
+      "Done: the member removal and the rotation of every environment completed",
+    );
   });
 
   it("ChainHeadConflict(409)の再同期で並行削除を検出したら、追記せず sweep へ進む(§12-4)", async () => {
@@ -323,7 +325,7 @@ describe("maruhi member remove", () => {
     // §7 の義務(sweep)は自分の分として履行する
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
-    expect(env.logs.join("\n")).toContain("対象は既に削除済みでした");
+    expect(env.logs.join("\n")).toContain("The target was already removed");
   });
 
   it("中断復旧: 対象が既に非メンバー(remove 記録あり)なら追記せず sweep を再開する", async () => {
@@ -345,7 +347,7 @@ describe("maruhi member remove", () => {
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
-    expect(env.logs.join("\n")).toContain("対象は既に削除済みでした");
+    expect(env.logs.join("\n")).toContain("The target was already removed");
     // 収束系コマンドでは未収束義務の常時警告(rotation-sweep.ts — B2)を出さない:
     // このチェーンは同期時点で未収束(remove 後の rotate なし)だが、自分の
     // sweep 報告が同じ事実をより正確に伝えるため二重に警告しない
@@ -371,7 +373,7 @@ describe("maruhi member remove", () => {
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain("ローテーション済み(義務エントリより後のエポック");
+    expect(env.logs.join("\n")).toContain("Already rotated (epoch newer than the mandate entry");
   });
 
   it("自分自身の削除は拒否する(§7 の義務を本人が履行できない)", async () => {
@@ -383,7 +385,7 @@ describe("maruhi member remove", () => {
     const env = await startEnv(state, built.projectId, owner);
 
     expect(await runCli(["member", "remove", owner.userId], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("自分自身は削除できません");
+    expect(env.errors.join("\n")).toContain("You cannot remove yourself");
     expect(state.appendedEntries).toHaveLength(0);
   });
 
@@ -396,13 +398,15 @@ describe("maruhi member remove", () => {
     const state = await makeRemoveServer({ built, environments: {} });
     const env = await startEnv(state, built.projectId, admin2);
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("owner のみが実行できます");
+    expect(env.errors.join("\n")).toContain(
+      "Only an owner can run remove_member against an admin / owner",
+    );
     expect(state.appendedEntries).toHaveLength(0);
 
     const state2 = await makeRemoveServer({ built, environments: {} });
     const env2 = await startEnv(state2, built.projectId, owner);
     expect(await runCli(["member", "remove", "user-nobody-0000"], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("チェーン上に削除記録もありません");
+    expect(env2.errors.join("\n")).toContain("the chain has no removal record for it");
   });
 });
 
@@ -435,7 +439,9 @@ describe("maruhi member change-role", () => {
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, target.userId].toSorted(),
     );
-    expect(env.logs.join("\n")).toContain("完了: 降格と全環境ローテーションが完了しました");
+    expect(env.logs.join("\n")).toContain(
+      "Done: the demotion and the rotation of every environment completed",
+    );
   });
 
   it("昇格(reader → member)はローテーション義務なし", async () => {
@@ -457,9 +463,7 @@ describe("maruhi member change-role", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain(
-      "完了: role を変更しました(ローテーション義務はありません)",
-    );
+    expect(env.logs.join("\n")).toContain("Done: the role was changed (no rotation mandate)");
   });
 
   it("最初から reader のメンバーへの no-op 再実行は追記も sweep もしない", async () => {
@@ -481,9 +485,7 @@ describe("maruhi member change-role", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain(
-      "完了: role を変更しました(ローテーション義務はありません)",
-    );
+    expect(env.logs.join("\n")).toContain("Done: the role was changed (no rotation mandate)");
   });
 
   it("中断復旧: 降格エントリ追記済み・ローテーション未了なら、追記せず sweep を再開する", async () => {
@@ -513,7 +515,7 @@ describe("maruhi member change-role", () => {
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("role-demoted");
-    expect(env.logs.join("\n")).toContain("対象は既に指定の role です");
+    expect(env.logs.join("\n")).toContain("The target already has the specified role");
   });
 
   it("born-reader への no-op 再実行は、他人の未収束義務があっても sweep を拾わない(対象スコープの基準)", async () => {
@@ -540,9 +542,7 @@ describe("maruhi member change-role", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
-    expect(env.logs.join("\n")).toContain(
-      "完了: role を変更しました(ローテーション義務はありません)",
-    );
+    expect(env.logs.join("\n")).toContain("Done: the role was changed (no rotation mandate)");
   });
 
   it("自分自身の member 未満への降格は拒否する(§7 の義務を本人が履行できない)", async () => {
@@ -556,7 +556,7 @@ describe("maruhi member change-role", () => {
     expect(
       await runCli(["member", "change-role", owner.userId, "--role", "reader"], env.layer),
     ).toBe(1);
-    expect(env.errors.join("\n")).toContain("自分自身を member 未満へ降格できません");
+    expect(env.errors.join("\n")).toContain("You cannot demote yourself below member");
     expect(state.appendedEntries).toHaveLength(0);
   });
 });

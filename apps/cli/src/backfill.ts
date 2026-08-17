@@ -83,7 +83,7 @@ export function backfillEnvironmentFor(input: {
         // 「再実行してください」とは言わない(pullfrog レビュー反映)
         return yield* Effect.fail(
           cliError(
-            `環境 ${input.environmentId} の epoch ${epoch} の DEK ラップが自分宛に存在しません(§7 の全エポック配布と矛盾)。全エポックのラップを保持する別のメンバーがこの操作を実行するか、修復経路(自分宛ラップの再登録)で欠けを解消してから再実行してください`,
+            `No DEK wrap addressed to you exists for epoch ${epoch} of environment ${input.environmentId} (contradicts the all-epoch distribution of §7). Have another member who holds wraps for every epoch run this operation, or fill the gap via the repair path (re-registering wraps addressed to you) and re-run`,
           ),
         );
       }
@@ -99,11 +99,11 @@ export function backfillEnvironmentFor(input: {
             signingKeyPair: input.signingKeyPair,
           }),
         catch: () =>
-          cliError(`${input.recipientLabel} DEK ラップ生成が失敗しました(暗号処理エラー)`),
+          cliError(`Failed to build the ${input.recipientLabel} DEK wrap (crypto error)`),
       });
       if (built.kind === "failed") {
         return yield* Effect.fail(
-          cliError(`${input.recipientLabel} DEK ラップ生成に失敗しました(${built.reason})`),
+          cliError(`Failed to build the ${input.recipientLabel} DEK wrap (${built.reason})`),
         );
       }
       wraps.push(built.wrap);

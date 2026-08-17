@@ -1,10 +1,9 @@
 // ローテーション結果の報告と終了コードの導出(env rotate / server revoke /
 // member remove / change-role の sweep が共用)。
 //
-// cli.ts(gunshi 側)から切り出したのは ADR-0016 第 2 段階の移行のため:
-// env rotate は effect/unstable/cli 側(effect-cli.ts)、server / member は
-// 移行が済むまで gunshi 側に残り、両方が同じ報告を使う。文言は ADR-0017
-// (ユーザーに見える文言は英語)に従い、移行と同時に英語化済み。
+// ADR-0016 第 2 段階の移行で cli.ts(gunshi 側)から切り出した。第 2 段階の
+// 完了により、利用者は全員 effect/unstable/cli 側(effect-cli.ts)になった。
+// 文言は ADR-0017(ユーザーに見える文言は英語)に従い英語。
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";

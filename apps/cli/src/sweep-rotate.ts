@@ -1,9 +1,8 @@
 // §7 の全環境走査へ注入する 1 環境ローテーション(server revoke / member
 // remove / change-role で共用)。
 //
-// cli.ts(gunshi 側)から切り出したのは ADR-0016 第 2 段階の移行のため:
-// server は effect/unstable/cli 側(effect-cli.ts)、member は移行が済むまで
-// gunshi 側に残り、両方が同じ実装を使う。
+// ADR-0016 第 2 段階の移行で cli.ts(gunshi 側)から切り出した。第 2 段階の
+// 完了により、利用者は全員 effect/unstable/cli 側(effect-cli.ts)になった。
 
 import { isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
