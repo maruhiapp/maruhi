@@ -302,7 +302,7 @@ export function reportRotationFlagCount(input: {
       return;
     }
     yield* io.log(
-      `Rotation flags: ${countNoun(count, "flag")} targeting the removed party remain active (encryption cannot revoke already-read values — rotating the upstream credentials is recommended. See maruhi rotation list)`,
+      `Rotation flags: ${countNoun(count, "active flag")} targeting the removed party (encryption cannot revoke already-read values — rotating the upstream credentials is recommended. See maruhi rotation list)`,
     );
   });
 }

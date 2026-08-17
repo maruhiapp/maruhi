@@ -27,6 +27,10 @@ describe("maruhi config", () => {
   it("set → get が往復し、ファイルには known key のみ永続化される", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
+    // 報告文は**設定キー名**を言う(宣言オブジェクトの取り違え — レビュー指摘 —
+    // の回帰検査。Effect の内部表現が stdout へ出る形を固定で塞ぐ)
+    expect(env.logs).toContain("Set server");
+    expect(env.logs.join("\n")).not.toContain("_id");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
     expect(env.logs).toContain("https://maruhi.example");
     const raw = JSON.parse(await readFile(env.configPath, "utf8")) as Record<string, string>;

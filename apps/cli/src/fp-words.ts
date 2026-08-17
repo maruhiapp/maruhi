@@ -64,7 +64,7 @@ export function confirmByLastWord(input: {
     }
     for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
       const answer = yield* io.promptLine({
-        prompt: `${input.promptText}(${attempt}/${CONFIRM_ATTEMPTS}): `,
+        prompt: `${input.promptText} (${attempt}/${CONFIRM_ATTEMPTS}): `,
       });
       if (answer.trim() === lastWord) {
         return;

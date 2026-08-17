@@ -910,8 +910,6 @@ function projectVerify(
       return;
     }
     for (const mandate of pending) {
-      // describeUnconvergedMandate の本文は共有モジュール(rotation-sweep.ts)の
-      // 文言 — 英語化は共有モジュールの一括英語化(最終コミット)で行う
       yield* io.logError(
         `Unconverged rotation mandate: ${describeUnconvergedMandate(verified, mandate)} (holders of the old DEK may still be able to read current values)`,
       );
@@ -1822,7 +1820,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         ),
       );
       yield* store.save({ ...config, [configKey]: values.value });
-      yield* io.log(`Set ${key}`);
+      yield* io.log(`Set ${configKey}`);
     }),
   ).pipe(Command.withDescription("Set one non-secret config value"));
 

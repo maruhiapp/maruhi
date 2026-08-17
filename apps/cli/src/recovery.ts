@@ -291,7 +291,7 @@ const brokenRecoveryBlobMessage =
  * ブロブ由来の自由文字列なので、端末へ出す前にエスケープする。
  */
 function foreignRecoveryBlobMessage(suite: string | null): string {
-  const named = suite === null ? "" : `(${escapeText(suite)})`;
+  const named = suite === null ? "" : ` (${escapeText(suite)})`;
   return `The registered recovery blob cannot be read by this version${named}. It may have been written by a newer maruhi — update maruhi to the latest version and re-run (the recovery code you just entered still works — do not discard it). If you cannot update, ${reRegisterAction}`;
 }
 

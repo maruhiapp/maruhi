@@ -78,10 +78,13 @@ function unrecognizedOptionMessage(
   // 載せる自己矛盾の診断になる(Bugbot 指摘)。親の段の宣言を引ければ、
   // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
   const errorKey = (error.command ?? []).slice(1).join(" ");
-  // root(errorKey が空)は「段が解決できなかった」であって「root の宣言で
-  // 組め」ではない — 振り分けが確定させた段(commandKey)の宣言を優先する
-  const spec = (errorKey === "" ? undefined : specs[errorKey]) ?? specs[commandKey];
-  const errorCommandKey = errorKey !== "" && specs[errorKey] !== undefined ? errorKey : commandKey;
+  // root(errorKey が空)も root の spec(空のキー)で組む: `maruhi --show
+  // pull` のようにフラグをコマンド名より前に書いた形で、振り分けの葉
+  // (commandKey)の宣言へ落とすと「--show を拒否しつつ受け付ける一覧に
+  // --show を載せる」自己矛盾の診断になる。root spec は置き場所(サブコマンド
+  // の後ろ)の案内に分岐する
+  const spec = specs[errorKey] ?? specs[commandKey];
+  const errorCommandKey = specs[errorKey] !== undefined ? errorKey : commandKey;
   // 位置引数の名前をオプションとして書いた形は、直し方が違う
   const option = bareName(error.option);
   if (spec?.positionals.includes(option) === true) {

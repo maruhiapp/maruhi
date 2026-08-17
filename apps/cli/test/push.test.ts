@@ -429,7 +429,7 @@ describe("maruhi push", () => {
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     // セッション 16 以降は初回 pull がコミットした床の規則が先に検出する
-    // (floor-check.ts の文言 — 共有モジュールの英語化まで日本語のまま)
+    // (floor-check.ts の文言)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 
@@ -1086,7 +1086,7 @@ describe("maruhi push", () => {
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
     // セッション 16 以降は初回 pull がコミットした床の規則 (a) が先に検出する
-    // (floor-check.ts の文言 — 共有モジュールの英語化まで日本語のまま)
+    // (floor-check.ts の文言)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 

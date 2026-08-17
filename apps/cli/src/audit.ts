@@ -238,7 +238,11 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
   const parts: string[] = [];
   if (event.chainSeq !== undefined || trust !== null) {
     const seqPart = event.chainSeq === undefined ? "" : `chain_seq=${event.chainSeq}`;
-    parts.push(trust === null ? seqPart : `${seqPart}(${trust.label})`);
+    if (trust === null) {
+      parts.push(seqPart);
+    } else {
+      parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
+    }
   }
   if (event.payload !== undefined) {
     // 記録内容(サーバー申告)であることを明示する接頭辞。名前スナップショット
@@ -624,7 +628,7 @@ export function auditVerifyOp(
       // 未検証の行が残る限り「OK」とは言わない(pullfrog 指摘 — 偽造行が
       // 未検証枠に恒久に居座る形を、成功終了で覆い隠さない)
       yield* io.logError(
-        `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} are newer than the local chain and could not be verified in this run (this can happen when the chain grew right after the sync). Re-run maruhi audit verify — if it does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
+        `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run maruhi audit verify — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
       );
     }
     for (const problem of problems) {

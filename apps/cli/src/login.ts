@@ -200,7 +200,7 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
     case "active":
       return "Note: MARUHI_TOKEN is set, so the CLI stays authenticated with that token (the env-var token is not revoked here; manage it on the environment side)";
     case "placeholder":
-      return `Note: ${redactedPlaceholderEnvTokenMessage}(the next command will fail as-is)`;
+      return `Note: ${redactedPlaceholderEnvTokenMessage} (the next command will fail as-is)`;
     case "originInvalid":
       // 理由は解決側の文言をそのまま使う(言い換えると次の失敗と食い違う)
       return `Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN cannot be used, so the token is not used for authentication (${status.reason}). The next command will fail as-is — unset the env vars or fix the reported problem`;
@@ -235,7 +235,7 @@ export function logoutOp(input: {
       return yield* Effect.fail(
         cliError(
           redacted
-            ? `${redactedPlaceholderTokenMessage}(the unusable record has been deleted; the server-side revocation could not be performed)`
+            ? `${redactedPlaceholderTokenMessage} (the unusable record has been deleted; the server-side revocation could not be performed)`
             : "The keychain token record was corrupt, so it has been deleted (the server-side revocation could not be performed)",
         ),
       );

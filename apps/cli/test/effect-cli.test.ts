@@ -1013,6 +1013,18 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
     expect(errors).not.toContain("s3cr3t");
   });
 
+  it("コマンド名より前に書いたフラグは、自己矛盾せず置き場所を案内する", async () => {
+    // `maruhi --show pull`(gunshi が通していた形)。振り分けの葉(pull)の
+    // 宣言で診断を組むと「--show を拒否しつつ受け付ける一覧に --show を載せる」
+    // 自己矛盾になる — root の宣言(置き場所の案内)で組む(レビュー指摘)
+    const { env, server } = await startEnv();
+    expect(await runCli(["--show", "pull"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("write the subcommand first and its flags after it");
+    expect(errors).not.toContain("flags this command accepts");
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("エントリコマンドの二重名(`maruhi maruhi`)をコマンドとして勧めない", async () => {
     // gunshi はエントリコマンドを自分自身の名前でも登録していた。effect の
     // root に `maruhi` サブコマンドは無い = ただの未知のコマンド
