@@ -595,7 +595,7 @@ describe("cryptoBackendUsable", () => {
     // 保存済みの鍵を指せるのはキーチェーン経路だけ。recover / generate は
     // まだ何も保存していないので、共通部分がここまで書くと無い物を指す
     expect(unsupportedCryptoCause).not.toContain("do not delete");
-    expect(unsupportedCryptoCause).not.toContain("保存");
+    expect(unsupportedCryptoCause).not.toContain("stored");
     // キーチェーン経路の文言だけが「do not delete it」を持つ
     expect(unsupportedCryptoMessage).toContain("do not delete it");
   });

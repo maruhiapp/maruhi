@@ -241,7 +241,7 @@ async function establishFloor(env: TestEnv, payload: PullPayload, chain = chain1
 }
 
 describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
-  it("first syncは床なしの注意を出し、床ファイルを作る(非機密ダイジェストのみ)", async () => {
+  it("初回同期は床なしの注意を出し、床ファイルを作る(非機密ダイジェストのみ)", async () => {
     const env = await makeTestEnv();
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "beta-value" });
     await establishFloor(env, {

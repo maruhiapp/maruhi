@@ -2,7 +2,7 @@
 // context.ts の attachProject / project verify)の統合テスト。
 //
 // 固定する性質:
-//  1. add_member 後のfirst syncで、ピン留めした「ヘッド包含 + 招待者 FP の在籍」を
+//  1. add_member 後の初回同期で、ピン留めした「ヘッド包含 + 招待者 FP の在籍」を
 //     機械照合し、成功時は verifiedAtSeq を永続化する(以後も検査は継続)
 //  2. ヘッド不包含(巻き戻し・fork 配布)・招待者 FP 不一致(偽造リンク /
 //     偽造チェーン)は硬い証拠として拒否する

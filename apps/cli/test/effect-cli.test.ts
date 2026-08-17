@@ -1130,6 +1130,19 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     expect(bogus.server.requests).toHaveLength(0);
   });
 
+  it("自段のフラグをサブコマンドより前に書いた形は、自己矛盾せず置き場所を案内する", async () => {
+    // `audit --limit 5 list`(gunshi が通していた形)。上流は親のローカル
+    // フラグをサブコマンドへ継承しない = 未宣言として報告するが、bare 親
+    // (= list)の宣言に同じフラグがあるため、「受け付ける一覧」に載せると
+    // 自己矛盾になる(レビュー第 2 巡の指摘)
+    const { env, server } = await startEnv();
+    expect(await runCli(["audit", "--limit", "5", "list"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("--limit belongs after the subcommand");
+    expect(errors).not.toContain("flags this command accepts");
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("その操作に無いフラグは usage エラー(2)で落ちる(AUDIT_ACTION_FLAGS の置き換え)", async () => {
     // gunshi 時代の optionRestrictedTo / auditActionFlagRejection が受け持って
     // いた形。宣言が操作ごとに分かれたので、未宣言フラグとして構造的に落ちる

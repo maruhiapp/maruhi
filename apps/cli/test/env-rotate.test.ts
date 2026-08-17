@@ -1992,7 +1992,7 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("may be selectively blocking rotation");
     expect(errors).not.toContain("safe to simply re-run");
     expect(errors).not.toContain("was accepted");
-    // 受理確認のためのチェーン再取得をしていない(first syncの 1 回だけ)
+    // 受理確認のためのチェーン再取得をしていない(初回同期の 1 回だけ)
     const chainCalls = server.requests.filter((request) => request.path.endsWith("/chain")).length;
     expect(chainCalls - chainCallsBefore).toBe(1);
   });

@@ -436,9 +436,9 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const message = foreignMasterKeyMessage("maruhi/v2", "master::https://x::u1");
     expect(message).toContain("keep this record");
     // 既定は「消さない」。ただし行き止まりにもしない: 逃げ道は**可逆**な形
-    // (Copy down the value first消す)でだけ示す。リカバリーコードを条件にすると、
+    // (値を控えてから消す)でだけ示す。リカバリーコードを条件にすると、
     // ブロブも新形式のときに「消してから復元できない」に落ちる
-    expect(message).toContain("opy down the value first");
+    expect(message).toContain("Copy down the value first");
     // 逃げ道の要は可逆性。破棄の指示を足すときに**置き換えて**しまうと、
     // 何のための控えかが消える(両方が要る)
     expect(message).toContain("you can put it back");
@@ -487,7 +487,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     // 破損側でも削除は**可逆**にしておく: parseStoredMasterKey は hex の中身まで
     // 見ないので、形の揃った将来形式のレコードが decodeHex で落ちて「破損」に
     // 見えることがある(鍵素材は無事かもしれない)
-    expect(message).toContain("opy down the value first");
+    expect(message).toContain("Copy down the value first");
     expect(message).toContain("you can put it back");
     // 控えを作らせる以上、消す指示まで書く(別形式側と同じ義務)
     // 破棄の条件は**手で戻す必要が消えたとき**。`key recover` の成功に読める

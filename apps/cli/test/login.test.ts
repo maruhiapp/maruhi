@@ -349,7 +349,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
     expect(await runCli(["login", "--github-base-url", "ftp://x.example"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("must be http(s)");
-    expect(env.errors.join("\n")).not.toContain("接続に失敗");
+    expect(env.errors.join("\n")).not.toContain("Failed to connect");
   });
 
   it("config の server が不正な場合は、直す先を示して 1 で落ちる", async () => {

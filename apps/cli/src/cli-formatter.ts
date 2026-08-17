@@ -90,6 +90,14 @@ function unrecognizedOptionMessage(
   if (spec?.positionals.includes(option) === true) {
     return `--${option} is a positional argument (it cannot be written as a flag). Write the value as a positional argument instead`;
   }
+  // 解決済みの段の宣言に**在る**フラグが未宣言として報告された = 書いた位置が
+  // サブコマンドより前(`audit --limit 5 list` — 上流は親のローカルフラグを
+  // サブコマンドへ継承しない)。「存在しない」とも「受け付ける一覧」とも
+  // 言わない — 同じフラグを拒否しつつ一覧に載せる自己矛盾の診断になる
+  // (レビュー第 2 巡の指摘)。置き場所だけを案内する
+  if (spec?.flags.includes(option) === true) {
+    return `Unknown flag position (--${option} belongs after the subcommand — e.g. ${commandLabel(errorCommandKey)} --${option} …)`;
+  }
   const guess = error.suggestions[0];
   if (guess !== undefined) {
     return `Unknown flag (did you mean --${bareName(guess)}?)`;
