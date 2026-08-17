@@ -61,6 +61,11 @@ function bareName(name: string): string {
   return name.replace(/^-+/, "");
 }
 
+/** 表示用のコマンド名(root 段 — 空のキー — は `maruhi` 単体)。 */
+function commandLabel(commandKey: string): string {
+  return commandKey === "" ? "maruhi" : `maruhi ${commandKey}`;
+}
+
 function unrecognizedOptionMessage(
   error: CliError.UnrecognizedOption,
   specs: Readonly<Record<string, CommandSpec>>,
@@ -73,7 +78,9 @@ function unrecognizedOptionMessage(
   // 載せる自己矛盾の診断になる(Bugbot 指摘)。親の段の宣言を引ければ、
   // 置き場所(サブコマンドの後ろ)の案内に正しく分岐する
   const errorKey = (error.command ?? []).slice(1).join(" ");
-  const spec = specs[errorKey] ?? specs[commandKey];
+  // root(errorKey が空)は「段が解決できなかった」であって「root の宣言で
+  // 組め」ではない — 振り分けが確定させた段(commandKey)の宣言を優先する
+  const spec = (errorKey === "" ? undefined : specs[errorKey]) ?? specs[commandKey];
   const errorCommandKey = errorKey !== "" && specs[errorKey] !== undefined ? errorKey : commandKey;
   // 位置引数の名前をオプションとして書いた形は、直し方が違う
   const option = bareName(error.option);
@@ -97,7 +104,7 @@ function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string
   const subcommands = (spec?.flags.length ?? 0) === 0 ? (spec?.subcommands ?? []) : [];
   const first = subcommands[0];
   if (first !== undefined) {
-    return `Unknown flag (maruhi ${commandKey} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. maruhi ${commandKey} ${first} --flag …)`;
+    return `Unknown flag (${commandLabel(commandKey)} itself takes only ${GLOBAL_FLAGS.join(" / ")} — write the subcommand first and its flags after it, e.g. ${commandLabel(commandKey)} ${first} --flag …)`;
   }
   // 実行時に混ぜられるグローバル(--help / --version)は宣言の表に現れない
   // ので、ここで補う(無いと、実在するフラグが一覧から抜ける)
@@ -112,8 +119,8 @@ function unexpectedArgumentMessage(
 ): string {
   const takesNone = spec === undefined || spec.positionals.length === 0;
   const shape = takesNone
-    ? `maruhi ${commandKey} takes no positional arguments`
-    : `maruhi ${commandKey} only takes these positional arguments: ${spec.positionals.join(" ")}`;
+    ? `${commandLabel(commandKey)} takes no positional arguments`
+    : `${commandLabel(commandKey)} only takes these positional arguments: ${spec.positionals.join(" ")}`;
   return `Unexpected extra arguments (${error.arguments.length}; contents not shown — they may contain plaintext values). ${shape}${spec?.strayHint ?? ""}`;
 }
 
@@ -233,7 +240,22 @@ function maruhiFormatter(
     formatVersion: fallback.formatVersion,
     formatError: describe,
     formatCliError: describe,
-    formatErrors: (errors: ReadonlyArray<CliError.CliError>) => errors.map(describe).join("\n"),
+    // コマンド名が解決できなかった実行では、フラグは root の宣言と突き合わ
+    // されるため、正しく綴られたフラグまで不明として並ぶ。誤りはコマンド名の
+    // 方なので、綴りの合っているフラグを探させない(gunshi 時代の
+    // usageErrorMessages と同じ規律)
+    formatErrors: (errors: ReadonlyArray<CliError.CliError>) => {
+      // 抑えるのは **root 段**(コマンド名そのものが解決できなかった実行)
+      // だけ: 深い段の UnknownSubcommand(`server abc` の abc)では、親の段に
+      // 書いたフラグへの置き場所の案内が同時に要る
+      const commandNotFound = errors.some(
+        (error) => error instanceof CliError.UnknownSubcommand && (error.parent ?? []).length <= 1,
+      );
+      const shown = commandNotFound
+        ? errors.filter((error) => !(error instanceof CliError.UnrecognizedOption))
+        : errors;
+      return shown.map(describe).join("\n");
+    },
   };
 }
 

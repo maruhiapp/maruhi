@@ -50,17 +50,6 @@ describe("未宣言オプション(strict)", () => {
     expect(env.errors.join("\n")).toContain("不明なオプションです");
     expect(env.logs).toHaveLength(0);
   });
-
-  it("コマンド名の綴り間違いでは、正しく綴られたオプションを不明扱いしない", async () => {
-    const { env } = await startEnv();
-
-    // 未解決のコマンドではエントリコマンドの引数表と突き合わされるため、
-    // 綴りの合っている --show まで不明として並ぶ(探させない)
-    expect(await runCli(["pul", "--show"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なコマンドです(pull のことですか?)");
-    expect(errors).not.toContain("不明なオプションです");
-  });
 });
 
 describe("空の値", () => {
@@ -88,83 +77,6 @@ describe("空の値", () => {
     expect(env.errors.join("\n")).toContain("コマンド名は `--` より前に書いてください");
     expect(env.runnerCalls).toHaveLength(0);
     expect(server.requests).toHaveLength(0);
-  });
-});
-
-describe("gunshi 由来の usage エラー", () => {
-  it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
-    const { env } = await startEnv();
-
-    // 期待する型は宣言(引数表)由来なので出してよいが、与えられた値
-    // (values.actual)は平文が混ざりうるので出さない
-    expect(await runCli(["login", "--github-poll-interval", "s3cr3t"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("オプション --github-poll-interval の値が number として読めません");
-    expect(errors).not.toContain("s3cr3t");
-  });
-
-  it("パーサ内部の例外は打ち間違いとして報告しない", async () => {
-    const { env } = await startEnv();
-
-    // 値の無い number オプションで gunshi 自身が TypeError を投げる。これは
-    // バグであって書き方の誤りではないので、usage エラー(2)に化けさせず
-    // 内部エラー(1)として報告する(無言で飲まない — CLAUDE.md)
-    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(1);
-    // 型の名前だけを添える(message は出さない)。部分一致だと元の
-    // `内部エラー: <上流の message>` にも当たってしまうので厳密に固定する
-    expect(env.errors.join("\n")).toContain("内部エラー(TypeError)");
-  });
-
-  it("未知のコマンドは日本語で落ち、使えるコマンドを示す", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["bogus"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なコマンドです(使えるコマンド:");
-    // エントリコマンドは自分自身の名前でも登録されている。`maruhi maruhi` を
-    // サブコマンドとして勧めない(余分な引数の文面と揃える)
-    expect(errors).not.toContain("maruhi project");
-  });
-
-  it("コマンド名の位置に値を書いた形も綴りを出さない", async () => {
-    const { env } = await startEnv();
-
-    expect(await runCli(["s3cr3t/value=with-symbols"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("不明なコマンドです");
-    expect(errors).not.toContain("s3cr3t");
-  });
-
-  it("長いオプション名の打ち間違いも候補として案内する", async () => {
-    const { env } = await startEnv();
-
-    // `--github-client-id` の 1 字違い。候補の語彙に長さの上限を設けると、
-    // 自分のオプションの打ち間違いが案内できなくなる
-    expect(await runCli(["login", "--github-client-idd", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain(
-      "不明なオプションです(--github-client-id のことですか?)",
-    );
-  });
-
-  it("隠しオプション(hidden)は候補に出さない", async () => {
-    const { env } = await startEnv();
-
-    // gunshi の usage が出さない内部向けの綴りを、打ち間違いの案内で広めない
-    expect(await runCli(["login", "--github-poll-intervall", "3"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).not.toContain("--github-poll-interval");
-    expect(errors).not.toContain("--github-base-url");
-    expect(errors).toContain("このコマンドが取るオプション:");
-  });
-
-  it("エントリコマンドの二重名(`maruhi maruhi`)を文面に出さない", async () => {
-    const { env } = await startEnv();
-
-    // エントリコマンドは自分自身の名前でもサブコマンドとして登録されている
-    expect(await runCli(["maruhi", "extra"], env.layer)).toBe(2);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("maruhi は位置引数を取りません");
-    expect(errors).not.toContain("maruhi maruhi");
   });
 });
 

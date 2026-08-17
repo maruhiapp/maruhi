@@ -94,7 +94,7 @@ describe("pollDeviceFlow", () => {
       }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("有効期限");
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
   });
 
   it("device flow 開始応答の欠損(device_code なし)を検出する", async () => {
@@ -106,7 +106,7 @@ describe("pollDeviceFlow", () => {
       startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("device flow");
+    expect(JSON.stringify(exit)).toContain("device-flow start response");
   });
 
   it("サーバーが interval 0 を返しても下限(既定 5 秒)に丸める(ビジースピン防止)", async () => {
@@ -171,7 +171,7 @@ describe("pollDeviceFlow", () => {
       }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("有効期限");
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
   });
 });
 

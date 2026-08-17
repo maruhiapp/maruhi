@@ -27,10 +27,13 @@
 // 6. **stdout はコマンドの出力だけ**。コマンド本体の出力は `CliIo.log`、
 //    ヘルプ・診断は `Console`(= `CliIo.logError` = stderr)へ分ける
 
+import { hostname } from "node:os";
+
 import {
   AUDIT_ROW_ID_PATTERN,
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
+  MAX_TOKEN_NAME_LENGTH,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
@@ -41,6 +44,7 @@ import {
   Exit,
   FileSystem,
   Layer,
+  Option,
   Path,
   Redacted,
   Schema,
@@ -54,7 +58,8 @@ import {
   Command,
   Flag,
   GlobalFlag,
-  type Param,
+  Param,
+  Primitive,
 } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -104,6 +109,7 @@ import {
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
+import { loginOp, logoutOp, resolveClientId } from "./login.ts";
 import {
   MEMBER_REMOVED_ROTATION_REASON,
   type MemberAddSummary,
@@ -129,7 +135,7 @@ import {
 import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
-import { loadMasterKeys } from "./session.ts";
+import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
 import { syncProject } from "./sync.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -187,16 +193,68 @@ function singleFlag(name: string, description: string) {
 }
 
 /**
+ * テスト用の隠しフラグ(値 1 つ)。ヘルプにも打ち間違いの候補にも出さない。
+ *
+ * `Flag` には hidden コンビネータが**無い**が、`Param.Single` は
+ * `hidden: boolean` を持ち `Param.makeSingle` が受ける(実測: ヘルプの描画と
+ * 上流の typo 候補の両方が hidden を除外する)。診断の一覧(specOf)からも
+ * 除外する — 内部向けの綴りを広めない(gunshi 時代の hidden と同じ扱い)。
+ */
+function hiddenSingle<A>(name: string, description: string, primitive: Primitive.Primitive<A>) {
+  return Param.makeSingle({
+    kind: Param.flagKind,
+    name,
+    primitiveType: primitive,
+    description: Option.some(description),
+    hidden: true,
+  });
+}
+
+function hiddenValued(name: string, description: string) {
+  return hiddenSingle(name, description, Primitive.string).pipe(
+    Flag.withSchema(NonBlank),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  );
+}
+
+function hiddenIntegerValued(name: string, description: string) {
+  return hiddenSingle(name, description, Primitive.integer).pipe(
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  );
+}
+
+/**
+ * その宣言は hidden な葉(`Param.Single`)か。ラッパ(Map / Variadic /
+ * Transform / Optional)は子を `param` に持つので、葉まで辿って判定する。
+ */
+function isHiddenParam(param: Param.Any): boolean {
+  let current: unknown = param;
+  while (typeof current === "object" && current !== null) {
+    if (Param.isSingle(current as Param.Any)) {
+      return (current as { hidden: boolean }).hidden;
+    }
+    current = (current as { param?: unknown }).param;
+  }
+  return false;
+}
+
+/**
  * 診断用のコマンド宣言を、**コマンド定義そのもの**から導く。
  *
  * 手書きの写しを持つと、フラグを足したときに診断だけ古いまま残る。`Param` は
  * 公開型として `kind`(`"flag"` / `"argument"`)を持つので、宣言の並びから
  * そのまま仕分けできる。名前はオブジェクトのキー(= 打つときの綴り)を使う。
+ * hidden な宣言は一覧に出さない(内部向けの綴りを広めない)。
  */
 function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
   const flags: string[] = [];
   const positionals: string[] = [];
   for (const [name, param] of Object.entries(config)) {
+    if (isHiddenParam(param)) {
+      continue;
+    }
     (param.kind === "flag" ? flags : positionals).push(name);
   }
   return { flags, positionals };
@@ -350,6 +408,25 @@ const auditInvitesConfig = { ...projectFlags(), ...auditPageFlags() };
 const auditSelfConfig = { ...serverOnlyFlags(), ...auditPageFlags() };
 
 const auditVerifyConfig = { ...projectFlags() };
+
+const loginConfig = {
+  ...serverOnlyFlags(),
+  "github-client-id": singleValued(
+    "github-client-id",
+    "GitHub OAuth App client_id (defaults to config githubClientId, then auto-resolved from the server's /auth/config)",
+  ),
+  "token-name": singleValued(
+    "token-name",
+    "Token name (re-login with the same name rotates the token; default: cli:<hostname>)",
+  ),
+  "github-base-url": hiddenValued("github-base-url", "GitHub base URL (for tests)"),
+  "github-poll-interval": hiddenIntegerValued(
+    "github-poll-interval",
+    "Minimum device-flow polling interval in seconds (for tests)",
+  ),
+};
+
+const logoutConfig = serverOnlyFlags();
 
 const keyGenerateConfig = serverOnlyFlags();
 const keyShowConfig = serverOnlyFlags();
@@ -565,7 +642,17 @@ const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Para
  * 入れ子の段は subcommands を持ち、不明なサブコマンドの診断が「取りうる
  * 操作の一覧」を出すのに使う(cli-formatter.ts)。
  */
-export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
+/**
+ * root(`maruhi` 段)の診断キー。`ShowHelp.commandPath` が 1 段のとき
+ * `commandPath.slice(1).join(" ")` は空文字列になるので、その綴りに合わせる。
+ * 未知のコマンド(`maruhi bogus`)の診断が「取りうるコマンドの一覧」を
+ * 出すために使う(cli-formatter.ts の unknownSubcommandMessage)。
+ */
+export const ROOT_SPEC_KEY = "";
+
+const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
+  login: specOf(loginConfig),
+  logout: specOf(logoutConfig),
   pull: specOf(pullConfig),
   run: specOf(runConfig),
   push: { ...specOf(pushConfig), strayHint: PUSH_STDIN_HINT },
@@ -584,6 +671,18 @@ export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
       ...Object.entries(subcommands).map(([name, config]) => [`${group} ${name}`, specOf(config)]),
     ]),
   ),
+};
+
+export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
+  ...LEAF_AND_GROUP_SPECS,
+  // root 段(1 段の一覧)。未知のコマンドの診断が「取りうるコマンド」を出す
+  [ROOT_SPEC_KEY]: {
+    flags: [],
+    positionals: [],
+    subcommands: [
+      ...new Set(Object.keys(LEAF_AND_GROUP_SPECS).map((key) => key.split(" ")[0] ?? key)),
+    ],
+  },
 };
 
 /**
@@ -744,6 +843,19 @@ function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFil
     environmentId: values.env ?? null,
     variableId: values.var ?? null,
   });
+}
+
+/**
+ * `--token-name` の長さ検査(**指定値そのものはエラーに出さない**)。
+ *
+ * 上限は `@maruhi/api-schema` の宣言と同じ定数を見る(CLI 側に数字を写すと、
+ * 宣言を緩めたときにこちらだけ古い上限で拒否し続ける)。
+ */
+function requireTokenName(value: string | undefined): Effect.Effect<string, CliError> {
+  const name = value ?? `cli:${hostname()}`;
+  return name.length > MAX_TOKEN_NAME_LENGTH
+    ? Effect.fail(usageError(`--token-name must be at most ${MAX_TOKEN_NAME_LENGTH} characters`))
+    : Effect.succeed(name);
 }
 
 /** 位置引数で受けた設定キーの検証(**指定値そのものはエラーに出さない**)。 */
@@ -1423,6 +1535,56 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const login = Command.make("login", loginConfig, (values) =>
+    Effect.gen(function* () {
+      // **どの通信よりも先**に見る。上限は api-schema と共有する
+      // (MAX_TOKEN_NAME_LENGTH)。ここで見ないと、長すぎる名前は device flow
+      // (**ブラウザでの承認**)を完走した後にリクエストの encode 失敗として
+      // 現れる。`resolveClientId` より後ろでも駄目で、あちらは client_id が
+      // フラグにも config にも無いとき `/auth/config` を引く(= 往復が先に
+      // 起きるうえ、その取得が失敗すると書き方の誤りが接続失敗に隠れる)
+      const tokenName = yield* requireTokenName(values["token-name"]);
+      const store = yield* ConfigStore;
+      const config = yield* store.load;
+      const origin = yield* resolveServerOrigin(values.server, config);
+      // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
+      // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)。
+      // 形式の検査は**通信より前**に置く(後ろだと、書き方の誤りが
+      // 「サーバーへの接続に失敗しました」として報告される)
+      const githubBaseUrl =
+        values["github-base-url"] === undefined
+          ? undefined
+          : yield* normalizeHttpOrigin(values["github-base-url"], "GitHub base URL");
+      // フラグ → config → サーバーの公開設定エンドポイント(AUTH_SPEC §4)
+      const clientId = yield* resolveClientId({
+        origin,
+        explicit: values["github-client-id"],
+        configured: config.githubClientId,
+      });
+      const minIntervalSeconds = values["github-poll-interval"];
+      yield* loginOp({
+        origin,
+        clientId,
+        tokenName,
+        ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
+        ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Log in via the GitHub device flow and store the maruhi token in the OS keychain",
+    ),
+  );
+
+  const logout = Command.make("logout", logoutConfig, (values) =>
+    Effect.gen(function* () {
+      const store = yield* ConfigStore;
+      const config = yield* store.load;
+      const origin = yield* resolveServerOrigin(values.server, config);
+      yield* logoutOp({ origin });
+    }),
+  ).pipe(Command.withDescription("Revoke this token and remove it from the OS keychain"));
+
   const rotationList = Command.make("list", rotationListConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openMetadataProject(values);
@@ -1865,6 +2027,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   return Command.make("maruhi").pipe(
     Command.withSubcommands([
+      login,
+      logout,
       pull,
       run,
       push,

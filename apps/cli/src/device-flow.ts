@@ -68,7 +68,7 @@ function postForm(
     },
     catch: (error) =>
       cliError(
-        `GitHub への接続に失敗しました(ネットワーク・URL を確認してください): ${
+        `Failed to connect to GitHub (check your network and the URL): ${
           error instanceof Error ? error.message : String(error)
         }`,
       ),
@@ -98,7 +98,7 @@ export function startDeviceFlow(
     ) {
       return yield* Effect.fail(
         cliError(
-          "GitHub の device flow 開始応答を解釈できません(client_id が device flow 有効な OAuth App か確認してください)",
+          "Cannot interpret GitHub's device-flow start response (check that the client_id belongs to an OAuth App with the device flow enabled)",
         ),
       );
     }
@@ -135,7 +135,7 @@ export function pollDeviceFlow(
       yield* Effect.sleep(Duration.seconds(intervalSeconds));
       if (Date.now() > deadlineMs) {
         return yield* Effect.fail(
-          cliError("認可コードの有効期限が切れました。`maruhi login` をやり直してください"),
+          cliError("The authorization code expired. Run `maruhi login` again"),
         );
       }
       const body = yield* postForm(`${base}/login/oauth/access_token`, {
@@ -156,13 +156,13 @@ export function pollDeviceFlow(
       }
       if (errorCode === "expired_token") {
         return yield* Effect.fail(
-          cliError("認可コードの有効期限が切れました。`maruhi login` をやり直してください"),
+          cliError("The authorization code expired. Run `maruhi login` again"),
         );
       }
       if (errorCode === "access_denied") {
-        return yield* Effect.fail(cliError("ブラウザ側で認可が拒否されました"));
+        return yield* Effect.fail(cliError("The authorization was denied in the browser"));
       }
-      return yield* Effect.fail(cliError("GitHub の device flow 応答を解釈できません"));
+      return yield* Effect.fail(cliError("Cannot interpret GitHub's device-flow response"));
     });
 
   return poll(options.authorization.intervalSeconds);

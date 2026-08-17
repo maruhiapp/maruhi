@@ -598,15 +598,19 @@ describe("env の入れ子サブコマンド(ADR-0016 決定 6 — 第 2 段階)
     expect(same.server.requests).toHaveLength(0);
   });
 
-  it("先頭の空引数があってもコマンドの解決は effect 側と一致する(振り分けの整合)", async () => {
-    // gunshi は falsy な positional を読み飛ばす。migratedCommandKey も同じ規則
-    // (commandTokens)で解決しないと、診断の宛先(env create の宣言)がずれて
-    // 位置引数の取り違えという**専用の案内**が出せなくなる
+  it("先頭の空引数は不明なコマンドとして落ち、無関係なフラグの指摘を重ねない", async () => {
+    // 先頭の "" はコマンド名として解決できない(root の UnknownSubcommand)。
+    // このときフラグは root の宣言と突き合わされているので、後続のフラグを
+    // 不明扱いで並べない(formatErrors の畳み込み — 第 3 段階 ④ で、gunshi の
+    // 読み飛ばしに合わせていた旧挙動から「空のトークンも 1 つの引数」へ揃えた)
     const { env } = await startEnv();
     expect(await runCli(["", "env", "create", "dev", "--environment-id", "prod"], env.layer)).toBe(
       2,
     );
-    expect(env.errors.join("\n")).toContain("--environment-id is a positional argument");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand");
+    expect(errors).not.toContain("Unknown flag");
+    expectNoLeak(env, ["prod"]);
   });
 
   it("`maruhi env` 単体は usage エラー(2)で、env 段の使い方を stderr へ出す", async () => {
@@ -978,6 +982,100 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
       expect(env.errors.join("\n"), command).toContain(`maruhi ${command}`);
       expect(server.requests, command).toHaveLength(0);
     }
+  });
+});
+
+describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSubcommand)", () => {
+  it("コマンド名の綴り間違いでは、正しく綴られたオプションを不明扱いしない", async () => {
+    // 未解決のコマンドではフラグが root の宣言と突き合わされるため、綴りの
+    // 合っている --show まで不明として並ぶ(探させない — formatErrors が
+    // UnknownSubcommand と同時の UnrecognizedOption を畳む)
+    const { env } = await startEnv();
+    expect(await runCli(["pul", "--show"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand (did you mean pull?)");
+    expect(errors).not.toContain("Unknown flag");
+  });
+
+  it("未知のコマンドは取りうるコマンドの一覧を出す", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["bogus"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain(
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | project | rotation | audit | config)",
+    );
+  });
+
+  it("コマンド名の位置に値を書いた形も綴りを出さない", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["s3cr3t/value=with-symbols"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand");
+    expect(errors).not.toContain("s3cr3t");
+  });
+
+  it("エントリコマンドの二重名(`maruhi maruhi`)をコマンドとして勧めない", async () => {
+    // gunshi はエントリコマンドを自分自身の名前でも登録していた。effect の
+    // root に `maruhi` サブコマンドは無い = ただの未知のコマンド
+    const { env } = await startEnv();
+    expect(await runCli(["maruhi", "extra"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unknown subcommand");
+    expect(errors).not.toContain("maruhi maruhi");
+  });
+});
+
+describe("login / logout の移行(ADR-0016 第 3 段階 ④)", () => {
+  it("型の合わない値は、与えられた値を出さずに拒否する", async () => {
+    // 期待する型は宣言由来なので出してよいが、与えられた値は平文が混ざりうる
+    // ので出さない
+    const { env, server } = await startEnv();
+    expect(await runCli(["login", "--github-poll-interval", "s3cr3t"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Unacceptable value for flag --github-poll-interval");
+    expectNoLeak(env, ["s3cr3t"]);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("値の無い number は usage エラー(2)になる(gunshi は内部エラー = 1 だった)", async () => {
+    // gunshi では値の無い number オプションで gunshi 自身が TypeError を投げ、
+    // 内部エラー(exit 1)として報告していた(args.test.ts の旧ケース)。
+    // effect では InvalidValue = 書き方の誤り(exit 2)— 移行後の正へ更新
+    const { env, server } = await startEnv();
+    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --github-poll-interval");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("長いオプション名の打ち間違いも候補として案内する", async () => {
+    const { env } = await startEnv();
+    expect(await runCli(["login", "--github-client-idd", "x"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unknown flag (did you mean --github-client-id?)");
+  });
+
+  it("隠しオプション(hidden)はヘルプにも候補にも出さない", async () => {
+    // 内部向けの綴り(--github-base-url / --github-poll-interval)を広めない。
+    // 上流の typo 候補は hidden を除外し(実測)、こちらの一覧(specOf)も
+    // hidden を除外する
+    const typo = await startEnv();
+    expect(await runCli(["login", "--github-poll-intervall", "3"], typo.env.layer)).toBe(2);
+    const errors = typo.env.errors.join("\n");
+    expect(errors).not.toContain("--github-poll-interval");
+    expect(errors).not.toContain("--github-base-url");
+    expect(errors).toContain("Unknown flag");
+
+    const help = await startEnv();
+    expect(await runCli(["login", "--help"], help.env.layer)).toBe(0);
+    const full = help.env.errors.join("\n");
+    expect(full).toContain("--token-name");
+    expect(full).not.toContain("--github-base-url");
+    expect(full).not.toContain("--github-poll-interval");
+  });
+
+  it("logout は位置引数を取らない", async () => {
+    const { env, server } = await startEnv();
+    expect(await runCli(["logout", "extra"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("maruhi logout takes no positional arguments");
+    expect(server.requests).toHaveLength(0);
   });
 });
 

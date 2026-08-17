@@ -9,9 +9,6 @@
 // 値の入力は stdin(argv に平文値を載せない)、値の表示は pull --show のみで、
 // 対話端末以外では拒否する(agent-gate.ts)。`maruhi run` は許可される。
 
-import { hostname } from "node:os";
-
-import { MAX_TOKEN_NAME_LENGTH } from "@maruhi/api-schema";
 import { Effect, Layer } from "effect";
 import { cli, define } from "gunshi";
 
@@ -25,14 +22,11 @@ import {
   TERMINATOR_BEFORE_COMMAND,
   usageErrorMessages,
 } from "./args.ts";
-import { ConfigStore } from "./config.ts";
 import type { CliServices } from "./context.ts";
-import { COMMAND_SPECS, runEffectCli } from "./effect-cli.ts";
-import { type CliError, usageError } from "./errors.ts";
+import { COMMAND_SPECS, ROOT_SPEC_KEY, runEffectCli } from "./effect-cli.ts";
+import type { CliError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { loginOp, logoutOp, resolveClientId } from "./login.ts";
-import { normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { CLI_VERSION } from "./version.ts";
 
 export type { CliServices } from "./context.ts";
@@ -50,106 +44,6 @@ type Execute = (
   /** コマンドごとの検査の調整(型と既定は args.ts が持つ)。 */
   options?: ArgsCheckOptions,
 ) => Promise<void>;
-
-function loginCommand(execute: Execute) {
-  return define({
-    name: "login",
-    description: "GitHub device flow でログインし、maruhi トークンを OS キーチェーンに保存する",
-    args: {
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-      "github-client-id": {
-        type: "string",
-        description:
-          "GitHub OAuth App の client_id(省略時は config の githubClientId → サーバーの /auth/config から自動解決)",
-      },
-      "token-name": {
-        type: "string",
-        description: "トークン名(同名の再ログインはローテーション。既定: cli:<hostname>)",
-      },
-      "github-base-url": {
-        type: "string",
-        description: "GitHub の base URL(テスト用)",
-        hidden: true,
-      },
-      "github-poll-interval": {
-        type: "number",
-        description: "device flow ポーリング間隔の下限秒(テスト用)",
-        hidden: true,
-      },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          // **どの通信よりも先**に見る。上限は api-schema と共有する
-          // (MAX_TOKEN_NAME_LENGTH)。ここで見ないと、長すぎる名前は device flow
-          // (**ブラウザでの承認**)を完走した後にリクエストの encode 失敗として
-          // 現れる。`resolveClientId` より後ろでも駄目で、あちらは client_id が
-          // フラグにも config にも無いとき `/auth/config` を引く(= 往復が先に
-          // 起きるうえ、その取得が失敗すると書き方の誤りが接続失敗に隠れる)
-          const tokenName = yield* requireTokenName(ctx.values["token-name"]);
-          const store = yield* ConfigStore;
-          const config = yield* store.load;
-          const origin = yield* resolveServerOrigin(ctx.values.server, config);
-          // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
-          // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)。
-          // 形式の検査は**通信より前**に置く(後ろだと、書き方の誤りが
-          // 「サーバーへの接続に失敗しました」として報告される)
-          const githubBaseUrl =
-            ctx.values["github-base-url"] === undefined
-              ? undefined
-              : yield* normalizeHttpOrigin(ctx.values["github-base-url"], "GitHub base URL");
-          // フラグ → config → サーバーの公開設定エンドポイント(AUTH_SPEC §4)
-          const clientId = yield* resolveClientId({
-            origin,
-            explicit: ctx.values["github-client-id"],
-            configured: config.githubClientId,
-          });
-          const minIntervalSeconds = ctx.values["github-poll-interval"];
-          yield* loginOp({
-            origin,
-            clientId,
-            tokenName,
-            ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
-            ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
-          });
-        }),
-      ),
-  });
-}
-
-/**
- * `--token-name` の長さ検査(**指定値そのものはエラーに出さない**)。
- *
- * 上限は `@maruhi/api-schema` の宣言と同じ定数を見る(CLI 側に数字を写すと、
- * 宣言を緩めたときにこちらだけ古い上限で拒否し続ける)。
- */
-function requireTokenName(value: string | undefined): Effect.Effect<string, CliError> {
-  const name = value ?? `cli:${hostname()}`;
-  return name.length > MAX_TOKEN_NAME_LENGTH
-    ? Effect.fail(usageError(`--token-name は ${MAX_TOKEN_NAME_LENGTH} 文字以内で指定してください`))
-    : Effect.succeed(name);
-}
-
-function logoutCommand(execute: Execute) {
-  return define({
-    name: "logout",
-    description: "自トークンを失効させ、OS キーチェーンから削除する",
-    args: {
-      server: { type: "string", description: "サーバー URL(省略時は config の server)" },
-    },
-    run: (ctx) =>
-      execute(
-        ctx,
-        Effect.gen(function* () {
-          const store = yield* ConfigStore;
-          const config = yield* store.load;
-          const origin = yield* resolveServerOrigin(ctx.values.server, config);
-          yield* logoutOp({ origin });
-        }),
-      ),
-  });
-}
 
 /**
  * Given an action → action-specific-options table, reports whether `action` may
@@ -214,8 +108,16 @@ function entryCommand(execute: Execute, commands: readonly string[]) {
 function migratedCommandKey(argv: readonly string[]): string | null {
   const tokens = commandTokens(argv);
   const head = tokens[0];
-  if (head === undefined || !Object.hasOwn(COMMAND_SPECS, head)) {
+  if (head === undefined) {
+    // コマンド名なし(bare `maruhi` / オプションのみ)は gunshi のエントリ
+    // コマンドが受ける(使い方の表示・未宣言オプションの診断)
     return null;
+  }
+  if (!Object.hasOwn(COMMAND_SPECS, head)) {
+    // 未知のコマンドも effect 側へ渡す(第 3 段階 ④ — gunshi の subCommands は
+    // 空になったので、CommandNotFound の診断はもう出ない)。root の
+    // UnknownSubcommand が候補・一覧(ROOT_SPEC_KEY の subcommands)を出す
+    return ROOT_SPEC_KEY;
   }
   const nested = tokens[1] === undefined ? null : `${head} ${tokens[1]}`;
   return nested !== null && Object.hasOwn(COMMAND_SPECS, nested) ? nested : head;
@@ -328,10 +230,7 @@ export async function runCli(
     exitCode = await Effect.runPromise(handled);
   };
 
-  const subCommands = {
-    login: loginCommand(execute),
-    logout: logoutCommand(execute),
-  };
+  const subCommands = {};
 
   // コマンドの一覧は「gunshi に残っているもの + 移行済みのもの」。登録済みの
   // 表から導くのは変わらないが、移行済みのコマンドは gunshi の subCommands に
@@ -341,7 +240,7 @@ export async function runCli(
   // (段は先頭だけ: `env create` は `env` として既に並んでいる)
   const migratedNames = [
     ...new Set(Object.keys(COMMAND_SPECS).map((key) => key.split(" ")[0] ?? key)),
-  ].filter((name) => !Object.hasOwn(subCommands, name));
+  ].filter((name) => name !== "" && !Object.hasOwn(subCommands, name));
   const knownCommands: CommandTable = {
     ...subCommands,
     // 移行済みは引数表を持たない(gunshi の execute へは来ない)。候補の

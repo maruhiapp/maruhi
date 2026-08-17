@@ -56,7 +56,7 @@ export function resolveClientId(input: {
         error instanceof SetupIncompleteError
           ? toCliError(error)
           : cliError(
-              `${toCliError(error).message}(client_id をサーバーから自動取得できませんでした。\`maruhi config set githubClientId <id>\` で手動設定できます)`,
+              `${toCliError(error).message} (could not auto-resolve the client_id from the server; you can set it manually with \`maruhi config set githubClientId <id>\`)`,
             ),
       ),
     );
@@ -88,12 +88,12 @@ export function loginOp(input: {
     // verificationUri / userCode は GitHub(または上書き先)由来の外部文字列。
     // 制御文字・ANSI を生で端末へ流さない
     yield* io.log(
-      `ブラウザで ${displayText(authorization.verificationUri)} を開き、次のコードを入力してください:`,
+      `Open ${displayText(authorization.verificationUri)} in your browser and enter this code:`,
     );
     yield* io.log("");
     yield* io.log(`    ${displayText(authorization.userCode)}`);
     yield* io.log("");
-    yield* io.log("承認を待っています…");
+    yield* io.log("Waiting for approval\u2026");
 
     // GitHub トークンはこのスコープ限り。キーチェーン・設定・ログへは出さない
     const githubAccessToken = yield* pollDeviceFlow({ ...flowOptions, authorization });
@@ -132,17 +132,19 @@ export function loginOp(input: {
           return yield* Effect.fail(
             cliError(
               revoked
-                ? `${setError.message}(いま発行したトークンはサーバー側で失効させました)`
-                : `${setError.message}(発行したトークンの失効にも失敗しました。同名トークン(${input.tokenName})での再ログインが成功すればローテーションにより自動失効します)`,
+                ? `${setError.message} (the token just issued has been revoked on the server)`
+                : `${setError.message} (revoking the issued token also failed; a successful re-login with the same token name (${input.tokenName}) will revoke it automatically by rotation)`,
             ),
           );
         }),
       ),
     );
     yield* io.log(
-      `ログインしました(user: ${displayText(exchanged.userId)})。トークンは OS キーチェーンに保存されました`,
+      `Logged in (user: ${displayText(exchanged.userId)}). The token is stored in the OS keychain`,
     );
-    yield* io.log(`同名トークン(${input.tokenName})の再ログインは旧トークンの失効を伴います`);
+    yield* io.log(
+      `Re-logging in with the same token name (${input.tokenName}) revokes the old token`,
+    );
     yield* nextStepHint(input.origin, exchanged.userId, issuedToken);
   });
 }
@@ -166,19 +168,19 @@ function nextStepHint(
     if (master === null) {
       yield* io.log(
         status.registered
-          ? "このデバイスに master 鍵がありません。リカバリーコードで復元できます: `maruhi key recover`"
-          : "master 鍵がありません。`maruhi key generate` で生成してください",
+          ? "No master key on this device. You can restore it with your recovery code: `maruhi key recover`"
+          : "No master key yet. Generate one with `maruhi key generate`",
       );
     } else if (!status.registered) {
       yield* io.logError(
-        "注意: リカバリーコードが未登録です。鍵を失うと復元できません — `maruhi key recovery` で発行してください",
+        "Note: no recovery code is registered. If you lose the key it cannot be restored — issue one with `maruhi key recovery`",
       );
     }
   }).pipe(
     Effect.catch(() =>
       Effect.flatMap(CliIo, (io) =>
         io.logError(
-          "注意: リカバリー登録状態を確認できなかったため、次の一歩の案内をスキップしました(ログインには影響しません。状態は `maruhi key show` で確認できます)",
+          "Note: skipped the next-step hint because the recovery registration status could not be checked (login itself is unaffected; check the status with `maruhi key show`)",
         ),
       ),
     ),
@@ -196,16 +198,16 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
     case "unset":
       return null;
     case "active":
-      return "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きそのトークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)";
+      return "Note: MARUHI_TOKEN is set, so the CLI stays authenticated with that token (the env-var token is not revoked here; manage it on the environment side)";
     case "placeholder":
-      return `注意: ${redactedPlaceholderEnvTokenMessage}(このままでは次のコマンドが失敗します)`;
+      return `Note: ${redactedPlaceholderEnvTokenMessage}(the next command will fail as-is)`;
     case "originInvalid":
       // 理由は解決側の文言をそのまま使う(言い換えると次の失敗と食い違う)
-      return `注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN を使えないため認証には使われません(${status.reason})。このままでは次のコマンドが失敗します。環境変数を解除するか、指摘の点を直してください`;
+      return `Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN cannot be used, so the token is not used for authentication (${status.reason}). The next command will fail as-is — unset the env vars or fix the reported problem`;
     case "originMissing":
-      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN が未設定のため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN に対象サーバーの origin を設定してください)";
+      return "Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN is not set, so the token is not used for authentication (the next command will fail as-is — unset MARUHI_TOKEN or set MARUHI_TOKEN_ORIGIN to the target server's origin)";
     case "originMismatch":
-      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN がこのサーバーと一致しないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN を対象サーバーに合わせてください)";
+      return "Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN does not match this server, so the token is not used for authentication (the next command will fail as-is — unset the env vars or point MARUHI_TOKEN_ORIGIN at the target server)";
   }
 }
 
@@ -221,7 +223,7 @@ export function logoutOp(input: {
     if (stored === null) {
       return yield* Effect.fail(
         cliError(
-          "このサーバーのトークンはキーチェーンにありません(MARUHI_TOKEN は環境変数側で管理してください)",
+          "No token for this server in the keychain (MARUHI_TOKEN is managed on the environment side)",
         ),
       );
     }
@@ -233,8 +235,8 @@ export function logoutOp(input: {
       return yield* Effect.fail(
         cliError(
           redacted
-            ? `${redactedPlaceholderTokenMessage}(使えないレコードなので削除しました。サーバー側の失効は行えていません)`
-            : "キーチェーンのトークンレコードが壊れていたため削除しました(サーバー側の失効は行えていません)",
+            ? `${redactedPlaceholderTokenMessage}(the unusable record has been deleted; the server-side revocation could not be performed)`
+            : "The keychain token record was corrupt, so it has been deleted (the server-side revocation could not be performed)",
         ),
       );
     }
@@ -250,7 +252,7 @@ export function logoutOp(input: {
       Effect.catchTag("Unauthorized", () => Effect.void),
       Effect.mapError(toCliError),
     );
-    yield* io.log("ログアウトしました(トークンを失効し、キーチェーンから削除しました)");
+    yield* io.log("Logged out (the token was revoked and removed from the keychain)");
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
     // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
     // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは
