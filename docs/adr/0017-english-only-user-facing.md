@@ -37,3 +37,28 @@ i18n の機構はどこにも入っていない。gunshi は `@gunshi/plugin-i18
 gunshi を廃止すると(ADR-0016 決定 1)、i18n 能力を持つ唯一の依存が無くなる。決定 2 のとおりそれは意図した結果であり、将来必要になった場合は Formatter の裏に自前のメッセージ表を置く(依存は増やさない)。
 
 web(`apps/web/src/Root.tsx` の `<html lang="ja">`)と docs サイトは CLI と別作業になる。ROADMAP Phase 2 に項目として起こす。
+
+---
+
+**追記(2026-08-17 — 配布物ドキュメントとインストーラの英語化)**: 決定 1 の残り(CLI 以外)を実施した。境界は決定 3「配布物からユーザーが読むか」で切った。
+
+**ユーザーが読む側(今回英語化)**:
+
+- `README.md` / `CONTRIBUTING.md` — リポジトリの表紙と DCO 文書。コントリビュータは配布物から読む
+- `docs/SELF_HOSTING.md` — セルフホスト利用者向けの検証済み runbook(ADR-0014 の上級者経路。セッション 19 で実デプロイ検証済み)
+- `packaging/install.sh` のユーザー可視メッセージ(`warn` / `die` / `printf` / `--help`)。スクリプト内コメントは内部なので日本語のまま
+- `apps/web/src/Root.tsx` の `lang="en"`(web の可視文字列に日本語は無く、日本語はコメントのみ = 決定 3 で維持)
+- GitHub Release のリリースノート — `docs/RELEASING.md` に「英語で書く」を一行で固定(決定 1)
+
+**内部(日本語のまま)**:
+
+- `docs/CRYPTO_SPEC.md` / `AUTH_SPEC.md` / `AUDIT_SPEC.md`
+- `docs/RELEASING.md` 本体(所有者向けの運用手順。上記の一行だけ追加)
+- `docs/notes/` / `docs/adr/`(本追記を除く)
+- `CLAUDE.md` / `AGENTS.md`
+- コード内コメント全般
+- `packaging/homebrew/maruhi.example.rb` のコメント(`desc` は既に英語)
+- `packaging/install-test.sh` のラベル文字列(CI 内部。install.sh の文言を grep で固定している箇所だけ道連れに更新)
+- npm の `package.json` に `description` フィールドは無い(追加しない)
+
+docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダのみ)。サイト構築時に英語で書く旨を ROADMAP に残した。

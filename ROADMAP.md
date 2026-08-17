@@ -38,7 +38,7 @@
 - 監査ログ UI、Web ダッシュボード
 - CLI 配布: npm / brew tap / インストールスクリプト、macOS 公証(Apple Developer Program は公開 2〜3 週前に登録)、npm provenance、チェックサム公開
 - 運用側デプロイを Alchemy v2 へ載せる(ADR-0012。現状は素の wrangler 経路のみが実在 — セルフホスト配布物はこのまま維持する)。spike-b / セッション 03 の申し送り: ① state store が常設 worker + secret を張る設計を運用として受け入れるか `state:` を差し替えるか ② worker 名が Alchemy の命名規則(`<stack>-<resource>-<stage>-<hash>`)になるので stage / 命名の明示設定 ③ ソースを Alchemy 非依存に保つため **Async Worker 形式に固定**(Effect ネイティブな Worker/DO 記述を使うと wrangler 経路が壊れる)
-- ユーザーに見える文言を英語へ統一(ADR-0017)。**CLI 分は完了**(ADR-0016 第 3 段階 — コマンド単位の移行 PR + 最終コミットの共有モジュール一括英語化で、`pull` / `run` / `env create` の先行 3 コマンド分も解消済み)。web(`Root.tsx` の `lang="ja"`)・docs サイト・README は未着手(別作業)
+- ユーザーに見える文言を英語へ統一(ADR-0017)。**CLI 分は完了**(ADR-0016 第 3 段階 — コマンド単位の移行 PR + 最終コミットの共有モジュール一括英語化で、`pull` / `run` / `env create` の先行 3 コマンド分も解消済み)。**web / README / インストーラ / 配布物ドキュメント分は完了**(web = `Root.tsx` の `lang="en"`。README / CONTRIBUTING / SELF_HOSTING / install.sh のユーザー可視メッセージ)。docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダのみ)なので、サイト構築時に英語で書く
 - docs サイト(Blume)
 
 ## Phase 3: エージェント(方針は ADR-0014。優先度順)

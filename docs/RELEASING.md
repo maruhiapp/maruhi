@@ -121,6 +121,7 @@ trusted publisher の設定 — workflow 名・org・allowed action)を直して
 
 ## 注意
 
+- **GitHub Release のリリースノートは英語で書く**(ADR-0017 決定 1)
 - **windows-x64 は experimental**(Credential Manager 経路が未検証。fail-closed
   設計のため危険側には壊れない — ADR-0015)
 - **macOS は未公証**。ブラウザでダウンロードすると Gatekeeper に隔離される
