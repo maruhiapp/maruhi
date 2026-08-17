@@ -28,6 +28,8 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
+  classifyUnreadableMasterKey,
+  declaredSuiteOf,
   hasRedactedPlaceholder,
   Keychain,
   parseStoredMasterKey,
@@ -282,8 +284,9 @@ const brokenRecoveryBlobMessage =
  * このデバイスに鍵は保存されていない)ので、削除の警告は要らない。スイート名は
  * ブロブ由来の自由文字列なので、端末へ出す前にエスケープする。
  */
-function foreignRecoveryBlobMessage(suite: string): string {
-  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません(${escapeText(suite)})。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください(いま入力したリカバリーコードはそのまま使えます — 捨てないでください)。更新できない場合は、${reRegisterAction}`;
+function foreignRecoveryBlobMessage(suite: string | null): string {
+  const named = suite === null ? "" : `(${escapeText(suite)})`;
+  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください(いま入力したリカバリーコードはそのまま使えます — 捨てないでください)。更新できない場合は、${reRegisterAction}`;
 }
 
 /**
@@ -295,9 +298,20 @@ function foreignRecoveryBlobMessage(suite: string): string {
 function readRecoveryBlob(bytes: Uint8Array): {
   readonly record: StoredMasterKey | null;
   readonly placeholder: boolean;
+  /** 解釈できなかったときの分類(キーチェーン側と同じ規準)。 */
+  readonly classification: "corrupt" | "foreign";
+  /** 解釈できなかったブロブが名乗るスイート(名乗らなければ null)。 */
+  readonly declaredSuite: string | null;
 } {
   const blob = new TextDecoder().decode(bytes);
-  return { record: parseStoredMasterKey(blob), placeholder: hasRedactedPlaceholder(blob) };
+  // 分類とスイートの取り出しも**この関数の中で**行う: どちらもブロブの生文字列を
+  // 要るため、外へ出すと平文の鍵素材を持つ文字列が呼び出し側へ漏れる
+  return {
+    record: parseStoredMasterKey(blob),
+    placeholder: hasRedactedPlaceholder(blob),
+    classification: classifyUnreadableMasterKey(blob),
+    declaredSuite: declaredSuiteOf(blob),
+  };
 }
 
 function unwrapWithPromptedCode(input: {
@@ -355,7 +369,13 @@ function unwrapWithPromptedCode(input: {
                 // レコードではない(この経路は ensureNoStoredMasterKey を通って
                 // いるので、キーチェーンに master 鍵は存在しない)
                 `${placeholderCause("登録済みのリカバリーブロブ")}。${reRegisterGuidance}併せて不具合として報告してください`
-              : "復号したブロブを master 鍵レコードとして解釈できません。`maruhi key recovery` で再登録してください",
+              : // 形が違うだけかもしれない(将来版が書いたブロブ)。キーチェーン側と
+                // 同じ分類を使い、破損と言い切れないものには更新を先に案内する。
+                // 破損側でも再登録は**鍵が残っている別のデバイス**でしか実行
+                // できない(このデバイスには鍵が無い)ので、その断りを落とさない
+                parsed.classification === "foreign"
+                ? foreignRecoveryBlobMessage(parsed.declaredSuite)
+                : `復号したブロブを master 鍵レコードとして解釈できません。${reRegisterGuidance}`,
           ),
         );
       }

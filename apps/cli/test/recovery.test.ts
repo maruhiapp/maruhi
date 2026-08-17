@@ -334,6 +334,56 @@ describe("maruhi key recover(復元)", () => {
     expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
   });
 
+  it("解釈できないブロブは形で言い分け、再登録は別デバイスだと断る", async () => {
+    // 復号は成功するが parse に落ちる 2 種類: 現行の形が揃っていて中身が壊れて
+    // いるもの(再登録)と、形が違うもの(将来版かもしれない = 更新が先)
+    const cases = [
+      {
+        blob: JSON.stringify({
+          suite: "maruhi/v1",
+          encPubHex: "",
+          encSkHex: "",
+          sigPubHex: "",
+          sigSkSeedHex: "",
+        }),
+        expected: "master 鍵が残っている別のデバイスで",
+        notExpected: "最新版へ更新",
+      },
+      {
+        blob: JSON.stringify({ suite: "maruhi/v2", keys: { enc: "aa" } }),
+        expected: "最新版へ更新",
+        notExpected: "このコードでは復元できません",
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const user = await makeTestUser("user-0001");
+      const secret = crypto.getRandomValues(new Uint8Array(32));
+      const wrapped = await wrapMasterSecret({
+        recoverySecret: secret,
+        userId: user.userId,
+        masterSecretBlob: new TextEncoder().encode(testCase.blob),
+      });
+      if (!wrapped.ok) throw new Error("test wrap failed");
+      const maruhi = await start([
+        onRequest("GET", "/auth/recovery", () => ({
+          status: 200,
+          json: {
+            suite: "maruhi/v1",
+            nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
+            ciphertextHex: Buffer.from(wrapped.value.ciphertext).toString("hex"),
+            updatedAtMs: 1754006400000,
+          },
+        })),
+      ]);
+      const env = await loggedInEnv(maruhi.origin, user.userId);
+      env.setPromptResponses([Redacted.value(formatRecoveryCode(Redacted.make(secret)))]);
+      expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+      const errors = env.errors.join("\n");
+      expect(errors).toContain(testCase.expected);
+      expect(errors).not.toContain(testCase.notExpected);
+    }
+  });
+
   it("誤ったコードはローカルで再試行し、3 回で失敗する(取得は 1 回)", async () => {
     const user = await makeTestUser("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
