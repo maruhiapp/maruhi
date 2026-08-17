@@ -23,7 +23,7 @@ import {
   signInviteAccept,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -64,7 +64,7 @@ beforeAll(async () => {
   acceptor = await makeTestUser("user-acceptor-22");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
-  tokenHashHex = await Effect.runPromise(tokenHashHexOf(TOKEN));
+  tokenHashHex = await Effect.runPromise(tokenHashHexOf(Redacted.make(TOKEN)));
 });
 
 afterEach(async () => {

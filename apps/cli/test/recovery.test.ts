@@ -3,12 +3,14 @@
 // ワイヤレベルモック(support/server.ts)。
 
 import { unwrapMasterSecret, wrapMasterSecret } from "@maruhi/crypto";
+import { Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import {
   masterKeyEntryName,
   parseStoredMasterKey,
+  serializeStoredMasterKey,
   type StoredMasterKey,
   tokenEntryName,
 } from "../src/keychain.ts";
@@ -76,13 +78,18 @@ function lastGroupOf(env: TestEnv): () => string {
   };
 }
 
+/** 解釈結果を剥がして生バイトで突合するためのヘルパ(null はそのまま返す)。 */
+function unwrapParsed(parsed: Redacted.Redacted<Uint8Array> | null): Uint8Array | null {
+  return parsed === null ? null : Redacted.value(parsed);
+}
+
 function storedMasterRecord(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
-    encSkHex: user.encSkHex,
+    encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
-    sigSkSeedHex: user.sigSkSeedHex,
+    sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
   };
 }
 
@@ -90,16 +97,19 @@ describe("recovery-code の表現(Base32)", () => {
   it("roundtrip: 32 バイト → 13 グループ → 復元(小文字・空白・ハイフン差を吸収)", () => {
     for (let round = 0; round < 8; round += 1) {
       const secret = crypto.getRandomValues(new Uint8Array(32));
-      const code = formatRecoveryCode(secret);
+      // 生値の突合は剥がして行う(包んだままの toEqual は中身を見ない)
+      const code = Redacted.value(formatRecoveryCode(Redacted.make(secret)));
       expect(code).toMatch(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/);
-      expect(parseRecoveryCode(code)).toEqual(secret);
-      expect(parseRecoveryCode(code.toLowerCase().replaceAll("-", " "))).toEqual(secret);
+      expect(unwrapParsed(parseRecoveryCode(code))).toEqual(secret);
+      expect(unwrapParsed(parseRecoveryCode(code.toLowerCase().replaceAll("-", " ")))).toEqual(
+        secret,
+      );
     }
   });
 
   it("アルファベット外の文字・長さ違い・非ゼロ詰めを拒否する", () => {
     const secret = new Uint8Array(32).fill(7);
-    const code = formatRecoveryCode(secret);
+    const code = Redacted.value(formatRecoveryCode(Redacted.make(secret)));
     // 0 / 1 は Base32 アルファベット外(O / I への推測置換をしない)
     expect(parseRecoveryCode(code.replace(/^./, "0"))).toBeNull();
     expect(parseRecoveryCode(code.replace(/^./, "1"))).toBeNull();
@@ -111,6 +121,33 @@ describe("recovery-code の表現(Base32)", () => {
     expect(parseRecoveryCode(tampered)).toBeNull();
   });
 });
+
+/**
+ * 表示されたコードで登録済みラップを開き、直列化した master 鍵レコードを返す。
+ *
+ * 直列化して返す理由: `JSON.stringify(record)` は秘密側が伏字になるため、
+ * レコード同士をそのまま比較すると「どんな鍵でも一致する」空の突合になる。
+ */
+async function unwrapWithDisplayedCode(
+  env: TestEnv,
+  body: PutBody | null,
+  userId: string,
+): Promise<string> {
+  const secret = parseRecoveryCode(displayedCode(env));
+  if (secret === null) throw new Error("expected a parsed recovery secret");
+  const unwrapped = await unwrapMasterSecret({
+    recoverySecret: Redacted.value(secret),
+    userId,
+    wrapped: {
+      nonce: Uint8Array.from(Buffer.from(body?.nonceHex ?? "", "hex")),
+      ciphertext: Uint8Array.from(Buffer.from(body?.ciphertextHex ?? "", "hex")),
+    },
+  });
+  if (!unwrapped.ok) throw new Error("expected the recovery blob to unwrap");
+  const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped.value));
+  if (record === null) throw new Error("expected a parsed master-key record");
+  return serializeStoredMasterKey(record);
+}
 
 describe("maruhi key generate のリカバリー発行", () => {
   it("発行 → 登録 → 表示コードで実際に復号できる(roundtrip)+ 保存確認", async () => {
@@ -130,22 +167,8 @@ describe("maruhi key generate のリカバリー発行", () => {
     expect(body?.nonceHex).toMatch(/^[0-9a-f]{24}$/);
     // 登録されたラップは、表示されたコードで復号でき、キーチェーンの
     // レコードと一致する(コードを失う前に壊れたラップを検出できる形)
-    const secret = parseRecoveryCode(displayedCode(env));
-    expect(secret).not.toBeNull();
-    const nonce = Uint8Array.from(Buffer.from(body?.nonceHex ?? "", "hex"));
-    const ciphertext = Uint8Array.from(Buffer.from(body?.ciphertextHex ?? "", "hex"));
-    const unwrapped = await unwrapMasterSecret({
-      recoverySecret: secret as Uint8Array,
-      userId: "user-0001",
-      wrapped: { nonce, ciphertext },
-    });
-    expect(unwrapped.ok).toBe(true);
-    if (unwrapped.ok) {
-      const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped.value));
-      expect(JSON.stringify(record)).toBe(
-        env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001")),
-      );
-    }
+    const blob = await unwrapWithDisplayedCode(env, body, "user-0001");
+    expect(blob).toBe(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001")));
     expect(env.errors.join("\n")).toContain("保存確認が完了しました");
     // 鍵素材(コード)はリダイレクトされうる stdout に出ない(レビュー①)
     expect(env.logs.join("\n")).not.toContain(displayedCode(env));
@@ -230,7 +253,9 @@ describe("maruhi key recover(復元)", () => {
     const wrapped = await wrapMasterSecret({
       recoverySecret: secret,
       userId: user.userId,
-      masterSecretBlob: new TextEncoder().encode(JSON.stringify(record)),
+      // JSON.stringify(record) は使えない — 秘密側が伏字でラップされ、
+      // 「復号は成功するのに鍵が読めない」ブロブになる(本番の recovery.ts と同じ罠)
+      masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(record)),
     });
     if (!wrapped.ok) {
       throw new Error("test wrap failed");
@@ -244,7 +269,7 @@ describe("maruhi key recover(復元)", () => {
         updatedAtMs: 1754006400000,
       },
     }));
-    return { handler, code: formatRecoveryCode(secret) };
+    return { handler, code: Redacted.value(formatRecoveryCode(Redacted.make(secret))) };
   }
 
   it("正しいコードで master 鍵を復元し、FP を表示する", async () => {
@@ -256,13 +281,121 @@ describe("maruhi key recover(復元)", () => {
     env.setPromptResponses([code.toLowerCase()]);
     expect(await runCli(["key", "recover"], env.layer)).toBe(0);
     const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId));
-    expect(parseStoredMasterKey(stored ?? "")).toEqual(storedMasterRecord(user));
+    const restored = parseStoredMasterKey(stored ?? "");
+    if (restored === null) throw new Error("expected a restored master-key record");
+    // 秘密側は剥がして突合する(包んだままの toEqual は中身を見ない)
+    expect(serializeStoredMasterKey(restored)).toBe(
+      serializeStoredMasterKey(storedMasterRecord(user)),
+    );
     const output = env.logs.join("\n");
     expect(output).toContain("master 鍵を復元し");
     expect(output).toContain(`key fingerprint: ${user.fingerprintHex}`);
     // 秘密鍵素材・コードを表示しない
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(code);
+  });
+
+  it("未知スイートのブロブは行き止まりにせず、更新と再登録を案内する", async () => {
+    // 別デバイスのより新しい maruhi が登録したブロブ。復号はできるが鍵素材は
+    // 読めない — 「壊れています」ではないので、出口(更新する / 鍵の残る
+    // デバイスで再登録する)を示す
+    const user = await makeTestUser("user-0001");
+    const secret = crypto.getRandomValues(new Uint8Array(32));
+    const future = { ...storedMasterRecord(user), suite: "maruhi/v2" };
+    const wrapped = await wrapMasterSecret({
+      recoverySecret: secret,
+      userId: user.userId,
+      masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(future)),
+    });
+    if (!wrapped.ok) throw new Error("test wrap failed");
+    const maruhi = await start([
+      onRequest("GET", "/auth/recovery", () => ({
+        status: 200,
+        json: {
+          suite: "maruhi/v1",
+          nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
+          ciphertextHex: Buffer.from(wrapped.value.ciphertext).toString("hex"),
+          updatedAtMs: 1754006400000,
+        },
+      })),
+    ]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    env.setPromptResponses([Redacted.value(formatRecoveryCode(Redacted.make(secret)))]);
+    expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("maruhi/v2");
+    expect(errors).toContain("最新版へ更新");
+    expect(errors).toContain("`maruhi key recovery`");
+    // 未知スイートは「このコードでは復元できません」ではない(更新すれば
+    // そのまま使える)。破損用の文言を混ぜると、使えるコードを捨てさせる
+    expect(errors).not.toContain("このコードでは復元できません");
+    expect(errors).toContain("捨てないでください");
+    // キーチェーンには何も書かない
+    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
+  });
+
+  it("解釈できないブロブは形で言い分け、再登録は別デバイスだと断る", async () => {
+    // 復号は成功するが parse に落ちる 2 種類: 現行の形が揃っていて中身が壊れて
+    // いるもの(再登録)と、形が違うもの(将来版かもしれない = 更新が先)
+    const cases = [
+      {
+        blob: JSON.stringify({
+          suite: "maruhi/v1",
+          encPubHex: "",
+          encSkHex: "",
+          sigPubHex: "",
+          sigSkSeedHex: "",
+        }),
+        expected: "master 鍵が残っている別のデバイスで",
+        notExpected: "最新版へ更新",
+      },
+      {
+        blob: JSON.stringify({ suite: "maruhi/v2", keys: { enc: "aa" } }),
+        expected: "最新版へ更新",
+        notExpected: "このコードでは復元できません",
+      },
+      {
+        // 形は現行のまま符号化だけ違う = parse は通り、hex の解釈で落ちる。
+        // このフォークでは「壊れている」と「将来版の符号化」を観測で区別
+        // できないので、断定して再登録(= コードの失効)へ送らない
+        blob: JSON.stringify({
+          suite: "maruhi/v1",
+          encPubHex: "aa".repeat(32),
+          encSkHex: "not-hex+/=",
+          sigPubHex: "bb".repeat(32),
+          sigSkSeedHex: "cc".repeat(32),
+        }),
+        expected: "捨てないでください",
+        notExpected: "このコードでは復元できません",
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const user = await makeTestUser("user-0001");
+      const secret = crypto.getRandomValues(new Uint8Array(32));
+      const wrapped = await wrapMasterSecret({
+        recoverySecret: secret,
+        userId: user.userId,
+        masterSecretBlob: new TextEncoder().encode(testCase.blob),
+      });
+      if (!wrapped.ok) throw new Error("test wrap failed");
+      const maruhi = await start([
+        onRequest("GET", "/auth/recovery", () => ({
+          status: 200,
+          json: {
+            suite: "maruhi/v1",
+            nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
+            ciphertextHex: Buffer.from(wrapped.value.ciphertext).toString("hex"),
+            updatedAtMs: 1754006400000,
+          },
+        })),
+      ]);
+      const env = await loggedInEnv(maruhi.origin, user.userId);
+      env.setPromptResponses([Redacted.value(formatRecoveryCode(Redacted.make(secret)))]);
+      expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+      const errors = env.errors.join("\n");
+      expect(errors).toContain(testCase.expected);
+      expect(errors).not.toContain(testCase.notExpected);
+    }
   });
 
   it("誤ったコードはローカルで再試行し、3 回で失敗する(取得は 1 回)", async () => {
@@ -278,7 +411,7 @@ describe("maruhi key recover(復元)", () => {
     };
     const maruhi = await start([counting, handler]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
-    const wrong = formatRecoveryCode(new Uint8Array(32).fill(1));
+    const wrong = Redacted.value(formatRecoveryCode(Redacted.make(new Uint8Array(32).fill(1))));
     env.setPromptResponses([wrong, wrong, wrong]);
     expect(await runCli(["key", "recover"], env.layer)).toBe(1);
     expect(fetches).toBe(1);

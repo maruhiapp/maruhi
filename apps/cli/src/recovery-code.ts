@@ -10,14 +10,25 @@
 // 0→O / 1→I|L の解釈は一意でなく、誤変換した 256-bit 値は黙って復号失敗に
 // なるだけで利用者が原因へ辿り着けない。
 
+import { Redacted } from "effect";
+
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 const SECRET_BYTES = 32;
 const SYMBOL_COUNT = Math.ceil((SECRET_BYTES * 8) / 5); // 52
 const GROUP_SIZE = 4;
 
-/** Formats a 256-bit recovery secret as grouped Base32 (`XXXX-XXXX-…`). */
-export function formatRecoveryCode(secret: Uint8Array): string {
+/**
+ * Formats a 256-bit recovery secret as grouped Base32 (`XXXX-XXXX-…`).
+ *
+ * 剥がす理由: Base32 化の入力。整形済みコードは秘密そのものの別表現なので
+ * 再び `Redacted` で包んで返し、生の文字列がこの関数の外へ出ないようにする
+ * (剥がすのは表示側 — recovery.ts のエージェントゲートの後ろ)。
+ */
+export function formatRecoveryCode(
+  redactedSecret: Redacted.Redacted<Uint8Array>,
+): Redacted.Redacted<string> {
+  const secret = Redacted.value(redactedSecret);
   if (secret.length !== SECRET_BYTES) {
     throw new Error("recovery secret must be 32 bytes");
   }
@@ -40,7 +51,7 @@ export function formatRecoveryCode(secret: Uint8Array): string {
   for (let i = 0; i < symbols.length; i += GROUP_SIZE) {
     groups.push(symbols.slice(i, i + GROUP_SIZE));
   }
-  return groups.join("-");
+  return Redacted.make(groups.join("-"), { label: "recovery-code" });
 }
 
 /**
@@ -48,7 +59,7 @@ export function formatRecoveryCode(secret: Uint8Array): string {
  * hyphens and whitespace are ignored. Returns null for anything that is not
  * exactly a 52-symbol Base32 string with zeroed padding bits.
  */
-export function parseRecoveryCode(text: string): Uint8Array | null {
+export function parseRecoveryCode(text: string): Redacted.Redacted<Uint8Array> | null {
   const symbols = text.replace(/[\s-]/g, "").toUpperCase();
   if (symbols.length !== SYMBOL_COUNT) {
     return null;
@@ -76,5 +87,5 @@ export function parseRecoveryCode(text: string): Uint8Array | null {
   if (acc !== 0) {
     return null;
   }
-  return out;
+  return Redacted.make(out, { label: "recovery-secret" });
 }

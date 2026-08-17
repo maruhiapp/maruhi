@@ -8,7 +8,7 @@
 // - logout は自トークンの失効(§6 v1 線引き)+ キーチェーンからの削除
 
 import { SetupIncompleteError } from "@maruhi/api-schema";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
@@ -18,12 +18,17 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
+  hasRedactedPlaceholder,
   Keychain,
   masterKeyEntryName,
   parseStoredToken,
+  redactedPlaceholderEnvTokenMessage,
+  redactedPlaceholderTokenMessage,
+  serializeStoredToken,
   type StoredToken,
   tokenEntryName,
 } from "./keychain.ts";
+import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
 
 /**
  * GitHub OAuth App client_id の解決(AUTH_SPEC §4): `--github-client-id`
@@ -96,22 +101,30 @@ export function loginOp(input: {
     const client = yield* makeApiClient({ baseUrl: input.origin });
     const exchanged = yield* client.auth
       .deviceExchange({
-        payload: { githubAccessToken, tokenName: input.tokenName },
+        // 剥がす理由: exchange のワイヤ境界。GitHub トークンの生値はここで
+        // 一度だけ本文に載り、以後 CLI 側には残らない(AUTH_SPEC §4-5)
+        payload: {
+          githubAccessToken: Redacted.value(githubAccessToken),
+          tokenName: input.tokenName,
+        },
       })
       .pipe(Effect.mapError(toCliError));
 
+    const issuedToken = Redacted.make(exchanged.token, { label: "maruhi-token" });
     const record: StoredToken = {
-      token: exchanged.token,
+      token: issuedToken,
       userId: exchanged.userId,
       tokenId: exchanged.tokenId,
     };
-    yield* keychain.set(tokenEntryName(input.origin), JSON.stringify(record)).pipe(
+    // JSON.stringify(record) は使わない — Redacted.toJSON() が伏字を返し、
+    // "<redacted>" がキーチェーンへ書かれる(keychain.ts の注記)
+    yield* keychain.set(tokenEntryName(input.origin), serializeStoredToken(record)).pipe(
       // 保存できないなら発行済みトークンを孤児化させない: サーバー側の失効を
       // 試みてから失敗させる(元エラー = キーチェーン不達を優先しつつ、失効の
       // 成否を正確に報告する — 失効成功を無条件に主張しない)
       Effect.catch((setError) =>
         Effect.gen(function* () {
-          const authed = yield* makeApiClient({ baseUrl: input.origin, token: exchanged.token });
+          const authed = yield* makeApiClient({ baseUrl: input.origin, token: issuedToken });
           const revoked = yield* authed.auth.revokeToken({}).pipe(
             Effect.map(() => true),
             Effect.catch(() => Effect.succeed(false)),
@@ -130,7 +143,7 @@ export function loginOp(input: {
       `ログインしました(user: ${displayText(exchanged.userId)})。トークンは OS キーチェーンに保存されました`,
     );
     yield* io.log(`同名トークン(${input.tokenName})の再ログインは旧トークンの失効を伴います`);
-    yield* nextStepHint(input.origin, exchanged.userId, exchanged.token);
+    yield* nextStepHint(input.origin, exchanged.userId, issuedToken);
   });
 }
 
@@ -142,7 +155,7 @@ export function loginOp(input: {
 function nextStepHint(
   origin: string,
   userId: string,
-  token: string,
+  token: Redacted.Redacted<string>,
 ): Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -172,6 +185,30 @@ function nextStepHint(
   );
 }
 
+/**
+ * ログアウト後に MARUHI_TOKEN が残っていることの案内(残らないなら null)。
+ *
+ * `active` 以外はどれも**キーチェーンへ落ちずに失敗する**状態だが、直し方は
+ * 別々(貼り直す・足す・合わせる)なので、原因ごとに言い分ける。
+ */
+function envTokenNotice(status: EnvTokenStatus): string | null {
+  switch (status.kind) {
+    case "unset":
+      return null;
+    case "active":
+      return "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きそのトークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)";
+    case "placeholder":
+      return `注意: ${redactedPlaceholderEnvTokenMessage}(このままでは次のコマンドが失敗します)`;
+    case "originInvalid":
+      // 理由は解決側の文言をそのまま使う(言い換えると次の失敗と食い違う)
+      return `注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN を使えないため認証には使われません(${status.reason})。このままでは次のコマンドが失敗します。環境変数を解除するか、指摘の点を直してください`;
+    case "originMissing":
+      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN が未設定のため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN に対象サーバーの origin を設定してください)";
+    case "originMismatch":
+      return "注意: MARUHI_TOKEN が設定されていますが、MARUHI_TOKEN_ORIGIN がこのサーバーと一致しないため認証には使われません(このままでは次のコマンドが失敗します。環境変数を解除するか、MARUHI_TOKEN_ORIGIN を対象サーバーに合わせてください)";
+  }
+}
+
 /** `maruhi logout`: revoke the presented token, then remove it from the keychain. */
 export function logoutOp(input: {
   readonly origin: string;
@@ -191,10 +228,13 @@ export function logoutOp(input: {
     const record = parseStoredToken(stored);
     if (record === null) {
       // 壊れたレコードは失効を呼べないが、残しても使えないため削除する
+      const redacted = hasRedactedPlaceholder(stored);
       yield* keychain.remove(entryName);
       return yield* Effect.fail(
         cliError(
-          "キーチェーンのトークンレコードが壊れていたため削除しました(サーバー側の失効は行えていません)",
+          redacted
+            ? `${redactedPlaceholderTokenMessage}(使えないレコードなので削除しました。サーバー側の失効は行えていません)`
+            : "キーチェーンのトークンレコードが壊れていたため削除しました(サーバー側の失効は行えていません)",
         ),
       );
     }
@@ -212,11 +252,12 @@ export function logoutOp(input: {
     );
     yield* io.log("ログアウトしました(トークンを失効し、キーチェーンから削除しました)");
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
-    // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する
-    if ((io.envVar("MARUHI_TOKEN") ?? "").length > 0) {
-      yield* io.log(
-        "注意: MARUHI_TOKEN が設定されているため、CLI は引き続きその トークンで認証されます(環境変数のトークンはここでは失効しません。管理は環境変数側で行ってください)",
-      );
+    // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
+    // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは
+    // 違う結論(空白だけの値・origin 不一致でも「認証されます」)を出してしまう
+    const notice = envTokenNotice(yield* envTokenStatus(input.origin));
+    if (notice !== null) {
+      yield* io.log(notice);
     }
   });
 }

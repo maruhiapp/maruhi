@@ -3,7 +3,7 @@
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決、操作専用オプションの適用可否。
 
 import { ProjectNotFoundError } from "@maruhi/api-schema";
-import { Cause, Effect, Exit, Layer, Schema, Stdio } from "effect";
+import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
 import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -17,11 +17,17 @@ import {
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
+  serializeStoredToken,
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
 import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
-import { resolveServerOrigin } from "../src/session.ts";
+import {
+  cryptoBackendUsable,
+  resolveServerOrigin,
+  unsupportedCryptoCause,
+  unsupportedCryptoMessage,
+} from "../src/session.ts";
 import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
@@ -60,7 +66,7 @@ describe("pollDeviceFlow", () => {
         },
       }),
     );
-    expect(token).toBe("gho_x");
+    expect(Redacted.value(token)).toBe("gho_x");
     expect(polls).toBe(2);
   });
 
@@ -171,7 +177,19 @@ describe("pollDeviceFlow", () => {
 describe("keychain record codecs", () => {
   it("トークン・master 鍵レコードの往復と破損検出", () => {
     const token = { token: "maruhi_pat_x", userId: "u1", tokenId: "t1" };
-    expect(parseStoredToken(JSON.stringify(token))).toEqual(token);
+    const parsed = parseStoredToken(JSON.stringify(token));
+    if (parsed === null) throw new Error("expected a parsed token record");
+    // 生値の突合は必ず剥がして行う(包んだままの toEqual は中身を見ない)
+    expect(Redacted.value(parsed.token)).toBe("maruhi_pat_x");
+    expect({ userId: parsed.userId, tokenId: parsed.tokenId }).toEqual({
+      userId: "u1",
+      tokenId: "t1",
+    });
+    // 保存側との往復: serializeStoredToken → parseStoredToken で生値が戻る
+    // (直列化が伏字を書いていればここで落ちる)
+    const reparsed = parseStoredToken(serializeStoredToken(parsed));
+    if (reparsed === null) throw new Error("expected a reparsed token record");
+    expect(Redacted.value(reparsed.token)).toBe("maruhi_pat_x");
     expect(parseStoredToken("not json")).toBeNull();
     expect(parseStoredToken(JSON.stringify({ token: "x" }))).toBeNull();
     expect(parseStoredMasterKey(JSON.stringify({ suite: "maruhi/v1" }))).toBeNull();
@@ -219,7 +237,9 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
     name,
     version: 1,
     epoch: 1,
-    value: typeof value === "string" ? new TextEncoder().encode(value) : value,
+    value: Redacted.make(typeof value === "string" ? new TextEncoder().encode(value) : value, {
+      label: "variable-value",
+    }),
   };
 }
 
@@ -305,6 +325,123 @@ describe("showValues(復号後の防衛線)", () => {
   it("人間の対話端末では表示する(検査が空振りしていない陽性対照)", async () => {
     const allowed = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: true });
     expect(Exit.isSuccess(allowed)).toBe(true);
+  });
+
+  it("値の改行で `NAME=value` の行を偽造できない", async () => {
+    // 値は共同編集者が書ける。改行をそのまま流すと、存在しない変数の行を
+    // 画面に作れる(pull --show を見て貼る利用者を騙せる)
+    const logs: string[] = [];
+    const capturingIo = Layer.succeed(CliIo, {
+      log: (line: string) => {
+        logs.push(line);
+        return Effect.void;
+      },
+      logError: () => Effect.void,
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+    });
+    const exit = await Effect.runPromiseExit(
+      showValues([variable("SECRET", "x\nDATABASE_URL=postgres://attacker/")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            capturingIo,
+            Layer.succeed(AgentProfileRef, { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(true),
+              stdoutIsTerminal: Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    // 偽造された行は `NAME=value` の形では出ない(印が付く)
+    expect(logs).not.toContain("DATABASE_URL=postgres://attacker/");
+    expect(logs).toContain("| DATABASE_URL=postgres://attacker/");
+  });
+
+  it("末尾の改行は行数を増やさず、あることだけを述べる", async () => {
+    // "a\nb\n" は 2 行 + 末尾改行。素朴な split は空の 3 行目を作り、
+    // 行数の申告も 1 つずれる(改行の有無は値の一部なので捨てもしない)
+    const logs: string[] = [];
+    const capturingIo = Layer.succeed(CliIo, {
+      log: (line: string) => {
+        logs.push(line);
+        return Effect.void;
+      },
+      logError: () => Effect.void,
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+    });
+    const exit = await Effect.runPromiseExit(
+      showValues([variable("SECRET", "a\nb\n")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            capturingIo,
+            Layer.succeed(AgentProfileRef, { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(true),
+              stdoutIsTerminal: Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(logs[0]).toContain("2 行の値。末尾に改行あり");
+    expect(logs).toEqual([logs[0], "| a", "| b"]);
+  });
+
+  it("表示する値でも並び順を壊す文字は中和する(名前側と同じ扱い)", async () => {
+    // 値は共同編集者が書くので、悪意ある値で他メンバーの端末表示を偽装できる。
+    // ANSI だけ潰しても双方向上書き・ゼロ幅は残るため、名前側(displayText)と
+    // 同じ一覧で中和されることを固定する — 片方だけ足された状態を作らない
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const capturingIo = Layer.succeed(CliIo, {
+      log: (line: string) => {
+        logs.push(line);
+        return Effect.void;
+      },
+      logError: (line: string) => {
+        errors.push(line);
+        return Effect.void;
+      },
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+    });
+    const exit = await Effect.runPromiseExit(
+      showValues([variable("SECRET", "a\u202Eb\u200Bc\u2028d\u200Ce\nf")]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            capturingIo,
+            Layer.succeed(AgentProfileRef, { isAgent: false }),
+            Stdio.layerTest({
+              stdinIsTerminal: Effect.succeed(true),
+              stdoutIsTerminal: Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    // ZWNJ(綴りに要る)と改行(PEM 等の正当な値)は残す。改行を含む値は
+    // 2 行目以降に印を付けて出す(値の側で `NAME=value` の行を偽造させない)
+    expect(logs).toEqual([
+      'SECRET= (2 行の値。以下の各行の先頭 "| " は maruhi が付けた印です)',
+      "| a\uFFFDb\uFFFDc\uFFFDd\u200Ce",
+      "| f",
+    ]);
+    // 中和したことは黙らない: 表示と実際の値が別物であることを名指しする
+    // (値そのものは警告に載せない)
+    expect(errors.join("\n")).toContain("SECRET");
+    expect(errors.join("\n")).toContain("実際の値と一致しない");
   });
 });
 
@@ -445,6 +582,24 @@ describe("normalizeStdinValue", () => {
   });
 });
 
+describe("cryptoBackendUsable", () => {
+  it("動く環境では true(破損の診断を環境のせいにしない)", async () => {
+    // この判定は「鍵が読めない」原因が鍵か環境かを分ける。動く環境で false を
+    // 返すと、本当に壊れたレコードの診断まで「環境が非対応です・消さないで
+    // ください」に化け、唯一の復旧手順(手で消す)へ辿り着けなくなる
+    expect(await Effect.runPromise(cryptoBackendUsable())).toBe(true);
+  });
+
+  it("環境起因の共通文言は「何が無事か」を含まない(経路ごとに違うため)", () => {
+    // 保存済みの鍵を指せるのはキーチェーン経路だけ。recover / generate は
+    // まだ何も保存していないので、共通部分がここまで書くと無い物を指す
+    expect(unsupportedCryptoCause).not.toContain("消さないで");
+    expect(unsupportedCryptoCause).not.toContain("保存");
+    // キーチェーン経路の文言だけが「消さないでください」を持つ
+    expect(unsupportedCryptoMessage).toContain("消さないでください");
+  });
+});
+
 describe("MARUHI_TOKEN 環境変数経路", () => {
   it("キーチェーンなしでも /auth/me で userId を解決して動く", async () => {
     const user = await makeTestUser("user-env-0001");
@@ -498,6 +653,26 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("MARUHI_TOKEN での認証に失敗");
+  });
+
+  it("空白だけの MARUHI_TOKEN は未設定として扱う(空トークンで往復させない)", async () => {
+    let hit = false;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => {
+        hit = true;
+        return { status: 200, json: { userId: "u", orgs: [] } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    // 判定を trim 後の値で行わないと、`Bearer `(空)を送ってから 401 になり、
+    // 「失効・スコープ・接続先を確認してください」という別原因の案内へ落ちる
+    env.setEnvVar("MARUHI_TOKEN", " \n");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
+    expect(await runCli(["key", "show"], env.layer)).toBe(1);
+    expect(hit).toBe(false);
+    expect(env.errors.join("\n")).toContain("ログインしていません");
   });
 
   it("MARUHI_TOKEN_ORIGIN 未指定なら MARUHI_TOKEN を使わず案内する", async () => {

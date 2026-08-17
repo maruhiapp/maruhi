@@ -6,7 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, Layer, Stdio } from "effect";
+import { Effect, Layer, Redacted, Stdio } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { AgentProfileRef } from "../../src/agent-gate.ts";
@@ -19,6 +19,8 @@ import {
   Keychain,
   masterKeyEntryName,
   type StoredMasterKey,
+  serializeStoredMasterKey,
+  serializeStoredToken,
   type StoredToken,
   tokenEntryName,
 } from "../../src/keychain.ts";
@@ -225,19 +227,22 @@ export async function makeTestEnv(): Promise<TestEnv> {
 export function seedSession(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
     // 実サーバーの形式(maruhi_pat_ + Base62 乱数)に寄せたフィクスチャ
-    token: "maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123",
+    token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
   };
   const master: StoredMasterKey = {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
-    encSkHex: user.encSkHex,
+    encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
-    sigSkSeedHex: user.sigSkSeedHex,
+    sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
   };
-  env.keychain.set(tokenEntryName(origin), JSON.stringify(token));
-  env.keychain.set(masterKeyEntryName(origin, user.userId), JSON.stringify(master));
+  // JSON.stringify(token) は使えない — Redacted.toJSON() が伏字を返し、
+  // 「シードしたのに認証できない」テストになる(本番の login.ts と同じ罠)
+  env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
+  // master 鍵も JSON.stringify は使えない(秘密側が伏字で保存され復号不能になる)
+  env.keychain.set(masterKeyEntryName(origin, user.userId), serializeStoredMasterKey(master));
 }
 
 /** config.json に server(+ 任意の既定)を書いた状態を作る。 */

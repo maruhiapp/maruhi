@@ -18,7 +18,7 @@ import {
   generateSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
@@ -26,12 +26,15 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
-import { Keychain, type StoredMasterKey } from "./keychain.ts";
+import { Keychain, serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import { issueRecoveryAfterKeygen } from "./recovery.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
+  cryptoBackendUsable,
   importMasterKeys,
+  retryOnSupportedRuntime,
+  unsupportedCryptoCause,
   loadMasterKeys,
 } from "./session.ts";
 
@@ -83,14 +86,34 @@ export function keyGenerateOp(input: {
     const record: StoredMasterKey = {
       suite: SUITE_ID,
       encPubHex: encodeHex(encPub),
-      encSkHex: encodeHex(encSk.value),
+      encSkHex: Redacted.make(encodeHex(encSk.value), { label: "master-enc-sk" }),
       sigPubHex: encodeHex(sigPub),
-      sigSkSeedHex: encodeHex(sigSeed.value),
+      sigSkSeedHex: Redacted.make(encodeHex(sigSeed.value), { label: "master-sig-seed" }),
     };
     // 保存「前」にレコードを再インポートして自己検証する(検証失敗の壊れた
-    // レコードをキーチェーンに残さない — レビューループ 1 [低])
-    const validated = yield* importMasterKeys(record);
-    yield* keychain.set(entryName, JSON.stringify(record));
+    // レコードをキーチェーンに残さない — レビューループ 1 [低])。
+    // 失敗の文言は**この経路専用**にする: 既定の文言はキーチェーンのレコードを
+    // 指して削除を促すが、ここはまだ何も保存していない — 無い物の削除を案内する
+    // ことになる。原因が環境(WebCrypto 非対応)なら鍵の問題ではないので、
+    // それだけは言い分ける
+    const validated = yield* importMasterKeys(record).pipe(
+      Effect.catch(() =>
+        Effect.flatMap(cryptoBackendUsable(), (usable) =>
+          Effect.fail(
+            cliError(
+              usable
+                ? "生成した鍵を読み込めませんでした(キーチェーンには何も保存していません)。maruhi の不具合として報告してください"
+                : // 保存前なので「保存されている鍵」は指せない。無事な物(=
+                  // 何も書いていないこと)を言い、次の一手だけ共有する
+                  `${unsupportedCryptoCause}。キーチェーンには何も保存していません。${retryOnSupportedRuntime}`,
+            ),
+          ),
+        ),
+      ),
+    );
+    // JSON.stringify(record) は使わない — 秘密側が伏字で保存され、鍵を
+    // 復元できないレコードがキーチェーンに残る(keychain.ts の注記)
+    yield* keychain.set(entryName, serializeStoredMasterKey(record));
     yield* io.log("master keypair を生成し、OS キーチェーンに保存しました");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
     yield* io.log(

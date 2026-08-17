@@ -2,11 +2,13 @@
 //
 // ここで得る GitHub アクセストークンは呼び出し元のローカル変数にのみ存在し、
 // /auth/device/exchange へ渡した後は破棄される(保存・ログ出力禁止 —
-// AUTH_SPEC §10)。エラーメッセージにもトークン値を含めない。
+// AUTH_SPEC §10)。エラーメッセージにもトークン値を含めない。第三者(GitHub)の
+// 資格情報なので maruhi トークンと同様に `Redacted` で包み、剥がすのは
+// exchange のワイヤ境界だけにする(login.ts)。
 //
 // githubBaseUrl はテスト(ローカル HTTP モック)用の注入点。本番は既定値。
 
-import { Duration, Effect } from "effect";
+import { Duration, Effect, Redacted } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 
@@ -123,12 +125,12 @@ export function pollDeviceFlow(
     /** RFC 8628 §3.5 の増分(既定 5 秒)。テストのみ短縮する。 */
     readonly slowDownExtraSeconds?: number;
   },
-): Effect.Effect<string, CliError> {
+): Effect.Effect<Redacted.Redacted<string>, CliError> {
   const base = options.githubBaseUrl ?? GITHUB_BASE_URL;
   const slowDownExtra = options.slowDownExtraSeconds ?? SLOW_DOWN_EXTRA_SECONDS;
   const deadlineMs = Date.now() + options.authorization.expiresInSeconds * 1000;
 
-  const poll = (intervalSeconds: number): Effect.Effect<string, CliError> =>
+  const poll = (intervalSeconds: number): Effect.Effect<Redacted.Redacted<string>, CliError> =>
     Effect.gen(function* () {
       yield* Effect.sleep(Duration.seconds(intervalSeconds));
       if (Date.now() > deadlineMs) {
@@ -143,7 +145,7 @@ export function pollDeviceFlow(
       });
       const accessToken = body["access_token"];
       if (typeof accessToken === "string" && accessToken.length > 0) {
-        return accessToken;
+        return Redacted.make(accessToken, { label: "github-token" });
       }
       const errorCode = body["error"];
       if (errorCode === "authorization_pending") {

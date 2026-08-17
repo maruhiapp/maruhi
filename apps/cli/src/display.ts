@@ -3,28 +3,99 @@
 // 変数の表示名・user_id 等はサーバー配布の非認証メタデータ(自由文字列)で、
 // 改行・ANSI エスケープを含められる。生のまま端末へ流すと偽行・誘導文の
 // 混入(端末インジェクション)になるため、制御文字を可視の代替文字に置換
-// してから表示する。値(--show)は対象外: 値はメンバーが E2EE で書いた
-// データでサーバーには偽造できず、改変すれば復号失敗に落ちる。
+// してから表示する。値(--show)はサーバーに偽造できない(E2EE で書かれ、
+// 改変すれば復号に失敗する)が、共同編集者は書けるため別の脅威として同じ
+// 中和をかける。ただし値は利用者がコピーして使うものなので、中和が起きた
+// ときは「表示 = 実際の値」でないことを警告で明示する(showValues)。
 
-import { Effect, type Stdio } from "effect";
+import { Effect, Redacted, type Stdio } from "effect";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 
-// Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)
-const CONTROL_CHARS = /\p{Cc}/gu;
+// Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)に
+// 加えて、**行と並び順の整合性を壊す**もの:
+//   U+202A〜U+202E(双方向の埋め込み・上書き)/ U+2066〜U+2069(分離)
+//   U+200E / U+200F / U+061C(双方向マーク)
+//     — いずれも端末上で表示順を入れ替えられる。偽行・誘導文の混入と同じ脅威で、
+//       ANSI エスケープだけ潰しても閉じない
+//   U+200B(ゼロ幅スペース)/ U+FEFF(ゼロ幅非改行スペース)/ U+2060〜U+2064
+//   (単語結合子・不可視演算子)/ U+00AD(ソフトハイフン)/ U+180E
+//     — いずれも**見えないまま挿入できる**。API_KEY と API<U+FEFF>KEY が同じ
+//       見た目になり、綴りには要らない
+//   U+FFF9〜U+FFFB(行間注釈)— 本文と注釈の境界を作り、表示を分岐させられる
+//   U+2028 / U+2029(行・段落区切り)— 描画先によっては改行として扱われる
+//
+// Cf(書式文字)を一括では潰さない: ZWNJ(U+200C)/ ZWJ(U+200D)はペルシア語・
+// デーヴァナーガリー・絵文字連結の**正当な表示に必要**(文字の結合そのものを
+// 決める)で、潰すと正しい名前を壊す。上に挙げたものは順序・可視性を操るだけで
+// 文字の綴りには要らないので、そこで線を引く。同じ理由で、絵文字の表示形を
+// 決める異体字セレクタ(U+FE00〜U+FE0F)とアラビア数字の書式接頭辞
+// (U+0600〜U+0605 等)も潰さない。
+//
+// これは**列挙(deny-list)であり閉じない** — 同形異字のように文字クラスでは
+// 区別できないものが残る。「表示された文字列 = 実際の文字列」を厳密に要求する
+// 場面では、この関数ではなく {@link escapeText} の許可制を使う。
+//
+// **変数名にこれを使うのは意図的な線引き**: `DАTАBАSЕ_URL`(А = U+0410 の
+// キリル文字)は `DATABASE_URL` と見分けが付かず、displayText では素通りする。
+// それでも許可制にしないのは、正当な非 ASCII の変数名・user_id をすべて
+// \u{...} に潰してしまい、一覧の可読性が失われるため。許可制は「その文字列を
+// 操作対象として指す」場面(キーチェーンのエントリ名)にだけ使い、一覧表示
+// では取らない。同形異字による名前の偽装は**未解決の既知の穴**であり、
+// 解くなら表示側ではなく名前の正規化・登録時検査の側に置く
+//
+// 表示名(displayText)と値(displayValue)のどちらにも同じ危険があるので、この一覧は
+// **一箇所で持つ** — 別々に書くと、片方だけ足された状態で気づかれずに残る
+const ORDER_BREAKING =
+  "\\u00AD\\u061C\\u180E\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\u2028\\u2029\\uFEFF\\uFFF9-\\uFFFB";
+const CONTROL_CHARS = new RegExp(`\\p{Cc}|[${ORDER_BREAKING}]`, "gu");
+// escapeText が素通しする範囲 = 印字可能 ASCII(U+0020〜U+007E)から
+// バックスラッシュと引用符を除いたもの。それ以外は一律に逃がす。
+// バックスラッシュは可逆性(逃がした表記と元から同じ見た目の文字列が衝突しない)、
+// 引用符は引用符で囲んだ表示を閉じられないことに要る
+const ESCAPABLE = /[^\u0020-\u007E]|["\\]/gu;
 
-/** Replaces control characters (C0 / C1 / DEL) for safe terminal display. */
+/** Replaces control and order-breaking characters for safe terminal display. */
 export function displayText(value: string): string {
   return value.replace(CONTROL_CHARS, "\uFFFD");
+}
+
+/**
+ * Escapes everything outside printable ASCII as `\u{...}` (hex, at least four
+ * digits — supplementary-plane code points take more), and `\` / `"` as `\\` /
+ * `\"`, so the rendered text is exactly reconstructible.
+ *
+ * {@link displayText} は置換文字に潰すため、**利用者が元の文字列を復元できない**。
+ * 「この名前のエントリを消してください」のように文字列そのものを操作対象として
+ * 案内する場面では潰してはいけない(消せない名前を案内することになる)ので、
+ * 端末へ流しても危険のない形にエスケープしたうえで原文を保つ。
+ *
+ * **許可制(allow-list)にしている理由**: 危険な文字を列挙して逃がす形では
+ * 閉じない。制御文字・書式文字・孤立サロゲート・行区切りと足していっても、
+ * 最後に同形異字(Latin `a` U+0061 と Cyrillic `а` U+0430 など)が残り、これは
+ * **見た目が同一なので文字クラスでは区別できない**。「表示された名前 = 実際の
+ * 名前」を本当に成り立たせるには、安全と分かっている範囲だけを素通しし、
+ * 残りを一律に逃がすしかない。非 ASCII の user_id は冗長な表記になるが、
+ * この関数の目的は可読性ではなく**操作対象としての一致**なので、そちらを取る。
+ */
+export function escapeText(value: string): string {
+  return value.replace(ESCAPABLE, (char) =>
+    char === "\\" || char === '"'
+      ? `\\${char}`
+      : `\\u{${(char.codePointAt(0) ?? 0xff_fd).toString(16).padStart(4, "0")}}`,
+  );
 }
 
 // 値の表示(pull --show)用: 端末インジェクションの媒介(ESC・BEL・C1・
 // CR 等)は中和しつつ、正当なシークレット(複数行 PEM 鍵など)を壊さないよう
 // タブ(\t)と改行(\n)だけは残す。値は共同編集者(正当な書き手)が保存する
-// ため、悪意ある値による他メンバーの端末改ざんを防ぐ(サーバー偽造とは別脅威)
-const VALUE_CONTROL_CHARS = /[^\P{Cc}\t\n]/gu;
+// ため、悪意ある値による他メンバーの端末改ざんを防ぐ(サーバー偽造とは別脅威)。
+// 順序を壊す文字({@link ORDER_BREAKING})も同じ脅威で、値だけ素通しにすると
+// 「表示された値 = 実際の値」が値の側で崩れる(綴りに要る ZWNJ / ZWJ は
+// displayText と同じく残す)
+const VALUE_CONTROL_CHARS = new RegExp(`[^\\P{Cc}\\t\\n]|[${ORDER_BREAKING}]`, "gu");
 
 /** Neutralizes injection-capable control chars in a secret value, keeping \t and \n. */
 function displayValue(value: string): string {
@@ -40,12 +111,19 @@ export interface DisplayableVariable {
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
-  readonly value: Uint8Array;
+  readonly value: Redacted.Redacted<Uint8Array>;
 }
 
-/** pull のメタデータ一覧 1 行。 */
+/**
+ * pull のメタデータ一覧 1 行。
+ *
+ * 剥がす理由: **バイト長だけ**を読む(値は行に載せない)。この行は --show の
+ * 有無に関わらず出るため値表示ゲートの手前にあり、ここで値そのものを出力に
+ * 混ぜてはならない。
+ */
 export function formatPulledLine(variable: DisplayableVariable): string {
-  return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${variable.value.byteLength} bytes)`;
+  const byteLength = Redacted.value(variable.value).byteLength;
+  return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${byteLength} bytes)`;
 }
 
 /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
@@ -92,8 +170,14 @@ export function showValues(
     // 全値のデコードを出力より前に完了させる(all-or-nothing)。1 値でも不正
     // UTF-8 なら何も表示せず失敗し、部分出力(前半の値だけ画面に残る)を作らない
     const lines: string[] = [];
+    // 中和で表示が原文と変わった変数(名前だけ集める。値は運ばない)
+    const altered: string[] = [];
     for (const variable of variables) {
-      const text = decodeValueText(variable.value);
+      // 剥がす理由: 値の表示がこのコマンドの機能そのもの。**必ず上の
+      // ensureValueDisplayAllowed(TTY 一次境界 + エージェント二次層)を
+      // 通った後**で剥がす — ゲートより前に剥がすと、拒否される環境でも
+      // 平文がメモリ上の文字列として組み上がってしまう
+      const text = decodeValueText(Redacted.value(variable.value));
       if (text === null) {
         return yield* Effect.fail(
           cliError(
@@ -101,10 +185,61 @@ export function showValues(
           ),
         );
       }
-      lines.push(`${displayText(variable.name)}=${displayValue(text)}`);
+      const shown = displayValue(text);
+      if (shown !== text) {
+        altered.push(displayText(variable.name));
+      }
+      lines.push(...renderValue(displayText(variable.name), shown));
     }
     for (const line of lines) {
       yield* io.log(line);
     }
+    // 中和は端末インジェクションを防ぐために必要だが、**黙って**行うと
+    // 「画面の文字列 = 実際の値」が崩れたことに気づけない(コピーして使うと
+    // 壊れた値を貼る)。中和が起きたときだけ、原文が別物であることと、
+    // 実際の値を渡す手段(run の環境変数注入)を stderr で名指しする
+    if (altered.length > 0) {
+      yield* io.logError(warnAlteredDisplay(altered));
+    }
   });
+}
+
+/** 複数行の値の各行に付ける印(`NAME=` の行と見分けられる形にする)。 */
+const CONTINUATION = "| ";
+
+/**
+ * 1 変数の表示行。
+ *
+ * 改行は正当な値(複数行 PEM 鍵など)に要るので潰さないが、**素のまま流すと
+ * 値の側で行を偽造できる**: 値に `x\nDATABASE_URL=...` を書いた共同編集者は、
+ * 存在しない変数の行を画面に作れる(値は E2EE なのでサーバーには偽造できない
+ * が、書き手には書ける)。中和の対象にすると本物の複数行シークレットが壊れる
+ * ため、潰す代わりに**枠に入れて出所を明示する** — 2 行目以降に印を付ければ、
+ * どの行が値の続きかが表示だけで分かる。
+ */
+function renderValue(name: string, shown: string): readonly string[] {
+  // 末尾の改行は行を増やさない(`"a\nb\n"` は 2 行 + 末尾改行)。素朴に split
+  // すると空の 3 行目を作り、行数の申告も 1 つずれる。改行の有無は値の一部
+  // なので、捨てずに見出しで述べる
+  const trailingNewline = shown.endsWith("\n");
+  const parts = (trailingNewline ? shown.slice(0, -1) : shown).split("\n");
+  if (parts.length === 1 && !trailingNewline) {
+    return [`${name}=${shown}`];
+  }
+  const trailing = trailingNewline ? "。末尾に改行あり" : "";
+  return [
+    `${name}= (${parts.length} 行の値${trailing}。以下の各行の先頭 "${CONTINUATION}" は maruhi が付けた印です)`,
+    ...parts.map((line) => `${CONTINUATION}${line}`),
+  ];
+}
+
+/**
+ * 中和で表示が変わった旨の警告(値そのものは載せない)。
+ *
+ * 逃げ道として `maruhi run` を示すが、**万能とは書かない**: NUL を含む値は
+ * 環境変数に載せられず run 自身が拒否する(run.ts)。ここで無条件に
+ * 「run を使えば渡せます」と書くと、直後に拒否される手順へ送ることになる。
+ */
+function warnAlteredDisplay(names: readonly string[]): string {
+  return `警告: 次の変数の値には端末表示に使えない文字(制御文字・並び順を操る文字)が含まれるため、表示では \uFFFD に置き換えています。表示された文字列は実際の値と一致しないので、コピーして使わないでください。実際の値をプロセスへ渡すには \`maruhi run -- <コマンド>\` を使ってください(ただし NUL を含む値は環境変数として渡せないため run も拒否します): ${names.join(", ")}`;
 }

@@ -19,19 +19,32 @@ import {
   unwrapMasterSecret,
   wrapMasterSecret,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
+import { escapeText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { Keychain, parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
+import {
+  classifyUnreadableMasterKey,
+  declaredSuiteOf,
+  hasRedactedPlaceholder,
+  Keychain,
+  parseStoredMasterKey,
+  placeholderCause,
+  serializeStoredMasterKey,
+  type StoredMasterKey,
+} from "./keychain.ts";
 import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
+  cryptoBackendUsable,
   importMasterKeys,
+  retryOnSupportedRuntime,
+  unsupportedCryptoCause,
   loadMasterKeys,
   type MasterKeys,
 } from "./session.ts";
@@ -66,12 +79,16 @@ export function issueRecoveryCodeOp(input: {
       );
     }
 
-    const secret = generateRecoverySecret();
-    const blob = new TextEncoder().encode(JSON.stringify(input.masterKeys.record));
+    const secret = Redacted.make(generateRecoverySecret(), { label: "recovery-secret" });
+    // JSON.stringify(record) は使わない — 秘密側が伏字のままラップされ、
+    // 「復元できたのに鍵が使えない」リカバリーブロブを登録してしまう
+    // (キーチェーン保存と同じ罠。keychain.ts の注記)
+    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.masterKeys.record));
     const wrapped = yield* Effect.tryPromise({
       try: () =>
         wrapMasterSecret({
-          recoverySecret: secret,
+          // 剥がす理由: リカバリーラップの鍵導出入力(暗号境界)
+          recoverySecret: Redacted.value(secret),
           userId: input.session.userId,
           masterSecretBlob: blob,
         }),
@@ -98,7 +115,10 @@ export function issueRecoveryCodeOp(input: {
     yield* io.logError("");
     yield* io.logError("リカバリーコードを発行しました。今すぐ安全な場所に保管してください:");
     yield* io.logError("");
-    yield* io.logError(`    ${code}`);
+    // 剥がす理由: コードの表示が発行の機能そのもの(二度と表示されない)。
+    // 表示可否はこの関数の冒頭のエージェントゲートで判定済みで、剥がすのは
+    // その後ろ。出力先が stderr であることも意図的に維持する(上の注記)
+    yield* io.logError(`    ${Redacted.value(code)}`);
     yield* io.logError("");
     yield* io.logError(
       "推奨: 印刷またはパスワードマネージャへの保存。このコードは二度と表示されません",
@@ -112,10 +132,12 @@ export function issueRecoveryCodeOp(input: {
 }
 
 /** 表示したコードの最終グループの再入力で保存を確認する(紛失対策 UX)。 */
-function confirmCodeSaved(code: string): Effect.Effect<void, CliError, CliIo> {
+function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const groups = code.split("-");
+    // 剥がす理由: 最終グループの照合材料。既に表示済みのコードであり、
+    // ここで取り出す部分文字列は出力せず比較にしか使わない
+    const groups = Redacted.value(code).split("-");
     const last = groups[groups.length - 1] ?? "";
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
       const answer = yield* io.promptLine({
@@ -190,11 +212,112 @@ export function recoverMasterKeyOp(input: {
       ciphertext,
       userId: input.session.userId,
     });
-    const validated = yield* importMasterKeys(record);
-    yield* keychain.set(entryName, JSON.stringify(record));
+    // ブロブは解釈できたが鍵素材として読み込めない場合、壊れているのは
+    // **サーバー登録済みのブロブ**。既定の文言はキーチェーンのレコードを指すが、
+    // この経路は ensureNoStoredMasterKey を通っており、このデバイスに master 鍵の
+    // エントリは存在しない — 無い物を指した診断になってしまう。
+    // 未知スイート等は原因も出口も違うので、この 1 種類だけを写す
+    const validated = yield* importMasterKeys(record).pipe(
+      Effect.catchTag("MasterKeyUnknownSuite", (error) =>
+        Effect.fail(cliError(foreignRecoveryBlobMessage(error.suite))),
+      ),
+      Effect.catchTag("MasterKeyCorrupt", () =>
+        Effect.flatMap(corruptBlobMessage(), (message) => Effect.fail(cliError(message))),
+      ),
+    );
+    yield* keychain.set(entryName, serializeStoredMasterKey(record));
     yield* io.log("master 鍵を復元し、OS キーチェーンに保存しました");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
   });
+}
+
+/** 再登録の手順そのもの(どの原因でも同じ)。 */
+const reRegisterAction =
+  "master 鍵が残っている別のデバイスで `maruhi key recovery` を実行して再登録してください。";
+
+/**
+ * ブロブが使えないときの共通の出口(このデバイスでは直せない)。
+ *
+ * 「このコードでは復元できません」は**破損・伏字の場合にだけ真**。未知スイートの
+ * ブロブは更新すれば同じコードで復元できるので、この文言を付けてはいけない
+ * (付けると、使えるコードを捨てさせる)。
+ */
+const reRegisterGuidance = `このコードでは復元できません。${reRegisterAction}`;
+
+/**
+ * ブロブが破損しているときの文言。
+ *
+ * 未知スイート(より新しい maruhi が別デバイスで登録した)は破損ではないので
+ * ここには来ない — 分岐は呼び出し側の {@link Effect.catchTag} が型で見分ける。
+ * 残る 2 つを区別する: 環境が非対応ならブロブもコードも無事(**捨てさせない**)、
+ * そうでなければ本当に壊れている(再登録が要る)。
+ */
+function corruptBlobMessage(): Effect.Effect<string> {
+  return Effect.map(cryptoBackendUsable(), (usable) =>
+    usable ? brokenRecoveryBlobMessage : unsupportedCryptoOnRecover,
+  );
+}
+
+/**
+ * 環境が非対応のときの文言(この経路版)。
+ *
+ * この経路は ensureNoStoredMasterKey を通っており、このデバイスに鍵は無い —
+ * 「保存されている鍵を消さないでください」は指す物が無い。代わりに**無事な物**
+ * (コードとブロブ)を名指しする: 書かないと、失敗をコードのせいだと思って
+ * 唯一の復元手段を捨てられる。
+ */
+const unsupportedCryptoOnRecover =
+  `${unsupportedCryptoCause}。入力したリカバリーコードと登録済みのブロブは無事です — 捨てないでください。${retryOnSupportedRuntime}` as const;
+
+/**
+ * ブロブは解釈できたが鍵素材が読み込めないときの文言。
+ *
+ * **原因を「壊れている」と断定しない**: このフォークは形が現行と同じブロブ
+ * (= parse を通ったもの)しか来ないため、「本当に壊れている」のと「スイートを
+ * 変えずに符号化だけ変えた将来版が書いた」のを**観測では区別できない**
+ * (suite は暗号スイートの識別子であって保存形式の版ではない — keychain.ts の
+ * 注記と同じ理由)。断定して `reRegisterGuidance`(「このコードでは復元できません」)を
+ * 付けると、別デバイスでの再登録で**使えるコードを失効させてしまう**。
+ * 先に更新を促し、再登録はその後の手段として置く。
+ */
+const brokenRecoveryBlobMessage =
+  `登録済みのリカバリーブロブの鍵素材を読み込めません(記録が壊れているか、このバージョンが知らない形式です)。まず maruhi を最新版へ更新して再実行してください(いま入力したリカバリーコードはそのまま使える可能性があります — 捨てないでください)。更新しても直らない場合は、${reRegisterAction}` as const;
+
+/**
+ * ブロブが現行版の知らないスイートで書かれていたときの文言。
+ *
+ * キーチェーンのレコードと違い**消すものは無い**(ブロブはサーバー側にあり、
+ * このデバイスに鍵は保存されていない)ので、削除の警告は要らない。スイート名は
+ * ブロブ由来の自由文字列なので、端末へ出す前にエスケープする。
+ */
+function foreignRecoveryBlobMessage(suite: string | null): string {
+  const named = suite === null ? "" : `(${escapeText(suite)})`;
+  return `登録済みのリカバリーブロブをこのバージョンでは読み取れません${named}。より新しい maruhi が書いた可能性があるため、maruhi を最新版へ更新してから再実行してください(いま入力したリカバリーコードはそのまま使えます — 捨てないでください)。更新できない場合は、${reRegisterAction}`;
+}
+
+/**
+ * 復号済みブロブの解釈。**平文の鍵素材(hex)を持つ文字列をこの関数の外へ
+ * 出さない**ために切り出してある: 呼び出し側にはレコードと真偽値しか渡らず、
+ * エラーメッセージの組み立てから物理的に届かない(この経路は master 秘密鍵が
+ * 素の文字列として現れる唯一の場所)。
+ */
+function readRecoveryBlob(bytes: Uint8Array): {
+  readonly record: StoredMasterKey | null;
+  readonly placeholder: boolean;
+  /** 解釈できなかったときの分類(キーチェーン側と同じ規準)。 */
+  readonly classification: "corrupt" | "foreign";
+  /** 解釈できなかったブロブが名乗るスイート(名乗らなければ null)。 */
+  readonly declaredSuite: string | null;
+} {
+  const blob = new TextDecoder().decode(bytes);
+  // 分類とスイートの取り出しも**この関数の中で**行う: どちらもブロブの生文字列を
+  // 要るため、外へ出すと平文の鍵素材を持つ文字列が呼び出し側へ漏れる
+  return {
+    record: parseStoredMasterKey(blob),
+    placeholder: hasRedactedPlaceholder(blob),
+    classification: classifyUnreadableMasterKey(blob),
+    declaredSuite: declaredSuiteOf(blob),
+  };
 }
 
 function unwrapWithPromptedCode(input: {
@@ -205,11 +328,17 @@ function unwrapWithPromptedCode(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
-      const answer = yield* io.promptLine({
-        prompt: "リカバリーコードを入力してください: ",
-        secret: true,
-      });
-      const secret = parseRecoveryCode(answer);
+      // 入力されたコードは鍵素材そのもの。**入口で包む**(素の string のまま
+      // 置くと、同じブロックにある logError へ 1 行で載せられてしまい、
+      // 剥がす箇所の棚卸しにも現れない)。剥がすのは解釈の直前だけ
+      const answer = Redacted.make(
+        yield* io.promptLine({
+          prompt: "リカバリーコードを入力してください: ",
+          secret: true,
+        }),
+        { label: "recovery-code" },
+      );
+      const secret = parseRecoveryCode(Redacted.value(answer));
       if (secret === null) {
         yield* io.logError(
           "コードの形式が不正です(4 文字 × 13 グループ。ハイフン・空白・大文字小文字は無視されます)",
@@ -219,7 +348,8 @@ function unwrapWithPromptedCode(input: {
       const unwrapped = yield* Effect.tryPromise({
         try: () =>
           unwrapMasterSecret({
-            recoverySecret: secret,
+            // 剥がす理由: リカバリーブロブ復号の鍵導出入力(暗号境界)
+            recoverySecret: Redacted.value(secret),
             userId: input.userId,
             wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
           }),
@@ -229,13 +359,29 @@ function unwrapWithPromptedCode(input: {
         yield* io.logError("復号できません。コードが正しいか確認してください");
         continue;
       }
-      const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped.value));
+      const parsed = readRecoveryBlob(unwrapped.value);
+      const record = parsed.record;
       if (record === null) {
         // 復号は成功したのに中身が壊れている = 登録時のブロブが不正(コードの
-        // 誤りではないので再入力させない)
+        // 誤りではないので再入力させない)。伏字保存はここでも区別する:
+        // ブロブは serializeStoredMasterKey の 3 つ目のシンクであり、同じ
+        // 剥がし忘れが届きうる。しかも `maruhi key recovery` での再登録は
+        // master 鍵の読み込み(= 復元済みであること)を要するため、鍵を失った
+        // デバイスでは実行できない — 案内としても成立しない
         return yield* Effect.fail(
           cliError(
-            "復号したブロブを master 鍵レコードとして解釈できません。`maruhi key recovery` で再登録してください",
+            parsed.placeholder
+              ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
+                // レコードではない(この経路は ensureNoStoredMasterKey を通って
+                // いるので、キーチェーンに master 鍵は存在しない)
+                `${placeholderCause("登録済みのリカバリーブロブ")}。${reRegisterGuidance}併せて不具合として報告してください`
+              : // 形が違うだけかもしれない(将来版が書いたブロブ)。キーチェーン側と
+                // 同じ分類を使い、破損と言い切れないものには更新を先に案内する。
+                // 破損側でも再登録は**鍵が残っている別のデバイス**でしか実行
+                // できない(このデバイスには鍵が無い)ので、その断りを落とさない
+                parsed.classification === "foreign"
+                ? foreignRecoveryBlobMessage(parsed.declaredSuite)
+                : `復号したブロブを master 鍵レコードとして解釈できません。${reRegisterGuidance}`,
           ),
         );
       }

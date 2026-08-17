@@ -1,7 +1,7 @@
 // クライアント同期検査(§6.3)のテスト: verifyChain 委譲・genesis ハッシュ =
 // プロジェクト ID 検証・ヘッド整合・鍵履歴索引(削除済みメンバー含む)。
 
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -55,7 +55,10 @@ function chainResponse(projectId: string, built: BuiltChain): MockResponse {
 function runSync(origin: string, projectId: string) {
   return Effect.runPromiseExit(
     Effect.gen(function* () {
-      const client = yield* makeApiClient({ baseUrl: origin, token: "maruhi_pat_test" });
+      const client = yield* makeApiClient({
+        baseUrl: origin,
+        token: Redacted.make("maruhi_pat_test"),
+      });
       return yield* syncProject(client, projectId);
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
