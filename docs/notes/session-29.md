@@ -109,6 +109,8 @@ owner / admin の画面を Tunnel 等で他メンバーに見せる案は、E2EE
   拡張リスク明示)が前提
 - 画面のチーム共有は作らない。自分の他端末(リモコン / QR 配対)は
   将来検討。`maruhi ui` は CLI 側(MIT)、テーマは共有・成果物は分離
+  (theme は現状 FSL 被覆下のため、MIT 側への置き直しが第 2 段の前提 —
+  PR #82 レビューで確定)
 - 詳細と帰結(仕様の改訂候補・W0 の始点・ROADMAP 注記)は ADR-0018
 
 ## 9. 参照
@@ -118,6 +120,6 @@ owner / admin の画面を Tunnel 等で他メンバーに見せる案は、E2EE
 - CRYPTO_SPEC §3(鍵の保存先)/ §6.5(招待の相互確認)/ §14.3(非保証)
 - AUTH_SPEC §6(トークン UI の予約)/ §15-3(招待リンク形式と Web 受諾)
 - docs/notes/session-22.md §1(Wave 3 W = W0 画面設計から)
-- docs/SECURITY_REVIEW_2026-08-14.md(値付き pull への CSRF 推奨)
+- docs/SECURITY_REVIEW_2026-08-14.md(値付き pull への CSRF = L-1。2026-08-15 修正済み)
 - Cloudflare Mesh: developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/
   (2026-04-14 changelog。全トラフィック CF 経由・Gateway 検査の明記)
