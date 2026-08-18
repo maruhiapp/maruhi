@@ -32,7 +32,7 @@
 - 公開前チェックリスト: ライセンス最終確認(FSL-1.1-MIT + MIT 分割)・DCO + CONTRIBUTING.md(いずれも 2026-08-12 完了 — ADR-0003 確定、LICENSE 一式 + README 導入)、テレメトリゼロの明文化、maruhi.dev 取得、商標出願(9 類・42 類)、Deploy to Cloudflare ボタンの実検証(公開リポジトリが前提。モノレポサブディレクトリ指定と D1 自動プロビジョニング — セッション 19 申し送り)
 - 脅威モデル文書(CRYPTO_SPEC を基に「何から守り、何からは守らないか」を明文化)
 - チーム共有(add_member / remove_member、エポックローテーション、要ローテーション検出。ゼロ知識運用の UX 設計込み: 未登録ユーザー招待 = CRYPTO_SPEC 未決 #9、鍵フィンガープリント確認、退職時ローテ推奨 — ADR-0014)
-- ヘッドゴシップ検証(環境マニフェスト・定期チェックポイントの設計と同時 — CRYPTO_SPEC 未決 #12)
+- ヘッドゴシップ検証(環境マニフェスト・定期チェックポイントの設計と同時 — CRYPTO_SPEC 未決 #12)**設計・仕様起草済み(2026-08-18 — Wave 3 D。docs/notes/session-27.md、CRYPTO_SPEC 0.6-draft §4.3 / §6.2 `checkpoint` / §6.6、AUTH_SPEC §16、AUDIT_SPEC 未決 #2 統合。仕様 PR のマージ = 所有者承認)。実装は承認後の後続 PR(PR-M1 マニフェスト → M2 チェックポイント → M3 値スナップショット、M4 ゴシップは並走可 — session-27 §14)**
 - GitHub Actions 同期(ここで選択的開示 = grant_server を実装)**完了(2026-08-17 — Wave 2 全完了)**: A1 = サーバー鍵基盤 + grant/revoke CLI(PR #63)、A2 = OIDC 検証 + lease エンドポイント + 監査(PR #65)+ リプレイ先着束縛(PR #67)、A3 = CLI の CI モード(`maruhi ci run` — OIDC リース + CRYPTO_SPEC §9.1 の全検証義務 + メモリ注入。リポジトリアンカーの生成 = `maruhi project anchor`)+ リポジトリ内 setup-maruhi action(`actions/setup-maruhi` — マーケットプレイス公開は public 化と同時。設計判断は docs/notes/session-25.md)
 - 環境間パリティチェック(環境モデル決定が前提)
 - 監査ログ UI、Web ダッシュボード
