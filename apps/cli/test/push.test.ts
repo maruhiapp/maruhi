@@ -19,6 +19,7 @@ import {
   manifestFor,
   rotateEpochOp,
   statementFor,
+  variablesDigestOf,
   type TestUser,
   valueHashOf,
   type WireDistributedEnvironmentStatement,
@@ -237,6 +238,19 @@ async function startEnv(handlers: readonly MockHandler[], stdin: string): Promis
 interface CreateBody {
   readonly statement: WireDistributedVariableStatement;
   readonly value: WireEncryptedPayload;
+  /** 同梱マニフェスト(§12-4 — 変数作成もマニフェストを再発行する)。 */
+  readonly manifest: {
+    readonly environmentId: string;
+    readonly epoch: number;
+    readonly manifestVersion: number;
+    readonly variablesDigestHex: string;
+    readonly envMetaVersion: number;
+    readonly envMetaSigHashHex: string;
+    readonly prevManifestSigHashHex: string;
+    readonly chainHeadHashHex: string;
+    readonly chainHeadSeq: number;
+    readonly signatureHex: string;
+  };
 }
 
 async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promise<string> {
@@ -312,6 +326,19 @@ describe("maruhi push", () => {
     expect(body.value.signatureHex).toMatch(/^[0-9a-f]{128}$/);
     // 末尾改行 1 つは除去され、値は現エポック DEK で復号できる
     expect(await decryptWire(dek1, body.value)).toBe("secret-value");
+    // 同梱マニフェスト(§12-4): 直前(サーバー配布の v1)の次 = v2、prev は
+    // 検証済み直前マニフェストの signed bytes ハッシュ、ダイジェストは作成後の
+    // 全変数集合(= 新規ステートメント 1 件)からの再計算値
+    expect(body.manifest.manifestVersion).toBe(2);
+    expect(body.manifest.prevManifestSigHashHex).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.manifest.epoch).toBe(1);
+    expect(body.manifest.chainHeadSeq).toBe(chainV1.entries.length);
+    expect(body.manifest.variablesDigestHex).toBe(
+      await variablesDigestOf(chainV1.projectId, [
+        { ...body.statement, authorUserId: owner.userId },
+      ]),
+    );
+    expect(body.manifest.signatureHex).toMatch(/^[0-9a-f]{128}$/);
     expect(env.logs.join("\n")).toContain("version=1");
     // 新規作成の名前解決はメタデータのみ pull(§12-7)で行い、値付き pull を
     // 一切呼ばない = サーバー側で var.read が記録されない経路(session-11 裁定 3)
