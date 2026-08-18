@@ -43,7 +43,11 @@ import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
 import { encryptAndSignPayload, winnerInconsistency } from "./push.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
-import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
+import {
+  pullVerifiedEnvironment,
+  type VerifiedEnvironmentPull,
+  type VerifiedPulledValue,
+} from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 /** 再暗号化の巡回上限(1 巡 = 全対象への push + 競合分の再取得・再検証)。 */
@@ -1769,6 +1773,93 @@ function resumeReencryption(input: {
   });
 }
 
+/** rotate 前の状況警告(マニフェスト移行の 2 態 + 床なし)。pull 警告の直後に積む。 */
+function rotateSituationWarnings(
+  input: RotateInput,
+  pulled: VerifiedEnvironmentPull,
+  floorless: boolean,
+): readonly string[] {
+  const warnings: string[] = [];
+  if (input.initManifest && pulled.manifest !== null) {
+    warnings.push(
+      `--init-manifest was passed, but environment ${displayText(input.environmentId)} already has a verified manifest (manifestVersion ${pulled.manifest.manifestVersion}). The flag changed nothing — this rotation re-issues the next manifestVersion as usual`,
+    );
+  }
+  if (pulled.manifest === null) {
+    warnings.push(
+      `Environment ${displayText(input.environmentId)} has no manifest yet (created before manifests were introduced). This rotation initializes manifestVersion 1 — after it succeeds, every distribution of this environment is manifest-verified and a missing manifest is rejected (CRYPTO_SPEC §6.3)`,
+    );
+  }
+  if (floorless) {
+    warnings.push(
+      `This environment has no local floor yet, so variables the server keeps omitting from responses (ones that exist but never appear in listings) are not covered by re-encryption, and the omission cannot be detected (omission detection in CRYPTO_SPEC §6.3 presumes a floor). For revocation-purpose rotations, re-run from a machine that has a floor and confirm the variable listing for ${displayText(input.environmentId)} matches`,
+    );
+  }
+  return warnings;
+}
+
+/**
+ * 経路選択: 複合を送るか(rotate)、複合なしの再開(resume)か、確認だけ
+ * (up-to-date)か。--new-epoch と「初期化が実際に必要な --init-manifest」は
+ * 必ず複合を送る — manifestVersion 1 の発行はメタ操作への同梱でしか起きない
+ * (§12-5)ため、早期 return を取ると成功に見えるのに未初期化のまま残る。
+ */
+function rotatePathOf(input: {
+  readonly staleCount: number;
+  readonly reason: string | null;
+  readonly forceNewEpoch: boolean;
+  readonly mustInitialize: boolean;
+}): "resume" | "up-to-date" | "rotate" {
+  if (input.forceNewEpoch || input.mustInitialize) {
+    return "rotate";
+  }
+  if (input.staleCount > 0) {
+    return "resume";
+  }
+  return input.reason === null ? "up-to-date" : "rotate";
+}
+
+/**
+ * 同梱マニフェストの材料は検証済み pull から組む(§16-2 の「自分の検証済み
+ * ビューから」と同じ姿勢 — サーバー申告値をそのまま署名しない)。
+ */
+function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
+  readonly previous: {
+    readonly manifestVersion: number;
+    readonly signedBytesHashHex: string;
+  } | null;
+  readonly entries: readonly ManifestDigestEntry[];
+  readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+} {
+  return {
+    previous:
+      pulled.manifest === null
+        ? null
+        : {
+            manifestVersion: pulled.manifest.manifestVersion,
+            signedBytesHashHex: pulled.manifest.signedBytesHashHex,
+          },
+    entries: [
+      ...pulled.variables.map((value) => ({
+        variableId: value.variableId,
+        status: "active" as const,
+        metaVersion: value.metaVersion,
+        metaSigHashHex: value.metaSignedBytesHashHex,
+      })),
+      ...pulled.tombstones.map((tombstone) => ({
+        variableId: tombstone.variableId,
+        status: "deleted" as const,
+        metaVersion: tombstone.metaVersion,
+        metaSigHashHex: tombstone.metaSigHashHex,
+      })),
+    ],
+    envMeta: {
+      metaVersion: pulled.environment.metaVersion,
+      sigHashHex: pulled.environment.metaSigHashHex,
+    },
+  };
+}
+
 function rotateWithWarnings(
   input: RotateInput,
   warnings: string[],
@@ -1806,27 +1897,7 @@ function rotateWithWarnings(
     });
     // 警告は後続の失敗(DEK 検証など)より**前**に sink へ入れる: 失敗経路の
     // flush に含まれなければ、失敗時にだけ消えるという round 8 と同じ穴になる
-    warnings.push(...pulled.warnings);
-    if (input.initManifest && pulled.manifest !== null) {
-      warnings.push(
-        `--init-manifest was passed, but environment ${displayText(input.environmentId)} already has a verified manifest (manifestVersion ${pulled.manifest.manifestVersion}). The flag changed nothing — this rotation re-issues the next manifestVersion as usual`,
-      );
-    }
-    if (pulled.manifest === null) {
-      warnings.push(
-        `Environment ${displayText(input.environmentId)} has no manifest yet (created before manifests were introduced). This rotation initializes manifestVersion 1 — after it succeeds, every distribution of this environment is manifest-verified and a missing manifest is rejected (CRYPTO_SPEC §6.3)`,
-      );
-    }
-    // 初期化が実際に必要(欠落を確認した)実行は、rotate 複合を必ず送る:
-    // manifestVersion 1 の発行はメタ操作への同梱でしか起きない(§12-5)ため、
-    // 中断復旧(複合なしの再開)や「確認だけ」の早期 return を取ると、実行は
-    // 成功に見えるのに環境は未初期化のまま残る。--new-epoch と同じ経路選択に倒す
-    const mustInitialize = input.initManifest && pulled.manifest === null;
-    if (floorless) {
-      warnings.push(
-        `This environment has no local floor yet, so variables the server keeps omitting from responses (ones that exist but never appear in listings) are not covered by re-encryption, and the omission cannot be detected (omission detection in CRYPTO_SPEC §6.3 presumes a floor). For revocation-purpose rotations, re-run from a machine that has a floor and confirm the variable listing for ${displayText(input.environmentId)} matches`,
-      );
-    }
+    warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, pulled, floorless));
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified: pulled.verified,
@@ -1836,9 +1907,16 @@ function rotateWithWarnings(
     });
     const currentEpoch = keys.currentEpoch;
     const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
+    const path = rotatePathOf({
+      staleCount: stale.length,
+      reason,
+      forceNewEpoch: input.forceNewEpoch,
+      // 初期化が実際に必要(欠落を確認した)実行は rotate 複合を必ず送る
+      mustInitialize: input.initManifest && pulled.manifest === null,
+    });
 
     // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
-    if (stale.length > 0 && !input.forceNewEpoch && !mustInitialize) {
+    if (path === "resume") {
       return yield* resumeReencryption({
         input,
         pulled,
@@ -1856,7 +1934,7 @@ function rotateWithWarnings(
     // 再実行した利用者が理由を求められ、指定すると**二度目のローテーション**に
     // なってしまう。何もせず完了状態を報告する。
     // `--reason ""` はこの経路に入らない(checkReasonLength が手前で落とす)
-    if (reason === null && !input.forceNewEpoch && !mustInitialize) {
+    if (path === "up-to-date") {
       return {
         mode: "up-to-date",
         previousEpoch: currentEpoch,
@@ -1919,35 +1997,7 @@ function rotateWithWarnings(
       newEpoch,
       dek,
       dekCommitmentHex: commitment.value,
-      // 同梱マニフェストの材料は検証済み pull から組む(§16-2 の「自分の検証済み
-      // ビューから」と同じ姿勢 — サーバー申告値をそのまま署名しない)
-      manifestBase: {
-        previous:
-          pulled.manifest === null
-            ? null
-            : {
-                manifestVersion: pulled.manifest.manifestVersion,
-                signedBytesHashHex: pulled.manifest.signedBytesHashHex,
-              },
-        entries: [
-          ...pulled.variables.map((value) => ({
-            variableId: value.variableId,
-            status: "active" as const,
-            metaVersion: value.metaVersion,
-            metaSigHashHex: value.metaSignedBytesHashHex,
-          })),
-          ...pulled.tombstones.map((tombstone) => ({
-            variableId: tombstone.variableId,
-            status: "deleted" as const,
-            metaVersion: tombstone.metaVersion,
-            metaSigHashHex: tombstone.metaSigHashHex,
-          })),
-        ],
-        envMeta: {
-          metaVersion: pulled.environment.metaVersion,
-          sigHashHex: pulled.environment.metaSigHashHex,
-        },
-      },
+      manifestBase: manifestBaseOf(pulled),
     });
     yield* io.log(
       `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,

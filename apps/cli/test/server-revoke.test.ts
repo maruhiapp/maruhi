@@ -162,6 +162,29 @@ async function makeRevokeServer(input: {
   const counters = { appendAttempts: 0 };
   /** 環境ごとの保存済み最新マニフェスト(初回 pull で遅延発行 → rotate 受理で置換)。 */
   const manifests = new Map<string, WireDistributedManifest>();
+  const serveManifest = async (
+    environmentId: string,
+    environment: RevokeEnvironmentFixture,
+    statement: WireDistributedEnvironmentStatement | undefined,
+  ): Promise<WireDistributedManifest | undefined> => {
+    if (statement === undefined) {
+      return undefined;
+    }
+    let manifest = manifests.get(environmentId);
+    if (manifest === undefined) {
+      manifest = await manifestFor({
+        projectId,
+        environmentId,
+        epoch: environment.currentEpoch,
+        issuer: owner,
+        head: { seq: entries.length, hashHex: hashes[hashes.length - 1] ?? "" },
+        envStatement: statement,
+        statements: (environment.variables ?? []).map((variable) => variable.statement),
+      });
+      manifests.set(environmentId, manifest);
+    }
+    return manifest;
+  };
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
@@ -217,19 +240,6 @@ async function makeRevokeServer(input: {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: match[1] } };
       }
       const statement = listedStatements.find((item) => item.environmentId === match[1]);
-      let manifest = manifests.get(environmentId);
-      if (manifest === undefined && statement !== undefined) {
-        manifest = await manifestFor({
-          projectId,
-          environmentId,
-          epoch: environment.currentEpoch,
-          issuer: owner,
-          head: { seq: entries.length, hashHex: hashes[hashes.length - 1] ?? "" },
-          envStatement: statement,
-          statements: (environment.variables ?? []).map((variable) => variable.statement),
-        });
-        manifests.set(environmentId, manifest);
-      }
       return {
         status: 200,
         json: {
@@ -239,7 +249,7 @@ async function makeRevokeServer(input: {
           variables: environment.variables ?? [],
           deletedVariables: [],
           deks: environment.deks,
-          manifest,
+          manifest: await serveManifest(environmentId, environment, statement),
         },
       };
     },

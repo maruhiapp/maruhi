@@ -275,6 +275,28 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
   );
 }
 
+/** 検証側 envMeta(無指定はベクター context 自身の env_meta フィールド)。 */
+function verifyEnvMetaOf(negative: ManifestNegative, context: EnvManifestContext) {
+  if (negative.verify_env_meta === undefined) {
+    return envMetaOf(context);
+  }
+  return {
+    metaVersion: negative.verify_env_meta.meta_version,
+    sigHashHex: negative.verify_env_meta.meta_sig_hash_hex,
+  };
+}
+
+/** 検証側 predecessor(床 / 保存済み直前マニフェストのアンカー — 無指定なら検査なし)。 */
+function predecessorAnchorOf(negative: ManifestNegative) {
+  if (negative.predecessor === undefined) {
+    return undefined;
+  }
+  return {
+    signedBytesHashHex: negative.predecessor.signed_bytes_sha256_hex,
+    epoch: negative.predecessor.epoch,
+  };
+}
+
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
   c: Checks,
@@ -292,20 +314,8 @@ async function ruleNegativeCheck(
     // verify_entries = 検証側が再計算に使う集合(欠落・tombstone 隠し・順序違反の
     // 表現)。無指定はベクターの正規形集合
     entries: entriesOf(negative.verify_entries ?? negative.entries ?? []),
-    envMeta:
-      negative.verify_env_meta === undefined
-        ? envMetaOf(context)
-        : {
-            metaVersion: negative.verify_env_meta.meta_version,
-            sigHashHex: negative.verify_env_meta.meta_sig_hash_hex,
-          },
-    predecessor:
-      negative.predecessor === undefined
-        ? undefined
-        : {
-            signedBytesHashHex: negative.predecessor.signed_bytes_sha256_hex,
-            epoch: negative.predecessor.epoch,
-          },
+    envMeta: verifyEnvMetaOf(negative, context),
+    predecessor: predecessorAnchorOf(negative),
   });
   c.push(
     `env-manifest rule negative: ${negative.name}`,

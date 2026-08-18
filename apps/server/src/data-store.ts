@@ -87,7 +87,7 @@ interface MetaAnchor {
  * VariablesDigestEntry と構造一致。data-store は crypto に依存しないため
  * 構造型で持つ)。
  */
-export interface VariableDigestEntryRow {
+interface VariableDigestEntryRow {
   readonly variableId: string;
   readonly status: MetaStatementStatusInput;
   readonly metaVersion: number;

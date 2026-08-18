@@ -108,6 +108,52 @@ export const storedEnvMeta = (environmentId: string) =>
   });
 
 /**
+ * 非複合のメタ操作(変数の作成・rename・削除、環境 rename)の共通形:
+ * マニフェスト受理(§12-5)+ 書き込みフェーズ用のクロージャ。
+ * `digestOverride` は同梱ステートメント適用後の当該変数エントリ(変数を
+ * 伴わない操作は null)、`envMeta` 省略 = 保存済み環境メタ(環境 rename は
+ * 適用後 = 同梱ステートメント自身を渡す)。
+ */
+export const acceptManifestForMetaOp = (input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly manifest: EnvManifestInput;
+  readonly digestOverride: {
+    readonly variableId: string;
+    readonly status: "active" | "deleted";
+    readonly metaVersion: number;
+    readonly signedBytesHashHex: string;
+  } | null;
+  readonly envMeta?: EnvManifestEnvMeta;
+}) =>
+  Effect.gen(function* () {
+    const signedBytesHashHex = yield* acceptEnvManifest({
+      projectId: input.projectId,
+      environmentId: input.environmentId,
+      history: input.history,
+      member: input.member,
+      manifest: input.manifest,
+      entries: yield* manifestDigestEntries(input.environmentId, input.digestOverride),
+      envMeta: input.envMeta ?? (yield* storedEnvMeta(input.environmentId)),
+    });
+    const store = yield* DataStore;
+    return {
+      /** 書き込みフェーズ(単一の Effect.sync)内で呼ぶ — 最新 1 通の upsert(§12-8)。 */
+      writeSync: (nowMs: number): void => {
+        store.write.upsertEnvironmentManifest(
+          input.environmentId,
+          input.manifest,
+          signedBytesHashHex,
+          { userId: input.member.userId, keyFingerprintHex: input.member.keyFingerprintHex },
+          nowMs,
+        );
+      },
+    };
+  });
+
+/**
  * マニフェストの受理列(§12-5 の (1)〜(7)): manifestVersion CAS(6。409 は
  * 最新番号のみ)→ 保存済み直前マニフェストのアンカー取得(prev 検査 (5) と
  * エポック単調性の predecessor)→ crypto の複合検証(署名者一致 (1)・ヘッド

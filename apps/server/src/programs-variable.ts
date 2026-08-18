@@ -28,7 +28,7 @@ import {
   requireActiveEnvironment,
   requireActiveVariable,
 } from "./quotas.ts";
-import { acceptEnvManifest, manifestDigestEntries, storedEnvMeta } from "./verify-manifest.ts";
+import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import {
   acceptMetaStatement,
   ensureMetaCas,
@@ -153,19 +153,18 @@ export const createVariableProgram = (
     // (新変数のステートメントを含む集合)からダイジェストを再計算して申告と
     // 突合する。manifestVersion CAS は metaVersion CAS と同一トランザクション
     // (同一プログラム・同一 permit)で判定される
-    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+    const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
       history,
       member,
       manifest: input.manifest,
-      entries: yield* manifestDigestEntries(environmentId, {
+      digestOverride: {
         variableId: input.variableId,
         status: "active",
         metaVersion: input.statement.metaVersion,
         signedBytesHashHex: metaSignedBytesHashHex,
-      }),
-      envMeta: yield* storedEnvMeta(environmentId),
+      },
     });
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
     const audit = yield* AuditStore;
@@ -175,13 +174,7 @@ export const createVariableProgram = (
     // (「latest_version = 0 のまま ID だけ占有された変数」を残さない)
     yield* Effect.sync(() => {
       store.write.insertVariable(environmentId, input.variableId, input.statement.name, now);
-      store.write.upsertEnvironmentManifest(
-        environmentId,
-        input.manifest,
-        manifestSignedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
-        now,
-      );
+      acceptedManifest.writeSync(now);
       store.write.insertVariableMetaStatement(
         environmentId,
         input.variableId,
@@ -308,19 +301,18 @@ export const renameVariableProgram = (
       statement,
     });
     // マニフェストの複合受理(§12-5): rename 適用後の集合で再計算・突合
-    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+    const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
       history,
       member,
       manifest,
-      entries: yield* manifestDigestEntries(environmentId, {
+      digestOverride: {
         variableId,
         status: "active",
         metaVersion: statement.metaVersion,
         signedBytesHashHex,
-      }),
-      envMeta: yield* storedEnvMeta(environmentId),
+      },
     });
     const audit = yield* AuditStore;
     const now = Date.now();
@@ -333,13 +325,7 @@ export const renameVariableProgram = (
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
-      store.write.upsertEnvironmentManifest(
-        environmentId,
-        manifest,
-        manifestSignedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
-        now,
-      );
+      acceptedManifest.writeSync(now);
       audit.appendSync(
         dataEvent(actor, now, "var.renamed", {
           environmentId,
@@ -378,19 +364,18 @@ export const deleteVariableProgram = (
     });
     // マニフェストの複合受理(§12-5): tombstone を含む集合で再計算・突合
     // (tombstone 隠しの digest 不一致はここで落ちる — §4.3 (3))
-    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+    const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
       history,
       member,
       manifest,
-      entries: yield* manifestDigestEntries(environmentId, {
+      digestOverride: {
         variableId,
         status: "deleted",
         metaVersion: statement.metaVersion,
         signedBytesHashHex,
-      }),
-      envMeta: yield* storedEnvMeta(environmentId),
+      },
     });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
@@ -408,13 +393,7 @@ export const deleteVariableProgram = (
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
-      store.write.upsertEnvironmentManifest(
-        environmentId,
-        manifest,
-        manifestSignedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
-        now,
-      );
+      acceptedManifest.writeSync(now);
       audit.appendSync(
         dataEvent(actor, now, "var.deleted", {
           environmentId,

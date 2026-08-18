@@ -207,6 +207,27 @@ function chainHandler(): MockHandler {
   }));
 }
 
+/**
+ * 配布集合(override 済み)→ digest 入力。variableId 重複の override は digest
+ * 計算が受け付けないため後勝ちで畳む(重複自体はクライアントがマニフェスト検証
+ * より前に拒否する)。
+ */
+function digestStatementsOf(
+  variables: readonly unknown[],
+  deletedVariables: readonly unknown[],
+): readonly WireDistributedVariableStatement[] {
+  const digestInputs = new Map<string, WireDistributedVariableStatement>();
+  for (const entry of variables as readonly {
+    readonly statement: WireDistributedVariableStatement;
+  }[]) {
+    digestInputs.set(entry.statement.variableId, entry.statement);
+  }
+  for (const tombstone of deletedVariables as readonly WireDistributedVariableStatement[]) {
+    digestInputs.set(tombstone.variableId, tombstone);
+  }
+  return [...digestInputs.values()];
+}
+
 function pullHandler(overrides?: {
   readonly deks?: readonly unknown[];
   readonly variables?: readonly unknown[];
@@ -220,18 +241,7 @@ function pullHandler(overrides?: {
     const deletedVariables = overrides?.deletedVariables ?? [];
     // マニフェスト(§12-7)は**配布する集合そのもの**から計算する(override で
     // 改竄・差し替えした集合にも一致させる — 各テストの negative はマニフェスト
-    // ではなくステートメント / 値の検証で落ちることを検査している)。variableId
-    // 重複の override は digest 計算が受け付けないため後勝ちで畳む(重複自体は
-    // クライアントがマニフェスト検証より前に拒否する)
-    const digestInputs = new Map<string, WireDistributedVariableStatement>();
-    for (const entry of variables as readonly {
-      readonly statement: WireDistributedVariableStatement;
-    }[]) {
-      digestInputs.set(entry.statement.variableId, entry.statement);
-    }
-    for (const tombstone of deletedVariables as readonly WireDistributedVariableStatement[]) {
-      digestInputs.set(tombstone.variableId, tombstone);
-    }
+    // ではなくステートメント / 値の検証で落ちることを検査している)
     const manifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -239,7 +249,7 @@ function pullHandler(overrides?: {
       issuer: fixture.owner,
       head: headOf(built, 3),
       envStatement: statement as WireDistributedEnvironmentStatement,
-      statements: [...digestInputs.values()],
+      statements: digestStatementsOf(variables, deletedVariables),
     });
     return {
       status: 200,

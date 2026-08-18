@@ -19,7 +19,7 @@ import type {
 import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
-import { acceptEnvManifest, manifestDigestEntries } from "./verify-manifest.ts";
+import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "./verify-meta.ts";
 
 export const renameEnvironmentProgram = (
@@ -55,13 +55,13 @@ export const renameEnvironmentProgram = (
     // マニフェストの複合受理(§12-4 / §12-5): 環境 rename は新しい
     // envMetaSigHashHex を写したマニフェスト(manifestVersion + 1)を同梱する。
     // envMeta の期待値は rename 適用後 = 今回のステートメント自身
-    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+    const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
       history,
       member,
       manifest,
-      entries: yield* manifestDigestEntries(environmentId, null),
+      digestOverride: null,
       envMeta: { metaVersion: statement.metaVersion, sigHashHex: signedBytesHashHex },
     });
     const audit = yield* AuditStore;
@@ -74,13 +74,7 @@ export const renameEnvironmentProgram = (
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
-      store.write.upsertEnvironmentManifest(
-        environmentId,
-        manifest,
-        manifestSignedBytesHashHex,
-        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
-        now,
-      );
+      acceptedManifest.writeSync(now);
       audit.appendSync(
         dataEvent(actor, now, "env.renamed", {
           environmentId,

@@ -283,27 +283,35 @@ function decodeManifestFloor(value: unknown): ManifestFloor | null | undefined {
   };
 }
 
-function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
-  if (
-    !isRecord(value) ||
-    !isPositiveInteger(value["pullEpoch"]) ||
-    !isPositiveInteger(value["metaVersion"]) ||
-    !isHex64(value["metaSigHashHex"]) ||
-    !isRecord(value["variables"])
-  ) {
-    return null;
-  }
-  const manifest = decodeManifestFloor(value["manifest"]);
-  if (manifest === null) {
+/** 変数床レコードのデコード(1 件でも壊れていれば全体破損 — 厳格デコード)。 */
+function decodeVariablesRecord(value: unknown): Record<string, VariableFloor> | null {
+  if (!isRecord(value)) {
     return null;
   }
   const variables: Record<string, VariableFloor> = {};
-  for (const [variableId, raw] of Object.entries(value["variables"])) {
+  for (const [variableId, raw] of Object.entries(value)) {
     const variable = decodeVariableFloor(raw);
     if (variable === null || !isVariableId(variableId)) {
       return null;
     }
     variables[variableId] = variable;
+  }
+  return variables;
+}
+
+function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
+  if (
+    !isRecord(value) ||
+    !isPositiveInteger(value["pullEpoch"]) ||
+    !isPositiveInteger(value["metaVersion"]) ||
+    !isHex64(value["metaSigHashHex"])
+  ) {
+    return null;
+  }
+  const manifest = decodeManifestFloor(value["manifest"]);
+  const variables = decodeVariablesRecord(value["variables"]);
+  if (manifest === null || variables === null) {
+    return null;
   }
   return {
     pullEpoch: value["pullEpoch"],
@@ -450,59 +458,52 @@ function applyPull(commit: PullCommit): FloorMerge {
   };
 }
 
-function applyPush(commit: PushCommit): FloorMerge {
+/**
+ * 既存の環境レコードへの単調更新の共通骨格。環境床がない(並行破損等)場合、
+ * 環境レコードを捏造しない: 規則 (c) 基準(pullEpoch)は pull でしか確定できず、
+ * ここで作ると「チェーン同期単独で基準を前進させない」規範に反する。ヘッド
+ * 前進のみ反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)。
+ */
+function applyEnvironmentUpdate(
+  chainHead: ChainHeadFloor,
+  environmentId: string,
+  update: (environment: EnvironmentFloor) => EnvironmentFloor,
+): FloorMerge {
   return (current) => {
-    const base = applyHead(commit.chainHead)(current);
-    const environment = floorRecordGet(base.environments, commit.environmentId);
+    const base = applyHead(chainHead)(current);
+    const environment = floorRecordGet(base.environments, environmentId);
     if (environment === undefined) {
-      // 環境床がない(並行破損等)場合、変数床だけの環境レコードを作らない:
-      // 規則 (c) 基準(pullEpoch)は pull でしか確定できず、ここで捏造すると
-      // 「チェーン同期単独で基準を前進させない」規範に反する。ヘッド前進のみ
-      // 反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)
       return base;
     }
-    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
     return {
       ...base,
-      environments: {
-        ...base.environments,
-        [commit.environmentId]: {
-          ...environment,
-          ...(manifest === undefined ? {} : { manifest }),
-          variables: {
-            ...environment.variables,
-            [commit.variableId]: mergeVariableFloor(
-              floorRecordGet(environment.variables, commit.variableId),
-              commit.variable,
-            ),
-          },
-        },
-      },
+      environments: { ...base.environments, [environmentId]: update(environment) },
     };
   };
 }
 
-function applyManifest(commit: ManifestCommit): FloorMerge {
-  return (current) => {
-    const base = applyHead(commit.chainHead)(current);
-    const environment = floorRecordGet(base.environments, commit.environmentId);
-    if (environment === undefined) {
-      // applyPush と同じ理由で環境レコードを捏造しない(規則 (c) 基準 pullEpoch は
-      // pull でしか確定できない)。ヘッド前進のみ反映する(床は SHOULD)
-      return base;
-    }
+function applyPush(commit: PushCommit): FloorMerge {
+  return applyEnvironmentUpdate(commit.chainHead, commit.environmentId, (environment) => {
     const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
     return {
-      ...base,
-      environments: {
-        ...base.environments,
-        [commit.environmentId]: {
-          ...environment,
-          ...(manifest === undefined ? {} : { manifest }),
-        },
+      ...environment,
+      ...(manifest === undefined ? {} : { manifest }),
+      variables: {
+        ...environment.variables,
+        [commit.variableId]: mergeVariableFloor(
+          floorRecordGet(environment.variables, commit.variableId),
+          commit.variable,
+        ),
       },
     };
-  };
+  });
+}
+
+function applyManifest(commit: ManifestCommit): FloorMerge {
+  return applyEnvironmentUpdate(commit.chainHead, commit.environmentId, (environment) => {
+    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
+    return { ...environment, ...(manifest === undefined ? {} : { manifest }) };
+  });
 }
 
 function isFileMissingError(error: unknown): boolean {

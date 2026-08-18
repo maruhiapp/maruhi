@@ -194,24 +194,25 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
 const alphaEntry = () => ({ variableId: "va", statement: alphaStatement, value: alphaValue1 });
 
 /** 正直なマニフェスト(epoch 1・chain1 ヘッド・[ALPHA])。上書きで negative を作る。 */
-function manifestV1(overrides?: {
-  readonly statements?: readonly WireDistributedVariableStatement[];
-  readonly epoch?: number;
-  readonly head?: { readonly seq: number; readonly hashHex: string };
-  readonly issuer?: TestUser;
-  readonly manifestVersion?: number;
-}): Promise<WireDistributedManifest> {
+function manifestV1(
+  overrides: {
+    readonly statements?: readonly WireDistributedVariableStatement[];
+    readonly epoch?: number;
+    readonly head?: { readonly seq: number; readonly hashHex: string };
+    readonly issuer?: TestUser;
+    readonly manifestVersion?: number;
+  } = {},
+): Promise<WireDistributedManifest> {
+  const { manifestVersion } = overrides;
   return manifestFor({
     projectId,
     environmentId: ENV_ID,
-    epoch: overrides?.epoch ?? 1,
-    issuer: overrides?.issuer ?? owner,
-    head: overrides?.head ?? headOf(chain1, 4),
+    epoch: overrides.epoch ?? 1,
+    issuer: overrides.issuer ?? owner,
+    head: overrides.head ?? headOf(chain1, 4),
     envStatement,
-    statements: overrides?.statements ?? [alphaStatement],
-    ...(overrides?.manifestVersion === undefined
-      ? {}
-      : { manifestVersion: overrides.manifestVersion }),
+    statements: overrides.statements ?? [alphaStatement],
+    ...(manifestVersion === undefined ? {} : { manifestVersion }),
   });
 }
 

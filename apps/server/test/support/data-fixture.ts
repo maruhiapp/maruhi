@@ -258,15 +258,6 @@ export async function envMetaOf(
   };
 }
 
-/** 受理成功時のマニフェスト記録の前進(呼び出し側の 200 / 204 判定後に呼ぶ)。 */
-export function recordManifest(
-  fixture: DataFixture,
-  environmentId: string,
-  state: EnvManifestState,
-): void {
-  fixture.manifests.set(environmentId, state);
-}
-
 /**
  * 変数のメタ操作(作成・rename・削除)に同梱するマニフェストを署名する:
  * 記録済みのダイジェスト集合に当該変数のエントリを適用した形。成功時に

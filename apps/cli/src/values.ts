@@ -519,6 +519,66 @@ async function verifyActiveVariables(
   return { kind: "ok", value: { values, ids: seenIds } };
 }
 
+/** 検証段の実行結果(rejected は失敗チャネルへ潰し済み — future | ok の 2 値)。 */
+type StageResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "future" };
+
+/**
+ * 検証段の共通ラッパ: crypto 実行自体の失敗を CliError へ、rejected を失敗
+ * チャネルへ潰す(各段の残余は future | ok の 2 値になる)。
+ */
+function verifyStage<T>(
+  run: () => Promise<VerifyOutcome<T>>,
+  description: string,
+): Effect.Effect<StageResult<T>, CliError> {
+  return Effect.gen(function* () {
+    const outcome = yield* Effect.tryPromise({
+      try: run,
+      catch: () => cliError(`${description} failed to run (crypto error)`),
+    });
+    if (outcome.kind === "rejected") {
+      return yield* Effect.fail(cliError(outcome.message));
+    }
+    return outcome.kind === "future"
+      ? ({ kind: "future" } as const)
+      : ({ kind: "ok", value: outcome.value } as const);
+  });
+}
+
+/**
+ * マニフェスト段(§4.3 / §6.3): 欠落 = 一律拒否(唯一の例外は移行経路の
+ * allowMissingManifest — manifest.ts のモジュールコメント)。配布された場合は
+ * 検証済み全ステートメント(tombstone 込み)からダイジェストを再計算して照合する。
+ */
+function verifyManifestStage(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly manifest: DistributedEnvironmentManifest | undefined;
+  readonly allowMissingManifest: boolean;
+  readonly entries: readonly ManifestDigestEntry[];
+  readonly environment: VerifiedMetaEvidence;
+}): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
+  const wireManifest = input.manifest;
+  if (wireManifest === undefined) {
+    return input.allowMissingManifest
+      ? Effect.succeed({ kind: "ok", value: null } as const)
+      : Effect.fail(cliError(missingManifestMessage(input.environmentId)));
+  }
+  return verifyStage(
+    () =>
+      verifyDistributedManifest({
+        verified: input.verified,
+        environmentId: input.environmentId,
+        manifest: wireManifest,
+        entries: input.entries,
+        envMeta: {
+          metaVersion: input.environment.metaVersion,
+          sigHashHex: input.environment.metaSigHashHex,
+        },
+      }),
+    "Environment-manifest verification",
+  );
+}
+
 /**
  * pull 応答の共通検証骨格(§6.3): 環境ステートメント → アクティブ集合(値付き /
  * メタのみで差し替わる)→ tombstone → 名前検査 → **マニフェスト**(ダイジェスト
@@ -554,87 +614,51 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   CliError
 > {
   return Effect.gen(function* () {
-    const environment = yield* Effect.tryPromise({
-      try: () => verifyEnvironmentStatement(verified, environmentId, pull.statement),
-      catch: () => cliError("Environment-statement verification failed to run (crypto error)"),
-    });
+    const environment = yield* verifyStage(
+      () => verifyEnvironmentStatement(verified, environmentId, pull.statement),
+      "Environment-statement verification",
+    );
     if (environment.kind === "future") {
       return { kind: "future" } as const;
     }
-    if (environment.kind === "rejected") {
-      return yield* Effect.fail(cliError(environment.message));
-    }
-    const actives = yield* Effect.tryPromise({
-      try: verifyActives,
-      catch: () =>
-        cliError("Variable-statement / value-signature verification failed to run (crypto error)"),
-    });
+    const actives = yield* verifyStage(
+      verifyActives,
+      "Variable-statement / value-signature verification",
+    );
     if (actives.kind === "future") {
       return { kind: "future" } as const;
     }
-    if (actives.kind === "rejected") {
-      return yield* Effect.fail(cliError(actives.message));
-    }
-    const deleted = yield* Effect.tryPromise({
-      try: () =>
+    const deleted = yield* verifyStage(
+      () =>
         verifyDeletedStatements(verified, environmentId, pull.deletedVariables, actives.value.ids),
-      catch: () => cliError("Deleted-variable-statement verification failed to run (crypto error)"),
-    });
+      "Deleted-variable-statement verification",
+    );
     if (deleted.kind === "future") {
       return { kind: "future" } as const;
-    }
-    if (deleted.kind === "rejected") {
-      return yield* Effect.fail(cliError(deleted.message));
     }
     const warnings: string[] = [];
     const nameFailure = checkVerifiedNames(actives.value.values, warnings);
     if (nameFailure !== null) {
       return yield* Effect.fail(cliError(nameFailure));
     }
-    // マニフェスト検証(§4.3 / §6.3): 検証済み全ステートメント(tombstone 込み)
-    // からダイジェストを再計算して照合する。欠落 = 一律拒否(移行経路のみ許容)
-    const wireManifest = pull.manifest;
-    if (wireManifest === undefined) {
-      if (!allowMissingManifest) {
-        return yield* Effect.fail(cliError(missingManifestMessage(environmentId)));
-      }
-      return {
-        kind: "ok",
-        environment: environment.value,
-        variables: actives.value.values,
-        tombstones: deleted.value,
-        manifest: null,
-        warnings,
-      } as const;
-    }
-    const entries: ManifestDigestEntry[] = [
-      ...actives.value.values.map(digestEntryOf),
-      ...deleted.value.map((tombstone) => ({
-        variableId: tombstone.variableId,
-        status: "deleted" as const,
-        metaVersion: tombstone.metaVersion,
-        metaSigHashHex: tombstone.metaSigHashHex,
-      })),
-    ];
-    const manifest = yield* Effect.tryPromise({
-      try: () =>
-        verifyDistributedManifest({
-          verified,
-          environmentId,
-          manifest: wireManifest,
-          entries,
-          envMeta: {
-            metaVersion: environment.value.metaVersion,
-            sigHashHex: environment.value.metaSigHashHex,
-          },
-        }),
-      catch: () => cliError("Environment-manifest verification failed to run (crypto error)"),
+    const manifest = yield* verifyManifestStage({
+      verified,
+      environmentId,
+      manifest: pull.manifest,
+      allowMissingManifest,
+      entries: [
+        ...actives.value.values.map(digestEntryOf),
+        ...deleted.value.map((tombstone) => ({
+          variableId: tombstone.variableId,
+          status: "deleted" as const,
+          metaVersion: tombstone.metaVersion,
+          metaSigHashHex: tombstone.metaSigHashHex,
+        })),
+      ],
+      environment: environment.value,
     });
     if (manifest.kind === "future") {
       return { kind: "future" } as const;
-    }
-    if (manifest.kind === "rejected") {
-      return yield* Effect.fail(cliError(manifest.message));
     }
     return {
       kind: "ok",
