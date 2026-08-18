@@ -711,9 +711,17 @@ export function makeFloorHandle(input: {
               } else if (current !== null) {
                 // ディスクに環境レコードがない稀な形(破損の作り直し直後の
                 // レース — applyPush は基準を捏造しない)ではプロセス内の
-                // 知識だけを前進させる
+                // 知識だけを前進させる(変数作成の複合が発行したマニフェストも
+                // 単調に — commitManifest のフォールバックと同じ規律)
+                const advanced =
+                  manifest !== undefined &&
+                  (current.manifest === undefined ||
+                    manifest.manifestVersion >= current.manifest.manifestVersion)
+                    ? manifest
+                    : current.manifest;
                 current = {
                   ...current,
+                  ...(advanced === undefined ? {} : { manifest: advanced }),
                   variables: { ...current.variables, [variableId]: variable },
                 };
               }
