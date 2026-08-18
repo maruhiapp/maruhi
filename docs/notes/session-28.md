@@ -133,7 +133,7 @@ maruhi env rotate <environmentId> --init-manifest --reason "manifest initializat
 
 ## 3. 仕様乖離の有無(罠 1 の報告)
 
-**意味論の乖離なし**。実装中に「仕様が言い切っていない」2 点を仕様側へ
+**意味論の乖離なし**。実装中に「仕様が言い切っていない」3 点を仕様側へ
 明確化として追記した(いずれも既存様式の Status 行つき — 本 PR の「要裁定」):
 
 1. **AUTH_SPEC §12-5 (6)**: manifestVersion CAS の初期値 — 保存済み
@@ -141,6 +141,12 @@ maruhi env rotate <environmentId> --init-manifest --reason "manifest initializat
    初期化エンドポイントは設けない)
 2. **CRYPTO_SPEC §6.3**: 移行の明示初期化操作(`--init-manifest`)の境界 —
    緩めるのは欠落の許容のみ・床確立後の欠落は移行操作でも拒否
+3. **CRYPTO_SPEC §6.3**: 床規則 (c) のマニフェスト適用の基準 —
+   「pull 時点エポック床」と「床マニフェスト自身の epoch」の大きい方
+   (レビューボット指摘: rotate 受理直後・有界再同期の形で pull 基準が
+   遅れている窓に、旧エポック焼き込みの前進 manifestVersion が素通りする。
+   マニフェスト連鎖のエポック非減少 — §4.3 epoch-regressed — の推移形
+   なので誤検出を生まない強化)
 
 ## 4. テスト(session-27 §13-5 のマニフェスト項の対応)
 
