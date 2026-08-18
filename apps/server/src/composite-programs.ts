@@ -32,7 +32,12 @@ import {
 } from "./chain-accept.ts";
 import type { StateCache } from "./chain-store.ts";
 import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
-import type { DataActor, DekWrapInput, MetaStatementInput } from "./data-plane.ts";
+import type {
+  DataActor,
+  DekWrapInput,
+  EnvManifestInput,
+  MetaStatementInput,
+} from "./data-plane.ts";
 import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import type { DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
@@ -42,6 +47,7 @@ import {
   expectedWrapRecipientCount,
 } from "./dek-wraps.ts";
 import { ensureEnvironmentQuota, requireActiveEnvironment } from "./quotas.ts";
+import { acceptEnvManifest, manifestDigestEntries, storedEnvMeta } from "./verify-manifest.ts";
 import { ensureMetaStatementSignature, ensureNfcName } from "./verify-meta.ts";
 
 /** 複合受理の結果(RPC 境界を渡る)。 */
@@ -184,21 +190,34 @@ export const createEnvironmentCompositeProgram = (
     readonly entry: ChainEntry & { readonly op: "create_environment" };
     readonly statement: MetaStatementInput;
     readonly deks: readonly DekWrapInput[];
+    readonly manifest: EnvManifestInput;
   },
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
     const { chain, history, member, projectId } = yield* loadChainForComposite(actor.userId, cache);
     yield* ensureParentHead(chain, input.parentHeadHashHex);
-    // 複合内の宣言ヘッド(§12-4): 同梱ステートメントの宣言ヘッドは追記前の
-    // 現ヘッド(= 同梱エントリの prev)と厳密一致。CAS 通過後なので現ヘッド =
-    // parentHeadHashHex。ヘッド CAS 失敗の再試行ではエントリとステートメントの
-    // 両方を再署名する(クライアント側 — env-create.ts)
+    // 複合内の宣言ヘッド(§12-4): 同梱ステートメント・マニフェストの宣言ヘッドは
+    // 追記前の現ヘッド(= 同梱エントリの prev)と厳密一致。CAS 通過後なので
+    // 現ヘッド = parentHeadHashHex。ヘッド CAS 失敗の再試行ではエントリと
+    // ステートメントとマニフェストの全部を再署名する(クライアント側 — env-create.ts)
     if (
       input.statement.chainHeadHashHex !== chain.headHashHex ||
       input.statement.chainHeadSeq !== chain.headSeq
     ) {
       return yield* rejectData({ kind: "payload-mismatch", field: "statementChainHead" });
+    }
+    if (
+      input.manifest.chainHeadHashHex !== chain.headHashHex ||
+      input.manifest.chainHeadSeq !== chain.headSeq
+    ) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "manifestChainHead" });
+    }
+    // 複合内整合検査(§12-4): マニフェストの epoch = 同梱エントリが確立する
+    // エポック(作成 = 1)。ラップの epoch 検査と同じ複合内の早期拒否で、
+    // エポック整合の完全検証は acceptEnvManifest(適用後履歴)が行う
+    if (input.manifest.epoch !== 1) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
     }
     // 受理 4 手順のうち検査 3 手順(サイズ → 容量 → verifyChain — §6.4 の合意
     // 規則 = duplicate-environment / エポック順序 / role / コミットメント形式を
@@ -230,6 +249,18 @@ export const createEnvironmentCompositeProgram = (
       member,
       statement: input.statement,
     });
+    // 同梱マニフェストの受理(§12-4 / §12-5): manifestVersion 1・変数空集合・
+    // epoch 1。エポック整合は同梱エントリ適用後の履歴(applied.history — 宣言
+    // ヘッドの次エントリ = create_environment が epoch 1 を確立する形)で判定する
+    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+      projectId,
+      environmentId,
+      history: applied.history,
+      member,
+      manifest: input.manifest,
+      entries: [],
+      envMeta: { metaVersion: input.statement.metaVersion, sigHashHex: metaSignedBytesHashHex },
+    });
     // 同梱エントリ適用後の現エポックは常に 1(create_environment — §12-4)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -246,8 +277,8 @@ export const createEnvironmentCompositeProgram = (
       environmentId,
     });
     // 書き込みフェーズ: 単一の同期ブロック = 同一タスクで原子コミット
-    // (チェーンエントリ + ミラー + 環境行 + ステートメント行 + ラップ + 監査を
-    // 分割しない — §12-4)
+    // (チェーンエントリ + ミラー + 環境行 + ステートメント行 + マニフェスト +
+    // ラップ + 監査を分割しない — §12-4)
     yield* Effect.sync(() => {
       insertAcceptedEntrySync(
         writeContext,
@@ -261,6 +292,13 @@ export const createEnvironmentCompositeProgram = (
         environmentId,
         input.statement,
         metaSignedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        writeContext.nowMs,
+      );
+      store.write.upsertEnvironmentManifest(
+        environmentId,
+        input.manifest,
+        manifestSignedBytesHashHex,
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         writeContext.nowMs,
       );
@@ -285,6 +323,7 @@ export const rotateEpochCompositeProgram = (
     readonly parentHeadHashHex: string;
     readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
     readonly deks: readonly DekWrapInput[];
+    readonly manifest: EnvManifestInput;
   },
   cache: StateCache,
 ) =>
@@ -299,8 +338,33 @@ export const rotateEpochCompositeProgram = (
     // 削除済みを含まない。黙って受理して守るもののないエポックを進めない)
     yield* requireActiveEnvironment(environmentId);
     yield* ensureParentHead(chain, input.parentHeadHashHex);
+    // 複合内の宣言ヘッド(§12-4)とエポック(= new_epoch)の整合検査。
+    // ヘッド CAS 失敗の再試行ではエントリとマニフェストの両方を再署名する
+    if (
+      input.manifest.chainHeadHashHex !== chain.headHashHex ||
+      input.manifest.chainHeadSeq !== chain.headSeq
+    ) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "manifestChainHead" });
+    }
+    if (input.manifest.epoch !== input.entry.payload.newEpoch) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
+    }
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, input.entry);
     const appliedState = applied.state;
+    // 同梱マニフェストの受理(§12-5 (4): epoch = 同梱エントリ適用後の状態 =
+    // new_epoch — applied.history で判定)。メタ集合は不変(エポック前進の反映
+    // だけの再発行 — §4.3)なので entries は保存済みの最新形そのまま。
+    // マニフェスト導入前に作成された環境の最初の rotate は保存行なし(最新 0)
+    // から manifestVersion 1 を確立する(移行経路 — session-27 §14 PR-M1)
+    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+      projectId,
+      environmentId,
+      history: applied.history,
+      member,
+      manifest: input.manifest,
+      entries: yield* manifestDigestEntries(environmentId, null),
+      envMeta: yield* storedEnvMeta(environmentId),
+    });
     // 同梱エントリ適用後の現エポック = new_epoch(エポック順序は verifyChain 検証済み)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -322,6 +386,13 @@ export const rotateEpochCompositeProgram = (
         input.entry,
         applied,
         canonicalBytes,
+        writeContext.nowMs,
+      );
+      writeContext.dataStore.write.upsertEnvironmentManifest(
+        environmentId,
+        input.manifest,
+        manifestSignedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         writeContext.nowMs,
       );
       insertCompositeWrapsSync(writeContext, input.deks);

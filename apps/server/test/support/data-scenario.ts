@@ -6,7 +6,11 @@
 
 import { beforeEach, expect } from "vitest";
 
-import type { WireEncryptedPayload, WireVariableMetaStatement } from "./data-crypto.ts";
+import type {
+  WireEncryptedPayload,
+  WireEnvironmentManifest,
+  WireVariableMetaStatement,
+} from "./data-crypto.ts";
 import {
   createVariableStatement,
   encryptValue,
@@ -15,8 +19,9 @@ import {
   signValueAs,
 } from "./data-crypto.ts";
 import { makeDek, wrapDekForAll } from "./data-crypto.ts";
-import type { DataFixture } from "./data-fixture.ts";
+import type { DataFixture, EnvManifestState } from "./data-fixture.ts";
 import {
+  manifestForVariableOp,
   MEMBER,
   OWNER,
   projectId,
@@ -46,6 +51,33 @@ export function registerDataScenario(): void {
 }
 
 export const token = (userId: string): string => tokenOf(fixture.tokens, userId);
+
+/**
+ * 変数のメタ操作(作成・rename・削除)に同梱するマニフェスト(§12-5)を、
+ * 検証済みステートメントのハッシュから署名して返す(成功時は record で記録を
+ * 進める)。issuer は操作の実行者と一致させること(§12-5 (1))。
+ */
+export async function manifestForStatement(
+  statement: WireVariableMetaStatement,
+  authorUserId: string,
+  environmentId = ENV,
+): Promise<{ manifest: WireEnvironmentManifest; record: () => void }> {
+  const { manifest, state } = await manifestForVariableOp(fixture, {
+    environmentId,
+    issuerUserId: authorUserId,
+    entry: {
+      variableId: statement.variableId,
+      status: statement.status,
+      metaVersion: statement.metaVersion,
+      metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, authorUserId),
+    },
+  });
+  return { manifest, record: () => recordManifestState(environmentId, state) };
+}
+
+function recordManifestState(environmentId: string, state: EnvManifestState): void {
+  fixture.manifests.set(environmentId, state);
+}
 
 /** 変数作成に同梱するステートメント(metaVersion 1)を署名し、記録する。 */
 export async function variableStatementFor(
@@ -106,14 +138,16 @@ export async function renameVariableRequest(
     status: "active",
     authorUserId: actorUserId,
   });
+  const { manifest, record } = await manifestForStatement(statement, actorUserId);
   const response = await requestJson(
     "PATCH",
     `/environments/${ENV}/variables/${variableId}`,
     token(actorUserId),
-    { statement },
+    { statement, manifest },
   );
   if (response.status === 204) {
     varStatements.set(variableId, { statement, authorUserId: actorUserId });
+    record();
   }
   return response;
 }
@@ -134,14 +168,16 @@ export async function deleteVariableRequest(
     status: "deleted",
     authorUserId: actorUserId,
   });
+  const { manifest, record } = await manifestForStatement(statement, actorUserId);
   const response = await requestJson(
     "DELETE",
     `/environments/${ENV}/variables/${variableId}`,
     token(actorUserId),
-    { statement },
+    { statement, manifest },
   );
   if (response.status === 204) {
     varStatements.set(variableId, { statement, authorUserId: actorUserId });
+    record();
   }
   return response;
 }
@@ -162,6 +198,26 @@ export function unsignedVariableStatement(
     status: "active",
     metaVersion: 1,
     prevMetaSigHashHex: "",
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+    signatureHex: "00".repeat(64),
+  };
+}
+
+/**
+ * Schema 通過のみが必要なテスト(400 / 403 / 404 が署名検証より前に確定)用の
+ * 未署名ダミーマニフェスト(形式のみ有効なゼロ署名)。
+ */
+export function unsignedManifest(environmentId = ENV): WireEnvironmentManifest {
+  return {
+    suite: "maruhi/v1",
+    environmentId,
+    epoch: 1,
+    manifestVersion: 1,
+    variablesDigestHex: "ab".repeat(32),
+    envMetaVersion: 1,
+    envMetaSigHashHex: "ab".repeat(32),
+    prevManifestSigHashHex: "",
     chainHeadHashHex: fixture.head.hashHex,
     chainHeadSeq: fixture.head.seq,
     signatureHex: "00".repeat(64),
@@ -245,13 +301,16 @@ export async function createVariableOk(
     { writerUserId: MEMBER, head: fixture.head },
   );
   const statement = await variableStatementFor(MEMBER, variableId, name);
+  const { manifest, record } = await manifestForStatement(statement, MEMBER);
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
     statement,
     value,
+    manifest,
   });
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toEqual({ variableId, version: 1, epoch: 1 });
   varStatements.set(variableId, { statement, authorUserId: MEMBER });
+  record();
   return value;
 }
 

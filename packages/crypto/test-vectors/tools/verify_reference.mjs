@@ -944,6 +944,202 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- env-manifest.json ---------------------------------------------------------
+{
+  const doc = read("env-manifest.json");
+  const chain = read("chain-entries.json");
+  const projectId = chain.entries[0].entry_hash_hex;
+  const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  const importSigPub = (hex) =>
+    crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
+  // 検証は仕様ハードコードの順序で行い、JSON の宣言はそれとの一致を検査する
+  const MANIFEST_SIGNED_FIELDS_ORDER = [
+    "domain",
+    "project_id",
+    "environment_id",
+    "epoch",
+    "manifest_version",
+    "variables_digest_hex",
+    "env_meta_version",
+    "env_meta_sig_hash_hex",
+    "prev_manifest_sig_hash_hex",
+    "issuer_user_id",
+    "chain_head_hash_hex",
+    "chain_head_seq",
+  ];
+  const DIGEST_ENTRY_FIELDS_ORDER = ["variable_id", "status", "meta_version", "meta_sig_hash_hex"];
+  check(
+    "env-manifest: manifest_signed_fields_order matches spec",
+    sameOrder(doc.manifest_signed_fields_order, MANIFEST_SIGNED_FIELDS_ORDER),
+  );
+  check(
+    "env-manifest: digest_entry_fields_order matches spec",
+    sameOrder(doc.digest_entry_fields_order, DIGEST_ENTRY_FIELDS_ORDER),
+  );
+  const signedBytes = (ctx) => lpEncode(MANIFEST_SIGNED_FIELDS_ORDER.map((key) => ctx[key]));
+  const encoder = new TextEncoder();
+  const byteCompare = (a, b) => {
+    const ba = encoder.encode(a);
+    const bb = encoder.encode(b);
+    const n = Math.min(ba.length, bb.length);
+    for (let i = 0; i < n; i += 1) {
+      if (ba[i] !== bb[i]) return ba[i] - bb[i];
+    }
+    return ba.length - bb.length;
+  };
+  const digestInput = (entries, sort = true) => {
+    const ordered = sort
+      ? entries.toSorted((a, b) => byteCompare(a.variable_id, b.variable_id))
+      : entries;
+    return lpEncode([
+      "maruhi/v1/env-manifest-vars",
+      ...ordered.map((e) => lpEncode(DIGEST_ENTRY_FIELDS_ORDER.map((key) => e[key]))),
+    ]);
+  };
+  const digestHex = async (entries, sort = true) => sha256hex(digestInput(entries, sort));
+
+  // ダイジェストの LP 正規形(空集合・単一・tombstone・バイト昇順)
+  for (const c of doc.digests) {
+    check(
+      `env-manifest digest ${c.name}: input reconstruction`,
+      toHex(digestInput(c.entries)) === c.digest_input_hex,
+    );
+    check(
+      `env-manifest digest ${c.name}: sha256`,
+      (await digestHex(c.entries)) === c.variables_digest_hex,
+    );
+  }
+  {
+    const order = doc.digests.find((c) => c.name === "byte-ascending-order");
+    check(
+      "env-manifest digest byte-ascending-order: uppercase sorts before lowercase",
+      order.entries[0].variable_id.startsWith("Z") && order.entries[1].variable_id.startsWith("a"),
+    );
+  }
+
+  const byName = new Map(doc.vectors.map((v) => [v.name, v]));
+  const verifyManifest = async (v, label) => {
+    const ctx = v.context;
+    const bytes = signedBytes(ctx);
+    check(`env-manifest ${label}: signed bytes`, toHex(bytes) === v.signed_bytes_hex);
+    check(
+      `env-manifest ${label}: signed bytes sha256`,
+      (await sha256hex(bytes)) === v.signed_bytes_sha256_hex,
+    );
+    check(
+      `env-manifest ${label}: domain embeds suite`,
+      ctx.domain === `${ctx.suite}/env-manifest-sig`,
+    );
+    check(`env-manifest ${label}: project id is genesis hash`, ctx.project_id === projectId);
+    // ダイジェスト再計算(§4.3 (3)): entries はマニフェストが署名した集合の正規形
+    check(
+      `env-manifest ${label}: variables digest recomputation`,
+      (await digestHex(v.entries)) === ctx.variables_digest_hex,
+    );
+    const issuerKeys = chain.keys[ctx.issuer_user_id];
+    check(
+      `env-manifest ${label}: issuer fingerprint matches chain keys`,
+      issuerKeys.key_fingerprint_hex === v.issuer_key_fingerprint_hex,
+    );
+    const ok = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(issuerKeys.sig_pub_hex),
+      fromHex(v.signature_hex),
+      bytes,
+    );
+    check(`env-manifest ${label}: Ed25519 signature`, ok);
+  };
+
+  for (const v of doc.vectors) {
+    await verifyManifest(v, v.name);
+    check(
+      `env-manifest ${v.name}: head hash matches chain`,
+      v.context.chain_head_hash_hex === chain.entries[v.context.chain_head_seq - 1].entry_hash_hex,
+    );
+    // prev 連鎖: prev_base を持つベクターは直前 manifestVersion の signed_bytes ハッシュへ連鎖
+    if (v.prev_base !== undefined) {
+      check(
+        `env-manifest ${v.name}: prev links to ${v.prev_base}`,
+        v.context.prev_manifest_sig_hash_hex === byName.get(v.prev_base)?.signed_bytes_sha256_hex,
+      );
+    } else {
+      check(
+        `env-manifest ${v.name}: manifestVersion 1 has empty prev`,
+        v.context.prev_manifest_sig_hash_hex === "" && v.context.manifest_version === 1,
+      );
+    }
+  }
+  // tombstone 込みダイジェスト(§4.3): manifest-var-delete は deleted entry を列挙に含む
+  {
+    const del = byName.get("manifest-var-delete");
+    check(
+      "env-manifest manifest-var-delete: digest includes the tombstone",
+      del.entries.some((e) => e.status === "deleted"),
+    );
+  }
+
+  // fork: 両 branch とも署名有効・同一座標・prev 同一で signed_bytes が異なる
+  {
+    const [a, b] = doc.manifest_fork.branches;
+    for (const branch of [a, b]) {
+      await verifyManifest(branch, `fork ${branch.name}`);
+    }
+    const sameCoordinate =
+      a.context.environment_id === b.context.environment_id &&
+      a.context.manifest_version === b.context.manifest_version &&
+      a.context.prev_manifest_sig_hash_hex === b.context.prev_manifest_sig_hash_hex;
+    check(
+      "env-manifest fork: same coordinate, distinct signed bytes (equivocation evidence)",
+      sameCoordinate && a.signed_bytes_sha256_hex !== b.signed_bytes_sha256_hex,
+    );
+  }
+
+  for (const n of doc.negative) {
+    if (n.kind === "authorization") {
+      // 検証規則系は「暗号学的には有効(署名が正しい)」ことを確認する。
+      // expected_reason での拒否は実装テスト(§6.3 の履歴検証)が担う
+      const bytes = signedBytes(n.context);
+      const ok = await crypto.subtle.verify(
+        "Ed25519",
+        await importSigPub(n.verify_key_hex),
+        fromHex(n.signature_hex),
+        bytes,
+      );
+      check(
+        `env-manifest rule negative: ${n.name} (signature must be VALID)`,
+        ok && toHex(bytes) === n.signed_bytes_hex,
+      );
+      // ダイジェスト系: verify_entries(検証側集合)での再計算は署名済み
+      // ダイジェストと一致しない(欠落・tombstone 隠し・順序違反の固定)
+      if (n.verify_entries !== undefined) {
+        check(
+          `env-manifest rule negative: ${n.name} (verify-side digest differs)`,
+          (await digestHex(n.verify_entries)) !== n.context.variables_digest_hex,
+        );
+      }
+      continue;
+    }
+    const reconstructed = signedBytes(n.context);
+    const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
+    const verified = await crypto.subtle.verify(
+      "Ed25519",
+      await importSigPub(n.verify_key_hex),
+      fromHex(n.signature_hex),
+      reconstructed,
+    );
+    check(`env-manifest negative: ${n.name}`, bytesMatch && verified === false);
+  }
+  // digest-order-swap: 署名されたダイジェストは同一集合の**非正規順**での計算値
+  {
+    const swap = doc.negative.find((n) => n.name === "digest-order-swap");
+    check(
+      "env-manifest digest-order-swap: signed digest is the descending-order value",
+      (await digestHex(swap.entries.toReversed(), false)) === swap.context.variables_digest_hex &&
+        (await digestHex(swap.entries)) !== swap.context.variables_digest_hex,
+    );
+  }
+}
+
 // --- recovery-wrap.json ------------------------------------------------------
 {
   const doc = read("recovery-wrap.json");

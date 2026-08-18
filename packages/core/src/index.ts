@@ -10,6 +10,7 @@ export {
   CryptoDekWrapSignatureError,
   CryptoEncryptError,
   cryptoEffect,
+  CryptoEnvManifestInvalidError,
   CryptoInvalidInputError,
   CryptoInviteAcceptSignatureError,
   CryptoKeyExportError,

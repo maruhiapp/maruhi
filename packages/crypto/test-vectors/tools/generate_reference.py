@@ -2659,6 +2659,632 @@ def gen_metadata_signature():
 
 
 # ---------------------------------------------------------------------------
+# 3.8b env-manifest.json — §4.3 環境マニフェスト(Ed25519 + §2.1 LP)
+#
+# env_manifest_signed_bytes = LP("<suite>/env-manifest-sig", project_id,
+#                                environment_id, epoch, manifest_version,
+#                                variables_digest_hex,
+#                                env_meta_version, env_meta_sig_hash_hex,
+#                                prev_manifest_sig_hash_hex,
+#                                issuer_user_id, chain_head_hash_hex, chain_head_seq)
+# variables_digest_hex = lower_hex(SHA-256(LP("<suite>/env-manifest-vars",
+#                                             entry_1, …, entry_n)))
+# entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)
+#   (variable_id のバイト昇順。tombstone 込みの全ステートメントの最新形。空集合可。
+#    各 entry は入れ子 LP のバイト列として 1 フィールドで埋め込む —
+#    scope_environments と同じ規約)
+#
+# チェーン状態を要する検証規則系は chain-entries.json の正規 12 エントリチェーンを
+# 参照して構成する(value-signature / metadata-signature と同じ cross-file の先例)。
+# 発行契機と epoch 焼き込み(§4.3): 複合発行(環境作成・rotate)の宣言ヘッドは
+# 追記前の現ヘッドで、エポック整合は「宣言ヘッド時点の現エポックと一致、または
+# 宣言ヘッドの**次の**エントリ(= 同梱チェーンエントリ)が当該環境にちょうど
+# そのエポックを確立する」(AUTH_SPEC §12-5 (4) の「同梱エントリ適用後の状態」の
+# 検証側の形)。manifest-v1-create / manifest-rotate がこの形を positive で固定する。
+
+ENV_MANIFEST_SIG_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "epoch", "manifest_version",
+    "variables_digest_hex", "env_meta_version", "env_meta_sig_hash_hex",
+    "prev_manifest_sig_hash_hex", "issuer_user_id",
+    "chain_head_hash_hex", "chain_head_seq",
+]
+
+ENV_MANIFEST_VARS_DOMAIN = "maruhi/v1/env-manifest-vars"
+
+
+def manifest_signed_bytes(ctx: dict) -> bytes:
+    return lp_encode([ctx[key] for key in ENV_MANIFEST_SIG_FIELDS_ORDER])
+
+
+def variables_digest_input(entries: list, sort: bool = True) -> bytes:
+    """LP("<suite>/env-manifest-vars", entry_1, …, entry_n)(正規形は昇順)。"""
+    ordered = (
+        sorted(entries, key=lambda e: e["variable_id"].encode("utf-8")) if sort else entries
+    )
+    fields: list = [ENV_MANIFEST_VARS_DOMAIN]
+    for entry in ordered:
+        fields.append(lp_encode([
+            entry["variable_id"], entry["status"],
+            entry["meta_version"], entry["meta_sig_hash_hex"],
+        ]))
+    return lp_encode(fields)
+
+
+def variables_digest_hex(entries: list, sort: bool = True) -> str:
+    return sha256(variables_digest_input(entries, sort)).hex()
+
+
+def gen_env_manifest():
+    with open(os.path.join(OUT_DIR, "chain-entries.json"), encoding="utf-8") as fh:
+        chain = json.load(fh)
+    entries = chain["entries"]
+    project_id = entries[0]["entry_hash_hex"]
+    suite = "maruhi/v1"
+
+    def head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"]
+
+    def signer_of(user_id: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(chain["keys"][user_id]["sig_sk_seed_hex"])
+        )
+
+    def sig_pub_of(user_id: str) -> str:
+        return chain["keys"][user_id]["sig_pub_hex"]
+
+    def fp_of(user_id: str) -> str:
+        return chain["keys"][user_id]["key_fingerprint_hex"]
+
+    owner_id = "user-owner-0001"
+    member_id = "user-member-0002"
+    admin_id = "user-admin-0003"
+    env_id = "env-prod-0001"
+
+    # --- フィクスチャのメタステートメント(metadata-signature.json と同一入力・
+    # 同一ハッシュ。ダイジェストが要するのは (variable_id, status, meta_version,
+    # meta_sig_hash_hex) のタプルのみ — §4.3)---
+    def meta_hash(kind, environment_id, variable_id, name, status, meta_version,
+                  prev_hash_hex, author_id, head_seq):
+        ctx = {
+            "kind": kind,
+            "domain": f"{suite}/{'var' if kind == 'variable' else 'env'}-meta-sig",
+            "project_id": project_id,
+            "environment_id": environment_id,
+        }
+        if kind == "variable":
+            ctx["variable_id"] = variable_id
+        ctx.update({
+            "name": name,
+            "status": status,
+            "meta_version": meta_version,
+            "prev_meta_sig_hash_hex": prev_hash_hex,
+            "author_user_id": author_id,
+            "chain_head_hash_hex": head_hash(head_seq),
+            "chain_head_seq": head_seq,
+        })
+        return ctx, sha256(meta_signed_bytes(ctx)).hex()
+
+    env_meta_ctx, env_meta_v1_hash = meta_hash(
+        "environment", env_id, None, "Production", "active", 1, "", member_id, 2)
+    api_v1_ctx, api_v1_hash = meta_hash(
+        "variable", env_id, "var-api-key-0001", "API_KEY", "active", 1, "", admin_id, 12)
+    api_v2_ctx, api_v2_hash = meta_hash(
+        "variable", env_id, "var-api-key-0001", "API_KEY_ROTATED", "active", 2,
+        api_v1_hash, admin_id, 12)
+    api_v3_ctx, api_v3_hash = meta_hash(
+        "variable", env_id, "var-api-key-0001", "API_KEY_ROTATED", "deleted", 3,
+        api_v2_hash, admin_id, 12)
+    legacy_ctx, legacy_hash = meta_hash(
+        "variable", env_id, "var-legacy-0002", "LEGACY_TOKEN", "active", 1, "", member_id, 4)
+
+    def digest_entry(variable_id, status, meta_version, meta_sig_hash_hex):
+        return {
+            "variable_id": variable_id,
+            "status": status,
+            "meta_version": meta_version,
+            "meta_sig_hash_hex": meta_sig_hash_hex,
+        }
+
+    api_v1_entry = digest_entry("var-api-key-0001", "active", 1, api_v1_hash)
+    api_v2_entry = digest_entry("var-api-key-0001", "active", 2, api_v2_hash)
+    api_v3_entry = digest_entry("var-api-key-0001", "deleted", 3, api_v3_hash)
+    legacy_entry = digest_entry("var-legacy-0002", "active", 1, legacy_hash)
+
+    def make_context(environment_id, epoch, manifest_version, digest_hex,
+                     env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
+                     head_hash_hex, head_seq):
+        return {
+            "suite": suite,
+            "domain": f"{suite}/env-manifest-sig",
+            "project_id": project_id,
+            "environment_id": environment_id,
+            "epoch": epoch,
+            "manifest_version": manifest_version,
+            "variables_digest_hex": digest_hex,
+            "env_meta_version": env_meta_version,
+            "env_meta_sig_hash_hex": env_meta_hash,
+            "prev_manifest_sig_hash_hex": prev_hash_hex,
+            "issuer_user_id": issuer_id,
+            "chain_head_hash_hex": head_hash_hex,
+            "chain_head_seq": head_seq,
+        }
+
+    def make_manifest(name, environment_id, epoch, manifest_version, digest_entries,
+                      env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
+                      head_seq, note, prev_base=None):
+        digest_hex = variables_digest_hex(digest_entries)
+        ctx = make_context(environment_id, epoch, manifest_version, digest_hex,
+                           env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
+                           head_hash(head_seq), head_seq)
+        signed = manifest_signed_bytes(ctx)
+        vector = {
+            "name": name,
+            "context": ctx,
+            "issuer_key_fingerprint_hex": fp_of(issuer_id),
+            # ダイジェストの原像(正規形 = variable_id のバイト昇順)。検証側は
+            # これを再ダイジェストして context の variables_digest_hex と照合する
+            "entries": sorted(digest_entries, key=lambda e: e["variable_id"].encode("utf-8")),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(issuer_id).sign(signed).hex(),
+            "note": note,
+        }
+        if prev_base is not None:
+            vector["prev_base"] = prev_base
+        return vector
+
+    # --- 正例(session-27 §13-2): 発行契機ごとの manifest_version 連鎖。
+    # mv1(環境作成)→ mv2(rotate)→ mv3(削除済み issuer の在籍中座標)→
+    # mv4(変数作成)→ mv5(rename)→ mv6(削除 = tombstone 込みダイジェスト)---
+    mv1 = make_manifest(
+        "manifest-v1-create", env_id, 1, 1, [], 1, env_meta_v1_hash, "", member_id, 2,
+        "環境作成複合の同梱マニフェスト(manifestVersion 1、変数空集合、epoch 1)。"
+        "宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。"
+        "宣言ヘッド時点に環境は未存在だが、次エントリ(seq 3)が epoch 1 を確立する = "
+        "複合発行のエポック整合(§12-5 (4) の検証側の形)",
+    )
+    mv2 = make_manifest(
+        "manifest-rotate", env_id, 2, 2, [], 1, env_meta_v1_hash,
+        mv1["signed_bytes_sha256_hex"], member_id, 3,
+        "rotate 複合の同梱マニフェスト(エポック前進の反映 — メタ集合は不変でも再発行する。§4.3)。"
+        "宣言ヘッド seq 3 の次のエントリ(seq 4 = rotate_epoch)が epoch 2 を確立する",
+        prev_base="manifest-v1-create",
+    )
+    mv3 = make_manifest(
+        "manifest-removed-issuer", env_id, 2, 3, [legacy_entry], 1, env_meta_v1_hash,
+        mv2["signed_bytes_sha256_hex"], member_id, 4,
+        "seq 5 で削除済みの issuer による在籍区間内(head 4)の過去マニフェスト"
+        "(変数 var-legacy-0002 の作成に伴う発行)。削除後も当時の鍵・当時の現エポック"
+        "(head 4 時点 = 2)で検証できる(§6.3-1 の対応物)",
+        prev_base="manifest-rotate",
+    )
+    mv4 = make_manifest(
+        "manifest-var-create", env_id, 2, 4, [api_v1_entry, legacy_entry], 1, env_meta_v1_hash,
+        mv3["signed_bytes_sha256_hex"], admin_id, 12,
+        "変数作成(var-api-key-0001)後のマニフェスト。ダイジェストは 2 変数を "
+        "variable_id のバイト昇順で列挙する",
+        prev_base="manifest-removed-issuer",
+    )
+    mv5 = make_manifest(
+        "manifest-var-rename", env_id, 2, 5, [api_v2_entry, legacy_entry], 1, env_meta_v1_hash,
+        mv4["signed_bytes_sha256_hex"], admin_id, 12,
+        "rename(metaVersion 2)後のマニフェスト。prev = manifest-var-create の signed_bytes の "
+        "SHA-256(§4.3 の連鎖)",
+        prev_base="manifest-var-create",
+    )
+    mv6 = make_manifest(
+        "manifest-var-delete", env_id, 2, 6, [api_v3_entry, legacy_entry], 1, env_meta_v1_hash,
+        mv5["signed_bytes_sha256_hex"], admin_id, 12,
+        "削除後のマニフェスト。ダイジェストは tombstone(status deleted、metaVersion 3)を"
+        "含む(§4.3 — tombstone 隠しは digest-tombstone-omitted が negative で固定)",
+        prev_base="manifest-var-rename",
+    )
+    vectors = [mv1, mv2, mv3, mv4, mv5, mv6]
+
+    # --- fork(§14.2-5): 同一 (environment, manifestVersion, prev) に対する内容の
+    # 異なる 2 つの有効マニフェスト。単体ではどちらも全検証を通り、組になって
+    # 初めて equivocation の暗号学的証拠になる(signed_bytes_sha256 の相違)---
+    fork_branches = [
+        make_manifest(
+            "manifest-fork-a", env_id, 2, 5, [api_v2_entry, legacy_entry], 1, env_meta_v1_hash,
+            mv4["signed_bytes_sha256_hex"], admin_id, 12,
+            "manifestVersion 5 の分岐 A(admin が署名。rename 適用後の集合)",
+            prev_base="manifest-var-create",
+        ),
+        make_manifest(
+            "manifest-fork-b", env_id, 2, 5, [legacy_entry], 1, env_meta_v1_hash,
+            mv4["signed_bytes_sha256_hex"], owner_id, 12,
+            "manifestVersion 5 の分岐 B(owner が署名。var-api-key-0001 を落とした集合)。"
+            "A と同一座標・同一 prev でダイジェストが異なる",
+            prev_base="manifest-var-create",
+        ),
+    ]
+
+    # --- ダイジェストの LP 正規形の固定(空集合・単一・複数・バイト昇順)---
+    order_entries = [
+        digest_entry("alpha-var-0001", "active", 1, sha256(b"digest-fixture-alpha").hex()),
+        digest_entry("Zeta-var-0002", "active", 2, sha256(b"digest-fixture-zeta").hex()),
+    ]
+    digest_cases = [
+        {
+            "name": "empty-set",
+            "entries": [],
+            "digest_input_hex": variables_digest_input([]).hex(),
+            "variables_digest_hex": variables_digest_hex([]),
+            "note": "変数ゼロの環境では要素 0 の LP(空集合も有効なダイジェストを持つ — §4.3)",
+        },
+        {
+            "name": "single-entry",
+            "entries": [api_v1_entry],
+            "digest_input_hex": variables_digest_input([api_v1_entry]).hex(),
+            "variables_digest_hex": variables_digest_hex([api_v1_entry]),
+            "note": "entry = LP(variable_id, status, meta_version, meta_sig_hash_hex) を"
+                    "入れ子 LP の 1 フィールドとして埋め込む",
+        },
+        {
+            "name": "tombstone-entry",
+            "entries": [api_v3_entry, legacy_entry],
+            "digest_input_hex": variables_digest_input([api_v3_entry, legacy_entry]).hex(),
+            "variables_digest_hex": variables_digest_hex([api_v3_entry, legacy_entry]),
+            "note": "tombstone(status deleted)も全ステートメントの最新形として列挙に含む",
+        },
+        {
+            "name": "byte-ascending-order",
+            "entries": sorted(order_entries, key=lambda e: e["variable_id"].encode("utf-8")),
+            "digest_input_hex": variables_digest_input(order_entries).hex(),
+            "variables_digest_hex": variables_digest_hex(order_entries),
+            "note": "順序は variable_id の**バイト**昇順(UTF-8): 'Zeta-var-0002'(Z = 0x5a)が "
+                    "'alpha-var-0001'(a = 0x61)より先に来る(ロケール・大文字小文字非依存の固定)",
+        },
+    ]
+
+    # --- tenure 跨ぎ検査用の派生チェーン(value / metadata と同一内容。
+    # chain-entries.json 本体は変更しない)---
+    rejoined = make_user(pat(0x74, 32), pat(0x84, 32))
+    readd_payload = {
+        "target_user_id": member_id,
+        "enc_pub_hex": rejoined["enc_pub_hex"],
+        "sig_pub_hex": rejoined["sig_pub_hex"],
+        "role": "member",
+    }
+    owner_fp = chain["keys"][owner_id]["key_fingerprint_hex"]
+    readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
+    readd_ts = 1754006400000 + 12000
+    readd_signed = lp_encode(
+        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts]
+    )
+    readd_sig = signer_of(owner_id).sign(readd_signed)
+    readd_entry_bytes = lp_encode(
+        [suite, 13, head_hash(12), "add_member", owner_id, owner_fp, readd_pb, readd_ts,
+         readd_sig.hex()]
+    )
+    tenure_extension = {
+        "note": "key-from-other-tenure 用の派生チェーン(value-signature.json / "
+                "metadata-signature.json と同一内容): 正規 12 エントリの後に seq 13 で "
+                "user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。"
+                "chain-entries.json 本体は変更しない",
+        "rejoined_member": {
+            "user_id": member_id,
+            "enc_sk_seed_hex": pat(0x74, 32).hex(),
+            "sig_sk_seed_hex": pat(0x84, 32).hex(),
+            "enc_pub_hex": rejoined["enc_pub_hex"],
+            "sig_pub_hex": rejoined["sig_pub_hex"],
+            "key_fingerprint_hex": rejoined["fp_hex"],
+        },
+        "entry": {
+            "seq": 13,
+            "suite": suite,
+            "prev_hash_hex": head_hash(12),
+            "op": "add_member",
+            "actor": {"user_id": owner_id, "key_fingerprint_hex": owner_fp},
+            "payload": readd_payload,
+            "timestamp_ms": readd_ts,
+            "payload_bytes_hex": readd_pb.hex(),
+            "signed_bytes_hex": readd_signed.hex(),
+            "signature_hex": readd_sig.hex(),
+            "entry_bytes_hex": readd_entry_bytes.hex(),
+            "entry_hash_hex": sha256(readd_entry_bytes).hex(),
+        },
+    }
+
+    # --- negative(署名系): 改竄・移植 = 元署名を維持したまま signed_bytes を
+    # 差し替え、Ed25519 検証が失敗することを固定する(metadata-signature と同じ形)---
+    base_sig = bytes.fromhex(mv4["signature_hex"])
+    tampered_sig = bytearray(base_sig)
+    tampered_sig[-1] ^= 0x01
+
+    def make_negative(name, overrides, note, base_vector=None, verify_key_hex=None,
+                      signature=None):
+        source = base_vector if base_vector is not None else mv4
+        ctx = dict(source["context"], **overrides)
+        return {
+            "name": name,
+            "base": source["name"],
+            "context": ctx,
+            "verify_signed_bytes_hex": manifest_signed_bytes(ctx).hex(),
+            "signature_hex": (signature.hex() if signature is not None
+                              else source["signature_hex"]),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None
+            else sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        make_negative(
+            "tampered-signature", {},
+            "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
+            signature=bytes(tampered_sig),
+        ),
+        make_negative(
+            "tampered-digest", {"variables_digest_hex": variables_digest_hex([])},
+            "variables_digest_hex の差し替え(集合の改竄)は元署名の検証に失敗する"
+            "(ダイジェストは署名対象 — §4.3)",
+        ),
+        make_negative(
+            "transplant-project", {"project_id": "proj-other-0002"},
+            "別プロジェクトへの座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-environment", {"environment_id": "env-dev-0002"},
+            "別環境への座標移植は署名検証に失敗する",
+        ),
+        make_negative(
+            "transplant-issuer", {"issuer_user_id": owner_id},
+            "issuer_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — "
+            "§4.3 の issuer 焼き込み)",
+        ),
+        make_negative(
+            "wrong-issuer-key", {},
+            "issuer 以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)",
+            verify_key_hex=sig_pub_of(owner_id),
+        ),
+        make_negative(
+            "chain-head-swap", {"chain_head_hash_hex": head_hash(11)},
+            "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)",
+        ),
+        make_negative(
+            "chain-head-seq-mismatch", {"chain_head_seq": 11},
+            "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)",
+        ),
+        make_negative(
+            "suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/env-manifest-sig"},
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+    ]
+
+    # --- negative(検証規則系。kind = "authorization"): 署名は有効だが、検証済み
+    # チェーン履歴・検証済みステートメント集合・直前マニフェストに対する §4.3 / §6.3 の
+    # 検証規則で拒否されるべきもの。expected_reason は実装の理由コードを固定する。
+    # verify_entries / verify_env_meta は「検証側が再計算に使う集合・環境メタ」が
+    # 署名された内容と食い違う形(欠落・注入・tombstone 隠し)の表現 ---
+    ghost = make_user(pat(0x78, 32), pat(0x88, 32))
+    ghost_signer = Ed25519PrivateKey.from_private_bytes(pat(0x88, 32))
+
+    def rule_negative(name, environment_id, epoch, manifest_version, digest_entries,
+                      env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
+                      head_hash_hex, head_seq, expected_reason, note,
+                      chain_ref="canonical", issuer_fp=None, sign_with=None,
+                      verify_key_hex=None, predecessor=None, verify_entries=None,
+                      verify_env_meta=None, digest_sort=True):
+        digest_hex = variables_digest_hex(digest_entries, sort=digest_sort)
+        ctx = make_context(environment_id, epoch, manifest_version, digest_hex,
+                           env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
+                           head_hash_hex, head_seq)
+        signed = manifest_signed_bytes(ctx)
+        signer = sign_with if sign_with is not None else signer_of(issuer_id)
+        case = {
+            "name": name,
+            "kind": "authorization",
+            "chain": chain_ref,
+            "context": ctx,
+            "issuer_key_fingerprint_hex": issuer_fp if issuer_fp is not None else fp_of(issuer_id),
+            "entries": (digest_entries if digest_sort
+                        else sorted(digest_entries,
+                                    key=lambda e: e["variable_id"].encode("utf-8"))),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer.sign(signed).hex(),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None
+            else sig_pub_of(issuer_id),
+            "expected_reason": expected_reason,
+            "must_fail": True,
+            "note": note,
+        }
+        if predecessor is not None:
+            case["predecessor"] = predecessor
+        if verify_entries is not None:
+            case["verify_entries"] = verify_entries
+        if verify_env_meta is not None:
+            case["verify_env_meta"] = verify_env_meta
+        return case
+
+    def predecessor_of(vector):
+        return {
+            "base": vector["name"],
+            "signed_bytes_sha256_hex": vector["signed_bytes_sha256_hex"],
+            "epoch": vector["context"]["epoch"],
+        }
+
+    rule_negatives = [
+        rule_negative(
+            "head-not-in-chain", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], admin_id, sha256(b"not-in-chain").hex(), 12,
+            "chain-head-mismatch",
+            "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)"
+            "または偽造の硬い証拠として即時拒否(§6.3-2a)",
+        ),
+        rule_negative(
+            "head-beyond-local-seq", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], admin_id, sha256(b"future-head").hex(), 13,
+            "chain-head-future",
+            "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、"
+            "延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)",
+        ),
+        rule_negative(
+            "issuer-removed-at-head", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], member_id, head_hash(12), 12,
+            "issuer-not-member-at-head",
+            "seq 5 で削除済みの issuer が削除後のヘッド(12)を宣言する形は拒否する"
+            "(削除済みメンバーの鍵による新規マニフェストの遮断 — §6.3-3)",
+        ),
+        rule_negative(
+            "issuer-role-insufficient", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], admin_id, head_hash(6), 6,
+            "issuer-role-insufficient-at-head",
+            "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。マニフェストの"
+            "発行契機はすべて member 以上のメタ操作 — reader 署名は拒否する(§4.3)",
+        ),
+        rule_negative(
+            "key-from-other-tenure", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], member_id,
+            tenure_extension["entry"]["entry_hash_hex"], 13,
+            "issuer-key-mismatch-at-head",
+            "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間の"
+            "ヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)",
+            chain_ref="tenure-extension",
+        ),
+        rule_negative(
+            "issuer-unknown-in-history", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], "user-ghost-0042", head_hash(12), 12,
+            "issuer-unknown",
+            "チェーン履歴のどの時点にも存在しない issuer_user_id / 鍵 FP の組は検証鍵を選択"
+            "できず拒否する(署名自体は本 negative の鍵で有効)",
+            issuer_fp=ghost["fp_hex"], sign_with=ghost_signer,
+            verify_key_hex=ghost["sig_pub_hex"],
+        ),
+        rule_negative(
+            "environment-not-created-at-head", "env-stage-0003", 1, 1, [], 1,
+            sha256(b"stage-env-meta-placeholder").hex(), "", owner_id, head_hash(2), 2,
+            "environment-not-created-at-head",
+            "env-stage-0003 の create_environment は seq 11。宣言ヘッド(seq 2)時点に環境は"
+            "未存在で、次エントリ(seq 3)も当該環境のエポックを確立しない — 既定値への"
+            "フォールバック実装を禁止する(値署名の §6.3-4 後段と同型)",
+        ),
+        rule_negative(
+            "epoch-not-current-at-head", env_id, 1, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12,
+            "epoch-not-current-at-head",
+            "head 12 時点の env-prod-0001 の現エポックは 2(rotate は seq 4)。旧エポック 1 を"
+            "焼き込んだマニフェストは、宣言ヘッド時点のエポック整合で拒否する(§4.3 の核 — "
+            "write 資格を失った鍵は現エポックのマニフェストを署名できない)",
+        ),
+        rule_negative(
+            "epoch-regression", env_id, 1, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], member_id, head_hash(3), 3,
+            "epoch-regressed",
+            "rotate(seq 4 → epoch 2)後に、在籍区間内の旧ヘッド(seq 3 — 当時の現エポック 1)を"
+            "宣言して旧エポックを焼き込んだ前進 manifest_version(4)。宣言ヘッド時点の"
+            "エポック整合は通るが、検証済みの直前マニフェスト(epoch 2)からのエポック後退として"
+            "拒否する(§4.1 単調性のマニフェスト版 — 本設計の核となる negative)",
+            predecessor=predecessor_of(mv3),
+        ),
+        rule_negative(
+            "v1-nonempty-prev", env_id, 1, 1, [], 1, env_meta_v1_hash,
+            sha256(b"phantom-manifest-predecessor").hex(), member_id, head_hash(2), 2,
+            "prev-shape-mismatch",
+            "manifestVersion 1 の prev_manifest_sig_hash_hex は空文字列でなければならない(§4.3)。"
+            "predecessor を保持しない latest-only 検証でも形は必ず検査する",
+        ),
+        rule_negative(
+            "v2-empty-prev", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            "", admin_id, head_hash(12), 12,
+            "prev-shape-mismatch",
+            "manifestVersion > 1 の prev_manifest_sig_hash_hex は 64 文字 hex でなければならない(§4.3)",
+        ),
+        rule_negative(
+            "prev-hash-mismatch", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            sha256(b"wrong-manifest-predecessor").hex(), admin_id, head_hash(12), 12,
+            "prev-hash-mismatch",
+            "既知の直前 manifestVersion(manifest-removed-issuer)の signed_bytes ハッシュと "
+            "prev が一致しない連鎖不整合(§6.3-6)。署名は有効 — Ed25519 failure に潰さない",
+            predecessor=predecessor_of(mv3),
+        ),
+        rule_negative(
+            "digest-variable-omitted", env_id, 2, 4, [api_v1_entry, legacy_entry], 1,
+            env_meta_v1_hash, mv3["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12,
+            "variables-digest-mismatch",
+            "マニフェストは 2 変数のダイジェストを署名しているが、配布から "
+            "var-api-key-0001 のステートメントを落とした集合での再計算は一致しない"
+            "(ステートメントの欠落の検出 — §4.3 (3))",
+            verify_entries=[legacy_entry],
+        ),
+        rule_negative(
+            "digest-tombstone-omitted", env_id, 2, 6, [api_v3_entry, legacy_entry], 1,
+            env_meta_v1_hash, mv5["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12,
+            "variables-digest-mismatch",
+            "tombstone(var-api-key-0001 の deleted ステートメント)を配布から隠した集合での"
+            "再計算は一致しない(削除の隠蔽 = 無断復活の入口の検出 — §4.3 (3))",
+            verify_entries=[legacy_entry],
+        ),
+        rule_negative(
+            "digest-order-swap", env_id, 2, 4,
+            [legacy_entry, api_v1_entry], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12,
+            "variables-digest-mismatch",
+            "昇順違反(降順)で計算されたダイジェストを署名したマニフェストは、正規形"
+            "(バイト昇順)での再計算と一致しない(順序はダイジェストの正規形の一部 — §4.3)",
+            digest_sort=False,
+        ),
+        rule_negative(
+            "env-meta-mismatch", env_id, 2, 4, [], 1, env_meta_v1_hash,
+            mv3["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12,
+            "env-meta-mismatch",
+            "マニフェストの (env_meta_version, env_meta_sig_hash_hex) が検証済みの環境メタ"
+            "ステートメントと一致しない(環境メタの差し替え・古い環境メタへの固定の検出 — "
+            "AUTH_SPEC §12-5 (7) の再計算対象)",
+            verify_env_meta={
+                "meta_version": 2,
+                "meta_sig_hash_hex": sha256(b"other-env-meta").hex(),
+            },
+        ),
+    ]
+
+    write(
+        "env-manifest.json",
+        {
+            "description": "CRYPTO_SPEC §4.3: 環境マニフェスト(Ed25519)。env_manifest_signed_bytes = LP(\"<suite>/env-manifest-sig\", project_id, environment_id, epoch, manifest_version, variables_digest_hex, env_meta_version, env_meta_sig_hash_hex, prev_manifest_sig_hash_hex, issuer_user_id, chain_head_hash_hex, chain_head_seq)、variables_digest_hex = lower_hex(SHA-256(LP(\"<suite>/env-manifest-vars\", entry_1, …, entry_n)))、entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)(variable_id のバイト昇順。tombstone 込み。空集合可)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+            "manifest_signed_fields_order": ENV_MANIFEST_SIG_FIELDS_ORDER,
+            "digest_entry_fields_order": [
+                "variable_id", "status", "meta_version", "meta_sig_hash_hex",
+            ],
+            "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / manifest_version / env_meta_version / meta_version / chain_head_seq)は 10 進文字列化。ダイジェストの各 entry は入れ子 LP のバイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys",
+            "composite_epoch_rule": "エポック整合(§4.3 (2) / AUTH_SPEC §12-5 (4)): マニフェストの epoch は宣言ヘッド時点の当該環境の現エポックと一致するか、または宣言ヘッドの次のエントリ(= 複合発行の同梱チェーンエントリ)が当該環境にちょうどそのエポックを確立する(環境作成複合 = epoch 1、rotate 複合 = new_epoch。宣言ヘッドは追記前ヘッド — §12-4)。manifest-v1-create / manifest-rotate が positive、epoch-not-current-at-head / environment-not-created-at-head が negative としてこれを固定する",
+            "statements": {
+                "note": "ダイジェスト入力のフィクスチャ(metadata-signature.json と同一入力・同一ハッシュのステートメント)。ダイジェストが要するのは (variable_id, status, meta_version, meta_sig_hash_hex) のみ(§4.3)",
+                "env_meta_v1": {"context": env_meta_ctx, "signed_bytes_sha256_hex": env_meta_v1_hash},
+                "api_key_v1": {"context": api_v1_ctx, "signed_bytes_sha256_hex": api_v1_hash},
+                "api_key_v2_rename": {"context": api_v2_ctx, "signed_bytes_sha256_hex": api_v2_hash},
+                "api_key_v3_delete": {"context": api_v3_ctx, "signed_bytes_sha256_hex": api_v3_hash},
+                "legacy_v1": {"context": legacy_ctx, "signed_bytes_sha256_hex": legacy_hash},
+            },
+            "extra_keys": {
+                "ghost": {
+                    "note": "issuer-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+                    "enc_sk_seed_hex": pat(0x78, 32).hex(),
+                    "sig_sk_seed_hex": pat(0x88, 32).hex(),
+                    "enc_pub_hex": ghost["enc_pub_hex"],
+                    "sig_pub_hex": ghost["sig_pub_hex"],
+                    "key_fingerprint_hex": ghost["fp_hex"],
+                },
+            },
+            "tenure_extension": tenure_extension,
+            "digests": digest_cases,
+            "vectors": vectors,
+            "manifest_fork": {
+                "note": "同一座標(env-prod-0001 × manifestVersion 5)に対する内容の異なる 2 つの"
+                        "有効マニフェスト。各 branch は単体で §4.3 / §6.3 の全検証を通り(両方 "
+                        "verify 成功)、組として signed_bytes_sha256_hex の相違 = サーバー "
+                        "equivocation の否認不能な証拠になる(§14.2-5。防止ではなく証拠化)",
+                "branches": fork_branches,
+            },
+            "negative": negatives + rule_negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3.9 invite-accept-signature.json — §6.5 招待受諾署名(Ed25519 + §2.1 LP)
 #
 # signed_bytes = LP(domain, project_id, invite_token_hash_hex,
@@ -2883,5 +3509,6 @@ if __name__ == "__main__":
     gen_dek_commitment()
     gen_value_signature()  # chain-entries.json / 上記の出力を参照するため後段で生成
     gen_metadata_signature()  # 同上(chain-entries.json を参照)
+    gen_env_manifest()  # 同上(chain-entries.json を参照。§4.3)
     gen_invite_accept_signature()
     gen_recovery_wrap()

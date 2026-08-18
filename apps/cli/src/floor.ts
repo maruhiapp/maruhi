@@ -57,6 +57,18 @@ export type VariableFloor =
       readonly metaSigHashHex: string;
     };
 
+/**
+ * 環境マニフェストの床(CRYPTO_SPEC §6.3 の 2026-08-18 拡張 — manifest_version /
+ * その epoch / signed_bytes ハッシュ)。規則 (a) の後退・(b) の同版相違・
+ * (c) のマニフェスト適用(前進 manifestVersion への旧エポック注入)の検出材料。
+ */
+export interface ManifestFloor {
+  readonly manifestVersion: number;
+  /** そのマニフェストが焼き込んだ epoch(規則 (c) のマニフェスト適用の材料)。 */
+  readonly epoch: number;
+  readonly manifestSigHashHex: string;
+}
+
 /** 環境 1 つ分の床。 */
 export interface EnvironmentFloor {
   /**
@@ -69,6 +81,14 @@ export interface EnvironmentFloor {
   /** 環境メタステートメントの床(巻き戻し検出のみ — 前進注入は非保証 §14.3-5)。 */
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
+  /**
+   * 環境マニフェストの床(§6.3 — 2026-08-18)。**欠落は「マニフェスト床なし」
+   * として許容する**: マニフェスト導入前に書かれた v1 床ファイルにこの
+   * フィールドはなく、欠落を全体破損(fail-open の作り直し)に落とすと既存の
+   * 値・メタ床の検出材料まで捨てることになる(session-27 §14 PR-M1 の移行 —
+   * 床のバージョンを上げない後方互換の追加)。
+   */
+  readonly manifest?: ManifestFloor;
   /** キーは variableId(名前を書かない)。 */
   readonly variables: Readonly<Record<string, VariableFloor>>;
 }
@@ -101,6 +121,24 @@ export interface PushCommit {
   readonly environmentId: string;
   readonly variableId: string;
   readonly variable: VariableFloor;
+  /**
+   * 変数作成の複合が発行したマニフェストの床前進(自計算値 — §6.3)。
+   * push(既存変数)はマニフェストを発行しないため undefined。
+   */
+  readonly manifest?: ManifestFloor;
+}
+
+/**
+ * rotate 複合の受理時のコミット(自分が署名した次 manifestVersion を床へ昇格 —
+ * §6.3)。変数床は動かさない(再暗号化 push が個別に commitPush する)。
+ * これを怠ると、受理後も床が pull 時点の旧 manifestVersion のままになり、
+ * 「自分が進めた version より古いマニフェストを配布し続けるサーバー」を
+ * 規則 (a) が検出できない窓が生まれる。
+ */
+export interface ManifestCommit {
+  readonly chainHead: ChainHeadFloor;
+  readonly environmentId: string;
+  readonly manifest: ManifestFloor;
 }
 
 /** Load / commit boundary for the local floor files (§6.3). */
@@ -125,6 +163,14 @@ export interface FloorStoreShape {
   readonly commitPush: (
     projectId: string,
     commit: PushCommit,
+  ) => Effect.Effect<EnvironmentFloor | null, CliError>;
+  /**
+   * 受理された rotate 複合のマニフェスト床前進(pullEpoch・変数床は動かさない)。
+   * マージ済み環境床(環境レコードがディスクにない場合は null)を返す。
+   */
+  readonly commitManifest: (
+    projectId: string,
+    commit: ManifestCommit,
   ) => Effect.Effect<EnvironmentFloor | null, CliError>;
 }
 
@@ -212,28 +258,66 @@ export function floorRecordGet<T>(
   return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
+/**
+ * マニフェスト床のデコード。**フィールド自体の欠落(undefined)は「マニフェスト
+ * 床なし」として許容**(マニフェスト導入前の v1 床ファイルとの互換 — 既存の
+ * 値・メタ床の検出材料を捨てない)。存在するのに形が壊れている場合は他の
+ * フィールドと同じく全体破損(厳格デコード)。
+ */
+function decodeManifestFloor(value: unknown): ManifestFloor | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
   if (
     !isRecord(value) ||
-    !isPositiveInteger(value["pullEpoch"]) ||
-    !isPositiveInteger(value["metaVersion"]) ||
-    !isHex64(value["metaSigHashHex"]) ||
-    !isRecord(value["variables"])
+    !isPositiveInteger(value["manifestVersion"]) ||
+    !isPositiveInteger(value["epoch"]) ||
+    !isHex64(value["manifestSigHashHex"])
   ) {
     return null;
   }
+  return {
+    manifestVersion: value["manifestVersion"],
+    epoch: value["epoch"],
+    manifestSigHashHex: value["manifestSigHashHex"],
+  };
+}
+
+/** 変数床レコードのデコード(1 件でも壊れていれば全体破損 — 厳格デコード)。 */
+function decodeVariablesRecord(value: unknown): Record<string, VariableFloor> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
   const variables: Record<string, VariableFloor> = {};
-  for (const [variableId, raw] of Object.entries(value["variables"])) {
+  for (const [variableId, raw] of Object.entries(value)) {
     const variable = decodeVariableFloor(raw);
     if (variable === null || !isVariableId(variableId)) {
       return null;
     }
     variables[variableId] = variable;
   }
+  return variables;
+}
+
+function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
+  if (
+    !isRecord(value) ||
+    !isPositiveInteger(value["pullEpoch"]) ||
+    !isPositiveInteger(value["metaVersion"]) ||
+    !isHex64(value["metaSigHashHex"])
+  ) {
+    return null;
+  }
+  const manifest = decodeManifestFloor(value["manifest"]);
+  const variables = decodeVariablesRecord(value["variables"]);
+  if (manifest === null || variables === null) {
+    return null;
+  }
   return {
     pullEpoch: value["pullEpoch"],
     metaVersion: value["metaVersion"],
     metaSigHashHex: value["metaSigHashHex"],
+    ...(manifest === undefined ? {} : { manifest }),
     variables,
   };
 }
@@ -307,7 +391,21 @@ function mergeVariableFloor(
   };
 }
 
-/** 環境床の単調マージ(pullEpoch は max・メタは metaVersion の大きい側・変数は単調 union)。 */
+/** マニフェスト床の単調マージ(manifestVersion の大きい側が勝つ。欠落側は負けない)。 */
+function mergeManifestFloor(
+  existing: ManifestFloor | undefined,
+  incoming: ManifestFloor | undefined,
+): ManifestFloor | undefined {
+  if (existing === undefined) {
+    return incoming;
+  }
+  if (incoming === undefined) {
+    return existing;
+  }
+  return incoming.manifestVersion >= existing.manifestVersion ? incoming : existing;
+}
+
+/** 環境床の単調マージ(pullEpoch は max・メタ / マニフェストは版の大きい側・変数は単調 union)。 */
 function mergeEnvironmentFloor(
   existing: EnvironmentFloor | undefined,
   incoming: EnvironmentFloor,
@@ -316,6 +414,7 @@ function mergeEnvironmentFloor(
     return incoming;
   }
   const meta = incoming.metaVersion >= existing.metaVersion ? incoming : existing;
+  const manifest = mergeManifestFloor(existing.manifest, incoming.manifest);
   // union: 正当な床の変数キーは消えない(削除も tombstone レコードとして残る)
   // ため、片側にしかない変数は保持する
   const variables: Record<string, VariableFloor> = { ...existing.variables };
@@ -329,6 +428,7 @@ function mergeEnvironmentFloor(
     pullEpoch: Math.max(existing.pullEpoch, incoming.pullEpoch),
     metaVersion: meta.metaVersion,
     metaSigHashHex: meta.metaSigHashHex,
+    ...(manifest === undefined ? {} : { manifest }),
     variables,
   };
 }
@@ -358,34 +458,52 @@ function applyPull(commit: PullCommit): FloorMerge {
   };
 }
 
-function applyPush(commit: PushCommit): FloorMerge {
+/**
+ * 既存の環境レコードへの単調更新の共通骨格。環境床がない(並行破損等)場合、
+ * 環境レコードを捏造しない: 規則 (c) 基準(pullEpoch)は pull でしか確定できず、
+ * ここで作ると「チェーン同期単独で基準を前進させない」規範に反する。ヘッド
+ * 前進のみ反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)。
+ */
+function applyEnvironmentUpdate(
+  chainHead: ChainHeadFloor,
+  environmentId: string,
+  update: (environment: EnvironmentFloor) => EnvironmentFloor,
+): FloorMerge {
   return (current) => {
-    const base = applyHead(commit.chainHead)(current);
-    const environment = floorRecordGet(base.environments, commit.environmentId);
+    const base = applyHead(chainHead)(current);
+    const environment = floorRecordGet(base.environments, environmentId);
     if (environment === undefined) {
-      // 環境床がない(並行破損等)場合、変数床だけの環境レコードを作らない:
-      // 規則 (c) 基準(pullEpoch)は pull でしか確定できず、ここで捏造すると
-      // 「チェーン同期単独で基準を前進させない」規範に反する。ヘッド前進のみ
-      // 反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)
       return base;
     }
     return {
       ...base,
-      environments: {
-        ...base.environments,
-        [commit.environmentId]: {
-          ...environment,
-          variables: {
-            ...environment.variables,
-            [commit.variableId]: mergeVariableFloor(
-              floorRecordGet(environment.variables, commit.variableId),
-              commit.variable,
-            ),
-          },
-        },
-      },
+      environments: { ...base.environments, [environmentId]: update(environment) },
     };
   };
+}
+
+function applyPush(commit: PushCommit): FloorMerge {
+  return applyEnvironmentUpdate(commit.chainHead, commit.environmentId, (environment) => {
+    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
+    return {
+      ...environment,
+      ...(manifest === undefined ? {} : { manifest }),
+      variables: {
+        ...environment.variables,
+        [commit.variableId]: mergeVariableFloor(
+          floorRecordGet(environment.variables, commit.variableId),
+          commit.variable,
+        ),
+      },
+    };
+  });
+}
+
+function applyManifest(commit: ManifestCommit): FloorMerge {
+  return applyEnvironmentUpdate(commit.chainHead, commit.environmentId, (environment) => {
+    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
+    return { ...environment, ...(manifest === undefined ? {} : { manifest }) };
+  });
 }
 
 function isFileMissingError(error: unknown): boolean {
@@ -475,6 +593,10 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
       ),
     commitPush: (projectId, commit) =>
       write(projectId, applyPush(commit)).pipe(
+        Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
+      ),
+    commitManifest: (projectId, commit) =>
+      write(projectId, applyManifest(commit)).pipe(
         Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
       ),
   };

@@ -25,7 +25,9 @@ import {
   hexBytes,
   makeTestUser,
   removeMemberOp,
+  statementHashOf,
   type TestUser,
+  variablesDigestOf,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
@@ -45,6 +47,20 @@ interface CompositeCreateBody {
     readonly signatureHex: string;
   };
   readonly deks: WrappedDek[];
+  /** 同梱マニフェスト(§12-4 — manifestVersion 1・変数空集合・prev 空)。 */
+  readonly manifest: {
+    readonly suite: string;
+    readonly environmentId: string;
+    readonly epoch: number;
+    readonly manifestVersion: number;
+    readonly variablesDigestHex: string;
+    readonly envMetaVersion: number;
+    readonly envMetaSigHashHex: string;
+    readonly prevManifestSigHashHex: string;
+    readonly chainHeadHashHex: string;
+    readonly chainHeadSeq: number;
+    readonly signatureHex: string;
+  };
 }
 
 let servers: MockServer[] = [];
@@ -225,6 +241,33 @@ describe("maruhi env create", () => {
       expectedCommitmentHex: body.entry.payload.dekCommitmentHex,
     });
     expect(matched.ok).toBe(true);
+    // 同梱マニフェスト(§12-4): manifestVersion 1・変数空集合の正規ダイジェスト・
+    // prev 空・epoch 1(複合適用後 — §12-5 (4))・宣言ヘッドは追記前の現ヘッド。
+    // envMeta は同梱ステートメントの (metaVersion, signed bytes ハッシュ)
+    expect(body.manifest.manifestVersion).toBe(1);
+    expect(body.manifest.prevManifestSigHashHex).toBe("");
+    expect(body.manifest.environmentId).toBe("staging");
+    expect(body.manifest.epoch).toBe(1);
+    expect(body.manifest.chainHeadHashHex).toBe(head);
+    expect(body.manifest.chainHeadSeq).toBe(built.entries.length);
+    expect(body.manifest.variablesDigestHex).toBe(await variablesDigestOf(built.projectId, []));
+    expect(body.manifest.envMetaVersion).toBe(1);
+    expect(body.manifest.envMetaSigHashHex).toBe(
+      await statementHashOf(built.projectId, {
+        suite: "maruhi/v1",
+        environmentId: "staging",
+        name: "Staging",
+        status: "active",
+        metaVersion: 1,
+        prevMetaSigHashHex: "",
+        chainHeadHashHex: head,
+        chainHeadSeq: built.entries.length,
+        signatureHex: body.statement.signatureHex,
+        authorUserId: owner.userId,
+        authorKeyFingerprintHex: owner.fingerprintHex,
+      }),
+    );
+    expect(body.manifest.signatureHex).toMatch(/^[0-9a-f]{128}$/);
   });
 
   it("ChainHeadConflict(409)は再同期してエントリを再署名し、リトライする(§12-4)", async () => {

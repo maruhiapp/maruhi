@@ -41,6 +41,7 @@ import {
   fixture,
   registerDataScenario,
   token,
+  unsignedManifest,
   VAR,
   wrapsFor,
 } from "./support/data-scenario.ts";
@@ -341,6 +342,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
         head: fixture.head,
       }),
       deks,
+      manifest: unsignedManifest(),
     });
     expect(response.status).toBe(403);
     expect(((await response.json()) as { reason: string }).reason).toBe("actor-mismatch");

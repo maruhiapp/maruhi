@@ -33,6 +33,7 @@ import {
   headOf,
   hexBytes,
   makeTestUser,
+  manifestFor,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -303,6 +304,16 @@ async function leaseResponseFor(
     statement: envStatement,
     variables: resolved.variables,
     deletedVariables: [],
+    manifest: await manifestFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: resolved.currentEpoch,
+      issuer: fixture.owner,
+      // 宣言ヘッドは申告エポックが現エポックである位置(create = 2、rotate = 3)
+      head: headOf(built, resolved.currentEpoch === 1 ? 2 : 3),
+      envStatement,
+      statements: resolved.variables.map((entry) => entry.statement),
+    }),
     leases: [
       await wrapFor(1, dek1),
       await wrapFor(2, dek2),

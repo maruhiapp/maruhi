@@ -18,7 +18,9 @@ import type {
 import {
   computeChainEntryHash,
   computeDekCommitment,
+  computeEnvManifestSignedBytesHash,
   computeMetaSignedBytesHash,
+  computeVariablesDigest,
   decryptVariable,
   encodeHex,
   encryptVariable,
@@ -29,6 +31,7 @@ import {
   importSigningPublicKey,
   signChainEntry,
   signDekWrap,
+  signEnvManifest,
   signMetaStatement,
   signValue,
   SUITE_ID,
@@ -530,6 +533,102 @@ export async function metaSignedBytesHashOf(
   return unwrapResult(
     await computeMetaSignedBytesHash(metaContextOf(projectId, statement, authorUserId)),
     "computeMetaSignedBytesHash",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5 — PR-M1)
+// ---------------------------------------------------------------------------
+
+/** variables_digest の 1 エントリ(§4.3 — tombstone 込みの全変数の最新形)。 */
+export interface WireDigestEntry {
+  readonly variableId: string;
+  readonly status: "active" | "deleted";
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+}
+
+/** 環境マニフェストのワイヤ表現(EnvironmentManifest — §12-2)。 */
+export interface WireEnvironmentManifest {
+  readonly suite: typeof SUITE_ID;
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly variablesDigestHex: string;
+  readonly envMetaVersion: number;
+  readonly envMetaSigHashHex: string;
+  readonly prevManifestSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+}
+
+/** variables_digest の正規形計算(空集合可 — §4.3)。 */
+export async function digestOf(entries: readonly WireDigestEntry[]): Promise<string> {
+  return unwrapResult(await computeVariablesDigest(SUITE_ID, entries), "computeVariablesDigest");
+}
+
+function manifestContextOf(
+  projectId: string,
+  manifest: Omit<WireEnvironmentManifest, "signatureHex">,
+  issuerUserId: string,
+) {
+  return {
+    suite: manifest.suite,
+    projectId,
+    environmentId: manifest.environmentId,
+    epoch: manifest.epoch,
+    manifestVersion: manifest.manifestVersion,
+    variablesDigestHex: manifest.variablesDigestHex,
+    envMetaVersion: manifest.envMetaVersion,
+    envMetaSigHashHex: manifest.envMetaSigHashHex,
+    prevManifestSigHashHex: manifest.prevManifestSigHashHex,
+    issuerUserId,
+    chainHeadHashHex: manifest.chainHeadHashHex,
+    chainHeadSeq: manifest.chainHeadSeq,
+  };
+}
+
+/**
+ * 署名なしマニフェストに §4.3 の issuer 署名を付ける(署名者 = API を呼ぶ主体と
+ * 一致させること — §12-5 (1))。
+ */
+export async function signEnvManifestAs(
+  issuerUserId: string,
+  projectId: string,
+  unsigned: Omit<WireEnvironmentManifest, "signatureHex">,
+): Promise<WireEnvironmentManifest> {
+  const keys = vectorKeyOf(issuerUserId);
+  const pair = unwrapResult(
+    await importSigningKeyPair({
+      publicKey: hexBytes(keys.sig_pub_hex),
+      privateSeed: hexBytes(keys.sig_sk_seed_hex),
+    }),
+    "importSigningKeyPair",
+  );
+  const signatureHex = unwrapResult(
+    await signEnvManifest({
+      context: manifestContextOf(projectId, unsigned, issuerUserId),
+      signingKey: pair.privateKey,
+    }),
+    "signEnvManifest",
+  );
+  return { ...unsigned, signatureHex };
+}
+
+/**
+ * env_manifest_signed_bytes の SHA-256(次 manifestVersion の
+ * prevManifestSigHashHex に使う — §4.3 の連鎖)。issuer はワイヤに載らないため
+ * 明示指定する。
+ */
+export async function manifestSignedBytesHashOf(
+  projectId: string,
+  manifest: WireEnvironmentManifest,
+  issuerUserId: string,
+): Promise<string> {
+  return unwrapResult(
+    await computeEnvManifestSignedBytesHash(manifestContextOf(projectId, manifest, issuerUserId)),
+    "computeEnvManifestSignedBytesHash",
   );
 }
 

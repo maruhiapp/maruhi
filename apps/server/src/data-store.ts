@@ -9,8 +9,10 @@ import { Context, Effect, Layer } from "effect";
 
 import type {
   DekWrapInput,
+  DistributedEnvManifestValue,
   DistributedMetaStatementValue,
   DistributedVariableMetaStatementValue,
+  EnvManifestInput,
   MetaStatementInput,
   MetaStatementStatusInput,
   PulledVariableValue,
@@ -80,6 +82,29 @@ interface MetaAnchor {
   readonly status: MetaStatementStatusInput;
 }
 
+/**
+ * variables_digest の 1 エントリ(CRYPTO_SPEC §4.3 — @maruhi/crypto の
+ * VariablesDigestEntry と構造一致。data-store は crypto に依存しないため
+ * 構造型で持つ)。
+ */
+interface VariableDigestEntryRow {
+  readonly variableId: string;
+  readonly status: MetaStatementStatusInput;
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+}
+
+/**
+ * 保存済み最新マニフェストの検証アンカー: manifestVersion(CAS — §12-5 (6))・
+ * サーバー再計算の signed_bytes ハッシュ(prev 検査 — (5))・当時のエポック
+ * (predecessor のエポック単調性検査)。
+ */
+interface EnvManifestAnchor {
+  readonly manifestVersion: number;
+  readonly signedBytesHashHex: string;
+  readonly epoch: number;
+}
+
 /** アクティブ数と行数(tombstone 込み)。§12-8 の数量ポリシー判定用。 */
 interface ResourceCounts {
   readonly active: number;
@@ -139,6 +164,18 @@ export interface DataWriteOps {
   ) => void;
   /** tombstone 化 + 全バージョン(暗号文)の即時削除。deleted ステートメントは残る。 */
   readonly retireVariable: (environmentId: string, variableId: string, nowMs: number) => void;
+  /**
+   * 環境マニフェストの upsert(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)。保持は
+   * 環境ごとに**最新 1 通のみ**(§12-5 — 過去行を要する検証経路が存在しない)。
+   * issuer は受理時点のチェーン導出メンバー(= 署名検証に使った鍵の持ち主)。
+   */
+  readonly upsertEnvironmentManifest: (
+    environmentId: string,
+    manifest: EnvManifestInput,
+    signedBytesHashHex: string,
+    issuer: MetaAuthorInfo,
+    nowMs: number,
+  ) => void;
   /** バージョン行の挿入と latest_version の前進(書き込みロック下で呼ぶ)。 */
   readonly insertVersion: (
     environmentId: string,
@@ -200,6 +237,20 @@ interface DataStoreShape {
     environmentId: string,
     metaVersion: number,
   ) => Effect.Effect<MetaAnchor | null>;
+  /**
+   * 最新の環境マニフェスト(配布形 — §12-7 の同梱材料)。マニフェスト導入前に
+   * 作成された環境は初期化(最初のメタ操作 / rotate)まで null(移行の過渡状態)。
+   */
+  readonly environmentManifest: (
+    environmentId: string,
+  ) => Effect.Effect<DistributedEnvManifestValue | null>;
+  /**
+   * 最新マニフェストの検証アンカー(manifestVersion CAS = §12-5 (6) と prev
+   * 検査 = (5) の材料。epoch は predecessor のエポック単調性検査に使う)。
+   */
+  readonly environmentManifestAnchor: (
+    environmentId: string,
+  ) => Effect.Effect<EnvManifestAnchor | null>;
 
   readonly findVariable: (
     environmentId: string,
@@ -228,6 +279,14 @@ interface DataStoreShape {
   readonly activeVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
+  /**
+   * 全変数(tombstone 込み)の最新ステートメントのダイジェストタプル
+   * (CRYPTO_SPEC §4.3 の variables_digest 再計算材料 — §12-5 (7))。
+   * metaSigHashHex はサーバー再計算の signed_bytes ハッシュ。
+   */
+  readonly variableDigestEntries: (
+    environmentId: string,
+  ) => Effect.Effect<readonly VariableDigestEntryRow[]>;
 
   /** アクティブ変数の最新バージョン + 最新ステートメント一覧(一括 pull 用)。 */
   readonly latestVersions: (
@@ -525,6 +584,57 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
           .toArray()[0],
       ),
     ),
+  // 配布(§12-2)は signed_bytes_hash_hex を選択しない = 配布しない(検証者が
+  // 自ら再計算する — ステートメント配布と同じ規律)
+  environmentManifest: (environmentId: string) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          `SELECT environment_id, suite, epoch, manifest_version, variables_digest_hex,
+                  env_meta_version, env_meta_sig_hash_hex, prev_manifest_sig_hash_hex,
+                  chain_head_hash_hex, chain_head_seq, signature_hex,
+                  issuer_user_id, issuer_key_fingerprint
+           FROM environment_manifests WHERE environment_id = ?`,
+          environmentId,
+        )
+        .toArray()[0];
+      if (row === undefined) {
+        return null;
+      }
+      return {
+        environmentId: stringColumn(row, "environment_id"),
+        suite: storedSuite(columnValue(row, "suite")),
+        epoch: numberColumn(row, "epoch"),
+        manifestVersion: numberColumn(row, "manifest_version"),
+        variablesDigestHex: stringColumn(row, "variables_digest_hex"),
+        envMetaVersion: numberColumn(row, "env_meta_version"),
+        envMetaSigHashHex: stringColumn(row, "env_meta_sig_hash_hex"),
+        prevManifestSigHashHex: stringColumn(row, "prev_manifest_sig_hash_hex"),
+        chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
+        chainHeadSeq: numberColumn(row, "chain_head_seq"),
+        signatureHex: stringColumn(row, "signature_hex"),
+        issuerUserId: stringColumn(row, "issuer_user_id"),
+        issuerKeyFingerprintHex: stringColumn(row, "issuer_key_fingerprint"),
+      };
+    }),
+  environmentManifestAnchor: (environmentId: string) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          `SELECT manifest_version, signed_bytes_hash_hex, epoch
+           FROM environment_manifests WHERE environment_id = ?`,
+          environmentId,
+        )
+        .toArray()[0];
+      if (row === undefined) {
+        return null;
+      }
+      return {
+        manifestVersion: numberColumn(row, "manifest_version"),
+        signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+        epoch: numberColumn(row, "epoch"),
+      };
+    }),
 });
 
 const makeVariableQueries = (sql: SqlStorage) => ({
@@ -610,6 +720,37 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()[0];
       return countsOf(row);
     }),
+  // variables_digest の再計算材料(§12-5 (7)): tombstone 込みの全変数の最新形。
+  // 正規順(variable_id のバイト昇順)は crypto の computeVariablesDigest が
+  // 内部で確立するため、ここでは順序を規範にしない
+  variableDigestEntries: (environmentId: string) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT v.variable_id, ms.status, ms.meta_version, ms.signed_bytes_hash_hex
+           FROM variables v
+           JOIN variable_meta_statements ms
+             ON ms.environment_id = v.environment_id
+            AND ms.variable_id = v.variable_id
+            AND ms.meta_version = v.latest_meta_version
+           WHERE v.environment_id = ?
+           ORDER BY v.variable_id`,
+          environmentId,
+        )
+        .toArray()
+        .map((row): VariableDigestEntryRow => {
+          const status = stringColumn(row, "status");
+          if (status !== "active" && status !== "deleted") {
+            throw new Error("unexpected status in stored meta statement row");
+          }
+          return {
+            variableId: stringColumn(row, "variable_id"),
+            status,
+            metaVersion: numberColumn(row, "meta_version"),
+            metaSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+          };
+        }),
+    ),
   variableNameTaken: (environmentId: string, name: string, excludeVariableId: string | null) =>
     Effect.sync(() => {
       const rows = sql
@@ -979,6 +1120,10 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     sql.exec("DELETE FROM variable_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
+    // 環境マニフェストもカスケード削除する(§12-4 — 2026-08-18: 削除済み環境には
+    // 配布チャネルが存在せず、配布されないサーバー保存物に検出材料としての残存
+    // 価値がない。環境自身の deleted ステートメントが終端の検出材料)
+    sql.exec("DELETE FROM environment_manifests WHERE environment_id = ?", environmentId);
   },
   insertVariable: (environmentId, variableId, name, nowMs) => {
     sql.exec(
@@ -1026,6 +1171,47 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       "DELETE FROM variable_versions WHERE environment_id = ? AND variable_id = ?",
       environmentId,
       variableId,
+    );
+  },
+  // 保持は環境ごとに最新 1 通のみ(§12-5 — upsert で置き換え、行を蓄積しない)
+  upsertEnvironmentManifest: (environmentId, manifest, signedBytesHashHex, issuer, nowMs) => {
+    sql.exec(
+      `INSERT INTO environment_manifests
+         (environment_id, manifest_version, suite, epoch, variables_digest_hex,
+          env_meta_version, env_meta_sig_hash_hex, prev_manifest_sig_hash_hex,
+          chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex,
+          issuer_user_id, issuer_key_fingerprint, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (environment_id) DO UPDATE SET
+         manifest_version = excluded.manifest_version,
+         suite = excluded.suite,
+         epoch = excluded.epoch,
+         variables_digest_hex = excluded.variables_digest_hex,
+         env_meta_version = excluded.env_meta_version,
+         env_meta_sig_hash_hex = excluded.env_meta_sig_hash_hex,
+         prev_manifest_sig_hash_hex = excluded.prev_manifest_sig_hash_hex,
+         chain_head_hash_hex = excluded.chain_head_hash_hex,
+         chain_head_seq = excluded.chain_head_seq,
+         signature_hex = excluded.signature_hex,
+         signed_bytes_hash_hex = excluded.signed_bytes_hash_hex,
+         issuer_user_id = excluded.issuer_user_id,
+         issuer_key_fingerprint = excluded.issuer_key_fingerprint,
+         created_at = excluded.created_at`,
+      environmentId,
+      manifest.manifestVersion,
+      manifest.suite,
+      manifest.epoch,
+      manifest.variablesDigestHex,
+      manifest.envMetaVersion,
+      manifest.envMetaSigHashHex,
+      manifest.prevManifestSigHashHex,
+      manifest.chainHeadHashHex,
+      manifest.chainHeadSeq,
+      manifest.signatureHex,
+      signedBytesHashHex,
+      issuer.userId,
+      issuer.keyFingerprintHex,
+      nowMs,
     );
   },
   insertVersion: (

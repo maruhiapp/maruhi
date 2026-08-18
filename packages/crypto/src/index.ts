@@ -80,6 +80,24 @@ export {
   verifyMetaStatementSignature,
 } from "./internal.package/index.ts";
 
+// §4.3: 環境マニフェスト(メタ層の鮮度アンカー — エポック焼き込み +
+// 変数集合ダイジェスト。正規形実装はここに 1 つだけ置き、サーバー / CLI が共有する)
+export {
+  buildEnvManifestSignedBytes,
+  computeEnvManifestSignedBytesHash,
+  computeVariablesDigest,
+  type DistributedEnvManifestInput,
+  type EnvManifestContext,
+  type EnvManifestEnvMeta,
+  type EnvManifestPredecessor,
+  manifestContextInvalidField,
+  type ManifestInvalidReason,
+  signEnvManifest,
+  type VariablesDigestEntry,
+  verifyDistributedEnvManifest,
+  verifyEnvManifestSignature,
+} from "./internal.package/index.ts";
+
 // §5: 鍵ラップ(HPKE)
 export {
   buildDekWrapInfo,

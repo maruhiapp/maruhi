@@ -503,6 +503,13 @@ const envRotateConfig = {
     "new-epoch",
     "Always create a new epoch, even when incomplete re-encryption could be resumed instead",
   ),
+  // 移行専用(session-27 §14 PR-M1): マニフェスト導入前に作成された環境の
+  // manifest_version 1 初期化。許容するのは**欠落**のみで、配布された
+  // マニフェストの検証は緩和しない(manifest.ts)
+  "init-manifest": singleFlag(
+    "init-manifest",
+    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run this for every environment before upgrading CI — workloads cannot initialize a manifest themselves",
+  ),
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
 
@@ -959,6 +966,7 @@ function envRotateCommand(
   flags: CommonFlags & {
     readonly reason?: string | undefined;
     readonly newEpoch?: boolean | undefined;
+    readonly initManifest?: boolean | undefined;
   },
   environmentId: EnvironmentId,
 ): Effect.Effect<number, CliError, CliServices> {
@@ -981,6 +989,7 @@ function envRotateCommand(
       // 防衛線として残る)
       reason: flags.reason,
       forceNewEpoch: flags.newEpoch === true,
+      initManifest: flags.initManifest === true,
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
@@ -1982,8 +1991,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         values["environment-id"],
         "maruhi env rotate dev",
       );
-      const { reason, "new-epoch": newEpoch, ...flags } = values;
-      onExitCode(yield* envRotateCommand({ ...flags, reason, newEpoch }, environmentId));
+      const { reason, "new-epoch": newEpoch, "init-manifest": initManifest, ...flags } = values;
+      onExitCode(
+        yield* envRotateCommand({ ...flags, reason, newEpoch, initManifest }, environmentId),
+      );
     }),
   ).pipe(
     Command.withDescription(

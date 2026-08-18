@@ -23,6 +23,8 @@ import {
   LeaseRateLimitedError,
   LeaseUnauthorizedError,
   LeaseUnavailableError,
+  ManifestRejectedError,
+  ManifestVersionConflictError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
@@ -138,6 +140,18 @@ const renderers: readonly Renderer[] = [
   when(
     isInstanceOf(ChainHeadConflictError),
     (e) => `The chain head conflicted (current head seq=${e.currentHeadSeq}). Re-sync and retry`,
+  ),
+  // マニフェスト系(§12-5)。各コマンドが専用の写像を持つ経路(env rotate /
+  // push の 409 再解決)ではここへ来ない — これは残りの経路の受け皿
+  when(
+    isInstanceOf(ManifestRejectedError),
+    (e) =>
+      `The environment manifest was rejected by server-side validation (reason=${e.reason} — AUTH_SPEC §12-5)`,
+  ),
+  when(
+    isInstanceOf(ManifestVersionConflictError),
+    (e) =>
+      `The manifestVersion conflicted (current manifestVersion=${e.currentManifestVersion}). A concurrent meta operation advanced the environment's manifest — re-run to rebuild it from the refreshed state`,
   ),
   when(
     isInstanceOf(ChainEntryInvalidError),
@@ -258,6 +272,8 @@ export function isServerRejection(error: unknown): boolean {
     EnvironmentNotFoundError,
     EpochConflictError,
     ForbiddenError,
+    ManifestRejectedError,
+    ManifestVersionConflictError,
     PayloadMismatchError,
     ProjectNotFoundError,
     UnauthorizedError,

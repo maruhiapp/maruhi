@@ -20,9 +20,11 @@ import { statefulGetCsrfViolated } from "./auth.package/index.ts";
 import {
   callProjectData,
   checkAadCoordinates,
+  checkManifestCoordinates,
   checkStatementCoordinates,
   checkValueSize,
   noContent,
+  toManifestInput,
   toMetaStatementInput,
   toValueInput,
   toWireVariable,
@@ -41,6 +43,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
         });
+        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
         yield* checkAadCoordinates(payload.value, {
           projectId: params.projectId,
           environmentId: params.environmentId,
@@ -56,6 +59,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               variableId: payload.statement.variableId,
               statement: toMetaStatementInput(payload.statement),
               value: toValueInput(payload.value),
+              manifest: toManifestInput(payload.manifest),
             }),
         });
       }),
@@ -90,6 +94,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           environmentId: params.environmentId,
           variableId: params.variableId,
         });
+        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
         return yield* callProjectData<void>()({
           endpoint,
           projectId: params.projectId,
@@ -100,6 +105,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               params.environmentId,
               params.variableId,
               toMetaStatementInput(payload.statement),
+              toManifestInput(payload.manifest),
             ),
         });
       }).pipe(Effect.as(noContent)),
@@ -110,6 +116,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           environmentId: params.environmentId,
           variableId: params.variableId,
         });
+        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
         return yield* callProjectData<void>()({
           endpoint,
           projectId: params.projectId,
@@ -120,6 +127,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               params.environmentId,
               params.variableId,
               toMetaStatementInput(payload.statement),
+              toManifestInput(payload.manifest),
             ),
         });
       }).pipe(Effect.as(noContent)),
@@ -149,6 +157,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           ),
           deletedVariables: pulled.deletedVariables,
           deks: pulled.deks,
+          // 最新マニフェスト(§12-7 — 保存行があれば必ず同梱。欠落 = 移行前の
+          // 過渡状態のみで、クライアント側は一律拒否する — CRYPTO_SPEC §6.3)
+          ...(pulled.manifest === undefined ? {} : { manifest: pulled.manifest }),
         };
       }),
     )

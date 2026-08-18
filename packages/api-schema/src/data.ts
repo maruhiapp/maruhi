@@ -16,6 +16,7 @@ import {
   hexString,
   HpkeEncHex,
   KeyFingerprintHex,
+  ManifestSignatureHex,
   MetaSignatureHex,
   PositiveInt,
   Sha256Hex,
@@ -230,6 +231,77 @@ export const DistributedEnvironmentMetaStatementSchema = Schema.Struct({
 /** A distributed environment metadata statement with its author identity. */
 export type DistributedEnvironmentMetaStatement =
   typeof DistributedEnvironmentMetaStatementSchema.Type;
+
+// ---------------------------------------------------------------------------
+// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-2。2026-08-18)。
+// 環境のメタ状態の全体像(全変数ステートメント — tombstone 込み — のダイジェスト +
+// 環境メタステートメント)を、メタ状態を変える操作の実行者が発行時点の現エポックを
+// 焼き込んで署名する。メタ層の鮮度アンカー(値の §4.1 エポック整合の対応物)。
+// ---------------------------------------------------------------------------
+
+const PrevManifestSigHashHex = Schema.Union([Schema.Literal(""), Sha256Hex]);
+
+const manifestBaseFields = {
+  suite: SuiteSchema,
+  environmentId: EnvironmentIdSchema,
+  /** 発行時点(宣言ヘッド時点)の現エポック — メタ層の鮮度アンカー(§4.3)。 */
+  epoch: PositiveInt,
+  /** 全変数ステートメント(tombstone 込み)の正規ダイジェスト(§4.3)。 */
+  variablesDigestHex: Sha256Hex,
+  envMetaVersion: PositiveInt,
+  envMetaSigHashHex: Sha256Hex,
+  chainHeadHashHex: Sha256Hex,
+  chainHeadSeq: PositiveInt,
+  signatureHex: ManifestSignatureHex,
+};
+
+/**
+ * 環境作成の複合リクエストに同梱するマニフェスト(§12-4): manifestVersion 1・
+ * 変数空集合・prev 空をワイヤ形で固定する(新規環境にマニフェスト未初期化状態が
+ * 構造的に存在しないことの根拠 — CRYPTO_SPEC §6.3)。
+ */
+export const CreateEnvironmentManifestSchema = Schema.Struct({
+  ...manifestBaseFields,
+  manifestVersion: Schema.Literal(1),
+  prevManifestSigHashHex: Schema.Literal(""),
+});
+
+/**
+ * メタ操作(変数の作成・rename・削除、環境の rename)と rotate 複合に同梱する
+ * マニフェスト(§12-5 (6) の manifestVersion CAS = 申告 == 最新 + 1)。
+ * manifestVersion 1 も受理する: マニフェスト導入前に作成された環境の最初の
+ * メタ操作 / rotate は保存済みマニフェストなし(= 最新 0)から v1 を発行する
+ * (移行手順 — session-27 §14 PR-M1)。
+ */
+export const EnvironmentManifestSchema = Schema.Struct({
+  ...manifestBaseFields,
+  manifestVersion: PositiveInt,
+  prevManifestSigHashHex: PrevManifestSigHashHex,
+});
+
+/** 環境マニフェスト(発行形 — issuer は呼び出し主体が契約 §12-5 (1))。 */
+export type EnvironmentManifest = typeof EnvironmentManifestSchema.Type;
+
+/**
+ * A distributed environment manifest (AUTH_SPEC §12-2 / §12-7): the stored
+ * latest manifest plus the verification material — the issuer's user id and
+ * key fingerprint at acceptance time. The receiver verifies against its own
+ * verified chain history and the distributed statement set (CRYPTO_SPEC
+ * §4.3 / §6.3 — ダイジェスト再計算・エポック整合)。**欠落 = 一律拒否**
+ * (§6.3 — 「未初期化」の警告格下げ分岐は置かない)。ワイヤ上 optional なのは
+ * マニフェスト導入前に作成された環境の移行完了までの過渡状態のみ(サーバーは
+ * 保存行があれば必ず同梱する)。
+ */
+export const DistributedEnvironmentManifestSchema = Schema.Struct({
+  ...manifestBaseFields,
+  manifestVersion: PositiveInt,
+  prevManifestSigHashHex: PrevManifestSigHashHex,
+  issuerUserId: BoundedUserId,
+  issuerKeyFingerprintHex: KeyFingerprintHex,
+});
+
+/** A distributed environment manifest with its issuer identity. */
+export type DistributedEnvironmentManifest = typeof DistributedEnvironmentManifestSchema.Type;
 
 /**
  * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の

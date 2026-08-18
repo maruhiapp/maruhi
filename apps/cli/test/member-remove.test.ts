@@ -26,9 +26,11 @@ import {
   genesisOp,
   headOf,
   makeTestUser,
+  manifestFor,
   removeMemberOp,
   rotateEpochOp,
   type TestUser,
+  type WireDistributedManifest,
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
@@ -69,6 +71,8 @@ interface RotateBody {
     };
   };
   readonly deks: readonly WrappedDek[];
+  /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
+  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
 }
 
 interface RemoveServerState {
@@ -99,6 +103,8 @@ async function makeRemoveServer(input: {
   const rotateBodies: RotateBody[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
+  /** 環境ごとの保存済み最新マニフェスト(初回 pull で遅延発行 → rotate 受理で置換)。 */
+  const manifests = new Map<string, WireDistributedManifest>();
   const listedStatements = await Promise.all(
     Object.keys(environments).map((environmentId) =>
       environmentStatementFor({
@@ -153,18 +159,32 @@ async function makeRemoveServer(input: {
         })),
       },
     })),
-    (request) => {
+    async (request) => {
       const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/pull$`).exec(
         request.path,
       );
       if (match === null || request.method !== "GET") {
         return null;
       }
-      const environment = environments[match[1] ?? ""];
+      const environmentId = match[1] ?? "";
+      const environment = environments[environmentId];
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: match[1] } };
       }
       const statement = listedStatements.find((item) => item.environmentId === match[1]);
+      let manifest = manifests.get(environmentId);
+      if (manifest === undefined && statement !== undefined) {
+        manifest = await manifestFor({
+          projectId,
+          environmentId,
+          epoch: environment.currentEpoch,
+          issuer: owner,
+          head: { seq: entries.length, hashHex: hashes[hashes.length - 1] ?? "" },
+          envStatement: statement,
+          statements: [],
+        });
+        manifests.set(environmentId, manifest);
+      }
       return {
         status: 200,
         json: {
@@ -174,6 +194,7 @@ async function makeRemoveServer(input: {
           variables: [],
           deletedVariables: [],
           deks: environment.deks,
+          manifest,
         },
       };
     },
@@ -194,6 +215,12 @@ async function makeRemoveServer(input: {
       entries.push(body.entry);
       hashes.push(await computeChainEntryHash(body.entry));
       environment.currentEpoch = body.entry.payload.newEpoch;
+      // 受理した同梱マニフェスト(§12-4)を保存最新として配布へ回す(§12-5)
+      manifests.set(environmentId, {
+        ...body.manifest,
+        issuerUserId: owner.userId,
+        issuerKeyFingerprintHex: owner.fingerprintHex,
+      });
       for (const wrap of body.deks) {
         if (wrap.recipientUserId !== owner.userId) {
           continue;

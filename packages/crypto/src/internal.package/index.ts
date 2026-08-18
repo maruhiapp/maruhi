@@ -90,9 +90,26 @@ export {
   type ChainInvalidReason,
   type CryptoError,
   type CryptoResult,
+  type ManifestInvalidReason,
   type MetaInvalidReason,
   type ValueInvalidReason,
 } from "./errors.ts";
+export {
+  buildEnvManifestSignedBytes,
+  computeEnvManifestSignedBytesHash,
+  computeVariablesDigest,
+  type EnvManifestContext,
+  manifestContextInvalidField,
+  signEnvManifest,
+  type VariablesDigestEntry,
+  verifyEnvManifestSignature,
+} from "./manifest-sign.ts";
+export {
+  type DistributedEnvManifestInput,
+  type EnvManifestEnvMeta,
+  type EnvManifestPredecessor,
+  verifyDistributedEnvManifest,
+} from "./manifest-verify.ts";
 export {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,

@@ -148,7 +148,7 @@ export class MockServer {
 export function onRequest(
   method: string,
   path: string,
-  respond: (request: MockRequest) => MockResponse,
+  respond: (request: MockRequest) => MockResponse | Promise<MockResponse>,
 ): MockHandler {
   return (request) =>
     request.method === method && request.path === path ? respond(request) : null;

@@ -282,6 +282,40 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS ae_row_id ON audit_events (row_id)");
     },
   },
+
+  {
+    // 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5。2026-08-18 PR-M1)。
+    // **保持は環境ごとに最新 1 通のみ**(PRIMARY KEY = environment_id の upsert —
+    // §12-5: prev 検査・配布・チェックポイント受理のすべてが最新しか参照せず、
+    // 行が蓄積しないため行数上限も置かない — §12-8)。signed_bytes_hash_hex は
+    // サーバー再計算(prev 検査 = 次の manifestVersion の prev 照合材料。配布
+    // しない)。issuer は受理時点のチェーン導出メンバー(user_id + 鍵 FP)。
+    // 環境削除のカスケード対象(§12-4 — retireEnvironment が行を消す)。
+    // マニフェスト導入前に作成された環境は行なしで始まり、最初のメタ操作 /
+    // rotate が manifest_version 1 を確立する(移行手順 — session-27 §14 PR-M1)
+    tables: ["environment_manifests"],
+    apply(sql) {
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS environment_manifests (
+           environment_id TEXT PRIMARY KEY,
+           manifest_version INTEGER NOT NULL,
+           suite TEXT NOT NULL,
+           epoch INTEGER NOT NULL,
+           variables_digest_hex TEXT NOT NULL,
+           env_meta_version INTEGER NOT NULL,
+           env_meta_sig_hash_hex TEXT NOT NULL,
+           prev_manifest_sig_hash_hex TEXT NOT NULL,
+           chain_head_hash_hex TEXT NOT NULL,
+           chain_head_seq INTEGER NOT NULL,
+           signature_hex TEXT NOT NULL,
+           signed_bytes_hash_hex TEXT NOT NULL,
+           issuer_user_id TEXT NOT NULL,
+           issuer_key_fingerprint TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         )`,
+      );
+    },
+  },
 ];
 
 /**

@@ -42,10 +42,15 @@ import {
   vectorExtendedChains,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
+import type { WireEnvironmentManifest } from "./support/data-crypto.ts";
 import {
+  digestOf,
   hexBytes,
   makeDek,
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
   signEntryAt,
+  signEnvManifestAs,
   signMetaStatementAs,
   wrapDekForAll,
   wrapDekToServer,
@@ -118,15 +123,32 @@ interface TrackedServerGrant {
   readonly scope: readonly string[];
 }
 
-async function submitComposite(
+/**
+ * 環境ごとの最新マニフェスト追跡(複合の manifestVersion CAS / prev 連鎖の
+ * 材料 — §12-5)。replayVectorChain の開始でクリアする(各テストは replay から
+ * 始まる)。envMeta は複合作成の同梱ステートメント(metaVersion 1)で固定。
+ */
+const replayManifests = new Map<
+  string,
+  {
+    manifest: WireEnvironmentManifest;
+    issuerUserId: string;
+    envMeta: { metaVersion: number; sigHashHex: string };
+  }
+>();
+
+/**
+ * 複合のラップ集合(現メンバー全員 + 開示スコープ内の有効 grant のサーバー鍵宛 —
+ * AUTH_SPEC §12-4 の完全集合)。
+ */
+async function compositeWraps(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
+  environmentId: string,
+  epoch: number,
+  dek: Uint8Array,
   recipients: readonly string[],
-  headers?: Record<string, string>,
-  serverRecipients?: readonly { readonly fpHex: string; readonly encPubHex: string }[],
-): Promise<Response> {
-  const environmentId = entry.payload.environmentId;
-  const epoch = entry.op === "create_environment" ? 1 : entry.payload.newEpoch;
-  const dek = vectorDek(environmentId, epoch);
+  serverRecipients: readonly { readonly fpHex: string; readonly encPubHex: string }[],
+) {
   const deks = await wrapDekForAll({
     projectId: vectorProjectId,
     environmentId,
@@ -135,9 +157,7 @@ async function submitComposite(
     recipientUserIds: recipients,
     signerUserId: entry.actor.userId,
   });
-  // 開示スコープ内の有効 grant があるときの完全集合はサーバー鍵宛を含む
-  // (AUTH_SPEC §12-4 — 2026-08-12 改訂)
-  for (const server of serverRecipients ?? []) {
+  for (const server of serverRecipients) {
     deks.push(
       await wrapDekToServer({
         projectId: vectorProjectId,
@@ -150,35 +170,113 @@ async function submitComposite(
       }),
     );
   }
+  return deks;
+}
+
+/**
+ * 複合の同梱ステートメント(作成のみ)+ envMeta + マニフェスト(§12-4 / §12-5):
+ * 宣言ヘッドは追記前の現ヘッド、epoch は同梱エントリが確立するエポック。膜
+ * negative(未作成環境への rotate 等)で追跡が無い場合はダミー envMeta の v1
+ * (拒否は先行検査で確定する)。作成複合はワイヤ形が manifestVersion 1・prev 空を
+ * 固定する(negative の重複作成でも同じ形で送り、拒否は合意規則が担う)。
+ */
+async function compositeManifestParts(
+  entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
+  environmentId: string,
+  epoch: number,
+) {
+  const tracked = replayManifests.get(environmentId);
+  const statement =
+    entry.op === "create_environment"
+      ? await signMetaStatementAs(entry.actor.userId, vectorProjectId, {
+          suite: "maruhi/v1" as const,
+          environmentId,
+          name: environmentId,
+          status: "active" as const,
+          metaVersion: 1,
+          prevMetaSigHashHex: "",
+          chainHeadHashHex: entry.prevHashHex,
+          chainHeadSeq: entry.seq - 1,
+        })
+      : null;
+  const envMeta =
+    statement !== null
+      ? {
+          metaVersion: 1,
+          sigHashHex: await metaSignedBytesHashOf(vectorProjectId, statement, entry.actor.userId),
+        }
+      : (tracked?.envMeta ?? { metaVersion: 1, sigHashHex: "ab".repeat(32) });
+  const chainlike =
+    entry.op === "create_environment"
+      ? { manifestVersion: 1, prevManifestSigHashHex: "" }
+      : {
+          manifestVersion: (tracked?.manifest.manifestVersion ?? 0) + 1,
+          prevManifestSigHashHex:
+            tracked === undefined
+              ? ""
+              : await manifestSignedBytesHashOf(
+                  vectorProjectId,
+                  tracked.manifest,
+                  tracked.issuerUserId,
+                ),
+        };
+  const manifest = await signEnvManifestAs(entry.actor.userId, vectorProjectId, {
+    suite: "maruhi/v1",
+    environmentId,
+    epoch,
+    ...chainlike,
+    variablesDigestHex: await digestOf([]),
+    envMetaVersion: envMeta.metaVersion,
+    envMetaSigHashHex: envMeta.sigHashHex,
+    chainHeadHashHex: entry.prevHashHex,
+    chainHeadSeq: entry.seq - 1,
+  });
+  return { statement, envMeta, manifest };
+}
+
+async function submitComposite(
+  entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
+  recipients: readonly string[],
+  headers?: Record<string, string>,
+  serverRecipients?: readonly { readonly fpHex: string; readonly encPubHex: string }[],
+): Promise<Response> {
+  const environmentId = entry.payload.environmentId;
+  const epoch = entry.op === "create_environment" ? 1 : entry.payload.newEpoch;
+  const dek = vectorDek(environmentId, epoch);
+  const deks = await compositeWraps(
+    entry,
+    environmentId,
+    epoch,
+    dek,
+    recipients,
+    serverRecipients ?? [],
+  );
   const url =
     entry.op === "create_environment"
       ? `${BASE}/projects/${vectorProjectId}/environments`
       : `${BASE}/projects/${vectorProjectId}/environments/${environmentId}/rotate`;
+  const { statement, envMeta, manifest } = await compositeManifestParts(
+    entry,
+    environmentId,
+    epoch,
+  );
   const body =
     entry.op === "create_environment"
-      ? {
-          parentHeadHashHex: entry.prevHashHex,
-          entry,
-          // 同梱ステートメント(metaVersion 1)。宣言ヘッドは追記前の現ヘッド =
-          // 同梱エントリの prev(AUTH_SPEC §12-4)
-          statement: await signMetaStatementAs(entry.actor.userId, vectorProjectId, {
-            suite: "maruhi/v1" as const,
-            environmentId,
-            name: environmentId,
-            status: "active" as const,
-            metaVersion: 1,
-            prevMetaSigHashHex: "",
-            chainHeadHashHex: entry.prevHashHex,
-            chainHeadSeq: entry.seq - 1,
-          }),
-          deks,
-        }
-      : { parentHeadHashHex: entry.prevHashHex, entry, deks };
-  return SELF.fetch(url, {
+      ? { parentHeadHashHex: entry.prevHashHex, entry, statement, deks, manifest }
+      : { parentHeadHashHex: entry.prevHashHex, entry, deks, manifest };
+  const response = await SELF.fetch(url, {
     method: "POST",
     headers: { ...JSON_HEADERS, ...(headers ?? bearer(tokenFor(entry.actor.userId))) },
     body: JSON.stringify(body),
   });
+  if (response.status === 200) {
+    replayManifests.set(environmentId, {
+      manifest,
+      issuerUserId: entry.actor.userId,
+      envMeta,
+    });
+  }
+  return response;
 }
 
 /** 再生の op を追いながら現メンバー / 有効 grant を更新する(複合のラップ集合の導出)。 */
@@ -211,6 +309,8 @@ function trackReplayState(
 async function replayVectorChain(upTo: number): Promise<readonly string[]> {
   const members: string[] = [];
   const serverGrants = new Map<string, TrackedServerGrant>();
+  // マニフェスト追跡は再生ごとにやり直す(beforeEach が DO を消すため)
+  replayManifests.clear();
   for (const vector of vectorEntries) {
     if (vector.seq > upTo) {
       break;

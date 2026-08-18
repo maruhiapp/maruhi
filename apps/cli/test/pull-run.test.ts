@@ -14,6 +14,7 @@ import {
   genesisOp,
   headOf,
   makeTestUser,
+  manifestFor,
   removeMemberOp,
   rotateEpochOp,
   statementFor,
@@ -206,6 +207,27 @@ function chainHandler(): MockHandler {
   }));
 }
 
+/**
+ * 配布集合(override 済み)→ digest 入力。variableId 重複の override は digest
+ * 計算が受け付けないため後勝ちで畳む(重複自体はクライアントがマニフェスト検証
+ * より前に拒否する)。
+ */
+function digestStatementsOf(
+  variables: readonly unknown[],
+  deletedVariables: readonly unknown[],
+): readonly WireDistributedVariableStatement[] {
+  const digestInputs = new Map<string, WireDistributedVariableStatement>();
+  for (const entry of variables as readonly {
+    readonly statement: WireDistributedVariableStatement;
+  }[]) {
+    digestInputs.set(entry.statement.variableId, entry.statement);
+  }
+  for (const tombstone of deletedVariables as readonly WireDistributedVariableStatement[]) {
+    digestInputs.set(tombstone.variableId, tombstone);
+  }
+  return [...digestInputs.values()];
+}
+
 function pullHandler(overrides?: {
   readonly deks?: readonly unknown[];
   readonly variables?: readonly unknown[];
@@ -213,17 +235,35 @@ function pullHandler(overrides?: {
   readonly statement?: unknown;
 }): MockHandler {
   const { built, wraps, entryAlpha, entryBeta, envStatement } = fixture;
-  return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
-    status: 200,
-    json: {
+  return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
+    const statement = overrides?.statement ?? envStatement;
+    const variables = overrides?.variables ?? [entryAlpha, entryBeta];
+    const deletedVariables = overrides?.deletedVariables ?? [];
+    // マニフェスト(§12-7)は**配布する集合そのもの**から計算する(override で
+    // 改竄・差し替えした集合にも一致させる — 各テストの negative はマニフェスト
+    // ではなくステートメント / 値の検証で落ちることを検査している)
+    const manifest = await manifestFor({
+      projectId: built.projectId,
       environmentId: ENV_ID,
-      currentEpoch: 2,
-      statement: overrides?.statement ?? envStatement,
-      variables: overrides?.variables ?? [entryAlpha, entryBeta],
-      deletedVariables: overrides?.deletedVariables ?? [],
-      deks: overrides?.deks ?? wraps,
-    },
-  }));
+      epoch: 2,
+      issuer: fixture.owner,
+      head: headOf(built, 3),
+      envStatement: statement as WireDistributedEnvironmentStatement,
+      statements: digestStatementsOf(variables, deletedVariables),
+    });
+    return {
+      status: 200,
+      json: {
+        environmentId: ENV_ID,
+        currentEpoch: 2,
+        statement,
+        variables,
+        deletedVariables,
+        deks: overrides?.deks ?? wraps,
+        manifest,
+      },
+    };
+  });
 }
 
 async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
@@ -609,7 +649,7 @@ describe("maruhi pull", () => {
       onRequest(
         "GET",
         `/projects/${fixture.built.projectId}/environments/${ENV_ID}/pull/metadata`,
-        () => ({
+        async () => ({
           status: 200,
           json: {
             environmentId: ENV_ID,
@@ -617,6 +657,15 @@ describe("maruhi pull", () => {
             statement: fixture.envStatement,
             variables: [fixture.entryAlpha.statement, fixture.entryBeta.statement],
             deletedVariables: [],
+            manifest: await manifestFor({
+              projectId: fixture.built.projectId,
+              environmentId: ENV_ID,
+              epoch: 2,
+              issuer: fixture.owner,
+              head: headOf(fixture.built, 3),
+              envStatement: fixture.envStatement,
+              statements: [fixture.entryAlpha.statement, fixture.entryBeta.statement],
+            }),
           },
         }),
       ),
@@ -766,13 +815,24 @@ describe("maruhi pull", () => {
       writer: oldKeys,
       head: headOf(built, 3),
     });
+    const historicEnvStatement = await pullEnvStatement(built.projectId, owner);
+    const historicEntry = await pullEntry(built.projectId, "vr", "HISTORIC", value, owner);
     const pullJson = {
       environmentId: ENV_ID,
       currentEpoch: 1,
-      statement: await pullEnvStatement(built.projectId, owner),
-      variables: [await pullEntry(built.projectId, "vr", "HISTORIC", value, owner)],
+      statement: historicEnvStatement,
+      variables: [historicEntry],
       deletedVariables: [],
       deks: [wrap],
+      manifest: await manifestFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        issuer: owner,
+        head: headOf(built, 5),
+        envStatement: historicEnvStatement,
+        statements: [historicEntry.statement],
+      }),
     };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
@@ -996,13 +1056,24 @@ describe("maruhi pull", () => {
       writer: newcomer,
       head: headOf(fullBuilt, 3),
     });
+    const newcomerEnvStatement = await pullEnvStatement(fullBuilt.projectId, owner);
+    const newcomerEntry = await pullEntry(fullBuilt.projectId, "vn", "NEWCOMER", value, owner);
     const newcomerPullJson = {
       environmentId: ENV_ID,
       currentEpoch: 1,
-      statement: await pullEnvStatement(fullBuilt.projectId, owner),
-      variables: [await pullEntry(fullBuilt.projectId, "vn", "NEWCOMER", value, owner)],
+      statement: newcomerEnvStatement,
+      variables: [newcomerEntry],
       deletedVariables: [],
       deks: [wrap],
+      manifest: await manifestFor({
+        projectId: fullBuilt.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        issuer: owner,
+        head: headOf(fullBuilt, 3),
+        envStatement: newcomerEnvStatement,
+        statements: [newcomerEntry.statement],
+      }),
     };
     let chainCalls = 0;
     const server = await MockServer.start([
@@ -1320,32 +1391,39 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
       writer: oldKeys,
       head: headOf(built, 3),
     });
+    const historicEnvStatement = await environmentStatementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      name: ENV_ID,
+      author: oldKeys,
+      head: headOf(built, 3),
+    });
+    const historicStatement = await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "vh",
+      name: "HISTORIC",
+      author: oldKeys,
+      head: headOf(built, 3),
+    });
     const pullJson = {
       environmentId: ENV_ID,
       currentEpoch: 1,
-      statement: await environmentStatementFor({
-        projectId: built.projectId,
-        environmentId: ENV_ID,
-        name: ENV_ID,
-        author: oldKeys,
-        head: headOf(built, 3),
-      }),
-      variables: [
-        {
-          variableId: "vh",
-          statement: await statementFor({
-            projectId: built.projectId,
-            environmentId: ENV_ID,
-            variableId: "vh",
-            name: "HISTORIC",
-            author: oldKeys,
-            head: headOf(built, 3),
-          }),
-          value,
-        },
-      ],
+      statement: historicEnvStatement,
+      variables: [{ variableId: "vh", statement: historicStatement, value }],
       deletedVariables: [],
       deks: [wrap],
+      // マニフェスト発行者は現メンバー(owner)— author の削除はマニフェストの
+      // 発行可否と独立(§4.3 の issuer 在籍検査は issuer 自身に対してのみ)
+      manifest: await manifestFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        issuer: owner,
+        head: headOf(built, 4),
+        envStatement: historicEnvStatement,
+        statements: [historicStatement],
+      }),
     };
     const server = await MockServer.start([
       onRequest("GET", `/projects/${built.projectId}/chain`, () => ({

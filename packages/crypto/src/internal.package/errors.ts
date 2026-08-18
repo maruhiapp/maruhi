@@ -102,6 +102,49 @@ export type MetaInvalidReason =
   | "prev-hash-mismatch"
   | "revived-after-delete";
 
+/**
+ * Reason codes for rejecting a distributed environment manifest (CRYPTO_SPEC
+ * §4.3 / §6.3 — env-manifest.json の rule negative が固定する語彙)。
+ * メタステートメント(MetaInvalidReason)との本質的な差はエポックアンカー:
+ *
+ * - `signature-invalid` — valid-format の Ed25519 検証失敗
+ * - `issuer-unknown` — チェーン履歴のどの時点にも (issuer_user_id, 鍵 FP) の
+ *   束縛が存在しない(検証鍵を選択できない)
+ * - `chain-head-mismatch` / `chain-head-future` — 宣言ヘッドの不一致 2 種
+ *   (§6.3-2a / -2b。値・メタと同じ区別 — future は再同期の入口)
+ * - `issuer-not-member-at-head` / `issuer-key-mismatch-at-head` /
+ *   `issuer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
+ *   発行契機はすべて member 以上のメタ操作 — §4.3)
+ * - `environment-not-created-at-head` / `epoch-not-current-at-head` —
+ *   エポック整合(§4.3 (2)): マニフェストの epoch は宣言ヘッド時点の現エポックと
+ *   一致するか、宣言ヘッドの**次の**エントリ(= 複合発行の同梱チェーンエントリ —
+ *   AUTH_SPEC §12-4 / §12-5 (4))が当該環境にちょうどそのエポックを確立する
+ * - `env-meta-mismatch` — (env_meta_version, env_meta_sig_hash_hex) が検証済み
+ *   環境メタステートメントと不一致(AUTH_SPEC §12-5 (7) の再計算対象)
+ * - `variables-digest-mismatch` — 検証済みステートメント集合(tombstone 込み)
+ *   からの variables_digest 再計算が不一致 = 欠落・注入・順序違反(§4.3 (3))
+ * - `prev-shape-mismatch` — manifestVersion 1 は空 / > 1 は 64 hex という prev の
+ *   形の違反(predecessor を保持しない latest-only でも必ず検査する)
+ * - `prev-hash-mismatch` / `epoch-regressed` — predecessor(検証済みの直前
+ *   マニフェスト)を渡された場合のみの連鎖・エポック単調性検査(値の §4.1 と
+ *   同型 — rotate 後に旧エポックを焼き込んだ前進 manifestVersion の検出)
+ */
+export type ManifestInvalidReason =
+  | "signature-invalid"
+  | "issuer-unknown"
+  | "chain-head-mismatch"
+  | "chain-head-future"
+  | "issuer-not-member-at-head"
+  | "issuer-key-mismatch-at-head"
+  | "issuer-role-insufficient-at-head"
+  | "environment-not-created-at-head"
+  | "epoch-not-current-at-head"
+  | "env-meta-mismatch"
+  | "variables-digest-mismatch"
+  | "prev-shape-mismatch"
+  | "prev-hash-mismatch"
+  | "epoch-regressed";
+
 /** Typed error union for all fallible @maruhi/crypto operations. */
 export type CryptoError =
   /** Input failed structural validation (wrong length, malformed hex, etc.). */
@@ -151,6 +194,13 @@ export type CryptoError =
    * or the predecessor chaining was rejected for `reason`.
    */
   | { readonly kind: "MetaStatementInvalid"; readonly reason: MetaInvalidReason }
+  /**
+   * An environment manifest failed verification (CRYPTO_SPEC §4.3 / §6.3):
+   * the issuer signature, the declared chain head, the head-time
+   * authorization / epoch integrity, the env-meta / variables-digest
+   * recomputation, or the predecessor chaining was rejected for `reason`.
+   */
+  | { readonly kind: "EnvManifestInvalid"; readonly reason: ManifestInvalidReason }
   /** Chain verification failed at entry `seq` for `reason`. */
   | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 

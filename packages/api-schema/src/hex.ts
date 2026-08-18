@@ -51,6 +51,9 @@ export const ValueSignatureHex = hexString(64);
 /** メタステートメント署名(Ed25519 — CRYPTO_SPEC §4.2)。 */
 export const MetaSignatureHex = hexString(64);
 
+/** 環境マニフェスト署名(Ed25519 — CRYPTO_SPEC §4.3)。 */
+export const ManifestSignatureHex = hexString(64);
+
 /** 招待受諾署名(Ed25519 — CRYPTO_SPEC §6.5)。 */
 export const InviteAcceptSignatureHex = hexString(64);
 

@@ -31,10 +31,12 @@ import {
   fakePayload,
   fixture,
   hashOf,
+  manifestForStatement,
   nextVariableStatement,
   registerDataScenario,
   renameVariableRequest,
   token,
+  unsignedManifest,
   VAR,
   variableStatementFor,
   varStatements,
@@ -162,7 +164,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { statement: stale },
+      { statement: stale, manifest: unsignedManifest() },
     );
     expect(response.status).toBe(409);
     const staleBody = (await response.json()) as Record<string, unknown>;
@@ -181,6 +183,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, nfdName),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
+      manifest: unsignedManifest(),
     });
     expect(created.status).toBe(422);
     expect((await created.json()) as Record<string, unknown>).toMatchObject({
@@ -201,6 +204,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
           status: "active",
           authorUserId: MEMBER,
         }),
+        manifest: unsignedManifest(),
       },
     );
     expect(renamed.status).toBe(422);
@@ -232,7 +236,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "DELETE",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { statement: wrongName },
+      { statement: wrongName, manifest: unsignedManifest() },
     );
     expect(response.status).toBe(422);
     expect(((await response.json()) as { field: string }).field).toBe("name");
@@ -257,7 +261,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { statement: ownerSigned },
+      { statement: ownerSigned, manifest: unsignedManifest() },
     );
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
@@ -289,7 +293,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { statement: beforeMembership },
+      { statement: beforeMembership, manifest: unsignedManifest() },
     );
     expect(notMember.status).toBe(422);
     expect(((await notMember.json()) as { reason: string }).reason).toBe(
@@ -312,7 +316,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { statement: unknownHead },
+      { statement: unknownHead, manifest: unsignedManifest() },
     );
     expect(mismatch.status).toBe(422);
     expect(((await mismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
@@ -333,7 +337,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      { statement: wrongPrev },
+      { statement: wrongPrev, manifest: unsignedManifest() },
     );
     expect(prevMismatch.status).toBe(422);
     expect(((await prevMismatch.json()) as { reason: string }).reason).toBe(
@@ -511,6 +515,7 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
           chainHeadHashHex: fixture.head.hashHex,
           chainHeadSeq: fixture.head.seq,
         }),
+        manifest: unsignedManifest(),
       },
     );
     expect(response.status).toBe(422);
@@ -557,24 +562,26 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     if (typeof prevHash !== "string") {
       throw new Error("seeded meta statement row missing");
     }
+    const deleteStatement = await signMetaStatementAs(MEMBER, projectId, {
+      suite: "maruhi/v1" as const,
+      environmentId: ENV,
+      variableId: VAR,
+      // deleted の name は直前 active 名を保持する(§4.2)
+      name: "DATABASE_URL",
+      status: "deleted" as const,
+      metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
+      prevMetaSigHashHex: prevHash,
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    });
+    // 上限到達でも同梱マニフェスト(tombstone 込みダイジェスト)は通常どおり
+    // 要る(マニフェスト自体は行数上限の対象外 — §12-8: 保持は最新 1 通)
+    const { manifest } = await manifestForStatement(deleteStatement, MEMBER);
     const removed = await requestJson(
       "DELETE",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      {
-        statement: await signMetaStatementAs(MEMBER, projectId, {
-          suite: "maruhi/v1" as const,
-          environmentId: ENV,
-          variableId: VAR,
-          // deleted の name は直前 active 名を保持する(§4.2)
-          name: "DATABASE_URL",
-          status: "deleted" as const,
-          metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
-          prevMetaSigHashHex: prevHash,
-          chainHeadHashHex: fixture.head.hashHex,
-          chainHeadSeq: fixture.head.seq,
-        }),
-      },
+      { statement: deleteStatement, manifest },
     );
     expect(removed.status).toBe(204);
     // tombstone ステートメントは保存・配布され続ける(§12-5)

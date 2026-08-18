@@ -48,6 +48,7 @@ import {
   appendOperation,
   createEnvironmentComposite,
   createEnvironmentOk,
+  manifestForVariableOp,
   MEMBER,
   OWNER,
   projectId,
@@ -143,13 +144,24 @@ async function createVariableAsOwner(input: {
     name: input.name,
     head: fixture.head,
   });
+  const { manifest, state } = await manifestForVariableOp(fixture, {
+    environmentId: input.environmentId,
+    issuerUserId: OWNER,
+    entry: {
+      variableId: input.variableId,
+      status: "active",
+      metaVersion: 1,
+      metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
+    },
+  });
   const response = await requestJson(
     "POST",
     `/environments/${input.environmentId}/variables`,
     token(OWNER),
-    { statement, value },
+    { statement, value, manifest },
   );
   expect(response.status).toBe(200);
+  fixture.manifests.set(input.environmentId, state);
   return statement;
 }
 
@@ -279,13 +291,25 @@ describe("要ローテーション検出: remove_member(AUDIT_SPEC §4.1)", () =
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
+    const gapDelete = await manifestForVariableOp(fixture, {
+      environmentId: ENV,
+      issuerUserId: OWNER,
+      entry: {
+        variableId: gapVar,
+        status: "deleted",
+        metaVersion: 2,
+        metaSigHashHex: await metaSignedBytesHashOf(projectId, gapDeleteStatement, OWNER),
+      },
+    });
     expect(
       (
         await requestJson("DELETE", `/environments/${ENV}/variables/${gapVar}`, token(OWNER), {
           statement: gapDeleteStatement,
+          manifest: gapDelete.manifest,
         })
       ).status,
     ).toBe(204);
+    fixture.manifests.set(ENV, gapDelete.state);
 
     // 再追加(同一鍵)→ 再削除
     await readdWithSameKeys(MEMBER, "member");
@@ -554,13 +578,25 @@ describe("要ローテーション検出: revoke_server 変種(AUDIT_SPEC §4.1)
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
+    const preDeleteManifest = await manifestForVariableOp(fixture, {
+      environmentId: widenEnv,
+      issuerUserId: OWNER,
+      entry: {
+        variableId: preVar,
+        status: "deleted",
+        metaVersion: 2,
+        metaSigHashHex: await metaSignedBytesHashOf(projectId, preDelete, OWNER),
+      },
+    });
     expect(
       (
         await requestJson("DELETE", `/environments/${widenEnv}/variables/${preVar}`, token(OWNER), {
           statement: preDelete,
+          manifest: preDeleteManifest.manifest,
         })
       ).status,
     ).toBe(204);
+    fixture.manifests.set(widenEnv, preDeleteManifest.state);
     // 拡大再 grant(チェーン合意規則は同一鍵 FP への拡大のみ受理 — CRYPTO_SPEC §6.2)
     await appendOperation(fixture, OWNER, {
       op: "grant_server",

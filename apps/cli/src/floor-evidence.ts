@@ -96,6 +96,65 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
   ];
 }
 
+type ManifestViolation = Extract<
+  FloorViolation,
+  {
+    kind:
+      | "manifest-rollback"
+      | "manifest-equivocation"
+      | "manifest-omitted"
+      | "stale-manifest-injection";
+  }
+>;
+
+function pulledManifestLines(pulled: {
+  readonly manifestVersion: number;
+  readonly epoch: number;
+  readonly signedBytesHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly chainHeadHashHex: string;
+  readonly signatureHex: string;
+  readonly issuerUserId: string;
+  readonly issuerKeyFingerprintHex: string;
+}): readonly string[] {
+  return [
+    `  this distribution: manifestVersion=${pulled.manifestVersion} epoch=${pulled.epoch}`,
+    `    manifest_signed_bytes_hash=${pulled.signedBytesHashHex}`,
+    `    declared head: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
+    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    `    issuer signature: issuer=${displayText(pulled.issuerUserId)} fp=${pulled.issuerKeyFingerprintHex}`,
+    `    signature=${pulled.signatureHex}`,
+  ];
+}
+
+function manifestEvidenceLines(
+  coordinates: FloorEvidenceCoordinates,
+  violation: ManifestViolation,
+): readonly string[] {
+  if (violation.kind === "manifest-omitted") {
+    return [
+      coordinateLine(coordinates),
+      `  floor record (previously verified): manifestVersion=${violation.floor.manifestVersion} epoch=${violation.floor.epoch}`,
+      `    manifest_signed_bytes_hash=${violation.floor.manifestSigHashHex}`,
+      "  this distribution: (no manifest)",
+    ];
+  }
+  if (violation.kind === "stale-manifest-injection") {
+    return [
+      coordinateLine(coordinates),
+      `  rule (c) baseline: epoch baseline=${violation.baselineEpoch} (the larger of the pull-time chain-derived epoch and the verified floor manifest's own epoch — manifest epochs never decrease across versions)`,
+      `  floor record manifestVersion=${violation.floorManifestVersion} (0 = no floor record)`,
+      ...pulledManifestLines(violation.pulled),
+    ];
+  }
+  return [
+    coordinateLine(coordinates),
+    `  floor record (previously verified): manifestVersion=${violation.floor.manifestVersion} epoch=${violation.floor.epoch}`,
+    `    manifest_signed_bytes_hash=${violation.floor.manifestSigHashHex}`,
+    ...pulledManifestLines(violation.pulled),
+  ];
+}
+
 type ChainViolation = Extract<FloorViolation, { kind: "chain-shortened" | "chain-diverged" }>;
 
 function chainEvidenceLines(
@@ -118,7 +177,7 @@ function chainEvidenceLines(
 
 function variableEvidenceLines(
   coordinates: FloorEvidenceCoordinates,
-  violation: Exclude<FloorViolation, ChainViolation>,
+  violation: Exclude<FloorViolation, ChainViolation | ManifestViolation>,
 ): readonly string[] {
   if (violation.kind === "variable-omitted") {
     return [coordinateLine(coordinates, violation.variableId), ...floorVariableLines(violation)];
@@ -148,6 +207,14 @@ function evidenceLines(
 ): readonly string[] {
   if (violation.kind === "chain-shortened" || violation.kind === "chain-diverged") {
     return chainEvidenceLines(coordinates, violation);
+  }
+  if (
+    violation.kind === "manifest-rollback" ||
+    violation.kind === "manifest-equivocation" ||
+    violation.kind === "manifest-omitted" ||
+    violation.kind === "stale-manifest-injection"
+  ) {
+    return manifestEvidenceLines(coordinates, violation);
   }
   return variableEvidenceLines(coordinates, violation);
 }

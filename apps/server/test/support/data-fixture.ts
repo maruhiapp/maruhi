@@ -17,17 +17,25 @@ import {
   seedOrgMember,
   seedUser,
 } from "./auth.ts";
-import type { WireEnvironmentMetaStatement, WireWrappedDek } from "./data-crypto.ts";
+import type {
+  WireDigestEntry,
+  WireEnvironmentManifest,
+  WireEnvironmentMetaStatement,
+  WireWrappedDek,
+} from "./data-crypto.ts";
 import {
   addMemberOperation,
   buildChain,
   commitmentOf,
   createEnvironmentOperation,
+  digestOf,
   genesisOperation,
   makeDek,
+  manifestSignedBytesHashOf,
   metaSignedBytesHashOf,
   rotateEpochOperation,
   signEntryAt,
+  signEnvManifestAs,
   signMetaStatementAs,
   wrapDekForAll,
 } from "./data-crypto.ts";
@@ -61,6 +69,17 @@ export const projectId = baseChain.projectId;
 /** 全メンバー(DEK ラップの完全集合の既定受信者)。 */
 export const ALL_MEMBERS = [OWNER, MEMBER, READER] as const;
 
+/**
+ * 環境ごとのマニフェスト追跡(§4.3 の prev 連鎖・CAS・ダイジェスト集合の材料 —
+ * 受理成功時に helper が進める)。entries は tombstone 込みの全変数の最新形。
+ */
+export interface EnvManifestState {
+  manifest: WireEnvironmentManifest;
+  issuerUserId: string;
+  epoch: number;
+  entries: readonly WireDigestEntry[];
+}
+
 export interface DataFixture {
   readonly tokens: Record<string, string>;
   /** チェーンの現ヘッド(appendOperation が進める)。 */
@@ -73,6 +92,8 @@ export interface DataFixture {
     string,
     { statement: WireEnvironmentMetaStatement; authorUserId: string }
   >;
+  /** 環境ごとの最新マニフェスト(prev 連鎖・CAS・ダイジェスト集合の材料)。 */
+  readonly manifests: Map<string, EnvManifestState>;
 }
 
 /** DO / D1 のリセット + ユーザー・PAT のシード + ベースチェーンの API 再生。 */
@@ -107,6 +128,7 @@ export async function setupDataProject(): Promise<DataFixture> {
     tokens,
     head: { seq: baseChain.entries.length, hashHex: prevHash },
     envStatements: new Map(),
+    manifests: new Map(),
   };
 }
 
@@ -186,10 +208,97 @@ export async function createEnvironmentStatement(input: {
 }
 
 /**
+ * 次のマニフェスト(§4.3)をテスト時署名で作る: manifestVersion = 記録済み
+ * 最新 + 1(未記録 = 1)、prev = 記録済み最新の signed_bytes ハッシュ、
+ * ダイジェスト = entries の正規形。宣言ヘッドは呼び出し側指定(複合 = 追記前の
+ * 現ヘッド、メタ操作 = 現ヘッド)。
+ */
+export async function nextEnvironmentManifest(
+  fixture: DataFixture,
+  input: {
+    readonly environmentId: string;
+    readonly epoch: number;
+    readonly entries: readonly WireDigestEntry[];
+    readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+    readonly issuerUserId: string;
+    readonly head: { readonly seq: number; readonly hashHex: string };
+  },
+): Promise<WireEnvironmentManifest> {
+  const last = fixture.manifests.get(input.environmentId);
+  const prevManifestSigHashHex =
+    last === undefined
+      ? ""
+      : await manifestSignedBytesHashOf(projectId, last.manifest, last.issuerUserId);
+  return signEnvManifestAs(input.issuerUserId, projectId, {
+    suite: "maruhi/v1",
+    environmentId: input.environmentId,
+    epoch: input.epoch,
+    manifestVersion: (last?.manifest.manifestVersion ?? 0) + 1,
+    variablesDigestHex: await digestOf(input.entries),
+    envMetaVersion: input.envMeta.metaVersion,
+    envMetaSigHashHex: input.envMeta.sigHashHex,
+    prevManifestSigHashHex,
+    chainHeadHashHex: input.head.hashHex,
+    chainHeadSeq: input.head.seq,
+  });
+}
+
+/** 記録済みの環境メタステートメントの最新形(マニフェストの envMeta 期待値)。 */
+export async function envMetaOf(
+  fixture: DataFixture,
+  environmentId: string,
+): Promise<{ metaVersion: number; sigHashHex: string }> {
+  const last = fixture.envStatements.get(environmentId);
+  if (last === undefined) {
+    throw new Error(`no recorded statement for environment ${environmentId}`);
+  }
+  return {
+    metaVersion: last.statement.metaVersion,
+    sigHashHex: await metaSignedBytesHashOf(projectId, last.statement, last.authorUserId),
+  };
+}
+
+/**
+ * 変数のメタ操作(作成・rename・削除)に同梱するマニフェストを署名する:
+ * 記録済みのダイジェスト集合に当該変数のエントリを適用した形。成功時に
+ * 記録を進めるための EnvManifestState も返す。
+ */
+export async function manifestForVariableOp(
+  fixture: DataFixture,
+  input: {
+    readonly environmentId: string;
+    readonly issuerUserId: string;
+    readonly entry: WireDigestEntry;
+  },
+): Promise<{ manifest: WireEnvironmentManifest; state: EnvManifestState }> {
+  const last = fixture.manifests.get(input.environmentId);
+  if (last === undefined) {
+    throw new Error(`no recorded manifest for environment ${input.environmentId}`);
+  }
+  const entries = [
+    ...last.entries.filter((candidate) => candidate.variableId !== input.entry.variableId),
+    input.entry,
+  ];
+  const manifest = await nextEnvironmentManifest(fixture, {
+    environmentId: input.environmentId,
+    epoch: last.epoch,
+    entries,
+    envMeta: await envMetaOf(fixture, input.environmentId),
+    issuerUserId: input.issuerUserId,
+    head: fixture.head,
+  });
+  return {
+    manifest,
+    state: { manifest, issuerUserId: input.issuerUserId, epoch: last.epoch, entries },
+  };
+}
+
+/**
  * 複合の環境作成リクエスト(§12-4)を組み立てて送る: create_environment
  * エントリ(コミットメント込み)+ EnvironmentMetaStatement(metaVersion 1。
- * 宣言ヘッド = 追記前の現ヘッド)をテスト時署名し、親ヘッド CAS 付きで
- * ラップ集合と同時に POST する。200 ならフィクスチャのヘッドを進める。
+ * 宣言ヘッド = 追記前の現ヘッド)+ EnvironmentManifest(manifestVersion 1・
+ * 変数空集合・epoch 1)をテスト時署名し、親ヘッド CAS 付きでラップ集合と同時に
+ * POST する。200 ならフィクスチャのヘッドを進める。
  */
 export async function createEnvironmentComposite(
   fixture: DataFixture,
@@ -203,6 +312,8 @@ export async function createEnvironmentComposite(
     readonly parentHeadHashHex?: string;
     /** 複合内整合の negative 用のステートメント上書き。 */
     readonly statement?: WireEnvironmentMetaStatement;
+    /** 複合内整合の negative 用のマニフェスト上書き。 */
+    readonly manifest?: WireEnvironmentManifest;
   },
 ): Promise<Response> {
   const actorUserId = input.actorUserId ?? OWNER;
@@ -223,6 +334,21 @@ export async function createEnvironmentComposite(
         hashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       },
     }));
+  // manifestVersion 1(変数空集合・epoch 1)。envMeta は同梱ステートメント自身
+  const manifest =
+    input.manifest ??
+    (await signEnvManifestAs(actorUserId, projectId, {
+      suite: "maruhi/v1",
+      environmentId: input.environmentId,
+      epoch: 1,
+      manifestVersion: 1,
+      variablesDigestHex: await digestOf([]),
+      envMetaVersion: statement.metaVersion,
+      envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, actorUserId),
+      prevManifestSigHashHex: "",
+      chainHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    }));
   const response = await requestJson(
     "POST",
     "/environments",
@@ -232,6 +358,7 @@ export async function createEnvironmentComposite(
       entry,
       statement,
       deks: input.deks,
+      manifest,
     },
   );
   if (response.status === 200) {
@@ -240,6 +367,12 @@ export async function createEnvironmentComposite(
       (await response.clone().json()) as { headSeq: number; headHashHex: string },
     );
     fixture.envStatements.set(input.environmentId, { statement, authorUserId: actorUserId });
+    fixture.manifests.set(input.environmentId, {
+      manifest,
+      issuerUserId: actorUserId,
+      epoch: 1,
+      entries: [],
+    });
   }
   return response;
 }
@@ -279,7 +412,7 @@ async function nextEnvironmentStatement(
   });
 }
 
-/** 環境 rename(ステートメント付き PATCH)。204 なら記録を進める。 */
+/** 環境 rename(ステートメント + マニフェスト付き PATCH)。204 なら記録を進める。 */
 export async function renameEnvironmentRequest(
   fixture: DataFixture,
   environmentId: string,
@@ -292,14 +425,36 @@ export async function renameEnvironmentRequest(
     status: "active",
     authorUserId: actorUserId,
   });
+  // 環境 rename のマニフェストは新しい envMetaSigHashHex を写す(§12-4)
+  const last = fixture.manifests.get(environmentId);
+  if (last === undefined) {
+    throw new Error(`no recorded manifest for environment ${environmentId}`);
+  }
+  const manifest = await nextEnvironmentManifest(fixture, {
+    environmentId,
+    epoch: last.epoch,
+    entries: last.entries,
+    envMeta: {
+      metaVersion: statement.metaVersion,
+      sigHashHex: await metaSignedBytesHashOf(projectId, statement, actorUserId),
+    },
+    issuerUserId: actorUserId,
+    head: fixture.head,
+  });
   const response = await requestJson(
     "PATCH",
     `/environments/${environmentId}`,
     tokenOf(fixture.tokens, actorUserId),
-    { statement },
+    { statement, manifest },
   );
   if (response.status === 204) {
     fixture.envStatements.set(environmentId, { statement, authorUserId: actorUserId });
+    fixture.manifests.set(environmentId, {
+      manifest,
+      issuerUserId: actorUserId,
+      epoch: last.epoch,
+      entries: last.entries,
+    });
   }
   return response;
 }
@@ -392,6 +547,8 @@ export async function rotateEnvironmentComposite(
     readonly parentHeadHashHex?: string;
     /** URL とエントリ payload の不一致テスト用(既定はエントリと同じ環境)。 */
     readonly urlEnvironmentId?: string;
+    /** 複合内整合の negative 用のマニフェスト上書き。 */
+    readonly manifest?: WireEnvironmentManifest;
   },
 ): Promise<Response> {
   const actorUserId = input.actorUserId ?? MEMBER;
@@ -401,6 +558,28 @@ export async function rotateEnvironmentComposite(
     actorUserId,
     operation: rotateEpochOperation(input.environmentId, input.newEpoch, input.dekCommitmentHex),
   });
+  // 新エポックを焼き込んだマニフェスト(メタ集合は不変 — §4.3)。宣言ヘッドは
+  // 追記前の現ヘッド(§12-4)。未記録の環境(negative テストの未作成環境等)は
+  // 空集合 + ダミー envMeta で形だけ満たす(受理段の先行検査で落ちる前提)
+  const last = fixture.manifests.get(input.environmentId);
+  const manifest =
+    input.manifest ??
+    (await nextEnvironmentManifest(fixture, {
+      // URL とエントリの不一致 negative では worker のマニフェスト座標検査
+      // (manifestEnvironmentId)より先に DO の entry-vs-URL 検査へ到達させる
+      // ため、マニフェストは URL 側の座標で署名する
+      environmentId: input.urlEnvironmentId ?? input.environmentId,
+      epoch: input.newEpoch,
+      entries: last?.entries ?? [],
+      envMeta: fixture.envStatements.has(input.environmentId)
+        ? await envMetaOf(fixture, input.environmentId)
+        : { metaVersion: 1, sigHashHex: "ab".repeat(32) },
+      issuerUserId: actorUserId,
+      head: {
+        seq: fixture.head.seq,
+        hashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+      },
+    }));
   const response = await requestJson(
     "POST",
     `/environments/${input.urlEnvironmentId ?? input.environmentId}/rotate`,
@@ -409,6 +588,7 @@ export async function rotateEnvironmentComposite(
       parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       entry,
       deks: input.deks,
+      manifest,
     },
   );
   if (response.status === 200) {
@@ -416,6 +596,12 @@ export async function rotateEnvironmentComposite(
       fixture,
       (await response.clone().json()) as { headSeq: number; headHashHex: string },
     );
+    fixture.manifests.set(input.environmentId, {
+      manifest,
+      issuerUserId: actorUserId,
+      epoch: input.newEpoch,
+      entries: last?.entries ?? [],
+    });
   }
   return response;
 }

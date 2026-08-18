@@ -119,6 +119,40 @@ export interface DistributedVariableMetaStatementValue extends DistributedMetaSt
 }
 
 /**
+ * 環境マニフェストの保存入力(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)。
+ * 座標(environment)は worker が URL との一致を検査済みで、DO は保存先座標から
+ * 署名対象を再構成する(§12-5 — ワイヤの申告値から組まない)。issuer = 呼び出し
+ * 主体が契約のため issuer の ID / FP はここに載せない(DO が受理時点のチェーン
+ * 導出メンバーから取る)。
+ */
+export interface EnvManifestInput {
+  readonly suite: WireSuite;
+  /** 発行時点(宣言ヘッド時点)の現エポック(§4.3 の鮮度アンカー)。 */
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly variablesDigestHex: string;
+  readonly envMetaVersion: number;
+  readonly envMetaSigHashHex: string;
+  /** 直前マニフェストの signed_bytes の SHA-256(manifestVersion 1 は空文字列)。 */
+  readonly prevManifestSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  /** マニフェスト署名(Ed25519 — CRYPTO_SPEC §4.3)。 */
+  readonly signatureHex: string;
+}
+
+/**
+ * 配布される環境マニフェスト(DistributedEnvironmentManifest と構造一致)。
+ * 保存済みの署名ブロックと issuer(受理時点の user_id + チェーン導出鍵 FP)を
+ * そのまま返す(削除済み issuer の過去マニフェストの検証可能性 — §12-2)。
+ */
+export interface DistributedEnvManifestValue extends EnvManifestInput {
+  readonly environmentId: string;
+  readonly issuerUserId: string;
+  readonly issuerKeyFingerprintHex: string;
+}
+
+/**
  * 変数値の保存入力。AAD 構成要素のうち座標(project / environment / variable)は
  * worker が URL との一致を検査済み(§12-2)。DO は状態依存の epoch / version と
  * 値署名(§12-5 = CRYPTO_SPEC §4.1 / §6.4)を検査する。
@@ -201,6 +235,12 @@ export interface EnvironmentPullValue {
   /** 削除済み変数の deleted ステートメント(保存・配布し続ける — §12-5)。 */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
   readonly deks: readonly RecipientDekValue[];
+  /**
+   * 最新の環境マニフェスト(§12-7 — 2026-08-18)。undefined はマニフェスト
+   * 導入前に作成された環境の移行完了までの過渡状態のみ(保存行があれば必ず
+   * 同梱する — クライアント側は欠落 = 一律拒否 §6.3)。
+   */
+  readonly manifest?: DistributedEnvManifestValue;
 }
 
 /**
@@ -217,6 +257,8 @@ export interface EnvironmentMetadataPullValue {
   readonly variables: readonly DistributedVariableMetaStatementValue[];
   /** 削除済み変数の deleted ステートメント(§12-5)。 */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
+  /** 最新の環境マニフェスト(メタ検証の完全性はこのモードでも同水準 — §12-7)。 */
+  readonly manifest?: DistributedEnvManifestValue;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +303,16 @@ export type ValueSignatureRejectReason =
  * 再ステートメント(revived-after-delete)を含む。
  */
 export type MetaStatementRejectReason = ValueSignatureRejectReason;
+
+/**
+ * 環境マニフェストの 422 理由(AUTH_SPEC §12-5 — 2026-08-18): 既存 3 語彙を
+ * 共有し、マニフェスト固有の 2 理由(ダイジェスト再計算不一致・エポック不整合)を
+ * 加える。api-schema の ManifestRejectReasonSchema と一致させる。
+ */
+export type ManifestRejectReason =
+  | ValueSignatureRejectReason
+  | "manifest-digest-mismatch"
+  | "manifest-epoch-mismatch";
 
 export type DataLimitResource =
   | "environments"
@@ -320,6 +372,10 @@ export type DataRejection =
   | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
   | { readonly kind: "meta-rejected"; readonly reason: MetaStatementRejectReason }
   | { readonly kind: "meta-version-conflict"; readonly currentMetaVersion: number }
+  | { readonly kind: "manifest-rejected"; readonly reason: ManifestRejectReason }
+  // manifestVersion CAS(§12-5 (6))。最新番号のみを返す(勝者のハッシュを
+  // 載せない規律は metaVersion CAS と同一)
+  | { readonly kind: "manifest-version-conflict"; readonly currentManifestVersion: number }
   | { readonly kind: "name-not-nfc" }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
   | {
