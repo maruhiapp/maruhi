@@ -237,7 +237,7 @@ export function floorViolationLabel(violation: FloorViolation): string {
     case "manifest-omitted":
       return "omission of the environment manifest after one was verified (manifest suppression)";
     case "stale-manifest-injection":
-      return "an advanced manifestVersion below the pull-time epoch baseline (evidence of forward meta injection with an old epoch key)";
+      return "an advanced manifestVersion below the epoch baseline (evidence of forward meta injection with an old epoch key)";
   }
 }
 
@@ -347,10 +347,18 @@ function checkManifestAgainstFloor(
 
 /**
  * 規則 (c) のマニフェスト適用(§6.3 — 2026-08-18): 床の manifest_version より
- * 新しいマニフェストの epoch が pull 時点エポック床より小さい配布は、旧エポック
- * 鍵による前進 manifestVersion 注入の証拠。マニフェスト床がない場合は
- * version 0 相当(値の「床にない変数」と同型 — 導入後の正当な初回マニフェストの
- * epoch は発行時点の現エポック ≥ 基準)。
+ * 新しいマニフェストの epoch が基準より小さい配布は、旧エポック鍵による前進
+ * manifestVersion 注入の証拠。マニフェスト床がない場合は version 0 相当
+ * (値の「床にない変数」と同型 — 導入後の正当な初回マニフェストの epoch は
+ * 発行時点の現エポック ≥ 基準)。
+ *
+ * 基準は pull 時点エポック床と**床マニフェスト自身の epoch** の大きい方:
+ * マニフェスト連鎖のエポックは非減少(§4.3 の epoch-regressed — 検証済み)
+ * なので、床が検証済みの epoch E のマニフェストを持つ以上、それより新しい
+ * manifestVersion の正当なマニフェストの epoch は E 以上でしかありえない
+ * (推移形)。pullEpoch だけを基準にすると、rotate 直後(commitManifest は
+ * 前進するが pullEpoch は pull まで動かない)や有界再同期の形(pullEpoch は
+ * 応答取得前ビュー)で、床が知っている epoch より古い焼き込みが素通りする。
  */
 function checkManifestEpochBaseline(
   floor: EnvironmentFloor,
@@ -360,10 +368,11 @@ function checkManifestEpochBaseline(
     return null;
   }
   const floorVersion = floor.manifest?.manifestVersion ?? 0;
-  if (manifest.manifestVersion > floorVersion && manifest.epoch < floor.pullEpoch) {
+  const baselineEpoch = Math.max(floor.pullEpoch, floor.manifest?.epoch ?? 0);
+  if (manifest.manifestVersion > floorVersion && manifest.epoch < baselineEpoch) {
     return {
       kind: "stale-manifest-injection",
-      baselineEpoch: floor.pullEpoch,
+      baselineEpoch,
       floorManifestVersion: floorVersion,
       pulled: manifest,
     };

@@ -408,8 +408,64 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("below the pull-time epoch baseline");
+    expect(errors).toContain("below the epoch baseline");
     expect(errors).toContain("forward meta injection");
+  });
+
+  it("規則 (c) の基準は床マニフェスト自身の epoch も含む(pullEpoch が遅れている窓 — bugbot 指摘の回帰)", async () => {
+    // 有界再同期の形では pullEpoch は応答取得**前**ビュー(= 旧エポック)に
+    // 据え置かれる一方、床マニフェストは epoch 2 を検証済みで知っている。
+    // 基準を pullEpoch だけにすると、旧エポックを焼き込んだ前進 manifestVersion
+    // (旧在籍ヘッド宣言で暗号学的には有効)が素通りする
+    const env = await makeTestEnv();
+    let chainCalls = 0;
+    const progressiveChain: MockHandler = onRequest("GET", `/projects/${projectId}/chain`, () => {
+      chainCalls += 1;
+      const built = chainCalls === 1 ? chain1 : chain2;
+      return {
+        status: 200,
+        json: {
+          projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      };
+    });
+    // フェーズ 1: 旧ビュー(chain1)から始まり、epoch 2 の値 + v2 マニフェスト
+    // (head seq 5 = future)が有界再同期で受理される → 床: pullEpoch 1・
+    // マニフェスト {v2, epoch 2}
+    await startPhase(env, [
+      progressiveChain,
+      pullHandler({
+        currentEpoch: 2,
+        variables: [{ variableId: "va", statement: alphaStatement, value: alphaValue2 }],
+        deks: [wrap1, wrap2],
+        manifest: await manifestV1({
+          epoch: 2,
+          head: headOf(chain2, 5),
+          manifestVersion: 2,
+        }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+
+    // フェーズ 2: version は前進(3)だが epoch 1 を焼き込んだマニフェスト。
+    // pullEpoch(1)基準では素通りするが、床マニフェストの epoch(2)が基準に
+    // 入るため拒否される(マニフェスト連鎖のエポック非減少の推移形)
+    await startPhase(env, [
+      chainHandler(chain2),
+      pullHandler({
+        currentEpoch: 2,
+        variables: [{ variableId: "va", statement: alphaStatement, value: alphaValue2 }],
+        deks: [wrap1, wrap2],
+        manifest: await manifestV1({ epoch: 1, head: headOf(chain2, 4), manifestVersion: 3 }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("below the epoch baseline");
+    expect(errors).toContain("epoch baseline=2");
   });
 });
 

@@ -142,7 +142,7 @@ function manifestEvidenceLines(
   if (violation.kind === "stale-manifest-injection") {
     return [
       coordinateLine(coordinates),
-      `  rule (c) baseline: pull-time epoch baseline=${violation.baselineEpoch} (the chain-derived current epoch at the last successful pull)`,
+      `  rule (c) baseline: epoch baseline=${violation.baselineEpoch} (the larger of the pull-time chain-derived epoch and the verified floor manifest's own epoch — manifest epochs never decrease across versions)`,
       `  floor record manifestVersion=${violation.floorManifestVersion} (0 = no floor record)`,
       ...pulledManifestLines(violation.pulled),
     ];
