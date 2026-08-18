@@ -468,13 +468,23 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
       });
+      // 採番した variableId は乱数生成なので、検証済み集合に既に存在することは
+      // ない。もし存在したら握り潰して digest から落とさず(サーバーの 422 に
+      // 化けて原因が遠くなる)、内部不整合として明示的に失敗させる
+      if (issueBase.entries.some((entry) => entry.variableId === state.target.variableId)) {
+        return yield* Effect.fail(
+          cliError(
+            `Variable ${state.target.variableId} resolved as a creation but already exists in the verified statement set (internal inconsistency)`,
+          ),
+        );
+      }
       const manifest = yield* signNextManifest({
         verified: state.verified,
         environmentId: input.environmentId,
         epoch: state.epoch,
         previous: issueBase.previous,
         entries: [
-          ...issueBase.entries.filter((entry) => entry.variableId !== state.target.variableId),
+          ...issueBase.entries,
           {
             variableId: state.target.variableId,
             status: "active" as const,

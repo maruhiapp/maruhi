@@ -62,6 +62,17 @@ manifestVersion 1(prev 空)を受理する(AUTH_SPEC §12-5 (6) に明確化を�
 rotate / メタ操作の `EnvironmentManifestSchema` は v1 も受理する(移行の
 最初の操作が v1 を発行する)。
 
+初期化が実際に必要(欠落を確認した)実行は **rotate 複合の送信を強制**する
+(`--new-epoch` と同じ経路選択): 中断復旧(複合なしの再開)や「確認だけ」の
+早期 return を取ると、成功に見えるのに v1 が発行されない(PR #81 レビュー
+ボット指摘の修正)。
+
+**依存関係の注意(PR #81 pullfrog レビュー)**: この経路は `env rotate` が
+値付き pull(`pullVerifiedEnvironment` — `allowMissingManifest` を尊重)を
+使うことに依存している。`pullVerifiedEnvironmentMetadata` は移行許容を持たない
+(メタのみ pull に欠落許容の分岐はない)ため、**将来 rotate の前段をメタのみ
+pull に載せ替えると移行経路が壊れる**。
+
 ### 2-2. 既存ドッグフーディング環境の移行手順(確定)
 
 マニフェスト導入前に作成された各環境について、member 以上が 1 回だけ:
@@ -75,8 +86,20 @@ maruhi env rotate <environmentId> --init-manifest --reason "manifest initializat
 - 実行順は任意・環境ごとに独立。未初期化環境への pull / run / push /
   ci run は初期化まで欠落拒否で失敗する(エラーメッセージが上記コマンドを
   案内する)ため、**本 PR のデプロイ後すみやかに全環境で実行する**
+- **順序要件(PR #81 pullfrog レビュー)**: ① サーバーのデプロイ →
+  ② 全環境の `--init-manifest` 初期化 → ③ CI(actions/setup-maruhi が拾う
+  CLI)の更新、の順で行う。逆順の帰結: 旧サーバー × 新 CLI では rotate
+  エンドポイントが manifest を受け取れず**案内された初期化手順自体が失敗**
+  する(サーバー版数ネゴシエーションは存在しない)。環境の移行より先に CI が
+  新 CLI を拾うと、`verifyLeaseDistribution` は移行許容を持たない(ワーク
+  ロードは自力初期化できない)ため既存ジョブが欠落拒否で落ちる(文言は
+  自己説明的 — 沈黙のロックアウトにはならない)
 - SELF_HOSTING.md には載せない(公開前の内部移行 — 公開後のセルフホストは
-  作成複合が v1 を必須同梱するため未初期化状態が構造的に存在しない)
+  作成複合が v1 を必須同梱するため未初期化状態が構造的に存在しない)。
+  ただし**公開前チェックリスト(ROADMAP)に「SELF_HOSTING.md の "Updates"
+  節へ本移行の項目を追加する」を紐づけた**(サーバーと CLI が独立更新される
+  セルフホストでは公開後に同じ形が起こるため — 2026-08-11 の client_id 移行の
+  先例と同じ置き場)
 
 ### 2-3. 床ファイルの互換方針(罠 8 の決着)
 
@@ -172,7 +195,15 @@ maruhi env rotate <environmentId> --init-manifest --reason "manifest initializat
 2. **メタ forward injection の残余**(§14.3-5 の縮小後): 床のマニフェスト
    規則でも「攻撃鍵の在籍区間終了後に一度も pull していないクライアント」
    への注入は検出されない(値の規則 (c) と同型の限界)。テストで非保証を
-   固定済み(floor-detection.test.ts — マニフェストごと前進させる形)
+   固定済み(floor-detection.test.ts — マニフェストごと前進させる形)。
+   より一般に、**巻き戻し方向の検出は M1 時点では完全にローカル床に依存**
+   する(配布時検証は predecessor を渡さないため prev の実在一致・エポック
+   非減少は発火せず、宣言ヘッドは検証済みチェーン上に実在すれば tip でなくて
+   よい — 値・メタと同じ規約)。§4.3 の「鮮度アンカー」が本当に要る 2 場面
+   (床のない初回接触・使い捨て CI ランナー)は M1 では守られない — 内部整合
+   的な古いマニフェスト + 古いステートメント集合の配布は通る。この閉包は
+   M2(チェックポイント整合)/ M4(ヘッドゴシップ)の担当(PR #81 pullfrog
+   レビューでの確認事項 — 後続 PR で過大に読まないこと)
 3. **CLI の変数 rename / 削除・環境 rename / 削除コマンドは未実装のまま**
    (本 PR の範囲外 — API 経路は server テストで固定済み)。新設時は
    マニフェスト同梱(signNextManifest)を忘れないこと — api-schema の

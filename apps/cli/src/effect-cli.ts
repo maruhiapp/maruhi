@@ -508,7 +508,7 @@ const envRotateConfig = {
   // マニフェストの検証は緩和しない(manifest.ts)
   "init-manifest": singleFlag(
     "init-manifest",
-    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation)",
+    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run this for every environment before upgrading CI — workloads cannot initialize a manifest themselves",
   ),
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
