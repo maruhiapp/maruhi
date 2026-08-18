@@ -20,6 +20,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { signNextManifest } from "./manifest.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
@@ -174,7 +175,7 @@ export function envCreateOp(input: {
             });
             // 宣言ヘッドは追記前の現ヘッド(= 同梱エントリの prev — §12-4)。
             // 共有実装(meta-statement.ts)— push.ts との差分は target のみ
-            const { statement } = yield* signCreateStatement({
+            const { statement, metaSigHashHex } = yield* signCreateStatement({
               verified: state.verified,
               environmentId: input.environmentId,
               target: { kind: "environment" },
@@ -182,6 +183,28 @@ export function envCreateOp(input: {
               authorUserId: input.signerUserId,
               signingKey: input.signingKeyPair.privateKey,
             });
+            // 同梱マニフェスト(§12-4 — 2026-08-18): manifestVersion 1・変数
+            // 空集合・epoch 1。envMeta は同梱ステートメント自身。CAS リトライでは
+            // エントリ・ステートメント・マニフェストの全部を再署名する
+            const signedManifest = yield* signNextManifest({
+              verified: state.verified,
+              environmentId: input.environmentId,
+              epoch: 1,
+              previous: null,
+              entries: [],
+              envMeta: { metaVersion: 1, sigHashHex: metaSigHashHex },
+              issuerUserId: input.signerUserId,
+              signingKey: input.signingKeyPair.privateKey,
+              chainHead: {
+                seq: state.verified.state.headSeq,
+                hashHex: state.verified.state.headHashHex,
+              },
+            });
+            // 作成複合のワイヤ形(manifestVersion 1・prev 空)への絞り込み
+            const manifest = signedManifest.manifest;
+            if (manifest.manifestVersion !== 1 || manifest.prevManifestSigHashHex !== "") {
+              return yield* Effect.fail(cliError("Failed to sign the environment manifest"));
+            }
             yield* input.client.environments.create({
               params: { projectId: state.verified.projectId },
               payload: {
@@ -189,6 +212,11 @@ export function envCreateOp(input: {
                 entry,
                 statement,
                 deks: state.deks,
+                manifest: {
+                  ...manifest,
+                  manifestVersion: 1,
+                  prevManifestSigHashHex: "",
+                },
               },
             });
             // 作成直後の現エポックは**構造的に 1**(§12-4 — 同梱エントリは

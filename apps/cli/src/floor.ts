@@ -57,6 +57,18 @@ export type VariableFloor =
       readonly metaSigHashHex: string;
     };
 
+/**
+ * 環境マニフェストの床(CRYPTO_SPEC §6.3 の 2026-08-18 拡張 — manifest_version /
+ * その epoch / signed_bytes ハッシュ)。規則 (a) の後退・(b) の同版相違・
+ * (c) のマニフェスト適用(前進 manifestVersion への旧エポック注入)の検出材料。
+ */
+export interface ManifestFloor {
+  readonly manifestVersion: number;
+  /** そのマニフェストが焼き込んだ epoch(規則 (c) のマニフェスト適用の材料)。 */
+  readonly epoch: number;
+  readonly manifestSigHashHex: string;
+}
+
 /** 環境 1 つ分の床。 */
 export interface EnvironmentFloor {
   /**
@@ -69,6 +81,14 @@ export interface EnvironmentFloor {
   /** 環境メタステートメントの床(巻き戻し検出のみ — 前進注入は非保証 §14.3-5)。 */
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
+  /**
+   * 環境マニフェストの床(§6.3 — 2026-08-18)。**欠落は「マニフェスト床なし」
+   * として許容する**: マニフェスト導入前に書かれた v1 床ファイルにこの
+   * フィールドはなく、欠落を全体破損(fail-open の作り直し)に落とすと既存の
+   * 値・メタ床の検出材料まで捨てることになる(session-27 §14 PR-M1 の移行 —
+   * 床のバージョンを上げない後方互換の追加)。
+   */
+  readonly manifest?: ManifestFloor;
   /** キーは variableId(名前を書かない)。 */
   readonly variables: Readonly<Record<string, VariableFloor>>;
 }
@@ -101,6 +121,11 @@ export interface PushCommit {
   readonly environmentId: string;
   readonly variableId: string;
   readonly variable: VariableFloor;
+  /**
+   * 変数作成の複合が発行したマニフェストの床前進(自計算値 — §6.3)。
+   * push(既存変数)はマニフェストを発行しないため undefined。
+   */
+  readonly manifest?: ManifestFloor;
 }
 
 /** Load / commit boundary for the local floor files (§6.3). */
@@ -212,6 +237,31 @@ export function floorRecordGet<T>(
   return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
+/**
+ * マニフェスト床のデコード。**フィールド自体の欠落(undefined)は「マニフェスト
+ * 床なし」として許容**(マニフェスト導入前の v1 床ファイルとの互換 — 既存の
+ * 値・メタ床の検出材料を捨てない)。存在するのに形が壊れている場合は他の
+ * フィールドと同じく全体破損(厳格デコード)。
+ */
+function decodeManifestFloor(value: unknown): ManifestFloor | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    !isPositiveInteger(value["manifestVersion"]) ||
+    !isPositiveInteger(value["epoch"]) ||
+    !isHex64(value["manifestSigHashHex"])
+  ) {
+    return null;
+  }
+  return {
+    manifestVersion: value["manifestVersion"],
+    epoch: value["epoch"],
+    manifestSigHashHex: value["manifestSigHashHex"],
+  };
+}
+
 function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   if (
     !isRecord(value) ||
@@ -220,6 +270,10 @@ function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
     !isHex64(value["metaSigHashHex"]) ||
     !isRecord(value["variables"])
   ) {
+    return null;
+  }
+  const manifest = decodeManifestFloor(value["manifest"]);
+  if (manifest === null) {
     return null;
   }
   const variables: Record<string, VariableFloor> = {};
@@ -234,6 +288,7 @@ function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
     pullEpoch: value["pullEpoch"],
     metaVersion: value["metaVersion"],
     metaSigHashHex: value["metaSigHashHex"],
+    ...(manifest === undefined ? {} : { manifest }),
     variables,
   };
 }
@@ -307,7 +362,21 @@ function mergeVariableFloor(
   };
 }
 
-/** 環境床の単調マージ(pullEpoch は max・メタは metaVersion の大きい側・変数は単調 union)。 */
+/** マニフェスト床の単調マージ(manifestVersion の大きい側が勝つ。欠落側は負けない)。 */
+function mergeManifestFloor(
+  existing: ManifestFloor | undefined,
+  incoming: ManifestFloor | undefined,
+): ManifestFloor | undefined {
+  if (existing === undefined) {
+    return incoming;
+  }
+  if (incoming === undefined) {
+    return existing;
+  }
+  return incoming.manifestVersion >= existing.manifestVersion ? incoming : existing;
+}
+
+/** 環境床の単調マージ(pullEpoch は max・メタ / マニフェストは版の大きい側・変数は単調 union)。 */
 function mergeEnvironmentFloor(
   existing: EnvironmentFloor | undefined,
   incoming: EnvironmentFloor,
@@ -316,6 +385,7 @@ function mergeEnvironmentFloor(
     return incoming;
   }
   const meta = incoming.metaVersion >= existing.metaVersion ? incoming : existing;
+  const manifest = mergeManifestFloor(existing.manifest, incoming.manifest);
   // union: 正当な床の変数キーは消えない(削除も tombstone レコードとして残る)
   // ため、片側にしかない変数は保持する
   const variables: Record<string, VariableFloor> = { ...existing.variables };
@@ -329,6 +399,7 @@ function mergeEnvironmentFloor(
     pullEpoch: Math.max(existing.pullEpoch, incoming.pullEpoch),
     metaVersion: meta.metaVersion,
     metaSigHashHex: meta.metaSigHashHex,
+    ...(manifest === undefined ? {} : { manifest }),
     variables,
   };
 }
@@ -369,12 +440,14 @@ function applyPush(commit: PushCommit): FloorMerge {
       // 反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)
       return base;
     }
+    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
     return {
       ...base,
       environments: {
         ...base.environments,
         [commit.environmentId]: {
           ...environment,
+          ...(manifest === undefined ? {} : { manifest }),
           variables: {
             ...environment.variables,
             [commit.variableId]: mergeVariableFloor(

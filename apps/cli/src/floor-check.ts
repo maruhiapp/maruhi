@@ -27,9 +27,11 @@ import {
   type EnvironmentFloor,
   floorRecordGet,
   type FloorStoreShape,
+  type ManifestFloor,
   type ProjectFloor,
   type VariableFloor,
 } from "./floor.ts";
+import type { VerifiedManifest } from "./manifest.ts";
 import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedPulledValue } from "./values.ts";
 
@@ -58,6 +60,11 @@ export interface VerifiedPullSnapshot {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedPulledValue[];
   readonly tombstones: readonly VerifiedTombstone[];
+  /**
+   * 検証済みマニフェスト(§4.3)。null は移行経路(--init-manifest)が欠落を
+   * 許容した場合のみ — 通常経路の欠落は values.ts が床検査の前に拒否している。
+   */
+  readonly manifest: VerifiedManifest | null;
 }
 
 /**
@@ -70,6 +77,8 @@ export interface VerifiedMetadataSnapshot {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedActiveStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
+  /** 検証済みマニフェスト(欠落は values.ts が拒否済み — メタのみ pull に移行許容はない)。 */
+  readonly manifest: VerifiedManifest;
 }
 
 /** 検証済みのアクティブ変数ステートメント(メタデータのみ pull の 1 変数)。 */
@@ -170,6 +179,30 @@ export type FloorViolation =
       readonly variableId: string;
       readonly floor: FloorMetaEvidence;
       readonly pulled: VerifiedMetaEvidence;
+    }
+  | {
+      readonly kind: "manifest-rollback";
+      readonly floor: ManifestFloor;
+      readonly pulled: VerifiedManifest;
+    }
+  | {
+      readonly kind: "manifest-equivocation";
+      readonly floor: ManifestFloor;
+      readonly pulled: VerifiedManifest;
+    }
+  | {
+      // マニフェスト床の確立後にマニフェストが配布されない形(--init-manifest の
+      // 欠落許容下でも、一度確立した床に対する欠落は握り潰しの証拠)
+      readonly kind: "manifest-omitted";
+      readonly floor: ManifestFloor;
+    }
+  | {
+      // 規則 (c) のマニフェスト適用(§6.3 — 2026-08-18): 床の manifest_version
+      // より新しいマニフェストの epoch が pull 時点エポック床より小さい配布
+      readonly kind: "stale-manifest-injection";
+      readonly baselineEpoch: number;
+      readonly floorManifestVersion: number;
+      readonly pulled: VerifiedManifest;
     };
 
 /** 拒否メッセージの種別ラベル(証拠の整形は floor-evidence.ts)。 */
@@ -197,6 +230,14 @@ export function floorViolationLabel(violation: FloorViolation): string {
       return "an unauthorized undeletion";
     case "tombstone-mismatch":
       return "replacement of a deleted variable's tombstone";
+    case "manifest-rollback":
+      return "an environment-manifest rollback";
+    case "manifest-equivocation":
+      return "different signed bytes served for the same manifestVersion (evidence of equivocation)";
+    case "manifest-omitted":
+      return "omission of the environment manifest after one was verified (manifest suppression)";
+    case "stale-manifest-injection":
+      return "an advanced manifestVersion below the pull-time epoch baseline (evidence of forward meta injection with an old epoch key)";
   }
 }
 
@@ -268,6 +309,64 @@ function checkMetaAgainstFloor(
   }
   if (pulled.metaVersion === floor.metaVersion && pulled.metaSigHashHex !== floor.metaSigHashHex) {
     return { kind: "meta-equivocation", target, variableId, floor, pulled };
+  }
+  return null;
+}
+
+/**
+ * マニフェスト床の検査(規則 (a)(b) のマニフェスト部分 + 確立後の欠落)。
+ * 床にマニフェスト記録がない(マニフェスト導入前の床)場合は検査対象がない —
+ * 記録の確立は検証成功後の床コミットが担う。
+ */
+function checkManifestAgainstFloor(
+  floor: EnvironmentFloor,
+  manifest: VerifiedManifest | null,
+): FloorViolation | null {
+  const manifestFloor = floor.manifest;
+  if (manifestFloor === undefined) {
+    return null;
+  }
+  if (manifest === null) {
+    // 一度確立したマニフェスト床に対する欠落は、移行経路(--init-manifest)の
+    // 許容下でも握り潰しの証拠(初期化済み環境のマニフェストは消えない)
+    return { kind: "manifest-omitted", floor: manifestFloor };
+  }
+  if (manifest.manifestVersion < manifestFloor.manifestVersion) {
+    return { kind: "manifest-rollback", floor: manifestFloor, pulled: manifest };
+  }
+  if (
+    manifest.manifestVersion === manifestFloor.manifestVersion &&
+    manifest.signedBytesHashHex !== manifestFloor.manifestSigHashHex
+  ) {
+    // epoch を含む全署名対象が signed bytes に入るため、同一 manifestVersion の
+    // 内容相違はこの 1 検査で覆われる(§4.3 の署名対象全列挙)
+    return { kind: "manifest-equivocation", floor: manifestFloor, pulled: manifest };
+  }
+  return null;
+}
+
+/**
+ * 規則 (c) のマニフェスト適用(§6.3 — 2026-08-18): 床の manifest_version より
+ * 新しいマニフェストの epoch が pull 時点エポック床より小さい配布は、旧エポック
+ * 鍵による前進 manifestVersion 注入の証拠。マニフェスト床がない場合は
+ * version 0 相当(値の「床にない変数」と同型 — 導入後の正当な初回マニフェストの
+ * epoch は発行時点の現エポック ≥ 基準)。
+ */
+function checkManifestEpochBaseline(
+  floor: EnvironmentFloor,
+  manifest: VerifiedManifest | null,
+): FloorViolation | null {
+  if (manifest === null) {
+    return null;
+  }
+  const floorVersion = floor.manifest?.manifestVersion ?? 0;
+  if (manifest.manifestVersion > floorVersion && manifest.epoch < floor.pullEpoch) {
+    return {
+      kind: "stale-manifest-injection",
+      baselineEpoch: floor.pullEpoch,
+      floorManifestVersion: floorVersion,
+      pulled: manifest,
+    };
   }
   return null;
 }
@@ -423,6 +522,13 @@ export function checkEnvironmentPull(
   if (violation !== null) {
     return violation;
   }
+  // マニフェスト床の規則 (a)(b) + 確立後の欠落 + 規則 (c) のマニフェスト適用
+  const manifestViolation =
+    checkManifestAgainstFloor(floor, snapshot.manifest) ??
+    checkManifestEpochBaseline(floor, snapshot.manifest);
+  if (manifestViolation !== null) {
+    return manifestViolation;
+  }
   // 規則 (c): 床の version より新しい version(床にない変数は version 0 相当 —
   // 前回 pull 以降に正当に作られた変数は当時の現エポック以上でしか書けない)の
   // epoch が pull 時点エポック基準より小さい配布は前進注入の証拠。基準「以上」は
@@ -462,13 +568,23 @@ export function checkEnvironmentMetadataPull(
   const tombstones = new Map(
     snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
   );
-  return checkFloorCommon(
+  const violation = checkFloorCommon(
     floor,
     snapshot.environment,
     actives,
     tombstones,
     checkFloorActiveMeta,
     (statement) => statement,
+  );
+  if (violation !== null) {
+    return violation;
+  }
+  // マニフェストはメタのみモードでも配布される(§12-7 — メタ検証の完全性は
+  // 同水準)ため、床の規則 (a)(b) と規則 (c) のマニフェスト適用はここでも検査
+  // する(値水準の規則 (c) と床コミットが値付き pull の領分であることは不変)
+  return (
+    checkManifestAgainstFloor(floor, snapshot.manifest) ??
+    checkManifestEpochBaseline(floor, snapshot.manifest)
   );
 }
 
@@ -503,6 +619,15 @@ export function buildEnvironmentFloor(
     pullEpoch: chainCurrentEpoch,
     metaVersion: snapshot.environment.metaVersion,
     metaSigHashHex: snapshot.environment.metaSigHashHex,
+    ...(snapshot.manifest === null
+      ? {}
+      : {
+          manifest: {
+            manifestVersion: snapshot.manifest.manifestVersion,
+            epoch: snapshot.manifest.epoch,
+            manifestSigHashHex: snapshot.manifest.signedBytesHashHex,
+          },
+        }),
     variables,
   };
 }
@@ -530,6 +655,8 @@ export interface FloorHandle {
     variableId: string,
     variable: VariableFloor,
     head: ChainHeadFloor,
+    /** 変数作成の複合が発行したマニフェストの床前進(自計算値)。 */
+    manifest?: ManifestFloor,
   ) => Effect.Effect<void, CliError>;
 }
 
@@ -558,13 +685,14 @@ export function makeFloorHandle(input: {
           ),
           Effect.asVoid,
         ),
-    commitPush: (variableId, variable, head) =>
+    commitPush: (variableId, variable, head, manifest) =>
       input.store
         .commitPush(input.projectId, {
           chainHead: head,
           environmentId: input.environmentId,
           variableId,
           variable,
+          ...(manifest === undefined ? {} : { manifest }),
         })
         .pipe(
           Effect.tap((merged) =>

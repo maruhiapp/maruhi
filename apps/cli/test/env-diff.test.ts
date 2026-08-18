@@ -37,6 +37,7 @@ import {
   genesisOp,
   headOf,
   makeTestUser,
+  manifestFor,
   statementFor,
   type TestUser,
   type WireDistributedEnvironmentStatement,
@@ -133,18 +134,43 @@ function chainHandlerOf(heads: readonly number[]): MockHandler {
   });
 }
 
-/** メタデータのみ pull(§12-7)の応答。値も DEK も運ばない形。 */
+/** create_environment の位置(seq)。マニフェストの宣言ヘッドはこれ以降が必要。 */
+const CREATED_AT_SEQ: Readonly<Record<string, number>> = { [DEV]: 2, [PROD]: 3 };
+
+/** メタデータのみ pull(§12-7)の応答。値も DEK も運ばない形(マニフェストは同梱)。 */
 function pullMetadataHandlerOf(
   environmentId: string,
   statement: WireDistributedEnvironmentStatement,
   variables: readonly WireDistributedVariableStatement[],
 ): MockHandler {
+  // 宣言ヘッドは「環境作成の seq」と「配布ステートメントの最大宣言 seq」の大きい
+  // 方: 有界再同期テスト(短いチェーン → 延長)がステートメントの宣言 seq までしか
+  // ビューを進めないため、それより先を宣言すると再同期後も future のまま落ちる
+  const headSeq = Math.max(
+    CREATED_AT_SEQ[environmentId] ?? chain.entries.length,
+    ...variables.map((variable) => variable.chainHeadSeq),
+  );
   return onRequest(
     "GET",
     `/projects/${chain.projectId}/environments/${environmentId}/pull/metadata`,
-    () => ({
+    async () => ({
       status: 200,
-      json: { environmentId, currentEpoch: 1, statement, variables, deletedVariables: [] },
+      json: {
+        environmentId,
+        currentEpoch: 1,
+        statement,
+        variables,
+        deletedVariables: [],
+        manifest: await manifestFor({
+          projectId: chain.projectId,
+          environmentId,
+          epoch: 1,
+          issuer: owner,
+          head: headOf(chain, headSeq),
+          envStatement: statement,
+          statements: variables,
+        }),
+      },
     }),
   );
 }

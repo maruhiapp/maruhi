@@ -45,11 +45,14 @@ import {
   headOf,
   hexBytes,
   makeTestUser,
+  manifestFor,
   rotateEpochOp,
   statementFor,
   type TestUser,
   valueHashOf,
+  variablesDigestOf,
   type WireDistributedEnvironmentStatement,
+  type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
@@ -73,6 +76,8 @@ interface RotateBody {
     };
   };
   readonly deks: readonly WrappedDek[];
+  /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
+  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
 }
 
 /** pull 応答の 1 変数(検証済みステートメント + 配布形の値)。 */
@@ -233,12 +238,64 @@ function makeServer(options: ServerOptions): ServerState {
   let pushCalls = 0;
   let pullCalls = 0;
   let chainCalls = 0;
+  // 保存済みの最新マニフェスト(§12-5 — 保持は 1 通)。配信状態(エポック・
+  // メタ集合)が変わるたびに次 manifestVersion で再発行する(テストが変数集合を
+  // 差し替える = 他メンバーのメタ操作のモデル化)。受理した rotate の同梱
+  // マニフェストはそのまま最新として置き換える
+  let manifestState: {
+    key: string;
+    manifest: WireDistributedManifest;
+    version: number;
+  } | null = null;
+  const manifestKey = (): string =>
+    JSON.stringify([
+      currentEpoch,
+      entries.length,
+      variables.map((entry) => [entry.variableId, entry.statement.signatureHex]),
+      deletedVariables.map((tombstone) => [tombstone.variableId, tombstone.signatureHex]),
+    ]);
+  const serveManifest = async (): Promise<WireDistributedManifest> => {
+    const key = manifestKey();
+    if (manifestState !== null && manifestState.key === key) {
+      return manifestState.manifest;
+    }
+    const version = (manifestState?.version ?? 0) + 1;
+    const manifest = await manifestFor({
+      projectId,
+      environmentId: ENV_ID,
+      epoch: currentEpoch,
+      issuer: owner,
+      head: { seq: entries.length, hashHex: hashes[hashes.length - 1] ?? "" },
+      envStatement,
+      statements: [...variables.map((variable) => variable.statement), ...deletedVariables],
+      manifestVersion: version,
+    });
+    manifestState = { key, manifest, version };
+    return manifest;
+  };
 
   /** 受理: エントリをチェーンへ追記し、同梱ラップを配布集合へ入れる。 */
   const acceptRotate = async (body: RotateBody): Promise<void> => {
     entries.push(body.entry);
     hashes.push(await computeChainEntryHash(body.entry));
     currentEpoch = body.entry.payload.newEpoch;
+    // 配布形 = 受理した発行形 + 呼び出し主体の issuer 情報(§12-2)。同梱
+    // ダイジェストが現行集合を覆う場合のみ「最新」として固定する — 受理前に
+    // テストが変数集合を差し替えた(= 他メンバーのメタ操作の)場合は key を
+    // 空にし、次の pull で次 version を再発行させる
+    const digestNow = await variablesDigestOf(projectId, [
+      ...variables.map((variable) => variable.statement),
+      ...deletedVariables,
+    ]);
+    manifestState = {
+      key: digestNow === body.manifest.variablesDigestHex ? manifestKey() : "",
+      manifest: {
+        ...body.manifest,
+        issuerUserId: owner.userId,
+        issuerKeyFingerprintHex: owner.fingerprintHex,
+      },
+      version: body.manifest.manifestVersion,
+    };
     for (const wrap of body.deks) {
       if (wrap.recipientUserId !== owner.userId) {
         continue;
@@ -297,7 +354,7 @@ function makeServer(options: ServerOptions): ServerState {
         }
       );
     }),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => {
+    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, async () => {
       const injected = options.onPull?.(pullCalls);
       pullCalls += 1;
       return (
@@ -310,6 +367,7 @@ function makeServer(options: ServerOptions): ServerState {
             variables,
             deletedVariables,
             deks,
+            manifest: await serveManifest(),
           },
         }
       );
@@ -1088,7 +1146,7 @@ describe("maruhi env rotate", () => {
           },
         };
       }),
-      onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
+      onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, async () => ({
         status: 200,
         json: {
           environmentId: ENV_ID,
@@ -1097,6 +1155,15 @@ describe("maruhi env rotate", () => {
           variables: [],
           deletedVariables: [],
           deks: [],
+          manifest: await manifestFor({
+            projectId,
+            environmentId: ENV_ID,
+            epoch: 1,
+            issuer: owner,
+            head: headOf(chainBase, 2),
+            envStatement,
+            statements: [],
+          }),
         },
       })),
       onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/rotate`, (request) => {
@@ -1520,7 +1587,7 @@ describe("maruhi env rotate", () => {
           },
         };
       }),
-      onRequest("GET", `/projects/${granted.projectId}/environments/${ENV_ID}/pull`, () => ({
+      onRequest("GET", `/projects/${granted.projectId}/environments/${ENV_ID}/pull`, async () => ({
         status: 200,
         json: {
           environmentId: ENV_ID,
@@ -1529,6 +1596,15 @@ describe("maruhi env rotate", () => {
           variables,
           deletedVariables: [],
           deks: [],
+          manifest: await manifestFor({
+            projectId: granted.projectId,
+            environmentId: ENV_ID,
+            epoch: 2,
+            issuer: owner,
+            head: headOf(granted, 5),
+            envStatement: futureEnvStatement,
+            statements: variables.map((variable) => variable.statement),
+          }),
         },
       })),
       (request) => {
@@ -1746,17 +1822,30 @@ describe("maruhi env rotate", () => {
           },
         };
       }),
-      onRequest("GET", `/projects/${chainBase.projectId}/environments/${ENV_ID}/pull`, () => ({
-        status: 200,
-        json: {
-          environmentId: ENV_ID,
-          currentEpoch: 2,
-          statement: envStatement,
-          variables,
-          deletedVariables: [],
-          deks,
-        },
-      })),
+      onRequest(
+        "GET",
+        `/projects/${chainBase.projectId}/environments/${ENV_ID}/pull`,
+        async () => ({
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 2,
+            statement: envStatement,
+            variables,
+            deletedVariables: [],
+            deks,
+            manifest: await manifestFor({
+              projectId: chainBase.projectId,
+              environmentId: ENV_ID,
+              epoch: 2,
+              issuer: owner,
+              head: headOf(chainRotated, 3),
+              envStatement,
+              statements: variables.map((variable) => variable.statement),
+            }),
+          },
+        }),
+      ),
       (request) => {
         if (request.method !== "POST" || !request.path.endsWith("/versions")) {
           return null;

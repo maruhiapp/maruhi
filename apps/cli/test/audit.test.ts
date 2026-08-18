@@ -27,6 +27,7 @@ import {
   genesisOp,
   headOf,
   makeTestUser,
+  manifestFor,
   statementFor,
   type TestUser,
 } from "./support/crypto.ts";
@@ -162,6 +163,15 @@ async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHa
     author: owner,
     head: headOf(input.built, 2),
   });
+  const manifest = await manifestFor({
+    projectId,
+    environmentId: ENV_ID,
+    epoch: 1,
+    issuer: owner,
+    head: headOf(input.built, input.built.entries.length),
+    envStatement,
+    statements: [activeStatement],
+  });
   return [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
@@ -183,6 +193,7 @@ async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHa
               statement: envStatement,
               variables: [activeStatement],
               deletedVariables: [],
+              manifest,
             },
           },
     ),

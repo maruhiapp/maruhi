@@ -33,6 +33,7 @@
 
 import {
   EpochConflictError,
+  ManifestVersionConflictError,
   MetaVersionConflictError,
   type RecipientDek,
   VariableConflictError,
@@ -53,7 +54,8 @@ import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
-import type { VariableFloor } from "./floor.ts";
+import type { ManifestFloor, VariableFloor } from "./floor.ts";
+import { type ManifestDigestEntry, signNextManifest } from "./manifest.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
@@ -104,6 +106,20 @@ function prevHashOf(target: PushTarget): string {
   return target.latest === null ? "" : target.latest.signedBytesHashHex;
 }
 
+/**
+ * 変数作成の同梱マニフェスト(§12-5)の発行材料(検証済みメタデータ pull 由来)。
+ * 既存変数への push はマニフェストを発行しない(発行契機の限定 — §4.3)ため null。
+ */
+interface ManifestIssueBase {
+  readonly previous: {
+    readonly manifestVersion: number;
+    readonly signedBytesHashHex: string;
+  };
+  /** 現在のメタ集合(tombstone 込み)— 新変数のエントリは試行ごとに足す。 */
+  readonly entries: readonly ManifestDigestEntry[];
+  readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+}
+
 interface ResolvedTarget {
   readonly target: PushTarget;
   /** pull 検証で前進していることがあるビュー(future head の有界再同期)。 */
@@ -115,6 +131,8 @@ interface ResolvedTarget {
    * との二重取得の解消: session-11 裁定 3)。
    */
   readonly deks: readonly RecipientDek[] | null;
+  /** 作成経路のみ: 同梱マニフェストの発行材料(既存変数への push は null)。 */
+  readonly issueBase: ManifestIssueBase | null;
 }
 
 /**
@@ -157,6 +175,32 @@ function resolveTarget(input: {
         verified: metadata.verified,
         warnings: metadata.warnings,
         deks: null,
+        // 作成の同梱マニフェスト(§12-5)の材料: 検証済みメタデータ pull の
+        // 直前マニフェスト・現在の集合(tombstone 込み)・環境メタの最新形
+        issueBase: {
+          previous: {
+            manifestVersion: metadata.manifest.manifestVersion,
+            signedBytesHashHex: metadata.manifest.signedBytesHashHex,
+          },
+          entries: [
+            ...metadata.variables.map((statement) => ({
+              variableId: statement.variableId,
+              status: "active" as const,
+              metaVersion: statement.metaVersion,
+              metaSigHashHex: statement.metaSigHashHex,
+            })),
+            ...metadata.tombstones.map((tombstone) => ({
+              variableId: tombstone.variableId,
+              status: "deleted" as const,
+              metaVersion: tombstone.metaVersion,
+              metaSigHashHex: tombstone.metaSigHashHex,
+            })),
+          ],
+          envMeta: {
+            metaVersion: metadata.environment.metaVersion,
+            sigHashHex: metadata.environment.metaSigHashHex,
+          },
+        },
       };
     }
     const pulled = yield* pullVerifiedEnvironment({ ...input, verified: metadata.verified });
@@ -186,6 +230,8 @@ function resolveTarget(input: {
       verified: pulled.verified,
       warnings: [...metadata.warnings, ...pulled.warnings],
       deks: pulled.deks,
+      // 既存変数への push はメタ状態を変えない = マニフェストを発行しない(§4.3)
+      issueBase: null,
     };
   });
 }
@@ -285,6 +331,8 @@ interface AcceptedPush {
   };
   /** 受理された自分の書き込みの床レコード(自計算値 — サーバー echo でない)。 */
   readonly floorVariable: VariableFloor;
+  /** 作成経路のみ: 自分が発行したマニフェストの床レコード(自計算値)。 */
+  readonly floorManifest?: ManifestFloor;
   /** 受理時点の状態(床コミットのヘッド・変数 ID の源)。 */
   readonly state: PushState;
 }
@@ -302,10 +350,15 @@ function classifyPushConflict(error: unknown): PushConflict | null {
   if (error instanceof EpochConflictError) {
     return { kind: "epoch-conflict" };
   }
-  if (error instanceof VariableConflictError || error instanceof MetaVersionConflictError) {
-    // create の name 競合 / metaVersion 競合(並行作成・並行 rename)は名前
-    // から解決し直す(§12-5 のメタ再試行 = 再取得 → 検証 → 再署名。ID 競合は
-    // 乱数 ID の衝突で実質起こらない — 起きたら再解決でも新 ID が振られる)
+  if (
+    error instanceof VariableConflictError ||
+    error instanceof MetaVersionConflictError ||
+    error instanceof ManifestVersionConflictError
+  ) {
+    // create の name 競合 / metaVersion 競合(並行作成・並行 rename)/
+    // manifestVersion 競合(並行メタ操作 — §12-5 (6))は名前から解決し直す
+    // (§12-5 の再試行 = 再取得 → 検証 → ステートメントとマニフェストの両方を
+    // 再署名。ID 競合は乱数 ID の衝突で実質起こらない)
     return { kind: "variable-conflict" };
   }
   return null;
@@ -332,6 +385,8 @@ interface PushState {
   readonly epoch: number;
   readonly deks: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly target: PushTarget;
+  /** 作成経路のみ: 同梱マニフェストの発行材料(reresolveTarget が取り直す)。 */
+  readonly issueBase: ManifestIssueBase | null;
   readonly warnings: readonly string[];
 }
 
@@ -355,6 +410,7 @@ function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
       epoch: keys.currentEpoch,
       deks: keys.deksByEpoch,
       target: resolved.target,
+      issueBase: resolved.issueBase,
       warnings: resolved.warnings,
     };
   });
@@ -392,9 +448,18 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
     } as const;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     if (state.target.create) {
-      // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
-      // 宣言ヘッドは値署名と同じ「最後に検証したチェーンヘッド」で、CAS リトライで
-      // 検証ビューが進めば試行ごとに作り直される(meta-statement.ts の共有実装)
+      // 作成 = version 1 の値 + metaVersion 1 のステートメント + 作成後の集合を
+      // 反映したマニフェストの同梱(§12-5)。宣言ヘッドは値署名と同じ「最後に
+      // 検証したチェーンヘッド」で、CAS リトライで検証ビューが進めば試行ごとに
+      // 三つとも作り直される(meta-statement.ts / manifest.ts の共有実装)
+      const issueBase = state.issueBase;
+      if (issueBase === null) {
+        return yield* Effect.fail(
+          cliError(
+            `Variable ${state.target.variableId} resolved as a creation without manifest material (internal inconsistency)`,
+          ),
+        );
+      }
       const created = yield* signCreateStatement({
         verified: state.verified,
         environmentId: input.environmentId,
@@ -403,13 +468,45 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
       });
+      const manifest = yield* signNextManifest({
+        verified: state.verified,
+        environmentId: input.environmentId,
+        epoch: state.epoch,
+        previous: issueBase.previous,
+        entries: [
+          ...issueBase.entries.filter((entry) => entry.variableId !== state.target.variableId),
+          {
+            variableId: state.target.variableId,
+            status: "active" as const,
+            metaVersion: 1,
+            metaSigHashHex: created.metaSigHashHex,
+          },
+        ],
+        envMeta: issueBase.envMeta,
+        issuerUserId: input.writerUserId,
+        signingKey: input.signingKey,
+        chainHead: {
+          seq: state.verified.state.headSeq,
+          hashHex: state.verified.state.headHashHex,
+        },
+      });
       const accepted = yield* input.client.variables.create({
         params,
-        payload: { statement: created.statement, value: signed.payload },
+        payload: {
+          statement: created.statement,
+          value: signed.payload,
+          manifest: manifest.manifest,
+        },
       });
       return {
         accepted,
         floorVariable: { ...valueFloor, metaVersion: 1, metaSigHashHex: created.metaSigHashHex },
+        // 自分が発行したマニフェストの床前進(自計算値 — §6.3)
+        floorManifest: {
+          manifestVersion: manifest.manifestVersion,
+          epoch: manifest.epoch,
+          manifestSigHashHex: manifest.manifestSigHashHex,
+        },
         state,
       };
     }
@@ -607,6 +704,8 @@ function adoptConflictWinner(
     return {
       ...refreshed,
       target: { ...state.target, create: false, latest: winner },
+      // winner の採用 = 既存変数への push(メタ状態を変えない — マニフェスト非発行)
+      issueBase: null,
       warnings: [...state.warnings, ...pulled.warnings],
     };
   });
@@ -622,6 +721,7 @@ function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<Push
     return {
       ...refreshed,
       target: resolved.target,
+      issueBase: resolved.issueBase,
       warnings: [...state.warnings, ...resolved.warnings],
     };
   });
@@ -715,6 +815,7 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
           seq: acceptedState.verified.state.headSeq,
           hashHex: acceptedState.verified.state.headHashHex,
         },
+        outcome.floorManifest,
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
     return {

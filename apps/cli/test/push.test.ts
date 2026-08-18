@@ -16,6 +16,7 @@ import {
   headOf,
   hexBytes,
   makeTestUser,
+  manifestFor,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -123,6 +124,54 @@ function deksHandlerOf(sets: readonly (readonly WireRecipientDek[])[]): MockHand
   });
 }
 
+/**
+ * 配布集合そのものから計算したマニフェスト(§12-7)。Ed25519 は決定的なので、
+ * 同一集合の再計算は byte-exact に一致する(equivocation にならない)。
+ */
+async function manifestOf(
+  statements: readonly WireDistributedVariableStatement[],
+  currentEpoch = 1,
+  manifestVersion = 1,
+): Promise<unknown> {
+  return manifestFor({
+    projectId: chainV1.projectId,
+    environmentId: ENV_ID,
+    epoch: currentEpoch,
+    issuer: owner,
+    head: currentEpoch === 1 ? headOf(chainV1, 2) : headOf(chainV2, 3),
+    envStatement,
+    statements,
+    manifestVersion,
+  });
+}
+
+/** 値付き pull(§12-7)の応答 JSON(マニフェスト同梱)。 */
+async function pullJsonOf(
+  variables: readonly {
+    variableId: string;
+    statement: WireDistributedVariableStatement;
+    value: WireEncryptedPayload;
+  }[],
+  deks: readonly WireRecipientDek[],
+  currentEpoch = 1,
+  /** メタ集合が変わる応答は次 version を渡す(同 version の集合差は equivocation)。 */
+  manifestVersion = 1,
+): Promise<unknown> {
+  return {
+    environmentId: ENV_ID,
+    currentEpoch,
+    statement: envStatement,
+    variables,
+    deletedVariables: [],
+    deks,
+    manifest: await manifestOf(
+      variables.map((variable) => variable.statement),
+      currentEpoch,
+      manifestVersion,
+    ),
+  };
+}
+
 function pullHandlerOf(
   variables: readonly {
     variableId: string;
@@ -131,17 +180,14 @@ function pullHandlerOf(
   }[],
   deks: readonly WireRecipientDek[],
 ): MockHandler {
-  return onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => ({
-    status: 200,
-    json: {
-      environmentId: ENV_ID,
-      currentEpoch: 1,
-      statement: envStatement,
-      variables,
-      deletedVariables: [],
-      deks,
-    },
-  }));
+  return onRequest(
+    "GET",
+    `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
+    async () => ({
+      status: 200,
+      json: await pullJsonOf(variables, deks),
+    }),
+  );
 }
 
 /** メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で止まる)。 */
@@ -153,8 +199,9 @@ function pullMetadataHandlerOf(
   return onRequest(
     "GET",
     `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
-    () => {
-      const variables = variants[Math.min(call, variants.length - 1)] ?? [];
+    async () => {
+      const index = Math.min(call, variants.length - 1);
+      const variables = variants[index] ?? [];
       call += 1;
       return {
         status: 200,
@@ -164,6 +211,9 @@ function pullMetadataHandlerOf(
           statement: envStatement,
           variables,
           deletedVariables: [],
+          // variant の前進 = 他メンバーのメタ操作 1 回のモデル化。manifestVersion も
+          // 一緒に進める(床の単調性と整合する)
+          manifest: await manifestOf(variables, currentEpoch, index + 1),
         },
       };
     },
@@ -303,18 +353,14 @@ describe("maruhi push", () => {
       // listMine ハンドラを置かない: 既存変数への push は値付き pull の同梱 DEK を
       // 使い、listMine との二重取得をしない(session-11 裁定 3)。呼べば 404 で落ちる
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [{ ...entryExisting, value: pullCalls === 1 ? existing : winner }],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf(
+            [{ ...entryExisting, value: pullCalls === 1 ? existing : winner }],
+            [wrap1],
+          ),
         };
       }),
       onRequest(
@@ -398,18 +444,14 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [{ ...entryExisting, value: pullCalls === 1 ? v4 : rolledBack }],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf(
+            [{ ...entryExisting, value: pullCalls === 1 ? v4 : rolledBack }],
+            [wrap1],
+          ),
         };
       }),
       onRequest(
@@ -467,18 +509,14 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [{ ...entryExisting, value: pullCalls === 1 ? v4 : forkedV5 }],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf(
+            [{ ...entryExisting, value: pullCalls === 1 ? v4 : forkedV5 }],
+            [wrap1],
+          ),
         };
       }),
       onRequest(
@@ -539,18 +577,15 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV2]),
       deksHandlerOf([[wrap1, wrap2]]),
       pullMetadataHandlerOf([[entryExisting.statement]], 2),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 2,
-            statement: envStatement,
-            variables: [{ ...entryExisting, value: pullCalls === 1 ? knownV4 : regressedV6 }],
-            deletedVariables: [],
-            deks: [wrap1, wrap2],
-          },
+          json: await pullJsonOf(
+            [{ ...entryExisting, value: pullCalls === 1 ? knownV4 : regressedV6 }],
+            [wrap1, wrap2],
+            2,
+          ),
         };
       }),
       onRequest(
@@ -624,18 +659,11 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: pullCalls === 1 ? [entryExisting] : [],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf(pullCalls === 1 ? [entryExisting] : [], [wrap1]),
         };
       }),
       onRequest(
@@ -678,18 +706,14 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [{ ...entryExisting, value: pullCalls === 1 ? existing : forked }],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf(
+            [{ ...entryExisting, value: pullCalls === 1 ? existing : forked }],
+            [wrap1],
+          ),
         };
       }),
       onRequest(
@@ -829,18 +853,11 @@ describe("maruhi push", () => {
       // 初回解決では変数なし(create 経路)、競合後の再解決では並行作成された
       // v-racer が見える(解決はメタデータのみ pull — §12-7)
       pullMetadataHandlerOf([[], [entryRacer.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [entryRacer],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf([entryRacer], [wrap1]),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -916,18 +933,11 @@ describe("maruhi push", () => {
       deksHandlerOf([[wrap1]]),
       // 初回解決は変数なし(create 経路)、再解決で v-late が見える
       pullMetadataHandlerOf([[], [entryLate.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [entryLate],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf([entryLate], [wrap1]),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -1049,24 +1059,20 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[statementV2]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [
+          json: await pullJsonOf(
+            [
               {
                 variableId: "v-existing",
                 statement: pullCalls === 1 ? statementV2 : statementV1,
                 value: pullCalls === 1 ? existing : winner,
               },
             ],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+            [wrap1],
+          ),
         };
       }),
       onRequest(
@@ -1142,24 +1148,23 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[statementV1]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [
+          json: await pullJsonOf(
+            [
               {
                 variableId: "v-existing",
                 statement: pullCalls === 1 ? statementV1 : forkedSuccessor,
                 value: pullCalls === 1 ? existing : winner,
               },
             ],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+            [wrap1],
+            1,
+            // 2 回目は metaVersion 2 の勝者 = メタ操作 1 回分マニフェストも前進
+            pullCalls === 1 ? 1 : 2,
+          ),
         };
       }),
       onRequest(
@@ -1222,22 +1227,18 @@ describe("maruhi push", () => {
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [
+          json: await pullJsonOf(
+            [
               pullCalls === 1
                 ? entryExisting
                 : { ...entryExisting, statement: forkedStatement, value: winner },
             ],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+            [wrap1],
+          ),
         };
       }),
       onRequest(
@@ -1279,18 +1280,11 @@ describe("maruhi push", () => {
       deksHandlerOf([[wrap1]]),
       // 初回解決は変数なし(create 経路)、再解決で v-meta-race が見える
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, () => {
+      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
         return {
           status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: [entryRaced],
-            deletedVariables: [],
-            deks: [wrap1],
-          },
+          json: await pullJsonOf([entryRaced], [wrap1]),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({

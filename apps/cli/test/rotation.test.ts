@@ -26,6 +26,7 @@ import {
   genesisOp,
   headOf,
   makeTestUser,
+  manifestFor,
   removeMemberOp,
   rotateEpochOp,
   statementFor,
@@ -136,6 +137,15 @@ async function makeRotationServer(input: {
     status: "deleted",
     metaVersion: 2,
   });
+  const manifest = await manifestFor({
+    projectId,
+    environmentId: ENV_ID,
+    epoch: currentEpoch,
+    issuer: owner,
+    head: headOf(input.built, input.built.entries.length),
+    envStatement,
+    statements: [activeStatement, deletedStatement],
+  });
 
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
@@ -168,6 +178,7 @@ async function makeRotationServer(input: {
               statement: envStatement,
               variables: [activeStatement],
               deletedVariables: [deletedStatement],
+              manifest,
             },
           },
     ),

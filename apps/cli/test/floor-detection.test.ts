@@ -22,6 +22,7 @@ import {
   genesisOp,
   headOf,
   makeTestUser,
+  manifestFor,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -155,6 +156,29 @@ interface PullPayload {
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly deks: readonly WireRecipientDek[];
   readonly currentEpoch?: number;
+  /** 同梱マニフェストの manifestVersion(フェーズ間でメタ集合が変わるときは進める)。 */
+  readonly manifestVersion?: number;
+}
+
+/** 配布集合そのものから計算したマニフェスト(§12-7)。Ed25519 は決定的 = 再計算は byte-exact。 */
+async function manifestOf(payload: {
+  readonly statement?: WireDistributedEnvironmentStatement;
+  readonly variables: readonly WireDistributedVariableStatement[];
+  readonly deletedVariables?: readonly WireDistributedVariableStatement[];
+  readonly currentEpoch?: number;
+  readonly manifestVersion?: number;
+}): Promise<unknown> {
+  const epoch = payload.currentEpoch ?? 1;
+  return manifestFor({
+    projectId,
+    environmentId: ENV_ID,
+    epoch,
+    issuer: owner,
+    head: epoch === 1 ? headOf(chain1, 2) : headOf(chain2, 3),
+    envStatement: payload.statement ?? envStatement,
+    statements: [...payload.variables, ...(payload.deletedVariables ?? [])],
+    manifestVersion: payload.manifestVersion ?? 1,
+  });
 }
 
 function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
@@ -176,7 +200,7 @@ function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
 }
 
 function pullHandlerFor(payload: PullPayload): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
+  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, async () => ({
     status: 200,
     json: {
       environmentId: ENV_ID,
@@ -185,6 +209,10 @@ function pullHandlerFor(payload: PullPayload): MockHandler {
       variables: payload.variables,
       deletedVariables: payload.deletedVariables ?? [],
       deks: payload.deks,
+      manifest: await manifestOf({
+        ...payload,
+        variables: payload.variables.map((variable) => variable.statement),
+      }),
     },
   }));
 }
@@ -201,17 +229,23 @@ function pullMetadataHandlerFor(payload: {
   readonly variables: readonly WireDistributedVariableStatement[];
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly currentEpoch?: number;
+  readonly manifestVersion?: number;
 }): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
-    status: 200,
-    json: {
-      environmentId: ENV_ID,
-      currentEpoch: payload.currentEpoch ?? 1,
-      statement: envStatement,
-      variables: payload.variables,
-      deletedVariables: payload.deletedVariables ?? [],
-    },
-  }));
+  return onRequest(
+    "GET",
+    `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`,
+    async () => ({
+      status: 200,
+      json: {
+        environmentId: ENV_ID,
+        currentEpoch: payload.currentEpoch ?? 1,
+        statement: envStatement,
+        variables: payload.variables,
+        deletedVariables: payload.deletedVariables ?? [],
+        manifest: await manifestOf(payload),
+      },
+    }),
+  );
 }
 
 /** 同一 TestEnv(= 同一の床)に対する新しいサーバーフェーズを開始する。 */
@@ -644,6 +678,8 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
+        // rotate 複合がマニフェストを再発行済み(§12-4)の形
+        manifestVersion: 2,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -667,6 +703,8 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         variables: [{ variableId: "vb", statement, value: v3 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
+        // メタ集合はフェーズ 2 と同一 = 同じ v2 マニフェスト(byte-exact)を配布
+        manifestVersion: 2,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -705,6 +743,8 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         variables: [betaEntry, injectedEntry],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
+        // 「vc が作られた」ことになっている = マニフェストも前進している形
+        manifestVersion: 2,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -789,7 +829,13 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
 
     await startPhase(env, [
       chainHandlerFor([chain1]),
-      pullHandlerFor({ variables: [], deletedVariables: [await tombstoneOf()], deks: [wrap1] }),
+      pullHandlerFor({
+        variables: [],
+        deletedVariables: [await tombstoneOf()],
+        deks: [wrap1],
+        // 削除のメタ操作がマニフェストを再発行済み(§12-4)の形
+        manifestVersion: 2,
+      }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const floor = await readFloorFile(env);
@@ -895,6 +941,8 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
+        // rotate 複合がマニフェストを再発行済み(§12-4)の形
+        manifestVersion: 2,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -1004,6 +1052,9 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
       pullHandlerFor({
         variables: [{ variableId: "vb", statement: injected, value }],
         deks: [wrap1],
+        // サーバー共謀のforward injectionはマニフェストも一緒に前進させられる
+        // (issuer 資格を持つ攻撃鍵 — §14.3-5 の非保証はこの形まで含めて成立)
+        manifestVersion: 2,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -1035,6 +1086,8 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
         statement: injectedEnvMeta,
         variables: [{ variableId: "vb", statement, value }],
         deks: [wrap1],
+        // 変数側と同じくマニフェストごと前進させる形(§14.3-5)
+        manifestVersion: 2,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);

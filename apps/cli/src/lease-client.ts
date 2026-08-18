@@ -24,6 +24,7 @@
 // その主要な緩和が (2) のアンカーである。
 
 import type {
+  DistributedEnvironmentManifest,
   DistributedEnvironmentMetaStatement,
   DistributedVariableMetaStatement,
   LeasedDek,
@@ -59,6 +60,8 @@ export interface LeaseResponseWire {
   readonly statement: DistributedEnvironmentMetaStatement;
   readonly variables: readonly PulledWire[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
+  /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §9.1 (5)。移行許容はない)。 */
+  readonly manifest?: DistributedEnvironmentManifest | undefined;
   readonly leases: readonly LeasedDek[];
 }
 
@@ -276,6 +279,7 @@ export function verifyLeaseResponse(input: {
         statement: response.statement,
         variables: response.variables,
         deletedVariables: response.deletedVariables,
+        ...(response.manifest === undefined ? {} : { manifest: response.manifest }),
       },
     });
     // (3) リースラップの開封 + DEK コミットメント照合

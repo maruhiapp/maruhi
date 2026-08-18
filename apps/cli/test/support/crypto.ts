@@ -11,7 +11,9 @@ import type {
 } from "@maruhi/crypto";
 import {
   computeDekCommitment,
+  computeMetaSignedBytesHash,
   computeUserKeyFingerprint,
+  computeVariablesDigest,
   encodeHex,
   encryptVariable,
   exportEncryptionPrivateKey,
@@ -23,6 +25,7 @@ import {
   importEncryptionPublicKey,
   signChainEntry,
   signDekWrap,
+  signEnvManifest,
   signMetaStatement,
   signValue,
   SUITE_ID,
@@ -364,6 +367,125 @@ export async function environmentStatementFor(
   input: StatementInputBase,
 ): Promise<WireDistributedEnvironmentStatement> {
   return signDistributedStatement(input, { kind: "environment" });
+}
+
+/** 配布形の環境マニフェスト(DistributedEnvironmentManifest — §12-2)。 */
+export interface WireDistributedManifest {
+  readonly suite: "maruhi/v1";
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly variablesDigestHex: string;
+  readonly envMetaVersion: number;
+  readonly envMetaSigHashHex: string;
+  readonly prevManifestSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+  readonly issuerUserId: string;
+  readonly issuerKeyFingerprintHex: string;
+}
+
+/** 配布形ステートメント → signed bytes ハッシュ(ダイジェスト・envMeta の材料)。 */
+export async function statementHashOf(
+  projectId: string,
+  statement: WireDistributedEnvironmentStatement & { readonly variableId?: string },
+): Promise<string> {
+  return unwrapResult(
+    await computeMetaSignedBytesHash({
+      suite: statement.suite,
+      projectId,
+      environmentId: statement.environmentId,
+      target:
+        statement.variableId === undefined
+          ? { kind: "environment" }
+          : { kind: "variable", variableId: statement.variableId },
+      name: statement.name,
+      status: statement.status,
+      metaVersion: statement.metaVersion,
+      prevMetaSigHashHex: statement.prevMetaSigHashHex,
+      authorUserId: statement.authorUserId,
+      chainHeadHashHex: statement.chainHeadHashHex,
+      chainHeadSeq: statement.chainHeadSeq,
+    }),
+    "computeMetaSignedBytesHash",
+  );
+}
+
+/** 配布形ステートメント集合(tombstone 込み)→ variables_digest(§4.3 (3))。 */
+export async function variablesDigestOf(
+  projectId: string,
+  statements: readonly WireDistributedVariableStatement[],
+): Promise<string> {
+  const entries = await Promise.all(
+    statements.map(async (statement) => ({
+      variableId: statement.variableId,
+      status: statement.status,
+      metaVersion: statement.metaVersion,
+      metaSigHashHex: await statementHashOf(projectId, statement),
+    })),
+  );
+  return unwrapResult(await computeVariablesDigest(SUITE_ID, entries), "computeVariablesDigest");
+}
+
+/**
+ * 環境マニフェスト(§4.3)を issuer 署名し、配布形(issuer 情報込み — §12-2)で
+ * 返す。ダイジェストは渡された配布形ステートメント(tombstone 込み)から実計算
+ * する — pull 応答フィクスチャの statements / deletedVariables と同じ集合を渡す
+ * こと(食い違えばクライアントのダイジェスト再計算が拒否する = それ自体が
+ * negative の作り方)。
+ */
+export async function manifestFor(input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  /** 発行時点の現エポック(§4.3 の鮮度アンカー)。 */
+  readonly epoch: number;
+  readonly issuer: TestUser;
+  readonly head: { readonly seq: number; readonly hashHex: string };
+  readonly envStatement: WireDistributedEnvironmentStatement;
+  /** active + tombstone の配布形ステートメント(digest の入力)。 */
+  readonly statements?: readonly WireDistributedVariableStatement[];
+  readonly manifestVersion?: number;
+  readonly prevManifestSigHashHex?: string;
+  /** ダイジェストの上書き(digest 不一致 negative 用)。 */
+  readonly variablesDigestHex?: string;
+}): Promise<WireDistributedManifest> {
+  const variablesDigestHex =
+    input.variablesDigestHex ?? (await variablesDigestOf(input.projectId, input.statements ?? []));
+  const context = {
+    suite: SUITE_ID,
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    epoch: input.epoch,
+    manifestVersion: input.manifestVersion ?? 1,
+    variablesDigestHex,
+    envMetaVersion: input.envStatement.metaVersion,
+    envMetaSigHashHex: await statementHashOf(input.projectId, input.envStatement),
+    prevManifestSigHashHex:
+      input.prevManifestSigHashHex ?? ((input.manifestVersion ?? 1) === 1 ? "" : "cd".repeat(32)),
+    issuerUserId: input.issuer.userId,
+    chainHeadHashHex: input.head.hashHex,
+    chainHeadSeq: input.head.seq,
+  } as const;
+  const signatureHex = unwrapResult(
+    await signEnvManifest({ context, signingKey: input.issuer.sigKeyPair.privateKey }),
+    "signEnvManifest",
+  );
+  return {
+    suite: SUITE_ID,
+    environmentId: context.environmentId,
+    epoch: context.epoch,
+    manifestVersion: context.manifestVersion,
+    variablesDigestHex: context.variablesDigestHex,
+    envMetaVersion: context.envMetaVersion,
+    envMetaSigHashHex: context.envMetaSigHashHex,
+    prevManifestSigHashHex: context.prevManifestSigHashHex,
+    chainHeadHashHex: context.chainHeadHashHex,
+    chainHeadSeq: context.chainHeadSeq,
+    signatureHex,
+    issuerUserId: context.issuerUserId,
+    issuerKeyFingerprintHex: input.issuer.fingerprintHex,
+  };
 }
 
 /** BuiltChain 上の宣言ヘッド(seq 位置の entry hash)。 */
