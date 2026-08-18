@@ -17,6 +17,7 @@ CRYPTO_SPEC §11 のテストベクター。**実装より先にコミットし�
 | `dek-commitment.json` | §5.2 エポック DEK のコミットメント(SHA-256 + §2.1 LP) | Python 3 標準ライブラリ(`tools/generate_reference.py`。DEK・座標は dek-wrap.json の basic ベクターを読み込む) |
 | `value-signature.json` | §4.1 値の書き込み署名(Ed25519 + §2.1 LP) | Python 3 + pyca/cryptography(`tools/generate_reference.py`。チェーン・鍵・DEK は chain-entries.json の正規チェーンを読み込む) |
 | `metadata-signature.json` | §4.2 変数・環境メタデータの署名付きステートメント(Ed25519 + §2.1 LP) | Python 3 + pyca/cryptography(`tools/generate_reference.py`。チェーン・鍵は chain-entries.json の正規チェーンを読み込む) |
+| `env-manifest.json` | §4.3 環境マニフェスト(Ed25519 + §2.1 LP。variables_digest の正規形込み) | Python 3 + pyca/cryptography(`tools/generate_reference.py`。チェーン・鍵は chain-entries.json の正規チェーンを読み込む) |
 | `lease-wrap.json` | §9.1 ワークロードリースのリースラップ(HPKE 単発 Seal + claims_digest) | hpke-js(`tools/generate-lease-wrap.mjs`。ekm derandomize で Seal 方向を固定。座標・DEK は dek-wrap.json の `server-basic` を読み込む) |
 
 ## 期待値の算出方法(独立参照ツール)

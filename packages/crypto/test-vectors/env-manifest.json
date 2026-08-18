@@ -1,0 +1,1237 @@
+{
+  "description": "CRYPTO_SPEC §4.3: 環境マニフェスト(Ed25519)。env_manifest_signed_bytes = LP(\"<suite>/env-manifest-sig\", project_id, environment_id, epoch, manifest_version, variables_digest_hex, env_meta_version, env_meta_sig_hash_hex, prev_manifest_sig_hash_hex, issuer_user_id, chain_head_hash_hex, chain_head_seq)、variables_digest_hex = lower_hex(SHA-256(LP(\"<suite>/env-manifest-vars\", entry_1, …, entry_n)))、entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)(variable_id のバイト昇順。tombstone 込み。空集合可)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+  "manifest_signed_fields_order": [
+    "domain",
+    "project_id",
+    "environment_id",
+    "epoch",
+    "manifest_version",
+    "variables_digest_hex",
+    "env_meta_version",
+    "env_meta_sig_hash_hex",
+    "prev_manifest_sig_hash_hex",
+    "issuer_user_id",
+    "chain_head_hash_hex",
+    "chain_head_seq"
+  ],
+  "digest_entry_fields_order": ["variable_id", "status", "meta_version", "meta_sig_hash_hex"],
+  "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / manifest_version / env_meta_version / meta_version / chain_head_seq)は 10 進文字列化。ダイジェストの各 entry は入れ子 LP のバイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)",
+  "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys",
+  "composite_epoch_rule": "エポック整合(§4.3 (2) / AUTH_SPEC §12-5 (4)): マニフェストの epoch は宣言ヘッド時点の当該環境の現エポックと一致するか、または宣言ヘッドの次のエントリ(= 複合発行の同梱チェーンエントリ)が当該環境にちょうどそのエポックを確立する(環境作成複合 = epoch 1、rotate 複合 = new_epoch。宣言ヘッドは追記前ヘッド — §12-4)。manifest-v1-create / manifest-rotate が positive、epoch-not-current-at-head / environment-not-created-at-head が negative としてこれを固定する",
+  "statements": {
+    "note": "ダイジェスト入力のフィクスチャ(metadata-signature.json と同一入力・同一ハッシュのステートメント)。ダイジェストが要するのは (variable_id, status, meta_version, meta_sig_hash_hex) のみ(§4.3)",
+    "env_meta_v1": {
+      "context": {
+        "kind": "environment",
+        "domain": "maruhi/v1/env-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "name": "Production",
+        "status": "active",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": "user-member-0002",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "signed_bytes_sha256_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4"
+    },
+    "api_key_v1": {
+      "context": {
+        "kind": "variable",
+        "domain": "maruhi/v1/var-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "variable_id": "var-api-key-0001",
+        "name": "API_KEY",
+        "status": "active",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "signed_bytes_sha256_hex": "af8ab6d6886e5277e79038e619079f796e709915985986160eb8ab25fbf0bb65"
+    },
+    "api_key_v2_rename": {
+      "context": {
+        "kind": "variable",
+        "domain": "maruhi/v1/var-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "variable_id": "var-api-key-0001",
+        "name": "API_KEY_ROTATED",
+        "status": "active",
+        "meta_version": 2,
+        "prev_meta_sig_hash_hex": "af8ab6d6886e5277e79038e619079f796e709915985986160eb8ab25fbf0bb65",
+        "author_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "signed_bytes_sha256_hex": "f42334a6cca988fee9c50110e9d7e7df5db8cd606b80b5554e4ae765fdc8d11f"
+    },
+    "api_key_v3_delete": {
+      "context": {
+        "kind": "variable",
+        "domain": "maruhi/v1/var-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "variable_id": "var-api-key-0001",
+        "name": "API_KEY_ROTATED",
+        "status": "deleted",
+        "meta_version": 3,
+        "prev_meta_sig_hash_hex": "f42334a6cca988fee9c50110e9d7e7df5db8cd606b80b5554e4ae765fdc8d11f",
+        "author_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "signed_bytes_sha256_hex": "aad7b1bc08b68e7f6e42afa17b6305b13978cc88f093b1196af8f3e26cf4244f"
+    },
+    "legacy_v1": {
+      "context": {
+        "kind": "variable",
+        "domain": "maruhi/v1/var-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "variable_id": "var-legacy-0002",
+        "name": "LEGACY_TOKEN",
+        "status": "active",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": "user-member-0002",
+        "chain_head_hash_hex": "a2c9e6ab1c0d09e35ca9571cbd92fcffb23247a1b586233cd6c9a68179aaab28",
+        "chain_head_seq": 4
+      },
+      "signed_bytes_sha256_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+    }
+  },
+  "extra_keys": {
+    "ghost": {
+      "note": "issuer-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+      "enc_sk_seed_hex": "78797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091929394959697",
+      "sig_sk_seed_hex": "88898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7",
+      "enc_pub_hex": "7ea13ddfcbacd8a13542dece890886486fb8024d0d3cc7f95ed8bb4efad66b73",
+      "sig_pub_hex": "03ff0e60c3634744bf45cec1833341ccdde192a3f66873422378bcbd46a32f1b",
+      "key_fingerprint_hex": "d4f7cd50d2bf26ff0a58ae89b05cc5f6"
+    }
+  },
+  "tenure_extension": {
+    "note": "key-from-other-tenure 用の派生チェーン(value-signature.json / metadata-signature.json と同一内容): 正規 12 エントリの後に seq 13 で user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。chain-entries.json 本体は変更しない",
+    "rejoined_member": {
+      "user_id": "user-member-0002",
+      "enc_sk_seed_hex": "7475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90919293",
+      "sig_sk_seed_hex": "8485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3",
+      "enc_pub_hex": "521a0e65efec77cdfdb4c16cf8886d0241232cddbcfbecce6c1ac57efe83ac62",
+      "sig_pub_hex": "8befe61c3095da4d71f14befe220ff9a76e0c5b5d046204ee3d70761aae839fc",
+      "key_fingerprint_hex": "3e78daf5883f37985faabed4e0f8ce7f"
+    },
+    "entry": {
+      "seq": 13,
+      "suite": "maruhi/v1",
+      "prev_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+      "op": "add_member",
+      "actor": {
+        "user_id": "user-owner-0001",
+        "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+      },
+      "payload": {
+        "target_user_id": "user-member-0002",
+        "enc_pub_hex": "521a0e65efec77cdfdb4c16cf8886d0241232cddbcfbecce6c1ac57efe83ac62",
+        "sig_pub_hex": "8befe61c3095da4d71f14befe220ff9a76e0c5b5d046204ee3d70761aae839fc",
+        "role": "member"
+      },
+      "timestamp_ms": 1754006412000,
+      "payload_bytes_hex": "00000010757365722d6d656d6265722d3030303200000040353231613065363565666563373763646664623463313663663838383664303234313233326364646263666265636365366331616335376566653833616336320000004038626566653631633330393564613464373166313462656665323230666639613736653063356235643034363230346565336437303736316161653833396663000000066d656d626572",
+      "signed_bytes_hex": "000000096d61727568692f763100000002313300000040616135653063656631333361366638666434616635393064393235396265386536633239326266643036373339643139646635366639666632646139393231660000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000a600000010757365722d6d656d6265722d3030303200000040353231613065363565666563373763646664623463313663663838383664303234313233326364646263666265636365366331616335376566653833616336320000004038626566653631633330393564613464373166313462656665323230666639613736653063356235643034363230346565336437303736316161653833396663000000066d656d6265720000000d31373534303036343132303030",
+      "signature_hex": "878d908ce542ff5dc426294d0f81eeda5a9a2603f9bf830a0e33b684930ed2999c02aabfd8edaf10a4f55ded8b02f254e4df24a56ed11243d70943cb95b13204",
+      "entry_bytes_hex": "000000096d61727568692f763100000002313300000040616135653063656631333361366638666434616635393064393235396265386536633239326266643036373339643139646635366639666632646139393231660000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000a600000010757365722d6d656d6265722d3030303200000040353231613065363565666563373763646664623463313663663838383664303234313233326364646263666265636365366331616335376566653833616336320000004038626566653631633330393564613464373166313462656665323230666639613736653063356235643034363230346565336437303736316161653833396663000000066d656d6265720000000d31373534303036343132303030000000803837386439303863653534326666356463343236323934643066383165656461356139613236303366396266383330613065333362363834393330656432393939633032616162666438656461663130613466353564656438623032663235346534646632346135366564313132343364373039343363623935623133323034",
+      "entry_hash_hex": "2f0556665dfdc3b7ffa33f271107cf74c1c5fd4b03f291945ee6b96ae0eb50b4"
+    }
+  },
+  "digests": [
+    {
+      "name": "empty-set",
+      "entries": [],
+      "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d76617273",
+      "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+      "note": "変数ゼロの環境では要素 0 の LP(空集合も有効なダイジェストを持つ — §4.3)"
+    },
+    {
+      "name": "single-entry",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "af8ab6d6886e5277e79038e619079f796e709915985986160eb8ab25fbf0bb65"
+        }
+      ],
+      "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d7661727300000067000000107661722d6170692d6b65792d303030310000000661637469766500000001310000004061663861623664363838366535323737653739303338653631393037396637393665373039393135393835393836313630656238616232356662663062623635",
+      "variables_digest_hex": "fb3cabbdd431f605ab1c00522b21425a5b7cebe739ad8eb18a0b2544d1a5ef47",
+      "note": "entry = LP(variable_id, status, meta_version, meta_sig_hash_hex) を入れ子 LP の 1 フィールドとして埋め込む"
+    },
+    {
+      "name": "tombstone-entry",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "deleted",
+          "meta_version": 3,
+          "meta_sig_hash_hex": "aad7b1bc08b68e7f6e42afa17b6305b13978cc88f093b1196af8f3e26cf4244f"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d7661727300000068000000107661722d6170692d6b65792d303030310000000764656c6574656400000001330000004061616437623162633038623638653766366534326166613137623633303562313339373863633838663039336231313936616638663365323663663432343466000000660000000f7661722d6c65676163792d303030320000000661637469766500000001310000004039323231653261363637633262636436333533386232323064613166343431653063383861383933326232643932613134636136383766623234623961346264",
+      "variables_digest_hex": "64f8707be2c4de8d7cd08328d47ffa6b54033ebbd2f9fe3ddf5fbbdebc292178",
+      "note": "tombstone(status deleted)も全ステートメントの最新形として列挙に含む"
+    },
+    {
+      "name": "byte-ascending-order",
+      "entries": [
+        {
+          "variable_id": "Zeta-var-0002",
+          "status": "active",
+          "meta_version": 2,
+          "meta_sig_hash_hex": "0de9dc7204eac659db26e98a40dde4b807819dc9b335aa437fbd2d1b2f38737a"
+        },
+        {
+          "variable_id": "alpha-var-0001",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "ef725a881f81023d26226fd1104821e8972d1b85f7697d0e4ae94ad5ff4f9331"
+        }
+      ],
+      "digest_input_hex": "0000001b6d61727568692f76312f656e762d6d616e69666573742d76617273000000640000000d5a6574612d7661722d303030320000000661637469766500000001320000004030646539646337323034656163363539646232366539386134306464653462383037383139646339623333356161343337666264326431623266333837333761000000650000000e616c7068612d7661722d303030310000000661637469766500000001310000004065663732356138383166383130323364323632323666643131303438323165383937326431623835663736393764306534616539346164356666346639333331",
+      "variables_digest_hex": "babcd47b7fdaae5fa6134ccbc2b7601a7af5b9e48c0cf337f2ff797a29a455ed",
+      "note": "順序は variable_id の**バイト**昇順(UTF-8): 'Zeta-var-0002'(Z = 0x5a)が 'alpha-var-0001'(a = 0x61)より先に来る(ロケール・大文字小文字非依存の固定)"
+    }
+  ],
+  "vectors": [
+    {
+      "name": "manifest-v1-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 1,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000013100000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040373562343032356139326436666236643137653132363535616463643066636366633936633035373338336639343835366366316437616435323738313165340000000000000010757365722d6d656d6265722d3030303200000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
+      "signed_bytes_sha256_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
+      "signature_hex": "f26ff2131c15d2001a7fc50a858734fe0c64e8a1dd115ef5c56f775c3f2e318049d8a2e1870f19e845ef2d6fbe38de9a372ad82bf65b7ad442cb05dc0edbdb0b",
+      "note": "環境作成複合の同梱マニフェスト(manifestVersion 1、変数空集合、epoch 1)。宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。宣言ヘッド時点に環境は未存在だが、次エントリ(seq 3)が epoch 1 を確立する = 複合発行のエポック整合(§12-5 (4) の検証側の形)"
+    },
+    {
+      "name": "manifest-rotate",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 2,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "c7f29252d384a5ade1850873009fb8cb7f61ecc14da8d6fa69c2591e6cfbbc0f",
+        "chain_head_seq": 3
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000132000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403863373736333038636435306361366139366138326361366464633161333432653265343464313664356663396363333730653932363430393931383137366200000010757365722d6d656d6265722d3030303200000040633766323932353264333834613561646531383530383733303039666238636237663631656363313464613864366661363963323539316536636662626330660000000133",
+      "signed_bytes_sha256_hex": "6d781adfe675b8622c1a35de072cad79cad16ec87006c1c8f816f02007462a90",
+      "signature_hex": "78c8fb2eb698a52c9de7024187c50856b849cfd488eba8ec3f10752b9928ecb08846cec0d33cafe6bd2ec192f1b5d3306a92310f5b4a36528a3615ae9c28620c",
+      "note": "rotate 複合の同梱マニフェスト(エポック前進の反映 — メタ集合は不変でも再発行する。§4.3)。宣言ヘッド seq 3 の次のエントリ(seq 4 = rotate_epoch)が epoch 2 を確立する",
+      "prev_base": "manifest-v1-create"
+    },
+    {
+      "name": "manifest-removed-issuer",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 3,
+        "variables_digest_hex": "153b9766ef89721e6bbec37cf4b2607d161eb7ff45232316e132e25fc1c69de2",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "6d781adfe675b8622c1a35de072cad79cad16ec87006c1c8f816f02007462a90",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "a2c9e6ab1c0d09e35ca9571cbd92fcffb23247a1b586233cd6c9a68179aaab28",
+        "chain_head_seq": 4
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000133000000403135336239373636656638393732316536626265633337636634623236303764313631656237666634353233323331366531333265323566633163363964653200000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403664373831616466653637356238363232633161333564653037326361643739636164313665633837303036633163386638313666303230303734363261393000000010757365722d6d656d6265722d3030303200000040613263396536616231633064303965333563613935373163626439326663666662323332343761316235383632333363643663396136383137396161616232380000000134",
+      "signed_bytes_sha256_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+      "signature_hex": "2ca51e9ea668f28fcf2e99e356b8823e18577f60f293775b17dc93a1a9a2f5444d5cfd52e5d1cfc60bdb6ed9c2283bbc1b78337e2f303d89e5302b2fd651b00d",
+      "note": "seq 5 で削除済みの issuer による在籍区間内(head 4)の過去マニフェスト(変数 var-legacy-0002 の作成に伴う発行)。削除後も当時の鍵・当時の現エポック(head 4 時点 = 2)で検証できる(§6.3-1 の対応物)",
+      "prev_base": "manifest-rotate"
+    },
+    {
+      "name": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "af8ab6d6886e5277e79038e619079f796e709915985986160eb8ab25fbf0bb65"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "a13cec919ad09972f47c3cb92a61ac8542c7467cacf43381de45dc41933ecd24",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "note": "変数作成(var-api-key-0001)後のマニフェスト。ダイジェストは 2 変数を variable_id のバイト昇順で列挙する",
+      "prev_base": "manifest-removed-issuer"
+    },
+    {
+      "name": "manifest-var-rename",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 5,
+        "variables_digest_hex": "54c47029f204c218aec728f1b70b997cf6652ccacecb3fe767ff4eb31162130b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "a13cec919ad09972f47c3cb92a61ac8542c7467cacf43381de45dc41933ecd24",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "active",
+          "meta_version": 2,
+          "meta_sig_hash_hex": "f42334a6cca988fee9c50110e9d7e7df5db8cd606b80b5554e4ae765fdc8d11f"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013500000040353463343730323966323034633231386165633732386631623730623939376366363635326363616365636233666537363766663465623331313632313330620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040613133636563393139616430393937326634376333636239326136316163383534326337343637636163663433333831646534356463343139333365636432340000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "2c086afd9f44423a224245e8f0943f0d2e55340cc9616de1299e8de89c8b8c62",
+      "signature_hex": "0681d374a4951e450989246bf5d4af4972bd58d1b9a36792001510f756890394364b595d242b5812e27d0c7b2dbcfd0e9cd288b06a51975910d7c1522072880c",
+      "note": "rename(metaVersion 2)後のマニフェスト。prev = manifest-var-create の signed_bytes の SHA-256(§4.3 の連鎖)",
+      "prev_base": "manifest-var-create"
+    },
+    {
+      "name": "manifest-var-delete",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 6,
+        "variables_digest_hex": "64f8707be2c4de8d7cd08328d47ffa6b54033ebbd2f9fe3ddf5fbbdebc292178",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "2c086afd9f44423a224245e8f0943f0d2e55340cc9616de1299e8de89c8b8c62",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "deleted",
+          "meta_version": 3,
+          "meta_sig_hash_hex": "aad7b1bc08b68e7f6e42afa17b6305b13978cc88f093b1196af8f3e26cf4244f"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013600000040363466383730376265326334646538643763643038333238643437666661366235343033336562626432663966653364646635666262646562633239323137380000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040326330383661666439663434343233613232343234356538663039343366306432653535333430636339363136646531323939653864653839633862386336320000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "e134e51bb9146657da56be34ab2d8785c60cf497ad69cea513826a452a26d999",
+      "signature_hex": "94b2b9bdea48fde935aca47361b764a55c40ce072ce45ecafbb43b3d4b85b4f043fcc36840481b17aff438f0c06a4f2b66ccc9fd2d693c10a8ca836da587cf0d",
+      "note": "削除後のマニフェスト。ダイジェストは tombstone(status deleted、metaVersion 3)を含む(§4.3 — tombstone 隠しは digest-tombstone-omitted が negative で固定)",
+      "prev_base": "manifest-var-rename"
+    }
+  ],
+  "manifest_fork": {
+    "note": "同一座標(env-prod-0001 × manifestVersion 5)に対する内容の異なる 2 つの有効マニフェスト。各 branch は単体で §4.3 / §6.3 の全検証を通り(両方 verify 成功)、組として signed_bytes_sha256_hex の相違 = サーバー equivocation の否認不能な証拠になる(§14.2-5。防止ではなく証拠化)",
+    "branches": [
+      {
+        "name": "manifest-fork-a",
+        "context": {
+          "suite": "maruhi/v1",
+          "domain": "maruhi/v1/env-manifest-sig",
+          "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+          "environment_id": "env-prod-0001",
+          "epoch": 2,
+          "manifest_version": 5,
+          "variables_digest_hex": "54c47029f204c218aec728f1b70b997cf6652ccacecb3fe767ff4eb31162130b",
+          "env_meta_version": 1,
+          "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+          "prev_manifest_sig_hash_hex": "a13cec919ad09972f47c3cb92a61ac8542c7467cacf43381de45dc41933ecd24",
+          "issuer_user_id": "user-admin-0003",
+          "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+          "chain_head_seq": 12
+        },
+        "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+        "entries": [
+          {
+            "variable_id": "var-api-key-0001",
+            "status": "active",
+            "meta_version": 2,
+            "meta_sig_hash_hex": "f42334a6cca988fee9c50110e9d7e7df5db8cd606b80b5554e4ae765fdc8d11f"
+          },
+          {
+            "variable_id": "var-legacy-0002",
+            "status": "active",
+            "meta_version": 1,
+            "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+          }
+        ],
+        "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013500000040353463343730323966323034633231386165633732386631623730623939376366363635326363616365636233666537363766663465623331313632313330620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040613133636563393139616430393937326634376333636239326136316163383534326337343637636163663433333831646534356463343139333365636432340000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+        "signed_bytes_sha256_hex": "2c086afd9f44423a224245e8f0943f0d2e55340cc9616de1299e8de89c8b8c62",
+        "signature_hex": "0681d374a4951e450989246bf5d4af4972bd58d1b9a36792001510f756890394364b595d242b5812e27d0c7b2dbcfd0e9cd288b06a51975910d7c1522072880c",
+        "note": "manifestVersion 5 の分岐 A(admin が署名。rename 適用後の集合)",
+        "prev_base": "manifest-var-create"
+      },
+      {
+        "name": "manifest-fork-b",
+        "context": {
+          "suite": "maruhi/v1",
+          "domain": "maruhi/v1/env-manifest-sig",
+          "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+          "environment_id": "env-prod-0001",
+          "epoch": 2,
+          "manifest_version": 5,
+          "variables_digest_hex": "153b9766ef89721e6bbec37cf4b2607d161eb7ff45232316e132e25fc1c69de2",
+          "env_meta_version": 1,
+          "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+          "prev_manifest_sig_hash_hex": "a13cec919ad09972f47c3cb92a61ac8542c7467cacf43381de45dc41933ecd24",
+          "issuer_user_id": "user-owner-0001",
+          "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+          "chain_head_seq": 12
+        },
+        "issuer_key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
+        "entries": [
+          {
+            "variable_id": "var-legacy-0002",
+            "status": "active",
+            "meta_version": 1,
+            "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+          }
+        ],
+        "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013500000040313533623937363665663839373231653662626563333763663462323630376431363165623766663435323332333136653133326532356663316336396465320000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040613133636563393139616430393937326634376333636239326136316163383534326337343637636163663433333831646534356463343139333365636432340000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+        "signed_bytes_sha256_hex": "5123618535d63f8b9cd8ac8c604f4458f47f5649bb7b57c686044a99a76ae65f",
+        "signature_hex": "1c7d37682b0ec9777df04f6b341190ceff38b5a68e8a47ba96ac0d91e05bd3a20f538c946a17dd752b816c739d5ef59465b1887767169fdb569d519782c65f05",
+        "note": "manifestVersion 5 の分岐 B(owner が署名。var-api-key-0001 を落とした集合)。A と同一座標・同一 prev でダイジェストが異なる",
+        "prev_base": "manifest-var-create"
+      }
+    ]
+  },
+  "negative": [
+    {
+      "name": "tampered-signature",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750e",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+    },
+    {
+      "name": "tampered-digest",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "variables_digest_hex の差し替え(集合の改竄)は元署名の検証に失敗する(ダイジェストは署名対象 — §4.3)"
+    },
+    {
+      "name": "transplant-project",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "proj-other-0002",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d7369670000000f70726f6a2d6f746865722d303030320000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "別プロジェクトへの座標移植は署名検証に失敗する"
+    },
+    {
+      "name": "transplant-environment",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-dev-0002",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d303030320000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "別環境への座標移植は署名検証に失敗する"
+    },
+    {
+      "name": "transplant-issuer",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "issuer_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §4.3 の issuer 焼き込み)"
+    },
+    {
+      "name": "wrong-issuer-key",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "must_fail": true,
+      "note": "issuer 以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)"
+    },
+    {
+      "name": "chain-head-swap",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "e3bb5c66f2f19c5ef506ee2115f7bc3982d1860bb04dcd552c5d0d0dcf189011",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004065336262356336366632663139633565663530366565323131356637626333393832643138363062623034646364353532633564306430646366313839303131000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)"
+    },
+    {
+      "name": "chain-head-seq-mismatch",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 11
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023131",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)"
+    },
+    {
+      "name": "suite-mismatch",
+      "base": "manifest-var-create",
+      "context": {
+        "suite": "maruhi/v2",
+        "domain": "maruhi/v2/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76322f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+    },
+    {
+      "name": "head-not-in-chain",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "f2ec7db945ebd56c30417ca3fcac82bf97ecb090b7facf0001d2d466ab9f9701",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004066326563376462393435656264353663333034313763613366636163383262663937656362303930623766616366303030316432643436366162396639373031000000023132",
+      "signed_bytes_sha256_hex": "44593ed1d93924eafc5eeb9031ac50aff4d240d377d19d02aa422c202e919bf4",
+      "signature_hex": "c3f16fc7b0f7e7c8970744e41016d855a5e277b6636ee123a369117019d7eda50cdda8d853f45a6575ae6a615b5f2912681022d34a923a975ea21757f090a008",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "chain-head-mismatch",
+      "must_fail": true,
+      "note": "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)または偽造の硬い証拠として即時拒否(§6.3-2a)"
+    },
+    {
+      "name": "head-beyond-local-seq",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "5ede6b72e00d09be6e06cce91824de5e93f2271695c6f5e51be6de03ed5cced6",
+        "chain_head_seq": 13
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004035656465366237326530306430396265366530366363653931383234646535653933663232373136393563366635653531626536646530336564356363656436000000023133",
+      "signed_bytes_sha256_hex": "fb9e51a9a5475eab770c48a7627b0e9c9c2cb52a6d1d3c657d23d4624d4ffb1b",
+      "signature_hex": "e6c881d358326a6a2dece6401f77aa6bd478870ba29b4476a25b88b802b9f039b26cf44f5b045600e2fe66d98fc5e7896dfb8afdbdaa529d08667a978330f404",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "chain-head-future",
+      "must_fail": true,
+      "note": "seq 13 は自ビューのヘッド(12)より先 = 自チェーンが古いだけの可能性。まず再同期し、延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)"
+    },
+    {
+      "name": "issuer-removed-at-head",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000134000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403132386239396331626332333261303765326664613433356232343139643064666634646639663066323163303834666233636561656161363361363033386500000010757365722d6d656d6265722d303030320000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "d300a79f481e253565c12d45ca5b214e33ef219760904d067f77c94650959821",
+      "signature_hex": "7b32bf361717a08dd4483e919b2dbd0479e56ab8ae63d212b93566ec7b7984886f0cc71caa86bfa69a74103874141f24dd20381541bbde75718ee8cb78df3702",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "issuer-not-member-at-head",
+      "must_fail": true,
+      "note": "seq 5 で削除済みの issuer が削除後のヘッド(12)を宣言する形は拒否する(削除済みメンバーの鍵による新規マニフェストの遮断 — §6.3-3)"
+    },
+    {
+      "name": "issuer-role-insufficient",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "4be2267354d3af7c787fdcf180d775d5bf98b0e39b6f709d0880bf729186fbc4",
+        "chain_head_seq": 6
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d3030303300000040346265323236373335346433616637633738376664636631383064373735643562663938623065333962366637303964303838306266373239313836666263340000000136",
+      "signed_bytes_sha256_hex": "4f1d5221571a02f47b7a9a7d6146a77123ea699d8043f27e8d8c998ed4b26274",
+      "signature_hex": "4b738cec86e6261ab93cecb3cf2e551a5a47a93321c9d76d22cfcf40e93e3e84131ad159a5916de8d4060d3b75391b5d9521647a62d7e3f9cfdab7e0c3c0d208",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "issuer-role-insufficient-at-head",
+      "must_fail": true,
+      "note": "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。マニフェストの発行契機はすべて member 以上のメタ操作 — reader 署名は拒否する(§4.3)"
+    },
+    {
+      "name": "key-from-other-tenure",
+      "kind": "authorization",
+      "chain": "tenure-extension",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "2f0556665dfdc3b7ffa33f271107cf74c1c5fd4b03f291945ee6b96ae0eb50b4",
+        "chain_head_seq": 13
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000134000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403132386239396331626332333261303765326664613433356232343139643064666634646639663066323163303834666233636561656161363361363033386500000010757365722d6d656d6265722d303030320000004032663035353636363564666463336237666661333366323731313037636637346331633566643462303366323931393435656536623936616530656235306234000000023133",
+      "signed_bytes_sha256_hex": "92160b40273f9f71ca1ccf950317ee722409e16c4bc6d15f63809064399f4843",
+      "signature_hex": "dcf7ee85ab0e6449eb6dbde23ce542ee6d3a4b63d5813dd865d84cdb1c923e940bd9f7393bf16a7393ded3d572645258fe5164e2e5aa141ff5dd308f6a2c3500",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "issuer-key-mismatch-at-head",
+      "must_fail": true,
+      "note": "remove → 別鍵 re-add(派生チェーン seq 13)の user_id で、旧在籍区間の鍵 × 新区間のヘッド(13)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)"
+    },
+    {
+      "name": "issuer-unknown-in-history",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-ghost-0042",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "d4f7cd50d2bf26ff0a58ae89b05cc5f6",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d67686f73742d303034320000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "1fdaa12bb26cc411a1bfc39839d818b73c4d4e0ed53778a31d293178c5e86cc9",
+      "signature_hex": "392b5e5c29e80c943e2b45642f9402f10a21d7074fbe0ca5164883fcc3bf7ceb642a0708993f7537efd0e1f4b69ebf824579e0824f64a3a51a0e3c65d0d40202",
+      "verify_key_hex": "03ff0e60c3634744bf45cec1833341ccdde192a3f66873422378bcbd46a32f1b",
+      "expected_reason": "issuer-unknown",
+      "must_fail": true,
+      "note": "チェーン履歴のどの時点にも存在しない issuer_user_id / 鍵 FP の組は検証鍵を選択できず拒否する(署名自体は本 negative の鍵で有効)"
+    },
+    {
+      "name": "environment-not-created-at-head",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-stage-0003",
+        "epoch": 1,
+        "manifest_version": 1,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "43329d4fc75f1da88f7e72040d4d7467751d7c94f2acfb396744003330f52942",
+        "prev_manifest_sig_hash_hex": "",
+        "issuer_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "issuer_key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000e656e762d73746167652d3030303300000001310000000131000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004034333332396434666337356631646138386637653732303430643464373436373735316437633934663261636662333936373434303033333330663532393432000000000000000f757365722d6f776e65722d3030303100000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
+      "signed_bytes_sha256_hex": "8fd453311cf2616f82b7b7087685abcafb70346848384da7fe0b4bce2ebb7a15",
+      "signature_hex": "42484c9215eddc691d0ea1c83c1cd2345920241c40810fab77c1f106ca9071ccda4254a37e8f262ec46f2197ebce9ee2371bc7080be07c448f39a8977eef0101",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "environment-not-created-at-head",
+      "must_fail": true,
+      "note": "env-stage-0003 の create_environment は seq 11。宣言ヘッド(seq 2)時点に環境は未存在で、次エントリ(seq 3)も当該環境のエポックを確立しない — 既定値へのフォールバック実装を禁止する(値署名の §6.3-4 後段と同型)"
+    },
+    {
+      "name": "epoch-not-current-at-head",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000131000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "06e65fcf0c9cf61b31be95cfae14d42ae54ac445acbb978b2f31eeb3c4ecf5ba",
+      "signature_hex": "673fe4aeac3c8161e392959e89f010a5f06930a1d210f750934af6d46a27470a5f4e5f3b6982b913646a6c8ef93f1ccee9244337c0b62baa30be134a47d7a007",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "epoch-not-current-at-head",
+      "must_fail": true,
+      "note": "head 12 時点の env-prod-0001 の現エポックは 2(rotate は seq 4)。旧エポック 1 を焼き込んだマニフェストは、宣言ヘッド時点のエポック整合で拒否する(§4.3 の核 — write 資格を失った鍵は現エポックのマニフェストを署名できない)"
+    },
+    {
+      "name": "epoch-regression",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "c7f29252d384a5ade1850873009fb8cb7f61ecc14da8d6fa69c2591e6cfbbc0f",
+        "chain_head_seq": 3
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001310000000134000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403132386239396331626332333261303765326664613433356232343139643064666634646639663066323163303834666233636561656161363361363033386500000010757365722d6d656d6265722d3030303200000040633766323932353264333834613561646531383530383733303039666238636237663631656363313464613864366661363963323539316536636662626330660000000133",
+      "signed_bytes_sha256_hex": "c18a6519611a76ccd6610303f859ab3bf49adc77f150968d47871909b8d93eb8",
+      "signature_hex": "6b2be6a51da5ea3be6952acbb473aa5dc18051a4c06f1c7bf42280e9521b028bf3050a73cf4d568914f292c8e17c95db9cfa85800f6ab2bde159b52291717a02",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "epoch-regressed",
+      "must_fail": true,
+      "note": "rotate(seq 4 → epoch 2)後に、在籍区間内の旧ヘッド(seq 3 — 当時の現エポック 1)を宣言して旧エポックを焼き込んだ前進 manifest_version(4)。宣言ヘッド時点のエポック整合は通るが、検証済みの直前マニフェスト(epoch 2)からのエポック後退として拒否する(§4.1 単調性のマニフェスト版 — 本設計の核となる negative)",
+      "predecessor": {
+        "base": "manifest-removed-issuer",
+        "signed_bytes_sha256_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "epoch": 2
+      }
+    },
+    {
+      "name": "v1-nonempty-prev",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 1,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "3b24c2b8e36a2ae0fd1f4a152a8205d16f36874c8be1aeba380bee6527ee974a",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001310000000131000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403362323463326238653336613261653066643166346131353261383230356431366633363837346338626531616562613338306265653635323765653937346100000010757365722d6d656d6265722d3030303200000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
+      "signed_bytes_sha256_hex": "44f62130590bb9e014fade7871bff2507f37bc588abcbed01b4dce37cf87c442",
+      "signature_hex": "5579814e98741231b2555e7daa9a8fd9b0f4dca1c9a921a6629ead39b4daa2743d539c22f5b4040721f8a1338d236310f205cb1be2edd76242e658528a51e905",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "prev-shape-mismatch",
+      "must_fail": true,
+      "note": "manifestVersion 1 の prev_manifest_sig_hash_hex は空文字列でなければならない(§4.3)。predecessor を保持しない latest-only 検証でも形は必ず検査する"
+    },
+    {
+      "name": "v2-empty-prev",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000134000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000000000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "8a2eb0639a7d2e77d8958637e1cafb3b3ecf88e7a813628f8fb49cf421435eb3",
+      "signature_hex": "9c026db5642f933bd8faca19594c9bb30b1608148a53d05b33a9e54fbb3a338b820e3a9a2d55d417fe9731199f5ea757da14dc61611fd440faf56f36fd4c2a05",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "prev-shape-mismatch",
+      "must_fail": true,
+      "note": "manifestVersion > 1 の prev_manifest_sig_hash_hex は 64 文字 hex でなければならない(§4.3)"
+    },
+    {
+      "name": "prev-hash-mismatch",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "73a362193bdf1c7b33a3f88e62d3d4ce596a79f10b997db1a68954034bd23857",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040373361333632313933626466316337623333613366383865363264336434636535393661373966313062393937646231613638393534303334626432333835370000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "32519f01c885da4faf8405e7e70bb1efd736e97cd1ea9f634e28afdee8d48a18",
+      "signature_hex": "da1289388543a5afa6d0c627c36df7b225cc81e0e98697a769f82f08e06a1c8717ec4664cbaa8f96f3fc8ca30230b0e38970ef09cb31752f6ebb9bd0d95c520d",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "prev-hash-mismatch",
+      "must_fail": true,
+      "note": "既知の直前 manifestVersion(manifest-removed-issuer)の signed_bytes ハッシュと prev が一致しない連鎖不整合(§6.3-6)。署名は有効 — Ed25519 failure に潰さない",
+      "predecessor": {
+        "base": "manifest-removed-issuer",
+        "signed_bytes_sha256_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "epoch": 2
+      }
+    },
+    {
+      "name": "digest-variable-omitted",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "3abeb02f35f1d0e69cc8b290287867f123dcd8d40b0da85adc7dc57132df7a7b",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "af8ab6d6886e5277e79038e619079f796e709915985986160eb8ab25fbf0bb65"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040336162656230326633356631643065363963633862323930323837383637663132336463643864343062306461383561646337646335373133326466376137620000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "a13cec919ad09972f47c3cb92a61ac8542c7467cacf43381de45dc41933ecd24",
+      "signature_hex": "01111976b0d592460927c997e609a653bfb5b0ee6f6170416a75c108741617caa9c758b5636e929fbff91fdf3d79279c3665136d9af07ff109e4db4b9b29750f",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "variables-digest-mismatch",
+      "must_fail": true,
+      "note": "マニフェストは 2 変数のダイジェストを署名しているが、配布から var-api-key-0001 のステートメントを落とした集合での再計算は一致しない(ステートメントの欠落の検出 — §4.3 (3))",
+      "verify_entries": [
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ]
+    },
+    {
+      "name": "digest-tombstone-omitted",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 6,
+        "variables_digest_hex": "64f8707be2c4de8d7cd08328d47ffa6b54033ebbd2f9fe3ddf5fbbdebc292178",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "2c086afd9f44423a224245e8f0943f0d2e55340cc9616de1299e8de89c8b8c62",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "deleted",
+          "meta_version": 3,
+          "meta_sig_hash_hex": "aad7b1bc08b68e7f6e42afa17b6305b13978cc88f093b1196af8f3e26cf4244f"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013600000040363466383730376265326334646538643763643038333238643437666661366235343033336562626432663966653364646635666262646562633239323137380000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040326330383661666439663434343233613232343234356538663039343366306432653535333430636339363136646531323939653864653839633862386336320000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "e134e51bb9146657da56be34ab2d8785c60cf497ad69cea513826a452a26d999",
+      "signature_hex": "94b2b9bdea48fde935aca47361b764a55c40ce072ce45ecafbb43b3d4b85b4f043fcc36840481b17aff438f0c06a4f2b66ccc9fd2d693c10a8ca836da587cf0d",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "variables-digest-mismatch",
+      "must_fail": true,
+      "note": "tombstone(var-api-key-0001 の deleted ステートメント)を配布から隠した集合での再計算は一致しない(削除の隠蔽 = 無断復活の入口の検出 — §4.3 (3))",
+      "verify_entries": [
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ]
+    },
+    {
+      "name": "digest-order-swap",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "b6e8559adba1616241ae20fe541de0b4f7186d807386899cda4da8439968cd76",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "af8ab6d6886e5277e79038e619079f796e709915985986160eb8ab25fbf0bb65"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "active",
+          "meta_version": 1,
+          "meta_sig_hash_hex": "9221e2a667c2bcd63538b220da1f441e0c88a8932b2d92a14ca687fb24b9a4bd"
+        }
+      ],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040623665383535396164626131363136323431616532306665353431646530623466373138366438303733383638393963646134646138343339393638636437360000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "a9ce8e40b78045eda9c89595fd3811e3a1cc9b9badeee8e7e08bd286ee5de780",
+      "signature_hex": "d6b6498d98b3a43de1f77e5f5c8e37b304f8fd38be6c8d2042da56d505cf566e229db32eb1f58a025e8fae9f7db64c551a84c7eaf9afffbbd630ae3ee1c0a50a",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "variables-digest-mismatch",
+      "must_fail": true,
+      "note": "昇順違反(降順)で計算されたダイジェストを署名したマニフェストは、正規形(バイト昇順)での再計算と一致しない(順序はダイジェストの正規形の一部 — §4.3)"
+    },
+    {
+      "name": "env-meta-mismatch",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 4,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "128b99c1bc232a07e2fda435b2419d0dff4df9f0f21c084fb3ceaeaa63a6038e",
+        "issuer_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "issuer_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000132000000013400000040373962346661333864313563626263656462613461353533363836363963366433326261363033663233326161633631326264306430306265643835393232630000000131000000403735623430323561393264366662366431376531323635356164636430666363666339366330353733383366393438353663663164376164353237383131653400000040313238623939633162633233326130376532666461343335623234313964306466663464663966306632316330383466623363656165616136336136303338650000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "69032460be7aec3b75c1c000d4fd3f17a6e32fe0f791522dae2178ffb3151f5e",
+      "signature_hex": "f10ac893027370de9e37a6d4428f1949067ac7bf3040a65d90ccb84b7216248e27df7bdda750ee42c6fef4e6db5a946bf21a1aa45687d7baea1005f71e0cc30c",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "env-meta-mismatch",
+      "must_fail": true,
+      "note": "マニフェストの (env_meta_version, env_meta_sig_hash_hex) が検証済みの環境メタステートメントと一致しない(環境メタの差し替え・古い環境メタへの固定の検出 — AUTH_SPEC §12-5 (7) の再計算対象)",
+      "verify_env_meta": {
+        "meta_version": 2,
+        "meta_sig_hash_hex": "0111b5daee1a0604d4fb5f8b01b3113a3493beaf5003a93e7e94ad81beb18790"
+      }
+    }
+  ]
+}
