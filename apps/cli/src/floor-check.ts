@@ -658,6 +658,15 @@ export interface FloorHandle {
     /** 変数作成の複合が発行したマニフェストの床前進(自計算値)。 */
     manifest?: ManifestFloor,
   ) => Effect.Effect<void, CliError>;
+  /**
+   * 受理された rotate 複合のマニフェスト床前進(自計算値 — pullEpoch・変数床は
+   * 動かさない)。怠ると受理後の床が旧 manifestVersion のままになり、旧版を
+   * 配布し続けるサーバーを規則 (a) が検出できない窓が生まれる。
+   */
+  readonly commitManifest: (
+    manifest: ManifestFloor,
+    head: ChainHeadFloor,
+  ) => Effect.Effect<void, CliError>;
 }
 
 /** 床ストアに対する環境床ハンドルを作る。 */
@@ -707,6 +716,31 @@ export function makeFloorHandle(input: {
                   ...current,
                   variables: { ...current.variables, [variableId]: variable },
                 };
+              }
+            }),
+          ),
+          Effect.asVoid,
+        ),
+    commitManifest: (manifest, head) =>
+      input.store
+        .commitManifest(input.projectId, {
+          chainHead: head,
+          environmentId: input.environmentId,
+          manifest,
+        })
+        .pipe(
+          Effect.tap((merged) =>
+            Effect.sync(() => {
+              if (merged !== null) {
+                current = merged;
+              } else if (
+                current !== null &&
+                (current.manifest === undefined ||
+                  manifest.manifestVersion >= current.manifest.manifestVersion)
+              ) {
+                // commitPush の同型: ディスクに環境レコードがない稀な形では
+                // プロセス内の知識だけを単調に前進させる
+                current = { ...current, manifest };
               }
             }),
           ),

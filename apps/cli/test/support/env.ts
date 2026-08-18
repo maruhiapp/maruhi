@@ -121,6 +121,12 @@ export async function makeTestEnv(): Promise<TestEnv> {
             ? floorStore.commitPush(projectId, commit)
             : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
         ),
+      commitManifest: (projectId, commit) =>
+        Effect.suspend(() =>
+          floorPushCommittable
+            ? floorStore.commitManifest(projectId, commit)
+            : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
+        ),
     }),
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),

@@ -443,7 +443,11 @@ interface RotateBody {
  * マニフェスト導入前に作られた環境のサーバー: 保存マニフェストなし(pull は
  * manifest を同梱しない)。rotate 複合を受理したら以後は受理マニフェストを配布する。
  */
-function makeLegacyServer(input: { readonly serveManifestAfterAccept?: boolean }): {
+function makeLegacyServer(input: {
+  readonly serveManifestAfterAccept?: boolean;
+  /** 初期配布マニフェスト(undefined = 未初期化サーバー)。 */
+  readonly initialManifest?: WireDistributedManifest;
+}): {
   readonly handlers: readonly MockHandler[];
   readonly rotateBodies: RotateBody[];
 } {
@@ -452,7 +456,7 @@ function makeLegacyServer(input: { readonly serveManifestAfterAccept?: boolean }
   const deks: WireRecipientDek[] = [wrap1];
   const rotateBodies: RotateBody[] = [];
   let currentEpoch = 1;
-  let manifest: WireDistributedManifest | null = null;
+  let manifest: WireDistributedManifest | null = input.initialManifest ?? null;
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
@@ -521,6 +525,25 @@ function makeLegacyServer(input: { readonly serveManifestAfterAccept?: boolean }
   ];
   return { handlers, rotateBodies };
 }
+
+describe("rotate 受理後の床前進(§6.3 — bugbot 指摘の回帰)", () => {
+  it("受理後も旧 manifestVersion を配布し続けるサーバーは、同一実行の再走査で規則 (a) が検出する", async () => {
+    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する。
+    // これを怠ると「床は pull 時点の旧 version のまま」なので、旧マニフェストを
+    // 配布し続けるサーバー(受理した v2 の握り潰し)が床検査を通ってしまう
+    const staleManifest = await manifestV1({ statements: [] });
+    const state = makeLegacyServer({
+      initialManifest: staleManifest,
+      // 受理した v2 を保存せず、v1 を配布し続ける(巻き戻しサーバーのモデル化)
+      serveManifestAfterAccept: false,
+    });
+    const env = await startEnv(state.handlers);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "握り潰し"], env.layer)).toBe(1);
+    // 複合自体は受理されている(拒否は受理後の再走査 pull の床検査)
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain("environment-manifest rollback");
+  });
+});
 
 describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
   it("マニフェスト未初期化サーバーへの rotate は既定で拒否される(欠落 = 拒否は移行でも例外にしない)", async () => {

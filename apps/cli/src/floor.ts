@@ -128,6 +128,19 @@ export interface PushCommit {
   readonly manifest?: ManifestFloor;
 }
 
+/**
+ * rotate 複合の受理時のコミット(自分が署名した次 manifestVersion を床へ昇格 —
+ * §6.3)。変数床は動かさない(再暗号化 push が個別に commitPush する)。
+ * これを怠ると、受理後も床が pull 時点の旧 manifestVersion のままになり、
+ * 「自分が進めた version より古いマニフェストを配布し続けるサーバー」を
+ * 規則 (a) が検出できない窓が生まれる。
+ */
+export interface ManifestCommit {
+  readonly chainHead: ChainHeadFloor;
+  readonly environmentId: string;
+  readonly manifest: ManifestFloor;
+}
+
 /** Load / commit boundary for the local floor files (§6.3). */
 export interface FloorStoreShape {
   readonly load: (projectId: string) => Effect.Effect<FloorLoadResult, CliError>;
@@ -150,6 +163,14 @@ export interface FloorStoreShape {
   readonly commitPush: (
     projectId: string,
     commit: PushCommit,
+  ) => Effect.Effect<EnvironmentFloor | null, CliError>;
+  /**
+   * 受理された rotate 複合のマニフェスト床前進(pullEpoch・変数床は動かさない)。
+   * マージ済み環境床(環境レコードがディスクにない場合は null)を返す。
+   */
+  readonly commitManifest: (
+    projectId: string,
+    commit: ManifestCommit,
   ) => Effect.Effect<EnvironmentFloor | null, CliError>;
 }
 
@@ -461,6 +482,29 @@ function applyPush(commit: PushCommit): FloorMerge {
   };
 }
 
+function applyManifest(commit: ManifestCommit): FloorMerge {
+  return (current) => {
+    const base = applyHead(commit.chainHead)(current);
+    const environment = floorRecordGet(base.environments, commit.environmentId);
+    if (environment === undefined) {
+      // applyPush と同じ理由で環境レコードを捏造しない(規則 (c) 基準 pullEpoch は
+      // pull でしか確定できない)。ヘッド前進のみ反映する(床は SHOULD)
+      return base;
+    }
+    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
+    return {
+      ...base,
+      environments: {
+        ...base.environments,
+        [commit.environmentId]: {
+          ...environment,
+          ...(manifest === undefined ? {} : { manifest }),
+        },
+      },
+    };
+  };
+}
+
 function isFileMissingError(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -548,6 +592,10 @@ export function makeFileFloorStore(dir: string): FloorStoreShape {
       ),
     commitPush: (projectId, commit) =>
       write(projectId, applyPush(commit)).pipe(
+        Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
+      ),
+    commitManifest: (projectId, commit) =>
+      write(projectId, applyManifest(commit)).pipe(
         Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
       ),
   };

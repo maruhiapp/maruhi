@@ -36,6 +36,7 @@ import { countNoun, displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
+import type { ManifestFloor } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { type ManifestDigestEntry, signNextManifest } from "./manifest.ts";
 import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
@@ -334,6 +335,8 @@ interface RotateState {
 /** 複合受理の結果(受理時点の状態を持ち帰り、受理後の再同期の基準にする)。 */
 interface AcceptedRotation {
   readonly state: RotateState;
+  /** 受理された同梱マニフェストの床記録(自計算値 — §6.3 の規則 (a)(b)(c) の材料)。 */
+  readonly manifest: ManifestFloor;
 }
 
 /**
@@ -401,6 +404,8 @@ function appendRotation(
      * 帰属(台帳の writer)はこちらを使う。
      */
     readonly member: ChainMember;
+    /** マニフェスト床コミットの失敗警告(null = 成功)。呼び出し側が sink へ積む。 */
+    readonly floorWarning: string | null;
   },
   CliError
 > {
@@ -474,7 +479,14 @@ function appendRotation(
                     return mapRotateFailure(input.environmentId)(error);
                   }),
                 );
-              return { state };
+              return {
+                state,
+                manifest: {
+                  manifestVersion: manifest.manifestVersion,
+                  epoch: manifest.epoch,
+                  manifestSigHashHex: manifest.manifestSigHashHex,
+                },
+              };
             }),
           classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
           recover: (state) =>
@@ -560,10 +572,28 @@ function appendRotation(
         ),
       ),
     );
+    // 受理されたマニフェストを床へ昇格する(§6.3 — push の変数作成と同じ規律)。
+    // 怠ると受理後も床が pull 時点の旧 manifestVersion のままになり、旧版を
+    // 配布し続けるサーバーを規則 (a) が検出できない。床の書き込み失敗で
+    // 受理済みのローテーションを失敗扱いにしない(床は SHOULD — 警告で開示)
+    const floorWarning = yield* input.floor
+      .commitManifest(accepted.manifest, {
+        seq: confirmed.state.headSeq,
+        hashHex: confirmed.state.headHashHex,
+      })
+      .pipe(
+        Effect.as<string | null>(null),
+        Effect.catch((error) =>
+          Effect.succeed<string | null>(
+            `The accepted rotation could not be recorded in the local floor (${error.message}). Manifest rollback detection for this rotation starts from the next successful pull`,
+          ),
+        ),
+      );
     return {
       view: confirmed,
       memberCount: accepted.state.deks.length,
       member: accepted.state.member,
+      floorWarning,
     };
   });
 }
@@ -1917,6 +1947,9 @@ function rotateWithWarnings(
     yield* io.log(
       `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,
     );
+    if (rotated.floorWarning !== null) {
+      warnings.push(rotated.floorWarning);
+    }
     // 新エポックの DEK は生成元(自分)が保持している。チェーン導出コミットメントとの
     // 照合は appendRotation が済ませている(§5.2)
     const deksByEpoch = new Map<number, Redacted.Redacted<Uint8Array>>(keys.deksByEpoch);
