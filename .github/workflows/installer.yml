@@ -134,3 +134,42 @@ jobs:
             --dist fixtures \
             --target "${TARGET}" \
             --version "${VERSION}"
+
+  # setup-maruhi action(actions/setup-maruhi)を**ローカルパス参照で実走**させる。
+  # install.sh 単体は上の install job が検査するが、action と script の結合
+  # (--dir / --version の受け渡し・アーカイブ内のバイナリ位置・GITHUB_PATH への
+  # 追記)はここでしか踏まれない — script 側のフラグ改名や配置変更が action の
+  # 利用者だけを壊す形を CI で検出する(PR #79 pullfrog レビュー反映)。
+  # 実リリースには依存しない: build の成果物を MARUHI_BASE_URL(file://)で与える
+  action-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: installer-fixtures
+          path: fixtures
+
+      # job env は composite action のステップにも届く(install.sh のミラー
+      # 指定 — GitHub Releases へは一切出ない)
+      - name: Point the installer at the local fixtures
+        run: echo "MARUHI_BASE_URL=file://${GITHUB_WORKSPACE}/fixtures" >> "$GITHUB_ENV"
+
+      - uses: ./actions/setup-maruhi
+        with:
+          version: ${{ needs.build.outputs.version }}
+
+      - name: Installed binary is on PATH (with the mh alias)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          command -v maruhi
+          test "$(maruhi --version)" = "${VERSION}"
+          test "$(mh --version)" = "${VERSION}"
