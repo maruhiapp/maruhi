@@ -33,7 +33,7 @@
 - 脅威モデル文書(CRYPTO_SPEC を基に「何から守り、何からは守らないか」を明文化)
 - チーム共有(add_member / remove_member、エポックローテーション、要ローテーション検出。ゼロ知識運用の UX 設計込み: 未登録ユーザー招待 = CRYPTO_SPEC 未決 #9、鍵フィンガープリント確認、退職時ローテ推奨 — ADR-0014)
 - ヘッドゴシップ検証(環境マニフェスト・定期チェックポイントの設計と同時 — CRYPTO_SPEC 未決 #12)
-- GitHub Actions 同期(ここで選択的開示 = grant_server を実装)
+- GitHub Actions 同期(ここで選択的開示 = grant_server を実装)**完了(2026-08-17 — Wave 2 全完了)**: A1 = サーバー鍵基盤 + grant/revoke CLI(PR #63)、A2 = OIDC 検証 + lease エンドポイント + 監査(PR #65)+ リプレイ先着束縛(PR #67)、A3 = CLI の CI モード(`maruhi ci run` — OIDC リース + CRYPTO_SPEC §9.1 の全検証義務 + メモリ注入。リポジトリアンカーの生成 = `maruhi project anchor`)+ リポジトリ内 setup-maruhi action(`actions/setup-maruhi` — マーケットプレイス公開は public 化と同時。設計判断は docs/notes/session-25.md)
 - 環境間パリティチェック(環境モデル決定が前提)
 - 監査ログ UI、Web ダッシュボード
 - CLI 配布: npm / brew tap / インストールスクリプト、macOS 公証(Apple Developer Program は公開 2〜3 週前に登録)、npm provenance、チェックサム公開

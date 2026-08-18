@@ -1,0 +1,43 @@
+# setup-maruhi — GitHub Actions へ maruhi CLI を導入する composite action。
+#
+# リリース成果物(タグ駆動 CI のバイナリ + checksums.txt — ADR-0015)から
+# packaging/install.sh を再利用して導入する: SHA-256 検証を通るまで
+# インストール先へ一切書かない・失敗時に部分ファイルを残さない、の性質を
+# ここで再実装しない(action の checkout はリポジトリ全体を含むため、
+# $GITHUB_ACTION_PATH からスクリプトへ相対で届く)。
+#
+# マーケットプレイス公開は Phase 2 の public 化と同時(docs/notes/session-25.md)。
+# 使い方は同ディレクトリの README.md(英語)。
+
+name: "setup-maruhi"
+description: >-
+  Install the maruhi CLI from GitHub release assets with mandatory SHA-256
+  checksum verification. Use together with `maruhi ci run`, which needs
+  `permissions: id-token: write` on the job (see this action's README).
+author: "maruhi"
+
+inputs:
+  version:
+    description: >-
+      maruhi version tag to install (example: v0.1.0-rc.1). Required while no
+      stable release exists — during the pre-release period releases/latest
+      cannot be resolved, so the install script refuses to guess.
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install maruhi
+      shell: bash
+      env:
+        MARUHI_SETUP_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        install_dir="${RUNNER_TEMP}/maruhi-bin"
+        args=(--dir "${install_dir}")
+        if [ -n "${MARUHI_SETUP_VERSION}" ]; then
+          args+=(--version "${MARUHI_SETUP_VERSION}")
+        fi
+        sh "${GITHUB_ACTION_PATH}/../../packaging/install.sh" "${args[@]}"
+        echo "${install_dir}" >> "${GITHUB_PATH}"

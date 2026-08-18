@@ -121,20 +121,24 @@ async function buildKeyHistory(
 }
 
 /**
- * Fetches and fully verifies the project chain (§6.3), checks the genesis
+ * Fully verifies one distributed chain snapshot (§6.3), checks the genesis
  * hash against the project id (§6.4), and cross-checks the server's claimed
  * head against the locally derived one.
+ *
+ * syncProject(チェーン API からの取得)と lease 応答の同梱チェーン
+ * (AUTH_SPEC §14-2 — 非メンバーへの唯一の配布経路)の**両方**がここを通る。
+ * 検証実装を 2 系統に割ると、片方だけが genesis 固定・ヘッド整合を失う
+ * 静かな退行になる(values.ts の decryptVerifiedValue と同じ理由)。
  */
-export function syncProject(
-  client: MaruhiClient,
-  projectId: ProjectId,
-): Effect.Effect<VerifiedProject, CliError> {
+export function verifyChainSnapshot(input: {
+  readonly projectId: ProjectId;
+  readonly entries: readonly ChainEntry[];
+  /** サーバー申告のヘッド(信用せず、導出ヘッドとの一致を検査する)。 */
+  readonly claimedHeadSeq: number;
+  readonly claimedHeadHashHex: string;
+}): Effect.Effect<VerifiedProject, CliError> {
   return Effect.gen(function* () {
-    const snapshot = yield* client.membership
-      .get({ params: { projectId } })
-      .pipe(Effect.mapError(toCliError));
-
-    const entries: readonly ChainEntry[] = snapshot.entries;
+    const { projectId, entries } = input;
     const verified = yield* Effect.tryPromise({
       try: () => verifyChainWithHistory(entries),
       catch: () => cliError("Chain verification failed to run (crypto error)"),
@@ -171,7 +175,7 @@ export function syncProject(
     }
 
     // サーバー申告のヘッドと導出ヘッドの整合(申告値は信用しない)
-    if (state.headSeq !== snapshot.headSeq || state.headHashHex !== snapshot.headHashHex) {
+    if (state.headSeq !== input.claimedHeadSeq || state.headHashHex !== input.claimedHeadHashHex) {
       return yield* Effect.fail(
         cliError(
           "The server-declared chain head does not match the fetched entries (the response contradicts itself)",
@@ -189,6 +193,27 @@ export function syncProject(
         ),
     });
     return { projectId, state, history, keyHistory, entries } satisfies VerifiedProject;
+  });
+}
+
+/**
+ * Fetches and fully verifies the project chain (§6.3) through
+ * {@link verifyChainSnapshot}.
+ */
+export function syncProject(
+  client: MaruhiClient,
+  projectId: ProjectId,
+): Effect.Effect<VerifiedProject, CliError> {
+  return Effect.gen(function* () {
+    const snapshot = yield* client.membership
+      .get({ params: { projectId } })
+      .pipe(Effect.mapError(toCliError));
+    return yield* verifyChainSnapshot({
+      projectId,
+      entries: snapshot.entries,
+      claimedHeadSeq: snapshot.headSeq,
+      claimedHeadHashHex: snapshot.headHashHex,
+    });
   });
 }
 

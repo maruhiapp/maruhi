@@ -102,7 +102,8 @@ export interface VerifiedEnvironmentPull {
   readonly warnings: readonly string[];
 }
 
-interface PulledWire {
+/** One pulled variable on the wire (statement + value — AUTH_SPEC §12-7 / §14-2). */
+export interface PulledWire {
   readonly variableId: string;
   readonly statement: DistributedVariableMetaStatement;
   readonly value: DistributedEncryptedPayload;
@@ -767,6 +768,39 @@ export function pullVerifiedEnvironment(input: {
       warnings: value.warnings,
     }),
   );
+}
+
+/**
+ * Verifies the distribution material of a workload-lease response
+ * (CRYPTO_SPEC §9.1 duty (4): environment statement, every active variable's
+ * statement + write signature, every tombstone). Same discipline as the bulk
+ * pull with exactly one difference: **a declared head beyond the chain is an
+ * immediate rejection**, never a bounded re-sync — the chain travels in the
+ * same response (AUTH_SPEC §14-2), so "our chain is merely stale" is not an
+ * honest explanation; the response contradicts itself.
+ *
+ * 床は使わない: ワークロードは床を持たない初回同期クラス(§14.3-3)で、
+ * その主要な緩和はリポジトリアンカー(anchor.ts — §6.3 帯域外アンカー (b))。
+ */
+export function verifyLeaseDistribution(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: EnvironmentId;
+  readonly wire: PullWire;
+}): Effect.Effect<
+  { readonly variables: readonly VerifiedPulledValue[]; readonly warnings: readonly string[] },
+  CliError
+> {
+  return Effect.gen(function* () {
+    const result = yield* verifyAll(input.verified, input.environmentId, input.wire);
+    if (result.kind === "future") {
+      return yield* Effect.fail(
+        cliError(
+          "A value or statement in the lease response declares a chain head beyond the chain included in the same response (the response contradicts itself)",
+        ),
+      );
+    }
+    return { variables: result.snapshot.variables, warnings: result.warnings };
+  });
 }
 
 /** メタデータのみ pull の検証済み応答(§12-7 のメタデータのみモード)。 */

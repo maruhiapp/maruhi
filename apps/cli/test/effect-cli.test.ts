@@ -947,7 +947,7 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
     const project = await makeTestEnv();
     expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
     expect(project.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: init | verify)",
+      "Unknown subcommand (expected one of: init | verify | anchor)",
     );
   });
 
@@ -1001,7 +1001,7 @@ describe("未知のコマンドの診断(第 3 段階 ④ — root の UnknownSu
     const { env } = await startEnv();
     expect(await runCli(["bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | project | rotation | audit | config)",
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | key | project | ci | rotation | audit | config)",
     );
   });
 
