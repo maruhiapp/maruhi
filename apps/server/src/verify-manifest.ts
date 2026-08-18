@@ -129,6 +129,20 @@ export const acceptManifestForMetaOp = (input: {
   readonly envMeta?: EnvManifestEnvMeta;
 }) =>
   Effect.gen(function* () {
+    // v1 ブートストラップのヘッドピン留め(AUTH_SPEC §12-5 (6) の明確化 —
+    // 2026-08-18 PR #81 pullfrog レビュー対応): 保存済みマニフェストなし →
+    // v1 受理では、宣言ヘッド後にローテーションが挟まっても manifestVersion
+    // CAS(最新 0 のまま)が 409 で落とせず、「受理時点の現エポック独立検査を
+    // 置かない」論証(§12-5)が v1 に限って成立しない。複合経路のピン留め
+    // (composite-programs.ts の manifestChainHead)と同型に、宣言ヘッド =
+    // 受理時点の現ヘッドを要求して stale エポックの焼き込みを塞ぐ(ハッシュの
+    // 一致は crypto のヘッド束縛検査が担う — ここは位置のみ)
+    if (
+      input.manifest.manifestVersion === 1 &&
+      input.manifest.chainHeadSeq !== input.history.headSeq
+    ) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "manifestChainHead" });
+    }
     const signedBytesHashHex = yield* acceptEnvManifest({
       projectId: input.projectId,
       environmentId: input.environmentId,

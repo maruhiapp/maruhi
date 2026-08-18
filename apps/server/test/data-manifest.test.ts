@@ -451,6 +451,81 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     });
   });
 
+  it("pins the declared head of a non-composite v1 bootstrap to the acceptance-time head (§12-5 (6) — PR #81 review)", async () => {
+    // v1 は保存済みマニフェストなし(最新 0)から受理されるため、宣言ヘッド後に
+    // ローテーションが挟まっても manifestVersion CAS が 409 で落とせない —
+    // 非複合経路の v1 は宣言ヘッド = 受理時点の現ヘッドを要求し、rotate 前の
+    // ヘッドに epoch 1 を焼き込んだブートストラップ(stale アンカー)を塞ぐ
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const staleHead = fixture.head;
+    await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
+    // マニフェスト導入前に作成された環境を、保存行の削除でシミュレートする
+    await queryProjectDo(
+      projectId,
+      "DELETE FROM environment_manifests WHERE environment_id = ?",
+      ENV,
+    );
+    fixture.manifests.delete(ENV);
+
+    const statement = await nextVariableStatement({
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active",
+      authorUserId: MEMBER,
+    });
+    const entries = [
+      {
+        variableId: VAR,
+        status: "active" as const,
+        metaVersion: statement.metaVersion,
+        metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
+      },
+    ];
+    // rotate 前のヘッド(epoch 1 が現エポックだった位置)を宣言した v1 =
+    // stale エポックの焼き込み。エポック整合(宣言ヘッド時点)は通る形だが、
+    // ヘッドのピン留めが先に落とす
+    const stale = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement,
+        manifest: await nextEnvironmentManifest(fixture, {
+          environmentId: ENV,
+          epoch: 1,
+          entries,
+          envMeta: await envMetaOf(fixture, ENV),
+          issuerUserId: MEMBER,
+          head: staleHead,
+        }),
+      },
+    );
+    expect(stale.status).toBe(422);
+    expect(((await stale.json()) as { field: string }).field).toBe("manifestChainHead");
+
+    // 受理時点の現ヘッド + 現エポックを宣言した v1 は受理される(非複合経路の
+    // ブートストラップ自体は移行のため有効なまま)
+    const pinned = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement,
+        manifest: await nextEnvironmentManifest(fixture, {
+          environmentId: ENV,
+          epoch: 2,
+          entries,
+          envMeta: await envMetaOf(fixture, ENV),
+          issuerUserId: MEMBER,
+          head: fixture.head,
+        }),
+      },
+    );
+    expect(pinned.status).toBe(204);
+    expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1, epoch: 2 });
+  });
+
   it("cascades the manifest row on environment deletion (§12-4)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     expect((await manifestRows()).length).toBe(1);

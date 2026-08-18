@@ -161,7 +161,12 @@ maruhi env rotate <environmentId> --init-manifest --reason "manifest initializat
 
 1. **AUTH_SPEC §12-5 (6)**: manifestVersion CAS の初期値 — 保存済み
    マニフェストなし = 最新 0 → manifestVersion 1 受理(移行経路。専用の
-   初期化エンドポイントは設けない)
+   初期化エンドポイントは設けない)。**追補(PR #81 pullfrog レビュー)**:
+   非複合メタ操作での v1 受理は宣言ヘッド = 受理時点の現ヘッドを要求する —
+   v1 は最新 0 からの受理で、宣言ヘッド後のローテーションを CAS が検出でき
+   ない(「受理時点エポック独立検査を置かない」の論証が v1 に限って不成立)
+   ため、複合経路のピン留めと同型の要求で stale エポックの焼き込みを塞ぐ。
+   実装は `acceptManifestForMetaOp`(4 経路の単一入口)の 1 箇所
 2. **CRYPTO_SPEC §6.3**: 移行の明示初期化操作(`--init-manifest`)の境界 —
    緩めるのは欠落の許容のみ・床確立後の欠落は移行操作でも拒否
 3. **CRYPTO_SPEC §6.3**: 床規則 (c) のマニフェスト適用の基準 —
