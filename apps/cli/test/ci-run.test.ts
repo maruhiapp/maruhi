@@ -506,6 +506,35 @@ describe("maruhi ci run(検証義務の負例 — CRYPTO_SPEC §9.1)", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
+  it("(4) 同梱チェーンより先のヘッドを宣言する値は再同期せず即時拒否する", async () => {
+    // pull は future head を有界再同期で解消できる(§6.3-2b — 自分のチェーンが
+    // 古いだけの可能性がある)が、lease はチェーンが**同じ応答に**同梱される
+    // (§14-2)ため、その説明が存在しない = 応答の自己矛盾として即時拒否する。
+    // これは verifyLeaseDistribution を pull と分ける唯一の挙動差
+    const { built, owner, dek2 } = fixture;
+    const futureValue = await encryptValueFor({
+      dek: dek2,
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 2,
+      variableId: "va",
+      version: 4,
+      plaintext: "alpha-future",
+      writer: owner,
+      head: { seq: built.entries.length + 1, hashHex: "ee".repeat(32) },
+    });
+    const { env, server } = await startCiEnv([
+      leaseHandler({
+        variables: [{ ...fixture.entryAlpha, value: futureValue }, fixture.entryBeta],
+      }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("beyond the chain included in the same response");
+    expect(env.runnerCalls).toHaveLength(0);
+    // 再同期に相当する追加取得をしない(OIDC 発行と lease の 1 回ずつだけ)
+    expect(server.requests.map((request) => request.path)).toEqual(["/oidc/token", leasePath()]);
+  });
+
   it("同一エポックの重複リースラップを拒否する", async () => {
     const { env, server } = await startCiEnv([
       leaseHandler({ extraLeases: [{ epoch: 1, dek: fixture.dek1 }] }),

@@ -37,8 +37,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # Pin the action to a tag or commit SHA — it installs the binary that
-      # will hold your decrypted secrets in memory. Do not use a mutable ref
-      - uses: maruhiapp/maruhi/actions/setup-maruhi@v0.1.0-rc.1
+      # will hold your decrypted secrets in memory. Do not use a mutable ref.
+      # Replace <tag> with the first release tag that contains this action
+      # directory (tags up to v0.1.0-rc.2 predate it and will not resolve)
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
         with:
           # Required while no stable release exists (releases/latest cannot
           # be resolved during the pre-release period)
