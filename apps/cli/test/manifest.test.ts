@@ -503,15 +503,28 @@ function makeLegacyServer(input: {
   readonly serveManifestAfterAccept?: boolean;
   /** 初期配布マニフェスト(undefined = 未初期化サーバー)。 */
   readonly initialManifest?: WireDistributedManifest;
+  /** 初期チェーン(既定 = chain1)。 */
+  readonly built?: BuiltChain;
+  readonly currentEpoch?: number;
+  readonly variables?: {
+    variableId: string;
+    statement: WireDistributedVariableStatement;
+    value: WireDistributedValue;
+  }[];
+  readonly initialDeks?: readonly WireRecipientDek[];
 }): {
   readonly handlers: readonly MockHandler[];
   readonly rotateBodies: RotateBody[];
+  readonly pushes: string[];
 } {
-  const entries: ChainEntry[] = [...chain1.entries];
-  const hashes: string[] = [...chain1.hashes];
-  const deks: WireRecipientDek[] = [wrap1];
+  const built = input.built ?? chain1;
+  const entries: ChainEntry[] = [...built.entries];
+  const hashes: string[] = [...built.hashes];
+  const deks: WireRecipientDek[] = [...(input.initialDeks ?? [wrap1])];
+  const variables = input.variables ?? [];
   const rotateBodies: RotateBody[] = [];
-  let currentEpoch = 1;
+  const pushes: string[] = [];
+  let currentEpoch = input.currentEpoch ?? 1;
   let manifest: WireDistributedManifest | null = input.initialManifest ?? null;
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
@@ -529,12 +542,38 @@ function makeLegacyServer(input: {
         environmentId: ENV_ID,
         currentEpoch,
         statement: envStatement,
-        variables: [],
+        variables,
         deletedVariables: [],
         deks,
         ...(manifest === null ? {} : { manifest }),
       },
     })),
+    (request) => {
+      const prefix = `/projects/${projectId}/environments/${ENV_ID}/variables/`;
+      if (
+        request.method !== "POST" ||
+        !request.path.startsWith(prefix) ||
+        !request.path.endsWith("/versions")
+      ) {
+        return null;
+      }
+      const variableId = request.path.slice(prefix.length, -"/versions".length);
+      pushes.push(variableId);
+      const body = request.body as { readonly value: WireDistributedValue };
+      const stored: WireDistributedValue = {
+        ...body.value,
+        writerUserId: owner.userId,
+        writerKeyFingerprintHex: owner.fingerprintHex,
+      };
+      const target = variables.find((variable) => variable.variableId === variableId);
+      if (target !== undefined) {
+        target.value = stored;
+      }
+      return {
+        status: 200,
+        json: { variableId, version: body.value.aad.version, epoch: body.value.aad.epoch },
+      };
+    },
     async (request) => {
       if (
         request.method !== "POST" ||
@@ -579,7 +618,7 @@ function makeLegacyServer(input: {
       };
     },
   ];
-  return { handlers, rotateBodies };
+  return { handlers, rotateBodies, pushes };
 }
 
 describe("rotate 受理後の床前進(§6.3 — bugbot 指摘の回帰)", () => {
@@ -707,6 +746,47 @@ describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("omission of the environment manifest");
     expect(state.rotateBodies).toHaveLength(0);
+  });
+
+  it("--init-manifest は「確認だけ」の早期完了を取らない(--reason なしは usage エラー)", async () => {
+    // 未初期化環境 + 未完了なし + --reason なし = 従来なら up-to-date の
+    // 早期 return。初期化が必要な実行でこれを取ると、成功に見えるのに v1 が
+    // 発行されない(bugbot 指摘)。複合送信経路へ倒し、理由を要求する
+    const state = makeLegacyServer({});
+    const env = await startEnv(state.handlers);
+    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Specify the rotation reason with --reason");
+    expect(state.rotateBodies).toHaveLength(0);
+  });
+
+  it("--init-manifest は中断復旧(複合なしの再開)を取らず、新エポックの複合で v1 を発行する", async () => {
+    // エポックは 2 まで進んでいるが epoch 1 の stale 値が残る形(中断復旧の
+    // 入口)。従来の再開経路は複合を送らないため v1 が発行されない(bugbot
+    // 指摘)。初期化が必要な実行は --new-epoch と同じく新エポックの複合へ倒す
+    const staleEntry = {
+      variableId: "va",
+      statement: alphaStatement,
+      value: alphaValue1,
+    };
+    const state = makeLegacyServer({
+      built: chain2,
+      currentEpoch: 2,
+      variables: [staleEntry],
+      initialDeks: [wrap1, wrap2],
+    });
+    const env = await startEnv(state.handlers);
+    expect(
+      await runCli(["env", "rotate", ENV_ID, "--init-manifest", "--reason", "移行"], env.layer),
+    ).toBe(0);
+    expect(state.rotateBodies).toHaveLength(1);
+    const body = state.rotateBodies[0];
+    if (body === undefined) throw new Error("rotate body missing");
+    expect(body.entry.payload.newEpoch).toBe(3);
+    expect(body.manifest.manifestVersion).toBe(1);
+    expect(body.manifest.prevManifestSigHashHex).toBe("");
+    expect(body.manifest.epoch).toBe(3);
+    // stale 値は新エポックへ再暗号化される(--new-epoch と同じ一気の揃え)
+    expect(state.pushes).toEqual(["va"]);
   });
 
   it("配布されたマニフェストの検証は --init-manifest でも緩和されない", async () => {

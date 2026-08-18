@@ -1817,6 +1817,11 @@ function rotateWithWarnings(
         `Environment ${displayText(input.environmentId)} has no manifest yet (created before manifests were introduced). This rotation initializes manifestVersion 1 — after it succeeds, every distribution of this environment is manifest-verified and a missing manifest is rejected (CRYPTO_SPEC §6.3)`,
       );
     }
+    // 初期化が実際に必要(欠落を確認した)実行は、rotate 複合を必ず送る:
+    // manifestVersion 1 の発行はメタ操作への同梱でしか起きない(§12-5)ため、
+    // 中断復旧(複合なしの再開)や「確認だけ」の早期 return を取ると、実行は
+    // 成功に見えるのに環境は未初期化のまま残る。--new-epoch と同じ経路選択に倒す
+    const mustInitialize = input.initManifest && pulled.manifest === null;
     if (floorless) {
       warnings.push(
         `This environment has no local floor yet, so variables the server keeps omitting from responses (ones that exist but never appear in listings) are not covered by re-encryption, and the omission cannot be detected (omission detection in CRYPTO_SPEC §6.3 presumes a floor). For revocation-purpose rotations, re-run from a machine that has a floor and confirm the variable listing for ${displayText(input.environmentId)} matches`,
@@ -1833,7 +1838,7 @@ function rotateWithWarnings(
     const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
 
     // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
-    if (stale.length > 0 && !input.forceNewEpoch) {
+    if (stale.length > 0 && !input.forceNewEpoch && !mustInitialize) {
       return yield* resumeReencryption({
         input,
         pulled,
@@ -1851,7 +1856,7 @@ function rotateWithWarnings(
     // 再実行した利用者が理由を求められ、指定すると**二度目のローテーション**に
     // なってしまう。何もせず完了状態を報告する。
     // `--reason ""` はこの経路に入らない(checkReasonLength が手前で落とす)
-    if (reason === null && !input.forceNewEpoch) {
+    if (reason === null && !input.forceNewEpoch && !mustInitialize) {
       return {
         mode: "up-to-date",
         previousEpoch: currentEpoch,
