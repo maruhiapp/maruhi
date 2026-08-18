@@ -47,6 +47,7 @@ import type {
   EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
+  EnvManifestInput,
   MetaStatementInput,
   RecipientDekValue,
   ValueInput,
@@ -429,6 +430,7 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly entry: ChainEntry & { readonly op: "create_environment" };
       readonly statement: MetaStatementInput;
       readonly deks: readonly DekWrapInput[];
+      readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
     // 複合受理(§12-4): チェーン追記(CAS + verifyChain)とデータ登録を同一
@@ -444,6 +446,7 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly parentHeadHashHex: string;
       readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
       readonly deks: readonly DekWrapInput[];
+      readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
     return this.#runData(
@@ -456,9 +459,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     environmentId: string,
     statement: MetaStatementInput,
+    manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
     return this.#runData(
-      renameEnvironmentProgram(actor, environmentId, statement, this.#stateCache),
+      renameEnvironmentProgram(actor, environmentId, statement, manifest, this.#stateCache),
     );
   }
 
@@ -486,6 +490,7 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly variableId: string;
       readonly statement: MetaStatementInput;
       readonly value: ValueInput;
+      readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<VariableVersionValue>> {
     return this.#runData(createVariableProgram(actor, environmentId, input, this.#stateCache));
@@ -510,9 +515,17 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     variableId: string,
     statement: MetaStatementInput,
+    manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
     return this.#runData(
-      renameVariableProgram(actor, environmentId, variableId, statement, this.#stateCache),
+      renameVariableProgram(
+        actor,
+        environmentId,
+        variableId,
+        statement,
+        manifest,
+        this.#stateCache,
+      ),
     );
   }
 
@@ -522,9 +535,17 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     variableId: string,
     statement: MetaStatementInput,
+    manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
     return this.#runData(
-      deleteVariableProgram(actor, environmentId, variableId, statement, this.#stateCache),
+      deleteVariableProgram(
+        actor,
+        environmentId,
+        variableId,
+        statement,
+        manifest,
+        this.#stateCache,
+      ),
     );
   }
 

@@ -21,9 +21,12 @@ import { deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./suppo
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
   commitmentOf,
+  digestOf,
   hexBytes,
   makeDek,
+  metaSignedBytesHashOf,
   signEntryAt,
+  signEnvManifestAs,
   signWrapAs,
   unwrapAndDecrypt,
   vectorKeyOf,
@@ -155,16 +158,30 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
         payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
       },
     });
+    const statement = await createEnvironmentStatement({
+      authorUserId: OWNER,
+      environmentId: ENV,
+      name: "App",
+      head: fixture.head,
+    });
     const body = JSON.stringify({
       parentHeadHashHex: fixture.head.hashHex,
       entry,
-      statement: await createEnvironmentStatement({
-        authorUserId: OWNER,
-        environmentId: ENV,
-        name: "App",
-        head: fixture.head,
-      }),
+      statement,
       deks,
+      // 作成複合の同梱マニフェスト(manifestVersion 1・変数空集合・epoch 1 — §12-4)
+      manifest: await signEnvManifestAs(OWNER, projectId, {
+        suite: "maruhi/v1",
+        environmentId: ENV,
+        epoch: 1,
+        manifestVersion: 1,
+        variablesDigestHex: await digestOf([]),
+        envMetaVersion: statement.metaVersion,
+        envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
+        prevManifestSigHashHex: "",
+        chainHeadHashHex: fixture.head.hashHex,
+        chainHeadSeq: fixture.head.seq,
+      }),
     });
     // CSRF ヘッダーなしの書き込みは 403
     const headers = sessionHeaders(session);

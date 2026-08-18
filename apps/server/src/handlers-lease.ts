@@ -139,6 +139,8 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
         ),
         deletedVariables: leased.deletedVariables,
         leases: leased.leases,
+        // 最新マニフェスト(§14-2 — ワークロードの検証義務 §9.1 (5) の材料)
+        ...(leased.manifest === undefined ? {} : { manifest: leased.manifest }),
       };
     }),
   ),

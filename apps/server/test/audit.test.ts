@@ -11,15 +11,17 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { makeAuditStore } from "../src/audit-store.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
-import type { WireVariableMetaStatement } from "./support/data-crypto.ts";
+import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
   commitmentOf,
   createVariableStatement,
+  digestOf,
   encryptValue,
   hexBytes,
   makeDek,
   metaSignedBytesHashOf,
   signEntryAt,
+  signEnvManifestAs,
   signMetaStatementAs,
   vectorKeyOf,
   wrapDekForAll,
@@ -33,6 +35,7 @@ import {
   createEnvironmentStatement,
   dataUrl,
   deleteEnvironmentRequest,
+  manifestForVariableOp,
   MEMBER,
   OWNER,
   projectId,
@@ -73,12 +76,43 @@ async function createVariableOk(dek: Uint8Array, variableId: string, name: strin
     name,
     head: fixture.head,
   });
+  const { manifest, state } = await manifestForVariableOp(fixture, {
+    environmentId: ENV,
+    issuerUserId: MEMBER,
+    entry: {
+      variableId,
+      status: "active",
+      metaVersion: 1,
+      metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
+    },
+  });
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
     statement,
     value,
+    manifest,
   });
   expect(response.status).toBe(200);
   varStatements.set(variableId, { statement, authorUserId: MEMBER });
+  fixture.manifests.set(ENV, state);
+}
+
+/** 変数のメタ操作(rename / 削除)に同梱するマニフェスト(§12-5)を署名し、記録を進める。 */
+async function manifestForNext(
+  statement: WireVariableMetaStatement,
+  issuerUserId: string,
+): Promise<WireEnvironmentManifest> {
+  const { manifest, state } = await manifestForVariableOp(fixture, {
+    environmentId: ENV,
+    issuerUserId,
+    entry: {
+      variableId: statement.variableId,
+      status: statement.status,
+      metaVersion: statement.metaVersion,
+      metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, issuerUserId),
+    },
+  });
+  fixture.manifests.set(ENV, state);
+  return manifest;
 }
 
 /** 変数の次ステートメント(rename / 削除)を記録済み最新から署名する。 */
@@ -267,29 +301,31 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      {
-        statement: await nextVariableStatement({
+      await (async () => {
+        const statement = await nextVariableStatement({
           variableId: VAR,
           name: "API_KEY_V2",
           status: "active",
           authorUserId: MEMBER,
-        }),
-      },
+        });
+        return { statement, manifest: await manifestForNext(statement, MEMBER) };
+      })(),
     );
     expect(renamed.status).toBe(204);
     const removedVar = await requestJson(
       "DELETE",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      {
-        statement: await nextVariableStatement({
+      await (async () => {
+        const statement = await nextVariableStatement({
           variableId: VAR,
           // deleted の name は直前 active 名を保持する(§4.2)
           name: "API_KEY_V2",
           status: "deleted",
           authorUserId: MEMBER,
-        }),
-      },
+        });
+        return { statement, manifest: await manifestForNext(statement, MEMBER) };
+      })(),
     );
     expect(removedVar.status).toBe(204);
     const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
@@ -443,19 +479,32 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
         },
       },
     });
+    const sessionStatement = await createEnvironmentStatement({
+      authorUserId: MEMBER,
+      environmentId: "env-audit-0002",
+      name: "Session",
+      head: fixture.head,
+    });
     const created = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
       headers: { ...JSON_HEADERS, ...sessionHeaders(session) },
       body: JSON.stringify({
         parentHeadHashHex: fixture.head.hashHex,
         entry,
-        statement: await createEnvironmentStatement({
-          authorUserId: MEMBER,
-          environmentId: "env-audit-0002",
-          name: "Session",
-          head: fixture.head,
-        }),
+        statement: sessionStatement,
         deks,
+        manifest: await signEnvManifestAs(MEMBER, projectId, {
+          suite: "maruhi/v1",
+          environmentId: "env-audit-0002",
+          epoch: 1,
+          manifestVersion: 1,
+          variablesDigestHex: await digestOf([]),
+          envMetaVersion: sessionStatement.metaVersion,
+          envMetaSigHashHex: await metaSignedBytesHashOf(projectId, sessionStatement, MEMBER),
+          prevManifestSigHashHex: "",
+          chainHeadHashHex: fixture.head.hashHex,
+          chainHeadSeq: fixture.head.seq,
+        }),
       }),
     });
     expect(created.status).toBe(200);

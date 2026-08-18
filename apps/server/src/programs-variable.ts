@@ -13,6 +13,7 @@ import type { StateCache } from "./chain-store.ts";
 import type {
   DataActor,
   DataRejection,
+  EnvManifestInput,
   MetaStatementInput,
   ValueInput,
   VariableVersionValue,
@@ -27,6 +28,7 @@ import {
   requireActiveEnvironment,
   requireActiveVariable,
 } from "./quotas.ts";
+import { acceptEnvManifest, manifestDigestEntries, storedEnvMeta } from "./verify-manifest.ts";
 import {
   acceptMetaStatement,
   ensureMetaCas,
@@ -97,6 +99,7 @@ export const createVariableProgram = (
     readonly variableId: string;
     readonly statement: MetaStatementInput;
     readonly value: ValueInput;
+    readonly manifest: EnvManifestInput;
   },
   cache: StateCache,
 ) =>
@@ -146,14 +149,39 @@ export const createVariableProgram = (
       member,
       value: input.value,
     });
+    // 環境マニフェストの複合受理(§12-5 — 2026-08-18): 作成後のメタ状態
+    // (新変数のステートメントを含む集合)からダイジェストを再計算して申告と
+    // 突合する。manifestVersion CAS は metaVersion CAS と同一トランザクション
+    // (同一プログラム・同一 permit)で判定される
+    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+      projectId,
+      environmentId,
+      history,
+      member,
+      manifest: input.manifest,
+      entries: yield* manifestDigestEntries(environmentId, {
+        variableId: input.variableId,
+        status: "active",
+        metaVersion: input.statement.metaVersion,
+        signedBytesHashHex: metaSignedBytesHashHex,
+      }),
+      envMeta: yield* storedEnvMeta(environmentId),
+    });
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
     const audit = yield* AuditStore;
     const now = Date.now();
     // 書き込みフェーズ(単一タスク): 変数行 + ステートメント行 + version 1 +
-    // 監査 2 行を原子的に書く(「latest_version = 0 のまま ID だけ占有された
-    // 変数」を残さない)
+    // マニフェスト(最新 1 通の upsert)+ 監査 2 行を原子的に書く
+    // (「latest_version = 0 のまま ID だけ占有された変数」を残さない)
     yield* Effect.sync(() => {
       store.write.insertVariable(environmentId, input.variableId, input.statement.name, now);
+      store.write.upsertEnvironmentManifest(
+        environmentId,
+        input.manifest,
+        manifestSignedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
       store.write.insertVariableMetaStatement(
         environmentId,
         input.variableId,
@@ -258,6 +286,7 @@ export const renameVariableProgram = (
   environmentId: string,
   variableId: string,
   statement: MetaStatementInput,
+  manifest: EnvManifestInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -278,6 +307,21 @@ export const renameVariableProgram = (
       member,
       statement,
     });
+    // マニフェストの複合受理(§12-5): rename 適用後の集合で再計算・突合
+    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+      projectId,
+      environmentId,
+      history,
+      member,
+      manifest,
+      entries: yield* manifestDigestEntries(environmentId, {
+        variableId,
+        status: "active",
+        metaVersion: statement.metaVersion,
+        signedBytesHashHex,
+      }),
+      envMeta: yield* storedEnvMeta(environmentId),
+    });
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
@@ -286,6 +330,13 @@ export const renameVariableProgram = (
         variableId,
         statement,
         signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      store.write.upsertEnvironmentManifest(
+        environmentId,
+        manifest,
+        manifestSignedBytesHashHex,
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
@@ -305,6 +356,7 @@ export const deleteVariableProgram = (
   environmentId: string,
   variableId: string,
   statement: MetaStatementInput,
+  manifest: EnvManifestInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -324,11 +376,28 @@ export const deleteVariableProgram = (
       member,
       statement,
     });
+    // マニフェストの複合受理(§12-5): tombstone を含む集合で再計算・突合
+    // (tombstone 隠しの digest 不一致はここで落ちる — §4.3 (3))
+    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+      projectId,
+      environmentId,
+      history,
+      member,
+      manifest,
+      entries: yield* manifestDigestEntries(environmentId, {
+        variableId,
+        status: "deleted",
+        metaVersion: statement.metaVersion,
+        signedBytesHashHex,
+      }),
+      envMeta: yield* storedEnvMeta(environmentId),
+    });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
     // 書き込みフェーズ: tombstone + 全バージョン削除 + deleted ステートメント行
-    // (保存・配布し続ける — §12-5)+ var.deleted(author FP — AUDIT_SPEC §3.3)
+    // (保存・配布し続ける — §12-5)+ マニフェスト + var.deleted(author FP —
+    // AUDIT_SPEC §3.3)
     yield* Effect.sync(() => {
       store.write.retireVariable(environmentId, variableId, now);
       store.write.insertVariableMetaStatement(
@@ -336,6 +405,13 @@ export const deleteVariableProgram = (
         variableId,
         statement,
         signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      store.write.upsertEnvironmentManifest(
+        environmentId,
+        manifest,
+        manifestSignedBytesHashHex,
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );

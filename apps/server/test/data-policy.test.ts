@@ -48,6 +48,7 @@ import {
   fixture,
   registerDataScenario,
   token,
+  unsignedManifest,
   unsignedPayload,
   unsignedVariableStatement,
   VAR,
@@ -170,6 +171,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
+      manifest: unsignedManifest(),
     });
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
@@ -191,6 +193,7 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
+      manifest: unsignedManifest(),
     });
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
@@ -432,6 +435,7 @@ describe("判定順と Schema 境界(§12-3 / §12-2)", () => {
       const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
         statement: unsignedVariableStatement(VAR, "DATABASE_URL"),
         value,
+        manifest: unsignedManifest(),
       });
       expect(response.status).toBe(400);
     }
@@ -567,6 +571,11 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "value-rejected": { kind: "value-rejected", reason: "signature-invalid" },
     "meta-rejected": { kind: "meta-rejected", reason: "signature-invalid" },
     "meta-version-conflict": { kind: "meta-version-conflict", currentMetaVersion: 2 },
+    "manifest-rejected": { kind: "manifest-rejected", reason: "manifest-digest-mismatch" },
+    "manifest-version-conflict": {
+      kind: "manifest-version-conflict",
+      currentManifestVersion: 2,
+    },
     "name-not-nfc": { kind: "name-not-nfc" },
     "dek-wrap-rejected": { kind: "dek-wrap-rejected", reason: "duplicate-recipient" },
     "dek-wrap-exists": {
@@ -607,6 +616,8 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "value-rejected": "ValueSignatureRejected",
     "meta-rejected": "MetaStatementRejected",
     "meta-version-conflict": "MetaVersionConflict",
+    "manifest-rejected": "ManifestRejected",
+    "manifest-version-conflict": "ManifestVersionConflict",
     "name-not-nfc": "NameNotNfc",
     "dek-wrap-rejected": "DekWrapRejected",
     "dek-wrap-exists": "DekWrapExists",

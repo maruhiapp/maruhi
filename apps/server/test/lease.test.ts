@@ -265,6 +265,13 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     expect(body.headSeq).toBe(body.chain.length);
     expect(body.currentEpoch).toBe(1);
 
+    // 最新の環境マニフェスト + issuer 情報を同梱する(§14-2 — ワークロードの
+    // 検証義務 §9.1 (5) の材料。2026-08-18)
+    expect(
+      (body as { manifest?: { manifestVersion: number; epoch: number; issuerUserId: string } })
+        .manifest,
+    ).toMatchObject({ manifestVersion: 2, epoch: 1 });
+
     // リースラップは登録署名も署名者情報も持たない(サーバー生成・応答スコープ
     // であり、チェーン上の署名者が存在しえない — §9.1)
     expect(body.leases.length).toBe(1);

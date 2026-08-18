@@ -16,6 +16,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { ChainEntrySchema } from "./chain.ts";
 import { PulledVariableSchema } from "./data-api.ts";
 import {
+  DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
   DistributedVariableMetaStatementSchema,
   LeasedDekSchema,
@@ -81,6 +82,12 @@ export const LeaseResponseSchema = Schema.Struct({
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   leases: Schema.Array(LeasedDekSchema),
+  /**
+   * 最新の環境マニフェスト + issuer 情報(§14-2 — 2026-08-18)。ワークロードの
+   * 検証義務 §9.1 (5)(ダイジェスト再計算・エポック整合)の材料。欠落 = 拒否は
+   * pull と同一(optional は移行完了までの過渡状態のみ)。
+   */
+  manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
 });
 
 /**

@@ -13,17 +13,20 @@ import type {
   EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
+  EnvManifestInput,
   MetaStatementInput,
 } from "./data-plane.ts";
 import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
+import { acceptEnvManifest, manifestDigestEntries } from "./verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "./verify-meta.ts";
 
 export const renameEnvironmentProgram = (
   actor: DataActor,
   environmentId: string,
   statement: MetaStatementInput,
+  manifest: EnvManifestInput,
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
@@ -38,7 +41,8 @@ export const renameEnvironmentProgram = (
         reason: "duplicate-name",
       });
     }
-    // 判定順(値の裁定 D と同型): 上限 → CAS → ステートメント署名 → 原子書き込み
+    // 判定順(値の裁定 D と同型): 上限 → CAS → ステートメント署名 →
+    // マニフェスト受理 → 原子書き込み
     const signedBytesHashHex = yield* acceptMetaStatement({
       projectId,
       environmentId,
@@ -48,6 +52,18 @@ export const renameEnvironmentProgram = (
       member,
       statement,
     });
+    // マニフェストの複合受理(§12-4 / §12-5): 環境 rename は新しい
+    // envMetaSigHashHex を写したマニフェスト(manifestVersion + 1)を同梱する。
+    // envMeta の期待値は rename 適用後 = 今回のステートメント自身
+    const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+      projectId,
+      environmentId,
+      history,
+      member,
+      manifest,
+      entries: yield* manifestDigestEntries(environmentId, null),
+      envMeta: { metaVersion: statement.metaVersion, sigHashHex: signedBytesHashHex },
+    });
     const audit = yield* AuditStore;
     const now = Date.now();
     yield* Effect.sync(() => {
@@ -55,6 +71,13 @@ export const renameEnvironmentProgram = (
         environmentId,
         statement,
         signedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      store.write.upsertEnvironmentManifest(
+        environmentId,
+        manifest,
+        manifestSignedBytesHashHex,
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
@@ -155,7 +178,11 @@ const requirePullContext = (actor: DataActor, environmentId: string, cache: Stat
     if (statement === null) {
       return yield* Effect.die(new Error("environment meta statement row missing"));
     }
-    return { state, store, statement };
+    // 最新マニフェスト(§12-7 の同梱材料 — 2026-08-18)。null はマニフェスト
+    // 導入前に作成された環境の移行完了までの過渡状態のみ(初期化後の環境は
+    // 全メタ操作 / rotate が原子的に upsert するため必ず存在する)
+    const manifest = yield* store.environmentManifest(environmentId);
+    return { state, store, statement, manifest };
   });
 
 export const pullEnvironmentProgram = (
@@ -164,7 +191,11 @@ export const pullEnvironmentProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state, store, statement } = yield* requirePullContext(actor, environmentId, cache);
+    const { state, store, statement, manifest } = yield* requirePullContext(
+      actor,
+      environmentId,
+      cache,
+    );
     const variables = yield* store.latestVersions(environmentId);
     // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
     // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
@@ -193,6 +224,7 @@ export const pullEnvironmentProgram = (
       variables,
       deletedVariables,
       deks,
+      ...(manifest === null ? {} : { manifest }),
     } satisfies EnvironmentPullValue;
   });
 
@@ -208,7 +240,11 @@ export const pullEnvironmentMetadataProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    const { state, store, statement } = yield* requirePullContext(actor, environmentId, cache);
+    const { state, store, statement, manifest } = yield* requirePullContext(
+      actor,
+      environmentId,
+      cache,
+    );
     const variables = yield* store.activeVariableStatements(environmentId);
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
     return {
@@ -217,5 +253,6 @@ export const pullEnvironmentMetadataProgram = (
       statement,
       variables,
       deletedVariables,
+      ...(manifest === null ? {} : { manifest }),
     } satisfies EnvironmentMetadataPullValue;
   });

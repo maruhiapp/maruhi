@@ -43,6 +43,7 @@ import {
   hashOf,
   registerDataScenario,
   token,
+  unsignedManifest,
   VAR,
   variableStatementFor,
 } from "./support/data-scenario.ts";
@@ -107,6 +108,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: { ...value, signatureHex: flipped },
+      manifest: unsignedManifest(),
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
@@ -300,6 +302,7 @@ describe("値署名の受理検証(§12-5 = CRYPTO_SPEC §4.1 / §6.4)", () => {
           chainHeadSeq: context.chainHeadSeq,
           signatureHex: encodeHex(rawSignature),
         },
+        manifest: unsignedManifest(),
       },
     );
     expect(v1NonEmptyPrev.status).toBe(422);

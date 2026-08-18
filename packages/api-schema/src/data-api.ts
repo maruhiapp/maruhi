@@ -15,15 +15,18 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/ht
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { CreateEnvironmentEntrySchema, RotateEpochEntrySchema } from "./chain.ts";
 import {
+  CreateEnvironmentManifestSchema,
   CreateEnvironmentMetaStatementSchema,
   CreateVariableMetaStatementSchema,
   DekWrapRefSchema,
   DeleteEnvironmentMetaStatementSchema,
   DeleteVariableMetaStatementSchema,
   DistributedEncryptedPayloadSchema,
+  DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
   DistributedVariableMetaStatementSchema,
   EncryptedPayloadSchema,
+  EnvironmentManifestSchema,
   RecipientDekSchema,
   RenameEnvironmentMetaStatementSchema,
   RenameVariableMetaStatementSchema,
@@ -42,6 +45,8 @@ import {
   EnvironmentNotFoundError,
   EpochConflictError,
   ForbiddenError,
+  ManifestRejectedError,
+  ManifestVersionConflictError,
   MetaStatementRejectedError,
   MetaVersionConflictError,
   NameNotNfcError,
@@ -122,6 +127,13 @@ export const EnvironmentPullSchema = Schema.Struct({
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   deks: Schema.Array(RecipientDekSchema),
+  /**
+   * 最新の環境マニフェスト + issuer 情報(§12-7 — 2026-08-18)。クライアントは
+   * ダイジェスト再計算・エポック整合を検証し、**欠落は一律拒否**(CRYPTO_SPEC
+   * §6.3)。optional なのはマニフェスト導入前に作成された環境の移行完了までの
+   * 過渡状態のみ(サーバーは保存行があれば必ず同梱する)。
+   */
+  manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
 });
 
 /**
@@ -139,6 +151,8 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
   statement: DistributedEnvironmentMetaStatementSchema,
   variables: Schema.Array(DistributedVariableMetaStatementSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
+  /** 最新の環境マニフェスト(メタ検証の完全性はこのモードでも同水準 — §12-7)。 */
+  manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
 });
 
 /**
@@ -170,6 +184,8 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         entry: CreateEnvironmentEntrySchema,
         statement: CreateEnvironmentMetaStatementSchema,
         deks: Schema.Array(WrappedDekSchema),
+        // manifestVersion 1・変数空集合・epoch 1(§12-4 — 2026-08-18)
+        manifest: CreateEnvironmentManifestSchema,
       }),
       success: EnvironmentChainResultSchema,
       error: [
@@ -180,10 +196,15 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
-        // 複合内整合検査(§12-4): エントリ payload とステートメントの
+        // 複合内整合検査(§12-4): エントリ payload とステートメント / マニフェストの
         // environment_id / 宣言ヘッドの不一致
         PayloadMismatchError,
         MetaStatementRejectedError,
+        // 同梱マニフェストも通常経路と同一の検証(§12-5 の (1)〜(7))を受ける。
+        // ManifestVersionConflict は宣言しない: 作成はチェーン合意規則
+        // (duplicate-environment)が環境の新規性を保証し、保存済みマニフェストの
+        // ない環境への v1 は CAS 上競合しえない(ワイヤも Literal 1)
+        ManifestRejectedError,
         NameNotNfcError,
         DekWrapRejectedError,
         // ラップ集合検査(§12-6 checkWrapSets)は既存 (エポック, 受信者) との
@@ -202,6 +223,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         parentHeadHashHex: Sha256Hex,
         entry: RotateEpochEntrySchema,
         deks: Schema.Array(WrappedDekSchema),
+        // 新エポックを焼き込んだマニフェスト(manifestVersion = 最新 + 1。
+        // メタ集合は不変でもエポック前進を反映する — CRYPTO_SPEC §4.3。
+        // マニフェスト導入前に作成された環境の最初の rotate は v1 を同梱する
+        // = 移行経路 — session-27 §14 PR-M1)
+        manifest: EnvironmentManifestSchema,
       }),
       success: EnvironmentChainResultSchema,
       error: [
@@ -216,6 +242,10 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
+        // 同梱マニフェストの検証(§12-5 の (1)〜(7)。epoch = 同梱エントリ適用後 =
+        // new_epoch)。409 の再試行ではエントリとマニフェストの両方を再署名する
+        ManifestRejectedError,
+        ManifestVersionConflictError,
         DekWrapRejectedError,
         // 確立エポック(rotate = new_epoch)への既存ラップは現行チェーン規則
         // (エポック単調性)の下では存在しえないが、create と同じ理由で宣言する
@@ -234,7 +264,13 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.patch("rename", "/projects/:projectId/environments/:environmentId", {
       params: environmentParams,
-      payload: Schema.Struct({ statement: RenameEnvironmentMetaStatementSchema }),
+      // 環境の rename はマニフェストも同梱する(manifestVersion + 1 — 新しい
+      // envMetaSigHashHex を写す。§12-4)。metaVersion CAS と manifestVersion CAS は
+      // 同一トランザクションで判定し、409 は両方の再署名で再試行する(§12-5)
+      payload: Schema.Struct({
+        statement: RenameEnvironmentMetaStatementSchema,
+        manifest: EnvironmentManifestSchema,
+      }),
       success: HttpApiSchema.NoContent,
       error: [
         ProjectNotFoundError,
@@ -244,6 +280,8 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         PayloadMismatchError,
         MetaVersionConflictError,
         MetaStatementRejectedError,
+        ManifestRejectedError,
+        ManifestVersionConflictError,
         NameNotNfcError,
         DataLimitExceededError,
       ],
@@ -287,6 +325,9 @@ export const variablesGroup = HttpApiGroup.make("variables")
       payload: Schema.Struct({
         statement: CreateVariableMetaStatementSchema,
         value: EncryptedPayloadSchema,
+        // 作成後のメタ状態(新変数のステートメントを含む集合)を反映した
+        // マニフェスト(§12-5 — メタ状態を変える全操作の複合受理)
+        manifest: EnvironmentManifestSchema,
       }),
       success: VariableVersionSchema,
       error: [
@@ -305,6 +346,10 @@ export const variablesGroup = HttpApiGroup.make("variables")
         ValueSignatureRejectedError,
         MetaStatementRejectedError,
         MetaVersionConflictError,
+        // 同梱マニフェストの検証と manifestVersion CAS(§12-5 (6) — 並行メタ
+        // 操作は環境単位の manifestVersion で直列化される。一括投入は逐次実行)
+        ManifestRejectedError,
+        ManifestVersionConflictError,
         NameNotNfcError,
         ValueTooLargeError,
         DataLimitExceededError,
@@ -347,7 +392,10 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
-        payload: Schema.Struct({ statement: RenameVariableMetaStatementSchema }),
+        payload: Schema.Struct({
+          statement: RenameVariableMetaStatementSchema,
+          manifest: EnvironmentManifestSchema,
+        }),
         success: HttpApiSchema.NoContent,
         error: [
           ProjectNotFoundError,
@@ -358,6 +406,8 @@ export const variablesGroup = HttpApiGroup.make("variables")
           PayloadMismatchError,
           MetaVersionConflictError,
           MetaStatementRejectedError,
+          ManifestRejectedError,
+          ManifestVersionConflictError,
           NameNotNfcError,
           DataLimitExceededError,
         ],
@@ -370,8 +420,13 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
-        // 削除も署名付きステートメント(status deleted。name は直前 active 名)
-        payload: Schema.Struct({ statement: DeleteVariableMetaStatementSchema }),
+        // 削除も署名付きステートメント(status deleted。name は直前 active 名)+
+        // tombstone を含む集合を反映したマニフェスト(§12-5 — マニフェストは
+        // 行数上限の対象外なので削除経路を遮断しない: 保持は最新 1 通 — §12-8)
+        payload: Schema.Struct({
+          statement: DeleteVariableMetaStatementSchema,
+          manifest: EnvironmentManifestSchema,
+        }),
         success: HttpApiSchema.NoContent,
         // DataLimitExceeded を宣言しない理由は environments.remove と同じ
         // (deleted は metaVersion 上限の対象外 — §12-8)
@@ -383,6 +438,8 @@ export const variablesGroup = HttpApiGroup.make("variables")
           PayloadMismatchError,
           MetaVersionConflictError,
           MetaStatementRejectedError,
+          ManifestRejectedError,
+          ManifestVersionConflictError,
         ],
       },
     ).middleware(AuthMiddleware),

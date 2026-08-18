@@ -15,8 +15,10 @@ import { ensureActorMatches } from "./authz.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";
 import {
   callProjectData,
+  checkManifestCoordinates,
   checkStatementCoordinates,
   noContent,
+  toManifestInput,
   toMetaStatementInput,
 } from "./data-http.ts";
 import type { EnvironmentSummaryValue } from "./data-plane.ts";
@@ -37,11 +39,13 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
     .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* ensureCompositeActor(payload.entry);
-        // 複合内整合検査(§12-4)の worker 側: エントリ payload とステートメントの
-        // environment_id の一致(宣言ヘッドの一致検査は状態依存のため DO 側)
+        // 複合内整合検査(§12-4)の worker 側: エントリ payload とステートメント /
+        // マニフェストの environment_id の一致(宣言ヘッド・エポックの一致検査は
+        // 状態依存のため DO 側)
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: payload.entry.payload.environmentId,
         });
+        yield* checkManifestCoordinates(payload.manifest, payload.entry.payload.environmentId);
         return yield* callProjectData<EnvironmentChainResultValue>()({
           endpoint,
           projectId: params.projectId,
@@ -52,6 +56,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               entry: payload.entry,
               statement: toMetaStatementInput(payload.statement),
               deks: payload.deks,
+              manifest: toManifestInput(payload.manifest),
             }),
         });
       }),
@@ -59,6 +64,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
     .handle("rotate", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* ensureCompositeActor(payload.entry);
+        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
         return yield* callProjectData<EnvironmentChainResultValue>()({
           endpoint,
           projectId: params.projectId,
@@ -68,6 +74,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               parentHeadHashHex: payload.parentHeadHashHex,
               entry: payload.entry,
               deks: payload.deks,
+              manifest: toManifestInput(payload.manifest),
             }),
         });
       }),
@@ -85,6 +92,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
         });
+        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
         return yield* callProjectData<void>()({
           endpoint,
           projectId: params.projectId,
@@ -94,6 +102,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               actor,
               params.environmentId,
               toMetaStatementInput(payload.statement),
+              toManifestInput(payload.manifest),
             ),
         });
       }).pipe(Effect.as(noContent)),

@@ -248,6 +248,9 @@ export const leaseProgram = (
     }
     const variables = yield* store.latestVersions(environmentId);
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
+    // 最新マニフェスト(§14-2 — 2026-08-18。ワークロードの検証義務 §9.1 (5) の
+    // 材料。null は移行前の過渡状態のみ — 受信側は欠落を一律拒否する)
+    const manifest = yield* store.environmentManifest(environmentId);
 
     // 応答内の最新値が使用する全エポック + 現エポック(§14-2)。過不足なく
     // 揃っていることを要求する — 1 つでも欠ければ復号できない値が応答に載る
@@ -345,5 +348,6 @@ export const leaseProgram = (
       variables,
       deletedVariables,
       leases,
+      ...(manifest === null ? {} : { manifest }),
     } satisfies LeaseValue;
   });

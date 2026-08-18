@@ -20,6 +20,8 @@ import {
   EnvironmentNotFoundError,
   EpochConflictError,
   ForbiddenError,
+  ManifestRejectedError,
+  ManifestVersionConflictError,
   MetaStatementRejectedError,
   MetaVersionConflictError,
   NameNotNfcError,
@@ -46,6 +48,7 @@ import type {
   DataOutcome,
   DataRejection,
   EnvironmentPullValue,
+  EnvManifestInput,
   MetaStatementInput,
   ValueInput,
 } from "./data-plane.ts";
@@ -131,6 +134,46 @@ export function checkStatementCoordinates(
   return Effect.void;
 }
 
+/**
+ * マニフェスト申告座標とリクエスト保存先座標の一致検査(checkStatementCoordinates
+ * のマニフェスト版 — DO は URL / 保存先から署名対象を再構成する §12-5)。
+ */
+export function checkManifestCoordinates(
+  manifest: { readonly environmentId: string },
+  environmentId: string,
+): Effect.Effect<void, PayloadMismatchError> {
+  return manifest.environmentId === environmentId
+    ? Effect.void
+    : Effect.fail(new PayloadMismatchError({ field: "manifestEnvironmentId" }));
+}
+
+/** ワイヤのマニフェスト → DO へ渡す保存入力(座標は検査済み — §12-5)。 */
+export function toManifestInput(manifest: {
+  readonly suite: "maruhi/v1";
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly variablesDigestHex: string;
+  readonly envMetaVersion: number;
+  readonly envMetaSigHashHex: string;
+  readonly prevManifestSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+}): EnvManifestInput {
+  return {
+    suite: manifest.suite,
+    epoch: manifest.epoch,
+    manifestVersion: manifest.manifestVersion,
+    variablesDigestHex: manifest.variablesDigestHex,
+    envMetaVersion: manifest.envMetaVersion,
+    envMetaSigHashHex: manifest.envMetaSigHashHex,
+    prevManifestSigHashHex: manifest.prevManifestSigHashHex,
+    chainHeadHashHex: manifest.chainHeadHashHex,
+    chainHeadSeq: manifest.chainHeadSeq,
+    signatureHex: manifest.signatureHex,
+  };
+}
+
 /** ワイヤのステートメント → DO へ渡す保存入力(座標は検査済み)。 */
 export function toMetaStatementInput(statement: {
   readonly suite: "maruhi/v1";
@@ -214,6 +257,8 @@ type DataApiError =
   | ValueSignatureRejectedError
   | MetaStatementRejectedError
   | MetaVersionConflictError
+  | ManifestRejectedError
+  | ManifestVersionConflictError
   | NameNotNfcError
   | DekWrapRejectedError
   | DekWrapExistsError
@@ -264,6 +309,9 @@ const rejectionErrors = {
   "meta-rejected": (rejection) => new MetaStatementRejectedError({ reason: rejection.reason }),
   "meta-version-conflict": (rejection) =>
     new MetaVersionConflictError({ currentMetaVersion: rejection.currentMetaVersion }),
+  "manifest-rejected": (rejection) => new ManifestRejectedError({ reason: rejection.reason }),
+  "manifest-version-conflict": (rejection) =>
+    new ManifestVersionConflictError({ currentManifestVersion: rejection.currentManifestVersion }),
   "name-not-nfc": () => new NameNotNfcError(),
   "dek-wrap-rejected": (rejection) => new DekWrapRejectedError({ reason: rejection.reason }),
   "dek-wrap-exists": (rejection) =>

@@ -13,6 +13,7 @@ import type {
   ChainInvalidReason,
   CryptoError,
   CryptoResult,
+  ManifestInvalidReason,
   MetaInvalidReason,
   ValueInvalidReason,
 } from "@maruhi/crypto";
@@ -88,6 +89,16 @@ export class CryptoMetaStatementInvalidError extends Data.TaggedError(
   readonly reason: MetaInvalidReason;
 }> {}
 
+/**
+ * An environment manifest failed the §4.3 / §6.3 verification (issuer
+ * signature, declared chain head, head-time authorization / epoch integrity,
+ * env-meta / variables-digest recomputation, or predecessor chaining) for
+ * `reason`.
+ */
+export class CryptoEnvManifestInvalidError extends Data.TaggedError("CryptoEnvManifestInvalid")<{
+  readonly reason: ManifestInvalidReason;
+}> {}
+
 /** Membership-chain verification failed at entry `seq` for `reason`. */
 export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly seq: number;
@@ -109,6 +120,7 @@ export type WrappedCryptoError =
   | CryptoDekCommitmentError
   | CryptoValueInvalidError
   | CryptoMetaStatementInvalidError
+  | CryptoEnvManifestInvalidError
   | ChainInvalidError;
 
 /** Maps a raw `CryptoError` value onto its Effect-tagged counterpart. */
@@ -140,6 +152,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoValueInvalidError({ reason: error.reason });
     case "MetaStatementInvalid":
       return new CryptoMetaStatementInvalidError({ reason: error.reason });
+    case "EnvManifestInvalid":
+      return new CryptoEnvManifestInvalidError({ reason: error.reason });
     case "ChainInvalid":
       return new ChainInvalidError({ seq: error.seq, reason: error.reason });
   }

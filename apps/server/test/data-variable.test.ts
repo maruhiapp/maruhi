@@ -43,6 +43,7 @@ import {
   registerDataScenario,
   renameVariableRequest,
   token,
+  unsignedManifest,
   VAR,
   variableStatementFor,
 } from "./support/data-scenario.ts";
@@ -200,6 +201,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 2)),
+      manifest: unsignedManifest(),
     });
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ currentVersion: 0 });
@@ -363,6 +365,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const duplicate = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "OTHER"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
+      manifest: unsignedManifest(),
     });
     expect(duplicate.status).toBe(409);
     expect(((await duplicate.json()) as { reason: string }).reason).toBe("exists");
@@ -370,6 +373,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const sameName = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, "var-other", "DATABASE_URL"),
       value: await fakePayload(MEMBER, { ...aadFor(1, 1), variableId: "var-other" }),
+      manifest: unsignedManifest(),
     });
     expect(sameName.status).toBe(409);
     expect(((await sameName.json()) as { reason: string }).reason).toBe("duplicate-name");
@@ -382,6 +386,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       {
         statement: await variableStatementFor(MEMBER, "var-other", "OTHER"),
         value: await fakePayload(MEMBER, aadFor(1, 1)),
+        manifest: unsignedManifest(),
       },
     );
     expect(createMismatch.status).toBe(422);
@@ -410,6 +415,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
     const retired = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "REBORN"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
+      manifest: unsignedManifest(),
     });
     expect(retired.status).toBe(409);
     expect(((await retired.json()) as { reason: string }).reason).toBe("retired");
@@ -431,6 +437,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
       value: await fakePayload(MEMBER, aadFor(1, 1), {
         ciphertextBytes: MAX_VALUE_CIPHERTEXT_BYTES + 1,
       }),
+      manifest: unsignedManifest(),
     });
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({

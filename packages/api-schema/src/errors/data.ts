@@ -130,6 +130,49 @@ export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatement
 ) {}
 
 /**
+ * Reason codes for a 422 on an environment manifest (AUTH_SPEC §12-5 =
+ * CRYPTO_SPEC §4.3。2026-08-18): 既存の 3 語彙(署名・ヘッド系)を共有し、
+ * マニフェスト固有の 2 理由を加える —
+ *
+ * - `manifest-digest-mismatch` — サーバーが受理後のメタ状態(同梱ステートメント
+ *   適用後の全変数ステートメント + 環境メタステートメント)から再計算した
+ *   variablesDigestHex / envMetaVersion / envMetaSigHashHex と申告値の不一致
+ *   (§12-5 (7))
+ * - `manifest-epoch-mismatch` — エポック整合の失敗(§12-5 (4): 宣言ヘッド時点の
+ *   現エポック — rotate / 作成複合の同梱分は同梱エントリ適用後の状態)
+ */
+export const ManifestRejectReasonSchema = Schema.Literals([
+  "signature-invalid",
+  "chain-head-unknown",
+  "chain-head-state-mismatch",
+  "manifest-digest-mismatch",
+  "manifest-epoch-mismatch",
+]);
+
+/**
+ * 422: the environment manifest (CRYPTO_SPEC §4.3) was rejected. Carries a
+ * reason code only — never signature bytes, hashes or digests.
+ */
+export class ManifestRejectedError extends Schema.TaggedError<ManifestRejectedError>()(
+  "ManifestRejected",
+  { reason: ManifestRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * 409: manifestVersion CAS failure (AUTH_SPEC §12-5 (6)) — the manifest's
+ * declared manifestVersion is not `currentManifestVersion + 1`. Carries the
+ * latest manifestVersion **number only**(勝者のハッシュを載せない規律は
+ * metaVersion CAS と同一 — §12-5)。再試行ではステートメントとマニフェストの
+ * **両方**を再署名する。
+ */
+export class ManifestVersionConflictError extends Schema.TaggedError<ManifestVersionConflictError>()(
+  "ManifestVersionConflict",
+  { currentManifestVersion: Schema.Number },
+  { httpApiStatus: 409 },
+) {}
+
+/**
  * 409: metaVersion CAS failure (AUTH_SPEC §12-5) — the statement's declared
  * metaVersion is not `currentMetaVersion + 1`. Carries the latest metaVersion
  * **number only** (never the winner's signed-bytes hash — クライアントは勝者を
