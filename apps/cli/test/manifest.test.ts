@@ -599,6 +599,27 @@ describe("rotate 受理後の床前進(§6.3 — bugbot 指摘の回帰)", () =>
     expect(state.rotateBodies).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("environment-manifest rollback");
   });
+
+  it("床の書き込みに失敗しても、受理 version のプロセス内基準は同一実行の再走査で機能する", async () => {
+    // commitManifest のディスク書き込みが失敗しても、「自分が受理させた
+    // manifestVersion」を知っている事実はプロセス内の検出材料であり続ける —
+    // 受理後に旧版を配布し続けるサーバーは同一実行内で rollback として落ちる
+    // (永続化の欠けは警告で開示される)
+    const staleManifest = await manifestV1({ statements: [] });
+    const state = makeLegacyServer({
+      initialManifest: staleManifest,
+      serveManifestAfterAccept: false,
+    });
+    const env = await startEnv(state.handlers);
+    // 床は事前 pull で確立しておく(rotate 中の書き込みだけを失敗させる)
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    env.failFloorPushCommits();
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床故障"], env.layer)).toBe(1);
+    expect(state.rotateBodies).toHaveLength(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("could not be recorded in the local floor");
+    expect(errors).toContain("environment-manifest rollback");
+  });
 });
 
 describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {

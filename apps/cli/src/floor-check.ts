@@ -739,29 +739,35 @@ export function makeFloorHandle(input: {
           Effect.asVoid,
         ),
     commitManifest: (manifest, head) =>
-      input.store
-        .commitManifest(input.projectId, {
-          chainHead: head,
-          environmentId: input.environmentId,
-          manifest,
-        })
-        .pipe(
-          Effect.tap((merged) =>
-            Effect.sync(() => {
-              if (merged !== null) {
-                current = merged;
-              } else if (
-                current !== null &&
-                (current.manifest === undefined ||
-                  manifest.manifestVersion >= current.manifest.manifestVersion)
-              ) {
-                // commitPush の同型: ディスクに環境レコードがない稀な形では
-                // プロセス内の知識だけを単調に前進させる
-                current = { ...current, manifest };
-              }
-            }),
-          ),
-          Effect.asVoid,
-        ),
+      Effect.suspend(() => {
+        // プロセス内の基準は**ディスク書き込みの成否に関わらず先に**前進させる:
+        // 自分が受理させた manifestVersion を知っている事実は、書き込みに失敗
+        // しても同一実行内の再走査の検出材料であり続ける(受理後に旧版を配布し
+        // 続けるサーバーの検出)。永続化の欠けは呼び出し側が警告で開示する
+        if (
+          current !== null &&
+          (current.manifest === undefined ||
+            manifest.manifestVersion >= current.manifest.manifestVersion)
+        ) {
+          current = { ...current, manifest };
+        }
+        return input.store
+          .commitManifest(input.projectId, {
+            chainHead: head,
+            environmentId: input.environmentId,
+            manifest,
+          })
+          .pipe(
+            Effect.tap((merged) =>
+              Effect.sync(() => {
+                if (merged !== null) {
+                  // ディスクの単調マージが取り込んだ並行 CLI の検出材料も採用する
+                  current = merged;
+                }
+              }),
+            ),
+            Effect.asVoid,
+          );
+      }),
   };
 }
