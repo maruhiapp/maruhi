@@ -78,30 +78,36 @@ jobs:
         run: bun run --filter @maruhi/web build
 
       # Playwright ブラウザ導入(step 9 と 11 の browser テストが共有)。
-      # 旧構成(step 9 内で毎回 playwright install --with-deps)はブラウザ取得
-      # (約 170MB)+ apt が step 9 の実測 35s〜6m42s の変動要因だったため、
-      # ~/.cache/ms-playwright を playwright の厳密ピン版をキーにキャッシュする。
+      # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
+      # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは
+      # ubuntu-latest がすべて同梱済みで、apt が新規に入れるのはフォント 9 個
+      # (21.1MB)のみ。その apt 取得が遅いミラーで 5 分超かかることがあり、これが
+      # 変動の正体。フォント無しでも e2e / crypto:browser が通ることを CI で実証
+      # 済み(テストは DOM テキストと computed style のみ検証し、字形描画に依存
+      # しない)ため --with-deps は使わない。
       # --only-shell: web e2e(chromium.launch headless)と crypto test:browser
       # (vitest browser provider、headless)は chromium headless shell だけで
       # 動くことを実測済み(フル Chromium は不要。取得量も約半分)。
-      # --with-deps(apt)はキャッシュミス時のみ: ubuntu-latest はブラウザ実行に
-      # 必要な OS ライブラリを同梱しており、ヒット時はそれで足りる(CI で実証)。
+      # ~/.cache/ms-playwright は playwright の厳密ピン版をキーにキャッシュし、
+      # ミス時も headless shell の取得(数十 MB・数秒)だけで済む。
       # 導入を単一ステップに集約したので step 9 / 11 は常に同一 revision を使う。
       - name: Resolve Playwright version (browser cache key)
         id: playwright-version
         run: echo "version=$(bun --print 'require("./apps/web/package.json").devDependencies.playwright')" >> "$GITHUB_OUTPUT"
 
-      - name: Cache Playwright Chromium
+      - name: Cache Playwright Chromium (headless shell)
         id: playwright-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+          # キー名の "shell" はキャッシュ内容(headless shell のみ)を表す。
+          # フル Chromium 導入へ戻す変更をする場合はキー名も変えること
+          key: playwright-shell-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright Chromium (headless shell, cache miss only)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 10
-        run: bunx playwright install --with-deps --only-shell chromium
+        timeout-minutes: 5
+        run: bunx playwright install --only-shell chromium
 
       # ステップ単位の timeout: ハング時(2026-08-19 run 32217317312 で実績)に
       # ジョブ上限 30 分ではなくステップ上限で早期に落とす(実測 + 余裕で設定)
