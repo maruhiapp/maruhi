@@ -60,19 +60,29 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 // wrangler が残留したとき vitest プロセスが終了できず、CI がステップではなく
 // ジョブ上限(30 分)までハングした実績がある(2026-08-19 run 32217317312)
 async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
-  if (proc === undefined || proc.exitCode !== null || proc.signalCode !== null) return;
-  const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
-  proc.kill("SIGTERM");
-  const timedOut = await Promise.race([
-    exited.then(() => false),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 10_000).unref()),
-  ]);
-  if (timedOut) {
-    console.error(
-      `wrangler dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- wrangler output ---\n${wranglerOutput()}`,
-    );
-    proc.kill("SIGKILL");
-    await exited;
+  if (proc === undefined) return;
+  try {
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    proc.kill("SIGTERM");
+    const timedOut = await Promise.race([
+      exited.then(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 10_000).unref()),
+    ]);
+    if (timedOut) {
+      console.error(
+        `wrangler dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- wrangler output ---\n${wranglerOutput()}`,
+      );
+      proc.kill("SIGKILL");
+      await exited;
+    }
+  } finally {
+    // パイプの読み口を無条件に閉じる: wrangler の子孫が書き口を握ったまま
+    // 生き残ると EOF が来ず、ref 付き handle が vitest の終了を妨げる
+    // (stdio をパイプ化したことで生じる新たなハング経路 — レビュー指摘)。
+    // wrangler 自身が先に死んで子孫だけ残るケースも踏むため早期 return 側も通す
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
   }
 }
 

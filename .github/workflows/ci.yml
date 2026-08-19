@@ -93,11 +93,21 @@ jobs:
       # 導入を単一ステップに集約したので step 9 / 11 は常に同一 revision を使う。
       - name: Resolve Playwright version (browser cache key)
         id: playwright-version
-        run: echo "version=$(bun --print 'require("./apps/web/package.json").devDependencies.playwright')" >> "$GITHUB_OUTPUT"
+        # fail-closed: 解決失敗時の bun --print は "undefined" を exit 0 で返すため、
+        # 検証しないとキーが playwright-shell-Linux-undefined に固定され、以後の
+        # バージョン更新でキャッシュが自己修復しなくなる(レビュー指摘)
+        run: |
+          version=$(bun --print 'require("./apps/web/package.json").devDependencies.playwright')
+          case "$version" in "" | undefined) echo "::error::could not resolve the pinned playwright version"; exit 1 ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Cache Playwright Chromium (headless shell)
+      # restore / save を分離: 一体型 actions/cache の保存は post ステップ
+      # (success() 条件)のため、ミス後に step 9〜11 のどれかが落ちると保存されず、
+      # 赤いまま反復する開発中ブランチで毎回取り直しになる(レビュー指摘)。
+      # 保存は導入ステップの直後に行い、後続の成否に依存させない
+      - name: Restore Playwright Chromium cache (headless shell)
         id: playwright-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           # キー名の "shell" はキャッシュ内容(headless shell のみ)を表す。
@@ -108,6 +118,13 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5
         run: bunx playwright install --only-shell chromium
+
+      - name: Save Playwright Chromium cache (cache miss only)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
       # ステップ単位の timeout: ハング時(2026-08-19 run 32217317312 で実績)に
       # ジョブ上限 30 分ではなくステップ上限で早期に落とす(実測 + 余裕で設定)
