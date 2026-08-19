@@ -114,9 +114,13 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
 - floor v1 → 異なる prev の v2: 拒否
 - floor v1 → v3(version gap): latest-only の既知制約どおり受理
 - metadata-only pull / value pull の両方で同じ結果
-- `maruhi ci run` の lease 応答でも、隣接版の正しい prev は受理し、
-  異なる prev は拒否(lease も `values.ts` の共有検証へ流れるため、
-  適用面として明示的に固定する)
+- `maruhi ci run` の lease 応答: **prev 連鎖検査は適用外**
+  (`verifyLeaseDistribution` は床を使わない — ワークロードは床を
+  持たない初回同期クラス〔§14.3-3〕で、`RepositoryAnchor` も
+  manifest 座標を持たない。§11 の「使い捨て CI の永続床不在」と
+  整合)。lease の固定テストは共有検証器の同一性に限定する:
+  署名・digest・epoch 整合・欠落拒否が pull と同水準であること、
+  および床由来の prev 検査が lease 経路で発火**しない**こと
 
 ### M1-A2 [高] 新 CLI × 旧サーバーが manifest を黙って捨てる
 
@@ -197,10 +201,13 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
 
 1. metadata-only pull 用の「環境水準だけの床コミット」を追加:
    - chain head
-   - pullEpoch
    - environment meta `(version, hash)`
    - manifest `(version, epoch, hash)`
    - 値を読んでいない active variable の値床は作らない
+   - **pullEpoch(値規則 (c) の基準)は前進させない**(2026-08-19
+     pullfrog レビュー反映 — CRYPTO_SPEC §6.3 の規範「規則 (c) の
+     基準はチェーン同期単独で前進させてはならない」。詳細は §7
+     裁定 3)
 2. `env create` は受理をチェーン / 配布で確認後、
    空変数集合の環境床を作る
 3. その後の `commitPush` が v2 + 新変数値床を同じ環境レコードへ追加する
@@ -336,13 +343,19 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
 
 ### M1-A6 [中] H+1 エポック例外の適用範囲と actor 束縛
 
-該当:
+該当(検証器と、epoch の扱いを指定する必要がある呼び出し側の全部):
 
 - `packages/crypto/src/internal.package/manifest-verify.ts`
   - `epochIntegrityReason`
 - `packages/crypto/src/internal.package/chain-history.ts`
 - `apps/server/src/verify-manifest.ts`
-  - `acceptManifestForMetaOp`
+  - `acceptManifestForMetaOp`(strict 側の適用面)
+- `apps/server/src/composite-programs.ts`
+  - create / rotate の `acceptEnvManifest` 呼び出し 2 箇所
+    (複合側の適用面 — 同梱エントリがアンカー材料)
+- `apps/cli/src/manifest.ts`
+  - `verifyDistributedManifest`(配布検証側の適用面 —
+    検証済みチェーンの H+1 エントリがアンカー材料)
 
 先に、**既に検査されている束縛**(監査で誤検出しないための記録):
 
@@ -489,7 +502,8 @@ server は member 宛ラップの平文を開けないため受理するが、�
 
 1. adjacent prev + metadata floor + env create anchoring
 2. rotate の acceptance outcome / floor commit
-3. floor file のプロセス間直列化
+3. floor 保存形(§7 裁定 3 の採否に従う: 3-E 採用なら追記専用化 +
+   fold、不採用なら §3 M1-A5 のプロセス間直列化)
 
 ### PR-F3: H+1 epoch mode と issuer 束縛
 
@@ -602,6 +616,13 @@ capability(案 1-A)との比較:
   部分受理は構造的に起きない)
 - 1-A の残る優位は UX のみ(送信前に「サーバーが古い」と分かる
   誘導文言を出せる)
+- **1-E の実装コスト(2026-08-19 pullfrog レビュー反映)**:
+  `onExcessProperty` は decode 呼び出しの `ParseOptions` であって
+  スキーマ注釈ではなく、現行の `HttpApiBuilder` は payload
+  デコーダを ParseOptions なしで組み立てる。strict 受理へ到達する
+  経路(エンドポイント定義でのオプション指定・手動 decode 層・
+  upstream 対応のいずれか)の確認が PR-F1 の最初の作業であり、
+  その結果で本案のコストが確定する
 
 改訂推奨(第 2 次): 案 1-E を主防衛として仕様原則化し(公開前の
 全面適用)、案 1-C(受理後照合)を防衛多層として維持、案 1-A は
@@ -639,6 +660,16 @@ AUTH_SPEC §4(新エンドポイント面)から §12 の受理原則 1 項へ�
 - 1-E(受理の原子性 — 半端な状態を**作らせない**)と 1-E′(成功の
   真実源 — 作られたと**信じない**)は同じ原則の両面:
   「2xx は輸送層の事実でしかない」
+- **確認材料は mutation 種別ごとに定める(2026-08-19 pullfrog
+  レビュー反映)**: チェーン追記・複合はチェーン同期、メタ操作
+  (ステートメント・マニフェスト)は metadata-only pull
+  (`var.read` を記録しない経路)。**値 push は 1-E′ の適用外**:
+  効果確認に使える配布物が値 pull しかなく、書き込み経路に
+  `var.read` 監査を持ち込む(案 3-B の棄却根拠と同じ衝突 —
+  `pullVerifiedEnvironmentMetadata` が push のために存在する理由の
+  裏返し)。値 push の成功は従来どおりサーバーの CAS + 値署名検証と
+  自床の `commitPush` が担い、値の巻き戻し検出は checkpoint(M2)の
+  領分
 - 床への記録(M1-A4 の受理確認)・ユーザーへの成功報告は、
   この確認を通過したものだけが行う — M1-A2 修正案 4 の
   「取得して照合」が防衛多層から定義そのものへ変わる
@@ -891,19 +922,37 @@ strict → anchor の順に文脈から推定する)。これを崩す:
 pull(検証込み)」と定義しており、`env create → 新規変数 push` の
 流れでは環境床が一度も確立しない。
 
+**裁定対象の限定(2026-08-19 pullfrog レビュー反映)**: rotate の
+受理確認後の床記録(M1-A4)は本裁定の対象外 — CRYPTO_SPEC §6.3 は
+「rotate 複合の受理直後(受理マニフェストの床昇格は行うが pull 基準は
+次の pull まで動かない)」と、rotate 受理時の床昇格を既に前提として
+規則を書いている。M1-A4 は適合修正(本ノートの裁定不要リストと整合)。
+裁定対象は **metadata-only pull の環境水準コミットと、env create
+受理確認後の v1 床**の 2 契機のみ。
+
 案:
 
 - **案 3-A: 記録契機を「検証成功したすべての配布・受理確認」へ
   一般化し、環境水準の部分床を明文化する**
-  - metadata-only pull は環境水準(chain head / エポック基準 /
-    envMeta / manifest)のみコミットし、**値を読んでいない変数の
-    値床は作らない**(捏造しない)。env create / rotate は受理を
-    チェーン / 配布で確認した後に自己発行分を記録する
-  - 明文化の核心は規則 (c) の基準の再定義: 「値床の有無に依らず、
-    検証済みチェーン導出エポックの最新観測(メタのみ同期を含む)」。
-    論証は現行と同一 — その観測以降に受理される正規 push は当時の
-    現エポック以上でしか起きないため、基準は値の取得と独立に健全
-    (むしろ観測頻度が上がる分、強くなる)
+  - metadata-only pull は環境水準(chain head / envMeta / manifest)
+    のみコミットし、**値を読んでいない変数の値床は作らない**
+    (捏造しない)。env create は受理をチェーン / 配布で確認した
+    後に自己発行の v1 を記録する
+  - **値規則 (c) の基準(pull 基準)は再定義しない**(2026-08-19
+    pullfrog レビュー反映 — 当初の「出所を問わない最新観測」への
+    再定義は撤回): CRYPTO_SPEC §6.3 は「**規則 (c) の基準は
+    チェーン同期単独で前進させてはならない** — pull を経ずに基準へ
+    昇格させると、ローテーション後・再暗号化完了前の正当な最新値
+    (旧エポックのまま — AUTH_SPEC §12-7)を誤拒否する。この基準
+    時点は規範である」と明記する。metadata-only の環境水準コミットが
+    pull 基準まで前進させると、値床のない変数(version 0 相当)の
+    正当な旧エポック値が stale-epoch-injection で誤拒否される
+    (誤拒否列: epoch 1 のまま未再暗号化の変数 Y を、metadata-only
+    で基準 5 を得た床が初回 full pull で受け取ると拒否)
+  - 環境水準コミットが前進させてよいのは: チェーンヘッド床・
+    envMeta 床・マニフェスト床(規則 (a)(b) と、マニフェスト規則 (c)
+    baseline のうち床マニフェスト epoch 側)のみ。pull 基準は
+    従来どおり値床と原子的にのみ前進する
   - 欠点: 床型が環境水準 / 値水準の二層になり、型・マージの
     実装が複雑化する(M1-A3 の型設計に記載)
 - **案 3-B: 床意味論は不変のまま、作成系コマンドの直後に CLI が
@@ -942,8 +991,18 @@ pull(検証込み)」と定義しており、`env create → 新規変数 push` 
 - 同座標で比較不能な事実(同版・異 hash)には join が定義されない
   = typed conflict として equivocation 証拠化(床規則 (b) が
   マージ意味論そのものになる)
-- 規則 (c) の基準 = join 済みエポック観測の最大値(出所を問わない)
-  — 案 3-A の再定義と同値だが、定義から自動的に従う
+- エポック観測は単一の格子点ではなく**型付きの 2 座標**として
+  join する(2026-08-19 pullfrog レビュー反映 — 当初の「出所を
+  問わない最大値」は CRYPTO_SPEC §6.3 の規範「規則 (c) の基準は
+  チェーン同期単独で前進させてはならない(未再暗号化の正当値の
+  誤拒否 — この基準時点は規範である)」と衝突するため撤回):
+  - (i) **値規則 (c) の pull 基準** — 値床カバレッジと原子的に
+    確立された観測**のみ**が前進させる。規範を join の定義の中に
+    座標の型として保持する(「床にない変数 = version 0 相当」の
+    前提〔基準前進と値床記録の原子性〕が崩れない)
+  - (ii) **環境水準のエポック観測** — マニフェスト規則 (c) の
+    baseline・巻き戻し / equivocation 検出に使い、出所を問わず
+    join する(こちらは値を誤拒否する経路を持たない)
 
 これが同時に解くもの:
 
@@ -1040,6 +1099,17 @@ A5 の順で段階的に join へ寄せる。案 3-A 単体より、将来の
 不要と確認 — 残余(初回クライアント・使い捨て CI の床不在)は
 設計どおり M2 / M4 の領分。
 
+**3-E を採る場合の読み替え(実装ブリーフの一意化 — 2026-08-19
+pullfrog レビュー反映)**: §3 M1-A5 の修正案 1 / 2 / 6(プロセス間
+ロック下の read-modify-write・lock 失敗の fail-open 禁止)と固定
+テスト「lock 保持プロセス異常終了後の復旧」は、**追記 + fold 前提へ
+置き換わる** — ロックはコンパクションのみ、取得失敗は追記継続
+(fail-open ではない: 追記は証拠を失わないので「床なしへの
+fail-open」に相当する状態が生じない)。§3 の同座標 typed conflict
+(修正案 3 / 4)と再検査(修正案 5)は fold 側の規則としてそのまま
+生きる。§6 PR-F2 の分割 3 は「floor 保存形の追記専用化 + fold」と
+読み替える。3-E を採らない場合のみ §3 の記述が原文どおり生きる。
+
 ### 裁定不要と確認できたもの
 
 - M1-A1: CRYPTO_SPEC §4.3 検証規則 (1) が「prev 連鎖(床がある場合)」
@@ -1079,9 +1149,18 @@ A5 の順で段階的に join へ寄せる。案 3-A 単体より、将来の
   - environment delete cascade
   の回帰なし
 - metadata-only / value pull / lease のマニフェスト検証が同水準
+  (同水準の範囲 = 署名・digest・epoch 整合・欠落拒否。prev 連鎖は
+  床を持つ経路のみ — M1-A1 の lease 適用外の注記と整合)
 - 真の 2-process floor test が通る
-- 旧サーバー(strict 未導入)への新 CLI 複合が黙って部分受理されない
-  (§7 裁定 1 — strict 拒否のテスト + 受理後照合のテスト)
+- 裁定 1 のテストは対象サーバー構成ごとに分ける(2026-08-19
+  pullfrog レビュー反映):
+  - strict 導入後のサーバー: 未知フィールドを含む複合 payload を
+    decode 段で拒否する(strict 拒否のテスト)
+  - strict 未導入の旧サーバー: 受理後照合が「保存されていない
+    マニフェスト」を検出し、CLI が床を前進させず失敗する
+    (受理後照合のテスト。不整合状態の発生自体の防止は §8 運用
+    ガード 1 / 2 と session-28 §2-2 の更新順が担う — 1-C は
+    rotate ではチェーン追記後の検出になるため)
 - `bun run check` 全緑
 - crypto 変更に人間レビューが付く
 
