@@ -172,26 +172,7 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   }
   // 1. 列挙面の実在 + strict 注釈の有効位置(リネーム・注釈の失効を捕捉)
   for (const [groupName, endpointName] of SECURITY_CRITICAL_PAYLOAD_ENDPOINTS) {
-    const group = api.groups[groupName];
-    if (group === undefined) {
-      throw new Error(`security-critical payload sweep: unknown group "${groupName}"`);
-    }
-    const endpoint = group.endpoints[endpointName];
-    if (endpoint === undefined) {
-      throw new Error(
-        `security-critical payload sweep: unknown endpoint "${groupName}.${endpointName}"`,
-      );
-    }
-    if (endpoint.payload.size === 0) {
-      throw new Error(
-        `security-critical payload sweep: "${groupName}.${endpointName}" has no payload schema`,
-      );
-    }
-    for (const [mediaType, { schemas }] of endpoint.payload) {
-      for (const schema of schemas) {
-        assertStrictPayloadRoot(schema, `${groupName}.${endpointName} (${mediaType})`);
-      }
-    }
+    assertRegisteredPayloadStrict(api, groupName, endpointName);
   }
   // 2. 逆方向(fail-closed): payload を持つ全エンドポイントがどちらかのリストに
   //    分類されていること — 未分類の新設面は黙って非 strict にならずここで落ちる
@@ -206,6 +187,34 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
             `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`,
         );
       }
+    }
+  }
+}
+
+/** 列挙面 1 件の実在検査 + 全 payload スキーマの strict 注釈検査(スイープの 1.)。 */
+function assertRegisteredPayloadStrict(
+  api: SweepableApi,
+  groupName: string,
+  endpointName: string,
+): void {
+  const group = api.groups[groupName];
+  if (group === undefined) {
+    throw new Error(`security-critical payload sweep: unknown group "${groupName}"`);
+  }
+  const endpoint = group.endpoints[endpointName];
+  if (endpoint === undefined) {
+    throw new Error(
+      `security-critical payload sweep: unknown endpoint "${groupName}.${endpointName}"`,
+    );
+  }
+  if (endpoint.payload.size === 0) {
+    throw new Error(
+      `security-critical payload sweep: "${groupName}.${endpointName}" has no payload schema`,
+    );
+  }
+  for (const [mediaType, { schemas }] of endpoint.payload) {
+    for (const schema of schemas) {
+      assertStrictPayloadRoot(schema, `${groupName}.${endpointName} (${mediaType})`);
     }
   }
 }
