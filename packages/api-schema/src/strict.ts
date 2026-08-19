@@ -77,6 +77,12 @@ export function assertStrictPayloadRoot(schema: Schema.Top, label: string): void
  * field and across unions, so a single application at the payload root covers
  * the whole request body.
  *
+ * The annotation is symmetric: the derived `HttpApiClient` encodes payloads
+ * through this same schema, so excess properties fail at **client encode
+ * time** too. TypeScript's excess-property check only fires on fresh object
+ * literals, so build payloads as exact literals — spreading a wider object
+ * into a payload fails at runtime without a compile-time warning.
+ *
  * Apply this **last**, to a schema whose `.check(...)` compositions are all
  * done — a later `.check(...)` would silently disable the annotation
  * (the load-time asserts and the acceptance-path tests both guard this).
@@ -123,13 +129,48 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
 ];
 
 /**
- * Load-time sweep (AUTH_SPEC §12-10 (1)): walks every security-critical
- * payload root registered on the given HTTP API and asserts the strict
- * annotation sits in the parser-effective position. Catches recompositions
- * that happened after `strictPayload(...)` was applied — the wrapper's own
- * assert runs only once, at wrap time.
+ * Payload-bearing endpoints that are deliberately **not** strict: mutations
+ * that carry no signed structure, ciphertext or key material, so they fall
+ * outside the §12-10 (1) enumeration. Every payload-bearing endpoint of the
+ * API must appear in exactly one of the two lists — the sweep fails closed on
+ * an endpoint that is in neither, so adding a payload endpoint forces a
+ * conscious strict / non-strict decision instead of silently defaulting to
+ * the permissive schema behavior.
+ */
+export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
+  readonly [group: string, endpoint: string]
+> = [
+  // GitHub トークン + トークン名 + スコープのみ(AUTH_SPEC §4 — 認証前の交換面。
+  // 署名済み構造・暗号文・鍵材料を運ばない)
+  ["auth", "deviceExchange"],
+  // 削除対象ラップの座標参照のみ(§12-6 修復経路)
+  ["deks", "remove"],
+  // (environment, variable) 識別子の列挙のみ(AUDIT_SPEC §7)
+  ["rotation", "dismiss"],
+];
+
+/**
+ * Load-time sweep (AUTH_SPEC §12-10 (1)): asserts that every registered
+ * security-critical payload root carries the strict annotation in the
+ * parser-effective position (catching recompositions that happened after
+ * `strictPayload(...)` was applied — the wrapper's own assert runs only once,
+ * at wrap time), and that **every** payload-bearing endpoint of the API is
+ * classified in exactly one of `SECURITY_CRITICAL_PAYLOAD_ENDPOINTS` /
+ * `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`. An endpoint in neither list throws, so
+ * the §12-10 (1) rule "classify new and revised endpoints against this
+ * standard" is machine-enforced instead of remaining a process obligation.
  */
 export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
+  const strict = new Set(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
+  const exempt = new Set(STRICT_EXEMPT_PAYLOAD_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
+  for (const key of strict) {
+    if (exempt.has(key)) {
+      throw new Error(
+        `security-critical payload sweep: "${key}" is listed as both strict and exempt`,
+      );
+    }
+  }
+  // 1. 列挙面の実在 + strict 注釈の有効位置(リネーム・注釈の失効を捕捉)
   for (const [groupName, endpointName] of SECURITY_CRITICAL_PAYLOAD_ENDPOINTS) {
     const group = api.groups[groupName];
     if (group === undefined) {
@@ -149,6 +190,21 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
     for (const [mediaType, { schemas }] of endpoint.payload) {
       for (const schema of schemas) {
         assertStrictPayloadRoot(schema, `${groupName}.${endpointName} (${mediaType})`);
+      }
+    }
+  }
+  // 2. 逆方向(fail-closed): payload を持つ全エンドポイントがどちらかのリストに
+  //    分類されていること — 未分類の新設面は黙って非 strict にならずここで落ちる
+  for (const [groupName, group] of Object.entries(api.groups)) {
+    for (const [endpointName, endpoint] of Object.entries(group.endpoints)) {
+      const key = `${groupName}.${endpointName}`;
+      if (endpoint.payload.size > 0 && !strict.has(key) && !exempt.has(key)) {
+        throw new Error(
+          `security-critical payload sweep: "${key}" carries a payload but is not classified — ` +
+            `add it to SECURITY_CRITICAL_PAYLOAD_ENDPOINTS (AUTH_SPEC §12-10 (1)) or, if it ` +
+            `carries no signed structure, ciphertext or key material, to ` +
+            `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`,
+        );
       }
     }
   }

@@ -153,5 +153,6 @@ export {
   assertSecurityCriticalPayloadsStrict,
   assertStrictPayloadRoot,
   SECURITY_CRITICAL_PAYLOAD_ENDPOINTS,
+  STRICT_EXEMPT_PAYLOAD_ENDPOINTS,
   strictPayload,
 } from "./strict.ts";

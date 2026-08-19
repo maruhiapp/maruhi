@@ -15,6 +15,7 @@ import {
   assertStrictPayloadRoot,
   maruhiApi,
   SECURITY_CRITICAL_PAYLOAD_ENDPOINTS,
+  STRICT_EXEMPT_PAYLOAD_ENDPOINTS,
   strictPayload,
 } from "../src/index.ts";
 
@@ -116,33 +117,70 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
     ]);
   });
 
+  it("classifies every payload-bearing endpoint (strict と除外の重複なし)", () => {
+    // 除外リストの退行防止: §12-10 (1) の対象外(署名済み構造・暗号文・鍵材料を
+    // 運ばない mutation)のみが載ること
+    expect(STRICT_EXEMPT_PAYLOAD_ENDPOINTS).toEqual([
+      ["auth", "deviceExchange"],
+      ["deks", "remove"],
+      ["rotation", "dismiss"],
+    ]);
+  });
+
   it("throws when a registered payload root lost its strict annotation", () => {
-    const nonStrict = Schema.Struct({ a: Schema.String });
-    const fakeApi = {
-      groups: Object.fromEntries(
-        SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([group]) => [
-          group,
-          {
-            endpoints: Object.fromEntries(
-              SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.filter(([g]) => g === group).map(
-                ([, endpoint]) => [
-                  endpoint,
-                  {
-                    payload: new Map([
-                      ["application/json", { schemas: [nonStrict] as [Schema.Top] }],
-                    ]),
-                  },
-                ],
-              ),
-            ),
-          },
-        ]),
-      ),
-    };
+    const fakeApi = fakeApiFromRegistry(Schema.Struct({ a: Schema.String }));
     expect(() => assertSecurityCriticalPayloadsStrict(fakeApi)).toThrow(/not parser-effective/);
+  });
+
+  it("throws for a payload-bearing endpoint in neither list (fail-closed)", () => {
+    // 新設エンドポイントの分類漏れは黙って非 strict にならずロード時に落ちる
+    const fakeApi = fakeApiFromRegistry(strictPayload(Schema.Struct({ a: Schema.String })));
+    const membership = fakeApi.groups["membership"];
+    if (membership === undefined) {
+      throw new Error("fake api is missing the membership group");
+    }
+    membership.endpoints["newMutation"] = {
+      payload: new Map([
+        ["application/json", { schemas: [Schema.Struct({ a: Schema.String })] as [Schema.Top] }],
+      ]),
+    };
+    expect(() => assertSecurityCriticalPayloadsStrict(fakeApi)).toThrow(
+      /membership\.newMutation.*not classified/,
+    );
   });
 
   it("throws when a registered endpoint is missing", () => {
     expect(() => assertSecurityCriticalPayloadsStrict({ groups: {} })).toThrow(/unknown group/);
   });
 });
+
+/** 列挙面と同じ座標に指定スキーマを置いたフェイク API(スイープの負例用)。 */
+function fakeApiFromRegistry(schema: Schema.Top): {
+  groups: Record<
+    string,
+    {
+      endpoints: Record<
+        string,
+        { payload: Map<string, { schemas: [Schema.Top, ...Array<Schema.Top>] }> }
+      >;
+    }
+  >;
+} {
+  return {
+    groups: Object.fromEntries(
+      SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([group]) => [
+        group,
+        {
+          endpoints: Object.fromEntries(
+            SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.filter(([g]) => g === group).map(([, endpoint]) => [
+              endpoint,
+              {
+                payload: new Map([["application/json", { schemas: [schema] as [Schema.Top] }]]),
+              },
+            ]),
+          ),
+        },
+      ]),
+    ),
+  };
+}
