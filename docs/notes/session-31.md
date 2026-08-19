@@ -113,6 +113,9 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
 - floor v1 → 異なる prev の v2: 拒否
 - floor v1 → v3(version gap): latest-only の既知制約どおり受理
 - metadata-only pull / value pull の両方で同じ結果
+- `maruhi ci run` の lease 応答でも、隣接版の正しい prev は受理し、
+  異なる prev は拒否(lease も `values.ts` の共有検証へ流れるため、
+  適用面として明示的に固定する)
 
 ### M1-A2 [高] 新 CLI × 旧サーバーが manifest を黙って捨てる
 
@@ -272,6 +275,9 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
   - `mergeVariableFloor`
   - `mergeManifestFloor`
   - `makeFileFloorStore.write`
+- `apps/cli/src/floor-check.ts`
+  - `makeFloorHandle.commitPush` のディスク環境レコード欠落時フォールバック
+  - `makeFloorHandle.commitManifest` のプロセス内先行前進
 - `apps/cli/src/values.ts`
   - 床検査と commit の分離
 
@@ -281,6 +287,10 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
 - commit 時にファイルを再読込して単調 merge
 - 同一 manifestVersion は `>=` で incoming が勝つ
 - read → merge → temp write → rename の間にプロセス間ロックがない
+- `makeFloorHandle` のプロセス内マージ 2 経路も
+  `manifest.manifestVersion >= current.manifest.manifestVersion` で後勝ちになる。
+  `floor.ts` のディスクマージだけを直しても、同一コマンド内の後続検査基準は
+  同版異 hash で上書き可能なまま残る
 
 問題:
 
@@ -307,8 +317,10 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
    - same metaVersion + different hash
    - same manifestVersion + different hash
    を typed conflict として拒否
-4. lower version / omitted known record も commit 時に再検査
-5. ロックのクラッシュ回復を設計:
+4. `makeFloorHandle` のプロセス内フォールバック / 先行前進にも同じ
+   typed conflict 判定を共有し、`>=` の単純置換を残さない
+5. lower version / omitted known record も commit 時に再検査
+6. ロックのクラッシュ回復を設計:
    - OS advisory lock を使う
    - または owner PID / timestamp 付き lock file + stale 判定
    - lock 取得失敗を床なしへ fail-open しない
