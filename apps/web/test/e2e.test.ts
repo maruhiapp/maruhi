@@ -33,6 +33,15 @@ let BASE: string;
 let wranglerProcess: ChildProcess;
 let browser: Browser;
 
+// wrangler の出力は捨てず(stdio: "ignore" だと起動失敗・ハング時に手がかりが
+// 一切残らない)バッファへ取り、異常時のみ表示する
+const wranglerLogs: string[] = [];
+
+function wranglerOutput(): string {
+  const text = wranglerLogs.join("").trim();
+  return text === "" ? "(no output captured)" : text;
+}
+
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -47,15 +56,45 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   }
 }
 
+// SIGTERM で終了しない場合に SIGKILL へフォールバックする。SIGTERM のみだと
+// wrangler が残留したとき vitest プロセスが終了できず、CI がステップではなく
+// ジョブ上限(30 分)までハングした実績がある(2026-08-19 run 32217317312)
+async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
+  if (proc === undefined || proc.exitCode !== null || proc.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+  proc.kill("SIGTERM");
+  const timedOut = await Promise.race([
+    exited.then(() => false),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 10_000).unref()),
+  ]);
+  if (timedOut) {
+    console.error(
+      `wrangler dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- wrangler output ---\n${wranglerOutput()}`,
+    );
+    proc.kill("SIGKILL");
+    await exited;
+  }
+}
+
 beforeAll(async () => {
   const port = await getFreePort();
   BASE = `http://127.0.0.1:${port}`;
   wranglerProcess = spawn("bunx", ["wrangler", "dev", "--port", String(port)], {
     cwd: import.meta.dirname + "/..",
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CI: "1" },
   });
-  await waitForServer(BASE, 60_000);
+  wranglerProcess.stdout?.on("data", (chunk: Buffer) => wranglerLogs.push(chunk.toString()));
+  wranglerProcess.stderr?.on("data", (chunk: Buffer) => wranglerLogs.push(chunk.toString()));
+  try {
+    await waitForServer(BASE, 60_000);
+  } catch (cause) {
+    await stopWrangler(wranglerProcess);
+    throw new Error(
+      `wrangler dev did not become ready\n--- wrangler output ---\n${wranglerOutput()}`,
+      { cause },
+    );
+  }
   // ブラウザのダウンロードができない環境(Claude Code on the web 等)では、
   // プリインストール Chromium のパスを PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH で受け取る
   const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
@@ -64,7 +103,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close();
-  wranglerProcess?.kill();
+  await stopWrangler(wranglerProcess);
 });
 
 describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static Assets", () => {
