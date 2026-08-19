@@ -77,10 +77,69 @@ jobs:
       - name: 8. Web build (vite + CSP headers)
         run: bun run --filter @maruhi/web build
 
-      - name: 9. Web e2e (wrangler dev + Playwright)
+      # Playwright ブラウザ導入(step 9 と 11 の browser テストが共有)。
+      # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
+      # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは
+      # ubuntu-latest(実測時 ubuntu-24.04 noble イメージ)がすべて同梱済みで、
+      # apt が新規に入れるのはフォント 9 個(21.1MB)のみ。その apt 取得が遅い
+      # ミラーで 5 分超かかることがあり、これが変動の正体。フォント無しでも
+      # e2e / crypto:browser が通ることを CI で実証済み(テストは DOM テキストと
+      # computed style のみ検証し、字形描画に依存しない)ため --with-deps は
+      # 使わない(イメージ更新で同梱が欠けた場合は playwright が欠落 .so 名を
+      # 挙げて明示的に落ちるので、そのとき見直す)。
+      # --only-shell: web e2e(chromium.launch headless)と crypto test:browser
+      # (vitest browser provider、headless)は chromium headless shell だけで
+      # 動くことを実測済み(フル Chromium は不要。取得量も約半分)。
+      # ~/.cache/ms-playwright は playwright の厳密ピン版をキーにキャッシュし、
+      # ミス時も headless shell の取得(数十 MB・数秒)だけで済む。ミス時の取得も
+      # 速いがキャッシュは意図して維持する: ブラウザ CDN の変動・停滞という外部
+      # 要因を平常経路から外すため(35s〜6m42s の変動の教訓)。
+      # 導入を単一ステップに集約したので step 9 / 11 は常に同一 revision を使う。
+      - name: Resolve Playwright version (browser cache key)
+        id: playwright-version
+        # fail-closed: 解決失敗時の bun --print は "undefined" を exit 0 で返すため、
+        # 検証しないとキーが playwright-shell-Linux-undefined に固定され、以後の
+        # バージョン更新でキャッシュが自己修復しなくなる(レビュー指摘)
         run: |
-          bunx playwright install --with-deps chromium
-          bun run --filter @maruhi/web e2e
+          version=$(bun --print 'require("./apps/web/package.json").devDependencies.playwright')
+          case "$version" in "" | undefined) echo "::error::could not resolve the pinned playwright version"; exit 1 ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # restore / save を分離: 一体型 actions/cache の保存は post ステップ
+      # (success() 条件)のため、ミス後に step 9〜11 のどれかが落ちると保存されず、
+      # 赤いまま反復する開発中ブランチで毎回取り直しになる(レビュー指摘)。
+      # 保存は導入ステップの直後に行い、後続の成否に依存させない
+      - name: Restore Playwright Chromium cache (headless shell)
+        id: playwright-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          # キー名の "shell" はキャッシュ内容(headless shell のみ)を表す。
+          # フル Chromium 導入へ戻す変更をする場合はキー名も変えること
+          key: playwright-shell-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      # working-directory は必須: ルート cwd の bunx はワークスペースのピンではなく
+      # npm の latest を解決するため(docs/notes/session-04.md に既出の罠。レビューで
+      # react-doctor の実測により再確認)、apps/web で実行してピン版に install させる。
+      # これでキャッシュの中身(revision)とテストが要求する revision が常に一致する
+      - name: Install Playwright Chromium (headless shell, cache miss only)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        working-directory: apps/web
+        run: bunx playwright install --only-shell chromium
+
+      - name: Save Playwright Chromium cache (cache miss only)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
+
+      # ステップ単位の timeout: ハング時(2026-08-19 run 32217317312 で実績)に
+      # ジョブ上限 30 分ではなくステップ上限で早期に落とす(実測 + 余裕で設定)
+      - name: 9. Web e2e (wrangler dev + Playwright)
+        timeout-minutes: 5
+        run: bun run --filter @maruhi/web e2e
 
       - name: 10. Astryx doctor (web)
         run: bun run --filter @maruhi/web doctor:astryx
@@ -88,11 +147,11 @@ jobs:
       # crypto の 3 環境実行(CRYPTO_SPEC §11)。ルート vitest.config.ts(step 7)は
       # packages/*/vitest.config.ts の glob で node プロジェクトのみを拾う。
       # workerd / browser はビルド外部依存(workerd バイナリ / Playwright Chromium)を
-      # 要するため、web e2e と同じ独立ステップ方式で playwright 導入(step 9)後に置く。
-      # playwright install は step 9 と同一 revision なら即 no-op。
+      # 要するため独立ステップで実行する。browser は上の Playwright 導入ステップが
+      # 入れた headless shell(step 9 と同一 revision)を使う。
       - name: 11. Crypto multi-environment tests (workerd / browser / Bun)
+        timeout-minutes: 10
         run: |
           bun run --filter @maruhi/crypto test:workerd
-          bunx playwright install chromium
           bun run --filter @maruhi/crypto test:browser
           bun run --filter @maruhi/crypto test:bun
