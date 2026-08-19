@@ -28,6 +28,7 @@ import {
   ProjectNotFoundError,
 } from "./errors/index.ts";
 import { EncPubHex, PositiveInt, Sha256Hex } from "./hex.ts";
+import { strictPayload } from "./strict.ts";
 
 /**
  * 受理ポリシー(§14-3): oidcToken は 16 KiB 以下。値と違い専用の検証層を
@@ -107,7 +108,9 @@ export const LeaseResponseSchema = Schema.Struct({
 export const leaseGroup = HttpApiGroup.make("lease").add(
   HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
     params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
-    payload: LeaseRequestSchema,
+    // strict 受理(§12-10 (1))。共有部品の LeaseRequestSchema 自体には注釈せず、
+    // payload ルートの使用点でのみ被せる(応答側へ strict を波及させない規律)
+    payload: strictPayload(LeaseRequestSchema),
     success: LeaseResponseSchema,
     error: [
       LeaseUnauthorizedError,
