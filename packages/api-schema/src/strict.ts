@@ -154,11 +154,15 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
  * security-critical payload root carries the strict annotation in the
  * parser-effective position (catching recompositions that happened after
  * `strictPayload(...)` was applied — the wrapper's own assert runs only once,
- * at wrap time), and that **every** payload-bearing endpoint of the API is
+ * at wrap time), and that every payload-bearing endpoint of the API is
  * classified in exactly one of `SECURITY_CRITICAL_PAYLOAD_ENDPOINTS` /
  * `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`. An endpoint in neither list throws, so
- * the §12-10 (1) rule "classify new and revised endpoints against this
- * standard" is machine-enforced instead of remaining a process obligation.
+ * for **body payloads** the §12-10 (1) rule "classify new and revised
+ * endpoints against this standard" is machine-enforced instead of remaining a
+ * process obligation. The sweep inspects only `endpoint.payload` — request
+ * data carried via `query` / `params` / `headers` is outside its view (today
+ * only reads model request data that way; a future mutation doing so must be
+ * classified by review).
  */
 export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   const strict = new Set(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
@@ -174,8 +178,39 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   for (const [groupName, endpointName] of SECURITY_CRITICAL_PAYLOAD_ENDPOINTS) {
     assertRegisteredPayloadStrict(api, groupName, endpointName);
   }
-  // 2. 逆方向(fail-closed): payload を持つ全エンドポイントがどちらかのリストに
-  //    分類されていること — 未分類の新設面は黙って非 strict にならずここで落ちる
+  // 2. 除外面の実在(stale エントリの排除 — 消えた・リネームされた面の除外指定が
+  //    残ると、後で同名の security-critical 面が再利用されたとき「意識的除外」に
+  //    化けるため、strict 側と同じ実在検査を課す)
+  for (const [groupName, endpointName] of STRICT_EXEMPT_PAYLOAD_ENDPOINTS) {
+    requirePayloadEndpoint(api, groupName, endpointName);
+  }
+  assertEveryPayloadClassified(api, strict, exempt);
+}
+
+/** 列挙面 1 件: 実在検査 + 全 payload スキーマの strict 注釈検査(スイープの 1.)。 */
+function assertRegisteredPayloadStrict(
+  api: SweepableApi,
+  groupName: string,
+  endpointName: string,
+): void {
+  const endpoint = requirePayloadEndpoint(api, groupName, endpointName);
+  for (const [mediaType, { schemas }] of endpoint.payload) {
+    for (const schema of schemas) {
+      assertStrictPayloadRoot(schema, `${groupName}.${endpointName} (${mediaType})`);
+    }
+  }
+}
+
+/**
+ * 逆方向の fail-closed 検査(スイープの 3.): payload を持つ全エンドポイントが
+ * どちらかのリストに分類されていること — 未分類の新設面は黙って非 strict に
+ * ならずここで落ちる。
+ */
+function assertEveryPayloadClassified(
+  api: SweepableApi,
+  strict: ReadonlySet<string>,
+  exempt: ReadonlySet<string>,
+): void {
   for (const [groupName, group] of Object.entries(api.groups)) {
     for (const [endpointName, endpoint] of Object.entries(group.endpoints)) {
       const key = `${groupName}.${endpointName}`;
@@ -191,12 +226,12 @@ export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   }
 }
 
-/** 列挙面 1 件の実在検査 + 全 payload スキーマの strict 注釈検査(スイープの 1.)。 */
-function assertRegisteredPayloadStrict(
+/** リスト 1 件の実在検査: グループ・エンドポイント・payload の存在を要求する。 */
+function requirePayloadEndpoint(
   api: SweepableApi,
   groupName: string,
   endpointName: string,
-): void {
+): SweepableApi["groups"][string]["endpoints"][string] {
   const group = api.groups[groupName];
   if (group === undefined) {
     throw new Error(`security-critical payload sweep: unknown group "${groupName}"`);
@@ -212,9 +247,5 @@ function assertRegisteredPayloadStrict(
       `security-critical payload sweep: "${groupName}.${endpointName}" has no payload schema`,
     );
   }
-  for (const [mediaType, { schemas }] of endpoint.payload) {
-    for (const schema of schemas) {
-      assertStrictPayloadRoot(schema, `${groupName}.${endpointName} (${mediaType})`);
-    }
-  }
+  return endpoint;
 }

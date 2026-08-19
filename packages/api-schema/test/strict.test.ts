@@ -149,13 +149,26 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
     );
   });
 
+  it("throws for a stale exempt entry (endpoint no longer exists)", () => {
+    // 消えた・リネームされた面の除外指定が残ると、同名の security-critical 面の
+    // 再利用時に「意識的除外」へ化けるため、除外側にも実在検査を課す
+    const fakeApi = fakeApiFromRegistry(strictPayload(Schema.Struct({ a: Schema.String })));
+    const rotation = fakeApi.groups["rotation"];
+    if (rotation === undefined) {
+      throw new Error("fake api is missing the rotation group");
+    }
+    delete rotation.endpoints["dismiss"];
+    expect(() => assertSecurityCriticalPayloadsStrict(fakeApi)).toThrow(
+      /unknown endpoint "rotation\.dismiss"/,
+    );
+  });
+
   it("throws when a registered endpoint is missing", () => {
     expect(() => assertSecurityCriticalPayloadsStrict({ groups: {} })).toThrow(/unknown group/);
   });
 });
 
-/** 列挙面と同じ座標に指定スキーマを置いたフェイク API(スイープの負例用)。 */
-function fakeApiFromRegistry(schema: Schema.Top): {
+type FakeApi = {
   groups: Record<
     string,
     {
@@ -165,22 +178,25 @@ function fakeApiFromRegistry(schema: Schema.Top): {
       >;
     }
   >;
-} {
-  return {
-    groups: Object.fromEntries(
-      SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([group]) => [
-        group,
-        {
-          endpoints: Object.fromEntries(
-            SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.filter(([g]) => g === group).map(([, endpoint]) => [
-              endpoint,
-              {
-                payload: new Map([["application/json", { schemas: [schema] as [Schema.Top] }]]),
-              },
-            ]),
-          ),
-        },
-      ]),
+};
+
+/**
+ * 列挙面(strict)に指定スキーマ、除外面に素のスキーマを置いたフェイク API
+ * (スイープの負例用 — 実在検査を通すため両リストの座標を揃える)。
+ */
+function fakeApiFromRegistry(schema: Schema.Top): FakeApi {
+  const entries: readonly (readonly [string, string, Schema.Top])[] = [
+    ...SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => [g, e, schema] as const),
+    ...STRICT_EXEMPT_PAYLOAD_ENDPOINTS.map(
+      ([g, e]) => [g, e, Schema.Struct({ a: Schema.String })] as const,
     ),
-  };
+  ];
+  const groups: FakeApi["groups"] = {};
+  for (const [group, endpoint, endpointSchema] of entries) {
+    groups[group] ??= { endpoints: {} };
+    groups[group].endpoints[endpoint] = {
+      payload: new Map([["application/json", { schemas: [endpointSchema] as [Schema.Top] }]]),
+    };
+  }
+  return { groups };
 }
