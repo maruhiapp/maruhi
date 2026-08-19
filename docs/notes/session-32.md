@@ -61,6 +61,20 @@ ParseOptions なしで組み立てる」ため、エンドポイント定義で�
   AUTH_SPEC §12-10 (1) の実装注記に反映済み
 - エラーは既存の Schema 検証エラー(400)として表面化する(HttpApiSchemaError
   経由)— 新しいエラー面を増やさない
+- **適用順の制約(2026-08-19 pullfrog レビュー指摘 — 実測で確認)**:
+  `SchemaParser.makeParser` は AST に checks があると `parseOptions` を
+  **最後の check の annotations** から読む(dist/SchemaParser.js:892)。
+  `SchemaAST.annotate` も checks があると最後の check へ注釈を付けるため、
+  **注釈の後に `.check(...)` を合成すると strict が無警告で失効する**
+  (rc.109 実測: annotate のみ → 拒否 / check → annotate → 拒否 /
+  annotate → check → **受理・未知フィールドは黙って除去**)。
+  fail-closed 機構の失敗が silent なので、PR-F1 では
+  (1) `strictPayload(...)` を**最後に適用する**規約(check を全て
+  済ませたスキーマにのみ被せる)とし、
+  (2) 全対象エンドポイントについて「未知フィールドが実際に 400 で
+  拒否される」ことを受理経路の固定テストで保証する(注釈の存在では
+  なく拒否の実効性をテストする — 適用順バグ・upstream の読み取り位置
+  変更の両方を検出する)
 
 ## 3. 裁定待ちの状態(所有者へ)
 
