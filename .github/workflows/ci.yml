@@ -80,16 +80,20 @@ jobs:
       # Playwright ブラウザ導入(step 9 と 11 の browser テストが共有)。
       # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
       # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは
-      # ubuntu-latest がすべて同梱済みで、apt が新規に入れるのはフォント 9 個
-      # (21.1MB)のみ。その apt 取得が遅いミラーで 5 分超かかることがあり、これが
-      # 変動の正体。フォント無しでも e2e / crypto:browser が通ることを CI で実証
-      # 済み(テストは DOM テキストと computed style のみ検証し、字形描画に依存
-      # しない)ため --with-deps は使わない。
+      # ubuntu-latest(実測時 ubuntu-24.04 noble イメージ)がすべて同梱済みで、
+      # apt が新規に入れるのはフォント 9 個(21.1MB)のみ。その apt 取得が遅い
+      # ミラーで 5 分超かかることがあり、これが変動の正体。フォント無しでも
+      # e2e / crypto:browser が通ることを CI で実証済み(テストは DOM テキストと
+      # computed style のみ検証し、字形描画に依存しない)ため --with-deps は
+      # 使わない(イメージ更新で同梱が欠けた場合は playwright が欠落 .so 名を
+      # 挙げて明示的に落ちるので、そのとき見直す)。
       # --only-shell: web e2e(chromium.launch headless)と crypto test:browser
       # (vitest browser provider、headless)は chromium headless shell だけで
       # 動くことを実測済み(フル Chromium は不要。取得量も約半分)。
       # ~/.cache/ms-playwright は playwright の厳密ピン版をキーにキャッシュし、
-      # ミス時も headless shell の取得(数十 MB・数秒)だけで済む。
+      # ミス時も headless shell の取得(数十 MB・数秒)だけで済む。ミス時の取得も
+      # 速いがキャッシュは意図して維持する: ブラウザ CDN の変動・停滞という外部
+      # 要因を平常経路から外すため(35s〜6m42s の変動の教訓)。
       # 導入を単一ステップに集約したので step 9 / 11 は常に同一 revision を使う。
       - name: Resolve Playwright version (browser cache key)
         id: playwright-version
@@ -114,9 +118,14 @@ jobs:
           # フル Chromium 導入へ戻す変更をする場合はキー名も変えること
           key: playwright-shell-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
+      # working-directory は必須: ルート cwd の bunx はワークスペースのピンではなく
+      # npm の latest を解決するため(docs/notes/session-04.md に既出の罠。レビューで
+      # react-doctor の実測により再確認)、apps/web で実行してピン版に install させる。
+      # これでキャッシュの中身(revision)とテストが要求する revision が常に一致する
       - name: Install Playwright Chromium (headless shell, cache miss only)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5
+        working-directory: apps/web
         run: bunx playwright install --only-shell chromium
 
       - name: Save Playwright Chromium cache (cache miss only)

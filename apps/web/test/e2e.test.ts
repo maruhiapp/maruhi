@@ -33,8 +33,10 @@ let BASE: string;
 let wranglerProcess: ChildProcess;
 let browser: Browser;
 
-// wrangler の出力は捨てず(stdio: "ignore" だと起動失敗・ハング時に手がかりが
-// 一切残らない)バッファへ取り、異常時のみ表示する
+// wrangler の出力は捨てず(stdio: "ignore" だと手がかりが一切残らない)バッファへ
+// 取り、①起動待ちが 60 秒で失敗したとき ②SIGTERM が 10 秒で効かなかったときに
+// 表示する(ステップの timeout-minutes に達した場合はランナーがプロセスごと
+// 落とすため表示されない — その手前の 2 経路で拾うのが目的)
 const wranglerLogs: string[] = [];
 
 function wranglerOutput(): string {
