@@ -159,10 +159,13 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
  * `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`. An endpoint in neither list throws, so
  * for **body payloads** the §12-10 (1) rule "classify new and revised
  * endpoints against this standard" is machine-enforced instead of remaining a
- * process obligation. The sweep inspects only `endpoint.payload` — request
- * data carried via `query` / `params` / `headers` is outside its view (today
- * only reads model request data that way; a future mutation doing so must be
- * classified by review).
+ * process obligation. The sweep inspects only `endpoint.payload` — an unknown
+ * field arriving via `query` or `headers` is outside its view (path `params`
+ * are template-extracted and structurally cannot carry an excess field).
+ * Today that blind spot holds the `audit` reads and `auth.githubCallback`
+ * (a state-changing GET — it exchanges the OAuth code and issues a session);
+ * a future mutation modelling request data as `query` / `headers` must be
+ * classified by review.
  */
 export function assertSecurityCriticalPayloadsStrict(api: SweepableApi): void {
   const strict = new Set(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
