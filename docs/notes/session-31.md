@@ -28,7 +28,8 @@
 3. `env create → 新規変数 push` でも環境床が確立しない
 4. 受理確認済み rotate のマニフェストが床に残らない失敗経路がある
 5. 並行 CLI の床コミットが巻き戻し・equivocation 証拠を失いうる
-6. composite の actor / issuer 束縛と H+1 エポック例外の適用範囲が広すぎる
+6. H+1 エポック例外の適用範囲が広すぎ、H+1 エントリの actor / op を
+   manifest issuer と束縛しない
 
 以下で再現条件・影響・修正案・固定すべきテストを記録する。
 
@@ -333,52 +334,63 @@ latest-only 配布でも、`pulled.manifestVersion === floor.manifestVersion + 1
 - stale lower-version commit は当該コマンドも失敗する
 - lock 保持プロセス異常終了後の復旧
 
-### M1-A6 [中] composite actor / issuer 束縛と H+1 例外
+### M1-A6 [中] H+1 エポック例外の適用範囲と actor 束縛
 
 該当:
 
-- `apps/server/src/composite-programs.ts`
 - `packages/crypto/src/internal.package/manifest-verify.ts`
   - `epochIntegrityReason`
 - `packages/crypto/src/internal.package/chain-history.ts`
+- `apps/server/src/verify-manifest.ts`
+  - `acceptManifestForMetaOp`
 
-確認した 3 つのずれ:
+先に、**既に検査されている束縛**(監査で誤検出しないための記録):
 
-1. server composite は chain entry actor と認証済み caller/member の一致を
-   明示検査していない
-2. H+1 エポック例外は「次エントリで epoch が確立した」ことだけを見て、
-   manifest issuer と H+1 entry actor を比較しない
-3. 同じ H+1 例外を非複合メタ操作の server 受理にも使うため、
-   ordinary meta op が「宣言ヘッド H では未成立、H+1 で成立した epoch」を
-   焼き込める
+- worker は composite create / rotate の両方で
+  `ensureCompositeActor`(`handlers-environments.ts`)により
+  `entry.actor.userId === principal.userId` を検査する
+- DO は追記受理時に `verifyChain` を再実行し、
+  entry actor の fingerprint とチェーン上のメンバーレコードの一致
+  (`actor-key-mismatch`)を強制する
+- server 受理の manifest issuer は wire を信用せず、
+  `verify-manifest.ts` が呼び出し主体の member identity
+  (`input.member.userId` / `keyFingerprintHex`)で上書き強制する
 
-AUTH_SPEC §12-4 は chain actor / statement author / wrap signer /
-manifest issuer = 呼び出し主体の厳密一致を要求する。
-H+1 例外は create / rotate composite のためだけの例外である。
+よって「actor / issuer ≠ caller のまま受理される」経路は server には
+ない。残るずれは H+1 例外そのものの形:
+
+1. `epochIntegrityReason` の H+1 例外は「H で不一致・H+1 で一致」だけを
+   見て、H+1 エントリの actor / op を manifest issuer と比較しない。
+   エポックは高々 +1 しか動かないため H+1 エントリが当該環境の
+   create / rotate であることは帰結するが、**別メンバーの rotate** に
+   相乗りした投機的エポック焼き込み(issuer が自分で確立していない
+   epoch を宣言する manifest)を、配布検証(CLI 側)が受理する
+2. 同じ H+1 例外が非複合メタ操作の server 受理
+   (`acceptManifestForMetaOp`)にも効くため、ordinary meta op が
+   「宣言ヘッド H では未成立、H+1 で成立した epoch」を焼き込める。
+   AUTH_SPEC §12-4 の意図では H+1 例外は create / rotate composite の
+   ためだけの例外である
 
 修正案:
 
-1. server composite 入口で:
-   - `entry.actor.userId === member.userId`
-   - `entry.actor.keyFingerprintHex === member.keyFingerprintHex`
-   を要求
-2. `verifyDistributedEnvManifest` の epoch mode を明示:
+1. `verifyDistributedEnvManifest` の epoch mode を明示:
    - `strict-at-head`(非複合 server meta op)
    - `allow-composite-next-entry`(create / rotate、配布検証)
-3. `ChainHistoryIndex` に H+1 entry の actor / op / environment 座標を
+2. `ChainHistoryIndex` に H+1 entry の actor / op / environment 座標を
    検証済み情報として照会する API を追加
-4. H+1 例外を使う場合:
+3. H+1 例外を使う場合:
    - op が当該環境の create / rotate
    - issuer user / fingerprint が entry actor と一致
    を要求
-5. 本修正は `packages/crypto` を変更するため人間レビュー必須
+4. 本修正は `packages/crypto` を変更するため人間レビュー必須
 
 固定ベクター / server テスト:
 
-- create / rotate: caller = entry actor = issuer → 受理
-- entry actor と caller/issuer が異なる → 拒否
+- create / rotate: issuer = H+1 entry actor → 受理
+- issuer ≠ H+1 entry actor(別メンバーの rotate への相乗り)→ 拒否
 - ordinary meta op で H+1 epoch を使う → 拒否
-- create / rotate 以外の H+1 entry では例外を使わない
+- 既存の actor / issuer 束縛(worker userId 検査・DO fingerprint 検査・
+  server issuer 強制)の回帰をテストとして固定
 
 ## 4. 低優先度の修正
 
@@ -476,7 +488,7 @@ server は member 宛ラップの平文を開けないため受理するが、�
 2. rotate の acceptance outcome / floor commit
 3. floor file のプロセス間直列化
 
-### PR-F3: composite actor / epoch mode
+### PR-F3: H+1 epoch mode と issuer 束縛
 
 対象:
 
@@ -567,4 +579,4 @@ M4(gossip)の担当である。
 - 自分が受理させたマニフェストを床へ記録しない
 - 並行床 commit が既知の証拠を消す
 - 旧サーバーが manifest を黙って捨てる
-- composite actor / issuer が一致しない
+- H+1 例外が issuer と H+1 entry actor を束縛しない
