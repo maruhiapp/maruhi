@@ -46,6 +46,7 @@ import {
   hexBytes,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -260,6 +261,9 @@ function makeServer(options: ServerOptions): ServerState {
       return manifestState.manifest;
     }
     const version = (manifestState?.version ?? 0) + 1;
+    // 再発行は直前マニフェストへ prev を連鎖させる(隣接版の prev 検証 —
+    // M1-A1 — を満たす正直なメタ操作のモデル化。実サーバーの §12-5 (5) と同じ)
+    const previous = manifestState?.manifest;
     const manifest = await manifestFor({
       projectId,
       environmentId: ENV_ID,
@@ -269,6 +273,9 @@ function makeServer(options: ServerOptions): ServerState {
       envStatement,
       statements: [...variables.map((variable) => variable.statement), ...deletedVariables],
       manifestVersion: version,
+      ...(previous === undefined
+        ? {}
+        : { prevManifestSigHashHex: await manifestHashOf(projectId, previous) }),
     });
     manifestState = { key, manifest, version };
     return manifest;

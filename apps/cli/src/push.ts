@@ -53,6 +53,7 @@ import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { isServerRejection } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
 import { type ManifestDigestEntry, signNextManifest } from "./manifest.ts";
@@ -331,8 +332,14 @@ interface AcceptedPush {
   };
   /** 受理された自分の書き込みの床レコード(自計算値 — サーバー echo でない)。 */
   readonly floorVariable: VariableFloor;
-  /** 作成経路のみ: 自分が発行したマニフェストの床レコード(自計算値)。 */
-  readonly floorManifest?: ManifestFloor;
+  /**
+   * 作成経路のみ: 自分が発行したマニフェスト(自計算値)。**床へは直接昇格
+   * しない** — メタ操作の成功は「検証可能な配布物での効果確認」(§12-10 (3))を
+   * 通過して初めて成立し、床のマニフェスト前進は確認 pull の検証済み観測が担う。
+   */
+  readonly selfManifest: ManifestFloor | null;
+  /** 作成経路のみ: 送信前に追記した intent(3-F)の id。効果確認が閉じる。 */
+  readonly intentId: string | null;
   /** 受理時点の状態(床コミットのヘッド・変数 ID の源)。 */
   readonly state: PushState;
 }
@@ -500,23 +507,52 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           hashHex: state.verified.state.headHashHex,
         },
       });
-      const accepted = yield* input.client.variables.create({
-        params,
-        payload: {
-          statement: created.statement,
-          value: signed.payload,
-          manifest: manifest.manifest,
+      // journal-before-send(3-F): security-critical mutation(メタ操作 —
+      // §12-10)の送信前に intent を追記する。永続化に失敗したら送信しない
+      // (fail-closed)。クラッシュ・応答消失で失われるのは「成功したという
+      // 思い込み」ではなく「確認義務の記録」になる
+      const intentId = yield* input.floor.appendIntent({
+        op: "meta-op",
+        environmentId: input.environmentId,
+        epoch: state.epoch,
+        dekCommitmentHex: null,
+        variableId: state.target.variableId,
+        manifestVersion: manifest.manifestVersion,
+        manifestSigHashHex: manifest.manifestSigHashHex,
+        declaredHead: {
+          seq: state.verified.state.headSeq,
+          hashHex: state.verified.state.headHashHex,
         },
       });
+      const accepted = yield* input.client.variables
+        .create({
+          params,
+          payload: {
+            statement: created.statement,
+            value: signed.payload,
+            manifest: manifest.manifest,
+          },
+        })
+        .pipe(
+          Effect.tapError((error) =>
+            // サーバー自身のエラー本文で拒否された = 効果は生じていない(確定)。
+            // 転送層の失敗(応答消失)は未解決のまま残す — 次の照合機会
+            // (metadata pull)が解決する。resolution の追記失敗は握り潰して
+            // よい: intent が開いたまま残る方向は安全側(要照合が残るだけ)
+            isServerRejection(error)
+              ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
+              : Effect.void,
+          ),
+        );
       return {
         accepted,
         floorVariable: { ...valueFloor, metaVersion: 1, metaSigHashHex: created.metaSigHashHex },
-        // 自分が発行したマニフェストの床前進(自計算値 — §6.3)
-        floorManifest: {
+        selfManifest: {
           manifestVersion: manifest.manifestVersion,
           epoch: manifest.epoch,
           manifestSigHashHex: manifest.manifestSigHashHex,
         },
+        intentId,
         state,
       };
     }
@@ -529,6 +565,9 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         ),
       );
     }
+    // 既存変数への値 push は 1-E′ / 3-F の適用外(§12-10 (3) — 効果確認に使える
+    // 配布物が値 pull しかなく、書き込み経路へ var.read 監査を持ち込むため)。
+    // 成功は従来どおりサーバーの CAS + 値署名検証と自床の commitPush が担う
     const accepted = yield* input.client.variables.push({
       params: { ...params, variableId: state.target.variableId },
       payload: { value: signed.payload },
@@ -540,6 +579,8 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         metaVersion: latest.metaVersion,
         metaSigHashHex: latest.metaSignedBytesHashHex,
       },
+      selfManifest: null,
+      intentId: null,
       state,
     };
   });
@@ -788,6 +829,74 @@ function nextState(
 }
 
 /**
+ * 変数作成(メタ操作)の効果確認(AUTH_SPEC §12-10 (3) — 1-E′): 成功 =
+ * 「2xx を受け取った」ではなく「検証可能な配布物で効果を確認した」。確認材料は
+ * metadata-only pull(var.read を記録しない経路)で、自己発行マニフェストの
+ * (version, epoch, signed-bytes hash) と自分の変数 ID の存在を照合する。
+ *
+ * - 配布マニフェストが自己発行と完全一致 → 確認完了(床のマニフェスト前進は
+ *   確認 pull の検証済み観測 — enforceMetadataFloor — が join 済み)
+ * - 版が前進していても自分の variableId(乱数採番 — 他者は生成できない)が
+ *   検証済み集合に存在 → 効果は確認済み(直後の並行メタ操作に追い越された形)
+ * - マニフェスト欠落(旧サーバーの黙殺)・別マニフェスト(同版異ハッシュ)・
+ *   variableId の不在 → 失敗。**床は自己発行マニフェストへ前進していない**
+ *   (自分の思い込みを床に書かない — 記録されるのは検証済み観測のみ)
+ */
+function confirmVariableCreation(input: {
+  readonly push: PushInput;
+  readonly accepted: AcceptedPush;
+  readonly selfManifest: ManifestFloor;
+}): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
+    const variableId = input.accepted.state.target.variableId;
+    const metadata = yield* pullVerifiedEnvironmentMetadata({
+      client: input.push.client,
+      verified: input.accepted.state.verified,
+      environmentId: input.push.environmentId,
+      resync: input.push.resync,
+      floor: input.push.floor,
+    }).pipe(
+      Effect.mapError((error) =>
+        cliError(
+          `The variable creation was accepted (2xx), but the post-acceptance confirmation against the verified distribution failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}`,
+        ),
+      ),
+    );
+    const distributed = metadata.manifest;
+    const resolve = (outcome: Parameters<FloorHandle["resolveIntent"]>[1]) =>
+      input.accepted.intentId === null
+        ? Effect.void
+        : input.push.floor.resolveIntent(input.accepted.intentId, outcome);
+    if (
+      distributed.manifestVersion === input.selfManifest.manifestVersion &&
+      distributed.signedBytesHashHex === input.selfManifest.manifestSigHashHex
+    ) {
+      return yield* resolve("accepted");
+    }
+    const present =
+      metadata.variables.some((statement) => statement.variableId === variableId) ||
+      metadata.tombstones.some((tombstone) => tombstone.variableId === variableId);
+    if (distributed.manifestVersion > input.selfManifest.manifestVersion && present) {
+      // 並行メタ操作に追い越されたが、自分の作成の効果は検証済み集合に存在する
+      return yield* resolve("accepted-superseded");
+    }
+    if (distributed.manifestVersion === input.selfManifest.manifestVersion) {
+      yield* resolve("not-accepted");
+      return yield* Effect.fail(
+        cliError(
+          `The variable creation was accepted (2xx), but the server distributes a different manifest at the issued manifestVersion ${input.selfManifest.manifestVersion} (issued signed-bytes hash ${input.selfManifest.manifestSigHashHex}, distributed ${distributed.signedBytesHashHex}). The issued manifest was not stored — treating the creation as unconfirmed (AUTH_SPEC §12-10 (3)); the local floor was not advanced with the issued manifest`,
+        ),
+      );
+    }
+    return yield* Effect.fail(
+      cliError(
+        `The variable creation was accepted (2xx), but its effect could not be confirmed in the verified distribution (variable ${variableId} is absent and the distributed manifestVersion is ${distributed.manifestVersion} vs the issued ${input.selfManifest.manifestVersion}). Treating the creation as unconfirmed (AUTH_SPEC §12-10 (3)) — re-run the command after investigating the server`,
+      ),
+    );
+  });
+}
+
+/**
  * Pushes one variable value: resolve the target by display name through the
  * verified metadata statements of a metadata-only pull (§4.2 / §12-7 — the
  * lookup key is NFC-normalized, matching is byte-exact; only a push to an
@@ -798,6 +907,9 @@ function nextState(
  * the last verified chain head; creation additionally author-signs a
  * metaVersion-1 statement), and retry through the CAS conflicts (§12-5).
  * The chain — not the server's claim — stays the epoch authority.
+ *
+ * 変数作成は 1-E′ の効果確認(confirmVariableCreation)を通過して初めて成功と
+ * する(§12-10 (3) — 床への記録とユーザーへの成功報告は確認通過後のみ)。
  */
 export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, CliError> {
   return Effect.gen(function* () {
@@ -813,8 +925,9 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
       exhaustedMessage: `The push conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
     });
     // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
-    // 書き込みの巻き戻しも検出できる)。規則 (c) 基準は動かさない。
-    // push 自体は受理済みなので、床の書き込み失敗はその旨を明示する
+    // 書き込みの巻き戻しも検出できる。journal-before-release: 成功報告より先)。
+    // 規則 (c) 基準は動かさない。push 自体は受理済みなので、床の書き込み失敗は
+    // その旨を明示する
     const acceptedState = outcome.state;
     yield* input.floor
       .commitPush(
@@ -825,9 +938,16 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
           seq: acceptedState.verified.state.headSeq,
           hashHex: acceptedState.verified.state.headHashHex,
         },
-        outcome.floorManifest,
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
+    if (outcome.selfManifest !== null) {
+      // メタ操作(変数作成)の成功の定義 = 検証可能な配布物での効果確認(1-E′)
+      yield* confirmVariableCreation({
+        push: normalized,
+        accepted: outcome,
+        selfManifest: outcome.selfManifest,
+      });
+    }
     return {
       variableId: outcome.accepted.variableId,
       version: outcome.accepted.version,

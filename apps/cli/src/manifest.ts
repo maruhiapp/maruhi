@@ -25,7 +25,9 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import type { ManifestFloor } from "./floor.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /**
@@ -168,6 +170,16 @@ export type ManifestVerifyOutcome =
  * recomputation — all through the single shared implementation in
  * @maruhi/crypto. Coordinates are rebuilt from expected values, never from
  * wire claims (§6.3-5).
+ *
+ * **隣接版の prev 連鎖検証(CRYPTO_SPEC §4.3 検証規則 (1) — session-31 §3
+ * M1-A1)**: 床がマニフェスト記録を持ち、配布版が床の直後
+ * (pulled.manifestVersion = floor.manifestVersion + 1)なら、床は直前
+ * マニフェストそのものなので、床の signed_bytes ハッシュを predecessor として
+ * 共有検証器へ渡し `prevManifestSigHashHex` を厳密検証する。version の差が
+ * 2 以上は latest-only の既知制約どおり中間 predecessor の実在一致を検査
+ * できない(§14.3 — 検査済みと偽らない)。同版・後退は床検査(規則 (a)(b))が
+ * 担う。床を持たない経路(初回同期・リース — ワークロードは床を持たない
+ * 初回同期クラス §14.3-3)は floor = null で従来どおり。
  */
 export async function verifyDistributedManifest(input: {
   readonly verified: VerifiedProject;
@@ -175,6 +187,8 @@ export async function verifyDistributedManifest(input: {
   readonly manifest: DistributedEnvironmentManifest;
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+  /** ローカル床のマニフェスト記録(隣接 prev 検証の predecessor — null = 床なし)。 */
+  readonly floorManifest?: ManifestFloor | null;
 }): Promise<ManifestVerifyOutcome> {
   const manifest = input.manifest;
   if (manifest.environmentId !== input.environmentId) {
@@ -183,6 +197,14 @@ export async function verifyDistributedManifest(input: {
       message: `The environment manifest's coordinates do not match the requested environment ${input.environmentId} (possible transplantation)`,
     };
   }
+  const floorManifest = input.floorManifest ?? null;
+  const predecessor =
+    floorManifest !== null && manifest.manifestVersion === floorManifest.manifestVersion + 1
+      ? {
+          signedBytesHashHex: floorManifest.manifestSigHashHex,
+          epoch: floorManifest.epoch,
+        }
+      : undefined;
   const result = await verifyDistributedEnvManifest({
     history: input.verified.history,
     context: {
@@ -203,9 +225,10 @@ export async function verifyDistributedManifest(input: {
     signatureHex: manifest.signatureHex,
     entries: input.entries,
     envMeta: { metaVersion: input.envMeta.metaVersion, sigHashHex: input.envMeta.sigHashHex },
-    // predecessor は渡さない(latest-only 配布 — 直前マニフェストは配布されない)。
-    // セッションを跨ぐ後退・同版相違・前進注入の検出は床のマニフェスト拡張
-    // (floor-check.ts の規則 (a)(b)(c))が担う
+    // 隣接版のみ床由来の predecessor を渡す(上記)。それ以外は latest-only の
+    // 既知制約どおり — セッションを跨ぐ後退・同版相違・前進注入の検出は床の
+    // マニフェスト拡張(floor-check.ts の規則 (a)(b)(c))が担う
+    ...(predecessor === undefined ? {} : { predecessor }),
   });
   if (result.ok) {
     return {
@@ -234,6 +257,24 @@ export async function verifyDistributedManifest(input: {
       (unknownSigner && manifest.chainHeadSeq > input.verified.history.headSeq)
     ) {
       return { kind: "future" };
+    }
+    if (predecessor !== undefined && error.reason === "prev-hash-mismatch") {
+      // 隣接 prev 不一致は床(検証済みの直前マニフェスト)との矛盾 = マニフェスト
+      // 連鎖の分岐の証拠。第三者へ提示可能な材料(両ハッシュ・発行者・宣言ヘッド)
+      // を含める(session-31 §3 M1-A1 修正案 3)
+      return {
+        kind: "rejected",
+        message: [
+          `Environment ${input.environmentId}'s manifest (manifestVersion ${manifest.manifestVersion}) declares a prev that does not match the verified predecessor recorded in the local floor (evidence of a diverged manifest chain — CRYPTO_SPEC §4.3 rule (1))`,
+          `  floor record (previously verified): manifestVersion=${floorManifest?.manifestVersion ?? 0} manifest_signed_bytes_hash=${predecessor.signedBytesHashHex}`,
+          `  this distribution: prevManifestSigHashHex=${manifest.prevManifestSigHashHex}`,
+          `    declared head: seq=${manifest.chainHeadSeq} hash=${manifest.chainHeadHashHex}`,
+          // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+          `    issuer signature: issuer=${displayText(manifest.issuerUserId)} fp=${manifest.issuerKeyFingerprintHex}`,
+          `    signature=${manifest.signatureHex}`,
+          "  Preserve this output and the local floor log, and present them to the project administrators",
+        ].join("\n"),
+      };
     }
     return {
       kind: "rejected",

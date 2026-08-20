@@ -12,7 +12,8 @@
 //     片方の事実が消えない)
 //  5. **前段は 1 回だけ**(チェーン同期は 1 回)で、1 つ目の pull が有界再同期で
 //     前進させたビューを 2 つ目の pull が引き継ぐ
-//  6. 環境のメタ水準の床はコミットしない(チェーン床のヘッドは pull ごとに前進)
+//  6. 環境水準の床(メタ・マニフェスト・座標 (ii))はコミットするが、値床と
+//     規則 (c) の pull 基準は捏造しない(M1-A3 — チェーン床のヘッドは pull ごとに前進)
 //  7. 順に読むことによる標本のずれを、**差分の有無によらず** stderr で開示する
 //     (差分ゼロこそ、ずれに覆されうる結論)
 //  8. **master 鍵を要求しない**(復号しないため。MARUHI_TOKEN 経由のセッションでも動く)
@@ -28,6 +29,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { reportEnvironmentDiff, reportEnvironmentWarnings } from "../src/env-diff.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
+import type { ProjectFloor } from "../src/floor.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
 import {
   buildChain,
@@ -54,6 +57,13 @@ let chain: BuiltChain;
 let devStatement: WireDistributedEnvironmentStatement;
 let prodStatement: WireDistributedEnvironmentStatement;
 let servers: MockServer[] = [];
+
+/** 床(観測ログの fold)を読む(floor-log.ts の追記専用 JSONL)。 */
+async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
+  const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(chain.projectId));
+  expect(loaded.floor).not.toBeNull();
+  return loaded.floor as ProjectFloor;
+}
 
 beforeAll(async () => {
   owner = await makeTestUser("user-owner-1111");
@@ -324,20 +334,24 @@ describe("maruhi env diff", () => {
     ]);
   });
 
-  it("環境のメタ水準の床はコミットしない(チェーン床のヘッドだけ前進する)", async () => {
+  it("環境水準の床はコミットし、値床・規則 (c) の pull 基準は捏造しない(M1-A3)", async () => {
     const env = await startEnv(await handlersFor(["ONLY_DEV"], ["ONLY_PROD"]));
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
-    // 床ファイルは全コマンド共通のチェーン床ヘッドだけを持つ。値を読んでいない
-    // 以上、環境・変数の床レコードを作らない(値のダイジェストを要するため)
-    const floor: unknown = JSON.parse(
-      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
-    );
-    expect(floor).toMatchObject({
-      v: 1,
-      chainHead: { seq: chain.entries.length, hashHex: chain.hashes[chain.entries.length - 1] },
-      environments: {},
+    const floor = await loadFloor(env);
+    expect(floor.chainHead).toEqual({
+      seq: chain.entries.length,
+      hashHex: chain.hashes[chain.entries.length - 1],
     });
+    // 検証済みの環境水準観測(メタ・マニフェスト・座標 (ii))は join される
+    // (§6.3 の記録規則 — 検証に成功した事実は必ず join する)
+    const dev = floor.environments[DEV];
+    expect(dev?.metaVersion).toBe(1);
+    expect(dev?.manifest).toMatchObject({ manifestVersion: 1 });
+    expect(dev?.observedEpoch).toBe(1);
+    // 値を読んでいない以上、値床と pull 基準は捏造しない(規則 (c) の規範)
+    expect(dev?.pullEpoch).toBe(0);
+    expect(dev?.variables).toEqual({});
   });
 
   it("ワイヤの並びが変わっても出力は変わらない(名前でソートして安定させる)", async () => {
@@ -451,14 +465,11 @@ describe("maruhi env diff", () => {
     expect(env.logs).toContain("  ONLY_PROD");
     // 前進したヘッドは床へ残す。openProject 時点(seq 2)のままだと、その間への
     // 巻き戻しを次回以降に検出できない(pull / push は同じヘッドを書いている)
-    const floor: unknown = JSON.parse(
-      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
-    );
-    expect(floor).toMatchObject({
-      chainHead: { seq: 3, hashHex: chain.hashes[2] },
-      // 値を読んでいないので環境の床レコードは作らない
-      environments: {},
-    });
+    const floor = await loadFloor(env);
+    expect(floor.chainHead).toEqual({ seq: 3, hashHex: chain.hashes[2] });
+    // 値を読んでいないので値床は作らない(環境水準の観測のみ — M1-A3)
+    expect(floor.environments[DEV]?.pullEpoch).toBe(0);
+    expect(floor.environments[DEV]?.variables).toEqual({});
   });
 
   it("床へ残すのは 2 つ目の pull まで含めた最終ビューのヘッド", async () => {
@@ -475,10 +486,8 @@ describe("maruhi env diff", () => {
     );
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
-    const floor: unknown = JSON.parse(
-      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
-    );
-    expect(floor).toMatchObject({ chainHead: { seq: 4, hashHex: chain.hashes[3] } });
+    const floor = await loadFloor(env);
+    expect(floor.chainHead).toEqual({ seq: 4, hashHex: chain.hashes[3] });
   });
 
   it("2 つ目の pull が失敗しても、1 つ目が確立した前進は床に残る", async () => {
@@ -499,12 +508,10 @@ describe("maruhi env diff", () => {
 
     // 実行そのものは失敗する(1)
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(1);
-    const floor: unknown = JSON.parse(
-      await readFile(join(env.floorDir, `${chain.projectId}.json`), "utf8"),
-    );
+    const floor = await loadFloor(env);
     // 1 つ目の pull で seq 3 まで前進したことは記録されている(openProject
     // 時点の seq 2 のままにしない)
-    expect(floor).toMatchObject({ chainHead: { seq: 3, hashHex: chain.hashes[2] } });
+    expect(floor.chainHead).toEqual({ seq: 3, hashHex: chain.hashes[2] });
   });
 
   it("2 つ目の pull が失敗しても、1 つ目で集めた警告は必ず吐く", async () => {

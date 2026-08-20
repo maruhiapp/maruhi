@@ -11,6 +11,7 @@ import type {
 } from "@maruhi/crypto";
 import {
   computeDekCommitment,
+  computeEnvManifestSignedBytesHash,
   computeMetaSignedBytesHash,
   computeUserKeyFingerprint,
   computeVariablesDigest,
@@ -486,6 +487,33 @@ export async function manifestFor(input: {
     issuerUserId: context.issuerUserId,
     issuerKeyFingerprintHex: input.issuer.fingerprintHex,
   };
+}
+
+/**
+ * 配布形マニフェスト → signed-bytes ハッシュ(自計算 — §4.3)。隣接版の prev
+ * 連鎖(M1-A1)を満たすフィクスチャを組むときの prevManifestSigHashHex の材料。
+ */
+export async function manifestHashOf(
+  projectId: string,
+  manifest: WireDistributedManifest,
+): Promise<string> {
+  return unwrapResult(
+    await computeEnvManifestSignedBytesHash({
+      suite: SUITE_ID,
+      projectId,
+      environmentId: manifest.environmentId,
+      epoch: manifest.epoch,
+      manifestVersion: manifest.manifestVersion,
+      variablesDigestHex: manifest.variablesDigestHex,
+      envMetaVersion: manifest.envMetaVersion,
+      envMetaSigHashHex: manifest.envMetaSigHashHex,
+      prevManifestSigHashHex: manifest.prevManifestSigHashHex,
+      issuerUserId: manifest.issuerUserId,
+      chainHeadHashHex: manifest.chainHeadHashHex,
+      chainHeadSeq: manifest.chainHeadSeq,
+    }),
+    "computeEnvManifestSignedBytesHash",
+  );
 }
 
 /** BuiltChain 上の宣言ヘッド(seq 位置の entry hash)。 */

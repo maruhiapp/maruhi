@@ -9,10 +9,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { decodeProjectFloor, type ProjectFloor } from "../src/floor.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
+import type { ProjectFloor } from "../src/floor.ts";
 import {
   buildChain,
   type BuiltChain,
@@ -23,6 +25,7 @@ import {
   headOf,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -158,16 +161,25 @@ interface PullPayload {
   readonly currentEpoch?: number;
   /** 同梱マニフェストの manifestVersion(フェーズ間でメタ集合が変わるときは進める)。 */
   readonly manifestVersion?: number;
+  /**
+   * manifestVersion > 1 の prev(直前マニフェストの signed-bytes ハッシュ)。
+   * 床が直前版を記録しているフィクスチャは、隣接 prev 検証(M1-A1)を満たす
+   * 正しい連鎖を渡す(prevOfPhase ヘルパ)。未指定はフィクスチャのダミー。
+   */
+  readonly prevManifestSigHashHex?: string;
 }
 
-/** 配布集合そのものから計算したマニフェスト(§12-7)。Ed25519 は決定的 = 再計算は byte-exact。 */
-async function manifestOf(payload: {
+interface ManifestPayload {
   readonly statement?: WireDistributedEnvironmentStatement;
   readonly variables: readonly WireDistributedVariableStatement[];
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly currentEpoch?: number;
   readonly manifestVersion?: number;
-}): Promise<unknown> {
+  readonly prevManifestSigHashHex?: string;
+}
+
+/** 配布集合そのものから計算したマニフェスト(§12-7)。Ed25519 は決定的 = 再計算は byte-exact。 */
+async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   const epoch = payload.currentEpoch ?? 1;
   return manifestFor({
     projectId,
@@ -178,7 +190,18 @@ async function manifestOf(payload: {
     envStatement: payload.statement ?? envStatement,
     statements: [...payload.variables, ...(payload.deletedVariables ?? [])],
     manifestVersion: payload.manifestVersion ?? 1,
+    ...(payload.prevManifestSigHashHex === undefined
+      ? {}
+      : { prevManifestSigHashHex: payload.prevManifestSigHashHex }),
   });
+}
+
+/** 前フェーズのマニフェストの signed-bytes ハッシュ(次版の prev — M1-A1 の連鎖材料)。 */
+async function prevOfPhase(payload: ManifestPayload): Promise<string> {
+  return manifestHashOf(
+    projectId,
+    (await manifestOf(payload)) as Parameters<typeof manifestHashOf>[1],
+  );
 }
 
 function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
@@ -225,12 +248,7 @@ function deksHandlerFor(deks: readonly WireRecipientDek[]): MockHandler {
 }
 
 /** メタデータのみ pull(§12-7 — push の名前解決経路)の応答。 */
-function pullMetadataHandlerFor(payload: {
-  readonly variables: readonly WireDistributedVariableStatement[];
-  readonly deletedVariables?: readonly WireDistributedVariableStatement[];
-  readonly currentEpoch?: number;
-  readonly manifestVersion?: number;
-}): MockHandler {
+function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
   return onRequest(
     "GET",
     `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`,
@@ -261,11 +279,17 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
   return server;
 }
 
+/** 床(観測ログの fold)を読む。ログは追記専用の JSONL(floor-log.ts)。 */
 async function readFloorFile(env: TestEnv): Promise<ProjectFloor> {
-  const raw = await readFile(join(env.floorDir, `${projectId}.json`), "utf8");
-  const floor = decodeProjectFloor(raw);
-  expect(floor).not.toBeNull();
-  return floor as ProjectFloor;
+  const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(projectId));
+  expect(loaded.state).toBe("loaded");
+  expect(loaded.floor).not.toBeNull();
+  return loaded.floor as ProjectFloor;
+}
+
+/** 床ログの生バイト(非機密性・証拠保全の検査用)。 */
+async function readFloorRaw(env: TestEnv): Promise<string> {
+  return readFile(join(env.floorDir, `${projectId}.jsonl`), "utf8");
 }
 
 /** フェーズ 1(正直な配布)で床を確立し、pull が成功することを検証する。 */
@@ -294,13 +318,13 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
     const record = floor.environments[ENV_ID];
     expect(record?.pullEpoch).toBe(1);
     expect(record?.variables["vb"]).toMatchObject({ status: "active", version: 1, epoch: 1 });
-    // 床ファイルに平文値・変数名を書かない(ディスクレス不変条件)
-    const raw = await readFile(join(env.floorDir, `${projectId}.json`), "utf8");
+    // 床ログに平文値・変数名を書かない(ディスクレス不変条件)
+    const raw = await readFloorRaw(env);
     expect(raw).not.toContain("beta-value");
     expect(raw).not.toContain("BETA");
   });
 
-  it("床ファイルの破損は初回とは異なる警告で fail-open し、次の成功 pull で作り直す", async () => {
+  it("床ログの破損は初回とは異なる警告で fail-open し、次の成功 pull から追記を再開する", async () => {
     const env = await makeTestEnv();
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const entry = {
@@ -309,7 +333,9 @@ describe("床の確立と fail-open(§6.3 / 床なし・破損)", () => {
       value: beta,
     };
     await establishFloor(env, { variables: [entry], deks: [wrap1] });
-    await writeFile(join(env.floorDir, `${projectId}.json`), "{broken-json");
+    // 解読可能なレコードが 1 行も残らない全体破損(部分的な torn 行は corrupt では
+    // なく自己回復の対象 — floor.test.ts)
+    await writeFile(join(env.floorDir, `${projectId}.jsonl`), "{broken-json");
     env.errors.length = 0;
     await startPhase(env, [
       chainHandlerFor([chain1]),
@@ -672,6 +698,9 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
       plaintext: "v2",
       prevValueSigHashHex: await valueHashOf(v1, owner.userId),
     });
+    // 隣接版(床 v1 の直後 = v2)の prev は床のマニフェスト hash と厳密検証される
+    // (M1-A1)ため、正当な連鎖を組む
+    const prevHash = await prevOfPhase({ variables: [statement] });
     await startPhase(env, [
       chainHandlerFor([chain2]),
       pullHandlerFor({
@@ -680,6 +709,7 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         currentEpoch: 2,
         // rotate 複合がマニフェストを再発行済み(§12-4)の形
         manifestVersion: 2,
+        prevManifestSigHashHex: prevHash,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -705,6 +735,7 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         currentEpoch: 2,
         // メタ集合はフェーズ 2 と同一 = 同じ v2 マニフェスト(byte-exact)を配布
         manifestVersion: 2,
+        prevManifestSigHashHex: prevHash,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -744,7 +775,9 @@ describe("forward injectionの床検出と誤拒否なし(§6.3 規則 (c) / ses
         deks: [wrap1, wrap2],
         currentEpoch: 2,
         // 「vc が作られた」ことになっている = マニフェストも前進している形
+        // (隣接版なので prev は正しく連鎖させる — M1-A1 とは独立の検査を固定)
         manifestVersion: 2,
+        prevManifestSigHashHex: await prevOfPhase({ variables: [statement], currentEpoch: 2 }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -833,8 +866,10 @@ describe("削除の床意味論(§6.3 規則 (a) / session-15 §2-2 の終端状
         variables: [],
         deletedVariables: [await tombstoneOf()],
         deks: [wrap1],
-        // 削除のメタ操作がマニフェストを再発行済み(§12-4)の形
+        // 削除のメタ操作がマニフェストを再発行済み(§12-4)の形。隣接版の
+        // prev は床 v1 のマニフェスト hash と厳密検証される(M1-A1)
         manifestVersion: 2,
+        prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -941,8 +976,10 @@ describe("分岐 2 種の区別(§6.3-2 / session-12 §8-5)", () => {
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // rotate 複合がマニフェストを再発行済み(§12-4)の形
+        // rotate 複合がマニフェストを再発行済み(§12-4)の形(隣接版 — M1-A1 の
+        // prev 連鎖を満たす)
         manifestVersion: 2,
+        prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -1053,8 +1090,11 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
         variables: [{ variableId: "vb", statement: injected, value }],
         deks: [wrap1],
         // サーバー共謀のforward injectionはマニフェストも一緒に前進させられる
-        // (issuer 資格を持つ攻撃鍵 — §14.3-5 の非保証はこの形まで含めて成立)
+        // (issuer 資格を持つ攻撃鍵 — §14.3-5 の非保証はこの形まで含めて成立)。
+        // 隣接 prev(M1-A1)も、共謀サーバーは実マニフェストの hash を知って
+        // いるため正しく連鎖できる — 非保証はこの検査の導入後も変わらない
         manifestVersion: 2,
+        prevManifestSigHashHex: await prevOfPhase({ variables: [original] }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -1086,8 +1126,10 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
         statement: injectedEnvMeta,
         variables: [{ variableId: "vb", statement, value }],
         deks: [wrap1],
-        // 変数側と同じくマニフェストごと前進させる形(§14.3-5)
+        // 変数側と同じくマニフェストごと前進させる形(§14.3-5 — prev も共謀
+        // サーバーが正しく連鎖できる)
         manifestVersion: 2,
+        prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);

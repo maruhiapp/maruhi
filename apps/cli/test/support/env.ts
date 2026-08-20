@@ -13,7 +13,8 @@ import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
 import { cliError } from "../../src/errors.ts";
-import { floorDirOf, FloorStore, makeFileFloorStore } from "../../src/floor.ts";
+import { makeFileFloorStore } from "../../src/floor-log.ts";
+import { floorDirOf, FloorStore } from "../../src/floor.ts";
 import { type AgentProfile, CliIo } from "../../src/io.ts";
 import {
   Keychain,
@@ -121,12 +122,16 @@ export async function makeTestEnv(): Promise<TestEnv> {
             ? floorStore.commitPush(projectId, commit)
             : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
         ),
+      commitMetadata: (projectId, commit) => floorStore.commitMetadata(projectId, commit),
       commitManifest: (projectId, commit) =>
         Effect.suspend(() =>
           floorPushCommittable
             ? floorStore.commitManifest(projectId, commit)
             : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
         ),
+      appendIntent: (projectId, intent) => floorStore.appendIntent(projectId, intent),
+      resolveIntent: (projectId, intentId, outcome) =>
+        floorStore.resolveIntent(projectId, intentId, outcome),
     }),
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),

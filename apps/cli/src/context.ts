@@ -17,8 +17,14 @@ import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
-import { formatFloorViolation } from "./floor-evidence.ts";
-import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
+import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
+import {
+  type FloorIntent,
+  floorRecordGet,
+  FloorStore,
+  type FloorStoreShape,
+  type ProjectFloor,
+} from "./floor.ts";
 import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
@@ -195,6 +201,13 @@ export function loadCheckedFloor(
     }
     let view = verified;
     if (loaded.floor !== null) {
+      if (loaded.floor.conflicts.length > 0) {
+        // fold が表面化した同座標 conflict(§6.3 — 同一版・異ハッシュの検証済み
+        // 観測の対)は equivocation の硬い証拠。床の使用・前進を拒否する
+        return yield* Effect.fail(
+          cliError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
+        );
+      }
       let violation = checkChainFloor(loaded.floor, view);
       if (violation !== null && violation.kind === "chain-shortened") {
         // 延長検査付き再同期: 初回ビューが単に古いだけなら再同期ビューの接頭辞に
@@ -213,6 +226,63 @@ export function loadCheckedFloor(
       hashHex: view.state.headHashHex,
     });
     return { floor: loaded.floor, verified: view };
+  });
+}
+
+/**
+ * 未解決の複合 intent(create / rotate — 3-F)の起動時照合。複合の効果確認は
+ * チェーン同期(§12-10 (3))であり、コマンド前段は毎回チェーンを全検証する
+ * ため、ここで解決できる: チェーン上の (environment, epoch) commitment が
+ * intent のものと一致すれば受理済み — 自己発行マニフェストを床へ昇格する
+ * (M1-A4 の「エラー終了・クラッシュを跨いだ床コミット」の回収)。一致しなければ
+ * 受理されていない(チェーンは全同期済み = 完全な真実源)。meta-op intent は
+ * チェーンに痕跡を残さないため、次の検証済み pull(values.ts)が照合する。
+ */
+function reconcileCompositeIntents(input: {
+  readonly store: FloorStoreShape;
+  readonly projectId: string;
+  readonly verified: VerifiedProject;
+  readonly intents: readonly FloorIntent[];
+}): Effect.Effect<boolean, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    let resolved = false;
+    for (const intent of input.intents) {
+      if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
+        continue;
+      }
+      const environment = input.verified.state.environments.get(intent.environmentId);
+      const accepted = environment?.dekCommitments.get(intent.epoch) === intent.dekCommitmentHex;
+      if (accepted) {
+        // 受理済みと確認 — 自己発行マニフェストの床昇格(検証済み事実の join)
+        yield* input.store.commitManifest(input.projectId, {
+          chainHead: { seq: input.verified.state.headSeq, hashHex: input.verified.state.headHashHex },
+          environmentId: intent.environmentId,
+          manifest: {
+            manifestVersion: intent.manifestVersion,
+            epoch: intent.epoch,
+            manifestSigHashHex: intent.manifestSigHashHex,
+          },
+        });
+        yield* input.store.resolveIntent(
+          input.projectId,
+          intent.id,
+          environment !== undefined && environment.currentEpoch === intent.epoch
+            ? "accepted"
+            : "accepted-superseded",
+        );
+        yield* io.logError(
+          `Note: an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
+        );
+      } else {
+        yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
+        yield* io.logError(
+          `Note: an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
+        );
+      }
+      resolved = true;
+    }
+    return resolved;
   });
 }
 
@@ -300,10 +370,27 @@ function attachProject(
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
     yield* checkInviteAnchor(projectId, checked.verified);
+    // 未解決の複合 intent(3-F)は「同一環境への次の mutation・成功報告の前に
+    // 照合で解決する」— 前段は毎回チェーンを全同期・全検証するので、ここが
+    // その照合点になる(受理済みなら床のマニフェスト前進もここで回収する)
+    let floor = checked.floor;
+    if (floor !== null && floor.intents.length > 0) {
+      const store = yield* FloorStore;
+      const resolved = yield* reconcileCompositeIntents({
+        store,
+        projectId,
+        verified: checked.verified,
+        intents: floor.intents,
+      });
+      if (resolved) {
+        // 照合が床を前進させた可能性がある — fold を読み直す
+        floor = (yield* store.load(projectId)).floor;
+      }
+    }
     if (options?.quietMandateWarning !== true) {
       yield* warnUnconvergedMandates({ client: context.client, verified: checked.verified });
     }
-    return { ...context, projectId, verified: checked.verified, floor: checked.floor, resync };
+    return { ...context, projectId, verified: checked.verified, floor, resync };
   });
 }
 
@@ -389,6 +476,10 @@ export function floorHandleFor(
       // own-property 参照(環境 ID `constructor` 等の正当な ID が継承プロパティに
       // 解決されるのを防ぐ — floor.ts の floorRecordGet 参照)
       initial: floorRecordGet(context.floor?.environments, environmentId) ?? null,
+      // この環境の未解決 intent(前段の照合後に残るのは meta-op のみ —
+      // 検証済み pull の到達時に values.ts が照合する)
+      intents:
+        context.floor?.intents.filter((intent) => intent.environmentId === environmentId) ?? [],
     }),
   );
 }

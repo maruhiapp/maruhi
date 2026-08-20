@@ -17,12 +17,14 @@ import {
   hexBytes,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   rotateEpochOp,
   statementFor,
   variablesDigestOf,
   type TestUser,
   valueHashOf,
   type WireDistributedEnvironmentStatement,
+  type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireEncryptedPayload,
   wrapDekFor,
@@ -133,6 +135,7 @@ async function manifestOf(
   statements: readonly WireDistributedVariableStatement[],
   currentEpoch = 1,
   manifestVersion = 1,
+  prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return manifestFor({
     projectId: chainV1.projectId,
@@ -143,6 +146,7 @@ async function manifestOf(
     envStatement,
     statements,
     manifestVersion,
+    ...(prevManifestSigHashHex === undefined ? {} : { prevManifestSigHashHex }),
   });
 }
 
@@ -157,6 +161,8 @@ async function pullJsonOf(
   currentEpoch = 1,
   /** メタ集合が変わる応答は次 version を渡す(同 version の集合差は equivocation)。 */
   manifestVersion = 1,
+  /** version > 1 の prev(直前マニフェストの hash — 隣接 prev 検証 M1-A1 の連鎖)。 */
+  prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return {
     environmentId: ENV_ID,
@@ -169,8 +175,27 @@ async function pullJsonOf(
       variables.map((variable) => variable.statement),
       currentEpoch,
       manifestVersion,
+      prevManifestSigHashHex,
     ),
   };
+}
+
+/** 指定集合・版のマニフェストの signed-bytes ハッシュ(次版の prev の材料)。 */
+async function manifestHashAt(
+  statements: readonly WireDistributedVariableStatement[],
+  currentEpoch = 1,
+  manifestVersion = 1,
+  prevManifestSigHashHex?: string,
+): Promise<string> {
+  return manifestHashOf(
+    chainV1.projectId,
+    (await manifestOf(
+      statements,
+      currentEpoch,
+      manifestVersion,
+      prevManifestSigHashHex,
+    )) as WireDistributedManifest,
+  );
 }
 
 function pullHandlerOf(
@@ -191,16 +216,76 @@ function pullHandlerOf(
   );
 }
 
-/** メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で止まる)。 */
+/**
+ * 変数作成の受理を記録する箱(§12-10 (3) の効果確認 pull が、受理済みの
+ * ステートメント + マニフェストの配布を模すための共有状態)。
+ */
+interface CreateEcho {
+  body: CreateBody | null;
+  /** 作成の issueBase になった variant(配布集合 = variant + 作成ステートメント)。 */
+  baseVariant: readonly WireDistributedVariableStatement[];
+}
+
+/** 発行形 → 配布形(§12-2 — サーバーが呼び出し主体の帰属を付ける)。 */
+function distributedStatementOf(body: CreateBody): WireDistributedVariableStatement {
+  return {
+    ...body.statement,
+    authorUserId: owner.userId,
+    authorKeyFingerprintHex: owner.fingerprintHex,
+  } as WireDistributedVariableStatement;
+}
+
+/**
+ * メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で
+ * 止まる)。variant 間のマニフェストは prev を実際に連鎖させる(隣接版の prev
+ * 検証 — M1-A1 — を満たす正当な「他メンバーのメタ操作」のモデル化)。
+ * `echo` が受理済み作成を持つ場合は、その配布(variant + 作成ステートメント +
+ * 受理したマニフェスト)を返す — 効果確認(§12-10 (3))の材料。
+ */
 function pullMetadataHandlerOf(
   variants: readonly (readonly WireDistributedVariableStatement[])[],
   currentEpoch = 1,
+  echo?: CreateEcho,
 ): MockHandler {
   let call = 0;
+  const manifests: WireDistributedManifest[] = [];
+  const manifestAt = async (index: number): Promise<WireDistributedManifest> => {
+    for (let position = manifests.length; position <= index; position += 1) {
+      const previous = manifests[position - 1];
+      manifests[position] = (await manifestOf(
+        variants[position] ?? [],
+        currentEpoch,
+        position + 1,
+        previous === undefined
+          ? undefined
+          : await manifestHashOf(chainV1.projectId, previous),
+      )) as WireDistributedManifest;
+    }
+    return manifests[index] as WireDistributedManifest;
+  };
   return onRequest(
     "GET",
     `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
     async () => {
+      if (echo !== undefined && echo.body !== null) {
+        // 受理済み: 配布形 = issueBase の集合 + 作成ステートメント、マニフェスト =
+        // 受理した発行形 + issuer 帰属(env-rotate.test.ts の acceptRotate と同型)
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch,
+            statement: envStatement,
+            variables: [...echo.baseVariant, distributedStatementOf(echo.body)],
+            deletedVariables: [],
+            manifest: {
+              ...echo.body.manifest,
+              issuerUserId: owner.userId,
+              issuerKeyFingerprintHex: owner.fingerprintHex,
+            },
+          },
+        };
+      }
       const index = Math.min(call, variants.length - 1);
       const variables = variants[index] ?? [];
       call += 1;
@@ -214,7 +299,7 @@ function pullMetadataHandlerOf(
           deletedVariables: [],
           // variant の前進 = 他メンバーのメタ操作 1 回のモデル化。manifestVersion も
           // 一緒に進める(床の単調性と整合する)
-          manifest: await manifestOf(variables, currentEpoch, index + 1),
+          manifest: await manifestAt(index),
         },
       };
     },
@@ -269,16 +354,19 @@ async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promis
 describe("maruhi push", () => {
   it("新規変数は create(version 1)。stdin の値が現エポックで暗号化される", async () => {
     const createCalls: CreateBody[] = [];
+    const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      pullMetadataHandlerOf([[]]),
+      pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
         (request: MockRequest) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
+          // 受理: 以後の metadata pull(効果確認 — §12-10 (3))が配布する
+          echo.body = body;
           return {
             status: 200,
             json: {
@@ -768,11 +856,12 @@ describe("maruhi push", () => {
     // 固定 timestamp により成立)
     expect(chainV2.projectId).toBe(chainV1.projectId);
     const createBodies: CreateBody[] = [];
+    const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       // first syncはローテーション前(epoch 1)、再同期でローテーション後が見える
       chainHandlerOf([chainV1, chainV2]),
       deksHandlerOf([[wrap1], [wrap1, wrap2]]),
-      pullMetadataHandlerOf([[]]),
+      pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -784,6 +873,7 @@ describe("maruhi push", () => {
             // であることを固定する(申告値を使う退行は aad.epoch=5 になり検出)
             return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 5 } };
           }
+          echo.body = body;
           return {
             status: 200,
             json: {
@@ -882,9 +972,11 @@ describe("maruhi push", () => {
       pullMetadataHandlerOf([[], [entryRacer.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
+        // 並行作成のメタ操作がマニフェストを v2 へ進めた形(メタデータ側の
+        // variant 2 と同じマニフェスト — 隣接 prev は v1 へ連鎖 M1-A1)
         return {
           status: 200,
-          json: await pullJsonOf([entryRacer], [wrap1]),
+          json: await pullJsonOf([entryRacer], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -962,9 +1054,10 @@ describe("maruhi push", () => {
       pullMetadataHandlerOf([[], [entryLate.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
+        // 並行作成のメタ操作がマニフェストを v2 へ進めた形(variant 2 と同一)
         return {
           status: 200,
-          json: await pullJsonOf([entryLate], [wrap1]),
+          json: await pullJsonOf([entryLate], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -1190,7 +1283,10 @@ describe("maruhi push", () => {
             [wrap1],
             1,
             // 2 回目は metaVersion 2 の勝者 = メタ操作 1 回分マニフェストも前進
+            // (隣接版なので prev は v1 マニフェストへ連鎖させる — M1-A1 とは
+            // 独立に、勝者ステートメントの prev 不一致だけを固定する)
             pullCalls === 1 ? 1 : 2,
+            pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
           ),
         };
       }),
@@ -1309,9 +1405,10 @@ describe("maruhi push", () => {
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
+        // 並行 rename のメタ操作がマニフェストを v2 へ進めた形(variant 2 と同一)
         return {
           status: 200,
-          json: await pullJsonOf([entryRaced], [wrap1]),
+          json: await pullJsonOf([entryRaced], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -1351,16 +1448,18 @@ describe("maruhi push", () => {
     const nfcName = nfdName.normalize("NFC");
     expect(nfcName).not.toBe(nfdName);
     const createCalls: CreateBody[] = [];
+    const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      pullMetadataHandlerOf([[]]),
+      pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
         (request) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
+          echo.body = body;
           return {
             status: 200,
             json: {
@@ -1453,7 +1552,22 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
-        pullHandlerOf([{ ...entryExisting, statement: renamedStatement }], [wrap1]),
+        // 並行 rename のメタ操作はマニフェストも v2 へ進める(§12-5 — 同版の
+        // 集合差は equivocation になってしまうため、正直な rename の形で組む)
+        onRequest(
+          "GET",
+          `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
+          async () => ({
+            status: 200,
+            json: await pullJsonOf(
+              [{ ...entryExisting, statement: renamedStatement }],
+              [wrap1],
+              1,
+              2,
+              await manifestHashAt([entryExisting.statement]),
+            ),
+          }),
+        ),
       ],
       "value",
     );

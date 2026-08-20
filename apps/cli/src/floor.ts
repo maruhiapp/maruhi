@@ -1,36 +1,34 @@
-// ローカル床の永続化層(CRYPTO_SPEC §6.3 のローカル床 — SHOULD・規範)。
+// ローカル床の意味論(CRYPTO_SPEC §6.3 — 2026-08-19 セッション 32 改訂)。
 //
-// セッションを跨ぐ巻き戻し・欠落・前進注入(値のみ)の永続検出のため、
-// 「最後に検証した状態」の非機密ダイジェストをディスクに保存する。保存するのは
-// §6.3 の列挙どおり: チェーンヘッド(hash + seq)・変数ごとの最新 version /
-// その version の epoch / metaVersion / 各 signed bytes ハッシュ・環境ごとの
-// 「最後に成功した pull(検証込み)時点のチェーン導出現エポック」(規則 (c) の
-// 基準)。**平文値・鍵素材・変数名・環境名は書かない**(キーはすべて ID —
-// ディスクレス不変条件と両立)。
+// 床 = **これまでに検証へ成功した事実の単調 join(結合半束)**であり、
+// 「最後に成功した pull のスナップショット」ではない(3-D)。保存形は
+// 追記専用の観測ログ + fold(3-E — floor-log.ts)で、本モジュールは
+// 格子の型と join 演算だけを持つ。ディスク上のマージとプロセス内マージが
+// **同一の join 実装**を共有する(session-31 §3 M1-A5 — `>=` 後勝ちの
+// 重複実装が同版異ハッシュの証拠を上書きした温床の構造的解消)。
 //
-// 置き場は設定と同系の非機密ローカル状態(<config dir>/floor/<projectId>.json。
-// projectId = genesis ハッシュはグローバル一意なのでサーバー origin をキーに
-// 含めない — セッション 16 裁定)。OS キーチェーンには置かない(非機密であり、
-// キーチェーンの容量・可用性制約を避ける)。
+// エポック観測は型付きの 2 座標として分けて join する(§6.3 規範):
+//   (i) 値規則 (c) の pull 基準(pullEpoch)— 値床カバレッジと原子的に
+//       確立された観測のみが前進させる(チェーン同期単独で前進させない)
+//   (ii) 環境水準のエポック観測(observedEpoch)— マニフェスト規則 (c)
+//       baseline・巻き戻し検出に使い、出所を問わず join する
 //
-// 原子性: 書き込みは temp + rename(§6.3 の「変数床と同一トランザクション」
-// 規範 — 規則 (c) 基準と変数床が別々に見える中間状態を作らない)。更新は
-// read-merge-write で、チェーンヘッドは seq の大きい側が勝つ(並行 CLI との
-// lost update を最小化する。完全な排他はしない — 床は SHOULD であり、取りうる
-// 損失は「検出材料が一世代分新しくならない」だけで誤検出は生まない)。
+// 同座標で比較不能な事実(同一版・異ハッシュ)には join が定義されない =
+// **typed conflict** として両観測の証拠を保存する(規則 (b) がマージ意味論
+// そのものになる)。conflict を持つ床の使用・更新は呼び出し側が拒否する。
 //
-// fail-open: ファイル不在(初回)・破損はどちらも「床なし」として続行し、
-// 呼び出し側が区別可能な警告を出す(ローカル状態を消せる攻撃者は床の外 —
-// §14.3-3 の非保証に帰着)。書き込み失敗は fail-open にしない(検出機構の
-// 無効化を不可視にしない — 設定ファイルと同じ扱い)。
+// 各座標は bottom(0 / 空文字列 / レコードなし)を持つ半束であり、部分的な
+// 観測(metadata-only pull の環境水準・push だけの変数床)を不可能状態なしに
+// 表現する — bottom に対する検査規則は構造的に発火しない(誤検出ゼロ)。
+//
+// **平文値・鍵素材・変数名・環境名は書かない**(キーはすべて ID、内容は
+// ハッシュ・連番・op 種別のみ — ディスクレス不変条件と両立)。
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
-import { Context, Effect } from "effect";
+import { Context, type Effect } from "effect";
 
-import { cliError, type CliError } from "./errors.ts";
+import type { CliError } from "./errors.ts";
 
 /** 最後に検証したチェーンヘッド(§6.3 床の保存項目)。 */
 export interface ChainHeadFloor {
@@ -58,9 +56,9 @@ export type VariableFloor =
     };
 
 /**
- * 環境マニフェストの床(CRYPTO_SPEC §6.3 の 2026-08-18 拡張 — manifest_version /
- * その epoch / signed_bytes ハッシュ)。規則 (a) の後退・(b) の同版相違・
- * (c) のマニフェスト適用(前進 manifestVersion への旧エポック注入)の検出材料。
+ * 環境マニフェストの床(CRYPTO_SPEC §6.3 — manifest_version / その epoch /
+ * signed_bytes ハッシュ)。規則 (a) の後退・(b) の同版相違・(c) のマニフェスト
+ * 適用(前進 manifestVersion への旧エポック注入)の検出材料。
  */
 export interface ManifestFloor {
   readonly manifestVersion: number;
@@ -69,46 +67,112 @@ export interface ManifestFloor {
   readonly manifestSigHashHex: string;
 }
 
-/** 環境 1 つ分の床。 */
+/**
+ * 環境 1 つ分の床。各座標は独立に join される半束で、bottom(pullEpoch /
+ * observedEpoch / metaVersion = 0)は「その座標の観測がまだない」ことを表す。
+ */
 export interface EnvironmentFloor {
   /**
-   * 規則 (c) の基準: 最後に成功した pull(検証込み)時点でチェーン導出されて
-   * いた現エポック。**チェーン同期単独で前進させてはならない**(§6.3 の規範 —
-   * ローテーション直後の正当な旧エポック値の誤拒否と、基準欠落による検出喪失の
-   * 両縁。セッション 12 ノート §12 ループ 2)。
+   * 規則 (c) の基準: 値床カバレッジと原子的に確立された観測(検証済み pull・
+   * 環境作成の受理確認〔空変数集合〕)のみが前進させる。**チェーン同期単独で
+   * 前進させてはならない**(§6.3 の規範 — ローテーション直後の正当な旧エポック
+   * 値の誤拒否と、基準欠落による検出喪失の両縁)。0 = 未確立。
    */
   readonly pullEpoch: number;
-  /** 環境メタステートメントの床(巻き戻し検出のみ — 前進注入は非保証 §14.3-5)。 */
+  /**
+   * 環境水準のエポック観測(§6.3 の座標 (ii))。マニフェスト規則 (c) baseline に
+   * 使い、出所を問わず join する(metadata-only pull・受理確認・値付き pull)。
+   * 値を誤拒否する経路を持たないため pull 基準より広く前進する。0 = 観測なし。
+   */
+  readonly observedEpoch: number;
+  /** 環境メタステートメントの床(巻き戻し検出のみ — 前進注入は非保証 §14.3-5)。0 = 観測なし。 */
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
-  /**
-   * 環境マニフェストの床(§6.3 — 2026-08-18)。**欠落は「マニフェスト床なし」
-   * として許容する**: マニフェスト導入前に書かれた v1 床ファイルにこの
-   * フィールドはなく、欠落を全体破損(fail-open の作り直し)に落とすと既存の
-   * 値・メタ床の検出材料まで捨てることになる(session-27 §14 PR-M1 の移行 —
-   * 床のバージョンを上げない後方互換の追加)。
-   */
+  /** 環境マニフェストの床(§6.3)。欠落 = マニフェスト観測なし。 */
   readonly manifest?: ManifestFloor;
   /** キーは variableId(名前を書かない)。 */
   readonly variables: Readonly<Record<string, VariableFloor>>;
 }
 
-/** プロジェクト 1 つ分の床ファイル(floor/<projectId>.json)。 */
-export interface ProjectFloor {
-  readonly v: 1;
-  readonly chainHead: ChainHeadFloor;
-  /** キーは environmentId。 */
-  readonly environments: Readonly<Record<string, EnvironmentFloor>>;
+/**
+ * 同座標で比較不能な 2 観測(join 未定義)= equivocation の typed conflict。
+ * 両観測の証拠(版とハッシュ)を保存する — 上書きによる証拠喪失は保存形
+ * (追記専用ログ)により表現不能で、fold がこの形で顕在化させる(§6.3)。
+ */
+export interface FloorConflict {
+  readonly kind:
+    | "chain-head"
+    | "value"
+    | "variable-meta"
+    | "environment-meta"
+    | "manifest"
+    | "undeletion";
+  readonly environmentId: string | null;
+  readonly variableId: string | null;
+  /** 観測 1(seq / version / metaVersion / manifestVersion とその signed bytes ハッシュ)。 */
+  readonly firstVersion: number;
+  readonly firstHashHex: string;
+  /** 観測 2。 */
+  readonly secondVersion: number;
+  readonly secondHashHex: string;
 }
 
-/** 床ファイルの読み込み結果(fail-open — 呼び出し側が状態別の警告を出す)。 */
+/** security-critical mutation の intent レコードの op 種別(§6.3 記録規律 (ii))。 */
+export type FloorIntentOp = "create_environment" | "rotate_epoch" | "meta-op";
+
+/** intent の解決(§12-10 (3) の効果確認の結果)。 */
+export type FloorIntentOutcome =
+  | "accepted"
+  | "accepted-superseded"
+  | "rejected"
+  | "not-accepted"
+  | "superseded";
+
+/**
+ * 送信前 intent レコード(3-F — journal-before-send)。非機密座標のみ:
+ * op 種別・環境 ID・manifest_version + signed_bytes ハッシュ・宣言ヘッド、
+ * および効果確認の照合材料(複合 = DEK コミットメント、メタ操作 = 変数 ID)。
+ * intent は検証済み事実ではないため join の格子に入れない — fold は未解決
+ * intent を「要照合」として表面化する。
+ */
+export interface FloorIntent {
+  readonly id: string;
+  readonly op: FloorIntentOp;
+  readonly environmentId: string;
+  /** 複合が確立するエポック(create = 1 / rotate = new_epoch)。メタ操作 = 発行時点の現エポック。 */
+  readonly epoch: number;
+  /** 複合の効果確認材料(チェーン上の自エントリの §5.2 コミットメント)。メタ操作 = null。 */
+  readonly dekCommitmentHex: string | null;
+  /** メタ操作(変数作成)の照合座標。複合 = null。 */
+  readonly variableId: string | null;
+  readonly manifestVersion: number;
+  readonly manifestSigHashHex: string;
+  readonly declaredHead: ChainHeadFloor;
+}
+
+/** intent レコードの入力(id はストアが採番する)。 */
+export type FloorIntentInput = Omit<FloorIntent, "id">;
+
+/** プロジェクト 1 つ分の床 = 観測ログの fold 結果(導出値)。 */
+export interface ProjectFloor {
+  /** null = ヘッド観測がまだない(intent だけのログ等)。 */
+  readonly chainHead: ChainHeadFloor | null;
+  /** キーは environmentId。 */
+  readonly environments: Readonly<Record<string, EnvironmentFloor>>;
+  /** 同座標 conflict の証拠(スナップショットに畳まれても消えない — §6.3)。 */
+  readonly conflicts: readonly FloorConflict[];
+  /** 未解決の intent(要照合 — 同一環境への次の mutation・成功報告の前に解決する)。 */
+  readonly intents: readonly FloorIntent[];
+}
+
+/** 床ログの読み込み結果(fail-open — 呼び出し側が状態別の警告を出す)。 */
 export interface FloorLoadResult {
   readonly floor: ProjectFloor | null;
   /** missing = 初回同期(床なし)、corrupt = 破損(初回として扱うが区別して警告)。 */
   readonly state: "loaded" | "missing" | "corrupt";
 }
 
-/** pull 成功時の原子コミット(規則 (c) 基準 + 変数床 + チェーンヘッド)。 */
+/** pull 成功時の原子コミット(規則 (c) 基準 + 変数床 + チェーンヘッドを 1 レコードで)。 */
 export interface PullCommit {
   readonly chainHead: ChainHeadFloor;
   readonly environmentId: string;
@@ -121,19 +185,27 @@ export interface PushCommit {
   readonly environmentId: string;
   readonly variableId: string;
   readonly variable: VariableFloor;
-  /**
-   * 変数作成の複合が発行したマニフェストの床前進(自計算値 — §6.3)。
-   * push(既存変数)はマニフェストを発行しないため undefined。
-   */
-  readonly manifest?: ManifestFloor;
 }
 
 /**
- * rotate 複合の受理時のコミット(自分が署名した次 manifestVersion を床へ昇格 —
- * §6.3)。変数床は動かさない(再暗号化 push が個別に commitPush する)。
- * これを怠ると、受理後も床が pull 時点の旧 manifestVersion のままになり、
- * 「自分が進めた version より古いマニフェストを配布し続けるサーバー」を
- * 規則 (a) が検出できない窓が生まれる。
+ * metadata-only pull の環境水準コミット(session-31 §3 M1-A3)。値床は
+ * 捏造しない・pull 基準(規則 (c))は前進させない — 前進するのは環境メタ床・
+ * マニフェスト床・環境水準エポック観測(座標 (ii))・チェーンヘッドのみ。
+ */
+export interface MetadataCommit {
+  readonly chainHead: ChainHeadFloor;
+  readonly environmentId: string;
+  /** チェーン導出の現エポック(座標 (ii) — 出所を問わず join)。 */
+  readonly observedEpoch: number;
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+  readonly manifest: ManifestFloor;
+}
+
+/**
+ * 受理確認済みの自己発行マニフェストの床昇格(session-31 §3 M1-A4)。
+ * pullEpoch・変数床は動かさない。環境水準エポック観測はマニフェストの
+ * epoch で join される(検証済み観測 — 座標 (ii))。
  */
 export interface ManifestCommit {
   readonly chainHead: ChainHeadFloor;
@@ -141,37 +213,50 @@ export interface ManifestCommit {
   readonly manifest: ManifestFloor;
 }
 
-/** Load / commit boundary for the local floor files (§6.3). */
+/**
+ * Load / commit boundary for the local floor log (§6.3). すべての commit は
+ * 「追記(fsync 相当の永続化まで — 3-E′)→ fold」であり、fold が同座標
+ * conflict を検出したら typed エラーで失敗する(証拠はログに残っている)。
+ */
 export interface FloorStoreShape {
   readonly load: (projectId: string) => Effect.Effect<FloorLoadResult, CliError>;
   /** チェーン同期成功時のヘッド前進(規則 (c) 基準は動かさない)。 */
   readonly commitHead: (projectId: string, head: ChainHeadFloor) => Effect.Effect<void, CliError>;
-  /**
-   * 検証済み pull の床コミット(環境床の単調マージ + ヘッド前進を 1 書き込みで)。
-   * **ディスクへ書いた後の(マージ済み)環境床**を返す — 呼び出し側のプロセス内
-   * キャッシュはこれを採用し、並行 CLI が確立した検出材料(union・deleted 終端・
-   * より新しい version / pullEpoch)をコマンド実行中に取りこぼさない。
-   */
+  /** 検証済み pull の床コミット。fold 済み(= ログへ永続化済み)の環境床を返す。 */
   readonly commitPull: (
     projectId: string,
     commit: PullCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
-  /**
-   * 受理された push の変数床前進(規則 (c) 基準 pullEpoch は動かさない)。
-   * マージ済み環境床(環境レコードがディスクにない場合は null)を返す。
-   */
+  /** 受理された push の変数床前進(規則 (c) 基準 pullEpoch は動かさない)。 */
   readonly commitPush: (
     projectId: string,
     commit: PushCommit,
-  ) => Effect.Effect<EnvironmentFloor | null, CliError>;
-  /**
-   * 受理された rotate 複合のマニフェスト床前進(pullEpoch・変数床は動かさない)。
-   * マージ済み環境床(環境レコードがディスクにない場合は null)を返す。
-   */
+  ) => Effect.Effect<EnvironmentFloor, CliError>;
+  /** metadata-only pull の環境水準コミット(M1-A3 — 値床は捏造しない)。 */
+  readonly commitMetadata: (
+    projectId: string,
+    commit: MetadataCommit,
+  ) => Effect.Effect<EnvironmentFloor, CliError>;
+  /** 受理確認済みマニフェストの床昇格(M1-A4)。 */
   readonly commitManifest: (
     projectId: string,
     commit: ManifestCommit,
-  ) => Effect.Effect<EnvironmentFloor | null, CliError>;
+  ) => Effect.Effect<EnvironmentFloor, CliError>;
+  /**
+   * security-critical mutation の送信前 intent(3-F)。追記の永続化(fsync
+   * 相当)まで待ってから送信してよい — 失敗したら送信しない(fail-closed)。
+   * 採番した intent id を返す。
+   */
+  readonly appendIntent: (
+    projectId: string,
+    intent: FloorIntentInput,
+  ) => Effect.Effect<string, CliError>;
+  /** 効果確認の結果で intent を閉じる resolution レコードの追記。 */
+  readonly resolveIntent: (
+    projectId: string,
+    intentId: string,
+    outcome: FloorIntentOutcome,
+  ) => Effect.Effect<void, CliError>;
 }
 
 export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("cli/FloorStore") {}
@@ -180,70 +265,6 @@ export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("
 export function floorDirOf(configPath: string): string {
   return join(dirname(configPath), "floor");
 }
-
-const HEX_64 = /^[0-9a-f]{64}$/;
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return isNonNegativeInteger(value) && value > 0;
-}
-
-function isHex64(value: unknown): value is string {
-  return typeof value === "string" && HEX_64.test(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function decodeChainHead(value: unknown): ChainHeadFloor | null {
-  if (!isRecord(value) || !isPositiveInteger(value["seq"]) || !isHex64(value["hashHex"])) {
-    return null;
-  }
-  return { seq: value["seq"], hashHex: value["hashHex"] };
-}
-
-function decodeVariableFloor(value: unknown): VariableFloor | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (!isPositiveInteger(value["metaVersion"]) || !isHex64(value["metaSigHashHex"])) {
-    return null;
-  }
-  const meta = {
-    metaVersion: value["metaVersion"],
-    metaSigHashHex: value["metaSigHashHex"],
-  };
-  if (value["status"] === "deleted") {
-    return { status: "deleted", ...meta };
-  }
-  if (
-    value["status"] !== "active" ||
-    !isPositiveInteger(value["version"]) ||
-    !isPositiveInteger(value["epoch"]) ||
-    !isHex64(value["valueSigHashHex"])
-  ) {
-    return null;
-  }
-  return {
-    status: "active",
-    version: value["version"],
-    epoch: value["epoch"],
-    valueSigHashHex: value["valueSigHashHex"],
-    ...meta,
-  };
-}
-
-// レコードキー(environmentId / variableId)は §12-1 の受理形式
-// (@maruhi/core の isEnvironmentId / isVariableId)を要求する。正規の床は wire
-// スキーマ検証済み(または CLI 採番)の ID しか書かないため、形式外のキー =
-// 破損として全体拒否してよい。これは `__proto__`(先頭 `_` で形式外 — ブラケット
-// 代入でプロトタイプ設定になりエントリが黙って欠落する)を構造的に排除する。
-// **`constructor` / `prototype` は正当な ID であり拒否しない**(レビュー①再指摘 —
-// 参照側は floorRecordGet の own-property 参照で継承プロパティへの解決を防ぐ)
 
 /**
  * Own-property lookup for floor records. `constructor` / `prototype` は §12-1 の
@@ -258,346 +279,262 @@ export function floorRecordGet<T>(
   return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-/**
- * マニフェスト床のデコード。**フィールド自体の欠落(undefined)は「マニフェスト
- * 床なし」として許容**(マニフェスト導入前の v1 床ファイルとの互換 — 既存の
- * 値・メタ床の検出材料を捨てない)。存在するのに形が壊れている場合は他の
- * フィールドと同じく全体破損(厳格デコード)。
- */
-function decodeManifestFloor(value: unknown): ManifestFloor | null | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    !isPositiveInteger(value["manifestVersion"]) ||
-    !isPositiveInteger(value["epoch"]) ||
-    !isHex64(value["manifestSigHashHex"])
-  ) {
-    return null;
-  }
-  return {
-    manifestVersion: value["manifestVersion"],
-    epoch: value["epoch"],
-    manifestSigHashHex: value["manifestSigHashHex"],
-  };
+/** 全座標が bottom の環境床(部分観測の join 台座)。 */
+export function emptyEnvironmentFloor(): EnvironmentFloor {
+  return { pullEpoch: 0, observedEpoch: 0, metaVersion: 0, metaSigHashHex: "", variables: {} };
 }
 
-/** 変数床レコードのデコード(1 件でも壊れていれば全体破損 — 厳格デコード)。 */
-function decodeVariablesRecord(value: unknown): Record<string, VariableFloor> | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const variables: Record<string, VariableFloor> = {};
-  for (const [variableId, raw] of Object.entries(value)) {
-    const variable = decodeVariableFloor(raw);
-    if (variable === null || !isVariableId(variableId)) {
-      return null;
-    }
-    variables[variableId] = variable;
-  }
-  return variables;
-}
+/** join 中に検出した同座標 conflict の受け皿。 */
+export type ConflictSink = (conflict: FloorConflict) => void;
 
-function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
-  if (
-    !isRecord(value) ||
-    !isPositiveInteger(value["pullEpoch"]) ||
-    !isPositiveInteger(value["metaVersion"]) ||
-    !isHex64(value["metaSigHashHex"])
-  ) {
-    return null;
-  }
-  const manifest = decodeManifestFloor(value["manifest"]);
-  const variables = decodeVariablesRecord(value["variables"]);
-  if (manifest === null || variables === null) {
-    return null;
-  }
-  return {
-    pullEpoch: value["pullEpoch"],
-    metaVersion: value["metaVersion"],
-    metaSigHashHex: value["metaSigHashHex"],
-    ...(manifest === undefined ? {} : { manifest }),
-    variables,
-  };
+interface VersionedEvidence {
+  readonly version: number;
+  readonly hashHex: string;
 }
 
 /**
- * 床ファイルの厳格デコード。スキーマ不一致は全体を破損扱い(部分読みしない —
- * 半端な床は「検査した」と「していない」の区別を曖昧にする)。
+ * 同一版・異ハッシュ = join 未定義。証拠を sink へ流し、代表値は**ハッシュの
+ * 辞書順で大きい側**にする(可換・冪等 — fold の順序に依存しない決定的な代表。
+ * conflict の存在自体が使用拒否の条件なので、代表の選び方は検出に影響しない)。
  */
-export function decodeProjectFloor(json: string): ProjectFloor | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
+function joinVersioned<T extends VersionedEvidence>(
+  a: T,
+  b: T,
+  conflict: (first: VersionedEvidence, second: VersionedEvidence) => FloorConflict,
+  sink: ConflictSink,
+): T {
+  if (a.version !== b.version) {
+    return a.version > b.version ? a : b;
   }
-  if (!isRecord(value) || value["v"] !== 1) {
-    return null;
+  if (a.hashHex === b.hashHex) {
+    return a;
   }
-  const chainHead = decodeChainHead(value["chainHead"]);
-  if (chainHead === null || !isRecord(value["environments"])) {
-    return null;
-  }
-  const environments: Record<string, EnvironmentFloor> = {};
-  for (const [environmentId, raw] of Object.entries(value["environments"])) {
-    const environment = decodeEnvironmentFloor(raw);
-    if (environment === null || !isEnvironmentId(environmentId)) {
-      return null;
-    }
-    environments[environmentId] = environment;
-  }
-  return { v: 1, chainHead, environments };
+  sink(conflict(a, b));
+  return a.hashHex > b.hashHex ? a : b;
 }
 
-/** チェーンヘッドの前進マージ(seq の大きい側が勝つ。後退はさせない)。 */
-function mergeHead(existing: ChainHeadFloor, incoming: ChainHeadFloor): ChainHeadFloor {
-  return incoming.seq > existing.seq ? incoming : existing;
+/** チェーンヘッドの join(seq 前進のみ。同一 seq の異ハッシュ = 分岐の証拠)。 */
+export function joinChainHead(
+  existing: ChainHeadFloor | null,
+  incoming: ChainHeadFloor,
+  sink: ConflictSink,
+): ChainHeadFloor {
+  if (existing === null) {
+    return incoming;
+  }
+  const joined = joinVersioned(
+    { version: existing.seq, hashHex: existing.hashHex },
+    { version: incoming.seq, hashHex: incoming.hashHex },
+    (first, second) => ({
+      kind: "chain-head",
+      environmentId: null,
+      variableId: null,
+      firstVersion: first.version,
+      firstHashHex: first.hashHex,
+      secondVersion: second.version,
+      secondHashHex: second.hashHex,
+    }),
+    sink,
+  );
+  return { seq: joined.version, hashHex: joined.hashHex };
+}
+
+function metaConflict(
+  kind: "variable-meta" | "environment-meta",
+  environmentId: string,
+  variableId: string | null,
+): (first: VersionedEvidence, second: VersionedEvidence) => FloorConflict {
+  return (first, second) => ({
+    kind,
+    environmentId,
+    variableId,
+    firstVersion: first.version,
+    firstHashHex: first.hashHex,
+    secondVersion: second.version,
+    secondHashHex: second.hashHex,
+  });
+}
+
+interface MetaSide {
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+}
+
+function joinMetaSide(
+  environmentId: string,
+  variableId: string | null,
+  a: MetaSide,
+  b: MetaSide,
+  sink: ConflictSink,
+): MetaSide {
+  const joined = joinVersioned(
+    { version: a.metaVersion, hashHex: a.metaSigHashHex },
+    { version: b.metaVersion, hashHex: b.metaSigHashHex },
+    metaConflict(variableId === null ? "environment-meta" : "variable-meta", environmentId, variableId),
+    sink,
+  );
+  return { metaVersion: joined.version, metaSigHashHex: joined.hashHex };
+}
+
+/** deleted(終端)と active の join: 削除後の active 観測 = undeletion の証拠。 */
+function joinDeletedWithActive(
+  environmentId: string,
+  variableId: string,
+  deleted: Extract<VariableFloor, { status: "deleted" }>,
+  active: Extract<VariableFloor, { status: "active" }>,
+  sink: ConflictSink,
+): VariableFloor {
+  if (active.metaVersion > deleted.metaVersion) {
+    // deleted は終端状態(§4.2)— それより進んだ metaVersion の active 観測は
+    // 正当な経路が存在しない(無断復活の証拠)。代表は deleted のまま
+    sink({
+      kind: "undeletion",
+      environmentId,
+      variableId,
+      firstVersion: deleted.metaVersion,
+      firstHashHex: deleted.metaSigHashHex,
+      secondVersion: active.metaVersion,
+      secondHashHex: active.metaSigHashHex,
+    });
+  } else if (active.metaVersion === deleted.metaVersion) {
+    // 同一 metaVersion で status が違えば signed bytes も必ず違う = 規則 (b)
+    sink({
+      kind: "variable-meta",
+      environmentId,
+      variableId,
+      firstVersion: deleted.metaVersion,
+      firstHashHex: deleted.metaSigHashHex,
+      secondVersion: active.metaVersion,
+      secondHashHex: active.metaSigHashHex,
+    });
+  }
+  return deleted;
 }
 
 /**
- * 変数床の単調マージ。ディスク上の床は**決して後退させない**(read-merge-write
- * の窓で古いコミットが後に着地しても、並行プロセスが確立した検出材料を失わ
- * ない — 悪意サーバーが応答遅延で着地順を制御しても床を過去世代へ戻せない):
- * deleted は終端状態(active で上書きしない・metaVersion の大きい側のみ採用)、
- * active 同士は値側(version)とメタ側(metaVersion)を独立に単調マージする。
- * どちらの入力も §6.3 検証を通過した床レコードなので、この規則は健全。
+ * 変数床の join。deleted は終端状態(active で上書きしない)、active 同士は
+ * 値側(version)とメタ側(metaVersion)を独立に join する。どちらの入力も
+ * §6.3 検証を通過した観測なので、同座標の相違はすべて equivocation の証拠。
  */
-function mergeVariableFloor(
+export function joinVariableFloor(
+  environmentId: string,
+  variableId: string,
   existing: VariableFloor | undefined,
   incoming: VariableFloor,
+  sink: ConflictSink,
 ): VariableFloor {
   if (existing === undefined) {
     return incoming;
   }
-  if (existing.status === "deleted" || incoming.status === "deleted") {
-    // 削除は終端状態(§4.2 / session-15 §2-2): deleted 記録は active で上書き
-    // せず、tombstone 同士・active → deleted は metaVersion の前進のみ受け入れる
-    if (incoming.status === "deleted" && incoming.metaVersion > existing.metaVersion) {
-      return incoming;
+  // 片側だけ deleted: metaVersion の大小に依らず deleted(終端)が代表。
+  // active 側が deleted より進んでいれば undeletion、同一版なら規則 (b) の
+  // 証拠として joinDeletedWithActive が sink へ流す
+  if (existing.status === "deleted") {
+    if (incoming.status === "deleted") {
+      const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
+      return { status: "deleted", ...meta };
     }
-    return existing;
+    return joinDeletedWithActive(environmentId, variableId, existing, incoming, sink);
   }
-  const value = incoming.version >= existing.version ? incoming : existing;
-  const meta = incoming.metaVersion >= existing.metaVersion ? incoming : existing;
+  if (incoming.status === "deleted") {
+    return joinDeletedWithActive(environmentId, variableId, incoming, existing, sink);
+  }
+  const value = joinVersioned(
+    { version: existing.version, hashHex: existing.valueSigHashHex, epoch: existing.epoch },
+    { version: incoming.version, hashHex: incoming.valueSigHashHex, epoch: incoming.epoch },
+    (first, second) => ({
+      kind: "value",
+      environmentId,
+      variableId,
+      firstVersion: first.version,
+      firstHashHex: first.hashHex,
+      secondVersion: second.version,
+      secondHashHex: second.hashHex,
+    }),
+    sink,
+  );
+  const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
   return {
     status: "active",
     version: value.version,
     epoch: value.epoch,
-    valueSigHashHex: value.valueSigHashHex,
-    metaVersion: meta.metaVersion,
-    metaSigHashHex: meta.metaSigHashHex,
+    valueSigHashHex: value.hashHex,
+    ...meta,
   };
 }
 
-/** マニフェスト床の単調マージ(manifestVersion の大きい側が勝つ。欠落側は負けない)。 */
-function mergeManifestFloor(
+/** マニフェスト床の join(manifestVersion 前進のみ。同一版の異ハッシュ = 分岐の証拠)。 */
+export function joinManifestFloor(
+  environmentId: string,
   existing: ManifestFloor | undefined,
   incoming: ManifestFloor | undefined,
+  sink: ConflictSink,
 ): ManifestFloor | undefined {
-  if (existing === undefined) {
-    return incoming;
+  if (existing === undefined || incoming === undefined) {
+    return existing ?? incoming;
   }
-  if (incoming === undefined) {
-    return existing;
-  }
-  return incoming.manifestVersion >= existing.manifestVersion ? incoming : existing;
+  const joined = joinVersioned(
+    {
+      version: existing.manifestVersion,
+      hashHex: existing.manifestSigHashHex,
+      epoch: existing.epoch,
+    },
+    {
+      version: incoming.manifestVersion,
+      hashHex: incoming.manifestSigHashHex,
+      epoch: incoming.epoch,
+    },
+    (first, second) => ({
+      kind: "manifest",
+      environmentId,
+      variableId: null,
+      firstVersion: first.version,
+      firstHashHex: first.hashHex,
+      secondVersion: second.version,
+      secondHashHex: second.hashHex,
+    }),
+    sink,
+  );
+  return { manifestVersion: joined.version, epoch: joined.epoch, manifestSigHashHex: joined.hashHex };
 }
 
-/** 環境床の単調マージ(pullEpoch は max・メタ / マニフェストは版の大きい側・変数は単調 union)。 */
-function mergeEnvironmentFloor(
+/**
+ * 環境床の join(各座標を独立に): pullEpoch / observedEpoch は max、
+ * メタ / マニフェストは版前進 + 同版相違の証拠化、変数は単調 union。
+ */
+export function joinEnvironmentFloor(
+  environmentId: string,
   existing: EnvironmentFloor | undefined,
   incoming: EnvironmentFloor,
+  sink: ConflictSink,
 ): EnvironmentFloor {
   if (existing === undefined) {
     return incoming;
   }
-  const meta = incoming.metaVersion >= existing.metaVersion ? incoming : existing;
-  const manifest = mergeManifestFloor(existing.manifest, incoming.manifest);
+  const meta =
+    existing.metaVersion === 0
+      ? { metaVersion: incoming.metaVersion, metaSigHashHex: incoming.metaSigHashHex }
+      : incoming.metaVersion === 0
+        ? { metaVersion: existing.metaVersion, metaSigHashHex: existing.metaSigHashHex }
+        : joinMetaSide(environmentId, null, existing, incoming, sink);
+  const manifest = joinManifestFloor(environmentId, existing.manifest, incoming.manifest, sink);
   // union: 正当な床の変数キーは消えない(削除も tombstone レコードとして残る)
   // ため、片側にしかない変数は保持する
   const variables: Record<string, VariableFloor> = { ...existing.variables };
   for (const [variableId, variable] of Object.entries(incoming.variables)) {
-    variables[variableId] = mergeVariableFloor(
+    variables[variableId] = joinVariableFloor(
+      environmentId,
+      variableId,
       floorRecordGet(existing.variables, variableId),
       variable,
+      sink,
     );
   }
   return {
     pullEpoch: Math.max(existing.pullEpoch, incoming.pullEpoch),
-    metaVersion: meta.metaVersion,
-    metaSigHashHex: meta.metaSigHashHex,
+    observedEpoch: Math.max(existing.observedEpoch, incoming.observedEpoch),
+    ...meta,
     ...(manifest === undefined ? {} : { manifest }),
     variables,
-  };
-}
-
-type FloorMerge = (current: ProjectFloor | null) => ProjectFloor;
-
-function applyHead(head: ChainHeadFloor): FloorMerge {
-  return (current) =>
-    current === null
-      ? { v: 1, chainHead: head, environments: {} }
-      : { ...current, chainHead: mergeHead(current.chainHead, head) };
-}
-
-function applyPull(commit: PullCommit): FloorMerge {
-  return (current) => {
-    const base = applyHead(commit.chainHead)(current);
-    return {
-      ...base,
-      environments: {
-        ...base.environments,
-        [commit.environmentId]: mergeEnvironmentFloor(
-          floorRecordGet(base.environments, commit.environmentId),
-          commit.environment,
-        ),
-      },
-    };
-  };
-}
-
-/**
- * 既存の環境レコードへの単調更新の共通骨格。環境床がない(並行破損等)場合、
- * 環境レコードを捏造しない: 規則 (c) 基準(pullEpoch)は pull でしか確定できず、
- * ここで作ると「チェーン同期単独で基準を前進させない」規範に反する。ヘッド
- * 前進のみ反映する(床は SHOULD — 検出材料が一世代分薄くなるだけで誤検出はない)。
- */
-function applyEnvironmentUpdate(
-  chainHead: ChainHeadFloor,
-  environmentId: string,
-  update: (environment: EnvironmentFloor) => EnvironmentFloor,
-): FloorMerge {
-  return (current) => {
-    const base = applyHead(chainHead)(current);
-    const environment = floorRecordGet(base.environments, environmentId);
-    if (environment === undefined) {
-      return base;
-    }
-    return {
-      ...base,
-      environments: { ...base.environments, [environmentId]: update(environment) },
-    };
-  };
-}
-
-function applyPush(commit: PushCommit): FloorMerge {
-  return applyEnvironmentUpdate(commit.chainHead, commit.environmentId, (environment) => {
-    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
-    return {
-      ...environment,
-      ...(manifest === undefined ? {} : { manifest }),
-      variables: {
-        ...environment.variables,
-        [commit.variableId]: mergeVariableFloor(
-          floorRecordGet(environment.variables, commit.variableId),
-          commit.variable,
-        ),
-      },
-    };
-  });
-}
-
-function applyManifest(commit: ManifestCommit): FloorMerge {
-  return applyEnvironmentUpdate(commit.chainHead, commit.environmentId, (environment) => {
-    const manifest = mergeManifestFloor(environment.manifest, commit.manifest);
-    return { ...environment, ...(manifest === undefined ? {} : { manifest }) };
-  });
-}
-
-function isFileMissingError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
-}
-
-/**
- * 床ファイルの読み込み。missing は **ENOENT のみ**: それ以外の I/O エラー
- * (EACCES / EIO 等)を「初回」と同一視すると、読めないだけの床を次のコミットが
- * 空から作り直して全消去する(検出機構の不可視な無効化)ため、例外として投げて
- * 呼び出し側のエラーにする。
- */
-async function readFloorFile(path: string): Promise<FloorLoadResult> {
-  let json: string;
-  try {
-    json = await readFile(path, "utf8");
-  } catch (error) {
-    if (isFileMissingError(error)) {
-      return { floor: null, state: "missing" };
-    }
-    throw error;
-  }
-  const floor = decodeProjectFloor(json);
-  return floor === null ? { floor: null, state: "corrupt" } : { floor, state: "loaded" };
-}
-
-/** File-backed floor store rooted at `dir` (production and tests share this). */
-export function makeFileFloorStore(dir: string): FloorStoreShape {
-  const pathOf = (projectId: string): string => {
-    // projectId は genesis ハッシュ(hex 64)のはずだが、ファイル名に使う前に
-    // 形式を強制する(パス組み立てへの信頼できない文字列の混入を防ぐ)
-    if (!isProjectId(projectId)) {
-      throw new Error(`invalid project id for floor path: ${projectId}`);
-    }
-    return join(dir, `${projectId}.json`);
-  };
-
-  const write = (projectId: string, merge: FloorMerge): Effect.Effect<ProjectFloor, CliError> =>
-    Effect.tryPromise({
-      try: async () => {
-        const path = pathOf(projectId);
-        // read-merge-write: コミット直前に最新のファイル内容へマージする
-        // (同一プロジェクトの並行 CLI と競合しても、マージ規則の単調性により
-        // ディスク上の床は後退しない)。missing 以外の読み取り失敗は throw され、
-        // 空からの作り直しによる床の無警告全消去を防ぐ
-        const loaded = await readFloorFile(path);
-        if (loaded.state === "corrupt") {
-          // 破損床は作り直す(読み込み時に警告済み — fail-open の帰結)前に
-          // 退避する: 床ファイルは証拠の半分であり、破損の形自体もフォレンジック
-          // 材料になる(上書きで消さない)
-          await rename(path, `${path}.corrupt-${Date.now()}`);
-        }
-        const next = merge(loaded.floor);
-        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-        // temp + rename の原子的置き換え(§6.3 の同一トランザクション規範):
-        // 規則 (c) 基準と変数床が別々に見える中間状態をディスク上に作らない
-        const temp = `${path}.${process.pid}.tmp`;
-        await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-        await rename(temp, path);
-        return next;
-      },
-      catch: () =>
-        cliError(
-          `Cannot write the local floor file: ${join(dir, `${projectId}.json`)} (aborting because rollback detection cannot continue)`,
-        ),
-    });
-
-  return {
-    load: (projectId) =>
-      Effect.tryPromise({
-        try: () => readFloorFile(pathOf(projectId)),
-        catch: () =>
-          cliError(`Cannot read the local floor file: ${join(dir, `${projectId}.json`)}`),
-      }),
-    commitHead: (projectId, head) => Effect.asVoid(write(projectId, applyHead(head))),
-    commitPull: (projectId, commit) =>
-      write(projectId, applyPull(commit)).pipe(
-        // マージ済み(= ディスクへ書いた)環境床を返す。applyPull がレコードを
-        // 必ず作るため own-property 参照は常に存在する
-        Effect.map(
-          (next) => floorRecordGet(next.environments, commit.environmentId) ?? commit.environment,
-        ),
-      ),
-    commitPush: (projectId, commit) =>
-      write(projectId, applyPush(commit)).pipe(
-        Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
-      ),
-    commitManifest: (projectId, commit) =>
-      write(projectId, applyManifest(commit)).pipe(
-        Effect.map((next) => floorRecordGet(next.environments, commit.environmentId) ?? null),
-      ),
   };
 }
