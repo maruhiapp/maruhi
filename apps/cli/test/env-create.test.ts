@@ -662,9 +662,7 @@ describe("maruhi env create", () => {
     const env = await startEnv(built.projectId, server.handlers, owner);
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
-    const loaded = await Effect.runPromise(
-      makeFileFloorStore(env.floorDir).load(built.projectId),
-    );
+    const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
     const record = loaded.floor?.environments["staging"];
     // 空変数集合の環境床: 環境メタ v1・自己発行マニフェスト v1(epoch 1)・
     // 規則 (c) の基準 = 1(空カバレッジと原子的に確立)
@@ -699,9 +697,7 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("does not show this run's create_environment");
-    const loaded = await Effect.runPromise(
-      makeFileFloorStore(env.floorDir).load(built.projectId),
-    );
+    const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
     // 床は前進していない(自分の思い込みを床に書かない)
     expect(loaded.floor?.environments["staging"]).toBeUndefined();
     // 確認義務の記録(intent)は未解決のまま残る(3-F — 次の実行の照合対象)

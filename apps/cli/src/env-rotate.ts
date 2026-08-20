@@ -589,35 +589,6 @@ function appendRotation(
         },
       ),
     );
-    // 受理確認済みマニフェストの床昇格(M1-A4 — §6.3 記録契機の「受理確認」。
-    // コマンドがエラー終了する経路でも、チェーン上の自 commitment 一致を確認
-    // できた時点で必ず走る)。床の書き込み失敗で受理済みのローテーションを
-    // 失敗扱いにしない(床は SHOULD — 警告で開示)
-    const promoteFloor = (
-      accepted: AcceptedRotation,
-      view: VerifiedProject,
-    ): Effect.Effect<string | null, never> =>
-      input.floor
-        .commitManifest(accepted.manifest, {
-          seq: view.state.headSeq,
-          hashHex: view.state.headHashHex,
-        })
-        .pipe(
-          Effect.as<string | null>(null),
-          Effect.catch((error) =>
-            Effect.succeed<string | null>(
-              `The accepted rotation could not be recorded in the local floor (${error.message}). Manifest rollback detection for this rotation starts from the next successful pull`,
-            ),
-          ),
-        );
-    const resolveQuietly = (
-      accepted: AcceptedRotation,
-      outcome: "accepted" | "accepted-superseded" | "not-accepted",
-    ): Effect.Effect<void> =>
-      // resolution の追記失敗は握り潰してよい: intent が開いたまま残る方向は
-      // 安全側(次の実行の照合が同じ判定をやり直すだけ)
-      Effect.ignore(input.floor.resolveIntent(accepted.intentId, outcome));
-
     if (attempted.kind === "failed") {
       // 確定した拒否(サーバー自身のエラー本文)や、recover が下した中断
       // (並行ローテーション検出 — 既に再同期してチェーンを見ている)は、
@@ -627,50 +598,122 @@ function appendRotation(
         return yield* Effect.fail(attempted.error);
       }
       // 送信の失敗を「何も起きなかった」と読ませない: チェーンを probe して
-      // 判別可能な outcome(M1-A4)へ落とす
-      const sent: AcceptedRotation = lastSent;
-      const probed = yield* probeAmbiguousSend({
-        resync: input.resync,
-        baseline: input.baseline,
-        environmentId: input.environmentId,
-        newEpoch: input.newEpoch,
-        dekCommitmentHex: input.dekCommitmentHex,
-        cause: attempted.error.message,
-      });
-      switch (probed.outcome.kind) {
-        case "accepted-and-current":
-        case "accepted-but-superseded": {
-          // 受理をチェーンで確認した = コマンドがエラー終了しても床は前進する
-          // (M1-A4 — 受理前の manifest / epoch 基準へ戻される窓を閉じる)
-          const floorWarning = yield* promoteFloor(sent, probed.outcome.view);
-          yield* resolveQuietly(
-            sent,
-            probed.outcome.kind === "accepted-and-current" ? "accepted" : "accepted-superseded",
-          );
-          return yield* Effect.fail(
-            floorWarning === null
-              ? probed.error
-              : cliError(`${probed.error.message}. ${floorWarning}`),
-          );
-        }
-        case "not-accepted":
-          yield* resolveQuietly(sent, "not-accepted");
-          return yield* Effect.fail(probed.error);
-        case "acceptance-unknown":
-          // probe 失敗 = acceptance-unknown: 床は前進させない(受理を確認して
-          // いない事実を床に書かない)。intent は未解決のまま残り、次の実行の
-          // 照合(チェーン同期)が解決する
-          return yield* Effect.fail(probed.error);
-        case "rejected":
-          return yield* Effect.fail(probed.error);
-      }
+      // 判別可能な outcome(M1-A4)へ落とし、必ず失敗として返す
+      return yield* settleAmbiguousRotation(input, lastSent, attempted.error.message);
     }
-    const accepted = attempted.value;
-
     // 受理後の確認はサーバー申告(応答の currentEpoch)ではなくチェーン再検証で
-    // 行う(§12-10 (3) — 複合の効果確認はチェーン同期)。ここから先の失敗は
-    // **エポックが既に進んだ後**の失敗なので、原因だけ出して「エポックが動いた・
-    // 再暗号化は未実行」という運用状態を伝え損ねない
+    // 行う(§12-10 (3) — 複合の効果確認はチェーン同期)
+    return yield* confirmAcceptedRotation(input, attempted.value);
+  });
+}
+
+/** 判別可能 outcome の共有入力(appendRotation の確認・probe 経路が使う)。 */
+interface RotationConfirmInput {
+  readonly floor: FloorHandle;
+  readonly resync: Effect.Effect<VerifiedProject, CliError>;
+  readonly baseline: VerifiedProject;
+  readonly environmentId: EnvironmentId;
+  readonly newEpoch: number;
+  readonly dekCommitmentHex: string;
+}
+
+/**
+ * 受理確認済みマニフェストの床昇格(M1-A4 — §6.3 記録契機の「受理確認」。
+ * コマンドがエラー終了する経路でも、チェーン上の自 commitment 一致を確認
+ * できた時点で必ず走る)。床の書き込み失敗で受理済みのローテーションを
+ * 失敗扱いにしない(床は SHOULD — 警告で開示)。
+ */
+function promoteAcceptedManifest(
+  floor: FloorHandle,
+  accepted: AcceptedRotation,
+  view: VerifiedProject,
+): Effect.Effect<string | null, never> {
+  return floor
+    .commitManifest(accepted.manifest, {
+      seq: view.state.headSeq,
+      hashHex: view.state.headHashHex,
+    })
+    .pipe(
+      Effect.as<string | null>(null),
+      Effect.catch((error) =>
+        Effect.succeed<string | null>(
+          `The accepted rotation could not be recorded in the local floor (${error.message}). Manifest rollback detection for this rotation starts from the next successful pull`,
+        ),
+      ),
+    );
+}
+
+/**
+ * intent(3-F)の解決。resolution の追記失敗は握り潰してよい: intent が
+ * 開いたまま残る方向は安全側(次の実行の照合が同じ判定をやり直すだけ)。
+ */
+function resolveRotationIntent(
+  floor: FloorHandle,
+  accepted: AcceptedRotation,
+  outcome: "accepted" | "accepted-superseded" | "not-accepted",
+): Effect.Effect<void> {
+  return Effect.ignore(floor.resolveIntent(accepted.intentId, outcome));
+}
+
+/**
+ * 応答が消えた送信の決着(M1-A4): チェーンを probe して判別可能な outcome へ
+ * 落とす。accepted 系はコマンドがエラー終了しても床を前進させ、intent を閉じる。
+ * acceptance-unknown は床を前進させず intent も未解決のまま残す(受理を確認して
+ * いない事実を床に書かない — 次の実行の照合〔チェーン同期〕が解決する)。
+ */
+function settleAmbiguousRotation(
+  input: RotationConfirmInput,
+  sent: AcceptedRotation,
+  cause: string,
+): Effect.Effect<never, CliError> {
+  return Effect.gen(function* () {
+    const probed = yield* probeAmbiguousSend({
+      resync: input.resync,
+      baseline: input.baseline,
+      environmentId: input.environmentId,
+      newEpoch: input.newEpoch,
+      dekCommitmentHex: input.dekCommitmentHex,
+      cause,
+    });
+    const outcome = probed.outcome;
+    if (outcome.kind === "accepted-and-current" || outcome.kind === "accepted-but-superseded") {
+      // 受理をチェーンで確認した = コマンドがエラー終了しても床は前進する
+      // (M1-A4 — 受理前の manifest / epoch 基準へ戻される窓を閉じる)
+      const floorWarning = yield* promoteAcceptedManifest(input.floor, sent, outcome.view);
+      yield* resolveRotationIntent(
+        input.floor,
+        sent,
+        outcome.kind === "accepted-and-current" ? "accepted" : "accepted-superseded",
+      );
+      return yield* Effect.fail(
+        floorWarning === null ? probed.error : cliError(`${probed.error.message}. ${floorWarning}`),
+      );
+    }
+    if (outcome.kind === "not-accepted") {
+      yield* resolveRotationIntent(input.floor, sent, "not-accepted");
+    }
+    return yield* Effect.fail(probed.error);
+  });
+}
+
+/**
+ * 200 が返った複合の受理後確認(§12-10 (3) — チェーン同期)。ここから先の
+ * 失敗は**エポックが既に進んだ後**の失敗なので、原因だけ出して「エポックが
+ * 動いた・再暗号化は未実行」という運用状態を伝え損ねない。
+ */
+function confirmAcceptedRotation(
+  input: RotationConfirmInput,
+  accepted: AcceptedRotation,
+): Effect.Effect<
+  {
+    readonly view: VerifiedProject;
+    readonly memberCount: number;
+    readonly member: ChainMember;
+    readonly floorWarning: string | null;
+  },
+  CliError
+> {
+  return Effect.gen(function* () {
     const postCheckError = (message: string): CliError =>
       cliError(
         `The rotation (epoch=${input.newEpoch}) was accepted, but the post-acceptance check failed: ${message}. Environment ${input.environmentId}'s epoch has advanced and no current values have been re-encrypted — resolve the cause and re-run to resume re-encryption without advancing the epoch`,
@@ -694,7 +737,7 @@ function appendRotation(
       // 自分で生成した DEK にも同じ規律を適用する(受理されたエントリが自分の
       // ものであることの確認 = 再暗号化を他人の DEK 前提で始めない)。
       // 2xx なのにチェーンに自分の commitment がない = 受理されていない(確定)
-      yield* resolveQuietly(accepted, "not-accepted");
+      yield* resolveRotationIntent(input.floor, accepted, "not-accepted");
       return yield* Effect.fail(
         postCheckError(
           `The accepted epoch=${input.newEpoch} commitment does not match the generated DEK's (CRYPTO_SPEC §5.2). This DEK will not be used`,
@@ -705,8 +748,8 @@ function appendRotation(
       // accepted-but-superseded: 自分の rotate は受理された(commitment 一致)が、
       // 直後の別 rotate が現エポックを追い越した。自己発行マニフェストは最低床
       // として残す(M1-A4 の固定テスト —「200 + 直後に別 rotate」)
-      const floorWarning = yield* promoteFloor(accepted, view);
-      yield* resolveQuietly(accepted, "accepted-superseded");
+      const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
+      yield* resolveRotationIntent(input.floor, accepted, "accepted-superseded");
       return yield* Effect.fail(
         postCheckError(
           `The resynced chain is now at epoch ${environment.currentEpoch} (possibly a concurrent rotation right after acceptance). This rotation itself was accepted and its manifest was recorded in the local floor${floorWarning === null ? "" : ` (with a caveat: ${floorWarning})`}`,
@@ -715,8 +758,8 @@ function appendRotation(
     }
     // accepted-and-current: 床昇格 → intent 解決 → 成功(§12-10 (3) — 床への
     // 記録と成功報告は効果確認の通過後のみ)
-    const floorWarning = yield* promoteFloor(accepted, view);
-    yield* resolveQuietly(accepted, "accepted");
+    const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
+    yield* resolveRotationIntent(input.floor, accepted, "accepted");
     return {
       view,
       memberCount: accepted.state.deks.length,

@@ -53,8 +53,7 @@ import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { isServerRejection } from "./failure.ts";
-import type { FloorHandle } from "./floor-check.ts";
+import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
 import { type ManifestDigestEntry, signNextManifest } from "./manifest.ts";
 import { signCreateStatement } from "./meta-statement.ts";
@@ -534,15 +533,9 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           },
         })
         .pipe(
-          Effect.tapError((error) =>
-            // サーバー自身のエラー本文で拒否された = 効果は生じていない(確定)。
-            // 転送層の失敗(応答消失)は未解決のまま残す — 次の照合機会
-            // (metadata pull)が解決する。resolution の追記失敗は握り潰して
-            // よい: intent が開いたまま残る方向は安全側(要照合が残るだけ)
-            isServerRejection(error)
-              ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
-              : Effect.void,
-          ),
+          // サーバー自身のエラー本文で拒否された = 効果は生じていない(確定)—
+          // intent を閉じる(floor-check.ts の共有コールバック)
+          Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)),
         );
       return {
         accepted,

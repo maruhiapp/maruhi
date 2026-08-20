@@ -27,8 +27,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { isServerRejection } from "./failure.ts";
-import type { FloorHandle } from "./floor-check.ts";
+import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
 import { signNextManifest } from "./manifest.ts";
 import { signCreateStatement } from "./meta-statement.ts";
@@ -314,14 +313,9 @@ function attemptCreate(
         },
       })
       .pipe(
-        Effect.tapError((error) =>
-          // サーバー自身のエラー本文での拒否(CAS 409 含む)= 効果は生じて
-          // いない(確定)— intent を閉じる。転送層の失敗(応答消失)は
-          // 未解決のまま残し、次の実行の照合(チェーン同期)が解決する
-          isServerRejection(error)
-            ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
-            : Effect.void,
-        ),
+        // サーバー自身のエラー本文での拒否(CAS 409 含む)= 効果は生じていない
+        // (確定)— intent を閉じる(floor-check.ts の共有コールバック)
+        Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)),
       );
     return {
       state,

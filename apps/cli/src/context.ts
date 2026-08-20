@@ -256,7 +256,10 @@ function reconcileCompositeIntents(input: {
       if (accepted) {
         // 受理済みと確認 — 自己発行マニフェストの床昇格(検証済み事実の join)
         yield* input.store.commitManifest(input.projectId, {
-          chainHead: { seq: input.verified.state.headSeq, hashHex: input.verified.state.headHashHex },
+          chainHead: {
+            seq: input.verified.state.headSeq,
+            hashHex: input.verified.state.headHashHex,
+          },
           environmentId: intent.environmentId,
           manifest: {
             manifestVersion: intent.manifestVersion,

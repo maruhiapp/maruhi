@@ -22,6 +22,7 @@
 import { Effect } from "effect";
 
 import type { CliError } from "./errors.ts";
+import { isServerRejection } from "./failure.ts";
 import {
   type ChainHeadFloor,
   type EnvironmentFloor,
@@ -381,11 +382,7 @@ function checkManifestEpochBaseline(
     return null;
   }
   const floorVersion = floor.manifest?.manifestVersion ?? 0;
-  const baselineEpoch = Math.max(
-    floor.pullEpoch,
-    floor.observedEpoch,
-    floor.manifest?.epoch ?? 0,
-  );
+  const baselineEpoch = Math.max(floor.pullEpoch, floor.observedEpoch, floor.manifest?.epoch ?? 0);
   if (manifest.manifestVersion > floorVersion && manifest.epoch < baselineEpoch) {
     return {
       kind: "stale-manifest-injection",
@@ -481,11 +478,11 @@ function checkFloorDeleted(
  * 共通骨格。active 側の検査だけが形(値付き / メタのみ)で差し替わる。
  * active / deleted の同一 ID 併置は values.ts が拒否済み。
  */
-function checkFloorCommon<T>(
+function checkFloorCommon<T extends { readonly variableId: string }>(
   floor: EnvironmentFloor,
   environment: VerifiedMetaEvidence,
-  actives: ReadonlyMap<string, T>,
-  tombstones: ReadonlyMap<string, VerifiedTombstone>,
+  activeList: readonly T[],
+  tombstoneList: readonly VerifiedTombstone[],
   checkActive: (
     variableId: string,
     variableFloor: ActiveVariableFloor,
@@ -494,6 +491,8 @@ function checkFloorCommon<T>(
   ) => FloorViolation | null,
   toMeta: (active: T) => VerifiedMetaEvidence,
 ): FloorViolation | null {
+  const actives = new Map(activeList.map((value) => [value.variableId, value]));
+  const tombstones = new Map(tombstoneList.map((tombstone) => [tombstone.variableId, tombstone]));
   const environmentViolation = checkMetaAgainstFloor(
     "environment",
     null,
@@ -533,15 +532,11 @@ export function checkEnvironmentPull(
   if (floor === null) {
     return null;
   }
-  const actives = new Map(snapshot.variables.map((value) => [value.variableId, value]));
-  const tombstones = new Map(
-    snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
-  );
   const violation = checkFloorCommon(
     floor,
     snapshot.environment,
-    actives,
-    tombstones,
+    snapshot.variables,
+    snapshot.tombstones,
     checkFloorActive,
     metaEvidenceOf,
   );
@@ -590,15 +585,11 @@ export function checkEnvironmentMetadataPull(
   if (floor === null) {
     return null;
   }
-  const actives = new Map(snapshot.variables.map((statement) => [statement.variableId, statement]));
-  const tombstones = new Map(
-    snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
-  );
   const violation = checkFloorCommon(
     floor,
     snapshot.environment,
-    actives,
-    tombstones,
+    snapshot.variables,
+    snapshot.tombstones,
     checkFloorActiveMeta,
     (statement) => statement,
   );
@@ -719,6 +710,23 @@ export interface FloorHandle {
   ) => Effect.Effect<void, CliError>;
 }
 
+/**
+ * 送信の失敗がサーバー自身のエラー本文での拒否(= 効果は生じていない — 確定)
+ * なら intent(3-F)を rejected で閉じる `Effect.tapError` 用コールバック。
+ * 転送層の失敗(応答消失)は未解決のまま残す — 次の照合機会(チェーン同期 /
+ * metadata-only pull)が解決する。resolution の追記失敗は握り潰してよい:
+ * intent が開いたまま残る方向は安全側(要照合が残るだけ)。
+ */
+export function rejectIntentOnServerRejection(
+  floor: FloorHandle,
+  intentId: string,
+): (error: unknown) => Effect.Effect<void> {
+  return (error) =>
+    isServerRejection(error)
+      ? Effect.ignore(floor.resolveIntent(intentId, "rejected"))
+      : Effect.void;
+}
+
 /** 床ストアに対する環境床ハンドルを作る。 */
 export function makeFloorHandle(input: {
   readonly store: FloorStoreShape;
@@ -773,7 +781,14 @@ export function makeFloorHandle(input: {
           current = joinEnvironmentFloor(
             input.environmentId,
             current,
-            { pullEpoch: 0, observedEpoch: manifest.epoch, metaVersion: 0, metaSigHashHex: "", manifest, variables: {} },
+            {
+              pullEpoch: 0,
+              observedEpoch: manifest.epoch,
+              metaVersion: 0,
+              metaSigHashHex: "",
+              manifest,
+              variables: {},
+            },
             () => {},
           );
         }

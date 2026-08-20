@@ -370,7 +370,11 @@ function joinMetaSide(
   const joined = joinVersioned(
     { version: a.metaVersion, hashHex: a.metaSigHashHex },
     { version: b.metaVersion, hashHex: b.metaSigHashHex },
-    metaConflict(variableId === null ? "environment-meta" : "variable-meta", environmentId, variableId),
+    metaConflict(
+      variableId === null ? "environment-meta" : "variable-meta",
+      environmentId,
+      variableId,
+    ),
     sink,
   );
   return { metaVersion: joined.version, metaSigHashHex: joined.hashHex };
@@ -416,7 +420,7 @@ function joinDeletedWithActive(
  * 値側(version)とメタ側(metaVersion)を独立に join する。どちらの入力も
  * §6.3 検証を通過した観測なので、同座標の相違はすべて equivocation の証拠。
  */
-export function joinVariableFloor(
+function joinVariableFloor(
   environmentId: string,
   variableId: string,
   existing: VariableFloor | undefined,
@@ -464,7 +468,7 @@ export function joinVariableFloor(
 }
 
 /** マニフェスト床の join(manifestVersion 前進のみ。同一版の異ハッシュ = 分岐の証拠)。 */
-export function joinManifestFloor(
+function joinManifestFloor(
   environmentId: string,
   existing: ManifestFloor | undefined,
   incoming: ManifestFloor | undefined,
@@ -495,7 +499,11 @@ export function joinManifestFloor(
     }),
     sink,
   );
-  return { manifestVersion: joined.version, epoch: joined.epoch, manifestSigHashHex: joined.hashHex };
+  return {
+    manifestVersion: joined.version,
+    epoch: joined.epoch,
+    manifestSigHashHex: joined.hashHex,
+  };
 }
 
 /**

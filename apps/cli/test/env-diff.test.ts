@@ -20,9 +20,6 @@
 //  9. 書き方の誤り(環境 1 つ・同一環境 ID・他操作専用オプション)は
 //     usage エラー(2)で、**通信より前**に落ちる
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";

@@ -150,6 +150,43 @@ function isVariableIdValue(value: unknown): value is string {
   return typeof value === "string" && isVariableId(value);
 }
 
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+const isNullOr =
+  (check: (value: unknown) => boolean) =>
+  (value: unknown): boolean =>
+    value === null || check(value);
+
+/**
+ * フィールド仕様の一括検査。strict デコードの `||` 連鎖(1 条件 = 1 分岐)を
+ * データへ畳む — fallow の複雑度ゲート対応であると同時に、仕様の列挙が
+ * 見た目にもフィールド表になる。
+ */
+function fieldsValid(
+  record: Record<string, unknown>,
+  spec: Readonly<Record<string, (value: unknown) => boolean>>,
+): boolean {
+  return Object.entries(spec).every(([key, check]) => check(record[key]));
+}
+
+/** 全要素が strict にデコードできた場合のみ配列を返す(1 件でも壊れていれば null)。 */
+function decodeList<T>(value: unknown, decode: (item: unknown) => T | null): T[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const items: T[] = [];
+  for (const raw of value) {
+    const item = decode(raw);
+    if (item === null) {
+      return null;
+    }
+    items.push(item);
+  }
+  return items;
+}
+
 function decodeChainHead(value: unknown): ChainHeadFloor | null {
   if (!isRecord(value) || !isPositiveInteger(value["seq"]) || !isHex64(value["hashHex"])) {
     return null;
@@ -224,41 +261,47 @@ function decodeVariablesRecord(value: unknown): Record<string, VariableFloor> | 
   return variables;
 }
 
+/** manifest(省略可)+ variables の共通デコード(新形と旧形が共有する尾部)。 */
+function decodeManifestAndVariables(
+  value: Record<string, unknown>,
+): { readonly manifest?: ManifestFloor; readonly variables: Record<string, VariableFloor> } | null {
+  const manifest =
+    value["manifest"] === undefined ? undefined : decodeManifestFloor(value["manifest"]);
+  const variables = decodeVariablesRecord(value["variables"]);
+  if (manifest === null || variables === null) {
+    return null;
+  }
+  return { ...(manifest === undefined ? {} : { manifest }), variables };
+}
+
 /** 環境床(新形 — bottom 座標を許す: pullEpoch / observedEpoch / metaVersion = 0)。 */
 function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   if (
     !isRecord(value) ||
-    !isNonNegativeInteger(value["pullEpoch"]) ||
-    !isNonNegativeInteger(value["observedEpoch"]) ||
-    !isNonNegativeInteger(value["metaVersion"])
+    !fieldsValid(value, {
+      pullEpoch: isNonNegativeInteger,
+      observedEpoch: isNonNegativeInteger,
+      metaVersion: isNonNegativeInteger,
+    })
   ) {
     return null;
   }
   const metaSigHashHex = value["metaSigHashHex"];
-  if (value["metaVersion"] === 0 ? metaSigHashHex !== "" : !isHex64(metaSigHashHex)) {
-    return null;
-  }
-  const manifest = value["manifest"] === undefined ? undefined : decodeManifestFloor(value["manifest"]);
-  if (manifest === null) {
-    return null;
-  }
-  const variables = decodeVariablesRecord(value["variables"]);
-  if (variables === null) {
+  const metaValid = value["metaVersion"] === 0 ? metaSigHashHex === "" : isHex64(metaSigHashHex);
+  const tail = decodeManifestAndVariables(value);
+  if (!metaValid || tail === null) {
     return null;
   }
   return {
-    pullEpoch: value["pullEpoch"],
-    observedEpoch: value["observedEpoch"],
-    metaVersion: value["metaVersion"],
+    pullEpoch: value["pullEpoch"] as number,
+    observedEpoch: value["observedEpoch"] as number,
+    metaVersion: value["metaVersion"] as number,
     metaSigHashHex: metaSigHashHex as string,
-    ...(manifest === undefined ? {} : { manifest }),
-    variables,
+    ...tail,
   };
 }
 
-function decodeEnvironmentsRecord(
-  value: unknown,
-): Record<string, EnvironmentFloor> | null {
+function decodeEnvironmentsRecord(value: unknown): Record<string, EnvironmentFloor> | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -285,30 +328,26 @@ const CONFLICT_KINDS: readonly FloorConflict["kind"][] = [
 function decodeConflict(value: unknown): FloorConflict | null {
   if (
     !isRecord(value) ||
-    !CONFLICT_KINDS.includes(value["kind"] as FloorConflict["kind"]) ||
-    !isNonNegativeInteger(value["firstVersion"]) ||
-    !isNonNegativeInteger(value["secondVersion"]) ||
-    typeof value["firstHashHex"] !== "string" ||
-    typeof value["secondHashHex"] !== "string"
+    !fieldsValid(value, {
+      kind: (kind) => CONFLICT_KINDS.includes(kind as FloorConflict["kind"]),
+      environmentId: isNullOr(isEnvironmentIdValue),
+      variableId: isNullOr(isVariableIdValue),
+      firstVersion: isNonNegativeInteger,
+      firstHashHex: isString,
+      secondVersion: isNonNegativeInteger,
+      secondHashHex: isString,
+    })
   ) {
-    return null;
-  }
-  const environmentId = value["environmentId"];
-  const variableId = value["variableId"];
-  if (environmentId !== null && !isEnvironmentIdValue(environmentId)) {
-    return null;
-  }
-  if (variableId !== null && !isVariableIdValue(variableId)) {
     return null;
   }
   return {
     kind: value["kind"] as FloorConflict["kind"],
-    environmentId: environmentId as string | null,
-    variableId: variableId as string | null,
-    firstVersion: value["firstVersion"],
-    firstHashHex: value["firstHashHex"],
-    secondVersion: value["secondVersion"],
-    secondHashHex: value["secondHashHex"],
+    environmentId: value["environmentId"] as string | null,
+    variableId: value["variableId"] as string | null,
+    firstVersion: value["firstVersion"] as number,
+    firstHashHex: value["firstHashHex"] as string,
+    secondVersion: value["secondVersion"] as number,
+    secondHashHex: value["secondHashHex"] as string,
   };
 }
 
@@ -324,22 +363,17 @@ const INTENT_OUTCOMES: readonly FloorIntentOutcome[] = [
 function decodeIntent(value: unknown): FloorIntent | null {
   if (
     !isRecord(value) ||
-    typeof value["id"] !== "string" ||
-    !INTENT_ID.test(value["id"]) ||
-    !INTENT_OPS.includes(value["op"] as FloorIntent["op"]) ||
-    !isEnvironmentIdValue(value["environmentId"]) ||
-    !isPositiveInteger(value["epoch"]) ||
-    !isPositiveInteger(value["manifestVersion"]) ||
-    !isHex64(value["manifestSigHashHex"])
+    !fieldsValid(value, {
+      id: (id) => isString(id) && INTENT_ID.test(id),
+      op: (op) => INTENT_OPS.includes(op as FloorIntent["op"]),
+      environmentId: isEnvironmentIdValue,
+      epoch: isPositiveInteger,
+      dekCommitmentHex: isNullOr(isHex64),
+      variableId: isNullOr(isVariableIdValue),
+      manifestVersion: isPositiveInteger,
+      manifestSigHashHex: isHex64,
+    })
   ) {
-    return null;
-  }
-  const dekCommitmentHex = value["dekCommitmentHex"];
-  if (dekCommitmentHex !== null && !isHex64(dekCommitmentHex)) {
-    return null;
-  }
-  const variableId = value["variableId"];
-  if (variableId !== null && !isVariableIdValue(variableId)) {
     return null;
   }
   const declaredHead = decodeChainHead(value["declaredHead"]);
@@ -347,14 +381,14 @@ function decodeIntent(value: unknown): FloorIntent | null {
     return null;
   }
   return {
-    id: value["id"],
+    id: value["id"] as string,
     op: value["op"] as FloorIntent["op"],
     environmentId: value["environmentId"] as string,
-    epoch: value["epoch"],
-    dekCommitmentHex: dekCommitmentHex as string | null,
-    variableId: variableId as string | null,
-    manifestVersion: value["manifestVersion"],
-    manifestSigHashHex: value["manifestSigHashHex"],
+    epoch: value["epoch"] as number,
+    dekCommitmentHex: value["dekCommitmentHex"] as string | null,
+    variableId: value["variableId"] as string | null,
+    manifestVersion: value["manifestVersion"] as number,
+    manifestSigHashHex: value["manifestSigHashHex"] as string,
     declaredHead,
   };
 }
@@ -368,24 +402,10 @@ function decodeSnapshotState(value: unknown): SnapshotState | null {
     return null;
   }
   const environments = decodeEnvironmentsRecord(value["environments"]);
-  if (environments === null || !Array.isArray(value["conflicts"]) || !Array.isArray(value["intents"])) {
+  const conflicts = decodeList(value["conflicts"], decodeConflict);
+  const intents = decodeList(value["intents"], decodeIntent);
+  if (environments === null || conflicts === null || intents === null) {
     return null;
-  }
-  const conflicts: FloorConflict[] = [];
-  for (const raw of value["conflicts"]) {
-    const conflict = decodeConflict(raw);
-    if (conflict === null) {
-      return null;
-    }
-    conflicts.push(conflict);
-  }
-  const intents: FloorIntent[] = [];
-  for (const raw of value["intents"]) {
-    const intent = decodeIntent(raw);
-    if (intent === null) {
-      return null;
-    }
-    intents.push(intent);
   }
   return { chainHead, environments, conflicts, intents };
 }
@@ -401,44 +421,99 @@ function decodeScoped(
   return { head, environmentId: value["environmentId"] as string };
 }
 
-function decodeEnvironmentRecord(value: Record<string, unknown>): FloorLogRecord | null {
+function decodePullRecord(value: Record<string, unknown>): FloorLogRecord | null {
   const scoped = decodeScoped(value);
-  if (scoped === null) {
+  const environment = decodeEnvironmentFloor(value["environment"]);
+  if (scoped === null || environment === null) {
     return null;
   }
-  if (value["r"] === "pull") {
-    const environment = decodeEnvironmentFloor(value["environment"]);
-    return environment === null ? null : { r: "pull", ...scoped, environment };
-  }
-  if (value["r"] === "push") {
-    const variable = decodeVariableFloor(value["variable"]);
-    if (variable === null || !isVariableIdValue(value["variableId"])) {
-      return null;
-    }
-    return { r: "push", ...scoped, variableId: value["variableId"] as string, variable };
-  }
-  if (value["r"] === "meta") {
-    const manifest = decodeManifestFloor(value["manifest"]);
-    if (
-      manifest === null ||
-      !isPositiveInteger(value["observedEpoch"]) ||
-      !isPositiveInteger(value["metaVersion"]) ||
-      !isHex64(value["metaSigHashHex"])
-    ) {
-      return null;
-    }
-    return {
-      r: "meta",
-      ...scoped,
-      observedEpoch: value["observedEpoch"],
-      metaVersion: value["metaVersion"],
-      metaSigHashHex: value["metaSigHashHex"],
-      manifest,
-    };
-  }
-  const manifest = decodeManifestFloor(value["manifest"]);
-  return manifest === null ? null : { r: "manifest", ...scoped, manifest };
+  return { r: "pull", ...scoped, environment };
 }
+
+function decodePushRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const scoped = decodeScoped(value);
+  const variable = decodeVariableFloor(value["variable"]);
+  if (scoped === null || variable === null || !isVariableIdValue(value["variableId"])) {
+    return null;
+  }
+  return { r: "push", ...scoped, variableId: value["variableId"] as string, variable };
+}
+
+function decodeMetaRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const scoped = decodeScoped(value);
+  const manifest = decodeManifestFloor(value["manifest"]);
+  const valid = fieldsValid(value, {
+    observedEpoch: isPositiveInteger,
+    metaVersion: isPositiveInteger,
+    metaSigHashHex: isHex64,
+  });
+  if (scoped === null || manifest === null || !valid) {
+    return null;
+  }
+  return {
+    r: "meta",
+    ...scoped,
+    observedEpoch: value["observedEpoch"] as number,
+    metaVersion: value["metaVersion"] as number,
+    metaSigHashHex: value["metaSigHashHex"] as string,
+    manifest,
+  };
+}
+
+function decodeManifestRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const scoped = decodeScoped(value);
+  const manifest = decodeManifestFloor(value["manifest"]);
+  if (scoped === null || manifest === null) {
+    return null;
+  }
+  return { r: "manifest", ...scoped, manifest };
+}
+
+function decodeHeadRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const head = decodeChainHead(value["head"]);
+  return head === null ? null : { r: "head", head };
+}
+
+function decodeIntentRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const intent = decodeIntent(value["intent"]);
+  return intent === null ? null : { r: "intent", intent };
+}
+
+function decodeResolutionRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const valid = fieldsValid(value, {
+    intentId: (id) => isString(id) && INTENT_ID.test(id),
+    outcome: (outcome) => INTENT_OUTCOMES.includes(outcome as FloorIntentOutcome),
+  });
+  if (!valid) {
+    return null;
+  }
+  return {
+    r: "resolution",
+    intentId: value["intentId"] as string,
+    outcome: value["outcome"] as FloorIntentOutcome,
+  };
+}
+
+function decodeSnapshotRecord(value: Record<string, unknown>): FloorLogRecord | null {
+  const state = decodeSnapshotState(value["state"]);
+  if (state === null || !isNonNegativeInteger(value["folded"])) {
+    return null;
+  }
+  return { r: "snapshot", folded: value["folded"], state };
+}
+
+// r タグ → デコーダの対応(Map — 素の Record だと `constructor` 等の r 値が
+// 継承プロパティの関数へ解決されて破損レコードが通る)
+const RECORD_DECODERS = new Map<string, (value: Record<string, unknown>) => FloorLogRecord | null>([
+  ["head", decodeHeadRecord],
+  ["pull", decodePullRecord],
+  ["push", decodePushRecord],
+  ["meta", decodeMetaRecord],
+  ["manifest", decodeManifestRecord],
+  ["intent", decodeIntentRecord],
+  ["resolution", decodeResolutionRecord],
+  ["snapshot", decodeSnapshotRecord],
+]);
 
 /** 1 行の厳格デコード。null = 解読不能(fold が無視する — 自己回復)。 */
 function decodeLogRecord(line: string): FloorLogRecord | null {
@@ -448,47 +523,11 @@ function decodeLogRecord(line: string): FloorLogRecord | null {
   } catch {
     return null;
   }
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !isString(value["r"])) {
     return null;
   }
-  switch (value["r"]) {
-    case "head": {
-      const head = decodeChainHead(value["head"]);
-      return head === null ? null : { r: "head", head };
-    }
-    case "pull":
-    case "push":
-    case "meta":
-    case "manifest":
-      return decodeEnvironmentRecord(value);
-    case "intent": {
-      const intent = decodeIntent(value["intent"]);
-      return intent === null ? null : { r: "intent", intent };
-    }
-    case "resolution": {
-      if (
-        typeof value["intentId"] !== "string" ||
-        !INTENT_ID.test(value["intentId"]) ||
-        !INTENT_OUTCOMES.includes(value["outcome"] as FloorIntentOutcome)
-      ) {
-        return null;
-      }
-      return {
-        r: "resolution",
-        intentId: value["intentId"],
-        outcome: value["outcome"] as FloorIntentOutcome,
-      };
-    }
-    case "snapshot": {
-      const state = decodeSnapshotState(value["state"]);
-      if (state === null || !isNonNegativeInteger(value["folded"])) {
-        return null;
-      }
-      return { r: "snapshot", folded: value["folded"], state };
-    }
-    default:
-      return null;
-  }
+  const decode = RECORD_DECODERS.get(value["r"]);
+  return decode === undefined ? null : decode(value);
 }
 
 // ---- fold(観測ログ → 床)----
@@ -604,7 +643,11 @@ function baseStateOf(snapshot: { folded: number; state: SnapshotState } | null):
   return state;
 }
 
-function foldRecords(lines: readonly string[]): FoldOutcome {
+/** 行 → 解読できたレコード列 + 落とした非空行数(torn 行の自己回復)。 */
+function parseLogLines(lines: readonly string[]): {
+  readonly records: FloorLogRecord[];
+  readonly droppedLines: number;
+} {
   const records: FloorLogRecord[] = [];
   let droppedLines = 0;
   for (const line of lines) {
@@ -620,19 +663,37 @@ function foldRecords(lines: readonly string[]): FoldOutcome {
     }
     records.push(record);
   }
-  // 最新の有効なスナップショットを基点にし、その「畳んだ接頭辞の終端位置」
-  // 以降のレコードだけを join する。位置が壊れている(範囲外)場合は全レコード
-  // fold へフォールバックする — join の冪等性・可換性により正しさは不変
-  let snapshotIndex = -1;
+  return { records, droppedLines };
+}
+
+/**
+ * fold の基点 = 最新の有効なスナップショット。「畳んだ接頭辞の終端位置
+ * (folded)」がスナップショット自身の位置を超えている(壊れている)場合は
+ * 全レコード fold へフォールバックする — join の冪等性・可換性により正しさは
+ * 不変(コストだけが変わる — §6.3)。
+ */
+function foldBase(records: readonly FloorLogRecord[]): {
+  readonly foldFrom: number;
+  readonly snapshotIndex: number;
+  readonly state: FoldState;
+} {
   for (let index = records.length - 1; index >= 0; index -= 1) {
-    if (records[index]?.r === "snapshot") {
-      snapshotIndex = index;
-      break;
+    const record = records[index];
+    if (record?.r === "snapshot") {
+      const usable = record.folded <= index;
+      return {
+        foldFrom: usable ? record.folded : 0,
+        snapshotIndex: index,
+        state: baseStateOf(usable ? record : null),
+      };
     }
   }
-  const snapshot = snapshotIndex >= 0 ? (records[snapshotIndex] as { folded: number; state: SnapshotState }) : null;
-  const foldFrom = snapshot !== null && snapshot.folded <= snapshotIndex ? snapshot.folded : 0;
-  const state = baseStateOf(snapshot !== null && snapshot.folded <= snapshotIndex ? snapshot : null);
+  return { foldFrom: 0, snapshotIndex: -1, state: baseStateOf(null) };
+}
+
+function foldRecords(lines: readonly string[]): FoldOutcome {
+  const { records, droppedLines } = parseLogLines(lines);
+  const { foldFrom, snapshotIndex, state } = foldBase(records);
   for (let index = foldFrom; index < records.length; index += 1) {
     applyRecord(state, records[index] as FloorLogRecord);
   }
@@ -662,27 +723,53 @@ interface LegacyEnvironmentFloor {
 function decodeLegacyEnvironment(value: unknown): LegacyEnvironmentFloor | null {
   if (
     !isRecord(value) ||
-    !isPositiveInteger(value["pullEpoch"]) ||
-    !isPositiveInteger(value["metaVersion"]) ||
-    !isHex64(value["metaSigHashHex"])
+    !fieldsValid(value, {
+      pullEpoch: isPositiveInteger,
+      metaVersion: isPositiveInteger,
+      metaSigHashHex: isHex64,
+    })
   ) {
     return null;
   }
-  const manifest = value["manifest"] === undefined ? undefined : decodeManifestFloor(value["manifest"]);
-  if (manifest === null) {
-    return null;
-  }
-  const variables = decodeVariablesRecord(value["variables"]);
-  if (variables === null) {
+  const tail = decodeManifestAndVariables(value);
+  if (tail === null) {
     return null;
   }
   return {
-    pullEpoch: value["pullEpoch"],
-    metaVersion: value["metaVersion"],
-    metaSigHashHex: value["metaSigHashHex"],
-    ...(manifest === undefined ? {} : { manifest }),
-    variables,
+    pullEpoch: value["pullEpoch"] as number,
+    metaVersion: value["metaVersion"] as number,
+    metaSigHashHex: value["metaSigHashHex"] as string,
+    ...tail,
   };
+}
+
+/** 旧環境床 → 新形(環境水準観測は既知の検証済み事実から保守的に導出)。 */
+function convertLegacyEnvironment(legacy: LegacyEnvironmentFloor): EnvironmentFloor {
+  return {
+    pullEpoch: legacy.pullEpoch,
+    // 旧形式は環境水準観測(座標 (ii))を持たない — 既知の検証済み事実
+    // (pull 基準と床マニフェスト自身の epoch)から保守的に導出する
+    observedEpoch: Math.max(legacy.pullEpoch, legacy.manifest?.epoch ?? 0),
+    metaVersion: legacy.metaVersion,
+    metaSigHashHex: legacy.metaSigHashHex,
+    ...(legacy.manifest === undefined ? {} : { manifest: legacy.manifest }),
+    variables: legacy.variables,
+  };
+}
+
+function decodeLegacyEnvironments(value: unknown): Record<string, EnvironmentFloor> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const environments: Record<string, EnvironmentFloor> = {};
+  for (const [environmentId, raw] of Object.entries(value)) {
+    const legacy = decodeLegacyEnvironment(raw);
+    if (legacy === null || !isEnvironmentId(environmentId)) {
+      return null;
+    }
+    environments[environmentId] = convertLegacyEnvironment(legacy);
+  }
+  return environments;
 }
 
 /** 旧形式(v1 単一スナップショット)→ 新しい床(fold 結果と同形)への変換。 */
@@ -697,25 +784,9 @@ function decodeLegacyProjectFloor(json: string): ProjectFloor | null {
     return null;
   }
   const chainHead = decodeChainHead(value["chainHead"]);
-  if (chainHead === null || !isRecord(value["environments"])) {
+  const environments = decodeLegacyEnvironments(value["environments"]);
+  if (chainHead === null || environments === null) {
     return null;
-  }
-  const environments: Record<string, EnvironmentFloor> = {};
-  for (const [environmentId, raw] of Object.entries(value["environments"])) {
-    const legacy = decodeLegacyEnvironment(raw);
-    if (legacy === null || !isEnvironmentId(environmentId)) {
-      return null;
-    }
-    environments[environmentId] = {
-      pullEpoch: legacy.pullEpoch,
-      // 旧形式は環境水準観測(座標 (ii))を持たない — 既知の検証済み事実
-      // (pull 基準と床マニフェスト自身の epoch)から保守的に導出する
-      observedEpoch: Math.max(legacy.pullEpoch, legacy.manifest?.epoch ?? 0),
-      metaVersion: legacy.metaVersion,
-      metaSigHashHex: legacy.metaSigHashHex,
-      ...(legacy.manifest === undefined ? {} : { manifest: legacy.manifest }),
-      variables: legacy.variables,
-    };
   }
   return { chainHead, environments, conflicts: [], intents: [] };
 }
@@ -737,6 +808,11 @@ function encodeRecord(record: FloorLogRecord): string {
 function randomIntentId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** commit 系の返り値: fold 済み床から当該環境の床(未観測なら bottom)。 */
+function environmentOf(floor: ProjectFloor, environmentId: string): EnvironmentFloor {
+  return floorRecordGet(floor.environments, environmentId) ?? emptyEnvironmentFloor();
 }
 
 export interface FileFloorStoreOptions {
@@ -781,7 +857,10 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
    * 先頭に移行する。末尾に改行がない(torn 行)場合は改行を前置し、torn 行を
    * それ自身の(解読不能な)1 行として隔離する — 自己回復の前提。
    */
-  const appendRecords = async (projectId: string, records: readonly FloorLogRecord[]): Promise<void> => {
+  const appendRecords = async (
+    projectId: string,
+    records: readonly FloorLogRecord[],
+  ): Promise<void> => {
     const path = pathOf(projectId);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const handle = await open(path, "a+", 0o600);
@@ -862,9 +941,6 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           : Effect.succeed(floor),
       ),
     );
-
-  const environmentOf = (floor: ProjectFloor, environmentId: string): EnvironmentFloor =>
-    floorRecordGet(floor.environments, environmentId) ?? emptyEnvironmentFloor();
 
   return {
     load: (projectId) =>

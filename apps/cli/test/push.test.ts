@@ -3,9 +3,11 @@
 // スキーマ外の素の 413 分岐(session-07 §5 申し送りの決着)。
 
 import { decryptVariable } from "@maruhi/crypto";
+import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
 import {
   buildChain,
   type BuiltChain,
@@ -256,9 +258,7 @@ function pullMetadataHandlerOf(
         variants[position] ?? [],
         currentEpoch,
         position + 1,
-        previous === undefined
-          ? undefined
-          : await manifestHashOf(chainV1.projectId, previous),
+        previous === undefined ? undefined : await manifestHashOf(chainV1.projectId, previous),
       )) as WireDistributedManifest;
     }
     return manifests[index] as WireDistributedManifest;
@@ -433,6 +433,172 @@ describe("maruhi push", () => {
     const paths = server.requests.map((request) => request.path);
     expect(paths).toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`);
     expect(paths).not.toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`);
+  });
+
+  it("旧サーバー相当(manifest を黙って捨てて 200)では、受理後照合が失敗し床のマニフェストを前進させない(1-E′ — §12-10 (3))", async () => {
+    // strict 受理(§12-10 (1))未導入の旧サーバーの形: 変数作成の 200 は返すが
+    // 同梱マニフェストを保存せず、以後も旧マニフェスト(v1・作成前の集合)を
+    // 配布し続ける。成功の定義 = 検証可能な配布物での効果確認なので、CLI は
+    // 成功と言わず、自己発行マニフェストを床に書かない(M1-A2 の受理後照合)
+    let created: CreateBody | null = null;
+    let metadataCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest(
+        "GET",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+        async () => {
+          metadataCalls += 1;
+          return {
+            status: 200,
+            json: {
+              environmentId: ENV_ID,
+              currentEpoch: 1,
+              statement: envStatement,
+              // 受理後もステートメントは保存済み(値・メタは旧サーバーでも保存
+              // される)が、マニフェストは v1(作成前の空集合)のまま = 黙殺の形
+              variables: created === null ? [] : [distributedStatementOf(created)],
+              deletedVariables: [],
+              manifest: await manifestOf([], 1, 1),
+            },
+          };
+        },
+      ),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+        (request) => {
+          created = request.body as CreateBody;
+          return {
+            status: 200,
+            json: {
+              variableId: (request.body as CreateBody).statement.variableId,
+              version: 1,
+              epoch: 1,
+            },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 効果確認の失敗として報告する(2xx を成功と読ませない)
+    expect(errors).toContain("post-acceptance confirmation");
+    expect(errors).toContain("success is defined by the confirmed effect");
+    // 確認の metadata pull は実際に行われた(受理後照合)
+    expect(metadataCalls).toBeGreaterThanOrEqual(2);
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    const record = loaded.floor?.environments[ENV_ID];
+    // 自己発行マニフェスト(v2)は床に書かれない — 記録されるのは検証済み観測
+    // (解決 pull の v1)のみ。旧サーバーへ「保存されていないマニフェスト」を
+    // 床に固定して以後の欠落を omission と誤判定する事故(M1-A2)を作らない
+    expect(record?.manifest?.manifestVersion).toBe(1);
+    // 受理済みの自分の値の観測は journal-before-release で残っている
+    const body = created as CreateBody | null;
+    expect(record?.variables[body?.statement.variableId ?? ""]).toMatchObject({ version: 1 });
+    // 確認義務の記録(intent — 3-F)は未解決のまま残る
+    expect(loaded.floor?.intents).toHaveLength(1);
+  });
+
+  it("同版の別マニフェストが配布されたら hash 不一致として失敗する(1-E′ — §12-10 (3))", async () => {
+    // サーバーは 200 を返すが、発行した manifestVersion に**別内容**の検証可能な
+    // マニフェスト(自分の変数 + 注入された変数を覆う)を配布する。デジェストは
+    // 配布集合と整合するため §4.3 検証は通る — 自己発行 (version, hash) との
+    // 照合だけがこれを検出する
+    const extraStatement = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-injected",
+      name: "INJECTED",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+    });
+    let created: CreateBody | null = null;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest(
+        "GET",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+        async () => {
+          if (created === null) {
+            return {
+              status: 200,
+              json: {
+                environmentId: ENV_ID,
+                currentEpoch: 1,
+                statement: envStatement,
+                variables: [],
+                deletedVariables: [],
+                manifest: await manifestOf([], 1, 1),
+              },
+            };
+          }
+          const statements = [distributedStatementOf(created), extraStatement];
+          return {
+            status: 200,
+            json: {
+              environmentId: ENV_ID,
+              currentEpoch: 1,
+              statement: envStatement,
+              variables: statements,
+              deletedVariables: [],
+              // 同じ manifestVersion(2)だが別集合を覆う = 別の signed bytes。
+              // prev は正しく v1 へ連鎖させる(M1-A1 は通る形 — hash 照合の固定)
+              manifest: await manifestOf(statements, 1, 2, await manifestHashAt([])),
+            },
+          };
+        },
+      ),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+        (request) => {
+          created = request.body as CreateBody;
+          return {
+            status: 200,
+            json: {
+              variableId: (request.body as CreateBody).statement.variableId,
+              version: 1,
+              epoch: 1,
+            },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("distributes a different manifest at the issued manifestVersion");
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    // 発行したマニフェストは保存されていないことを確認済み = intent は
+    // not-accepted で閉じる(検証済みの配布側 v2' は観測として床に残る)
+    expect(loaded.floor?.intents).toEqual([]);
+    expect(loaded.floor?.environments[ENV_ID]?.manifest?.manifestVersion).toBe(2);
   });
 
   it("VersionConflict(409)は再取得した winner を検証し、その hash へ prev を付け替えて再試行する", async () => {
