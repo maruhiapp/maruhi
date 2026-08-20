@@ -51,6 +51,7 @@ import {
   type VerifiedTombstone,
 } from "./floor-check.ts";
 import { formatFloorViolation } from "./floor-evidence.ts";
+import type { ManifestFloor } from "./floor.ts";
 import {
   type ManifestDigestEntry,
   missingManifestMessage,
@@ -556,6 +557,8 @@ function verifyManifestStage(input: {
   readonly allowMissingManifest: boolean;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
+  /** 床のマニフェスト記録(隣接 prev 検証の predecessor — M1-A1。床なし = null)。 */
+  readonly floorManifest: ManifestFloor | null;
 }): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
   const wireManifest = input.manifest;
   if (wireManifest === undefined) {
@@ -574,6 +577,7 @@ function verifyManifestStage(input: {
           metaVersion: input.environment.metaVersion,
           sigHashHex: input.environment.metaSigHashHex,
         },
+        floorManifest: input.floorManifest,
       }),
     "Environment-manifest verification",
   );
@@ -601,6 +605,8 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   digestEntryOf: (value: T) => ManifestDigestEntry,
   /** 移行経路(--init-manifest)のみ true — 欠落の許容であって検証の緩和ではない。 */
   allowMissingManifest: boolean,
+  /** 床のマニフェスト記録(隣接 prev 検証 — M1-A1。床を持たない経路は null)。 */
+  floorManifest: ManifestFloor | null,
 ): Effect.Effect<
   | {
       readonly kind: "ok";
@@ -656,6 +662,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
         })),
       ],
       environment: environment.value,
+      floorManifest,
     });
     if (manifest.kind === "future") {
       return { kind: "future" } as const;
@@ -676,6 +683,7 @@ function verifyAll(
   environmentId: string,
   pull: PullWire,
   allowMissingManifest: boolean,
+  floorManifest: ManifestFloor | null,
 ): Effect.Effect<
   | {
       readonly kind: "ok";
@@ -697,6 +705,7 @@ function verifyAll(
       metaSigHashHex: value.metaSignedBytesHashHex,
     }),
     allowMissingManifest,
+    floorManifest,
   ).pipe(
     Effect.map((result) =>
       result.kind === "future"
@@ -712,6 +721,41 @@ function verifyAll(
             warnings: result.warnings,
           } as const),
     ),
+  );
+}
+
+/**
+ * 検証済み配布物に対する meta-op intent の照合(§6.3 記録規律 (ii) — 3-F)。
+ * 検証済みマニフェストが intent の版へ到達・追い越していれば、確認義務は
+ * 解決できる:
+ * - 同版・同ハッシュ = 自分の発行が配布されている(accepted)
+ * - 同版・異ハッシュ = 自分の発行は保存されていない(not-accepted — 配布側の
+ *   検証済みマニフェストは観測として床へ join 済みで、証拠は失われない)
+ * - 前進 = 検証済み後続状態の観測により義務を果たした(superseded)
+ * - 配布版が intent より古い = 未解決のまま(次の照合機会に持ち越す)
+ */
+function resolveMetaIntents(
+  floor: FloorHandle,
+  manifest: VerifiedManifest | null,
+): Effect.Effect<void, CliError> {
+  if (manifest === null) {
+    return Effect.void;
+  }
+  return Effect.forEach(
+    floor.unresolvedIntents().filter((intent) => intent.op === "meta-op"),
+    (intent) => {
+      if (manifest.manifestVersion > intent.manifestVersion) {
+        return floor.resolveIntent(intent.id, "superseded");
+      }
+      if (manifest.manifestVersion === intent.manifestVersion) {
+        return floor.resolveIntent(
+          intent.id,
+          manifest.signedBytesHashHex === intent.manifestSigHashHex ? "accepted" : "not-accepted",
+        );
+      }
+      return Effect.void;
+    },
+    { discard: true },
   );
 }
 
@@ -772,6 +816,8 @@ function enforceFloor(input: {
       buildEnvironmentFloor(baselineEnvironment.currentEpoch, input.snapshot),
       { seq: input.commitView.state.headSeq, hashHex: input.commitView.state.headHashHex },
     );
+    // 検証済み配布物が到達したので、この環境の未解決 meta intent(3-F)を照合する
+    yield* resolveMetaIntents(input.floor, input.snapshot.manifest);
   });
 }
 
@@ -851,7 +897,14 @@ export function pullVerifiedEnvironment(input: {
         })
         .pipe(Effect.mapError(toCliError)),
       verify: (view, wire) =>
-        verifyAll(view, input.environmentId, wire, input.allowMissingManifest === true).pipe(
+        verifyAll(
+          view,
+          input.environmentId,
+          wire,
+          input.allowMissingManifest === true,
+          // 隣接版の prev 検証(M1-A1): 床のマニフェスト記録を predecessor として渡す
+          input.floor.current()?.manifest ?? null,
+        ).pipe(
           Effect.map((result) =>
             result.kind === "future"
               ? result
@@ -910,8 +963,11 @@ export function verifyLeaseDistribution(input: {
   return Effect.gen(function* () {
     // マニフェスト検証は義務(CRYPTO_SPEC §9.1 (5) — 2026-08-18)で、欠落 =
     // 一律拒否(移行許容はない: ワークロードは初期化を行えない — 初期化は
-    // メンバーの明示操作 §14 PR-M1)
-    const result = yield* verifyAll(input.verified, input.environmentId, input.wire, false);
+    // メンバーの明示操作 §14 PR-M1)。床由来の prev 検査は適用しない —
+    // ワークロードは床を持たない初回同期クラス(§14.3-3。session-31 §3 M1-A1
+    // の lease 適用外の注記): 署名・digest・エポック整合・欠落拒否は pull と
+    // 同水準のまま、predecessor は null(共有検証器の同一性)
+    const result = yield* verifyAll(input.verified, input.environmentId, input.wire, false, null);
     if (result.kind === "future") {
       return yield* Effect.fail(
         cliError(
@@ -957,6 +1013,7 @@ function verifyAllMetadata(
   verified: VerifiedProject,
   environmentId: string,
   pull: MetadataPullWire,
+  floorManifest: ManifestFloor | null,
 ): Effect.Effect<
   | {
       readonly kind: "ok";
@@ -981,14 +1038,18 @@ function verifyAllMetadata(
       metaSigHashHex: statement.metaSigHashHex,
     }),
     false,
+    floorManifest,
   );
 }
 
 /**
  * メタデータのみ pull の床検査(値を運ばない形 — メタ水準の規則 (a)(b) と
- * 欠落・削除取り消しのみ。checkEnvironmentMetadataPull 参照)。床のコミットは
- * 行わない: 変数床のレコードは値のダイジェストを要し、メタだけから作らない
- * (基準の確立が値を運ぶ pull まで一周遅れるだけで誤検出はない — 床は SHOULD)。
+ * 欠落・削除取り消しのみ。checkEnvironmentMetadataPull 参照)と**環境水準の
+ * 床コミット**(session-31 §3 M1-A3): チェーンヘッド・環境メタ床・マニフェスト
+ * 床・環境水準エポック観測(§6.3 座標 (ii))を join する。**値床は捏造しない・
+ * pull 基準(規則 (c))は前進させない** — 値を読んでいない観測から値水準の
+ * 基準を作ると、ローテーション後・再暗号化完了前の正当な旧エポック値を
+ * 誤拒否する(§6.3 の規範)。
  */
 function enforceMetadataFloor(input: {
   readonly floor: FloorHandle;
@@ -1018,7 +1079,24 @@ function enforceMetadataFloor(input: {
     }
     // 環境がチェーンに存在しないのに検証を通る配布はここで止まる(enforceFloor
     // と同じファントム環境検査 — メタはエポックアンカーを持たない)
-    yield* requireChainEnvironment(input.verified, input.environmentId);
+    const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
+    // 検証済み事実の join(§6.3 — 記録契機の列挙ではなく単一の記録規則)。
+    // journal-before-release: 追記の永続化が検査合格の使用・成功報告に先行する
+    yield* input.floor.commitMetadata(
+      {
+        observedEpoch: environment.currentEpoch,
+        metaVersion: input.environment.metaVersion,
+        metaSigHashHex: input.environment.metaSigHashHex,
+        manifest: {
+          manifestVersion: input.manifest.manifestVersion,
+          epoch: input.manifest.epoch,
+          manifestSigHashHex: input.manifest.signedBytesHashHex,
+        },
+      },
+      { seq: input.verified.state.headSeq, hashHex: input.verified.state.headHashHex },
+    );
+    // 検証済み配布物が到達したので、この環境の未解決 meta intent(3-F)を照合する
+    yield* resolveMetaIntents(input.floor, input.manifest);
   });
 }
 
@@ -1037,7 +1115,7 @@ export function pullVerifiedEnvironmentMetadata(input: {
   readonly environmentId: EnvironmentId;
   /** future head 時の有界再同期(1 回)。 */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3)。メタ水準の検査のみ — コミットしない(enforceMetadataFloor)。 */
+  /** ローカル床(§6.3)。メタ水準の検査 + 環境水準コミット(enforceMetadataFloor — M1-A3)。 */
   readonly floor: FloorHandle;
 }): Effect.Effect<VerifiedEnvironmentMetadata, CliError> {
   return Effect.map(
@@ -1050,7 +1128,13 @@ export function pullVerifiedEnvironmentMetadata(input: {
         })
         .pipe(Effect.mapError(toCliError)),
       verify: (view, wire) =>
-        verifyAllMetadata(view, input.environmentId, wire).pipe(
+        verifyAllMetadata(
+          view,
+          input.environmentId,
+          wire,
+          // 隣接版の prev 検証(M1-A1): metadata-only / value pull の両経路で同一
+          input.floor.current()?.manifest ?? null,
+        ).pipe(
           Effect.flatMap(
             (
               result,

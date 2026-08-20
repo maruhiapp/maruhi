@@ -13,7 +13,8 @@ import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
 import { cliError } from "../../src/errors.ts";
-import { floorDirOf, FloorStore, makeFileFloorStore } from "../../src/floor.ts";
+import { makeFileFloorStore } from "../../src/floor-log.ts";
+import { floorDirOf, FloorStore } from "../../src/floor.ts";
 import { type AgentProfile, CliIo } from "../../src/io.ts";
 import {
   Keychain,
@@ -72,6 +73,12 @@ export interface TestEnv {
    * いないことを固定するために使う。
    */
   failFloorPushCommits(): void;
+  /**
+   * intent(3-F)の追記だけを失敗させる。journal-before-send は床の書き込みで
+   * 唯一の fail-closed(永続化に失敗したら送信しない)であり、fail-open へ
+   * 巻かれる退行を「サーバーへ 1 リクエストも飛ばないこと」で固定するために使う。
+   */
+  failFloorIntentAppends(): void;
   /** defect 経路の検査用: 設定読込を throw(非 CliError)にする。 */
   breakConfigLoadWithDefect(): void;
 }
@@ -94,6 +101,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let runnerExitCode = 0;
   let keychainWritable = true;
   let floorPushCommittable = true;
+  let floorIntentAppendable = true;
   let configLoadDefect = false;
 
   const fileStore = makeFileConfigStore(configPath);
@@ -121,12 +129,21 @@ export async function makeTestEnv(): Promise<TestEnv> {
             ? floorStore.commitPush(projectId, commit)
             : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
         ),
+      commitMetadata: (projectId, commit) => floorStore.commitMetadata(projectId, commit),
       commitManifest: (projectId, commit) =>
         Effect.suspend(() =>
           floorPushCommittable
             ? floorStore.commitManifest(projectId, commit)
             : Effect.fail(cliError("ローカル床に書き込めません(テスト注入)")),
         ),
+      appendIntent: (projectId, intent) =>
+        Effect.suspend(() =>
+          floorIntentAppendable
+            ? floorStore.appendIntent(projectId, intent)
+            : Effect.fail(cliError("ローカル床に intent を書き込めません(テスト注入)")),
+        ),
+      resolveIntent: (projectId, intentId, outcome) =>
+        floorStore.resolveIntent(projectId, intentId, outcome),
     }),
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),
@@ -222,6 +239,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     failFloorPushCommits() {
       floorPushCommittable = false;
+    },
+    failFloorIntentAppends() {
+      floorIntentAppendable = false;
     },
     breakConfigLoadWithDefect() {
       configLoadDefect = true;

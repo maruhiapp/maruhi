@@ -22,12 +22,19 @@
 import { Effect } from "effect";
 
 import type { CliError } from "./errors.ts";
+import { isServerRejection } from "./failure.ts";
 import {
   type ChainHeadFloor,
   type EnvironmentFloor,
+  type FloorConflict,
+  type FloorIntent,
+  type FloorIntentInput,
+  type FloorIntentOutcome,
   floorRecordGet,
   type FloorStoreShape,
+  joinEnvironmentFloor,
   type ManifestFloor,
+  type MetadataCommit,
   type ProjectFloor,
   type VariableFloor,
 } from "./floor.ts";
@@ -252,18 +259,23 @@ export function checkChainFloor(
   floor: ProjectFloor,
   verified: VerifiedProject,
 ): FloorViolation | null {
+  const floorHead = floor.chainHead;
+  if (floorHead === null) {
+    // ヘッド観測がまだない床(intent だけのログ等)— 検査対象がない
+    return null;
+  }
   const syncedHead: ChainHeadFloor = {
     seq: verified.state.headSeq,
     hashHex: verified.state.headHashHex,
   };
-  if (verified.state.headSeq < floor.chainHead.seq) {
-    return { kind: "chain-shortened", floorHead: floor.chainHead, syncedHead };
+  if (verified.state.headSeq < floorHead.seq) {
+    return { kind: "chain-shortened", floorHead, syncedHead };
   }
-  const actualHashHex = verified.history.entryHashAt(floor.chainHead.seq);
-  if (actualHashHex !== floor.chainHead.hashHex) {
+  const actualHashHex = verified.history.entryHashAt(floorHead.seq);
+  if (actualHashHex !== floorHead.hashHex) {
     return {
       kind: "chain-diverged",
-      floorHead: floor.chainHead,
+      floorHead,
       actualHashHex: actualHashHex ?? "",
       syncedHead,
     };
@@ -352,13 +364,16 @@ function checkManifestAgainstFloor(
  * (値の「床にない変数」と同型 — 導入後の正当な初回マニフェストの epoch は
  * 発行時点の現エポック ≥ 基準)。
  *
- * 基準は pull 時点エポック床と**床マニフェスト自身の epoch** の大きい方:
- * マニフェスト連鎖のエポックは非減少(§4.3 の epoch-regressed — 検証済み)
- * なので、床が検証済みの epoch E のマニフェストを持つ以上、それより新しい
+ * 基準は pull 時点エポック床・**床マニフェスト自身の epoch**・**環境水準の
+ * エポック観測(§6.3 座標 (ii) — 出所を問わず join される observedEpoch)**の
+ * 最大値: マニフェスト連鎖のエポックは非減少(§4.3 の epoch-regressed —
+ * 検証済み)なので、床が検証済みの epoch E を知っている以上、それより新しい
  * manifestVersion の正当なマニフェストの epoch は E 以上でしかありえない
  * (推移形)。pullEpoch だけを基準にすると、rotate 直後(commitManifest は
  * 前進するが pullEpoch は pull まで動かない)や有界再同期の形(pullEpoch は
  * 応答取得前ビュー)で、床が知っている epoch より古い焼き込みが素通りする。
+ * observedEpoch は値を誤拒否する経路を持たないため、この baseline には
+ * 制約なく参加できる(値規則 (c) には使わない — 座標の型が分ける)。
  */
 function checkManifestEpochBaseline(
   floor: EnvironmentFloor,
@@ -368,7 +383,7 @@ function checkManifestEpochBaseline(
     return null;
   }
   const floorVersion = floor.manifest?.manifestVersion ?? 0;
-  const baselineEpoch = Math.max(floor.pullEpoch, floor.manifest?.epoch ?? 0);
+  const baselineEpoch = Math.max(floor.pullEpoch, floor.observedEpoch, floor.manifest?.epoch ?? 0);
   if (manifest.manifestVersion > floorVersion && manifest.epoch < baselineEpoch) {
     return {
       kind: "stale-manifest-injection",
@@ -464,11 +479,11 @@ function checkFloorDeleted(
  * 共通骨格。active 側の検査だけが形(値付き / メタのみ)で差し替わる。
  * active / deleted の同一 ID 併置は values.ts が拒否済み。
  */
-function checkFloorCommon<T>(
+function checkFloorCommon<T extends { readonly variableId: string }>(
   floor: EnvironmentFloor,
   environment: VerifiedMetaEvidence,
-  actives: ReadonlyMap<string, T>,
-  tombstones: ReadonlyMap<string, VerifiedTombstone>,
+  activeList: readonly T[],
+  tombstoneList: readonly VerifiedTombstone[],
   checkActive: (
     variableId: string,
     variableFloor: ActiveVariableFloor,
@@ -477,6 +492,8 @@ function checkFloorCommon<T>(
   ) => FloorViolation | null,
   toMeta: (active: T) => VerifiedMetaEvidence,
 ): FloorViolation | null {
+  const actives = new Map(activeList.map((value) => [value.variableId, value]));
+  const tombstones = new Map(tombstoneList.map((tombstone) => [tombstone.variableId, tombstone]));
   const environmentViolation = checkMetaAgainstFloor(
     "environment",
     null,
@@ -516,15 +533,11 @@ export function checkEnvironmentPull(
   if (floor === null) {
     return null;
   }
-  const actives = new Map(snapshot.variables.map((value) => [value.variableId, value]));
-  const tombstones = new Map(
-    snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
-  );
   const violation = checkFloorCommon(
     floor,
     snapshot.environment,
-    actives,
-    tombstones,
+    snapshot.variables,
+    snapshot.tombstones,
     checkFloorActive,
     metaEvidenceOf,
   );
@@ -562,9 +575,9 @@ export function checkEnvironmentPull(
  * メタデータのみ pull(§12-7)の床検査: 規則 (a)(b) のメタ部分(環境・変数
  * ステートメントの後退 / 同一 metaVersion の相違)、検証済み変数の欠落、
  * 削除の無断取り消し・tombstone の差し替え。値を運ばない形のため値水準の
- * 検査と規則 (c) は対象外で、**床のコミット(基準の前進)も行わない** —
- * 変数床のレコードは値のダイジェストを要し、メタだけから捏造しない
- * (床は SHOULD: 検出材料の確立が値を運ぶ pull まで遅れるだけで誤検出はない)。
+ * 検査と規則 (c) は対象外。検査合格後の**環境水準の床コミット**(M1-A3 —
+ * チェーンヘッド・環境メタ床・マニフェスト床・座標 (ii) のみ。値床は捏造
+ * しない・pull 基準は前進させない)は呼び出し側(enforceMetadataFloor)が行う。
  */
 export function checkEnvironmentMetadataPull(
   floor: EnvironmentFloor | null,
@@ -573,15 +586,11 @@ export function checkEnvironmentMetadataPull(
   if (floor === null) {
     return null;
   }
-  const actives = new Map(snapshot.variables.map((statement) => [statement.variableId, statement]));
-  const tombstones = new Map(
-    snapshot.tombstones.map((tombstone) => [tombstone.variableId, tombstone]),
-  );
   const violation = checkFloorCommon(
     floor,
     snapshot.environment,
-    actives,
-    tombstones,
+    snapshot.variables,
+    snapshot.tombstones,
     checkFloorActiveMeta,
     (statement) => statement,
   );
@@ -626,6 +635,8 @@ export function buildEnvironmentFloor(
   }
   return {
     pullEpoch: chainCurrentEpoch,
+    // 環境水準のエポック観測(座標 (ii))も同じ検証済み観測から確立する
+    observedEpoch: chainCurrentEpoch,
     metaVersion: snapshot.environment.metaVersion,
     metaSigHashHex: snapshot.environment.metaSigHashHex,
     ...(snapshot.manifest === null
@@ -644,17 +655,23 @@ export function buildEnvironmentFloor(
 /**
  * 1 コマンド実行中の環境床ハンドル。プロセス内で pull が複数回起きる場合
  * (push の再試行ループ)に、直前の pull がコミットした床を次の検査の基準に
- * する。プロセス内キャッシュはコミットのたびに**ストアが書いたマージ済み
- * 環境床**へ同期する(単なる送信スナップショットではない): read-merge-write
- * の単調マージが取り込んだ並行 CLI の検出材料(union・deleted 終端・より新しい
- * version / pullEpoch)を、同一コマンド内の後続検査が取りこぼさないため。
- * ディスクの床は自 CLI が §6.3 検証済みレコードしか書かないので、マージ結果の
- * 採用は検査基準として健全(ローカル状態を書ける攻撃者は床の外 — fail-open)。
+ * する。プロセス内キャッシュはコミットのたびに**ストアが fold した(= ログへ
+ * 永続化済みの)環境床**へ同期する(単なる送信スナップショットではない):
+ * 追記専用ログの join が取り込んだ並行 CLI の検出材料(union・deleted 終端・
+ * より新しい version / pullEpoch)を、同一コマンド内の後続検査が取りこぼさない
+ * ため。ディスクの床は自 CLI が §6.3 検証済みレコードしか書かないので、fold
+ * 結果の採用は検査基準として健全(ローカル状態を書ける攻撃者は床の外)。
+ *
+ * intent(3-F)も環境スコープでここが窓口になる: openProject 時点の未解決
+ * intent + 自プロセスが追記した intent を保持し、効果確認(§12-10 (3))を
+ * 通過した経路が resolution で閉じる。
  */
 export interface FloorHandle {
   /** 現在の環境床(初回 pull 前は openProject 時に読んだスナップショット)。 */
   readonly current: () => EnvironmentFloor | null;
-  /** 検証済み pull の原子コミット(規則 (c) 基準 + 変数床 + ヘッド)。 */
+  /** この環境の未解決 intent(要照合 — §6.3 記録規律 (ii))。 */
+  readonly unresolvedIntents: () => readonly FloorIntent[];
+  /** 検証済み pull の原子コミット(規則 (c) 基準 + 変数床 + ヘッドを 1 レコードで)。 */
   readonly commitPull: (
     environment: EnvironmentFloor,
     head: ChainHeadFloor,
@@ -664,11 +681,17 @@ export interface FloorHandle {
     variableId: string,
     variable: VariableFloor,
     head: ChainHeadFloor,
-    /** 変数作成の複合が発行したマニフェストの床前進(自計算値)。 */
-    manifest?: ManifestFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * 受理された rotate 複合のマニフェスト床前進(自計算値 — pullEpoch・変数床は
+   * metadata-only pull の環境水準コミット(M1-A3 — 値床は捏造しない・pull
+   * 基準は前進させない。環境メタ床・マニフェスト床・座標 (ii) のみ)。
+   */
+  readonly commitMetadata: (
+    commit: Omit<MetadataCommit, "chainHead" | "environmentId">,
+    head: ChainHeadFloor,
+  ) => Effect.Effect<void, CliError>;
+  /**
+   * 受理確認済みの自己発行マニフェストの床昇格(M1-A4 — pullEpoch・変数床は
    * 動かさない)。怠ると受理後の床が旧 manifestVersion のままになり、旧版を
    * 配布し続けるサーバーを規則 (a) が検出できない窓が生まれる。
    */
@@ -676,6 +699,33 @@ export interface FloorHandle {
     manifest: ManifestFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
+  /**
+   * security-critical mutation の送信前 intent(3-F)。永続化(fsync 相当)の
+   * 成功まで送信しない(fail-closed)。返り値は resolution 用の intent id。
+   */
+  readonly appendIntent: (input: FloorIntentInput) => Effect.Effect<string, CliError>;
+  /** 効果確認の結果で intent を閉じる(未知 / 解決済み id は no-op — 冪等)。 */
+  readonly resolveIntent: (
+    intentId: string,
+    outcome: FloorIntentOutcome,
+  ) => Effect.Effect<void, CliError>;
+}
+
+/**
+ * 送信の失敗がサーバー自身のエラー本文での拒否(= 効果は生じていない — 確定)
+ * なら intent(3-F)を rejected で閉じる `Effect.tapError` 用コールバック。
+ * 転送層の失敗(応答消失)は未解決のまま残す — 次の照合機会(チェーン同期 /
+ * metadata-only pull)が解決する。resolution の追記失敗は握り潰してよい:
+ * intent が開いたまま残る方向は安全側(要照合が残るだけ)。
+ */
+export function rejectIntentOnServerRejection(
+  floor: FloorHandle,
+  intentId: string,
+): (error: unknown) => Effect.Effect<void> {
+  return (error) =>
+    isServerRejection(error)
+      ? Effect.ignore(floor.resolveIntent(intentId, "rejected"))
+      : Effect.void;
 }
 
 /** 床ストアに対する環境床ハンドルを作る。 */
@@ -684,10 +734,17 @@ export function makeFloorHandle(input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly initial: EnvironmentFloor | null;
+  /** openProject 時点の、この環境の未解決 intent(fold の表面化 — 3-F)。 */
+  readonly intents?: readonly FloorIntent[];
 }): FloorHandle {
   let current = input.initial;
+  const intents = new Map((input.intents ?? []).map((intent) => [intent.id, intent]));
+  const adopt = (merged: EnvironmentFloor): void => {
+    current = merged;
+  };
   return {
     current: () => current,
+    unresolvedIntents: () => [...intents.values()],
     commitPull: (environment, head) =>
       input.store
         .commitPull(input.projectId, {
@@ -695,61 +752,53 @@ export function makeFloorHandle(input: {
           environmentId: input.environmentId,
           environment,
         })
-        .pipe(
-          Effect.tap((merged) =>
-            Effect.sync(() => {
-              current = merged;
-            }),
-          ),
-          Effect.asVoid,
-        ),
-    commitPush: (variableId, variable, head, manifest) =>
+        .pipe(Effect.map(adopt)),
+    commitPush: (variableId, variable, head) =>
       input.store
         .commitPush(input.projectId, {
           chainHead: head,
           environmentId: input.environmentId,
           variableId,
           variable,
-          ...(manifest === undefined ? {} : { manifest }),
         })
-        .pipe(
-          Effect.tap((merged) =>
-            Effect.sync(() => {
-              if (merged !== null) {
-                current = merged;
-              } else if (current !== null) {
-                // ディスクに環境レコードがない稀な形(破損の作り直し直後の
-                // レース — applyPush は基準を捏造しない)ではプロセス内の
-                // 知識だけを前進させる(変数作成の複合が発行したマニフェストも
-                // 単調に — commitManifest のフォールバックと同じ規律)
-                const advanced =
-                  manifest !== undefined &&
-                  (current.manifest === undefined ||
-                    manifest.manifestVersion >= current.manifest.manifestVersion)
-                    ? manifest
-                    : current.manifest;
-                current = {
-                  ...current,
-                  ...(advanced === undefined ? {} : { manifest: advanced }),
-                  variables: { ...current.variables, [variableId]: variable },
-                };
-              }
-            }),
-          ),
-          Effect.asVoid,
-        ),
+        .pipe(Effect.map(adopt)),
+    commitMetadata: (commit, head) =>
+      input.store
+        .commitMetadata(input.projectId, {
+          chainHead: head,
+          environmentId: input.environmentId,
+          ...commit,
+        })
+        .pipe(Effect.map(adopt)),
     commitManifest: (manifest, head) =>
       Effect.suspend(() => {
         // プロセス内の基準は**ディスク書き込みの成否に関わらず先に**前進させる:
         // 自分が受理させた manifestVersion を知っている事実は、書き込みに失敗
         // しても同一実行内の再走査の検出材料であり続ける(受理後に旧版を配布し
-        // 続けるサーバーの検出)。永続化の欠けは呼び出し側が警告で開示する
-        if (
-          current !== null &&
-          (current.manifest === undefined ||
-            manifest.manifestVersion >= current.manifest.manifestVersion)
-        ) {
-          current = { ...current, manifest };
+        // 続けるサーバーの検出)。前進はディスク側と同一の join 実装で行う
+        // (M1-A5 — `>=` 後勝ちの別実装を持たない)。join が conflict(同版・
+        // 異ハッシュ)を検出した場合は**前進を採用しない**: 証拠を捨てた側を
+        // 検査基準にすると、ディスク書き込みが I/O 失敗で警告に落ちた実行の
+        // 残りが equivocation を見ないまま走る(ディスクが書けた場合は fold が
+        // 同じ conflict で以後の commit を typed エラーにする)
+        if (current !== null) {
+          const conflicts: FloorConflict[] = [];
+          const joined = joinEnvironmentFloor(
+            input.environmentId,
+            current,
+            {
+              pullEpoch: 0,
+              observedEpoch: manifest.epoch,
+              metaVersion: 0,
+              metaSigHashHex: "",
+              manifest,
+              variables: {},
+            },
+            (conflict) => conflicts.push(conflict),
+          );
+          if (conflicts.length === 0) {
+            current = joined;
+          }
         }
         return input.store
           .commitManifest(input.projectId, {
@@ -757,17 +806,23 @@ export function makeFloorHandle(input: {
             environmentId: input.environmentId,
             manifest,
           })
-          .pipe(
-            Effect.tap((merged) =>
-              Effect.sync(() => {
-                if (merged !== null) {
-                  // ディスクの単調マージが取り込んだ並行 CLI の検出材料も採用する
-                  current = merged;
-                }
-              }),
-            ),
-            Effect.asVoid,
-          );
+          .pipe(Effect.map(adopt));
+      }),
+    appendIntent: (intentInput) =>
+      input.store.appendIntent(input.projectId, intentInput).pipe(
+        Effect.tap((id) =>
+          Effect.sync(() => {
+            intents.set(id, { id, ...intentInput });
+          }),
+        ),
+      ),
+    resolveIntent: (intentId, outcome) =>
+      Effect.suspend(() => {
+        if (!intents.has(intentId)) {
+          return Effect.void;
+        }
+        intents.delete(intentId);
+        return input.store.resolveIntent(input.projectId, intentId, outcome);
       }),
   };
 }

@@ -9,6 +9,7 @@
 import { displayText } from "./display.ts";
 import type { FloorViolation } from "./floor-check.ts";
 import { floorViolationLabel } from "./floor-check.ts";
+import type { FloorConflict } from "./floor.ts";
 
 /** 証拠に含める座標(すべて ID — 名前は含めない: 名前自体が係争対象になりうる)。 */
 export interface FloorEvidenceCoordinates {
@@ -231,5 +232,55 @@ export function formatFloorViolation(
     `The local floor check detected an inconsistency: ${floorViolationLabel(violation)}`,
     ...evidenceLines(coordinates, violation),
     "  This is a contradiction between previously verified signed data and this distribution — evidence of server equivocation or a leaked signing key (CRYPTO_SPEC §14.2-5). Preserve this output and the local floor file, and present them to the project administrators",
+  ].join("\n");
+}
+
+function conflictLabel(conflict: FloorConflict): string {
+  switch (conflict.kind) {
+    case "chain-head":
+      return "two verified chain heads at the same seq with different hashes (a fork)";
+    case "value":
+      return "two verified values for the same version with different signed bytes";
+    case "variable-meta":
+      return "two verified variable statements for the same metaVersion with different signed bytes";
+    case "environment-meta":
+      return "two verified environment statements for the same metaVersion with different signed bytes";
+    case "manifest":
+      return "two verified environment manifests for the same manifestVersion with different signed bytes";
+    case "undeletion":
+      return "a verified statement past a verified deletion (deletion is terminal — an unauthorized undeletion)";
+  }
+}
+
+function conflictLines(conflict: FloorConflict): readonly string[] {
+  const parts: string[] = [];
+  if (conflict.environmentId !== null) {
+    parts.push(`environment=${conflict.environmentId}`);
+  }
+  if (conflict.variableId !== null) {
+    parts.push(`variable=${conflict.variableId}`);
+  }
+  return [
+    `  [${conflict.kind}] ${conflictLabel(conflict)}`,
+    ...(parts.length > 0 ? [`    coordinates: ${parts.join(" ")}`] : []),
+    `    observation A: version=${conflict.firstVersion} signed_bytes_hash=${conflict.firstHashHex}`,
+    `    observation B: version=${conflict.secondVersion} signed_bytes_hash=${conflict.secondHashHex}`,
+  ];
+}
+
+/**
+ * 観測ログの fold が検出した同座標 conflict(join 未定義 — CRYPTO_SPEC §6.3
+ * 規則 (b) のマージ意味論)の拒否メッセージ。両観測とも §6.3 検証を通過した
+ * 事実であり、矛盾は equivocation または鍵漏洩の否認不能な証拠 — ログは
+ * 追記専用なので証拠自体は消えない(保全の案内だけを行う)。
+ */
+export function formatFloorConflicts(
+  projectId: string,
+  conflicts: readonly FloorConflict[],
+): string {
+  return [
+    `The local floor observation log contains verified observations that contradict each other (project=${projectId}):`,
+    ...conflicts.flatMap(conflictLines),
+    `  Both observations passed CRYPTO_SPEC §6.3 verification — this is evidence of server equivocation or a leaked signing key (§14.2-5). The append-only floor log preserves both records: floor/${projectId}.jsonl in the config directory. Present it to the project administrators. Every command for this project will refuse to run until this is resolved out of band. Refusing to use or advance this floor`,
   ].join("\n");
 }

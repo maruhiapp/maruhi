@@ -26,6 +26,7 @@ import {
   headOf,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -201,9 +202,11 @@ function manifestV1(
     readonly head?: { readonly seq: number; readonly hashHex: string };
     readonly issuer?: TestUser;
     readonly manifestVersion?: number;
+    /** version > 1 の prev(隣接 prev 検証 — M1-A1 — を満たすフィクスチャ用)。 */
+    readonly prevManifestSigHashHex?: string;
   } = {},
 ): Promise<WireDistributedManifest> {
-  const { manifestVersion } = overrides;
+  const { manifestVersion, prevManifestSigHashHex } = overrides;
   return manifestFor({
     projectId,
     environmentId: ENV_ID,
@@ -213,6 +216,7 @@ function manifestV1(
     envStatement,
     statements: overrides.statements ?? [alphaStatement],
     ...(manifestVersion === undefined ? {} : { manifestVersion }),
+    ...(prevManifestSigHashHex === undefined ? {} : { prevManifestSigHashHex }),
   });
 }
 
@@ -396,15 +400,19 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: version は前進(3)だが epoch 1 を焼き込んだマニフェスト
-    // (旧エポック期の在籍ヘッド seq 4 を宣言すれば暗号学的には有効)
+    // フェーズ 2: version は前進(4 — 床 v2 との差 2 以上 = 隣接 prev 検証
+    // 〔M1-A1〕の対象外で、中間 predecessor の実在一致は latest-only の既知
+    // 制約どおり検査不能)だが epoch 1 を焼き込んだマニフェスト(旧エポック期の
+    // 在籍ヘッド seq 4 を宣言すれば暗号学的には有効)。この gap 形の前進注入を
+    // 落とすのが床の規則 (c) のマニフェスト適用そのもの(隣接形は共有検証器の
+    // predecessor エポック非減少 — 下の固定テスト — が先に落とす)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
         currentEpoch: 2,
         variables: [{ variableId: "va", statement: alphaStatement, value: alphaValue2 }],
         deks: [wrap1, wrap2],
-        manifest: await manifestV1({ epoch: 1, head: headOf(chain2, 4), manifestVersion: 3 }),
+        manifest: await manifestV1({ epoch: 1, head: headOf(chain2, 4), manifestVersion: 4 }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -451,22 +459,165 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: version は前進(3)だが epoch 1 を焼き込んだマニフェスト。
-    // pullEpoch(1)基準では素通りするが、床マニフェストの epoch(2)が基準に
-    // 入るため拒否される(マニフェスト連鎖のエポック非減少の推移形)
+    // フェーズ 2: version は前進(4 — gap 2 以上 = 隣接 prev 検証の対象外)だが
+    // epoch 1 を焼き込んだマニフェスト。pullEpoch(1)基準では素通りするが、
+    // 床マニフェストの epoch(2)が基準に入るため拒否される(マニフェスト連鎖の
+    // エポック非減少の推移形)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
         currentEpoch: 2,
         variables: [{ variableId: "va", statement: alphaStatement, value: alphaValue2 }],
         deks: [wrap1, wrap2],
-        manifest: await manifestV1({ epoch: 1, head: headOf(chain2, 4), manifestVersion: 3 }),
+        manifest: await manifestV1({ epoch: 1, head: headOf(chain2, 4), manifestVersion: 4 }),
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("below the epoch baseline");
     expect(errors).toContain("epoch baseline=2");
+  });
+});
+
+describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) — session-31 M1-A1)", () => {
+  /** metadata-only pull(§12-7)の応答(push の名前解決経路 = metadata 経路の固定用)。 */
+  function metadataHandler(manifest: WireDistributedManifest): MockHandler {
+    return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
+      status: 200,
+      json: {
+        environmentId: ENV_ID,
+        currentEpoch: 1,
+        statement: envStatement,
+        variables: [alphaStatement],
+        deletedVariables: [],
+        manifest,
+      },
+    }));
+  }
+
+  /** フェーズ 1: v1 マニフェストで床を確立し、その signed-bytes ハッシュを返す。 */
+  async function establishV1Floor(env: TestEnv): Promise<string> {
+    await startPhase(env, [
+      chainHandler(chain1),
+      pullHandler({
+        currentEpoch: 1,
+        variables: [alphaEntry()],
+        deks: [wrap1],
+        manifest: await manifestV1(),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    return manifestHashOf(projectId, await manifestV1());
+  }
+
+  it("床 v1 → 正しい prev の v2: 受理する", async () => {
+    const env = await makeTestEnv();
+    const v1Hash = await establishV1Floor(env);
+    await startPhase(env, [
+      chainHandler(chain1),
+      pullHandler({
+        currentEpoch: 1,
+        variables: [alphaEntry()],
+        deks: [wrap1],
+        manifest: await manifestV1({ manifestVersion: 2, prevManifestSigHashHex: v1Hash }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+  });
+
+  it("床 v1 → 異なる prev の v2: 分岐の証拠として拒否する(有効署名・正しい digest でも)", async () => {
+    const env = await makeTestEnv();
+    const v1Hash = await establishV1Floor(env);
+    // 有効署名・正しい digest・正しい epoch を持つが、prev が任意の 64-hex
+    const forged = await manifestV1({
+      manifestVersion: 2,
+      prevManifestSigHashHex: "ab".repeat(32),
+    });
+    await startPhase(env, [
+      chainHandler(chain1),
+      pullHandler({
+        currentEpoch: 1,
+        variables: [alphaEntry()],
+        deks: [wrap1],
+        manifest: forged,
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("declares a prev that does not match the verified predecessor");
+    // 証拠: 床側ハッシュ・配布側 prev・issuer・宣言ヘッド(M1-A1 修正案 3)
+    expect(errors).toContain(v1Hash);
+    expect(errors).toContain("ab".repeat(32));
+    expect(errors).toContain(`issuer=${owner.userId}`);
+    expect(errors).toContain("declared head:");
+  });
+
+  it("床 v1 → v3(version gap ≥ 2): latest-only の既知制約どおり受理する(§14.3)", async () => {
+    const env = await makeTestEnv();
+    await establishV1Floor(env);
+    // 中間版(v2)は配布されない設計なので prev の実在一致は検査不能 — 検査
+    // できると偽らない(prev はフィクスチャのダミーのまま)
+    await startPhase(env, [
+      chainHandler(chain1),
+      pullHandler({
+        currentEpoch: 1,
+        variables: [alphaEntry()],
+        deks: [wrap1],
+        manifest: await manifestV1({ manifestVersion: 3 }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+  });
+
+  it("metadata-only pull 経路でも同一の prev 検査が働く(push の名前解決で発火)", async () => {
+    const env = await makeTestEnv();
+    await establishV1Floor(env);
+    const forged = await manifestV1({
+      manifestVersion: 2,
+      prevManifestSigHashHex: "ab".repeat(32),
+    });
+    await startPhase(env, [chainHandler(chain1), metadataHandler(forged)]);
+    env.setStdin(new TextEncoder().encode("value"));
+    expect(await runCli(["push", "ALPHA"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "declares a prev that does not match the verified predecessor",
+    );
+  });
+
+  it("隣接 v2 が prev を正しく連鎖しつつエポックを後退させたら epoch-regressed で拒否する", async () => {
+    // 床の predecessor は hash と epoch の両方を運ぶ(共有検証器の §4.1 同型
+    // 検査)。旧エポック焼き込みの隣接前進はここで落ちる(gap 形は床の規則 (c))
+    const env = await makeTestEnv();
+    await startPhase(env, [
+      chainHandler(chain2),
+      pullHandler({
+        currentEpoch: 2,
+        variables: [{ variableId: "va", statement: alphaStatement, value: alphaValue2 }],
+        deks: [wrap1, wrap2],
+        manifest: await manifestV1({ epoch: 2, head: headOf(chain2, 5), manifestVersion: 2 }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    const v2Hash = await manifestHashOf(
+      projectId,
+      await manifestV1({ epoch: 2, head: headOf(chain2, 5), manifestVersion: 2 }),
+    );
+    await startPhase(env, [
+      chainHandler(chain2),
+      pullHandler({
+        currentEpoch: 2,
+        variables: [{ variableId: "va", statement: alphaStatement, value: alphaValue2 }],
+        deks: [wrap1, wrap2],
+        manifest: await manifestV1({
+          epoch: 1,
+          head: headOf(chain2, 4),
+          manifestVersion: 3,
+          prevManifestSigHashHex: v2Hash,
+        }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("epoch-regressed");
   });
 });
 
@@ -713,7 +864,7 @@ describe("--init-manifest(移行経路 — session-27 §14 PR-M1)", () => {
     expect(second.manifest.manifestVersion).toBe(2);
     expect(second.manifest.prevManifestSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(second.manifest.epoch).toBe(3);
-    expect(env.errors.join("\n")).toContain("The flag changed nothing");
+    expect(env.errors.join("\n")).toContain("The flag is not needed");
   });
 
   it("床にマニフェスト記録がある環境の欠落は --init-manifest でも握り潰しとして拒否する", async () => {

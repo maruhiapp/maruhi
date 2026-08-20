@@ -3,9 +3,11 @@
 // スキーマ外の素の 413 分岐(session-07 §5 申し送りの決着)。
 
 import { decryptVariable } from "@maruhi/crypto";
+import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
 import {
   buildChain,
   type BuiltChain,
@@ -17,12 +19,14 @@ import {
   hexBytes,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   rotateEpochOp,
   statementFor,
   variablesDigestOf,
   type TestUser,
   valueHashOf,
   type WireDistributedEnvironmentStatement,
+  type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireEncryptedPayload,
   wrapDekFor,
@@ -133,6 +137,7 @@ async function manifestOf(
   statements: readonly WireDistributedVariableStatement[],
   currentEpoch = 1,
   manifestVersion = 1,
+  prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return manifestFor({
     projectId: chainV1.projectId,
@@ -143,6 +148,7 @@ async function manifestOf(
     envStatement,
     statements,
     manifestVersion,
+    ...(prevManifestSigHashHex === undefined ? {} : { prevManifestSigHashHex }),
   });
 }
 
@@ -157,6 +163,8 @@ async function pullJsonOf(
   currentEpoch = 1,
   /** メタ集合が変わる応答は次 version を渡す(同 version の集合差は equivocation)。 */
   manifestVersion = 1,
+  /** version > 1 の prev(直前マニフェストの hash — 隣接 prev 検証 M1-A1 の連鎖)。 */
+  prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return {
     environmentId: ENV_ID,
@@ -169,8 +177,27 @@ async function pullJsonOf(
       variables.map((variable) => variable.statement),
       currentEpoch,
       manifestVersion,
+      prevManifestSigHashHex,
     ),
   };
+}
+
+/** 指定集合・版のマニフェストの signed-bytes ハッシュ(次版の prev の材料)。 */
+async function manifestHashAt(
+  statements: readonly WireDistributedVariableStatement[],
+  currentEpoch = 1,
+  manifestVersion = 1,
+  prevManifestSigHashHex?: string,
+): Promise<string> {
+  return manifestHashOf(
+    chainV1.projectId,
+    (await manifestOf(
+      statements,
+      currentEpoch,
+      manifestVersion,
+      prevManifestSigHashHex,
+    )) as WireDistributedManifest,
+  );
 }
 
 function pullHandlerOf(
@@ -191,16 +218,74 @@ function pullHandlerOf(
   );
 }
 
-/** メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で止まる)。 */
+/**
+ * 変数作成の受理を記録する箱(§12-10 (3) の効果確認 pull が、受理済みの
+ * ステートメント + マニフェストの配布を模すための共有状態)。
+ */
+interface CreateEcho {
+  body: CreateBody | null;
+  /** 作成の issueBase になった variant(配布集合 = variant + 作成ステートメント)。 */
+  baseVariant: readonly WireDistributedVariableStatement[];
+}
+
+/** 発行形 → 配布形(§12-2 — サーバーが呼び出し主体の帰属を付ける)。 */
+function distributedStatementOf(body: CreateBody): WireDistributedVariableStatement {
+  return {
+    ...body.statement,
+    authorUserId: owner.userId,
+    authorKeyFingerprintHex: owner.fingerprintHex,
+  } as WireDistributedVariableStatement;
+}
+
+/**
+ * メタデータのみ pull(§12-7)の応答。呼び出しごとに variants を進む(最後で
+ * 止まる)。variant 間のマニフェストは prev を実際に連鎖させる(隣接版の prev
+ * 検証 — M1-A1 — を満たす正当な「他メンバーのメタ操作」のモデル化)。
+ * `echo` が受理済み作成を持つ場合は、その配布(variant + 作成ステートメント +
+ * 受理したマニフェスト)を返す — 効果確認(§12-10 (3))の材料。
+ */
 function pullMetadataHandlerOf(
   variants: readonly (readonly WireDistributedVariableStatement[])[],
   currentEpoch = 1,
+  echo?: CreateEcho,
 ): MockHandler {
   let call = 0;
+  const manifests: WireDistributedManifest[] = [];
+  const manifestAt = async (index: number): Promise<WireDistributedManifest> => {
+    for (let position = manifests.length; position <= index; position += 1) {
+      const previous = manifests[position - 1];
+      manifests[position] = (await manifestOf(
+        variants[position] ?? [],
+        currentEpoch,
+        position + 1,
+        previous === undefined ? undefined : await manifestHashOf(chainV1.projectId, previous),
+      )) as WireDistributedManifest;
+    }
+    return manifests[index] as WireDistributedManifest;
+  };
   return onRequest(
     "GET",
     `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
     async () => {
+      if (echo !== undefined && echo.body !== null) {
+        // 受理済み: 配布形 = issueBase の集合 + 作成ステートメント、マニフェスト =
+        // 受理した発行形 + issuer 帰属(env-rotate.test.ts の acceptRotate と同型)
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch,
+            statement: envStatement,
+            variables: [...echo.baseVariant, distributedStatementOf(echo.body)],
+            deletedVariables: [],
+            manifest: {
+              ...echo.body.manifest,
+              issuerUserId: owner.userId,
+              issuerKeyFingerprintHex: owner.fingerprintHex,
+            },
+          },
+        };
+      }
       const index = Math.min(call, variants.length - 1);
       const variables = variants[index] ?? [];
       call += 1;
@@ -214,7 +299,7 @@ function pullMetadataHandlerOf(
           deletedVariables: [],
           // variant の前進 = 他メンバーのメタ操作 1 回のモデル化。manifestVersion も
           // 一緒に進める(床の単調性と整合する)
-          manifest: await manifestOf(variables, currentEpoch, index + 1),
+          manifest: await manifestAt(index),
         },
       };
     },
@@ -269,16 +354,19 @@ async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promis
 describe("maruhi push", () => {
   it("新規変数は create(version 1)。stdin の値が現エポックで暗号化される", async () => {
     const createCalls: CreateBody[] = [];
+    const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      pullMetadataHandlerOf([[]]),
+      pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
         (request: MockRequest) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
+          // 受理: 以後の metadata pull(効果確認 — §12-10 (3))が配布する
+          echo.body = body;
           return {
             status: 200,
             json: {
@@ -345,6 +433,218 @@ describe("maruhi push", () => {
     const paths = server.requests.map((request) => request.path);
     expect(paths).toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`);
     expect(paths).not.toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`);
+    // 肯定側の固定(否定側 =「未確認なら書かない」は旧サーバーテストが固定):
+    // 効果確認(1-E′)を**通過した**作成は、自分の書き込みを床へ昇格し、確認
+    // pull の検証済みマニフェスト(= 自己発行 v2)が床にあり、intent が閉じる
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    const record = loaded.floor?.environments[ENV_ID];
+    expect(record?.variables[body.statement.variableId]).toMatchObject({
+      status: "active",
+      version: 1,
+      epoch: 1,
+      metaVersion: 1,
+    });
+    expect(record?.manifest?.manifestVersion).toBe(2);
+    expect(loaded.floor?.intents).toEqual([]);
+  });
+
+  it("intent(3-F)の追記に失敗したら変数作成を送信しない(journal-before-send の fail-closed)", async () => {
+    let createCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[]]),
+      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => {
+        createCalls += 1;
+        return { status: 200, json: { variableId: "vx", version: 1, epoch: 1 } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    env.failFloorIntentAppends();
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    expect(createCalls).toBe(0);
+    expect(env.errors.join("\n")).toContain("intent");
+  });
+
+  it("旧サーバー相当(manifest を黙って捨てて 200)では、受理後照合が失敗し床のマニフェストを前進させない(1-E′ — §12-10 (3))", async () => {
+    // strict 受理(§12-10 (1))未導入の旧サーバーの形: 変数作成の 200 は返すが
+    // 同梱マニフェストを保存せず、以後も旧マニフェスト(v1・作成前の集合)を
+    // 配布し続ける。成功の定義 = 検証可能な配布物での効果確認なので、CLI は
+    // 成功と言わず、自己発行マニフェストを床に書かない(M1-A2 の受理後照合)
+    let created: CreateBody | null = null;
+    let metadataCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest(
+        "GET",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+        async () => {
+          metadataCalls += 1;
+          return {
+            status: 200,
+            json: {
+              environmentId: ENV_ID,
+              currentEpoch: 1,
+              statement: envStatement,
+              // 受理後もステートメントは保存済み(値・メタは旧サーバーでも保存
+              // される)が、マニフェストは v1(作成前の空集合)のまま = 黙殺の形
+              variables: created === null ? [] : [distributedStatementOf(created)],
+              deletedVariables: [],
+              manifest: await manifestOf([], 1, 1),
+            },
+          };
+        },
+      ),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+        (request) => {
+          created = request.body as CreateBody;
+          return {
+            status: 200,
+            json: {
+              variableId: (request.body as CreateBody).statement.variableId,
+              version: 1,
+              epoch: 1,
+            },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    // 効果確認の失敗として報告する(2xx を成功と読ませない)
+    expect(errors).toContain("post-acceptance confirmation");
+    expect(errors).toContain("success is defined by the confirmed effect");
+    // 確認の metadata pull は実際に行われた(受理後照合)
+    expect(metadataCalls).toBeGreaterThanOrEqual(2);
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    const record = loaded.floor?.environments[ENV_ID];
+    // 自己発行マニフェスト(v2)は床に書かれない — 記録されるのは検証済み観測
+    // (解決 pull の v1)のみ。旧サーバーへ「保存されていないマニフェスト」を
+    // 床に固定して以後の欠落を omission と誤判定する事故(M1-A2)を作らない
+    expect(record?.manifest?.manifestVersion).toBe(1);
+    // **変数床も書かれない**(§12-10 (3) — 床への記録は確認通過後のみ)。
+    // 2xx だけを根拠に自分の書き込みを床へ植えると、サーバーが実際には保存して
+    // いなかった場合に、以後の全 pull が variable-omitted で恒久拒否される
+    // (未確認の思い込みが equivocation 証拠に化ける — Bugbot 指摘の固定)
+    const body = created as CreateBody | null;
+    expect(record?.variables[body?.statement.variableId ?? ""]).toBeUndefined();
+    // 確認義務の記録(intent — 3-F)は未解決のまま残る
+    expect(loaded.floor?.intents).toHaveLength(1);
+  });
+
+  it("同版の別マニフェストが配布されたら hash 不一致として失敗する(1-E′ — §12-10 (3))", async () => {
+    // サーバーは 200 を返すが、発行した manifestVersion に**別内容**の検証可能な
+    // マニフェスト(自分の変数 + 注入された変数を覆う)を配布する。デジェストは
+    // 配布集合と整合するため §4.3 検証は通る — 自己発行 (version, hash) との
+    // 照合だけがこれを検出する
+    const extraStatement = await statementFor({
+      projectId: chainV1.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-injected",
+      name: "INJECTED",
+      author: owner,
+      head: { seq: 1, hashHex: chainV1.projectId },
+    });
+    let created: CreateBody | null = null;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      onRequest(
+        "GET",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+        async () => {
+          if (created === null) {
+            return {
+              status: 200,
+              json: {
+                environmentId: ENV_ID,
+                currentEpoch: 1,
+                statement: envStatement,
+                variables: [],
+                deletedVariables: [],
+                manifest: await manifestOf([], 1, 1),
+              },
+            };
+          }
+          const statements = [distributedStatementOf(created), extraStatement];
+          return {
+            status: 200,
+            json: {
+              environmentId: ENV_ID,
+              currentEpoch: 1,
+              statement: envStatement,
+              variables: statements,
+              deletedVariables: [],
+              // 同じ manifestVersion(2)だが別集合を覆う = 別の signed bytes。
+              // prev は正しく v1 へ連鎖させる(M1-A1 は通る形 — hash 照合の固定)
+              manifest: await manifestOf(statements, 1, 2, await manifestHashAt([])),
+            },
+          };
+        },
+      ),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+        (request) => {
+          created = request.body as CreateBody;
+          return {
+            status: 200,
+            json: {
+              variableId: (request.body as CreateBody).statement.variableId,
+              version: 1,
+              epoch: 1,
+            },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("distributes a different manifest at the issued manifestVersion");
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    // 発行したマニフェストは保存されていないことを確認済み = intent は
+    // not-accepted で閉じる(検証済みの配布側 v2' は観測として床に残る)
+    expect(loaded.floor?.intents).toEqual([]);
+    expect(loaded.floor?.environments[ENV_ID]?.manifest?.manifestVersion).toBe(2);
   });
 
   it("VersionConflict(409)は再取得した winner を検証し、その hash へ prev を付け替えて再試行する", async () => {
@@ -768,11 +1068,12 @@ describe("maruhi push", () => {
     // 固定 timestamp により成立)
     expect(chainV2.projectId).toBe(chainV1.projectId);
     const createBodies: CreateBody[] = [];
+    const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       // first syncはローテーション前(epoch 1)、再同期でローテーション後が見える
       chainHandlerOf([chainV1, chainV2]),
       deksHandlerOf([[wrap1], [wrap1, wrap2]]),
-      pullMetadataHandlerOf([[]]),
+      pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
@@ -784,6 +1085,7 @@ describe("maruhi push", () => {
             // であることを固定する(申告値を使う退行は aad.epoch=5 になり検出)
             return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 5 } };
           }
+          echo.body = body;
           return {
             status: 200,
             json: {
@@ -882,9 +1184,11 @@ describe("maruhi push", () => {
       pullMetadataHandlerOf([[], [entryRacer.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
+        // 並行作成のメタ操作がマニフェストを v2 へ進めた形(メタデータ側の
+        // variant 2 と同じマニフェスト — 隣接 prev は v1 へ連鎖 M1-A1)
         return {
           status: 200,
-          json: await pullJsonOf([entryRacer], [wrap1]),
+          json: await pullJsonOf([entryRacer], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -962,9 +1266,10 @@ describe("maruhi push", () => {
       pullMetadataHandlerOf([[], [entryLate.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
+        // 並行作成のメタ操作がマニフェストを v2 へ進めた形(variant 2 と同一)
         return {
           status: 200,
-          json: await pullJsonOf([entryLate], [wrap1]),
+          json: await pullJsonOf([entryLate], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -1190,7 +1495,10 @@ describe("maruhi push", () => {
             [wrap1],
             1,
             // 2 回目は metaVersion 2 の勝者 = メタ操作 1 回分マニフェストも前進
+            // (隣接版なので prev は v1 マニフェストへ連鎖させる — M1-A1 とは
+            // 独立に、勝者ステートメントの prev 不一致だけを固定する)
             pullCalls === 1 ? 1 : 2,
+            pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
           ),
         };
       }),
@@ -1309,9 +1617,10 @@ describe("maruhi push", () => {
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
+        // 並行 rename のメタ操作がマニフェストを v2 へ進めた形(variant 2 と同一)
         return {
           status: 200,
-          json: await pullJsonOf([entryRaced], [wrap1]),
+          json: await pullJsonOf([entryRaced], [wrap1], 1, 2, await manifestHashAt([])),
         };
       }),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
@@ -1351,16 +1660,18 @@ describe("maruhi push", () => {
     const nfcName = nfdName.normalize("NFC");
     expect(nfcName).not.toBe(nfdName);
     const createCalls: CreateBody[] = [];
+    const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      pullMetadataHandlerOf([[]]),
+      pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
         (request) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
+          echo.body = body;
           return {
             status: 200,
             json: {
@@ -1453,7 +1764,22 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
-        pullHandlerOf([{ ...entryExisting, statement: renamedStatement }], [wrap1]),
+        // 並行 rename のメタ操作はマニフェストも v2 へ進める(§12-5 — 同版の
+        // 集合差は equivocation になってしまうため、正直な rename の形で組む)
+        onRequest(
+          "GET",
+          `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
+          async () => ({
+            status: 200,
+            json: await pullJsonOf(
+              [{ ...entryExisting, statement: renamedStatement }],
+              [wrap1],
+              1,
+              2,
+              await manifestHashAt([entryExisting.statement]),
+            ),
+          }),
+        ),
       ],
       "value",
     );

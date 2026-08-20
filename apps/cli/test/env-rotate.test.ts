@@ -29,9 +29,12 @@ import {
   verifyDekCommitment,
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
+import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
+import type { ProjectFloor } from "../src/floor.ts";
 import {
   addMemberOp,
   removeMemberOp,
@@ -46,6 +49,7 @@ import {
   hexBytes,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -260,6 +264,9 @@ function makeServer(options: ServerOptions): ServerState {
       return manifestState.manifest;
     }
     const version = (manifestState?.version ?? 0) + 1;
+    // 再発行は直前マニフェストへ prev を連鎖させる(隣接版の prev 検証 —
+    // M1-A1 — を満たす正直なメタ操作のモデル化。実サーバーの §12-5 (5) と同じ)
+    const previous = manifestState?.manifest;
     const manifest = await manifestFor({
       projectId,
       environmentId: ENV_ID,
@@ -269,6 +276,9 @@ function makeServer(options: ServerOptions): ServerState {
       envStatement,
       statements: [...variables.map((variable) => variable.statement), ...deletedVariables],
       manifestVersion: version,
+      ...(previous === undefined
+        ? {}
+        : { prevManifestSigHashHex: await manifestHashOf(projectId, previous) }),
     });
     manifestState = { key, manifest, version };
     return manifest;
@@ -450,6 +460,14 @@ function makeServer(options: ServerOptions): ServerState {
     },
   ];
   return { handlers, rotateBodies, pushes };
+}
+
+/** 床(観測ログの fold)を読む(M1-A4 の床前進 / 非前進の固定用)。 */
+async function loadFloor(env: TestEnv): Promise<ProjectFloor | null> {
+  const loaded = await Effect.runPromise(
+    makeFileFloorStore(env.floorDir).load(chainBase.projectId),
+  );
+  return loaded.floor;
 }
 
 async function startEnv(handlers: readonly MockHandler[], user: TestUser): Promise<TestEnv> {
@@ -1952,6 +1970,15 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("this rotation itself was accepted");
     expect(errors).toContain("resume re-encryption without advancing the epoch");
+    // M1-A4: チェーン上の自 commitment 一致を確認した時点で、コマンドが
+    // エラー終了でも床(自己発行マニフェスト)は前進している
+    const floor = await loadFloor(env);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
+      manifestVersion: 2,
+      epoch: 2,
+    });
+    // 効果確認が済んだので intent(3-F)も閉じている
+    expect(floor?.intents).toEqual([]);
   });
 
   it("1 つも再暗号化できないならエポックを進めない(空回りで失効にならない)", async () => {
@@ -2009,6 +2036,12 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("this run's entry was not accepted");
     // 自分の分が受理されたと読ませない
     expect(errors).not.toContain("this rotation itself was accepted");
+    // M1-A4: チェーン上の commitment が別物 = 床は前進しない(自己発行
+    // マニフェストの記録なし)。受理されていないことは確認済みなので intent は
+    // not-accepted として閉じる
+    const floor = await loadFloor(env);
+    expect(floor?.environments[ENV_ID]?.manifest?.manifestVersion ?? 1).toBeLessThanOrEqual(1);
+    expect(floor?.intents).toEqual([]);
   });
 
   it("受理後にさらに他メンバーが進めていても、自分の分の受理を見落とさない", async () => {
@@ -2041,6 +2074,141 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("this rotation itself was accepted");
     expect(errors).toContain("resume re-encryption without advancing the epoch");
     expect(errors).not.toContain("was not accepted");
+    // M1-A4: 追い越されても自分のマニフェスト(v2)は最低床として残る
+    const floor = await loadFloor(env);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
+      manifestVersion: 2,
+      epoch: 2,
+    });
+    expect(floor?.intents).toEqual([]);
+  });
+
+  it("200 直後の別 rotate で受理後確認が追い越しを見ても、自分のマニフェストは最低床として残る(M1-A4)", async () => {
+    // 200 は返った(受理確定)が、受理後確認の再同期までに別メンバーが epoch 3 へ
+    // 進めた形。現エポック(3)≠ 目標(2)でコマンドはエラー終了するが、
+    // チェーン上の epoch 2 commitment は自分のものなので床は前進する
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      appendRotateAfterAccept: { epoch: 3, dek: dek3 },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "受理後追い越し"], env.layer)).toBe(
+      1,
+    );
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("possibly a concurrent rotation right after acceptance");
+    expect(errors).toContain(
+      "This rotation itself was accepted and its manifest was recorded in the local floor",
+    );
+    const floor = await loadFloor(env);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
+      manifestVersion: 2,
+      epoch: 2,
+    });
+    expect(floor?.intents).toEqual([]);
+  });
+
+  it("--init-manifest が不要で再開だけの実行は、次版の再発行を言わない(M1-B2)", async () => {
+    // 中断復旧の形(エポック 2・最新値は epoch 1 のまま)+ 不要な --init-manifest。
+    // 経路は resume = rotate 複合を送らない = 「次版を再発行する」と言うのは嘘
+    const variables = [
+      await variableAt({
+        built: chainRotated,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const wraps = [
+      await wrapDekFor({
+        projectId: chainBase.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        dek: dek1,
+        recipient: owner,
+        signer: owner,
+      }),
+      await wrapDekFor({
+        projectId: chainBase.projectId,
+        environmentId: ENV_ID,
+        epoch: 2,
+        dek: dek2,
+        recipient: owner,
+        signer: owner,
+      }),
+    ];
+    const state = makeServer({
+      built: chainRotated,
+      variables,
+      deks: wraps,
+      currentEpoch: 2,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("The flag is not needed");
+    expect(errors).toContain(
+      "only resumes the incomplete re-encryption and issues no new manifest",
+    );
+    expect(errors).not.toContain("re-issues the next manifestVersion");
+    // 実際に rotate 複合は送っていない(resume は push のみ)
+    expect(state.rotateBodies).toHaveLength(0);
+  });
+
+  it("--init-manifest が不要で確認だけの実行は、何も発行しないと言う(M1-B2)", async () => {
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--init-manifest"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("The flag is not needed");
+    expect(errors).toContain("issues nothing");
+    expect(errors).not.toContain("re-issues the next manifestVersion");
+    expect(state.rotateBodies).toHaveLength(0);
   });
 
   it("削除済み環境への rotate(404)は確定した拒否として扱い、再実行を勧めない", async () => {
@@ -2111,6 +2279,17 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("may already have advanced to epoch 2");
     expect(errors).toContain("Restore connectivity and re-run");
+    // M1-A4: probe 失敗 = acceptance-unknown — 受理を確認していない事実を
+    // 床へ書かない(前進しない)。確認義務の記録(intent — 3-F)は未解決で残り、
+    // 次の実行の照合(チェーン同期)が解決する
+    const floor = await loadFloor(env);
+    expect(floor?.environments[ENV_ID]?.manifest?.manifestVersion ?? 1).toBeLessThanOrEqual(1);
+    expect(floor?.intents).toHaveLength(1);
+    expect(floor?.intents[0]).toMatchObject({
+      op: "rotate_epoch",
+      environmentId: ENV_ID,
+      epoch: 2,
+    });
   });
 
   it("複合の送信が失敗し、受理もされていなければ「そのまま再実行できる」と伝える", async () => {
@@ -2134,8 +2313,39 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "未達"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("was not accepted");
+    // チェーンが宣言ヘッドのまま = 輸送中の要求が後から着地しうるため、
+    // 「受理されていない」と断定しない(send-pending — Security Reviewer 指摘)
+    expect(errors).toContain("does not show it as accepted yet");
     expect(errors).toContain("safe to simply re-run");
+    // intent(3-F)は確定させず未解決のまま残す — チェーンが動いた後の照合が
+    // accepted / rejected を確定する
+    const floor = await loadFloor(env);
+    expect(floor?.intents).toHaveLength(1);
+  });
+
+  it("intent(3-F)の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const env = await startEnv(state.handlers, owner);
+    env.failFloorIntentAppends();
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "journal"], env.layer)).toBe(1);
+    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    expect(state.rotateBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("intent");
   });
 
   it("ラップを持っているのに開けない値は、差し替えの疑いとして即時中断する", async () => {

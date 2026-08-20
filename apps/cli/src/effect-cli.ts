@@ -81,6 +81,7 @@ import type { CliServices, CommonFlags } from "./context.ts";
 import {
   checkInviteAnchor,
   commitVerifiedHead,
+  floorHandleFor,
   loadCheckedFloor,
   openEnvironment,
   openMetadataEnvironmentPair,
@@ -775,6 +776,7 @@ function envCreateCommand(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const context = yield* openProject(flags);
+    const floor = yield* floorHandleFor(context, environmentId);
     const created = yield* envCreateOp({
       client: context.client,
       verified: context.verified,
@@ -783,6 +785,7 @@ function envCreateCommand(
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
       resync: context.resync,
+      floor,
     });
     yield* io.log(
       // メンバー数は**実際に登録したラップ集合**の大きさ(CAS リトライで作り

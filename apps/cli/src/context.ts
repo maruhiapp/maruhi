@@ -8,6 +8,7 @@
 //   openMetadataProjectWith = 鍵なし(平文メタデータしか読まないコマンド — env diff)
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import type { ChainEntry } from "@maruhi/crypto";
 import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
@@ -17,8 +18,14 @@ import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
-import { formatFloorViolation } from "./floor-evidence.ts";
-import { floorRecordGet, FloorStore, type ProjectFloor } from "./floor.ts";
+import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
+import {
+  type FloorIntent,
+  floorRecordGet,
+  FloorStore,
+  type FloorStoreShape,
+  type ProjectFloor,
+} from "./floor.ts";
 import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
@@ -192,9 +199,23 @@ export function loadCheckedFloor(
       yield* io.logError(
         "Warning: cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
       );
+    } else if (loaded.droppedRecords > 0) {
+      // 部分的な破損は fold の自己回復で続行できるが、無言にはしない: 落ちた
+      // 行が最新の head / manifest 観測だった場合、その座標の検出材料は次の
+      // 検証済み観測まで一世代薄くなる(旧保存形の corrupt 警告と同じ可視化水準)
+      yield* io.logError(
+        `Warning: ${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
+      );
     }
     let view = verified;
     if (loaded.floor !== null) {
+      if (loaded.floor.conflicts.length > 0) {
+        // fold が表面化した同座標 conflict(§6.3 — 同一版・異ハッシュの検証済み
+        // 観測の対)は equivocation の硬い証拠。床の使用・前進を拒否する
+        return yield* Effect.fail(
+          cliError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
+        );
+      }
       let violation = checkChainFloor(loaded.floor, view);
       if (violation !== null && violation.kind === "chain-shortened") {
         // 延長検査付き再同期: 初回ビューが単に古いだけなら再同期ビューの接頭辞に
@@ -213,6 +234,126 @@ export function loadCheckedFloor(
       hashHex: view.state.headHashHex,
     });
     return { floor: loaded.floor, verified: view };
+  });
+}
+
+/**
+ * intent の複合エントリの照合結果。accepted / rejected は宣言ヘッド位置の
+ * エントリ同一性で確定し、**pending(スロットが空)は確定させない**: チェーンが
+ * まだ宣言ヘッドのままなら、送信済みの複合が着地する前に別 CLI が同期しただけの
+ * 可能性があり、そこで not-accepted に潰すと後からエントリが載っても誰も
+ * マニフェストを昇格しない(送信者がクラッシュしていた場合の回収を失う)。
+ */
+type IntentEntryState = "accepted" | "rejected" | "pending";
+
+/**
+ * intent の複合エントリがチェーン上に**その試行のものとして**存在するか。
+ * (environment, epoch) の DEK commitment の一致だけでは判定しない: CAS
+ * リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
+ * 再署名するため、拒否された旧試行の intent(resolution の追記失敗・クラッシュで
+ * 残ったもの)を後続試行の受理と commitment だけでは区別できず、旧試行の
+ * マニフェスト(同版・異ハッシュ)を昇格させると typed conflict として床を
+ * 恒久拒否に落とす。複合の受理位置は宣言ヘッドが一意に決める(エントリの
+ * prev = 宣言ヘッド・seq = 宣言ヘッド + 1 — §12-4 の CAS。prev は署名対象
+ * なので別位置への着地は存在しない)ため、その位置のエントリが本 intent の
+ * op・座標・commitment を持てば accepted、**別のエントリに占有されていれば**
+ * rejected(この試行はもう着地しえない)、空なら pending。
+ */
+function intentEntryState(verified: VerifiedProject, intent: FloorIntent): IntentEntryState {
+  // entries は seq 順(entries[0].seq === 1)— 宣言ヘッド + 1 の位置を見る
+  const entry = verified.entries[intent.declaredHead.seq];
+  if (entry === undefined) {
+    return "pending";
+  }
+  if (entry.prevHashHex !== intent.declaredHead.hashHex) {
+    return "rejected";
+  }
+  return intentEntryMatches(entry, intent) ? "accepted" : "rejected";
+}
+
+/** スロットのエントリが intent の複合(op・座標・commitment)そのものか。 */
+function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
+  if (intent.op === "create_environment") {
+    return (
+      entry.op === "create_environment" &&
+      entry.payload.environmentId === intent.environmentId &&
+      entry.payload.dekCommitmentHex === intent.dekCommitmentHex
+    );
+  }
+  return (
+    entry.op === "rotate_epoch" &&
+    entry.payload.environmentId === intent.environmentId &&
+    entry.payload.newEpoch === intent.epoch &&
+    entry.payload.dekCommitmentHex === intent.dekCommitmentHex
+  );
+}
+
+/**
+ * 未解決の複合 intent(create / rotate — 3-F)の起動時照合。複合の効果確認は
+ * チェーン同期(§12-10 (3))であり、コマンド前段は毎回チェーンを全検証する
+ * ため、ここで解決できる: intent の複合エントリがチェーン上に存在すれば
+ * 受理済み — 自己発行マニフェストを床へ昇格する(M1-A4 の「エラー終了・
+ * クラッシュを跨いだ床コミット」の回収)。存在しなければ受理されていない
+ * (チェーンは全同期済み = 完全な真実源)。meta-op intent はチェーンに痕跡を
+ * 残さないため、次の検証済み pull(values.ts)が照合する。
+ */
+function reconcileCompositeIntents(input: {
+  readonly store: FloorStoreShape;
+  readonly projectId: string;
+  readonly verified: VerifiedProject;
+  readonly intents: readonly FloorIntent[];
+}): Effect.Effect<boolean, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    let resolved = false;
+    for (const intent of input.intents) {
+      if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
+        continue;
+      }
+      const state = intentEntryState(input.verified, intent);
+      if (state === "pending") {
+        // スロットが空 = 送信前のクラッシュか、複合が着地する前に自分が同期した
+        // だけかを区別できない。確定させず要照合のまま残す(チェーンが宣言
+        // ヘッドを越えて進めば次の照合で accepted / rejected が確定する)
+        yield* io.logError(
+          `Note: an earlier ${intent.op} for environment ${intent.environmentId} is still awaiting confirmation (its chain slot is empty — the request may not have been sent, or may still be in flight). It will be reconciled once the chain advances`,
+        );
+        continue;
+      }
+      const environment = input.verified.state.environments.get(intent.environmentId);
+      if (state === "accepted") {
+        // 受理済みと確認 — 自己発行マニフェストの床昇格(検証済み事実の join)
+        yield* input.store.commitManifest(input.projectId, {
+          chainHead: {
+            seq: input.verified.state.headSeq,
+            hashHex: input.verified.state.headHashHex,
+          },
+          environmentId: intent.environmentId,
+          manifest: {
+            manifestVersion: intent.manifestVersion,
+            epoch: intent.epoch,
+            manifestSigHashHex: intent.manifestSigHashHex,
+          },
+        });
+        yield* input.store.resolveIntent(
+          input.projectId,
+          intent.id,
+          environment !== undefined && environment.currentEpoch === intent.epoch
+            ? "accepted"
+            : "accepted-superseded",
+        );
+        yield* io.logError(
+          `Note: an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
+        );
+      } else {
+        yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
+        yield* io.logError(
+          `Note: an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
+        );
+      }
+      resolved = true;
+    }
+    return resolved;
   });
 }
 
@@ -300,10 +441,35 @@ function attachProject(
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
     yield* checkInviteAnchor(projectId, checked.verified);
+    // 未解決の複合 intent(3-F)は「同一環境への次の mutation・成功報告の前に
+    // 照合で解決する」— 前段は毎回チェーンを全同期・全検証するので、ここが
+    // その照合点になる(受理済みなら床のマニフェスト前進もここで回収する)
+    let floor = checked.floor;
+    if (floor !== null && floor.intents.length > 0) {
+      const store = yield* FloorStore;
+      const resolved = yield* reconcileCompositeIntents({
+        store,
+        projectId,
+        verified: checked.verified,
+        intents: floor.intents,
+      });
+      if (resolved) {
+        // 照合が床を前進させた可能性がある — fold を読み直す。読み直した床にも
+        // conflict 検査を再適用する: 照合中・直後に並行プロセスが同座標の矛盾
+        // 観測を追記していた場合、検査なしで進むとこのコマンドの残りが
+        // equivocation 証拠を無視した代表値で走る(loadCheckedFloor と同じ
+        // fail-closed を、床を読み直すすべての点で崩さない)
+        const reloaded = (yield* store.load(projectId)).floor;
+        if (reloaded !== null && reloaded.conflicts.length > 0) {
+          return yield* Effect.fail(cliError(formatFloorConflicts(projectId, reloaded.conflicts)));
+        }
+        floor = reloaded;
+      }
+    }
     if (options?.quietMandateWarning !== true) {
       yield* warnUnconvergedMandates({ client: context.client, verified: checked.verified });
     }
-    return { ...context, projectId, verified: checked.verified, floor: checked.floor, resync };
+    return { ...context, projectId, verified: checked.verified, floor, resync };
   });
 }
 
@@ -389,6 +555,10 @@ export function floorHandleFor(
       // own-property 参照(環境 ID `constructor` 等の正当な ID が継承プロパティに
       // 解決されるのを防ぐ — floor.ts の floorRecordGet 参照)
       initial: floorRecordGet(context.floor?.environments, environmentId) ?? null,
+      // この環境の未解決 intent(前段の照合後に残るのは meta-op のみ —
+      // 検証済み pull の到達時に values.ts が照合する)
+      intents:
+        context.floor?.intents.filter((intent) => intent.environmentId === environmentId) ?? [],
     }),
   );
 }
