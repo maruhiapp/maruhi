@@ -433,6 +433,21 @@ describe("maruhi push", () => {
     const paths = server.requests.map((request) => request.path);
     expect(paths).toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`);
     expect(paths).not.toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`);
+    // 肯定側の固定(否定側 =「未確認なら書かない」は旧サーバーテストが固定):
+    // 効果確認(1-E′)を**通過した**作成は、自分の書き込みを床へ昇格し、確認
+    // pull の検証済みマニフェスト(= 自己発行 v2)が床にあり、intent が閉じる
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    const record = loaded.floor?.environments[ENV_ID];
+    expect(record?.variables[body.statement.variableId]).toMatchObject({
+      status: "active",
+      version: 1,
+      epoch: 1,
+      metaVersion: 1,
+    });
+    expect(record?.manifest?.manifestVersion).toBe(2);
+    expect(loaded.floor?.intents).toEqual([]);
   });
 
   it("intent(3-F)の追記に失敗したら変数作成を送信しない(journal-before-send の fail-closed)", async () => {
