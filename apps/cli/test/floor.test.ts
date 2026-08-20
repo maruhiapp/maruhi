@@ -76,6 +76,23 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     expect(result.floor?.chainHead).toEqual({ seq: 1, hashHex: HASH_A });
   });
 
+  it("droppedRecords はコンパクションで retire する(古い torn 行の警告を恒久的に鳴らさない)", async () => {
+    const compacting = makeFileFloorStore(dir, { compactionThreshold: 2 });
+    await Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
+    await appendFile(logPath(), "\n{torn-line-without-newline");
+    expect((await load()).droppedRecords).toBe(1);
+    // 閾値を超えてスナップショットが積まれると、torn 行は畳まれた接頭辞に入り
+    // 数えられなくなる(警告の対象は fold 基点以降のみ)
+    for (let index = 0; index < 4; index += 1) {
+      await Effect.runPromise(
+        compacting.commitHead(PROJECT_ID, { seq: 2 + index, hashHex: HASH_B }),
+      );
+    }
+    const result = await load();
+    expect(result.state).toBe("loaded");
+    expect(result.droppedRecords).toBe(0);
+  });
+
   it("commitHead はヘッドを前進のみさせる(seq 後退の観測は join で負ける)", async () => {
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 3, hashHex: HASH_B }));

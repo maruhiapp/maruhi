@@ -9,9 +9,9 @@
 //   自体が存在しない(追記のみ)
 // - 追記は追記モード(O_APPEND 相当)のみ・**fsync 相当の永続化まで待つ**
 //   (3-E′ — journal-before-release / before-send の「記録」基準)
-// - 破損した末尾レコード(クラッシュ・電源断の torn write)は fold が無視する
-//   (自己回復)。次の追記は末尾の改行欠けを検出して改行を前置するため、
-//   torn 行が後続レコードを壊すことはない
+// - 破損レコード(クラッシュ・電源断の torn write)は fold が無視する
+//   (自己回復)。追記は常に改行を**前置**するため、torn 行が後続レコードを
+//   壊すことはない(末尾検査は行わない — appendRecords の JSDoc)
 // - コンパクションは「現在の fold 結果 + 畳んだ接頭辞の終端位置」を
 //   **スナップショットレコードとして追記**する形でのみ行う(契機 = 最新
 //   スナップショットレコード以降に積まれた相対量の閾値超過)。書き直し・
@@ -60,6 +60,9 @@ import {
  * fold コストの有界化はこの相対基準そのものが担う。
  */
 const DEFAULT_COMPACTION_THRESHOLD = 256;
+
+/** 1 論理 append の全長書き直し再試行の上限(short write — appendRecords)。 */
+const MAX_APPEND_WRITE_ATTEMPTS = 3;
 
 /** スナップショットレコードの中身(= fold 結果。conflicts / intents 込み)。 */
 interface SnapshotState {
@@ -643,13 +646,19 @@ function baseStateOf(snapshot: { folded: number; state: SnapshotState } | null):
   return state;
 }
 
-/** 行 → 解読できたレコード列 + 落とした非空行数(torn 行の自己回復)。 */
+/**
+ * 行 → 解読できたレコード列 + 落とした非空行の位置(torn 行の自己回復)。
+ * 位置 = その行の直前までに解読できたレコード数 — fold 基点(スナップショットの
+ * folded)より前の落ちた行は「畳まれた接頭辞の中」なので警告の対象から外れる
+ * (コンパクションが警告を自然に retire する — 恒久的に鳴り続けるノイズを
+ * equivocation 警告と同じ帯域へ載せない)。
+ */
 function parseLogLines(lines: readonly string[]): {
   readonly records: FloorLogRecord[];
-  readonly droppedLines: number;
+  readonly droppedAtRecordCount: readonly number[];
 } {
   const records: FloorLogRecord[] = [];
-  let droppedLines = 0;
+  const droppedAtRecordCount: number[] = [];
   for (const line of lines) {
     if (line.trim() === "") {
       continue;
@@ -658,12 +667,12 @@ function parseLogLines(lines: readonly string[]): {
     if (record === null) {
       // torn 行(クラッシュした並行プロセスの書きかけ)の自己回復。conflict の
       // 証拠行は正しい JSON なのでここでは失われない
-      droppedLines += 1;
+      droppedAtRecordCount.push(records.length);
       continue;
     }
     records.push(record);
   }
-  return { records, droppedLines };
+  return { records, droppedAtRecordCount };
 }
 
 /**
@@ -692,7 +701,7 @@ function foldBase(records: readonly FloorLogRecord[]): {
 }
 
 function foldRecords(lines: readonly string[]): FoldOutcome {
-  const { records, droppedLines } = parseLogLines(lines);
+  const { records, droppedAtRecordCount } = parseLogLines(lines);
   const { foldFrom, snapshotIndex, state } = foldBase(records);
   for (let index = foldFrom; index < records.length; index += 1) {
     applyRecord(state, records[index] as FloorLogRecord);
@@ -705,7 +714,9 @@ function foldRecords(lines: readonly string[]): FoldOutcome {
       intents: [...state.intents.values()],
     },
     decodedRecords: records.length,
-    droppedLines,
+    // fold 基点より後の落ちた行だけを数える(基点より前はスナップショットへ
+    // 畳まれた接頭辞 — 警告済みの古い torn 行を恒久的に鳴らさない)
+    droppedLines: droppedAtRecordCount.filter((position) => position >= foldFrom).length,
     recordsSinceSnapshot: snapshotIndex >= 0 ? records.length - 1 - snapshotIndex : records.length,
   };
 }
@@ -890,10 +901,23 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         }
       }
       const payload = Buffer.from(`\n${lines.map(encodeRecord).join("")}`, "utf8");
-      let written = 0;
-      while (written < payload.length) {
-        const result = await handle.write(payload, written);
-        written += result.bytesWritten;
+      // 1 論理 append = 1 write syscall(O_APPEND の原子性が及ぶ単位)。short
+      // write の**残りを継ぎ足さない**: 継ぎ足しの 2 回目の write は別プロセスの
+      // 追記と交錯し、1 レコードが 2 つの不正断片に分裂して無言で失われる
+      // (成功を返してはならない形)。断片は改行前置で隔離済みの torn 行として
+      // fold が捨てるので、payload **全体**を先頭から書き直す — join は冪等な
+      // ため重複レコードは無害。書き切れないまま尽きたら失敗として投げる
+      // (mutate が床エラーへ変換し、呼び出し側は「永続化済み」と扱わない)
+      for (let attempt = 1; ; attempt += 1) {
+        const result = await handle.write(payload, 0, payload.length);
+        if (result.bytesWritten === payload.length) {
+          break;
+        }
+        if (result.bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
+          throw new Error(
+            `short write on the floor log (${result.bytesWritten}/${payload.length} bytes)`,
+          );
+        }
       }
       await handle.datasync();
     } finally {

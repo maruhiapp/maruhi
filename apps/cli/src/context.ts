@@ -454,8 +454,16 @@ function attachProject(
         intents: floor.intents,
       });
       if (resolved) {
-        // 照合が床を前進させた可能性がある — fold を読み直す
-        floor = (yield* store.load(projectId)).floor;
+        // 照合が床を前進させた可能性がある — fold を読み直す。読み直した床にも
+        // conflict 検査を再適用する: 照合中・直後に並行プロセスが同座標の矛盾
+        // 観測を追記していた場合、検査なしで進むとこのコマンドの残りが
+        // equivocation 証拠を無視した代表値で走る(loadCheckedFloor と同じ
+        // fail-closed を、床を読み直すすべての点で崩さない)
+        const reloaded = (yield* store.load(projectId)).floor;
+        if (reloaded !== null && reloaded.conflicts.length > 0) {
+          return yield* Effect.fail(cliError(formatFloorConflicts(projectId, reloaded.conflicts)));
+        }
+        floor = reloaded;
       }
     }
     if (options?.quietMandateWarning !== true) {
