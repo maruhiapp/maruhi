@@ -230,13 +230,46 @@ export function loadCheckedFloor(
 }
 
 /**
+ * intent の複合エントリがチェーン上に**その試行のものとして**存在するか。
+ * (environment, epoch) の DEK commitment の一致だけでは判定しない: CAS
+ * リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
+ * 再署名するため、拒否された旧試行の intent(resolution の追記失敗・クラッシュで
+ * 残ったもの)を後続試行の受理と commitment だけでは区別できず、旧試行の
+ * マニフェスト(同版・異ハッシュ)を昇格させると typed conflict として床を
+ * 恒久拒否に落とす。複合の受理位置は宣言ヘッドが一意に決める(エントリの
+ * prev = 宣言ヘッド・seq = 宣言ヘッド + 1 — §12-4 の CAS。prev は署名対象
+ * なので別位置への着地は存在しない)ため、その位置のエントリが本 intent の
+ * op・座標・commitment を持つことを受理の条件にする。
+ */
+function intentEntryAccepted(verified: VerifiedProject, intent: FloorIntent): boolean {
+  // entries は seq 順(entries[0].seq === 1)— 宣言ヘッド + 1 の位置を見る
+  const entry = verified.entries[intent.declaredHead.seq];
+  if (entry === undefined || entry.prevHashHex !== intent.declaredHead.hashHex) {
+    return false;
+  }
+  if (intent.op === "create_environment") {
+    return (
+      entry.op === "create_environment" &&
+      entry.payload.environmentId === intent.environmentId &&
+      entry.payload.dekCommitmentHex === intent.dekCommitmentHex
+    );
+  }
+  return (
+    entry.op === "rotate_epoch" &&
+    entry.payload.environmentId === intent.environmentId &&
+    entry.payload.newEpoch === intent.epoch &&
+    entry.payload.dekCommitmentHex === intent.dekCommitmentHex
+  );
+}
+
+/**
  * 未解決の複合 intent(create / rotate — 3-F)の起動時照合。複合の効果確認は
  * チェーン同期(§12-10 (3))であり、コマンド前段は毎回チェーンを全検証する
- * ため、ここで解決できる: チェーン上の (environment, epoch) commitment が
- * intent のものと一致すれば受理済み — 自己発行マニフェストを床へ昇格する
- * (M1-A4 の「エラー終了・クラッシュを跨いだ床コミット」の回収)。一致しなければ
- * 受理されていない(チェーンは全同期済み = 完全な真実源)。meta-op intent は
- * チェーンに痕跡を残さないため、次の検証済み pull(values.ts)が照合する。
+ * ため、ここで解決できる: intent の複合エントリがチェーン上に存在すれば
+ * 受理済み — 自己発行マニフェストを床へ昇格する(M1-A4 の「エラー終了・
+ * クラッシュを跨いだ床コミット」の回収)。存在しなければ受理されていない
+ * (チェーンは全同期済み = 完全な真実源)。meta-op intent はチェーンに痕跡を
+ * 残さないため、次の検証済み pull(values.ts)が照合する。
  */
 function reconcileCompositeIntents(input: {
   readonly store: FloorStoreShape;
@@ -252,7 +285,7 @@ function reconcileCompositeIntents(input: {
         continue;
       }
       const environment = input.verified.state.environments.get(intent.environmentId);
-      const accepted = environment?.dekCommitments.get(intent.epoch) === intent.dekCommitmentHex;
+      const accepted = intentEntryAccepted(input.verified, intent);
       if (accepted) {
         // 受理済みと確認 — 自己発行マニフェストの床昇格(検証済み事実の join)
         yield* input.store.commitManifest(input.projectId, {

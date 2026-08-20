@@ -1136,6 +1136,70 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
   });
 });
 
+describe("未解決 intent の起動時照合(3-F — CAS リトライの同一 commitment を区別する)", () => {
+  it("拒否された旧試行の残置 intent は、同一 commitment でも昇格せず not-accepted で閉じる", async () => {
+    // CAS リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
+    // 再署名する。拒否された旧試行の intent(resolution の追記失敗・クラッシュ)を
+    // commitment の一致だけで「受理済み」と誤認して昇格させると、受理された試行の
+    // マニフェスト(同版・異ハッシュ)との typed conflict で床が恒久拒否になる
+    // (Bugbot 指摘の固定)。受理の判定は宣言ヘッド位置のエントリ同一性で行う
+    const env = await makeTestEnv();
+    const store = makeFileFloorStore(env.floorDir);
+    const createEntry = chain1.entries[1];
+    if (createEntry?.op !== "create_environment") throw new Error("create entry missing");
+    const commitment = createEntry.payload.dekCommitmentHex;
+    const statement = await statementOf({ variableId: "vb", name: "BETA" });
+    const acceptedManifestHash = await prevOfPhase({ variables: [statement] });
+    // 受理された試行の intent(宣言ヘッド = genesis → エントリ位置 seq 2 が一致)
+    await Effect.runPromise(
+      store.appendIntent(projectId, {
+        op: "create_environment",
+        environmentId: ENV_ID,
+        epoch: 1,
+        dekCommitmentHex: commitment,
+        variableId: null,
+        manifestVersion: 1,
+        manifestSigHashHex: acceptedManifestHash,
+        declaredHead: { seq: 1, hashHex: projectId },
+      }),
+    );
+    // 拒否された旧試行の残置 intent: commitment は同一だが宣言ヘッドが異なり
+    // (別の親からの試行)、マニフェストの signed bytes も異なる
+    await Effect.runPromise(
+      store.appendIntent(projectId, {
+        op: "create_environment",
+        environmentId: ENV_ID,
+        epoch: 1,
+        dekCommitmentHex: commitment,
+        variableId: null,
+        manifestVersion: 1,
+        manifestSigHashHex: "9a".repeat(32),
+        declaredHead: { seq: 2, hashHex: chain1.hashes[1] as string },
+      }),
+    );
+
+    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+    await startPhase(env, [
+      chainHandlerFor([chain1]),
+      pullHandlerFor({ variables: [{ variableId: "vb", statement, value }], deks: [wrap1] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("confirmed as accepted on the chain");
+    expect(errors).toContain("not on the verified chain — it was not accepted");
+    const floor = await readFloorFile(env);
+    // 受理された試行のマニフェストだけが床にあり(pull の検証済み観測と同一)、
+    // 旧試行のハッシュは昇格していない = typed conflict は発生しない
+    expect(floor.conflicts).toEqual([]);
+    expect(floor.environments[ENV_ID]?.manifest).toEqual({
+      manifestVersion: 1,
+      epoch: 1,
+      manifestSigHashHex: acceptedManifestHash,
+    });
+    expect(floor.intents).toEqual([]);
+  });
+});
+
 describe("commitHead のみの床(project verify 先行)との相互作用", () => {
   it("verify で作られたヘッドのみの床から、後続 pull が環境床を確立できる", async () => {
     const env = await makeTestEnv();

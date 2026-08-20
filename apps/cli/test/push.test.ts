@@ -506,9 +506,12 @@ describe("maruhi push", () => {
     // (解決 pull の v1)のみ。旧サーバーへ「保存されていないマニフェスト」を
     // 床に固定して以後の欠落を omission と誤判定する事故(M1-A2)を作らない
     expect(record?.manifest?.manifestVersion).toBe(1);
-    // 受理済みの自分の値の観測は journal-before-release で残っている
+    // **変数床も書かれない**(§12-10 (3) — 床への記録は確認通過後のみ)。
+    // 2xx だけを根拠に自分の書き込みを床へ植えると、サーバーが実際には保存して
+    // いなかった場合に、以後の全 pull が variable-omitted で恒久拒否される
+    // (未確認の思い込みが equivocation 証拠に化ける — Bugbot 指摘の固定)
     const body = created as CreateBody | null;
-    expect(record?.variables[body?.statement.variableId ?? ""]).toMatchObject({ version: 1 });
+    expect(record?.variables[body?.statement.variableId ?? ""]).toBeUndefined();
     // 確認義務の記録(intent — 3-F)は未解決のまま残る
     expect(loaded.floor?.intents).toHaveLength(1);
   });

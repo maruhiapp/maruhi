@@ -917,11 +917,25 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
       recover: (state, conflict) => nextState(normalized, state, conflict),
       exhaustedMessage: `The push conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
     });
+    const acceptedState = outcome.state;
+    if (outcome.selfManifest !== null) {
+      // メタ操作(変数作成)の成功の定義 = 検証可能な配布物での効果確認(1-E′)。
+      // **床への記録は確認通過後のみ**(§12-10 (3)): 2xx だけを根拠に自分の
+      // 書き込みを床へ植えると、サーバーが実際には保存していなかった場合に
+      // 「配布されない変数を床が要求し続ける」= 以後の pull がすべて
+      // variable-omitted で恒久拒否される(未確認の思い込みが equivocation
+      // 証拠に化ける)。env create が確認後にのみ v1 床を書くのと同じ規律
+      yield* confirmVariableCreation({
+        push: normalized,
+        accepted: outcome,
+        selfManifest: outcome.selfManifest,
+      });
+    }
     // 受理された自分の書き込みを床へ昇格する(§6.3 — 以後の pull で自分の
     // 書き込みの巻き戻しも検出できる。journal-before-release: 成功報告より先)。
-    // 規則 (c) 基準は動かさない。push 自体は受理済みなので、床の書き込み失敗は
-    // その旨を明示する
-    const acceptedState = outcome.state;
+    // 既存変数への値 push は 1-E′ の適用外なので受理直後 = ここ、作成は上の
+    // 効果確認を通過した後。規則 (c) 基準は動かさない。push 自体は受理済み
+    // なので、床の書き込み失敗はその旨を明示する
     yield* input.floor
       .commitPush(
         // 床のキーは自分が署名した変数 ID(サーバー echo を信用しない)
@@ -933,14 +947,6 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
         },
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
-    if (outcome.selfManifest !== null) {
-      // メタ操作(変数作成)の成功の定義 = 検証可能な配布物での効果確認(1-E′)
-      yield* confirmVariableCreation({
-        push: normalized,
-        accepted: outcome,
-        selfManifest: outcome.selfManifest,
-      });
-    }
     return {
       variableId: outcome.accepted.variableId,
       version: outcome.accepted.version,
