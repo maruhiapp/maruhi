@@ -210,6 +210,36 @@ own fork (if upstream changes this file, `git pull` will collide with an
 uncommitted edit. If you do not commit it, re-apply the edit after pull).
 client_id / client_secret live in Workers Secrets, so updates do not touch them.
 
+**One-time migration when crossing the environment-manifest release (2026-08-18,
+PR-M1)**: environments created before this release have no environment manifest
+yet, and the update order matters. Do it in this order:
+
+1. **Update the server first** (`git pull` + `bun run deploy` as above).
+2. Initialize every existing environment once, from an **updated** CLI on a
+   project member's machine: `maruhi env rotate --init-manifest` (once per
+   environment; environments created after the update need nothing).
+3. Update the CLIs and CI workflows everywhere else.
+
+The server must go first: `--init-manifest` sends the manifest as a new request
+field, and a pre-manifest server does not store it (an updated CLI against an
+old server cannot complete the migration — in the worst case the CLI records a
+manifest the server never saved). Note this order will change in an upcoming
+release that bundles a boundary checkpoint entry into creation/rotation: from
+that release on, CLIs/CI must be updated **before** the migration rotate. This
+section will be revised then.
+
+**Failure direction after the strict-acceptance release (2026-08-19)**: the
+server now rejects unknown fields in security-critical write requests
+(chain appends, environment creation/rotation, value pushes and metadata
+operations, DEK wrap registration, recovery blob registration, lease claims,
+invitations) with an HTTP 400 schema error instead of silently dropping them.
+This fixes the failure direction of future version skew: when a newer CLI sends
+a field an older (strict-aware) server does not know, the request fails closed
+with 400 (the CLI reports an HTTP 400 and suggests checking that the CLI and
+server versions match) rather than being accepted with the new field silently
+discarded. If you see such a 400 right after upgrading a CLI, update the server
+first, then retry.
+
 **One-time migration when crossing the 2026-08-11 revision**: the old steps put
 client_id in `wrangler.jsonc` as `vars.GITHUB_CLIENT_ID`. Instances stood up
 with those old steps must register client_id as a Workers Secret with

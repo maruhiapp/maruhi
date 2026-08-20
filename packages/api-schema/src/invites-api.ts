@@ -26,6 +26,7 @@ import {
   ProjectNotFoundError,
 } from "./errors/index.ts";
 import { EncPubHex, InviteAcceptSignatureHex, PublicKeyHex, Sha256Hex } from "./hex.ts";
+import { strictPayload } from "./strict.ts";
 
 /** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
 export const InviteRoleSchema = Schema.Literals(["reader", "member", "admin"]);
@@ -106,7 +107,8 @@ export const invitesGroup = HttpApiGroup.make("invites")
   .add(
     HttpApiEndpoint.post("issue", "/projects/:projectId/invites", {
       params: { projectId: ProjectIdSchema },
-      payload: Schema.Struct({ role: InviteRoleSchema }),
+      // strict 受理(§12-10 (1) — 招待の作成・受諾は §15-2 の鍵宣言クラス)
+      payload: strictPayload(Schema.Struct({ role: InviteRoleSchema })),
       success: InviteIssueResultSchema,
       error: [
         ProjectNotFoundError,
@@ -118,12 +120,14 @@ export const invitesGroup = HttpApiGroup.make("invites")
   )
   .add(
     HttpApiEndpoint.post("accept", "/invites/accept", {
-      payload: Schema.Struct({
-        token: InviteTokenSchema,
-        encPubHex: EncPubHex,
-        sigPubHex: PublicKeyHex,
-        signatureHex: InviteAcceptSignatureHex,
-      }),
+      payload: strictPayload(
+        Schema.Struct({
+          token: InviteTokenSchema,
+          encPubHex: EncPubHex,
+          sigPubHex: PublicKeyHex,
+          signatureHex: InviteAcceptSignatureHex,
+        }),
+      ),
       success: InviteAcceptResultSchema,
       error: [InviteNotFoundError, InviteGoneError, InviteSignatureInvalidError, ForbiddenError],
     }).middleware(AuthMiddleware),

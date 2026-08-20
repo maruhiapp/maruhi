@@ -59,6 +59,7 @@ import {
   VersionConflictError,
 } from "./errors/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
+import { strictPayload } from "./strict.ts";
 
 const projectParams = { projectId: ProjectIdSchema };
 const environmentParams = { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema };
@@ -179,14 +180,17 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.post("create", "/projects/:projectId/environments", {
       params: projectParams,
-      payload: Schema.Struct({
-        parentHeadHashHex: Sha256Hex,
-        entry: CreateEnvironmentEntrySchema,
-        statement: CreateEnvironmentMetaStatementSchema,
-        deks: Schema.Array(WrappedDekSchema),
-        // manifestVersion 1・変数空集合・epoch 1(§12-4 — 2026-08-18)
-        manifest: CreateEnvironmentManifestSchema,
-      }),
+      // strict 受理(§12-10 (1) — ルート 1 注釈で全ネストへ伝播)
+      payload: strictPayload(
+        Schema.Struct({
+          parentHeadHashHex: Sha256Hex,
+          entry: CreateEnvironmentEntrySchema,
+          statement: CreateEnvironmentMetaStatementSchema,
+          deks: Schema.Array(WrappedDekSchema),
+          // manifestVersion 1・変数空集合・epoch 1(§12-4 — 2026-08-18)
+          manifest: CreateEnvironmentManifestSchema,
+        }),
+      ),
       success: EnvironmentChainResultSchema,
       error: [
         ProjectNotFoundError,
@@ -219,16 +223,18 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.post("rotate", "/projects/:projectId/environments/:environmentId/rotate", {
       params: environmentParams,
-      payload: Schema.Struct({
-        parentHeadHashHex: Sha256Hex,
-        entry: RotateEpochEntrySchema,
-        deks: Schema.Array(WrappedDekSchema),
-        // 新エポックを焼き込んだマニフェスト(manifestVersion = 最新 + 1。
-        // メタ集合は不変でもエポック前進を反映する — CRYPTO_SPEC §4.3。
-        // マニフェスト導入前に作成された環境の最初の rotate は v1 を同梱する
-        // = 移行経路 — session-27 §14 PR-M1)
-        manifest: EnvironmentManifestSchema,
-      }),
+      payload: strictPayload(
+        Schema.Struct({
+          parentHeadHashHex: Sha256Hex,
+          entry: RotateEpochEntrySchema,
+          deks: Schema.Array(WrappedDekSchema),
+          // 新エポックを焼き込んだマニフェスト(manifestVersion = 最新 + 1。
+          // メタ集合は不変でもエポック前進を反映する — CRYPTO_SPEC §4.3。
+          // マニフェスト導入前に作成された環境の最初の rotate は v1 を同梱する
+          // = 移行経路 — session-27 §14 PR-M1)
+          manifest: EnvironmentManifestSchema,
+        }),
+      ),
       success: EnvironmentChainResultSchema,
       error: [
         ProjectNotFoundError,
@@ -267,10 +273,12 @@ export const environmentsGroup = HttpApiGroup.make("environments")
       // 環境の rename はマニフェストも同梱する(manifestVersion + 1 — 新しい
       // envMetaSigHashHex を写す。§12-4)。metaVersion CAS と manifestVersion CAS は
       // 同一トランザクションで判定し、409 は両方の再署名で再試行する(§12-5)
-      payload: Schema.Struct({
-        statement: RenameEnvironmentMetaStatementSchema,
-        manifest: EnvironmentManifestSchema,
-      }),
+      payload: strictPayload(
+        Schema.Struct({
+          statement: RenameEnvironmentMetaStatementSchema,
+          manifest: EnvironmentManifestSchema,
+        }),
+      ),
       success: HttpApiSchema.NoContent,
       error: [
         ProjectNotFoundError,
@@ -292,7 +300,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
       params: environmentParams,
       // 削除も署名付きステートメント(status deleted。name は直前 active 名 —
       // CRYPTO_SPEC §4.2)を要する。DELETE + body は deks.remove の先例に倣う
-      payload: Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema }),
+      payload: strictPayload(Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema })),
       success: HttpApiSchema.NoContent,
       // DataLimitExceeded は宣言しない: 削除経路の数量検査は metaVersion 上限のみ
       // で、削除ステートメント(ワイヤ Schema が status = deleted を固定)は
@@ -322,13 +330,15 @@ export const variablesGroup = HttpApiGroup.make("variables")
       // 作成 = version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱
       // (§12-5)。variableId と表示名はステートメントが運ぶ(裸のフィールドを
       // 併置しない — 二重運搬の不一致面を作らない)
-      payload: Schema.Struct({
-        statement: CreateVariableMetaStatementSchema,
-        value: EncryptedPayloadSchema,
-        // 作成後のメタ状態(新変数のステートメントを含む集合)を反映した
-        // マニフェスト(§12-5 — メタ状態を変える全操作の複合受理)
-        manifest: EnvironmentManifestSchema,
-      }),
+      payload: strictPayload(
+        Schema.Struct({
+          statement: CreateVariableMetaStatementSchema,
+          value: EncryptedPayloadSchema,
+          // 作成後のメタ状態(新変数のステートメントを含む集合)を反映した
+          // マニフェスト(§12-5 — メタ状態を変える全操作の複合受理)
+          manifest: EnvironmentManifestSchema,
+        }),
+      ),
       success: VariableVersionSchema,
       error: [
         ProjectNotFoundError,
@@ -366,10 +376,12 @@ export const variablesGroup = HttpApiGroup.make("variables")
         // 「直前バージョンと同一平文の新エポックへの再暗号化(CRYPTO_SPEC §7)」の
         // writer 自己申告で、受理判定・値署名には影響しない。要ローテーション
         // 検出の解消導出(AUDIT_SPEC §4.1-5)だけがこれを読む
-        payload: Schema.Struct({
-          value: EncryptedPayloadSchema,
-          reencryption: Schema.optionalKey(Schema.Boolean),
-        }),
+        payload: strictPayload(
+          Schema.Struct({
+            value: EncryptedPayloadSchema,
+            reencryption: Schema.optionalKey(Schema.Boolean),
+          }),
+        ),
         success: VariableVersionSchema,
         error: [
           ProjectNotFoundError,
@@ -392,10 +404,12 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
-        payload: Schema.Struct({
-          statement: RenameVariableMetaStatementSchema,
-          manifest: EnvironmentManifestSchema,
-        }),
+        payload: strictPayload(
+          Schema.Struct({
+            statement: RenameVariableMetaStatementSchema,
+            manifest: EnvironmentManifestSchema,
+          }),
+        ),
         success: HttpApiSchema.NoContent,
         error: [
           ProjectNotFoundError,
@@ -423,10 +437,12 @@ export const variablesGroup = HttpApiGroup.make("variables")
         // 削除も署名付きステートメント(status deleted。name は直前 active 名)+
         // tombstone を含む集合を反映したマニフェスト(§12-5 — マニフェストは
         // 行数上限の対象外なので削除経路を遮断しない: 保持は最新 1 通 — §12-8)
-        payload: Schema.Struct({
-          statement: DeleteVariableMetaStatementSchema,
-          manifest: EnvironmentManifestSchema,
-        }),
+        payload: strictPayload(
+          Schema.Struct({
+            statement: DeleteVariableMetaStatementSchema,
+            manifest: EnvironmentManifestSchema,
+          }),
+        ),
         success: HttpApiSchema.NoContent,
         // DataLimitExceeded を宣言しない理由は environments.remove と同じ
         // (deleted は metaVersion 上限の対象外 — §12-8)
@@ -481,7 +497,9 @@ export const deksGroup = HttpApiGroup.make("deks")
       // 空の deks は 400(§12-6。削除側の空 wraps と同じ「黙って成功させない」
       // 規律 — 2026-08-03 に 204 no-op から統一)。環境作成の deks は対象外
       // (空集合は完全一致要件の 422 recipient-missing が先に意味を持つ)
-      payload: Schema.Struct({ deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)) }),
+      payload: strictPayload(
+        Schema.Struct({ deks: Schema.Array(WrappedDekSchema).check(Schema.isMinLength(1)) }),
+      ),
       success: HttpApiSchema.NoContent,
       error: [
         ProjectNotFoundError,

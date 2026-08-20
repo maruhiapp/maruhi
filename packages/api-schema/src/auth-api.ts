@@ -23,6 +23,7 @@ import {
   TokenLimitError,
 } from "./errors/index.ts";
 import { hexString } from "./hex.ts";
+import { strictPayload } from "./strict.ts";
 
 /**
  * 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。
@@ -191,7 +192,9 @@ export const authGroup = HttpApiGroup.make("auth")
   .add(
     // 登録・再発行 = 置換 upsert(AUTH_SPEC §13-1。旧ラップは受理と同時に消える)
     HttpApiEndpoint.put("recoveryPut", "/auth/recovery", {
-      payload: RecoveryWrapSchema,
+      // strict 受理(§12-10 (1))。共有部品の RecoveryWrapSchema 自体には注釈せず、
+      // payload ルートの使用点でのみ被せる(応答スキーマと共有されうる部品の規律)
+      payload: strictPayload(RecoveryWrapSchema),
       success: HttpApiSchema.NoContent,
       error: [ForbiddenError],
     }).middleware(AuthMiddleware),

@@ -27,6 +27,7 @@ import { PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";
 import { leaseGroup } from "./lease-api.ts";
 import { rotationGroup } from "./rotation-api.ts";
+import { assertSecurityCriticalPayloadsStrict, strictPayload } from "./strict.ts";
 
 /** Chain head after a successful initialization or append. */
 export const ChainHeadSchema = Schema.Struct({
@@ -61,7 +62,8 @@ export const ChainSnapshotSchema = Schema.Struct({
 export const membershipGroup = HttpApiGroup.make("membership")
   .add(
     HttpApiEndpoint.post("init", "/projects", {
-      payload: Schema.Struct({ orgId: Schema.String, entry: ChainEntrySchema }),
+      // strict 受理(§12-10 (1) — genesis を運ぶチェーン追記面)
+      payload: strictPayload(Schema.Struct({ orgId: Schema.String, entry: ChainEntrySchema })),
       success: ChainHeadSchema,
       error: [
         ProjectAlreadyInitializedError,
@@ -81,11 +83,13 @@ export const membershipGroup = HttpApiGroup.make("membership")
   .add(
     HttpApiEndpoint.post("append", "/projects/:projectId/chain/entries", {
       params: { projectId: ProjectIdSchema },
-      payload: Schema.Struct({
-        // CAS の親ヘッド。不正形式は schema 境界の 400 で落とす(意図的な受理変更)
-        parentHeadHashHex: Sha256Hex,
-        entry: ChainEntrySchema,
-      }),
+      payload: strictPayload(
+        Schema.Struct({
+          // CAS の親ヘッド。不正形式は schema 境界の 400 で落とす(意図的な受理変更)
+          parentHeadHashHex: Sha256Hex,
+          entry: ChainEntrySchema,
+        }),
+      ),
       success: ChainHeadSchema,
       error: [
         ProjectNotFoundError,
@@ -111,3 +115,9 @@ export const maruhiApi = HttpApi.make("maruhi")
   .add(auditGroup)
   // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
   .add(leaseGroup);
+
+// ロード時スイープ(AUTH_SPEC §12-10 (1) / session-32 §5-2): 登録済みの全
+// security-critical payload ルートで strict 注釈が parser の読む位置にあることを
+// import 時に検査する。strictPayload 適用後の .check() 再合成(wrapper 内 assert は
+// ラップ時 1 回きりで捕捉できない)をモジュールロードの fail-loud に格上げする。
+assertSecurityCriticalPayloadsStrict(maruhiApi);
