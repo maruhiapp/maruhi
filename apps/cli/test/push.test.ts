@@ -435,6 +435,34 @@ describe("maruhi push", () => {
     expect(paths).not.toContain(`/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`);
   });
 
+  it("intent(3-F)の追記に失敗したら変数作成を送信しない(journal-before-send の fail-closed)", async () => {
+    let createCalls = 0;
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[]]),
+      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => {
+        createCalls += 1;
+        return { status: 200, json: { variableId: "vx", version: 1, epoch: 1 } };
+      }),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("value"));
+    env.failFloorIntentAppends();
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    expect(createCalls).toBe(0);
+    expect(env.errors.join("\n")).toContain("intent");
+  });
+
   it("旧サーバー相当(manifest を黙って捨てて 200)では、受理後照合が失敗し床のマニフェストを前進させない(1-E′ — §12-10 (3))", async () => {
     // strict 受理(§12-10 (1))未導入の旧サーバーの形: 変数作成の 200 は返すが
     // 同梱マニフェストを保存せず、以後も旧マニフェスト(v1・作成前の集合)を

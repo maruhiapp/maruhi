@@ -26,6 +26,7 @@ import { isServerRejection } from "./failure.ts";
 import {
   type ChainHeadFloor,
   type EnvironmentFloor,
+  type FloorConflict,
   type FloorIntent,
   type FloorIntentInput,
   type FloorIntentOutcome,
@@ -775,10 +776,14 @@ export function makeFloorHandle(input: {
         // 自分が受理させた manifestVersion を知っている事実は、書き込みに失敗
         // しても同一実行内の再走査の検出材料であり続ける(受理後に旧版を配布し
         // 続けるサーバーの検出)。前進はディスク側と同一の join 実装で行う
-        // (M1-A5 — `>=` 後勝ちの別実装を持たない)。プロセス内 join の conflict
-        // 検出はディスク側の fold が同じ規則で担うため、ここでは捨ててよい
+        // (M1-A5 — `>=` 後勝ちの別実装を持たない)。join が conflict(同版・
+        // 異ハッシュ)を検出した場合は**前進を採用しない**: 証拠を捨てた側を
+        // 検査基準にすると、ディスク書き込みが I/O 失敗で警告に落ちた実行の
+        // 残りが equivocation を見ないまま走る(ディスクが書けた場合は fold が
+        // 同じ conflict で以後の commit を typed エラーにする)
         if (current !== null) {
-          current = joinEnvironmentFloor(
+          const conflicts: FloorConflict[] = [];
+          const joined = joinEnvironmentFloor(
             input.environmentId,
             current,
             {
@@ -789,8 +794,11 @@ export function makeFloorHandle(input: {
               manifest,
               variables: {},
             },
-            () => {},
+            (conflict) => conflicts.push(conflict),
           );
+          if (conflicts.length === 0) {
+            current = joined;
+          }
         }
         return input.store
           .commitManifest(input.projectId, {

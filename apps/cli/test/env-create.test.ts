@@ -788,6 +788,19 @@ describe("maruhi env create", () => {
     expect(loaded.floor?.intents).toEqual([]);
   });
 
+  it("intent(3-F)の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const server = acceptingCreateServer({ projectId: built.projectId, base: built });
+    const env = await startEnv(built.projectId, server.handlers, owner);
+    env.failFloorIntentAppends();
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    expect(server.bodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("intent");
+  });
+
   it("チェーン観測済みの環境 ID は HTTP を呼ばず早期拒否する(履歴全体一意 — §6.2)", async () => {
     const owner = await makeTestUser("user-owner-1111");
     const built = await buildChain([

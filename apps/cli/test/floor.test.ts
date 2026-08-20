@@ -60,11 +60,20 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
   const logPath = () => join(dir, `${PROJECT_ID}.jsonl`);
 
   it("ファイル不在 = missing(初回)、解読可能レコードゼロの非空ファイル = corrupt を区別する", async () => {
-    expect(await load()).toEqual({ floor: null, state: "missing" });
+    expect(await load()).toEqual({ floor: null, state: "missing", droppedRecords: 0 });
     await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
     expect((await load()).state).toBe("loaded");
     await writeFile(logPath(), "{broken\nnot-json-either\n");
-    expect(await load()).toEqual({ floor: null, state: "corrupt" });
+    expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 2 });
+  });
+
+  it("部分的に解読できない行は droppedRecords として数える(呼び出し側の警告材料)", async () => {
+    await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
+    await appendFile(logPath(), "\n{torn-line-without-newline");
+    const result = await load();
+    expect(result.state).toBe("loaded");
+    expect(result.droppedRecords).toBe(1);
+    expect(result.floor?.chainHead).toEqual({ seq: 1, hashHex: HASH_A });
   });
 
   it("commitHead はヘッドを前進のみさせる(seq 後退の観測は join で負ける)", async () => {
@@ -564,7 +573,19 @@ describe("makeFileFloorStore(追記専用ログ + fold)", () => {
     it("旧ファイルの破損は corrupt として区別する", async () => {
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, `${PROJECT_ID}.json`), "{broken");
-      expect(await load()).toEqual({ floor: null, state: "corrupt" });
+      expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 0 });
+    });
+
+    it("空の .jsonl(open と write の間で落ちた残骸)は有効な旧形式を隠さない", async () => {
+      // open(\"a\") はファイルを即座に作るため、直後のクラッシュで 0 byte の
+      // ログが残りうる。これを missing(初回)へ潰すと、有効な旧床がある run が
+      // 床なし(fail-open)で走り、事実と違う first sync 通知が出る
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
+      await writeFile(join(dir, `${PROJECT_ID}.jsonl`), "");
+      const loaded = await load();
+      expect(loaded.state).toBe("loaded");
+      expect(loaded.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
     });
   });
 
@@ -703,7 +724,9 @@ describe("床ログの非機密性(ディスクレス不変条件)", () => {
       }),
     );
     const raw = await readFile(join(dir, `${PROJECT_ID}.jsonl`), "utf8");
-    const record: unknown = JSON.parse(raw.split("\n")[0] as string);
+    // 追記は隔離用の改行を前置する — 最初の非空行がレコード
+    const line = raw.split("\n").find((candidate) => candidate.trim() !== "") as string;
+    const record: unknown = JSON.parse(line);
     // 保存されるのはハッシュ・連番・op 種別のみ(§6.3)
     expect(JSON.stringify(record)).not.toContain("name");
   });

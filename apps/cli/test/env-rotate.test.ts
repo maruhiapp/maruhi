@@ -2313,8 +2313,39 @@ describe("maruhi env rotate", () => {
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "未達"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("was not accepted");
+    // チェーンが宣言ヘッドのまま = 輸送中の要求が後から着地しうるため、
+    // 「受理されていない」と断定しない(send-pending — Security Reviewer 指摘)
+    expect(errors).toContain("does not show it as accepted yet");
     expect(errors).toContain("safe to simply re-run");
+    // intent(3-F)は確定させず未解決のまま残す — チェーンが動いた後の照合が
+    // accepted / rejected を確定する
+    const floor = await loadFloor(env);
+    expect(floor?.intents).toHaveLength(1);
+  });
+
+  it("intent(3-F)の追記に失敗したら複合を送信しない(journal-before-send の fail-closed)", async () => {
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+    });
+    const env = await startEnv(state.handlers, owner);
+    env.failFloorIntentAppends();
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "journal"], env.layer)).toBe(1);
+    // 確認義務の記録なしに security-critical mutation を飛ばさない
+    expect(state.rotateBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain("intent");
   });
 
   it("ラップを持っているのに開けない値は、差し替えの疑いとして即時中断する", async () => {

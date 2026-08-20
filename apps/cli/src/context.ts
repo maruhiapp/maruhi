@@ -8,6 +8,7 @@
 //   openMetadataProjectWith = 鍵なし(平文メタデータしか読まないコマンド — env diff)
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import type { ChainEntry } from "@maruhi/crypto";
 import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
@@ -198,6 +199,13 @@ export function loadCheckedFloor(
       yield* io.logError(
         "Warning: cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
       );
+    } else if (loaded.droppedRecords > 0) {
+      // 部分的な破損は fold の自己回復で続行できるが、無言にはしない: 落ちた
+      // 行が最新の head / manifest 観測だった場合、その座標の検出材料は次の
+      // 検証済み観測まで一世代薄くなる(旧保存形の corrupt 警告と同じ可視化水準)
+      yield* io.logError(
+        `Warning: ${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
+      );
     }
     let view = verified;
     if (loaded.floor !== null) {
@@ -230,6 +238,15 @@ export function loadCheckedFloor(
 }
 
 /**
+ * intent の複合エントリの照合結果。accepted / rejected は宣言ヘッド位置の
+ * エントリ同一性で確定し、**pending(スロットが空)は確定させない**: チェーンが
+ * まだ宣言ヘッドのままなら、送信済みの複合が着地する前に別 CLI が同期しただけの
+ * 可能性があり、そこで not-accepted に潰すと後からエントリが載っても誰も
+ * マニフェストを昇格しない(送信者がクラッシュしていた場合の回収を失う)。
+ */
+type IntentEntryState = "accepted" | "rejected" | "pending";
+
+/**
  * intent の複合エントリがチェーン上に**その試行のものとして**存在するか。
  * (environment, epoch) の DEK commitment の一致だけでは判定しない: CAS
  * リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
@@ -239,14 +256,23 @@ export function loadCheckedFloor(
  * 恒久拒否に落とす。複合の受理位置は宣言ヘッドが一意に決める(エントリの
  * prev = 宣言ヘッド・seq = 宣言ヘッド + 1 — §12-4 の CAS。prev は署名対象
  * なので別位置への着地は存在しない)ため、その位置のエントリが本 intent の
- * op・座標・commitment を持つことを受理の条件にする。
+ * op・座標・commitment を持てば accepted、**別のエントリに占有されていれば**
+ * rejected(この試行はもう着地しえない)、空なら pending。
  */
-function intentEntryAccepted(verified: VerifiedProject, intent: FloorIntent): boolean {
+function intentEntryState(verified: VerifiedProject, intent: FloorIntent): IntentEntryState {
   // entries は seq 順(entries[0].seq === 1)— 宣言ヘッド + 1 の位置を見る
   const entry = verified.entries[intent.declaredHead.seq];
-  if (entry === undefined || entry.prevHashHex !== intent.declaredHead.hashHex) {
-    return false;
+  if (entry === undefined) {
+    return "pending";
   }
+  if (entry.prevHashHex !== intent.declaredHead.hashHex) {
+    return "rejected";
+  }
+  return intentEntryMatches(entry, intent) ? "accepted" : "rejected";
+}
+
+/** スロットのエントリが intent の複合(op・座標・commitment)そのものか。 */
+function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
   if (intent.op === "create_environment") {
     return (
       entry.op === "create_environment" &&
@@ -284,9 +310,18 @@ function reconcileCompositeIntents(input: {
       if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
         continue;
       }
+      const state = intentEntryState(input.verified, intent);
+      if (state === "pending") {
+        // スロットが空 = 送信前のクラッシュか、複合が着地する前に自分が同期した
+        // だけかを区別できない。確定させず要照合のまま残す(チェーンが宣言
+        // ヘッドを越えて進めば次の照合で accepted / rejected が確定する)
+        yield* io.logError(
+          `Note: an earlier ${intent.op} for environment ${intent.environmentId} is still awaiting confirmation (its chain slot is empty — the request may not have been sent, or may still be in flight). It will be reconciled once the chain advances`,
+        );
+        continue;
+      }
       const environment = input.verified.state.environments.get(intent.environmentId);
-      const accepted = intentEntryAccepted(input.verified, intent);
-      if (accepted) {
+      if (state === "accepted") {
         // 受理済みと確認 — 自己発行マニフェストの床昇格(検証済み事実の join)
         yield* input.store.commitManifest(input.projectId, {
           chainHead: {

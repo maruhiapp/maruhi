@@ -854,8 +854,15 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
   /**
    * 追記(O_APPEND 相当)+ fsync 相当の永続化(3-E′)。空のログへの最初の
    * 追記は、旧形式スナップショットがあればそれをスナップショットレコードとして
-   * 先頭に移行する。末尾に改行がない(torn 行)場合は改行を前置し、torn 行を
-   * それ自身の(解読不能な)1 行として隔離する — 自己回復の前提。
+   * 先頭に移行する。
+   *
+   * 書き込みは常に改行を**前置**する: 並行プロセスの torn 行(改行なしの
+   * 書きかけ)が直前に着地していても、自分のレコードは必ず新しい行として
+   * 隔離される(fold は空行を無視する)。「末尾バイトを読んで判定する」形は
+   * 検査と O_APPEND 書き込みの間に torn 行が割り込むレースを持つため使わない
+   * (割り込まれると自分の完全なレコードが 1 行に連結されて失われ、
+   * journal-before-release が無言で破れる)。write は short write に備えて
+   * 全バイト書けるまでループする(datasync が永続化の基準 — 3-E′)。
    */
   const appendRecords = async (
     projectId: string,
@@ -863,10 +870,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
   ): Promise<void> => {
     const path = pathOf(projectId);
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    const handle = await open(path, "a+", 0o600);
+    const handle = await open(path, "a", 0o600);
     try {
       const { size } = await handle.stat();
-      let prefix = "";
       const lines: FloorLogRecord[] = [...records];
       if (size === 0) {
         const legacy = await readLegacy(projectId);
@@ -882,14 +888,13 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             },
           });
         }
-      } else {
-        const tail = Buffer.alloc(1);
-        await handle.read(tail, 0, 1, size - 1);
-        if (tail[0] !== 0x0a) {
-          prefix = "\n";
-        }
       }
-      await handle.write(`${prefix}${lines.map(encodeRecord).join("")}`);
+      const payload = Buffer.from(`\n${lines.map(encodeRecord).join("")}`, "utf8");
+      let written = 0;
+      while (written < payload.length) {
+        const result = await handle.write(payload, written);
+        written += result.bytesWritten;
+      }
       await handle.datasync();
     } finally {
       await handle.close();
@@ -942,6 +947,17 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
       ),
     );
 
+  /** 旧形式の互換読み(ログ未作成 / 空ログ)。最初の追記でログへ移行される。 */
+  const loadLegacy = async (projectId: string): Promise<FloorLoadResult> => {
+    const legacy = await readLegacy(projectId);
+    if (legacy.corrupt) {
+      return { floor: null, state: "corrupt", droppedRecords: 0 };
+    }
+    return legacy.floor === null
+      ? { floor: null, state: "missing", droppedRecords: 0 }
+      : { floor: legacy.floor, state: "loaded", droppedRecords: 0 };
+  };
+
   return {
     load: (projectId) =>
       Effect.tryPromise({
@@ -953,23 +969,20 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             if (!isFileMissingError(error)) {
               throw error;
             }
-            // ログ未作成 — 旧形式(PR #33)の互換読み(最初の追記で移行される)
-            const legacy = await readLegacy(projectId);
-            if (legacy.corrupt) {
-              return { floor: null, state: "corrupt" };
-            }
-            return legacy.floor === null
-              ? { floor: null, state: "missing" }
-              : { floor: legacy.floor, state: "loaded" };
+            return loadLegacy(projectId);
           }
           const outcome = foldRecords(raw.split("\n"));
           if (outcome.decodedRecords === 0) {
-            // 解読可能なレコードがない: 空ファイルは初回相当、非空は全体破損
-            return raw.trim() === ""
-              ? { floor: null, state: "missing" }
-              : { floor: null, state: "corrupt" };
+            if (raw.trim() !== "") {
+              // 非空なのに 1 件も解読できない = 全体破損
+              return { floor: null, state: "corrupt", droppedRecords: outcome.droppedLines };
+            }
+            // 空ファイルは open("a") と write の間で落ちた残骸でもありうる —
+            // 有効な旧形式が残っていればそれを読む(missing = 初回に潰すと
+            // 旧床が 1 run ぶん不可視になり、事実と違う first sync 通知が出る)
+            return loadLegacy(projectId);
           }
-          return { floor: outcome.floor, state: "loaded" };
+          return { floor: outcome.floor, state: "loaded", droppedRecords: outcome.droppedLines };
         },
         catch: () =>
           cliError(`Cannot read the local floor log: ${join(dir, `${projectId}.jsonl`)}`),

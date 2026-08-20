@@ -1136,67 +1136,102 @@ describe("メタのforward injectionは床でも検出されない(§14.3-5 — 
   });
 });
 
-describe("未解決 intent の起動時照合(3-F — CAS リトライの同一 commitment を区別する)", () => {
-  it("拒否された旧試行の残置 intent は、同一 commitment でも昇格せず not-accepted で閉じる", async () => {
+describe("未解決 intent の起動時照合(3-F — 宣言ヘッド位置のエントリ同一性で確定する)", () => {
+  it("残置 intent は accepted / rejected / pending を宣言ヘッド位置で区別する(同一 commitment の旧試行を昇格させない)", async () => {
     // CAS リトライは同一 DEK(= 同一 commitment)のまま宣言ヘッドとマニフェストを
     // 再署名する。拒否された旧試行の intent(resolution の追記失敗・クラッシュ)を
     // commitment の一致だけで「受理済み」と誤認して昇格させると、受理された試行の
     // マニフェスト(同版・異ハッシュ)との typed conflict で床が恒久拒否になる
-    // (Bugbot 指摘の固定)。受理の判定は宣言ヘッド位置のエントリ同一性で行う
+    // (Bugbot 指摘の固定)。逆に、スロットが空なだけの intent を not-accepted に
+    // 潰すと、輸送中の複合が後から着地したときに誰も回収しない(Security
+    // Reviewer 指摘の固定)— pending は未解決のまま残す
     const env = await makeTestEnv();
     const store = makeFileFloorStore(env.floorDir);
-    const createEntry = chain1.entries[1];
-    if (createEntry?.op !== "create_environment") throw new Error("create entry missing");
-    const commitment = createEntry.payload.dekCommitmentHex;
+    const rotateEntry = chain2.entries[2];
+    if (rotateEntry?.op !== "rotate_epoch") throw new Error("rotate entry missing");
+    const commitment = rotateEntry.payload.dekCommitmentHex;
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
-    const acceptedManifestHash = await prevOfPhase({ variables: [statement] });
-    // 受理された試行の intent(宣言ヘッド = genesis → エントリ位置 seq 2 が一致)
+    // pull が配布する v2 マニフェスト(rotate 複合の再発行形)と同一の hash を
+    // 受理済み intent に持たせる(実運用では同じ複合の同梱物なので当然一致する)
+    const servedManifest = {
+      variables: [statement],
+      currentEpoch: 2,
+      manifestVersion: 2,
+      prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
+    };
+    const acceptedManifestHash = await prevOfPhase(servedManifest);
+    // (a) 受理された試行: 宣言ヘッド = seq 2(create 直後)→ スロット seq 3 が
+    // 本 intent の rotate エントリ
     await Effect.runPromise(
       store.appendIntent(projectId, {
-        op: "create_environment",
+        op: "rotate_epoch",
         environmentId: ENV_ID,
-        epoch: 1,
+        epoch: 2,
         dekCommitmentHex: commitment,
         variableId: null,
-        manifestVersion: 1,
+        manifestVersion: 2,
         manifestSigHashHex: acceptedManifestHash,
-        declaredHead: { seq: 1, hashHex: projectId },
-      }),
-    );
-    // 拒否された旧試行の残置 intent: commitment は同一だが宣言ヘッドが異なり
-    // (別の親からの試行)、マニフェストの signed bytes も異なる
-    await Effect.runPromise(
-      store.appendIntent(projectId, {
-        op: "create_environment",
-        environmentId: ENV_ID,
-        epoch: 1,
-        dekCommitmentHex: commitment,
-        variableId: null,
-        manifestVersion: 1,
-        manifestSigHashHex: "9a".repeat(32),
         declaredHead: { seq: 2, hashHex: chain1.hashes[1] as string },
       }),
     );
+    // (b) 拒否された旧試行: 同一 commitment だが宣言ヘッドが古く(seq 1)、
+    // そのスロット(seq 2)は別エントリ(create)に占有されている = この試行は
+    // もう着地しえない(確定拒否)。マニフェストの signed bytes も異なる
+    await Effect.runPromise(
+      store.appendIntent(projectId, {
+        op: "rotate_epoch",
+        environmentId: ENV_ID,
+        epoch: 2,
+        dekCommitmentHex: commitment,
+        variableId: null,
+        manifestVersion: 2,
+        manifestSigHashHex: "9a".repeat(32),
+        declaredHead: { seq: 1, hashHex: projectId },
+      }),
+    );
+    // (c) 着地待ちの intent: 宣言ヘッド = 現ヘッド(seq 3)→ スロット seq 4 は
+    // 空 = 輸送中でありうる。確定させない(未解決のまま残す)
+    await Effect.runPromise(
+      store.appendIntent(projectId, {
+        op: "rotate_epoch",
+        environmentId: ENV_ID,
+        epoch: 3,
+        dekCommitmentHex: "8b".repeat(32),
+        variableId: null,
+        manifestVersion: 3,
+        manifestSigHashHex: "8c".repeat(32),
+        declaredHead: { seq: 3, hashHex: chain2.hashes[2] as string },
+      }),
+    );
 
-    const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
+    const value = await valueOf({ variableId: "vb", version: 1, epoch: 2, plaintext: "b" });
     await startPhase(env, [
-      chainHandlerFor([chain1]),
-      pullHandlerFor({ variables: [{ variableId: "vb", statement, value }], deks: [wrap1] }),
+      chainHandlerFor([chain2]),
+      pullHandlerFor({
+        variables: [{ variableId: "vb", statement, value }],
+        deks: [wrap1, wrap2],
+        currentEpoch: 2,
+        manifestVersion: 2,
+        prevManifestSigHashHex: servedManifest.prevManifestSigHashHex,
+      }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("confirmed as accepted on the chain");
-    expect(errors).toContain("not on the verified chain — it was not accepted");
+    expect(errors).toContain("it was not accepted");
+    expect(errors).toContain("still awaiting confirmation");
     const floor = await readFloorFile(env);
     // 受理された試行のマニフェストだけが床にあり(pull の検証済み観測と同一)、
     // 旧試行のハッシュは昇格していない = typed conflict は発生しない
     expect(floor.conflicts).toEqual([]);
     expect(floor.environments[ENV_ID]?.manifest).toEqual({
-      manifestVersion: 1,
-      epoch: 1,
+      manifestVersion: 2,
+      epoch: 2,
       manifestSigHashHex: acceptedManifestHash,
     });
-    expect(floor.intents).toEqual([]);
+    // pending の intent だけが要照合として残る
+    expect(floor.intents).toHaveLength(1);
+    expect(floor.intents[0]).toMatchObject({ epoch: 3 });
   });
 });
 

@@ -170,6 +170,12 @@ export interface FloorLoadResult {
   readonly floor: ProjectFloor | null;
   /** missing = 初回同期(床なし)、corrupt = 破損(初回として扱うが区別して警告)。 */
   readonly state: "loaded" | "missing" | "corrupt";
+  /**
+   * 解読できず読み飛ばした非空行の数(torn 行の自己回復の痕跡)。0 でなければ
+   * 呼び出し側が警告する — 部分的な破損を無言の「検出材料の目減り」にしない
+   * (旧保存形の corrupt 警告と同じ可視化の水準)。
+   */
+  readonly droppedRecords: number;
 }
 
 /** pull 成功時の原子コミット(規則 (c) 基準 + 変数床 + チェーンヘッドを 1 レコードで)。 */

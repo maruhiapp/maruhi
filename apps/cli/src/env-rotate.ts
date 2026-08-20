@@ -290,12 +290,21 @@ function signRotateEntry(input: {
 type RotateSendOutcome =
   /** サーバー自身のエラー本文で拒否された(効果は生じていない — 確定)。 */
   | { readonly kind: "rejected" }
-  /** チェーン上に自分の commitment がなく、受理されていないことを確認した。 */
+  /**
+   * 受理されていないことを確認した(確定)。チェーンが宣言ヘッドを越えて
+   * 進んでいる = この試行の CAS はもう成立しえない(prev は署名対象)。
+   */
   | { readonly kind: "not-accepted" }
   /** 受理を確認し、現エポック = 目標エポック(正常経路)。 */
   | { readonly kind: "accepted-and-current"; readonly view: VerifiedProject }
   /** 受理を確認したが、別ローテーションが現エポックを追い越している。 */
   | { readonly kind: "accepted-but-superseded"; readonly view: VerifiedProject }
+  /**
+   * チェーンがまだ宣言ヘッドのまま = 送信済みの複合が**まだ着地しうる**
+   * (応答は消えたが要求は輸送中でありうる)。not-accepted へ確定させない —
+   * intent(3-F)は未解決のまま残し、チェーンが動いた後の照合が確定する。
+   */
+  | { readonly kind: "send-pending" }
   /** 受理の有無を確認できなかった(probe 失敗)— 床は前進させない。 */
   | { readonly kind: "acceptance-unknown" };
 
@@ -312,6 +321,8 @@ function probeAmbiguousSend(input: {
   readonly newEpoch: number;
   /** 自分が生成した DEK のコミットメント(受理されたのが**自分の**分かの判定)。 */
   readonly dekCommitmentHex: string;
+  /** 応答が消えた試行の宣言ヘッド(= 複合の CAS 親)。着地可能性の判定材料。 */
+  readonly declaredHead: { readonly seq: number; readonly hashHex: string };
   readonly cause: string;
 }): Effect.Effect<{ readonly outcome: RotateSendOutcome; readonly error: CliError }, never> {
   return Effect.gen(function* () {
@@ -354,10 +365,23 @@ function probeAmbiguousSend(input: {
         ),
       };
     }
+    // 現エポックが目標未満: 確定の可否は宣言ヘッド位置で分かれる。チェーンが
+    // 宣言ヘッドを越えて進んでいれば、この試行の CAS はもう成立しえない(確定
+    // 拒否)。宣言ヘッドのまま(スロットが空)なら、輸送中の要求が後から着地
+    // しうる — not-accepted へ確定させない(intent は未解決のまま残り、
+    // チェーンが動いた後の照合が確定する)
+    if (probe.value.view.state.headSeq > input.declaredHead.seq) {
+      return {
+        outcome: { kind: "not-accepted" } as const,
+        error: cliError(
+          `${input.cause}. The chain shows it was not accepted (the chain advanced past this attempt's declared parent head, so it can no longer land; environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}). It is safe to simply re-run`,
+        ),
+      };
+    }
     return {
-      outcome: { kind: "not-accepted" } as const,
+      outcome: { kind: "send-pending" } as const,
       error: cliError(
-        `${input.cause}. The chain shows it was not accepted (environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}). It is safe to simply re-run`,
+        `${input.cause}. The chain does not show it as accepted yet (environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}, and the request may still be in flight). It is safe to simply re-run — the re-run resumes re-encryption if it landed, or restarts the rotation if not`,
       ),
     };
   });
@@ -377,6 +401,8 @@ interface AcceptedRotation {
   readonly manifest: ManifestFloor;
   /** 送信前に追記した intent(3-F)の id。効果確認の結果が閉じる。 */
   readonly intentId: string;
+  /** この試行の宣言ヘッド(= 複合の CAS 親。probe の着地可能性判定の材料)。 */
+  readonly declaredHead: { readonly seq: number; readonly hashHex: string };
 }
 
 /**
@@ -528,6 +554,10 @@ function appendRotation(
                   manifestSigHashHex: manifest.manifestSigHashHex,
                 },
                 intentId,
+                declaredHead: {
+                  seq: state.verified.state.headSeq,
+                  hashHex: state.verified.state.headHashHex,
+                },
               };
               lastSent = sent;
               yield* input.client.environments
@@ -673,6 +703,7 @@ function settleAmbiguousRotation(
       environmentId: input.environmentId,
       newEpoch: input.newEpoch,
       dekCommitmentHex: input.dekCommitmentHex,
+      declaredHead: sent.declaredHead,
       cause,
     });
     const outcome = probed.outcome;
@@ -692,6 +723,8 @@ function settleAmbiguousRotation(
     if (outcome.kind === "not-accepted") {
       yield* resolveRotationIntent(input.floor, sent, "not-accepted");
     }
+    // send-pending / acceptance-unknown は確定させない: intent(3-F)は未解決の
+    // まま残り、次の実行の照合(チェーン同期)が accepted / rejected を確定する
     return yield* Effect.fail(probed.error);
   });
 }

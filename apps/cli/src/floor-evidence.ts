@@ -281,6 +281,6 @@ export function formatFloorConflicts(
   return [
     `The local floor observation log contains verified observations that contradict each other (project=${projectId}):`,
     ...conflicts.flatMap(conflictLines),
-    "  Both observations passed CRYPTO_SPEC §6.3 verification — this is evidence of server equivocation or a leaked signing key (§14.2-5). The append-only floor log preserves both records; present the log file to the project administrators. Refusing to use or advance this floor",
+    `  Both observations passed CRYPTO_SPEC §6.3 verification — this is evidence of server equivocation or a leaked signing key (§14.2-5). The append-only floor log preserves both records: floor/${projectId}.jsonl in the config directory. Present it to the project administrators. Every command for this project will refuse to run until this is resolved out of band. Refusing to use or advance this floor`,
   ].join("\n");
 }
