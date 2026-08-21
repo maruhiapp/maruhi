@@ -20,6 +20,14 @@
 
 バージョンは `.deepsec/package.json` で厳密ピン。更新は独立 PR。
 
+## スキルとして呼ぶ
+
+公式手順どおり `npx skills add vercel-labs/deepsec` で入れた。正は `.agents/skills/deepsec/SKILL.md`、`.claude/skills/deepsec` は symlink。`skills-lock.json` がソースとハッシュを固定する。更新は `npx skills update deepsec`。
+
+エージェントは `/deepsec` か「deepsec でスキャンして」で公式 runbook を読む。最初に範囲(未コミット / `origin/main` との差 / リポジトリ全体)を聞き、そのあと `process` する。`process` は有料なので、支出上限を先に決めてから呼ぶ。
+
+バージョン一致のドキュメントは `.deepsec/node_modules/deepsec/SKILL.md` と `dist/docs/`(パッケージ同梱。名前は `deepsec-docs`)。
+
 ## 日常操作
 
 ```sh

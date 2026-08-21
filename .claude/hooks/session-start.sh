@@ -20,6 +20,17 @@ export PATH="$HOME/.bun/bin:$PATH"
 
 bun install
 
+# deepsec スキル(`.agents/skills/deepsec`)の公式 runbook は
+# `.deepsec/node_modules/deepsec` が無いと init 再開に入る。
+# ワークスペース依存はルート bun とは別隔離なので、ここだけ pnpm で入れる。
+if [ -f .deepsec/package.json ]; then
+  if command -v pnpm >/dev/null 2>&1; then
+    (cd .deepsec && pnpm install --frozen-lockfile)
+  else
+    (cd .deepsec && bunx pnpm install --frozen-lockfile)
+  fi
+fi
+
 # プリインストール Chromium(PLAYWRIGHT_BROWSERS_PATH 配下)は Playwright の
 # ピン版が要求する revision と一致しないことがあるため、実行パスを直接渡す
 if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -x /opt/pw-browsers/chromium ]; then
