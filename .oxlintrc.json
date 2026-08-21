@@ -5,7 +5,7 @@
     "correctness": "error",
     "suspicious": "error"
   },
-  "ignorePatterns": ["fallow-baselines", ".agents", ".claude"],
+  "ignorePatterns": ["fallow-baselines", ".agents", ".claude", ".deepsec"],
   "overrides": [
     {
       // Astryx styling 規律(ADR-0013、B2 運用)。詳細は CLAUDE.md の styling 規律を参照

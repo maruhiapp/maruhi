@@ -21,7 +21,7 @@
 
   // Extra glob patterns to skip, on top of .gitignore. Relative to the project root.
   // .agents / .claude はエージェントスキル(ベンダードコンテンツ)のため対象外
-  "exclude": [".agents/**", ".claude/**"],
+  "exclude": [".agents/**", ".claude/**", ".deepsec/**"],
 
   // Path to tsconfig.json (for resolver `paths`/`baseUrl`), relative to the
   // project root. Defaults to "<project root>/tsconfig.json" if it exists.

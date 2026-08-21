@@ -83,6 +83,7 @@ apps/
 - ImportLint の `@public` によるディレクトリカプセル化を尊重する。内部モジュールへの直 import が必要に感じたら、それは公開 API の設計不足なので人間に相談する
 - テスト: サーバー/DO は `@cloudflare/vitest-pool-workers`(workerd 実環境)、crypto/core/CLI は Vitest。`bun:test` は使わない
 - `packages/crypto` はテストベクター(`test-vectors/`)による検証を必須とする
+- deepsec(`.deepsec/`)はメンテナ向けの任意レビューであり、上の 7 ステップには含めない。手順は `docs/DEEPSEC.md`
 
 ## コーディング規約
 
@@ -97,4 +98,5 @@ apps/
 - `docs/CRYPTO_SPEC.md` — 暗号仕様(唯一の正)
 - `docs/AUTH_SPEC.md` — 認証・アイデンティティ仕様
 - `docs/adr/` — 設計判断の記録
+- `docs/DEEPSEC.md` — deepsec(任意の脆弱性レビュー。品質ゲート外)
 - ライセンス: サーバー/web = FSL-1.1-MIT、CLI/SDK/crypto = MIT(確定 — ADR-0003。LICENSE 一式・CONTRIBUTING.md〔DCO〕導入済み)
