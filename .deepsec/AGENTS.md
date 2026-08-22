@@ -6,8 +6,12 @@ asked to set a project up.
 
 ## Common tasks
 
-- **Set up or resume a project**: run `pnpm deepsec setup`. For a
-  scaffold-only/manual setup, read `data/<id>/SETUP.md` and follow it.
+- **Missing `node_modules`**: `pnpm install --frozen-lockfile`. Never
+  re-run `npx deepsec init`.
+- **Set up or resume a project**: run `pnpm deepsec setup` only after a
+  human chooses credentials and a spend cap. For scaffold-only/manual
+  setup, read `data/<id>/SETUP.md` and follow it. Do not regenerate
+  `INFO.md`.
 - **Add a new project**: run `deepsec init-project <root>` — it
   scaffolds `data/<id>/` and prints/writes the setup prompt for the
   new project.

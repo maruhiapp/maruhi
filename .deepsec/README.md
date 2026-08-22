@@ -12,13 +12,13 @@ commit): [`docs/DEEPSEC.md`](../docs/DEEPSEC.md).
 
 ## Setup
 
-`npx deepsec init` created this workspace and normally completes its
-install, exact Vercel project link, Sandbox/model probes, threat model,
-coverage-guided scans, custom matchers, and first AI processing run.
+This workspace was created with `npx deepsec init --scaffold-only`.
+Do not re-run `init` (including `--through coverage`). Missing
+`node_modules` is repaired with `pnpm install --frozen-lockfile`.
+`data/maruhi/INFO.md` is hand-curated — do not regenerate it.
 
-If setup was interrupted, run `pnpm deepsec setup` here or re-run the
-original init command. Checkpoints in `data/maruhi/setup/setup-state.json`
-skip completed work. The linked Vercel project is always in Sandbox scope.
+Paid `setup` / `process` still need a human to choose credentials
+and a spend cap (`docs/DEEPSEC.md`).
 
 Use `--model-auth direct --ai-provider <provider>
 --ai-api-key-env <ENV_NAME>` to use a user-owned model credential; secret

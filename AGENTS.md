@@ -17,4 +17,4 @@
 - web dev サーバー(`bun run --filter @maruhi/web dev`、port 5173)は `Accept: text/html` ヘッダーがないリクエストに 404 を返す。curl での疎通確認は `-H "Accept: text/html"` を付ける(ブラウザでは問題なし)
 - `apps/server` はスタブ(dev スクリプトなし)。必要なら `cd apps/server && bunx wrangler dev`。DB・シークレット・外部サービスは現状一切不要
 - `.agents/skills` の一部エントリは node_modules へのシンボリックリンクのため、`bun install` 前は壊れて見える
-- deepsec スキル(`/deepsec`、`.agents/skills/deepsec`)を使う場合は `cd .deepsec && pnpm install --frozen-lockfile`。無いと公式 runbook が `npx deepsec init` 再開に入る
+- deepsec スキル(`/deepsec`、`.agents/skills/deepsec`)を使う場合は `cd .deepsec && pnpm install --frozen-lockfile`。`npx deepsec init` は走らせない(SKILL.md の maruhi overlay。`docs/DEEPSEC.md`)

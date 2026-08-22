@@ -25,6 +25,14 @@ to how much code it investigates.
 
 Follow this runbook when the user invokes `/deepsec` or asks for a scan.
 
+**maruhi overlay:** If `.deepsec/deepsec.config.ts` exists, this
+repository is already onboarded. Never run `npx deepsec init` (including
+`--through coverage` / `--yes`). Repair a missing
+`.deepsec/node_modules/deepsec` with
+`cd .deepsec && pnpm install --frozen-lockfile`.
+`npx skills update deepsec` overwrites this overlay; re-apply it
+(see `docs/DEEPSEC.md`).
+
 ## 1. Ask for scope first
 
 Ask the user which scope to process, using a structured question tool if you
@@ -44,12 +52,17 @@ Ask before doing anything else so the rest of the flow can run unattended.
 From the repository root:
 
 - **No `.deepsec/deepsec.config.ts`** → not onboarded. Do step 3 in full.
-- **`.deepsec/` exists but `.deepsec/node_modules/deepsec` is missing, or a
-  previous setup was interrupted** → re-run the init command from step 3; it
-  resumes from checkpoints and repairs the install rather than starting over.
-- **Otherwise** → onboarded; skip to step 4.
+- **`.deepsec/deepsec.config.ts` exists** → onboarded, even if
+  `.deepsec/node_modules/deepsec` is missing. Repair the install with
+  `cd .deepsec && pnpm install --frozen-lockfile` (or
+  `bunx pnpm install --frozen-lockfile` if `pnpm` is not on PATH).
+  Never re-run `npx deepsec init` / `init --through coverage`: this repo
+  is scaffold-only, `INFO.md` is hand-curated, and the CLI is pinned in
+  `.deepsec/package.json`. Then skip to step 4.
 
 ## 3. Onboard without full processing
+
+Skip this step if `.deepsec/deepsec.config.ts` already exists.
 
 Onboarding normally ends with an AI processing pass over the whole
 repository. Since the user already chose a scope, stop setup after the

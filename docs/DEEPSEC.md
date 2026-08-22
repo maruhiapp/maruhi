@@ -26,6 +26,14 @@
 
 エージェントは `/deepsec` か「deepsec でスキャンして」で公式 runbook を読む。最初に範囲(未コミット / `origin/main` との差 / リポジトリ全体)を聞き、そのあと `process` する。`process` は有料なので、支出上限を先に決めてから呼ぶ。
 
+公式 SKILL.md の step 2 は `.deepsec/node_modules/deepsec` が無いと `npx -y deepsec init --through coverage` を再開する。こちらは scaffold-only で `INFO.md` を手で書いており、CLI は `.deepsec/package.json` でピンしているので、その経路は禁止。`.agents/skills/deepsec/SKILL.md` に overlay を入れてある:
+
+- `deepsec.config.ts` がある = onboarded
+- 欠落した `node_modules` は `cd .deepsec && pnpm install --frozen-lockfile` で直す
+- `init` は config が無いときだけ
+
+`npx skills update deepsec` はこの overlay を消す(`skills-lock.json` の hash は upstream のまま)。更新後に同じ overlay を戻す。
+
 バージョン一致のドキュメントは `.deepsec/node_modules/deepsec/SKILL.md` と `dist/docs/`(パッケージ同梱。名前は `deepsec-docs`)。
 
 ## 日常操作
