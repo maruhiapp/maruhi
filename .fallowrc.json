@@ -18,9 +18,14 @@
     "apps/web/scripts/*.ts",
     "apps/web/theme/maruhi.js"
   ],
-  // エージェントスキル(ベンダードコンテンツ)と
+  // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
   // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外
-  "ignorePatterns": [".agents/**", ".claude/**", "packages/crypto/test-vectors/tools/**"],
+  "ignorePatterns": [
+    ".agents/**",
+    ".claude/**",
+    ".deepsec/**",
+    "packages/crypto/test-vectors/tools/**"
+  ],
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
