@@ -222,6 +222,29 @@ describe("pollDeviceFlow", () => {
     expect(JSON.stringify(exit)).toContain("authorization code expired");
     expect(Date.now() - started).toBeLessThan(2000);
   });
+
+  it("expiresInSeconds が NaN でも deadline は有界(B3 レビューループ 1)", async () => {
+    // Math.min(NaN, 上限) = NaN で deadline 比較が常に偽になる形の固定。
+    // NaN は既定値(900s)へ倒れ、interval 3600s は残り時間を越えるため
+    // sleep せず即座に期限切れになる
+    const started = Date.now();
+    const exit = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: "http://127.0.0.1:9",
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: 3600,
+          expiresInSeconds: Number.NaN,
+        },
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 });
 
 describe("total timestamp formatters", () => {
@@ -229,9 +252,17 @@ describe("total timestamp formatters", () => {
     expect(formatUtcSeconds(0)).toBe("1970-01-01 00:00:00 UTC");
     expect(formatUtcMinutes(0)).toBe("1970-01-01 00:00 UTC");
     expect(formatUtcDate(0)).toBe("1970-01-01");
-    // ECMA-262 の Date 範囲の境界(±8.64e15 ms)は表示できる
-    expect(formatUtcSeconds(8_640_000_000_000_000)).toContain("UTC");
-    for (const bad of [8_640_000_000_000_001, -1e300, Number.POSITIVE_INFINITY, Number.NaN]) {
+    // Date 範囲内でも年 0〜9999 の外(toISOString が拡張年形式を返す領域)は
+    // 固定 slice が黙って別位置を切るため、明示劣化に倒す(レビューループ 1)
+    expect(formatUtcSeconds(Date.UTC(9999, 11, 31, 23, 59, 59))).toBe("9999-12-31 23:59:59 UTC");
+    for (const bad of [
+      253_402_300_800_000, // 年 10000
+      -62_167_219_200_001, // 年 -1
+      8_640_000_000_000_000,
+      -1e300,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+    ]) {
       expect(formatUtcSeconds(bad)).toContain("invalid timestamp");
       expect(formatUtcMinutes(bad)).toContain("invalid timestamp");
       expect(formatUtcDate(bad)).toContain("invalid timestamp");

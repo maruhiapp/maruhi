@@ -50,6 +50,12 @@ function readIssuanceEndpoint(io: {
   return { requestUrl, requestToken };
 }
 
+/** 127.0.0.0/8 の IPv4 リテラルか(DNS 名・8 進や 16 進などの別記法は不可)。 */
+function isLoopbackIpv4(hostname: string): boolean {
+  const match = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  return match !== null && match.slice(1).every((octet) => Number(octet) <= 255);
+}
+
 /**
  * 発行エンドポイント URL の検証(M1)と audience パラメータの付与。`https:`
  * 以外・埋め込み資格情報・パース不能は null(呼び出し元が型付きエラーにする)。
@@ -62,9 +68,11 @@ function validatedIssuanceUrl(requestUrl: string, audience: string): string | nu
     return null;
   }
   // `http:` は loopback のみ許す(テスト・ローカルモック用 — 平文がネットワークを
-  // 渡らない)。それ以外は `https:` 必須
+  // 渡らない)。それ以外は `https:` 必須。loopback 判定は IPv4 リテラルとして
+  // 厳密に検査する — 文字列接頭辞("127." で始まる)だと "127.evil.com" の
+  // ような公開 DNS 名が通ってしまう(レビューループ 1)
   const loopback =
-    url.hostname === "localhost" || url.hostname === "[::1]" || url.hostname.startsWith("127.");
+    url.hostname === "localhost" || url.hostname === "[::1]" || isLoopbackIpv4(url.hostname);
   const schemeOk = url.protocol === "https:" || (url.protocol === "http:" && loopback);
   if (!schemeOk || url.username !== "" || url.password !== "") {
     return null;

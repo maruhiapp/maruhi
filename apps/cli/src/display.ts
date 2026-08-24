@@ -75,11 +75,19 @@ export function displayText(value: string): string {
 /** ECMA-262 が Date に許す unix ms の絶対値上限。 */
 const MAX_TIMESTAMP_MS = 8_640_000_000_000_000;
 
-/** 範囲内なら ISO 文字列、範囲外・非有限なら null。 */
+// 標準形("YYYY-MM-DDTHH:mm:ss.sssZ")のみ受ける: Date 範囲内でも年が 0〜9999 の
+// 外だと toISOString は拡張年形式("+010000-…" / "-…")を返し、固定オフセットの
+// slice が黙って別の位置を切り出す(レビューループ 1 — 「明示劣化」の約束が
+// 崩れる)。形式で検査すれば slice の前提そのものを固定できる
+const STANDARD_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** 範囲内(年 0〜9999)なら標準形 ISO 文字列、それ以外は null。 */
 function isoOf(ms: number): string | null {
-  return Number.isFinite(ms) && Math.abs(ms) <= MAX_TIMESTAMP_MS
-    ? new Date(ms).toISOString()
-    : null;
+  if (!Number.isFinite(ms) || Math.abs(ms) > MAX_TIMESTAMP_MS) {
+    return null;
+  }
+  const iso = new Date(ms).toISOString();
+  return STANDARD_ISO.test(iso) ? iso : null;
 }
 
 /** 範囲外の値の表示(number 由来なので端末サニタイズ不要)。 */

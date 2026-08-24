@@ -146,10 +146,16 @@ export function pollDeviceFlow(
 ): Effect.Effect<Redacted.Redacted<string>, CliError> {
   const base = options.githubBaseUrl ?? GITHUB_BASE_URL;
   const slowDownExtra = options.slowDownExtraSeconds ?? SLOW_DOWN_EXTRA_SECONDS;
-  // startDeviceFlow が丸めた値を信頼せず、こちらでも上限を適用する(呼び出し元が
-  // 応答値を直接渡しても deadline が有界であることを保つ)
-  const deadlineMs =
-    Date.now() + Math.min(options.authorization.expiresInSeconds, MAX_EXPIRES_IN_SECONDS) * 1000;
+  // startDeviceFlow が丸めた値を信頼せず、こちらでも検証と上限を適用する
+  // (呼び出し元が応答値を直接渡しても deadline が有界であることを保つ)。
+  // 非有限・非正は既定値へ倒す — 素の Math.min だと NaN が deadline を無効化し、
+  // B3 が塞いだ無期限ポーリングが復活する(レビューループ 1)
+  const rawExpires = options.authorization.expiresInSeconds;
+  const expiresInSeconds =
+    Number.isFinite(rawExpires) && rawExpires > 0
+      ? Math.min(rawExpires, MAX_EXPIRES_IN_SECONDS)
+      : DEFAULT_EXPIRES_IN_SECONDS;
+  const deadlineMs = Date.now() + expiresInSeconds * 1000;
 
   const poll = (intervalSeconds: number): Effect.Effect<Redacted.Redacted<string>, CliError> =>
     Effect.gen(function* () {

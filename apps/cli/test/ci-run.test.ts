@@ -750,6 +750,16 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it('"127." で始まるだけの DNS 名は loopback 扱いしない(M1 レビューループ 1)', async () => {
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    // "127.evil.com" は 127.0.0.0/8 のリテラルではなく任意 IP へ解決できる公開
+    // DNS 名 — 接頭辞判定だと平文 http でも通ってしまう形の固定
+    env.setEnvVar(OIDC_REQUEST_URL_ENV, "http://127.evil.com/oidc/token");
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https:");
+    expect(server.requests).toHaveLength(0);
+  });
+
   it("パース不能な発行 URL も通信前に拒否する(M1)", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     env.setEnvVar(OIDC_REQUEST_URL_ENV, "not a url");

@@ -42,7 +42,16 @@ export function ipRateLimitAllowed(
     try {
       const outcome = await limiter.limit({ key: ip });
       return outcome.success;
-    } catch {
+    } catch (error) {
+      // fail-open の**明示的な**回復(可用性側の設計判断 — 上の doc)。ただし
+      // 無言では飲まない(CLAUDE.md): binding の設定ミス等で limiter が恒久に
+      // 落ちていると、制限が全て無効のまま誰も気づけない。Workers のログ
+      // (wrangler tail / Workers Logs — 運用者のみが読む。外部送信ではない)へ
+      // 静的メッセージだけ残す(リクエスト内容・IP は書かない)
+      console.warn(
+        "rate limiter binding failed; allowing the request (fail-open)",
+        error instanceof Error ? error.message : String(error),
+      );
       return true;
     }
   });
