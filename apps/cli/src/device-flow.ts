@@ -26,12 +26,16 @@ const MAX_POLL_INTERVAL_SECONDS = 60;
 const DEFAULT_EXPIRES_IN_SECONDS = 900;
 const MAX_EXPIRES_IN_SECONDS = 1800;
 
-/** interval を [下限, 上限] に丸める(下限はテストのみ短縮可)。 */
+/**
+ * interval を [下限, 上限] に丸める(下限はテスト用 knob で変更可)。下限が
+ * 上限を越える場合は下限が勝つ(不正入力と有効入力で結果が食い違わないよう、
+ * 上限側も下限で底上げする)。
+ */
 function clampInterval(seconds: number, minSeconds: number): number {
   if (!Number.isFinite(seconds) || seconds < minSeconds) {
     return minSeconds;
   }
-  return Math.min(seconds, MAX_POLL_INTERVAL_SECONDS);
+  return Math.min(seconds, Math.max(MAX_POLL_INTERVAL_SECONDS, minSeconds));
 }
 
 /** expires_in を (0, 上限] に丸める(非数・非有限・非正は既定値)。start / poll 共用。 */

@@ -196,10 +196,13 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("deviceExchange", ({ payload, request }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        // 発信元 IP のレート制限を最初に置く(deepsec M3/B11): 交換 1 回ごとの
-        // GitHub check-token 呼び出しは OAuth App 単位の共有クォータを消費し、
-        // 枯渇すると**全ユーザー**の CLI login が止まる。判定は形式検査より
-        // 手前・アウトバウンドより手前(そもそも仕事をしない)
+        // 発信元 IP のレート制限をハンドラ最初に置く(deepsec M3/B11): 交換
+        // 1 回ごとの GitHub check-token 呼び出しは OAuth App 単位の共有クォータを
+        // 消費し、枯渇すると**全ユーザー**の CLI login が止まる。ワイヤ Schema の
+        // 形式事前検査(トークン形式・サイズ上限)は HttpApi がハンドラより先に
+        // 走るため、形式不正の洪水はこの窓を消費せずに 400 で落ち、ここへ届く
+        // 形式適合のリクエストだけが計数される。判定はアウトバウンドより手前
+        // (制限時はそもそも仕事をしない)
         const allowed = yield* ipRateLimitAllowed(env.DEVICE_EXCHANGE_RATE_LIMIT, request);
         if (!allowed) {
           return yield* Effect.fail(
