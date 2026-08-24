@@ -62,6 +62,49 @@ export function displayText(value: string): string {
   return value.replace(CONTROL_CHARS, "\uFFFD");
 }
 
+// ---------------------------------------------------------------------------
+// サーバー申告 unix ms の total な表示(deepsec B1/B4/B5)
+//
+// serverTs / createdAtMs / expiresAtMs / updatedAtMs はワイヤの無制限 number で、
+// ECMA-262 の Date 範囲(±8.64e15 ms)外を Date#toISOString に渡すと RangeError
+// の defect になり、audit / invite / key show が型付きエラーでなくクラッシュで
+// 終了する。表示は total にし、範囲外は「不正なタイムスタンプ」を明示する
+// 文字列へ劣化する(1 フィールドの不正で行全体・コマンド全体を落とさない)。
+// ---------------------------------------------------------------------------
+
+/** ECMA-262 が Date に許す unix ms の絶対値上限。 */
+const MAX_TIMESTAMP_MS = 8_640_000_000_000_000;
+
+/** 範囲内なら ISO 文字列、範囲外・非有限なら null。 */
+function isoOf(ms: number): string | null {
+  return Number.isFinite(ms) && Math.abs(ms) <= MAX_TIMESTAMP_MS
+    ? new Date(ms).toISOString()
+    : null;
+}
+
+/** 範囲外の値の表示(number 由来なので端末サニタイズ不要)。 */
+function invalidTimestamp(ms: number): string {
+  return `(invalid timestamp: ${ms})`;
+}
+
+/** unix ms → "YYYY-MM-DD HH:mm:ss UTC"(範囲外は明示表示 — total)。 */
+export function formatUtcSeconds(ms: number): string {
+  const iso = isoOf(ms);
+  return iso === null ? invalidTimestamp(ms) : iso.slice(0, 19).replace("T", " ") + " UTC";
+}
+
+/** unix ms → "YYYY-MM-DD HH:mm UTC"(範囲外は明示表示 — total)。 */
+export function formatUtcMinutes(ms: number): string {
+  const iso = isoOf(ms);
+  return iso === null ? invalidTimestamp(ms) : iso.slice(0, 16).replace("T", " ") + " UTC";
+}
+
+/** unix ms → "YYYY-MM-DD"(範囲外は明示表示 — total)。 */
+export function formatUtcDate(ms: number): string {
+  const iso = isoOf(ms);
+  return iso === null ? invalidTimestamp(ms) : iso.slice(0, 10);
+}
+
 /**
  * English count phrase with a regular plural: `countNoun(1, "variable")` →
  * "1 variable"、`countNoun(2, "variable")` → "2 variables"。

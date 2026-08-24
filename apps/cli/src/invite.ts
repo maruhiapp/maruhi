@@ -34,7 +34,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
-import { displayText } from "./display.ts";
+import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
@@ -263,10 +263,10 @@ export function inviteCreateOp(input: {
   });
 }
 
-/** unix ms を UTC 表示(YYYY-MM-DD HH:mm)にする。 */
-function formatDateTimeUtc(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC";
-}
+// createdAtMs / expiresAtMs はサーバー申告の無制限 number(B4): total な共有
+// フォーマッタで表示し、Date 範囲外の値が defect(RangeError)にならないように
+// する(invite create / list を型なしクラッシュで終了させない)
+const formatDateTimeUtc = formatUtcMinutes;
 
 // ---------------------------------------------------------------------------
 // invite accept

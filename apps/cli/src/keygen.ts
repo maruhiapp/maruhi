@@ -22,7 +22,7 @@ import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
-import { displayText } from "./display.ts";
+import { displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
@@ -167,7 +167,7 @@ export function keyShowOp(input: {
   });
 }
 
-/** unix ms を UTC の日付表記(YYYY-MM-DD)にする(リマインダ表示用)。 */
-function formatDateUtc(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
+// updatedAtMs はサーバー申告の無制限 number(B5): total な共有フォーマッタで
+// 表示し、ローカル鍵の表示(key show の本務)が recovery status の不正値で
+// 非ゼロ終了しないようにする(劣化表示)
+const formatDateUtc = formatUtcDate;

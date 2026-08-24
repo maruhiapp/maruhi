@@ -24,7 +24,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices, ProjectContextBase, SessionContext } from "./context.ts";
-import { countNoun, displayText } from "./display.ts";
+import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -184,9 +184,9 @@ function mirrorTrustOf(
 // 表示
 // ---------------------------------------------------------------------------
 
-function formatTs(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 19).replace("T", " ") + " UTC";
-}
+// serverTs はサーバー申告の無制限 number(B1): total な共有フォーマッタで表示し、
+// Date 範囲外の値が defect(RangeError)にならないようにする
+const formatTs = formatUtcSeconds;
 
 function describeActor(event: WireAuditEvent): string {
   const actor = event.actor;

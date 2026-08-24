@@ -10,7 +10,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentProfileRef } from "../src/agent-gate.ts";
 import { runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
-import { decodeValueText, showValues } from "../src/display.ts";
+import {
+  decodeValueText,
+  formatUtcDate,
+  formatUtcMinutes,
+  formatUtcSeconds,
+  showValues,
+} from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
 import { CliIo } from "../src/io.ts";
 import {
@@ -215,6 +221,21 @@ describe("pollDeviceFlow", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("authorization code expired");
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("total timestamp formatters", () => {
+  it("Date 範囲外・非有限でも RangeError にせず明示表示へ劣化する(B1/B4/B5)", () => {
+    expect(formatUtcSeconds(0)).toBe("1970-01-01 00:00:00 UTC");
+    expect(formatUtcMinutes(0)).toBe("1970-01-01 00:00 UTC");
+    expect(formatUtcDate(0)).toBe("1970-01-01");
+    // ECMA-262 の Date 範囲の境界(±8.64e15 ms)は表示できる
+    expect(formatUtcSeconds(8_640_000_000_000_000)).toContain("UTC");
+    for (const bad of [8_640_000_000_000_001, -1e300, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(formatUtcSeconds(bad)).toContain("invalid timestamp");
+      expect(formatUtcMinutes(bad)).toContain("invalid timestamp");
+      expect(formatUtcDate(bad)).toContain("invalid timestamp");
+    }
   });
 });
 
