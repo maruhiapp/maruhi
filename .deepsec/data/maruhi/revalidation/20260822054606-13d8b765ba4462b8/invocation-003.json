@@ -1,0 +1,100 @@
+{
+  "batchIndex": 3,
+  "label": "initial",
+  "timestamp": "2026-08-22T05:48:49.286Z",
+  "files": [
+    "apps/server/src/handlers-auth.ts",
+    "apps/server/src/handlers-lease.ts",
+    "apps/server/src/lease-policy.ts",
+    "apps/server/src/dek-wraps.ts"
+  ],
+  "requested": [
+    {
+      "findingId": "finding_5e11f454a9eb616b",
+      "filePath": "apps/server/src/handlers-auth.ts",
+      "title": "requestOrigin() derives the OAuth origin from the request URL, which in workerd comes from the Host header",
+      "alias": "F1"
+    },
+    {
+      "findingId": "finding_c65cd36f0fa799c5",
+      "filePath": "apps/server/src/handlers-lease.ts",
+      "title": "Unauthenticated lease endpoint materializes a Durable Object for any attacker-supplied projectId with no request-rate limit",
+      "alias": "F2"
+    },
+    {
+      "findingId": "finding_f5ac88ecaeb21c6b",
+      "filePath": "apps/server/src/lease-policy.ts",
+      "title": "Empty claimConstraints authorizes any workload from the shared OIDC issuer",
+      "alias": "F3"
+    },
+    {
+      "findingId": "finding_b6472057aadcdc8f",
+      "filePath": "apps/server/src/dek-wraps.ts",
+      "title": "member user_id colliding with a server-key fingerprint makes the wrap-set completeness check unsatisfiable, blocking epoch creation and rotation",
+      "alias": "F4"
+    }
+  ],
+  "rawResponses": [
+    {
+      "kind": "initial",
+      "rawText": "I've traced all four. Key checks: `lease-api.ts` params use `ProjectIdSchema` (F2's premise partly wrong), `programs-lease.ts:178-187` self-documents the gap, `chain-verify.ts:158` uses only `isBoundedId` for `targetUserId`, and `shapeLeasePolicyIssuer` permits length-0 constraints while the CLI defaults the field to `{}`.\n\n```json\n[\n  {\n    \"findingId\": \"F1\",\n    \"verdict\": \"false-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"The technical claim about workerd is correct — `request.url` on the incoming Web Request is reconstructed from the request line plus the Host header, so `new URL(source.url).origin` is Host-derived and the comment at L52-54 is factually wrong. But a wrong comment is not a vulnerability, and I could not construct a concrete attack. Three independent mitigations stack: (1) Cloudflare's edge dispatches to the Worker by hostname, so a request bearing an arbitrary unrelated Host does not reach this handler at all; (2) the `redirect_uri` built at L148/L168 is sent to GitHub, which enforces that redirect_uri's host match the OAuth App's registered callback URL — a forged origin makes the authorize step or the code exchange fail rather than redirect a victim anywhere useful; (3) the post-login 302 at L181 targets `${origin}/`, and origin comes from the *victim's own* request, which a browser always sends with the real Host — an attacker cannot make a victim's browser forge Host, so there is no open redirect. The `__Host-` prefixed state cookie (HOST_COOKIE_OPTIONS, Secure/Path=/, no Domain) is additionally host-bound, so any cross-host callback fails the constant-time state comparison at L162 before the code exchange. The residual multi-hostname scenario the finding raises (workers.dev plus custom domain) means at most that a user who deliberately starts the flow on the workers.dev name gets a redirect_uri GitHub will reject — a functional wart, not a security boundary crossing. Recommend fixing the misleading comment (and optionally pinning a configured public origin) as hardening, but this is not an exploitable finding.\"\n  },\n  {\n    \"findingId\": \"F2\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"The finding's premise that projectId is 'entirely unvalidated' is wrong — `packages/api-schema/src/lease-api.ts:110` declares `params: { projectId: ProjectIdSchema, ... }` and `packages/core/src/project.ts:11` pins that to a 64-char lowercase-hex pattern, so HttpApi rejects malformed ids before the handler runs. That kills the recommendation but not the finding: 64-hex is a 2^256 space, so an attacker still supplies unlimited *distinct, well-formed* names, and `projectStub` (worker-env.ts:10) does `PROJECT_CHAIN.idFromName(<attacker string>)` for each. `ProjectChainDO`'s constructor (chain-do.ts:317) calls `ensureProjectDoTables(ctx.storage)` unconditionally, so every distinct name materializes a DO that writes its schema to storage, with no reclamation path. The route carries no AuthMiddleware by design; the only credential is a GitHub Actions OIDC token that any GitHub account can mint, and because the first-come binding (`rejectReplayedToken`) is stored inside the DO, one token replays across unlimited distinct projectIds — a fresh DO has no binding row to consult. The in-code comment at programs-lease.ts:178-187 states this exact conclusion verbatim ('DO のコンストラクタは到達時点で空テーブル群を作るため…要求レート自体の上限は未実装'), confirming it is an acknowledged, unimplemented gap rather than a mitigated design. The lease-side counters bound issued leases and audit rows inside the DO only, and the denied-row cap makes sustained abuse quieter after 100/hour. Real but bounded impact: storage/cost exhaustion and audit suppression, not confidentiality loss — MEDIUM is right.\"\n  },\n  {\n    \"findingId\": \"F3\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"Verified the whole chain. `elementMatches` (lease-policy.ts:51-57) authorizes on issuerUrl equality, `token.audiences.includes(element.audience)`, and `claimConstraints.every(...)`; `Array.prototype.every` on an empty array is vacuously true, so a zero-constraint element degenerates to issuer+audience. `SUPPORTED_ISSUERS` (oidc.package/verifier.ts:32) is exactly `https://token.actions.githubusercontent.com`, shared by every GitHub Actions workflow on the internet, and `aud` is chosen freely by the token minter via getIDToken(audience) — the verifier only checks presence/format, never that aud is deployment-specific. Nothing rejects the empty case: `shapeLeasePolicyIssuer` (chain-verify.ts:199-208) requires only `Array.isArray` and `length <= 8`, and the CLI actively makes it easy — `parseLeaseElement` (apps/cli/src/lease-policy.ts:70) defaults a missing `claimConstraints` to `{}`, i.e. an empty array, with no warning, and `ensureGrantable` in server-grant.ts performs no policy sanity check. Consequently a grant_server entry written as `[{issuerUrl, audience}]` authorizes any repository on GitHub that guesses/learns the audience string (and the spec recommends the deployment origin as the audience — a publicly known value), yielding a lease with a full DEK rewrap to an attacker-supplied ephemeral key at programs-lease.ts. CRYPTO_SPEC §271 gives semantics only for an empty *policy list* ('no lease path'), not for an element with empty constraints, so the vacuous-authorize case is unspecified rather than a deliberate decision. This is the classic missing sub/repository condition in an OIDC trust policy; it needs an operator to write such a policy, which is why MEDIUM rather than HIGH, but the silent CLI default makes that misconfiguration easy and undetectable.\"\n  },\n  {\n    \"findingId\": \"F4\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"Traced the arithmetic and it is unsatisfiable exactly as described. `expectedWrapRecipientCount` (dek-wraps.ts:56-64) returns `state.members.size + <in-scope grants>` and counts the two namespaces independently. `checkOneWrap` (L129) dedupes on `wrapStorageKey` = `${epoch}:${recipientUserId}` with the recipient class deliberately excluded (the L35-45 comment explains this was added by security review A-1 to avoid a write-phase primary-key 500). `checkWrapSets` (L231) demands `epochWraps.length === expectedWrapRecipientCount` for the first registration of an epoch. Now suppose a member exists whose userId equals the deployment server-key fingerprint of a grant whose scopeEnvironmentIds includes E. `checkWrapRecipient` accepts that id under either class, but the set of *distinct* valid recipient ids for E is members.size + grants − 1, while the required count is members.size + grants — by pigeonhole any conforming submission repeats a storage key and trips duplicate-recipient, while any deduped submission is one short and trips recipient-missing. create_environment and rotate_epoch for E are then permanently blocked. Reachability is real: `shapeAddMember` (chain-verify.ts:158) validates targetUserId with `isBoundedId` only — an arbitrary bounded string, explicitly unvalidated per AUTH_SPEC §11-1 — and the server fingerprint is public via GET /auth/config (handlers-auth.ts:134). The nearby comment at chain-verify.ts:461-462 even notes the reverse direction (reusing a grant's server key in add_member) is out of scope, confirming the namespaces are not separated. It requires an admin-level append and is recoverable by remove_member, so it is a self-inflicted availability/logic defect rather than an authorization bypass — BUG is the right severity — but it blocks the rotation path, which is the security-critical recovery mechanism after member removal, so it deserves a fix (dedupe the union when computing the expected count, or constrain targetUserId format at accept).\"\n  }\n]\n```",
+      "parsedCount": 4
+    }
+  ],
+  "repairAttempts": 0,
+  "parsedVerdicts": [
+    {
+      "findingId": "F1",
+      "verdict": "false-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "The technical claim about workerd is correct — `request.url` on the incoming Web Request is reconstructed from the request line plus the Host header, so `new URL(source.url).origin` is Host-derived and the comment at L52-54 is factually wrong. But a wrong comment is not a vulnerability, and I could not construct a concrete attack. Three independent mitigations stack: (1) Cloudflare's edge dispatches to the Worker by hostname, so a request bearing an arbitrary unrelated Host does not reach this handler at all; (2) the `redirect_uri` built at L148/L168 is sent to GitHub, which enforces that redirect_uri's host match the OAuth App's registered callback URL — a forged origin makes the authorize step or the code exchange fail rather than redirect a victim anywhere useful; (3) the post-login 302 at L181 targets `${origin}/`, and origin comes from the *victim's own* request, which a browser always sends with the real Host — an attacker cannot make a victim's browser forge Host, so there is no open redirect. The `__Host-` prefixed state cookie (HOST_COOKIE_OPTIONS, Secure/Path=/, no Domain) is additionally host-bound, so any cross-host callback fails the constant-time state comparison at L162 before the code exchange. The residual multi-hostname scenario the finding raises (workers.dev plus custom domain) means at most that a user who deliberately starts the flow on the workers.dev name gets a redirect_uri GitHub will reject — a functional wart, not a security boundary crossing. Recommend fixing the misleading comment (and optionally pinning a configured public origin) as hardening, but this is not an exploitable finding."
+    },
+    {
+      "findingId": "F2",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "The finding's premise that projectId is 'entirely unvalidated' is wrong — `packages/api-schema/src/lease-api.ts:110` declares `params: { projectId: ProjectIdSchema, ... }` and `packages/core/src/project.ts:11` pins that to a 64-char lowercase-hex pattern, so HttpApi rejects malformed ids before the handler runs. That kills the recommendation but not the finding: 64-hex is a 2^256 space, so an attacker still supplies unlimited *distinct, well-formed* names, and `projectStub` (worker-env.ts:10) does `PROJECT_CHAIN.idFromName(<attacker string>)` for each. `ProjectChainDO`'s constructor (chain-do.ts:317) calls `ensureProjectDoTables(ctx.storage)` unconditionally, so every distinct name materializes a DO that writes its schema to storage, with no reclamation path. The route carries no AuthMiddleware by design; the only credential is a GitHub Actions OIDC token that any GitHub account can mint, and because the first-come binding (`rejectReplayedToken`) is stored inside the DO, one token replays across unlimited distinct projectIds — a fresh DO has no binding row to consult. The in-code comment at programs-lease.ts:178-187 states this exact conclusion verbatim ('DO のコンストラクタは到達時点で空テーブル群を作るため…要求レート自体の上限は未実装'), confirming it is an acknowledged, unimplemented gap rather than a mitigated design. The lease-side counters bound issued leases and audit rows inside the DO only, and the denied-row cap makes sustained abuse quieter after 100/hour. Real but bounded impact: storage/cost exhaustion and audit suppression, not confidentiality loss — MEDIUM is right."
+    },
+    {
+      "findingId": "F3",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "Verified the whole chain. `elementMatches` (lease-policy.ts:51-57) authorizes on issuerUrl equality, `token.audiences.includes(element.audience)`, and `claimConstraints.every(...)`; `Array.prototype.every` on an empty array is vacuously true, so a zero-constraint element degenerates to issuer+audience. `SUPPORTED_ISSUERS` (oidc.package/verifier.ts:32) is exactly `https://token.actions.githubusercontent.com`, shared by every GitHub Actions workflow on the internet, and `aud` is chosen freely by the token minter via getIDToken(audience) — the verifier only checks presence/format, never that aud is deployment-specific. Nothing rejects the empty case: `shapeLeasePolicyIssuer` (chain-verify.ts:199-208) requires only `Array.isArray` and `length <= 8`, and the CLI actively makes it easy — `parseLeaseElement` (apps/cli/src/lease-policy.ts:70) defaults a missing `claimConstraints` to `{}`, i.e. an empty array, with no warning, and `ensureGrantable` in server-grant.ts performs no policy sanity check. Consequently a grant_server entry written as `[{issuerUrl, audience}]` authorizes any repository on GitHub that guesses/learns the audience string (and the spec recommends the deployment origin as the audience — a publicly known value), yielding a lease with a full DEK rewrap to an attacker-supplied ephemeral key at programs-lease.ts. CRYPTO_SPEC §271 gives semantics only for an empty *policy list* ('no lease path'), not for an element with empty constraints, so the vacuous-authorize case is unspecified rather than a deliberate decision. This is the classic missing sub/repository condition in an OIDC trust policy; it needs an operator to write such a policy, which is why MEDIUM rather than HIGH, but the silent CLI default makes that misconfiguration easy and undetectable."
+    },
+    {
+      "findingId": "F4",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "Traced the arithmetic and it is unsatisfiable exactly as described. `expectedWrapRecipientCount` (dek-wraps.ts:56-64) returns `state.members.size + <in-scope grants>` and counts the two namespaces independently. `checkOneWrap` (L129) dedupes on `wrapStorageKey` = `${epoch}:${recipientUserId}` with the recipient class deliberately excluded (the L35-45 comment explains this was added by security review A-1 to avoid a write-phase primary-key 500). `checkWrapSets` (L231) demands `epochWraps.length === expectedWrapRecipientCount` for the first registration of an epoch. Now suppose a member exists whose userId equals the deployment server-key fingerprint of a grant whose scopeEnvironmentIds includes E. `checkWrapRecipient` accepts that id under either class, but the set of *distinct* valid recipient ids for E is members.size + grants − 1, while the required count is members.size + grants — by pigeonhole any conforming submission repeats a storage key and trips duplicate-recipient, while any deduped submission is one short and trips recipient-missing. create_environment and rotate_epoch for E are then permanently blocked. Reachability is real: `shapeAddMember` (chain-verify.ts:158) validates targetUserId with `isBoundedId` only — an arbitrary bounded string, explicitly unvalidated per AUTH_SPEC §11-1 — and the server fingerprint is public via GET /auth/config (handlers-auth.ts:134). The nearby comment at chain-verify.ts:461-462 even notes the reverse direction (reusing a grant's server key in add_member) is out of scope, confirming the namespaces are not separated. It requires an admin-level append and is recoverable by remove_member, so it is a self-inflicted availability/logic defect rather than an authorization bypass — BUG is the right severity — but it blocks the rotation path, which is the security-critical recovery mechanism after member removal, so it deserves a fix (dedupe the union when computing the expected count, or constrain targetUserId format at accept)."
+    }
+  ],
+  "reconciliation": {
+    "matches": [
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F1",
+        "resolvedFindingId": "finding_5e11f454a9eb616b"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F2",
+        "resolvedFindingId": "finding_c65cd36f0fa799c5"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F3",
+        "resolvedFindingId": "finding_f5ac88ecaeb21c6b"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F4",
+        "resolvedFindingId": "finding_b6472057aadcdc8f"
+      }
+    ],
+    "missingFindingIds": [],
+    "unknownVerdicts": [],
+    "ambiguousVerdicts": []
+  },
+  "persistedCount": 4,
+  "unresolvedFindingIds": []
+}

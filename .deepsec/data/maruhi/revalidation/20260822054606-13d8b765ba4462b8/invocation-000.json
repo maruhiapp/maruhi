@@ -1,0 +1,118 @@
+{
+  "batchIndex": 1,
+  "label": "initial",
+  "timestamp": "2026-08-22T05:48:34.919Z",
+  "files": [
+    "apps/cli/src/oidc-github.ts",
+    "apps/cli/src/run.ts",
+    "apps/cli/src/live.ts",
+    "apps/cli/src/push.ts",
+    "apps/cli/src/device-flow.ts"
+  ],
+  "requested": [
+    {
+      "findingId": "finding_63c6fb3022214762",
+      "filePath": "apps/cli/src/oidc-github.ts",
+      "title": "Runner bearer token sent to an unvalidated URL from ACTIONS_ID_TOKEN_REQUEST_URL with redirect following enabled",
+      "alias": "F1"
+    },
+    {
+      "findingId": "finding_9b7c68c037c7b44e",
+      "filePath": "apps/cli/src/run.ts",
+      "title": "Execution-control env-var denylist misses several interpreter/loader hooks (notably NODE_REPL_EXTERNAL_MODULE, PYTHONINSPECT, HOME, and the Windows set)",
+      "alias": "F2"
+    },
+    {
+      "findingId": "finding_727be0da39e1bda8",
+      "filePath": "apps/cli/src/live.ts",
+      "title": "Keychain write timeout reports failure while the underlying `Bun.secrets.set` may still land",
+      "alias": "F3"
+    },
+    {
+      "findingId": "finding_bc6dd01591b172e0",
+      "filePath": "apps/cli/src/push.ts",
+      "title": "Push result reported to the user comes from the server echo, not the locally computed/signed values",
+      "alias": "F4"
+    },
+    {
+      "findingId": "finding_2b297773d35d3fc5",
+      "filePath": "apps/cli/src/device-flow.ts",
+      "title": "Server-controlled expires_in / interval are accepted unbounded, allowing an indefinite CLI hang",
+      "alias": "F5"
+    }
+  ],
+  "rawResponses": [
+    {
+      "kind": "initial",
+      "rawText": "Verified all five findings against current source. Here are my verdicts:\n\n```json\n[\n  {\n    \"findingId\": \"F1\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"The code is exactly as described. `readIssuanceEndpoint` (L34-51) reads ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN through the CliIo service and applies only an undefined/empty check — no scheme check, no host check. `fetchGitHubOidcToken` then builds `url` by string-concatenating the audience query (L78-79) and calls `fetch` with `authorization: Bearer ${endpoint.requestToken}` (L82-89) and no `redirect` option, so the default `follow` applies. I grepped the whole repo: there is no allowlist, no URL parsing, and no other guard for these env vars anywhere outside this file and its tests. The concrete attack is the well-known GITHUB_ENV-injection class: a `run:` step that interpolates untrusted input into `>> $GITHUB_ENV` (or a third-party composite action) sets ACTIONS_ID_TOKEN_REQUEST_URL for later steps to `http://attacker/` — the maruhi CI step then hands the runner's ID-token request credential to the attacker, who can mint OIDC tokens for the repository (usable against cloud roles outside the job's lifetime), and can also return an arbitrary `value`. Two things bound this: (a) an attacker who can set arbitrary env for later steps could already set NODE_OPTIONS/LD_PRELOAD and get code execution in the job, so this is rarely the *first* escalation; and (b) the second half of the claim (attacker-chosen token accepted downstream) is largely blunted because `apps/server/src/oidc.package/verifier.ts` validates the issuer and signature server-side, so a forged `value` will not pass the lease endpoint. It is also worth noting actions/toolkit's own `getIDToken` does not validate this URL either, so this is a hardening gap rather than a deviation from ecosystem norms. Still real, still cheap to fix, and the file itself treats the value as a bearer credential — MEDIUM stands, with the credential-exfiltration path as the actual impact.\"\n  },\n  {\n    \"findingId\": \"F2\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"I read run.ts in full. `DENIED_ENV_NAMES` (L33-58) and `DENIED_ENV_PREFIXES` (L59) are exactly the set the finding lists, and `SAFE_ENV_NAME` (L68) only constrains the name to a POSIX identifier — so every name the finding names (HOME, PROMPT_COMMAND, PS4, NODE_REPL_EXTERNAL_MODULE, PYTHONINSPECT, PYTHONEXECUTABLE, PERL5DB, PATHEXT, COMSPEC, SYSTEMROOT) matches `[A-Za-z_][A-Za-z0-9_]*` and passes both gates. `live.ts:65-71` confirms the injected map wins: `env: { ...process.env, ...extraEnv }`. The threat model is the one the file's own comment states — names are plaintext metadata not bound into the AEAD AAD, so a hostile server or a project member who can create a variable chooses both the name and the value. Ranking the gaps honestly: HOME is the strongest (redirects ~/.gitconfig, which can carry `core.hooksPath` or aliases, and ~/.npmrc; ZDOTDIR is blocked but HOME is not), and the Windows siblings PATHEXT/COMSPEC are a genuine hole given PATH is blocked and the code explicitly upper-cases for Windows case-insensitivity. NODE_REPL_EXTERNAL_MODULE and PYTHONINSPECT are weaker (they need an interactive REPL child), and BASH_ENV/ENV are already blocked so non-interactive bash children are covered. So this is a partial mitigation with concrete residual gaps, not a missing control — which is what the finding claims. The file self-labels the list best-effort, but self-labelling does not make the gap non-real; MEDIUM is fair for a chain that needs a hostile variable name plus a victim running `maruhi run -- <shell/git/node>`.\"\n  },\n  {\n    \"findingId\": \"F3\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"Confirmed at live.ts L40-45: `keychainOp` builds `Effect.tryPromise({try: run, catch: keychainUnavailable})` then pipes `Effect.timeout(30s)` and maps TimeoutError to `keychainUnavailable()`. `Effect.timeout` interrupts the fiber; it cannot abort an in-flight promise, and no AbortSignal is threaded into `Bun.secrets.set` (L51 passes only service/name/value — Bun.secrets exposes no cancellation hook). So the write can land after the CLI has already failed. The comment at L35-37 says this timeout exists specifically because Bun.secrets.set was observed blocking indefinitely on headless Linux, which is precisely the state where a slow-but-eventually-successful write is plausible (a keychain unlock prompt answered after 30s is the clearest case). The consequence the finding draws is supported by keychain.ts L279-305: the overwrite-protection guard keys on entry *existence*, and both `corruptMasterKeyMessage` and `redactedPlaceholderMasterKeyMessage` document that once an entry exists, `key generate` / `key recover` / `key show` are all refused and manual OS-keychain deletion is the only exit. The error text itself (L30-33) asserts the opposite of the true state: 'tokens and keys cannot be stored in this environment'. This is not a security vulnerability — no plaintext escapes and no authz is bypassed — but it is a real correctness/UX defect that can strand a user with an unregistered master key. BUG is the right severity.\"\n  },\n  {\n    \"findingId\": \"F4\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"Traced the value end-to-end. In `attemptOnce`, `accepted` is bound directly to the server response body of `client.variables.create(...)` (L526-539) or `client.variables.push(...)` (L564-567) and returned as `AcceptedPush.accepted` — the interface at L326-331 is `{variableId, version, epoch}`, schema-validated for shape but entirely server-chosen in content. `pushVariable` then returns those three echoed fields at L950-955, and effect-cli.ts prints `Pushed <name> (version=…, epoch=…)` from them. Meanwhile the floor commit at L939-948 deliberately uses `acceptedState.target.variableId` with the comment '床のキーは自分が署名した変数 ID(サーバー echo を信用しない)', and `confirmVariableCreation` (L838-889) cross-checks the creation path against the verified distribution. So the file's own stated discipline is contradicted by its return statement, and nothing compares `accepted.version` to the locally computed `version` from `nextVersionOf(state.target)` (L436) or `accepted.epoch` to `state.epoch`. For the existing-variable push path there is no 1-E′ confirmation at all (L561-563 says so explicitly), so the echo is entirely unchecked there. Impact is bounded and correctly characterized: persisted state stays correct, so this is reporting integrity, not data corruption. But for a security tool the operator's only confirmation that a rotation landed at the new epoch is attacker-choosable, which defeats the purpose of the confirmation line. BUG is the right severity; the fix (return the self-computed values, assert the echo matches) is what the surrounding code already does elsewhere.\"\n  },\n  {\n    \"findingId\": \"F5\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"The code matches the description. `startDeviceFlow` L110-111 clamps `interval` only from below (`interval >= minInterval ? interval : minInterval`), and L112 accepts any positive `expires_in` verbatim, defaulting to 900 only when it is not a positive number. `pollDeviceFlow` computes `deadlineMs` from that value (L131) and the recursion at L135-136 sleeps *first* and checks the deadline *after*, so a single oversized `interval` hangs before the deadline is ever consulted — the deadline clamp alone would not save it. So both halves of the claim are accurate, and RFC 8628 device codes genuinely never live beyond ~15-30 minutes. Two things temper severity. The reachable attacker set is narrow: the default base is `https://github.com`, so this needs a `--github-base-url` override to a hostile GHES/test endpoint or a TLS MitM against github.com — i.e. an endpoint the user has already chosen to trust with their OAuth flow. And the impact ceiling is low: a hostile device endpoint can already deny login by simply returning `authorization_pending` forever, and `maruhi login` is an interactive foreground command the user can Ctrl-C. So this is a robustness/hardening defect, not a security vulnerability — no credential is exposed and no state is corrupted. BUG (as filed) is correct; the two-line clamp the finding recommends is the right fix, plus moving the deadline check before the sleep.\"\n  }\n]\n```",
+      "parsedCount": 5
+    }
+  ],
+  "repairAttempts": 0,
+  "parsedVerdicts": [
+    {
+      "findingId": "F1",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "The code is exactly as described. `readIssuanceEndpoint` (L34-51) reads ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN through the CliIo service and applies only an undefined/empty check — no scheme check, no host check. `fetchGitHubOidcToken` then builds `url` by string-concatenating the audience query (L78-79) and calls `fetch` with `authorization: Bearer ${endpoint.requestToken}` (L82-89) and no `redirect` option, so the default `follow` applies. I grepped the whole repo: there is no allowlist, no URL parsing, and no other guard for these env vars anywhere outside this file and its tests. The concrete attack is the well-known GITHUB_ENV-injection class: a `run:` step that interpolates untrusted input into `>> $GITHUB_ENV` (or a third-party composite action) sets ACTIONS_ID_TOKEN_REQUEST_URL for later steps to `http://attacker/` — the maruhi CI step then hands the runner's ID-token request credential to the attacker, who can mint OIDC tokens for the repository (usable against cloud roles outside the job's lifetime), and can also return an arbitrary `value`. Two things bound this: (a) an attacker who can set arbitrary env for later steps could already set NODE_OPTIONS/LD_PRELOAD and get code execution in the job, so this is rarely the *first* escalation; and (b) the second half of the claim (attacker-chosen token accepted downstream) is largely blunted because `apps/server/src/oidc.package/verifier.ts` validates the issuer and signature server-side, so a forged `value` will not pass the lease endpoint. It is also worth noting actions/toolkit's own `getIDToken` does not validate this URL either, so this is a hardening gap rather than a deviation from ecosystem norms. Still real, still cheap to fix, and the file itself treats the value as a bearer credential — MEDIUM stands, with the credential-exfiltration path as the actual impact."
+    },
+    {
+      "findingId": "F2",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "I read run.ts in full. `DENIED_ENV_NAMES` (L33-58) and `DENIED_ENV_PREFIXES` (L59) are exactly the set the finding lists, and `SAFE_ENV_NAME` (L68) only constrains the name to a POSIX identifier — so every name the finding names (HOME, PROMPT_COMMAND, PS4, NODE_REPL_EXTERNAL_MODULE, PYTHONINSPECT, PYTHONEXECUTABLE, PERL5DB, PATHEXT, COMSPEC, SYSTEMROOT) matches `[A-Za-z_][A-Za-z0-9_]*` and passes both gates. `live.ts:65-71` confirms the injected map wins: `env: { ...process.env, ...extraEnv }`. The threat model is the one the file's own comment states — names are plaintext metadata not bound into the AEAD AAD, so a hostile server or a project member who can create a variable chooses both the name and the value. Ranking the gaps honestly: HOME is the strongest (redirects ~/.gitconfig, which can carry `core.hooksPath` or aliases, and ~/.npmrc; ZDOTDIR is blocked but HOME is not), and the Windows siblings PATHEXT/COMSPEC are a genuine hole given PATH is blocked and the code explicitly upper-cases for Windows case-insensitivity. NODE_REPL_EXTERNAL_MODULE and PYTHONINSPECT are weaker (they need an interactive REPL child), and BASH_ENV/ENV are already blocked so non-interactive bash children are covered. So this is a partial mitigation with concrete residual gaps, not a missing control — which is what the finding claims. The file self-labels the list best-effort, but self-labelling does not make the gap non-real; MEDIUM is fair for a chain that needs a hostile variable name plus a victim running `maruhi run -- <shell/git/node>`."
+    },
+    {
+      "findingId": "F3",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "Confirmed at live.ts L40-45: `keychainOp` builds `Effect.tryPromise({try: run, catch: keychainUnavailable})` then pipes `Effect.timeout(30s)` and maps TimeoutError to `keychainUnavailable()`. `Effect.timeout` interrupts the fiber; it cannot abort an in-flight promise, and no AbortSignal is threaded into `Bun.secrets.set` (L51 passes only service/name/value — Bun.secrets exposes no cancellation hook). So the write can land after the CLI has already failed. The comment at L35-37 says this timeout exists specifically because Bun.secrets.set was observed blocking indefinitely on headless Linux, which is precisely the state where a slow-but-eventually-successful write is plausible (a keychain unlock prompt answered after 30s is the clearest case). The consequence the finding draws is supported by keychain.ts L279-305: the overwrite-protection guard keys on entry *existence*, and both `corruptMasterKeyMessage` and `redactedPlaceholderMasterKeyMessage` document that once an entry exists, `key generate` / `key recover` / `key show` are all refused and manual OS-keychain deletion is the only exit. The error text itself (L30-33) asserts the opposite of the true state: 'tokens and keys cannot be stored in this environment'. This is not a security vulnerability — no plaintext escapes and no authz is bypassed — but it is a real correctness/UX defect that can strand a user with an unregistered master key. BUG is the right severity."
+    },
+    {
+      "findingId": "F4",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "Traced the value end-to-end. In `attemptOnce`, `accepted` is bound directly to the server response body of `client.variables.create(...)` (L526-539) or `client.variables.push(...)` (L564-567) and returned as `AcceptedPush.accepted` — the interface at L326-331 is `{variableId, version, epoch}`, schema-validated for shape but entirely server-chosen in content. `pushVariable` then returns those three echoed fields at L950-955, and effect-cli.ts prints `Pushed <name> (version=…, epoch=…)` from them. Meanwhile the floor commit at L939-948 deliberately uses `acceptedState.target.variableId` with the comment '床のキーは自分が署名した変数 ID(サーバー echo を信用しない)', and `confirmVariableCreation` (L838-889) cross-checks the creation path against the verified distribution. So the file's own stated discipline is contradicted by its return statement, and nothing compares `accepted.version` to the locally computed `version` from `nextVersionOf(state.target)` (L436) or `accepted.epoch` to `state.epoch`. For the existing-variable push path there is no 1-E′ confirmation at all (L561-563 says so explicitly), so the echo is entirely unchecked there. Impact is bounded and correctly characterized: persisted state stays correct, so this is reporting integrity, not data corruption. But for a security tool the operator's only confirmation that a rotation landed at the new epoch is attacker-choosable, which defeats the purpose of the confirmation line. BUG is the right severity; the fix (return the self-computed values, assert the echo matches) is what the surrounding code already does elsewhere."
+    },
+    {
+      "findingId": "F5",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "The code matches the description. `startDeviceFlow` L110-111 clamps `interval` only from below (`interval >= minInterval ? interval : minInterval`), and L112 accepts any positive `expires_in` verbatim, defaulting to 900 only when it is not a positive number. `pollDeviceFlow` computes `deadlineMs` from that value (L131) and the recursion at L135-136 sleeps *first* and checks the deadline *after*, so a single oversized `interval` hangs before the deadline is ever consulted — the deadline clamp alone would not save it. So both halves of the claim are accurate, and RFC 8628 device codes genuinely never live beyond ~15-30 minutes. Two things temper severity. The reachable attacker set is narrow: the default base is `https://github.com`, so this needs a `--github-base-url` override to a hostile GHES/test endpoint or a TLS MitM against github.com — i.e. an endpoint the user has already chosen to trust with their OAuth flow. And the impact ceiling is low: a hostile device endpoint can already deny login by simply returning `authorization_pending` forever, and `maruhi login` is an interactive foreground command the user can Ctrl-C. So this is a robustness/hardening defect, not a security vulnerability — no credential is exposed and no state is corrupted. BUG (as filed) is correct; the two-line clamp the finding recommends is the right fix, plus moving the deadline check before the sleep."
+    }
+  ],
+  "reconciliation": {
+    "matches": [
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F1",
+        "resolvedFindingId": "finding_63c6fb3022214762"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F2",
+        "resolvedFindingId": "finding_9b7c68c037c7b44e"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F3",
+        "resolvedFindingId": "finding_727be0da39e1bda8"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F4",
+        "resolvedFindingId": "finding_bc6dd01591b172e0"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F5",
+        "resolvedFindingId": "finding_2b297773d35d3fc5"
+      }
+    ],
+    "missingFindingIds": [],
+    "unknownVerdicts": [],
+    "ambiguousVerdicts": []
+  },
+  "persistedCount": 5,
+  "unresolvedFindingIds": []
+}

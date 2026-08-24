@@ -1,0 +1,135 @@
+{
+  "batchIndex": 0,
+  "label": "initial",
+  "timestamp": "2026-08-22T05:48:45.700Z",
+  "files": [
+    "packages/api-schema/src/lease-api.ts",
+    "packages/api-schema/src/auth-api.ts",
+    "apps/server/src/auth.package/github.ts",
+    "apps/server/src/db.package/repos.ts",
+    "apps/server/src/db.package/audit.ts"
+  ],
+  "requested": [
+    {
+      "findingId": "finding_7a1d93294699852b",
+      "filePath": "packages/api-schema/src/lease-api.ts",
+      "title": "Lease authorization fails open when a lease_policy element has zero claim constraints",
+      "alias": "F1"
+    },
+    {
+      "findingId": "finding_86ef51912e6d2327",
+      "filePath": "packages/api-schema/src/auth-api.ts",
+      "title": "Unauthenticated /auth/device/exchange has no rate limit and drives an outbound GitHub call per request",
+      "alias": "F2"
+    },
+    {
+      "findingId": "finding_64e174f4b2ef1b2f",
+      "filePath": "apps/server/src/auth.package/github.ts",
+      "title": "Unauthenticated requests drive outbound GitHub API calls that consume the OAuth App's shared quota",
+      "alias": "F3"
+    },
+    {
+      "findingId": "finding_ef2bce160a374d2d",
+      "filePath": "apps/server/src/db.package/repos.ts",
+      "title": "recordFetch read-then-write race allows exceeding the recovery-blob fetch rate limit",
+      "alias": "F4"
+    },
+    {
+      "findingId": "finding_a793506c4e430779",
+      "filePath": "apps/server/src/db.package/audit.ts",
+      "title": "Global (non-per-actor) auth.login_failed cap lets an unauthenticated attacker blind the audit trail",
+      "alias": "F5"
+    },
+    {
+      "findingId": "finding_8892a22233665854",
+      "filePath": "apps/server/src/db.package/audit.ts",
+      "title": "Audit read path can trigger an unbounded table-wide UPDATE on the shared D1",
+      "alias": "F6"
+    }
+  ],
+  "rawResponses": [
+    {
+      "kind": "initial",
+      "rawText": "I've traced each finding end-to-end. Here are my verdicts:\n\n```json\n[\n  {\n    \"findingId\": \"F1\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"The mechanism is confirmed exactly as described. `elementMatches` (apps/server/src/lease-policy.ts:51-57) authorizes on `issuerUrl === token.issuer && token.audiences.includes(element.audience) && element.claimConstraints.every(...)`; `[].every()` is vacuously true, so an element with zero constraints degenerates to issuer+audience. `shapeLeasePolicyIssuer` (chain-verify.ts) checks only `Array.isArray` and `length <= MAX_LEASE_CLAIM_CONSTRAINTS` — no minimum. The authoring CLI's `parseLeaseElement` does `parseLeaseConstraints(record[\\\"claimConstraints\\\"] ?? {})`, so a missing key or `{}` silently yields an empty (world-open) element with no warning; `effect-cli.ts` only prints the element count. The exploitability premise checks out: `SUPPORTED_ISSUERS` in oidc.package/verifier.ts:32 is the single global GitHub Actions issuer, and `aud` is chosen by the token requester (`core.getIDToken(audience)`), so such an element would authorize any GitHub Actions job anywhere. I also confirmed programs-lease.ts performs no additional subject/repository binding — `facts.subject` only feeds `claims_digest` for audit. I downgrade HIGH to MEDIUM because this is a missing guardrail, not a default-state exposure: the default is no `--lease-policy` = empty policy = deny-all (correctly handled), the shipped example in actions/setup-maruhi/README.md includes `repository`/`ref` constraints, and reaching the fail-open state requires a project owner to author a chain-signed grant that constrains nothing. That said, this is precisely the well-known 'OIDC trust policy without a sub/repository condition' class, and the CLI's `?? {}` default plus the absence of any evaluator-side rejection makes the footgun silent — the recommendation (hard error at authoring time + defensive `length === 0 → false` in elementMatches) is correct.\"\n  },\n  {\n    \"findingId\": \"F2\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"Verified: in packages/api-schema/src/auth-api.ts, `me`, `logout`, `revokeToken` and the `recovery*` endpoints all carry `.middleware(AuthMiddleware)` while `deviceExchange` deliberately does not, so the endpoint is anonymous by design, and handlers-auth.ts's `deviceExchange` calls `github.verifyAppToken` (one credentialed outbound POST to /applications/{client_id}/token) on every well-formed request. The schema-level defenses are exactly as characterized — `isMaxLength(512)` plus `/^gh[a-z]_[A-Za-z0-9_]+$/` only stop malformed floods — and I found no per-IP limiter anywhere in apps/server. So the factual claim is accurate. However, this is not an undocumented oversight: docs/SELF_HOSTING.md §'Recommended hardening' already names /auth/device/exchange as the single highest-priority path, states verbatim that a flood of well-formed tokens can exhaust the per-OAuth-App quota and break login deployment-wide, and prescribes 10 req/min/IP as the first rule to add even on the Free plan. The residual risk is that the guidance is labelled 'optional' and no rule ships in the default wrangler config. I keep the verdict true-positive but adjust to BUG severity for this file: auth-api.ts merely declares the (intentional) absence of middleware and its own comments already state the deferral; the substantive availability finding is stated more precisely against the server-side mechanism (F3), and I did not want to double-count MEDIUM for one issue.\"\n  },\n  {\n    \"findingId\": \"F3\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"Confirmed by reading apps/server/src/auth.package/github.ts in full: `checkAppTokenRequest` POSTs to `${API_BASE}/applications/${clientId}/token` with `Basic btoa(client_id:client_secret)`, and `makeGitHubApi.verifyAppToken` is wired to it. Its only caller is the `deviceExchange` handler (handlers-auth.ts), which is declared without AuthMiddleware. The amplification claim also holds: `toIdentity` calls `fetchVerifiedPrimaryEmail` on success, and the OAuth callback path additionally uses `fetchUserRequest`, so a successful exchange costs three GitHub calls. GitHub rate-limits the check-token endpoint per OAuth App, so a sustained flood of format-conforming but invalid `gh?_…` strings from one source consumes a deployment-wide budget and can fail CLI login for every user — an unauthenticated availability attack with no in-code throttle, since I found no per-IP limiter, proof-of-work, or device-code binding anywhere in apps/server. Two corrections to the write-up: the format pre-check the recommendation asks for already exists (the api-schema pattern/length checks), and the risk is documented in docs/SELF_HOSTING.md with a concrete 10 req/min/IP WAF rule — it is an accepted, operator-deferred risk rather than an unknown one. It nonetheless remains a real weakness in the default self-hosted deployment because no rule ships in the wrangler config, so MEDIUM stands. The RFC-6749-style fix (bind the exchange to a server-minted device code) is the durable one and would remove the anonymous entry point entirely.\"\n  },\n  {\n    \"findingId\": \"F4\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"The race is real and plainly visible in the code: `recordFetch` does a `select({fetchWindowStart, fetchCount})` and then, in a separate statement, `update(...).set({fetchCount: row.fetchCount + 1})` — an absolute value computed from the stale JS-side read, not a relative `fetch_count + 1` evaluated in SQL — with no transaction spanning the pair. N concurrent GET /auth/recovery requests from the same principal all observe the same count, all return `{allowed: true}`, and the writes collapse to one increment, so the 5-per-hour AUTH_SPEC §13-3 control can be exceeded. The invite path has the same read-modify-write shape. The file's own doc comment acknowledges this as best-effort ('読み → 条件付き更新の 2 文であり、並行リクエストで計数が僅かに超過しうる'), which confirms the analysis rather than refuting it. I downgrade MEDIUM to BUG because the security value of the bypass is close to nil: the caller must already hold a valid session or PAT for the blob's own owner, the endpoint returns the same identical ciphertext every time, and one successful fetch already yields everything N fetches would. The monitoring signal is also preserved — each allowed branch batches its own `auth.recovery_blob_fetched` insert, so racing requests each still emit an audit row. The recommended single atomic UPDATE ... WHERE ... RETURNING is the right fix, but this is a correctness defect in a throttle, not an exploitable exposure.\"\n  },\n  {\n    \"findingId\": \"F5\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"MEDIUM\",\n    \"reasoning\": \"Confirmed by reading `appendLoginFailed` in apps/server/src/db.package/audit.ts: the predicate is exactly `and(eq(event, 'auth.login_failed'), gte(serverTs, serverTs - LOGIN_FAILED_WINDOW_MS))` — a `count()` over the whole userAuditEvents table with no user, IP, or authMethod dimension — and once it reaches LOGIN_FAILED_WINDOW_LIMIT (100) the function returns without inserting. I verified both unauthenticated feeds into that path: in handlers-auth.ts `githubCallback` calls `recordLoginFailed(\\\"github_oauth\\\", \\\"state-mismatch\\\")` on a plain GET with a missing/mismatched state cookie (no credentials of any kind needed), and `deviceExchange` calls `recordLoginFailed(\\\"device_flow\\\", \\\"github-token-invalid\\\")` on any bogus token. So an anonymous attacker can burn the entire hourly budget in seconds and then attack real accounts with no records written, re-poisoning each successive window indefinitely. The design comment frames the cap as write-amplification protection, which it achieves, but a globally shared budget converts an availability control into a detection-evasion primitive — precisely the signal AUDIT_SPEC §3.1 designates for this attack class. Partial mitigation, worth noting: an operator who watches for the window saturating (exactly 100 rows in an hour) can observe that a flood occurred, so the blackout is not wholly invisible — but the targeted attempts inside it are irrecoverably lost, and nothing in the code emits a suppression marker. MEDIUM is right; partitioning the window per coarse actor dimension, or emitting a synthetic overflow event, is the correct fix.\"\n  },\n  {\n    \"findingId\": \"F6\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"The code matches the description: `selectAuditPage` reads a page, and if `rows.some(row => row.rowId === null)` it calls `backfillMissingRowIds`, which issues `update(table).set({rowId: sql`lower(hex(randomblob(16)))`}).where(isNull(table.rowId))` — table-wide, no LIMIT, not scoped to the seqs actually observed — then re-reads. The trigger is a normal authenticated audit read (readUserEventsFor / readProjectInviteEvents), and the work is O(all NULL rows), not O(page), so an authenticated read can fan out into an unbounded write on the deployment-shared D1 writer, with concurrent readers each launching the same sweep and old workers re-introducing NULLs during a rollback window so it does not converge. I keep this at BUG rather than raising it: it is a robustness/cost defect, not a security boundary failure. The blast radius is bounded in practice by how many rows a deploy gap actually produces (minutes of audit writes, not the whole table), the sweep only fires when a NULL is genuinely observed rather than on every read (an earlier review round already narrowed it to that), and the `WHERE row_id IS NULL` predicate seeks the unique index's NULL entries rather than truly scanning. The 'stalls audit reads for all tenants' worst case is therefore plausible but speculative. The recommended fix — scope the repair to `inArray(table.seq, nullSeqs)` — is correct, cheap, and strictly better than the current unbounded statement.\"\n  }\n]\n```",
+      "parsedCount": 6
+    }
+  ],
+  "repairAttempts": 0,
+  "parsedVerdicts": [
+    {
+      "findingId": "F1",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "The mechanism is confirmed exactly as described. `elementMatches` (apps/server/src/lease-policy.ts:51-57) authorizes on `issuerUrl === token.issuer && token.audiences.includes(element.audience) && element.claimConstraints.every(...)`; `[].every()` is vacuously true, so an element with zero constraints degenerates to issuer+audience. `shapeLeasePolicyIssuer` (chain-verify.ts) checks only `Array.isArray` and `length <= MAX_LEASE_CLAIM_CONSTRAINTS` — no minimum. The authoring CLI's `parseLeaseElement` does `parseLeaseConstraints(record[\"claimConstraints\"] ?? {})`, so a missing key or `{}` silently yields an empty (world-open) element with no warning; `effect-cli.ts` only prints the element count. The exploitability premise checks out: `SUPPORTED_ISSUERS` in oidc.package/verifier.ts:32 is the single global GitHub Actions issuer, and `aud` is chosen by the token requester (`core.getIDToken(audience)`), so such an element would authorize any GitHub Actions job anywhere. I also confirmed programs-lease.ts performs no additional subject/repository binding — `facts.subject` only feeds `claims_digest` for audit. I downgrade HIGH to MEDIUM because this is a missing guardrail, not a default-state exposure: the default is no `--lease-policy` = empty policy = deny-all (correctly handled), the shipped example in actions/setup-maruhi/README.md includes `repository`/`ref` constraints, and reaching the fail-open state requires a project owner to author a chain-signed grant that constrains nothing. That said, this is precisely the well-known 'OIDC trust policy without a sub/repository condition' class, and the CLI's `?? {}` default plus the absence of any evaluator-side rejection makes the footgun silent — the recommendation (hard error at authoring time + defensive `length === 0 → false` in elementMatches) is correct."
+    },
+    {
+      "findingId": "F2",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "Verified: in packages/api-schema/src/auth-api.ts, `me`, `logout`, `revokeToken` and the `recovery*` endpoints all carry `.middleware(AuthMiddleware)` while `deviceExchange` deliberately does not, so the endpoint is anonymous by design, and handlers-auth.ts's `deviceExchange` calls `github.verifyAppToken` (one credentialed outbound POST to /applications/{client_id}/token) on every well-formed request. The schema-level defenses are exactly as characterized — `isMaxLength(512)` plus `/^gh[a-z]_[A-Za-z0-9_]+$/` only stop malformed floods — and I found no per-IP limiter anywhere in apps/server. So the factual claim is accurate. However, this is not an undocumented oversight: docs/SELF_HOSTING.md §'Recommended hardening' already names /auth/device/exchange as the single highest-priority path, states verbatim that a flood of well-formed tokens can exhaust the per-OAuth-App quota and break login deployment-wide, and prescribes 10 req/min/IP as the first rule to add even on the Free plan. The residual risk is that the guidance is labelled 'optional' and no rule ships in the default wrangler config. I keep the verdict true-positive but adjust to BUG severity for this file: auth-api.ts merely declares the (intentional) absence of middleware and its own comments already state the deferral; the substantive availability finding is stated more precisely against the server-side mechanism (F3), and I did not want to double-count MEDIUM for one issue."
+    },
+    {
+      "findingId": "F3",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "Confirmed by reading apps/server/src/auth.package/github.ts in full: `checkAppTokenRequest` POSTs to `${API_BASE}/applications/${clientId}/token` with `Basic btoa(client_id:client_secret)`, and `makeGitHubApi.verifyAppToken` is wired to it. Its only caller is the `deviceExchange` handler (handlers-auth.ts), which is declared without AuthMiddleware. The amplification claim also holds: `toIdentity` calls `fetchVerifiedPrimaryEmail` on success, and the OAuth callback path additionally uses `fetchUserRequest`, so a successful exchange costs three GitHub calls. GitHub rate-limits the check-token endpoint per OAuth App, so a sustained flood of format-conforming but invalid `gh?_…` strings from one source consumes a deployment-wide budget and can fail CLI login for every user — an unauthenticated availability attack with no in-code throttle, since I found no per-IP limiter, proof-of-work, or device-code binding anywhere in apps/server. Two corrections to the write-up: the format pre-check the recommendation asks for already exists (the api-schema pattern/length checks), and the risk is documented in docs/SELF_HOSTING.md with a concrete 10 req/min/IP WAF rule — it is an accepted, operator-deferred risk rather than an unknown one. It nonetheless remains a real weakness in the default self-hosted deployment because no rule ships in the wrangler config, so MEDIUM stands. The RFC-6749-style fix (bind the exchange to a server-minted device code) is the durable one and would remove the anonymous entry point entirely."
+    },
+    {
+      "findingId": "F4",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "The race is real and plainly visible in the code: `recordFetch` does a `select({fetchWindowStart, fetchCount})` and then, in a separate statement, `update(...).set({fetchCount: row.fetchCount + 1})` — an absolute value computed from the stale JS-side read, not a relative `fetch_count + 1` evaluated in SQL — with no transaction spanning the pair. N concurrent GET /auth/recovery requests from the same principal all observe the same count, all return `{allowed: true}`, and the writes collapse to one increment, so the 5-per-hour AUTH_SPEC §13-3 control can be exceeded. The invite path has the same read-modify-write shape. The file's own doc comment acknowledges this as best-effort ('読み → 条件付き更新の 2 文であり、並行リクエストで計数が僅かに超過しうる'), which confirms the analysis rather than refuting it. I downgrade MEDIUM to BUG because the security value of the bypass is close to nil: the caller must already hold a valid session or PAT for the blob's own owner, the endpoint returns the same identical ciphertext every time, and one successful fetch already yields everything N fetches would. The monitoring signal is also preserved — each allowed branch batches its own `auth.recovery_blob_fetched` insert, so racing requests each still emit an audit row. The recommended single atomic UPDATE ... WHERE ... RETURNING is the right fix, but this is a correctness defect in a throttle, not an exploitable exposure."
+    },
+    {
+      "findingId": "F5",
+      "verdict": "true-positive",
+      "adjustedSeverity": "MEDIUM",
+      "reasoning": "Confirmed by reading `appendLoginFailed` in apps/server/src/db.package/audit.ts: the predicate is exactly `and(eq(event, 'auth.login_failed'), gte(serverTs, serverTs - LOGIN_FAILED_WINDOW_MS))` — a `count()` over the whole userAuditEvents table with no user, IP, or authMethod dimension — and once it reaches LOGIN_FAILED_WINDOW_LIMIT (100) the function returns without inserting. I verified both unauthenticated feeds into that path: in handlers-auth.ts `githubCallback` calls `recordLoginFailed(\"github_oauth\", \"state-mismatch\")` on a plain GET with a missing/mismatched state cookie (no credentials of any kind needed), and `deviceExchange` calls `recordLoginFailed(\"device_flow\", \"github-token-invalid\")` on any bogus token. So an anonymous attacker can burn the entire hourly budget in seconds and then attack real accounts with no records written, re-poisoning each successive window indefinitely. The design comment frames the cap as write-amplification protection, which it achieves, but a globally shared budget converts an availability control into a detection-evasion primitive — precisely the signal AUDIT_SPEC §3.1 designates for this attack class. Partial mitigation, worth noting: an operator who watches for the window saturating (exactly 100 rows in an hour) can observe that a flood occurred, so the blackout is not wholly invisible — but the targeted attempts inside it are irrecoverably lost, and nothing in the code emits a suppression marker. MEDIUM is right; partitioning the window per coarse actor dimension, or emitting a synthetic overflow event, is the correct fix."
+    },
+    {
+      "findingId": "F6",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "The code matches the description: `selectAuditPage` reads a page, and if `rows.some(row => row.rowId === null)` it calls `backfillMissingRowIds`, which issues `update(table).set({rowId: sql`lower(hex(randomblob(16)))`}).where(isNull(table.rowId))` — table-wide, no LIMIT, not scoped to the seqs actually observed — then re-reads. The trigger is a normal authenticated audit read (readUserEventsFor / readProjectInviteEvents), and the work is O(all NULL rows), not O(page), so an authenticated read can fan out into an unbounded write on the deployment-shared D1 writer, with concurrent readers each launching the same sweep and old workers re-introducing NULLs during a rollback window so it does not converge. I keep this at BUG rather than raising it: it is a robustness/cost defect, not a security boundary failure. The blast radius is bounded in practice by how many rows a deploy gap actually produces (minutes of audit writes, not the whole table), the sweep only fires when a NULL is genuinely observed rather than on every read (an earlier review round already narrowed it to that), and the `WHERE row_id IS NULL` predicate seeks the unique index's NULL entries rather than truly scanning. The 'stalls audit reads for all tenants' worst case is therefore plausible but speculative. The recommended fix — scope the repair to `inArray(table.seq, nullSeqs)` — is correct, cheap, and strictly better than the current unbounded statement."
+    }
+  ],
+  "reconciliation": {
+    "matches": [
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F1",
+        "resolvedFindingId": "finding_7a1d93294699852b"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F2",
+        "resolvedFindingId": "finding_86ef51912e6d2327"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F3",
+        "resolvedFindingId": "finding_64e174f4b2ef1b2f"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F4",
+        "resolvedFindingId": "finding_ef2bce160a374d2d"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F5",
+        "resolvedFindingId": "finding_a793506c4e430779"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F6",
+        "resolvedFindingId": "finding_8892a22233665854"
+      }
+    ],
+    "missingFindingIds": [],
+    "unknownVerdicts": [],
+    "ambiguousVerdicts": []
+  },
+  "persistedCount": 6,
+  "unresolvedFindingIds": []
+}

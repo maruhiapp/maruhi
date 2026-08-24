@@ -1,0 +1,82 @@
+{
+  "batchIndex": 4,
+  "label": "initial",
+  "timestamp": "2026-08-22T05:48:35.151Z",
+  "files": [
+    "packages/crypto/src/internal.package/chain-verify.ts",
+    "packages/crypto/src/internal.package/manifest-sign.ts",
+    "packages/crypto/src/internal.package/value-sign.ts"
+  ],
+  "requested": [
+    {
+      "findingId": "finding_9fcf26e733f4aa29",
+      "filePath": "packages/crypto/src/internal.package/chain-verify.ts",
+      "title": "Unknown chain `op` throws TypeError instead of returning invalid-payload",
+      "alias": "F1"
+    },
+    {
+      "findingId": "finding_455ea03a811b89a7",
+      "filePath": "packages/crypto/src/internal.package/manifest-sign.ts",
+      "title": "Duplicate-entry rejection in computeVariablesDigest uses JS string identity, not the encoded UTF-8 bytes it actually hashes",
+      "alias": "F2"
+    },
+    {
+      "findingId": "finding_e31a77fc8864c92f",
+      "filePath": "packages/crypto/src/internal.package/value-sign.ts",
+      "title": "contextInvalidField does not reject an empty variableId, unlike every sibling coordinate field",
+      "alias": "F3"
+    }
+  ],
+  "rawResponses": [
+    {
+      "kind": "initial",
+      "rawText": "I've traced all three findings through the source. Here are my verdicts:\n\n```json\n[\n  {\n    \"findingId\": \"F1\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"Verified in the current source. `checkFraming` (chain-verify.ts:102-120) validates suite, seq, the genesis/seq-1 coupling and prev_hash, but never validates that `entry.op` is one of the eight known operations. `checkPayloadShape` (L126-146) validates timestamp, actor, signature and that payload is a record, then calls `operationShapeOk` (L247-249), which does an unguarded `PAYLOAD_SHAPES[entry.op](entry.payload as never)`. For an unknown op string (or a non-string op) at seq > 1 the lookup yields `undefined` and the invocation raises a TypeError. There is no try/catch anywhere in `verifyChainCore`'s loop (L682-699) — the only try/catch in the file is inside `verifyEntrySignature`, which is reached *after* the shape check — so the throw escapes `verifyChain`. That directly contradicts the exported JSDoc at L722-724 ('Entries are treated as untrusted input … so malformed data yields `invalid-payload` instead of throwing') and the file-level comment at L60-63 which states the whole design rule for this module. I also confirmed a second, worse variant the report only implies: because `PAYLOAD_SHAPES` is a plain object literal, `op` values that hit `Object.prototype` (`\\\"toString\\\"`, `\\\"constructor\\\"`, `\\\"valueOf\\\"`) resolve to a *callable* inherited method that returns a truthy value, so the shape gate passes; `applyOperation` (L551-574) then falls off its non-default switch returning `undefined`, and `if (applied !== null)` treats `undefined` as a failure, producing `fail(undefined)` — a ChainInvalid error with an `undefined` reason code. Both branches are contract violations. On exploitability I agree with the reporter and confirmed it independently: `ChainEntrySchema` (packages/api-schema/src/chain.ts) is a union of eight `Schema.Literal`-discriminated structs, and every production entry path goes through it — the append endpoint decodes wire entries with it before `chain-accept.ts` calls `verifyChainEffect`, and stored entries in `chain-store.ts:62` are `JSON.parse`d from rows that were only ever written post-decode. So there is no attacker-reachable path today. It remains a genuine defect: `chain-store.ts:135-147` lifts the verifier via `Effect.promise` and dies on anything that isn't a ChainInvalid, so a throw here would surface as a DO defect/500 rather than the specified 422 — exactly the outcome the no-throw contract exists to prevent. BUG severity is correct; this is a defence-in-depth/contract gap, not a vulnerability.\"\n  },\n  {\n    \"findingId\": \"F2\",\n    \"verdict\": \"false-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"The mechanical claim is accurate: `computeVariablesDigest` (manifest-sign.ts:93-103) keys its duplicate `Set` on the raw JS string, while the digest bytes come from `encodeLengthPrefixed([entry.variableId, …])` (L108-113) → `utf8Encode` → `TextEncoder.encode` (bytes.ts:6-8), and per the WHATWG encoding spec TextEncoder maps every unpaired surrogate to U+FFFD (EF BF BD). So `\\\"\\\\uD800\\\"`, `\\\"\\\\uDFFF\\\"` and `\\\"\\\\uFFFD\\\"` would be three distinct Set keys that hash to identical bytes, and `compareVariableIdBytes` (L65-76) would likewise report 0 for them. But the precondition — a variable id containing a lone surrogate — cannot be reached. I traced every id source: `VariableIdSchema` in packages/core/src/project.ts:46-50 pins ids to `/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/`, pure ASCII with no surrogate representable, and it is applied at every API boundary (data.ts:62/127, data-api.ts:69/99/111, rotation-api.ts:48/59). The server's digest inputs come from `data-store.ts` `variableDigestEntries`, reading `variable_id` columns that were only ever written through those schema-validated endpoints. The CLI's inputs (`apps/cli/src/manifest.ts:102`) come from HttpApi-derived, schema-decoded responses carrying the same `VariableIdSchema`. Over the entire reachable id alphabet, UTF-8 encoding is injective, so the Set-key/digest-byte mismatch is a distinction without a difference: dedup, sort order and digest all agree. No attacker-controllable path produces two entry sets with a colliding `variables_digest_hex`, so no manifest signature can be transplanted. The function's own contract also frames duplicates as 'a caller bug' rather than an untrusted-input boundary (unlike chain-verify.ts, which explicitly promises safety against hostile server-distributed data), so this is not even a self-contract violation. The suggested hardening (`isWellFormed()`, or keying the Set on `encodeHex(utf8Encode(id))`) is reasonable belt-and-braces, but as a finding this is not exploitable and not a defect under any reachable input.\"\n  },\n  {\n    \"findingId\": \"F3\",\n    \"verdict\": \"true-positive\",\n    \"adjustedSeverity\": \"BUG\",\n    \"reasoning\": \"Confirmed by direct comparison of the two files. `contextInvalidField` in value-sign.ts:100-117 checks `suite`, `projectId`, `environmentId` and `writerUserId` for non-emptiness, then delegates to `numericFieldInvalid` and `hexFieldInvalid` — `context.variableId` is never checked, despite being a signed coordinate emitted at buildValueSignedBytes L136. The sibling module meta-sign.ts:123-124 applies exactly the analogous check (`context.target.kind === \\\"variable\\\" && context.target.variableId.length === 0` → `\\\"context variableId\\\"`), so the omission is an inconsistency inside the same crypto layer, not a deliberate asymmetry. The in-file comment at L104-106 makes the intent explicit: the non-empty checks on projectId/environmentId exist 'for defensive consistency … to hold the other fields to the same check level', which is precisely the rule variableId escapes. `valueContextInvalidField` is the shared gate for `computeValueSignedBytesHash`, `signValue` and `verifyValueSignature`, so all three accept an empty variableId. I agree with the reporter that this is not a forgery path: `encodeLengthPrefixed` (encoding.ts) writes a uint32-BE length before every field, so an empty variableId encodes unambiguously as a zero-length field and cannot be confused with a shifted neighbouring coordinate — there is no canonicalization ambiguity to exploit. Nor is it externally reachable, since `VariableIdSchema` forbids the empty string at the API boundary. What remains is a real missing defensive check: a caller bug that would produce a value statement signed at a coordinate with no variable is silently signed instead of being rejected as InvalidInput, which is exactly the class of caller bug the sibling checks were added to catch. The one-line fix the reporter proposes is correct. BUG severity is appropriate.\"\n  }\n]\n```",
+      "parsedCount": 3
+    }
+  ],
+  "repairAttempts": 0,
+  "parsedVerdicts": [
+    {
+      "findingId": "F1",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "Verified in the current source. `checkFraming` (chain-verify.ts:102-120) validates suite, seq, the genesis/seq-1 coupling and prev_hash, but never validates that `entry.op` is one of the eight known operations. `checkPayloadShape` (L126-146) validates timestamp, actor, signature and that payload is a record, then calls `operationShapeOk` (L247-249), which does an unguarded `PAYLOAD_SHAPES[entry.op](entry.payload as never)`. For an unknown op string (or a non-string op) at seq > 1 the lookup yields `undefined` and the invocation raises a TypeError. There is no try/catch anywhere in `verifyChainCore`'s loop (L682-699) — the only try/catch in the file is inside `verifyEntrySignature`, which is reached *after* the shape check — so the throw escapes `verifyChain`. That directly contradicts the exported JSDoc at L722-724 ('Entries are treated as untrusted input … so malformed data yields `invalid-payload` instead of throwing') and the file-level comment at L60-63 which states the whole design rule for this module. I also confirmed a second, worse variant the report only implies: because `PAYLOAD_SHAPES` is a plain object literal, `op` values that hit `Object.prototype` (`\"toString\"`, `\"constructor\"`, `\"valueOf\"`) resolve to a *callable* inherited method that returns a truthy value, so the shape gate passes; `applyOperation` (L551-574) then falls off its non-default switch returning `undefined`, and `if (applied !== null)` treats `undefined` as a failure, producing `fail(undefined)` — a ChainInvalid error with an `undefined` reason code. Both branches are contract violations. On exploitability I agree with the reporter and confirmed it independently: `ChainEntrySchema` (packages/api-schema/src/chain.ts) is a union of eight `Schema.Literal`-discriminated structs, and every production entry path goes through it — the append endpoint decodes wire entries with it before `chain-accept.ts` calls `verifyChainEffect`, and stored entries in `chain-store.ts:62` are `JSON.parse`d from rows that were only ever written post-decode. So there is no attacker-reachable path today. It remains a genuine defect: `chain-store.ts:135-147` lifts the verifier via `Effect.promise` and dies on anything that isn't a ChainInvalid, so a throw here would surface as a DO defect/500 rather than the specified 422 — exactly the outcome the no-throw contract exists to prevent. BUG severity is correct; this is a defence-in-depth/contract gap, not a vulnerability."
+    },
+    {
+      "findingId": "F2",
+      "verdict": "false-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "The mechanical claim is accurate: `computeVariablesDigest` (manifest-sign.ts:93-103) keys its duplicate `Set` on the raw JS string, while the digest bytes come from `encodeLengthPrefixed([entry.variableId, …])` (L108-113) → `utf8Encode` → `TextEncoder.encode` (bytes.ts:6-8), and per the WHATWG encoding spec TextEncoder maps every unpaired surrogate to U+FFFD (EF BF BD). So `\"\\uD800\"`, `\"\\uDFFF\"` and `\"\\uFFFD\"` would be three distinct Set keys that hash to identical bytes, and `compareVariableIdBytes` (L65-76) would likewise report 0 for them. But the precondition — a variable id containing a lone surrogate — cannot be reached. I traced every id source: `VariableIdSchema` in packages/core/src/project.ts:46-50 pins ids to `/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/`, pure ASCII with no surrogate representable, and it is applied at every API boundary (data.ts:62/127, data-api.ts:69/99/111, rotation-api.ts:48/59). The server's digest inputs come from `data-store.ts` `variableDigestEntries`, reading `variable_id` columns that were only ever written through those schema-validated endpoints. The CLI's inputs (`apps/cli/src/manifest.ts:102`) come from HttpApi-derived, schema-decoded responses carrying the same `VariableIdSchema`. Over the entire reachable id alphabet, UTF-8 encoding is injective, so the Set-key/digest-byte mismatch is a distinction without a difference: dedup, sort order and digest all agree. No attacker-controllable path produces two entry sets with a colliding `variables_digest_hex`, so no manifest signature can be transplanted. The function's own contract also frames duplicates as 'a caller bug' rather than an untrusted-input boundary (unlike chain-verify.ts, which explicitly promises safety against hostile server-distributed data), so this is not even a self-contract violation. The suggested hardening (`isWellFormed()`, or keying the Set on `encodeHex(utf8Encode(id))`) is reasonable belt-and-braces, but as a finding this is not exploitable and not a defect under any reachable input."
+    },
+    {
+      "findingId": "F3",
+      "verdict": "true-positive",
+      "adjustedSeverity": "BUG",
+      "reasoning": "Confirmed by direct comparison of the two files. `contextInvalidField` in value-sign.ts:100-117 checks `suite`, `projectId`, `environmentId` and `writerUserId` for non-emptiness, then delegates to `numericFieldInvalid` and `hexFieldInvalid` — `context.variableId` is never checked, despite being a signed coordinate emitted at buildValueSignedBytes L136. The sibling module meta-sign.ts:123-124 applies exactly the analogous check (`context.target.kind === \"variable\" && context.target.variableId.length === 0` → `\"context variableId\"`), so the omission is an inconsistency inside the same crypto layer, not a deliberate asymmetry. The in-file comment at L104-106 makes the intent explicit: the non-empty checks on projectId/environmentId exist 'for defensive consistency … to hold the other fields to the same check level', which is precisely the rule variableId escapes. `valueContextInvalidField` is the shared gate for `computeValueSignedBytesHash`, `signValue` and `verifyValueSignature`, so all three accept an empty variableId. I agree with the reporter that this is not a forgery path: `encodeLengthPrefixed` (encoding.ts) writes a uint32-BE length before every field, so an empty variableId encodes unambiguously as a zero-length field and cannot be confused with a shifted neighbouring coordinate — there is no canonicalization ambiguity to exploit. Nor is it externally reachable, since `VariableIdSchema` forbids the empty string at the API boundary. What remains is a real missing defensive check: a caller bug that would produce a value statement signed at a coordinate with no variable is silently signed instead of being rejected as InvalidInput, which is exactly the class of caller bug the sibling checks were added to catch. The one-line fix the reporter proposes is correct. BUG severity is appropriate."
+    }
+  ],
+  "reconciliation": {
+    "matches": [
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F1",
+        "resolvedFindingId": "finding_9fcf26e733f4aa29"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F2",
+        "resolvedFindingId": "finding_455ea03a811b89a7"
+      },
+      {
+        "matchedBy": "finding-id",
+        "returnedFindingId": "F3",
+        "resolvedFindingId": "finding_e31a77fc8864c92f"
+      }
+    ],
+    "missingFindingIds": [],
+    "unknownVerdicts": [],
+    "ambiguousVerdicts": []
+  },
+  "persistedCount": 3,
+  "unresolvedFindingIds": []
+}
