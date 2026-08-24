@@ -190,6 +190,14 @@ worker-side binding would be redundant with the WAF anyway). Deployments that
 predate the `ratelimits` section keep the old behavior until they redeploy with
 the updated config — the server treats a missing binding as "no limit".
 
+If legitimate traffic arrives through shared egress IPs — a large CI matrix on
+shared runners funneling many lease calls through one address, or a whole team
+logging in behind one office NAT — the per-IP defaults can throttle it (429).
+The per-colo counting already makes the effective ceiling looser than the
+nominal number, but if you still hit it, raise the `limit` values in
+`wrangler.jsonc` (or remove the binding entries) to match your traffic shape;
+the server fails open when a binding is absent.
+
 Add the following in the dashboard under Security → WAF → Rate limiting rules.
 **The Free plan allows only one rule, so in that case pick
 `/auth/device/exchange`** (it is the only surface in the table where exhausting

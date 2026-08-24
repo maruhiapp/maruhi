@@ -227,10 +227,17 @@ async function backfillMissingRowIds(
   table: D1AuditTable,
   seqs: readonly number[],
 ): Promise<void> {
-  await db
-    .update(table)
-    .set({ rowId: sql`lower(hex(randomblob(16)))` })
-    .where(and(isNull(table.rowId), inArray(table.seq, [...seqs])));
+  // D1 の 1 クエリあたりバインドパラメータ上限(100)より下で分割する: ページ
+  // 上限は 200 で、全行 NULL の legacy ページでは inArray が seq ごとに 1
+  // パラメータを束縛する — 分割しないと、まさに補填が要るページの読み取りが
+  // 決定的に失敗する(レビューループ 3)
+  const CHUNK = 90;
+  for (let offset = 0; offset < seqs.length; offset += CHUNK) {
+    await db
+      .update(table)
+      .set({ rowId: sql`lower(hex(randomblob(16)))` })
+      .where(and(isNull(table.rowId), inArray(table.seq, seqs.slice(offset, offset + CHUNK))));
+  }
 }
 
 /** selectAuditPage の生 1 回分の読み(rowId は補填前なら NULL がありうる)。 */

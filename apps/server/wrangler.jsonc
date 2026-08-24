@@ -18,8 +18,10 @@
   // (device exchange の GitHub 呼び出し・lease の DO 生成)を有界にする。
   // period は 10 か 60 のみで、変更時は src/worker-env.ts の
   // IP_RATE_LIMIT_PERIOD_SECONDS(429 の retryAfterSeconds)も揃えること。
-  // より強い保全(グローバル計数)は引き続き docs/SELF_HOSTING.md の
-  // WAF ルールを推奨
+  // 値は docs/SELF_HOSTING.md の WAF 推奨値と同一。共有 egress(オフィス NAT・
+  // 共有ランナー)配下で正当なトラフィックが 429 になる場合は limit を上げる
+  // (per-colo 計数なので実効上限は名目より緩い)。より強い保全(グローバル
+  // 計数)は引き続き同ドキュメントの WAF ルールを推奨
   "ratelimits": [
     {
       "name": "DEVICE_EXCHANGE_RATE_LIMIT",

@@ -34,6 +34,13 @@ function clampInterval(seconds: number, minSeconds: number): number {
   return Math.min(seconds, MAX_POLL_INTERVAL_SECONDS);
 }
 
+/** expires_in を (0, 上限] に丸める(非数・非有限・非正は既定値)。start / poll 共用。 */
+function clampExpires(seconds: unknown): number {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
+    ? Math.min(seconds, MAX_EXPIRES_IN_SECONDS)
+    : DEFAULT_EXPIRES_IN_SECONDS;
+}
+
 /** RFC 8628 §3.2 device authorization response (the fields the CLI uses). */
 export interface DeviceAuthorization {
   readonly deviceCode: string;
@@ -124,10 +131,7 @@ export function startDeviceFlow(
       // 省略・0・負値・非数・下限未満はすべて下限(既定 5 秒)に、上限超過は
       // 上限に丸める(B3: 巨大値による長時間 sleep / 実質無期限ポーリングを防ぐ)
       intervalSeconds: clampInterval(typeof interval === "number" ? interval : 0, minInterval),
-      expiresInSeconds:
-        typeof expiresIn === "number" && expiresIn > 0
-          ? Math.min(expiresIn, MAX_EXPIRES_IN_SECONDS)
-          : DEFAULT_EXPIRES_IN_SECONDS,
+      expiresInSeconds: clampExpires(expiresIn),
     } satisfies DeviceAuthorization;
   });
 }
@@ -150,12 +154,7 @@ export function pollDeviceFlow(
   // (呼び出し元が応答値を直接渡しても deadline が有界であることを保つ)。
   // 非有限・非正は既定値へ倒す — 素の Math.min だと NaN が deadline を無効化し、
   // B3 が塞いだ無期限ポーリングが復活する(レビューループ 1)
-  const rawExpires = options.authorization.expiresInSeconds;
-  const expiresInSeconds =
-    Number.isFinite(rawExpires) && rawExpires > 0
-      ? Math.min(rawExpires, MAX_EXPIRES_IN_SECONDS)
-      : DEFAULT_EXPIRES_IN_SECONDS;
-  const deadlineMs = Date.now() + expiresInSeconds * 1000;
+  const deadlineMs = Date.now() + clampExpires(options.authorization.expiresInSeconds) * 1000;
   // interval も同じ理由で再検証する(レビューループ 2): NaN は deadline 比較を
   // 常に偽にし sleep も即時解決になるため、authorization_pending のたびに
   // 無間隔で再 POST する(0・負値はビジースピン)。expires と対で clamp する
