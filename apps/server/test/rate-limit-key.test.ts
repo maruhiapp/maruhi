@@ -22,8 +22,10 @@ describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
     expect(rateLimitKeyOf("fe80::")).toBe("fe80:0:0:0::/64");
   });
 
-  it("IPv4 埋め込み末尾(::ffff:1.2.3.4)も展開して数える", () => {
-    expect(rateLimitKeyOf("::ffff:192.0.2.1")).toBe("0:0:0:0::/64");
+  it("IPv4-mapped(::ffff:a.b.c.d)は埋め込み IPv4 をキーにする(共有バケットへ畳まない)", () => {
+    expect(rateLimitKeyOf("::ffff:192.0.2.1")).toBe("192.0.2.1");
+    expect(rateLimitKeyOf("::ffff:c000:201")).toBe("192.0.2.1");
+    // v4-mapped 以外の IPv4 埋め込み(NAT64 等)は通常の /64 集約
     expect(rateLimitKeyOf("64:ff9b:1:2::192.0.2.1")).toBe("64:ff9b:1:2::/64");
   });
 

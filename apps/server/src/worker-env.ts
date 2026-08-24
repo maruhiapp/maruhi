@@ -33,11 +33,25 @@ export function rateLimitKeyOf(ip: string): string {
   if (!ip.includes(":")) {
     return ip;
   }
-  return ipv6Prefix64(ip) ?? ip;
+  const groups = ipv6Groups(ip);
+  if (groups === null) {
+    return ip;
+  }
+  // IPv4-mapped(::ffff:a.b.c.d)は埋め込み IPv4 をキーにする(レビューループ 6):
+  // /64 集約へ入れると、v4-mapped で到達する全 IPv4 クライアントが単一バケット
+  // "0:0:0:0::/64" に畳まれ、1 発信元が全 IPv4 ユーザーの窓を食い潰せてしまう
+  const upperZero = groups.slice(0, 5).every((group) => Number.parseInt(group, 16) === 0);
+  if (upperZero && Number.parseInt(groups[5] ?? "", 16) === 0xff_ff) {
+    const hi = Number.parseInt(groups[6] ?? "0", 16);
+    const lo = Number.parseInt(groups[7] ?? "0", 16);
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  const prefix = groups.slice(0, 4).map((group) => Number.parseInt(group, 16).toString(16));
+  return `${prefix.join(":")}::/64`;
 }
 
-/** 圧縮形("::")・IPv4 埋め込み末尾を展開し、正規化した /64 プレフィックスを返す。 */
-function ipv6Prefix64(ip: string): string | null {
+/** 圧縮形("::")・IPv4 埋め込み末尾を展開した正規化 8 グループ(不正は null)。 */
+function ipv6Groups(ip: string): string[] | null {
   const zoneless = ip.split("%")[0] ?? ip;
   const halves = zoneless.split("::");
   if (halves.length > 2) {
@@ -53,11 +67,7 @@ function ipv6Prefix64(ip: string): string | null {
     return null;
   }
   const full = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
-  if (full.length !== 8) {
-    return null;
-  }
-  const prefix = full.slice(0, 4).map((group) => Number.parseInt(group, 16).toString(16));
-  return `${prefix.join(":")}::/64`;
+  return full.length === 8 ? full : null;
 }
 
 /** ":" 区切りグループ列 → 16 進グループ配列(IPv4 埋め込みは 2 グループ)。 */
