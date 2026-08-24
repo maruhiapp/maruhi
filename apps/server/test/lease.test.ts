@@ -1241,5 +1241,7 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
     expect(body["_tag"]).toBe("LeaseRateLimited");
     expect(body["scope"]).toBe("source-address");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
-  });
+    // 124 リクエストのバーストはスイート全体の負荷次第で既定 15s を越える
+    // (実測 — フルスイート実行時)。ハング検出の有界性は保ったまま延長する
+  }, 60_000);
 });
