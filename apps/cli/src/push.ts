@@ -971,7 +971,9 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     ) {
       return yield* Effect.fail(
         cliError(
-          `The push was accepted and recorded locally as ${local.variableId} version=${local.version} epoch=${local.epoch}, but the server's response echoes different coordinates (${displayText(echo.variableId)} version=${echo.version} epoch=${echo.epoch}). The locally signed values are authoritative — verify the server with maruhi pull`,
+          // 既存変数の variableId はサーバー配布のメタステートメント由来
+          // (非空以外の文字集合検査なし)なので、local 側も中和して表示する
+          `The push was accepted and recorded locally as ${displayText(local.variableId)} version=${local.version} epoch=${local.epoch}, but the server's response echoes different coordinates (${displayText(echo.variableId)} version=${echo.version} epoch=${echo.epoch}). The locally signed values are authoritative — verify the server with maruhi pull`,
         ),
       );
     }

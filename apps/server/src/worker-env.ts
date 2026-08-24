@@ -23,6 +23,69 @@ export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =
 export const IP_RATE_LIMIT_PERIOD_SECONDS = 60;
 
 /**
+ * レート制限キーの正規化(レビューループ 5): IPv6 は /64 プレフィックスへ丸める。
+ * 標準割当の /64 内で下位 64 bit をローテーションすると、素のアドレスキーでは
+ * 毎リクエストが新規キーになり窓が一切効かない(Cloudflare WAF のレート制限が
+ * 既定で /64 集約するのと同じ理由)。IPv4 はそのまま。パースできない値は素の
+ * 文字列キーへフォールバックする(アドレス単位の制限は維持される)。
+ */
+export function rateLimitKeyOf(ip: string): string {
+  if (!ip.includes(":")) {
+    return ip;
+  }
+  return ipv6Prefix64(ip) ?? ip;
+}
+
+/** 圧縮形("::")・IPv4 埋め込み末尾を展開し、正規化した /64 プレフィックスを返す。 */
+function ipv6Prefix64(ip: string): string | null {
+  const zoneless = ip.split("%")[0] ?? ip;
+  const halves = zoneless.split("::");
+  if (halves.length > 2) {
+    return null;
+  }
+  const head = parseIpv6Groups(halves[0] ?? "");
+  const tail = halves.length === 2 ? parseIpv6Groups(halves[1] ?? "") : [];
+  if (head === null || tail === null) {
+    return null;
+  }
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) {
+    return null;
+  }
+  const full = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  if (full.length !== 8) {
+    return null;
+  }
+  const prefix = full.slice(0, 4).map((group) => Number.parseInt(group, 16).toString(16));
+  return `${prefix.join(":")}::/64`;
+}
+
+/** ":" 区切りグループ列 → 16 進グループ配列(IPv4 埋め込みは 2 グループ)。 */
+function parseIpv6Groups(raw: string): string[] | null {
+  if (raw === "") {
+    return [];
+  }
+  const groups: string[] = [];
+  for (const piece of raw.split(":")) {
+    if (piece.includes(".")) {
+      const octets = piece.split(".").map(Number);
+      if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
+        return null;
+      }
+      groups.push(
+        ((((octets[0] ?? 0) << 8) | (octets[1] ?? 0)) >>> 0).toString(16),
+        ((((octets[2] ?? 0) << 8) | (octets[3] ?? 0)) >>> 0).toString(16),
+      );
+    } else if (/^[0-9a-fA-F]{1,4}$/.test(piece)) {
+      groups.push(piece.toLowerCase());
+    } else {
+      return null;
+    }
+  }
+  return groups;
+}
+
+/**
  * 発信元 IP 単位の best-effort レート制限(Workers Rate Limiting binding —
  * deepsec M3/B11/M5)。true = 許可。
  *
@@ -47,7 +110,7 @@ export function ipRateLimitAllowed(
       return true;
     }
     try {
-      const outcome = await limiter.limit({ key: ip });
+      const outcome = await limiter.limit({ key: rateLimitKeyOf(ip) });
       return outcome.success;
     } catch (error) {
       // fail-open の**明示的な**回復(可用性側の設計判断 — 上の doc)。ただし
