@@ -176,12 +176,21 @@ type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
  * (§1-4 の append-only は内容の不変性 — row_id はサーバー採番の合成識別子で、
  * この補填は §5.1 backfill の繰り延べにすぎない)。randomblob は行ごとに評価
  * され、WHERE row_id IS NULL は一意索引の NULL エントリを seek する。
+ *
+ * 更新対象は**このページで観測した seq に限定する**(deepsec B8): テーブル全体の
+ * NULL 行を触ると、1 回の読み取りが無関係テナントの行まで UPDATE し、並行 reader
+ * や(ロールバック中の)旧 worker の並行挿入と衝突する。観測 seq への限定で
+ * 1 読み取りあたりの書き込みは高々ページサイズに有界になる。
  */
-async function backfillMissingRowIds(db: Db, table: D1AuditTable): Promise<void> {
+async function backfillMissingRowIds(
+  db: Db,
+  table: D1AuditTable,
+  seqs: readonly number[],
+): Promise<void> {
   await db
     .update(table)
     .set({ rowId: sql`lower(hex(randomblob(16)))` })
-    .where(isNull(table.rowId));
+    .where(and(isNull(table.rowId), inArray(table.seq, [...seqs])));
 }
 
 /** selectAuditPage の生 1 回分の読み(rowId は補填前なら NULL がありうる)。 */
@@ -247,8 +256,9 @@ async function selectAuditPage(
   page: D1AuditReadPage,
 ): Promise<readonly D1StoredAuditEventRow[]> {
   let rows = await readAuditPageRows(db, table, predicate, page);
-  if (rows.some((row) => row.rowId === null)) {
-    await backfillMissingRowIds(db, table);
+  const missingSeqs = rows.filter((row) => row.rowId === null).map((row) => row.seq);
+  if (missingSeqs.length > 0) {
+    await backfillMissingRowIds(db, table, missingSeqs);
     rows = await readAuditPageRows(db, table, predicate, page);
   }
   return rows.map((row) => ({

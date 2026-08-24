@@ -54,13 +54,19 @@ function wrapStorageKey(ref: { readonly epoch: number; readonly recipientUserId:
  * 両方がこの 1 定義を使う(受理境界をズラさない)。
  */
 export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
-  let grants = 0;
-  for (const grant of state.serverGrants.values()) {
+  // 保存キー(= 登録経路の重複検出キー wrapStorageKey)は受信者クラスを含まない
+  // ため、member の user_id と有効 grant のサーバー鍵 FP が衝突した場合、その
+  // 2 受信者は 1 スロットしか占められない。期待数をクラス別の単純和で数えると
+  // 「重複拒否」と「個数一致」を同時に満たせず環境作成・ローテーションが恒久に
+  // 塞がる(deepsec B10)。期待数も保存キーと同じ粒度 — 識別子の重複除去済み
+  // 和集合 — で数える
+  const recipients = new Set<string>(state.members.keys());
+  for (const [fingerprintHex, grant] of state.serverGrants) {
     if (grant.scopeEnvironmentIds.includes(environmentId)) {
-      grants += 1;
+      recipients.add(fingerprintHex);
     }
   }
-  return state.members.size + grants;
+  return recipients.size;
 }
 
 /** 1 リクエストのラップ件数上限(登録・削除の両経路で共通)。ok なら null。 */

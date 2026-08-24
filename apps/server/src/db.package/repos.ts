@@ -10,7 +10,7 @@
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { auditPayloadWith, parseTokenScopes } from "@maruhi/core";
-import { and, count, eq, gt, gte, inArray, isNull, lte, min, ne, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNull, lt, lte, min, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -44,6 +44,7 @@ import {
   projects,
   recoveryWraps,
   sessions,
+  userAuditEvents,
   users,
 } from "./schema.ts";
 
@@ -576,6 +577,52 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
       }),
     recordFetch: (userId, nowMs, actor) =>
       run(async () => {
+        // 取得計数は**単一の条件付き相対 UPDATE**で行う(deepsec B9): 従来の
+        // 読み → 書き 2 段は並行リクエストが同じ count を読み、複数成功しても
+        // 計数が 1 しか進まなかった。窓のリセット / 加算 / 上限判定を 1 文の
+        // CASE / WHERE に畳み、更新できた(= RETURNING が 1 行)ことを許可の
+        // 定義にする。auth.recovery_blob_fetched は invites の CAS と同じ
+        // changes() = 1 ガードの INSERT…SELECT を同一 batch に同梱し、許可された
+        // 取得と 1:1 のまま原子的に記録する(AUDIT_SPEC §5.2)
+        const windowExpired = sql`${recoveryWraps.fetchWindowStart} is null or ${nowMs} - ${recoveryWraps.fetchWindowStart} >= ${RECOVERY_FETCH_WINDOW_MS}`;
+        const payload = auditPayloadWith(actor, undefined);
+        const results = await db.batch([
+          db
+            .update(recoveryWraps)
+            .set({
+              fetchWindowStart: sql`case when ${windowExpired} then ${nowMs} else ${recoveryWraps.fetchWindowStart} end`,
+              fetchCount: sql`case when ${windowExpired} then 1 else ${recoveryWraps.fetchCount} + 1 end`,
+            })
+            .where(
+              and(
+                eq(recoveryWraps.userId, userId),
+                or(sql`(${windowExpired})`, lt(recoveryWraps.fetchCount, RECOVERY_FETCH_LIMIT)),
+              ),
+            )
+            .returning({ fetchCount: recoveryWraps.fetchCount }),
+          db.insert(userAuditEvents).select(
+            db
+              .select({
+                rowId: sql<string>`${randomHex(16)}`.as("row_id"),
+                serverTs: sql<number>`${nowMs}`.as("server_ts"),
+                event: sql<string>`'auth.recovery_blob_fetched'`.as("event"),
+                actorType: sql<string>`'user'`.as("actor_type"),
+                actorUserId: sql<string | null>`${actor.userId ?? null}`.as("actor_user_id"),
+                actorApiTokenId: sql<string | null>`${actor.apiTokenId ?? null}`.as(
+                  "actor_api_token_id",
+                ),
+                payload: sql<string | null>`${
+                  Object.keys(payload).length === 0 ? null : JSON.stringify(payload)
+                }`.as("payload"),
+              })
+              .from(recoveryWraps)
+              .where(and(eq(recoveryWraps.userId, userId), sql`changes() = 1`)),
+          ),
+        ]);
+        if (results[0].length === 1) {
+          return { allowed: true } as const;
+        }
+        // 0 行 = 対象行が無い(未登録 — 上位が 404 を導出する)か、窓内で上限到達
         const row = await db
           .select({
             fetchWindowStart: recoveryWraps.fetchWindowStart,
@@ -587,38 +634,24 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
         if (row === undefined) {
           return { allowed: true } as const;
         }
-        const fetchedEvent = userAuditInsert(db, nowMs, {
-          event: "auth.recovery_blob_fetched",
-          actor,
-        });
         const windowStart = row.fetchWindowStart;
-        const windowExpired =
-          windowStart === null || nowMs - windowStart >= RECOVERY_FETCH_WINDOW_MS;
-        if (windowExpired) {
-          await db.batch([
-            db
-              .update(recoveryWraps)
-              .set({ fetchWindowStart: nowMs, fetchCount: 1 })
-              .where(eq(recoveryWraps.userId, userId)),
-            fetchedEvent,
-          ]);
-          return { allowed: true } as const;
-        }
-        if (row.fetchCount >= RECOVERY_FETCH_LIMIT) {
+        if (
+          windowStart !== null &&
+          nowMs - windowStart < RECOVERY_FETCH_WINDOW_MS &&
+          row.fetchCount >= RECOVERY_FETCH_LIMIT
+        ) {
           const remainingMs = RECOVERY_FETCH_WINDOW_MS - (nowMs - windowStart);
           return {
             allowed: false,
             retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
           } as const;
         }
-        await db.batch([
-          db
-            .update(recoveryWraps)
-            .set({ fetchCount: row.fetchCount + 1 })
-            .where(eq(recoveryWraps.userId, userId)),
-          fetchedEvent,
-        ]);
-        return { allowed: true } as const;
+        // UPDATE と再読の間に別リクエストが窓をリセットした等の極小レース。
+        // 安全側(拒否)に倒し、残り時間は窓の全長で案内する
+        return {
+          allowed: false,
+          retryAfterSeconds: Math.ceil(RECOVERY_FETCH_WINDOW_MS / 1000),
+        } as const;
       }),
   };
 }

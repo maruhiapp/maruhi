@@ -157,6 +157,32 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     expect(afterReissue.status).toBe(200);
   });
 
+  it("counts concurrent fetches atomically: exactly the limit succeeds and the count matches (B9)", async () => {
+    const token = await deviceToken(516);
+    expect((await putWrap(bearer(token))).status).toBe(204);
+    // 上限越えの同時リクエスト: 計数は条件付き相対 UPDATE(1 文)なので、
+    // どの並び方でも成功はちょうど上限件・保存 count は上限で止まる
+    const responses = await Promise.all(
+      Array.from({ length: RECOVERY_FETCH_LIMIT + 3 }, () =>
+        SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) }),
+      ),
+    );
+    const succeeded = responses.filter((response) => response.status === 200).length;
+    const limited = responses.filter((response) => response.status === 429).length;
+    expect(succeeded).toBe(RECOVERY_FETCH_LIMIT);
+    expect(limited).toBe(3);
+    const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
+      fetch_count: number;
+    }>();
+    expect(row?.fetch_count).toBe(RECOVERY_FETCH_LIMIT);
+    // 監査行(auth.recovery_blob_fetched)は許可された取得と 1:1(§5.2 の同一
+    // トランザクション原則を保ったまま)
+    const audit = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.recovery_blob_fetched'",
+    ).first<{ n: number }>();
+    expect(audit?.n).toBe(RECOVERY_FETCH_LIMIT);
+  });
+
   it("rejects an unknown stored suite without consuming the fetch window", async () => {
     const token = await deviceToken(515);
     expect((await putWrap(bearer(token))).status).toBe(204);
