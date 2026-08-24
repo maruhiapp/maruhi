@@ -18,7 +18,11 @@ export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =
 /**
  * ratelimits binding の固定窓の周期(秒)。binding からは period を読めないため、
  * wrangler.jsonc の `ratelimits[].simple.period` と**手動で一致**させること
- * (429 応答の retryAfterSeconds に使う — レビューループ 2)。
+ * (429 応答の retryAfterSeconds / Retry-After ヘッダーに使う — レビューループ 2)。
+ * 片方だけ変えると案内する待ち時間が実際の窓とずれる(制限自体は正しく効く —
+ * 安全側でなく利便側の劣化)。型・テストでの強制は不可(wrangler 設定は
+ * 実行時に読めず、workerd テストからファイルも読めない)ため、両側のコメントで
+ * ペアを明示する(wrangler.jsonc 側にも同じ注記がある)。
  */
 export const IP_RATE_LIMIT_PERIOD_SECONDS = 60;
 

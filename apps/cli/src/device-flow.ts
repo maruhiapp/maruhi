@@ -26,7 +26,11 @@ const DEFAULT_POLL_INTERVAL_SECONDS = 5;
 // deadline 検査が既に無害化している(残り時間を越える sleep はしない)ため、
 // この上限の役目は「deadline 検査の粒度を有界に保つ」だけ — きつくすると
 // interval > 上限 を正当に要求する RFC 準拠エンドポイントで、slow_down との
-// 追いかけ合いにより login が恒久に不能になる
+// 追いかけ合いにより login が恒久に不能になる。
+// expires_in の上限は実値の 2 倍(意図的トレードオフ — レビューループ 11):
+// これを越える寿命を返すエンドポイントでは 30 分でこちらから打ち切るが、
+// その失敗は `maruhi login` の再実行(新しいコード発行)で回復できる —
+// interval の場合と違い恒久ロックアウトにはならない
 const MAX_POLL_INTERVAL_SECONDS = 900;
 const DEFAULT_EXPIRES_IN_SECONDS = 900;
 const MAX_EXPIRES_IN_SECONDS = 1800;
