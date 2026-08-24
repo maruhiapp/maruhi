@@ -680,8 +680,8 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
   it("全データプレーンエンドポイント × 全拒否 kind で fail / die 判定が宣言と厳密一致する", () => {
     // effect 更新(Schema.is / endpoint.error の意味変化)へのドリフト検出器。
     // beta.107 では全 14 エンドポイント × 全エラー種の厳密一致を手動検証済み
-    // (PR #49)— このテストはその検証の自動再実行。ピン留め中の rc.109 への
-    // 更新はこの検出器が green のまま通っている(手動検証の再実行は不要)
+    // (PR #49)— このテストはその検証の自動再実行。以後のピン更新(rc.109 /
+    // rc.111)はこの検出器が green のまま通っている(手動検証の再実行は不要)
     const results = contractCases.map(judgeContractCase);
     // toEqual の diff で不一致の (endpoint, kind) がそのまま読めるようにする
     expect(results.map((result) => result.observed)).toEqual(
