@@ -565,6 +565,39 @@ describe("buildInjectionEnv", () => {
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
   });
+
+  it("M2 で追加した POSIX / Windows の実行制御名への注入も拒否する", async () => {
+    for (const name of [
+      // POSIX: rc / 設定ディレクトリの差し替えとプロンプト評価
+      "HOME",
+      "home", // 大文字化比較(Windows の非区別)への防衛
+      "USERPROFILE",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "PROMPT_COMMAND",
+      "PS1",
+      "PS4",
+      "SHELLOPTS",
+      "BASHOPTS",
+      "NODE_REPL_EXTERNAL_MODULE",
+      "PYTHONINSPECT",
+      // Windows: 実行解決の差し替え
+      "PATHEXT",
+      "COMSPEC",
+      "SYSTEMROOT",
+      "SystemRoot",
+      "WINDIR",
+    ]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("execution-control");
+    }
+    // 包括 prefix 拒否は採らない裁定(M2)の固定: NODE_ENV 等の正当な変数は通る
+    const allowed = await Effect.runPromise(
+      buildInjectionEnv([variable("NODE_ENV", "production"), variable("BUN_INSTALL", "x")]),
+    );
+    expect(Object.keys(allowed).toSorted()).toEqual(["BUN_INSTALL", "NODE_ENV"]);
+  });
 });
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
