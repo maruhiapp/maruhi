@@ -194,6 +194,47 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
     const body = (await response.json()) as { reason: string };
     expect(body.reason).toBe("code-exchange-failed");
   });
+
+  it("rate-limits callbacks per source IP before any GitHub outbound (R7)", async () => {
+    // state 検査は cookie と query の二重送信のみでサーバー側状態を持たないため、
+    // 非ブラウザの発信元は両方を自分で用意して常に通せる(githubStart を経由
+    // しなくてよい)。頻度を縛るのは発信元 IP のレート制限だけ、という位置関係を
+    // ここで固定する。
+    // 窓は wall-clock 整列の固定窓(30/60s): 逐次では 1 窓に収まらずフレークする
+    // ため、並列バーストで 2 窓 + 2 発(62 リクエスト)を数秒に収める
+    const state = "ab".repeat(16);
+    const attempt = (): Promise<Response> =>
+      SELF.fetch(`${BASE}/auth/github/callback?code=not-a-code&state=${state}`, {
+        headers: { cookie: `${STATE_COOKIE}=${state}`, "cf-connecting-ip": "203.0.113.9" },
+        redirect: "manual",
+      });
+    const responses: Response[] = [];
+    for (let batch = 0; batch < 2; batch += 1) {
+      responses.push(...(await Promise.all(Array.from({ length: 31 }, attempt))));
+    }
+    let limited: Response | null = null;
+    for (const response of responses) {
+      if (response.status === 429) {
+        limited ??= response;
+      } else {
+        // 制限前は通常の 400(code-exchange-failed)
+        expect(response.status).toBe(400);
+      }
+    }
+    if (limited === null) {
+      throw new Error("expected a 429 within two full rate-limit windows");
+    }
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+    const body = (await limited.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("AuthRateLimited");
+    expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
+    // 別 IP は独立に数えられる(帰属単位の固定)
+    const other = await SELF.fetch(`${BASE}/auth/github/callback?code=not-a-code&state=${state}`, {
+      headers: { cookie: `${STATE_COOKIE}=${state}`, "cf-connecting-ip": "203.0.113.10" },
+      redirect: "manual",
+    });
+    expect(other.status).toBe(400);
+  }, 60_000);
 });
 
 // CF-Connecting-IP は本番エッジが上書き付与するヘッダー。テストでは明示して

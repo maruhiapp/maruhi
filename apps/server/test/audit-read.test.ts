@@ -217,6 +217,32 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
+  it("eventPrefix は名前空間ごと絞る(ミラー検証の全取得 — deepsec R1)", async () => {
+    await seedProjectActivity();
+    const { status, events } = await fetchEvents(token(OWNER), {
+      eventPrefix: "chain.",
+      limit: "200",
+    });
+    expect(status).toBe(200);
+    expect(events.length).toBeGreaterThan(0);
+    // 名前空間の全行が返り、外の行(env.* / var.* / dek.*)は 1 行も混じらない
+    for (const event of events) {
+      expect(event.event.startsWith("chain.")).toBe(true);
+    }
+    const all = await fetchEvents(token(OWNER), { limit: "200" });
+    expect(events.length).toBe(all.events.filter((e) => e.event.startsWith("chain.")).length);
+  });
+
+  it("eventPrefix はワイルドカード意味論を持たない(LIKE ではなく前置比較)", async () => {
+    await seedProjectActivity();
+    // LIKE 実装なら "%" は全一致・"_" は 1 文字ワイルドカードとして働いてしまう
+    for (const eventPrefix of ["%", "_hain.", "chain%"]) {
+      const { status, events } = await fetchEvents(token(OWNER), { eventPrefix, limit: "200" });
+      expect(status).toBe(200);
+      expect(events).toHaveLength(0);
+    }
+  });
+
   it("admin 未満の actorUserId フィルタは本人のみ(他人指定は 403)", async () => {
     await seedProjectActivity();
     // 本人指定は許可され、本人の行(クラス 2 の var.read 含む)だけが返る

@@ -13,9 +13,10 @@
   "durable_objects": {
     "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
   },
-  // 発信元 IP 単位の best-effort レート制限(deepsec M3/B11/M5)。全プランで
+  // 発信元 IP 単位の best-effort レート制限(deepsec M3/B11/M5/R7)。全プランで
   // 使える per-colo のメモリベース制限で、既定デプロイでも未認証の高コスト面
-  // (device exchange の GitHub 呼び出し・lease の DO 生成)を有界にする。
+  // (device exchange と OAuth callback の GitHub 呼び出し・lease の DO 生成)を
+  // 有界にする。
   // period は 10 か 60 のみで、変更時は src/worker-env.ts の
   // IP_RATE_LIMIT_PERIOD_SECONDS(429 の retryAfterSeconds)も揃えること。
   // 値は docs/SELF_HOSTING.md の WAF 推奨値と同一。共有 egress(オフィス NAT・
@@ -29,6 +30,13 @@
       "simple": { "limit": 10, "period": 60 },
     },
     { "name": "LEASE_RATE_LIMIT", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } },
+    // callback はブラウザの対話ログイン経路。同一オフィス NAT からの同時ログインが
+    // 束になるため device exchange(10)より緩くする(deepsec R7)
+    {
+      "name": "OAUTH_CALLBACK_RATE_LIMIT",
+      "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 },
+    },
   ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectChainDO"] }],
   "d1_databases": [

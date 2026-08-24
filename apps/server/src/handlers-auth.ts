@@ -99,6 +99,9 @@ function authFlowFailure(
  * 未認証の外部主体。理由種別のみ記録し、提示された外部 ID・コード・トークンは
  * 記録しない(同 §3.1 の禁止)。未認証経路からの書き込み増幅を有界にするため
  * 固定窓上限つきの専用追記を使う(db.package/audit.ts)。
+ *
+ * 上限は authMethod をバケットとして数える(deepsec R4): 片方の経路への匿名の
+ * 洪水が、もう片方の経路の標的型失敗まで黙って消さないようにする。
  */
 function recordLoginFailed(
   authMethod: "github_oauth" | "device_flow",
@@ -108,6 +111,7 @@ function recordLoginFailed(
     audit.appendLoginFailed(
       { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
       Date.now(),
+      authMethod,
     ),
   );
 }
@@ -158,6 +162,23 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     )
     .handle("githubCallback", ({ request, query }) =>
       Effect.gen(function* () {
+        const env = yield* WorkerEnv;
+        // 発信元 IP のレート制限をハンドラ最初に置く(deepsec R7): callback は
+        // 未認証で到達でき、1 回ごとに GitHub token endpoint への交換を起こす。
+        // その枠は device exchange と**同じ** OAuth App 単位の共有クォータで、
+        // 枯渇すると全ユーザーのログインが止まる。
+        //
+        // state 検査は throttle にならない: cookie と query の二重送信のみで
+        // サーバー側に状態を持たないため、非ブラウザの発信元は両方を自分で
+        // 用意でき(githubStart を経由する必要さえない)、検査は常に通る。
+        // 状態不一致の記録(recordLoginFailed)もこの判定より後に置き、未認証
+        // 経路からの監査書き込み増幅ごと有界にする
+        const allowed = yield* ipRateLimitAllowed(env.OAUTH_CALLBACK_RATE_LIMIT, request);
+        if (!allowed) {
+          return yield* Effect.fail(
+            new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
+          );
+        }
         const expectedState = request.cookies[STATE_COOKIE];
         // §3-2: state 検証(不一致は即拒否)
         if (expectedState === undefined || !constantTimeEqual(expectedState, query.state)) {

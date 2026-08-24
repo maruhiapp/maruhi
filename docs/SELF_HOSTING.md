@@ -180,18 +180,23 @@ All three already have server-side defenses (input size caps, format pre-checks,
 a fixed window per project, and a TTL cache for JWKS).
 
 **Since 2026-08-24 the default `wrangler.jsonc` also ships per-source-IP Workers
-Rate Limiting bindings** for `/auth/device/exchange` (10 / min / IP) and the
-lease endpoint (60 / min / IP), so a default deploy now enforces these two
-limits by itself (Cloudflare's docs list no plan requirement for the binding at
-the time of writing; if your deploy rejects the `ratelimits` section, remove it —
-the server falls back to the old no-limit behavior). These bindings are
-per-colo and memory-backed (best effort):
-a distributed flood spread across colos can still exceed the nominal number, so
-the WAF rules below remain the stronger, globally-counted option — and they are
-the only option for `/auth/github/callback` (a browser navigation path where the
-worker-side binding would be redundant with the WAF anyway). Deployments that
-predate the `ratelimits` section keep the old behavior until they redeploy with
-the updated config — the server treats a missing binding as "no limit".
+Rate Limiting bindings** for all three paths in the table below — the same limits
+it recommends — so a default deploy now enforces them by itself (Cloudflare's
+docs list no plan requirement for the binding at the time of writing; if your
+deploy rejects the `ratelimits` section, remove it — the server falls back to the
+old no-limit behavior). These bindings are per-colo and memory-backed (best
+effort): a distributed flood spread across colos can still exceed the nominal
+number, so the WAF rules below remain the stronger, globally-counted option.
+Deployments that predate the `ratelimits` section keep the old behavior until
+they redeploy with the updated config — the server treats a missing binding as
+"no limit".
+
+`/auth/github/callback` gained its binding later than the other two (it was
+initially left to the WAF alone as a browser navigation path). It is not
+redundant: the callback consumes the *same* per-OAuth-App quota as device
+exchange, and its `state` check is a cookie-vs-query comparison with no
+server-side state, so a non-browser caller supplies both halves itself and always
+passes it.
 
 If legitimate traffic arrives through shared egress IPs — a large CI matrix on
 shared runners funneling many lease calls through one address, or a whole team

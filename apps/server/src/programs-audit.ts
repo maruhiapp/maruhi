@@ -28,6 +28,8 @@ export interface AuditEventsQueryInput {
   readonly beforeRowId?: string;
   readonly limit?: number;
   readonly event?: string;
+  /** event 名前空間の前置一致(AUDIT_SPEC §7 — deepsec R1)。 */
+  readonly eventPrefix?: string;
   readonly actorUserId?: string;
   readonly targetUserId?: string;
   readonly variableId?: string;
@@ -135,6 +137,7 @@ export const auditEventsProgram = (
           beforeRowId: query.beforeRowId ?? null,
           limit: resolvePageLimit(query.limit),
           event: query.event ?? null,
+          eventPrefix: query.eventPrefix ?? null,
           actorUserId: query.actorUserId ?? null,
           targetUserId: query.targetUserId ?? null,
           variableId: query.variableId ?? null,

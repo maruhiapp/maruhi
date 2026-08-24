@@ -62,12 +62,18 @@ function splitIpv6Halves(
   if (halves.length > 2) {
     return null;
   }
-  const head = parseIpv6Groups(halves[0] ?? "");
-  const tail = parseIpv6Groups(halves[1] ?? "");
+  const compressed = halves.length === 2;
+  const tailRaw = halves[1] ?? "";
+  // IPv4 埋め込みはアドレス**末尾**にしか置けない(RFC 4291 §2.2 (3))。
+  // 末尾を含む側の半分だけに許可を渡し、その中でも最後のピースに限る
+  // (deepsec R9): "1.2.3.4::" や "::ffff:1.2.3.4:0" のような形を弾く
+  const ipv4InTail = compressed && tailRaw !== "";
+  const head = parseIpv6Groups(halves[0] ?? "", !compressed);
+  const tail = parseIpv6Groups(tailRaw, ipv4InTail);
   if (head === null || tail === null) {
     return null;
   }
-  return { head, tail, compressed: halves.length === 2 };
+  return { head, tail, compressed };
 }
 
 /** 圧縮形("::")・IPv4 埋め込み末尾を展開した正規化 8 グループ(不正は null)。 */
@@ -84,11 +90,15 @@ function ipv6Groups(ip: string): string[] | null {
   return zeros >= 1 ? [...split.head, ...Array<string>(zeros).fill("0"), ...split.tail] : null;
 }
 
-/** ":" 区切りグループ列 → 16 進グループ配列(空文字列は空配列。不正は null)。 */
-function parseIpv6Groups(raw: string): string[] | null {
+/**
+ * ":" 区切りグループ列 → 16 進グループ配列(空文字列は空配列。不正は null)。
+ * `ipv4Tail` はこの半分の**最後のピース**に IPv4 埋め込みを許すかどうか。
+ */
+function parseIpv6Groups(raw: string, ipv4Tail: boolean): string[] | null {
   const groups: string[] = [];
-  for (const piece of raw === "" ? [] : raw.split(":")) {
-    const parsed = groupsOfPiece(piece);
+  const pieces = raw === "" ? [] : raw.split(":");
+  for (const [index, piece] of pieces.entries()) {
+    const parsed = groupsOfPiece(piece, ipv4Tail && index === pieces.length - 1);
     if (parsed === null) {
       return null;
     }
@@ -97,16 +107,26 @@ function parseIpv6Groups(raw: string): string[] | null {
   return groups;
 }
 
+/**
+ * 10 進 octet の厳密形(deepsec R9): 0-255 で、先頭ゼロ・空・16 進・指数表記・
+ * 空白を許さない。`Number()` の強制変換は "" → 0、"0x10" → 16、"1e2" → 100 を
+ * 通してしまい、後段の範囲検査では捕まらない(変換が先に成功しているため)。
+ */
+const DECIMAL_OCTET = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
 /** 1 ピース → 16 進グループ(IPv4 埋め込みは 2 グループ。不正は null)。 */
-function groupsOfPiece(piece: string): readonly string[] | null {
+function groupsOfPiece(piece: string, ipv4Allowed: boolean): readonly string[] | null {
   if (!piece.includes(".")) {
     return /^[0-9a-fA-F]{1,4}$/.test(piece) ? [piece.toLowerCase()] : null;
   }
-  const octets = piece.split(".").map(Number);
-  if (octets.length !== 4 || !octets.every((o) => Number.isInteger(o) && o >= 0 && o <= 255)) {
+  if (!ipv4Allowed) {
     return null;
   }
-  const [a = 0, b = 0, c = 0, d = 0] = octets;
+  const octets = piece.split(".");
+  if (octets.length !== 4 || !octets.every((octet) => DECIMAL_OCTET.test(octet))) {
+    return null;
+  }
+  const [a = 0, b = 0, c = 0, d = 0] = octets.map(Number);
   return [((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
 }
 

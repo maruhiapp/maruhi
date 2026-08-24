@@ -143,6 +143,8 @@ interface AuditEventsQuery {
   readonly beforeRowId: string | null;
   readonly limit: number;
   readonly event: string | null;
+  /** event 名前空間の前置一致(§7 — deepsec R1)。LIKE ではなく substr 比較。 */
+  readonly eventPrefix: string | null;
   readonly actorUserId: string | null;
   readonly targetUserId: string | null;
   readonly variableId: string | null;
@@ -369,6 +371,13 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
     filter("seq < ?", beforeSeq);
   }
   filter("event = ?", query.event);
+  if (query.eventPrefix !== null) {
+    // 前置一致は LIKE を使わない(deepsec R1): LIKE だと入力の % / _ が
+    // ワイルドカードとして働き、フィルタが名前空間の指定でなくなる。
+    // substr 比較は長さと値の 2 バインドだけで、特別扱いの文字を持たない
+    conditions.push("substr(event, 1, ?) = ?");
+    bindings.push(query.eventPrefix.length, query.eventPrefix);
+  }
   filter("actor_user_id = ?", query.actorUserId);
   filter("target_user_id = ?", query.targetUserId);
   filter("variable_id = ?", query.variableId);

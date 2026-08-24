@@ -228,6 +228,27 @@ const auditEventColumns = {
   payload: text("payload"),
 };
 
+/**
+ * `auth.login_failed` の記録窓カウンタ(AUDIT_SPEC §3.1 — deepsec R4/R5)。
+ *
+ * 監査行ではなく可変のカウンタ状態(§1-4 の append-only は監査テーブルの規律)。
+ * 窓内件数を監査ログの走査で求めると、append-only で伸び続けるテーブルを未認証
+ * 経路の追記ごとに走査することになり、有界にしたい洪水がコスト増幅器になる。
+ *
+ * 行の粒度 = バケット(現状 `auth_method`)。発信元識別子は**持たない**
+ * (§1-2 の線引き — 発信元単位の別枠計数を採らない理由は §3.1)。
+ */
+export const loginFailedWindows = sqliteTable("login_failed_windows", {
+  /** 計数バケット。現状は auth_method 種別名(github_oauth / device_flow) */
+  bucket: text("bucket").primaryKey(),
+  /** 固定窓の開始(unix ms) */
+  windowStart: integer("window_start").notNull(),
+  /** この窓で監査行として記録した件数(上限まで) */
+  recordedCount: integer("recorded_count").notNull().default(0),
+  /** この窓で上限により落とした件数(抑制マーカーの根拠) */
+  suppressedCount: integer("suppressed_count").notNull().default(0),
+});
+
 /** 認証系イベント(AUDIT_SPEC §3.1)。 */
 export const userAuditEvents = sqliteTable("user_audit_events", auditEventColumns, (t) => [
   uniqueIndex("uae_row_id").on(t.rowId),

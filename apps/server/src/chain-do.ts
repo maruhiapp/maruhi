@@ -104,6 +104,16 @@ export interface Env {
    */
   readonly DEVICE_EXCHANGE_RATE_LIMIT?: RateLimit;
   /**
+   * 未認証 OAuth callback の発信元 IP レート制限(deepsec R7)。callback も
+   * リクエストごとに GitHub の token endpoint を叩き、device exchange と**同じ**
+   * OAuth App 単位のクォータを消費する。state は cookie と query の二重送信
+   * (サーバー側状態なし)なので、非ブラウザの発信元は両方を自分で用意できて
+   * 検査を通せる — 頻度を縛るのはこの binding だけ。ブラウザの対話ログインは
+   * 共有 egress で束になるため、device exchange より緩い上限にする
+   * (docs/SELF_HOSTING.md の WAF 推奨値と同じ 30/min)。
+   */
+  readonly OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;
+  /**
    * lease 発行の発信元 IP レート制限(deepsec M5)。DO は名前指定で暗黙生成
    * されるため、有効な OIDC token だけで任意の project ID の DO を量産できる —
    * projectStub 到達前の request-level 制限で生成レートを有界にする。

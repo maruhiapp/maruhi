@@ -33,4 +33,31 @@ describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
     expect(rateLimitKeyOf("not:an:ip:::")).toBe("not:an:ip:::");
     expect(rateLimitKeyOf("2001:db8:1:2:3:4:5:6:7:8")).toBe("2001:db8:1:2:3:4:5:6:7:8");
   });
+
+  it("埋め込み IPv4 の octet は厳密な 10 進のみ(deepsec R9)", () => {
+    // Number() の強制変換で通っていた形。素の文字列キーへ落ちる(= 別バケット
+    // に化けたり、不正表記が正当なアドレスとして畳まれたりしない)
+    for (const malformed of [
+      "::ffff:0x1.2.3.4",
+      "::ffff:1.2.3.",
+      "::ffff:1.2.3.4.5",
+      "::ffff:1e2.2.3.4",
+      "::ffff:1.2.3. 4",
+      "::ffff:01.2.3.4",
+      "::ffff:1.2.3.256",
+      "::ffff:1.2.3.-1",
+    ]) {
+      expect(rateLimitKeyOf(malformed)).toBe(malformed);
+    }
+    // 正当な形は従来どおり畳まれる(0 と 255 の境界を含む)
+    expect(rateLimitKeyOf("::ffff:0.0.0.0")).toBe("0.0.0.0");
+    expect(rateLimitKeyOf("::ffff:255.255.255.255")).toBe("255.255.255.255");
+  });
+
+  it("IPv4 埋め込みはアドレス末尾のピースだけ(RFC 4291 §2.2 (3))", () => {
+    expect(rateLimitKeyOf("::ffff:1.2.3.4:0")).toBe("::ffff:1.2.3.4:0");
+    expect(rateLimitKeyOf("1.2.3.4::")).toBe("1.2.3.4::");
+    // 非圧縮形の末尾に置くのは正当(6 グループ + IPv4 = 8 グループ)
+    expect(rateLimitKeyOf("2001:db8:1:2:0:0:192.0.2.1")).toBe("2001:db8:1:2::/64");
+  });
 });

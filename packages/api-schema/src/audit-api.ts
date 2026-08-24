@@ -128,6 +128,12 @@ export const auditGroup = HttpApiGroup.make("audit")
       query: {
         ...pageQuery,
         event: Schema.optionalKey(EventNameFilter),
+        // event 名前空間の前置一致(AUDIT_SPEC §7 — 2026-08-24 deepsec R1)。
+        // `maruhi audit verify` が `chain.` 名前空間の**全行**を引くために要る:
+        // 既知のミラー名を完全一致で 1 つずつ引く形では、集合外の `chain.*` を
+        // 名乗る偽造行が 1 度も取得されず、検証が OK で終わる。サーバー側は
+        // LIKE ではなく substr 比較で実装する(ワイルドカード意味論を持たせない)
+        eventPrefix: Schema.optionalKey(EventNameFilter),
         // admin 未満は本人指定のみ可(他人指定は 403 — §6 の「他人が actor の
         // 行の横断検索はクラス 2」。データ非依存の静的規則なので存在情報は
         // 漏れない)
