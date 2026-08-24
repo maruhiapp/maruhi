@@ -22,8 +22,11 @@
 
 ## レビュー結果
 
-2026-08-22 の全体レビューで再検証された未修正 finding は
-[`DEEPSEC_FINDINGS_2026-08-22.md`](./DEEPSEC_FINDINGS_2026-08-22.md)で追跡する。
+再検証された未修正 finding は
+[`DEEPSEC_FINDINGS_2026-08-24.md`](./DEEPSEC_FINDINGS_2026-08-24.md)で追跡する。
+2026-08-22 の初回全体レビュー
+([`DEEPSEC_FINDINGS_2026-08-22.md`](./DEEPSEC_FINDINGS_2026-08-22.md))は
+2026-08-24 の再検証でクローズ済み。
 `.deepsec/data/` の生成レポートは gitignore 対象なので、Cloud 環境や別チャットへの
 引き継ぎにはこの文書を使う。
 
