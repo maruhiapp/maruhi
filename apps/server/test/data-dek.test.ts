@@ -1205,30 +1205,30 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
   });
 });
 
-describe("expectedWrapRecipientCount(deepsec B10)", () => {
-  const memberOf = (userId: string) =>
-    [
+const memberOf = (userId: string) =>
+  [
+    userId,
+    {
       userId,
-      {
-        userId,
-        role: "member",
-        encPubHex: "11".repeat(32),
-        sigPubHex: "22".repeat(32),
-        keyFingerprintHex: "33".repeat(16),
-      },
-    ] as const;
-  const grantOf = (fingerprintHex: string, scope: readonly string[]) =>
-    [
-      fingerprintHex,
-      {
-        serverKeyFingerprintHex: fingerprintHex,
-        serverEncPubHex: "44".repeat(32),
-        grantSeq: 1,
-        scopeEnvironmentIds: scope,
-        leasePolicy: [],
-      },
-    ] as const;
+      role: "member",
+      encPubHex: "11".repeat(32),
+      sigPubHex: "22".repeat(32),
+      keyFingerprintHex: "33".repeat(16),
+    },
+  ] as const;
+const grantOf = (fingerprintHex: string, scope: readonly string[]) =>
+  [
+    fingerprintHex,
+    {
+      serverKeyFingerprintHex: fingerprintHex,
+      serverEncPubHex: "44".repeat(32),
+      grantSeq: 1,
+      scopeEnvironmentIds: scope,
+      leasePolicy: [],
+    },
+  ] as const;
 
+describe("expectedWrapRecipientCount(deepsec B10)", () => {
   it("member user_id と in-scope サーバー鍵 FP の重複除去済み和集合で数える", () => {
     // add_member の対象 user_id は存在検証されない自由文字列(AUTH_SPEC §11-1)
     // なので、サーバー鍵 FP と同じ文字列の member が作れる。保存キーはクラスを

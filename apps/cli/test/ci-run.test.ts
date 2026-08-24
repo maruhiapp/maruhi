@@ -770,9 +770,9 @@ describe("maruhi ci run(OIDC 発行)", () => {
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("HTTP 302");
     // リダイレクト先(正規の発行パス)への再送は発生しない
-    expect(server.requests.filter((request) => request.path.startsWith("/oidc/token"))).toHaveLength(
-      0,
-    );
+    expect(
+      server.requests.filter((request) => request.path.startsWith("/oidc/token")),
+    ).toHaveLength(0);
   });
 });
 

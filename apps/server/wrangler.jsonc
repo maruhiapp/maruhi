@@ -19,7 +19,11 @@
   // period は 10 か 60 のみ。より強い保全(グローバル計数)は引き続き
   // docs/SELF_HOSTING.md の WAF ルールを推奨
   "ratelimits": [
-    { "name": "DEVICE_EXCHANGE_RATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    {
+      "name": "DEVICE_EXCHANGE_RATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 },
+    },
     { "name": "LEASE_RATE_LIMIT", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } },
   ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectChainDO"] }],

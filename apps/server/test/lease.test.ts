@@ -1198,26 +1198,25 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
   });
 });
 
+// 実在しないプロジェクト ID への連投(deepsec M5 検査用): 制限が projectStub より
+// 手前にあるため DO は生成されない。Schema(base64url + `.` の文字集合)は通し、
+// OIDC 検証段で落ちる形 — 制限判定はハンドラ内(Schema 通過後)なので、Schema で
+// 弾かれる形だとそもそも計数されない
+function rateLimitedLeaseAttempt(): Promise<Response> {
+  return SELF.fetch(`https://maruhi.test/projects/${"ab".repeat(32)}/environments/${ENV}/lease`, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "cf-connecting-ip": "198.51.100.9" },
+    body: JSON.stringify({ oidcToken: "aaaa.bbbb.cccc", ephemeralPubHex: "cd".repeat(32) }),
+  });
+}
+
 describe("ワークロードリース: 発信元 IP の request-level レート制限(deepsec M5)", () => {
   it("固定 IP からの連投は OIDC 検証・DO 生成に到達する前に 429 になる", async () => {
-    // 実在しないプロジェクト ID への連投: 制限が projectStub より手前にあるため
-    // DO は生成されない。判定は IP のみでプロジェクト状態と無関係なので、
-    // 429 の露出は存在秘匿(§11-2)を壊さない
-    const attempt = () =>
-      SELF.fetch(
-        `https://maruhi.test/projects/${"ab".repeat(32)}/environments/${ENV}/lease`,
-        {
-          method: "POST",
-          headers: { ...JSON_HEADERS, "cf-connecting-ip": "198.51.100.9" },
-          // Schema(base64url + `.` の文字集合)は通し、OIDC 検証段で落ちる形 —
-          // 制限判定はハンドラ内(Schema 通過後)なので、Schema で弾かれる形だと
-          // そもそも計数されない
-          body: JSON.stringify({ oidcToken: "aaaa.bbbb.cccc", ephemeralPubHex: "cd".repeat(32) }),
-        },
-      );
+    // 判定は IP のみでプロジェクト状態と無関係なので、429 の露出は存在秘匿
+    // (§11-2)を壊さない
     let limited: Response | null = null;
     for (let i = 0; i < 70; i += 1) {
-      const response = await attempt();
+      const response = await rateLimitedLeaseAttempt();
       if (response.status === 429) {
         limited = response;
         break;
@@ -1226,8 +1225,8 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
       expect(response.status).toBe(401);
     }
     expect(limited).not.toBeNull();
-    const body = (await limited?.json()) as { _tag: string; retryAfterSeconds: number };
-    expect(body._tag).toBe("LeaseRateLimited");
-    expect(body.retryAfterSeconds).toBeGreaterThan(0);
+    const body = (await limited?.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("LeaseRateLimited");
+    expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
   });
 });

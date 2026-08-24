@@ -88,7 +88,7 @@ export const LOGIN_FAILED_WINDOW_LIMIT = 100;
  * する。個別行と同じく actor は user_id なしの type=user(外部 provider ID・
  * IP を append-only actor に書かない — §1-2)。
  */
-export const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
+const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
 
 // ---------------------------------------------------------------------------
 // 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
