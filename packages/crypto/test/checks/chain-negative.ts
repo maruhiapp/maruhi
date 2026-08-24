@@ -760,6 +760,22 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "x" },
       },
     },
+    // 未知の op(deepsec B12): PAYLOAD_SHAPES の表引きが membership を確認せずに
+    // 呼び出すと TypeError で検証が中断する。「不正入力は invalid-payload を返し
+    // throw しない」という公開 verifier の契約(defense-in-depth)をここで固定する
+    {
+      name: "unknown op",
+      entry: { ...base, op: "self_destruct", payload: {} },
+    },
+    {
+      name: "op is a prototype property name",
+      entry: { ...base, op: "toString", payload: {} },
+    },
+    {
+      name: "op is __proto__",
+      entry: { ...base, op: "__proto__", payload: {} },
+    },
+    { name: "op missing", entry: { ...base, op: undefined, payload: {} } },
     { name: "entry slot is null", entry: null },
     { name: "entry slot is a string", entry: "not-an-entry" },
   ];

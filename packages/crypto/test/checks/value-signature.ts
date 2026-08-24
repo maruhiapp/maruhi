@@ -271,6 +271,9 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "empty suite", context: { ...baseContext, suite: "" } },
     { name: "empty project id", context: { ...baseContext, projectId: "" } },
     { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
+    // 空の variable id も他の座標と同水準で拒否する(deepsec B13 —
+    // meta-sig の "empty variable id" と同じ期待値)
+    { name: "empty variable id", context: { ...baseContext, variableId: "" } },
     { name: "empty writer", context: { ...baseContext, writerUserId: "" } },
   ];
   for (const bad of badContexts) {
