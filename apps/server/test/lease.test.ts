@@ -1214,15 +1214,17 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
   it("固定 IP からの連投は OIDC 検証・DO 生成に到達する前に 429 になる", async () => {
     // 判定は IP のみでプロジェクト状態と無関係なので、429 の露出は存在秘匿
     // (§11-2)を壊さない
+    // 窓は wall-clock 整列の固定窓: バースト中の分境界 1 回では吸収できない
+    // 2 窓 + 2 発(122 リクエスト)を上限にフレークしない形で 429 を観測する
     let limited: Response | null = null;
-    for (let i = 0; i < 70; i += 1) {
+    for (let i = 0; i < 122 && limited === null; i += 1) {
       const response = await rateLimitedLeaseAttempt();
       if (response.status === 429) {
         limited = response;
-        break;
+      } else {
+        // 制限にかかるまでは通常の認証段拒否(401 malformed-token)
+        expect(response.status).toBe(401);
       }
-      // 制限にかかるまでは通常の認証段拒否(401 malformed-token)
-      expect(response.status).toBe(401);
     }
     expect(limited).not.toBeNull();
     const body = (await limited?.json()) as Record<string, unknown>;

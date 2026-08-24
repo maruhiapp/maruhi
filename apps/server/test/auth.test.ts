@@ -232,13 +232,22 @@ describe("POST /auth/device/exchange(§4)", () => {
   });
 
   it("rate-limits exchanges per source IP before any GitHub outbound (M3/B11)", async () => {
-    const statuses: number[] = [];
-    for (let i = 0; i < 12; i += 1) {
-      statuses.push((await rateLimitedExchangeAttempt()).status);
+    // 窓は wall-clock 整列の固定窓(miniflare の simple ratelimit): バースト中に
+    // 分境界をまたぐと 1 窓ぶんの許可が増える。境界 1 回では吸収できない
+    // 2 窓 + 2 発(22 リクエスト)まで送り、フレークしない形で 429 を観測する
+    let limited: Response | null = null;
+    for (let i = 0; i < 22 && limited === null; i += 1) {
+      const response = await rateLimitedExchangeAttempt();
+      if (response.status === 429) {
+        limited = response;
+      } else {
+        // 制限前は通常の 400(github-token-invalid)
+        expect(response.status).toBe(400);
+      }
     }
-    // 上限(10/60s)以内は通常の 400(github-token-invalid)、超過分は 429
-    expect(statuses.filter((status) => status === 429).length).toBeGreaterThan(0);
-    const limited = await rateLimitedExchangeAttempt();
+    if (limited === null) {
+      throw new Error("expected a 429 within two full rate-limit windows");
+    }
     expect(limited.status).toBe(429);
     const body = (await limited.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("AuthRateLimited");

@@ -189,9 +189,10 @@ export function pollDeviceFlow(
         return yield* poll(intervalSeconds);
       }
       if (errorCode === "slow_down") {
-        // slow_down の累積も上限に丸める(B3: 際限ない後退で deadline 検査の
-        // 粒度が粗くなり続けるのを防ぐ)
-        return yield* poll(Math.min(intervalSeconds + slowDownExtra, MAX_POLL_INTERVAL_SECONDS));
+        // slow_down の累積も clampInterval で丸める(B3: 際限ない後退で deadline
+        // 検査の粒度が粗くなり続けるのを防ぐ。下限が勝つ規約も初期値と揃える —
+        // レビューループ 7)
+        return yield* poll(clampInterval(intervalSeconds + slowDownExtra, minInterval));
       }
       if (errorCode === "expired_token") {
         return yield* Effect.fail(
