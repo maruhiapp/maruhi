@@ -10,7 +10,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentProfileRef } from "../src/agent-gate.ts";
 import { runCli } from "../src/cli.ts";
 import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
-import { decodeValueText, showValues } from "../src/display.ts";
+import {
+  decodeValueText,
+  formatUtcDate,
+  formatUtcMinutes,
+  formatUtcSeconds,
+  showValues,
+} from "../src/display.ts";
 import { toCliError } from "../src/failure.ts";
 import { CliIo } from "../src/io.ts";
 import {
@@ -58,6 +64,7 @@ describe("pollDeviceFlow", () => {
         clientId: "c",
         githubBaseUrl: server.origin,
         slowDownExtraSeconds: 0.01,
+        minIntervalSeconds: 0,
         authorization: {
           deviceCode: "d",
           userCode: "u",
@@ -84,6 +91,7 @@ describe("pollDeviceFlow", () => {
       pollDeviceFlow({
         clientId: "c",
         githubBaseUrl: server.origin,
+        minIntervalSeconds: 0,
         authorization: {
           deviceCode: "d",
           userCode: "u",
@@ -161,6 +169,7 @@ describe("pollDeviceFlow", () => {
       pollDeviceFlow({
         clientId: "c",
         githubBaseUrl: server.origin,
+        minIntervalSeconds: 0,
         authorization: {
           deviceCode: "d",
           userCode: "u",
@@ -172,6 +181,113 @@ describe("pollDeviceFlow", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("authorization code expired");
+  });
+
+  it("巨大な interval / expires_in は上限に丸める(B3: 敵対的エンドポイント対策)", async () => {
+    const server = await MockServer.start([
+      onRequest("POST", "/login/device/code", () => ({
+        status: 200,
+        json: {
+          device_code: "d",
+          user_code: "U",
+          verification_uri: "https://github.example/device",
+          interval: 86_400,
+          expires_in: 10_000_000,
+        },
+      })),
+    ]);
+    servers.push(server);
+    const auth = await Effect.runPromise(
+      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
+    );
+    expect(auth.intervalSeconds).toBe(900);
+    expect(auth.expiresInSeconds).toBe(1800);
+  });
+
+  it("interval が deadline を越えるなら sleep せず即座に期限切れにする(B3)", async () => {
+    // ポーリングに一度も到達せずに失敗すべきなので、モックサーバーは不要。
+    // 巨大 interval のまま sleep すると、このテスト自体がタイムアウトする
+    const started = Date.now();
+    const exit = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: "http://127.0.0.1:9",
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: 3600,
+          expiresInSeconds: 1,
+        },
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("interval / expiresInSeconds が NaN でも deadline と待ち時間は有界(B3 レビューループ 1・2)", async () => {
+    const started = Date.now();
+    // NaN interval は下限へ倒れる(5s > 残り 0.05s → sleep せず即期限切れ)。
+    // 素通しだと NaN 比較で deadline 検査が常に偽 + sleep 即時解決 = 無間隔の
+    // 再 POST ループになる
+    const nanInterval = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: "http://127.0.0.1:9",
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: Number.NaN,
+          expiresInSeconds: 0.05,
+        },
+      }),
+    );
+    expect(Exit.isFailure(nanInterval)).toBe(true);
+    expect(JSON.stringify(nanInterval)).toContain("authorization code expired");
+    // NaN expires は既定値(900s)へ倒れる = deadline が有界。下限(テスト knob)を
+    // 残り時間より大きくすれば、sleep せず即座に期限切れになることで観測できる
+    const nanExpires = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: "http://127.0.0.1:9",
+        minIntervalSeconds: 1000,
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: Number.NaN,
+          expiresInSeconds: Number.NaN,
+        },
+      }),
+    );
+    expect(Exit.isFailure(nanExpires)).toBe(true);
+    expect(JSON.stringify(nanExpires)).toContain("authorization code expired");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("total timestamp formatters", () => {
+  it("Date 範囲外・非有限でも RangeError にせず明示表示へ劣化する(B1/B4/B5)", () => {
+    expect(formatUtcSeconds(0)).toBe("1970-01-01 00:00:00 UTC");
+    expect(formatUtcMinutes(0)).toBe("1970-01-01 00:00 UTC");
+    expect(formatUtcDate(0)).toBe("1970-01-01");
+    // Date 範囲内でも年 0〜9999 の外(toISOString が拡張年形式を返す領域)は
+    // 固定 slice が黙って別位置を切るため、明示劣化に倒す(レビューループ 1)
+    expect(formatUtcSeconds(Date.UTC(9999, 11, 31, 23, 59, 59))).toBe("9999-12-31 23:59:59 UTC");
+    for (const bad of [
+      253_402_300_800_000, // 年 10000
+      -62_167_219_200_001, // 年 -1
+      8_640_000_000_000_000,
+      -1e300,
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+    ]) {
+      expect(formatUtcSeconds(bad)).toContain("invalid timestamp");
+      expect(formatUtcMinutes(bad)).toContain("invalid timestamp");
+      expect(formatUtcDate(bad)).toContain("invalid timestamp");
+    }
   });
 });
 
@@ -500,6 +616,39 @@ describe("buildInjectionEnv", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
+  });
+
+  it("M2 で追加した POSIX / Windows の実行制御名への注入も拒否する", async () => {
+    for (const name of [
+      // POSIX: rc / 設定ディレクトリの差し替えとプロンプト評価
+      "HOME",
+      "home", // 大文字化比較(Windows の非区別)への防衛
+      "USERPROFILE",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "PROMPT_COMMAND",
+      "PS1",
+      "PS4",
+      "SHELLOPTS",
+      "BASHOPTS",
+      "NODE_REPL_EXTERNAL_MODULE",
+      "PYTHONINSPECT",
+      // Windows: 実行解決の差し替え
+      "PATHEXT",
+      "COMSPEC",
+      "SYSTEMROOT",
+      "SystemRoot",
+      "WINDIR",
+    ]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("execution-control");
+    }
+    // 包括 prefix 拒否は採らない裁定(M2)の固定: NODE_ENV 等の正当な変数は通る
+    const allowed = await Effect.runPromise(
+      buildInjectionEnv([variable("NODE_ENV", "production"), variable("BUN_INSTALL", "x")]),
+    );
+    expect(Object.keys(allowed).toSorted()).toEqual(["BUN_INSTALL", "NODE_ENV"]);
   });
 });
 

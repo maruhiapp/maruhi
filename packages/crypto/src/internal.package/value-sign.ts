@@ -110,6 +110,12 @@ function contextInvalidField(context: ValueSignatureContext): string | null {
   if (context.environmentId.length === 0) {
     return "context environmentId";
   }
+  // variable id も他の座標と同水準で非空を要求する(deepsec B13)。API schema は
+  // 空をワイヤで拒否するため外部からの forgery 経路ではないが、空の座標を署名
+  // する正当な呼び出しは存在しない(meta-sign.ts の variableId 検査と同じ規律)
+  if (context.variableId.length === 0) {
+    return "context variableId";
+  }
   if (context.writerUserId.length === 0) {
     return "context writerUserId";
   }

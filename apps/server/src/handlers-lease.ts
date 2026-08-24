@@ -24,7 +24,13 @@ import { toWireVariable } from "./data-http.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";
 import { LEASE_BINDING_RETENTION_MARGIN_MS } from "./policy.ts";
 import type { LeaseOutcome, LeaseTokenFacts } from "./programs-lease.ts";
-import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
+import {
+  IP_RATE_LIMIT_PERIOD_SECONDS,
+  ipRateLimitAllowed,
+  projectStub,
+  rpcCall,
+  WorkerEnv,
+} from "./worker-env.ts";
 
 /**
  * claims_digest(CRYPTO_SPEC §9.1)は**検証済み**トークンの issuer / sub / aud
@@ -74,7 +80,10 @@ function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
   switch (rejection.kind) {
     case "rate-limited": {
       return Effect.fail(
-        new LeaseRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
+        new LeaseRateLimitedError({
+          retryAfterSeconds: rejection.retryAfterSeconds,
+          scope: "project-window",
+        }),
       );
     }
     case "unavailable": {
@@ -93,8 +102,24 @@ function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
 }
 
 export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
-  handlers.handle("issue", ({ params, payload }) =>
+  handlers.handle("issue", ({ params, payload, request }) =>
     Effect.gen(function* () {
+      // 0. 発信元 IP の request-level レート制限(deepsec M5)。DO は名前指定で
+      // 暗黙生成されるため、有効な OIDC トークンさえあれば異なる project ID で
+      // DO(constructor がテーブルを作る)を量産できる — projectStub の手前で
+      // 生成レートを有界にする。DO 内の per-project 窓(認可後 — §11-2 の存在
+      // 秘匿のため 404 系より後)とは役割が別で、この判定はプロジェクト状態と
+      // 無関係(IP のみ)なので存在秘匿を壊さない
+      const env = yield* WorkerEnv;
+      const allowed = yield* ipRateLimitAllowed(env.LEASE_RATE_LIMIT, request);
+      if (!allowed) {
+        return yield* Effect.fail(
+          new LeaseRateLimitedError({
+            retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS,
+            scope: "source-address",
+          }),
+        );
+      }
       // 1. 認証段(§14-1): OIDC トークンの検証。チェーン導出状態は一切見ない
       const verifier = yield* OidcVerifier;
       const token = yield* verifier.verify(payload.oidcToken, Date.now());
@@ -115,7 +140,6 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
         bindingExpiresAtMs: token.expiresAtSec * 1000 + LEASE_BINDING_RETENTION_MARGIN_MS,
       };
       // 2. 認可以降は DO の 1 RPC(監査を同一 permit・同一同期ブロックで書く)
-      const env = yield* WorkerEnv;
       const outcome = yield* rpcCall<LeaseOutcome>(() =>
         projectStub(env, params.projectId).issueLease(
           params.environmentId,

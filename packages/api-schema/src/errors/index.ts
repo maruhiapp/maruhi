@@ -12,6 +12,7 @@
 export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
+  AuthRateLimitedError,
   ForbiddenError,
   ForbiddenReasonSchema,
   RecoveryRateLimitedError,
@@ -69,6 +70,7 @@ export {
 } from "./invites.ts";
 export {
   LeaseRateLimitedError,
+  LeaseRateLimitScopeSchema,
   LeaseUnauthorizedError,
   LeaseUnauthorizedReasonSchema,
   LeaseUnavailableError,

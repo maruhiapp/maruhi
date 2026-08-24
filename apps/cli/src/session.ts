@@ -67,7 +67,20 @@ export interface MasterKeys {
   readonly fingerprintHex: string;
 }
 
-const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+/**
+ * loopback ホスト名か: localhost / ::1(URL の括弧付き表記含む)/ 127.0.0.0/8 の
+ * IPv4 リテラル(DNS 名・別記法は不可)。「http を許してよいのはどこか」の
+ * 判定は CLI 内でこの 1 関数に集約する(サーバー origin — 下の
+ * normalizeHttpOrigin — と OIDC 発行 URL — oidc-github.ts — で規則が割れると、
+ * 片方だけ直した将来の変更が他方を黙って取り残す — レビューループ 10)。
+ */
+export function isLoopbackHostname(hostname: string): boolean {
+  if (hostname === "localhost" || hostname === "::1" || hostname === "[::1]") {
+    return true;
+  }
+  const match = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  return match !== null && match.slice(1).every((octet) => Number(octet) <= 255);
+}
 
 /**
  * Validates and normalizes a base URL: https anywhere, http only on loopback
@@ -100,7 +113,7 @@ export function normalizeHttpOrigin(
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return reject(`${label} must be http(s)`);
   }
-  if (url.protocol === "http:" && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
+  if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) {
     return reject(
       `http: for ${label} is only allowed on loopback (it would otherwise transmit in cleartext)`,
     );

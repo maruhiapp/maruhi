@@ -739,6 +739,51 @@ describe("maruhi ci run(OIDC 発行)", () => {
     // lease エンドポイントには到達しない
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(0);
   });
+
+  it("非 loopback の http: 発行 URL には bearer token を送らない(M1)", async () => {
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    // ルーティング不能な TEST-NET-1 アドレス: 検証が甘くても実送信は起きないが、
+    // 検証が正しければ**通信自体が発生しない**ことを応答時間と文言で固定する
+    env.setEnvVar(OIDC_REQUEST_URL_ENV, "http://192.0.2.1/oidc/token");
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https:");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('"127." で始まるだけの DNS 名は loopback 扱いしない(M1 レビューループ 1)', async () => {
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    // "127.evil.com" は 127.0.0.0/8 のリテラルではなく任意 IP へ解決できる公開
+    // DNS 名 — 接頭辞判定だと平文 http でも通ってしまう形の固定
+    env.setEnvVar(OIDC_REQUEST_URL_ENV, "http://127.evil.com/oidc/token");
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https:");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("パース不能な発行 URL も通信前に拒否する(M1)", async () => {
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    env.setEnvVar(OIDC_REQUEST_URL_ENV, "not a url");
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https:");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("発行エンドポイントの redirect には追従しない(M1: bearer の再送を塞ぐ)", async () => {
+    const { env, server } = await startCiEnv([
+      (request) =>
+        request.path.startsWith("/oidc/redirect")
+          ? { status: 302, headers: { location: `${server.origin}/oidc/token` }, json: {} }
+          : null,
+      leaseHandler(),
+    ]);
+    env.setEnvVar(OIDC_REQUEST_URL_ENV, `${server.origin}/oidc/redirect`);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("HTTP 302");
+    // リダイレクト先(正規の発行パス)への再送は発生しない
+    expect(
+      server.requests.filter((request) => request.path.startsWith("/oidc/token")),
+    ).toHaveLength(0);
+  });
 });
 
 /* -------------------------------------------------------------------------- */

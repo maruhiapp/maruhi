@@ -1197,3 +1197,51 @@ describe("ワークロードリース: 先着束縛(§14-1 — 2026-08-15 裁定
     expect(await replay.json()).toMatchObject({ reason: "token-replayed" });
   });
 });
+
+// 実在しないプロジェクト ID への連投(deepsec M5 検査用): 制限が projectStub より
+// 手前にあるため DO は生成されない。Schema(base64url + `.` の文字集合)は通し、
+// OIDC 検証段で落ちる形 — 制限判定はハンドラ内(Schema 通過後)なので、Schema で
+// 弾かれる形だとそもそも計数されない
+function rateLimitedLeaseAttempt(): Promise<Response> {
+  return SELF.fetch(`https://maruhi.test/projects/${"ab".repeat(32)}/environments/${ENV}/lease`, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "cf-connecting-ip": "198.51.100.9" },
+    body: JSON.stringify({ oidcToken: "aaaa.bbbb.cccc", ephemeralPubHex: "cd".repeat(32) }),
+  });
+}
+
+describe("ワークロードリース: 発信元 IP の request-level レート制限(deepsec M5)", () => {
+  it("固定 IP からの連投は OIDC 検証・DO 生成に到達する前に 429 になる", async () => {
+    // 判定は IP のみでプロジェクト状態と無関係なので、429 の露出は存在秘匿
+    // (§11-2)を壊さない
+    // 窓は wall-clock 整列の固定窓(60/60s): 逐次送信だと遅いランナーでは
+    // 1 窓に 61 発が収まらずフレークする。並列バーストで 2 窓 + 2 発
+    // (124 リクエスト)を数秒に収める — 分境界がバースト中に落ちても、
+    // どちらかの窓が必ず 62 発を受けて 429 を返す
+    const responses: Response[] = [];
+    for (let batch = 0; batch < 4; batch += 1) {
+      responses.push(
+        ...(await Promise.all(Array.from({ length: 31 }, () => rateLimitedLeaseAttempt()))),
+      );
+    }
+    let limited: Response | null = null;
+    for (const response of responses) {
+      if (response.status === 429 && limited === null) {
+        limited = response;
+      } else if (response.status !== 429) {
+        // 制限にかからない分は通常の認証段拒否(401 malformed-token)
+        expect(response.status).toBe(401);
+      }
+    }
+    expect(limited).not.toBeNull();
+    // RFC 9110 の Retry-After ヘッダーも運ぶ(maruhi CLI 以外のクライアントの
+    // バックオフ材料 — index.ts の withRetryAfterHeader)
+    expect(limited?.headers.get("retry-after")).toMatch(/^\d+$/);
+    const body = (await limited?.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("LeaseRateLimited");
+    expect(body["scope"]).toBe("source-address");
+    expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
+    // 124 リクエストのバーストはスイート全体の負荷次第で既定 15s を越える
+    // (実測 — フルスイート実行時)。ハング検出の有界性は保ったまま延長する
+  }, 60_000);
+});

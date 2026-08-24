@@ -245,6 +245,15 @@ const PAYLOAD_SHAPES: {
 };
 
 function operationShapeOk(entry: ChainEntry): boolean {
+  // 未知の op は表引きの**前**に membership で拒否する(deepsec B12): TS 型は
+  // op の網羅を主張するが、入力はサーバー配布 JSON のキャストであり乖離しうる。
+  // 確認せずに PAYLOAD_SHAPES[entry.op] を呼ぶと TypeError となり、「不正入力は
+  // invalid-payload を返し throw しない」という公開 verifier の契約に反する。
+  // Object.hasOwn は "__proto__" / "toString" 等のプロトタイプ由来の名前も
+  // 自有プロパティでないとして正しく拒否する
+  if (typeof entry.op !== "string" || !Object.hasOwn(PAYLOAD_SHAPES, entry.op)) {
+    return false;
+  }
   return PAYLOAD_SHAPES[entry.op](entry.payload as never);
 }
 

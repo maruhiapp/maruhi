@@ -3,6 +3,7 @@
 // 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
 
 import type { TokenScope } from "@maruhi/core";
+import type { ChainState } from "@maruhi/crypto";
 import {
   computeServerKeyFingerprint,
   decryptVariable,
@@ -16,6 +17,7 @@ import {
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "../src/policy.ts";
 import { deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
@@ -1200,5 +1202,56 @@ describe("受信者クラス server(AUTH_SPEC §12-6 / CRYPTO_SPEC §9 — 2026-
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
     );
     expect(deleted[0]?.["n"]).toBe(0);
+  });
+});
+
+const memberOf = (userId: string) =>
+  [
+    userId,
+    {
+      userId,
+      role: "member",
+      encPubHex: "11".repeat(32),
+      sigPubHex: "22".repeat(32),
+      keyFingerprintHex: "33".repeat(16),
+    },
+  ] as const;
+const grantOf = (fingerprintHex: string, scope: readonly string[]) =>
+  [
+    fingerprintHex,
+    {
+      serverKeyFingerprintHex: fingerprintHex,
+      serverEncPubHex: "44".repeat(32),
+      grantSeq: 1,
+      scopeEnvironmentIds: scope,
+      leasePolicy: [],
+    },
+  ] as const;
+
+describe("expectedWrapRecipientCount(deepsec B10)", () => {
+  it("member user_id と in-scope サーバー鍵 FP の重複除去済み和集合で数える", () => {
+    // add_member の対象 user_id は存在検証されない自由文字列(AUTH_SPEC §11-1)
+    // なので、サーバー鍵 FP と同じ文字列の member が作れる。保存キーはクラスを
+    // 含まないため、この 2 受信者は 1 スロット — 期待数もクラス別の単純和でなく
+    // 和集合で数えないと、環境作成・ローテーションの完全集合検査が恒久に失敗する
+    const collidingFp = "ab".repeat(16);
+    const otherFp = "cd".repeat(16);
+    const state: ChainState = {
+      members: new Map([memberOf("user-1"), memberOf(collidingFp)]),
+      serverGrants: new Map([
+        grantOf(collidingFp, ["env-a"]),
+        grantOf(otherFp, ["env-a", "env-b"]),
+      ]),
+      environments: new Map(),
+      headSeq: 1,
+      headHashHex: "00".repeat(32),
+    };
+    // env-a: {user-1, collidingFp, otherFp} — collidingFp は member と grant の
+    // 双方に現れるが 1 と数える(単純和なら 4 で、受理不能な期待数になる)
+    expect(expectedWrapRecipientCount(state, "env-a")).toBe(3);
+    // env-b: in-scope な grant は otherFp のみ
+    expect(expectedWrapRecipientCount(state, "env-b")).toBe(3);
+    // スコープ外の環境は member のみ
+    expect(expectedWrapRecipientCount(state, "env-c")).toBe(2);
   });
 });

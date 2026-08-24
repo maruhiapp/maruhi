@@ -21,6 +21,7 @@ import { Effect, Redacted } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
+import { isLoopbackHostname } from "./session.ts";
 
 /** GitHub Actions ランナーが供給する OIDC 発行エンドポイントの環境変数。 */
 export const OIDC_REQUEST_URL_ENV = "ACTIONS_ID_TOKEN_REQUEST_URL";
@@ -50,6 +51,30 @@ function readIssuanceEndpoint(io: {
   return { requestUrl, requestToken };
 }
 
+/**
+ * 発行エンドポイント URL の検証(M1)と audience パラメータの付与。`https:`
+ * 以外・埋め込み資格情報・パース不能は null(呼び出し元が型付きエラーにする)。
+ */
+function validatedIssuanceUrl(requestUrl: string, audience: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  // `http:` は loopback のみ許す(テスト・ローカルモック用 — 平文がネットワークを
+  // 渡らない)。それ以外は `https:` 必須。loopback 判定は CLI 共通の
+  // isLoopbackHostname(session.ts)— IPv4 リテラル厳密検査で "127.evil.com" の
+  // ような公開 DNS 名は通らない(レビューループ 1)
+  const schemeOk =
+    url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname));
+  if (!schemeOk || url.username !== "" || url.password !== "") {
+    return null;
+  }
+  url.searchParams.set("audience", audience);
+  return url.toString();
+}
+
 /** 発行エンドポイント応答(`{ value }`)からのトークン取り出し。 */
 function tokenOfIssuanceBody(body: unknown): string | null {
   const value =
@@ -75,12 +100,26 @@ export function fetchGitHubOidcToken(
     if (endpoint === null) {
       return yield* Effect.fail(cliError(OIDC_ENV_MISSING_MESSAGE));
     }
-    const separator = endpoint.requestUrl.includes("?") ? "&" : "?";
-    const url = `${endpoint.requestUrl}${separator}audience=${encodeURIComponent(audience)}`;
+    // ランナートークン(bearer 資格情報)を送る前に URL を検証する(deepsec M1):
+    // `https:` 以外(平文 http・独自スキーム)と埋め込み資格情報を拒否する。
+    // ホストは固定しない — GitHub Hosted Runner のホストは固定名でなく、GHES は
+    // 任意ホストであるため、許可リストは正当な実行を壊すだけで攻撃(環境変数を
+    // 差し替えられる立場 = 既にジョブ定義を書ける立場)を増やさない
+    const url = validatedIssuanceUrl(endpoint.requestUrl, audience);
+    if (url === null) {
+      return yield* Effect.fail(
+        cliError(
+          "ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https: URL, so the runner's bearer token will not be sent to it (check the runner environment)",
+        ),
+      );
+    }
     const body = yield* Effect.tryPromise({
       try: async () => {
+        // redirect は追従しない(M1): 既定の follow は bearer ヘッダー付きの
+        // リクエストをリダイレクト先へ再送しうる。3xx は !ok として失敗に落ちる
         const response = await fetch(url, {
           method: "GET",
+          redirect: "manual",
           headers: {
             accept: "application/json",
             authorization: `Bearer ${endpoint.requestToken}`,

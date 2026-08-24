@@ -159,6 +159,23 @@ describe("Web OAuth ログイン(§3.1)", () => {
       "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
     ).first<{ n: number }>();
     expect(capped?.n).toBe(LOGIN_FAILED_WINDOW_LIMIT);
+    // 抑制は黙って行わない(deepsec M4): 上限到達の窓には集約マーカーが 1 行
+    // 残り、繰り返しの抑制でもマーカーは増えない(窓あたり 1 行)
+    const suppressedOnce = await env.DB.prepare(
+      "SELECT COUNT(*) AS n, MAX(actor_user_id) AS actor FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
+    ).first<{ n: number; actor: string | null }>();
+    expect(suppressedOnce?.n).toBe(1);
+    // actor は個別行と同じく user_id なし(外部 ID・IP を書かない — §1-2)
+    expect(suppressedOnce?.actor).toBeNull();
+    const blockedAgain = await SELF.fetch(
+      `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
+      { redirect: "manual" },
+    );
+    expect(blockedAgain.status).toBe(400);
+    const suppressedStill = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
+    ).first<{ n: number }>();
+    expect(suppressedStill?.n).toBe(1);
 
     // 窓の外へ出た行は数えない = 記録が再開する
     await env.DB.prepare("UPDATE user_audit_events SET server_ts = ?")

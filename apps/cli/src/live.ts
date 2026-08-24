@@ -37,10 +37,26 @@ const keychainUnavailable = () =>
 // プロンプト(ユーザー操作)を待つ余地を残しつつ、ハングは案内エラーに落とす
 const KEYCHAIN_TIMEOUT = Duration.seconds(30);
 
-function keychainOp<T>(run: () => Promise<T>): Effect.Effect<T, ReturnType<typeof cliError>> {
+// 変更系タイムアウト専用の文言(deepsec B6): Effect の timeout は進行中の
+// Bun.secrets.set / delete の Promise を取り消せないため、CLI が失敗を報告した
+// **後に**変更が完了しうる(set は次回実行時の上書きガード、delete は「まだ
+// あるはず」の鍵の消失)。「完了した可能性がある」ことと確認・復旧手順を明示する
+const keychainWriteTimedOut = () =>
+  cliError(
+    `Writing to the OS keychain timed out. The write cannot be cancelled and may still complete in the background — if a later command reports that a key or token already exists, that write did land. Check the stored state with \`maruhi key show\`, and remove a stale entry via your OS keychain manager (service: ${KEYCHAIN_SERVICE}) before retrying. maruhi does not fall back to plaintext files`,
+  );
+const keychainRemoveTimedOut = () =>
+  cliError(
+    `Removing from the OS keychain timed out. The removal cannot be cancelled and may still complete in the background — the entry may be gone even though this command failed. Check the stored state with \`maruhi key show\` (or your OS keychain manager, service: ${KEYCHAIN_SERVICE}) before retrying`,
+  );
+
+function keychainOp<T>(
+  run: () => Promise<T>,
+  onTimeout: () => ReturnType<typeof cliError> = keychainUnavailable,
+): Effect.Effect<T, ReturnType<typeof cliError>> {
   return Effect.tryPromise({ try: run, catch: keychainUnavailable }).pipe(
     Effect.timeout(KEYCHAIN_TIMEOUT),
-    Effect.catchTag("TimeoutError", () => Effect.fail(keychainUnavailable())),
+    Effect.catchTag("TimeoutError", () => Effect.fail(onTimeout())),
   );
 }
 
@@ -48,11 +64,14 @@ function makeBunKeychain(): KeychainShape {
   return {
     get: (name) => keychainOp(() => Bun.secrets.get({ service: KEYCHAIN_SERVICE, name })),
     set: (name, value) =>
-      keychainOp(() => Bun.secrets.set({ service: KEYCHAIN_SERVICE, name, value })),
+      keychainOp(
+        () => Bun.secrets.set({ service: KEYCHAIN_SERVICE, name, value }),
+        keychainWriteTimedOut,
+      ),
     remove: (name) =>
       keychainOp(async () => {
         await Bun.secrets.delete({ service: KEYCHAIN_SERVICE, name });
-      }),
+      }, keychainRemoveTimedOut),
   };
 }
 

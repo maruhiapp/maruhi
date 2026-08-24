@@ -66,6 +66,37 @@ export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInp
   return db.insert(userAuditEvents).values(rowOf(event, serverTs));
 }
 
+/**
+ * `changes() = 1` ガード付き INSERT…SELECT(AUDIT_SPEC §5.2 — 直前の条件付き
+ * UPDATE が効いたときだけ監査行を挿入する)用の共有選択列。rowOf と同じ列写像の
+ * SELECT 版 — 呼び出し側(invites の CAS・recovery の取得計数)が列リストを
+ * 個別に書き写すと、行形状の変更時に黙って食い違う(レビューループ 2)。
+ * FROM・WHERE(ガード条件)と追加列(invites の project_id)は呼び出し側が持つ。
+ */
+export function guardedAuditSelectColumns(input: {
+  readonly event: string;
+  readonly actor: D1AuditActor;
+  readonly nowMs: number;
+  readonly targetUserId?: string | null;
+  readonly payload?: Readonly<Record<string, unknown>>;
+}) {
+  const payload = auditPayloadWith(input.actor, input.payload);
+  return {
+    // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。ガード付き挿入は高々 1 行なので、
+    // 文の構築時に採番した定数で足りる
+    rowId: sql<string>`${randomHex(16)}`.as("row_id"),
+    serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
+    event: sql<string>`${input.event}`.as("event"),
+    actorType: sql<string>`'user'`.as("actor_type"),
+    actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
+    actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as("actor_api_token_id"),
+    targetUserId: sql<string | null>`${input.targetUserId ?? null}`.as("target_user_id"),
+    payload: sql<string | null>`${
+      Object.keys(payload).length === 0 ? null : JSON.stringify(payload)
+    }`.as("payload"),
+  };
+}
+
 /** org 系イベント(§3.2)の挿入文。リポジトリの batch に同梱する。 */
 export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInput) {
   return db.insert(orgAuditEvents).values(rowOf(event, serverTs));
@@ -80,6 +111,15 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
  */
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
+
+/**
+ * 上限到達の窓に 1 行だけ残す集約マーカー(deepsec M4 / AUDIT_SPEC §3.1)。
+ * 全体上限は全 actor で共有されるため、匿名の失敗洪水が枠を使い切ると後続の
+ * 標的型失敗が黙って記録されなくなる — 抑制が**起きたこと自体**を監査可能に
+ * する。個別行と同じく actor は user_id なしの type=user(外部 provider ID・
+ * IP を append-only actor に書かない — §1-2)。
+ */
+const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
 
 // ---------------------------------------------------------------------------
 // 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
@@ -176,12 +216,28 @@ type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
  * (§1-4 の append-only は内容の不変性 — row_id はサーバー採番の合成識別子で、
  * この補填は §5.1 backfill の繰り延べにすぎない)。randomblob は行ごとに評価
  * され、WHERE row_id IS NULL は一意索引の NULL エントリを seek する。
+ *
+ * 更新対象は**このページで観測した seq に限定する**(deepsec B8): テーブル全体の
+ * NULL 行を触ると、1 回の読み取りが無関係テナントの行まで UPDATE し、並行 reader
+ * や(ロールバック中の)旧 worker の並行挿入と衝突する。観測 seq への限定で
+ * 1 読み取りあたりの書き込みは高々ページサイズに有界になる。
  */
-async function backfillMissingRowIds(db: Db, table: D1AuditTable): Promise<void> {
-  await db
-    .update(table)
-    .set({ rowId: sql`lower(hex(randomblob(16)))` })
-    .where(isNull(table.rowId));
+async function backfillMissingRowIds(
+  db: Db,
+  table: D1AuditTable,
+  seqs: readonly number[],
+): Promise<void> {
+  // D1 の 1 クエリあたりバインドパラメータ上限(100)より下で分割する: ページ
+  // 上限は 200 で、全行 NULL の legacy ページでは inArray が seq ごとに 1
+  // パラメータを束縛する — 分割しないと、まさに補填が要るページの読み取りが
+  // 決定的に失敗する(レビューループ 3)
+  const CHUNK = 90;
+  for (let offset = 0; offset < seqs.length; offset += CHUNK) {
+    await db
+      .update(table)
+      .set({ rowId: sql`lower(hex(randomblob(16)))` })
+      .where(and(isNull(table.rowId), inArray(table.seq, seqs.slice(offset, offset + CHUNK))));
+  }
 }
 
 /** selectAuditPage の生 1 回分の読み(rowId は補填前なら NULL がありうる)。 */
@@ -247,8 +303,9 @@ async function selectAuditPage(
   page: D1AuditReadPage,
 ): Promise<readonly D1StoredAuditEventRow[]> {
   let rows = await readAuditPageRows(db, table, predicate, page);
-  if (rows.some((row) => row.rowId === null)) {
-    await backfillMissingRowIds(db, table);
+  const missingSeqs = rows.filter((row) => row.rowId === null).map((row) => row.seq);
+  if (missingSeqs.length > 0) {
+    await backfillMissingRowIds(db, table, missingSeqs);
     rows = await readAuditPageRows(db, table, predicate, page);
   }
   return rows.map((row) => ({
@@ -269,17 +326,38 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
       }),
     appendLoginFailed: (event, serverTs) =>
       Effect.promise(async () => {
+        // 個別行の計数と抑制マーカーの有無は**同じ 1 クエリ**の条件付き集計で
+        // 読む(レビューループ 2): 上限到達 = 洪水中こそが常態の経路なので、
+        // クエリを 2 本に増やすと防ぎたい読み増幅を自分で作ることになる
         const row = await db
-          .select({ n: count() })
+          .select({
+            failures: count(
+              sql`case when ${userAuditEvents.event} = 'auth.login_failed' then 1 end`,
+            ),
+            markers: count(
+              sql`case when ${userAuditEvents.event} = ${LOGIN_FAILED_SUPPRESSED_EVENT} then 1 end`,
+            ),
+          })
           .from(userAuditEvents)
           .where(
             and(
-              eq(userAuditEvents.event, "auth.login_failed"),
+              inArray(userAuditEvents.event, ["auth.login_failed", LOGIN_FAILED_SUPPRESSED_EVENT]),
               gte(userAuditEvents.serverTs, serverTs - LOGIN_FAILED_WINDOW_MS),
             ),
           )
           .get();
-        if ((row?.n ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
+        if ((row?.failures ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
+          // 個別行は落とすが、抑制を黙って行わない(deepsec M4): 窓内にまだ
+          // マーカーが無ければ auth.login_failed_suppressed を 1 行残す。読み →
+          // 書きの 2 文なので並行時に僅かに重複しうるベストエフォート(本体の
+          // 計数と同じ性質 — マーカー自体の書き込みも窓あたり定数件に有界)
+          if ((row?.markers ?? 0) === 0) {
+            await userAuditInsert(db, serverTs, {
+              event: LOGIN_FAILED_SUPPRESSED_EVENT,
+              actor: {},
+              payload: { windowMs: LOGIN_FAILED_WINDOW_MS, limit: LOGIN_FAILED_WINDOW_LIMIT },
+            });
+          }
           return;
         }
         await userAuditInsert(db, serverTs, event);

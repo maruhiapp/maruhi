@@ -36,6 +36,8 @@ export interface MockResponse {
   readonly json?: unknown;
   readonly bodyText?: string;
   readonly contentType?: string;
+  /** 追加ヘッダー(redirect の Location 等)。content-type は専用フィールドで。 */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** Returns a response to serve, or null to let the next handler try. */
@@ -68,6 +70,7 @@ function parseBody(raw: string, contentType: string): unknown {
 function writeResponse(response: ResponseWriter, result: MockResponse): void {
   const payload = result.json !== undefined ? JSON.stringify(result.json) : (result.bodyText ?? "");
   response.writeHead(result.status, {
+    ...result.headers,
     "content-type":
       result.contentType ?? (result.json !== undefined ? "application/json" : "text/plain"),
   });

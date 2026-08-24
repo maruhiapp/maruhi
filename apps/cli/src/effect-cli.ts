@@ -76,7 +76,13 @@ import {
 import { ciRunOp } from "./ci-run.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
-import { asConfigKey, CONFIG_KEYS, type ConfigKey, ConfigStore } from "./config.ts";
+import {
+  asConfigKey,
+  CONFIG_KEYS,
+  ConfigFileCorruptError,
+  type ConfigKey,
+  ConfigStore,
+} from "./config.ts";
 import type { CliServices, CommonFlags } from "./context.ts";
 import {
   checkInviteAnchor,
@@ -1954,15 +1960,20 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const configKey = yield* requireConfigKey(values.key);
       // 壊れた設定ファイルは set で作り直せるようにする(非機密のみの
       // ファイルなので破棄してよい — CLI 内から復旧不能にしない)。
-      // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す
+      // ただし既存設定の喪失を伴うため、無言では飲まず警告を出す。
+      // 作り直してよいのは**内容の破損**のみ(deepsec B2): 読み取り自体の失敗
+      // (EACCES / EISDIR / EIO 等)は読めなかっただけの既存設定を黙って
+      // 置換することになるため、そのまま失敗させる
       const config = yield* store.load.pipe(
         Effect.catch((error) =>
-          Effect.gen(function* () {
-            yield* io.logError(
-              `Warning: ${toCliError(error).message} — discarding the existing config and recreating it with only this key`,
-            );
-            return {};
-          }),
+          error instanceof ConfigFileCorruptError
+            ? Effect.gen(function* () {
+                yield* io.logError(
+                  `Warning: ${toCliError(error).message} — discarding the existing config and recreating it with only this key`,
+                );
+                return {};
+              })
+            : Effect.fail(error),
         ),
       );
       yield* store.save({ ...config, [configKey]: values.value });

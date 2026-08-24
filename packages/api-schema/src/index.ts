@@ -90,6 +90,7 @@ export {
 export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
+  AuthRateLimitedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -115,6 +116,7 @@ export {
   InviteRateLimitedError,
   InviteSignatureInvalidError,
   LeaseRateLimitedError,
+  LeaseRateLimitScopeSchema,
   LeaseUnauthorizedError,
   LeaseUnauthorizedReasonSchema,
   LeaseUnavailableError,

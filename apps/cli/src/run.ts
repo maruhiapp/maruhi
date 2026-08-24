@@ -36,6 +36,7 @@ const DENIED_ENV_NAMES = new Set([
   "NODE_PATH",
   "NODE_EXTRA_CA_CERTS",
   "NODE_TLS_REJECT_UNAUTHORIZED",
+  "NODE_REPL_EXTERNAL_MODULE",
   "SSLKEYLOGFILE",
   "BUN_OPTIONS",
   "BASH_ENV",
@@ -43,9 +44,25 @@ const DENIED_ENV_NAMES = new Set([
   "IFS",
   "SHELL",
   "ZDOTDIR",
+  // rc ファイル・設定ディレクトリの参照先を差し替えられる名前(deepsec M2):
+  // HOME を差し替えると bash / zsh / 各種ツールが攻撃者パスの rc・設定を読む
+  "HOME",
+  "USERPROFILE",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  // プロンプト評価でコマンド実行になる bash/zsh の変数(M2)。PS1 / PS4 も
+  // コマンド置換・xtrace(SHELLOPTS=xtrace + PS4)経由で実行制御になる
+  "PROMPT_COMMAND",
+  "PS0",
+  "PS1",
+  "PS4",
+  "SHELLOPTS",
+  "BASHOPTS",
   "PYTHONSTARTUP",
   "PYTHONPATH",
   "PYTHONHOME",
+  // 対話モード強制(M2): 子プロセス終了後に REPL が開き、後続入力を実行する
+  "PYTHONINSPECT",
   "PERL5OPT",
   "PERL5LIB",
   "PERLLIB",
@@ -55,7 +72,16 @@ const DENIED_ENV_NAMES = new Set([
   "_JAVA_OPTIONS",
   "CLASSPATH",
   "GCONV_PATH",
+  // Windows の実行解決(M2): PATHEXT は拡張子探索、COMSPEC はシェル本体、
+  // SYSTEMROOT / WINDIR はシステム DLL・実行体の解決基準を差し替えられる
+  "PATHEXT",
+  "COMSPEC",
+  "SYSTEMROOT",
+  "WINDIR",
 ]);
+// NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない(M2 の要検討事項の裁定):
+// NODE_ENV / PYTHONDONTWRITEBYTECODE 等、実行制御でない正当な変数を大量に
+// 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す
 const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_"];
 
 function isDeniedEnvName(name: string): boolean {

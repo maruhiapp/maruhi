@@ -196,6 +196,17 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
   });
 });
 
+// CF-Connecting-IP は本番エッジが上書き付与するヘッダー。テストでは明示して
+// 発信元を固定する(不在の直接到達は帰属不能として制限対象外 — 他テストが
+// ヘッダーなしで交換を繰り返せるのはそのため)
+function rateLimitedExchangeAttempt(): Promise<Response> {
+  return SELF.fetch(`${BASE}/auth/device/exchange`, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.7" },
+    body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
+  });
+}
+
 describe("POST /auth/device/exchange(§4)", () => {
   it("verifies the GitHub token and issues a maruhi_pat_ token usable as Bearer auth", async () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
@@ -218,6 +229,37 @@ describe("POST /auth/device/exchange(§4)", () => {
     const meBody = (await me.json()) as { userId: string; orgs: readonly { role: string }[] };
     expect(meBody.userId).toBe(body.userId);
     expect(meBody.orgs.map((org) => org.role)).toEqual(["owner"]);
+  });
+
+  it("rate-limits exchanges per source IP before any GitHub outbound (M3/B11)", async () => {
+    // 窓は wall-clock 整列の固定窓(miniflare の simple ratelimit): バースト中に
+    // 分境界をまたぐと 1 窓ぶんの許可が増える。境界 1 回では吸収できない
+    // 2 窓 + 2 発(22 リクエスト)まで送り、フレークしない形で 429 を観測する
+    let limited: Response | null = null;
+    for (let i = 0; i < 22 && limited === null; i += 1) {
+      const response = await rateLimitedExchangeAttempt();
+      if (response.status === 429) {
+        limited = response;
+      } else {
+        // 制限前は通常の 400(github-token-invalid)
+        expect(response.status).toBe(400);
+      }
+    }
+    if (limited === null) {
+      throw new Error("expected a 429 within two full rate-limit windows");
+    }
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+    const body = (await limited.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("AuthRateLimited");
+    expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
+    // 別 IP は独立に数えられる(帰属単位の固定)
+    const other = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.8" },
+      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
+    });
+    expect(other.status).toBe(400);
   });
 
   it("rejects an invalid GitHub token with 400 (github-token-invalid)", async () => {

@@ -13,6 +13,23 @@
   "durable_objects": {
     "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
   },
+  // 発信元 IP 単位の best-effort レート制限(deepsec M3/B11/M5)。全プランで
+  // 使える per-colo のメモリベース制限で、既定デプロイでも未認証の高コスト面
+  // (device exchange の GitHub 呼び出し・lease の DO 生成)を有界にする。
+  // period は 10 か 60 のみで、変更時は src/worker-env.ts の
+  // IP_RATE_LIMIT_PERIOD_SECONDS(429 の retryAfterSeconds)も揃えること。
+  // 値は docs/SELF_HOSTING.md の WAF 推奨値と同一。共有 egress(オフィス NAT・
+  // 共有ランナー)配下で正当なトラフィックが 429 になる場合は limit を上げる
+  // (per-colo 計数なので実効上限は名目より緩い)。より強い保全(グローバル
+  // 計数)は引き続き同ドキュメントの WAF ルールを推奨
+  "ratelimits": [
+    {
+      "name": "DEVICE_EXCHANGE_RATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 },
+    },
+    { "name": "LEASE_RATE_LIMIT", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } },
+  ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectChainDO"] }],
   "d1_databases": [
     {

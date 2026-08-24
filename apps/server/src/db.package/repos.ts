@@ -9,8 +9,8 @@
 //   必要な getOrCreateUser(§1-5)が成立しない。D1 の atomic batch を使う
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
-import { auditPayloadWith, parseTokenScopes } from "@maruhi/core";
-import { and, count, eq, gt, gte, inArray, isNull, lte, min, ne, sql } from "drizzle-orm";
+import { parseTokenScopes } from "@maruhi/core";
+import { and, count, eq, gt, gte, inArray, isNull, lt, lte, min, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -23,7 +23,7 @@ import type {
   UserOrg,
   VerifiedIdentity,
 } from "../auth-domain.ts";
-import { randomHex, ulid } from "../ids.ts";
+import { ulid } from "../ids.ts";
 import type {
   InvitationRecord,
   InviteAcceptInput,
@@ -33,7 +33,13 @@ import type {
   InviteStatus,
 } from "../invite-domain.ts";
 import type { D1AuditActor } from "./audit.ts";
-import { D1AuditRepo, makeD1AuditRepo, orgAuditInsert, userAuditInsert } from "./audit.ts";
+import {
+  D1AuditRepo,
+  guardedAuditSelectColumns,
+  makeD1AuditRepo,
+  orgAuditInsert,
+  userAuditInsert,
+} from "./audit.ts";
 import {
   apiTokens,
   invitations,
@@ -44,6 +50,7 @@ import {
   projects,
   recoveryWraps,
   sessions,
+  userAuditEvents,
   users,
 } from "./schema.ts";
 
@@ -576,6 +583,45 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
       }),
     recordFetch: (userId, nowMs, actor) =>
       run(async () => {
+        // 取得計数は**単一の条件付き相対 UPDATE**で行う(deepsec B9): 従来の
+        // 読み → 書き 2 段は並行リクエストが同じ count を読み、複数成功しても
+        // 計数が 1 しか進まなかった。窓のリセット / 加算 / 上限判定を 1 文の
+        // CASE / WHERE に畳み、更新できた(= RETURNING が 1 行)ことを許可の
+        // 定義にする。auth.recovery_blob_fetched は invites の CAS と同じ
+        // changes() = 1 ガードの INSERT…SELECT を同一 batch に同梱し、許可された
+        // 取得と 1:1 のまま原子的に記録する(AUDIT_SPEC §5.2)
+        const windowExpired = sql`${recoveryWraps.fetchWindowStart} is null or ${nowMs} - ${recoveryWraps.fetchWindowStart} >= ${RECOVERY_FETCH_WINDOW_MS}`;
+        const results = await db.batch([
+          db
+            .update(recoveryWraps)
+            .set({
+              fetchWindowStart: sql`case when ${windowExpired} then ${nowMs} else ${recoveryWraps.fetchWindowStart} end`,
+              fetchCount: sql`case when ${windowExpired} then 1 else ${recoveryWraps.fetchCount} + 1 end`,
+            })
+            .where(
+              and(
+                eq(recoveryWraps.userId, userId),
+                or(sql`(${windowExpired})`, lt(recoveryWraps.fetchCount, RECOVERY_FETCH_LIMIT)),
+              ),
+            )
+            .returning({ fetchCount: recoveryWraps.fetchCount }),
+          db.insert(userAuditEvents).select(
+            db
+              .select(
+                guardedAuditSelectColumns({
+                  event: "auth.recovery_blob_fetched",
+                  actor,
+                  nowMs,
+                }),
+              )
+              .from(recoveryWraps)
+              .where(and(eq(recoveryWraps.userId, userId), sql`changes() = 1`)),
+          ),
+        ]);
+        if (results[0].length === 1) {
+          return { allowed: true } as const;
+        }
+        // 0 行 = 対象行が無い(未登録 — 上位が 404 を導出する)か、窓内で上限到達
         const row = await db
           .select({
             fetchWindowStart: recoveryWraps.fetchWindowStart,
@@ -587,38 +633,24 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
         if (row === undefined) {
           return { allowed: true } as const;
         }
-        const fetchedEvent = userAuditInsert(db, nowMs, {
-          event: "auth.recovery_blob_fetched",
-          actor,
-        });
         const windowStart = row.fetchWindowStart;
-        const windowExpired =
-          windowStart === null || nowMs - windowStart >= RECOVERY_FETCH_WINDOW_MS;
-        if (windowExpired) {
-          await db.batch([
-            db
-              .update(recoveryWraps)
-              .set({ fetchWindowStart: nowMs, fetchCount: 1 })
-              .where(eq(recoveryWraps.userId, userId)),
-            fetchedEvent,
-          ]);
-          return { allowed: true } as const;
-        }
-        if (row.fetchCount >= RECOVERY_FETCH_LIMIT) {
+        if (
+          windowStart !== null &&
+          nowMs - windowStart < RECOVERY_FETCH_WINDOW_MS &&
+          row.fetchCount >= RECOVERY_FETCH_LIMIT
+        ) {
           const remainingMs = RECOVERY_FETCH_WINDOW_MS - (nowMs - windowStart);
           return {
             allowed: false,
             retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
           } as const;
         }
-        await db.batch([
-          db
-            .update(recoveryWraps)
-            .set({ fetchCount: row.fetchCount + 1 })
-            .where(eq(recoveryWraps.userId, userId)),
-          fetchedEvent,
-        ]);
-        return { allowed: true } as const;
+        // UPDATE と再読の間に別リクエストが窓をリセットした等の極小レース。
+        // 安全側(拒否)に倒し、残り時間は窓の全長で案内する
+        return {
+          allowed: false,
+          retryAfterSeconds: Math.ceil(RECOVERY_FETCH_WINDOW_MS / 1000),
+        } as const;
       }),
   };
 }
@@ -854,21 +886,10 @@ function makeInviteRepo(db: Db): InviteRepoShape {
     db.insert(orgAuditEvents).select(
       db
         .select({
-          // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。この文の挿入は高々 1 行
-          // (id の一意条件)なので、文の構築時に採番した定数で足りる
-          rowId: sql<string>`${randomHex(16)}`.as("row_id"),
-          serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
-          event: sql<string>`${input.event}`.as("event"),
-          actorType: sql<string>`'user'`.as("actor_type"),
-          actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
-          actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as(
-            "actor_api_token_id",
-          ),
-          targetUserId: sql<string | null>`${input.targetUserId}`.as("target_user_id"),
+          // 共有列(audit.ts — recovery の取得計数と同じ写像)+ project_id は
+          // 対象招待行から写す(ワイヤ申告値から組まない)
+          ...guardedAuditSelectColumns(input),
           projectId: invitations.projectId,
-          payload: sql<string>`${JSON.stringify(auditPayloadWith(input.actor, input.payload))}`.as(
-            "payload",
-          ),
         })
         .from(invitations)
         .where(and(eq(invitations.id, input.inviteId), sql`changes() = 1`)),

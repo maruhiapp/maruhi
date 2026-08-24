@@ -947,11 +947,36 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
         },
       )
       .pipe(Effect.mapError((error) => cliError(`The push was accepted, but ${error.message}`)));
-    return {
-      variableId: outcome.accepted.variableId,
-      version: outcome.accepted.version,
-      epoch: outcome.accepted.epoch,
-      warnings: acceptedState.warnings,
+    // 成功として報告する座標は**ローカルで署名した値**(床の更新と同じ姿勢 —
+    // deepsec B7)。サーバー echo は突合のみに使い、食い違えば型付きエラーで
+    // 明示する(echo を表示に昇格させると、サーバー申告の座標をユーザーが
+    // 事実として引用しうる)
+    const floorVariable = outcome.floorVariable;
+    if (floorVariable.status !== "active") {
+      // attemptOnce は常に active の床レコードを組む — ここに来たら内部不整合
+      return yield* Effect.fail(
+        cliError("The accepted push produced a non-active floor record (internal inconsistency)"),
+      );
+    }
+    const local = {
+      variableId: acceptedState.target.variableId,
+      version: floorVariable.version,
+      epoch: floorVariable.epoch,
     };
+    const echo = outcome.accepted;
+    if (
+      echo.variableId !== local.variableId ||
+      echo.version !== local.version ||
+      echo.epoch !== local.epoch
+    ) {
+      return yield* Effect.fail(
+        cliError(
+          // 既存変数の variableId はサーバー配布のメタステートメント由来
+          // (非空以外の文字集合検査なし)なので、local 側も中和して表示する
+          `The push was accepted and recorded locally as ${displayText(local.variableId)} version=${local.version} epoch=${local.epoch}, but the server's response echoes different coordinates (${displayText(echo.variableId)} version=${echo.version} epoch=${echo.epoch}). The locally signed values are authoritative — verify the server with maruhi pull`,
+        ),
+      );
+    }
+    return { ...local, warnings: acceptedState.warnings };
   });
 }

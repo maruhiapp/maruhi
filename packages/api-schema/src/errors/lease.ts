@@ -108,16 +108,34 @@ export class LeaseUnavailableError extends Schema.TaggedError<LeaseUnavailableEr
 ) {}
 
 /**
- * 429: the project's lease window is exhausted (AUTH_SPEC §14-3 — 固定窓
- * 1 時間 300 回)。`retryAfterSeconds` は窓の残り秒数(§13-3 の先例と同型)。
+ * Which limit produced a lease 429 (deepsec M5 — 2026-08-24):
  *
- * 判定は認可の**後**に行う: 先に置くと未認可の呼び出し元にも 429 が返り、
- * 「そのプロジェクトは実在する」が漏れる(§11-2 違反)。認可後に置くことで
- * 429 は正当なワークロードにしか届かず、窓を消費できる主体も
+ * - `project-window` — the per-project fixed window (AUTH_SPEC §14-3, judged
+ *   after authorization to preserve existence hiding)
+ * - `source-address` — the request-level per-source-IP limit (judged first in
+ *   the handler; independent of any project state, so it leaks nothing).
+ *   Remedies differ: the project window drains on its own, while a legitimate
+ *   shared-egress fleet hitting the per-IP limit needs the operator to raise
+ *   the binding limit (docs/SELF_HOSTING.md)
+ */
+export const LeaseRateLimitScopeSchema = Schema.Literals(["project-window", "source-address"]);
+
+/**
+ * 429: a lease rate limit is exhausted (AUTH_SPEC §14-3)。`retryAfterSeconds`
+ * は窓の残り秒数(§13-3 の先例と同型)。`scope` は上記 2 窓の判別
+ * (省略時 = 旧サーバー応答 = project-window 相当)。
+ *
+ * プロジェクト窓の判定は認可の**後**に行う: 先に置くと未認可の呼び出し元にも
+ * 429 が返り、「そのプロジェクトは実在する」が漏れる(§11-2 違反)。認可後に
+ * 置くことで 429 は正当なワークロードにしか届かず、窓を消費できる主体も
  * 「許可 issuer の有効署名 × ポリシー一致」を満たすものだけになる。
+ * source-address 窓はプロジェクト状態と無関係のため認可前でも存在情報を漏らさない。
  */
 export class LeaseRateLimitedError extends Schema.TaggedError<LeaseRateLimitedError>()(
   "LeaseRateLimited",
-  { retryAfterSeconds: Schema.Number },
+  {
+    retryAfterSeconds: Schema.Number,
+    scope: Schema.optionalKey(LeaseRateLimitScopeSchema),
+  },
   { httpApiStatus: 429 },
 ) {}
