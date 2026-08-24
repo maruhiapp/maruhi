@@ -54,49 +54,60 @@ export function rateLimitKeyOf(ip: string): string {
   return `${prefix.join(":")}::/64`;
 }
 
-/** 圧縮形("::")・IPv4 埋め込み末尾を展開した正規化 8 グループ(不正は null)。 */
-function ipv6Groups(ip: string): string[] | null {
-  const zoneless = ip.split("%")[0] ?? ip;
-  const halves = zoneless.split("::");
+/** "::" で分けた前後半のグループ列(不正・"::" が 2 つ以上は null)。 */
+function splitIpv6Halves(
+  ip: string,
+): { readonly head: string[]; readonly tail: string[]; readonly compressed: boolean } | null {
+  const halves = (ip.split("%")[0] ?? ip).split("::");
   if (halves.length > 2) {
     return null;
   }
   const head = parseIpv6Groups(halves[0] ?? "");
-  const tail = halves.length === 2 ? parseIpv6Groups(halves[1] ?? "") : [];
+  const tail = parseIpv6Groups(halves[1] ?? "");
   if (head === null || tail === null) {
     return null;
   }
-  const missing = 8 - head.length - tail.length;
-  if (halves.length === 2 ? missing < 1 : missing !== 0) {
-    return null;
-  }
-  const full = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
-  return full.length === 8 ? full : null;
+  return { head, tail, compressed: halves.length === 2 };
 }
 
-/** ":" 区切りグループ列 → 16 進グループ配列(IPv4 埋め込みは 2 グループ)。 */
-function parseIpv6Groups(raw: string): string[] | null {
-  if (raw === "") {
-    return [];
+/** 圧縮形("::")・IPv4 埋め込み末尾を展開した正規化 8 グループ(不正は null)。 */
+function ipv6Groups(ip: string): string[] | null {
+  const split = splitIpv6Halves(ip);
+  if (split === null) {
+    return null;
   }
+  const zeros = 8 - split.head.length - split.tail.length;
+  if (!split.compressed) {
+    // 非圧縮形は前半だけが全 8 グループを持つ("::" が無いので後半は空)
+    return zeros === 0 ? split.head : null;
+  }
+  return zeros >= 1 ? [...split.head, ...Array<string>(zeros).fill("0"), ...split.tail] : null;
+}
+
+/** ":" 区切りグループ列 → 16 進グループ配列(空文字列は空配列。不正は null)。 */
+function parseIpv6Groups(raw: string): string[] | null {
   const groups: string[] = [];
-  for (const piece of raw.split(":")) {
-    if (piece.includes(".")) {
-      const octets = piece.split(".").map(Number);
-      if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
-        return null;
-      }
-      groups.push(
-        ((((octets[0] ?? 0) << 8) | (octets[1] ?? 0)) >>> 0).toString(16),
-        ((((octets[2] ?? 0) << 8) | (octets[3] ?? 0)) >>> 0).toString(16),
-      );
-    } else if (/^[0-9a-fA-F]{1,4}$/.test(piece)) {
-      groups.push(piece.toLowerCase());
-    } else {
+  for (const piece of raw === "" ? [] : raw.split(":")) {
+    const parsed = groupsOfPiece(piece);
+    if (parsed === null) {
       return null;
     }
+    groups.push(...parsed);
   }
   return groups;
+}
+
+/** 1 ピース → 16 進グループ(IPv4 埋め込みは 2 グループ。不正は null)。 */
+function groupsOfPiece(piece: string): readonly string[] | null {
+  if (!piece.includes(".")) {
+    return /^[0-9a-fA-F]{1,4}$/.test(piece) ? [piece.toLowerCase()] : null;
+  }
+  const octets = piece.split(".").map(Number);
+  if (octets.length !== 4 || !octets.every((o) => Number.isInteger(o) && o >= 0 && o <= 255)) {
+    return null;
+  }
+  const [a = 0, b = 0, c = 0, d = 0] = octets;
+  return [((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
 }
 
 /**
