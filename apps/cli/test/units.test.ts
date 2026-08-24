@@ -200,7 +200,7 @@ describe("pollDeviceFlow", () => {
     const auth = await Effect.runPromise(
       startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
     );
-    expect(auth.intervalSeconds).toBe(60);
+    expect(auth.intervalSeconds).toBe(900);
     expect(auth.expiresInSeconds).toBe(1800);
   });
 
