@@ -10,7 +10,7 @@
   - スパイク B: Effect v4 HttpApi + Durable Objects(ManagedRuntime パターン)+ vitest-pool-workers + Alchemy v2 / wrangler 両対応。実デプロイ検証は wrangler 経路成立(Alchemy 経路はユーザー API トークン切り替え待ち。docs/notes/session-03.md)
   - スパイク C: E2EE ラウンドトリップをブラウザ / Bun / workerd の 3 環境で確認。HPKE ライブラリ選定(未決事項 #1)= `hpke`(panva)で決定
 - [x] npm `maruhi` プレースホルダ publish + org `maruhi`(@maruhi スコープ)作成(2026-08-01 完了。`maruhi@0.0.1`)
-- [ ] ウォッチ: Bun 1.4 安定化、Drizzle v1 正式版(D1 / DO SQLite の Effect ドライバ有無)、Effect v4 安定版化
+- [ ] ウォッチ: Drizzle v1 正式版(D1 / DO SQLite の Effect ドライバ有無)、Effect v4 安定版化(Bun 1.4 は 2026-08-24 の 1.4.0 到達で完了 — PR #91)
 
 ## Phase 1: MVP(クローズド開発)
 

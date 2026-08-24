@@ -30,7 +30,7 @@ deepsec は修正後に再実行していないため、ローカル生成レポ
    必要なら drizzle migration の手順に従う。
 4. 平文 secret、鍵素材、外部 provider ID をログや append-only 監査 actor に
    追加しない。攻撃 PoC をリポジトリへ置かない。
-5. ユーザー向け文言は英語。完了時は固定 Bun 1.3.14 で `bun run check` を通す。
+5. ユーザー向け文言は英語。完了時は固定 Bun(`.bun-version`。現行 1.4.0)で `bun run check` を通す。
 6. Cloud 環境には Claude Max のローカル認証がない。修正と通常テストは Cloud で
    できるが、deepsec の再検証は資格情報を別途用意しない限りローカルで行う。
 

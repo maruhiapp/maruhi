@@ -28,7 +28,7 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 
 - A Cloudflare account (the free plan is enough)
 - A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
-- Bun 1.3.14 (pinned in the repository `engines`. wrangler is a dependency)
+- Bun 1.4.0 (pinned in the repository `engines`. wrangler is a dependency)
 
 ## Steps
 

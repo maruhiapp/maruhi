@@ -62,8 +62,19 @@ jobs:
       - name: 4. ImportLint
         run: bunx import-lint --format github
 
+      # fallow 3.17: 解析は 1 回だけ実行し、同じ JSON から CI 向け 2 形式を描画する。
+      # annotations / summary 形式は fork PR でも write トークンなしで描画されるため、
+      # PR コメント形式(要トークン)ではなくこちらを使う。ゲート判定(exit code)は
+      # audit 本体のものを最後に返す
       - name: 5. fallow (baseline audit)
-        run: bun run fallow:audit
+        run: |
+          set +e
+          bunx fallow audit --format json > "$RUNNER_TEMP/fallow-results.json"
+          audit_status=$?
+          set -e
+          bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-annotations
+          bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-summary >> "$GITHUB_STEP_SUMMARY"
+          exit "$audit_status"
 
       - name: 6. React Doctor (web, diff mode)
         run: bun run doctor

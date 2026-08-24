@@ -51,10 +51,10 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 
 | 層 | 技術 |
 |---|---|
-| ランタイム(dev/CLI) | Bun 1.3.14(`.bun-version` で厳密ピン。ADR-0004 の 1.4 系は未到達) |
+| ランタイム(dev/CLI) | Bun 1.4.0(`.bun-version` で厳密ピン。ADR-0004 の 1.4 系に到達済み) |
 | サーバー実行環境 | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | サーバー HTTP 層 | Effect v4 `@effect/platform` HttpApi(Hono 不使用) |
-| アプリ基盤 | Effect v4 系(ピン留め。現行 `4.0.0-rc.109`) |
+| アプリ基盤 | Effect v4 系(ピン留め。現行 `4.0.0-rc.111`) |
 | DB | Drizzle v1(`drizzle-kit` migrations、Effect サービス境界内に隔離)。D1 + DO SQLite |
 | フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
 | CLI | `effect/unstable/cli` + Effect(実装)。gunshi は廃止済み(ADR-0016)。HttpApi 導出型付きクライアント |
