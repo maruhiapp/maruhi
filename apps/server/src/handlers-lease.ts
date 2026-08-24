@@ -24,7 +24,13 @@ import { toWireVariable } from "./data-http.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";
 import { LEASE_BINDING_RETENTION_MARGIN_MS } from "./policy.ts";
 import type { LeaseOutcome, LeaseTokenFacts } from "./programs-lease.ts";
-import { ipRateLimitAllowed, projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
+import {
+  IP_RATE_LIMIT_PERIOD_SECONDS,
+  ipRateLimitAllowed,
+  projectStub,
+  rpcCall,
+  WorkerEnv,
+} from "./worker-env.ts";
 
 /**
  * claims_digest(CRYPTO_SPEC §9.1)は**検証済み**トークンの issuer / sub / aud
@@ -104,7 +110,9 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
       const env = yield* WorkerEnv;
       const allowed = yield* ipRateLimitAllowed(env.LEASE_RATE_LIMIT, request);
       if (!allowed) {
-        return yield* Effect.fail(new LeaseRateLimitedError({ retryAfterSeconds: 60 }));
+        return yield* Effect.fail(
+          new LeaseRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
+        );
       }
       // 1. 認証段(§14-1): OIDC トークンの検証。チェーン導出状態は一切見ない
       const verifier = yield* OidcVerifier;

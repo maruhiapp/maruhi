@@ -16,6 +16,13 @@ export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =
   Effect.promise(() => call() as Promise<T>);
 
 /**
+ * ratelimits binding の固定窓の周期(秒)。binding からは period を読めないため、
+ * wrangler.jsonc の `ratelimits[].simple.period` と**手動で一致**させること
+ * (429 応答の retryAfterSeconds に使う — レビューループ 2)。
+ */
+export const IP_RATE_LIMIT_PERIOD_SECONDS = 60;
+
+/**
  * 発信元 IP 単位の best-effort レート制限(Workers Rate Limiting binding —
  * deepsec M3/B11/M5)。true = 許可。
  *

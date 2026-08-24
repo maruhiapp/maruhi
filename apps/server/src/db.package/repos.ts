@@ -9,7 +9,7 @@
 //   必要な getOrCreateUser(§1-5)が成立しない。D1 の atomic batch を使う
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
-import { auditPayloadWith, parseTokenScopes } from "@maruhi/core";
+import { parseTokenScopes } from "@maruhi/core";
 import { and, count, eq, gt, gte, inArray, isNull, lt, lte, min, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
@@ -23,7 +23,7 @@ import type {
   UserOrg,
   VerifiedIdentity,
 } from "../auth-domain.ts";
-import { randomHex, ulid } from "../ids.ts";
+import { ulid } from "../ids.ts";
 import type {
   InvitationRecord,
   InviteAcceptInput,
@@ -33,7 +33,13 @@ import type {
   InviteStatus,
 } from "../invite-domain.ts";
 import type { D1AuditActor } from "./audit.ts";
-import { D1AuditRepo, makeD1AuditRepo, orgAuditInsert, userAuditInsert } from "./audit.ts";
+import {
+  D1AuditRepo,
+  guardedAuditSelectColumns,
+  makeD1AuditRepo,
+  orgAuditInsert,
+  userAuditInsert,
+} from "./audit.ts";
 import {
   apiTokens,
   invitations,
@@ -585,7 +591,6 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
         // changes() = 1 ガードの INSERT…SELECT を同一 batch に同梱し、許可された
         // 取得と 1:1 のまま原子的に記録する(AUDIT_SPEC §5.2)
         const windowExpired = sql`${recoveryWraps.fetchWindowStart} is null or ${nowMs} - ${recoveryWraps.fetchWindowStart} >= ${RECOVERY_FETCH_WINDOW_MS}`;
-        const payload = auditPayloadWith(actor, undefined);
         const results = await db.batch([
           db
             .update(recoveryWraps)
@@ -602,19 +607,13 @@ function makeRecoveryRepo(db: Db): RecoveryRepoShape {
             .returning({ fetchCount: recoveryWraps.fetchCount }),
           db.insert(userAuditEvents).select(
             db
-              .select({
-                rowId: sql<string>`${randomHex(16)}`.as("row_id"),
-                serverTs: sql<number>`${nowMs}`.as("server_ts"),
-                event: sql<string>`'auth.recovery_blob_fetched'`.as("event"),
-                actorType: sql<string>`'user'`.as("actor_type"),
-                actorUserId: sql<string | null>`${actor.userId ?? null}`.as("actor_user_id"),
-                actorApiTokenId: sql<string | null>`${actor.apiTokenId ?? null}`.as(
-                  "actor_api_token_id",
-                ),
-                payload: sql<string | null>`${
-                  Object.keys(payload).length === 0 ? null : JSON.stringify(payload)
-                }`.as("payload"),
-              })
+              .select(
+                guardedAuditSelectColumns({
+                  event: "auth.recovery_blob_fetched",
+                  actor,
+                  nowMs,
+                }),
+              )
               .from(recoveryWraps)
               .where(and(eq(recoveryWraps.userId, userId), sql`changes() = 1`)),
           ),
@@ -887,21 +886,10 @@ function makeInviteRepo(db: Db): InviteRepoShape {
     db.insert(orgAuditEvents).select(
       db
         .select({
-          // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。この文の挿入は高々 1 行
-          // (id の一意条件)なので、文の構築時に採番した定数で足りる
-          rowId: sql<string>`${randomHex(16)}`.as("row_id"),
-          serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
-          event: sql<string>`${input.event}`.as("event"),
-          actorType: sql<string>`'user'`.as("actor_type"),
-          actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
-          actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as(
-            "actor_api_token_id",
-          ),
-          targetUserId: sql<string | null>`${input.targetUserId}`.as("target_user_id"),
+          // 共有列(audit.ts — recovery の取得計数と同じ写像)+ project_id は
+          // 対象招待行から写す(ワイヤ申告値から組まない)
+          ...guardedAuditSelectColumns(input),
           projectId: invitations.projectId,
-          payload: sql<string>`${JSON.stringify(auditPayloadWith(input.actor, input.payload))}`.as(
-            "payload",
-          ),
         })
         .from(invitations)
         .where(and(eq(invitations.id, input.inviteId), sql`changes() = 1`)),

@@ -156,6 +156,10 @@ export function pollDeviceFlow(
       ? Math.min(rawExpires, MAX_EXPIRES_IN_SECONDS)
       : DEFAULT_EXPIRES_IN_SECONDS;
   const deadlineMs = Date.now() + expiresInSeconds * 1000;
+  // interval も同じ理由で再検証する(レビューループ 2): NaN は deadline 比較を
+  // 常に偽にし sleep も即時解決になるため、authorization_pending のたびに
+  // 無間隔で再 POST する(0・負値はビジースピン)。expires と対で clamp する
+  const minInterval = options.minIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS;
 
   const poll = (intervalSeconds: number): Effect.Effect<Redacted.Redacted<string>, CliError> =>
     Effect.gen(function* () {
@@ -197,5 +201,5 @@ export function pollDeviceFlow(
       return yield* Effect.fail(cliError("Cannot interpret GitHub's device-flow response"));
     });
 
-  return poll(options.authorization.intervalSeconds);
+  return poll(clampInterval(options.authorization.intervalSeconds, minInterval));
 }

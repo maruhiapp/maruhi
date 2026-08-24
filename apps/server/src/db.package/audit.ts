@@ -66,6 +66,37 @@ export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInp
   return db.insert(userAuditEvents).values(rowOf(event, serverTs));
 }
 
+/**
+ * `changes() = 1` ガード付き INSERT…SELECT(AUDIT_SPEC §5.2 — 直前の条件付き
+ * UPDATE が効いたときだけ監査行を挿入する)用の共有選択列。rowOf と同じ列写像の
+ * SELECT 版 — 呼び出し側(invites の CAS・recovery の取得計数)が列リストを
+ * 個別に書き写すと、行形状の変更時に黙って食い違う(レビューループ 2)。
+ * FROM・WHERE(ガード条件)と追加列(invites の project_id)は呼び出し側が持つ。
+ */
+export function guardedAuditSelectColumns(input: {
+  readonly event: string;
+  readonly actor: D1AuditActor;
+  readonly nowMs: number;
+  readonly targetUserId?: string | null;
+  readonly payload?: Readonly<Record<string, unknown>>;
+}) {
+  const payload = auditPayloadWith(input.actor, input.payload);
+  return {
+    // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。ガード付き挿入は高々 1 行なので、
+    // 文の構築時に採番した定数で足りる
+    rowId: sql<string>`${randomHex(16)}`.as("row_id"),
+    serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
+    event: sql<string>`${input.event}`.as("event"),
+    actorType: sql<string>`'user'`.as("actor_type"),
+    actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
+    actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as("actor_api_token_id"),
+    targetUserId: sql<string | null>`${input.targetUserId ?? null}`.as("target_user_id"),
+    payload: sql<string | null>`${
+      Object.keys(payload).length === 0 ? null : JSON.stringify(payload)
+    }`.as("payload"),
+  };
+}
+
 /** org 系イベント(§3.2)の挿入文。リポジトリの batch に同梱する。 */
 export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInput) {
   return db.insert(orgAuditEvents).values(rowOf(event, serverTs));
@@ -288,32 +319,32 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
       }),
     appendLoginFailed: (event, serverTs) =>
       Effect.promise(async () => {
+        // 個別行の計数と抑制マーカーの有無は**同じ 1 クエリ**の条件付き集計で
+        // 読む(レビューループ 2): 上限到達 = 洪水中こそが常態の経路なので、
+        // クエリを 2 本に増やすと防ぎたい読み増幅を自分で作ることになる
         const row = await db
-          .select({ n: count() })
+          .select({
+            failures: count(
+              sql`case when ${userAuditEvents.event} = 'auth.login_failed' then 1 end`,
+            ),
+            markers: count(
+              sql`case when ${userAuditEvents.event} = ${LOGIN_FAILED_SUPPRESSED_EVENT} then 1 end`,
+            ),
+          })
           .from(userAuditEvents)
           .where(
             and(
-              eq(userAuditEvents.event, "auth.login_failed"),
+              inArray(userAuditEvents.event, ["auth.login_failed", LOGIN_FAILED_SUPPRESSED_EVENT]),
               gte(userAuditEvents.serverTs, serverTs - LOGIN_FAILED_WINDOW_MS),
             ),
           )
           .get();
-        if ((row?.n ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
+        if ((row?.failures ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
           // 個別行は落とすが、抑制を黙って行わない(deepsec M4): 窓内にまだ
           // マーカーが無ければ auth.login_failed_suppressed を 1 行残す。読み →
           // 書きの 2 文なので並行時に僅かに重複しうるベストエフォート(本体の
           // 計数と同じ性質 — マーカー自体の書き込みも窓あたり定数件に有界)
-          const marker = await db
-            .select({ n: count() })
-            .from(userAuditEvents)
-            .where(
-              and(
-                eq(userAuditEvents.event, LOGIN_FAILED_SUPPRESSED_EVENT),
-                gte(userAuditEvents.serverTs, serverTs - LOGIN_FAILED_WINDOW_MS),
-              ),
-            )
-            .get();
-          if ((marker?.n ?? 0) === 0) {
+          if ((row?.markers ?? 0) === 0) {
             await userAuditInsert(db, serverTs, {
               event: LOGIN_FAILED_SUPPRESSED_EVENT,
               actor: {},

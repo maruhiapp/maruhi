@@ -64,6 +64,7 @@ describe("pollDeviceFlow", () => {
         clientId: "c",
         githubBaseUrl: server.origin,
         slowDownExtraSeconds: 0.01,
+        minIntervalSeconds: 0,
         authorization: {
           deviceCode: "d",
           userCode: "u",
@@ -90,6 +91,7 @@ describe("pollDeviceFlow", () => {
       pollDeviceFlow({
         clientId: "c",
         githubBaseUrl: server.origin,
+        minIntervalSeconds: 0,
         authorization: {
           deviceCode: "d",
           userCode: "u",
@@ -167,6 +169,7 @@ describe("pollDeviceFlow", () => {
       pollDeviceFlow({
         clientId: "c",
         githubBaseUrl: server.origin,
+        minIntervalSeconds: 0,
         authorization: {
           deviceCode: "d",
           userCode: "u",
@@ -223,12 +226,12 @@ describe("pollDeviceFlow", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
-  it("expiresInSeconds が NaN でも deadline は有界(B3 レビューループ 1)", async () => {
-    // Math.min(NaN, 上限) = NaN で deadline 比較が常に偽になる形の固定。
-    // NaN は既定値(900s)へ倒れ、interval 3600s は残り時間を越えるため
-    // sleep せず即座に期限切れになる
+  it("interval / expiresInSeconds が NaN でも deadline と待ち時間は有界(B3 レビューループ 1・2)", async () => {
     const started = Date.now();
-    const exit = await Effect.runPromiseExit(
+    // NaN interval は下限へ倒れる(5s > 残り 0.05s → sleep せず即期限切れ)。
+    // 素通しだと NaN 比較で deadline 検査が常に偽 + sleep 即時解決 = 無間隔の
+    // 再 POST ループになる
+    const nanInterval = await Effect.runPromiseExit(
       pollDeviceFlow({
         clientId: "c",
         githubBaseUrl: "http://127.0.0.1:9",
@@ -236,13 +239,31 @@ describe("pollDeviceFlow", () => {
           deviceCode: "d",
           userCode: "u",
           verificationUri: "v",
-          intervalSeconds: 3600,
+          intervalSeconds: Number.NaN,
+          expiresInSeconds: 0.05,
+        },
+      }),
+    );
+    expect(Exit.isFailure(nanInterval)).toBe(true);
+    expect(JSON.stringify(nanInterval)).toContain("authorization code expired");
+    // NaN expires は既定値(900s)へ倒れる = deadline が有界。下限(テスト knob)を
+    // 残り時間より大きくすれば、sleep せず即座に期限切れになることで観測できる
+    const nanExpires = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: "http://127.0.0.1:9",
+        minIntervalSeconds: 1000,
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: Number.NaN,
           expiresInSeconds: Number.NaN,
         },
       }),
     );
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("authorization code expired");
+    expect(Exit.isFailure(nanExpires)).toBe(true);
+    expect(JSON.stringify(nanExpires)).toContain("authorization code expired");
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
