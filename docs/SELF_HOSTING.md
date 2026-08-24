@@ -182,7 +182,10 @@ a fixed window per project, and a TTL cache for JWKS).
 **Since 2026-08-24 the default `wrangler.jsonc` also ships per-source-IP Workers
 Rate Limiting bindings** for `/auth/device/exchange` (10 / min / IP) and the
 lease endpoint (60 / min / IP), so a default deploy now enforces these two
-limits by itself. These bindings are per-colo and memory-backed (best effort):
+limits by itself (Cloudflare's docs list no plan requirement for the binding at
+the time of writing; if your deploy rejects the `ratelimits` section, remove it —
+the server falls back to the old no-limit behavior). These bindings are
+per-colo and memory-backed (best effort):
 a distributed flood spread across colos can still exceed the nominal number, so
 the WAF rules below remain the stronger, globally-counted option — and they are
 the only option for `/auth/github/callback` (a browser navigation path where the
@@ -228,6 +231,12 @@ Commit the local edit to `wrangler.jsonc` from step 2 (`database_id`) to your
 own fork (if upstream changes this file, `git pull` will collide with an
 uncommitted edit. If you do not commit it, re-apply the edit after pull).
 client_id / client_secret live in Workers Secrets, so updates do not touch them.
+
+**Config-carrying updates**: some fixes ship as `wrangler.jsonc` changes, not
+just code — the 2026-08-24 per-IP rate limits are one (the server treats a
+missing `ratelimits` binding as "no limit" and logs a one-time warning). Such
+fixes take effect only after you redeploy with the updated `wrangler.jsonc`,
+so pull the config file too, not just the code.
 
 **One-time migration when crossing the environment-manifest release (2026-08-18,
 PR-M1)**: environments created before this release have no environment manifest

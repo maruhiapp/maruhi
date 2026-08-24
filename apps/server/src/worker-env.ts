@@ -110,12 +110,16 @@ function groupsOfPiece(piece: string): readonly string[] | null {
   return [((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
 }
 
+// binding 不在の警告は isolate ごとに 1 回だけ出す(毎リクエストだとログが溢れる)
+let warnedMissingRateLimitBinding = false;
+
 /**
  * 発信元 IP 単位の best-effort レート制限(Workers Rate Limiting binding —
  * deepsec M3/B11/M5)。true = 許可。
  *
  * fail-open の線引き(すべて可用性側に倒す):
- * - binding 不在(ratelimits 未設定の旧 wrangler.jsonc のまま self-host)は従来挙動
+ * - binding 不在(ratelimits 未設定の旧 wrangler.jsonc のまま self-host)は
+ *   従来挙動(isolate ごと 1 回の warn で観測可能にする)
  * - CF-Connecting-IP 不在は帰属不能として通す。本番の Cloudflare 経路では常に
  *   エッジが**上書き付与**するヘッダーで、クライアントに偽装余地はない。不在に
  *   なるのは直接到達(wrangler dev・テスト)だけ
@@ -127,6 +131,15 @@ export function ipRateLimitAllowed(
 ): Effect.Effect<boolean> {
   return Effect.promise(async () => {
     if (limiter === undefined) {
+      // fail-open だが無言にしない(pullfrog 指摘): コードだけ更新して旧
+      // wrangler.jsonc のまま再デプロイした self-host は、レート制限が恒久に
+      // 無効なまま何の signal も出ない — catch 側より現実的に当たる経路
+      if (!warnedMissingRateLimitBinding) {
+        warnedMissingRateLimitBinding = true;
+        console.warn(
+          "rate limiter binding is not configured; requests are not rate limited (redeploy with the ratelimits section of wrangler.jsonc to enable)",
+        );
+      }
       return true;
     }
     const source = request.source;
@@ -143,9 +156,11 @@ export function ipRateLimitAllowed(
       // 落ちていると、制限が全て無効のまま誰も気づけない。Workers のログ
       // (wrangler tail / Workers Logs — 運用者のみが読む。外部送信ではない)へ
       // 静的メッセージだけ残す(リクエスト内容・IP は書かない)
+      // error.message は管理下にない文字列(将来 limiter 実装が key を載せうる —
+      // pullfrog 指摘)。「IP は書かない」の約束に合わせ、種別名だけ残す
       console.warn(
         "rate limiter binding failed; allowing the request (fail-open)",
-        error instanceof Error ? error.message : String(error),
+        error instanceof Error ? error.name : "unknown",
       );
       return true;
     }
