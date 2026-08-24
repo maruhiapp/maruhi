@@ -20,6 +20,13 @@
 
 バージョンは `.deepsec/package.json` で厳密ピン。更新は独立 PR。
 
+## レビュー結果
+
+2026-08-22 の全体レビューで再検証された未修正 finding は
+[`DEEPSEC_FINDINGS_2026-08-22.md`](./DEEPSEC_FINDINGS_2026-08-22.md)で追跡する。
+`.deepsec/data/` の生成レポートは gitignore 対象なので、Cloud 環境や別チャットへの
+引き継ぎにはこの文書を使う。
+
 ## スキルとして呼ぶ
 
 公式手順どおり `npx skills add vercel-labs/deepsec` で入れた。正は `.agents/skills/deepsec/SKILL.md`、`.claude/skills/deepsec` は symlink。`skills-lock.json` がソースとハッシュを固定する。更新は `npx skills update deepsec`。

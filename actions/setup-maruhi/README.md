@@ -114,9 +114,10 @@ maruhi server grant --environments prod --lease-policy lease-policy.json
 ]
 ```
 
-Claim constraints are exact-match. To allow several branches, list one policy
-element per branch. The policy lives on the signed chain (owner-signed,
-append-only), never in mutable server configuration.
+Claim constraints are exact-match, and every policy element must contain at
+least one. Omitting `claimConstraints` or leaving it empty is rejected. To allow
+several branches, list one policy element per branch. The policy lives on the
+signed chain (owner-signed, append-only), never in mutable server configuration.
 
 ## Repository anchor (recommended)
 

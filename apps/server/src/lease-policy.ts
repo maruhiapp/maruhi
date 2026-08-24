@@ -42,7 +42,9 @@ function claimMatches(
 /**
  * lease_policy 要素 1 件の評価: issuer_url がトークンの issuer と一致し、
  * audience がトークンの `aud` に含まれ、claim_constraints の**すべて**が
- * 完全一致すること。
+ * 完全一致すること。claim_constraints が空の要素は fail-closed で一致しない。
+ * issuer は全 GitHub Actions で共有され、audience は呼び出し元が選べるため、
+ * 空を無条件の許可として扱うと第三者のワークロードまで認可してしまう。
  *
  * `aud` の包含判定(一致ではなく contains)は、RFC 7519 が `aud` に配列を
  * 許すため。単一文字列の `aud` は verifier が 1 要素配列へ正規化しており、
@@ -50,6 +52,7 @@ function claimMatches(
  */
 function elementMatches(element: LeasePolicyIssuer, token: PolicyEvaluationToken): boolean {
   return (
+    element.claimConstraints.length > 0 &&
     element.issuerUrl === token.issuer &&
     token.audiences.includes(element.audience) &&
     element.claimConstraints.every((constraint) => claimMatches(token.claims, constraint))

@@ -30,7 +30,8 @@ function leaseFieldOk(value: unknown, allowEmpty: boolean): value is string {
 /**
  * lease_policy ファイル(JSON)の解釈と正規化。ファイル形式は camelCase +
  * claimConstraints をオブジェクト(claim 名 → 値)で書く — 同一 claim の矛盾する
- * 重複制約(完全一致 AND では常に偽)を構造的に表現できなくするため。
+ * 重複制約(完全一致 AND では常に偽)を構造的に表現できなくするため。各要素は
+ * 1 件以上の claim 制約を必須とし、issuer + audience だけの認可を作らせない。
  * チェーン形式(順序付き配列)への変換で §6.2 の SHOULD(コードポイント昇順・
  * 重複なし)を適用する。
  */
@@ -67,7 +68,10 @@ function parseLeaseElement(element: unknown): LeasePolicyIssuer | string {
   if (!leaseFieldOk(record["issuerUrl"], false) || !leaseFieldOk(record["audience"], false)) {
     return `issuerUrl / audience must be non-empty strings (at most ${MAX_LEASE_FIELD_BYTES} bytes each)`;
   }
-  const claimConstraints = parseLeaseConstraints(record["claimConstraints"] ?? {});
+  if (!Object.hasOwn(record, "claimConstraints")) {
+    return "claimConstraints is required for every element";
+  }
+  const claimConstraints = parseLeaseConstraints(record["claimConstraints"]);
   if (typeof claimConstraints === "string") {
     return claimConstraints;
   }
@@ -86,6 +90,9 @@ function parseLeaseConstraints(
     return "claimConstraints must be an object of { claimName: value }";
   }
   const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) {
+    return "claimConstraints must have at least one entry per element";
+  }
   if (entries.length > MAX_LEASE_CLAIM_CONSTRAINTS) {
     return `claimConstraints may have at most ${MAX_LEASE_CLAIM_CONSTRAINTS} entries per element (consensus rule)`;
   }

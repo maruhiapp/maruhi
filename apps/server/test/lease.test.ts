@@ -487,13 +487,25 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
     await expect404({ leasePolicy: [] });
   });
 
+  it("fails closed when a matching policy element has no claim constraints", async () => {
+    await expect404({
+      leasePolicy: [
+        {
+          issuerUrl: OIDC_ISSUER,
+          audience: LEASE_AUDIENCE,
+          claimConstraints: [],
+        },
+      ],
+    });
+  });
+
   it("hides an issuer mismatch in the policy", async () => {
     await expect404({
       leasePolicy: [
         {
           issuerUrl: "https://gitlab.example",
           audience: LEASE_AUDIENCE,
-          claimConstraints: [],
+          claimConstraints: [{ claimName: "sub", claimValue: LEASE_SUBJECT }],
         },
       ],
     });
@@ -502,7 +514,11 @@ describe("ワークロードリース: 認可と存在秘匿(§14-1 / §11-2 —
   it("hides an audience mismatch in the policy", async () => {
     await expect404({
       leasePolicy: [
-        { issuerUrl: OIDC_ISSUER, audience: "https://other.example", claimConstraints: [] },
+        {
+          issuerUrl: OIDC_ISSUER,
+          audience: "https://other.example",
+          claimConstraints: [{ claimName: "sub", claimValue: LEASE_SUBJECT }],
+        },
       ],
     });
   });

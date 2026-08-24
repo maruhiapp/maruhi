@@ -526,6 +526,56 @@ describe("maruhi server grant", () => {
     expect(env.logs.join("\n")).toContain("lease_policy has 1 element");
   });
 
+  it("--lease-policy の各要素で claimConstraints を必須かつ非空にする", async () => {
+    const built = await builtWithTwoEpochs();
+    const state = await makeGrantServer({ built, deksByEnvironment: {} });
+    const env = await startGrantEnv(state, built.projectId, owner);
+    const policyPath = join(dirname(env.configPath), "unsafe-policy.json");
+    await mkdir(dirname(policyPath), { recursive: true });
+
+    await writeFile(
+      policyPath,
+      JSON.stringify([
+        {
+          issuerUrl: "https://token.actions.githubusercontent.com",
+          audience: "https://maruhi.example.com",
+        },
+      ]),
+    );
+    const missingErrorsStart = env.errors.length;
+    expect(
+      await runCli(
+        ["server", "grant", "--environments", ENV_ID, "--lease-policy", policyPath],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.slice(missingErrorsStart).join("\n")).toContain(
+      "claimConstraints is required for every element",
+    );
+
+    await writeFile(
+      policyPath,
+      JSON.stringify([
+        {
+          issuerUrl: "https://token.actions.githubusercontent.com",
+          audience: "https://maruhi.example.com",
+          claimConstraints: {},
+        },
+      ]),
+    );
+    const emptyErrorsStart = env.errors.length;
+    expect(
+      await runCli(
+        ["server", "grant", "--environments", ENV_ID, "--lease-policy", policyPath],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.slice(emptyErrorsStart).join("\n")).toContain(
+      "claimConstraints must have at least one entry per element",
+    );
+    expect(state.appendedEntries).toHaveLength(0);
+  });
+
   it("--environments は必須(最小開示の既定)・不正な JSON ファイルは usage エラー", async () => {
     const built = await builtWithTwoEpochs();
     const state = await makeGrantServer({ built, deksByEnvironment: {} });
