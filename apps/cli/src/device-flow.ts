@@ -18,6 +18,21 @@ const SLOW_DOWN_EXTRA_SECONDS = 5;
 // RFC 8628 §3.5: interval 省略時の既定は 5 秒。サーバーが 0 や負値を返しても
 // ビジースピン(CPU・レート制限)にならないよう、この値を下限に固定する
 const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+// interval / expires_in の上限(deepsec M 残課題 B3): RFC 8628 は上限を定めず、
+// 敵対的・誤設定のエンドポイントが巨大な値を返すと deadline 検査に到達しない
+// まま長時間 sleep する。実値(github.com / GHES とも interval 5 秒・
+// expires_in 900 秒)に余裕を持たせた運用上限へ丸める
+const MAX_POLL_INTERVAL_SECONDS = 60;
+const DEFAULT_EXPIRES_IN_SECONDS = 900;
+const MAX_EXPIRES_IN_SECONDS = 1800;
+
+/** interval を [下限, 上限] に丸める(下限はテストのみ短縮可)。 */
+function clampInterval(seconds: number, minSeconds: number): number {
+  if (!Number.isFinite(seconds) || seconds < minSeconds) {
+    return minSeconds;
+  }
+  return Math.min(seconds, MAX_POLL_INTERVAL_SECONDS);
+}
 
 /** RFC 8628 §3.2 device authorization response (the fields the CLI uses). */
 export interface DeviceAuthorization {
@@ -106,10 +121,13 @@ export function startDeviceFlow(
       deviceCode,
       userCode,
       verificationUri,
-      // 省略・0・負値・非数・下限未満はすべて下限(既定 5 秒)に丸める
-      intervalSeconds:
-        typeof interval === "number" && interval >= minInterval ? interval : minInterval,
-      expiresInSeconds: typeof expiresIn === "number" && expiresIn > 0 ? expiresIn : 900,
+      // 省略・0・負値・非数・下限未満はすべて下限(既定 5 秒)に、上限超過は
+      // 上限に丸める(B3: 巨大値による長時間 sleep / 実質無期限ポーリングを防ぐ)
+      intervalSeconds: clampInterval(typeof interval === "number" ? interval : 0, minInterval),
+      expiresInSeconds:
+        typeof expiresIn === "number" && expiresIn > 0
+          ? Math.min(expiresIn, MAX_EXPIRES_IN_SECONDS)
+          : DEFAULT_EXPIRES_IN_SECONDS,
     } satisfies DeviceAuthorization;
   });
 }
@@ -128,16 +146,22 @@ export function pollDeviceFlow(
 ): Effect.Effect<Redacted.Redacted<string>, CliError> {
   const base = options.githubBaseUrl ?? GITHUB_BASE_URL;
   const slowDownExtra = options.slowDownExtraSeconds ?? SLOW_DOWN_EXTRA_SECONDS;
-  const deadlineMs = Date.now() + options.authorization.expiresInSeconds * 1000;
+  // startDeviceFlow が丸めた値を信頼せず、こちらでも上限を適用する(呼び出し元が
+  // 応答値を直接渡しても deadline が有界であることを保つ)
+  const deadlineMs =
+    Date.now() + Math.min(options.authorization.expiresInSeconds, MAX_EXPIRES_IN_SECONDS) * 1000;
 
   const poll = (intervalSeconds: number): Effect.Effect<Redacted.Redacted<string>, CliError> =>
     Effect.gen(function* () {
-      yield* Effect.sleep(Duration.seconds(intervalSeconds));
-      if (Date.now() > deadlineMs) {
+      // deadline は sleep の**前**に検査する(B3): 次のポーリング時刻が deadline を
+      // 越えるならコードは待っている間に失効する。敵対的・誤設定のエンドポイントが
+      // 巨大 interval を返しても、deadline を越えて sleep し続けない
+      if (Date.now() + intervalSeconds * 1000 > deadlineMs) {
         return yield* Effect.fail(
           cliError("The authorization code expired. Run `maruhi login` again"),
         );
       }
+      yield* Effect.sleep(Duration.seconds(intervalSeconds));
       const body = yield* postForm(`${base}/login/oauth/access_token`, {
         client_id: options.clientId,
         device_code: options.authorization.deviceCode,
@@ -152,7 +176,9 @@ export function pollDeviceFlow(
         return yield* poll(intervalSeconds);
       }
       if (errorCode === "slow_down") {
-        return yield* poll(intervalSeconds + slowDownExtra);
+        // slow_down の累積も上限に丸める(B3: 際限ない後退で deadline 検査の
+        // 粒度が粗くなり続けるのを防ぐ)
+        return yield* poll(Math.min(intervalSeconds + slowDownExtra, MAX_POLL_INTERVAL_SECONDS));
       }
       if (errorCode === "expired_token") {
         return yield* Effect.fail(

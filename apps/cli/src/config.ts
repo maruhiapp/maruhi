@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 
 import { Context, Effect } from "effect";
 
-import { cliError, type CliError } from "./errors.ts";
+import { CliError, cliError } from "./errors.ts";
 
 /** Non-secret CLI configuration. */
 export interface CliConfig {
@@ -89,6 +89,17 @@ function decodeConfig(json: string): CliConfig | null {
   }
 }
 
+/** 読み取り失敗(ENOENT 以外)をパース失敗と区別するための内部マーカー。 */
+class ConfigUnreadableError extends Error {}
+
+/**
+ * 設定ファイルの**内容**が JSON として解釈できない失敗(CliError の下位型)。
+ * `config set` はこの場合のみ「破棄して作り直す」を許す — 読み取り自体の失敗
+ * (EACCES / EISDIR / EIO 等)は内容の破損ではないため、既存設定の置換に
+ * 進んではならない(deepsec B2)。
+ */
+export class ConfigFileCorruptError extends CliError {}
+
 /** File-backed config store at `path` (used by both production and tests). */
 export function makeFileConfigStore(path: string): ConfigStoreShape {
   return {
@@ -97,9 +108,15 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
         let json: string;
         try {
           json = await readFile(path, "utf8");
-        } catch {
-          // 未作成は空設定として扱う(初回実行)
-          return {};
+        } catch (error) {
+          // 未作成(ENOENT)**だけ**を空設定として扱う(初回実行)。EACCES /
+          // EISDIR / EIO 等の読み取り失敗まで空設定に畳むと、読めなかっただけの
+          // 既存設定を後続の `config set` が警告なしで置換する(deepsec B2)
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return {};
+          }
+          const code = (error as NodeJS.ErrnoException).code ?? "unknown error";
+          throw new ConfigUnreadableError(code);
         }
         const config = decodeConfig(json);
         if (config === null) {
@@ -107,7 +124,14 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
         }
         return config;
       },
-      catch: () => cliError(`Cannot read the config file (it is corrupt): ${path}`),
+      catch: (error) =>
+        error instanceof ConfigUnreadableError
+          ? cliError(
+              `Cannot read the config file (${error.message}). Fix the file's permissions or move it out of the way, then retry: ${path}`,
+            )
+          : new ConfigFileCorruptError({
+              message: `Cannot read the config file (it is corrupt): ${path}`,
+            }),
     }),
     save: (config) =>
       Effect.tryPromise({

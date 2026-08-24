@@ -58,6 +58,18 @@ describe("maruhi config", () => {
     expect(env.logs).toContain("https://maruhi.example");
   });
 
+  it("ENOENT 以外の読み取り失敗は空設定に畳まず、型付きエラーで報告する(B2)", async () => {
+    const env = await makeTestEnv();
+    const { mkdir } = await import("node:fs/promises");
+    // 設定ファイルの位置にディレクトリを置く(EISDIR: ENOENT ではない読み取り失敗)
+    await mkdir(env.configPath, { recursive: true });
+    expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("Cannot read the config file (");
+    expect(env.errors.join("\n")).not.toContain("corrupt");
+    // set も既存(読めない)設定の黙った置換にならない — 同じ理由で失敗する
+    expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(1);
+  });
+
   it("JSON 配列の設定ファイルは破損として扱う", async () => {
     const env = await makeTestEnv();
     const { writeFile, mkdir } = await import("node:fs/promises");

@@ -173,6 +173,49 @@ describe("pollDeviceFlow", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("authorization code expired");
   });
+
+  it("巨大な interval / expires_in は上限に丸める(B3: 敵対的エンドポイント対策)", async () => {
+    const server = await MockServer.start([
+      onRequest("POST", "/login/device/code", () => ({
+        status: 200,
+        json: {
+          device_code: "d",
+          user_code: "U",
+          verification_uri: "https://github.example/device",
+          interval: 86_400,
+          expires_in: 10_000_000,
+        },
+      })),
+    ]);
+    servers.push(server);
+    const auth = await Effect.runPromise(
+      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
+    );
+    expect(auth.intervalSeconds).toBe(60);
+    expect(auth.expiresInSeconds).toBe(1800);
+  });
+
+  it("interval が deadline を越えるなら sleep せず即座に期限切れにする(B3)", async () => {
+    // ポーリングに一度も到達せずに失敗すべきなので、モックサーバーは不要。
+    // 巨大 interval のまま sleep すると、このテスト自体がタイムアウトする
+    const started = Date.now();
+    const exit = await Effect.runPromiseExit(
+      pollDeviceFlow({
+        clientId: "c",
+        githubBaseUrl: "http://127.0.0.1:9",
+        authorization: {
+          deviceCode: "d",
+          userCode: "u",
+          verificationUri: "v",
+          intervalSeconds: 3600,
+          expiresInSeconds: 1,
+        },
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("authorization code expired");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 });
 
 describe("keychain record codecs", () => {

@@ -450,6 +450,53 @@ describe("maruhi push", () => {
     expect(loaded.floor?.intents).toEqual([]);
   });
 
+  it("受理後にサーバー echo がローカル署名値と食い違えば型付きエラーで報告する(B7)", async () => {
+    const echo: CreateEcho = { body: null, baseVariant: [] };
+    const server = await MockServer.start([
+      chainHandlerOf([chainV1]),
+      deksHandlerOf([[wrap1]]),
+      pullMetadataHandlerOf([[]], 1, echo),
+      onRequest(
+        "POST",
+        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+        (request: MockRequest) => {
+          const body = request.body as CreateBody;
+          echo.body = body;
+          // 受理はするが、echo の version をローカル署名値(1)と食い違わせる
+          return {
+            status: 200,
+            json: {
+              variableId: body.statement.variableId,
+              version: 999,
+              epoch: body.value.aad.epoch,
+            },
+          };
+        },
+      ),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: chainV1.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setStdin(new TextEncoder().encode("secret-value\n"));
+
+    expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("echoes different coordinates");
+    // 床への昇格はローカル署名値で完了している(echo 突合は床コミットの後段)
+    const created = echo.body as CreateBody | null;
+    expect(created).not.toBeNull();
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+    );
+    expect(
+      loaded.floor?.environments[ENV_ID]?.variables[created?.statement.variableId ?? ""],
+    ).toMatchObject({ status: "active", version: 1, epoch: 1 });
+  });
+
   it("intent(3-F)の追記に失敗したら変数作成を送信しない(journal-before-send の fail-closed)", async () => {
     let createCalls = 0;
     const server = await MockServer.start([
