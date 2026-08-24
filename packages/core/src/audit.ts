@@ -112,6 +112,15 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
  */
 export const CHAIN_MIRROR_EVENTS: readonly string[] = Object.values(MIRROR_EVENT_NAME);
 
+/**
+ * The `chain.` event namespace (AUDIT_SPEC §3.4). Mirror verification reads the
+ * whole namespace by prefix rather than the known names one by one: a row that
+ * claims a `chain.*` event outside `CHAIN_MIRROR_EVENTS` is evidence of forgery
+ * and must not be able to hide from the verifier by using an unmapped name
+ * (deepsec R1).
+ */
+export const CHAIN_MIRROR_EVENT_PREFIX = "chain.";
+
 // op ごとの写像(§3.4 の表)。genesis の target は作成者 = actor(在籍区間の
 // 開始点を Q1 の索引で引けるようにするため)
 const mirrorTails: {

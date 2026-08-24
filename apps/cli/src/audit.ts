@@ -18,7 +18,7 @@
 
 import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import type { AuditEventRecord } from "@maruhi/core";
-import { CHAIN_MIRROR_EVENTS, chainMirrorEvent } from "@maruhi/core";
+import { CHAIN_MIRROR_EVENT_PREFIX, CHAIN_MIRROR_EVENTS, chainMirrorEvent } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -340,7 +340,9 @@ function renderListEvent(
     event.environmentId === undefined || event.variableId === undefined
       ? null
       : (names.get(event.environmentId)?.get(event.variableId) ?? null);
-  const trust = event.event.startsWith("chain.") ? mirrorTrustOf(event, entries, headSeq) : null;
+  const trust = event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)
+    ? mirrorTrustOf(event, entries, headSeq)
+    : null;
   const warnings = (trust?.mismatches ?? []).map(
     (mismatch) =>
       `Warning: audit row ${event.id} has a mirror row that does not match the verified chain — ${mismatch} (the audit log is server-managed data, so this mismatch is evidence of server-side tampering or corruption — AUDIT_SPEC §6)`,
@@ -468,30 +470,34 @@ export function auditSelfOp(
 
 const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
 // チェーン受理ポリシー(10,000 エントリ)÷ ページ 200 = 50 ページが理論最大。
-// カーソルが前進しないサーバーで無限ループしないための硬い上限
-const VERIFY_MAX_PAGES_PER_EVENT = 100;
+// カーソルが前進しないサーバーで無限ループしないための硬い上限。名前空間ごと
+// 1 回のページングで全ミラー行を引くため、上限もイベント種別ごとではなく通し
+const VERIFY_MAX_PAGES = 100;
 
 /**
- * 1 イベント種別の全ページ取得(新しい順。カーソルは行 id)。同じ行 id が
+ * `chain.` 名前空間の全ページ取得(新しい順。カーソルは行 id)。同じ行 id が
  * 再登場したらサーバー応答の矛盾(カーソル非前進・行の重複配布)として拒否する
  * — id は不透明で序数比較ができないため、前進性は集合の非重複で検査する。
+ *
+ * 既知のミラー名を 1 つずつ完全一致で引くのではなく**名前空間ごと**引く
+ * (deepsec R1): 完全一致の反復だと、写像に無い `chain.*` を名乗る偽造行は
+ * 1 度も取得されず、欠落も重複も発生しないまま検証が OK で終わる。
  */
 function fetchAllMirrorRows(
   client: MaruhiClient,
   projectId: string,
-  event: string,
 ): Effect.Effect<readonly WireAuditEvent[], CliError> {
   return Effect.gen(function* () {
     const rows: WireAuditEvent[] = [];
     const seen = new Set<string>();
     let before: string | null = null;
-    for (let pageCount = 0; pageCount < VERIFY_MAX_PAGES_PER_EVENT; pageCount += 1) {
+    for (let pageCount = 0; pageCount < VERIFY_MAX_PAGES; pageCount += 1) {
       const cursor = before;
       const page: readonly WireAuditEvent[] = yield* client.audit
         .events({
           params: { projectId },
           query: {
-            event,
+            eventPrefix: CHAIN_MIRROR_EVENT_PREFIX,
             limit: VERIFY_PAGE_LIMIT,
             ...(cursor === null ? {} : { before: cursor }),
           },
@@ -504,7 +510,7 @@ function fetchAllMirrorRows(
         if (seen.has(row.id)) {
           return yield* Effect.fail(
             cliError(
-              `Audit-log paging is not advancing (event=${displayText(event)}, row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
+              `Audit-log paging is not advancing (row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
             ),
           );
         }
@@ -559,6 +565,15 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   const problems: string[] = [];
   const ahead: number[] = [];
   for (const row of rows) {
+    // 名前空間内で写像に無いイベント名は、それ自体が偽造の証拠(deepsec R1):
+    // 実在する op のミラーは必ず chainMirrorEvent の像に入る。chain_seq の
+    // 突合に進める行ではないので、ここで問題として確定させて次の行へ進む
+    if (!CHAIN_MIRROR_EVENTS.includes(row.event)) {
+      problems.push(
+        `Audit row ${displayText(row.id)}: the mirror row claims an unknown chain op (${displayText(row.event)}) — no chain operation maps to this event name, so the row cannot mirror a real entry (evidence of a forged row)`,
+      );
+      continue;
+    }
     if (row.chainSeq === undefined) {
       problems.push(
         `Audit row ${displayText(row.id)}: the mirror row has no chain_seq (${displayText(row.event)})`,
@@ -606,10 +621,7 @@ export function auditVerifyOp(
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const rows: WireAuditEvent[] = [];
-    for (const event of CHAIN_MIRROR_EVENTS) {
-      rows.push(...(yield* fetchAllMirrorRows(context.client, context.projectId, event)));
-    }
+    const rows = yield* fetchAllMirrorRows(context.client, context.projectId);
     const headSeq = context.verified.state.headSeq;
     const buckets = bucketMirrorRows(rows, headSeq);
     const problems = [

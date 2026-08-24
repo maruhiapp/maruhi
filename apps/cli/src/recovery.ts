@@ -44,6 +44,7 @@ import {
   cryptoBackendUsable,
   importMasterKeys,
   retryOnSupportedRuntime,
+  storeMasterKeyGuarded,
   unsupportedCryptoCause,
   loadMasterKeys,
   type MasterKeys,
@@ -167,7 +168,6 @@ export function recoverMasterKeyOp(input: {
 }): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const keychain = yield* Keychain;
     // 発行側と対称の線引き: コードは鍵素材であり、エージェント越しの stdin に
     // 打ち込ませる経路も作らない(入力はエージェントのセッション層から読める)。
     // 復元は人間の対話端末で行う
@@ -225,7 +225,10 @@ export function recoverMasterKeyOp(input: {
         Effect.flatMap(corruptBlobMessage(), (message) => Effect.fail(cliError(message))),
       ),
     );
-    yield* keychain.set(entryName, serializeStoredMasterKey(record));
+    // keygen と同じ上書き検出つき保存(deepsec R2): ガードからブロブ取得と
+    // コード入力を挟むため窓はさらに広く、素の set では並行実行の鍵を
+    // 黙って消しうる
+    yield* storeMasterKeyGuarded(entryName, serializeStoredMasterKey(record));
     yield* io.log("Restored the master key and stored it in the OS keychain");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
   });

@@ -111,8 +111,9 @@ function mirrorRowsOf(built: BuiltChain): WireRow[] {
 }
 
 /**
- * 監査イベントエンドポイントのモック: event / before / limit をサーバーと同じ
- * 意味論(seq 降順・row id カーソルの解決、不明な id は空ページ)で適用する。
+ * 監査イベントエンドポイントのモック: event / eventPrefix / before / limit を
+ * サーバーと同じ意味論(seq 降順・row id カーソルの解決、不明な id は空ページ)で
+ * 適用する。eventPrefix は前置一致(AUDIT_SPEC §7 — deepsec R1)。
  */
 function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
   return (request) => {
@@ -120,6 +121,7 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
       return null;
     }
     const eventFilter = request.query["event"];
+    const prefixFilter = request.query["eventPrefix"];
     const before = request.query["before"];
     const limit = Number(request.query["limit"] ?? "50");
     let cursorSeq = Number.POSITIVE_INFINITY;
@@ -132,6 +134,9 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
     }
     const filtered = rows()
       .filter((row) => (eventFilter === undefined ? true : row["event"] === eventFilter))
+      .filter((row) =>
+        prefixFilter === undefined ? true : String(row["event"]).startsWith(prefixFilter),
+      )
       .filter((row) => (row["seq"] as number) < cursorSeq)
       .toSorted((a, b) => (b["seq"] as number) - (a["seq"] as number))
       .slice(0, limit);
@@ -399,6 +404,24 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("not contiguous");
+    expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
+  });
+
+  it("写像に無い chain.* 名を名乗る偽造行を検出する(deepsec R1)", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const template = rows[2];
+    if (template === undefined) {
+      throw new Error("fixture is missing the add_member mirror row");
+    }
+    // 既知のミラー名を 1 つずつ完全一致で引く旧実装では、この行はそもそも
+    // 取得されず(欠落も重複も起きない)、exit 0 +「検証 OK」になっていた
+    rows.push({ ...template, id: idOf(9), seq: 9, event: "chain.role_granted" });
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("unknown chain op");
+    expect(errors).toContain("chain.role_granted");
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
