@@ -221,8 +221,12 @@ async function withRetryAfterHeader(response: Response): Promise<Response> {
     seconds = ((await response.clone().json()) as { retryAfterSeconds?: unknown })
       .retryAfterSeconds;
   } catch {
-    // JSON ボディを持たない 429(将来の経路)はヘッダーなしのまま返す —
-    // ここは表現の補強であり、パース不能を失敗に昇格させない(意図的な劣化)
+    // JSON ボディを持たない 429(将来の経路)はヘッダーなしのまま返す — ここは
+    // 表現の補強であり、パース不能を失敗に昇格させない(意図的な劣化)。ただし
+    // 無言では飲まない(CLAUDE.md): ヘッダー欠落は非 maruhi クライアントの
+    // 即時リトライを招くため、退行に気づける静的メッセージだけ Workers ログへ
+    // 残す(ipRateLimitAllowed の fail-open と同じ規律。ボディ内容は書かない)
+    console.warn("429 response body is not JSON; returning it without a Retry-After header");
     return response;
   }
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
