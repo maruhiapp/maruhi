@@ -51,7 +51,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 
 | 層 | 技術 |
 |---|---|
-| ランタイム(dev/CLI) | Bun 1.3.14(`.bun-version` で厳密ピン。ADR-0004 の 1.4 系は未到達) |
+| ランタイム(dev/CLI) | Bun 1.4.0(`.bun-version` で厳密ピン。ADR-0004 の 1.4 系に到達済み) |
 | サーバー実行環境 | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | サーバー HTTP 層 | Effect v4 `@effect/platform` HttpApi(Hono 不使用) |
 | アプリ基盤 | Effect v4 系(ピン留め。現行 `4.0.0-rc.109`) |
