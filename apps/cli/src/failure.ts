@@ -7,6 +7,7 @@
 
 import {
   AuthFlowError,
+  AuthRateLimitedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -234,6 +235,11 @@ const renderers: readonly Renderer[] = [
   ),
   when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
   when(isInstanceOf(AuthFlowError), (e) => `The authentication flow failed (${e.reason})`),
+  when(
+    isInstanceOf(AuthRateLimitedError),
+    (e) =>
+      `Too many login attempts from this address (HTTP 429). Retry after ${e.retryAfterSeconds} seconds`,
+  ),
   when(
     isInstanceOf(SetupIncompleteError),
     (e) =>

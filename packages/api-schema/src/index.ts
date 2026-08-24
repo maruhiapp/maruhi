@@ -90,6 +90,7 @@ export {
 export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
+  AuthRateLimitedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,

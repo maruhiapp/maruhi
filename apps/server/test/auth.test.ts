@@ -220,6 +220,36 @@ describe("POST /auth/device/exchange(§4)", () => {
     expect(meBody.orgs.map((org) => org.role)).toEqual(["owner"]);
   });
 
+  it("rate-limits exchanges per source IP before any GitHub outbound (M3/B11)", async () => {
+    // CF-Connecting-IP は本番エッジが上書き付与するヘッダー。テストでは明示して
+    // 発信元を固定する(不在の直接到達は帰属不能として制限対象外 — 他テストが
+    // ヘッダーなしで交換を繰り返せるのはそのため)
+    const attempt = () =>
+      SELF.fetch(`${BASE}/auth/device/exchange`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.7" },
+        body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
+      });
+    const statuses: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      statuses.push((await attempt()).status);
+    }
+    // 上限(10/60s)以内は通常の 400(github-token-invalid)、超過分は 429
+    expect(statuses.filter((status) => status === 429).length).toBeGreaterThan(0);
+    const limited = await attempt();
+    expect(limited.status).toBe(429);
+    const body = (await limited.json()) as { _tag: string; retryAfterSeconds: number };
+    expect(body._tag).toBe("AuthRateLimited");
+    expect(body.retryAfterSeconds).toBeGreaterThan(0);
+    // 別 IP は独立に数えられる(帰属単位の固定)
+    const other = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.8" },
+      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
+    });
+    expect(other.status).toBe(400);
+  });
+
   it("rejects an invalid GitHub token with 400 (github-token-invalid)", async () => {
     const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
       method: "POST",

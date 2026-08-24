@@ -81,6 +81,15 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
 
+/**
+ * 上限到達の窓に 1 行だけ残す集約マーカー(deepsec M4 / AUDIT_SPEC §3.1)。
+ * 全体上限は全 actor で共有されるため、匿名の失敗洪水が枠を使い切ると後続の
+ * 標的型失敗が黙って記録されなくなる — 抑制が**起きたこと自体**を監査可能に
+ * する。個別行と同じく actor は user_id なしの type=user(外部 provider ID・
+ * IP を append-only actor に書かない — §1-2)。
+ */
+export const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
+
 // ---------------------------------------------------------------------------
 // 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
 // ---------------------------------------------------------------------------
@@ -290,6 +299,27 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
           )
           .get();
         if ((row?.n ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
+          // 個別行は落とすが、抑制を黙って行わない(deepsec M4): 窓内にまだ
+          // マーカーが無ければ auth.login_failed_suppressed を 1 行残す。読み →
+          // 書きの 2 文なので並行時に僅かに重複しうるベストエフォート(本体の
+          // 計数と同じ性質 — マーカー自体の書き込みも窓あたり定数件に有界)
+          const marker = await db
+            .select({ n: count() })
+            .from(userAuditEvents)
+            .where(
+              and(
+                eq(userAuditEvents.event, LOGIN_FAILED_SUPPRESSED_EVENT),
+                gte(userAuditEvents.serverTs, serverTs - LOGIN_FAILED_WINDOW_MS),
+              ),
+            )
+            .get();
+          if ((marker?.n ?? 0) === 0) {
+            await userAuditInsert(db, serverTs, {
+              event: LOGIN_FAILED_SUPPRESSED_EVENT,
+              actor: {},
+              payload: { windowMs: LOGIN_FAILED_WINDOW_MS, limit: LOGIN_FAILED_WINDOW_LIMIT },
+            });
+          }
           return;
         }
         await userAuditInsert(db, serverTs, event);

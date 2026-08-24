@@ -7,6 +7,7 @@
 
 import {
   AuthFlowError,
+  AuthRateLimitedError,
   ForbiddenError,
   maruhiApi,
   RecoveryRateLimitedError,
@@ -31,7 +32,7 @@ import { ensureKeyMaterialAccess } from "./authz.ts";
 import { D1AuditRepo, IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { ServerKey } from "./server-key.ts";
-import { WorkerEnv } from "./worker-env.ts";
+import { ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
 const STATE_COOKIE = "__Host-maruhi_oauth_state";
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
@@ -192,11 +193,19 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         ).pipe(Effect.orDie);
       }),
     )
-    .handle("deviceExchange", ({ payload }) =>
+    .handle("deviceExchange", ({ payload, request }) =>
       Effect.gen(function* () {
+        const env = yield* WorkerEnv;
+        // 発信元 IP のレート制限を最初に置く(deepsec M3/B11): 交換 1 回ごとの
+        // GitHub check-token 呼び出しは OAuth App 単位の共有クォータを消費し、
+        // 枯渇すると**全ユーザー**の CLI login が止まる。判定は形式検査より
+        // 手前・アウトバウンドより手前(そもそも仕事をしない)
+        const allowed = yield* ipRateLimitAllowed(env.DEVICE_EXCHANGE_RATE_LIMIT, request);
+        if (!allowed) {
+          return yield* Effect.fail(new AuthRateLimitedError({ retryAfterSeconds: 60 }));
+        }
         // 未設定サーバーは不透明なトークン交換失敗(GitHub 401 → AuthFlow 400)
         // より先に fail-closed する(AUTH_SPEC §3)
-        const env = yield* WorkerEnv;
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         const github = yield* GitHubApi;
         // §4-4: 持ち込みトークンは check-token API で「自 OAuth App 発行」まで検証する

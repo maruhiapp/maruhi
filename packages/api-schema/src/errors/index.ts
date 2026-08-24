@@ -12,6 +12,7 @@
 export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
+  AuthRateLimitedError,
   ForbiddenError,
   ForbiddenReasonSchema,
   RecoveryRateLimitedError,

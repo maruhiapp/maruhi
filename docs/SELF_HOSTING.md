@@ -177,9 +177,20 @@ Of maruhi's unauthenticated surface, the following three are the ones where a
 third party can trigger work that costs money (the other unauthenticated surfaces
 `/auth/config` / `/auth/github/start` are self-contained lightweight responses).
 All three already have server-side defenses (input size caps, format pre-checks,
-a fixed window per project, and a TTL cache for JWKS), but **per-source-IP**
-limits can only be applied on the Cloudflare side. Add the following in the
-dashboard under Security → WAF → Rate limiting rules.
+a fixed window per project, and a TTL cache for JWKS).
+
+**Since 2026-08-24 the default `wrangler.jsonc` also ships per-source-IP Workers
+Rate Limiting bindings** for `/auth/device/exchange` (10 / min / IP) and the
+lease endpoint (60 / min / IP), so a default deploy now enforces these two
+limits by itself. These bindings are per-colo and memory-backed (best effort):
+a distributed flood spread across colos can still exceed the nominal number, so
+the WAF rules below remain the stronger, globally-counted option — and they are
+the only option for `/auth/github/callback` (a browser navigation path where the
+worker-side binding would be redundant with the WAF anyway). Deployments that
+predate the `ratelimits` section keep the old behavior until they redeploy with
+the updated config — the server treats a missing binding as "no limit".
+
+Add the following in the dashboard under Security → WAF → Rate limiting rules.
 **The Free plan allows only one rule, so in that case pick
 `/auth/device/exchange`** (it is the only surface in the table where exhausting
 the quota stops login for the **entire deployment**, not merely degrades one

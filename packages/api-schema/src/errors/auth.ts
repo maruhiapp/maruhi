@@ -60,6 +60,19 @@ export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteErro
   { httpApiStatus: 503 },
 ) {}
 
+/**
+ * 429: too many device exchanges from this source address (AUTH_SPEC §4 —
+ * deepsec M3/B11)。交換はリクエストごとに GitHub check-token API への
+ * アウトバウンドを伴い、その枠は OAuth App 単位の共有クォータなので、
+ * 発信元 IP 単位の best-effort 制限を既定デプロイでも強制する。
+ * `retryAfterSeconds` は次に試してよい目安(固定窓の周期)。
+ */
+export class AuthRateLimitedError extends Schema.TaggedError<AuthRateLimitedError>()(
+  "AuthRateLimited",
+  { retryAfterSeconds: Schema.Number },
+  { httpApiStatus: 429 },
+) {}
+
 /** 429: the per-user API token limit has been reached (AUTH_SPEC §6). */
 export class TokenLimitError extends Schema.TaggedError<TokenLimitError>()(
   "TokenLimit",

@@ -951,10 +951,17 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     // deepsec B7)。サーバー echo は突合のみに使い、食い違えば型付きエラーで
     // 明示する(echo を表示に昇格させると、サーバー申告の座標をユーザーが
     // 事実として引用しうる)
+    const floorVariable = outcome.floorVariable;
+    if (floorVariable.status !== "active") {
+      // attemptOnce は常に active の床レコードを組む — ここに来たら内部不整合
+      return yield* Effect.fail(
+        cliError("The accepted push produced a non-active floor record (internal inconsistency)"),
+      );
+    }
     const local = {
       variableId: acceptedState.target.variableId,
-      version: outcome.floorVariable.version,
-      epoch: outcome.floorVariable.epoch,
+      version: floorVariable.version,
+      epoch: floorVariable.epoch,
     };
     const echo = outcome.accepted;
     if (

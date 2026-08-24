@@ -16,6 +16,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/ht
 import { AuthMiddleware } from "./auth-middleware.ts";
 import {
   AuthFlowError,
+  AuthRateLimitedError,
   ForbiddenError,
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
@@ -156,8 +157,10 @@ export const authGroup = HttpApiGroup.make("auth")
       // 交換はリクエストごとにサーバーから GitHub check-token API への
       // アウトバウンド呼び出しを伴い、その枠は OAuth App 単位のレート制限を
       // 受けるため、形式を満たさない入力はここで落として GitHub へ出さない。
-      // これが遮断するのは無差別・形式不明の洪水までで、形式適合の洪水への
-      // 対策(per-IP レート制限)は運用側に置く(SELF_HOSTING.md — L-3)
+      // これが遮断するのは無差別・形式不明の洪水まで。形式適合の洪水は
+      // 発信元 IP 単位の Workers Rate Limiting(既定デプロイの wrangler.jsonc —
+      // deepsec M3/B11)が best-effort で遮断し、より強い保全は引き続き運用側の
+      // WAF ルールに置く(SELF_HOSTING.md — L-3)
       payload: Schema.Struct({
         githubAccessToken: Schema.String.check(
           Schema.isMaxLength(512),
@@ -171,7 +174,7 @@ export const authGroup = HttpApiGroup.make("auth")
         scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
       }),
       success: DeviceExchangeResultSchema,
-      error: [AuthFlowError, SetupIncompleteError, TokenLimitError],
+      error: [AuthFlowError, AuthRateLimitedError, SetupIncompleteError, TokenLimitError],
     }),
   )
   .add(

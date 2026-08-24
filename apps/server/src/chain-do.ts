@@ -97,6 +97,18 @@ export interface Env {
    * secret を欠いたデプロイでは実行時に undefined。
    */
   readonly SERVER_ENC_KEY_IKM?: string;
+  /**
+   * 未認証 device exchange の発信元 IP レート制限(deepsec M3/B11 —
+   * wrangler.jsonc の ratelimits)。旧設定のままの self-host デプロイでは
+   * undefined になりうるため optional(不在は制限なしで従来挙動)。
+   */
+  readonly DEVICE_EXCHANGE_RATE_LIMIT?: RateLimit;
+  /**
+   * lease 発行の発信元 IP レート制限(deepsec M5)。DO は名前指定で暗黙生成
+   * されるため、有効な OIDC token だけで任意の project ID の DO を量産できる —
+   * projectStub 到達前の request-level 制限で生成レートを有界にする。
+   */
+  readonly LEASE_RATE_LIMIT?: RateLimit;
 }
 
 // ---------------------------------------------------------------------------
