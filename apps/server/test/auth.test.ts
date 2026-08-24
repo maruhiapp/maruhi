@@ -249,6 +249,7 @@ describe("POST /auth/device/exchange(§4)", () => {
       throw new Error("expected a 429 within two full rate-limit windows");
     }
     expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
     const body = (await limited.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("AuthRateLimited");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);

@@ -116,6 +116,7 @@ export {
   InviteRateLimitedError,
   InviteSignatureInvalidError,
   LeaseRateLimitedError,
+  LeaseRateLimitScopeSchema,
   LeaseUnauthorizedError,
   LeaseUnauthorizedReasonSchema,
   LeaseUnavailableError,

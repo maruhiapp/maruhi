@@ -228,10 +228,10 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `The OIDC token was rejected by the lease endpoint (${e.reason}). Check the token's issuer, audience, and validity window (AUTH_SPEC §14-1)`,
   ),
-  when(
-    isInstanceOf(LeaseRateLimitedError),
-    (e) =>
-      `The project's lease rate limit is exhausted (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — re-run the job later; retrying immediately only consumes the window`,
+  when(isInstanceOf(LeaseRateLimitedError), (e) =>
+    e.scope === "source-address"
+      ? `Too many lease requests from this source address (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — if legitimate CI traffic shares this egress IP, the server operator can raise the per-IP limit (docs/SELF_HOSTING.md)`
+      : `The project's lease rate limit is exhausted (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — re-run the job later; retrying immediately only consumes the window`,
   ),
   when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
   when(isInstanceOf(AuthFlowError), (e) => `The authentication flow failed (${e.reason})`),

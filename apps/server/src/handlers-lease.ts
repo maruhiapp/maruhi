@@ -80,7 +80,10 @@ function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
   switch (rejection.kind) {
     case "rate-limited": {
       return Effect.fail(
-        new LeaseRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
+        new LeaseRateLimitedError({
+          retryAfterSeconds: rejection.retryAfterSeconds,
+          scope: "project-window",
+        }),
       );
     }
     case "unavailable": {
@@ -111,7 +114,10 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
       const allowed = yield* ipRateLimitAllowed(env.LEASE_RATE_LIMIT, request);
       if (!allowed) {
         return yield* Effect.fail(
-          new LeaseRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
+          new LeaseRateLimitedError({
+            retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS,
+            scope: "source-address",
+          }),
         );
       }
       // 1. 認証段(§14-1): OIDC トークンの検証。チェーン導出状態は一切見ない

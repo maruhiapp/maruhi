@@ -70,6 +70,7 @@ export {
 } from "./invites.ts";
 export {
   LeaseRateLimitedError,
+  LeaseRateLimitScopeSchema,
   LeaseUnauthorizedError,
   LeaseUnauthorizedReasonSchema,
   LeaseUnavailableError,

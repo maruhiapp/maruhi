@@ -204,13 +204,48 @@ function withSecurityHeaders(response: Response): Response {
   });
 }
 
+/**
+ * 429 応答へ標準 `Retry-After` ヘッダーを付与する(レビューループ 8)。型付き
+ * エラー(TokenLimit / RecoveryRateLimited / InviteRateLimited / AuthRateLimited /
+ * LeaseRateLimited)は retryAfterSeconds を JSON ボディで運ぶが、maruhi CLI 以外の
+ * クライアント(curl・SDK の再試行ラッパー・RFC 9110 準拠のバックオフ)は
+ * ヘッダーしか見ず、即時リトライで窓を消費し続ける。429 のみ(稀な経路)で
+ * ボディを 1 回パースして写す。
+ */
+async function withRetryAfterHeader(response: Response): Promise<Response> {
+  if (response.status !== 429 || response.headers.has("retry-after")) {
+    return response;
+  }
+  let seconds: unknown;
+  try {
+    seconds = ((await response.clone().json()) as { retryAfterSeconds?: unknown })
+      .retryAfterSeconds;
+  } catch {
+    // JSON ボディを持たない 429(将来の経路)はヘッダーなしのまま返す —
+    // ここは表現の補強であり、パース不能を失敗に昇格させない(意図的な劣化)
+    return response;
+  }
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.set("retry-after", String(Math.ceil(seconds)));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const cappedRequest = await capRequestBody(request);
     if (cappedRequest === null) {
       return withSecurityHeaders(new Response(null, { status: 413 }));
     }
-    return withSecurityHeaders(await handlerFor(env).handler(cappedRequest));
+    return withSecurityHeaders(
+      await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest)),
+    );
   },
   // 期限切れセッション行の定期掃除(wrangler.jsonc の triggers.crons)。
   // resolve 時の掃除(auth.package/session.ts)は「提示された行」しか消せない

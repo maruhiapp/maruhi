@@ -1227,8 +1227,12 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
       }
     }
     expect(limited).not.toBeNull();
+    // RFC 9110 の Retry-After ヘッダーも運ぶ(maruhi CLI 以外のクライアントの
+    // バックオフ材料 — index.ts の withRetryAfterHeader)
+    expect(limited?.headers.get("retry-after")).toMatch(/^\d+$/);
     const body = (await limited?.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("LeaseRateLimited");
+    expect(body["scope"]).toBe("source-address");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
   });
 });
