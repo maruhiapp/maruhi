@@ -78,11 +78,49 @@ const DENIED_ENV_NAMES = new Set([
   "COMSPEC",
   "SYSTEMROOT",
   "WINDIR",
+  // 子プロセスが**別のプログラムを起動する**ときの起動先(deepsec R3):
+  // LESSOPEN / LESSCLOSE は `|cmd %s` 形式でそのままコマンド実行、PAGER 系と
+  // EDITOR / VISUAL / BROWSER は git・systemctl・各種 CLI が直接 spawn する
+  "LESSOPEN",
+  "LESSCLOSE",
+  "PAGER",
+  "MANPAGER",
+  "EDITOR",
+  "VISUAL",
+  "BROWSER",
+  // パスフレーズ入力の代行プログラム(R3): ssh / sudo が指定先を実行する
+  "SSH_ASKPASS",
+  "SUDO_ASKPASS",
+  // インタプリタの初期化フック・モジュール探索(R3)。LUA_INIT は任意の Lua を
+  // 実行し、LUA_PATH / LUA_CPATH は require の探索先を差し替える
+  "LUA_INIT",
+  "LUA_PATH",
+  "LUA_CPATH",
+  "PSMODULEPATH",
+  // glibc / ローダの挙動と補助データの探索先(R3)。GLIBC_TUNABLES は
+  // チューナブル経由で挙動を変え、LOCPATH / NLSPATH / TERMINFO / TERMCAP は
+  // プロセスが読み込むバイナリ記述子(ロケール・端末定義)の出所を差し替える
+  "GLIBC_TUNABLES",
+  "MALLOC_CONF",
+  "LOCPATH",
+  "NLSPATH",
+  "TERMINFO",
+  "TERMCAP",
 ]);
 // NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない(M2 の要検討事項の裁定):
 // NODE_ENV / PYTHONDONTWRITEBYTECODE 等、実行制御でない正当な変数を大量に
-// 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す
-const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_"];
+// 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す。
+//
+// `MARUHI_` だけは包括 prefix で塞ぐ(deepsec S3)。上の裁定と矛盾しない理由は
+// **maruhi 自身が予約する名前空間**だから: 巻き込む「正当な変数」が原理的に
+// 存在せず(この名前空間の意味は maruhi が決める)、逆にここへ 1 つでも通すと
+// 入れ子の `maruhi` の挙動を注入側が決められる。実際 `MARUHI_TOKEN` /
+// `MARUHI_TOKEN_ORIGIN` は resolveSession がキーチェーンより**先に**見るため、
+// 悪意あるメンバーがその名前の変数に自分の PAT を入れておくと、被害者の
+// `maruhi run -- make deploy` の中の `maruhi pull` が攻撃者として認証される
+// (変数名は AAD に束縛されない平文メタデータ = 共同メンバーが決められる)。
+// 個別名の列挙にすると将来 MARUHI_* を増やしたときに同じ穴が再発する
+const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "MARUHI_"];
 
 function isDeniedEnvName(name: string): boolean {
   const upper = name.toUpperCase();

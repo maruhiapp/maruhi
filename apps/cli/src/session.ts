@@ -442,6 +442,52 @@ export function ensureNoStoredMasterKey(
   });
 }
 
+/**
+ * Stores a master-key record, re-checking absence immediately before the write
+ * and verifying afterwards that the stored record is the one just written.
+ *
+ * なぜ「保存の直前に再確認 + 直後に読み戻す」のか(deepsec R2): 上書き防止
+ * ガード({@link ensureNoStoredMasterKey})は読み取りだけでロックを取らず、
+ * その後に鍵生成(WebCrypto 6 回)と再インポート自己検証が挟まるため、
+ * 判定と書き込みの間に数十 ms の窓が開く。`Bun.secrets.set` は無条件 put で
+ * compare-and-swap も create-if-absent も無く、エントリ名は (origin, userId)
+ * から決定的なので、同一アカウントで `maruhi key generate` が並行すると
+ * どちらも「鍵なし」を観測して両方が書き、後勝ちで一方の鍵が黙って消える。
+ *
+ * OS キーチェーン側に原子的な条件付き書き込みが無いため、この関数は窓を
+ * 塞ぐのではなく**極小化し、かつ失敗を黙らせない**: 読み戻しが自分の
+ * レコードでなければ、並行実行に上書きされたことを検出して失敗する
+ * (呼び出し側はリカバリーコードの発行へ進まないので、「破棄された鍵の
+ * リカバリーブロブが登録される」不整合が起きない)。残る窓は再確認と
+ * 書き込みの間だけで、そこに他プロセスの書き込みが丸ごと入ると両方が成功
+ * しうる — その場合も生き残る鍵とそのリカバリーブロブは一致する側に倒れる。
+ */
+export function storeMasterKeyGuarded(
+  entryName: string,
+  serialized: string,
+): Effect.Effect<void, CliError, Keychain> {
+  return Effect.gen(function* () {
+    const keychain = yield* Keychain;
+    const appeared = yield* keychain.get(entryName);
+    if (appeared !== null) {
+      return yield* Effect.fail(cliError(concurrentMasterKeyWrite));
+    }
+    yield* keychain.set(entryName, serialized);
+    const stored = yield* keychain.get(entryName);
+    if (stored !== serialized) {
+      return yield* Effect.fail(cliError(concurrentMasterKeyWrite));
+    }
+  });
+}
+
+/**
+ * 並行書き込みを検出したときの文言。控えるべき情報が無いのが要点: この鍵は
+ * どこにも保存されておらず、リカバリーコードも発行していないので、後始末は
+ * 不要で、やることは「1 つずつ実行し直す」だけ。
+ */
+const concurrentMasterKeyWrite =
+  "Another master key for this account was written to the keychain at the same time, so this key was not stored (nothing was left behind and no recovery code was issued). Run `maruhi key show` to see which key is stored now, and do not run `maruhi key generate` / `maruhi key recover` concurrently for the same account" as const;
+
 /** Loads and imports the master keypair for (origin, userId) from the keychain. */
 export function loadMasterKeys(session: CliSession): Effect.Effect<MasterKeys, CliError, Keychain> {
   return Effect.gen(function* () {

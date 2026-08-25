@@ -20,7 +20,7 @@ import type { TokenScope } from "@maruhi/core";
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { CLASS1_EVENTS } from "../src/audit-store.ts";
+import { isClass1Event } from "../src/audit-store.ts";
 import { INVITE_AUDIT_EVENTS } from "../src/db.package/index.ts";
 import { BASE, bearer, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import {
@@ -42,6 +42,7 @@ import {
   token,
   VAR,
 } from "./support/data-scenario.ts";
+import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -126,7 +127,7 @@ describe("可視性クラス(§6)の強制", () => {
     // 応答は seq(無欠番採番の序数)を運ばず、行識別子は不透明な row id のみ
     // (AUDIT_SPEC §7 — 序数からのクラス 2 件数推論の遮断)
     for (const event of events) {
-      expect(CLASS1_EVENTS.includes(event.event) || event.actor.userId === READER).toBe(true);
+      expect(isClass1Event(event.event) || event.actor.userId === READER).toBe(true);
       expect(event.seq).toBeUndefined();
       expect(event.id).toMatch(/^[0-9a-f]{32}$/);
     }
@@ -214,6 +215,61 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     );
     for (const event of byTarget.events) {
       expect(event.targetUserId).toBe(READER);
+    }
+  });
+
+  it("eventPrefix は名前空間ごと絞る(ミラー検証の全取得 — deepsec R1)", async () => {
+    await seedProjectActivity();
+    const { status, events } = await fetchEvents(token(OWNER), {
+      eventPrefix: "chain.",
+      limit: "200",
+    });
+    expect(status).toBe(200);
+    expect(events.length).toBeGreaterThan(0);
+    // 名前空間の全行が返り、外の行(env.* / var.* / dek.*)は 1 行も混じらない
+    for (const event of events) {
+      expect(event.event.startsWith("chain.")).toBe(true);
+    }
+    const all = await fetchEvents(token(OWNER), { limit: "200" });
+    expect(events.length).toBe(all.events.filter((e) => e.event.startsWith("chain.")).length);
+  });
+
+  it("写像に無い chain.* 行も admin 未満に届く(§6 は名前空間全体をクラス 1 とする — R1)", async () => {
+    // verify は admin を要求しない(全メンバーが実行できる)。可視性述語が
+    // 写像済みの名前だけを許すと、偽造行はサーバー側で落ちて reader の verify に
+    // 1 行も届かず、R1 で閉じたはずの偽造方向の被覆漏れが非 admin では残る
+    // (pullfrog / Cursor Security Reviewer 指摘)
+    await seedProjectActivity();
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, chain_seq) VALUES ((SELECT MAX(seq) + 1 FROM audit_events), ?, ?, 'chain.role_granted', 'user', 2)",
+      "ab".repeat(16),
+      Date.now(),
+    );
+    for (const viewer of [READER, MEMBER, OWNER]) {
+      const { status, events } = await fetchEvents(token(viewer), {
+        eventPrefix: "chain.",
+        limit: "200",
+      });
+      expect(status).toBe(200);
+      expect(eventNames(events)).toContain("chain.role_granted");
+    }
+    // クラス 2(他人の var.read / dek.registered)は admin 未満に見えないまま —
+    // 名前空間の前置許可がクラス 2 の穴になっていないこと
+    const readerAll = await fetchEvents(token(READER), { limit: "200" });
+    expect(readerAll.events.some((event) => event.event === "dek.registered")).toBe(false);
+    for (const event of readerAll.events) {
+      expect(isClass1Event(event.event) || event.actor.userId === READER).toBe(true);
+    }
+  });
+
+  it("eventPrefix はワイルドカード意味論を持たない(LIKE ではなく前置比較)", async () => {
+    await seedProjectActivity();
+    // LIKE 実装なら "%" は全一致・"_" は 1 文字ワイルドカードとして働いてしまう
+    for (const eventPrefix of ["%", "_hain.", "chain%"]) {
+      const { status, events } = await fetchEvents(token(OWNER), { eventPrefix, limit: "200" });
+      expect(status).toBe(200);
+      expect(events).toHaveLength(0);
     }
   });
 

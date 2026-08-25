@@ -71,6 +71,7 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
               ...(query.before === undefined ? {} : { beforeRowId: query.before }),
               ...(query.limit === undefined ? {} : { limit: query.limit }),
               ...(query.event === undefined ? {} : { event: query.event }),
+              ...(query.eventPrefix === undefined ? {} : { eventPrefix: query.eventPrefix }),
               ...(query.actorUserId === undefined ? {} : { actorUserId: query.actorUserId }),
               ...(query.targetUserId === undefined ? {} : { targetUserId: query.targetUserId }),
               ...(query.variableId === undefined ? {} : { variableId: query.variableId }),

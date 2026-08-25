@@ -39,6 +39,7 @@ import {
   makeD1AuditRepo,
   orgAuditInsert,
   userAuditInsert,
+  userAuditInsertWithPayloadSql,
 } from "./audit.ts";
 import {
   apiTokens,
@@ -378,6 +379,9 @@ export interface TokenRepoShape {
    * (device 交換の再発行 = ローテーション)。delete + insert を D1 の atomic
    * batch で行い、並行発行でも同名トークンが複数残らない(UNIQUE (user_id, name)
    * が最終防衛)。
+   *
+   * 置換された旧トークン id は `auth.token_created` の payload に
+   * `replacedTokenId` として載る(新規発行では現れない — AUDIT_SPEC §3.1)。
    */
   readonly replaceForUserAndName: (token: NewApiToken) => Effect.Effect<void>;
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
@@ -393,11 +397,32 @@ export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("Tok
 function makeTokenRepo(db: Db): TokenRepoShape {
   return {
     // auth.token_created を同一 batch で記録する(AUDIT_SPEC §3.1)。同名旧行の
-    // 削除はローテーションの一部で独立イベントにしない(旧トークン id を知る
-    // には先行 SELECT が要り、発行の意味論も「置換」1 つで足りる)
+    // 削除はローテーションの一部なので独立イベント(auth.token_revoked)には
+    // しないが、**置換されたこと自体**は発行行に載せる(deepsec R6): device 交換の
+    // tokenName は呼び出し側が選べるため、GitHub identity を奪った第三者が被害者の
+    // 既存トークン名を指定してそのトークンを黙って無効化できる — 発行行だけでは
+    // 「なぜ動かなくなったか」がログから再構成できない。
+    //
+    // 置換対象 id は payload を SQL 側で組んで拾う: 先行 SELECT を足すと、
+    // 読みと batch の間に別の並行ローテーションが挟まって実際に消えた行と
+    // 食い違う。json_patch は値 NULL のキーを**削除**する(RFC 7386 のマージ
+    // 意味論)ので、新規発行(旧行なし)では payload の形が従来どおりになる
     replaceForUserAndName: (token) =>
       run(async () => {
+        const basePayload = JSON.stringify({
+          tokenId: token.id,
+          name: token.name,
+          scopes: token.scopes,
+        });
+        const replacedTokenId = sql`(select ${apiTokens.id} from ${apiTokens} where ${apiTokens.userId} = ${token.userId} and ${apiTokens.name} = ${token.name})`;
         await db.batch([
+          // 監査行を**削除より前**に置く: 置換対象 id は消える行から読むため
+          userAuditInsertWithPayloadSql(
+            db,
+            token.createdAtMs,
+            { event: "auth.token_created", actor: { userId: token.userId } },
+            sql<string>`json_patch(${basePayload}, json_object('replacedTokenId', ${replacedTokenId}))`,
+          ),
           db
             .delete(apiTokens)
             .where(and(eq(apiTokens.userId, token.userId), eq(apiTokens.name, token.name))),
@@ -411,11 +436,6 @@ function makeTokenRepo(db: Db): TokenRepoShape {
             expiresAt: null,
             createdAt: token.createdAtMs,
             lastUsedAt: null,
-          }),
-          userAuditInsert(db, token.createdAtMs, {
-            event: "auth.token_created",
-            actor: { userId: token.userId },
-            payload: { tokenId: token.id, name: token.name, scopes: token.scopes },
           }),
         ]);
       }),

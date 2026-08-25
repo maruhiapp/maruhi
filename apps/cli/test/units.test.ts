@@ -20,6 +20,7 @@ import {
 import { toCliError } from "../src/failure.ts";
 import { CliIo } from "../src/io.ts";
 import {
+  Keychain,
   masterKeyEntryName,
   parseStoredMasterKey,
   parseStoredToken,
@@ -32,6 +33,7 @@ import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import {
   cryptoBackendUsable,
   resolveServerOrigin,
+  storeMasterKeyGuarded,
   unsupportedCryptoCause,
   unsupportedCryptoMessage,
 } from "../src/session.ts";
@@ -360,6 +362,71 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
   };
 }
 
+describe("storeMasterKeyGuarded(上書き検出つき保存 — deepsec R2)", () => {
+  const ENTRY = masterKeyEntryName("https://maruhi.test", "user-1");
+
+  /**
+   * 並行実行を模す Keychain: `onSet` で「自分の書き込みの前後に他プロセスが
+   * 書いた」状況を注入する。OS キーチェーンに条件付き書き込みが無い以上、
+   * 固定できるのは「後勝ちを検出して失敗すること」である
+   */
+  const fakeKeychain = (input: {
+    readonly initial?: string;
+    readonly onSet?: (store: Map<string, string>) => void;
+  }) => {
+    const store = new Map<string, string>();
+    if (input.initial !== undefined) {
+      store.set(ENTRY, input.initial);
+    }
+    return {
+      store,
+      layer: Layer.succeed(Keychain, {
+        get: (name: string) => Effect.sync(() => store.get(name) ?? null),
+        set: (name: string, value: string) =>
+          Effect.sync(() => {
+            store.set(name, value);
+            input.onSet?.(store);
+          }),
+        remove: (name: string) => Effect.sync(() => void store.delete(name)),
+      }),
+    };
+  };
+
+  it("空のエントリへは保存できる", async () => {
+    const keychain = fakeKeychain({});
+    const exit = await Effect.runPromiseExit(
+      storeMasterKeyGuarded(ENTRY, "record-mine").pipe(Effect.provide(keychain.layer)),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(keychain.store.get(ENTRY)).toBe("record-mine");
+  });
+
+  it("判定と書き込みの間に現れたレコードは上書きしない", async () => {
+    // ensureNoStoredMasterKey の後で他プロセスが書いた形。素の set は
+    // 後勝ちで相手の鍵を黙って消していた
+    const keychain = fakeKeychain({ initial: "record-other" });
+    const exit = await Effect.runPromiseExit(
+      storeMasterKeyGuarded(ENTRY, "record-mine").pipe(Effect.provide(keychain.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("at the same time");
+    expect(keychain.store.get(ENTRY)).toBe("record-other");
+  });
+
+  it("書き込み直後に上書きされたら失敗する(リカバリー発行へ進ませない)", async () => {
+    // 自分の書き込みの直後に他プロセスが書いた形。読み戻しが自分のレコードで
+    // ないことを検出し、破棄された鍵のリカバリーブロブ登録を防ぐ
+    const keychain = fakeKeychain({
+      onSet: (store) => store.set(ENTRY, "record-other"),
+    });
+    const exit = await Effect.runPromiseExit(
+      storeMasterKeyGuarded(ENTRY, "record-mine").pipe(Effect.provide(keychain.layer)),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("no recovery code was issued");
+  });
+});
+
 describe("runOp", () => {
   /** 子プロセスを起動しないランナー(起動まで到達したら分かるようにする)。 */
   const spawnedNothing = Layer.succeed(ProcessRunner, {
@@ -644,11 +711,64 @@ describe("buildInjectionEnv", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
+  });
+
+  it("R3 で追加した「別プログラムを起動する」名前への注入も拒否する", async () => {
+    for (const name of [
+      // 子プロセスが起動する先(pager / editor / browser / askpass)
+      "LESSOPEN",
+      "LESSCLOSE",
+      "PAGER",
+      "MANPAGER",
+      "EDITOR",
+      "VISUAL",
+      "BROWSER",
+      "SSH_ASKPASS",
+      "SUDO_ASKPASS",
+      // インタプリタの初期化フックとモジュール探索
+      "LUA_INIT",
+      "LUA_PATH",
+      "LUA_CPATH",
+      "PSModulePath", // 大文字化比較(Windows の非区別)への防衛
+      // ローダ・補助データの探索先
+      "GLIBC_TUNABLES",
+      "MALLOC_CONF",
+      "LOCPATH",
+      "NLSPATH",
+      "TERMINFO",
+      "TERMCAP",
+    ]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("execution-control");
+    }
     // 包括 prefix 拒否は採らない裁定(M2)の固定: NODE_ENV 等の正当な変数は通る
     const allowed = await Effect.runPromise(
       buildInjectionEnv([variable("NODE_ENV", "production"), variable("BUN_INSTALL", "x")]),
     );
     expect(Object.keys(allowed).toSorted()).toEqual(["BUN_INSTALL", "NODE_ENV"]);
+  });
+
+  it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する(deepsec S3)", async () => {
+    // resolveSession は MARUHI_TOKEN をキーチェーンより先に見るため、この名前の
+    // 変数を作れる共同メンバーは、被害者の `maruhi run -- make deploy` の中の
+    // 入れ子 `maruhi` を自分のトークンで認証させられる。予約名前空間なので
+    // 個別名ではなく prefix ごと塞ぐ(将来 MARUHI_* を増やしても穴が再発しない)
+    for (const name of [
+      "MARUHI_TOKEN",
+      "MARUHI_TOKEN_ORIGIN",
+      "maruhi_token", // 大文字化比較(Windows の非区別)への防衛
+      "MARUHI_FUTURE_KNOB", // 未知の MARUHI_* も prefix で覆う
+    ]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("execution-control");
+    }
+    // 予約名前空間の外は通る(MARUHI で始まるだけの別名を巻き込まない)
+    const allowed = await Effect.runPromise(
+      buildInjectionEnv([variable("MARUHISECRET", "x"), variable("APP_MARUHI_TOKEN", "y")]),
+    );
+    expect(Object.keys(allowed).toSorted()).toEqual(["APP_MARUHI_TOKEN", "MARUHISECRET"]);
   });
 });
 

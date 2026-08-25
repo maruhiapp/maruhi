@@ -54,6 +54,33 @@ function payloadOf(row: AuditRow): Record<string, unknown> {
   return row.payload === null ? {} : (JSON.parse(row.payload) as Record<string, unknown>);
 }
 
+async function countEvent(event: string): Promise<number | undefined> {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM user_audit_events WHERE event = ?")
+    .bind(event)
+    .first<{ n: number }>();
+  return row?.n;
+}
+
+/** login_failed の窓カウンタ(AUDIT_SPEC §3.1)を任意の状態に置く。 */
+async function seedLoginFailedWindow(
+  bucket: string,
+  windowStart: number,
+  recordedCount: number,
+): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO login_failed_windows (bucket, window_start, recorded_count, suppressed_count) VALUES (?, ?, ?, 0) ON CONFLICT(bucket) DO UPDATE SET window_start = excluded.window_start, recorded_count = excluded.recorded_count, suppressed_count = 0",
+  )
+    .bind(bucket, windowStart, recordedCount)
+    .run();
+}
+
+/** state 不一致で確実に auth.login_failed 経路へ入る callback 呼び出し。 */
+function callbackFailure(): Promise<Response> {
+  return SELF.fetch(`${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`, {
+    redirect: "manual",
+  });
+}
+
 beforeEach(async () => {
   await resetAuthDb();
 });
@@ -139,57 +166,70 @@ describe("Web OAuth ログイン(§3.1)", () => {
   });
 
   it("caps auth.login_failed writes per fixed window (unauthenticated write amplification bound)", async () => {
-    // 窓内が上限まで埋まっている状態を直接シードする(実リクエストの反復は遅い)
+    // 窓の状態はカウンタ行が持つ(deepsec R5: 監査ログを走査しない)ので、
+    // 上限到達はカウンタを直接シードして作る
     const now = Date.now();
-    const seed = env.DB.prepare(
-      "INSERT INTO user_audit_events (server_ts, event, actor_type, payload) VALUES (?, 'auth.login_failed', 'user', ?)",
-    );
-    await env.DB.batch(
-      Array.from({ length: LOGIN_FAILED_WINDOW_LIMIT }, () =>
-        seed.bind(now, JSON.stringify({ authMethod: "github_oauth", reason: "state-mismatch" })),
-      ),
-    );
-    const blocked = await SELF.fetch(
-      `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
-      { redirect: "manual" },
-    );
+    await seedLoginFailedWindow("github_oauth", now, LOGIN_FAILED_WINDOW_LIMIT);
+    const blocked = await callbackFailure();
     // 拒否応答は変わらず、監査行だけが増えない
     expect(blocked.status).toBe(400);
-    const capped = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
-    ).first<{ n: number }>();
-    expect(capped?.n).toBe(LOGIN_FAILED_WINDOW_LIMIT);
-    // 抑制は黙って行わない(deepsec M4): 上限到達の窓には集約マーカーが 1 行
-    // 残り、繰り返しの抑制でもマーカーは増えない(窓あたり 1 行)
+    expect(await countEvent("auth.login_failed")).toBe(0);
+    // 抑制は黙って行わない(deepsec M4/R4): 最初の抑制でマーカーが 1 行残る
     const suppressedOnce = await env.DB.prepare(
-      "SELECT COUNT(*) AS n, MAX(actor_user_id) AS actor FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
-    ).first<{ n: number; actor: string | null }>();
+      "SELECT COUNT(*) AS n, MAX(actor_user_id) AS actor, MAX(payload) AS payload FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
+    ).first<{ n: number; actor: string | null; payload: string }>();
     expect(suppressedOnce?.n).toBe(1);
     // actor は個別行と同じく user_id なし(外部 ID・IP を書かない — §1-2)
     expect(suppressedOnce?.actor).toBeNull();
-    const blockedAgain = await SELF.fetch(
-      `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
-      { redirect: "manual" },
-    );
-    expect(blockedAgain.status).toBe(400);
-    const suppressedStill = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
-    ).first<{ n: number }>();
-    expect(suppressedStill?.n).toBe(1);
+    // payload は auth_method・窓長・上限・抑制件数のみ(個別行の reason は運ばない)
+    expect(JSON.parse(suppressedOnce?.payload ?? "{}")).toEqual({
+      authMethod: "github_oauth",
+      windowMs: LOGIN_FAILED_WINDOW_MS,
+      limit: LOGIN_FAILED_WINDOW_LIMIT,
+      suppressedCount: 1,
+    });
+    // マーカーは抑制ごとには増えない(10 の冪のみ)
+    for (let i = 0; i < 8; i += 1) {
+      expect((await callbackFailure()).status).toBe(400);
+    }
+    expect(await countEvent("auth.login_failed_suppressed")).toBe(1);
+    // 10 件目の抑制でもう 1 行。件数から抑制の規模が読める
+    expect((await callbackFailure()).status).toBe(400);
+    expect(await countEvent("auth.login_failed_suppressed")).toBe(2);
+    const milestone = await env.DB.prepare(
+      "SELECT payload FROM user_audit_events WHERE event = 'auth.login_failed_suppressed' ORDER BY seq DESC LIMIT 1",
+    ).first<{ payload: string }>();
+    expect(JSON.parse(milestone?.payload ?? "{}")).toMatchObject({ suppressedCount: 10 });
 
-    // 窓の外へ出た行は数えない = 記録が再開する
-    await env.DB.prepare("UPDATE user_audit_events SET server_ts = ?")
-      .bind(now - LOGIN_FAILED_WINDOW_MS - 1000)
-      .run();
-    const recorded = await SELF.fetch(
-      `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
-      { redirect: "manual" },
+    // 窓が明けたら記録が再開する
+    await seedLoginFailedWindow(
+      "github_oauth",
+      now - LOGIN_FAILED_WINDOW_MS - 1000,
+      LOGIN_FAILED_WINDOW_LIMIT,
     );
-    expect(recorded.status).toBe(400);
-    const resumed = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
-    ).first<{ n: number }>();
-    expect(resumed?.n).toBe(LOGIN_FAILED_WINDOW_LIMIT + 1);
+    expect((await callbackFailure()).status).toBe(400);
+    expect(await countEvent("auth.login_failed")).toBe(1);
+  });
+
+  it("counts the cap per auth_method bucket, so one flooded path cannot blind the other (R4)", async () => {
+    // device flow 側の窓を使い切った状態で、Web OAuth の失敗は記録され続ける
+    await seedLoginFailedWindow("device_flow", Date.now(), LOGIN_FAILED_WINDOW_LIMIT);
+    const deviceBlocked = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
+    });
+    expect(deviceBlocked.status).toBe(400);
+    expect(await countEvent("auth.login_failed")).toBe(0);
+
+    expect((await callbackFailure()).status).toBe(400);
+    const events = await auditRows("user_audit_events");
+    const recorded = events.filter((row) => row.event === "auth.login_failed");
+    expect(recorded).toHaveLength(1);
+    expect(payloadOf(recorded[0] as AuditRow)).toEqual({
+      authMethod: "github_oauth",
+      reason: "state-mismatch",
+    });
   });
 });
 
@@ -219,10 +259,20 @@ describe("device flow(§3.1)", () => {
     await deviceToken(701);
     await deviceToken(701);
     const events = await auditRows("user_audit_events");
-    expect(events.filter((row) => row.event === "auth.token_created")).toHaveLength(2);
+    const created = events.filter((row) => row.event === "auth.token_created");
+    expect(created).toHaveLength(2);
     // 置換された旧行の削除はローテーションの一部であり、明示失効イベントに
     // ならない(§3.1 の線引きの否定側)
     expect(events.filter((row) => row.event === "auth.token_revoked")).toHaveLength(0);
+    // が、置換されたことと対象はログから再構成できる(deepsec R6): 1 本目の
+    // 発行行にはキーが無く、2 本目は 1 本目の id を replacedTokenId に持つ
+    const first = payloadOf(created[0] as AuditRow);
+    const second = payloadOf(created[1] as AuditRow);
+    expect(first["replacedTokenId"]).toBeUndefined();
+    expect(second["replacedTokenId"]).toBe(first["tokenId"]);
+    // 生き残るトークンは 2 本目のもの(監査の主張と DB の状態が一致する)
+    const surviving = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
+    expect(surviving?.id).toBe(second["tokenId"]);
     // ローテーションで残る実トークンは 1 本のまま
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;

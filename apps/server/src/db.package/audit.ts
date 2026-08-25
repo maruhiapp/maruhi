@@ -15,12 +15,12 @@
 
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
-import { and, count, desc, eq, gte, inArray, isNull, lt, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
 import { randomHex } from "../ids.ts";
-import { orgAuditEvents, userAuditEvents } from "./schema.ts";
+import { loginFailedWindows, orgAuditEvents, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -67,6 +67,21 @@ export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInp
 }
 
 /**
+ * payload を SQL 式で組む版の追記(§3.1)。同一 batch 内の後続文が消す行から
+ * payload を導く必要がある場合に使う(トークンローテーションの置換対象 id —
+ * AUDIT_SPEC §3.1 / deepsec R6)。呼び出し側が JS で組める payload には
+ * `userAuditInsert` を使うこと。
+ */
+export function userAuditInsertWithPayloadSql(
+  db: Db,
+  serverTs: number,
+  event: Omit<D1AuditEventInput, "payload">,
+  payload: SQL<string>,
+) {
+  return db.insert(userAuditEvents).values({ ...rowOf(event, serverTs), payload });
+}
+
+/**
  * `changes() = 1` ガード付き INSERT…SELECT(AUDIT_SPEC §5.2 — 直前の条件付き
  * UPDATE が効いたときだけ監査行を挿入する)用の共有選択列。rowOf と同じ列写像の
  * SELECT 版 — 呼び出し側(invites の CAS・recovery の取得計数)が列リストを
@@ -105,21 +120,34 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
 /**
  * auth.login_failed の記録上限(AUDIT_SPEC §3.1)。login_failed は唯一の
  * 未認証経路からの D1 書き込みであり、無効リクエストの洪水による書き込み増幅
- * (可用性・コスト面の攻撃)を有界にするため、固定窓の全体上限を超えた分は
- * 記録しない。読み → 書きの 2 文で、並行リクエスト下では僅かに超過しうる
- * ベストエフォート(recovery の取得計数 — repos.ts — と同じ性質)。
+ * (可用性・コスト面の攻撃)を有界にするため、固定窓の上限を超えた分は
+ * 記録しない。上限は `auth_method` 単位のバケットで数える(deepsec R4):
+ * 単一枠だと片方の経路への洪水がもう片方の標的型失敗まで消してしまう。
  */
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
 
 /**
- * 上限到達の窓に 1 行だけ残す集約マーカー(deepsec M4 / AUDIT_SPEC §3.1)。
- * 全体上限は全 actor で共有されるため、匿名の失敗洪水が枠を使い切ると後続の
- * 標的型失敗が黙って記録されなくなる — 抑制が**起きたこと自体**を監査可能に
- * する。個別行と同じく actor は user_id なしの type=user(外部 provider ID・
- * IP を append-only actor に書かない — §1-2)。
+ * 上限到達の窓に残す集約マーカー(deepsec M4/R4 / AUDIT_SPEC §3.1)。抑制が
+ * **起きたこと**に加えて**量**も観測可能にするため、バケットの抑制件数が 10 の
+ * 冪(1・10・100・…)に達した時点で 1 行残す — 書き込みは抑制件数に対して対数的
+ * (洪水下でも窓あたり数行)。個別行と同じく actor は user_id なしの type=user
+ * (外部 provider ID・IP を append-only actor に書かない — §1-2)。
  */
 const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
+
+/** 抑制マーカーを残す件数か(1・10・100・… — 上の doc)。 */
+function isSuppressionMilestone(suppressedCount: number): boolean {
+  if (suppressedCount < 1) {
+    return false;
+  }
+  // 10 進の桁上がりちょうどか(log10 の丸め誤差を避けて整数の割り算で判定する)
+  let remaining = suppressedCount;
+  while (remaining % 10 === 0) {
+    remaining /= 10;
+  }
+  return remaining === 1;
+}
 
 // ---------------------------------------------------------------------------
 // 読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング(新しい順)。
@@ -162,10 +190,17 @@ interface D1AuditRepoShape {
   /** 単独イベントの追記(主データ書き込みを伴わないイベント用)。 */
   readonly appendUserEvent: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
   /**
-   * auth.login_failed 専用の追記。固定窓(1 時間)の記録上限を超えたら黙って
-   * 落とす(SHOULD 記録 — 洪水そのものは窓内の上限到達として観測できる)。
+   * auth.login_failed 専用の追記。固定窓(1 時間)の記録上限を超えたら個別行は
+   * 落とし、抑制マーカーだけ残す(SHOULD 記録 — AUDIT_SPEC §3.1)。
+   *
+   * `bucket` は上限を数える単位(現状 auth_method 種別名 — deepsec R4)。
+   * 発信元識別子を渡さないこと(§1-2 の線引き。理由は §3.1)。
    */
-  readonly appendLoginFailed: (event: D1AuditEventInput, serverTs: number) => Effect.Effect<void>;
+  readonly appendLoginFailed: (
+    event: D1AuditEventInput,
+    serverTs: number,
+    bucket: string,
+  ) => Effect.Effect<void>;
   /**
    * invite.* の project_id スコープ読み取り(§7 の例外規定)。権限軸(当該
    * プロジェクトのチェーン role admin 以上 × トークンスコープ admin)は
@@ -324,38 +359,59 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
       Effect.promise(async () => {
         await userAuditInsert(db, serverTs, event);
       }),
-    appendLoginFailed: (event, serverTs) =>
+    appendLoginFailed: (event, serverTs, bucket) =>
       Effect.promise(async () => {
-        // 個別行の計数と抑制マーカーの有無は**同じ 1 クエリ**の条件付き集計で
-        // 読む(レビューループ 2): 上限到達 = 洪水中こそが常態の経路なので、
-        // クエリを 2 本に増やすと防ぎたい読み増幅を自分で作ることになる
-        const row = await db
-          .select({
-            failures: count(
-              sql`case when ${userAuditEvents.event} = 'auth.login_failed' then 1 end`,
-            ),
-            markers: count(
-              sql`case when ${userAuditEvents.event} = ${LOGIN_FAILED_SUPPRESSED_EVENT} then 1 end`,
-            ),
+        // 窓の計数は監査ログの走査ではなく専用カウンタ行で行う(deepsec R5):
+        // append-only で伸び続ける user_audit_events を未認証経路の追記ごとに
+        // 走査すると、有界にしたい洪水そのものがコスト増幅器になる。窓の
+        // リセット・加算・上限判定は 1 文の条件付き UPSERT に畳み、RETURNING の
+        // 新しい計数から判定を導く(recovery 取得計数 — repos.ts — と同じ形)
+        const expired = sql`${serverTs} - ${loginFailedWindows.windowStart} >= ${LOGIN_FAILED_WINDOW_MS}`;
+        const underLimit = sql`${loginFailedWindows.recordedCount} < ${LOGIN_FAILED_WINDOW_LIMIT}`;
+        const counted = await db
+          .insert(loginFailedWindows)
+          .values({
+            bucket,
+            windowStart: serverTs,
+            recordedCount: 1,
+            suppressedCount: 0,
           })
-          .from(userAuditEvents)
-          .where(
-            and(
-              inArray(userAuditEvents.event, ["auth.login_failed", LOGIN_FAILED_SUPPRESSED_EVENT]),
-              gte(userAuditEvents.serverTs, serverTs - LOGIN_FAILED_WINDOW_MS),
-            ),
-          )
+          .onConflictDoUpdate({
+            target: loginFailedWindows.bucket,
+            set: {
+              windowStart: sql`case when ${expired} then ${serverTs} else ${loginFailedWindows.windowStart} end`,
+              recordedCount: sql`case when ${expired} then 1 when ${underLimit} then ${loginFailedWindows.recordedCount} + 1 else ${loginFailedWindows.recordedCount} end`,
+              suppressedCount: sql`case when ${expired} then 0 when ${underLimit} then ${loginFailedWindows.suppressedCount} else ${loginFailedWindows.suppressedCount} + 1 end`,
+            },
+          })
+          .returning({
+            recordedCount: loginFailedWindows.recordedCount,
+            suppressedCount: loginFailedWindows.suppressedCount,
+          })
           .get();
-        if ((row?.failures ?? 0) >= LOGIN_FAILED_WINDOW_LIMIT) {
-          // 個別行は落とすが、抑制を黙って行わない(deepsec M4): 窓内にまだ
-          // マーカーが無ければ auth.login_failed_suppressed を 1 行残す。読み →
-          // 書きの 2 文なので並行時に僅かに重複しうるベストエフォート(本体の
-          // 計数と同じ性質 — マーカー自体の書き込みも窓あたり定数件に有界)
-          if ((row?.markers ?? 0) === 0) {
+        // 窓内では recorded が上限まで伸びてから suppressed が伸びる(両方が
+        // 同時に進むことはない)。よって「上限に達していて、かつ抑制が 1 件以上」
+        // が抑制されたリクエストの十分条件になる — 上限ちょうどの**最後の許可**は
+        // suppressed = 0 のまま通る
+        const recorded = counted?.recordedCount ?? 1;
+        const suppressed = counted?.suppressedCount ?? 0;
+        if (recorded >= LOGIN_FAILED_WINDOW_LIMIT && suppressed >= 1) {
+          // 個別行は落とすが、抑制を黙って行わない(deepsec M4/R4): 抑制件数が
+          // 10 の冪に達した時点でマーカーを 1 行残す。行の密度と最後の件数から
+          // 抑制の規模が読め、書き込みは件数に対して対数的に有界
+          if (isSuppressionMilestone(suppressed)) {
             await userAuditInsert(db, serverTs, {
               event: LOGIN_FAILED_SUPPRESSED_EVENT,
               actor: {},
-              payload: { windowMs: LOGIN_FAILED_WINDOW_MS, limit: LOGIN_FAILED_WINDOW_LIMIT },
+              // 個別行の reason は運ばない(AUDIT_SPEC §3.1: マーカーの payload は
+              // auth_method・窓長・上限・抑制件数のみ)。マーカーはこの 1 件では
+              // なく窓の状態を表すものなので、最後の失敗理由を代表させない
+              payload: {
+                authMethod: bucket,
+                windowMs: LOGIN_FAILED_WINDOW_MS,
+                limit: LOGIN_FAILED_WINDOW_LIMIT,
+                suppressedCount: suppressed,
+              },
             });
           }
           return;

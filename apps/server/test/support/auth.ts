@@ -28,6 +28,8 @@ const AUTH_TABLES = [
   "invitations",
   "user_audit_events",
   "org_audit_events",
+  // login_failed の窓カウンタ(AUDIT_SPEC §3.1 — 監査行ではない可変状態)
+  "login_failed_windows",
 ];
 
 const SEED_TIME_MS = 1754006400000;

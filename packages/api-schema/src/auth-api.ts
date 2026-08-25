@@ -139,13 +139,16 @@ export const authGroup = HttpApiGroup.make("auth")
       // 成功時はさらに /user・/user/emails)を伴うため、クエリに明示的な上限
       // (512 文字)を課す(device/exchange と同じ論拠 — セキュリティレビュー
       // L-3 / 追補 3 A-6)。code の形式は OAuth 仕様が定めないため長さのみ検査
-      // する(実 GitHub の code / state はこの上限より桁違いに短い)
+      // する(実 GitHub の code / state はこの上限より桁違いに短い)。
+      // 長さ上限はペイロードを縛るだけで頻度は縛らないため、交換の**回数**は
+      // 発信元 IP 単位の Workers Rate Limiting が有界にする(deepsec R7 —
+      // device/exchange と同じ OAuth App 共有クォータを消費する経路)
       query: {
         code: Schema.String.check(Schema.isMaxLength(512)),
         state: Schema.String.check(Schema.isMaxLength(512)),
       },
       success: Redirect,
-      error: [AuthFlowError],
+      error: [AuthFlowError, AuthRateLimitedError],
     }),
   )
   .add(
