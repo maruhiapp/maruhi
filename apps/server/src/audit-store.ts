@@ -11,7 +11,7 @@
 //   ミラー検証 — `maruhi audit verify` — と同一実装を共有する)
 
 import type { AuditEventRecord } from "@maruhi/core";
-import { CHAIN_MIRROR_EVENTS } from "@maruhi/core";
+import { CHAIN_MIRROR_EVENT_PREFIX } from "@maruhi/core";
 import { Context, Layer } from "effect";
 
 import { randomHex } from "./ids.ts";
@@ -96,19 +96,24 @@ export interface AuditRotationRead {
 // ---------------------------------------------------------------------------
 
 /**
- * クラス 1(チェーン role reader 以上 = 全メンバー)のイベント名(§6)。
- * chain.* は §6 の定義どおり**全部**クラス 1 なので共有写像の像
- * (CHAIN_MIRROR_EVENTS — ChainOp の全域マップ由来)から導出する: 将来の
- * op 追加でここだけ漏れると、そのミラー行が admin 未満に不可視になり、
- * 全メンバー実行可能なはずの `maruhi audit verify` が健全なサーバーを
- * 「欠落 = 削除の隠蔽」と誤断定する(pullfrog 指摘)。
+ * クラス 1(チェーン role reader 以上 = 全メンバー)の**非 chain** イベント名
+ * (§6)。`chain.` 名前空間は名前の列挙ではなく前置一致で覆う
+ * ({@link isClass1Event}) — §6 は名前空間**全体**をクラス 1 と定めており、
+ * 写像済みの名前だけを許すと 2 方向で壊れる:
+ *
+ * 1. 将来の op 追加で列挙が漏れると、そのミラー行が admin 未満に不可視になり、
+ *    全メンバー実行可能なはずの `maruhi audit verify` が健全なサーバーを
+ *    「欠落 = 削除の隠蔽」と誤断定する(pullfrog 指摘)
+ * 2. 写像に**無い** `chain.*` を名乗る偽造行がサーバー側で落とされ、admin 未満の
+ *    verify には 1 行も届かない — R1 で閉じたはずの偽造方向の被覆漏れが、
+ *    非 admin では残ったままになる(pullfrog / Cursor Security Reviewer 指摘)
+ *
  * **chain.* 以外は明示 allowlist の default-deny**: ここに無いイベント
  * (var.read / dek.registered / dek.deleted、および将来追加される非 chain
  * イベント)はクラス 2 扱いで admin 未満には見えない — イベントを増やした
  * ときに安全側へ倒す。
  */
-export const CLASS1_EVENTS: readonly string[] = [
-  ...CHAIN_MIRROR_EVENTS,
+const CLASS1_EVENTS: readonly string[] = [
   "env.created",
   "env.renamed",
   "env.deleted",
@@ -123,6 +128,15 @@ export const CLASS1_EVENTS: readonly string[] = [
   "rotation.recommended",
   "rotation.dismissed",
 ];
+
+/**
+ * クラス 1 か(§6): `chain.` 名前空間の全体 + {@link CLASS1_EVENTS}。
+ * SQL 側の可視性述語({@link visibilityCondition})と同じ判定であり、
+ * 片方だけ変えると応答とテストの主張が食い違う。
+ */
+export function isClass1Event(event: string): boolean {
+  return event.startsWith(CHAIN_MIRROR_EVENT_PREFIX) || CLASS1_EVENTS.includes(event);
+}
 
 /**
  * 可視性の指定(§6)。admin = 全行(呼び出し側で「チェーン role admin 以上 ×
@@ -319,15 +333,23 @@ const EVENT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type,
 /** 可視性クラス(§6)の WHERE 条件(本クエリとカーソル解決で共用)。 */
 function visibilityCondition(
   visibility: AuditVisibility,
-): { readonly clause: string; readonly bindings: readonly string[] } | null {
+): { readonly clause: string; readonly bindings: readonly (string | number)[] } | null {
   if (visibility.kind === "admin") {
     return null;
   }
   // §6 / §7: クラス 2 の行は admin 未満に対して存在しないかのように振る舞う。
-  // 本人が actor の行はクラスに依らず本人が閲覧可
+  // 本人が actor の行はクラスに依らず本人が閲覧可。
+  // chain.* は名前の列挙ではなく前置一致で覆う(isClass1Event と同じ判定 —
+  // 理由は CLASS1_EVENTS の doc)。前置比較は LIKE ではなく substr で行い、
+  // ワイルドカード意味論を持たせない
   return {
-    clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR actor_user_id = ?)`,
-    bindings: [...CLASS1_EVENTS, visibility.selfUserId],
+    clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR substr(event, 1, ?) = ? OR actor_user_id = ?)`,
+    bindings: [
+      ...CLASS1_EVENTS,
+      CHAIN_MIRROR_EVENT_PREFIX.length,
+      CHAIN_MIRROR_EVENT_PREFIX,
+      visibility.selfUserId,
+    ],
   };
 }
 
