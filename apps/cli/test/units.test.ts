@@ -748,6 +748,28 @@ describe("buildInjectionEnv", () => {
     );
     expect(Object.keys(allowed).toSorted()).toEqual(["BUN_INSTALL", "NODE_ENV"]);
   });
+
+  it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する(deepsec S3)", async () => {
+    // resolveSession は MARUHI_TOKEN をキーチェーンより先に見るため、この名前の
+    // 変数を作れる共同メンバーは、被害者の `maruhi run -- make deploy` の中の
+    // 入れ子 `maruhi` を自分のトークンで認証させられる。予約名前空間なので
+    // 個別名ではなく prefix ごと塞ぐ(将来 MARUHI_* を増やしても穴が再発しない)
+    for (const name of [
+      "MARUHI_TOKEN",
+      "MARUHI_TOKEN_ORIGIN",
+      "maruhi_token", // 大文字化比較(Windows の非区別)への防衛
+      "MARUHI_FUTURE_KNOB", // 未知の MARUHI_* も prefix で覆う
+    ]) {
+      const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("execution-control");
+    }
+    // 予約名前空間の外は通る(MARUHI で始まるだけの別名を巻き込まない)
+    const allowed = await Effect.runPromise(
+      buildInjectionEnv([variable("MARUHISECRET", "x"), variable("APP_MARUHI_TOKEN", "y")]),
+    );
+    expect(Object.keys(allowed).toSorted()).toEqual(["APP_MARUHI_TOKEN", "MARUHISECRET"]);
+  });
 });
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);

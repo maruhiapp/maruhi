@@ -109,8 +109,18 @@ const DENIED_ENV_NAMES = new Set([
 ]);
 // NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない(M2 の要検討事項の裁定):
 // NODE_ENV / PYTHONDONTWRITEBYTECODE 等、実行制御でない正当な変数を大量に
-// 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す
-const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_"];
+// 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す。
+//
+// `MARUHI_` だけは包括 prefix で塞ぐ(deepsec S3)。上の裁定と矛盾しない理由は
+// **maruhi 自身が予約する名前空間**だから: 巻き込む「正当な変数」が原理的に
+// 存在せず(この名前空間の意味は maruhi が決める)、逆にここへ 1 つでも通すと
+// 入れ子の `maruhi` の挙動を注入側が決められる。実際 `MARUHI_TOKEN` /
+// `MARUHI_TOKEN_ORIGIN` は resolveSession がキーチェーンより**先に**見るため、
+// 悪意あるメンバーがその名前の変数に自分の PAT を入れておくと、被害者の
+// `maruhi run -- make deploy` の中の `maruhi pull` が攻撃者として認証される
+// (変数名は AAD に束縛されない平文メタデータ = 共同メンバーが決められる)。
+// 個別名の列挙にすると将来 MARUHI_* を増やしたときに同じ穴が再発する
+const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "MARUHI_"];
 
 function isDeniedEnvName(name: string): boolean {
   const upper = name.toUpperCase();
