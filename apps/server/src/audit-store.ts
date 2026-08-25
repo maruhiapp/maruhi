@@ -97,8 +97,9 @@ export interface AuditRotationRead {
 
 /**
  * クラス 1(チェーン role reader 以上 = 全メンバー)の**非 chain** イベント名
- * (§6)。`chain.` 名前空間は名前の列挙ではなく前置一致で覆う
- * ({@link isClass1Event}) — §6 は名前空間**全体**をクラス 1 と定めており、
+ * (§6)。`chain.` 名前空間と `chain_seq IS NOT NULL` の provenance claim は
+ * 名前の列挙ではなく SQL の述語で覆う({@link visibilityCondition}) —
+ * §6 は名前空間**全体**と chain provenance の検証材料をクラス 1 と定めており、
  * 写像済みの名前だけを許すと 2 方向で壊れる:
  *
  * 1. 将来の op 追加で列挙が漏れると、そのミラー行が admin 未満に不可視になり、
@@ -107,6 +108,11 @@ export interface AuditRotationRead {
  * 2. 写像に**無い** `chain.*` を名乗る偽造行がサーバー側で落とされ、admin 未満の
  *    verify には 1 行も届かない — R1 で閉じたはずの偽造方向の被覆漏れが、
  *    非 admin では残ったままになる(pullfrog / Cursor Security Reviewer 指摘)
+ * 3. `chain.*` の外で `chain_seq` を名乗る偽造行がクラス 2 として落ちると、
+ *    verify は名前空間の 1 歩外にある provenance claim を検査できない
+ *    (deepsec S1)。正直な書き手でこの形は存在しないため、chain_seq の存在を
+ *    クラス 1 に昇格するのは正常なクラス 2 行を開示せず、tamper evidence だけを
+ *    全メンバーへ届ける
  *
  * **chain.* 以外は明示 allowlist の default-deny**: ここに無いイベント
  * (var.read / dek.registered / dek.deleted、および将来追加される非 chain
@@ -159,6 +165,8 @@ interface AuditEventsQuery {
   readonly event: string | null;
   /** event 名前空間の前置一致(§7 — deepsec R1)。LIKE ではなく substr 比較。 */
   readonly eventPrefix: string | null;
+  /** chain_seq が NULL でない行だけを返す(§7 — deepsec S1)。 */
+  readonly chainSeqPresent: boolean;
   readonly actorUserId: string | null;
   readonly targetUserId: string | null;
   readonly variableId: string | null;
@@ -340,10 +348,12 @@ function visibilityCondition(
   // §6 / §7: クラス 2 の行は admin 未満に対して存在しないかのように振る舞う。
   // 本人が actor の行はクラスに依らず本人が閲覧可。
   // chain.* は名前の列挙ではなく前置一致で覆う(isClass1Event と同じ判定 —
-  // 理由は CLASS1_EVENTS の doc)。前置比較は LIKE ではなく substr で行い、
+  // 理由は CLASS1_EVENTS の doc)。さらに chain_seq を持つ行はイベント名に
+  // かかわらず provenance claim = 全メンバーが検証すべき tamper evidence として
+  // クラス 1 にする(deepsec S1)。前置比較は LIKE ではなく substr で行い、
   // ワイルドカード意味論を持たせない
   return {
-    clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR substr(event, 1, ?) = ? OR actor_user_id = ?)`,
+    clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR substr(event, 1, ?) = ? OR chain_seq IS NOT NULL OR actor_user_id = ?)`,
     bindings: [
       ...CLASS1_EVENTS,
       CHAIN_MIRROR_EVENT_PREFIX.length,
@@ -399,6 +409,9 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
     // substr 比較は長さと値の 2 バインドだけで、特別扱いの文字を持たない
     conditions.push("substr(event, 1, ?) = ?");
     bindings.push(query.eventPrefix.length, query.eventPrefix);
+  }
+  if (query.chainSeqPresent) {
+    conditions.push("chain_seq IS NOT NULL");
   }
   filter("actor_user_id = ?", query.actorUserId);
   filter("target_user_id = ?", query.targetUserId);

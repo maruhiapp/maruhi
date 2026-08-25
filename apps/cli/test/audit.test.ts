@@ -5,7 +5,8 @@
 //     する。payload の名前スナップショット(サーバー申告)は「記録」として
 //     区別表示され、表示名の位置に昇格しない(TCB 規律 — AUDIT_SPEC §7)
 //  2. chain.* ミラー行は検証済みチェーンと突合され(共有写像 chainMirrorEvent)、
-//     一致は 突合=OK、不一致は警告 + 終了コード 1(改竄の証拠 — §6)
+//     一致は 突合=OK、不一致は警告 + 終了コード 1。chain.* 外で chain_seq を
+//     名乗る行も無ラベル表示せず整合性違反にする(改竄の証拠 — §6 / S1)
 //  3. verify はミラーの全単射検証(§1-5): 欠落(削除の隠蔽)・改変・重複の
 //     いずれも検出して終了コード 1
 //  4. invites / self は D1 側の行を表示し、self は要監視イベント
@@ -122,6 +123,7 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
     }
     const eventFilter = request.query["event"];
     const prefixFilter = request.query["eventPrefix"];
+    const chainSeqPresent = request.query["chainSeqPresent"];
     const before = request.query["before"];
     const limit = Number(request.query["limit"] ?? "50");
     let cursorSeq = Number.POSITIVE_INFINITY;
@@ -137,6 +139,7 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
       .filter((row) =>
         prefixFilter === undefined ? true : String(row["event"]).startsWith(prefixFilter),
       )
+      .filter((row) => (chainSeqPresent === undefined ? true : row["chainSeq"] !== undefined))
       .filter((row) => (row["seq"] as number) < cursorSeq)
       .toSorted((a, b) => (b["seq"] as number) - (a["seq"] as number))
       .slice(0, limit);
@@ -288,6 +291,29 @@ describe("maruhi audit(list)", () => {
     expect(errors).toContain("actor.user_id");
   });
 
+  it("chain.* 外で chain_seq を名乗る行は明示的な不信ラベル + 終了コード 1(S1)", async () => {
+    const built = await baseChain();
+    const forged = {
+      ...pushRow(4),
+      event: "member.add",
+      chainSeq: 2,
+    };
+    const env = await startEnv(
+      await makeAuditServer({ built, rows: [...mirrorRowsOf(built), forged] }),
+      built.projectId,
+    );
+
+    expect(await runCli(["audit"], env.layer)).toBe(1);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("member.add");
+    expect(logs).toContain("chain_seq=2");
+    expect(logs).toContain(
+      "mirror=unverified (chain_seq is invalid outside the chain.* namespace)",
+    );
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("only chain.* mirror rows may carry chain provenance");
+  });
+
   it("--event と --before / --limit をそのままクエリへ写す", async () => {
     const built = await baseChain();
     // seq=9 の行を置き、そこから前(seq < 9)を row id カーソルで要求する
@@ -425,6 +451,34 @@ describe("maruhi audit verify(ミラー全単射検証 — §1-5 / §6)", () => 
     expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
   });
 
+  it("chain.* 外で chain_seq を名乗る偽造行も presence filter で取得して検出する(S1)", async () => {
+    const built = await baseChain();
+    const rows = mirrorRowsOf(built);
+    const forged = {
+      ...pushRow(9),
+      event: "chainx.grant",
+      chainSeq: 2,
+    };
+    const handlers = await makeAuditServer({ built, rows: [...rows, forged] });
+    const server = await MockServer.start([...handlers]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+
+    expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("outside the chain.* namespace");
+    expect(errors).toContain("chainx.grant");
+    expect(env.logs.join("\n")).not.toContain("Mirror bijection verification OK");
+    expect(
+      server.requests.some(
+        (request) =>
+          request.path.endsWith("/audit/events") && request.query["chainSeqPresent"] === "true",
+      ),
+    ).toBe(true);
+  });
+
   it("head 直後から連続する新しい行は偽造断定しないが、OK とも言わない(exit 1 + 再実行案内)", async () => {
     const built = await baseChain();
     const rows = mirrorRowsOf(built);
@@ -470,6 +524,34 @@ describe("maruhi audit invites / self", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("invite.created");
     expect(logs).toContain("inv-0001");
+  });
+
+  it("D1 経路の chain_seq も無ラベル表示せず整合性違反にする(S1)", async () => {
+    const built = await baseChain();
+    const handlers = [
+      ...(await makeAuditServer({ built, rows: mirrorRowsOf(built) })),
+      onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
+        status: 200,
+        json: {
+          events: [
+            {
+              id: idOf(13),
+              serverTs: BASE_TS,
+              event: "invite.created",
+              actor: { type: "user", userId: owner.userId },
+              projectId: built.projectId,
+              chainSeq: 2,
+            },
+          ],
+        },
+      })),
+    ];
+    const env = await startEnv(handlers, built.projectId);
+    expect(await runCli(["audit", "invites"], env.layer)).toBe(1);
+    expect(env.logs.join("\n")).toContain(
+      "chain_seq=2 (mirror=unverified (chain_seq is invalid on this audit endpoint))",
+    );
+    expect(env.errors.join("\n")).toContain("this endpoint does not store chain provenance");
   });
 
   it("self はアカウント系イベントを表示し、要監視イベントの含意を添える", async () => {

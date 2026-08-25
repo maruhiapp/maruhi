@@ -30,6 +30,8 @@ export interface AuditEventsQueryInput {
   readonly event?: string;
   /** event 名前空間の前置一致(AUDIT_SPEC §7 — deepsec R1)。 */
   readonly eventPrefix?: string;
+  /** chain_seq が NULL でない行だけを返す(AUDIT_SPEC §7 — deepsec S1)。 */
+  readonly chainSeqPresent?: true;
   readonly actorUserId?: string;
   readonly targetUserId?: string;
   readonly variableId?: string;
@@ -138,6 +140,7 @@ export const auditEventsProgram = (
           limit: resolvePageLimit(query.limit),
           event: query.event ?? null,
           eventPrefix: query.eventPrefix ?? null,
+          chainSeqPresent: query.chainSeqPresent === true,
           actorUserId: query.actorUserId ?? null,
           targetUserId: query.targetUserId ?? null,
           variableId: query.variableId ?? null,

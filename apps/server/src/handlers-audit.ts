@@ -29,6 +29,14 @@ function actorTypeOf(stored: string): AuditActorValue["type"] {
   return stored === "server" || stored === "system" ? stored : "user";
 }
 
+/** optional query を RPC 入力へ写す。undefined はキーごと落とす。 */
+function spreadIfDefined<K extends string, V>(
+  key: K,
+  value: V | undefined,
+): { readonly [P in K]?: V } {
+  return value === undefined ? {} : ({ [key]: value } as { [P in K]: V });
+}
+
 /**
  * D1 監査行 → ワイヤ形。`seq` は**誰にも**載せない(§7 — D1 の autoincrement は
  * デプロイメント全域の共有採番で、序数はテナント・ユーザーを跨ぐ活動量を漏らす)。
@@ -68,14 +76,18 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
           permission: "read",
           invoke: (stub, actor) =>
             stub.auditEvents(actor, {
-              ...(query.before === undefined ? {} : { beforeRowId: query.before }),
-              ...(query.limit === undefined ? {} : { limit: query.limit }),
-              ...(query.event === undefined ? {} : { event: query.event }),
-              ...(query.eventPrefix === undefined ? {} : { eventPrefix: query.eventPrefix }),
-              ...(query.actorUserId === undefined ? {} : { actorUserId: query.actorUserId }),
-              ...(query.targetUserId === undefined ? {} : { targetUserId: query.targetUserId }),
-              ...(query.variableId === undefined ? {} : { variableId: query.variableId }),
-              ...(query.environmentId === undefined ? {} : { environmentId: query.environmentId }),
+              ...spreadIfDefined("beforeRowId", query.before),
+              ...spreadIfDefined("limit", query.limit),
+              ...spreadIfDefined("event", query.event),
+              ...spreadIfDefined("eventPrefix", query.eventPrefix),
+              ...spreadIfDefined(
+                "chainSeqPresent",
+                query.chainSeqPresent === undefined ? undefined : (true as const),
+              ),
+              ...spreadIfDefined("actorUserId", query.actorUserId),
+              ...spreadIfDefined("targetUserId", query.targetUserId),
+              ...spreadIfDefined("variableId", query.variableId),
+              ...spreadIfDefined("environmentId", query.environmentId),
               scopeAdmin,
             }),
         });
