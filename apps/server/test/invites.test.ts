@@ -109,13 +109,21 @@ async function issueInvite(
   actorUserId: string,
   role: "reader" | "member" | "admin",
 ): Promise<{ id: string; token: string; expiresAtMs: number }> {
-  const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
+  const response = await issueInviteRequest(fixture, actorUserId, role);
+  expect(response.status).toBe(200);
+  return (await response.json()) as { id: string; token: string; expiresAtMs: number };
+}
+
+function issueInviteRequest(
+  fixture: DataFixture,
+  actorUserId: string,
+  role: "reader" | "member" | "admin",
+): Promise<Response> {
+  return SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
     method: "POST",
     headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, actorUserId)) },
     body: JSON.stringify({ role }),
   });
-  expect(response.status).toBe(200);
-  return (await response.json()) as { id: string; token: string; expiresAtMs: number };
 }
 
 function acceptRequest(
@@ -362,6 +370,70 @@ describe("invite issue", () => {
     const body = (await response.json()) as { _tag: string; limit: number };
     expect(body["_tag"]).toBe("InvitePendingLimit");
     expect(body.limit).toBe(MAX_PENDING_INVITES_PER_PROJECT);
+  });
+
+  it("concurrent issuance cannot exceed the pending cap and audits only the winner (S4)", async () => {
+    const now = Date.now();
+    const oldCreated = now - 2 * 60 * 60 * 1000;
+    for (let index = 0; index < MAX_PENDING_INVITES_PER_PROJECT - 1; index += 1) {
+      await seedInvitation({
+        id: `seed-pending-race-${index}`,
+        createdAt: oldCreated,
+        expiresAt: now + INVITE_TTL_MS,
+      });
+    }
+
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () => issueInviteRequest(fixture, OWNER, "member")),
+    );
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+    const rejected = responses.filter((response) => response.status !== 200);
+    expect(rejected).toHaveLength(7);
+    expect(await Promise.all(rejected.map(errorTag))).toEqual(
+      Array<string>(7).fill("InvitePendingLimit"),
+    );
+
+    const pending = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM invitations WHERE project_id = ? AND status = 'pending' AND expires_at > ?",
+    )
+      .bind(projectId, now)
+      .first<{ n: number }>();
+    expect(pending?.n).toBe(MAX_PENDING_INVITES_PER_PROJECT);
+    expect((await inviteAuditRows()).filter((row) => row.event === "invite.created")).toHaveLength(
+      1,
+    );
+  });
+
+  it("concurrent issuance cannot exceed the lookback window and audits only the winner (S4)", async () => {
+    const now = Date.now();
+    for (let index = 0; index < INVITE_ISSUE_WINDOW_LIMIT - 1; index += 1) {
+      await seedInvitation({
+        id: `seed-window-race-${index}`,
+        status: "completed",
+        createdAt: now,
+        expiresAt: now + INVITE_TTL_MS,
+      });
+    }
+
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () => issueInviteRequest(fixture, OWNER, "member")),
+    );
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+    const rejected = responses.filter((response) => response.status !== 200);
+    expect(rejected).toHaveLength(7);
+    expect(await Promise.all(rejected.map(errorTag))).toEqual(
+      Array<string>(7).fill("InviteRateLimited"),
+    );
+
+    const recent = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM invitations WHERE project_id = ? AND created_at >= ?",
+    )
+      .bind(projectId, now - 60 * 60 * 1000)
+      .first<{ n: number }>();
+    expect(recent?.n).toBe(INVITE_ISSUE_WINDOW_LIMIT);
+    expect((await inviteAuditRows()).filter((row) => row.event === "invite.created")).toHaveLength(
+      1,
+    );
   });
 
   it("expired pending rows do not consume the cap", async () => {

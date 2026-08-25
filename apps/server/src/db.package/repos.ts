@@ -776,22 +776,24 @@ export const INVITE_ISSUE_WINDOW_LIMIT = 30;
 /** §15-2 起草値: pending 招待の上限(プロジェクトあたり 100。期限切れは数えない)。 */
 export const MAX_PENDING_INVITES_PER_PROJECT = 100;
 
+interface InviteCreateInput {
+  readonly id: string;
+  readonly projectId: string;
+  readonly tokenHashHex: string;
+  readonly role: InviteRole;
+  readonly inviterUserId: string;
+}
+
 interface InviteRepoShape {
   /**
    * 発行(§15-2)。受理ポリシーの判定順は仕様の記載順に固定: pending 上限 →
-   * レート窓(lookback 計数 — INVITE_ISSUE_WINDOW_MS の注記参照)。読み → 挿入の
-   * 2 段で、並行発行では僅かに超過しうるベストエフォート(recovery の取得計数と
-   * 同じ性質)。受理時は invite.created(AUDIT_SPEC §3.2)を挿入と同一 batch で
-   * 記録する。
+   * レート窓(lookback 計数 — INVITE_ISSUE_WINDOW_MS の注記参照)。両カウントを
+   * `INSERT … SELECT … WHERE` の同一文で再評価し、並行発行でも上限を超えない
+   * (deepsec S4)。受理時は invite.created(AUDIT_SPEC §3.2)を changes() ガード付き
+   * INSERT…SELECT と同一 batch に入れ、作成と 1:1 で記録する。
    */
   readonly create: (
-    input: {
-      readonly id: string;
-      readonly projectId: string;
-      readonly tokenHashHex: string;
-      readonly role: InviteRole;
-      readonly inviterUserId: string;
-    },
+    input: InviteCreateInput,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<InviteIssueDecision>;
@@ -883,6 +885,83 @@ function toInvitationRecord(row: {
   };
 }
 
+/** pending / lookback の両上限を同一 INSERT 文で再評価する(deepsec S4)。 */
+function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number) {
+  const pendingAvailable = sql<boolean>`(
+    select count(*) from ${invitations}
+    where ${invitations.projectId} = ${input.projectId}
+      and ${invitations.status} = 'pending'
+      and ${invitations.expiresAt} > ${nowMs}
+  ) < ${MAX_PENDING_INVITES_PER_PROJECT}`;
+  const windowAvailable = sql<boolean>`(
+    select count(*) from ${invitations}
+    where ${invitations.projectId} = ${input.projectId}
+      and ${invitations.createdAt} >= ${nowMs - INVITE_ISSUE_WINDOW_MS}
+  ) < ${INVITE_ISSUE_WINDOW_LIMIT}`;
+  return db
+    .insert(invitations)
+    .select(
+      db
+        .select({
+          id: sql<string>`${input.id}`.as("id"),
+          projectId: sql<string>`${input.projectId}`.as("project_id"),
+          tokenHash: sql<string>`${input.tokenHashHex}`.as("token_hash"),
+          role: sql<string>`${input.role}`.as("role"),
+          inviterUserId: sql<string>`${input.inviterUserId}`.as("inviter_user_id"),
+          status: sql<string>`'pending'`.as("status"),
+          expiresAt: sql<number>`${nowMs + INVITE_TTL_MS}`.as("expires_at"),
+          createdAt: sql<number>`${nowMs}`.as("created_at"),
+        })
+        .from(sql`(select 1)`)
+        .where(and(pendingAvailable, windowAvailable)),
+    )
+    .returning({ id: invitations.id });
+}
+
+/**
+ * 条件付き INSERT が 0 行だった理由を仕様順に導出する。拒否後の説明用だけで、
+ * admission 自体は conditionalInviteInsert の 1 文が担う。
+ */
+async function inviteIssueRejection(
+  db: Db,
+  projectId: string,
+  nowMs: number,
+): Promise<Exclude<InviteIssueDecision, { readonly kind: "created" }> | null> {
+  const pendingRow = await db
+    .select({ n: count() })
+    .from(invitations)
+    .where(
+      and(
+        eq(invitations.projectId, projectId),
+        eq(invitations.status, "pending"),
+        gt(invitations.expiresAt, nowMs),
+      ),
+    )
+    .get();
+  if ((pendingRow?.n ?? 0) >= MAX_PENDING_INVITES_PER_PROJECT) {
+    return { kind: "pending-limit", limit: MAX_PENDING_INVITES_PER_PROJECT };
+  }
+  const windowRow = await db
+    .select({ n: count(), oldest: min(invitations.createdAt) })
+    .from(invitations)
+    .where(
+      and(
+        eq(invitations.projectId, projectId),
+        gte(invitations.createdAt, nowMs - INVITE_ISSUE_WINDOW_MS),
+      ),
+    )
+    .get();
+  if ((windowRow?.n ?? 0) < INVITE_ISSUE_WINDOW_LIMIT) {
+    return null;
+  }
+  const oldest = windowRow?.oldest ?? nowMs;
+  const remainingMs = oldest + INVITE_ISSUE_WINDOW_MS - nowMs;
+  return {
+    kind: "rate-limited",
+    retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+  };
+}
+
 function makeInviteRepo(db: Db): InviteRepoShape {
   const findWhere = async (condition: ReturnType<typeof and>) => {
     const row = await db.select().from(invitations).where(condition).get();
@@ -897,7 +976,7 @@ function makeInviteRepo(db: Db): InviteRepoShape {
    */
   const guardedAuditInsert = (input: {
     readonly inviteId: string;
-    readonly event: "invite.accepted" | "invite.revoked";
+    readonly event: "invite.created" | "invite.accepted" | "invite.revoked";
     readonly actor: D1AuditActor;
     readonly targetUserId: string | null;
     readonly payload: Readonly<Record<string, unknown>>;
@@ -917,59 +996,35 @@ function makeInviteRepo(db: Db): InviteRepoShape {
   return {
     create: (input, nowMs, actor) =>
       run(async () => {
-        // 判定順は §15-2 の記載順に固定: pending 上限(期限内のみ数える —
-        // 期限切れ pending が上限を恒久に食い潰さないため)→ 発行の固定窓
-        const pendingRow = await db
-          .select({ n: count() })
-          .from(invitations)
-          .where(
-            and(
-              eq(invitations.projectId, input.projectId),
-              eq(invitations.status, "pending"),
-              gt(invitations.expiresAt, nowMs),
-            ),
-          )
-          .get();
-        if ((pendingRow?.n ?? 0) >= MAX_PENDING_INVITES_PER_PROJECT) {
-          return { kind: "pending-limit", limit: MAX_PENDING_INVITES_PER_PROJECT } as const;
-        }
-        const windowRow = await db
-          .select({ n: count(), oldest: min(invitations.createdAt) })
-          .from(invitations)
-          .where(
-            and(
-              eq(invitations.projectId, input.projectId),
-              gte(invitations.createdAt, nowMs - INVITE_ISSUE_WINDOW_MS),
-            ),
-          )
-          .get();
-        if ((windowRow?.n ?? 0) >= INVITE_ISSUE_WINDOW_LIMIT) {
-          const oldest = windowRow?.oldest ?? nowMs;
-          const remainingMs = oldest + INVITE_ISSUE_WINDOW_MS - nowMs;
-          return {
-            kind: "rate-limited",
-            retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
-          } as const;
-        }
-        await db.batch([
-          db.insert(invitations).values({
-            id: input.id,
-            projectId: input.projectId,
-            tokenHash: input.tokenHashHex,
-            role: input.role,
-            inviterUserId: input.inviterUserId,
-            status: "pending",
-            expiresAt: nowMs + INVITE_TTL_MS,
-            createdAt: nowMs,
-          }),
-          orgAuditInsert(db, nowMs, {
+        // 判定と挿入を単一 INSERT…SELECT に畳む(deepsec S4)。別リクエストの
+        // SELECT → INSERT では、並行した全員が同じ under-limit を観測して
+        // 並行度ぶん上限を超えられる。audit は直前の INSERT が 1 行に効いた
+        // ときだけ changes() ガードで書く
+        const results = await db.batch([
+          conditionalInviteInsert(db, input, nowMs),
+          guardedAuditInsert({
+            inviteId: input.id,
             event: "invite.created",
             actor,
-            projectId: input.projectId,
+            targetUserId: null,
             payload: { inviteId: input.id, role: input.role },
+            nowMs,
           }),
         ]);
-        return { kind: "created" } as const;
+        if (results[0].length === 1) {
+          return { kind: "created" } as const;
+        }
+        const rejection = await inviteIssueRejection(db, input.projectId, nowMs);
+        if (rejection !== null) {
+          return rejection;
+        }
+        // conditional INSERT と説明用再読の間に revoke / expiry が進み、
+        // 一時的に admission が再び可能になった稀な競合。新しいリクエストで
+        // 安全に再試行できる型付き rate-limit に倒し、上限を破る fallback はしない
+        return {
+          kind: "rate-limited",
+          retryAfterSeconds: 1,
+        } as const;
       }),
     findByTokenHash: (tokenHashHex) =>
       run(() => findWhere(eq(invitations.tokenHash, tokenHashHex))),
