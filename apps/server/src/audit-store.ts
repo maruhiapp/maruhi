@@ -249,6 +249,20 @@ function orNull(value: string | number | undefined): string | number | null {
   return value === undefined ? null : value;
 }
 
+/**
+ * chain_seq は chain.* ミラー専有(AUDIT_SPEC §5.1)。
+ *
+ * 読み取り側は chain_seq を持つ行を tamper evidence としてクラス 1 に昇格するため、
+ * 正直な書き手の誤用をここで止めないと将来のクラス 2 行を全メンバーへ開示しうる。
+ * 列だけ NULL にすると producer bug を隠して監査の突合材料を失うため defect にする。
+ * 呼び出しは採番・SQL 実行より前に置き、違反で欠番や部分追記を作らない。
+ */
+function assertChainSeqInvariant(event: AuditEventInput): void {
+  if (event.chainSeq !== undefined && !event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
+    throw new Error("audit invariant violation: chain_seq is reserved for chain.* events");
+  }
+}
+
 /** 挿入バインディング(INSERT_EVENT の SELECT 列と同順)。未指定は NULL。 */
 function eventBindings(event: AuditEventInput): (string | number | null)[] {
   return [
@@ -295,6 +309,7 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
   };
   return {
     appendSync: (event) => {
+      assertChainSeqInvariant(event);
       const seq = nextSeq();
       try {
         // row_id = ワイヤ行識別子(16 バイト乱数 — AUDIT_SPEC §5.1 / §7)
@@ -306,6 +321,10 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
       nextSeqCache = seq + 1;
     },
     appendManySync: (events) => {
+      // 全件を SQL より前に検査し、後半の違反で前半チャンクだけ書く形を作らない
+      for (const event of events) {
+        assertChainSeqInvariant(event);
+      }
       try {
         for (let offset = 0; offset < events.length; offset += APPEND_CHUNK_ROWS) {
           const chunk = events.slice(offset, offset + APPEND_CHUNK_ROWS);
