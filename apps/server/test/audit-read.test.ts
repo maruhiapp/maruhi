@@ -263,6 +263,46 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     }
   });
 
+  it("chain_seq を名乗る非 chain.* 行も全メンバーの検証用フィルタへ届く(S1)", async () => {
+    await seedProjectActivity();
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, actor_user_id, chain_seq) VALUES ((SELECT MAX(seq) + 1 FROM audit_events), ?, ?, 'member.add', 'user', ?, 2)",
+      "cd".repeat(16),
+      Date.now(),
+      OWNER,
+    );
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, actor_user_id) VALUES ((SELECT MAX(seq) + 1 FROM audit_events), ?, ?, 'member.add', 'user', ?)",
+      "ef".repeat(16),
+      Date.now(),
+      OWNER,
+    );
+
+    for (const viewer of [READER, MEMBER, OWNER]) {
+      const { status, events } = await fetchEvents(token(viewer), {
+        chainSeqPresent: "true",
+        limit: "200",
+      });
+      expect(status).toBe(200);
+      expect(events.length).toBeGreaterThan(0);
+      expect(events.every((event) => event.chainSeq !== undefined)).toBe(true);
+      expect(eventNames(events)).toContain("member.add");
+    }
+
+    const readerAll = await fetchEvents(token(READER), { limit: "200" });
+    const claims = readerAll.events.filter((event) => event.event === "member.add");
+    expect(claims).toHaveLength(1);
+    expect(claims[0]?.chainSeq).toBe(2);
+  });
+
+  it("chainSeqPresent は literal true 以外を wire schema で拒否する", async () => {
+    await seedProjectActivity();
+    const response = await requestJson("GET", "/audit/events?chainSeqPresent=false", token(OWNER));
+    expect(response.status).toBe(400);
+  });
+
   it("eventPrefix はワイルドカード意味論を持たない(LIKE ではなく前置比較)", async () => {
     await seedProjectActivity();
     // LIKE 実装なら "%" は全一致・"_" は 1 文字ワイルドカードとして働いてしまう

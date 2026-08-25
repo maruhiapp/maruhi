@@ -134,6 +134,12 @@ export const auditGroup = HttpApiGroup.make("audit")
         // 名乗る偽造行が 1 度も取得されず、検証が OK で終わる。サーバー側は
         // LIKE ではなく substr 比較で実装する(ワイルドカード意味論を持たせない)
         eventPrefix: Schema.optionalKey(EventNameFilter),
+        // chain_seq を持つ行だけを返す(AUDIT_SPEC §7 — deepsec S1)。
+        // 正直なサーバーで chain_seq を設定するのは chain.* ミラーだけだが、
+        // tampered な監査ログは別イベント名で同じ座標を名乗りうる。verify が
+        // 名前空間の外にある偽の provenance claim も拾うための presence filter。
+        // クエリ文字列上の真偽値変換を増やさず、指定時は literal "true" のみ
+        chainSeqPresent: Schema.optionalKey(Schema.Literal("true")),
         // admin 未満は本人指定のみ可(他人指定は 403 — §6 の「他人が actor の
         // 行の横断検索はクラス 2」。データ非依存の静的規則なので存在情報は
         // 漏れない)

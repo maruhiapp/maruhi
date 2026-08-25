@@ -180,6 +180,61 @@ function mirrorTrustOf(
     : { label: "mirror=mismatch", mismatches };
 }
 
+/**
+ * event 名が chain.* 外なのに chain_seq を持つ行の明示的な不信ラベル(S1)。
+ *
+ * 正直なサーバーで chainSeq を設定する唯一の書き手は chainMirrorEvent なので、
+ * この組み合わせは provenance claim の偽造を示す。イベント名だけを起点にすると
+ * 名前空間の 1 歩外へ逃げた行が素の `chain_seq=N` として表示され、verify の
+ * eventPrefix=chain. にも入らない。
+ */
+function outsideChainNamespaceTrust(event: WireAuditEvent): MirrorTrust | null {
+  if (event.chainSeq === undefined || event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
+    return null;
+  }
+  return {
+    label: "mirror=unverified (chain_seq is invalid outside the chain.* namespace)",
+    mismatches: [
+      `event: chain_seq is present on ${displayText(event.event)}, but only chain.* mirror rows may carry chain provenance`,
+    ],
+  };
+}
+
+/** project 監査行の provenance 判定。chainSeq の存在をイベント名より先に見る。 */
+function projectMirrorTrustOf(
+  event: WireAuditEvent,
+  entries: ReadonlyMap<number, ChainEntry>,
+  headSeq: number,
+): MirrorTrust | null {
+  return (
+    outsideChainNamespaceTrust(event) ??
+    (event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)
+      ? mirrorTrustOf(event, entries, headSeq)
+      : null)
+  );
+}
+
+/** D1 経路(invites / self)は chain provenance を保存しない。あれば偽造・破損。 */
+function d1MirrorTrustOf(event: WireAuditEvent): MirrorTrust | null {
+  if (event.chainSeq === undefined) {
+    return null;
+  }
+  return {
+    label: "mirror=unverified (chain_seq is invalid on this audit endpoint)",
+    mismatches: [
+      `chain_seq: ${event.chainSeq} is present on a D1-backed audit row, but this endpoint does not store chain provenance`,
+    ],
+  };
+}
+
+/** trust の不一致を端末警告へ写す(空 = 未検証だが単独では改竄断定しない)。 */
+function mirrorWarnings(event: WireAuditEvent, trust: MirrorTrust | null): readonly string[] {
+  return (trust?.mismatches ?? []).map(
+    (mismatch) =>
+      `Warning: audit row ${event.id} makes a chain provenance claim that is invalid or does not match the verified chain — ${mismatch} (the audit log is server-managed data, so this mismatch is evidence of server-side tampering or corruption — AUDIT_SPEC §6)`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 表示
 // ---------------------------------------------------------------------------
@@ -239,7 +294,9 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
   if (event.chainSeq !== undefined || trust !== null) {
     const seqPart = event.chainSeq === undefined ? "" : `chain_seq=${event.chainSeq}`;
     if (trust === null) {
-      parts.push(seqPart);
+      // 呼び出し側が trust 計算を忘れても、chain_seq を検証済み座標のように
+      // 無ラベル表示しない(S1 の最後の防衛線)
+      parts.push(`${seqPart} (mirror=unverified — no chain verification context)`);
     } else {
       parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
     }
@@ -340,13 +397,8 @@ function renderListEvent(
     event.environmentId === undefined || event.variableId === undefined
       ? null
       : (names.get(event.environmentId)?.get(event.variableId) ?? null);
-  const trust = event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)
-    ? mirrorTrustOf(event, entries, headSeq)
-    : null;
-  const warnings = (trust?.mismatches ?? []).map(
-    (mismatch) =>
-      `Warning: audit row ${event.id} has a mirror row that does not match the verified chain — ${mismatch} (the audit log is server-managed data, so this mismatch is evidence of server-side tampering or corruption — AUDIT_SPEC §6)`,
-  );
+  const trust = projectMirrorTrustOf(event, entries, headSeq);
+  const warnings = mirrorWarnings(event, trust);
   return { line: formatEventLine(event, name, trust), warnings };
 }
 
@@ -393,13 +445,18 @@ function pageQueryOf(page: AuditPageOptions): { before?: string; limit?: number 
   };
 }
 
+interface D1AuditRenderResult {
+  readonly events: readonly WireAuditEvent[];
+  readonly integrityFailures: number;
+}
+
 /** D1 側ページ(invites / self)の共通経路: 取得 → 一覧描画 → 続きの案内。 */
 function fetchAndRenderD1Events(input: {
   readonly request: Effect.Effect<{ readonly events: readonly WireAuditEvent[] }, unknown>;
   readonly page: AuditPageOptions;
   readonly emptyMessage: string;
   readonly command: string;
-}): Effect.Effect<readonly WireAuditEvent[], CliError, CliIo> {
+}): Effect.Effect<D1AuditRenderResult, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const events = yield* input.request.pipe(
@@ -408,16 +465,25 @@ function fetchAndRenderD1Events(input: {
     );
     if (events.length === 0) {
       yield* io.log(input.emptyMessage);
-      return events;
+      return { events, integrityFailures: 0 };
     }
+    let integrityFailures = 0;
     for (const event of events) {
-      yield* io.log(formatEventLine(event, null, null));
+      // D1 行は chain provenance を持たない。悪意ある応答が chain_seq を差しても
+      // 素の座標として表示せず、警告 + 非ゼロ終了にする(S1)
+      const trust = d1MirrorTrustOf(event);
+      const warnings = mirrorWarnings(event, trust);
+      yield* io.log(formatEventLine(event, null, trust));
+      integrityFailures += warnings.length;
+      for (const warning of warnings) {
+        yield* io.logError(warning);
+      }
     }
     const hint = continuationHint(events, input.page.limit, input.command);
     if (hint !== null) {
       yield* io.log(hint);
     }
-    return events;
+    return { events, integrityFailures };
   });
 }
 
@@ -434,7 +500,7 @@ export function auditInvitesOp(
     page,
     emptyMessage: "No invite audit events",
     command: "maruhi audit invites",
-  }).pipe(Effect.as(0));
+  }).pipe(Effect.map((result) => (result.integrityFailures > 0 ? 1 : 0)));
 }
 
 /** `maruhi audit self`: 自分のアカウント系イベント(§3.1 — 要監視イベントの監視)。 */
@@ -444,19 +510,20 @@ export function auditSelfOp(
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const events = yield* fetchAndRenderD1Events({
+    const rendered = yield* fetchAndRenderD1Events({
       request: context.client.audit.self({ query: pageQueryOf(page) }),
       page,
       emptyMessage: "No account audit events",
       command: "maruhi audit self",
     });
+    const events = rendered.events;
     // 要監視イベント(AUDIT_SPEC §3.1)の含意はここで一度だけ添える
     if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
       yield* io.log(
         "Note: auth.recovery_blob_fetched (a fetch of the wrapped master private key) is present. If you do not recognize a fetch, reissue your recovery code (maruhi key recovery) and revoke your tokens and sessions",
       );
     }
-    return 0;
+    return rendered.integrityFailures > 0 ? 1 : 0;
   });
 }
 
@@ -474,18 +541,18 @@ const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
 // 1 回のページングで全ミラー行を引くため、上限もイベント種別ごとではなく通し
 const VERIFY_MAX_PAGES = 100;
 
+type MirrorRowSelector = "chain-namespace" | "chain-seq-present";
+
 /**
- * `chain.` 名前空間の全ページ取得(新しい順。カーソルは行 id)。同じ行 id が
- * 再登場したらサーバー応答の矛盾(カーソル非前進・行の重複配布)として拒否する
- * — id は不透明で序数比較ができないため、前進性は集合の非重複で検査する。
- *
- * 既知のミラー名を 1 つずつ完全一致で引くのではなく**名前空間ごと**引く
- * (deepsec R1): 完全一致の反復だと、写像に無い `chain.*` を名乗る偽造行は
- * 1 度も取得されず、欠落も重複も発生しないまま検証が OK で終わる。
+ * 1 つのミラー候補フィルタを全ページ取得(新しい順。カーソルは行 id)。
+ * 同じ行 id が再登場したらサーバー応答の矛盾(カーソル非前進・行の重複配布)
+ * として拒否する — id は不透明で序数比較ができないため、前進性は集合の
+ * 非重複で検査する。
  */
-function fetchAllMirrorRows(
+function fetchMirrorRowsForSelector(
   client: MaruhiClient,
   projectId: string,
+  selector: MirrorRowSelector,
 ): Effect.Effect<readonly WireAuditEvent[], CliError> {
   return Effect.gen(function* () {
     const rows: WireAuditEvent[] = [];
@@ -497,8 +564,10 @@ function fetchAllMirrorRows(
         .events({
           params: { projectId },
           query: {
-            eventPrefix: CHAIN_MIRROR_EVENT_PREFIX,
             limit: VERIFY_PAGE_LIMIT,
+            ...(selector === "chain-namespace"
+              ? { eventPrefix: CHAIN_MIRROR_EVENT_PREFIX }
+              : { chainSeqPresent: "true" as const }),
             ...(cursor === null ? {} : { before: cursor }),
           },
         })
@@ -510,7 +579,7 @@ function fetchAllMirrorRows(
         if (seen.has(row.id)) {
           return yield* Effect.fail(
             cliError(
-              `Audit-log paging is not advancing (row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
+              `Audit-log paging is not advancing (${selector}, row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
             ),
           );
         }
@@ -527,6 +596,39 @@ function fetchAllMirrorRows(
         "The audit log exceeded the theoretical page-count limit — the server response contradicts itself",
       ),
     );
+  });
+}
+
+/**
+ * verify のミラー候補全体。2 つの集合を和集合にする:
+ *
+ * 1. `chain.` 名前空間の全行 — 写像に無い名前・chain_seq 欠落も拾う(R1)
+ * 2. chain_seq を持つ全行 — 名前空間の 1 歩外にある偽 provenance を拾う(S1)
+ *
+ * 正当なミラー行は両方に入るので row id で重複排除する。同じ id なのに内容が
+ * フィルタ間で変わったら、サーバー応答が自己矛盾しており検証を続けられない。
+ */
+function fetchAllMirrorRows(
+  client: MaruhiClient,
+  projectId: string,
+): Effect.Effect<readonly WireAuditEvent[], CliError> {
+  return Effect.gen(function* () {
+    const byId = new Map<string, WireAuditEvent>();
+    for (const selector of ["chain-namespace", "chain-seq-present"] as const) {
+      const rows = yield* fetchMirrorRowsForSelector(client, projectId, selector);
+      for (const row of rows) {
+        const existing = byId.get(row.id);
+        if (existing !== undefined && !jsonEqual(existing, row)) {
+          return yield* Effect.fail(
+            cliError(
+              `Audit row ${displayText(row.id)} changed between mirror-verification queries — the server response contradicts itself`,
+            ),
+          );
+        }
+        byId.set(row.id, row);
+      }
+    }
+    return [...byId.values()];
   });
 }
 
@@ -565,6 +667,15 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   const problems: string[] = [];
   const ahead: number[] = [];
   for (const row of rows) {
+    // chain_seq の存在をイベント名より先に信頼境界として扱う(S1)。正当な
+    // chain_seq の唯一の書き手は chainMirrorEvent なので、名前空間外の行は
+    // 実在する op と突合する余地のない偽 provenance claim である
+    if (!row.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
+      problems.push(
+        `Audit row ${displayText(row.id)}: chain_seq=${row.chainSeq ?? "(missing)"} is present outside the chain.* namespace (${displayText(row.event)}) — only chain mirror rows may carry chain provenance (evidence of a forged row)`,
+      );
+      continue;
+    }
     // 名前空間内で写像に無いイベント名は、それ自体が偽造の証拠(deepsec R1):
     // 実在する op のミラーは必ず chainMirrorEvent の像に入る。chain_seq の
     // 突合に進める行ではないので、ここで問題として確定させて次の行へ進む

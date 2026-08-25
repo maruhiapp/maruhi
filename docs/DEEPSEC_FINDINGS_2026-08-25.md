@@ -24,6 +24,9 @@
 残っていた形。S2 と S4 は既知の申し送り(ADR-0016 決定 7 の 申し送り / B9 の
 「invite counter にも同型がある」)に対応する。
 
+> **対応状況(2026-08-25)**: S1 / S3 / S4 は実装済み。未解消は **S2 / S5 の
+> 2 件**で、どちらも仕様・ADR の裁定が先。
+
 ### S1. `chain_seq` が `chain.*` 外の行でも無ラベル表示される — BUG(新規)
 
 - 場所: `apps/cli/src/audit.ts`(`trailerParts` / `renderListEvent` / `fetchAllMirrorRows`)
@@ -45,6 +48,20 @@
   `(mirror=unverified — event name is outside the chain.* namespace)` を明示し、
   整合性違反として数える。verify 側でも `chain_seq` を持つ非 `chain.` 行を取得して
   偽造の証拠として報告する。
+- **対応済み**(2026-08-25): 一覧の trust 判定は `chainSeq` の存在をイベント名より
+  先に見る。名前空間外なら
+  `mirror=unverified (chain_seq is invalid outside the chain.* namespace)` を明示し、
+  警告 + exit 1 にする。`trailerParts` 自体にも trust が null の `chain_seq` を
+  無ラベル表示しない fallback を置いた。D1 経路(invites / self)は正当な
+  chain provenance を持たないため、同じ形を受け取ったら明示ラベル + exit 1。
+  verify は従来の `eventPrefix=chain.` に加えて新しい
+  `chainSeqPresent=true` フィルタを全ページ取得し、row_id で和集合にしてから
+  名前空間外の claim を偽造として報告する。同じ row_id が 2 クエリ間で異なる内容を
+  返した場合もサーバー応答の自己矛盾として中止する。非 admin の verify にも届くよう、
+  `chain_seq IS NOT NULL` は AUDIT_SPEC §6 のクラス 1 とした(正直な書き手でこの列を
+  設定するのは chain.* ミラーだけなので、正常なクラス 2 行は開示しない)。
+  CLI の一覧 / verify / D1 表示と workerd の presence filter / reader 可視性に
+  回帰テストを追加。
 
 ### S2. リカバリーコードの表示に TTY 検査がない — MEDIUM(新規)
 
@@ -110,6 +127,14 @@
   per-project カウンタ行を 1 文の条件付き UPSERT + `RETURNING` で回す。
   `invite.created` は `acceptCas` / `revokeCas` と同じ `changes() = 1` ガードで
   同一 batch に残す。
+- **対応済み**(2026-08-25): スキーマ・上限値・判定順は変えず、pending 件数と
+  lookback 件数を同じ `INSERT … SELECT … WHERE` の相関サブクエリで再評価する。
+  `RETURNING` が 1 行なら作成成功、0 行なら説明用に pending → lookback の仕様順で
+  再読して型付き 429 を導出する。`invite.created` は直後の
+  `changes() = 1` ガード付き INSERT…SELECT と同一 D1 batch に置き、作成の勝者と
+  1:1 にした。pending 上限 / 発行窓を残り 1 枠にした状態で 8 並行 POST を送り、
+  どちらも成功 1・拒否 7・保存件数が上限ちょうど・監査行 1 を workerd で固定。
+  条件を一時的に外すと両テストが成功 8 になって失敗することも確認済み。
 
 ### S5. `auth.login_failed` の上限が `auth_method` 共有のまま — BUG(R4 の残存)
 
@@ -141,9 +166,8 @@
 ## 推奨する着手順
 
 1. ~~**S3**~~ — 対応済み(上記)。08-24 の R3 と同じクラスだったため同じ PR に含めた。
-2. **S1**。ラベル付けの起点を `chainSeq` の存在に移す。R1 の実装をそのまま延長する形。
-3. **S4**。`recordFetch` / `login_failed_windows` に既に 2 つ前例があるので、
-   3 つ目として同型に畳む。workerd の並行テストを先に置く。
+2. ~~**S1**~~ — 対応済み(上記)。R1 の名前空間検査を chain_seq の presence まで延長した。
+3. ~~**S4**~~ — 対応済み(上記)。条件付き INSERT + changes() 監査に畳んだ。
 4. **S5**、**S2**。どちらも仕様・ADR の裁定が先(AUDIT_SPEC §3.1 のバケット次元 /
    ADR-0016 決定 7 のリダイレクト軸)。実装から入らない。
 

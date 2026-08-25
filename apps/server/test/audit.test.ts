@@ -422,6 +422,33 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     await evictDurableObject(stub);
   });
 
+  it("chain_seq は chain.* 以外へ追記できず、一括追記も全件を採番前に拒否する", async () => {
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const store = makeAuditStore(sql);
+      const before = Number(
+        sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0]?.["m"] ?? 0,
+      );
+      const invalid = { ...seqTestEvent("var.read"), chainSeq: 1 };
+
+      expect(() => store.appendSync(invalid)).toThrow("chain_seq is reserved for chain.* events");
+      // 後半に違反があっても、前半の正当な行を部分追記しない
+      // (APPEND_CHUNK_ROWS=5 の境界をまたぎ、違反を第2チャンクに置く)
+      expect(() =>
+        store.appendManySync([
+          ...Array.from({ length: 6 }, (_e, index) => seqTestEvent(`test.before-invalid${index}`)),
+          invalid,
+        ]),
+      ).toThrow("chain_seq is reserved for chain.* events");
+
+      const after = Number(
+        sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0]?.["m"] ?? 0,
+      );
+      expect(after).toBe(before);
+    });
+  });
+
   it("チャンク分割される一括 append と DO 再起動をまたいでも seq は無欠番(§5.1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     // multi-row INSERT の 1 文あたり行数(audit-store.ts の 6 行)を越える
