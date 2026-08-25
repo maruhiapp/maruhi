@@ -434,9 +434,13 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
 
       expect(() => store.appendSync(invalid)).toThrow("chain_seq is reserved for chain.* events");
       // 後半に違反があっても、前半の正当な行を部分追記しない
-      expect(() => store.appendManySync([seqTestEvent("test.before-invalid"), invalid])).toThrow(
-        "chain_seq is reserved for chain.* events",
-      );
+      // (APPEND_CHUNK_ROWS=5 の境界をまたぎ、違反を第2チャンクに置く)
+      expect(() =>
+        store.appendManySync([
+          ...Array.from({ length: 6 }, (_e, index) => seqTestEvent(`test.before-invalid${index}`)),
+          invalid,
+        ]),
+      ).toThrow("chain_seq is reserved for chain.* events");
 
       const after = Number(
         sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0]?.["m"] ?? 0,
