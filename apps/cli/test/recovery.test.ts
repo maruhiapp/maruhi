@@ -243,6 +243,30 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect(await runCli(["key", "recovery"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("AI agent environment");
   });
+
+  it("stdin / stdout / stderr のどれかが非TTYなら発行前に拒否する(S2)", async () => {
+    for (const terminal of [
+      { stdin: false, stdout: true, stderr: true },
+      { stdin: true, stdout: false, stderr: true },
+      { stdin: true, stdout: true, stderr: false },
+    ]) {
+      const user = await makeTestUser("user-0001");
+      let reachedServer = false;
+      const maruhi = await start([
+        onRequest("GET", "/auth/recovery/status", () => {
+          reachedServer = true;
+          return { status: 200, json: { registered: false, updatedAtMs: null } };
+        }),
+      ]);
+      const env = await loggedInEnv(maruhi.origin, user.userId);
+      seedSession(env, maruhi.origin, user);
+      env.setTerminal(terminal);
+      expect(await runCli(["key", "recovery"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("stdin, stdout, and stderr must all be terminals");
+      expect(reachedServer).toBe(false);
+      expect(env.errors.some((line) => /^ {4}[A-Z2-7]{4}-/.test(line))).toBe(false);
+    }
+  });
 });
 
 describe("maruhi key recover(復元)", () => {
@@ -436,6 +460,29 @@ describe("maruhi key recover(復元)", () => {
     expect(env.errors.join("\n")).toContain("Refused to read a recovery code");
     // ブロブ取得(要監視イベント)にも到達しない
     expect(fetched).toBe(false);
+  });
+
+  it("stdin / stdout / stderr のどれかが非TTYならブロブ取得前に拒否する(S2)", async () => {
+    for (const terminal of [
+      { stdin: false, stdout: true, stderr: true },
+      { stdin: true, stdout: false, stderr: true },
+      { stdin: true, stdout: true, stderr: false },
+    ]) {
+      const user = await makeTestUser("user-0001");
+      let fetched = false;
+      const maruhi = await start([
+        onRequest("GET", "/auth/recovery", () => {
+          fetched = true;
+          return { status: 404, json: { _tag: "RecoveryWrapNotFound" } };
+        }),
+      ]);
+      const env = await loggedInEnv(maruhi.origin, user.userId);
+      env.setTerminal(terminal);
+      expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("stdin, stdout, and stderr must all be terminals");
+      expect(fetched).toBe(false);
+      expect(env.prompts).toHaveLength(0);
+    }
   });
 
   it("既に master 鍵があるデバイスでは上書きを拒否する", async () => {

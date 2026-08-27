@@ -9,7 +9,7 @@ import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import type { DecryptedVariable } from "./pull.ts";
 
-/** Child-process boundary: spawn with injected env vars, inherit stdio. */
+/** Child-process boundary: inject values, inherit non-maruhi env + stdio. */
 export interface ProcessRunnerShape {
   /** Runs `command`, merging `extraEnv` into the inherited environment. Returns the exit code. */
   readonly run: (input: {
@@ -21,6 +21,8 @@ export interface ProcessRunnerShape {
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
   "cli/ProcessRunner",
 ) {}
+
+const MARUHI_ENV_PREFIX = "MARUHI_";
 
 // 実行制御系の環境変数名は注入を拒否する(レビューループ 1 [低]): 変数名は
 // 平文メタデータで AAD に束縛されないため、悪意あるサーバーが名前と暗号文の
@@ -48,6 +50,10 @@ const DENIED_ENV_NAMES = new Set([
   // HOME を差し替えると bash / zsh / 各種ツールが攻撃者パスの rc・設定を読む
   "HOME",
   "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   // プロンプト評価でコマンド実行になる bash/zsh の変数(M2)。PS1 / PS4 も
@@ -61,6 +67,10 @@ const DENIED_ENV_NAMES = new Set([
   "PYTHONSTARTUP",
   "PYTHONPATH",
   "PYTHONHOME",
+  "PYTHONUSERBASE",
+  "PYTHONWARNINGS",
+  "PYTHONBREAKPOINT",
+  "PYTHONEXECUTABLE",
   // 対話モード強制(M2): 子プロセス終了後に REPL が開き、後続入力を実行する
   "PYTHONINSPECT",
   "PERL5OPT",
@@ -70,6 +80,7 @@ const DENIED_ENV_NAMES = new Set([
   "RUBYLIB",
   "JAVA_TOOL_OPTIONS",
   "_JAVA_OPTIONS",
+  "JDK_JAVA_OPTIONS",
   "CLASSPATH",
   "GCONV_PATH",
   // Windows の実行解決(M2): PATHEXT は拡張子探索、COMSPEC はシェル本体、
@@ -105,7 +116,23 @@ const DENIED_ENV_NAMES = new Set([
   "LOCPATH",
   "NLSPATH",
   "TERMINFO",
+  "TERMINFO_DIRS",
   "TERMCAP",
+  "CDPATH",
+  // shell function autoload と TLS trust root。既存の BASH_ENV / ZDOTDIR /
+  // NODE_EXTRA_CA_CERTS と同じ実行・信頼境界(deepsec 08-27 follow-up)
+  "FPATH",
+  "KSH_ENV",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "CURL_CA_BUNDLE",
+  "REQUESTS_CA_BUNDLE",
+  "AWS_CA_BUNDLE",
+  "NPM_CONFIG_USERCONFIG",
+  "DOTNET_STARTUP_HOOKS",
+  "GEM_HOME",
+  "GEM_PATH",
+  "HOSTALIASES",
 ]);
 // NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない(M2 の要検討事項の裁定):
 // NODE_ENV / PYTHONDONTWRITEBYTECODE 等、実行制御でない正当な変数を大量に
@@ -120,11 +147,48 @@ const DENIED_ENV_NAMES = new Set([
 // `maruhi run -- make deploy` の中の `maruhi pull` が攻撃者として認証される
 // (変数名は AAD に束縛されない平文メタデータ = 共同メンバーが決められる)。
 // 個別名の列挙にすると将来 MARUHI_* を増やしたときに同じ穴が再発する
-const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "MARUHI_"];
+const DENIED_ENV_PREFIXES = [
+  "LD_",
+  "DYLD_",
+  "GIT_",
+  "NPM_CONFIG_",
+  "CORECLR_",
+  "COR_",
+  MARUHI_ENV_PREFIX,
+];
 
 function isDeniedEnvName(name: string): boolean {
   const upper = name.toUpperCase();
   return DENIED_ENV_NAMES.has(upper) || DENIED_ENV_PREFIXES.some((p) => upper.startsWith(p));
+}
+
+/**
+ * 子プロセスへ渡す環境。親の一般環境は継承するが、maruhi 自身の制御・資格情報
+ * 名前空間は除く(deepsec S6)。
+ *
+ * keychain-less / CI の MARUHI_TOKEN は run のセッション解決には必要だが、
+ * 子へ渡すと注入値より長寿命・広スコープな PAT まで依存コードが読める。
+ * 大文字化比較は Windows の環境変数名が case-insensitive なため。
+ */
+export function buildChildEnvironment(
+  inherited: Readonly<Record<string, string | undefined>>,
+  extraEnv: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  const child: Record<string, string> = {};
+  const copyAllowed = (name: string, value: string | undefined): void => {
+    if (value !== undefined && !name.toUpperCase().startsWith(MARUHI_ENV_PREFIX)) {
+      child[name] = value;
+    }
+  };
+  for (const [name, value] of Object.entries(inherited)) {
+    copyAllowed(name, value);
+  }
+  // extraEnv は buildInjectionEnv で既に MARUHI_* を拒否するが、ProcessRunner
+  // 境界を直接使う将来 caller に対しても資格情報名前空間を通さない
+  for (const [name, value] of Object.entries(extraEnv)) {
+    copyAllowed(name, value);
+  }
+  return child;
 }
 
 // 注入する環境変数名は POSIX 識別子に限定する(bash 関数インポート名など

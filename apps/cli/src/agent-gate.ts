@@ -47,6 +47,29 @@ export class AgentProfileRef extends Context.Reference<AgentProfile>("cli/AgentP
   defaultValue: (): AgentProfile => ({ isAgent: false }),
 }) {}
 
+/**
+ * 鍵素材・capability の表示 / 入力に使う3チャネルTTYゲート。
+ * stderrへ出す経路もあるため、値表示のstdin+stdout境界より1チャネル厳しい。
+ */
+export function ensureSensitiveTerminalAllowed(input: {
+  readonly agent: AgentProfile;
+  readonly stderrIsTerminal: boolean;
+  readonly agentError: string;
+  readonly terminalError: string;
+}): Effect.Effect<void, CliError, Stdio.Stdio> {
+  return Effect.gen(function* () {
+    if (input.agent.isAgent) {
+      return yield* Effect.fail(cliError(input.agentError));
+    }
+    const stdio = yield* Stdio.Stdio;
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (!stdinIsTerminal || !stdoutIsTerminal || !input.stderrIsTerminal) {
+      return yield* Effect.fail(cliError(input.terminalError));
+    }
+  });
+}
+
 /** 既知エージェントを検出したときの拒否文(名前は診断のためだけに出す)。 */
 function agentRejection(name: string | undefined): CliError {
   const detected = name === undefined ? "" : `: ${name}`;

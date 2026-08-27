@@ -25,7 +25,7 @@ import { floorDirOf, FloorStore } from "./floor.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { KEYCHAIN_SERVICE, Keychain, type KeychainShape } from "./keychain.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
-import { ProcessRunner, type ProcessRunnerShape } from "./run.ts";
+import { buildChildEnvironment, ProcessRunner, type ProcessRunnerShape } from "./run.ts";
 
 const keychainUnavailable = () =>
   cliError(
@@ -83,7 +83,9 @@ function makeBunProcessRunner(): ProcessRunnerShape {
           // 値は子プロセスの環境変数へのメモリ注入のみ(ディスクレス不変条件)
           const child = Bun.spawn({
             cmd: [...command],
-            env: { ...process.env, ...extraEnv },
+            // keychain-less / CI の MARUHI_TOKEN は親のセッション解決専用。
+            // 子へは注入値より広い長寿命 credential を渡さない(deepsec S6)
+            env: buildChildEnvironment(process.env, extraEnv),
             stdin: "inherit",
             stdout: "inherit",
             stderr: "inherit",
@@ -327,6 +329,7 @@ function makeLiveIo(): CliIoShape {
       }),
     envVar: (name) => process.env[name],
     agentProfile: detectAgentProfile,
+    stderrIsTerminal: () => process.stderr.isTTY === true,
   };
 }
 

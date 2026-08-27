@@ -52,10 +52,14 @@ export interface TestEnv {
   setStdin(bytes: Uint8Array): void;
   /**
    * 端末判定(`Stdio`)の偽装。値の表示可否の**一次境界**なので、既定は
-   * 「人間の対話端末」= stdin / stdout の両方が端末。パイプ・リダイレクト・
+   * 「人間の対話端末」= stdin / stdout / stderr が端末。パイプ・リダイレクト・
    * CI・未知のエージェントを再現するときに false を渡す。
    */
-  setTerminal(input: { readonly stdin?: boolean; readonly stdout?: boolean }): void;
+  setTerminal(input: {
+    readonly stdin?: boolean;
+    readonly stdout?: boolean;
+    readonly stderr?: boolean;
+  }): void;
   /**
    * promptLine が順に返す応答をキューする(枯渇後は失敗 = EOF 相当)。
    * 関数は応答時点で評価される(表示済みログから値を導く応答のため —
@@ -98,6 +102,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   // 既定は「人間が対話端末で実行した」形(値の表示が許される唯一の形)
   let stdinIsTerminal = true;
   let stdoutIsTerminal = true;
+  let stderrIsTerminal = true;
   let runnerExitCode = 0;
   let keychainWritable = true;
   let floorPushCommittable = true;
@@ -189,6 +194,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
         }),
       envVar: (name) => envVars.get(name),
       agentProfile: () => agent,
+      stderrIsTerminal: () => stderrIsTerminal,
     }),
     Layer.succeed(ProcessRunner, {
       run: ({ command, extraEnv }) =>
@@ -213,9 +219,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
     setStdin(bytes) {
       stdin = bytes;
     },
-    setTerminal({ stdin: isStdinTerminal, stdout: isStdoutTerminal }) {
+    setTerminal({ stdin: isStdinTerminal, stdout: isStdoutTerminal, stderr: isStderrTerminal }) {
       stdinIsTerminal = isStdinTerminal ?? stdinIsTerminal;
       stdoutIsTerminal = isStdoutTerminal ?? stdoutIsTerminal;
+      stderrIsTerminal = isStderrTerminal ?? stderrIsTerminal;
     },
     setPromptResponses(lines) {
       promptResponses.length = 0;
