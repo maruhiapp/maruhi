@@ -259,7 +259,13 @@ F3a と同じプロセス(複数案 → 上位互換探索 → 3 周比較 → �
   読み取りは発生しない(session-32 §5-1 の前提どおり)。サーバー突合は
   保存行の再列挙(`checkpointValueEntries`)で、宣言ヘッド確定後の並行 push
   は 422 `CheckpointStateMismatch`(values-digest-mismatch)→ クライアントは
-  再 pull + 有界再試行
+  再 pull + 有界再試行。CLI 側の有界再試行は #97 の pullfrog レビュー指摘
+  (初版は未マップの汎用エラーで落ちていた)で実装: `mapRotateFailure` が
+  422 を `RotateValuesConflictError`(CliError の細分 — toCliError の素通しで
+  層を跨ぐ)へ写し、`envRotateOp` が検証済み pull からやり直す(上限 3 試行。
+  再署名ループ内では values の再取得ができないため、リトライの単位は
+  複合送信ではなく pull からの全体)。`isServerRejection` にも追加(422 は
+  確定拒否 = intent を閉じ、プローブ不要)
 - **F-3 境界 checkpoint の監査ヘッド**: `GET /audit-head`(§16-2)未実装の
   間、非空 audit_head_hash の境界 checkpoint は payload-mismatch
   (checkpointAuditHead)で fail-closed 拒否。§6.4 の存在・位置検査なしの
@@ -292,6 +298,19 @@ F3a と同じプロセス(複数案 → 上位互換探索 → 3 周比較 → �
   受理 version の基準線が床(ローカル)に加えチェーン(共有)にも固定された
   検出層の増加で、期待文言を checkpoint-regressed へ更新(固定点 =「握り潰しが
   同一実行内で落ちる」は不変)
+### M2 への申し送り(#97 レビューの記録)
+
+- pullfrog の base 側観測(F3a 範囲): チェーン合意規則の checkpoint は role
+  member+ で、タプル内容(manifest_version)はチェーン層では検証不能 — 悪意
+  メンバーが実在しない先の manifest_version を公証できれば、以後の正当な
+  マニフェストが `checkpoint-regressed` で詰まる(fail-closed の可用性面)。
+  **現状は到達不能**: 受理される checkpoint は境界同梱のみで、タプルの
+  manifest_version は CAS 受理された同梱マニフェストの版と一致検査され、
+  standalone は §16-2 実装まで CompositeRequired で拒否される。M2 の
+  standalone 受理は §6.4 / §16-2 の「受理時点の最新マニフェストとの一致」
+  検査がこの穴を塞ぐ設計になっている — 実装時にこの negative
+  (先行 manifest_version の公証拒否)を必ず入れること
+
 ### F3b の実装内容(要約)
 
 - `packages/crypto`: manifest-verify.ts の検証順を D-2 へ(prev → チェック

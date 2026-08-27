@@ -337,7 +337,7 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
            manifest_version INTEGER NOT NULL,
            manifest_sig_hash_hex TEXT NOT NULL,
            values_digest_hex TEXT NOT NULL,
-           created_at INTEGER NOT NULL
+           updated_at INTEGER NOT NULL
          )`,
       );
       sql.exec(

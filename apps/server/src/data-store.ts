@@ -1293,7 +1293,7 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     sql.exec(
       `INSERT INTO environment_checkpoints
          (environment_id, chain_seq, entry_hash_hex, epoch, manifest_version,
-          manifest_sig_hash_hex, values_digest_hex, created_at)
+          manifest_sig_hash_hex, values_digest_hex, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (environment_id) DO UPDATE SET
          chain_seq = excluded.chain_seq,
@@ -1302,7 +1302,7 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
          manifest_version = excluded.manifest_version,
          manifest_sig_hash_hex = excluded.manifest_sig_hash_hex,
          values_digest_hex = excluded.values_digest_hex,
-         created_at = excluded.created_at`,
+         updated_at = excluded.updated_at`,
       environmentId,
       checkpoint.chainSeq,
       checkpoint.entryHashHex,
