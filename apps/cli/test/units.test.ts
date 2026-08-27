@@ -766,6 +766,13 @@ describe("buildInjectionEnv", () => {
       "NPM_CONFIG_PREFIX",
       "NPM_CONFIG_CAFILE",
       "NPM_CONFIG_IGNORE_SCRIPTS",
+      "NPM_CONFIG_NODE_GYP",
+      "NPM_CONFIG_INIT_MODULE",
+      "NPM_CONFIG_EDITOR",
+      "NPM_CONFIG_VIEWER",
+      "NPM_CONFIG_STRICT_SSL",
+      "NPM_CONFIG_CA",
+      "NPM_CONFIG_GIT",
       // interpreter / runtime hooks that do not need an attacker-controlled rc file
       "PYTHONBREAKPOINT",
       "PYTHONEXECUTABLE",
@@ -790,11 +797,13 @@ describe("buildInjectionEnv", () => {
         // NPM_CONFIG_ 全体を拒否せず、上の実行制御キーだけを個別拒否する
         variable("NPM_CONFIG__AUTH", "credential"),
         variable("NPM_CONFIG__AUTHTOKEN", "credential"),
+        variable("NPM_CONFIG_REGISTRY", "https://registry.example"),
       ]),
     );
     expect(Object.keys(allowed).toSorted()).toEqual([
       "BUN_INSTALL",
       "NODE_ENV",
+      "NPM_CONFIG_REGISTRY",
       "NPM_CONFIG__AUTH",
       "NPM_CONFIG__AUTHTOKEN",
     ]);

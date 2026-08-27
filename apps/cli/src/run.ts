@@ -136,6 +136,13 @@ const DENIED_ENV_NAMES = new Set([
   "NPM_CONFIG_PREFIX",
   "NPM_CONFIG_CAFILE",
   "NPM_CONFIG_IGNORE_SCRIPTS",
+  "NPM_CONFIG_NODE_GYP",
+  "NPM_CONFIG_INIT_MODULE",
+  "NPM_CONFIG_EDITOR",
+  "NPM_CONFIG_VIEWER",
+  "NPM_CONFIG_STRICT_SSL",
+  "NPM_CONFIG_CA",
+  "NPM_CONFIG_GIT",
   "DOTNET_STARTUP_HOOKS",
   "GEM_HOME",
   "GEM_PATH",
@@ -154,6 +161,12 @@ const DENIED_ENV_NAMES = new Set([
 // `maruhi run -- make deploy` の中の `maruhi pull` が攻撃者として認証される
 // (変数名は AAD に束縛されない平文メタデータ = 共同メンバーが決められる)。
 // 個別名の列挙にすると将来 MARUHI_* を増やしたときに同じ穴が再発する
+//
+// NPM_CONFIG_ は registry credential / private registry URL という正当なsecret・
+// 設定注入用途があるため包括拒否しない。実行・require・spawn・TLS trustを直接
+// 変える上記キーだけを個別拒否する。NPM_CONFIG_REGISTRY はinstall先を変えるが
+// private registryの基本設定でもあるため許可し、install scriptの実行可否は
+// 呼び出すnpmコマンド側の責務とする
 const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "CORECLR_", "COR_", MARUHI_ENV_PREFIX];
 
 function isDeniedEnvName(name: string): boolean {
