@@ -158,7 +158,7 @@ checkpoint-epoch-mismatch → checkpoint-regression」は単一環境エント�
   は仕様どおり payload 構造検査 = `invalid-payload`)
 - chain-entries.json: **追加のみ**(canonicalization への checkpoint
   記述・valid_appends 2 件・extended_chains `checkpoint-baseline`・
-  negative 15 件・values_digests セクション)。既存 12 エントリ・
+  negative 18 件・values_digests セクション)。既存 12 エントリ・
   expected_head_states・既存 negative は 1 バイトも変えない(git diff で
   確認)。生成は既存の独立参照生成器(generate_reference.py)の拡張で行い、
   既存出力のバイト一致再現を前提に追加分だけを diff に出す

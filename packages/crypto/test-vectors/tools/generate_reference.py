@@ -213,7 +213,7 @@ PAYLOAD_FIELD_ORDER = {
         "scope_environments_lp_hex", "lease_policy_lp_hex",
     ],
     "revoke_server": ["server_key_fingerprint_hex"],
-    # 2026-08-27(セッション 33 / CRYPTO_SPEC 0.6-draft §6.2 の checkpoint op を
+    # 2026-08-27(セッション 33 / CRYPTO_SPEC 0.7-draft §6.2 の checkpoint op を
     # PR-F3a で実装 — M2 の前倒し)。環境エントリのリストは scope_environments と
     # 同じ入れ子 LP の hex 文字列として 1 フィールドに載せる
     "checkpoint": ["environments_lp_hex", "audit_head_hash_hex"],
