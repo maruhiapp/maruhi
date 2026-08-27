@@ -56,7 +56,7 @@ const PAYLOAD_FIELD_ORDER = {
     "lease_policy_lp_hex",
   ],
   revoke_server: ["server_key_fingerprint_hex"],
-  // 2026-08-27(CRYPTO_SPEC 0.6-draft §6.2 checkpoint op — PR-F3a): 環境エントリの
+  // 2026-08-27(CRYPTO_SPEC 0.7-draft §6.2 checkpoint op — PR-F3a): 環境エントリの
   // リストは scope_environments と同じ入れ子 LP の hex 文字列 1 フィールド
   checkpoint: ["environments_lp_hex", "audit_head_hash_hex"],
 };
