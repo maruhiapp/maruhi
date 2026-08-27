@@ -767,6 +767,7 @@ describe("buildInjectionEnv", () => {
       "NPM_CONFIG_CAFILE",
       "NPM_CONFIG_IGNORE_SCRIPTS",
       "NPM_CONFIG_NODE_GYP",
+      "npm_config_python",
       "NPM_CONFIG_INIT_MODULE",
       "NPM_CONFIG_EDITOR",
       "NPM_CONFIG_VIEWER",
@@ -776,6 +777,8 @@ describe("buildInjectionEnv", () => {
       // interpreter / runtime hooks that do not need an attacker-controlled rc file
       "PYTHONBREAKPOINT",
       "PYTHONEXECUTABLE",
+      "PYTHON",
+      "NODE_GYP_FORCE_PYTHON",
       "JDK_JAVA_OPTIONS",
       "DOTNET_STARTUP_HOOKS",
       "GEM_HOME",
