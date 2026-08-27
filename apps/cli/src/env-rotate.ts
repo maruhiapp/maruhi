@@ -25,11 +25,12 @@ import {
   type WrappedDek,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
+import type { ChainEntry, ChainMember, EnvValuesDigestEntry, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
@@ -459,6 +460,13 @@ function appendRotation(
       readonly entries: readonly ManifestDigestEntry[];
       readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
     };
+    /**
+     * 境界 checkpoint(§12-4 — 2026-08-27)の values_digest 材料: 検証済み pull の
+     * 値レベル最新形(active 変数のみ。未再暗号化 = 旧エポックの現在値 — §12-7 の
+     * 正当な状態)。再暗号化のために実読した値そのもので、追加の読み取りは
+     * 発生しない(session-32 §5-1)。
+     */
+    readonly checkpointValues: readonly EnvValuesDigestEntry[];
   },
 ): Effect.Effect<
   {
@@ -546,6 +554,19 @@ function appendRotation(
                   hashHex: state.verified.state.headHashHex,
                 },
               });
+              // 境界 checkpoint(H+2 — §12-4): 当該環境 1 タプル(new_epoch・
+              // 同梱マニフェストの版とハッシュ・実読済み現在値の values_digest)。
+              // CAS リトライではエントリ・マニフェストとともに再署名する
+              const checkpoint = yield* signBoundaryCheckpoint({
+                compositeEntry: entry,
+                environmentId: input.environmentId,
+                epoch: input.newEpoch,
+                manifestVersion: manifest.manifestVersion,
+                manifestSigHashHex: manifest.manifestSigHashHex,
+                values: input.checkpointValues,
+                member: state.member,
+                signingKey: input.signingKeyPair.privateKey,
+              });
               const sent: AcceptedRotation = {
                 state,
                 manifest: {
@@ -571,6 +592,7 @@ function appendRotation(
                     entry,
                     deks: state.deks,
                     manifest: manifest.manifest,
+                    checkpoint,
                   },
                 })
                 .pipe(
@@ -2227,6 +2249,11 @@ function rotateWithWarnings(
       dek,
       dekCommitmentHex: commitment.value,
       manifestBase: manifestBaseOf(pulled),
+      checkpointValues: pulled.variables.map((value) => ({
+        variableId: value.variableId,
+        version: value.version,
+        valueSigHashHex: value.signedBytesHashHex,
+      })),
     });
     yield* io.log(
       `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,

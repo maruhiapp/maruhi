@@ -196,4 +196,117 @@ checkpoint-epoch-mismatch → checkpoint-regression」は単一環境エント�
 
 ## 5. F3b の実装裁定
 
-(F3b 作業時に追記)
+F3a と同じプロセス(複数案 → 上位互換探索 → 3 周比較 → 自律選択)。周ごとの
+記録は主要 2 裁定(D・E)に付し、小裁定(F 群)は結論と棄却理由のみ。
+
+### 裁定 D: マニフェスト検証の検査順 — prev 連鎖をエポック整合(規則 (2))より先に
+
+旧実装の順は 署名 → ヘッド束縛 → エポック → prev → 内容。チェックポイント
+束縛の導入で「タプルなし → strict」経路が v1(prev 空)の負系ベクター
+(v1-nonempty-prev)を `environment-not-created-at-head` で先取りし、期待理由
+`prev-shape-mismatch` に到達しなくなった。
+
+- 第 1 周: 案 D-1 = ベクターの期待理由を変える(不可 — 加法のみ制約と、
+  §4.3 の規則番号は (1) prev 連鎖 → (2) エポック整合の順で規定されており
+  仕様が正)。案 D-2 = prev 検査をエポック整合の前へ移す。
+- 第 2 周(上位互換探索): 案 D-3 = 理由コードに優先度メタデータを持たせ
+  検査順と独立にする — 過剰機構。検証は仕様の規則番号順で読める線形列で
+  あるべきで、順序をデータ化すると仕様との対応が読めなくなり棄却。
+- 第 3 周(再点検): D-2 は「先に構造(prev)、次に文脈(エポック)」で
+  §12-5 の受理列の説明とも一致。採用 = **D-2**(prev → エポック整合
+  (チェックポイント束縛込み)→ 内容 → チェックポイント基準線 (4))。
+
+### 裁定 E: membership.test.ts の正規ベクター再生と必須 checkpoint 挿入の両立
+
+複合が H+2 checkpoint を挿入するため、正規チェーン(seq 3 以降に複合を含む)
+の「固定バイトのままの API 再生」は構造的に不可能になった(正規ベクターは
+チェーン層では今も有効 — checkpoint は合意規則上任意 — だが、API では
+生成不能な形になった。これは 2-G′ の仕様帰結そのもの)。
+
+- 第 1 周: 案 E-1 = DO ストレージへ直接シードして固定バイトを維持 —
+  チェーン行に加え environments / ステートメント / ラップ / マニフェスト行の
+  複製が必要で、do-schema への結合が深く「API が受理した」という固定の
+  意味も失う。案 E-2 = 再生を適応型にする: 実ヘッドで op / payload / actor を
+  保ったまま再署名して追従(Ed25519 の決定性により、ずれが生じるまでは
+  原本と同一バイト)。
+- 第 2 周(上位互換探索): 案 E-3 = サーバーが checkpoint 無し複合を過渡的に
+  受理する(schema optional)— 仕様(§12-4 必須同梱)違反で棄却。旧 CLI の
+  create / rotate は fail-closed(400)になるのが承認済みの帰結
+  (SELF_HOSTING の更新順序が運用面を担う)。案 E-4 = 正規ベクター自体に
+  checkpoint を組み込む再生成 — 加法のみ制約(session-32 §4-2)違反で棄却。
+- 第 3 周(再点検): E-2 の失うものは「サーバーテストでの負系エントリの
+  バイト固定」だけで、それは crypto 層の 4 実行環境テストが既に固定している
+  (サーバーテストの固定対象は判定順・ステータス面)。負系も同じ再署名で
+  意味論(role / 重複 / エポック順序 / 鍵 FP 不一致)を保てる — actor
+  ブロックを原本のまま写して実鍵で署名し直すと、FP 不一致系もそのまま再現
+  される。採用 = **E-2**(`resignEntryAt` — data-crypto.ts)。
+
+### 裁定 F 群(小裁定 — 結論と棄却理由)
+
+- **F-1 移行経路テストの旧世代シミュレーション**: マニフェスト行の削除だけ
+  では「チェーンに checkpoint タプルが残ったまま保存行が無い」という実運用
+  では生じない状態になり、規則 (2) が(正しく)binding-mismatch で落とす。
+  実運用の移行対象(マニフェスト・checkpoint 導入前の環境)はチェーンにも
+  タプルが無いので、テストはチェーン末尾の境界 checkpoint エントリと
+  スナップショット行を直接取り除いて旧世代チェーンを再現する
+  (`stripTrailingCheckpoint` — membership の canonical_bytes 直接改変と同じ
+  「append-only 不変条件の外」扱い。改変後は DO 退去でフルロードへ戻す)。
+  代替案 = 移行経路テストの削除(サーバー面の固定を失う)、専用シード
+  (E-1 と同じ理由)— どちらも棄却
+- **F-2 rotate の values_digest 材料(CLI)**: 検証済み pull の
+  `VerifiedPulledValue`(再暗号化のために実読した現在値)から
+  (variable_id, version, 自計算 value_signed_bytes ハッシュ)を写す。追加の
+  読み取りは発生しない(session-32 §5-1 の前提どおり)。サーバー突合は
+  保存行の再列挙(`checkpointValueEntries`)で、宣言ヘッド確定後の並行 push
+  は 422 `CheckpointStateMismatch`(values-digest-mismatch)→ クライアントは
+  再 pull + 有界再試行
+- **F-3 境界 checkpoint の監査ヘッド**: `GET /audit-head`(§16-2)未実装の
+  間、非空 audit_head_hash の境界 checkpoint は payload-mismatch
+  (checkpointAuditHead)で fail-closed 拒否。§6.4 の存在・位置検査なしの
+  受理は虚偽公証の固定を許すため(F3a の standalone 拒否と同じ論法)
+- **F-4 §12-4 のハッシュ一致検査の分担**: タプル ↔ 同梱マニフェストの
+  (manifest_version, signed_bytes ハッシュ) 一致は acceptEnvManifest の
+  チェックポイント束縛(適用後履歴 = H+2 タプルとの完全一致)が一意に担い、
+  座標(env / epoch / manifestVersion / audit head 空)は
+  ensureBoundaryCheckpointShape が先行検査する。同じ検査を 2 箇所に書く案は
+  「どちらが正か」の分岐を作るため棄却
+- **F-5 M1-B1**: ピンの適用条件を「anchor 未確立(保存済みマニフェスト
+  なし)かつ manifestVersion 1」に限定(anchor は `environmentManifestAnchor`
+  で受理時に取得)。初期化済み環境への stale v1 は manifestVersion CAS の
+  409(currentManifestVersion 付き)へ落ち、正当クライアントの再取得・
+  再署名ループに合流する。既存の 422 ピンテスト(anchor 未確立)は
+  そのまま有効(F-1 の旧世代再現の上で)
+- **F-6 テストベクターの境界チェーン**: 既存複合 positive
+  (manifest-v1-create / manifest-rotate)の照合チェーンを、実マニフェスト
+  ハッシュを焼き込んだ checkpoint-boundary-\*(chain-entries.json への加法)
+  に付け替え。2 本必要なのは manifest-v1-create が rotate 後の全チェーンでは
+  規則 (4)(基準線 mv2)に落ちるため。既存ベクターの暗号材料は不変で、
+  変更は散文フィールドとハーネスの参照先のみ(加法制約と両立)
+
+- **F-7 CLI モックサーバーと巻き戻しテスト**: CLI テストのモックサーバーは
+  rotate 受理で rotate + 境界 checkpoint の 2 エントリを配布チェーンへ追記する
+  (実サーバーの 2 エントリ受理の模倣 — 追記しないと受理後の再 pull 検証が
+  strict エポック規則で落ち、旧 H+1 例外の廃止がテスト自身に当たる)。
+  「受理後も旧 manifestVersion を配布し続けるサーバー」の 2 テストは、床検査
+  (規則 (a))より先に §4.3 (4) の checkpoint-regressed が落とすようになった —
+  受理 version の基準線が床(ローカル)に加えチェーン(共有)にも固定された
+  検出層の増加で、期待文言を checkpoint-regressed へ更新(固定点 =「握り潰しが
+  同一実行内で落ちる」は不変)
+### F3b の実装内容(要約)
+
+- `packages/crypto`: manifest-verify.ts の検証順を D-2 へ(prev → チェック
+  ポイント束縛エポック整合 → 内容 → 基準線)。`epochIntegrityReason` =
+  タプル conflicting → `checkpoint-equivocation` / unique → (epoch,
+  manifest_sig_hash) 完全一致でなければ `checkpoint-binding-mismatch` /
+  無し → strict。`checkpointIntegrityReason` = 最新チェックポイント基準線
+  との非退行(`checkpoint-regressed`)。ベクター: checkpoint-boundary-\* 3 本
+  + env-manifest.json の rule_negatives 5 件(すべて加法)
+- `packages/api-schema` / `apps/server`: 複合 payload へ `checkpoint` 必須
+  同梱、`CheckpointStateMismatchError`(422)、H+1/H+2 ペアの単一 verifyChain
+  受理(chain-accept.ts の pair 経路)、environment_checkpoints /
+  checkpoint_snapshot_values の原子 upsert(retire でカスケード)、
+  ensureBoundaryCheckpointShape + ensureCheckpointValuesDigest
+- `apps/cli`: boundary-checkpoint.ts(H+2 の署名)、env-create / env-rotate
+  の複合へ同梱(CAS リトライで再署名)
+- docs: SELF_HOSTING.md の更新順序を 2-G′ の形(① サーバー → ② CLI/CI →
+  ③ 全環境の移行 rotate。旧 CLI は未知 op で fail-closed)に改訂

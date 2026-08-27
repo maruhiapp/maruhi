@@ -117,6 +117,49 @@ export const verifyAcceptableEntry = (
     return { canonicalBytes, applied };
   });
 
+/**
+ * 複合の 2 エントリ受理検査(AUTH_SPEC §12-4 — 2026-08-27 セッション 33:
+ * H+1 = create / rotate、H+2 = 境界 `checkpoint`)。サイズ検査は各エントリ、
+ * 容量検査は 2 エントリ分の合算、verifyChain(§6.4 の合意規則 — checkpoint の
+ * エポック厳密一致は「エントリ時点 = H+1 適用後」基準で自然に成立する —
+ * CRYPTO_SPEC §6.2)は両エントリを適用した全チェーンに対して 1 回。返す
+ * `applied` は両エントリ適用後の検証済みビュー(境界 checkpoint タプルを含む
+ * 履歴 = 同梱マニフェストのチェックポイント束縛検証 — §4.3 (2) — の入力)。
+ */
+export const verifyAcceptableEntryPair = (
+  chain: StoredChain,
+  first: ChainEntry,
+  second: ChainEntry,
+): Effect.Effect<
+  {
+    readonly firstCanonicalBytes: number;
+    readonly secondCanonicalBytes: number;
+    readonly applied: VerifiedChainView;
+  },
+  DataRejectedError
+> =>
+  Effect.gen(function* () {
+    const firstCanonicalBytes = yield* checkEntrySize(first);
+    const secondCanonicalBytes = yield* checkEntrySize(second);
+    if (
+      chain.entries.length + 2 > MAX_CHAIN_ENTRIES ||
+      chain.totalCanonicalBytes + firstCanonicalBytes + secondCanonicalBytes >
+        MAX_CHAIN_TOTAL_CANONICAL_BYTES
+    ) {
+      return yield* Effect.fail(
+        rejectData({
+          kind: "chain-capacity-exceeded",
+          maxEntries: MAX_CHAIN_ENTRIES,
+          maxTotalBytes: MAX_CHAIN_TOTAL_CANONICAL_BYTES,
+        }),
+      );
+    }
+    const applied = yield* verifyChainEffect([...chain.entries, first, second]).pipe(
+      Effect.mapError(rejectChainInvalid),
+    );
+    return { firstCanonicalBytes, secondCanonicalBytes, applied };
+  });
+
 /** insertAcceptedEntrySync が書き込みに使うストア面(構造的部分型)。 */
 export interface ChainAcceptStores {
   readonly chainStore: {
@@ -156,6 +199,31 @@ export function insertAcceptedEntrySync(
   stores.chainStore.insertSync(entry, applied.state.headHashHex, canonicalBytes);
   stores.audit.appendSync(chainMirrorEvent(entry, nowMs));
   applyAcceptanceSideEffectsSync(stores, entry, nowMs);
+}
+
+/**
+ * 複合の 2 エントリ(H+1 / H+2 — verifyAcceptableEntryPair 通過済み)の挿入 +
+ * ミラー + 副作用(同期・seq 順)。H+1 のエントリハッシュは H+2 の prev_hash
+ * (verifyChain が連鎖一致を検証済み)、H+2 のハッシュは両エントリ適用後の
+ * ヘッドハッシュ。checkpoint のスナップショット保存(§6.4)はエントリ単体から
+ * 導出できない(受理時点の保存状態の再構成物)ため、ここではなく呼び出し側の
+ * 書き込みフェーズが同じ同期ブロック内で行う。
+ */
+export function insertAcceptedEntryPairSync(
+  stores: ChainAcceptStores,
+  first: ChainEntry,
+  second: ChainEntry,
+  applied: VerifiedChainView,
+  firstCanonicalBytes: number,
+  secondCanonicalBytes: number,
+  nowMs: number,
+): void {
+  stores.chainStore.insertSync(first, second.prevHashHex, firstCanonicalBytes);
+  stores.audit.appendSync(chainMirrorEvent(first, nowMs));
+  applyAcceptanceSideEffectsSync(stores, first, nowMs);
+  stores.chainStore.insertSync(second, applied.state.headHashHex, secondCanonicalBytes);
+  stores.audit.appendSync(chainMirrorEvent(second, nowMs));
+  applyAcceptanceSideEffectsSync(stores, second, nowMs);
 }
 
 /**

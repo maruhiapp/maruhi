@@ -22,15 +22,18 @@ import { MAX_DEK_WRAPS_PER_REQUEST } from "../src/policy.ts";
 import { deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
+  checkpointOperation,
   commitmentOf,
   digestOf,
   hexBytes,
   makeDek,
+  manifestSignedBytesHashOf,
   metaSignedBytesHashOf,
   signEntryAt,
   signEnvManifestAs,
   signWrapAs,
   unwrapAndDecrypt,
+  valuesDigestOf,
   vectorKeyOf,
   verifyDistributedWrapSignature,
   wrapDekForAll,
@@ -151,7 +154,7 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const { entry } = await signEntryAt({
+    const { entry, hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
       actorUserId: OWNER,
@@ -166,24 +169,39 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
       name: "App",
       head: fixture.head,
     });
+    // 作成複合の同梱マニフェスト(manifestVersion 1・変数空集合・epoch 1 — §12-4)
+    const manifest = await signEnvManifestAs(OWNER, projectId, {
+      suite: "maruhi/v1",
+      environmentId: ENV,
+      epoch: 1,
+      manifestVersion: 1,
+      variablesDigestHex: await digestOf([]),
+      envMetaVersion: statement.metaVersion,
+      envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
+      prevManifestSigHashHex: "",
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    });
+    // 境界 checkpoint(H+2 — §12-4 の必須同梱)
+    const { entry: checkpoint } = await signEntryAt({
+      seq: entry.seq + 1,
+      prevHashHex: hash,
+      actorUserId: OWNER,
+      operation: checkpointOperation({
+        environmentId: ENV,
+        epoch: 1,
+        manifestVersion: 1,
+        manifestSigHashHex: await manifestSignedBytesHashOf(projectId, manifest, OWNER),
+        valuesDigestHex: await valuesDigestOf([]),
+      }),
+    });
     const body = JSON.stringify({
       parentHeadHashHex: fixture.head.hashHex,
       entry,
       statement,
       deks,
-      // 作成複合の同梱マニフェスト(manifestVersion 1・変数空集合・epoch 1 — §12-4)
-      manifest: await signEnvManifestAs(OWNER, projectId, {
-        suite: "maruhi/v1",
-        environmentId: ENV,
-        epoch: 1,
-        manifestVersion: 1,
-        variablesDigestHex: await digestOf([]),
-        envMetaVersion: statement.metaVersion,
-        envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
-        prevManifestSigHashHex: "",
-        chainHeadHashHex: fixture.head.hashHex,
-        chainHeadSeq: fixture.head.seq,
-      }),
+      manifest,
+      checkpoint,
     });
     // CSRF ヘッダーなしの書き込みは 403
     const headers = sessionHeaders(session);

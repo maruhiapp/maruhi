@@ -3,16 +3,22 @@
 //
 // テストベクター(packages/crypto/test-vectors/chain-entries.json)の再利用:
 // - 正常系 seq 1〜12 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT
-//   認証。create_environment / rotate_epoch は複合エンドポイント経由 — §12-4)
-// - 認可系 negative 全件を拒否テストとして再生する。サーバー受理面では判定順に
-//   より合意規則の理由コードがそのまま出ないケースがある(role 403 先行・
-//   未作成環境 404 先行・形式違反 400 先行 — compositeExpectations の対応表)
+//   認証。create_environment / rotate_epoch は複合エンドポイント経由 — §12-4)。
+//   複合は境界 checkpoint(H+2 — 2026-08-27 PR-F3b)を挿入するため、最初の複合
+//   以降はベクターの固定 seq / prev からヘッドがずれる。以降のエントリは op /
+//   payload / actor を保って実ヘッドで再署名して追従する(バイト固定は crypto 層の
+//   4 実行環境テストが担い、ここでは同じ op 列の API 受理を固定する)
+// - 認可系 negative 全件を拒否テストとして再生する(同じく実ヘッドで再署名)。
+//   サーバー受理面では判定順により合意規則の理由コードがそのまま出ないケースが
+//   ある(role 403 先行・未作成環境 404 先行・形式違反 400 先行 —
+//   compositeExpectations の対応表)
 //
 // 認証は実発行経路(device 交換)で PAT を取得する。ベクターの固定 user_id は
 // D1 への直接シード(users + linked_identities)で整合させる(AUTH_SPEC §11-1 裁定)。
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
+import { computeChainEntryHash } from "@maruhi/crypto";
 import { vectorEnvironmentDeks } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -44,14 +50,17 @@ import {
 } from "./support/chain-vectors.ts";
 import type { WireEnvironmentManifest } from "./support/data-crypto.ts";
 import {
+  checkpointOperation,
   digestOf,
   hexBytes,
   makeDek,
   manifestSignedBytesHashOf,
   metaSignedBytesHashOf,
+  resignEntryAt,
   signEntryAt,
   signEnvManifestAs,
   signMetaStatementAs,
+  valuesDigestOf,
   wrapDekForAll,
   wrapDekToServer,
 } from "./support/data-crypto.ts";
@@ -260,10 +269,28 @@ async function submitComposite(
     environmentId,
     epoch,
   );
+  // 境界 checkpoint(H+2 — §12-4 の必須同梱)。本ファイルはデータプレーンの変数を
+  // 作らないため values_digest は常に空集合の列挙
+  const { entry: checkpoint } = await signEntryAt({
+    seq: entry.seq + 1,
+    prevHashHex: await computeChainEntryHash(entry),
+    actorUserId: entry.actor.userId,
+    operation: checkpointOperation({
+      environmentId,
+      epoch,
+      manifestVersion: manifest.manifestVersion,
+      manifestSigHashHex: await manifestSignedBytesHashOf(
+        vectorProjectId,
+        manifest,
+        entry.actor.userId,
+      ),
+      valuesDigestHex: await valuesDigestOf([]),
+    }),
+  });
   const body =
     entry.op === "create_environment"
-      ? { parentHeadHashHex: entry.prevHashHex, entry, statement, deks, manifest }
-      : { parentHeadHashHex: entry.prevHashHex, entry, deks, manifest };
+      ? { parentHeadHashHex: entry.prevHashHex, entry, statement, deks, manifest, checkpoint }
+      : { parentHeadHashHex: entry.prevHashHex, entry, deks, manifest, checkpoint };
   const response = await SELF.fetch(url, {
     method: "POST",
     headers: { ...JSON_HEADERS, ...(headers ?? bearer(tokenFor(entry.actor.userId))) },
@@ -302,26 +329,50 @@ function trackReplayState(
   }
 }
 
+/** 再生後の実ヘッド(複合の境界 checkpoint 挿入でベクターの固定 seq とずれる)。 */
+interface ReplayHead {
+  readonly seq: number;
+  readonly hashHex: string;
+}
+
+interface ReplayResult {
+  readonly members: readonly string[];
+  readonly head: ReplayHead;
+}
+
 /**
  * ベクターの seq 1..upTo をサーバーへ再生する(init + append + 複合。actor ごとの
  * PAT)。複合のラップ集合が要る現メンバー集合は op を追いながら導出する。
+ *
+ * 2026-08-27(PR-F3b): 複合は境界 checkpoint(H+2)を挿入するため、最初の複合
+ * 以降のヘッドはベクターの固定 seq / prev からずれる。以降のエントリは op /
+ * payload / actor を保ったまま実ヘッドで再署名して追従する(正規チェーンの
+ * バイト固定は crypto 層の 4 実行環境テストが担い、ここでは「同じ op 列を API が
+ * 受理する」ことを固定する)。
  */
-async function replayVectorChain(upTo: number): Promise<readonly string[]> {
+async function replayVectorChain(upTo: number): Promise<ReplayResult> {
   const members: string[] = [];
   const serverGrants = new Map<string, TrackedServerGrant>();
+  let head: ReplayHead = { seq: 0, hashHex: "" };
   // マニフェスト追跡は再生ごとにやり直す(beforeEach が DO を消すため)
   replayManifests.clear();
   for (const vector of vectorEntries) {
     if (vector.seq > upTo) {
       break;
     }
-    const entry = toWireEntry(vector);
-    if (entry.op === "genesis") {
-      const response = await initChain(entry);
+    const wire = toWireEntry(vector);
+    if (wire.op === "genesis") {
+      const response = await initChain(wire);
       expect(response.status).toBe(200);
-      members.push(entry.actor.userId);
+      members.push(wire.actor.userId);
+      head = { seq: 1, hashHex: vector.entry_hash_hex };
       continue;
     }
+    // ヘッドがベクターどおりならエントリは原本バイトのまま(再署名は決定的に同一)
+    const { entry, hash } =
+      head.seq === vector.seq - 1 && head.hashHex === vector.prev_hash_hex
+        ? { entry: wire, hash: vector.entry_hash_hex }
+        : await resignEntryAt(wire, head.seq + 1, head.hashHex);
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       const environmentId = entry.payload.environmentId;
       const serverRecipients = [...serverGrants.entries()]
@@ -329,24 +380,28 @@ async function replayVectorChain(upTo: number): Promise<readonly string[]> {
         .map(([fpHex, grant]) => ({ fpHex, encPubHex: grant.encPubHex }));
       const response = await submitComposite(entry, members, undefined, serverRecipients);
       expect(response.status).toBe(200);
+      const body = (await response.json()) as { headSeq: number; headHashHex: string };
+      head = { seq: body.headSeq, hashHex: body.headHashHex };
       continue;
     }
-    const response = await appendEntry(vectorProjectId, vector.prev_hash_hex, entry);
+    const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
     expect(response.status).toBe(200);
+    head = { seq: entry.seq, hashHex: hash };
     trackReplayState(entry, members, serverGrants);
   }
-  return members;
+  return { members, head };
 }
 
 /**
  * 認可 negative の前提チェーンを再生する: chain 指定つきは正規チェーンの
  * base_seq までを再生した後、派生チェーン(extended_chains)のエントリを
- * 汎用 append で受理させる(受理されること自体も §6.2 の許容側の固定)。
+ * 汎用 append で受理させる(受理されること自体も §6.2 の許容側の固定。実ヘッドが
+ * ベクターとずれた分は再署名で追従する — replayVectorChain と同じ規律)。
  */
 async function replayNegativePrefix(negative: {
   readonly entry: { readonly seq: number };
   readonly chain?: string;
-}): Promise<readonly string[]> {
+}): Promise<ReplayResult> {
   if (negative.chain === undefined) {
     return replayVectorChain(negative.entry.seq - 1);
   }
@@ -354,12 +409,15 @@ async function replayNegativePrefix(negative: {
   if (extended === undefined) {
     throw new Error(`missing extended chain ${negative.chain}`);
   }
-  const members = await replayVectorChain(extended.base_seq);
+  const base = await replayVectorChain(extended.base_seq);
+  let head = base.head;
   for (const vector of extended.entries) {
-    const response = await appendEntry(vectorProjectId, vector.prev_hash_hex, toWireEntry(vector));
+    const { entry, hash } = await resignEntryAt(toWireEntry(vector), head.seq + 1, head.hashHex);
+    const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
     expect(response.status).toBe(200);
+    head = { seq: entry.seq, hashHex: hash };
   }
-  return members;
+  return { members: base.members, head };
 }
 
 // この vitest-pool-workers 構成(cloudflareTest プラグイン 0.21.0)にはテスト間の
@@ -460,8 +518,10 @@ describe("POST /projects (genesis 受理 + org 連携 §11-3)", () => {
 });
 
 describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate は複合経由)", () => {
-  it("accepts the full vector chain and stores it append-only", async () => {
-    await replayVectorChain(12);
+  it("accepts the full vector chain with interleaved boundary checkpoints, append-only", async () => {
+    // 複合(vector seq 3 / 4 / 8 / 10 / 11)ごとに境界 checkpoint(H+2)が
+    // 挿入される(§12-4 — 2026-08-27)。ベクターの 12 op はこの順序で全受理される
+    const { head } = await replayVectorChain(12);
 
     const response = await getChain(vectorProjectId);
     expect(response.status).toBe(200);
@@ -471,22 +531,45 @@ describe("チェーン再生(正常系ベクター seq 1〜12。create/rotate �
       headSeq: number;
       headHashHex: string;
     };
-    const last = vectorEntries[vectorEntries.length - 1];
+    const expectedOps = [
+      "genesis",
+      "add_member",
+      "create_environment",
+      "checkpoint",
+      "rotate_epoch",
+      "checkpoint",
+      "remove_member",
+      "add_member",
+      "change_role",
+      "create_environment",
+      "checkpoint",
+      "grant_server",
+      "rotate_epoch",
+      "checkpoint",
+      "create_environment",
+      "checkpoint",
+      "revoke_server",
+    ];
     expect(body.projectId).toBe(vectorProjectId);
-    expect(body.headSeq).toBe(12);
-    expect(body.headHashHex).toBe(last?.entry_hash_hex);
-    expect(body.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-    expect(body.entries.map((entry) => entry.op)).toEqual(vectorEntries.map((v) => v.op));
+    expect(body.headSeq).toBe(expectedOps.length);
+    expect(body.headHashHex).toBe(head.hashHex);
+    expect(body.entries.map((entry) => entry.seq)).toEqual(expectedOps.map((_, i) => i + 1));
+    expect(body.entries.map((entry) => entry.op)).toEqual(expectedOps);
+    // checkpoint を除いた op 列はベクター本編と一致する(同じ操作列の受理)
+    expect(
+      body.entries.filter((entry) => entry.op !== "checkpoint").map((entry) => entry.op),
+    ).toEqual(vectorEntries.map((v) => v.op));
 
-    // DO SQLite の実データを直接確認する(append-only 保存とハッシュ列)
+    // DO SQLite の実データを直接確認する(append-only 保存とハッシュ列)。最初の
+    // 複合の checkpoint 挿入まで(seq 1〜3)はベクターの固定バイトのまま受理される
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
     await runInDurableObject(stub, (_instance, state) => {
       const rows = state.storage.sql
         .exec("SELECT seq, entry_hash_hex FROM chain_entries ORDER BY seq")
         .toArray();
-      expect(rows.length).toBe(12);
-      expect(rows.map((row) => row["entry_hash_hex"])).toEqual(
-        vectorEntries.map((v) => v.entry_hash_hex),
+      expect(rows.length).toBe(expectedOps.length);
+      expect(rows.slice(0, 3).map((row) => row["entry_hash_hex"])).toEqual(
+        vectorEntries.slice(0, 3).map((v) => v.entry_hash_hex),
       );
     });
   });
@@ -506,8 +589,9 @@ describe("チェーンの差分ロードキャッシュ(chain-store.ts StateCach
 
   it("追記→読み取り→追記の往復がフルロードと同一結果を返す(複合追記の増分反映込み)", async () => {
     // seq 1〜12 の再生は「追記(増分反映)→ 読み取り(差分ロード)」を毎手で
-    // 往復し、複合受理(create/rotate)の insertSync 経路もキャッシュに反映する
-    const members = await replayVectorChain(12);
+    // 往復し、複合受理(create/rotate + 境界 checkpoint の 2 エントリ insertSync
+    // 経路)もキャッシュに反映する
+    const { members } = await replayVectorChain(12);
     const warm = await readChain();
 
     // DO 退去 = インスタンスメモリのキャッシュ破棄。次の読み取りはフルロードに
@@ -521,7 +605,7 @@ describe("チェーンの差分ロードキャッシュ(chain-store.ts StateCach
     const target = members.find((userId) => userId !== "user-owner-0001");
     if (target === undefined) throw new Error("vector chain has no removable member");
     const { entry } = await signEntryAt({
-      seq: 13,
+      seq: warm.headSeq + 1,
       prevHashHex: warm.headHashHex,
       actorUserId: "user-owner-0001",
       operation: { op: "remove_member", payload: { targetUserId: target } },
@@ -529,9 +613,9 @@ describe("チェーンの差分ロードキャッシュ(chain-store.ts StateCach
     const appended = await appendEntry(vectorProjectId, warm.headHashHex, entry);
     expect(appended.status).toBe(200);
     const after = await readChain();
-    expect(after.headSeq).toBe(13);
-    expect(after.entries.slice(0, 12)).toEqual(warm.entries);
-    expect(after.entries[12]).toEqual(entry);
+    expect(after.headSeq).toBe(warm.headSeq + 1);
+    expect(after.entries.slice(0, warm.headSeq)).toEqual(warm.entries);
+    expect(after.entries[warm.headSeq]).toEqual(entry);
 
     // もう一度キャッシュを破棄してもフルロードが同一結果に到達する
     await evictDurableObject(stub);
@@ -588,8 +672,8 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     // チェーン検証(422)ではなく、メンバーシップ判定の 404 で拒否される(存在秘匿)
     const nonmember = vectorAuthzNegatives.find((n) => n.name === "authz-nonmember-actor");
     if (nonmember === undefined) throw new Error("missing authz-nonmember-actor vector");
-    await replayVectorChain(nonmember.entry.seq - 1);
-    const entry = toWireEntry(nonmember.entry);
+    const { head } = await replayVectorChain(nonmember.entry.seq - 1);
+    const { entry } = await resignEntryAt(toWireEntry(nonmember.entry), head.seq + 1, head.hashHex);
     if (entry.op !== "rotate_epoch") throw new Error("expected a rotate_epoch negative");
     const response = await submitComposite(entry, ["user-owner-0001", "user-admin-0003"]);
     expect(response.status).toBe(404);
@@ -660,8 +744,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     const vector4 = vectorEntries[3];
     if (vector3 === undefined || vector4 === undefined) throw new Error("missing vectors");
     const entry3 = toWireEntry(vector3);
-    const entry4 = toWireEntry(vector4);
-    if (entry3.op !== "create_environment" || entry4.op !== "rotate_epoch") {
+    if (entry3.op !== "create_environment") {
       throw new Error("unexpected vector ops");
     }
     const members = ["user-owner-0001", "user-member-0002"];
@@ -670,6 +753,17 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
       ...bearer(memberWrite),
     });
     expect(created.status).toBe(200);
+    // 作成複合の境界 checkpoint(H+2)がヘッドを進めるため、rotate は実ヘッドで
+    // 再署名する(op / payload / actor はベクターのまま)
+    const createdHead = (await created.json()) as { headSeq: number; headHashHex: string };
+    const { entry: entry4 } = await resignEntryAt(
+      toWireEntry(vector4),
+      createdHead.headSeq + 1,
+      createdHead.headHashHex,
+    );
+    if (entry4.op !== "rotate_epoch") {
+      throw new Error("unexpected vector ops");
+    }
     const rotated = await submitComposite(entry4, members, {
       ...JSON_HEADERS,
       ...bearer(memberWrite),
@@ -883,8 +977,14 @@ describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 nega
         throw new Error(`missing composite expectation for ${negative.name}`);
       }
       it(`rejects ${negative.name} via the composite endpoint with ${expectation.status}${expectation.reason === undefined ? "" : ` (${expectation.reason})`}`, async () => {
-        const members = await replayVectorChain(negative.entry.seq - 1);
-        const entry = toWireEntry(negative.entry);
+        const { members, head } = await replayVectorChain(negative.entry.seq - 1);
+        // 実ヘッドで再署名する(境界 checkpoint 挿入分の seq / prev のずれを吸収。
+        // op / payload / actor ブロックはベクター negative のまま)
+        const { entry } = await resignEntryAt(
+          toWireEntry(negative.entry),
+          head.seq + 1,
+          head.hashHex,
+        );
         if (entry.op !== "create_environment" && entry.op !== "rotate_epoch") {
           throw new Error("unexpected op");
         }
@@ -903,13 +1003,14 @@ describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 nega
       ? `rejects ${negative.name} with 404 (§11-2 concealment)`
       : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
     it(label, async () => {
-      const failingSeq = negative.entry.seq;
-      await replayNegativePrefix(negative);
-      const response = await appendEntry(
-        vectorProjectId,
-        negative.entry.prev_hash_hex,
+      const { head } = await replayNegativePrefix(negative);
+      // 実ヘッドで再署名する(境界 checkpoint 挿入分のずれを吸収 — 上の複合と同じ)
+      const { entry } = await resignEntryAt(
         toWireEntry(negative.entry),
+        head.seq + 1,
+        head.hashHex,
       );
+      const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
       if (expectsConcealment) {
         expect(response.status).toBe(404);
         return;
@@ -917,7 +1018,7 @@ describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 nega
       expect(response.status).toBe(422);
       const body = (await response.json()) as { seq: number; reason: string };
       expect(body.reason).toBe(negative.expected_reason);
-      expect(body.seq).toBe(failingSeq);
+      expect(body.seq).toBe(entry.seq);
     });
   }
 

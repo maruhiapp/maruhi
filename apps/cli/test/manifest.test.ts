@@ -645,6 +645,8 @@ interface RotateBody {
     readonly signatureHex: string;
   }[];
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
+  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
 /**
@@ -735,8 +737,12 @@ function makeLegacyServer(input: {
       }
       const body = request.body as RotateBody;
       rotateBodies.push(body);
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
+      // rotate + 境界 checkpoint の 2 エントリ受理(§12-4)
+      entries.push(body.entry, body.checkpoint);
+      hashes.push(
+        await computeChainEntryHash(body.entry),
+        await computeChainEntryHash(body.checkpoint),
+      );
       currentEpoch = body.entry.payload.newEpoch;
       for (const wrap of body.deks) {
         if (wrap.recipientUserId !== owner.userId) {
@@ -773,11 +779,14 @@ function makeLegacyServer(input: {
   return { handlers, rotateBodies, pushes };
 }
 
-describe("rotate 受理後の床前進(§6.3 — bugbot 指摘の回帰)", () => {
-  it("受理後も旧 manifestVersion を配布し続けるサーバーは、同一実行の再走査で規則 (a) が検出する", async () => {
-    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する。
-    // これを怠ると「床は pull 時点の旧 version のまま」なので、旧マニフェストを
-    // 配布し続けるサーバー(受理した v2 の握り潰し)が床検査を通ってしまう
+describe("rotate 受理後の巻き戻し検出(§6.3 / §4.3 (4))", () => {
+  it("受理後も旧 manifestVersion を配布し続けるサーバーは、同一実行の再走査が検出する", async () => {
+    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する
+    // (bugbot 指摘の回帰)。2026-08-27(PR-F3b)以降は境界 checkpoint が
+    // 受理 version の基準線をチェーン上にも固定するため、旧マニフェストを
+    // 配布し続けるサーバー(受理した v2 の握り潰し)は床検査(規則 (a))より
+    // 先に §4.3 検証規則 (4)(checkpoint-regressed)で落ちる — 検出層が
+    // 増えただけで、握り潰しが同一実行内で落ちる固定点は変わらない
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeLegacyServer({
       initialManifest: staleManifest,
@@ -786,16 +795,16 @@ describe("rotate 受理後の床前進(§6.3 — bugbot 指摘の回帰)", () =>
     });
     const env = await startEnv(state.handlers);
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "握り潰し"], env.layer)).toBe(1);
-    // 複合自体は受理されている(拒否は受理後の再走査 pull の床検査)
+    // 複合自体は受理されている(拒否は受理後の再走査 pull の検証)
     expect(state.rotateBodies).toHaveLength(1);
-    expect(env.errors.join("\n")).toContain("environment-manifest rollback");
+    expect(env.errors.join("\n")).toContain("checkpoint-regressed");
   });
 
-  it("床の書き込みに失敗しても、受理 version のプロセス内基準は同一実行の再走査で機能する", async () => {
-    // commitManifest のディスク書き込みが失敗しても、「自分が受理させた
-    // manifestVersion」を知っている事実はプロセス内の検出材料であり続ける —
-    // 受理後に旧版を配布し続けるサーバーは同一実行内で rollback として落ちる
-    // (永続化の欠けは警告で開示される)
+  it("床の書き込みに失敗しても、受理 version の検出基準は同一実行の再走査で機能する", async () => {
+    // commitManifest のディスク書き込みが失敗しても、受理した rotate の境界
+    // checkpoint はチェーン上の基準線であり続ける — 受理後に旧版を配布し続ける
+    // サーバーは同一実行内で checkpoint-regressed として落ちる(床の永続化の
+    // 欠けは警告で開示される)
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeLegacyServer({
       initialManifest: staleManifest,
@@ -809,7 +818,7 @@ describe("rotate 受理後の床前進(§6.3 — bugbot 指摘の回帰)", () =>
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("could not be recorded in the local floor");
-    expect(errors).toContain("environment-manifest rollback");
+    expect(errors).toContain("checkpoint-regressed");
   });
 });
 

@@ -316,6 +316,41 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       );
     },
   },
+  {
+    // チェックポイントの値スナップショット(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2。
+    // 2026-08-27 セッション 33 = PR-F3b — 境界 checkpoint の複合原子同梱)。
+    // 環境ごとの**最新包含 checkpoint** のタプル(environment_checkpoints —
+    // PRIMARY KEY = environment_id の upsert)と、その時点の値スナップショット
+    // 列挙(checkpoint_snapshot_values — 受理時点状態そのもの。upsert は環境
+    // 単位の全置換)。payload に含まれない環境の既存スナップショットは変更
+    // しない(§6.4)。配布(§12-7 の値付き応答への同梱)とクライアント側の
+    // 整合規則 2 の検証は M2(session-32 §5-1 のスコープ境界)。
+    // 環境削除のカスケード対象(§12-4 — retireEnvironment が両テーブルを消す)
+    tables: ["environment_checkpoints", "checkpoint_snapshot_values"],
+    apply(sql) {
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS environment_checkpoints (
+           environment_id TEXT PRIMARY KEY,
+           chain_seq INTEGER NOT NULL,
+           entry_hash_hex TEXT NOT NULL,
+           epoch INTEGER NOT NULL,
+           manifest_version INTEGER NOT NULL,
+           manifest_sig_hash_hex TEXT NOT NULL,
+           values_digest_hex TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         )`,
+      );
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS checkpoint_snapshot_values (
+           environment_id TEXT NOT NULL,
+           variable_id TEXT NOT NULL,
+           version INTEGER NOT NULL,
+           value_sig_hash_hex TEXT NOT NULL,
+           PRIMARY KEY (environment_id, variable_id)
+         )`,
+      );
+    },
+  },
 ];
 
 /**

@@ -20,15 +20,21 @@
 // 権威で、duplicate-environment / unknown-environment / エポック順序 / role /
 // コミットメント形式はすべてそこで判定される。
 
-import type { ChainEntry, ChainMember, ChainState } from "@maruhi/crypto";
+import type {
+  ChainEntry,
+  ChainMember,
+  ChainState,
+  CheckpointEnvironmentEntry,
+} from "@maruhi/crypto";
+import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
 import { AuditStore } from "./audit-store.ts";
 import {
   ensureParentHead,
-  insertAcceptedEntrySync,
-  verifyAcceptableEntry,
+  insertAcceptedEntryPairSync,
+  verifyAcceptableEntryPair,
 } from "./chain-accept.ts";
 import type { StateCache } from "./chain-store.ts";
 import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
@@ -39,7 +45,7 @@ import type {
   MetaStatementInput,
 } from "./data-plane.ts";
 import { dataEvent, loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
-import type { DataWriteOps } from "./data-store.ts";
+import type { CheckpointValueEntryRow, DataWriteOps } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import {
   dekRegisteredEvent,
@@ -112,6 +118,70 @@ const ensureCompositeWrapSet = (input: {
     // (§12-4 — 2026-08-12 改訂。dek-wraps.ts の期待数定義を共有する)
     if (input.deks.length !== expectedWrapRecipientCount(input.appliedState, input.environmentId)) {
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
+    }
+  });
+
+/**
+ * 境界 checkpoint の同梱物一致検査(AUTH_SPEC §12-4 — 2026-08-27 セッション 33):
+ * 当該環境 1 タプルのみ・座標一致・epoch = 同梱エントリが確立するエポック・
+ * manifestVersion = 同梱マニフェストの版。タプルの manifest_sig_hash と同梱
+ * マニフェストのハッシュ一致は、両エントリ適用後の履歴に対する acceptEnvManifest
+ * のチェックポイント束縛検査(CRYPTO_SPEC §4.3 (2))が一意に担う(§6.4 の
+ * 「同梱物一致検査との分担は実装 PR で一意化」)。
+ */
+const ensureBoundaryCheckpointShape = (input: {
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
+  readonly environmentId: string;
+  readonly establishedEpoch: number;
+  readonly manifestVersion: number;
+}) =>
+  Effect.gen(function* () {
+    const environments = input.checkpoint.payload.environments;
+    const tuple = environments[0];
+    if (environments.length !== 1 || tuple === undefined) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "checkpointEnvironment" });
+    }
+    if (tuple.environmentId !== input.environmentId) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "checkpointEnvironment" });
+    }
+    if (tuple.epoch !== input.establishedEpoch) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "checkpointEpoch" });
+    }
+    if (tuple.manifestVersion !== input.manifestVersion) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "checkpointManifestVersion" });
+    }
+    // 監査ヘッドの公証は standalone チェックポイント受理(M2 — AUTH_SPEC §16-2)
+    // の実装まで受理しない(fail-closed): 申告の取得(GET /audit-head)自体が
+    // 未実装で正当なクライアントは非空を構成できず、§6.4 の存在・位置検査なしの
+    // 受理は虚偽公証の固定を許す。チェーン合意規則(admin role)は verifyChain が
+    // 独立に検査するが、内容の突合面はここで閉じる
+    if (input.checkpoint.payload.auditHeadHashHex !== "") {
+      return yield* rejectData({ kind: "payload-mismatch", field: "checkpointAuditHead" });
+    }
+    return tuple;
+  });
+
+/**
+ * 境界 checkpoint の values_digest 内容突合(CRYPTO_SPEC §6.4 — 突合基準は
+ * 「複合の適用後の保存状態」。複合は値を変更しないため、受理時点の保存値 =
+ * 適用後の保存値)。不一致は 422(rotate では宣言ヘッド確定後の並行 push で
+ * 正当に起きる — クライアントは再 pull の上で有界再試行する。§12-4)。
+ */
+const ensureCheckpointValuesDigest = (
+  tuple: CheckpointEnvironmentEntry,
+  values: readonly CheckpointValueEntryRow[],
+) =>
+  Effect.gen(function* () {
+    const digest = yield* Effect.promise(() => computeEnvValuesDigest(SUITE_ID, values));
+    if (!digest.ok) {
+      // 保存行由来の入力で構造不正は実装バグ(エラー値に秘密は含まれない)
+      return yield* Effect.die(new Error(`values digest failed: ${digest.error.kind}`));
+    }
+    if (digest.value !== tuple.valuesDigestHex) {
+      return yield* rejectData({
+        kind: "checkpoint-state-mismatch",
+        reason: "values-digest-mismatch",
+      });
     }
   });
 
@@ -191,6 +261,8 @@ export const createEnvironmentCompositeProgram = (
     readonly statement: MetaStatementInput;
     readonly deks: readonly DekWrapInput[];
     readonly manifest: EnvManifestInput;
+    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4。2026-08-27 セッション 33)。 */
+    readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
   },
   cache: StateCache,
 ) =>
@@ -219,12 +291,26 @@ export const createEnvironmentCompositeProgram = (
     if (input.manifest.epoch !== 1) {
       return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
     }
-    // 受理 4 手順のうち検査 3 手順(サイズ → 容量 → verifyChain — §6.4 の合意
-    // 規則 = duplicate-environment / エポック順序 / role / コミットメント形式を
-    // 含む)は汎用チェーン API と共有(chain-accept.ts)
-    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, input.entry);
-    const appliedState = applied.state;
     const environmentId = input.entry.payload.environmentId;
+    // 境界 checkpoint の同梱物一致(§12-4): 当該環境 1 タプル・epoch 1・
+    // manifestVersion 1(ワイヤは Literal 1 だがタプル側も突合する)
+    const checkpointTuple = yield* ensureBoundaryCheckpointShape({
+      checkpoint: input.checkpoint,
+      environmentId,
+      establishedEpoch: 1,
+      manifestVersion: input.manifest.manifestVersion,
+    });
+    // 受理検査(サイズ → 容量 → verifyChain — §6.4 の合意規則 =
+    // duplicate-environment / エポック順序 / role / コミットメント形式 /
+    // checkpoint の合意規則を含む)は汎用チェーン API と共有(chain-accept.ts)。
+    // create = H+1、境界 checkpoint = H+2 の 2 エントリを 1 回の全チェーン
+    // 再検証で受理判定する
+    const { firstCanonicalBytes, secondCanonicalBytes, applied } = yield* verifyAcceptableEntryPair(
+      chain,
+      input.entry,
+      input.checkpoint,
+    );
+    const appliedState = applied.state;
     const store = yield* DataStore;
     // ID の一意性はチェーン合意規則(duplicate-environment — verifyChain)が
     // 担う。データプレーンに残る検査は表示名の一意性と数量ポリシーのみ
@@ -250,8 +336,10 @@ export const createEnvironmentCompositeProgram = (
       statement: input.statement,
     });
     // 同梱マニフェストの受理(§12-4 / §12-5): manifestVersion 1・変数空集合・
-    // epoch 1。エポック整合は同梱エントリ適用後の履歴(applied.history — 宣言
-    // ヘッドの次エントリ = create_environment が epoch 1 を確立する形)で判定する
+    // epoch 1。エポック整合は両エントリ適用後の履歴(applied.history)に対する
+    // チェックポイント束縛(§4.3 (2) — H+2 の境界 checkpoint タプルとの完全一致。
+    // タプルのハッシュが同梱マニフェストと食い違えば checkpoint-binding-mismatch
+    // で拒否 = §12-4 のハッシュ一致検査を兼ねる)で判定する
     const manifestSignedBytesHashHex = yield* acceptEnvManifest({
       projectId,
       environmentId,
@@ -261,6 +349,8 @@ export const createEnvironmentCompositeProgram = (
       entries: [],
       envMeta: { metaVersion: input.statement.metaVersion, sigHashHex: metaSignedBytesHashHex },
     });
+    // 境界 checkpoint の values_digest(§6.4 — 作成 = 変数空集合の列挙)
+    yield* ensureCheckpointValuesDigest(checkpointTuple, []);
     // 同梱エントリ適用後の現エポックは常に 1(create_environment — §12-4)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -280,11 +370,13 @@ export const createEnvironmentCompositeProgram = (
     // (チェーンエントリ + ミラー + 環境行 + ステートメント行 + マニフェスト +
     // ラップ + 監査を分割しない — §12-4)
     yield* Effect.sync(() => {
-      insertAcceptedEntrySync(
+      insertAcceptedEntryPairSync(
         writeContext,
         input.entry,
+        input.checkpoint,
         applied,
-        canonicalBytes,
+        firstCanonicalBytes,
+        secondCanonicalBytes,
         writeContext.nowMs,
       );
       store.write.insertEnvironment(environmentId, input.statement.name, writeContext.nowMs);
@@ -311,6 +403,20 @@ export const createEnvironmentCompositeProgram = (
         }),
       );
       insertCompositeWrapsSync(writeContext, input.deks);
+      // 値スナップショットの原子保存(§6.4 / §16-2): 作成は空列挙 + タプル座標
+      store.write.upsertCheckpointSnapshot(
+        environmentId,
+        {
+          chainSeq: input.checkpoint.seq,
+          entryHashHex: appliedState.headHashHex,
+          epoch: checkpointTuple.epoch,
+          manifestVersion: checkpointTuple.manifestVersion,
+          manifestSigHashHex: checkpointTuple.manifestSigHashHex,
+          valuesDigestHex: checkpointTuple.valuesDigestHex,
+        },
+        [],
+        writeContext.nowMs,
+      );
     });
     updateStateCache(cache, applied);
     return compositeResult(environmentId, 1, appliedState);
@@ -324,6 +430,8 @@ export const rotateEpochCompositeProgram = (
     readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
     readonly deks: readonly DekWrapInput[];
     readonly manifest: EnvManifestInput;
+    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4。2026-08-27 セッション 33)。 */
+    readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
   },
   cache: StateCache,
 ) =>
@@ -349,11 +457,25 @@ export const rotateEpochCompositeProgram = (
     if (input.manifest.epoch !== input.entry.payload.newEpoch) {
       return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
     }
-    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, input.entry);
+    // 境界 checkpoint の同梱物一致(§12-4): 当該環境 1 タプル・epoch = new_epoch・
+    // manifestVersion = 同梱マニフェストの版
+    const checkpointTuple = yield* ensureBoundaryCheckpointShape({
+      checkpoint: input.checkpoint,
+      environmentId,
+      establishedEpoch: input.entry.payload.newEpoch,
+      manifestVersion: input.manifest.manifestVersion,
+    });
+    // rotate = H+1、境界 checkpoint = H+2 の 2 エントリ受理検査(chain-accept.ts)
+    const { firstCanonicalBytes, secondCanonicalBytes, applied } = yield* verifyAcceptableEntryPair(
+      chain,
+      input.entry,
+      input.checkpoint,
+    );
     const appliedState = applied.state;
-    // 同梱マニフェストの受理(§12-5 (4): epoch = 同梱エントリ適用後の状態 =
-    // new_epoch — applied.history で判定)。メタ集合は不変(エポック前進の反映
-    // だけの再発行 — §4.3)なので entries は保存済みの最新形そのまま。
+    // 同梱マニフェストの受理(§12-5 (4): エポック整合は両エントリ適用後の履歴に
+    // 対するチェックポイント束縛 — §4.3 (2)。H+2 のタプルとの完全一致 = §12-4 の
+    // ハッシュ一致検査を兼ねる)。メタ集合は不変(エポック前進の反映だけの
+    // 再発行 — §4.3)なので entries は保存済みの最新形そのまま。
     // マニフェスト導入前に作成された環境の最初の rotate は保存行なし(最新 0)
     // から manifestVersion 1 を確立する(移行経路 — session-27 §14 PR-M1)
     const manifestSignedBytesHashHex = yield* acceptEnvManifest({
@@ -365,6 +487,14 @@ export const rotateEpochCompositeProgram = (
       entries: yield* manifestDigestEntries(environmentId, null),
       envMeta: yield* storedEnvMeta(environmentId),
     });
+    // 境界 checkpoint の values_digest(§6.4 — 突合基準は複合の適用後状態。
+    // 複合は値を変更しないため受理時点の保存値と同一。rotate では未再暗号化 =
+    // 旧エポックの現在値の列挙 — §12-7 の正当な状態。宣言ヘッド確定後の並行
+    // push が挟まると不一致 = 422 で、クライアントは再 pull + 有界再試行)
+    const snapshotValues = yield* Effect.flatMap(DataStore, (store) =>
+      store.checkpointValueEntries(environmentId),
+    );
+    yield* ensureCheckpointValuesDigest(checkpointTuple, snapshotValues);
     // 同梱エントリ適用後の現エポック = new_epoch(エポック順序は verifyChain 検証済み)
     yield* ensureCompositeWrapSet({
       projectId,
@@ -381,11 +511,13 @@ export const rotateEpochCompositeProgram = (
       environmentId,
     });
     yield* Effect.sync(() => {
-      insertAcceptedEntrySync(
+      insertAcceptedEntryPairSync(
         writeContext,
         input.entry,
+        input.checkpoint,
         applied,
-        canonicalBytes,
+        firstCanonicalBytes,
+        secondCanonicalBytes,
         writeContext.nowMs,
       );
       writeContext.dataStore.write.upsertEnvironmentManifest(
@@ -396,6 +528,21 @@ export const rotateEpochCompositeProgram = (
         writeContext.nowMs,
       );
       insertCompositeWrapsSync(writeContext, input.deks);
+      // 値スナップショットの原子保存(§6.4 / §16-2): 受理時点の現在値の列挙
+      // (突合済み)+ タプル座標を最新包含 checkpoint として upsert する
+      writeContext.dataStore.write.upsertCheckpointSnapshot(
+        environmentId,
+        {
+          chainSeq: input.checkpoint.seq,
+          entryHashHex: appliedState.headHashHex,
+          epoch: checkpointTuple.epoch,
+          manifestVersion: checkpointTuple.manifestVersion,
+          manifestSigHashHex: checkpointTuple.manifestSigHashHex,
+          valuesDigestHex: checkpointTuple.valuesDigestHex,
+        },
+        snapshotValues,
+        writeContext.nowMs,
+      );
     });
     updateStateCache(cache, applied);
     return compositeResult(environmentId, input.entry.payload.newEpoch, appliedState);

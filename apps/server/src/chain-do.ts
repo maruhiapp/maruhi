@@ -460,6 +460,7 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly statement: MetaStatementInput;
       readonly deks: readonly DekWrapInput[];
       readonly manifest: EnvManifestInput;
+      readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
     // 複合受理(§12-4): チェーン追記(CAS + verifyChain)とデータ登録を同一
@@ -476,6 +477,7 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
       readonly deks: readonly DekWrapInput[];
       readonly manifest: EnvManifestInput;
+      readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
     return this.#runData(

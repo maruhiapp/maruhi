@@ -6,7 +6,13 @@
 import type { ChainEntry, ChainHistoryIndex } from "../../src/index.ts";
 import { verifyChainWithHistory } from "../../src/index.ts";
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
-import { toTypedEntry, typedEntries, vectorEntries, vectorKeys } from "./chain-vector.ts";
+import {
+  toTypedEntry,
+  typedEntries,
+  vectorEntries,
+  vectorExtendedChains,
+  vectorKeys,
+} from "./chain-vector.ts";
 import { type CheckResult, Checks } from "./support.ts";
 
 const OWNER = "user-owner-0001";
@@ -37,6 +43,26 @@ export async function canonicalHistory(): Promise<ChainHistoryIndex> {
   const result = await verifyChainWithHistory(typedEntries);
   if (!result.ok) {
     throw new Error("canonical chain failed verification");
+  }
+  return result.value.history;
+}
+
+/**
+ * chain-entries.json の派生チェーン(extended_chains)の検証済み履歴索引。
+ * チェックポイント束縛のマニフェスト検証(§4.3 (2) — env-manifest.ts)が
+ * checkpoint-boundary-* を照合先チェーンとして使う。
+ */
+export async function extendedVectorChainHistory(name: string): Promise<ChainHistoryIndex> {
+  const extended = vectorExtendedChains[name];
+  if (extended === undefined) {
+    throw new Error(`extended chain ${name} missing`);
+  }
+  const result = await verifyChainWithHistory([
+    ...typedEntries.slice(0, extended.base_seq),
+    ...extended.entries.map((entry) => toTypedEntry(entry)),
+  ]);
+  if (!result.ok) {
+    throw new Error(`extended chain ${name} failed verification`);
   }
   return result.value.history;
 }

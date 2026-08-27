@@ -38,10 +38,14 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
   handlers
     .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
+        // §12-4: チェーンエントリ(create と境界 checkpoint の両方)の actor は
+        // 呼び出し主体と厳密一致(2026-08-27 セッション 33 — 2 エントリ複合化)
         yield* ensureCompositeActor(payload.entry);
+        yield* ensureCompositeActor(payload.checkpoint);
         // 複合内整合検査(§12-4)の worker 側: エントリ payload とステートメント /
         // マニフェストの environment_id の一致(宣言ヘッド・エポックの一致検査は
-        // 状態依存のため DO 側)
+        // 状態依存のため DO 側。checkpoint タプルの座標・エポック・版・監査ヘッドの
+        // 突合も DO 側 — ensureBoundaryCheckpointShape)
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: payload.entry.payload.environmentId,
         });
@@ -57,6 +61,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               statement: toMetaStatementInput(payload.statement),
               deks: payload.deks,
               manifest: toManifestInput(payload.manifest),
+              checkpoint: payload.checkpoint,
             }),
         });
       }),
@@ -64,6 +69,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
     .handle("rotate", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
         yield* ensureCompositeActor(payload.entry);
+        yield* ensureCompositeActor(payload.checkpoint);
         yield* checkManifestCoordinates(payload.manifest, params.environmentId);
         return yield* callProjectData<EnvironmentChainResultValue>()({
           endpoint,
@@ -75,6 +81,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               entry: payload.entry,
               deks: payload.deks,
               manifest: toManifestInput(payload.manifest),
+              checkpoint: payload.checkpoint,
             }),
         });
       }),

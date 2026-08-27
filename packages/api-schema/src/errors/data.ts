@@ -140,6 +140,12 @@ export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatement
  *   (§12-5 (7))
  * - `manifest-epoch-mismatch` — エポック整合の失敗(§12-5 (4): 宣言ヘッド時点の
  *   現エポック — rotate / 作成複合の同梱分は同梱エントリ適用後の状態)
+ * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
+ *   `checkpoint-regressed` — チェックポイント束縛(CRYPTO_SPEC §4.3 (2) —
+ *   2026-08-27 セッション 33: 検証済みチェーン上の当該 (environment_id,
+ *   manifest_version) タプルとの完全一致必須 / 同座標の相違タプル併存 =
+ *   equivocation の証拠 / 最新チェックポイント基準に対する非後退〔§6.3 整合
+ *   規則 1〕の失敗)
  */
 export const ManifestRejectReasonSchema = Schema.Literals([
   "signature-invalid",
@@ -147,6 +153,9 @@ export const ManifestRejectReasonSchema = Schema.Literals([
   "chain-head-state-mismatch",
   "manifest-digest-mismatch",
   "manifest-epoch-mismatch",
+  "checkpoint-binding-mismatch",
+  "checkpoint-equivocation",
+  "checkpoint-regressed",
 ]);
 
 /**
@@ -156,6 +165,28 @@ export const ManifestRejectReasonSchema = Schema.Literals([
 export class ManifestRejectedError extends Schema.TaggedError<ManifestRejectedError>()(
   "ManifestRejected",
   { reason: ManifestRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * 422: the bundled boundary `checkpoint` entry's attested content does not
+ * match the post-composite stored state (CRYPTO_SPEC §6.4 — 複合同梱分の
+ * 突合基準は「複合の適用後の保存状態」。AUTH_SPEC §12-4 / §16-2, 2026-08-27
+ * セッション 33 = PR-F3b):
+ *
+ * - `values-digest-mismatch` — タプルの values_digest が受理時点の保存状態
+ *   (rotate = 全 active 変数の最新 version とその value_signed_bytes ハッシュ、
+ *   作成 = 変数空集合)からの再計算と不一致。rotate では宣言ヘッド確定後の
+ *   並行 push で正当に起きる — クライアントは再 pull(再暗号化に必要な読み取りと
+ *   同一)の上で有界再試行する(§12-4)
+ *
+ * 監査ヘッド系の理由(audit-head-unknown / audit-head-stale)と削除済み環境
+ * (environment-deleted)は standalone チェックポイント受理(M2 — §16-2)で
+ * 加わる予定の追加語彙であり、本 PR では境界分の突合のみを宣言する。
+ */
+export class CheckpointStateMismatchError extends Schema.TaggedError<CheckpointStateMismatchError>()(
+  "CheckpointStateMismatch",
+  { reason: Schema.Literals(["values-digest-mismatch"]) },
   { httpApiStatus: 422 },
 ) {}
 

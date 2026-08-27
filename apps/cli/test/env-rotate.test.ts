@@ -82,6 +82,8 @@ interface RotateBody {
   readonly deks: readonly WrappedDek[];
   /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
+  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
 /** pull 応答の 1 変数(検証済みステートメント + 配布形の値)。 */
@@ -284,10 +286,13 @@ function makeServer(options: ServerOptions): ServerState {
     return manifest;
   };
 
-  /** 受理: エントリをチェーンへ追記し、同梱ラップを配布集合へ入れる。 */
+  /** 受理: rotate + 境界 checkpoint の 2 エントリを追記し、同梱ラップを配布集合へ入れる(§12-4)。 */
   const acceptRotate = async (body: RotateBody): Promise<void> => {
-    entries.push(body.entry);
-    hashes.push(await computeChainEntryHash(body.entry));
+    entries.push(body.entry, body.checkpoint);
+    hashes.push(
+      await computeChainEntryHash(body.entry),
+      await computeChainEntryHash(body.checkpoint),
+    );
     currentEpoch = body.entry.payload.newEpoch;
     // 配布形 = 受理した発行形 + 呼び出し主体の issuer 情報(§12-2)。同梱
     // ダイジェストが現行集合を覆う場合のみ「最新」として固定する — 受理前に

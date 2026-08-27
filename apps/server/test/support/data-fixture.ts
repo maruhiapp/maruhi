@@ -4,7 +4,7 @@
 // API 経由で再生し、各ユーザーの実 PAT を取得する。チェーンの延長
 // (rotate_epoch / add_member)もすべて API 経由で行う。
 
-import type { ChainOperation } from "@maruhi/crypto";
+import type { ChainEntry, ChainOperation, EnvValuesDigestEntry } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { expect } from "vitest";
 
@@ -26,6 +26,7 @@ import type {
 import {
   addMemberOperation,
   buildChain,
+  checkpointOperation,
   commitmentOf,
   createEnvironmentOperation,
   digestOf,
@@ -37,9 +38,10 @@ import {
   signEntryAt,
   signEnvManifestAs,
   signMetaStatementAs,
+  valuesDigestOf,
   wrapDekForAll,
 } from "./data-crypto.ts";
-import { resetProjectDo } from "./project-do.ts";
+import { evictProjectDo, queryProjectDo, resetProjectDo } from "./project-do.ts";
 
 export const OWNER = "user-owner-0001";
 export const MEMBER = "user-member-0002";
@@ -294,11 +296,115 @@ export async function manifestForVariableOp(
 }
 
 /**
+ * チェーン末尾の境界 checkpoint エントリと当該環境のスナップショット行を取り除き、
+ * checkpoint タプルを持たない旧世代(境界 checkpoint 導入前)チェーンの形を再現する
+ * (マニフェスト移行経路テスト用)。実運用の移行対象はマニフェスト・checkpoint
+ * 導入前に作られた環境で、そのチェーンにはタプルが存在しない — 現 API は複合で
+ * 必ず checkpoint を挿入するため、テストでは append-only の不変条件の外で直接
+ * 取り除く(membership の canonical_bytes 改変と同じ扱い)。改変後は DO を退去
+ * させてフルロードへ戻し、fixture のヘッドを新しい末尾へ巻き戻す。
+ */
+export async function stripTrailingCheckpoint(
+  fixture: DataFixture,
+  environmentId: string,
+): Promise<void> {
+  const tail = await queryProjectDo(
+    projectId,
+    "SELECT seq, entry_json FROM chain_entries ORDER BY seq DESC LIMIT 1",
+  );
+  const tailSeq = Number(tail[0]?.["seq"]);
+  const tailEntry = JSON.parse(String(tail[0]?.["entry_json"])) as { op?: string };
+  if (tailEntry.op !== "checkpoint") {
+    throw new Error("chain tail is not a boundary checkpoint entry");
+  }
+  await queryProjectDo(projectId, "DELETE FROM chain_entries WHERE seq = ?", tailSeq);
+  await queryProjectDo(
+    projectId,
+    "DELETE FROM environment_checkpoints WHERE environment_id = ?",
+    environmentId,
+  );
+  await queryProjectDo(
+    projectId,
+    "DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?",
+    environmentId,
+  );
+  await evictProjectDo(projectId);
+  const newTail = await queryProjectDo(
+    projectId,
+    "SELECT seq, entry_hash_hex FROM chain_entries ORDER BY seq DESC LIMIT 1",
+  );
+  fixture.head = {
+    seq: Number(newTail[0]?.["seq"]),
+    hashHex: String(newTail[0]?.["entry_hash_hex"]),
+  };
+}
+
+/**
+ * 保存済みの値レベル最新形(active 変数の latest_version + 値署名 signed_bytes
+ * ハッシュ — §6.2 の values_digest 列挙)を DO の SQLite から直接読む。サーバーの
+ * checkpointValueEntries と同じ問い合わせ(rotate の境界 checkpoint 突合基準)。
+ */
+async function storedCheckpointValues(
+  environmentId: string,
+): Promise<readonly EnvValuesDigestEntry[]> {
+  const rows = await queryProjectDo(
+    projectId,
+    `SELECT v.variable_id, vv.version, vv.signed_bytes_hash_hex
+     FROM variables v
+     JOIN variable_versions vv
+       ON vv.environment_id = v.environment_id
+      AND vv.variable_id = v.variable_id
+      AND vv.version = v.latest_version
+     WHERE v.environment_id = ? AND v.deleted_at IS NULL
+     ORDER BY v.variable_id`,
+    environmentId,
+  );
+  return rows.map((row) => ({
+    variableId: String(row["variable_id"]),
+    version: Number(row["version"]),
+    valueSigHashHex: String(row["signed_bytes_hash_hex"]),
+  }));
+}
+
+/**
+ * 境界 checkpoint(H+2 — §12-4)をテスト時署名で作る: prev = H+1 複合エントリの
+ * ハッシュ、タプル = 同梱マニフェストの座標 + signed_bytes ハッシュ(issuer =
+ * actor — §12-5 (1))+ values のダイジェスト。
+ */
+async function signBoundaryCheckpointEntry(input: {
+  readonly actorUserId: string;
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly manifest: WireEnvironmentManifest;
+  readonly compositeSeq: number;
+  readonly compositeHashHex: string;
+  readonly values: readonly EnvValuesDigestEntry[];
+}): Promise<ChainEntry> {
+  const { entry } = await signEntryAt({
+    seq: input.compositeSeq + 1,
+    prevHashHex: input.compositeHashHex,
+    actorUserId: input.actorUserId,
+    operation: checkpointOperation({
+      environmentId: input.environmentId,
+      epoch: input.epoch,
+      manifestVersion: input.manifest.manifestVersion,
+      manifestSigHashHex: await manifestSignedBytesHashOf(
+        projectId,
+        input.manifest,
+        input.actorUserId,
+      ),
+      valuesDigestHex: await valuesDigestOf(input.values),
+    }),
+  });
+  return entry;
+}
+
+/**
  * 複合の環境作成リクエスト(§12-4)を組み立てて送る: create_environment
  * エントリ(コミットメント込み)+ EnvironmentMetaStatement(metaVersion 1。
  * 宣言ヘッド = 追記前の現ヘッド)+ EnvironmentManifest(manifestVersion 1・
- * 変数空集合・epoch 1)をテスト時署名し、親ヘッド CAS 付きでラップ集合と同時に
- * POST する。200 ならフィクスチャのヘッドを進める。
+ * 変数空集合・epoch 1)+ 境界 checkpoint(H+2)をテスト時署名し、親ヘッド CAS
+ * 付きでラップ集合と同時に POST する。200 ならフィクスチャのヘッドを進める。
  */
 export async function createEnvironmentComposite(
   fixture: DataFixture,
@@ -314,10 +420,12 @@ export async function createEnvironmentComposite(
     readonly statement?: WireEnvironmentMetaStatement;
     /** 複合内整合の negative 用のマニフェスト上書き。 */
     readonly manifest?: WireEnvironmentManifest;
+    /** 複合内整合の negative 用の境界 checkpoint 上書き。 */
+    readonly checkpoint?: ChainEntry;
   },
 ): Promise<Response> {
   const actorUserId = input.actorUserId ?? OWNER;
-  const { entry } = await signEntryAt({
+  const { entry, hash: entryHash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
     actorUserId,
@@ -349,6 +457,18 @@ export async function createEnvironmentComposite(
       chainHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     }));
+  // 境界 checkpoint(H+2 — §12-4): 作成 = 変数空集合の values_digest
+  const checkpoint =
+    input.checkpoint ??
+    (await signBoundaryCheckpointEntry({
+      actorUserId,
+      environmentId: input.environmentId,
+      epoch: 1,
+      manifest,
+      compositeSeq: fixture.head.seq + 1,
+      compositeHashHex: entryHash,
+      values: [],
+    }));
   const response = await requestJson(
     "POST",
     "/environments",
@@ -359,6 +479,7 @@ export async function createEnvironmentComposite(
       statement,
       deks: input.deks,
       manifest,
+      checkpoint,
     },
   );
   if (response.status === 200) {
@@ -549,10 +670,17 @@ export async function rotateEnvironmentComposite(
     readonly urlEnvironmentId?: string;
     /** 複合内整合の negative 用のマニフェスト上書き。 */
     readonly manifest?: WireEnvironmentManifest;
+    /** 複合内整合の negative 用の境界 checkpoint 上書き。 */
+    readonly checkpoint?: ChainEntry;
+    /**
+     * values_digest の材料上書き(既定 = DO 保存行の実列挙。並行 push の不一致
+     * negative 等で使う)。
+     */
+    readonly checkpointValues?: readonly EnvValuesDigestEntry[];
   },
 ): Promise<Response> {
   const actorUserId = input.actorUserId ?? MEMBER;
-  const { entry } = await signEntryAt({
+  const { entry, hash: entryHash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
     actorUserId,
@@ -580,6 +708,19 @@ export async function rotateEnvironmentComposite(
         hashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
       },
     }));
+  // 境界 checkpoint(H+2 — §12-4): rotate = 保存済みの値レベル最新形の列挙
+  // (未再暗号化 = 旧エポックの現在値 — §12-7 の正当な状態)
+  const checkpoint =
+    input.checkpoint ??
+    (await signBoundaryCheckpointEntry({
+      actorUserId,
+      environmentId: input.environmentId,
+      epoch: input.newEpoch,
+      manifest,
+      compositeSeq: fixture.head.seq + 1,
+      compositeHashHex: entryHash,
+      values: input.checkpointValues ?? (await storedCheckpointValues(input.environmentId)),
+    }));
   const response = await requestJson(
     "POST",
     `/environments/${input.urlEnvironmentId ?? input.environmentId}/rotate`,
@@ -589,6 +730,7 @@ export async function rotateEnvironmentComposite(
       entry,
       deks: input.deks,
       manifest,
+      checkpoint,
     },
   );
   if (response.status === 200) {
