@@ -759,7 +759,13 @@ describe("buildInjectionEnv", () => {
       "CDPATH",
       "TERMINFO_DIRS",
       "NPM_CONFIG_USERCONFIG",
-      "npm_config_script_shell", // prefix + case-insensitive
+      "NPM_CONFIG_GLOBALCONFIG",
+      "npm_config_script_shell", // individual name + case-insensitive
+      "NPM_CONFIG_SHELL",
+      "NPM_CONFIG_NODE_OPTIONS",
+      "NPM_CONFIG_PREFIX",
+      "NPM_CONFIG_CAFILE",
+      "NPM_CONFIG_IGNORE_SCRIPTS",
       // interpreter / runtime hooks that do not need an attacker-controlled rc file
       "PYTHONBREAKPOINT",
       "PYTHONEXECUTABLE",
@@ -777,9 +783,21 @@ describe("buildInjectionEnv", () => {
     }
     // 包括 prefix 拒否は採らない裁定(M2)の固定: NODE_ENV 等の正当な変数は通る
     const allowed = await Effect.runPromise(
-      buildInjectionEnv([variable("NODE_ENV", "production"), variable("BUN_INSTALL", "x")]),
+      buildInjectionEnv([
+        variable("NODE_ENV", "production"),
+        variable("BUN_INSTALL", "x"),
+        // npm registry auth は maruhi run の正当な secret 注入用途。
+        // NPM_CONFIG_ 全体を拒否せず、上の実行制御キーだけを個別拒否する
+        variable("NPM_CONFIG__AUTH", "credential"),
+        variable("NPM_CONFIG__AUTHTOKEN", "credential"),
+      ]),
     );
-    expect(Object.keys(allowed).toSorted()).toEqual(["BUN_INSTALL", "NODE_ENV"]);
+    expect(Object.keys(allowed).toSorted()).toEqual([
+      "BUN_INSTALL",
+      "NODE_ENV",
+      "NPM_CONFIG__AUTH",
+      "NPM_CONFIG__AUTHTOKEN",
+    ]);
   });
 
   it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する(deepsec S3)", async () => {

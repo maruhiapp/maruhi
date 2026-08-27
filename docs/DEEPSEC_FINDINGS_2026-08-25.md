@@ -306,7 +306,9 @@
   未拒否。共同memberがautoload pathやTLS trust rootを差し替えられる。
 - **対応済み**(2026-08-27): 上記9名を既知実行制御名として追加し、R3と同じ
   大文字小文字非区別の回帰テストへ含めた。変数名の暗号的束縛が根本策で、
-  denylistがbest-effortである点は変わらない。
+  denylistがbest-effortである点は変わらない。`NPM_CONFIG_` は全体拒否せず、
+  `USERCONFIG` / `GLOBALCONFIG` / `SCRIPT_SHELL` / `NODE_OPTIONS`等の実行制御キーだけを
+  個別拒否する。registry credential用の `NPM_CONFIG__AUTH` / `_AUTHTOKEN` は許可する。
 - **再検証**(2026-08-27): `fixed`。同じ再調査で追加の同型名がS13として出たため、
   そちらも同じdenylistに追補した。
 

@@ -129,6 +129,13 @@ const DENIED_ENV_NAMES = new Set([
   "REQUESTS_CA_BUNDLE",
   "AWS_CA_BUNDLE",
   "NPM_CONFIG_USERCONFIG",
+  "NPM_CONFIG_GLOBALCONFIG",
+  "NPM_CONFIG_SCRIPT_SHELL",
+  "NPM_CONFIG_SHELL",
+  "NPM_CONFIG_NODE_OPTIONS",
+  "NPM_CONFIG_PREFIX",
+  "NPM_CONFIG_CAFILE",
+  "NPM_CONFIG_IGNORE_SCRIPTS",
   "DOTNET_STARTUP_HOOKS",
   "GEM_HOME",
   "GEM_PATH",
@@ -147,15 +154,7 @@ const DENIED_ENV_NAMES = new Set([
 // `maruhi run -- make deploy` の中の `maruhi pull` が攻撃者として認証される
 // (変数名は AAD に束縛されない平文メタデータ = 共同メンバーが決められる)。
 // 個別名の列挙にすると将来 MARUHI_* を増やしたときに同じ穴が再発する
-const DENIED_ENV_PREFIXES = [
-  "LD_",
-  "DYLD_",
-  "GIT_",
-  "NPM_CONFIG_",
-  "CORECLR_",
-  "COR_",
-  MARUHI_ENV_PREFIX,
-];
+const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "CORECLR_", "COR_", MARUHI_ENV_PREFIX];
 
 function isDeniedEnvName(name: string): boolean {
   const upper = name.toUpperCase();
