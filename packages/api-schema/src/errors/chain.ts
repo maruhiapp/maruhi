@@ -28,6 +28,10 @@ const CHAIN_INVALID_REASONS = [
   "grant-scope-narrowed",
   "duplicate-server-key",
   "epoch-out-of-sequence",
+  // checkpoint op(CRYPTO_SPEC §6.2。2026-08-27 セッション 33 — PR-F3a)
+  "checkpoint-audit-role-insufficient",
+  "checkpoint-epoch-mismatch",
+  "checkpoint-regression",
 ] as const satisfies readonly ChainInvalidReason[];
 
 // 逆方向の静的検査: crypto 側に理由コードが追加されたらここがコンパイルエラーになる
@@ -97,9 +101,16 @@ export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacity
  * through their composite endpoints (AUTH_SPEC §6 / §12-4, 2026-08-03) — the
  * generic chain append rejects them so the entry-plus-data atomicity cannot
  * be bypassed ("エポックはあるがラップがない" 中間状態を作らせない).
+ *
+ * `checkpoint`(2026-08-27 — PR-F3a)も現状は同じ拒否の対象: 境界
+ * チェックポイントは複合の同梱(AUTH_SPEC §12-4 — PR-F3b)のみが受理経路で、
+ * standalone(周期)チェックポイントの汎用 append 受理(§16-2 の内容突合 +
+ * スナップショット保存)が実装されるまで fail-closed に保つ(内容突合なしの
+ * 受理は、偽タプルの持ち込みで §4.3 (2) のチェックポイント束縛を汚染できる
+ * fail-open になるため)。
  */
 export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",
-  { op: Schema.Literals(["create_environment", "rotate_epoch"]) },
+  { op: Schema.Literals(["create_environment", "rotate_epoch", "checkpoint"]) },
   { httpApiStatus: 422 },
 ) {}

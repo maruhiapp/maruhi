@@ -18,6 +18,7 @@ import {
   toTypedEntry,
   typedEntries,
   serverGrantsMatchVector,
+  type VectorCheckpointState,
   vectorEntries,
   vectorEnvironmentDeks,
   vectorExtendedChains,
@@ -214,11 +215,14 @@ async function tamperedChecks(c: Checks): Promise<void> {
     new Set([
       ...payloadVariants.map((variant) => variant.name),
       ...headerVariants.map((variant) => variant.name),
-      // bytesLevelChecks が担う 4 件(この実装からは生成されないバイト列)
+      // bytesLevelChecks が担う 5 件(この実装からは生成されないバイト列)
       "field-order-swap",
       "grant-server-scope-flat-concat",
       "grant-server-lease-policy-flat-concat",
       "grant-server-lease-policy-dropped",
+      "checkpoint-environments-flat-concat",
+      // checkpointTamperChecks が担う 1 件(派生チェーンのエントリが base)
+      "checkpoint-tampered-environments",
     ]),
   );
   for (const variant of [...payloadVariants, ...headerVariants]) {
@@ -241,16 +245,31 @@ async function tamperedChecks(c: Checks): Promise<void> {
   }
 }
 
+/** bytes-level negative の base エントリ(chain 指定つきは派生チェーンから引く)。 */
+function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): ChainEntry {
+  if (chainName === undefined) {
+    return entryAt(baseSeq);
+  }
+  const extended = vectorExtendedChains[chainName];
+  const raw = extended?.entries.find((entry) => entry.seq === baseSeq);
+  if (raw === undefined) {
+    throw new Error(`chain vector extended entry ${chainName}#${baseSeq} missing`);
+  }
+  return toTypedEntry(raw);
+}
+
 async function bytesLevelChecks(c: Checks): Promise<void> {
   // 正規化の順序・入れ子 LP を崩したバイト列は、この実装からは生成されず
   // (canonical bytes と不一致)、元の署名も通らないことを確認する。
   // lease-policy-flat-concat は 3 段入れ子の平坦化、lease-policy-dropped は
-  // 旧 3 フィールド形式(4 フィールドが正規形であることの固定 — §6.2)
+  // 旧 3 フィールド形式(4 フィールドが正規形であることの固定 — §6.2)、
+  // checkpoint-environments-flat-concat は環境タプルの入れ子 LP の平坦化(§6.2)
   for (const name of [
     "field-order-swap",
     "grant-server-scope-flat-concat",
     "grant-server-lease-policy-flat-concat",
     "grant-server-lease-policy-dropped",
+    "checkpoint-environments-flat-concat",
   ]) {
     const vector = negativeByName(name);
     if (
@@ -262,7 +281,7 @@ async function bytesLevelChecks(c: Checks): Promise<void> {
       c.push(`chain negative: ${name}`, false, "vector missing");
       continue;
     }
-    const base = entryAt(vector.base_seq);
+    const base = bytesLevelBaseEntry(vector.chain, vector.base_seq);
     const canonicalDiffers = toHex(canonicalChainSignedBytes(base)) !== vector.signed_bytes_hex;
     const key = await crypto.subtle.importKey(
       "raw",
@@ -279,6 +298,33 @@ async function bytesLevelChecks(c: Checks): Promise<void> {
     ));
     c.push(`chain negative: ${name}`, canonicalDiffers && signatureRejected);
   }
+}
+
+/**
+ * checkpoint の payload 改竄 negative: 派生チェーン(checkpoint-baseline)の
+ * seq 13 を base に、環境タプルの manifest_version を書き換えた typed 変種の
+ * 正規化バイト列がベクターと一致し、元の署名で bad-signature になることを固定する
+ * (payloadTamperVariants の派生チェーン版 — 正規 12 エントリに checkpoint op が
+ * 存在しないため base をベクターの chain フィールドで引く)。
+ */
+async function checkpointTamperChecks(c: Checks): Promise<void> {
+  const name = "checkpoint-tampered-environments";
+  const vector = negativeByName(name);
+  const extended = vectorExtendedChains["checkpoint-baseline"];
+  const rawBase = extended?.entries.find((entry) => entry.seq === vector?.base_seq);
+  if (vector?.payload === undefined || extended === undefined || rawBase === undefined) {
+    c.push(`chain negative: ${name}`, false, "vector missing");
+    return;
+  }
+  const tampered = toTypedEntry({ ...rawBase, payload: vector.payload });
+  const canonicalMatches =
+    vector.signed_bytes_hex !== undefined &&
+    toHex(canonicalChainSignedBytes(tampered)) === vector.signed_bytes_hex;
+  const result = await verifyChain([...typedEntries.slice(0, extended.base_seq), tampered]);
+  c.push(
+    `chain negative: ${name}`,
+    canonicalMatches && failsWith(result, tampered.seq, "bad-signature"),
+  );
 }
 
 /** 認可 negative の前提チェーン: 正規プレフィックス、または extended_chains の派生。 */
@@ -315,7 +361,9 @@ async function authorizationChecks(c: Checks): Promise<void> {
 async function extendedChainChecks(c: Checks): Promise<void> {
   // extended_chains: 派生チェーン自体が受理されること(許容側の境界)。
   // server-key-member-sock は「add_member の鍵一意性の索引は現メンバーの鍵のみで、
-  // 有効 grant のサーバー鍵は対象外」という §6.2 の線引きを固定する
+  // 有効 grant のサーバー鍵は対象外」という §6.2 の線引きを固定する。
+  // checkpoint-baseline は同一 manifest_version の正当な再公証(非後退の等号側)と
+  // 「環境ごとの最新チェックポイント」導出(expected_checkpoints)を固定する
   for (const [name, extended] of Object.entries(vectorExtendedChains)) {
     const chain = [
       ...typedEntries.slice(0, extended.base_seq),
@@ -324,7 +372,9 @@ async function extendedChainChecks(c: Checks): Promise<void> {
     const result = await verifyChain(chain);
     c.push(
       `chain extended: ${name} verifies`,
-      result.ok && membersMatch(result.value, extended.expected_members),
+      result.ok &&
+        membersMatch(result.value, extended.expected_members) &&
+        checkpointsMatch(result.value, extended.expected_checkpoints),
     );
   }
 }
@@ -491,6 +541,33 @@ function membersMatch(state: ChainState, expected: Readonly<Record<string, strin
   );
 }
 
+/**
+ * 導出状態の最新チェックポイント集合が期待と一致するか(§6.2 の導出状態 —
+ * expected_checkpoints 無指定のベクターは検査対象外として通す)。
+ */
+function checkpointsMatch(
+  state: ChainState,
+  expected: Readonly<Record<string, VectorCheckpointState>> | undefined,
+): boolean {
+  if (expected === undefined) {
+    return true;
+  }
+  return (
+    state.checkpoints.size === Object.keys(expected).length &&
+    Object.entries(expected).every(([environmentId, checkpoint]) => {
+      const actual = state.checkpoints.get(environmentId);
+      return (
+        actual !== undefined &&
+        actual.seq === checkpoint.seq &&
+        actual.epoch === Number(checkpoint.epoch) &&
+        actual.manifestVersion === Number(checkpoint.manifest_version) &&
+        actual.manifestSigHashHex === checkpoint.manifest_sig_hash_hex &&
+        actual.valuesDigestHex === checkpoint.values_digest_hex
+      );
+    })
+  );
+}
+
 /** 導出状態の環境集合が期待(environment_id → 現エポック)と一致するか。 */
 function environmentsMatch(state: ChainState, expected: Readonly<Record<string, string>>): boolean {
   return (
@@ -526,7 +603,8 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
       result.ok &&
         membersMatch(result.value, append.expected_members) &&
         environmentsMatch(result.value, append.expected_environments) &&
-        serverGrantsMatch(result.value, append.expected_server_grants),
+        serverGrantsMatch(result.value, append.expected_server_grants) &&
+        checkpointsMatch(result.value, append.expected_checkpoints),
     );
   }
 
@@ -760,6 +838,68 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "x" },
       },
     },
+    // checkpoint payload(§6.2 — PR-F3a): 実行時型の乖離も invalid-payload に落とす
+    {
+      name: "checkpoint environments is not an array",
+      entry: {
+        ...base,
+        op: "checkpoint",
+        payload: { environments: "env-prod-0001", auditHeadHashHex: "" },
+      },
+    },
+    {
+      name: "checkpoint environment entry is null",
+      entry: {
+        ...base,
+        op: "checkpoint",
+        payload: { environments: [null], auditHeadHashHex: "" },
+      },
+    },
+    {
+      name: "checkpoint epoch is a string",
+      entry: {
+        ...base,
+        op: "checkpoint",
+        payload: {
+          environments: [
+            {
+              environmentId: "env-prod-0001",
+              epoch: "2",
+              manifestVersion: 2,
+              manifestSigHashHex: "ab".repeat(32),
+              valuesDigestHex: "cd".repeat(32),
+            },
+          ],
+          auditHeadHashHex: "",
+        },
+      },
+    },
+    {
+      name: "checkpoint audit head missing",
+      entry: {
+        ...base,
+        op: "checkpoint",
+        payload: { environments: [] },
+      },
+    },
+    {
+      name: "checkpoint values digest missing",
+      entry: {
+        ...base,
+        op: "checkpoint",
+        payload: {
+          environments: [
+            {
+              environmentId: "env-prod-0001",
+              epoch: 2,
+              manifestVersion: 2,
+              manifestSigHashHex: "ab".repeat(32),
+            },
+          ],
+          auditHeadHashHex: "",
+        },
+      },
+    },
     // 未知の op(deepsec B12): PAYLOAD_SHAPES の表引きが membership を確認せずに
     // 呼び出すと TypeError で検証が中断する。「不正入力は invalid-payload を返し
     // throw しない」という公開 verifier の契約(defense-in-depth)をここで固定する
@@ -907,6 +1047,7 @@ export async function chainNegativeChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   await tamperedChecks(c);
   await bytesLevelChecks(c);
+  await checkpointTamperChecks(c);
   await authorizationChecks(c);
   await extendedChainChecks(c);
   await framingChecks(c);

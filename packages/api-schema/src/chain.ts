@@ -139,6 +139,44 @@ const RevokeServerEntrySchema = Schema.Struct({
   payload: Schema.Struct({ serverKeyFingerprintHex: KeyFingerprintHex }),
 });
 
+/**
+ * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2,
+ * 2026-08-27 — PR-F3a)。environmentId は create/rotate と同じ受理ポリシー
+ * 形式。epoch / manifestVersion の数値範囲・重複 environment_id・
+ * audit_head の「空または 64 hex」は合意規則であり verifyChain が検査する
+ * (冒頭の方針どおり Schema へ重複させない。固定長 hex のみここで検査)。
+ */
+const CheckpointEnvironmentEntrySchema = Schema.Struct({
+  environmentId: EnvironmentIdSchema,
+  epoch: Schema.Number,
+  manifestVersion: Schema.Number,
+  manifestSigHashHex: Sha256Hex,
+  valuesDigestHex: Sha256Hex,
+});
+
+/**
+ * `checkpoint` entry (CRYPTO_SPEC §6.2): the issuer's attestation of its
+ * verified data-layer view. Boundary checkpoints are submitted only through
+ * the composite create/rotate endpoints (AUTH_SPEC §12-4 — PR-F3b);
+ * standalone (periodic) checkpoints flow through the generic append
+ * (AUTH_SPEC §16-2) once their acceptance-time content matching lands (M2 —
+ * until then the generic append rejects the op, fail-closed). The composite
+ * payload schemas (PR-F3b) will import this — exported then, not before
+ * (未使用 export を置かない).
+ */
+const CheckpointEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("checkpoint"),
+  payload: Schema.Struct({
+    // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 入れ子 LP は
+    // crypto 側 — 順序は署名対象の一部なので配列で保つ。grant_server と同型)
+    environments: Schema.Array(CheckpointEnvironmentEntrySchema),
+    // 空文字列 = 監査ヘッドの公証なし(§6.2)。「空または 64 hex」の判定は
+    // 合意規則(verifyChain)に一本化する
+    auditHeadHashHex: Schema.String,
+  }),
+});
+
 /** Wire schema for one signed chain entry, discriminated by `op` (CRYPTO_SPEC §6.1). */
 export const ChainEntrySchema = Schema.Union([
   GenesisEntrySchema,
@@ -149,6 +187,7 @@ export const ChainEntrySchema = Schema.Union([
   RotateEpochEntrySchema,
   GrantServerEntrySchema,
   RevokeServerEntrySchema,
+  CheckpointEntrySchema,
 ]);
 
 // デコード結果が @maruhi/crypto の ChainEntry へそのまま渡せることの静的検査。

@@ -167,6 +167,33 @@ checkpoint-epoch-mismatch → checkpoint-regression」は単一環境エント�
   照合側」)。実マニフェストハッシュと結線した境界チェックポイントの
   派生チェーンは F3b(マニフェスト検証規則の consumer と同じ PR)で追加する
 
+## 4-1. F3a の波及(crypto 外に触れた最小面)
+
+`ChainOp` / `ChainState` / `ChainInvalidReason` の拡張はリポジトリ全体の
+型検査で次の追随を強制した(いずれも F3a の合意規則実装の直接の帰結で、
+新しい挙動は「fail-closed の拒否」のみ):
+
+- `packages/api-schema`: エラー語彙(`CHAIN_INVALID_REASONS`)への 3 理由
+  追加(逆方向静的検査 `AllReasonsListed` が強制)。ワイヤの
+  `ChainEntrySchema` union へ `checkpoint` を追加(チェーン配布応答の型が
+  crypto の `ChainEntry` を運ぶため、union に無いと配布ハンドラが
+  型エラーになる)。`CompositeRequiredError` の op リテラルへ `checkpoint`
+  を追加
+- `apps/server`: 汎用 append(worker + DO の多層)で `checkpoint` op を
+  `CompositeRequired` で拒否する。**§16-2 の受理検証(受理時点状態との
+  内容突合 + スナップショット原子保存)なしで standalone checkpoint を
+  受理すると、偽タプルの持ち込みで §4.3 (2) のチェックポイント束縛を
+  汚染できる fail-open になる**ため、受理経路が実装されるまで(境界分 =
+  F3b の複合同梱、standalone = M2)は構造的に閉じる
+- `packages/core`: チェーンミラー(AUDIT_SPEC §3.4)の網羅 Record へ
+  `chain.checkpointed` を追加(公証ダイジェストを payload に写す。
+  監査 seq は写さない — 仕様どおり)
+- fallow の複雑度指摘への追随として、op ディスパッチ 3 箇所
+  (applyOperation / recordHistory / テストの toOperation)を既存イディオム
+  (PAYLOAD_SHAPES / mirrorTails と同じ網羅 Record 表引き)へ揃え、
+  §4.3 variables_digest と §6.2 values_digest の共通骨格を
+  `sorted-digest.ts` に 1 実装化した(正規形はベクターが固定 — 挙動不変)
+
 ## 5. F3b の実装裁定
 
 (F3b 作業時に追記)

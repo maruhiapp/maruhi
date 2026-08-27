@@ -24,11 +24,12 @@
 // manifest-verify.ts(履歴照会は chain-history.ts)が担い、本モジュールは
 // 正規化・署名・ダイジェスト・ハッシュの低水準のみ。
 
-import { encodeHex, utf8Encode } from "./bytes.ts";
-import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
+import { encodeHex } from "./bytes.ts";
+import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import type { MetaStatementStatus } from "./meta-sign.ts";
+import { computeVariableKeyedDigest } from "./sorted-digest.ts";
 import { invalidInput, isLowercaseHexOfLength, verifyEd25519Over } from "./validate.ts";
 
 const SHA256_HEX_LENGTH = 32 * 2;
@@ -61,59 +62,30 @@ function digestEntryInvalidField(entry: VariablesDigestEntry): string | null {
   return null;
 }
 
-/** UTF-8 バイト列としての辞書順比較(ロケール・大文字小文字非依存 — §4.3 の正規形)。 */
-function compareVariableIdBytes(a: VariablesDigestEntry, b: VariablesDigestEntry): number {
-  const bytesA = utf8Encode(a.variableId);
-  const bytesB = utf8Encode(b.variableId);
-  const length = Math.min(bytesA.length, bytesB.length);
-  for (let i = 0; i < length; i += 1) {
-    const delta = (bytesA[i] ?? 0) - (bytesB[i] ?? 0);
-    if (delta !== 0) {
-      return delta;
-    }
-  }
-  return bytesA.length - bytesB.length;
-}
-
 /**
- * Computes the canonical variables digest (CRYPTO_SPEC §4.3): entries are
- * sorted by variable_id byte-ascending **inside this function** — the
- * canonical order is part of the digest's definition, so callers cannot
- * produce a non-canonical digest through this API. Duplicate variable ids
- * are a caller bug (one latest statement per variable) and are rejected.
- * The empty set is valid (an environment with no variables yet).
+ * Computes the canonical variables digest (CRYPTO_SPEC §4.3). The canonical
+ * variable_id byte-ascending order is applied internally, duplicate variable
+ * ids are rejected, and the empty set is valid (an environment with no
+ * variables yet). 骨格(検証 → 重複拒否 → 内部ソート → 入れ子 LP)は
+ * sorted-digest.ts の共有実装(§6.2 values_digest と同型)。
  */
 export async function computeVariablesDigest(
   suite: string,
   entries: readonly VariablesDigestEntry[],
 ): Promise<CryptoResult<string>> {
-  if (suite.length === 0) {
-    return invalidInput("suite");
-  }
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    const field = digestEntryInvalidField(entry);
-    if (field !== null) {
-      return invalidInput(field);
-    }
-    if (seen.has(entry.variableId)) {
-      return invalidInput("entry variableId (duplicate)");
-    }
-    seen.add(entry.variableId);
-  }
-  const ordered = entries.toSorted(compareVariableIdBytes);
-  const fields: LengthPrefixedField[] = [`${suite}/env-manifest-vars`];
-  for (const entry of ordered) {
-    fields.push(
-      encodeLengthPrefixed([
-        entry.variableId,
-        entry.status,
-        entry.metaVersion,
-        entry.metaSigHashHex,
-      ]),
-    );
-  }
-  return { ok: true, value: encodeHex(await sha256(encodeLengthPrefixed(fields))) };
+  return computeVariableKeyedDigest({
+    suite,
+    domain: "env-manifest-vars",
+    entries,
+    variableIdOf: (entry) => entry.variableId,
+    entryInvalidField: digestEntryInvalidField,
+    entryFields: (entry) => [
+      entry.variableId,
+      entry.status,
+      entry.metaVersion,
+      entry.metaSigHashHex,
+    ],
+  });
 }
 
 /**

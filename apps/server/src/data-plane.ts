@@ -341,7 +341,7 @@ export type DataRejection =
   // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired へ写像する)
   | {
       readonly kind: "composite-required";
-      readonly op: "create_environment" | "rotate_epoch";
+      readonly op: "create_environment" | "rotate_epoch" | "checkpoint";
     }
   | {
       readonly kind: "chain-head-conflict";

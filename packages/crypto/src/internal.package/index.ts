@@ -10,6 +10,7 @@ export {
 } from "./chain-canonical.ts";
 export {
   type ChainHistoryIndex,
+  type CheckpointTupleLookup,
   type EnvironmentStateAtSeq,
   type MemberStateAtSeq,
 } from "./chain-history.ts";
@@ -23,8 +24,11 @@ export {
   type ChainOperation,
   type ChainState,
   type ChangeRolePayload,
+  type CheckpointEnvironmentEntry,
+  type CheckpointPayload,
   type CreateEnvironmentPayload,
   type EnvironmentChainState,
+  type EnvironmentCheckpointState,
   type GenesisPayload,
   type GrantServerPayload,
   type LeaseClaimConstraint,
@@ -37,6 +41,7 @@ export {
   type UnsignedChainEntry,
 } from "./chain-types.ts";
 export { verifyChain, verifyChainWithHistory } from "./chain-verify.ts";
+export { computeEnvValuesDigest, type EnvValuesDigestEntry } from "./values-digest.ts";
 export {
   buildDekCommitmentBytes,
   computeDekCommitment,

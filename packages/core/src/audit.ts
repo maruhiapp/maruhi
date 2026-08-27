@@ -103,6 +103,7 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   rotate_epoch: "chain.epoch_rotated",
   grant_server: "chain.server_granted",
   revoke_server: "chain.server_revoked",
+  checkpoint: "chain.checkpointed",
 };
 
 /**
@@ -170,6 +171,23 @@ const mirrorTails: {
   revoke_server: (entry) => ({
     event: MIRROR_EVENT_NAME.revoke_server,
     targetKeyFingerprintHex: entry.payload.serverKeyFingerprintHex,
+  }),
+  // 公証対象のダイジェスト(環境ごとの epoch / manifest_version /
+  // manifest_sig_hash / values_digest と audit_head_hash)を payload に写す
+  // (AUDIT_SPEC §3.4 — 2026-08-18 起草。監査 seq・行数は payload にも写さない:
+  // チェーン payload 自体が seq を含まない設計 — CRYPTO_SPEC §6.2)
+  checkpoint: (entry) => ({
+    event: MIRROR_EVENT_NAME.checkpoint,
+    payload: {
+      environments: entry.payload.environments.map((tuple) => ({
+        environmentId: tuple.environmentId,
+        epoch: tuple.epoch,
+        manifestVersion: tuple.manifestVersion,
+        manifestSigHashHex: tuple.manifestSigHashHex,
+        valuesDigestHex: tuple.valuesDigestHex,
+      })),
+      auditHeadHashHex: entry.payload.auditHeadHashHex,
+    },
   }),
 };
 

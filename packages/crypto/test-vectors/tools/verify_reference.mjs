@@ -271,12 +271,14 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     for (const e of checkpointEntries) {
       check(
         `chain checkpoint seq ${e.seq} (${e.actor.user_id}): environments nested LP`,
-        toHex(checkpointEnvironmentsLp(e.payload.environments)) ===
-          e.payload.environments_lp_hex,
+        toHex(checkpointEnvironmentsLp(e.payload.environments)) === e.payload.environments_lp_hex,
       );
     }
     // 環境エントリ 0 件は空バイト列の hex = 空文字列(checkpoint-empty-environments)
-    check("chain: empty checkpoint environments encode to empty hex", toHex(checkpointEnvironmentsLp([])) === "");
+    check(
+      "chain: empty checkpoint environments encode to empty hex",
+      toHex(checkpointEnvironmentsLp([])) === "",
+    );
   }
   // checkpoint の values_digest 正規形(values_digests セクション): 非正規順の
   // entries からバイト昇順の再計算が期待ダイジェストと一致する

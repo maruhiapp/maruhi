@@ -16,7 +16,11 @@
 // timestamp は認可判定に使わない(すべて seq ベース)。remove → re-add は別
 // tenure として保持する(同じ鍵の dedupe で tenure を消さない — 裁定 A)。
 
-import type { Role } from "./chain-types.ts";
+import type {
+  CheckpointEnvironmentEntry,
+  EnvironmentCheckpointState,
+  Role,
+} from "./chain-types.ts";
 
 /** A member's chain-derived state at one inclusive seq (§6.3 の宣言ヘッド時点). */
 export interface MemberStateAtSeq {
@@ -27,6 +31,30 @@ export interface MemberStateAtSeq {
   /** Seq of the genesis / add_member entry that started this tenure. */
   readonly tenureStartSeq: number;
 }
+
+/**
+ * Lookup result for the `checkpoint` tuple covering one
+ * (environment_id, manifest_version) coordinate on the verified chain
+ * (CRYPTO_SPEC §4.3 検証規則 (2) の照合材料 — 2026-08-27 セッション 33).
+ *
+ * - `unique` — every checkpoint entry carrying this coordinate agrees on
+ *   (epoch, manifest_sig_hash); `seq` is the first entry that carried it
+ * - `conflicting` — two checkpoint entries carry this coordinate with a
+ *   differing (epoch, manifest_sig_hash): hard evidence of manifest
+ *   equivocation — the verifier must reject the environment's distribution
+ *   (§4.3 (2)). The values digest is deliberately NOT part of this
+ *   comparison: re-attesting the same manifest_version with a new values
+ *   digest is a legitimate flow (rotate boundary checkpoint followed by the
+ *   post-re-encryption periodic checkpoint — §6.3。session-33 裁定 B)
+ */
+export type CheckpointTupleLookup =
+  | {
+      readonly kind: "unique";
+      readonly seq: number;
+      readonly epoch: number;
+      readonly manifestSigHashHex: string;
+    }
+  | { readonly kind: "conflicting" };
 
 /** An environment's chain-derived state at one inclusive seq (§6.3-4 の入力). */
 export interface EnvironmentStateAtSeq {
@@ -68,6 +96,24 @@ export interface ChainHistoryIndex {
    * first and is then rejected as `writer-key-mismatch-at-head`).
    */
   readonly sigKeyByFingerprint: (userId: string, keyFingerprintHex: string) => string | undefined;
+  /**
+   * The `checkpoint` tuple covering (environmentId, manifestVersion) anywhere
+   * on the verified chain, or undefined when no checkpoint entry carries the
+   * coordinate (§4.3 (2): the strict head-time epoch rule then applies). The
+   * verifier consults this internally — the binding is not caller-supplied,
+   * so a forgotten lookup cannot reopen the strict path for a coordinate the
+   * chain has bound (session-33 裁定 A).
+   */
+  readonly checkpointTupleFor: (
+    environmentId: string,
+    manifestVersion: number,
+  ) => CheckpointTupleLookup | undefined;
+  /**
+   * The latest checkpoint tuple covering the environment (§6.3
+   * チェックポイント整合の環境ごとの基準 — mirror of
+   * `ChainState.checkpoints` for history-based verifiers).
+   */
+  readonly latestCheckpointFor: (environmentId: string) => EnvironmentCheckpointState | undefined;
 }
 
 interface RoleSpan {
@@ -91,6 +137,15 @@ interface EnvironmentRecord {
   readonly epochStarts: readonly (readonly [number, number])[];
 }
 
+/** Per (environment, manifestVersion) checkpoint tuple, or a conflict marker. */
+type CheckpointTupleRecord =
+  | {
+      readonly seq: number;
+      readonly epoch: number;
+      readonly manifestSigHashHex: string;
+    }
+  | "conflict";
+
 /** change_role はエントリ自身の seq で新 role が有効(inclusive)。 */
 function roleAt(tenure: TenureRecord, seq: number): Role | undefined {
   let role: Role | undefined;
@@ -110,15 +165,21 @@ class ChainHistory implements ChainHistoryIndex {
   readonly #entryHashes: readonly string[];
   readonly #tenures: ReadonlyMap<string, readonly TenureRecord[]>;
   readonly #environments: ReadonlyMap<string, EnvironmentRecord>;
+  readonly #checkpointTuples: ReadonlyMap<string, ReadonlyMap<number, CheckpointTupleRecord>>;
+  readonly #latestCheckpoints: ReadonlyMap<string, EnvironmentCheckpointState>;
 
   constructor(input: {
     readonly entryHashes: readonly string[];
     readonly tenures: ReadonlyMap<string, readonly TenureRecord[]>;
     readonly environments: ReadonlyMap<string, EnvironmentRecord>;
+    readonly checkpointTuples: ReadonlyMap<string, ReadonlyMap<number, CheckpointTupleRecord>>;
+    readonly latestCheckpoints: ReadonlyMap<string, EnvironmentCheckpointState>;
   }) {
     this.#entryHashes = input.entryHashes;
     this.#tenures = input.tenures;
     this.#environments = input.environments;
+    this.#checkpointTuples = input.checkpointTuples;
+    this.#latestCheckpoints = input.latestCheckpoints;
     this.headSeq = input.entryHashes.length;
     this.headHashHex = input.entryHashes[input.entryHashes.length - 1] ?? "";
   }
@@ -182,6 +243,32 @@ class ChainHistory implements ChainHistoryIndex {
     const tenures = this.#tenures.get(userId) ?? [];
     return tenures.find((tenure) => tenure.keyFingerprintHex === keyFingerprintHex)?.sigPubHex;
   }
+
+  checkpointTupleFor(
+    environmentId: string,
+    manifestVersion: number,
+  ): CheckpointTupleLookup | undefined {
+    if (!Number.isSafeInteger(manifestVersion) || manifestVersion < 1) {
+      return undefined;
+    }
+    const record = this.#checkpointTuples.get(environmentId)?.get(manifestVersion);
+    if (record === undefined) {
+      return undefined;
+    }
+    if (record === "conflict") {
+      return { kind: "conflicting" };
+    }
+    return {
+      kind: "unique",
+      seq: record.seq,
+      epoch: record.epoch,
+      manifestSigHashHex: record.manifestSigHashHex,
+    };
+  }
+
+  latestCheckpointFor(environmentId: string): EnvironmentCheckpointState | undefined {
+    return this.#latestCheckpoints.get(environmentId);
+  }
 }
 
 /**
@@ -196,6 +283,8 @@ export class ChainHistoryBuilder {
     string,
     { createdAtSeq: number; epochStarts: [number, number][] }
   >();
+  readonly #checkpointTuples = new Map<string, Map<number, CheckpointTupleRecord>>();
+  readonly #latestCheckpoints = new Map<string, EnvironmentCheckpointState>();
 
   recordEntryHash(hash: string): void {
     this.#entryHashes.push(hash);
@@ -252,11 +341,49 @@ export class ChainHistoryBuilder {
     this.#environmentStarts.get(environmentId)?.epochStarts.push([newEpoch, seq]);
   }
 
+  /**
+   * checkpoint エントリの環境タプルを記録する(§6.2 の導出状態 / §4.3 (2) の
+   * 照合材料)。同一 (environment, manifestVersion) に (epoch, manifest_sig_hash)
+   * の異なるタプルが現れたら conflict へ格下げする(equivocation の証拠化 —
+   * session-33 裁定 B。values_digest は同一 mv でも正当に変わるため比較対象外)。
+   */
+  recordCheckpoint(seq: number, environments: readonly CheckpointEnvironmentEntry[]): void {
+    for (const tuple of environments) {
+      let perEnv = this.#checkpointTuples.get(tuple.environmentId);
+      if (perEnv === undefined) {
+        perEnv = new Map();
+        this.#checkpointTuples.set(tuple.environmentId, perEnv);
+      }
+      const existing = perEnv.get(tuple.manifestVersion);
+      if (existing === undefined) {
+        perEnv.set(tuple.manifestVersion, {
+          seq,
+          epoch: tuple.epoch,
+          manifestSigHashHex: tuple.manifestSigHashHex,
+        });
+      } else if (
+        existing !== "conflict" &&
+        (existing.epoch !== tuple.epoch || existing.manifestSigHashHex !== tuple.manifestSigHashHex)
+      ) {
+        perEnv.set(tuple.manifestVersion, "conflict");
+      }
+      this.#latestCheckpoints.set(tuple.environmentId, {
+        seq,
+        epoch: tuple.epoch,
+        manifestVersion: tuple.manifestVersion,
+        manifestSigHashHex: tuple.manifestSigHashHex,
+        valuesDigestHex: tuple.valuesDigestHex,
+      });
+    }
+  }
+
   build(): ChainHistoryIndex {
     return new ChainHistory({
       entryHashes: this.#entryHashes,
       tenures: this.#tenures,
       environments: this.#environmentStarts,
+      checkpointTuples: this.#checkpointTuples,
+      latestCheckpoints: this.#latestCheckpoints,
     });
   }
 }
