@@ -17,7 +17,7 @@
   "digest_entry_fields_order": ["variable_id", "status", "meta_version", "meta_sig_hash_hex"],
   "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / manifest_version / env_meta_version / meta_version / chain_head_seq)は 10 進文字列化。ダイジェストの各 entry は入れ子 LP のバイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)",
   "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys",
-  "composite_epoch_rule": "エポック整合(§4.3 (2) / AUTH_SPEC §12-5 (4)): マニフェストの epoch は宣言ヘッド時点の当該環境の現エポックと一致するか、または宣言ヘッドの次のエントリ(= 複合発行の同梱チェーンエントリ)が当該環境にちょうどそのエポックを確立する(環境作成複合 = epoch 1、rotate 複合 = new_epoch。宣言ヘッドは追記前ヘッド — §12-4)。manifest-v1-create / manifest-rotate が positive、epoch-not-current-at-head / environment-not-created-at-head が negative としてこれを固定する",
+  "composite_epoch_rule": "エポック整合(§4.3 (2) — 2026-08-27 セッション 33 = PR-F3b でチェックポイント束縛へ改訂。旧 H+1 例外は廃止): 検証済みチェーン上に当該 (environment_id, manifest_version) の checkpoint タプルが存在する場合、その (epoch, manifest_sig_hash) と完全一致しなければならない(strict は代替経路にならない — checkpoint-binding-mismatch が negative)。同座標に (epoch, manifest_sig_hash) の異なるタプルが併存すれば equivocation の硬い証拠として拒否(checkpoint-equivocation)。タプルが存在しない場合のみ宣言ヘッド時点の現エポックとの strict 一致(epoch-not-current-at-head / environment-not-created-at-head が negative。複合発行形の manifest-v1-create / manifest-rotate は chain-entries.json の checkpoint-boundary-* 派生チェーンに対する positive で、checkpoint を欠くチェーンに対しては composite-head-without-checkpoint-* の negative)。さらにチェックポイント整合の規則 1(§6.3): manifestVersion・epoch は当該環境の最新 checkpoint 以上(checkpoint-regressed が negative)",
   "statements": {
     "note": "ダイジェスト入力のフィクスチャ(metadata-signature.json と同一入力・同一ハッシュのステートメント)。ダイジェストが要するのは (variable_id, status, meta_version, meta_sig_hash_hex) のみ(§4.3)",
     "env_meta_v1": {
@@ -234,7 +234,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000013100000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040373562343032356139326436666236643137653132363535616463643066636366633936633035373338336639343835366366316437616435323738313165340000000000000010757365722d6d656d6265722d3030303200000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
       "signed_bytes_sha256_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
       "signature_hex": "f26ff2131c15d2001a7fc50a858734fe0c64e8a1dd115ef5c56f775c3f2e318049d8a2e1870f19e845ef2d6fbe38de9a372ad82bf65b7ad442cb05dc0edbdb0b",
-      "note": "環境作成複合の同梱マニフェスト(manifestVersion 1、変数空集合、epoch 1)。宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。宣言ヘッド時点に環境は未存在だが、次エントリ(seq 3)が epoch 1 を確立する = 複合発行のエポック整合(§12-5 (4) の検証側の形)"
+      "note": "環境作成複合の同梱マニフェスト(manifestVersion 1、変数空集合、epoch 1)。宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。宣言ヘッド時点に環境は未存在で、検証は境界 checkpoint タプル(chain-entries.json の checkpoint-boundary-create 派生チェーン seq 4)との完全一致による(§4.3 (2) — 2026-08-27 セッション 33 で旧 H+1 例外を廃止。checkpoint を欠く正規チェーンに対する同データは negative composite-head-without-checkpoint-create)"
     },
     {
       "name": "manifest-rotate",
@@ -258,7 +258,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000132000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403863373736333038636435306361366139366138326361366464633161333432653265343464313664356663396363333730653932363430393931383137366200000010757365722d6d656d6265722d3030303200000040633766323932353264333834613561646531383530383733303039666238636237663631656363313464613864366661363963323539316536636662626330660000000133",
       "signed_bytes_sha256_hex": "6d781adfe675b8622c1a35de072cad79cad16ec87006c1c8f816f02007462a90",
       "signature_hex": "78c8fb2eb698a52c9de7024187c50856b849cfd488eba8ec3f10752b9928ecb08846cec0d33cafe6bd2ec192f1b5d3306a92310f5b4a36528a3615ae9c28620c",
-      "note": "rotate 複合の同梱マニフェスト(エポック前進の反映 — メタ集合は不変でも再発行する。§4.3)。宣言ヘッド seq 3 の次のエントリ(seq 4 = rotate_epoch)が epoch 2 を確立する",
+      "note": "rotate 複合の同梱マニフェスト(エポック前進の反映 — メタ集合は不変でも再発行する。§4.3)。検証は境界 checkpoint タプル(checkpoint-boundary-rotate 派生チェーン seq 6)との完全一致による(§4.3 (2)。checkpoint を欠く正規チェーンに対する同データは negative composite-head-without-checkpoint-rotate)",
       "prev_base": "manifest-v1-create"
     },
     {
@@ -1232,6 +1232,151 @@
         "meta_version": 2,
         "meta_sig_hash_hex": "0111b5daee1a0604d4fb5f8b01b3113a3493beaf5003a93e7e94ad81beb18790"
       }
+    },
+    {
+      "name": "composite-head-without-checkpoint-create",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 1,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000013100000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040373562343032356139326436666236643137653132363535616463643066636366633936633035373338336639343835366366316437616435323738313165340000000000000010757365722d6d656d6265722d3030303200000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
+      "signed_bytes_sha256_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
+      "signature_hex": "f26ff2131c15d2001a7fc50a858734fe0c64e8a1dd115ef5c56f775c3f2e318049d8a2e1870f19e845ef2d6fbe38de9a372ad82bf65b7ad442cb05dc0edbdb0b",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "environment-not-created-at-head",
+      "must_fail": true,
+      "note": "manifest-v1-create と同一データを checkpoint タプルを持たない正規チェーンに対して検証すると strict(宣言ヘッド時点)に落ち、宣言ヘッド(seq 2)時点で環境未存在として拒否する — 旧 H+1 例外(宣言ヘッドの次エントリでエポックが成立する複合形の無条件許容)の廃止の固定(§4.3 (2))"
+    },
+    {
+      "name": "composite-head-without-checkpoint-rotate",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 2,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "c7f29252d384a5ade1850873009fb8cb7f61ecc14da8d6fa69c2591e6cfbbc0f",
+        "chain_head_seq": 3
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000132000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403863373736333038636435306361366139366138326361366464633161333432653265343464313664356663396363333730653932363430393931383137366200000010757365722d6d656d6265722d3030303200000040633766323932353264333834613561646531383530383733303039666238636237663631656363313464613864366661363963323539316536636662626330660000000133",
+      "signed_bytes_sha256_hex": "6d781adfe675b8622c1a35de072cad79cad16ec87006c1c8f816f02007462a90",
+      "signature_hex": "78c8fb2eb698a52c9de7024187c50856b849cfd488eba8ec3f10752b9928ecb08846cec0d33cafe6bd2ec192f1b5d3306a92310f5b4a36528a3615ae9c28620c",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "epoch-not-current-at-head",
+      "must_fail": true,
+      "note": "manifest-rotate と同一データを checkpoint タプルを持たない正規チェーンに対して検証すると strict に落ち、宣言ヘッド(seq 3)時点の現エポック(1)との不一致で拒否する(旧 H+1 例外の廃止の rotate 側)"
+    },
+    {
+      "name": "checkpoint-binding-mismatch",
+      "kind": "authorization",
+      "chain": "checkpoint-boundary-rotate",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 1,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "",
+        "issuer_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "issuer_key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001310000000131000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000000000000f757365722d6f776e65722d3030303100000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
+      "signed_bytes_sha256_hex": "bc494652fc1a3b0b68ff3e4e48ec0fe21fa9452ed507993fd637d4a19dfccaf5",
+      "signature_hex": "f83e1e52b197cdadd47ab1b643fc85ac771419fbd34b410a7fab8a071786aff45b1974cab301330efd5b2274a1a98d4499b1cfa54259f4a992efc6e88e716602",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "checkpoint-binding-mismatch",
+      "must_fail": true,
+      "note": "検証済みチェーン上に (env-prod-0001, manifestVersion 1) の checkpoint タプルが存在する場合、マニフェストの signed_bytes ハッシュはタプルと完全一致しなければならない(strict は代替経路にならない — 選言禁止)。owner が署名した同座標の別内容マニフェスト(issuer が異なるためハッシュが異なる)は、署名・ヘッド・エポックが有効でも拒否する。latest checkpoint(manifestVersion 2)より古い版への照合でも束縛が先に判定される(検査順序: 束縛 (2) → 非後退 (4))"
+    },
+    {
+      "name": "checkpoint-equivocation",
+      "kind": "authorization",
+      "chain": "checkpoint-boundary-equivocation",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 2,
+        "manifest_version": 2,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "c7f29252d384a5ade1850873009fb8cb7f61ecc14da8d6fa69c2591e6cfbbc0f",
+        "chain_head_seq": 3
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d3030303100000001320000000132000000403739623466613338643135636262636564626134613535333638363639633664333262613630336632333261616336313262643064303062656438353932326300000001310000004037356234303235613932643666623664313765313236353561646364306663636663393663303537333833663934383536636631643761643532373831316534000000403863373736333038636435306361366139366138326361366464633161333432653265343464313664356663396363333730653932363430393931383137366200000010757365722d6d656d6265722d3030303200000040633766323932353264333834613561646531383530383733303039666238636237663631656363313464613864366661363963323539316536636662626330660000000133",
+      "signed_bytes_sha256_hex": "6d781adfe675b8622c1a35de072cad79cad16ec87006c1c8f816f02007462a90",
+      "signature_hex": "78c8fb2eb698a52c9de7024187c50856b849cfd488eba8ec3f10752b9928ecb08846cec0d33cafe6bd2ec192f1b5d3306a92310f5b4a36528a3615ae9c28620c",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "checkpoint-equivocation",
+      "must_fail": true,
+      "note": "同一 (environment_id, manifest_version) に (epoch, manifest_sig_hash) の異なるcheckpoint タプルが検証済みチェーン上に併存する場合は、マニフェスト equivocation の硬い証拠として当該環境の配布を拒否する(§4.3 (2)。manifest-rotate 自体は正当でも、チェーンが矛盾タプルを運んだ時点で拒否)"
+    },
+    {
+      "name": "checkpoint-regressed",
+      "kind": "authorization",
+      "chain": "checkpoint-boundary-rotate",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-manifest-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "epoch": 1,
+        "manifest_version": 1,
+        "variables_digest_hex": "79b4fa38d15cbbcedba4a55368669c6d32ba603f232aac612bd0d00bed85922c",
+        "env_meta_version": 1,
+        "env_meta_sig_hash_hex": "75b4025a92d6fb6d17e12655adcd0fccfc96c057383f94856cf1d7ad527811e4",
+        "prev_manifest_sig_hash_hex": "",
+        "issuer_user_id": "user-member-0002",
+        "chain_head_hash_hex": "64a1c1bd45aa51fbef10fb5c88cd6152095ac6e92df3d8bd1d417f81d1665709",
+        "chain_head_seq": 2
+      },
+      "issuer_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "entries": [],
+      "signed_bytes_hex": "0000001a6d61727568692f76312f656e762d6d616e69666573742d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000013100000001310000004037396234666133386431356362626365646261346135353336383636396336643332626136303366323332616163363132626430643030626564383539323263000000013100000040373562343032356139326436666236643137653132363535616463643066636366633936633035373338336639343835366366316437616435323738313165340000000000000010757365722d6d656d6265722d3030303200000040363461316331626434356161353166626566313066623563383863643631353230393561633665393264663364386264316434313766383164313636353730390000000132",
+      "signed_bytes_sha256_hex": "8c776308cd50ca6a96a82ca6ddc1a342e2e44d16d5fc9cc370e926409918176b",
+      "signature_hex": "f26ff2131c15d2001a7fc50a858734fe0c64e8a1dd115ef5c56f775c3f2e318049d8a2e1870f19e845ef2d6fbe38de9a372ad82bf65b7ad442cb05dc0edbdb0b",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "checkpoint-regressed",
+      "must_fail": true,
+      "note": "チェックポイント整合の規則 1(§6.3 / §4.3 (4)): 配布マニフェストの manifestVersion は当該環境の最新 checkpoint(checkpoint-boundary-rotate では manifestVersion 2)以上でなければならない。タプル(manifestVersion 1)との完全一致を通る正当な旧マニフェストでも、基準より古い版の配布は巻き戻しとして拒否する(境界チェックポイントが供給する下限 — タプルを持つ版への照合の下方回避を塞ぐ)"
     }
   ]
 }
