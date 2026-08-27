@@ -704,6 +704,7 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
     promptLine: () => Effect.succeed(""),
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
+    stderrIsTerminal: () => true,
   });
 
   const showWiped = (input: {

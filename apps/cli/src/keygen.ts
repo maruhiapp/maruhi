@@ -18,7 +18,7 @@ import {
   generateSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
@@ -47,7 +47,7 @@ const keygenFailed = () => cliError("Failed to generate the keypair (crypto erro
 export function keyGenerateOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const entryName = yield* ensureNoStoredMasterKey(

@@ -67,21 +67,6 @@ export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInp
 }
 
 /**
- * payload を SQL 式で組む版の追記(§3.1)。同一 batch 内の後続文が消す行から
- * payload を導く必要がある場合に使う(トークンローテーションの置換対象 id —
- * AUDIT_SPEC §3.1 / deepsec R6)。呼び出し側が JS で組める payload には
- * `userAuditInsert` を使うこと。
- */
-export function userAuditInsertWithPayloadSql(
-  db: Db,
-  serverTs: number,
-  event: Omit<D1AuditEventInput, "payload">,
-  payload: SQL<string>,
-) {
-  return db.insert(userAuditEvents).values({ ...rowOf(event, serverTs), payload });
-}
-
-/**
  * `changes() = 1` ガード付き INSERT…SELECT(AUDIT_SPEC §5.2 — 直前の条件付き
  * UPDATE が効いたときだけ監査行を挿入する)用の共有選択列。rowOf と同じ列写像の
  * SELECT 版 — 呼び出し側(invites の CAS・recovery の取得計数)が列リストを
@@ -94,8 +79,13 @@ export function guardedAuditSelectColumns(input: {
   readonly nowMs: number;
   readonly targetUserId?: string | null;
   readonly payload?: Readonly<Record<string, unknown>>;
+  /** 保存行から組む動的 payload。指定時は静的 payload より優先する。 */
+  readonly payloadSql?: SQL<string | null>;
 }) {
   const payload = auditPayloadWith(input.actor, input.payload);
+  const payloadSql =
+    input.payloadSql ??
+    sql<string | null>`${Object.keys(payload).length === 0 ? null : JSON.stringify(payload)}`;
   return {
     // ワイヤ行識別子(AUDIT_SPEC §5.1 row_id)。ガード付き挿入は高々 1 行なので、
     // 文の構築時に採番した定数で足りる
@@ -106,9 +96,7 @@ export function guardedAuditSelectColumns(input: {
     actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
     actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as("actor_api_token_id"),
     targetUserId: sql<string | null>`${input.targetUserId ?? null}`.as("target_user_id"),
-    payload: sql<string | null>`${
-      Object.keys(payload).length === 0 ? null : JSON.stringify(payload)
-    }`.as("payload"),
+    payload: payloadSql.as("payload"),
   };
 }
 
@@ -121,11 +109,22 @@ export function orgAuditInsert(db: Db, serverTs: number, event: D1AuditEventInpu
  * auth.login_failed の記録上限(AUDIT_SPEC §3.1)。login_failed は唯一の
  * 未認証経路からの D1 書き込みであり、無効リクエストの洪水による書き込み増幅
  * (可用性・コスト面の攻撃)を有界にするため、固定窓の上限を超えた分は
- * 記録しない。上限は `auth_method` 単位のバケットで数える(deepsec R4):
- * 単一枠だと片方の経路への洪水がもう片方の標的型失敗まで消してしまう。
+ * 記録しない。上限は `auth_method + reason` 単位のバケットで数える
+ * (deepsec R4/S5): 単一枠や method だけの枠だと、別経路・別理由の洪水が
+ * 標的型失敗の reason まで消してしまう。
  */
 export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
+
+interface LoginFailedBucket {
+  readonly authMethod: string;
+  readonly reason: string;
+}
+
+/** mutable counter の主キー。外部 ID / IP は含めず、監査行が持つ分類だけを使う。 */
+function loginFailedBucketKey(bucket: LoginFailedBucket): string {
+  return JSON.stringify([bucket.authMethod, bucket.reason]);
+}
 
 /**
  * 上限到達の窓に残す集約マーカー(deepsec M4/R4 / AUDIT_SPEC §3.1)。抑制が
@@ -193,13 +192,13 @@ interface D1AuditRepoShape {
    * auth.login_failed 専用の追記。固定窓(1 時間)の記録上限を超えたら個別行は
    * 落とし、抑制マーカーだけ残す(SHOULD 記録 — AUDIT_SPEC §3.1)。
    *
-   * `bucket` は上限を数える単位(現状 auth_method 種別名 — deepsec R4)。
+   * `bucket` は上限を数える単位(auth_method + reason — deepsec R4/S5)。
    * 発信元識別子を渡さないこと(§1-2 の線引き。理由は §3.1)。
    */
   readonly appendLoginFailed: (
     event: D1AuditEventInput,
     serverTs: number,
-    bucket: string,
+    bucket: LoginFailedBucket,
   ) => Effect.Effect<void>;
   /**
    * invite.* の project_id スコープ読み取り(§7 の例外規定)。権限軸(当該
@@ -366,12 +365,13 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
         // 走査すると、有界にしたい洪水そのものがコスト増幅器になる。窓の
         // リセット・加算・上限判定は 1 文の条件付き UPSERT に畳み、RETURNING の
         // 新しい計数から判定を導く(recovery 取得計数 — repos.ts — と同じ形)
+        const bucketKey = loginFailedBucketKey(bucket);
         const expired = sql`${serverTs} - ${loginFailedWindows.windowStart} >= ${LOGIN_FAILED_WINDOW_MS}`;
         const underLimit = sql`${loginFailedWindows.recordedCount} < ${LOGIN_FAILED_WINDOW_LIMIT}`;
         const counted = await db
           .insert(loginFailedWindows)
           .values({
-            bucket,
+            bucket: bucketKey,
             windowStart: serverTs,
             recordedCount: 1,
             suppressedCount: 0,
@@ -404,10 +404,11 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
               event: LOGIN_FAILED_SUPPRESSED_EVENT,
               actor: {},
               // 個別行の reason は運ばない(AUDIT_SPEC §3.1: マーカーの payload は
-              // auth_method・窓長・上限・抑制件数のみ)。マーカーはこの 1 件では
+              // auth_method・reason・窓長・上限・抑制件数のみ)。マーカーはこの 1 件では
               // なく窓の状態を表すものなので、最後の失敗理由を代表させない
               payload: {
-                authMethod: bucket,
+                authMethod: bucket.authMethod,
+                reason: bucket.reason,
                 windowMs: LOGIN_FAILED_WINDOW_MS,
                 limit: LOGIN_FAILED_WINDOW_LIMIT,
                 suppressedCount: suppressed,

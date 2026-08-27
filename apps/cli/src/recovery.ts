@@ -5,8 +5,8 @@
 // - ラップ対象の master 鍵ブロブ = キーチェーンの StoredMasterKey レコードの
 //   JSON 直列化(CRYPTO_SPEC §8 の「直列化形式は CLI 実装時に確定」の確定点。
 //   復元側は importMasterKeys の自己検証を通してから保存する)
-// - コードの表示は鍵素材の表示なので、AI エージェント環境では拒否する
-//   (agent.ts と同じ線引き)
+// - コードの表示・入力は鍵素材を端末へ通すため、stdin / stdout / stderr の
+//   全てが TTY の人間環境だけ許可する(既知 AI agent は二次層でも拒否)
 // - 保存確認(ROADMAP の紛失対策 UX): 表示したコードの最終グループを再入力
 //   させてから完了とする。確認前にサーバー登録を済ませる — 確認に失敗しても
 //   再発行(`maruhi key recovery`)でやり直せる状態を先に作る
@@ -19,14 +19,15 @@ import {
   unwrapMasterSecret,
   wrapMasterSecret,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
+import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import { escapeText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import {
   classifyUnreadableMasterKey,
   declaredSuiteOf,
@@ -56,6 +57,21 @@ const PROMPT_ATTEMPTS = 3;
 const agentRefusalMessage =
   "Refused to issue a recovery code because an AI agent environment was detected (the code is key material; it may only be shown on a human interactive terminal)";
 
+function ensureRecoveryCodeInteractionAllowed(
+  io: CliIoShape,
+  action: "issue" | "read",
+): Effect.Effect<void, CliError, Stdio.Stdio> {
+  return ensureSensitiveTerminalAllowed({
+    agent: io.agentProfile(),
+    stderrIsTerminal: io.stderrIsTerminal(),
+    agentError:
+      action === "issue"
+        ? agentRefusalMessage
+        : "Refused to read a recovery code because an AI agent environment was detected (the code is key material; run the recovery on a human interactive terminal)",
+    terminalError: `Recovery-code ${action === "issue" ? "display" : "entry"} is only allowed on an interactive terminal (stdin, stdout, and stderr must all be terminals; pipes, redirects, CI, and AI agents are refused)`,
+  });
+}
+
 /**
  * Issues (or reissues) the recovery code: generate → wrap → register →
  * display → save confirmation. `maruhi key generate` と `maruhi key recovery`
@@ -65,12 +81,10 @@ export function issueRecoveryCodeOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly masterKeys: MasterKeys;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    if (io.agentProfile().isAgent) {
-      return yield* Effect.fail(cliError(agentRefusalMessage));
-    }
+    yield* ensureRecoveryCodeInteractionAllowed(io, "issue");
 
     // 既登録の置換(再発行)は事前に明示する(旧コードはこの操作で無効になる)
     const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
@@ -117,8 +131,8 @@ export function issueRecoveryCodeOp(input: {
     yield* io.logError("Issued your recovery code. Store it somewhere safe now:");
     yield* io.logError("");
     // 剥がす理由: コードの表示が発行の機能そのもの(二度と表示されない)。
-    // 表示可否はこの関数の冒頭のエージェントゲートで判定済みで、剥がすのは
-    // その後ろ。出力先が stderr であることも意図的に維持する(上の注記)
+    // 表示可否はこの関数の冒頭の TTY + agent ゲートで判定済みで、剥がすのは
+    // その後ろ。stderr 自体も TTY であることを確認済み(S2)
     yield* io.logError(`    ${Redacted.value(code)}`);
     yield* io.logError("");
     yield* io.logError(
@@ -165,19 +179,13 @@ function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, 
 export function recoverMasterKeyOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     // 発行側と対称の線引き: コードは鍵素材であり、エージェント越しの stdin に
     // 打ち込ませる経路も作らない(入力はエージェントのセッション層から読める)。
     // 復元は人間の対話端末で行う
-    if (io.agentProfile().isAgent) {
-      return yield* Effect.fail(
-        cliError(
-          "Refused to read a recovery code because an AI agent environment was detected (the code is key material; run the recovery on a human interactive terminal)",
-        ),
-      );
-    }
+    yield* ensureRecoveryCodeInteractionAllowed(io, "read");
     const entryName = yield* ensureNoStoredMasterKey(
       input.session,
       "A master key already exists on this device. Overwriting it would lose the existing key, so this is refused (check it with `maruhi key show`)",
@@ -403,7 +411,7 @@ function unwrapWithPromptedCode(input: {
 export function issueRecoveryAfterKeygen(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     if (io.agentProfile().isAgent) {

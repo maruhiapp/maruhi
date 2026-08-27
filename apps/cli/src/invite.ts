@@ -29,9 +29,10 @@ import {
   SUITE_ID,
   verifyInviteAcceptSignature,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
+import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
@@ -39,7 +40,7 @@ import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "./invite-link.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import { Keychain, masterKeyEntryName } from "./keychain.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
@@ -157,6 +158,19 @@ export interface InviteCreateSummary {
   readonly expiresAtMs: number;
 }
 
+function ensureInviteLinkDisplayAllowed(
+  io: CliIoShape,
+): Effect.Effect<void, CliError, Stdio.Stdio> {
+  return ensureSensitiveTerminalAllowed({
+    agent: io.agentProfile(),
+    stderrIsTerminal: io.stderrIsTerminal(),
+    agentError:
+      "An AI agent environment was detected, so the invite was not issued (the invite link's raw token would persist in execution logs and transcripts). Run maruhi invite create on a human interactive terminal",
+    terminalError:
+      "Invite-link display is only allowed on an interactive terminal (stdin, stdout, and stderr must all be terminals; pipes, redirects, CI, and AI agents are refused)",
+  });
+}
+
 /**
  * 招待の発行 + リンクの組み立て + 発行ピンの保存。発行の認可はサーバーが
  * 強制するが、role 規則(§6.2 と同水準: 発行は admin 以上・role=admin は
@@ -168,7 +182,7 @@ export function inviteCreateOp(input: {
   readonly origin: string;
   readonly role: InviteRole;
   readonly sessionUserId: string;
-}): Effect.Effect<InviteCreateSummary, CliError, CliIo | PinStore> {
+}): Effect.Effect<InviteCreateSummary, CliError, CliIo | PinStore | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const pinStore = yield* PinStore;
@@ -177,13 +191,7 @@ export function inviteCreateOp(input: {
     // 第三者(エージェント基盤・ログ)へ漏れる経路になる。生値は再表示不可の
     // ため「発行して表示しない」形は取れない — 発行そのものを拒否する
     // (値表示 — agent.ts — ・リカバリーコード発行と同じ線引き)
-    if (io.agentProfile().isAgent) {
-      return yield* Effect.fail(
-        cliError(
-          "An AI agent environment was detected, so the invite was not issued (the invite link's raw token would persist in execution logs and transcripts). Run maruhi invite create on a human interactive terminal",
-        ),
-      );
-    }
+    yield* ensureInviteLinkDisplayAllowed(io);
     const inviter = input.verified.state.members.get(input.sessionUserId);
     if (inviter === undefined || ROLE_RANK[inviter.role] < ROLE_RANK.admin) {
       return yield* Effect.fail(
@@ -248,7 +256,7 @@ export function inviteCreateOp(input: {
         ),
       );
     // 剥がす理由: リンクの表示がこのコマンドの機能そのもの。表示可否は上の
-    // エージェントゲート(この関数の冒頭)で既に判定済みで、剥がすのはその後ろ
+    // TTY + エージェントゲート(この関数の冒頭)で判定済みで、剥がすのはその後ろ
     yield* io.log(Redacted.value(link));
     yield* io.logError(
       `Issued an invite (id=${displayText(issued.id)}, role=${issued.role}, expires=${formatDateTimeUtc(issued.expiresAtMs)})`,
@@ -361,8 +369,12 @@ function confirmInviterFingerprint(input: {
 function ensureMasterKeysForAccept(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-  readonly keyGenerate: Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient>;
-}): Effect.Effect<MasterKeys, CliError, Keychain | CliIo | HttpClient.HttpClient> {
+  readonly keyGenerate: Effect.Effect<
+    void,
+    CliError,
+    Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient
+  >;
+}): Effect.Effect<MasterKeys, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keychain = yield* Keychain;
@@ -414,11 +426,15 @@ export function inviteAcceptOp(input: {
   readonly target: AcceptTarget;
   readonly expectInviterFingerprintHex: string | null;
   /** keyGenerateOp(生成 → リカバリー儀式)そのもの(cli.ts が結線する)。 */
-  readonly keyGenerate: Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient>;
+  readonly keyGenerate: Effect.Effect<
+    void,
+    CliError,
+    Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient
+  >;
 }): Effect.Effect<
   InviteAcceptSummary,
   CliError,
-  CliIo | Keychain | PinStore | HttpClient.HttpClient
+  CliIo | Keychain | PinStore | Stdio.Stdio | HttpClient.HttpClient
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -736,7 +752,13 @@ export function inviteListOp(input: {
       // 発行ピン突合(§6.5 の招待者側対応物): サーバー申告の行が発行時の
       // token_hash・role と食い違えば、行のすり替え・role の虚偽申告の兆候
       const pin = issuedPinOf(input.pins, row.id);
-      if (pin !== undefined && (pin.tokenHashHex !== row.tokenHashHex || pin.role !== row.role)) {
+      if (pin === undefined) {
+        // 別端末発行は正当なので integrity failure にはしないが、「照合なし」を
+        // 「照合成功」と同じ無言状態にしない(deepsec 08-27 follow-up)
+        yield* io.logError(
+          `Note: this machine has no issuance pin for invite ${displayText(row.id)} (it may have been issued on another device). The token_hash / role cross-check was not performed; confirm the displayed role matches what was intended at issuance`,
+        );
+      } else if (pin.tokenHashHex !== row.tokenHashHex || pin.role !== row.role) {
         integrityFailures += 1;
         yield* io.logError(
           `Warning: the server's claim for invite ${displayText(row.id)} (token_hash / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — do not run member add with this invite`,

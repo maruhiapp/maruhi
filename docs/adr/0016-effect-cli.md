@@ -19,35 +19,37 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
 7. **値表示(`pull --show`)の境界は fail-closed の 2 層にする**。一次境界 = `stdin` と `stdout` の**両方が端末**か(`Stdio.stdinIsTerminal` / `stdoutIsTerminal`)。二次層 = 既知エージェントの環境変数(**std-env を直接依存**・厳密ピン・同期 API)。判定材料はいずれも Effect のサービス経由で取り、`process.*` を直に読まない。
 
    **適用範囲(2026-08-16 所有者裁定)**: CLI には他に `isAgent` を見るゲートが 9 か所ある。
-   **儀式系(人間の帯域外確認が操作の本質)を一次境界へ移し、残りは deny-list のまま据え置く**:
+   **儀式系と鍵素材の表示・入力を一次境界へ移し、残りは deny-list のまま据え置く**:
 
    | 移す(TTY 一次境界) | 据え置く(deny-list) |
    |---|---|
-   | `invite.ts:321` 招待者 FP 確認の儀式 | `invite.ts:174` 招待トークンの生値表示(= 発行拒否) |
+   | `invite.ts` 招待リンクの生値表示(stdin / stdout / stderr 全て TTY) | |
+   | `invite.ts:321` 招待者 FP 確認の儀式 | |
    | `member.ts:302` 受諾鍵 FP 確認の儀式 | `invite.ts:361` エージェント環境での鍵新規生成 |
    | `server-grant.ts:218` サーバー鍵確認の儀式 | `invite.ts:597` 生トークンでの受諾 |
-   | | `recovery.ts:57/152` リカバリーコードの発行・入力(いずれも**失敗**する) |
-   | | `recovery.ts:260` 鍵生成後の発行を**黙ってスキップ**(`io.log` して継続。失敗しない) |
+   | `recovery.ts` リカバリーコードの表示・入力(stdin / stdout / stderr 全て TTY) | `recovery.ts` 鍵生成後の既知エージェントでの発行スキップ |
 
    儀式系は「人間が指紋を目視で照合する」ことが要件そのものなので、TTY 必須は要件の言い換えになる。
-   一方の発行系を TTY 必須にすると **CI 運用が変わる**(非 TTY で落ちる)ため、今回は動かさない。
+   リカバリーコードは master 秘密鍵を開く鍵素材で、stderr も `2>` / CI capture で
+   永続化できるため、2026-08-27 deepsec S2 対応で表示・入力を同じ一次境界へ移す。
+   コードは stderr に表示するので、ここだけは stdin / stdout に加えて
+   **stderr も TTY**であることを要求する。既知エージェント判定は二次層として残す。
 
-   **申し送り(次の裁定候補)**: 据え置き側のうち `invite.ts:174`(生トークンを端末へ表示)と
-   `recovery.ts:57/152`(リカバリーコードの表示・stdin 入力)は、**`pull --show` と同じ
-   「値・鍵素材が端末を通る」クラス**である。deny-list のままだと、未知のエージェント下では
-   一次境界の保護を受けない。一貫性の観点では移す候補だが、`maruhi invite create` /
-   `maruhi recovery issue` が CI で落ちるようになるため、運用影響を見てから別途裁定する。
-   裁定の際は **`recovery.ts:260` の性質の違い**に注意する — ここだけは拒否ではなく
-   **黙ってスキップ**なので、一次境界へ移すと非 TTY で「リカバリーコードが発行されないまま
-   処理が進む」既定になる(失敗する 2 か所とは影響の出方が違う)
+   招待リンクの raw token も単回使用・7日expiry・受諾後のFP確認があるとはいえ
+   capability であり、stdout redirect / CI capture へ永続化できる。2026-08-27 の
+   deepsec 追加 finding 対応で recovery と同じ3チャネルTTY境界へ移す。
+   鍵生成後の既知エージェント向け recovery skip は表示自体を行わないため据え置く。
+   未知エージェント / CI は TTY 一次境界で失敗し、master key の生成自体が完了したことと
+   後から `maruhi key recovery` を実行できることを既存の型付きエラーで案内する。
 
 8. **`maruhi run` は `--` を必須のままとする**。判定は `Stdio.args` を読む Effect(`TerminatorRequired`、exit 2)で行う
 9. **stdout はコマンドの出力だけ**。ヘルプ・診断は `Console` を差し替えて stderr へ寄せる。これは規律ではなく**機構**として持つ: コマンド本体の出力は `Stdio` の stdout Sink へ流し、描画は `Console`(stderr)へ、どちらも通さない実 fd への書き込みは安全網で捕まえる — 3 経路が分離しているので、混線をテストで検出できる
 10. **移行は段階的に行う**。スパイクの 3 コマンド(`pull` / `run` / `env create`)を src へ昇格させる PR を先頭に、操作フラグ機構を持つコマンド(`env rotate` / `diff`、`server`、`invite`、`member`)、残りの順で進める。全 14 サブコマンドの一括移行は行わない
+11. **`maruhi run` の子プロセスへ `MARUHI_*` 環境変数を継承しない**(2026-08-27 deepsec S6)。keychain-less / CI の `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` は親 CLI がセッションを解決するための入力であり、run の消費対象ではない。これを子へ渡すと、注入した値より長寿命・広スコープな PAT を依存コードが読み、run 終了後も利用できる。親の一般環境と復号済み `extraEnv` は従来どおり渡すが、両方から case-insensitive に `MARUHI_` prefix を除く。**入れ子の maruhi は親の env token を暗黙継承しない**: OS keychain が使える対話環境では keychain から独立に解決できるが、keychain-less / CI で `maruhi run -- make` 内から再び maruhi を呼ぶ構成はサポートしない。必要な maruhi 操作は run の外で行い、run の子には実際の消費値だけを渡す
 
 **Rationale**: (1) gunshi 由来の危険な形が**構造的に**消える — 外側で塞ぎ続ける方式は、レビュー 4 巡ぶんの実績が示すとおり抜けが尽きない。(2) 引数層が Effect の型付きエラー(`Schema.TaggedError`)に統一され、現行 `runCli` の `Execute` ブリッジ・`Effect.runPromise` の往復・defect を usage エラーに化けさせない防御が不要になる。(3) 検査・診断・終了コード・端末判定がすべて Effect の差し替え点に載るため、自前実装が「文面そのもの」だけに縮む。(4) エージェント検出の deny-list は **fail-open** である — 環境変数の標準化は未確定(`AGENT` と `AI_AGENT` が併存、Claude Code / Cursor / Gemini CLI は各社独自、VS Code / Copilot は反対の立場)で、検出ライブラリの範囲も互いに部分集合ではない。「知っているものを止める」から「人間の端末だけ通す」へ反転させれば、**未知のエージェントも既定で止まる**。実測でも Claude Code 実行下は `stdin/stdout/stderr` の `isTTY` がすべて false だった。
 
-**Consequences**: 既存の CLI テストは**引数の書き方を検査するもの(`args.test.ts` と各コマンドの同型ケース)が大半不要になる**。移行 PR では削除ではなく「宣言(`Flag` / `Argument`)で同じ形が落ちること」を確かめる検査へ置き換え、危険な形(重複指定・空の値・`--` の後ろの空文字列・値の表示可否)は必ず残す。ADR-0015 の npm 配布バンドルには `@effect/platform-bun` も畳まれる(利用者の依存グラフへ伝播させない方針は変わらない)。`Bun.secrets` / `Bun.spawn` は引き続き `live.ts` にのみ置く(ADR-0004 の範囲内)。`effect/unstable/cli` は unstable モジュールであり rc → stable で API が動きうる(ADR-0011 の系: 厳密ピン + 更新は独立 PR。beta.107 → rc.109 では 12 形の挙動もプローブのソースも無改修だった)。UX の変更点は 3 つ:
+**Consequences**: 既存の CLI テストは**引数の書き方を検査するもの(`args.test.ts` と各コマンドの同型ケース)が大半不要になる**。移行 PR では削除ではなく「宣言(`Flag` / `Argument`)で同じ形が落ちること」を確かめる検査へ置き換え、危険な形(重複指定・空の値・`--` の後ろの空文字列・値の表示可否)は必ず残す。ADR-0015 の npm 配布バンドルには `@effect/platform-bun` も畳まれる(利用者の依存グラフへ伝播させない方針は変わらない)。`Bun.secrets` / `Bun.spawn` は引き続き `live.ts` にのみ置く(ADR-0004 の範囲内)。`effect/unstable/cli` は unstable モジュールであり rc → stable で API が動きうる(ADR-0011 の系: 厳密ピン + 更新は独立 PR。beta.107 → rc.109 では 12 形の挙動もプローブのソースも無改修だった)。UX の変更点は 6 つ:
 
 1. **`maruhi pull --show > secrets.txt` が拒否される**(平文をディスクへ落とす操作であり、ディスクレス不変条件からは拒否が正しい)
 2. **引数の誤りに添えるヘルプが使い方 1 行になる**
@@ -60,6 +62,9 @@ Status: 2026-08-16 提案。移行 PR(スパイクの src 昇格)のマージを
    | `maruhi server grant` | 同上 | `--expect-fingerprint <fp>` を渡す |
 
    指紋を目視照合する儀式で stdout をパイプされると人間が語を読めないため、拒否が正しい。
+4. **リカバリーコードの表示・入力は stdin / stdout / stderr の全てが TTY のときだけ通る**。`2>` や CI capture はコードを永続化しうるため拒否する。非 TTY での `key recovery` / `key recover` は exit 1。`key generate` からの自動発行で同じ拒否に当たった場合は、master key の生成自体は完了済みで、後から対話端末で発行できることを案内する
+5. **`maruhi run` の子は親の `MARUHI_*` を受け取らない**。keychain-less / CI で入れ子の maruhi が親 PAT を暗黙利用する構成は動かなくなる。一般環境と実際の注入値は従来どおり継承する
+6. **`maruhi invite create` は3チャネル全てがTTYでなければ発行しない**。stdoutへのリンク出力をスクリプトで捕捉する運用は廃止し、人間が対話端末から person-to-person channel へ渡す経路だけを許可する
 
 依存は `@effect/platform-bun`(+ `@effect/platform-node-shared`)と `std-env` が増え、`gunshi` が消える。バンドルの実質増分は約 190KB(単体バイナリ 62〜96MB に対して誤差)。退避経路: パーサだけを `@stricli/core`(依存ゼロ・重複指定と boolean への値をパーサ自身が拒否する唯一の候補)へ差し替える — その場合 Effect との結線は現行と同じく自前に戻る。`Bun.isAIAgent()` は Zig の内部実装で公開 JS API ではないため採用しない(Bun 1.4 で JS へ露出したら二次層の実装として再判断する。検出範囲は std-env より狭い)。
 

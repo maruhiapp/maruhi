@@ -269,6 +269,36 @@ describe("maruhi invite create", () => {
     expect(issueCalls).toHaveLength(0);
   });
 
+  it("stdin / stdout / stderr のどれかが非TTYなら発行前に拒否する", async () => {
+    const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
+    for (const terminal of [
+      { stdin: false, stdout: true, stderr: true },
+      { stdin: true, stdout: false, stderr: true },
+      { stdin: true, stdout: true, stderr: false },
+    ]) {
+      const issueCalls: unknown[] = [];
+      const server = await start([
+        chainHandler(built),
+        onRequest("POST", `/projects/${built.projectId}/invites`, (request) => {
+          issueCalls.push(request.body);
+          return {
+            status: 200,
+            json: { id: INVITE_ID, token: TOKEN, role: "member", expiresAtMs: 1755993600000 },
+          };
+        }),
+      ]);
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, inviter);
+      await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+      env.setTerminal(terminal);
+
+      expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("stdin, stdout, and stderr must all be terminals");
+      expect(issueCalls).toHaveLength(0);
+      expect(env.logs.some((line) => line.includes("maruhi_inv_"))).toBe(false);
+    }
+  });
+
   it("発行ピンの保存失敗(破損ピンファイル)でも発行は成立し、リンクを表示して警告する", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
     const server = await start([
@@ -771,6 +801,7 @@ describe("maruhi invite list / revoke", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain(`accepted: ${acceptor.userId} (signature verified)`);
     expect(logs).toContain(`fp:   ${acceptor.fingerprintHex}`);
+    expect(env.errors.join("\n")).toContain("The token_hash / role cross-check was not performed");
   });
 
   it("改竄された受諾署名は検証失敗として警告し、exit 1 にする", async () => {

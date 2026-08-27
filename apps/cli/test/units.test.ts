@@ -29,7 +29,7 @@ import {
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
 import { normalizeStdinValue } from "../src/push.ts";
-import { buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
+import { buildChildEnvironment, buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import {
   cryptoBackendUsable,
   resolveServerOrigin,
@@ -463,6 +463,7 @@ describe("showValues(復号後の防衛線)", () => {
     promptLine: () => Effect.succeed(""),
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
+    stderrIsTerminal: () => true,
   });
 
   const showOne = (input: {
@@ -525,6 +526,7 @@ describe("showValues(復号後の防衛線)", () => {
       promptLine: () => Effect.succeed(""),
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
+      stderrIsTerminal: () => true,
     });
     const exit = await Effect.runPromiseExit(
       showValues([variable("SECRET", "x\nDATABASE_URL=postgres://attacker/")]).pipe(
@@ -560,6 +562,7 @@ describe("showValues(復号後の防衛線)", () => {
       promptLine: () => Effect.succeed(""),
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
+      stderrIsTerminal: () => true,
     });
     const exit = await Effect.runPromiseExit(
       showValues([variable("SECRET", "a\nb\n")]).pipe(
@@ -599,6 +602,7 @@ describe("showValues(復号後の防衛線)", () => {
       promptLine: () => Effect.succeed(""),
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
+      stderrIsTerminal: () => true,
     });
     const exit = await Effect.runPromiseExit(
       showValues([variable("SECRET", "a\u202Eb\u200Bc\u2028d\u200Ce\nf")]).pipe(
@@ -737,6 +741,51 @@ describe("buildInjectionEnv", () => {
       "NLSPATH",
       "TERMINFO",
       "TERMCAP",
+      // shell autoload / TLS trust / Python user-site (08-27 follow-up)
+      "FPATH",
+      "KSH_ENV",
+      "SSL_CERT_FILE",
+      "SSL_CERT_DIR",
+      "CURL_CA_BUNDLE",
+      "REQUESTS_CA_BUNDLE",
+      "AWS_CA_BUNDLE",
+      "PYTHONUSERBASE",
+      "PYTHONWARNINGS",
+      // Windows home/config・shell探索・npm設定(08-27追加再検証)
+      "HOMEDRIVE",
+      "HOMEPATH",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "CDPATH",
+      "TERMINFO_DIRS",
+      "NPM_CONFIG_USERCONFIG",
+      "NPM_CONFIG_GLOBALCONFIG",
+      "npm_config_script_shell", // individual name + case-insensitive
+      "NPM_CONFIG_SHELL",
+      "NPM_CONFIG_NODE_OPTIONS",
+      "NPM_CONFIG_PREFIX",
+      "NPM_CONFIG_CAFILE",
+      "NPM_CONFIG_IGNORE_SCRIPTS",
+      "NPM_CONFIG_NODE_GYP",
+      "npm_config_python",
+      "NPM_CONFIG_INIT_MODULE",
+      "NPM_CONFIG_EDITOR",
+      "NPM_CONFIG_VIEWER",
+      "NPM_CONFIG_STRICT_SSL",
+      "NPM_CONFIG_CA",
+      "NPM_CONFIG_GIT",
+      // interpreter / runtime hooks that do not need an attacker-controlled rc file
+      "PYTHONBREAKPOINT",
+      "PYTHONEXECUTABLE",
+      "PYTHON",
+      "NODE_GYP_FORCE_PYTHON",
+      "JDK_JAVA_OPTIONS",
+      "DOTNET_STARTUP_HOOKS",
+      "GEM_HOME",
+      "GEM_PATH",
+      "HOSTALIASES",
+      "CORECLR_ENABLE_PROFILING",
+      "COR_PROFILER_PATH",
     ]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
@@ -744,9 +793,23 @@ describe("buildInjectionEnv", () => {
     }
     // 包括 prefix 拒否は採らない裁定(M2)の固定: NODE_ENV 等の正当な変数は通る
     const allowed = await Effect.runPromise(
-      buildInjectionEnv([variable("NODE_ENV", "production"), variable("BUN_INSTALL", "x")]),
+      buildInjectionEnv([
+        variable("NODE_ENV", "production"),
+        variable("BUN_INSTALL", "x"),
+        // npm registry auth は maruhi run の正当な secret 注入用途。
+        // NPM_CONFIG_ 全体を拒否せず、上の実行制御キーだけを個別拒否する
+        variable("NPM_CONFIG__AUTH", "credential"),
+        variable("NPM_CONFIG__AUTHTOKEN", "credential"),
+        variable("NPM_CONFIG_REGISTRY", "https://registry.example"),
+      ]),
     );
-    expect(Object.keys(allowed).toSorted()).toEqual(["BUN_INSTALL", "NODE_ENV"]);
+    expect(Object.keys(allowed).toSorted()).toEqual([
+      "BUN_INSTALL",
+      "NODE_ENV",
+      "NPM_CONFIG_REGISTRY",
+      "NPM_CONFIG__AUTH",
+      "NPM_CONFIG__AUTHTOKEN",
+    ]);
   });
 
   it("maruhi 自身の名前空間(MARUHI_*)への注入を拒否する(deepsec S3)", async () => {
@@ -769,6 +832,31 @@ describe("buildInjectionEnv", () => {
       buildInjectionEnv([variable("MARUHISECRET", "x"), variable("APP_MARUHI_TOKEN", "y")]),
     );
     expect(Object.keys(allowed).toSorted()).toEqual(["APP_MARUHI_TOKEN", "MARUHISECRET"]);
+  });
+});
+
+describe("buildChildEnvironment(deepsec S6)", () => {
+  it("親・追加envのMARUHI_*だけをcase-insensitiveに除外する", () => {
+    expect(
+      buildChildEnvironment(
+        {
+          PATH: "/usr/bin",
+          MARUHI_TOKEN: "maruhi_pat_parent",
+          maruhi_token_origin: "https://maruhi.test",
+          MARUHI_FUTURE_AUTH: "reserved",
+          APP_MARUHI_TOKEN: "application-value",
+          UNDEFINED_VALUE: undefined,
+        },
+        {
+          SECRET: "injected-value",
+          MARUHI_TOKEN: "must-not-pass-even-from-extra-env",
+        },
+      ),
+    ).toEqual({
+      PATH: "/usr/bin",
+      APP_MARUHI_TOKEN: "application-value",
+      SECRET: "injected-value",
+    });
   });
 });
 

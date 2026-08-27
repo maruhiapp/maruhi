@@ -61,27 +61,28 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
   return {
     issueToken: (userId, name, scopes) =>
       Effect.gen(function* () {
-        // 別名の新規発行はユーザーあたり上限まで(AUTH_SPEC §6。認証済み主体による
-        // api_tokens の無制限増加を防ぐ。同名ローテーションは上限に達していても可能)
-        const others = yield* tokens.countByUserExcludingName(userId, name);
-        if (others >= MAX_TOKENS_PER_USER) {
-          return yield* Effect.fail(new TokenLimitReachedError({ limit: MAX_TOKENS_PER_USER }));
-        }
         const rawToken = TOKEN_PREFIX + randomBase62();
         const tokenHash = yield* hashOf(rawToken);
         const tokenId = ulid();
         // 同一 (user, name) は再発行 = ローテーション(旧行の失効と新行の挿入を
-        // atomic batch で行う)。device 交換の連打で api_tokens が無限に増える DoS を
-        // 防ぐ(名前を変えれば複数保持は可能)
-        yield* tokens.replaceForUserAndName({
-          id: tokenId,
-          userId,
-          name,
-          tokenHash,
-          tokenPrefix: displayPrefix(rawToken),
-          scopes,
-          createdAtMs: Date.now(),
-        });
+        // atomic batch で行う)。別名の新規発行は repo の条件付き INSERT で
+        // ユーザー上限と同じ文に畳む(deepsec S7): サービス側の count → insert は
+        // 異名の並行発行が同じ under-limit を観測して上限を超えられる
+        const admitted = yield* tokens.issueForUserWithinLimit(
+          {
+            id: tokenId,
+            userId,
+            name,
+            tokenHash,
+            tokenPrefix: displayPrefix(rawToken),
+            scopes,
+            createdAtMs: Date.now(),
+          },
+          MAX_TOKENS_PER_USER,
+        );
+        if (!admitted) {
+          return yield* Effect.fail(new TokenLimitReachedError({ limit: MAX_TOKENS_PER_USER }));
+        }
         return { rawToken, tokenId };
       }),
     resolveApiToken: (rawToken) => {

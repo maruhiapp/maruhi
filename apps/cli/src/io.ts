@@ -18,7 +18,7 @@ import type { CliError } from "./errors.ts";
  *
  * 実体は agent-gate.ts(検出は live.ts が std-env で行う)。値の表示可否の
  * **一次境界は TTY** で、この profile は二次層 — 据え置きの deny-list ゲート
- * (invite / member / recovery / server grant。ADR-0016 決定 7 の裁定)が
+ * (invite / member / server grant。ADR-0016 決定 7 の裁定)が
  * `agentProfile()` として読む。
  */
 export type { AgentProfile };
@@ -40,6 +40,8 @@ export interface CliIoShape {
   }) => Effect.Effect<string, CliError>;
   readonly envVar: (name: string) => string | undefined;
   readonly agentProfile: () => AgentProfile;
+  /** Recovery code uses stderr; this keeps redirect detection behind the I/O service boundary. */
+  readonly stderrIsTerminal: () => boolean;
 }
 
 export class CliIo extends Context.Service<CliIo, CliIoShape>()("cli/CliIo") {}
