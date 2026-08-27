@@ -10,7 +10,21 @@
 
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
-import { and, count, eq, gt, gte, inArray, isNull, lt, lte, min, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  min,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect } from "effect";
 
@@ -39,7 +53,6 @@ import {
   makeD1AuditRepo,
   orgAuditInsert,
   userAuditInsert,
-  userAuditInsertWithPayloadSql,
 } from "./audit.ts";
 import {
   apiTokens,
@@ -375,69 +388,133 @@ export interface NewApiToken {
 
 export interface TokenRepoShape {
   /**
-   * 同一 (user, name) の既存トークンを失効させつつ新トークンを挿入する
-   * (device 交換の再発行 = ローテーション)。delete + insert を D1 の atomic
-   * batch で行い、並行発行でも同名トークンが複数残らない(UNIQUE (user_id, name)
-   * が最終防衛)。
+   * 同一 (user, name) は既存トークンを失効させつつローテーションし、別名は
+   * `limit` 未満のときだけ条件付き発行する。各経路を D1 の atomic batch で行い、
+   * 並行発行でも同名重複・別名の上限超過を許さない。false = quota 拒否。
    *
    * 置換された旧トークン id は `auth.token_created` の payload に
    * `replacedTokenId` として載る(新規発行では現れない — AUDIT_SPEC §3.1)。
    */
-  readonly replaceForUserAndName: (token: NewApiToken) => Effect.Effect<void>;
+  readonly issueForUserWithinLimit: (token: NewApiToken, limit: number) => Effect.Effect<boolean>;
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
-  /** 明示失効。auth.token_revoked を同一 batch で記録する(AUDIT_SPEC §3.1)。 */
+  /** 明示失効。id × user 所有を強制し、auth.token_revoked を記録する(§3.1 / S8)。 */
   readonly revokeById: (id: string, userId: string, nowMs: number) => Effect.Effect<void>;
-  /** 指定名を除くユーザーのトークン本数(発行上限の判定用。同名は常にローテーション可)。 */
-  readonly countByUserExcludingName: (userId: string, name: string) => Effect.Effect<number>;
 }
 
 export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("TokenRepo") {}
 
+function tokenInsertSelect(db: Db, token: NewApiToken, condition: SQL) {
+  return db
+    .insert(apiTokens)
+    .select(
+      db
+        .select({
+          id: sql<string>`${token.id}`.as("id"),
+          userId: sql<string>`${token.userId}`.as("user_id"),
+          name: sql<string>`${token.name}`.as("name"),
+          tokenHash: sql<string>`${token.tokenHash}`.as("token_hash"),
+          tokenPrefix: sql<string>`${token.tokenPrefix}`.as("token_prefix"),
+          scopes: sql<string>`${JSON.stringify(token.scopes)}`.as("scopes"),
+          expiresAt: sql<number | null>`${null}`.as("expires_at"),
+          createdAt: sql<number>`${token.createdAtMs}`.as("created_at"),
+          lastUsedAt: sql<number | null>`${null}`.as("last_used_at"),
+        })
+        .from(sql`(select 1)`)
+        .where(condition),
+    )
+    .returning({ id: apiTokens.id });
+}
+
+function tokenCreatedAuditAfterInsert(db: Db, token: NewApiToken) {
+  return db.insert(userAuditEvents).select(
+    db
+      .select(
+        guardedAuditSelectColumns({
+          event: "auth.token_created",
+          actor: { userId: token.userId },
+          nowMs: token.createdAtMs,
+          payload: { tokenId: token.id, name: token.name, scopes: token.scopes },
+        }),
+      )
+      .from(apiTokens)
+      .where(and(eq(apiTokens.id, token.id), sql`changes() = 1`)),
+  );
+}
+
+/**
+ * 既存同名 token のローテーション。最初の audit INSERT が旧 id を読むため、
+ * replacedTokenId は実際に同一 batch で消える行と一致する(deepsec R6)。
+ */
+async function rotateExistingToken(db: Db, token: NewApiToken): Promise<boolean> {
+  const basePayload = JSON.stringify({
+    tokenId: token.id,
+    name: token.name,
+    scopes: token.scopes,
+  });
+  const sameTokenName = and(eq(apiTokens.userId, token.userId), eq(apiTokens.name, token.name));
+  const results = await db.batch([
+    db.insert(userAuditEvents).select(
+      db
+        .select(
+          guardedAuditSelectColumns({
+            event: "auth.token_created",
+            actor: { userId: token.userId },
+            nowMs: token.createdAtMs,
+            payloadSql: sql<string>`json_patch(${basePayload}, json_object('replacedTokenId', ${apiTokens.id}))`,
+          }),
+        )
+        .from(apiTokens)
+        .where(sameTokenName),
+    ),
+    db
+      .delete(apiTokens)
+      .where(and(sameTokenName, sql`changes() = 1`))
+      .returning({ id: apiTokens.id }),
+    tokenInsertSelect(db, token, sql`changes() = 1`),
+  ]);
+  return results[2].length === 1;
+}
+
+/** 新規名 token の上限判定 + INSERT を 1 文に畳む(deepsec S7)。 */
+async function createNewTokenWithinLimit(
+  db: Db,
+  token: NewApiToken,
+  limit: number,
+): Promise<boolean> {
+  const underLimit = sql<boolean>`(
+    select count(*) from ${apiTokens}
+    where ${apiTokens.userId} = ${token.userId}
+  ) < ${limit}`;
+  const nameAvailable = sql<boolean>`not exists (
+    select 1 from ${apiTokens}
+    where ${apiTokens.userId} = ${token.userId}
+      and ${apiTokens.name} = ${token.name}
+  )`;
+  const results = await db.batch([
+    tokenInsertSelect(db, token, sql`${underLimit} and ${nameAvailable}`),
+    tokenCreatedAuditAfterInsert(db, token),
+  ]);
+  return results[0].length === 1;
+}
+
 function makeTokenRepo(db: Db): TokenRepoShape {
   return {
-    // auth.token_created を同一 batch で記録する(AUDIT_SPEC §3.1)。同名旧行の
-    // 削除はローテーションの一部なので独立イベント(auth.token_revoked)には
-    // しないが、**置換されたこと自体**は発行行に載せる(deepsec R6): device 交換の
-    // tokenName は呼び出し側が選べるため、GitHub identity を奪った第三者が被害者の
-    // 既存トークン名を指定してそのトークンを黙って無効化できる — 発行行だけでは
-    // 「なぜ動かなくなったか」がログから再構成できない。
-    //
-    // 置換対象 id は payload を SQL 側で組んで拾う: 先行 SELECT を足すと、
-    // 読みと batch の間に別の並行ローテーションが挟まって実際に消えた行と
-    // 食い違う。json_patch は値 NULL のキーを**削除**する(RFC 7386 のマージ
-    // 意味論)ので、新規発行(旧行なし)では payload の形が従来どおりになる
-    replaceForUserAndName: (token) =>
+    // 発行上限の admission は repo 内の条件付き INSERT が担う(deepsec S7)。
+    // サービス層の count → insert は別 D1 round-trip になり、異名の並行発行が
+    // 同じ under-limit を観測して上限を超えられる。同名ローテーションは上限
+    // 到達時も許可し、旧 id の監査(R6)も同一 batch で保つ。
+    issueForUserWithinLimit: (token, limit) =>
       run(async () => {
-        const basePayload = JSON.stringify({
-          tokenId: token.id,
-          name: token.name,
-          scopes: token.scopes,
-        });
-        const replacedTokenId = sql`(select ${apiTokens.id} from ${apiTokens} where ${apiTokens.userId} = ${token.userId} and ${apiTokens.name} = ${token.name})`;
-        await db.batch([
-          // 監査行を**削除より前**に置く: 置換対象 id は消える行から読むため
-          userAuditInsertWithPayloadSql(
-            db,
-            token.createdAtMs,
-            { event: "auth.token_created", actor: { userId: token.userId } },
-            sql<string>`json_patch(${basePayload}, json_object('replacedTokenId', ${replacedTokenId}))`,
-          ),
-          db
-            .delete(apiTokens)
-            .where(and(eq(apiTokens.userId, token.userId), eq(apiTokens.name, token.name))),
-          db.insert(apiTokens).values({
-            id: token.id,
-            userId: token.userId,
-            name: token.name,
-            tokenHash: token.tokenHash,
-            tokenPrefix: token.tokenPrefix,
-            scopes: JSON.stringify(token.scopes),
-            expiresAt: null,
-            createdAt: token.createdAtMs,
-            lastUsedAt: null,
-          }),
-        ]);
+        if (await rotateExistingToken(db, token)) {
+          return true;
+        }
+        if (await createNewTokenWithinLimit(db, token, limit)) {
+          return true;
+        }
+        // 最初の既存確認と新規 INSERT の間に同名 token が現れた競合。
+        // 新規名の quota 拒否と区別するため、最後にローテーションを再試行する
+        return rotateExistingToken(db, token);
       }),
     findByHash: (tokenHash) => run(() => findTokenByHash(db, tokenHash)),
     touchLastUsed: (id, nowMs) =>
@@ -454,7 +531,10 @@ function makeTokenRepo(db: Db): TokenRepoShape {
         // token_revoked を記録できてしまう(過大計上)。重複より欠落側に倒す
         const deleted = await db
           .delete(apiTokens)
-          .where(eq(apiTokens.id, id))
+          // deepsec S8: id だけで消すと将来 token-id 指定の管理 API が増えた際に
+          // 別 user の token を失効し、監査 actor だけ呼び出し user と誤記録する。
+          // 現行 caller も server-derived userId を渡すが、所有条件は repo 境界で強制
+          .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId)))
           .returning({ id: apiTokens.id });
         if (deleted.length === 0) {
           return;
@@ -464,15 +544,6 @@ function makeTokenRepo(db: Db): TokenRepoShape {
           actor: { userId, apiTokenId: id },
           payload: { tokenId: id },
         });
-      }),
-    countByUserExcludingName: (userId, name) =>
-      run(async () => {
-        const row = await db
-          .select({ n: count() })
-          .from(apiTokens)
-          .where(and(eq(apiTokens.userId, userId), ne(apiTokens.name, name)))
-          .get();
-        return row?.n ?? 0;
       }),
   };
 }

@@ -383,6 +383,66 @@ describe("POST /auth/device/exchange(§4)", () => {
     expect(rotate.status).toBe(200);
   });
 
+  it("admits exactly the remaining slot under concurrent distinct-name issuance (S7)", async () => {
+    const first = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ githubAccessToken: "gho_test206", tokenName: "seed" }),
+    });
+    expect(first.status).toBe(200);
+    const { userId } = (await first.json()) as { userId: string };
+    // 上限100の残り1枠まで直接シード。異名なので UNIQUE(user_id,name)では
+    // 競合せず、admissionが非原子的なら8件すべて入ってしまう
+    await env.DB.batch(
+      Array.from({ length: 98 }, (_, index) =>
+        env.DB.prepare(
+          "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', NULL, 1, NULL)",
+        ).bind(
+          `race-seed-${index}`,
+          userId,
+          `race-filler-${index}`,
+          `race-hash-${index}`,
+          "maruhi_pat_x",
+        ),
+      ),
+    );
+
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        SELF.fetch(`${BASE}/auth/device/exchange`, {
+          method: "POST",
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            githubAccessToken: "gho_test206",
+            tokenName: `race-new-${index}`,
+          }),
+        }),
+      ),
+    );
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+    const rejected = responses.filter((response) => response.status !== 200);
+    expect(rejected).toHaveLength(7);
+    expect(
+      await Promise.all(
+        rejected.map(async (response) => {
+          const body = (await response.json()) as { _tag?: string };
+          return body["_tag"];
+        }),
+      ),
+    ).toEqual(Array<string>(7).fill("TokenLimit"));
+
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ?")
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(count?.n).toBe(100);
+    const audit = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.token_created' AND actor_user_id = ?",
+    )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(audit?.n).toBe(2);
+  });
+
   it("rejects out-of-bounds payloads at the schema boundary (400)", async () => {
     // scopes 要素数上限(100)超過
     const tooManyScopes = await SELF.fetch(`${BASE}/auth/device/exchange`, {

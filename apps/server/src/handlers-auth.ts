@@ -100,8 +100,8 @@ function authFlowFailure(
  * 記録しない(同 §3.1 の禁止)。未認証経路からの書き込み増幅を有界にするため
  * 固定窓上限つきの専用追記を使う(db.package/audit.ts)。
  *
- * 上限は authMethod をバケットとして数える(deepsec R4): 片方の経路への匿名の
- * 洪水が、もう片方の経路の標的型失敗まで黙って消さないようにする。
+ * 上限は authMethod + reason をバケットとして数える(deepsec R4/S5):
+ * 片方の経路・理由への匿名洪水が、別理由の失敗まで黙って消さないようにする。
  */
 function recordLoginFailed(
   authMethod: "github_oauth" | "device_flow",
@@ -111,7 +111,7 @@ function recordLoginFailed(
     audit.appendLoginFailed(
       { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
       Date.now(),
-      authMethod,
+      { authMethod, reason },
     ),
   );
 }
