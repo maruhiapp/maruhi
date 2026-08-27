@@ -213,7 +213,26 @@ PAYLOAD_FIELD_ORDER = {
         "scope_environments_lp_hex", "lease_policy_lp_hex",
     ],
     "revoke_server": ["server_key_fingerprint_hex"],
+    # 2026-08-27(セッション 33 / CRYPTO_SPEC 0.6-draft §6.2 の checkpoint op を
+    # PR-F3a で実装 — M2 の前倒し)。環境エントリのリストは scope_environments と
+    # 同じ入れ子 LP の hex 文字列として 1 フィールドに載せる
+    "checkpoint": ["environments_lp_hex", "audit_head_hash_hex"],
 }
+
+# CRYPTO_SPEC §6.2: checkpoint の values_digest。
+#   values_digest_hex = lower_hex(SHA-256(LP("maruhi/v1/env-values-digest", v_1, …, v_m)))
+#   v_j = LP(variable_id, version, value_sig_hash_hex) — variable_id のバイト昇順。
+#   active 変数のみ(tombstone はマニフェスト側 — §4.3 — が捕捉する)。空集合も有効
+ENV_VALUES_DIGEST_DOMAIN = "maruhi/v1/env-values-digest"
+
+
+def env_values_digest_hex(value_entries: list) -> str:
+    ordered = sorted(value_entries, key=lambda v: v["variable_id"].encode("utf-8"))
+    fields = [ENV_VALUES_DIGEST_DOMAIN] + [
+        lp_encode([v["variable_id"], v["version"], v["value_sig_hash_hex"]])
+        for v in ordered
+    ]
+    return sha256(lp_encode(fields)).hex()
 
 # CRYPTO_SPEC §5.2: エポック DEK のコミットメント。
 #   dek_commitment_hex = lower_hex(SHA-256(LP("maruhi/v1/dek-commit",
@@ -1177,6 +1196,378 @@ def gen_chain_entries():
         },
     ]
 
+    # --- checkpoint op(CRYPTO_SPEC §6.2。2026-08-27 セッション 33 = PR-F3a)--------
+    # M2 の前倒し実装(session-32 §5-1 の分割 F3a)。合意規則が検証するのは
+    # 形式・actor role・座標整合のみで、タプル内容(マニフェスト・値・監査ヘッド)は
+    # チェーン検証では検証不能(§6.2 の「形式は合意規則、内容は照合側」)。
+    # よって本セクションの manifest_sig_hash / 監査ヘッドは決定論的なダミー値で足りる。
+    # 実マニフェストのハッシュと結線した境界チェックポイントの派生チェーンは
+    # PR-F3b(マニフェスト検証規則の consumer 側)で追加する
+
+    def dummy_manifest_sig_hash(environment_id: str, manifest_version: int) -> str:
+        return sha256(
+            f"maruhi-vector-dummy-manifest:{environment_id}:{manifest_version}".encode()
+        ).hex()
+
+    def dummy_value_sig_hash(variable_id: str, version: int) -> str:
+        return sha256(f"maruhi-vector-dummy-value:{variable_id}:{version}".encode()).hex()
+
+    empty_values_digest = env_values_digest_hex([])
+    dummy_audit_head = sha256(b"maruhi-vector-dummy-audit-head").hex()
+
+    def checkpoint_env_entry(environment_id, epoch, manifest_version,
+                             values_digest_hex=None, manifest_sig_hash_hex=None):
+        return {
+            "environment_id": environment_id,
+            "epoch": str(epoch),
+            "manifest_version": str(manifest_version),
+            "manifest_sig_hash_hex": (
+                manifest_sig_hash_hex if manifest_sig_hash_hex is not None
+                else dummy_manifest_sig_hash(environment_id, manifest_version)
+            ),
+            "values_digest_hex": (
+                values_digest_hex if values_digest_hex is not None else empty_values_digest
+            ),
+        }
+
+    def checkpoint_environments_lp_hex(env_entries: list) -> str:
+        # scope_environments / lease_policy と同じ入れ子 LP: 各環境エントリを
+        # LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
+        # values_digest_hex) のバイト列にし、リストの LP の hex 小文字文字列を
+        # payload の 1 フィールドに載せる。リスト順は署名対象の一部
+        # (生成は environment_id のバイト昇順 SHOULD — 検証は順序を規範にしない)
+        return lp_encode([
+            lp_encode([e["environment_id"], e["epoch"], e["manifest_version"],
+                       e["manifest_sig_hash_hex"], e["values_digest_hex"]])
+            for e in env_entries
+        ]).hex()
+
+    def checkpoint_payload(env_entries: list, audit_head_hash_hex: str = "") -> dict:
+        return {
+            "environments": env_entries,  # 可読性のための平文表現(正規化対象は *_lp_hex)
+            "environments_lp_hex": checkpoint_environments_lp_hex(env_entries),
+            "audit_head_hash_hex": audit_head_hash_hex,
+        }
+
+    # head12 時点の現エポック: env-prod-0001 = 2 / env-dev-0002 = 2 / env-stage-0003 = 1
+    head4 = entries[3]["entry_hash_hex"]
+    cp_prod_values = env_values_digest_hex([
+        {"variable_id": "var-database-url-0001", "version": "3",
+         "value_sig_hash_hex": dummy_value_sig_hash("var-database-url-0001", 3)},
+        {"variable_id": "var-api-key-0002", "version": "1",
+         "value_sig_hash_hex": dummy_value_sig_hash("var-api-key-0002", 1)},
+    ])
+    # 同一 (environment, manifest_version) の正当な再公証(rotate 境界 checkpoint の
+    # 後、再暗号化完了後の周期 checkpoint が同じ manifestVersion を新しい値集合で
+    # 公証する — §6.3 発行 SHOULD (i)。値 push はマニフェスト版を進めない §4.3)
+    cp_prod_values_reencrypted = env_values_digest_hex([
+        {"variable_id": "var-database-url-0001", "version": "4",
+         "value_sig_hash_hex": dummy_value_sig_hash("var-database-url-0001", 4)},
+        {"variable_id": "var-api-key-0002", "version": "2",
+         "value_sig_hash_hex": dummy_value_sig_hash("var-api-key-0002", 2)},
+    ])
+    cp_dev_entry = checkpoint_env_entry("env-dev-0002", 2, 3)
+    cp_prod_entry = checkpoint_env_entry("env-prod-0001", 2, 2, values_digest_hex=cp_prod_values)
+    cp_prod_reattested = checkpoint_env_entry(
+        "env-prod-0001", 2, 2, values_digest_hex=cp_prod_values_reencrypted)
+    cp13 = build_entry(13, "checkpoint", admin_id, admin,
+                       checkpoint_payload([cp_dev_entry, cp_prod_entry]), t0 + 12000, head12)
+    cp14 = build_entry(14, "checkpoint", admin_id, admin,
+                       checkpoint_payload([cp_prod_reattested], dummy_audit_head),
+                       t0 + 13000, cp13["entry_hash_hex"])
+
+    def expected_checkpoint(seq: int, env_entry: dict) -> dict:
+        return {
+            "seq": seq,
+            "epoch": env_entry["epoch"],
+            "manifest_version": env_entry["manifest_version"],
+            "manifest_sig_hash_hex": env_entry["manifest_sig_hash_hex"],
+            "values_digest_hex": env_entry["values_digest_hex"],
+        }
+
+    extended_chains["checkpoint-baseline"] = {
+        "description": (
+            "正規チェーン seq 1〜12 に standalone checkpoint 2 エントリを追記した"
+            "派生チェーン。seq 13(admin。監査ヘッドなし)が env-dev / env-prod の"
+            "部分集合を公証し、seq 14(admin。監査ヘッド公証あり)が env-prod を"
+            "同一 manifest_version・別 values_digest で再公証する — manifest_version"
+            "非後退の等号側(checkpoint-regression の許容境界)と「環境ごとの最新"
+            "チェックポイント」導出(env-dev は seq 13、env-prod は seq 14 が最新)を"
+            "同時に固定する。checkpoint-regression 系 negative の前提チェーン"
+        ),
+        "base_seq": 12,
+        "entries": [cp13, cp14],
+        "expected_members": {owner_id: "owner", admin_id: "admin"},
+        "expected_checkpoints": {
+            "env-dev-0002": expected_checkpoint(13, cp_dev_entry),
+            "env-prod-0001": expected_checkpoint(14, cp_prod_reattested),
+        },
+    }
+
+    checkpoint_negatives = []
+
+    def add_checkpoint_authz(name, seq, prev_hex, actor_id, actor, payload, ts,
+                             expected_reason, note, chain=None):
+        entry = build_entry(seq, "checkpoint", actor_id, actor, payload, ts, prev_hex)
+        case = authz(name, entry, expected_reason, note)
+        case["verify_key_hex"] = actor["sig_pub_hex"]
+        if chain is not None:
+            case["chain"] = chain
+        checkpoint_negatives.append(case)
+
+    # 認可段の検査順序(§6.2): role(member 以上)→ 非空監査ヘッドの admin role →
+    # unknown-environment → checkpoint-epoch-mismatch → checkpoint-regression。
+    # 複数環境エントリ間は検査段ごとに全エントリを走査する(stage-wise —
+    # authz-checkpoint-unknown-precedes-epoch が固定。session-33 裁定 C)
+    add_checkpoint_authz(
+        "authz-checkpoint-reader-role", 7, head6, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry("env-prod-0001", 2, 1)]),
+        t0 + 6000, "insufficient-role",
+        "seq 6 時点の user-admin-0003 は reader。checkpoint の発行は member 以上のみ(§6.2)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-audit-role-insufficient", 5, head4, member_id, member,
+        checkpoint_payload([checkpoint_env_entry("env-prod-0001", 2, 1)], dummy_audit_head),
+        t0 + 4000, "checkpoint-audit-role-insufficient",
+        "非空の監査ヘッドを公証できる actor は admin 以上のみ。member(seq 4 時点の user-member-0002)の監査ヘッド付き checkpoint は拒否する(§6.2)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-role-precedes-audit-role", 7, head6, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry("env-prod-0001", 2, 1)], dummy_audit_head),
+        t0 + 6000, "insufficient-role",
+        "role 不足(reader)× 監査ヘッド公証の複合違反は role 規則が先に判定される(§6.2 の検査順序: role → 監査 admin)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-unknown-environment", 13, head12, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry("env-ghost-9999", 2, 1)]),
+        t0 + 12000, "unknown-environment",
+        "create_environment が先行しない環境を含む checkpoint は拒否する(rotate_epoch と同じ理由コード — §6.2)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-epoch-rollback", 13, head12, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry("env-prod-0001", 1, 2)]),
+        t0 + 12000, "checkpoint-epoch-mismatch",
+        "環境エントリの epoch はエントリ時点(自エントリ適用前)の現エポック(env-prod-0001 = 2)と厳密一致。旧エポック(1)の公証は拒否する(巻き戻し公証の遮断 — §6.2)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-epoch-ahead", 13, head12, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry("env-prod-0001", 3, 2)]),
+        t0 + 12000, "checkpoint-epoch-mismatch",
+        "未来エポック(3)の公証も拒否する(厳密一致 — 「現エポック以上」の誤実装はここで落ちる)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-audit-role-precedes-unknown", 5, head4, member_id, member,
+        checkpoint_payload([checkpoint_env_entry("env-ghost-9999", 1, 1)], dummy_audit_head),
+        t0 + 4000, "checkpoint-audit-role-insufficient",
+        "監査 admin 不足 × 未知環境の複合違反は監査 role 規則が先に判定される(§6.2 の検査順序: 監査 admin → unknown-environment)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-unknown-precedes-epoch", 13, head12, admin_id, admin,
+        checkpoint_payload([
+            checkpoint_env_entry("env-prod-0001", 1, 2),   # epoch 不一致(リスト先頭)
+            checkpoint_env_entry("env-ghost-9999", 2, 1),  # 未知環境(リスト後方)
+        ]),
+        t0 + 12000, "unknown-environment",
+        "複数環境エントリの複合違反は検査段ごとに全エントリを走査する(stage-wise): リスト後方の unknown-environment がリスト先頭の epoch 不一致より先に判定される(session-33 裁定 C)",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-regression", 15, cp14["entry_hash_hex"], admin_id, admin,
+        checkpoint_payload([
+            checkpoint_env_entry("env-prod-0001", 2, 1, values_digest_hex=cp_prod_values),
+        ]),
+        t0 + 14000, "checkpoint-regression",
+        "同一環境を含む直近の先行 checkpoint(seq 14 = manifest_version 2)より小さい manifest_version の公証は拒否する(床なしクライアントの検出基準の巻き戻し遮断 — §6.2)",
+        chain="checkpoint-baseline",
+    )
+    add_checkpoint_authz(
+        "authz-checkpoint-epoch-precedes-regression", 15, cp14["entry_hash_hex"],
+        admin_id, admin,
+        checkpoint_payload([
+            checkpoint_env_entry("env-prod-0001", 1, 1, values_digest_hex=cp_prod_values),
+        ]),
+        t0 + 14000, "checkpoint-epoch-mismatch",
+        "epoch 不一致 × manifest_version 後退の複合違反は epoch 厳密一致が先に判定される(§6.2 の検査順序: checkpoint-epoch-mismatch → checkpoint-regression)",
+        chain="checkpoint-baseline",
+    )
+
+    # payload 構造検査(invalid-payload — 検証段順「構造 → actor → 署名 → 認可」の
+    # 構造段。dek_commitment_hex の形式検査と同型で認可判定に先行する)
+    add_checkpoint_authz(
+        "checkpoint-manifest-hash-uppercase-hex", 13, head12, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry(
+            "env-prod-0001", 2, 2,
+            values_digest_hex=cp_prod_values,
+            manifest_sig_hash_hex=dummy_manifest_sig_hash("env-prod-0001", 2).upper(),
+        )]),
+        t0 + 12000, "invalid-payload",
+        "manifest_sig_hash_hex の大文字 hex は payload 構造検査で拒否する(hex 小文字 64 文字が正規形)",
+    )
+    add_checkpoint_authz(
+        "checkpoint-values-digest-bad-length", 13, head12, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry(
+            "env-prod-0001", 2, 2, values_digest_hex=cp_prod_values[:62])]),
+        t0 + 12000, "invalid-payload",
+        "values_digest_hex の長さ不正(62 文字)は payload 構造検査で拒否する",
+    )
+    add_checkpoint_authz(
+        "checkpoint-audit-head-bad-length", 13, head12, admin_id, admin,
+        checkpoint_payload([cp_prod_entry], dummy_audit_head[:32]),
+        t0 + 12000, "invalid-payload",
+        "audit_head_hash_hex は空文字列(公証なし)または hex 小文字 64 文字のみ。中途半端な長さは payload 構造検査で拒否する",
+    )
+    add_checkpoint_authz(
+        "checkpoint-duplicate-environment", 13, head12, admin_id, admin,
+        checkpoint_payload([cp_prod_entry, cp_prod_entry]),
+        t0 + 12000, "invalid-payload",
+        "重複 environment_id を含む payload は無効(MUST — §6.2)。同一環境の 2 エントリを許すと §6.3 の基準・checkpoint-regression の比較対象が非決定になる",
+    )
+    add_checkpoint_authz(
+        "checkpoint-manifest-version-zero", 13, head12, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry("env-prod-0001", 2, 0)]),
+        t0 + 12000, "invalid-payload",
+        "manifest_version は 1 始まりの正整数。0 は payload 構造検査で拒否する",
+    )
+    add_checkpoint_authz(
+        "checkpoint-format-precedes-role", 7, head6, admin_id, admin,
+        checkpoint_payload([checkpoint_env_entry(
+            "env-prod-0001", 2, 1, values_digest_hex=empty_values_digest[:62])]),
+        t0 + 6000, "invalid-payload",
+        "形式違反 × role 不足(seq 6 時点の reader)の複合違反は構造検査が先に判定される(create-env-commitment-format-precedes-role と同型)",
+    )
+
+    # 署名系 negative: environments の改竄と入れ子 LP の平坦化(いずれも元署名が
+    # 検証に失敗し、正規化はこのバイト列を生まない)。base は checkpoint-baseline の
+    # seq 13 エントリ(正規 12 エントリチェーンに checkpoint op が存在しないため、
+    # 派生チェーンのエントリを chain フィールドで参照する)
+    tampered_cp_payload = checkpoint_payload([
+        cp_dev_entry,
+        checkpoint_env_entry(
+            "env-prod-0001", 2, 3,
+            values_digest_hex=cp_prod_values,
+            manifest_sig_hash_hex=cp_prod_entry["manifest_sig_hash_hex"],
+        ),
+    ])
+    checkpoint_negatives.append({
+        "name": "checkpoint-tampered-environments",
+        "base_seq": 13,
+        "chain": "checkpoint-baseline",
+        "payload": tampered_cp_payload,
+        "signed_bytes_hex": lp_encode([
+            suite, 13, head12, "checkpoint", admin_id, admin["fp_hex"],
+            payload_bytes("checkpoint", tampered_cp_payload), t0 + 12000,
+        ]).hex(),
+        "signature_hex": cp13["signature_hex"],
+        "verify_key_hex": admin["sig_pub_hex"],
+        "must_fail": True,
+        "note": "環境エントリの manifest_version を書き換えると元の署名は検証に失敗する(タプルは署名対象)",
+    })
+    flat_cp_fields = []
+    for e in [cp_dev_entry, cp_prod_entry]:
+        flat_cp_fields += [e["environment_id"], e["epoch"], e["manifest_version"],
+                           e["manifest_sig_hash_hex"], e["values_digest_hex"]]
+    flat_cp_payload = {
+        "environments": [cp_dev_entry, cp_prod_entry],
+        "environments_lp_hex": lp_encode(flat_cp_fields).hex(),
+        "audit_head_hash_hex": "",
+    }
+    checkpoint_negatives.append({
+        "name": "checkpoint-environments-flat-concat",
+        "base_seq": 13,
+        "chain": "checkpoint-baseline",
+        "signed_bytes_hex": lp_encode([
+            suite, 13, head12, "checkpoint", admin_id, admin["fp_hex"],
+            payload_bytes("checkpoint", flat_cp_payload), t0 + 12000,
+        ]).hex(),
+        "signature_hex": cp13["signature_hex"],
+        "verify_key_hex": admin["sig_pub_hex"],
+        "must_fail": True,
+        "note": "環境エントリを入れ子 LP でなく 1 段の平坦 LP でエンコードしたバイト列では署名検証に失敗する(エントリ境界の曖昧性排除 — §2.1)",
+    })
+
+    negatives += checkpoint_negatives
+
+    valid_appends += [
+        {
+            "name": "standalone-checkpoint-all-environments",
+            "entry": build_entry(13, "checkpoint", admin_id, admin,
+                                 checkpoint_payload([
+                                     checkpoint_env_entry("env-dev-0002", 2, 3),
+                                     checkpoint_env_entry("env-prod-0001", 2, 2,
+                                                          values_digest_hex=cp_prod_values),
+                                     checkpoint_env_entry("env-stage-0003", 1, 1),
+                                 ]), t0 + 12000, head12),
+            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_environments": base_environments,
+            "expected_server_grants": [],
+            "expected_checkpoints": {
+                "env-dev-0002": expected_checkpoint(13, checkpoint_env_entry("env-dev-0002", 2, 3)),
+                "env-prod-0001": expected_checkpoint(
+                    13, checkpoint_env_entry("env-prod-0001", 2, 2,
+                                             values_digest_hex=cp_prod_values)),
+                "env-stage-0003": expected_checkpoint(
+                    13, checkpoint_env_entry("env-stage-0003", 1, 1)),
+            },
+            "note": "member 以上による全環境カバーの standalone checkpoint(環境エントリは environment_id のバイト昇順 — 生成 SHOULD)は受理され、各環境の最新チェックポイントが導出される(§6.2 / §6.3。エポック 1 のままの環境 = env-stage-0003 も公証できる)",
+        },
+        {
+            "name": "checkpoint-empty-environments",
+            "entry": build_entry(13, "checkpoint", owner_id, owner,
+                                 checkpoint_payload([], dummy_audit_head), t0 + 12000, head12),
+            "expected_members": {owner_id: "owner", admin_id: "admin"},
+            "expected_environments": base_environments,
+            "expected_server_grants": [],
+            "expected_checkpoints": {},
+            "note": "環境エントリ 0 件(environments_lp_hex = 空文字列)+ 監査ヘッド公証のみの checkpoint も有効(§6.2 の「要素 0 も有効」。owner は admin 以上なので監査ヘッドを公証できる)",
+        },
+    ]
+
+    # env values digest の単体ベクター(§6.2 の values_digest 正規形 —
+    # env-manifest.json の digests セクションと同型の固定)
+    values_digests = [
+        {
+            "name": "empty-set",
+            "entries": [],
+            "values_digest_hex": empty_values_digest,
+            "note": "変数ゼロの環境(環境作成の境界 checkpoint — AUTH_SPEC §12-4)も有効なダイジェストを持つ(要素 0 の LP)",
+        },
+        {
+            "name": "single-entry",
+            "entries": [
+                {"variable_id": "var-database-url-0001", "version": "3",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-database-url-0001", 3)},
+            ],
+            "values_digest_hex": env_values_digest_hex([
+                {"variable_id": "var-database-url-0001", "version": "3",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-database-url-0001", 3)},
+            ]),
+            "note": "v_j = LP(variable_id, version, value_sig_hash_hex)。version は 10 進文字列化(§2.1)",
+        },
+        {
+            "name": "byte-ascending-order",
+            "entries": [
+                {"variable_id": "var-a-0010", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-a-0010", 1)},
+                {"variable_id": "var-㊙-0001", "version": "2",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-㊙-0001", 2)},
+                {"variable_id": "var-Z-0001", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-Z-0001", 1)},
+                {"variable_id": "var-a-0002", "version": "10",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-a-0002", 10)},
+            ],
+            "values_digest_hex": env_values_digest_hex([
+                {"variable_id": "var-a-0010", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-a-0010", 1)},
+                {"variable_id": "var-㊙-0001", "version": "2",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-㊙-0001", 2)},
+                {"variable_id": "var-Z-0001", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-Z-0001", 1)},
+                {"variable_id": "var-a-0002", "version": "10",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-a-0002", 10)},
+            ]),
+            "note": "正規順は variable_id の UTF-8 バイト昇順: var-Z-0001(0x5A)< var-a-0002 < var-a-0010 < var-㊙-0001(0xE3…)。ロケール・数値順でなくバイト順であることを固定する(entries は非正規順で列挙 — 実装は内部でソートして同じダイジェストに到達する)",
+        },
+    ]
+
     write(
         "chain-entries.json",
         {
@@ -1193,6 +1584,8 @@ def gen_chain_entries():
                 "scope_environments": "environment_id のリストを LP エンコード(入れ子 LP)し、その hex 小文字文字列を scope_environments_lp_hex として payload に載せる。リストの順序は署名対象の一部(検証は as-signed 順で再構築)→ 要レビュー",
                 "lease_policy": "constraint = LP(claim_name, claim_value)、element = LP(issuer_url, audience, LP(constraint...))、lease_policy_lp_hex = lower_hex(LP(element...))(3 段の入れ子 LP — §6.2)。リスト順(要素・制約とも)は署名対象の一部。空リストは hex 空文字列 = リース経路なし。上限: 要素 8 / 要素あたり制約 8 / 各文字列 1024 バイト(§6.1)→ 要レビュー",
                 "dek_commitment": "dek_commitment_hex = lower_hex(SHA-256(LP(\"maruhi/v1/dek-commit\", project_id, environment_id, epoch, dek_hex)))(§5.2)。project_id = genesis エントリハッシュ。形式は hex 小文字 64 文字(形式検査は payload 構造検査の段 — §6.2)。内容の照合は受信者の §5.2 検証が担い、チェーン検証は形式のみ検査する",
+                "checkpoint_environments": "環境エントリ = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex, values_digest_hex)、environments_lp_hex = lower_hex(LP(entry...))(scope_environments と同じ入れ子 LP — §6.2)。リスト順は署名対象の一部(生成は environment_id のバイト昇順 SHOULD — 検証は順序を規範にしない)。重複 environment_id は payload 構造検査で無効(invalid-payload)。manifest_sig_hash_hex / values_digest_hex は hex 小文字 64 文字、audit_head_hash_hex は空文字列(公証なし)または hex 小文字 64 文字。タプル内容(マニフェスト・値・監査ヘッド)はチェーン検証では検証不能であり、照合はサーバー受理検証(§6.4)とクライアントの配布時照合(§6.3)が担う → 要レビュー",
+                "env_values_digest": "values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m)))、v_j = LP(variable_id, version, value_sig_hash_hex)(variable_id の UTF-8 バイト昇順。active 変数のみ — tombstone はマニフェスト側 §4.3 が捕捉)。空集合も有効。単体ベクターは values_digests セクション → 要レビュー",
             },
             "keys": {
                 "user-owner-0001": {
@@ -1243,6 +1636,8 @@ def gen_chain_entries():
             "valid_appends": valid_appends,
             "extended_chains": extended_chains,
             "negative": negatives,
+            # checkpoint の values_digest 正規形の単体ベクター(§6.2 — PR-F3a)
+            "values_digests": values_digests,
         },
     )
 
