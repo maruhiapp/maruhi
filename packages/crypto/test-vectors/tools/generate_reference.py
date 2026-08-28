@@ -4091,6 +4091,130 @@ def gen_invite_accept_signature():
 
 
 # ---------------------------------------------------------------------------
+# 3.10 audit-head.json — AUDIT_SPEC §5.1 監査ヘッド累積ハッシュ(SHA-256 + §2.1 LP)
+#
+# row_digest = lower_hex(SHA-256(LP(seq, row_id, server_ts, client_ts, event,
+#                                   actor_type, actor_user_id,
+#                                   actor_key_fingerprint, actor_api_token_id,
+#                                   target_user_id, target_key_fingerprint,
+#                                   environment_id, variable_id, epoch, version,
+#                                   chain_seq, payload)))
+#   - 列は AUDIT_SPEC §5.1 の固定順 17 列。数値は 10 進文字列化(§2.1)
+#   - NULL 許容列(seq / server_ts / event / actor_type 以外の 13 列)は
+#     タグ付きバイト列: NULL = 0x00 の 1 バイト、非 NULL = 0x01 + 値のバイト列
+#     (NULL と空文字列を同一プリイメージにしない — §5.1)
+#   - payload は保存された TEXT のバイト列をそのまま使う(JSON 正規化はしない)
+# h_n = lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))
+#   - h_0 = 空文字列。h_{n-1} / row_digest はともに hex 小文字**文字列**として
+#     LP フィールドに載せる(h_0 = "" の規定と整合する唯一の一様な表現 —
+#     本ベクターがこの表現を固定する)
+
+AUDIT_HEAD_DOMAIN = "maruhi/v1/audit-head"
+
+# AUDIT_SPEC §5.1 の固定列順。値 None = NULL(タグ 0x00)
+AUDIT_ROW_COLUMNS = [
+    ("seq", "int"), ("row_id", "nullable-str"), ("server_ts", "int"),
+    ("client_ts", "nullable-int"), ("event", "str"), ("actor_type", "str"),
+    ("actor_user_id", "nullable-str"), ("actor_key_fingerprint", "nullable-str"),
+    ("actor_api_token_id", "nullable-str"), ("target_user_id", "nullable-str"),
+    ("target_key_fingerprint", "nullable-str"), ("environment_id", "nullable-str"),
+    ("variable_id", "nullable-str"), ("epoch", "nullable-int"),
+    ("version", "nullable-int"), ("chain_seq", "nullable-int"),
+    ("payload", "nullable-str"),
+]
+
+
+def audit_row_digest_hex(row: dict) -> str:
+    fields = []
+    for (column, kind) in AUDIT_ROW_COLUMNS:
+        value = row[column]
+        if kind in ("nullable-str", "nullable-int"):
+            if value is None:
+                fields.append(b"\x00")
+            else:
+                text = str(value) if kind == "nullable-int" else value
+                fields.append(b"\x01" + text.encode("utf-8"))
+        else:
+            fields.append(value)
+    return sha256(lp_encode(fields)).hex()
+
+
+def audit_head_hash_hex(prev_head_hex: str, seq: int, row_digest_hex: str) -> str:
+    return sha256(lp_encode([AUDIT_HEAD_DOMAIN, prev_head_hex, seq, row_digest_hex])).hex()
+
+
+def gen_audit_head():
+    # 正規チェーン(累積列): 行は project DO の現実的なイベント形。row_id は
+    # 16 バイト乱数 hex の位置づけだがベクターでは決定論的なパターンバイト列
+    def row(seq, **columns):
+        base = {column: None for (column, _kind) in AUDIT_ROW_COLUMNS}
+        base["seq"] = seq
+        base["row_id"] = pat(0xA0 + seq, 16).hex()
+        return {**base, **columns}
+
+    rows = [
+        # 1: チェーンミラー行(chain_seq あり・payload あり)
+        row(
+            1, server_ts=1_755_500_000_000, client_ts=1_755_499_999_000,
+            event="chain.genesis", actor_type="user", actor_user_id="user-owner-0001",
+            actor_key_fingerprint=pat(0x10, 16).hex(), target_user_id="user-owner-0001",
+            chain_seq=1, payload='{"role":"owner"}',
+        ),
+        # 2: NULL 許容列が全て NULL の最小行(system actor)
+        row(2, row_id=None, server_ts=1_755_500_000_001, event="rotation.recommended",
+            actor_type="system"),
+        # 3: データ系行(数値列 epoch / version が非 NULL)+ 非 ASCII payload
+        #    (保存 TEXT のバイト列そのまま — JSON 正規化をしないことの固定)
+        row(
+            3, server_ts=1_755_500_000_002, event="var.version_pushed", actor_type="user",
+            actor_user_id="user-member-0002", actor_key_fingerprint=pat(0x20, 16).hex(),
+            environment_id="env-prod-0001", variable_id="var-database-url-0001",
+            epoch=3, version=7, payload='{"note":"㊙ reencryption","reencryption":true}',
+        ),
+        # 4: 空文字列の非 NULL 列(target_user_id / payload)— NULL(行 2)との
+        #    プリイメージ相違はタグバイトが担う
+        row(4, server_ts=1_755_500_000_003, event="var.read", actor_type="user",
+            actor_user_id="user-reader-0003", target_user_id="", payload=""),
+    ]
+
+    head = ""
+    chain_cases = []
+    for entry in rows:
+        digest = audit_row_digest_hex(entry)
+        head = audit_head_hash_hex(head, entry["seq"], digest)
+        chain_cases.append({
+            "row": entry,
+            "expected_row_digest_hex": digest,
+            "expected_head_hash_hex": head,
+        })
+
+    # NULL vs 空文字列の判別対(同一行の target_user_id だけを変える)
+    null_row = row(5, server_ts=1_755_500_000_004, event="dek.deleted", actor_type="user",
+                   actor_user_id="user-owner-0001", environment_id="env-prod-0001", epoch=2)
+    empty_row = {**null_row, "target_user_id": ""}
+    null_vs_empty = {
+        "note": "target_user_id が NULL の行と空文字列の行は row_digest が異なる"
+                "(タグ付きバイト列 0x00 / 0x01 — AUDIT_SPEC §5.1)",
+        "null_row": null_row,
+        "null_row_digest_hex": audit_row_digest_hex(null_row),
+        "empty_row": empty_row,
+        "empty_row_digest_hex": audit_row_digest_hex(empty_row),
+    }
+
+    write(
+        "audit-head.json",
+        {
+            "description": "AUDIT_SPEC §5.1 監査ヘッド累積ハッシュ: row_digest = SHA-256(固定 17 列の LP。NULL 許容列はタグ付きバイト列 0x00 / 0x01 + 値)、h_n = SHA-256(LP(\"maruhi/v1/audit-head\", h_{n-1}, seq, row_digest))。h_0 = 空文字列。h_{n-1} と row_digest は hex 小文字文字列として LP に載せる",
+            "domain": AUDIT_HEAD_DOMAIN,
+            "row_columns_order": [column for (column, _kind) in AUDIT_ROW_COLUMNS],
+            "initial_head": "",
+            "chain": chain_cases,
+            "null_vs_empty": null_vs_empty,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. recovery-wrap.json — §8 リカバリーコードによる master 秘密鍵ラップ
 
 def gen_recovery_wrap():
@@ -4171,5 +4295,6 @@ if __name__ == "__main__":
     gen_metadata_signature()  # 同上(chain-entries.json を参照)
     gen_env_manifest()  # 同上(chain-entries.json を参照。§4.3)
     gen_checkpoint_boundary_chains()  # env-manifest のハッシュを参照するため後段(§4.3 (2))
+    gen_audit_head()  # AUDIT_SPEC §5.1(単独 — 他ファイルを参照しない)
     gen_invite_accept_signature()
     gen_recovery_wrap()

@@ -1211,6 +1211,81 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- audit-head.json(AUDIT_SPEC §5.1 監査ヘッド累積ハッシュ)-------------------
+{
+  const doc = read("audit-head.json");
+  const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  // 列順は仕様(AUDIT_SPEC §5.1)のハードコードを正とし、JSON の宣言との一致を検査
+  const NULLABLE = new Set([
+    "row_id",
+    "client_ts",
+    "actor_user_id",
+    "actor_key_fingerprint",
+    "actor_api_token_id",
+    "target_user_id",
+    "target_key_fingerprint",
+    "environment_id",
+    "variable_id",
+    "epoch",
+    "version",
+    "chain_seq",
+    "payload",
+  ]);
+  const COLUMNS = [
+    "seq",
+    "row_id",
+    "server_ts",
+    "client_ts",
+    "event",
+    "actor_type",
+    "actor_user_id",
+    "actor_key_fingerprint",
+    "actor_api_token_id",
+    "target_user_id",
+    "target_key_fingerprint",
+    "environment_id",
+    "variable_id",
+    "epoch",
+    "version",
+    "chain_seq",
+    "payload",
+  ];
+  check("audit-head: column order matches spec", sameOrder(doc.row_columns_order, COLUMNS));
+  check("audit-head: domain embeds suite", doc.domain === "maruhi/v1/audit-head");
+  check("audit-head: initial head is the empty string", doc.initial_head === "");
+  const rowDigest = async (row) =>
+    sha256(
+      lpEncode(
+        COLUMNS.map((column) => {
+          const value = row[column];
+          if (!NULLABLE.has(column)) {
+            return value;
+          }
+          if (value === null) {
+            return Uint8Array.of(0x00);
+          }
+          const body = new TextEncoder().encode(String(value));
+          const tagged = new Uint8Array(1 + body.length);
+          tagged[0] = 0x01;
+          tagged.set(body, 1);
+          return tagged;
+        }),
+      ),
+    );
+  let head = doc.initial_head;
+  for (const c of doc.chain) {
+    const digest = await rowDigest(c.row);
+    check(`audit-head: seq ${c.row.seq} row digest`, digest === c.expected_row_digest_hex);
+    head = await sha256(lpEncode([doc.domain, head, c.row.seq, digest]));
+    check(`audit-head: seq ${c.row.seq} head hash`, head === c.expected_head_hash_hex);
+  }
+  const nullDigest = await rowDigest(doc.null_vs_empty.null_row);
+  const emptyDigest = await rowDigest(doc.null_vs_empty.empty_row);
+  check("audit-head: null row digest", nullDigest === doc.null_vs_empty.null_row_digest_hex);
+  check("audit-head: empty row digest", emptyDigest === doc.null_vs_empty.empty_row_digest_hex);
+  check("audit-head: null and empty string differ", nullDigest !== emptyDigest);
+}
+
 // --- recovery-wrap.json ------------------------------------------------------
 {
   const doc = read("recovery-wrap.json");
