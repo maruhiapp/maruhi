@@ -429,6 +429,35 @@ export interface OpenProjectOptions {
 }
 
 /**
+ * ヘッドゴシップの照合(§6.3 / §6.6): 矛盾申告 = 硬い証拠で中断、future 申告は
+ * 有界再同期(1 回)で解決を試みる。ビューが前進したら床ヘッドを追いかけ、
+ * アンカー機械照合も新ビューで再適用する(検査は 2 参照のみ)。
+ */
+function reconcileGossip(
+  projectId: string,
+  verified: VerifiedProject,
+  resync: Effect.Effect<VerifiedProject, CliError>,
+): Effect.Effect<VerifiedProject, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const reconciled = yield* reconcileDistributedAttestations({
+      projectId,
+      view: verified,
+      resync,
+    });
+    if (reconciled === verified) {
+      return verified;
+    }
+    const store = yield* FloorStore;
+    yield* store.commitHead(projectId, {
+      seq: reconciled.state.headSeq,
+      hashHex: reconciled.state.headHashHex,
+    });
+    yield* checkInviteAnchor(projectId, reconciled);
+    return reconciled;
+  });
+}
+
+/**
  * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → アンカー機械照合 →
  * ヘッドゴシップの照合(§6.3 / §6.6 — 矛盾申告は成果物の使用を中断)→
  * 床ヘッドの前進 → 未収束ローテーション義務の常時警告(§7 / B2 裁定 — §9 の
@@ -453,24 +482,7 @@ function attachProject(
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
     yield* checkInviteAnchor(projectId, checked.verified);
-    // ヘッドゴシップの照合(§6.3 / §6.6): 矛盾申告 = 硬い証拠で中断、future
-    // 申告は有界再同期(1 回)で解決を試みる。ビューが前進したら床ヘッドを
-    // 追いかけ、アンカー機械照合も新ビューで再適用する(検査は 2 参照のみ)
-    let verified = checked.verified;
-    const reconciled = yield* reconcileDistributedAttestations({
-      projectId,
-      view: verified,
-      resync,
-    });
-    if (reconciled !== verified) {
-      verified = reconciled;
-      const store = yield* FloorStore;
-      yield* store.commitHead(projectId, {
-        seq: verified.state.headSeq,
-        hashHex: verified.state.headHashHex,
-      });
-      yield* checkInviteAnchor(projectId, verified);
-    }
+    const verified = yield* reconcileGossip(projectId, checked.verified, resync);
     // 未解決の複合 intent(3-F)は「同一環境への次の mutation・成功報告の前に
     // 照合で解決する」— 前段は毎回チェーンを全同期・全検証するので、ここが
     // その照合点になる(受理済みなら床のマニフェスト前進もここで回収する)
