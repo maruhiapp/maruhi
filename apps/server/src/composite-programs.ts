@@ -30,7 +30,7 @@ import {
   insertAcceptedEntryPairSync,
   verifyAcceptableEntryPair,
 } from "./chain-accept.ts";
-import type { StateCache } from "./chain-store.ts";
+import type { StateCache, StoredChain } from "./chain-store.ts";
 import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
 import { ensureAuditHeadAcceptable, ensureCheckpointValuesDigest } from "./checkpoint-accept.ts";
 import type {
@@ -170,6 +170,39 @@ const ensureCheckpointAuditHead = (input: {
     yield* ensureAuditHeadAcceptable(input.checkpoint.payload.auditHeadHashHex);
   });
 
+/**
+ * 境界 checkpoint(H+2)の受理前段の共有列(create / rotate 共通):
+ * 同梱物一致検査(§12-4)→ 監査ヘッド検査(§16-2)→ 2 エントリ受理検査
+ * (サイズ → 容量 → verifyChain — §6.4 の合意規則。chain-accept.ts と共有)。
+ */
+const acceptBoundaryCheckpointPair = (input: {
+  readonly chain: StoredChain;
+  readonly state: ChainState;
+  readonly callerUserId: string;
+  readonly entry: ChainEntry;
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
+  readonly environmentId: string;
+  readonly establishedEpoch: number;
+  readonly manifestVersion: number;
+}) =>
+  Effect.gen(function* () {
+    const checkpointTuple = yield* ensureBoundaryCheckpointShape({
+      checkpoint: input.checkpoint,
+      environmentId: input.environmentId,
+      establishedEpoch: input.establishedEpoch,
+      manifestVersion: input.manifestVersion,
+    });
+    // 非空 audit_head_hash の実効権限 admin + 存在・位置検査(§16-2 —
+    // standalone 経路と同一規則)
+    yield* ensureCheckpointAuditHead({
+      checkpoint: input.checkpoint,
+      state: input.state,
+      callerUserId: input.callerUserId,
+    });
+    const pair = yield* verifyAcceptableEntryPair(input.chain, input.entry, input.checkpoint);
+    return { checkpointTuple, ...pair };
+  });
+
 // 境界 checkpoint の values_digest 内容突合(CRYPTO_SPEC §6.4 — 突合基準は
 // 「複合の適用後の保存状態」。複合は値を変更しないため、受理時点の保存値 =
 // 適用後の保存値)と監査ヘッド検査は standalone 経路と共有する
@@ -286,30 +319,20 @@ export const createEnvironmentCompositeProgram = (
     }
     const environmentId = input.entry.payload.environmentId;
     // 境界 checkpoint の同梱物一致(§12-4): 当該環境 1 タプル・epoch 1・
-    // manifestVersion 1(ワイヤは Literal 1 だがタプル側も突合する)
-    const checkpointTuple = yield* ensureBoundaryCheckpointShape({
-      checkpoint: input.checkpoint,
-      environmentId,
-      establishedEpoch: 1,
-      manifestVersion: input.manifest.manifestVersion,
-    });
-    // 非空 audit_head_hash の実効権限 admin + 存在・位置検査(§16-2 —
-    // standalone 経路と同一規則)
-    yield* ensureCheckpointAuditHead({
-      checkpoint: input.checkpoint,
-      state,
-      callerUserId: actor.userId,
-    });
-    // 受理検査(サイズ → 容量 → verifyChain — §6.4 の合意規則 =
-    // duplicate-environment / エポック順序 / role / コミットメント形式 /
-    // checkpoint の合意規則を含む)は汎用チェーン API と共有(chain-accept.ts)。
+    // manifestVersion 1(ワイヤは Literal 1 だがタプル側も突合する)。
     // create = H+1、境界 checkpoint = H+2 の 2 エントリを 1 回の全チェーン
-    // 再検証で受理判定する
-    const { firstCanonicalBytes, secondCanonicalBytes, applied } = yield* verifyAcceptableEntryPair(
-      chain,
-      input.entry,
-      input.checkpoint,
-    );
+    // 再検証で受理判定する(acceptBoundaryCheckpointPair)
+    const { checkpointTuple, firstCanonicalBytes, secondCanonicalBytes, applied } =
+      yield* acceptBoundaryCheckpointPair({
+        chain,
+        state,
+        callerUserId: actor.userId,
+        entry: input.entry,
+        checkpoint: input.checkpoint,
+        environmentId,
+        establishedEpoch: 1,
+        manifestVersion: input.manifest.manifestVersion,
+      });
     const appliedState = applied.state;
     const store = yield* DataStore;
     // ID の一意性はチェーン合意規則(duplicate-environment — verifyChain)が
@@ -458,26 +481,19 @@ export const rotateEpochCompositeProgram = (
       return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
     }
     // 境界 checkpoint の同梱物一致(§12-4): 当該環境 1 タプル・epoch = new_epoch・
-    // manifestVersion = 同梱マニフェストの版
-    const checkpointTuple = yield* ensureBoundaryCheckpointShape({
-      checkpoint: input.checkpoint,
-      environmentId,
-      establishedEpoch: input.entry.payload.newEpoch,
-      manifestVersion: input.manifest.manifestVersion,
-    });
-    // 非空 audit_head_hash の実効権限 admin + 存在・位置検査(§16-2 —
-    // standalone 経路と同一規則)
-    yield* ensureCheckpointAuditHead({
-      checkpoint: input.checkpoint,
-      state,
-      callerUserId: actor.userId,
-    });
-    // rotate = H+1、境界 checkpoint = H+2 の 2 エントリ受理検査(chain-accept.ts)
-    const { firstCanonicalBytes, secondCanonicalBytes, applied } = yield* verifyAcceptableEntryPair(
-      chain,
-      input.entry,
-      input.checkpoint,
-    );
+    // manifestVersion = 同梱マニフェストの版。rotate = H+1、境界 checkpoint =
+    // H+2 の 2 エントリ受理検査(acceptBoundaryCheckpointPair)
+    const { checkpointTuple, firstCanonicalBytes, secondCanonicalBytes, applied } =
+      yield* acceptBoundaryCheckpointPair({
+        chain,
+        state,
+        callerUserId: actor.userId,
+        entry: input.entry,
+        checkpoint: input.checkpoint,
+        environmentId,
+        establishedEpoch: input.entry.payload.newEpoch,
+        manifestVersion: input.manifest.manifestVersion,
+      });
     const appliedState = applied.state;
     // 同梱マニフェストの受理(§12-5 (4): エポック整合は両エントリ適用後の履歴に
     // 対するチェックポイント束縛 — §4.3 (2)。H+2 のタプルとの完全一致 = §12-4 の

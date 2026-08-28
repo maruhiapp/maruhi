@@ -49,7 +49,7 @@ const MAX_STATE_MISMATCH_ATTEMPTS = 3;
 const MAX_HEAD_CONFLICT_ATTEMPTS = 5;
 
 /** 発行契機 (iii) の基準経過(7 日 — CRYPTO_SPEC §6.3 の起草値)。 */
-export const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 発行結果(表示・終了コードの材料)。 */
 export interface CheckpointSummary {
@@ -405,24 +405,17 @@ export function issueCheckpoint(
         Effect.catch((error) => classifySendFailure(error)),
       );
       if (attempt.kind === "accepted") {
-        const covered = (subset ?? targets).map(String);
-        return {
-          environmentIds: covered,
-          skippedEnvironmentIds: targets.map(String).filter((id) => !covered.includes(id)),
-          attestedAuditHead: attest,
+        return summarizeAccepted({
+          targets,
+          subset,
+          attest,
           headSeq: attempt.accepted.headSeq,
-          warnings: [...new Set(warnings)],
-        };
+          warnings,
+        });
       }
       if (attempt.kind === "head-conflict") {
         headConflictAttempts += 1;
-        if (headConflictAttempts >= MAX_HEAD_CONFLICT_ATTEMPTS) {
-          return yield* Effect.fail(
-            cliError(
-              `The checkpoint's chain-head conflict did not resolve (${MAX_HEAD_CONFLICT_ATTEMPTS} attempts). Wait a moment and re-run maruhi project checkpoint`,
-            ),
-          );
-        }
+        yield* ensureHeadConflictBudget(headConflictAttempts);
         yield* io.log("The chain head advanced while the checkpoint was in flight — re-signing");
         previous = built;
         continue;
@@ -438,29 +431,12 @@ export function issueCheckpoint(
         previous = built;
         continue;
       }
-      if (subset !== null || previous === null) {
-        return yield* Effect.fail(
-          cliError(
-            `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${attempt.reason}) even for the stable subset. Wait for the writes to settle and re-run maruhi project checkpoint`,
-          ),
-        );
-      }
-      const baseline = previous;
-      const stableIds = built.tuples
-        .filter((tuple) =>
-          sameTuple(
-            tuple,
-            baseline.tuples.find((candidate) => candidate.environmentId === tuple.environmentId),
-          ),
-        )
-        .map((tuple) => tuple.environmentId as EnvironmentId);
-      if (stableIds.length === 0) {
-        return yield* Effect.fail(
-          cliError(
-            `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${attempt.reason}) for every environment. Wait for the writes to settle and re-run maruhi project checkpoint`,
-          ),
-        );
-      }
+      // 型注釈は built と同じ理由(generator 内の自己参照推論を断つ)
+      const stableIds: readonly EnvironmentId[] = yield* stableSubsetOrFail({
+        built,
+        baseline: subset === null ? previous : null,
+        reason: attempt.reason,
+      });
       subset = stableIds;
       warnings.push(
         `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run maruhi project checkpoint later to cover the rest`,
@@ -471,6 +447,71 @@ export function issueCheckpoint(
       previous = built;
     }
   });
+}
+
+/** 受理後の要約(部分集合発行時は skipped で全環境カバー(SHOULD)の漏れを明示)。 */
+function summarizeAccepted(input: {
+  readonly targets: readonly EnvironmentId[];
+  readonly subset: readonly EnvironmentId[] | null;
+  readonly attest: boolean;
+  readonly headSeq: number;
+  readonly warnings: readonly string[];
+}): CheckpointSummary {
+  const covered = (input.subset ?? input.targets).map(String);
+  return {
+    environmentIds: covered,
+    skippedEnvironmentIds: input.targets.map(String).filter((id) => !covered.includes(id)),
+    attestedAuditHead: input.attest,
+    headSeq: input.headSeq,
+    warnings: [...new Set(input.warnings)],
+  };
+}
+
+/** CAS 競合(409)の再署名リトライの残量検査(使い切ったら確定失敗)。 */
+function ensureHeadConflictBudget(attempts: number): Effect.Effect<void, CliError> {
+  return attempts >= MAX_HEAD_CONFLICT_ATTEMPTS
+    ? Effect.fail(
+        cliError(
+          `The checkpoint's chain-head conflict did not resolve (${MAX_HEAD_CONFLICT_ATTEMPTS} attempts). Wait a moment and re-run maruhi project checkpoint`,
+        ),
+      )
+    : Effect.void;
+}
+
+/**
+ * 部分集合退避(§6.3): 直近 2 回の構築(baseline / built)で不変だったタプルの
+ * 環境 ID を返す。退避不能(既に部分集合で再失敗した = baseline なし、または
+ * 安定な環境が 1 つもない)は確定失敗。
+ */
+function stableSubsetOrFail(input: {
+  readonly built: BuiltView;
+  readonly baseline: BuiltView | null;
+  readonly reason: string;
+}): Effect.Effect<readonly EnvironmentId[], CliError> {
+  if (input.baseline === null) {
+    return Effect.fail(
+      cliError(
+        `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${input.reason}) even for the stable subset. Wait for the writes to settle and re-run maruhi project checkpoint`,
+      ),
+    );
+  }
+  const baseline = input.baseline;
+  const stableIds = input.built.tuples
+    .filter((tuple) =>
+      sameTuple(
+        tuple,
+        baseline.tuples.find((candidate) => candidate.environmentId === tuple.environmentId),
+      ),
+    )
+    .map((tuple) => tuple.environmentId as EnvironmentId);
+  if (stableIds.length === 0) {
+    return Effect.fail(
+      cliError(
+        `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${input.reason}) for every environment. Wait for the writes to settle and re-run maruhi project checkpoint`,
+      ),
+    );
+  }
+  return Effect.succeed(stableIds);
 }
 
 /** sendCheckpoint の失敗の分類(再試行の型はここで判別、その他は確定失敗)。 */

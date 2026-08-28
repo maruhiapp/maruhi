@@ -22,13 +22,10 @@ import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { AuditStore } from "./audit-store.ts";
-import {
-  ensureParentHead,
-  insertAcceptedEntrySync,
-  verifyAcceptableEntry,
-} from "./chain-accept.ts";
+import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
+import { commitAcceptedEntry } from "./chain-commit.ts";
 import type { StateCache } from "./chain-store.ts";
-import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
+import { deriveStoredState, updateStateCache } from "./chain-store.ts";
 import { loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import type { CheckpointValueEntryRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
@@ -159,18 +156,10 @@ export function standaloneCheckpointProgram(
       snapshots.push({ tuple, values: yield* ensureCheckpointTupleState(tuple) });
     }
     yield* ensureAuditHeadAcceptable(entry.payload.auditHeadHashHex);
-    const chainStore = yield* ChainStore;
-    const audit = yield* AuditStore;
     const dataStore = yield* DataStore;
-    const nowMs = Date.now();
-    yield* Effect.sync(() => {
-      insertAcceptedEntrySync(
-        { chainStore, audit, dataStore },
-        entry,
-        applied,
-        canonicalBytes,
-        nowMs,
-      );
+    // スナップショット保存(§6.4)はチェーン挿入・ミラーと同じ同期ブロックで
+    // 原子コミットする(commitAcceptedEntry の extraSync)
+    yield* commitAcceptedEntry(entry, applied, canonicalBytes, (nowMs) => {
       for (const { tuple, values } of snapshots) {
         dataStore.write.upsertCheckpointSnapshot(
           tuple.environmentId,

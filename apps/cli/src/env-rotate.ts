@@ -2206,11 +2206,7 @@ function rotateWithWarnings(
     });
     // --init-manifest の不要フラグ文言は経路の確定後に選ぶ(M1-B2 — resume /
     // up-to-date の実行は複合を送らない = 「次版を再発行する」とは言わない)
-    if (input.initManifest && pulled.manifest !== null) {
-      warnings.push(
-        initManifestWarning(input.environmentId, pulled.manifest.manifestVersion, path),
-      );
-    }
+    warnings.push(...initManifestNotices(input, pulled.manifest, path));
 
     // --- 中断復旧: エポックは進んだが再暗号化が残っている ---
     if (path === "resume") {
@@ -2266,23 +2262,12 @@ function rotateWithWarnings(
     yield* ensureRotationIsUseful(targets.length, pulled.variables.length);
     // 生成直後に包む(以降 DEK は Redacted としてしか流れない)
     const dek = Redacted.make(generateDek(), { label: "dek" });
-    const commitment = yield* Effect.tryPromise({
-      try: () =>
-        computeDekCommitment({
-          context: {
-            suite: SUITE_ID,
-            projectId: pulled.verified.projectId,
-            environmentId: input.environmentId,
-            epoch: newEpoch,
-          },
-          // 剥がす理由: コミットメント計算の入力(暗号境界)。産物はハッシュ
-          dek: Redacted.value(dek),
-        }),
-      catch: () => cliError("Failed to compute the DEK commitment"),
+    const dekCommitmentHex = yield* computeRotationCommitmentHex({
+      projectId: pulled.verified.projectId,
+      environmentId: input.environmentId,
+      newEpoch,
+      dek,
     });
-    if (!commitment.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the DEK commitment"));
-    }
     yield* io.log(
       `Rotating environment ${input.environmentId} (epoch ${currentEpoch} → ${newEpoch}, ${countNoun(targets.length, "variable")} targeted)`,
     );
@@ -2293,7 +2278,7 @@ function rotateWithWarnings(
       reason: entryReason,
       newEpoch,
       dek,
-      dekCommitmentHex: commitment.value,
+      dekCommitmentHex,
       manifestBase: manifestBaseOf(pulled),
       checkpointValues: pulled.variables.map((value) => ({
         variableId: value.variableId,
@@ -2318,39 +2303,8 @@ function rotateWithWarnings(
       targets,
       sink: warnings,
     });
-    // 発行契機 (i)(CRYPTO_SPEC §6.3 — SHOULD): rotate とそれに伴う再暗号化の
-    // **完了後**に当該環境の周期 checkpoint を発行する(境界分は複合に同梱済み。
-    // 完了後の発行なので受理時点一致検査と自己競合しない)。カバーは当該環境
-    // 1 タプル(全環境カバーを rotate に課すと読んでいない環境の値取得を強制
-    // する — §12-4 の監査規律と同じ論法。裁定は docs/notes/session-35.md)。
-    // 部分完了・失敗時は発行しない(公証すべき「完了後のデータ状態」がない)。
-    // SHOULD なので発行失敗は rotate の成功を覆さず、警告で開示する
     if (outcome.remaining === 0 && outcome.failure === null) {
-      yield* issueCheckpoint({
-        client: input.client,
-        verified: rotated.view,
-        resync: input.resync,
-        environmentIds: [input.environmentId],
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-        floorFor: () => Effect.succeed(input.floor),
-      }).pipe(
-        Effect.tap((issued) =>
-          Effect.gen(function* () {
-            warnings.push(...issued.warnings);
-            yield* io.log(
-              `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
-            );
-          }),
-        ),
-        Effect.catch((error) =>
-          Effect.sync(() => {
-            warnings.push(
-              `The post-rotation periodic checkpoint could not be issued (${error.message}). The boundary checkpoint from the rotation still holds; run maruhi project checkpoint to notarize the re-encrypted state (CRYPTO_SPEC §6.3 (i))`,
-            );
-          }),
-        ),
-      );
+      yield* issuePostRotationCheckpoint(input, rotated.view, warnings);
     }
     return {
       mode: "rotated",
@@ -2363,5 +2317,89 @@ function rotateWithWarnings(
       failure: outcome.failure,
       warnings: dedupeWarnings(warnings),
     };
+  });
+}
+
+/** --init-manifest が実際には不要だった実行の案内(M1-B2 — 文言は経路確定後に選ぶ)。 */
+function initManifestNotices(
+  input: RotateInput,
+  manifest: { readonly manifestVersion: number } | null,
+  path: "resume" | "up-to-date" | "rotate",
+): readonly string[] {
+  return input.initManifest && manifest !== null
+    ? [initManifestWarning(input.environmentId, manifest.manifestVersion, path)]
+    : [];
+}
+
+/** 新エポック DEK のコミットメント計算(CRYPTO_SPEC §5.2)。失敗は CliError。 */
+function computeRotationCommitmentHex(input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly newEpoch: number;
+  readonly dek: Redacted.Redacted<Uint8Array>;
+}): Effect.Effect<string, CliError> {
+  return Effect.tryPromise({
+    try: () =>
+      computeDekCommitment({
+        context: {
+          suite: SUITE_ID,
+          projectId: input.projectId,
+          environmentId: input.environmentId,
+          epoch: input.newEpoch,
+        },
+        // 剥がす理由: コミットメント計算の入力(暗号境界)。産物はハッシュ
+        dek: Redacted.value(input.dek),
+      }),
+    catch: () => cliError("Failed to compute the DEK commitment"),
+  }).pipe(
+    Effect.flatMap((commitment) =>
+      commitment.ok
+        ? Effect.succeed(commitment.value)
+        : Effect.fail(cliError("Failed to compute the DEK commitment")),
+    ),
+  );
+}
+
+/**
+ * 発行契機 (i)(CRYPTO_SPEC §6.3 — SHOULD): rotate とそれに伴う再暗号化の
+ * **完了後**に当該環境の周期 checkpoint を発行する(境界分は複合に同梱済み。
+ * 完了後の発行なので受理時点一致検査と自己競合しない)。カバーは当該環境
+ * 1 タプル(全環境カバーを rotate に課すと読んでいない環境の値取得を強制
+ * する — §12-4 の監査規律と同じ論法。裁定は docs/notes/session-35.md)。
+ * 部分完了・失敗時は呼ばない(公証すべき「完了後のデータ状態」がない)。
+ * SHOULD なので発行失敗は rotate の成功を覆さず、警告で開示する。
+ */
+function issuePostRotationCheckpoint(
+  input: RotateInput,
+  view: VerifiedProject,
+  warnings: string[],
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    yield* issueCheckpoint({
+      client: input.client,
+      verified: view,
+      resync: input.resync,
+      environmentIds: [input.environmentId],
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+      floorFor: () => Effect.succeed(input.floor),
+    }).pipe(
+      Effect.tap((issued) =>
+        Effect.gen(function* () {
+          warnings.push(...issued.warnings);
+          yield* io.log(
+            `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
+          );
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          warnings.push(
+            `The post-rotation periodic checkpoint could not be issued (${error.message}). The boundary checkpoint from the rotation still holds; run maruhi project checkpoint to notarize the re-encrypted state (CRYPTO_SPEC §6.3 (i))`,
+          );
+        }),
+      ),
+    );
   });
 }

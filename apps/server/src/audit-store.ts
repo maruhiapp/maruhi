@@ -176,25 +176,14 @@ interface AuditEventsQuery {
   readonly visibility: AuditVisibility;
 }
 
-/** 保存行の読み取り形(§5.1 の全列。NULL は null)。 */
-export interface StoredAuditEventRow {
-  readonly seq: number;
+/**
+ * 保存行の読み取り形(§5.1 の全列。NULL は null)。列集合は監査ヘッド計算の
+ * 入力形(AuditHeadRow — §5.1 の固定 17 列)と同一で、row_id の非 NULL 制約と
+ * payload の防御的 parse(TEXT そのままではなくオブジェクト)だけが異なる。
+ */
+export interface StoredAuditEventRow extends Omit<AuditHeadRow, "rowId" | "payloadText"> {
   /** ワイヤ行識別子(§5.1 row_id — 16 バイト乱数 hex)。 */
   readonly rowId: string;
-  readonly serverTs: number;
-  readonly clientTs: number | null;
-  readonly event: string;
-  readonly actorType: string;
-  readonly actorUserId: string | null;
-  readonly actorKeyFingerprintHex: string | null;
-  readonly actorApiTokenId: string | null;
-  readonly targetUserId: string | null;
-  readonly targetKeyFingerprintHex: string | null;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
-  readonly epoch: number | null;
-  readonly version: number | null;
-  readonly chainSeq: number | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
@@ -595,23 +584,12 @@ const textOrNull = (value: unknown): string | null => (value === null ? null : S
 const numberOrNull = (value: unknown): number | null => (value === null ? null : Number(value));
 
 function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
+  // 列の写像は監査ヘッド計算の入力形と共有する(列集合が同一 — §5.1 の 17 列)。
+  // row_id の非 NULL 化と payload の防御的 parse だけがこの読み取り形の差分
+  const { payloadText: _payloadText, ...shared } = toAuditHeadRow(row);
   return {
-    seq: Number(row["seq"]),
+    ...shared,
     rowId: String(row["row_id"]),
-    serverTs: Number(row["server_ts"]),
-    clientTs: numberOrNull(row["client_ts"]),
-    event: String(row["event"]),
-    actorType: String(row["actor_type"]),
-    actorUserId: textOrNull(row["actor_user_id"]),
-    actorKeyFingerprintHex: textOrNull(row["actor_key_fingerprint"]),
-    actorApiTokenId: textOrNull(row["actor_api_token_id"]),
-    targetUserId: textOrNull(row["target_user_id"]),
-    targetKeyFingerprintHex: textOrNull(row["target_key_fingerprint"]),
-    environmentId: textOrNull(row["environment_id"]),
-    variableId: textOrNull(row["variable_id"]),
-    epoch: numberOrNull(row["epoch"]),
-    version: numberOrNull(row["version"]),
-    chainSeq: numberOrNull(row["chain_seq"]),
     payload: parsePayload(row["payload"]),
   };
 }
