@@ -32,7 +32,7 @@ import { CliIo } from "./io.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
 
 /** ワイヤの監査イベント(api-schema の AuditEventSchema の受信形)。 */
-interface WireAuditEvent {
+export interface WireAuditEvent {
   /** 行識別子 = row_id(不透明。--before カーソルに使う)。 */
   readonly id: string;
   /** 保存採番(admin 可視の project 応答のみ — AUDIT_SPEC §7)。 */
@@ -544,6 +544,38 @@ const VERIFY_MAX_PAGES = 100;
 type MirrorRowSelector = "chain-namespace" | "chain-seq-present";
 
 /**
+ * ページング共通エンジン(verify と `maruhi audit reconcile` が共有)。
+ * fetchPage は 1 ページ(新しい順)を取得し、カーソルは前ページ末尾行の id。
+ * onRow は行ごとの検査 + 収集(失敗 = サーバー応答の矛盾として中止)。
+ * bound は静的なページ数上限 — null は上限なしで、そのとき停止性は呼び出し側の
+ * 行検査が担う(reconcile は admin 可視 `seq` の厳密減少で総行数を束縛する)。
+ */
+export function paginateAuditEvents(input: {
+  readonly pageLimit: number;
+  readonly fetchPage: (before: string | null) => Effect.Effect<readonly WireAuditEvent[], CliError>;
+  readonly onRow: (row: WireAuditEvent) => Effect.Effect<void, CliError>;
+  readonly bound: { readonly maxPages: number; readonly exceededMessage: string } | null;
+}): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
+    let before: string | null = null;
+    for (let page = 0; input.bound === null || page < input.bound.maxPages; page += 1) {
+      // 型注釈は generator 内の自己参照推論(before → rows → before)を断つため
+      const cursor: string | null = before;
+      const rows: readonly WireAuditEvent[] = yield* input.fetchPage(cursor);
+      for (const row of rows) {
+        yield* input.onRow(row);
+      }
+      if (rows.length < input.pageLimit) {
+        return;
+      }
+      before = rows[rows.length - 1]?.id ?? null;
+    }
+    // ループを抜ける = bound 非 null で maxPages に到達した
+    return yield* Effect.fail(cliError(input.bound?.exceededMessage ?? "unreachable"));
+  });
+}
+
+/**
  * 1 つのミラー候補フィルタを全ページ取得(新しい順。カーソルは行 id)。
  * 同じ行 id が再登場したらサーバー応答の矛盾(カーソル非前進・行の重複配布)
  * として拒否する — id は不透明で序数比較ができないため、前進性は集合の
@@ -557,27 +589,32 @@ function fetchMirrorRowsForSelector(
   return Effect.gen(function* () {
     const rows: WireAuditEvent[] = [];
     const seen = new Set<string>();
-    let before: string | null = null;
-    for (let pageCount = 0; pageCount < VERIFY_MAX_PAGES; pageCount += 1) {
-      const cursor = before;
-      const page: readonly WireAuditEvent[] = yield* client.audit
-        .events({
-          params: { projectId },
-          query: {
-            limit: VERIFY_PAGE_LIMIT,
-            ...(selector === "chain-namespace"
-              ? { eventPrefix: CHAIN_MIRROR_EVENT_PREFIX }
-              : { chainSeqPresent: "true" as const }),
-            ...(cursor === null ? {} : { before: cursor }),
-          },
-        })
-        .pipe(
-          Effect.mapError(toCliError),
-          Effect.map((response) => response.events as readonly WireAuditEvent[]),
-        );
-      for (const row of page) {
+    yield* paginateAuditEvents({
+      pageLimit: VERIFY_PAGE_LIMIT,
+      bound: {
+        maxPages: VERIFY_MAX_PAGES,
+        exceededMessage:
+          "The audit log exceeded the theoretical page-count limit — the server response contradicts itself",
+      },
+      fetchPage: (before) =>
+        client.audit
+          .events({
+            params: { projectId },
+            query: {
+              limit: VERIFY_PAGE_LIMIT,
+              ...(selector === "chain-namespace"
+                ? { eventPrefix: CHAIN_MIRROR_EVENT_PREFIX }
+                : { chainSeqPresent: "true" as const }),
+              ...(before === null ? {} : { before }),
+            },
+          })
+          .pipe(
+            Effect.mapError(toCliError),
+            Effect.map((response) => response.events as readonly WireAuditEvent[]),
+          ),
+      onRow: (row) => {
         if (seen.has(row.id)) {
-          return yield* Effect.fail(
+          return Effect.fail(
             cliError(
               `Audit-log paging is not advancing (${selector}, row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
             ),
@@ -585,17 +622,10 @@ function fetchMirrorRowsForSelector(
         }
         seen.add(row.id);
         rows.push(row);
-      }
-      if (page.length < VERIFY_PAGE_LIMIT) {
-        return rows;
-      }
-      before = page[page.length - 1]?.id ?? null;
-    }
-    return yield* Effect.fail(
-      cliError(
-        "The audit log exceeded the theoretical page-count limit — the server response contradicts itself",
-      ),
-    );
+        return Effect.void;
+      },
+    });
+    return rows;
   });
 }
 

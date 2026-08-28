@@ -187,6 +187,12 @@ export interface StoredAuditEventRow extends Omit<AuditHeadRow, "rowId" | "paylo
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
+/**
+ * ensureHeadCurrent の結果: "current" = 列が MAX(seq) に到達(ヘッドを読んで
+ * よい)、"more-remains" = 有界伸長の上限に達し未到達(読まずに retryable 拒否)。
+ */
+export type AuditHeadExtensionOutcome = "current" | "more-remains";
+
 interface AuditStoreShape {
   /**
    * 同期追記。データ書き込みと同じ同期ブロック(= 同一イベントループタスク)で
@@ -218,20 +224,32 @@ interface AuditStoreShape {
   readonly queryEventsSync: (query: AuditEventsQuery) => readonly StoredAuditEventRow[];
   /**
    * 監査ヘッド累積ハッシュ列(AUDIT_SPEC §5.1 — audit_head_hashes)を
-   * MAX(seq) まで伸ばす。ハッシュ列は append-only 行からの決定論的な導出値で、
-   * materialize は読み取り経路(GET /audit-head・checkpoint 受理検証)の直前に
-   * 行う — SHA-256 が非同期(WebCrypto)のため追記の同期ブロックには置けず、
-   * 遅延拡張なら var.read の大量追記ホットパスにハッシュ計算が乗らない。
+   * MAX(seq) へ向けて伸ばす。ハッシュ列は append-only 行からの決定論的な導出値
+   * で、materialize は読み取り経路(GET /audit-head・checkpoint 受理検証)の
+   * 直前に行う — SHA-256 が非同期(WebCrypto)のため追記の同期ブロックには
+   * 置けず、遅延拡張なら var.read の大量追記ホットパスにハッシュ計算が乗らない。
    * 初回呼び出しが既存全行からの再計算 = §5.1 の導入マイグレーションを兼ねる。
    * どの読み手も拡張後の完全な列しか観測しないため、行と列の食い違いは
    * 観測不能(設計の裁定は docs/notes/session-35.md)。DO permit 下で呼ぶこと。
+   *
+   * **有界契約(セッション 38 — PR #99 レビュー申し送りの解消)**: 1 呼び出しの
+   * 伸長はチャンク数で有界({@link MAX_HEAD_EXTENSION_CHUNKS_PER_CALL})。
+   * `"more-remains"` が返った呼び出しでは列は MAX(seq) に達していないので、
+   * 呼び出し側は**ヘッドを読まず**(currentHeadHexSync / headPositionSync を
+   * 呼ばず)retryable な拒否(AuditHeadNotReady — AUTH_SPEC §16-2)で応答する
+   * こと。古い列で audit-head-unknown / stale を判定してはならない(fail-closed)。
+   * 進捗はチャンク単位で保存済みなので、再試行は必ず前進して収束する。
    */
-  readonly ensureHeadCurrent: Effect.Effect<void>;
-  /** 現在の累積ハッシュ(監査行ゼロは空文字列)。ensureHeadCurrent の後に呼ぶ。 */
+  readonly ensureHeadCurrent: Effect.Effect<AuditHeadExtensionOutcome>;
+  /**
+   * 現在の累積ハッシュ(監査行ゼロは空文字列)。ensureHeadCurrent が
+   * "current" を返した後にのみ呼ぶ(有界契約 — 上記)。
+   */
   readonly currentHeadHexSync: () => string;
   /**
    * 累積ハッシュ列内の出現位置(= 監査 seq。所属検査 — CRYPTO_SPEC §6.4)。
-   * 列に存在しなければ null。ensureHeadCurrent の後に呼ぶ。
+   * 列に存在しなければ null。ensureHeadCurrent が "current" を返した後にのみ
+   * 呼ぶ(有界契約 — 上記)。
    */
   readonly headPositionSync: (headHashHex: string) => number | null;
   /**
@@ -311,7 +329,13 @@ function eventBindings(event: AuditEventInput): (string | number | null)[] {
  * DO の失敗経路も resetSeqCacheSync を呼ぶ — chain-do.ts)。全追記はこの実装
  * 経由 + DO の permit 下で直列化されている前提。
  */
-export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
+/** makeAuditStore のオプション(テストが有界伸長の上限を縮めて固定するため)。 */
+export interface AuditStoreOptions {
+  /** ensureHeadCurrent の 1 呼び出しあたりチャンク上限(既定は本番値)。 */
+  readonly maxHeadExtensionChunks?: number;
+}
+
+export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): AuditStoreShape => {
   let nextSeqCache: number | null = null;
   const nextSeq = (): number => {
     if (nextSeqCache === null) {
@@ -364,7 +388,10 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
     },
     readRotationSync: makeRotationRead(sql),
     queryEventsSync: (query) => queryEvents(sql, query),
-    ensureHeadCurrent: extendHeadHashes(sql),
+    ensureHeadCurrent: extendHeadHashes(
+      sql,
+      options?.maxHeadExtensionChunks ?? MAX_HEAD_EXTENSION_CHUNKS_PER_CALL,
+    ),
     currentHeadHexSync: () => {
       const row = sql
         .exec("SELECT head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1")
@@ -393,6 +420,17 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
 
 /** 1 チャンクで読む・書く行数(2 列 × 50 行 = 100 バインドで SQLite 上限内)。 */
 const HEAD_CHUNK_ROWS = 50;
+
+/**
+ * ensureHeadCurrent の 1 呼び出しあたりチャンク上限(セッション 38 の裁定 AF)。
+ * 200 チャンク × 50 行 = 10,000 行 — §12-8 の 1 リクエスト最大監査行数
+ * (appendManySync の上限)と同値に取る: 定常状態(読むたびに伸ばす)の
+ * バックログは高々「直前の読み以降の追記」であり、最大の単発バーストでも
+ * 1 呼び出しで解消する。上限に達しうるのは巨大な既存ログの初回実体化だけで、
+ * その場合は "more-remains" → AuditHeadNotReady(503)→ クライアントの有界
+ * 再試行(進捗はチャンク単位で保存済み — 各呼び出しが最大 1 万行前進する)。
+ */
+export const MAX_HEAD_EXTENSION_CHUNKS_PER_CALL = 200;
 
 /** 拡張の読み取り列(row_digest の固定 17 列 — AUDIT_SPEC §5.1 の列順)。 */
 const HEAD_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
@@ -423,70 +461,94 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
 }
 
 /**
- * audit_head_hashes を audit_events の MAX(seq) まで伸ばす。
+ * audit_head_hashes を audit_events の MAX(seq) へ向けて伸ばす(1 呼び出し
+ * maxChunks チャンクまで — 有界契約はサービス宣言の doc を参照)。
  *
  * 永続化の粒度はタスク単位(chain-do.ts 冒頭のとおり DO SQLite の書き込みは
  * タスクごとに原子コミットされ、失敗で巻き戻るのは**現在の**タスクの書き込み
  * のみ)。このループはチャンクごとに await(SHA-256)を挟んでタスクを跨いで
  * 進むため、完了済みチャンクの INSERT は先行タスクで確定済みで、途中失敗が
  * 失いうるのは高々進行中チャンクの単一 INSERT(そのチャンクの全ハッシュ計算が
- * 成功した後の 1 回の sql.exec)だけ。どの失敗時点でも列は seq 1 からの連続
- * 接頭辞のまま残り、次回呼び出しが保存済みの末尾から再開して収束する — 巨大な
- * 既存ログの初回パスが実行環境の上限で切られても進捗は保存され、再試行が必ず
- * 前進する(このため呼び出しごとの反復上限は設けない)。seq の欠番は §5.1 の
- * 不変条件違反(append-only ストレージの破損)なので defect にする。
+ * 成功した後の 1 回の sql.exec)だけ。どの失敗・上限到達時点でも列は seq 1
+ * からの連続接頭辞のまま残り、次回呼び出しが保存済みの末尾から再開して収束する
+ * — 巨大な既存ログの初回パスは "more-remains"(→ AuditHeadNotReady)の有界
+ * 再試行に分割され、各呼び出しが必ず前進する。seq の欠番は §5.1 の不変条件違反
+ * (append-only ストレージの破損)なので defect にする。
  */
-const extendHeadHashes = (sql: SqlStorage): Effect.Effect<void> =>
+const extendHeadHashes = (
+  sql: SqlStorage,
+  maxChunks: number,
+): Effect.Effect<AuditHeadExtensionOutcome> =>
   Effect.promise(async () => {
-    let hashedUpTo = 0;
-    let head = "";
-    const state = sql
+    const state = { hashedUpTo: 0, head: "" };
+    const tail = sql
       .exec(`SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`)
       .toArray()[0];
-    if (state !== undefined) {
-      hashedUpTo = Number(state["seq"]);
-      head = String(state["head_hash_hex"]);
+    if (tail !== undefined) {
+      state.hashedUpTo = Number(tail["seq"]);
+      state.head = String(tail["head_hash_hex"]);
     }
-    for (;;) {
-      const rows = sql
-        .exec(
-          `SELECT ${HEAD_ROW_COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq LIMIT ?`,
-          hashedUpTo,
-          HEAD_CHUNK_ROWS,
-        )
-        .toArray()
-        .map(toAuditHeadRow);
-      if (rows.length === 0) {
-        return;
+    for (let chunk = 0; chunk < maxChunks; chunk += 1) {
+      if (await hashNextChunk(sql, state)) {
+        return "current";
       }
-      const inserts: (string | number)[] = [];
-      for (const row of rows) {
-        if (row.seq !== hashedUpTo + 1) {
-          throw new Error(
-            `audit log has a seq gap at ${hashedUpTo + 1} (append-only invariant violated)`,
-          );
-        }
-        const digest = await computeAuditRowDigest(row);
-        if (!digest.ok) {
-          // 保存行由来の入力で構造不正は実装バグ(エラー値に秘密は含まれない)
-          throw new Error(`audit row digest failed at seq ${row.seq}: ${digest.error.kind}`);
-        }
-        const next = await computeAuditHeadHash(SUITE_ID, head, row.seq, digest.value);
-        if (!next.ok) {
-          throw new Error(`audit head hash failed at seq ${row.seq}: ${next.error.kind}`);
-        }
-        head = next.value;
-        hashedUpTo = row.seq;
-        inserts.push(row.seq, head);
-      }
-      sql.exec(
-        `INSERT INTO audit_head_hashes (seq, head_hash_hex) VALUES ${rows
-          .map(() => "(?, ?)")
-          .join(", ")}`,
-        ...inserts,
+    }
+    // チャンク上限に到達。残行の有無を軽い存在検査で確定する(ちょうど上限で
+    // 完了した呼び出しに余計な "more-remains" を返さない)
+    const remains = sql
+      .exec(`SELECT 1 FROM audit_events WHERE seq > ? LIMIT 1`, state.hashedUpTo)
+      .toArray()[0];
+    return remains === undefined ? "current" : "more-remains";
+  });
+
+/**
+ * 次の 1 チャンク(最大 HEAD_CHUNK_ROWS 行)をハッシュして単一 INSERT で確定する。
+ * 返り値 = このチャンクで列が MAX(seq) に到達したか(空チャンク・端数チャンク)。
+ */
+async function hashNextChunk(
+  sql: SqlStorage,
+  state: { hashedUpTo: number; head: string },
+): Promise<boolean> {
+  const rows = sql
+    .exec(
+      `SELECT ${HEAD_ROW_COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq LIMIT ?`,
+      state.hashedUpTo,
+      HEAD_CHUNK_ROWS,
+    )
+    .toArray()
+    .map(toAuditHeadRow);
+  if (rows.length === 0) {
+    return true;
+  }
+  const inserts: (string | number)[] = [];
+  for (const row of rows) {
+    if (row.seq !== state.hashedUpTo + 1) {
+      throw new Error(
+        `audit log has a seq gap at ${state.hashedUpTo + 1} (append-only invariant violated)`,
       );
     }
-  });
+    const digest = await computeAuditRowDigest(row);
+    if (!digest.ok) {
+      // 保存行由来の入力で構造不正は実装バグ(エラー値に秘密は含まれない)
+      throw new Error(`audit row digest failed at seq ${row.seq}: ${digest.error.kind}`);
+    }
+    const next = await computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest.value);
+    if (!next.ok) {
+      throw new Error(`audit head hash failed at seq ${row.seq}: ${next.error.kind}`);
+    }
+    state.head = next.value;
+    state.hashedUpTo = row.seq;
+    inserts.push(row.seq, state.head);
+  }
+  sql.exec(
+    `INSERT INTO audit_head_hashes (seq, head_hash_hex) VALUES ${rows
+      .map(() => "(?, ?)")
+      .join(", ")}`,
+    ...inserts,
+  );
+  // 端数チャンク = このチャンクで MAX(seq) に到達(追加の SELECT 不要)
+  return rows.length < HEAD_CHUNK_ROWS;
+}
 
 /** queryEventsSync の SELECT 列(StoredAuditEventRow と同順)。 */
 const EVENT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,

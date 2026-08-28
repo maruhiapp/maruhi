@@ -17,6 +17,7 @@ import {
   AttestationRateLimitedError,
   AttestationRegressionError,
   AttestationRejectedError,
+  AuditHeadNotReadyError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -142,6 +143,10 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
         CheckpointStateMismatchError,
+        // 非空 audit_head_hash の受理検査の前段: 監査ヘッド派生列の有界伸長が
+        // 未完了(AUDIT_SPEC §5.1 — セッション 38)。retryable 503 — 古い列で
+        // audit-head-unknown / stale を判定しない(fail-closed)
+        AuditHeadNotReadyError,
         CompositeRequiredError,
         ForbiddenError,
       ],

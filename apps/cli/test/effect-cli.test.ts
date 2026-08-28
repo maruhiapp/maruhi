@@ -1164,7 +1164,7 @@ describe("rotation / audit の入れ子サブコマンド(ADR-0016 第 3 段階 
     const bogus = await startEnv();
     expect(await runCli(["audit", "bogus"], bogus.env.layer)).toBe(2);
     expect(bogus.env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: list | invites | self | verify)",
+      "Unknown subcommand (expected one of: list | invites | self | verify | reconcile)",
     );
     expect(bogus.server.requests).toHaveLength(0);
   });

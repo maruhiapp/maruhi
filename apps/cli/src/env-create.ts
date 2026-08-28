@@ -18,7 +18,7 @@
 // サーバー鍵宛ラップを含む(§12-4 — 2026-08-12 の受信者クラス server 実装)。
 
 import type { WrappedDek } from "@maruhi/api-schema";
-import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { AuditHeadNotReadyError, ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
@@ -188,7 +188,15 @@ export function envCreateOp(input: {
         // CAS リトライではエントリ(prev 変更)とステートメント(宣言ヘッド変更)の
         // **両方**を再署名する(§12-4)。ラップ集合はメンバー集合変化時のみ再構築
         attempt: (state) => attemptCreate(input, state, { name, commitmentHex: commitment.value }),
-        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+        // AuditHeadNotReady(503 — 監査ヘッド派生列の有界伸長が未完了。AUDIT_SPEC
+        // §5.1)も同じ回復(再同期 + 再署名 + 再送)で前進する: 失敗応答でも
+        // サーバーの伸長は保存済みで、再送時の再伸長は残りだけになる。CLI の
+        // 境界 checkpoint は公証しない(空 — 裁定 M-b)ため現行サーバーからは
+        // 到達しないが、契約に宣言されたエラーとして防御的に retryable に分類する
+        classify: (error) =>
+          error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
+            ? "head-conflict"
+            : null,
         // 親ヘッド CAS 失敗(並行追記): 再同期して新ヘッドでエントリを再署名する
         // (§12-4)。ラップ集合は現メンバー集合が変わった場合のみ作り直す。
         // 再同期で判明する定的エラー(並行作成による duplicate-environment 等)は
@@ -217,7 +225,9 @@ export function envCreateOp(input: {
                 });
             return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
           }),
-        exhaustedMessage: `The environment creation's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+        // AuditHeadNotReady も同じ分類で回るため、文面は両方の原因に忠実にする
+        // (pullfrog PR #102 レビュー対応 — 到達可能になった場合の誤案内を防ぐ)
+        exhaustedMessage: `The environment creation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
       },
     );
     // 効果確認(§12-10 (3))を通過して初めて床を確立し成功を報告する

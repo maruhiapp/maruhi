@@ -20,7 +20,11 @@
 //   積まない — checkpoint はローカル状態を前進させず、未確認の着地が後続の
 //   判断を汚す経路がない(裁定は docs/notes/session-35.md)
 
-import { ChainHeadConflictError, CheckpointStateMismatchError } from "@maruhi/api-schema";
+import {
+  AuditHeadNotReadyError,
+  ChainHeadConflictError,
+  CheckpointStateMismatchError,
+} from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import { scopePermissionFor } from "@maruhi/core";
 import type {
@@ -38,7 +42,7 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
@@ -47,6 +51,17 @@ import { pullVerifiedEnvironment } from "./values.ts";
 const MAX_STATE_MISMATCH_ATTEMPTS = 3;
 /** CAS 競合(409)の再署名リトライの上限(チェーン CAS の既存慣行と同水準)。 */
 const MAX_HEAD_CONFLICT_ATTEMPTS = 5;
+/**
+ * AuditHeadNotReady(503 — 監査ヘッド派生列の有界伸長が未完了。AUDIT_SPEC
+ * §5.1 / AUTH_SPEC §16-2)の再試行上限。1 回の失敗応答でもサーバー側は上限
+ * いっぱい(1 万行)前進しているため、予算 × サーバー上限 = 1 実行あたり
+ * 10 万行の伸長が保証される。枯渇はエラーにするが、進捗は保存済みなので
+ * 再実行が続きから前進する(メッセージで案内 — session-38 裁定 AG)。
+ */
+const MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS = 10;
+
+/** AuditHeadNotReady 枯渇時の案内(fetch / 送信の両経路で共通)。 */
+const AUDIT_HEAD_NOT_READY_EXHAUSTED = `The server is still materializing the audit-head hash column after ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS} attempts (this happens once, on the first audit-head access of a project with a very large existing audit log). Progress is saved server-side and every attempt advances it — re-run the command to continue where it left off`;
 
 /** 発行契機 (iii) の基準経過(7 日 — CRYPTO_SPEC §6.3 の起草値)。 */
 const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -247,14 +262,41 @@ function buildTuples(
   });
 }
 
-/** 監査ヘッド申告の取得(実効権限 admin の場合のみ呼ばれる — §16-2)。 */
-function fetchAuditHead(client: MaruhiClient, projectId: string): Effect.Effect<string, CliError> {
-  return client.audit.auditHead({ params: { projectId } }).pipe(
-    Effect.map((response) => response.auditHeadHashHex),
-    Effect.mapError((error) =>
-      cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
-    ),
-  );
+/**
+ * 監査ヘッド申告の取得(実効権限 admin の場合のみ呼ばれる — §16-2)。
+ * AuditHeadNotReady(503 — 遅延実体化の有界伸長が未完了)は専用の有界再試行で
+ * 吸収する: サーバー側の進捗は呼び出しごとに保存され必ず前進するため、即時
+ * 再試行が生産的(バックオフ不要)。枯渇時は発生条件と再実行での解消を案内する
+ * (黙って一般エラーに落とさない)。`maruhi audit reconcile` も共有する。
+ */
+export function fetchAuditHead(
+  client: MaruhiClient,
+  projectId: string,
+): Effect.Effect<string, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    for (let attempt = 1; attempt <= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS; attempt += 1) {
+      const outcome = yield* client.audit.auditHead({ params: { projectId } }).pipe(
+        Effect.map((response) => ({ kind: "ok" as const, head: response.auditHeadHashHex })),
+        Effect.catch((error) =>
+          error instanceof AuditHeadNotReadyError
+            ? Effect.succeed({ kind: "not-ready" as const })
+            : Effect.fail(
+                cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
+              ),
+        ),
+      );
+      if (outcome.kind === "ok") {
+        return outcome.head;
+      }
+      if (attempt < MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS) {
+        yield* io.log(
+          `The server is materializing the audit-head hash column — retrying (attempt ${attempt + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+        );
+      }
+    }
+    return yield* Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED));
+  });
 }
 
 /** 署名 → 追記 → 受理後照合(§12-10 (3))の 1 試行。 */
@@ -268,7 +310,7 @@ function sendCheckpoint(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.Effect<
   { readonly headSeq: number },
-  ChainHeadConflictError | CheckpointStateMismatchError | CliError
+  ChainHeadConflictError | CheckpointStateMismatchError | AuditHeadNotReadyError | CliError
 > {
   return Effect.gen(function* () {
     const environments: CheckpointEnvironmentEntry[] = input.tuples.map((tuple) => ({
@@ -307,7 +349,10 @@ function appendCheckpoint(
   client: MaruhiClient,
   view: VerifiedProject,
   entry: ChainEntry,
-): Effect.Effect<void, ChainHeadConflictError | CheckpointStateMismatchError | CliError> {
+): Effect.Effect<
+  void,
+  ChainHeadConflictError | CheckpointStateMismatchError | AuditHeadNotReadyError | CliError
+> {
   return client.membership
     .append({
       params: { projectId: view.projectId },
@@ -318,7 +363,8 @@ function appendCheckpoint(
       Effect.mapError((error) => {
         if (
           error instanceof ChainHeadConflictError ||
-          error instanceof CheckpointStateMismatchError
+          error instanceof CheckpointStateMismatchError ||
+          error instanceof AuditHeadNotReadyError
         ) {
           return error;
         }
@@ -378,9 +424,8 @@ export function issueCheckpoint(
     }
     const attest = yield* determineAuditAttestation(input);
     const warnings: string[] = [];
+    const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
     let previous: BuiltView | null = null;
-    let mismatchAttempts = 0;
-    let headConflictAttempts = 0;
     let subset: readonly EnvironmentId[] | null = null;
     for (;;) {
       // 型注釈は generator 内の自己参照推論(built → subset → built)を断つため
@@ -413,39 +458,88 @@ export function issueCheckpoint(
           warnings,
         });
       }
-      if (attempt.kind === "head-conflict") {
-        headConflictAttempts += 1;
-        yield* ensureHeadConflictBudget(headConflictAttempts);
-        yield* io.log("The chain head advanced while the checkpoint was in flight — re-signing");
-        previous = built;
-        continue;
-      }
-      // 受理時点突合の 422(CheckpointStateMismatch): データ層のビューを取り
-      // 直して再試行する(§16-2)。上限到達後は直近 2 回の構築で不変だった
-      // タプルの部分集合で 1 回だけ発行する(§6.3 の退避経路)
-      mismatchAttempts += 1;
-      if (mismatchAttempts < MAX_STATE_MISMATCH_ATTEMPTS) {
-        yield* io.log(
-          `The server-side state advanced past this checkpoint's view (${attempt.reason}) — re-pulling and retrying (attempt ${mismatchAttempts + 1} of ${MAX_STATE_MISMATCH_ATTEMPTS})`,
-        );
-        previous = built;
-        continue;
-      }
-      // 型注釈は built と同じ理由(generator 内の自己参照推論を断つ)
-      const stableIds: readonly EnvironmentId[] = yield* stableSubsetOrFail({
+      // 再試行可能な失敗の吸収(型注釈は built と同じ理由 — generator 内の
+      // 自己参照推論を断つ): null = そのまま再試行、配列 = 部分集合へ退避
+      const nextSubset: readonly EnvironmentId[] | null = yield* absorbSendFailure({
+        failure: attempt,
+        counters,
         built,
         baseline: subset === null ? previous : null,
-        reason: attempt.reason,
+        warnings,
+        io,
       });
-      subset = stableIds;
-      warnings.push(
-        `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run maruhi project checkpoint later to cover the rest`,
-      );
-      yield* io.log(
-        `Retrying with the stable subset of ${stableIds.length} environment(s) (bounded retries exhausted)`,
-      );
+      if (nextSubset !== null) {
+        subset = nextSubset;
+      }
       previous = built;
     }
+  });
+}
+
+/** issueCheckpoint の再試行カウンタ(失敗種別ごとの独立予算)。 */
+interface RetryCounters {
+  mismatch: number;
+  headConflict: number;
+  notReady: number;
+}
+
+/**
+ * 送信失敗(再試行可能な 3 種)の吸収。返り値 null = ビューを取り直して
+ * そのまま再試行、配列 = 部分集合へ退避(§6.3)。予算枯渇は種別ごとの案内で
+ * 確定失敗にする。
+ *
+ * - head-conflict(409): 再署名して再試行(既存慣行の上限)
+ * - audit-head-not-ready(503): 申告の取得と受理の間に大量の監査行(一括
+ *   var.read 等)が追記され、受理側の再伸長が上限に達した形。失敗応答でも
+ *   サーバーの伸長は前進済みなので、ビューと申告を取り直して再試行すれば
+ *   収束する(進捗保存 — AUDIT_SPEC §5.1)。枯渇は黙らせず発生条件と再実行での
+ *   解消を案内する(session-38 裁定 AG)
+ * - state-mismatch(422): ビューの再取得で再試行し、上限到達後は直近 2 回の
+ *   構築で不変だったタプルの部分集合で 1 回だけ発行する(§6.3 の退避経路)
+ */
+function absorbSendFailure(input: {
+  readonly failure:
+    | { readonly kind: "head-conflict" }
+    | { readonly kind: "state-mismatch"; readonly reason: string }
+    | { readonly kind: "audit-head-not-ready" };
+  readonly counters: RetryCounters;
+  readonly built: BuiltView;
+  readonly baseline: BuiltView | null;
+  readonly warnings: string[];
+  readonly io: CliIoShape;
+}): Effect.Effect<readonly EnvironmentId[] | null, CliError> {
+  return Effect.gen(function* () {
+    const { failure, counters, io } = input;
+    if (failure.kind === "head-conflict") {
+      counters.headConflict += 1;
+      yield* ensureHeadConflictBudget(counters.headConflict);
+      yield* io.log("The chain head advanced while the checkpoint was in flight — re-signing");
+      return null;
+    }
+    if (failure.kind === "audit-head-not-ready") {
+      counters.notReady += 1;
+      yield* absorbAcceptanceNotReady(counters.notReady, io);
+      return null;
+    }
+    counters.mismatch += 1;
+    if (counters.mismatch < MAX_STATE_MISMATCH_ATTEMPTS) {
+      yield* io.log(
+        `The server-side state advanced past this checkpoint's view (${failure.reason}) — re-pulling and retrying (attempt ${counters.mismatch + 1} of ${MAX_STATE_MISMATCH_ATTEMPTS})`,
+      );
+      return null;
+    }
+    const stableIds = yield* stableSubsetOrFail({
+      built: input.built,
+      baseline: input.baseline,
+      reason: failure.reason,
+    });
+    input.warnings.push(
+      `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run maruhi project checkpoint later to cover the rest`,
+    );
+    yield* io.log(
+      `Retrying with the stable subset of ${stableIds.length} environment(s) (bounded retries exhausted)`,
+    );
+    return stableIds;
   });
 }
 
@@ -465,6 +559,22 @@ function summarizeAccepted(input: {
     headSeq: input.headSeq,
     warnings: [...new Set(input.warnings)],
   };
+}
+
+/**
+ * 受理段の AuditHeadNotReady(503)の吸収: 申告の取得と受理の間に大量の監査行
+ * (一括 var.read 等)が追記され、受理側の再伸長が上限に達した形。失敗応答でも
+ * サーバーの伸長は前進済みなので、ビューと申告を取り直して再試行すれば収束する
+ * (進捗保存 — AUDIT_SPEC §5.1)。枯渇は黙らせず発生条件と再実行での解消を
+ * 案内する(session-38 裁定 AG)。
+ */
+function absorbAcceptanceNotReady(attempts: number, io: CliIoShape): Effect.Effect<void, CliError> {
+  if (attempts >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS) {
+    return Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED));
+  }
+  return io.log(
+    `The server is materializing the audit-head hash column — refetching the attestation and retrying (attempt ${attempts + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+  );
 }
 
 /** CAS 競合(409)の再署名リトライの残量検査(使い切ったら確定失敗)。 */
@@ -516,9 +626,11 @@ function stableSubsetOrFail(input: {
 
 /** sendCheckpoint の失敗の分類(再試行の型はここで判別、その他は確定失敗)。 */
 function classifySendFailure(
-  error: ChainHeadConflictError | CheckpointStateMismatchError | CliError,
+  error: ChainHeadConflictError | CheckpointStateMismatchError | AuditHeadNotReadyError | CliError,
 ): Effect.Effect<
-  { readonly kind: "head-conflict" } | { readonly kind: "state-mismatch"; readonly reason: string },
+  | { readonly kind: "head-conflict" }
+  | { readonly kind: "state-mismatch"; readonly reason: string }
+  | { readonly kind: "audit-head-not-ready" },
   CliError
 > {
   if (error instanceof ChainHeadConflictError) {
@@ -526,6 +638,9 @@ function classifySendFailure(
   }
   if (error instanceof CheckpointStateMismatchError) {
     return Effect.succeed({ kind: "state-mismatch" as const, reason: error.reason });
+  }
+  if (error instanceof AuditHeadNotReadyError) {
+    return Effect.succeed({ kind: "audit-head-not-ready" as const });
   }
   return Effect.fail(error);
 }

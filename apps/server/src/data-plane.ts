@@ -418,6 +418,11 @@ export type DataRejection =
       readonly kind: "checkpoint-state-mismatch";
       readonly reason: CheckpointMismatchReason;
     }
+  // 監査ヘッド派生列の有界伸長が未完了(AUDIT_SPEC §5.1 — セッション 38)。
+  // 監査ヘッドを読む全経路(GET /audit-head・standalone 受理・境界複合の
+  // 非空公証)で、上限到達時に古い列で unknown / stale を判定する代わりに
+  // 返す retryable 拒否(worker が api-schema の AuditHeadNotReady〔503〕へ写像)
+  | { readonly kind: "audit-head-not-ready" }
   | {
       readonly kind: "chain-head-conflict";
       readonly currentHeadSeq: number;

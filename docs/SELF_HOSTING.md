@@ -289,6 +289,22 @@ backed by `GET /projects/:id/audit-head`. Two version-skew notes:
   with very large audit logs the first such request does a one-time full pass
   over the rows.
 
+**Bounded audit-head materialization — `AuditHeadNotReady` (2026-08-28
+release, after the periodic checkpoints above)**: the lazy materialization
+above is now bounded per call (10,000 rows). When a project's backlog exceeds
+that — in practice only the one-time first pass over a very large existing
+audit log — the audit-head read and checkpoint acceptance respond with a
+retryable HTTP 503 (`AuditHeadNotReady`) instead of holding the request until
+the full pass completes. Progress is saved server-side, so every attempt
+advances and retrying converges. Update-order impact:
+
+- **Old CLI × new server**: an old CLI does not understand the new typed 503
+  and reports it as a generic error. This can only happen on that first
+  materialization of a very large log, and re-running the command resolves it
+  (the server keeps advancing on every attempt). No data is at risk.
+- **New CLI × old server**: unchanged behavior — the old server never sends
+  `AuditHeadNotReady`, and the new CLI's retry handling simply never triggers.
+
 **Checkpoint snapshot distribution (2026-08-28 release, after the periodic
 checkpoints above)**: this release makes servers bundle the checkpoint-time
 value snapshot into value-bearing reads (bulk pull and workload leases), and

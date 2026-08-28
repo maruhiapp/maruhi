@@ -6,6 +6,7 @@
 // (Schema.TaggedError は instanceof が使える — session-07 の知見)。
 
 import {
+  AuditHeadNotReadyError,
   AuthFlowError,
   AuthRateLimitedError,
   ChainCapacityExceededError,
@@ -174,6 +175,13 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `This operation (${e.op}) is only accepted through the compound endpoint (AUTH_SPEC §12-4)`,
   ),
+  // 専用の有界再試行(checkpoint.ts / audit-reconcile.ts)を通らない残りの
+  // 経路の受け皿。retryable なので再実行を案内する
+  when(
+    isInstanceOf(AuditHeadNotReadyError),
+    () =>
+      "The server is still materializing the audit-head hash column (this happens once on a project with a large existing audit log). Progress is saved server-side — re-run the command to continue",
+  ),
   when(
     isInstanceOf(ChainInvalidError),
     (e) =>
@@ -266,6 +274,7 @@ const renderers: readonly Renderer[] = [
  */
 export function isServerRejection(error: unknown): boolean {
   return [
+    AuditHeadNotReadyError,
     ChainCapacityExceededError,
     ChainHeadConflictError,
     ChainEntryInvalidError,

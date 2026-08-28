@@ -142,8 +142,13 @@ export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
     // 注意: この GET は読み取り形だが**意図的に書き込む** endpoint である
     // (派生列の遅延実体化 = 「読む経路が読む前に伸ばす」契約)。op permit 下で
     // 直列化され、拡張は冪等なので再試行は安全だが、応答キャッシュの導入や
-    // 「GET = 副作用なし」を前提にした経路変更はこの副作用を壊す
-    yield* audit.ensureHeadCurrent;
+    // 「GET = 副作用なし」を前提にした経路変更はこの副作用を壊す。
+    // 有界伸長(セッション 38): 上限到達 = MAX(seq) 未到達なら古いヘッドを
+    // 返さず retryable な audit-head-not-ready(503)— 拒否は認可判定(上の
+    // 404 / 403)より後なので §11-2 の存在秘匿と両立する
+    if ((yield* audit.ensureHeadCurrent) === "more-remains") {
+      return yield* rejectData({ kind: "audit-head-not-ready" });
+    }
     return { auditHeadHashHex: audit.currentHeadHexSync() };
   });
 

@@ -98,6 +98,7 @@ export {
   AttestationRegressionError,
   AttestationRejectedError,
   AttestationRejectReasonSchema,
+  AuditHeadNotReadyError,
   AuthFlowError,
   AuthFlowFailureReasonSchema,
   AuthRateLimitedError,

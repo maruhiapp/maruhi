@@ -598,6 +598,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "attestation-rejected": { kind: "attestation-rejected", reason: "signature-invalid" },
     "attestation-regression": { kind: "attestation-regression", storedSeq: 5 },
     "attestation-rate-limited": { kind: "attestation-rate-limited", retryAfterSeconds: 60 },
+    "audit-head-not-ready": { kind: "audit-head-not-ready" },
   } as const satisfies {
     readonly [K in DataRejection["kind"]]: Extract<DataRejection, { kind: K }>;
   };
@@ -635,6 +636,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "attestation-rejected": "AttestationRejected",
     "attestation-regression": "AttestationRegression",
     "attestation-rate-limited": "AttestationRateLimited",
+    "audit-head-not-ready": "AuditHeadNotReady",
   } as const satisfies Record<DataRejection["kind"], string>;
 
   // 全データプレーン + チェーンエンドポイント × 全拒否 kind の組み合わせ

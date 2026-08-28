@@ -211,6 +211,20 @@ export class CheckpointStateMismatchError extends Schema.TaggedError<CheckpointS
 ) {}
 
 /**
+ * 503: the audit-head derived column (AUDIT_SPEC §5.1 の遅延実体化) has not
+ * reached MAX(seq) within this call's bounded extension budget (AUTH_SPEC
+ * §16-2 — 2026-08-28 セッション 38)。Retryable: 伸長の進捗はサーバー側に保存
+ * 済みで、再試行は必ず前進する。監査ヘッドを読む全経路(GET /audit-head・
+ * standalone checkpoint 受理・境界複合の非空公証)が共有する。**本文は空**:
+ * 残行数・進捗を載せると監査行数の序数情報になる(AUDIT_SPEC §7 の件数非漏洩)。
+ */
+export class AuditHeadNotReadyError extends Schema.TaggedError<AuditHeadNotReadyError>()(
+  "AuditHeadNotReady",
+  {},
+  { httpApiStatus: 503 },
+) {}
+
+/**
  * 409: manifestVersion CAS failure (AUTH_SPEC §12-5 (6)) — the manifest's
  * declared manifestVersion is not `currentManifestVersion + 1`. Carries the
  * latest manifestVersion **number only**(勝者のハッシュを載せない規律は
