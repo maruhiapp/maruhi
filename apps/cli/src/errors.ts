@@ -11,6 +11,13 @@ export class CliError extends Data.TaggedError("CliError")<{
   readonly message: string;
   /** 引数の書き方の誤り(usage エラー = 終了コード 2)か。 */
   readonly usage?: boolean;
+  /**
+   * 暗号学的証拠(署名検証済みデータとチェーン公証・床の矛盾 — 再実行では
+   * 解消しない)を運ぶ失敗か。rotate の巡末分類(env-rotate.ts の settlePass)が
+   * 「再実行すれば直る」案内への格下げを避けるために読む(PR-F4 の規律の
+   * 規則 2 / 床違反への適用 — PR-M3)。
+   */
+  readonly evidence?: boolean;
 }> {
   /**
    * 終了コードは**エラー型自身が持つ**(ADR-0016 決定 4)。ランナーに
@@ -25,6 +32,15 @@ export class CliError extends Data.TaggedError("CliError")<{
 /** Builds a {@link CliError} from a user-facing message. */
 export function cliError(message: string): CliError {
   return new CliError({ message });
+}
+
+/**
+ * Builds a {@link CliError} carrying cryptographic evidence (a contradiction
+ * between verified data and the chain's notarization or the local floor —
+ * a failure re-running cannot resolve).
+ */
+export function evidenceError(message: string): CliError {
+  return new CliError({ message, evidence: true });
 }
 
 /**

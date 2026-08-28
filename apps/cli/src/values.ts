@@ -24,6 +24,7 @@
 // への注入は床を持っても検出されない**(§14.3-5 の既知残余)。
 
 import type {
+  CheckpointValueSnapshot,
   DistributedEncryptedPayload,
   DistributedEnvironmentManifest,
   DistributedEnvironmentMetaStatement,
@@ -36,9 +37,10 @@ import { verifyDistributedMetaStatement, verifyDistributedValue } from "@maruhi/
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { checkCheckpointIntegrity } from "./checkpoint-integrity.ts";
 import { requireChainEnvironment } from "./deks.ts";
 import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import {
   buildEnvironmentFloor,
@@ -326,6 +328,11 @@ interface PullWire {
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3。optional は移行の過渡状態のみ)。 */
   readonly manifest?: DistributedEnvironmentManifest;
+  /**
+   * チェックポイント時点の値スナップショット列挙(§12-7 — 規則 2 の材料。
+   * 基準を持つ環境での欠落は checkpoint-integrity.ts が拒否する)。
+   */
+  readonly checkpointSnapshot?: CheckpointValueSnapshot;
 }
 
 /** 環境自身のステートメント検証(active であること込み)。証拠材料を返す。 */
@@ -562,9 +569,22 @@ function verifyManifestStage(input: {
 }): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
   const wireManifest = input.manifest;
   if (wireManifest === undefined) {
-    return input.allowMissingManifest
-      ? Effect.succeed({ kind: "ok", value: null } as const)
-      : Effect.fail(cliError(missingManifestMessage(input.environmentId)));
+    if (!input.allowMissingManifest) {
+      return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
+    }
+    // 移行許容(--init-manifest)は「マニフェスト未初期化の環境」のためにある。
+    // 検証済みチェーン上に基準 checkpoint を持つ環境は必ずマニフェストを持つ
+    // (checkpoint タプルが manifest_version を束縛する — §6.2 / §12-4)ため、
+    // その欠落は移行操作下でも握り潰しの証拠として拒否する(床のマニフェスト
+    // 記録確立後の欠落拒否 — §6.3 — のチェーン導出版)
+    if (input.verified.history.latestCheckpointFor(input.environmentId) !== undefined) {
+      return Effect.fail(
+        cliError(
+          `The server did not distribute an environment manifest for ${input.environmentId}, although the verified chain carries a checkpoint binding one (manifest suppression — CRYPTO_SPEC §6.3). The migration allowance does not apply to a checkpointed environment`,
+        ),
+      );
+    }
+    return Effect.succeed({ kind: "ok", value: null } as const);
   }
   return verifyStage(
     () =>
@@ -693,35 +713,57 @@ function verifyAll(
   | { readonly kind: "future" },
   CliError
 > {
-  return verifyAllCommon(
-    verified,
-    environmentId,
-    pull,
-    () => verifyActiveVariables(verified, environmentId, pull.variables),
-    (value) => ({
-      variableId: value.variableId,
-      status: "active" as const,
-      metaVersion: value.metaVersion,
-      metaSigHashHex: value.metaSignedBytesHashHex,
-    }),
-    allowMissingManifest,
-    floorManifest,
-  ).pipe(
-    Effect.map((result) =>
-      result.kind === "future"
-        ? result
-        : ({
-            kind: "ok",
-            snapshot: {
-              environment: result.environment,
-              variables: result.variables,
-              tombstones: result.tombstones,
-              manifest: result.manifest,
-            },
-            warnings: result.warnings,
-          } as const),
-    ),
-  );
+  return Effect.gen(function* () {
+    const result = yield* verifyAllCommon(
+      verified,
+      environmentId,
+      pull,
+      () => verifyActiveVariables(verified, environmentId, pull.variables),
+      (value) => ({
+        variableId: value.variableId,
+        status: "active" as const,
+        metaVersion: value.metaVersion,
+        metaSigHashHex: value.metaSignedBytesHashHex,
+      }),
+      allowMissingManifest,
+      floorManifest,
+    );
+    if (result.kind === "future") {
+      return { kind: "future" } as const;
+    }
+    // チェックポイント整合の規則 2(§6.3 — 値付き経路のみ。metadata-only は
+    // 値を運ばないため対象外 §12-7)。tombstone の削除説明はマニフェスト整合済み
+    // 集合を前提にするため、マニフェスト段(verifyAllCommon 内)の後に置く。
+    // 拒否は検証済みデータとチェーン公証の矛盾 = 証拠(evidence — rotate の
+    // 巡末分類が「再実行で直る」案内へ格下げしないための型付け)
+    const checkpoint = yield* Effect.tryPromise({
+      try: () =>
+        checkCheckpointIntegrity({
+          history: verified.history,
+          environmentId,
+          snapshot: pull.checkpointSnapshot,
+          variables: result.variables,
+          tombstoneIds: new Set(result.tombstones.map((tombstone) => tombstone.variableId)),
+        }),
+      catch: () => cliError("Checkpoint-integrity verification failed to run (crypto error)"),
+    });
+    if (checkpoint.kind === "rejected") {
+      return yield* Effect.fail(evidenceError(checkpoint.message));
+    }
+    if (checkpoint.kind === "future") {
+      return { kind: "future" } as const;
+    }
+    return {
+      kind: "ok",
+      snapshot: {
+        environment: result.environment,
+        variables: result.variables,
+        tombstones: result.tombstones,
+        manifest: result.manifest,
+      },
+      warnings: result.warnings,
+    } as const;
+  });
 }
 
 /**
@@ -789,9 +831,10 @@ function enforceFloor(input: {
   return Effect.gen(function* () {
     const violation = checkEnvironmentPull(input.floor.current(), input.snapshot);
     if (violation !== null) {
-      // 拒否 + 提示可能な証拠(座標・両 signed bytes ハッシュ・宣言ヘッド)
+      // 拒否 + 提示可能な証拠(座標・両 signed bytes ハッシュ・宣言ヘッド)。
+      // 床違反は正規署名済みデータ同士の矛盾 = 証拠(再実行では解消しない)
       return yield* Effect.fail(
-        cliError(
+        evidenceError(
           formatFloorViolation(
             { projectId: input.commitView.projectId, environmentId: input.environmentId },
             violation,
@@ -975,7 +1018,18 @@ export function verifyLeaseDistribution(input: {
         ),
       );
     }
-    return { variables: result.snapshot.variables, warnings: result.warnings };
+    // 基準なし警告(§6.3 SHOULD — 床を持たないクライアントは、値付き配布を
+    // 受けた環境に基準 checkpoint が存在しないことを検出したら警告する。
+    // 不在の黙認は「このクラスの主要保証 = チェックポイント整合が働いていない」
+    // ことの不可視化になる — session-36 裁定 V)
+    const warnings =
+      input.verified.history.latestCheckpointFor(input.environmentId) === undefined
+        ? [
+            ...result.warnings,
+            `No checkpoint on the verified chain covers environment ${input.environmentId}, so checkpoint integrity (rollback and stale-epoch injection detection — CRYPTO_SPEC §6.3) does not protect this response. A project member should issue one with: maruhi project checkpoint`,
+          ]
+        : result.warnings;
+    return { variables: result.snapshot.variables, warnings };
   });
 }
 

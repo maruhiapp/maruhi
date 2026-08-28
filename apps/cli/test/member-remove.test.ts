@@ -30,6 +30,7 @@ import {
   removeMemberOp,
   rotateEpochOp,
   type TestUser,
+  type WireCheckpointSnapshot,
   type WireDistributedManifest,
   type WireRecipientDek,
   wrapDekFor,
@@ -107,6 +108,8 @@ async function makeRemoveServer(input: {
   const environments = input.environments;
   /** 環境ごとの保存済み最新マニフェスト(初回 pull で遅延発行 → rotate 受理で置換)。 */
   const manifests = new Map<string, WireDistributedManifest>();
+  /** 環境ごとの保存済みチェックポイントスナップショット(§16-2 — 変数なし = 空列挙)。 */
+  const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
   const listedStatements = await Promise.all(
     Object.keys(environments).map((environmentId) =>
       environmentStatementFor({
@@ -187,6 +190,7 @@ async function makeRemoveServer(input: {
         });
         manifests.set(environmentId, manifest);
       }
+      const checkpointSnapshot = checkpointSnapshots.get(environmentId);
       return {
         status: 200,
         json: {
@@ -197,6 +201,8 @@ async function makeRemoveServer(input: {
           deletedVariables: [],
           deks: environment.deks,
           manifest,
+          // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
+          ...(checkpointSnapshot === undefined ? {} : { checkpointSnapshot }),
         },
       };
     },
@@ -220,6 +226,12 @@ async function makeRemoveServer(input: {
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
+      // 受理と同一トランザクションのスナップショット保存(§16-2 — 変数なし = 空)
+      checkpointSnapshots.set(environmentId, {
+        chainSeq: entries.length,
+        entryHashHex: hashes[hashes.length - 1] ?? "",
+        values: [],
+      });
       environment.currentEpoch = body.entry.payload.newEpoch;
       // 受理した同梱マニフェスト(§12-4)を保存最新として配布へ回す(§12-5)
       manifests.set(environmentId, {
