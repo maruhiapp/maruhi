@@ -65,6 +65,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
+import { auditReconcileOp } from "./audit-reconcile.ts";
 import {
   type AuditListFilters,
   auditInvitesOp,
@@ -450,6 +451,8 @@ const auditSelfConfig = { ...serverOnlyFlags(), ...auditPageFlags() };
 
 const auditVerifyConfig = { ...projectFlags() };
 
+const auditReconcileConfig = { ...projectFlags() };
+
 const loginConfig = {
   ...serverOnlyFlags(),
   "github-client-id": singleValued(
@@ -688,6 +691,7 @@ const GROUP_CONFIGS: Readonly<
     invites: auditInvitesConfig,
     self: auditSelfConfig,
     verify: auditVerifyConfig,
+    reconcile: auditReconcileConfig,
   },
   config: { get: configGetConfig, set: configSetConfig },
 };
@@ -1888,15 +1892,29 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const auditReconcile = Command.make("reconcile", auditReconcileConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openMetadataProject({
+        server: values.server,
+        project: values.project,
+      });
+      onExitCode(yield* auditReconcileOp(context));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Recompute the audit-head hash column and reconcile notarized checkpoints (effective admin — AUDIT_SPEC §6)",
+    ),
+  );
+
   // **bare `maruhi audit` = list**(現行仕様の維持 — 第 3 段階の裁定)。
   // 親自身が list の宣言とハンドラを持つ(実測: ハンドラ付き親 +
   // withSubcommands で、bare 親はハンドラを実行し、サブコマンド指定時は
   // 子だけが走る。不明なサブコマンドは UnknownSubcommand で exit 2)
   const audit = Command.make("audit", auditListConfig, runAuditList).pipe(
     Command.withDescription(
-      "View and verify audit events (list / invites / self / verify — AUDIT_SPEC §7). Bare `maruhi audit` runs list",
+      "View and verify audit events (list / invites / self / verify / reconcile — AUDIT_SPEC §7). Bare `maruhi audit` runs list",
     ),
-    Command.withSubcommands([auditList, auditInvites, auditSelf, auditVerify]),
+    Command.withSubcommands([auditList, auditInvites, auditSelf, auditVerify, auditReconcile]),
   );
 
   const keyGenerate = Command.make("generate", keyGenerateConfig, (values) =>
