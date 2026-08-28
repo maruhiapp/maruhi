@@ -24,6 +24,7 @@ import {
   addMemberOp,
   buildChain,
   type BuiltChain,
+  checkpointSnapshotValuesOf,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -37,6 +38,7 @@ import {
   rotateEpochOp,
   statementFor,
   type TestUser,
+  type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
@@ -164,6 +166,26 @@ async function makeRevokeServer(input: {
   const counters = { appendAttempts: 0 };
   /** 環境ごとの保存済み最新マニフェスト(初回 pull で遅延発行 → rotate 受理で置換)。 */
   const manifests = new Map<string, WireDistributedManifest>();
+  /** 環境ごとの保存済みチェックポイントスナップショット(§16-2)。 */
+  const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
+  /** 保存行があれば同梱、なければキーなし(§12-7 の配布形 — pull 応答の spread 用)。 */
+  const snapshotFieldOf = (
+    environmentId: string,
+  ): { readonly checkpointSnapshot?: WireCheckpointSnapshot } => {
+    const checkpointSnapshot = checkpointSnapshots.get(environmentId);
+    return checkpointSnapshot === undefined ? {} : { checkpointSnapshot };
+  };
+  /** checkpoint 受理と同一トランザクションのスナップショット保存(§16-2)。 */
+  const storeSnapshot = async (
+    environmentId: string,
+    variables: readonly { readonly value: WireDistributedValue }[] | undefined,
+  ): Promise<void> => {
+    checkpointSnapshots.set(environmentId, {
+      chainSeq: entries.length,
+      entryHashHex: hashes[hashes.length - 1] ?? "",
+      values: await checkpointSnapshotValuesOf((variables ?? []).map((variable) => variable.value)),
+    });
+  };
   const serveManifest = async (
     environmentId: string,
     environment: RevokeEnvironmentFixture,
@@ -252,6 +274,8 @@ async function makeRevokeServer(input: {
           deletedVariables: [],
           deks: environment.deks,
           manifest: await serveManifest(environmentId, environment, statement),
+          // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
+          ...snapshotFieldOf(environmentId),
         },
       };
     },
@@ -279,6 +303,9 @@ async function makeRevokeServer(input: {
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
+      // 受理と同一トランザクションのスナップショット保存(§16-2 — 受理時点の
+      // 配布集合の列挙)
+      await storeSnapshot(environmentId, environment.variables);
       environment.currentEpoch = body.entry.payload.newEpoch;
       // 受理した同梱マニフェスト(§12-4)を保存最新として配布へ回す(§12-5)
       manifests.set(environmentId, {

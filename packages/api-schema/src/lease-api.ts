@@ -16,6 +16,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { ChainEntrySchema } from "./chain.ts";
 import { PulledVariableSchema } from "./data-api.ts";
 import {
+  CheckpointValueSnapshotSchema,
   DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
   DistributedVariableMetaStatementSchema,
@@ -89,6 +90,14 @@ export const LeaseResponseSchema = Schema.Struct({
    * pull と同一(optional は移行完了までの過渡状態のみ)。
    */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
+  /**
+   * チェックポイント時点の値スナップショット列挙(§14-2 — §12-7 と同じ材料。
+   * 2026-08-28 PR-M3)。同梱チェーン上に当該環境の基準 `checkpoint` が存在する
+   * のに列挙を欠く応答は、ワークロードのチェックポイント整合検証(CRYPTO_SPEC
+   * §6.3 規則 2)が拒否する。基準を持たない環境では載らない(その場合は警告 —
+   * §6.3 SHOULD)。
+   */
+  checkpointSnapshot: Schema.optionalKey(CheckpointValueSnapshotSchema),
 });
 
 /**

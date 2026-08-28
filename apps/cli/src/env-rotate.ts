@@ -1682,10 +1682,23 @@ function settlePass(input: {
         decryptRemaining: input.hasNextPass,
       }),
     );
+    const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${countNoun(input.reencrypted, "variable")}`;
     if (rescan.kind === "failed") {
-      // **再走査の失敗を優先する**: 床の巻き戻し・チェーン分岐の証拠や並行
-      // ローテーションの検出はここに現れるため、変数 1 件の一時的な失敗で
-      // 覆い隠してはならない(押し出すと「再実行で直る」案内に化ける)
+      if (rescan.error.evidence === true) {
+        // 再走査の pull が証拠付きで拒否された(床違反・チェックポイント整合
+        // 規則 2 — PR-M3)。復号段の証拠(rescan.value.evidence)と同じ扱いの
+        // 即時中断とし、「再実行で直る部分完了」へ格下げしない
+        return {
+          warnings,
+          verdict: {
+            kind: "abort",
+            message: `${rescan.error.message}\n${context}. This is evidence that re-running will not resolve — investigate the server's responses`,
+          },
+        } as const;
+      }
+      // **再走査の失敗を優先する**: 並行ローテーションの検出・一時的な失敗は
+      // ここに現れるため、変数 1 件の一時的な失敗で覆い隠してはならない
+      // (押し出すと「再実行で直る」案内に化ける)
       const pushFailure =
         input.pass.firstFailure === null
           ? ""
@@ -1699,7 +1712,6 @@ function settlePass(input: {
         },
       } as const;
     }
-    const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${countNoun(input.reencrypted, "variable")}`;
     if (rescan.value.evidence !== null) {
       // 暗号学的証拠は最優先の即時中断(再実行では解消しない)。エポックが
       // 進んでいる文脈も一緒に伝える — 証拠だけ出して運用状態を伝え損ねない

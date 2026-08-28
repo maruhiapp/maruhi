@@ -452,6 +452,77 @@ describe("境界 checkpoint の監査ヘッド公証(§16-2 — standalone と�
   });
 });
 
+/** 保存済みスナップショット列挙(配布内容の期待値 — §16-2 の保存行そのもの)。 */
+async function storedSnapshotEnumeration(
+  environmentId: string,
+): Promise<readonly { variableId: string; version: number; valueSigHashHex: string }[]> {
+  const rows = await queryProjectDo(
+    projectId,
+    `SELECT variable_id, version, value_sig_hash_hex
+     FROM checkpoint_snapshot_values WHERE environment_id = ? ORDER BY variable_id`,
+    environmentId,
+  );
+  return rows.map((row) => ({
+    variableId: String(row["variable_id"]),
+    version: Number(row["version"]),
+    valueSigHashHex: String(row["value_sig_hash_hex"]),
+  }));
+}
+
+interface PullSnapshotBody {
+  readonly checkpointSnapshot?: {
+    readonly chainSeq: number;
+    readonly entryHashHex: string;
+    readonly values: readonly {
+      readonly variableId: string;
+      readonly version: number;
+      readonly valueSigHashHex: string;
+    }[];
+  };
+}
+
+async function pullBody(environmentId: string): Promise<PullSnapshotBody> {
+  const response = await requestJson("GET", `/environments/${environmentId}/pull`, token(OWNER));
+  expect(response.status).toBe(200);
+  return (await response.json()) as PullSnapshotBody;
+}
+
+describe("値スナップショットの配布(AUTH_SPEC §12-7 / §14-2 — PR-M3)", () => {
+  it("value pull bundles the stored enumeration of the latest covering checkpoint", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    // 作成複合の境界 checkpoint(空列挙)が誕生時からの基準(§12-4)
+    const creation = await pullBody(ENV);
+    const creationRow = await snapshotRow(ENV);
+    expect(creation.checkpointSnapshot).toBeDefined();
+    expect(creation.checkpointSnapshot?.chainSeq).toBe(creationRow?.chainSeq);
+    expect(creation.checkpointSnapshot?.values).toEqual([]);
+    // 変数作成は checkpoint を発行しない — 配布される列挙は保存行のまま(空)
+    await createVariableOk(dek, "var-m3-0001", "DATABASE_URL", "postgres://alpha");
+    const beforeCheckpoint = await pullBody(ENV);
+    expect(beforeCheckpoint.checkpointSnapshot?.chainSeq).toBe(creationRow?.chainSeq);
+    expect(beforeCheckpoint.checkpointSnapshot?.values).toEqual([]);
+    // standalone checkpoint の受理後は、受理時に保存した列挙そのものを配布する
+    const accepted = await sendStandaloneCheckpoint({
+      actorUserId: MEMBER,
+      environments: [await matchingTuple(ENV)],
+    });
+    expect(accepted.response.status).toBe(200);
+    const after = await pullBody(ENV);
+    expect(after.checkpointSnapshot?.chainSeq).toBe(accepted.entry.seq);
+    const stored = await storedSnapshotEnumeration(ENV);
+    expect(stored.length).toBe(1);
+    expect(after.checkpointSnapshot?.values).toEqual(stored);
+  });
+
+  it("metadata-only pull does not carry the snapshot (§12-7 — 値を運ばない)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    const response = await requestJson("GET", `/environments/${ENV}/pull/metadata`, token(OWNER));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as PullSnapshotBody;
+    expect(body.checkpointSnapshot).toBeUndefined();
+  });
+});
+
 describe("スナップショット保存規律の経路同一性(§16-2 — 部分集合 checkpoint)", () => {
   const ENV_B = "env-second-0001";
 
@@ -479,6 +550,12 @@ describe("スナップショット保存規律の経路同一性(§16-2 — 部�
     // B の基準(最新包含 checkpoint)は維持される — payload に含まれない環境の
     // 既存スナップショットは変更しない(§16-2)
     expect(await snapshotRow(ENV_B)).toEqual(baselineB);
+    // 配布(§12-7 — PR-M3)も環境ごとの最新包含 checkpoint に対応する:
+    // A は再 checkpoint の位置、B は元の位置の列挙を配る
+    expect((await pullBody(ENV)).checkpointSnapshot?.chainSeq).toBe(onlyA.entry.seq);
+    const pulledB = await pullBody(ENV_B);
+    expect(pulledB.checkpointSnapshot?.chainSeq).toBe(both.entry.seq);
+    expect(pulledB.checkpointSnapshot?.values).toEqual(await storedSnapshotEnumeration(ENV_B));
     // ミラー行(chain.checkpointed)は受理ごとに記録される(AUDIT_SPEC §3.4)
     const mirrors = await queryProjectDo(
       projectId,

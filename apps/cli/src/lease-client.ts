@@ -24,6 +24,7 @@
 // その主要な緩和が (2) のアンカーである。
 
 import type {
+  CheckpointValueSnapshot,
   DistributedEnvironmentManifest,
   DistributedEnvironmentMetaStatement,
   DistributedVariableMetaStatement,
@@ -62,6 +63,11 @@ export interface LeaseResponseWire {
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §9.1 (5)。移行許容はない)。 */
   readonly manifest?: DistributedEnvironmentManifest | undefined;
+  /**
+   * チェックポイント時点の値スナップショット列挙(§14-2 — 規則 2 の材料。
+   * 同梱チェーン上に基準があるのに欠く応答は checkpoint-integrity.ts が拒否)。
+   */
+  readonly checkpointSnapshot?: CheckpointValueSnapshot | undefined;
   readonly leases: readonly LeasedDek[];
 }
 
@@ -280,6 +286,9 @@ export function verifyLeaseResponse(input: {
         variables: response.variables,
         deletedVariables: response.deletedVariables,
         ...(response.manifest === undefined ? {} : { manifest: response.manifest }),
+        ...(response.checkpointSnapshot === undefined
+          ? {}
+          : { checkpointSnapshot: response.checkpointSnapshot }),
       },
     });
     // (3) リースラップの開封 + DEK コミットメント照合

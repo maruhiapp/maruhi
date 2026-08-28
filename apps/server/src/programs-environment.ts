@@ -16,7 +16,13 @@ import type {
   EnvManifestInput,
   MetaStatementInput,
 } from "./data-plane.ts";
-import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
+import {
+  currentEpochOf,
+  dataEvent,
+  optionalDistributionFields,
+  rejectData,
+  requireMemberState,
+} from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
 import { acceptManifestForMetaOp } from "./verify-manifest.ts";
@@ -195,6 +201,10 @@ export const pullEnvironmentProgram = (
     // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
+    // チェックポイント時点の値スナップショット(§12-7 — 2026-08-28 PR-M3):
+    // 当該環境を含む最新 checkpoint の保存行(§16-2)があれば必ず同梱する。
+    // クライアント規則 2(CRYPTO_SPEC §6.3)は基準あり + 列挙なしを拒否する
+    const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
     // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行
     // (返した行に対して記録するため、行とイベントは常に一致する)
     const audit = yield* AuditStore;
@@ -218,7 +228,7 @@ export const pullEnvironmentProgram = (
       variables,
       deletedVariables,
       deks,
-      ...(manifest === null ? {} : { manifest }),
+      ...optionalDistributionFields(manifest, checkpointSnapshot),
     } satisfies EnvironmentPullValue;
   });
 

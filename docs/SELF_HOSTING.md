@@ -289,6 +289,30 @@ backed by `GET /projects/:id/audit-head`. Two version-skew notes:
   with very large audit logs the first such request does a one-time full pass
   over the rows.
 
+**Checkpoint snapshot distribution (2026-08-28 release, after the periodic
+checkpoints above)**: this release makes servers bundle the checkpoint-time
+value snapshot into value-bearing reads (bulk pull and workload leases), and
+makes clients verify it (value non-regression — CRYPTO_SPEC §6.3 rule 2).
+**Update the server first — this is mandatory here, not just recommended.**
+The client rule is fail-closed by design: a client at this release **rejects
+every value-bearing pull and lease of an environment whose chain carries a
+checkpoint when the response lacks the snapshot** (omission would let a
+malicious server skip rollback detection, so the client cannot tell an old
+server from an attacking one). Since every environment created after the
+boundary-checkpoint release carries a checkpoint from birth, a new CLI or CI
+workload against an old server fails closed on **all** such environments —
+`maruhi pull`, `maruhi run` and `maruhi ci run` stop working until the server
+is updated. The error message names the omission and suggests the server
+update. The reverse direction is safe: an old client simply ignores the new
+response field. No data migration is involved for checkpoints accepted at or
+after the boundary-checkpoint release — every acceptance path has stored the
+snapshot atomically with the chain append since then (and no earlier server
+accepted checkpoints at all), so the server distributes rows it already has.
+Should a server ever lack the stored row for an on-chain checkpoint anyway
+(e.g., after restoring Durable Object storage from a backup that does not
+match the distributed chain), a project member re-establishes a distributable
+baseline by issuing a fresh checkpoint: `maruhi project checkpoint`.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata

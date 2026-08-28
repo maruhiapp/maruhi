@@ -19,6 +19,7 @@ import {
   RotateEpochEntrySchema,
 } from "./chain.ts";
 import {
+  CheckpointValueSnapshotSchema,
   CreateEnvironmentManifestSchema,
   CreateEnvironmentMetaStatementSchema,
   CreateVariableMetaStatementSchema,
@@ -140,6 +141,15 @@ export const EnvironmentPullSchema = Schema.Struct({
    * 過渡状態のみ(サーバーは保存行があれば必ず同梱する)。
    */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
+  /**
+   * チェックポイント時点の値スナップショット列挙(§12-7 — 2026-08-28 PR-M3)。
+   * 当該環境のエントリを含む最新 `checkpoint` が存在する場合に必ず同梱する
+   * (checkpoint 受理時に保存した列挙そのもの — §16-2)。クライアント規則 2
+   * (CRYPTO_SPEC §6.3 — 値の非後退)は、検証済みチェーン上に基準が存在する
+   * のに列挙を欠く値付き応答を**拒否**する(省略を規則 2 のスキップに落とさせ
+   * ない)。基準を持たない環境では載らない。
+   */
+  checkpointSnapshot: Schema.optionalKey(CheckpointValueSnapshotSchema),
 });
 
 /**

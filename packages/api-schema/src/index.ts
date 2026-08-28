@@ -32,6 +32,10 @@ export {
   RotateEpochEntrySchema,
 } from "./chain.ts";
 export {
+  type CheckpointValueSnapshot,
+  type CheckpointValueSnapshotEntry,
+  CheckpointValueSnapshotEntrySchema,
+  CheckpointValueSnapshotSchema,
   CreateEnvironmentManifestSchema,
   CreateEnvironmentMetaStatementSchema,
   CreateVariableMetaStatementSchema,

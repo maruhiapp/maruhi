@@ -11,7 +11,7 @@
 //     manifestVersion 1 を発行する(配布された場合の検証は緩和しない)
 
 import type { ChainEntry } from "@maruhi/crypto";
-import { computeChainEntryHash } from "@maruhi/crypto";
+import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -19,6 +19,7 @@ import {
   addMemberOp,
   buildChain,
   type BuiltChain,
+  checkpointSnapshotValuesOf,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -30,6 +31,7 @@ import {
   rotateEpochOp,
   statementFor,
   type TestUser,
+  type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
@@ -150,6 +152,8 @@ interface PullJson {
   readonly deks: readonly WireRecipientDek[];
   /** undefined = マニフェストを配布しない(欠落 negative 用)。 */
   readonly manifest?: WireDistributedManifest;
+  /** チェーンに基準 checkpoint を積むフィクスチャは対応する列挙を同梱する(§12-7)。 */
+  readonly checkpointSnapshot?: WireCheckpointSnapshot;
 }
 
 function pullHandler(payload: PullJson): MockHandler {
@@ -163,6 +167,9 @@ function pullHandler(payload: PullJson): MockHandler {
       deletedVariables: payload.deletedVariables ?? [],
       deks: payload.deks,
       ...(payload.manifest === undefined ? {} : { manifest: payload.manifest }),
+      ...(payload.checkpointSnapshot === undefined
+        ? {}
+        : { checkpointSnapshot: payload.checkpointSnapshot }),
     },
   }));
 }
@@ -362,6 +369,11 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     // 粗い共有基準(チェーン。メタ操作は checkpoint を発行しないため床より
     // 遅れて進む)が、細かいローカル基準(床)を短絡しないことの固定
     const v1 = await manifestV1();
+    // 基準 checkpoint の values_digest は配布集合([ALPHA v1])の実計算値 —
+    // 対応する列挙(checkpointSnapshot)を pull に同梱する(規則 2 — PR-M3)
+    const snapshotValues = await checkpointSnapshotValuesOf([alphaValue1]);
+    const valuesDigest = await computeEnvValuesDigest(SUITE_ID, snapshotValues);
+    if (!valuesDigest.ok) throw new Error("values digest failed");
     const checkpointChain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(reader, "reader") },
@@ -378,9 +390,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
                 epoch: 1,
                 manifestVersion: 1,
                 manifestSigHashHex: await manifestHashOf(projectId, v1),
-                // タプルの値ダイジェスト内容はチェーン合意規則では形式のみ検査
-                // (§6.2 — 内容の照合は M2 の規則 2 の領分)
-                valuesDigestHex: "ab".repeat(32),
+                valuesDigestHex: valuesDigest.value,
               },
             ],
             auditHeadHashHex: "",
@@ -389,6 +399,11 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
       },
     ]);
     expect(checkpointChain.projectId).toBe(projectId);
+    const checkpointSnapshot: WireCheckpointSnapshot = {
+      chainSeq: 5,
+      entryHashHex: checkpointChain.hashes[4] ?? "",
+      values: snapshotValues,
+    };
     const env = await makeTestEnv();
     // フェーズ 1: v3 で床を確立(mv1 タプルとは別版 — strict 経路で検証される)
     await startPhase(env, [
@@ -398,6 +413,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
         variables: [alphaEntry()],
         deks: [wrap1],
         manifest: await manifestV1({ manifestVersion: 3, head: headOf(checkpointChain, 5) }),
+        checkpointSnapshot,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -410,6 +426,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
         variables: [alphaEntry()],
         deks: [wrap1],
         manifest: await manifestV1({ manifestVersion: 2, head: headOf(checkpointChain, 5) }),
+        checkpointSnapshot,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -743,6 +760,9 @@ function makeLegacyServer(input: {
   const pushes: string[] = [];
   let currentEpoch = input.currentEpoch ?? 1;
   let manifest: WireDistributedManifest | null = input.initialManifest ?? null;
+  // 保存済みチェックポイントスナップショット(§16-2 — 境界 checkpoint の受理で
+  // 保存し、以後の値付き pull に同梱する。規則 2 の材料 — PR-M3)
+  let checkpointSnapshot: WireCheckpointSnapshot | null = null;
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
@@ -763,6 +783,7 @@ function makeLegacyServer(input: {
         deletedVariables: [],
         deks,
         ...(manifest === null ? {} : { manifest }),
+        ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
       },
     })),
     (request) => {
@@ -806,6 +827,13 @@ function makeLegacyServer(input: {
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
+      // 受理と同一トランザクションのスナップショット保存(§16-2 — 受理時点の
+      // 配布集合の列挙)
+      checkpointSnapshot = {
+        chainSeq: entries.length,
+        entryHashHex: hashes[hashes.length - 1] ?? "",
+        values: await checkpointSnapshotValuesOf(variables.map((variable) => variable.value)),
+      };
       currentEpoch = body.entry.payload.newEpoch;
       for (const wrap of body.deks) {
         if (wrap.recipientUserId !== owner.userId) {

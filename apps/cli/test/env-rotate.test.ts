@@ -52,10 +52,12 @@ import {
   manifestFor,
   manifestHashOf,
   rotateEpochOp,
+  checkpointSnapshotValuesOf,
   statementFor,
   type TestUser,
   valueHashOf,
   variablesDigestOf,
+  type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
@@ -193,6 +195,14 @@ interface ServerOptions {
   /** rotate 呼び出しごとの差し込み応答(undefined = 正常受理)。 */
   readonly onRotate?: (call: number) => MockResponse | undefined;
   /**
+   * rotate 複合の**受理直後**に呼ぶフック(受理後にサーバーが配布状態を
+   * 差し替える攻撃・並行操作のモデル化)。引数は受理後のチェーン現在形。
+   */
+  readonly onRotateAccepted?: (chain: {
+    readonly entries: readonly ChainEntry[];
+    readonly hashes: readonly string[];
+  }) => Promise<void> | void;
+  /**
    * **受理した後**に差し込む応答(応答の消失・502 のモデル化)。チェーンへの
    * 追記とラップの配布は起きるが、クライアントにはエラーだけが見える。
    */
@@ -270,6 +280,20 @@ function makeServer(options: ServerOptions): ServerState {
     manifest: WireDistributedManifest;
     version: number;
   } | null = null;
+  // 保存済みチェックポイントスナップショット(§16-2 — checkpoint 受理時点の
+  // 配布集合の列挙 + 対応 checkpoint 位置)。以後の値付き pull に同梱する(§12-7)
+  let checkpointSnapshot: WireCheckpointSnapshot | null = null;
+  /** checkpoint エントリの受理時のみ upsert(§16-2 — それ以外の op は素通し)。 */
+  const storeCheckpointSnapshot = async (entry: ChainEntry): Promise<void> => {
+    if (entry.op !== "checkpoint") {
+      return;
+    }
+    checkpointSnapshot = {
+      chainSeq: entries.length,
+      entryHashHex: hashes[hashes.length - 1] ?? "",
+      values: await checkpointSnapshotValuesOf(variables.map((variable) => variable.value)),
+    };
+  };
   const manifestKey = (): string =>
     JSON.stringify([
       currentEpoch,
@@ -306,6 +330,8 @@ function makeServer(options: ServerOptions): ServerState {
   /** 受理: rotate + 境界 checkpoint の 2 エントリを追記し、同梱ラップを配布集合へ入れる(§12-4)。 */
   const acceptRotate = async (body: RotateBody): Promise<void> => {
     if (options.dropCheckpointFromChain === true) {
+      // checkpoint 隠しサーバーはスナップショットも保存しない(整合した隠蔽の
+      // モデル化 — チェーンに基準がないのに列挙を配ると規則 2 がそこで落ちる)
       entries.push(body.entry);
       hashes.push(await computeChainEntryHash(body.entry));
     } else {
@@ -314,6 +340,9 @@ function makeServer(options: ServerOptions): ServerState {
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
+      // 境界 checkpoint の受理と同一トランザクションでスナップショットを保存
+      // (§16-2 — 受理時点 = 再暗号化前の配布集合)
+      await storeCheckpointSnapshot(body.checkpoint);
     }
     currentEpoch = body.entry.payload.newEpoch;
     // 配布形 = 受理した発行形 + 呼び出し主体の issuer 情報(§12-2)。同梱
@@ -347,6 +376,7 @@ function makeServer(options: ServerOptions): ServerState {
         signerKeyFingerprintHex: owner.fingerprintHex,
       });
     }
+    await options.onRotateAccepted?.({ entries, hashes });
   };
 
   /** 他メンバーのローテーションを 1 件、現在のチェーンの末尾へ追記する。 */
@@ -402,6 +432,9 @@ function makeServer(options: ServerOptions): ServerState {
             const body = request.body as { readonly entry: ChainEntry };
             entries.push(body.entry);
             hashes.push(await computeChainEntryHash(body.entry));
+            // standalone checkpoint の受理もスナップショットを upsert(§16-2 —
+            // 保存規律は経路によらず同一)
+            await storeCheckpointSnapshot(body.entry);
             return {
               status: 200,
               json: {
@@ -443,6 +476,8 @@ function makeServer(options: ServerOptions): ServerState {
             deletedVariables,
             deks,
             manifest: await serveManifest(),
+            // 基準 checkpoint の保存行があれば必ず同梱(§12-7 — 規則 2 の材料)
+            ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
           },
         }
       );
@@ -1187,7 +1222,7 @@ describe("maruhi env rotate", () => {
     expect(errors).not.toContain("The requested rotation will not be performed");
   });
 
-  it("完了検証: 初回 pull 以降に他メンバーが作った変数も再暗号化してから完了とする", async () => {
+  it("完了検証: 初回 pull と複合受理の窓で作られた変数は 422 → 再 pull で対象へ入り、再暗号化してから完了とする", async () => {
     const variables = [
       await variableAt({
         built: chainBase,
@@ -1200,7 +1235,12 @@ describe("maruhi env rotate", () => {
         headSeq: 2,
       }),
     ];
-    // 初回 pull と複合受理の窓で、他メンバーが旧エポックの変数を作成する
+    // 初回 pull と複合受理の窓で、他メンバーが旧エポックの変数を作成する。
+    // 実サーバーはこの窓の並行作成を受理時点突合(§12-4 — 境界 checkpoint の
+    // values_digest)で 422 拒否するため、再 pull 後の再試行で対象集合へ入る
+    // (受理された checkpoint のスナップショットが常に配布集合を覆う — 規則 2
+    // の前提。旧来の「受理後の再走査で拾う」形は、規則 2 が backdated 作成と
+    // して拒否する不正な配布のモデル化だった — PR-M3)
     const late = await variableAt({
       built: chainBase,
       variableId: "vlate",
@@ -1225,18 +1265,29 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotate: () => {
-        variables.push(late);
+      onRotate: (call) => {
+        if (call === 0) {
+          variables.push(late);
+          return {
+            status: 422,
+            json: { _tag: "CheckpointStateMismatch", reason: "values-digest-mismatch" },
+          };
+        }
         return undefined;
       },
     });
     const env = await startEnv(state.handlers, owner);
 
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "窓"], env.layer)).toBe(0);
-    // 対象集合になかった vlate も、完了検証の再走査で見つけて再暗号化する
+    // 窓で作られた vlate も、再試行の対象集合に入って再暗号化されてから完了する
     expect(state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vlate"]);
-    const body = state.rotateBodies[0];
-    if (body === undefined) throw new Error("rotate was not called");
+    expect(state.rotateBodies).toHaveLength(2);
+    const body = state.rotateBodies[1];
+    if (body === undefined) throw new Error("rotate retry missing");
+    // 再試行の境界 checkpoint は vlate 込みの値集合を公証している
+    expect(body.checkpoint.payload.environments[0]?.valuesDigestHex).not.toBe(
+      state.rotateBodies[0]?.checkpoint.payload.environments[0]?.valuesDigestHex,
+    );
     const newDek = await newEpochDekOf(body);
     const pushedLate = state.pushes.find((push) => push.variableId === "vlate");
     if (pushedLate === undefined) throw new Error("late push missing");
@@ -2746,8 +2797,11 @@ describe("maruhi env rotate", () => {
         headSeq: 2,
       }),
     ];
-    // 初回 pull には現れず、複合受理の後(= 巡末の再走査)にだけ現れる値。
-    // 署名は妥当だが暗号化に使われた鍵が違う(= AEAD 認証が通らない)
+    // 初回 pull には現れず、複合受理の後(= 巡末の再走査)にだけ現れる旧
+    // エポックの値。署名は妥当だが、境界 checkpoint のスナップショットに存在
+    // しない旧エポックの「作成」であり、規則 2(CRYPTO_SPEC §6.3 — PR-M3)が
+    // backdated 作成の証拠として pull ごと拒否する(M3 前は復号段の AEAD 失敗
+    // で検出していた形 — 検出層が前へ動いた)
     const tampered = await variableAt({
       built: chainBase,
       variableId: "vtamper",
@@ -2772,9 +2826,8 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotate: () => {
+      onRotateAccepted: () => {
         variables.push(tampered);
-        return undefined;
       },
     });
     const env = await startEnv(state.handlers, owner);
@@ -2783,7 +2836,8 @@ describe("maruhi env rotate", () => {
     // 初回 pull のケースと違い、ここではローテーション自体は起きている
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("possibly replaced by the server");
+    // 規則 2 の backdated 作成の証拠として拒否される(PR-M3)
+    expect(errors).toContain("below the checkpoint baseline epoch");
     expect(errors).toContain("This is evidence that re-running will not resolve");
     // 「再実行すれば片付く」系の案内へ格下げしない
     expect(errors).not.toContain("resume from the remainder");

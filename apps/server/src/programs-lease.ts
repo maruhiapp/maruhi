@@ -32,7 +32,7 @@ import { AuditStore } from "./audit-store.ts";
 import type { StateCache } from "./chain-store.ts";
 import { ChainStore, deriveStoredState } from "./chain-store.ts";
 import type { EnvironmentPullValue } from "./data-plane.ts";
-import { currentEpochOf, loadInitializedChain } from "./data-plane.ts";
+import { currentEpochOf, loadInitializedChain, optionalDistributionFields } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { grantCoversEnvironment, leasePolicyAuthorizes } from "./lease-policy.ts";
 import { MAX_LEASE_DENIED_ROWS_PER_WINDOW, MAX_LEASES_PER_WINDOW } from "./policy.ts";
@@ -251,6 +251,9 @@ export const leaseProgram = (
     // 最新マニフェスト(§14-2 — 2026-08-18。ワークロードの検証義務 §9.1 (5) の
     // 材料。null は移行前の過渡状態のみ — 受信側は欠落を一律拒否する)
     const manifest = yield* store.environmentManifest(environmentId);
+    // チェックポイント時点の値スナップショット(§14-2 — §12-7 と同じ材料。
+    // 2026-08-28 PR-M3。基準を持たない環境では null = 載せない)
+    const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
 
     // 応答内の最新値が使用する全エポック + 現エポック(§14-2)。過不足なく
     // 揃っていることを要求する — 1 つでも欠ければ復号できない値が応答に載る
@@ -348,6 +351,6 @@ export const leaseProgram = (
       variables,
       deletedVariables,
       leases,
-      ...(manifest === null ? {} : { manifest }),
+      ...optionalDistributionFields(manifest, checkpointSnapshot),
     } satisfies LeaseValue;
   });

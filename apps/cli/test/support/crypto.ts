@@ -37,7 +37,12 @@ import type {
   LazyChainOperation,
   WireEncryptedPayload as SharedWireEncryptedPayload,
 } from "@maruhi/crypto/test-support";
-import { buildChainWith, hexBytes, unwrapResult } from "@maruhi/crypto/test-support";
+import {
+  buildChainWith,
+  hexBytes,
+  unwrapResult,
+  valueSignedBytesHashOf,
+} from "@maruhi/crypto/test-support";
 
 export type { BuiltChain, LazyChainOperation };
 export { hexBytes, valueSignedBytesHashOf as valueHashOf } from "@maruhi/crypto/test-support";
@@ -513,6 +518,35 @@ export async function manifestHashOf(
       chainHeadSeq: manifest.chainHeadSeq,
     }),
     "computeEnvManifestSignedBytesHash",
+  );
+}
+
+/** 配布形の checkpointSnapshot(§12-7 / §14-2 — CheckpointValueSnapshot と構造一致)。 */
+export interface WireCheckpointSnapshot {
+  readonly chainSeq: number;
+  readonly entryHashHex: string;
+  readonly values: readonly {
+    readonly variableId: string;
+    readonly version: number;
+    readonly valueSigHashHex: string;
+  }[];
+}
+
+/**
+ * 配布値集合 → checkpoint スナップショット列挙(checkpoint 受理時にサーバーが
+ * 保存する「受理時点の全 active 変数の最新 version + value_signed_bytes ハッシュ」
+ * のモデル化 — §16-2)。正直なサーバーのモックは checkpoint 受理時点の配布集合で
+ * これを呼び、以後の pull に同梱する。
+ */
+export async function checkpointSnapshotValuesOf(
+  values: readonly WireDistributedValue[],
+): Promise<WireCheckpointSnapshot["values"]> {
+  return Promise.all(
+    values.map(async (value) => ({
+      variableId: value.aad.variableId,
+      version: value.aad.version,
+      valueSigHashHex: await valueSignedBytesHashOf(value, value.writerUserId),
+    })),
   );
 }
 

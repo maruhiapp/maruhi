@@ -8,6 +8,8 @@
 import { Context, Effect, Layer } from "effect";
 
 import type {
+  CheckpointSnapshotEntryValue,
+  CheckpointSnapshotValue,
   DekWrapInput,
   DistributedEnvManifestValue,
   DistributedMetaStatementValue,
@@ -334,6 +336,15 @@ interface DataStoreShape {
   readonly checkpointValueEntries: (
     environmentId: string,
   ) => Effect.Effect<readonly CheckpointValueEntryRow[]>;
+  /**
+   * チェックポイント時点の値スナップショットの配布形(§12-7 / §14-2 —
+   * 2026-08-28 PR-M3): checkpoint 受理時に原子保存した最新包含 checkpoint の
+   * タプル + 列挙をそのまま返す(再構成しない — §16-2)。基準を持たない環境は
+   * null(応答に載せない)。
+   */
+  readonly checkpointSnapshot: (
+    environmentId: string,
+  ) => Effect.Effect<CheckpointSnapshotValue | null>;
 
   /** アクティブ変数の最新バージョン + 最新ステートメント一覧(一括 pull 用)。 */
   readonly latestVersions: (
@@ -822,6 +833,37 @@ const makeVariableQueries = (sql: SqlStorage) => ({
           valueSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
     ),
+  // 配布形のチェックポイントスナップショット(§12-7 — 保存行そのもの)
+  checkpointSnapshot: (environmentId: string) =>
+    Effect.sync((): CheckpointSnapshotValue | null => {
+      const row = sql
+        .exec(
+          "SELECT chain_seq, entry_hash_hex FROM environment_checkpoints WHERE environment_id = ?",
+          environmentId,
+        )
+        .toArray()[0];
+      if (row === undefined) {
+        return null;
+      }
+      const values = sql
+        .exec(
+          `SELECT variable_id, version, value_sig_hash_hex
+           FROM checkpoint_snapshot_values
+           WHERE environment_id = ? ORDER BY variable_id`,
+          environmentId,
+        )
+        .toArray()
+        .map((value): CheckpointSnapshotEntryValue => ({
+          variableId: stringColumn(value, "variable_id"),
+          version: numberColumn(value, "version"),
+          valueSigHashHex: stringColumn(value, "value_sig_hash_hex"),
+        }));
+      return {
+        chainSeq: numberColumn(row, "chain_seq"),
+        entryHashHex: stringColumn(row, "entry_hash_hex"),
+        values,
+      };
+    }),
   variableNameTaken: (environmentId: string, name: string, excludeVariableId: string | null) =>
     Effect.sync(() => {
       const rows = sql

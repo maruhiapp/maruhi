@@ -165,6 +165,11 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
         leases: leased.leases,
         // 最新マニフェスト(§14-2 — ワークロードの検証義務 §9.1 (5) の材料)
         ...(leased.manifest === undefined ? {} : { manifest: leased.manifest }),
+        // チェックポイント時点の値スナップショット(§14-2 — §12-7 と同じ材料。
+        // ワークロードのチェックポイント整合・規則 2 の材料 — CRYPTO_SPEC §6.3)
+        ...(leased.checkpointSnapshot === undefined
+          ? {}
+          : { checkpointSnapshot: leased.checkpointSnapshot }),
       };
     }),
   ),
