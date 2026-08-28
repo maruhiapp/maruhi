@@ -199,10 +199,14 @@ export function reconcileDistributedAttestations(input: {
     // 正常形だが、置き換わらず消えた場合も元申告の解決可否で判定する)。
     // 和集合は同一申告(attester が再申告していなければ新集合にも同じレコードが
     // 現れる)を重複排除する — 証拠 JSONL・警告に同内容が 2 回並ぶと「2 人の
-    // メンバーが矛盾している」ように読める(pullfrog レビュー — PR #101)
+    // メンバーが矛盾している」ように読める(pullfrog レビュー — PR #101)。
+    // キーはワイヤの全フィールド: 部分キーだと、悪意あるサーバーが 1 フィールド
+    // だけ書き換えたレコードを新集合に混ぜて本物の持ち越し分(first.future)を
+    // キー衝突で捨てさせられる(偽側は署名検証で無言 skip → 持ち越し照合が
+    // 空振りし、裁定 AA が閉じた omission bypass が再び開く)
     const seen = new Set<string>();
     const union = [...advanced.attestations, ...first.future].filter((attestation) => {
-      const key = `${attestation.attesterUserId}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
+      const key = `${attestation.suite}#${attestation.attesterUserId}#${attestation.attesterKeyFingerprintHex}#${attestation.chainHeadHashHex}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
       if (seen.has(key)) {
         return false;
       }

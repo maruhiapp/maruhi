@@ -260,6 +260,40 @@ describe("reconcileDistributedAttestations(照合 — §6.3 / §6.6)", () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toContain('"kind":"unresolved-after-resync"');
   });
+
+  it("(b) 再同期ビューにハッシュだけ書き換えた同キー偽レコードを混ぜても持ち越し照合は無効化されない", async () => {
+    const env = await makeTestEnv();
+    const built = await buildStandardChain();
+    // 本物: 自ヘッド(3)より先の seq 5 への申告(再同期後も未解決になる形)
+    const genuineHash = "ab".repeat(32);
+    const genuine = await attestationBy(owner, built.projectId, {
+      seq: 5,
+      hashHex: genuineHash,
+    });
+    // 偽: attesterUserId / chainHeadSeq / signatureHex は本物と同一のまま
+    // chainHeadHashHex だけ書き換えたレコード。部分キーの重複排除だと本物の
+    // 持ち越し分(first.future)がキー衝突で捨てられ、偽側は署名検証で無言
+    // skip されて second.future が空になる = 中断が起きなくなる
+    const tampered = { ...genuine, chainHeadHashHex: "cd".repeat(32) };
+    const view = await verifiedViewOf(built, 3, [genuine]);
+    const resyncView = await verifiedViewOf(built, 3, [tampered]);
+    const exit = await runReconcile(env, {
+      projectId: built.projectId,
+      view,
+      resync: Effect.succeed(resyncView),
+    });
+    expect(Exit.isFailure(exit)).toBe(true);
+    const evidenceRaw = await readFile(
+      join(env.floorDir, `${built.projectId}.attestation-evidence.jsonl`),
+      "utf8",
+    );
+    const records = evidenceRaw.split("\n").filter((line) => line.trim() !== "");
+    // 本物の申告が unresolved-after-resync の証拠として残る(偽レコードは
+    // 署名検証に落ちて照合材料にならない)
+    expect(records).toHaveLength(1);
+    expect(records[0]).toContain('"kind":"unresolved-after-resync"');
+    expect(records[0]).toContain(genuineHash);
+  });
 });
 
 describe("コマンド前段への接続(project verify — 矛盾申告での中断)", () => {
