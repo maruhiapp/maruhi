@@ -132,6 +132,24 @@ describe("チェーン追記(§11-4)", () => {
   });
 });
 
+describe("ヘッド申告の提出(§16-1)", () => {
+  it("attest rejects an unknown field with 400", async () => {
+    const send = sendJson(
+      "PUT",
+      `${BASE}/projects/${projectId}/head-attestation`,
+      bearer(token(OWNER)),
+    );
+    // ゼロ署名の control は Schema を通過して受理検証の 422(signature-invalid)
+    // に落ちる = 非 400(decode 通過の証明には十分)
+    await expectStrictReject(send, {
+      suite: "maruhi/v1",
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+      signatureHex: "00".repeat(64),
+    });
+  });
+});
+
 // 形式のみ有効なゼロ署名の境界 checkpoint(§12-4 の必須同梱 — 2026-08-27)
 const unsignedCheckpoint = (epoch: number, manifestVersion: number): Record<string, unknown> =>
   unsignedEntry("checkpoint", {

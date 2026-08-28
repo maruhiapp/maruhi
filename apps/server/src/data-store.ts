@@ -22,7 +22,7 @@ import type {
   ValueInput,
   WireSuite,
 } from "./data-plane.ts";
-import { LEASE_WINDOW_MS } from "./policy.ts";
+import { ATTESTATION_WINDOW_MS, LEASE_WINDOW_MS } from "./policy.ts";
 import type { StoredServerWrap } from "./server-key.ts";
 
 interface EnvironmentRow {
@@ -249,12 +249,39 @@ export interface DataWriteOps {
     recipientUserId: string,
     keepEncPubHex: string,
   ) => readonly StaleWrapRef[];
+  /**
+   * ヘッド申告の upsert(AUTH_SPEC §16-1 — メンバーごと最新 1 行)。seq の
+   * 単調前進は呼び出し側(attestation-accept.ts)が保存済み seq と照合してから
+   * 呼ぶ(後退 409 / 同一 seq 冪等 204)。
+   */
+  readonly upsertHeadAttestation: (attestation: StoredHeadAttestation, nowMs: number) => void;
+  /**
+   * `remove_member` 受理時の申告行・レート窓行の削除(CRYPTO_SPEC §6.4 —
+   * 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵ラップ掃除と同型)。
+   * add_member 受理の書き込みフェーズと同じく単一タスク内から呼ぶ。
+   */
+  readonly deleteHeadAttestation: (attesterUserId: string) => void;
 }
 
 /** 掃除で削除されたラップの座標(dek.deleted 監査行の材料)。 */
 export interface StaleWrapRef {
   readonly environmentId: string;
   readonly epoch: number;
+}
+
+/**
+ * 保存されたヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — メンバーごと
+ * 最新 1 行)。attesterKeyFingerprintHex は受理時点のチェーン導出メンバーの
+ * 鍵 FP(配布時の検証材料)。受理時刻(accepted_at)は**含めない** — 保存は
+ * するが配布しない(§16-1)ため、配布材料の型に最初から載せない。
+ */
+export interface StoredHeadAttestation {
+  readonly attesterUserId: string;
+  readonly suite: WireSuite;
+  readonly chainHeadSeq: number;
+  readonly chainHeadHashHex: string;
+  readonly signatureHex: string;
+  readonly attesterKeyFingerprintHex: string;
 }
 
 interface DataStoreShape {
@@ -425,6 +452,25 @@ interface DataStoreShape {
     expiresAtMs: number,
     nowMs: number,
   ) => void;
+  /** 保存済みヘッド申告の seq(未提出なら null — 単調前進判定の材料。§16-1)。 */
+  readonly headAttestationSeq: (attesterUserId: string) => Effect.Effect<number | null>;
+  /**
+   * 全メンバーの保存済みヘッド申告(AUTH_SPEC §16-1 の配布材料)。現メンバー
+   * への絞り込みは呼び出し側(chain-do.ts — チェーン導出の現メンバー集合)が
+   * 行う: remove 時の行削除(§6.4)が漏れた場合の独立の防衛層を配布側に持つ。
+   */
+  readonly listHeadAttestations: Effect.Effect<readonly StoredHeadAttestation[]>;
+  /**
+   * ヘッド申告のメンバーあたり固定窓の判定のみ(消費しない — checkLeaseWindow と
+   * 同じ分離規律)。
+   */
+  readonly checkAttestationWindow: (
+    attesterUserId: string,
+    limit: number,
+    nowMs: number,
+  ) => Effect.Effect<LeaseWindowDecision>;
+  /** ヘッド申告の固定窓の消費(1 件計上。permit 下で直列化 — 判定との割り込みなし)。 */
+  readonly recordAttestationWindowUse: (attesterUserId: string, nowMs: number) => void;
 
   readonly write: DataWriteOps;
 }
@@ -1091,6 +1137,89 @@ const makeWrapQueries = (sql: SqlStorage) => ({
 });
 
 /**
+ * ヘッド申告の読み・固定窓(AUTH_SPEC §16-1)。窓の意味論(判定と消費の分離・
+ * 窓切れ = 数え直し)はリース窓と同一で、キーがメンバー単位になっただけ。
+ */
+const makeAttestationQueries = (sql: SqlStorage) => ({
+  headAttestationSeq: (attesterUserId: string) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          "SELECT chain_head_seq FROM head_attestations WHERE attester_user_id = ?",
+          attesterUserId,
+        )
+        .toArray()[0];
+      return row === undefined ? null : numberColumn(row, "chain_head_seq");
+    }),
+  listHeadAttestations: Effect.sync(() =>
+    sql
+      .exec(
+        `SELECT attester_user_id, suite, chain_head_seq, chain_head_hash_hex,
+                signature_hex, attester_key_fingerprint
+         FROM head_attestations ORDER BY attester_user_id`,
+      )
+      .toArray()
+      .map((row): StoredHeadAttestation => ({
+        attesterUserId: stringColumn(row, "attester_user_id"),
+        suite: storedSuite(columnValue(row, "suite")),
+        chainHeadSeq: numberColumn(row, "chain_head_seq"),
+        chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
+        signatureHex: stringColumn(row, "signature_hex"),
+        attesterKeyFingerprintHex: stringColumn(row, "attester_key_fingerprint"),
+      })),
+  ),
+  checkAttestationWindow: (attesterUserId: string, limit: number, nowMs: number) =>
+    Effect.sync(() => {
+      const current = attestationWindowRow(sql, attesterUserId, nowMs);
+      if (current === null || current.count < limit) {
+        return { allowed: true, retryAfterSeconds: 0 };
+      }
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.ceil((ATTESTATION_WINDOW_MS - current.elapsed) / 1000),
+      };
+    }),
+  recordAttestationWindowUse: (attesterUserId: string, nowMs: number) => {
+    if (attestationWindowRow(sql, attesterUserId, nowMs) === null) {
+      sql.exec(
+        `INSERT INTO attestation_windows (attester_user_id, window_start, count) VALUES (?, ?, 1)
+         ON CONFLICT(attester_user_id) DO UPDATE
+           SET window_start = excluded.window_start, count = 1`,
+        attesterUserId,
+        nowMs,
+      );
+      return;
+    }
+    sql.exec(
+      "UPDATE attestation_windows SET count = count + 1 WHERE attester_user_id = ?",
+      attesterUserId,
+    );
+  },
+});
+
+/** 申告窓の有効行(リース窓の leaseWindowRow と同じ「有効な窓」の定義)。 */
+function attestationWindowRow(
+  sql: SqlStorage,
+  attesterUserId: string,
+  nowMs: number,
+): { readonly count: number; readonly elapsed: number } | null {
+  const row = sql
+    .exec(
+      "SELECT window_start, count FROM attestation_windows WHERE attester_user_id = ?",
+      attesterUserId,
+    )
+    .toArray()[0];
+  if (row === undefined) {
+    return null;
+  }
+  const elapsed = nowMs - numberColumn(row, "window_start");
+  if (elapsed >= ATTESTATION_WINDOW_MS || elapsed < 0) {
+    return null;
+  }
+  return { count: numberColumn(row, "count"), elapsed };
+}
+
+/**
  * 現在有効な固定窓の行(窓切れ・初回・時計の巻き戻しは null = 数え直し)。
  * 判定と消費が同じ「有効な窓」の定義を共有するための 1 箇所。
  */
@@ -1465,6 +1594,32 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     }
     return stale;
   },
+  upsertHeadAttestation: (attestation, nowMs) => {
+    sql.exec(
+      `INSERT INTO head_attestations
+         (attester_user_id, suite, chain_head_seq, chain_head_hash_hex,
+          signature_hex, attester_key_fingerprint, accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(attester_user_id) DO UPDATE SET
+         suite = excluded.suite,
+         chain_head_seq = excluded.chain_head_seq,
+         chain_head_hash_hex = excluded.chain_head_hash_hex,
+         signature_hex = excluded.signature_hex,
+         attester_key_fingerprint = excluded.attester_key_fingerprint,
+         accepted_at = excluded.accepted_at`,
+      attestation.attesterUserId,
+      attestation.suite,
+      attestation.chainHeadSeq,
+      attestation.chainHeadHashHex,
+      attestation.signatureHex,
+      attestation.attesterKeyFingerprintHex,
+      nowMs,
+    );
+  },
+  deleteHeadAttestation: (attesterUserId) => {
+    sql.exec("DELETE FROM head_attestations WHERE attester_user_id = ?", attesterUserId);
+    sql.exec("DELETE FROM attestation_windows WHERE attester_user_id = ?", attesterUserId);
+  },
 });
 
 export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
@@ -1473,5 +1628,6 @@ export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
     ...makeVariableQueries(sql),
     ...makeVersionQueries(sql),
     ...makeWrapQueries(sql),
+    ...makeAttestationQueries(sql),
     write: makeWriteOps(sql),
   }));

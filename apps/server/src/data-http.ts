@@ -7,6 +7,9 @@
 
 import type { EncryptedPayload } from "@maruhi/api-schema";
 import {
+  AttestationRateLimitedError,
+  AttestationRegressionError,
+  AttestationRejectedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -243,6 +246,9 @@ export function toWireVariable(
 type DataApiError =
   | ProjectNotFoundError
   | ForbiddenError
+  | AttestationRejectedError
+  | AttestationRegressionError
+  | AttestationRateLimitedError
   | EnvironmentNotFoundError
   | EnvironmentConflictError
   | CompositeRequiredError
@@ -337,6 +343,12 @@ const rejectionErrors = {
     }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
+  // ヘッド申告(AUTH_SPEC §16-1 — 2026-08-28 PR-M4)
+  "attestation-rejected": (rejection) => new AttestationRejectedError({ reason: rejection.reason }),
+  "attestation-regression": (rejection) =>
+    new AttestationRegressionError({ storedSeq: rejection.storedSeq }),
+  "attestation-rate-limited": (rejection) =>
+    new AttestationRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
 } satisfies {
   readonly [K in DataRejection["kind"]]: (
     rejection: Extract<DataRejection, { kind: K }>,

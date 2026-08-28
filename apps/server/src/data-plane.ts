@@ -350,6 +350,13 @@ export type ValueSignatureRejectReason =
 export type MetaStatementRejectReason = ValueSignatureRejectReason;
 
 /**
+ * ヘッド申告の 422 理由も同じ 3 語彙を共有する(AUTH_SPEC §16-1 — 新理由
+ * コードを作らない)。chain-head-unknown は seq が現ヘッドより先の場合を含む
+ * (クライアント側の再同期分岐 — chain-head-future — はサーバーには無い)。
+ */
+export type AttestationRejectReason = ValueSignatureRejectReason;
+
+/**
  * 環境マニフェストの 422 理由(AUTH_SPEC §12-5 — 2026-08-18): 既存 3 語彙を
  * 共有し、マニフェスト固有の 2 理由(ダイジェスト再計算不一致・エポック不整合)を
  * 加える。api-schema の ManifestRejectReasonSchema と一致させる。
@@ -471,7 +478,12 @@ export type DataRejection =
       readonly kind: "limit-exceeded";
       readonly resource: DataLimitResource;
       readonly limit: number;
-    };
+    }
+  // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — 2026-08-28 PR-M4)
+  | { readonly kind: "attestation-rejected"; readonly reason: AttestationRejectReason }
+  // seq 後退(黙って成功させない — 保存済み seq を返す。同一 seq は冪等 204)
+  | { readonly kind: "attestation-regression"; readonly storedSeq: number }
+  | { readonly kind: "attestation-rate-limited"; readonly retryAfterSeconds: number };
 
 /** データプレーンのプログラムが失敗として運ぶ唯一の型付きエラー。 */
 export class DataRejectedError extends Data.TaggedError("DataRejected")<{
