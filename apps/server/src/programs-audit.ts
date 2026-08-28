@@ -138,7 +138,11 @@ export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
     }
     const audit = yield* AuditStore;
     // 累積ハッシュ列を MAX(seq) まで伸ばしてから読む(遅延 materialize —
-    // 初回呼び出しが既存行からの初期化マイグレーションを兼ねる。AUDIT_SPEC §5.1)
+    // 初回呼び出しが既存行からの初期化マイグレーションを兼ねる。AUDIT_SPEC §5.1)。
+    // 注意: この GET は読み取り形だが**意図的に書き込む** endpoint である
+    // (派生列の遅延実体化 = 「読む経路が読む前に伸ばす」契約)。op permit 下で
+    // 直列化され、拡張は冪等なので再試行は安全だが、応答キャッシュの導入や
+    // 「GET = 副作用なし」を前提にした経路変更はこの副作用を壊す
     yield* audit.ensureHeadCurrent;
     return { auditHeadHashHex: audit.currentHeadHexSync() };
   });

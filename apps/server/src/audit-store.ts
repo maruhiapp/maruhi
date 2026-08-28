@@ -423,10 +423,18 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
 }
 
 /**
- * audit_head_hashes を audit_events の MAX(seq) まで伸ばす。列は常に seq 1 からの
- * 連続接頭辞(チャンクは seq 順に確定コミットされ、途中失敗しても接頭辞性は
- * 保たれる — 次回呼び出しが続きから再開する)。seq の欠番は §5.1 の不変条件
- * 違反(append-only ストレージの破損)なので defect にする。
+ * audit_head_hashes を audit_events の MAX(seq) まで伸ばす。
+ *
+ * 永続化の粒度はタスク単位(chain-do.ts 冒頭のとおり DO SQLite の書き込みは
+ * タスクごとに原子コミットされ、失敗で巻き戻るのは**現在の**タスクの書き込み
+ * のみ)。このループはチャンクごとに await(SHA-256)を挟んでタスクを跨いで
+ * 進むため、完了済みチャンクの INSERT は先行タスクで確定済みで、途中失敗が
+ * 失いうるのは高々進行中チャンクの単一 INSERT(そのチャンクの全ハッシュ計算が
+ * 成功した後の 1 回の sql.exec)だけ。どの失敗時点でも列は seq 1 からの連続
+ * 接頭辞のまま残り、次回呼び出しが保存済みの末尾から再開して収束する — 巨大な
+ * 既存ログの初回パスが実行環境の上限で切られても進捗は保存され、再試行が必ず
+ * 前進する(このため呼び出しごとの反復上限は設けない)。seq の欠番は §5.1 の
+ * 不変条件違反(append-only ストレージの破損)なので defect にする。
  */
 const extendHeadHashes = (sql: SqlStorage): Effect.Effect<void> =>
   Effect.promise(async () => {
