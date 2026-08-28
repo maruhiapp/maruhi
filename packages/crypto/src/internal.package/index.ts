@@ -93,6 +93,7 @@ export {
 } from "./variable.ts";
 export { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 export {
+  type AttestationInvalidReason,
   type ChainInvalidReason,
   type CryptoError,
   type CryptoResult,
@@ -100,6 +101,15 @@ export {
   type MetaInvalidReason,
   type ValueInvalidReason,
 } from "./errors.ts";
+export {
+  buildHeadAttestationSignedBytes,
+  computeHeadAttestationSignedBytesHash,
+  type DistributedHeadAttestationInput,
+  type HeadAttestationContext,
+  signHeadAttestation,
+  verifyDistributedHeadAttestation,
+  verifyHeadAttestationSignature,
+} from "./head-attestation.ts";
 export {
   buildEnvManifestSignedBytes,
   computeEnvManifestSignedBytesHash,
