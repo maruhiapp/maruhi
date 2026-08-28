@@ -20,6 +20,7 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
+  computeEnvValuesDigest,
   decryptVariable,
   signChainEntry,
   SUITE_ID,
@@ -219,6 +220,13 @@ interface ServerOptions {
    * §4.3 (2) の束縛タプルだけが消える)。
    */
   readonly dropCheckpointFromChain?: boolean;
+  /**
+   * standalone checkpoint の受理(汎用 append)+ /auth/me + /audit-head を
+   * 有効にする(契機 (i) — rotate + 再暗号化完了後の周期 checkpoint 発行 —
+   * のモデル化。PR-M2)。省略時は従来どおり未実装(発行は失敗し警告になる —
+   * 既存テストの前提を変えない)。
+   */
+  readonly standaloneCheckpoint?: { readonly auditHeadHashHex: string };
 }
 
 interface ServerState {
@@ -230,6 +238,8 @@ interface ServerState {
     /** リクエストの再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false として記録)。 */
     readonly reencryption: boolean;
   }[];
+  /** 配布チェーンの現在形(standalone checkpoint の追記の検査用)。 */
+  readonly chainEntries: readonly ChainEntry[];
 }
 
 /**
@@ -365,7 +375,45 @@ function makeServer(options: ServerOptions): ServerState {
     currentEpoch = target.epoch;
   };
 
+  // 契機 (i) の周期 checkpoint 発行(PR-M2)用の追加エンドポイント(オプション)
+  const standaloneHandlers: MockHandler[] =
+    options.standaloneCheckpoint === undefined
+      ? []
+      : [
+          onRequest("GET", "/auth/me", () => ({
+            status: 200,
+            json: {
+              userId: owner.userId,
+              orgs: [],
+              tokenScopes: [{ project: projectId, permission: "admin" }],
+            },
+          })),
+          onRequest("GET", `/projects/${projectId}/audit-head`, () => ({
+            status: 200,
+            json: { auditHeadHashHex: options.standaloneCheckpoint?.auditHeadHashHex ?? "" },
+          })),
+          async (request) => {
+            if (
+              request.method !== "POST" ||
+              request.path !== `/projects/${projectId}/chain/entries`
+            ) {
+              return null;
+            }
+            const body = request.body as { readonly entry: ChainEntry };
+            entries.push(body.entry);
+            hashes.push(await computeChainEntryHash(body.entry));
+            return {
+              status: 200,
+              json: {
+                projectId,
+                headSeq: entries.length,
+                headHashHex: hashes[hashes.length - 1],
+              },
+            };
+          },
+        ];
   const handlers: MockHandler[] = [
+    ...standaloneHandlers,
     onRequest("GET", `/projects/${projectId}/chain`, () => {
       const injected = options.onChain?.(chainCalls);
       chainCalls += 1;
@@ -476,7 +524,7 @@ function makeServer(options: ServerOptions): ServerState {
       };
     },
   ];
-  return { handlers, rotateBodies, pushes };
+  return { handlers, rotateBodies, pushes, chainEntries: entries };
 }
 
 /** 床(観測ログの fold)を読む(M1-A4 の床前進 / 非前進の固定用)。 */
@@ -673,6 +721,66 @@ describe("maruhi env rotate", () => {
     expect(pushedA.value.prevValueSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(env.logs.join("\n")).toContain("epoch 1 → 2");
     expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
+  });
+
+  it("契機 (i): rotate + 再暗号化の完了後に当該環境の周期 checkpoint を発行する(CRYPTO_SPEC §6.3 — PR-M2)", async () => {
+    const auditHead = "ab".repeat(32);
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      standaloneCheckpoint: { auditHeadHashHex: auditHead },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "periodic"], env.layer)).toBe(0);
+    // 末尾 = 再暗号化完了後の周期 checkpoint(境界分の H+2 の後に standalone)
+    const tail = state.chainEntries[state.chainEntries.length - 1];
+    if (tail === undefined || tail.op !== "checkpoint") {
+      throw new Error("the post-rotation periodic checkpoint was not appended");
+    }
+    expect(tail.payload.environments).toHaveLength(1);
+    const tuple = tail.payload.environments[0];
+    if (tuple === undefined) throw new Error("missing tuple");
+    expect(tuple.environmentId).toBe(ENV_ID);
+    // 公証対象 = 再暗号化**完了後**のデータ状態(新エポックの値)
+    expect(tuple.epoch).toBe(2);
+    const reencrypted = state.pushes.find((push) => push.variableId === "vaa");
+    if (reencrypted === undefined) throw new Error("missing re-encrypted push");
+    const digest = await computeEnvValuesDigest(SUITE_ID, [
+      {
+        variableId: "vaa",
+        version: reencrypted.value.aad.version,
+        valueSigHashHex: await valueHashOf(reencrypted.value, owner.userId),
+      },
+    ]);
+    if (!digest.ok) throw new Error("digest failed");
+    expect(tuple.valuesDigestHex).toBe(digest.value);
+    // 実効権限 admin(モックの /auth/me = admin スコープ)なので監査ヘッドを公証する
+    expect(tail.payload.auditHeadHashHex).toBe(auditHead);
+    expect(env.logs.join("\n")).toContain("post-rotation periodic checkpoint");
   });
 
   it("中断復旧: 複合受理後にクラッシュした状態から、エポックを進めず残りの再暗号化を再開する", async () => {
