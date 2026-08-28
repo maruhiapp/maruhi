@@ -15,7 +15,8 @@ export type ChainOp =
   | "create_environment"
   | "rotate_epoch"
   | "grant_server"
-  | "revoke_server";
+  | "revoke_server"
+  | "checkpoint";
 
 /** Entry actor: internal user id + key fingerprint only (never provider ids). */
 export interface ChainActor {
@@ -120,6 +121,42 @@ export interface RevokeServerPayload {
   readonly serverKeyFingerprintHex: string;
 }
 
+/**
+ * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2): the
+ * issuer's verified view of that environment — its current epoch (strict
+ * equality with the entry-time chain-derived epoch is a consensus rule), the
+ * latest manifest coordinates and the canonical values digest. The manifest
+ * hash / values digest contents are not verifiable by chain verification
+ * (they live in the data layer); acceptance-time content matching is the
+ * server's §6.4 duty and distribution-time matching the client's §6.3 duty.
+ */
+export interface CheckpointEnvironmentEntry {
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  /** SHA-256 (lowercase hex) of the manifest's signed bytes (§4.3). */
+  readonly manifestSigHashHex: string;
+  /** Canonical env values digest (lowercase hex — §6.2 の values_digest). */
+  readonly valuesDigestHex: string;
+}
+
+export interface CheckpointPayload {
+  /**
+   * Environment tuples — a subset of the active environments is valid
+   * (§6.2: full coverage is an issuance SHOULD, not a consensus rule).
+   * Duplicate environment ids make the payload invalid (structure check).
+   * List order is part of the signed bytes; generation SHOULD sort by
+   * environment id byte-ascending, verification does not normalize.
+   */
+  readonly environments: readonly CheckpointEnvironmentEntry[];
+  /**
+   * Server-attested audit-log rolling hash (AUDIT_SPEC §5.1), or the empty
+   * string for "no audit-head attestation". A non-empty value requires the
+   * actor to hold the admin role at this entry (consensus rule — §6.2).
+   */
+  readonly auditHeadHashHex: string;
+}
+
 /** Operation + payload, discriminated by `op`. */
 export type ChainOperation =
   | { readonly op: "genesis"; readonly payload: GenesisPayload }
@@ -129,7 +166,8 @@ export type ChainOperation =
   | { readonly op: "create_environment"; readonly payload: CreateEnvironmentPayload }
   | { readonly op: "rotate_epoch"; readonly payload: RotateEpochPayload }
   | { readonly op: "grant_server"; readonly payload: GrantServerPayload }
-  | { readonly op: "revoke_server"; readonly payload: RevokeServerPayload };
+  | { readonly op: "revoke_server"; readonly payload: RevokeServerPayload }
+  | { readonly op: "checkpoint"; readonly payload: CheckpointPayload };
 
 /** A chain entry before signing (CRYPTO_SPEC §6.1). */
 export type UnsignedChainEntry = ChainOperation & {
@@ -186,6 +224,19 @@ export interface EnvironmentChainState {
 }
 
 /**
+ * The latest `checkpoint` tuple covering one environment, derived from a
+ * verified chain (CRYPTO_SPEC §6.2 の検証状態 / §6.3 チェックポイント整合の
+ * 環境ごとの基準). `seq` is the checkpoint entry that carried the tuple.
+ */
+export interface EnvironmentCheckpointState {
+  readonly seq: number;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly manifestSigHashHex: string;
+  readonly valuesDigestHex: string;
+}
+
+/**
  * State derived from a verified chain (CRYPTO_SPEC §6.3): the current member
  * set (with roles), active server grants, and the environment set with per
  * epoch state. Environments exist only via `create_environment` (§6.2) —
@@ -197,6 +248,12 @@ export interface ChainState {
   readonly members: ReadonlyMap<string, ChainMember>;
   readonly serverGrants: ReadonlyMap<string, ServerGrant>;
   readonly environments: ReadonlyMap<string, EnvironmentChainState>;
+  /**
+   * Per environment, the latest `checkpoint` tuple covering it (§6.2 —
+   * the `checkpoint-regression` baseline and the §6.3 checkpoint-integrity
+   * baseline). Environments never covered by a checkpoint are absent.
+   */
+  readonly checkpoints: ReadonlyMap<string, EnvironmentCheckpointState>;
   readonly headSeq: number;
   readonly headHashHex: string;
 }

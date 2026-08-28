@@ -8,11 +8,13 @@
 // バイナリ値(prev_hash / 公開鍵 / FP / 署名)は hex 小文字文字列として LP に載せる。
 // grant_server の scope_environments は環境 ID リストの LP の hex 文字列(入れ子 LP)。
 // grant_server の lease_policy は 3 段の入れ子 LP の hex 文字列(§6.2。2026-08-12)。
+// checkpoint の environments は環境タプルリストの入れ子 LP の hex 文字列(§6.2。2026-08-27)。
 
 import { encodeHex } from "./bytes.ts";
 import type {
   ChainEntry,
   ChainOperation,
+  CheckpointEnvironmentEntry,
   LeasePolicyIssuer,
   UnsignedChainEntry,
 } from "./chain-types.ts";
@@ -38,6 +40,30 @@ function canonicalLeasePolicyBytes(policy: readonly LeasePolicyIssuer[]): Uint8A
             encodeLengthPrefixed([constraint.claimName, constraint.claimValue]),
           ),
         ),
+      ]),
+    ),
+  );
+}
+
+/**
+ * Canonical bytes of a checkpoint's environment tuple list (CRYPTO_SPEC
+ * §6.2): a nested length-prefixed encoding —
+ * `entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
+ * values_digest_hex)`, `environments = LP(entry...)`. Fixed by
+ * chain-entries.json. The empty list encodes to the empty byte string
+ * (a checkpoint with no environment tuples — audit-head attestation only).
+ */
+function canonicalCheckpointEnvironmentsBytes(
+  environments: readonly CheckpointEnvironmentEntry[],
+): Uint8Array {
+  return encodeLengthPrefixed(
+    environments.map((entry) =>
+      encodeLengthPrefixed([
+        entry.environmentId,
+        entry.epoch,
+        entry.manifestVersion,
+        entry.manifestSigHashHex,
+        entry.valuesDigestHex,
       ]),
     ),
   );
@@ -85,6 +111,11 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
     }
     case "revoke_server": {
       return encodeLengthPrefixed([operation.payload.serverKeyFingerprintHex]);
+    }
+    case "checkpoint": {
+      const p = operation.payload;
+      const environmentsLpHex = encodeHex(canonicalCheckpointEnvironmentsBytes(p.environments));
+      return encodeLengthPrefixed([environmentsLpHex, p.auditHeadHashHex]);
     }
   }
 }

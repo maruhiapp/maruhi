@@ -13,7 +13,15 @@
 import { concatBytes, decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
 import { canonicalChainSignedBytes, computeChainEntryHash } from "./chain-canonical.ts";
 import { ChainHistoryBuilder, type ChainHistoryIndex } from "./chain-history.ts";
-import type { ChainEntry, ChainMember, ChainState, Role, ServerGrant } from "./chain-types.ts";
+import type {
+  ChainEntry,
+  ChainMember,
+  ChainState,
+  CheckpointEnvironmentEntry,
+  EnvironmentCheckpointState,
+  Role,
+  ServerGrant,
+} from "./chain-types.ts";
 import type { ChainInvalidReason, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { SUITE_ID } from "./suite.ts";
@@ -48,6 +56,9 @@ interface MutableChainState {
   // (削除はデータプレーン操作)ため、このマップ自体が「履歴全体の使用済み ID」
   // でもあり、duplicate-environment の判定に追加の索引を要しない
   readonly environments: Map<string, MutableEnvironmentState>;
+  // 環境ごとの最新チェックポイントタプル(§6.2 checkpoint の導出状態 —
+  // checkpoint-regression の比較対象と §6.3 チェックポイント整合の基準)
+  readonly checkpoints: Map<string, EnvironmentCheckpointState>;
   // 現メンバー集合の enc / sig 公開鍵の索引(メンバー鍵の一意性 — §6.2)。
   // 本規則自体が「各鍵は高々 1 メンバーに属する」を不変条件にするため、
   // remove_member での Set 削除は他メンバーの鍵を消さない(健全)。
@@ -229,6 +240,46 @@ function shapeGrantServer(p: {
   );
 }
 
+/**
+ * checkpoint payload の構造検査(§6.2)。hex 長・数値範囲に加えて**重複
+ * environment_id の拒否**も構造段に属する(仕様の「payload 構造検査」—
+ * 同一環境の 2 エントリを許すと §6.3 の基準・checkpoint-regression の
+ * 比較対象が非決定になる)。環境エントリ数の合意規則上限は置かない
+ * (§6.2 — サイズはサーバー受理ポリシー〔§6.4 の 1 MiB〕が束縛する)
+ */
+function shapeCheckpointEnvironment(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isBoundedId(value.environmentId) &&
+    Number.isSafeInteger(value.epoch) &&
+    (value.epoch as number) >= 1 &&
+    Number.isSafeInteger(value.manifestVersion) &&
+    (value.manifestVersion as number) >= 1 &&
+    isHexOfLength(value.manifestSigHashHex, SHA256_BYTES) &&
+    isHexOfLength(value.valuesDigestHex, SHA256_BYTES)
+  );
+}
+
+function shapeCheckpoint(p: { environments: unknown; auditHeadHashHex: unknown }): boolean {
+  if (!Array.isArray(p.environments)) {
+    return false;
+  }
+  if (!p.environments.every((entry) => shapeCheckpointEnvironment(entry))) {
+    return false;
+  }
+  const ids = new Set<string>();
+  for (const entry of p.environments as readonly { environmentId: string }[]) {
+    if (ids.has(entry.environmentId)) {
+      return false;
+    }
+    ids.add(entry.environmentId);
+  }
+  // audit_head_hash は空文字列(公証なし)または hex 小文字 64 文字のみ
+  return p.auditHeadHashHex === "" || isHexOfLength(p.auditHeadHashHex, SHA256_BYTES);
+}
+
 // op ごとの payload 形状述語(§6.1 / §6.2 の構造検査)。分岐でなく表引きにして
 // op 追加時の検査漏れを型(網羅 Record)で防ぐ
 const PAYLOAD_SHAPES: {
@@ -242,6 +293,7 @@ const PAYLOAD_SHAPES: {
   rotate_epoch: shapeRotateEpoch,
   grant_server: shapeGrantServer,
   revoke_server: (p) => isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES),
+  checkpoint: shapeCheckpoint,
 };
 
 function operationShapeOk(entry: ChainEntry): boolean {
@@ -557,29 +609,108 @@ function applyRotateEpoch(
   return null;
 }
 
+/**
+ * checkpoint の認可 + 状態遷移(§6.2。2026-08-27 セッション 33 — PR-F3a)。
+ * 検査順序(ベクターで固定): role(member 以上)→ 非空監査ヘッドの admin role →
+ * unknown-environment → checkpoint-epoch-mismatch → checkpoint-regression。
+ * 複数環境エントリ間は**検査段ごとに全エントリを走査**する(stage-wise —
+ * session-33 裁定 C。authz-checkpoint-unknown-precedes-epoch が固定)。
+ * エポックは「エントリ時点(自エントリ適用前)」の現エポックとの厳密一致 —
+ * checkpoint 自身はエポックを動かさないため、境界チェックポイント(複合の
+ * H+2 — AUTH_SPEC §12-4)でも同梱エントリ(H+1)適用後の状態と自然に一致する。
+ * タプル内容(マニフェスト・値・監査ヘッド)はここでは検証不能(§6.2 の
+ * 「形式は合意規則、内容は照合側」— サーバー §6.4 / クライアント §6.3)。
+ */
+function checkpointRoleReason(
+  entry: ChainEntry & { readonly op: "checkpoint" },
+  actorRole: Role,
+): ChainInvalidReason | null {
+  if (!atLeast(actorRole, "member")) {
+    return "insufficient-role";
+  }
+  // 非空の監査ヘッドを公証できるのは admin 以上のみ(監査ヘッド申告の取得自体が
+  // 実効権限 admin 限定 — AUTH_SPEC §16-2 のタイミングサイドチャネル対応)
+  if (entry.payload.auditHeadHashHex !== "" && !atLeast(actorRole, "admin")) {
+    return "checkpoint-audit-role-insufficient";
+  }
+  return null;
+}
+
+function checkpointEnvironmentsReason(
+  environments: readonly CheckpointEnvironmentEntry[],
+  state: MutableChainState,
+): ChainInvalidReason | null {
+  for (const tuple of environments) {
+    if (!state.environments.has(tuple.environmentId)) {
+      return "unknown-environment";
+    }
+  }
+  for (const tuple of environments) {
+    if (state.environments.get(tuple.environmentId)?.currentEpoch !== tuple.epoch) {
+      return "checkpoint-epoch-mismatch";
+    }
+  }
+  for (const tuple of environments) {
+    const prior = state.checkpoints.get(tuple.environmentId);
+    // 非後退は等号を許す(rotate 境界分の後、再暗号化完了後の周期 checkpoint が
+    // 同一 manifest_version を新しい values_digest で正当に再公証する — §6.3)
+    if (prior !== undefined && tuple.manifestVersion < prior.manifestVersion) {
+      return "checkpoint-regression";
+    }
+  }
+  return null;
+}
+
+function applyCheckpoint(
+  entry: ChainEntry & { readonly op: "checkpoint" },
+  state: MutableChainState,
+  actorRole: Role,
+): ChainInvalidReason | null {
+  const rejected =
+    checkpointRoleReason(entry, actorRole) ??
+    checkpointEnvironmentsReason(entry.payload.environments, state);
+  if (rejected !== null) {
+    return rejected;
+  }
+  for (const tuple of entry.payload.environments) {
+    state.checkpoints.set(tuple.environmentId, {
+      seq: entry.seq,
+      epoch: tuple.epoch,
+      manifestVersion: tuple.manifestVersion,
+      manifestSigHashHex: tuple.manifestSigHashHex,
+      valuesDigestHex: tuple.valuesDigestHex,
+    });
+  }
+  return null;
+}
+
+// op ごとの認可 + 状態遷移(§6.2)。PAYLOAD_SHAPES と同じ網羅 Record にして
+// op 追加時の適用漏れを型で防ぐ(checkEntryBeforeApply が op の membership を
+// 検査済みなので表引きは安全)
+const OPERATION_APPLIERS: {
+  readonly [K in ChainEntry["op"]]: (
+    entry: Extract<ChainEntry, { op: K }>,
+    state: MutableChainState,
+    actorRole: Role,
+  ) => ChainInvalidReason | null | Promise<ChainInvalidReason | null>;
+} = {
+  genesis: (entry, state) => applyGenesis(entry, state),
+  add_member: applyAddMember,
+  remove_member: applyRemoveMember,
+  change_role: applyChangeRole,
+  create_environment: applyCreateEnvironment,
+  rotate_epoch: applyRotateEpoch,
+  grant_server: applyGrantServer,
+  revoke_server: applyRevokeServer,
+  checkpoint: applyCheckpoint,
+};
+
 async function applyOperation(
   entry: ChainEntry,
   state: MutableChainState,
   actorRole: Role,
 ): Promise<ChainInvalidReason | null> {
-  switch (entry.op) {
-    case "genesis":
-      return applyGenesis(entry, state);
-    case "add_member":
-      return applyAddMember(entry, state, actorRole);
-    case "remove_member":
-      return applyRemoveMember(entry, state, actorRole);
-    case "change_role":
-      return applyChangeRole(entry, state, actorRole);
-    case "create_environment":
-      return applyCreateEnvironment(entry, state, actorRole);
-    case "rotate_epoch":
-      return applyRotateEpoch(entry, state, actorRole);
-    case "grant_server":
-      return applyGrantServer(entry, state, actorRole);
-    case "revoke_server":
-      return applyRevokeServer(entry, state, actorRole);
-  }
+  return OPERATION_APPLIERS[entry.op](entry as never, state, actorRole);
 }
 
 /** 適用済み状態から対象メンバーの鍵束縛を引いて tenure 開始を記録する。 */
@@ -596,45 +727,42 @@ function recordTenureStartOf(
   }
 }
 
-/**
- * 適用成功済みエントリを履歴索引(chain-history.ts)へ記録する。tenure の
- * 開始・終了・role 変更はすべて当該エントリ自身の seq を境界にする
- * (§6.3 の inclusive 規約 — value-signature.json のベクターが固定)。
- */
+// op ごとの履歴記録(OPERATION_APPLIERS と同じ網羅 Record — op 追加時の記録
+// 漏れを型で防ぐ)。tenure の開始・終了・role 変更はすべて当該エントリ自身の
+// seq を境界にする(§6.3 の inclusive 規約 — value-signature.json のベクターが
+// 固定)。grant_server / revoke_server は履歴索引に載せる状態を持たない
+const HISTORY_RECORDERS: {
+  readonly [K in ChainEntry["op"]]: (
+    history: ChainHistoryBuilder,
+    entry: Extract<ChainEntry, { op: K }>,
+    state: MutableChainState,
+  ) => void;
+} = {
+  genesis: (history, entry, state) =>
+    recordTenureStartOf(history, state, entry.actor.userId, entry.seq, "owner"),
+  add_member: (history, entry, state) =>
+    recordTenureStartOf(history, state, entry.payload.targetUserId, entry.seq, entry.payload.role),
+  change_role: (history: ChainHistoryBuilder, entry) =>
+    history.recordRoleChange(entry.payload.targetUserId, entry.seq, entry.payload.newRole),
+  remove_member: (history: ChainHistoryBuilder, entry) =>
+    history.recordTenureEnd(entry.payload.targetUserId, entry.seq),
+  create_environment: (history: ChainHistoryBuilder, entry) =>
+    history.recordEnvironmentCreated(entry.payload.environmentId, entry.seq),
+  rotate_epoch: (history: ChainHistoryBuilder, entry) =>
+    history.recordEpochRotated(entry.payload.environmentId, entry.payload.newEpoch, entry.seq),
+  checkpoint: (history: ChainHistoryBuilder, entry) =>
+    history.recordCheckpoint(entry.seq, entry.payload.environments),
+  grant_server: () => undefined,
+  revoke_server: () => undefined,
+};
+
+/** 適用成功済みエントリを履歴索引(chain-history.ts)へ記録する。 */
 function recordHistory(
   history: ChainHistoryBuilder,
   entry: ChainEntry,
   state: MutableChainState,
 ): void {
-  switch (entry.op) {
-    case "genesis":
-      recordTenureStartOf(history, state, entry.actor.userId, entry.seq, "owner");
-      return;
-    case "add_member":
-      recordTenureStartOf(
-        history,
-        state,
-        entry.payload.targetUserId,
-        entry.seq,
-        entry.payload.role,
-      );
-      return;
-    case "change_role":
-      history.recordRoleChange(entry.payload.targetUserId, entry.seq, entry.payload.newRole);
-      return;
-    case "remove_member":
-      history.recordTenureEnd(entry.payload.targetUserId, entry.seq);
-      return;
-    case "create_environment":
-      history.recordEnvironmentCreated(entry.payload.environmentId, entry.seq);
-      return;
-    case "rotate_epoch":
-      history.recordEpochRotated(entry.payload.environmentId, entry.payload.newEpoch, entry.seq);
-      return;
-    case "grant_server":
-    case "revoke_server":
-      return;
-  }
+  HISTORY_RECORDERS[entry.op](history, entry as never, state);
 }
 
 /**
@@ -680,6 +808,7 @@ async function verifyChainCore(
     members: new Map(),
     serverGrants: new Map(),
     environments: new Map(),
+    checkpoints: new Map(),
     memberEncPubs: new Set(),
     memberSigPubs: new Set(),
   };
@@ -713,6 +842,7 @@ async function verifyChainCore(
       members: state.members,
       serverGrants: state.serverGrants,
       environments: state.environments,
+      checkpoints: state.checkpoints,
       headSeq: entries.length,
       headHashHex: prevHash,
     },

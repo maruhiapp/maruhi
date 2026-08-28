@@ -833,9 +833,49 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   "authz-actor-key-mismatch": { status: 422, reason: "actor-key-mismatch" },
 };
 
+/**
+ * checkpoint op の汎用 append テスト(2026-08-27 — PR-F3a): §16-2 の受理検証
+ * (内容突合 + スナップショット保存)が実装されるまで CompositeRequired で
+ * fail-closed に拒否する。合意規則の理由コード(expected_reason)は crypto 層の
+ * 4 実行環境テストが固定し、ここでは受理面のガードだけを固定する。前提チェーンの
+ * 再生も不要(ガードは検証より先に働き、checkpoint を含む派生チェーン —
+ * checkpoint-baseline — は汎用 append では再生できない)。固定長 hex の形式違反は
+ * api-schema の hex Schema が先に 400 で拒否する(create-env-commitment-* の
+ * 複合期待と同じ分担)。
+ */
+function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegatives)[number]): void {
+  const schemaRejected = [
+    "checkpoint-manifest-hash-uppercase-hex",
+    "checkpoint-values-digest-bad-length",
+    "checkpoint-format-precedes-role",
+  ].includes(negative.name);
+  const label = schemaRejected
+    ? `rejects ${negative.name} at the wire schema (400)`
+    : `rejects ${negative.name} at the generic append (422 CompositeRequired)`;
+  it(label, async () => {
+    await replayVectorChain(1);
+    const response = await appendEntry(
+      vectorProjectId,
+      negative.entry.prev_hash_hex,
+      toWireEntry(negative.entry),
+    );
+    if (schemaRejected) {
+      expect(response.status).toBe(400);
+      return;
+    }
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { op?: string };
+    expect(body.op).toBe("checkpoint");
+  });
+}
+
 describe("サーバー側検証(§6.4 = verifyChain 再実行)— 認可系 negative ベクター", () => {
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
+    if (op === "checkpoint") {
+      registerCheckpointAppendGuardTest(negative);
+      continue;
+    }
     const isComposite = op === "create_environment" || op === "rotate_epoch";
     if (isComposite) {
       const expectation = compositeExpectations[negative.name];

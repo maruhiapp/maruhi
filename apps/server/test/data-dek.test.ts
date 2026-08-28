@@ -1243,6 +1243,7 @@ describe("expectedWrapRecipientCount(deepsec B10)", () => {
         grantOf(otherFp, ["env-a", "env-b"]),
       ]),
       environments: new Map(),
+      checkpoints: new Map(),
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };

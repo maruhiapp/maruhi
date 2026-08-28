@@ -30,7 +30,12 @@ export type ChainInvalidReason =
   | "unknown-server-grant"
   | "grant-scope-narrowed"
   | "duplicate-server-key"
-  | "epoch-out-of-sequence";
+  | "epoch-out-of-sequence"
+  // checkpoint op(§6.2。2026-08-27 セッション 33 — PR-F3a)。重複 environment_id は
+  // payload 構造検査(invalid-payload)に属し、専用理由コードを持たない
+  | "checkpoint-audit-role-insufficient"
+  | "checkpoint-epoch-mismatch"
+  | "checkpoint-regression";
 
 /**
  * Reason codes for rejecting a distributed variable value (CRYPTO_SPEC §4.1 /

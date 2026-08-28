@@ -16,30 +16,43 @@ import {
   toTypedEntry,
   typedEntries,
   vectorEntries,
+  vectorExtendedChains,
   vectorHeadStates,
   vectorKeys,
+  vectorValidAppends,
 } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 async function canonicalizationChecks(c: Checks): Promise<void> {
-  for (const vector of vectorEntries) {
+  // 正規 12 エントリに加えて valid_appends / extended_chains の追記エントリも
+  // 同水準で正規化を固定する(checkpoint op は正規チェーンに現れないため、
+  // 追記エントリのバイト一致が checkpoint 正規化の唯一の直接固定点になる)
+  const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
+    ...vectorEntries.map((vector) => [`chain seq ${vector.seq}`, vector] as const),
+    ...vectorValidAppends.map(
+      (append) => [`chain valid append ${append.name}`, append.entry] as const,
+    ),
+    ...Object.entries(vectorExtendedChains).flatMap(([name, extended]) =>
+      extended.entries.map(
+        (vector) => [`chain extended ${name} seq ${vector.seq}`, vector] as const,
+      ),
+    ),
+  ];
+  for (const [label, vector] of labeled) {
     const entry = toTypedEntry(vector);
     c.push(
-      `chain seq ${vector.seq}: payload bytes`,
+      `${label}: payload bytes`,
       toHex(canonicalChainPayloadBytes(entry)) === vector.payload_bytes_hex,
     );
     c.push(
-      `chain seq ${vector.seq}: signed bytes`,
+      `${label}: signed bytes`,
       toHex(canonicalChainSignedBytes(entry)) === vector.signed_bytes_hex,
     );
     c.push(
-      `chain seq ${vector.seq}: entry bytes`,
+      `${label}: entry bytes`,
       toHex(canonicalChainEntryBytes(entry)) === vector.entry_bytes_hex,
     );
-    c.push(
-      `chain seq ${vector.seq}: entry hash`,
-      (await computeChainEntryHash(entry)) === vector.entry_hash_hex,
-    );
+    c.push(`${label}: entry hash`, (await computeChainEntryHash(entry)) === vector.entry_hash_hex);
   }
 }
 

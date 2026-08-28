@@ -56,7 +56,48 @@ const PAYLOAD_FIELD_ORDER = {
     "lease_policy_lp_hex",
   ],
   revoke_server: ["server_key_fingerprint_hex"],
+  // 2026-08-27(CRYPTO_SPEC 0.7-draft §6.2 checkpoint op — PR-F3a): 環境エントリの
+  // リストは scope_environments と同じ入れ子 LP の hex 文字列 1 フィールド
+  checkpoint: ["environments_lp_hex", "audit_head_hash_hex"],
 };
+
+// checkpoint の環境エントリの入れ子 LP(§6.2 — generate_reference.py と同一定義):
+//   entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
+//              values_digest_hex)、environments_lp_hex = lower_hex(LP(entry...))
+function checkpointEnvironmentsLp(environments) {
+  return lpEncode(
+    environments.map((e) =>
+      lpEncode([
+        e.environment_id,
+        e.epoch,
+        e.manifest_version,
+        e.manifest_sig_hash_hex,
+        e.values_digest_hex,
+      ]),
+    ),
+  );
+}
+
+// checkpoint の values_digest(§6.2): v_j = LP(variable_id, version,
+// value_sig_hash_hex) を variable_id の UTF-8 バイト昇順で並べ、
+// LP("maruhi/v1/env-values-digest", v_1, …, v_m) を SHA-256 する
+function envValuesDigestInput(entries) {
+  const enc = new TextEncoder();
+  const ordered = entries.toSorted((a, b) => {
+    const ba = enc.encode(a.variable_id);
+    const bb = enc.encode(b.variable_id);
+    for (let i = 0; i < Math.min(ba.length, bb.length); i += 1) {
+      if (ba[i] !== bb[i]) {
+        return ba[i] - bb[i];
+      }
+    }
+    return ba.length - bb.length;
+  });
+  return lpEncode([
+    "maruhi/v1/env-values-digest",
+    ...ordered.map((v) => lpEncode([v.variable_id, v.version, v.value_sig_hash_hex])),
+  ]);
+}
 
 // grant_server の lease_policy の入れ子 LP(§6.2 — 3 段。generate_reference.py と同一定義)
 function leasePolicyLp(policy) {
@@ -216,6 +257,36 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     // 空ポリシーは空バイト列の hex = 空文字列(regrant-lease-policy-revised が使う形)
     check("chain: empty lease_policy encodes to empty hex", toHex(leasePolicyLp([])) === "");
+  }
+  // checkpoint(§6.2 — PR-F3a): 構造化表現(environments)からの入れ子 LP 再構築が
+  // environments_lp_hex と一致する。対象は checkpoint op を含む全エントリ
+  // (extended_chains / valid_appends / negative の entry)
+  {
+    const checkpointEntries = [
+      ...Object.values(doc.extended_chains ?? {}).flatMap((ext) => ext.entries),
+      ...doc.valid_appends.map((a) => a.entry),
+      ...doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
+    ].filter((e) => e.op === "checkpoint");
+    check("chain: checkpoint vectors exist", checkpointEntries.length > 0);
+    for (const e of checkpointEntries) {
+      check(
+        `chain checkpoint seq ${e.seq} (${e.actor.user_id}): environments nested LP`,
+        toHex(checkpointEnvironmentsLp(e.payload.environments)) === e.payload.environments_lp_hex,
+      );
+    }
+    // 環境エントリ 0 件は空バイト列の hex = 空文字列(checkpoint-empty-environments)
+    check(
+      "chain: empty checkpoint environments encode to empty hex",
+      toHex(checkpointEnvironmentsLp([])) === "",
+    );
+  }
+  // checkpoint の values_digest 正規形(values_digests セクション): 非正規順の
+  // entries からバイト昇順の再計算が期待ダイジェストと一致する
+  for (const digestCase of doc.values_digests ?? []) {
+    check(
+      `chain values-digest ${digestCase.name}`,
+      (await sha256(envValuesDigestInput(digestCase.entries))) === digestCase.values_digest_hex,
+    );
   }
   // §5.2 の DEK コミットメント: environment_deks のダミー DEK からの再計算が
   // 掲載値と一致し、create_environment / rotate_epoch の payload がそれを載せている

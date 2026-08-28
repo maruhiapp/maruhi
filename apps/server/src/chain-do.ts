@@ -276,8 +276,15 @@ const appendProgram = (
     // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
     // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
     // 将来増えても「エポック / 環境はチェーンにあるがラップ・環境行がない」状態を
-    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)
-    if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
+    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)。
+    // checkpoint(2026-08-27 — PR-F3a)も同様: §16-2 の受理検証(内容突合 +
+    // スナップショット保存)なしの受理は偽タプルの持ち込み(§4.3 (2) の束縛の
+    // 汚染)を許す fail-open になるため、実装まで DO 側でも拒否する
+    if (
+      entry.op === "create_environment" ||
+      entry.op === "rotate_epoch" ||
+      entry.op === "checkpoint"
+    ) {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
