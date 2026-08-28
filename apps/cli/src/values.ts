@@ -704,6 +704,13 @@ function verifyAll(
   pull: PullWire,
   allowMissingManifest: boolean,
   floorManifest: ManifestFloor | null,
+  /**
+   * 応答を**取得した時点**のビューのヘッド seq(pull = 取得時ビュー、lease =
+   * 同梱チェーンのヘッド)。有界再同期の再検証は同じ応答本文を前進後のビューで
+   * 再検証するため、規則 2 の基準が応答より新しい良性競合の判別に要る
+   * (checkpoint-integrity.ts — PR #100 Bugbot 指摘)。
+   */
+  fetchedAtHeadSeq: number,
 ): Effect.Effect<
   | {
       readonly kind: "ok";
@@ -734,8 +741,10 @@ function verifyAll(
     // チェックポイント整合の規則 2(§6.3 — 値付き経路のみ。metadata-only は
     // 値を運ばないため対象外 §12-7)。tombstone の削除説明はマニフェスト整合済み
     // 集合を前提にするため、マニフェスト段(verifyAllCommon 内)の後に置く。
-    // 拒否は検証済みデータとチェーン公証の矛盾 = 証拠(evidence — rotate の
-    // 巡末分類が「再実行で直る」案内へ格下げしないための型付け)
+    // evidence 付き拒否 = 検証済みデータとチェーン公証の矛盾(rotate の巡末分類が
+    // 「再実行で直る」案内へ格下げしないための型付け)。evidence なしの拒否 =
+    // 取得ビューより後に基準が前進した良性競合でも説明できる形(再 pull で解消
+    // しうる — PR #100 Bugbot 指摘)
     const checkpoint = yield* Effect.tryPromise({
       try: () =>
         checkCheckpointIntegrity({
@@ -744,11 +753,14 @@ function verifyAll(
           snapshot: pull.checkpointSnapshot,
           variables: result.variables,
           tombstoneIds: new Set(result.tombstones.map((tombstone) => tombstone.variableId)),
+          fetchedAtHeadSeq,
         }),
       catch: () => cliError("Checkpoint-integrity verification failed to run (crypto error)"),
     });
     if (checkpoint.kind === "rejected") {
-      return yield* Effect.fail(evidenceError(checkpoint.message));
+      return yield* Effect.fail(
+        checkpoint.evidence ? evidenceError(checkpoint.message) : cliError(checkpoint.message),
+      );
     }
     if (checkpoint.kind === "future") {
       return { kind: "future" } as const;
@@ -947,6 +959,9 @@ export function pullVerifiedEnvironment(input: {
           input.allowMissingManifest === true,
           // 隣接版の prev 検証(M1-A1): 床のマニフェスト記録を predecessor として渡す
           input.floor.current()?.manifest ?? null,
+          // 応答は input.verified のビューの下で取得された(再同期後の再検証でも
+          // 取得時点は変わらない — 規則 2 の良性競合判別の基準)
+          input.verified.state.headSeq,
         ).pipe(
           Effect.map((result) =>
             result.kind === "future"
@@ -1010,7 +1025,17 @@ export function verifyLeaseDistribution(input: {
     // ワークロードは床を持たない初回同期クラス(§14.3-3。session-31 §3 M1-A1
     // の lease 適用外の注記): 署名・digest・エポック整合・欠落拒否は pull と
     // 同水準のまま、predecessor は null(共有検証器の同一性)
-    const result = yield* verifyAll(input.verified, input.environmentId, input.wire, false, null);
+    // lease は応答がチェーンを同梱する自己完結形 — 取得ビュー = 同梱チェーンの
+    // ヘッドそのもの(基準が取得ビューより新しい形は構造的に存在せず、規則 2 の
+    // 拒否は常に evidence 側に分類される)
+    const result = yield* verifyAll(
+      input.verified,
+      input.environmentId,
+      input.wire,
+      false,
+      null,
+      input.verified.state.headSeq,
+    );
     if (result.kind === "future") {
       return yield* Effect.fail(
         cliError(

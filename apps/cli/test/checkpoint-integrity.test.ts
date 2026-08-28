@@ -18,6 +18,7 @@ import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { checkCheckpointIntegrity } from "../src/checkpoint-integrity.ts";
 import { runCli } from "../src/cli.ts";
 import { verifyChainSnapshot } from "../src/sync.ts";
 import { verifyLeaseDistribution } from "../src/values.ts";
@@ -71,6 +72,8 @@ let valueB: WireDistributedValue;
 let snapshot: WireCheckpointSnapshot;
 /** checkpoint タプルが束縛する mv1 マニフェスト([A active, B active])。 */
 let manifestMain: WireDistributedManifest;
+/** ENV を覆う checkpoint op(良性競合テストが第 2 の checkpoint として再利用)。 */
+let checkpointOperation: ChainOperation;
 let wraps: WireRecipientDek[];
 let servers: MockServer[] = [];
 
@@ -146,7 +149,7 @@ beforeAll(async () => {
   const snapshotValues = await checkpointSnapshotValuesOf([valueA, valueB]);
   const digest = await computeEnvValuesDigest(SUITE_ID, snapshotValues);
   if (!digest.ok) throw new Error("values digest failed");
-  const checkpointOp: ChainOperation = {
+  checkpointOperation = {
     op: "checkpoint",
     payload: {
       environments: [
@@ -161,7 +164,7 @@ beforeAll(async () => {
       auditHeadHashHex: "",
     },
   };
-  chain = await buildChain([...baseSteps, { actor: owner, operation: checkpointOp }]);
+  chain = await buildChain([...baseSteps, { actor: owner, operation: checkpointOperation }]);
   expect(chain.projectId).toBe(projectId);
   snapshot = {
     chainSeq: CHECKPOINT_SEQ,
@@ -559,6 +562,87 @@ describe("規則 2 の拒否経路(session-27 §13-5 — 全件が検証済み�
       "derives no checkpoint covering this environment",
       baseChain,
     );
+  });
+});
+
+describe("良性競合の分類(PR #100 Bugbot 指摘 — 取得ビュー後の基準前進は evidence にしない)", () => {
+  it("再同期の窓に第 2 の checkpoint が着地した正直な応答は、証拠ではなく retriable として拒否する", async () => {
+    // fetch 時のビュー = baseChain(checkpoint なし)。応答は checkpoint(seq 4)の
+    // 列挙を運ぶが、再同期後のチェーンには第 2 の checkpoint(seq 5)まで載って
+    // いる — 応答の locator(4)は最新基準(5)と一致しないが、基準は取得ビュー
+    // (head 3)より後に前進しており、正直な応答でも起きる形。証拠(再実行では
+    // 解消しない)へ格上げせず、再 pull の案内で拒否する
+    const doubleChain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+      { actor: owner, operation: checkpointOperation },
+      { actor: owner, operation: checkpointOperation },
+    ]);
+    expect(doubleChain.projectId).toBe(projectId);
+    let chainCalls = 0;
+    const racingChain: MockHandler = (request) => {
+      if (request.method !== "GET" || request.path !== `/projects/${projectId}/chain`) {
+        return null;
+      }
+      const built = chainCalls === 0 ? baseChain : doubleChain;
+      chainCalls += 1;
+      return {
+        status: 200,
+        json: {
+          projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      };
+    };
+    const env = await startEnv([racingChain, pullHandler()]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("retry the pull");
+    expect(errors).not.toContain("stale or fabricated");
+  });
+
+  it("基準前進の分類は取得ビュー基準(fetchedAtHeadSeq)で行う(unit)", async () => {
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: projectId as never,
+        entries: chain.entries,
+        claimedHeadSeq: chain.entries.length,
+        claimedHeadHashHex: chain.hashes[chain.hashes.length - 1] ?? "",
+      }),
+    );
+    // 列挙なし + 基準は取得ビュー(head 3)より後に着地 → retriable
+    const missingAfterFetch = await checkCheckpointIntegrity({
+      history: verified.history,
+      environmentId: ENV_ID,
+      snapshot: undefined,
+      variables: [],
+      tombstoneIds: new Set(),
+      fetchedAtHeadSeq: 3,
+    });
+    expect(missingAfterFetch).toMatchObject({ kind: "rejected", evidence: false });
+    // 列挙なし + 基準は取得ビュー時点で保存済み → MUST の evidence 拒否
+    const missingStored = await checkCheckpointIntegrity({
+      history: verified.history,
+      environmentId: ENV_ID,
+      snapshot: undefined,
+      variables: [],
+      tombstoneIds: new Set(),
+      fetchedAtHeadSeq: CHECKPOINT_SEQ,
+    });
+    expect(missingStored).toMatchObject({ kind: "rejected", evidence: true });
+    // 旧位置の列挙 + 基準は取得ビュー時点で保存済み → stale 配布の evidence 拒否
+    const staleStored = await checkCheckpointIntegrity({
+      history: verified.history,
+      environmentId: ENV_ID,
+      snapshot: { chainSeq: 2, entryHashHex: chain.hashes[1] ?? "", values: [] },
+      variables: [],
+      tombstoneIds: new Set(),
+      fetchedAtHeadSeq: CHECKPOINT_SEQ,
+    });
+    expect(staleStored).toMatchObject({ kind: "rejected", evidence: true });
   });
 });
 
