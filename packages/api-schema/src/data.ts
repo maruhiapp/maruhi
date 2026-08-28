@@ -303,6 +303,49 @@ export const DistributedEnvironmentManifestSchema = Schema.Struct({
 /** A distributed environment manifest with its issuer identity. */
 export type DistributedEnvironmentManifest = typeof DistributedEnvironmentManifestSchema.Type;
 
+// ---------------------------------------------------------------------------
+// チェックポイント時点の値スナップショット列挙(AUTH_SPEC §12-7 / §14-2 —
+// 2026-08-28 PR-M3)。checkpoint 受理時にサーバーが原子保存した列挙(§16-2)を
+// 値付き応答へ同梱し、クライアントのチェックポイント整合・規則 2(値の非後退 —
+// CRYPTO_SPEC §6.3)の材料にする。metadata-only pull は対象外(値を運ばない)。
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry of the checkpoint-time value snapshot (AUTH_SPEC §12-7): one
+ * active variable's latest version at checkpoint acceptance and the SHA-256
+ * of that version's `value_signed_bytes` (CRYPTO_SPEC §4.1 / §6.2).
+ */
+export const CheckpointValueSnapshotEntrySchema = Schema.Struct({
+  variableId: VariableIdSchema,
+  version: PositiveInt,
+  valueSigHashHex: Sha256Hex,
+});
+
+/** One checkpoint-time snapshot entry (variable id / version / value-sig hash). */
+export type CheckpointValueSnapshotEntry = typeof CheckpointValueSnapshotEntrySchema.Type;
+
+/**
+ * The checkpoint-time value snapshot bundled into value-bearing responses
+ * (bulk pull §12-7 / lease §14-2): the enumeration the server stored at
+ * checkpoint acceptance, plus the checkpoint's chain position. The position
+ * is an **advisory locator only** (CRYPTO_SPEC §1 原則 6 — session-36 裁定 S):
+ * the verification baseline is always the client's own chain-derived latest
+ * covering checkpoint (§6.3), and the locator merely routes the §6.3-2-style
+ * two-way classification (declared seq beyond the verified head = possibly
+ * stale view → one bounded re-sync on the pull path; at or below it = the
+ * baseline is settled, any mismatch is hard evidence).
+ */
+export const CheckpointValueSnapshotSchema = Schema.Struct({
+  /** Chain seq of the checkpoint entry the enumeration was stored for. */
+  chainSeq: PositiveInt,
+  /** Entry hash of that checkpoint entry (cross-checked against the chain). */
+  entryHashHex: Sha256Hex,
+  values: Schema.Array(CheckpointValueSnapshotEntrySchema),
+});
+
+/** The checkpoint-time value snapshot of one environment (§12-7 / §14-2). */
+export type CheckpointValueSnapshot = typeof CheckpointValueSnapshotSchema.Type;
+
 /**
  * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の
  * 現メンバー(user_id + enc 公開鍵で同定)、server = 有効な grant_server の
