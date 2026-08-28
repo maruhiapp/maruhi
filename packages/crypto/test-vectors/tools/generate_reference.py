@@ -1590,6 +1590,34 @@ def gen_chain_entries():
             ]),
             "note": "正規順は variable_id の UTF-8 バイト昇順: var-Z-0001(0x5A)< var-a-0002 < var-a-0010 < var-㊙-0001(0xE3…)。ロケール・数値順でなくバイト順であることを固定する(entries は非正規順で列挙 — 実装は内部でソートして同じダイジェストに到達する)",
         },
+        {
+            # サロゲートペア境界(session-31 M1-T2 — 2026-08-28): BMP 高位
+            # U+FFE5(UTF-8 EF BF A5)は astral U+1F511(UTF-8 F0 9F 94 91)より
+            # 先。UTF-16 コード単位比較(JS の素の文字列比較)ではサロゲート
+            # 0xD83D < 0xFFE5 で逆順になるため、この対が両実装を判別する
+            "name": "surrogate-boundary-order",
+            "entries": [
+                {"variable_id": "var-\U0001F511-0001", "version": "2",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-\U0001F511-0001", 2)},
+                {"variable_id": "var-￥-0001", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-￥-0001", 1)},
+                {"variable_id": "var-㊙-0001", "version": "3",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-㊙-0001", 3)},
+                {"variable_id": "var-z-0001", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-z-0001", 1)},
+            ],
+            "values_digest_hex": env_values_digest_hex([
+                {"variable_id": "var-\U0001F511-0001", "version": "2",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-\U0001F511-0001", 2)},
+                {"variable_id": "var-￥-0001", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-￥-0001", 1)},
+                {"variable_id": "var-㊙-0001", "version": "3",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-㊙-0001", 3)},
+                {"variable_id": "var-z-0001", "version": "1",
+                 "value_sig_hash_hex": dummy_value_sig_hash("var-z-0001", 1)},
+            ]),
+            "note": "サロゲートペア境界の byte-ascending(session-31 M1-T2): 正規順は var-z-0001(0x7A)< var-㊙-0001(0xE3…)< var-￥-0001(U+FFE5 = 0xEF BF A5)< var-🔑-0001(U+1F511 = 0xF0 9F 94 91)。UTF-16 コード単位順(JS の素の文字列比較)はサロゲート(0xD83D)< U+FFE5 のため最後の 2 要素が逆転する — UTF-8 バイト順の実装だけがこのダイジェストに到達する(entries は非正規順で列挙)",
+        },
     ]
 
     write(
@@ -3328,6 +3356,15 @@ def gen_env_manifest():
         digest_entry("alpha-var-0001", "active", 1, sha256(b"digest-fixture-alpha").hex()),
         digest_entry("Zeta-var-0002", "active", 2, sha256(b"digest-fixture-zeta").hex()),
     ]
+    # サロゲートペア境界の判別対(session-31 M1-T2)。tombstone を 1 本混ぜ、
+    # 非 ASCII の variable_id でも status / meta_version が正規形に載ることを兼ねる
+    surrogate_entries = [
+        digest_entry("var-\U0001F511-0001", "active", 2,
+                     sha256(b"digest-fixture-astral-key").hex()),
+        digest_entry("var-￥-0001", "deleted", 3, sha256(b"digest-fixture-bmp-yen").hex()),
+        digest_entry("var-㊙-0001", "active", 1, sha256(b"digest-fixture-bmp-maruhi").hex()),
+        digest_entry("var-z-0001", "active", 1, sha256(b"digest-fixture-ascii-z").hex()),
+    ]
     digest_cases = [
         {
             "name": "empty-set",
@@ -3358,6 +3395,22 @@ def gen_env_manifest():
             "variables_digest_hex": variables_digest_hex(order_entries),
             "note": "順序は variable_id の**バイト**昇順(UTF-8): 'Zeta-var-0002'(Z = 0x5a)が "
                     "'alpha-var-0001'(a = 0x61)より先に来る(ロケール・大文字小文字非依存の固定)",
+        },
+        {
+            # サロゲートペア境界(session-31 M1-T2 — 2026-08-28): 既存ケースは
+            # ASCII / BMP 止まりで、UTF-16 コード単位比較(JS の素の文字列比較)と
+            # UTF-8 バイト比較が食い違う対(BMP 高位 U+E000〜U+FFFF × astral)を
+            # 固定していなかった。U+FFE5(EF BF A5)< U+1F511(F0 9F 94 91)が
+            # バイト昇順、UTF-16 ではサロゲート 0xD83D < 0xFFE5 で逆転する
+            "name": "surrogate-boundary-order",
+            "entries": sorted(surrogate_entries, key=lambda e: e["variable_id"].encode("utf-8")),
+            "digest_input_hex": variables_digest_input(surrogate_entries).hex(),
+            "variables_digest_hex": variables_digest_hex(surrogate_entries),
+            "note": "サロゲートペア境界の byte-ascending(session-31 M1-T2): 正規順は "
+                    "var-z-0001(0x7A)< var-㊙-0001(0xE3…)< var-￥-0001(U+FFE5 = "
+                    "0xEF BF A5)< var-🔑-0001(U+1F511 = 0xF0 9F 94 91)。UTF-16 コード"
+                    "単位順(JS の素の文字列比較)はサロゲート(0xD83D)< U+FFE5 のため"
+                    "最後の 2 要素が逆転する — UTF-8 バイト順の実装だけがこのダイジェストに到達する",
         },
     ]
 

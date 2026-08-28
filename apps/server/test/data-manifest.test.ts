@@ -17,6 +17,7 @@ import {
   metaSignedBytesHashOf,
   signEnvManifestAs,
   signMetaStatementAs,
+  unwrapDistributedDek,
   wrapDekForAll,
 } from "./support/data-crypto.ts";
 import {
@@ -428,6 +429,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       head: fixture.head,
     });
     expect(manifest.manifestVersion).toBe(1);
+    // 単一の DEK をラップとコミットメントの両方に使う(session-31 M1-T1 —
+    // 別々の makeDek() では、サーバーは member 宛ラップの平文を開けないため
+    // 受理するが、配布される新エポック DEK がチェーンのコミットメントと
+    // 一致せず、peer CLI が拒否する形をテストが固定してしまう)
+    const nextDek = makeDek();
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -435,11 +441,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
         projectId,
         environmentId: ENV,
         epoch: 2,
-        dek: makeDek(),
+        dek: nextDek,
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, makeDek()),
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, nextDek),
       manifest,
     });
     expect(response.status).toBe(200);
@@ -449,10 +455,35 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
       variables_digest_hex: await digestOf(entries),
     });
     const afterInit = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
-    expect(((await afterInit.json()) as WireManifestBody).manifest).toMatchObject({
+    const afterInitBody = (await afterInit.json()) as WireManifestBody & {
+      readonly deks: readonly { epoch: number; encHex: string; ciphertextHex: string }[];
+    };
+    expect(afterInitBody.manifest).toMatchObject({
       manifestVersion: 1,
       epoch: 2,
     });
+    // サーバーの 200 で終わらせない: 配布されたラップを受信者(READER)として
+    // Open し、§5.2 のコミットメント照合 — チェーンが配布した rotate_epoch の
+    // dek_commitment_hex との一致 — まで通す(peer CLI の受信経路の固定)
+    const epoch2Wrap = afterInitBody.deks.find((wrap) => wrap.epoch === 2);
+    if (epoch2Wrap === undefined) throw new Error("missing epoch-2 wrap in pull");
+    const openedDek = await unwrapDistributedDek({
+      recipientUserId: READER,
+      wrapped: epoch2Wrap,
+      projectId,
+      environmentId: ENV,
+    });
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const chainEntries = (
+      (await chain.json()) as {
+        entries: readonly { op: string; payload: { dekCommitmentHex?: string } }[];
+      }
+    ).entries;
+    const rotateEntry = chainEntries.findLast((entry) => entry.op === "rotate_epoch");
+    if (rotateEntry === undefined) throw new Error("missing rotate_epoch entry in chain");
+    expect(await commitmentOf(projectId, ENV, 2, openedDek)).toBe(
+      rotateEntry.payload.dekCommitmentHex,
+    );
   });
 
   it("pins the declared head of a non-composite v1 bootstrap to the acceptance-time head (§12-5 (6) — PR #81 review)", async () => {

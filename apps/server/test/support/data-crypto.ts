@@ -715,10 +715,10 @@ export async function createVariableStatement(input: {
 }
 
 /**
- * クライアント側の受信経路: 自分宛のラップ済み DEK を Open し、その DEK で
- * EncryptedPayload を復号する(push→pull→復号のラウンドトリップ検証)。
+ * クライアント側の受信経路の前半: 自分宛のラップ済み DEK をベクター固定鍵で
+ * Open して DEK を返す(§5.2 のコミットメント照合・復号の材料)。
  */
-export async function unwrapAndDecrypt(input: {
+export async function unwrapDistributedDek(input: {
   readonly recipientUserId: string;
   readonly wrapped: {
     readonly epoch: number;
@@ -727,8 +727,7 @@ export async function unwrapAndDecrypt(input: {
   };
   readonly projectId: string;
   readonly environmentId: string;
-  readonly payload: WireEncryptedPayload;
-}): Promise<string> {
+}): Promise<Uint8Array> {
   const keys = vectorKeyOf(input.recipientUserId);
   const pair = unwrapResult(
     await importEncryptionKeyPair({
@@ -737,7 +736,7 @@ export async function unwrapAndDecrypt(input: {
     }),
     "importEncryptionKeyPair",
   );
-  const dek = unwrapResult(
+  return unwrapResult(
     await unwrapDek({
       recipientKeyPair: pair,
       wrapped: {
@@ -753,6 +752,24 @@ export async function unwrapAndDecrypt(input: {
     }),
     "unwrapDek",
   );
+}
+
+/**
+ * クライアント側の受信経路: 自分宛のラップ済み DEK を Open し、その DEK で
+ * EncryptedPayload を復号する(push→pull→復号のラウンドトリップ検証)。
+ */
+export async function unwrapAndDecrypt(input: {
+  readonly recipientUserId: string;
+  readonly wrapped: {
+    readonly epoch: number;
+    readonly encHex: string;
+    readonly ciphertextHex: string;
+  };
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly payload: WireEncryptedPayload;
+}): Promise<string> {
+  const dek = await unwrapDistributedDek(input);
   const plaintext = unwrapResult(
     await decryptVariable({
       dek,

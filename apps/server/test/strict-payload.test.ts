@@ -167,6 +167,12 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       ...clean,
       entry: unsignedEntry("create_environment", { ...entryPayload, [PROBE_KEY]: true }),
     });
+    // F3b が複合へ追加した checkpoint フィールドにも strict が伝播する
+    // (PR-F4 cross-layer — F1 の strict 面は F3 で増えたネスト構造も覆う)
+    await expectNestedReject(send, {
+      ...clean,
+      checkpoint: { ...(clean.checkpoint as Record<string, unknown>), [PROBE_KEY]: true },
+    });
   });
 
   it("rotate rejects an unknown field with 400 (root and nested manifest)", async () => {
@@ -193,6 +199,74 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       ...clean,
       manifest: { ...(clean.manifest as Record<string, unknown>), [PROBE_KEY]: true },
     });
+    // F3b が複合へ追加した checkpoint フィールドの内側にも strict が伝播する
+    // (PR-F4 cross-layer): エントリ payload とその環境タプルの両ネスト位置
+    const cleanCheckpoint = clean.checkpoint as Record<string, unknown>;
+    const checkpointPayload = cleanCheckpoint["payload"] as Record<string, unknown>;
+    await expectNestedReject(send, {
+      ...clean,
+      checkpoint: {
+        ...cleanCheckpoint,
+        payload: { ...checkpointPayload, [PROBE_KEY]: true },
+      },
+    });
+    const environments = checkpointPayload["environments"] as readonly Record<string, unknown>[];
+    await expectNestedReject(send, {
+      ...clean,
+      checkpoint: {
+        ...cleanCheckpoint,
+        payload: {
+          ...checkpointPayload,
+          environments: [{ ...environments[0], [PROBE_KEY]: true }],
+        },
+      },
+    });
+  });
+
+  it("rejects a composite without the boundary checkpoint field with 400 (旧 CLI fail-closed — 2-G′)", async () => {
+    // §12-4 の必須同梱: checkpoint を知らない旧 CLI の create / rotate 複合は
+    // Schema 段の 400 で fail-closed になる(session-33 裁定 E-3 の承認済み帰結の
+    // テスト固定 — SELF_HOSTING の更新順序が運用面を担う)。冒頭の規約どおり
+    // probe / control を本テスト内で対にする(pullfrog レビュー反映 — 先行
+    // テストの clean に依存すると、400 が checkpoint 欠落起因である保証が
+    // 先行側の変更で黙って失われる): 差分は checkpoint フィールドの有無のみ
+    const create = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
+    const createClean = {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry: unsignedEntry("create_environment", {
+        environmentId: ENV,
+        dekCommitmentHex: "12".repeat(32),
+      }),
+      statement: unsignedEnvStatement({ status: "active", metaVersion: 1, prevMetaSigHashHex: "" }),
+      deks: [],
+      manifest: { ...unsignedManifest(), variablesDigestHex: "ab".repeat(32) },
+    };
+    expect((await create(createClean)).status).toBe(400);
+    expect(
+      (await create({ ...createClean, checkpoint: unsignedCheckpoint(1, 1) })).status,
+    ).not.toBe(400);
+
+    const rotate = sendJson("POST", dataUrl(`/environments/${ENV}/rotate`), bearer(token(OWNER)));
+    const rotateClean = {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry: unsignedEntry("rotate_epoch", {
+        environmentId: ENV,
+        newEpoch: 2,
+        reason: "test",
+        dekCommitmentHex: "12".repeat(32),
+      }),
+      deks: [],
+      manifest: {
+        ...unsignedManifest(),
+        epoch: 2,
+        manifestVersion: 2,
+        prevManifestSigHashHex: "cd".repeat(32),
+      },
+    };
+    expect((await rotate(rotateClean)).status).toBe(400);
+    expect(
+      (await rotate({ ...rotateClean, checkpoint: unsignedCheckpoint(2, 2) })).status,
+    ).not.toBe(400);
   });
 });
 

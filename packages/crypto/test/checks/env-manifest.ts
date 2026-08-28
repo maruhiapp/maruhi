@@ -183,6 +183,58 @@ async function digestChecks(c: Checks): Promise<void> {
   }
 }
 
+/** サロゲート境界の判別性と数値・hex 境界の拒否(session-31 M1-T2 — 分担は session-34.md 裁定 G)。 */
+async function digestBoundaryChecks(c: Checks): Promise<void> {
+  // サロゲートペア境界のベクターが実際に判別対であること(UTF-16 コード単位順
+  // = JS の素の文字列比較ではバイト昇順と異なる並びになる)。裁定 G
+  // (session-34.md)の唯一のメタチェックなので、ベクターの欠落はスキップで
+  // なく失敗にする(pullfrog レビュー反映 — リネーム・削除が PASS 件数の
+  // 減少だけで緑のまま通る形を残さない)
+  const surrogate = manifestVectors.digests.find((d) => d.name === "surrogate-boundary-order");
+  if (surrogate === undefined) {
+    c.push(
+      "env-manifest digest surrogate-boundary-order: discriminates UTF-16 ordering",
+      false,
+      "surrogate-boundary-order vector missing",
+    );
+  } else {
+    const canonicalIds = surrogate.entries.map((entry) => entry.variable_id);
+    const utf16Sorted = canonicalIds.toSorted();
+    c.push(
+      "env-manifest digest surrogate-boundary-order: discriminates UTF-16 ordering",
+      utf16Sorted.join(" ") !== canonicalIds.join(" "),
+    );
+  }
+  // 数値・hex 境界の拒否(session-31 M1-T2 — JSON ベクターで表現しない分担は
+  // session-34.md の裁定): 非整数 / MAX_SAFE_INTEGER + 1 の metaVersion、同じ
+  // 長さの大文字 hex(正規形は hex 小文字 — 受理して小文字化する実装は同一値に
+  // 複数の正規形を作るため、拒否が仕様の期待挙動)
+  const validEntry: VariablesDigestEntry = {
+    variableId: "var-bounds-0001",
+    status: "active",
+    metaVersion: 1,
+    metaSigHashHex: "ab".repeat(32),
+  };
+  const badEntries: readonly { readonly name: string; readonly entry: VariablesDigestEntry }[] = [
+    { name: "fractional meta version", entry: { ...validEntry, metaVersion: 1.5 } },
+    {
+      name: "unsafe integer meta version",
+      entry: { ...validEntry, metaVersion: Number.MAX_SAFE_INTEGER + 1 },
+    },
+    {
+      name: "uppercase meta sig hash",
+      entry: { ...validEntry, metaSigHashHex: "AB".repeat(32) },
+    },
+  ];
+  for (const bad of badEntries) {
+    const result = await computeVariablesDigest("maruhi/v1", [bad.entry]);
+    c.push(
+      `env-manifest digest invalid input: ${bad.name}`,
+      !result.ok && result.error.kind === "InvalidInput",
+    );
+  }
+}
+
 /** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
 async function signAndVerifyChecks(
   c: Checks,
@@ -418,6 +470,21 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "bad manifest version", context: { ...baseContext, manifestVersion: 0 } },
     { name: "bad env meta version", context: { ...baseContext, envMetaVersion: 0 } },
     { name: "bad head seq", context: { ...baseContext, chainHeadSeq: 0 } },
+    // 数値境界(session-31 M1-T2): §2.1 の 10 進文字列化は非負の安全整数のみ
+    { name: "fractional epoch", context: { ...baseContext, epoch: 1.5 } },
+    {
+      name: "unsafe integer manifest version",
+      context: { ...baseContext, manifestVersion: Number.MAX_SAFE_INTEGER + 1 },
+    },
+    // 同じ長さの大文字 hex(正規形は hex 小文字 — session-31 M1-T2)
+    {
+      name: "uppercase digest",
+      context: { ...baseContext, variablesDigestHex: "AB".repeat(32) },
+    },
+    {
+      name: "uppercase head hash",
+      context: { ...baseContext, chainHeadHashHex: "AB".repeat(32) },
+    },
     { name: "short digest", context: { ...baseContext, variablesDigestHex: "abcd" } },
     { name: "short env meta hash", context: { ...baseContext, envMetaSigHashHex: "abcd" } },
     { name: "short prev hash", context: { ...baseContext, prevManifestSigHashHex: "abcd" } },
@@ -627,6 +694,7 @@ export async function envManifestChecks(): Promise<CheckResult[]> {
     throw new Error("canonical history missing");
   }
   await digestChecks(c);
+  await digestBoundaryChecks(c);
   await vectorChecks(c, histories);
   await forkChecks(c, canonical);
   await negativeChecks(c, histories);

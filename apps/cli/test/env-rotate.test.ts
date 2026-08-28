@@ -212,6 +212,13 @@ interface ServerOptions {
    * (現エポックが目標エポックを追い越す形のモデル化)。
    */
   readonly appendRotateAfterAccept?: { readonly epoch: number; readonly dek: Uint8Array };
+  /**
+   * 受理した境界 checkpoint を配布チェーンへ追記しない(rotate エントリのみを
+   * 配布する「checkpoint 隠し」サーバーのモデル化 — PR-F4 cross-layer。
+   * checkpoint はチェーン合意規則上は任意なのでチェーン自体は有効なまま、
+   * §4.3 (2) の束縛タプルだけが消える)。
+   */
+  readonly dropCheckpointFromChain?: boolean;
 }
 
 interface ServerState {
@@ -288,11 +295,16 @@ function makeServer(options: ServerOptions): ServerState {
 
   /** 受理: rotate + 境界 checkpoint の 2 エントリを追記し、同梱ラップを配布集合へ入れる(§12-4)。 */
   const acceptRotate = async (body: RotateBody): Promise<void> => {
-    entries.push(body.entry, body.checkpoint);
-    hashes.push(
-      await computeChainEntryHash(body.entry),
-      await computeChainEntryHash(body.checkpoint),
-    );
+    if (options.dropCheckpointFromChain === true) {
+      entries.push(body.entry);
+      hashes.push(await computeChainEntryHash(body.entry));
+    } else {
+      entries.push(body.entry, body.checkpoint);
+      hashes.push(
+        await computeChainEntryHash(body.entry),
+        await computeChainEntryHash(body.checkpoint),
+      );
+    }
     currentEpoch = body.entry.payload.newEpoch;
     // 配布形 = 受理した発行形 + 呼び出し主体の issuer 情報(§12-2)。同梱
     // ダイジェストが現行集合を覆う場合のみ「最新」として固定する — 受理前に
@@ -1185,6 +1197,12 @@ describe("maruhi env rotate", () => {
       first.checkpoint.payload.environments[0]?.valuesDigestHex,
     );
     expect(env.logs.join("\n")).toContain("re-pulling and retrying the rotation");
+    // intent 規律(3-F)× 有界再試行(F-2)の cross-layer(PR-F4): 1 試行目の
+    // intent は 422(確定拒否)が閉じ、2 試行目の intent は受理確認が閉じる —
+    // 再試行ループが未解決 intent を積み残さない
+    const floor = await loadFloor(env);
+    expect(floor?.intents).toEqual([]);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({ epoch: 2 });
   });
 
   it("CheckpointStateMismatch が解消しない場合は有界で打ち切り、再実行を案内する(§12-4)", async () => {
@@ -1215,6 +1233,57 @@ describe("maruhi env rotate", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("values-digest-mismatch");
     expect(errors).toContain("Re-run maruhi env rotate to rebuild the checkpoint");
+    // intent 規律(3-F)× 有界再試行の cross-layer(PR-F4): 422 は確定拒否
+    // (isServerRejection)なので 3 試行分の intent はすべて rejected で閉じ、
+    // 未解決 intent の積み残しも床の前進もない(次の実行に照合義務を残さない)。
+    // 床は初回 pull が配った mv1 のまま(打ち切り後の正しい床状態そのものを
+    // 固定する — pullfrog レビュー反映: 緩い不等式はマニフェスト消失も通す)
+    const floor = await loadFloor(env);
+    expect(floor?.intents).toEqual([]);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
+      manifestVersion: 1,
+      epoch: 1,
+    });
+  });
+
+  it("受理した境界 checkpoint をチェーン配布から落とすサーバーは、受理後の再走査が strict 検証で検出する(PR-F4 cross-layer)", async () => {
+    // 2-G′ の帰結の end-to-end 固定: 複合発行のマニフェスト(epoch = new_epoch・
+    // 宣言ヘッド = 追記前)は境界 checkpoint タプルとの完全一致でのみ検証できる
+    // (旧 H+1 例外は廃止 — §4.3 (2))。受理した checkpoint をチェーン配布から
+    // 隠すサーバー(チェーン自体は合意規則上有効なまま)は、受理後の再走査 pull の
+    // マニフェスト検証が strict へ落ちて epoch-not-current-at-head で検出される —
+    // 「checkpoint 隠し」で H+1 相当の緩い受理へ戻す経路が存在しないことの固定
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      dropCheckpointFromChain: true,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "checkpoint 隠し"], env.layer)).toBe(
+      1,
+    );
+    // 複合自体は受理されている(検出は受理後の再走査 pull の配布時検証)
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
+    // 受理の確認(チェーン上の自 commitment 一致)は checkpoint の有無と独立に
+    // 成立するため、床の自己発行マニフェスト昇格(M1-A4)自体は行われている
+    const floor = await loadFloor(env);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
+      manifestVersion: 2,
+      epoch: 2,
+    });
   });
 
   it("CAS リトライ中に他メンバーの並行ローテーションを検出したら、生成済み DEK を使わず中断する", async () => {
