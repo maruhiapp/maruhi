@@ -88,6 +88,8 @@ interface CheckpointServerOptions {
   readonly environments: MockEnvironment[];
   readonly me: { readonly userId: string; readonly tokenScopes?: readonly unknown[] };
   readonly auditHeadHashHex?: string;
+  /** audit-head 呼び出しごとの差し込み(undefined = 200 で申告を返す)。 */
+  readonly onAuditHead?: (call: number) => MockResponse | undefined;
   /** append 呼び出しごとの差し込み(undefined = 受理して追記)。 */
   readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
   /** 受理してもチェーンへ追記しない(虚偽 2xx サーバー — §12-10 (3) の検査)。 */
@@ -138,7 +140,11 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
       },
     })),
     onRequest("GET", `/projects/${projectId}/audit-head`, () => {
+      const injected = options.onAuditHead?.(auditHeadCalls);
       auditHeadCalls += 1;
+      if (injected !== undefined) {
+        return injected;
+      }
       return { status: 200, json: { auditHeadHashHex: options.auditHeadHashHex ?? "" } };
     }),
     async (request) => {
@@ -432,6 +438,76 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
     expect(state.appends.length).toBe(2);
     // 監査ヘッド申告は試行ごとに取り直す(§16-2 の再試行)
     expect(state.auditHeadCalls()).toBe(2);
+  });
+
+  /** AuditHeadNotReady 再試行テストの共通フィクスチャ(admin の 1 環境発行)。 */
+  async function makeNotReadyFixture(input: {
+    readonly onAuditHead?: (call: number) => MockResponse | undefined;
+    readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
+  }): Promise<{ state: CheckpointServerState; env: TestEnv }> {
+    const dek = crypto.getRandomValues(new Uint8Array(32));
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_A, dek) },
+    ]);
+    const environment = await makeEnvironment({
+      built,
+      environmentId: ENV_A,
+      dek,
+      headSeq: 2,
+      issuer: owner,
+      variableId: "var-a",
+    });
+    const state = makeCheckpointServer({
+      built,
+      environments: [environment],
+      me: {
+        userId: owner.userId,
+        tokenScopes: [{ project: built.projectId, permission: "admin" }],
+      },
+      auditHeadHashHex: "cd".repeat(32),
+      ...(input.onAuditHead === undefined ? {} : { onAuditHead: input.onAuditHead }),
+      ...(input.onAppend === undefined ? {} : { onAppend: input.onAppend }),
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, built.projectId, owner);
+    return { state, env };
+  }
+
+  const NOT_READY: MockResponse = { status: 503, json: { _tag: "AuditHeadNotReady" } };
+
+  it("申告取得の AuditHeadNotReady(503)は有界再試行で吸収する(進捗はサーバー側に保存)", async () => {
+    const { state, env } = await makeNotReadyFixture({
+      onAuditHead: (call) => (call < 2 ? NOT_READY : undefined),
+    });
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
+    // 2 回の 503 を吸収して 3 回目の申告で発行(発行は 1 回)
+    expect(state.auditHeadCalls()).toBe(3);
+    expect(state.appends.length).toBe(1);
+    expect(state.appends[0]!.entry.payload).toMatchObject({ auditHeadHashHex: "cd".repeat(32) });
+    expect(env.logs.join("\n")).toContain("materializing the audit-head hash column");
+  });
+
+  it("受理段の AuditHeadNotReady(503)は申告を取り直して再送する", async () => {
+    const { state, env } = await makeNotReadyFixture({
+      onAppend: (call) => (call === 0 ? NOT_READY : undefined),
+    });
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
+    expect(state.appends.length).toBe(2);
+    // 再送では申告も取り直す(サーバーの伸長は前進済み — AUDIT_SPEC §5.1)
+    expect(state.auditHeadCalls()).toBe(2);
+  });
+
+  it("AuditHeadNotReady が枯渇したら、発生条件と再実行での解消を案内して失敗する", async () => {
+    const { state, env } = await makeNotReadyFixture({ onAuditHead: () => NOT_READY });
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
+    // 予算 10 回で打ち切り、発行には進まない
+    expect(state.auditHeadCalls()).toBe(10);
+    expect(state.appends.length).toBe(0);
+    const output = env.errors.join("\n");
+    expect(output).toContain("still materializing the audit-head hash column");
+    expect(output).toContain("re-run the command to continue where it left off");
   });
 
   it("再試行を使い切ったら、直近 2 回の構築で不変だった環境の部分集合で発行する(§6.3 の退避)", async () => {
