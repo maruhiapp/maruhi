@@ -84,7 +84,7 @@ PR レビュー)。
   どちらの枯渇か文面で判別できない
 
 **選択: 案 AG-c**。api-schema の `AuditHeadNotReadyError`(httpApiStatus 503・
-フィールドなし)。契約宣言への追加は 3 endpoint(auditHead / membership append /
+フィールドなし)。契約宣言への追加は 4 endpoint(auditHead / membership append /
 environments create・rotate)への加法のみ、payload スキーマ不変(§12-10 (1) の
 strict 分類に変更なし)。
 

@@ -247,6 +247,30 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     const output = env.logs.join("\n");
     expect(output).toContain("Audit reconciliation OK");
     expect(output).toContain("4 audit rows recomputed, 2 notarized checkpoints checked");
+    // §6 の明示的な残余(公証済み接頭辞の外は保護対象外)を成功時に一言添える
+    expect(output).toContain("not covered until the next attested checkpoint");
+  });
+
+  it("公証ゼロの正例は「checks passed」を出さず、空虚に真であることを明示する", async () => {
+    // チェーン = genesis のみ(公証あり checkpoint なし)。監査行はそのミラー 1 行
+    const rows: readonly SeedRow[] = [{ seq: 1, event: "chain.genesis", chainSeq: 1 }];
+    const heads = await headsOf(rows);
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const state = makeReconcileServer({
+      built,
+      served: rows.map(wireRowOf),
+      declaredHeadHex: heads[0]!,
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, built.projectId);
+
+    expect(await runCli(["audit", "reconcile"], env.layer)).toBe(0);
+    const output = env.logs.join("\n");
+    // 実証したのは欠番なし + 申告所属だけ — (a)(b)(c) の合格を主張しない
+    expect(output).toContain("Audit reconciliation OK (nothing notarized yet)");
+    expect(output).toContain("vacuous until an effective admin issues");
+    expect(output).not.toContain("checks passed");
   });
 
   it("所属違反 (a): 公証ヘッドが再計算列に無い = 行改竄の証拠として報告する", async () => {

@@ -225,7 +225,9 @@ export function envCreateOp(input: {
                 });
             return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
           }),
-        exhaustedMessage: `The environment creation's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+        // AuditHeadNotReady も同じ分類で回るため、文面は両方の原因に忠実にする
+        // (pullfrog PR #102 レビュー対応 — 到達可能になった場合の誤案内を防ぐ)
+        exhaustedMessage: `The environment creation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
       },
     );
     // 効果確認(§12-10 (3))を通過して初めて床を確立し成功を報告する

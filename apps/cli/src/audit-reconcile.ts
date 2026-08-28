@@ -428,8 +428,22 @@ export function auditReconcileOp(
     ];
     const summary = `${countNoun(rows.length, "audit row")} recomputed, ${countNoun(checkpoints.notarized, "notarized checkpoint")} checked against the verified chain`;
     if (violations.length === 0) {
+      // 成功文言は証明した内容に忠実にする(pullfrog PR #102 レビュー対応):
+      // 公証ゼロでは (a)(b)(c) は空虚に真で、実証したのは欠番なし + 申告所属
+      // だけ。無条件の「checks passed」を出さない
+      if (checkpoints.notarized === 0) {
+        yield* io.log(
+          `Audit reconciliation OK (nothing notarized yet): ${summary} — seq continuity and the declared head's membership verified; the checkpoint checks (a)(b)(c) are vacuous until an effective admin issues an audit-head-attested checkpoint (run maruhi project checkpoint — AUDIT_SPEC §6)`,
+        );
+        return 0;
+      }
       yield* io.log(
         `Audit reconciliation OK: ${summary} — membership (a) and position (b)(c) checks passed (AUDIT_SPEC §6)`,
+      );
+      // §6 の明示的な残余: 公証済み接頭辞の外(最後の公証以降の行)は本突合の
+      // 保護対象外 — 次の公証で前進する
+      yield* io.log(
+        "Note: rows appended after the latest notarized checkpoint are outside the notarized prefix and are not covered until the next attested checkpoint (AUDIT_SPEC §6)",
       );
       return 0;
     }

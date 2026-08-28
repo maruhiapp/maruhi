@@ -661,7 +661,9 @@ function appendRotation(
                 : yield* buildWraps(resynced);
               return { verified: resynced, member, deks };
             }),
-          exhaustedMessage: `The rotation's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+          // AuditHeadNotReady も同じ分類で回るため、文面は両方の原因に忠実にする
+          // (pullfrog PR #102 レビュー対応 — 到達可能になった場合の誤案内を防ぐ)
+          exhaustedMessage: `The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
         },
       ),
     );
