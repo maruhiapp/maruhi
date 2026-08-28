@@ -487,7 +487,7 @@ invitations (
 |---|---|---|
 | 発行 | `POST /projects/:projectId/invites` | トークンスコープ admin × チェーン role admin 以上(**role = admin の招待の発行は owner のみ** — CRYPTO_SPEC §6.2 の add_member 権限表と同水準)。**セッション主体は拒否**(§5 の能力制限 — 2026-08-28 W0 裁定: 発行は生 invite token = bearer capability の生成であり Web に置かない — ADR-0018 改訂 2。W2b 実装で反転) |
 | 受諾 | `POST /invites/accept`(body: token, encPubHex, sigPubHex, signatureHex) | **全プロジェクトスコープ(`*`)× admin のトークンのみ**(§13-2 の鍵素材条件と同水準。device flow の既定トークンは満たす。スコープ限定トークンは 403 — 受諾は「自分の公開鍵を自分の user_id に束縛して宣言する」鍵宣言クラスの操作であり、スコープ限定トークンの窃取 + 招待リンクの複合で攻撃者鍵を被害者 user_id に束縛する経路を FP 相互確認の手前で遮断する。2026-08-15 明文化 — B1a 裁定の実装済み挙動の追認。**セッション主体は拒否** — §5 の能力制限〔2026-08-28 W0 裁定。それ以前はセッション可だった — W2b 実装で反転〕: 受諾は CLI のみ〔§15-3〕でセッションの正当な導線がなく、セッション XSS + 招待リンクの複合も同じ手前で塞ぐ)。トークン保持が対象招待への capability |
-| 一覧・失効 | `GET / DELETE /projects/:projectId/invites(/:id)` | トークンスコープ admin × チェーン role admin 以上 |
+| 一覧・失効 | `GET / DELETE /projects/:projectId/invites(/:id)` | トークンスコープ admin × チェーン role admin 以上。**セッション主体も可**(チェーン role admin 以上 — §5 の能力制限の許可列挙〔読み取り + 失効系〕に含まれる。Web の招待管理 S8 の消費経路 — ADR-0018 改訂 2) |
 
 - 受諾のサーバー検証: 受諾署名(CRYPTO_SPEC §6.5)を提示された sig 鍵で検証し、**呼び出し主体の内部 user_id = 署名対象の invitee_user_id** を要求する(§12-5 / CRYPTO_SPEC §5.1 と同じ「呼び出し主体 = 署名者」規則)。signed_bytes の project_id / token_hash は**保存行から再構成**する(§12-5 の座標再構成と同じ不変条件 — ワイヤ申告値から組まない)。鍵は形式検査(32 バイト hex)のみ行い、**メンバー鍵一意性(CRYPTO_SPEC §6.2)の事前判定はしない** — 最終判定は add_member のチェーン合意規則であり、二重の真実源を作らない(受諾時の重複検出は招待者クライアントへの警告表示のための情報提供 — SHOULD — に留める)
 - **受諾はチェーンに影響しない**: add_member は招待者クライアントの後続操作(§11 の汎用追記 + §12-6 バックフィル)。サーバーは add_member 受理時に target = invitee の accepted 招待を completed へ更新する(導出状態の突合であり、真実源はチェーン)
