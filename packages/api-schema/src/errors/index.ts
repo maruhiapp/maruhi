@@ -39,6 +39,7 @@ export {
   ProjectNotFoundError,
 } from "./chain.ts";
 export {
+  AuditHeadNotReadyError,
   CheckpointMismatchReasonSchema,
   CheckpointStateMismatchError,
   DataLimitExceededError,

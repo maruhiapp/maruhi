@@ -22,7 +22,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { ForbiddenError, ProjectNotFoundError } from "./errors/index.ts";
+import { AuditHeadNotReadyError, ForbiddenError, ProjectNotFoundError } from "./errors/index.ts";
 import { hexPattern, hexString, KeyFingerprintHex, PositiveInt } from "./hex.ts";
 
 /** ページの最大件数(AUDIT_SPEC §7: limit ≤ 200。超過は Schema の 400)。 */
@@ -195,6 +195,10 @@ export const auditGroup = HttpApiGroup.make("audit")
     HttpApiEndpoint.get("auditHead", "/projects/:projectId/audit-head", {
       params: { projectId: ProjectIdSchema },
       success: AuditHeadSchema,
-      error: [ProjectNotFoundError, ForbiddenError],
+      // AuditHeadNotReady(503): 遅延実体化の伸長が 1 呼び出しの上限に達した
+      // (AUDIT_SPEC §5.1 の有界伸長 — セッション 38)。retryable — 進捗は保存
+      // 済みで再試行は前進する。認可判定(404 / 403)より後にのみ返るため
+      // §11-2 の存在秘匿と両立する
+      error: [ProjectNotFoundError, ForbiddenError, AuditHeadNotReadyError],
     }).middleware(AuthMiddleware),
   );

@@ -38,6 +38,7 @@ import {
   WrappedDekSchema,
 } from "./data.ts";
 import {
+  AuditHeadNotReadyError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -239,6 +240,10 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準。作成は変数空集合の
         // values_digest との一致)
         CheckpointStateMismatchError,
+        // 非空 audit_head_hash の公証で監査ヘッド派生列の有界伸長が未完了
+        // (AUDIT_SPEC §5.1 — セッション 38)。retryable 503。CLI の境界
+        // checkpoint は公証しない(空 — 裁定 M-b)ため、他クライアント向けの契約
+        AuditHeadNotReadyError,
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
@@ -288,6 +293,10 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         // 並行 push で values_digest が外れた場合の 422 — クライアントは再 pull の
         // 上で有界再試行する(§12-4)
         CheckpointStateMismatchError,
+        // 非空 audit_head_hash の公証で監査ヘッド派生列の有界伸長が未完了
+        // (AUDIT_SPEC §5.1 — セッション 38)。retryable 503。CLI の境界
+        // checkpoint は公証しない(空 — 裁定 M-b)ため、他クライアント向けの契約
+        AuditHeadNotReadyError,
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
