@@ -186,14 +186,23 @@ async function digestChecks(c: Checks): Promise<void> {
 /** サロゲート境界の判別性と数値・hex 境界の拒否(session-31 M1-T2 — 分担は session-34.md 裁定 G)。 */
 async function digestBoundaryChecks(c: Checks): Promise<void> {
   // サロゲートペア境界のベクターが実際に判別対であること(UTF-16 コード単位順
-  // = JS の素の文字列比較ではバイト昇順と異なる並びになる)
+  // = JS の素の文字列比較ではバイト昇順と異なる並びになる)。裁定 G
+  // (session-34.md)の唯一のメタチェックなので、ベクターの欠落はスキップで
+  // なく失敗にする(pullfrog レビュー反映 — リネーム・削除が PASS 件数の
+  // 減少だけで緑のまま通る形を残さない)
   const surrogate = manifestVectors.digests.find((d) => d.name === "surrogate-boundary-order");
-  if (surrogate !== undefined) {
+  if (surrogate === undefined) {
+    c.push(
+      "env-manifest digest surrogate-boundary-order: discriminates UTF-16 ordering",
+      false,
+      "surrogate-boundary-order vector missing",
+    );
+  } else {
     const canonicalIds = surrogate.entries.map((entry) => entry.variable_id);
     const utf16Sorted = canonicalIds.toSorted();
     c.push(
       "env-manifest digest surrogate-boundary-order: discriminates UTF-16 ordering",
-      utf16Sorted.join(" ") !== canonicalIds.join(" "),
+      utf16Sorted.join(" ") !== canonicalIds.join(" "),
     );
   }
   // 数値・hex 境界の拒否(session-31 M1-T2 — JSON ベクターで表現しない分担は
