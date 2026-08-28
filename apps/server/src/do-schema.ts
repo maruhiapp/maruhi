@@ -374,6 +374,39 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec(`CREATE INDEX IF NOT EXISTS ahh_hash ON audit_head_hashes (head_hash_hex)`);
     },
   },
+  {
+    // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1。2026-08-28 PR-M4)。
+    // **保存はメンバーごと最新 1 行**(PRIMARY KEY = attester_user_id の upsert —
+    // チェーンに載せない: 申告は同期のたびに更新される可変データで、チェーン op に
+    // するとエントリ上限を同期活動が消費する — §6.4)。attester_key_fingerprint は
+    // 受理時点のチェーン導出メンバーの鍵 FP(配布時の検証材料 — §12-2 と同型)。
+    // accepted_at は保存してよいが**配布しない**(§16-1 — 申告が運ぶ行動情報を
+    // 「チェーン同期の到達点」に限定する)。`remove_member` 受理時に行を削除する
+    // (現メンバーのみ配布 — chain-accept.ts の受理副作用)。
+    // attestation_windows はメンバーあたりの固定窓カウンタ(1 時間 60 回 —
+    // §16-1 起草値。行はメンバー数で有界、remove 時に申告行と一緒に削除)
+    tables: ["head_attestations", "attestation_windows"],
+    apply(sql) {
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS head_attestations (
+           attester_user_id TEXT PRIMARY KEY,
+           suite TEXT NOT NULL,
+           chain_head_seq INTEGER NOT NULL,
+           chain_head_hash_hex TEXT NOT NULL,
+           signature_hex TEXT NOT NULL,
+           attester_key_fingerprint TEXT NOT NULL,
+           accepted_at INTEGER NOT NULL
+         )`,
+      );
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS attestation_windows (
+           attester_user_id TEXT PRIMARY KEY,
+           window_start INTEGER NOT NULL,
+           count INTEGER NOT NULL
+         )`,
+      );
+    },
+  },
 ];
 
 /**

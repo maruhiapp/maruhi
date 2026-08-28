@@ -11,6 +11,7 @@ export {
   CryptoEncryptError,
   cryptoEffect,
   CryptoEnvManifestInvalidError,
+  CryptoHeadAttestationInvalidError,
   CryptoInvalidInputError,
   CryptoInviteAcceptSignatureError,
   CryptoKeyExportError,

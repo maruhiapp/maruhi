@@ -4091,6 +4091,215 @@ def gen_invite_accept_signature():
 
 
 # ---------------------------------------------------------------------------
+# 3.9b head-attestation.json — §6.6 ヘッド申告(Ed25519 + §2.1 LP。PR-M4)
+#
+# head_attestation_signed_bytes = LP("<suite>/head-attestation",
+#                                    project_id, attester_user_id,
+#                                    chain_head_hash_hex, chain_head_seq)
+#   - タイムスタンプ・ノンスは含めない(意味論は帰属であり鮮度証明ではない —
+#     §6.6。申告の新旧は chain_head_seq が順序付ける)
+#   - attester_user_id の焼き込みは §5.1 の signer_user_id と同じ帰属付け替え対策
+#   - チェーン状態を要する検証規則系は chain-entries.json の正規 12 エントリ
+#     チェーンを参照する(value-signature / metadata-signature と同じ先例)
+#
+# 正例は session-27 §13-3 の 3 種(基本 / reader の申告 / 削除済みメンバーの
+# 在籍中ヘッドへの過去申告)。3 つ目は「§6.6 の署名・ヘッド時点検証は通るが、
+# attester が現メンバーでないため配布・照合の対象にならない」意図の固定
+# (サーバーは remove_member 受理時に申告行を削除し — §6.4 — クライアントは
+# 現メンバーでない attester の申告を照合材料にしない — §6.6 (1))。
+
+HEAD_ATTESTATION_FIELDS_ORDER = [
+    "domain", "project_id", "attester_user_id", "chain_head_hash_hex", "chain_head_seq",
+]
+
+
+def head_attestation_signed_bytes(ctx: dict) -> bytes:
+    return lp_encode([ctx[key] for key in HEAD_ATTESTATION_FIELDS_ORDER])
+
+
+def gen_head_attestation():
+    with open(os.path.join(OUT_DIR, "chain-entries.json"), encoding="utf-8") as fh:
+        chain = json.load(fh)
+    entries = chain["entries"]
+    project_id = entries[0]["entry_hash_hex"]
+    suite = "maruhi/v1"
+
+    def head_hash(seq: int) -> str:
+        return entries[seq - 1]["entry_hash_hex"]
+
+    def signer_of(user_id: str) -> Ed25519PrivateKey:
+        return Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(chain["keys"][user_id]["sig_sk_seed_hex"])
+        )
+
+    def sig_pub_of(user_id: str) -> str:
+        return chain["keys"][user_id]["sig_pub_hex"]
+
+    def fp_of(user_id: str) -> str:
+        return chain["keys"][user_id]["key_fingerprint_hex"]
+
+    owner_id = "user-owner-0001"
+    member_id = "user-member-0002"
+    admin_id = "user-admin-0003"
+
+    def make_context(attester_id, head_hash_hex, head_seq, ctx_suite=suite):
+        return {
+            "suite": ctx_suite,
+            "domain": f"{ctx_suite}/head-attestation",
+            "project_id": project_id,
+            "attester_user_id": attester_id,
+            "chain_head_hash_hex": head_hash_hex,
+            "chain_head_seq": head_seq,
+        }
+
+    def make_attestation(name, attester_id, head_seq, note):
+        ctx = make_context(attester_id, head_hash(head_seq), head_seq)
+        signed = head_attestation_signed_bytes(ctx)
+        return {
+            "name": name,
+            "context": ctx,
+            "attester_key_fingerprint_hex": fp_of(attester_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(attester_id).sign(signed).hex(),
+            "note": note,
+        }
+
+    basic = make_attestation(
+        "basic", owner_id, 12,
+        "基本形: owner が現ヘッド(seq 12)を申告する。§6.6 の全検証(署名・ヘッド束縛・"
+        "申告ヘッド時点の在籍)を通る",
+    )
+    vectors = [
+        basic,
+        make_attestation(
+            "reader-attestation", admin_id, 6,
+            "reader の申告: head 6 時点の user-admin-0003 は reader(change_role は seq 7)。"
+            "申告は reader を含む全メンバーが提出できる(§6.3 ヘッドゴシップ / §6.6 — "
+            "必要 role の下限は reader)",
+        ),
+        make_attestation(
+            "removed-attester-in-tenure", member_id, 4,
+            "seq 5 で削除済みの attester による在籍区間内(head 4)の過去申告。§6.6 の"
+            "署名・ヘッド時点検証は通る(検証鍵は当時の鍵 — チェーンは鍵履歴を保持する)が、"
+            "attester は現メンバーでないため配布対象外(サーバーは remove_member 受理時に"
+            "申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない"
+            "(§6.6 (1) — 現メンバー検査)。この二層の意図をベクターで固定する",
+        ),
+    ]
+
+    # --- negative(署名系): 元署名を維持したまま signed_bytes を差し替え、
+    # Ed25519 検証が失敗することを固定する(metadata-signature と同じ形)
+    base_sig = bytes.fromhex(basic["signature_hex"])
+    tampered_sig = bytearray(base_sig)
+    tampered_sig[-1] ^= 0x01
+
+    def make_negative(name, overrides, note, verify_key_hex=None, signature=None):
+        ctx = dict(basic["context"], **overrides)
+        return {
+            "name": name,
+            "base": "basic",
+            "context": ctx,
+            "verify_signed_bytes_hex": head_attestation_signed_bytes(ctx).hex(),
+            "signature_hex": (signature.hex() if signature is not None
+                              else basic["signature_hex"]),
+            "verify_key_hex": verify_key_hex if verify_key_hex is not None
+            else sig_pub_of(owner_id),
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives = [
+        make_negative(
+            "tampered-signature", {},
+            "署名バイト自体の末尾 1 bit 反転は検証に失敗する",
+            signature=bytes(tampered_sig),
+        ),
+        make_negative(
+            "transplant-project", {"project_id": "proj-other-0002"},
+            "別プロジェクトへの申告の移植は署名検証に失敗する(project_id の文脈束縛 — §6.6)",
+        ),
+        make_negative(
+            "transplant-attester", {"attester_user_id": admin_id},
+            "attester_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — "
+            "§5.1 の signer_user_id と同型)",
+        ),
+        make_negative(
+            "wrong-attester-key", {},
+            "attester 以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)",
+            verify_key_hex=sig_pub_of(admin_id),
+        ),
+        make_negative(
+            "head-seq-mismatch", {"chain_head_seq": 11},
+            "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の"
+            "両方が署名対象 — §6.6)",
+        ),
+        make_negative(
+            "suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/head-attestation"},
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する",
+        ),
+    ]
+
+    # --- negative(検証規則系。kind = "authorization"): 署名は有効だが、検証済み
+    # チェーン履歴に対する §6.6 / §6.3-2 の検証規則で拒否されるべきもの。
+    # expected_reason は実装の理由コードを固定する(value / meta と同じ運び方)
+    def rule_negative(name, attester_id, head_hash_hex, head_seq, expected_reason, note):
+        ctx = make_context(attester_id, head_hash_hex, head_seq)
+        signed = head_attestation_signed_bytes(ctx)
+        return {
+            "name": name,
+            "kind": "authorization",
+            "chain": "canonical",
+            "context": ctx,
+            "attester_key_fingerprint_hex": fp_of(attester_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(attester_id).sign(signed).hex(),
+            "verify_key_hex": sig_pub_of(attester_id),
+            "expected_reason": expected_reason,
+            "must_fail": True,
+            "note": note,
+        }
+
+    rule_negatives = [
+        rule_negative(
+            "head-not-in-chain", owner_id, sha256(b"not-in-chain-attestation").hex(), 12,
+            "chain-head-mismatch",
+            "seq 12 は自ビューに実在するがハッシュが一致しない = 分岐(equivocation)または"
+            "偽造の硬い証拠(§6.3-2a / §6.6 の照合 (a) — 当該同期の成果物の使用を中断し、"
+            "証拠を保存する)",
+        ),
+        rule_negative(
+            "head-beyond-local-seq", owner_id, sha256(b"future-attestation-head").hex(), 13,
+            "chain-head-future",
+            "seq 13 は自ビューのヘッド(12)より先 = 自分のチェーンが古いだけの可能性"
+            "(§6.3-2b / §6.6 の照合 (b))。まず有界再同期し、延長として一致すれば正常・"
+            "解決しなければ (a) と同じ扱い。この理由での即時証拠化は誤り",
+        ),
+        rule_negative(
+            "attester-removed-at-head", member_id, head_hash(12), 12,
+            "attester-not-member-at-head",
+            "seq 5 で削除済みの attester が削除後のヘッド(12)を申告する形は拒否する"
+            "(§6.6 (1) の申告ヘッド時点在籍 — removed-attester-in-tenure との対比で"
+            "在籍区間の境界を固定する)",
+        ),
+    ]
+
+    write(
+        "head-attestation.json",
+        {
+            "description": "CRYPTO_SPEC §6.6: ヘッド申告(Ed25519)。head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+            "signed_fields_order": HEAD_ATTESTATION_FIELDS_ORDER,
+            "binary_encoding": "チェーンヘッドハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(chain_head_seq)は 10 進文字列化。タイムスタンプ・ノンスは署名対象に含めない(§6.6 — 意味論は帰属であり鮮度証明ではない)",
+            "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、attester 鍵 = keys",
+            "distribution_note": "removed-attester-in-tenure は §6.6 の検証(署名・申告ヘッド時点の在籍)を通る正例だが、attester が現メンバーでないため配布対象外(remove_member 受理時にサーバーが申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない(§6.6 (1))。この現メンバー検査は本ファイルの検証ベクターの外(実装テスト — session-27 §13-5)",
+            "vectors": vectors,
+            "negative": negatives + rule_negatives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3.10 audit-head.json — AUDIT_SPEC §5.1 監査ヘッド累積ハッシュ(SHA-256 + §2.1 LP)
 #
 # row_digest = lower_hex(SHA-256(LP(seq, row_id, server_ts, client_ts, event,
@@ -4295,6 +4504,7 @@ if __name__ == "__main__":
     gen_metadata_signature()  # 同上(chain-entries.json を参照)
     gen_env_manifest()  # 同上(chain-entries.json を参照。§4.3)
     gen_checkpoint_boundary_chains()  # env-manifest のハッシュを参照するため後段(§4.3 (2))
+    gen_head_attestation()  # 同上(chain-entries.json を参照。§6.6)
     gen_audit_head()  # AUDIT_SPEC §5.1(単独 — 他ファイルを参照しない)
     gen_invite_accept_signature()
     gen_recovery_wrap()

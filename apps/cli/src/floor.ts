@@ -165,6 +165,38 @@ export interface ProjectFloor {
   readonly intents: readonly FloorIntent[];
 }
 
+/**
+ * 矛盾ヘッド申告の証拠レコード(CRYPTO_SPEC §6.6 照合 (a) / §14.2-5 —
+ * 2026-08-28 PR-M4)。申告全文(署名込み — §6.6 検証を通過した否認不能な材料)+
+ * 自ビューのチェーンダイジェストを対で保存する。**床の join 格子には入れない**:
+ * 申告は他メンバーの署名済み宣言であって「自分の検証済み観測」ではなく、格子へ
+ * 流し込むと 1 メンバーの偽ヘッド申告(鍵漏洩)が全コマンドの恒久拒否を招く。
+ * 保存は追記専用の証拠ファイル(floor-log.ts — <projectId>.attestation-evidence.jsonl)。
+ * 平文値・鍵素材は含まない(ID・ハッシュ・署名のみ)。
+ */
+export interface AttestationEvidenceRecord {
+  /** 配布された申告そのもの(§6.6 検証を通過済み — 署名が証拠の本体)。 */
+  readonly attestation: {
+    readonly suite: string;
+    readonly attesterUserId: string;
+    readonly attesterKeyFingerprintHex: string;
+    readonly chainHeadHashHex: string;
+    readonly chainHeadSeq: number;
+    readonly signatureHex: string;
+  };
+  /** 照合時点の自ビュー(検証済みチェーン)のダイジェスト。 */
+  readonly localView: {
+    readonly headSeq: number;
+    readonly headHashHex: string;
+    /** 申告 seq 位置の自ビューのエントリハッシュ(空 = 申告 seq が自ヘッドより先)。 */
+    readonly entryHashAtAttestedSeq: string;
+  };
+  /** 検出契機(mismatch = seq ≤ 自ヘッドの不一致、unresolved = 有界再同期後も未解決)。 */
+  readonly kind: "head-mismatch" | "unresolved-after-resync";
+  /** ローカル検出時刻(フォレンジック用 — 配布されない非機密ローカル状態)。 */
+  readonly detectedAtMs: number;
+}
+
 /** 床ログの読み込み結果(fail-open — 呼び出し側が状態別の警告を出す)。 */
 export interface FloorLoadResult {
   readonly floor: ProjectFloor | null;
@@ -263,6 +295,27 @@ export interface FloorStoreShape {
     intentId: string,
     outcome: FloorIntentOutcome,
   ) => Effect.Effect<void, CliError>;
+  /**
+   * 前回提出したヘッド申告のヘッド(CRYPTO_SPEC §6.3 ヘッドゴシップの
+   * 「前回申告より前進していれば提出」の判定材料 — 2026-08-28 PR-M4)。
+   * 床の join 格子には入れない別クラス: 自分の送信記録であって検証済み観測では
+   * なく、喪失の帰結は「同一 seq の再提出(サーバー側で冪等 204)」のみで
+   * 安全性を担わない。missing / 破損は null(ベストエフォート)。
+   */
+  readonly loadAttestedHead: (projectId: string) => Effect.Effect<ChainHeadFloor | null, CliError>;
+  /** 提出成功後の前回申告の更新(上書き可の非機密ローカル状態)。 */
+  readonly saveAttestedHead: (
+    projectId: string,
+    head: ChainHeadFloor,
+  ) => Effect.Effect<void, CliError>;
+  /**
+   * 矛盾ヘッド申告の証拠の追記(§6.6 照合 (a) — 追記専用 JSONL。フォーマットは
+   * AttestationEvidenceRecord)。保存先パスを返す(警告文の導線)。
+   */
+  readonly appendAttestationEvidence: (
+    projectId: string,
+    evidence: AttestationEvidenceRecord,
+  ) => Effect.Effect<string, CliError>;
 }
 
 export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("cli/FloorStore") {}

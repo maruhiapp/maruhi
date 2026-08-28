@@ -10,6 +10,7 @@
 // それ以外を追加しない。
 
 import type {
+  AttestationInvalidReason,
   ChainInvalidReason,
   CryptoError,
   CryptoResult,
@@ -99,6 +100,16 @@ export class CryptoEnvManifestInvalidError extends Data.TaggedError("CryptoEnvMa
   readonly reason: ManifestInvalidReason;
 }> {}
 
+/**
+ * A head attestation failed the §6.6 verification (attester signature,
+ * declared chain head, or head-time membership / key binding) for `reason`.
+ */
+export class CryptoHeadAttestationInvalidError extends Data.TaggedError(
+  "CryptoHeadAttestationInvalid",
+)<{
+  readonly reason: AttestationInvalidReason;
+}> {}
+
 /** Membership-chain verification failed at entry `seq` for `reason`. */
 export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly seq: number;
@@ -121,6 +132,7 @@ export type WrappedCryptoError =
   | CryptoValueInvalidError
   | CryptoMetaStatementInvalidError
   | CryptoEnvManifestInvalidError
+  | CryptoHeadAttestationInvalidError
   | ChainInvalidError;
 
 /** Maps a raw `CryptoError` value onto its Effect-tagged counterpart. */
@@ -154,6 +166,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoMetaStatementInvalidError({ reason: error.reason });
     case "EnvManifestInvalid":
       return new CryptoEnvManifestInvalidError({ reason: error.reason });
+    case "HeadAttestationInvalid":
+      return new CryptoHeadAttestationInvalidError({ reason: error.reason });
     case "ChainInvalid":
       return new ChainInvalidError({ seq: error.seq, reason: error.reason });
   }

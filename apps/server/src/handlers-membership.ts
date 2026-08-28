@@ -29,7 +29,7 @@ import {
   requiredPermissionForEntry,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
-import { unwrapDataOutcome } from "./data-http.ts";
+import { callProjectData, noContent, unwrapDataOutcome } from "./data-http.ts";
 import type { DataOutcome } from "./data-plane.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "./db.package/index.ts";
 import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
@@ -156,8 +156,24 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           entries: snapshot.entries,
           headSeq: snapshot.headSeq,
           headHashHex: snapshot.headHashHex,
+          // 現メンバーの最新ヘッド申告(AUTH_SPEC §16-1)。保存行の受理時刻は
+          // ここに現れない(StoredHeadAttestation が最初から持たない — §16-1)
+          attestations: snapshot.attestations,
         };
       }),
+    )
+    .handle("attest", ({ params, payload, endpoint }) =>
+      // ヘッド申告の提出(AUTH_SPEC §16-1 — 2026-08-28 PR-M4)。トークン
+      // スコープは read(申告は読み取り同期の付随 — reader 常在の認可モデルで
+      // read トークンの同期クライアントがゴシップに参加できる水準)。attester =
+      // 呼び出し主体は構造的(ワイヤに attester フィールドがなく、DO が署名
+      // 対象の attester_user_id に呼び出し主体を用いる — §12-5 の規則)
+      callProjectData<void>()({
+        endpoint,
+        projectId: params.projectId,
+        permission: "read",
+        invoke: (stub, actor) => stub.putHeadAttestation(actor.userId, payload),
+      }).pipe(Effect.as(noContent)),
     )
     .handle("append", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {

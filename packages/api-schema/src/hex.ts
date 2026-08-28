@@ -57,6 +57,9 @@ export const ManifestSignatureHex = hexString(64);
 /** 招待受諾署名(Ed25519 — CRYPTO_SPEC §6.5)。 */
 export const InviteAcceptSignatureHex = hexString(64);
 
+/** ヘッド申告署名(Ed25519 — CRYPTO_SPEC §6.6)。 */
+export const HeadAttestationSignatureHex = hexString(64);
+
 /**
  * 1 始まりの整数(epoch / version / チェーン seq — CRYPTO_SPEC §3 / §4 / §6)。
  * hex ではないが、チェーンヘッド系フィールド(hash + seq の対)の共有定義として

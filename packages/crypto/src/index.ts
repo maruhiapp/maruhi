@@ -183,6 +183,19 @@ export {
   verifyInviteAcceptSignature,
 } from "./internal.package/index.ts";
 
+// §6.6: ヘッド申告(§6.3 ヘッドゴシップの申告形式 — チェーン外の署名付き宣言。
+// 提出面 = AUTH_SPEC §16-1、サーバー検証 = §6.4、照合規則 = §6.3)
+export {
+  type AttestationInvalidReason,
+  buildHeadAttestationSignedBytes,
+  computeHeadAttestationSignedBytesHash,
+  type DistributedHeadAttestationInput,
+  type HeadAttestationContext,
+  signHeadAttestation,
+  verifyDistributedHeadAttestation,
+  verifyHeadAttestationSignature,
+} from "./internal.package/index.ts";
+
 // §7: エポックとメンバーシップ変更 — export 面なし(ワークフロー規定のみ)
 
 // §8: リカバリーコード

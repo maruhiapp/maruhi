@@ -9,7 +9,7 @@
 import { displayText } from "./display.ts";
 import type { FloorViolation } from "./floor-check.ts";
 import { floorViolationLabel } from "./floor-check.ts";
-import type { FloorConflict } from "./floor.ts";
+import type { AttestationEvidenceRecord, FloorConflict } from "./floor.ts";
 
 /** 証拠に含める座標(すべて ID — 名前は含めない: 名前自体が係争対象になりうる)。 */
 export interface FloorEvidenceCoordinates {
@@ -266,6 +266,39 @@ function conflictLines(conflict: FloorConflict): readonly string[] {
     `    observation A: version=${conflict.firstVersion} signed_bytes_hash=${conflict.firstHashHex}`,
     `    observation B: version=${conflict.secondVersion} signed_bytes_hash=${conflict.secondHashHex}`,
   ];
+}
+
+function attestationEvidenceLines(record: AttestationEvidenceRecord): readonly string[] {
+  const { attestation, localView } = record;
+  return [
+    record.kind === "head-mismatch"
+      ? "  [head-mismatch] a verified member attestation names a different entry hash at a seq within this view"
+      : "  [unresolved-after-resync] a verified member attestation names a head beyond this view that one bounded re-sync could not resolve as an extension",
+    // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+    `    attester: ${displayText(attestation.attesterUserId)} fp=${attestation.attesterKeyFingerprintHex}`,
+    `    attested head: ${headText(attestation.chainHeadSeq, attestation.chainHeadHashHex)}`,
+    `    attestation signature: ${attestation.signatureHex}`,
+    `    this view's head: ${headText(localView.headSeq, localView.headHashHex)}`,
+    `    this view's entry hash at the attested seq: ${localView.entryHashAtAttestedSeq === "" ? "(beyond this view)" : localView.entryHashAtAttestedSeq}`,
+  ];
+}
+
+/**
+ * 矛盾ヘッド申告(CRYPTO_SPEC §6.6 照合 (a))の警告メッセージ。申告は §6.6 の
+ * 署名検証を通過済みなので、自ビューとの矛盾は「サーバーの equivocation
+ * (split view)または attester の鍵漏洩」の否認不能な証拠(§14.2-5)。
+ * 証拠本体は追記専用の証拠ファイルへ保存済み(パスを導線として示す)。
+ */
+export function formatAttestationEvidence(
+  projectId: string,
+  records: readonly AttestationEvidenceRecord[],
+  evidencePath: string,
+): string {
+  return [
+    `Head-attestation cross-check detected a contradiction with this sync's chain (project=${projectId}):`,
+    ...records.flatMap(attestationEvidenceLines),
+    `  Each attestation above passed CRYPTO_SPEC §6.6 verification (a current member's signature over a chain position), so the contradiction is evidence of server equivocation (a split view) or a leaked member signing key (§14.2-5). Aborting this command without using this sync's results. The evidence (attestation + this view's chain digest) has been preserved append-only at ${evidencePath} — present it and this output to the project administrators, and confirm the chain head with other members out of band`,
+  ].join("\n");
 }
 
 /**

@@ -176,6 +176,7 @@ export interface ChainAcceptStores {
         recipientUserId: string,
         keepEncPubHex: string,
       ) => readonly StaleWrapRef[];
+      readonly deleteHeadAttestation: (attesterUserId: string) => void;
     };
   };
 }
@@ -235,6 +236,9 @@ export function insertAcceptedEntryPairSync(
  * - `remove_member` / `revoke_server`: 要ローテーション検出(AUDIT_SPEC §4.1)。
  *   検出はミラー追記の**後**に読む — 対象の在籍 / grant 区間は直前に書いた
  *   ミラー行で閉じている
+ * - `remove_member` はさらに対象のヘッド申告行を削除する(CRYPTO_SPEC §6.4 /
+ *   AUTH_SPEC §16-1 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵
+ *   ラップ掃除と同型)
  */
 function applyAcceptanceSideEffectsSync(
   stores: ChainAcceptStores,
@@ -262,6 +266,7 @@ function applyAcceptanceSideEffectsSync(
     return;
   }
   if (entry.op === "remove_member") {
+    stores.dataStore.write.deleteHeadAttestation(entry.payload.targetUserId);
     appendDetected(
       stores,
       detectMemberRemoval({

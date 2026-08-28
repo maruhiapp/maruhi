@@ -105,14 +105,14 @@ export function strictPayload<S extends Schema.Top>(schema: S): S["Rebuild"] {
  * - recovery blob registration (§13-2)
  * - lease claims (§14)
  * - invitation issue / accept (§15-2)
- *
- * Head attestation (§16-1) is not implemented yet; add it here when it lands.
+ * - head-attestation submission (§16-1): membership attest
  */
 export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   readonly [group: string, endpoint: string]
 > = [
   ["membership", "init"],
   ["membership", "append"],
+  ["membership", "attest"],
   ["environments", "create"],
   ["environments", "rotate"],
   ["environments", "rename"],

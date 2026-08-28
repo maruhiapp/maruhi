@@ -141,6 +141,34 @@ export type MetaInvalidReason =
  *   マニフェスト)を渡された場合のみの連鎖・エポック単調性検査(値の §4.1 と
  *   同型 — rotate 後に旧エポックを焼き込んだ前進 manifestVersion の検出)
  */
+/**
+ * Reason codes for rejecting a distributed head attestation (CRYPTO_SPEC
+ * §6.6 — head-attestation.json の rule negative が固定する語彙)。
+ * 値・メタと同じヘッド束縛の 2 種区別を持つが、照合(§6.3 ヘッドゴシップ)での
+ * 扱いが異なる:
+ *
+ * - `signature-invalid` — valid-format の Ed25519 検証失敗(照合材料にしない)
+ * - `attester-unknown` — チェーン履歴のどの時点にも (attester_user_id, 鍵 FP) の
+ *   束縛が存在しない(検証鍵を選択できない。照合材料にしない)
+ * - `chain-head-mismatch` — 申告 seq は自ビュー内だが保存ハッシュと不一致
+ *   (§6.3-2a / §6.6 照合 (a): **署名は検証済み**なので、申告自体が分岐
+ *   (equivocation)または attester 鍵漏洩の硬い証拠 — 当該同期の成果物の使用を
+ *   中断し、証拠を保存する)
+ * - `chain-head-future` — 申告 seq が自ビューのヘッドより先(§6.3-2b / §6.6
+ *   照合 (b): 有界再同期で延長として解決すれば正常、解決しなければ (a))
+ * - `attester-not-member-at-head` / `attester-key-mismatch-at-head` —
+ *   申告ヘッド時点(inclusive)の在籍・鍵束縛の不一致(§6.6 (1)/(2)。照合材料に
+ *   しない)。必要 role の下限は reader(全メンバーが申告できる — §6.3)なので
+ *   role 不足の理由コードは存在しない
+ */
+export type AttestationInvalidReason =
+  | "signature-invalid"
+  | "attester-unknown"
+  | "chain-head-mismatch"
+  | "chain-head-future"
+  | "attester-not-member-at-head"
+  | "attester-key-mismatch-at-head";
+
 export type ManifestInvalidReason =
   | "signature-invalid"
   | "issuer-unknown"
@@ -216,6 +244,12 @@ export type CryptoError =
    * recomputation, or the predecessor chaining was rejected for `reason`.
    */
   | { readonly kind: "EnvManifestInvalid"; readonly reason: ManifestInvalidReason }
+  /**
+   * A head attestation failed verification (CRYPTO_SPEC §6.6): the attester
+   * signature, the declared chain head (2 種区別 — §6.3-2), or the head-time
+   * membership / key binding was rejected for `reason`.
+   */
+  | { readonly kind: "HeadAttestationInvalid"; readonly reason: AttestationInvalidReason }
   /** Chain verification failed at entry `seq` for `reason`. */
   | { readonly kind: "ChainInvalid"; readonly seq: number; readonly reason: ChainInvalidReason };
 

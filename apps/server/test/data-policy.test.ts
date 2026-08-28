@@ -595,6 +595,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       variableId: "var-contract",
     },
     "limit-exceeded": { kind: "limit-exceeded", resource: "variables", limit: 100 },
+    "attestation-rejected": { kind: "attestation-rejected", reason: "signature-invalid" },
+    "attestation-regression": { kind: "attestation-regression", storedSeq: 5 },
+    "attestation-rate-limited": { kind: "attestation-rate-limited", retryAfterSeconds: 60 },
   } as const satisfies {
     readonly [K in DataRejection["kind"]]: Extract<DataRejection, { kind: K }>;
   };
@@ -629,6 +632,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "dek-wrap-not-found": "DekWrapNotFound",
     "rotation-flag-not-found": "RotationFlagNotFound",
     "limit-exceeded": "DataLimitExceeded",
+    "attestation-rejected": "AttestationRejected",
+    "attestation-regression": "AttestationRegression",
+    "attestation-rate-limited": "AttestationRateLimited",
   } as const satisfies Record<DataRejection["kind"], string>;
 
   // 全データプレーン + チェーンエンドポイント × 全拒否 kind の組み合わせ
@@ -693,8 +699,8 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       results.map((result) => result.expected),
     );
     // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
-    // 追加したらこの数を更新する(membership 3 / environments 5 / variables 6 /
+    // 追加したらこの数を更新する(membership 4 / environments 5 / variables 6 /
     // deks 3 / rotation 2 / audit 4)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(23);
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(24);
   });
 });

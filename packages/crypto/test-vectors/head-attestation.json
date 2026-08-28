@@ -1,0 +1,230 @@
+{
+  "description": "CRYPTO_SPEC §6.6: ヘッド申告(Ed25519)。head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+  "signed_fields_order": [
+    "domain",
+    "project_id",
+    "attester_user_id",
+    "chain_head_hash_hex",
+    "chain_head_seq"
+  ],
+  "binary_encoding": "チェーンヘッドハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(chain_head_seq)は 10 進文字列化。タイムスタンプ・ノンスは署名対象に含めない(§6.6 — 意味論は帰属であり鮮度証明ではない)",
+  "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、attester 鍵 = keys",
+  "distribution_note": "removed-attester-in-tenure は §6.6 の検証(署名・申告ヘッド時点の在籍)を通る正例だが、attester が現メンバーでないため配布対象外(remove_member 受理時にサーバーが申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない(§6.6 (1))。この現メンバー検査は本ファイルの検証ベクターの外(実装テスト — session-27 §13-5)",
+  "vectors": [
+    {
+      "name": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "attester_key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "d4d786d72ce6896e10bf36eeee9b8f5aa433f666b3e9ec731966585525da23d0",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055105",
+      "note": "基本形: owner が現ヘッド(seq 12)を申告する。§6.6 の全検証(署名・ヘッド束縛・申告ヘッド時点の在籍)を通る"
+    },
+    {
+      "name": "reader-attestation",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "4be2267354d3af7c787fdcf180d775d5bf98b0e39b6f709d0880bf729186fbc4",
+        "chain_head_seq": 6
+      },
+      "attester_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d61646d696e2d3030303300000040346265323236373335346433616637633738376664636631383064373735643562663938623065333962366637303964303838306266373239313836666263340000000136",
+      "signed_bytes_sha256_hex": "7c104cc52efacc2ebfe00e8445fd8e2cfa1e0c6b531c1f487d8ff19d8e25f745",
+      "signature_hex": "2384da05a3ae030b4b321a04eaf56dc217cd5ac797ee6a4af65bdde1f16f128bb833d21135f72de68b1ede2b83a0a8efb7754dd9cacdd9759aaf61bc20ed3101",
+      "note": "reader の申告: head 6 時点の user-admin-0003 は reader(change_role は seq 7)。申告は reader を含む全メンバーが提出できる(§6.3 ヘッドゴシップ / §6.6 — 必要 role の下限は reader)"
+    },
+    {
+      "name": "removed-attester-in-tenure",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-member-0002",
+        "chain_head_hash_hex": "a2c9e6ab1c0d09e35ca9571cbd92fcffb23247a1b586233cd6c9a68179aaab28",
+        "chain_head_seq": 4
+      },
+      "attester_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e000000403234353366333439343334363363303437316136653638313739633561356139373864633061306139633936626662386230646534616664303064633639363900000010757365722d6d656d6265722d3030303200000040613263396536616231633064303965333563613935373163626439326663666662323332343761316235383632333363643663396136383137396161616232380000000134",
+      "signed_bytes_sha256_hex": "0adac731ee8fec20ee00012a5629ba483c6b59ee3c1342065e684238fd96ff5a",
+      "signature_hex": "e6a92f889c6051f521969a43dceb9644c511b50b3acc5a9ecdd68138cd4e404f17e75ab2113539cb95c1eb58d0af557629315b9b9bd245cb8a18a3251e19fd09",
+      "note": "seq 5 で削除済みの attester による在籍区間内(head 4)の過去申告。§6.6 の署名・ヘッド時点検証は通る(検証鍵は当時の鍵 — チェーンは鍵履歴を保持する)が、attester は現メンバーでないため配布対象外(サーバーは remove_member 受理時に申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない(§6.6 (1) — 現メンバー検査)。この二層の意図をベクターで固定する"
+    }
+  ],
+  "negative": [
+    {
+      "name": "tampered-signature",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055104",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "must_fail": true,
+      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+    },
+    {
+      "name": "transplant-project",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "proj-other-0002",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e0000000f70726f6a2d6f746865722d303030320000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055105",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "must_fail": true,
+      "note": "別プロジェクトへの申告の移植は署名検証に失敗する(project_id の文脈束縛 — §6.6)"
+    },
+    {
+      "name": "transplant-attester",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d61646d696e2d303030330000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055105",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "must_fail": true,
+      "note": "attester_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §5.1 の signer_user_id と同型)"
+    },
+    {
+      "name": "wrong-attester-key",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055105",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "must_fail": true,
+      "note": "attester 以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)"
+    },
+    {
+      "name": "head-seq-mismatch",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 11
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023131",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055105",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "must_fail": true,
+      "note": "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象 — §6.6)"
+    },
+    {
+      "name": "suite-mismatch",
+      "base": "basic",
+      "context": {
+        "suite": "maruhi/v2",
+        "domain": "maruhi/v2/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "verify_signed_bytes_hex": "0000001a6d61727568692f76322f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signature_hex": "4bfbc828fdb504e1f95bd062887c017f336a6de9712c7e4644400630674d7b2da516f6ab3b7022ba5777585084663ca427d52e0c9c221d2c70f5ebd7ee055105",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "must_fail": true,
+      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+    },
+    {
+      "name": "head-not-in-chain",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "be18ec99f19e4ef13e0d355cebfa67dada8302a28087df610e0e0df68b24097e",
+        "chain_head_seq": 12
+      },
+      "attester_key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004062653138656339396631396534656631336530643335356365626661363764616461383330326132383038376466363130653065306466363862323430393765000000023132",
+      "signed_bytes_sha256_hex": "e2d62e3bbd977b51dd8b3242fc6fddfed5a1b23c06698cac7e17f01b81e56c26",
+      "signature_hex": "fccda196baae5e51d91cfdfaa15ac13404fcc245d9b39764e21b00b615ee020e434fb852099fa6379aec69bdf41df84cce9d3c4d11fc0951e813c54a9cec6404",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "chain-head-mismatch",
+      "must_fail": true,
+      "note": "seq 12 は自ビューに実在するがハッシュが一致しない = 分岐(equivocation)または偽造の硬い証拠(§6.3-2a / §6.6 の照合 (a) — 当該同期の成果物の使用を中断し、証拠を保存する)"
+    },
+    {
+      "name": "head-beyond-local-seq",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-owner-0001",
+        "chain_head_hash_hex": "7242a27162786b8d102a52d18c0b7e70da15dda52327a795d2a8be967af7e311",
+        "chain_head_seq": 13
+      },
+      "attester_key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004037323432613237313632373836623864313032613532643138633062376537306461313564646135323332376137393564326138626539363761663765333131000000023133",
+      "signed_bytes_sha256_hex": "ba894e06eaae22d49923e960e3dc947fd56329ba4885eb3c5485fecae3c8a710",
+      "signature_hex": "9b986be57b42e6d244f44c23553bfd4f011fa6ac762a17c9cc1dc541722ef0354beda0a0ade1b5800766895a82a80d8cc2c3c53cd2d62e014bbce8bfc68cdc09",
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "chain-head-future",
+      "must_fail": true,
+      "note": "seq 13 は自ビューのヘッド(12)より先 = 自分のチェーンが古いだけの可能性(§6.3-2b / §6.6 の照合 (b))。まず有界再同期し、延長として一致すれば正常・解決しなければ (a) と同じ扱い。この理由での即時証拠化は誤り"
+    },
+    {
+      "name": "attester-removed-at-head",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/head-attestation",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "attester_user_id": "user-member-0002",
+        "chain_head_hash_hex": "aa5e0cef133a6f8fd4af590d9259be8e6c292bfd06739d19df56f9ff2da9921f",
+        "chain_head_seq": 12
+      },
+      "attester_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
+      "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e000000403234353366333439343334363363303437316136653638313739633561356139373864633061306139633936626662386230646534616664303064633639363900000010757365722d6d656d6265722d303030320000004061613565306365663133336136663866643461663539306439323539626538653663323932626664303637333964313964663536663966663264613939323166000000023132",
+      "signed_bytes_sha256_hex": "c15a492cb7c82ac52dbb3a22c330e4a348a0a2f1d372cc562049f24e6a8ef9c6",
+      "signature_hex": "5bee110be9fb8576faec7714609e8ad501e9635f3b5eec425644802d638568fe757b4c96a9f52d9ceb78bc5d4b4c6c612c7d0960346648de34ceb2af424fc105",
+      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "expected_reason": "attester-not-member-at-head",
+      "must_fail": true,
+      "note": "seq 5 で削除済みの attester が削除後のヘッド(12)を申告する形は拒否する(§6.6 (1) の申告ヘッド時点在籍 — removed-attester-in-tenure との対比で在籍区間の境界を固定する)"
+    }
+  ]
+}

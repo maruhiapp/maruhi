@@ -97,10 +97,11 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("covers every §12-10 (1) implemented surface", () => {
-    // 列挙の退行防止(§16-1 ヘッド申告は未実装のため対象外 — 実装時に追加する)
+    // 列挙の退行防止(§16-1 ヘッド申告 = membership.attest を含む — PR-M4)
     expect(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS).toEqual([
       ["membership", "init"],
       ["membership", "append"],
+      ["membership", "attest"],
       ["environments", "create"],
       ["environments", "rotate"],
       ["environments", "rename"],

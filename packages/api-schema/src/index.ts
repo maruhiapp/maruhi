@@ -94,6 +94,10 @@ export {
   rotationGroup,
 } from "./rotation-api.ts";
 export {
+  AttestationRateLimitedError,
+  AttestationRegressionError,
+  AttestationRejectedError,
+  AttestationRejectReasonSchema,
   AuthFlowError,
   AuthFlowFailureReasonSchema,
   AuthRateLimitedError,
@@ -156,6 +160,8 @@ export {
 export {
   ChainHeadSchema,
   ChainSnapshotSchema,
+  DistributedHeadAttestationSchema,
+  HeadAttestationSubmissionSchema,
   maruhiApi,
   membershipGroup,
 } from "./membership-api.ts";

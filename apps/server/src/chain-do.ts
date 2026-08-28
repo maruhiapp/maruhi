@@ -24,6 +24,8 @@ import type { ChainEntry, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
 import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
+import type { HeadAttestationSubmissionInput } from "./attestation-accept.ts";
+import { putHeadAttestationProgram } from "./attestation-accept.ts";
 import { AuditStore, auditStoreLayer } from "./audit-store.ts";
 import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
 import { commitAcceptedEntry } from "./chain-commit.ts";
@@ -52,6 +54,7 @@ import type {
   VariableVersionValue,
 } from "./data-plane.ts";
 import { rejectData, requireMemberState } from "./data-plane.ts";
+import type { StoredHeadAttestation } from "./data-store.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
 import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
@@ -142,11 +145,16 @@ export interface ChainHeadValue {
   readonly headHashHex: string;
 }
 
-/** チェーン全体のスナップショット(取得成功の RPC 値)。 */
+/**
+ * チェーン全体のスナップショット(取得成功の RPC 値)。attestations は
+ * **現メンバーの最新ヘッド申告のみ**(AUTH_SPEC §16-1 — remove 時の行削除
+ * 〔chain-accept.ts〕に加えて配布側でも現メンバー集合で絞る独立の防衛層)。
+ */
 export interface ChainSnapshotValue {
   readonly entries: readonly ChainEntry[];
   readonly headSeq: number;
   readonly headHashHex: string;
+  readonly attestations: readonly StoredHeadAttestation[];
 }
 
 /** RPC 境界(structured clone)を渡る初期化結果。 */
@@ -234,6 +242,7 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
       headHashHex: chain.headHashHex,
       genesisHashHex: chain.genesisHashHex,
       totalCanonicalBytes: chain.totalCanonicalBytes,
+      members: state.members,
     };
   });
 
@@ -270,12 +279,23 @@ const appendProgram = (
 const snapshotProgram = (
   callerUserId: string,
   cache: StateCache,
-): Effect.Effect<ChainSnapshotValue, DataRejectedError, ChainStore> =>
-  Effect.map(loadChainForMember(callerUserId, cache), (chain) => ({
-    entries: chain.entries,
-    headSeq: chain.headSeq,
-    headHashHex: chain.headHashHex,
-  }));
+): Effect.Effect<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> =>
+  Effect.gen(function* () {
+    const chain = yield* loadChainForMember(callerUserId, cache);
+    // 申告の同梱(AUTH_SPEC §16-1): 現メンバーの最新申告のみ。remove_member
+    // 受理時の行削除(chain-accept.ts)が真実源への収束を担い、ここでの現
+    // メンバー絞り込みは独立の防衛層(§6.6 (1) のクライアント検査とも一致)
+    const dataStore = yield* DataStore;
+    const attestations = (yield* dataStore.listHeadAttestations).filter((attestation) =>
+      chain.members.has(attestation.attesterUserId),
+    );
+    return {
+      entries: chain.entries,
+      headSeq: chain.headSeq,
+      headHashHex: chain.headHashHex,
+      attestations,
+    };
+  });
 
 /**
  * 呼び出し主体のチェーン導出 role(招待 API — AUTH_SPEC §15-2 — の認可入力)。
@@ -412,6 +432,14 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
   snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runData(snapshotProgram(callerUserId, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  putHeadAttestation(
+    callerUserId: string,
+    input: HeadAttestationSubmissionInput,
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(putHeadAttestationProgram(callerUserId, input, this.#stateCache));
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)

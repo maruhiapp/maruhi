@@ -13,6 +13,10 @@ import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
+import {
+  reconcileDistributedAttestations,
+  submitHeadAttestationIfAdvanced,
+} from "./attestation.ts";
 import type { CliConfig } from "./config.ts";
 import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -174,8 +178,14 @@ export interface CheckedFloor {
 
 /**
  * ローカル床の読み込み(fail-open — 初回と破損を区別して知らせる)+ チェーン床
- * 検査(§6.3 規則 (a) のチェーン部分)+ 検証済みヘッドの床前進。規則 (c) の
- * 基準(pullEpoch)はここでは動かさない(チェーン同期単独で前進させない規範)。
+ * 検査(§6.3 規則 (a) のチェーン部分)。規則 (c) の基準(pullEpoch)はここでは
+ * 動かさない(チェーン同期単独で前進させない規範)。
+ *
+ * **床ヘッドの前進はここでは行わない**: 前進はヘッドゴシップの照合
+ * (reconcileGossip)を通過した後だけ。検査より先に記録すると、照合が硬い証拠で
+ * 中断したビューのヘッドが床の恒久記録になり、以後の正直なチェーンを床の
+ * ハッシュ不一致として拒否させられる(拒否ビューの床汚染 — Cursor Security
+ * Agent 指摘、PR #101)。
  *
  * 床ヘッドが自ビューより先(headSeq の後退)は、同期と床ロードの間に兄弟
  * プロセスが床を前進させた正直なレースでも起きるため、即時証拠にせず
@@ -229,10 +239,6 @@ export function loadCheckedFloor(
         return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
       }
     }
-    yield* store.commitHead(projectId, {
-      seq: view.state.headSeq,
-      hashHex: view.state.headHashHex,
-    });
     return { floor: loaded.floor, verified: view };
   });
 }
@@ -425,22 +431,60 @@ export interface OpenProjectOptions {
 }
 
 /**
+ * ヘッドゴシップの照合(§6.3 / §6.6): 矛盾申告 = 硬い証拠で中断、future 申告は
+ * 有界再同期(1 回)で解決を試みる。ビューが前進したらアンカー機械照合を
+ * 新ビューで再適用する(検査は 2 参照のみ)。
+ *
+ * **床ヘッドの前進はここで、全検査(床・アンカー・ゴシップ)の通過後に行う**。
+ * 中断したビューのヘッドを床に残すと、拒否したはずの fork が床の恒久記録に
+ * なり、以後の正直なチェーンをハッシュ不一致として拒否させられる(拒否
+ * ビューの床汚染 — Cursor Security Agent 指摘、PR #101)。
+ */
+export function reconcileGossip(
+  projectId: string,
+  verified: VerifiedProject,
+  resync: Effect.Effect<VerifiedProject, CliError>,
+): Effect.Effect<VerifiedProject, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const reconciled = yield* reconcileDistributedAttestations({
+      projectId,
+      view: verified,
+      resync,
+    });
+    if (reconciled !== verified) {
+      yield* checkInviteAnchor(projectId, reconciled);
+    }
+    yield* commitVerifiedHead(projectId, reconciled);
+    return reconciled;
+  });
+}
+
+/**
  * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → アンカー機械照合 →
+ * ヘッドゴシップの照合(§6.3 / §6.6 — 矛盾申告は成果物の使用を中断)→
  * 床ヘッドの前進 → 未収束ローテーション義務の常時警告(§7 / B2 裁定 — §9 の
- * 開示常時明示と同じ規律)。鍵の有無で分かれるのは呼び出し側だけで、床の
- * 意味論はここに一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの
- * 前進は全コマンド共通で、env diff のような値を読まないコマンドでも従来どおり行う。
+ * 開示常時明示と同じ規律)→ 検証済みヘッドの申告提出(SHOULD — 署名鍵を持つ
+ * 前段のみ)。鍵の有無で分かれるのは呼び出し側だけで、床とゴシップの意味論は
+ * ここに一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は
+ * 全コマンド共通で、env diff のような値を読まないコマンドでも従来どおり行う。
+ *
+ * `attester` は申告提出の署名材料(openProjectWith が master 鍵から渡す)。
+ * 渡されない前段(openMetadataProjectWith — master 鍵を要求しないコマンド)は
+ * 照合のみ行い提出しない(提出は SHOULD であり、鍵なし実行 — MARUHI_TOKEN — を
+ * 提出のために壊さない)。
  */
 function attachProject(
   context: SessionContext,
   projectId: string,
   options?: OpenProjectOptions,
+  attester?: { readonly userId: string; readonly signingKey: CryptoKey },
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
     const resync = syncProject(context.client, projectId);
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
     yield* checkInviteAnchor(projectId, checked.verified);
+    const verified = yield* reconcileGossip(projectId, checked.verified, resync);
     // 未解決の複合 intent(3-F)は「同一環境への次の mutation・成功報告の前に
     // 照合で解決する」— 前段は毎回チェーンを全同期・全検証するので、ここが
     // その照合点になる(受理済みなら床のマニフェスト前進もここで回収する)
@@ -450,7 +494,7 @@ function attachProject(
       const resolved = yield* reconcileCompositeIntents({
         store,
         projectId,
-        verified: checked.verified,
+        verified,
         intents: floor.intents,
       });
       if (resolved) {
@@ -467,9 +511,20 @@ function attachProject(
       }
     }
     if (options?.quietMandateWarning !== true) {
-      yield* warnUnconvergedMandates({ client: context.client, verified: checked.verified });
+      yield* warnUnconvergedMandates({ client: context.client, verified });
     }
-    return { ...context, projectId, verified: checked.verified, floor, resync };
+    // 検証済みヘッドの申告提出(§6.3 ヘッドゴシップ — SHOULD。照合を全部
+    // 通過したビューだけを申告する。失敗は非失敗の警告 — attestation.ts)
+    if (attester !== undefined) {
+      yield* submitHeadAttestationIfAdvanced({
+        client: context.client,
+        projectId,
+        view: verified,
+        attesterUserId: attester.userId,
+        signingKey: attester.signingKey,
+      });
+    }
+    return { ...context, projectId, verified, floor, resync };
   });
 }
 
@@ -486,7 +541,10 @@ function openProjectWith(
     // master 鍵の読み込みは同期(通信)・床の前進より**前**のまま置く: 鍵の無い
     // 端末で実行された書き込み系コマンドを、サーバーへ 1 往復してから落とさない
     const masterKeys = yield* loadMasterKeys(context.session);
-    const base = yield* attachProject(context, projectId, options);
+    const base = yield* attachProject(context, projectId, options, {
+      userId: context.session.userId,
+      signingKey: masterKeys.sigKeyPair.privateKey,
+    });
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,

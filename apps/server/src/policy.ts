@@ -112,6 +112,18 @@ export const MAX_LEASES_PER_WINDOW = 300;
  */
 export const MAX_LEASE_DENIED_ROWS_PER_WINDOW = 100;
 
+/** AUTH_SPEC §16-1: ヘッド申告の固定窓の長さ(1 時間)。 */
+export const ATTESTATION_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * AUTH_SPEC §16-1: 固定窓あたりのヘッド申告提出数(メンバー単位 — 起草値 60)。
+ * 判定は**メンバーシップ判定の後**(§11-2 — 窓を消費できるのはチェーン導出
+ * メンバーのみで、429 が非メンバーへプロジェクトの存在を漏らさない)・署名検証の
+ * 前(Ed25519 検証の作業量をレートで有界にする)。窓の消費は受理可否に依らない
+ * (処理した提出ごとに 1 計上 — 拒否の反復も窓を消費する)。
+ */
+export const MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW = 60;
+
 /**
  * §14-1 の先着束縛(2026-08-15 裁定 — docs/notes/session-24.md): 束縛行の
  * 保持余裕。行の生存期限は「トークンの exp + この余裕」で、余裕は**時刻検証の

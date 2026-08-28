@@ -313,6 +313,29 @@ Should a server ever lack the stored row for an on-chain checkpoint anyway
 match the distributed chain), a project member re-establishes a distributable
 baseline by issuing a fresh checkpoint: `maruhi project checkpoint`.
 
+**Head attestations / split-view gossip (2026-08-28 release, PR-M4)**: this
+release adds signed head attestations (CRYPTO_SPEC §6.6): after every
+successful chain sync, a CLI submits a signed "I verified the chain up to this
+head" statement (`PUT /projects/:id/head-attestation`), and servers bundle the
+current members' latest attestations into chain reads so members cross-check
+each other's verified heads. This makes a server that shows different chains to
+different members (a split view) detectable, with non-repudiable evidence.
+Version-skew notes — **update the server before the CLIs** (same direction as
+always), but note this feature degrades gracefully in both directions:
+
+- **New CLI against an old server**: the attestation submission fails (the
+  endpoint does not exist there) and the CLI prints a one-line note per
+  command — the command itself still succeeds. Chain responses from an old
+  server carry no `attestations` field; the CLI treats that as an empty set
+  and does **not** reject (omission of gossip is a normative non-guarantee of
+  CRYPTO_SPEC §6.3 — an omission-rejecting branch would break old-server
+  interop without adding detection). Cross-checking becomes effective once the
+  server is updated and members have submitted attestations.
+- **Old CLI against a new server**: the extra response field is ignored and
+  nothing changes.
+- The Durable Object migration (two new tables for attestation rows and their
+  per-member rate windows) is automatic on first access. No operator action.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata
