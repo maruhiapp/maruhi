@@ -66,10 +66,7 @@ function taggedField(value: string | null): Uint8Array {
   return concatBytes(Uint8Array.of(0x01), utf8Encode(value));
 }
 
-function taggedNumberField(
-  value: number | null,
-  field: string,
-): CryptoResult<Uint8Array> {
+function taggedNumberField(value: number | null, field: string): CryptoResult<Uint8Array> {
   if (value === null) {
     return { ok: true, value: Uint8Array.of(0x00) };
   }

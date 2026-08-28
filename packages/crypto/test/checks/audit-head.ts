@@ -6,10 +6,9 @@
 // - 数値境界(非整数・2^53 以上)と hex 形式の invalid-input(規約 21 の分担 —
 //   拒否は JSON ベクターでなくハーネス側で固定する)
 
-import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
-
 import type { AuditHeadRow } from "../../src/index.ts";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "../../src/index.ts";
+import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
 import { type CheckResult, Checks } from "./support.ts";
 
 /** ベクター JSON の行(推論リテラル型でなく構造型で受ける — chain と null_vs_empty の両方から渡す)。 */
@@ -71,10 +70,7 @@ async function chainVectorChecks(c: Checks): Promise<void> {
   let head = auditHeadVectors.initial_head;
   for (const step of auditHeadVectors.chain) {
     const digest = await digestOf(step.row);
-    c.push(
-      `audit-head: seq ${step.row.seq} row digest`,
-      digest === step.expected_row_digest_hex,
-    );
+    c.push(`audit-head: seq ${step.row.seq} row digest`, digest === step.expected_row_digest_hex);
     const next = await computeAuditHeadHash(SUITE_ID, head, step.row.seq, digest);
     c.push(
       `audit-head: seq ${step.row.seq} head hash`,
@@ -140,7 +136,11 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     [SUITE_ID, digest.toUpperCase(), 2, digest],
     "prevHeadHashHex",
   );
-  await rejectsHead("short prev head", [SUITE_ID, digest.slice(0, 62), 2, digest], "prevHeadHashHex");
+  await rejectsHead(
+    "short prev head",
+    [SUITE_ID, digest.slice(0, 62), 2, digest],
+    "prevHeadHashHex",
+  );
   await rejectsHead(
     "uppercase row digest",
     [SUITE_ID, "", 1, digest.toUpperCase()],

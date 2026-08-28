@@ -444,9 +444,7 @@ const extendHeadHashes = (sql: SqlStorage): Effect.Effect<void> =>
     let hashedUpTo = 0;
     let head = "";
     const state = sql
-      .exec(
-        `SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`,
-      )
+      .exec(`SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`)
       .toArray()[0];
     if (state !== undefined) {
       hashedUpTo = Number(state["seq"]);

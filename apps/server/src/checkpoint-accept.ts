@@ -164,7 +164,13 @@ export function standaloneCheckpointProgram(
     const dataStore = yield* DataStore;
     const nowMs = Date.now();
     yield* Effect.sync(() => {
-      insertAcceptedEntrySync({ chainStore, audit, dataStore }, entry, applied, canonicalBytes, nowMs);
+      insertAcceptedEntrySync(
+        { chainStore, audit, dataStore },
+        entry,
+        applied,
+        canonicalBytes,
+        nowMs,
+      );
       for (const { tuple, values } of snapshots) {
         dataStore.write.upsertCheckpointSnapshot(
           tuple.environmentId,
