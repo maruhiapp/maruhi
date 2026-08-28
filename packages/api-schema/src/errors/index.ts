@@ -23,6 +23,12 @@ export {
   UnauthorizedError,
 } from "./auth.ts";
 export {
+  AttestationRateLimitedError,
+  AttestationRegressionError,
+  AttestationRejectedError,
+  AttestationRejectReasonSchema,
+} from "./attestation.ts";
+export {
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,

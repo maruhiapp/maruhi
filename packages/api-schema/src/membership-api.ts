@@ -6,7 +6,7 @@
 
 import { ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { auditGroup } from "./audit-api.ts";
 import { authGroup } from "./auth-api.ts";
@@ -14,6 +14,9 @@ import { AuthMiddleware } from "./auth-middleware.ts";
 import { ChainEntrySchema } from "./chain.ts";
 import { deksGroup, environmentsGroup, variablesGroup } from "./data-api.ts";
 import {
+  AttestationRateLimitedError,
+  AttestationRegressionError,
+  AttestationRejectedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -24,7 +27,7 @@ import {
   ProjectAlreadyInitializedError,
   ProjectNotFoundError,
 } from "./errors/index.ts";
-import { PositiveInt, Sha256Hex } from "./hex.ts";
+import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";
 import { leaseGroup } from "./lease-api.ts";
 import { rotationGroup } from "./rotation-api.ts";
@@ -37,12 +40,48 @@ export const ChainHeadSchema = Schema.Struct({
   headHashHex: Sha256Hex,
 });
 
-/** Full chain as stored by the project DO (entries in seq order). */
+/**
+ * ヘッド申告の提出リクエスト(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。attester は
+ * 呼び出し主体(§12-5 の「呼び出し主体 = 署名者」規則 — ワイヤに attester
+ * フィールドを持たない)。
+ */
+export const HeadAttestationSubmissionSchema = Schema.Struct({
+  suite: Schema.Literal("maruhi/v1"),
+  chainHeadHashHex: Sha256Hex,
+  chainHeadSeq: PositiveInt,
+  signatureHex: HeadAttestationSignatureHex,
+});
+
+/**
+ * 配布されるヘッド申告(AUTH_SPEC §16-1 — チェーン取得応答の `attestations`)。
+ * attesterUserId + attesterKeyFingerprintHex は §12-2 の検証材料と同型(受信者は
+ * チェーン履歴と照合して CRYPTO_SPEC §6.6 のクライアント検証を行う)。
+ * サーバー受理時刻は配布しない(申告が運ぶ行動情報を「チェーン同期の到達点」に
+ * 限定する — §16-1)。
+ */
+export const DistributedHeadAttestationSchema = Schema.Struct({
+  suite: Schema.Literal("maruhi/v1"),
+  attesterUserId: Schema.String,
+  attesterKeyFingerprintHex: KeyFingerprintHex,
+  chainHeadHashHex: Sha256Hex,
+  chainHeadSeq: PositiveInt,
+  signatureHex: HeadAttestationSignatureHex,
+});
+
+/**
+ * Full chain as stored by the project DO (entries in seq order).
+ *
+ * `attestations` = 現メンバーの最新ヘッド申告集合(AUTH_SPEC §16-1 — 2026-08-28
+ * PR-M4 の加法追加)。optionalKey なのは新 CLI × 旧サーバーの応答に欠けるため —
+ * **欠落は拒否にしない**(配布の省略は CRYPTO_SPEC §6.3 の規範的非保証 = G8。
+ * 欠落拒否の分岐は攻撃検出を足さず、旧サーバーとの併用だけを壊す)。
+ */
 export const ChainSnapshotSchema = Schema.Struct({
   projectId: ProjectIdSchema,
   entries: Schema.Array(ChainEntrySchema),
   headSeq: PositiveInt,
   headHashHex: Sha256Hex,
+  attestations: Schema.optionalKey(Schema.Array(DistributedHeadAttestationSchema)),
 });
 
 /**
@@ -105,6 +144,25 @@ export const membershipGroup = HttpApiGroup.make("membership")
         CheckpointStateMismatchError,
         CompositeRequiredError,
         ForbiddenError,
+      ],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    // ヘッド申告の提出(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — 2026-08-28 PR-M4)。
+    // 認可はトークンスコープ read × チェーン role reader 以上(申告は読み取り
+    // 同期の付随で、書けるのは自分の署名済み申告 1 行のみ — §16-1)。受理検証
+    // (署名・ヘッド実在・seq 単調前進)は §6.4。後退 = 409(保存済み seq を
+    // 返す — 黙って成功させない)、同一 seq 再提出 = 冪等 204。
+    HttpApiEndpoint.put("attest", "/projects/:projectId/head-attestation", {
+      params: { projectId: ProjectIdSchema },
+      // strict 受理(§12-10 (1) — 署名済み構造を運ぶ mutation)
+      payload: strictPayload(HeadAttestationSubmissionSchema),
+      success: HttpApiSchema.NoContent,
+      error: [
+        ProjectNotFoundError,
+        AttestationRegressionError,
+        AttestationRejectedError,
+        AttestationRateLimitedError,
       ],
     }).middleware(AuthMiddleware),
   );
