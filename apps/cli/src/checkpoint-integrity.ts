@@ -70,6 +70,29 @@ function retriable(message: string): CheckpointIntegrityOutcome {
 }
 
 /**
+ * 基準なしの環境に列挙が配布された形の分類(§6.3-2 と同型の future / 拒否)。
+ * 位置が実在エントリ(hash 一致)でも、チェーン導出上そのエントリは当該環境を
+ * 覆う checkpoint ではない(覆っていれば基準が導出されている)= 偽装。
+ */
+function noBaselineOutcome(
+  history: ChainHistoryIndex,
+  environmentId: string,
+  snapshot: CheckpointValueSnapshot,
+): CheckpointIntegrityOutcome {
+  if (snapshot.chainSeq > history.headSeq) {
+    return { kind: "future" };
+  }
+  if (history.entryHashAt(snapshot.chainSeq) !== snapshot.entryHashHex) {
+    return rejected(
+      `The served checkpoint value snapshot declares an entry hash for seq ${snapshot.chainSeq} that does not match the verified chain (evidence of chain divergence or forgery)`,
+    );
+  }
+  return rejected(
+    `A checkpoint value snapshot claiming checkpoint seq ${snapshot.chainSeq} was served for environment ${displayText(environmentId)}, but the verified chain derives no checkpoint covering this environment (the response contradicts the chain)`,
+  );
+}
+
+/**
  * locator(申告 checkpoint 位置)の分類(裁定 S — §6.3-2 と同型)。null =
  * 位置は基準と一致(検査続行)。
  *
@@ -86,7 +109,7 @@ function locatorOutcome(
   history: ChainHistoryIndex,
   environmentId: string,
   snapshot: CheckpointValueSnapshot,
-  baseline: EnvironmentCheckpointState | undefined,
+  baseline: EnvironmentCheckpointState,
   fetchedAtHeadSeq: number,
 ): CheckpointIntegrityOutcome | null {
   if (snapshot.chainSeq > history.headSeq) {
@@ -97,13 +120,6 @@ function locatorOutcome(
   if (history.entryHashAt(snapshot.chainSeq) !== snapshot.entryHashHex) {
     return rejected(
       `The served checkpoint value snapshot declares an entry hash for seq ${snapshot.chainSeq} that does not match the verified chain (evidence of chain divergence or forgery)`,
-    );
-  }
-  if (baseline === undefined) {
-    // 位置は実在エントリだが、チェーン導出上そのエントリは当該環境を覆う
-    // checkpoint ではない(覆っていれば基準が導出されている)= 偽装
-    return rejected(
-      `A checkpoint value snapshot claiming checkpoint seq ${snapshot.chainSeq} was served for environment ${displayText(environmentId)}, but the verified chain derives no checkpoint covering this environment (the response contradicts the chain)`,
     );
   }
   if (snapshot.chainSeq === baseline.seq) {
@@ -199,10 +215,16 @@ export async function checkCheckpointIntegrity(input: {
         `A checkpoint covering environment ${displayText(environmentId)} (seq ${baseline.seq}) was accepted after this response's view, and the response carries no snapshot for it. The response may simply predate the checkpoint — retry the pull; if this persists, the server is omitting the checkpoint value snapshot`,
       );
     }
-    // 基準あり + 列挙なし = 拒否(MUST — 省略を規則 2 のスキップに落とさせない)
+    // 基準あり + 列挙なし = 拒否(MUST — 省略を規則 2 のスキップに落とさせない)。
+    // 案内は 2 分岐: 旧サーバー(未配布リリース)はサーバー更新、更新済み
+    // サーバーが保存行を持たない形(通常は到達しない — 保存は受理と原子的
+    // §16-2)は新しい checkpoint の発行が基準と保存行を揃え直す
     return rejected(
-      `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). If the server predates the snapshot-distribution release, update the server first`,
+      `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). If the server predates the snapshot-distribution release, update the server first; if the server is current, a project member can re-establish a distributable baseline by issuing a fresh checkpoint: maruhi project checkpoint`,
     );
+  }
+  if (baseline === undefined) {
+    return noBaselineOutcome(history, environmentId, snapshot);
   }
   const locator = locatorOutcome(
     history,
@@ -211,9 +233,8 @@ export async function checkCheckpointIntegrity(input: {
     baseline,
     input.fetchedAtHeadSeq,
   );
-  if (locator !== null || baseline === undefined) {
-    // baseline なしの列挙は locator が必ず future / rejected を返している
-    return locator ?? rejected("checkpoint locator inconsistency");
+  if (locator !== null) {
+    return locator;
   }
   // 列挙の正規ダイジェスト再計算(重複 variableId は計算側が拒否する)と
   // チェーン公証(values_digest)との照合

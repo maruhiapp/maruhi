@@ -304,8 +304,14 @@ workload against an old server fails closed on **all** such environments —
 `maruhi pull`, `maruhi run` and `maruhi ci run` stop working until the server
 is updated. The error message names the omission and suggests the server
 update. The reverse direction is safe: an old client simply ignores the new
-response field. No data migration is involved — the server distributes the
-snapshots it has been storing since the boundary-checkpoint release.
+response field. No data migration is involved for checkpoints accepted at or
+after the boundary-checkpoint release — every acceptance path has stored the
+snapshot atomically with the chain append since then (and no earlier server
+accepted checkpoints at all), so the server distributes rows it already has.
+Should a server ever lack the stored row for an on-chain checkpoint anyway
+(e.g., after restoring Durable Object storage from a backup that does not
+match the distributed chain), a project member re-establishes a distributable
+baseline by issuing a fresh checkpoint: `maruhi project checkpoint`.
 
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
