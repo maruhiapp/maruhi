@@ -1235,10 +1235,15 @@ describe("maruhi env rotate", () => {
     expect(errors).toContain("Re-run maruhi env rotate to rebuild the checkpoint");
     // intent 規律(3-F)× 有界再試行の cross-layer(PR-F4): 422 は確定拒否
     // (isServerRejection)なので 3 試行分の intent はすべて rejected で閉じ、
-    // 未解決 intent の積み残しも床の前進もない(次の実行に照合義務を残さない)
+    // 未解決 intent の積み残しも床の前進もない(次の実行に照合義務を残さない)。
+    // 床は初回 pull が配った mv1 のまま(打ち切り後の正しい床状態そのものを
+    // 固定する — pullfrog レビュー反映: 緩い不等式はマニフェスト消失も通す)
     const floor = await loadFloor(env);
     expect(floor?.intents).toEqual([]);
-    expect(floor?.environments[ENV_ID]?.manifest?.manifestVersion ?? 1).toBeLessThanOrEqual(1);
+    expect(floor?.environments[ENV_ID]?.manifest).toMatchObject({
+      manifestVersion: 1,
+      epoch: 1,
+    });
   });
 
   it("受理した境界 checkpoint をチェーン配布から落とすサーバーは、受理後の再走査が strict 検証で検出する(PR-F4 cross-layer)", async () => {

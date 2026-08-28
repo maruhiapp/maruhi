@@ -226,10 +226,12 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
   it("rejects a composite without the boundary checkpoint field with 400 (旧 CLI fail-closed — 2-G′)", async () => {
     // §12-4 の必須同梱: checkpoint を知らない旧 CLI の create / rotate 複合は
     // Schema 段の 400 で fail-closed になる(session-33 裁定 E-3 の承認済み帰結の
-    // テスト固定 — SELF_HOSTING の更新順序が運用面を担う)。control(checkpoint
-    // 込みの同一 body)が非 400 まで進むことは上の 2 テストが証明済み
+    // テスト固定 — SELF_HOSTING の更新順序が運用面を担う)。冒頭の規約どおり
+    // probe / control を本テスト内で対にする(pullfrog レビュー反映 — 先行
+    // テストの clean に依存すると、400 が checkpoint 欠落起因である保証が
+    // 先行側の変更で黙って失われる): 差分は checkpoint フィールドの有無のみ
     const create = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
-    const createResponse = await create({
+    const createClean = {
       parentHeadHashHex: fixture.head.hashHex,
       entry: unsignedEntry("create_environment", {
         environmentId: ENV,
@@ -238,11 +240,14 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
       statement: unsignedEnvStatement({ status: "active", metaVersion: 1, prevMetaSigHashHex: "" }),
       deks: [],
       manifest: { ...unsignedManifest(), variablesDigestHex: "ab".repeat(32) },
-    });
-    expect(createResponse.status).toBe(400);
+    };
+    expect((await create(createClean)).status).toBe(400);
+    expect(
+      (await create({ ...createClean, checkpoint: unsignedCheckpoint(1, 1) })).status,
+    ).not.toBe(400);
 
     const rotate = sendJson("POST", dataUrl(`/environments/${ENV}/rotate`), bearer(token(OWNER)));
-    const rotateResponse = await rotate({
+    const rotateClean = {
       parentHeadHashHex: fixture.head.hashHex,
       entry: unsignedEntry("rotate_epoch", {
         environmentId: ENV,
@@ -257,8 +262,11 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
         manifestVersion: 2,
         prevManifestSigHashHex: "cd".repeat(32),
       },
-    });
-    expect(rotateResponse.status).toBe(400);
+    };
+    expect((await rotate(rotateClean)).status).toBe(400);
+    expect(
+      (await rotate({ ...rotateClean, checkpoint: unsignedCheckpoint(2, 2) })).status,
+    ).not.toBe(400);
   });
 });
 
