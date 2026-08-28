@@ -58,6 +58,11 @@ export const ensureCheckpointValuesDigest = (
  * 空文字列 = 公証なしは検査対象外。検査の前に累積ハッシュ列を MAX(seq) まで
  * 伸ばす(遅延 materialize — audit-store.ts)。
  *
+ * - 有界伸長(セッション 38): 伸長が 1 呼び出しの上限に達し MAX(seq) 未到達の
+ *   場合は retryable な audit-head-not-ready(503)で拒否する。**古い列で
+ *   unknown / stale を判定しない**(fail-closed — 途中までの列に対する所属・
+ *   位置の判定は、正当な申告の誤拒否〔unknown〕と保護接頭辞の誤った基底を
+ *   同時に作る)。進捗は保存済みで、再試行は必ず前進する
  * - 所属: 申告ハッシュが計算列に存在すること(audit-head-unknown)
  * - 位置下限: 出現位置が直前 checkpoint(公証の有無を問わない)のミラー行
  *   (chain.checkpointed)以上であること(audit-head-stale)。直前が存在しない
@@ -72,7 +77,9 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
       return;
     }
     const audit = yield* AuditStore;
-    yield* audit.ensureHeadCurrent;
+    if ((yield* audit.ensureHeadCurrent) === "more-remains") {
+      return yield* rejectData({ kind: "audit-head-not-ready" });
+    }
     const position = audit.headPositionSync(auditHeadHashHex);
     if (position === null) {
       return yield* rejectData({ kind: "checkpoint-state-mismatch", reason: "audit-head-unknown" });
