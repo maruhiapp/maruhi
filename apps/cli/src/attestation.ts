@@ -196,10 +196,20 @@ export function reconcileDistributedAttestations(input: {
     const advanced = yield* resyncExtended(input.resync, input.view);
     // 再同期後のビュー自身の申告集合と、未解決だった future 分を再照合する
     // (future 分は新集合で同 attester のより新しい申告に置き換わっているのが
-    // 正常形だが、置き換わらず消えた場合も元申告の解決可否で判定する)
-    const second = yield* Effect.promise(() =>
-      classifyAll(advanced, [...advanced.attestations, ...first.future]),
-    );
+    // 正常形だが、置き換わらず消えた場合も元申告の解決可否で判定する)。
+    // 和集合は同一申告(attester が再申告していなければ新集合にも同じレコードが
+    // 現れる)を重複排除する — 証拠 JSONL・警告に同内容が 2 回並ぶと「2 人の
+    // メンバーが矛盾している」ように読める(pullfrog レビュー — PR #101)
+    const seen = new Set<string>();
+    const union = [...advanced.attestations, ...first.future].filter((attestation) => {
+      const key = `${attestation.attesterUserId}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+    const second = yield* Effect.promise(() => classifyAll(advanced, union));
     if (second.evidence.length > 0 || second.future.length > 0) {
       return yield* failWithEvidence(input.projectId, advanced, [
         ...second.evidence.map((attestation) => ({
@@ -237,9 +247,14 @@ export function submitHeadAttestationIfAdvanced(input: {
     const attested = yield* store
       .loadAttestedHead(input.projectId)
       .pipe(Effect.catch(() => Effect.succeed(null)));
-    if (attested !== null && head.seq <= attested.seq) {
-      // 前進していない(同一ヘッドの再申告はサーバー側冪等だが、SHOULD の契機は
-      // 「前進していれば」— 提出もレート窓消費も行わない)
+    if (attested !== null && head.seq <= attested.seq && head.hashHex === attested.hashHex) {
+      // 前進していない**同一ヘッド**の再申告だけを抑制する(SHOULD の契機は
+      // 「前進していれば」— 提出もレート窓消費も行わない)。seq だけで判定
+      // しないのは、床が missing / corrupt の初回・破損時に同一 seq・異ハッシュの
+      // 別チェーン(equivocation)を見せられた場合、この端末の申告経由で他
+      // メンバーが分岐を検出する経路まで閉じてしまうため(pullfrog レビュー —
+      // PR #101)。seq 後退(必然的に異ハッシュ)も提出し、サーバーの 409
+      // AttestationRegression が床破損・並行 CLI の徴候として警告に浮かぶ
       return;
     }
     const signed = yield* Effect.promise(() =>

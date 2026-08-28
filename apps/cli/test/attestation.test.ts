@@ -233,7 +233,7 @@ describe("reconcileDistributedAttestations(照合 — §6.3 / §6.6)", () => {
     }
   });
 
-  it("(b) 再同期しても解決しない申告は (a) と同じ扱い(unresolved-after-resync の証拠)", async () => {
+  it("(b) 再同期しても解決しない申告は (a) と同じ扱い(unresolved-after-resync の証拠。重複排除込み)", async () => {
     const env = await makeTestEnv();
     const built = await buildStandardChain();
     // 自ヘッド(3)より先の seq 5 を申告する — 再同期後も届かない
@@ -253,7 +253,12 @@ describe("reconcileDistributedAttestations(照合 — §6.3 / §6.6)", () => {
       join(env.floorDir, `${built.projectId}.attestation-evidence.jsonl`),
       "utf8",
     );
-    expect(evidenceRaw).toContain('"kind":"unresolved-after-resync"');
+    const records = evidenceRaw.split("\n").filter((line) => line.trim() !== "");
+    // 同一申告は「持ち越した future 分」と「再同期ビュー自身の申告集合」の
+    // 両方に現れるが、証拠は 1 レコードに重複排除される(2 行あると 2 人の
+    // メンバーが矛盾しているように読める — pullfrog レビュー)
+    expect(records).toHaveLength(1);
+    expect(records[0]).toContain('"kind":"unresolved-after-resync"');
   });
 });
 
@@ -371,6 +376,31 @@ describe("submitHeadAttestationIfAdvanced(提出 — SHOULD)", () => {
       await readFile(join(env.floorDir, `${built.projectId}.attested.json`), "utf8"),
     ) as { head: { seq: number } };
     expect(tracked.head.seq).toBe(3);
+  });
+
+  it("同一 seq でもハッシュが違えば提出する(seq のみの抑制は equivocation 下で申告経路を閉じる)", async () => {
+    const env = await makeTestEnv();
+    const built = await buildStandardChain();
+    const server = await startServer([
+      onRequest("PUT", `/projects/${built.projectId}/head-attestation`, () => ({
+        status: 204,
+        bodyText: "",
+      })),
+    ]);
+    const view3 = await verifiedViewOf(built, 3, []);
+    await submissionProgram(env, server.origin, view3, built.projectId);
+    expect(server.requests).toHaveLength(1);
+    // 床破損・初回の fail-open 下で、同一 seq・異ハッシュの別チェーン
+    // (equivocation)を見せられた形を模す: 追跡の hash を別値に書き換える。
+    // seq は前進していないがハッシュが違うので提出は抑制されない — この端末の
+    // 申告経由で他メンバーが分岐を検出する経路を保つ(pullfrog レビュー)
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(env.floorDir, `${built.projectId}.attested.json`),
+      `${JSON.stringify({ v: 1, head: { seq: 3, hashHex: "ef".repeat(32) } })}\n`,
+    );
+    await submissionProgram(env, server.origin, view3, built.projectId);
+    expect(server.requests).toHaveLength(2);
   });
 
   it("提出失敗(旧サーバー = ルート不在)はコマンドを失敗させず警告 1 行に落とす", async () => {
