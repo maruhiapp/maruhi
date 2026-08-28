@@ -984,7 +984,7 @@ export function pullVerifiedEnvironment(input: {
           snapshot: value.snapshot,
         }),
       divergedMessage:
-        "A value or statement bound to a head that still does not exist on the chain after a re-sync was served (evidence of chain divergence or forgery)",
+        "A value, statement or checkpoint snapshot bound to a chain position that still does not exist on the chain after a re-sync was served (evidence of chain divergence or forgery)",
     }),
     ({ view, wire, value }) => ({
       verified: view,
@@ -1039,7 +1039,7 @@ export function verifyLeaseDistribution(input: {
     if (result.kind === "future") {
       return yield* Effect.fail(
         cliError(
-          "A value or statement in the lease response declares a chain head beyond the chain included in the same response (the response contradicts itself)",
+          "A value, statement or checkpoint snapshot in the lease response is bound to a chain position beyond the chain included in the same response (the response contradicts itself)",
         ),
       );
     }
