@@ -11,6 +11,7 @@
 import type {
   ChainEntry,
   ChainOperation,
+  EnvValuesDigestEntry,
   MetaStatementTarget,
   UnsignedChainEntry,
   VariableContext,
@@ -19,6 +20,7 @@ import {
   computeChainEntryHash,
   computeDekCommitment,
   computeEnvManifestSignedBytesHash,
+  computeEnvValuesDigest,
   computeMetaSignedBytesHash,
   computeVariablesDigest,
   decryptVariable,
@@ -112,6 +114,29 @@ export async function signEntryAt(input: {
   return { entry, hash: await computeChainEntryHash(entry) };
 }
 
+/**
+ * 既存エントリ(ベクター本編・negative)の op / payload / actor を保ったまま
+ * seq / prev を付け替えて再署名する。複合の境界 checkpoint 挿入(AUTH_SPEC §12-4)
+ * でヘッドがベクターの固定 seq からずれた後の API 再生用。actor ブロックは原本を
+ * 保持する(鍵 FP 不一致 negative の意味論を保つ)。seq / prev / timestamp が原本と
+ * 一致する場合は Ed25519 の決定性により原本と同一バイトになる。
+ */
+export async function resignEntryAt(
+  base: ChainEntry,
+  seq: number,
+  prevHashHex: string,
+): Promise<{ readonly entry: ChainEntry; readonly hash: string }> {
+  const { signatureHex: _signatureHex, ...rest } = base;
+  const unsigned: UnsignedChainEntry = {
+    ...rest,
+    seq,
+    prevHashHex,
+    timestampMs: BASE_TIME_MS + seq * 1000,
+  };
+  const entry = await signAs(base.actor.userId, unsigned);
+  return { entry, hash: await computeChainEntryHash(entry) };
+}
+
 /** テスト時署名で有効なチェーンを組み立てる(seq / prev_hash / timestamp は自動)。 */
 export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChain> {
   return buildChainWith(
@@ -174,6 +199,41 @@ export function createEnvironmentOperation(
   dekCommitmentHex: string,
 ): ChainOperation {
   return { op: "create_environment", payload: { environmentId, dekCommitmentHex } };
+}
+
+/** values_digest の正規形計算(§6.2 — active 変数の値レベル最新形。空集合可)。 */
+export async function valuesDigestOf(entries: readonly EnvValuesDigestEntry[]): Promise<string> {
+  return unwrapResult(await computeEnvValuesDigest(SUITE_ID, entries), "computeEnvValuesDigest");
+}
+
+/**
+ * 境界 checkpoint 用の operation(当該環境 1 タプル + 空 audit head —
+ * AUTH_SPEC §12-4 / CRYPTO_SPEC §6.3)。negative 用に audit head と複数タプルの
+ * 上書きも許す。
+ */
+export function checkpointOperation(input: {
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly manifestSigHashHex: string;
+  readonly valuesDigestHex: string;
+  readonly auditHeadHashHex?: string;
+}): ChainOperation {
+  return {
+    op: "checkpoint",
+    payload: {
+      environments: [
+        {
+          environmentId: input.environmentId,
+          epoch: input.epoch,
+          manifestVersion: input.manifestVersion,
+          manifestSigHashHex: input.manifestSigHashHex,
+          valuesDigestHex: input.valuesDigestHex,
+        },
+      ],
+      auditHeadHashHex: input.auditHeadHashHex ?? "",
+    },
+  };
 }
 
 /** rotate_epoch 用の payload(新エポックのコミットメント込み — §6.2)。 */

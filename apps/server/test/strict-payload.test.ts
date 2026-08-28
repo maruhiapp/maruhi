@@ -132,6 +132,21 @@ describe("チェーン追記(§11-4)", () => {
   });
 });
 
+// 形式のみ有効なゼロ署名の境界 checkpoint(§12-4 の必須同梱 — 2026-08-27)
+const unsignedCheckpoint = (epoch: number, manifestVersion: number): Record<string, unknown> =>
+  unsignedEntry("checkpoint", {
+    environments: [
+      {
+        environmentId: ENV,
+        epoch,
+        manifestVersion,
+        manifestSigHashHex: "ab".repeat(32),
+        valuesDigestHex: "cd".repeat(32),
+      },
+    ],
+    auditHeadHashHex: "",
+  });
+
 describe("環境作成・ローテーション複合(§12-4)", () => {
   it("create rejects an unknown field with 400 (root and nested entry payload)", async () => {
     const send = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
@@ -145,6 +160,7 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
         ...unsignedManifest(),
         variablesDigestHex: "ab".repeat(32),
       },
+      checkpoint: unsignedCheckpoint(1, 1),
     };
     await expectStrictReject(send, clean);
     await expectNestedReject(send, {
@@ -170,6 +186,7 @@ describe("環境作成・ローテーション複合(§12-4)", () => {
         manifestVersion: 2,
         prevManifestSigHashHex: "cd".repeat(32),
       },
+      checkpoint: unsignedCheckpoint(2, 2),
     };
     await expectStrictReject(send, clean);
     await expectNestedReject(send, {

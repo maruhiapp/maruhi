@@ -160,11 +160,10 @@ const CheckpointEnvironmentEntrySchema = Schema.Struct({
  * the composite create/rotate endpoints (AUTH_SPEC §12-4 — PR-F3b);
  * standalone (periodic) checkpoints flow through the generic append
  * (AUTH_SPEC §16-2) once their acceptance-time content matching lands (M2 —
- * until then the generic append rejects the op, fail-closed). The composite
- * payload schemas (PR-F3b) will import this — exported then, not before
- * (未使用 export を置かない).
+ * until then the generic append rejects the op, fail-closed). Exported for
+ * the composite payload schemas (data-api.ts).
  */
-const CheckpointEntrySchema = Schema.Struct({
+export const CheckpointEntrySchema = Schema.Struct({
   ...entryBaseFields,
   op: Schema.Literal("checkpoint"),
   payload: Schema.Struct({

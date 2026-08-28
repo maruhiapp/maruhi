@@ -7,31 +7,44 @@
 // マニフェスト固有の固定点(metadata-signature との差):
 // - variables_digest の LP 正規形(空集合・単一・tombstone・バイト昇順)を
 //   computeVariablesDigest が再現する(digests セクション)
-// - 複合発行のエポック整合(manifest-v1-create / manifest-rotate = 宣言ヘッドの
-//   次エントリがエポックを確立する形)が positive で通る
+// - チェックポイント束縛のエポック整合(§4.3 (2) — 2026-08-27 セッション 33 で
+//   旧 H+1 例外を廃止): 複合発行の positive(manifest-v1-create /
+//   manifest-rotate)は境界 checkpoint タプルを含む派生チェーン
+//   (chain-entries.json の checkpoint-boundary-*)に対して通り、checkpoint を
+//   欠く正規チェーンに対する同データは composite-head-without-checkpoint-* の
+//   negative で落ちる。束縛の完全一致(checkpoint-binding-mismatch)・同座標
+//   相違タプルの equivocation・整合規則 1(checkpoint-regressed)も negative
 // - epoch-regression(rotate 後に旧エポックを焼き込んだ前進 manifestVersion)が
 //   predecessor 込み検証で落ちる — 本機構の核となる negative
 // - digest-*(欠落・tombstone 隠し・順序違反)が verify 側集合での再計算で落ちる
+// - タプルの epoch フィールドがマニフェスト内容と矛盾する虚偽公証(ハッシュは
+//   一致)の拒否は、実行時署名チェーンで固定する(bindingEpochChecks —
+//   ハッシュ照合だけの実装はここで落ちる)
 
 import type {
+  ChainEntry,
   ChainHistoryIndex,
   EnvManifestContext,
+  UnsignedChainEntry,
   VariablesDigestEntry,
 } from "../../src/index.ts";
 import {
   buildEnvManifestSignedBytes,
+  computeChainEntryHash,
   computeEnvManifestSignedBytesHash,
   computeVariablesDigest,
   generateSigningKeyPair,
   importSigningKeyPair,
   importSigningPublicKey,
+  signChainEntry,
   signEnvManifest,
+  verifyChainWithHistory,
   verifyDistributedEnvManifest,
   verifyEnvManifestSignature,
 } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
-import { canonicalHistory } from "./chain-history.ts";
-import { vectorKeys } from "./chain-vector.ts";
+import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
+import { typedEntries, vectorEnvironmentDeks, vectorKeys } from "./chain-vector.ts";
 import { manifestExtendedHistory } from "./manifest-history.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
@@ -204,8 +217,26 @@ async function signAndVerifyChecks(
   c.push(`env-manifest ${name}: raw signature verify`, verified.ok);
 }
 
-async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+/** 検証の前提チェーン(名前 → 検証済み履歴索引)。 */
+type Histories = Readonly<Record<string, ChainHistoryIndex>>;
+
+/**
+ * positive の複合発行 2 例はチェックポイント束縛(§4.3 (2))で検証されるため、
+ * 照合先は境界 checkpoint タプルを含む派生チェーン。それ以外は正規チェーン
+ * (strict — タプルなし)。
+ */
+const POSITIVE_CHAIN: Readonly<Record<string, string>> = {
+  "manifest-v1-create": "checkpoint-boundary-create",
+  "manifest-rotate": "checkpoint-boundary-rotate",
+};
+
+async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   for (const vector of positives) {
+    const history = histories[POSITIVE_CHAIN[vector.name] ?? "canonical"];
+    if (history === undefined) {
+      c.push(`env-manifest ${vector.name}: history`, false, "history missing");
+      continue;
+    }
     const context = contextOf(vector.context);
     c.push(
       `env-manifest ${vector.name}: signed bytes construction`,
@@ -301,10 +332,17 @@ function predecessorAnchorOf(negative: ManifestNegative) {
 async function ruleNegativeCheck(
   c: Checks,
   negative: ManifestNegative,
-  history: ChainHistoryIndex,
-  extended: ChainHistoryIndex,
+  histories: Histories,
 ): Promise<void> {
-  const chainHistory = negative.chain === "tenure-extension" ? extended : history;
+  const chainHistory = histories[negative.chain ?? "canonical"];
+  if (chainHistory === undefined) {
+    c.push(
+      `env-manifest rule negative: ${negative.name}`,
+      false,
+      `unknown chain ${negative.chain}`,
+    );
+    return;
+  }
   const context = contextOf(negative.context);
   const result = await verifyDistributedEnvManifest({
     history: chainHistory,
@@ -350,16 +388,12 @@ async function tamperNegativeCheck(c: Checks, negative: ManifestNegative): Promi
   );
 }
 
-async function negativeChecks(
-  c: Checks,
-  history: ChainHistoryIndex,
-  extended: ChainHistoryIndex,
-): Promise<void> {
+async function negativeChecks(c: Checks, histories: Histories): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of manifestVectors.negative as readonly ManifestNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, history, extended);
+      await ruleNegativeCheck(c, negative, histories);
     } else {
       await tamperNegativeCheck(c, negative);
     }
@@ -463,14 +497,140 @@ async function roundtripChecks(c: Checks): Promise<void> {
   c.push("env-manifest: roundtrip wrong context rejected", !wrongContext.ok);
 }
 
+/**
+ * タプルの epoch フィールドがマニフェスト内容と矛盾する虚偽公証(ハッシュは
+ * 一致)の拒否。ベクターでは表現できない形(タプルの epoch はチェーン合意規則で
+ * エントリ時点の現エポックに固定されるため、矛盾させるには「rotate 後に旧
+ * マニフェストのハッシュを新エポックで公証する」チェーンを組む必要がある)を、
+ * ベクター鍵での実行時署名チェーンで固定する: (epoch, hash) の**両方**を
+ * 照合しない実装 — ハッシュだけ比較する実装 — はここで落ちる。
+ */
+/**
+ * bindingEpochChecks の材料: 正規チェーン seq 1〜3(create_environment まで)+
+ * rotate(epoch 2)+「epoch 2・manifestVersion 1・hash(manifest-v1-create)」の
+ * 虚偽公証 checkpoint を、ベクター鍵の実行時署名で組み立てて検証する。チェーン
+ * 合意規則ではタプルの epoch がエントリ時点の現エポック(2)と一致するため有効。
+ */
+async function falseAttestationHistory(
+  manifestSigHashHex: string,
+): Promise<{ ok: true; history: ChainHistoryIndex } | { ok: false; detail: string }> {
+  const member = vectorKeys["user-member-0002"];
+  const rotateCommitment = vectorEnvironmentDeks["env-prod-0001"]?.["2"]?.dek_commitment_hex;
+  const prefix = typedEntries.slice(0, 3);
+  const head3 = prefix[prefix.length - 1];
+  if (member === undefined || rotateCommitment === undefined || head3 === undefined) {
+    return { ok: false, detail: "fixture missing" };
+  }
+  const pair = await importSigningKeyPair({
+    publicKey: fromHex(member.sig_pub_hex),
+    privateSeed: fromHex(member.sig_sk_seed_hex),
+  });
+  if (!pair.ok) {
+    return { ok: false, detail: "key import failed" };
+  }
+  const actor = { userId: "user-member-0002", keyFingerprintHex: member.key_fingerprint_hex };
+  const signEntry = async (entry: UnsignedChainEntry): Promise<ChainEntry> => {
+    const signed = await signChainEntry({ entry, signingKey: pair.value.privateKey });
+    if (!signed.ok) {
+      throw new Error("chain entry signing failed");
+    }
+    return signed.value;
+  };
+  const rotate = await signEntry({
+    suite: "maruhi/v1",
+    seq: 4,
+    prevHashHex: await computeChainEntryHash(head3),
+    actor,
+    timestampMs: head3.timestampMs + 1000,
+    op: "rotate_epoch",
+    payload: {
+      environmentId: "env-prod-0001",
+      newEpoch: 2,
+      reason: "scheduled",
+      dekCommitmentHex: rotateCommitment,
+    },
+  });
+  const falseAttestation = await signEntry({
+    suite: "maruhi/v1",
+    seq: 5,
+    prevHashHex: await computeChainEntryHash(rotate),
+    actor,
+    timestampMs: head3.timestampMs + 2000,
+    op: "checkpoint",
+    payload: {
+      environments: [
+        {
+          environmentId: "env-prod-0001",
+          epoch: 2,
+          manifestVersion: 1,
+          manifestSigHashHex,
+          // タプル内容はチェーン検証で検証不能(§6.2)— 形式的に有効な 64 hex
+          valuesDigestHex: "ab".repeat(32),
+        },
+      ],
+      auditHeadHashHex: "",
+    },
+  });
+  const verified = await verifyChainWithHistory([...prefix, rotate, falseAttestation]);
+  if (!verified.ok) {
+    return { ok: false, detail: JSON.stringify(verified.error) };
+  }
+  return { ok: true, history: verified.value.history };
+}
+
+async function bindingEpochChecks(c: Checks): Promise<void> {
+  const mv1 = byName.get("manifest-v1-create");
+  if (mv1 === undefined) {
+    c.push("env-manifest binding-epoch: chain verifies", false, "fixture missing");
+    return;
+  }
+  const built = await falseAttestationHistory(mv1.signed_bytes_sha256_hex);
+  c.push(
+    "env-manifest binding-epoch: chain verifies",
+    built.ok,
+    built.ok ? undefined : built.detail,
+  );
+  if (!built.ok) {
+    return;
+  }
+  const context = contextOf(mv1.context);
+  const result = await verifyDistributedEnvManifest({
+    history: built.history,
+    context,
+    issuerKeyFingerprintHex: mv1.issuer_key_fingerprint_hex,
+    signatureHex: mv1.signature_hex,
+    entries: entriesOf(mv1.entries),
+    envMeta: envMetaOf(context),
+  });
+  c.push(
+    "env-manifest binding-epoch: hash match with epoch mismatch is rejected",
+    !result.ok &&
+      result.error.kind === "EnvManifestInvalid" &&
+      result.error.reason === "checkpoint-binding-mismatch",
+    result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
+  );
+}
+
 export async function envManifestChecks(): Promise<CheckResult[]> {
   const c = new Checks();
-  const history = await canonicalHistory();
-  const extended = await manifestExtendedHistory();
+  const histories: Histories = {
+    canonical: await canonicalHistory(),
+    "tenure-extension": await manifestExtendedHistory(),
+    "checkpoint-boundary-create": await extendedVectorChainHistory("checkpoint-boundary-create"),
+    "checkpoint-boundary-rotate": await extendedVectorChainHistory("checkpoint-boundary-rotate"),
+    "checkpoint-boundary-equivocation": await extendedVectorChainHistory(
+      "checkpoint-boundary-equivocation",
+    ),
+  };
+  const canonical = histories["canonical"];
+  if (canonical === undefined) {
+    throw new Error("canonical history missing");
+  }
   await digestChecks(c);
-  await vectorChecks(c, history);
-  await forkChecks(c, history);
-  await negativeChecks(c, history, extended);
+  await vectorChecks(c, histories);
+  await forkChecks(c, canonical);
+  await negativeChecks(c, histories);
+  await bindingEpochChecks(c);
   await invalidInputChecks(c);
   await roundtripChecks(c);
   return c.results;

@@ -243,23 +243,33 @@ missing `ratelimits` binding as "no limit" and logs a one-time warning). Such
 fixes take effect only after you redeploy with the updated `wrangler.jsonc`,
 so pull the config file too, not just the code.
 
-**One-time migration when crossing the environment-manifest release (2026-08-18,
-PR-M1)**: environments created before this release have no environment manifest
-yet, and the update order matters. Do it in this order:
+**One-time migration when crossing the boundary-checkpoint release (2026-08-27;
+also covers the 2026-08-18 environment-manifest release if you skipped it)**:
+from this release on, environment creation and rotation bundle a `checkpoint`
+chain entry that notarizes the environment's manifest and value state, and the
+verification of distributed manifests is bound to these checkpoints. The update
+order matters. Do it in this order:
 
-1. **Update the server first** (`git pull` + `bun run deploy` as above).
-2. Initialize every existing environment once, from an **updated** CLI on a
-   project member's machine: `maruhi env rotate --init-manifest` (once per
-   environment; environments created after the update need nothing).
-3. Update the CLIs and CI workflows everywhere else.
+1. **Update the server first** (`git pull` + `bun run deploy` as above). The
+   updated server requires the bundled checkpoint, so environment creation and
+   rotation from not-yet-updated CLIs fail closed with an HTTP 400 until step 2
+   (reads, pushes and metadata operations keep working).
+2. **Update the CLIs and CI workflows everywhere.** Not-yet-updated CLIs also
+   fail closed when they *read* a chain that already contains a `checkpoint`
+   entry (unknown operation) — another reason to complete this step promptly
+   after step 1.
+3. Rotate every existing environment once, from an updated CLI on a project
+   member's machine: `maruhi env rotate` (use `--init-manifest` for
+   environments that predate the 2026-08-18 manifest release; once per
+   environment). This establishes each environment's first checkpoint —
+   environments created after the update need nothing.
 
-The server must go first: `--init-manifest` sends the manifest as a new request
-field, and a pre-manifest server does not store it (an updated CLI against an
-old server cannot complete the migration — in the worst case the CLI records a
-manifest the server never saved). Note this order will change in an upcoming
-release that bundles a boundary checkpoint entry into creation/rotation: from
-that release on, CLIs/CI must be updated **before** the migration rotate. This
-section will be revised then.
+The server must go first: the checkpoint (and, for pre-manifest environments,
+the manifest) is sent as a new request field, and an old server does not store
+it — an updated CLI against an old server cannot complete the migration.
+Between steps 1 and 3, verification of existing environments continues on the
+pre-checkpoint rules (their chains carry no checkpoint yet); each environment
+picks up checkpoint-bound verification at its first post-update rotation.
 
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests

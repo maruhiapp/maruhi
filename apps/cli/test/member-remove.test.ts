@@ -73,6 +73,8 @@ interface RotateBody {
   readonly deks: readonly WrappedDek[];
   /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
+  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
 interface RemoveServerState {
@@ -212,8 +214,12 @@ async function makeRemoveServer(input: {
       }
       const body = request.body as RotateBody;
       rotateBodies.push(body);
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
+      // rotate + 境界 checkpoint の 2 エントリ受理(§12-4)
+      entries.push(body.entry, body.checkpoint);
+      hashes.push(
+        await computeChainEntryHash(body.entry),
+        await computeChainEntryHash(body.checkpoint),
+      );
       environment.currentEpoch = body.entry.payload.newEpoch;
       // 受理した同梱マニフェスト(§12-4)を保存最新として配布へ回す(§12-5)
       manifests.set(environmentId, {

@@ -13,16 +13,19 @@ import { makeAuditStore } from "../src/audit-store.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
+  checkpointOperation,
   commitmentOf,
   createVariableStatement,
   digestOf,
   encryptValue,
   hexBytes,
   makeDek,
+  manifestSignedBytesHashOf,
   metaSignedBytesHashOf,
   signEntryAt,
   signEnvManifestAs,
   signMetaStatementAs,
+  valuesDigestOf,
   vectorKeyOf,
   wrapDekForAll,
   wrapDekTo,
@@ -200,7 +203,7 @@ describe("チェーンミラー(§3.4)", () => {
     const commitment1 = await commitmentOf(projectId, ENV, 1, dek1);
     const commitment2 = await commitmentOf(projectId, ENV, 2, dek2);
     const events = await readAuditEvents(projectId);
-    const rotated = events.at(-1 - ALL_MEMBERS.length);
+    const rotated = events.find((event) => event["event"] === "chain.epoch_rotated");
     const created = events.find((event) => event["event"] === "chain.environment_created");
     if (rotated === undefined || created === undefined) throw new Error("missing mirrors");
 
@@ -215,10 +218,26 @@ describe("チェーンミラー(§3.4)", () => {
     expect(rotated["event"]).toBe("chain.epoch_rotated");
     expect(rotated["environment_id"]).toBe(ENV);
     expect(rotated["epoch"]).toBe(2);
-    expect(rotated["chain_seq"]).toBe(5);
+    // 複合は create / rotate(H+1)に続けて境界 checkpoint(H+2)を追記する
+    // (§12-4 — 2026-08-27)ため、rotate のチェーン seq は 6
+    expect(rotated["chain_seq"]).toBe(6);
     expect(JSON.parse(String(rotated["payload"]))).toEqual({
       reason: "scheduled",
       dekCommitmentHex: commitment2,
+    });
+
+    // 境界 checkpoint のミラー(chain.checkpointed — AUDIT_SPEC §3.4)は H+2 の
+    // seq(作成 = 5、rotate = 7)で記録され、payload に環境タプルを写す
+    const checkpoints = events.filter((event) => event["event"] === "chain.checkpointed");
+    expect(checkpoints.map((event) => event["chain_seq"])).toEqual([5, 7]);
+    const rotateCheckpoint = JSON.parse(String(checkpoints[1]?.["payload"])) as {
+      environments: { environmentId: string; epoch: number; manifestVersion: number }[];
+    };
+    expect(rotateCheckpoint.environments).toHaveLength(1);
+    expect(rotateCheckpoint.environments[0]).toMatchObject({
+      environmentId: ENV,
+      epoch: 2,
+      manifestVersion: 2,
     });
   });
 
@@ -338,9 +357,11 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "chain.genesis",
       "chain.member_added",
       "chain.member_added",
-      // 複合の環境作成(§12-4)はチェーンミラー + env.created + 同梱ラップの
-      // dek.registered(1 受信者 1 行 — §3.3)を原子的に書く
+      // 複合の環境作成(§12-4)はチェーンミラー(create + 境界 checkpoint の
+      // 2 エントリ — 2026-08-27)+ env.created + 同梱ラップの dek.registered
+      // (1 受信者 1 行 — §3.3)を原子的に書く
       "chain.environment_created",
+      "chain.checkpointed",
       "env.created",
       "dek.registered",
       "dek.registered",
@@ -360,9 +381,9 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "env.deleted",
     ]);
 
-    const created = events[8];
-    const pushed = events[9];
-    const read = events[12];
+    const created = events[9];
+    const pushed = events[10];
+    const read = events[13];
     if (created === undefined || pushed === undefined || read === undefined) {
       throw new Error("missing audit rows");
     }
@@ -494,7 +515,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    const { entry } = await signEntryAt({
+    const { entry, hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
       actorUserId: MEMBER,
@@ -512,6 +533,31 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       name: "Session",
       head: fixture.head,
     });
+    const sessionManifest = await signEnvManifestAs(MEMBER, projectId, {
+      suite: "maruhi/v1",
+      environmentId: "env-audit-0002",
+      epoch: 1,
+      manifestVersion: 1,
+      variablesDigestHex: await digestOf([]),
+      envMetaVersion: sessionStatement.metaVersion,
+      envMetaSigHashHex: await metaSignedBytesHashOf(projectId, sessionStatement, MEMBER),
+      prevManifestSigHashHex: "",
+      chainHeadHashHex: fixture.head.hashHex,
+      chainHeadSeq: fixture.head.seq,
+    });
+    // 境界 checkpoint(H+2 — §12-4 の必須同梱)
+    const { entry: sessionCheckpoint } = await signEntryAt({
+      seq: entry.seq + 1,
+      prevHashHex: hash,
+      actorUserId: MEMBER,
+      operation: checkpointOperation({
+        environmentId: "env-audit-0002",
+        epoch: 1,
+        manifestVersion: 1,
+        manifestSigHashHex: await manifestSignedBytesHashOf(projectId, sessionManifest, MEMBER),
+        valuesDigestHex: await valuesDigestOf([]),
+      }),
+    });
     const created = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
       headers: { ...JSON_HEADERS, ...sessionHeaders(session) },
@@ -520,18 +566,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
         entry,
         statement: sessionStatement,
         deks,
-        manifest: await signEnvManifestAs(MEMBER, projectId, {
-          suite: "maruhi/v1",
-          environmentId: "env-audit-0002",
-          epoch: 1,
-          manifestVersion: 1,
-          variablesDigestHex: await digestOf([]),
-          envMetaVersion: sessionStatement.metaVersion,
-          envMetaSigHashHex: await metaSignedBytesHashOf(projectId, sessionStatement, MEMBER),
-          prevManifestSigHashHex: "",
-          chainHeadHashHex: fixture.head.hashHex,
-          chainHeadSeq: fixture.head.seq,
-        }),
+        manifest: sessionManifest,
+        checkpoint: sessionCheckpoint,
       }),
     });
     expect(created.status).toBe(200);

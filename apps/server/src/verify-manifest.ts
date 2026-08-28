@@ -54,6 +54,13 @@ const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRe
   "variables-digest-mismatch": "manifest-digest-mismatch",
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
+  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1 — 2026-08-27
+  // セッション 33 = PR-F3b)。ワイヤも同名の理由で返す(複合の同梱物一致
+  // 〔§12-4 の tuple ↔ manifest ハッシュ一致〕は本束縛検査が一意に担う —
+  // §6.4 の「分担は実装 PR で一意化」)
+  "checkpoint-binding-mismatch": "checkpoint-binding-mismatch",
+  "checkpoint-equivocation": "checkpoint-equivocation",
+  "checkpoint-regressed": "checkpoint-regressed",
 };
 
 /**
@@ -136,8 +143,16 @@ export const acceptManifestForMetaOp = (input: {
     // 置かない」論証(§12-5)が v1 に限って成立しない。複合経路のピン留め
     // (composite-programs.ts の manifestChainHead)と同型に、宣言ヘッド =
     // 受理時点の現ヘッドを要求して stale エポックの焼き込みを塞ぐ(ハッシュの
-    // 一致は crypto のヘッド束縛検査が担う — ここは位置のみ)
+    // 一致は crypto のヘッド束縛検査が担う — ここは位置のみ)。
+    // **ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ**
+    // (session-31 M1-B1 — 2026-08-27 修正): 初期化済み環境への stale v1 は
+    // ピンで 422 にせず、CAS の 409(currentManifestVersion 付き)へ落とす —
+    // 正当クライアントの再取得・再署名ループに合流させる
+    const pinAnchor = yield* Effect.flatMap(DataStore, (store) =>
+      store.environmentManifestAnchor(input.environmentId),
+    );
     if (
+      pinAnchor === null &&
       input.manifest.manifestVersion === 1 &&
       input.manifest.chainHeadSeq !== input.history.headSeq
     ) {

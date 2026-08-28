@@ -120,10 +120,17 @@ export type MetaInvalidReason =
  * - `issuer-not-member-at-head` / `issuer-key-mismatch-at-head` /
  *   `issuer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
  *   発行契機はすべて member 以上のメタ操作 — §4.3)
- * - `environment-not-created-at-head` / `epoch-not-current-at-head` —
- *   エポック整合(§4.3 (2)): マニフェストの epoch は宣言ヘッド時点の現エポックと
- *   一致するか、宣言ヘッドの**次の**エントリ(= 複合発行の同梱チェーンエントリ —
- *   AUTH_SPEC §12-4 / §12-5 (4))が当該環境にちょうどそのエポックを確立する
+ * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
+ *   `environment-not-created-at-head` / `epoch-not-current-at-head` —
+ *   エポック整合(§4.3 (2)。2026-08-27 セッション 33 で改訂 — 旧 H+1 例外の廃止):
+ *   検証済みチェーン上に当該 (environment_id, manifest_version) の `checkpoint`
+ *   タプルが存在すれば、その (epoch, manifest_sig_hash) と完全一致必須(不一致 =
+ *   binding-mismatch。strict は代替経路にならない)。同座標に相違タプルが併存
+ *   すれば equivocation の硬い証拠として拒否。タプルが無い場合のみ宣言ヘッド
+ *   時点の現エポックとの strict 一致(env 未作成 / エポック不一致の 2 理由)
+ * - `checkpoint-regressed` — チェックポイント整合の規則 1(§6.3 / §4.3 (4)):
+ *   manifestVersion または epoch が当該環境の最新 `checkpoint` 基準を下回る配布
+ *   (チェックポイント済み状態からの巻き戻し)
  * - `env-meta-mismatch` — (env_meta_version, env_meta_sig_hash_hex) が検証済み
  *   環境メタステートメントと不一致(AUTH_SPEC §12-5 (7) の再計算対象)
  * - `variables-digest-mismatch` — 検証済みステートメント集合(tombstone 込み)
@@ -144,6 +151,9 @@ export type ManifestInvalidReason =
   | "issuer-role-insufficient-at-head"
   | "environment-not-created-at-head"
   | "epoch-not-current-at-head"
+  | "checkpoint-binding-mismatch"
+  | "checkpoint-equivocation"
+  | "checkpoint-regressed"
   | "env-meta-mismatch"
   | "variables-digest-mismatch"
   | "prev-shape-mismatch"

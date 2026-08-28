@@ -7,11 +7,15 @@ import { describe, expect, it } from "vitest";
 
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
+  checkpointOperation,
+  commitmentOf,
+  createEnvironmentOperation,
   encryptValue,
   makeDek,
   signEntryAt,
   unwrapAndDecrypt,
   valueSignedBytesHashOf,
+  valuesDigestOf,
   vectorKeyOf,
   wrapDekForAll,
   wrapDekTo,
@@ -71,12 +75,15 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     };
     expect(body.environmentId).toBe(ENV);
     expect(body.currentEpoch).toBe(1);
-    expect(body.headSeq).toBe(headBefore.seq + 1);
+    // 複合は create(H+1)+ 境界 checkpoint(H+2)の 2 エントリを追記する(§12-4)
+    expect(body.headSeq).toBe(headBefore.seq + 2);
 
-    // チェーンに create_environment エントリが追記されている(複合の原子性の片翼)
+    // チェーンに create_environment + checkpoint の 2 エントリが追記されている
+    // (複合の原子性の片翼 — 2026-08-27)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: { op: string; seq: number }[] };
-    expect(chainBody.entries.at(-1)?.op).toBe("create_environment");
+    expect(chainBody.entries.at(-2)?.op).toBe("create_environment");
+    expect(chainBody.entries.at(-1)?.op).toBe("checkpoint");
     expect(chainBody.entries.at(-1)?.seq).toBe(body.headSeq);
 
     // 環境一覧は裸 name でなく最新ステートメント + author 情報を返す(§12-2)
@@ -323,7 +330,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const { entry } = await signEntryAt({
+    const { entry, hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
       actorUserId: OWNER,
@@ -331,6 +338,20 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
         op: "create_environment",
         payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
       },
+    });
+    // 境界 checkpoint も同じ actor(OWNER)で署名する — Schema を通し、actor
+    // 一致検査(403)へ到達させる
+    const { entry: checkpoint } = await signEntryAt({
+      seq: entry.seq + 1,
+      prevHashHex: hash,
+      actorUserId: OWNER,
+      operation: checkpointOperation({
+        environmentId: ENV,
+        epoch: 1,
+        manifestVersion: 1,
+        manifestSigHashHex: "ab".repeat(32),
+        valuesDigestHex: await valuesDigestOf([]),
+      }),
     });
     const response = await requestJson("POST", "/environments", token(MEMBER), {
       parentHeadHashHex: fixture.head.hashHex,
@@ -343,6 +364,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       }),
       deks,
       manifest: unsignedManifest(),
+      checkpoint,
     });
     expect(response.status).toBe(403);
     expect(((await response.json()) as { reason: string }).reason).toBe("actor-mismatch");
@@ -519,10 +541,11 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       dekCommitmentHex: "ab".repeat(32),
     });
     expect(rotation.status).toBe(200);
+    // 複合は rotate(H+1)+ 境界 checkpoint(H+2)の 2 エントリを追記する(§12-4)
     await expect(rotation.clone().json()).resolves.toMatchObject({
       environmentId: ENV,
       currentEpoch: 2,
-      headSeq: headBefore.seq + 1,
+      headSeq: headBefore.seq + 2,
     });
 
     // 旧エポックの push は 409(現エポックを返す — クライアントは再暗号化して再試行)
@@ -771,5 +794,157 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       dekCommitmentHex: "ab".repeat(32),
     });
     expect(retried.status).toBe(200);
+  });
+});
+
+/**
+ * 独自タプルの境界 checkpoint を OWNER 署名で作る(同梱物一致の negative 用)。
+ * 一致検査はチェーン受理検証より先に働くため、prev はダミーで良い(到達しない)。
+ */
+const shapeCheckpoint = async (tuple: {
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly auditHeadHashHex?: string;
+}) => {
+  const { entry } = await signEntryAt({
+    seq: fixture.head.seq + 2,
+    prevHashHex: "ab".repeat(32),
+    actorUserId: OWNER,
+    operation: checkpointOperation({
+      ...tuple,
+      manifestSigHashHex: "cd".repeat(32),
+      valuesDigestHex: await valuesDigestOf([]),
+    }),
+  });
+  return entry;
+};
+
+const createWithCheckpoint = async (checkpoint: Awaited<ReturnType<typeof shapeCheckpoint>>) =>
+  createEnvironmentComposite(fixture, {
+    environmentId: ENV,
+    name: "App",
+    deks: await wrapsFor(ENV, [...ALL_MEMBERS]),
+    dekCommitmentHex: await commitmentOf(projectId, ENV, 1, makeDek()),
+    checkpoint,
+  });
+
+const expectPayloadMismatch = async (response: Response, field: string) => {
+  expect(response.status).toBe(422);
+  expect(((await response.json()) as { field: string }).field).toBe(field);
+};
+
+describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2) — 2026-08-27)", () => {
+  it("rejects a tuple naming another environment (payload-mismatch checkpointEnvironment)", async () => {
+    const response = await createWithCheckpoint(
+      await shapeCheckpoint({ environmentId: "env-other-0009", epoch: 1, manifestVersion: 1 }),
+    );
+    await expectPayloadMismatch(response, "checkpointEnvironment");
+  });
+
+  it("rejects a tuple whose epoch differs from the established epoch (checkpointEpoch)", async () => {
+    const response = await createWithCheckpoint(
+      await shapeCheckpoint({ environmentId: ENV, epoch: 2, manifestVersion: 1 }),
+    );
+    await expectPayloadMismatch(response, "checkpointEpoch");
+  });
+
+  it("rejects a tuple whose manifestVersion differs from the bundled manifest (checkpointManifestVersion)", async () => {
+    const response = await createWithCheckpoint(
+      await shapeCheckpoint({ environmentId: ENV, epoch: 1, manifestVersion: 2 }),
+    );
+    await expectPayloadMismatch(response, "checkpointManifestVersion");
+  });
+
+  it("rejects a non-empty audit head on a boundary checkpoint (checkpointAuditHead — fail-closed)", async () => {
+    // GET /audit-head(§16-2)未実装の間、§6.4 の存在・位置検査なしの受理は
+    // 虚偽公証の固定を許すため、境界 checkpoint の監査ヘッド公証は受理しない
+    const response = await createWithCheckpoint(
+      await shapeCheckpoint({
+        environmentId: ENV,
+        epoch: 1,
+        manifestVersion: 1,
+        auditHeadHashHex: "ef".repeat(32),
+      }),
+    );
+    await expectPayloadMismatch(response, "checkpointAuditHead");
+  });
+
+  it("rejects a checkpoint whose actor differs from the caller (403 actor-mismatch — §12-4)", async () => {
+    // エントリ・ステートメント・マニフェストは呼び出し主体(OWNER)のまま、
+    // checkpoint だけ MEMBER 署名 → チェーンエントリ両方の actor 厳密一致に反する
+    const { entry: checkpoint } = await signEntryAt({
+      seq: fixture.head.seq + 2,
+      prevHashHex: "ab".repeat(32),
+      actorUserId: MEMBER,
+      operation: checkpointOperation({
+        environmentId: ENV,
+        epoch: 1,
+        manifestVersion: 1,
+        manifestSigHashHex: "cd".repeat(32),
+        valuesDigestHex: await valuesDigestOf([]),
+      }),
+    });
+    const response = await createWithCheckpoint(checkpoint);
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { reason: string }).reason).toBe("actor-mismatch");
+  });
+
+  it("rejects a binding whose manifest hash differs from the bundled manifest (422 checkpoint-binding-mismatch)", async () => {
+    // 座標(env / epoch / manifestVersion)は同梱物と一致させ、タプルの
+    // manifest_sig_hash だけを別値にする: 形状検査とチェーン受理は通り、
+    // §4.3 (2) の完全一致束縛(acceptEnvManifest — 適用後履歴のタプル)が落とす。
+    // H+1 エントリはフィクスチャと同じ材料の決定的署名で再構成し、prev を接続する
+    const commitment = await commitmentOf(projectId, ENV, 1, makeDek());
+    const { hash } = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: createEnvironmentOperation(ENV, commitment),
+    });
+    const { entry: checkpoint } = await signEntryAt({
+      seq: fixture.head.seq + 2,
+      prevHashHex: hash,
+      actorUserId: OWNER,
+      operation: checkpointOperation({
+        environmentId: ENV,
+        epoch: 1,
+        manifestVersion: 1,
+        manifestSigHashHex: "ef".repeat(32),
+        valuesDigestHex: await valuesDigestOf([]),
+      }),
+    });
+    const response = await createEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      name: "App",
+      deks: await wrapsFor(ENV, [...ALL_MEMBERS]),
+      dekCommitmentHex: commitment,
+      checkpoint,
+    });
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe(
+      "checkpoint-binding-mismatch",
+    );
+    // 原子性: 拒否された複合はチェーンに何も残さない
+    const chain = await requestJson("GET", "/chain", token(OWNER));
+    expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(fixture.head.seq);
+  });
+
+  it("rejects a rotate checkpoint whose values digest mismatches the stored enumeration (422 values-digest-mismatch)", async () => {
+    // 宣言ヘッド確定後の並行 push と同型の不一致(§12-4): クライアントは再 pull の
+    // 上で有界再試行する。タプルの digest は保存列挙に存在しない変数から構成する
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const response = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 2,
+      deks: await wrapsFor(ENV, [...ALL_MEMBERS], 2, MEMBER),
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, makeDek()),
+      checkpointValues: [
+        { variableId: "var-phantom-0001", version: 1, valueSigHashHex: "ab".repeat(32) },
+      ],
+    });
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe("values-digest-mismatch");
   });
 });

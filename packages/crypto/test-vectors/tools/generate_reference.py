@@ -234,6 +234,73 @@ def env_values_digest_hex(value_entries: list) -> str:
     ]
     return sha256(lp_encode(fields)).hex()
 
+
+# --- チェーンエントリ構築の共有ヘルパ(gen_chain_entries と、env-manifest の
+# ハッシュを要するため後段で実行する gen_checkpoint_boundary_chains が共用)---
+
+CHAIN_SUITE = "maruhi/v1"
+
+
+def chain_payload_bytes(op: str, payload: dict) -> bytes:
+    return lp_encode([payload[k] for k in PAYLOAD_FIELD_ORDER[op]])
+
+
+def build_chain_entry(seq, op, actor_id, actor, payload, timestamp, prev_hex):
+    pb = chain_payload_bytes(op, payload)
+    signed = lp_encode(
+        [CHAIN_SUITE, seq, prev_hex, op, actor_id, actor["fp_hex"], pb, timestamp]
+    )
+    sig = actor["sig_sk"].sign(signed)
+    entry_bytes = lp_encode(
+        [CHAIN_SUITE, seq, prev_hex, op, actor_id, actor["fp_hex"], pb, timestamp, sig.hex()]
+    )
+    return {
+        "seq": seq,
+        "suite": CHAIN_SUITE,
+        "prev_hash_hex": prev_hex,
+        "op": op,
+        "actor": {"user_id": actor_id, "key_fingerprint_hex": actor["fp_hex"]},
+        "payload": payload,
+        "timestamp_ms": timestamp,
+        "payload_bytes_hex": pb.hex(),
+        "signed_bytes_hex": signed.hex(),
+        "signature_hex": sig.hex(),
+        "entry_bytes_hex": entry_bytes.hex(),
+        "entry_hash_hex": sha256(entry_bytes).hex(),
+    }
+
+
+def checkpoint_env_entry_tuple(environment_id, epoch, manifest_version,
+                               manifest_sig_hash_hex, values_digest_hex) -> dict:
+    return {
+        "environment_id": environment_id,
+        "epoch": str(epoch),
+        "manifest_version": str(manifest_version),
+        "manifest_sig_hash_hex": manifest_sig_hash_hex,
+        "values_digest_hex": values_digest_hex,
+    }
+
+
+def checkpoint_environments_lp_hex(env_entries: list) -> str:
+    # scope_environments / lease_policy と同じ入れ子 LP: 各環境エントリを
+    # LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
+    # values_digest_hex) のバイト列にし、リストの LP の hex 小文字文字列を
+    # payload の 1 フィールドに載せる。リスト順は署名対象の一部
+    # (生成は environment_id のバイト昇順 SHOULD — 検証は順序を規範にしない)
+    return lp_encode([
+        lp_encode([e["environment_id"], e["epoch"], e["manifest_version"],
+                   e["manifest_sig_hash_hex"], e["values_digest_hex"]])
+        for e in env_entries
+    ]).hex()
+
+
+def checkpoint_payload(env_entries: list, audit_head_hash_hex: str = "") -> dict:
+    return {
+        "environments": env_entries,  # 可読性のための平文表現(正規化対象は *_lp_hex)
+        "environments_lp_hex": checkpoint_environments_lp_hex(env_entries),
+        "audit_head_hash_hex": audit_head_hash_hex,
+    }
+
 # CRYPTO_SPEC §5.2: エポック DEK のコミットメント。
 #   dek_commitment_hex = lower_hex(SHA-256(LP("maruhi/v1/dek-commit",
 #                                             project_id, environment_id, epoch, dek_hex)))
@@ -316,33 +383,13 @@ def gen_chain_entries():
     server = make_server(pat(0x90, 32))
     suite = "maruhi/v1"
 
-    def payload_bytes(op: str, payload: dict) -> bytes:
-        return lp_encode([payload[k] for k in PAYLOAD_FIELD_ORDER[op]])
+    # モジュールレベルの共有ヘルパ(build_chain_entry — 2026-08-27 に
+    # gen_checkpoint_boundary_chains と共用化)への別名。出力は不変
+    payload_bytes = chain_payload_bytes
+    build_entry = build_chain_entry
 
     entries = []
     prev_hash_hex = "0" * 64
-
-    def build_entry(seq, op, actor_id, actor, payload, timestamp, prev_hex):
-        pb = payload_bytes(op, payload)
-        signed = lp_encode([suite, seq, prev_hex, op, actor_id, actor["fp_hex"], pb, timestamp])
-        sig = actor["sig_sk"].sign(signed)
-        entry_bytes = lp_encode(
-            [suite, seq, prev_hex, op, actor_id, actor["fp_hex"], pb, timestamp, sig.hex()]
-        )
-        return {
-            "seq": seq,
-            "suite": suite,
-            "prev_hash_hex": prev_hex,
-            "op": op,
-            "actor": {"user_id": actor_id, "key_fingerprint_hex": actor["fp_hex"]},
-            "payload": payload,
-            "timestamp_ms": timestamp,
-            "payload_bytes_hex": pb.hex(),
-            "signed_bytes_hex": signed.hex(),
-            "signature_hex": sig.hex(),
-            "entry_bytes_hex": entry_bytes.hex(),
-            "entry_hash_hex": sha256(entry_bytes).hex(),
-        }
 
     def add_entry(seq, op, actor_id, actor, payload, timestamp):
         nonlocal prev_hash_hex
@@ -1217,37 +1264,14 @@ def gen_chain_entries():
 
     def checkpoint_env_entry(environment_id, epoch, manifest_version,
                              values_digest_hex=None, manifest_sig_hash_hex=None):
-        return {
-            "environment_id": environment_id,
-            "epoch": str(epoch),
-            "manifest_version": str(manifest_version),
-            "manifest_sig_hash_hex": (
-                manifest_sig_hash_hex if manifest_sig_hash_hex is not None
-                else dummy_manifest_sig_hash(environment_id, manifest_version)
-            ),
-            "values_digest_hex": (
-                values_digest_hex if values_digest_hex is not None else empty_values_digest
-            ),
-        }
-
-    def checkpoint_environments_lp_hex(env_entries: list) -> str:
-        # scope_environments / lease_policy と同じ入れ子 LP: 各環境エントリを
-        # LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
-        # values_digest_hex) のバイト列にし、リストの LP の hex 小文字文字列を
-        # payload の 1 フィールドに載せる。リスト順は署名対象の一部
-        # (生成は environment_id のバイト昇順 SHOULD — 検証は順序を規範にしない)
-        return lp_encode([
-            lp_encode([e["environment_id"], e["epoch"], e["manifest_version"],
-                       e["manifest_sig_hash_hex"], e["values_digest_hex"]])
-            for e in env_entries
-        ]).hex()
-
-    def checkpoint_payload(env_entries: list, audit_head_hash_hex: str = "") -> dict:
-        return {
-            "environments": env_entries,  # 可読性のための平文表現(正規化対象は *_lp_hex)
-            "environments_lp_hex": checkpoint_environments_lp_hex(env_entries),
-            "audit_head_hash_hex": audit_head_hash_hex,
-        }
+        # ダミー既定値つきの薄いラッパ(タプル構築の実体はモジュールレベルの
+        # checkpoint_env_entry_tuple — 2026-08-27 に共用化)
+        return checkpoint_env_entry_tuple(
+            environment_id, epoch, manifest_version,
+            (manifest_sig_hash_hex if manifest_sig_hash_hex is not None
+             else dummy_manifest_sig_hash(environment_id, manifest_version)),
+            values_digest_hex if values_digest_hex is not None else empty_values_digest,
+        )
 
     # head12 時点の現エポック: env-prod-0001 = 2 / env-dev-0002 = 2 / env-stage-0003 = 1
     head4 = entries[3]["entry_hash_hex"]
@@ -3235,14 +3259,18 @@ def gen_env_manifest():
         "manifest-v1-create", env_id, 1, 1, [], 1, env_meta_v1_hash, "", member_id, 2,
         "環境作成複合の同梱マニフェスト(manifestVersion 1、変数空集合、epoch 1)。"
         "宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。"
-        "宣言ヘッド時点に環境は未存在だが、次エントリ(seq 3)が epoch 1 を確立する = "
-        "複合発行のエポック整合(§12-5 (4) の検証側の形)",
+        "宣言ヘッド時点に環境は未存在で、検証は境界 checkpoint タプル(chain-entries.json の "
+        "checkpoint-boundary-create 派生チェーン seq 4)との完全一致による(§4.3 (2) — "
+        "2026-08-27 セッション 33 で旧 H+1 例外を廃止。checkpoint を欠く正規チェーンに対する"
+        "同データは negative composite-head-without-checkpoint-create)",
     )
     mv2 = make_manifest(
         "manifest-rotate", env_id, 2, 2, [], 1, env_meta_v1_hash,
         mv1["signed_bytes_sha256_hex"], member_id, 3,
         "rotate 複合の同梱マニフェスト(エポック前進の反映 — メタ集合は不変でも再発行する。§4.3)。"
-        "宣言ヘッド seq 3 の次のエントリ(seq 4 = rotate_epoch)が epoch 2 を確立する",
+        "検証は境界 checkpoint タプル(checkpoint-boundary-rotate 派生チェーン seq 6)との"
+        "完全一致による(§4.3 (2)。checkpoint を欠く正規チェーンに対する同データは "
+        "negative composite-head-without-checkpoint-rotate)",
         prev_base="manifest-v1-create",
     )
     mv3 = make_manifest(
@@ -3635,6 +3663,64 @@ def gen_env_manifest():
         ),
     ]
 
+    # --- チェックポイント束縛(§4.3 (2) の改訂 — 2026-08-27 セッション 33 = PR-F3b。
+    # 旧 H+1 例外の廃止)の negative。束縛の照合先(境界 checkpoint タプルを含む
+    # 派生チェーン)は chain-entries.json の checkpoint-boundary-* を参照する
+    # (gen_checkpoint_boundary_chains が本関数の後に追記する)---
+    rule_negatives += [
+        rule_negative(
+            "composite-head-without-checkpoint-create", env_id, 1, 1, [], 1,
+            env_meta_v1_hash, "", member_id, head_hash(2), 2,
+            "environment-not-created-at-head",
+            "manifest-v1-create と同一データを checkpoint タプルを持たない正規チェーンに"
+            "対して検証すると strict(宣言ヘッド時点)に落ち、宣言ヘッド(seq 2)時点で"
+            "環境未存在として拒否する — 旧 H+1 例外(宣言ヘッドの次エントリでエポックが"
+            "成立する複合形の無条件許容)の廃止の固定(§4.3 (2))",
+        ),
+        rule_negative(
+            "composite-head-without-checkpoint-rotate", env_id, 2, 2, [], 1,
+            env_meta_v1_hash, mv1["signed_bytes_sha256_hex"], member_id, head_hash(3), 3,
+            "epoch-not-current-at-head",
+            "manifest-rotate と同一データを checkpoint タプルを持たない正規チェーンに"
+            "対して検証すると strict に落ち、宣言ヘッド(seq 3)時点の現エポック(1)との"
+            "不一致で拒否する(旧 H+1 例外の廃止の rotate 側)",
+        ),
+        rule_negative(
+            "checkpoint-binding-mismatch", env_id, 1, 1, [], 1,
+            env_meta_v1_hash, "", owner_id, head_hash(2), 2,
+            "checkpoint-binding-mismatch",
+            "検証済みチェーン上に (env-prod-0001, manifestVersion 1) の checkpoint タプルが"
+            "存在する場合、マニフェストの signed_bytes ハッシュはタプルと完全一致しなければ"
+            "ならない(strict は代替経路にならない — 選言禁止)。owner が署名した同座標の"
+            "別内容マニフェスト(issuer が異なるためハッシュが異なる)は、署名・ヘッド・"
+            "エポックが有効でも拒否する。latest checkpoint(manifestVersion 2)より古い版への"
+            "照合でも束縛が先に判定される(検査順序: 束縛 (2) → 非後退 (4))",
+            chain_ref="checkpoint-boundary-rotate",
+        ),
+        rule_negative(
+            "checkpoint-equivocation", env_id, 2, 2, [], 1,
+            env_meta_v1_hash, mv1["signed_bytes_sha256_hex"], member_id, head_hash(3), 3,
+            "checkpoint-equivocation",
+            "同一 (environment_id, manifest_version) に (epoch, manifest_sig_hash) の異なる"
+            "checkpoint タプルが検証済みチェーン上に併存する場合は、マニフェスト "
+            "equivocation の硬い証拠として当該環境の配布を拒否する(§4.3 (2)。"
+            "manifest-rotate 自体は正当でも、チェーンが矛盾タプルを運んだ時点で拒否)",
+            chain_ref="checkpoint-boundary-equivocation",
+        ),
+        rule_negative(
+            "checkpoint-regressed", env_id, 1, 1, [], 1,
+            env_meta_v1_hash, "", member_id, head_hash(2), 2,
+            "checkpoint-regressed",
+            "チェックポイント整合の規則 1(§6.3 / §4.3 (4)): 配布マニフェストの "
+            "manifestVersion は当該環境の最新 checkpoint(checkpoint-boundary-rotate では "
+            "manifestVersion 2)以上でなければならない。タプル(manifestVersion 1)との"
+            "完全一致を通る正当な旧マニフェストでも、基準より古い版の配布は巻き戻しとして"
+            "拒否する(境界チェックポイントが供給する下限 — タプルを持つ版への照合の"
+            "下方回避を塞ぐ)",
+            chain_ref="checkpoint-boundary-rotate",
+        ),
+    ]
+
     write(
         "env-manifest.json",
         {
@@ -3645,7 +3731,7 @@ def gen_env_manifest():
             ],
             "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(epoch / manifest_version / env_meta_version / meta_version / chain_head_seq)は 10 進文字列化。ダイジェストの各 entry は入れ子 LP のバイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)",
             "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、issuer 鍵 = keys",
-            "composite_epoch_rule": "エポック整合(§4.3 (2) / AUTH_SPEC §12-5 (4)): マニフェストの epoch は宣言ヘッド時点の当該環境の現エポックと一致するか、または宣言ヘッドの次のエントリ(= 複合発行の同梱チェーンエントリ)が当該環境にちょうどそのエポックを確立する(環境作成複合 = epoch 1、rotate 複合 = new_epoch。宣言ヘッドは追記前ヘッド — §12-4)。manifest-v1-create / manifest-rotate が positive、epoch-not-current-at-head / environment-not-created-at-head が negative としてこれを固定する",
+            "composite_epoch_rule": "エポック整合(§4.3 (2) — 2026-08-27 セッション 33 = PR-F3b でチェックポイント束縛へ改訂。旧 H+1 例外は廃止): 検証済みチェーン上に当該 (environment_id, manifest_version) の checkpoint タプルが存在する場合、その (epoch, manifest_sig_hash) と完全一致しなければならない(strict は代替経路にならない — checkpoint-binding-mismatch が negative)。同座標に (epoch, manifest_sig_hash) の異なるタプルが併存すれば equivocation の硬い証拠として拒否(checkpoint-equivocation)。タプルが存在しない場合のみ宣言ヘッド時点の現エポックとの strict 一致(epoch-not-current-at-head / environment-not-created-at-head が negative。複合発行形の manifest-v1-create / manifest-rotate は chain-entries.json の checkpoint-boundary-* 派生チェーンに対する positive で、checkpoint を欠くチェーンに対しては composite-head-without-checkpoint-* の negative)。さらにチェックポイント整合の規則 1(§6.3): manifestVersion・epoch は当該環境の最新 checkpoint 以上(checkpoint-regressed が negative)",
             "statements": {
                 "note": "ダイジェスト入力のフィクスチャ(metadata-signature.json と同一入力・同一ハッシュのステートメント)。ダイジェストが要するのは (variable_id, status, meta_version, meta_sig_hash_hex) のみ(§4.3)",
                 "env_meta_v1": {"context": env_meta_ctx, "signed_bytes_sha256_hex": env_meta_v1_hash},
@@ -3677,6 +3763,132 @@ def gen_env_manifest():
             "negative": negatives + rule_negatives,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# 3.8.5 chain-entries.json への境界チェックポイント派生チェーンの追記
+# (2026-08-27 セッション 33 = PR-F3b — CRYPTO_SPEC §4.3 (2) / §6.3 / AUTH_SPEC §12-4)
+#
+# 環境作成・rotate 複合の必須同梱(境界 checkpoint = 複合エントリの直後 seq)を、
+# 実マニフェストのハッシュ(env-manifest.json の manifest-v1-create /
+# manifest-rotate)と結線した派生チェーンとして固定する。マニフェストのハッシュを
+# 要するため gen_env_manifest の**後**に実行し、chain-entries.json をロードして
+# extended_chains へ**追記のみ**行う(既存セクションは 1 バイトも変えない)。
+# env-manifest.json の checkpoint-binding-mismatch / checkpoint-equivocation /
+# checkpoint-regressed / positive の複合 2 例がこれらのチェーンを参照する。
+
+
+def gen_checkpoint_boundary_chains():
+    chain_path = os.path.join(OUT_DIR, "chain-entries.json")
+    with open(chain_path, encoding="utf-8") as fh:
+        chain = json.load(fh)
+    with open(os.path.join(OUT_DIR, "env-manifest.json"), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    manifest_by_name = {v["name"]: v for v in manifest["vectors"]}
+    mv1_hash = manifest_by_name["manifest-v1-create"]["signed_bytes_sha256_hex"]
+    mv2_hash = manifest_by_name["manifest-rotate"]["signed_bytes_sha256_hex"]
+
+    owner_id = "user-owner-0001"
+    member_id = "user-member-0002"
+    member = make_user(pat(0x30, 32), pat(0x40, 32))
+    env_id = "env-prod-0001"
+    t0 = 1754006400000
+    head3 = chain["entries"][2]["entry_hash_hex"]
+    empty_values = env_values_digest_hex([])
+    # rotate 境界分の values_digest も空集合: この派生チェーンの世界では env-prod に
+    # 値が push されていない = 受理時点の現在値の列挙は空(AUTH_SPEC §12-4 の
+    # 「受理時点の現在値から構成」と整合する正直な値)
+    rotate_payload = {
+        "environment_id": env_id,
+        "new_epoch": "2",
+        "reason": "scheduled",
+        "dek_commitment_hex": chain["environment_deks"][env_id]["2"]["dek_commitment_hex"],
+    }
+
+    cb4 = build_chain_entry(
+        4, "checkpoint", member_id, member,
+        checkpoint_payload([
+            checkpoint_env_entry_tuple(env_id, 1, 1, mv1_hash, empty_values),
+        ]),
+        t0 + 3000, head3,
+    )
+    cb5 = build_chain_entry(
+        5, "rotate_epoch", member_id, member, rotate_payload, t0 + 4000,
+        cb4["entry_hash_hex"],
+    )
+    cb6 = build_chain_entry(
+        6, "checkpoint", member_id, member,
+        checkpoint_payload([
+            checkpoint_env_entry_tuple(env_id, 2, 2, mv2_hash, empty_values),
+        ]),
+        t0 + 5000, cb5["entry_hash_hex"],
+    )
+    # 同座標 (env-prod-0001, manifestVersion 2) を別ハッシュで公証する 2 本目の
+    # checkpoint。チェーン合意規則では有効(非後退は等号を許し、タプル内容は
+    # チェーン検証で検証不能)だが、マニフェスト検証(§4.3 (2))はこの併存を
+    # equivocation の硬い証拠として拒否する
+    cb7 = build_chain_entry(
+        7, "checkpoint", member_id, member,
+        checkpoint_payload([
+            checkpoint_env_entry_tuple(
+                env_id, 2, 2,
+                sha256(b"maruhi-vector-forged-manifest:env-prod-0001:2").hex(),
+                empty_values,
+            ),
+        ]),
+        t0 + 6000, cb6["entry_hash_hex"],
+    )
+
+    def expected_checkpoint(seq: int, entry: dict) -> dict:
+        tuple_ = entry["payload"]["environments"][0]
+        return {
+            "seq": seq,
+            "epoch": tuple_["epoch"],
+            "manifest_version": tuple_["manifest_version"],
+            "manifest_sig_hash_hex": tuple_["manifest_sig_hash_hex"],
+            "values_digest_hex": tuple_["values_digest_hex"],
+        }
+
+    members = {owner_id: "owner", member_id: "member"}
+    chain["extended_chains"]["checkpoint-boundary-create"] = {
+        "description": (
+            "環境作成複合の境界 checkpoint(AUTH_SPEC §12-4: create = H+1、checkpoint = "
+            "H+2。ここでは正規チェーン seq 3 の create_environment の直後 seq 4 に、"
+            "manifest-v1-create の実ハッシュを束縛する checkpoint を置く)。"
+            "manifest-v1-create の positive(§4.3 (2) のチェックポイント束縛経路)の"
+            "照合先チェーン"
+        ),
+        "base_seq": 3,
+        "entries": [cb4],
+        "expected_members": members,
+        "expected_checkpoints": {env_id: expected_checkpoint(4, cb4)},
+    }
+    chain["extended_chains"]["checkpoint-boundary-rotate"] = {
+        "description": (
+            "rotate 複合の境界 checkpoint まで進めた派生チェーン(seq 4 = 作成境界分、"
+            "seq 5 = rotate_epoch(epoch 2)、seq 6 = manifest-rotate の実ハッシュを束縛"
+            "する境界 checkpoint)。manifest-rotate の positive と、checkpoint-binding-"
+            "mismatch / checkpoint-regressed(env-manifest.json)の照合先チェーン"
+        ),
+        "base_seq": 3,
+        "entries": [cb4, cb5, cb6],
+        "expected_members": members,
+        "expected_checkpoints": {env_id: expected_checkpoint(6, cb6)},
+    }
+    chain["extended_chains"]["checkpoint-boundary-equivocation"] = {
+        "description": (
+            "checkpoint-boundary-rotate の先へ、同座標 (env-prod-0001, manifestVersion 2) "
+            "を**別ハッシュ**で公証する checkpoint(seq 7)を追記した派生チェーン。追記"
+            "自体は合意規則で有効(非後退の等号 + タプル内容はチェーン検証で検証不能)で、"
+            "マニフェスト検証(§4.3 (2))が checkpoint-equivocation として拒否する材料に"
+            "なる(env-manifest.json の同名 negative の照合先)"
+        ),
+        "base_seq": 3,
+        "entries": [cb4, cb5, cb6, cb7],
+        "expected_members": members,
+        "expected_checkpoints": {env_id: expected_checkpoint(7, cb7)},
+    }
+    write("chain-entries.json", chain)
 
 
 # ---------------------------------------------------------------------------
@@ -3905,5 +4117,6 @@ if __name__ == "__main__":
     gen_value_signature()  # chain-entries.json / 上記の出力を参照するため後段で生成
     gen_metadata_signature()  # 同上(chain-entries.json を参照)
     gen_env_manifest()  # 同上(chain-entries.json を参照。§4.3)
+    gen_checkpoint_boundary_chains()  # env-manifest のハッシュを参照するため後段(§4.3 (2))
     gen_invite_accept_signature()
     gen_recovery_wrap()

@@ -10,12 +10,16 @@
 //   2. ヘッド束縛(seq → hash の一致。不一致 2 種 — mismatch / future — を区別)
 //   3. 認可時点(宣言ヘッド時点の在籍・鍵束縛・role — 発行契機はすべて member
 //      以上のメタ操作 — §4.3)
-//   4. エポック整合(§4.3 (2)): manifest の epoch = 宣言ヘッド時点の当該環境の
-//      現エポック、**または宣言ヘッドの次のエントリ(= 複合発行の同梱チェーン
-//      エントリ — AUTH_SPEC §12-4)が当該環境にちょうどそのエポックを確立する**
-//      (環境作成複合 = epoch 1、rotate 複合 = new_epoch。§12-5 (4) の「同梱
-//      エントリ適用後の状態」の検証側の形 — env-manifest.json の
-//      composite_epoch_rule / manifest-v1-create / manifest-rotate が固定)
+//   4. エポック整合(§4.3 (2)。2026-08-27 セッション 33 で改訂 — 旧 H+1 例外の
+//      廃止。session-32 §5-1 = 所有者承認済み案 2-G′): 検証済みチェーン上に当該
+//      (environment_id, manifest_version) の `checkpoint` タプルが存在する場合、
+//      その (epoch, manifest_sig_hash) と**完全一致しなければならない**(境界
+//      チェックポイント束縛 — strict はこの場合の代替経路に**ならない**。
+//      環境作成・rotate 複合のマニフェストは複合が必須同梱する境界 checkpoint —
+//      AUTH_SPEC §12-4 — のこの経路で検証される)。同座標に (epoch,
+//      manifest_sig_hash) の異なるタプルが併存する場合は equivocation の硬い
+//      証拠として拒否する。タプルが存在しない場合のみ、宣言ヘッド時点の当該
+//      環境の現エポックとの厳密一致(strict)
 //   5. 環境メタ整合: (env_meta_version, env_meta_sig_hash_hex) = 検証済み環境
 //      メタステートメントの最新形(AUTH_SPEC §12-5 (7) の再計算対象)
 //   6. ダイジェスト再計算(§4.3 (3)): 検証済み全ステートメント(tombstone 込み)
@@ -23,17 +27,22 @@
 //   7. prev 連鎖(predecessor を渡された場合のみ: prev 一致 + **エポック非減少**
 //      — 値の §4.1 単調性のマニフェスト版。rotate 後に旧エポックを焼き込んだ
 //      前進 manifestVersion の検出 = 本機構の核)
+//   8. チェックポイント整合の規則 1(§6.3 / §4.3 (4)): manifestVersion・epoch は
+//      当該環境の**最新** `checkpoint` 基準以上であること(基準割れ = チェック
+//      ポイント済み状態からの巻き戻しとして拒否。タプルを持つ版への (4) の照合の
+//      下方回避もこれが塞ぐ — 検査順序〔束縛 (4) → 本規則〕はベクター
+//      checkpoint-binding-mismatch / checkpoint-regressed が固定)。
+//      同版・異ハッシュは (4) の束縛(基準 = 最新 checkpoint 自身のタプル)が拒否
 // 座標整合(§6.3-5)は呼び出し側の責務: 本関数へ渡す context 自体を、申告値
 // でなく期待座標(検証済み genesis ハッシュ・要求環境)から構成すること。
 // entries / envMeta も**検証済み**ステートメントから構成すること(サーバー =
 // 受理後状態の保存行、クライアント = §6.3 検証を通過した配布ステートメント)。
 //
-// 複合エポック例外(4)の健全性: 削除・member 未満への降格は全環境 rotate を
-// 伴う(§7)ため、現エポック E の開始 seq は資格喪失より後にある。例外が適用
-// されるのは宣言ヘッド H = (E の開始 seq) - 1 の場合だけであり、資格を失った鍵の
-// 在籍区間は H に届かない(remove エントリ自身の seq で無効 — inclusive 規約)。
-// よって例外は「write 資格を失った鍵は現エポックのマニフェストを署名できない」
-// (§4.3)を弱めない。
+// チェックポイント束縛(4)の照合材料は履歴索引の内部照会(checkpointTupleFor —
+// session-33 裁定 A)であり、呼び出し側の入力ではない: 明示入力の形は「引き
+// 忘れ = strict へのフォールバック」という fail-open(タプルが存在しても strict
+// 経路が生きたままなら equivocation 優位が消える — session-32 §4-2 が選言形を
+// 潰した理由の再現)を呼び出し規約のバグとして許すため、構造的に閉じる。
 //
 // latest-only の限界(session-14 裁定 B の同型): predecessor が無い場合でも
 // 署名・ヘッド・鍵・role・エポック・環境メタ・ダイジェスト・prev の形は必ず
@@ -118,28 +127,58 @@ const HEAD_AUTHORIZATION_REASONS = {
 } as const satisfies HeadAuthorizationReasons<ManifestInvalidReason>;
 
 /**
- * 4. エポック整合(§4.3 (2))。宣言ヘッド時点の現エポックとの厳密一致に加えて、
- * 複合発行(宣言ヘッド = 追記前ヘッド — §12-4)の「次のエントリがちょうど
- * このエポックを確立する」形を受理する(モジュール冒頭コメントの健全性論証)。
+ * 4. エポック整合(§4.3 (2) — チェックポイント束縛。2026-08-27 改訂で旧 H+1
+ * 例外を廃止)。タプルが存在する場合の照合は (epoch, manifest_sig_hash) の
+ * **両方**に対して行う: ハッシュはエポックを署名対象として覆うが、タプル側の
+ * epoch フィールドがマニフェスト内容と矛盾する形(チェーンに載った虚偽公証)は
+ * ハッシュ照合だけでは検出されない。タプルが存在する場合、宣言ヘッド時点の
+ * 環境存在検査は行わない(環境作成複合の正当な形 — 宣言ヘッド H の時点で環境は
+ * 未作成、H+1 の create と H+2 の境界 checkpoint が同一トランザクションで載る)。
  */
-function epochIntegrityReason(input: DistributedEnvManifestInput): ManifestInvalidReason | null {
+function epochIntegrityReason(
+  input: DistributedEnvManifestInput,
+  signedBytesHashHex: string,
+): ManifestInvalidReason | null {
   const { history, context } = input;
+  const tuple = history.checkpointTupleFor(context.environmentId, context.manifestVersion);
+  if (tuple !== undefined) {
+    if (tuple.kind === "conflicting") {
+      return "checkpoint-equivocation";
+    }
+    return tuple.epoch === context.epoch && tuple.manifestSigHashHex === signedBytesHashHex
+      ? null
+      : "checkpoint-binding-mismatch";
+  }
+  // strict: 宣言ヘッド時点の当該環境の現エポックとの厳密一致(削除・member
+  // 未満への降格は全環境ローテーションを伴う — §7 — ため、write 資格を失った
+  // 鍵では現エポックのマニフェストを署名できない)
   const atHead = history.environmentStateAt(context.environmentId, context.chainHeadSeq);
-  if (atHead !== undefined && atHead.currentEpoch === context.epoch) {
+  if (atHead === undefined) {
+    return "environment-not-created-at-head";
+  }
+  return atHead.currentEpoch === context.epoch ? null : "epoch-not-current-at-head";
+}
+
+/**
+ * 8. チェックポイント整合の規則 1(§6.3 / §4.3 (4)): 当該環境の最新
+ * `checkpoint` 基準に対する manifestVersion・epoch の非後退。基準を持たない
+ * 環境は対象外(その環境の保証はエポック整合のみ — §6.3)。同版・異ハッシュの
+ * 拒否は (4) の束縛が担う(最新基準の版のタプルは必ず存在するため)。
+ */
+function checkpointIntegrityReason(
+  input: DistributedEnvManifestInput,
+): ManifestInvalidReason | null {
+  const baseline = input.history.latestCheckpointFor(input.context.environmentId);
+  if (baseline === undefined) {
     return null;
   }
-  // 複合発行の形: 次のエントリ(H+1)で当該環境の現エポックがちょうど
-  // manifest.epoch になっている(作成 = 環境自体が H+1 で生まれ epoch 1、
-  // rotate = H+1 で new_epoch へ前進)。エポックはエントリごとに高々 +1 しか
-  // 動かない(§6.3 のエポック順序規則)ため、「H で不一致 かつ H+1 で一致」は
-  // 「H+1 のエントリがこのエポックを確立した」と同値
-  const atNext = history.environmentStateAt(context.environmentId, context.chainHeadSeq + 1);
-  if (atNext !== undefined && atNext.currentEpoch === context.epoch) {
-    return null;
+  if (
+    input.context.manifestVersion < baseline.manifestVersion ||
+    input.context.epoch < baseline.epoch
+  ) {
+    return "checkpoint-regressed";
   }
-  return atHead === undefined && atNext === undefined
-    ? "environment-not-created-at-head"
-    : "epoch-not-current-at-head";
+  return null;
 }
 
 async function contentReason(
@@ -247,7 +286,17 @@ export async function verifyDistributedEnvManifest(
   if (headReason !== null) {
     return manifestInvalid(headReason);
   }
-  const epochReason = epochIntegrityReason(input);
+  // prev 連鎖は §4.3 (1) の一部(§6.3-6 と同型)であり、エポック整合 (2) に
+  // 先行する(v1-nonempty-prev / v2-empty-prev の形検査が束縛判定より先に
+  // 落ちることをベクターが固定する)
+  const chainReason = prevReason(input);
+  if (chainReason !== null) {
+    return manifestInvalid(chainReason);
+  }
+  // チェックポイント束縛(2)の照合対象 = 自身の signed_bytes ハッシュ
+  // (成功時の返り値と同一 — 束縛照合のために先に計算する)
+  const signedBytesHashHex = encodeHex(await sha256(buildEnvManifestSignedBytes(input.context)));
+  const epochReason = epochIntegrityReason(input, signedBytesHashHex);
   if (epochReason !== null) {
     return manifestInvalid(epochReason);
   }
@@ -255,14 +304,9 @@ export async function verifyDistributedEnvManifest(
   if (digestReason !== null) {
     return manifestInvalid(digestReason);
   }
-  const chainReason = prevReason(input);
-  if (chainReason !== null) {
-    return manifestInvalid(chainReason);
+  const checkpointReason = checkpointIntegrityReason(input);
+  if (checkpointReason !== null) {
+    return manifestInvalid(checkpointReason);
   }
-  return {
-    ok: true,
-    value: {
-      signedBytesHashHex: encodeHex(await sha256(buildEnvManifestSignedBytes(input.context))),
-    },
-  };
+  return { ok: true, value: { signedBytesHashHex } };
 }

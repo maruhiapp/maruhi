@@ -24,6 +24,15 @@ export async function resetProjectDo(projectId: string): Promise<void> {
   await evictDurableObject(stub);
 }
 
+/**
+ * インスタンスを退去させ、導出 ChainState のメモリキャッシュを消す(保存行の
+ * 直接改変後にフルロードへ戻す用 — 改変はキャッシュに映らない)。
+ */
+export async function evictProjectDo(projectId: string): Promise<void> {
+  const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+  await evictDurableObject(stub);
+}
+
 /** DO SQLite への直接クエリ(保存状態・監査ログの検証用)。 */
 export async function queryProjectDo(
   projectId: string,

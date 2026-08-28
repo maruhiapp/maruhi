@@ -17,6 +17,7 @@
 
 import {
   ChainHeadConflictError,
+  CheckpointStateMismatchError,
   EnvironmentNotFoundError,
   EpochConflictError,
   ManifestVersionConflictError,
@@ -25,15 +26,16 @@ import {
   type WrappedDek,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
+import type { ChainEntry, ChainMember, EnvValuesDigestEntry, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
+import { CliError, cliError, usageError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -406,6 +408,15 @@ interface AcceptedRotation {
 }
 
 /**
+ * 境界 checkpoint の values_digest 突合(§12-4)の 422 の目印。宣言ヘッド確定後の
+ * 並行 push が現在値を進めた形で、再署名では解決しない(値集合の再取得を要する)。
+ * envRotateOp の有界再試行(検証済み pull からのやり直し — §12-4 の指定)が
+ * 型で拾えるよう CliError を細分化する(toCliError は CliError を素通しするため、
+ * retryOnConflict の未分類経路を跨いでも型が保たれる)。
+ */
+class RotateValuesConflictError extends CliError {}
+
+/**
  * 削除済み(tombstone)環境への rotate は 404(§12-4)。チェーンは環境の存在を
  * 主張しているのにサーバーが 404 を返す形なので、§7 の規律どおり「黙って
  * スキップせず中断して警告する」— 汎用の「環境が見つかりません」に潰さない。
@@ -425,6 +436,13 @@ function mapRotateFailure(environmentId: string): (error: unknown) => unknown {
       return cliError(
         `A concurrent meta operation advanced environment ${environmentId}'s manifest (the server reports manifestVersion ${error.currentManifestVersion}). Re-run maruhi env rotate to rebuild the manifest from the refreshed state`,
       );
+    }
+    if (error instanceof CheckpointStateMismatchError) {
+      // 境界 checkpoint の values_digest 突合の 422(§12-4)。envRotateOp が
+      // 検証済み pull からの有界再試行で拾う(exhausted 時はこの文面がそのまま出る)
+      return new RotateValuesConflictError({
+        message: `A concurrent push advanced environment ${environmentId}'s values while the rotation was in flight (the server reports ${error.reason}). Re-run maruhi env rotate to rebuild the checkpoint from the refreshed state`,
+      });
     }
     // ChainHeadConflict 等の分類対象はそのまま通す(retryOnConflict の classify)
     return error;
@@ -459,6 +477,13 @@ function appendRotation(
       readonly entries: readonly ManifestDigestEntry[];
       readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
     };
+    /**
+     * 境界 checkpoint(§12-4 — 2026-08-27)の values_digest 材料: 検証済み pull の
+     * 値レベル最新形(active 変数のみ。未再暗号化 = 旧エポックの現在値 — §12-7 の
+     * 正当な状態)。再暗号化のために実読した値そのもので、追加の読み取りは
+     * 発生しない(session-32 §5-1)。
+     */
+    readonly checkpointValues: readonly EnvValuesDigestEntry[];
   },
 ): Effect.Effect<
   {
@@ -546,6 +571,19 @@ function appendRotation(
                   hashHex: state.verified.state.headHashHex,
                 },
               });
+              // 境界 checkpoint(H+2 — §12-4): 当該環境 1 タプル(new_epoch・
+              // 同梱マニフェストの版とハッシュ・実読済み現在値の values_digest)。
+              // CAS リトライではエントリ・マニフェストとともに再署名する
+              const checkpoint = yield* signBoundaryCheckpoint({
+                compositeEntry: entry,
+                environmentId: input.environmentId,
+                epoch: input.newEpoch,
+                manifestVersion: manifest.manifestVersion,
+                manifestSigHashHex: manifest.manifestSigHashHex,
+                values: input.checkpointValues,
+                member: state.member,
+                signingKey: input.signingKeyPair.privateKey,
+              });
               const sent: AcceptedRotation = {
                 state,
                 manifest: {
@@ -571,6 +609,7 @@ function appendRotation(
                     entry,
                     deks: state.deks,
                     manifest: manifest.manifest,
+                    checkpoint,
                   },
                 })
                 .pipe(
@@ -1846,6 +1885,20 @@ function reencryptCurrentValues(input: {
  * (§12-7 の正当な過渡状態からの冪等な再開)。
  */
 export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, CliError, CliIo> {
+  return rotateAttempt(input, 1);
+}
+
+/**
+ * values_digest 突合の 422(§12-4 — 宣言ヘッド確定後の並行 push)に対する
+ * 有界再試行の上限。再試行は検証済み pull からのやり直し(再暗号化に必要な
+ * 読み取りと同一 — 取りこぼしの防止を兼ねる。session-33 §5 F-2)。
+ */
+const MAX_VALUES_CONFLICT_ATTEMPTS = 3;
+
+function rotateAttempt(
+  input: RotateInput,
+  attempt: number,
+): Effect.Effect<RotationSummary, CliError, CliIo> {
   // 収集した警告は**失敗経路でも**必ず吐く: 成功時は呼び出し側が
   // summary.warnings を表示するが、中断すると表示経路に到達しない。床の更新
   // 失敗・並行削除・床なしの但し書きは、まさに中断時に効く情報である
@@ -1859,6 +1912,20 @@ export function envRotateOp(input: RotateInput): Effect.Effect<RotationSummary, 
       Effect.catch((error) =>
         Effect.gen(function* () {
           yield* logWarnings(dedupeWarnings(warnings));
+          if (
+            error instanceof RotateValuesConflictError &&
+            attempt < MAX_VALUES_CONFLICT_ATTEMPTS
+          ) {
+            // 並行 push が現在値を進めた(§12-4)。この試行の複合は受理されて
+            // いない(エポックは進んでいない)ので、生成済みの新 DEK・ラップ集合は
+            // 破棄してよい。検証済み pull からやり直し、values_digest の材料を
+            // 現在の保存状態から作り直す
+            const io = yield* CliIo;
+            yield* io.log(
+              `A concurrent push advanced environment ${input.environmentId}'s values — re-pulling and retrying the rotation (attempt ${attempt + 1} of ${MAX_VALUES_CONFLICT_ATTEMPTS})`,
+            );
+            return yield* rotateAttempt(input, attempt + 1);
+          }
           return yield* Effect.fail(error);
         }),
       ),
@@ -2227,6 +2294,11 @@ function rotateWithWarnings(
       dek,
       dekCommitmentHex: commitment.value,
       manifestBase: manifestBaseOf(pulled),
+      checkpointValues: pulled.variables.map((value) => ({
+        variableId: value.variableId,
+        version: value.version,
+        valueSigHashHex: value.signedBytesHashHex,
+      })),
     });
     yield* io.log(
       `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,

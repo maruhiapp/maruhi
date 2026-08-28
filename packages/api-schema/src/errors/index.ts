@@ -33,6 +33,7 @@ export {
   ProjectNotFoundError,
 } from "./chain.ts";
 export {
+  CheckpointStateMismatchError,
   DataLimitExceededError,
   DataLimitResourceSchema,
   EnvironmentConflictError,

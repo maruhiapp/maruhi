@@ -95,6 +95,31 @@ interface VariableDigestEntryRow {
 }
 
 /**
+ * checkpoint values_digest の 1 エントリ(CRYPTO_SPEC §6.2 — @maruhi/crypto の
+ * EnvValuesDigestEntry と構造一致。data-store は crypto に依存しないため
+ * 構造型で持つ)。2026-08-27 セッション 33 = PR-F3b。
+ */
+export interface CheckpointValueEntryRow {
+  readonly variableId: string;
+  readonly version: number;
+  readonly valueSigHashHex: string;
+}
+
+/**
+ * 境界 checkpoint のタプル + チェーン位置(スナップショット保存の入力 —
+ * CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 の「再構成した値スナップショット列挙 +
+ * 対応 checkpoint seq / hash」の座標部分)。
+ */
+export interface CheckpointSnapshotInput {
+  readonly chainSeq: number;
+  readonly entryHashHex: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly manifestSigHashHex: string;
+  readonly valuesDigestHex: string;
+}
+
+/**
  * 保存済み最新マニフェストの検証アンカー: manifestVersion(CAS — §12-5 (6))・
  * サーバー再計算の signed_bytes ハッシュ(prev 検査 — (5))・当時のエポック
  * (predecessor のエポック単調性検査)。
@@ -174,6 +199,19 @@ export interface DataWriteOps {
     manifest: EnvManifestInput,
     signedBytesHashHex: string,
     issuer: MetaAuthorInfo,
+    nowMs: number,
+  ) => void;
+  /**
+   * 境界 checkpoint の値スナップショットの保存(CRYPTO_SPEC §6.4 / AUTH_SPEC
+   * §16-2 — 2026-08-27): 環境ごとの最新包含 checkpoint のタプルを upsert し、
+   * 値スナップショット列挙を環境単位で全置換する。payload に含まれない環境の
+   * 既存スナップショットは変更しない(A のみ再 checkpoint しても B の基準は
+   * 失われない — §6.4)。チェーン追記と同じ同期ブロック内から呼ぶ。
+   */
+  readonly upsertCheckpointSnapshot: (
+    environmentId: string,
+    checkpoint: CheckpointSnapshotInput,
+    values: readonly CheckpointValueEntryRow[],
     nowMs: number,
   ) => void;
   /** バージョン行の挿入と latest_version の前進(書き込みロック下で呼ぶ)。 */
@@ -287,6 +325,15 @@ interface DataStoreShape {
   readonly variableDigestEntries: (
     environmentId: string,
   ) => Effect.Effect<readonly VariableDigestEntryRow[]>;
+  /**
+   * checkpoint values_digest の再計算材料(§6.4 の内容突合 — 受理時点の保存
+   * 状態): active 変数の最新 version とサーバー再計算の value_signed_bytes
+   * ハッシュ。tombstone は含めない(§6.2 — active 変数のみ。tombstone は
+   * マニフェスト側が捕捉する)。
+   */
+  readonly checkpointValueEntries: (
+    environmentId: string,
+  ) => Effect.Effect<readonly CheckpointValueEntryRow[]>;
 
   /** アクティブ変数の最新バージョン + 最新ステートメント一覧(一括 pull 用)。 */
   readonly latestVersions: (
@@ -751,6 +798,30 @@ const makeVariableQueries = (sql: SqlStorage) => ({
           };
         }),
     ),
+  // checkpoint values_digest の再計算材料(§6.4): active 変数の最新 version と
+  // 保存済み value_signed_bytes ハッシュ。正規順(variable_id のバイト昇順)は
+  // crypto の computeEnvValuesDigest が内部で確立するため、順序を規範にしない
+  checkpointValueEntries: (environmentId: string) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT v.variable_id, vv.version, vv.signed_bytes_hash_hex
+           FROM variables v
+           JOIN variable_versions vv
+             ON vv.environment_id = v.environment_id
+            AND vv.variable_id = v.variable_id
+            AND vv.version = v.latest_version
+           WHERE v.environment_id = ? AND v.deleted_at IS NULL
+           ORDER BY v.variable_id`,
+          environmentId,
+        )
+        .toArray()
+        .map((row): CheckpointValueEntryRow => ({
+          variableId: stringColumn(row, "variable_id"),
+          version: numberColumn(row, "version"),
+          valueSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+        })),
+    ),
   variableNameTaken: (environmentId: string, name: string, excludeVariableId: string | null) =>
     Effect.sync(() => {
       const rows = sql
@@ -1124,6 +1195,10 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     // 配布チャネルが存在せず、配布されないサーバー保存物に検出材料としての残存
     // 価値がない。環境自身の deleted ステートメントが終端の検出材料)
     sql.exec("DELETE FROM environment_manifests WHERE environment_id = ?", environmentId);
+    // チェックポイントのタプル・値スナップショットも同じ論法でカスケード削除
+    // (§12-4 — 2026-08-27: 削除済み環境のスナップショットに配布チャネルはない)
+    sql.exec("DELETE FROM environment_checkpoints WHERE environment_id = ?", environmentId);
+    sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
   },
   insertVariable: (environmentId, variableId, name, nowMs) => {
     sql.exec(
@@ -1213,6 +1288,43 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       issuer.keyFingerprintHex,
       nowMs,
     );
+  },
+  upsertCheckpointSnapshot: (environmentId, checkpoint, values, nowMs) => {
+    sql.exec(
+      `INSERT INTO environment_checkpoints
+         (environment_id, chain_seq, entry_hash_hex, epoch, manifest_version,
+          manifest_sig_hash_hex, values_digest_hex, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (environment_id) DO UPDATE SET
+         chain_seq = excluded.chain_seq,
+         entry_hash_hex = excluded.entry_hash_hex,
+         epoch = excluded.epoch,
+         manifest_version = excluded.manifest_version,
+         manifest_sig_hash_hex = excluded.manifest_sig_hash_hex,
+         values_digest_hex = excluded.values_digest_hex,
+         updated_at = excluded.updated_at`,
+      environmentId,
+      checkpoint.chainSeq,
+      checkpoint.entryHashHex,
+      checkpoint.epoch,
+      checkpoint.manifestVersion,
+      checkpoint.manifestSigHashHex,
+      checkpoint.valuesDigestHex,
+      nowMs,
+    );
+    // 列挙は環境単位の全置換(受理時点状態そのもの — §6.4 の upsert 意味論)
+    sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
+    for (const value of values) {
+      sql.exec(
+        `INSERT INTO checkpoint_snapshot_values
+           (environment_id, variable_id, version, value_sig_hash_hex)
+         VALUES (?, ?, ?, ?)`,
+        environmentId,
+        value.variableId,
+        value.version,
+        value.valueSigHashHex,
+      );
+    }
   },
   insertVersion: (
     environmentId,

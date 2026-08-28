@@ -25,6 +25,7 @@ export { AuthMiddleware } from "./auth-middleware.ts";
 export {
   ChainActorSchema,
   ChainEntrySchema,
+  CheckpointEntrySchema,
   CreateEnvironmentEntrySchema,
   RoleSchema,
   RotateEpochEntrySchema,
@@ -96,6 +97,7 @@ export {
   ChainEntryTooLargeError,
   ChainHeadConflictError,
   ChainInvalidReasonSchema,
+  CheckpointStateMismatchError,
   CompositeRequiredError,
   DataLimitExceededError,
   DataLimitResourceSchema,

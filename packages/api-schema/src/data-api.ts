@@ -13,7 +13,11 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { CreateEnvironmentEntrySchema, RotateEpochEntrySchema } from "./chain.ts";
+import {
+  CheckpointEntrySchema,
+  CreateEnvironmentEntrySchema,
+  RotateEpochEntrySchema,
+} from "./chain.ts";
 import {
   CreateEnvironmentManifestSchema,
   CreateEnvironmentMetaStatementSchema,
@@ -37,6 +41,7 @@ import {
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   ChainHeadConflictError,
+  CheckpointStateMismatchError,
   DataLimitExceededError,
   DekWrapExistsError,
   DekWrapNotFoundError,
@@ -189,6 +194,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           deks: Schema.Array(WrappedDekSchema),
           // manifestVersion 1・変数空集合・epoch 1(§12-4 — 2026-08-18)
           manifest: CreateEnvironmentManifestSchema,
+          // 境界 checkpoint(§12-4 — 2026-08-27 セッション 33 = 2-G′)。
+          // create = H+1、checkpoint = H+2 の 2 エントリを原子受理する。
+          // カバーは当該環境 1 タプルのみ(epoch 1・manifestVersion 1・同梱
+          // マニフェストの signed_bytes ハッシュ・変数空集合の values_digest)
+          checkpoint: CheckpointEntrySchema,
         }),
       ),
       success: EnvironmentChainResultSchema,
@@ -216,6 +226,9 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         // (duplicate-environment)の下では既存ラップを持ちえないが、規則の変化で
         // 409 が契約外(500)へ落ちないよう契約として宣言する
         DekWrapExistsError,
+        // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準。作成は変数空集合の
+        // values_digest との一致)
+        CheckpointStateMismatchError,
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
@@ -233,6 +246,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           // マニフェスト導入前に作成された環境の最初の rotate は v1 を同梱する
           // = 移行経路 — session-27 §14 PR-M1)
           manifest: EnvironmentManifestSchema,
+          // 境界 checkpoint(§12-4 — 2026-08-27 セッション 33 = 2-G′)。
+          // rotate = H+1、checkpoint = H+2。タプルは new_epoch・同梱マニフェストの
+          // (manifestVersion, signed_bytes ハッシュ)・受理時点の現在値
+          // (未再暗号化 = 旧エポックの値 — §12-7 の正当な状態)の values_digest
+          checkpoint: CheckpointEntrySchema,
         }),
       ),
       success: EnvironmentChainResultSchema,
@@ -256,6 +274,10 @@ export const environmentsGroup = HttpApiGroup.make("environments")
         // 確立エポック(rotate = new_epoch)への既存ラップは現行チェーン規則
         // (エポック単調性)の下では存在しえないが、create と同じ理由で宣言する
         DekWrapExistsError,
+        // 境界 checkpoint の内容突合(§6.4 — 複合の適用後基準)。宣言ヘッド確定後の
+        // 並行 push で values_digest が外れた場合の 422 — クライアントは再 pull の
+        // 上で有界再試行する(§12-4)
+        CheckpointStateMismatchError,
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),

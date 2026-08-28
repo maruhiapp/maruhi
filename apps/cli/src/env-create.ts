@@ -25,6 +25,7 @@ import { computeDekCommitment, generateDek, signChainEntry, SUITE_ID } from "@ma
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
@@ -281,6 +282,19 @@ function attemptCreate(
     if (manifest.manifestVersion !== 1 || manifest.prevManifestSigHashHex !== "") {
       return yield* Effect.fail(cliError("Failed to sign the environment manifest"));
     }
+    // 境界 checkpoint(H+2 — §12-4。2026-08-27 セッション 33): 当該環境 1 タプル
+    // (epoch 1・manifestVersion 1・同梱マニフェストのハッシュ・変数空集合の
+    // values_digest)。CAS リトライでは他の同梱物とともに再署名される
+    const checkpoint = yield* signBoundaryCheckpoint({
+      compositeEntry: entry,
+      environmentId: input.environmentId,
+      epoch: 1,
+      manifestVersion: 1,
+      manifestSigHashHex: signedManifest.manifestSigHashHex,
+      values: [],
+      member: state.member,
+      signingKey: input.signingKeyPair.privateKey,
+    });
     // journal-before-send(3-F): 送信前に intent を追記する(永続化に失敗したら
     // 送信しない — fail-closed)。応答消失・クラッシュで失われるのは「成功した
     // という思い込み」ではなく「確認義務の記録」になる
@@ -310,6 +324,7 @@ function attemptCreate(
             manifestVersion: 1,
             prevManifestSigHashHex: "",
           },
+          checkpoint,
         },
       })
       .pipe(

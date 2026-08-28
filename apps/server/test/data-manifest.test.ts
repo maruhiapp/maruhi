@@ -33,6 +33,7 @@ import {
   requestJson,
   rotateEnvironmentComposite,
   rotateEnvironmentOk,
+  stripTrailingCheckpoint,
 } from "./support/data-fixture.ts";
 import {
   aadFor,
@@ -401,8 +402,11 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
 
   it("initializes manifestVersion 1 through a rotation for a pre-manifest environment (移行経路 — session-27 §14)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
+    // マニフェスト・checkpoint 導入前に作成された環境をシミュレートする:
+    // チェーン末尾の境界 checkpoint を取り除き(旧世代チェーンにはタプルが
+    // 存在しない — §4.3 (2) の束縛対象なし)、マニフェスト保存行も削除する
+    await stripTrailingCheckpoint(fixture, ENV);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // マニフェスト導入前に作成された環境を、保存行の削除でシミュレートする
     await queryProjectDo(
       projectId,
       "DELETE FROM environment_manifests WHERE environment_id = ?",
@@ -457,10 +461,14 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     // 非複合経路の v1 は宣言ヘッド = 受理時点の現ヘッドを要求し、rotate 前の
     // ヘッドに epoch 1 を焼き込んだブートストラップ(stale アンカー)を塞ぐ
     const dek = await createEnvironmentOk(fixture, ENV, "App");
+    // マニフェスト・checkpoint 導入前に作成された環境をシミュレートする(チェーンに
+    // タプルを残さない — 上の移行経路テストと同じ理由)。create / rotate 両複合の
+    // 境界 checkpoint をそれぞれ末尾から取り除く
+    await stripTrailingCheckpoint(fixture, ENV);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const staleHead = fixture.head;
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
-    // マニフェスト導入前に作成された環境を、保存行の削除でシミュレートする
+    await stripTrailingCheckpoint(fixture, ENV);
     await queryProjectDo(
       projectId,
       "DELETE FROM environment_manifests WHERE environment_id = ?",
@@ -524,6 +532,45 @@ describe("環境マニフェストの複合受理(§12-5 = CRYPTO_SPEC §4.3)", 
     );
     expect(pinned.status).toBe(204);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1, epoch: 2 });
+  });
+
+  it("routes a stale v1 against an initialized environment to the CAS 409, not the bootstrap pin (session-31 M1-B1 — 2026-08-27)", async () => {
+    // ピンの適用は anchor 未確立(保存済みマニフェストなし)の v1 のみ。初期化済み
+    // 環境(最新 2)への stale v1 は 422(manifestChainHead)ではなく CAS の 409
+    // (currentManifestVersion 付き)へ落とし、正当クライアントの再取得・再署名
+    // ループに合流させる
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const statement = await nextVariableStatement({
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active",
+      authorUserId: MEMBER,
+    });
+    const staleV1 = await signEnvManifestAs(MEMBER, projectId, {
+      suite: "maruhi/v1",
+      environmentId: ENV,
+      epoch: 1,
+      manifestVersion: 1,
+      variablesDigestHex: "ab".repeat(32),
+      envMetaVersion: 1,
+      envMetaSigHashHex: "cd".repeat(32),
+      prevManifestSigHashHex: "",
+      // 宣言ヘッドは現ヘッドより古い位置(作成前のベースチェーンのヘッド)
+      chainHeadHashHex: projectId,
+      chainHeadSeq: 1,
+    });
+    const response = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement, manifest: staleV1 },
+    );
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toMatchObject({
+      _tag: "ManifestVersionConflict",
+      currentManifestVersion: 2,
+    });
   });
 
   it("cascades the manifest row on environment deletion (§12-4)", async () => {

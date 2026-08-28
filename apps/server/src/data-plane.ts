@@ -312,7 +312,12 @@ export type MetaStatementRejectReason = ValueSignatureRejectReason;
 export type ManifestRejectReason =
   | ValueSignatureRejectReason
   | "manifest-digest-mismatch"
-  | "manifest-epoch-mismatch";
+  | "manifest-epoch-mismatch"
+  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1 —
+  // 2026-08-27 セッション 33 = PR-F3b)
+  | "checkpoint-binding-mismatch"
+  | "checkpoint-equivocation"
+  | "checkpoint-regressed";
 
 export type DataLimitResource =
   | "environments"
@@ -342,6 +347,12 @@ export type DataRejection =
   | {
       readonly kind: "composite-required";
       readonly op: "create_environment" | "rotate_epoch" | "checkpoint";
+    }
+  // 境界 checkpoint の内容突合(CRYPTO_SPEC §6.4 — 複合の適用後基準。
+  // AUTH_SPEC §12-4 / §16-2。2026-08-27 セッション 33 = PR-F3b)
+  | {
+      readonly kind: "checkpoint-state-mismatch";
+      readonly reason: "values-digest-mismatch";
     }
   | {
       readonly kind: "chain-head-conflict";

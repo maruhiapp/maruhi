@@ -82,6 +82,8 @@ interface RotateBody {
   readonly deks: readonly WrappedDek[];
   /** 同梱マニフェスト(§12-4 — 発行形。issuer は呼び出し主体が契約)。 */
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
+  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
 /** pull 応答の 1 変数(検証済みステートメント + 配布形の値)。 */
@@ -284,10 +286,13 @@ function makeServer(options: ServerOptions): ServerState {
     return manifest;
   };
 
-  /** 受理: エントリをチェーンへ追記し、同梱ラップを配布集合へ入れる。 */
+  /** 受理: rotate + 境界 checkpoint の 2 エントリを追記し、同梱ラップを配布集合へ入れる(§12-4)。 */
   const acceptRotate = async (body: RotateBody): Promise<void> => {
-    entries.push(body.entry);
-    hashes.push(await computeChainEntryHash(body.entry));
+    entries.push(body.entry, body.checkpoint);
+    hashes.push(
+      await computeChainEntryHash(body.entry),
+      await computeChainEntryHash(body.checkpoint),
+    );
     currentEpoch = body.entry.payload.newEpoch;
     // 配布形 = 受理した発行形 + 呼び出し主体の issuer 情報(§12-2)。同梱
     // ダイジェストが現行集合を覆う場合のみ「最新」として固定する — 受理前に
@@ -1138,6 +1143,78 @@ describe("maruhi env rotate", () => {
     // コミットメントとラップ集合は同一エポック向けのまま再利用される
     expect(second.entry.payload.dekCommitmentHex).toBe(first.entry.payload.dekCommitmentHex);
     expect(second.deks).toEqual(first.deks);
+  });
+
+  it("CheckpointStateMismatch(422)は検証済み pull からやり直して有界再試行する(§12-4)", async () => {
+    // 境界 checkpoint の values_digest 突合の 422 = 宣言ヘッド確定後の並行 push。
+    // 再署名では解決しない(値集合の再取得を要する)ため、リトライは複合送信の
+    // 再署名ループではなく検証済み pull からのやり直しで行う(session-33 §5 F-2)
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: (call) =>
+        call === 0
+          ? {
+              status: 422,
+              json: { _tag: "CheckpointStateMismatch", reason: "values-digest-mismatch" },
+            }
+          : undefined,
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "値競合テスト"], env.layer)).toBe(0);
+    expect(state.rotateBodies).toHaveLength(2);
+    const [first, second] = state.rotateBodies;
+    if (first === undefined || second === undefined) throw new Error("missing bodies");
+    // 再試行は pull からのやり直し = 新しい DEK を生成する(前試行の複合は受理
+    // されておらずエポックも進んでいない — 破棄してよい)
+    expect(second.entry.payload.dekCommitmentHex).not.toBe(first.entry.payload.dekCommitmentHex);
+    // 境界 checkpoint は再試行でも同梱される(値集合は不変なので digest は同一)
+    expect(second.checkpoint.payload.environments[0]?.valuesDigestHex).toBe(
+      first.checkpoint.payload.environments[0]?.valuesDigestHex,
+    );
+    expect(env.logs.join("\n")).toContain("re-pulling and retrying the rotation");
+  });
+
+  it("CheckpointStateMismatch が解消しない場合は有界で打ち切り、再実行を案内する(§12-4)", async () => {
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => ({
+        status: 422,
+        json: { _tag: "CheckpointStateMismatch", reason: "values-digest-mismatch" },
+      }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "値競合テスト"], env.layer)).toBe(1);
+    // 有界(3 試行)で打ち切る — 無限に pull し続けない
+    expect(state.rotateBodies).toHaveLength(3);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("values-digest-mismatch");
+    expect(errors).toContain("Re-run maruhi env rotate to rebuild the checkpoint");
   });
 
   it("CAS リトライ中に他メンバーの並行ローテーションを検出したら、生成済み DEK を使わず中断する", async () => {
