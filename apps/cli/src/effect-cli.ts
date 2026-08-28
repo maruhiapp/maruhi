@@ -65,7 +65,6 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
-import { reconcileDistributedAttestations } from "./attestation.ts";
 import {
   type AuditListFilters,
   auditInvitesOp,
@@ -96,6 +95,7 @@ import {
   openMetadataProject,
   openProject,
   openSession,
+  reconcileGossip,
   resolveProjectId,
 } from "./context.ts";
 import { countNoun, displayText, formatPulledLine, logWarnings, showValues } from "./display.ts";
@@ -952,12 +952,13 @@ function projectVerify(
     yield* checkInviteAnchor(projectId, checked);
     // 他メンバーのヘッド申告との照合(§6.3 ヘッドゴシップ / §6.6)も verify の
     // 一部(矛盾申告 = split view の硬い証拠で中断・証拠保存)。提出は行わない
-    // (verify は master 鍵を要求しない読み取りコマンド)
-    const verified = yield* reconcileDistributedAttestations({
+    // (verify は master 鍵を要求しない読み取りコマンド)。床ヘッドの前進は
+    // attachProject と同じく reconcileGossip の中で全検査通過後に行う
+    const verified = yield* reconcileGossip(
       projectId,
-      view: checked,
-      resync: syncProject(context.client, projectId),
-    });
+      checked,
+      syncProject(context.client, projectId),
+    );
     yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
     yield* io.log(`head: ${verified.state.headHashHex}`);
     yield* io.log(`Members (${verified.state.members.size}):`);

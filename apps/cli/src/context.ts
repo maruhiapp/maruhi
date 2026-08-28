@@ -178,8 +178,14 @@ export interface CheckedFloor {
 
 /**
  * ローカル床の読み込み(fail-open — 初回と破損を区別して知らせる)+ チェーン床
- * 検査(§6.3 規則 (a) のチェーン部分)+ 検証済みヘッドの床前進。規則 (c) の
- * 基準(pullEpoch)はここでは動かさない(チェーン同期単独で前進させない規範)。
+ * 検査(§6.3 規則 (a) のチェーン部分)。規則 (c) の基準(pullEpoch)はここでは
+ * 動かさない(チェーン同期単独で前進させない規範)。
+ *
+ * **床ヘッドの前進はここでは行わない**: 前進はヘッドゴシップの照合
+ * (reconcileGossip)を通過した後だけ。検査より先に記録すると、照合が硬い証拠で
+ * 中断したビューのヘッドが床の恒久記録になり、以後の正直なチェーンを床の
+ * ハッシュ不一致として拒否させられる(拒否ビューの床汚染 — Cursor Security
+ * Agent 指摘、PR #101)。
  *
  * 床ヘッドが自ビューより先(headSeq の後退)は、同期と床ロードの間に兄弟
  * プロセスが床を前進させた正直なレースでも起きるため、即時証拠にせず
@@ -233,10 +239,6 @@ export function loadCheckedFloor(
         return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
       }
     }
-    yield* store.commitHead(projectId, {
-      seq: view.state.headSeq,
-      hashHex: view.state.headHashHex,
-    });
     return { floor: loaded.floor, verified: view };
   });
 }
@@ -430,10 +432,15 @@ export interface OpenProjectOptions {
 
 /**
  * ヘッドゴシップの照合(§6.3 / §6.6): 矛盾申告 = 硬い証拠で中断、future 申告は
- * 有界再同期(1 回)で解決を試みる。ビューが前進したら床ヘッドを追いかけ、
- * アンカー機械照合も新ビューで再適用する(検査は 2 参照のみ)。
+ * 有界再同期(1 回)で解決を試みる。ビューが前進したらアンカー機械照合を
+ * 新ビューで再適用する(検査は 2 参照のみ)。
+ *
+ * **床ヘッドの前進はここで、全検査(床・アンカー・ゴシップ)の通過後に行う**。
+ * 中断したビューのヘッドを床に残すと、拒否したはずの fork が床の恒久記録に
+ * なり、以後の正直なチェーンをハッシュ不一致として拒否させられる(拒否
+ * ビューの床汚染 — Cursor Security Agent 指摘、PR #101)。
  */
-function reconcileGossip(
+export function reconcileGossip(
   projectId: string,
   verified: VerifiedProject,
   resync: Effect.Effect<VerifiedProject, CliError>,
@@ -444,15 +451,10 @@ function reconcileGossip(
       view: verified,
       resync,
     });
-    if (reconciled === verified) {
-      return verified;
+    if (reconciled !== verified) {
+      yield* checkInviteAnchor(projectId, reconciled);
     }
-    const store = yield* FloorStore;
-    yield* store.commitHead(projectId, {
-      seq: reconciled.state.headSeq,
-      hashHex: reconciled.state.headHashHex,
-    });
-    yield* checkInviteAnchor(projectId, reconciled);
+    yield* commitVerifiedHead(projectId, reconciled);
     return reconciled;
   });
 }

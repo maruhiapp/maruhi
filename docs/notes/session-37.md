@@ -251,3 +251,20 @@ AUTH_SPEC §16-1 を「ベクター先行 → crypto → api-schema → server �
   内容(申告 + 自ビューダイジェスト)/ runCli(project verify)経由の中断 /
   提出契機(前進時のみ — 追跡の永続化)/ 提出失敗の非失敗警告(旧サーバー
   404)/ 409 の区別警告
+
+## 11. PR #101 レビュー対応(マージ前追記)
+
+- **pullfrog**: (1) 提出抑制を seq のみ → ヘッド同一性(seq + hash)へ —
+  床 fail-open 下の同一 seq・異ハッシュ equivocation で申告経路を閉じない。
+  (2) 再照合和集合の重複排除を導入し、キーはワイヤ全 6 フィールド — 部分キー
+  だと悪意あるサーバーが 1 フィールドだけ書き換えたレコードで持ち越し分
+  (first.future)をキー衝突で捨てさせられ、裁定 AA の omission bypass 封鎖が
+  無効化される(偽側は署名検証の無言 skip に落ちるため痕跡も残らない)
+- **Cursor Security Agent(HIGH)**: 床ヘッドの前進が loadCheckedFloor の中
+  (ゴシップ照合より前)にあり、照合が硬い証拠で中断したビューのヘッドが床の
+  恒久記録になっていた。拒否した fork が床になると、以後の正直なチェーンが
+  床のハッシュ不一致で恒久拒否される(検出済み equivocation を wedge に転化
+  できる)。修正: 床前進を loadCheckedFloor から reconcileGossip の末尾
+  (床・アンカー・ゴシップの全検査通過後)へ移動し、project verify も同じ
+  reconcileGossip を通す形に一本化。中断時に床が前進しないこと・成功時は
+  従来どおり前進することをコマンド水準のテストで固定

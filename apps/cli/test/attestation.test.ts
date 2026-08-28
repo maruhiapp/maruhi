@@ -329,6 +329,10 @@ describe("コマンド前段への接続(project verify — 矛盾申告での�
     });
     const env = await verifyCommandEnv(built, [matching]);
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
+    // 照合を通過したビューのヘッドは従来どおり床に記録される(前進の位置が
+    // 全検査通過後へ移っただけで、成功時の床の材料は落とさない)
+    const floorLog = await readFile(join(env.floorDir, `${built.projectId}.jsonl`), "utf8");
+    expect(floorLog).toContain('"r":"head"');
   });
 
   it("矛盾申告の配布下で project verify は中断し、警告と証拠を残す", async () => {
@@ -347,6 +351,13 @@ describe("コマンド前段への接続(project verify — 矛盾申告での�
       "utf8",
     );
     expect(evidenceRaw).toContain('"kind":"head-mismatch"');
+    // 中断したビューのヘッドは床に記録されない: 照合前に記録すると、拒否した
+    // はずの fork が床の恒久記録になり、以後の正直なチェーンをハッシュ不一致と
+    // して拒否させられる(Cursor Security Agent 指摘 — 床前進は全検査通過後)
+    const floorLog = await readFile(join(env.floorDir, `${built.projectId}.jsonl`), "utf8").catch(
+      () => "",
+    );
+    expect(floorLog).not.toContain('"r":"head"');
   });
 });
 
