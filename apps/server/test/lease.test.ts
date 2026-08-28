@@ -288,6 +288,34 @@ describe("ワークロードリース: 発行(AUTH_SPEC §14-2 / CRYPTO_SPEC §9
     expect(opened.ok && encodeHex(opened.value)).toBe(encodeHex(dek));
   });
 
+  it("bundles the stored checkpoint-time value snapshot (§14-2 — PR-M3)", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as LeaseBody & {
+      readonly checkpointSnapshot?: {
+        readonly chainSeq: number;
+        readonly entryHashHex: string;
+        readonly values: readonly unknown[];
+      };
+    };
+    // 供給源は checkpoint 受理時の保存行そのもの(§16-2 — 環境作成の境界
+    // checkpoint が誕生時からの基準。作成後の変数はその列挙に含まれない)
+    const stored = await queryProjectDo(
+      projectId,
+      "SELECT chain_seq, entry_hash_hex FROM environment_checkpoints WHERE environment_id = ?",
+      ENV,
+    );
+    expect(body.checkpointSnapshot).toBeDefined();
+    expect(body.checkpointSnapshot?.chainSeq).toBe(stored[0]?.["chain_seq"]);
+    expect(body.checkpointSnapshot?.entryHashHex).toBe(stored[0]?.["entry_hash_hex"]);
+    expect(body.checkpointSnapshot?.values).toEqual([]);
+  });
+
   it("returns values as ciphertext the workload decrypts with the leased DEK", async () => {
     await readyProject();
     const workload = await workloadKeyPair();

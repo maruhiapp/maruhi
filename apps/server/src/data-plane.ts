@@ -223,6 +223,44 @@ export interface RecipientDekValue {
   readonly signerKeyFingerprintHex: string;
 }
 
+/** チェックポイント時点の値スナップショットの 1 エントリ(配布形 — §12-7)。 */
+export interface CheckpointSnapshotEntryValue {
+  readonly variableId: string;
+  readonly version: number;
+  readonly valueSigHashHex: string;
+}
+
+/**
+ * 配布されるチェックポイント時点の値スナップショット(api-schema の
+ * CheckpointValueSnapshot と構造一致 — §12-7 / §14-2。2026-08-28 PR-M3)。
+ * 供給源は checkpoint 受理時に原子保存した行そのもの(§16-2 — 再構成しない)。
+ * chainSeq / entryHashHex は保存済みの対応 checkpoint の位置(クライアント側では
+ * advisory locator — 検証基準はチェーン導出)。
+ */
+export interface CheckpointSnapshotValue {
+  readonly chainSeq: number;
+  readonly entryHashHex: string;
+  readonly values: readonly CheckpointSnapshotEntryValue[];
+}
+
+/**
+ * 値付き応答の省略可能な検証材料フィールド(§12-7 / §14-2): 保存行があれば
+ * 必ず載せ、なければキー自体を置かない(optionalKey のワイヤ形)。pull と
+ * lease の応答組み立てが共有する(分岐を各プログラムに重複させない)。
+ */
+export function optionalDistributionFields(
+  manifest: DistributedEnvManifestValue | null,
+  checkpointSnapshot: CheckpointSnapshotValue | null,
+): {
+  readonly manifest?: DistributedEnvManifestValue;
+  readonly checkpointSnapshot?: CheckpointSnapshotValue;
+} {
+  return {
+    ...(manifest === null ? {} : { manifest }),
+    ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
+  };
+}
+
 export interface EnvironmentPullValue {
   readonly environmentId: string;
   readonly currentEpoch: number;
@@ -241,6 +279,13 @@ export interface EnvironmentPullValue {
    * 同梱する — クライアント側は欠落 = 一律拒否 §6.3)。
    */
   readonly manifest?: DistributedEnvManifestValue;
+  /**
+   * チェックポイント時点の値スナップショット列挙(§12-7 — 2026-08-28 PR-M3)。
+   * 当該環境のエントリを含む最新 checkpoint の保存行があれば必ず同梱する
+   * (クライアント規則 2 は「基準あり + 列挙なし」を拒否する — CRYPTO_SPEC §6.3)。
+   * undefined は基準 checkpoint を持たない環境のみ。
+   */
+  readonly checkpointSnapshot?: CheckpointSnapshotValue;
 }
 
 /**
