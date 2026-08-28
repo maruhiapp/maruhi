@@ -627,7 +627,14 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const created = await createEnvironmentWith(fixture, ENV, "App", deks);
+    // 正例はラップした DEK 自身のコミットメントを渡す(session-31 M1-T1)
+    const created = await createEnvironmentWith(
+      fixture,
+      ENV,
+      "App",
+      deks,
+      await commitmentOf(projectId, ENV, 1, dek),
+    );
     expect(created.status).toBe(200);
     const readerWrap = deks.find((wrap) => wrap.recipientUserId === READER);
     if (readerWrap === undefined) throw new Error("missing reader wrap");

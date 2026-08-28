@@ -635,21 +635,26 @@ export async function createEnvironmentOk(
 }
 
 /**
- * 環境作成リクエストを任意のラップ集合で送る(negative テスト用)。
- * コミットメントは使い捨て DEK から計算する(内容はサーバー検証不能 — §5.2 の
- * 照合は受信者の責務であり、受理判定に影響しない)。
+ * 環境作成リクエストを任意のラップ集合で送る。dekCommitmentHex 省略時は
+ * 使い捨て DEK から計算する(negative テスト用 — 内容はサーバー検証不能で、
+ * §5.2 の照合は受信者の責務であり受理判定に影響しない)。**受理(200)まで
+ * 進める正例は、ラップした DEK 自身のコミットメントを渡すこと**(session-31
+ * M1-T1 — 使い捨てコミットメントの正例は「配布 DEK がチェーンのコミットメントと
+ * 一致せず peer CLI が拒否する形」をテストに固定してしまう)。
  */
 export async function createEnvironmentWith(
   fixture: DataFixture,
   environmentId: string,
   name: string,
   deks: readonly WireWrappedDek[],
+  dekCommitmentHex?: string,
 ): Promise<Response> {
   return createEnvironmentComposite(fixture, {
     environmentId,
     name,
     deks,
-    dekCommitmentHex: await commitmentOf(projectId, environmentId, 1, makeDek()),
+    dekCommitmentHex:
+      dekCommitmentHex ?? (await commitmentOf(projectId, environmentId, 1, makeDek())),
   });
 }
 

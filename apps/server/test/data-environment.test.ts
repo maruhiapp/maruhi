@@ -65,7 +65,14 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const created = await createEnvironmentWith(fixture, ENV, "App", deks);
+    // 正例はラップした DEK 自身のコミットメントを渡す(session-31 M1-T1)
+    const created = await createEnvironmentWith(
+      fixture,
+      ENV,
+      "App",
+      deks,
+      await commitmentOf(projectId, ENV, 1, dek),
+    );
     expect(created.status).toBe(200);
     const body = (await created.json()) as {
       environmentId: string;
@@ -233,11 +240,12 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
+    const dekCommitmentHex = await commitmentOf(projectId, ENV, 1, dek);
     const stale = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
       deks,
-      dekCommitmentHex: "ab".repeat(32),
+      dekCommitmentHex,
       parentHeadHashHex: projectId, // genesis ハッシュ = 2 世代前のヘッド
     });
     expect(stale.status).toBe(409);
@@ -251,11 +259,12 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [] });
 
+    // 再試行の正例はラップした DEK 自身のコミットメント(session-31 M1-T1)
     const retried = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
       deks,
-      dekCommitmentHex: "ab".repeat(32),
+      dekCommitmentHex,
     });
     expect(retried.status).toBe(200);
   });
@@ -271,12 +280,20 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const duplicate = await createEnvironmentWith(fixture, "env-app-0002", "App", deks);
+    const commitment = await commitmentOf(projectId, "env-app-0002", 1, dek);
+    const duplicate = await createEnvironmentWith(fixture, "env-app-0002", "App", deks, commitment);
     expect(duplicate.status).toBe(409);
     const body = (await duplicate.json()) as { reason: string };
     expect(body.reason).toBe("duplicate-name");
 
-    const second = await createEnvironmentWith(fixture, "env-app-0002", "Staging", deks);
+    // 受理(200)まで進む正例はラップした DEK のコミットメント(session-31 M1-T1)
+    const second = await createEnvironmentWith(
+      fixture,
+      "env-app-0002",
+      "Staging",
+      deks,
+      commitment,
+    );
     expect(second.status).toBe(200);
     const renamed = await renameEnvironmentRequest(fixture, "env-app-0002", "App", MEMBER);
     expect(renamed.status).toBe(409);
@@ -534,11 +551,12 @@ describe("エポックとローテーション(§12-4 複合 / §12-5 / §12-6 /
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
+    // 受理される正例はラップした DEK 自身のコミットメント(session-31 M1-T1)
     const rotation = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
       deks: complete,
-      dekCommitmentHex: "ab".repeat(32),
+      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
     });
     expect(rotation.status).toBe(200);
     // 複合は rotate(H+1)+ 境界 checkpoint(H+2)の 2 エントリを追記する(§12-4)
