@@ -32,6 +32,7 @@ import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
+import { issueCheckpoint } from "./checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
@@ -2317,6 +2318,40 @@ function rotateWithWarnings(
       targets,
       sink: warnings,
     });
+    // 発行契機 (i)(CRYPTO_SPEC §6.3 — SHOULD): rotate とそれに伴う再暗号化の
+    // **完了後**に当該環境の周期 checkpoint を発行する(境界分は複合に同梱済み。
+    // 完了後の発行なので受理時点一致検査と自己競合しない)。カバーは当該環境
+    // 1 タプル(全環境カバーを rotate に課すと読んでいない環境の値取得を強制
+    // する — §12-4 の監査規律と同じ論法。裁定は docs/notes/session-35.md)。
+    // 部分完了・失敗時は発行しない(公証すべき「完了後のデータ状態」がない)。
+    // SHOULD なので発行失敗は rotate の成功を覆さず、警告で開示する
+    if (outcome.remaining === 0 && outcome.failure === null) {
+      yield* issueCheckpoint({
+        client: input.client,
+        verified: rotated.view,
+        resync: input.resync,
+        environmentIds: [input.environmentId],
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+        floorFor: () => Effect.succeed(input.floor),
+      }).pipe(
+        Effect.tap((issued) =>
+          Effect.gen(function* () {
+            warnings.push(...issued.warnings);
+            yield* io.log(
+              `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
+            );
+          }),
+        ),
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            warnings.push(
+              `The post-rotation periodic checkpoint could not be issued (${error.message}). The boundary checkpoint from the rotation still holds; run maruhi project checkpoint to notarize the re-encrypted state (CRYPTO_SPEC §6.3 (i))`,
+            );
+          }),
+        ),
+      );
+    }
     return {
       mode: "rotated",
       previousEpoch: currentEpoch,

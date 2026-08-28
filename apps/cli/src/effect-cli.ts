@@ -73,6 +73,7 @@ import {
   auditSelfOp,
   auditVerifyOp,
 } from "./audit.ts";
+import { ANCHOR_REFRESH_PROPOSAL, checkpointProposal, issueCheckpoint } from "./checkpoint.ts";
 import { ciRunOp } from "./ci-run.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
@@ -83,7 +84,7 @@ import {
   type ConfigKey,
   ConfigStore,
 } from "./config.ts";
-import type { CliServices, CommonFlags } from "./context.ts";
+import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
 import {
   checkInviteAnchor,
   commitVerifiedHead,
@@ -100,9 +101,10 @@ import { countNoun, displayText, formatPulledLine, logWarnings, showValues } fro
 import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
-import { CliError, usageError } from "./errors.ts";
+import { CliError, cliError, usageError } from "./errors.ts";
 import { internalErrorKind, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
+import type { FloorHandle } from "./floor-check.ts";
 import {
   type InviteInputRejection,
   type InviteRole,
@@ -489,6 +491,11 @@ const projectAnchorConfig = {
   project: singleValued("project", "Project ID to anchor (defaults to config defaultProject)"),
 };
 
+const projectCheckpointConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued("project", "Project ID to checkpoint (defaults to config defaultProject)"),
+};
+
 /** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
 const environmentIdArgument = (name: string, description: string) =>
   Argument.string(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
@@ -667,7 +674,12 @@ const GROUP_CONFIGS: Readonly<
     recover: keyRecoverConfig,
     recovery: keyRecoveryConfig,
   },
-  project: { init: projectInitConfig, verify: projectVerifyConfig, anchor: projectAnchorConfig },
+  project: {
+    init: projectInitConfig,
+    verify: projectVerifyConfig,
+    anchor: projectAnchorConfig,
+    checkpoint: projectCheckpointConfig,
+  },
   ci: { run: ciRunConfig },
   rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
   audit: {
@@ -970,6 +982,34 @@ function projectVerify(
   });
 }
 
+/**
+ * 発行契機 (iii) の提案(CRYPTO_SPEC §6.3): pull / push の成功後に基準
+ * チェックポイントの鮮度(7 日超・未発行)を検出したら提案行を出す。提案の
+ * 判定失敗でコマンド本体の成功を覆さない(提案は SHOULD の付随)。push では
+ * アンカー更新の提案(session-25 §8)を同じ導線に同梱する。
+ */
+function proposeCheckpointRefresh(
+  context: Pick<ProjectContext, "client" | "verified" | "session">,
+  options: { readonly includeAnchor: boolean },
+): Effect.Effect<void, never, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const proposal = yield* checkpointProposal({
+      client: context.client,
+      verified: context.verified,
+      signerUserId: context.session.userId,
+      nowMs: Date.now(),
+    });
+    if (proposal === null) {
+      return;
+    }
+    yield* io.logError(proposal);
+    if (options.includeAnchor) {
+      yield* io.logError(`Note: ${ANCHOR_REFRESH_PROPOSAL}`);
+    }
+  }).pipe(Effect.catch(() => Effect.void));
+}
+
 /** `maruhi env rotate <id> [--reason <text>] [--new-epoch]`(§7 / §12-4)。 */
 function envRotateCommand(
   flags: CommonFlags & {
@@ -1006,11 +1046,18 @@ function envRotateCommand(
     });
     // 「新しいエポックを要求したか」は起動時のフラグで決まる(--reason は
     // 新エポックを作る経路でのみ必須 — env-rotate.ts の requireReason)
-    return yield* reportRotation(
+    const code = yield* reportRotation(
       environmentId,
       summary,
       flags.newEpoch === true || flags.reason !== undefined,
     );
+    if (summary.mode === "rotated") {
+      // アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b)): エポックが
+      // 進んだ = コミット済みアンカーのエポック床が古くなった
+      const io = yield* CliIo;
+      yield* io.logError(`Note: ${ANCHOR_REFRESH_PROPOSAL}`);
+    }
+    return code;
   });
 }
 
@@ -1391,6 +1438,10 @@ function reportSweepOutcome(
       );
       exitCode = 1;
     }
+    if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
+      // アンカー更新の提案(session-25 §8)— sweep 全体で 1 行だけ出す
+      yield* io.logError(`Note: ${ANCHOR_REFRESH_PROPOSAL}`);
+    }
     return exitCode;
   });
 }
@@ -1575,6 +1626,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       if (values.show) {
         yield* showValues(pulled.variables);
       }
+      // 発行契機 (iii)(CRYPTO_SPEC §6.3): pull 成功時の基準チェックポイントの
+      // 鮮度検出。提案のみ(自動発行しない)
+      yield* proposeCheckpointRefresh(context, { includeAnchor: false });
     }),
   ).pipe(
     Command.withDescription(
@@ -1634,6 +1688,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       yield* io.log(
         `Pushed ${displayText(values.name)} (version=${pushed.version}, epoch=${pushed.epoch})`,
       );
+      // 発行契機 (iii)(CRYPTO_SPEC §6.3): push 成功時の基準チェックポイントの
+      // 鮮度検出。アンカー更新の提案(session-25 §8)は同じ導線に同梱する
+      // (裁定は docs/notes/session-35.md)
+      yield* proposeCheckpointRefresh(context, { includeAnchor: true });
     }),
   ).pipe(
     Command.withDescription(
@@ -1916,9 +1974,53 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const projectCheckpoint = Command.make("checkpoint", projectCheckpointConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      // 発行はチェーン追記(Ed25519 署名)を伴うので master 鍵を要求する。
+      // 検証済みビューの構築(全環境の検証済み pull)はチェックポイントの
+      // 材料そのもの — 値の取得は var.read として正しく記録される(明示操作)
+      const context = yield* openProject({ server: values.server, project: values.project });
+      // 環境床ハンドルは先に解決しておく(issueCheckpoint の R を CliIo に保つ)
+      const floors = new Map<string, FloorHandle>();
+      for (const environmentId of context.verified.state.environments.keys()) {
+        floors.set(environmentId, yield* floorHandleFor(context, environmentId));
+      }
+      const summary = yield* issueCheckpoint({
+        client: context.client,
+        verified: context.verified,
+        resync: context.resync,
+        environmentIds: "all",
+        signerUserId: context.session.userId,
+        signingKeyPair: context.masterKeys.sigKeyPair,
+        floorFor: (environmentId) => {
+          const handle = floors.get(environmentId);
+          return handle === undefined
+            ? Effect.fail(
+                cliError(`No floor handle for environment ${displayText(environmentId)} — re-run`),
+              )
+            : Effect.succeed(handle);
+        },
+      });
+      yield* logWarnings(summary.warnings);
+      yield* io.log(
+        `Checkpoint accepted at chain seq ${summary.headSeq}, covering ${countNoun(summary.environmentIds.length, "environment")}${summary.attestedAuditHead ? " (audit head attested)" : ""}`,
+      );
+      if (summary.skippedEnvironmentIds.length > 0) {
+        yield* io.logError(
+          `Warning: ${countNoun(summary.skippedEnvironmentIds.length, "environment")} could not be covered (${summary.skippedEnvironmentIds.map(displayText).join(", ")}). Re-run maruhi project checkpoint later to cover them`,
+        );
+      }
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain (CRYPTO_SPEC §6.3)",
+    ),
+  );
+
   const project = Command.make("project").pipe(
-    Command.withDescription("Manage projects (init / verify / anchor)"),
-    Command.withSubcommands([projectInit, projectVerifyCommand, projectAnchor]),
+    Command.withDescription("Manage projects (init / verify / anchor / checkpoint)"),
+    Command.withSubcommands([projectInit, projectVerifyCommand, projectAnchor, projectCheckpoint]),
   );
 
   const ciRun = Command.make("run", ciRunConfig, (values) =>
