@@ -87,6 +87,8 @@
 
 ### L-2. API トークンに有効期限がない(Low)
 
+> **状態(2026-08-28 追記)**: **仕様改訂起草済み** — 申し送り(推奨対応順序 5「トークン管理 UI 設計・仕様改訂と同時に」)どおり、W0(Web ダッシュボード画面設計 — ADR-0018 改訂 2)のトークン境界裁定と同時に AUTH_SPEC §6 へ既定 TTL(起草値 90 日・再ログイン更新)を起草した。実装は Wave 3 W3a(docs/notes/web-dashboard-design.md §7)のため「修正済み」とはしない。
+
 **場所**: `apps/server/src/db.package/repos.ts`(`expiresAt: null` 固定)、`apps/server/src/auth.package/token.ts`(**現 main でも同様**)
 
 **内容**: device flow で発行されるトークンは無期限。失効手段(自己失効・同名再発行によるローテーション)はあるが、漏洩に気づかない限り漏洩トークンが永続する。AUTH_SPEC §6 はデータモデルに `expires_at` を持つが TTL を義務付けていないため仕様違反ではない。CLI トークンはキーチェーン保存かつスコープ実効権限が min(スコープ, チェーン role) で束縛される点は緩和要素。
