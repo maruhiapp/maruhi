@@ -2027,6 +2027,13 @@ function resumeReencryption(input: {
             targets,
             sink: warnings,
           });
+    // 発行契機 (i)(CRYPTO_SPEC §6.3): 再開経路による**完了**も同じ節目 —
+    // 初回実行はクラッシュで発行へ到達しておらず、中断していた再暗号化が
+    // ここで完了して初めて「完了後のデータ状態」が成立する。通常経路と同じ
+    // 条件(完全完了のみ)で発行する(PR #99 Bugbot 指摘対応)
+    if (outcome.remaining === 0 && outcome.failure === null) {
+      yield* issuePostRotationCheckpoint(input.input, input.pulled.verified, warnings);
+    }
     return {
       mode: "resumed",
       previousEpoch: currentEpoch,
@@ -2367,6 +2374,8 @@ function computeRotationCommitmentHex(input: {
  * 1 タプル(全環境カバーを rotate に課すと読んでいない環境の値取得を強制
  * する — §12-4 の監査規律と同じ論法。裁定は docs/notes/session-35.md)。
  * 部分完了・失敗時は呼ばない(公証すべき「完了後のデータ状態」がない)。
+ * 再開経路(resumeReencryption)による完了も同じ節目として発行する —
+ * 初回実行はクラッシュで発行へ到達していない(PR #99 Bugbot 指摘)。
  * SHOULD なので発行失敗は rotate の成功を覆さず、警告で開示する。
  */
 function issuePostRotationCheckpoint(
