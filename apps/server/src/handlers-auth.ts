@@ -273,7 +273,15 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const principal = yield* (yield* RequestAuth).principal;
         const identities = yield* IdentityRepo;
         const orgs = yield* identities.listUserOrgs(principal.userId);
-        return { userId: principal.userId, orgs };
+        // トークン主体には提示トークンのスコープを返す(AUTH_SPEC §16-2 —
+        // クライアントが実効権限 min(スコープ, チェーン role) を事前判定する
+        // 材料。自分が提示した資格情報の属性であり新しい情報を開示しない)。
+        // セッション主体は欠落 = 本人のフルパワー
+        return {
+          userId: principal.userId,
+          orgs,
+          ...(principal.kind === "token" ? { tokenScopes: principal.scopes } : {}),
+        };
       }),
     )
     .handle("logout", ({ request }) =>

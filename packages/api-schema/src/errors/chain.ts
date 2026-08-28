@@ -102,15 +102,13 @@ export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacity
  * generic chain append rejects them so the entry-plus-data atomicity cannot
  * be bypassed ("エポックはあるがラップがない" 中間状態を作らせない).
  *
- * `checkpoint`(2026-08-27 — PR-F3a)も現状は同じ拒否の対象: 境界
- * チェックポイントは複合の同梱(AUTH_SPEC §12-4 — PR-F3b)のみが受理経路で、
- * standalone(周期)チェックポイントの汎用 append 受理(§16-2 の内容突合 +
- * スナップショット保存)が実装されるまで fail-closed に保つ(内容突合なしの
- * 受理は、偽タプルの持ち込みで §4.3 (2) のチェックポイント束縛を汚染できる
- * fail-open になるため)。
+ * `checkpoint` は本エラーの対象ではない(2026-08-28 — PR-M2): standalone
+ * (周期)チェックポイントは §16-2 のとおり汎用 append が受理検証(内容突合 +
+ * スナップショット原子保存)つきで受理する。PR-F3a〜M2 実装前の過渡期のみ
+ * fail-closed の拒否対象だった。
  */
 export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",
-  { op: Schema.Literals(["create_environment", "rotate_epoch", "checkpoint"]) },
+  { op: Schema.Literals(["create_environment", "rotate_epoch"]) },
   { httpApiStatus: 422 },
 ) {}

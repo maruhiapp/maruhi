@@ -319,6 +319,17 @@ export type ManifestRejectReason =
   | "checkpoint-equivocation"
   | "checkpoint-regressed";
 
+/**
+ * checkpoint 内容突合の 422 理由(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 —
+ * 2026-08-28 PR-M2)。api-schema の CheckpointMismatchReasonSchema と一致させる。
+ */
+export type CheckpointMismatchReason =
+  | "manifest-mismatch"
+  | "values-digest-mismatch"
+  | "audit-head-unknown"
+  | "audit-head-stale"
+  | "environment-deleted";
+
 export type DataLimitResource =
   | "environments"
   | "environment-rows"
@@ -346,13 +357,14 @@ export type DataRejection =
   // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired へ写像する)
   | {
       readonly kind: "composite-required";
-      readonly op: "create_environment" | "rotate_epoch" | "checkpoint";
+      readonly op: "create_environment" | "rotate_epoch";
     }
-  // 境界 checkpoint の内容突合(CRYPTO_SPEC §6.4 — 複合の適用後基準。
-  // AUTH_SPEC §12-4 / §16-2。2026-08-27 セッション 33 = PR-F3b)
+  // checkpoint の内容突合(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 — 境界同梱分
+  // 〔複合の適用後基準 — §12-4〕と standalone 分〔受理時点 = 適用前基準〕の
+  // 両経路で共通。語彙は api-schema の CheckpointMismatchReasonSchema と一致)
   | {
       readonly kind: "checkpoint-state-mismatch";
-      readonly reason: "values-digest-mismatch";
+      readonly reason: CheckpointMismatchReason;
     }
   | {
       readonly kind: "chain-head-conflict";

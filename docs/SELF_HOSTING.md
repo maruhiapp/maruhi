@@ -271,6 +271,24 @@ Between steps 1 and 3, verification of existing environments continues on the
 pre-checkpoint rules (their chains carry no checkpoint yet); each environment
 picks up checkpoint-bound verification at its first post-update rotation.
 
+**Periodic checkpoints and the audit head (2026-08-28 release)**: this release
+adds standalone (periodic) checkpoints — `maruhi project checkpoint`, plus an
+automatic one after each completed rotation — and audit-head notarization
+backed by `GET /projects/:id/audit-head`. Two version-skew notes:
+
+- **Update the server before the CLIs** (same direction as always). A new CLI
+  against an old server fails closed: the standalone checkpoint append is
+  rejected by the old server (HTTP 422 `CompositeRequired`), and the audit-head
+  fetch does not exist there — the explicit command reports the error, and the
+  automatic post-rotation issuance reports it as a warning while the rotation
+  itself still succeeds. Nothing is silently dropped.
+- **The audit-head initialization migration is automatic.** The cumulative
+  audit-head hash column (AUDIT_SPEC §5.1) is derived lazily: the first
+  audit-head read or checkpoint acceptance after the update recomputes it from
+  the project's existing audit rows. No operator action is needed; on projects
+  with very large audit logs the first such request does a one-time full pass
+  over the rows.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata

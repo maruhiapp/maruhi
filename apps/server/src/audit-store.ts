@@ -12,7 +12,9 @@
 
 import type { AuditEventRecord } from "@maruhi/core";
 import { CHAIN_MIRROR_EVENT_PREFIX } from "@maruhi/core";
-import { Context, Layer } from "effect";
+import type { AuditHeadRow } from "@maruhi/crypto";
+import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
+import { Context, Effect, Layer } from "effect";
 
 import { randomHex } from "./ids.ts";
 
@@ -174,25 +176,14 @@ interface AuditEventsQuery {
   readonly visibility: AuditVisibility;
 }
 
-/** 保存行の読み取り形(§5.1 の全列。NULL は null)。 */
-export interface StoredAuditEventRow {
-  readonly seq: number;
+/**
+ * 保存行の読み取り形(§5.1 の全列。NULL は null)。列集合は監査ヘッド計算の
+ * 入力形(AuditHeadRow — §5.1 の固定 17 列)と同一で、row_id の非 NULL 制約と
+ * payload の防御的 parse(TEXT そのままではなくオブジェクト)だけが異なる。
+ */
+export interface StoredAuditEventRow extends Omit<AuditHeadRow, "rowId" | "payloadText"> {
   /** ワイヤ行識別子(§5.1 row_id — 16 バイト乱数 hex)。 */
   readonly rowId: string;
-  readonly serverTs: number;
-  readonly clientTs: number | null;
-  readonly event: string;
-  readonly actorType: string;
-  readonly actorUserId: string | null;
-  readonly actorKeyFingerprintHex: string | null;
-  readonly actorApiTokenId: string | null;
-  readonly targetUserId: string | null;
-  readonly targetKeyFingerprintHex: string | null;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
-  readonly epoch: number | null;
-  readonly version: number | null;
-  readonly chainSeq: number | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
@@ -225,6 +216,30 @@ interface AuditStoreShape {
    * スキップした穴のない limit 件になる(件数・カーソルに漏れない — §7)。
    */
   readonly queryEventsSync: (query: AuditEventsQuery) => readonly StoredAuditEventRow[];
+  /**
+   * 監査ヘッド累積ハッシュ列(AUDIT_SPEC §5.1 — audit_head_hashes)を
+   * MAX(seq) まで伸ばす。ハッシュ列は append-only 行からの決定論的な導出値で、
+   * materialize は読み取り経路(GET /audit-head・checkpoint 受理検証)の直前に
+   * 行う — SHA-256 が非同期(WebCrypto)のため追記の同期ブロックには置けず、
+   * 遅延拡張なら var.read の大量追記ホットパスにハッシュ計算が乗らない。
+   * 初回呼び出しが既存全行からの再計算 = §5.1 の導入マイグレーションを兼ねる。
+   * どの読み手も拡張後の完全な列しか観測しないため、行と列の食い違いは
+   * 観測不能(設計の裁定は docs/notes/session-35.md)。DO permit 下で呼ぶこと。
+   */
+  readonly ensureHeadCurrent: Effect.Effect<void>;
+  /** 現在の累積ハッシュ(監査行ゼロは空文字列)。ensureHeadCurrent の後に呼ぶ。 */
+  readonly currentHeadHexSync: () => string;
+  /**
+   * 累積ハッシュ列内の出現位置(= 監査 seq。所属検査 — CRYPTO_SPEC §6.4)。
+   * 列に存在しなければ null。ensureHeadCurrent の後に呼ぶ。
+   */
+  readonly headPositionSync: (headHashHex: string) => number | null;
+  /**
+   * 直前 checkpoint のミラー行(chain.checkpointed — 公証の有無を問わない)の
+   * 監査 seq(位置下限検査の基準 — CRYPTO_SPEC §6.4)。存在しなければ null
+   * (プロジェクト初の checkpoint — 位置下限を課さない)。
+   */
+  readonly latestCheckpointMirrorSeqSync: () => number | null;
 }
 
 export class AuditStore extends Context.Service<AuditStore, AuditStoreShape>()("AuditStore") {}
@@ -349,8 +364,129 @@ export const makeAuditStore = (sql: SqlStorage): AuditStoreShape => {
     },
     readRotationSync: makeRotationRead(sql),
     queryEventsSync: (query) => queryEvents(sql, query),
+    ensureHeadCurrent: extendHeadHashes(sql),
+    currentHeadHexSync: () => {
+      const row = sql
+        .exec("SELECT head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1")
+        .toArray()[0];
+      return row === undefined ? "" : String(row["head_hash_hex"]);
+    },
+    headPositionSync: (headHashHex) => {
+      const row = sql
+        .exec("SELECT seq FROM audit_head_hashes WHERE head_hash_hex = ? LIMIT 1", headHashHex)
+        .toArray()[0];
+      return row === undefined ? null : Number(row["seq"]);
+    },
+    latestCheckpointMirrorSeqSync: () => {
+      const row = sql
+        .exec("SELECT MAX(seq) AS seq FROM audit_events WHERE event = 'chain.checkpointed'")
+        .toArray()[0];
+      return row === undefined || row["seq"] === null ? null : Number(row["seq"]);
+    },
   };
 };
+
+// ---------------------------------------------------------------------------
+// 監査ヘッド累積ハッシュの遅延拡張(AUDIT_SPEC §5.1 — 実装形の裁定は
+// docs/notes/session-35.md)。正規形は @maruhi/crypto(audit-head.json が固定)。
+// ---------------------------------------------------------------------------
+
+/** 1 チャンクで読む・書く行数(2 列 × 50 行 = 100 バインドで SQLite 上限内)。 */
+const HEAD_CHUNK_ROWS = 50;
+
+/** 拡張の読み取り列(row_digest の固定 17 列 — AUDIT_SPEC §5.1 の列順)。 */
+const HEAD_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
+  actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,
+  environment_id, variable_id, epoch, version, chain_seq, payload`;
+
+function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
+  return {
+    seq: Number(row["seq"]),
+    rowId: textOrNull(row["row_id"]),
+    serverTs: Number(row["server_ts"]),
+    clientTs: numberOrNull(row["client_ts"]),
+    event: String(row["event"]),
+    actorType: String(row["actor_type"]),
+    actorUserId: textOrNull(row["actor_user_id"]),
+    actorKeyFingerprintHex: textOrNull(row["actor_key_fingerprint"]),
+    actorApiTokenId: textOrNull(row["actor_api_token_id"]),
+    targetUserId: textOrNull(row["target_user_id"]),
+    targetKeyFingerprintHex: textOrNull(row["target_key_fingerprint"]),
+    environmentId: textOrNull(row["environment_id"]),
+    variableId: textOrNull(row["variable_id"]),
+    epoch: numberOrNull(row["epoch"]),
+    version: numberOrNull(row["version"]),
+    chainSeq: numberOrNull(row["chain_seq"]),
+    // payload は保存 TEXT のバイト列そのまま(JSON 正規化をしない — §5.1)
+    payloadText: textOrNull(row["payload"]),
+  };
+}
+
+/**
+ * audit_head_hashes を audit_events の MAX(seq) まで伸ばす。
+ *
+ * 永続化の粒度はタスク単位(chain-do.ts 冒頭のとおり DO SQLite の書き込みは
+ * タスクごとに原子コミットされ、失敗で巻き戻るのは**現在の**タスクの書き込み
+ * のみ)。このループはチャンクごとに await(SHA-256)を挟んでタスクを跨いで
+ * 進むため、完了済みチャンクの INSERT は先行タスクで確定済みで、途中失敗が
+ * 失いうるのは高々進行中チャンクの単一 INSERT(そのチャンクの全ハッシュ計算が
+ * 成功した後の 1 回の sql.exec)だけ。どの失敗時点でも列は seq 1 からの連続
+ * 接頭辞のまま残り、次回呼び出しが保存済みの末尾から再開して収束する — 巨大な
+ * 既存ログの初回パスが実行環境の上限で切られても進捗は保存され、再試行が必ず
+ * 前進する(このため呼び出しごとの反復上限は設けない)。seq の欠番は §5.1 の
+ * 不変条件違反(append-only ストレージの破損)なので defect にする。
+ */
+const extendHeadHashes = (sql: SqlStorage): Effect.Effect<void> =>
+  Effect.promise(async () => {
+    let hashedUpTo = 0;
+    let head = "";
+    const state = sql
+      .exec(`SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`)
+      .toArray()[0];
+    if (state !== undefined) {
+      hashedUpTo = Number(state["seq"]);
+      head = String(state["head_hash_hex"]);
+    }
+    for (;;) {
+      const rows = sql
+        .exec(
+          `SELECT ${HEAD_ROW_COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq LIMIT ?`,
+          hashedUpTo,
+          HEAD_CHUNK_ROWS,
+        )
+        .toArray()
+        .map(toAuditHeadRow);
+      if (rows.length === 0) {
+        return;
+      }
+      const inserts: (string | number)[] = [];
+      for (const row of rows) {
+        if (row.seq !== hashedUpTo + 1) {
+          throw new Error(
+            `audit log has a seq gap at ${hashedUpTo + 1} (append-only invariant violated)`,
+          );
+        }
+        const digest = await computeAuditRowDigest(row);
+        if (!digest.ok) {
+          // 保存行由来の入力で構造不正は実装バグ(エラー値に秘密は含まれない)
+          throw new Error(`audit row digest failed at seq ${row.seq}: ${digest.error.kind}`);
+        }
+        const next = await computeAuditHeadHash(SUITE_ID, head, row.seq, digest.value);
+        if (!next.ok) {
+          throw new Error(`audit head hash failed at seq ${row.seq}: ${next.error.kind}`);
+        }
+        head = next.value;
+        hashedUpTo = row.seq;
+        inserts.push(row.seq, head);
+      }
+      sql.exec(
+        `INSERT INTO audit_head_hashes (seq, head_hash_hex) VALUES ${rows
+          .map(() => "(?, ?)")
+          .join(", ")}`,
+        ...inserts,
+      );
+    }
+  });
 
 /** queryEventsSync の SELECT 列(StoredAuditEventRow と同順)。 */
 const EVENT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
@@ -456,23 +592,12 @@ const textOrNull = (value: unknown): string | null => (value === null ? null : S
 const numberOrNull = (value: unknown): number | null => (value === null ? null : Number(value));
 
 function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
+  // 列の写像は監査ヘッド計算の入力形と共有する(列集合が同一 — §5.1 の 17 列)。
+  // row_id の非 NULL 化と payload の防御的 parse だけがこの読み取り形の差分
+  const { payloadText: _payloadText, ...shared } = toAuditHeadRow(row);
   return {
-    seq: Number(row["seq"]),
+    ...shared,
     rowId: String(row["row_id"]),
-    serverTs: Number(row["server_ts"]),
-    clientTs: numberOrNull(row["client_ts"]),
-    event: String(row["event"]),
-    actorType: String(row["actor_type"]),
-    actorUserId: textOrNull(row["actor_user_id"]),
-    actorKeyFingerprintHex: textOrNull(row["actor_key_fingerprint"]),
-    actorApiTokenId: textOrNull(row["actor_api_token_id"]),
-    targetUserId: textOrNull(row["target_user_id"]),
-    targetKeyFingerprintHex: textOrNull(row["target_key_fingerprint"]),
-    environmentId: textOrNull(row["environment_id"]),
-    variableId: textOrNull(row["variable_id"]),
-    epoch: numberOrNull(row["epoch"]),
-    version: numberOrNull(row["version"]),
-    chainSeq: numberOrNull(row["chain_seq"]),
     payload: parsePayload(row["payload"]),
   };
 }

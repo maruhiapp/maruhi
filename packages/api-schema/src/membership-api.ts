@@ -18,6 +18,7 @@ import {
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
   ChainHeadConflictError,
+  CheckpointStateMismatchError,
   CompositeRequiredError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
@@ -58,6 +59,10 @@ export const ChainSnapshotSchema = Schema.Struct({
  *   `create_environment` / `rotate_epoch` は複合エンドポイント
  *   (environments group の create / rotate — AUTH_SPEC §12-4)経由のみ受理し、
  *   ここでは CompositeRequired で拒否する(AUTH_SPEC §6。2026-08-03)。
+ *   standalone(周期)`checkpoint` は本エンドポイントが受理する(AUTH_SPEC
+ *   §16-2 — 2026-08-28 PR-M2): 認可は空 audit_head_hash = write × member 以上、
+ *   非空 = 実効権限 admin(不足 403)。受理時点の保存状態との突合失敗は 422
+ *   `CheckpointStateMismatch`。
  */
 export const membershipGroup = HttpApiGroup.make("membership")
   .add(
@@ -97,6 +102,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
+        CheckpointStateMismatchError,
         CompositeRequiredError,
         ForbiddenError,
       ],

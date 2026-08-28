@@ -96,6 +96,19 @@ export const AuditEventsPageSchema = Schema.Struct({
   events: Schema.Array(AuditEventSchema),
 });
 
+/**
+ * GET /projects/:projectId/audit-head の応答(AUTH_SPEC §16-2)。累積
+ * ハッシュ(AUDIT_SPEC §5.1)のみを運び、監査 seq・行数は載せない(§7 の
+ * 件数非漏洩)。監査行ゼロのプロジェクトは空文字列。
+ */
+export const AuditHeadSchema = Schema.Struct({
+  auditHeadHashHex: Schema.String.check(
+    Schema.isPattern(/^(?:[0-9a-f]{64})?$/, {
+      description: "empty string or 64 lowercase hex digits",
+    }),
+  ),
+});
+
 // クエリ文字列の limit。QueryConstraint(string への encode)を満たすため
 // NumberFromString ベースで定義する
 const PageLimitFromString = Schema.NumberFromString.check(
@@ -170,5 +183,18 @@ export const auditGroup = HttpApiGroup.make("audit")
       query: pageQuery,
       success: AuditEventsPageSchema,
       error: [ForbiddenError],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    // 監査ヘッドの取得(AUTH_SPEC §16-2 — checkpoint の audit_head_hash 公証の
+    // 申告元)。認可は実効権限 admin(トークンスコープ admin × チェーン role
+    // admin 以上 — §9-2 の min): member 水準に開くと累積ハッシュの変化の
+    // ポーリングがクラス 2(AUDIT_SPEC §6)の活動窓を漏らすタイミングサイド
+    // チャネルになる。応答は auditHeadHashHex のみ(監査 seq・行数を載せない —
+    // §7 の件数非漏洩)。監査行ゼロは空文字列
+    HttpApiEndpoint.get("auditHead", "/projects/:projectId/audit-head", {
+      params: { projectId: ProjectIdSchema },
+      success: AuditHeadSchema,
+      error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   );

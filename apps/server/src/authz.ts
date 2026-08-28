@@ -13,15 +13,20 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 /**
- * 追記エントリの op が要求するトークン権限水準(AUTH_SPEC §6)。
+ * 追記エントリが要求するトークン権限水準(AUTH_SPEC §6 / §16-2)。
  * `create_environment` / `rotate_epoch` = write(ただしこの 2 op は複合
  * エンドポイント経由のみで、汎用 append はハンドラが CompositeRequired で
- * 先に拒否する — ここの写像は表の網羅性のために保持)、メンバー / サーバー鍵
- * 管理系 = admin。append に genesis が来た場合も admin(verifyChain が
- * bad-genesis で拒否する)。
+ * 先に拒否する — ここの写像は表の網羅性のために保持)、`checkpoint` は
+ * payload 依存: 空 audit_head_hash = write、非空 = admin(§16-2 — 実効権限
+ * admin のスコープ半分。チェーン role 半分は DO が判定する)。メンバー /
+ * サーバー鍵管理系 = admin。append に genesis が来た場合も admin(verifyChain
+ * が bad-genesis で拒否する)。
  */
-export function requiredPermissionForOp(op: ChainEntry["op"]): TokenPermission {
-  return op === "rotate_epoch" || op === "create_environment" ? "write" : "admin";
+export function requiredPermissionForEntry(entry: ChainEntry): TokenPermission {
+  if (entry.op === "checkpoint") {
+    return entry.payload.auditHeadHashHex === "" ? "write" : "admin";
+  }
+  return entry.op === "rotate_epoch" || entry.op === "create_environment" ? "write" : "admin";
 }
 
 /** §11-1: 認証主体の内部 user_id と entry.actor.user_id の厳密一致(受理ポリシー)。 */

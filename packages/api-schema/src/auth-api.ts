@@ -79,6 +79,14 @@ export const UserOrgSchema = Schema.Struct({
 export const MeSchema = Schema.Struct({
   userId: Schema.String,
   orgs: Schema.Array(UserOrgSchema),
+  /**
+   * トークン主体のときのみ: 提示トークンのスコープ(AUTH_SPEC §6)。
+   * セッション主体では欠落(本人のフルパワー — チェーン role のみが束縛)。
+   * クライアントが実効権限(min(スコープ, チェーン role) — §9-2)を**事前に**
+   * 判定するための材料(checkpoint の監査ヘッド公証で 403 を踏まない —
+   * §16-2。2026-08-28 PR-M2)。
+   */
+  tokenScopes: Schema.optionalKey(Schema.Array(TokenScopeSchema)),
 });
 
 // リカバリーブロブ(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み master 秘密鍵)。

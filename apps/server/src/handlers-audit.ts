@@ -94,6 +94,19 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
         return { events };
       }),
     )
+    .handle("auditHead", ({ params, endpoint }) =>
+      Effect.gen(function* () {
+        // 実効権限 admin(AUTH_SPEC §16-2): スコープ半分は permission: "admin"
+        // (スコープ外 404 / 水準不足 403)、チェーン role 半分は DO
+        // (auditHeadProgram — 非メンバー 404 / admin 未満 403)
+        return yield* callProjectData<{ readonly auditHeadHashHex: string }>()({
+          endpoint,
+          projectId: params.projectId,
+          permission: "admin",
+          invoke: (stub, actor) => stub.auditHeadFor(actor),
+        });
+      }),
+    )
     .handle("invites", ({ params, query, endpoint }) =>
       Effect.gen(function* () {
         yield* requireProjectChainAdmin(params.projectId, endpoint);

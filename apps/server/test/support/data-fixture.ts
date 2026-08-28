@@ -344,7 +344,7 @@ export async function stripTrailingCheckpoint(
  * ハッシュ — §6.2 の values_digest 列挙)を DO の SQLite から直接読む。サーバーの
  * checkpointValueEntries と同じ問い合わせ(rotate の境界 checkpoint 突合基準)。
  */
-async function storedCheckpointValues(
+export async function storedCheckpointValues(
   environmentId: string,
 ): Promise<readonly EnvValuesDigestEntry[]> {
   const rows = await queryProjectDo(
@@ -379,6 +379,8 @@ async function signBoundaryCheckpointEntry(input: {
   readonly compositeSeq: number;
   readonly compositeHashHex: string;
   readonly values: readonly EnvValuesDigestEntry[];
+  /** 監査ヘッドの公証(§16-2 — 既定は空 = 公証なし)。 */
+  readonly auditHeadHashHex?: string;
 }): Promise<ChainEntry> {
   const { entry } = await signEntryAt({
     seq: input.compositeSeq + 1,
@@ -394,6 +396,7 @@ async function signBoundaryCheckpointEntry(input: {
         input.actorUserId,
       ),
       valuesDigestHex: await valuesDigestOf(input.values),
+      ...(input.auditHeadHashHex === undefined ? {} : { auditHeadHashHex: input.auditHeadHashHex }),
     }),
   });
   return entry;
@@ -682,6 +685,8 @@ export async function rotateEnvironmentComposite(
      * negative 等で使う)。
      */
     readonly checkpointValues?: readonly EnvValuesDigestEntry[];
+    /** 境界 checkpoint の監査ヘッド公証(§16-2 — 既定は空 = 公証なし)。 */
+    readonly checkpointAuditHeadHashHex?: string;
   },
 ): Promise<Response> {
   const actorUserId = input.actorUserId ?? MEMBER;
@@ -725,6 +730,9 @@ export async function rotateEnvironmentComposite(
       compositeSeq: fixture.head.seq + 1,
       compositeHashHex: entryHash,
       values: input.checkpointValues ?? (await storedCheckpointValues(input.environmentId)),
+      ...(input.checkpointAuditHeadHashHex === undefined
+        ? {}
+        : { auditHeadHashHex: input.checkpointAuditHeadHashHex }),
     }));
   const response = await requestJson(
     "POST",

@@ -694,7 +694,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     );
     // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
     // 追加したらこの数を更新する(membership 3 / environments 5 / variables 6 /
-    // deks 3 / rotation 2 / audit 3)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(22);
+    // deks 3 / rotation 2 / audit 4)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(23);
   });
 });

@@ -874,9 +874,10 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2) �
     await expectPayloadMismatch(response, "checkpointManifestVersion");
   });
 
-  it("rejects a non-empty audit head on a boundary checkpoint (checkpointAuditHead — fail-closed)", async () => {
-    // GET /audit-head(§16-2)未実装の間、§6.4 の存在・位置検査なしの受理は
-    // 虚偽公証の固定を許すため、境界 checkpoint の監査ヘッド公証は受理しない
+  it("rejects a fabricated audit head on a boundary checkpoint (audit-head-unknown)", async () => {
+    // 非空 audit_head_hash は §16-2 の規則(実効権限 admin + §6.4 の存在・位置
+    // 検査)で受理する(2026-08-28 PR-M2 — F3b の暫定 fail-closed を置換)。
+    // 保存済みの累積ハッシュ列に存在しない申告 = 偽公証は受理段で落ちる
     const response = await createWithCheckpoint(
       await shapeCheckpoint({
         environmentId: ENV,
@@ -885,7 +886,8 @@ describe("境界 checkpoint の複合内整合(§12-4 / CRYPTO_SPEC §4.3 (2) �
         auditHeadHashHex: "ef".repeat(32),
       }),
     );
-    await expectPayloadMismatch(response, "checkpointAuditHead");
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { reason: string }).reason).toBe("audit-head-unknown");
   });
 
   it("rejects a checkpoint whose actor differs from the caller (403 actor-mismatch — §12-4)", async () => {

@@ -25,13 +25,11 @@ import { DurableObject } from "cloudflare:workers";
 import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
 import { AuditStore, auditStoreLayer } from "./audit-store.ts";
-import {
-  ensureParentHead,
-  insertAcceptedEntrySync,
-  verifyAcceptableEntry,
-} from "./chain-accept.ts";
-import type { StateCache, VerifiedChainView } from "./chain-store.ts";
+import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
+import { commitAcceptedEntry } from "./chain-commit.ts";
+import type { StateCache } from "./chain-store.ts";
 import { ChainStore, chainStoreLayer, deriveStoredState, updateStateCache } from "./chain-store.ts";
+import { standaloneCheckpointProgram } from "./checkpoint-accept.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";
 import {
   createEnvironmentCompositeProgram,
@@ -57,7 +55,7 @@ import { rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
 import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
-import { auditEventsProgram } from "./programs-audit.ts";
+import { auditEventsProgram, auditHeadProgram } from "./programs-audit.ts";
 import {
   deleteDekWrapsProgram,
   listMyDekWrapsProgram,
@@ -186,33 +184,6 @@ function ensureChainMember(
   return members.has(userId) ? Effect.void : Effect.fail(rejectData({ kind: "not-member" }));
 }
 
-/**
- * チェーン追記の受理と同時に §3.4 のミラーイベントを記録する。単一の同期
- * ブロック(= 同一イベントループタスク)で両方を書き、クラッシュしても
- * 「チェーンだけ書けてミラーが欠ける」不整合を作らない(ミラーは v1 バック
- * フィルなし — AUDIT_SPEC §3.4 — なので欠落は恒久化する)。
- * serverTs は全検査後・書き込みフェーズ直前に取得する(複合経路と同じ
- * タイミング — chain-accept.ts の insertAcceptedEntrySync 参照)。
- */
-const insertAccepted = (entry: ChainEntry, applied: VerifiedChainView, canonicalBytes: number) =>
-  Effect.gen(function* () {
-    const chainStore = yield* ChainStore;
-    const audit = yield* AuditStore;
-    // 受理副作用(chain-accept.ts): add_member の旧鍵ラップ掃除がラップ行を
-    // 削除するため、汎用チェーン受理もデータストアの書き込み面を渡す
-    const dataStore = yield* DataStore;
-    const nowMs = Date.now();
-    yield* Effect.sync(() =>
-      insertAcceptedEntrySync(
-        { chainStore, audit, dataStore },
-        entry,
-        applied,
-        canonicalBytes,
-        nowMs,
-      ),
-    );
-  });
-
 const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateCache) =>
   Effect.gen(function* () {
     const store = yield* ChainStore;
@@ -238,7 +209,7 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
     if (applied.state.headHashHex !== expectedProjectId) {
       return yield* new ProjectIdMismatchError();
     }
-    yield* insertAccepted(entry, applied, canonicalBytes);
+    yield* commitAcceptedEntry(entry, applied, canonicalBytes);
     updateStateCache(cache, applied);
     return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
   });
@@ -276,23 +247,22 @@ const appendProgram = (
     // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
     // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
     // 将来増えても「エポック / 環境はチェーンにあるがラップ・環境行がない」状態を
-    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)。
-    // checkpoint(2026-08-27 — PR-F3a)も同様: §16-2 の受理検証(内容突合 +
-    // スナップショット保存)なしの受理は偽タプルの持ち込み(§4.3 (2) の束縛の
-    // 汚染)を許す fail-open になるため、実装まで DO 側でも拒否する
-    if (
-      entry.op === "create_environment" ||
-      entry.op === "rotate_epoch" ||
-      entry.op === "checkpoint"
-    ) {
+    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)
+    if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
+    }
+    // standalone(周期)checkpoint(AUTH_SPEC §16-2 — 2026-08-28 PR-M2):
+    // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
+    // スナップショットの原子保存を伴う専用経路へ分岐する
+    if (entry.op === "checkpoint") {
+      return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
     yield* ensureParentHead(chain, parentHeadHashHex);
     // 受理 4 手順(サイズ → 容量 → verifyChain → insert + ミラー)は複合経路と
     // 共有(chain-accept.ts)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    yield* insertAccepted(entry, applied, canonicalBytes);
+    yield* commitAcceptedEntry(entry, applied, canonicalBytes);
     updateStateCache(cache, applied);
     return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
   });
@@ -645,6 +615,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     query: AuditEventsQueryInput,
   ): Promise<DataOutcome<readonly AuditEventValue[]>> {
     return this.#runData(auditEventsProgram(actor, query, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  auditHeadFor(actor: DataActor): Promise<DataOutcome<{ readonly auditHeadHashHex: string }>> {
+    return this.#runData(auditHeadProgram(actor, this.#stateCache));
   }
 
   // --- ワークロードリース RPC(AUTH_SPEC §14) ---------------------------

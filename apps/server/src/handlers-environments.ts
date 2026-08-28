@@ -34,6 +34,17 @@ const ensureCompositeActor = (entry: ChainEntry) =>
     yield* ensureActorMatches(principal, entry);
   });
 
+/**
+ * 複合のトークンスコープ水準(AUTH_SPEC §12-3 / §16-2): 通常は write、境界
+ * checkpoint が監査ヘッドを公証する(非空 audit_head_hash)場合のみ admin
+ * (実効権限 admin のスコープ半分 — 汎用 append の checkpoint と同一規則)。
+ */
+function requiredCompositePermission(checkpoint: {
+  readonly payload: { readonly auditHeadHashHex: string };
+}): "write" | "admin" {
+  return checkpoint.payload.auditHeadHashHex === "" ? "write" : "admin";
+}
+
 export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", (handlers) =>
   handlers
     .handle("create", ({ params, payload, endpoint }) =>
@@ -53,7 +64,10 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         return yield* callProjectData<EnvironmentChainResultValue>()({
           endpoint,
           projectId: params.projectId,
-          permission: "write",
+          // 境界 checkpoint が監査ヘッドを公証する(非空 audit_head_hash)場合は
+          // 実効権限 admin のスコープ半分を要求する(§16-2 — standalone 経路と
+          // 同一規則。role 半分は DO の ensureCheckpointAuditHead)
+          permission: requiredCompositePermission(payload.checkpoint),
           invoke: (stub, actor) =>
             stub.createEnvironment(actor, {
               parentHeadHashHex: payload.parentHeadHashHex,
@@ -74,7 +88,8 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         return yield* callProjectData<EnvironmentChainResultValue>()({
           endpoint,
           projectId: params.projectId,
-          permission: "write",
+          // create と同じ: 非空 audit_head_hash の同梱は admin スコープ(§16-2)
+          permission: requiredCompositePermission(payload.checkpoint),
           invoke: (stub, actor) =>
             stub.rotateEpoch(actor, params.environmentId, {
               parentHeadHashHex: payload.parentHeadHashHex,

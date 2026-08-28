@@ -20,6 +20,7 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
+  computeEnvValuesDigest,
   decryptVariable,
   signChainEntry,
   SUITE_ID,
@@ -219,6 +220,13 @@ interface ServerOptions {
    * §4.3 (2) の束縛タプルだけが消える)。
    */
   readonly dropCheckpointFromChain?: boolean;
+  /**
+   * standalone checkpoint の受理(汎用 append)+ /auth/me + /audit-head を
+   * 有効にする(契機 (i) — rotate + 再暗号化完了後の周期 checkpoint 発行 —
+   * のモデル化。PR-M2)。省略時は従来どおり未実装(発行は失敗し警告になる —
+   * 既存テストの前提を変えない)。
+   */
+  readonly standaloneCheckpoint?: { readonly auditHeadHashHex: string };
 }
 
 interface ServerState {
@@ -230,6 +238,8 @@ interface ServerState {
     /** リクエストの再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false として記録)。 */
     readonly reencryption: boolean;
   }[];
+  /** 配布チェーンの現在形(standalone checkpoint の追記の検査用)。 */
+  readonly chainEntries: readonly ChainEntry[];
 }
 
 /**
@@ -365,7 +375,45 @@ function makeServer(options: ServerOptions): ServerState {
     currentEpoch = target.epoch;
   };
 
+  // 契機 (i) の周期 checkpoint 発行(PR-M2)用の追加エンドポイント(オプション)
+  const standaloneHandlers: MockHandler[] =
+    options.standaloneCheckpoint === undefined
+      ? []
+      : [
+          onRequest("GET", "/auth/me", () => ({
+            status: 200,
+            json: {
+              userId: owner.userId,
+              orgs: [],
+              tokenScopes: [{ project: projectId, permission: "admin" }],
+            },
+          })),
+          onRequest("GET", `/projects/${projectId}/audit-head`, () => ({
+            status: 200,
+            json: { auditHeadHashHex: options.standaloneCheckpoint?.auditHeadHashHex ?? "" },
+          })),
+          async (request) => {
+            if (
+              request.method !== "POST" ||
+              request.path !== `/projects/${projectId}/chain/entries`
+            ) {
+              return null;
+            }
+            const body = request.body as { readonly entry: ChainEntry };
+            entries.push(body.entry);
+            hashes.push(await computeChainEntryHash(body.entry));
+            return {
+              status: 200,
+              json: {
+                projectId,
+                headSeq: entries.length,
+                headHashHex: hashes[hashes.length - 1],
+              },
+            };
+          },
+        ];
   const handlers: MockHandler[] = [
+    ...standaloneHandlers,
     onRequest("GET", `/projects/${projectId}/chain`, () => {
       const injected = options.onChain?.(chainCalls);
       chainCalls += 1;
@@ -476,7 +524,7 @@ function makeServer(options: ServerOptions): ServerState {
       };
     },
   ];
-  return { handlers, rotateBodies, pushes };
+  return { handlers, rotateBodies, pushes, chainEntries: entries };
 }
 
 /** 床(観測ログの fold)を読む(M1-A4 の床前進 / 非前進の固定用)。 */
@@ -675,6 +723,66 @@ describe("maruhi env rotate", () => {
     expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
   });
 
+  it("契機 (i): rotate + 再暗号化の完了後に当該環境の周期 checkpoint を発行する(CRYPTO_SPEC §6.3 — PR-M2)", async () => {
+    const auditHead = "ab".repeat(32);
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      standaloneCheckpoint: { auditHeadHashHex: auditHead },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "periodic"], env.layer)).toBe(0);
+    // 末尾 = 再暗号化完了後の周期 checkpoint(境界分の H+2 の後に standalone)
+    const tail = state.chainEntries[state.chainEntries.length - 1];
+    if (tail === undefined || tail.op !== "checkpoint") {
+      throw new Error("the post-rotation periodic checkpoint was not appended");
+    }
+    expect(tail.payload.environments).toHaveLength(1);
+    const tuple = tail.payload.environments[0];
+    if (tuple === undefined) throw new Error("missing tuple");
+    expect(tuple.environmentId).toBe(ENV_ID);
+    // 公証対象 = 再暗号化**完了後**のデータ状態(新エポックの値)
+    expect(tuple.epoch).toBe(2);
+    const reencrypted = state.pushes.find((push) => push.variableId === "vaa");
+    if (reencrypted === undefined) throw new Error("missing re-encrypted push");
+    const digest = await computeEnvValuesDigest(SUITE_ID, [
+      {
+        variableId: "vaa",
+        version: reencrypted.value.aad.version,
+        valueSigHashHex: await valueHashOf(reencrypted.value, owner.userId),
+      },
+    ]);
+    if (!digest.ok) throw new Error("digest failed");
+    expect(tuple.valuesDigestHex).toBe(digest.value);
+    // 実効権限 admin(モックの /auth/me = admin スコープ)なので監査ヘッドを公証する
+    expect(tail.payload.auditHeadHashHex).toBe(auditHead);
+    expect(env.logs.join("\n")).toContain("post-rotation periodic checkpoint");
+  });
+
   it("中断復旧: 複合受理後にクラッシュした状態から、エポックを進めず残りの再暗号化を再開する", async () => {
     const variables = [
       await variableAt({
@@ -748,6 +856,94 @@ describe("maruhi env rotate", () => {
     expect(env.errors.join("\n")).toContain("the requested rotation was not performed");
     // 要求があった実行では「要求を実行せず切り替えた」と明示する
     expect(env.errors.join("\n")).toContain("The requested rotation will not be performed");
+  });
+
+  it("契機 (i): 再開経路で再暗号化が完了した場合も周期 checkpoint を発行する(PR #99 Bugbot 指摘)", async () => {
+    const auditHead = "cd".repeat(32);
+    const variables = [
+      await variableAt({
+        built: chainBase,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built: chainBase,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+    const state = makeServer({
+      built: chainBase,
+      variables,
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      // vbb だけが 1 回目の実行中ずっと落ちる = 再暗号化の途中でクラッシュ。
+      // 1 回目は完全完了に至らないので周期 checkpoint は発行されない
+      onPush: (call, variableId) =>
+        variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
+      standaloneCheckpoint: { auditHeadHashHex: auditHead },
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    // 1 回目: rotate は受理されたが再暗号化は中断 — checkpoint はチェーン末尾に
+    // 増えない(rotate + 境界 checkpoint の 2 エントリのみ)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "初回"], env.layer)).toBe(1);
+    const afterCrash = state.chainEntries.length;
+    expect(state.chainEntries[afterCrash - 1]?.op).toBe("checkpoint"); // 境界分(H+2)
+    expect(state.chainEntries[afterCrash - 2]?.op).toBe("rotate_epoch");
+
+    // 2 回目(理由なし = 案内どおりの再開): 残り 1 変数を再暗号化して**完了**する
+    // → 完了の節目で当該環境の周期 checkpoint が発行される
+    expect(await runCli(["env", "rotate", ENV_ID], env.layer)).toBe(0);
+    expect(state.chainEntries.length).toBe(afterCrash + 1);
+    const tail = state.chainEntries[state.chainEntries.length - 1];
+    if (tail === undefined || tail.op !== "checkpoint") {
+      throw new Error("the post-resume periodic checkpoint was not appended");
+    }
+    expect(tail.payload.environments).toHaveLength(1);
+    const tuple = tail.payload.environments[0];
+    if (tuple === undefined) throw new Error("missing tuple");
+    expect(tuple.environmentId).toBe(ENV_ID);
+    // 公証対象 = 再暗号化**完了後**のデータ状態(両変数とも新エポックの値)
+    expect(tuple.epoch).toBe(2);
+    const pushedA = state.pushes.find((push) => push.variableId === "vaa");
+    const pushedB = state.pushes.find((push) => push.variableId === "vbb");
+    if (pushedA === undefined || pushedB === undefined) throw new Error("missing pushes");
+    const digest = await computeEnvValuesDigest(SUITE_ID, [
+      {
+        variableId: "vaa",
+        version: pushedA.value.aad.version,
+        valueSigHashHex: await valueHashOf(pushedA.value, owner.userId),
+      },
+      {
+        variableId: "vbb",
+        version: pushedB.value.aad.version,
+        valueSigHashHex: await valueHashOf(pushedB.value, owner.userId),
+      },
+    ]);
+    if (!digest.ok) throw new Error("digest failed");
+    expect(tuple.valuesDigestHex).toBe(digest.value);
+    expect(tail.payload.auditHeadHashHex).toBe(auditHead);
+    expect(env.logs.join("\n")).toContain("post-rotation periodic checkpoint");
   });
 
   it("ローテーション後の push 失敗は、エポックが進んだ事実を部分完了として報告する", async () => {
