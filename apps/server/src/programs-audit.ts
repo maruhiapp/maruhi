@@ -121,6 +121,28 @@ export function resolvePageLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(requested, MAX_AUDIT_EVENTS_PAGE_LIMIT));
 }
 
+/**
+ * GET /projects/:projectId/audit-head(AUTH_SPEC §16-2 — checkpoint の
+ * audit_head_hash 公証の申告元)。認可は実効権限 admin: スコープ半分
+ * (admin スコープ)は worker(callProjectData の permission: "admin")、
+ * チェーン role 半分はここで判定する(member 水準に開くと累積ハッシュの
+ * 変化のポーリングがクラス 2 の活動窓を漏らす — §16-2 のタイミングサイド
+ * チャネル対応)。応答は累積ハッシュのみ(監査 seq・行数を載せない — §7 の
+ * 件数非漏洩)。監査行ゼロは空文字列。
+ */
+export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
+  Effect.gen(function* () {
+    const context = yield* requireMemberState(actor.userId, "reader", cache);
+    if (!roleAtLeast(context.member.role, "admin")) {
+      return yield* rejectData({ kind: "insufficient-role" });
+    }
+    const audit = yield* AuditStore;
+    // 累積ハッシュ列を MAX(seq) まで伸ばしてから読む(遅延 materialize —
+    // 初回呼び出しが既存行からの初期化マイグレーションを兼ねる。AUDIT_SPEC §5.1)
+    yield* audit.ensureHeadCurrent;
+    return { auditHeadHashHex: audit.currentHeadHexSync() };
+  });
+
 export const auditEventsProgram = (
   actor: DataActor,
   query: AuditEventsQueryInput,

@@ -32,6 +32,7 @@ import {
 } from "./chain-accept.ts";
 import type { StateCache, VerifiedChainView } from "./chain-store.ts";
 import { ChainStore, chainStoreLayer, deriveStoredState, updateStateCache } from "./chain-store.ts";
+import { standaloneCheckpointProgram } from "./checkpoint-accept.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";
 import {
   createEnvironmentCompositeProgram,
@@ -57,7 +58,7 @@ import { rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
 import { ensureProjectDoTables } from "./do-schema.ts";
 import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
-import { auditEventsProgram } from "./programs-audit.ts";
+import { auditEventsProgram, auditHeadProgram } from "./programs-audit.ts";
 import {
   deleteDekWrapsProgram,
   listMyDekWrapsProgram,
@@ -276,16 +277,15 @@ const appendProgram = (
     // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
     // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
     // 将来増えても「エポック / 環境はチェーンにあるがラップ・環境行がない」状態を
-    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)。
-    // checkpoint(2026-08-27 — PR-F3a)も同様: §16-2 の受理検証(内容突合 +
-    // スナップショット保存)なしの受理は偽タプルの持ち込み(§4.3 (2) の束縛の
-    // 汚染)を許す fail-open になるため、実装まで DO 側でも拒否する
-    if (
-      entry.op === "create_environment" ||
-      entry.op === "rotate_epoch" ||
-      entry.op === "checkpoint"
-    ) {
+    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)
+    if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
+    }
+    // standalone(周期)checkpoint(AUTH_SPEC §16-2 — 2026-08-28 PR-M2):
+    // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
+    // スナップショットの原子保存を伴う専用経路へ分岐する
+    if (entry.op === "checkpoint") {
+      return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
     yield* ensureParentHead(chain, parentHeadHashHex);
@@ -645,6 +645,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     query: AuditEventsQueryInput,
   ): Promise<DataOutcome<readonly AuditEventValue[]>> {
     return this.#runData(auditEventsProgram(actor, query, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  auditHeadFor(actor: DataActor): Promise<DataOutcome<{ readonly auditHeadHashHex: string }>> {
+    return this.#runData(auditHeadProgram(actor, this.#stateCache));
   }
 
   // --- ワークロードリース RPC(AUTH_SPEC §14) ---------------------------

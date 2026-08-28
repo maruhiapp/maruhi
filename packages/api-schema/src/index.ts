@@ -7,6 +7,7 @@ export {
   AuditEventSchema,
   AuditEventsPageSchema,
   auditGroup,
+  AuditHeadSchema,
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
 } from "./audit-api.ts";
@@ -97,6 +98,7 @@ export {
   ChainEntryTooLargeError,
   ChainHeadConflictError,
   ChainInvalidReasonSchema,
+  CheckpointMismatchReasonSchema,
   CheckpointStateMismatchError,
   CompositeRequiredError,
   DataLimitExceededError,

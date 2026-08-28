@@ -26,7 +26,7 @@ import {
   ensureActorMatches,
   ensureTokenScopeForInit,
   ensureTokenScopeForProject,
-  requiredPermissionForOp,
+  requiredPermissionForEntry,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
 import { unwrapDataOutcome } from "./data-http.ts";
@@ -166,14 +166,10 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // 複合エンドポイント(付随データとの原子受理)経由のみ。汎用追記での
         // 迂回は「エポックはあるがラップがない」中間状態を作るため型付きで拒否
         // (DO 側にも同じガードがあり composite-required 拒否として届く — 多層防御)。
-        // checkpoint(2026-08-27 — PR-F3a)も現状は拒否: 受理経路は複合の同梱
-        // (§12-4 — PR-F3b)のみで、standalone の汎用 append 受理は §16-2 の
-        // 内容突合 + スナップショット保存の実装(M2)まで fail-closed に保つ
-        if (
-          payload.entry.op === "create_environment" ||
-          payload.entry.op === "rotate_epoch" ||
-          payload.entry.op === "checkpoint"
-        ) {
+        // standalone(周期)checkpoint は本エンドポイントが受理する(§16-2 —
+        // 2026-08-28 PR-M2。DO 側の standaloneCheckpointProgram が内容突合 +
+        // スナップショット原子保存を行う)
+        if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
           return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
         }
         // §11-1: 追記エントリの actor = 認証主体(受理ポリシー)
@@ -181,7 +177,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         yield* ensureTokenScopeForProject(
           principal,
           params.projectId,
-          requiredPermissionForOp(payload.entry.op),
+          requiredPermissionForEntry(payload.entry),
         );
         const env = yield* WorkerEnv;
         const outcome = yield* rpcCall<AppendOutcome>(() =>

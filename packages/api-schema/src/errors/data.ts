@@ -169,24 +169,44 @@ export class ManifestRejectedError extends Schema.TaggedError<ManifestRejectedEr
 ) {}
 
 /**
- * 422: the bundled boundary `checkpoint` entry's attested content does not
- * match the post-composite stored state (CRYPTO_SPEC §6.4 — 複合同梱分の
- * 突合基準は「複合の適用後の保存状態」。AUTH_SPEC §12-4 / §16-2, 2026-08-27
- * セッション 33 = PR-F3b):
+ * Reason codes for a 422 on a `checkpoint` entry's acceptance-time state
+ * matching (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2。境界同梱分〔§12-4 — 突合
+ * 基準は複合の適用後の保存状態〕と standalone 分〔汎用チェーン追記 — 受理
+ * 時点 = 適用前の保存状態〕の両経路で共通):
  *
+ * - `manifest-mismatch` — タプルの (manifest_version, manifest_sig_hash) が
+ *   受理時点の当該環境の**最新**マニフェストと不一致(発行者のビューが古い
+ *   場合と、実在しない先行 manifest_version の公証 — 悪意 member による
+ *   checkpoint-regressed 詰まらせ — の両方を含む。session-33 §5 の申し送り)
  * - `values-digest-mismatch` — タプルの values_digest が受理時点の保存状態
- *   (rotate = 全 active 変数の最新 version とその value_signed_bytes ハッシュ、
- *   作成 = 変数空集合)からの再計算と不一致。rotate では宣言ヘッド確定後の
- *   並行 push で正当に起きる — クライアントは再 pull(再暗号化に必要な読み取りと
- *   同一)の上で有界再試行する(§12-4)
- *
- * 監査ヘッド系の理由(audit-head-unknown / audit-head-stale)と削除済み環境
- * (environment-deleted)は standalone チェックポイント受理(M2 — §16-2)で
- * 加わる予定の追加語彙であり、本 PR では境界分の突合のみを宣言する。
+ *   (全 active 変数の最新 version とその value_signed_bytes ハッシュ)からの
+ *   再計算と不一致。宣言ヘッド確定後の並行 push で正当に起きる —
+ *   クライアントは再 pull の上で有界再試行する(§12-4 / §16-2)
+ * - `audit-head-unknown` — 非空 audit_head_hash が保存済みの累積ハッシュ列
+ *   (AUDIT_SPEC §5.1)に存在しない(偽公証の拒否)
+ * - `audit-head-stale` — 出現位置が直前 checkpoint(公証の有無を問わない)の
+ *   ミラー行(chain.checkpointed)未満(CRYPTO_SPEC §6.4 の位置下限。直前が
+ *   存在しない初回は課さない。CAS 競合後に申告を取り直さなかった発行の拒否 —
+ *   クライアントは申告も取得し直して再試行する)
+ * - `environment-deleted` — 削除済み(tombstone)環境のエントリ(受理時点
+ *   状態との一致が定義できない — チェーンは削除を観測しないため合意規則には
+ *   できない。CRYPTO_SPEC §6.4)
+ */
+export const CheckpointMismatchReasonSchema = Schema.Literals([
+  "manifest-mismatch",
+  "values-digest-mismatch",
+  "audit-head-unknown",
+  "audit-head-stale",
+  "environment-deleted",
+]);
+
+/**
+ * 422: a `checkpoint` entry's attested content does not match the
+ * acceptance-time stored state (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2).
  */
 export class CheckpointStateMismatchError extends Schema.TaggedError<CheckpointStateMismatchError>()(
   "CheckpointStateMismatch",
-  { reason: Schema.Literals(["values-digest-mismatch"]) },
+  { reason: CheckpointMismatchReasonSchema },
   { httpApiStatus: 422 },
 ) {}
 

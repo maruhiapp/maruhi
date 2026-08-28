@@ -928,14 +928,14 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
 };
 
 /**
- * checkpoint op の汎用 append テスト(2026-08-27 — PR-F3a): §16-2 の受理検証
- * (内容突合 + スナップショット保存)が実装されるまで CompositeRequired で
- * fail-closed に拒否する。合意規則の理由コード(expected_reason)は crypto 層の
- * 4 実行環境テストが固定し、ここでは受理面のガードだけを固定する。前提チェーンの
- * 再生も不要(ガードは検証より先に働き、checkpoint を含む派生チェーン —
- * checkpoint-baseline — は汎用 append では再生できない)。固定長 hex の形式違反は
- * api-schema の hex Schema が先に 400 で拒否する(create-env-commitment-* の
- * 複合期待と同じ分担)。
+ * checkpoint op の汎用 append テスト(2026-08-28 — PR-M2 で standalone 受理へ
+ * 移行): 固定長 hex の形式違反は api-schema の hex Schema が先に 400 で拒否する
+ * (create-env-commitment-* の複合期待と同じ分担)。それ以外の合意規則 negative
+ * (role / audit role / unknown / epoch / regression と検査順序)は crypto 層の
+ * 4 実行環境テストが理由コードごと固定済みで、前提チェーン(checkpoint-baseline
+ * 派生チェーン — タプル内容がダミー)は §16-2 の内容突合を通らず API では再生
+ * できないため、ここでは繰り返さない。API 受理面(認可 2 水準・内容突合 5 理由・
+ * 原子性・スナップショット保存)は data-checkpoint.test.ts が実データで固定する。
  */
 function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegatives)[number]): void {
   const schemaRejected = [
@@ -943,23 +943,17 @@ function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegative
     "checkpoint-values-digest-bad-length",
     "checkpoint-format-precedes-role",
   ].includes(negative.name);
-  const label = schemaRejected
-    ? `rejects ${negative.name} at the wire schema (400)`
-    : `rejects ${negative.name} at the generic append (422 CompositeRequired)`;
-  it(label, async () => {
+  if (!schemaRejected) {
+    return;
+  }
+  it(`rejects ${negative.name} at the wire schema (400)`, async () => {
     await replayVectorChain(1);
     const response = await appendEntry(
       vectorProjectId,
       negative.entry.prev_hash_hex,
       toWireEntry(negative.entry),
     );
-    if (schemaRejected) {
-      expect(response.status).toBe(400);
-      return;
-    }
-    expect(response.status).toBe(422);
-    const body = (await response.json()) as { op?: string };
-    expect(body.op).toBe("checkpoint");
+    expect(response.status).toBe(400);
   });
 }
 

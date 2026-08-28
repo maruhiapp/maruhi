@@ -351,6 +351,29 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       );
     },
   },
+  {
+    // 監査ヘッド累積ハッシュの計算列(AUDIT_SPEC §5.1。2026-08-28 セッション 35 =
+    // PR-M2)。行 seq → h_seq(正規形は @maruhi/crypto の computeAuditRowDigest /
+    // computeAuditHeadHash — audit-head.json ベクターが固定)。audit_events の
+    // 決定論的な導出値であり(append-only の行が真実源)、materialize は遅延
+    // 拡張(audit-store.ts の ensureHeadCurrent — 監査ヘッド読み取り・checkpoint
+    // 受理の前に MAX(seq) まで伸ばす)。**導入マイグレーションはこの遅延拡張
+    // そのもの**: 既存 DO の初回アクセス時に seq 1 から全行を再計算して初期化する
+    // (§5.1 の「既存行から再計算して初期化」— コンストラクタは同期のため
+    // ここでは DDL だけを適用する)。ハッシュ列は接頭辞連続(seq 1..k の完全な
+    // 前置)を不変条件とし、書き直し・削除をしない(append-only 導出)。
+    // head_hash_hex の索引は checkpoint 受理の所属・位置検査(CRYPTO_SPEC §6.4)用
+    tables: ["audit_head_hashes"],
+    apply(sql) {
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS audit_head_hashes (
+           seq INTEGER PRIMARY KEY,
+           head_hash_hex TEXT NOT NULL
+         )`,
+      );
+      sql.exec(`CREATE INDEX IF NOT EXISTS ahh_hash ON audit_head_hashes (head_hash_hex)`);
+    },
+  },
 ];
 
 /**
