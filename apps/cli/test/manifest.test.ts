@@ -355,6 +355,69 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).toContain("manifestVersion=1");
   });
 
+  it("チェーンの checkpoint 基準線(F3)は床の規則 (a)(F2)を代替しない — 基準線以上・床未満の配布は床が拒否する(PR-F4 cross-layer)", async () => {
+    // チェーン上の最新 checkpoint は mv1 を公証している(境界 checkpoint の形)。
+    // 床は pull で v3 を知っている。v2 の配布は §4.3 (4) の基準線(mv1 以上)を
+    // 通り checkpoint-regressed は発火しないが、床の規則 (a)(v3 未満)が落とす —
+    // 粗い共有基準(チェーン。メタ操作は checkpoint を発行しないため床より
+    // 遅れて進む)が、細かいローカル基準(床)を短絡しないことの固定
+    const v1 = await manifestV1();
+    const checkpointChain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addMemberOp(reader, "reader") },
+      { actor: owner, operation: addMemberOp(member2, "member") },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      {
+        actor: owner,
+        operation: {
+          op: "checkpoint",
+          payload: {
+            environments: [
+              {
+                environmentId: ENV_ID,
+                epoch: 1,
+                manifestVersion: 1,
+                manifestSigHashHex: await manifestHashOf(projectId, v1),
+                // タプルの値ダイジェスト内容はチェーン合意規則では形式のみ検査
+                // (§6.2 — 内容の照合は M2 の規則 2 の領分)
+                valuesDigestHex: "ab".repeat(32),
+              },
+            ],
+            auditHeadHashHex: "",
+          },
+        },
+      },
+    ]);
+    expect(checkpointChain.projectId).toBe(projectId);
+    const env = await makeTestEnv();
+    // フェーズ 1: v3 で床を確立(mv1 タプルとは別版 — strict 経路で検証される)
+    await startPhase(env, [
+      chainHandler(checkpointChain),
+      pullHandler({
+        currentEpoch: 1,
+        variables: [alphaEntry()],
+        deks: [wrap1],
+        manifest: await manifestV1({ manifestVersion: 3, head: headOf(checkpointChain, 5) }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+
+    // フェーズ 2: v2(チェーン基準線 mv1 以上・床 v3 未満)
+    await startPhase(env, [
+      chainHandler(checkpointChain),
+      pullHandler({
+        currentEpoch: 1,
+        variables: [alphaEntry()],
+        deks: [wrap1],
+        manifest: await manifestV1({ manifestVersion: 2, head: headOf(checkpointChain, 5) }),
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("environment-manifest rollback");
+    expect(errors).not.toContain("checkpoint-regressed");
+  });
+
   it("同一 manifestVersion の signed bytes 相違を拒否する(規則 (b) — equivocation)", async () => {
     const env = await makeTestEnv();
     await startPhase(env, [
