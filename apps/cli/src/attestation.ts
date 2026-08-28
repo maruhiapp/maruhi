@@ -23,12 +23,14 @@
 // ci run(lease 経路)はゴシップに参加しない(§6.6 / §14-2 — lease 応答は申告を
 // 同梱せず、ワークロードは署名鍵を持たない)。
 
+import { AttestationRegressionError } from "@maruhi/api-schema";
 import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices } from "./context.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { internalErrorKind } from "./failure.ts";
 import { formatAttestationEvidence } from "./floor-evidence.ts";
 import { type AttestationEvidenceRecord, FloorStore } from "./floor.ts";
 import { CliIo } from "./io.ts";
@@ -258,6 +260,8 @@ export function submitHeadAttestationIfAdvanced(input: {
       );
       return;
     }
+    // `_tag` 直読みは oxlint が禁止 — 判定は instanceof(failure.ts の規律)、
+    // 診断名は internalErrorKind(型名のみ — 応答断片を運ばない)
     const submitted = yield* input.client.membership
       .attest({
         params: { projectId: input.projectId },
@@ -272,9 +276,7 @@ export function submitHeadAttestationIfAdvanced(input: {
         Effect.as("submitted" as const),
         Effect.catch((error) =>
           Effect.succeed(
-            typeof error === "object" && error !== null && "_tag" in error
-              ? (error._tag as string)
-              : "unknown",
+            error instanceof AttestationRegressionError ? "regression" : internalErrorKind(error),
           ),
         ),
       );
@@ -291,7 +293,7 @@ export function submitHeadAttestationIfAdvanced(input: {
       return;
     }
     // 提出失敗は非失敗(SHOULD)だが黙殺しない — 1 行の警告に落とす
-    if (submitted === "AttestationRegression") {
+    if (submitted === "regression") {
       yield* io.logError(
         "Warning: the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",
       );
