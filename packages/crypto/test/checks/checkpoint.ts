@@ -84,6 +84,12 @@ async function valuesDigestInvalidInputChecks(c: Checks): Promise<void> {
   const badEntries: readonly { readonly name: string; readonly entry: EnvValuesDigestEntry }[] = [
     { name: "version zero", entry: { ...validEntry, version: 0 } },
     { name: "fractional version", entry: { ...validEntry, version: 1.5 } },
+    // MAX_SAFE_INTEGER + 1 = float64 の精度喪失域(10 進文字列化が一意でない —
+    // §2.1 / session-31 M1-T2)
+    {
+      name: "unsafe integer version",
+      entry: { ...validEntry, version: Number.MAX_SAFE_INTEGER + 1 },
+    },
     {
       name: "uppercase value sig hash",
       entry: { ...validEntry, valueSigHashHex: "AB".repeat(32) },
