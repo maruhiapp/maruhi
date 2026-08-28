@@ -13,6 +13,10 @@ import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
+import {
+  reconcileDistributedAttestations,
+  submitHeadAttestationIfAdvanced,
+} from "./attestation.ts";
 import type { CliConfig } from "./config.ts";
 import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -426,21 +430,47 @@ export interface OpenProjectOptions {
 
 /**
  * セッション確立後の共通前段: §6.3 同期 → チェーン床検査 → アンカー機械照合 →
+ * ヘッドゴシップの照合(§6.3 / §6.6 — 矛盾申告は成果物の使用を中断)→
  * 床ヘッドの前進 → 未収束ローテーション義務の常時警告(§7 / B2 裁定 — §9 の
- * 開示常時明示と同じ規律)。鍵の有無で分かれるのは呼び出し側だけで、床の
- * 意味論はここに一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの
- * 前進は全コマンド共通で、env diff のような値を読まないコマンドでも従来どおり行う。
+ * 開示常時明示と同じ規律)→ 検証済みヘッドの申告提出(SHOULD — 署名鍵を持つ
+ * 前段のみ)。鍵の有無で分かれるのは呼び出し側だけで、床とゴシップの意味論は
+ * ここに一本化する(2 系統に割ると、いずれ黙って食い違う)。床ヘッドの前進は
+ * 全コマンド共通で、env diff のような値を読まないコマンドでも従来どおり行う。
+ *
+ * `attester` は申告提出の署名材料(openProjectWith が master 鍵から渡す)。
+ * 渡されない前段(openMetadataProjectWith — master 鍵を要求しないコマンド)は
+ * 照合のみ行い提出しない(提出は SHOULD であり、鍵なし実行 — MARUHI_TOKEN — を
+ * 提出のために壊さない)。
  */
 function attachProject(
   context: SessionContext,
   projectId: string,
   options?: OpenProjectOptions,
+  attester?: { readonly userId: string; readonly signingKey: CryptoKey },
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
     const resync = syncProject(context.client, projectId);
     const synced = yield* resync;
     const checked = yield* loadCheckedFloor(projectId, synced, resync);
     yield* checkInviteAnchor(projectId, checked.verified);
+    // ヘッドゴシップの照合(§6.3 / §6.6): 矛盾申告 = 硬い証拠で中断、future
+    // 申告は有界再同期(1 回)で解決を試みる。ビューが前進したら床ヘッドを
+    // 追いかけ、アンカー機械照合も新ビューで再適用する(検査は 2 参照のみ)
+    let verified = checked.verified;
+    const reconciled = yield* reconcileDistributedAttestations({
+      projectId,
+      view: verified,
+      resync,
+    });
+    if (reconciled !== verified) {
+      verified = reconciled;
+      const store = yield* FloorStore;
+      yield* store.commitHead(projectId, {
+        seq: verified.state.headSeq,
+        hashHex: verified.state.headHashHex,
+      });
+      yield* checkInviteAnchor(projectId, verified);
+    }
     // 未解決の複合 intent(3-F)は「同一環境への次の mutation・成功報告の前に
     // 照合で解決する」— 前段は毎回チェーンを全同期・全検証するので、ここが
     // その照合点になる(受理済みなら床のマニフェスト前進もここで回収する)
@@ -450,7 +480,7 @@ function attachProject(
       const resolved = yield* reconcileCompositeIntents({
         store,
         projectId,
-        verified: checked.verified,
+        verified,
         intents: floor.intents,
       });
       if (resolved) {
@@ -467,9 +497,20 @@ function attachProject(
       }
     }
     if (options?.quietMandateWarning !== true) {
-      yield* warnUnconvergedMandates({ client: context.client, verified: checked.verified });
+      yield* warnUnconvergedMandates({ client: context.client, verified });
     }
-    return { ...context, projectId, verified: checked.verified, floor, resync };
+    // 検証済みヘッドの申告提出(§6.3 ヘッドゴシップ — SHOULD。照合を全部
+    // 通過したビューだけを申告する。失敗は非失敗の警告 — attestation.ts)
+    if (attester !== undefined) {
+      yield* submitHeadAttestationIfAdvanced({
+        client: context.client,
+        projectId,
+        view: verified,
+        attesterUserId: attester.userId,
+        signingKey: attester.signingKey,
+      });
+    }
+    return { ...context, projectId, verified, floor, resync };
   });
 }
 
@@ -486,7 +527,10 @@ function openProjectWith(
     // master 鍵の読み込みは同期(通信)・床の前進より**前**のまま置く: 鍵の無い
     // 端末で実行された書き込み系コマンドを、サーバーへ 1 往復してから落とさない
     const masterKeys = yield* loadMasterKeys(context.session);
-    const base = yield* attachProject(context, projectId, options);
+    const base = yield* attachProject(context, projectId, options, {
+      userId: context.session.userId,
+      signingKey: masterKeys.sigKeyPair.privateKey,
+    });
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,

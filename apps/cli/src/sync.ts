@@ -9,7 +9,10 @@
 //
 // 併せて §5.1 の配布時検証が使う「チェーン履歴で user_id に束縛された鍵」の索引
 // (genesis / add_member の payload。削除済みメンバーの当時の鍵も含む)を作る。
-// ヘッドゴシップ(§6.3)は Phase 2 — 本セッションのスコープ外。
+// ヘッドゴシップ(§6.3 / §6.6): チェーン取得応答に同梱される他メンバーの申告は
+// **未検証のまま** VerifiedProject に載せて運ぶだけで、検証・照合は
+// attestation.ts(reconcileDistributedAttestations)が行う。lease 応答は申告を
+// 同梱しない(§14-2)ため常に空。
 
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
@@ -31,6 +34,20 @@ export interface KeyBinding {
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly keyFingerprintHex: string;
+}
+
+/**
+ * 配布されたヘッド申告のワイヤ形(AUTH_SPEC §16-1 — チェーン取得応答の
+ * `attestations`)。**未検証の生データ**として運ぶ: §6.6 の検証と照合
+ * (attestation.ts)を通過するまで一切の判断材料にしない。
+ */
+export interface DistributedAttestationWire {
+  readonly suite: "maruhi/v1";
+  readonly attesterUserId: string;
+  readonly attesterKeyFingerprintHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
 }
 
 /**
@@ -56,6 +73,12 @@ export interface VerifiedProject {
    * 参照する読み取り専用ビュー。
    */
   readonly entries: readonly ChainEntry[];
+  /**
+   * 同じ応答に同梱された他メンバーのヘッド申告(§6.6 — **未検証**)。旧サーバー
+   * の応答には欠ける(欠落 = 空。omission は §6.3 の規範的非保証であり拒否
+   * しない)。lease 応答由来のビューでは常に空(§14-2 — 非同梱)。
+   */
+  readonly attestations: readonly DistributedAttestationWire[];
 }
 
 function bindingKey(binding: KeyBinding): string {
@@ -136,6 +159,8 @@ export function verifyChainSnapshot(input: {
   /** サーバー申告のヘッド(信用せず、導出ヘッドとの一致を検査する)。 */
   readonly claimedHeadSeq: number;
   readonly claimedHeadHashHex: string;
+  /** 同梱されたヘッド申告(未検証のまま運ぶ — lease 経路は渡さない = 空)。 */
+  readonly attestations?: readonly DistributedAttestationWire[];
 }): Effect.Effect<VerifiedProject, CliError> {
   return Effect.gen(function* () {
     const { projectId, entries } = input;
@@ -192,7 +217,14 @@ export function verifyChainSnapshot(input: {
           } (cannot build the key index from the verified chain)`,
         ),
     });
-    return { projectId, state, history, keyHistory, entries } satisfies VerifiedProject;
+    return {
+      projectId,
+      state,
+      history,
+      keyHistory,
+      entries,
+      attestations: input.attestations ?? [],
+    } satisfies VerifiedProject;
   });
 }
 
@@ -213,6 +245,9 @@ export function syncProject(
       entries: snapshot.entries,
       claimedHeadSeq: snapshot.headSeq,
       claimedHeadHashHex: snapshot.headHashHex,
+      // 旧サーバーの応答には attestations が無い(欠落 = 空で受ける — §6.3 の
+      // 規範的非保証。欠落拒否の分岐は作らない)
+      attestations: snapshot.attestations ?? [],
     });
   });
 }

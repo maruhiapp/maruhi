@@ -149,6 +149,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
         ),
       resolveIntent: (projectId, intentId, outcome) =>
         floorStore.resolveIntent(projectId, intentId, outcome),
+      loadAttestedHead: (projectId) => floorStore.loadAttestedHead(projectId),
+      saveAttestedHead: (projectId, head) => floorStore.saveAttestedHead(projectId, head),
+      appendAttestationEvidence: (projectId, evidence) =>
+        floorStore.appendAttestationEvidence(projectId, evidence),
     }),
     Layer.succeed(Keychain, {
       get: (name) => Effect.sync(() => keychain.get(name) ?? null),

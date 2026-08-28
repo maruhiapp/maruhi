@@ -24,7 +24,7 @@
 // 互換読みし、最初の追記でスナップショットレコードとしてログへ移行する
 // (旧ファイルはフォレンジック材料としてそのまま残す — 追記専用の規律)。
 
-import { mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
@@ -33,6 +33,7 @@ import { Effect } from "effect";
 import { cliError, type CliError } from "./errors.ts";
 import { formatFloorConflicts } from "./floor-evidence.ts";
 import {
+  type AttestationEvidenceRecord,
   type ChainHeadFloor,
   emptyEnvironmentFloor,
   type EnvironmentFloor,
@@ -971,6 +972,48 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
       ),
     );
 
+  const attestedPathOf = (projectId: string): string => {
+    if (!isProjectId(projectId)) {
+      throw new Error(`invalid project id for attested-head path: ${projectId}`);
+    }
+    return join(dir, `${projectId}.attested.json`);
+  };
+
+  const evidencePathOf = (projectId: string): string => {
+    if (!isProjectId(projectId)) {
+      throw new Error(`invalid project id for attestation-evidence path: ${projectId}`);
+    }
+    return join(dir, `${projectId}.attestation-evidence.jsonl`);
+  };
+
+  /**
+   * 証拠の追記(床ログと同じ規律: O_APPEND + 改行前置 + datasync まで待つ)。
+   * 床ログの appendRecords と分かれているのは、あちらが床レコード型と旧形式
+   * 移行に固有だから — 追記の物理規律(改行前置・short write の全長書き直し)は
+   * 同じ形を写す。
+   */
+  const appendJsonLine = async (path: string, value: AttestationEvidenceRecord): Promise<void> => {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const handle = await open(path, "a", 0o600);
+    try {
+      const payload = Buffer.from(`\n${JSON.stringify(value)}\n`, "utf8");
+      for (let attempt = 1; ; attempt += 1) {
+        const result = await handle.write(payload, 0, payload.length);
+        if (result.bytesWritten === payload.length) {
+          break;
+        }
+        if (result.bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
+          throw new Error(
+            `short write on the attestation-evidence log (${result.bytesWritten}/${payload.length} bytes)`,
+          );
+        }
+      }
+      await handle.datasync();
+    } finally {
+      await handle.close();
+    }
+  };
+
   /** 旧形式の互換読み(ログ未作成 / 空ログ)。最初の追記でログへ移行される。 */
   const loadLegacy = async (projectId: string): Promise<FloorLoadResult> => {
     const legacy = await readLegacy(projectId);
@@ -1068,5 +1111,52 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             ),
         }),
       ),
+    loadAttestedHead: (projectId) =>
+      Effect.tryPromise({
+        try: async () => {
+          let raw: string;
+          try {
+            raw = await readFile(attestedPathOf(projectId), "utf8");
+          } catch (error) {
+            if (isFileMissingError(error)) {
+              return null;
+            }
+            throw error;
+          }
+          // 破損は null(前回申告の追跡はベストエフォート — 喪失の帰結は
+          // 同一 seq の再提出で、サーバー側の冪等 204 が吸収する)
+          let value: unknown;
+          try {
+            value = JSON.parse(raw);
+          } catch {
+            return null;
+          }
+          return decodeChainHead(isRecord(value) ? value["head"] : undefined);
+        },
+        catch: () => cliError(`Cannot read the attested-head file: ${attestedPathOf(projectId)}`),
+      }),
+    saveAttestedHead: (projectId, head) =>
+      Effect.tryPromise({
+        try: async () => {
+          await mkdir(dir, { recursive: true, mode: 0o700 });
+          // tmp → rename の置換(部分書き込みを読み手に見せない)。追跡は
+          // 上書き可の別クラス(検証済み観測ではない — floor.ts の doc)
+          const path = attestedPathOf(projectId);
+          const tmp = `${path}.tmp`;
+          await writeFile(tmp, `${JSON.stringify({ v: 1, head })}\n`, { mode: 0o600 });
+          await rename(tmp, path);
+        },
+        catch: () => cliError(`Cannot write the attested-head file: ${attestedPathOf(projectId)}`),
+      }),
+    appendAttestationEvidence: (projectId, evidence) =>
+      Effect.tryPromise({
+        try: async () => {
+          const path = evidencePathOf(projectId);
+          await appendJsonLine(path, evidence);
+          return path;
+        },
+        catch: () =>
+          cliError(`Cannot write the attestation-evidence log: ${evidencePathOf(projectId)}`),
+      }),
   };
 }
