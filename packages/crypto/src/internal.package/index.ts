@@ -43,6 +43,11 @@ export {
 export { verifyChain, verifyChainWithHistory } from "./chain-verify.ts";
 export { computeEnvValuesDigest, type EnvValuesDigestEntry } from "./values-digest.ts";
 export {
+  type AuditHeadRow,
+  computeAuditHeadHash,
+  computeAuditRowDigest,
+} from "./audit-head.ts";
+export {
   buildDekCommitmentBytes,
   computeDekCommitment,
   type DekCommitmentContext,

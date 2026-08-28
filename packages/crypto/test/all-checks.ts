@@ -1,6 +1,7 @@
 // 全チェックの集約。vitest(node / workerd / browser)と Bun 直接実行の共通入口。
 // 各層の実装が進むごとにここへチェックを追加する。
 
+import { auditHeadChecks } from "./checks/audit-head.ts";
 import { chainHistoryChecks } from "./checks/chain-history.ts";
 import { chainNegativeChecks } from "./checks/chain-negative.ts";
 import { chainChecks } from "./checks/chain.ts";
@@ -42,6 +43,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await valueSignatureChecks());
   groups.push(await metadataSignatureChecks());
   groups.push(await envManifestChecks());
+  groups.push(await auditHeadChecks());
   groups.push(await recoveryChecks());
   return groups.flat();
 }

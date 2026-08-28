@@ -165,6 +165,15 @@ export {
   verifyChainWithHistory,
 } from "./internal.package/index.ts";
 
+// AUDIT_SPEC §5.1: 監査ヘッド累積ハッシュ(checkpoint の audit_head_hash — §6.2 —
+// の入力)。生成 = プロジェクト DO の受理面、検証 = admin 突合(AUDIT_SPEC §6)が
+// この 1 実装を共有する
+export {
+  type AuditHeadRow,
+  computeAuditHeadHash,
+  computeAuditRowDigest,
+} from "./internal.package/index.ts";
+
 // §6.5: 招待の暗号面 — 受諾署名(チェーン外の追加証跡。相互確認の表示は §3 の
 // fingerprintToWords、リンクアンカーは §6.3 — いずれも既存 export)
 export {
