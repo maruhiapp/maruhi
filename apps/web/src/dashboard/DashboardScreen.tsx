@@ -145,29 +145,31 @@ function appendProjects(current: ProjectsState | undefined, page: ProjectList): 
  * 空ページはリストの終端ではない(AUTH_SPEC §11-5): 候補ページは ghost 除外・
  * 確認失敗の省略で `{ projects: [], nextAfter }` になりうる。行が増えるか
  * nextAfter が尽きるまでカーソルを進める(PR #107 Bugbot 指摘の修正 —
- * 深さは候補ページ数で有界)。
+ * 深さは候補ページ数で有界)。既出カーソルの再出現(壊れた・敵対的な
+ * サーバー — 交互カーソルを含む)は終端扱いにして追跡を打ち切る: 追跡回数は
+ * 相異なるカーソル数で全域有界(クライアントのサーバー不信の姿勢の均一化)。
  */
-function morePagesNeeded(
+function shouldFollowCursor(
   page: ProjectList,
   next: ProjectsState,
-  previousAfter: string | undefined,
+  visitedCursors: Set<string>,
 ): boolean {
-  // 前進しないカーソル(壊れた・敵対的なサーバー)は終端扱いにして追跡を
-  // 打ち切る — クライアントのサーバー不信の姿勢を無限ループ耐性でも揃える
-  return (
-    page.projects.length === 0 && next.nextAfter !== undefined && next.nextAfter !== previousAfter
-  );
+  if (page.projects.length > 0) return false;
+  if (next.nextAfter === undefined) return false;
+  if (visitedCursors.has(next.nextAfter)) return false;
+  visitedCursors.add(next.nextAfter);
+  return true;
 }
 
 async function loadNonEmptyPage(
   current: ProjectsState | undefined,
+  visitedCursors: Set<string>,
 ): Promise<{ kind: "ok"; value: ProjectsState } | ApiFailure> {
-  const after = current?.nextAfter;
-  const result = await apiGet<ProjectList>(projectsPath(after));
+  const result = await apiGet<ProjectList>(projectsPath(current?.nextAfter));
   if (result.kind !== "ok") return result;
   const next = appendProjects(current, result.value);
-  return morePagesNeeded(result.value, next, after)
-    ? loadNonEmptyPage(next)
+  return shouldFollowCursor(result.value, next, visitedCursors)
+    ? loadNonEmptyPage(next, visitedCursors)
     : { kind: "ok", value: next };
 }
 
@@ -231,7 +233,7 @@ function ProjectListSection(): ReactNode {
   const loadPage = useCallback(async (current: ProjectsState | undefined) => {
     setIsLoading(true);
     setFailure(undefined);
-    const result = await loadNonEmptyPage(current);
+    const result = await loadNonEmptyPage(current, new Set());
     setIsLoading(false);
     if (result.kind !== "ok") {
       setFailure(result);
