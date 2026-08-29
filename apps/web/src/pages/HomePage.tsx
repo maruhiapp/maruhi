@@ -1,6 +1,7 @@
 // サーバーコンポーネント(ビルド時に RSC ペイロードへ固められる)。
 // ビルド時刻を埋め込むことで「ビルド時レンダリングされた静的シェル」であることを検証可能にする。
 import { CounterCard } from "../components/CounterCard.tsx";
+import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
 
 const builtAt = new Date().toISOString();
 
@@ -10,6 +11,9 @@ const builtAt = new Date().toISOString();
 export function HomePage() {
   return (
     <main>
+      {/* サインイン往復のマーカーがあるときだけ /dashboard へ戻す(裁定 BU)。
+          マーカーなしのランディングは API を呼ばない */}
+      <ResumeToDashboard />
       <h1>㊙ maruhi</h1>
       <p>A general-purpose, diskless secrets manager that runs on Cloudflare.</p>
       <p>

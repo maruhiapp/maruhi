@@ -20,6 +20,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
+import { markResumeToDashboard } from "./resume.ts";
 import { FailureNotice, LoadingRow, navigateTo, RoleToken, ServerReportedNote } from "./shared.tsx";
 import type { Me, ProjectList } from "./types.ts";
 
@@ -59,7 +60,8 @@ function LoginCard({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
             Secrets never appear here — values live on your own machines and are handled by the CLI.
           </Text>
         )}
-        <Link href="/auth/github/start" data-testid="sign-in-link">
+        {/* 復帰マーカー(裁定 BU): OAuth 完了後に S1 経由で /dashboard へ戻る */}
+        <Link href="/auth/github/start" onClick={markResumeToDashboard} data-testid="sign-in-link">
           Sign in with GitHub
         </Link>
       </VStack>

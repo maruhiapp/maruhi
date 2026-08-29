@@ -1,14 +1,31 @@
-// スパイク A の e2e 検証。ビルド済み dist/public を wrangler dev(Workers Static Assets)で
-// 配信し、Playwright(Chromium)で以下を検証する:
+// e2e 検証(スパイク A 起源)。ビルド済み dist/public を **combined 構成
+// (apps/server の wrangler dev — 本番と同じ maruhi-server が Workers Static
+// Assets として配信する形。裁定 BM/BT — docs/notes/session-43.md)**で配信し、
+// Playwright(Chromium)で以下を検証する:
 //   1. 静的シェル(ビルド時 RSC)の配信と hydrate
 //   2. 厳格 CSP(script-src 'self' / style-src 'self')下での全機能動作
 //   3. SPA ナビゲーション(Navigation API)と、非対応ブラウザ相当での MPA 劣化
 //   4. Astryx プリビルド CSS + maruhi テーマ + xstyle(StyleX コンパイラあり)の適用
-// 事前に `bun run build` が必要。
+//   5. 配信トポロジ(run_worker_first の API 到達・SPA フォールバック・
+//      per-path ヘッダー)を**デプロイされる実構成**に対して固定する(裁定 BT —
+//      旧来の apps/web/wrangler.jsonc は preview 用ハーネスで、デプロイされない)
+// 事前に `bun run build` が必要。API はテスト内で page.route によりモックする
+// (裁定 BS)ため、ローカルサーバーの D1 / OAuth 設定は不要(素の 401 / 503 応答
+// 自体が「Worker に届いた」ことの検証材料になる)。
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 
+import {
+  AuditEventSchema,
+  ChainSnapshotSchema,
+  EnvironmentMetadataPullSchema,
+  EnvironmentSummarySchema,
+  MeSchema,
+  ProjectListSchema,
+  RotationFlagSchema,
+} from "@maruhi/api-schema";
+import { Schema } from "effect";
 import { type Browser, chromium, type Page, type Route } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -101,8 +118,10 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
 beforeAll(async () => {
   const port = await getFreePort();
   BASE = `http://127.0.0.1:${port}`;
+  // combined 構成(裁定 BT): 本番にデプロイされるのは apps/server/wrangler.jsonc
+  // (assets 同梱)であり、e2e はそれ自体を配信系として起動する
   wranglerProcess = spawn("bunx", ["wrangler", "dev", "--port", String(port)], {
-    cwd: import.meta.dirname + "/..",
+    cwd: import.meta.dirname + "/../../server",
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CI: "1" },
   });
@@ -457,7 +476,51 @@ function collectViolations(page: Page): string[] {
   return violations;
 }
 
+describe("web e2e: serving topology (W2 裁定 BM/BT — combined worker)", () => {
+  it("routes API paths to the worker, not the asset layer", async () => {
+    // run_worker_first の実効(navigation 吸収の遮断)をデプロイされる実構成で
+    // 固定する。未設定ローカルサーバーの素の応答(503 / 401 の JSON)自体が
+    // 「Worker に届いた」証拠 — SPA シェル(200 text/html)に飲まれていない
+    const config = await fetch(`${BASE}/auth/config`);
+    // CI = 未設定サーバーの 503 SetupIncomplete。開発者ローカルの .dev.vars が
+    // ある場合は 200 — どちらも JSON = Worker の応答(SPA シェルの 200 html でない)
+    expect([200, 503]).toContain(config.status);
+    expect(config.headers.get("content-type") ?? "").toContain("application/json");
+    const projects = await fetch(`${BASE}/projects`);
+    expect(projects.status).toBe(401);
+    expect(projects.headers.get("content-type") ?? "").toContain("application/json");
+  });
+
+  it("does not let the /invite* redirect catch-all swallow POST /invites/accept", async () => {
+    // session-43 §9 の欠陥修正の回帰テスト: 列挙漏れ時は _redirects の小文字
+    // 総取りが受諾 POST を 301 → /invite で飲む(実測で確認した壊れ方)
+    const res = await fetch(`${BASE}/invites/accept`, { method: "POST", redirect: "manual" });
+    expect(res.status).toBe(401); // 未認証の Worker 応答(301 ではない)
+  });
+});
+
 describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", () => {
+  it("keeps every mocked fixture wire-valid against the api-schema contracts (裁定 BV)", () => {
+    // 型適合(tsc)は hex 長・パターン等の実行時制約を見ない。フィクスチャを
+    // 実 Schema でデコードし、モックとワイヤ契約の漂流を機械検査にする
+    // (Schema の実行コードはテストプロセスのみで動き、バンドルには入らない)
+    Schema.decodeUnknownSync(MeSchema)(meFixture);
+    for (const page of [projectsPage1, projectsPageEmpty, projectsPage2]) {
+      Schema.decodeUnknownSync(ProjectListSchema)(page);
+    }
+    Schema.decodeUnknownSync(ChainSnapshotSchema)(chainFixture);
+    for (const env of environmentsFixture.environments) {
+      Schema.decodeUnknownSync(EnvironmentSummarySchema)(env);
+    }
+    Schema.decodeUnknownSync(EnvironmentMetadataPullSchema)(metadataPullFixture);
+    for (const event of [...projectAuditEvents.events, ...selfAuditEvents.events]) {
+      Schema.decodeUnknownSync(AuditEventSchema)(event);
+    }
+    for (const flag of rotationFlagsFixture.flags) {
+      Schema.decodeUnknownSync(RotationFlagSchema)(flag);
+    }
+  });
+
   it("serves /dashboard routes with the strict SPA CSP header", async () => {
     // violation ゼロの検査(下の各テスト)は「CSP ヘッダーが無い」場合も通って
     // しまうため、ヘッダーの実在を直接固定する(pullfrog レビュー反映)。
@@ -588,6 +651,47 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
 
     expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("resumes to /dashboard after the sign-in round trip via the one-shot marker (裁定 BU)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+    await page.route(
+      (url) => url.pathname === "/projects",
+      (route) => fulfillJson(route, 200, projectsPage2),
+    );
+    // Sign in クリック → OAuth 往復 → callback が ${origin}/ へ 302 で戻した状態を
+    // マーカー + "/" 直行で再現する(OAuth 実フローは e2e 不能 — 裁定 BS)
+    await page.addInitScript(() => {
+      try {
+        sessionStorage.setItem("maruhi-resume-dashboard", "1");
+      } catch {
+        // storage 不可環境ではこのテスト自体が成立しない(現行導線に劣化)
+      }
+    });
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+    await page.getByTestId("project-list").waitFor();
+    expect(new URL(page.url()).pathname).toBe("/dashboard");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("stays on the landing page when the marker is set but no session exists", async () => {
+    const page = await browser.newPage();
+    await page.route("**/auth/me", unauthorized);
+    await page.addInitScript(() => {
+      try {
+        sessionStorage.setItem("maruhi-resume-dashboard", "1");
+      } catch {
+        // storage 不可環境では何もしない
+      }
+    });
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+    await page.getByTestId("built-at").waitFor();
+    // OAuth 中断・失敗(セッション未成立)ではランディングに留まる
+    expect(new URL(page.url()).pathname).toBe("/");
     await page.close();
   });
 
