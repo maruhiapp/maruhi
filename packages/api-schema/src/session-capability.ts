@@ -24,14 +24,14 @@ import { AuthMiddleware } from "./auth-middleware.ts";
  *
  * - 認証・自己情報系: `auth.me` / `auth.logout` / `auth.recoveryStatus`
  *   (§3 のフロー — githubStart / githubCallback — は未認証面であり本表の外)
- * - 読み取り: チェーン取得(§11)、環境一覧(§12-4)、メタデータのみ pull
- *   (§12-7)、監査読み取り(AUDIT_SPEC §7 — プロジェクト・invite.*・本人軸)、
- *   要ローテーションフラグビュー、招待一覧(§15-2)
+ * - 読み取り: チェーン取得(§11)、プロジェクト一覧(§11-5 — W2a)、環境一覧
+ *   (§12-4)、メタデータのみ pull(§12-7)、監査読み取り(AUDIT_SPEC §7 —
+ *   プロジェクト・invite.*・本人軸)、要ローテーションフラグビュー、
+ *   招待一覧(§15-2)
  * - 失効系: 招待の失効(§15-2)
  *
- * §5 の許可列挙中の将来 API(トークン一覧・指定失効 = W3a、プロジェクト
- * 一覧 = W2a)は実装時に本リストへ追加する。`audit.auditHead` は列挙外
- * (Web に消費者なし — session-39 §10-4)。
+ * §5 の許可列挙中の将来 API(トークン一覧・指定失効 = W3a)は実装時に本リストへ
+ * 追加する。`audit.auditHead` は列挙外(Web に消費者なし — session-39 §10-4)。
  */
 export const SESSION_ALLOWED_ENDPOINTS: ReadonlyArray<readonly [group: string, endpoint: string]> =
   [
@@ -39,6 +39,7 @@ export const SESSION_ALLOWED_ENDPOINTS: ReadonlyArray<readonly [group: string, e
     ["auth", "logout"],
     ["auth", "recoveryStatus"],
     ["membership", "get"],
+    ["membership", "list"],
     ["environments", "list"],
     ["variables", "pullMetadata"],
     ["audit", "events"],

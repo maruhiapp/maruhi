@@ -151,6 +151,35 @@ export const projects = sqliteTable(
   (t) => [index("proj_org").on(t.orgId)],
 );
 
+/**
+ * チェーン導出 membership の D1 投影(AUTH_SPEC §11-5 — W2a)。
+ *
+ * **発見(discovery)専用の候補索引**であり、いかなる認可判定にも使わない
+ * (プロジェクトアクセスの真実源はメンバーシップチェーン — CRYPTO_SPEC §6.4 の
+ * 「2 つの真実源の禁止」。一覧応答は読取時に各プロジェクト DO の membership
+ * 確認を通過した行のみで、stale 行は読取時に削除されて収束する)。role・状態
+ * 列を意図的に持たない: role は読取時確認が返す現在値を使うため、change_role の
+ * 投影追随が構造的に不要(session-42 裁定 BI 第 2 周)。
+ *
+ * FK を張らない(invitations と同じ理由: 導出キャッシュは参照整合で受理・修復を
+ * 阻害しない — §11-3 の部分失敗窓とも干渉させない)。
+ */
+export const projectMembers = sqliteTable(
+  "project_members",
+  {
+    /** genesis ハッシュ(hex 小文字 64) */
+    projectId: text("project_id").notNull(),
+    /** 内部 user_id(ULID) */
+    userId: text("user_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.projectId, t.userId] }),
+    // 一覧の候補列挙(user 軸・project_id 昇順のカーソルページング — §11-5)
+    index("pm_user_project").on(t.userId, t.projectId),
+  ],
+);
+
 export const invitations = sqliteTable(
   "invitations",
   {

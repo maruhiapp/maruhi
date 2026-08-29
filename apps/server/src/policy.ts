@@ -78,6 +78,14 @@ export const MAX_PROJECT_DEK_WRAP_ROWS = 1_000_000;
  */
 export const MAX_ROTATION_DISMISSALS_PER_REQUEST = 10_000;
 
+/**
+ * AUTH_SPEC §11-5: プロジェクト一覧のサーバー固定ページ(D1 候補基準・
+ * project_id 昇順)。1 呼び出しの DO membership 確認をこの件数に有界化する
+ * (Workers サブリクエスト上限への防波堤を契約側に持つ)。クライアント指定の
+ * limit は設けない — 受理ポリシーの値を増やす方向のノブを作らない。
+ */
+export const PROJECT_LIST_PAGE_SIZE = 100;
+
 // ---------------------------------------------------------------------------
 // ワークロードリースの受理ポリシー(AUTH_SPEC §14-3 / AUDIT_SPEC §3.5)。
 // §12-8 と同じ性格 = 合意規則ではない(セルフホストでの引き上げは自由)。

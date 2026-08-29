@@ -261,6 +261,9 @@ describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 
     // チェーン取得(§11)— fixture の OWNER はチェーン導出メンバー
     const chain = await SELF.fetch(concreteUrl("/projects/:projectId/chain"), { headers });
     expect(chain.status).toBe(200);
+    // プロジェクト一覧(§11-5 — W2a。S4 の消費経路)
+    const projectList = await SELF.fetch(`${BASE}/projects`, { headers });
+    expect(projectList.status).toBe(200);
     // 環境一覧(§12-4)
     const environments = await SELF.fetch(concreteUrl("/projects/:projectId/environments"), {
       headers,
