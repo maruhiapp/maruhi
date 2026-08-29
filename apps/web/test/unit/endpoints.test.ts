@@ -138,7 +138,8 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     expect(
       findSourceOffenders(
         srcRoot,
-        /import\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)["']/,
+        // サブパス import(effect/schema 等 — 本リポジトリの主流形)も対象
+        /import\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/,
         new Set(),
       ),
       "value import of effect / @maruhi/api-schema in bundle source — use `import type` (裁定 BR)",
