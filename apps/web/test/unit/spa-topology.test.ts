@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { unstable_readConfig } from "wrangler";
 
 import { SAMPLE_PROJECT_ID } from "../../src/dashboard/endpoints.ts";
-import { SPA_ROUTES } from "../../src/dashboard/routes.ts";
+import { SPA_ROUTES, spaPaths } from "../../src/dashboard/routes.ts";
 
 /** serving-topology.test.ts の ruleCovers と同じ意味論(完全一致 / 前置 + `*`)。 */
 function ruleCovers(rule: string, path: string): boolean {
@@ -60,5 +60,28 @@ describe("SPA route space vs run_worker_first (裁定 BZ)", () => {
         `SPA route ${path} is covered by run_worker_first — navigation would hit the worker's 404`,
       ).toEqual([]);
     }
+  });
+
+  it("binds every spaPaths builder to a declared route (裁定 CA)", () => {
+    // ビルダーとルート定義は routes.ts の同じ定数を読むが、ビルダーの追加が
+    // SPA_ROUTES への登録(= 非交差スイープの対象化)を伴うことと、パラメータ
+    // 置換が完全であること(:param の取りこぼしは実行時 404)をここで固定する
+    const declaredPaths = new Set(SPA_ROUTES.map((r) => r.path));
+    const built = [
+      spaPaths.home(),
+      spaPaths.about(),
+      spaPaths.dashboard(),
+      spaPaths.account(),
+      spaPaths.project(SAMPLE_PROJECT_ID),
+    ];
+    for (const path of built) {
+      expect(path.includes(":"), `builder output ${path} has an unsubstituted param`).toBe(false);
+    }
+    // project はサンプル置換後なのでテンプレート側を逆置換して突合する
+    expect(declaredPaths.has(spaPaths.dashboard())).toBe(true);
+    expect(declaredPaths.has(spaPaths.account())).toBe(true);
+    expect(declaredPaths.has(spaPaths.home())).toBe(true);
+    expect(declaredPaths.has(spaPaths.about())).toBe(true);
+    expect(declaredPaths.has(spaPaths.project(":projectId"))).toBe(true);
   });
 });

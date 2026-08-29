@@ -16,12 +16,23 @@ import {
   SAMPLE_PROJECT_ID,
 } from "../../src/dashboard/endpoints.ts";
 
+/** 登録エンドポイント 1 面の構造スライス。 */
+interface RegisteredEndpoint {
+  readonly path: string;
+  /** クエリ Schema(未宣言のエンドポイントでは undefined)。 */
+  readonly query?: {
+    readonly ast?: {
+      readonly propertySignatures?: ReadonlyArray<{ readonly name: PropertyKey }>;
+    };
+  };
+}
+
 /** 検査対象の構造スライス(session-capability.ts の SweepableApi と同じ理由の構造型)。 */
 interface PathedApi {
   readonly groups: {
     readonly [group: string]: {
       readonly endpoints: {
-        readonly [endpoint: string]: { readonly path: string };
+        readonly [endpoint: string]: RegisteredEndpoint;
       };
     };
   };
@@ -73,35 +84,67 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("keeps API path literals out of screen code (builders are the only source)", () => {
-    // ソーストリップワイヤ(裁定 BY): 目録の網羅性は「画面が fetch するパスは
-    // すべて endpoints.ts のビルダー経由」という規律に依存する。ここでは
-    // src/ 配下(endpoints.ts 自身を除く)に API 前置のパスリテラルが現れない
-    // ことを機械検査し、ビルダーを迂回する消費面の混入をドリフトとして落とす
+  it("declares every consumed cursor query in the endpoint's query schema (裁定 CB)", () => {
+    // withCursor が付けるカーソル名が api-schema のクエリ Schema に宣言されて
+    // いること: パラメータ名のリネームは「ページングが黙って無反応になる」で
+    // なくここで割れる(サーバーは未知クエリを無視するため実行時エラーが出ない)
+    for (const { group, endpoint, cursor } of DASHBOARD_ENDPOINTS) {
+      if (cursor === undefined) continue;
+      expect(
+        queryKeys(requireEndpoint(group, endpoint)),
+        `${group}.${endpoint} does not declare a "${cursor}" query parameter in api-schema`,
+      ).toContain(cursor);
+    }
+  });
+
+  it("keeps path literals out of screen code (builders are the only source)", () => {
+    // ソーストリップワイヤ(裁定 BY / CA): 目録の網羅性は「画面が使うパスは
+    // すべてビルダー経由」(API = endpoints.ts、SPA = routes.ts)という規律に
+    // 依存する。ここでは src/ 配下(両ビルダー置き場を除く)に API 前置・
+    // /dashboard 前置のパスリテラルが現れないことを機械検査し、ビルダーを
+    // 迂回する消費面の混入をドリフトとして落とす
     expect(
-      findApiLiteralOffenders(join(import.meta.dirname, "../../src")),
-      "API path literal outside src/dashboard/endpoints.ts — use the apiPaths builders (裁定 BW/BY)",
+      findPathLiteralOffenders(join(import.meta.dirname, "../../src")),
+      "path literal outside the builder modules — use apiPaths (endpoints.ts) or spaPaths (routes.ts)",
     ).toEqual([]);
   });
 });
 
-/** トリップワイヤの走査対象: TS/TSX ソース(唯一のビルダー置き場を除く)。 */
+/** 登録エンドポイントの取得(不在は fail-loud — パス整合テストと同じ前提)。 */
+function requireEndpoint(group: string, endpoint: string): RegisteredEndpoint {
+  const registered = api.groups[group]?.endpoints[endpoint];
+  if (registered === undefined) throw new Error(`${group}.${endpoint} is not registered`);
+  return registered;
+}
+
+/** クエリ Schema の宣言プロパティ名(未宣言は空)。 */
+function queryKeys(registered: RegisteredEndpoint): PropertyKey[] {
+  return (registered.query?.ast?.propertySignatures ?? []).map((p) => p.name);
+}
+
+/** トリップワイヤの走査対象: TS/TSX ソース(2 つのビルダー置き場を除く)。 */
 function isSweepTarget(entry: { isFile(): boolean; name: string }): boolean {
-  return entry.isFile() && /\.(ts|tsx)$/.test(entry.name) && entry.name !== "endpoints.ts";
+  return (
+    entry.isFile() &&
+    /\.(ts|tsx)$/.test(entry.name) &&
+    entry.name !== "endpoints.ts" &&
+    entry.name !== "routes.ts"
+  );
 }
 
 /**
- * API 前置(/auth・/projects・/invites)のパスリテラルを持つファイルを列挙する。
- * 対象はダブル/シングルクォートの文字列のみ — バッククォートはコメント内の
- * パス例(`/auth/me` 等)と衝突するため対象外で、迂回可能性は許容する
- * (word-hash トリップワイヤと同じ「善意のドリフト検出」の位置づけ — session-41 BG)。
+ * API 前置(/auth・/projects・/invites)と SPA 前置(/dashboard)のパス
+ * リテラルを持つファイルを列挙する。対象はダブル/シングルクォートの文字列
+ * のみ — バッククォートはコメント内のパス例(`/auth/me` 等)と衝突するため
+ * 対象外で、迂回可能性は許容する(word-hash トリップワイヤと同じ「善意の
+ * ドリフト検出」の位置づけ — session-41 BG)。
  */
-function findApiLiteralOffenders(srcRoot: string): string[] {
+function findPathLiteralOffenders(srcRoot: string): string[] {
   const offenders: string[] = [];
   for (const entry of readdirSync(srcRoot, { recursive: true, withFileTypes: true })) {
     if (!isSweepTarget(entry)) continue;
     const filePath = join(entry.parentPath, entry.name);
-    if (/["']\/(auth|projects|invites)\b/.test(readFileSync(filePath, "utf8"))) {
+    if (/["']\/(auth|projects|invites|dashboard)\b/.test(readFileSync(filePath, "utf8"))) {
       offenders.push(filePath.slice(srcRoot.length + 1));
     }
   }

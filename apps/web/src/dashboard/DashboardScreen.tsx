@@ -22,6 +22,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
 import { apiPaths, withCursor } from "./endpoints.ts";
 import { markResumeToDashboard } from "./resume.ts";
+import { spaPaths } from "./routes.ts";
 import { FailureNotice, LoadingRow, navigateTo, RoleToken, ServerReportedNote } from "./shared.tsx";
 import type { Me, ProjectList } from "./types.ts";
 
@@ -80,7 +81,7 @@ function OpenByIdCard(): ReactNode {
   const open = () => {
     const trimmed = projectId.trim();
     if (PROJECT_ID_PATTERN.test(trimmed)) {
-      navigateTo(`/dashboard/projects/${trimmed}`);
+      navigateTo(spaPaths.project(trimmed));
     } else {
       setShowFormatNote(true);
     }
@@ -124,7 +125,7 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
     header: "Project",
     width: proportional(1),
     renderCell: (row: ProjectRow) => (
-      <Link href={`/dashboard/projects/${row.id}`}>
+      <Link href={spaPaths.project(row.id)}>
         <Text type="code" size="sm" wordBreak="break-all">
           {row.id}
         </Text>
@@ -290,7 +291,7 @@ function SignedInBody({ me, onSignOut }: { me: Me; onSignOut: () => void }): Rea
           Signed in as <Text type="code">{me.userId}</Text>
         </Text>
         <HStack gap={3} align="center">
-          <Link href="/dashboard/account">Account audit</Link>
+          <Link href={spaPaths.account()}>Account audit</Link>
           <Button
             label="Sign out"
             variant="ghost"
@@ -360,7 +361,7 @@ export function DashboardScreen(): ReactNode {
           <VStack gap={5}>
             <HStack gap={3} justify="between" align="center">
               <Heading level={1}>㊙ maruhi dashboard</Heading>
-              <Link href="/">Home</Link>
+              <Link href={spaPaths.home()}>Home</Link>
             </HStack>
             <DashboardBody
               auth={auth}

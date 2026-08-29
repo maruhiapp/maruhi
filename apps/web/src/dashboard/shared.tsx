@@ -14,6 +14,7 @@ import { Token } from "@astryxdesign/core/Token";
 import type { ReactNode } from "react";
 
 import type { ApiFailure } from "./api.ts";
+import { spaPaths } from "./routes.ts";
 import type { ChainRole } from "./types.ts";
 
 /**
@@ -106,7 +107,7 @@ export function FailureNotice({
         status="warning"
         title="Signed out"
         description="Your session has ended. Sign in again to continue."
-        endContent={<Link href="/dashboard">Go to sign-in</Link>}
+        endContent={<Link href={spaPaths.dashboard()}>Go to sign-in</Link>}
       />
     );
   }

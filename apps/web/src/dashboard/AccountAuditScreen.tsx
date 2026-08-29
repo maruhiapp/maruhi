@@ -12,6 +12,7 @@ import { type ReactNode, useCallback } from "react";
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { apiPaths, withCursor } from "./endpoints.ts";
+import { spaPaths } from "./routes.ts";
 import { ServerReportedNote } from "./shared.tsx";
 import type { AuditEventsPage } from "./types.ts";
 
@@ -29,7 +30,7 @@ export function AccountAuditScreen(): ReactNode {
         <LayoutContent>
           <VStack gap={5}>
             <VStack gap={2}>
-              <Link href="/dashboard">← Dashboard</Link>
+              <Link href={spaPaths.dashboard()}>← Dashboard</Link>
               <Heading level={1}>Account audit</Heading>
               <Text type="supporting">
                 Events about your own account (sign-ins, tokens, recovery), as reported by the

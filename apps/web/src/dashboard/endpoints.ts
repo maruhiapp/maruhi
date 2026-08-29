@@ -59,6 +59,12 @@ export interface DashboardEndpoint {
   readonly access: "session" | "unauthenticated";
   /** サンプルパラメータで具体化したパス(テストがテンプレートと突合する)。 */
   readonly sample: string;
+  /**
+   * この面に withCursor で付けるカーソルクエリ名(裁定 CB — session-43 §13)。
+   * スイープが api-schema のクエリ Schema にこの名前の宣言があることを検査する
+   * (パラメータ名のリネームはページング無反応でなくテストで割れる)。
+   */
+  readonly cursor?: "after" | "before";
 }
 
 /** ダッシュボードの全消費面(スイープの検査対象)。 */
@@ -71,7 +77,13 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
   },
   { group: "auth", endpoint: "me", access: "session", sample: apiPaths.me() },
   { group: "auth", endpoint: "logout", access: "session", sample: apiPaths.logout() },
-  { group: "membership", endpoint: "list", access: "session", sample: apiPaths.projects() },
+  {
+    group: "membership",
+    endpoint: "list",
+    access: "session",
+    sample: apiPaths.projects(),
+    cursor: "after",
+  },
   {
     group: "membership",
     endpoint: "get",
@@ -95,14 +107,22 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     endpoint: "events",
     access: "session",
     sample: apiPaths.auditEvents(SAMPLE_PROJECT_ID),
+    cursor: "before",
   },
   {
     group: "audit",
     endpoint: "invites",
     access: "session",
     sample: apiPaths.auditInvites(SAMPLE_PROJECT_ID),
+    cursor: "before",
   },
-  { group: "audit", endpoint: "self", access: "session", sample: apiPaths.auditSelf() },
+  {
+    group: "audit",
+    endpoint: "self",
+    access: "session",
+    sample: apiPaths.auditSelf(),
+    cursor: "before",
+  },
   {
     group: "rotation",
     endpoint: "flags",

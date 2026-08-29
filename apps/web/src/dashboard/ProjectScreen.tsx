@@ -27,7 +27,7 @@ import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
 import { apiPaths, withCursor } from "./endpoints.ts";
-import { projectRoute } from "./routes.ts";
+import { projectRoute, spaPaths } from "./routes.ts";
 import {
   FailureNotice,
   formatServerTime,
@@ -563,7 +563,7 @@ export function ProjectScreen(): ReactNode {
         <LayoutContent>
           <VStack gap={5}>
             <VStack gap={2}>
-              <Link href="/dashboard">← All projects</Link>
+              <Link href={spaPaths.dashboard()}>← All projects</Link>
               <Heading level={1}>Project</Heading>
               <Text type="code" size="sm" wordBreak="break-all" data-testid="project-id">
                 {projectId}

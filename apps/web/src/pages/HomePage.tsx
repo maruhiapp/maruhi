@@ -2,6 +2,7 @@
 // ビルド時刻を埋め込むことで「ビルド時レンダリングされた静的シェル」であることを検証可能にする。
 import { CounterCard } from "../components/CounterCard.tsx";
 import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
+import { spaPaths } from "../dashboard/routes.ts";
 
 const builtAt = new Date().toISOString();
 
@@ -22,13 +23,13 @@ export function HomePage() {
         started.
       </p>
       <p>
-        <a href="/dashboard" data-testid="to-dashboard">
+        <a href={spaPaths.dashboard()} data-testid="to-dashboard">
           open the dashboard
         </a>{" "}
         — a read-only view of your projects (sign-in required).
       </p>
       <p>
-        <a href="/about" data-testid="to-about">
+        <a href={spaPaths.about()} data-testid="to-about">
           go to about
         </a>
       </p>
