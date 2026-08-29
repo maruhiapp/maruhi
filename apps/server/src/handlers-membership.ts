@@ -199,10 +199,23 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
               // 当該行は応答から省くだけで**保持**する(ghost 削除は DO の
               // 明確な非メンバー回答のみ — 障害の回復後に再出現できる)。
               // 契約違反の検出線(下の想定外 rejection kind の die)はこの
-              // 隔離の外側で従来どおり loud に保つ
+              // 隔離の外側で従来どおり loud に保つ。隔離は無言では飲まない
+              // (CLAUDE.md — worker-env.ts の fail-open 警告と同じ規律):
+              // 破損チェーンの die は決定的で、この省略は恒久になりうる —
+              // Workers ログへ静的メッセージ + エラー種別名だけ残す
+              // (プロジェクト ID・ユーザー ID 等のリクエスト由来文字列は
+              // 書かない)
               const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
                 projectStub(env, projectId).memberRoleFor(principal.userId),
-              ).pipe(Effect.catchDefect(() => Effect.succeed(null)));
+              ).pipe(
+                Effect.catchDefect((defect) => {
+                  console.warn(
+                    "project list: a membership confirmation failed; omitting that project from the page (its projection row is retained)",
+                    defect instanceof Error ? defect.name : "unknown",
+                  );
+                  return Effect.succeed(null);
+                }),
+              );
               if (outcome === null) {
                 return null;
               }
