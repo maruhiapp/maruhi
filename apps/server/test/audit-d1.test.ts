@@ -524,7 +524,7 @@ describe("org.project_created(§3.2)と禁止情報(§1-2)", () => {
     const services = makeDbServices(env.DB);
     const projects = Context.get(services, ProjectRepo);
     await Effect.runPromise(
-      projects.insertIfAbsent(vectorProjectId, VECTOR_ORG, Date.now(), { userId: OWNER }),
+      projects.insertIfAbsent(vectorProjectId, VECTOR_ORG, OWNER, Date.now(), { userId: OWNER }),
     );
     const events = await auditRows("org_audit_events");
     expect(events.filter((row) => row.event === "org.project_created")).toHaveLength(1);

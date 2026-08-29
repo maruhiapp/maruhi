@@ -165,6 +165,8 @@ export {
   HeadAttestationSubmissionSchema,
   maruhiApi,
   membershipGroup,
+  ProjectListSchema,
+  ProjectMembershipSchema,
 } from "./membership-api.ts";
 export {
   assertSessionCapabilityClassified,

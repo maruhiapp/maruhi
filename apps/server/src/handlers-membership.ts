@@ -16,7 +16,7 @@ import {
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal } from "@maruhi/core";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainEntry, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
 import type { HttpApiEndpoint } from "effect/unstable/httpapi";
@@ -27,12 +27,14 @@ import {
   ensureTokenScopeForInit,
   ensureTokenScopeForProject,
   requiredPermissionForEntry,
+  scopedProjectIdsFor,
+  tokenScopeAllowsForProject,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
 import { callProjectData, noContent, unwrapDataOutcome } from "./data-http.ts";
 import type { DataOutcome } from "./data-plane.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "./db.package/index.ts";
-import { MAX_ENTRY_CANONICAL_BYTES } from "./policy.ts";
+import { MAX_ENTRY_CANONICAL_BYTES, PROJECT_LIST_PAGE_SIZE } from "./policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 // RPC 境界の outcome → api-schema の型付きエラー / 成功レスポンスへの写像。
@@ -62,7 +64,13 @@ const repairOrConflict = (
     if (exists || outcome.genesisActorUserId !== principal.userId) {
       return yield* Effect.fail(new ProjectAlreadyInitializedError({ projectId }));
     }
-    yield* projects.insertIfAbsent(projectId, orgId, Date.now(), auditActorOf(principal));
+    yield* projects.insertIfAbsent(
+      projectId,
+      orgId,
+      principal.userId,
+      Date.now(),
+      auditActorOf(principal),
+    );
     return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
   });
 
@@ -77,8 +85,15 @@ const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
     case "initialized":
       return Effect.gen(function* () {
         const projects = yield* ProjectRepo;
-        // org.project_created(AUDIT_SPEC §3.2)は insertIfAbsent が同一 batch で記録
-        yield* projects.insertIfAbsent(projectId, orgId, Date.now(), auditActorOf(principal));
+        // org.project_created(AUDIT_SPEC §3.2)と genesis actor の membership
+        // 投影行(§11-5)は insertIfAbsent が同一 batch で記録
+        yield* projects.insertIfAbsent(
+          projectId,
+          orgId,
+          principal.userId,
+          Date.now(),
+          auditActorOf(principal),
+        );
         return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
       });
     case "already-initialized":
@@ -140,6 +155,99 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         return yield* mapInitOutcome(endpoint, projectId, payload.orgId, principal, outcome);
       }),
     )
+    .handle("list", ({ query }) =>
+      Effect.gen(function* () {
+        const principal = yield* (yield* RequestAuth).principal;
+        // トークン主体のスコープ交差は**候補索引の段**で行う(スコープ外 =
+        // 不出現 — 他所の「スコープ外 = 404」§11-2 と同じ情報量)。後段の
+        // 絞り込みだけに置くと、候補ページ末尾から出る nextAfter にスコープ外の
+        // project_id(ID = capability)が載って漏れる(Cursor Security Agent
+        // 指摘 — PR #106)。セッション主体・`*` スコープは制限なし(§5 の許可
+        // 列挙を通過済み — ensureTokenScopeForProject と同じ規律)
+        const scopeFilter = scopedProjectIdsFor(principal);
+        if (scopeFilter !== null && scopeFilter.length === 0) {
+          return { projects: [] };
+        }
+        const projects = yield* ProjectRepo;
+        // §11-5: D1 投影は候補索引にすぎない(認可に使わない)。ページは
+        // 候補基準・project_id 昇順(DO 確認の絞り込みより前に確定する —
+        // 確認後基準にすると ghost の尾部でカーソルが進まない)
+        const candidates = yield* projects.listMemberProjectIds(
+          principal.userId,
+          query.after ?? null,
+          PROJECT_LIST_PAGE_SIZE,
+          scopeFilter,
+        );
+        const lastCandidate = candidates[candidates.length - 1];
+        const nextAfter = candidates.length === PROJECT_LIST_PAGE_SIZE ? lastCandidate : undefined;
+        // 深層防御: 候補は SQL 交差済みだが、応答行にも同じ述語を適用する
+        // (交差の実装が食い違ってもスコープ外が応答に昇格しない)
+        const visible = candidates.filter((projectId) =>
+          tokenScopeAllowsForProject(principal, projectId, "read"),
+        );
+        const env = yield* WorkerEnv;
+        // 読取時確認: 各候補の DO へ membership を確認し、通過した行だけを
+        // 受理時点のチェーン導出 role とともに返す(応答の真実源はチェーン)。
+        // 並行度は絞る(1 一覧がページ上限ぶんの DO を同時に実体化しない)
+        const rows = yield* Effect.forEach(
+          visible,
+          (projectId) =>
+            Effect.gen(function* () {
+              // 確認 RPC の defect(DO 到達不能・保存チェーンの破損等)は候補
+              // 単位で隔離する: 発見エンドポイントで 1 プロジェクトの障害が
+              // 残り全部の列挙を 500 にしない(pullfrog 指摘 — PR #106)。
+              // 当該行は応答から省くだけで**保持**する(ghost 削除は DO の
+              // 明確な非メンバー回答のみ — 障害の回復後に再出現できる)。
+              // 契約違反の検出線(下の想定外 rejection kind の die)はこの
+              // 隔離の外側で従来どおり loud に保つ。隔離は無言では飲まない
+              // (CLAUDE.md — worker-env.ts の fail-open 警告と同じ規律):
+              // 破損チェーンの die は決定的で、この省略は恒久になりうる —
+              // Workers ログへ静的メッセージ + エラー種別名だけ残す
+              // (プロジェクト ID・ユーザー ID 等のリクエスト由来文字列は
+              // 書かない)
+              const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
+                projectStub(env, projectId).memberRoleFor(principal.userId),
+              ).pipe(
+                Effect.catchDefect((defect) => {
+                  console.warn(
+                    "project list: a membership confirmation failed; omitting that project from the page (its projection row is retained)",
+                    defect instanceof Error ? defect.name : "unknown",
+                  );
+                  return Effect.succeed(null);
+                }),
+              );
+              if (outcome === null) {
+                return null;
+              }
+              if (outcome.kind === "ok") {
+                return { projectId, role: outcome.value };
+              }
+              const kind = outcome.rejection.kind;
+              if (kind !== "not-member" && kind !== "not-initialized") {
+                // memberRoleFor の拒否語彙は上の 2 種のみ(下限 reader = 全
+                // メンバーが満たす)— それ以外は不変条件違反
+                return yield* Effect.die(
+                  new Error(`memberRoleFor returned an unexpected rejection: ${kind}`),
+                );
+              }
+              // stale ghost 行(remove_member 後の削除失敗・§11-3 の部分状態):
+              // 応答から除外し、行を削除してチェーン truth へ収束させる。削除の
+              // D1 障害は握って前進(次回一覧が再収束する)
+              yield* projects
+                .deleteMember(projectId, principal.userId)
+                .pipe(Effect.catchDefect(() => Effect.void));
+              return null;
+            }),
+          { concurrency: 10 },
+        );
+        const memberships = rows.filter(
+          (row): row is { readonly projectId: string; readonly role: Role } => row !== null,
+        );
+        return nextAfter === undefined
+          ? { projects: memberships }
+          : { projects: memberships, nextAfter };
+      }),
+    )
     .handle("get", ({ params, endpoint }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
@@ -151,6 +259,15 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // §11-2: 未初期化と非メンバーを区別しない(存在秘匿。畳み込みは
         // rejectionErrors — 契約宣言からの導出は unwrapDataOutcome)
         const snapshot = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
+        // §11-5 (4): 取得成功 = DO がチェーン導出メンバーと確認済み — membership
+        // 投影の lazy 挿入(add_member 時の D1 障害の自己修復 + 投影導入前
+        // プロジェクトの無人バックフィル)。冪等な導出キャッシュ書き込みであり、
+        // D1 障害を成功応答へ伝播させない(§15-2 の completed 突合と同じ規律。
+        // 帰結は一覧の表示欠落のみで、次回取得が再修復する)
+        const projects = yield* ProjectRepo;
+        yield* projects
+          .upsertMember(params.projectId, principal.userId, Date.now())
+          .pipe(Effect.catchDefect(() => Effect.void));
         return {
           projectId: params.projectId,
           entries: snapshot.entries,
@@ -223,6 +340,22 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
               inviteeEncPubHex: target.encPubHex,
               inviteeSigPubHex: target.sigPubHex,
             })
+            .pipe(Effect.catchDefect(() => Effect.void));
+          // §11-5 (2): membership 投影への行挿入(発見用の候補索引 — 認可には
+          // 使わない)。同じ defect 例外の論法: 失敗の帰結は一覧の表示欠落のみで、
+          // 対象者の次回チェーン取得(lazy 挿入)が自己修復する
+          const projects = yield* ProjectRepo;
+          yield* projects
+            .upsertMember(params.projectId, target.targetUserId, Date.now())
+            .pipe(Effect.catchDefect(() => Effect.void));
+        }
+        if (payload.entry.op === "remove_member") {
+          // §11-5 (3): 投影行の削除(候補集合の衛生)。一覧の正しさはこの削除の
+          // 成否に依存しない — 読取時の DO 確認が stale 行を応答から排除 + 削除
+          // する(session-42 裁定 BI-c)ため、ここも defect を握って前進する
+          const projects = yield* ProjectRepo;
+          yield* projects
+            .deleteMember(params.projectId, payload.entry.payload.targetUserId)
             .pipe(Effect.catchDefect(() => Effect.void));
         }
         return {

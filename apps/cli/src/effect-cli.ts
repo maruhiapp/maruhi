@@ -133,6 +133,7 @@ import {
 } from "./member.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
+import { projectListOp } from "./project-list.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
 import { issueRecoveryCodeOp, recoverMasterKeyOp } from "./recovery.ts";
@@ -485,6 +486,8 @@ const projectInitConfig = {
   ),
 };
 
+const projectListConfig = { ...serverOnlyFlags() };
+
 const projectVerifyConfig = {
   ...serverOnlyFlags(),
   project: singleValued("project", "Project ID to verify (defaults to config defaultProject)"),
@@ -680,6 +683,7 @@ const GROUP_CONFIGS: Readonly<
   },
   project: {
     init: projectInitConfig,
+    list: projectListConfig,
     verify: projectVerifyConfig,
     anchor: projectAnchorConfig,
     checkpoint: projectCheckpointConfig,
@@ -1974,6 +1978,17 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const projectList = Command.make("list", projectListConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openSession(values.server);
+      yield* projectListOp({ client: context.client });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "List projects where you are a chain-derived member (server-reported — AUTH_SPEC §11-5)",
+    ),
+  );
+
   const projectVerifyCommand = Command.make("verify", projectVerifyConfig, (values) =>
     projectVerify(values.server, values.project),
   ).pipe(
@@ -2047,8 +2062,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   );
 
   const project = Command.make("project").pipe(
-    Command.withDescription("Manage projects (init / verify / anchor / checkpoint)"),
-    Command.withSubcommands([projectInit, projectVerifyCommand, projectAnchor, projectCheckpoint]),
+    Command.withDescription("Manage projects (init / list / verify / anchor / checkpoint)"),
+    Command.withSubcommands([
+      projectInit,
+      projectList,
+      projectVerifyCommand,
+      projectAnchor,
+      projectCheckpoint,
+    ]),
   );
 
   const ciRun = Command.make("run", ciRunConfig, (values) =>

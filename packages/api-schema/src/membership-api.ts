@@ -11,7 +11,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/un
 import { auditGroup } from "./audit-api.ts";
 import { authGroup } from "./auth-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { ChainEntrySchema } from "./chain.ts";
+import { ChainEntrySchema, RoleSchema } from "./chain.ts";
 import { deksGroup, environmentsGroup, variablesGroup } from "./data-api.ts";
 import {
   AttestationRateLimitedError,
@@ -87,6 +87,28 @@ export const ChainSnapshotSchema = Schema.Struct({
 });
 
 /**
+ * 一覧 1 行(AUTH_SPEC §11-5)。`role` は読取時に各プロジェクト DO が返す
+ * **受理時点のチェーン導出 role** — D1 投影(候補索引)の値ではない(投影は
+ * role を持たない)。サーバー申告の表示値であり、検証済み状態は
+ * `maruhi project verify` / チェーン取得 + クライアント検証の領分。
+ */
+export const ProjectMembershipSchema = Schema.Struct({
+  projectId: ProjectIdSchema,
+  role: RoleSchema,
+});
+
+/**
+ * `GET /projects` の応答(AUTH_SPEC §11-5)。`nextAfter` は D1 候補ページが
+ * 満杯(サーバー固定 100 件)のときのみ載るカーソル(project_id 昇順の排他
+ * 下限)。org 帰属・作成時刻・ヘッド情報は意図的に載せない(cross-org
+ * メンバーへ他 org の帰属情報を開示しない最小形 — session-42 裁定 BK)。
+ */
+export const ProjectListSchema = Schema.Struct({
+  projects: Schema.Array(ProjectMembershipSchema),
+  nextAfter: Schema.optionalKey(ProjectIdSchema),
+});
+
+/**
  * Membership-log endpoints (CRYPTO_SPEC §6.4)。全エンドポイント認証必須
  * (AUTH_SPEC §11-1。AuthMiddleware が 401 / CSRF 403 を担う)。
  *
@@ -117,6 +139,17 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryTooLargeError,
         ForbiddenError,
       ],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    // プロジェクト一覧(AUTH_SPEC §11-5 — 2026-08-29 W2a)。本人がチェーン
+    // 導出メンバーであるプロジェクトのみを返す。対象指定(パス・クエリ)を
+    // 持たないため 404 系エラーが構造的に存在しない(存在秘匿 §11-2 と自明に
+    // 両立)。トークン主体はスコープとの交差のみ(スコープ外 = 不出現)、
+    // セッション主体は §5 の許可列挙(SESSION_ALLOWED_ENDPOINTS)で可。
+    HttpApiEndpoint.get("list", "/projects", {
+      query: { after: Schema.optionalKey(ProjectIdSchema) },
+      success: ProjectListSchema,
     }).middleware(AuthMiddleware),
   )
   .add(

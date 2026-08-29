@@ -83,6 +83,28 @@ export function tokenScopeAllowsForProject(
 }
 
 /**
+ * プロジェクト一覧の候補列挙に渡すスコープ交差フィルタ(AUTH_SPEC §11-5)。
+ * null = 制限なし(セッション主体・`*` スコープを含むトークン)、それ以外は
+ * スコープが名指しするプロジェクト ID の重複排除済み列(どの permission も
+ * read 以上なので全エントリが一覧の資格を満たす)。空列 = 見えるプロジェクトが
+ * 存在しない(呼び出し側は候補列挙自体を省く)。
+ *
+ * 交差を**候補索引の段**で行うのは応答行の絞り込みのためだけではない:
+ * `nextAfter` カーソルは候補ページの末尾から出るため、後段の絞り込みだけでは
+ * スコープ外の project_id(ID = capability)がカーソルに載って漏れる
+ * (PR #106 Cursor Security Agent 指摘)。
+ */
+export function scopedProjectIdsFor(principal: AuthenticatedPrincipal): readonly string[] | null {
+  if (principal.kind !== "token") {
+    return null;
+  }
+  if (principal.scopes.some((scope) => scope.project === "*")) {
+    return null;
+  }
+  return [...new Set(principal.scopes.map((scope) => scope.project))];
+}
+
+/**
  * 鍵素材クラスの操作のトークン条件(AUTH_SPEC §13-2 / §15-2): トークン主体は
  * `*` × admin スコープを含む場合のみ可。リカバリーブロブの登録・再発行・取得
  * (スコープ限定トークンにラップの置換 = 可用性攻撃や要監視のブロブ取得を

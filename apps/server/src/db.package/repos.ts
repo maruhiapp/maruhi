@@ -61,6 +61,7 @@ import {
   memberships,
   organizations,
   orgAuditEvents,
+  projectMembers,
   projects,
   recoveryWraps,
   sessions,
@@ -771,34 +772,81 @@ function makeOrgRepo(db: Db): OrgRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// ProjectRepo(§11-3。org 帰属メタデータ。権限テーブルではない)
+// ProjectRepo(§11-3。org 帰属メタデータ + §11-5 の membership 投影。
+// どちらも権限テーブルではない — 投影は発見専用の候補索引で、認可判定には
+// 使わない。真実源はメンバーシップチェーン — CRYPTO_SPEC §6.4)
 // ---------------------------------------------------------------------------
 
 interface ProjectRepoShape {
   /**
    * 冪等挿入(修復経路を含む §11-3)。既存行はそのまま。org.project_created
-   * (AUDIT_SPEC §3.2)を同一 batch で記録する。batch の原子性により、既存行
-   * との競合で挿入が成立しなかった場合は監査行も巻き戻る(空振り挿入で
-   * イベントだけ重複しない)。
+   * (AUDIT_SPEC §3.2)と genesis actor(owner)の membership 投影行(§11-5)を
+   * 同一 batch で記録する。batch の原子性により、既存行との競合で挿入が成立
+   * しなかった場合は監査行も巻き戻る(空振り挿入でイベントだけ重複しない)。
+   * 投影行の挿入は onConflictDoNothing: 修復経路(§11-3)では lazy upsert
+   * (§11-5 の (4))が先に行を立てていることがあり、その競合で projects 行の
+   * 挿入まで巻き戻してはならない。
    */
   readonly insertIfAbsent: (
     projectId: string,
     orgId: string,
+    ownerUserId: string,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
   readonly exists: (projectId: string) => Effect.Effect<boolean>;
+  /**
+   * 投影の維持(§11-5): add_member 受理後の行挿入と、チェーン取得成功時の
+   * lazy 挿入(missing の自己修復 + 投影導入前プロジェクトの無人バックフィル)。
+   * 冪等(INSERT OR IGNORE 相当)。
+   */
+  readonly upsertMember: (projectId: string, userId: string, nowMs: number) => Effect.Effect<void>;
+  /**
+   * 投影の維持(§11-5): remove_member 受理後と、一覧の読取時確認で DO が
+   * 非メンバーと答えた stale 行の削除(チェーン truth への収束)。冪等。
+   */
+  readonly deleteMember: (projectId: string, userId: string) => Effect.Effect<void>;
+  /**
+   * 一覧の候補列挙(§11-5): 本人の投影行の project_id を昇順で、排他カーソル
+   * `afterProjectId`(null = 先頭から)から最大 `limit` 件。候補にすぎない —
+   * 応答へ載せてよいかは呼び出し側の DO 確認が決める。
+   *
+   * `withinProjectIds` はトークンスコープとの交差を**候補索引の段で**行う
+   * フィルタ(null = 制限なし)。`nextAfter` は候補ページの末尾から出るため、
+   * 交差を後段(応答行の絞り込み)だけに置くとスコープ外の project_id が
+   * カーソルに載って漏れる(PR #106 Cursor Security Agent 指摘)— 候補空間
+   * 自体をスコープ内に閉じる。
+   */
+  readonly listMemberProjectIds: (
+    userId: string,
+    afterProjectId: string | null,
+    limit: number,
+    withinProjectIds: readonly string[] | null,
+  ) => Effect.Effect<readonly string[]>;
 }
 
 export class ProjectRepo extends Context.Service<ProjectRepo, ProjectRepoShape>()("ProjectRepo") {}
 
+/**
+ * スコープ交差 IN のチャンク幅(§11-5 の候補列挙)。D1 の 1 クエリ束縛
+ * パラメータ上限(100 — Cloudflare D1 limits)から userId / after / limit の
+ * 3 パラメータを引いた予算内に余裕を持って収める。トークンスコープの発行時
+ * 上限(100 エントリ — AUTH_SPEC §6 / api-schema)を単一 IN に流すと上限を
+ * 超えるため、いずれかの上限を変更する場合は本値との整合を再確認すること。
+ */
+const SCOPE_FILTER_CHUNK_SIZE = 50;
+
 function makeProjectRepo(db: Db): ProjectRepoShape {
   return {
-    insertIfAbsent: (projectId, orgId, nowMs, actor) =>
+    insertIfAbsent: (projectId, orgId, ownerUserId, nowMs, actor) =>
       run(async () => {
         try {
           await db.batch([
             db.insert(projects).values({ id: projectId, orgId, createdAt: nowMs }),
+            db
+              .insert(projectMembers)
+              .values({ projectId, userId: ownerUserId, createdAt: nowMs })
+              .onConflictDoNothing(),
             orgAuditInsert(db, nowMs, {
               event: "org.project_created",
               actor,
@@ -822,6 +870,57 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
           .where(eq(projects.id, projectId))
           .get();
         return row !== undefined;
+      }),
+    upsertMember: (projectId, userId, nowMs) =>
+      run(async () => {
+        await db
+          .insert(projectMembers)
+          .values({ projectId, userId, createdAt: nowMs })
+          .onConflictDoNothing();
+      }),
+    deleteMember: (projectId, userId) =>
+      run(async () => {
+        await db
+          .delete(projectMembers)
+          .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
+      }),
+    listMemberProjectIds: (userId, afterProjectId, limit, withinProjectIds) =>
+      run(async () => {
+        const pageQuery = (
+          scopeChunk: readonly string[] | null,
+        ): Promise<{ projectId: string }[]> => {
+          const conditions = [eq(projectMembers.userId, userId)];
+          if (afterProjectId !== null) {
+            conditions.push(gt(projectMembers.projectId, afterProjectId));
+          }
+          if (scopeChunk !== null) {
+            conditions.push(inArray(projectMembers.projectId, [...scopeChunk]));
+          }
+          return db
+            .select({ projectId: projectMembers.projectId })
+            .from(projectMembers)
+            .where(and(...conditions))
+            .orderBy(projectMembers.projectId)
+            .limit(limit)
+            .all();
+        };
+        if (withinProjectIds === null) {
+          return (await pageQuery(null)).map((row) => row.projectId);
+        }
+        // スコープ交差の IN はチャンクして発行する(PR #106 pullfrog 指摘):
+        // D1 の 1 クエリ束縛パラメータ上限は 100 で、トークンスコープの
+        // スキーマ上限も 100 エントリ(api-schema auth-api.ts)— 単一 IN だと
+        // userId / after / limit の 3 パラメータと合わせて上限を超え、正当に
+        // 発行されたワイドスコープトークンの一覧が hard fail する。各チャンクは
+        // limit 件までの昇順列を返すので、連結 + 全体ソート + limit 切りが
+        // 単一クエリと同じページを与える(チャンクは互いに素な ID 集合)。
+        // ループ形は保存済みスコープが発行時上限を超える旧行にも安全
+        const merged: string[] = [];
+        for (let offset = 0; offset < withinProjectIds.length; offset += SCOPE_FILTER_CHUNK_SIZE) {
+          const chunk = withinProjectIds.slice(offset, offset + SCOPE_FILTER_CHUNK_SIZE);
+          merged.push(...(await pageQuery(chunk)).map((row) => row.projectId));
+        }
+        return merged.toSorted().slice(0, limit);
       }),
   };
 }

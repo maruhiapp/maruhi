@@ -21,6 +21,8 @@ const AUTH_TABLES = [
   "api_tokens",
   "recovery_wraps",
   "memberships",
+  // membership 投影(AUTH_SPEC §11-5)。FK なしの導出キャッシュ
+  "project_members",
   "projects",
   "linked_identities",
   "organizations",

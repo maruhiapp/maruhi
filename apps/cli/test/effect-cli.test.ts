@@ -947,7 +947,7 @@ describe("key / project の入れ子サブコマンド(ADR-0016 第 3 段階 ②
     const project = await makeTestEnv();
     expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
     expect(project.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: init | verify | anchor | checkpoint)",
+      "Unknown subcommand (expected one of: init | list | verify | anchor | checkpoint)",
     );
   });
 
