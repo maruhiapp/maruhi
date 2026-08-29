@@ -138,34 +138,52 @@ if (inviteBlock === undefined || !inviteBlock.includes("script-src 'none'")) {
 // ---- _redirects: near-miss パスの /invite への正規化 ----
 // 資産キー照合は大文字小文字を区別するため、`/Invite` 等の大小変種はアセットに一致せず
 // SPA フォールバック(script を持つシェル)へ落ちる。系統的な発生源(モバイルの
-// 自動大文字化・貼り付け時の末尾ゴミ)を含む「大小変種 × 末尾続き」のクラス全体を、
-// 機械生成した _redirects で /invite へ 301 正規化して閉じる(フラグメントはブラウザが
-// リダイレクト越しに保持する)。
-// 形は 1 変種 1 本の末尾スプラット `/{Variant}* /invite 301`(`/Invite`・`/Invite/x`・
-// `/InviteXYZ` をまとめて捕捉 — wrangler dev 実測)。全ルールが動的扱いで上限 100 本
-// (127 本の完全一致 + スプラット並記は 101 本目以降が黙って落ちる — 実測)のため、
-// この圧縮形で 64 本に収める。小文字だけは `/invite*` にすると正規パス自身と
-// /invite.css に一致して事故るため、`/invite/*` のみとする(小文字 + 末尾続き
-// 〔/inviteXYZ〕は生成源のないタイポとして残余 — SPA 側に fragment を読むコードは無い)
-const inviteRedirectRules: string[] = [];
-for (let bits = 0; bits < 1 << "invite".length; bits++) {
+// 自動大文字化・貼り付け時の末尾ゴミ〔小文字パスに落ちる — pullfrog 指摘〕)を含む
+// 「大小変種 × 任意の末尾続き」のクラス全体を、機械生成した _redirects で /invite へ
+// 301 正規化して閉じる(フラグメントはブラウザがリダイレクト越しに保持する)。
+//
+// 構成(先勝ちマッチを利用): ① 正規アセット 2 本の 200 リライト(自分自身への
+// リライト = 素通し)を盾として前置 → ② 大小変種 63 本の末尾スプラット
+// `/{Variant}* /invite 301` → ③ 小文字総取り `/invite* /invite 301` を最後に。
+// 盾が先にあるため ③ が正規パス自身(自己ループ)と /invite.css(スタイル破壊)に
+// 誤爆しない。全ルールが動的扱いで上限 100 本(超過行は黙って落ちる — 実測)のため
+// 計 66 本に収める。想定外の失敗モードは「盾だけ落ちて ③ が残る」= /invite の
+// リダイレクトループ(可用性の喪失。秘匿には影響せず、開けば即分かる)だが、
+// wrangler dev と production は同一のアセットワーカー実装であり選択的欠落の根拠は
+// 無い。挙動全体は e2e が固定する。残余は語中タイポ(/invte 等)のみ = 任意の
+// 404 パスと同じクラス(SPA 側に fragment を読むコードは無い)
+const inviteRedirectRules: string[] = ["/invite /invite 200", "/invite.css /invite.css 200"];
+for (let bits = 1; bits < 1 << "invite".length; bits++) {
   let variant = "";
   for (let i = 0; i < "invite".length; i++) {
     const ch = "invite".charAt(i);
     variant += (bits >> i) & 1 ? ch.toUpperCase() : ch;
   }
-  inviteRedirectRules.push(
-    variant === "invite" ? `/${variant}/* /invite 301` : `/${variant}* /invite 301`,
-  );
+  inviteRedirectRules.push(`/${variant}* /invite 301`);
 }
+inviteRedirectRules.push("/invite* /invite 301");
 writeFileSync(join(publicDir, "_redirects"), `${inviteRedirectRules.join("\n")}\n`);
 
-// 固定検査: 書き出した _redirects に正規化ルールが実在すること(_headers と同じ読み戻し型)
+// 固定検査: 書き出した _redirects に正規化ルールが実在し、かつ盾(200 リライト)が
+// 総取り(/invite*)より前にあること(先勝ちマッチのループ安全性の順序不変条件)
 const writtenRedirects = readFileSync(join(publicDir, "_redirects"), "utf8");
-for (const required of ["/invite/* /invite 301", "/Invite* /invite 301"]) {
+for (const required of [
+  "/invite /invite 200",
+  "/invite.css /invite.css 200",
+  "/Invite* /invite 301",
+  "/invite* /invite 301",
+]) {
   if (!writtenRedirects.includes(required)) {
     throw new Error(`_redirects に正規化ルールが無い: ${required}`);
   }
+}
+if (
+  writtenRedirects.indexOf("/invite /invite 200") >
+    writtenRedirects.indexOf("/invite* /invite 301") ||
+  writtenRedirects.indexOf("/invite.css /invite.css 200") >
+    writtenRedirects.indexOf("/invite* /invite 301")
+) {
+  throw new Error("_redirects の順序が壊れている: 200 リライトの盾が /invite* 総取りより後にある");
 }
 
 console.log(

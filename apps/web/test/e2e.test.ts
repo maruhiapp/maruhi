@@ -212,15 +212,13 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
   });
 
   it("normalizes near-miss paths to the canonical /invite (link format §15-3)", async () => {
-    // auto-trailing-slash による正規化(307)
-    const htmlRes = await fetch(`${BASE}/invite.html`, { redirect: "manual" });
-    expect(htmlRes.status).toBe(307);
-    expect(htmlRes.headers.get("location")).toBe("/invite");
-    // _redirects による正規化(301): 大小変種 × 深いパスのクラス全体
+    // _redirects による正規化(301): 大小変種 × 任意の末尾続きのクラス全体
     // (フラグメントはブラウザがリダイレクト越しに保持する)
     for (const path of [
       "/invite/",
       "/invite/x",
+      "/invite.html",
+      "/inviteXYZ",
       "/Invite",
       "/INVITE",
       "/iNvItE",
@@ -231,6 +229,12 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
       expect(res.status, `path: ${path}`).toBe(301);
       expect(res.headers.get("location"), `path: ${path}`).toBe("/invite");
     }
+    // 200 リライトの盾: 正規アセットは /invite* の総取りに飲まれず素通しされる
+    // (盾が落ちてループ化したら /invite の 3xx でここが検知する)
+    const cssRes = await fetch(`${BASE}/invite.css`, { redirect: "manual" });
+    expect(cssRes.status).toBe(200);
+    const inviteRes = await fetch(`${BASE}/invite`, { redirect: "manual" });
+    expect(inviteRes.status).toBe(200);
   });
 
   it("renders /invite with zero scripts under a fragment-bearing URL", async () => {
