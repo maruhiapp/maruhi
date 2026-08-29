@@ -3,25 +3,27 @@
 // ダッシュボード(W2 — S3〜S7)はクライアントコンポーネントで、共有ルート定義
 // (dashboard/routes.ts)を bindRoute で結合する(裁定 BO — docs/notes/session-43.md)。
 import { Router } from "@funstack/router";
-import { bindRoute, route } from "@funstack/router/server";
+import { bindRoute } from "@funstack/router/server";
 
 import { Providers } from "./components/Providers.tsx";
 import { AccountAuditScreen } from "./dashboard/AccountAuditScreen.tsx";
 import { DashboardScreen } from "./dashboard/DashboardScreen.tsx";
 import { ProjectScreen } from "./dashboard/ProjectScreen.tsx";
-import { accountAuditRoute, dashboardRoute, projectRoute } from "./dashboard/routes.ts";
+import {
+  aboutRoute,
+  accountAuditRoute,
+  dashboardRoute,
+  homeRoute,
+  projectRoute,
+} from "./dashboard/routes.ts";
 import { AboutPage } from "./pages/AboutPage.tsx";
 import { HomePage } from "./pages/HomePage.tsx";
 
+// ルート定義(パス)は routes.ts が単一目録(裁定 BZ — SPA 空間と
+// run_worker_first の非交差をユニットテストが検査する)。ここは結合のみ
 const routes = [
-  route({
-    path: "/",
-    component: <HomePage />,
-  }),
-  route({
-    path: "/about",
-    component: <AboutPage />,
-  }),
+  bindRoute(homeRoute, { component: <HomePage /> }),
+  bindRoute(aboutRoute, { component: <AboutPage /> }),
   bindRoute(dashboardRoute, { component: <DashboardScreen /> }),
   bindRoute(accountAuditRoute, { component: <AccountAuditScreen /> }),
   bindRoute(projectRoute, { component: <ProjectScreen /> }),

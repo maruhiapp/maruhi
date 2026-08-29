@@ -563,3 +563,65 @@ S5(チェーン取得)・S6(監査)の応答フィールド(`headHashHex`・
   書いたマーカーで復帰)に置き換え、**マーカーなしランディングの API
   呼び出しゼロ**をリクエスト収集で固定するテストを追加 — BU の 2 不変条件が
   どちらも fail-loud になった
+
+## 12. 第 4 次上位互換探索(オーナー依頼 — 2026-08-29・最終回)
+
+依頼: 「最後にもう一回だけ更なる上位互換のアイディアがないかを模索してください」。
+第 3 次で導入した 2 つのスイープ(BW / serving-topology)自身を候補集合に含め、
+「検査の穴」と「残った手書き重複」を標的に 3 周比較した。
+
+### 裁定 BY: 消費面目録の完全化(採用)
+
+BW の目録には検査の穴が 3 つ残っていた:
+
+1. **ナビゲーション消費面の目録外** — ログインカードの
+   `/auth/github/start` は fetch でなく Link だったため目録に載らず、
+   パス整合もセッション面分類も未検査だった。`apiPaths.githubStart()` を
+   追加し、目録へ `access: "session" | "unauthenticated"` 判別子を導入。
+   スイープを access 対応にし、session 面は従来どおり
+   `isSessionAllowedEndpoint`、unauthenticated 面は
+   `UNAUTHENTICATED_ENDPOINTS`(AUTH_SPEC §5)への所属を要求する
+   (認証必須面をナビゲーション導線として消費する形もテストで割れる)
+2. **カーソルクエリ組み立ての 3 重複** — projects の `?after=` と
+   audit×2 の `?before=` が画面ごとに手書きだった。`withCursor(path,
+   name, value)` に一本化(唯一のクエリ付与点。encodeURIComponent 込み)
+3. **ビルダー迂回の無検査** — 目録の網羅性は「画面はビルダー経由でのみ
+   fetch する」規律に依存するが、その規律自体が手検証だった。ソース
+   トリップワイヤ(src/ 配下・endpoints.ts 除外で
+   `["']/(auth|projects|invites)` を走査)をユニットテストに追加。
+   バッククォート文字列は対象外(コメント内のパス例と衝突するため)—
+   word-hash トリップワイヤ(session-41 BG)と同じ「善意のドリフト検出」の
+   位置づけで、意図的な迂回の防止は目的にしない
+
+### 裁定 BZ: SPA ルート空間の非交差スイープ(採用)
+
+- **標的**: BO の分離「SPA は /dashboard 前置、API は /auth・/projects・
+  /invites 前置」のうち、逆方向 —「SPA のルートが run_worker_first に
+  飲まれない」— の検査が serving-topology.test.ts 内の**手書きパス列挙**
+  (4 パス)だった。ルート追加時に列挙の追随を忘れると検査が黙って狭まる
+- **採用形**: routes.ts に homeRoute / aboutRoute を移し、全ルートの単一
+  目録 `SPA_ROUTES` を export(App.tsx は bindRoute で結合するのみ)。
+  web-unit テスト(test/unit/spa-topology.test.ts)が実ルート定義と
+  実配信設定(`unstable_readConfig` で apps/server/wrangler.jsonc を読む —
+  BT/BX と同じ「実物を読む」姿勢)を突合し、全 SPA ルートの具体化パスが
+  どの run_worker_first ルールにも被覆されないことを検査する。ルール
+  意味論(完全一致 / 前置 `*` のみ・それ以外は保守的に throw)は
+  serving-topology 側と同一
+- serving-topology 側の手書き 4 パス検査は**残す**(workerd 実環境での
+  検査 + `/invite` は SPA ルートでないため BZ の目録外)。両者は重複でなく
+  「サーバー側は代表点・クライアント側は全ルート導出」の相補
+
+### 検討の上で棄却(第 4 次)
+
+- **loader フックへの取得統合(funstack-router の loader でデータ取得)** —
+  棄却: 画面の useApiResource / 手動ページングを全面改造する churn に対し、
+  得られるのは取得タイミングの前倒しのみ。読み取り専用ダッシュボードの
+  規模では上位互換でなく横移動
+- **パラメータのブランド型(ProjectId 等の branded type)** — 棄却:
+  ビルダー引数の取り違えを型で防ぐ案だが、W2 の消費面では projectId /
+  environmentId の 2 種しかなく、ルートパラメータ由来の値は結局 string。
+  儀式が増えるだけで実バグ面が現状ない
+- **run_worker_first を api-schema から自動生成(コード生成)** — 棄却:
+  生成器 + 生成物検査という新しい機構を持ち込む対価に対し、双方向スイープ
+  (被覆 + 非交差)が既に同じドリフトを fail-loud にしている。設定は
+  「読める素の JSONC」のままが自己ホスト配布物として優る

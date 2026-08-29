@@ -18,8 +18,10 @@
 export const SAMPLE_PROJECT_ID = "ab".repeat(32);
 export const SAMPLE_ENVIRONMENT_ID = "production";
 
-/** 画面が使うパスビルダー(パス部のみ — クエリは呼び出し側が付ける)。 */
+/** 画面が使うパスビルダー(パス部のみ — クエリは withCursor が付ける)。 */
 export const apiPaths = {
+  /** Web OAuth の開始(ナビゲーション導線 — 未認証面。AUTH_SPEC §3)。 */
+  githubStart: () => "/auth/github/start",
   me: () => "/auth/me",
   logout: () => "/auth/logout",
   projects: () => "/projects",
@@ -33,28 +35,78 @@ export const apiPaths = {
   rotationFlags: (projectId: string) => `/projects/${projectId}/rotation/flags`,
 } as const;
 
+/**
+ * カーソルクエリの組み立て(唯一のクエリ付与点)。`after` = プロジェクト一覧
+ * (AUTH_SPEC §11-5)、`before` = 監査ページング(AUDIT_SPEC §7)。
+ */
+export function withCursor(
+  path: string,
+  name: "after" | "before",
+  value: string | undefined,
+): string {
+  return value === undefined ? path : `${path}?${name}=${encodeURIComponent(value)}`;
+}
+
 /** One dashboard-consumed endpoint bound to its api-schema identity. */
 export interface DashboardEndpoint {
   readonly group: string;
   readonly endpoint: string;
+  /**
+   * 認証面の分類: `session` はセッション許可列挙(AUTH_SPEC §5)内で
+   * なければならない fetch 消費面、`unauthenticated` は未認証面
+   * (ナビゲーション導線 — UNAUTHENTICATED_ENDPOINTS 内)であること。
+   */
+  readonly access: "session" | "unauthenticated";
   /** サンプルパラメータで具体化したパス(テストがテンプレートと突合する)。 */
   readonly sample: string;
 }
 
 /** ダッシュボードの全消費面(スイープの検査対象)。 */
 export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
-  { group: "auth", endpoint: "me", sample: apiPaths.me() },
-  { group: "auth", endpoint: "logout", sample: apiPaths.logout() },
-  { group: "membership", endpoint: "list", sample: apiPaths.projects() },
-  { group: "membership", endpoint: "get", sample: apiPaths.chain(SAMPLE_PROJECT_ID) },
-  { group: "environments", endpoint: "list", sample: apiPaths.environments(SAMPLE_PROJECT_ID) },
+  {
+    group: "auth",
+    endpoint: "githubStart",
+    access: "unauthenticated",
+    sample: apiPaths.githubStart(),
+  },
+  { group: "auth", endpoint: "me", access: "session", sample: apiPaths.me() },
+  { group: "auth", endpoint: "logout", access: "session", sample: apiPaths.logout() },
+  { group: "membership", endpoint: "list", access: "session", sample: apiPaths.projects() },
+  {
+    group: "membership",
+    endpoint: "get",
+    access: "session",
+    sample: apiPaths.chain(SAMPLE_PROJECT_ID),
+  },
+  {
+    group: "environments",
+    endpoint: "list",
+    access: "session",
+    sample: apiPaths.environments(SAMPLE_PROJECT_ID),
+  },
   {
     group: "variables",
     endpoint: "pullMetadata",
+    access: "session",
     sample: apiPaths.pullMetadata(SAMPLE_PROJECT_ID, SAMPLE_ENVIRONMENT_ID),
   },
-  { group: "audit", endpoint: "events", sample: apiPaths.auditEvents(SAMPLE_PROJECT_ID) },
-  { group: "audit", endpoint: "invites", sample: apiPaths.auditInvites(SAMPLE_PROJECT_ID) },
-  { group: "audit", endpoint: "self", sample: apiPaths.auditSelf() },
-  { group: "rotation", endpoint: "flags", sample: apiPaths.rotationFlags(SAMPLE_PROJECT_ID) },
+  {
+    group: "audit",
+    endpoint: "events",
+    access: "session",
+    sample: apiPaths.auditEvents(SAMPLE_PROJECT_ID),
+  },
+  {
+    group: "audit",
+    endpoint: "invites",
+    access: "session",
+    sample: apiPaths.auditInvites(SAMPLE_PROJECT_ID),
+  },
+  { group: "audit", endpoint: "self", access: "session", sample: apiPaths.auditSelf() },
+  {
+    group: "rotation",
+    endpoint: "flags",
+    access: "session",
+    sample: apiPaths.rotationFlags(SAMPLE_PROJECT_ID),
+  },
 ];

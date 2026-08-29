@@ -20,7 +20,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
-import { apiPaths } from "./endpoints.ts";
+import { apiPaths, withCursor } from "./endpoints.ts";
 import { markResumeToDashboard } from "./resume.ts";
 import { FailureNotice, LoadingRow, navigateTo, RoleToken, ServerReportedNote } from "./shared.tsx";
 import type { Me, ProjectList } from "./types.ts";
@@ -62,7 +62,11 @@ function LoginCard({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
           </Text>
         )}
         {/* 復帰マーカー(裁定 BU): OAuth 完了後に S1 経由で /dashboard へ戻る */}
-        <Link href="/auth/github/start" onClick={markResumeToDashboard} data-testid="sign-in-link">
+        <Link
+          href={apiPaths.githubStart()}
+          onClick={markResumeToDashboard}
+          data-testid="sign-in-link"
+        >
           Sign in with GitHub
         </Link>
       </VStack>
@@ -135,11 +139,6 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
   },
 ];
 
-function projectsPath(after: string | undefined): string {
-  const base = apiPaths.projects();
-  return after === undefined ? base : `${base}?after=${encodeURIComponent(after)}`;
-}
-
 function appendProjects(current: ProjectsState | undefined, page: ProjectList): ProjectsState {
   const rows = page.projects.map((p) => ({ id: p.projectId, role: p.role }));
   return { rows: [...(current?.rows ?? []), ...rows], nextAfter: page.nextAfter };
@@ -169,7 +168,9 @@ async function loadNonEmptyPage(
   current: ProjectsState | undefined,
   visitedCursors: Set<string>,
 ): Promise<{ kind: "ok"; value: ProjectsState } | ApiFailure> {
-  const result = await apiGet<ProjectList>(projectsPath(current?.nextAfter));
+  const result = await apiGet<ProjectList>(
+    withCursor(apiPaths.projects(), "after", current?.nextAfter),
+  );
   if (result.kind !== "ok") return result;
   const next = appendProjects(current, result.value);
   return shouldFollowCursor(result.value, next, visitedCursors)

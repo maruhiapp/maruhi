@@ -11,16 +11,14 @@ import { type ReactNode, useCallback } from "react";
 
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
-import { apiPaths } from "./endpoints.ts";
+import { apiPaths, withCursor } from "./endpoints.ts";
 import { ServerReportedNote } from "./shared.tsx";
 import type { AuditEventsPage } from "./types.ts";
 
 export function AccountAuditScreen(): ReactNode {
   const fetchPage = useCallback(
     (before: string | undefined) =>
-      apiGet<AuditEventsPage>(
-        `${apiPaths.auditSelf()}${before === undefined ? "" : `?before=${encodeURIComponent(before)}`}`,
-      ),
+      apiGet<AuditEventsPage>(withCursor(apiPaths.auditSelf(), "before", before)),
     [],
   );
   return (

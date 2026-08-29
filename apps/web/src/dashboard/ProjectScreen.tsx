@@ -26,7 +26,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
-import { apiPaths } from "./endpoints.ts";
+import { apiPaths, withCursor } from "./endpoints.ts";
 import { projectRoute } from "./routes.ts";
 import {
   FailureNotice,
@@ -374,20 +374,16 @@ function OverviewTab({ projectId }: { projectId: string }): ReactNode {
 // S6: 監査タブ(project / invites 軸。本人軸は /dashboard/account)
 // ---------------------------------------------------------------------------
 
-function auditPath(base: string, before: string | undefined): string {
-  return before === undefined ? base : `${base}?before=${encodeURIComponent(before)}`;
-}
-
 function AuditTab({ projectId }: { projectId: string }): ReactNode {
   const [axis, setAxis] = useState("project");
   const fetchProjectEvents = useMemo(
     () => (before: string | undefined) =>
-      apiGet<AuditEventsPage>(auditPath(apiPaths.auditEvents(projectId), before)),
+      apiGet<AuditEventsPage>(withCursor(apiPaths.auditEvents(projectId), "before", before)),
     [projectId],
   );
   const fetchInviteEvents = useMemo(
     () => (before: string | undefined) =>
-      apiGet<AuditEventsPage>(auditPath(apiPaths.auditInvites(projectId), before)),
+      apiGet<AuditEventsPage>(withCursor(apiPaths.auditInvites(projectId), "before", before)),
     [projectId],
   );
   return (
