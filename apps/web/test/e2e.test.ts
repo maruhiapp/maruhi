@@ -187,6 +187,76 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     await page.close();
   });
 
+  // /invite(AUTH_SPEC §15-3 / ADR-0018 改訂 2・5 項): SPA 外の独立静的アセット +
+  // per-path CSP `script-src 'none'`。「スクリプトを一切持たない・フラグメントを
+  // 解釈しない」を実配信(wrangler dev)に対して固定する
+  it("serves /invite as a script-free static page with per-path CSP script-src 'none'", async () => {
+    const res = await fetch(`${BASE}/invite`);
+    expect(res.status).toBe(200);
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("script-src 'none'");
+    // SPA の CSP('self' + ブートストラップハッシュ許可)がデタッチされ、
+    // 2 本目の CSP として残っていないこと
+    expect(csp).not.toContain("'self' 'sha256-");
+    expect(csp).not.toContain("script-src 'self'");
+    // /* の他セキュリティヘッダーは /invite にも引き続き付く
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    const html = await res.text();
+    expect(html.toLowerCase()).not.toContain("<script");
+    expect(html).toContain("maruhi invite accept");
+    // 配信バイト内蔵の meta CSP(配信層のヘッダーと独立の二重強制)
+    expect(html).toMatch(
+      /<meta\s+http-equiv="Content-Security-Policy"\s+content="[^"]*script-src 'none'/i,
+    );
+  });
+
+  it("normalizes near-miss paths to the canonical /invite (link format §15-3)", async () => {
+    // _redirects による正規化(301): 大小変種 × 任意の末尾続きのクラス全体
+    // (フラグメントはブラウザがリダイレクト越しに保持する)
+    for (const path of [
+      "/invite/",
+      "/invite/x",
+      "/invite.html",
+      "/inviteXYZ",
+      "/Invite",
+      "/INVITE",
+      "/iNvItE",
+      "/Invite/x",
+      "/InviteXYZ",
+    ]) {
+      const res = await fetch(`${BASE}${path}`, { redirect: "manual" });
+      expect(res.status, `path: ${path}`).toBe(301);
+      expect(res.headers.get("location"), `path: ${path}`).toBe("/invite");
+    }
+    // 200 リライトの盾: 正規アセットは /invite* の総取りに飲まれず素通しされる
+    // (盾が落ちてループ化したら /invite の 3xx でここが検知する)
+    const cssRes = await fetch(`${BASE}/invite.css`, { redirect: "manual" });
+    expect(cssRes.status).toBe(200);
+    const inviteRes = await fetch(`${BASE}/invite`, { redirect: "manual" });
+    expect(inviteRes.status).toBe(200);
+  });
+
+  it("renders /invite with zero scripts under a fragment-bearing URL", async () => {
+    const page = await browser.newPage();
+    const violations: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.text().includes("Content Security Policy")) violations.push(msg.text());
+    });
+    // フラグメントは §15-3 のリンク形式を模したダミー(サーバーへは送信されない)
+    await page.goto(`${BASE}/invite#v=1&t=dummy-invite-token&p=dummy-project&r=member`, {
+      waitUntil: "networkidle",
+    });
+    await expect(page.locator("h1").textContent()).resolves.toContain("maruhi");
+    // スクリプトゼロ(<script> 要素が DOM に一切ない)
+    await expect(page.evaluate(() => document.scripts.length)).resolves.toBe(0);
+    // スタイルシート(自己配信 /invite.css)が CSP 下で適用されている
+    const maxWidth = await page.locator("main").evaluate((el) => getComputedStyle(el).maxWidth);
+    expect(maxWidth).toBe("640px"); // 40rem
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
   it("degrades to MPA (full page loads) when Navigation API is unavailable", async () => {
     const page = await browser.newPage();
     // Navigation API 非対応ブラウザを再現(スクリプト実行前に window.navigation を消す)

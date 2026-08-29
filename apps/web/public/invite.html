@@ -1,0 +1,62 @@
+<!doctype html>
+<!--
+  招待リンク着地ページ(AUTH_SPEC §15-3 / ADR-0018 改訂 2・5 項)。
+  SPA の外の独立静的アセットとして配信し、スクリプトを一切持たない。
+  URL フラグメント(招待トークン等)は解釈しない — この不変条件は
+  per-path CSP `script-src 'none'`(scripts/write-headers.ts)と
+  ビルド時検査で構成として強制される。ここに script 要素を追加してはならない
+  (検査は配信バイト全体を見るため、コメント内の script 開始タグの字面も禁止)。
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      meta CSP: 「スクリプトを一切実行しない」の強制を配信バイト自身に内蔵する。
+      _headers の per-path CSP(配信層)と二重化され、配信層の挙動差(デタッチ構文の
+      production 実装等)から独立に効く。meta では frame-ancestors を指定できないため、
+      それだけは _headers 側が単独で担う。複数 CSP は交差(全ポリシーが強制)。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>maruhi — accept your invite</title>
+    <link rel="stylesheet" href="/invite.css" />
+  </head>
+  <body>
+    <main>
+      <h1>㊙ maruhi</h1>
+      <p class="lede">You have been invited to a maruhi project.</p>
+      <p>
+        maruhi is end-to-end encrypted: accepting an invite declares your keys, and that happens
+        only on your machine, in the maruhi CLI. There is no way to accept an invite in the browser.
+      </p>
+      <h2>Accept the invite</h2>
+      <ol>
+        <li>
+          <a href="https://github.com/maruhiapp/maruhi#install-cli">Install the maruhi CLI</a> if
+          you don't have it yet.
+        </li>
+        <li>
+          Copy the full invite link from your browser's address bar, including everything after
+          <code>#</code>.
+        </li>
+        <li>
+          Pass the link to the CLI as-is (keep the single quotes so your shell doesn't eat the
+          <code>#</code> part):
+          <pre><code>maruhi invite accept '&lt;paste the full invite link here&gt;'</code></pre>
+        </li>
+        <li>
+          The CLI walks you through the rest: verifying the inviter's key fingerprint and declaring
+          your own keys.
+        </li>
+      </ol>
+      <p class="note">
+        This page does not — and cannot — read your invite link. The part after <code>#</code>
+        never leaves your browser: it is not sent to the server, and this page contains no scripts.
+      </p>
+    </main>
+  </body>
+</html>
