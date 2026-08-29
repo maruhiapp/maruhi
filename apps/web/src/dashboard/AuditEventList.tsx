@@ -16,7 +16,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiFailure, ApiResult } from "./api.ts";
 import { FailureNotice, formatServerTime, LoadingRow } from "./shared.tsx";
@@ -203,12 +203,17 @@ export function AuditEventList({
   const [loaded, setLoaded] = useState<LoadedState | undefined>(undefined);
   const [failure, setFailure] = useState<ApiFailure | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(false);
+  // 消費軸(fetchPage)の世代。軸が変わったら旧 in-flight 応答を捨てる —
+  // 後着の旧軸ページが新しい軸のリストへ混入しない(PR #107 Bugbot 指摘の修正)
+  const generationRef = useRef(0);
 
   const loadMore = useCallback(
     async (current: LoadedState | undefined) => {
+      const generation = generationRef.current;
       setIsLoading(true);
       setFailure(undefined);
       const result = await fetchPage(nextCursor(current));
+      if (generation !== generationRef.current) return;
       setIsLoading(false);
       if (result.kind !== "ok") {
         setFailure(result);
@@ -220,8 +225,10 @@ export function AuditEventList({
   );
 
   useEffect(() => {
-    // fetchPage(= 消費軸)が変わったら読み直す
+    // fetchPage(= 消費軸)が変わったら世代を進めて読み直す
+    generationRef.current += 1;
     setLoaded(undefined);
+    setFailure(undefined);
     void loadMore(undefined);
   }, [loadMore]);
 

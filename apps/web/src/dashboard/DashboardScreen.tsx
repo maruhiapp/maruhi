@@ -156,6 +156,25 @@ function appendProjects(current: ProjectsState | undefined, page: ProjectList): 
   return { rows: [...(current?.rows ?? []), ...rows], nextAfter: page.nextAfter };
 }
 
+/**
+ * 空ページはリストの終端ではない(AUTH_SPEC §11-5): 候補ページは ghost 除外・
+ * 確認失敗の省略で `{ projects: [], nextAfter }` になりうる。行が増えるか
+ * nextAfter が尽きるまでカーソルを進める(PR #107 Bugbot 指摘の修正 —
+ * 深さは候補ページ数で有界)。
+ */
+function morePagesNeeded(page: ProjectList, next: ProjectsState): boolean {
+  return page.projects.length === 0 && next.nextAfter !== undefined;
+}
+
+async function loadNonEmptyPage(
+  current: ProjectsState | undefined,
+): Promise<{ kind: "ok"; value: ProjectsState } | ApiFailure> {
+  const result = await apiGet<ProjectList>(projectsPath(current?.nextAfter));
+  if (result.kind !== "ok") return result;
+  const next = appendProjects(current, result.value);
+  return morePagesNeeded(result.value, next) ? loadNonEmptyPage(next) : { kind: "ok", value: next };
+}
+
 function ProjectsFooter({
   isLoading,
   nextAfter,
@@ -216,13 +235,13 @@ function ProjectListSection(): ReactNode {
   const loadPage = useCallback(async (current: ProjectsState | undefined) => {
     setIsLoading(true);
     setFailure(undefined);
-    const result = await apiGet<ProjectList>(projectsPath(current?.nextAfter));
+    const result = await loadNonEmptyPage(current);
     setIsLoading(false);
     if (result.kind !== "ok") {
       setFailure(result);
       return;
     }
-    setProjects(appendProjects(current, result.value));
+    setProjects(result.value);
   }, []);
 
   useEffect(() => {

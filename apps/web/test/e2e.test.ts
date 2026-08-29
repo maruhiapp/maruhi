@@ -308,9 +308,17 @@ const ROW_ID_2 = "9a".repeat(16);
 
 const meFixture: Me = { userId: "user_e2e", orgs: [] };
 
+const PROJECT_GHOST_CURSOR = "ef".repeat(32);
+
 const projectsPage1: ProjectList = {
   projects: [{ projectId: PROJECT_1, role: "admin" }],
   nextAfter: PROJECT_1,
+};
+// 空ページ + nextAfter(AUTH_SPEC §11-5 — ghost 除外・確認失敗の省略で
+// 候補ページが空になる形)。UI はこれを終端と誤断せずカーソルを進める
+const projectsPageEmpty: ProjectList = {
+  projects: [],
+  nextAfter: PROJECT_GHOST_CURSOR,
 };
 const projectsPage2: ProjectList = {
   projects: [{ projectId: PROJECT_2, role: "reader" }],
@@ -474,7 +482,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       (url) => url.pathname === "/projects",
       (route) => {
         const after = new URL(route.request().url()).searchParams.get("after");
-        return fulfillJson(route, 200, after === PROJECT_1 ? projectsPage2 : projectsPage1);
+        if (after === PROJECT_1) return fulfillJson(route, 200, projectsPageEmpty);
+        if (after === PROJECT_GHOST_CURSOR) return fulfillJson(route, 200, projectsPage2);
+        return fulfillJson(route, 200, projectsPage1);
       },
     );
     await page.route("**/auth/logout", (route) => {
@@ -487,6 +497,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("project-list").waitFor();
     // 1 ページ目: admin の 1 行 + Load more(nextAfter あり)
     await expect(page.getByText(PROJECT_1).count()).resolves.toBeGreaterThan(0);
+    // Load more は途中の空ページ(nextAfter 付き)を終端と誤断せず追跡する
     await page.getByTestId("load-more-projects").click();
     await page.getByText(PROJECT_2).waitFor();
     // 2 ページ目に nextAfter がないので Load more は消える

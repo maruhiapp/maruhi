@@ -41,7 +41,12 @@ import type {
 
 const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
 
-/** 単発 GET の 3 状態(loading / failure / value)を持つ小さなフック。 */
+/**
+ * 単発 GET の 3 状態(loading / failure / value)を持つ小さなフック。
+ * path 変更・再読込で古い in-flight 応答は捨てる(effect のクリーンアップで
+ * stale マーク — 後着の旧プロジェクト応答が新しい画面を上書きしない。
+ * PR #107 Bugbot 指摘の修正)。
+ */
 function useApiResource<T>(path: string): {
   state: { kind: "loading" } | { kind: "failed"; failure: ApiFailure } | { kind: "ok"; value: T };
   reload: () => void;
@@ -49,19 +54,24 @@ function useApiResource<T>(path: string): {
   const [state, setState] = useState<
     { kind: "loading" } | { kind: "failed"; failure: ApiFailure } | { kind: "ok"; value: T }
   >({ kind: "loading" });
-  const load = useCallback(async () => {
-    setState({ kind: "loading" });
-    const result: ApiResult<T> = await apiGet<T>(path);
-    setState(
-      result.kind === "ok"
-        ? { kind: "ok", value: result.value }
-        : { kind: "failed", failure: result },
-    );
-  }, [path]);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    void load();
-  }, [load]);
-  return { state, reload: () => void load() };
+    let stale = false;
+    setState({ kind: "loading" });
+    void apiGet<T>(path).then((result: ApiResult<T>) => {
+      if (stale) return;
+      setState(
+        result.kind === "ok"
+          ? { kind: "ok", value: result.value }
+          : { kind: "failed", failure: result },
+      );
+    });
+    return () => {
+      stale = true;
+    };
+  }, [path, attempt]);
+  const reload = useCallback(() => setAttempt((n) => n + 1), []);
+  return { state, reload };
 }
 
 // ---------------------------------------------------------------------------
