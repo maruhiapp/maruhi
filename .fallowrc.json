@@ -19,11 +19,14 @@
     "apps/web/theme/maruhi.js"
   ],
   // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
-  // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外
+  // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。
+  // apps/web/public は SPA 外の静的配信アセット(invite.html から参照される invite.css 等 —
+  // AUTH_SPEC §15-3)で、モジュールグラフに載らないため未到達と誤検出される
   "ignorePatterns": [
     ".agents/**",
     ".claude/**",
     ".deepsec/**",
+    "apps/web/public/**",
     "packages/crypto/test-vectors/tools/**"
   ],
   "audit": {
