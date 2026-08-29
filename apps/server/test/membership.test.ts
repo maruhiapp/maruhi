@@ -796,22 +796,30 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(body.reason).toBe("insufficient-permission");
   });
 
-  it("accepts session-cookie auth with the CSRF header and rejects writes without it (§5)", async () => {
+  it("rejects session-principal init even with the CSRF header (§5 能力制限 — W2b)", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const session = await loginSession(9001);
 
-    // CSRF ヘッダーなしの書き込みは 403
+    // チェーン追記・init は §5 の明示拒否面: CSRF ヘッダーの有無によらず
+    // 一様に 403 session-not-allowed(能力判定は CSRF 検査に先行する)
     const headers = sessionHeaders(session);
     const withoutCsrf: Record<string, string> = { cookie: headers["cookie"] ?? "" };
     const rejected = await initChain(toWireEntry(genesis), {
       headers: { ...JSON_HEADERS, ...withoutCsrf },
     });
     expect(rejected.status).toBe(403);
+    expect(((await rejected.json()) as { reason: string }).reason).toBe("session-not-allowed");
 
-    // CSRF ヘッダー付きは受理される(セッション = 本人のフルパワー)
-    const accepted = await initChain(toWireEntry(genesis), {
+    const withCsrf = await initChain(toWireEntry(genesis), {
       headers: { ...JSON_HEADERS, ...headers },
+    });
+    expect(withCsrf.status).toBe(403);
+    expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
+
+    // 同一 body はトークン主体では受理される(拒否がセッション主体起因の証明)
+    const accepted = await initChain(toWireEntry(genesis), {
+      headers: { ...JSON_HEADERS, ...bearer(await deviceToken(9001)) },
     });
     expect(accepted.status).toBe(200);
   });

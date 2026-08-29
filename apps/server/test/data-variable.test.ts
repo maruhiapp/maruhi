@@ -645,22 +645,31 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
   });
 });
 
-describe("セッション主体の一括 pull の CSRF ヘッダー(§12-7 — セキュリティレビュー L-1)", () => {
-  it("requires the CSRF header for session pulls with values; bearer and metadata-only are exempt", async () => {
+describe("セッション主体の値付き一括 pull の拒否(§5 能力制限 — W2b。§12-7)", () => {
+  it("rejects session pulls with values regardless of the CSRF header; bearer and metadata-only stay open", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
 
-    // ヘッダーなしのセッション pull(値付き)は 403。Lax クッキーはクロスサイトの
-    // トップレベル遷移でも同送されるため、これを許すと第三者サイトが被害者の
-    // セッションで偽の var.read を刻める(監査証跡の汚染)
+    // W2b で反転: 値付き一括 pull は §5 の明示拒否面(セッション経由の監査証跡
+    // 汚染 = SECURITY_REVIEW L-1 の発生面自体を消す)。CSRF ヘッダーなし = 従来の
+    // csrf-header-required だった形も、能力判定の先行により一様に
+    // session-not-allowed になる
     const withoutCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });
     expect(withoutCsrf.status).toBe(403);
     const body = (await withoutCsrf.json()) as Record<string, unknown>;
-    expect(body["reason"]).toBe("csrf-header-required");
+    expect(body["reason"]).toBe("session-not-allowed");
+
+    // CSRF ヘッダーを自分で付けても同じ(同一オリジン XSS はヘッダーを付けられる
+    // — 設計文書 §6。この面を閉じるのが W2b の目的)
+    const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
+    expect(withCsrf.status).toBe(403);
+    expect(((await withCsrf.json()) as Record<string, unknown>)["reason"]).toBe(
+      "session-not-allowed",
+    );
 
     // 拒否された pull は var.read を 1 行も記録しない(読んでいないものを
     // 読んだと記録しない — AUDIT_SPEC §3.3)
@@ -670,22 +679,17 @@ describe("セッション主体の一括 pull の CSRF ヘッダー(§12-7 — �
     );
     expect(reads[0]?.["n"]).toBe(0);
 
-    // ヘッダーありのセッション pull は従来どおり 200 で、今度は var.read が
-    // 記録される(positive control — 監査記録経路そのものが生きていることの裏取り)
-    const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
-    expect(withCsrf.status).toBe(200);
+    // Bearer(トークン主体)は影響を受けない(§5 — CLI・maruhi ui はトークン主体)
+    const bearerPull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(bearerPull.status).toBe(200);
     const readsAfter = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
     );
     expect(readsAfter[0]?.["n"]).toBe(1);
 
-    // Bearer はクロスサイトで付与できないため対象外(ヘッダーなしで 200)
-    const bearerPull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
-    expect(bearerPull.status).toBe(200);
-
-    // メタデータのみモードは var.read を記録しないため対象外(セッション +
-    // ヘッダーなしで 200 — §12-7)
+    // メタデータのみモードは §5 の許可列挙(読み取り)に含まれ、var.read を
+    // 記録しないため CSRF ヘッダーも不要(セッション + ヘッダーなしで 200)
     const metadata = await SELF.fetch(dataUrl(`/environments/${ENV}/pull/metadata`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });

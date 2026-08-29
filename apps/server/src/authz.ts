@@ -41,7 +41,9 @@ export function ensureActorMatches(
 
 /**
  * 既存プロジェクトへの操作: スコープ外 = 404(§11-2)、水準不足 = 403。
- * セッション主体はスコープを持たない(本人のフルパワー。チェーン role が束縛)。
+ * セッション主体はスコープを持たず素通しする — ここへ到達するセッションは
+ * §5 の能力制限(AuthMiddleware の宣言層)を通過済みの許可列挙面(読み取り +
+ * 失効系)に限られ、チェーン role が束縛する。
  */
 export function ensureTokenScopeForProject(
   principal: AuthenticatedPrincipal,
@@ -65,7 +67,8 @@ export function ensureTokenScopeForProject(
  * 半分を**確かめるだけ**の形 — 監査読み取りのクラス 2 可視性の材料。AUDIT_SPEC
  * §6 の可視性クラスはチェーン role で定義されるが、盗まれた read スコープの
  * トークンに同僚の読み取りパターン(クラス 2)を開示しないため、スコープ側も
- * admin を要求する)。セッション主体はスコープを持たない(本人のフルパワー)。
+ * admin を要求する)。セッション主体はスコープを持たず素通しする(§5 の能力
+ * 制限を通過済みの許可列挙面に限られる — ensureTokenScopeForProject と同じ)。
  */
 export function tokenScopeAllowsForProject(
   principal: AuthenticatedPrincipal,
@@ -80,16 +83,42 @@ export function tokenScopeAllowsForProject(
 }
 
 /**
- * 鍵素材クラスの操作のトークン条件(AUTH_SPEC §13-2): セッション主体は常に可、
- * トークン主体は `*` × admin スコープを含む場合のみ可。リカバリーブロブの
- * 登録・再発行・取得(スコープ限定トークンにラップの置換 = 可用性攻撃や要監視の
- * ブロブ取得を許さない)に加え、招待の受諾にも適用する(B1a 裁定 — 受諾は
- * 「自分の公開鍵を自分の user_id に束縛して宣言する」鍵宣言クラスの操作であり、
- * CI 等の露出しやすい文脈に置かれるスコープ限定トークンの窃取と招待リンクの
- * 複合で攻撃者鍵を束縛する経路を、FP 相互確認 — CRYPTO_SPEC §6.5 — の手前で
- * 塞ぐ。§15-2 の「認証済み主体」より狭い — AUTH_SPEC 追補の提案は PR 申し送り)。
+ * 鍵素材クラスの操作のトークン条件(AUTH_SPEC §13-2 / §15-2): トークン主体は
+ * `*` × admin スコープを含む場合のみ可。リカバリーブロブの登録・再発行・取得
+ * (スコープ限定トークンにラップの置換 = 可用性攻撃や要監視のブロブ取得を
+ * 許さない)に加え、招待の受諾にも適用する(B1a 裁定 — 受諾は「自分の公開鍵を
+ * 自分の user_id に束縛して宣言する」鍵宣言クラスの操作であり、CI 等の露出し
+ * やすい文脈に置かれるスコープ限定トークンの窃取と招待リンクの複合で攻撃者鍵を
+ * 束縛する経路を、FP 相互確認 — CRYPTO_SPEC §6.5 — の手前で塞ぐ)。
+ *
+ * セッション主体は拒否(§5 の能力制限 — §13-2 / §15-2 の表 = トークンのみ)。
+ * 通常は AuthMiddleware の宣言層(SESSION_ALLOWED_ENDPOINTS)が先に 403 を
+ * 返すため到達しない — ここは同方向の fail-closed の第 2 層であり、独立の
+ * 真実源ではない。
  */
 export function ensureKeyMaterialAccess(
+  principal: AuthenticatedPrincipal,
+): Effect.Effect<void, ForbiddenError> {
+  if (principal.kind === "session") {
+    return Effect.fail(new ForbiddenError({ reason: "session-not-allowed" }));
+  }
+  const allowed = principal.scopes.some(
+    (scope) => scope.project === "*" && scope.permission === "admin",
+  );
+  return allowed
+    ? Effect.void
+    : Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
+}
+
+/**
+ * 本人軸の監査読み取り(AUDIT_SPEC §6 — `GET /auth/audit/events`)の主体条件:
+ * セッション主体は可(§5 の許可列挙「監査読み取り」)、トークン主体は `*` ×
+ * admin スコープを含む場合のみ可(§13-2 と同水準 — 要監視イベントを含む
+ * アカウント全域の履歴を、露出しやすいスコープ限定トークンに読ませない)。
+ * 鍵素材クラス(上の ensureKeyMaterialAccess — §5 でセッション拒否へ反転)とは
+ * セッション側の規範が異なるため独立の関数に分ける。
+ */
+export function ensureSelfAuditAccess(
   principal: AuthenticatedPrincipal,
 ): Effect.Effect<void, ForbiddenError> {
   if (principal.kind === "session") {

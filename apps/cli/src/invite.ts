@@ -709,7 +709,7 @@ function acceptErrorToCliError(error: unknown): CliError {
   }
   if (error instanceof ForbiddenError) {
     return cliError(
-      "These credentials cannot accept the invite. Acceptance needs a session, or an all-project-scope (*) × admin token (AUTH_SPEC §15-2 — scope-limited tokens are not allowed). Log in again with `maruhi login`",
+      "These credentials cannot accept the invite. Acceptance needs an all-project-scope (*) × admin token (AUTH_SPEC §15-2 — scope-limited tokens and web sessions are not allowed). Log in again with `maruhi login`",
     );
   }
   return toCliError(error);

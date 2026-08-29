@@ -17,7 +17,7 @@ import { RequestAuth } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { ensureKeyMaterialAccess, tokenScopeAllowsForProject } from "./authz.ts";
+import { ensureSelfAuditAccess, tokenScopeAllowsForProject } from "./authz.ts";
 import { callProjectData, requireProjectChainAdmin } from "./data-http.ts";
 import type { D1StoredAuditEventRow } from "./db.package/index.ts";
 import { D1AuditRepo } from "./db.package/index.ts";
@@ -122,8 +122,9 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         // アカウント全域の履歴(要監視イベント含む)はスコープ限定トークンに
-        // 読ませない(§13-2 と同水準 — audit-api.ts の宣言コメント)
-        yield* ensureKeyMaterialAccess(principal);
+        // 読ませない(§13-2 と同水準 — audit-api.ts の宣言コメント)。
+        // セッション主体は可(§5 の許可列挙「監査読み取り」)
+        yield* ensureSelfAuditAccess(principal);
         const audit = yield* D1AuditRepo;
         const rows = yield* audit.readUserEventsFor(principal.userId, {
           beforeRowId: query.before ?? null,

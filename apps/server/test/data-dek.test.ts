@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "../src/policy.ts";
-import { deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
+import { bearer, deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
   checkpointOperation,
@@ -143,7 +143,7 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
     expect(new TextDecoder().decode(decrypted.value)).toBe("postgres://alpha");
   });
 
-  it("supports session-cookie auth with the CSRF header for data writes (§5)", async () => {
+  it("rejects session-principal data writes uniformly (§5 能力制限 — W2b)", async () => {
     const session = await loginSession(9001);
     const dek = makeDek();
     const deks = await wrapDekForAll({
@@ -203,7 +203,8 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
       manifest,
       checkpoint,
     });
-    // CSRF ヘッダーなしの書き込みは 403
+    // 環境作成(§12-4)は §5 の明示拒否面(環境・変数の全 mutation): CSRF
+    // ヘッダーの有無によらず一様に 403 session-not-allowed(能力判定が先行)
     const headers = sessionHeaders(session);
     const withoutCsrf = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
@@ -211,9 +212,18 @@ describe("DEK 配布と新メンバーのバックフィル(§12-6 / CRYPTO_SPEC
       body,
     });
     expect(withoutCsrf.status).toBe(403);
-    const accepted = await SELF.fetch(dataUrl("/environments"), {
+    expect(((await withoutCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
+    const withCsrf = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
       headers: { ...JSON_HEADERS, ...headers },
+      body,
+    });
+    expect(withCsrf.status).toBe(403);
+    expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
+    // 同一 body はトークン主体では受理される(拒否がセッション主体起因の証明)
+    const accepted = await SELF.fetch(dataUrl("/environments"), {
+      method: "POST",
+      headers: { ...JSON_HEADERS, ...bearer(token(OWNER)) },
       body,
     });
     expect(accepted.status).toBe(200);

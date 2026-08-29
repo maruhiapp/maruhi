@@ -651,7 +651,7 @@ describe("invite accept", () => {
     });
   });
 
-  it("session accept requires the CSRF header and succeeds with it", async () => {
+  it("rejects a session principal even with the CSRF header (§5 能力制限 — §15-2 の反転。W2b)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const session = await loginSession(9009);
@@ -662,10 +662,17 @@ describe("invite accept", () => {
       sigPubHex: keys.sigPubHex,
       signatureHex,
     };
+    // 受諾は CLI のみ(§15-3)でセッションの正当な導線がなく、セッション XSS +
+    // 漏洩招待リンクで攻撃者鍵を被害者 user_id に束縛する複合を FP 相互確認の
+    // 手前で塞ぐ(§15-2)。CSRF ヘッダーの有無によらず一様に拒否
     const noCsrf = await acceptRequest({ cookie: `__Host-maruhi_session=${session}` }, body);
     expect(noCsrf.status).toBe(403);
+    expect(((await noCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
     const withCsrf = await acceptRequest(sessionHeaders(session), body);
-    expect(withCsrf.status).toBe(200);
+    expect(withCsrf.status).toBe(403);
+    expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
+    // 行は pending のまま(拒否が受諾 CAS より前に確定している)
+    expect((await inviteRow(issued.id))?.status).toBe("pending");
   });
 });
 
@@ -774,6 +781,32 @@ describe("invite list / revoke", () => {
 
     // 未知 id は 404
     expect((await revoke("01ARZ3NDEKTSV4RRFFQ69G5FAV")).status).toBe(404);
+  });
+
+  it("session principals can list and revoke (§5 の許可列挙 — 読み取り + 失効系。W2b)", async () => {
+    const issued = await issueInvite(fixture, OWNER, "member");
+    const session = await loginSession(9001);
+
+    // 一覧(読み取り)— チェーン role admin 以上のセッションは可(§15-2)
+    const listed = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
+      headers: sessionHeaders(session),
+    });
+    expect(listed.status).toBe(200);
+
+    // 失効(資格を減らす方向の mutation — ADR-0018 改訂 2 の境界原則)。
+    // セッション actor の監査帰属は auth_method(トークン id なし — AUDIT_SPEC §2)
+    const revoked = await SELF.fetch(`${BASE}/projects/${projectId}/invites/${issued.id}`, {
+      method: "DELETE",
+      headers: sessionHeaders(session),
+    });
+    expect(revoked.status).toBe(204);
+    expect((await inviteRow(issued.id))?.status).toBe("revoked");
+    const audits = (await inviteAuditRows()).filter((r) => r.event === "invite.revoked");
+    expect(audits).toHaveLength(1);
+    const audit = audits[0] ?? ({} as AuditRow);
+    expect(audit.actor_user_id).toBe(OWNER);
+    expect(audit.actor_api_token_id).toBeNull();
+    expect(payloadOf(audit)).toMatchObject({ authMethod: "github_oauth" });
   });
 
   it("marks the key-matched accepted invite completed when add_member is accepted", async () => {

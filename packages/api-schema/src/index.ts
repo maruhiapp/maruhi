@@ -167,6 +167,12 @@ export {
   membershipGroup,
 } from "./membership-api.ts";
 export {
+  assertSessionCapabilityClassified,
+  isSessionAllowedEndpoint,
+  SESSION_ALLOWED_ENDPOINTS,
+  UNAUTHENTICATED_ENDPOINTS,
+} from "./session-capability.ts";
+export {
   assertSecurityCriticalPayloadsStrict,
   assertStrictPayloadRoot,
   SECURITY_CRITICAL_PAYLOAD_ENDPOINTS,
