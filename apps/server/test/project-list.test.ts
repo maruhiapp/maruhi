@@ -191,6 +191,30 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     expect(raw).not.toContain(fakeProjectId(PROJECT_LIST_PAGE_SIZE));
   });
 
+  it("スコープ上限(100 エントリ)のトークンでも全ページ成功する(D1 束縛パラメータ上限 — PR #106 pullfrog 指摘の回帰)", async () => {
+    // スキーマ上限いっぱいの 100 スコープ(実プロジェクト + 合成 99)。修正前は
+    // 単一 IN が userId / after / limit と合わせて D1 の 100 パラメータ上限を
+    // 超え、一覧が hard fail した(2 ページ目は after 込みで最悪 103)
+    const fakes = Array.from({ length: 99 }, (_unused, index) => fakeProjectId(index + 1));
+    const scopes = [
+      { project: projectId, permission: "read" as const },
+      ...fakes.map((project) => ({ project, permission: "read" as const })),
+    ];
+    expect(scopes).toHaveLength(100);
+    for (const fake of fakes) {
+      await insertProjectionRow(fake, OWNER);
+    }
+    const wide = await deviceToken(9001, scopes, "scope-cap");
+    // ページ 1: 候補 100 件(合成 99 + 実 1 = 満杯)→ nextAfter 連鎖
+    const first = await listOk(bearer(wide));
+    expect(first.projects).toEqual([{ projectId, role: "owner" }]);
+    expect(first.nextAfter).toBe(projectId);
+    // ページ 2(after 込みの最悪パラメータ数)も成功して終端する
+    const second = await listOk(bearer(wide), first.nextAfter);
+    expect(second.projects).toEqual([]);
+    expect(second.nextAfter).toBeUndefined();
+  });
+
   it("確認に答えられない DO の候補は省き、残りの列挙は成立する(行は保持 — PR #106 pullfrog 指摘の回帰)", async () => {
     // 破損チェーン(JSON 非適合の保存行)の DO を候補に混ぜる — memberRoleFor が
     // defect になる形。他テストと衝突しない専用 ID を使い、終了時に片付ける

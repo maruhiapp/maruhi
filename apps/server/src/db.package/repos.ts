@@ -827,6 +827,15 @@ interface ProjectRepoShape {
 
 export class ProjectRepo extends Context.Service<ProjectRepo, ProjectRepoShape>()("ProjectRepo") {}
 
+/**
+ * スコープ交差 IN のチャンク幅(§11-5 の候補列挙)。D1 の 1 クエリ束縛
+ * パラメータ上限(100 — Cloudflare D1 limits)から userId / after / limit の
+ * 3 パラメータを引いた予算内に余裕を持って収める。トークンスコープの発行時
+ * 上限(100 エントリ — AUTH_SPEC §6 / api-schema)を単一 IN に流すと上限を
+ * 超えるため、いずれかの上限を変更する場合は本値との整合を再確認すること。
+ */
+const SCOPE_FILTER_CHUNK_SIZE = 50;
+
 function makeProjectRepo(db: Db): ProjectRepoShape {
   return {
     insertIfAbsent: (projectId, orgId, ownerUserId, nowMs, actor) =>
@@ -877,21 +886,41 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
       }),
     listMemberProjectIds: (userId, afterProjectId, limit, withinProjectIds) =>
       run(async () => {
-        const conditions = [eq(projectMembers.userId, userId)];
-        if (afterProjectId !== null) {
-          conditions.push(gt(projectMembers.projectId, afterProjectId));
+        const pageQuery = (
+          scopeChunk: readonly string[] | null,
+        ): Promise<{ projectId: string }[]> => {
+          const conditions = [eq(projectMembers.userId, userId)];
+          if (afterProjectId !== null) {
+            conditions.push(gt(projectMembers.projectId, afterProjectId));
+          }
+          if (scopeChunk !== null) {
+            conditions.push(inArray(projectMembers.projectId, [...scopeChunk]));
+          }
+          return db
+            .select({ projectId: projectMembers.projectId })
+            .from(projectMembers)
+            .where(and(...conditions))
+            .orderBy(projectMembers.projectId)
+            .limit(limit)
+            .all();
+        };
+        if (withinProjectIds === null) {
+          return (await pageQuery(null)).map((row) => row.projectId);
         }
-        if (withinProjectIds !== null) {
-          conditions.push(inArray(projectMembers.projectId, [...withinProjectIds]));
+        // スコープ交差の IN はチャンクして発行する(PR #106 pullfrog 指摘):
+        // D1 の 1 クエリ束縛パラメータ上限は 100 で、トークンスコープの
+        // スキーマ上限も 100 エントリ(api-schema auth-api.ts)— 単一 IN だと
+        // userId / after / limit の 3 パラメータと合わせて上限を超え、正当に
+        // 発行されたワイドスコープトークンの一覧が hard fail する。各チャンクは
+        // limit 件までの昇順列を返すので、連結 + 全体ソート + limit 切りが
+        // 単一クエリと同じページを与える(チャンクは互いに素な ID 集合)。
+        // ループ形は保存済みスコープが発行時上限を超える旧行にも安全
+        const merged: string[] = [];
+        for (let offset = 0; offset < withinProjectIds.length; offset += SCOPE_FILTER_CHUNK_SIZE) {
+          const chunk = withinProjectIds.slice(offset, offset + SCOPE_FILTER_CHUNK_SIZE);
+          merged.push(...(await pageQuery(chunk)).map((row) => row.projectId));
         }
-        const rows = await db
-          .select({ projectId: projectMembers.projectId })
-          .from(projectMembers)
-          .where(and(...conditions))
-          .orderBy(projectMembers.projectId)
-          .limit(limit)
-          .all();
-        return rows.map((row) => row.projectId);
+        return merged.toSorted().slice(0, limit);
       }),
   };
 }
