@@ -115,11 +115,14 @@ for (const asset of ["invite.html", "invite.css"]) {
 // できず誤検知するため棄却した(実測は session-41 裁定 BG)。正当な `hash` 利用が
 // 将来必要になったら、この検査が落ちて明示的な裁定を強制する(「インライン script は
 // 厳密に 1 本」検査と同じ、上流変化で意図的に割れる型)
+// 走査は publicDir 全体の再帰列挙(pullfrog レビュー反映): assets/ 直下・非再帰に
+// 固定すると、ビルドの出力レイアウト変更(サブディレクトリ・.mjs 化)で検査が
+// 落ちずに被覆だけ縮む。再帰なら被覆が自己維持される
 const bundleFiles = [
   join(publicDir, "index.html"),
-  ...readdirSync(join(publicDir, "assets"))
-    .filter((name) => name.endsWith(".js"))
-    .map((name) => join(publicDir, "assets", name)),
+  ...readdirSync(publicDir, { recursive: true, encoding: "utf8" })
+    .filter((name) => name.endsWith(".js") || name.endsWith(".mjs"))
+    .map((name) => join(publicDir, name)),
 ];
 for (const file of bundleFiles) {
   const content = readFileSync(file, "utf8");
