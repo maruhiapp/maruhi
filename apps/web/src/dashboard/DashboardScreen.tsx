@@ -17,31 +17,16 @@ import { Link } from "@astryxdesign/core/Link";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
-import { FailureNotice, LoadingRow, navigateTo, ServerReportedNote } from "./shared.tsx";
-import type { ChainRole, Me, ProjectList } from "./types.ts";
+import { FailureNotice, LoadingRow, navigateTo, RoleToken, ServerReportedNote } from "./shared.tsx";
+import type { Me, ProjectList } from "./types.ts";
 
 // プロジェクト ID の形式(genesis エントリの SHA-256 hex — CRYPTO_SPEC §6.4)。
 // @maruhi/core の isProjectId と同形だが、実行コードを bundle に持ち込まない
 // 方針(裁定 BR)のためリテラルで持つ
 const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
-
-const ROLE_TOKEN_COLOR: Record<ChainRole, "purple" | "blue" | "green" | "gray"> = {
-  owner: "purple",
-  admin: "blue",
-  member: "green",
-  reader: "gray",
-};
-
-/** チェーン導出 role のサーバー申告値の表示(設計文書 §4 — 検証済みを名乗らない)。 */
-export function RoleToken({ role }: { role: string }): ReactNode {
-  const color =
-    role in ROLE_TOKEN_COLOR ? ROLE_TOKEN_COLOR[role as ChainRole] : ("default" as const);
-  return <Token label={role} size="sm" color={color} />;
-}
 
 type AuthState =
   | { status: "loading" }
@@ -162,8 +147,16 @@ function appendProjects(current: ProjectsState | undefined, page: ProjectList): 
  * nextAfter が尽きるまでカーソルを進める(PR #107 Bugbot 指摘の修正 —
  * 深さは候補ページ数で有界)。
  */
-function morePagesNeeded(page: ProjectList, next: ProjectsState): boolean {
-  return page.projects.length === 0 && next.nextAfter !== undefined;
+function morePagesNeeded(
+  page: ProjectList,
+  next: ProjectsState,
+  previousAfter: string | undefined,
+): boolean {
+  // 前進しないカーソル(壊れた・敵対的なサーバー)は終端扱いにして追跡を
+  // 打ち切る — クライアントのサーバー不信の姿勢を無限ループ耐性でも揃える
+  return (
+    page.projects.length === 0 && next.nextAfter !== undefined && next.nextAfter !== previousAfter
+  );
 }
 
 async function loadNonEmptyPage(
@@ -172,7 +165,9 @@ async function loadNonEmptyPage(
   const result = await apiGet<ProjectList>(projectsPath(current?.nextAfter));
   if (result.kind !== "ok") return result;
   const next = appendProjects(current, result.value);
-  return morePagesNeeded(result.value, next) ? loadNonEmptyPage(next) : { kind: "ok", value: next };
+  return morePagesNeeded(result.value, next, current?.nextAfter)
+    ? loadNonEmptyPage(next)
+    : { kind: "ok", value: next };
 }
 
 function ProjectsFooter({

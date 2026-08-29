@@ -71,7 +71,11 @@ const ENTRY_FOLDERS: { [Op in ChainEntry["op"]]?: (state: FoldState, entry: Entr
 export function deriveReportedView(entries: ReadonlyArray<ChainEntry>): ReportedChainView {
   const state: FoldState = { members: new Map(), servers: new Map() };
   for (const entry of entries) {
-    const fold = ENTRY_FOLDERS[entry.op] as ((s: FoldState, e: ChainEntry) => void) | undefined;
+    // Object.hasOwn: 敵対的サーバーの op(例: "__proto__")がプロトタイプ鎖の
+    // 値に当たって throw で描画を落とさないための自衛(PR #107 pullfrog 指摘)
+    const fold = Object.hasOwn(ENTRY_FOLDERS, entry.op)
+      ? (ENTRY_FOLDERS[entry.op] as (s: FoldState, e: ChainEntry) => void)
+      : undefined;
     fold?.(state, entry);
   }
   return { members: [...state.members.values()], servers: [...state.servers.values()] };

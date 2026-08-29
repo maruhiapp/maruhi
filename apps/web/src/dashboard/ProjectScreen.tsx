@@ -26,9 +26,14 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
-import { RoleToken } from "./DashboardScreen.tsx";
 import { projectRoute } from "./routes.ts";
-import { FailureNotice, formatServerTime, LoadingRow, ServerReportedNote } from "./shared.tsx";
+import {
+  FailureNotice,
+  formatServerTime,
+  LoadingRow,
+  RoleToken,
+  ServerReportedNote,
+} from "./shared.tsx";
 import type {
   AuditEventsPage,
   ChainSnapshot,

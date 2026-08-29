@@ -394,6 +394,28 @@ S5(チェーン取得)・S6(監査)の応答フィールド(`headHashHex`・
   nextAfter が尽きるまでカーソルを自動追跡する形に修正(深さは候補ページ数で
   有界 — 全滅時のコストは CLI の全ページ列挙と同水準)。e2e に空ページ跨ぎの
   ページングを追加
+- **レビュー反映(PR #107 pullfrog)**: (1) **run_worker_first の被覆スイープの
+  検査化** — 列挙は api-schema パス空間の手書き複製でドリフトが無音
+  (navigation リクエストは SPA シェル 200 に飲まれる)という指摘を受け、
+  session-capability.ts と同じ型のスイープテスト
+  (apps/server/test/serving-topology.test.ts — 登録済み全エンドポイントの
+  被覆 + `/invite` 非被覆の回帰ガード。wrangler.jsonc の実値は
+  vitest.config.ts が unstable_readConfig で注入)を追加。§9 の欠陥修正を
+  一回性の突合から常設の fail-loud へ格上げ。(2) **CI に deploy:dry-run**
+  (step 8b — credential 不要の設定妥当性検査)を追加し、combined 構成の
+  設定検証を人間儀式から CI へ移した(配信挙動そのものの自動テスト外は残余の
+  まま)。(3) **CSP ヘッダーの実在 assertion** — violation ゼロ検査はヘッダー
+  欠落でも通る(空虚)ため、/dashboard 系 3 パスのヘッダー実在を e2e で直接
+  固定。(4) **プロトタイプ鎖ルックアップの自衛** — `ENTRY_FOLDERS[entry.op]` /
+  `ROLE_TOKEN_COLOR[role]` は敵対的サーバーの op/role(`__proto__` 等)で
+  プロトタイプ鎖の値に当たりうる(帰結は描画破壊のみ)— Object.hasOwn ガード +
+  回帰ユニットテスト。(5) RoleToken を shared.tsx へ移動(置き場の指摘)。
+  stale fetch の指摘は Bugbot 対応(40bd7b1)で修正済み(pullfrog は旧
+  コミットのレビュー)。(6) incremental review の passing note(前進しない
+  nextAfter を返す壊れた・敵対的サーバーでの無限追跡)も、カーソル非前進 =
+  終端扱いの 1 条件で塞いだ(サーバー不信の姿勢の均一化)。**サインイン後の着地(`${origin}/`)の scope 質問**は
+  本裁定(BP 第 3 周)どおり W2 では受容 — callback への return path 追加は
+  API 挙動の変更であり、需要が出た時点の別 PR(AUTH_SPEC §3 の改訂)に送る
 - **S6 ページ終端判定の再検討(維持)**: 「ページが limit 未満なら終端」は
   サーバーの既定 limit(50)への依存を足すため、「空ページで終端」の現行形を
   維持(1 回余分な取得と引き換えに応答形への仮定を持たない)

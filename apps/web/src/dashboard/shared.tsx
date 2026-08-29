@@ -10,9 +10,11 @@ import { HStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
 import type { ReactNode } from "react";
 
 import type { ApiFailure } from "./api.ts";
+import type { ChainRole } from "./types.ts";
 
 /**
  * SPA 内の命令的ナビゲーション(ID 直入力の Open 等)。Navigation API が
@@ -32,6 +34,25 @@ export function navigateTo(path: string): void {
 export function formatServerTime(ms: number): string {
   const date = new Date(ms);
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(ms);
+}
+
+const ROLE_TOKEN_COLOR: Record<ChainRole, "purple" | "blue" | "green" | "gray"> = {
+  owner: "purple",
+  admin: "blue",
+  member: "green",
+  reader: "gray",
+};
+
+/**
+ * チェーン導出 role のサーバー申告値の表示(設計文書 §4 — 検証済みを名乗らない)。
+ * Object.hasOwn: 想定外の role 文字列(プロトタイプ鎖の鍵名を含む)は
+ * default 色へ落とす(PR #107 pullfrog 指摘)。
+ */
+export function RoleToken({ role }: { role: string }): ReactNode {
+  const color = Object.hasOwn(ROLE_TOKEN_COLOR, role)
+    ? ROLE_TOKEN_COLOR[role as ChainRole]
+    : ("default" as const);
+  return <Token label={role} size="sm" color={color} />;
 }
 
 /** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */

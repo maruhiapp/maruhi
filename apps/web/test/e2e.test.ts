@@ -458,6 +458,19 @@ function collectViolations(page: Page): string[] {
 }
 
 describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", () => {
+  it("serves /dashboard routes with the strict SPA CSP header", async () => {
+    // violation ゼロの検査(下の各テスト)は「CSP ヘッダーが無い」場合も通って
+    // しまうため、ヘッダーの実在を直接固定する(pullfrog レビュー反映)。
+    // SPA フォールバック経由の深いパスにも /* の CSP が付くこと
+    for (const path of ["/dashboard", `/dashboard/projects/${PROJECT_1}`, "/dashboard/account"]) {
+      const res = await fetch(`${BASE}${path}`);
+      expect(res.status, `path: ${path}`).toBe(200);
+      const csp = res.headers.get("content-security-policy") ?? "";
+      expect(csp, `path: ${path}`).toContain("script-src 'self'");
+      expect(csp, `path: ${path}`).toContain("connect-src 'self'");
+    }
+  });
+
   it("shows the sign-in screen when the server reports no session (401)", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
