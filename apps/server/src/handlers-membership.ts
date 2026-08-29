@@ -27,6 +27,7 @@ import {
   ensureTokenScopeForInit,
   ensureTokenScopeForProject,
   requiredPermissionForEntry,
+  scopedProjectIdsFor,
   tokenScopeAllowsForProject,
 } from "./authz.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
@@ -157,20 +158,30 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
     .handle("list", ({ query }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
+        // トークン主体のスコープ交差は**候補索引の段**で行う(スコープ外 =
+        // 不出現 — 他所の「スコープ外 = 404」§11-2 と同じ情報量)。後段の
+        // 絞り込みだけに置くと、候補ページ末尾から出る nextAfter にスコープ外の
+        // project_id(ID = capability)が載って漏れる(Cursor Security Agent
+        // 指摘 — PR #106)。セッション主体・`*` スコープは制限なし(§5 の許可
+        // 列挙を通過済み — ensureTokenScopeForProject と同じ規律)
+        const scopeFilter = scopedProjectIdsFor(principal);
+        if (scopeFilter !== null && scopeFilter.length === 0) {
+          return { projects: [] };
+        }
         const projects = yield* ProjectRepo;
         // §11-5: D1 投影は候補索引にすぎない(認可に使わない)。ページは
-        // 候補基準・project_id 昇順(スコープ・DO 確認の絞り込みより前に確定
-        // する — 絞り込み後基準にするとスコープ外の尾部が恒久にスキップされる)
+        // 候補基準・project_id 昇順(DO 確認の絞り込みより前に確定する —
+        // 確認後基準にすると ghost の尾部でカーソルが進まない)
         const candidates = yield* projects.listMemberProjectIds(
           principal.userId,
           query.after ?? null,
           PROJECT_LIST_PAGE_SIZE,
+          scopeFilter,
         );
         const lastCandidate = candidates[candidates.length - 1];
         const nextAfter = candidates.length === PROJECT_LIST_PAGE_SIZE ? lastCandidate : undefined;
-        // トークン主体はスコープとの交差のみ(スコープ外 = 不出現 — 他所の
-        // 「スコープ外 = 404」§11-2 と同じ情報量)。セッション主体は素通し
-        // (§5 の許可列挙を通過済み — ensureTokenScopeForProject と同じ規律)
+        // 深層防御: 候補は SQL 交差済みだが、応答行にも同じ述語を適用する
+        // (交差の実装が食い違ってもスコープ外が応答に昇格しない)
         const visible = candidates.filter((projectId) =>
           tokenScopeAllowsForProject(principal, projectId, "read"),
         );

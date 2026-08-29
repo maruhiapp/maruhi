@@ -170,6 +170,26 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     expect((await listOk(bearer(outOfScope))).projects).toEqual([]);
   });
 
+  it("nextAfter はスコープ外の project_id を運ばない(候補索引段の交差 — PR #106 セキュリティレビューの回帰)", async () => {
+    // スコープ外の合成候補を満杯ページぶん挿入(修正前は候補ページ末尾 =
+    // スコープ外 ID が nextAfter に載って漏れていた)
+    for (let index = 1; index <= PROJECT_LIST_PAGE_SIZE; index += 1) {
+      await insertProjectionRow(fakeProjectId(index), OWNER);
+    }
+    const scoped = await deviceToken(
+      9001,
+      [{ project: projectId, permission: "read" }],
+      "scoped-owner",
+    );
+    const response = await listOk(bearer(scoped));
+    expect(response.projects).toEqual([{ projectId, role: "owner" }]);
+    expect(response.nextAfter).toBeUndefined();
+    // 応答のどのフィールドにもスコープ外 ID が現れない(§11-5 の不変条件)
+    const raw = JSON.stringify(response);
+    expect(raw).not.toContain(fakeProjectId(1));
+    expect(raw).not.toContain(fakeProjectId(PROJECT_LIST_PAGE_SIZE));
+  });
+
   it("セッション主体で一覧できる(§5 の許可列挙 — S4 の消費経路)", async () => {
     const session = await loginSession(9001);
     const viaSession = await listOk(sessionHeaders(session));

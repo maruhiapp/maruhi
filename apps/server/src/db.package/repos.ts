@@ -810,11 +810,18 @@ interface ProjectRepoShape {
    * 一覧の候補列挙(§11-5): 本人の投影行の project_id を昇順で、排他カーソル
    * `afterProjectId`(null = 先頭から)から最大 `limit` 件。候補にすぎない —
    * 応答へ載せてよいかは呼び出し側の DO 確認が決める。
+   *
+   * `withinProjectIds` はトークンスコープとの交差を**候補索引の段で**行う
+   * フィルタ(null = 制限なし)。`nextAfter` は候補ページの末尾から出るため、
+   * 交差を後段(応答行の絞り込み)だけに置くとスコープ外の project_id が
+   * カーソルに載って漏れる(PR #106 Cursor Security Agent 指摘)— 候補空間
+   * 自体をスコープ内に閉じる。
    */
   readonly listMemberProjectIds: (
     userId: string,
     afterProjectId: string | null,
     limit: number,
+    withinProjectIds: readonly string[] | null,
   ) => Effect.Effect<readonly string[]>;
 }
 
@@ -868,16 +875,19 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
           .delete(projectMembers)
           .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
       }),
-    listMemberProjectIds: (userId, afterProjectId, limit) =>
+    listMemberProjectIds: (userId, afterProjectId, limit, withinProjectIds) =>
       run(async () => {
-        const cursor =
-          afterProjectId === null
-            ? eq(projectMembers.userId, userId)
-            : and(eq(projectMembers.userId, userId), gt(projectMembers.projectId, afterProjectId));
+        const conditions = [eq(projectMembers.userId, userId)];
+        if (afterProjectId !== null) {
+          conditions.push(gt(projectMembers.projectId, afterProjectId));
+        }
+        if (withinProjectIds !== null) {
+          conditions.push(inArray(projectMembers.projectId, [...withinProjectIds]));
+        }
         const rows = await db
           .select({ projectId: projectMembers.projectId })
           .from(projectMembers)
-          .where(cursor)
+          .where(and(...conditions))
           .orderBy(projectMembers.projectId)
           .limit(limit)
           .all();
