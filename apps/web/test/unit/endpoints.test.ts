@@ -11,6 +11,7 @@ import { isSessionAllowedEndpoint, maruhiApi, UNAUTHENTICATED_ENDPOINTS } from "
 import { describe, expect, it } from "vitest";
 
 import {
+  apiPaths,
   DASHBOARD_ENDPOINTS,
   SAMPLE_ENVIRONMENT_ID,
   SAMPLE_PROJECT_ID,
@@ -95,6 +96,20 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
         `${group}.${endpoint} does not declare a "${cursor}" query parameter in api-schema`,
       ).toContain(cursor);
     }
+  });
+
+  it("appends the declared cursor name from inside the paged builders (裁定 CB)", () => {
+    // 呼び出し側は名前に触れない(取り違えは構文上あり得ない — PR #107
+    // pullfrog 指摘の反映)。ビルダーが実際に付ける名前をここで固定する:
+    // 期待値のリテラルは意図的(ビルダー同士の同語反復を避ける)
+    expect(apiPaths.projects("x")).toBe("/projects?after=x");
+    expect(apiPaths.auditEvents(SAMPLE_PROJECT_ID, "y")).toBe(
+      `/projects/${SAMPLE_PROJECT_ID}/audit/events?before=y`,
+    );
+    expect(apiPaths.auditInvites(SAMPLE_PROJECT_ID, "y")).toBe(
+      `/projects/${SAMPLE_PROJECT_ID}/audit/invites?before=y`,
+    );
+    expect(apiPaths.auditSelf("y")).toBe("/auth/audit/events?before=y");
   });
 
   it("keeps path literals out of screen code (builders are the only source)", () => {

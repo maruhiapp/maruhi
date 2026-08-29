@@ -20,7 +20,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
-import { apiPaths, withCursor } from "./endpoints.ts";
+import { apiPaths } from "./endpoints.ts";
 import { markResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
 import { FailureNotice, LoadingRow, navigateTo, RoleToken, ServerReportedNote } from "./shared.tsx";
@@ -169,9 +169,7 @@ async function loadNonEmptyPage(
   current: ProjectsState | undefined,
   visitedCursors: Set<string>,
 ): Promise<{ kind: "ok"; value: ProjectsState } | ApiFailure> {
-  const result = await apiGet<ProjectList>(
-    withCursor(apiPaths.projects(), "after", current?.nextAfter),
-  );
+  const result = await apiGet<ProjectList>(apiPaths.projects(current?.nextAfter));
   if (result.kind !== "ok") return result;
   const next = appendProjects(current, result.value);
   return shouldFollowCursor(result.value, next, visitedCursors)

@@ -18,34 +18,38 @@
 export const SAMPLE_PROJECT_ID = "ab".repeat(32);
 export const SAMPLE_ENVIRONMENT_ID = "production";
 
-/** 画面が使うパスビルダー(パス部のみ — クエリは withCursor が付ける)。 */
+/**
+ * カーソルクエリ名(裁定 CB — session-43 §13)。ビルダーと目録が同じ定数を
+ * 読むため、呼び出し側は名前に触れない(取り違えは構文上あり得ない — 裁定 CA
+ * と同じ共有定数の形。PR #107 pullfrog 指摘の反映)。`after` = プロジェクト
+ * 一覧(AUTH_SPEC §11-5)、`before` = 監査ページング(AUDIT_SPEC §7)。
+ */
+const PROJECTS_CURSOR = "after";
+const AUDIT_CURSOR = "before";
+
+/** カーソルクエリの組み立て(唯一のクエリ付与点 — ビルダー内部でのみ使う)。 */
+function withCursor(path: string, name: "after" | "before", value: string | undefined): string {
+  return value === undefined ? path : `${path}?${name}=${encodeURIComponent(value)}`;
+}
+
+/** 画面が使うパスビルダー(ページング面はカーソル値を受け、名前は付けない)。 */
 export const apiPaths = {
   /** Web OAuth の開始(ナビゲーション導線 — 未認証面。AUTH_SPEC §3)。 */
   githubStart: () => "/auth/github/start",
   me: () => "/auth/me",
   logout: () => "/auth/logout",
-  projects: () => "/projects",
+  projects: (after?: string) => withCursor("/projects", PROJECTS_CURSOR, after),
   chain: (projectId: string) => `/projects/${projectId}/chain`,
   environments: (projectId: string) => `/projects/${projectId}/environments`,
   pullMetadata: (projectId: string, environmentId: string) =>
     `/projects/${projectId}/environments/${environmentId}/pull/metadata`,
-  auditEvents: (projectId: string) => `/projects/${projectId}/audit/events`,
-  auditInvites: (projectId: string) => `/projects/${projectId}/audit/invites`,
-  auditSelf: () => "/auth/audit/events",
+  auditEvents: (projectId: string, before?: string) =>
+    withCursor(`/projects/${projectId}/audit/events`, AUDIT_CURSOR, before),
+  auditInvites: (projectId: string, before?: string) =>
+    withCursor(`/projects/${projectId}/audit/invites`, AUDIT_CURSOR, before),
+  auditSelf: (before?: string) => withCursor("/auth/audit/events", AUDIT_CURSOR, before),
   rotationFlags: (projectId: string) => `/projects/${projectId}/rotation/flags`,
 } as const;
-
-/**
- * カーソルクエリの組み立て(唯一のクエリ付与点)。`after` = プロジェクト一覧
- * (AUTH_SPEC §11-5)、`before` = 監査ページング(AUDIT_SPEC §7)。
- */
-export function withCursor(
-  path: string,
-  name: "after" | "before",
-  value: string | undefined,
-): string {
-  return value === undefined ? path : `${path}?${name}=${encodeURIComponent(value)}`;
-}
 
 /** One dashboard-consumed endpoint bound to its api-schema identity. */
 export interface DashboardEndpoint {
@@ -82,7 +86,7 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     endpoint: "list",
     access: "session",
     sample: apiPaths.projects(),
-    cursor: "after",
+    cursor: PROJECTS_CURSOR,
   },
   {
     group: "membership",
@@ -107,21 +111,21 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     endpoint: "events",
     access: "session",
     sample: apiPaths.auditEvents(SAMPLE_PROJECT_ID),
-    cursor: "before",
+    cursor: AUDIT_CURSOR,
   },
   {
     group: "audit",
     endpoint: "invites",
     access: "session",
     sample: apiPaths.auditInvites(SAMPLE_PROJECT_ID),
-    cursor: "before",
+    cursor: AUDIT_CURSOR,
   },
   {
     group: "audit",
     endpoint: "self",
     access: "session",
     sample: apiPaths.auditSelf(),
-    cursor: "before",
+    cursor: AUDIT_CURSOR,
   },
   {
     group: "rotation",

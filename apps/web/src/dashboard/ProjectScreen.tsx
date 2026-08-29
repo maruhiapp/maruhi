@@ -26,7 +26,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
-import { apiPaths, withCursor } from "./endpoints.ts";
+import { apiPaths } from "./endpoints.ts";
 import { projectRoute, spaPaths } from "./routes.ts";
 import {
   FailureNotice,
@@ -378,12 +378,12 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
   const [axis, setAxis] = useState("project");
   const fetchProjectEvents = useMemo(
     () => (before: string | undefined) =>
-      apiGet<AuditEventsPage>(withCursor(apiPaths.auditEvents(projectId), "before", before)),
+      apiGet<AuditEventsPage>(apiPaths.auditEvents(projectId, before)),
     [projectId],
   );
   const fetchInviteEvents = useMemo(
     () => (before: string | undefined) =>
-      apiGet<AuditEventsPage>(withCursor(apiPaths.auditInvites(projectId), "before", before)),
+      apiGet<AuditEventsPage>(apiPaths.auditInvites(projectId, before)),
     [projectId],
   );
   return (
