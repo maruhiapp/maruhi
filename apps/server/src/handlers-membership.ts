@@ -193,9 +193,19 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           visible,
           (projectId) =>
             Effect.gen(function* () {
+              // 確認 RPC の defect(DO 到達不能・保存チェーンの破損等)は候補
+              // 単位で隔離する: 発見エンドポイントで 1 プロジェクトの障害が
+              // 残り全部の列挙を 500 にしない(pullfrog 指摘 — PR #106)。
+              // 当該行は応答から省くだけで**保持**する(ghost 削除は DO の
+              // 明確な非メンバー回答のみ — 障害の回復後に再出現できる)。
+              // 契約違反の検出線(下の想定外 rejection kind の die)はこの
+              // 隔離の外側で従来どおり loud に保つ
               const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
                 projectStub(env, projectId).memberRoleFor(principal.userId),
-              );
+              ).pipe(Effect.catchDefect(() => Effect.succeed(null)));
+              if (outcome === null) {
+                return null;
+              }
               if (outcome.kind === "ok") {
                 return { projectId, role: outcome.value };
               }

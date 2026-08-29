@@ -13,7 +13,7 @@
 // - トークンスコープの交差(スコープ外 = 不出現)・セッション主体の許可(§5)
 // - カーソルページング(候補基準・project_id 昇順・サーバー固定 100 件)
 
-import { env, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
@@ -28,6 +28,7 @@ import {
   STRANGER,
 } from "./support/data-fixture.ts";
 import { fixture, registerDataScenario, token } from "./support/data-scenario.ts";
+import { resetProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -188,6 +189,29 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     const raw = JSON.stringify(response);
     expect(raw).not.toContain(fakeProjectId(1));
     expect(raw).not.toContain(fakeProjectId(PROJECT_LIST_PAGE_SIZE));
+  });
+
+  it("確認に答えられない DO の候補は省き、残りの列挙は成立する(行は保持 — PR #106 pullfrog 指摘の回帰)", async () => {
+    // 破損チェーン(JSON 非適合の保存行)の DO を候補に混ぜる — memberRoleFor が
+    // defect になる形。他テストと衝突しない専用 ID を使い、終了時に片付ける
+    const broken = fakeProjectId(0xb0b);
+    await insertProjectionRow(broken, OWNER);
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(broken));
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, 'not-json', 'broken', 8)",
+      );
+    });
+    try {
+      const response = await listOk(bearer(token(OWNER)));
+      // 破損候補は応答から省かれ、残り(実プロジェクト)の列挙は成立する
+      expect(response.projects).toEqual([{ projectId, role: "owner" }]);
+      // 行は保持される(ghost 削除は明確な非メンバー回答のみ — 障害回復後に
+      // 再出現できる)
+      expect(await projectionRowsOf(OWNER)).toEqual([broken, projectId].toSorted());
+    } finally {
+      await resetProjectDo(broken);
+    }
   });
 
   it("セッション主体で一覧できる(§5 の許可列挙 — S4 の消費経路)", async () => {
