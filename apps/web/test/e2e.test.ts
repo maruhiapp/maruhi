@@ -205,13 +205,31 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     const html = await res.text();
     expect(html.toLowerCase()).not.toContain("<script");
     expect(html).toContain("maruhi invite accept");
+    // 配信バイト内蔵の meta CSP(配信層のヘッダーと独立の二重強制)
+    expect(html).toMatch(
+      /<meta\s+http-equiv="Content-Security-Policy"\s+content="[^"]*script-src 'none'/i,
+    );
   });
 
-  it("normalizes /invite.html and /invite/ to the canonical /invite (link format §15-3)", async () => {
-    for (const path of ["/invite.html", "/invite/"]) {
+  it("normalizes near-miss paths to the canonical /invite (link format §15-3)", async () => {
+    // auto-trailing-slash による正規化(307)
+    const htmlRes = await fetch(`${BASE}/invite.html`, { redirect: "manual" });
+    expect(htmlRes.status).toBe(307);
+    expect(htmlRes.headers.get("location")).toBe("/invite");
+    // _redirects による正規化(301): 大小変種 × 深いパスのクラス全体
+    // (フラグメントはブラウザがリダイレクト越しに保持する)
+    for (const path of [
+      "/invite/",
+      "/invite/x",
+      "/Invite",
+      "/INVITE",
+      "/iNvItE",
+      "/Invite/x",
+      "/InviteXYZ",
+    ]) {
       const res = await fetch(`${BASE}${path}`, { redirect: "manual" });
-      expect(res.status).toBe(307);
-      expect(res.headers.get("location")).toBe("/invite");
+      expect(res.status, `path: ${path}`).toBe(301);
+      expect(res.headers.get("location"), `path: ${path}`).toBe("/invite");
     }
   });
 

@@ -10,6 +10,16 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      meta CSP: 「スクリプトを一切実行しない」の強制を配信バイト自身に内蔵する。
+      _headers の per-path CSP(配信層)と二重化され、配信層の挙動差(デタッチ構文の
+      production 実装等)から独立に効く。meta では frame-ancestors を指定できないため、
+      それだけは _headers 側が単独で担う。複数 CSP は交差(全ポリシーが強制)。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex" />
     <title>maruhi — accept your invite</title>

@@ -7,8 +7,9 @@
 //
 // あわせて /invite(招待リンク着地ページ — AUTH_SPEC §15-3 / ADR-0018 改訂 2・5 項)の
 // 不変条件「スクリプトを一切持たない・フラグメントを解釈しない」を、
-//   (1) 配信物 invite.html への機械検査(script ゼロ・外部リソース読み込みなし)
+//   (1) 配信物 invite.html への機械検査(script ゼロ・meta CSP あり・外部リソースなし)
 //   (2) per-path CSP `script-src 'none'` の _headers への書き込みと最終成果物の確認
+//   (3) near-miss パス(大小変種・深いパス)を /invite へ正規化する _redirects の生成
 // で構成として固定する。違反はビルド失敗(throw)にする — 検査は品質ゲート
 // (CI の web ビルドステップ)の経路に載る。裁定の経緯は docs/notes/session-41.md。
 import { createHash } from "node:crypto";
@@ -62,6 +63,15 @@ if (/\bon[a-z]+\s*=\s*["']/i.test(inviteHtml)) {
 }
 if (/javascript:/i.test(inviteHtml)) {
   throw new Error("invite.html に javascript: URL がある(AUTH_SPEC §15-3)");
+}
+// meta CSP(配信バイト内蔵の強制)が存在し script-src 'none' を含むこと。
+// _headers の per-path CSP(配信層)と独立に効く二重化であり、配信層の挙動差
+// (デタッチ構文の production 実装等)に依らずスクリプト実行ゼロを保つ
+const metaCspMatch = inviteHtml.match(
+  /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"/i,
+);
+if (metaCspMatch?.[1] === undefined || !metaCspMatch[1].includes("script-src 'none'")) {
+  throw new Error("invite.html に meta CSP(script-src 'none')が無い(AUTH_SPEC §15-3)");
 }
 // 外部リソース読み込みなし(全アセット自己配信)。href 属性に限り、自リポジトリの
 // GitHub(CLI 導入への導線のナビゲーションリンク)を許可する。実行時の強制は CSP
@@ -125,4 +135,40 @@ if (inviteBlock === undefined || !inviteBlock.includes("script-src 'none'")) {
   throw new Error("_headers に /invite の per-path CSP(script-src 'none')が無い");
 }
 
-console.log(`_headers written (${hashes.length} inline script hash + /invite per-path CSP)`);
+// ---- _redirects: near-miss パスの /invite への正規化 ----
+// 資産キー照合は大文字小文字を区別するため、`/Invite` 等の大小変種はアセットに一致せず
+// SPA フォールバック(script を持つシェル)へ落ちる。系統的な発生源(モバイルの
+// 自動大文字化・貼り付け時の末尾ゴミ)を含む「大小変種 × 末尾続き」のクラス全体を、
+// 機械生成した _redirects で /invite へ 301 正規化して閉じる(フラグメントはブラウザが
+// リダイレクト越しに保持する)。
+// 形は 1 変種 1 本の末尾スプラット `/{Variant}* /invite 301`(`/Invite`・`/Invite/x`・
+// `/InviteXYZ` をまとめて捕捉 — wrangler dev 実測)。全ルールが動的扱いで上限 100 本
+// (127 本の完全一致 + スプラット並記は 101 本目以降が黙って落ちる — 実測)のため、
+// この圧縮形で 64 本に収める。小文字だけは `/invite*` にすると正規パス自身と
+// /invite.css に一致して事故るため、`/invite/*` のみとする(小文字 + 末尾続き
+// 〔/inviteXYZ〕は生成源のないタイポとして残余 — SPA 側に fragment を読むコードは無い)
+const inviteRedirectRules: string[] = [];
+for (let bits = 0; bits < 1 << "invite".length; bits++) {
+  let variant = "";
+  for (let i = 0; i < "invite".length; i++) {
+    const ch = "invite".charAt(i);
+    variant += (bits >> i) & 1 ? ch.toUpperCase() : ch;
+  }
+  inviteRedirectRules.push(
+    variant === "invite" ? `/${variant}/* /invite 301` : `/${variant}* /invite 301`,
+  );
+}
+writeFileSync(join(publicDir, "_redirects"), `${inviteRedirectRules.join("\n")}\n`);
+
+// 固定検査: 書き出した _redirects に正規化ルールが実在すること(_headers と同じ読み戻し型)
+const writtenRedirects = readFileSync(join(publicDir, "_redirects"), "utf8");
+for (const required of ["/invite/* /invite 301", "/Invite* /invite 301"]) {
+  if (!writtenRedirects.includes(required)) {
+    throw new Error(`_redirects に正規化ルールが無い: ${required}`);
+  }
+}
+
+console.log(
+  `_headers written (${hashes.length} inline script hash + /invite per-path CSP), ` +
+    `_redirects written (${inviteRedirectRules.length} rules)`,
+);
