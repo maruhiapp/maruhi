@@ -103,12 +103,32 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     // 依存する。ここでは src/ 配下(両ビルダー置き場を除く)に API 前置・
     // /dashboard 前置のパスリテラルが現れないことを機械検査し、ビルダーを
     // 迂回する消費面の混入をドリフトとして落とす
+    const srcRoot = join(import.meta.dirname, "../../src");
     expect(
-      findPathLiteralOffenders(join(import.meta.dirname, "../../src")),
+      findSourceOffenders(
+        srcRoot,
+        /["']\/(auth|projects|invites|dashboard)\b/,
+        new Set([BUILDER_API_MODULE, BUILDER_SPA_MODULE].map((p) => join(srcRoot, p))),
+      ),
       "path literal outside the builder modules — use apiPaths (endpoints.ts) or spaPaths (routes.ts)",
     ).toEqual([]);
   });
+
+  it("keeps route() declarations inside the SPA route catalog (裁定 BZ/CA)", () => {
+    // SPA_ROUTES の権威性は「route() の宣言は routes.ts のみ」という規律に
+    // 依存する(App.tsx へのインライン route() は非交差スイープを黙って
+    // 狭める — PR #107 pullfrog 指摘)。bindRoute( は別名なので誤検知しない
+    const srcRoot = join(import.meta.dirname, "../../src");
+    expect(
+      findSourceOffenders(srcRoot, /\broute\(/, new Set([join(srcRoot, BUILDER_SPA_MODULE)])),
+      "route() declared outside src/dashboard/routes.ts — add it to the SPA_ROUTES catalog instead",
+    ).toEqual([]);
+  });
 });
+
+/** ビルダー置き場(トリップワイヤの除外対象)— 解決済みパスで一意に指す。 */
+const BUILDER_API_MODULE = "dashboard/endpoints.ts";
+const BUILDER_SPA_MODULE = "dashboard/routes.ts";
 
 /** 登録エンドポイントの取得(不在は fail-loud — パス整合テストと同じ前提)。 */
 function requireEndpoint(group: string, endpoint: string): RegisteredEndpoint {
@@ -122,29 +142,35 @@ function queryKeys(registered: RegisteredEndpoint): PropertyKey[] {
   return (registered.query?.ast?.propertySignatures ?? []).map((p) => p.name);
 }
 
-/** トリップワイヤの走査対象: TS/TSX ソース(2 つのビルダー置き場を除く)。 */
-function isSweepTarget(entry: { isFile(): boolean; name: string }): boolean {
-  return (
-    entry.isFile() &&
-    /\.(ts|tsx)$/.test(entry.name) &&
-    entry.name !== "endpoints.ts" &&
-    entry.name !== "routes.ts"
-  );
+/**
+ * トリップワイヤの走査対象: TS/TSX ソース(除外は解決済みパスで比較 —
+ * ファイル名比較だと別ディレクトリの同名ファイルが黙って免除される)。
+ */
+function isSweepTarget(
+  entry: { isFile(): boolean; name: string },
+  filePath: string,
+  excluded: ReadonlySet<string>,
+): boolean {
+  return entry.isFile() && /\.(ts|tsx)$/.test(entry.name) && !excluded.has(filePath);
 }
 
 /**
- * API 前置(/auth・/projects・/invites)と SPA 前置(/dashboard)のパス
- * リテラルを持つファイルを列挙する。対象はダブル/シングルクォートの文字列
- * のみ — バッククォートはコメント内のパス例(`/auth/me` 等)と衝突するため
- * 対象外で、迂回可能性は許容する(word-hash トリップワイヤと同じ「善意の
- * ドリフト検出」の位置づけ — session-41 BG)。
+ * src/ 配下で pattern にかかるファイルを列挙する共通走査(excluded は
+ * 解決済みパスの集合)。パスリテラル検査はダブル/シングルクォートの文字列
+ * のみ対象 — バッククォートはコメント内のパス例(`/auth/me` 等)と衝突する
+ * ため対象外で、迂回可能性は許容する(word-hash トリップワイヤと同じ
+ * 「善意のドリフト検出」の位置づけ — session-41 BG)。
  */
-function findPathLiteralOffenders(srcRoot: string): string[] {
+function findSourceOffenders(
+  srcRoot: string,
+  pattern: RegExp,
+  excluded: ReadonlySet<string>,
+): string[] {
   const offenders: string[] = [];
   for (const entry of readdirSync(srcRoot, { recursive: true, withFileTypes: true })) {
-    if (!isSweepTarget(entry)) continue;
     const filePath = join(entry.parentPath, entry.name);
-    if (/["']\/(auth|projects|invites|dashboard)\b/.test(readFileSync(filePath, "utf8"))) {
+    if (!isSweepTarget(entry, filePath, excluded)) continue;
+    if (pattern.test(readFileSync(filePath, "utf8"))) {
       offenders.push(filePath.slice(srcRoot.length + 1));
     }
   }
