@@ -12,6 +12,7 @@ import type {
   ChainSnapshotSchema,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
+  ForbiddenReasonSchema,
   MeSchema,
   ProjectListSchema,
   RoleSchema,
@@ -27,6 +28,8 @@ export type EnvironmentSummary = typeof EnvironmentSummarySchema.Type;
 export type EnvironmentMetadataPull = typeof EnvironmentMetadataPullSchema.Type;
 export type AuditEvent = typeof AuditEventSchema.Type;
 export type RotationFlag = typeof RotationFlagSchema.Type;
+/** 403 reason の閉じた列挙(裁定 CC — 比較リテラルのリネームを型で割る)。 */
+export type ForbiddenReason = typeof ForbiddenReasonSchema.Type;
 
 /** `{ events }` page shape shared by every audit read endpoint (AUDIT_SPEC §7). */
 export interface AuditEventsPage {

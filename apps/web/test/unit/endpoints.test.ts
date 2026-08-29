@@ -129,6 +129,22 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     ).toEqual([]);
   });
 
+  it("keeps effect / api-schema imports type-only in bundle sources (裁定 BR/CD)", () => {
+    // 裁定 BR「Effect / Schema の実行コードをバンドル(= TCB)へ持ち込まない」は
+    // 規約でしかなかった: 値 import はビルドも実行も黙って通り、バンドルと
+    // 供給網だけが静かに太る。verbatimModuleSyntax の下では type-only import が
+    // `import type` 構文で明示されるため、値 import の混入を機械検査できる
+    const srcRoot = join(import.meta.dirname, "../../src");
+    expect(
+      findSourceOffenders(
+        srcRoot,
+        /import\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)["']/,
+        new Set(),
+      ),
+      "value import of effect / @maruhi/api-schema in bundle source — use `import type` (裁定 BR)",
+    ).toEqual([]);
+  });
+
   it("keeps route() declarations inside the SPA route catalog (裁定 BZ/CA)", () => {
     // SPA_ROUTES の権威性は「route() の宣言は routes.ts のみ」という規律に
     // 依存する(App.tsx へのインライン route() は非交差スイープを黙って

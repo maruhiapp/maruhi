@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
-import type { ChainRole } from "./types.ts";
+import type { ChainRole, ForbiddenReason } from "./types.ts";
 
 /**
  * SPA 内の命令的ナビゲーション(ID 直入力の Open 等)。Navigation API が
@@ -56,9 +56,13 @@ export function RoleToken({ role }: { role: string }): ReactNode {
   return <Token label={role} size="sm" color={color} />;
 }
 
+// 比較リテラルを api-schema の閉じた列挙へ型束縛する(裁定 CC): reason 名の
+// リネームは「一般文言への無音フォールバック」でなくコンパイルエラーで割れる
+const SESSION_NOT_ALLOWED = "session-not-allowed" satisfies ForbiddenReason;
+
 /** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */
 function ForbiddenNotice({ reason }: { reason: string | undefined }): ReactNode {
-  return reason === "session-not-allowed" ? (
+  return reason === SESSION_NOT_ALLOWED ? (
     <Banner
       status="warning"
       title="Not available to browser sessions"
