@@ -162,10 +162,11 @@ function morePagesNeeded(
 async function loadNonEmptyPage(
   current: ProjectsState | undefined,
 ): Promise<{ kind: "ok"; value: ProjectsState } | ApiFailure> {
-  const result = await apiGet<ProjectList>(projectsPath(current?.nextAfter));
+  const after = current?.nextAfter;
+  const result = await apiGet<ProjectList>(projectsPath(after));
   if (result.kind !== "ok") return result;
   const next = appendProjects(current, result.value);
-  return morePagesNeeded(result.value, next, current?.nextAfter)
+  return morePagesNeeded(result.value, next, after)
     ? loadNonEmptyPage(next)
     : { kind: "ok", value: next };
 }
