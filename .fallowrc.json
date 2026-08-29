@@ -11,12 +11,16 @@
   // apps/web のエントリは vite.config.ts の文字列参照(funstackStatic の root/app)のため
   // fallow が自動検出できない。手動でエントリポイントとして宣言する
   // theme/maruhi.js は astryx theme build の生成物。import 指定子 ../../theme/maruhi.js を
-  // fallow は TS 流儀で maruhi.ts に解決するため、実体の .js が未到達と誤検出される
+  // fallow は TS 流儀で maruhi.ts に解決するため、実体の .js が未到達と誤検出される。
+  // vitest.unit.config.ts(web ユニットテスト)は規約外のファイル名(vitest.config.ts は
+  // e2e が使用済み)でルート vitest.config.ts から文字列参照されるため自動検出されない
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
     "apps/web/scripts/*.ts",
-    "apps/web/theme/maruhi.js"
+    "apps/web/theme/maruhi.js",
+    "apps/web/vitest.unit.config.ts",
+    "apps/web/test/unit/*.test.ts"
   ],
   // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
   // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。

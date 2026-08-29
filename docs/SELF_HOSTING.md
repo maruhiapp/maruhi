@@ -56,7 +56,7 @@ Write the printed `database_id` (UUID) into `wrangler.jsonc` at
 ### 3. First deploy (apply migrations + pin the URL)
 
 ```sh
-bun run deploy   # = bun run db:migrate && wrangler deploy
+bun run deploy   # = bun run db:migrate && (web dashboard build) && wrangler deploy
 ```
 
 The deploy script always applies D1 migrations first (it refers to the binding

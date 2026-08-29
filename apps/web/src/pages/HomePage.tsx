@@ -18,6 +18,12 @@ export function HomePage() {
         started.
       </p>
       <p>
+        <a href="/dashboard" data-testid="to-dashboard">
+          open the dashboard
+        </a>{" "}
+        — a read-only view of your projects (sign-in required).
+      </p>
+      <p>
         <a href="/about" data-testid="to-about">
           go to about
         </a>
