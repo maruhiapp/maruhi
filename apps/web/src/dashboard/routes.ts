@@ -48,8 +48,8 @@ export const spaPaths = {
  * 全 SPA ルート(裁定 BZ — docs/notes/session-43.md §12)。ユニットテストが
  * この列挙を wrangler.jsonc の run_worker_first と突合し、「SPA のルート空間は
  * Worker に飲まれない」(裁定 BO の分離)を実ルート定義から導出して検査する。
- * ルートを追加したらここに載せる — App.tsx が本モジュール以外のルートを
- * 持たないことは同テストの目視外だが、bindRoute の結合は本モジュールの
- * export を経由することで単一目録が保たれる。
+ * ルートを追加したらここに載せる — 本モジュール外の route() 宣言は
+ * ソーストリップワイヤ(test/unit/endpoints.test.ts)が締め出すため、
+ * 目録から漏れうるのは本モジュール内で SPA_ROUTES への追記を忘れた場合だけ。
  */
 export const SPA_ROUTES = [homeRoute, aboutRoute, dashboardRoute, accountAuditRoute, projectRoute];
