@@ -1,4 +1,4 @@
-# セッション 41: W1 — 静的縮小形(/invite + per-path CSP)の実装裁定(BA〜BF)
+# セッション 41: W1 — 静的縮小形(/invite + per-path CSP)の実装裁定(BA〜BH)
 
 日付: 2026-08-29。目的: PR-W1(web-dashboard-design.md §7)の実装上の裁定の記録。
 規範 = AUTH_SPEC §15-3(招待リンク着地点 = 完全静的・フラグメント非解釈 —
@@ -302,13 +302,82 @@ apps/web/scripts/write-headers.ts(spike-a の CSP 生成)。
 
 **選択(改訂): BF-d + 200 リライトの盾(66 本)**。
 
-## 7. 実施記録
+## 7. 裁定 BG: SPA バンドルのフラグメント非読取検査(最後の規約の検査化 — 第 2 次上位互換探索)
+
+所有者依頼の第 2 次探索(BE・BF 実装後)。標的は最後に残った「規約どまり」の
+保証 — 語中タイポ(`/invte` 等)が SPA シェルに落ちたときの無害性の根拠
+「SPA に `location.hash` を読むコードは無い」が目視確認に依存している点。
+
+### 第 1 周
+
+- **案 BG-a: 現状維持(目視 + 設計上の事実)** — funstack-router は Navigation
+  API ベースでハッシュを使わないが、将来のドリフト(機能追加でフラグメント
+  読取が紛れ込む)を止める機構がない
+- **案 BG-b: e2e で `location` を Proxy 化しハッシュ読取を実行時検出** — 棄却:
+  検査できるのは e2e が踏んだコードパスのみ(部分被覆)。静的全量検査に劣る
+- **案 BG-c: ビルド出力の全 JS + index.html への字面検査** — 実測: 現行バンドル
+  (5 JS + インラインブートストラップ)に `.hash` メンバアクセス・分割代入
+  `{hash}`・`["hash"]`・bare 識別子 `hash` は **0 件**(`location` 自体は 27 箇所
+  — pathname / href 系のみ)。語 `hash` の全面禁止が誤検知ゼロで張れる
+
+### 第 2 周(上位互換探索 — 検査強度の上限を実測で探る)
+
+- **`location.href.split("#")` 型の回避も塞げるか**: bare `#` 文字列リテラルの
+  全面禁止を試行 → **誤検知で棄却**(正当用途が実在: Astryx 色パーサの
+  `startsWith(\`#\`)`・Intl 数値パターンの `#` 判定)。抽出イディオム限定
+  (`split|indexOf|lastIndexOf` + `#` リテラル)に絞る版も試行 → **これも誤検知で
+  棄却**(RSC ランタイムがモジュール参照 `"path#export"` を `lastIndexOf(\`#\`)` +
+  `slice` で分割している — location と無関係の正当用途)。`#` 系の字面検査は
+  正当用途と原理的に区別できない
+- 確定形: **語 `hash`(大小無視)の全面禁止のみ**。フラグメントを読む意図の
+  ある自然なコードは `location.hash` を書く — ドリフトの全字面形を被覆する。
+  `href` 手動パース・難読化(`charCodeAt(35)` 等)は検知対象外と明記する
+  (対象はドリフトであり、悪意あるコード挿入はレビュー・供給網の領分)
+
+### 第 3 周(再点検)
+
+- 持続可能性: funstack-router はハッシュルーティングを持たず、アンカーリンク
+  (`#section`)は JS を要さないため、正当な `hash` 利用が入る見込みは低い。
+  入る場合は検査が落ちて明示的な裁定を強制する — 既存の「インライン script は
+  厳密に 1 本」検査と同じ「上流変化で意図的に割れる」型
+- 検査対象は `dist/public/index.html` + `dist/public/assets/*.js`(配信される
+  実行可能コードの全量。RSC ペイロード .txt はデータであり対象外)
+- 効果の整理: これで「招待トークン(フラグメント)を読める字面が配信物の
+  どこにも存在しない」が全パス(near-miss 正規化から漏れる語中タイポ含む)に
+  ついて検査可能になり、§15-3 の「Web 受諾画面への漂流を構造的に断つ」が
+  SPA バンドル側にも及ぶ
+
+**選択: 案 BG-c(語 `hash` 全面禁止・`#` 系は棄却)**。
+
+## 8. 裁定 BH: 既定依存の明示化と複製忠実性(第 2 次上位互換探索・小粒 2 件)
+
+### html_handling の明示ピン
+
+- `/invite` → `invite.html` の解決は wrangler `assets.html_handling` の**既定値**
+  (auto-trailing-slash)に暗黙依存していた(既定が変わると `/invite` が SPA
+  フォールバックに落ちる — e2e は検知するが構成としては既定依存)。スキーマ
+  確認の上、`wrangler.jsonc` に明示ピンを追加
+- **上位互換候補の実測棄却**: 盾ルールを `/invite /invite.html 200`(実ファイル
+  への直接リライト)にすれば html_handling 依存自体が消えるという仮説を試行 →
+  **リライト先が html_handling に再処理され 307 → `/invite` の無限ループ**に
+  なることを実測で確認し棄却。盾は `/invite /invite 200` のまま + 明示ピンが正解
+
+### 複製忠実性のバイト等価検査
+
+- 「vite publicDir は無変換コピー」(裁定 BA 第 3 周の前提)を
+  `public/invite.{html,css}` ↔ `dist/public/invite.{html,css}` のバイト等価と
+  してビルド検査に固定。将来のビルドプラグインが HTML/CSS を変換し始めた
+  場合に最速で検知する(「配信物 = レビューした字面」の直接性の保証)
+
+**選択: 明示ピン + バイト等価検査(リライト直付け案は実測棄却)**。
+
+## 9. 実施記録
 
 - `apps/web/public/invite.html` + `invite.css` — SPA 外の独立静的アセット
   (BA-b・BB-b)。文言は英語(ADR-0017)・ブランド表記は小文字 maruhi。
   `noindex`(招待着地ページを索引させない)。meta CSP 内蔵(BE-c)
 - `apps/web/scripts/write-headers.ts` — /invite の検査(BD-a + BE の meta 検査)+
-  per-path CSP(BC-b)+ `_redirects` 生成・読み戻し検査(BF-d)。既存 `/*` の
+  per-path CSP(BC-b)+ `_redirects` 生成・読み戻し検査(BF-d)+ バンドルの語 `hash` 検査・複製忠実性検査(BG・BH)。既存 `/*` の
   CSP・ヘッダーは文字列不変
 - `apps/web/test/e2e.test.ts` — /invite の 3 テスト追加(BD-b): per-path CSP の
   実効・near-miss 正規化(BF の 7 代表パス)・実描画 script ゼロ + スタイル

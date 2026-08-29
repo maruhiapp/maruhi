@@ -13,7 +13,7 @@
 // で構成として固定する。違反はビルド失敗(throw)にする — 検査は品質ゲート
 // (CI の web ビルドステップ)の経路に載る。裁定の経緯は docs/notes/session-41.md。
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const publicDir = join(import.meta.dirname, "..", "dist", "public");
@@ -88,8 +88,48 @@ for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
     throw new Error(`invite.html が外部リソース/URL を参照している: ${attr}="${url}"`);
   }
 }
-// スタイルシートの実体もビルド出力に存在すること(コピー漏れの検出)
-readFileSync(join(publicDir, "invite.css"));
+// 複製忠実性(裁定 BH): vite publicDir のコピーが無変換であること(= レビューした
+// ソースの字面がそのまま配信バイトであること)をバイト等価で固定する。将来の
+// ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する
+const sourceDir = join(import.meta.dirname, "..", "public");
+for (const asset of ["invite.html", "invite.css"]) {
+  if (
+    readFileSync(join(sourceDir, asset), "utf8") !== readFileSync(join(publicDir, asset), "utf8")
+  ) {
+    throw new Error(
+      `${asset} がソースとビルド出力で一致しない(publicDir の無変換コピーの前提が破れた)`,
+    );
+  }
+}
+
+// ---- SPA バンドルのフラグメント非読取検査(裁定 BG) ----
+// near-miss 正規化(下の _redirects)から漏れる語中タイポ(/invte 等)は SPA シェルに
+// 落ちる。その無害性の根拠「SPA はフラグメントを読まない」を、規約でなく配信物への
+// 機械検査にする: 配信される全 JS + index.html(インラインブートストラップ含む)に
+// **識別子・プロパティ・文字列としての語 `hash` が一切現れない**ことを要求する
+// (location.hash / {hash} 分割代入 / ["hash"] の全字面形を被覆。現行バンドルで 0 件)。
+// これは字面のトリップワイヤであり、対象はドリフト(将来の機能追加でフラグメント
+// 読取が紛れ込むこと)。`location.href` の手動 `#` パースや難読化(charCodeAt(35) 等)
+// は検知対象外 — `#` 系の字面検査は正当用途(色パーサの startsWith(`#`)・Intl 数値
+// パターン・RSC ランタイムのモジュール参照 "path#export" の分割)と原理的に区別
+// できず誤検知するため棄却した(実測は session-41 裁定 BG)。正当な `hash` 利用が
+// 将来必要になったら、この検査が落ちて明示的な裁定を強制する(「インライン script は
+// 厳密に 1 本」検査と同じ、上流変化で意図的に割れる型)
+const bundleFiles = [
+  join(publicDir, "index.html"),
+  ...readdirSync(join(publicDir, "assets"))
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => join(publicDir, "assets", name)),
+];
+for (const file of bundleFiles) {
+  const content = readFileSync(file, "utf8");
+  if (/\bhash\b/i.test(content)) {
+    throw new Error(
+      `${file} が語 "hash" を含む。SPA バンドルはフラグメントを読まない(AUTH_SPEC §15-3 — ` +
+        "正当な利用を足す場合は docs/notes/session-41.md 裁定 BG を改訂すること)",
+    );
+  }
+}
 
 // /invite の per-path CSP: script-src 'none' で「フラグメントを解釈しない」を構成で強制。
 // ページが使うのは自己配信スタイルのみ。それ以外は全面 'none'
