@@ -20,6 +20,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
+import { apiPaths } from "./endpoints.ts";
 import { markResumeToDashboard } from "./resume.ts";
 import { FailureNotice, LoadingRow, navigateTo, RoleToken, ServerReportedNote } from "./shared.tsx";
 import type { Me, ProjectList } from "./types.ts";
@@ -135,7 +136,8 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
 ];
 
 function projectsPath(after: string | undefined): string {
-  return after === undefined ? "/projects" : `/projects?after=${encodeURIComponent(after)}`;
+  const base = apiPaths.projects();
+  return after === undefined ? base : `${base}?after=${encodeURIComponent(after)}`;
 }
 
 function appendProjects(current: ProjectsState | undefined, page: ProjectList): ProjectsState {
@@ -325,7 +327,7 @@ export function DashboardScreen(): ReactNode {
 
   const loadMe = useCallback(async () => {
     setAuth({ status: "loading" });
-    const result = await apiGet<Me>("/auth/me");
+    const result = await apiGet<Me>(apiPaths.me());
     if (result.kind === "ok") {
       setAuth({ status: "ok", me: result.value });
     } else if (result.kind === "unauthorized") {
@@ -340,7 +342,7 @@ export function DashboardScreen(): ReactNode {
   }, [loadMe]);
 
   const signOut = useCallback(async () => {
-    const result = await apiPost("/auth/logout");
+    const result = await apiPost(apiPaths.logout());
     if (result.kind === "ok" || result.kind === "unauthorized") {
       setAuth({ status: "signed-out", signedOutNow: true });
     } else {

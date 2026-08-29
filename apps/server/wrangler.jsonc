@@ -27,7 +27,9 @@
     // session-43 §9 の欠陥修正)
     "run_worker_first": ["/auth/*", "/projects", "/projects/*", "/invites", "/invites/*"],
     "not_found_handling": "single-page-application",
-    // 既定値の明示ピン(apps/web/wrangler.jsonc と同じ理由 — session-41 裁定 BH)
+    // 既定値の明示ピン(session-41 裁定 BH): /invite → invite.html の拡張子なし
+    // 正規 URL(AUTH_SPEC §15-3)がこの値に依存する。既定変更への暗黙依存を
+    // 構成にする
     "html_handling": "auto-trailing-slash",
   },
   "durable_objects": {

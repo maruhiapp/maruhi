@@ -26,6 +26,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
+import { apiPaths } from "./endpoints.ts";
 import { projectRoute } from "./routes.ts";
 import {
   FailureNotice,
@@ -181,7 +182,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
 }
 
 function ChainSection({ projectId }: { projectId: string }): ReactNode {
-  const { state, reload } = useApiResource<ChainSnapshot>(`/projects/${projectId}/chain`);
+  const { state, reload } = useApiResource<ChainSnapshot>(apiPaths.chain(projectId));
   if (state.kind === "loading") return <LoadingRow label="Loading chain" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return <ChainView snapshot={state.value} />;
@@ -257,7 +258,7 @@ function VariablesSection({
   environmentId: string;
 }): ReactNode {
   const { state, reload } = useApiResource<EnvironmentMetadataPull>(
-    `/projects/${projectId}/environments/${environmentId}/pull/metadata`,
+    apiPaths.pullMetadata(projectId, environmentId),
   );
   if (state.kind === "loading") return <LoadingRow label="Loading variable names" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
@@ -353,7 +354,7 @@ function EnvironmentsBody({
 }
 
 function EnvironmentsSection({ projectId }: { projectId: string }): ReactNode {
-  const { state, reload } = useApiResource<EnvironmentList>(`/projects/${projectId}/environments`);
+  const { state, reload } = useApiResource<EnvironmentList>(apiPaths.environments(projectId));
   if (state.kind === "loading") return <LoadingRow label="Loading environments" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return <EnvironmentsBody projectId={projectId} environments={state.value.environments} />;
@@ -381,12 +382,12 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
   const [axis, setAxis] = useState("project");
   const fetchProjectEvents = useMemo(
     () => (before: string | undefined) =>
-      apiGet<AuditEventsPage>(auditPath(`/projects/${projectId}/audit/events`, before)),
+      apiGet<AuditEventsPage>(auditPath(apiPaths.auditEvents(projectId), before)),
     [projectId],
   );
   const fetchInviteEvents = useMemo(
     () => (before: string | undefined) =>
-      apiGet<AuditEventsPage>(auditPath(`/projects/${projectId}/audit/invites`, before)),
+      apiGet<AuditEventsPage>(auditPath(apiPaths.auditInvites(projectId), before)),
     [projectId],
   );
   return (
@@ -514,9 +515,7 @@ function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): R
 }
 
 function RotationTab({ projectId }: { projectId: string }): ReactNode {
-  const { state, reload } = useApiResource<RotationFlagList>(
-    `/projects/${projectId}/rotation/flags`,
-  );
+  const { state, reload } = useApiResource<RotationFlagList>(apiPaths.rotationFlags(projectId));
   if (state.kind === "loading") return <LoadingRow label="Loading rotation flags" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (

@@ -10,7 +10,7 @@
     "doctor": "react-doctor . --scope changed --no-telemetry",
     "doctor:astryx": "astryx doctor",
     "e2e": "vitest run",
-    "preview": "wrangler dev --port 8788",
+    "preview": "wrangler dev --config ../server/wrangler.jsonc --port 8788",
     "theme:build": "astryx theme build theme/maruhi.ts -o theme/maruhi.css",
     "typecheck": "tsc --noEmit"
   },

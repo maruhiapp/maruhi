@@ -496,3 +496,60 @@ S5(チェーン取得)・S6(監査)の応答フィールド(`headHashHex`・
 - **フィクスチャの自動生成(Schema の Arbitrary 由来)** — 棄却: 画面の
   アサーションは具体値(名前・ID)に結びついており、生成値では検証が
   非決定的になる。実検証(BV)が同じ漂流検出をより単純に与える
+
+## 11. 第 3 次上位互換探索(オーナー依頼 — 2026-08-29)
+
+第 2 次(§10)後にまだ**手検証・規約どまり**で残っていた点を標的にした一巡。
+2 件を採用、4 件を検討の上で棄却。
+
+### 裁定 BW: ダッシュボード消費面の単一目録 + クライアント側スイープ(採用)
+
+- **標的**: 「画面が呼ぶ全エンドポイントが `SESSION_ALLOWED_ENDPOINTS` の
+  列挙内」という W2 の中核不変条件が**手検証**だった(pullfrog の初回レビューも
+  人手で突合していた)。パス文字列も各画面に手書きで散在し、api-schema の
+  リネーム・タイポは実行時 404 / 403 まで沈黙する
+- **採用形**: `src/dashboard/endpoints.ts` — 全パスビルダー + 各ビルダーを
+  api-schema の (group, endpoint) 識別子へ束縛する目録
+  (`DASHBOARD_ENDPOINTS`)。画面はビルダー経由でのみ fetch する。ユニット
+  テスト(test/unit/endpoints.test.ts)が目録を登録済み HttpApi と突合し、
+  (1) **パス整合**(ビルダー生成パス = テンプレートのサンプル置換 — 未知
+  パラメータは置換されず fail-loud)、(2) **セッション許可**
+  (`isSessionAllowedEndpoint` — 新画面が列挙外 API を呼ぶ形は実行時 403 で
+  なくテストで割れる)、(3) 目録の重複なし、を固定する
+- **効果**: serving-topology スイープ(サーバー側 — run_worker_first 被覆)と
+  対になり、**api-schema を中心に消費の両方向が機械検査**になる。あわせて
+  serving-topology 側に負方向(`/invite`・`/dashboard` 系が worker-first に
+  飲まれない)の検査を拡張
+- 逆方向(「セッション許可の全読み取り面をダッシュボードが消費しているか」)は
+  不変条件ではないため課さない(recoveryStatus・invites.list/revoke は許可
+  済みだが W2 の画面外 — W3b の領分)
+
+### 裁定 BX: wrangler 設定の単一真実源化 — apps/web/wrangler.jsonc の削除(採用)
+
+- **標的**: §10 で「preview 用に存置」とした apps/web/wrangler.jsonc。
+  BT(e2e の combined 移行)後、消費者は preview スクリプト 1 つになり、
+  html_handling ピン等の**構成の二重管理**(ドリフト面)だけが残っていた
+- **発見**: `wrangler dev --config ../server/wrangler.jsonc` は apps/web の
+  cwd からでも成立する(パス解決は設定ファイル基準 — 実測: root 200 /
+  /projects 401 / /invite 200)。preview をこれに差し替えると
+  apps/web/wrangler.jsonc の消費者がゼロになる → 削除
+- **効果**: 配信構成が apps/server/wrangler.jsonc の 1 本に集約され、
+  デプロイ・e2e・preview の全経路が同一構成を読む。§10 の存置判断は
+  前提(preview が旧構成を使う)が消えたため本裁定が上書きする
+
+### 検討の上で棄却(第 3 次)
+
+- **コンテンツハッシュ付きアセットへの `Cache-Control: immutable` 付与** —
+  棄却: 性能改善であって残余(セキュリティ・正しさ)の解消ではなく、
+  approve 後の PR に検査対象(write-headers の新ブロック)を増やす対価が
+  釣り合わない。需要が出た時点の独立 PR へ
+- **SRI(subresource integrity)** — 棄却: 全アセット自己配信 + 厳格 CSP の
+  下で SRI が足す保証はない(配信者 = 検証者の構図は ADR-0018 Context の
+  とおり SRI では壊せない)
+- **`/*` CSP の form-action 'self' → 'none' 強化** — 棄却: ダッシュボードに
+  フォームは無いが、'self' が既に同一オリジンへ拘束しており閉じる脅威が
+  ない。W1 で固定した `/*` CSP 文字列の不変(非退行検査の前提)を崩す
+  対価だけが残る
+- **復帰マーカー鍵の export 共有(e2e との重複リテラル解消)** — 棄却:
+  鍵名がドリフトすると e2e の waitFor が確実に落ちる(沈黙しない)ため、
+  検査上の利得がない

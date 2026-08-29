@@ -80,12 +80,23 @@ describe("serving topology (W2 裁定 BM): run_worker_first covers the whole API
     ).toEqual([]);
   });
 
-  it("keeps the /invite static page outside the worker-first rules (regression guard)", () => {
-    // /invite(静的案内ページ — AUTH_SPEC §15-3)がアセット層のまま配信される
-    // こと: run_worker_first が /invite を飲む形(例: /inv* のような過剰前置)を
-    // 将来の編集から守る
+  it("keeps the static / SPA route space outside the worker-first rules (regression guard)", () => {
+    // /invite(静的案内ページ — AUTH_SPEC §15-3)と SPA のルート空間(/dashboard
+    // 前置 — 裁定 BO)がアセット層のまま配信されること: run_worker_first が
+    // 過剰前置(例: /inv*・/*)でこれらを飲む形を将来の編集から守る
     const rules = env.TEST_RUN_WORKER_FIRST;
     expect(Array.isArray(rules)).toBe(true);
-    expect((rules as string[]).some((rule) => ruleCovers(rule, "/invite"))).toBe(false);
+    const ruleList = rules as string[];
+    for (const path of [
+      "/invite",
+      "/dashboard",
+      `/dashboard/projects/${"ab".repeat(32)}`,
+      "/dashboard/account",
+    ]) {
+      expect(
+        ruleList.some((rule) => ruleCovers(rule, path)),
+        `${path} must stay on the asset layer`,
+      ).toBe(false);
+    }
   });
 });

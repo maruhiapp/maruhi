@@ -7,8 +7,8 @@
 //   3. SPA ナビゲーション(Navigation API)と、非対応ブラウザ相当での MPA 劣化
 //   4. Astryx プリビルド CSS + maruhi テーマ + xstyle(StyleX コンパイラあり)の適用
 //   5. 配信トポロジ(run_worker_first の API 到達・SPA フォールバック・
-//      per-path ヘッダー)を**デプロイされる実構成**に対して固定する(裁定 BT —
-//      旧来の apps/web/wrangler.jsonc は preview 用ハーネスで、デプロイされない)
+//      per-path ヘッダー)を**デプロイされる実構成**に対して固定する(裁定 BT。
+//      preview も同じ構成を使い、wrangler 設定は apps/server の 1 本のみ — 裁定 BX)
 // 事前に `bun run build` が必要。API はテスト内で page.route によりモックする
 // (裁定 BS)ため、ローカルサーバーの D1 / OAuth 設定は不要(素の 401 / 503 応答
 // 自体が「Worker に届いた」ことの検証材料になる)。

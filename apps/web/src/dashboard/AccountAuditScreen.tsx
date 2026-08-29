@@ -11,6 +11,7 @@ import { type ReactNode, useCallback } from "react";
 
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
+import { apiPaths } from "./endpoints.ts";
 import { ServerReportedNote } from "./shared.tsx";
 import type { AuditEventsPage } from "./types.ts";
 
@@ -18,7 +19,7 @@ export function AccountAuditScreen(): ReactNode {
   const fetchPage = useCallback(
     (before: string | undefined) =>
       apiGet<AuditEventsPage>(
-        `/auth/audit/events${before === undefined ? "" : `?before=${encodeURIComponent(before)}`}`,
+        `${apiPaths.auditSelf()}${before === undefined ? "" : `?before=${encodeURIComponent(before)}`}`,
       ),
     [],
   );
