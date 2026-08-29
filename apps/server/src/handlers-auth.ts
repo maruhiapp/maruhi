@@ -276,7 +276,8 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // トークン主体には提示トークンのスコープを返す(AUTH_SPEC §16-2 —
         // クライアントが実効権限 min(スコープ, チェーン role) を事前判定する
         // 材料。自分が提示した資格情報の属性であり新しい情報を開示しない)。
-        // セッション主体は欠落 = 本人のフルパワー
+        // セッション主体は欠落 = スコープなし(呼べる面は §5 の能力制限の
+        // 許可列挙に限られる — W2b)
         return {
           userId: principal.userId,
           orgs,

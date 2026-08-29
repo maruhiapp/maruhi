@@ -493,7 +493,7 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(events[events.length - 1]?.["event"]).toBe("env.renamed");
   });
 
-  it("attributes actors: PAT ops carry the token id, session ops carry auth_method (§2)", async () => {
+  it("attributes actors: PAT ops carry the token id; session mutations are rejected and leave no row (§2 / AUTH_SPEC §5)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const events = await readAuditEvents(projectId);
     const envCreated = events.find((event) => event["event"] === "env.created");
@@ -504,7 +504,10 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     // author の鍵 FP を写す(AUDIT_SPEC §3.3 — 2026-08-04 PR-3)
     expect(envCreated["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
-    // セッション経由の操作は auth_method を payload に持つ(§2 / §5.1)
+    // セッション経由のデータ mutation は §5 の能力制限(W2b)で 403 になり、
+    // 監査行を残さない(セッション actor の DO 側監査は成立面ごと消えた —
+    // D1 側の auth.* / invite.* イベントのセッション actor 帰属は audit-d1 /
+    // invites のテストが担う)
     const session = await loginSession(9002);
     const dek = makeDek();
     const deks = await wrapDekForAll({
@@ -570,18 +573,14 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
         checkpoint: sessionCheckpoint,
       }),
     });
-    expect(created.status).toBe(200);
+    expect(created.status).toBe(403);
+    expect(((await created.json()) as { reason: string }).reason).toBe("session-not-allowed");
     const after = await readAuditEvents(projectId);
-    const bySession = after.find(
-      (event) => event["event"] === "env.created" && event["environment_id"] === "env-audit-0002",
-    );
-    if (bySession === undefined) throw new Error("missing session event");
-    expect(bySession["actor_user_id"]).toBe(MEMBER);
-    expect(bySession["actor_api_token_id"]).toBeNull();
-    expect(JSON.parse(String(bySession["payload"]))).toEqual({
-      name: "Session",
-      authMethod: "github_oauth",
-    });
+    expect(
+      after.find(
+        (event) => event["event"] === "env.created" && event["environment_id"] === "env-audit-0002",
+      ),
+    ).toBeUndefined();
   });
 
   it("records dek.registered / dek.deleted per recipient with actor, epoch and target (§3.3)", async () => {

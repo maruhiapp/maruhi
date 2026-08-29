@@ -72,10 +72,15 @@ export async function seedOrgMember(
   ]);
 }
 
-/** device flow 交換(実経路)で PAT を得る。GitHub 側はフェイク(gho_test<id>)。 */
+/**
+ * device flow 交換(実経路)で PAT を得る。GitHub 側はフェイク(gho_test<id>)。
+ * `tokenName` 省略時は既定名 — 同一ユーザーへの再発行は同名ローテーションで
+ * 既存トークンを失効させる(AUTH_SPEC §6)ため、併存させたいテストは別名を渡す。
+ */
 export async function deviceToken(
   githubId: number,
   scopes?: readonly TokenScope[],
+  tokenName?: string,
 ): Promise<string> {
   const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
     method: "POST",
@@ -83,6 +88,7 @@ export async function deviceToken(
     body: JSON.stringify({
       githubAccessToken: `gho_test${githubId}`,
       ...(scopes === undefined ? {} : { scopes }),
+      ...(tokenName === undefined ? {} : { tokenName }),
     }),
   });
   if (response.status !== 200) {

@@ -2,12 +2,16 @@
 //
 // - 資格情報の優先順: `Authorization: Bearer maruhi_pat_…` → セッションクッキー。
 //   どちらも解決できなければ 401(認証必須エンドポイントにのみ適用される)
+// - セッション能力制限(§5 — W2b): セッション主体は肯定列挙
+//   (@maruhi/api-schema の SESSION_ALLOWED_ENDPOINTS)の外の全エンドポイントで
+//   403 `session-not-allowed`。ミドルウェアが受け取る { group, endpoint } の
+//   識別子で判定する単一実装点であり、ハンドラごとの手動検査を持たない
 // - CSRF(§5): クッキー認証の書き込み系(GET / HEAD / OPTIONS 以外)は
 //   `x-maruhi-csrf: 1` を要求する。Authorization ヘッダーはクロスサイトの
 //   フォーム送信では付与できないため対象外
 // - 解決済み主体は RequestAuth としてハンドラへ提供する
 
-import { ForbiddenError, UnauthorizedError } from "@maruhi/api-schema";
+import { ForbiddenError, isSessionAllowedEndpoint, UnauthorizedError } from "@maruhi/api-schema";
 import type { Principal } from "@maruhi/core";
 import { anonymousPrincipal, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect, Option } from "effect";
@@ -116,12 +120,23 @@ export const authMiddlewareImpl: HttpApiMiddleware.HttpApiMiddleware<
   RequestAuth,
   readonly [typeof UnauthorizedError, typeof ForbiddenError],
   SessionService | TokenService
-> = (httpEffect) =>
+> = (httpEffect, options) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const principal = yield* resolvePrincipal(request);
     if (principal.kind === "anonymous") {
       return yield* Effect.fail(new UnauthorizedError());
+    }
+    // セッション能力制限(AUTH_SPEC §5 — 肯定列挙外は fail-closed で 403)。
+    // 判定材料は (主体種別, グループ・エンドポイント識別子) のみで、プロジェクトの
+    // 存在・状態を一切参照しない一様応答 — §11-2 の存在秘匿と両立する(§12-3 の
+    // 認可先行例外と同じ論法)。CSRF 検査より先に置く: 許可外エンドポイントの
+    // 拒否理由が、攻撃者が自分で付けられるヘッダーの有無で揺れないようにする
+    if (
+      principal.kind === "session" &&
+      !isSessionAllowedEndpoint(options.group.identifier, options.endpoint.identifier)
+    ) {
+      return yield* Effect.fail(new ForbiddenError({ reason: "session-not-allowed" }));
     }
     if (csrfViolated(request, principal)) {
       return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));

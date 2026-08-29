@@ -11,9 +11,18 @@ export class UnauthorizedError extends Schema.TaggedError<UnauthorizedError>()(
   { httpApiStatus: 401 },
 ) {}
 
-/** Reason codes for a 403 (AUTH_SPEC §5 CSRF / §9-2 実効権限 / §11-1 / §11-3 / §12-3). */
+/**
+ * Reason codes for a 403 (AUTH_SPEC §5 CSRF / セッション能力制限 / §9-2 実効権限 /
+ * §11-1 / §11-3 / §12-3).
+ *
+ * `session-not-allowed` = セッション主体の能力制限(§5 の肯定列挙外 — W2b)。
+ * エンドポイント同一性と主体種別のみから決まる一様応答であり、プロジェクトの
+ * 存在・状態情報を運ばない(§11-2 の存在秘匿と両立する — §12-3 の認可先行例外と
+ * 同じ「リクエスト内容のみから計算できる」論法)。
+ */
 export const ForbiddenReasonSchema = Schema.Literals([
   "csrf-header-required",
+  "session-not-allowed",
   "insufficient-permission",
   "actor-mismatch",
   "org-membership-required",

@@ -52,27 +52,32 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
     expect(typeof body["updatedAtMs"]).toBe("number");
   });
 
-  it("registers a blob for a session principal (CSRF ヘッダー込み)", async () => {
+  it("rejects a session principal for both PUT and GET (§5 能力制限 — §13-2 の表 = トークンのみ)", async () => {
     const session = await loginSession(502);
+    // W2b で反転: 登録・取得ともセッションからの正当な導線がない(2026-08-28
+    // W0 裁定)。CSRF ヘッダー込みでも 403 session-not-allowed
     const put = await putWrap(sessionHeaders(session));
-    expect(put.status).toBe(204);
-    // 取得もセッション主体は CSRF ヘッダー必須(§13-2 — 状態を持つ GET)
+    expect(put.status).toBe(403);
+    expect(((await put.json()) as Record<string, unknown>)["reason"]).toBe("session-not-allowed");
     const get = await SELF.fetch(`${BASE}/auth/recovery`, {
       headers: sessionHeaders(session),
     });
-    expect(get.status).toBe(200);
+    expect(get.status).toBe(403);
+    expect(((await get.json()) as Record<string, unknown>)["reason"]).toBe("session-not-allowed");
   });
 
-  it("session GET without the CSRF header is rejected and does not consume the window", async () => {
+  it("session GET is rejected before the CSRF check and does not consume the window", async () => {
+    const token = await deviceToken(507);
+    expect((await putWrap(bearer(token))).status).toBe(204);
     const session = await loginSession(507);
-    expect((await putWrap(sessionHeaders(session))).status).toBe(204);
-    // Lax クッキーだけが同送されるクロスサイト遷移の形(カスタムヘッダーなし)
+    // Lax クッキーだけが同送されるクロスサイト遷移の形(カスタムヘッダーなし)。
+    // 能力判定(§5)は CSRF 検査に先行し、拒否理由はヘッダーの有無で揺れない
     const get = await SELF.fetch(`${BASE}/auth/recovery`, {
       headers: { cookie: sessionHeaders(session)["cookie"] ?? "" },
     });
     expect(get.status).toBe(403);
     const body = (await get.json()) as Record<string, unknown>;
-    expect(body["reason"]).toBe("csrf-header-required");
+    expect(body["reason"]).toBe("session-not-allowed");
     const row = await env.DB.prepare("SELECT fetch_count FROM recovery_wraps").first<{
       fetch_count: number;
     }>();
@@ -217,10 +222,11 @@ describe("GET /auth/recovery/status(§13-2)", () => {
     expect(before.status).toBe(200);
     expect(await before.json()).toEqual({ registered: false, updatedAtMs: null });
 
-    // 登録は同一ユーザーのセッション経由で行う(同名 device flow トークンの
-    // 再発行はローテーションで既存トークンを失効させてしまうため)
-    const session = await loginSession(521);
-    expect((await putWrap(sessionHeaders(session))).status).toBe(204);
+    // 登録は同一ユーザーの別名トークンで行う(セッションは §5 の能力制限で
+    // 登録不可 — W2b。同名 device flow トークンの再発行はローテーションで
+    // 既存トークンを失効させてしまうため、別名で併存させる)
+    const adminToken = await deviceToken(521, undefined, "recovery-secondary");
+    expect((await putWrap(bearer(adminToken))).status).toBe(204);
 
     const after = await SELF.fetch(`${BASE}/auth/recovery/status`, { headers: bearer(token) });
     expect(after.status).toBe(200);

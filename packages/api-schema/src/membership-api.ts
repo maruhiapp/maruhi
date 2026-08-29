@@ -32,6 +32,7 @@ import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex 
 import { invitesGroup } from "./invites-api.ts";
 import { leaseGroup } from "./lease-api.ts";
 import { rotationGroup } from "./rotation-api.ts";
+import { assertSessionCapabilityClassified } from "./session-capability.ts";
 import { assertSecurityCriticalPayloadsStrict, strictPayload } from "./strict.ts";
 
 /** Chain head after a successful initialization or append. */
@@ -190,3 +191,10 @@ export const maruhiApi = HttpApi.make("maruhi")
 // import 時に検査する。strictPayload 適用後の .check() 再合成(wrapper 内 assert は
 // ラップ時 1 回きりで捕捉できない)をモジュールロードの fail-loud に格上げする。
 assertSecurityCriticalPayloadsStrict(maruhiApi);
+
+// ロード時スイープ(AUTH_SPEC §5 — W2b): セッション能力制限の宣言
+// (session-capability.ts)が登録済みエンドポイント集合と整合していること —
+// 許可列挙の実在 + AuthMiddleware 保持、未認証面の明示分類 — を import 時に
+// 検査する。列挙外 = 拒否(fail-closed)の実効性はサーバー側マトリクス
+// テストが保証する。
+assertSessionCapabilityClassified(maruhiApi);
