@@ -44,6 +44,16 @@ apps/web/scripts/write-headers.ts(spike-a の CSP 生成)。
   実在アセットはフォールバックより優先されるため、`/invite` が SPA に飲まれる
   経路はない。SPA 側ルート定義にも `/invite` を追加しない(クライアント遷移の
   導線を作らない)
+- **受容した残余(pullfrog レビュー指摘の記録)**: 上の保証は正規 URL とその
+  正規化対象(`/invite.html`・`/invite/`・パーセントエンコード)に限られる。
+  **near-miss パス(`/Invite`・`/INVITE`・`/invite/x` 等)はアセットキーに
+  一致せず SPA フォールバックに落ち**、ブートストラップ script + `/*` CSP の
+  シェルが 200 で返る(実測)。SPA に `/invite` ルートも `location.hash` を
+  読むコードも存在しないため実害経路はないが、そこは「構成」でなく「規約」で
+  成立している。リンクは機械生成(CLI `invite create`)+ コピペで near-miss の
+  発生確率は低く、潰すには `not_found_handling` 自体の設計判断が要る(W1 の
+  縮小形の範囲外)ため、**W1 では受容し、W2(SPA ルートが実在する段)の
+  裁定へ申し送る**。最終判断は本 PR レビューの所有者裁定に委ねる
 - vite `publicDir` のコピーは無変換(ビルドで script が注入されない)ことを
   実測で確認。ただし検査(BD)は将来のビルド変化に備えソースでなく
   **ビルド出力**に対して行う
@@ -111,6 +121,14 @@ apps/web/scripts/write-headers.ts(spike-a の CSP 生成)。
 - デタッチ構文の実挙動を wrangler dev で実測: `/invite` の応答 CSP は置換後の
   1 本のみ。e2e で「`'self' 'sha256-` を含まない」を固定し、デタッチが将来の
   wrangler で無効化されたら検知される(裁定 BD)
+- **申し送り(pullfrog レビュー指摘の記録)**: Cloudflare ドキュメントは
+  Workers Static Assets での `_headers`・`!` デタッチ構文・広いルールからの
+  ヘッダー継承までは明記するが、「同一ブロック内でデタッチ直後に同名ヘッダーを
+  再宣言する」本パターンと wrangler dev / production の挙動一致は記述がない。
+  仮に production で再宣言が落ちても、ページ自体はビルド時検査 + 静的バイトで
+  script ゼロのままであり、失われるのは多層防御の 1 枚(CSP ヘッダー)のみ。
+  **初回デプロイ後に `/invite` の実応答ヘッダーを一度確認すること**(所有者の
+  デプロイ時タスク)
 - 既存パスの退行なし: `/*` ブロックの文字列は不変(e2e の既存アサーションが
   `script-src 'self'` + ハッシュを固定済み)
 

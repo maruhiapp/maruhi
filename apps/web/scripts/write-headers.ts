@@ -63,14 +63,15 @@ if (/\bon[a-z]+\s*=\s*["']/i.test(inviteHtml)) {
 if (/javascript:/i.test(inviteHtml)) {
   throw new Error("invite.html に javascript: URL がある(AUTH_SPEC §15-3)");
 }
-// 外部リソース読み込みなし(全アセット自己配信)。ナビゲーションリンク(<a href>)だけは
-// 自リポジトリの GitHub(CLI 導入への導線)を許可する。CSP(default-src 'none' 基調)が
-// 実行時の強制であり、この検査はビルド時に早く落とすための二重化
+// 外部リソース読み込みなし(全アセット自己配信)。href 属性に限り、自リポジトリの
+// GitHub(CLI 導入への導線のナビゲーションリンク)を許可する。実行時の強制は CSP
+// (default-src 'none' 基調)が担い、この検査はビルド時に早く落とすための二重化
+// (プロトコル相対 `//` はルート相対と区別して弾く — pullfrog レビュー反映)
 const allowedExternalNavPrefix = "https://github.com/maruhiapp/maruhi";
 for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
   const ok =
     url !== undefined &&
-    (url.startsWith("/") ||
+    ((url.startsWith("/") && !url.startsWith("//")) ||
       url.startsWith("#") ||
       (attr === "href" && url.startsWith(allowedExternalNavPrefix)));
   if (!ok) {
