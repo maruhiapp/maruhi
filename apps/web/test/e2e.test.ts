@@ -654,27 +654,50 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("resumes to /dashboard after the sign-in round trip via the one-shot marker (裁定 BU)", async () => {
+  it("resumes to /dashboard after sign-in, driven through the real affordance (裁定 BU)", async () => {
+    // マーカーはテストが注入せず、**実クリック**(Link の onClick)に書かせる —
+    // Link がマーカーを書かなくなる退行・consume ガードの退行がこのテストで
+    // 割れる(pullfrog レビュー反映)。OAuth 実フローだけは e2e 不能(裁定 BS)
+    // なので、/auth/github/start への実ナビゲーションを「認可成功 → callback が
+    // ${origin}/ へ 302」まで畳んで差し替える
     const page = await browser.newPage();
     const violations = collectViolations(page);
-    await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+    let signedIn = false;
+    await page.route("**/auth/me", (route) =>
+      signedIn ? fulfillJson(route, 200, meFixture) : unauthorized(route),
+    );
     await page.route(
       (url) => url.pathname === "/projects",
       (route) => fulfillJson(route, 200, projectsPage2),
     );
-    // Sign in クリック → OAuth 往復 → callback が ${origin}/ へ 302 で戻した状態を
-    // マーカー + "/" 直行で再現する(OAuth 実フローは e2e 不能 — 裁定 BS)
-    await page.addInitScript(() => {
-      try {
-        sessionStorage.setItem("maruhi-resume-dashboard", "1");
-      } catch {
-        // storage 不可環境ではこのテスト自体が成立しない(現行導線に劣化)
-      }
+    await page.route("**/auth/github/start", (route) => {
+      signedIn = true;
+      return route.fulfill({ status: 302, headers: { location: "/" } });
     });
-    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+    await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await page.getByTestId("login-card").waitFor();
+    await page.getByTestId("sign-in-link").click();
+    // "/" 着地 → ResumeToDashboard がマーカーを消費 → /auth/me 確認 → /dashboard
     await page.getByTestId("project-list").waitFor();
     expect(new URL(page.url()).pathname).toBe("/dashboard");
     expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("keeps the marker-free landing free of API calls (BP 第 3 周の境界の固定)", async () => {
+    // BU が BP の棄却案(S1 での常時 /auth/me 照会)に退行していないことを
+    // リクエスト収集で固定する — consume ガードが消えるとここが割れる
+    const page = await browser.newPage();
+    const apiRequests: string[] = [];
+    page.on("request", (request) => {
+      const { pathname } = new URL(request.url());
+      if (pathname.startsWith("/auth") || pathname.startsWith("/projects")) {
+        apiRequests.push(pathname);
+      }
+    });
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+    await page.getByTestId("built-at").waitFor();
+    expect(apiRequests).toEqual([]);
     await page.close();
   });
 
