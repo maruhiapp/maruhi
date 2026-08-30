@@ -23,14 +23,14 @@
 - [x] リカバリーコード(保存確認・印刷 / 保管リマインダ等の紛失対策 UX 込み — ADR-0014)(2026-08-09 セッション 18 で完了。CRYPTO_SPEC §8 のサーバー保存・配布面 = AUTH_SPEC §13 起草(登録・再発行 = 置換 upsert / 取得レート制限 = 1 時間 5 回 / status)、D1 `recovery_wraps` + ハンドラ、CLI = `key generate` への発行組み込み(Base32 13 グループ表示・最終グループ再入力の保存確認・エージェント環境スキップ)+ `key recovery`(再発行)+ `key recover`(復元)+ `key show` / login の保管リマインダ。auth.recovery_* の監査記録は D1 側監査基盤(下記残項目)と同時に実装する申し送り)
 - [x] セルフホスト初回セットアップウィザード(GitHub OAuth App の作成案内 + client_id/secret 登録。AUTH_SPEC §3 参照)(2026-08-10 セッション 19 で完了。形 = `docs/SELF_HOSTING.md` の検証済み runbook(ADR-0014「セルフホストは上級者経路」)+ 公開設定エンドポイント `GET /auth/config`(セッション 11 裁定 B の実装 — login の client_id 自動解決、CLI 設定は server 1 項目で足りる)+ 未設定検出(プレースホルダ → 503 SetupIncomplete で fail-closed)。ランタイムの client_id/secret 登録 API は先着者乗っ取り経路のため不採用 — AUTH_SPEC §3)
 - [x] Deploy to Cloudflare / wrangler 一発デプロイの検証(2026-08-10 セッション 19 で完了。素の wrangler のみで実デプロイ成立: d1 create → migrations apply --remote(drizzle フォルダ形式 = migrations_pattern)→ secret put → deploy → 疎通・cron 確認。起動 35 ms。検証デプロイは残置 = ドッグフーディングの土台(docs/notes/session-19.md §1)。Deploy to Cloudflare ボタンは公開リポジトリ前提のため Phase 2 公開時に検証)
-- [ ] 数週間のドッグフーディング
+- [ ] ~~数週間のドッグフーディング~~ **再定義(2026-08-30 H0 — ADR-0014 改訂 1)**: 完了条件(先行ゲート)から**並行の継続活動**へ。検証デプロイ(2026-08-10 — session-19)を土台に H 系列と同時に開始し、private preview(対人信頼の数名 — 公開前に受け入れてよい範囲)を経て招待制ベータまで続ける。「自分の全プロジェクトから .env を消せた」の実証は private preview の第一利用者(所有者)が担う
 
 ## Phase 2: 公開
 
-**完了条件: SECURITY.md + 脅威モデル文書とセットで public 化**
+**完了条件: SECURITY.md + 脅威モデル文書とセットで public 化**(不変。ただし 2026-08-30 H0 — ADR-0014 改訂 1 — により、公開は独立マイルストーンから **H 系列のゲート(H5 — 招待制ベータの前提条件)**へ再配置された。docs サイトは公開の必須物から外れ GA までに — 下記 H 系列の節)
 
 - 公開前チェックリスト: ライセンス最終確認(FSL-1.1-MIT + MIT 分割)・DCO + CONTRIBUTING.md(いずれも 2026-08-12 完了 — ADR-0003 確定、LICENSE 一式 + README 導入)、テレメトリゼロの明文化、maruhi.dev 取得、商標出願(9 類・42 類)、Deploy to Cloudflare ボタンの実検証(公開リポジトリが前提。モノレポサブディレクトリ指定と D1 自動プロビジョニング — セッション 19 申し送り)、**SELF_HOSTING.md の "Updates" 節へ環境マニフェスト移行の項目を追加**(PR-M1 導入前に作成された環境の `maruhi env rotate --init-manifest` 初期化と「環境の移行 → CI の更新」の順序要件。旧サーバー × 新 CLI ではこの案内自体が通らないため、サーバー更新を先に行うことも明記 — 2026-08-18 PR #81 pullfrog レビュー。公開前の内部移行手順自体は docs/notes/session-28.md §2-2)**(2026-08-19 PR-F1 で完了 — strict 受理〔AUTH_SPEC §12-10〕後の失敗方向の説明込み。順序は後続 PR-F3b〔境界 checkpoint 同梱〕で「サーバー → CI/CLI → 移行 rotate」へ再改訂される前提を本文に注記済み — docs/notes/session-32.md §4-2)**
-- 脅威モデル文書(CRYPTO_SPEC を基に「何から守り、何からは守らないか」を明文化)
+- 脅威モデル文書(CRYPTO_SPEC を基に「何から守り、何からは守らないか」を明文化)**位置づけの昇格(2026-08-30 H0 裁定 DD)**: 公開前チェックリスト項 → ホステッド(招待制ベータ)の前提条件。置き場 = `docs/THREAT_MODEL.md`(英語)、目次案は docs/notes/hosted-design.md §6 — 本文の起草は次セッション
 - チーム共有(add_member / remove_member、エポックローテーション、要ローテーション検出。ゼロ知識運用の UX 設計込み: 未登録ユーザー招待 = CRYPTO_SPEC 未決 #9、鍵フィンガープリント確認、退職時ローテ推奨 — ADR-0014)
 - ヘッドゴシップ検証(環境マニフェスト・定期チェックポイントの設計と同時 — CRYPTO_SPEC **旧**未決 #12)**設計・仕様起草済み(2026-08-18 — Wave 3 D。PR #80、docs/notes/session-27.md、CRYPTO_SPEC 0.6-draft §4.3 / §6.2 `checkpoint` / §6.6、AUTH_SPEC §16、AUDIT_SPEC 旧未決 #2 統合。仕様 PR #80 のマージ = 所有者承認)。実装は承認後の後続 PR(PR-M1 マニフェスト → M2 チェックポイント〔受理時スナップショット保存を含む〕→ M3 値スナップショット配布・検証、M4 ゴシップは並走可 — session-27 §14)。**PR-M1(環境マニフェスト)は実装済み(2026-08-18 — テストベクター → crypto → api-schema → server → CLI の全層 + 床のマニフェスト拡張 + `--init-manifest` 移行経路。実装判断は docs/notes/session-28.md)**
 - GitHub Actions 同期(ここで選択的開示 = grant_server を実装)**完了(2026-08-17 — Wave 2 全完了)**: A1 = サーバー鍵基盤 + grant/revoke CLI(PR #63)、A2 = OIDC 検証 + lease エンドポイント + 監査(PR #65)+ リプレイ先着束縛(PR #67)、A3 = CLI の CI モード(`maruhi ci run` — OIDC リース + CRYPTO_SPEC §9.1 の全検証義務 + メモリ注入。リポジトリアンカーの生成 = `maruhi project anchor`)+ リポジトリ内 setup-maruhi action(`actions/setup-maruhi` — マーケットプレイス公開は public 化と同時。設計判断は docs/notes/session-25.md)
@@ -39,11 +39,26 @@
 - CLI 配布: npm / brew tap / インストールスクリプト、macOS 公証(Apple Developer Program は公開 2〜3 週前に登録)、npm provenance、チェックサム公開
 - 運用側デプロイを Alchemy v2 へ載せる(ADR-0012。現状は素の wrangler 経路のみが実在 — セルフホスト配布物はこのまま維持する)。spike-b / セッション 03 の申し送り: ① state store が常設 worker + secret を張る設計を運用として受け入れるか `state:` を差し替えるか ② worker 名が Alchemy の命名規則(`<stack>-<resource>-<stage>-<hash>`)になるので stage / 命名の明示設定 ③ ソースを Alchemy 非依存に保つため **Async Worker 形式に固定**(Effect ネイティブな Worker/DO 記述を使うと wrangler 経路が壊れる)
 - ユーザーに見える文言を英語へ統一(ADR-0017)。**CLI 分は完了**(ADR-0016 第 3 段階 — コマンド単位の移行 PR + 最終コミットの共有モジュール一括英語化で、`pull` / `run` / `env create` の先行 3 コマンド分も解消済み)。**web / README / インストーラ / 配布物ドキュメント分は完了**(web = `Root.tsx` の `lang="en"`。README / CONTRIBUTING / SELF_HOSTING / install.sh のユーザー可視メッセージ)。docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダのみ)なので、サイト構築時に英語で書く
-- docs サイト(Blume)
+- docs サイト(Blume)**後回し(2026-08-30 オーナー裁定 — H0)**: 公開の必須物から外す(公開時は README + SELF_HOSTING で足りる)。GA までに構築(H 系列の節を参照)
+
+## ホステッドクラウド版(H 系列 — 2026-08-30 H0 で実スケジュール化。ADR-0014 改訂 1)
+
+**完了条件(招待制ベータ開放 = H6): S1〜S3 着地 × H1〜H5 完了 × public 化**。設計・gap 分析・実装分割の正は docs/notes/hosted-design.md、裁定録は docs/notes/session-47.md(CY〜DE)。ADR-0009 の再判断は実施済み(GitHub 直実装のまま続行 — 同 ADR の再判断記録)。
+
+順序(ADR-0014 改訂 1): ドッグフーディング(private preview 込み — 並行・継続)/ S1〜S3 と H1〜H4 の並走 → H5 公開儀式 → public 化 → 招待制ベータ → オープンベータ → GA(課金・docs サイト)。
+
+- [ ] H1: サインアップ制御 — deployment 設定 `signupPolicy`(open / invite / closed。セルフホスト既定 open = 現行挙動)+ サインアップ招待コード(単回・期限つき bearer)+ コードの未認証事前検証エンドポイント + `/auth/config` の advisory 配布 + プロジェクト招待(AUTH_SPEC §15)との合成経路 + **CLI の login 事前 fail-fast(device flow 開始前 — 拒否経路の共有枠消費の遮断)**。AUTH_SPEC §3 / §4 の改訂は実装 PR 側
+- [ ] H2: テナント quota — プロジェクト数 / org 上限(起草値 アクティブ 100)+ DO ストレージ総量ガード(AUTH_SPEC §12-8 の Phase 2 予告の実装 — 警告 / 拒否の 2 段)
+- [ ] H3: 運用基盤 — 監視・アラート(D1 総量・GitHub クォータトリップワイヤ・外形監視)、バックアップ(D1 Time Travel + 定期 export、DO のアプリレベル退避の設計)、リストア演習、運用 OAuth App。(任意)運用側デプロイの Alchemy v2 化(ADR-0012 — 既存項の再掲)
+- [ ] H4: 法務・商務 — ToS / プライバシーポリシー / AUP、サブプロセッサ整理、security@ 窓口、ステータスページ、アカウント削除(gap 6)・通知経路(gap 8)の設計 + **法務文書の配信面(web の未認証静的ページ — hosted-design.md §9「web 面の帰属」)**(人間タスクの列挙は hosted-design.md §7)
+- [ ] H5: 公開儀式 — SECURITY.md + 脅威モデル文書(`docs/THREAT_MODEL.md` — 起草計画は hosted-design.md §6)+ 公開前チェックリスト残(Deploy to Cloudflare ボタン検証・CLI 配布・macOS 公証)→ **public 化**
+- [ ] H6: 招待制ベータ開放 — 「最初の 5 分」体験要件(ADR-0014 改訂 1)の充足確認・招待コード発行運用 + **ベータ案内・waitlist 導線・サインアップ拒否時の着地文言・オンボーディングの web 静的面(S1 系の拡張 — hosted-design.md §9)**
+- [ ] オープンベータ(H6 の後): quota 実測 + GitHub クォータ余裕(device flow 50 回/時 — hosted-design.md §3-4)+ CLI ログインのスケール経路(gap 9)の裁定を経て開放
+- [ ] GA: 課金導入(設計は独立タスク — 未起草)・docs サイト(Blume — Wave 3 G)
 
 ## Phase 3: エージェント(方針は ADR-0014。優先度順)
 
-- 値なしスキーマ(名前・型・説明・必須のみをエージェントへ開示。配信は `maruhi schema` CLI — MCP 配信は後回し〔次行〕。`.env.schema` ファイルは正にしない)— **仕様起草済み(2026-08-30 S0)**: CRYPTO_SPEC 0.8-draft §4.2 レイアウト v2 / AUTH_SPEC 0.16-draft §12-11 スキーマポリシー。CLI・付帯面と実装分割(S1〜)は docs/notes/value-free-schema-design.md、裁定は docs/notes/session-46.md(検討メモ: docs/notes/value-free-schema.md)
+- 値なしスキーマ(名前・型・説明・必須のみをエージェントへ開示。配信は `maruhi schema` CLI — MCP 配信は後回し〔次行〕。`.env.schema` ファイルは正にしない)— **仕様起草済み(2026-08-30 S0)**: CRYPTO_SPEC 0.8-draft §4.2 レイアウト v2 / AUTH_SPEC 0.16-draft §12-11 スキーマポリシー。CLI・付帯面と実装分割(S1〜)は docs/notes/value-free-schema-design.md、裁定は docs/notes/session-46.md(検討メモ: docs/notes/value-free-schema.md)。**順序の正式化(2026-08-30 H0 裁定 DB — session-46 §9 申し送りの解消): S1〜S3(署名・受理・CLI 検証面)は招待制ベータ開放前に着地する(H 系列のゲート)。S4〜S5(import / export / lint — 生成物・付帯 UX)はゲートにせずベータと並走可**
 - MCP サーバー同居(スコープ付き・短命・監査付きの読み取り。値なしスキーマの配信機構を兼ねる — スキーマの MCP 配信は需要の実測後に `maruhi schema` の薄いラッパとして追加〔2026-08-30 オーナー既決 — 検討メモ §1〕)
 - エージェント向け credential brokering(`maruhi proxy run`: プレースホルダのみ渡し、通信境界で実値に差し替え。「サーバーもエージェントも平文を持たない」)
 - DO ベースのリース(「このエージェントセッションに、この変数だけ、30 分」)
@@ -52,6 +67,6 @@
 
 ## 将来(未スケジュール)
 
-- パスキー PRF によるデバイス鍵(封印バックエンド抽象の検討メモ: docs/notes/device-key-sealing.md)、SOPS 互換エクスポート、`maruhi/v2` ハイブリッド PQ、ホステッドクラウド版(着工日 = WorkOS 再判断ポイント、ADR-0009)
+- パスキー PRF によるデバイス鍵(封印バックエンド抽象の検討メモ: docs/notes/device-key-sealing.md)、SOPS 互換エクスポート、`maruhi/v2` ハイブリッド PQ(~~ホステッドクラウド版~~ は 2026-08-30 H0 で実スケジュール化 — 上記 H 系列の節。WorkOS 再判断は実施済み = GitHub 直実装続行 — ADR-0009)
 - リカバリーの封印バックアップ(ユーザー所有ストレージへ、パスフレーズ / パスキーで暗号化。運営が読める預かりは禁止 — ADR-0014)
 - 四眼・承認付き reveal(prod reveal / エクスポート / 危険操作の break-glass。企業向け)、上流 credential の自動ローテーション(コネクタ次第。「要ローテーション検出」= Phase 2 の後続)、remove / 降格から全環境 rotate 完了までの窓の機構化(CRYPTO_SPEC §14.3-5 (ii)。候補はセッション 12 ノート §10-7)
