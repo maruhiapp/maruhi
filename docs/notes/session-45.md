@@ -259,6 +259,13 @@ session-43 §10〜§14 / session-44 §7〜§14 の既知の生成規則を順に
   `headers()["x-maruhi-csrf"]` を `CSRF_HEADER_NAME` の値 import へ束縛
   (実リクエスト観測にも裁定 CN の二層目が効く形。テストプロセスのみ —
   BV と同じ位置づけ)
+- **pullfrog 第 2 波(ロック回帰 e2e のロケータ)**: Playwright の name 照合は
+  既定で部分一致 — in-flight 中は実行行の "Confirm revoke"(isLoading で無効)
+  が DOM 順の先頭に立ち、`isLocked` を外してもテストが通っていた。
+  `exact: true` で未武装行だけを指す形へ修正。教訓: **コンポーネント変異の
+  検証は必ずビルド後に走らせる**(e2e は dist のバンドルを検証する — 初回の
+  変異検証はソース改変のみでビルドを忘れ、偽の成功を見ていた。修正後は
+  isLocked 除去 + 再ビルドでテスト失敗 → 復元で全通過を実測)
 
 ### 収束の見立て
 
