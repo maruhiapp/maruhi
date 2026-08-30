@@ -331,7 +331,7 @@ WrappedDek = {
   - **レイアウト単調性(CRYPTO_SPEC §4.2 — 2026-08-30 PR #112 レビュー対応)**: 直前ステートメントが v2 の変数への v1 後続ステートメント(rename を含む)は 422(`layout-regression`)で拒否する(rename 経由のスキーマ欄の黙った消失と locked の迂回 —「作成は v2 → rename で v1 へ落とす」— の遮断)
   - **スキーマ再発行**: 既存変数のスキーマ欄のみの変更(name・status 不変・metaVersion + 1 の v2 ステートメント)を、改名と同一の受理規則(署名 1〜3 + prev 連鎖 + metaVersion CAS + マニフェスト同梱)で受理する
   - **削除ステートメントのスキーマ欄**: 直前ステートメントのスキーマ欄・レイアウトと一致すること(name の「直前の active 名を保持」と同じ規約の受理検査)。declared 変数の削除も同型(スキーマ欄を保持した status deleted)
-  - **schema-locked(§12-11 の locked)**: 変数作成(metaVersion 1 — declared・値同梱の両方)は layoutVersion 2 かつ varType 非空を要求し、満たさなければ 422(`schema-required`)で拒否する(「宣言なき変数の創出」— typo の影の変数 — の書き込み時遮断。検討メモ発見 E)
+  - **schema-locked(§12-11 の locked)**: 変数作成(metaVersion 1 — declared・値同梱の両方)は layoutVersion 2 かつ varType 非空を要求し、満たさなければ 422(`schema-required`)で拒否する(「宣言なき変数の創出」— typo の影の変数 — の書き込み時遮断。検討メモ発見 E)。**これは作成時の一回検査であり、継続的な不変条件ではない(2026-08-30 PR #112 レビュー対応で明確化)**: 後続の明示的なスキーマ再発行で varType を `""` へ戻すことは locked 下でも妨げない(署名・監査の残る明示操作であり、required の引き下げと同じ扱い — 遮断対象の「typo による黙った創出」ではない)。enabled 期に varType なしで作られた declared 変数の activation にも遡及しない(activation は創出ではない)
   - 本項の複合(declared 作成・activation)は §12-10 (1) の「値 push・メタ操作(§12-5)」クラスに属する(strict 受理)。§12-10 (3) の効果確認は種別ごとの既存規則がそのまま適用される: ステートメント・マニフェスト面は metadata-only pull(§12-7)、activation の値面は CAS + 床の自己記録(値 push の既存規律)
 
 ### 12-6. DEK ラップの保存・配布(CRYPTO_SPEC §6.3 ゴーストメンバー対策のサーバー側)
@@ -405,7 +405,7 @@ CRYPTO_SPEC §4.2 レイアウト v2 の書き込みゲート(発見 F — 旧�
 |---|---|
 | `disabled`(既定) | レイアウト v2 の**新規採用**(metaVersion 1 の v2 作成・v1 変数への v2 再発行)の受理を拒否(422 `schema-policy-disabled` — §12-5)。**既に v2 の変数の継続ステートメント(削除・activation・rename・スキーマ再発行)は受理する**(同節 — 降格が既存 v2 変数のライフサイクルを凍結しない)。既存の v1 受理は不変 |
 | `enabled` | v2 を受理する。スキーマ欄の利用は任意 |
-| `locked` | enabled + 変数作成(metaVersion 1)に layoutVersion 2 かつ varType 非空を要求(422 `schema-required` — §12-5) |
+| `locked` | enabled + 変数作成(metaVersion 1)に layoutVersion 2 かつ varType 非空を要求(422 `schema-required` — §12-5)。**作成時の検査**であり、後続の明示的なスキーマ再発行による引き下げは妨げない(§12-5 — 遮断対象は typo による黙った創出) |
 
 - **チェーンに載せない**: §6.2 の「チェーンは鍵の真正性・認可の台帳であり、可変メタデータの台帳にしない」(CRYPTO_SPEC)に従う。本設定は**書き込み受理ポリシー(誠実サーバー下の hygiene)**であり、悪意サーバーは自分の受理ポリシーを常に無視できるため、チェーン化・署名化しても敵対保証は増えない(§12-8 の受理ポリシーと同じ性格。lease_policy がチェーンに載るのは鍵開示の認可 — サーバーが被検証者 — だからで、性格が異なる)。メタは平文でありサーバー enforcement が E2EE と矛盾しない(検討メモ発見 E)
 - **エンドポイント**: `GET /projects/:projectId/schema-policy`(200 = `{ schemaPolicy }`。read スコープ × チェーン role reader 以上)/ `PUT /projects/:projectId/schema-policy`(204。**admin スコープ × チェーン role admin 以上**。セッション主体は拒否 — §5 の能力制限の許可列挙外)。判定順・存在秘匿(非メンバー 404)は §12-3 と同一。ペイロードは署名済み構造を運ばない(§12-10 (1) の strict 対象クラス外 — 3 値の Literal で Schema 検証が閉じる)

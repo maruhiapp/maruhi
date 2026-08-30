@@ -24,6 +24,7 @@
 
 - 形(起草値 — 体裁は S3 で確定): `maruhi schema set <environment> <NAME> [--type string|number|boolean|url] [--required | --optional] [--description <text>]`
 - 対象変数が存在する場合: レイアウト v2 のステートメント再発行(metaVersion + 1・name / status 不変 — AUTH_SPEC §12-5 のスキーマ再発行)+ マニフェスト再発行の複合
+- **マージ規則は部分更新(2026-08-30 PR #112 pullfrog レビュー対応で確定)**: 指定しなかったスキーマ欄は直前ステートメントの値をそのまま引き継いで新ステートメントを組み立てる(v2 では required が明示必須のため、`--description` だけの実行で型・必須が黙って落ちる全置換は、レイアウト単調性が塞いだ「rename でスキーマ欄が消える」と同じ結果を CLI 側で再現してしまう)。欄を空へ戻す操作は明示フラグ(`--type none` / `--description ""` — 体裁は S3)でのみ行う
 - 対象変数が存在しない場合: **宣言(status declared・metaVersion 1)**として作成する(CRYPTO_SPEC §4.2 — 値は後から `maruhi push` の activation 複合で載る)
 - プロジェクトの `schemaPolicy` が disabled の場合、v2 の**新規採用**(宣言作成・v1 変数への再発行)はサーバーが 422 で拒否する(既に v2 の変数へのスキーマ再発行はポリシーに依らず通る — AUTH_SPEC §12-5 / §12-11)。CLI は配布された advisory の schemaPolicy から事前に案内を出してよい(検証規則の入力にはしない)
 - **エントロピー警告(裁定 CW — fail-closed)**: description(および name)に高エントロピー部分文字列を検出したら、対話環境では警告 + 明示確認、非対話環境では明示フラグ(`--allow-high-entropy` — 起草名)なしに型付きエラーで拒否する。検出器・閾値は S3 の実装詳細(仕様が固定するのは要件と失敗方向のみ)。メタは平文でサーバー可視であり、スキーマ欄への実値混入はゼロ知識の約束にユーザー形の穴を開ける(発見 D)
