@@ -13,5 +13,10 @@ declare namespace Cloudflare {
     OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;
     /** vitest.config.ts の miniflare bindings で注入(applyD1Migrations 用) */
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
+    /**
+     * vitest.config.ts の miniflare bindings で注入: wrangler.jsonc の
+     * assets.run_worker_first(serving-topology.test.ts の被覆スイープ用)
+     */
+    TEST_RUN_WORKER_FIRST: string[] | boolean | undefined;
   }
 }

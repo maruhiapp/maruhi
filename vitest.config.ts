@@ -8,6 +8,8 @@ export default defineConfig({
       "packages/*/vitest.config.ts",
       "apps/cli/vitest.config.ts",
       "apps/server/vitest.config.ts",
+      // web の e2e はビルド済み dist 前提で独立ステップ(CI 9)のまま。unit のみ統合
+      "apps/web/vitest.unit.config.ts",
     ],
   },
 });

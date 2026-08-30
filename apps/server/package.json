@@ -7,8 +7,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "deploy": "bun run db:migrate && wrangler deploy",
-    "deploy:dry-run": "wrangler deploy --dry-run",
+    "deploy": "bun run db:migrate && bun run web:build && wrangler deploy",
+    "deploy:dry-run": "bun run web:build && wrangler deploy --dry-run",
+    "web:build": "bun run --filter @maruhi/web build",
     "db:create": "wrangler d1 create maruhi",
     "db:migrate": "wrangler d1 migrations apply DB --remote",
     "db:migrate:local": "wrangler d1 migrations apply DB --local"

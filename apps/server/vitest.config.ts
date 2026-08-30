@@ -1,8 +1,15 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { unstable_readConfig } from "wrangler";
 
 import { fakeGitHub } from "./test/support/fake-github.ts";
 import { readDrizzleMigrations } from "./test/support/read-migrations.ts";
+
+// serving-topology.test.ts(run_worker_first の全エンドポイント被覆スイープ)へ
+// wrangler.jsonc の実値を渡す。workerd 内から fs を読めないため Node 側で読む
+const wranglerConfig = unstable_readConfig({
+  config: new URL("wrangler.jsonc", import.meta.url).pathname,
+});
 
 export default defineConfig({
   plugins: [
@@ -22,6 +29,8 @@ export default defineConfig({
           // Secret。リース経路(§14)のテストは、この IKM から導出される実鍵で
           // サーバー宛ラップを作り、サーバーがそれを開封できることまで検証する
           SERVER_ENC_KEY_IKM: "b0".repeat(32),
+          // wrangler.jsonc の assets.run_worker_first の実値(被覆スイープの検査対象)
+          TEST_RUN_WORKER_FIRST: (wranglerConfig.assets?.run_worker_first ?? null) as string[],
           // D1 マイグレーション(test 側で applyD1Migrations に渡す)。
           // パスは設定ファイル基準(ルートの vitest run でも壊れないよう絶対化)
           // Miniflare bindings は Record<string, Json>。D1Migration[] は JSON 互換だが

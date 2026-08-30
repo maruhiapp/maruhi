@@ -1,6 +1,8 @@
 // サーバーコンポーネント(ビルド時に RSC ペイロードへ固められる)。
 // ビルド時刻を埋め込むことで「ビルド時レンダリングされた静的シェル」であることを検証可能にする。
 import { CounterCard } from "../components/CounterCard.tsx";
+import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
+import { spaPaths } from "../dashboard/routes.ts";
 
 const builtAt = new Date().toISOString();
 
@@ -10,6 +12,9 @@ const builtAt = new Date().toISOString();
 export function HomePage() {
   return (
     <main>
+      {/* サインイン往復のマーカーがあるときだけ /dashboard へ戻す(裁定 BU)。
+          マーカーなしのランディングは API を呼ばない */}
+      <ResumeToDashboard />
       <h1>㊙ maruhi</h1>
       <p>A general-purpose, diskless secrets manager that runs on Cloudflare.</p>
       <p>
@@ -18,7 +23,13 @@ export function HomePage() {
         started.
       </p>
       <p>
-        <a href="/about" data-testid="to-about">
+        <a href={spaPaths.dashboard()} data-testid="to-dashboard">
+          open the dashboard
+        </a>{" "}
+        — a read-only view of your projects (sign-in required).
+      </p>
+      <p>
+        <a href={spaPaths.about()} data-testid="to-about">
           go to about
         </a>
       </p>

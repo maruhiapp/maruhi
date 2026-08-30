@@ -88,6 +88,16 @@ jobs:
       - name: 8. Web build (vite + CSP headers)
         run: bun run --filter @maruhi/web build
 
+      # combined 配信構成(W2 裁定 BM — server が web アセットを同梱)の設定
+      # 妥当性検査。credential 不要のローカル検証で、assets ディレクトリの実在・
+      # wrangler.jsonc の整合をデプロイと同じ経路で確かめる(パス空間の被覆は
+      # apps/server/test/serving-topology.test.ts が step 7 で検査済み)
+      - name: 8b. Server deploy dry-run (combined assets config)
+        run: bunx wrangler deploy --dry-run
+        working-directory: apps/server
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
       # Playwright ブラウザ導入(step 9 と 11 の browser テストが共有)。
       # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
       # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは
