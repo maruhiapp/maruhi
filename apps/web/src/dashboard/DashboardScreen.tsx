@@ -289,6 +289,7 @@ function SignedInBody({ me, onSignOut }: { me: Me; onSignOut: () => void }): Rea
           Signed in as <Text type="code">{me.userId}</Text>
         </Text>
         <HStack gap={3} align="center">
+          <Link href={spaPaths.tokens()}>API tokens</Link>
           <Link href={spaPaths.account()}>Account audit</Link>
           <Button
             label="Sign out"

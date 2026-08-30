@@ -60,6 +60,19 @@ export function RoleToken({ role }: { role: string }): ReactNode {
 // リネームは「一般文言への無音フォールバック」でなくコンパイルエラーで割れる
 const SESSION_NOT_ALLOWED = "session-not-allowed" satisfies ForbiddenReason;
 
+/**
+ * 404 文言の対象名詞(裁定 CN の付随具体化 — docs/notes/session-45.md §5)。
+ * 一様 404 の意味(他人の・存在しないを区別しない)は変えず、画面の対象に
+ * 合わせて名詞だけ替える — 文言の一元化(裁定 BP)は本モジュールが保つ。
+ */
+export type FailureSubject = "project" | "invitation" | "token";
+
+const NOT_FOUND_DESCRIPTION: Record<FailureSubject, string> = {
+  project: "The server reports no such project for your account.",
+  invitation: "The server reports no such invitation for this project.",
+  token: "The server reports no such token for your account.",
+};
+
 /** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */
 function ForbiddenNotice({ reason }: { reason: string | undefined }): ReactNode {
   return reason === SESSION_NOT_ALLOWED ? (
@@ -87,23 +100,32 @@ function UnreachableNotice({ onRetry }: { onRetry: (() => void) | undefined }): 
   );
 }
 
-/** 401 以外の失敗の画面内表示(401 は各画面がログインカードへ差し替える)。 */
-export function FailureNotice({
+/** 410 の表示(invite 失効面のみが受ける — サーバー申告の reason を写す)。 */
+function GoneNotice({ reason }: { reason: string | undefined }): ReactNode {
+  return (
+    <Banner
+      status="info"
+      title="No longer active"
+      description={
+        reason === undefined
+          ? "The server reports this invitation is no longer active."
+          : `The server reports this invitation as ${reason}.`
+      }
+    />
+  );
+}
+
+function StatusNotice({
   failure,
   onRetry,
+  subject,
 }: {
   failure: ApiFailure;
-  onRetry?: () => void;
+  onRetry: (() => void) | undefined;
+  subject: FailureSubject;
 }): ReactNode {
-  if (failure.kind === "forbidden") return <ForbiddenNotice reason={failure.reason} />;
   if (failure.kind === "not-found") {
-    return (
-      <Banner
-        status="info"
-        title="Not found"
-        description="The server reports no such project for your account."
-      />
-    );
+    return <Banner status="info" title="Not found" description={NOT_FOUND_DESCRIPTION[subject]} />;
   }
   if (failure.kind === "unauthorized") {
     return (
@@ -118,12 +140,81 @@ export function FailureNotice({
   return <UnreachableNotice onRetry={onRetry} />;
 }
 
+/** 401 以外の失敗の画面内表示(401 は各画面がログインカードへ差し替える)。 */
+export function FailureNotice({
+  failure,
+  onRetry,
+  subject = "project",
+}: {
+  failure: ApiFailure;
+  onRetry?: () => void;
+  subject?: FailureSubject;
+}): ReactNode {
+  if (failure.kind === "forbidden") return <ForbiddenNotice reason={failure.reason} />;
+  if (failure.kind === "gone") return <GoneNotice reason={failure.reason} />;
+  return <StatusNotice failure={failure} onRetry={onRetry} subject={subject} />;
+}
+
 /** ローディング表示(行の置き換え用)。 */
 export function LoadingRow({ label }: { label: string }): ReactNode {
   return (
     <HStack gap={2} align="center">
       <Spinner size="sm" aria-label={label} />
       <Text type="supporting">{label}</Text>
+    </HStack>
+  );
+}
+
+/**
+ * 期限の表示(裁定 CQ — docs/notes/session-45.md)。表示の主体は常にサーバー
+ * 申告の expiresAtMs(過去判定のみクライアント時計との比較)。null は移行
+ * (AUTH_SPEC §6 裁定 CE-c′)前の旧無期限行で、検証側が期限切れとして扱う
+ * (fail-closed)ため表示も Expired + no expiry recorded とする — 仕様が定める
+ * 挙動の写しであり、クライアントの捏造ではない。
+ */
+export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): ReactNode {
+  const expired = expiresAtMs === null || expiresAtMs <= Date.now();
+  return (
+    <HStack gap={2} align="center" wrap="wrap">
+      <Text type="supporting" size="sm" hasTabularNumbers>
+        {expiresAtMs === null ? "no expiry recorded" : formatServerTime(expiresAtMs)}
+      </Text>
+      {expired ? <Token label="Expired" size="sm" color="red" /> : null}
+    </HStack>
+  );
+}
+
+/**
+ * インライン 2 段階の失効ボタン(裁定 CO — docs/notes/session-45.md)。
+ * 武装(armed)状態は親が行単位で管理する(常に 1 行のみ — 別行の武装・
+ * Cancel で解除)。確認は destructive バリアント、実行中は isLoading。
+ * 失効の帰結の注記は各画面がテーブル下へ常時表示する(武装時だけ出す形より
+ * 先に読める)。
+ */
+export function RevokeControl({
+  armed,
+  isPending,
+  onArm,
+  onCancel,
+  onConfirm,
+}: {
+  armed: boolean;
+  isPending: boolean;
+  onArm: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}): ReactNode {
+  if (!armed) return <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} />;
+  return (
+    <HStack gap={2} align="center" wrap="wrap">
+      <Button label="Cancel" variant="ghost" size="sm" onClick={onCancel} isDisabled={isPending} />
+      <Button
+        label="Confirm revoke"
+        variant="destructive"
+        size="sm"
+        onClick={onConfirm}
+        isLoading={isPending}
+      />
     </HStack>
   );
 }

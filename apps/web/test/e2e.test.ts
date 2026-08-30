@@ -21,9 +21,11 @@ import {
   ChainSnapshotSchema,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
+  InvitationSummarySchema,
   MeSchema,
   ProjectListSchema,
   RotationFlagSchema,
+  TokenSummarySchema,
 } from "@maruhi/api-schema";
 import { Schema } from "effect";
 import { type Browser, chromium, type Page, type Route } from "playwright";
@@ -34,9 +36,11 @@ import type {
   ChainSnapshot,
   EnvironmentList,
   EnvironmentMetadataPull,
+  InvitationList,
   Me,
   ProjectList,
   RotationFlagList,
+  TokenList,
 } from "../src/dashboard/types.ts";
 
 // ポートは固定せず OS に空きを割り当てさせる(CI の並列実行でも衝突しない)
@@ -458,6 +462,108 @@ const rotationFlagsFixture: RotationFlagList = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// W3b(S8 招待管理・S9 トークン管理)のフィクスチャ。期限は「未来 = 2100 年 /
+// 過去 = 2023 年」の固定値(実行時刻に対して安定 — 裁定 CQ の Expired 表示は
+// クライアント時計との比較なので、境界近傍の値を使わない)
+// ---------------------------------------------------------------------------
+
+const FUTURE_MS = 4_102_444_800_000; // 2100-01-01
+const PAST_MS = 1_700_000_000_000; // 2023-11-14
+
+const acceptanceFixture = {
+  inviteeUserId: "user_colleague",
+  inviteeEncPubHex: HEX64,
+  inviteeSigPubHex: HEX64,
+  signatureHex: SIG,
+  acceptedAtMs: 1_756_000_100_000,
+} as const;
+
+const pendingInvite = {
+  id: "inv-pending",
+  projectId: PROJECT_1,
+  role: "member",
+  status: "pending",
+  inviterUserId: "user_e2e",
+  tokenHashHex: HEX64,
+  createdAtMs: 1_756_000_000_000,
+  expiresAtMs: FUTURE_MS,
+  acceptance: null,
+} as const;
+
+const invitationsFixture: InvitationList = {
+  invitations: [
+    pendingInvite,
+    {
+      id: "inv-accepted",
+      projectId: PROJECT_1,
+      role: "reader",
+      status: "accepted",
+      inviterUserId: "user_e2e",
+      tokenHashHex: HEX64,
+      createdAtMs: 1_756_000_000_000,
+      expiresAtMs: FUTURE_MS,
+      acceptance: acceptanceFixture,
+    },
+    {
+      id: "inv-completed",
+      projectId: PROJECT_1,
+      role: "member",
+      status: "completed",
+      inviterUserId: "user_e2e",
+      tokenHashHex: HEX64,
+      createdAtMs: 1_756_000_000_000,
+      expiresAtMs: PAST_MS,
+      acceptance: acceptanceFixture,
+    },
+  ],
+};
+
+// 失効後のサーバー申告(pending 行が revoked へ) — UI は再取得で写す(裁定 CO)
+const invitationsAfterRevoke: InvitationList = {
+  invitations: [
+    { ...pendingInvite, status: "revoked" },
+    ...invitationsFixture.invitations.slice(1),
+  ],
+};
+
+const tokensFixture: TokenList = {
+  tokens: [
+    {
+      id: "tok-active",
+      name: "ci",
+      tokenPrefix: "maruhi_pat_abcdefgh",
+      scopes: [{ project: "*", permission: "admin" }],
+      createdAtMs: 1_756_000_000_000,
+      lastUsedAtMs: 1_756_000_100_000,
+      expiresAtMs: FUTURE_MS,
+    },
+    {
+      id: "tok-expired",
+      name: "old-laptop",
+      tokenPrefix: "maruhi_pat_ijklmnop",
+      scopes: [{ project: PROJECT_1, permission: "read" }],
+      createdAtMs: 1_756_000_000_000,
+      lastUsedAtMs: null,
+      expiresAtMs: PAST_MS,
+    },
+    // 移行(AUTH_SPEC §6 裁定 CE)前の旧無期限行 — 検証側は期限切れ扱い
+    // (fail-closed)。表示は Expired + no expiry recorded(裁定 CQ)
+    {
+      id: "tok-legacy",
+      name: "legacy",
+      tokenPrefix: "maruhi_pat_qrstuvwx",
+      scopes: [],
+      createdAtMs: 1_756_000_000_000,
+      lastUsedAtMs: null,
+      expiresAtMs: null,
+    },
+  ],
+};
+
+// 指定失効は行の削除(サーバー実装 — 一覧から消える)
+const tokensAfterRevoke: TokenList = { tokens: tokensFixture.tokens.slice(1) };
+
 function fulfillJson(route: Route, status: number, body: unknown): Promise<void> {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
@@ -465,6 +571,22 @@ function fulfillJson(route: Route, status: number, body: unknown): Promise<void>
 /** 401(未認証)を返すハンドラ(Unauthorized — api-schema のワイヤ形)。 */
 function unauthorized(route: Route): Promise<void> {
   return fulfillJson(route, 401, { _tag: "Unauthorized" });
+}
+
+/**
+ * プロジェクト画面の初期表示(Overview タブ)の消費面のモック(W3b の S8 テストで
+ * 共用)。/auth/me は画面が呼ばないが、他テストと同じ既定として登録しておく。
+ */
+async function routeProjectOverview(page: Page): Promise<void> {
+  await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+  await page.route(
+    (url) => url.pathname === `/projects/${PROJECT_1}/chain`,
+    (route) => fulfillJson(route, 200, chainFixture),
+  );
+  await page.route(
+    (url) => url.pathname === `/projects/${PROJECT_1}/environments`,
+    (route) => fulfillJson(route, 200, environmentsFixture),
+  );
 }
 
 /** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
@@ -519,13 +641,27 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     for (const flag of rotationFlagsFixture.flags) {
       Schema.decodeUnknownSync(RotationFlagSchema)(flag);
     }
+    for (const invite of [
+      ...invitationsFixture.invitations,
+      ...invitationsAfterRevoke.invitations,
+    ]) {
+      Schema.decodeUnknownSync(InvitationSummarySchema)(invite);
+    }
+    for (const token of tokensFixture.tokens) {
+      Schema.decodeUnknownSync(TokenSummarySchema)(token);
+    }
   });
 
   it("serves /dashboard routes with the strict SPA CSP header", async () => {
     // violation ゼロの検査(下の各テスト)は「CSP ヘッダーが無い」場合も通って
     // しまうため、ヘッダーの実在を直接固定する(pullfrog レビュー反映)。
     // SPA フォールバック経由の深いパスにも /* の CSP が付くこと
-    for (const path of ["/dashboard", `/dashboard/projects/${PROJECT_1}`, "/dashboard/account"]) {
+    for (const path of [
+      "/dashboard",
+      `/dashboard/projects/${PROJECT_1}`,
+      "/dashboard/account",
+      "/dashboard/tokens",
+    ]) {
       const res = await fetch(`${BASE}${path}`);
       expect(res.status, `path: ${path}`).toBe(200);
       const csp = res.headers.get("content-security-policy") ?? "";
@@ -639,8 +775,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("audit-list-project").waitFor();
     await expect(page.getByText("Seq", { exact: true }).count()).resolves.toBe(1);
     await expect(page.getByText("chain.member_added").count()).resolves.toBeGreaterThan(0);
-    // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)
-    await page.getByText("Invites", { exact: true }).click();
+    // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)。
+    // W3b で管理タブ "Invites"(S8)が同語で並ぶため、radiogroup(SegmentedControl)
+    // 側を role で指す
+    await page.getByRole("radio", { name: "Invites" }).click();
     await page.getByText("Not available to your role").first().waitFor();
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
@@ -715,6 +853,156 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("built-at").waitFor();
     // OAuth 中断・失敗(セッション未成立)ではランディングに留まる
     expect(new URL(page.url()).pathname).toBe("/");
+    await page.close();
+  });
+
+  it("lists invitations, revokes via inline confirm with the CSRF header, and refreshes (S8)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let revoked = false;
+    let deleteMethod: string | null = null;
+    let deleteCsrf: string | null = null;
+    // Overview タブ(初期表示)の消費面もモックする: 実サーバーの 401 応答は
+    // ボディ未読のまま networkidle を妨げる(W2 テストが全面モックである理由)
+    await routeProjectOverview(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites`,
+      (route) => fulfillJson(route, 200, revoked ? invitationsAfterRevoke : invitationsFixture),
+    );
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites/inv-pending`,
+      (route) => {
+        deleteMethod = route.request().method();
+        deleteCsrf = route.request().headers()["x-maruhi-csrf"] ?? null;
+        revoked = true;
+        return route.fulfill({ status: 204 });
+      },
+    );
+
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    await page.locator('[data-tab-value="invites"]').click();
+    await page.getByTestId("invite-table").waitFor();
+    // 発行 UI は置かない — CLI への静的案内のみ(ADR-0018 改訂 2)
+    await expect(page.getByTestId("invite-notes").textContent()).resolves.toContain(
+      "maruhi invite create",
+    );
+    // Revoke は pending | accepted 行のみ(completed 行にはボタンが出ない)
+    await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(2);
+    // 2 段階確認(裁定 CO): Revoke で武装 → Confirm revoke で実行
+    await page.getByRole("button", { name: "Revoke" }).first().click();
+    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    // 完了後はサーバー再取得で写す(楽観更新しない) — pending 行が revoked に
+    await page.getByText("revoked", { exact: true }).waitFor();
+    expect(deleteMethod).toBe("DELETE");
+    expect(deleteCsrf).toBe("1");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("shows the server-reported gone wording when a revocation races to 410 (S8)", async () => {
+    // 失効 CAS が負けた側(他所で completed / revoked に遷移済み)のサーバー
+    // 申告 reason を写す(api 層の gone 分類 — 裁定 CN 付随の文言検証)
+    const page = await browser.newPage();
+    await routeProjectOverview(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites`,
+      (route) => fulfillJson(route, 200, invitationsFixture),
+    );
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites/inv-pending`,
+      (route) => fulfillJson(route, 410, { _tag: "InviteGone", reason: "completed" }),
+    );
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    await page.locator('[data-tab-value="invites"]').click();
+    await page.getByTestId("invite-table").waitFor();
+    await page.getByRole("button", { name: "Revoke" }).first().click();
+    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await page.getByText("The server reports this invitation as completed.").waitFor();
+    await page.close();
+  });
+
+  it("shows the role wording when the invites listing reports 403 (S8 — admin 未満)", async () => {
+    const page = await browser.newPage();
+    await routeProjectOverview(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites`,
+      (route) => fulfillJson(route, 403, { _tag: "Forbidden", reason: "insufficient-role" }),
+    );
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    // タブは role で事前に隠さない(裁定 CP 第 3 周)— 403 は役割文言で表示
+    await page.locator('[data-tab-value="invites"]').click();
+    await page.getByText("Not available to your role").first().waitFor();
+    await page.close();
+  });
+
+  it("lists tokens with server-reported expiry: Expired, no expiry recorded, never (S9)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, tokensFixture),
+    );
+    await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
+    await page.getByTestId("token-table").waitFor();
+    // 期限切れ(過去)+ 移行前 null 行(fail-closed — 裁定 CQ)の両方が Expired
+    await expect(page.getByText("Expired", { exact: true }).count()).resolves.toBe(2);
+    await expect(page.getByText("no expiry recorded", { exact: true }).count()).resolves.toBe(1);
+    // lastUsedAtMs null は "never"(2 行)
+    await expect(page.getByText("never", { exact: true }).count()).resolves.toBe(2);
+    // 発行 UI・生値表示は置かない — CLI ログインへの静的案内のみ
+    await expect(page.getByTestId("token-notes").textContent()).resolves.toContain("maruhi login");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("revokes a token via inline confirm with the CSRF header and refreshes (S9)", async () => {
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let revoked = false;
+    let deleteMethod: string | null = null;
+    let deleteCsrf: string | null = null;
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens/tok-active",
+      (route) => {
+        deleteMethod = route.request().method();
+        deleteCsrf = route.request().headers()["x-maruhi-csrf"] ?? null;
+        revoked = true;
+        return route.fulfill({ status: 204 });
+      },
+    );
+    await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
+    await page.getByTestId("token-table").waitFor();
+    await page.getByRole("button", { name: "Revoke" }).first().click();
+    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える
+    await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
+    await expect(page.getByText("old-laptop", { exact: true }).count()).resolves.toBe(1);
+    expect(deleteMethod).toBe("DELETE");
+    expect(deleteCsrf).toBe("1");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("shows the token 404 wording on the uniform not-found of targeted revocation (S9)", async () => {
+    const page = await browser.newPage();
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, tokensFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens/tok-active",
+      (route) => fulfillJson(route, 404, { _tag: "TokenNotFound" }),
+    );
+    await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
+    await page.getByTestId("token-table").waitFor();
+    await page.getByRole("button", { name: "Revoke" }).first().click();
+    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    // 一様 404(他人の・存在しないを区別しない)を token の名詞で写す(裁定 CN 付随)
+    await page.getByText("The server reports no such token for your account.").waitFor();
     await page.close();
   });
 

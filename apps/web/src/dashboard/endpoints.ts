@@ -17,6 +17,8 @@
 /** 目録のサンプルパラメータ(テストのテンプレート置換と共有する)。 */
 export const SAMPLE_PROJECT_ID = "ab".repeat(32);
 export const SAMPLE_ENVIRONMENT_ID = "production";
+export const SAMPLE_INVITE_ID = "inv-sample";
+export const SAMPLE_TOKEN_ID = "tok-sample";
 
 /**
  * カーソルクエリ名(裁定 CB — session-43 §13)。ビルダーと目録が同じ定数を
@@ -49,6 +51,15 @@ export const apiPaths = {
     withCursor(`/projects/${projectId}/audit/invites`, AUDIT_CURSOR, before),
   auditSelf: (before?: string) => withCursor("/auth/audit/events", AUDIT_CURSOR, before),
   rotationFlags: (projectId: string) => `/projects/${projectId}/rotation/flags`,
+  invites: (projectId: string) => `/projects/${projectId}/invites`,
+  // inviteId / tokenId はサーバー発行の不透明 id(projectId のような形式検査を
+  // UI 側に持たない)ため encodeURIComponent を通す — 敵対的サーバーの id が
+  // パスを踏み外しても可視の 404/405 に留める(裁定 CN の付随具体化 —
+  // docs/notes/session-45.md §5)
+  inviteRevoke: (projectId: string, inviteId: string) =>
+    `/projects/${projectId}/invites/${encodeURIComponent(inviteId)}`,
+  tokens: () => "/auth/tokens",
+  tokenRevoke: (tokenId: string) => `/auth/tokens/${encodeURIComponent(tokenId)}`,
 } as const;
 
 /** One dashboard-consumed endpoint bound to its api-schema identity. */
@@ -132,5 +143,25 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     endpoint: "flags",
     access: "session",
     sample: apiPaths.rotationFlags(SAMPLE_PROJECT_ID),
+  },
+  // W3b(S8 招待管理・S9 トークン管理 — 失効系画面): 一覧 + 指定失効の 4 面
+  {
+    group: "invites",
+    endpoint: "list",
+    access: "session",
+    sample: apiPaths.invites(SAMPLE_PROJECT_ID),
+  },
+  {
+    group: "invites",
+    endpoint: "revoke",
+    access: "session",
+    sample: apiPaths.inviteRevoke(SAMPLE_PROJECT_ID, SAMPLE_INVITE_ID),
+  },
+  { group: "auth", endpoint: "listTokens", access: "session", sample: apiPaths.tokens() },
+  {
+    group: "auth",
+    endpoint: "revokeTokenById",
+    access: "session",
+    sample: apiPaths.tokenRevoke(SAMPLE_TOKEN_ID),
   },
 ];
