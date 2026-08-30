@@ -352,6 +352,57 @@ always), but note this feature degrades gracefully in both directions:
 - The Durable Object migration (two new tables for attestation rows and their
   per-member rate windows) is automatic on first access. No operator action.
 
+**API token lifetimes (2026-08-30 release, W3a)**: this release gives API
+tokens a default lifetime of 90 days (fixed at issuance; expired tokens are
+rejected with 401 like revoked ones), adds token management endpoints
+(`GET /auth/tokens`, `DELETE /auth/tokens/:tokenId`), and lets `maruhi login`
+request a longer lifetime with `--token-ttl-days` (up to 365). Version-skew
+notes — **update the server before the CLIs** (same direction as always), and
+this feature degrades gracefully in both directions:
+
+- **Existing tokens**: the bundled D1 migration re-anchors previously
+  unlimited tokens to *apply time + 90 days*, so nothing stops working at the
+  update itself — re-login (`maruhi login`) within 90 days rotates each token
+  onto its own fresh lifetime. If you deploy the new code without applying the
+  migration (the standard `bun run deploy` applies it automatically), the
+  server treats legacy no-expiry tokens as already expired (fail-closed);
+  re-login recovers.
+- **New CLI against an old server**: `maruhi login` still works. The old
+  server does not report an expiry, so the CLI prints a note instead of an
+  expiry date, and `--token-ttl-days` has no effect there (the exchange
+  request is deliberately tolerant of unknown fields, so the old server
+  ignores it and issues an unlimited token).
+- **Provisioning unattended runtimes (`MARUHI_TOKEN`)**: on runtimes without
+  lease support (anything but GitHub Actions today), the CLI authenticates
+  with the `MARUHI_TOKEN` env var, bound to the target server with
+  `MARUHI_TOKEN_ORIGIN`. To obtain a value, run
+  `maruhi login --token-name <name> --token-ttl-days <days> --show-token` on
+  an interactive workstation terminal: the issued token is printed once (and
+  stored in the OS keychain as usual). The display is refused on pipes, in
+  CI, and in AI-agent environments (same fail-closed gate as value display),
+  so provision from a human terminal and clear your scrollback afterwards.
+  Then run a plain `maruhi login` once more: the keychain holds one token per
+  server, so the provisioning login also made the new token this machine's
+  active token — the extra login gives your workstation a token of its own
+  (the provisioned one stays valid **because it has a distinct name**;
+  re-login rotates only the default-name token), keeping audit attribution
+  per environment and letting you revoke either one without cutting off the
+  other. Do not skip the `--token-name` in the provisioning step: a token
+  provisioned under the default name would be revoked by that same plain
+  re-login (the CLI's on-screen note tells these two cases apart).
+  Starting 14 days before a token expires, every CLI command warns on stderr
+  with the expiry date and the re-issuance procedure (in CI this lands in the
+  job log, so the operator sees it before the 401). When the token expires,
+  CLI commands in that runtime fail with 401 and name the same procedure.
+  Prefer `maruhi ci run` (leases) where available — leases are short-lived
+  and need no stored token.
+- **Old CLI against a new server**: the extra `expiresAtMs` response field is
+  ignored; the issued token simply expires after 90 days, and the old CLI
+  reports the eventual 401 as a revoked token — re-login recovers.
+- **Adjusting the default**: the 90-day default is an acceptance-policy
+  constant (`DEFAULT_TOKEN_TTL_DAYS` in `packages/api-schema`), not a
+  consensus rule — self-hosted deployments may change it.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata

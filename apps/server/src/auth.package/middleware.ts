@@ -11,7 +11,12 @@
 //   フォーム送信では付与できないため対象外
 // - 解決済み主体は RequestAuth としてハンドラへ提供する
 
-import { ForbiddenError, isSessionAllowedEndpoint, UnauthorizedError } from "@maruhi/api-schema";
+import {
+  CSRF_HEADER_NAME,
+  ForbiddenError,
+  isSessionAllowedEndpoint,
+  UnauthorizedError,
+} from "@maruhi/api-schema";
 import type { Principal } from "@maruhi/core";
 import { anonymousPrincipal, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect, Option } from "effect";
@@ -22,8 +27,9 @@ export const SESSION_COOKIE = "__Host-maruhi_session";
 /**
  * CSRF 対抗ヘッダー。状態を持つ GET(値付き一括 pull・リカバリーブロブ取得)も
  * ハンドラ側で要求する(下の statefulGetCsrfViolated がヘッダー名ごと閉じ込める)。
+ * 名前の真実源は api-schema の共有定数(session-43 §14 申し送りの解消 — W3a)。
  */
-const CSRF_HEADER = "x-maruhi-csrf";
+const CSRF_HEADER = CSRF_HEADER_NAME;
 // RFC 7235: auth-scheme は大文字小文字を区別しない。空白の連続も許容する
 const BEARER_PATTERN = /^bearer\s+(\S+)$/i;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

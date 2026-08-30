@@ -84,6 +84,9 @@ function concreteUrl(path: string): string {
         return VAR;
       case "id":
         return "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+      case "tokenId":
+        // 実在しなくてよい(許可面は 404 = 非 session-not-allowed で十分)
+        return "01ARZ3NDEKTSV4RRFFQ69G5FAV";
       default:
         throw new Error(`session-capability matrix: no substitution for path param :${param}`);
     }

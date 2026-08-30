@@ -89,6 +89,18 @@ export class TokenLimitError extends Schema.TaggedError<TokenLimitError>()(
   { httpApiStatus: 429 },
 ) {}
 
+/**
+ * 404: the token id does not name a token owned by the authenticated principal
+ * (AUTH_SPEC §6 — W3a 指定失効). 他人の・存在しないトークン id への一様応答で
+ * あり(存在秘匿 — §12-6 の削除系と同じ規律)、対象 id を運ばない(呼び出し側が
+ * 送った値をエラーに写さない)。
+ */
+export class TokenNotFoundError extends Schema.TaggedError<TokenNotFoundError>()(
+  "TokenNotFound",
+  {},
+  { httpApiStatus: 404 },
+) {}
+
 /** 404: no recovery wrap is registered for the authenticated user (AUTH_SPEC §13). */
 export class RecoveryWrapNotFoundError extends Schema.TaggedError<RecoveryWrapNotFoundError>()(
   "RecoveryWrapNotFound",

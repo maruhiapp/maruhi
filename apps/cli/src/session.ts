@@ -25,6 +25,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
+import { formatUtcDate } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import {
@@ -148,6 +149,42 @@ const noSessionError = cliError(
 );
 
 /**
+ * 期限接近の事前警告の窓(裁定 CL — 残り 14 日から警告する。起草値)。
+ * 期限切れ(401)を「突然の停止」でなく事前に観測可能にする — 特に CI では
+ * この警告がジョブログに残り、operator が 401 の前に再発行を仕込める。
+ */
+const TOKEN_EXPIRY_WARNING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * 期限が警告窓に入っていれば stderr へ 1 行出す(裁定 CL)。
+ *
+ * - stderr に出すのは stdout の機械可読性を守るため(値・JSON を pipe する
+ *   コマンドの出力へ混ぜない — nextStepHint と同じ規律)
+ * - 期限不明(undefined — 旧サーバー / 旧レコード)と、既にローカル判定で
+ *   過去(次のリクエストが 401 で言う — 二重に言わない)は何も出さない
+ * - 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number)
+ */
+function warnNearExpiry(
+  expiresAtMs: number | undefined,
+  reissueHint: string,
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    if (expiresAtMs === undefined) {
+      return;
+    }
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0 || remainingMs > TOKEN_EXPIRY_WARNING_WINDOW_MS) {
+      return;
+    }
+    const io = yield* CliIo;
+    const days = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+    yield* io.logError(
+      `Warning: the maruhi token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
+    );
+  });
+}
+
+/**
  * MARUHI_TOKEN 経路のセッション解決(キーチェーン不在環境・CI 用)。
  *
  * 環境変数は平文の string が入ってくる唯一の起点なので、入口で包み、以降は
@@ -158,7 +195,7 @@ function sessionFromEnvToken(input: {
   readonly token: string;
   readonly origin: string;
   readonly declaredOrigin: string | undefined;
-}): Effect.Effect<CliSession, CliError, HttpClient.HttpClient> {
+}): Effect.Effect<CliSession, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     // 伏字そのものが入っていたら、通信する前に理由を名指しする。`Redacted` を
     // 導入した以上、出力で見た "<redacted:maruhi-token>" をトークンだと思って
@@ -192,15 +229,28 @@ function sessionFromEnvToken(input: {
       );
     }
     const client = yield* makeApiClient({ baseUrl: input.origin, token: envToken });
+    // W3a(AUTH_SPEC §6 の既定 TTL)以降、常用の無人環境でこの 401 の最有力
+    // 原因は**期限切れ**になる(全トークンが最長 365 日で死ぬ)。環境変数
+    // 経路の直し先はキーチェーンと違い「作業端末で再発行して env を差し替える」
+    // なので、failure.ts の汎用 401 案内(`maruhi login` のみ)を使い回さず、
+    // 生値の取得まで完遂できる実在の手順(--show-token — 裁定 CK)を言い切る
+    // (裁定 CJ — session-44 §11・§12)
     const me = yield* client.auth
       .me({})
       .pipe(
         Effect.mapError(() =>
           cliError(
-            "Authentication with MARUHI_TOKEN failed (check revocation, scope, and the target server)",
+            "Authentication with MARUHI_TOKEN failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with `maruhi login --token-name <name> --show-token` on an interactive workstation terminal, then update the MARUHI_TOKEN value in this environment",
           ),
         ),
       );
+    // 期限接近の事前警告(裁定 CL): /auth/me はこの経路で毎回呼ぶので、
+    // tokenExpiresAtMs(裁定 CI の自己開示)は追加リクエストなしで手元にある。
+    // CI のジョブログに残り、401 で止まる前に再発行を仕込める
+    yield* warnNearExpiry(
+      me.tokenExpiresAtMs,
+      "Re-issue it with `maruhi login --token-name <name> --show-token` on a workstation and update MARUHI_TOKEN before it stops working",
+    );
     return { origin: input.origin, token: envToken, userId: me.userId } satisfies CliSession;
   });
 }
@@ -293,6 +343,10 @@ export function resolveSession(
           : cliError("The keychain token record is corrupt. Log in again with `maruhi login`"),
       );
     }
+    // 期限接近の事前警告(裁定 CL): 期限はログイン時にレコードへ保存済み
+    // (keychain.ts の expiresAtMs)なので、無通信のローカル判定で足りる。
+    // 旧レコード(W3a 前のログイン)は欠落 = 警告なし(再ログインで付く)
+    yield* warnNearExpiry(record.expiresAtMs, "Re-login with `maruhi login` to rotate it");
     return {
       origin,
       token: record.token,

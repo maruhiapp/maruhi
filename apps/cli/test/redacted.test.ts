@@ -53,6 +53,9 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
+/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
+const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
+
 let servers: MockServer[] = [];
 
 afterEach(async () => {
@@ -237,7 +240,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued_real", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued_real",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("GET", "/auth/me", (request) => {
         const header = request.headers["authorization"];
@@ -628,8 +636,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
 
   it("MARUHI_TOKEN に伏字が入っていたら、通信する前に理由を名指しする", async () => {
     // Redacted を入れた以上、出力で見た伏字をトークンだと思って環境変数へ
-    // 貼る経路は現実的。そのまま送ると 401 になり「revocation, scope, and the target serverを
-    // 確認してください」という別の原因の案内へ送られてしまう
+    // 貼る経路は現実的。そのまま送ると 401 になり「期限切れ・失効かもしれ
+    // ません」という別の原因の案内(session.ts の認証失敗文言)へ送られてしまう
     const requests: string[] = [];
     const maruhi = await start([
       onRequest("GET", "/auth/me", (request) => {
@@ -647,7 +655,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
     expect(dump).toContain("redaction placeholder (<redacted>) itself");
-    expect(dump).not.toContain("revocation, scope, and the target server");
+    expect(dump).not.toContain("Authentication with MARUHI_TOKEN failed");
     // 通信より前に落ちる(無駄な往復も、誤認された 401 も作らない)
     expect(requests).toEqual([]);
   });
@@ -788,8 +796,10 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "invite-link.ts": 2,
   // 直列化 = 唯一の永続化経路(トークン 1 + master 鍵の秘密側 2)
   "keychain.ts": 3,
-  // device exchange のワイヤ境界(GitHub トークン)
-  "login.ts": 1,
+  // device exchange のワイヤ境界(GitHub トークン)1 +
+  // --show-token の発行時端末表示(AUTH_SPEC §6 の 1 箇所 — 値表示ゲート
+  // 通過後。裁定 CK)1
+  "login.ts": 2,
   // 自 OIDC トークンの claims 読み出し(payload セグメントの decode — A3)
   "oidc-github.ts": 1,
   // 復号の鍵入力(暗号境界)

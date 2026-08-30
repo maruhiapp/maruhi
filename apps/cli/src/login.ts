@@ -13,7 +13,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import { pollDeviceFlow, startDeviceFlow } from "./device-flow.ts";
-import { displayText } from "./display.ts";
+import { displayText, escapeText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -69,6 +69,23 @@ export function loginOp(input: {
   readonly origin: string;
   readonly clientId: string;
   readonly tokenName: string;
+  /**
+   * 発行した PAT の生値を端末へ 1 度だけ表示する(AUTH_SPEC §6 の「発行時の
+   * 端末表示 1 箇所」— 裁定 CK。リース非対応環境の MARUHI_TOKEN 供給用)。
+   * 表示可否のゲート(ADR-0016 決定 7 — fail-closed 2 層)は呼び出し側が
+   * **通信より前**に通している前提。
+   */
+  readonly showToken: boolean;
+  /**
+   * tokenName がこの端末の既定名(`cli:<hostname>`)か(裁定 CM — 既定名の
+   * 真実源は呼び出し側の引数層なのでここでは判定しない)。身元スワップ注記の
+   * 分岐に使う: 既定名で供給した場合に「素の再ログイン」を勧めると、同名
+   * ローテーションが**いま表示したトークン自体を失効させる**(PR #108
+   * Bugbot 指摘)。
+   */
+  readonly tokenNameIsDefault: boolean;
+  /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
+  readonly expiresInDays?: number;
   readonly githubBaseUrl?: string;
   /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
   readonly minIntervalSeconds?: number;
@@ -106,6 +123,7 @@ export function loginOp(input: {
         payload: {
           githubAccessToken: Redacted.value(githubAccessToken),
           tokenName: input.tokenName,
+          ...(input.expiresInDays === undefined ? {} : { expiresInDays: input.expiresInDays }),
         },
       })
       .pipe(Effect.mapError(toCliError));
@@ -115,6 +133,9 @@ export function loginOp(input: {
       token: issuedToken,
       userId: exchanged.userId,
       tokenId: exchanged.tokenId,
+      // 期限接近の事前警告(裁定 CL)のローカル判定材料。旧サーバー(W3a 前)は
+      // 期限を返さない — 欠落のまま保存し、警告なしで従来どおり動く
+      ...(exchanged.expiresAtMs === undefined ? {} : { expiresAtMs: exchanged.expiresAtMs }),
     };
     // JSON.stringify(record) は使わない — Redacted.toJSON() が伏字を返し、
     // "<redacted>" がキーチェーンへ書かれる(keychain.ts の注記)
@@ -142,6 +163,47 @@ export function loginOp(input: {
     yield* io.log(
       `Logged in (user: ${displayText(exchanged.userId)}). The token is stored in the OS keychain`,
     );
+    if (input.showToken) {
+      // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
+      // 剥がすのはこの表示のためだけで、値は保存済み(上のキーチェーン)以外へ
+      // 流れない。呼び出し側の値表示ゲート(fail-closed 2 層)通過が前提で、
+      // 対話端末以外(パイプ・CI・エージェント)ではここへ到達しない。
+      // token はワイヤ上無制約の Schema.String(サーバーが全バイトを選べる)
+      // なので中和して出す — ただしコピーする値なので displayText(U+FFFD への
+      // 破壊的置換)でなく escapeText(allow-list — 正直な Base62 値は素通し、
+      // 注入は可視のエスケープ列になる)を使う(PR #108 pullfrog 指摘)
+      yield* io.log("");
+      yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
+      yield* io.log("");
+      yield* io.log(
+        "This value is not shown again (re-login rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
+      );
+      // 供給ログインの身元スワップの可視化(裁定 CM): キーチェーンのスロットは
+      // origin 単位なので、この発行はこの端末のアクティブトークンも置き換えた。
+      // 復し方は発行名で分岐する(PR #108 Bugbot 指摘): 既定名で発行した場合に
+      // 「素の再ログイン」を勧めると、同名ローテーションが**いま表示した
+      // トークン自体を失効させ**、貼り付け先の環境を切断する。既定名なら
+      // 「別名で発行し直す」が正しい復し方
+      yield* io.log(
+        input.tokenNameIsDefault
+          ? "Note: this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
+          : "Note: this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
+      );
+    }
+    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
+    // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
+    // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
+    // Date#toISOString へ直接渡さない — deepsec B1/B4/B5 と同じ規律。PR #108
+    // pullfrog 指摘)。フィールド欠落 = W3a より古いサーバー(TTL 未実装)
+    if (exchanged.expiresAtMs !== undefined) {
+      yield* io.log(
+        `The token expires on ${formatUtcDate(exchanged.expiresAtMs)} (UTC). Re-login (\`maruhi login\`) rotates it`,
+      );
+    } else {
+      yield* io.log(
+        "Note: this server did not report a token expiry (it predates token TTLs; --token-ttl-days has no effect). Update the server to enforce token lifetimes",
+      );
+    }
     yield* io.log(
       `Re-logging in with the same token name (${input.tokenName}) revokes the old token`,
     );

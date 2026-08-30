@@ -145,15 +145,15 @@ AUDIT_SPEC §6 の可視性クラス)が真実源で、Web は結果を写すだ
 - 対象: P3〜P5(本人のトークンのみ — user 単位のリソース)
 - 実装済み API: `POST /auth/token/revoke` は**提示トークン自身の失効・トークン
   主体限定**(CLI logout 用)であり、セッション主体の Web からは使えない
-- **不足 API**(AUTH_SPEC §6 改訂で設計 — 実装は W3a):
+- **不足 API**(AUTH_SPEC §6 改訂で設計 — W3a で実装済み〔2026-08-30〕):
   1. 一覧 `GET /auth/tokens`(id / name / token_prefix / scopes / created_at /
      last_used_at / expires_at。**生値・ハッシュは返さない**)
-  2. 指定失効(token id 指定。セッション主体または `*` × admin トークン —
-     §13-2 の鍵素材条件と同水準)
+  2. 指定失効 `DELETE /auth/tokens/:tokenId`(セッション主体または `*` ×
+     admin トークン — §13-2 の鍵素材条件と同水準。非該当は一様 404)
 - **発行・生値表示は置かない**(発行経路は device flow のみ据え置き —
   ADR-0018 改訂 2・AUTH_SPEC §6 改訂。生値の存在場所は発行時の端末表示 1 箇所)
 - 同時解消: 既定 TTL(SECURITY_REVIEW L-2 — AUTH_SPEC §6 改訂に含める。
-  実装は W3a)
+  W3a で実装済み — 移行規則・明示 TTL は session-44.md 裁定 CE / CF)
 
 ### S10.(任意・後続)セッション一覧・失効
 
@@ -268,9 +268,13 @@ CSRF ヘッダーは自分で付けられる — したがって「画面・バ�
    `__Host-` セッション・`connect-src 'self'`・OAuth callback の 3 制約が独立に
    要求する形。裁定と棄却案は session-43.md BM)
 5. **PR-W3a: トークン管理 API + TTL** — server(`GET /auth/tokens`・指定失効・
-   既定 TTL = AUTH_SPEC §6 改訂の実装。TTL は既存トークンに遡及しない移行
-   規則、リース非対応実行環境の無人利用の扱い〔§8 申し送り〕の裁定込み)→
-   api-schema → CLI(期限切れ 401 の再ログイン案内)。web 変更なし
+   既定 TTL = AUTH_SPEC §6 改訂の実装)→ api-schema → CLI(期限切れ 401 の
+   再ログイン案内 + `--token-ttl-days`)。web 変更なし。**実装済み(2026-08-30
+   — 裁定 CE〜CH は docs/notes/session-44.md)**。移行規則は当初案(非遡及)
+   でなく**既存無期限行の「適用時点 + 90 日」への再アンカー + 検証側の NULL
+   fail-closed**を採用(非遡及は L-2 を既存行に恒久温存するため棄却 — 裁定
+   CE)。リース非対応実行環境の無人利用(§8 申し送り)は発行時の明示 TTL
+   指定(`expiresInDays` 1..365)で解消(裁定 CF)
 6. **PR-W3b: 失効系画面** — web(S8 招待管理・S9 トークン管理)。W3a に依存
 - 依存: W1 は独立。W2 は W2a(暫定 ID 手入力で先行可 — §3 S4)と **W2b
   (必須 — 順序制約は §6)**に依存。W3b は W3a に依存。W2a / W2b / W3a は
@@ -286,12 +290,15 @@ CSRF ヘッダーは自分で付けられる — したがって「画面・バ�
   決定 4 — 第 2 段着手の前提のまま)
 - 値あり UI(第 3 段 ADR)・シェル選定(改訂 1・3 項)
 - S10 セッション管理 API(需要が出た時点で AUTH_SPEC §5 改訂)
-- **リース非対応実行環境(GitLab CI / k8s 等 — AUTH_SPEC §14-1 の対応 issuer
+- ~~**リース非対応実行環境(GitLab CI / k8s 等 — AUTH_SPEC §14-1 の対応 issuer
   は v1 = GitHub Actions のみ)での PAT 無人利用と既定 TTL の衝突**: 90 日
   ごとの再ログイン(人間の介在)を要求する形になる。扱い(発行時の明示 TTL
   指定〔上限つき〕を許すか、対応 issuer の拡張で解くか)は W3a 実装時の裁定。
   無期限の既定へ戻す選択肢は採らない(L-2 の再導入 — PR #103 pullfrog
-  レビュー指摘の申し送り)
+  レビュー指摘の申し送り)~~ **解消(2026-08-30 W3a 裁定 CF —
+  session-44.md)**: 発行時の明示 TTL 指定 `expiresInDays`(1..365 — 上限は
+  ワイヤ Schema で強制)を採用。対応 issuer の拡張は排他でない長期経路として
+  残す(AUTH_SPEC §14 の将来拡張)。無期限の既定へは戻していない
 - ~~監査 UI の可視性クラスを跨ぐ横断検索 UX(クラス 2 の高度なフィルタ)は
   W2 実装時の裁定に委ねる(API は実装済みで拘束しない)~~ **解消(2026-08-29
   W2 裁定 BQ — session-43.md)**: W2 の監査 UI はフィルタなしの単一時系列

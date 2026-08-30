@@ -32,8 +32,10 @@ import { hostname } from "node:os";
 import {
   AUDIT_ROW_ID_PATTERN,
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
+  DEFAULT_TOKEN_TTL_DAYS,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_TOKEN_NAME_LENGTH,
+  MAX_TOKEN_TTL_DAYS,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
@@ -463,6 +465,17 @@ const loginConfig = {
   "token-name": singleValued(
     "token-name",
     "Token name (re-login with the same name rotates the token; default: cli:<hostname>)",
+  ),
+  "token-ttl-days": Flag.integer("token-ttl-days").pipe(
+    Flag.withDescription(
+      `Token lifetime in days (1-${MAX_TOKEN_TTL_DAYS}; default ${DEFAULT_TOKEN_TTL_DAYS}). For unattended use on runtimes without lease support`,
+    ),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+  "show-token": singleFlag(
+    "show-token",
+    "Print the issued token once (to provision MARUHI_TOKEN on runtimes without lease support). Interactive terminals only",
   ),
   "github-base-url": hiddenValued("github-base-url", "GitHub base URL (for tests)"),
   "github-poll-interval": hiddenIntegerValued(
@@ -930,6 +943,23 @@ function requireTokenName(value: string | undefined): Effect.Effect<string, CliE
   return name.length > MAX_TOKEN_NAME_LENGTH
     ? Effect.fail(usageError(`--token-name must be at most ${MAX_TOKEN_NAME_LENGTH} characters`))
     : Effect.succeed(name);
+}
+
+/**
+ * `--token-ttl-days` の範囲検査(AUTH_SPEC §6 — W3a)。上限・既定は
+ * `@maruhi/api-schema` の宣言と同じ定数を見る(requireTokenName と同じ理由:
+ * 書き方の誤りは device flow の完走より前に落とす)。省略は undefined のまま
+ * 返し、サーバー側の既定(90 日)に委ねる。
+ */
+function requireTokenTtlDays(
+  value: number | undefined,
+): Effect.Effect<number | undefined, CliError> {
+  if (value === undefined) {
+    return Effect.succeed(undefined);
+  }
+  return value < 1 || value > MAX_TOKEN_TTL_DAYS
+    ? Effect.fail(usageError(`--token-ttl-days must be between 1 and ${MAX_TOKEN_TTL_DAYS}`))
+    : Effect.succeed(value);
 }
 
 /** 位置引数で受けた設定キーの検証(**指定値そのものはエラーに出さない**)。 */
@@ -1726,6 +1756,16 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       // フラグにも config にも無いとき `/auth/config` を引く(= 往復が先に
       // 起きるうえ、その取得が失敗すると書き方の誤りが接続失敗に隠れる)
       const tokenName = yield* requireTokenName(values["token-name"]);
+      const expiresInDays = yield* requireTokenTtlDays(values["token-ttl-days"]);
+      // --show-token は発行した PAT の生値を端末へ出す(AUTH_SPEC §6 の
+      // 「発行時の端末表示 1 箇所」— 裁定 CK)。表示可否は値表示と同じ
+      // fail-closed の 2 層ゲート(ADR-0016 決定 7)で、**どの通信よりも前**に
+      // 判定する: 拒否される環境でブラウザ承認を完走させると、同名ローテー
+      // ションで旧トークンだけ失効し、新しい生値は得られないまま終わる
+      // (置き換え対象の CI トークンを壊すだけの最悪の失敗形)
+      if (values["show-token"]) {
+        yield* ensureValueDisplayAllowed;
+      }
       const store = yield* ConfigStore;
       const config = yield* store.load;
       const origin = yield* resolveServerOrigin(values.server, config);
@@ -1748,6 +1788,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         origin,
         clientId,
         tokenName,
+        showToken: values["show-token"],
+        // 既定名の判定は解決後の実名で行う(明示的に cli:<hostname> を渡した
+        // 場合も既定名扱い — 素の再ログインが同名ローテーションになる事実で
+        // 分岐する。裁定 CM / PR #108 Bugbot 指摘)
+        tokenNameIsDefault: tokenName === `cli:${hostname()}`,
+        ...(expiresInDays === undefined ? {} : { expiresInDays }),
         ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
         ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
       });

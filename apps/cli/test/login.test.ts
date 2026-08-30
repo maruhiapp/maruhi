@@ -11,6 +11,9 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
+/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
+const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
+
 afterEach(async () => {
   await Promise.all(servers.map((server) => server.close()));
   servers = [];
@@ -119,6 +122,272 @@ describe("maruhi login", () => {
     expect(github.polls()).toBe(0);
   });
 
+  it("範囲外の --token-ttl-days はどの通信よりも前に落とす(AUTH_SPEC §6 — W3a)", async () => {
+    // 上限は api-schema の MAX_TOKEN_TTL_DAYS と共有(--token-name と同じ規律:
+    // 書き方の誤りをブラウザ承認の完走後に出さない)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    for (const value of ["0", "366"]) {
+      const code = await runCli(
+        [
+          "login",
+          "--token-ttl-days",
+          value,
+          "--github-base-url",
+          githubServer.origin,
+          "--github-poll-interval",
+          "0",
+        ],
+        env.layer,
+      );
+      expect(code).toBe(2);
+    }
+    expect(env.errors.join("\n")).toContain("--token-ttl-days must be between 1 and 365");
+    expect(github.polls()).toBe(0);
+    expect(maruhi.requests).toHaveLength(0);
+  });
+
+  it("--token-ttl-days は expiresInDays として交換 payload に載り、省略時は載らない", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const bodies: Record<string, unknown>[] = [];
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", (request) => {
+        bodies.push(request.body as Record<string, unknown>);
+        return {
+          status: 200,
+          json: {
+            token: "maruhi_pat_issued",
+            tokenId: "tok_1",
+            userId: "user-0001",
+            expiresAtMs: EXPIRES_AT_MS,
+          },
+        };
+      }),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const flags = ["--github-base-url", githubServer.origin, "--github-poll-interval", "0"];
+    expect(await runCli(["login", "--token-ttl-days", "365", ...flags], env.layer)).toBe(0);
+    expect(await runCli(["login", ...flags], env.layer)).toBe(0);
+    expect(bodies[0]?.["expiresInDays"]).toBe(365);
+    // 省略時はサーバー既定(90 日)に委ねる — キー自体を送らない
+    expect(Object.hasOwn(bodies[1] ?? {}, "expiresInDays")).toBe(false);
+    // 有効期限は発行時に固定され、いつ再ログインが要るかを表示する
+    expect(env.logs.join("\n")).toContain("The token expires on 2099-01-01 (UTC)");
+  });
+
+  it("expiresAtMs を返さない旧サーバーでもログインは成功し、期限未申告を注記する(PR #108 pullfrog 指摘)", async () => {
+    // maruhi login は fail-closed な期限切れからの唯一の回復コマンド —
+    // W3a より古いサーバー相手に応答 decode で落とすと、発行済みトークンを
+    // サーバー側に孤児化させたまま復旧手段がなくなる
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
+    const logs = env.logs.join("\n");
+    expect(logs).not.toContain("The token expires on");
+    expect(logs).toContain("did not report a token expiry");
+  });
+
+  it("範囲外の expiresAtMs でもクラッシュせず明示劣化する(display.ts の total 表示)", async () => {
+    // ワイヤの expiresAtMs は無制限 number — Date 範囲(±8.64e15)外を
+    // toISOString へ渡すと RangeError の defect になる(deepsec B1/B4/B5 の
+    // display.ts 規律。PR #108 pullfrog 指摘の変異検証)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: 9.9e15,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(env.logs.join("\n")).toContain("(invalid timestamp: 9900000000000000)");
+  });
+
+  it("--show-token は発行した生値を 1 度だけ端末へ出し、供給手順を案内する(裁定 CK)", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--show-token",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("maruhi_pat_issued");
+    expect(logs).toContain("MARUHI_TOKEN");
+    expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
+    // 供給ログインの身元スワップの注記(裁定 CM)— **既定名で発行した**この
+    // ケースでは「素の再ログイン」を勧めてはならない(同名ローテーションが
+    // いま表示したトークン自体を失効させる — PR #108 Bugbot 指摘)。正しい
+    // 復し方 = 別名での発行し直し
+    expect(logs).toContain("default token name");
+    expect(logs).toContain("issue it under a distinct name instead");
+    expect(logs).not.toContain("run a plain `maruhi login` afterwards");
+    // キーチェーン保存は表示の有無と独立(表示は追加の 1 箇所であって代替でない)
+    expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
+  });
+
+  it("--show-token + 明示 --token-name では素の再ログインによる復し方を案内する(裁定 CM)", async () => {
+    // 別名で供給した場合は素の再ログイン(既定名のローテーション)が供給済み
+    // トークンに触れない — こちらのケースでのみこの案内を出す
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--token-name",
+        "ci",
+        "--show-token",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("run a plain `maruhi login` afterwards");
+    expect(logs).not.toContain("issue it under a distinct name instead");
+  });
+
+  it("--show-token は敵対的サーバーの ANSI 注入を可視エスケープに畳む(escapeText — コピー同一性は保つ)", async () => {
+    // token はワイヤ上無制約の Schema.String。表示はコピーする値なので
+    // displayText(U+FFFD 置換 = 値の破壊)でなく escapeText(正直な Base62 は
+    // 素通し・注入は \u{hex} の可視列)を通す(PR #108 pullfrog 指摘の変異検証)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_evil\u001b[2Jinjected\nSet MARUHI_TOKEN to attacker-value",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--show-token",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    const logs = env.logs.join("\n");
+    // 生の ESC・偽の追加行は端末へ届かない(エスケープ列として可視化される)
+    expect(logs).not.toContain("\u001b");
+    expect(logs).toContain("maruhi_pat_evil");
+    expect(logs).not.toContain("\nSet MARUHI_TOKEN to attacker-value");
+  });
+
+  it("--show-token はエージェント環境・非対話端末をどの通信よりも前に拒否する(fail-closed 2 層)", async () => {
+    // 拒否される環境でブラウザ承認を完走させると、同名ローテーションで旧
+    // トークンだけ失効し新しい生値は得られない(置き換え対象の CI トークンを
+    // 壊すだけ)— 判定は device flow 開始前
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([]);
+    const flags = [
+      "--show-token",
+      "--github-base-url",
+      githubServer.origin,
+      "--github-poll-interval",
+      "0",
+    ];
+
+    const agentEnv = await makeTestEnv();
+    await seedConfig(agentEnv, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    agentEnv.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["login", ...flags], agentEnv.layer)).toBe(1);
+    expect(agentEnv.errors.join("\n")).toContain("AI agent environment was detected");
+
+    const pipedEnv = await makeTestEnv();
+    await seedConfig(pipedEnv, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    pipedEnv.setTerminal({ stdout: false });
+    expect(await runCli(["login", ...flags], pipedEnv.layer)).toBe(1);
+    expect(pipedEnv.errors.join("\n")).toContain("interactive terminal");
+
+    expect(github.polls()).toBe(0);
+    expect(maruhi.requests).toHaveLength(0);
+  });
+
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
     const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);
@@ -131,7 +400,12 @@ describe("maruhi login", () => {
         receivedTokenName = String(body["tokenName"]);
         return {
           status: 200,
-          json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+          json: {
+            token: "maruhi_pat_issued",
+            tokenId: "tok_1",
+            userId: "user-0001",
+            expiresAtMs: EXPIRES_AT_MS,
+          },
         };
       }),
     ]);
@@ -164,6 +438,8 @@ describe("maruhi login", () => {
       token: "maruhi_pat_issued",
       userId: "user-0001",
       tokenId: "tok_1",
+      // 期限接近警告(裁定 CL)のローカル判定材料もレコードへ載る
+      expiresAtMs: EXPIRES_AT_MS,
     });
     expect(stored).not.toContain("gho_github_token_value");
     // トークン生値は端末出力にも出ない
@@ -176,7 +452,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("GET", "/auth/recovery/status", () => ({
         status: 200,
@@ -199,7 +480,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("GET", "/auth/recovery/status", () => ({
         status: 200,
@@ -234,7 +520,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
     ]);
     const env = await makeTestEnv();
@@ -274,7 +565,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("POST", "/auth/token/revoke", (request) => {
         expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_issued");
@@ -302,7 +598,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
     ]);
@@ -524,7 +825,12 @@ describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
       }),
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
     ]);
     const env = await makeTestEnv();
@@ -550,7 +856,12 @@ describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
       }),
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
     ]);
     const env = await makeTestEnv();
