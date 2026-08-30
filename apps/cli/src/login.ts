@@ -125,6 +125,9 @@ export function loginOp(input: {
       token: issuedToken,
       userId: exchanged.userId,
       tokenId: exchanged.tokenId,
+      // 期限接近の事前警告(裁定 CL)のローカル判定材料。旧サーバー(W3a 前)は
+      // 期限を返さない — 欠落のまま保存し、警告なしで従来どおり動く
+      ...(exchanged.expiresAtMs === undefined ? {} : { expiresAtMs: exchanged.expiresAtMs }),
     };
     // JSON.stringify(record) は使わない — Redacted.toJSON() が伏字を返し、
     // "<redacted>" がキーチェーンへ書かれる(keychain.ts の注記)

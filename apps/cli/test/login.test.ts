@@ -354,6 +354,8 @@ describe("maruhi login", () => {
       token: "maruhi_pat_issued",
       userId: "user-0001",
       tokenId: "tok_1",
+      // 期限接近警告(裁定 CL)のローカル判定材料もレコードへ載る
+      expiresAtMs: EXPIRES_AT_MS,
     });
     expect(stored).not.toContain("gho_github_token_value");
     // トークン生値は端末出力にも出ない

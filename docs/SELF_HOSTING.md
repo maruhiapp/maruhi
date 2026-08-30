@@ -381,9 +381,12 @@ this feature degrades gracefully in both directions:
   stored in the OS keychain as usual). The display is refused on pipes, in
   CI, and in AI-agent environments (same fail-closed gate as value display),
   so provision from a human terminal and clear your scrollback afterwards.
-  When the token expires, CLI commands in that runtime fail with 401 and
-  name this re-issuance procedure. Prefer `maruhi ci run` (leases) where
-  available — leases are short-lived and need no stored token.
+  Starting 14 days before a token expires, every CLI command warns on stderr
+  with the expiry date and the re-issuance procedure (in CI this lands in the
+  job log, so the operator sees it before the 401). When the token expires,
+  CLI commands in that runtime fail with 401 and name the same procedure.
+  Prefer `maruhi ci run` (leases) where available — leases are short-lived
+  and need no stored token.
 - **Old CLI against a new server**: the extra `expiresAtMs` response field is
   ignored; the issued token simply expires after 90 days, and the old CLI
   reports the eventual 401 as a revoked token — re-login recovers.

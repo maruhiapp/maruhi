@@ -986,6 +986,79 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     expect(env.errors.join("\n")).toContain("No master key");
   });
 
+  it("期限が 14 日以内なら stderr へ事前警告する(裁定 CL — 環境変数経路は /auth/me の自己開示から)", async () => {
+    const user = await makeTestUser("user-env-0001");
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => ({
+        status: 200,
+        json: { userId: user.userId, orgs: [], tokenExpiresAtMs: Date.now() + 5 * DAY_MS },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
+    await runCli(["key", "show"], env.layer);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Warning: the maruhi token expires on");
+    expect(errors).toContain("days left");
+    expect(errors).toContain("--show-token");
+  });
+
+  it("期限が窓の外なら警告しない(環境変数経路)", async () => {
+    const user = await makeTestUser("user-env-0001");
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const server = await MockServer.start([
+      onRequest("GET", "/auth/me", () => ({
+        status: 200,
+        json: { userId: user.userId, orgs: [], tokenExpiresAtMs: Date.now() + 60 * DAY_MS },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: server.origin });
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
+    await runCli(["key", "show"], env.layer);
+    expect(env.errors.join("\n")).not.toContain("Warning: the maruhi token expires");
+  });
+
+  it("キーチェーン経路はレコード保存の期限から無通信で警告し、旧レコード(期限なし)は従来どおり", async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const server = await MockServer.start([]);
+    servers.push(server);
+
+    const nearEnv = await makeTestEnv();
+    await seedConfig(nearEnv, { server: server.origin });
+    nearEnv.keychain.set(
+      tokenEntryName(server.origin),
+      JSON.stringify({
+        token: "maruhi_pat_keychain",
+        userId: "user-0001",
+        tokenId: "tok_1",
+        expiresAtMs: Date.now() + 3 * DAY_MS,
+      }),
+    );
+    await runCli(["key", "show"], nearEnv.layer);
+    const nearErrors = nearEnv.errors.join("\n");
+    expect(nearErrors).toContain("Warning: the maruhi token expires on");
+    expect(nearErrors).toContain("Re-login with `maruhi login`");
+    // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
+    expect(server.requests).toHaveLength(0);
+
+    // W3a 前のログインが書いた旧レコード(expiresAtMs なし)は警告なしで動く
+    const legacyEnv = await makeTestEnv();
+    await seedConfig(legacyEnv, { server: server.origin });
+    legacyEnv.keychain.set(
+      tokenEntryName(server.origin),
+      JSON.stringify({ token: "maruhi_pat_keychain", userId: "user-0001", tokenId: "tok_1" }),
+    );
+    await runCli(["key", "show"], legacyEnv.layer);
+    expect(legacyEnv.errors.join("\n")).not.toContain("Warning: the maruhi token expires");
+  });
+
   it("環境変数がキーチェーンより優先される", async () => {
     const user = await makeTestUser("user-env-0001");
     let presented = "";
