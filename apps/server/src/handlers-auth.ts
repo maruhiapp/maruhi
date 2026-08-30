@@ -8,12 +8,14 @@
 import {
   AuthFlowError,
   AuthRateLimitedError,
+  DEFAULT_TOKEN_TTL_DAYS,
   ForbiddenError,
   maruhiApi,
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
   SetupIncompleteError,
   TokenLimitError,
+  TokenNotFoundError,
 } from "@maruhi/api-schema";
 import type { TokenScope } from "@maruhi/core";
 import { auditActorOf, RequestAuth, SessionService, TokenService } from "@maruhi/core";
@@ -28,8 +30,8 @@ import {
   SESSION_COOKIE,
   statefulGetCsrfViolated,
 } from "./auth.package/index.ts";
-import { ensureKeyMaterialAccess } from "./authz.ts";
-import { D1AuditRepo, IdentityRepo, RecoveryRepo } from "./db.package/index.ts";
+import { ensureKeyMaterialAccess, ensureTokenManagementAccess } from "./authz.ts";
+import { D1AuditRepo, IdentityRepo, RecoveryRepo, TokenRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex } from "./ids.ts";
 import { ServerKey } from "./server-key.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
@@ -254,18 +256,28 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           Date.now(),
         );
         const tokens = yield* TokenService;
+        // TTL は発行時に固定(AUTH_SPEC §6 — W3a)。明示指定(expiresInDays —
+        // 上限はワイヤ Schema の 1..365)はリース非対応実行環境の無人 PAT 用の
+        // 逃し弁(裁定 CF)。省略時は既定 90 日
+        const ttlMs = (payload.expiresInDays ?? DEFAULT_TOKEN_TTL_DAYS) * 24 * 60 * 60 * 1000;
         const issued = yield* tokens
           .issueToken(
             resolved.userId,
             payload.tokenName ?? "device-flow",
             payload.scopes ?? DEFAULT_TOKEN_SCOPES,
+            ttlMs,
           )
           .pipe(
             Effect.catchTag("TokenLimitReached", (error) =>
               Effect.fail(new TokenLimitError({ limit: error.limit })),
             ),
           );
-        return { token: issued.rawToken, tokenId: issued.tokenId, userId: resolved.userId };
+        return {
+          token: issued.rawToken,
+          tokenId: issued.tokenId,
+          userId: resolved.userId,
+          expiresAtMs: issued.expiresAtMs,
+        };
       }),
     )
     .handle("me", () =>
@@ -318,6 +330,43 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         }
         const tokens = yield* TokenService;
         yield* tokens.revokePresentedToken(rawToken);
+        return HttpServerResponse.empty({ status: 204 });
+      }),
+    )
+    .handle("listTokens", () =>
+      Effect.gen(function* () {
+        const principal = yield* (yield* RequestAuth).principal;
+        // トークン主体は `*` × admin のみ(裁定 CH)。セッション主体は §5 の
+        // 許可列挙を通過済み。403 は呼び出し資格のみから計算される(対象情報なし)
+        yield* ensureTokenManagementAccess(principal);
+        const tokens = yield* TokenRepo;
+        // 応答は本人の行のみ(userId はサーバー導出 — ワイヤに対象指定がなく、
+        // 他人のトークンを探れる面が構造的に存在しない)。監査イベントは
+        // 記録しない(値・鍵に触れない自己情報の読み取り — §11-5 と同じ規律)
+        const summaries = yield* tokens.listForUser(principal.userId);
+        return { tokens: summaries };
+      }),
+    )
+    .handle("revokeTokenById", ({ params }) =>
+      Effect.gen(function* () {
+        const principal = yield* (yield* RequestAuth).principal;
+        // 判定順(裁定 CG): 401(ミドルウェア)→ 403(主体条件 — 呼び出し資格
+        // のみから計算)→ 一様 404(本人所有でない・存在しない id を区別しない)。
+        // セッション主体の CSRF はミドルウェアが担う(DELETE は書き込み系)
+        yield* ensureTokenManagementAccess(principal);
+        const tokens = yield* TokenRepo;
+        // 所有条件(id × userId)は repo 境界が強制する(deepsec S8)。
+        // auth.token_revoked は削除の成立と同時に記録され、actor = 実行主体
+        // (セッション / 別トークン)、payload.tokenId = 失効対象(AUDIT_SPEC §3.1)
+        const revoked = yield* tokens.revokeById(
+          params.tokenId,
+          principal.userId,
+          Date.now(),
+          auditActorOf(principal),
+        );
+        if (!revoked) {
+          return yield* Effect.fail(new TokenNotFoundError());
+        }
         return HttpServerResponse.empty({ status: 204 });
       }),
     )

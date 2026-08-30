@@ -20,6 +20,7 @@ export {
   SetupIncompleteError,
   SetupIncompleteReasonSchema,
   TokenLimitError,
+  TokenNotFoundError,
   UnauthorizedError,
 } from "./auth.ts";
 export {

@@ -118,7 +118,10 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
 const renderers: readonly Renderer[] = [
   when(
     isInstanceOf(UnauthorizedError),
-    () => "Authentication failed (the token may be revoked). Log in again with `maruhi login`",
+    // 期限切れは失効と同じ 401 に畳まれる(AUTH_SPEC §6 — W3a: 区別をワイヤに
+    // 出さない)ため、案内は両方の可能性を言う
+    () =>
+      "Authentication failed (the token may be expired or revoked). Log in again with `maruhi login`",
   ),
   when(isInstanceOf(ForbiddenError), (e) => `Insufficient permission (${e.reason})`),
   // エラー Schema の ID / field 列はワイヤ上無制約の Schema.String(サーバーが

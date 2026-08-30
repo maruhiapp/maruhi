@@ -24,7 +24,7 @@
 | M-1 | ~~Medium~~ | server / crypto | **解決済み(PR #63)** | 承認済み 0.5-draft 合意規則が未実装のまま `grant_server` を旧形式で受理できた(追補 §A-0 で解消を検証) |
 | M-2 | Medium | CI | **修正済み(2026-08-15)** | `pullfrog.yml` が可変タグ参照のまま多数の AI プロバイダ API キーを保持(SHA ピン留め規律の例外) |
 | L-1 | Low | server | **修正済み(2026-08-15)** | セッション認証の `GET …/pull`(var.read 監査を記録)に CSRF ヘッダー要求がなく、クロスサイトから監査記録を強制発火できる |
-| L-2 | Low | server | 現 main でも有効 | API トークンに有効期限がない(`expires_at` 常に NULL) |
+| L-2 | Low | server | **修正済み(2026-08-30 W3a)** | API トークンに有効期限がない(`expires_at` 常に NULL) |
 | L-3 | Low | server | **緩和済み(2026-08-15)** | `/auth/device/exchange`(未認証)にレート制限がなく、GitHub check-token API の枠を第三者が消費できる(ログイン可用性) |
 | L-4 | Low | server | 現 main でも有効 | `auth.login_failed` の記録上限がグローバル固定窓のため、洪水で標的型失敗の記録を抑制できる(設計文書化済み) |
 | L-5 | Low | web / server | **修正済み(2026-08-15)** | HSTS 未設定(custom domain 時)・API 応答にセキュリティヘッダーなし |
@@ -88,6 +88,8 @@
 ### L-2. API トークンに有効期限がない(Low)
 
 > **状態(2026-08-28 追記)**: **仕様改訂起草済み** — 申し送り(推奨対応順序 5「トークン管理 UI 設計・仕様改訂と同時に」)どおり、W0(Web ダッシュボード画面設計 — ADR-0018 改訂 2)のトークン境界裁定と同時に AUTH_SPEC §6 へ既定 TTL(起草値 90 日・再ログイン更新)を起草した。実装は Wave 3 W3a(docs/notes/web-dashboard-design.md §7)のため「修正済み」とはしない。
+>
+> **状態(2026-08-30 追記)**: **修正済み(W3a)** — 既定 TTL 90 日を発行時に `expires_at` へ固定し、期限切れは検証時 401(失効と同一扱い)。既存の無期限行は移行(`token_ttl_reanchor`)が「適用時点 + 90 日」へ再アンカーし、検証側も NULL を期限切れとして扱う(fail-closed — 移行未適用でも無期限は復活しない)。リース非対応実行環境の無人 PAT には発行時の明示 TTL 指定(`expiresInDays` 1..365 — 上限つき)を用意し、無期限の既定へは戻していない。裁定の比較・棄却案は docs/notes/session-44.md(裁定 CE / CF)。
 
 **場所**: `apps/server/src/db.package/repos.ts`(`expiresAt: null` 固定)、`apps/server/src/auth.package/token.ts`(**現 main でも同様**)
 

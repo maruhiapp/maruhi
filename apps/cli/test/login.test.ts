@@ -11,6 +11,9 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
+/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
+const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
+
 afterEach(async () => {
   await Promise.all(servers.map((server) => server.close()));
   servers = [];
@@ -119,6 +122,66 @@ describe("maruhi login", () => {
     expect(github.polls()).toBe(0);
   });
 
+  it("範囲外の --token-ttl-days はどの通信よりも前に落とす(AUTH_SPEC §6 — W3a)", async () => {
+    // 上限は api-schema の MAX_TOKEN_TTL_DAYS と共有(--token-name と同じ規律:
+    // 書き方の誤りをブラウザ承認の完走後に出さない)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    for (const value of ["0", "366"]) {
+      const code = await runCli(
+        [
+          "login",
+          "--token-ttl-days",
+          value,
+          "--github-base-url",
+          githubServer.origin,
+          "--github-poll-interval",
+          "0",
+        ],
+        env.layer,
+      );
+      expect(code).toBe(2);
+    }
+    expect(env.errors.join("\n")).toContain("--token-ttl-days must be between 1 and 365");
+    expect(github.polls()).toBe(0);
+    expect(maruhi.requests).toHaveLength(0);
+  });
+
+  it("--token-ttl-days は expiresInDays として交換 payload に載り、省略時は載らない", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const bodies: Record<string, unknown>[] = [];
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", (request) => {
+        bodies.push(request.body as Record<string, unknown>);
+        return {
+          status: 200,
+          json: {
+            token: "maruhi_pat_issued",
+            tokenId: "tok_1",
+            userId: "user-0001",
+            expiresAtMs: EXPIRES_AT_MS,
+          },
+        };
+      }),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const flags = ["--github-base-url", githubServer.origin, "--github-poll-interval", "0"];
+    expect(await runCli(["login", "--token-ttl-days", "365", ...flags], env.layer)).toBe(0);
+    expect(await runCli(["login", ...flags], env.layer)).toBe(0);
+    expect(bodies[0]?.["expiresInDays"]).toBe(365);
+    // 省略時はサーバー既定(90 日)に委ねる — キー自体を送らない
+    expect(Object.hasOwn(bodies[1] ?? {}, "expiresInDays")).toBe(false);
+    // 有効期限は発行時に固定され、いつ再ログインが要るかを表示する
+    expect(env.logs.join("\n")).toContain("The token expires on 2099-01-01 (UTC)");
+  });
+
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
     const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);
@@ -131,7 +194,12 @@ describe("maruhi login", () => {
         receivedTokenName = String(body["tokenName"]);
         return {
           status: 200,
-          json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+          json: {
+            token: "maruhi_pat_issued",
+            tokenId: "tok_1",
+            userId: "user-0001",
+            expiresAtMs: EXPIRES_AT_MS,
+          },
         };
       }),
     ]);
@@ -176,7 +244,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("GET", "/auth/recovery/status", () => ({
         status: 200,
@@ -199,7 +272,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("GET", "/auth/recovery/status", () => ({
         status: 200,
@@ -234,7 +312,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
     ]);
     const env = await makeTestEnv();
@@ -274,7 +357,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("POST", "/auth/token/revoke", (request) => {
         expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_issued");
@@ -302,7 +390,12 @@ describe("maruhi login", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
     ]);
@@ -524,7 +617,12 @@ describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
       }),
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
     ]);
     const env = await makeTestEnv();
@@ -550,7 +648,12 @@ describe("client_id の自動解決(AUTH_SPEC §4 = GET /auth/config)", () => {
       }),
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
     ]);
     const env = await makeTestEnv();

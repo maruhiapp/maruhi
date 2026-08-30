@@ -2,7 +2,7 @@
 // キーチェーンレコードの codec、run の注入検証、stdin 正規化、
 // MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
 
-import { ProjectNotFoundError } from "@maruhi/api-schema";
+import { ProjectNotFoundError, UnauthorizedError } from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
 import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
@@ -873,6 +873,14 @@ describe("decodeValueText(値デコード方針の一本化)", () => {
 });
 
 describe("toCliError(サーバー由来文字列の端末中和)", () => {
+  it("401 は期限切れ・失効の両方の可能性と再ログインを案内する(AUTH_SPEC §6 — W3a)", () => {
+    // 期限切れは失効と同じ 401 に畳まれる(区別はワイヤに出ない)ため、
+    // 案内は両方の可能性を言い、次の一手(再ログイン)を示す
+    const rendered = toCliError(new UnauthorizedError());
+    expect(rendered.message).toContain("expired or revoked");
+    expect(rendered.message).toContain("maruhi login");
+  });
+
   it("エラー Schema の自由文字列 ID を中和する", () => {
     // ワイヤ上無制約の Schema.String 列(悪意あるサーバーが ANSI/改行を埋められる)
     const notFound = toCliError(

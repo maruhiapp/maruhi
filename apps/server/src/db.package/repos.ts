@@ -30,6 +30,7 @@ import { Context, Data, Effect } from "effect";
 
 import type {
   ApiTokenRecord,
+  ApiTokenSummary,
   RecoveryFetchDecision,
   RecoveryWrapRecord,
   ResolvedUser,
@@ -384,6 +385,8 @@ export interface NewApiToken {
   readonly tokenHash: string;
   readonly tokenPrefix: string;
   readonly scopes: readonly TokenScope[];
+  /** 発行時に固定される有効期限(AUTH_SPEC §6 の既定 TTL — W3a)。 */
+  readonly expiresAtMs: number;
   readonly createdAtMs: number;
 }
 
@@ -399,8 +402,24 @@ export interface TokenRepoShape {
   readonly issueForUserWithinLimit: (token: NewApiToken, limit: number) => Effect.Effect<boolean>;
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
-  /** 明示失効。id × user 所有を強制し、auth.token_revoked を記録する(§3.1 / S8)。 */
-  readonly revokeById: (id: string, userId: string, nowMs: number) => Effect.Effect<void>;
+  /**
+   * 本人のトークン一覧(AUTH_SPEC §6 — W3a)。token_hash は選択列に含めない
+   * (配布面 — ApiTokenSummary に構造ごと存在しない)。期限切れ行も返す
+   * (棚卸しの対象 — 検証だけが 401 に落とす)。created_at 昇順・同時刻は id。
+   */
+  readonly listForUser: (userId: string) => Effect.Effect<readonly ApiTokenSummary[]>;
+  /**
+   * 明示失効。id × user 所有を強制し、auth.token_revoked を記録する(§3.1 / S8)。
+   * actor は失効を実行した主体(指定失効ではセッション / 別トークンでありうる —
+   * AUDIT_SPEC §2)。戻り値 = 実際に行が消えたか(false は呼び出し側が一様 404 を
+   * 導出する — §6 の存在秘匿)。
+   */
+  readonly revokeById: (
+    id: string,
+    userId: string,
+    nowMs: number,
+    actor: D1AuditActor,
+  ) => Effect.Effect<boolean>;
 }
 
 export class TokenRepo extends Context.Service<TokenRepo, TokenRepoShape>()("TokenRepo") {}
@@ -417,7 +436,7 @@ function tokenInsertSelect(db: Db, token: NewApiToken, condition: SQL) {
           tokenHash: sql<string>`${token.tokenHash}`.as("token_hash"),
           tokenPrefix: sql<string>`${token.tokenPrefix}`.as("token_prefix"),
           scopes: sql<string>`${JSON.stringify(token.scopes)}`.as("scopes"),
-          expiresAt: sql<number | null>`${null}`.as("expires_at"),
+          expiresAt: sql<number>`${token.expiresAtMs}`.as("expires_at"),
           createdAt: sql<number>`${token.createdAtMs}`.as("created_at"),
           lastUsedAt: sql<number | null>`${null}`.as("last_used_at"),
         })
@@ -522,9 +541,44 @@ function makeTokenRepo(db: Db): TokenRepoShape {
       run(async () => {
         await db.update(apiTokens).set({ lastUsedAt: nowMs }).where(eq(apiTokens.id, id));
       }),
-    // v1 の失効経路は「提示されたトークン自身」のみ(AUTH_SPEC §6)なので、
-    // actor のトークン id = 失効対象 id になる
-    revokeById: (id, userId, nowMs) =>
+    listForUser: (userId) =>
+      run(async () => {
+        // token_hash を選択列に含めない(配布面 — auth-domain.ts の注記)。
+        // 期限切れ行も返す: 一覧は棚卸し面であり、期限切れは失効(行の削除)と
+        // 違って在庫として可視のまま残る(利用者が指定失効で掃除できる)
+        const rows = await db
+          .select({
+            id: apiTokens.id,
+            name: apiTokens.name,
+            tokenPrefix: apiTokens.tokenPrefix,
+            scopes: apiTokens.scopes,
+            createdAt: apiTokens.createdAt,
+            lastUsedAt: apiTokens.lastUsedAt,
+            expiresAt: apiTokens.expiresAt,
+          })
+          .from(apiTokens)
+          .where(eq(apiTokens.userId, userId))
+          .orderBy(apiTokens.createdAt, apiTokens.id)
+          .all();
+        return rows.map((row): ApiTokenSummary => {
+          const scopes = parseTokenScopes(row.scopes);
+          if (scopes === null) {
+            // findTokenByHash と同じ規律: 自分の書き込み経路でしか生成されない
+            // 列が壊れている = 実装バグ / DB 破損(黙って行を落とさない)
+            throw new Error("stored token scopes are not a valid scope array");
+          }
+          return {
+            id: row.id,
+            name: row.name,
+            tokenPrefix: row.tokenPrefix,
+            scopes,
+            createdAtMs: row.createdAt,
+            lastUsedAtMs: row.lastUsedAt,
+            expiresAtMs: row.expiresAt,
+          };
+        });
+      }),
+    revokeById: (id, userId, nowMs, actor) =>
       run(async () => {
         // 削除の成立を returning で観測してからイベントを書く(revokeByHash と
         // 同型 — Cursor Security Agent 指摘対応)。並行 revoke は呼び出し側の
@@ -532,19 +586,20 @@ function makeTokenRepo(db: Db): TokenRepoShape {
         // token_revoked を記録できてしまう(過大計上)。重複より欠落側に倒す
         const deleted = await db
           .delete(apiTokens)
-          // deepsec S8: id だけで消すと将来 token-id 指定の管理 API が増えた際に
+          // deepsec S8: id だけで消すと token-id 指定の管理 API(W3a の指定失効)が
           // 別 user の token を失効し、監査 actor だけ呼び出し user と誤記録する。
-          // 現行 caller も server-derived userId を渡すが、所有条件は repo 境界で強制
+          // 所有条件は repo 境界で強制し、0 行 = 呼び出し側の一様 404(§6)
           .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId)))
           .returning({ id: apiTokens.id });
         if (deleted.length === 0) {
-          return;
+          return false;
         }
         await userAuditInsert(db, nowMs, {
           event: "auth.token_revoked",
-          actor: { userId, apiTokenId: id },
+          actor,
           payload: { tokenId: id },
         });
+        return true;
       }),
   };
 }

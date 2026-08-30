@@ -53,6 +53,9 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
+/** 交換応答の有効期限フィクスチャ(AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z)。 */
+const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
+
 let servers: MockServer[] = [];
 
 afterEach(async () => {
@@ -237,7 +240,12 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     const maruhi = await start([
       onRequest("POST", "/auth/device/exchange", () => ({
         status: 200,
-        json: { token: "maruhi_pat_issued_real", tokenId: "tok_1", userId: "user-0001" },
+        json: {
+          token: "maruhi_pat_issued_real",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
       })),
       onRequest("GET", "/auth/me", (request) => {
         const header = request.headers["authorization"];

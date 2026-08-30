@@ -387,6 +387,9 @@ describe("セッション / トークンの失効(§3.1)", () => {
       id: string;
       user_id: string;
     }>();
+    if (tokenRow === null) {
+      throw new Error("expected token row");
+    }
     const revoke = await SELF.fetch(`${BASE}/auth/token/revoke`, {
       method: "POST",
       headers: bearer(token),
@@ -395,15 +398,18 @@ describe("セッション / トークンの失効(§3.1)", () => {
     const events = await auditRows("user_audit_events");
     const revoked = events.filter((row) => row.event === "auth.token_revoked");
     expect(revoked).toHaveLength(1);
-    expect((revoked[0] as AuditRow).actor_api_token_id).toBe(tokenRow?.id);
-    expect(payloadOf(revoked[0] as AuditRow)).toEqual({ tokenId: tokenRow?.id });
+    expect((revoked[0] as AuditRow).actor_api_token_id).toBe(tokenRow.id);
+    expect(payloadOf(revoked[0] as AuditRow)).toEqual({ tokenId: tokenRow.id });
 
     // 削除が空振りする再失効(並行 revoke の負け側と同じ実行順)はイベントを
     // 増やさない(1 失効 = 高々 1 行)
     const services = makeDbServices(env.DB);
     const tokens = Context.get(services, TokenRepo);
     await Effect.runPromise(
-      tokens.revokeById(tokenRow?.id ?? "", tokenRow?.user_id ?? "", Date.now()),
+      tokens.revokeById(tokenRow.id, tokenRow.user_id, Date.now(), {
+        userId: tokenRow.user_id,
+        apiTokenId: tokenRow.id,
+      }),
     );
     const after = await auditRows("user_audit_events");
     expect(after.filter((row) => row.event === "auth.token_revoked")).toHaveLength(1);
@@ -416,7 +422,12 @@ describe("セッション / トークンの失効(§3.1)", () => {
       throw new Error("expected token row");
     }
     const tokens = Context.get(makeDbServices(env.DB), TokenRepo);
-    await Effect.runPromise(tokens.revokeById(tokenRow.id, "user-other", Date.now()));
+    await Effect.runPromise(
+      tokens.revokeById(tokenRow.id, "user-other", Date.now(), {
+        userId: "user-other",
+        apiTokenId: tokenRow.id,
+      }),
+    );
 
     expect(
       await env.DB.prepare("SELECT id FROM api_tokens WHERE id = ?").bind(tokenRow.id).first(),

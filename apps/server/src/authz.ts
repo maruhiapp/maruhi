@@ -155,6 +155,22 @@ export function ensureSelfAuditAccess(
 }
 
 /**
+ * トークン管理面(AUTH_SPEC §6 — W3a: 一覧 `GET /auth/tokens`・指定失効)の
+ * 主体条件: セッション主体は可(§5 の許可列挙)、トークン主体は `*` × admin
+ * スコープを含む場合のみ。指定失効は §13-2 の鍵素材条件と同水準(スコープ限定
+ * トークンの窃取で他のトークンを失効させる可用性攻撃の遮断 — §6)。一覧も同条件
+ * (裁定 CH — 本人軸監査 ensureSelfAuditAccess と同じ理由: アカウント全域の
+ * トークン目録 = 偵察材料を、露出しやすいスコープ限定トークンに読ませない)。
+ * 判定は呼び出し主体の資格情報のみから計算でき、対象トークンの情報を運ばない
+ * (裁定 CG の判定順 — 403 が一様 404 より先でも存在情報を漏らさない)。
+ */
+export function ensureTokenManagementAccess(
+  principal: AuthenticatedPrincipal,
+): Effect.Effect<void, ForbiddenError> {
+  return ensureSelfAuditAccess(principal);
+}
+
+/**
  * プロジェクト作成(init): まだ存在しないプロジェクトなので存在秘匿の対象外。
  * スコープ不足はすべて 403。必要水準は admin(AUTH_SPEC §6)。
  */

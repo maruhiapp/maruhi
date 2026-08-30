@@ -155,10 +155,15 @@ export class SessionService extends Context.Service<SessionService, SessionServi
   "SessionService",
 ) {}
 
-/** Result of issuing an API token: the raw token is returned exactly once. */
+/**
+ * Result of issuing an API token: the raw token is returned exactly once.
+ * `expiresAtMs` は発行時に固定された有効期限(AUTH_SPEC §6 の既定 TTL — W3a。
+ * セッション §5 のスライディング更新と意図的に非対称)。
+ */
 export interface IssuedToken {
   readonly rawToken: string;
   readonly tokenId: string;
+  readonly expiresAtMs: number;
 }
 
 /** ユーザーあたりのトークン本数上限(AUTH_SPEC §6)に達している。 */
@@ -171,12 +176,14 @@ export interface TokenServiceShape {
   /**
    * `maruhi_pat_` トークンを発行する。DB にはハッシュのみ保存し、生値はここでのみ
    * 返す。同名は既存の失効を伴う再発行(ローテーション)、別名の新規発行は
-   * ユーザーあたり上限まで(§6)。
+   * ユーザーあたり上限まで(§6)。`ttlMs` から expires_at を発行時に固定する
+   * (§6 の既定 TTL — W3a。呼び出し側が既定値・明示指定の解決を済ませて渡す)。
    */
   readonly issueToken: (
     userId: string,
     name: string,
     scopes: readonly TokenScope[],
+    ttlMs: number,
   ) => Effect.Effect<IssuedToken, TokenLimitReachedError>;
   /** `maruhi_pat_…` トークンから主体を解決する。失敗は匿名として扱う。 */
   readonly resolveApiToken: (rawToken: string) => Effect.Effect<Principal>;

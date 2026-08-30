@@ -28,16 +28,18 @@ import { AuthMiddleware } from "./auth-middleware.ts";
  *   (§12-4)、メタデータのみ pull(§12-7)、監査読み取り(AUDIT_SPEC §7 —
  *   プロジェクト・invite.*・本人軸)、要ローテーションフラグビュー、
  *   招待一覧(§15-2)
- * - 失効系: 招待の失効(§15-2)
+ * - 失効系: 招待の失効(§15-2)、トークンの指定失効(§6 — W3a)
  *
- * §5 の許可列挙中の将来 API(トークン一覧・指定失効 = W3a)は実装時に本リストへ
- * 追加する。`audit.auditHead` は列挙外(Web に消費者なし — session-39 §10-4)。
+ * トークン一覧(`auth.listTokens` — §6 の読み取り面)もここに含む。
+ * `audit.auditHead` は列挙外(Web に消費者なし — session-39 §10-4)。
  */
 export const SESSION_ALLOWED_ENDPOINTS: ReadonlyArray<readonly [group: string, endpoint: string]> =
   [
     ["auth", "me"],
     ["auth", "logout"],
     ["auth", "recoveryStatus"],
+    ["auth", "listTokens"],
+    ["auth", "revokeTokenById"],
     ["membership", "get"],
     ["membership", "list"],
     ["environments", "list"],

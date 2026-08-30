@@ -69,6 +69,8 @@ export function loginOp(input: {
   readonly origin: string;
   readonly clientId: string;
   readonly tokenName: string;
+  /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
+  readonly expiresInDays?: number;
   readonly githubBaseUrl?: string;
   /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
   readonly minIntervalSeconds?: number;
@@ -106,6 +108,7 @@ export function loginOp(input: {
         payload: {
           githubAccessToken: Redacted.value(githubAccessToken),
           tokenName: input.tokenName,
+          ...(input.expiresInDays === undefined ? {} : { expiresInDays: input.expiresInDays }),
         },
       })
       .pipe(Effect.mapError(toCliError));
@@ -141,6 +144,11 @@ export function loginOp(input: {
     );
     yield* io.log(
       `Logged in (user: ${displayText(exchanged.userId)}). The token is stored in the OS keychain`,
+    );
+    // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
+    // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする
+    yield* io.log(
+      `The token expires on ${new Date(exchanged.expiresAtMs).toISOString().slice(0, 10)} (UTC). Re-login (\`maruhi login\`) rotates it`,
     );
     yield* io.log(
       `Re-logging in with the same token name (${input.tokenName}) revokes the old token`,
