@@ -636,8 +636,8 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
 
   it("MARUHI_TOKEN に伏字が入っていたら、通信する前に理由を名指しする", async () => {
     // Redacted を入れた以上、出力で見た伏字をトークンだと思って環境変数へ
-    // 貼る経路は現実的。そのまま送ると 401 になり「revocation, scope, and the target serverを
-    // 確認してください」という別の原因の案内へ送られてしまう
+    // 貼る経路は現実的。そのまま送ると 401 になり「期限切れ・失効かもしれ
+    // ません」という別の原因の案内(session.ts の認証失敗文言)へ送られてしまう
     const requests: string[] = [];
     const maruhi = await start([
       onRequest("GET", "/auth/me", (request) => {
@@ -655,7 +655,7 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     const dump = JSON.stringify(exit);
     expect(dump).toContain("redaction placeholder (<redacted>) itself");
-    expect(dump).not.toContain("revocation, scope, and the target server");
+    expect(dump).not.toContain("Authentication with MARUHI_TOKEN failed");
     // 通信より前に落ちる(無駄な往復も、誤認された 401 も作らない)
     expect(requests).toEqual([]);
   });

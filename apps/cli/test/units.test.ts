@@ -1018,7 +1018,13 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("Authentication with MARUHI_TOKEN failed");
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Authentication with MARUHI_TOKEN failed");
+    // W3a 以降、無人環境のこの 401 の最有力原因は期限切れ(裁定 CJ)。
+    // 直し先は env 差し替えであることまで案内する(`maruhi login` 単独の
+    // キーチェーン向け案内へ退行させない)
+    expect(errors).toContain("expired or revoked");
+    expect(errors).toContain("update the MARUHI_TOKEN value");
   });
 
   it("空白だけの MARUHI_TOKEN は未設定として扱う(空トークンで往復させない)", async () => {
@@ -1033,7 +1039,8 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
     // 判定を trim 後の値で行わないと、`Bearer `(空)を送ってから 401 になり、
-    // 「revocation, scope, and the target serverを確認してください」という別原因の案内へ落ちる
+    // 「期限切れ・失効かもしれません」という別原因の案内(session.ts の
+    // 認証失敗文言)へ落ちる
     env.setEnvVar("MARUHI_TOKEN", " \n");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
