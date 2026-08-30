@@ -13,7 +13,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import { pollDeviceFlow, startDeviceFlow } from "./device-flow.ts";
-import { displayText } from "./display.ts";
+import { displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -146,10 +146,19 @@ export function loginOp(input: {
       `Logged in (user: ${displayText(exchanged.userId)}). The token is stored in the OS keychain`,
     );
     // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
-    // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする
-    yield* io.log(
-      `The token expires on ${new Date(exchanged.expiresAtMs).toISOString().slice(0, 10)} (UTC). Re-login (\`maruhi login\`) rotates it`,
-    );
+    // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
+    // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
+    // Date#toISOString へ直接渡さない — deepsec B1/B4/B5 と同じ規律。PR #108
+    // pullfrog 指摘)。フィールド欠落 = W3a より古いサーバー(TTL 未実装)
+    if (exchanged.expiresAtMs !== undefined) {
+      yield* io.log(
+        `The token expires on ${formatUtcDate(exchanged.expiresAtMs)} (UTC). Re-login (\`maruhi login\`) rotates it`,
+      );
+    } else {
+      yield* io.log(
+        "Note: this server did not report a token expiry (it predates token TTLs; --token-ttl-days has no effect). Update the server to enforce token lifetimes",
+      );
+    }
     yield* io.log(
       `Re-logging in with the same token name (${input.tokenName}) revokes the old token`,
     );

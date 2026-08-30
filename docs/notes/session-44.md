@@ -218,7 +218,26 @@ session-43 §14 の要領で、新設面の各不変条件を定義 → 消費 �
 - 追加の発見は出なかった(新設面が既設のスイープ機構〔session-capability /
   serving-topology〕の被覆内に収まる設計を最初から選んだことの帰結)
 
-## 8. 申し送り(W3b へ)
+## 8. レビュー反映(PR #108)
+
+- **pullfrog(2 件 — 両方正当として修正)**:
+  (1) **期限表示の total フォーマッタ迂回** — login.ts の新規行が
+  `new Date(ms).toISOString().slice(0, 10)` を直に呼んでいた。`expiresAtMs` は
+  ワイヤの無制限 number であり、Date 範囲外で RangeError の defect(クラッシュ)、
+  拡張年形式で slice 位置ずれ — display.ts のヘッダーコメント(deepsec
+  B1/B4/B5)がまさに `expiresAtMs` を名指しで挙げる規律の迂回だった。
+  `formatUtcDate` へ置換し、範囲外値(9.9e15)での明示劣化をテストで変異検証。
+  (2) **`expiresAtMs` 必須化のバージョンスキュー** — 応答の必須フィールド化は
+  「新 CLI × 旧サーバー」で `maruhi login`(fail-closed な期限切れからの唯一の
+  回復コマンド)を応答 decode で壊し、発行済みトークンを孤児化させる。ボットは
+  「optionalKey 化 or 運用手順書への hard break 記録」の二択を提示したが、
+  **両方の上位互換 = optionalKey 化 + 欠落時の注記表示 + SELF_HOSTING
+  "Updates" の両方向スキュー記述**を採用: 欠落は旧サーバーの検出材料になり
+  (`--token-ttl-days` が無効である旨まで利用者に言える)、リポジトリの先例
+  (head attestations の両方向 graceful degradation 記述)にも揃う。旧サーバー
+  相手のログイン成功 + 注記をテストで固定
+
+## 9. 申し送り(W3b へ)
 
 - web の `x-maruhi-csrf` リテラルを `CSRF_HEADER_NAME` の type-only でない
   定数 import へ置換(裁定 CD の import 規律と整合する形で — 値 import に

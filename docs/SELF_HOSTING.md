@@ -352,6 +352,33 @@ always), but note this feature degrades gracefully in both directions:
 - The Durable Object migration (two new tables for attestation rows and their
   per-member rate windows) is automatic on first access. No operator action.
 
+**API token lifetimes (2026-08-30 release, W3a)**: this release gives API
+tokens a default lifetime of 90 days (fixed at issuance; expired tokens are
+rejected with 401 like revoked ones), adds token management endpoints
+(`GET /auth/tokens`, `DELETE /auth/tokens/:tokenId`), and lets `maruhi login`
+request a longer lifetime with `--token-ttl-days` (up to 365). Version-skew
+notes — **update the server before the CLIs** (same direction as always), and
+this feature degrades gracefully in both directions:
+
+- **Existing tokens**: the bundled D1 migration re-anchors previously
+  unlimited tokens to *apply time + 90 days*, so nothing stops working at the
+  update itself — re-login (`maruhi login`) within 90 days rotates each token
+  onto its own fresh lifetime. If you deploy the new code without applying the
+  migration (the standard `bun run deploy` applies it automatically), the
+  server treats legacy no-expiry tokens as already expired (fail-closed);
+  re-login recovers.
+- **New CLI against an old server**: `maruhi login` still works. The old
+  server does not report an expiry, so the CLI prints a note instead of an
+  expiry date, and `--token-ttl-days` has no effect there (the exchange
+  request is deliberately tolerant of unknown fields, so the old server
+  ignores it and issues an unlimited token).
+- **Old CLI against a new server**: the extra `expiresAtMs` response field is
+  ignored; the issued token simply expires after 90 days, and the old CLI
+  reports the eventual 401 as a revoked token — re-login recovers.
+- **Adjusting the default**: the 90-day default is an acceptance-policy
+  constant (`DEFAULT_TOKEN_TTL_DAYS` in `packages/api-schema`), not a
+  consensus rule — self-hosted deployments may change it.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata

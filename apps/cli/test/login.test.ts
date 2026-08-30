@@ -182,6 +182,60 @@ describe("maruhi login", () => {
     expect(env.logs.join("\n")).toContain("The token expires on 2099-01-01 (UTC)");
   });
 
+  it("expiresAtMs を返さない旧サーバーでもログインは成功し、期限未申告を注記する(PR #108 pullfrog 指摘)", async () => {
+    // maruhi login は fail-closed な期限切れからの唯一の回復コマンド —
+    // W3a より古いサーバー相手に応答 decode で落とすと、発行済みトークンを
+    // サーバー側に孤児化させたまま復旧手段がなくなる
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: { token: "maruhi_pat_issued", tokenId: "tok_1", userId: "user-0001" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
+    const logs = env.logs.join("\n");
+    expect(logs).not.toContain("The token expires on");
+    expect(logs).toContain("did not report a token expiry");
+  });
+
+  it("範囲外の expiresAtMs でもクラッシュせず明示劣化する(display.ts の total 表示)", async () => {
+    // ワイヤの expiresAtMs は無制限 number — Date 範囲(±8.64e15)外を
+    // toISOString へ渡すと RangeError の defect になる(deepsec B1/B4/B5 の
+    // display.ts 規律。PR #108 pullfrog 指摘の変異検証)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: 9.9e15,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    expect(env.logs.join("\n")).toContain("(invalid timestamp: 9900000000000000)");
+  });
+
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
     const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);

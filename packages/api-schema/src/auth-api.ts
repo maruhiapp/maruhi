@@ -89,12 +89,17 @@ export const AuthConfigSchema = Schema.Struct({
  * Result of the device-flow exchange (AUTH_SPEC §4): the raw token, shown once.
  * `expiresAtMs` は発行時に固定された有効期限(§6 の既定 TTL — W3a)。CLI が
  * 期限を利用者へ表示するための材料で、生値と違い何度でも表示してよい。
+ * optionalKey なのはバージョンスキュー耐性(PR #108 pullfrog 指摘): W3a より
+ * 古いサーバーはこのフィールドを返さず、必須にすると新 CLI の `maruhi login`
+ * — fail-closed な期限切れからの唯一の回復コマンド — が応答 decode で失敗し、
+ * 発行済みトークンをサーバー側に孤児化させる。W3a 以降のサーバーは常に返す
+ * (欠落 = 旧サーバーの検出材料。CLI は期限未申告の注意を表示する)。
  */
 export const DeviceExchangeResultSchema = Schema.Struct({
   token: Schema.String,
   tokenId: Schema.String,
   userId: Schema.String,
-  expiresAtMs: Schema.Number,
+  expiresAtMs: Schema.optionalKey(Schema.Number),
 });
 
 /**
