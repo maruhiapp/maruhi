@@ -43,8 +43,8 @@
 
 ## Phase 3: エージェント(方針は ADR-0014。優先度順)
 
-- 値なしスキーマ(名前・型・説明・必須のみをエージェントへ開示。`maruhi schema` / MCP。`.env.schema` ファイルは正にしない)(検討メモ: docs/notes/value-free-schema.md — 2026-08-30 のオーナー既決事項〔フル実施・MCP 配信後回し〕込み。本行の文言更新は S 系列の設計 PR で)
-- MCP サーバー同居(スコープ付き・短命・監査付きの読み取り。値なしスキーマの配信機構を兼ねる)
+- 値なしスキーマ(名前・型・説明・必須のみをエージェントへ開示。配信は `maruhi schema` CLI — MCP 配信は後回し〔次行〕。`.env.schema` ファイルは正にしない)— **仕様起草済み(2026-08-30 S0)**: CRYPTO_SPEC 0.8-draft §4.2 レイアウト v2 / AUTH_SPEC 0.16-draft §12-11 スキーマポリシー。CLI・付帯面と実装分割(S1〜)は docs/notes/value-free-schema-design.md、裁定は docs/notes/session-46.md(検討メモ: docs/notes/value-free-schema.md)
+- MCP サーバー同居(スコープ付き・短命・監査付きの読み取り。値なしスキーマの配信機構を兼ねる — スキーマの MCP 配信は需要の実測後に `maruhi schema` の薄いラッパとして追加〔2026-08-30 オーナー既決 — 検討メモ §1〕)
 - エージェント向け credential brokering(`maruhi proxy run`: プレースホルダのみ渡し、通信境界で実値に差し替え。「サーバーもエージェントも平文を持たない」)
 - DO ベースのリース(「このエージェントセッションに、この変数だけ、30 分」)
 - no-reveal 方針化(人間向けの値表示を例外操作に格上げ。エージェント検出時の表示拒否は既定のまま)
