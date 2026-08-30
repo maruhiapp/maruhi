@@ -1015,14 +1015,17 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await page.getByRole("button", { name: "Confirm revoke" }).click();
     // in-flight 中: 他行の Revoke は無効(クリックしても武装できない)。
-    // クリック直後の再レンダリングと競合しないようポーリングで待つ
-    const otherRevoke = page.getByRole("button", { name: "Revoke" }).first();
+    // クリック直後の再レンダリングと競合しないようポーリングで待つ。
+    // exact: true が必須(PR #109 pullfrog 指摘): 既定の name 照合は部分一致で、
+    // 実行中行の "Confirm revoke"(isLoading で無効)が DOM 順の先頭に立ち、
+    // isLocked を外してもテストが通ってしまう — 完全一致で未武装行だけを指す
+    const otherRevoke = page.getByRole("button", { name: "Revoke", exact: true }).first();
     await expect.poll(() => otherRevoke.isDisabled()).toBe(true);
     release?.();
     // 完了 → 再取得で行が消え、残る行の Revoke は再び有効
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
     await expect
-      .poll(() => page.getByRole("button", { name: "Revoke" }).first().isDisabled())
+      .poll(() => page.getByRole("button", { name: "Revoke", exact: true }).first().isDisabled())
       .toBe(false);
     await page.close();
   });
