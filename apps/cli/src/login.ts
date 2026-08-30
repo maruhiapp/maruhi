@@ -13,7 +13,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { makeApiClient } from "./api.ts";
 import { pollDeviceFlow, startDeviceFlow } from "./device-flow.ts";
-import { displayText, formatUtcDate } from "./display.ts";
+import { displayText, escapeText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -159,9 +159,13 @@ export function loginOp(input: {
       // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
       // 剥がすのはこの表示のためだけで、値は保存済み(上のキーチェーン)以外へ
       // 流れない。呼び出し側の値表示ゲート(fail-closed 2 層)通過が前提で、
-      // 対話端末以外(パイプ・CI・エージェント)ではここへ到達しない
+      // 対話端末以外(パイプ・CI・エージェント)ではここへ到達しない。
+      // token はワイヤ上無制約の Schema.String(サーバーが全バイトを選べる)
+      // なので中和して出す — ただしコピーする値なので displayText(U+FFFD への
+      // 破壊的置換)でなく escapeText(allow-list — 正直な Base62 値は素通し、
+      // 注入は可視のエスケープ列になる)を使う(PR #108 pullfrog 指摘)
       yield* io.log("");
-      yield* io.log(`    ${Redacted.value(issuedToken)}`);
+      yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
       yield* io.log("");
       yield* io.log(
         "This value is not shown again (re-login rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",

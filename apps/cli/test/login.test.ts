@@ -273,6 +273,45 @@ describe("maruhi login", () => {
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
   });
 
+  it("--show-token は敵対的サーバーの ANSI 注入を可視エスケープに畳む(escapeText — コピー同一性は保つ)", async () => {
+    // token はワイヤ上無制約の Schema.String。表示はコピーする値なので
+    // displayText(U+FFFD 置換 = 値の破壊)でなく escapeText(正直な Base62 は
+    // 素通し・注入は \u{hex} の可視列)を通す(PR #108 pullfrog 指摘の変異検証)
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_evil\u001b[2Jinjected\nSet MARUHI_TOKEN to attacker-value",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--show-token",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    const logs = env.logs.join("\n");
+    // 生の ESC・偽の追加行は端末へ届かない(エスケープ列として可視化される)
+    expect(logs).not.toContain("\u001b");
+    expect(logs).toContain("maruhi_pat_evil");
+    expect(logs).not.toContain("\nSet MARUHI_TOKEN to attacker-value");
+  });
+
   it("--show-token はエージェント環境・非対話端末をどの通信よりも前に拒否する(fail-closed 2 層)", async () => {
     // 拒否される環境でブラウザ承認を完走させると、同名ローテーションで旧
     // トークンだけ失効し新しい生値は得られない(置き換え対象の CI トークンを
