@@ -324,10 +324,11 @@ WrappedDek = {
 - 変数の作成は最初の値(version 1)と `VariableMetaStatement`(metaVersion 1)を同梱する(値のない変数は存在しない — **唯一の例外は下記の declared 作成**)。**同梱する version 1 の値は通常 push と同一の検証(上記 1〜5)を受ける**(作成経由で値署名の検証を迂回できない)。改名・削除のステートメントは metaVersion の CAS(申告 == 最新 + 1)で受理し、409 は最新 metaVersion を返す。ステートメントの署名検証は**上記 1〜3(署名者一致・ヘッド実在・宣言ヘッド時点の role)+ prev 連鎖(`prevMetaSigHashHex` の metaVersion 連鎖 — 上記 5 と同型)**。エポック整合(上記 4)は値専用でありメタステートメントには適用しない。**このメタステートメント受理規則は `VariableMetaStatement` と `EnvironmentMetaStatement` に共通**(環境の改名・削除 — 12-4 — と複合作成の同梱ステートメントにも適用する。複合固有の宣言ヘッド規則は 12-4、削除の role 水準 admin は 12-3)。**サーバーは変数・環境ごとに各 metaVersion のステートメント(signed_bytes ハッシュ・署名・author 情報込み)を保存する**(prev 検査は保存済み直前 metaVersion のハッシュに対して行い、409 再試行・12-7 の配布材料もこの保存行が担う — 値の保存行規定と同型)
 - 削除は変数 tombstone + 全バージョンの暗号文削除。削除の `VariableMetaStatement`(status deleted)は保存・配布し続ける。監査上の存在区間は var.created / var.deleted イベントが保持する(要ローテーション検出は削除済み変数も対象 — AUDIT_SPEC §4.1)
 - **レイアウト v2・declared・activation の受理(2026-08-30 セッション 46 — CRYPTO_SPEC §4.2 レイアウト v2。設計比較は docs/notes/session-46.md 裁定 CR・CS)**:
-  - **v2 ステートメントの受理**: 署名検証は、ワイヤの `layoutVersion`(§12-2)が選択するレイアウトの signed_bytes(v2 = `maruhi/v1/var-meta-sig-v2` — CRYPTO_SPEC §4.2)で行う。検証規則は従来の 1〜3 + prev 連鎖と同一(スキーマ欄は署名対象に含まれるため独立の真正性検査を要しない)。varType の閉集合・required の型は Schema 検証(400)、description の上限・文字種は §12-8。**受理はプロジェクトのスキーマポリシー(§12-11)が enabled 以上のときのみ**: disabled のプロジェクトでは layoutVersion 2 のステートメント(status declared を含む)を 422(`schema-policy-disabled`)で拒否する(有効化ゲート — 旧検証者保護。CRYPTO_SPEC §4.2 発見 F)。判定は受理時点のポリシー(project DO の直列化の中で読む)。v1 ステートメントはポリシーに依らず従来どおり受理する
+  - **v2 ステートメントの受理**: 署名検証は、ワイヤの `layoutVersion`(§12-2)が選択するレイアウトの signed_bytes(v2 = `maruhi/v1/var-meta-sig-v2` — CRYPTO_SPEC §4.2)で行う。検証規則は従来の 1〜3 + prev 連鎖と同一(スキーマ欄は署名対象に含まれるため独立の真正性検査を要しない)。varType の閉集合・required の型は Schema 検証(400)、description の上限・文字種は §12-8。**v2 の新規採用はプロジェクトのスキーマポリシー(§12-11)が enabled 以上のときのみ受理する**: disabled のプロジェクトでは、metaVersion 1 の v2 ステートメント(declared・値同梱の両方)と、直前ステートメントが v1 の変数への v2 再発行を 422(`schema-policy-disabled`)で拒否する(有効化ゲート — 旧検証者保護。CRYPTO_SPEC §4.2 発見 F)。**直前ステートメントが既に v2 の変数の継続ステートメント(削除・activation・rename・スキーマ再発行)はポリシーに依らず受理する**(2026-08-30 PR #112 pullfrog レビュー対応: ゲートが守るのは「未更新クライアントが読めない新しい v2 ステートメントの出現」であり、v2 配布済みの変数には既に達成不能 — 継続まで止めると降格が既存 v2 変数の削除・activation を凍結し、§12-11 の可逆性が成立しない)。判定は受理時点のポリシー(project DO の直列化の中で読む)。v1 ステートメントはポリシーに依らず従来どおり受理する
   - **宣言(declared 作成)**: 変数作成の変形として、「status declared・スキーマ欄付きの `VariableMetaStatement`(metaVersion 1)+ `EnvironmentManifest`」を**値なしで**受理する複合を追加する(「値のない変数は存在しない」の唯一の例外)。検証は値同梱の作成と同一(値署名の検証のみ、値がないため対象外)。declared 変数は保存バージョン 0 のまま、アクティブ変数枠(12-8)に数える
   - **activation(declared → active)**: declared 変数への最初の値 push は「`EncryptedPayload`(version 1)+ status active のステートメント(metaVersion + 1・v2)+ `EnvironmentManifest`」の複合として受理する(メタ状態が変わるためマニフェスト再発行を伴う — 「値の push はマニフェストに触れない」不変条件 — CRYPTO_SPEC §4.3 — の対象は通常 push であり、activation はメタ操作を含む複合である)。値署名・ステートメント署名・マニフェストの検証は既存規則(上記 1〜5・マニフェスト複合受理 (1)〜(7))の合成。declared 変数への通常 push(activation 複合でない)は 422(`activation-required`)で拒否する
   - **遷移の受理検査**: active → declared・deleted → declared(および既存の deleted → active)は 422 で拒否する(CRYPTO_SPEC §4.2 の遷移規則)
+  - **レイアウト単調性(CRYPTO_SPEC §4.2 — 2026-08-30 PR #112 レビュー対応)**: 直前ステートメントが v2 の変数への v1 後続ステートメント(rename を含む)は 422(`layout-regression`)で拒否する(rename 経由のスキーマ欄の黙った消失と locked の迂回 —「作成は v2 → rename で v1 へ落とす」— の遮断)
   - **スキーマ再発行**: 既存変数のスキーマ欄のみの変更(name・status 不変・metaVersion + 1 の v2 ステートメント)を、改名と同一の受理規則(署名 1〜3 + prev 連鎖 + metaVersion CAS + マニフェスト同梱)で受理する
   - **削除ステートメントのスキーマ欄**: 直前ステートメントのスキーマ欄・レイアウトと一致すること(name の「直前の active 名を保持」と同じ規約の受理検査)。declared 変数の削除も同型(スキーマ欄を保持した status deleted)
   - **schema-locked(§12-11 の locked)**: 変数作成(metaVersion 1 — declared・値同梱の両方)は layoutVersion 2 かつ varType 非空を要求し、満たさなければ 422(`schema-required`)で拒否する(「宣言なき変数の創出」— typo の影の変数 — の書き込み時遮断。検討メモ発見 E)
@@ -402,7 +403,7 @@ CRYPTO_SPEC §4.2 レイアウト v2 の書き込みゲート(発見 F — 旧�
 
 | 値 | 意味 |
 |---|---|
-| `disabled`(既定) | レイアウト v2 ステートメント(スキーマ欄・declared)の受理を拒否(422 `schema-policy-disabled` — §12-5)。既存の v1 受理は不変 |
+| `disabled`(既定) | レイアウト v2 の**新規採用**(metaVersion 1 の v2 作成・v1 変数への v2 再発行)の受理を拒否(422 `schema-policy-disabled` — §12-5)。**既に v2 の変数の継続ステートメント(削除・activation・rename・スキーマ再発行)は受理する**(同節 — 降格が既存 v2 変数のライフサイクルを凍結しない)。既存の v1 受理は不変 |
 | `enabled` | v2 を受理する。スキーマ欄の利用は任意 |
 | `locked` | enabled + 変数作成(metaVersion 1)に layoutVersion 2 かつ varType 非空を要求(422 `schema-required` — §12-5) |
 
@@ -411,7 +412,7 @@ CRYPTO_SPEC §4.2 レイアウト v2 の書き込みゲート(発見 F — 旧�
 - **配布**: §12-7 のとおり環境一覧・pull 応答へ advisory フィールドとして同梱する(サーバー申告 — 署名されない。クライアントの用途は UX〔`schema set` が拒否される前の案内〕であり、CRYPTO_SPEC §6.3 の検証規則の入力にしない)
 - **受理判定は受理時点のポリシー**(project DO の直列化の中で読む — 変更との競合窓を作らない)
 - **有効化の順序**: サーバー更新(S2)→ 全メンバーの CLI 更新(S3)→ プロジェクトごとに `enabled` 化(**SELF_HOSTING "Updates" への追記は実装 PR 側** — 実装分割は docs/notes/value-free-schema-design.md §3)。順序違反(未更新 CLI が残るプロジェクトでの有効化)の帰結: 未更新 CLI は declared ステートメントを decode 段(未知 status)で、スキーマ欄付き active ステートメントを署名検証段で拒否する(前者は明示エラー、後者は改ざんと区別のつかない警告 — CRYPTO_SPEC §4.2 の破壊様式の残余であり、順序の遵守で回避する)
-- **可逆性**: `enabled` → `disabled` の降格は新規 v2 書き込みを止めるだけで、既存 v2 ステートメントの保存・配布・検証は不変(検証はポリシーを参照しない)。`locked` → `enabled` も同様(撤去可能性 — 検討メモ第 8 次)
+- **可逆性**: `enabled` → `disabled` の降格は v2 の**新規採用**を止めるだけで、既存 v2 ステートメントの保存・配布・検証と、既に v2 の変数のライフサイクル(削除・activation・rename・スキーマ再発行 — 継続受理の線引きは §12-5)は不変(検証はポリシーを参照しない。降格が declared 変数を凍結しない — 2026-08-30 PR #112 レビュー対応で精密化)。`locked` → `enabled` も同様(撤去可能性 — 検討メモ第 8 次)
 - **監査**: 変更は `project.schema_policy_changed`(AUDIT_SPEC §3.3 — actor と新旧値)を記録する
 
 ## 13. リカバリーブロブ API との接続(2026-08-09 セッション 18 起草)
