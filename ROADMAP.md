@@ -47,12 +47,12 @@
 
 順序(ADR-0014 改訂 1): ドッグフーディング(private preview 込み — 並行・継続)/ S1〜S3 と H1〜H4 の並走 → H5 公開儀式 → public 化 → 招待制ベータ → オープンベータ → GA(課金・docs サイト)。
 
-- [ ] H1: サインアップ制御 — deployment 設定 `signupPolicy`(open / invite / closed。セルフホスト既定 open = 現行挙動)+ サインアップ招待コード(単回・期限つき bearer)+ プロジェクト招待(AUTH_SPEC §15)との合成経路。AUTH_SPEC §3 / §4 の改訂は実装 PR 側
+- [ ] H1: サインアップ制御 — deployment 設定 `signupPolicy`(open / invite / closed。セルフホスト既定 open = 現行挙動)+ サインアップ招待コード(単回・期限つき bearer)+ コードの未認証事前検証エンドポイント + `/auth/config` の advisory 配布 + プロジェクト招待(AUTH_SPEC §15)との合成経路 + **CLI の login 事前 fail-fast(device flow 開始前 — 拒否経路の共有枠消費の遮断)**。AUTH_SPEC §3 / §4 の改訂は実装 PR 側
 - [ ] H2: テナント quota — プロジェクト数 / org 上限(起草値 アクティブ 100)+ DO ストレージ総量ガード(AUTH_SPEC §12-8 の Phase 2 予告の実装 — 警告 / 拒否の 2 段)
 - [ ] H3: 運用基盤 — 監視・アラート(D1 総量・GitHub クォータトリップワイヤ・外形監視)、バックアップ(D1 Time Travel + 定期 export、DO のアプリレベル退避の設計)、リストア演習、運用 OAuth App。(任意)運用側デプロイの Alchemy v2 化(ADR-0012 — 既存項の再掲)
-- [ ] H4: 法務・商務 — ToS / プライバシーポリシー / AUP、サブプロセッサ整理、security@ 窓口、ステータスページ、アカウント削除(gap 6)・通知経路(gap 8)の設計(人間タスクの列挙は hosted-design.md §7)
+- [ ] H4: 法務・商務 — ToS / プライバシーポリシー / AUP、サブプロセッサ整理、security@ 窓口、ステータスページ、アカウント削除(gap 6)・通知経路(gap 8)の設計 + **法務文書の配信面(web の未認証静的ページ — hosted-design.md §9「web 面の帰属」)**(人間タスクの列挙は hosted-design.md §7)
 - [ ] H5: 公開儀式 — SECURITY.md + 脅威モデル文書(`docs/THREAT_MODEL.md` — 起草計画は hosted-design.md §6)+ 公開前チェックリスト残(Deploy to Cloudflare ボタン検証・CLI 配布・macOS 公証)→ **public 化**
-- [ ] H6: 招待制ベータ開放 — 「最初の 5 分」体験要件(ADR-0014 改訂 1)の充足確認・招待コード発行運用
+- [ ] H6: 招待制ベータ開放 — 「最初の 5 分」体験要件(ADR-0014 改訂 1)の充足確認・招待コード発行運用 + **ベータ案内・waitlist 導線・サインアップ拒否時の着地文言・オンボーディングの web 静的面(S1 系の拡張 — hosted-design.md §9)**
 - [ ] オープンベータ(H6 の後): quota 実測 + GitHub クォータ余裕(device flow 50 回/時 — hosted-design.md §3-4)+ CLI ログインのスケール経路(gap 9)の裁定を経て開放
 - [ ] GA: 課金導入(設計は独立タスク — 未起草)・docs サイト(Blume — Wave 3 G)
 
