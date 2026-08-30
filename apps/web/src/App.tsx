@@ -15,7 +15,9 @@ import {
   dashboardRoute,
   homeRoute,
   projectRoute,
+  tokensRoute,
 } from "./dashboard/routes.ts";
+import { TokensScreen } from "./dashboard/TokensScreen.tsx";
 import { AboutPage } from "./pages/AboutPage.tsx";
 import { HomePage } from "./pages/HomePage.tsx";
 
@@ -26,6 +28,7 @@ const routes = [
   bindRoute(aboutRoute, { component: <AboutPage /> }),
   bindRoute(dashboardRoute, { component: <DashboardScreen /> }),
   bindRoute(accountAuditRoute, { component: <AccountAuditScreen /> }),
+  bindRoute(tokensRoute, { component: <TokensScreen /> }),
   bindRoute(projectRoute, { component: <ProjectScreen /> }),
 ];
 

@@ -13,10 +13,14 @@ import type {
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
   ForbiddenReasonSchema,
+  InvitationSummarySchema,
+  InviteStatusSchema,
   MeSchema,
   ProjectListSchema,
   RoleSchema,
   RotationFlagSchema,
+  TokenListSchema,
+  TokenSummarySchema,
 } from "@maruhi/api-schema";
 
 export type Me = typeof MeSchema.Type;
@@ -45,3 +49,20 @@ export interface EnvironmentList {
 export interface RotationFlagList {
   readonly flags: ReadonlyArray<RotationFlag>;
 }
+
+/** One invitation row of the S8 management listing (AUTH_SPEC §15-2). */
+export type InvitationSummary = typeof InvitationSummarySchema.Type;
+
+/** 保存上の招待状態の閉じた列挙(AUTH_SPEC §15-1 — 表示色の鍵に使う)。 */
+export type InviteStatus = typeof InviteStatusSchema.Type;
+
+/** `{ invitations }` shape of the invite listing (AUTH_SPEC §15-2 — スキーマはインライン宣言)。 */
+export interface InvitationList {
+  readonly invitations: ReadonlyArray<InvitationSummary>;
+}
+
+/** One token row of the S9 self-inventory listing (AUTH_SPEC §6 — W3a). */
+export type TokenSummary = typeof TokenSummarySchema.Type;
+
+/** `{ tokens }` shape of the token listing (AUTH_SPEC §6 — W3a). */
+export type TokenList = typeof TokenListSchema.Type;

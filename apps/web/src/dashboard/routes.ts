@@ -14,6 +14,7 @@ const HOME_PATH = "/";
 const ABOUT_PATH = "/about";
 const DASHBOARD_PATH = "/dashboard";
 const ACCOUNT_AUDIT_PATH = "/dashboard/account";
+const TOKENS_PATH = "/dashboard/tokens";
 const PROJECT_PATH = "/dashboard/projects/:projectId";
 
 /** S1 landing (static, unauthenticated). */
@@ -28,6 +29,9 @@ export const dashboardRoute = route({ id: "dashboard", path: DASHBOARD_PATH });
 /** S6 self axis: the signed-in user's account events. */
 export const accountAuditRoute = route({ id: "dashboard-account", path: ACCOUNT_AUDIT_PATH });
 
+/** S9 token management (user axis — 裁定 CP, docs/notes/session-45.md). */
+export const tokensRoute = route({ id: "dashboard-tokens", path: TOKENS_PATH });
+
 /** S5 overview / S6 project audit / S7 rotation flags for one project. */
 export const projectRoute = route({ id: "dashboard-project", path: PROJECT_PATH });
 
@@ -41,6 +45,7 @@ export const spaPaths = {
   about: () => ABOUT_PATH,
   dashboard: () => DASHBOARD_PATH,
   account: () => ACCOUNT_AUDIT_PATH,
+  tokens: () => TOKENS_PATH,
   project: (projectId: string) => PROJECT_PATH.replace(":projectId", projectId),
 } as const;
 
@@ -52,4 +57,11 @@ export const spaPaths = {
  * ソーストリップワイヤ(test/unit/endpoints.test.ts)が締め出すため、
  * 目録から漏れうるのは本モジュール内で SPA_ROUTES への追記を忘れた場合だけ。
  */
-export const SPA_ROUTES = [homeRoute, aboutRoute, dashboardRoute, accountAuditRoute, projectRoute];
+export const SPA_ROUTES = [
+  homeRoute,
+  aboutRoute,
+  dashboardRoute,
+  accountAuditRoute,
+  tokensRoute,
+  projectRoute,
+];

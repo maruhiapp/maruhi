@@ -14,7 +14,9 @@ import {
   apiPaths,
   DASHBOARD_ENDPOINTS,
   SAMPLE_ENVIRONMENT_ID,
+  SAMPLE_INVITE_ID,
   SAMPLE_PROJECT_ID,
+  SAMPLE_TOKEN_ID,
 } from "../../src/dashboard/endpoints.ts";
 
 /** 登録エンドポイント 1 面の構造スライス。 */
@@ -48,7 +50,9 @@ const api = maruhiApi as unknown as PathedApi;
 function substituteTemplate(template: string): string {
   return template
     .replace(/:projectId/g, SAMPLE_PROJECT_ID)
-    .replace(/:environmentId/g, SAMPLE_ENVIRONMENT_ID);
+    .replace(/:environmentId/g, SAMPLE_ENVIRONMENT_ID)
+    .replace(/:tokenId/g, SAMPLE_TOKEN_ID)
+    .replace(/:id/g, SAMPLE_INVITE_ID);
 }
 
 describe("dashboard endpoint sweep (裁定 BW)", () => {
@@ -138,8 +142,14 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
     expect(
       findSourceOffenders(
         srcRoot,
-        // サブパス import(effect/schema 等 — 本リポジトリの主流形)も対象
-        /import\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/,
+        // サブパス import(effect/schema 等 — 本リポジトリの主流形)も対象。
+        // 行頭アンカー(m): import 文はトップレベル宣言で行頭に現れる —
+        // アンカーなしだとコメント中の語「import」から実 import 文の from 句
+        // までを 1 マッチに繋げて誤検知する(W3b で実測 — api.ts の裁定 CN
+        // 注記コメントが最初の踏み抜き)。再 export(`export { X } from …` /
+        // `export * from …`)も同じ実行コードをバンドルへ引き込むため対象
+        // (PR #109 pullfrog 指摘)
+        /^(?:import|export)\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/m,
         new Set(),
       ),
       "value import of effect / @maruhi/api-schema in bundle source — use `import type` (裁定 BR)",

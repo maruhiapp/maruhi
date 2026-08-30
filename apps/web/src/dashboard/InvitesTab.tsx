@@ -1,0 +1,230 @@
+"use client";
+
+// S8 招待管理(一覧・失効 — 設計文書 §3 S8 / ADR-0018 改訂 2)。
+//
+// - 対象はチェーン role admin 以上 — 真実源はサーバー認可で、タブは role で
+//   事前に隠さない(裁定 CP 第 3 周 — 403 は役割文言で表示。裁定 BQ と同じ
+//   「事前判定をクライアントへ複製しない」)
+// - **発行は置かない**(ADR-0018 改訂 2 — 帯域外アンカーの欠落 + capability
+//   生成)。CLI `maruhi invite create` の静的案内のみ
+// - 失効はインライン 2 段階確認(裁定 CO)+ 完了後のサーバー再取得。
+//   Revoke は status が pending | accepted の行のみ(サーバーの受理条件 —
+//   期限切れ pending の掃除も可 — の写し)
+import { VStack } from "@astryxdesign/core/Layout";
+import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
+import { Heading, Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
+import { type ReactNode, useCallback } from "react";
+
+import { apiPaths } from "./endpoints.ts";
+import { ExpiryCell, FailureNotice, LoadingRow, RevokeControl, RoleToken } from "./shared.tsx";
+import type { InvitationList, InvitationSummary, InviteStatus } from "./types.ts";
+import { type ResourceState, useApiResource } from "./use-api-resource.ts";
+import { type RevocationState, useRevocation } from "./use-revocation.ts";
+
+interface InviteRow extends Record<string, unknown> {
+  id: string;
+  role: string;
+  status: string;
+  inviterUserId: string;
+  inviteeUserId: string | undefined;
+  expiresAtMs: number;
+}
+
+function toInviteRow(invite: InvitationSummary): InviteRow {
+  return {
+    id: invite.id,
+    role: invite.role,
+    status: invite.status,
+    inviterUserId: invite.inviterUserId,
+    inviteeUserId: invite.acceptance?.inviteeUserId,
+    expiresAtMs: invite.expiresAtMs,
+  };
+}
+
+const STATUS_TOKEN_COLOR: Record<InviteStatus, "blue" | "orange" | "green" | "gray"> = {
+  pending: "blue",
+  accepted: "orange",
+  completed: "green",
+  revoked: "gray",
+};
+
+/**
+ * 招待状態のサーバー申告値の表示。Object.hasOwn: 想定外の status 文字列
+ * (プロトタイプ鎖の鍵名を含む)は default 色へ落とす(RoleToken と同じ自衛 —
+ * PR #107 pullfrog 指摘の型)。
+ */
+function InviteStatusToken({ status }: { status: string }): ReactNode {
+  const color = Object.hasOwn(STATUS_TOKEN_COLOR, status)
+    ? STATUS_TOKEN_COLOR[status as InviteStatus]
+    : ("default" as const);
+  return <Token label={status} size="sm" color={color} />;
+}
+
+/**
+ * サーバーの失効受理条件(pending | accepted)の写し — 表示の出し分けのみで
+ * 防御ではない。リテラルは閉じた列挙へ型束縛する(裁定 CC と同型 — status 名の
+ * リネームはボタンの無音消失でなくコンパイルエラーで割れる)。
+ */
+const REVOCABLE_STATUSES: ReadonlyArray<string> = [
+  "pending",
+  "accepted",
+] as const satisfies ReadonlyArray<InviteStatus>;
+
+function isRevocable(row: InviteRow): boolean {
+  return REVOCABLE_STATUSES.includes(row.status);
+}
+
+function buildInviteColumns(
+  revocation: RevocationState,
+  onArm: (id: string | undefined) => void,
+  onConfirm: (id: string) => void,
+): TableColumn<InviteRow>[] {
+  return [
+    {
+      key: "status",
+      header: "Status",
+      width: pixel(110),
+      renderCell: (row: InviteRow) => <InviteStatusToken status={row.status} />,
+    },
+    {
+      key: "role",
+      header: "Role",
+      width: pixel(100),
+      renderCell: (row: InviteRow) => <RoleToken role={row.role} />,
+    },
+    {
+      key: "inviterUserId",
+      header: "Invited by",
+      width: proportional(1),
+      renderCell: (row: InviteRow) => (
+        <Text type="code" size="sm" wordBreak="break-all">
+          {row.inviterUserId}
+        </Text>
+      ),
+    },
+    {
+      key: "inviteeUserId",
+      header: "Accepted by",
+      width: proportional(1),
+      renderCell: (row: InviteRow) =>
+        row.inviteeUserId === undefined ? null : (
+          <Text type="code" size="sm" wordBreak="break-all">
+            {row.inviteeUserId}
+          </Text>
+        ),
+    },
+    {
+      key: "expiresAtMs",
+      header: "Expires (UTC)",
+      width: pixel(230),
+      renderCell: (row: InviteRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
+    },
+    {
+      key: "actions",
+      header: "",
+      width: pixel(200),
+      renderCell: (row: InviteRow) =>
+        isRevocable(row) ? (
+          <RevokeControl
+            armed={revocation.armedId === row.id}
+            isPending={revocation.pendingId === row.id}
+            isLocked={revocation.pendingId !== undefined && revocation.pendingId !== row.id}
+            onArm={() => onArm(row.id)}
+            onCancel={() => onArm(undefined)}
+            onConfirm={() => onConfirm(row.id)}
+          />
+        ) : null,
+    },
+  ];
+}
+
+/** 発行の静的案内(発行 UI は置かない — ADR-0018 改訂 2)+ 失効の帰結の注記。 */
+function InviteNotes(): ReactNode {
+  return (
+    <Text type="supporting" data-testid="invite-notes">
+      Issuing invitations is not available in the dashboard — issue one from the CLI:{" "}
+      <Text type="code">maruhi invite create</Text> (admin). Revoking makes the invitation link
+      unusable immediately; issue a new invitation to replace it.
+    </Text>
+  );
+}
+
+function InvitesTable({
+  invitations,
+  revocation,
+  onArm,
+  onConfirm,
+}: {
+  invitations: ReadonlyArray<InvitationSummary>;
+  revocation: RevocationState;
+  onArm: (id: string | undefined) => void;
+  onConfirm: (id: string) => void;
+}): ReactNode {
+  if (invitations.length === 0) {
+    return (
+      <Text type="supporting" data-testid="invite-empty">
+        No invitations, as reported by the server.
+      </Text>
+    );
+  }
+  return (
+    <Table
+      data={invitations.map(toInviteRow)}
+      columns={buildInviteColumns(revocation, onArm, onConfirm)}
+      idKey="id"
+      density="compact"
+      dividers="rows"
+      data-testid="invite-table"
+    />
+  );
+}
+
+function InvitesResource({
+  revocation,
+  onArm,
+  onConfirm,
+  reload,
+  state,
+}: {
+  revocation: RevocationState;
+  onArm: (id: string | undefined) => void;
+  onConfirm: (id: string) => void;
+  reload: () => void;
+  state: ResourceState<InvitationList>;
+}): ReactNode {
+  if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
+  if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
+  return (
+    <InvitesTable
+      invitations={state.value.invitations}
+      revocation={revocation}
+      onArm={onArm}
+      onConfirm={onConfirm}
+    />
+  );
+}
+
+export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
+  const { state, reload } = useApiResource<InvitationList>(apiPaths.invites(projectId));
+  // 失効状態は一覧リソースの外(タブ直下)に持つ — 再取得中のアンマウントで
+  // 直近の失敗表示が消えない(use-revocation.ts のヘッダーコメント)
+  const revokePath = useCallback((id: string) => apiPaths.inviteRevoke(projectId, id), [projectId]);
+  const { revocation, arm, confirm } = useRevocation(revokePath, reload);
+  return (
+    <VStack gap={4} data-testid="invite-list">
+      <Heading level={3}>Invitations</Heading>
+      <InvitesResource
+        revocation={revocation}
+        onArm={arm}
+        onConfirm={confirm}
+        reload={reload}
+        state={state}
+      />
+      {revocation.failure !== undefined ? (
+        <FailureNotice failure={revocation.failure} subject="invitation" />
+      ) : null}
+      <InviteNotes />
+    </VStack>
+  );
+}

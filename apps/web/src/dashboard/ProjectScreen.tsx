@@ -21,12 +21,13 @@ import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { useRouteParams } from "@funstack/router";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
-import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
+import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
 import { apiPaths } from "./endpoints.ts";
+import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
 import {
   FailureNotice,
@@ -44,41 +45,9 @@ import type {
   RotationFlag,
   RotationFlagList,
 } from "./types.ts";
+import { useApiResource } from "./use-api-resource.ts";
 
 const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
-
-/**
- * 単発 GET の 3 状態(loading / failure / value)を持つ小さなフック。
- * path 変更・再読込で古い in-flight 応答は捨てる(effect のクリーンアップで
- * stale マーク — 後着の旧プロジェクト応答が新しい画面を上書きしない。
- * PR #107 Bugbot 指摘の修正)。
- */
-function useApiResource<T>(path: string): {
-  state: { kind: "loading" } | { kind: "failed"; failure: ApiFailure } | { kind: "ok"; value: T };
-  reload: () => void;
-} {
-  const [state, setState] = useState<
-    { kind: "loading" } | { kind: "failed"; failure: ApiFailure } | { kind: "ok"; value: T }
-  >({ kind: "loading" });
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let stale = false;
-    setState({ kind: "loading" });
-    void apiGet<T>(path).then((result: ApiResult<T>) => {
-      if (stale) return;
-      setState(
-        result.kind === "ok"
-          ? { kind: "ok", value: result.value }
-          : { kind: "failed", failure: result },
-      );
-    });
-    return () => {
-      stale = true;
-    };
-  }, [path, attempt]);
-  const reload = useCallback(() => setAttempt((n) => n + 1), []);
-  return { state, reload };
-}
 
 // ---------------------------------------------------------------------------
 // S5: 概要タブ — チェーン(メンバー・ヘッド・サーバー)
@@ -534,6 +503,9 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
 function ProjectTabBody({ tab, projectId }: { tab: string; projectId: string }): ReactNode {
   if (tab === "audit") return <AuditTab projectId={projectId} />;
   if (tab === "rotation") return <RotationTab projectId={projectId} />;
+  // S8(裁定 CP): project 軸の管理面はタブ。失効状態が別プロジェクトへ
+  // 持ち越されないよう projectId でキーする
+  if (tab === "invites") return <InvitesTab key={projectId} projectId={projectId} />;
   return <OverviewTab projectId={projectId} />;
 }
 
@@ -545,6 +517,7 @@ function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
         <Tab value="overview" label="Overview" />
         <Tab value="audit" label="Audit" />
         <Tab value="rotation" label="Rotation flags" />
+        <Tab value="invites" label="Invites" />
       </TabList>
       <ProjectTabBody tab={tab} projectId={projectId} />
       <Divider />
