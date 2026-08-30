@@ -69,6 +69,13 @@ export function loginOp(input: {
   readonly origin: string;
   readonly clientId: string;
   readonly tokenName: string;
+  /**
+   * 発行した PAT の生値を端末へ 1 度だけ表示する(AUTH_SPEC §6 の「発行時の
+   * 端末表示 1 箇所」— 裁定 CK。リース非対応環境の MARUHI_TOKEN 供給用)。
+   * 表示可否のゲート(ADR-0016 決定 7 — fail-closed 2 層)は呼び出し側が
+   * **通信より前**に通している前提。
+   */
+  readonly showToken: boolean;
   /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
   readonly expiresInDays?: number;
   readonly githubBaseUrl?: string;
@@ -145,6 +152,18 @@ export function loginOp(input: {
     yield* io.log(
       `Logged in (user: ${displayText(exchanged.userId)}). The token is stored in the OS keychain`,
     );
+    if (input.showToken) {
+      // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
+      // 剥がすのはこの表示のためだけで、値は保存済み(上のキーチェーン)以外へ
+      // 流れない。呼び出し側の値表示ゲート(fail-closed 2 層)通過が前提で、
+      // 対話端末以外(パイプ・CI・エージェント)ではここへ到達しない
+      yield* io.log("");
+      yield* io.log(`    ${Redacted.value(issuedToken)}`);
+      yield* io.log("");
+      yield* io.log(
+        "This value is not shown again (re-login rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
+      );
+    }
     // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
     // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
     // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を

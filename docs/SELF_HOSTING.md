@@ -372,6 +372,18 @@ this feature degrades gracefully in both directions:
   expiry date, and `--token-ttl-days` has no effect there (the exchange
   request is deliberately tolerant of unknown fields, so the old server
   ignores it and issues an unlimited token).
+- **Provisioning unattended runtimes (`MARUHI_TOKEN`)**: on runtimes without
+  lease support (anything but GitHub Actions today), the CLI authenticates
+  with the `MARUHI_TOKEN` env var, bound to the target server with
+  `MARUHI_TOKEN_ORIGIN`. To obtain a value, run
+  `maruhi login --token-name <name> --token-ttl-days <days> --show-token` on
+  an interactive workstation terminal: the issued token is printed once (and
+  stored in the OS keychain as usual). The display is refused on pipes, in
+  CI, and in AI-agent environments (same fail-closed gate as value display),
+  so provision from a human terminal and clear your scrollback afterwards.
+  When the token expires, CLI commands in that runtime fail with 401 and
+  name this re-issuance procedure. Prefer `maruhi ci run` (leases) where
+  available — leases are short-lived and need no stored token.
 - **Old CLI against a new server**: the extra `expiresAtMs` response field is
   ignored; the issued token simply expires after 90 days, and the old CLI
   reports the eventual 401 as a revoked token — re-login recovers.

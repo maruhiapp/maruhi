@@ -236,6 +236,74 @@ describe("maruhi login", () => {
     expect(env.logs.join("\n")).toContain("(invalid timestamp: 9900000000000000)");
   });
 
+  it("--show-token は発行した生値を 1 度だけ端末へ出し、供給手順を案内する(裁定 CK)", async () => {
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--show-token",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("maruhi_pat_issued");
+    expect(logs).toContain("MARUHI_TOKEN");
+    expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
+    // キーチェーン保存は表示の有無と独立(表示は追加の 1 箇所であって代替でない)
+    expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
+  });
+
+  it("--show-token はエージェント環境・非対話端末をどの通信よりも前に拒否する(fail-closed 2 層)", async () => {
+    // 拒否される環境でブラウザ承認を完走させると、同名ローテーションで旧
+    // トークンだけ失効し新しい生値は得られない(置き換え対象の CI トークンを
+    // 壊すだけ)— 判定は device flow 開始前
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([]);
+    const flags = [
+      "--show-token",
+      "--github-base-url",
+      githubServer.origin,
+      "--github-poll-interval",
+      "0",
+    ];
+
+    const agentEnv = await makeTestEnv();
+    await seedConfig(agentEnv, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    agentEnv.setAgent({ isAgent: true, name: "test-agent" });
+    expect(await runCli(["login", ...flags], agentEnv.layer)).toBe(1);
+    expect(agentEnv.errors.join("\n")).toContain("AI agent environment was detected");
+
+    const pipedEnv = await makeTestEnv();
+    await seedConfig(pipedEnv, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    pipedEnv.setTerminal({ stdout: false });
+    expect(await runCli(["login", ...flags], pipedEnv.layer)).toBe(1);
+    expect(pipedEnv.errors.join("\n")).toContain("interactive terminal");
+
+    expect(github.polls()).toBe(0);
+    expect(maruhi.requests).toHaveLength(0);
+  });
+
   it("device flow → 交換 → maruhi トークンのみキーチェーンへ保存する", async () => {
     const github = fakeGitHub({ pendingPolls: 2, accessToken: "gho_github_token_value" });
     const githubServer = await start(github.handlers);

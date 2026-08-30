@@ -195,14 +195,15 @@ function sessionFromEnvToken(input: {
     // W3a(AUTH_SPEC §6 の既定 TTL)以降、常用の無人環境でこの 401 の最有力
     // 原因は**期限切れ**になる(全トークンが最長 365 日で死ぬ)。環境変数
     // 経路の直し先はキーチェーンと違い「作業端末で再発行して env を差し替える」
-    // なので、failure.ts の汎用 401 案内(`maruhi login` のみ)を使い回さず
-    // ここで言い切る(裁定 CJ — session-44 §11)
+    // なので、failure.ts の汎用 401 案内(`maruhi login` のみ)を使い回さず、
+    // 生値の取得まで完遂できる実在の手順(--show-token — 裁定 CK)を言い切る
+    // (裁定 CJ — session-44 §11・§12)
     const me = yield* client.auth
       .me({})
       .pipe(
         Effect.mapError(() =>
           cliError(
-            "Authentication with MARUHI_TOKEN failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with `maruhi login --token-name <name>` on a workstation, then update the MARUHI_TOKEN value in this environment",
+            "Authentication with MARUHI_TOKEN failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with `maruhi login --token-name <name> --show-token` on an interactive workstation terminal, then update the MARUHI_TOKEN value in this environment",
           ),
         ),
       );

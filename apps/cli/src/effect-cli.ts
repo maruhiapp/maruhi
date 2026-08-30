@@ -473,6 +473,10 @@ const loginConfig = {
     Flag.atMost(1),
     Flag.map((values) => values[0]),
   ),
+  "show-token": singleFlag(
+    "show-token",
+    "Print the issued token once (to provision MARUHI_TOKEN on runtimes without lease support). Interactive terminals only",
+  ),
   "github-base-url": hiddenValued("github-base-url", "GitHub base URL (for tests)"),
   "github-poll-interval": hiddenIntegerValued(
     "github-poll-interval",
@@ -1753,6 +1757,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       // 起きるうえ、その取得が失敗すると書き方の誤りが接続失敗に隠れる)
       const tokenName = yield* requireTokenName(values["token-name"]);
       const expiresInDays = yield* requireTokenTtlDays(values["token-ttl-days"]);
+      // --show-token は発行した PAT の生値を端末へ出す(AUTH_SPEC §6 の
+      // 「発行時の端末表示 1 箇所」— 裁定 CK)。表示可否は値表示と同じ
+      // fail-closed の 2 層ゲート(ADR-0016 決定 7)で、**どの通信よりも前**に
+      // 判定する: 拒否される環境でブラウザ承認を完走させると、同名ローテー
+      // ションで旧トークンだけ失効し、新しい生値は得られないまま終わる
+      // (置き換え対象の CI トークンを壊すだけの最悪の失敗形)
+      if (values["show-token"]) {
+        yield* ensureValueDisplayAllowed;
+      }
       const store = yield* ConfigStore;
       const config = yield* store.load;
       const origin = yield* resolveServerOrigin(values.server, config);
@@ -1775,6 +1788,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         origin,
         clientId,
         tokenName,
+        showToken: values["show-token"],
         ...(expiresInDays === undefined ? {} : { expiresInDays }),
         ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
         ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),

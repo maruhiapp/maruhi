@@ -796,8 +796,10 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "invite-link.ts": 2,
   // 直列化 = 唯一の永続化経路(トークン 1 + master 鍵の秘密側 2)
   "keychain.ts": 3,
-  // device exchange のワイヤ境界(GitHub トークン)
-  "login.ts": 1,
+  // device exchange のワイヤ境界(GitHub トークン)1 +
+  // --show-token の発行時端末表示(AUTH_SPEC §6 の 1 箇所 — 値表示ゲート
+  // 通過後。裁定 CK)1
+  "login.ts": 2,
   // 自 OIDC トークンの claims 読み出し(payload セグメントの decode — A3)
   "oidc-github.ts": 1,
   // 復号の鍵入力(暗号境界)
