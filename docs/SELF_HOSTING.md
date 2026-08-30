@@ -381,6 +381,12 @@ this feature degrades gracefully in both directions:
   stored in the OS keychain as usual). The display is refused on pipes, in
   CI, and in AI-agent environments (same fail-closed gate as value display),
   so provision from a human terminal and clear your scrollback afterwards.
+  Then run a plain `maruhi login` once more: the keychain holds one token per
+  server, so the provisioning login also made the new token this machine's
+  active token — the extra login gives your workstation a token of its own
+  (the provisioned one stays valid), keeping audit attribution per
+  environment and letting you revoke either one without cutting off the
+  other.
   Starting 14 days before a token expires, every CLI command warns on stderr
   with the expiry date and the re-issuance procedure (in CI this lands in the
   job log, so the operator sees it before the 401). When the token expires,

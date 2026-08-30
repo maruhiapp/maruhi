@@ -269,6 +269,11 @@ describe("maruhi login", () => {
     expect(logs).toContain("maruhi_pat_issued");
     expect(logs).toContain("MARUHI_TOKEN");
     expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
+    // 供給ログインの身元スワップの注記(裁定 CM): キーチェーンは origin 単位の
+    // 単一スロットなので、別環境向けの発行が端末のアクティブトークンも
+    // 置き換えたことと、素の再ログインによる復し方を必ず言う
+    expect(logs).toContain("this machine's active keychain token");
+    expect(logs).toContain("run `maruhi login` again");
     // キーチェーン保存は表示の有無と独立(表示は追加の 1 箇所であって代替でない)
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
   });

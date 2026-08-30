@@ -170,6 +170,15 @@ export function loginOp(input: {
       yield* io.log(
         "This value is not shown again (re-login rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
       );
+      // 供給ログインの身元スワップの可視化(裁定 CM): キーチェーンのスロットは
+      // origin 単位なので、この発行はこの端末のアクティブトークンも置き換えた。
+      // 別環境向けの発行なら、素の再ログイン(既定名の同名ローテーション)で
+      // 端末に自分のトークンを持たせ直せる — 同一資格情報の 2 環境共有
+      // (監査のアクター帰属の混濁・片方のつもりの失効が両方を殺す形)を
+      // 続けさせない
+      yield* io.log(
+        "Note: this token is now also this machine's active keychain token. If it is destined for another environment, run `maruhi login` again (default token name) so this machine keeps a token of its own — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
+      );
     }
     // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
     // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
