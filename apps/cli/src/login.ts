@@ -76,6 +76,14 @@ export function loginOp(input: {
    * **通信より前**に通している前提。
    */
   readonly showToken: boolean;
+  /**
+   * tokenName がこの端末の既定名(`cli:<hostname>`)か(裁定 CM — 既定名の
+   * 真実源は呼び出し側の引数層なのでここでは判定しない)。身元スワップ注記の
+   * 分岐に使う: 既定名で供給した場合に「素の再ログイン」を勧めると、同名
+   * ローテーションが**いま表示したトークン自体を失効させる**(PR #108
+   * Bugbot 指摘)。
+   */
+  readonly tokenNameIsDefault: boolean;
   /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
   readonly expiresInDays?: number;
   readonly githubBaseUrl?: string;
@@ -172,12 +180,14 @@ export function loginOp(input: {
       );
       // 供給ログインの身元スワップの可視化(裁定 CM): キーチェーンのスロットは
       // origin 単位なので、この発行はこの端末のアクティブトークンも置き換えた。
-      // 別環境向けの発行なら、素の再ログイン(既定名の同名ローテーション)で
-      // 端末に自分のトークンを持たせ直せる — 同一資格情報の 2 環境共有
-      // (監査のアクター帰属の混濁・片方のつもりの失効が両方を殺す形)を
-      // 続けさせない
+      // 復し方は発行名で分岐する(PR #108 Bugbot 指摘): 既定名で発行した場合に
+      // 「素の再ログイン」を勧めると、同名ローテーションが**いま表示した
+      // トークン自体を失効させ**、貼り付け先の環境を切断する。既定名なら
+      // 「別名で発行し直す」が正しい復し方
       yield* io.log(
-        "Note: this token is now also this machine's active keychain token. If it is destined for another environment, run `maruhi login` again (default token name) so this machine keeps a token of its own — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
+        input.tokenNameIsDefault
+          ? "Note: this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
+          : "Note: this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
       );
     }
     // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が

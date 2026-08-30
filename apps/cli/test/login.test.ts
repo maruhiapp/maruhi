@@ -269,13 +269,53 @@ describe("maruhi login", () => {
     expect(logs).toContain("maruhi_pat_issued");
     expect(logs).toContain("MARUHI_TOKEN");
     expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
-    // 供給ログインの身元スワップの注記(裁定 CM): キーチェーンは origin 単位の
-    // 単一スロットなので、別環境向けの発行が端末のアクティブトークンも
-    // 置き換えたことと、素の再ログインによる復し方を必ず言う
-    expect(logs).toContain("this machine's active keychain token");
-    expect(logs).toContain("run `maruhi login` again");
+    // 供給ログインの身元スワップの注記(裁定 CM)— **既定名で発行した**この
+    // ケースでは「素の再ログイン」を勧めてはならない(同名ローテーションが
+    // いま表示したトークン自体を失効させる — PR #108 Bugbot 指摘)。正しい
+    // 復し方 = 別名での発行し直し
+    expect(logs).toContain("default token name");
+    expect(logs).toContain("issue it under a distinct name instead");
+    expect(logs).not.toContain("run a plain `maruhi login` afterwards");
     // キーチェーン保存は表示の有無と独立(表示は追加の 1 箇所であって代替でない)
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
+  });
+
+  it("--show-token + 明示 --token-name では素の再ログインによる復し方を案内する(裁定 CM)", async () => {
+    // 別名で供給した場合は素の再ログイン(既定名のローテーション)が供給済み
+    // トークンに触れない — こちらのケースでのみこの案内を出す
+    const github = fakeGitHub({ pendingPolls: 0, accessToken: "gho_github_token_value" });
+    const githubServer = await start(github.handlers);
+    const maruhi = await start([
+      onRequest("POST", "/auth/device/exchange", () => ({
+        status: 200,
+        json: {
+          token: "maruhi_pat_issued",
+          tokenId: "tok_1",
+          userId: "user-0001",
+          expiresAtMs: EXPIRES_AT_MS,
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+
+    const code = await runCli(
+      [
+        "login",
+        "--token-name",
+        "ci",
+        "--show-token",
+        "--github-base-url",
+        githubServer.origin,
+        "--github-poll-interval",
+        "0",
+      ],
+      env.layer,
+    );
+    expect(code).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("run a plain `maruhi login` afterwards");
+    expect(logs).not.toContain("issue it under a distinct name instead");
   });
 
   it("--show-token は敵対的サーバーの ANSI 注入を可視エスケープに畳む(escapeText — コピー同一性は保つ)", async () => {

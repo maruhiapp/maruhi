@@ -1789,6 +1789,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         clientId,
         tokenName,
         showToken: values["show-token"],
+        // 既定名の判定は解決後の実名で行う(明示的に cli:<hostname> を渡した
+        // 場合も既定名扱い — 素の再ログインが同名ローテーションになる事実で
+        // 分岐する。裁定 CM / PR #108 Bugbot 指摘)
+        tokenNameIsDefault: tokenName === `cli:${hostname()}`,
         ...(expiresInDays === undefined ? {} : { expiresInDays }),
         ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
         ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),

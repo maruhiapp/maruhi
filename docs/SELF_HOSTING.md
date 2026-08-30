@@ -384,9 +384,12 @@ this feature degrades gracefully in both directions:
   Then run a plain `maruhi login` once more: the keychain holds one token per
   server, so the provisioning login also made the new token this machine's
   active token — the extra login gives your workstation a token of its own
-  (the provisioned one stays valid), keeping audit attribution per
-  environment and letting you revoke either one without cutting off the
-  other.
+  (the provisioned one stays valid **because it has a distinct name**;
+  re-login rotates only the default-name token), keeping audit attribution
+  per environment and letting you revoke either one without cutting off the
+  other. Do not skip the `--token-name` in the provisioning step: a token
+  provisioned under the default name would be revoked by that same plain
+  re-login (the CLI's on-screen note tells these two cases apart).
   Starting 14 days before a token expires, every CLI command warns on stderr
   with the expiry date and the re-issuance procedure (in CI this lands in the
   job log, so the operator sees it before the 401). When the token expires,
