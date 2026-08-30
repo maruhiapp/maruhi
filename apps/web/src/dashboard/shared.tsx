@@ -100,16 +100,27 @@ function UnreachableNotice({ onRetry }: { onRetry: (() => void) | undefined }): 
   );
 }
 
-/** 410 の表示(invite 失効面のみが受ける — サーバー申告の reason を写す)。 */
-function GoneNotice({ reason }: { reason: string | undefined }): ReactNode {
+/**
+ * 410 の表示(現状は invite 失効面のみが受ける — サーバー申告の reason を写す)。
+ * 名詞は NOT_FOUND_DESCRIPTION と同じく subject から取る(裁定 BP の単一
+ * 実装点 — 他の消費面が 410 を持ったとき片方だけ名詞が固定される形を残さない。
+ * PR #109 pullfrog 指摘)。
+ */
+function GoneNotice({
+  reason,
+  subject,
+}: {
+  reason: string | undefined;
+  subject: FailureSubject;
+}): ReactNode {
   return (
     <Banner
       status="info"
       title="No longer active"
       description={
         reason === undefined
-          ? "The server reports this invitation is no longer active."
-          : `The server reports this invitation as ${reason}.`
+          ? `The server reports this ${subject} is no longer active.`
+          : `The server reports this ${subject} as ${reason}.`
       }
     />
   );
@@ -151,7 +162,7 @@ export function FailureNotice({
   subject?: FailureSubject;
 }): ReactNode {
   if (failure.kind === "forbidden") return <ForbiddenNotice reason={failure.reason} />;
-  if (failure.kind === "gone") return <GoneNotice reason={failure.reason} />;
+  if (failure.kind === "gone") return <GoneNotice reason={failure.reason} subject={subject} />;
   return <StatusNotice failure={failure} onRetry={onRetry} subject={subject} />;
 }
 
@@ -194,17 +205,24 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
 export function RevokeControl({
   armed,
   isPending,
+  isLocked,
   onArm,
   onCancel,
   onConfirm,
 }: {
   armed: boolean;
   isPending: boolean;
+  /** 別の行の失効が実行中(PR #109 Bugbot 指摘 — in-flight 中は他行を無効化)。 */
+  isLocked: boolean;
   onArm: () => void;
   onCancel: () => void;
   onConfirm: () => void;
 }): ReactNode {
-  if (!armed) return <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} />;
+  if (!armed) {
+    return (
+      <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />
+    );
+  }
   return (
     <HStack gap={2} align="center" wrap="wrap">
       <Button label="Cancel" variant="ghost" size="sm" onClick={onCancel} isDisabled={isPending} />

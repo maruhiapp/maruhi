@@ -146,8 +146,10 @@ describe("dashboard endpoint sweep (裁定 BW)", () => {
         // 行頭アンカー(m): import 文はトップレベル宣言で行頭に現れる —
         // アンカーなしだとコメント中の語「import」から実 import 文の from 句
         // までを 1 マッチに繋げて誤検知する(W3b で実測 — api.ts の裁定 CN
-        // 注記コメントが最初の踏み抜き)
-        /^import\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/m,
+        // 注記コメントが最初の踏み抜き)。再 export(`export { X } from …` /
+        // `export * from …`)も同じ実行コードをバンドルへ引き込むため対象
+        // (PR #109 pullfrog 指摘)
+        /^(?:import|export)\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/m,
         new Set(),
       ),
       "value import of effect / @maruhi/api-schema in bundle source — use `import type` (裁定 BR)",

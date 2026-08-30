@@ -19,6 +19,7 @@ import { createServer } from "node:net";
 import {
   AuditEventSchema,
   ChainSnapshotSchema,
+  CSRF_HEADER_NAME,
   EnvironmentMetadataPullSchema,
   EnvironmentSummarySchema,
   InvitationSummarySchema,
@@ -700,7 +701,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       },
     );
     await page.route("**/auth/logout", (route) => {
-      sawCsrfHeader = route.request().headers()["x-maruhi-csrf"] ?? null;
+      sawCsrfHeader = route.request().headers()[CSRF_HEADER_NAME] ?? null;
       signedOut = true;
       return route.fulfill({ status: 204 });
     });
@@ -873,7 +874,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       (url) => url.pathname === `/projects/${PROJECT_1}/invites/inv-pending`,
       (route) => {
         deleteMethod = route.request().method();
-        deleteCsrf = route.request().headers()["x-maruhi-csrf"] ?? null;
+        deleteCsrf = route.request().headers()[CSRF_HEADER_NAME] ?? null;
         revoked = true;
         return route.fulfill({ status: 204 });
       },
@@ -969,7 +970,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       (url) => url.pathname === "/auth/tokens/tok-active",
       (route) => {
         deleteMethod = route.request().method();
-        deleteCsrf = route.request().headers()["x-maruhi-csrf"] ?? null;
+        deleteCsrf = route.request().headers()[CSRF_HEADER_NAME] ?? null;
         revoked = true;
         return route.fulfill({ status: 204 });
       },
@@ -984,6 +985,45 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("locks other rows while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
+    // DELETE の in-flight 中に別行を武装できると、後着の完了が武装状態を
+    // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード +
+    // RevokeControl の isLocked)。DELETE をゲートで保留して実測する
+    const page = await browser.newPage();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let revoked = false;
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens/tok-active",
+      async (route) => {
+        await gate;
+        revoked = true;
+        return route.fulfill({ status: 204 });
+      },
+    );
+    await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
+    await page.getByTestId("token-table").waitFor();
+    await page.getByRole("button", { name: "Revoke" }).first().click();
+    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    // in-flight 中: 他行の Revoke は無効(クリックしても武装できない)。
+    // クリック直後の再レンダリングと競合しないようポーリングで待つ
+    const otherRevoke = page.getByRole("button", { name: "Revoke" }).first();
+    await expect.poll(() => otherRevoke.isDisabled()).toBe(true);
+    release?.();
+    // 完了 → 再取得で行が消え、残る行の Revoke は再び有効
+    await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
+    await expect
+      .poll(() => page.getByRole("button", { name: "Revoke" }).first().isDisabled())
+      .toBe(false);
     await page.close();
   });
 

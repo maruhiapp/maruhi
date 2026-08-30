@@ -10,7 +10,7 @@
 // - 状態は一覧リソースの再取得をまたいで生存させる(呼び出し側は一覧の外 —
 //   画面レベル — で本フックを持つ): 再取得中のアンマウントで失敗表示が
 //   消えない
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { apiDelete, type ApiFailure } from "./api.ts";
 
@@ -33,15 +33,23 @@ export function useRevocation(
   confirm: (id: string) => void;
 } {
   const [revocation, setRevocation] = useState<RevocationState>(IDLE);
-  const arm = useCallback(
-    (id: string | undefined) =>
-      setRevocation({ armedId: id, pendingId: undefined, failure: undefined }),
-    [],
-  );
+  // in-flight ガード(PR #109 Bugbot 指摘): DELETE の実行中は arm / confirm を
+  // 受け付けない — 後着の完了が別行の武装状態を上書きし、失敗の帰属が別の
+  // 失効に見える競合を塞ぐ。UI 側も pendingId を見て他行の Revoke を無効化する
+  // (RevokeControl の isLocked)— ガードは見えないボタンでなく効かないボタンを
+  // 作らないための二層目
+  const pendingRef = useRef(false);
+  const arm = useCallback((id: string | undefined) => {
+    if (pendingRef.current) return;
+    setRevocation({ armedId: id, pendingId: undefined, failure: undefined });
+  }, []);
   const confirm = useCallback(
     (id: string) => {
+      if (pendingRef.current) return;
+      pendingRef.current = true;
       setRevocation({ armedId: id, pendingId: id, failure: undefined });
       void apiDelete(revokePath(id)).then((result) => {
+        pendingRef.current = false;
         setRevocation({
           armedId: undefined,
           pendingId: undefined,

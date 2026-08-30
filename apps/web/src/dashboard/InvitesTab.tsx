@@ -129,6 +129,7 @@ function buildInviteColumns(
           <RevokeControl
             armed={revocation.armedId === row.id}
             isPending={revocation.pendingId === row.id}
+            isLocked={revocation.pendingId !== undefined && revocation.pendingId !== row.id}
             onArm={() => onArm(row.id)}
             onCancel={() => onArm(undefined)}
             onConfirm={() => onConfirm(row.id)}

@@ -240,6 +240,26 @@ session-43 §10〜§14 / session-44 §7〜§14 の既知の生成規則を順に
 - 410 の reason はサーバー申告の防御的 string を英文へ埋め込む(React の
   エスケープ + 表示のみ — 他のサーバー申告 string と同じクラス)
 
+## 8. レビュー反映(PR #109)
+
+- **Bugbot + pullfrog(同一指摘 — 正当として修正)**: 失効の in-flight 中に
+  他行の arm / 同行の再 confirm が可能で、後着の完了が武装状態を上書きし
+  失敗の帰属が別の失効に見える(重複 DELETE は成功済み失効に偽の 404/410
+  バナーも出しうる)。裁定 CO の「武装は常に 1 行」を in-flight にも拡張:
+  `useRevocation` に pendingRef ガード(実行中は arm / confirm を無視)+
+  `RevokeControl` の `isLocked`(他行の Revoke ボタンを無効化 — 効かない
+  ボタンを作らない)。変異検証 = e2e にゲート付き DELETE の回帰テスト
+  (in-flight 中の他行 disabled → 完了後に再有効化)
+- **pullfrog(GoneNotice の名詞固定)**: 410 文言の名詞も subject 経由へ
+  (NOT_FOUND_DESCRIPTION と同じ選び方 — 裁定 BP の単一実装点の一貫性)
+- **pullfrog(トリップワイヤの再 export 穴)**: `export { X } from` /
+  `export * from` も同じ実行コードをバンドルへ引き込む —
+  `^(?:import|export)\s+(?!type\b)` へ拡大(変異検証: 再 export 追加で検知)
+- **pullfrog(nit — e2e のヘッダー観測キー)**: e2e の
+  `headers()["x-maruhi-csrf"]` を `CSRF_HEADER_NAME` の値 import へ束縛
+  (実リクエスト観測にも裁定 CN の二層目が効く形。テストプロセスのみ —
+  BV と同じ位置づけ)
+
 ### 収束の見立て
 
 既知の 6 生成規則を一巡し、新発見は「スイープ自身の誤検知」(規則 3 の
