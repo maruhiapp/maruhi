@@ -115,6 +115,36 @@ describe("既定 TTL(AUTH_SPEC §6 — L-2 の解消)", () => {
     expect(ok.status).toBe(200);
   });
 
+  it("self-discloses the presented token's expiry on /auth/me (裁定 CI — 自己資格情報属性)", async () => {
+    // 無人利用(リース非対応環境の PAT — 裁定 CF)が期限を自己観測するための
+    // 経路。スコープ限定トークンでも自分の期限だけは見える(一覧 — 裁定 CH の
+    // `*` × admin 条件 — を開かない)。セッション主体は欠落(トークンを提示して
+    // いない)
+    const issued = await exchange(806);
+    const viaToken = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
+    expect(viaToken.status).toBe(200);
+    const tokenMe = (await viaToken.json()) as { tokenExpiresAtMs?: number };
+    expect(tokenMe.tokenExpiresAtMs).toBe(issued.expiresAtMs);
+
+    const scoped = await deviceToken(
+      806,
+      [{ project: "ef".repeat(32), permission: "read" }],
+      "scoped",
+    );
+    const viaScoped = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(scoped) });
+    expect(viaScoped.status).toBe(200);
+    expect(((await viaScoped.json()) as { tokenExpiresAtMs?: number }).tokenExpiresAtMs).toBeTypeOf(
+      "number",
+    );
+
+    const session = await loginSession(806);
+    const viaSession = await SELF.fetch(`${BASE}/auth/me`, {
+      headers: { cookie: `${SESSION_COOKIE}=${session}` },
+    });
+    expect(viaSession.status).toBe(200);
+    expect(Object.hasOwn((await viaSession.json()) as object, "tokenExpiresAtMs")).toBe(false);
+  });
+
   it("re-anchors legacy NULL rows to apply-time + 90 days (migration token_ttl_reanchor)", async () => {
     const issued = await exchange(805);
     await env.DB.prepare("UPDATE api_tokens SET expires_at = NULL WHERE id = ?")

@@ -144,6 +144,15 @@ export const MeSchema = Schema.Struct({
    * §16-2。2026-08-28 PR-M2)。
    */
   tokenScopes: Schema.optionalKey(Schema.Array(TokenScopeSchema)),
+  /**
+   * トークン主体のときのみ: 提示トークンの有効期限(AUTH_SPEC §6 — W3a
+   * 裁定 CI)。tokenScopes と同じ「自分が提示した資格情報の属性」であり新しい
+   * 情報を開示しない。無人利用(リース非対応環境の PAT — 裁定 CF)が期限を
+   * 自己観測して 401 の前に警告・再発行を仕込むための材料。一覧
+   * `GET /auth/tokens`(トークン主体は `*` × admin — 裁定 CH)を開かずに
+   * 自分の期限だけを知る経路でもある。
+   */
+  tokenExpiresAtMs: Schema.optionalKey(Schema.Number),
 });
 
 // リカバリーブロブ(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み master 秘密鍵)。

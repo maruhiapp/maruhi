@@ -29,24 +29,27 @@ function displayPrefix(rawToken: string): string {
 const hashOf = (rawToken: string): Effect.Effect<string> =>
   Effect.promise(() => sha256Hex(rawToken));
 
-/**
- * 期限判定(AUTH_SPEC §6 — W3a 裁定 CE)。null(旧無期限行)は**期限切れとして
- * 扱う**(fail-closed): 移行(既存 NULL 行への expires_at 再アンカー)を適用せず
- * 新コードだけをデプロイした場合でも、無期限トークンが復活しない。再ログイン =
- * 同名ローテーションが expires_at 付きの行を発行して自己回復する。
- */
-function isExpired(record: ApiTokenRecord, nowMs: number): boolean {
-  return record.expiresAtMs === null || record.expiresAtMs <= nowMs;
-}
-
 /** ハッシュ照合済みレコードを主体へ写す(期限切れ・不一致は匿名)。 */
 function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: number): Principal {
   if (record === null || !constantTimeEqual(tokenHash, record.tokenHash)) {
     return anonymousPrincipal;
   }
-  return isExpired(record, nowMs)
-    ? anonymousPrincipal
-    : { kind: "token", userId: record.userId, tokenId: record.id, scopes: record.scopes };
+  // 期限判定(AUTH_SPEC §6 — W3a 裁定 CE)。null(旧無期限行)は**期限切れとして
+  // 扱う**(fail-closed): 移行(既存 NULL 行への expires_at 再アンカー)を適用
+  // せず新コードだけをデプロイした場合でも、無期限トークンが復活しない。
+  // 再ログイン = 同名ローテーションが expires_at 付きの行を発行して自己回復する
+  const expiresAtMs = record.expiresAtMs;
+  if (expiresAtMs === null || expiresAtMs <= nowMs) {
+    return anonymousPrincipal;
+  }
+  // 判定を通過した主体は常に非 null の期限を持つ(裁定 CI — /auth/me の自己開示)
+  return {
+    kind: "token",
+    userId: record.userId,
+    tokenId: record.id,
+    scopes: record.scopes,
+    expiresAtMs,
+  };
 }
 
 /** last_used_at の書き込み間引き(全リクエスト D1 UPDATE を避ける。粒度 1 時間)。 */

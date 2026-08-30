@@ -123,6 +123,13 @@ export type AuthenticatedPrincipal =
       readonly userId: string;
       readonly tokenId: string;
       readonly scopes: readonly TokenScope[];
+      /**
+       * 提示トークンの有効期限(AUTH_SPEC §6 の既定 TTL — W3a 裁定 CI)。
+       * 検証(期限切れ = 匿名)を通過した主体だけが構築されるため常に非 null。
+       * scopes と同じ「自分が提示した資格情報の属性」であり、/auth/me が
+       * 自己開示する(§16-2 の tokenScopes と同じ類型)。
+       */
+      readonly expiresAtMs: number;
     };
 
 /** A resolved request principal: anonymous or authenticated. */
