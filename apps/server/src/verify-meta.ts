@@ -36,6 +36,11 @@ const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejec
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
   "revived-after-delete": "chain-head-state-mismatch",
+  // §4.2 レイアウト v2 の遷移・単調性理由(S1 — crypto 層の語彙追加に伴う網羅
+  // 維持のみ)。ワイヤ v2(layoutVersion / スキーマ欄の Schema)は S2 で導入する
+  // ため、現行サーバーの受理面では v2 の predecessor が存在せず到達しない
+  "declared-after-active": "chain-head-state-mismatch",
+  "layout-regression": "chain-head-state-mismatch",
 };
 
 /**
@@ -99,8 +104,16 @@ export const ensureMetaStatementSignature = (input: {
         reason: META_REJECT_REASONS[verified.error.reason],
       });
     }
-    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
-    // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
+    // InvalidInput / KeyImportFailed / UnsupportedMetaLayout は Schema 検証済み
+    // ワイヤ + 検証済みチェーン由来の鍵では到達しない(実装バグ = defect。
+    // エラー値に秘密は含まれない)。ただし UnsupportedMetaLayout は S2 でワイヤに
+    // layoutVersion が乗ると「古いサーバー × 新しいクライアント」で実際に発生する
+    // **正常系**になるため、S2 ではこの手前に「クライアント更新が必要」の typed
+    // rejection への分岐を追加すること(裁定 CR — defect の 500 に落とすのは
+    // 「改竄警告ではなく正直な update-required」の真逆。PR #116 レビュー対応)。
+    // S2 義務(同 — 独立レビュー第 2 ラウンド): v2 削除の「スキーマ欄・
+    // レイアウトの直前一致」受理検査も追加すること(crypto 層は意図的に検査
+    // しない — v1 の name 保持検査〔programs-variable.ts〕と同じ受理面の領分)
     return yield* Effect.die(
       new Error(`meta statement verification failed: ${verified.error.kind}`),
     );
@@ -175,6 +188,9 @@ export const acceptMetaStatement = (input: {
       history: input.history,
       member: input.member,
       statement: input.statement,
-      predecessor: anchor,
+      // 保存済みステートメントは現行すべてレイアウト 1(ワイヤ v2 の受理 = S2)。
+      // MetaPredecessor.layoutVersion は fail-closed の必須フィールドなので明示
+      // する — S2 で layout_version 列を保存し、アンカーの実値をここへ通すこと
+      predecessor: { ...anchor, layoutVersion: 1 },
     });
   });

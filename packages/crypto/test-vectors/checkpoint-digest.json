@@ -1,0 +1,60 @@
+{
+  "description": "CRYPTO_SPEC §6.2: checkpoint values_digest の対象選別 — status = declared(§4.2 レイアウト v2・値未設定)の変数は values_digest に現れない(2026-08-30)。values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m)))、v_j = LP(variable_id, version, value_sig_hash_hex)(variable_id の UTF-8 バイト昇順・active 変数のみ)。エンコーダの LP 正規形は chain-entries.json の values_digests セクションが固定済みで不変 — 本ファイルは対象選別の規則のみを固定する(chain-entries.json は変更しない — §11)",
+  "encoding_reference": "chain-entries.json の values_digests(LP 正規形・バイト昇順・重複拒否・数値の 10 進文字列化)",
+  "selection_rule": "variables(ステートメント status 込みの変数集合)から values_digest_entries(active のみ)を選別する。active は最新 version の値座標(version / value_sig_hash_hex)を必ず持ち、declared / deleted は値座標を持たない(active の値配布要求と「declared に値が配布されないことは正当」— §6.3)",
+  "cases": [
+    {
+      "name": "declared-excluded",
+      "variables": [
+        {
+          "variable_id": "var-api-key-0001",
+          "status": "active",
+          "version": "1",
+          "value_sig_hash_hex": "b35f0fd44a509889ad8d2aff830a0dd499eedf8d71bbc8feb9ff16e35f7e2ded"
+        },
+        {
+          "variable_id": "var-v2-declared-0012",
+          "status": "declared"
+        },
+        {
+          "variable_id": "var-legacy-0002",
+          "status": "deleted"
+        },
+        {
+          "variable_id": "var-database-url-0001",
+          "status": "active",
+          "version": "3",
+          "value_sig_hash_hex": "9a30dd0dd0f556f2c685181808d0940936278a6b6d63c73ce7574b50e39f1a22"
+        }
+      ],
+      "values_digest_entries": [
+        {
+          "variable_id": "var-api-key-0001",
+          "version": "1",
+          "value_sig_hash_hex": "b35f0fd44a509889ad8d2aff830a0dd499eedf8d71bbc8feb9ff16e35f7e2ded"
+        },
+        {
+          "variable_id": "var-database-url-0001",
+          "version": "3",
+          "value_sig_hash_hex": "9a30dd0dd0f556f2c685181808d0940936278a6b6d63c73ce7574b50e39f1a22"
+        }
+      ],
+      "digest_input_hex": "0000001b6d61727568692f76312f656e762d76616c7565732d6469676573740000005d000000107661722d6170692d6b65792d303030310000000131000000406233356630666434346135303938383961643864326166663833306130646434393965656466386437316262633866656239666631366533356637653264656400000062000000157661722d64617461626173652d75726c2d3030303100000001330000004039613330646430646430663535366632633638353138313830386430393430393336323738613662366436336337336365373537346235306533396631613232",
+      "values_digest_hex": "e13d91a9221ccfb802b5cc363beed44de6ddee8a54494333f80a9a8014f3f0ec",
+      "note": "values_digest の対象は status = active の変数のみ(§6.2)。declared(§4.2 レイアウト v2 — 値・バージョンが存在しない)は現れず、tombstone(deleted)の対象外は既存規則(マニフェスト側 — §4.3 — が捕捉)。ダイジェストは active 2 変数のみの集合と同値になる"
+    },
+    {
+      "name": "all-declared-empty",
+      "variables": [
+        {
+          "variable_id": "var-v2-declared-0012",
+          "status": "declared"
+        }
+      ],
+      "values_digest_entries": [],
+      "digest_input_hex": "0000001b6d61727568692f76312f656e762d76616c7565732d646967657374",
+      "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01",
+      "note": "declared のみの環境の values_digest は空集合のダイジェスト(chain-entries.json values_digests の empty-set と同値)に一致する — 「declared に値が配布されないことは正当」(§6.3)の対象選別側の固定"
+    }
+  ]
+}

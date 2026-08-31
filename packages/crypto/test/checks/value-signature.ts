@@ -4,7 +4,11 @@
 // expected_reason により拒否される」ことを、verifyChainWithHistory で構築した
 // 履歴索引に対する verifyDistributedValue で固定する。
 
-import type { ChainHistoryIndex, ValueSignatureContext } from "../../src/index.ts";
+import type {
+  ChainHistoryIndex,
+  ValueInvalidReason,
+  ValueSignatureContext,
+} from "../../src/index.ts";
 import {
   buildValueSignedBytes,
   computeValueSignedBytesHash,
@@ -18,7 +22,14 @@ import {
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
 import { canonicalHistory, extendedHistory } from "./chain-history.ts";
 import { vectorKeys } from "./chain-vector.ts";
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
+import {
+  type CheckResult,
+  Checks,
+  expectRejectedReason,
+  fromHex,
+  reasonCoverageChecks,
+  toHex,
+} from "./support.ts";
 
 interface VectorContext {
   readonly suite: string;
@@ -174,12 +185,31 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
   );
 }
 
+// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
+// Record 型が union との同期をコンパイル時に強制する(metadata-signature.ts の
+// META_REASON_COVERAGE と同型)。
+const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
+  "signature-invalid": true,
+  "writer-unknown": true,
+  "chain-head-mismatch": true,
+  "chain-head-future": true,
+  "writer-not-member-at-head": true,
+  "writer-key-mismatch-at-head": true,
+  "writer-role-insufficient-at-head": true,
+  "environment-not-created-at-head": true,
+  "epoch-not-current-at-head": true,
+  "prev-shape-mismatch": true,
+  "prev-hash-mismatch": true,
+  "epoch-regressed": true,
+};
+
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
   c: Checks,
   negative: RuleNegative,
   history: ChainHistoryIndex,
   extended: ChainHistoryIndex,
+  exercised: Set<ValueInvalidReason>,
 ): Promise<void> {
   const chainHistory = negative.chain === "tenure-extension" ? extended : history;
   const result = await verifyDistributedValue({
@@ -195,17 +225,22 @@ async function ruleNegativeCheck(
             epoch: negative.predecessor.epoch,
           },
   });
-  c.push(
+  expectRejectedReason(
+    c,
     `value-sig rule negative: ${negative.name}`,
-    !result.ok &&
-      result.error.kind === "ValueInvalid" &&
-      result.error.reason === negative.expected_reason,
+    !result.ok && result.error.kind === "ValueInvalid" ? result.error.reason : undefined,
+    negative.expected_reason,
+    exercised,
     result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
   );
 }
 
 /** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
-async function tamperNegativeCheck(c: Checks, negative: RuleNegative): Promise<void> {
+async function tamperNegativeCheck(
+  c: Checks,
+  negative: RuleNegative,
+  exercised: Set<ValueInvalidReason>,
+): Promise<void> {
   const context = contextOf(negative.context);
   const bytesMatch = toHex(buildValueSignedBytes(context)) === negative.verify_signed_bytes_hex;
   const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
@@ -218,12 +253,14 @@ async function tamperNegativeCheck(c: Checks, negative: RuleNegative): Promise<v
     signatureHex: negative.signature_hex,
     writerPublicKey: key.value,
   });
-  c.push(
+  expectRejectedReason(
+    c,
     `value-sig negative: ${negative.name}`,
-    bytesMatch &&
-      !result.ok &&
-      result.error.kind === "ValueInvalid" &&
-      result.error.reason === "signature-invalid",
+    bytesMatch && !result.ok && result.error.kind === "ValueInvalid"
+      ? result.error.reason
+      : undefined,
+    "signature-invalid",
+    exercised,
   );
 }
 
@@ -231,14 +268,15 @@ async function negativeChecks(
   c: Checks,
   history: ChainHistoryIndex,
   extended: ChainHistoryIndex,
+  exercised: Set<ValueInvalidReason>,
 ): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of valueVectors.negative as readonly RuleNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, history, extended);
+      await ruleNegativeCheck(c, negative, history, extended, exercised);
     } else {
-      await tamperNegativeCheck(c, negative);
+      await tamperNegativeCheck(c, negative, exercised);
     }
   }
   // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
@@ -351,10 +389,12 @@ export async function valueSignatureChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const history = await canonicalHistory();
   const extended = await extendedHistory();
+  const exercised = new Set<ValueInvalidReason>();
   await vectorChecks(c, history);
   await forkChecks(c, history);
-  await negativeChecks(c, history, extended);
+  await negativeChecks(c, history, extended, exercised);
   await invalidInputChecks(c);
   await roundtripChecks(c);
+  reasonCoverageChecks(c, "value-sig", VALUE_REASON_COVERAGE, exercised);
   return c.results;
 }

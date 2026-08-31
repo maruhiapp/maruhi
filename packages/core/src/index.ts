@@ -18,6 +18,7 @@ export {
   CryptoKeyImportError,
   CryptoMetaStatementInvalidError,
   CryptoSignError,
+  CryptoUnsupportedMetaLayoutError,
   CryptoValueInvalidError,
   fromCryptoResult,
   toWrappedCryptoError,

@@ -10,7 +10,9 @@
 //      role 水準: 変数の作成・rename・削除と環境の作成・rename = member 以上、
 //      環境の削除のみ admin 以上 — §4.2 / AUTH_SPEC §12-3)
 //   6. 連鎖整合(predecessor を渡された場合のみ: prev 一致 + 削除後の再ステート
-//      メント拒否 — §4.2 の「deleted 後の再 active 化は禁止」)
+//      メント拒否 — §4.2 の「deleted 後の再 active 化は禁止」— に加え、レイアウト
+//      v2 の遷移規則: active → declared の禁止と変数単位のレイアウト単調性
+//      〔v2 → v1 後退の拒否〕— §4.2 レイアウト v2・0.8-draft)
 // 座標整合(§6.3-5)は呼び出し側の責務: 本関数へ渡す context 自体を、申告値
 // でなく期待座標(検証済み genesis ハッシュ・要求環境・応答外側の variableId)
 // から構成すること。
@@ -31,7 +33,8 @@ import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoResult, MetaInvalidReason } from "./errors.ts";
 import {
   computeMetaSignedBytesHash,
-  metaContextInvalidField,
+  metaContextRejection,
+  metaLayoutVersionOf,
   type MetaStatementContext,
   type MetaStatementStatus,
   verifyMetaStatementSignature,
@@ -55,6 +58,19 @@ import {
 export interface MetaPredecessor {
   readonly signedBytesHashHex: string;
   readonly status: MetaStatementStatus;
+  /**
+   * The predecessor's wire layout version — the anchor of the per-variable
+   * layout monotonicity check (§4.2: a v1 successor of a v2 predecessor is
+   * rejected as `layout-regression`). **Required, not optional-with-default**:
+   * this structure is assembled from a *verified* stored statement, and an
+   * omitted-means-1 default would make the fail-closed monotonicity check
+   * fail-open — a caller that forgets the field would silently wave a v2 → v1
+   * regression through, which is the exact schema erasure the rule exists to
+   * stop (PR #116 レビュー対応). Wire omission = 1 (§4.2) is the *wire* rule;
+   * callers holding a v1 predecessor write `layoutVersion: 1` explicitly, so
+   * the type checker catches S2 migration gaps.
+   */
+  readonly layoutVersion: number;
 }
 
 /** Input of the history-based distributed-statement verification (§6.3 / §6.4). */
@@ -109,10 +125,22 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
   });
 }
 
+// 本層の predecessor 検査が見るのは**ハッシュ連鎖・遷移・レイアウト単調性のみ**。
+// crypto 層が意図的に検査しないもの(独立レビュー第 2 ラウンド — 所有者裁定で
+// S2 受理面の領分と確定。v1 の前例と一貫):
+// - 削除ステートメントのスキーマ欄・name の「直前からの完全保持」(§4.2)は
+//   **受理検査**(AUTH_SPEC §12-5 — name の「直前の active 名を保持」と同じ
+//   規約の受理検査。v1 の name 保持も同型で apps/server/src/programs-variable.ts
+//   が検査する)。**S2 の実装 PR は v2 削除の「スキーマ欄・レイアウトの直前一致」
+//   受理検査を必ず追加すること** — 実装しないと、有効署名を持つ改変削除
+//   (スキーマ欄を書き換えた status = deleted)が受理される
+// - metaVersion 1 + status deleted は署名 API(signMetaStatement)が拒否するが、
+//   分散検証は拒否しない(v1 からの既知の非対称 — 受理面〔§12-5: 作成は active
+//   または v2 declared〕が正)
 function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { context, predecessor } = input;
   // prev の形(latest-only でも必ず検査): metaVersion 1 = 空、> 1 = 64 hex。
-  // 個別フィールドの hex 形式は metaContextInvalidField が検査済みなので、
+  // 個別フィールドの hex 形式は metaContextRejection が検査済みなので、
   // ここは metaVersion との結合のみ
   if ((context.metaVersion === 1) !== (context.prevMetaSigHashHex === "")) {
     return "prev-shape-mismatch";
@@ -126,9 +154,24 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
     return "prev-hash-mismatch";
   }
   // §4.2: deleted 後の再 active 化は禁止(tombstone は終端)。deleted の後続は
-  // status を問わずすべて拒否する — 削除済み変数・環境の無断復活の遮断
+  // status を問わずすべて拒否する — 削除済み変数・環境の無断復活の遮断。
+  // declared への遷移にも適用する(ベクター declared-after-delete)
   if (predecessor.status === "deleted") {
     return "revived-after-delete";
+  }
+  // §4.2 レイアウト v2: active → declared は禁止(値の存在の巻き戻し表現を
+  // 作らない — 値を取り除く唯一の経路は削除)。declared → declared(宣言中の
+  // スキーマ再発行・rename)は正当なのでここでは拒否しない
+  if (predecessor.status === "active" && context.status === "declared") {
+    return "declared-after-active";
+  }
+  // §4.2 変数単位のレイアウト単調性: 直前が v2 の変数への v1 後続は拒否
+  // (後退を許すと rename 1 回でスキーマ欄が黙って消え、presence 保証
+  // §14.2-8 と schema-locked〔AUTH_SPEC §12-11〕が迂回できる)。predecessor 側は
+  // 必須フィールド(fail-closed — MetaPredecessor の doc 参照)、context 側のみ
+  // ワイヤ規約(省略 = 1)を適用する
+  if (predecessor.layoutVersion === 2 && metaLayoutVersionOf(context) === 1) {
+    return "layout-regression";
   }
   return null;
 }
@@ -147,14 +190,18 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
 export async function verifyDistributedMetaStatement(
   input: DistributedMetaStatementInput,
 ): Promise<CryptoResult<{ readonly signedBytesHashHex: string }>> {
-  const field =
-    metaContextInvalidField(input.context) ??
-    distributedInputInvalidField({
-      actorKeyFingerprintHex: input.authorKeyFingerprintHex,
-      actorKeyFingerprintField: "authorKeyFingerprintHex",
-      signatureHex: input.signatureHex,
-      predecessorSignedBytesHashHex: input.predecessor?.signedBytesHashHex,
-    });
+  // レイアウト選択の検査(裁定 CR)は metaContextRejection が担う: サポート外の
+  // layoutVersion は署名検証より前に型付きエラー UnsupportedMetaLayout で拒否
+  const rejection = metaContextRejection(input.context);
+  if (rejection !== null) {
+    return { ok: false, error: rejection };
+  }
+  const field = distributedInputInvalidField({
+    actorKeyFingerprintHex: input.authorKeyFingerprintHex,
+    actorKeyFingerprintField: "authorKeyFingerprintHex",
+    signatureHex: input.signatureHex,
+    predecessorSignedBytesHashHex: input.predecessor?.signedBytesHashHex,
+  });
   if (field !== null) {
     return invalidInput(field);
   }

@@ -65,17 +65,22 @@ export {
   verifyValueSignature,
 } from "./internal.package/index.ts";
 
-// §4.2: 変数・環境メタデータの署名付きステートメント
+// §4.2: 変数・環境メタデータの署名付きステートメント(レイアウト v2 — スキーマ欄・
+// declared・レイアウト選択 — を含む。0.8-draft)
 export {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,
   type DistributedMetaStatementInput,
+  metaLayoutVersionOf,
   type MetaInvalidReason,
   type MetaPredecessor,
   type MetaStatementContext,
   type MetaStatementStatus,
   type MetaStatementTarget,
+  type MetaVariableSchema,
+  type MetaVarType,
   signMetaStatement,
+  SUPPORTED_META_LAYOUT_VERSIONS,
   verifyDistributedMetaStatement,
   verifyMetaStatementSignature,
 } from "./internal.package/index.ts";
@@ -149,6 +154,7 @@ export {
   type EnvironmentCheckpointState,
   type EnvironmentStateAtSeq,
   type EnvValuesDigestEntry,
+  type EnvValuesDigestSource,
   type GenesisPayload,
   type GrantServerPayload,
   type LeaseClaimConstraint,
@@ -158,6 +164,7 @@ export {
   type RevokeServerPayload,
   type Role,
   type RotateEpochPayload,
+  selectEnvValuesDigestEntries,
   type ServerGrant,
   signChainEntry,
   type UnsignedChainEntry,
