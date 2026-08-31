@@ -220,27 +220,23 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
   it("login の保存 → resolveSession の読み戻し → Bearer ヘッダーでの実使用", async () => {
     // 3 段を 1 本で通す。どこかで伏字が混ざれば「保存はできたのに認証に失敗する」
     // 形で必ずここが落ちる(型検査では捕まらない経路)
-    const githubServer = await start([
-      onRequest("POST", "/login/device/code", () => ({
-        status: 200,
-        json: {
-          device_code: "dev-code-0001",
-          user_code: "ABCD-1234",
-          verification_uri: "https://github.example/login/device",
-          interval: 0,
-          expires_in: 900,
-        },
-      })),
-      onRequest("POST", "/login/oauth/access_token", () => ({
-        status: 200,
-        json: { access_token: "gho_github_token_value" },
-      })),
-    ]);
     const authorizations: (string | undefined)[] = [];
     const maruhi = await start([
-      onRequest("POST", "/auth/device/exchange", () => ({
+      onRequest("POST", "/auth/cli/start", () => ({
         status: 200,
         json: {
+          flowId: "0123456789abcdef0123456789abcdef",
+          flowToken: "v1.dGVzdC1mbG93.fixture-mac-value",
+          userCode: "ABCD-1234",
+          verificationUrl: "https://maruhi.example/auth/cli/verify?flow=x&vsig=y",
+          expiresInSeconds: 900,
+          pollIntervalSeconds: 0,
+        },
+      })),
+      onRequest("POST", "/auth/cli/poll", () => ({
+        status: 200,
+        json: {
+          status: "approved",
           token: "maruhi_pat_issued_real",
           tokenId: "tok_1",
           userId: "user-0001",
@@ -254,13 +250,10 @@ describe("キーチェーン往復は伏字保存で壊れていない", () => {
       }),
     ]);
     const env = await makeTestEnv();
-    await seedConfig(env, { server: maruhi.origin, githubClientId: "Iv1.testclient" });
+    await seedConfig(env, { server: maruhi.origin });
 
     // (a) 保存: login がキーチェーンへ書く
-    const code = await runCli(
-      ["login", "--github-base-url", githubServer.origin, "--github-poll-interval", "0"],
-      env.layer,
-    );
+    const code = await runCli(["login", "--poll-interval", "0"], env.layer);
     expect(code).toBe(0);
     const stored = env.keychain.get(tokenEntryName(maruhi.origin));
     expect(stored).toBeDefined();
@@ -713,6 +706,7 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
     stderrIsTerminal: () => true,
+    openBrowser: () => Effect.succeed(false),
   });
 
   const showWiped = (input: {
@@ -796,10 +790,9 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "invite-link.ts": 2,
   // 直列化 = 唯一の永続化経路(トークン 1 + master 鍵の秘密側 2)
   "keychain.ts": 3,
-  // device exchange のワイヤ境界(GitHub トークン)1 +
   // --show-token の発行時端末表示(AUTH_SPEC §6 の 1 箇所 — 値表示ゲート
-  // 通過後。裁定 CK)1
-  "login.ts": 2,
+  // 通過後。裁定 CK)
+  "login.ts": 1,
   // 自 OIDC トークンの claims 読み出し(payload セグメントの decode — A3)
   "oidc-github.ts": 1,
   // 復号の鍵入力(暗号境界)

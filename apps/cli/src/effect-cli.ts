@@ -124,7 +124,7 @@ import {
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
-import { loginOp, logoutOp, resolveClientId } from "./login.ts";
+import { loginOp, logoutOp } from "./login.ts";
 import {
   MEMBER_REMOVED_ROTATION_REASON,
   type MemberAddSummary,
@@ -458,10 +458,6 @@ const auditReconcileConfig = { ...projectFlags() };
 
 const loginConfig = {
   ...serverOnlyFlags(),
-  "github-client-id": singleValued(
-    "github-client-id",
-    "GitHub OAuth App client_id (defaults to config githubClientId, then auto-resolved from the server's /auth/config)",
-  ),
   "token-name": singleValued(
     "token-name",
     "Token name (re-login with the same name rotates the token; default: cli:<hostname>)",
@@ -477,10 +473,9 @@ const loginConfig = {
     "show-token",
     "Print the issued token once (to provision MARUHI_TOKEN on runtimes without lease support). Interactive terminals only",
   ),
-  "github-base-url": hiddenValued("github-base-url", "GitHub base URL (for tests)"),
-  "github-poll-interval": hiddenIntegerValued(
-    "github-poll-interval",
-    "Minimum device-flow polling interval in seconds (for tests)",
+  "poll-interval": hiddenIntegerValued(
+    "poll-interval",
+    "Minimum approval polling interval in seconds (for tests)",
   ),
 };
 
@@ -948,7 +943,7 @@ function requireTokenName(value: string | undefined): Effect.Effect<string, CliE
 /**
  * `--token-ttl-days` の範囲検査(AUTH_SPEC §6 — W3a)。上限・既定は
  * `@maruhi/api-schema` の宣言と同じ定数を見る(requireTokenName と同じ理由:
- * 書き方の誤りは device flow の完走より前に落とす)。省略は undefined のまま
+ * 書き方の誤りはブラウザ承認の完走より前に落とす)。省略は undefined のまま
  * 返し、サーバー側の既定(90 日)に委ねる。
  */
 function requireTokenTtlDays(
@@ -1750,11 +1745,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const login = Command.make("login", loginConfig, (values) =>
     Effect.gen(function* () {
       // **どの通信よりも先**に見る。上限は api-schema と共有する
-      // (MAX_TOKEN_NAME_LENGTH)。ここで見ないと、長すぎる名前は device flow
-      // (**ブラウザでの承認**)を完走した後にリクエストの encode 失敗として
-      // 現れる。`resolveClientId` より後ろでも駄目で、あちらは client_id が
-      // フラグにも config にも無いとき `/auth/config` を引く(= 往復が先に
-      // 起きるうえ、その取得が失敗すると書き方の誤りが接続失敗に隠れる)
+      // (MAX_TOKEN_NAME_LENGTH)。ここで見ないと、長すぎる名前は start の
+      // encode 失敗(接続失敗と紛らわしい診断)として現れる
       const tokenName = yield* requireTokenName(values["token-name"]);
       const expiresInDays = yield* requireTokenTtlDays(values["token-ttl-days"]);
       // --show-token は発行した PAT の生値を端末へ出す(AUTH_SPEC §6 の
@@ -1769,24 +1761,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const store = yield* ConfigStore;
       const config = yield* store.load;
       const origin = yield* resolveServerOrigin(values.server, config);
-      // --github-base-url は GHES / テスト用の上書き。既定の GitHub から
-      // 外す以上、http を任意ホストへ向ける経路を塞ぐ(https か loopback のみ)。
-      // 形式の検査は**通信より前**に置く(後ろだと、書き方の誤りが
-      // 「サーバーへの接続に失敗しました」として報告される)
-      const githubBaseUrl =
-        values["github-base-url"] === undefined
-          ? undefined
-          : yield* normalizeHttpOrigin(values["github-base-url"], "GitHub base URL");
-      // フラグ → config → サーバーの公開設定エンドポイント(AUTH_SPEC §4)
-      const clientId = yield* resolveClientId({
-        origin,
-        explicit: values["github-client-id"],
-        configured: config.githubClientId,
-      });
-      const minIntervalSeconds = values["github-poll-interval"];
+      const minIntervalSeconds = values["poll-interval"];
       yield* loginOp({
         origin,
-        clientId,
         tokenName,
         showToken: values["show-token"],
         // 既定名の判定は解決後の実名で行う(明示的に cli:<hostname> を渡した
@@ -1794,13 +1771,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         // 分岐する。裁定 CM / PR #108 Bugbot 指摘)
         tokenNameIsDefault: tokenName === `cli:${hostname()}`,
         ...(expiresInDays === undefined ? {} : { expiresInDays }),
-        ...(githubBaseUrl === undefined ? {} : { githubBaseUrl }),
         ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
       });
     }),
   ).pipe(
     Command.withDescription(
-      "Log in via the GitHub device flow and store the maruhi token in the OS keychain",
+      "Log in by approving the request in your browser, and store the maruhi token in the OS keychain",
     ),
   );
 

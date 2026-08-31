@@ -14,8 +14,8 @@ export type MaruhiClient = HttpApiClient.ForApi<typeof maruhiApi>;
 
 /**
  * Derives the typed client. `token` is attached as a Bearer header when
- * present (authConfig and deviceExchange are the only unauthenticated calls
- * the CLI makes).
+ * present (authConfig and the CLI login handoff — cliStart / cliPoll — are
+ * the only unauthenticated calls the CLI makes).
  *
  * 上流の `bearerToken` は `Redacted` をそのまま受ける(ヘッダー組み立ての
  * 内側で剥がす)ため、CLI 側に剥がす箇所を作らずに済む — 手書きの

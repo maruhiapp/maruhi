@@ -1064,9 +1064,9 @@ describe("login / logout の移行(ADR-0016 第 3 段階 ④)", () => {
     // 期待する型は宣言由来なので出してよいが、与えられた値は平文が混ざりうる
     // ので出さない
     const { env, server } = await startEnv();
-    expect(await runCli(["login", "--github-poll-interval", "s3cr3t"], env.layer)).toBe(2);
+    expect(await runCli(["login", "--poll-interval", "s3cr3t"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("Unacceptable value for flag --github-poll-interval");
+    expect(errors).toContain("Unacceptable value for flag --poll-interval");
     expectNoLeak(env, ["s3cr3t"]);
     expect(server.requests).toHaveLength(0);
   });
@@ -1076,34 +1076,31 @@ describe("login / logout の移行(ADR-0016 第 3 段階 ④)", () => {
     // 内部エラー(exit 1)として報告していた(args.test.ts の旧ケース)。
     // effect では InvalidValue = 書き方の誤り(exit 2)— 移行後の正へ更新
     const { env, server } = await startEnv();
-    expect(await runCli(["login", "--github-poll-interval"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --github-poll-interval");
+    expect(await runCli(["login", "--token-ttl-days"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --token-ttl-days");
     expect(server.requests).toHaveLength(0);
   });
 
   it("長いオプション名の打ち間違いも候補として案内する", async () => {
     const { env } = await startEnv();
-    expect(await runCli(["login", "--github-client-idd", "x"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Unknown flag (did you mean --github-client-id?)");
+    expect(await runCli(["login", "--token-namee", "x"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain("Unknown flag (did you mean --token-name?)");
   });
 
   it("隠しオプション(hidden)はヘルプにも候補にも出さない", async () => {
-    // 内部向けの綴り(--github-base-url / --github-poll-interval)を広めない。
-    // 上流の typo 候補は hidden を除外し(実測)、こちらの一覧(specOf)も
-    // hidden を除外する
+    // 内部向けの綴り(--poll-interval)を広めない。上流の typo 候補は hidden を
+    // 除外し(実測)、こちらの一覧(specOf)も hidden を除外する
     const typo = await startEnv();
-    expect(await runCli(["login", "--github-poll-intervall", "3"], typo.env.layer)).toBe(2);
+    expect(await runCli(["login", "--poll-intervall", "3"], typo.env.layer)).toBe(2);
     const errors = typo.env.errors.join("\n");
-    expect(errors).not.toContain("--github-poll-interval");
-    expect(errors).not.toContain("--github-base-url");
+    expect(errors).not.toContain("--poll-interval");
     expect(errors).toContain("Unknown flag");
 
     const help = await startEnv();
     expect(await runCli(["login", "--help"], help.env.layer)).toBe(0);
     const full = help.env.errors.join("\n");
     expect(full).toContain("--token-name");
-    expect(full).not.toContain("--github-base-url");
-    expect(full).not.toContain("--github-poll-interval");
+    expect(full).not.toContain("--poll-interval");
   });
 
   it("logout は位置引数を取らない", async () => {
@@ -1388,7 +1385,7 @@ describe("config の入れ子サブコマンド(ADR-0016 第 3 段階 ①)", () 
     const get = await startEnv();
     expect(await runCli(["config", "get", evil], get.env.layer)).toBe(2);
     const getOutput = [...get.env.logs, ...get.env.errors].join("\n");
-    expect(getOutput).toContain("Unknown config key (server | githubClientId");
+    expect(getOutput).toContain("Unknown config key (server | defaultProject");
     expect(getOutput).not.toContain("");
     expect(getOutput).not.toContain("\r");
 

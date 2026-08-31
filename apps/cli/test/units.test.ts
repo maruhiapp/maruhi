@@ -1,6 +1,6 @@
-// 細部のユニットテスト: device flow のポーリング規則(RFC 8628 §3.5)、
-// キーチェーンレコードの codec、run の注入検証、stdin 正規化、
-// MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
+// 細部のユニットテスト: キーチェーンレコードの codec、run の注入検証、
+// stdin 正規化、MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
+// (CLI ログインのポーリング規則は login.test.ts — AUTH_SPEC §4)
 
 import { ProjectNotFoundError, UnauthorizedError } from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";
 import { runCli } from "../src/cli.ts";
-import { pollDeviceFlow, startDeviceFlow } from "../src/device-flow.ts";
 import {
   decodeValueText,
   formatUtcDate,
@@ -46,228 +45,6 @@ let servers: MockServer[] = [];
 afterEach(async () => {
   await Promise.all(servers.map((server) => server.close()));
   servers = [];
-});
-
-describe("pollDeviceFlow", () => {
-  it("slow_down は待ち時間を増やして続行する", async () => {
-    let polls = 0;
-    const server = await MockServer.start([
-      onRequest("POST", "/login/oauth/access_token", () => {
-        polls += 1;
-        if (polls === 1) {
-          return { status: 200, json: { error: "slow_down" } };
-        }
-        return { status: 200, json: { access_token: "gho_x" } };
-      }),
-    ]);
-    servers.push(server);
-    const token = await Effect.runPromise(
-      pollDeviceFlow({
-        clientId: "c",
-        githubBaseUrl: server.origin,
-        slowDownExtraSeconds: 0.01,
-        minIntervalSeconds: 0,
-        authorization: {
-          deviceCode: "d",
-          userCode: "u",
-          verificationUri: "v",
-          intervalSeconds: 0,
-          expiresInSeconds: 60,
-        },
-      }),
-    );
-    expect(Redacted.value(token)).toBe("gho_x");
-    expect(polls).toBe(2);
-  });
-
-  it("expired_token(サーバー申告)で中断する。RFC 準拠の 400 + error ボディも分類できる", async () => {
-    const server = await MockServer.start([
-      onRequest("POST", "/login/oauth/access_token", () => ({
-        // RFC 8628 準拠実装の形(GitHub 実サーバーは 200 + error)
-        status: 400,
-        json: { error: "expired_token" },
-      })),
-    ]);
-    servers.push(server);
-    const exit = await Effect.runPromiseExit(
-      pollDeviceFlow({
-        clientId: "c",
-        githubBaseUrl: server.origin,
-        minIntervalSeconds: 0,
-        authorization: {
-          deviceCode: "d",
-          userCode: "u",
-          verificationUri: "v",
-          intervalSeconds: 0,
-          expiresInSeconds: 60,
-        },
-      }),
-    );
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("authorization code expired");
-  });
-
-  it("device flow 開始応答の欠損(device_code なし)を検出する", async () => {
-    const server = await MockServer.start([
-      onRequest("POST", "/login/device/code", () => ({ status: 200, json: { interval: 5 } })),
-    ]);
-    servers.push(server);
-    const exit = await Effect.runPromiseExit(
-      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
-    );
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("device-flow start response");
-  });
-
-  it("サーバーが interval 0 を返しても下限(既定 5 秒)に丸める(ビジースピン防止)", async () => {
-    const server = await MockServer.start([
-      onRequest("POST", "/login/device/code", () => ({
-        status: 200,
-        json: {
-          device_code: "d",
-          user_code: "U",
-          verification_uri: "https://github.example/device",
-          interval: 0,
-          expires_in: 900,
-        },
-      })),
-    ]);
-    servers.push(server);
-    const auth = await Effect.runPromise(
-      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
-    );
-    expect(auth.intervalSeconds).toBe(5);
-  });
-
-  it("minIntervalSeconds を渡すと下限を上書きできる(テスト用)", async () => {
-    const server = await MockServer.start([
-      onRequest("POST", "/login/device/code", () => ({
-        status: 200,
-        json: {
-          device_code: "d",
-          user_code: "U",
-          verification_uri: "https://github.example/device",
-          interval: 0,
-          expires_in: 900,
-        },
-      })),
-    ]);
-    servers.push(server);
-    const auth = await Effect.runPromise(
-      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin, minIntervalSeconds: 0 }),
-    );
-    expect(auth.intervalSeconds).toBe(0);
-  });
-
-  it("期限切れ(deadline 超過)で中断する", async () => {
-    const server = await MockServer.start([
-      onRequest("POST", "/login/oauth/access_token", () => ({
-        status: 200,
-        json: { error: "authorization_pending" },
-      })),
-    ]);
-    servers.push(server);
-    const exit = await Effect.runPromiseExit(
-      pollDeviceFlow({
-        clientId: "c",
-        githubBaseUrl: server.origin,
-        minIntervalSeconds: 0,
-        authorization: {
-          deviceCode: "d",
-          userCode: "u",
-          verificationUri: "v",
-          intervalSeconds: 0.01,
-          expiresInSeconds: 0.02,
-        },
-      }),
-    );
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("authorization code expired");
-  });
-
-  it("巨大な interval / expires_in は上限に丸める(B3: 敵対的エンドポイント対策)", async () => {
-    const server = await MockServer.start([
-      onRequest("POST", "/login/device/code", () => ({
-        status: 200,
-        json: {
-          device_code: "d",
-          user_code: "U",
-          verification_uri: "https://github.example/device",
-          interval: 86_400,
-          expires_in: 10_000_000,
-        },
-      })),
-    ]);
-    servers.push(server);
-    const auth = await Effect.runPromise(
-      startDeviceFlow({ clientId: "c", githubBaseUrl: server.origin }),
-    );
-    expect(auth.intervalSeconds).toBe(900);
-    expect(auth.expiresInSeconds).toBe(1800);
-  });
-
-  it("interval が deadline を越えるなら sleep せず即座に期限切れにする(B3)", async () => {
-    // ポーリングに一度も到達せずに失敗すべきなので、モックサーバーは不要。
-    // 巨大 interval のまま sleep すると、このテスト自体がタイムアウトする
-    const started = Date.now();
-    const exit = await Effect.runPromiseExit(
-      pollDeviceFlow({
-        clientId: "c",
-        githubBaseUrl: "http://127.0.0.1:9",
-        authorization: {
-          deviceCode: "d",
-          userCode: "u",
-          verificationUri: "v",
-          intervalSeconds: 3600,
-          expiresInSeconds: 1,
-        },
-      }),
-    );
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("authorization code expired");
-    expect(Date.now() - started).toBeLessThan(2000);
-  });
-
-  it("interval / expiresInSeconds が NaN でも deadline と待ち時間は有界(B3 レビューループ 1・2)", async () => {
-    const started = Date.now();
-    // NaN interval は下限へ倒れる(5s > 残り 0.05s → sleep せず即期限切れ)。
-    // 素通しだと NaN 比較で deadline 検査が常に偽 + sleep 即時解決 = 無間隔の
-    // 再 POST ループになる
-    const nanInterval = await Effect.runPromiseExit(
-      pollDeviceFlow({
-        clientId: "c",
-        githubBaseUrl: "http://127.0.0.1:9",
-        authorization: {
-          deviceCode: "d",
-          userCode: "u",
-          verificationUri: "v",
-          intervalSeconds: Number.NaN,
-          expiresInSeconds: 0.05,
-        },
-      }),
-    );
-    expect(Exit.isFailure(nanInterval)).toBe(true);
-    expect(JSON.stringify(nanInterval)).toContain("authorization code expired");
-    // NaN expires は既定値(900s)へ倒れる = deadline が有界。下限(テスト knob)を
-    // 残り時間より大きくすれば、sleep せず即座に期限切れになることで観測できる
-    const nanExpires = await Effect.runPromiseExit(
-      pollDeviceFlow({
-        clientId: "c",
-        githubBaseUrl: "http://127.0.0.1:9",
-        minIntervalSeconds: 1000,
-        authorization: {
-          deviceCode: "d",
-          userCode: "u",
-          verificationUri: "v",
-          intervalSeconds: Number.NaN,
-          expiresInSeconds: Number.NaN,
-        },
-      }),
-    );
-    expect(Exit.isFailure(nanExpires)).toBe(true);
-    expect(JSON.stringify(nanExpires)).toContain("authorization code expired");
-    expect(Date.now() - started).toBeLessThan(2000);
-  });
 });
 
 describe("total timestamp formatters", () => {
@@ -464,6 +241,7 @@ describe("showValues(復号後の防衛線)", () => {
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
     stderrIsTerminal: () => true,
+    openBrowser: () => Effect.succeed(false),
   });
 
   const showOne = (input: {
@@ -527,6 +305,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
       showValues([variable("SECRET", "x\nDATABASE_URL=postgres://attacker/")]).pipe(
@@ -563,6 +342,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
       showValues([variable("SECRET", "a\nb\n")]).pipe(
@@ -603,6 +383,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
       showValues([variable("SECRET", "a\u202Eb\u200Bc\u2028d\u200Ce\nf")]).pipe(

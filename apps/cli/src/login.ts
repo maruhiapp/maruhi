@@ -1,18 +1,23 @@
 // maruhi login / logout(AUTH_SPEC §4 / §6)。
 //
-// - GitHub トークンはこのファイルのローカル変数にのみ存在し、/auth/device/exchange
-//   へ渡した後は参照を残さない(両側で即時破棄 — §4-5)
+// login はサーバー仲介の web-flow ハンドオフ(§4 — 2026-08-31 全面改訂):
+// start → verificationUrl と userCode の表示(対話端末 × 非エージェントのみ
+// ブラウザ自動起動を試みる)→ poll。CLI はアイデンティティプロバイダと直接
+// 通信しない(client_id 解決は廃止)。
+//
+// - flowToken は CLI 専用の bearer 資格情報(§4-1 (1))。ローカル変数にのみ
+//   存在し、表示・ログ・保存をしない(poll の payload にのみ載る)
 // - 永続化するのは maruhi 発行トークンのみ、保存先は OS キーチェーンのみ
 // - login の再実行は同名トークンのローテーション(§6): サーバー側で旧トークンが
 //   自動失効する
 // - logout は自トークンの失効(§6 v1 線引き)+ キーチェーンからの削除
 
-import { SetupIncompleteError } from "@maruhi/api-schema";
-import { Effect, Redacted } from "effect";
+import { MIN_CLI_POLL_INTERVAL_SECONDS } from "@maruhi/api-schema";
+import { Duration, Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
-import { makeApiClient } from "./api.ts";
-import { pollDeviceFlow, startDeviceFlow } from "./device-flow.ts";
+import { AgentProfileRef } from "./agent-gate.ts";
+import { makeApiClient, type MaruhiClient } from "./api.ts";
 import { displayText, escapeText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
@@ -30,44 +35,86 @@ import {
 } from "./keychain.ts";
 import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
 
+// サーバー申告値の運用上限(device flow 時代の B3 と同じ論拠): 敵対的・誤設定
+// サーバーの巨大値で deadline 検査に到達しないまま長時間 sleep しない。実値
+// (サーバーの TTL 15 分・間隔 5 秒)に余裕を持たせた丸め
+const MAX_POLL_INTERVAL_SECONDS = 900;
+const DEFAULT_EXPIRES_IN_SECONDS = 900;
+const MAX_EXPIRES_IN_SECONDS = 1800;
+
 /**
- * GitHub OAuth App client_id の解決(AUTH_SPEC §4): `--github-client-id`
- * フラグ → config の `githubClientId` → サーバーの公開設定エンドポイント
- * `GET /auth/config`。config は自動解決の導入後も上書き手段として残す
- * (GHES・テスト用 — セッション 11 裁定 (iii))。
+ * ポーリング間隔を [下限, 上限] に丸める(下限はワイヤ共有の
+ * MIN_CLI_POLL_INTERVAL_SECONDS — §4-1 (5)。テストのみ短縮可)。0・負値・非数は
+ * 下限へ(ビジースピンしない)。下限が上限を越える場合は下限が勝つ。
  */
-export function resolveClientId(input: {
-  readonly origin: string;
-  readonly explicit: string | undefined;
-  readonly configured: string | undefined;
-}): Effect.Effect<string, CliError, HttpClient.HttpClient> {
-  if (input.explicit !== undefined) {
-    return Effect.succeed(input.explicit);
+function clampInterval(seconds: number, minSeconds: number): number {
+  if (!Number.isFinite(seconds) || seconds < minSeconds) {
+    return minSeconds;
   }
-  if (input.configured !== undefined) {
-    return Effect.succeed(input.configured);
-  }
-  return Effect.gen(function* () {
-    const client = yield* makeApiClient({ baseUrl: input.origin });
-    const config = yield* client.auth.authConfig({}).pipe(
-      Effect.mapError((error) =>
-        // 未設定サーバー(SetupIncomplete)は failure.ts の案内をそのまま使う。
-        // それ以外(到達不能・旧サーバー等)は手動設定の逃げ道を添える
-        error instanceof SetupIncompleteError
-          ? toCliError(error)
-          : cliError(
-              `${toCliError(error).message} (could not auto-resolve the client_id from the server; you can set it manually with \`maruhi config set githubClientId <id>\`)`,
-            ),
-      ),
-    );
-    return config.githubClientId;
-  });
+  return Math.min(seconds, Math.max(MAX_POLL_INTERVAL_SECONDS, minSeconds));
 }
 
-/** `maruhi login`: device flow → token exchange → keychain. */
+/** expiresInSeconds を (0, 上限] に丸める(非数・非有限・非正は既定値)。 */
+function clampExpires(seconds: number): number {
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.min(seconds, MAX_EXPIRES_IN_SECONDS)
+    : DEFAULT_EXPIRES_IN_SECONDS;
+}
+
+const FLOW_EXPIRED_MESSAGE = "The sign-in request expired. Run `maruhi login` again";
+
+/** poll 1 回の帰結(レート制限は失敗ではなく次回間隔の調整として扱う)。 */
+type PollOutcome =
+  | { readonly kind: "pending" }
+  | { readonly kind: "backoff"; readonly retryAfterSeconds: number }
+  | {
+      readonly kind: "approved";
+      readonly token: string;
+      readonly tokenId: string;
+      readonly userId: string;
+      readonly expiresAtMs: number;
+    };
+
+function pollOnce(
+  client: MaruhiClient,
+  flowId: string,
+  flowToken: string,
+): Effect.Effect<PollOutcome, CliError> {
+  return client.authCli
+    .cliPoll({ payload: { flowId, flowToken } })
+    .pipe(
+      Effect.flatMap((result): Effect.Effect<PollOutcome, CliError> => {
+        if (result.status === "approved") {
+          return Effect.succeed({ kind: "approved", ...result });
+        }
+        if (result.status === "denied") {
+          return Effect.fail(
+            cliError("The sign-in was denied in the browser. No token was issued"),
+          );
+        }
+        return Effect.succeed({ kind: "pending" });
+      }),
+      // 期限切れ(型付き — §4-2)はポーリングをやめて再ログインを案内する
+      Effect.catchTag("CliFlowExpired", () => Effect.fail(cliError(FLOW_EXPIRED_MESSAGE))),
+      // 一様拒否(§4-2): 資格不一致・消費済みフローの再 poll 等。理由は
+      // 出し分けられない(サーバーがオラクルを作らない)ので再ログインを案内する
+      Effect.catchTag("CliFlowRejected", () =>
+        Effect.fail(
+          cliError("The sign-in flow was rejected by the server. Run `maruhi login` again"),
+        ),
+      ),
+      // 429 は失敗ではない(§4-1 (5) — サーバーは超過ポーリングを拒否してよい)。
+      // 案内された待ち時間だけ下がって続ける
+      Effect.catchTag("AuthRateLimited", (error) =>
+        Effect.succeed<PollOutcome>({ kind: "backoff", retryAfterSeconds: error.retryAfterSeconds }),
+      ),
+      Effect.mapError(toCliError),
+    );
+}
+
+/** `maruhi login`: start → browser approval → poll → keychain(AUTH_SPEC §4)。 */
 export function loginOp(input: {
   readonly origin: string;
-  readonly clientId: string;
   readonly tokenName: string;
   /**
    * 発行した PAT の生値を端末へ 1 度だけ表示する(AUTH_SPEC §6 の「発行時の
@@ -86,56 +133,82 @@ export function loginOp(input: {
   readonly tokenNameIsDefault: boolean;
   /** 明示 TTL(日。AUTH_SPEC §6 — W3a。省略時はサーバー既定の 90 日)。 */
   readonly expiresInDays?: number;
-  readonly githubBaseUrl?: string;
   /** ポーリング間隔の下限(秒。テストのみ短縮)。 */
   readonly minIntervalSeconds?: number;
-}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
+}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keychain = yield* Keychain;
-    const flowOptions = {
-      clientId: input.clientId,
-      ...(input.githubBaseUrl === undefined ? {} : { githubBaseUrl: input.githubBaseUrl }),
-      ...(input.minIntervalSeconds === undefined
-        ? {}
-        : { minIntervalSeconds: input.minIntervalSeconds }),
-    };
-
-    const authorization = yield* startDeviceFlow(flowOptions);
-    // verificationUri / userCode は GitHub(または上書き先)由来の外部文字列。
-    // 制御文字・ANSI を生で端末へ流さない
-    yield* io.log(
-      `Open ${displayText(authorization.verificationUri)} in your browser and enter this code:`,
-    );
-    yield* io.log("");
-    yield* io.log(`    ${displayText(authorization.userCode)}`);
-    yield* io.log("");
-    yield* io.log("Waiting for approval\u2026");
-
-    // GitHub トークンはこのスコープ限り。キーチェーン・設定・ログへは出さない
-    const githubAccessToken = yield* pollDeviceFlow({ ...flowOptions, authorization });
-
     const client = yield* makeApiClient({ baseUrl: input.origin });
-    const exchanged = yield* client.auth
-      .deviceExchange({
-        // 剥がす理由: exchange のワイヤ境界。GitHub トークンの生値はここで
-        // 一度だけ本文に載り、以後 CLI 側には残らない(AUTH_SPEC §4-5)
+
+    // 開始(§4-1 (1) — サーバーは無記録。フロー資格はここで得る 2 識別子のみ)
+    const started = yield* client.authCli
+      .cliStart({
         payload: {
-          githubAccessToken: Redacted.value(githubAccessToken),
           tokenName: input.tokenName,
           ...(input.expiresInDays === undefined ? {} : { expiresInDays: input.expiresInDays }),
         },
       })
       .pipe(Effect.mapError(toCliError));
 
-    const issuedToken = Redacted.make(exchanged.token, { label: "maruhi-token" });
+    // verificationUrl / userCode はサーバー由来の外部文字列。制御文字・ANSI を
+    // 生で端末へ流さない(displayText で中和)
+    yield* io.log("Open this URL in your browser to approve the sign-in:");
+    yield* io.log("");
+    yield* io.log(`    ${displayText(started.verificationUrl)}`);
+    yield* io.log("");
+    yield* io.log(`Confirmation code: ${displayText(started.userCode)}`);
+    yield* io.log(
+      "Approve in the browser only if it shows this exact code (AUTH_SPEC's phishing guard)",
+    );
+
+    // ブラウザ自動起動は「対話端末 × 非エージェント」のときのみ試みる
+    // (§4-1 (2) — ADR-0016 決定 7 の既存サービスを流用する UX 分岐であって
+    // 新しいセキュリティゲートではない)。失敗・非対象でも表示 + ポーリングで
+    // 完走する — 縮退経路はこの 1 本で全環境を覆う
+    const agent = yield* AgentProfileRef;
+    const stdio = yield* Stdio.Stdio;
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (!agent.isAgent && stdinIsTerminal && stdoutIsTerminal) {
+      const opened = yield* io.openBrowser(started.verificationUrl);
+      if (opened) {
+        yield* io.log("Opened the browser (if nothing appeared, open the URL above manually)");
+      }
+    }
+    yield* io.log("Waiting for approval\u2026");
+
+    // 取得(§4-1 (5))。deadline は sleep の**前**に検査する(次のポーリング
+    // 時刻が deadline を越えるならフローは待っている間に失効する)
+    const minInterval = input.minIntervalSeconds ?? MIN_CLI_POLL_INTERVAL_SECONDS;
+    const deadlineMs = Date.now() + clampExpires(started.expiresInSeconds) * 1000;
+    const initialInterval = clampInterval(started.pollIntervalSeconds, minInterval);
+    const poll = (
+      intervalSeconds: number,
+    ): Effect.Effect<Extract<PollOutcome, { readonly kind: "approved" }>, CliError> =>
+      Effect.gen(function* () {
+        if (Date.now() + intervalSeconds * 1000 > deadlineMs) {
+          return yield* Effect.fail(cliError(FLOW_EXPIRED_MESSAGE));
+        }
+        yield* Effect.sleep(Duration.seconds(intervalSeconds));
+        const outcome = yield* pollOnce(client, started.flowId, started.flowToken);
+        if (outcome.kind === "approved") {
+          return outcome;
+        }
+        if (outcome.kind === "backoff") {
+          return yield* poll(clampInterval(outcome.retryAfterSeconds, intervalSeconds));
+        }
+        return yield* poll(intervalSeconds);
+      });
+    const approved = yield* poll(initialInterval);
+
+    const issuedToken = Redacted.make(approved.token, { label: "maruhi-token" });
     const record: StoredToken = {
       token: issuedToken,
-      userId: exchanged.userId,
-      tokenId: exchanged.tokenId,
-      // 期限接近の事前警告(裁定 CL)のローカル判定材料。旧サーバー(W3a 前)は
-      // 期限を返さない — 欠落のまま保存し、警告なしで従来どおり動く
-      ...(exchanged.expiresAtMs === undefined ? {} : { expiresAtMs: exchanged.expiresAtMs }),
+      userId: approved.userId,
+      tokenId: approved.tokenId,
+      // 期限接近の事前警告(裁定 CL)のローカル判定材料
+      expiresAtMs: approved.expiresAtMs,
     };
     // JSON.stringify(record) は使わない — Redacted.toJSON() が伏字を返し、
     // "<redacted>" がキーチェーンへ書かれる(keychain.ts の注記)
@@ -161,7 +234,7 @@ export function loginOp(input: {
       ),
     );
     yield* io.log(
-      `Logged in (user: ${displayText(exchanged.userId)}). The token is stored in the OS keychain`,
+      `Logged in (user: ${displayText(approved.userId)}). The token is stored in the OS keychain`,
     );
     if (input.showToken) {
       // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
@@ -193,21 +266,14 @@ export function loginOp(input: {
     // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
     // 来ると 401 になるため、いつ再ログインが要るかを発行時点で可視にする。
     // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
-    // Date#toISOString へ直接渡さない — deepsec B1/B4/B5 と同じ規律。PR #108
-    // pullfrog 指摘)。フィールド欠落 = W3a より古いサーバー(TTL 未実装)
-    if (exchanged.expiresAtMs !== undefined) {
-      yield* io.log(
-        `The token expires on ${formatUtcDate(exchanged.expiresAtMs)} (UTC). Re-login (\`maruhi login\`) rotates it`,
-      );
-    } else {
-      yield* io.log(
-        "Note: this server did not report a token expiry (it predates token TTLs; --token-ttl-days has no effect). Update the server to enforce token lifetimes",
-      );
-    }
+    // Date#toISOString へ直接渡さない — deepsec B1/B4/B5 と同じ規律)
+    yield* io.log(
+      `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Re-login (\`maruhi login\`) rotates it`,
+    );
     yield* io.log(
       `Re-logging in with the same token name (${input.tokenName}) revokes the old token`,
     );
-    yield* nextStepHint(input.origin, exchanged.userId, issuedToken);
+    yield* nextStepHint(input.origin, approved.userId, issuedToken);
   });
 }
 

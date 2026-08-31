@@ -129,7 +129,7 @@ export function fetchGitHubOidcToken(
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
-        // JSON.parse の例外はここで飲む(device-flow.ts と同じ守られたパース):
+        // JSON.parse の例外はここで飲む(守られたパース):
         // parse エラーの message は応答本文の断片を含み、この応答の本文は
         // トークンの運搬路である。素通しにせず「解釈できない」へ畳む
         const text = await response.text();

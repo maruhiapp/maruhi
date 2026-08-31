@@ -85,9 +85,8 @@ export function isLoopbackHostname(hostname: string): boolean {
 
 /**
  * Validates and normalizes a base URL: https anywhere, http only on loopback
- * (tokens / GitHub tokens travel in cleartext otherwise; wrangler dev and
- * device-flow test servers on localhost still pass). `label` names the URL in
- * error messages.
+ * (tokens travel in cleartext otherwise; wrangler dev and mock test servers
+ * on localhost still pass). `label` names the URL in error messages.
  */
 export function normalizeHttpOrigin(
   raw: string,
