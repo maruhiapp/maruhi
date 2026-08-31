@@ -375,7 +375,7 @@ describe("declared 作成と activation(§12-5)", () => {
     expect(response.status).toBe(200);
   });
 
-  it("active 変数への activation 複合は値 CAS の 409(declared だけが正当な latest 0 状態)", async () => {
+  it("active 変数への activation 複合は 422 payload-mismatch(status — 明示ガード。version の値に依らない)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -384,17 +384,103 @@ describe("declared 作成と activation(§12-5)", () => {
       plaintext: "postgres://alpha",
       dek,
     }).then((response) => expect(response.status).toBe(200));
+    // version 1(CAS で落ちる形)と latest + 1(CAS を通過する形)の両方で
+    // 同じ 422 になること — 対象判定を値 CAS に依存させない(pullfrog 指摘:
+    // version 1 固定のヘルパでは「active 変数を狙えない」性質を検証できない)
+    for (const version of [1, 2]) {
+      const response = await activateVariableRequest({
+        variableId: VAR,
+        actorUserId: MEMBER,
+        dek,
+        plaintext: "postgres://beta",
+        version,
+        prevValueSigHashHex: version === 1 ? "" : await storedValueSigHash(VAR, 1),
+      });
+      expect(response.status, `version ${version}`).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        _tag: "PayloadMismatch",
+        field: "status",
+      });
+    }
+  });
+
+  it("disabled 下の active v1 変数は activation 経路でも v2 へ昇格できない(§12-11 迂回の遮断)", async () => {
+    // pullfrog 指摘の再現形: activation は schemaPolicy を検査しない(declared の
+    // 直前は必ず v2 のため)が、その免除は対象の declared 限定が前提。ガードが
+    // 無いと disabled のまま v1 active 変数 + version latest+1 で v2 再発行が通る
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const response = await activateVariableRequest({
       variableId: VAR,
       actorUserId: MEMBER,
       dek,
       plaintext: "postgres://beta",
+      version: 2,
+      prevValueSigHashHex: await storedValueSigHash(VAR, 1),
     });
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
-      _tag: "VersionConflict",
-      currentVersion: 1,
+      _tag: "PayloadMismatch",
+      field: "status",
     });
+    // 拒否は何も書かない: 最新ステートメントはレイアウト 1 のまま・version も不変
+    const rows = await queryProjectDo(
+      projectId,
+      `SELECT ms.layout_version, v.latest_version, v.latest_meta_version
+       FROM variables v
+       JOIN variable_meta_statements ms
+         ON ms.environment_id = v.environment_id
+        AND ms.variable_id = v.variable_id
+        AND ms.meta_version = v.latest_meta_version
+       WHERE v.environment_id = ? AND v.variable_id = ?`,
+      ENV,
+      VAR,
+    );
+    expect(rows).toEqual([{ layout_version: 1, latest_version: 1, latest_meta_version: 1 }]);
+  });
+
+  it("activation は改名を兼ねない(name は宣言時の名を保持 — 422 payload-mismatch)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await setSchemaPolicyOk("enabled", OWNER);
+    await declareVariableOk({ variableId: VAR, name: "API_KEY" });
+    const renamed = await activateVariableRequest({
+      variableId: VAR,
+      actorUserId: MEMBER,
+      dek,
+      plaintext: "secret-value",
+      name: "API_TOKEN",
+    });
+    expect(renamed.status).toBe(422);
+    await expect(renamed.json()).resolves.toMatchObject({
+      _tag: "PayloadMismatch",
+      field: "name",
+    });
+    // 改名は rename 経路(declared → declared — var.renamed の監査つき)を挟めば
+    // 同じ結果に到達できる(能力は失われない)
+    const rename = await nextVariableStatement({
+      variableId: VAR,
+      name: "API_TOKEN",
+      status: "declared",
+      authorUserId: MEMBER,
+      v2: v2Fields(),
+    });
+    const renameBundle = await manifestForStatement(rename, MEMBER);
+    const renameResponse = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: rename, manifest: renameBundle.manifest },
+    );
+    expect(renameResponse.status).toBe(204);
+    varStatements.set(VAR, { statement: rename, authorUserId: MEMBER });
+    renameBundle.record();
+    const activated = await activateVariableRequest({
+      variableId: VAR,
+      actorUserId: MEMBER,
+      dek,
+      plaintext: "secret-value",
+    });
+    expect(activated.status).toBe(200);
   });
 
   it("作成複合は deleted を創出できない(ワイヤ形の 400 — §12-5 の受理面が正)", async () => {

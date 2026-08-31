@@ -428,6 +428,13 @@ export async function activateVariableRequest(input: {
   readonly epoch?: number;
   readonly name?: string;
   readonly schema?: Partial<WireSchemaFields>;
+  /**
+   * 値の version(既定 1 = 正当な activation)。1 以外は negative 用 —
+   * 「active 変数へ latest + 1 を送る」迂回形の再現(PR #119 pullfrog 指摘。
+   * ヘルパが 1 を固定すると『active 変数を狙えない』という性質が検証できない)。
+   */
+  readonly version?: number;
+  readonly prevValueSigHashHex?: string;
 }): Promise<Response> {
   const last = varStatements.get(input.variableId);
   if (last === undefined) {
@@ -447,10 +454,16 @@ export async function activateVariableRequest(input: {
       environmentId: ENV,
       epoch: input.epoch ?? 1,
       variableId: input.variableId,
-      version: 1,
+      version: input.version ?? 1,
     },
     input.plaintext,
-    { writerUserId: input.actorUserId, head: fixture.head },
+    {
+      writerUserId: input.actorUserId,
+      head: fixture.head,
+      ...(input.prevValueSigHashHex === undefined
+        ? {}
+        : { prevValueSigHashHex: input.prevValueSigHashHex }),
+    },
   );
   const { manifest, record } = await manifestForStatement(statement, input.actorUserId);
   const response = await requestJson(

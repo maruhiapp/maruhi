@@ -498,7 +498,12 @@ export const variablesGroup = HttpApiGroup.make("variables")
     // declared 変数への最初の値 push を「値 version 1 + status active の v2
     // ステートメント(metaVersion + 1)+ マニフェスト」の複合として受理する。
     // メタ状態が変わるためマニフェスト再発行を伴う(「値の push はマニフェストに
-    // 触れない」不変条件の対象は通常 push — CRYPTO_SPEC §4.3)
+    // 触れない」不変条件の対象は通常 push — CRYPTO_SPEC §4.3)。
+    // **declared → active 専用**であり「値 push + メタ再発行」の汎用複合では
+    // ない: 対象が declared でない・name が宣言時の名から変わる形は 422
+    // payload-mismatch(status / name)で拒否する(改名は rename 経路が
+    // var.renamed の監査と共に担う。この限定が §12-11 のポリシー免除 —
+    // 直前は必ず v2 — の前提を成立させる)
     HttpApiEndpoint.post(
       "activate",
       "/projects/:projectId/environments/:environmentId/variables/:variableId/activate",
@@ -517,10 +522,8 @@ export const variablesGroup = HttpApiGroup.make("variables")
           ForbiddenError,
           EnvironmentNotFoundError,
           VariableNotFoundError,
-          VariableConflictError,
           PayloadMismatchError,
-          // active 変数への activation 複合は値 CAS(version 1 ≠ latest + 1)が
-          // 409 で落とす(declared 変数だけが latest 0 を持つ)
+          // declared の latest は常に 0 なので、CAS が値 version 1 を強制する
           VersionConflictError,
           EpochConflictError,
           ValueSignatureRejectedError,
@@ -528,7 +531,6 @@ export const variablesGroup = HttpApiGroup.make("variables")
           MetaVersionConflictError,
           ManifestRejectedError,
           ManifestVersionConflictError,
-          NameNotNfcError,
           SchemaDescriptionRejectedError,
           ValueTooLargeError,
           DataLimitExceededError,

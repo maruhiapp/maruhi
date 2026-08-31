@@ -409,21 +409,30 @@ export const activateVariableProgram = (
     );
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
-    // activation の対象は declared のみ。active 変数(latestVersion >= 1)への
-    // 複合は値 CAS が 409(currentVersion)で落とす — declared だけが正当な
-    // latest 0 状態なので、CAS の意味論がそのまま対象判定を兼ねる
-    yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
-    // ステートメントは rename 形の受け皿と同じ検査列(NFC・名前一意性 —
-    // activation は rename を兼ねてよい: name の変更は他のメタ操作と同じ規則)
-    yield* ensureNfcName(input.statement.name);
-    const store = yield* DataStore;
-    if (yield* store.variableNameTaken(environmentId, input.statement.name, variableId)) {
-      return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
+    // activation の対象は declared のみ(§12-5 — 「値 push + メタ再発行」の
+    // 汎用複合ではない)。値 CAS は version = latestVersion + 1 しか強制しない
+    // ため対象判定を兼ねられず(active 変数へ version N+1 を送れば通過して
+    // しまう)、この明示ガードが下の schemaPolicy 免除の前提「直前は必ず v2
+    // (declared は v2 限定)」を成立させる — 無いと disabled 下で active な
+    // v1 変数を v2 へ昇格でき、§12-11 の有効化ゲートが迂回される
+    // (PR #119 pullfrog レビュー指摘)
+    if (variable.latestStatus !== "declared") {
+      return yield* rejectData({ kind: "payload-mismatch", field: "status" });
     }
+    // activation は改名を兼ねない: name は宣言時の名をそのまま保持する
+    // (delete の name 保持と同じ受理検査 — 改名は rename 経路が var.renamed の
+    // 監査と共に担い、「名前の変更 ⇔ var.renamed 行」の対応を崩さない)。
+    // 保持一致により NFC・一意性は宣言受理時の検査結果がそのまま生きる
+    if (input.statement.name !== variable.name) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "name" });
+    }
+    // declared は latestVersion 0 の唯一の正当な状態なので、CAS が値 version 1 を
+    // 強制する(§12-5 の「値 version 1」)
+    yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
     // メタ受理列(§12-5): CAS → アンカー → description 受理検査 → 署名検証
     // (declared → active の遷移と v2 単調性は crypto の predecessor 検査)。
-    // schemaPolicy は渡さない — 直前は必ず v2(declared は v2 限定)で、継続
-    // ステートメントはポリシーに依らず受理される(§12-11)
+    // schemaPolicy は渡さない — 上の declared ガードにより直前は必ず v2 で、
+    // 継続ステートメントはポリシーに依らず受理される(§12-11)
     const metaSignedBytesHashHex = yield* acceptMetaStatement({
       projectId,
       environmentId,
@@ -458,6 +467,7 @@ export const activateVariableProgram = (
       },
     });
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
+    const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
     // 書き込みフェーズ(単一タスク): ステートメント行 + version 1 +
