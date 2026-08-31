@@ -13,6 +13,7 @@
 import type {
   ChainHistoryIndex,
   CryptoResult,
+  MetaInvalidReason,
   MetaStatementContext,
   MetaVariableSchema,
 } from "../../src/index.ts";
@@ -274,12 +275,39 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
   }
 }
 
+// 理由空間の網羅固定(観点 7 — テストの実効性): MetaInvalidReason の全メンバーが
+// 少なくとも 1 つの negative で「実際にその理由で拒否されること」を検査する。
+// Record 型が union との同期を **コンパイル時に** 強制するため、新しい拒否規則を
+// 実装したのにベクター・ハーネスのどちらにも負例が無い、を型 + テストで捕まえる
+// (S1 の declared-after-active / layout-regression の追加で顕在化した欠落様式)。
+const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
+  "signature-invalid": true,
+  "author-unknown": true,
+  "chain-head-mismatch": true,
+  "chain-head-future": true,
+  "author-not-member-at-head": true,
+  "author-key-mismatch-at-head": true,
+  "author-role-insufficient-at-head": true,
+  "prev-shape-mismatch": true,
+  "prev-hash-mismatch": true,
+  "revived-after-delete": true,
+  "declared-after-active": true,
+  "layout-regression": true,
+};
+
+function reasonCoverageChecks(c: Checks, exercised: ReadonlySet<MetaInvalidReason>): void {
+  for (const reason of Object.keys(META_REASON_COVERAGE) as readonly MetaInvalidReason[]) {
+    c.push(`meta-sig reason coverage: ${reason} is exercised by a negative`, exercised.has(reason));
+  }
+}
+
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
   c: Checks,
   negative: MetaNegative,
   history: ChainHistoryIndex,
   extended: ChainHistoryIndex,
+  exercised: Set<MetaInvalidReason>,
 ): Promise<void> {
   const chainHistory = negative.chain === "tenure-extension" ? extended : history;
   const result = await verifyDistributedMetaStatement({
@@ -296,17 +324,25 @@ async function ruleNegativeCheck(
             layoutVersion: negative.predecessor.layout_version ?? 1,
           },
   });
+  const rejectedReason =
+    !result.ok && result.error.kind === "MetaStatementInvalid" ? result.error.reason : undefined;
+  const rejected = rejectedReason !== undefined && rejectedReason === negative.expected_reason;
+  if (rejectedReason !== undefined && rejected) {
+    exercised.add(rejectedReason);
+  }
   c.push(
     `meta-sig rule negative: ${negative.name}`,
-    !result.ok &&
-      result.error.kind === "MetaStatementInvalid" &&
-      result.error.reason === negative.expected_reason,
+    rejected,
     result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
   );
 }
 
 /** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
-async function tamperNegativeCheck(c: Checks, negative: MetaNegative): Promise<void> {
+async function tamperNegativeCheck(
+  c: Checks,
+  negative: MetaNegative,
+  exercised: Set<MetaInvalidReason>,
+): Promise<void> {
   const context = contextOf(negative.context);
   const bytesMatch = toHex(buildMetaSignedBytes(context)) === negative.verify_signed_bytes_hex;
   const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
@@ -319,13 +355,15 @@ async function tamperNegativeCheck(c: Checks, negative: MetaNegative): Promise<v
     signatureHex: negative.signature_hex,
     authorPublicKey: key.value,
   });
-  c.push(
-    `meta-sig negative: ${negative.name}`,
+  const rejected =
     bytesMatch &&
-      !result.ok &&
-      result.error.kind === "MetaStatementInvalid" &&
-      result.error.reason === "signature-invalid",
-  );
+    !result.ok &&
+    result.error.kind === "MetaStatementInvalid" &&
+    result.error.reason === "signature-invalid";
+  if (rejected) {
+    exercised.add("signature-invalid");
+  }
+  c.push(`meta-sig negative: ${negative.name}`, rejected);
 }
 
 /**
@@ -364,16 +402,17 @@ async function negativeChecks(
   c: Checks,
   history: ChainHistoryIndex,
   extended: ChainHistoryIndex,
+  exercised: Set<MetaInvalidReason>,
 ): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of metaVectors.negative as readonly MetaNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, history, extended);
+      await ruleNegativeCheck(c, negative, history, extended, exercised);
     } else if (negative.kind === "invalid-input") {
       await invalidInputNegativeCheck(c, negative);
     } else {
-      await tamperNegativeCheck(c, negative);
+      await tamperNegativeCheck(c, negative, exercised);
     }
   }
   // kind 語彙の固定(第三の値が導入されると各ふるいから漏れる — session-13 の教訓)
@@ -584,6 +623,48 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
   );
 }
 
+/**
+ * ドメイン分離の性質検査(§4.2 — 観点 7): 同一座標を v1 / v2 でエンコードした
+ * signed_bytes は必ず異なる。混同ベクター(layout-confusion 双方向)は固定入力の
+ * 例示だが、こちらは生成的な直接検査 — 実装がドメイン分離文字列を落としても
+ * ベクター再生成で偶然一致しない限り騙せない。スキーマ欄が全て空文字列の退化 v2
+ * でも v1 と衝突しないこと(分離が LP 構造でなくドメインタグに依存すること)まで
+ * 固定する。
+ */
+function layoutDomainSeparationChecks(c: Checks): void {
+  const v2 = byName.get("var-v2-create-typed");
+  if (v2 === undefined) {
+    c.push("meta-sig domain separation: v2 base vector", false);
+    return;
+  }
+  const v2Context = contextOf(v2.context);
+  const v1Context: MetaStatementContext = {
+    ...v2Context,
+    layoutVersion: undefined,
+    schema: undefined,
+  };
+  const v1Bytes = toHex(buildMetaSignedBytes(v1Context));
+  const v2Bytes = toHex(buildMetaSignedBytes(v2Context));
+  c.push(
+    "meta-sig domain separation: same coordinates encode differently across layouts",
+    v1Bytes !== v2Bytes && v2Bytes === v2.signed_bytes_hex,
+  );
+  // 退化ケース: スキーマ欄が全て空でもドメインタグにより v1 とは衝突しない
+  // (エンコーダは全域関数なので構造検証なしにバイト列を構成できる)
+  const degenerate: MetaStatementContext = {
+    ...v2Context,
+    schema: {
+      varType: "" as MetaVariableSchema["varType"],
+      required: "" as MetaVariableSchema["required"],
+      description: "",
+    },
+  };
+  c.push(
+    "meta-sig domain separation: degenerate empty-schema v2 never collides with v1",
+    toHex(buildMetaSignedBytes(degenerate)) !== v1Bytes,
+  );
+}
+
 /** deleted な predecessor の後続は status を問わず拒否する(§4.2 — tombstone は終端)。 */
 async function deletedPredecessorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const deleted = byName.get("var-delete");
@@ -672,14 +753,17 @@ export async function metadataSignatureChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const history = await canonicalHistory();
   const extended = await metaExtendedHistory();
+  const exercised = new Set<MetaInvalidReason>();
   await vectorChecks(c, history);
   await forkChecks(c, history);
   await nameSwapChecks(c, history);
-  await negativeChecks(c, history, extended);
+  await negativeChecks(c, history, extended, exercised);
   await invalidInputChecks(c);
   await layoutInvalidInputChecks(c);
   await layoutSelectionChecks(c, history);
+  layoutDomainSeparationChecks(c);
   await deletedPredecessorChecks(c, history);
   await roundtripChecks(c);
+  reasonCoverageChecks(c, exercised);
   return c.results;
 }

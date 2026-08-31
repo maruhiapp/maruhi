@@ -82,6 +82,17 @@ jobs:
       - name: 7. Test (Vitest)
         run: bun run test
 
+      # 主実装(WebCrypto / panva hpke)と独立実装系(pyca 生成 + 参照検証
+      # スクリプト)のクロスチェックを CI で継続化する(観点 7 — 従来は手動実行
+      # のみで、主実装とベクターが揃って劣化しても検出できなかった)。tools は
+      # ワークスペース外の独立プロジェクト(bunfig.toml)のためここで frozen
+      # install する(数パッケージ・sub-second。実測で verify 含め 1 秒未満)
+      - name: 7b. Crypto vectors cross-check (independent reference verifier)
+        working-directory: packages/crypto/test-vectors/tools
+        run: |
+          bun install --frozen-lockfile
+          bun run verify
+
       # web の e2e はビルド成果物(dist/public + _headers)前提のため、
       # ルート vitest.config.ts の projects には入れず独立ステップで実行する
       # (docs/notes/spike-a.md の推奨)。ポートは OS 割り当てで並列衝突しない。

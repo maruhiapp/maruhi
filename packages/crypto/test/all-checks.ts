@@ -23,11 +23,19 @@ import { rfc9180Checks } from "./checks/rfc9180.ts";
 import type { CheckResult } from "./checks/support.ts";
 import { valueSignatureChecks } from "./checks/value-signature.ts";
 import { variableChecks } from "./checks/variable.ts";
+import { vectorInventoryChecks } from "./checks/vector-inventory.ts";
+
+// 総チェック数の下限(観点 7 — テストの実効性): チェック群の脱落(all-checks
+// からの取り外し・早期 return 化など)を「黙って母数が減る」形でなく明示的な
+// 失敗として検出する。チェックを追加しても失敗しない(下限のみ)。意図して
+// チェックを削減する変更では、この値も同じ変更で引き下げる
+const MIN_TOTAL_CHECKS = 998;
 
 export async function runAllChecks(): Promise<CheckResult[]> {
   // 各層のチェックは共有の固定ベクターを読むだけで相互に独立だが、
   // WebCrypto 呼び出しの並行実行で失敗箇所が紛れないよう直列に実行する
   const groups: CheckResult[][] = [];
+  groups.push(vectorInventoryChecks());
   groups.push(await encodingChecks());
   groups.push(await keysChecks());
   groups.push(await fingerprintWordsChecks());
@@ -49,5 +57,11 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await headAttestationChecks());
   groups.push(await auditHeadChecks());
   groups.push(await recoveryChecks());
-  return groups.flat();
+  const results = groups.flat();
+  results.push({
+    name: `meta: total check count is at least ${MIN_TOTAL_CHECKS}`,
+    ok: results.length >= MIN_TOTAL_CHECKS,
+    detail: `actual ${results.length}`,
+  });
+  return results;
 }

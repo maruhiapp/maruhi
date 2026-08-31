@@ -25,6 +25,7 @@ import type {
   ChainEntry,
   ChainHistoryIndex,
   EnvManifestContext,
+  ManifestInvalidReason,
   UnsignedChainEntry,
   VariablesDigestEntry,
 } from "../../src/index.ts";
@@ -380,11 +381,45 @@ function predecessorAnchorOf(negative: ManifestNegative) {
   };
 }
 
+// 理由空間の網羅固定(観点 7 — テストの実効性): ManifestInvalidReason の全メンバー
+// が少なくとも 1 つの negative で「実際にその理由で拒否されること」を検査する。
+// Record 型が union との同期をコンパイル時に強制する(metadata-signature.ts の
+// META_REASON_COVERAGE と同型)。
+const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
+  "signature-invalid": true,
+  "issuer-unknown": true,
+  "chain-head-mismatch": true,
+  "chain-head-future": true,
+  "issuer-not-member-at-head": true,
+  "issuer-key-mismatch-at-head": true,
+  "issuer-role-insufficient-at-head": true,
+  "environment-not-created-at-head": true,
+  "epoch-not-current-at-head": true,
+  "checkpoint-binding-mismatch": true,
+  "checkpoint-equivocation": true,
+  "checkpoint-regressed": true,
+  "env-meta-mismatch": true,
+  "variables-digest-mismatch": true,
+  "prev-shape-mismatch": true,
+  "prev-hash-mismatch": true,
+  "epoch-regressed": true,
+};
+
+function reasonCoverageChecks(c: Checks, exercised: ReadonlySet<ManifestInvalidReason>): void {
+  for (const reason of Object.keys(MANIFEST_REASON_COVERAGE) as readonly ManifestInvalidReason[]) {
+    c.push(
+      `env-manifest reason coverage: ${reason} is exercised by a negative`,
+      exercised.has(reason),
+    );
+  }
+}
+
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
   c: Checks,
   negative: ManifestNegative,
   histories: Histories,
+  exercised: Set<ManifestInvalidReason>,
 ): Promise<void> {
   const chainHistory = histories[negative.chain ?? "canonical"];
   if (chainHistory === undefined) {
@@ -407,17 +442,25 @@ async function ruleNegativeCheck(
     envMeta: verifyEnvMetaOf(negative, context),
     predecessor: predecessorAnchorOf(negative),
   });
+  const rejectedReason =
+    !result.ok && result.error.kind === "EnvManifestInvalid" ? result.error.reason : undefined;
+  const rejected = rejectedReason !== undefined && rejectedReason === negative.expected_reason;
+  if (rejectedReason !== undefined && rejected) {
+    exercised.add(rejectedReason);
+  }
   c.push(
     `env-manifest rule negative: ${negative.name}`,
-    !result.ok &&
-      result.error.kind === "EnvManifestInvalid" &&
-      result.error.reason === negative.expected_reason,
+    rejected,
     result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
   );
 }
 
 /** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
-async function tamperNegativeCheck(c: Checks, negative: ManifestNegative): Promise<void> {
+async function tamperNegativeCheck(
+  c: Checks,
+  negative: ManifestNegative,
+  exercised: Set<ManifestInvalidReason>,
+): Promise<void> {
   const context = contextOf(negative.context);
   const bytesMatch =
     toHex(buildEnvManifestSignedBytes(context)) === negative.verify_signed_bytes_hex;
@@ -431,23 +474,29 @@ async function tamperNegativeCheck(c: Checks, negative: ManifestNegative): Promi
     signatureHex: negative.signature_hex,
     issuerPublicKey: key.value,
   });
-  c.push(
-    `env-manifest negative: ${negative.name}`,
+  const rejected =
     bytesMatch &&
-      !result.ok &&
-      result.error.kind === "EnvManifestInvalid" &&
-      result.error.reason === "signature-invalid",
-  );
+    !result.ok &&
+    result.error.kind === "EnvManifestInvalid" &&
+    result.error.reason === "signature-invalid";
+  if (rejected) {
+    exercised.add("signature-invalid");
+  }
+  c.push(`env-manifest negative: ${negative.name}`, rejected);
 }
 
-async function negativeChecks(c: Checks, histories: Histories): Promise<void> {
+async function negativeChecks(
+  c: Checks,
+  histories: Histories,
+  exercised: Set<ManifestInvalidReason>,
+): Promise<void> {
   const seenKinds = new Set<string>();
   for (const negative of manifestVectors.negative as readonly ManifestNegative[]) {
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
-      await ruleNegativeCheck(c, negative, histories);
+      await ruleNegativeCheck(c, negative, histories, exercised);
     } else {
-      await tamperNegativeCheck(c, negative);
+      await tamperNegativeCheck(c, negative, exercised);
     }
   }
   // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
@@ -693,13 +742,15 @@ export async function envManifestChecks(): Promise<CheckResult[]> {
   if (canonical === undefined) {
     throw new Error("canonical history missing");
   }
+  const exercised = new Set<ManifestInvalidReason>();
   await digestChecks(c);
   await digestBoundaryChecks(c);
   await vectorChecks(c, histories);
   await forkChecks(c, canonical);
-  await negativeChecks(c, histories);
+  await negativeChecks(c, histories, exercised);
   await bindingEpochChecks(c);
   await invalidInputChecks(c);
   await roundtripChecks(c);
+  reasonCoverageChecks(c, exercised);
   return c.results;
 }
