@@ -6,20 +6,35 @@ import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypt
 import { createExecutionContext, createScheduledController, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { isUniqueConflict } from "../src/db.package/index.ts";
+import {
+  CLI_FLOW_TTL_MS,
+  type CliVerifyParams,
+  computeVsig,
+  createFlowToken,
+  importFlowSigningKey,
+  verificationQuery,
+} from "../src/auth.package/index.ts";
+import { isUniqueConflict, MAX_CONCURRENT_CLI_FLOWS } from "../src/db.package/index.ts";
 import worker from "../src/index.ts";
 import {
+  approvalTicketOf,
+  approveCliFlow,
   BASE,
   bearer,
+  cliBrowserLeg,
+  cliIssue,
+  type CliFlowStart,
+  cliToken,
   CSRF_HEADERS,
-  deviceToken,
   JSON_HEADERS,
   loginSession,
+  pollCliFlow,
   readCookieValue,
   resetAuthDb,
   seedUser,
   SESSION_COOKIE,
   sessionHeaders,
+  startCliFlow,
   STATE_COOKIE,
 } from "./support/auth.ts";
 
@@ -237,27 +252,89 @@ describe("GET /auth/github/callback(§3-2〜§3-4)", () => {
   }, 60_000);
 });
 
-// CF-Connecting-IP は本番エッジが上書き付与するヘッダー。テストでは明示して
-// 発信元を固定する(不在の直接到達は帰属不能として制限対象外 — 他テストが
-// ヘッダーなしで交換を繰り返せるのはそのため)
-function rateLimitedExchangeAttempt(): Promise<Response> {
-  return SELF.fetch(`${BASE}/auth/device/exchange`, {
-    method: "POST",
-    headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.7" },
-    body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
-  });
+/** D1 に保存された実フロー署名鍵(初回 start で自動生成される)を読む。 */
+async function flowSigningKeyFromDb(): Promise<CryptoKey> {
+  const row = await env.DB.prepare("SELECT key_hex FROM flow_signing_keys").first<{
+    key_hex: string;
+  }>();
+  if (row === null) {
+    throw new Error("no flow signing key in D1");
+  }
+  return importFlowSigningKey(row.key_hex);
 }
 
-describe("POST /auth/device/exchange(§4)", () => {
-  it("verifies the GitHub token and issues a maruhi_pat_ token usable as Bearer auth", async () => {
-    const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_test201" }),
+/** ワイヤ形式は満たすが実在しないフロー資格(レート制限テスト等のダミー)。 */
+const DUMMY_FLOW_ID = "ab".repeat(16);
+
+describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハンドオフ)", () => {
+  it("start → verify → callback → approve → poll で PAT を単回発行する(§4-1 正常系)", async () => {
+    await seedUser("user-cli-0001", 901);
+    const started = await startCliFlow({
+      tokenName: "cli-test",
+      scopes: [{ project: "*", permission: "read" }],
+      expiresInDays: 30,
     });
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { token: string; tokenId: string; userId: string };
+    expect(started.flowId).toMatch(/^[0-9a-f]{32}$/);
+    expect(started.userCode).toMatch(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+    // flowToken はブラウザチャネル(verificationUrl)に載らない(§4-1 (1))
+    expect(started.verificationUrl).not.toContain(started.flowToken);
+    // start は無記録(裁定 DH): フロー行もユーザー系イベントも生まれない
+    const flowsAfterStart = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM cli_login_flows",
+    ).first<{ n: number }>();
+    expect(flowsAfterStart?.n).toBe(0);
+    // ブラウザ脚未到達の poll は型付き pending(行なし = 正常系 — §4-1 (5))
+    const early = await pollCliFlow(started.flowId, started.flowToken);
+    expect(early.status).toBe(200);
+    expect(((await early.json()) as { status: string }).status).toBe("pending");
+
+    // ブラウザ脚: 承認ページ(スクリプトなし — §4-1 (4)。§15-3 と同じ配信規律)
+    const callback = await cliBrowserLeg(started.verificationUrl, 901);
+    expect(callback.status).toBe(200);
+    expect(callback.headers.get("content-security-policy")).toContain("script-src 'none'");
+    expect(callback.headers.get("referrer-policy")).toBe("no-referrer");
+    const html = await callback.text();
+    expect(html).toContain(started.userCode);
+    // 認証済みアイデンティティと付与内容の表示
+    expect(html).toContain("user901");
+    expect(html).toContain("cli-test");
+    expect(html).toContain("read");
+    expect(html).toContain("30");
+    // flowToken はページにも現れない(§4-1 (1))
+    expect(html).not.toContain(started.flowToken);
+    const ticket = approvalTicketOf(html);
+
+    // 承認までは pending のまま
+    const awaiting = await pollCliFlow(started.flowId, started.flowToken);
+    expect(((await awaiting.json()) as { status: string }).status).toBe("pending");
+
+    const approve = await approveCliFlow(started.flowId, ticket);
+    expect(approve.status).toBe(200);
+    expect(await approve.text()).toContain("Sign-in approved");
+
+    const poll = await pollCliFlow(started.flowId, started.flowToken);
+    expect(poll.status).toBe(200);
+    const body = (await poll.json()) as {
+      status: string;
+      token: string;
+      tokenId: string;
+      userId: string;
+      expiresAtMs: number;
+    };
+    expect(body.status).toBe("approved");
     expect(body.token).toMatch(/^maruhi_pat_[0-9A-Za-z]{43}$/);
+    expect(body.userId).toBe("user-cli-0001");
+
+    // 発行パラメータは start で確定した値(§4-1 (1)/(4) — 行の保持値で発行)
+    const row = await env.DB.prepare(
+      "SELECT name, scopes, expires_at, created_at FROM api_tokens WHERE id = ?",
+    )
+      .bind(body.tokenId)
+      .first<{ name: string; scopes: string; expires_at: number; created_at: number }>();
+    expect(row?.name).toBe("cli-test");
+    expect(JSON.parse(row?.scopes ?? "[]")).toEqual([{ project: "*", permission: "read" }]);
+    expect(row?.expires_at).toBe((row?.created_at ?? 0) + 30 * 24 * 60 * 60 * 1000);
+    expect(body.expiresAtMs).toBe(row?.expires_at);
 
     // DB には生値は存在しない(ハッシュのみ。§6)
     const raw = await env.DB.prepare("SELECT id FROM api_tokens WHERE token_hash = ?")
@@ -267,69 +344,84 @@ describe("POST /auth/device/exchange(§4)", () => {
 
     const me = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(body.token) });
     expect(me.status).toBe(200);
-    const meBody = (await me.json()) as { userId: string; orgs: readonly { role: string }[] };
-    expect(meBody.userId).toBe(body.userId);
-    expect(meBody.orgs.map((org) => org.role)).toEqual(["owner"]);
+    expect(((await me.json()) as { userId: string }).userId).toBe("user-cli-0001");
+
+    // 単回発行: 消費済みフローへの再 poll は一様拒否(§4-2)
+    const again = await pollCliFlow(started.flowId, started.flowToken);
+    expect(again.status).toBe(400);
+    expect(((await again.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
   });
 
-  it("rate-limits exchanges per source IP before any GitHub outbound (M3/B11)", async () => {
-    // 窓は wall-clock 整列の固定窓(miniflare の simple ratelimit): バースト中に
-    // 分境界をまたぐと 1 窓ぶんの許可が増える。境界 1 回では吸収できない
-    // 2 窓 + 2 発(22 リクエスト)まで送り、フレークしない形で 429 を観測する
+  it("rate-limits start per source IP (§4-1 (1))", async () => {
+    // CF-Connecting-IP は本番エッジが上書き付与するヘッダー。テストでは明示して
+    // 発信元を固定する(不在の直接到達は帰属不能として制限対象外)。窓は
+    // wall-clock 整列の固定窓(10/60s): 2 窓 + 2 発(22 リクエスト)を並列
+    // バーストで送り、フレークしない形で 429 を観測する
+    const attempt = (): Promise<Response> =>
+      SELF.fetch(`${BASE}/auth/cli/start`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.7" },
+        body: JSON.stringify({}),
+      });
+    const responses: Response[] = [];
+    for (let batch = 0; batch < 2; batch += 1) {
+      responses.push(...(await Promise.all(Array.from({ length: 11 }, attempt))));
+    }
     let limited: Response | null = null;
-    for (let i = 0; i < 22 && limited === null; i += 1) {
-      const response = await rateLimitedExchangeAttempt();
+    for (const response of responses) {
       if (response.status === 429) {
-        limited = response;
+        limited ??= response;
       } else {
-        // 制限前は通常の 400(github-token-invalid)
+        expect(response.status).toBe(200);
+      }
+    }
+    if (limited === null) {
+      throw new Error("expected a 429 within two full rate-limit windows");
+    }
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+    const body = (await limited.json()) as Record<string, unknown>;
+    expect(body["_tag"]).toBe("AuthRateLimited");
+    expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
+    // 別 IP は独立に数えられる(帰属単位の固定)
+    const other = await SELF.fetch(`${BASE}/auth/cli/start`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.8" },
+      body: JSON.stringify({}),
+    });
+    expect(other.status).toBe(200);
+  }, 60_000);
+
+  it("rate-limits poll per source IP before any verification (§4-1 (5))", async () => {
+    // 検証前に制限する = でっち上げの資格でも CPU を消費させない。窓 30/60s:
+    // 2 窓 + 2 発(62 リクエスト)の並列バースト
+    const attempt = (): Promise<Response> =>
+      SELF.fetch(`${BASE}/auth/cli/poll`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.9" },
+        body: JSON.stringify({ flowId: DUMMY_FLOW_ID, flowToken: "v1.bogus" }),
+      });
+    const responses: Response[] = [];
+    for (let batch = 0; batch < 2; batch += 1) {
+      responses.push(...(await Promise.all(Array.from({ length: 31 }, attempt))));
+    }
+    let limited: Response | null = null;
+    for (const response of responses) {
+      if (response.status === 429) {
+        limited ??= response;
+      } else {
+        // 制限前は一様拒否(資格不一致の 400)
         expect(response.status).toBe(400);
       }
     }
     if (limited === null) {
       throw new Error("expected a 429 within two full rate-limit windows");
     }
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
-    const body = (await limited.json()) as Record<string, unknown>;
-    expect(body["_tag"]).toBe("AuthRateLimited");
-    expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
-    // 別 IP は独立に数えられる(帰属単位の固定)
-    const other = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.8" },
-      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
-    });
-    expect(other.status).toBe(400);
-  });
-
-  it("rejects an invalid GitHub token with 400 (github-token-invalid)", async () => {
-    const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
-    });
-    expect(response.status).toBe(400);
-    const body = (await response.json()) as { reason: string };
-    expect(body.reason).toBe("github-token-invalid");
-  });
-
-  it("rejects a token issued to a different OAuth App (§4-4 audience 検証)", async () => {
-    // フェイク GitHub: gho_otherapp* は /user では有効だが check-token では 404。
-    // /user 検証止まりの実装(confused-deputy)ではこのテストが緑にならない
-    const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_otherapp201" }),
-    });
-    expect(response.status).toBe(400);
-    const body = (await response.json()) as { reason: string };
-    expect(body.reason).toBe("github-token-invalid");
-  });
+    expect(((await limited.json()) as { _tag: string })._tag).toBe("AuthRateLimited");
+  }, 60_000);
 
   it("rotates the token for the same (user, name): the old one stops working", async () => {
-    const first = await deviceToken(202);
-    const second = await deviceToken(202);
+    const first = await cliToken(202);
+    const second = await cliToken(202);
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;
     }>();
@@ -340,10 +432,10 @@ describe("POST /auth/device/exchange(§4)", () => {
     expect(newMe.status).toBe(200);
   });
 
-  it("keeps at most one token per (user, name) under concurrent exchanges", async () => {
+  it("keeps at most one token per (user, name) under concurrent issuance", async () => {
     // ローテーションは delete + insert の atomic batch(+ UNIQUE (user_id, name))。
-    // 並行 device 交換でも同名トークンが複数残らない
-    await Promise.all([deviceToken(203), deviceToken(203), deviceToken(203)]);
+    // 並行ハンドオフ(別フロー・同名)でも同名トークンが複数残らない
+    await Promise.all([cliToken(203), cliToken(203), cliToken(203)]);
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;
     }>();
@@ -351,46 +443,38 @@ describe("POST /auth/device/exchange(§4)", () => {
   });
 
   it("rejects issuing beyond the per-user token limit with 429 (§6)", async () => {
-    // 上限 100 本(別名)。101 本目の新名は 429、同名ローテーションは引き続き可能
-    const first = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "seed" }),
-    });
-    expect(first.status).toBe(200);
-    const { userId } = (await first.json()) as { userId: string };
+    // 上限 100 本(別名)。101 本目の新名は poll の発行段で 429、同名ローテー
+    // ションは引き続き可能(発行規律は §6 のまま — CLI ハンドオフは呼び出し元)
+    const seed = await cliIssue(204, { tokenName: "seed" });
     // 残り 99 本ぶんを直接シードして上限到達状態を作る
     const rows = Array.from({ length: 99 }, (_, i) =>
       env.DB.prepare(
         "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scopes, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, '[]', NULL, 1, NULL)",
-      ).bind(`tok-${i}`, userId, `filler-${i}`, `hash-${i}`, "maruhi_pat_x"),
+      ).bind(`tok-${i}`, seed.userId, `filler-${i}`, `hash-${i}`, "maruhi_pat_x"),
     );
     await env.DB.batch(rows);
 
-    const overflow = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "one-too-many" }),
-    });
+    const started = await startCliFlow({ tokenName: "one-too-many" });
+    const page = await cliBrowserLeg(started.verificationUrl, 204);
+    const ticket = approvalTicketOf(await page.text());
+    expect((await approveCliFlow(started.flowId, ticket)).status).toBe(200);
+    const overflow = await pollCliFlow(started.flowId, started.flowToken);
     expect(overflow.status).toBe(429);
+    expect(((await overflow.json()) as { _tag: string })._tag).toBe("TokenLimit");
+    // CAS 成功後の発行失敗は consumed のまま終わる(fail-closed — 半配布を
+    // 残さない)。再 poll は一様拒否で、CLI は再ログインする
+    const retry = await pollCliFlow(started.flowId, started.flowToken);
+    expect(retry.status).toBe(400);
+    expect(((await retry.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
 
     // 同名(既存 "seed")のローテーションは上限に達していても通る
-    const rotate = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_test204", tokenName: "seed" }),
-    });
-    expect(rotate.status).toBe(200);
+    const rotated = await cliIssue(204, { tokenName: "seed" });
+    expect(rotated.userId).toBe(seed.userId);
   });
 
   it("admits exactly the remaining slot under concurrent distinct-name issuance (S7)", async () => {
-    const first = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_test206", tokenName: "seed" }),
-    });
-    expect(first.status).toBe(200);
-    const { userId } = (await first.json()) as { userId: string };
+    const seed = await cliIssue(206, { tokenName: "seed" });
+    const userId = seed.userId;
     // 上限100の残り1枠まで直接シード。異名なので UNIQUE(user_id,name)では
     // 競合せず、admissionが非原子的なら8件すべて入ってしまう
     await env.DB.batch(
@@ -407,17 +491,17 @@ describe("POST /auth/device/exchange(§4)", () => {
       ),
     );
 
+    // 異名の承認済みフローを 8 本用意し、発行段(poll)だけを同時に競わせる
+    const flows: CliFlowStart[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const started = await startCliFlow({ tokenName: `race-new-${index}` });
+      const page = await cliBrowserLeg(started.verificationUrl, 206);
+      const ticket = approvalTicketOf(await page.text());
+      expect((await approveCliFlow(started.flowId, ticket)).status).toBe(200);
+      flows.push(started);
+    }
     const responses = await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        SELF.fetch(`${BASE}/auth/device/exchange`, {
-          method: "POST",
-          headers: JSON_HEADERS,
-          body: JSON.stringify({
-            githubAccessToken: "gho_test206",
-            tokenName: `race-new-${index}`,
-          }),
-        }),
-      ),
+      flows.map((flow) => pollCliFlow(flow.flowId, flow.flowToken)),
     );
     expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
     const rejected = responses.filter((response) => response.status !== 200);
@@ -425,6 +509,7 @@ describe("POST /auth/device/exchange(§4)", () => {
     expect(
       await Promise.all(
         rejected.map(async (response) => {
+          expect(response.status).toBe(429);
           const body = (await response.json()) as { _tag?: string };
           return body["_tag"];
         }),
@@ -443,54 +528,274 @@ describe("POST /auth/device/exchange(§4)", () => {
     expect(audit?.n).toBe(2);
   });
 
-  it("rejects out-of-bounds payloads at the schema boundary (400)", async () => {
+  it("rejects out-of-bounds start payloads at the schema boundary (400)", async () => {
+    const start = (payload: unknown): Promise<Response> =>
+      SELF.fetch(`${BASE}/auth/cli/start`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(payload),
+      });
     // scopes 要素数上限(100)超過
-    const tooManyScopes = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({
-        githubAccessToken: "gho_test205",
-        scopes: Array.from({ length: 101 }, () => ({ project: "*", permission: "read" })),
-      }),
+    const tooManyScopes = await start({
+      scopes: Array.from({ length: 101 }, () => ({ project: "*", permission: "read" })),
     });
     expect(tooManyScopes.status).toBe(400);
 
     // project はプロジェクト ID 形式(hex 64)か "*" のみ
-    const badProject = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({
-        githubAccessToken: "gho_test205",
-        scopes: [{ project: "x".repeat(500_000), permission: "read" }],
-      }),
+    const badProject = await start({
+      scopes: [{ project: "x".repeat(500_000), permission: "read" }],
     });
     expect(badProject.status).toBe(400);
 
     // tokenName 上限(128 文字)超過
-    const longName = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_test205", tokenName: "n".repeat(129) }),
-    });
-    expect(longName.status).toBe(400);
+    expect((await start({ tokenName: "n".repeat(129) })).status).toBe(400);
+
+    // tokenName の制御文字・双方向制御文字は受理時拒否(§6 — 承認ページに
+    // 到達する前のワイヤ境界で落とす。非遡及 = 既存行はマイグレーションしない)
+    expect((await start({ tokenName: "evil\u0007name" })).status).toBe(400);
+    expect((await start({ tokenName: "evil\u202Ename" })).status).toBe(400);
   });
 
-  it("rejects a malformed GitHub token before any outbound call (§4 形式事前検査 — L-3)", async () => {
-    // gh?_ プレフィックス形式を満たさない入力はワイヤ Schema で 400。ハンドラに
-    // 到達しないため auth.login_failed も記録されない = GitHub check-token API
-    // へのアウトバウンド呼び出しの前で落ちていることの裏取り(形式適合の
-    // 不正トークンが従来どおりハンドラ経由で 400 + login_failed になることは
-    // 上の "rejects an invalid GitHub token" と audit-d1.test.ts が固定する)
-    const malformed = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "not-a-github-token" }),
-    });
-    expect(malformed.status).toBe(400);
-    const failedRows = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_failed'",
-    ).first<{ n: number }>();
-    expect(failedRows?.n).toBe(0);
+  it("rejects a mix-and-match poll: victim flowId with the attacker's own flowToken (§4-1 (1))", async () => {
+    // flowToken の MAC は flowId を署名対象に含む — 「他人の flowId + 自前の
+    // flowToken」の組み替えは資格不一致の一様拒否になる(§4-2)
+    const victim = await startCliFlow();
+    const attacker = await startCliFlow();
+    const response = await pollCliFlow(victim.flowId, attacker.flowToken);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+  });
+
+  it("rejects a tampered flowToken uniformly (§4-2)", async () => {
+    const started = await startCliFlow();
+    // MAC 末尾 1 文字の改竄
+    const flipped = started.flowToken.endsWith("0") ? "1" : "0";
+    const tampered = started.flowToken.slice(0, -1) + flipped;
+    const macBroken = await pollCliFlow(started.flowId, tampered);
+    expect(macBroken.status).toBe(400);
+    expect(((await macBroken.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    // 自己申告の期限を伸ばす改竄も MAC で落ちる(期限判定は MAC の後 — 署名済み
+    // の値しか信じない)
+    const [version, expiresPart, random, mac] = started.flowToken.split(".") as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    const extended = [version, String(Number(expiresPart) + 3_600_000), random, mac].join(".");
+    const expiryForged = await pollCliFlow(started.flowId, extended);
+    expect(expiryForged.status).toBe(400);
+    expect(((await expiryForged.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+  });
+
+  it("tells the legitimate holder about expiry with a typed 410 (§4-2)", async () => {
+    // 正規の署名鍵で期限だけ過去の flowToken を作る = 「MAC は正しいが期限切れ」
+    // の正当な保持者。組み替え(invalid)とは型で出し分ける
+    const started = await startCliFlow();
+    const key = await flowSigningKeyFromDb();
+    const expiredToken = await createFlowToken(key, started.flowId, Date.now() - 1_000);
+    const response = await pollCliFlow(started.flowId, expiredToken);
+    expect(response.status).toBe(410);
+    expect(((await response.json()) as { _tag: string })._tag).toBe("CliFlowExpired");
+  });
+
+  it("rejects a tampered verificationUrl before redirecting to GitHub (§4-1 (3))", async () => {
+    const started = await startCliFlow({ tokenName: "honest" });
+    // 発行パラメータの掏り替え(tokenName)は vsig で落ち、GitHub への
+    // リダイレクトは起きない(一様なスクリプトなしエラーページ — §4-2)
+    const url = new URL(started.verificationUrl);
+    url.searchParams.set("name", "sneaky");
+    const tampered = await SELF.fetch(url.toString(), { redirect: "manual" });
+    expect(tampered.status).toBe(400);
+    expect(tampered.headers.get("location")).toBeNull();
+    expect(tampered.headers.get("content-type")).toContain("text/html");
+    expect(tampered.headers.get("content-security-policy")).toContain("script-src 'none'");
+    // vsig の欠落も同じ一様ページ(欠落と改竄を出し分けない)
+    const bare = new URL(started.verificationUrl);
+    bare.searchParams.delete("vsig");
+    const missing = await SELF.fetch(bare.toString(), { redirect: "manual" });
+    expect(missing.status).toBe(400);
+    expect(missing.headers.get("location")).toBeNull();
+  });
+
+  it("rejects an expired verificationUrl with the same uniform page (§4-2)", async () => {
+    // 正規の鍵で署名された期限切れ URL(vsig は正しい)も verify で fail-closed
+    // (鍵は先行 start の初回生成に依存する — ここで 1 回起こす)
+    await startCliFlow();
+    const key = await flowSigningKeyFromDb();
+    const params: CliVerifyParams = {
+      flowId: DUMMY_FLOW_ID,
+      expiresAtMs: Date.now() - 1_000,
+      userCode: "AAAA-AAAA",
+      tokenName: "expired",
+      scopesJson: JSON.stringify([{ project: "*", permission: "read" }]),
+      expiresInDays: 30,
+    };
+    const vsig = await computeVsig(key, params);
+    const response = await SELF.fetch(
+      `${BASE}/auth/cli/verify?${verificationQuery(params, vsig).toString()}`,
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("shows the signup guidance page for an unknown account with zero side effects (裁定 DH)", async () => {
+    // CLI ログインは既存アカウント専用(get-or-create しない)。不在は案内ページ
+    // で終了し、ユーザー作成もフロー行作成も起きない — 再開リンクだけを載せる
+    const started = await startCliFlow();
+    const callback = await cliBrowserLeg(started.verificationUrl, 908);
+    expect(callback.status).toBe(200);
+    expect(callback.headers.get("content-security-policy")).toContain("script-src 'none'");
+    const html = await callback.text();
+    expect(html).toContain("No maruhi account yet");
+    expect(html).toContain("/auth/github/start");
+    // 再開リンクは verificationUrl(vsig 済みパラメータの復元)
+    expect(html).toContain(`flow=${started.flowId}`);
+    // flowToken はブラウザチャネルに決して現れない(§4-1 (1))
+    expect(html).not.toContain(started.flowToken);
+    const users = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
+    expect(users?.n).toBe(0);
+    const flows = await env.DB.prepare("SELECT COUNT(*) AS n FROM cli_login_flows").first<{
+      n: number;
+    }>();
+    expect(flows?.n).toBe(0);
+    // 案内どおり Web でサインアップした後、同じ verificationUrl から再開できる
+    await loginSession(908);
+    const resumed = await cliBrowserLeg(started.verificationUrl, 908);
+    expect(resumed.status).toBe(200);
+    expect(await resumed.text()).toContain(started.userCode);
+  });
+
+  it("does not rotate the ticket on a different-user revisit (§4-1 (4) (iii))", async () => {
+    await seedUser("user-cli-a", 911);
+    await seedUser("user-cli-b", 912);
+    const started = await startCliFlow();
+    const first = await cliBrowserLeg(started.verificationUrl, 911);
+    expect(first.status).toBe(200);
+    const ticket = approvalTicketOf(await first.text());
+
+    // 別 user_id の再到達は一様エラー(乗っ取りにもチケット失効 DoS にも
+    // させない — チケットは回転しない)
+    const hijack = await cliBrowserLeg(started.verificationUrl, 912);
+    expect(hijack.status).toBe(400);
+    expect((await hijack.text())).toContain("This sign-in link can&#39;t be used");
+
+    // 元のユーザーのチケットはそのまま有効で、承認 → 発行まで完走できる
+    expect((await approveCliFlow(started.flowId, ticket)).status).toBe(200);
+    const poll = await pollCliFlow(started.flowId, started.flowToken);
+    expect(poll.status).toBe(200);
+    const body = (await poll.json()) as { status: string; userId: string };
+    expect(body.status).toBe("approved");
+    expect(body.userId).toBe("user-cli-a");
+  });
+
+  it("replaces the ticket idempotently on a same-user revisit (§4-1 (4) (iii))", async () => {
+    await seedUser("user-cli-c", 916);
+    const started = await startCliFlow();
+    const first = await cliBrowserLeg(started.verificationUrl, 916);
+    const staleTicket = approvalTicketOf(await first.text());
+
+    // 同一 user_id の再到達はべき等: 承認ページを再描画し、チケットを置換する
+    const again = await cliBrowserLeg(started.verificationUrl, 916);
+    expect(again.status).toBe(200);
+    const freshTicket = approvalTicketOf(await again.text());
+    expect(freshTicket).not.toBe(staleTicket);
+
+    // 有効なチケットは常に最新 1 枚(置換で旧チケットは失効)
+    const stale = await approveCliFlow(started.flowId, staleTicket);
+    expect(stale.status).toBe(400);
+    // 失敗した承認はフローを進めない(awaiting のまま = poll は pending)
+    const pending = await pollCliFlow(started.flowId, started.flowToken);
+    expect(((await pending.json()) as { status: string }).status).toBe("pending");
+    expect((await approveCliFlow(started.flowId, freshTicket)).status).toBe(200);
+  });
+
+  it("reports an explicit denial to the CLI as a typed denied status (§4-1 (4) (iv))", async () => {
+    await seedUser("user-cli-deny", 913);
+    const started = await startCliFlow();
+    const page = await cliBrowserLeg(started.verificationUrl, 913);
+    const ticket = approvalTicketOf(await page.text());
+    const deny = await approveCliFlow(started.flowId, ticket, "deny");
+    expect(deny.status).toBe(200);
+    expect(await deny.text()).toContain("Sign-in denied");
+    // denied は正当な flowToken 保持者への型付き状態(§4-2 — 新情報を運ばない)
+    const poll = await pollCliFlow(started.flowId, started.flowToken);
+    expect(poll.status).toBe(200);
+    expect(((await poll.json()) as { status: string }).status).toBe("denied");
+    // 拒否済みフローのチケット再使用(承認への裏返し)は一様エラー
+    const reuse = await approveCliFlow(started.flowId, ticket);
+    expect(reuse.status).toBe(400);
+    // 拒否ではトークンは 1 本も生まれない
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(0);
+  });
+
+  it("issues exactly once under concurrent polls (approved → consumed CAS — §4-1 (5))", async () => {
+    await seedUser("user-cli-race", 914);
+    const started = await startCliFlow();
+    const page = await cliBrowserLeg(started.verificationUrl, 914);
+    const ticket = approvalTicketOf(await page.text());
+    expect((await approveCliFlow(started.flowId, ticket)).status).toBe(200);
+
+    // flowToken は 1 プロセスに束縛されない bearer — 並行 poll は想定内の入力。
+    // consumed への CAS 勝者だけが発行する(二重配布の構造的排除)
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, () => pollCliFlow(started.flowId, started.flowToken)),
+    );
+    const issued = responses.filter((response) => response.status === 200);
+    expect(issued).toHaveLength(1);
+    const body = (await issued[0]?.json()) as { status: string; token: string };
+    expect(body.status).toBe("approved");
+    for (const response of responses.filter((candidate) => candidate.status !== 200)) {
+      expect(response.status).toBe(400);
+      expect(((await response.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    }
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(1);
+  });
+
+  it("generates the flow signing key exactly once under concurrent first use (§4-2)", async () => {
+    // resetAuthDb が鍵も消している = ここが正真の初回使用。並行 start が別々の
+    // 候補鍵を書き合っても先勝ち(INSERT OR IGNORE)+ 読み戻しで同じ保存鍵に
+    // 収束する — 敗者候補の鍵で署名された(検証不能な)フローが生まれない
+    const starts = await Promise.all(Array.from({ length: 4 }, () => startCliFlow()));
+    const keys = await env.DB.prepare("SELECT COUNT(*) AS n FROM flow_signing_keys").first<{
+      n: number;
+    }>();
+    expect(keys?.n).toBe(1);
+    for (const started of starts) {
+      const poll = await pollCliFlow(started.flowId, started.flowToken);
+      expect(poll.status).toBe(200);
+      expect(((await poll.json()) as { status: string }).status).toBe("pending");
+    }
+  });
+
+  it("rejects new flows beyond the global unconsumed cap with the uniform page (§4-1 (4) (iii))", async () => {
+    await seedUser("user-cli-cap", 915);
+    // 未消費行を上限(1,000)まで直接シード。実経路での到達には「既存アカウント
+    // × OAuth 完走」の同時併走が上限件数ぶん必要で、テストでは行を直接作る
+    await env.DB.prepare(
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+       INSERT INTO cli_login_flows (id, user_id, status, token_name, scopes, expires_in_days, user_code, ticket_hash, expires_at, created_at)
+       SELECT printf('cap%029d', n), ?, 'awaiting', 'filler', '[]', 30, 'AAAA-AAAA', printf('%064d', n), ?, ?
+       FROM seq`,
+    )
+      .bind(MAX_CONCURRENT_CLI_FLOWS, "user-cli-cap", Date.now() + CLI_FLOW_TTL_MS, Date.now())
+      .run();
+
+    const started = await startCliFlow();
+    const callback = await cliBrowserLeg(started.verificationUrl, 915);
+    // capacity も一様エラーページ(§4-2 — 上限到達を出し分けない)
+    expect(callback.status).toBe(400);
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM cli_login_flows").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(MAX_CONCURRENT_CLI_FLOWS);
   });
 });
 
@@ -528,7 +833,7 @@ describe("GET /auth/me(認証必須)", () => {
   });
 
   it("returns 401 for an expired token (§6)", async () => {
-    const token = await deviceToken(303);
+    const token = await cliToken(303);
     await env.DB.prepare("UPDATE api_tokens SET expires_at = 1").run();
     const response = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(token) });
     expect(response.status).toBe(401);
@@ -537,7 +842,7 @@ describe("GET /auth/me(認証必須)", () => {
 
 describe("資格情報の優先順位(Authorization ヘッダーが常に優先)", () => {
   it("accepts a case-insensitive bearer scheme (RFC 7235)", async () => {
-    const token = await deviceToken(311);
+    const token = await cliToken(311);
     const response = await SELF.fetch(`${BASE}/auth/me`, {
       headers: { authorization: `bearer ${token}` },
     });
@@ -567,7 +872,7 @@ describe("資格情報の優先順位(Authorization ヘッダーが常に優先)
     // トークン + クッキー同時提示の書き込み(CSRF ヘッダーなし)が通る =
     // 主体はトークン(クロスサイトから Authorization は付与できないため安全)
     const session = await loginSession(314);
-    const token = await deviceToken(315);
+    const token = await cliToken(315);
     const response = await SELF.fetch(`${BASE}/auth/token/revoke`, {
       method: "POST",
       headers: { ...bearer(token), cookie: `${SESSION_COOKIE}=${session}` },
@@ -629,7 +934,7 @@ describe("POST /auth/logout(§5: セッション失効)", () => {
   });
 
   it("token-authenticated logout is a 204 no-op(セッションを持たない主体の冪等挙動)", async () => {
-    const token = await deviceToken(406);
+    const token = await cliToken(406);
     const response = await SELF.fetch(`${BASE}/auth/logout`, {
       method: "POST",
       headers: bearer(token),
@@ -644,7 +949,7 @@ describe("POST /auth/logout(§5: セッション失効)", () => {
     // ブラウザ拡張等が Bearer とセッションクッキーを同送しても、トークン主体の
     // logout は Web セッションを失効させず、クッキーの expire も返さない
     const session = await loginSession(407);
-    const token = await deviceToken(408);
+    const token = await cliToken(408);
     const response = await SELF.fetch(`${BASE}/auth/logout`, {
       method: "POST",
       headers: { ...bearer(token), cookie: `${SESSION_COOKIE}=${session}` },
@@ -661,7 +966,7 @@ describe("POST /auth/logout(§5: セッション失効)", () => {
   });
 
   it("does not require the CSRF header for token-authenticated writes", async () => {
-    const token = await deviceToken(403);
+    const token = await cliToken(403);
     const response = await SELF.fetch(`${BASE}/auth/token/revoke`, {
       method: "POST",
       headers: bearer(token),
@@ -672,7 +977,7 @@ describe("POST /auth/logout(§5: セッション失効)", () => {
 
 describe("POST /auth/token/revoke(§6: 自トークンの失効)", () => {
   it("revokes the presented token; it no longer authenticates", async () => {
-    const token = await deviceToken(501);
+    const token = await cliToken(501);
     const revoke = await SELF.fetch(`${BASE}/auth/token/revoke`, {
       method: "POST",
       headers: bearer(token),
@@ -725,7 +1030,7 @@ describe("セッションのスライディング更新(§5)", () => {
     expect(cookie).toContain("Max-Age=2592000");
 
     // トークン認証の応答ではクッキーを発行しない
-    const token = await deviceToken(604);
+    const token = await cliToken(604);
     const tokenMe = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(token) });
     expect(tokenMe.headers.getSetCookie()).toEqual([]);
   });
@@ -838,18 +1143,18 @@ describe("GET /auth/config(§4 公開設定)と未設定検出(§3)", () => {
     const { GITHUB_CLIENT_SECRET: _removed, ...missing } = env;
     const config = await worker.fetch(incoming(`${BASE}/auth/config`), missing as typeof env);
     expect(config.status).toBe(503);
-    // deviceExchange も GitHub へのトークン検証より先に fail-closed する
-    const exchange = await worker.fetch(
-      incoming(`${BASE}/auth/device/exchange`, {
+    // cliStart もフロー資格の発行より先に fail-closed する(§4-1 (1) — 未設定
+    // サーバーで CLI を verificationUrl のエラーページまで歩かせない)
+    const start = await worker.fetch(
+      incoming(`${BASE}/auth/cli/start`, {
         method: "POST",
         headers: JSON_HEADERS,
-        // ガードはトークン検証より先に走る(値は Schema を満たせば何でもよい)
-        body: JSON.stringify({ githubAccessToken: "gho_test901" }),
+        body: JSON.stringify({}),
       }),
       missing as typeof env,
     );
-    expect(exchange.status).toBe(503);
-    const body = (await exchange.json()) as Record<string, unknown>;
+    expect(start.status).toBe(503);
+    const body = (await start.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("SetupIncomplete");
   });
 

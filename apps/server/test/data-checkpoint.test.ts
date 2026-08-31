@@ -21,7 +21,7 @@ import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { BASE } from "./support/auth.ts";
+import { BASE, cliToken } from "./support/auth.ts";
 import {
   commitmentOf,
   makeDek,
@@ -63,25 +63,15 @@ const GITHUB_IDS: Record<string, number> = {
 
 /**
  * 対象プロジェクト限定の write スコープトークン(実効権限マトリクスの b / d)。
- * fixture の既定トークン(name "device-flow")を同名ローテーションで失効させない
- * よう、別名で発行する。
+ * fixture の既定トークン(CLI ログインの既定名)を同名ローテーションで失効させ
+ * ないよう、別名で発行する。
  */
 async function writeScopedToken(userId: string): Promise<string> {
   const githubId = GITHUB_IDS[userId];
   if (githubId === undefined) {
     throw new Error(`no seeded github id for ${userId}`);
   }
-  const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      githubAccessToken: `gho_test${githubId}`,
-      tokenName: "write-scoped",
-      scopes: [{ project: projectId, permission: "write" }],
-    }),
-  });
-  expect(response.status).toBe(200);
-  return ((await response.json()) as { token: string }).token;
+  return cliToken(githubId, [{ project: projectId, permission: "write" }], "write-scoped");
 }
 
 /** 保存済み最新マニフェストのタプル座標(受理時点突合の一致側の材料)。 */

@@ -22,7 +22,14 @@ import { describe, expect, it } from "vitest";
 
 import { isClass1Event } from "../src/audit-store.ts";
 import { INVITE_AUDIT_EVENTS } from "../src/db.package/index.ts";
-import { BASE, bearer, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
+import {
+  BASE,
+  bearer,
+  cliToken,
+  JSON_HEADERS,
+  loginSession,
+  sessionHeaders,
+} from "./support/auth.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -180,18 +187,12 @@ describe("可視性クラス(§6)の強制", () => {
   });
 });
 
-async function scopedToken(
+function scopedToken(
   githubId: number,
   name: string,
   scopes: readonly TokenScope[],
 ): Promise<string> {
-  const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ githubAccessToken: `gho_test${githubId}`, tokenName: name, scopes }),
-  });
-  expect(response.status).toBe(200);
-  return ((await response.json()) as { token: string }).token;
+  return cliToken(githubId, scopes, name);
 }
 
 describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
@@ -596,7 +597,7 @@ describe("user 系の本人閲覧(§3.1 / §6 — self)", () => {
     for (const event of events) {
       expect(event.seq).toBeUndefined();
     }
-    // 実発行経路の証跡: device 交換(setup)+ 今回の Web ログイン
+    // 実発行経路の証跡: CLI ハンドオフ(setup)+ 今回の Web ログイン
     expect(eventNames(events)).toEqual(
       expect.arrayContaining(["auth.token_created", "auth.login_succeeded"]),
     );

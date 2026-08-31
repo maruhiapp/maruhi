@@ -11,8 +11,7 @@
 //   トークンのみ 200(それ以外 404)
 //
 // 決定論的な対応: code-<n> → gho_test<n> → GitHub user { id: n, login: user<n> }
-// (実 GitHub の OAuth トークンと同じ `gho_` プレフィックス形 — device/exchange の
-// ワイヤ Schema がこの形式を要求するため、フェイクも実形式に合わせる)。
+// (実 GitHub の OAuth トークンと同じ `gho_` プレフィックス形)。
 // メール応答は ID 帯で分岐(§3-3 の verified/primary フィルタを判別可能にする):
 //   通常        → [{ primary: true, verified: true }]
 //   666         → verified: false のみ

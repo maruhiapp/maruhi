@@ -14,7 +14,7 @@ import {
   MAX_VERSIONS_PER_VARIABLE,
 } from "../src/policy.ts";
 import { projectBytesExceeded } from "../src/quotas.ts";
-import { deviceToken, loginSession, sessionHeaders } from "./support/auth.ts";
+import { cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
   encryptValue,
@@ -308,7 +308,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
 
     // member の read スコープ: pull 可・push 不可(403 insufficient-permission)
     const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
-    const readToken = await deviceToken(9002, readScope);
+    const readToken = await cliToken(9002, readScope);
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, readToken);
     expect(pull.status).toBe(200);
     const push = await requestJson(
@@ -322,7 +322,7 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
 
     // reader の write スコープ: スコープが足りてもチェーン role が束縛(403 insufficient-role)
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
-    const readerWrite = await deviceToken(9003, writeScope);
+    const readerWrite = await cliToken(9003, writeScope);
     const readerPush = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -334,13 +334,13 @@ describe("変数の push→pull→クライアント復号(§12-5 / §12-7)", ()
 
     // スコープ外プロジェクトは存在秘匿(404)
     const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
-    const scoped = await deviceToken(9002, otherScope);
+    const scoped = await cliToken(9002, otherScope);
     const concealed = await requestJson("GET", `/environments/${ENV}/pull`, scoped);
     expect(concealed.status).toBe(404);
 
     // 環境削除は admin スコープが必要(write では 403。スコープ検査は署名検証より
     // 前 — §12-3 — なので未署名ダミーのステートメントで足りる)
-    const memberWrite = await deviceToken(9001, writeScope);
+    const memberWrite = await cliToken(9001, writeScope);
     const removal = await requestJson("DELETE", `/environments/${ENV}`, memberWrite, {
       statement: {
         suite: "maruhi/v1",
@@ -618,7 +618,7 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
 
     // reader(チェーン role)+ read スコープで取得可(pull と同一行 — §12-3)
     const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
-    const readToken = await deviceToken(9003, readScope);
+    const readToken = await cliToken(9003, readScope);
     const allowed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
     expect(allowed.status).toBe(200);
 
@@ -632,7 +632,7 @@ describe("メタデータのみモード(§12-7 — 値・DEK を返さない)",
 
     // スコープ外プロジェクトも 404(存在秘匿はスコープ検査が先行)
     const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
-    const scoped = await deviceToken(9002, otherScope);
+    const scoped = await cliToken(9002, otherScope);
     const concealed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, scoped);
     expect(concealed.status).toBe(404);
 

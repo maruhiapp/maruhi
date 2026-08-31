@@ -11,7 +11,7 @@ import { RECOVERY_FETCH_LIMIT } from "../src/db.package/index.ts";
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliToken,
   JSON_HEADERS,
   loginSession,
   resetAuthDb,
@@ -39,7 +39,7 @@ async function putWrap(headers: Record<string, string>, ciphertextHex?: string):
 
 describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
   it("registers a blob for a device-flow token (default * × admin scope)", async () => {
-    const token = await deviceToken(501);
+    const token = await cliToken(501);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(204);
 
@@ -67,7 +67,7 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
   });
 
   it("session GET is rejected before the CSRF check and does not consume the window", async () => {
-    const token = await deviceToken(507);
+    const token = await cliToken(507);
     expect((await putWrap(bearer(token))).status).toBe(204);
     const session = await loginSession(507);
     // Lax クッキーだけが同送されるクロスサイト遷移の形(カスタムヘッダーなし)。
@@ -85,7 +85,7 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
   });
 
   it("re-registration replaces the previous blob (再発行 = 置換。§13-1)", async () => {
-    const token = await deviceToken(503);
+    const token = await cliToken(503);
     expect((await putWrap(bearer(token))).status).toBe(204);
     const reissued = "cd".repeat(64);
     expect((await putWrap(bearer(token), reissued)).status).toBe(204);
@@ -97,19 +97,19 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
   });
 
   it("rejects a project-scoped admin token with 403 (§13-2 の鍵素材管理条件)", async () => {
-    const token = await deviceToken(504, [{ project: "f0".repeat(32), permission: "admin" }]);
+    const token = await cliToken(504, [{ project: "f0".repeat(32), permission: "admin" }]);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(403);
   });
 
   it("rejects a * × write token with 403 (admin 未満)", async () => {
-    const token = await deviceToken(505, [{ project: "*", permission: "write" }]);
+    const token = await cliToken(505, [{ project: "*", permission: "write" }]);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(403);
   });
 
   it("rejects malformed wraps with 400 (nonce 長・hex 形式は Schema 検証)", async () => {
-    const token = await deviceToken(506);
+    const token = await cliToken(506);
     const bad = await SELF.fetch(`${BASE}/auth/recovery`, {
       method: "PUT",
       headers: { ...JSON_HEADERS, ...bearer(token) },
@@ -130,19 +130,19 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
 
 describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   it("returns 404 when no blob is registered", async () => {
-    const token = await deviceToken(511);
+    const token = await cliToken(511);
     const get = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(get.status).toBe(404);
   });
 
   it("rejects a scope-limited token with 403 (要監視操作の遮断)", async () => {
-    const token = await deviceToken(512, [{ project: "*", permission: "read" }]);
+    const token = await cliToken(512, [{ project: "*", permission: "read" }]);
     const get = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(get.status).toBe(403);
   });
 
   it("rate-limits blob fetches per fixed window and reissue resets it (§13-3)", async () => {
-    const token = await deviceToken(513);
+    const token = await cliToken(513);
     expect((await putWrap(bearer(token))).status).toBe(204);
 
     for (let i = 0; i < RECOVERY_FETCH_LIMIT; i += 1) {
@@ -163,7 +163,7 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   });
 
   it("counts concurrent fetches atomically: exactly the limit succeeds and the count matches (B9)", async () => {
-    const token = await deviceToken(516);
+    const token = await cliToken(516);
     expect((await putWrap(bearer(token))).status).toBe(204);
     // 上限越えの同時リクエスト: 計数は条件付き相対 UPDATE(1 文)なので、
     // どの並び方でも成功はちょうど上限件・保存 count は上限で止まる
@@ -189,7 +189,7 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   });
 
   it("rejects an unknown stored suite without consuming the fetch window", async () => {
-    const token = await deviceToken(515);
+    const token = await cliToken(515);
     expect((await putWrap(bearer(token))).status).toBe(204);
     // v1 の書き込み経路では作れない行を直接作る(将来バージョンの書き込み /
     // DB 破損の想定)。黙って v1 として配布しない(500)+ 窓を消費しない
@@ -203,7 +203,7 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   });
 
   it("does not count 404s toward the fetch window (未登録は計数外)", async () => {
-    const token = await deviceToken(514);
+    const token = await cliToken(514);
     for (let i = 0; i < RECOVERY_FETCH_LIMIT + 2; i += 1) {
       const notFound = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
       expect(notFound.status).toBe(404);
@@ -217,15 +217,15 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
 
 describe("GET /auth/recovery/status(§13-2)", () => {
   it("reports registration state to any authenticated principal (ブロブは運ばない)", async () => {
-    const token = await deviceToken(521, [{ project: "*", permission: "read" }]);
+    const token = await cliToken(521, [{ project: "*", permission: "read" }]);
     const before = await SELF.fetch(`${BASE}/auth/recovery/status`, { headers: bearer(token) });
     expect(before.status).toBe(200);
     expect(await before.json()).toEqual({ registered: false, updatedAtMs: null });
 
     // 登録は同一ユーザーの別名トークンで行う(セッションは §5 の能力制限で
-    // 登録不可 — W2b。同名 device flow トークンの再発行はローテーションで
-    // 既存トークンを失効させてしまうため、別名で併存させる)
-    const adminToken = await deviceToken(521, undefined, "recovery-secondary");
+    // 登録不可 — W2b。同名トークンの再発行はローテーションで既存トークンを
+    // 失効させてしまうため、別名で併存させる)
+    const adminToken = await cliToken(521, undefined, "recovery-secondary");
     expect((await putWrap(bearer(adminToken))).status).toBe(204);
 
     const after = await SELF.fetch(`${BASE}/auth/recovery/status`, { headers: bearer(token) });
