@@ -15,7 +15,7 @@ const FORM_HEADERS = { "content-type": "application/x-www-form-urlencoded" };
 export const CSRF_HEADERS = { "x-maruhi-csrf": "1" };
 export const SESSION_COOKIE = "__Host-maruhi_session";
 export const STATE_COOKIE = "__Host-maruhi_oauth_state";
-const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
+export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
 
 // FK の親子順に削除する(invitations・監査テーブルは FK なし — 末尾でよい)
 const AUTH_TABLES = [

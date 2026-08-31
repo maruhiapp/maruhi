@@ -21,6 +21,7 @@ import {
   approveCliFlow,
   BASE,
   bearer,
+  CLI_STATE_COOKIE,
   cliBrowserLeg,
   cliIssue,
   type CliFlowStart,
@@ -628,6 +629,42 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     expect(missing.headers.get("location")).toBeNull();
   });
 
+  it("re-verifies the flow binding at the callback: a tampered cookie creates no flow row (§4-1 (3))", async () => {
+    // フロー束縛クッキーは改竄可能なクライアント保持データ — callback は verify
+    // と同じ vsig 再検証を行ってからフロー行を作る。この再検証を落とす変異は
+    // 「flowId を知るだけ」で任意パラメータの行を他人のフローに束縛できる経路を
+    // 開く(URL の知識 = vsig の保持が資格、の実装点はここ)ため、両側から固定
+    // する: 正規の verify が発行したクッキーの署名対象(tokenName)だけを掏り
+    // 替え、state 照合は通る形で callback に自給する
+    await seedUser("user-cli-forge", 917);
+    const started = await startCliFlow({ tokenName: "honest" });
+    const verify = await SELF.fetch(started.verificationUrl, { redirect: "manual" });
+    expect(verify.status).toBe(302);
+    const state = new URL(verify.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    const bound = readCookieValue(verify.headers.getSetCookie(), CLI_STATE_COOKIE);
+    if (bound === null) {
+      throw new Error("verify did not set the flow-binding cookie");
+    }
+    // クッキー値は percent-encode されている — 復号 → 掏り替え → 同じ符号化で
+    // 再エンコード(サーバーのクッキーパーサが読む形をそのまま自給する)
+    const params = new URLSearchParams(decodeURIComponent(bound));
+    expect(params.get("name")).toBe("honest");
+    params.set("name", "sneaky");
+    const forged = encodeURIComponent(params.toString());
+    expect(forged).not.toBe(bound);
+    const callback = await SELF.fetch(`${BASE}/auth/github/callback?code=code-917&state=${state}`, {
+      headers: { cookie: `${CLI_STATE_COOKIE}=${forged}` },
+      redirect: "manual",
+    });
+    expect(callback.status).toBe(400);
+    expect(await callback.text()).toContain("This sign-in link can&#39;t be used");
+    // 署名の通らないパラメータでフロー行は生まれない(OAuth 完走の成否に依らず)
+    const flows = await env.DB.prepare("SELECT COUNT(*) AS n FROM cli_login_flows").first<{
+      n: number;
+    }>();
+    expect(flows?.n).toBe(0);
+  });
+
   it("rejects an expired verificationUrl with the same uniform page (§4-2)", async () => {
     // 正規の鍵で署名された期限切れ URL(vsig は正しい)も verify で fail-closed
     // (鍵は先行 start の初回生成に依存する — ここで 1 回起こす)
@@ -723,6 +760,36 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const pending = await pollCliFlow(started.flowId, started.flowToken);
     expect(((await pending.json()) as { status: string }).status).toBe("pending");
     expect((await approveCliFlow(started.flowId, freshTicket)).status).toBe(200);
+  });
+
+  it("rejects the ticket of an expired flow row uniformly (§4-1 (4) (iv) — チケットは短命)", async () => {
+    // 承認 CAS の期限ガードの実装点を固定する: ガードを落とす変異は、期限切れ
+    // 行への承認で偽の auth.login_succeeded を記録する(発行自体は poll 側の
+    // flowToken 期限が別途塞ぐが、監査の真正性が破れる)。期限だけ過去の
+    // awaiting 行を直接シードし、正しいチケット生値で承認を試みる
+    await seedUser("user-cli-late", 918);
+    const ticket = "ee".repeat(32);
+    const ticketHash = encodeHex(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ticket))),
+    );
+    const flowId = "cd".repeat(16);
+    await env.DB.prepare(
+      "INSERT INTO cli_login_flows (id, user_id, status, token_name, scopes, expires_in_days, user_code, ticket_hash, expires_at, created_at) VALUES (?, ?, 'awaiting', 'late', '[]', 30, 'AAAA-AAAA', ?, ?, ?)",
+    )
+      .bind(flowId, "user-cli-late", ticketHash, Date.now() - 1_000, Date.now() - CLI_FLOW_TTL_MS)
+      .run();
+    const late = await approveCliFlow(flowId, ticket);
+    expect(late.status).toBe(400);
+    expect(await late.text()).toContain("This sign-in link can&#39;t be used");
+    // 行は awaiting のまま進まず、承認の監査イベントも生まれない
+    const row = await env.DB.prepare("SELECT status FROM cli_login_flows WHERE id = ?")
+      .bind(flowId)
+      .first<{ status: string }>();
+    expect(row?.status).toBe("awaiting");
+    const audit = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.login_succeeded'",
+    ).first<{ n: number }>();
+    expect(audit?.n).toBe(0);
   });
 
   it("reports an explicit denial to the CLI as a typed denied status (§4-1 (4) (iv))", async () => {
@@ -821,6 +888,36 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
       n: number;
     }>();
     expect(count?.n).toBe(MAX_CONCURRENT_CLI_FLOWS);
+  });
+
+  it("keeps terminal rows through the +5min grace and sweeps only past-grace rows (§4-1 (5))", async () => {
+    // 「行なし = pending」誤読の遮断の実装点: consumed / denied の行は期限 +
+    // 余裕(§4-1 (5) 起草値 +5 分)まで日和見削除の対象にならず、余裕を過ぎた
+    // 行だけが次の作成 batch(§4-1 (4) (iii))で掃かれる。境界を両側から固定
+    // する — 余裕を縮める変異(完了済みフローの poll が pending 化)と、削除を
+    // 落とす変異(行が無限に残る)の両方を検知する
+    await seedUser("user-cli-grace", 919);
+    const graceMs = 5 * 60 * 1000;
+    const nowMs = Date.now();
+    const seedFlow = (id: string, status: string, expiresAt: number) =>
+      env.DB.prepare(
+        "INSERT INTO cli_login_flows (id, user_id, status, token_name, scopes, expires_in_days, user_code, ticket_hash, expires_at, created_at) VALUES (?, ?, ?, 'sweep', '[]', 30, 'AAAA-AAAA', ?, ?, ?)",
+      ).bind(id, "user-cli-grace", status, `hash-${id}`, expiresAt, nowMs - CLI_FLOW_TTL_MS);
+    await env.DB.batch([
+      // 期限切れだが余裕内(消してはならない — poll の誤読遮断)
+      seedFlow("aa".repeat(16), "consumed", nowMs - 60_000),
+      // 余裕超過(次の作成 batch で掃かれる)
+      seedFlow("bb".repeat(16), "denied", nowMs - graceMs - 60_000),
+    ]);
+    // 実経路の作成 CAS を 1 回起こす(日和見削除は作成 batch の先頭に同梱)
+    const started = await startCliFlow();
+    expect((await cliBrowserLeg(started.verificationUrl, 919)).status).toBe(200);
+    const rows = await env.DB.prepare("SELECT id FROM cli_login_flows ORDER BY id").all<{
+      id: string;
+    }>();
+    expect(rows.results.map((row) => row.id).sort()).toEqual(
+      ["aa".repeat(16), started.flowId].sort(),
+    );
   });
 });
 
