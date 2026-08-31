@@ -915,8 +915,8 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const rows = await env.DB.prepare("SELECT id FROM cli_login_flows ORDER BY id").all<{
       id: string;
     }>();
-    expect(rows.results.map((row) => row.id).sort()).toEqual(
-      ["aa".repeat(16), started.flowId].sort(),
+    expect(rows.results.map((row) => row.id).toSorted()).toEqual(
+      ["aa".repeat(16), started.flowId].toSorted(),
     );
   });
 });
