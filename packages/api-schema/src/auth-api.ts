@@ -1,4 +1,5 @@
-// 認証エンドポイントの HttpApi 定義(AUTH_SPEC §3 / §4 / §5 / §6 / §11-4)。
+// 認証エンドポイントの HttpApi 定義(AUTH_SPEC §3 / §5 / §6 / §11-4)。
+// CLI ログイン(§4 — サーバー仲介 web-flow ハンドオフ)は auth-cli-api.ts。
 //
 // 2026-08-02 裁定 4: OAuth リダイレクト系(start / callback)も含めてすべて
 // api-schema に置く(サーバー実装とクライアント導出の共有源を単一に保つ)。
@@ -7,7 +8,7 @@
 //
 // 禁止事項(AUTH_SPEC §10): GitHub トークンはリクエスト処理中のメモリ上でのみ
 // 扱われ、どのレスポンス型にも現れない。セッション / トークン生値がレスポンスに
-// 現れるのは発行時の一度だけ(deviceExchange の success)。
+// 現れるのは発行時の一度だけ(auth-cli-api.ts の cliPoll approved 応答)。
 
 import { OrgRoleSchema, TokenScopeSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -21,7 +22,6 @@ import {
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,
   SetupIncompleteError,
-  TokenLimitError,
   TokenNotFoundError,
 } from "./errors/index.ts";
 import { hexString } from "./hex.ts";
@@ -35,14 +35,40 @@ import { strictPayload } from "./strict.ts";
 const Redirect = HttpApiSchema.Empty(302);
 
 /**
- * トークン名の上限(`deviceExchange` の payload)。
+ * トークン名の上限(`cliStart` の payload — AUTH_SPEC §6)。
  *
  * **CLI の引数層と共有する**: ここだけに書くと、`maruhi login --token-name` の
- * 長すぎる値が device flow(ブラウザでの承認)を完走した後の encode 失敗として
- * 初めて現れる。書き方の誤りは通信より前に落とす(CLI 側の規律)ため、上限を
- * export して両側が同じ値を見る。
+ * 長すぎる値がブラウザでの承認を完走した後の encode 失敗として初めて現れる。
+ * 書き方の誤りは通信より前に落とす(CLI 側の規律)ため、上限を export して
+ * 両側が同じ値を見る。
  */
 export const MAX_TOKEN_NAME_LENGTH = 128;
+
+// トークン名に許さない文字クラス(AUTH_SPEC §6 — 2026-08-31 文字種制約):
+// 制御文字(C0 / DEL / C1)と双方向制御文字(bidi — ALM・LRM/RLM・埋め込み /
+// 上書き・分離子)。名前は承認ページ(§4-1 (4))・一覧 API・ダッシュボードに
+// 呼び出し側由来のテキストとして描画されるため、表示面共通の保護を受理時に
+// 置く(§4-2 の「承認文言のなりすまし」緩和)。**非遡及** — 旧 Schema 下で
+// 保存済みの名前は掃除しない。
+const TOKEN_NAME_FORBIDDEN_CLASS =
+  "\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069";
+
+/**
+ * トークン名に禁止文字が含まれるかの検査(CLI の引数層と共有 — 書き方の誤りは
+ * 通信より前に落とし、ブラウザ承認の完走後に encode 失敗として現れさせない)。
+ */
+export const TOKEN_NAME_FORBIDDEN_CHARS = new RegExp(`[${TOKEN_NAME_FORBIDDEN_CLASS}]`, "u");
+
+/**
+ * トークン名のワイヤ受理形(AUTH_SPEC §6): 128 文字以下・制御 / bidi 制御
+ * 文字なし。`cliStart` の payload と CLI の引数検査が同じ Schema を見る。
+ */
+export const TokenNameSchema = Schema.String.check(
+  Schema.isMaxLength(MAX_TOKEN_NAME_LENGTH),
+  Schema.isPattern(new RegExp(`^[^${TOKEN_NAME_FORBIDDEN_CLASS}]*$`, "u"), {
+    description: "token name without control or bidirectional control characters",
+  }),
+);
 
 /**
  * API トークンの既定 TTL(AUTH_SPEC §6 — 2026-08-30 W3a。SECURITY_REVIEW
@@ -62,7 +88,7 @@ export const DEFAULT_TOKEN_TTL_DAYS = 90;
 export const MAX_TOKEN_TTL_DAYS = 365;
 
 /** 発行時の明示 TTL(日)。整数 1..MAX_TOKEN_TTL_DAYS(省略時は既定 90 日)。 */
-const TokenTtlDays = Schema.Number.check(
+export const TokenTtlDays = Schema.Number.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(1),
   Schema.isLessThanOrEqualTo(MAX_TOKEN_TTL_DAYS),
@@ -83,23 +109,6 @@ export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
   serverKeyFingerprintHex: Schema.optionalKey(Schema.String),
   serverEncPubHex: Schema.optionalKey(Schema.String),
-});
-
-/**
- * Result of the device-flow exchange (AUTH_SPEC §4): the raw token, shown once.
- * `expiresAtMs` は発行時に固定された有効期限(§6 の既定 TTL — W3a)。CLI が
- * 期限を利用者へ表示するための材料で、生値と違い何度でも表示してよい。
- * optionalKey なのはバージョンスキュー耐性(PR #108 pullfrog 指摘): W3a より
- * 古いサーバーはこのフィールドを返さず、必須にすると新 CLI の `maruhi login`
- * — fail-closed な期限切れからの唯一の回復コマンド — が応答 decode で失敗し、
- * 発行済みトークンをサーバー側に孤児化させる。W3a 以降のサーバーは常に返す
- * (欠落 = 旧サーバーの検出材料。CLI は期限未申告の注意を表示する)。
- */
-export const DeviceExchangeResultSchema = Schema.Struct({
-  token: Schema.String,
-  tokenId: Schema.String,
-  userId: Schema.String,
-  expiresAtMs: Schema.optionalKey(Schema.Number),
 });
 
 /**
@@ -187,11 +196,12 @@ export const RecoveryStatusSchema = Schema.Struct({
 });
 
 /**
- * Authentication endpoints (AUTH_SPEC §3 web OAuth, §4 device flow, §5
- * sessions, §6 tokens). Token issuance happens only through the device flow;
- * management is the presented-token self-revocation (CLI logout 用) plus the
- * W3a token-management surface: self-inventory listing and targeted revocation
- * (2026-08-28 W0 裁定で更新された §6 の線引き — 追加発行 UI / API は作らない).
+ * Authentication endpoints (AUTH_SPEC §3 web OAuth, §5 sessions, §6 tokens).
+ * Token issuance happens only through the CLI login handoff (§4 —
+ * auth-cli-api.ts の authCli グループ); management is the presented-token
+ * self-revocation (CLI logout 用) plus the W3a token-management surface:
+ * self-inventory listing and targeted revocation (2026-08-28 W0 裁定で更新
+ * された §6 の線引き — 追加発行 UI / API は作らない).
  */
 export const authGroup = HttpApiGroup.make("auth")
   .add(
@@ -213,50 +223,17 @@ export const authGroup = HttpApiGroup.make("auth")
     HttpApiEndpoint.get("githubCallback", "/auth/github/callback", {
       // 未認証で到達でき、リクエストごとに GitHub へのアウトバウンド(code 交換。
       // 成功時はさらに /user・/user/emails)を伴うため、クエリに明示的な上限
-      // (512 文字)を課す(device/exchange と同じ論拠 — セキュリティレビュー
-      // L-3 / 追補 3 A-6)。code の形式は OAuth 仕様が定めないため長さのみ検査
-      // する(実 GitHub の code / state はこの上限より桁違いに短い)。
-      // 長さ上限はペイロードを縛るだけで頻度は縛らないため、交換の**回数**は
-      // 発信元 IP 単位の Workers Rate Limiting が有界にする(deepsec R7 —
-      // device/exchange と同じ OAuth App 共有クォータを消費する経路)
+      // (512 文字)を課す(セキュリティレビュー L-3 / 追補 3 A-6)。code の
+      // 形式は OAuth 仕様が定めないため長さのみ検査する(実 GitHub の code /
+      // state はこの上限より桁違いに短い)。長さ上限はペイロードを縛るだけで
+      // 頻度は縛らないため、交換の**回数**は発信元 IP 単位の Workers Rate
+      // Limiting が有界にする(deepsec R7 — OAuth App 共有クォータを消費する経路)
       query: {
         code: Schema.String.check(Schema.isMaxLength(512)),
         state: Schema.String.check(Schema.isMaxLength(512)),
       },
       success: Redirect,
       error: [AuthFlowError, AuthRateLimitedError],
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("deviceExchange", "/auth/device/exchange", {
-      // 認証前に到達できる書き込み系のため、フィールドに明示的な上限を課す
-      // (D1 への肥大 JSON 蓄積の遮断。AUTH_SPEC §6)。
-      // 形式事前検査(AUTH_SPEC §4 — 2026-08-15): GitHub のトークンは
-      // `gh<種別 1 文字>_` プレフィックス + Base62/`_` 本体で発行される。
-      // 交換はリクエストごとにサーバーから GitHub check-token API への
-      // アウトバウンド呼び出しを伴い、その枠は OAuth App 単位のレート制限を
-      // 受けるため、形式を満たさない入力はここで落として GitHub へ出さない。
-      // これが遮断するのは無差別・形式不明の洪水まで。形式適合の洪水は
-      // 発信元 IP 単位の Workers Rate Limiting(既定デプロイの wrangler.jsonc —
-      // deepsec M3/B11)が best-effort で遮断し、より強い保全は引き続き運用側の
-      // WAF ルールに置く(SELF_HOSTING.md — L-3)
-      payload: Schema.Struct({
-        githubAccessToken: Schema.String.check(
-          Schema.isMaxLength(512),
-          Schema.isPattern(/^gh[a-z]_[A-Za-z0-9_]+$/, {
-            description: "GitHub token (gh?_ prefix + base62 body)",
-          }),
-        ),
-        tokenName: Schema.optionalKey(
-          Schema.String.check(Schema.isMaxLength(MAX_TOKEN_NAME_LENGTH)),
-        ),
-        scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),
-        // 発行時の明示 TTL(AUTH_SPEC §6 — W3a 裁定 CF)。省略時は既定 90 日。
-        // 上限(365 日)はワイヤ Schema で強制し、無期限相当の値を受けない
-        expiresInDays: Schema.optionalKey(TokenTtlDays),
-      }),
-      success: DeviceExchangeResultSchema,
-      error: [AuthFlowError, AuthRateLimitedError, SetupIncompleteError, TokenLimitError],
     }),
   )
   .add(

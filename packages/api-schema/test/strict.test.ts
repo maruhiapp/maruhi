@@ -122,7 +122,9 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
     // 除外リストの退行防止: §12-10 (1) の対象外(署名済み構造・暗号文・鍵材料を
     // 運ばない mutation)のみが載ること
     expect(STRICT_EXEMPT_PAYLOAD_ENDPOINTS).toEqual([
-      ["auth", "deviceExchange"],
+      ["authCli", "cliStart"],
+      ["authCli", "cliPoll"],
+      ["authCli", "cliApprove"],
       ["deks", "remove"],
       ["rotation", "dismiss"],
     ]);

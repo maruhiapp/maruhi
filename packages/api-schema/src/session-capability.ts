@@ -66,7 +66,13 @@ export const UNAUTHENTICATED_ENDPOINTS: ReadonlyArray<readonly [group: string, e
     ["auth", "authConfig"],
     ["auth", "githubStart"],
     ["auth", "githubCallback"],
-    ["auth", "deviceExchange"],
+    // CLI ログイン(AUTH_SPEC §4)は全 4 面が未認証: 資格はフロー資格情報
+    // (flowToken / vsig / 単回承認チケット)であってセッションではない
+    // (§4-1 (3) — SESSION_ALLOWED_ENDPOINTS には決して追加しない)
+    ["authCli", "cliStart"],
+    ["authCli", "cliVerify"],
+    ["authCli", "cliApprove"],
+    ["authCli", "cliPoll"],
     ["lease", "issue"],
   ];
 

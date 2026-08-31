@@ -140,9 +140,12 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
 export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   readonly [group: string, endpoint: string]
 > = [
-  // GitHub トークン + トークン名 + スコープのみ(AUTH_SPEC §4 — 認証前の交換面。
-  // 署名済み構造・暗号文・鍵材料を運ばない)
-  ["auth", "deviceExchange"],
+  // CLI ログイン(AUTH_SPEC §4 — 認証前のハンドオフ面。署名済み構造・暗号文・
+  // 鍵材料を運ばない): start = 発行パラメータのみ、poll = フロー資格情報のみ、
+  // approve = ブラウザの素のフォーム POST(欠落・不一致はハンドラが一様拒否)
+  ["authCli", "cliStart"],
+  ["authCli", "cliPoll"],
+  ["authCli", "cliApprove"],
   // 削除対象ラップの座標参照のみ(§12-6 修復経路)
   ["deks", "remove"],
   // (environment, variable) 識別子の列挙のみ(AUDIT_SPEC §7)

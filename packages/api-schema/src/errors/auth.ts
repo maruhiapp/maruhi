@@ -44,8 +44,8 @@ export const AuthFlowFailureReasonSchema = Schema.Literals([
 ]);
 
 /**
- * 400: the OAuth / device-flow dance failed (state mismatch, code exchange
- * rejection, or an invalid GitHub token presented to the device exchange).
+ * 400: the web OAuth dance failed (state mismatch, code exchange rejection,
+ * or a user-info fetch failure on the obtained token).
  * 提示された外部 ID・トークン値は運ばない(理由コードのみ)。
  */
 export class AuthFlowError extends Schema.TaggedError<AuthFlowError>()(
@@ -70,16 +70,41 @@ export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteErro
 ) {}
 
 /**
- * 429: too many device exchanges from this source address (AUTH_SPEC §4 —
- * deepsec M3/B11)。交換はリクエストごとに GitHub check-token API への
- * アウトバウンドを伴い、その枠は OAuth App 単位の共有クォータなので、
- * 発信元 IP 単位の best-effort 制限を既定デプロイでも強制する。
- * `retryAfterSeconds` は次に試してよい目安(固定窓の周期)。
+ * 429: too many requests to an unauthenticated auth surface from this source
+ * address (AUTH_SPEC §3 / §4 — deepsec M3/B11)。OAuth callback は GitHub への
+ * アウトバウンド(OAuth App 単位の共有クォータ)を伴い、CLI ログインの
+ * start / poll は未認証の CPU 消費面なので、発信元 IP 単位の best-effort
+ * 制限を既定デプロイでも強制する(§4-1 の Workers Rate Limiting binding
+ * パターン)。`retryAfterSeconds` は次に試してよい目安(固定窓の周期)。
  */
 export class AuthRateLimitedError extends Schema.TaggedError<AuthRateLimitedError>()(
   "AuthRateLimited",
   { retryAfterSeconds: Schema.Number },
   { httpApiStatus: 429 },
+) {}
+
+/**
+ * 410: the CLI login flow credential has expired (AUTH_SPEC §4-2)。正当な
+ * flowToken 保持者への型付き終了指示で、CLI はポーリングをやめ再ログインを
+ * 案内する。期限は flowToken の署名に含まれる自己申告値であり、この応答は
+ * フロー状態(行の有無・承認状況)を一切開示しない。
+ */
+export class CliFlowExpiredError extends Schema.TaggedError<CliFlowExpiredError>()(
+  "CliFlowExpired",
+  {},
+  { httpApiStatus: 410 },
+) {}
+
+/**
+ * 400: uniform rejection of a CLI login poll (AUTH_SPEC §4-2 の一様拒否規律)。
+ * MAC 不一致・署名内 flowId と提示 flowId の組不一致・consumed 後の再 poll・
+ * 並行 poll の CAS 敗者 — すべて同一の応答で、失敗理由を出し分けない
+ * (フロー状態のオラクルを作らない)。理由・識別子は運ばない。
+ */
+export class CliFlowRejectedError extends Schema.TaggedError<CliFlowRejectedError>()(
+  "CliFlowRejected",
+  {},
+  { httpApiStatus: 400 },
 ) {}
 
 /** 429: the per-user API token limit has been reached (AUTH_SPEC §6). */
