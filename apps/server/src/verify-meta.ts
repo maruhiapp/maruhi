@@ -110,7 +110,10 @@ export const ensureMetaStatementSignature = (input: {
     // layoutVersion が乗ると「古いサーバー × 新しいクライアント」で実際に発生する
     // **正常系**になるため、S2 ではこの手前に「クライアント更新が必要」の typed
     // rejection への分岐を追加すること(裁定 CR — defect の 500 に落とすのは
-    // 「改竄警告ではなく正直な update-required」の真逆。PR #116 レビュー対応)
+    // 「改竄警告ではなく正直な update-required」の真逆。PR #116 レビュー対応)。
+    // S2 義務(同 — 独立レビュー第 2 ラウンド): v2 削除の「スキーマ欄・
+    // レイアウトの直前一致」受理検査も追加すること(crypto 層は意図的に検査
+    // しない — v1 の name 保持検査〔programs-variable.ts〕と同じ受理面の領分)
     return yield* Effect.die(
       new Error(`meta statement verification failed: ${verified.error.kind}`),
     );

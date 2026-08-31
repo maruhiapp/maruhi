@@ -125,6 +125,18 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
   });
 }
 
+// 本層の predecessor 検査が見るのは**ハッシュ連鎖・遷移・レイアウト単調性のみ**。
+// crypto 層が意図的に検査しないもの(独立レビュー第 2 ラウンド — 所有者裁定で
+// S2 受理面の領分と確定。v1 の前例と一貫):
+// - 削除ステートメントのスキーマ欄・name の「直前からの完全保持」(§4.2)は
+//   **受理検査**(AUTH_SPEC §12-5 — name の「直前の active 名を保持」と同じ
+//   規約の受理検査。v1 の name 保持も同型で apps/server/src/programs-variable.ts
+//   が検査する)。**S2 の実装 PR は v2 削除の「スキーマ欄・レイアウトの直前一致」
+//   受理検査を必ず追加すること** — 実装しないと、有効署名を持つ改変削除
+//   (スキーマ欄を書き換えた status = deleted)が受理される
+// - metaVersion 1 + status deleted は署名 API(signMetaStatement)が拒否するが、
+//   分散検証は拒否しない(v1 からの既知の非対称 — 受理面〔§12-5: 作成は active
+//   または v2 declared〕が正)
 function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { context, predecessor } = input;
   // prev の形(latest-only でも必ず検査): metaVersion 1 = 空、> 1 = 64 hex。
