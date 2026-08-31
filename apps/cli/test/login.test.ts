@@ -131,10 +131,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    const code = await runCli(
-      ["login", "--token-name", "n".repeat(129), ...FAST_POLL],
-      env.layer,
-    );
+    const code = await runCli(["login", "--token-name", "n".repeat(129), ...FAST_POLL], env.layer);
     // 書き方の誤りは usage エラー(2)
     expect(code).toBe(2);
     expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");

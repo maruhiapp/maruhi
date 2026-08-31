@@ -129,12 +129,7 @@ export function handleCliCallback(
 ): Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   never,
-  | WorkerEnv
-  | GitHubApi
-  | IdentityRepo
-  | CliFlowRepo
-  | FlowSigningKeyRepo
-  | D1AuditRepo
+  WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo
 > {
   return Effect.gen(function* () {
     // (i)-a: state 検証。CLI 分岐は専用クッキー(CLI_STATE_COOKIE)に state と
@@ -174,9 +169,9 @@ export function handleCliCallback(
     // 処理は起きない(フロー行の作成が OAuth 完走の後にのみ起きる — §4-1 (4))
     const origin = requestOrigin(request);
     const github = yield* GitHubApi;
-    const exchanged = yield* github.exchangeCode(query.code, callbackUri(origin)).pipe(
-      Effect.option,
-    );
+    const exchanged = yield* github
+      .exchangeCode(query.code, callbackUri(origin))
+      .pipe(Effect.option);
     if (Option.isNone(exchanged)) {
       yield* recordLoginFailed("cli_handoff", "code-exchange-failed");
       return yield* withCliCookieExpired(uniformErrorPage());
@@ -401,11 +396,13 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // §6 の発行(同名ローテーション・発行上限・auth.token_created 監査 —
         // すべて既存規律のまま)。発行パラメータは行の保持値
         const ttlMs = row.expiresInDays * 24 * 60 * 60 * 1000;
-        const issued = yield* tokens.issueToken(row.userId, row.tokenName, row.scopes, ttlMs).pipe(
-          Effect.catchTag("TokenLimitReached", (error) =>
-            Effect.fail(new TokenLimitError({ limit: error.limit })),
-          ),
-        );
+        const issued = yield* tokens
+          .issueToken(row.userId, row.tokenName, row.scopes, ttlMs)
+          .pipe(
+            Effect.catchTag("TokenLimitReached", (error) =>
+              Effect.fail(new TokenLimitError({ limit: error.limit })),
+            ),
+          );
         return {
           status: "approved" as const,
           token: issued.rawToken,

@@ -22,14 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import { isClass1Event } from "../src/audit-store.ts";
 import { INVITE_AUDIT_EVENTS } from "../src/db.package/index.ts";
-import {
-  BASE,
-  bearer,
-  cliToken,
-  JSON_HEADERS,
-  loginSession,
-  sessionHeaders,
-} from "./support/auth.ts";
+import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,

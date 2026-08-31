@@ -1464,10 +1464,7 @@ interface CliFlowRepoShape {
    * 別 user_id はチケットを回転させず rejected(乗っ取り・チケット失効攻撃の
    * 両経路を閉じる)。
    */
-  readonly createOrMatch: (
-    flow: NewCliLoginFlow,
-    nowMs: number,
-  ) => Effect.Effect<CliFlowAdmission>;
+  readonly createOrMatch: (flow: NewCliLoginFlow, nowMs: number) => Effect.Effect<CliFlowAdmission>;
   /**
    * 承認 / 拒否の CAS(awaiting → approved | denied — §4-1 (4) (iv))。資格は
    * 承認チケット(最新 1 枚)で、不明・期限切れ・使用済みは一様に false。
@@ -1509,7 +1506,9 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
         const results = await db.batch([
           // 日和見削除(§4-1 (4) (iii)): 期限 + 余裕を過ぎた行のみ。consumed /
           // denied も余裕内は残す(poll の「行なし = pending」誤読の遮断)
-          db.delete(cliLoginFlows).where(lte(cliLoginFlows.expiresAt, nowMs - CLI_FLOW_DELETE_GRACE_MS)),
+          db
+            .delete(cliLoginFlows)
+            .where(lte(cliLoginFlows.expiresAt, nowMs - CLI_FLOW_DELETE_GRACE_MS)),
           db
             .insert(cliLoginFlows)
             .select(

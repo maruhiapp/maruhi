@@ -289,10 +289,7 @@ describe("CLI ログインハンドオフ(§3.1 — AUTH_SPEC §4)", () => {
     await seedUser("user-cli-audit", 701);
     const token = await cliToken(701);
     const events = await auditRows("user_audit_events");
-    expect(events.map((row) => row.event)).toEqual([
-      "auth.login_succeeded",
-      "auth.token_created",
-    ]);
+    expect(events.map((row) => row.event)).toEqual(["auth.login_succeeded", "auth.token_created"]);
     // 承認(§4-2): actor = 照会で確定した内部 user_id、payload は authMethod と
     // フロー相関子のみ(プロバイダ情報は載らない — §1-2)
     const login = events[0] as AuditRow;

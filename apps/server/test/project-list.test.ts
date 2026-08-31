@@ -155,11 +155,7 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
 
   it("トークンスコープと交差する(スコープ外 = 不出現・水準は read で足りる)", async () => {
     // 対象プロジェクトを覆う read スコープ → 出現
-    const scoped = await cliToken(
-      9002,
-      [{ project: projectId, permission: "read" }],
-      "scoped-in",
-    );
+    const scoped = await cliToken(9002, [{ project: projectId, permission: "read" }], "scoped-in");
     expect((await listOk(bearer(scoped))).projects).toEqual([{ projectId, role: "member" }]);
     // 別プロジェクト限定スコープ → メンバーであっても不出現(存在情報ゼロの 200)
     const other = fakeProjectId(1);

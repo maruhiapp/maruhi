@@ -227,14 +227,6 @@ function hiddenSingle<A>(name: string, description: string, primitive: Primitive
   });
 }
 
-function hiddenValued(name: string, description: string) {
-  return hiddenSingle(name, description, Primitive.string).pipe(
-    Flag.withSchema(NonBlank),
-    Flag.atMost(1),
-    Flag.map((values) => values[0]),
-  );
-}
-
 function hiddenIntegerValued(name: string, description: string) {
   return hiddenSingle(name, description, Primitive.integer).pipe(
     Flag.atMost(1),

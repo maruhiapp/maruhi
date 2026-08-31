@@ -103,7 +103,8 @@ export interface ApprovalPageInput {
 }
 
 function scopeLine(scope: TokenScope): string {
-  const project = scope.project === "*" ? "all projects" : `project <code>${escapeHtml(scope.project)}</code>`;
+  const project =
+    scope.project === "*" ? "all projects" : `project <code>${escapeHtml(scope.project)}</code>`;
   return `<li>${escapeHtml(scope.permission)} access to ${project}</li>`;
 }
 

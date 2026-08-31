@@ -266,6 +266,22 @@ async function flowSigningKeyFromDb(): Promise<CryptoKey> {
 /** ワイヤ形式は満たすが実在しないフロー資格(レート制限テスト等のダミー)。 */
 const DUMMY_FLOW_ID = "ab".repeat(16);
 
+/** 固定 IP からの start 1 発(レート制限テストのバースト単位)。 */
+const startAttempt = (): Promise<Response> =>
+  SELF.fetch(`${BASE}/auth/cli/start`, {
+    method: "POST",
+    headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.7" },
+    body: JSON.stringify({}),
+  });
+
+/** 任意 payload での start(ワイヤ境界テスト用 — IP 帰属なし = 制限対象外)。 */
+const startWithPayload = (payload: unknown): Promise<Response> =>
+  SELF.fetch(`${BASE}/auth/cli/start`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
+  });
+
 describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハンドオフ)", () => {
   it("start → verify → callback → approve → poll で PAT を単回発行する(§4-1 正常系)", async () => {
     await seedUser("user-cli-0001", 901);
@@ -349,7 +365,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     // 単回発行: 消費済みフローへの再 poll は一様拒否(§4-2)
     const again = await pollCliFlow(started.flowId, started.flowToken);
     expect(again.status).toBe(400);
-    expect(((await again.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    expect(((await again.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowRejected");
   });
 
   it("rate-limits start per source IP (§4-1 (1))", async () => {
@@ -357,15 +373,9 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     // 発信元を固定する(不在の直接到達は帰属不能として制限対象外)。窓は
     // wall-clock 整列の固定窓(10/60s): 2 窓 + 2 発(22 リクエスト)を並列
     // バーストで送り、フレークしない形で 429 を観測する
-    const attempt = (): Promise<Response> =>
-      SELF.fetch(`${BASE}/auth/cli/start`, {
-        method: "POST",
-        headers: { ...JSON_HEADERS, "cf-connecting-ip": "203.0.113.7" },
-        body: JSON.stringify({}),
-      });
     const responses: Response[] = [];
     for (let batch = 0; batch < 2; batch += 1) {
-      responses.push(...(await Promise.all(Array.from({ length: 11 }, attempt))));
+      responses.push(...(await Promise.all(Array.from({ length: 11 }, startAttempt))));
     }
     let limited: Response | null = null;
     for (const response of responses) {
@@ -416,7 +426,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     if (limited === null) {
       throw new Error("expected a 429 within two full rate-limit windows");
     }
-    expect(((await limited.json()) as { _tag: string })._tag).toBe("AuthRateLimited");
+    expect(((await limited.json()) as Record<string, unknown>)["_tag"]).toBe("AuthRateLimited");
   }, 60_000);
 
   it("rotates the token for the same (user, name): the old one stops working", async () => {
@@ -460,12 +470,12 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     expect((await approveCliFlow(started.flowId, ticket)).status).toBe(200);
     const overflow = await pollCliFlow(started.flowId, started.flowToken);
     expect(overflow.status).toBe(429);
-    expect(((await overflow.json()) as { _tag: string })._tag).toBe("TokenLimit");
+    expect(((await overflow.json()) as Record<string, unknown>)["_tag"]).toBe("TokenLimit");
     // CAS 成功後の発行失敗は consumed のまま終わる(fail-closed — 半配布を
     // 残さない)。再 poll は一様拒否で、CLI は再ログインする
     const retry = await pollCliFlow(started.flowId, started.flowToken);
     expect(retry.status).toBe(400);
-    expect(((await retry.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    expect(((await retry.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowRejected");
 
     // 同名(既存 "seed")のローテーションは上限に達していても通る
     const rotated = await cliIssue(204, { tokenName: "seed" });
@@ -529,31 +539,25 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
   });
 
   it("rejects out-of-bounds start payloads at the schema boundary (400)", async () => {
-    const start = (payload: unknown): Promise<Response> =>
-      SELF.fetch(`${BASE}/auth/cli/start`, {
-        method: "POST",
-        headers: JSON_HEADERS,
-        body: JSON.stringify(payload),
-      });
     // scopes 要素数上限(100)超過
-    const tooManyScopes = await start({
+    const tooManyScopes = await startWithPayload({
       scopes: Array.from({ length: 101 }, () => ({ project: "*", permission: "read" })),
     });
     expect(tooManyScopes.status).toBe(400);
 
     // project はプロジェクト ID 形式(hex 64)か "*" のみ
-    const badProject = await start({
+    const badProject = await startWithPayload({
       scopes: [{ project: "x".repeat(500_000), permission: "read" }],
     });
     expect(badProject.status).toBe(400);
 
     // tokenName 上限(128 文字)超過
-    expect((await start({ tokenName: "n".repeat(129) })).status).toBe(400);
+    expect((await startWithPayload({ tokenName: "n".repeat(129) })).status).toBe(400);
 
     // tokenName の制御文字・双方向制御文字は受理時拒否(§6 — 承認ページに
     // 到達する前のワイヤ境界で落とす。非遡及 = 既存行はマイグレーションしない)
-    expect((await start({ tokenName: "evil\u0007name" })).status).toBe(400);
-    expect((await start({ tokenName: "evil\u202Ename" })).status).toBe(400);
+    expect((await startWithPayload({ tokenName: "evil\u0007name" })).status).toBe(400);
+    expect((await startWithPayload({ tokenName: "evil\u202Ename" })).status).toBe(400);
   });
 
   it("rejects a mix-and-match poll: victim flowId with the attacker's own flowToken (§4-1 (1))", async () => {
@@ -563,7 +567,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const attacker = await startCliFlow();
     const response = await pollCliFlow(victim.flowId, attacker.flowToken);
     expect(response.status).toBe(400);
-    expect(((await response.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    expect(((await response.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowRejected");
   });
 
   it("rejects a tampered flowToken uniformly (§4-2)", async () => {
@@ -573,7 +577,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const tampered = started.flowToken.slice(0, -1) + flipped;
     const macBroken = await pollCliFlow(started.flowId, tampered);
     expect(macBroken.status).toBe(400);
-    expect(((await macBroken.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    expect(((await macBroken.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowRejected");
     // 自己申告の期限を伸ばす改竄も MAC で落ちる(期限判定は MAC の後 — 署名済み
     // の値しか信じない)
     const [version, expiresPart, random, mac] = started.flowToken.split(".") as [
@@ -585,7 +589,9 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const extended = [version, String(Number(expiresPart) + 3_600_000), random, mac].join(".");
     const expiryForged = await pollCliFlow(started.flowId, extended);
     expect(expiryForged.status).toBe(400);
-    expect(((await expiryForged.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+    expect(((await expiryForged.json()) as Record<string, unknown>)["_tag"]).toBe(
+      "CliFlowRejected",
+    );
   });
 
   it("tells the legitimate holder about expiry with a typed 410 (§4-2)", async () => {
@@ -596,7 +602,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const expiredToken = await createFlowToken(key, started.flowId, Date.now() - 1_000);
     const response = await pollCliFlow(started.flowId, expiredToken);
     expect(response.status).toBe(410);
-    expect(((await response.json()) as { _tag: string })._tag).toBe("CliFlowExpired");
+    expect(((await response.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowExpired");
   });
 
   it("rejects a tampered verificationUrl before redirecting to GitHub (§4-1 (3))", async () => {
@@ -679,7 +685,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     // させない — チケットは回転しない)
     const hijack = await cliBrowserLeg(started.verificationUrl, 912);
     expect(hijack.status).toBe(400);
-    expect((await hijack.text())).toContain("This sign-in link can&#39;t be used");
+    expect(await hijack.text()).toContain("This sign-in link can&#39;t be used");
 
     // 元のユーザーのチケットはそのまま有効で、承認 → 発行まで完走できる
     expect((await approveCliFlow(started.flowId, ticket)).status).toBe(200);
@@ -751,7 +757,7 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     expect(body.status).toBe("approved");
     for (const response of responses.filter((candidate) => candidate.status !== 200)) {
       expect(response.status).toBe(400);
-      expect(((await response.json()) as { _tag: string })._tag).toBe("CliFlowRejected");
+      expect(((await response.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowRejected");
     }
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;

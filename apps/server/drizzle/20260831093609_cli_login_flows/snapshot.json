@@ -2,9 +2,7 @@
   "version": "7",
   "dialect": "sqlite",
   "id": "cdd38dfa-dad7-4ffd-ba92-921e5bc70519",
-  "prevIds": [
-    "3f673ebf-8493-43b7-a9a8-e6c23f0aa5af"
-  ],
+  "prevIds": ["3f673ebf-8493-43b7-a9a8-e6c23f0aa5af"],
   "ddl": [
     {
       "name": "api_tokens",
@@ -1047,13 +1045,9 @@
       "table": "users"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "tableTo": "users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1062,13 +1056,9 @@
       "table": "api_tokens"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "tableTo": "users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1077,13 +1067,9 @@
       "table": "cli_login_flows"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "tableTo": "users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1092,13 +1078,9 @@
       "table": "linked_identities"
     },
     {
-      "columns": [
-        "org_id"
-      ],
+      "columns": ["org_id"],
       "tableTo": "organizations",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1107,13 +1089,9 @@
       "table": "memberships"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "tableTo": "users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1122,13 +1100,9 @@
       "table": "memberships"
     },
     {
-      "columns": [
-        "org_id"
-      ],
+      "columns": ["org_id"],
       "tableTo": "organizations",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1137,13 +1111,9 @@
       "table": "projects"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "tableTo": "users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1152,13 +1122,9 @@
       "table": "recovery_wraps"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "tableTo": "users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
@@ -1167,138 +1133,105 @@
       "table": "sessions"
     },
     {
-      "columns": [
-        "provider",
-        "provider_user_id"
-      ],
+      "columns": ["provider", "provider_user_id"],
       "nameExplicit": false,
       "name": "linked_identities_pk",
       "entityType": "pks",
       "table": "linked_identities"
     },
     {
-      "columns": [
-        "org_id",
-        "user_id"
-      ],
+      "columns": ["org_id", "user_id"],
       "nameExplicit": false,
       "name": "memberships_pk",
       "entityType": "pks",
       "table": "memberships"
     },
     {
-      "columns": [
-        "project_id",
-        "user_id"
-      ],
+      "columns": ["project_id", "user_id"],
       "nameExplicit": false,
       "name": "project_members_pk",
       "entityType": "pks",
       "table": "project_members"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "api_tokens_pk",
       "table": "api_tokens",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "cli_login_flows_pk",
       "table": "cli_login_flows",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "flow_signing_keys_pk",
       "table": "flow_signing_keys",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "invitations_pk",
       "table": "invitations",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "bucket"
-      ],
+      "columns": ["bucket"],
       "nameExplicit": false,
       "name": "login_failed_windows_pk",
       "table": "login_failed_windows",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "seq"
-      ],
+      "columns": ["seq"],
       "nameExplicit": false,
       "name": "org_audit_events_pk",
       "table": "org_audit_events",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "organizations_pk",
       "table": "organizations",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "projects_pk",
       "table": "projects",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "user_id"
-      ],
+      "columns": ["user_id"],
       "nameExplicit": false,
       "name": "recovery_wraps_pk",
       "table": "recovery_wraps",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "sessions_pk",
       "table": "sessions",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "seq"
-      ],
+      "columns": ["seq"],
       "nameExplicit": false,
       "name": "user_audit_events_pk",
       "table": "user_audit_events",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "users_pk",
       "table": "users",

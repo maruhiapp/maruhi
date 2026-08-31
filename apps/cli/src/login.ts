@@ -80,36 +80,32 @@ function pollOnce(
   flowId: string,
   flowToken: string,
 ): Effect.Effect<PollOutcome, CliError> {
-  return client.authCli
-    .cliPoll({ payload: { flowId, flowToken } })
-    .pipe(
-      Effect.flatMap((result): Effect.Effect<PollOutcome, CliError> => {
-        if (result.status === "approved") {
-          return Effect.succeed({ kind: "approved", ...result });
-        }
-        if (result.status === "denied") {
-          return Effect.fail(
-            cliError("The sign-in was denied in the browser. No token was issued"),
-          );
-        }
-        return Effect.succeed({ kind: "pending" });
-      }),
-      // 期限切れ(型付き — §4-2)はポーリングをやめて再ログインを案内する
-      Effect.catchTag("CliFlowExpired", () => Effect.fail(cliError(FLOW_EXPIRED_MESSAGE))),
-      // 一様拒否(§4-2): 資格不一致・消費済みフローの再 poll 等。理由は
-      // 出し分けられない(サーバーがオラクルを作らない)ので再ログインを案内する
-      Effect.catchTag("CliFlowRejected", () =>
-        Effect.fail(
-          cliError("The sign-in flow was rejected by the server. Run `maruhi login` again"),
-        ),
+  return client.authCli.cliPoll({ payload: { flowId, flowToken } }).pipe(
+    Effect.flatMap((result): Effect.Effect<PollOutcome, CliError> => {
+      if (result.status === "approved") {
+        return Effect.succeed({ kind: "approved", ...result });
+      }
+      if (result.status === "denied") {
+        return Effect.fail(cliError("The sign-in was denied in the browser. No token was issued"));
+      }
+      return Effect.succeed({ kind: "pending" });
+    }),
+    // 期限切れ(型付き — §4-2)はポーリングをやめて再ログインを案内する
+    Effect.catchTag("CliFlowExpired", () => Effect.fail(cliError(FLOW_EXPIRED_MESSAGE))),
+    // 一様拒否(§4-2): 資格不一致・消費済みフローの再 poll 等。理由は
+    // 出し分けられない(サーバーがオラクルを作らない)ので再ログインを案内する
+    Effect.catchTag("CliFlowRejected", () =>
+      Effect.fail(
+        cliError("The sign-in flow was rejected by the server. Run `maruhi login` again"),
       ),
-      // 429 は失敗ではない(§4-1 (5) — サーバーは超過ポーリングを拒否してよい)。
-      // 案内された待ち時間だけ下がって続ける
-      Effect.catchTag("AuthRateLimited", (error) =>
-        Effect.succeed<PollOutcome>({ kind: "backoff", retryAfterSeconds: error.retryAfterSeconds }),
-      ),
-      Effect.mapError(toCliError),
-    );
+    ),
+    // 429 は失敗ではない(§4-1 (5) — サーバーは超過ポーリングを拒否してよい)。
+    // 案内された待ち時間だけ下がって続ける
+    Effect.catchTag("AuthRateLimited", (error) =>
+      Effect.succeed<PollOutcome>({ kind: "backoff", retryAfterSeconds: error.retryAfterSeconds }),
+    ),
+    Effect.mapError(toCliError),
+  );
 }
 
 /** `maruhi login`: start → browser approval → poll → keychain(AUTH_SPEC §4)。 */
