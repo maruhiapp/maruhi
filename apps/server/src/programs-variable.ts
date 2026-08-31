@@ -4,7 +4,7 @@
 // requireMemberState → 環境・変数の存在 → CAS → 署名検証 → 数量ポリシー →
 // 原子書き込み + 監査(AUDIT_SPEC §3.3)。
 
-import type { ChainMember } from "@maruhi/crypto";
+import type { ChainHistoryIndex, ChainMember, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
@@ -118,6 +118,74 @@ function ensureSchemaLockedCreation(
 }
 
 /**
+ * 作成(metaVersion 1)のスキーマ系受理検査(§12-11 / §12-8)を受理時点の
+ * ポリシーで通す: disabled の有効化ゲート(v2 の新規採用拒否)→ schema-locked
+ * の作成時検査 → description の受理ポリシー。
+ */
+const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const schemaPolicy = yield* store.schemaPolicy;
+    yield* ensureSchemaPolicyAllowsLayout({
+      schemaPolicy,
+      statement,
+      predecessorLayoutVersion: 1,
+    });
+    yield* ensureSchemaLockedCreation(schemaPolicy, statement);
+    yield* ensureDescriptionPolicy(statement);
+  });
+
+/**
+ * 作成の前段検査(§12-1 / §12-8): ID の可用性(tombstone 再利用禁止)→
+ * 数量ポリシー → NFC → 名前の一意性。
+ */
+const ensureVariableCreatable = (
+  environmentId: string,
+  statement: MetaStatementInput,
+  variableId: string,
+) =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const existing = yield* store.findVariable(environmentId, variableId);
+    const unavailable = variableIdUnavailable(existing, variableId);
+    if (unavailable !== null) {
+      return yield* rejectData(unavailable);
+    }
+    yield* ensureVariableQuota(environmentId);
+    yield* ensureNfcName(statement.name);
+    if (yield* store.variableNameTaken(environmentId, statement.name, null)) {
+      return yield* rejectData({
+        kind: "variable-conflict",
+        variableId,
+        reason: "duplicate-name",
+      });
+    }
+  });
+
+/** 同梱 version 1 の値の検証列(値ありの作成のみ): 値 CAS → 値署名 → 容量。 */
+const acceptCreationValue = (context: {
+  readonly state: ChainState;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly value: ValueInput;
+}) =>
+  Effect.gen(function* () {
+    yield* ensureValueCas(context.state, context.environmentId, 0, context.value);
+    const signedBytesHashHex = yield* ensureValueSignature({
+      projectId: context.projectId,
+      environmentId: context.environmentId,
+      variableId: context.variableId,
+      history: context.history,
+      member: context.member,
+      value: context.value,
+    });
+    return { value: context.value, signedBytesHashHex };
+  });
+
+/**
  * 変数作成(§12-5): active(version 1 の値同梱)または declared(値なし —
  * 「値のない変数は存在しない」の唯一の例外。レイアウト v2 限定)。ワイヤ
  * Schema が status と値の有無の結合を固定する(deleted の創出は構造的に不可)。
@@ -141,39 +209,15 @@ export const createVariableProgram = (
       cache,
     );
     yield* requireActiveEnvironment(environmentId);
-    const store = yield* DataStore;
-    const existing = yield* store.findVariable(environmentId, input.variableId);
-    const unavailable = variableIdUnavailable(existing, input.variableId);
-    if (unavailable !== null) {
-      return yield* rejectData(unavailable);
-    }
-    yield* ensureVariableQuota(environmentId);
-    yield* ensureNfcName(input.statement.name);
-    if (yield* store.variableNameTaken(environmentId, input.statement.name, null)) {
-      return yield* rejectData({
-        kind: "variable-conflict",
-        variableId: input.variableId,
-        reason: "duplicate-name",
-      });
-    }
+    yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
     // スキーマポリシー(§12-11 — 受理時点のポリシーを permit 下で読む):
     // disabled は v2 の新規採用(metaVersion 1 の v2 作成)を拒否し、locked は
     // 作成に v2 + varType 非空を要求する。description の上限・文字種は §12-8
-    const schemaPolicy = yield* store.schemaPolicy;
-    yield* ensureSchemaPolicyAllowsLayout({
-      schemaPolicy,
-      statement: input.statement,
-      predecessorLayoutVersion: 1,
-    });
-    yield* ensureSchemaLockedCreation(schemaPolicy, input.statement);
-    yield* ensureDescriptionPolicy(input.statement);
+    yield* ensureCreationSchemaGates(input.statement);
     // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
     // ワイヤ Schema が metaVersion 1・active/declared・prev 空を固定するが、
     // CAS は防衛線として残す(latest = 0 相当)
     yield* ensureMetaCas(0, input.statement);
-    if (input.value !== undefined) {
-      yield* ensureValueCas(state, environmentId, 0, input.value);
-    }
     // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名検証を
     // 受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可。declared 作成は
     // 値がないため値署名の検証のみ対象外)。判定順:
@@ -186,15 +230,16 @@ export const createVariableProgram = (
       member,
       statement: input.statement,
     });
-    const signedBytesHashHex =
+    const acceptedValue =
       input.value === undefined
         ? null
-        : yield* ensureValueSignature({
+        : yield* acceptCreationValue({
+            state,
+            history,
+            member,
             projectId,
             environmentId,
             variableId: input.variableId,
-            history,
-            member,
             value: input.value,
           });
     // 環境マニフェストの複合受理(§12-5 — 2026-08-18): 作成後のメタ状態
@@ -214,10 +259,10 @@ export const createVariableProgram = (
         signedBytesHashHex: metaSignedBytesHashHex,
       },
     });
-    const value = input.value;
-    if (value !== undefined) {
-      yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
+    if (acceptedValue !== null) {
+      yield* ensureProjectCapacity(acceptedValue.value.ciphertextHex.length / 2);
     }
+    const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
     // 書き込みフェーズ(単一タスク): 変数行 + ステートメント行 +(active 作成
@@ -245,7 +290,7 @@ export const createVariableProgram = (
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
-      if (value !== undefined && signedBytesHashHex !== null) {
+      if (acceptedValue !== null) {
         // 作成は定義上、再暗号化ではない(マーカーの申告面も持たない — §12-5)
         writeVersionWithAudit(
           store.write,
@@ -254,9 +299,9 @@ export const createVariableProgram = (
           member,
           environmentId,
           input.variableId,
-          value,
+          acceptedValue.value,
           false,
-          signedBytesHashHex,
+          acceptedValue.signedBytesHashHex,
           now,
         );
       }
@@ -264,8 +309,8 @@ export const createVariableProgram = (
     return {
       variableId: input.variableId,
       // declared 作成は保存バージョン 0 のまま(§12-5)
-      version: value?.version ?? 0,
-      epoch: value?.epoch ?? currentEpochOf(state, environmentId),
+      version: acceptedValue?.value.version ?? 0,
+      epoch: acceptedValue?.value.epoch ?? currentEpochOf(state, environmentId),
     } satisfies VariableVersionValue;
   });
 

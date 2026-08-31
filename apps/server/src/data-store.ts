@@ -1490,10 +1490,22 @@ function wrapBodyOf(row: Record<string, SqlStorageValue>): {
 }
 
 /**
- * ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。
- * 変数側はレイアウト v2 の列(layout_version + スキーマ欄)も書く — v1
- * ステートメントは layout_version 1・スキーマ欄 NULL。required は署名対象の
+ * レイアウト v2 の列値(layout_version + スキーマ欄 — 変数ステートメント専用)。
+ * v1 ステートメントは layout_version 1・スキーマ欄 NULL。required は署名対象の
  * "true" / "false" 表現で保存する(CRYPTO_SPEC §4.2 の LP フィールドと同一)。
+ */
+function layoutColumnValues(statement: MetaStatementInput): readonly (string | number | null)[] {
+  const layoutVersion = statement.layoutVersion ?? 1;
+  const schema = statement.schema;
+  if (schema === undefined) {
+    return [layoutVersion, null, null, null];
+  }
+  return [layoutVersion, schema.varType, schema.required ? "true" : "false", schema.description];
+}
+
+/**
+ * ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。
+ * 変数側はレイアウト v2 の列({@link layoutColumnValues})も書く。
  */
 function insertStatementRow(
   sql: SqlStorage,
@@ -1504,27 +1516,12 @@ function insertStatementRow(
   author: MetaAuthorInfo,
   nowMs: number,
 ): void {
-  const keyColumns =
-    table === "variable_meta_statements"
-      ? "environment_id, variable_id, meta_version"
-      : "environment_id, meta_version";
-  const layoutColumns =
-    table === "variable_meta_statements" ? ", layout_version, var_type, required, description" : "";
-  const layoutValues: (string | number | null)[] =
-    table === "variable_meta_statements"
-      ? [
-          statement.layoutVersion ?? 1,
-          statement.schema?.varType ?? null,
-          statement.schema === undefined ? null : statement.schema.required ? "true" : "false",
-          statement.schema?.description ?? null,
-        ]
-      : [];
-  sql.exec(
-    `INSERT INTO ${table}
-       (${keyColumns}, suite, name, status, prev_meta_sig_hash_hex,
-        chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex,
-        author_user_id, author_key_fingerprint, created_at${layoutColumns})
-     VALUES (${[...keys, ...Array.from({ length: 11 + layoutValues.length })].map(() => "?").join(", ")})`,
+  const isVariable = table === "variable_meta_statements";
+  const keyColumns = isVariable
+    ? "environment_id, variable_id, meta_version"
+    : "environment_id, meta_version";
+  const layoutColumns = isVariable ? ", layout_version, var_type, required, description" : "";
+  const values: readonly (string | number | null)[] = [
     ...keys,
     statement.suite,
     statement.name,
@@ -1537,7 +1534,15 @@ function insertStatementRow(
     author.userId,
     author.keyFingerprintHex,
     nowMs,
-    ...layoutValues,
+    ...(isVariable ? layoutColumnValues(statement) : []),
+  ];
+  sql.exec(
+    `INSERT INTO ${table}
+       (${keyColumns}, suite, name, status, prev_meta_sig_hash_hex,
+        chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex,
+        author_user_id, author_key_fingerprint, created_at${layoutColumns})
+     VALUES (${values.map(() => "?").join(", ")})`,
+    ...values,
   );
 }
 
