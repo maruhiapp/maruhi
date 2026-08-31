@@ -252,6 +252,22 @@ describe("maruhi login", () => {
     expect(env.logs.join("\n")).not.toContain("Opened the browser");
   });
 
+  it("http(s) 以外・パース不能な verificationUrl は OS opener に渡さない(fail-closed)", async () => {
+    // OS の URL ハンドラは任意スキームをディスパッチする。verificationUrl は
+    // サーバー応答由来の untrusted 入力なので、opener に渡す前に検証し、不合格は
+    // ブラウザ自動起動をスキップして手動オープン案内(表示)+ ポーリングで完走する
+    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "not a url"]) {
+      const handoff = fakeHandoff({ startOverrides: { verificationUrl: url } });
+      const maruhi = await start(handoff.handlers);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+      // 既定の TestEnv = 対話端末 × 非エージェント(自動起動の対象環境)
+      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(env.browserOpens).toHaveLength(0);
+      expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
+    }
+  });
+
   it("サーバー由来の verificationUrl / userCode の制御文字は中和して表示する", async () => {
     // 敵対的・侵害済みサーバーの ANSI 注入を端末へ生で流さない(displayText)
     const handoff = fakeHandoff({

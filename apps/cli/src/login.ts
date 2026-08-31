@@ -21,7 +21,7 @@ import { makeApiClient, type MaruhiClient } from "./api.ts";
 import { displayText, escapeText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
+import { CliIo, type CliIoShape } from "./io.ts";
 import {
   hasRedactedPlaceholder,
   Keychain,
@@ -52,6 +52,47 @@ function clampInterval(seconds: number, minSeconds: number): number {
     return minSeconds;
   }
   return Math.min(seconds, Math.max(MAX_POLL_INTERVAL_SECONDS, minSeconds));
+}
+
+/**
+ * ブラウザ自動起動に渡してよい URL か(fail-closed)。verificationUrl は
+ * サーバー応答由来の untrusted 入力で、表示側は displayText で中和している —
+ * OS の opener に渡す側も同様に生値を信頼しない。OS の URL ハンドラは任意
+ * スキームをディスパッチするため http(s) のみ許可し、パース不能値も拒否する。
+ * 不合格は自動起動のスキップ = 手動オープン案内(表示済みの URL)への縮退。
+ */
+function isOpenableUrl(raw: string): boolean {
+  if (!URL.canParse(raw)) {
+    return false;
+  }
+  const { protocol } = new URL(raw);
+  return protocol === "https:" || protocol === "http:";
+}
+
+/**
+ * ブラウザ自動起動の UX 分岐(§4-1 (2) — ADR-0016 決定 7 の既存サービスを
+ * 流用する分岐であって新しいセキュリティゲートではない)。「対話端末 ×
+ * 非エージェント × URL 検証合格(isOpenableUrl)」のときのみ試みる。失敗・
+ * 非対象・検証不合格のいずれも表示 + ポーリングで完走する — 縮退経路は
+ * この 1 本で全環境を覆う。
+ */
+function maybeOpenBrowser(
+  io: CliIoShape,
+  verificationUrl: string,
+): Effect.Effect<void, never, Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const agent = yield* AgentProfileRef;
+    const stdio = yield* Stdio.Stdio;
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (agent.isAgent || !stdinIsTerminal || !stdoutIsTerminal || !isOpenableUrl(verificationUrl)) {
+      return;
+    }
+    const opened = yield* io.openBrowser(verificationUrl);
+    if (opened) {
+      yield* io.log("Opened the browser (if nothing appeared, open the URL above manually)");
+    }
+  });
 }
 
 /** expiresInSeconds を (0, 上限] に丸める(非数・非有限・非正は既定値)。 */
@@ -158,20 +199,7 @@ export function loginOp(input: {
       "Approve in the browser only if it shows this exact code (AUTH_SPEC's phishing guard)",
     );
 
-    // ブラウザ自動起動は「対話端末 × 非エージェント」のときのみ試みる
-    // (§4-1 (2) — ADR-0016 決定 7 の既存サービスを流用する UX 分岐であって
-    // 新しいセキュリティゲートではない)。失敗・非対象でも表示 + ポーリングで
-    // 完走する — 縮退経路はこの 1 本で全環境を覆う
-    const agent = yield* AgentProfileRef;
-    const stdio = yield* Stdio.Stdio;
-    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
-    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    if (!agent.isAgent && stdinIsTerminal && stdoutIsTerminal) {
-      const opened = yield* io.openBrowser(started.verificationUrl);
-      if (opened) {
-        yield* io.log("Opened the browser (if nothing appeared, open the URL above manually)");
-      }
-    }
+    yield* maybeOpenBrowser(io, started.verificationUrl);
     yield* io.log("Waiting for approval\u2026");
 
     // 取得(§4-1 (5))。deadline は sleep の**前**に検査する(次のポーリング

@@ -308,6 +308,10 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     const callback = await cliBrowserLeg(started.verificationUrl, 901);
     expect(callback.status).toBe(200);
     expect(callback.headers.get("content-security-policy")).toContain("script-src 'none'");
+    // クリックジャッキング防御: 承認ページは iframe 埋め込み不可(default-src は
+    // frame-ancestors にフォールバックしないため、明示の存在を固定する)
+    expect(callback.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(callback.headers.get("x-frame-options")).toBe("DENY");
     expect(callback.headers.get("referrer-policy")).toBe("no-referrer");
     const html = await callback.text();
     expect(html).toContain(started.userCode);
@@ -644,6 +648,10 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     );
     expect(response.status).toBe(400);
     expect(response.headers.get("location")).toBeNull();
+    // 「一様ページ」の実体まで固定する: 改竄経路(上のテスト)と同じ HTML +
+    // 同じ CSP であること — 期限切れだけが型付き JSON 等へ逸れたら破れ
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(response.headers.get("content-security-policy")).toContain("script-src 'none'");
   });
 
   it("shows the signup guidance page for an unknown account with zero side effects (裁定 DH)", async () => {
@@ -783,20 +791,31 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
 
   it("rejects new flows beyond the global unconsumed cap with the uniform page (§4-1 (4) (iii))", async () => {
     await seedUser("user-cli-cap", 915);
-    // 未消費行を上限(1,000)まで直接シード。実経路での到達には「既存アカウント
-    // × OAuth 完走」の同時併走が上限件数ぶん必要で、テストでは行を直接作る
+    // 未消費行を上限 − 1 まで直接シード(実経路での到達には「既存アカウント ×
+    // OAuth 完走」の同時併走が上限件数ぶん必要で、テストでは行を直接作る)。
+    // 境界は両側から固定する: N 本目(実経路の createOrMatch)は受け入れられ、
+    // N+1 本目が拒否される — オフバイワンと「常に拒否」の両方の破れを検知する
     await env.DB.prepare(
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
        INSERT INTO cli_login_flows (id, user_id, status, token_name, scopes, expires_in_days, user_code, ticket_hash, expires_at, created_at)
        SELECT printf('cap%029d', n), ?, 'awaiting', 'filler', '[]', 30, 'AAAA-AAAA', printf('%064d', n), ?, ?
        FROM seq`,
     )
-      .bind(MAX_CONCURRENT_CLI_FLOWS, "user-cli-cap", Date.now() + CLI_FLOW_TTL_MS, Date.now())
+      .bind(MAX_CONCURRENT_CLI_FLOWS - 1, "user-cli-cap", Date.now() + CLI_FLOW_TTL_MS, Date.now())
       .run();
 
-    const started = await startCliFlow();
-    const callback = await cliBrowserLeg(started.verificationUrl, 915);
-    // capacity も一様エラーページ(§4-2 — 上限到達を出し分けない)
+    // N 本目: capAvailable ガードの条件付き INSERT を実経路で通り、承認ページに至る
+    const atCap = await startCliFlow();
+    const admitted = await cliBrowserLeg(atCap.verificationUrl, 915);
+    expect(admitted.status).toBe(200);
+    const afterAdmit = await env.DB.prepare("SELECT COUNT(*) AS n FROM cli_login_flows").first<{
+      n: number;
+    }>();
+    expect(afterAdmit?.n).toBe(MAX_CONCURRENT_CLI_FLOWS);
+
+    // N+1 本目: capacity も一様エラーページ(§4-2 — 上限到達を出し分けない)
+    const overCap = await startCliFlow();
+    const callback = await cliBrowserLeg(overCap.verificationUrl, 915);
     expect(callback.status).toBe(400);
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM cli_login_flows").first<{
       n: number;

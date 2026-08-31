@@ -291,8 +291,12 @@ function browserOpenCommand(url: string): readonly string[] {
     return ["open", url];
   }
   if (process.platform === "win32") {
-    // `start` は cmd 組み込み。第 1 引数はウィンドウタイトルに食われるため空を挟む
-    return ["cmd", "/c", "start", "", url];
+    // cmd 組み込みの `start` を使うと URL 中の `&` `^` 等が cmd 自身のパーサに
+    // 解釈される(spawn の引用規約は Win32 argv 用で、cmd メタ文字はエスケープ
+    // されない — 正常な verificationUrl も `&` で切られるうえ、敵対的サーバー
+    // からはコマンド注入になる)。rundll32 の FileProtocolHandler は cmd を
+    // 通らずに既定ブラウザへディスパッチする
+    return ["rundll32", "url.dll,FileProtocolHandler", url];
   }
   return ["xdg-open", url];
 }

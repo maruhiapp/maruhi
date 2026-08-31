@@ -15,7 +15,7 @@ export {
   verifyFlowToken,
 } from "./cli-flow.ts";
 export {
-  CLI_PAGE_CSP,
+  CLI_PAGE_CSP_HEADER,
   renderApprovalPage,
   renderApprovedPage,
   renderCliErrorPage,

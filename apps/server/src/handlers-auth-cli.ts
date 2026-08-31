@@ -38,7 +38,7 @@ import {
 import type { CliVerifyParams } from "./auth.package/index.ts";
 import {
   CLI_FLOW_TTL_MS,
-  CLI_PAGE_CSP,
+  CLI_PAGE_CSP_HEADER,
   computeVsig,
   createFlowToken,
   generateUserCode,
@@ -81,16 +81,19 @@ const flowSigningKey: Effect.Effect<CryptoKey, never, FlowSigningKeyRepo> = Effe
 
 /**
  * スクリプトなし HTML ページの応答(§4-1 (4) — §15-3 の招待着地ページと同じ
- * 配信規律)。CSP はページ内 meta と二重化し、Referrer-Policy でページ URL の
- * 外部リーク(承認ページからの遷移)も塞ぐ。
+ * 配信規律)。CSP はページ内 meta と二重化し(frame-ancestors はヘッダー側
+ * のみ — meta では無効)、Referrer-Policy でページ URL の外部リーク(承認
+ * ページからの遷移)も塞ぐ。X-Frame-Options は frame-ancestors 未対応の古い
+ * ブラウザ向けの併記。
  */
 function htmlResponse(html: string, status: number): HttpServerResponse.HttpServerResponse {
   return HttpServerResponse.text(html, {
     status,
     contentType: "text/html; charset=utf-8",
     headers: {
-      "content-security-policy": CLI_PAGE_CSP,
+      "content-security-policy": CLI_PAGE_CSP_HEADER,
       "referrer-policy": "no-referrer",
+      "x-frame-options": "DENY",
     },
   });
 }

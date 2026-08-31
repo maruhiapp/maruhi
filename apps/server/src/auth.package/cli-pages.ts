@@ -28,8 +28,18 @@ function escapeHtml(value: string): string {
  * 論拠。ヘッダー側の適用点は handlers-auth-cli.ts の htmlResponse)。
  * form-action は承認フォームの POST 先(自オリジン)のみ許す。
  */
-export const CLI_PAGE_CSP =
+const CLI_PAGE_CSP =
   "default-src 'none'; script-src 'none'; style-src 'none'; base-uri 'none'; form-action 'self'";
+
+/**
+ * 配信ヘッダー用の CSP。`frame-ancestors 'none'` は承認ページのクリック
+ * ジャッキング防御(default-src はこのディレクティブにフォールバック
+ * **しない**ため、明示しないと任意オリジンから iframe 可能になる)。
+ * frame-ancestors は meta タグでは無効(仕様上無視される)ため、invite.html /
+ * write-headers.ts と同じくヘッダー側にのみ載せる。承認ページ以外(完了・
+ * 拒否・エラー・サインアップ案内)も同じ htmlResponse を通るので一貫して付く。
+ */
+export const CLI_PAGE_CSP_HEADER = `${CLI_PAGE_CSP}; frame-ancestors 'none'`;
 
 function page(title: string, body: string): string {
   return `<!doctype html>
