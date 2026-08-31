@@ -1415,15 +1415,15 @@ export const MAX_CONCURRENT_CLI_FLOWS = 1000;
  * 行を flowToken の期限より先に消すと poll が「行なし = pending」と誤読して
  * CLI が完了済みフローを無限に待つ。日和見削除はこの余裕を過ぎた行のみ対象。
  */
-export const CLI_FLOW_DELETE_GRACE_MS = 5 * 60 * 1000;
+const CLI_FLOW_DELETE_GRACE_MS = 5 * 60 * 1000;
 
 /** フロー行の状態(§4-1 (4)〜(5) の CAS 語彙)。 */
-export type CliFlowStatus = "awaiting" | "approved" | "denied" | "consumed";
+type CliFlowStatus = "awaiting" | "approved" | "denied" | "consumed";
 
 /** 承認ページの明示操作(§4-1 (4) (iv) — 承認 / 拒否の 2 択)。 */
-export type CliFlowDecision = "approved" | "denied";
+type CliFlowDecision = "approved" | "denied";
 
-export interface NewCliLoginFlow {
+interface NewCliLoginFlow {
   readonly flowId: string;
   readonly userId: string;
   readonly tokenName: string;
@@ -1436,7 +1436,7 @@ export interface NewCliLoginFlow {
 }
 
 /** poll の行引き(§4-1 (5))が見る形。ticket_hash は含めない(照合は CAS 内)。 */
-export interface CliLoginFlowRecord {
+interface CliLoginFlowRecord {
   readonly flowId: string;
   readonly userId: string;
   readonly status: CliFlowStatus;
@@ -1453,7 +1453,7 @@ export interface CliLoginFlowRecord {
  * 理由を出し分けない)、capacity は上限到達(同じ一様エラーページ + 運用
  * アラートの材料)。
  */
-export type CliFlowAdmission = "created" | "matched" | "rejected" | "capacity";
+type CliFlowAdmission = "created" | "matched" | "rejected" | "capacity";
 
 interface CliFlowRepoShape {
   /**

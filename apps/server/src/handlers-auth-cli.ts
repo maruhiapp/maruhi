@@ -30,9 +30,9 @@ import {
   CLI_STATE_PREFIX,
   callbackUri,
   ensureGitHubOAuthConfigured,
-  githubAuthorizeUrl,
   HOST_COOKIE_OPTIONS,
   recordLoginFailed,
+  redirectToGitHubAuthorize,
   requestOrigin,
 } from "./auth-shared.ts";
 import type { CliVerifyParams } from "./auth.package/index.ts";
@@ -114,6 +114,102 @@ export function isCliCallbackState(state: string): boolean {
   return state.startsWith(CLI_STATE_PREFIX);
 }
 
+/** (i)-a の復元結果: 検証を通った束縛パラメータ、または一様拒否の区分。 */
+type FlowBinding =
+  | { readonly params: CliVerifyParams; readonly vsig: string }
+  | "state-mismatch"
+  | "invalid";
+
+/**
+ * callback の CLI 分岐 (i)-a: フロー束縛クッキーの復元と検証。CLI 分岐は専用
+ * クッキー(CLI_STATE_COOKIE)に state と vsig 済みパラメータ一式を運ぶ
+ * (§4-1 (3) の「state に flow 束縛」— GitHub の state パラメータ自体は乱数のみ
+ * とし、束縛の実体は同一ブラウザにしか無いクッキー側に置く)。state 照合の後、
+ * vsig を再検証する(verify 到達時と同じ無状態検証 — クッキー値は改竄可能な
+ * クライアント保持データであり、署名の通らないパラメータでフロー行を作らない)。
+ */
+function restoreFlowBinding(
+  request: HttpServerRequest.HttpServerRequest,
+  queryState: string,
+  key: CryptoKey,
+): Effect.Effect<FlowBinding> {
+  const cookie = request.cookies[CLI_STATE_COOKIE];
+  const bound = cookie === undefined ? null : new URLSearchParams(cookie);
+  const cookieState = bound?.get("state") ?? null;
+  if (bound === null || cookieState === null || !constantTimeEqual(cookieState, queryState)) {
+    return Effect.succeed("state-mismatch");
+  }
+  const readParam = (name: string): string | undefined => bound.get(name) ?? undefined;
+  const vsig = readParam("vsig");
+  return Effect.promise(async () => {
+    const params = await verifyCliVerifyQuery(
+      key,
+      {
+        flow: readParam("flow"),
+        exp: readParam("exp"),
+        code: readParam("code"),
+        name: readParam("name"),
+        scopes: readParam("scopes"),
+        days: readParam("days"),
+        vsig,
+      },
+      Date.now(),
+    );
+    return params === null || vsig === undefined ? "invalid" : { params, vsig };
+  });
+}
+
+/**
+ * callback の CLI 分岐 (iii)〜(iv): フロー行の作成 CAS(create-or-match)と
+ * 承認ページの描画。user_id・発行パラメータ・チケットは作成と同時に確定する
+ * (中間状態が存在しない)。scopesJson は start が自ら JSON.stringify した値で
+ * vsig 検証済み — parse 失敗は defect。
+ */
+function admitAndRenderApproval(
+  params: CliVerifyParams,
+  userId: string,
+  identityLabel: string,
+): Effect.Effect<HttpServerResponse.HttpServerResponse, never, CliFlowRepo> {
+  return Effect.gen(function* () {
+    const ticket = randomHex(32);
+    const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
+    const scopes = JSON.parse(params.scopesJson) as readonly TokenScope[];
+    const flows = yield* CliFlowRepo;
+    const admission = yield* flows.createOrMatch(
+      {
+        flowId: params.flowId,
+        userId,
+        tokenName: params.tokenName,
+        scopes,
+        expiresInDays: params.expiresInDays,
+        userCode: params.userCode,
+        ticketHash,
+        expiresAtMs: params.expiresAtMs,
+      },
+      Date.now(),
+    );
+    // rejected(別 user_id・期限切れ・終端状態)と capacity(全体上限)はどちらも
+    // 一様エラーページ(§4-1 (4) (iii) / §4-2 — チケットは回転していない)
+    if (admission === "rejected" || admission === "capacity") {
+      return uniformErrorPage();
+    }
+    // (iv): 承認ページ(スクリプトなし)。表示は認証済みアイデンティティ +
+    // 付与内容。チケット生値はこのページにのみ埋まる(常に最新 1 枚)
+    return htmlResponse(
+      renderApprovalPage({
+        userCode: params.userCode,
+        identityLabel,
+        tokenName: params.tokenName,
+        scopes,
+        expiresInDays: params.expiresInDays,
+        flowId: params.flowId,
+        ticket,
+      }),
+      200,
+    );
+  });
+}
+
 /**
  * callback の CLI フロー分岐(AUTH_SPEC §4-1 (4) — 処理順は仕様で固定)。
  * (i) state 検証 + code 交換 + ユーザー情報取得(OAuth 完走の確定)→
@@ -132,39 +228,17 @@ export function handleCliCallback(
   WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo
 > {
   return Effect.gen(function* () {
-    // (i)-a: state 検証。CLI 分岐は専用クッキー(CLI_STATE_COOKIE)に state と
-    // vsig 済みパラメータ一式を運ぶ(§4-1 (3) の「state に flow 束縛」— GitHub の
-    // state パラメータ自体は乱数のみとし、束縛の実体は同一ブラウザにしか無い
-    // クッキー側に置く。改竄防御はクッキーではなく vsig の再検証が担う)
-    const cookie = request.cookies[CLI_STATE_COOKIE];
-    const bound = cookie === undefined ? null : new URLSearchParams(cookie);
-    const cookieState = bound?.get("state") ?? null;
-    if (cookieState === null || !constantTimeEqual(cookieState, query.state)) {
+    // (i)-a: フロー束縛クッキーの復元(state 照合 + vsig 再検証)
+    const key = yield* flowSigningKey;
+    const binding = yield* restoreFlowBinding(request, query.state, key);
+    if (binding === "state-mismatch") {
       yield* recordLoginFailed("cli_handoff", "state-mismatch");
       return yield* withCliCookieExpired(uniformErrorPage());
     }
-    // vsig の再検証(verify 到達時と同じ無状態検証 — クッキー値は改竄可能な
-    // クライアント保持データであり、署名の通らないパラメータでフロー行を作らない)
-    const key = yield* flowSigningKey;
-    const vsig = bound?.get("vsig") ?? undefined;
-    const params = yield* Effect.promise(() =>
-      verifyCliVerifyQuery(
-        key,
-        {
-          flow: bound?.get("flow") ?? undefined,
-          exp: bound?.get("exp") ?? undefined,
-          code: bound?.get("code") ?? undefined,
-          name: bound?.get("name") ?? undefined,
-          scopes: bound?.get("scopes") ?? undefined,
-          days: bound?.get("days") ?? undefined,
-          vsig,
-        },
-        Date.now(),
-      ),
-    );
-    if (params === null || vsig === undefined) {
+    if (binding === "invalid") {
       return yield* withCliCookieExpired(uniformErrorPage());
     }
+    const { params, vsig } = binding;
     // (i)-b: code 交換 + ユーザー情報取得(§3 の 2 段目)。失敗したら以降の
     // 処理は起きない(フロー行の作成が OAuth 完走の後にのみ起きる — §4-1 (4))
     const origin = requestOrigin(request);
@@ -193,47 +267,9 @@ export function handleCliCallback(
         htmlResponse(renderSignupGuidancePage(origin, verificationUrl), 200),
       );
     }
-    // (iii): フロー行の作成 CAS(create-or-match)。user_id・発行パラメータ・
-    // チケットは作成と同時に確定する(中間状態が存在しない)。scopesJson は
-    // start が自ら JSON.stringify した値で vsig 検証済み — parse 失敗は defect
-    const ticket = randomHex(32);
-    const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
-    const scopes = JSON.parse(params.scopesJson) as readonly TokenScope[];
-    const flows = yield* CliFlowRepo;
-    const admission = yield* flows.createOrMatch(
-      {
-        flowId: params.flowId,
-        userId,
-        tokenName: params.tokenName,
-        scopes,
-        expiresInDays: params.expiresInDays,
-        userCode: params.userCode,
-        ticketHash,
-        expiresAtMs: params.expiresAtMs,
-      },
-      Date.now(),
-    );
-    // rejected(別 user_id・期限切れ・終端状態)と capacity(全体上限)はどちらも
-    // 一様エラーページ(§4-1 (4) (iii) / §4-2 — チケットは回転していない)
-    if (admission === "rejected" || admission === "capacity") {
-      return yield* withCliCookieExpired(uniformErrorPage());
-    }
-    // (iv): 承認ページ(スクリプトなし)。表示は認証済みアイデンティティ +
-    // 付与内容。チケット生値はこのページにのみ埋まる(常に最新 1 枚)
     const identityLabel = identity.providerLogin ?? `GitHub account #${identity.providerUserId}`;
     return yield* withCliCookieExpired(
-      htmlResponse(
-        renderApprovalPage({
-          userCode: params.userCode,
-          identityLabel,
-          tokenName: params.tokenName,
-          scopes,
-          expiresInDays: params.expiresInDays,
-          flowId: params.flowId,
-          ticket,
-        }),
-        200,
-      ),
+      yield* admitAndRenderApproval(params, userId, identityLabel),
     );
   });
 }
@@ -305,13 +341,10 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         const state = `${CLI_STATE_PREFIX}${randomHex(16)}`;
         const bound = verificationQuery(params, query.vsig);
         bound.set("state", state);
-        const origin = requestOrigin(request);
-        const authorize = githubAuthorizeUrl(env.GITHUB_CLIENT_ID, origin, state);
-        const response = HttpServerResponse.redirect(authorize, { status: 302 });
-        return yield* HttpServerResponse.setCookie(response, CLI_STATE_COOKIE, bound.toString(), {
-          ...HOST_COOKIE_OPTIONS,
-          maxAge: "10 minutes",
-        }).pipe(Effect.orDie);
+        return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+          name: CLI_STATE_COOKIE,
+          value: bound.toString(),
+        });
       }),
     )
     .handle("cliApprove", ({ payload }) =>

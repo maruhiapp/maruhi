@@ -100,7 +100,7 @@ export async function createFlowToken(
  * トークンの期限は意味を持たない)。invalid = 一様拒否(CliFlowRejected)、
  * expired = 正当な保持者への型付き終了指示(CliFlowExpired — §4-2)。
  */
-export type FlowTokenVerdict = "valid" | "expired" | "invalid";
+type FlowTokenVerdict = "valid" | "expired" | "invalid";
 
 export async function verifyFlowToken(
   key: CryptoKey,
@@ -170,7 +170,7 @@ export function verificationQuery(params: CliVerifyParams, vsig: string): URLSea
 }
 
 /** ブラウザ脚が受け取る生クエリ(verify のクエリ / callback の cookie 復元)。 */
-export interface RawCliVerifyQuery {
+interface RawCliVerifyQuery {
   readonly flow?: string | undefined;
   readonly exp?: string | undefined;
   readonly code?: string | undefined;

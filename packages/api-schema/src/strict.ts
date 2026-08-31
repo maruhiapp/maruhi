@@ -21,6 +21,8 @@
 
 import type { Schema, SchemaAST } from "effect";
 
+import { forEachEndpoint, requireRegisteredEndpoint } from "./sweep.ts";
+
 /**
  * The structural slice of an `HttpApi` the sweep walks (the concrete
  * `HttpApi<...>` type is invariant in its group union, so the nominal
@@ -217,19 +219,16 @@ function assertEveryPayloadClassified(
   strict: ReadonlySet<string>,
   exempt: ReadonlySet<string>,
 ): void {
-  for (const [groupName, group] of Object.entries(api.groups)) {
-    for (const [endpointName, endpoint] of Object.entries(group.endpoints)) {
-      const key = `${groupName}.${endpointName}`;
-      if (endpoint.payload.size > 0 && !strict.has(key) && !exempt.has(key)) {
-        throw new Error(
-          `security-critical payload sweep: "${key}" carries a payload but is not classified — ` +
-            `add it to SECURITY_CRITICAL_PAYLOAD_ENDPOINTS (AUTH_SPEC §12-10 (1)) or, if it ` +
-            `carries no signed structure, ciphertext or key material, to ` +
-            `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`,
-        );
-      }
+  forEachEndpoint(api, (key, endpoint) => {
+    if (endpoint.payload.size > 0 && !strict.has(key) && !exempt.has(key)) {
+      throw new Error(
+        `security-critical payload sweep: "${key}" carries a payload but is not classified — ` +
+          `add it to SECURITY_CRITICAL_PAYLOAD_ENDPOINTS (AUTH_SPEC §12-10 (1)) or, if it ` +
+          `carries no signed structure, ciphertext or key material, to ` +
+          `STRICT_EXEMPT_PAYLOAD_ENDPOINTS`,
+      );
     }
-  }
+  });
 }
 
 /** リスト 1 件の実在検査: グループ・エンドポイント・payload の存在を要求する。 */
@@ -238,16 +237,12 @@ function requirePayloadEndpoint(
   groupName: string,
   endpointName: string,
 ): SweepableApi["groups"][string]["endpoints"][string] {
-  const group = api.groups[groupName];
-  if (group === undefined) {
-    throw new Error(`security-critical payload sweep: unknown group "${groupName}"`);
-  }
-  const endpoint = group.endpoints[endpointName];
-  if (endpoint === undefined) {
-    throw new Error(
-      `security-critical payload sweep: unknown endpoint "${groupName}.${endpointName}"`,
-    );
-  }
+  const endpoint = requireRegisteredEndpoint(
+    api,
+    "security-critical payload sweep",
+    groupName,
+    endpointName,
+  );
   if (endpoint.payload.size === 0) {
     throw new Error(
       `security-critical payload sweep: "${groupName}.${endpointName}" has no payload schema`,

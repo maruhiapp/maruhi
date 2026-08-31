@@ -8,11 +8,12 @@
 import { AuthFlowError, SetupIncompleteError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import type { Cookies, HttpServerRequest } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/unstable/http";
 
 import { D1AuditRepo } from "./db.package/index.ts";
 
-export const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
-export const OAUTH_SCOPE = "read:user user:email";
+const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+const OAUTH_SCOPE = "read:user user:email";
 
 /** Web ログインの state クッキー(§3-2)。 */
 export const STATE_COOKIE = "__Host-maruhi_oauth_state";
@@ -52,13 +53,34 @@ export function callbackUri(origin: string): string {
 }
 
 /** GitHub authorize URL の組み立て(§3-2。web / CLI ブラウザ脚で共通)。 */
-export function githubAuthorizeUrl(clientId: string, origin: string, state: string): URL {
+function githubAuthorizeUrl(clientId: string, origin: string, state: string): URL {
   const authorize = new URL(GITHUB_AUTHORIZE_URL);
   authorize.searchParams.set("client_id", clientId);
   authorize.searchParams.set("redirect_uri", callbackUri(origin));
   authorize.searchParams.set("scope", OAUTH_SCOPE);
   authorize.searchParams.set("state", state);
   return authorize;
+}
+
+/**
+ * §3-1 の 1 段目の終端(web / CLI ブラウザ脚で共通): GitHub authorize への
+ * 302 に state 運搬クッキーを添える。クッキー名と値だけが二経路で異なる
+ * (web = STATE_COOKIE に state 乱数、CLI = CLI_STATE_COOKIE に state +
+ * vsig 済みパラメータ一式)。
+ */
+export function redirectToGitHubAuthorize(
+  request: HttpServerRequest.HttpServerRequest,
+  clientId: string,
+  state: string,
+  cookie: { readonly name: string; readonly value: string },
+): Effect.Effect<HttpServerResponse.HttpServerResponse> {
+  const origin = requestOrigin(request);
+  const authorize = githubAuthorizeUrl(clientId, origin, state);
+  const response = HttpServerResponse.redirect(authorize, { status: 302 });
+  return HttpServerResponse.setCookie(response, cookie.name, cookie.value, {
+    ...HOST_COOKIE_OPTIONS,
+    maxAge: "10 minutes",
+  }).pipe(Effect.orDie);
 }
 
 /**

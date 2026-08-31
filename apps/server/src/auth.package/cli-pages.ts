@@ -14,7 +14,7 @@
 import type { TokenScope } from "@maruhi/core";
 
 /** HTML テキスト / 属性値のエスケープ(不活性描画の実装点)。 */
-export function escapeHtml(value: string): string {
+function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -90,7 +90,7 @@ export function renderSignupGuidancePage(origin: string, verificationUrl: string
 }
 
 /** 承認ページの入力(§4-1 (4) (iv) — 表示は認証済みアイデンティティと付与内容)。 */
-export interface ApprovalPageInput {
+interface ApprovalPageInput {
   readonly userCode: string;
   /** 認証済みアイデンティティの表示名(GitHub login。取り違えの可視化)。 */
   readonly identityLabel: string;

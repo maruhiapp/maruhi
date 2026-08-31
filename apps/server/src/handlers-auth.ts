@@ -23,9 +23,9 @@ import {
   authFlowFailure,
   callbackUri,
   ensureGitHubOAuthConfigured,
-  githubAuthorizeUrl,
   HOST_COOKIE_OPTIONS,
   recordLoginFailed,
+  redirectToGitHubAuthorize,
   requestOrigin,
   STATE_COOKIE,
 } from "./auth-shared.ts";
@@ -73,13 +73,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const env = yield* WorkerEnv;
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         const state = randomHex(16);
-        const origin = requestOrigin(request);
-        const authorize = githubAuthorizeUrl(env.GITHUB_CLIENT_ID, origin, state);
-        const response = HttpServerResponse.redirect(authorize, { status: 302 });
-        return yield* HttpServerResponse.setCookie(response, STATE_COOKIE, state, {
-          ...HOST_COOKIE_OPTIONS,
-          maxAge: "10 minutes",
-        }).pipe(Effect.orDie);
+        return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+          name: STATE_COOKIE,
+          value: state,
+        });
       }),
     )
     .handle("githubCallback", ({ request, query }) =>

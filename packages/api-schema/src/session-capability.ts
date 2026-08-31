@@ -17,6 +17,7 @@
 // マトリクス(api-schema のエンドポイント列挙から機械導出)が保証する。
 
 import { AuthMiddleware } from "./auth-middleware.ts";
+import { forEachEndpoint, requireRegisteredEndpoint } from "./sweep.ts";
 
 /**
  * Endpoints a session principal may call (AUTH_SPEC §5 の肯定列挙のうち実装済み
@@ -152,18 +153,15 @@ function assertEveryEndpointClassified(
   api: SweepableApi,
   unauthenticated: ReadonlySet<string>,
 ): void {
-  for (const [groupName, group] of Object.entries(api.groups)) {
-    for (const [endpointName, endpoint] of Object.entries(group.endpoints)) {
-      const key = `${groupName}.${endpointName}`;
-      if (!hasAuthMiddleware(endpoint) && !unauthenticated.has(key)) {
-        throw new Error(
-          `session capability sweep: "${key}" carries no AuthMiddleware and is not classified — ` +
-            `declare AuthMiddleware on it or, if it is deliberately unauthenticated, add it to ` +
-            `UNAUTHENTICATED_ENDPOINTS (AUTH_SPEC §5)`,
-        );
-      }
+  forEachEndpoint(api, (key, endpoint) => {
+    if (!hasAuthMiddleware(endpoint) && !unauthenticated.has(key)) {
+      throw new Error(
+        `session capability sweep: "${key}" carries no AuthMiddleware and is not classified — ` +
+          `declare AuthMiddleware on it or, if it is deliberately unauthenticated, add it to ` +
+          `UNAUTHENTICATED_ENDPOINTS (AUTH_SPEC §5)`,
+      );
     }
-  }
+  });
 }
 
 function hasAuthMiddleware(endpoint: { readonly middlewares: ReadonlySet<unknown> }): boolean {
@@ -176,13 +174,5 @@ function requireEndpoint(
   groupName: string,
   endpointName: string,
 ): SweepableApi["groups"][string]["endpoints"][string] {
-  const group = api.groups[groupName];
-  if (group === undefined) {
-    throw new Error(`session capability sweep: unknown group "${groupName}"`);
-  }
-  const endpoint = group.endpoints[endpointName];
-  if (endpoint === undefined) {
-    throw new Error(`session capability sweep: unknown endpoint "${groupName}.${endpointName}"`);
-  }
-  return endpoint;
+  return requireRegisteredEndpoint(api, "session capability sweep", groupName, endpointName);
 }

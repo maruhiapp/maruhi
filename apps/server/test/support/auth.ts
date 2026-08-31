@@ -11,11 +11,11 @@ import { applyD1Migrations, env, SELF } from "cloudflare:test";
 
 export const BASE = "https://example.com";
 export const JSON_HEADERS = { "content-type": "application/json" };
-export const FORM_HEADERS = { "content-type": "application/x-www-form-urlencoded" };
+const FORM_HEADERS = { "content-type": "application/x-www-form-urlencoded" };
 export const CSRF_HEADERS = { "x-maruhi-csrf": "1" };
 export const SESSION_COOKIE = "__Host-maruhi_session";
 export const STATE_COOKIE = "__Host-maruhi_oauth_state";
-export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
+const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
 
 // FK の親子順に削除する(invitations・監査テーブルは FK なし — 末尾でよい)
 const AUTH_TABLES = [
