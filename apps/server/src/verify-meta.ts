@@ -8,7 +8,7 @@ import type {
   MetaStatementTarget,
   MetaVariableSchema,
 } from "@maruhi/crypto";
-import { verifyDistributedMetaStatement } from "@maruhi/crypto";
+import { SUPPORTED_META_LAYOUT_VERSIONS, verifyDistributedMetaStatement } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type {
@@ -129,9 +129,9 @@ export const ensureMetaStatementSignature = (input: {
     // 申告 layoutVersion がこのサーバーのサポート範囲({1, 2})を超える形は、
     // ワイヤに layoutVersion が乗った本改訂以降「古いサーバー × 新しい
     // クライアント」の**正常系**として発生する(裁定 CR — PR #116 レビュー
-    // 対応)。署名検証より前に crypto が型付きで返すため、defect(500 =
-    // 改ざん警告と区別のつかない失敗)へ落とさず、正直な update-required の
-    // 422 として返す
+    // 対応)。一次判定は各受理列の最前段の ensureSupportedLayout が担い、
+    // ここは fail-closed の二重防衛(新しい受理経路が最前段の検査を落としても
+    // defect = 改ざん警告と区別のつかない 500 にはならない)
     if (verified.error.kind === "UnsupportedMetaLayout") {
       return yield* rejectData({ kind: "meta-rejected", reason: "unsupported-layout" });
     }
@@ -155,6 +155,23 @@ export const ensureNfcName = (name: string): Effect.Effect<void, DataRejectedErr
  */
 export const statementLayoutVersion = (statement: MetaStatementInput): number =>
   statement.layoutVersion ?? 1;
+
+/**
+ * 申告 layoutVersion のサポート範囲検査(裁定 CR — §12-2 / CRYPTO_SPEC §4.2)。
+ * **v2 系の他のどの受理検査よりも前**に呼ぶ: サポート外レイアウト(v3〜 —
+ * 「古いサーバー × 新しいクライアント」の正常系)には schemaPolicy ゲート・
+ * schema-locked・削除の直前一致などの判定が原理的に定義できず、それらの
+ * エラーを先に返すと「ポリシーを直せば通る」という誤誘導になる。正直な
+ * update-required = `unsupported-layout` を常に最初に返す。
+ * (署名検証内の同判定 — crypto の UnsupportedMetaLayout — は fail-closed の
+ * 二重防衛として残る)。
+ */
+export const ensureSupportedLayout = (
+  statement: MetaStatementInput,
+): Effect.Effect<void, DataRejectedError> =>
+  SUPPORTED_META_LAYOUT_VERSIONS.includes(statementLayoutVersion(statement))
+    ? Effect.void
+    : Effect.fail(rejectData({ kind: "meta-rejected", reason: "unsupported-layout" }));
 
 /**
  * §12-8: スキーマ description の受理検査 — 1024 コードポイント以下・制御文字
@@ -280,6 +297,8 @@ export const acceptMetaStatement = (input: {
   readonly schemaPolicy?: SchemaPolicy;
 }) =>
   Effect.gen(function* () {
+    // サポート範囲検査は最前段(ensureSupportedLayout の doc — 裁定 CR)
+    yield* ensureSupportedLayout(input.statement);
     yield* ensureMetaQuota(input.latestMetaVersion, input.statement);
     yield* ensureMetaCas(input.latestMetaVersion, input.statement);
     const store = yield* DataStore;

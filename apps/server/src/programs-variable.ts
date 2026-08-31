@@ -37,6 +37,7 @@ import {
   ensureMetaStatementSignature,
   ensureNfcName,
   ensureSchemaPolicyAllowsLayout,
+  ensureSupportedLayout,
   statementLayoutVersion,
 } from "./verify-meta.ts";
 import { ensureValueCas, ensureValueSignature } from "./verify-value.ts";
@@ -119,11 +120,13 @@ function ensureSchemaLockedCreation(
 
 /**
  * 作成(metaVersion 1)のスキーマ系受理検査(§12-11 / §12-8)を受理時点の
- * ポリシーで通す: disabled の有効化ゲート(v2 の新規採用拒否)→ schema-locked
- * の作成時検査 → description の受理ポリシー。
+ * ポリシーで通す: layoutVersion のサポート範囲(最前段 — 裁定 CR)→ disabled の
+ * 有効化ゲート(v2 の新規採用拒否)→ schema-locked の作成時検査 → description の
+ * 受理ポリシー。
  */
 const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
   Effect.gen(function* () {
+    yield* ensureSupportedLayout(statement);
     const store = yield* DataStore;
     const schemaPolicy = yield* store.schemaPolicy;
     yield* ensureSchemaPolicyAllowsLayout({
@@ -503,6 +506,9 @@ export const renameVariableProgram = (
     const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
+    // サポート範囲検査は statement 依存の全検査より前(裁定 CR — サポート外
+    // レイアウトには以降の検査の誤誘導エラーを返さない)
+    yield* ensureSupportedLayout(statement);
     // rename / スキーマ再発行は status 不変(§12-5): declared → active は
     // activation 複合(値同梱)のみ、active → declared は禁止。ワイヤは両
     // status を運べるため、現状態との一致を受理検査で固定する(name の保持
@@ -576,6 +582,8 @@ export const deleteVariableProgram = (
     const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
+    // サポート範囲検査は statement 依存の全検査より前(rename と同じ規律)
+    yield* ensureSupportedLayout(statement);
     // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)
     if (statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });

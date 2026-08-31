@@ -884,32 +884,101 @@ describe("description の受理検査(§12-8)", () => {
   });
 });
 
+/** サポート外レイアウトの宣言作成(署名 API では作れないためゼロ署名)。 */
+function unsupportedLayoutStatement(): Record<string, unknown> {
+  return {
+    suite: "maruhi/v1",
+    environmentId: ENV,
+    variableId: VAR,
+    name: "API_KEY",
+    status: "declared",
+    metaVersion: 1,
+    prevMetaSigHashHex: "",
+    ...v2Fields(),
+    layoutVersion: 3,
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+    signatureHex: "00".repeat(64),
+  };
+}
+
 describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
   it("layoutVersion 3 は 422 unsupported-layout の型付き拒否(署名不正・500 に潰さない)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    // サポート外レイアウトは署名 API では作れない(crypto が拒否する)ため、
-    // 形式のみ有効なゼロ署名で送る — 受理検査は署名検証より前に落とす(裁定 CR)
-    const statement = {
+    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      statement: unsupportedLayoutStatement(),
+      manifest: unsignedManifest(),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "MetaStatementRejected",
+      reason: "unsupported-layout",
+    });
+  });
+
+  it("サポート範囲検査は schemaPolicy より前(disabled / locked でも誤誘導エラーにしない)", async () => {
+    // v3 クライアントへの正直な応答は常に「server update required」であり、
+    // schema-policy-disabled(enabled 化しても直らない)や schema-required
+    // (varType を足しても直らない)を先に返さない(裁定 CR の趣旨)
+    await createEnvironmentOk(fixture, ENV, "App");
+    for (const policy of ["disabled", "locked"] as const) {
+      await setSchemaPolicyOk(policy, OWNER);
+      const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+        statement: unsupportedLayoutStatement(),
+        manifest: unsignedManifest(),
+      });
+      expect(response.status, policy).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        _tag: "MetaStatementRejected",
+        reason: "unsupported-layout",
+      });
+    }
+  });
+
+  it("サポート範囲検査は削除の直前一致・メタ CAS の判定より前(rename / 削除経路)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await setSchemaPolicyOk("enabled", OWNER);
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // v3 の後続ステートメント(rename 形・stale な metaVersion でも
+    // unsupported-layout が CAS 409 より先に確定する)
+    const successor = {
       suite: "maruhi/v1",
       environmentId: ENV,
       variableId: VAR,
-      name: "API_KEY",
-      status: "declared",
-      metaVersion: 1,
-      prevMetaSigHashHex: "",
+      name: "DATABASE_URL",
+      status: "active",
+      metaVersion: 9,
+      prevMetaSigHashHex: "ab".repeat(32),
       ...v2Fields(),
       layoutVersion: 3,
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
       signatureHex: "00".repeat(64),
     };
-    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      statement,
-      manifest: unsignedManifest(),
+    const renamed = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: successor, manifest: unsignedManifest() },
+    );
+    expect(renamed.status).toBe(422);
+    await expect(renamed.json()).resolves.toMatchObject({
+      _tag: "MetaStatementRejected",
+      reason: "unsupported-layout",
     });
-    expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toMatchObject({
+    // v3 の削除(直前一致 payload-mismatch でなく unsupported-layout)
+    const removed = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement: { ...successor, status: "deleted", metaVersion: 2 },
+        manifest: unsignedManifest(),
+      },
+    );
+    expect(removed.status).toBe(422);
+    await expect(removed.json()).resolves.toMatchObject({
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });
