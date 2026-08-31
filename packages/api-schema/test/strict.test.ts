@@ -108,6 +108,8 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["environments", "remove"],
       ["variables", "create"],
       ["variables", "push"],
+      // activation 複合(§12-5 — 2026-08-30 S2)
+      ["variables", "activate"],
       ["variables", "rename"],
       ["variables", "remove"],
       ["deks", "register"],
@@ -127,6 +129,8 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["authCli", "cliApprove"],
       ["deks", "remove"],
       ["rotation", "dismiss"],
+      // schemaPolicy の PUT(§12-11 — 署名済み構造を運ばない 3 値の Literal)
+      ["schemaPolicy", "set"],
     ]);
   });
 
