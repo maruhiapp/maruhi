@@ -89,9 +89,16 @@ PR #115 のレビュー 8 往復(§5 の追補記録)を終えた後、所有者
   CAS 可能な状態が必要)/ KV・DO への保管変更(CAS が弱くなる・複雑化のみ)/ userCode の
   廃止・自動承認(フィッシングへの最後の防衛線)/ 発行パラメータの承認ページ側での選択
   (CLI フラグの意味が消える)
-- **仕様上の細部(実装者向け)**: 発行パラメータ(tokenName / scopes / expiresInDays)は
-  vsig で覆った verificationUrl が運ぶ(承認ページの表示と行作成に必要。flowToken は
-  ブラウザチャネル不可のまま)。consumed / denied 行は flowToken 期限 + 余裕まで保持
+- **仕様上の細部(実装者向け)**: flowToken の MAC は **flowId を署名対象に含める**
+  (旧 §4-2 の「(flowId, flowToken) の組一致」検査の削除ではなく**移設** — start は
+  未認証・無償で誰でも正当な flowToken を持てるため、束縛が無いと「他人の flowId +
+  自前の flowToken」の組み替えで他人の PAT を取れてしまう。PR #115 第 9 ラウンド
+  〔pullfrog / Bugbot / Security agent が同一指摘〕で確定)。発行パラメータ
+  (tokenName / scopes / expiresInDays)は vsig で覆った verificationUrl が運ぶ
+  (承認ページの表示と行作成に必要。flowToken はブラウザチャネル不可のまま)。
+  サインアップ案内ページの再開導線は **verificationUrl**(callback 応答自身は単回で
+  再読込不可 — 同ラウンド Bugbot 指摘)。フロー署名鍵の初回生成は冪等(先勝ち +
+  読み戻し — 同ラウンド nitpick)。consumed / denied 行は flowToken 期限 + 余裕まで保持
   (先に消すと poll が「行なし = pending」と誤読して無限待ち)。行の総量規律(日和見削除 +
   上限、起草値 1,000・超過は一様エラー + H3 アラート)は作成点(callback)へ移動 — 埋める
   コストが「既存アカウント × OAuth 完走」なので退避は不要になり単純拒否で足りる
