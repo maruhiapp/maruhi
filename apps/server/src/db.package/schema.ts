@@ -119,6 +119,59 @@ export const apiTokens = sqliteTable(
   ],
 );
 
+/**
+ * フロー署名鍵(AUTH_SPEC §4-2)。CLI ログインの flowToken / vsig を検証する
+ * HMAC-SHA-256 鍵で、初回使用時に自動生成して保存する(冪等 — insert の先勝ち +
+ * 読み戻し)。auth 層の資格情報保護であり CRYPTO_SPEC の対象外(E2EE 特性に
+ * 一切依拠されない)。行は固定 id の高々 1 行。
+ */
+export const flowSigningKeys = sqliteTable("flow_signing_keys", {
+  /** 固定識別子(現状 'v1' の 1 行のみ) */
+  id: text("id").primaryKey(),
+  /** HMAC-SHA-256 鍵(256-bit、hex 小文字 64 文字) */
+  keyHex: text("key_hex").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
+ * CLI ログインのフロー行(AUTH_SPEC §4-1 (4) (iii))。start は無記録(裁定 DH)
+ * で、行は callback の create-or-match CAS で**初めて**生まれる — 生まれた時点で
+ * 認証済み user_id・発行パラメータ(vsig 済み URL 由来)・期限・承認チケットが
+ * 確定している(中間状態が存在しない)。
+ *
+ * - status: 'awaiting' | 'approved' | 'denied' | 'consumed'。承認 / 拒否は
+ *   awaiting からの CAS、PAT 発行は approved → consumed の CAS 勝者のみ(§4-1 (5))
+ * - ticket_hash: 承認チケット(256-bit 乱数)の SHA-256(hex)。生値はページに
+ *   のみ埋め、常に最新 1 枚(同一 user_id の再到達で置換)
+ * - consumed / denied の行も期限 + 余裕までは削除しない(先に消すと poll が
+ *   「行なし = pending」と誤読する — §4-1 (5))。掃除は期限経過後の日和見削除のみ
+ */
+export const cliLoginFlows = sqliteTable(
+  "cli_login_flows",
+  {
+    /** 公開相関子 flowId(128-bit 乱数 hex 小文字 32 文字) */
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    status: text("status").notNull(),
+    /** 発行パラメータ(start で既定値を解決済み — vsig が覆う確定値) */
+    tokenName: text("token_name").notNull(),
+    /** TokenScope の JSON 配列(api_tokens.scopes と同じ表現) */
+    scopes: text("scopes").notNull(),
+    expiresInDays: integer("expires_in_days").notNull(),
+    /** 照合用の短い表示コード(秘密ではない — §4-1 (2)) */
+    userCode: text("user_code").notNull(),
+    /** 承認チケット(生値 256-bit 乱数)の SHA-256(hex)。 */
+    ticketHash: text("ticket_hash").notNull(),
+    /** フローの期限(unix ms — flowToken / vsig の署名済み期限と同値) */
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  // 日和見削除(期限 + 余裕を過ぎた行の掃除)用
+  (t) => [index("clf_expires").on(t.expiresAt)],
+);
+
 export const recoveryWraps = sqliteTable("recovery_wraps", {
   /** user 単位で高々 1 つ(AUTH_SPEC §13-1) */
   userId: text("user_id")
