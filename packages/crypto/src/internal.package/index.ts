@@ -41,7 +41,12 @@ export {
   type UnsignedChainEntry,
 } from "./chain-types.ts";
 export { verifyChain, verifyChainWithHistory } from "./chain-verify.ts";
-export { computeEnvValuesDigest, type EnvValuesDigestEntry } from "./values-digest.ts";
+export {
+  computeEnvValuesDigest,
+  type EnvValuesDigestEntry,
+  type EnvValuesDigestSource,
+  selectEnvValuesDigestEntries,
+} from "./values-digest.ts";
 export { type AuditHeadRow, computeAuditHeadHash, computeAuditRowDigest } from "./audit-head.ts";
 export {
   buildDekCommitmentBytes,
@@ -129,10 +134,14 @@ export {
 export {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,
+  metaLayoutVersionOf,
   type MetaStatementContext,
   type MetaStatementStatus,
   type MetaStatementTarget,
+  type MetaVariableSchema,
+  type MetaVarType,
   signMetaStatement,
+  SUPPORTED_META_LAYOUT_VERSIONS,
   verifyMetaStatementSignature,
 } from "./meta-sign.ts";
 export {

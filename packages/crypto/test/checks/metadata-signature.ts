@@ -10,7 +10,12 @@
 // - rename_fork(同一 metaVersion の分岐)と name_swap(名前入替は署名失敗)
 // - revive-after-delete(deleted な predecessor の後続は全拒否)
 
-import type { ChainHistoryIndex, MetaStatementContext } from "../../src/index.ts";
+import type {
+  ChainHistoryIndex,
+  CryptoResult,
+  MetaStatementContext,
+  MetaVariableSchema,
+} from "../../src/index.ts";
 import {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,
@@ -35,6 +40,10 @@ interface VectorContext {
   readonly variable_id?: string;
   readonly name: string;
   readonly status: string;
+  readonly layout_version?: number;
+  readonly var_type?: string;
+  readonly required?: string;
+  readonly description?: string;
   readonly meta_version: number;
   readonly prev_meta_sig_hash_hex: string;
   readonly author_user_id: string;
@@ -63,10 +72,12 @@ interface MetaNegative {
   readonly signature_hex: string;
   readonly verify_key_hex: string;
   readonly expected_reason?: string;
+  readonly expected_error?: string;
   readonly predecessor?: {
     readonly base: string;
     readonly signed_bytes_sha256_hex: string;
     readonly status: string;
+    readonly layout_version?: number;
   };
   readonly must_fail: boolean;
 }
@@ -82,6 +93,17 @@ function contextOf(v: VectorContext): MetaStatementContext {
         : { kind: "environment" },
     name: v.name,
     status: v.status as MetaStatementContext["status"],
+    layoutVersion: v.layout_version,
+    // レイアウト v2 のスキーマ欄(var_type / required / description)は 3 欄
+    // 同時に存在する(§4.2 — required がベクター側の存在判定の代表)
+    schema:
+      v.required === undefined
+        ? undefined
+        : {
+            varType: (v.var_type ?? "") as MetaVariableSchema["varType"],
+            required: v.required as MetaVariableSchema["required"],
+            description: v.description ?? "",
+          },
     metaVersion: v.meta_version,
     prevMetaSigHashHex: v.prev_meta_sig_hash_hex,
     authorUserId: v.author_user_id,
@@ -103,6 +125,7 @@ function predecessorOf(vector: MetaVector) {
     : {
         signedBytesHashHex: base.signed_bytes_sha256_hex,
         status: base.context.status as MetaStatementContext["status"],
+        layoutVersion: base.context.layout_version,
       };
 }
 
@@ -171,12 +194,30 @@ async function vectorChecks(c: Checks, history: ChainHistoryIndex): Promise<void
       distributed.ok ? undefined : JSON.stringify(distributed.error),
     );
   }
-  // 削除は直前 active 名を保持する(§4.2)ことのデータ再確認
+  deleteRetentionChecks(c);
+}
+
+/** 削除ステートメントの保持規約(§4.2)のデータ再確認。 */
+function deleteRetentionChecks(c: Checks): void {
+  // 削除は直前 active 名を保持する
   const del = byName.get("var-delete");
   const rename = byName.get("var-rename");
   c.push(
     "meta-sig var-delete: keeps last active name",
     del?.context.status === "deleted" && del.context.name === rename?.context.name,
+  );
+  // v2 の削除は name と同じ規約でスキーマ欄とレイアウトを直前ステートメントから
+  // 完全保持する(§4.2 レイアウト v2)
+  const v2Delete = byName.get("var-v2-delete-keeps-schema");
+  const v2Create = byName.get("var-v2-create-typed");
+  c.push(
+    "meta-sig var-v2-delete-keeps-schema: keeps schema and layout from predecessor",
+    v2Delete?.context.status === "deleted" &&
+      v2Delete.context.layout_version === 2 &&
+      v2Delete.context.name === v2Create?.context.name &&
+      v2Delete.context.var_type === v2Create.context.var_type &&
+      v2Delete.context.required === v2Create.context.required &&
+      v2Delete.context.description === v2Create.context.description,
   );
 }
 
@@ -251,6 +292,7 @@ async function ruleNegativeCheck(
         : {
             signedBytesHashHex: negative.predecessor.signed_bytes_sha256_hex,
             status: negative.predecessor.status as MetaStatementContext["status"],
+            layoutVersion: negative.predecessor.layout_version,
           },
   });
   c.push(
@@ -285,6 +327,38 @@ async function tamperNegativeCheck(c: Checks, negative: MetaNegative): Promise<v
   );
 }
 
+/**
+ * 構造違反系 negative(kind = invalid-input): 署名は当該バイト列に対して有効
+ * (参照実装が確認済み)だが、ワイヤ形の構造違反(v1 の declared・v2 の空
+ * required)として署名検証に到達する前に InvalidInput で拒否する(§4.2 /
+ * 裁定 CS — 拒否は暗号検証によるものではない)。
+ */
+async function invalidInputNegativeCheck(c: Checks, negative: MetaNegative): Promise<void> {
+  const context = contextOf(negative.context);
+  // エンコーダ自体は全域関数なのでベクターの signed_bytes を再現できることも固定
+  const bytesMatch = toHex(buildMetaSignedBytes(context)) === negative.signed_bytes_hex;
+  const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
+  if (!key.ok) {
+    c.push(`meta-sig invalid-input negative: ${negative.name}`, false, "key import failed");
+    return;
+  }
+  const verified = await verifyMetaStatementSignature({
+    context,
+    signatureHex: negative.signature_hex,
+    authorPublicKey: key.value,
+  });
+  const hash = await computeMetaSignedBytesHash(context);
+  c.push(
+    `meta-sig invalid-input negative: ${negative.name}`,
+    bytesMatch &&
+      !verified.ok &&
+      verified.error.kind === negative.expected_error &&
+      !hash.ok &&
+      hash.error.kind === negative.expected_error,
+    verified.ok ? "verified unexpectedly" : JSON.stringify(verified.error),
+  );
+}
+
 async function negativeChecks(
   c: Checks,
   history: ChainHistoryIndex,
@@ -295,14 +369,18 @@ async function negativeChecks(
     seenKinds.add(negative.kind ?? "signature");
     if (negative.kind === "authorization") {
       await ruleNegativeCheck(c, negative, history, extended);
+    } else if (negative.kind === "invalid-input") {
+      await invalidInputNegativeCheck(c, negative);
     } else {
       await tamperNegativeCheck(c, negative);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる — session-13 の教訓)
+  // kind 語彙の固定(第三の値が導入されると各ふるいから漏れる — session-13 の教訓)
   c.push(
     "meta-sig negative: kind vocabulary is exhaustive",
-    [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
+    [...seenKinds].every(
+      (kind) => kind === "signature" || kind === "authorization" || kind === "invalid-input",
+    ),
   );
 }
 
@@ -374,6 +452,134 @@ async function invalidInputChecks(c: Checks): Promise<void> {
   c.push(
     "meta-sig invalid input: short signature",
     !shortSignature.ok && shortSignature.error.kind === "InvalidInput",
+  );
+}
+
+/**
+ * レイアウト依存の構造違反(§4.2 — JSON ベクターで表現しない分担): v1 に
+ * スキーマ欄、v2 のスキーマ欄欠落、var_type の閉集合違反、環境メタへの v2。
+ */
+async function layoutInvalidInputChecks(c: Checks): Promise<void> {
+  const base = positives[0];
+  const v2Base = byName.get("var-v2-create-typed");
+  if (base === undefined || v2Base === undefined) {
+    c.push("meta-sig invalid input: v2 base vector", false);
+    return;
+  }
+  const pair = await generateSigningKeyPair();
+  const baseContext = contextOf(base.context);
+  const v2Context = contextOf(v2Base.context);
+  const layoutBadContexts: readonly { name: string; context: MetaStatementContext }[] = [
+    { name: "schema on layout 1", context: { ...baseContext, schema: v2Context.schema } },
+    { name: "missing schema on layout 2", context: { ...v2Context, schema: undefined } },
+    {
+      name: "unknown var type",
+      context: {
+        ...v2Context,
+        schema: {
+          varType: "secret" as MetaVariableSchema["varType"],
+          required: "true",
+          description: "Rule fixture",
+        },
+      },
+    },
+    {
+      name: "environment target on layout 2",
+      context: { ...v2Context, target: { kind: "environment" } },
+    },
+  ];
+  for (const bad of layoutBadContexts) {
+    const signed = await signMetaStatement({ context: bad.context, signingKey: pair.privateKey });
+    const verified = await verifyMetaStatementSignature({
+      context: bad.context,
+      signatureHex: v2Base.signature_hex,
+      authorPublicKey: pair.publicKey,
+    });
+    c.push(
+      `meta-sig invalid input: ${bad.name}`,
+      !signed.ok &&
+        signed.error.kind === "InvalidInput" &&
+        !verified.ok &&
+        verified.error.kind === "InvalidInput",
+    );
+  }
+}
+
+function isUnsupportedLayout(result: CryptoResult<unknown>, layoutVersion: number): boolean {
+  return (
+    !result.ok &&
+    result.error.kind === "UnsupportedMetaLayout" &&
+    result.error.layoutVersion === layoutVersion
+  );
+}
+
+/**
+ * レイアウト選択(§4.2 / 裁定 CR — 拒否ケースに参照期待値が存在しないため
+ * 規約 21 の分担どおりハーネス側で固定): サポート外の layoutVersion は
+ * **署名検証より前に** UnsupportedMetaLayout で拒否する(署名不正・
+ * InvalidInput に潰さない誠実な破壊様式)。明示 layoutVersion 1 は省略と同値。
+ */
+async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+  const base = byName.get("var-v2-create-typed");
+  if (base === undefined) {
+    c.push("meta-sig layout selection: base vector", false);
+    return;
+  }
+  const future: MetaStatementContext = { ...contextOf(base.context), layoutVersion: 3 };
+  const pair = await generateSigningKeyPair();
+  const signed = await signMetaStatement({ context: future, signingKey: pair.privateKey });
+  const verified = await verifyMetaStatementSignature({
+    context: future,
+    signatureHex: base.signature_hex,
+    authorPublicKey: pair.publicKey,
+  });
+  const hash = await computeMetaSignedBytesHash(future);
+  // 署名鍵の解決(author-unknown)にすら到達しない = 署名検証より前の拒否を、
+  // 履歴に存在しない FP を渡して固定する
+  const distributed = await verifyDistributedMetaStatement({
+    history,
+    context: future,
+    authorKeyFingerprintHex: "00".repeat(16),
+    signatureHex: base.signature_hex,
+  });
+  c.push(
+    "meta-sig layout selection: sign rejects unsupported layout",
+    isUnsupportedLayout(signed, 3),
+  );
+  c.push(
+    "meta-sig layout selection: verify rejects unsupported layout",
+    isUnsupportedLayout(verified, 3),
+  );
+  c.push(
+    "meta-sig layout selection: hash rejects unsupported layout",
+    isUnsupportedLayout(hash, 3),
+  );
+  c.push(
+    "meta-sig layout selection: distributed verify rejects before key resolution",
+    isUnsupportedLayout(distributed, 3),
+  );
+  // layoutVersion の構造違反(0 / 非整数)は InvalidInput(バージョン交渉でなく
+  // ワイヤ形の壊れ)
+  for (const bad of [0, 1.5]) {
+    const result = await computeMetaSignedBytesHash({
+      ...contextOf(base.context),
+      layoutVersion: bad,
+    });
+    c.push(
+      `meta-sig layout selection: layoutVersion ${bad} is invalid input`,
+      !result.ok && result.error.kind === "InvalidInput",
+    );
+  }
+  // 明示 layoutVersion 1 は省略と同値(§4.2 — 省略 = 1)
+  const v1 = byName.get("var-create");
+  if (v1 === undefined) {
+    c.push("meta-sig layout selection: v1 base vector", false);
+    return;
+  }
+  const explicit = buildMetaSignedBytes({ ...contextOf(v1.context), layoutVersion: 1 });
+  c.push(
+    "meta-sig layout selection: explicit layoutVersion 1 equals omitted",
+    toHex(explicit) === v1.signed_bytes_hex,
   );
 }
 
@@ -469,6 +675,8 @@ export async function metadataSignatureChecks(): Promise<CheckResult[]> {
   await nameSwapChecks(c, history);
   await negativeChecks(c, history, extended);
   await invalidInputChecks(c);
+  await layoutInvalidInputChecks(c);
+  await layoutSelectionChecks(c, history);
   await deletedPredecessorChecks(c, history);
   await roundtripChecks(c);
   return c.results;

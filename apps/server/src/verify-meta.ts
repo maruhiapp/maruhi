@@ -36,6 +36,11 @@ const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejec
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
   "revived-after-delete": "chain-head-state-mismatch",
+  // §4.2 レイアウト v2 の遷移・単調性理由(S1 — crypto 層の語彙追加に伴う網羅
+  // 維持のみ)。ワイヤ v2(layoutVersion / スキーマ欄の Schema)は S2 で導入する
+  // ため、現行サーバーの受理面では v2 の predecessor が存在せず到達しない
+  "declared-after-active": "chain-head-state-mismatch",
+  "layout-regression": "chain-head-state-mismatch",
 };
 
 /**

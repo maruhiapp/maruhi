@@ -89,7 +89,14 @@ export type ValueInvalidReason =
  *   形の違反(predecessor を保持しない latest-only でも必ず検査する)
  * - `prev-hash-mismatch` — predecessor を渡された場合のみの連鎖検査(§6.3-6)
  * - `revived-after-delete` — deleted な predecessor の後続ステートメント
- *   (§4.2 の「削除後の再 active 化は禁止」— tombstone は終端)
+ *   (§4.2 の「削除後の再 active 化は禁止」— tombstone は終端。declared への
+ *   遷移にも適用する — ベクター declared-after-delete)
+ * - `declared-after-active` — active な predecessor の後続を declared にする
+ *   ステートメント(§4.2 レイアウト v2 — 値の存在の巻き戻し表現を作らない。
+ *   値を取り除く唯一の経路は削除)
+ * - `layout-regression` — layoutVersion 2 の predecessor への v1 後続
+ *   ステートメント(§4.2 の変数単位のレイアウト単調性 — 後退を許すと rename
+ *   1 回でスキーマ欄が黙って消え、presence 保証 §14.2-8 が崩れる)
  *
  * エポック整合(値の environment-not-created / epoch-not-current)に相当する
  * 理由は**存在しない**: メタはエポックアンカーを持たず(§4.2)、前進
@@ -105,7 +112,9 @@ export type MetaInvalidReason =
   | "author-role-insufficient-at-head"
   | "prev-shape-mismatch"
   | "prev-hash-mismatch"
-  | "revived-after-delete";
+  | "revived-after-delete"
+  | "declared-after-active"
+  | "layout-regression";
 
 /**
  * Reason codes for rejecting a distributed environment manifest (CRYPTO_SPEC
@@ -237,6 +246,14 @@ export type CryptoError =
    * or the predecessor chaining was rejected for `reason`.
    */
   | { readonly kind: "MetaStatementInvalid"; readonly reason: MetaInvalidReason }
+  /**
+   * A metadata statement declares a wire `layoutVersion` beyond what this
+   * build supports (CRYPTO_SPEC §4.2 layout selection — 裁定 CR): the client
+   * must be updated. Checked **before** signature verification so an outdated
+   * verifier fails with an honest "update required" error instead of a
+   * signature failure that is indistinguishable from tampering.
+   */
+  | { readonly kind: "UnsupportedMetaLayout"; readonly layoutVersion: number }
   /**
    * An environment manifest failed verification (CRYPTO_SPEC §4.3 / §6.3):
    * the issuer signature, the declared chain head, the head-time

@@ -36,7 +36,10 @@ const SHA256_HEX_LENGTH = 32 * 2;
 
 /**
  * One entry of the variables digest (CRYPTO_SPEC §4.3): the latest form of
- * one variable's metadata statement — tombstones (`deleted`) included.
+ * one variable's metadata statement — tombstones (`deleted`) and layout v2
+ * `declared` statements (§4.2 — 値未設定の宣言) included. The digest encoder
+ * is unchanged by layout v2: `declared` only appears as a new string value of
+ * the `status` field (§4.3 スキーマ欄の被覆 — マニフェスト層は不変).
  */
 export interface VariablesDigestEntry {
   readonly variableId: string;
@@ -50,7 +53,7 @@ function digestEntryInvalidField(entry: VariablesDigestEntry): string | null {
   if (entry.variableId.length === 0) {
     return "entry variableId";
   }
-  if (entry.status !== "active" && entry.status !== "deleted") {
+  if (entry.status !== "active" && entry.status !== "deleted" && entry.status !== "declared") {
     return "entry status";
   }
   if (!Number.isSafeInteger(entry.metaVersion) || entry.metaVersion < 1) {

@@ -5,6 +5,7 @@ import { auditHeadChecks } from "./checks/audit-head.ts";
 import { chainHistoryChecks } from "./checks/chain-history.ts";
 import { chainNegativeChecks } from "./checks/chain-negative.ts";
 import { chainChecks } from "./checks/chain.ts";
+import { checkpointDigestChecks } from "./checks/checkpoint-digest.ts";
 import { checkpointChecks } from "./checks/checkpoint.ts";
 import { dekCommitmentChecks } from "./checks/dek-commitment.ts";
 import { dekWrapSignatureChecks } from "./checks/dek-wrap-signature.ts";
@@ -41,6 +42,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await chainNegativeChecks());
   groups.push(await chainHistoryChecks());
   groups.push(await checkpointChecks());
+  groups.push(await checkpointDigestChecks());
   groups.push(await valueSignatureChecks());
   groups.push(await metadataSignatureChecks());
   groups.push(await envManifestChecks());

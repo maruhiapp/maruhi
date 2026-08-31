@@ -91,6 +91,19 @@ export class CryptoMetaStatementInvalidError extends Data.TaggedError(
 }> {}
 
 /**
+ * A metadata statement declares a wire `layoutVersion` beyond what this
+ * build supports (CRYPTO_SPEC §4.2 layout selection): the client must be
+ * updated. Distinct from `CryptoMetaStatementInvalid` so callers can show an
+ * honest "update required" instead of a tampering warning.
+ */
+// fallow-ignore-next-line unused-export -- S2(ワイヤ v2)/ S3(CLI 表示)が消費する。WrappedCryptoError の一員として先行導入
+export class CryptoUnsupportedMetaLayoutError extends Data.TaggedError(
+  "CryptoUnsupportedMetaLayout",
+)<{
+  readonly layoutVersion: number;
+}> {}
+
+/**
  * An environment manifest failed the §4.3 / §6.3 verification (issuer
  * signature, declared chain head, head-time authorization / epoch integrity,
  * env-meta / variables-digest recomputation, or predecessor chaining) for
@@ -131,6 +144,7 @@ export type WrappedCryptoError =
   | CryptoDekCommitmentError
   | CryptoValueInvalidError
   | CryptoMetaStatementInvalidError
+  | CryptoUnsupportedMetaLayoutError
   | CryptoEnvManifestInvalidError
   | CryptoHeadAttestationInvalidError
   | ChainInvalidError;
@@ -164,6 +178,8 @@ export function toWrappedCryptoError(error: CryptoError): WrappedCryptoError {
       return new CryptoValueInvalidError({ reason: error.reason });
     case "MetaStatementInvalid":
       return new CryptoMetaStatementInvalidError({ reason: error.reason });
+    case "UnsupportedMetaLayout":
+      return new CryptoUnsupportedMetaLayoutError({ layoutVersion: error.layoutVersion });
     case "EnvManifestInvalid":
       return new CryptoEnvManifestInvalidError({ reason: error.reason });
     case "HeadAttestationInvalid":
