@@ -144,6 +144,11 @@ const VAR_V2_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const sameOrder = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// メタステートメントのドメイン文字列(§4.2): suite・var / env の別・レイアウト版を束縛
+const expectedMetaDomain = (ctx) =>
+  (ctx.layout_version ?? 1) === 2
+    ? `${ctx.suite}/var-meta-sig-v2`
+    : `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
 
 // --- encoding.json -----------------------------------------------------------
 {
@@ -863,10 +868,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     return ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER;
   };
   const signedBytes = (ctx) => lpEncode(orderOf(ctx).map((key) => ctx[key]));
-  const expectedDomain = (ctx) =>
-    (ctx.layout_version ?? 1) === 2
-      ? `${ctx.suite}/var-meta-sig-v2`
-      : `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
   const byName = new Map(doc.vectors.map((v) => [v.name, v]));
 
   const verifyStatement = async (v, label) => {
@@ -879,7 +880,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(
       `meta-sig ${label}: domain embeds suite and layout/kind`,
-      ctx.domain === expectedDomain(ctx),
+      ctx.domain === expectedMetaDomain(ctx),
     );
     check(`meta-sig ${label}: project id is genesis hash`, ctx.project_id === projectId);
     check(`meta-sig ${label}: name is NFC-normal`, ctx.name.normalize("NFC") === ctx.name);
