@@ -543,8 +543,8 @@ function namesMatch(
   actual: readonly string[],
   expected: readonly string[],
 ): void {
-  const a = [...actual].sort();
-  const e = [...expected].sort();
+  const a = actual.toSorted();
+  const e = expected.toSorted();
   const ok = a.length === e.length && a.every((name, i) => name === e[i]);
   if (ok) {
     c.push(`vector inventory: ${label}`, true);
