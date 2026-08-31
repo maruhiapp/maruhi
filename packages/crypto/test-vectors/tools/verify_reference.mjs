@@ -126,6 +126,23 @@ const VAR_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const ENV_SIGNED_FIELDS_ORDER = VAR_SIGNED_FIELDS_ORDER.filter((f) => f !== "variable_id");
+// レイアウト v2(CRYPTO_SPEC §4.2 の 0.8-draft — スキーマ欄を status の直後に挟む)
+const VAR_V2_SIGNED_FIELDS_ORDER = [
+  "domain",
+  "project_id",
+  "environment_id",
+  "variable_id",
+  "name",
+  "status",
+  "var_type",
+  "required",
+  "description",
+  "meta_version",
+  "prev_meta_sig_hash_hex",
+  "author_user_id",
+  "chain_head_hash_hex",
+  "chain_head_seq",
+];
 const sameOrder = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // --- encoding.json -----------------------------------------------------------
@@ -834,12 +851,22 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     "meta-sig: env_signed_fields_order matches spec",
     sameOrder(doc.env_signed_fields_order, ENV_SIGNED_FIELDS_ORDER),
   );
-  const signedBytes = (ctx) =>
-    lpEncode(
-      (ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER).map(
-        (key) => ctx[key],
-      ),
-    );
+  check(
+    "meta-sig: var_v2_signed_fields_order matches spec",
+    sameOrder(doc.var_v2_signed_fields_order, VAR_V2_SIGNED_FIELDS_ORDER),
+  );
+  // レイアウトの選択は context の layout_version(省略 = 1)が担う(§4.2 裁定 CR)
+  const orderOf = (ctx) => {
+    if ((ctx.layout_version ?? 1) === 2) {
+      return VAR_V2_SIGNED_FIELDS_ORDER;
+    }
+    return ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER;
+  };
+  const signedBytes = (ctx) => lpEncode(orderOf(ctx).map((key) => ctx[key]));
+  const expectedDomain = (ctx) =>
+    (ctx.layout_version ?? 1) === 2
+      ? `${ctx.suite}/var-meta-sig-v2`
+      : `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
   const byName = new Map(doc.vectors.map((v) => [v.name, v]));
 
   const verifyStatement = async (v, label) => {
@@ -851,8 +878,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       (await sha256hex(bytes)) === v.signed_bytes_sha256_hex,
     );
     check(
-      `meta-sig ${label}: domain embeds suite and kind`,
-      ctx.domain === `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`,
+      `meta-sig ${label}: domain embeds suite and layout/kind`,
+      ctx.domain === expectedDomain(ctx),
     );
     check(`meta-sig ${label}: project id is genesis hash`, ctx.project_id === projectId);
     check(`meta-sig ${label}: name is NFC-normal`, ctx.name.normalize("NFC") === ctx.name);
@@ -978,9 +1005,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 
   for (const n of doc.negative) {
-    if (n.kind === "authorization") {
-      // 検証規則系は「暗号学的には有効(署名が正しい)」ことを確認する。
-      // expected_reason での拒否は実装テスト(§6.3 の履歴検証)が担う
+    if (n.kind === "authorization" || n.kind === "invalid-input") {
+      // 検証規則系・構造違反系は「暗号学的には有効(署名が正しい)」ことを確認する。
+      // expected_reason / expected_error での拒否は実装テスト(§6.3 の履歴検証・
+      // InvalidInput の fail-closed)が担う — 拒否が暗号検証によるものでないことの保証
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1003,6 +1031,28 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       reconstructed,
     );
     check(`meta-sig negative: ${n.name}`, bytesMatch && verified === false);
+  }
+  // レイアウト v2(§4.2 の 0.8-draft): declared 作成 → activation の prev 連鎖と、
+  // v2 削除のスキーマ欄・name の完全保持(削除ステートメントのみ完全保持を要求)
+  {
+    const declared = byName.get("var-v2-declared-create");
+    const activation = byName.get("var-v2-activation");
+    const created = byName.get("var-v2-create-typed");
+    const deleted = byName.get("var-v2-delete-keeps-schema");
+    check(
+      "meta-sig v2: activation links declared -> active",
+      declared.context.status === "declared" &&
+        activation.context.status === "active" &&
+        activation.context.prev_meta_sig_hash_hex === declared.signed_bytes_sha256_hex,
+    );
+    check(
+      "meta-sig v2: delete keeps schema fields and name",
+      deleted.context.status === "deleted" &&
+        deleted.context.name === created.context.name &&
+        deleted.context.var_type === created.context.var_type &&
+        deleted.context.required === created.context.required &&
+        deleted.context.description === created.context.description,
+    );
   }
   // nfc-variant: NFC 正規形で署名された name の NFD 変種は byte 列が異なることの固定
   {
@@ -1484,6 +1534,60 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       failed = true;
     }
     check(`lease-wrap negative: ${n.name}`, failed === n.must_fail);
+  }
+}
+
+// --- checkpoint-digest.json ------------------------------------------------------
+// §6.2 values_digest の対象選別(0.8-draft — declared の除外)。エンコーダの正規形は
+// chain-entries.json の values_digests が固定済み(envValuesDigestInput を共用)
+{
+  const doc = read("checkpoint-digest.json");
+  const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
+  for (const digestCase of doc.cases) {
+    // 選別の宣言整合: values_digest_entries = variables の active のみ(値座標込み)
+    const actives = digestCase.variables.filter((v) => v.status === "active");
+    const nonActives = digestCase.variables.filter((v) => v.status !== "active");
+    check(
+      `checkpoint-digest ${digestCase.name}: entries are exactly the active variables`,
+      actives.length === digestCase.values_digest_entries.length &&
+        actives.every((v, i) => {
+          const entry = digestCase.values_digest_entries[i];
+          return (
+            entry.variable_id === v.variable_id &&
+            entry.version === v.version &&
+            entry.value_sig_hash_hex === v.value_sig_hash_hex
+          );
+        }),
+    );
+    // declared / deleted は値座標(version / value_sig_hash_hex)を持たない(§6.3)
+    check(
+      `checkpoint-digest ${digestCase.name}: non-active variables carry no value coordinates`,
+      nonActives.every(
+        (v) =>
+          (v.status === "declared" || v.status === "deleted") &&
+          v.version === undefined &&
+          v.value_sig_hash_hex === undefined,
+      ),
+    );
+    const input = envValuesDigestInput(digestCase.values_digest_entries);
+    check(
+      `checkpoint-digest ${digestCase.name}: digest input`,
+      toHex(input) === digestCase.digest_input_hex,
+    );
+    check(
+      `checkpoint-digest ${digestCase.name}: values digest`,
+      (await sha256(input)) === digestCase.values_digest_hex,
+    );
+  }
+  // 「declared のみ = 空集合ダイジェスト」は chain-entries.json の empty-set と同値
+  {
+    const chain = read("chain-entries.json");
+    const emptySet = (chain.values_digests ?? []).find((c) => c.name === "empty-set");
+    const allDeclared = doc.cases.find((c) => c.name === "all-declared-empty");
+    check(
+      "checkpoint-digest all-declared-empty: equals the empty-set digest",
+      emptySet !== undefined && allDeclared.values_digest_hex === emptySet.values_digest_hex,
+    );
   }
 }
 

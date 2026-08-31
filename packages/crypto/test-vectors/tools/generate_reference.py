@@ -2589,10 +2589,24 @@ ENV_META_SIG_FIELDS_ORDER = [
     "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
     "chain_head_hash_hex", "chain_head_seq",
 ]
+# CRYPTO_SPEC §4.2 レイアウト v2(0.8-draft — 2026-08-30 セッション 46): 変数メタ
+# ステートメントの第 2 レイアウト。ドメイン分離文字列は "<suite>/var-meta-sig-v2"
+# (レイアウト版はステートメント種ローカル — suite は据え置き)。スキーマ欄
+# (var_type / required / description)を status の直後に挟む。環境メタは v1 のまま
+VAR_META_SIG_V2_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "variable_id", "name", "status",
+    "var_type", "required", "description",
+    "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
+    "chain_head_hash_hex", "chain_head_seq",
+]
 
 
 def meta_signed_bytes(ctx: dict) -> bytes:
-    order = VAR_META_SIG_FIELDS_ORDER if ctx["kind"] == "variable" else ENV_META_SIG_FIELDS_ORDER
+    if ctx.get("layout_version", 1) == 2:
+        order = VAR_META_SIG_V2_FIELDS_ORDER
+    else:
+        order = (VAR_META_SIG_FIELDS_ORDER if ctx["kind"] == "variable"
+                 else ENV_META_SIG_FIELDS_ORDER)
     return lp_encode([ctx[key] for key in order])
 
 
@@ -2729,6 +2743,91 @@ def gen_metadata_signature():
             "(値署名の §6.3-4 と意図的に非対称 — AUTH_SPEC §12-4。§14.3-5 の既知残余の対価)",
         ),
     ]
+
+    # --- レイアウト v2 の正例(CRYPTO_SPEC §4.2 レイアウト v2 / §11 の 0.8-draft 項。
+    # 2026-08-30 セッション 46 — S0 承認済み・S1 でベクター化)。既存 v1 ベクターは
+    # 1 バイトも変えない(レイアウト v2 は新ドメイン文字列の追加 — 追記で拡張)---
+    def make_v2_context(environment_id, variable_id, name, status, var_type, required,
+                        description, meta_version, prev_hash_hex, author_id,
+                        head_hash_hex, head_seq):
+        return {
+            "kind": "variable",
+            "suite": suite,
+            "domain": f"{suite}/var-meta-sig-v2",
+            "layout_version": 2,
+            "project_id": project_id,
+            "environment_id": environment_id,
+            "variable_id": variable_id,
+            "name": name,
+            "status": status,
+            "var_type": var_type,
+            "required": required,
+            "description": description,
+            "meta_version": meta_version,
+            "prev_meta_sig_hash_hex": prev_hash_hex,
+            "author_user_id": author_id,
+            "chain_head_hash_hex": head_hash_hex,
+            "chain_head_seq": head_seq,
+        }
+
+    def make_v2_statement(name, environment_id, variable_id, display_name, status,
+                          var_type, required, description, meta_version, prev_hash_hex,
+                          author_id, head_seq, note, prev_base=None):
+        ctx = make_v2_context(environment_id, variable_id, display_name, status,
+                              var_type, required, description, meta_version,
+                              prev_hash_hex, author_id, head_hash(head_seq), head_seq)
+        signed = meta_signed_bytes(ctx)
+        vector = {
+            "name": name,
+            "context": ctx,
+            "author_key_fingerprint_hex": fp_of(author_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(author_id).sign(signed).hex(),
+            "note": note,
+        }
+        if prev_base is not None:
+            vector["prev_base"] = prev_base
+        return vector
+
+    v2_typed = make_v2_statement(
+        "var-v2-create-typed", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL",
+        "active", "url", "true", "Primary service endpoint URL", 1, "", admin_id, 12,
+        "レイアウト v2 の変数作成(スキーマ欄あり・status active)。ドメイン分離文字列は"
+        " maruhi/v1/var-meta-sig-v2(レイアウト版はステートメント種ローカル — suite は据え置き。§4.2)。"
+        "スキーマ欄(var_type / required / description)は status の直後に署名対象として並ぶ",
+    )
+    v2_untyped = make_v2_statement(
+        "var-v2-create-untyped", "env-prod-0001", "var-v2-untyped-0011", "OPTIONAL_FLAG",
+        "active", "", "false", "", 1, "", admin_id, 12,
+        "レイアウト v2 の未指定型(var_type = \"\" は閉集合の正当な値 — §4.2)。"
+        "description も空文字列を許す(required のみ明示必須 — 空文字列不可)",
+    )
+    v2_declared = make_v2_statement(
+        "var-v2-declared-create", "env-prod-0001", "var-v2-declared-0012", "STRIPE_API_KEY",
+        "declared", "string", "true", "Stripe secret key (set before first deploy)",
+        1, "", admin_id, 12,
+        "declared 作成(metaVersion 1・値なし — §4.2 レイアウト v2 の第 3 の status)。"
+        "作成は active(値同梱)または declared(値なし)のいずれか",
+    )
+    v2_activation = make_v2_statement(
+        "var-v2-activation", "env-prod-0001", "var-v2-declared-0012", "STRIPE_API_KEY",
+        "active", "string", "true", "Stripe secret key (set before first deploy)",
+        2, v2_declared["signed_bytes_sha256_hex"], admin_id, 12,
+        "declared → active 遷移(activation — 最初の値 push との複合。複合の受理検査は"
+        " AUTH_SPEC §12-5 = S2 で、本ベクターはステートメント単体の encode / verify と"
+        "「declared な predecessor の active 化は正当」を固定する)",
+        prev_base="var-v2-declared-create",
+    )
+    v2_delete = make_v2_statement(
+        "var-v2-delete-keeps-schema", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL",
+        "deleted", "url", "true", "Primary service endpoint URL",
+        2, v2_typed["signed_bytes_sha256_hex"], admin_id, 12,
+        "レイアウト v2 の削除(status deleted)。name と同じ規約でスキーマ欄とレイアウトを"
+        "直前ステートメントからそのまま保持する(§4.2 — 削除ステートメントのみ完全保持を要求)",
+        prev_base="var-v2-create-typed",
+    )
+    vectors += [v2_typed, v2_untyped, v2_declared, v2_activation, v2_delete]
 
     # --- rename-fork(§14.2-5 / §8-2): 同一 (variable, metaVersion) に対する内容の
     # 異なる 2 つの有効ステートメント。単体ではどちらも全検証を通り、組になって
@@ -3071,15 +3170,198 @@ def gen_metadata_signature():
         ),
     ]
 
+    # --- レイアウト v2 の負例(§11 の 0.8-draft 項の列挙)------------------------
+    # 署名系(改竄・移植): 元署名を維持したまま signed_bytes を差し替え、Ed25519
+    # 検証が失敗することを固定する(既存 negative と同じ形)
+    def v2_tamper_negative(name, overrides, note, base_vector=None):
+        source = base_vector if base_vector is not None else v2_typed
+        ctx = dict(source["context"], **overrides)
+        return {
+            "name": name,
+            "base": source["name"],
+            "context": ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(ctx).hex(),
+            "signature_hex": source["signature_hex"],
+            "verify_key_hex": sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": note,
+        }
+
+    # レイアウト混同の双方向(§4.2 — v1 と v2 の相互解釈は署名不一致で構造的に失敗
+    # する〔§1 原則 6〕。layoutVersion の虚偽申告は別レイアウトでの signed_bytes
+    # 再計算 = 署名不一致に退化する — 裁定 CR の既知の残余の固定)
+    confusion_v2_as_v1_ctx = make_context(
+        "variable", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL", "active",
+        1, "", admin_id, head_hash(12), 12)
+    confusion_v1_as_v2_ctx = make_v2_context(
+        "env-prod-0001", "var-api-key-0001", "API_KEY", "active", "", "false", "",
+        1, "", admin_id, head_hash(12), 12)
+    layout_negatives = [
+        {
+            "name": "layout-confusion-v2-as-v1",
+            "base": v2_typed["name"],
+            "context": confusion_v2_as_v1_ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(confusion_v2_as_v1_ctx).hex(),
+            "signature_hex": v2_typed["signature_hex"],
+            "verify_key_hex": sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": "v2 で署名されたステートメント(var-v2-create-typed)をスキーマ欄を落として"
+                    " v1 レイアウト(v1 ドメイン文字列)で再計算したバイト列では署名検証に失敗する"
+                    "(layoutVersion の虚偽申告 v2 → v1 は署名不一致に退化 — 裁定 CR)",
+        },
+        {
+            "name": "layout-confusion-v1-as-v2",
+            "base": "var-create",
+            "context": confusion_v1_as_v2_ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(confusion_v1_as_v2_ctx).hex(),
+            "signature_hex": var_create["signature_hex"],
+            "verify_key_hex": sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": "v1 で署名されたステートメント(var-create)に空のスキーマ欄を補って"
+                    " v2 レイアウト(v2 ドメイン文字列)で再計算したバイト列では署名検証に失敗する"
+                    "(layoutVersion の虚偽申告 v1 → v2 — 逆方向の混同も同様に退化する)",
+        },
+        v2_tamper_negative(
+            "tampered-var-type", {"var_type": "string"},
+            "var_type の書き換え(url → string)は元署名の検証に失敗する(スキーマ欄は署名対象 — §4.2)",
+        ),
+        v2_tamper_negative(
+            "tampered-required", {"required": "false"},
+            "required の書き換え(true → false)は元署名の検証に失敗する(presence 保証 §14.2-8 の"
+            "前提 — required 宣言は署名済みの明示操作なしに変わらない)",
+        ),
+        v2_tamper_negative(
+            "tampered-description", {"description": "Rewritten by the server"},
+            "description の書き換えは元署名の検証に失敗する(description も byte-exact に署名対象 — §4.2)",
+        ),
+        v2_tamper_negative(
+            "v2-suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/var-meta-sig-v2"},
+            "suite が異なればドメイン文字列が異なり、スイート間の署名移植は v2 レイアウトでも"
+            "検証に失敗する(レイアウト版はステートメント種ローカルで suite 束縛は不変 — §4.2)",
+        ),
+    ]
+
+    # 検証規則系(kind = "authorization"): 署名は有効だが遷移・レイアウト規則で拒否
+    def v2_rule_negative(name, ctx, expected_reason, note, predecessor):
+        signed = meta_signed_bytes(ctx)
+        return {
+            "name": name,
+            "kind": "authorization",
+            "chain": "canonical",
+            "context": ctx,
+            "author_key_fingerprint_hex": fp_of(admin_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(admin_id).sign(signed).hex(),
+            "verify_key_hex": sig_pub_of(admin_id),
+            "expected_reason": expected_reason,
+            "must_fail": True,
+            "note": note,
+            "predecessor": predecessor,
+        }
+
+    v2_rule_negatives = [
+        v2_rule_negative(
+            "declared-after-active",
+            make_v2_context("env-prod-0001", "var-v2-typed-0010", "SERVICE_URL", "declared",
+                            "url", "true", "Primary service endpoint URL",
+                            2, v2_typed["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
+            "declared-after-active",
+            "active な predecessor の後続を declared にする形は、署名・prev 連鎖が有効でも拒否する"
+            "(§4.2 — active → declared 禁止: 値の存在の巻き戻し表現を作らない。値を取り除く"
+            "唯一の経路は削除)",
+            predecessor={
+                "base": "var-v2-create-typed",
+                "signed_bytes_sha256_hex": v2_typed["signed_bytes_sha256_hex"],
+                "status": "active",
+                "layout_version": 2,
+            },
+        ),
+        v2_rule_negative(
+            "declared-after-delete",
+            make_v2_context("env-prod-0001", "var-v2-typed-0010", "SERVICE_URL", "declared",
+                            "url", "true", "Primary service endpoint URL",
+                            3, v2_delete["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
+            "revived-after-delete",
+            "deleted な predecessor の後続は declared でも拒否する(§4.2 — 「deleted 後の"
+            "再 active 化禁止」は declared への遷移にも適用。tombstone は終端 — 既存理由コード"
+            " revived-after-delete の適用範囲の固定)",
+            predecessor={
+                "base": "var-v2-delete-keeps-schema",
+                "signed_bytes_sha256_hex": v2_delete["signed_bytes_sha256_hex"],
+                "status": "deleted",
+                "layout_version": 2,
+            },
+        ),
+        v2_rule_negative(
+            "layout-regression-rename",
+            make_context("variable", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL_RENAMED",
+                         "active", 2, v2_typed["signed_bytes_sha256_hex"], admin_id,
+                         head_hash(12), 12),
+            "layout-regression",
+            "直前ステートメントが v2 の変数への v1 後続ステートメント(rename 形)は、署名・"
+            "prev 連鎖が有効でも拒否する(§4.2 の変数単位のレイアウト単調性 — 後退を許すと"
+            " rename 1 回でスキーマ欄が黙って消え、presence 保証 §14.2-8 と schema-locked"
+            "〔AUTH_SPEC §12-11〕が迂回できる)",
+            predecessor={
+                "base": "var-v2-create-typed",
+                "signed_bytes_sha256_hex": v2_typed["signed_bytes_sha256_hex"],
+                "status": "active",
+                "layout_version": 2,
+            },
+        ),
+    ]
+
+    # 構造違反系(kind = "invalid-input"): ワイヤ形の構造違反は署名検証にも履歴検証
+    # にも到達させず、型付き InvalidInput で拒否する(fail-closed)。署名自体は本
+    # negative の鍵で有効 — 拒否が暗号検証によるものでないことを verify_reference が
+    # 確認する(kind = "authorization" と同じ運び方)
+    def v2_invalid_input_negative(name, ctx, note):
+        signed = meta_signed_bytes(ctx)
+        return {
+            "name": name,
+            "kind": "invalid-input",
+            "context": ctx,
+            "author_key_fingerprint_hex": fp_of(admin_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(admin_id).sign(signed).hex(),
+            "verify_key_hex": sig_pub_of(admin_id),
+            "expected_error": "InvalidInput",
+            "must_fail": True,
+            "note": note,
+        }
+
+    invalid_input_negatives = [
+        v2_invalid_input_negative(
+            "v1-declared-status",
+            make_context("variable", "env-prod-0001", "var-rule-0006", "DECLARED_V1",
+                         "declared", 1, "", admin_id, head_hash(12), 12),
+            "v1 レイアウトに declared は存在しない(§4.2 / 裁定 CS — 「v1 は不変」という移行の"
+            "核を守る)。status の語彙違反は構造違反として InvalidInput で拒否する — 署名は"
+            "本バイト列に対して有効であり、拒否は暗号検証によるものではない",
+        ),
+        v2_invalid_input_negative(
+            "v2-empty-required",
+            make_v2_context("env-prod-0001", "var-rule-0007", "RULE_VAR_V2", "active",
+                            "string", "", "Rule fixture", 1, "", admin_id, head_hash(12), 12),
+            "v2 の required は \"true\" | \"false\" の明示必須で空文字列を許さない(§4.2 — "
+            "省略時の既定値解釈をクライアント実装に分散させない fail-closed)。構造違反として"
+            " InvalidInput で拒否する",
+        ),
+    ]
+
     write(
         "metadata-signature.json",
         {
             "description": "CRYPTO_SPEC §4.2: 変数・環境メタデータの署名付きステートメント(Ed25519)。var_meta_signed_bytes = LP(\"<suite>/var-meta-sig\", project_id, environment_id, variable_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)、env_meta_signed_bytes = LP(\"<suite>/env-meta-sig\", project_id, environment_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
             "var_signed_fields_order": VAR_META_SIG_FIELDS_ORDER,
             "env_signed_fields_order": ENV_META_SIG_FIELDS_ORDER,
+            "var_v2_signed_fields_order": VAR_META_SIG_V2_FIELDS_ORDER,
             "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(meta_version / chain_head_seq)は 10 進文字列化。name は UTF-8 バイト列を byte-exact に束縛(NFC 正規化は署名前のクライアントの責務 — §4.2)",
             "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、author 鍵 = keys",
             "no_epoch_anchor": "メタステートメントはエポックアンカーを持たない(§4.2)。値署名の epoch-not-current-at-head / environment-not-created-at-head に相当する検証規則は存在せず、前進 meta_version への注入は v1 未検出の既知残余(§14.3-5)。var-meta-head-before-env-create が positive であることがこの非対称の固定",
+            "layout_v2": "CRYPTO_SPEC §4.2 レイアウト v2(0.8-draft — セッション 46 裁定 CR / CS): 変数メタステートメントの第 2 レイアウト。var_meta_signed_bytes_v2 = LP(\"<suite>/var-meta-sig-v2\", project_id, environment_id, variable_id, name, status, var_type, required, description, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)。context の layout_version(省略 = 1)がワイヤの layoutVersion に対応し、どのレイアウトで signed_bytes を再計算するかを選択する。検証者は署名検証より前にサポート範囲を検査し、超過は型付きエラー(未対応レイアウト)で拒否する(署名不正に潰さない誠実な破壊様式 — 本件は拒否ケースに参照期待値が存在しないため規約 21 の分担どおりハーネス側で固定)。status は 3 値(active | deleted | declared — declared は v2 限定)、var_type は閉集合(\"\" | string | number | boolean | url)、required は明示必須(\"true\" | \"false\")。環境メタステートメントは v1 のまま(本改訂の対象外)。既存 v1 ベクターは 1 バイトも不変(追記で拡張 — §11)",
             "extra_keys": {
                 "ghost": {
                     "note": "author-unknown-in-history 用(チェーン履歴に存在しない鍵)",
@@ -3100,7 +3382,8 @@ def gen_metadata_signature():
                 "branches": fork_branches,
             },
             "name_swap": name_swap,
-            "negative": negatives + rule_negatives,
+            "negative": negatives + rule_negatives + layout_negatives + v2_rule_negatives
+            + invalid_input_negatives,
         },
     )
 
@@ -3236,6 +3519,31 @@ def gen_env_manifest():
     api_v2_entry = digest_entry("var-api-key-0001", "active", 2, api_v2_hash)
     api_v3_entry = digest_entry("var-api-key-0001", "deleted", 3, api_v3_hash)
     legacy_entry = digest_entry("var-legacy-0002", "active", 1, legacy_hash)
+
+    # レイアウト v2 の declared ステートメント(metadata-signature.json の
+    # var-v2-declared-create と同一入力・同一ハッシュ — §4.2 レイアウト v2)。
+    # entry・ダイジェストのエンコーダは不変で、status に "declared" が新しい文字列値
+    # として現れるだけ(§4.3 のスキーマ欄の被覆 — マニフェスト層の変更なしの自動継承)
+    declared_v2_ctx = {
+        "kind": "variable",
+        "domain": f"{suite}/var-meta-sig-v2",
+        "layout_version": 2,
+        "project_id": project_id,
+        "environment_id": env_id,
+        "variable_id": "var-v2-declared-0012",
+        "name": "STRIPE_API_KEY",
+        "status": "declared",
+        "var_type": "string",
+        "required": "true",
+        "description": "Stripe secret key (set before first deploy)",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": admin_id,
+        "chain_head_hash_hex": head_hash(12),
+        "chain_head_seq": 12,
+    }
+    declared_v2_hash = sha256(meta_signed_bytes(declared_v2_ctx)).hex()
+    declared_v2_entry = digest_entry("var-v2-declared-0012", "declared", 1, declared_v2_hash)
 
     def make_context(environment_id, epoch, manifest_version, digest_hex,
                      env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
@@ -3411,6 +3719,18 @@ def gen_env_manifest():
                     "0xEF BF A5)< var-🔑-0001(U+1F511 = 0xF0 9F 94 91)。UTF-16 コード"
                     "単位順(JS の素の文字列比較)はサロゲート(0xD83D)< U+FFE5 のため"
                     "最後の 2 要素が逆転する — UTF-8 バイト順の実装だけがこのダイジェストに到達する",
+        },
+        {
+            # レイアウト v2 の declared entry(§4.2 / §11 の 0.8-draft 項 — 2026-08-30)
+            "name": "declared-entry",
+            "entries": sorted([legacy_entry, declared_v2_entry],
+                              key=lambda e: e["variable_id"].encode("utf-8")),
+            "digest_input_hex": variables_digest_input([legacy_entry, declared_v2_entry]).hex(),
+            "variables_digest_hex": variables_digest_hex([legacy_entry, declared_v2_entry]),
+            "note": "status = declared(§4.2 レイアウト v2)の entry も全ステートメントの最新形"
+                    "として列挙に含む。entry・ダイジェストのエンコーダは不変で、status に新しい"
+                    "文字列値が現れるだけ(§4.3 のスキーマ欄の被覆 — meta_sig_hash は v2 の"
+                    " signed_bytes〔metadata-signature.json の var-v2-declared-create〕から計算される)",
         },
     ]
 
@@ -4494,6 +4814,87 @@ def gen_recovery_wrap():
     )
 
 
+# ---------------------------------------------------------------------------
+# checkpoint-digest.json — §6.2 values_digest の対象選別(declared の除外。
+# 0.8-draft — 2026-08-30 セッション 46 / §11 の 0.8-draft 項)
+#
+# values_digest のエンコーダ(LP 正規形・バイト昇順・重複拒否)は chain-entries.json
+# の values_digests セクションが固定済みで不変。本ファイルが固定するのは**対象選別の
+# 規則**: v_j に載るのは status = active の変数のみで、status = declared(§4.2
+# レイアウト v2 — 値未設定)の変数は values_digest に現れない(値が存在せず公証する
+# 座標がない — §6.2)。tombstone(deleted)の対象外は既存規則(マニフェスト側 —
+# §4.3 — が捕捉)で、混在ケースが選別の全 3 status を同時に固定する。
+# chain-entries.json は変更しない(チェーン形式に触れない — §11)。
+
+
+def gen_checkpoint_digest():
+    def value_hash(variable_id: str, version: int) -> str:
+        return sha256(f"checkpoint-digest value {variable_id} v{version}".encode()).hex()
+
+    def active_var(variable_id: str, version: int) -> dict:
+        return {
+            "variable_id": variable_id,
+            "status": "active",
+            "version": str(version),
+            "value_sig_hash_hex": value_hash(variable_id, version),
+        }
+
+    def digest_entry_of(var: dict) -> dict:
+        return {
+            "variable_id": var["variable_id"],
+            "version": var["version"],
+            "value_sig_hash_hex": var["value_sig_hash_hex"],
+        }
+
+    def values_digest_input(value_entries: list) -> bytes:
+        ordered = sorted(value_entries, key=lambda v: v["variable_id"].encode("utf-8"))
+        fields = [ENV_VALUES_DIGEST_DOMAIN] + [
+            lp_encode([v["variable_id"], v["version"], v["value_sig_hash_hex"]])
+            for v in ordered
+        ]
+        return lp_encode(fields)
+
+    active_api = active_var("var-api-key-0001", 1)
+    active_db = active_var("var-database-url-0001", 3)
+    declared_var = {"variable_id": "var-v2-declared-0012", "status": "declared"}
+    tombstone_var = {"variable_id": "var-legacy-0002", "status": "deleted"}
+
+    mixed_entries = [digest_entry_of(active_api), digest_entry_of(active_db)]
+    cases = [
+        {
+            "name": "declared-excluded",
+            "variables": [active_api, declared_var, tombstone_var, active_db],
+            "values_digest_entries": mixed_entries,
+            "digest_input_hex": values_digest_input(mixed_entries).hex(),
+            "values_digest_hex": env_values_digest_hex(mixed_entries),
+            "note": "values_digest の対象は status = active の変数のみ(§6.2)。declared"
+                    "(§4.2 レイアウト v2 — 値・バージョンが存在しない)は現れず、tombstone"
+                    "(deleted)の対象外は既存規則(マニフェスト側 — §4.3 — が捕捉)。"
+                    "ダイジェストは active 2 変数のみの集合と同値になる",
+        },
+        {
+            "name": "all-declared-empty",
+            "variables": [declared_var],
+            "values_digest_entries": [],
+            "digest_input_hex": values_digest_input([]).hex(),
+            "values_digest_hex": env_values_digest_hex([]),
+            "note": "declared のみの環境の values_digest は空集合のダイジェスト"
+                    "(chain-entries.json values_digests の empty-set と同値)に一致する — "
+                    "「declared に値が配布されないことは正当」(§6.3)の対象選別側の固定",
+        },
+    ]
+
+    write(
+        "checkpoint-digest.json",
+        {
+            "description": "CRYPTO_SPEC §6.2: checkpoint values_digest の対象選別 — status = declared(§4.2 レイアウト v2・値未設定)の変数は values_digest に現れない(2026-08-30)。values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m)))、v_j = LP(variable_id, version, value_sig_hash_hex)(variable_id の UTF-8 バイト昇順・active 変数のみ)。エンコーダの LP 正規形は chain-entries.json の values_digests セクションが固定済みで不変 — 本ファイルは対象選別の規則のみを固定する(chain-entries.json は変更しない — §11)",
+            "encoding_reference": "chain-entries.json の values_digests(LP 正規形・バイト昇順・重複拒否・数値の 10 進文字列化)",
+            "selection_rule": "variables(ステートメント status 込みの変数集合)から values_digest_entries(active のみ)を選別する。active は最新 version の値座標(version / value_sig_hash_hex)を必ず持ち、declared / deleted は値座標を持たない(active の値配布要求と「declared に値が配布されないことは正当」— §6.3)",
+            "cases": cases,
+        },
+    )
+
+
 if __name__ == "__main__":
     gen_encoding()
     gen_variable_encryption()
@@ -4508,3 +4909,4 @@ if __name__ == "__main__":
     gen_audit_head()  # AUDIT_SPEC §5.1(単独 — 他ファイルを参照しない)
     gen_invite_accept_signature()
     gen_recovery_wrap()
+    gen_checkpoint_digest()  # §6.2 values_digest の対象選別(単独 — 他ファイルを参照しない)
