@@ -96,13 +96,37 @@ export async function variableStatementFor(
   });
 }
 
-/** 変数の次ステートメント(rename / 削除)を記録済み最新から署名する。 */
+/** レイアウト v2 のスキーマ欄(ワイヤ形 — required は boolean)。 */
+export interface WireSchemaFields {
+  readonly varType: "" | "string" | "number" | "boolean" | "url";
+  readonly required: boolean;
+  readonly description: string;
+}
+
+/** v2 ステートメントの運搬フィールド(layoutVersion 2 + スキーマ欄)。 */
+export function v2Fields(schema: Partial<WireSchemaFields> = {}): {
+  readonly layoutVersion: number;
+  readonly varType: WireSchemaFields["varType"];
+  readonly required: boolean;
+  readonly description: string;
+} {
+  return {
+    layoutVersion: 2,
+    varType: schema.varType ?? "string",
+    required: schema.required ?? true,
+    description: schema.description ?? "",
+  };
+}
+
+/** 変数の次ステートメント(rename / スキーマ再発行 / 削除 / activation)を記録済み最新から署名する。 */
 export async function nextVariableStatement(input: {
   readonly variableId: string;
   readonly name: string;
-  readonly status: "active" | "deleted";
+  readonly status: "active" | "deleted" | "declared";
   readonly authorUserId: string;
   readonly environmentId?: string;
+  /** レイアウト v2 の運搬フィールド(v2Fields(...) — 省略 = v1 ステートメント)。 */
+  readonly v2?: ReturnType<typeof v2Fields>;
 }): Promise<WireVariableMetaStatement> {
   const last = varStatements.get(input.variableId);
   if (last === undefined) {
@@ -121,6 +145,7 @@ export async function nextVariableStatement(input: {
     status: input.status,
     metaVersion: last.statement.metaVersion + 1,
     prevMetaSigHashHex,
+    ...input.v2,
     chainHeadHashHex: fixture.head.hashHex,
     chainHeadSeq: fixture.head.seq,
   });
@@ -312,6 +337,144 @@ export async function createVariableOk(
   varStatements.set(variableId, { statement, authorUserId: MEMBER });
   record();
   return value;
+}
+
+/**
+ * レイアウト v2 の作成ステートメント(metaVersion 1 — active = 値同梱 /
+ * declared = 値なしの宣言)を署名して返す。
+ */
+export async function variableStatementV2For(input: {
+  readonly authorUserId: string;
+  readonly variableId: string;
+  readonly name: string;
+  readonly status: "active" | "declared";
+  readonly schema?: Partial<WireSchemaFields>;
+  readonly environmentId?: string;
+}): Promise<WireVariableMetaStatement> {
+  return signMetaStatementAs(input.authorUserId, projectId, {
+    suite: "maruhi/v1" as const,
+    environmentId: input.environmentId ?? ENV,
+    variableId: input.variableId,
+    name: input.name,
+    status: input.status,
+    metaVersion: 1,
+    prevMetaSigHashHex: "",
+    ...v2Fields(input.schema),
+    chainHeadHashHex: fixture.head.hashHex,
+    chainHeadSeq: fixture.head.seq,
+  });
+}
+
+/** declared 作成(値なしの宣言複合 — §12-5)。204/200 相当の成功時は記録を進める。 */
+export async function declareVariableRequest(input: {
+  readonly variableId: string;
+  readonly name: string;
+  readonly actorUserId: string;
+  readonly schema?: Partial<WireSchemaFields>;
+}): Promise<Response> {
+  const statement = await variableStatementV2For({
+    authorUserId: input.actorUserId,
+    variableId: input.variableId,
+    name: input.name,
+    status: "declared",
+    ...(input.schema === undefined ? {} : { schema: input.schema }),
+  });
+  const { manifest, record } = await manifestForStatement(statement, input.actorUserId);
+  const response = await requestJson(
+    "POST",
+    `/environments/${ENV}/variables`,
+    token(input.actorUserId),
+    {
+      statement,
+      manifest,
+    },
+  );
+  if (response.status === 200) {
+    varStatements.set(input.variableId, { statement, authorUserId: input.actorUserId });
+    record();
+  }
+  return response;
+}
+
+/** declared 作成の成功形(§12-5 — 保存バージョン 0)。 */
+export async function declareVariableOk(input: {
+  readonly variableId: string;
+  readonly name: string;
+  readonly actorUserId?: string;
+  readonly schema?: Partial<WireSchemaFields>;
+}): Promise<void> {
+  const response = await declareVariableRequest({
+    variableId: input.variableId,
+    name: input.name,
+    actorUserId: input.actorUserId ?? MEMBER,
+    ...(input.schema === undefined ? {} : { schema: input.schema }),
+  });
+  expect(response.status).toBe(200);
+  await expect(response.clone().json()).resolves.toMatchObject({
+    variableId: input.variableId,
+    version: 0,
+  });
+}
+
+/**
+ * activation 複合(§12-5 — declared → active: 値 version 1 + status active の
+ * v2 ステートメント + マニフェスト)。200 なら記録を進める。
+ */
+export async function activateVariableRequest(input: {
+  readonly variableId: string;
+  readonly actorUserId: string;
+  readonly dek: Uint8Array;
+  readonly plaintext: string;
+  readonly epoch?: number;
+  readonly name?: string;
+  readonly schema?: Partial<WireSchemaFields>;
+}): Promise<Response> {
+  const last = varStatements.get(input.variableId);
+  if (last === undefined) {
+    throw new Error(`no recorded statement for variable ${input.variableId}`);
+  }
+  const statement = await nextVariableStatement({
+    variableId: input.variableId,
+    name: input.name ?? last.statement.name,
+    status: "active",
+    authorUserId: input.actorUserId,
+    v2: v2Fields(input.schema),
+  });
+  const value = await encryptValue(
+    input.dek,
+    {
+      projectId,
+      environmentId: ENV,
+      epoch: input.epoch ?? 1,
+      variableId: input.variableId,
+      version: 1,
+    },
+    input.plaintext,
+    { writerUserId: input.actorUserId, head: fixture.head },
+  );
+  const { manifest, record } = await manifestForStatement(statement, input.actorUserId);
+  const response = await requestJson(
+    "POST",
+    `/environments/${ENV}/variables/${input.variableId}/activate`,
+    token(input.actorUserId),
+    { value, statement, manifest },
+  );
+  if (response.status === 200) {
+    varStatements.set(input.variableId, { statement, authorUserId: input.actorUserId });
+    record();
+  }
+  return response;
+}
+
+/** schemaPolicy の設定(PUT — §12-11。既定 actor は OWNER = チェーン role owner)。 */
+export async function setSchemaPolicyOk(
+  policy: "disabled" | "enabled" | "locked",
+  actorUserId = OWNER,
+): Promise<void> {
+  const response = await requestJson("PUT", "/schema-policy", token(actorUserId), {
+    schemaPolicy: policy,
+  });
+  expect(response.status).toBe(204);
 }
 
 /** ダミー DEK の完全ラップ集合(受信者・エポック・署名者は指定可)。 */

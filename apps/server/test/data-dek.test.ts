@@ -485,7 +485,7 @@ describe("DEK ラップの登録署名(§12-6 / CRYPTO_SPEC §5.1)", () => {
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
     // 環境は作られない(署名検証は書き込みフェーズより前)
     const list = await requestJson("GET", "/environments", token(READER));
-    await expect(list.json()).resolves.toEqual({ environments: [] });
+    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
   });
 
   it("rejects wraps without a signature (400 Schema, 両経路)", async () => {

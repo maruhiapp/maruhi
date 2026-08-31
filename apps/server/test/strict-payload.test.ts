@@ -323,6 +323,47 @@ describe("値 push・メタ操作(§12-5 — 変数)", () => {
     });
   });
 
+  it("declared create (union branch — §12-5) rejects an unknown field with 400", async () => {
+    // strict 注釈は Union を越えて伝播する(§12-10 (1))ことの v2 分岐での固定。
+    // control はハンドラ段の 4xx(非 400)= decode 通過の証明
+    const send = sendJson("POST", dataUrl(`/environments/${ENV}/variables`), bearer(token(OWNER)));
+    const statement = {
+      ...unsignedVariableStatement(VAR, "DATABASE_URL"),
+      status: "declared",
+      layoutVersion: 2,
+      varType: "string",
+      required: true,
+      description: "",
+    };
+    await expectStrictReject(send, { statement, manifest: unsignedManifest() });
+    await expectNestedReject(send, {
+      statement: { ...statement, [PROBE_KEY]: true },
+      manifest: unsignedManifest(),
+    });
+  });
+
+  it("variable activate rejects an unknown field with 400", async () => {
+    const send = sendJson(
+      "POST",
+      dataUrl(`/environments/${ENV}/variables/${VAR}/activate`),
+      bearer(token(OWNER)),
+    );
+    const statement = {
+      ...unsignedVariableStatement(VAR, "DATABASE_URL"),
+      metaVersion: 2,
+      prevMetaSigHashHex: "ab".repeat(32),
+      layoutVersion: 2,
+      varType: "string",
+      required: true,
+      description: "",
+    };
+    await expectStrictReject(send, {
+      value: unsignedPayload(aadFor(1, 1)),
+      statement,
+      manifest: unsignedManifest(),
+    });
+  });
+
   it("push rejects an unknown field with 400 (root and nested value AAD)", async () => {
     const send = sendJson(
       "POST",

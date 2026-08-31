@@ -257,7 +257,7 @@ describe("環境管理(§12-4 複合リクエスト)", () => {
     expect(staleBody.currentHeadHashHex).toBe(fixture.head.hashHex);
     // 何も書かれていない(原子性: CAS 失敗はチェーンにもデータにも痕跡を残さない)
     const list = await requestJson("GET", "/environments", token(READER));
-    await expect(list.json()).resolves.toEqual({ environments: [] });
+    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
 
     // 再試行の正例はラップした DEK 自身のコミットメント(session-31 M1-T1)
     const retried = await createEnvironmentComposite(fixture, {
@@ -441,7 +441,7 @@ describe("環境作成の DEK ラップ検証(§12-6)", () => {
     const body = (await response.json()) as { reason: string };
     expect(body.reason).toBe("recipient-missing");
     const list = await requestJson("GET", "/environments", token(READER));
-    await expect(list.json()).resolves.toEqual({ environments: [] });
+    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
     // 複合の原子性(§12-4): ラップ検査で落ちた複合はチェーンエントリも追記しない
     // (「コミットメントはあるがラップがない」中間状態を作らない)
     const chain = await requestJson("GET", "/chain", token(READER));
