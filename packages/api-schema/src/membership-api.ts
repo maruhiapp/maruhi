@@ -13,7 +13,7 @@ import { authGroup } from "./auth-api.ts";
 import { authCliGroup } from "./auth-cli-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ChainEntrySchema, RoleSchema } from "./chain.ts";
-import { deksGroup, environmentsGroup, variablesGroup } from "./data-api.ts";
+import { deksGroup, environmentsGroup, schemaPolicyGroup, variablesGroup } from "./data-api.ts";
 import {
   AttestationRateLimitedError,
   AttestationRegressionError,
@@ -217,6 +217,9 @@ export const maruhiApi = HttpApi.make("maruhi")
   .add(environmentsGroup)
   .add(variablesGroup)
   .add(deksGroup)
+  // schemaPolicy 設定(AUTH_SPEC §12-11 — GET は read × reader、PUT は
+  // admin × admin。セッション主体はどちらも拒否 = §5 の許可列挙外)
+  .add(schemaPolicyGroup)
   .add(invitesGroup)
   .add(rotationGroup)
   .add(auditGroup)
