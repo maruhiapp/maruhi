@@ -54,6 +54,7 @@
 - [ ] H5: 公開儀式 — SECURITY.md + 脅威モデル文書(`docs/THREAT_MODEL.md` — 起草計画は hosted-design.md §6)+ 公開前チェックリスト残(Deploy to Cloudflare ボタン検証・CLI 配布・macOS 公証)→ **public 化**
 - [ ] H6: 招待制ベータ開放 — 「最初の 5 分」体験要件(ADR-0014 改訂 1)の充足確認・招待コード発行運用 + **ベータ案内・waitlist 導線・サインアップ拒否時の着地文言・オンボーディングの web 静的面(S1 系の拡張 — hosted-design.md §9)**
 - [ ] オープンベータ(H6 の後): quota 実測 + GitHub クォータ余裕(device flow 50 回/時 — hosted-design.md §3-4)+ CLI ログインのスケール経路(gap 9)の裁定を経て開放
+- [ ] エクスポート / セルフホスト移行(export / import)— **実施決定・時期未定(2026-08-30 オーナー決定)。ベータのゲートにしない**: ホステッドから自分のデプロイへ、チェーン・値・マニフェストを履歴ごと運ぶ経路。構造的には可搬(project_id = genesis ハッシュ・自己検証チェーン・暗号文)で欠けているのは輸送路のみ。受理面に触れるため独立の設計セッション(設計 → 承認 → 実装)。論点と非可搬部分(`grant_server` ラップの再 grant 等)は docs/notes/hosted-design.md §10
 - [ ] GA: 課金導入(設計は独立タスク — 未起草)・docs サイト(Blume — Wave 3 G)
 
 ## Phase 3: エージェント(方針は ADR-0014。優先度順)
