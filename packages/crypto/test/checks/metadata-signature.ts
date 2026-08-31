@@ -125,7 +125,8 @@ function predecessorOf(vector: MetaVector) {
     : {
         signedBytesHashHex: base.signed_bytes_sha256_hex,
         status: base.context.status as MetaStatementContext["status"],
-        layoutVersion: base.context.layout_version,
+        // MetaPredecessor 側は必須(fail-closed)。ベクターの省略 = v1
+        layoutVersion: base.context.layout_version ?? 1,
       };
 }
 
@@ -292,7 +293,7 @@ async function ruleNegativeCheck(
         : {
             signedBytesHashHex: negative.predecessor.signed_bytes_sha256_hex,
             status: negative.predecessor.status as MetaStatementContext["status"],
-            layoutVersion: negative.predecessor.layout_version,
+            layoutVersion: negative.predecessor.layout_version ?? 1,
           },
   });
   c.push(
@@ -621,6 +622,7 @@ async function deletedPredecessorChecks(c: Checks, history: ChainHistoryIndex): 
     predecessor: {
       signedBytesHashHex: deleted.signed_bytes_sha256_hex,
       status: "deleted",
+      layoutVersion: 1,
     },
   });
   c.push(

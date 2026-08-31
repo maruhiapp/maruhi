@@ -96,7 +96,6 @@ export class CryptoMetaStatementInvalidError extends Data.TaggedError(
  * updated. Distinct from `CryptoMetaStatementInvalid` so callers can show an
  * honest "update required" instead of a tampering warning.
  */
-// fallow-ignore-next-line unused-export -- S2(ワイヤ v2)/ S3(CLI 表示)が消費する。WrappedCryptoError の一員として先行導入
 export class CryptoUnsupportedMetaLayoutError extends Data.TaggedError(
   "CryptoUnsupportedMetaLayout",
 )<{

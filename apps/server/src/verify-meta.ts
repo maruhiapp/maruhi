@@ -104,8 +104,13 @@ export const ensureMetaStatementSignature = (input: {
         reason: META_REJECT_REASONS[verified.error.reason],
       });
     }
-    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
-    // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
+    // InvalidInput / KeyImportFailed / UnsupportedMetaLayout は Schema 検証済み
+    // ワイヤ + 検証済みチェーン由来の鍵では到達しない(実装バグ = defect。
+    // エラー値に秘密は含まれない)。ただし UnsupportedMetaLayout は S2 でワイヤに
+    // layoutVersion が乗ると「古いサーバー × 新しいクライアント」で実際に発生する
+    // **正常系**になるため、S2 ではこの手前に「クライアント更新が必要」の typed
+    // rejection への分岐を追加すること(裁定 CR — defect の 500 に落とすのは
+    // 「改竄警告ではなく正直な update-required」の真逆。PR #116 レビュー対応)
     return yield* Effect.die(
       new Error(`meta statement verification failed: ${verified.error.kind}`),
     );
@@ -180,6 +185,9 @@ export const acceptMetaStatement = (input: {
       history: input.history,
       member: input.member,
       statement: input.statement,
-      predecessor: anchor,
+      // 保存済みステートメントは現行すべてレイアウト 1(ワイヤ v2 の受理 = S2)。
+      // MetaPredecessor.layoutVersion は fail-closed の必須フィールドなので明示
+      // する — S2 で layout_version 列を保存し、アンカーの実値をここへ通すこと
+      predecessor: { ...anchor, layoutVersion: 1 },
     });
   });

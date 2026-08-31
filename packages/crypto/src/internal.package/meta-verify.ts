@@ -59,11 +59,18 @@ export interface MetaPredecessor {
   readonly signedBytesHashHex: string;
   readonly status: MetaStatementStatus;
   /**
-   * The predecessor's wire layout version (§4.2 — omitted = 1). Anchors the
-   * per-variable layout monotonicity check (v2 → v1 regression is rejected);
-   * callers pass the verified predecessor's own `layoutVersion`.
+   * The predecessor's wire layout version — the anchor of the per-variable
+   * layout monotonicity check (§4.2: a v1 successor of a v2 predecessor is
+   * rejected as `layout-regression`). **Required, not optional-with-default**:
+   * this structure is assembled from a *verified* stored statement, and an
+   * omitted-means-1 default would make the fail-closed monotonicity check
+   * fail-open — a caller that forgets the field would silently wave a v2 → v1
+   * regression through, which is the exact schema erasure the rule exists to
+   * stop (PR #116 レビュー対応). Wire omission = 1 (§4.2) is the *wire* rule;
+   * callers holding a v1 predecessor write `layoutVersion: 1` explicitly, so
+   * the type checker catches S2 migration gaps.
    */
-  readonly layoutVersion?: number | undefined;
+  readonly layoutVersion: number;
 }
 
 /** Input of the history-based distributed-statement verification (§6.3 / §6.4). */
@@ -148,8 +155,10 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
   }
   // §4.2 変数単位のレイアウト単調性: 直前が v2 の変数への v1 後続は拒否
   // (後退を許すと rename 1 回でスキーマ欄が黙って消え、presence 保証
-  // §14.2-8 と schema-locked〔AUTH_SPEC §12-11〕が迂回できる)
-  if (metaLayoutVersionOf(predecessor) === 2 && metaLayoutVersionOf(context) === 1) {
+  // §14.2-8 と schema-locked〔AUTH_SPEC §12-11〕が迂回できる)。predecessor 側は
+  // 必須フィールド(fail-closed — MetaPredecessor の doc 参照)、context 側のみ
+  // ワイヤ規約(省略 = 1)を適用する
+  if (predecessor.layoutVersion === 2 && metaLayoutVersionOf(context) === 1) {
     return "layout-regression";
   }
   return null;
