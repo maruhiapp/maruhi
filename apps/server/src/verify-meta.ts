@@ -6,6 +6,7 @@ import type {
   MetaInvalidReason,
   MetaPredecessor,
   MetaStatementTarget,
+  MetaVariableSchema,
 } from "@maruhi/crypto";
 import { verifyDistributedMetaStatement } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -14,16 +15,18 @@ import type {
   DataRejectedError,
   MetaStatementInput,
   MetaStatementRejectReason,
+  SchemaPolicy,
 } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
+import type { MetaAnchor } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
-import { MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
+import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS, MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
 import { metaVersionsExceeded } from "./quotas.ts";
 
 /**
- * crypto の詳細理由 → ワイヤの 3 理由への写像(値署名の VALUE_REJECT_REASONS と
- * 同じ仮裁定 C の規約 — 語彙を共有し新理由コードを作らない。session-12 §6-7)。
- * 網羅は Record 型が静的に強制する。
+ * crypto の詳細理由 → ワイヤ理由への写像(値署名の VALUE_REJECT_REASONS と同じ
+ * 仮裁定 C の規約 — 3 語彙を共有し、仕様がエラー名を明示する layout-regression
+ * のみ独立の理由コードで返す。§12-5)。網羅は Record 型が静的に強制する。
  */
 const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejectReason>> = {
   "signature-invalid": "signature-invalid",
@@ -36,12 +39,27 @@ const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejec
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
   "revived-after-delete": "chain-head-state-mismatch",
-  // §4.2 レイアウト v2 の遷移・単調性理由(S1 — crypto 層の語彙追加に伴う網羅
-  // 維持のみ)。ワイヤ v2(layoutVersion / スキーマ欄の Schema)は S2 で導入する
-  // ため、現行サーバーの受理面では v2 の predecessor が存在せず到達しない
+  // §4.2 レイアウト v2 の遷移(active → declared)は state-mismatch へ畳む
+  // (revived-after-delete と同じ遷移クラス — 仕様は個別のエラー名を与えない)
   "declared-after-active": "chain-head-state-mismatch",
-  "layout-regression": "chain-head-state-mismatch",
+  // レイアウト単調性(v2 変数への v1 後続)は仕様がエラー名を明示する(§12-5)
+  "layout-regression": "layout-regression",
 };
+
+/**
+ * ワイヤの MetaStatementInput → crypto の署名対象スキーマ欄(required の
+ * boolean ↔ "true"/"false" の写像はこの 1 箇所)。
+ */
+function cryptoSchemaOf(statement: MetaStatementInput): MetaVariableSchema | undefined {
+  if (statement.schema === undefined) {
+    return undefined;
+  }
+  return {
+    varType: statement.schema.varType,
+    required: statement.schema.required ? "true" : "false",
+    description: statement.schema.description,
+  };
+}
 
 /**
  * メタステートメントの受理検証(§12-5 の 1〜3 + prev 連鎖)。検査内容:
@@ -82,6 +100,10 @@ export const ensureMetaStatementSignature = (input: {
           target: input.target,
           name: input.statement.name,
           status: input.statement.status,
+          // レイアウト v2 の運搬フィールド(§12-2 — 省略 = 1)。どのレイアウトの
+          // signed_bytes を再計算するかを選択する(裁定 CR)
+          layoutVersion: input.statement.layoutVersion,
+          schema: cryptoSchemaOf(input.statement),
           metaVersion: input.statement.metaVersion,
           prevMetaSigHashHex: input.statement.prevMetaSigHashHex,
           // author = 呼び出し主体(§12-5 の 1)。検証鍵と head 時点の束縛一致は
@@ -104,16 +126,18 @@ export const ensureMetaStatementSignature = (input: {
         reason: META_REJECT_REASONS[verified.error.reason],
       });
     }
-    // InvalidInput / KeyImportFailed / UnsupportedMetaLayout は Schema 検証済み
-    // ワイヤ + 検証済みチェーン由来の鍵では到達しない(実装バグ = defect。
-    // エラー値に秘密は含まれない)。ただし UnsupportedMetaLayout は S2 でワイヤに
-    // layoutVersion が乗ると「古いサーバー × 新しいクライアント」で実際に発生する
-    // **正常系**になるため、S2 ではこの手前に「クライアント更新が必要」の typed
-    // rejection への分岐を追加すること(裁定 CR — defect の 500 に落とすのは
-    // 「改竄警告ではなく正直な update-required」の真逆。PR #116 レビュー対応)。
-    // S2 義務(同 — 独立レビュー第 2 ラウンド): v2 削除の「スキーマ欄・
-    // レイアウトの直前一致」受理検査も追加すること(crypto 層は意図的に検査
-    // しない — v1 の name 保持検査〔programs-variable.ts〕と同じ受理面の領分)
+    // 申告 layoutVersion がこのサーバーのサポート範囲({1, 2})を超える形は、
+    // ワイヤに layoutVersion が乗った本改訂以降「古いサーバー × 新しい
+    // クライアント」の**正常系**として発生する(裁定 CR — PR #116 レビュー
+    // 対応)。署名検証より前に crypto が型付きで返すため、defect(500 =
+    // 改ざん警告と区別のつかない失敗)へ落とさず、正直な update-required の
+    // 422 として返す
+    if (verified.error.kind === "UnsupportedMetaLayout") {
+      return yield* rejectData({ kind: "meta-rejected", reason: "unsupported-layout" });
+    }
+    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済み
+    // チェーン由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は
+    // 含まれない)
     return yield* Effect.die(
       new Error(`meta statement verification failed: ${verified.error.kind}`),
     );
@@ -125,6 +149,87 @@ export const ensureMetaStatementSignature = (input: {
  */
 export const ensureNfcName = (name: string): Effect.Effect<void, DataRejectedError> =>
   name.normalize("NFC") === name ? Effect.void : Effect.fail(rejectData({ kind: "name-not-nfc" }));
+
+/**
+ * ステートメントの実効レイアウト(ワイヤ規約: 省略 = 1 — §12-2)。
+ */
+export const statementLayoutVersion = (statement: MetaStatementInput): number =>
+  statement.layoutVersion ?? 1;
+
+/**
+ * §12-8: スキーマ description の受理検査 — 1024 コードポイント以下・制御文字
+ * (Unicode カテゴリ Cc — 改行・タブ・ANSI エスケープの ESC を含む)なし。
+ * NFC 正規化は要求しない(識別子でなく照合に使わない — name との意図的な差)。
+ * v1 ステートメント(スキーマ欄なし)は対象外。本検査は受理ポリシーであり
+ * 悪意サーバーの配布を拘束しない(クライアントの表示は独立に必ず中和する)。
+ */
+export const ensureDescriptionPolicy = (
+  statement: MetaStatementInput,
+): Effect.Effect<void, DataRejectedError> => {
+  if (statement.schema === undefined) {
+    return Effect.void;
+  }
+  const description = statement.schema.description;
+  if (/\p{Cc}/u.test(description)) {
+    return Effect.fail(rejectData({ kind: "description-rejected", reason: "control-characters" }));
+  }
+  // 上限は Unicode コードポイント数(UTF-16 コード単位ではない — §12-8)
+  if ([...description].length > MAX_SCHEMA_DESCRIPTION_CODEPOINTS) {
+    return Effect.fail(rejectData({ kind: "description-rejected", reason: "too-long" }));
+  }
+  return Effect.void;
+};
+
+/**
+ * §12-11 / §12-5 の有効化ゲート: disabled のプロジェクトはレイアウト v2 の
+ * **新規採用**(metaVersion 1 の v2 作成と、直前ステートメントが v1 の変数への
+ * v2 再発行)を 422 で拒否する。直前が既に v2 の変数の継続ステートメント
+ * (削除・activation・rename・スキーマ再発行)はポリシーに依らず受理する
+ * (可逆性 — 降格が既存 v2 変数のライフサイクルを凍結しない)。v1 ステート
+ * メントはポリシーに依らず従来どおり受理する。判定は受理時点のポリシー
+ * (project DO の直列化の中で呼び出し側が読む)。
+ */
+export const ensureSchemaPolicyAllowsLayout = (input: {
+  readonly schemaPolicy: SchemaPolicy;
+  readonly statement: MetaStatementInput;
+  /** 直前ステートメントの実効レイアウト(作成 = 直前なしは 1 を渡す)。 */
+  readonly predecessorLayoutVersion: number;
+}): Effect.Effect<void, DataRejectedError> =>
+  input.schemaPolicy === "disabled" &&
+  statementLayoutVersion(input.statement) >= 2 &&
+  input.predecessorLayoutVersion === 1
+    ? Effect.fail(rejectData({ kind: "schema-policy-rejected", reason: "schema-policy-disabled" }))
+    : Effect.void;
+
+/**
+ * §12-5: 削除ステートメントのスキーマ欄・レイアウトは直前ステートメントと
+ * byte-exact に一致すること(name の「直前の active 名を保持」と同じ規約の
+ * 受理検査 — crypto 層は意図的に検査しない。実装しないと有効署名を持つ改変
+ * 削除〔スキーマ欄を書き換えた status = deleted〕が受理される)。不一致は
+ * name と同じ payload-mismatch(不一致フィールド名付き)で拒否する。
+ */
+function deletePreservationMismatch(
+  anchor: MetaAnchor,
+  statement: MetaStatementInput,
+): string | null {
+  if (statementLayoutVersion(statement) !== anchor.layoutVersion) {
+    return "layoutVersion";
+  }
+  if (anchor.schema === null || statement.schema === undefined) {
+    // レイアウト一致済み: 両方 v1(スキーマ欄なし)のみここへ来る
+    return null;
+  }
+  if (statement.schema.varType !== anchor.schema.varType) {
+    return "varType";
+  }
+  if (statement.schema.required !== anchor.schema.required) {
+    return "required";
+  }
+  if (statement.schema.description !== anchor.schema.description) {
+    return "description";
+  }
+  return null;
+}
 
 /** metaVersion の CAS(§12-5): 申告 == 最新 + 1 のみ。409 は最新番号のみを返す。 */
 export const ensureMetaCas = (
@@ -152,10 +257,13 @@ const ensureMetaQuota = (
     : Effect.void;
 
 /**
- * rename / 削除に共通するメタ受理列(§12-5): metaVersion 上限 → CAS(409 は
- * 最新番号のみ)→ 保存済み直前ステートメントのアンカー取得(CAS 通過後は必ず
- * 存在 — 欠落は defect)→ 署名検証(predecessor 込み — prev 連鎖と削除後の
- * 再ステートメント拒否)。成功時はサーバー再計算の signed_bytes ハッシュを返す。
+ * rename / スキーマ再発行 / 削除 / activation に共通するメタ受理列(§12-5):
+ * metaVersion 上限 → CAS(409 は最新番号のみ)→ 保存済み直前ステートメントの
+ * アンカー取得(CAS 通過後は必ず存在 — 欠落は defect)→ 受理面の v2 検査
+ * (schemaPolicy の有効化ゲート・description の受理ポリシー・削除ステートメントの
+ * スキーマ欄/レイアウト直前一致)→ 署名検証(predecessor 込み — prev 連鎖・
+ * 削除後の再ステートメント拒否・遷移規則・レイアウト単調性)。
+ * 成功時はサーバー再計算の signed_bytes ハッシュを返す。
  */
 export const acceptMetaStatement = (input: {
   readonly projectId: string;
@@ -165,6 +273,11 @@ export const acceptMetaStatement = (input: {
   readonly history: ChainHistoryIndex;
   readonly member: ChainMember;
   readonly statement: MetaStatementInput;
+  /**
+   * 受理時点の schemaPolicy(変数ステートメントのみ — 呼び出し側が DO permit
+   * 下で読む。環境ステートメントは v2 の対象外なので渡さない)。
+   */
+  readonly schemaPolicy?: SchemaPolicy;
 }) =>
   Effect.gen(function* () {
     yield* ensureMetaQuota(input.latestMetaVersion, input.statement);
@@ -181,6 +294,24 @@ export const acceptMetaStatement = (input: {
     if (anchor === null) {
       return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
     }
+    // 有効化ゲート(§12-11): disabled 下の v1 変数への v2 再発行を拒否する
+    // (直前が v2 の継続ステートメントはポリシーに依らず通る)
+    if (input.schemaPolicy !== undefined) {
+      yield* ensureSchemaPolicyAllowsLayout({
+        schemaPolicy: input.schemaPolicy,
+        statement: input.statement,
+        predecessorLayoutVersion: anchor.layoutVersion,
+      });
+    }
+    // description の受理ポリシー(§12-8 — v1 ステートメントは対象外)
+    yield* ensureDescriptionPolicy(input.statement);
+    // 削除ステートメントのスキーマ欄・レイアウトの直前一致(§12-5 — S2 義務)
+    if (input.target.kind === "variable" && input.statement.status === "deleted") {
+      const field = deletePreservationMismatch(anchor, input.statement);
+      if (field !== null) {
+        return yield* rejectData({ kind: "payload-mismatch", field });
+      }
+    }
     return yield* ensureMetaStatementSignature({
       projectId: input.projectId,
       environmentId: input.environmentId,
@@ -188,9 +319,12 @@ export const acceptMetaStatement = (input: {
       history: input.history,
       member: input.member,
       statement: input.statement,
-      // 保存済みステートメントは現行すべてレイアウト 1(ワイヤ v2 の受理 = S2)。
-      // MetaPredecessor.layoutVersion は fail-closed の必須フィールドなので明示
-      // する — S2 で layout_version 列を保存し、アンカーの実値をここへ通すこと
-      predecessor: { ...anchor, layoutVersion: 1 },
+      // アンカーの保存実値(layout_version 列 — レイアウト単調性検査の入力。
+      // MetaPredecessor.layoutVersion は fail-closed の必須フィールド)
+      predecessor: {
+        signedBytesHashHex: anchor.signedBytesHashHex,
+        status: anchor.status,
+        layoutVersion: anchor.layoutVersion,
+      },
     });
   });

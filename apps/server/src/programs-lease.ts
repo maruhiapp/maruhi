@@ -74,7 +74,9 @@ export interface LeaseTokenFacts {
  * チェーン全体(§14-2 の同梱 — 非メンバーはチェーン API から 404 を受けるため
  * ここが唯一の配布経路)とリースラップを加えたもの。
  */
-export interface LeaseValue extends Omit<EnvironmentPullValue, "deks"> {
+// schemaPolicy の advisory 同梱の対象は環境一覧・両 pull 応答のみ(§12-7 /
+// §12-11)— リース応答には載せない
+export interface LeaseValue extends Omit<EnvironmentPullValue, "deks" | "schemaPolicy"> {
   readonly chain: readonly ChainEntry[];
   readonly headSeq: number;
   readonly headHashHex: string;
@@ -248,6 +250,9 @@ export const leaseProgram = (
     }
     const variables = yield* store.latestVersions(environmentId);
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
+    // declared 変数のステートメント(§12-7 の配布規則をリース応答にも適用 —
+    // ワークロードのマニフェストダイジェスト再計算〔§9.1 (5)〕の材料)
+    const declaredVariables = yield* store.declaredVariableStatements(environmentId);
     // 最新マニフェスト(§14-2 — 2026-08-18。ワークロードの検証義務 §9.1 (5) の
     // 材料。null は移行前の過渡状態のみ — 受信側は欠落を一律拒否する)
     const manifest = yield* store.environmentManifest(environmentId);
@@ -350,6 +355,7 @@ export const leaseProgram = (
       statement,
       variables,
       deletedVariables,
+      ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
       leases,
       ...optionalDistributionFields(manifest, checkpointSnapshot),
     } satisfies LeaseValue;

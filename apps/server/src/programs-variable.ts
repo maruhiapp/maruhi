@@ -15,10 +15,11 @@ import type {
   DataRejection,
   EnvManifestInput,
   MetaStatementInput,
+  SchemaPolicy,
   ValueInput,
   VariableVersionValue,
 } from "./data-plane.ts";
-import { dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
+import { currentEpochOf, dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
 import type { DataWriteOps, VariableRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import { MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
@@ -31,9 +32,12 @@ import {
 import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import {
   acceptMetaStatement,
+  ensureDescriptionPolicy,
   ensureMetaCas,
   ensureMetaStatementSignature,
   ensureNfcName,
+  ensureSchemaPolicyAllowsLayout,
+  statementLayoutVersion,
 } from "./verify-meta.ts";
 import { ensureValueCas, ensureValueSignature } from "./verify-value.ts";
 
@@ -92,13 +96,40 @@ function writeVersionWithAudit(
   );
 }
 
+/**
+ * schema-locked(§12-11 / §12-5): locked のプロジェクトでは変数作成
+ * (metaVersion 1 — declared・値同梱の両方)に layoutVersion 2 かつ varType
+ * 非空を要求する(typo による影の変数の黙った創出の書き込み時遮断)。
+ * **作成時の一回検査**であり継続的な不変条件ではない — 後続のスキーマ再発行で
+ * varType を "" へ戻すことは locked 下でも妨げず、declared の activation にも
+ * 遡及しない。
+ */
+function ensureSchemaLockedCreation(
+  schemaPolicy: SchemaPolicy,
+  statement: MetaStatementInput,
+): Effect.Effect<void, ReturnType<typeof rejectData>> {
+  if (schemaPolicy !== "locked") {
+    return Effect.void;
+  }
+  if (statementLayoutVersion(statement) !== 2 || (statement.schema?.varType ?? "") === "") {
+    return Effect.fail(rejectData({ kind: "schema-policy-rejected", reason: "schema-required" }));
+  }
+  return Effect.void;
+}
+
+/**
+ * 変数作成(§12-5): active(version 1 の値同梱)または declared(値なし —
+ * 「値のない変数は存在しない」の唯一の例外。レイアウト v2 限定)。ワイヤ
+ * Schema が status と値の有無の結合を固定する(deleted の創出は構造的に不可)。
+ */
 export const createVariableProgram = (
   actor: DataActor,
   environmentId: string,
   input: {
     readonly variableId: string;
     readonly statement: MetaStatementInput;
-    readonly value: ValueInput;
+    /** active 作成の version 1 の値。declared 作成(値なし)では undefined。 */
+    readonly value?: ValueInput;
     readonly manifest: EnvManifestInput;
   },
   cache: StateCache,
@@ -125,13 +156,27 @@ export const createVariableProgram = (
         reason: "duplicate-name",
       });
     }
+    // スキーマポリシー(§12-11 — 受理時点のポリシーを permit 下で読む):
+    // disabled は v2 の新規採用(metaVersion 1 の v2 作成)を拒否し、locked は
+    // 作成に v2 + varType 非空を要求する。description の上限・文字種は §12-8
+    const schemaPolicy = yield* store.schemaPolicy;
+    yield* ensureSchemaPolicyAllowsLayout({
+      schemaPolicy,
+      statement: input.statement,
+      predecessorLayoutVersion: 1,
+    });
+    yield* ensureSchemaLockedCreation(schemaPolicy, input.statement);
+    yield* ensureDescriptionPolicy(input.statement);
     // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
-    // ワイヤ Schema が metaVersion 1・active・prev 空を固定するが、CAS は
-    // 防衛線として残す(latest = 0 相当)
+    // ワイヤ Schema が metaVersion 1・active/declared・prev 空を固定するが、
+    // CAS は防衛線として残す(latest = 0 相当)
     yield* ensureMetaCas(0, input.statement);
-    yield* ensureValueCas(state, environmentId, 0, input.value);
+    if (input.value !== undefined) {
+      yield* ensureValueCas(state, environmentId, 0, input.value);
+    }
     // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名検証を
-    // 受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可)。判定順:
+    // 受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可。declared 作成は
+    // 値がないため値署名の検証のみ対象外)。判定順:
     // CAS → メタ署名 → 値署名 → 数量ポリシー(裁定 D への挿入)
     const metaSignedBytesHashHex = yield* ensureMetaStatementSignature({
       projectId,
@@ -141,14 +186,17 @@ export const createVariableProgram = (
       member,
       statement: input.statement,
     });
-    const signedBytesHashHex = yield* ensureValueSignature({
-      projectId,
-      environmentId,
-      variableId: input.variableId,
-      history,
-      member,
-      value: input.value,
-    });
+    const signedBytesHashHex =
+      input.value === undefined
+        ? null
+        : yield* ensureValueSignature({
+            projectId,
+            environmentId,
+            variableId: input.variableId,
+            history,
+            member,
+            value: input.value,
+          });
     // 環境マニフェストの複合受理(§12-5 — 2026-08-18): 作成後のメタ状態
     // (新変数のステートメントを含む集合)からダイジェストを再計算して申告と
     // 突合する。manifestVersion CAS は metaVersion CAS と同一トランザクション
@@ -161,17 +209,21 @@ export const createVariableProgram = (
       manifest: input.manifest,
       digestOverride: {
         variableId: input.variableId,
-        status: "active",
+        status: input.statement.status,
         metaVersion: input.statement.metaVersion,
         signedBytesHashHex: metaSignedBytesHashHex,
       },
     });
-    yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
+    const value = input.value;
+    if (value !== undefined) {
+      yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
+    }
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 書き込みフェーズ(単一タスク): 変数行 + ステートメント行 + version 1 +
-    // マニフェスト(最新 1 通の upsert)+ 監査 2 行を原子的に書く
-    // (「latest_version = 0 のまま ID だけ占有された変数」を残さない)
+    // 書き込みフェーズ(単一タスク): 変数行 + ステートメント行 +(active 作成
+    // なら)version 1 + マニフェスト(最新 1 通の upsert)+ 監査行を原子的に
+    // 書く(「latest_version = 0 のまま ID だけ占有された active 変数」を
+    // 残さない — declared だけが正当な version 0 状態)
     yield* Effect.sync(() => {
       store.write.insertVariable(environmentId, input.variableId, input.statement.name, now);
       acceptedManifest.writeSync(now);
@@ -183,8 +235,8 @@ export const createVariableProgram = (
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         now,
       );
-      // var.created の FP = 同梱 v1 の writer FP = author FP(同一主体 — §12-5。
-      // テストが固定する)
+      // var.created の FP = author FP(declared 作成 — 値署名なし — は
+      // ステートメント署名の author 鍵 FP のみを写す。AUDIT_SPEC §3.3)
       audit.appendSync(
         dataEvent(actor, now, "var.created", {
           environmentId,
@@ -193,24 +245,27 @@ export const createVariableProgram = (
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       );
-      // 作成は定義上、再暗号化ではない(マーカーの申告面も持たない — §12-5)
-      writeVersionWithAudit(
-        store.write,
-        audit.appendSync,
-        actor,
-        member,
-        environmentId,
-        input.variableId,
-        input.value,
-        false,
-        signedBytesHashHex,
-        now,
-      );
+      if (value !== undefined && signedBytesHashHex !== null) {
+        // 作成は定義上、再暗号化ではない(マーカーの申告面も持たない — §12-5)
+        writeVersionWithAudit(
+          store.write,
+          audit.appendSync,
+          actor,
+          member,
+          environmentId,
+          input.variableId,
+          value,
+          false,
+          signedBytesHashHex,
+          now,
+        );
+      }
     });
     return {
       variableId: input.variableId,
-      version: input.value.version,
-      epoch: input.value.epoch,
+      // declared 作成は保存バージョン 0 のまま(§12-5)
+      version: value?.version ?? 0,
+      epoch: value?.epoch ?? currentEpochOf(state, environmentId),
     } satisfies VariableVersionValue;
   });
 
@@ -230,6 +285,11 @@ export const pushVersionProgram = (
     );
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
+    // declared 変数への通常 push は受理しない(§12-5): 最初の値は activation
+    // 複合(値 version 1 + status active のステートメント + マニフェスト)のみ
+    if (variable.latestStatus === "declared") {
+      return yield* rejectData({ kind: "activation-required", variableId });
+    }
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
     // 判定順(裁定 D): epoch / version CAS → 値署名(署名 → 宣言 head →
     // head 時点状態 → predecessor)→ 数量ポリシー → 原子書き込み。
@@ -274,6 +334,118 @@ export const pushVersionProgram = (
     } satisfies VariableVersionValue;
   });
 
+/**
+ * activation(declared → active — §12-5): declared 変数への最初の値 push を
+ * 「EncryptedPayload(version 1)+ status active のステートメント(metaVersion
+ * + 1・v2)+ EnvironmentManifest」の複合として受理する。値署名・ステートメント
+ * 署名・マニフェストの検証は既存規則の合成。直前が v2(declared は v2 限定)の
+ * ため継続ステートメントとしてポリシーに依らず受理される(§12-11 の可逆性 —
+ * schema-locked の varType 検査も遡及しない: activation は創出ではない)。
+ */
+export const activateVariableProgram = (
+  actor: DataActor,
+  environmentId: string,
+  variableId: string,
+  input: {
+    readonly value: ValueInput;
+    readonly statement: MetaStatementInput;
+    readonly manifest: EnvManifestInput;
+  },
+  cache: StateCache,
+) =>
+  Effect.gen(function* () {
+    const { state, history, member, projectId } = yield* requireMemberState(
+      actor.userId,
+      "member",
+      cache,
+    );
+    yield* requireActiveEnvironment(environmentId);
+    const variable = yield* requireActiveVariable(environmentId, variableId);
+    // activation の対象は declared のみ。active 変数(latestVersion >= 1)への
+    // 複合は値 CAS が 409(currentVersion)で落とす — declared だけが正当な
+    // latest 0 状態なので、CAS の意味論がそのまま対象判定を兼ねる
+    yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
+    // ステートメントは rename 形の受け皿と同じ検査列(NFC・名前一意性 —
+    // activation は rename を兼ねてよい: name の変更は他のメタ操作と同じ規則)
+    yield* ensureNfcName(input.statement.name);
+    const store = yield* DataStore;
+    if (yield* store.variableNameTaken(environmentId, input.statement.name, variableId)) {
+      return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
+    }
+    // メタ受理列(§12-5): CAS → アンカー → description 受理検査 → 署名検証
+    // (declared → active の遷移と v2 単調性は crypto の predecessor 検査)。
+    // schemaPolicy は渡さない — 直前は必ず v2(declared は v2 限定)で、継続
+    // ステートメントはポリシーに依らず受理される(§12-11)
+    const metaSignedBytesHashHex = yield* acceptMetaStatement({
+      projectId,
+      environmentId,
+      target: { kind: "variable", variableId },
+      latestMetaVersion: variable.latestMetaVersion,
+      history,
+      member,
+      statement: input.statement,
+    });
+    const signedBytesHashHex = yield* ensureValueSignature({
+      projectId,
+      environmentId,
+      variableId,
+      history,
+      member,
+      value: input.value,
+    });
+    // マニフェストの複合受理(§12-5): activation はメタ状態が変わるため
+    // マニフェスト再発行を伴う(「値の push はマニフェストに触れない」不変条件の
+    // 対象は通常 push — CRYPTO_SPEC §4.3)
+    const acceptedManifest = yield* acceptManifestForMetaOp({
+      projectId,
+      environmentId,
+      history,
+      member,
+      manifest: input.manifest,
+      digestOverride: {
+        variableId,
+        status: "active",
+        metaVersion: input.statement.metaVersion,
+        signedBytesHashHex: metaSignedBytesHashHex,
+      },
+    });
+    yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
+    const audit = yield* AuditStore;
+    const now = Date.now();
+    // 書き込みフェーズ(単一タスク): ステートメント行 + version 1 +
+    // マニフェスト + var.version_pushed(version 1 — AUDIT_SPEC §3.3。
+    // 存在区間の開始は declared 作成時の var.created が既に保持する)
+    yield* Effect.sync(() => {
+      store.write.insertVariableMetaStatement(
+        environmentId,
+        variableId,
+        input.statement,
+        metaSignedBytesHashHex,
+        { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
+        now,
+      );
+      acceptedManifest.writeSync(now);
+      // activation は最初の値であり、定義上再暗号化ではない
+      writeVersionWithAudit(
+        store.write,
+        audit.appendSync,
+        actor,
+        member,
+        environmentId,
+        variableId,
+        input.value,
+        false,
+        signedBytesHashHex,
+        now,
+      );
+    });
+    return {
+      variableId,
+      version: input.value.version,
+      epoch: input.value.epoch,
+    } satisfies VariableVersionValue;
+  });
+
 export const renameVariableProgram = (
   actor: DataActor,
   environmentId: string,
@@ -286,6 +458,13 @@ export const renameVariableProgram = (
     const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
+    // rename / スキーマ再発行は status 不変(§12-5): declared → active は
+    // activation 複合(値同梱)のみ、active → declared は禁止。ワイヤは両
+    // status を運べるため、現状態との一致を受理検査で固定する(name の保持
+    // 検査と同じ payload-mismatch)
+    if (statement.status !== variable.latestStatus) {
+      return yield* rejectData({ kind: "payload-mismatch", field: "status" });
+    }
     yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
@@ -299,6 +478,9 @@ export const renameVariableProgram = (
       history,
       member,
       statement,
+      // 有効化ゲート(§12-11): disabled 下の「v1 変数への v2 再発行」を拒否する
+      // (直前が v2 の継続はポリシーに依らず通る — アンカー実値で判定)
+      schemaPolicy: yield* store.schemaPolicy,
     });
     // マニフェストの複合受理(§12-5): rename 適用後の集合で再計算・突合
     const acceptedManifest = yield* acceptManifestForMetaOp({
@@ -309,7 +491,7 @@ export const renameVariableProgram = (
       manifest,
       digestOverride: {
         variableId,
-        status: "active",
+        status: statement.status,
         metaVersion: statement.metaVersion,
         signedBytesHashHex,
       },

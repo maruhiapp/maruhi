@@ -10,6 +10,7 @@ import { AuditStore } from "./audit-store.ts";
 import type { StateCache } from "./chain-store.ts";
 import type {
   DataActor,
+  EnvironmentListValue,
   EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   EnvironmentSummaryValue,
@@ -157,11 +158,15 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
     const environments = yield* store.listEnvironmentStatements;
     // 削除済み環境もチェーン上に create_environment を持つ(チェーンは削除を
     // 観測しない — §6.2)ため、currentEpochOf は全行で導出可能
-    return environments.map((environment): EnvironmentSummaryValue => ({
-      environmentId: environment.environmentId,
-      currentEpoch: currentEpochOf(state, environment.environmentId),
-      statement: environment.statement,
-    }));
+    return {
+      environments: environments.map((environment): EnvironmentSummaryValue => ({
+        environmentId: environment.environmentId,
+        currentEpoch: currentEpochOf(state, environment.environmentId),
+        statement: environment.statement,
+      })),
+      // schemaPolicy の advisory 同梱(§12-7 / §12-11 — 検証規則の入力にしない)
+      schemaPolicy: yield* store.schemaPolicy,
+    } satisfies EnvironmentListValue;
   });
 
 /**
@@ -200,6 +205,9 @@ export const pullEnvironmentProgram = (
     // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
     // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
+    // declared 変数はステートメントのみ配布する(§12-7 — 値・バージョンは
+    // 存在しない。マニフェストのダイジェスト再計算の材料として必須)
+    const declaredVariables = yield* store.declaredVariableStatements(environmentId);
     const deks = yield* store.listWrapsForRecipient(environmentId, actor.userId);
     // チェックポイント時点の値スナップショット(§12-7 — 2026-08-28 PR-M3):
     // 当該環境を含む最新 checkpoint の保存行(§16-2)があれば必ず同梱する。
@@ -227,7 +235,10 @@ export const pullEnvironmentProgram = (
       statement,
       variables,
       deletedVariables,
+      // declared 変数が無ければキー自体を置かない(optionalKey のワイヤ形)
+      ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
       deks,
+      schemaPolicy: yield* store.schemaPolicy,
       ...optionalDistributionFields(manifest, checkpointSnapshot),
     } satisfies EnvironmentPullValue;
   });
@@ -249,6 +260,8 @@ export const pullEnvironmentMetadataProgram = (
       environmentId,
       cache,
     );
+    // declared 変数のステートメントも variables に載る(削除済みでない全変数の
+    // 最新形 — §12-7。status が判別を担う)
     const variables = yield* store.activeVariableStatements(environmentId);
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
     return {
@@ -257,6 +270,7 @@ export const pullEnvironmentMetadataProgram = (
       statement,
       variables,
       deletedVariables,
+      schemaPolicy: yield* store.schemaPolicy,
       ...(manifest === null ? {} : { manifest }),
     } satisfies EnvironmentMetadataPullValue;
   });

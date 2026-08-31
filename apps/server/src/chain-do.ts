@@ -44,12 +44,13 @@ import type {
   DataRejection,
   DekWrapInput,
   DekWrapRefInput,
+  EnvironmentListValue,
   EnvironmentMetadataPullValue,
   EnvironmentPullValue,
-  EnvironmentSummaryValue,
   EnvManifestInput,
   MetaStatementInput,
   RecipientDekValue,
+  SchemaPolicy,
   ValueInput,
   VariableVersionValue,
 } from "./data-plane.ts";
@@ -75,7 +76,9 @@ import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease
 import { leaseProgram } from "./programs-lease.ts";
 import type { RotationDismissTargetInput } from "./programs-rotation.ts";
 import { dismissRotationFlagsProgram, rotationFlagsProgram } from "./programs-rotation.ts";
+import { getSchemaPolicyProgram, setSchemaPolicyProgram } from "./programs-schema-policy.ts";
 import {
+  activateVariableProgram,
   createVariableProgram,
   deleteVariableProgram,
   pushVersionProgram,
@@ -514,7 +517,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
-  listEnvironments(actor: DataActor): Promise<DataOutcome<readonly EnvironmentSummaryValue[]>> {
+  listEnvironments(actor: DataActor): Promise<DataOutcome<EnvironmentListValue>> {
     return this.#runData(listEnvironmentsProgram(actor, this.#stateCache));
   }
 
@@ -525,11 +528,30 @@ export class ProjectChainDO extends DurableObject<Env> {
     input: {
       readonly variableId: string;
       readonly statement: MetaStatementInput;
-      readonly value: ValueInput;
+      /** active 作成の version 1 の値。declared 作成(§12-5)では省略。 */
+      readonly value?: ValueInput;
       readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<VariableVersionValue>> {
     return this.#runData(createVariableProgram(actor, environmentId, input, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  activateVariable(
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    input: {
+      readonly value: ValueInput;
+      readonly statement: MetaStatementInput;
+      readonly manifest: EnvManifestInput;
+    },
+  ): Promise<DataOutcome<VariableVersionValue>> {
+    // activation 複合(§12-5): declared → active を値 version 1 + ステートメント +
+    // マニフェストの原子受理で行う
+    return this.#runData(
+      activateVariableProgram(actor, environmentId, variableId, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
@@ -625,6 +647,18 @@ export class ProjectChainDO extends DurableObject<Env> {
     refs: readonly DekWrapRefInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runData(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
+  }
+
+  // --- schemaPolicy 設定 RPC(AUTH_SPEC §12-11) --------------------------
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  schemaPolicyFor(actor: DataActor): Promise<DataOutcome<{ readonly schemaPolicy: SchemaPolicy }>> {
+    return this.#runData(getSchemaPolicyProgram(actor, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  setSchemaPolicy(actor: DataActor, schemaPolicy: SchemaPolicy): Promise<DataOutcome<void>> {
+    return this.#runData(setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache));
   }
 
   // --- 要ローテーションフラグ RPC(AUDIT_SPEC §4.1 / §7 — Wave 2 B2) ----

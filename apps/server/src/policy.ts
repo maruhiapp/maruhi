@@ -54,6 +54,14 @@ export const MAX_VARIABLE_ROWS_PER_ENVIRONMENT = 5_000;
 /** §12-8: 変数あたりのバージョン数。 */
 export const MAX_VERSIONS_PER_VARIABLE = 1_000;
 
+/**
+ * §12-8: スキーマ description(変数 — レイアウト v2)の上限(Unicode コード
+ * ポイント数)。制御文字(改行含む)の拒否と合わせて 422 で拒否する(表示名の
+ * Schema 400 とは意図的に区分が違う — 専用の受理検査を持つ)。DoS 抑制と
+ * エージェントへ渡るデータの注入面の抑制を兼ねる(裁定 CW)。
+ */
+export const MAX_SCHEMA_DESCRIPTION_CODEPOINTS = 1_024;
+
 /** §12-8: プロジェクトの累積暗号文バイト(現在保存中の量。削除で解放される)。 */
 export const MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES = 1024 * 1024 * 1024;
 

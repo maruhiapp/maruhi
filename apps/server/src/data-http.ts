@@ -7,6 +7,7 @@
 
 import type { EncryptedPayload } from "@maruhi/api-schema";
 import {
+  ActivationRequiredError,
   AttestationRateLimitedError,
   AttestationRegressionError,
   AttestationRejectedError,
@@ -33,6 +34,8 @@ import {
   PayloadMismatchError,
   ProjectNotFoundError,
   RotationFlagNotFoundError,
+  SchemaDescriptionRejectedError,
+  SchemaPolicyRejectedError,
   ValueSignatureRejectedError,
   ValueTooLargeError,
   VariableConflictError,
@@ -179,13 +182,22 @@ export function toManifestInput(manifest: {
   };
 }
 
-/** ワイヤのステートメント → DO へ渡す保存入力(座標は検査済み)。 */
+/**
+ * ワイヤのステートメント → DO へ渡す保存入力(座標は検査済み)。レイアウト v2
+ * (§12-2)では layoutVersion とスキーマ欄が 4 フィールド揃って存在する —
+ * ワイヤ Schema が結合を強制するため、layoutVersion の存在だけで分岐してよい
+ * (欠けたスキーマ欄は Schema 400 で先に落ちる)。
+ */
 export function toMetaStatementInput(statement: {
   readonly suite: "maruhi/v1";
   readonly name: string;
-  readonly status: "active" | "deleted";
+  readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
+  readonly layoutVersion?: number;
+  readonly varType?: "" | "string" | "number" | "boolean" | "url";
+  readonly required?: boolean;
+  readonly description?: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
@@ -196,6 +208,19 @@ export function toMetaStatementInput(statement: {
     status: statement.status,
     metaVersion: statement.metaVersion,
     prevMetaSigHashHex: statement.prevMetaSigHashHex,
+    ...(statement.layoutVersion === undefined ||
+    statement.varType === undefined ||
+    statement.required === undefined ||
+    statement.description === undefined
+      ? {}
+      : {
+          layoutVersion: statement.layoutVersion,
+          schema: {
+            varType: statement.varType,
+            required: statement.required,
+            description: statement.description,
+          },
+        }),
     chainHeadHashHex: statement.chainHeadHashHex,
     chainHeadSeq: statement.chainHeadSeq,
     signatureHex: statement.signatureHex,
@@ -266,6 +291,9 @@ type DataApiError =
   | EpochConflictError
   | ValueSignatureRejectedError
   | MetaStatementRejectedError
+  | SchemaPolicyRejectedError
+  | ActivationRequiredError
+  | SchemaDescriptionRejectedError
   | MetaVersionConflictError
   | ManifestRejectedError
   | ManifestVersionConflictError
@@ -322,6 +350,15 @@ const rejectionErrors = {
   "epoch-conflict": (rejection) => new EpochConflictError({ currentEpoch: rejection.currentEpoch }),
   "value-rejected": (rejection) => new ValueSignatureRejectedError({ reason: rejection.reason }),
   "meta-rejected": (rejection) => new MetaStatementRejectedError({ reason: rejection.reason }),
+  // schemaPolicy の受理ゲート(AUTH_SPEC §12-11 / §12-5)
+  "schema-policy-rejected": (rejection) =>
+    new SchemaPolicyRejectedError({ reason: rejection.reason }),
+  // declared 変数への通常 push(§12-5 — activation 複合を要求)
+  "activation-required": (rejection) =>
+    new ActivationRequiredError({ variableId: rejection.variableId }),
+  // スキーマ description の受理検査(§12-8)
+  "description-rejected": (rejection) =>
+    new SchemaDescriptionRejectedError({ reason: rejection.reason }),
   "meta-version-conflict": (rejection) =>
     new MetaVersionConflictError({ currentMetaVersion: rejection.currentMetaVersion }),
   "manifest-rejected": (rejection) => new ManifestRejectedError({ reason: rejection.reason }),

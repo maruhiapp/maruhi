@@ -135,6 +135,9 @@ const CLASS1_EVENTS: readonly string[] = [
   "server.value_decrypted",
   "rotation.recommended",
   "rotation.dismissed",
+  // 設定値自体が pull 応答で全メンバーへ advisory 配布されるためクラス 1
+  // (AUDIT_SPEC §3.3 — AUTH_SPEC §12-11)
+  "project.schema_policy_changed",
 ];
 
 /**

@@ -73,7 +73,7 @@ export const manifestDigestEntries = (
   environmentId: string,
   override: {
     readonly variableId: string;
-    readonly status: "active" | "deleted";
+    readonly status: "active" | "deleted" | "declared";
     readonly metaVersion: number;
     readonly signedBytesHashHex: string;
   } | null,
@@ -129,7 +129,7 @@ export const acceptManifestForMetaOp = (input: {
   readonly manifest: EnvManifestInput;
   readonly digestOverride: {
     readonly variableId: string;
-    readonly status: "active" | "deleted";
+    readonly status: "active" | "deleted" | "declared";
     readonly metaVersion: number;
     readonly signedBytesHashHex: string;
   } | null;
