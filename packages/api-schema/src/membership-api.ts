@@ -10,6 +10,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/un
 
 import { auditGroup } from "./audit-api.ts";
 import { authGroup } from "./auth-api.ts";
+import { authCliGroup } from "./auth-cli-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ChainEntrySchema, RoleSchema } from "./chain.ts";
 import { deksGroup, environmentsGroup, variablesGroup } from "./data-api.ts";
@@ -210,6 +211,9 @@ export const membershipGroup = HttpApiGroup.make("membership")
 export const maruhiApi = HttpApi.make("maruhi")
   .add(membershipGroup)
   .add(authGroup)
+  // CLI ログイン(AUTH_SPEC §4)— 全面未認証(資格 = フロー資格情報。
+  // session-capability.ts の UNAUTHENTICATED_ENDPOINTS に分類)
+  .add(authCliGroup)
   .add(environmentsGroup)
   .add(variablesGroup)
   .add(deksGroup)

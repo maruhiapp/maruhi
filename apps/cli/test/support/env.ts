@@ -49,6 +49,8 @@ export interface TestEnv {
   readonly pinsDir: string;
   /** promptLine に表示されたプロンプト文字列(検査用)。 */
   readonly prompts: string[];
+  /** openBrowser に渡された URL(login のブラウザ自動起動分岐の検査用)。 */
+  readonly browserOpens: string[];
   setStdin(bytes: Uint8Array): void;
   /**
    * 端末判定(`Stdio`)の偽装。値の表示可否の**一次境界**なので、既定は
@@ -69,6 +71,8 @@ export interface TestEnv {
   setAgent(profile: AgentProfile): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
+  /** openBrowser の成否を偽装する(既定は成功)。 */
+  setBrowserOpenSucceeds(succeeds: boolean): void;
   /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
   failKeychainWrites(): void;
   /**
@@ -97,6 +101,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const envVars = new Map<string, string>();
   const prompts: string[] = [];
   const promptResponses: (string | (() => string))[] = [];
+  const browserOpens: string[] = [];
+  let browserOpenSucceeds = true;
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
   // 既定は「人間が対話端末で実行した」形(値の表示が許される唯一の形)
@@ -199,6 +205,11 @@ export async function makeTestEnv(): Promise<TestEnv> {
       envVar: (name) => envVars.get(name),
       agentProfile: () => agent,
       stderrIsTerminal: () => stderrIsTerminal,
+      openBrowser: (url) =>
+        Effect.sync(() => {
+          browserOpens.push(url);
+          return browserOpenSucceeds;
+        }),
     }),
     Layer.succeed(ProcessRunner, {
       run: ({ command, extraEnv }) =>
@@ -220,6 +231,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     floorDir,
     pinsDir,
     prompts,
+    browserOpens,
     setStdin(bytes) {
       stdin = bytes;
     },
@@ -244,6 +256,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setRunnerExitCode(code) {
       runnerExitCode = code;
+    },
+    setBrowserOpenSucceeds(succeeds) {
+      browserOpenSucceeds = succeeds;
     },
     failKeychainWrites() {
       keychainWritable = false;

@@ -15,17 +15,28 @@ export {
   AuthConfigSchema,
   authGroup,
   DEFAULT_TOKEN_TTL_DAYS,
-  DeviceExchangeResultSchema,
   MAX_TOKEN_NAME_LENGTH,
   MAX_TOKEN_TTL_DAYS,
   MeSchema,
   RecoveryStatusSchema,
   RecoveryWrapResultSchema,
   RecoveryWrapSchema,
+  TOKEN_NAME_FORBIDDEN_CHARS,
   TokenListSchema,
+  TokenNameSchema,
   TokenSummarySchema,
   UserOrgSchema,
 } from "./auth-api.ts";
+export {
+  authCliGroup,
+  CliFlowIdSchema,
+  CliPollApprovedSchema,
+  CliPollDeniedSchema,
+  CliPollPendingSchema,
+  CliPollResultSchema,
+  CliStartResultSchema,
+  MIN_CLI_POLL_INTERVAL_SECONDS,
+} from "./auth-cli-api.ts";
 export { AuthMiddleware, CSRF_HEADER_NAME } from "./auth-middleware.ts";
 export {
   ChainActorSchema,
@@ -113,6 +124,8 @@ export {
   ChainInvalidReasonSchema,
   CheckpointMismatchReasonSchema,
   CheckpointStateMismatchError,
+  CliFlowExpiredError,
+  CliFlowRejectedError,
   CompositeRequiredError,
   DataLimitExceededError,
   DataLimitResourceSchema,

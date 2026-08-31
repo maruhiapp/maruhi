@@ -36,7 +36,7 @@ import {
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliToken,
   JSON_HEADERS,
   loginSession,
   sessionHeaders,
@@ -309,7 +309,7 @@ describe("invite issue", () => {
   });
 
   it("token scope gates issuance: out-of-scope 404, low permission 403", async () => {
-    const outOfScope = await deviceToken(9001, [{ project: "f".repeat(64), permission: "admin" }]);
+    const outOfScope = await cliToken(9001, [{ project: "f".repeat(64), permission: "admin" }]);
     const outResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(outOfScope) },
@@ -317,7 +317,7 @@ describe("invite issue", () => {
     });
     expect(outResponse.status).toBe(404);
 
-    const lowPermission = await deviceToken(9001, [{ project: projectId, permission: "write" }]);
+    const lowPermission = await cliToken(9001, [{ project: projectId, permission: "write" }]);
     const lowResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(lowPermission) },
@@ -637,7 +637,7 @@ describe("invite accept", () => {
   it("requires the key-material token condition (§13-2 と同水準)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    const narrow = await deviceToken(9009, [{ project: projectId, permission: "admin" }]);
+    const narrow = await cliToken(9009, [{ project: projectId, permission: "admin" }]);
     const signatureHex = await signAcceptance(keys, issued.token, STRANGER);
     const response = await acceptRequest(bearer(narrow), {
       token: issued.token,

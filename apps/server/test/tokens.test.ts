@@ -12,7 +12,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliIssue,
+  cliToken,
   JSON_HEADERS,
   loginSession,
   resetAuthDb,
@@ -22,28 +23,8 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = "__Host-maruhi_session";
 
-interface ExchangeBody {
-  readonly token: string;
-  readonly tokenId: string;
-  readonly userId: string;
-  readonly expiresAtMs: number;
-}
-
-/** device 交換の完全応答(support の deviceToken は生値のみ返すため別に持つ)。 */
-async function exchange(
-  githubId: number,
-  extra?: Readonly<Record<string, unknown>>,
-): Promise<ExchangeBody> {
-  const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ githubAccessToken: `gho_test${githubId}`, ...extra }),
-  });
-  if (response.status !== 200) {
-    throw new Error(`device exchange failed: ${response.status}`);
-  }
-  return (await response.json()) as ExchangeBody;
-}
+/** CLI ハンドオフ(実経路)での発行の完全応答(support の cliIssue の別名)。 */
+const exchange = cliIssue;
 
 interface TokenRow {
   readonly id: string;
@@ -85,14 +66,14 @@ describe("既定 TTL(AUTH_SPEC §6 — L-2 の解消)", () => {
 
   it("rejects out-of-range or non-integer expiresInDays at the wire schema", async () => {
     for (const expiresInDays of [0, 366, 1.5, -1]) {
-      const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
+      const response = await SELF.fetch(`${BASE}/auth/cli/start`, {
         method: "POST",
         headers: JSON_HEADERS,
-        body: JSON.stringify({ githubAccessToken: "gho_test803", expiresInDays }),
+        body: JSON.stringify({ expiresInDays }),
       });
       expect(response.status, `expiresInDays=${expiresInDays}`).toBe(400);
     }
-    // 形式不正はトークン発行に至らない
+    // 形式不正はフロー開始に至らない = トークン発行にも至らない
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;
     }>();
@@ -126,7 +107,7 @@ describe("既定 TTL(AUTH_SPEC §6 — L-2 の解消)", () => {
     const tokenMe = (await viaToken.json()) as { tokenExpiresAtMs?: number };
     expect(tokenMe.tokenExpiresAtMs).toBe(issued.expiresAtMs);
 
-    const scoped = await deviceToken(
+    const scoped = await cliToken(
       806,
       [{ project: "ef".repeat(32), permission: "read" }],
       "scoped",
@@ -220,11 +201,11 @@ describe("GET /auth/tokens(一覧 — AUTH_SPEC §6)", () => {
   });
 
   it("allows a token principal only with a * × admin scope (裁定 CH)", async () => {
-    const wildcard = await deviceToken(814, undefined, "wildcard");
+    const wildcard = await cliToken(814, undefined, "wildcard");
     const allowed = await SELF.fetch(`${BASE}/auth/tokens`, { headers: bearer(wildcard) });
     expect(allowed.status).toBe(200);
 
-    const scoped = await deviceToken(
+    const scoped = await cliToken(
       814,
       [{ project: "ab".repeat(32), permission: "admin" }],
       "scoped",
@@ -301,9 +282,9 @@ describe("DELETE /auth/tokens/:tokenId(指定失効 — AUTH_SPEC §6)", () => {
   });
 
   it("allows a * × admin token to revoke a sibling token, and denies a scoped token before target resolution (裁定 CG)", async () => {
-    const wildcard = await deviceToken(825, undefined, "wildcard");
+    const wildcard = await cliToken(825, undefined, "wildcard");
     const sibling = await exchange(825, { tokenName: "sibling" });
-    const scoped = await deviceToken(
+    const scoped = await cliToken(
       825,
       [{ project: "cd".repeat(32), permission: "admin" }],
       "scoped",

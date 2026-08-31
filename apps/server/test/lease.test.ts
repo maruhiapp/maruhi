@@ -1270,6 +1270,8 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
     expect(body["scope"]).toBe("source-address");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
     // 124 リクエストのバーストはスイート全体の負荷次第で既定 15s を越える
-    // (実測 — フルスイート実行時)。ハング検出の有界性は保ったまま延長する
-  }, 60_000);
+    // (実測 — フルスイート実行時)。fixture の beforeEach が PAT を実経路
+    // (CLI ログインハンドオフ = 6 往復/ユーザー)で発行するようになった分も
+    // この計測に含まれる。ハング検出の有界性は保ったまま延長する
+  }, 120_000);
 });

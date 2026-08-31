@@ -285,6 +285,42 @@ function detectAgentProfile(): AgentProfile {
   return name === undefined ? { isAgent: false } : { isAgent: true, name };
 }
 
+/** OS 既定ブラウザを開くコマンド(URL は引数として渡す — シェル展開なし)。 */
+function browserOpenCommand(url: string): readonly string[] {
+  if (process.platform === "darwin") {
+    return ["open", url];
+  }
+  if (process.platform === "win32") {
+    // cmd 組み込みの `start` を使うと URL 中の `&` `^` 等が cmd 自身のパーサに
+    // 解釈される(spawn の引用規約は Win32 argv 用で、cmd メタ文字はエスケープ
+    // されない — 正常な verificationUrl も `&` で切られるうえ、敵対的サーバー
+    // からはコマンド注入になる)。rundll32 の FileProtocolHandler は cmd を
+    // 通らずに既定ブラウザへディスパッチする
+    return ["rundll32", "url.dll,FileProtocolHandler", url];
+  }
+  return ["xdg-open", url];
+}
+
+/**
+ * 既定ブラウザで URL を開く(best effort)。stdio は繋がない(端末の表示を
+ * 汚さない)。起動の失敗(コマンド不在等)は false — 呼び出し側は URL の
+ * 手動オープン案内へ縮退する。
+ */
+function openBrowserLive(url: string): Effect.Effect<boolean> {
+  return Effect.tryPromise({
+    try: async () => {
+      const child = Bun.spawn({
+        cmd: [...browserOpenCommand(url)],
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      return (await child.exited) === 0;
+    },
+    catch: () => cliError("browser open failed"),
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+}
+
 function makeLiveIo(): CliIoShape {
   // 非 TTY 入力の行リーダーはプロセスで 1 つ(プロンプト間で未消費行を保持する)
   const readPipedLine = makeStdinLineReader(process.stdin);
@@ -330,6 +366,7 @@ function makeLiveIo(): CliIoShape {
     envVar: (name) => process.env[name],
     agentProfile: detectAgentProfile,
     stderrIsTerminal: () => process.stderr.isTTY === true,
+    openBrowser: openBrowserLive,
   };
 }
 

@@ -17,7 +17,7 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
-import { BASE, bearer, deviceToken, loginSession, sessionHeaders } from "./support/auth.ts";
+import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import { vectorKeyOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
@@ -155,15 +155,11 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
 
   it("トークンスコープと交差する(スコープ外 = 不出現・水準は read で足りる)", async () => {
     // 対象プロジェクトを覆う read スコープ → 出現
-    const scoped = await deviceToken(
-      9002,
-      [{ project: projectId, permission: "read" }],
-      "scoped-in",
-    );
+    const scoped = await cliToken(9002, [{ project: projectId, permission: "read" }], "scoped-in");
     expect((await listOk(bearer(scoped))).projects).toEqual([{ projectId, role: "member" }]);
     // 別プロジェクト限定スコープ → メンバーであっても不出現(存在情報ゼロの 200)
     const other = fakeProjectId(1);
-    const outOfScope = await deviceToken(
+    const outOfScope = await cliToken(
       9002,
       [{ project: other, permission: "admin" }],
       "scoped-out",
@@ -177,7 +173,7 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     for (let index = 1; index <= PROJECT_LIST_PAGE_SIZE; index += 1) {
       await insertProjectionRow(fakeProjectId(index), OWNER);
     }
-    const scoped = await deviceToken(
+    const scoped = await cliToken(
       9001,
       [{ project: projectId, permission: "read" }],
       "scoped-owner",
@@ -204,7 +200,7 @@ describe("プロジェクト一覧(AUTH_SPEC §11-5)", () => {
     for (const fake of fakes) {
       await insertProjectionRow(fake, OWNER);
     }
-    const wide = await deviceToken(9001, scopes, "scope-cap");
+    const wide = await cliToken(9001, scopes, "scope-cap");
     // ページ 1: 候補 100 件(合成 99 + 実 1 = 満杯)→ nextAfter 連鎖
     const first = await listOk(bearer(wide));
     expect(first.projects).toEqual([{ projectId, role: "owner" }]);

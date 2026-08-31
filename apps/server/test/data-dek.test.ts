@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "../src/policy.ts";
-import { bearer, deviceToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
+import { bearer, cliToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {
   checkpointOperation,
@@ -293,7 +293,7 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     expect(((await asMember.json()) as { reason: string }).reason).toBe("insufficient-role");
     // owner でもトークンスコープが write では 403(insufficient-permission)
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
-    const ownerWrite = await deviceToken(9001, writeScope);
+    const ownerWrite = await cliToken(9001, writeScope);
     const scoped = await requestJson("DELETE", `/environments/${ENV}/deks`, ownerWrite, {
       wraps: [{ epoch: 1, recipientUserId: READER }],
     });

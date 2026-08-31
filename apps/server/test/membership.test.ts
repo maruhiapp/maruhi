@@ -13,7 +13,7 @@
 //   ある(role 403 先行・未作成環境 404 先行・形式違反 400 先行 —
 //   compositeExpectations の対応表)
 //
-// 認証は実発行経路(device 交換)で PAT を取得する。ベクターの固定 user_id は
+// 認証は実発行経路(CLI ログインハンドオフ)で PAT を取得する。ベクターの固定 user_id は
 // D1 への直接シード(users + linked_identities)で整合させる(AUTH_SPEC §11-1 裁定)。
 
 import type { TokenScope } from "@maruhi/core";
@@ -33,7 +33,7 @@ import {
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliToken,
   JSON_HEADERS,
   loginSession,
   resetAuthDb,
@@ -429,7 +429,7 @@ beforeEach(async () => {
   tokens = {};
   for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
     await seedUser(userId, githubId);
-    tokens[userId] = await deviceToken(githubId);
+    tokens[userId] = await cliToken(githubId);
   }
   await seedOrgMember(VECTOR_ORG, "user-owner-0001", "member");
 });
@@ -640,7 +640,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
   it("conceals the project from authenticated non-members with 404 (§11-2)", async () => {
     await replayVectorChain(1);
     await seedUser("user-stranger-0009", 9009);
-    const strangerToken = await deviceToken(9009);
+    const strangerToken = await cliToken(9009);
 
     const get = await getChain(vectorProjectId, bearer(strangerToken));
     expect(get.status).toBe(404);
@@ -699,7 +699,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
   it("enforces token scopes: read scope can get but cannot append (§9-2)", async () => {
     await replayVectorChain(1);
     const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
-    const readToken = await deviceToken(9001, readOnly);
+    const readToken = await cliToken(9001, readOnly);
 
     const get = await getChain(vectorProjectId, bearer(readToken));
     expect(get.status).toBe(200);
@@ -720,14 +720,14 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
   it("conceals projects outside the token's scope with 404 (§11-2)", async () => {
     await replayVectorChain(1);
     const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
-    const scopedToken = await deviceToken(9001, otherScope);
+    const scopedToken = await cliToken(9001, otherScope);
     const response = await getChain(vectorProjectId, bearer(scopedToken));
     expect(response.status).toBe(404);
   });
 
   it("conceals everything from an empty-scope token (§11-2)", async () => {
     await replayVectorChain(1);
-    const emptyScopeToken = await deviceToken(9001, []);
+    const emptyScopeToken = await cliToken(9001, []);
     const response = await getChain(vectorProjectId, bearer(emptyScopeToken));
     expect(response.status).toBe(404);
   });
@@ -739,7 +739,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     // write(または admin)に潰す退行をここで判別する
     await replayVectorChain(2);
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
-    const memberWrite = await deviceToken(9002, writeScope);
+    const memberWrite = await cliToken(9002, writeScope);
     const vector3 = vectorEntries[2];
     const vector4 = vectorEntries[3];
     if (vector3 === undefined || vector4 === undefined) throw new Error("missing vectors");
@@ -771,7 +771,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     expect(rotated.status).toBe(200);
 
     // seq 5 は remove_member(admin 要求)、actor は user-owner-0001
-    const ownerWrite = await deviceToken(9001, writeScope);
+    const ownerWrite = await cliToken(9001, writeScope);
     const entry5 = vectorEntries[4];
     if (entry5 === undefined) throw new Error("missing vector entry 5");
     const removal = await appendEntry(
@@ -789,7 +789,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
-    const ownerWrite = await deviceToken(9001, writeScope);
+    const ownerWrite = await cliToken(9001, writeScope);
     const response = await initChain(toWireEntry(genesis), { headers: bearer(ownerWrite) });
     expect(response.status).toBe(403);
     const body = (await response.json()) as { reason: string };
@@ -819,7 +819,7 @@ describe("チェーン API の認可(AUTH_SPEC §11)", () => {
 
     // 同一 body はトークン主体では受理される(拒否がセッション主体起因の証明)
     const accepted = await initChain(toWireEntry(genesis), {
-      headers: { ...JSON_HEADERS, ...bearer(await deviceToken(9001)) },
+      headers: { ...JSON_HEADERS, ...bearer(await cliToken(9001)) },
     });
     expect(accepted.status).toBe(200);
   });

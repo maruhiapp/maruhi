@@ -1,5 +1,4 @@
-// 非機密設定(サーバー base URL・GitHub OAuth App の client_id・既定の
-// プロジェクト / 環境)の置き場所。
+// 非機密設定(サーバー base URL・既定のプロジェクト / 環境)の置き場所。
 //
 // 形式: JSON 1 ファイル。置き場所は $MARUHI_CONFIG_DIR(テスト・上級者向け
 // オーバーライド)→ $XDG_CONFIG_HOME/maruhi → ~/.config/maruhi。
@@ -7,9 +6,9 @@
 // OS キーチェーンのみ(keychain.ts)。
 //
 // サーバー URL に既定値はない(セルフホスト前提でホステッドのデフォルトが
-// 存在しない — タスク裁定)。githubClientId は login がサーバーの公開設定
-// エンドポイント(GET /auth/config — AUTH_SPEC §4)から自動解決するため通常
-// 不要。設定値は上書き手段として残る(GHES・テスト用 — セッション 11 裁定)。
+// 存在しない — タスク裁定)。旧 `githubClientId` は 2026-08-31 の AUTH_SPEC §4
+// 改訂(CLI の client_id 解決の廃止)で消費者ごと削除された — 既存ファイルに
+// 残っていても未知キーとして無害に無視される(decodeConfig は許可キーのみ拾う)。
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -22,18 +21,12 @@ import { CliError, cliError } from "./errors.ts";
 /** Non-secret CLI configuration. */
 export interface CliConfig {
   readonly server?: string;
-  readonly githubClientId?: string;
   readonly defaultProject?: string;
   readonly defaultEnvironment?: string;
 }
 
 /** Keys accepted by `maruhi config set` (all non-secret). */
-export const CONFIG_KEYS = [
-  "server",
-  "githubClientId",
-  "defaultProject",
-  "defaultEnvironment",
-] as const;
+export const CONFIG_KEYS = ["server", "defaultProject", "defaultEnvironment"] as const;
 
 /** A key accepted by `maruhi config set`. */
 export type ConfigKey = (typeof CONFIG_KEYS)[number];

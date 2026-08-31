@@ -11,7 +11,7 @@ import { expect } from "vitest";
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliToken,
   JSON_HEADERS,
   resetAuthDb,
   seedOrgMember,
@@ -105,7 +105,7 @@ export async function setupDataProject(): Promise<DataFixture> {
   const tokens: Record<string, string> = {};
   for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
     await seedUser(userId, githubId);
-    tokens[userId] = await deviceToken(githubId);
+    tokens[userId] = await cliToken(githubId);
   }
   await seedOrgMember(DATA_ORG, OWNER, "member");
 

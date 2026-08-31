@@ -57,6 +57,8 @@ import {
 } from "./audit.ts";
 import {
   apiTokens,
+  cliLoginFlows,
+  flowSigningKeys,
   invitations,
   linkedIdentities,
   memberships,
@@ -84,6 +86,12 @@ interface IdentityRepoShape {
     identity: VerifiedIdentity,
     nowMs: number,
   ) => Effect.Effect<ResolvedUser>;
+  /**
+   * 照会のみ(作成しない — AUTH_SPEC §4-1 (4) (ii)・裁定 DH)。CLI ログインの
+   * ブラウザ脚が使う: アカウント不在はサインアップ案内で終了し、一切の
+   * 不可逆な副作用を起こさない。
+   */
+  readonly lookupUser: (identity: VerifiedIdentity) => Effect.Effect<string | null>;
   /** ユーザーが属する org 一覧(プロジェクト作成先の発見用。§11-3)。 */
   readonly listUserOrgs: (userId: string) => Effect.Effect<readonly UserOrg[]>;
 }
@@ -239,7 +247,11 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
         Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
       );
     });
-  return { getOrCreateUser, listUserOrgs: (userId) => listUserOrgs(db, userId) };
+  return {
+    getOrCreateUser,
+    lookupUser: (identity) => lookupLinkedUser(db, identity),
+    listUserOrgs: (userId) => listUserOrgs(db, userId),
+  };
 }
 
 /** batch 競合後の再ルックアップ。ここでも見つからないのは D1 障害(defect)。 */
@@ -1343,6 +1355,300 @@ function makeInviteRepo(db: Db): InviteRepoShape {
 }
 
 // ---------------------------------------------------------------------------
+// FlowSigningKeyRepo(AUTH_SPEC §4-2。CLI ログインのフロー署名鍵の置き場)
+// ---------------------------------------------------------------------------
+
+/** 署名鍵行の固定 id(高々 1 行)。 */
+const FLOW_SIGNING_KEY_ID = "v1";
+
+interface FlowSigningKeyRepoShape {
+  /**
+   * 初回使用時の自動生成(AUTH_SPEC §4-2 — セルフホストのセットアップ手順を
+   * 増やさない)。冪等・先勝ち: 候補鍵を INSERT OR IGNORE し、常に保存行を
+   * 読み戻す — 同時初回使用の 2 リクエストが別々の鍵を書き合って進行中
+   * フローを失効させる分岐を閉じる。戻り値は勝った鍵(hex)。
+   */
+  readonly getOrCreate: (candidateKeyHex: string, nowMs: number) => Effect.Effect<string>;
+}
+
+export class FlowSigningKeyRepo extends Context.Service<
+  FlowSigningKeyRepo,
+  FlowSigningKeyRepoShape
+>()("FlowSigningKeyRepo") {}
+
+function makeFlowSigningKeyRepo(db: Db): FlowSigningKeyRepoShape {
+  return {
+    getOrCreate: (candidateKeyHex, nowMs) =>
+      run(async () => {
+        await db
+          .insert(flowSigningKeys)
+          .values({ id: FLOW_SIGNING_KEY_ID, keyHex: candidateKeyHex, createdAt: nowMs })
+          .onConflictDoNothing();
+        const row = await db
+          .select({ keyHex: flowSigningKeys.keyHex })
+          .from(flowSigningKeys)
+          .where(eq(flowSigningKeys.id, FLOW_SIGNING_KEY_ID))
+          .get();
+        if (row === undefined) {
+          // INSERT OR IGNORE 直後の SELECT が空 = D1 障害(defect)
+          throw new Error("flow signing key insert succeeded but the row is missing");
+        }
+        return row.keyHex;
+      }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// CliFlowRepo(AUTH_SPEC §4-1 (4)〜(5)。CLI ログインのフロー行)
+// ---------------------------------------------------------------------------
+
+/**
+ * デプロイメント全体の同時未消費フロー行の上限(AUTH_SPEC §4-1 (4) (iii)
+ * 起草値)。到達には「既存アカウント × OAuth 完走」の同時併走が上限件数ぶん
+ * 必要で安価に維持できない。TTL 15 分で自然回復。セルフホストの受理ポリシー
+ * として調整可。
+ */
+export const MAX_CONCURRENT_CLI_FLOWS = 1000;
+
+/**
+ * 期限後も行を残す余裕(AUTH_SPEC §4-1 (5) 起草値 +5 分)。consumed / denied の
+ * 行を flowToken の期限より先に消すと poll が「行なし = pending」と誤読して
+ * CLI が完了済みフローを無限に待つ。日和見削除はこの余裕を過ぎた行のみ対象。
+ */
+const CLI_FLOW_DELETE_GRACE_MS = 5 * 60 * 1000;
+
+/** フロー行の状態(§4-1 (4)〜(5) の CAS 語彙)。 */
+type CliFlowStatus = "awaiting" | "approved" | "denied" | "consumed";
+
+/** 承認ページの明示操作(§4-1 (4) (iv) — 承認 / 拒否の 2 択)。 */
+type CliFlowDecision = "approved" | "denied";
+
+interface NewCliLoginFlow {
+  readonly flowId: string;
+  readonly userId: string;
+  readonly tokenName: string;
+  readonly scopes: readonly TokenScope[];
+  readonly expiresInDays: number;
+  readonly userCode: string;
+  /** 承認チケット(256-bit 乱数)の SHA-256(hex)。生値はページのみ。 */
+  readonly ticketHash: string;
+  readonly expiresAtMs: number;
+}
+
+/** poll の行引き(§4-1 (5))が見る形。ticket_hash は含めない(照合は CAS 内)。 */
+interface CliLoginFlowRecord {
+  readonly flowId: string;
+  readonly userId: string;
+  readonly status: CliFlowStatus;
+  readonly tokenName: string;
+  readonly scopes: readonly TokenScope[];
+  readonly expiresInDays: number;
+  readonly userCode: string;
+  readonly expiresAtMs: number;
+}
+
+/**
+ * create-or-match の帰結(§4-1 (4) (iii))。created / matched が承認ページの
+ * 描画へ進む。rejected は一様エラーページ(別 user_id・期限切れ・終端状態 —
+ * 理由を出し分けない)、capacity は上限到達(同じ一様エラーページ + 運用
+ * アラートの材料)。
+ */
+type CliFlowAdmission = "created" | "matched" | "rejected" | "capacity";
+
+interface CliFlowRepoShape {
+  /**
+   * フロー行の作成 CAS(create-or-match — §4-1 (4) (iii))。batch 先頭に期限 +
+   * 余裕を過ぎた行の日和見削除を同梱し、作成は「同 flowId の行なし × 未消費
+   * 総量が上限未満」の条件付き INSERT で行う。行が既にある場合、同一 user_id ×
+   * awaiting × 期限内の再到達のみチケットを置換して成功(べき等 — matched)。
+   * 別 user_id はチケットを回転させず rejected(乗っ取り・チケット失効攻撃の
+   * 両経路を閉じる)。
+   */
+  readonly createOrMatch: (flow: NewCliLoginFlow, nowMs: number) => Effect.Effect<CliFlowAdmission>;
+  /**
+   * 承認 / 拒否の CAS(awaiting → approved | denied — §4-1 (4) (iv))。資格は
+   * 承認チケット(最新 1 枚)で、不明・期限切れ・使用済みは一様に false。
+   * 承認(user_id 確定)は `auth.login_succeeded`(authMethod cli_handoff —
+   * §4-2)を changes() ガード付きで同一 batch に記録する。
+   */
+  readonly decideCas: (
+    flowId: string,
+    ticketHash: string,
+    decision: CliFlowDecision,
+    nowMs: number,
+  ) => Effect.Effect<boolean>;
+  /** poll の行引き(§4-1 (5))。行なし = null(呼び出し側が pending を導出)。 */
+  readonly findById: (flowId: string) => Effect.Effect<CliLoginFlowRecord | null>;
+  /**
+   * 単回発行ゲート(approved → consumed の CAS — §4-1 (5))。勝者(true)だけが
+   * PAT を発行する。CAS 成功後の発行失敗は consumed のまま終える(fail-closed —
+   * 呼び出し側は巻き戻さない)。
+   */
+  readonly consumeCas: (flowId: string) => Effect.Effect<boolean>;
+}
+
+export class CliFlowRepo extends Context.Service<CliFlowRepo, CliFlowRepoShape>()("CliFlowRepo") {}
+
+function makeCliFlowRepo(db: Db): CliFlowRepoShape {
+  return {
+    createOrMatch: (flow, nowMs) =>
+      run(async () => {
+        // 上限は未消費行(consumed 以外)で数える(§4-1 (4) (iii) の「同時未消費
+        // 行」)。判定と挿入は同一 INSERT…SELECT(invites の admission と同型 —
+        // 並行作成が同じ under-limit を観測して上限を超えない)
+        const capAvailable = sql<boolean>`(
+          select count(*) from ${cliLoginFlows}
+          where ${cliLoginFlows.status} != 'consumed'
+        ) < ${MAX_CONCURRENT_CLI_FLOWS}`;
+        const rowAbsent = sql<boolean>`not exists (
+          select 1 from ${cliLoginFlows} where ${cliLoginFlows.id} = ${flow.flowId}
+        )`;
+        const results = await db.batch([
+          // 日和見削除(§4-1 (4) (iii)): 期限 + 余裕を過ぎた行のみ。consumed /
+          // denied も余裕内は残す(poll の「行なし = pending」誤読の遮断)
+          db
+            .delete(cliLoginFlows)
+            .where(lte(cliLoginFlows.expiresAt, nowMs - CLI_FLOW_DELETE_GRACE_MS)),
+          db
+            .insert(cliLoginFlows)
+            .select(
+              db
+                .select({
+                  id: sql<string>`${flow.flowId}`.as("id"),
+                  userId: sql<string>`${flow.userId}`.as("user_id"),
+                  status: sql<string>`'awaiting'`.as("status"),
+                  tokenName: sql<string>`${flow.tokenName}`.as("token_name"),
+                  scopes: sql<string>`${JSON.stringify(flow.scopes)}`.as("scopes"),
+                  expiresInDays: sql<number>`${flow.expiresInDays}`.as("expires_in_days"),
+                  userCode: sql<string>`${flow.userCode}`.as("user_code"),
+                  ticketHash: sql<string>`${flow.ticketHash}`.as("ticket_hash"),
+                  expiresAt: sql<number>`${flow.expiresAtMs}`.as("expires_at"),
+                  createdAt: sql<number>`${nowMs}`.as("created_at"),
+                })
+                .from(sql`(select 1)`)
+                .where(and(capAvailable, rowAbsent)),
+            )
+            .returning({ id: cliLoginFlows.id }),
+        ]);
+        if (results[1].length === 1) {
+          return "created";
+        }
+        // 行あり(match / conflict)か上限到達。同一 user_id × awaiting × 期限内の
+        // 再到達だけがチケットを置換して成功する(旧チケットは置換失効 — 有効な
+        // チケットは常に最新 1 枚)。別 user_id はこの UPDATE に決して合致しない
+        // = チケットを回転させない(§4-1 (4) (iii))
+        const matched = await db
+          .update(cliLoginFlows)
+          .set({ ticketHash: flow.ticketHash })
+          .where(
+            and(
+              eq(cliLoginFlows.id, flow.flowId),
+              eq(cliLoginFlows.userId, flow.userId),
+              eq(cliLoginFlows.status, "awaiting"),
+              gt(cliLoginFlows.expiresAt, nowMs),
+            ),
+          )
+          .returning({ id: cliLoginFlows.id });
+        if (matched.length === 1) {
+          return "matched";
+        }
+        const existing = await db
+          .select({ id: cliLoginFlows.id })
+          .from(cliLoginFlows)
+          .where(eq(cliLoginFlows.id, flow.flowId))
+          .get();
+        // 行なし = 条件付き INSERT を落としたのは上限(capacity)。行あり =
+        // 別 user_id / 期限切れ / terminal 状態(一様 rejected — 出し分けない)
+        return existing === undefined ? "capacity" : "rejected";
+      }),
+    decideCas: (flowId, ticketHash, decision, nowMs) =>
+      run(async () => {
+        const cas = db
+          .update(cliLoginFlows)
+          .set({ status: decision })
+          .where(
+            and(
+              eq(cliLoginFlows.id, flowId),
+              eq(cliLoginFlows.status, "awaiting"),
+              eq(cliLoginFlows.ticketHash, ticketHash),
+              gt(cliLoginFlows.expiresAt, nowMs),
+            ),
+          )
+          .returning({ id: cliLoginFlows.id });
+        if (decision !== "approved") {
+          // 拒否は監査イベントを持たない(§4-2 — 承認 = login_succeeded のみ。
+          // 失敗系は login_failed の固定窓規律で、明示拒否はどちらでもない)
+          return (await cas).length === 1;
+        }
+        // 承認 = auth.login_succeeded(authMethod cli_handoff — §4-2)。actor の
+        // user_id は行から写す(changes() ガード — invites の CAS と同型)
+        const results = await db.batch([
+          cas,
+          db.insert(userAuditEvents).select(
+            db
+              .select({
+                ...guardedAuditSelectColumns({
+                  event: "auth.login_succeeded",
+                  actor: { authMethod: "cli_handoff" },
+                  nowMs,
+                  payload: { flowId },
+                }),
+                actorUserId: cliLoginFlows.userId,
+              })
+              .from(cliLoginFlows)
+              .where(and(eq(cliLoginFlows.id, flowId), sql`changes() = 1`)),
+          ),
+        ]);
+        return results[0].length === 1;
+      }),
+    findById: (flowId) =>
+      run(async () => {
+        const row = await db
+          .select({
+            id: cliLoginFlows.id,
+            userId: cliLoginFlows.userId,
+            status: cliLoginFlows.status,
+            tokenName: cliLoginFlows.tokenName,
+            scopes: cliLoginFlows.scopes,
+            expiresInDays: cliLoginFlows.expiresInDays,
+            userCode: cliLoginFlows.userCode,
+            expiresAt: cliLoginFlows.expiresAt,
+          })
+          .from(cliLoginFlows)
+          .where(eq(cliLoginFlows.id, flowId))
+          .get();
+        if (row === undefined) {
+          return null;
+        }
+        const scopes = parseTokenScopes(row.scopes);
+        if (scopes === null) {
+          // 自分の書き込み経路でしか生成されない列が壊れている = 実装バグ / DB 破損
+          throw new Error("stored CLI flow scopes are not a valid scope array");
+        }
+        return {
+          flowId: row.id,
+          userId: row.userId,
+          status: row.status as CliFlowStatus,
+          tokenName: row.tokenName,
+          scopes,
+          expiresInDays: row.expiresInDays,
+          userCode: row.userCode,
+          expiresAtMs: row.expiresAt,
+        };
+      }),
+    consumeCas: (flowId) =>
+      run(async () => {
+        const rows = await db
+          .update(cliLoginFlows)
+          .set({ status: "consumed" })
+          .where(and(eq(cliLoginFlows.id, flowId), eq(cliLoginFlows.status, "approved")))
+          .returning({ id: cliLoginFlows.id });
+        return rows.length === 1;
+      }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 束ね: D1 binding からリポジトリ一式の Context を作る
 // ---------------------------------------------------------------------------
 
@@ -1354,6 +1660,8 @@ export type DbServices =
   | ProjectRepo
   | RecoveryRepo
   | InviteRepo
+  | FlowSigningKeyRepo
+  | CliFlowRepo
   | D1AuditRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
@@ -1366,6 +1674,8 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(ProjectRepo, makeProjectRepo(db)),
     Context.add(RecoveryRepo, makeRecoveryRepo(db)),
     Context.add(InviteRepo, makeInviteRepo(db)),
+    Context.add(FlowSigningKeyRepo, makeFlowSigningKeyRepo(db)),
+    Context.add(CliFlowRepo, makeCliFlowRepo(db)),
     Context.add(D1AuditRepo, makeD1AuditRepo(db)),
   );
 }

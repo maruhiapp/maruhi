@@ -79,7 +79,7 @@ Create one at https://github.com/settings/applications/new:
 | Application name | Anything (example: `maruhi (self-hosted)`) |
 | Homepage URL | The deploy URL from step 3 |
 | Authorization callback URL | `<deploy-url>/auth/github/callback` |
-| **Enable Device Flow** | **Must be checked** (CLI login is device flow — leaving this off is the most common stuck point) |
+| Enable Device Flow | **Leave unchecked** (recommended). maruhi does not use it: CLI login goes through the same browser OAuth flow as web login (AUTH_SPEC §4), so enabling it only widens the OAuth App's surface |
 
 After creating it, copy the client_id and issue a client_secret with
 "Generate a new client secret".
@@ -173,14 +173,16 @@ every environment — CRYPTO_SPEC §7).
 
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
-Of maruhi's unauthenticated surface, the following three are the ones where a
-third party can trigger work that costs money (the other unauthenticated surfaces
-`/auth/config` / `/auth/github/start` are self-contained lightweight responses).
-All three already have server-side defenses (input size caps, format pre-checks,
-a fixed window per project, and a TTL cache for JWKS).
+Of maruhi's unauthenticated surface, the following four are the ones where a
+third party can trigger work that costs money or drain a shared quota (the other
+unauthenticated surfaces `/auth/config` / `/auth/github/start` /
+`/auth/cli/verify` are self-contained lightweight responses).
+All four already have server-side defenses (input size caps, stateless MAC
+verification before any lookup, a fixed window per project, and a TTL cache for
+JWKS).
 
 **Since 2026-08-24 the default `wrangler.jsonc` also ships per-source-IP Workers
-Rate Limiting bindings** for all three paths in the table below — the same limits
+Rate Limiting bindings** for all paths in the table below — the same limits
 it recommends — so a default deploy now enforces them by itself (Cloudflare's
 docs list no plan requirement for the binding at the time of writing; if your
 deploy rejects the `ratelimits` section, remove it — the server falls back to the
@@ -191,12 +193,12 @@ Deployments that predate the `ratelimits` section keep the old behavior until
 they redeploy with the updated config — the server treats a missing binding as
 "no limit".
 
-`/auth/github/callback` gained its binding later than the other two (it was
+`/auth/github/callback` gained its binding later than the others (it was
 initially left to the WAF alone as a browser navigation path). It is not
-redundant: the callback consumes the *same* per-OAuth-App quota as device
-exchange, and its `state` check is a cookie-vs-query comparison with no
-server-side state, so a non-browser caller supplies both halves itself and always
-passes it.
+redundant: each callback can trigger a GitHub code exchange against the
+per-OAuth-App quota, and its `state` check is a cookie-vs-query comparison with
+no server-side state, so a non-browser caller supplies both halves itself and
+always passes it.
 
 If legitimate traffic arrives through shared egress IPs — a large CI matrix on
 shared runners funneling many lease calls through one address, or a whole team
@@ -208,18 +210,19 @@ the server fails open when a binding is absent.
 
 Add the following in the dashboard under Security → WAF → Rate limiting rules.
 **The Free plan allows only one rule, so in that case pick
-`/auth/device/exchange`** (it is the only surface in the table where exhausting
-the quota stops login for the **entire deployment**, not merely degrades one
-caller):
+`/auth/github/callback`** (it is the surface in the table where exhausting the
+per-OAuth-App code-exchange quota stops login for the **entire deployment**, not
+merely degrades one caller):
 
 | Path | Recommended limit | Why |
 |---|---|---|
-| `/auth/device/exchange` | 10 requests / min / IP | Each request makes an outbound call to GitHub's check-token API, and that quota is per OAuth App. A flood of well-formed tokens can exhaust the quota and fail legitimate user logins (device exchange) (malformed tokens already get an immediate 400 from the server) |
-| `/auth/github/callback` | 30 requests / min / IP | Each request can trigger one GitHub code exchange (the legitimate flow is at most 3 calls including `/user` and `/user/emails` after success), and the server cannot validate the code contents so format checks cannot block it. **This is the browser interactive login path, so loosen it relative to device/exchange to allow shared egress such as office NAT** |
+| `/auth/cli/start` | 10 requests / min / IP | Unauthenticated and recordless (nothing is stored — AUTH_SPEC §4-1), so the cost is pure CPU: each request computes two HMACs. A per-IP cap keeps a flood from turning that into a Workers bill |
+| `/auth/cli/poll` | 30 requests / min / IP | Unauthenticated; the legitimate CLI polls at a 5-second floor (12/min), so 30/min leaves room for several concurrent flows behind one address. Fabricated credentials are rejected by a stateless MAC check before any database lookup, and the limit is enforced before even that |
+| `/auth/github/callback` | 30 requests / min / IP | Each request can trigger one GitHub code exchange (the legitimate flow is at most 3 calls including `/user` and `/user/emails` after success), and the server cannot validate the code contents so format checks cannot block it. **This is the browser login path — both web login and the CLI flow's browser leg — so loosen it relative to start to allow shared egress such as office NAT** |
 | `/projects/*/environments/*/lease` | 60 requests / min / IP | The server-side window (300 calls / hour) is per project and does not care who is calling. A modest per-IP cap that does not interfere with normal CI retries absorbs a single source running wild or being abusive (the external call here — fetching the issuer's JWKS — is already TTL-cached with a cooldown, and does not happen on every request) |
 
-CLI / CI paths (device/exchange and lease) have spread-out source IPs and easy
-retries, so per-IP limits almost never get in the way of normal operation.
+CLI / CI paths (cli/start, cli/poll and lease) have spread-out source IPs and
+easy retries, so per-IP limits almost never get in the way of normal operation.
 callback is the exception: concurrent logins behind shared egress can bunch up,
 so do not go below the recommended value above.
 
@@ -431,14 +434,15 @@ so do not miss the warning).
 
 ## Troubleshooting
 
-- **`/auth/config` / `/auth/github/start` / `/auth/device/exchange` return 503
+- **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
   unregistered (a missed `wrangler secret put` — step 5. If this happened after
   updating an instance stood up with the old steps, see the migration in
   "Updates"). List registered secrets with `bunx wrangler secret list` (values
   are not shown)
-- **CLI login, GitHub returns `device_flow_disabled`**: "Enable Device Flow" is
-  unchecked on the OAuth App (step 4)
+- **CLI login's verification link shows "This sign-in link can't be used"**:
+  the link expired (flows last 15 minutes), was already used, or was edited in
+  transit. Run `maruhi login` again for a fresh link
 - **Browser login lands on a GitHub error page**: callback URL mismatch.
   Confirm the OAuth App Authorization callback URL is exactly
   `<deploy-url>/auth/github/callback` (full match on http/https, trailing slash,

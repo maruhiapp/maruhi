@@ -13,6 +13,8 @@ export {
   AuthFlowError,
   AuthFlowFailureReasonSchema,
   AuthRateLimitedError,
+  CliFlowExpiredError,
+  CliFlowRejectedError,
   ForbiddenError,
   ForbiddenReasonSchema,
   RecoveryRateLimitedError,

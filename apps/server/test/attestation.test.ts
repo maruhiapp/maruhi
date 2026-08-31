@@ -17,7 +17,7 @@ import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "../src/policy.ts";
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliToken,
   JSON_HEADERS,
   resetAuthDb,
   seedOrgMember,
@@ -158,7 +158,7 @@ beforeEach(async () => {
   tokens = {};
   for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
     await seedUser(userId, githubId);
-    tokens[userId] = await deviceToken(githubId);
+    tokens[userId] = await cliToken(githubId);
   }
   await seedOrgMember(ORG, OWNER, "member");
 });
@@ -167,7 +167,7 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
   it("reader が read スコープのトークンで提出でき、配布に attester 情報付きで載る(受理時刻は載らない)", async () => {
     const head = await setupChain();
     const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
-    const readToken = await deviceToken(GITHUB_IDS[READER] ?? 0, readOnly);
+    const readToken = await cliToken(GITHUB_IDS[READER] ?? 0, readOnly);
     const response = await submitAttestation(READER, head, bearer(readToken));
     expect(response.status).toBe(204);
 
@@ -260,7 +260,7 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
   it("非メンバー・未初期化プロジェクトへの提出は一律 404(§11-2)", async () => {
     await setupChain();
     await seedUser("user-outsider-0042", 9042);
-    const outsiderToken = await deviceToken(9042);
+    const outsiderToken = await cliToken(9042);
     const head = { seq: 1, hashHex: vectorEntries[0]?.entry_hash_hex ?? "" };
     const signatureHex = await signAttestation(OWNER, head);
     const body = {

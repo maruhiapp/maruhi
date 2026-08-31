@@ -20,13 +20,15 @@ import {
 import {
   BASE,
   bearer,
-  deviceToken,
+  cliBrowserLeg,
+  cliToken,
   JSON_HEADERS,
   loginSession,
   resetAuthDb,
   seedOrgMember,
   seedUser,
   sessionHeaders,
+  startCliFlow,
   STATE_COOKIE,
 } from "./support/auth.ts";
 import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
@@ -63,7 +65,7 @@ async function countEvent(event: string): Promise<number | undefined> {
 
 /** login_failed の窓カウンタ(AUDIT_SPEC §3.1)を任意の状態に置く。 */
 async function seedLoginFailedWindow(
-  authMethod: "github_oauth" | "device_flow",
+  authMethod: "github_oauth" | "cli_handoff",
   reason: string,
   windowStart: number,
   recordedCount: number,
@@ -215,19 +217,20 @@ describe("Web OAuth ログイン(§3.1)", () => {
   });
 
   it("counts the cap per auth_method + reason bucket, so one path cannot blind another (R4/S5)", async () => {
-    // device flow 側の窓を使い切った状態で、Web OAuth の失敗は記録され続ける
+    // CLI ハンドオフ側の窓を使い切った状態で、Web OAuth の失敗は記録され続ける
+    // (同じ reason でも auth_method でバケットが分かれる)
     await seedLoginFailedWindow(
-      "device_flow",
-      "github-token-invalid",
+      "cli_handoff",
+      "state-mismatch",
       Date.now(),
       LOGIN_FAILED_WINDOW_LIMIT,
     );
-    const deviceBlocked = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
-    });
-    expect(deviceBlocked.status).toBe(400);
+    // CLI 分岐の state 不一致(`cli.` プレフィックス + フロー束縛クッキーなし)
+    const cliBlocked = await SELF.fetch(
+      `${BASE}/auth/github/callback?code=code-700&state=cli.${"ab".repeat(16)}`,
+      { redirect: "manual" },
+    );
+    expect(cliBlocked.status).toBe(400);
     expect(await countEvent("auth.login_failed")).toBe(0);
 
     expect((await callbackFailure()).status).toBe(400);
@@ -279,21 +282,25 @@ describe("Web OAuth ログイン(§3.1)", () => {
   });
 });
 
-describe("device flow(§3.1)", () => {
-  it("records login_succeeded (device_flow) and token_created with token id, name and scopes", async () => {
-    const token = await deviceToken(701);
+describe("CLI ログインハンドオフ(§3.1 — AUTH_SPEC §4)", () => {
+  it("records login_succeeded (cli_handoff) on approval and token_created on issuance", async () => {
+    // ユーザーはシード済み(CLI ログインは既存アカウント専用 — 裁定 DH)。
+    // イベントは承認 = login_succeeded、発行 = token_created の 2 行のみ
+    await seedUser("user-cli-audit", 701);
+    const token = await cliToken(701);
     const events = await auditRows("user_audit_events");
-    expect(events.map((row) => row.event)).toEqual([
-      "auth.user_created",
-      "auth.identity_linked",
-      "auth.login_succeeded",
-      "auth.token_created",
-    ]);
-    expect(payloadOf(events[2] as AuditRow)).toEqual({ authMethod: "device_flow" });
+    expect(events.map((row) => row.event)).toEqual(["auth.login_succeeded", "auth.token_created"]);
+    // 承認(§4-2): actor = 照会で確定した内部 user_id、payload は authMethod と
+    // フロー相関子のみ(プロバイダ情報は載らない — §1-2)
+    const login = events[0] as AuditRow;
+    expect(login.actor_user_id).toBe("user-cli-audit");
+    const loginPayload = payloadOf(login);
+    expect(loginPayload["authMethod"]).toBe("cli_handoff");
+    expect(loginPayload["flowId"]).toMatch(/^[0-9a-f]{32}$/);
     const tokenRow = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
-    expect(payloadOf(events[3] as AuditRow)).toEqual({
+    expect(payloadOf(events[1] as AuditRow)).toEqual({
       tokenId: tokenRow?.id,
-      name: "device-flow",
+      name: "cli-login",
       scopes: [{ project: "*", permission: "admin" }],
     });
     // 発行直後のトークンが実際に使える(イベントとトークンの整合の脇検証)
@@ -302,8 +309,8 @@ describe("device flow(§3.1)", () => {
   });
 
   it("records one token_created per rotation of the same (user, name)", async () => {
-    await deviceToken(701);
-    await deviceToken(701);
+    await cliToken(701);
+    await cliToken(701);
     const events = await auditRows("user_audit_events");
     const created = events.filter((row) => row.event === "auth.token_created");
     expect(created).toHaveLength(2);
@@ -326,18 +333,17 @@ describe("device flow(§3.1)", () => {
     expect(count?.n).toBe(1);
   });
 
-  it("records auth.login_failed (device_flow) for an invalid GitHub token", async () => {
-    const response = await SELF.fetch(`${BASE}/auth/device/exchange`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ githubAccessToken: "gho_bogus" }),
-    });
-    expect(response.status).toBe(400);
+  it("records auth.login_failed (cli_handoff) when the browser leg's code exchange fails", async () => {
+    // start → verify は無記録(裁定 DH)。callback の code 交換失敗(§4-1 (4) (i))
+    // が最初の記録点で、理由コードのみ運ぶ(提示された code は記録しない)
+    const started = await startCliFlow();
+    const callback = await cliBrowserLeg(started.verificationUrl, 701, { code: "not-a-code" });
+    expect(callback.status).toBe(400);
     const events = await auditRows("user_audit_events");
     expect(events.map((row) => row.event)).toEqual(["auth.login_failed"]);
     expect(payloadOf(events[0] as AuditRow)).toEqual({
-      authMethod: "device_flow",
-      reason: "github-token-invalid",
+      authMethod: "cli_handoff",
+      reason: "code-exchange-failed",
     });
   });
 });
@@ -382,7 +388,7 @@ describe("セッション / トークンの失効(§3.1)", () => {
   });
 
   it("records auth.token_revoked with the token id as both actor token and target payload", async () => {
-    const token = await deviceToken(701);
+    const token = await cliToken(701);
     const tokenRow = await env.DB.prepare("SELECT id, user_id FROM api_tokens").first<{
       id: string;
       user_id: string;
@@ -416,7 +422,7 @@ describe("セッション / トークンの失効(§3.1)", () => {
   });
 
   it("does not revoke or audit a token owned by another user (S8)", async () => {
-    await deviceToken(702);
+    await cliToken(702);
     const tokenRow = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
     if (tokenRow === null) {
       throw new Error("expected token row");
@@ -446,7 +452,7 @@ describe("リカバリー(§3.1 / AUTH_SPEC §13-5)", () => {
   });
 
   it("records recovery_code_reissued on PUT and recovery_blob_fetched on distributed GET only", async () => {
-    const token = await deviceToken(702);
+    const token = await cliToken(702);
     // 未登録の GET(404)は配布なし = 記録なし
     const missing = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(missing.status).toBe(404);
@@ -473,7 +479,7 @@ describe("リカバリー(§3.1 / AUTH_SPEC §13-5)", () => {
   });
 
   it("does not record recovery_blob_fetched for a rate-limited GET (no distribution)", async () => {
-    const token = await deviceToken(702);
+    const token = await cliToken(702);
     await SELF.fetch(`${BASE}/auth/recovery`, {
       method: "PUT",
       headers: { ...JSON_HEADERS, ...bearer(token) },
@@ -515,7 +521,7 @@ describe("org.project_created(§3.2)と禁止情報(§1-2)", () => {
   }
 
   it("records org.project_created with org, project and the acting principal", async () => {
-    const token = await deviceToken(OWNER_GITHUB_ID);
+    const token = await cliToken(OWNER_GITHUB_ID);
     await initGenesis(token);
     const events = await auditRows("org_audit_events");
     const created = events.filter((row) => row.event === "org.project_created");
@@ -528,7 +534,7 @@ describe("org.project_created(§3.2)と禁止情報(§1-2)", () => {
   });
 
   it("does not record org.project_created when the insert is skipped by conflict", async () => {
-    const token = await deviceToken(OWNER_GITHUB_ID);
+    const token = await cliToken(OWNER_GITHUB_ID);
     await initGenesis(token);
     // 行が既に存在する状態での冪等挿入(並行 init の競合側と同じ実行順)は
     // イベントを増やさない(偽の作成イベントを作らない)
@@ -542,10 +548,10 @@ describe("org.project_created(§3.2)と禁止情報(§1-2)", () => {
   });
 
   it("never records provider identifiers or emails in any row (§1-2)", async () => {
-    // Web ログイン(verified メール保存経路)+ device flow + プロジェクト作成を
+    // Web ログイン(verified メール保存経路)+ CLI ハンドオフ + プロジェクト作成を
     // 通してから全行を走査する
     await loginSession(987002);
-    const token = await deviceToken(OWNER_GITHUB_ID);
+    const token = await cliToken(OWNER_GITHUB_ID);
     await initGenesis(token);
     const rows = [
       ...(await auditRows("user_audit_events")),
