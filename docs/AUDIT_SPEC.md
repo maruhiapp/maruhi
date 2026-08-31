@@ -11,7 +11,7 @@ CRYPTO_SPEC(特に §6 メンバーシップログ、§7 要ローテーショ�
 ## 1. 目的と設計原則
 
 1. **要ローテーション検出の成立**(最重要): メンバー削除・サーバー失効時に「その主体が閲覧可能だった変数 × 環境」を監査ログから算出できること(CRYPTO_SPEC §7)。スキーマはこのクエリ要件から逆算して設計する(§4)
-2. **アイデンティティ規則(絶対)**: イベントの主体・対象の識別は**内部 user_id と鍵フィンガープリント(+ maruhi 発行 API トークン id)のみ**。GitHub ID・provider_user_id・provider login・メールアドレスを監査ログに書き込んではならない(CLAUDE.md。append-only 構造は書き換え不能であり、認証プロバイダから独立していなければならない)。認証手段の**種別名**(`github_oauth` / `device_flow` 等。AUTH_SPEC の auth_method と同じ語彙)は記録してよい
+2. **アイデンティティ規則(絶対)**: イベントの主体・対象の識別は**内部 user_id と鍵フィンガープリント(+ maruhi 発行 API トークン id)のみ**。GitHub ID・provider_user_id・provider login・メールアドレスを監査ログに書き込んではならない(CLAUDE.md。append-only 構造は書き換え不能であり、認証プロバイダから独立していなければならない)。認証手段の**種別名**(`github_oauth` / `cli_handoff` / 旧 `device_flow`〔2026-08-31 の AUTH_SPEC §4 改訂で置換 — 既存行の歴史値として有効〕等。AUTH_SPEC の auth_method と同じ語彙)は記録してよい
 3. **秘密を含めない**: 変数の平文値・暗号文・nonce・鍵素材をイベントに含めない。変数名は v1 では平文メタデータ(CRYPTO_SPEC §4)なので、UI 利便のためスナップショットを payload に含めてよい
 4. **append-only**: 監査イベントの更新・削除 API を作らない。リポジトリサービスは追記と読み取りのみを公開する(ImportLint の境界で強制)。訂正は打ち消しイベントの追記で表現する
 5. **チェーンが正、ミラーは従**: メンバーシップ操作の真実源は署名チェーン(CRYPTO_SPEC §6)。監査ログのチェーンミラー(§3.4)は統一クエリのための導出データであり、矛盾時はチェーンが勝つ。ミラーはチェーンから再構築可能でなければならない
@@ -42,7 +42,7 @@ actor: {
 
 | イベント | 主な属性 | 備考 |
 |---|---|---|
-| `auth.login_succeeded` | auth_method | Web OAuth / device flow 完了 |
+| `auth.login_succeeded` | auth_method | Web OAuth / CLI ログイン(ハンドオフ)承認完了(2026-08-31 の AUTH_SPEC §4 改訂: `device_flow` → `cli_handoff`。既存行の旧値は歴史値として残る) |
 | `auth.login_failed` | auth_method, 理由種別 | state 不一致・検証失敗等。提示された外部 ID は**記録しない** |
 | `auth.session_revoked` | 対象 session id | 明示ログアウト / サーバー側失効 |
 | `auth.token_created` | token_id, name, scopes | |
@@ -218,7 +218,7 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 
 **提案: 案 A(D1)を v1 に採用する。** 理由: (1) §4 の中核クエリはすべてプロジェクト DO 内で完結しており、org / 認証系イベントは検出に関与しない = DO 併置の利点がない。(2) 認証系イベントは記録対象(sessions / tokens)と同じ D1 に置くことで、発行・失効処理と同一トランザクションで追記できる。(3) append-only はどのストアでも「コード規律 + 追記専用サービス境界」で守るものであり、DO にしても自動では強くならない。案 B への移行はイベント構造が同型なので後からでも機械的に可能(ホステッド版のコンプライアンス要件が出た時点で再評価)。
 
-**実装(2026-08-10 セッション 21)**: 案 A のとおり `user_audit_events`(§3.1)/ `org_audit_events`(§3.2)を D1 に実装した。列は §5.1 と同じ設計(頻出属性の列昇格 + payload JSON。auth_method は §2 どおり payload)で、D1 側イベントに現れない DO 専用列(チェーン・変数座標・鍵 FP・client_ts)は持たず、org 系の横断クエリ用に `org_id` / `project_id` を列昇格する。users への FK は張らない(監査行は記録対象の行より長生きし、参照整合が追記を阻害してはならない)。同一トランザクション追記(理由 (2))は各リポジトリが自分の D1 batch へ挿入文を同梱する形で実現し、主データ書き込みを伴わないイベント(`auth.login_failed` と device flow の `auth.login_succeeded`)のみ単独追記とする。記録は対応する操作 API が存在するイベントのみ(org の改名・削除・メンバー管理 API は未実装のため、該当イベントは API 導入時に記録を開始する)。読み取り API は §6〜§7 どおり作らない(Phase 2)。
+**実装(2026-08-10 セッション 21)**: 案 A のとおり `user_audit_events`(§3.1)/ `org_audit_events`(§3.2)を D1 に実装した。列は §5.1 と同じ設計(頻出属性の列昇格 + payload JSON。auth_method は §2 どおり payload)で、D1 側イベントに現れない DO 専用列(チェーン・変数座標・鍵 FP・client_ts)は持たず、org 系の横断クエリ用に `org_id` / `project_id` を列昇格する。users への FK は張らない(監査行は記録対象の行より長生きし、参照整合が追記を阻害してはならない)。同一トランザクション追記(理由 (2))は各リポジトリが自分の D1 batch へ挿入文を同梱する形で実現し、主データ書き込みを伴わないイベント(`auth.login_failed` と CLI ログイン〔2026-08-31 の §4 改訂前は device flow〕の `auth.login_succeeded`)のみ単独追記とする。記録は対応する操作 API が存在するイベントのみ(org の改名・削除・メンバー管理 API は未実装のため、該当イベントは API 導入時に記録を開始する)。読み取り API は §6〜§7 どおり作らない(Phase 2)。
 
 ### 5.3 保持と量
 

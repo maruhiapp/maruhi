@@ -47,13 +47,14 @@
 
 順序(ADR-0014 改訂 1): ドッグフーディング(private preview 込み — 並行・継続)/ S1〜S3 と H1〜H4 の並走 → H5 公開儀式 → public 化 → 招待制ベータ → オープンベータ → GA(課金・docs サイト)。
 
-- [ ] H1: サインアップ制御 — deployment 設定 `signupPolicy`(open / invite / closed。セルフホスト既定 open = 現行挙動)+ サインアップ招待コード(単回・期限つき bearer)+ コードの未認証事前検証エンドポイント + `/auth/config` の advisory 配布 + プロジェクト招待(AUTH_SPEC §15)との合成経路 + **CLI の login 事前 fail-fast(device flow 開始前 — 拒否経路の共有枠消費の遮断)**。AUTH_SPEC §3 / §4 の改訂は実装 PR 側
+- [ ] H1: サインアップ制御 — deployment 設定 `signupPolicy`(open / invite / closed。セルフホスト既定 open = 現行挙動)+ サインアップ招待コード(単回・期限つき bearer — **受理・事前検証は Web サインアップ〔AUTH_SPEC §3〕のみ: 2026-08-31 追補裁定 DH で CLI ログインはアカウントを作らなくなったため、CLI 経路にコードは載らない**)+ `/auth/config` の advisory 配布 + プロジェクト招待(AUTH_SPEC §15)との合成経路 + **CLI の login 事前 fail-fast(`POST /auth/cli/start` 前 — signupPolicy 確認と「Web でサインアップしてから」の案内に縮小。hosted-design.md §2-2 再追記)**。AUTH_SPEC §3 / §4 の改訂は実装 PR 側(§4 の本体改訂は 2026-08-31 に着地済み — H1 分は signupPolicy まわりの追補のみ)
+- [ ] H1b(2026-08-31 追加 — session-48 裁定 DF + 追補裁定 DH): CLI ログイン経路の置換(gap 9 の実装 — AUTH_SPEC §4 全面改訂 2026-08-31): サーバー `POST /auth/cli/start`(無記録 — 署名付きフロー資格)/ `GET /auth/cli/verify` / `POST /auth/cli/poll` + スクリプトなし承認ページ + サインアップ案内ページ(既存アカウント限定)+ 旧 `/auth/device/exchange`・check-token・形式事前検査の削除、CLI = login の置換(device flow 削除・client_id 解決の廃止・プロバイダ非依存)。既存 `tokenName` Schema の文字種制約(AUTH_SPEC §6 追記・非遡及)と `docs/SELF_HOSTING.md` の追随込み。H1 と独立・並走可。**H5 の前提に加える**(公開後の削除は破壊的変更 — 公開前が最安。hosted-design.md §9 追記)
 - [ ] H2: テナント quota — プロジェクト数 / org 上限(起草値 アクティブ 100)+ DO ストレージ総量ガード(AUTH_SPEC §12-8 の Phase 2 予告の実装 — 警告 / 拒否の 2 段)
 - [ ] H3: 運用基盤 — 監視・アラート(D1 総量・GitHub クォータトリップワイヤ・外形監視)、バックアップ(D1 Time Travel + 定期 export、DO のアプリレベル退避の設計)、リストア演習、運用 OAuth App。(任意)運用側デプロイの Alchemy v2 化(ADR-0012 — 既存項の再掲)
 - [ ] H4: 法務・商務 — ToS / プライバシーポリシー / AUP、サブプロセッサ整理、security@ 窓口、ステータスページ、アカウント削除(gap 6)・通知経路(gap 8)の設計 + **法務文書の配信面(web の未認証静的ページ — hosted-design.md §9「web 面の帰属」)**(人間タスクの列挙は hosted-design.md §7)
 - [ ] H5: 公開儀式 — SECURITY.md + 脅威モデル文書(`docs/THREAT_MODEL.md` — 起草計画は hosted-design.md §6)+ 公開前チェックリスト残(Deploy to Cloudflare ボタン検証・CLI 配布・macOS 公証)→ **public 化**
 - [ ] H6: 招待制ベータ開放 — 「最初の 5 分」体験要件(ADR-0014 改訂 1)の充足確認・招待コード発行運用 + **ベータ案内・waitlist 導線・サインアップ拒否時の着地文言・オンボーディングの web 静的面(S1 系の拡張 — hosted-design.md §9)**
-- [ ] オープンベータ(H6 の後): quota 実測 + GitHub クォータ余裕(device flow 50 回/時 — hosted-design.md §3-4)+ CLI ログインのスケール経路(gap 9)の裁定を経て開放
+- [ ] オープンベータ(H6 の後): quota 実測 + GitHub クォータ余裕(2026-08-31 更新: 律速は device flow 50 回/時から token 請求 2,000 回/時の自前計数へ — hosted-design.md §3-4 追記)+ ~~CLI ログインのスケール経路(gap 9)の裁定~~(2026-08-31 裁定済み — session-48 裁定 DF。実装 = H1b)を経て開放
 - [ ] エクスポート / セルフホスト移行(export / import)— **実施決定・時期未定(2026-08-30 オーナー決定)。ベータのゲートにしない**: ホステッドから自分のデプロイへ、チェーン・値・マニフェストを履歴ごと運ぶ経路。構造的には可搬(project_id = genesis ハッシュ・自己検証チェーン・暗号文)で欠けているのは輸送路のみ。受理面に触れるため独立の設計セッション(設計 → 承認 → 実装)。論点と非可搬部分(`grant_server` ラップの再 grant 等)は docs/notes/hosted-design.md §10
 - [ ] GA: 課金導入(設計は独立タスク — 未起草)・docs サイト(Blume — Wave 3 G)
 

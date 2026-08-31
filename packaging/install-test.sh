@@ -284,7 +284,12 @@ case_tampered_archive() {
   local dest out
   local dir
   dir="$(new_case tampered-archive)"
-  printf 'X' | dd of="${dir}/${ARCHIVE}" bs=1 seek=1024 conv=notrunc 2>/dev/null
+  # 負例 1 と同じく条件分岐で決定的に改竄する。固定文字の上書きだと、その位置の
+  # 元バイトが偶然同じ文字のとき(1/256)に「改竄できていない」で落ちる flake になる
+  local orig repl
+  orig="$(dd if="${dir}/${ARCHIVE}" bs=1 skip=1024 count=1 2>/dev/null || true)"
+  repl="$([ "${orig}" = "X" ] && echo "Y" || echo "X")"
+  printf '%s' "${repl}" | dd of="${dir}/${ARCHIVE}" bs=1 seek=1024 conv=notrunc 2>/dev/null
   if cmp -s "${DIST}/${ARCHIVE}" "${dir}/${ARCHIVE}"; then
     fail "改竄アーカイブ: 改竄できていない(テスト自体の不備)"
     return
