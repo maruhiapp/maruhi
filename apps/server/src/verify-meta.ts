@@ -322,14 +322,21 @@ export const acceptMetaStatement = (input: {
         predecessorLayoutVersion: anchor.layoutVersion,
       });
     }
-    // description の受理ポリシー(§12-8 — v1 ステートメントは対象外)
-    yield* ensureDescriptionPolicy(input.statement);
-    // 削除ステートメントのスキーマ欄・レイアウトの直前一致(§12-5 — S2 義務)
     if (input.target.kind === "variable" && input.statement.status === "deleted") {
+      // 削除ステートメントのスキーマ欄・レイアウトの直前一致(§12-5 — S2 義務)。
+      // description の受理ポリシーは**削除には適用しない**: 削除の規則は保存済み
+      // 値の byte-exact 保持であり、その値は受理時に検査済み。適用すると、
+      // セルフホストが上限を引き下げた後に既存 v2 変数が削除不能になる
+      // (§12-8 の「上限で削除を遮断しない」原則との衝突。PR #119 Bugbot 指摘 —
+      // 契約外の description-rejected が 500 に落ちる経路もこれで消える:
+      // 改変された description は本検査の payload-mismatch が先に捕捉する)
       const field = deletePreservationMismatch(anchor, input.statement);
       if (field !== null) {
         return yield* rejectData({ kind: "payload-mismatch", field });
       }
+    } else {
+      // description の受理ポリシー(§12-8 — v1 ステートメントは対象外)
+      yield* ensureDescriptionPolicy(input.statement);
     }
     return yield* ensureMetaStatementSignature({
       projectId: input.projectId,

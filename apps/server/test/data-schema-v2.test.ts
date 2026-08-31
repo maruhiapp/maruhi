@@ -21,6 +21,7 @@ import {
   STRANGER,
 } from "./support/data-fixture.ts";
 import {
+  aadFor,
   activateVariableRequest,
   createVariableOk,
   declareVariableOk,
@@ -34,6 +35,7 @@ import {
   setSchemaPolicyOk,
   token,
   unsignedManifest,
+  unsignedPayload,
   v2Fields,
   VAR,
   variableStatementFor,
@@ -697,6 +699,39 @@ describe("削除ステートメントのスキーマ欄・レイアウトの直�
     }
   });
 
+  it("削除の description は受理ポリシーの対象外(改変は直前一致の 422 — 契約外の 500 に落ちない)", async () => {
+    // 削除の規則は保存済み値の byte-exact 保持であり、description の受理
+    // ポリシー(§12-8)は適用しない — 適用するとセルフホストの上限引き下げ後に
+    // 既存 v2 変数が削除不能になる(「上限で削除を遮断しない」原則)。
+    // 上限超過の description を持つ改変削除は preservation の payload-mismatch が
+    // 捕捉する(PR #119 Bugbot 指摘: 以前は契約外 description-rejected → 500)
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await seedV2Variable(dek);
+    const statement = await nextVariableStatement({
+      variableId: VAR,
+      name: "DATABASE_URL",
+      status: "deleted",
+      authorUserId: MEMBER,
+      v2: v2Fields({
+        varType: "url",
+        required: true,
+        description: "a".repeat(MAX_SCHEMA_DESCRIPTION_CODEPOINTS + 1),
+      }),
+    });
+    const { manifest } = await manifestForStatement(statement, MEMBER);
+    const response = await requestJson(
+      "DELETE",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement, manifest },
+    );
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "PayloadMismatch",
+      field: "description",
+    });
+  });
+
   it("v2 変数への v1 形の削除は 422 payload-mismatch(layoutVersion — レイアウトも直前一致)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await seedV2Variable(dek);
@@ -1065,6 +1100,23 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
     );
     expect(removed.status).toBe(422);
     await expect(removed.json()).resolves.toMatchObject({
+      _tag: "MetaStatementRejected",
+      reason: "unsupported-layout",
+    });
+    // v3 の activation(status / name ガード・値 CAS でなく unsupported-layout —
+    // PR #119 Bugbot 指摘: activate 経路も rename / 削除と同じ巻き上げ)
+    const activated = await requestJson(
+      "POST",
+      `/environments/${ENV}/variables/${VAR}/activate`,
+      token(MEMBER),
+      {
+        value: unsignedPayload(aadFor(1, 1, { variableId: VAR })),
+        statement: successor,
+        manifest: unsignedManifest(),
+      },
+    );
+    expect(activated.status).toBe(422);
+    await expect(activated.json()).resolves.toMatchObject({
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });

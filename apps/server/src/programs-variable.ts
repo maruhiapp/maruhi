@@ -409,6 +409,10 @@ export const activateVariableProgram = (
     );
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
+    // サポート範囲検査は statement 依存の全検査より前(rename / 削除と同じ
+    // 規律 — v3 クライアントには下の status / name ガードや値 CAS の誤誘導
+    // エラーでなく、常に正直な update-required を返す)
+    yield* ensureSupportedLayout(input.statement);
     // activation の対象は declared のみ(§12-5 — 「値 push + メタ再発行」の
     // 汎用複合ではない)。値 CAS は version = latestVersion + 1 しか強制しない
     // ため対象判定を兼ねられず(active 変数へ version N+1 を送れば通過して
