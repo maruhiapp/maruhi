@@ -135,6 +135,7 @@ const SPEC_EXPLICIT_DENIALS: ReadonlyArray<readonly [string, string]> = [
   ["environments", "remove"],
   ["variables", "create"],
   ["variables", "push"],
+  ["variables", "activate"], // activation 複合(§12-5 — 変数の mutation クラス)
   ["variables", "rename"],
   ["variables", "remove"],
   ["invites", "issue"], // 招待の発行(§15-2)
@@ -142,6 +143,7 @@ const SPEC_EXPLICIT_DENIALS: ReadonlyArray<readonly [string, string]> = [
   ["rotation", "dismiss"], // rotation dismiss(AUDIT_SPEC §7)
   ["auth", "recoveryPut"], // リカバリーブロブの登録(§13-2)
   ["auth", "recoveryGet"], // リカバリーブロブの取得(§13-2)
+  ["schemaPolicy", "set"], // schemaPolicy の変更(§12-11 — セッション主体は拒否と明記)
 ];
 
 describe("セッション主体の能力制限マトリクス(AUTH_SPEC §5 — 機械導出)", () => {
