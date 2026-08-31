@@ -22,7 +22,14 @@ import {
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
 import { canonicalHistory, extendedHistory } from "./chain-history.ts";
 import { vectorKeys } from "./chain-vector.ts";
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
+import {
+  type CheckResult,
+  Checks,
+  expectRejectedReason,
+  fromHex,
+  reasonCoverageChecks,
+  toHex,
+} from "./support.ts";
 
 interface VectorContext {
   readonly suite: string;
@@ -178,8 +185,7 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
   );
 }
 
-// 理由空間の網羅固定(観点 7 — テストの実効性): ValueInvalidReason の全メンバーが
-// 少なくとも 1 つの negative で「実際にその理由で拒否されること」を検査する。
+// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
 // Record 型が union との同期をコンパイル時に強制する(metadata-signature.ts の
 // META_REASON_COVERAGE と同型)。
 const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
@@ -196,15 +202,6 @@ const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
   "prev-hash-mismatch": true,
   "epoch-regressed": true,
 };
-
-function reasonCoverageChecks(c: Checks, exercised: ReadonlySet<ValueInvalidReason>): void {
-  for (const reason of Object.keys(VALUE_REASON_COVERAGE) as readonly ValueInvalidReason[]) {
-    c.push(
-      `value-sig reason coverage: ${reason} is exercised by a negative`,
-      exercised.has(reason),
-    );
-  }
-}
 
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
@@ -228,15 +225,12 @@ async function ruleNegativeCheck(
             epoch: negative.predecessor.epoch,
           },
   });
-  const rejectedReason =
-    !result.ok && result.error.kind === "ValueInvalid" ? result.error.reason : undefined;
-  const rejected = rejectedReason !== undefined && rejectedReason === negative.expected_reason;
-  if (rejectedReason !== undefined && rejected) {
-    exercised.add(rejectedReason);
-  }
-  c.push(
+  expectRejectedReason(
+    c,
     `value-sig rule negative: ${negative.name}`,
-    rejected,
+    !result.ok && result.error.kind === "ValueInvalid" ? result.error.reason : undefined,
+    negative.expected_reason,
+    exercised,
     result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
   );
 }
@@ -259,15 +253,15 @@ async function tamperNegativeCheck(
     signatureHex: negative.signature_hex,
     writerPublicKey: key.value,
   });
-  const rejected =
-    bytesMatch &&
-    !result.ok &&
-    result.error.kind === "ValueInvalid" &&
-    result.error.reason === "signature-invalid";
-  if (rejected) {
-    exercised.add("signature-invalid");
-  }
-  c.push(`value-sig negative: ${negative.name}`, rejected);
+  expectRejectedReason(
+    c,
+    `value-sig negative: ${negative.name}`,
+    bytesMatch && !result.ok && result.error.kind === "ValueInvalid"
+      ? result.error.reason
+      : undefined,
+    "signature-invalid",
+    exercised,
+  );
 }
 
 async function negativeChecks(
@@ -401,6 +395,6 @@ export async function valueSignatureChecks(): Promise<CheckResult[]> {
   await negativeChecks(c, history, extended, exercised);
   await invalidInputChecks(c);
   await roundtripChecks(c);
-  reasonCoverageChecks(c, exercised);
+  reasonCoverageChecks(c, "value-sig", VALUE_REASON_COVERAGE, exercised);
   return c.results;
 }

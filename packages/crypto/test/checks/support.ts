@@ -30,3 +30,42 @@ export class Checks {
     this.results.push({ name, ok, ...(detail === undefined ? {} : { detail }) });
   }
 }
+
+/**
+ * 拒否理由の期待一致を検査し、一致した理由を行使済み集合へ記録する
+ * (観点 7 — 理由空間の網羅固定。meta / value / manifest の negative ふるいで共用)。
+ * `rejectedReason` は呼び出し側で「期待 kind で拒否された場合の reason、それ
+ * 以外は undefined」に絞って渡す(kind の判別 union は層ごとに異なるため)。
+ */
+export function expectRejectedReason<R extends string>(
+  c: Checks,
+  name: string,
+  rejectedReason: R | undefined,
+  expectedReason: string | undefined,
+  exercised: Set<R>,
+  detail?: string,
+): void {
+  const rejected = rejectedReason !== undefined && rejectedReason === expectedReason;
+  if (rejectedReason !== undefined && rejected) {
+    exercised.add(rejectedReason);
+  }
+  c.push(name, rejected, detail);
+}
+
+/**
+ * 理由 union の全メンバーが少なくとも 1 つの negative で実際に行使されたことを
+ * 検査する(観点 7)。coverage の Record 型が union との同期をコンパイル時に
+ * 強制するため、新しい拒否規則を実装したのに負例が無い、を型 + テストで捕まえる。
+ */
+export function reasonCoverageChecks<R extends string>(
+  c: Checks,
+  label: string,
+  coverage: Record<R, true>,
+  exercised: ReadonlySet<R>,
+): void {
+  // Object.keys は string[] を返すが、Record<R, true> のキーは R のみ(直接の
+  // 変換は TS2352 になるため unknown を経由する)
+  for (const reason of Object.keys(coverage) as unknown as readonly R[]) {
+    c.push(`${label} reason coverage: ${reason} is exercised by a negative`, exercised.has(reason));
+  }
+}

@@ -31,7 +31,14 @@ import metaVectors from "../../test-vectors/metadata-signature.json" with { type
 import { canonicalHistory } from "./chain-history.ts";
 import { vectorKeys } from "./chain-vector.ts";
 import { metaExtendedHistory } from "./meta-history.ts";
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
+import {
+  type CheckResult,
+  Checks,
+  expectRejectedReason,
+  fromHex,
+  reasonCoverageChecks,
+  toHex,
+} from "./support.ts";
 
 interface VectorContext {
   readonly kind: string;
@@ -275,8 +282,7 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
   }
 }
 
-// 理由空間の網羅固定(観点 7 — テストの実効性): MetaInvalidReason の全メンバーが
-// 少なくとも 1 つの negative で「実際にその理由で拒否されること」を検査する。
+// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
 // Record 型が union との同期を **コンパイル時に** 強制するため、新しい拒否規則を
 // 実装したのにベクター・ハーネスのどちらにも負例が無い、を型 + テストで捕まえる
 // (S1 の declared-after-active / layout-regression の追加で顕在化した欠落様式)。
@@ -294,12 +300,6 @@ const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "declared-after-active": true,
   "layout-regression": true,
 };
-
-function reasonCoverageChecks(c: Checks, exercised: ReadonlySet<MetaInvalidReason>): void {
-  for (const reason of Object.keys(META_REASON_COVERAGE) as readonly MetaInvalidReason[]) {
-    c.push(`meta-sig reason coverage: ${reason} is exercised by a negative`, exercised.has(reason));
-  }
-}
 
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
@@ -324,15 +324,12 @@ async function ruleNegativeCheck(
             layoutVersion: negative.predecessor.layout_version ?? 1,
           },
   });
-  const rejectedReason =
-    !result.ok && result.error.kind === "MetaStatementInvalid" ? result.error.reason : undefined;
-  const rejected = rejectedReason !== undefined && rejectedReason === negative.expected_reason;
-  if (rejectedReason !== undefined && rejected) {
-    exercised.add(rejectedReason);
-  }
-  c.push(
+  expectRejectedReason(
+    c,
     `meta-sig rule negative: ${negative.name}`,
-    rejected,
+    !result.ok && result.error.kind === "MetaStatementInvalid" ? result.error.reason : undefined,
+    negative.expected_reason,
+    exercised,
     result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
   );
 }
@@ -355,15 +352,15 @@ async function tamperNegativeCheck(
     signatureHex: negative.signature_hex,
     authorPublicKey: key.value,
   });
-  const rejected =
-    bytesMatch &&
-    !result.ok &&
-    result.error.kind === "MetaStatementInvalid" &&
-    result.error.reason === "signature-invalid";
-  if (rejected) {
-    exercised.add("signature-invalid");
-  }
-  c.push(`meta-sig negative: ${negative.name}`, rejected);
+  expectRejectedReason(
+    c,
+    `meta-sig negative: ${negative.name}`,
+    bytesMatch && !result.ok && result.error.kind === "MetaStatementInvalid"
+      ? result.error.reason
+      : undefined,
+    "signature-invalid",
+    exercised,
+  );
 }
 
 /**
@@ -764,6 +761,6 @@ export async function metadataSignatureChecks(): Promise<CheckResult[]> {
   layoutDomainSeparationChecks(c);
   await deletedPredecessorChecks(c, history);
   await roundtripChecks(c);
-  reasonCoverageChecks(c, exercised);
+  reasonCoverageChecks(c, "meta-sig", META_REASON_COVERAGE, exercised);
   return c.results;
 }

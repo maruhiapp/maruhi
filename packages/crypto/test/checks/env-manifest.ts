@@ -47,7 +47,14 @@ import manifestVectors from "../../test-vectors/env-manifest.json" with { type: 
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import { typedEntries, vectorEnvironmentDeks, vectorKeys } from "./chain-vector.ts";
 import { manifestExtendedHistory } from "./manifest-history.ts";
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
+import {
+  type CheckResult,
+  Checks,
+  expectRejectedReason,
+  fromHex,
+  reasonCoverageChecks,
+  toHex,
+} from "./support.ts";
 
 interface VectorContext {
   readonly suite: string;
@@ -381,8 +388,7 @@ function predecessorAnchorOf(negative: ManifestNegative) {
   };
 }
 
-// 理由空間の網羅固定(観点 7 — テストの実効性): ManifestInvalidReason の全メンバー
-// が少なくとも 1 つの negative で「実際にその理由で拒否されること」を検査する。
+// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
 // Record 型が union との同期をコンパイル時に強制する(metadata-signature.ts の
 // META_REASON_COVERAGE と同型)。
 const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
@@ -404,15 +410,6 @@ const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
   "prev-hash-mismatch": true,
   "epoch-regressed": true,
 };
-
-function reasonCoverageChecks(c: Checks, exercised: ReadonlySet<ManifestInvalidReason>): void {
-  for (const reason of Object.keys(MANIFEST_REASON_COVERAGE) as readonly ManifestInvalidReason[]) {
-    c.push(
-      `env-manifest reason coverage: ${reason} is exercised by a negative`,
-      exercised.has(reason),
-    );
-  }
-}
 
 /** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
 async function ruleNegativeCheck(
@@ -442,15 +439,12 @@ async function ruleNegativeCheck(
     envMeta: verifyEnvMetaOf(negative, context),
     predecessor: predecessorAnchorOf(negative),
   });
-  const rejectedReason =
-    !result.ok && result.error.kind === "EnvManifestInvalid" ? result.error.reason : undefined;
-  const rejected = rejectedReason !== undefined && rejectedReason === negative.expected_reason;
-  if (rejectedReason !== undefined && rejected) {
-    exercised.add(rejectedReason);
-  }
-  c.push(
+  expectRejectedReason(
+    c,
     `env-manifest rule negative: ${negative.name}`,
-    rejected,
+    !result.ok && result.error.kind === "EnvManifestInvalid" ? result.error.reason : undefined,
+    negative.expected_reason,
+    exercised,
     result.ok ? "verified unexpectedly" : JSON.stringify(result.error),
   );
 }
@@ -474,15 +468,15 @@ async function tamperNegativeCheck(
     signatureHex: negative.signature_hex,
     issuerPublicKey: key.value,
   });
-  const rejected =
-    bytesMatch &&
-    !result.ok &&
-    result.error.kind === "EnvManifestInvalid" &&
-    result.error.reason === "signature-invalid";
-  if (rejected) {
-    exercised.add("signature-invalid");
-  }
-  c.push(`env-manifest negative: ${negative.name}`, rejected);
+  expectRejectedReason(
+    c,
+    `env-manifest negative: ${negative.name}`,
+    bytesMatch && !result.ok && result.error.kind === "EnvManifestInvalid"
+      ? result.error.reason
+      : undefined,
+    "signature-invalid",
+    exercised,
+  );
 }
 
 async function negativeChecks(
@@ -751,6 +745,6 @@ export async function envManifestChecks(): Promise<CheckResult[]> {
   await bindingEpochChecks(c);
   await invalidInputChecks(c);
   await roundtripChecks(c);
-  reasonCoverageChecks(c, exercised);
+  reasonCoverageChecks(c, "env-manifest", MANIFEST_REASON_COVERAGE, exercised);
   return c.results;
 }
