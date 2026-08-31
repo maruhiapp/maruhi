@@ -4,8 +4,9 @@
 //   (AUTH_SPEC §10: GitHub トークンの永続化禁止)
 // - 識別子は数値 ID(providerUserId)。login 名は表示用スナップショットのみ
 // - email はプロバイダ側で verified な primary のみ拾う(§3)
-// - device 交換で持ち込まれるトークンは check-token API で「自 OAuth App 発行」を
-//   検証する(§4-4 の audience 検証。他 App 向けトークンの流用 = confused-deputy 対策)
+// - トークンは常に自分の code 交換で得る(§3-2 / §4-1 (4))。外部持ち込み
+//   トークンの検証(旧 device flow の check-token audience 検証)は §4 の
+//   2026-08-31 改訂で経路ごと削除された
 // - テストは miniflare の outboundService で GitHub をスタブする(実ネットワーク禁止)。
 //   本番コードにスタブ分岐は存在しない
 
@@ -34,13 +35,6 @@ interface GitHubApiShape {
    * トークンの出所が自明(直前の exchangeCode)な web フロー専用。
    */
   readonly fetchIdentity: (accessToken: string) => Effect.Effect<VerifiedIdentity, GitHubAuthError>;
-  /**
-   * 外部(CLI)から持ち込まれたトークンを check-token API で検証し、自 OAuth App
-   * 発行であることを確認した上でアイデンティティを返す(§4-4)。device 交換専用。
-   */
-  readonly verifyAppToken: (
-    accessToken: string,
-  ) => Effect.Effect<VerifiedIdentity, GitHubAuthError>;
 }
 
 export class GitHubApi extends Context.Service<GitHubApi, GitHubApiShape>()("GitHubApi") {}
@@ -52,10 +46,6 @@ interface TokenResponse {
 interface UserResponse {
   readonly id?: number;
   readonly login?: string;
-}
-
-interface CheckTokenResponse {
-  readonly user?: UserResponse;
 }
 
 interface EmailEntry {
@@ -100,32 +90,6 @@ async function fetchUserRequest(accessToken: string): Promise<UserResponse | nul
     return null;
   }
   return (await response.json()) as UserResponse;
-}
-
-/**
- * §4-4 の audience 検証: check-token API(Basic 認証 = client_id:client_secret)は
- * トークンが「この App に対して発行されたもの」でなければ 404 を返す。
- * 他 App 向けに発行された(漏洩・流用)トークンをここで遮断する。
- */
-async function checkAppTokenRequest(
-  clientId: string,
-  clientSecret: string,
-  accessToken: string,
-): Promise<UserResponse | null> {
-  const response = await fetch(`${API_BASE}/applications/${clientId}/token`, {
-    method: "POST",
-    headers: {
-      ...GITHUB_API_HEADERS,
-      "content-type": "application/json",
-      authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-    },
-    body: JSON.stringify({ access_token: accessToken }),
-  });
-  if (!response.ok) {
-    return null;
-  }
-  const body = (await response.json()) as CheckTokenResponse;
-  return body.user ?? null;
 }
 
 function isVerifiedPrimary(entry: EmailEntry): boolean {
@@ -186,10 +150,6 @@ export function makeGitHubApi(clientId: string, clientSecret: string): GitHubApi
     fetchIdentity: (accessToken) =>
       attempt("token-invalid", async () =>
         toIdentity(await fetchUserRequest(accessToken), accessToken),
-      ),
-    verifyAppToken: (accessToken) =>
-      attempt("token-invalid", async () =>
-        toIdentity(await checkAppTokenRequest(clientId, clientSecret, accessToken), accessToken),
       ),
   };
 }

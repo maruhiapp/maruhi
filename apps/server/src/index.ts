@@ -27,6 +27,7 @@ import type { DbServices } from "./db.package/index.ts";
 import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
 import { auditLive } from "./handlers-audit.ts";
 import { authLive } from "./handlers-auth.ts";
+import { authCliLive } from "./handlers-auth-cli.ts";
 import { deksLive } from "./handlers-deks.ts";
 import { environmentsLive } from "./handlers-environments.ts";
 import { invitesLive } from "./handlers-invites.ts";
@@ -93,6 +94,7 @@ function handlerFor(env: Env): EnvHandler {
   const apiLive = HttpApiBuilder.layer(maruhiApi).pipe(
     Layer.provide(membershipLive),
     Layer.provide(authLive),
+    Layer.provide(authCliLive),
     Layer.provide(environmentsLive),
     Layer.provide(variablesLive),
     Layer.provide(deksLive),

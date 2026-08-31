@@ -3,6 +3,28 @@
 // 公開するのはサービス構築関数・ミドルウェア実装・クッキー名のみ。GitHub API の
 // リクエスト詳細・ハッシュ計算などの内部は境界内に閉じる。
 
+export {
+  CLI_FLOW_TTL_MS,
+  type CliVerifyParams,
+  computeVsig,
+  createFlowToken,
+  type FlowTokenVerdict,
+  generateUserCode,
+  importFlowSigningKey,
+  type RawCliVerifyQuery,
+  verificationQuery,
+  verifyCliVerifyQuery,
+  verifyFlowToken,
+} from "./cli-flow.ts";
+export {
+  type ApprovalPageInput,
+  CLI_PAGE_CSP,
+  renderApprovalPage,
+  renderApprovedPage,
+  renderCliErrorPage,
+  renderDeniedPage,
+  renderSignupGuidancePage,
+} from "./cli-pages.ts";
 export { GitHubApi, makeGitHubApi } from "./github.ts";
 export {
   authMiddlewareImpl,

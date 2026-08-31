@@ -99,18 +99,25 @@ export interface Env {
    */
   readonly SERVER_ENC_KEY_IKM?: string;
   /**
-   * 未認証 device exchange の発信元 IP レート制限(deepsec M3/B11 —
-   * wrangler.jsonc の ratelimits)。旧設定のままの self-host デプロイでは
-   * undefined になりうるため optional(不在は制限なしで従来挙動)。
+   * 未認証 CLI ログイン start の発信元 IP レート制限(AUTH_SPEC §4-1 (1) —
+   * wrangler.jsonc の ratelimits。無記録 start なので DB 保護ではなく CPU 保護)。
+   * 旧設定のままの self-host デプロイでは undefined になりうるため optional
+   * (不在は制限なしで従来挙動)。
    */
-  readonly DEVICE_EXCHANGE_RATE_LIMIT?: RateLimit;
+  readonly CLI_START_RATE_LIMIT?: RateLimit;
   /**
-   * 未認証 OAuth callback の発信元 IP レート制限(deepsec R7)。callback も
-   * リクエストごとに GitHub の token endpoint を叩き、device exchange と**同じ**
-   * OAuth App 単位のクォータを消費する。state は cookie と query の二重送信
-   * (サーバー側状態なし)なので、非ブラウザの発信元は両方を自分で用意できて
-   * 検査を通せる — 頻度を縛るのはこの binding だけ。ブラウザの対話ログインは
-   * 共有 egress で束になるため、device exchange より緩い上限にする
+   * 未認証 CLI ログイン poll の発信元 IP レート制限(AUTH_SPEC §4-1 (5) —
+   * ポーリング間隔の下限 5 秒 = 12 回/分を正常系が下回るよう、start より緩い
+   * 上限にする。超過ポーリングの 429 拒否は仕様が明示的に許す)。
+   */
+  readonly CLI_POLL_RATE_LIMIT?: RateLimit;
+  /**
+   * 未認証 OAuth callback の発信元 IP レート制限(deepsec R7)。callback は
+   * リクエストごとに GitHub の token endpoint を叩き、OAuth App 単位の共有
+   * クォータを消費する。state は cookie と query の二重送信(サーバー側状態
+   * なし)なので、非ブラウザの発信元は両方を自分で用意できて検査を通せる —
+   * 頻度を縛るのはこの binding だけ。ブラウザの対話ログイン(CLI ブラウザ脚
+   * 含む)は共有 egress で束になるため、start より緩い上限にする
    * (docs/SELF_HOSTING.md の WAF 推奨値と同じ 30/min)。
    */
   readonly OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;

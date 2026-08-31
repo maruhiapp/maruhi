@@ -321,7 +321,7 @@ const auditEventColumns = {
  * (§1-2 の線引き — 発信元単位の別枠計数を採らない理由は §3.1)。
  */
 export const loginFailedWindows = sqliteTable("login_failed_windows", {
-  /** 計数バケット。現状は auth_method 種別名(github_oauth / device_flow) */
+  /** 計数バケット。現状は auth_method 種別名(github_oauth / cli_handoff) */
   bucket: text("bucket").primaryKey(),
   /** 固定窓の開始(unix ms) */
   windowStart: integer("window_start").notNull(),
