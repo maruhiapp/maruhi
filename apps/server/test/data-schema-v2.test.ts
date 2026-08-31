@@ -1057,6 +1057,22 @@ describe("未対応レイアウト(§12-2 — 裁定 CR)", () => {
     }
   });
 
+  it("サポート範囲検査は作成の前段検査(重複名)より前(pullfrog 指摘 — 名前衝突の v3 に duplicate-name を返さない)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await setSchemaPolicyOk("enabled", OWNER);
+    // v3 宣言と同名の既存変数を先に作り、名前衝突の状況を用意する
+    await createVariableOk(dek, "var-existing", "API_KEY", "occupied");
+    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      statement: unsupportedLayoutStatement(),
+      manifest: unsignedManifest(),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "MetaStatementRejected",
+      reason: "unsupported-layout",
+    });
+  });
+
   it("サポート範囲検査は削除の直前一致・メタ CAS の判定より前(rename / 削除経路)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);

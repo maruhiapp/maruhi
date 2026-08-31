@@ -120,13 +120,12 @@ function ensureSchemaLockedCreation(
 
 /**
  * 作成(metaVersion 1)のスキーマ系受理検査(§12-11 / §12-8)を受理時点の
- * ポリシーで通す: layoutVersion のサポート範囲(最前段 — 裁定 CR)→ disabled の
- * 有効化ゲート(v2 の新規採用拒否)→ schema-locked の作成時検査 → description の
- * 受理ポリシー。
+ * ポリシーで通す: disabled の有効化ゲート(v2 の新規採用拒否)→ schema-locked の
+ * 作成時検査 → description の受理ポリシー。layoutVersion のサポート範囲検査は
+ * 呼び出し側(createVariableProgram)が statement 依存の全検査より前に行う。
  */
 const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
   Effect.gen(function* () {
-    yield* ensureSupportedLayout(statement);
     const store = yield* DataStore;
     const schemaPolicy = yield* store.schemaPolicy;
     yield* ensureSchemaPolicyAllowsLayout({
@@ -212,6 +211,10 @@ export const createVariableProgram = (
       cache,
     );
     yield* requireActiveEnvironment(environmentId);
+    // サポート範囲検査は statement 依存の全検査(NFC・重複名を含む前段検査 —
+    // ensureVariableCreatable)より前(rename / 削除 / activation と同じ規律 —
+    // 名前が衝突している v3 クライアントに duplicate-name を返さない)
+    yield* ensureSupportedLayout(input.statement);
     yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
     // スキーマポリシー(§12-11 — 受理時点のポリシーを permit 下で読む):
     // disabled は v2 の新規採用(metaVersion 1 の v2 作成)を拒否し、locked は
