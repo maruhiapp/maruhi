@@ -158,6 +158,7 @@ import {
   typeAdvisoryWarnings,
 } from "./run.ts";
 import { ensureImportCeremonyAllowed, schemaImportOp } from "./schema-import.ts";
+import { scanPaths, schemaLintOp } from "./schema-lint.ts";
 import { schemaExportOp, schemaVerifySnapshotOp } from "./schema-snapshot.ts";
 import {
   ensureEntropyAcknowledged,
@@ -732,6 +733,23 @@ const schemaVerifySnapshotConfig = {
   ),
 };
 
+/** `maruhi schema lint [paths...]`(コード契約の突合 — 設計文書 §1-7)。 */
+const schemaLintConfig = {
+  ...commonFlags(),
+  ignore: Flag.string("ignore").pipe(
+    Flag.withDescription(
+      "Environment-variable name to exclude from the undeclared check (repeatable — for runtime variables not managed by maruhi, e.g. NODE_ENV)",
+    ),
+    Flag.withSchema(NonBlank),
+    // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
+    Flag.atLeast(0),
+  ),
+  paths: Argument.string("path").pipe(
+    Argument.withDescription("File or directory to scan for environment-variable references"),
+    Argument.atLeast(1),
+  ),
+};
+
 /** `maruhi var rm <NAME>`(変数の削除 — AUTH_SPEC §12-5)。 */
 const varRmConfig = {
   ...commonFlags(),
@@ -796,6 +814,7 @@ const GROUP_CONFIGS: Readonly<
     import: schemaImportConfig,
     export: schemaExportConfig,
     "verify-snapshot": schemaVerifySnapshotConfig,
+    lint: schemaLintConfig,
   },
   var: { rm: varRmConfig },
 };
@@ -2483,12 +2502,39 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const schemaLint = Command.make("lint", schemaLintConfig, (values) =>
+    Effect.gen(function* () {
+      // 走査はネットワークより先(パスの誤り・読めないツリーを 1 往復の前に落とす)
+      const scan = yield* scanPaths(values.paths);
+      const context = yield* openMetadataEnvironment(values);
+      yield* schemaLintOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        resync: context.resync,
+        floor: context.floorHandle,
+        scan,
+        ignore: values.ignore,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Cross-check environment-variable references in source code against the declared schema (best-effort static scan — names only)",
+    ),
+  );
+
   // **bare `maruhi schema` = 表示**(設計文書 §1-1 — audit と同じハンドラ付き親)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
       "Show the environment's declared variable schema (names / types / required / status / descriptions — no values). Bare `maruhi schema` shows; `schema set` writes",
     ),
-    Command.withSubcommands([schemaSet, schemaImport, schemaExport, schemaVerifySnapshot]),
+    Command.withSubcommands([
+      schemaSet,
+      schemaImport,
+      schemaExport,
+      schemaVerifySnapshot,
+      schemaLint,
+    ]),
   );
 
   const varRm = Command.make("rm", varRmConfig, (values) =>
