@@ -437,6 +437,15 @@ adoption only — statements already written in v2 stay stored, distributed and
 verifiable, and variables that are already v2 keep their full lifecycle
 (rename, schema re-issue, deletion, and activation of declared variables).
 
+**CLI side of the same series (S3)**: the updated CLI is the "step 2" client —
+it verifies and displays layout-v2 statements (`maruhi schema`), writes schema
+fields and value-free declarations (`maruhi schema set`), activates a declared
+variable on its first `maruhi push`, and makes `maruhi run` / `maruhi ci run`
+fail fast (before starting the child process) when a variable declared as
+required has no value yet. None of this changes behavior for projects whose
+`schemaPolicy` is `disabled` or for servers that predate the S2 release:
+enabling schemas remains the explicit per-project step 3 above.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata
