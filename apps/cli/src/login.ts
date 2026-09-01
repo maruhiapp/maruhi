@@ -126,11 +126,8 @@ function signupPolicyPreflight(
 ): Effect.Effect<void, CliError, Stdio.Stdio> {
   return Effect.gen(function* () {
     const config = yield* client.auth.authConfig({}).pipe(Effect.option);
-    if (Option.isNone(config)) {
-      return;
-    }
-    const policy = config.value.signupPolicy;
-    if (policy === undefined || policy === "open") {
+    const policy = Option.isNone(config) ? undefined : config.value.signupPolicy;
+    if (policy !== "invite" && policy !== "closed") {
       return;
     }
     yield* io.log(
@@ -138,15 +135,28 @@ function signupPolicyPreflight(
         ? "This server is invite-only: CLI sign-in works only for existing accounts. If you don't have a maruhi account yet, sign up in your browser first using your sign-up invite link, then run `maruhi login` again"
         : "This server is not accepting new sign-ups: CLI sign-in works only for existing accounts",
     );
+    // 非対話環境では確認を挟まず進む(ガードの目的は善意の無駄打ちの遮断と
+    // 案内 UX — 認可ではない。アカウント不在ならサーバー側の案内ページで止まる)
+    if (yield* interactiveHumanTerminal) {
+      yield* confirmExistingAccount(io);
+    }
+  });
+}
+
+/** 対話端末 × 非エージェントか(ADR-0016 決定 7 の既存サービスの流用)。 */
+const interactiveHumanTerminal: Effect.Effect<boolean, never, Stdio.Stdio> = Effect.gen(
+  function* () {
     const agent = yield* AgentProfileRef;
     const stdio = yield* Stdio.Stdio;
     const stdinIsTerminal = yield* stdio.stdinIsTerminal;
     const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    if (agent.isAgent || !stdinIsTerminal || !stdoutIsTerminal) {
-      // 非対話環境では確認を挟まず進む(ガードの目的は善意の無駄打ちの遮断と
-      // 案内 UX — 認可ではない。アカウント不在ならサーバー側の案内ページで止まる)
-      return;
-    }
+    return !agent.isAgent && stdinIsTerminal && stdoutIsTerminal;
+  },
+);
+
+/** 既存アカウント保持の自己申告確認(no が既定 — 新規希望者を start 前に止める)。 */
+function confirmExistingAccount(io: CliIoShape): Effect.Effect<void, CliError> {
+  return Effect.gen(function* () {
     const answer = yield* io.promptLine({
       prompt: "Do you already have a maruhi account on this server? [y/N] ",
     });

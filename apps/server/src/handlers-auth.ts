@@ -180,9 +180,11 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         ): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
           signupCode === undefined
             ? Effect.succeed(response)
-            : HttpServerResponse.expireCookie(response, SIGNUP_CODE_COOKIE, HOST_COOKIE_OPTIONS).pipe(
-                Effect.orDie,
-              );
+            : HttpServerResponse.expireCookie(
+                response,
+                SIGNUP_CODE_COOKIE,
+                HOST_COOKIE_OPTIONS,
+              ).pipe(Effect.orDie);
         const resolved = yield* identities.getOrCreateUser(
           identity,
           Date.now(),

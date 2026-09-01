@@ -47,7 +47,9 @@ console.log("Sign-up link for the invitee (the link carries the code):");
 console.log("");
 console.log(`    ${origin}/auth/github/start?signup_code=${code}`);
 console.log("");
-console.log(`Expires: ${new Date(expiresAtMs).toISOString()} (${String(days)} days). Invite id: ${id}`);
+console.log(
+  `Expires: ${new Date(expiresAtMs).toISOString()} (${String(days)} days). Invite id: ${id}`,
+);
 console.log("");
 console.log("Register it (only the SHA-256 hash is stored — run from apps/server):");
 console.log("");

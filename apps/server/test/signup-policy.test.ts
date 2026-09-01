@@ -32,6 +32,11 @@ beforeEach(async () => {
   await resetAuthDb();
 });
 
+async function countRows(table: string): Promise<number> {
+  const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>();
+  return row?.n ?? -1;
+}
+
 /** 主要テーブルの行数(拒否 = 行を作らない fail-closed の検査)。 */
 async function authRowCounts(): Promise<{
   users: number;
@@ -39,15 +44,11 @@ async function authRowCounts(): Promise<{
   orgs: number;
   memberships: number;
 }> {
-  const count = async (table: string): Promise<number> => {
-    const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>();
-    return row?.n ?? -1;
-  };
   return {
-    users: await count("users"),
-    identities: await count("linked_identities"),
-    orgs: await count("organizations"),
-    memberships: await count("memberships"),
+    users: await countRows("users"),
+    identities: await countRows("linked_identities"),
+    orgs: await countRows("organizations"),
+    memberships: await countRows("memberships"),
   };
 }
 

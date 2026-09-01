@@ -119,10 +119,7 @@ interface IdentityRepoShape {
    * ならない(§15 招待トークンと同水準)。消費はここでは行わない(消費は
    * getOrCreateUser の作成 batch 内の CAS のみ)。
    */
-  readonly hasPendingSignupInvite: (
-    tokenHashHex: string,
-    nowMs: number,
-  ) => Effect.Effect<boolean>;
+  readonly hasPendingSignupInvite: (tokenHashHex: string, nowMs: number) => Effect.Effect<boolean>;
 }
 
 export class IdentityRepo extends Context.Service<IdentityRepo, IdentityRepoShape>()(
@@ -208,7 +205,9 @@ function signupPolicyIs(value: SignupPolicy): SQL {
 }
 
 /** 作成ゲートの指定(AUTH_SPEC §3): open のポリシー条件か、invite の消費 CAS。 */
-type SignupGate = { readonly kind: "open" } | { readonly kind: "invite"; readonly inviteId: string };
+type SignupGate =
+  | { readonly kind: "open" }
+  | { readonly kind: "invite"; readonly inviteId: string };
 
 /** ゲート敗北(ポリシー遷移・招待コードの並行消費)。呼び出し側が再判定する。 */
 class SignupGateLostError extends Data.TaggedError("SignupGateLost")<object> {}
@@ -263,28 +262,37 @@ function createUserBatch(
     .returning({ id: users.id });
   const trailing = [
     db.insert(linkedIdentities).select(
-      db.select({
-        userId: sql<string>`${userId}`.as("user_id"),
-        provider: sql<string>`${identity.provider}`.as("provider"),
-        providerUserId: sql<string>`${identity.providerUserId}`.as("provider_user_id"),
-        providerLogin: sql<string | null>`${identity.providerLogin}`.as("provider_login"),
-        linkedAt: sql<number>`${nowMs}`.as("linked_at"),
-      }).from(sql`(select 1)`).where(chained),
+      db
+        .select({
+          userId: sql<string>`${userId}`.as("user_id"),
+          provider: sql<string>`${identity.provider}`.as("provider"),
+          providerUserId: sql<string>`${identity.providerUserId}`.as("provider_user_id"),
+          providerLogin: sql<string | null>`${identity.providerLogin}`.as("provider_login"),
+          linkedAt: sql<number>`${nowMs}`.as("linked_at"),
+        })
+        .from(sql`(select 1)`)
+        .where(chained),
     ),
     db.insert(organizations).select(
-      db.select({
-        id: sql<string>`${orgId}`.as("id"),
-        slug: sql<string>`${`u-${userId.toLowerCase()}`}`.as("slug"),
-        name: sql<string>`${identity.providerLogin ?? "personal"}`.as("name"),
-        createdAt: sql<number>`${nowMs}`.as("created_at"),
-      }).from(sql`(select 1)`).where(chained),
+      db
+        .select({
+          id: sql<string>`${orgId}`.as("id"),
+          slug: sql<string>`${`u-${userId.toLowerCase()}`}`.as("slug"),
+          name: sql<string>`${identity.providerLogin ?? "personal"}`.as("name"),
+          createdAt: sql<number>`${nowMs}`.as("created_at"),
+        })
+        .from(sql`(select 1)`)
+        .where(chained),
     ),
     db.insert(memberships).select(
-      db.select({
-        orgId: sql<string>`${orgId}`.as("org_id"),
-        userId: sql<string>`${userId}`.as("user_id"),
-        role: sql<string>`'owner'`.as("role"),
-      }).from(sql`(select 1)`).where(chained),
+      db
+        .select({
+          orgId: sql<string>`${orgId}`.as("org_id"),
+          userId: sql<string>`${userId}`.as("user_id"),
+          role: sql<string>`'owner'`.as("role"),
+        })
+        .from(sql`(select 1)`)
+        .where(chained),
     ),
     db.insert(userAuditEvents).select(
       db
@@ -313,15 +321,18 @@ function createUserBatch(
         .where(chained),
     ),
     db.insert(orgAuditEvents).select(
-      db.select({
-        ...guardedAuditSelectColumns({
-          event: "org.created",
-          actor,
-          nowMs,
-          payload: { personal: true },
-        }),
-        orgId: sql<string>`${orgId}`.as("org_id"),
-      }).from(sql`(select 1)`).where(chained),
+      db
+        .select({
+          ...guardedAuditSelectColumns({
+            event: "org.created",
+            actor,
+            nowMs,
+            payload: { personal: true },
+          }),
+          orgId: sql<string>`${orgId}`.as("org_id"),
+        })
+        .from(sql`(select 1)`)
+        .where(chained),
     ),
     db.insert(orgAuditEvents).select(
       db
@@ -451,30 +462,31 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
           Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
           Effect.catchTag("SignupGateLost", () =>
             attempt >= 2
-              ? Effect.die(
-                  new Error("signup gate kept losing against concurrent policy changes"),
-                )
+              ? Effect.die(new Error("signup gate kept losing against concurrent policy changes"))
               : getOrCreateUser(identity, nowMs, signupInviteTokenHash, attempt + 1),
           ),
         );
-      return Effect.flatMap(run(() => readSignupPolicy(db)), (policy) => {
-        if (policy === "closed") {
-          return Effect.succeed<SignupGateResult>({ denied: "policy-closed" });
-        }
-        if (policy === "open") {
-          return attemptCreate({ kind: "open" });
-        }
-        if (signupInviteTokenHash === null) {
-          return Effect.succeed<SignupGateResult>({ denied: "invite-required" });
-        }
-        return Effect.flatMap(
-          findPendingSignupInvite(db, signupInviteTokenHash, nowMs),
-          (invite) =>
-            invite === null
-              ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
-              : attemptCreate({ kind: "invite", inviteId: invite.id }),
-        );
-      });
+      return Effect.flatMap(
+        run(() => readSignupPolicy(db)),
+        (policy) => {
+          if (policy === "closed") {
+            return Effect.succeed<SignupGateResult>({ denied: "policy-closed" });
+          }
+          if (policy === "open") {
+            return attemptCreate({ kind: "open" });
+          }
+          if (signupInviteTokenHash === null) {
+            return Effect.succeed<SignupGateResult>({ denied: "invite-required" });
+          }
+          return Effect.flatMap(
+            findPendingSignupInvite(db, signupInviteTokenHash, nowMs),
+            (invite) =>
+              invite === null
+                ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
+                : attemptCreate({ kind: "invite", inviteId: invite.id }),
+          );
+        },
+      );
     });
   return {
     getOrCreateUser: (identity, nowMs, signupInviteTokenHash) =>
