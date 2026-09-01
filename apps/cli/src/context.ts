@@ -667,6 +667,31 @@ export function commitVerifiedHead(
   );
 }
 
+/** 鍵なしの環境コンテキスト(メタデータのみ読むコマンド — maruhi schema)。 */
+export interface MetadataEnvironmentContext extends ProjectContextBase {
+  readonly environmentId: string;
+  /** 環境単位の床ハンドル(§6.3 — メタのみ pull の検査・環境水準コミット)。 */
+  readonly floorHandle: FloorHandle;
+}
+
+/**
+ * 環境単位のメタデータのみコマンド(`maruhi schema`)の前段: 環境 ID の形式
+ * 検証(ネットワークより先)→ openMetadataProject(**master 鍵を要求しない**
+ * — MARUHI_TOKEN 実行・エージェント環境で動く鍵なしクラス)→ 環境床ハンドル。
+ */
+export function openMetadataEnvironment(
+  flags: CommonFlags,
+): Effect.Effect<MetadataEnvironmentContext, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const store = yield* ConfigStore;
+    const config = yield* store.load;
+    const environmentId = yield* resolveEnvironmentId(flags.env, config);
+    const context = yield* openMetadataProjectWith(config, flags);
+    const floorHandle = yield* floorHandleFor(context, environmentId);
+    return { ...context, environmentId, floorHandle };
+  });
+}
+
 /** 1 環境ぶんの床ハンドル(環境 ID と組で持ち、取り違えを書けなくする)。 */
 export interface EnvironmentHandle {
   readonly environmentId: EnvironmentId;

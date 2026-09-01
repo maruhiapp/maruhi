@@ -60,8 +60,8 @@ import {
   type VerifiedSchemaFields,
 } from "./floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
-import { type ManifestDigestEntry, signNextManifest } from "./manifest.ts";
-import { confirmMetaMutation } from "./meta-confirm.ts";
+import type { ManifestDigestEntry } from "./manifest.ts";
+import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema-statement.ts";
@@ -545,7 +545,11 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           ),
         );
       }
-      const manifest = yield* signNextManifest({
+      // マニフェスト発行 + journal-before-send(3-F): security-critical
+      // mutation(メタ操作 — §12-10)の送信前に intent を追記する。永続化に
+      // 失敗したら送信しない(fail-closed)。クラッシュ・応答消失で失われるのは
+      // 「成功したという思い込み」ではなく「確認義務の記録」になる
+      const { manifest, intentId } = yield* issueManifestWithIntent({
         verified: state.verified,
         environmentId: input.environmentId,
         epoch: state.epoch,
@@ -562,27 +566,8 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         envMeta: issueBase.envMeta,
         issuerUserId: input.writerUserId,
         signingKey: input.signingKey,
-        chainHead: {
-          seq: state.verified.state.headSeq,
-          hashHex: state.verified.state.headHashHex,
-        },
-      });
-      // journal-before-send(3-F): security-critical mutation(メタ操作 —
-      // §12-10)の送信前に intent を追記する。永続化に失敗したら送信しない
-      // (fail-closed)。クラッシュ・応答消失で失われるのは「成功したという
-      // 思い込み」ではなく「確認義務の記録」になる
-      const intentId = yield* input.floor.appendIntent({
-        op: "meta-op",
-        environmentId: input.environmentId,
-        epoch: state.epoch,
-        dekCommitmentHex: null,
+        floor: input.floor,
         variableId: target.variableId,
-        manifestVersion: manifest.manifestVersion,
-        manifestSigHashHex: manifest.manifestSigHashHex,
-        declaredHead: {
-          seq: state.verified.state.headSeq,
-          hashHex: state.verified.state.headHashHex,
-        },
       });
       const accepted = yield* input.client.variables
         .create({
@@ -649,7 +634,8 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
           ),
         );
       }
-      const manifest = yield* signNextManifest({
+      // activation もメタ操作の複合(§12-10 (1)) — マニフェスト発行 + 3-F intent
+      const { manifest, intentId } = yield* issueManifestWithIntent({
         verified: state.verified,
         environmentId: input.environmentId,
         epoch: state.epoch,
@@ -666,24 +652,8 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         envMeta: issueBase.envMeta,
         issuerUserId: input.writerUserId,
         signingKey: input.signingKey,
-        chainHead: {
-          seq: state.verified.state.headSeq,
-          hashHex: state.verified.state.headHashHex,
-        },
-      });
-      // journal-before-send(3-F): activation はメタ操作の複合(§12-10 (1))
-      const intentId = yield* input.floor.appendIntent({
-        op: "meta-op",
-        environmentId: input.environmentId,
-        epoch: state.epoch,
-        dekCommitmentHex: null,
+        floor: input.floor,
         variableId: target.variableId,
-        manifestVersion: manifest.manifestVersion,
-        manifestSigHashHex: manifest.manifestSigHashHex,
-        declaredHead: {
-          seq: state.verified.state.headSeq,
-          hashHex: state.verified.state.headHashHex,
-        },
       });
       const accepted = yield* input.client.variables
         .activate({

@@ -20,8 +20,63 @@ import type { MaruhiClient } from "./api.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
+import { type ManifestDigestEntry, type SignedManifest, signNextManifest } from "./manifest.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
+
+/**
+ * メタ操作の複合送信の前半の共有実装(push の create / activation・schema set):
+ * 操作後のメタ集合を反映したマニフェストの発行(§4.3 / §12-5)と、送信前
+ * intent(3-F — journal-before-send)の追記。intent の永続化に失敗したら
+ * 呼び出し側は送信しない(fail-closed — appendIntent の失敗がそのまま伝播する)。
+ */
+export function issueManifestWithIntent(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  /** 発行時点の現エポック(チェーン導出値)。 */
+  readonly epoch: number;
+  readonly previous: {
+    readonly manifestVersion: number;
+    readonly signedBytesHashHex: string;
+  } | null;
+  /** 操作の適用後のメタ集合(tombstone 込み — §4.3 (3) の再計算対象)。 */
+  readonly entries: readonly ManifestDigestEntry[];
+  readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+  readonly issuerUserId: string;
+  readonly signingKey: CryptoKey;
+  readonly floor: FloorHandle;
+  /** intent の照合座標(メタ操作の対象変数)。 */
+  readonly variableId: string;
+}): Effect.Effect<{ readonly manifest: SignedManifest; readonly intentId: string }, CliError> {
+  return Effect.gen(function* () {
+    const chainHead = {
+      seq: input.verified.state.headSeq,
+      hashHex: input.verified.state.headHashHex,
+    };
+    const manifest = yield* signNextManifest({
+      verified: input.verified,
+      environmentId: input.environmentId,
+      epoch: input.epoch,
+      previous: input.previous,
+      entries: input.entries,
+      envMeta: input.envMeta,
+      issuerUserId: input.issuerUserId,
+      signingKey: input.signingKey,
+      chainHead,
+    });
+    const intentId = yield* input.floor.appendIntent({
+      op: "meta-op",
+      environmentId: input.environmentId,
+      epoch: input.epoch,
+      dekCommitmentHex: null,
+      variableId: input.variableId,
+      manifestVersion: manifest.manifestVersion,
+      manifestSigHashHex: manifest.manifestSigHashHex,
+      declaredHead: chainHead,
+    });
+    return { manifest, intentId };
+  });
+}
 
 /**
  * Confirms one accepted meta mutation against the verified distribution

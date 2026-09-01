@@ -14,11 +14,12 @@
 // 実装分散を許さない fail-closed)、ワイヤでは boolean(§12-2)。変換はこの
 // モジュールの中に閉じる。
 
-import { computeMetaSignedBytesHash, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
+import { SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { cliError, type CliError } from "./errors.ts";
+import type { CliError } from "./errors.ts";
 import type { VerifiedSchemaFields } from "./floor-check.ts";
+import { signStatementAndHash } from "./meta-statement.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** v2 ステートメントの共通入力(作成 / 継続の別は下の 2 関数が固定する)。 */
@@ -131,23 +132,11 @@ function signV2(
 ): Effect.Effect<SignedStatementV2<WireContinuationStatementV2>, CliError> {
   return Effect.gen(function* () {
     const context = statementContextV2(input, lifecycle);
-    const signature = yield* Effect.tryPromise({
-      try: () => signMetaStatement({ context, signingKey: input.signingKey }),
-      catch: () => cliError("Failed to sign the meta statement"),
-    });
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the meta statement"));
-    }
-    const metaSigHash = yield* Effect.tryPromise({
-      try: () => computeMetaSignedBytesHash(context),
-      catch: () => cliError("Failed to compute the meta-statement signed-bytes hash"),
-    });
-    if (!metaSigHash.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the meta-statement signed-bytes hash"));
-    }
+    // 署名 + 自計算ハッシュは v1 作成形と共有(meta-statement.ts)
+    const signed = yield* signStatementAndHash(context, input.signingKey);
     return {
-      statement: toWireStatementV2(context, signature.value),
-      metaSigHashHex: metaSigHash.value,
+      statement: toWireStatementV2(context, signed.signatureHex),
+      metaSigHashHex: signed.metaSigHashHex,
     };
   });
 }

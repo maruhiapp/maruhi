@@ -488,41 +488,22 @@ function joinDeletedWithLive(
 }
 
 /**
- * 変数床の join。deleted は終端状態(active / declared で上書きしない)、
- * live(active | declared)同士は値側(version — active のみが持つ)とメタ側
- * (metaVersion)を独立に join する。declared の値観測は存在しない(§4.2 —
- * 値床は activation まで空)が、active の値観測が declared 観測で無効化される
- * ことはない(active → declared の正当な遷移は存在しない — 裁定 CS)ため、
- * どちらかが active なら代表は active(値側保持)になる。どちらの入力も
- * §6.3 検証を通過した観測なので、同座標の相違はすべて equivocation の証拠。
+ * live(active | declared)同士の join: 値側(version — active のみが持つ)と
+ * メタ側(metaVersion)を独立に join する。declared の値観測は存在しない
+ * (§4.2 — 値床は activation まで空)が、active の値観測が declared 観測で
+ * 無効化されることはない(active → declared の正当な遷移は存在しない —
+ * 裁定 CS)ため、どちらかが active なら代表は active(値側保持)になる。
  */
-function joinVariableFloor(
+function joinLiveVariableFloor(
   environmentId: string,
   variableId: string,
-  existing: VariableFloor | undefined,
-  incoming: VariableFloor,
+  existing: Extract<VariableFloor, { status: "active" | "declared" }>,
+  incoming: Extract<VariableFloor, { status: "active" | "declared" }>,
   sink: ConflictSink,
 ): VariableFloor {
-  if (existing === undefined) {
-    return incoming;
-  }
-  // 片側だけ deleted: metaVersion の大小に依らず deleted(終端)が代表。
-  // live 側が deleted より進んでいれば undeletion、同一版なら規則 (b) の
-  // 証拠として joinDeletedWithLive が sink へ流す
-  if (existing.status === "deleted") {
-    if (incoming.status === "deleted") {
-      const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
-      return { status: "deleted", ...meta };
-    }
-    return joinDeletedWithLive(environmentId, variableId, existing, incoming, sink);
-  }
-  if (incoming.status === "deleted") {
-    return joinDeletedWithLive(environmentId, variableId, incoming, existing, sink);
-  }
   const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
   if (existing.status === "declared" || incoming.status === "declared") {
-    // 高々片側が active: 値観測はその側のみ(declared は値側を持たない)。
-    // 値側をそのまま保持し、メタ側は join 済みの代表を使う
+    // 高々片側が active: 値観測はその側のみ(declared は値側を持たない)
     const active =
       existing.status === "active" ? existing : incoming.status === "active" ? incoming : null;
     if (active === null) {
@@ -557,6 +538,37 @@ function joinVariableFloor(
     valueSigHashHex: value.hashHex,
     ...meta,
   };
+}
+
+/**
+ * 変数床の join。deleted は終端状態(active / declared で上書きしない)、
+ * live 同士は joinLiveVariableFloor。どちらの入力も §6.3 検証を通過した観測
+ * なので、同座標の相違はすべて equivocation の証拠。
+ */
+function joinVariableFloor(
+  environmentId: string,
+  variableId: string,
+  existing: VariableFloor | undefined,
+  incoming: VariableFloor,
+  sink: ConflictSink,
+): VariableFloor {
+  if (existing === undefined) {
+    return incoming;
+  }
+  // 片側だけ deleted: metaVersion の大小に依らず deleted(終端)が代表。
+  // live 側が deleted より進んでいれば undeletion、同一版なら規則 (b) の
+  // 証拠として joinDeletedWithLive が sink へ流す
+  if (existing.status === "deleted") {
+    if (incoming.status === "deleted") {
+      const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
+      return { status: "deleted", ...meta };
+    }
+    return joinDeletedWithLive(environmentId, variableId, existing, incoming, sink);
+  }
+  if (incoming.status === "deleted") {
+    return joinDeletedWithLive(environmentId, variableId, incoming, existing, sink);
+  }
+  return joinLiveVariableFloor(environmentId, variableId, existing, incoming, sink);
 }
 
 /** マニフェスト床の join(manifestVersion 前進のみ。同一版の異ハッシュ = 分岐の証拠)。 */

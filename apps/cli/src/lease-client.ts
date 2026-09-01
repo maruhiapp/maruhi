@@ -292,13 +292,9 @@ export function verifyLeaseResponse(input: {
         statement: response.statement,
         variables: response.variables,
         deletedVariables: response.deletedVariables,
-        ...(response.declaredVariables === undefined
-          ? {}
-          : { declaredVariables: response.declaredVariables }),
-        ...(response.manifest === undefined ? {} : { manifest: response.manifest }),
-        ...(response.checkpointSnapshot === undefined
-          ? {}
-          : { checkpointSnapshot: response.checkpointSnapshot }),
+        declaredVariables: response.declaredVariables,
+        manifest: response.manifest,
+        checkpointSnapshot: response.checkpointSnapshot,
       },
     });
     // (3) リースラップの開封 + DEK コミットメント照合

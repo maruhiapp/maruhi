@@ -168,6 +168,22 @@ function coordinatesMatch(
  * **署名検証より前**に検査する)は「クライアント更新が必要」の誠実な破壊様式で
  * あり、改ざん疑いの文面に潰さない(CRYPTO_SPEC §4.2 — 裁定 CR)。
  */
+/** future(有界再同期の入口)に分類できる失敗か(§6.3-2b)。 */
+function isFutureFailure(
+  verified: VerifiedProject,
+  chainHeadSeq: number,
+  error: { readonly kind: string; readonly reason?: string },
+): boolean {
+  if (error.kind !== "ValueInvalid" && error.kind !== "MetaStatementInvalid") {
+    return false;
+  }
+  const unknownSigner = error.reason === "writer-unknown" || error.reason === "author-unknown";
+  return (
+    error.reason === "chain-head-future" ||
+    (unknownSigner && chainHeadSeq > verified.history.headSeq)
+  );
+}
+
 function failureOutcome<T>(
   verified: VerifiedProject,
   label: string,
@@ -180,19 +196,12 @@ function failureOutcome<T>(
       message: `${label} uses statement layout version ${error.layoutVersion ?? "(unknown)"}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
     };
   }
-  if (error.kind === "ValueInvalid" || error.kind === "MetaStatementInvalid") {
-    const unknownSigner = error.reason === "writer-unknown" || error.reason === "author-unknown";
-    if (
-      error.reason === "chain-head-future" ||
-      (unknownSigner && chainHeadSeq > verified.history.headSeq)
-    ) {
-      return { kind: "future" };
-    }
+  if (isFutureFailure(verified, chainHeadSeq, error)) {
+    return { kind: "future" };
   }
-  const reason = error.reason ?? error.kind;
   return {
     kind: "rejected",
-    message: `Verification of ${label} failed (reason=${reason}). It may have been replaced or forged by the server`,
+    message: `Verification of ${label} failed (reason=${error.reason ?? error.kind}). It may have been replaced or forged by the server`,
   };
 }
 
@@ -453,14 +462,14 @@ interface PullWire {
    * declared 変数の最新ステートメント(§12-7 — 値・バージョンは存在しない)。
    * 不在 = declared なし(旧サーバー応答との decode 互換を兼ねる optionalKey)。
    */
-  readonly declaredVariables?: readonly DistributedVariableMetaStatement[];
+  readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
   /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3。optional は移行の過渡状態のみ)。 */
-  readonly manifest?: DistributedEnvironmentManifest;
+  readonly manifest?: DistributedEnvironmentManifest | undefined;
   /**
    * チェックポイント時点の値スナップショット列挙(§12-7 — 規則 2 の材料。
    * 基準を持つ環境での欠落は checkpoint-integrity.ts が拒否する)。
    */
-  readonly checkpointSnapshot?: CheckpointValueSnapshot;
+  readonly checkpointSnapshot?: CheckpointValueSnapshot | undefined;
 }
 
 /** 環境自身のステートメント検証(active であること込み)。証拠材料を返す。 */
