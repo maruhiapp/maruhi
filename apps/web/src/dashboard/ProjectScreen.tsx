@@ -535,6 +535,7 @@ function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
         }}
         size="md"
         role="tablist"
+        aria-label="Project"
       >
         <Tab value="overview" label="Overview" panelId={PROJECT_TAB_PANELS.overview} />
         <Tab value="audit" label="Audit" panelId={PROJECT_TAB_PANELS.audit} />
