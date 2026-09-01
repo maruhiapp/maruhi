@@ -212,6 +212,10 @@ function decodeVariableFloor(value: unknown): VariableFloor | null {
   if (value["status"] === "deleted") {
     return { status: "deleted", ...meta };
   }
+  // declared(レイアウト v2 の値未設定宣言 — §4.2)はメタ側のみ(値床は空)
+  if (value["status"] === "declared") {
+    return { status: "declared", ...meta };
+  }
   if (
     value["status"] !== "active" ||
     !isPositiveInteger(value["version"]) ||

@@ -12,6 +12,7 @@
 // 注入直前 = run.ts、表示ゲートの後ろ = display.ts、暗号境界 = push.ts のみ)。
 
 import type { EnvironmentId } from "@maruhi/core";
+import type { MetaVarType } from "@maruhi/crypto";
 import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -19,7 +20,7 @@ import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle } from "./floor-check.ts";
+import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
@@ -30,14 +31,51 @@ export interface DecryptedVariable {
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
+  /**
+   * 宣言型(§4.2 レイアウト v2 のスキーマ欄。v1 / 未指定 = "")。注入直前の
+   * advisory 型検証(run.ts — §14.3-7: 検証は警告のみで実行は続行)にだけ使う。
+   */
+  readonly varType: MetaVarType;
   /** 平文バイト列(メモリ上のみ。剥がす箇所は run / show / 再暗号化に限る)。 */
   readonly value: Redacted.Redacted<Uint8Array>;
 }
 
-/** 復号済み変数と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
+/**
+ * One declared variable (a schema-only declaration with no value —
+ * CRYPTO_SPEC §4.2 layout v2). `maruhi run` / `ci run` の presence 検査
+ * (required 硬 — §14.2-8)の材料。description は運ばない(fail-fast の
+ * エラー文面に description を含めない — session-46 §8 第 3 周)。
+ */
+export interface DeclaredVariable {
+  readonly variableId: string;
+  readonly name: string;
+  readonly required: boolean;
+  readonly varType: MetaVarType;
+}
+
+/** 復号済み変数・declared 宣言と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
 export interface PulledVariables {
   readonly variables: readonly DecryptedVariable[];
+  /** 検証済み declared(値なし — 注入対象外。presence 検査は呼び出し側)。 */
+  readonly declared: readonly DeclaredVariable[];
   readonly warnings: readonly string[];
+}
+
+/**
+ * 検証済み declared ステートメント → presence 検査の材料。declared はレイアウト
+ * v2 限定(§4.2 — v1 declared は検証段で拒否済み)なので schema は必ず載るが、
+ * 型の上の null は fail-closed に required = true 扱いにする(required の欠落を
+ * 「注入せず素通り」に落とさない)。
+ */
+export function toDeclaredVariables(
+  statements: readonly VerifiedVariableStatement[],
+): readonly DeclaredVariable[] {
+  return statements.map((statement) => ({
+    variableId: statement.variableId,
+    name: statement.name,
+    required: statement.schema?.required ?? true,
+    varType: statement.schema?.varType ?? "",
+  }));
 }
 
 /**
@@ -197,9 +235,10 @@ export function pullVariables(input: {
         name: variable.name,
         version: variable.version,
         epoch: variable.epoch,
+        varType: variable.schema?.varType ?? "",
         value: plaintext,
       });
     }
-    return { variables: results, warnings };
+    return { variables: results, declared: toDeclaredVariables(pulled.declared), warnings };
   });
 }

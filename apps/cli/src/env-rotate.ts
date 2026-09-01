@@ -2163,6 +2163,14 @@ function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
         metaVersion: value.metaVersion,
         metaSigHashHex: value.metaSignedBytesHashHex,
       })),
+      // declared(値なしの宣言 — §4.2)もマニフェストのダイジェスト対象
+      // (§4.3 — 全ステートメントの最新形。落とすと digest 不一致で 422)
+      ...pulled.declared.map((statement) => ({
+        variableId: statement.variableId,
+        status: "declared" as const,
+        metaVersion: statement.metaVersion,
+        metaSigHashHex: statement.metaSigHashHex,
+      })),
       ...pulled.tombstones.map((tombstone) => ({
         variableId: tombstone.variableId,
         status: "deleted" as const,

@@ -149,7 +149,12 @@ import {
   rotationDismissOp,
   rotationListOp,
 } from "./rotation.ts";
-import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
+import {
+  enforceDeclaredPresence,
+  RUN_COMMAND_REQUIRED,
+  runOp,
+  typeAdvisoryWarnings,
+} from "./run.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
@@ -1658,6 +1663,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       for (const variable of pulled.variables) {
         yield* io.log(formatPulledLine(variable));
       }
+      // declared(値なしの宣言 — §4.2 レイアウト v2)はメタデータ行として列挙
+      // する(値・バージョンは存在しない。schema の詳細は `maruhi schema`)
+      for (const declared of pulled.declared) {
+        yield* io.log(`${displayText(declared.name)}\t(declared — no value set)`);
+      }
       if (values.show) {
         yield* showValues(pulled.variables);
       }
@@ -1686,6 +1696,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         floor: context.floorHandle,
       });
       yield* logWarnings(pulled.warnings);
+      // presence fail-fast(設計文書 §1-4 — 裁定 CT / CU): required = true の
+      // declared が検証済み集合にあれば、子プロセスを起動せず型付きエラー
+      yield* enforceDeclaredPresence(pulled.declared);
+      // type は advisory(§14.3-7)— 不一致は警告のみで実行続行
+      yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
       // 環境変数名は検証済みステートメント経由(§4.2 / §12-7)。実行制御系
       // 変数名 denylist(run.ts)は検証済み name に適用される防衛層
       onExitCode(yield* runOp({ command, variables: pulled.variables }));

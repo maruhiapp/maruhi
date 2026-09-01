@@ -30,9 +30,10 @@ import type {
   DistributedEnvironmentMetaStatement,
   DistributedVariableMetaStatement,
   RecipientDek,
+  SchemaPolicy,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import type { MetaStatementContext } from "@maruhi/crypto";
+import type { MetaStatementContext, MetaVariableSchema } from "@maruhi/crypto";
 import { verifyDistributedMetaStatement, verifyDistributedValue } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -47,10 +48,11 @@ import {
   checkEnvironmentMetadataPull,
   checkEnvironmentPull,
   type FloorHandle,
-  type VerifiedActiveStatement,
   type VerifiedMetaEvidence,
   type VerifiedPullSnapshot,
+  type VerifiedSchemaFields,
   type VerifiedTombstone,
+  type VerifiedVariableStatement,
 } from "./floor-check.ts";
 import { formatFloorViolation } from "./floor-evidence.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -99,6 +101,10 @@ export interface VerifiedPulledValue {
   readonly metaSignatureHex: string;
   readonly authorUserId: string;
   readonly authorKeyFingerprintHex: string;
+  /** ステートメントのワイヤ layoutVersion(省略 = 1 — §12-2)。 */
+  readonly layoutVersion: number;
+  /** レイアウト v2 のスキーマ欄(v1 = null。型は宣言 — advisory §14.3-7)。 */
+  readonly schema: VerifiedSchemaFields | null;
 }
 
 /** A bulk pull whose values and statements all passed verification (§12-7 / §6.3). */
@@ -106,6 +112,11 @@ export interface VerifiedEnvironmentPull {
   /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。 */
   readonly verified: VerifiedProject;
   readonly variables: readonly VerifiedPulledValue[];
+  /**
+   * 検証済み declared ステートメント(値なしの宣言 — §4.2 レイアウト v2)。
+   * declared だけが正当な値なし状態(CRYPTO_SPEC §6.3 の値配布要求)。
+   */
+  readonly declared: readonly VerifiedVariableStatement[];
   /** 検証済み tombstone(マニフェスト発行のダイジェスト材料 — §4.3)。 */
   readonly tombstones: readonly VerifiedTombstone[];
   /** 検証済みの環境メタステートメント(マニフェスト発行の envMeta 材料)。 */
@@ -152,13 +163,23 @@ function coordinatesMatch(
  * メンバーが宣言する自ビューより先のヘッド(writer / author が未知 かつ 宣言
  * seq > 自ヘッド)」は有界再同期の入口(future)へ。それ以外は拒否
  * (PR-2 レビューループ 1 [低] の分類を値・メタで共有する)。
+ *
+ * UnsupportedMetaLayout(サポート範囲 {1, 2} 超過の layoutVersion — crypto が
+ * **署名検証より前**に検査する)は「クライアント更新が必要」の誠実な破壊様式で
+ * あり、改ざん疑いの文面に潰さない(CRYPTO_SPEC §4.2 — 裁定 CR)。
  */
 function failureOutcome<T>(
   verified: VerifiedProject,
   label: string,
   chainHeadSeq: number,
-  error: { readonly kind: string; readonly reason?: string },
+  error: { readonly kind: string; readonly reason?: string; readonly layoutVersion?: number },
 ): VerifyOutcome<T> {
+  if (error.kind === "UnsupportedMetaLayout") {
+    return {
+      kind: "rejected",
+      message: `${label} uses statement layout version ${error.layoutVersion ?? "(unknown)"}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
+    };
+  }
   if (error.kind === "ValueInvalid" || error.kind === "MetaStatementInvalid") {
     const unknownSigner = error.reason === "writer-unknown" || error.reason === "author-unknown";
     if (
@@ -196,13 +217,80 @@ function metaEvidenceFields(
   };
 }
 
-/** ステートメントの複合検証(§6.3)。期待座標から context を自前で組む。 */
+/**
+ * 変数ステートメントのワイヤ v2 フィールド(§12-2)の解釈: v1 は 4 フィールド
+ * とも不在、v2 は 4 フィールドとも存在する。部分的な存在は正直サーバーの応答に
+ * ない形(保存行の結合をサーバーが保証する — §12-2)なので拒否する。
+ * layoutVersion のワイヤ型は上限を固定しない整数(明示値 2 以上)で、サポート
+ * 範囲({1, 2})の検査は署名検証より前に crypto 層(metaContextRejection)が
+ * 行う — ここでは範囲を検査しない(v3 を Schema / 形状エラーに潰さない)。
+ */
+type WireStatementLayout =
+  | { readonly layoutVersion: 1; readonly schema: null }
+  | { readonly layoutVersion: number; readonly schema: VerifiedSchemaFields };
+
+function wireStatementLayoutOf(
+  statement: DistributedVariableMetaStatement,
+): WireStatementLayout | null {
+  const present = [
+    statement.layoutVersion !== undefined,
+    statement.varType !== undefined,
+    statement.required !== undefined,
+    statement.description !== undefined,
+  ].filter(Boolean).length;
+  if (present === 0) {
+    return { layoutVersion: 1, schema: null };
+  }
+  if (
+    statement.layoutVersion === undefined ||
+    statement.varType === undefined ||
+    statement.required === undefined ||
+    statement.description === undefined
+  ) {
+    return null;
+  }
+  return {
+    layoutVersion: statement.layoutVersion,
+    schema: {
+      varType: statement.varType,
+      required: statement.required,
+      description: statement.description,
+    },
+  };
+}
+
+/** 部分的な v2 フィールドを持つ配布の拒否メッセージ(§12-2 の全欠揃い規約)。 */
+function partialLayoutMessage(label: string): string {
+  return `${label} carries only part of the layout-v2 field set (layoutVersion / varType / required / description must be all present or all absent — an inconsistent server response)`;
+}
+
+/** crypto の署名対象 context に渡す v2 フィールド(required は署名規約の文字列形 — §4.2)。 */
+function contextLayoutFields(
+  layout: WireStatementLayout | null,
+): Pick<MetaStatementContext, "layoutVersion" | "schema"> {
+  if (layout === null || layout.schema === null) {
+    return {};
+  }
+  const schema: MetaVariableSchema = {
+    varType: layout.schema.varType,
+    required: layout.schema.required ? "true" : "false",
+    description: layout.schema.description,
+  };
+  return { layoutVersion: layout.layoutVersion, schema };
+}
+
+/**
+ * ステートメントの複合検証(§6.3)。期待座標から context を自前で組む。
+ * 変数ステートメントの v2 フィールド(layout)は呼び出し側が wire から解釈して
+ * 渡す(環境メタは v1 のまま — §4.2 — で layout を持たない)。
+ */
 async function verifyStatement(
   verified: VerifiedProject,
   environmentId: string,
   target: MetaStatementContext["target"],
   statement: DistributedVariableMetaStatement | DistributedEnvironmentMetaStatement,
   label: string,
+  layout?: WireStatementLayout | null,
 ): Promise<VerifyOutcome<{ readonly signedBytesHashHex: string }>> {
   const result = await verifyDistributedMetaStatement({
     history: verified.history,
@@ -213,6 +301,7 @@ async function verifyStatement(
       target,
       name: statement.name,
       status: statement.status,
+      ...contextLayoutFields(layout ?? null),
       metaVersion: statement.metaVersion,
       prevMetaSigHashHex: statement.prevMetaSigHashHex,
       authorUserId: statement.authorUserId,
@@ -226,6 +315,37 @@ async function verifyStatement(
     return failureOutcome(verified, label, statement.chainHeadSeq, result.error);
   }
   return { kind: "ok", value: result.value };
+}
+
+/**
+ * 変数ステートメントの検証(verifyStatement のワイヤ v2 解釈込みの入口)。
+ * 部分的な v2 フィールドはここで拒否し、成功時は layout(表示・引き継ぎ・
+ * ダイジェスト材料)も返す。
+ */
+async function verifyVariableStatement(
+  verified: VerifiedProject,
+  environmentId: string,
+  statement: DistributedVariableMetaStatement,
+  label: string,
+): Promise<
+  VerifyOutcome<{ readonly signedBytesHashHex: string; readonly layout: WireStatementLayout }>
+> {
+  const layout = wireStatementLayoutOf(statement);
+  if (layout === null) {
+    return { kind: "rejected", message: partialLayoutMessage(label) };
+  }
+  const outcome = await verifyStatement(
+    verified,
+    environmentId,
+    { kind: "variable", variableId: statement.variableId },
+    statement,
+    label,
+    layout,
+  );
+  if (outcome.kind !== "ok") {
+    return outcome;
+  }
+  return { kind: "ok", value: { signedBytesHashHex: outcome.value.signedBytesHashHex, layout } };
 }
 
 async function verifyOne(
@@ -251,10 +371,9 @@ async function verifyOne(
     };
   }
   // 名前 → variableId の対応は検証済みステートメント経由が必須(§4.2 / §12-7)
-  const verifiedStatement = await verifyStatement(
+  const verifiedStatement = await verifyVariableStatement(
     verified,
     environmentId,
-    { kind: "variable", variableId: variable.variableId },
     statement,
     `variable ${displayText(variable.variableId)}'s meta statement`,
   );
@@ -262,9 +381,11 @@ async function verifyOne(
     return verifiedStatement;
   }
   if (statement.status !== "active") {
+    // deleted = 無断復活の運搬形、declared = 値未設定の宣言に値を併置する形
+    // (declared だけが正当な値なし状態 — §6.3。値の同梱はその逆の矛盾)
     return {
       kind: "rejected",
-      message: `Variable ${displayText(variable.variableId)} was served a deleted statement together with a value (a possible unauthorized undeletion)`,
+      message: `Variable ${displayText(variable.variableId)} was served a ${statement.status} statement together with a value (a value must only accompany an active statement — an inconsistent server response)`,
     };
   }
   const result = await verifyDistributedValue({
@@ -318,6 +439,8 @@ async function verifyOne(
       metaSignatureHex: statement.signatureHex,
       authorUserId: statement.authorUserId,
       authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+      layoutVersion: verifiedStatement.value.layout.layoutVersion,
+      schema: verifiedStatement.value.layout.schema,
     },
   };
 }
@@ -326,6 +449,11 @@ interface PullWire {
   readonly statement: DistributedEnvironmentMetaStatement;
   readonly variables: readonly PulledWire[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
+  /**
+   * declared 変数の最新ステートメント(§12-7 — 値・バージョンは存在しない)。
+   * 不在 = declared なし(旧サーバー応答との decode 互換を兼ねる optionalKey)。
+   */
+  readonly declaredVariables?: readonly DistributedVariableMetaStatement[];
   /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §6.3。optional は移行の過渡状態のみ)。 */
   readonly manifest?: DistributedEnvironmentManifest;
   /**
@@ -372,12 +500,12 @@ async function verifyEnvironmentStatement(
   };
 }
 
-/** 削除済み変数の tombstone ステートメント検証(active 側との併置 = 無断復活の運搬形も拒否)。 */
+/** 削除済み変数の tombstone ステートメント検証(active / declared 側との併置 = 無断復活の運搬形も拒否)。 */
 async function verifyDeletedStatements(
   verified: VerifiedProject,
   environmentId: string,
   deleted: readonly DistributedVariableMetaStatement[],
-  activeIds: ReadonlySet<string>,
+  liveIds: ReadonlySet<string>,
 ): Promise<VerifyOutcome<readonly VerifiedTombstone[]>> {
   const seen = new Set<string>();
   const tombstones: VerifiedTombstone[] = [];
@@ -388,23 +516,22 @@ async function verifyDeletedStatements(
         message: `Deleted variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested environment`,
       };
     }
-    if (seen.has(statement.variableId) || activeIds.has(statement.variableId)) {
+    if (seen.has(statement.variableId) || liveIds.has(statement.variableId)) {
       return {
         kind: "rejected",
-        message: `Variable ${displayText(statement.variableId)} was served as both active and deleted (an unauthorized undeletion = equivocation in transit)`,
+        message: `Variable ${displayText(statement.variableId)} was served as both live (active or declared) and deleted (an unauthorized undeletion = equivocation in transit)`,
       };
     }
     seen.add(statement.variableId);
     if (statement.status !== "deleted") {
       return {
         kind: "rejected",
-        message: `An active statement was served in the deleted list: ${displayText(statement.variableId)}`,
+        message: `A non-deleted statement was served in the deleted list: ${displayText(statement.variableId)}`,
       };
     }
-    const result = await verifyStatement(
+    const result = await verifyVariableStatement(
       verified,
       environmentId,
-      { kind: "variable", variableId: statement.variableId },
       statement,
       `deleted variable ${displayText(statement.variableId)}'s meta statement`,
     );
@@ -423,7 +550,7 @@ async function verifyDeletedStatements(
   return { kind: "ok", value: tombstones };
 }
 
-/** 検証済み active 集合の名前検査: 同名 active の重複 = 解決拒否(§4.2)、非 NFC = 警告(SHOULD)。 */
+/** 検証済み live(active + declared)集合の名前検査: 同名の重複 = 解決拒否(§4.2)、非 NFC = 警告(SHOULD)。 */
 function checkVerifiedNames(
   values: readonly { readonly variableId: string; readonly name: string }[],
   warnings: string[],
@@ -432,7 +559,7 @@ function checkVerifiedNames(
   for (const value of values) {
     // 一意性は byte-exact 比較(§12-1。全受理名が NFC ならば NFC 一致と同値)
     if (seenNames.has(value.name)) {
-      return `Multiple active statements with the same name passed verification (server equivocation): ${displayText(value.name)}. Refusing name resolution`;
+      return `Multiple live statements with the same name passed verification (server equivocation): ${displayText(value.name)}. Refusing name resolution`;
     }
     seenNames.add(value.name);
     if (value.name.normalize("NFC") !== value.name) {
@@ -445,19 +572,24 @@ function checkVerifiedNames(
 }
 
 /**
- * メタデータのみ pull のアクティブ変数ステートメント群の検証(§12-7 の
- * メタデータのみモード)。座標整合・variableId 重複拒否・active であることの
- * 検査は値付き pull の verifyOne と同一の規律で、値署名の検証だけがない。
+ * メタデータのみ pull の変数ステートメント群の検証(§12-7 のメタデータのみ
+ * モード)。座標整合・variableId 重複拒否の検査は値付き pull の verifyOne と
+ * 同一の規律で、値署名の検証だけがない。declared は active と同じ列に混在して
+ * 流れる(§12-7 — status フィールドが判別を担う)ため、拒否するのは deleted の
+ * 混入のみ。
  */
-async function verifyActiveStatements(
+async function verifyVariableStatements(
   verified: VerifiedProject,
   environmentId: string,
   statements: readonly DistributedVariableMetaStatement[],
 ): Promise<
-  VerifyOutcome<{ readonly values: readonly VerifiedActiveStatement[]; readonly ids: Set<string> }>
+  VerifyOutcome<{
+    readonly values: readonly VerifiedVariableStatement[];
+    readonly ids: Set<string>;
+  }>
 > {
   const seenIds = new Set<string>();
-  const values: VerifiedActiveStatement[] = [];
+  const values: VerifiedVariableStatement[] = [];
   for (const statement of statements) {
     if (statement.environmentId !== environmentId) {
       return {
@@ -472,27 +604,92 @@ async function verifyActiveStatements(
       };
     }
     seenIds.add(statement.variableId);
-    const outcome = await verifyStatement(
+    const outcome = await verifyVariableStatement(
       verified,
       environmentId,
-      { kind: "variable", variableId: statement.variableId },
       statement,
       `variable ${displayText(statement.variableId)}'s meta statement`,
     );
     if (outcome.kind !== "ok") {
       return outcome;
     }
-    if (statement.status !== "active") {
+    if (statement.status === "deleted") {
       return {
         kind: "rejected",
-        message: `Variable ${displayText(statement.variableId)} was served a deleted statement in the active list (a possible unauthorized undeletion)`,
+        message: `Variable ${displayText(statement.variableId)} was served a deleted statement in the live list (a possible unauthorized undeletion)`,
       };
     }
     values.push({
       variableId: statement.variableId,
       name: statement.name,
-      status: "active",
+      status: statement.status,
       ...metaEvidenceFields(statement, outcome.value.signedBytesHashHex),
+      layoutVersion: outcome.value.layout.layoutVersion,
+      schema: outcome.value.layout.schema,
+    });
+  }
+  return { kind: "ok", value: { values, ids: seenIds } };
+}
+
+/**
+ * 値付き応答の declaredVariables(§12-7)の検証。CRYPTO_SPEC §6.3 の値配布
+ * 要求の実装点: status active の検証済みステートメントがこの列に現れることは
+ * 「値の欠落」として拒否する(declared だけが正当な値なし状態)。
+ */
+async function verifyDeclaredStatements(
+  verified: VerifiedProject,
+  environmentId: string,
+  declared: readonly DistributedVariableMetaStatement[],
+  activeIds: ReadonlySet<string>,
+): Promise<
+  VerifyOutcome<{
+    readonly values: readonly VerifiedVariableStatement[];
+    readonly ids: Set<string>;
+  }>
+> {
+  const seenIds = new Set<string>();
+  const values: VerifiedVariableStatement[] = [];
+  for (const statement of declared) {
+    if (statement.environmentId !== environmentId) {
+      return {
+        kind: "rejected",
+        message: `Declared variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
+      };
+    }
+    if (seenIds.has(statement.variableId) || activeIds.has(statement.variableId)) {
+      return {
+        kind: "rejected",
+        message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
+      };
+    }
+    seenIds.add(statement.variableId);
+    if (statement.status !== "declared") {
+      // active がここに現れる = 検証済み active ステートメントの値が値付き応答に
+      // 欠けている(値の欠落 G6 — §6.3 の値配布要求)。deleted の混入も拒否
+      return {
+        kind: "rejected",
+        message:
+          statement.status === "active"
+            ? `Variable ${displayText(statement.variableId)} has a verified active statement, but the value-bearing response carries no value for it (a value omission — CRYPTO_SPEC §6.3: only declared variables legitimately have no value)`
+            : `A deleted statement was served in the declared list: ${displayText(statement.variableId)}`,
+      };
+    }
+    const outcome = await verifyVariableStatement(
+      verified,
+      environmentId,
+      statement,
+      `declared variable ${displayText(statement.variableId)}'s meta statement`,
+    );
+    if (outcome.kind !== "ok") {
+      return outcome;
+    }
+    values.push({
+      variableId: statement.variableId,
+      name: statement.name,
+      status: "declared",
+      ...metaEvidenceFields(statement, outcome.value.signedBytesHashHex),
+      layoutVersion: outcome.value.layout.layoutVersion,
+      schema: outcome.value.layout.schema,
     });
   }
   return { kind: "ok", value: { values, ids: seenIds } };
@@ -605,10 +802,12 @@ function verifyManifestStage(input: {
 
 /**
  * pull 応答の共通検証骨格(§6.3): 環境ステートメント → アクティブ集合(値付き /
- * メタのみで差し替わる)→ tombstone → 名前検査 → **マニフェスト**(ダイジェスト
- * 再計算・エポック整合 — §4.3。欠落 = 一律拒否。唯一の例外は移行経路の
- * allowMissingManifest — manifest.ts のモジュールコメント)。future はどの段でも
- * 全体を future にする(有界再同期の入口)。
+ * メタのみで差し替わる)→ declared 集合(値付き応答の declaredVariables — メタ
+ * のみモードは variables に混在するため空)→ tombstone → 名前検査 →
+ * **マニフェスト**(ダイジェスト再計算・エポック整合 — §4.3。欠落 = 一律拒否。
+ * 唯一の例外は移行経路の allowMissingManifest — manifest.ts のモジュール
+ * コメント)。ダイジェスト再計算の集合は variables ∪ declared ∪ deleted の
+ * 全ステートメント。future はどの段でも全体を future にする(有界再同期の入口)。
  */
 function verifyAllCommon<T extends { readonly variableId: string; readonly name: string }>(
   verified: VerifiedProject,
@@ -616,6 +815,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   pull: {
     readonly statement: DistributedEnvironmentMetaStatement;
     readonly deletedVariables: readonly DistributedVariableMetaStatement[];
+    readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
     readonly manifest?: DistributedEnvironmentManifest | undefined;
   },
   verifyActives: () => Promise<
@@ -632,6 +832,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       readonly kind: "ok";
       readonly environment: VerifiedMetaEvidence;
       readonly variables: readonly T[];
+      readonly declared: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
       readonly manifest: VerifiedManifest | null;
       readonly warnings: readonly string[];
@@ -654,16 +855,32 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
     if (actives.kind === "future") {
       return { kind: "future" } as const;
     }
-    const deleted = yield* verifyStage(
+    const declared = yield* verifyStage(
       () =>
-        verifyDeletedStatements(verified, environmentId, pull.deletedVariables, actives.value.ids),
+        verifyDeclaredStatements(
+          verified,
+          environmentId,
+          pull.declaredVariables ?? [],
+          actives.value.ids,
+        ),
+      "Declared-variable-statement verification",
+    );
+    if (declared.kind === "future") {
+      return { kind: "future" } as const;
+    }
+    const liveIds = new Set([...actives.value.ids, ...declared.value.ids]);
+    const deleted = yield* verifyStage(
+      () => verifyDeletedStatements(verified, environmentId, pull.deletedVariables, liveIds),
       "Deleted-variable-statement verification",
     );
     if (deleted.kind === "future") {
       return { kind: "future" } as const;
     }
     const warnings: string[] = [];
-    const nameFailure = checkVerifiedNames(actives.value.values, warnings);
+    const nameFailure = checkVerifiedNames(
+      [...actives.value.values, ...declared.value.values],
+      warnings,
+    );
     if (nameFailure !== null) {
       return yield* Effect.fail(cliError(nameFailure));
     }
@@ -674,6 +891,12 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       allowMissingManifest,
       entries: [
         ...actives.value.values.map(digestEntryOf),
+        ...declared.value.values.map((statement) => ({
+          variableId: statement.variableId,
+          status: "declared" as const,
+          metaVersion: statement.metaVersion,
+          metaSigHashHex: statement.metaSigHashHex,
+        })),
         ...deleted.value.map((tombstone) => ({
           variableId: tombstone.variableId,
           status: "deleted" as const,
@@ -691,6 +914,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       kind: "ok",
       environment: environment.value,
       variables: actives.value.values,
+      declared: declared.value.values,
       tombstones: deleted.value,
       manifest: manifest.value,
       warnings,
@@ -770,6 +994,7 @@ function verifyAll(
       snapshot: {
         environment: result.environment,
         variables: result.variables,
+        declared: result.declared,
         tombstones: result.tombstones,
         manifest: result.manifest,
       },
@@ -989,6 +1214,7 @@ export function pullVerifiedEnvironment(input: {
     ({ view, wire, value }) => ({
       verified: view,
       variables: value.snapshot.variables,
+      declared: value.snapshot.declared,
       tombstones: value.snapshot.tombstones,
       environment: value.snapshot.environment,
       manifest: value.snapshot.manifest,
@@ -1015,7 +1241,12 @@ export function verifyLeaseDistribution(input: {
   readonly environmentId: EnvironmentId;
   readonly wire: PullWire;
 }): Effect.Effect<
-  { readonly variables: readonly VerifiedPulledValue[]; readonly warnings: readonly string[] },
+  {
+    readonly variables: readonly VerifiedPulledValue[];
+    /** 検証済み declared(§14-2 — ci run の presence 検査の材料)。 */
+    readonly declared: readonly VerifiedVariableStatement[];
+    readonly warnings: readonly string[];
+  },
   CliError
 > {
   return Effect.gen(function* () {
@@ -1054,7 +1285,11 @@ export function verifyLeaseDistribution(input: {
             `No checkpoint on the verified chain covers environment ${input.environmentId}, so checkpoint integrity (rollback and stale-epoch injection detection — CRYPTO_SPEC §6.3) does not protect this response. A project member should issue one with: maruhi project checkpoint`,
           ]
         : result.warnings;
-    return { variables: result.snapshot.variables, warnings };
+    return {
+      variables: result.snapshot.variables,
+      declared: result.snapshot.declared,
+      warnings,
+    };
   });
 }
 
@@ -1062,13 +1297,20 @@ export function verifyLeaseDistribution(input: {
 export interface VerifiedEnvironmentMetadata {
   /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。 */
   readonly verified: VerifiedProject;
-  readonly variables: readonly VerifiedActiveStatement[];
+  /** 削除済みでない全変数の検証済みステートメント(active と declared の混在 — §12-7)。 */
+  readonly variables: readonly VerifiedVariableStatement[];
   /** 検証済み tombstone(削除済み変数の名前解決の唯一の源 — AUDIT_SPEC §7)。 */
   readonly tombstones: readonly VerifiedTombstone[];
   /** 検証済みの環境メタステートメント(マニフェスト発行の envMeta 材料)。 */
   readonly environment: VerifiedMetaEvidence;
   /** 検証済みマニフェスト(欠落は拒否済み — メタのみ pull に移行許容はない)。 */
   readonly manifest: VerifiedManifest;
+  /**
+   * サーバー申告の schemaPolicy(§12-7 / §12-11 — advisory)。null = 旧サーバー
+   * (未申告)。**検証規則の入力にしない** — 用途は UX(schema set の事前案内)
+   * のみ。署名されない申告値なので verified の名を持つ本構造では advisory と明示する。
+   */
+  readonly advisorySchemaPolicy: SchemaPolicy | null;
   readonly warnings: readonly string[];
 }
 
@@ -1077,12 +1319,14 @@ interface MetadataPullWire {
   readonly variables: readonly DistributedVariableMetaStatement[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   readonly manifest?: DistributedEnvironmentManifest;
+  /** schemaPolicy の advisory 同梱(§12-7 — 不在 = 旧サーバー)。 */
+  readonly schemaPolicy?: SchemaPolicy;
 }
 
 /** メタデータのみ pull の検証済み中間値(pullWithBoundedResync の TVerified)。 */
 interface VerifiedMetadataValue {
   readonly environment: VerifiedMetaEvidence;
-  readonly variables: readonly VerifiedActiveStatement[];
+  readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
   readonly manifest: VerifiedManifest;
   readonly warnings: readonly string[];
@@ -1097,7 +1341,7 @@ function verifyAllMetadata(
   | {
       readonly kind: "ok";
       readonly environment: VerifiedMetaEvidence;
-      readonly variables: readonly VerifiedActiveStatement[];
+      readonly variables: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
       readonly manifest: VerifiedManifest | null;
       readonly warnings: readonly string[];
@@ -1108,11 +1352,16 @@ function verifyAllMetadata(
   return verifyAllCommon(
     verified,
     environmentId,
-    pull,
-    () => verifyActiveStatements(verified, environmentId, pull.variables),
+    // メタのみモードの declared は variables に混在する(§12-7)— declared の
+    // 別列は値付き応答のみ
+    { ...pull, declaredVariables: [] },
+    () => verifyVariableStatements(verified, environmentId, pull.variables),
     (statement) => ({
       variableId: statement.variableId,
-      status: "active" as const,
+      // active / declared の別は検証済みステートメントの status(§4.3 の entry は
+      // status を含む — "active" 固定にすると declared を含む環境のダイジェスト
+      // 再計算が常に不一致になる)
+      status: statement.status,
       metaVersion: statement.metaVersion,
       metaSigHashHex: statement.metaSigHashHex,
     }),
@@ -1135,7 +1384,7 @@ function enforceMetadataFloor(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly environment: VerifiedMetaEvidence;
-  readonly variables: readonly VerifiedActiveStatement[];
+  readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
   readonly manifest: VerifiedManifest;
 }): Effect.Effect<void, CliError> {
@@ -1256,12 +1505,14 @@ export function pullVerifiedEnvironmentMetadata(input: {
       divergedMessage:
         "A statement bound to a head that still does not exist on the chain after a re-sync was served (evidence of chain divergence or forgery)",
     }),
-    ({ view, value }) => ({
+    ({ view, wire, value }) => ({
       verified: view,
       variables: value.variables,
       tombstones: value.tombstones,
       environment: value.environment,
       manifest: value.manifest,
+      // advisory(§12-11): 検証しない申告値 — UX 用途のみ(不在 = 旧サーバー)
+      advisorySchemaPolicy: wire.schemaPolicy ?? null,
       warnings: value.warnings,
     }),
   );

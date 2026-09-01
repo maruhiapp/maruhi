@@ -45,8 +45,8 @@ import type { RepositoryAnchor } from "./anchor.ts";
 import { checkRepositoryAnchor } from "./anchor.ts";
 import { requireChainEnvironment } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
-import type { DecryptedVariable } from "./pull.ts";
-import { decryptVerifiedValue } from "./pull.ts";
+import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
+import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
 import { verifyChainSnapshot, type VerifiedProject } from "./sync.ts";
 import { type PulledWire, verifyLeaseDistribution } from "./values.ts";
 
@@ -61,6 +61,11 @@ export interface LeaseResponseWire {
   readonly statement: DistributedEnvironmentMetaStatement;
   readonly variables: readonly PulledWire[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
+  /**
+   * declared 変数の最新ステートメント(§14-2 — 値なし。`ci run` の presence
+   * 検査の材料。不在 = declared なし)。
+   */
+  readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
   /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §9.1 (5)。移行許容はない)。 */
   readonly manifest?: DistributedEnvironmentManifest | undefined;
   /**
@@ -74,6 +79,8 @@ export interface LeaseResponseWire {
 /** リース応答から検証・復号された実行材料(run と同じ注入境界へ渡る)。 */
 export interface VerifiedLeaseMaterial {
   readonly variables: readonly DecryptedVariable[];
+  /** 検証済み declared(値なし — presence 検査は呼び出し側 ci-run.ts)。 */
+  readonly declared: readonly DeclaredVariable[];
   /** 非 NFC 名の配布などの SHOULD 警告(呼び出し側が表示する)。 */
   readonly warnings: readonly string[];
 }
@@ -285,6 +292,9 @@ export function verifyLeaseResponse(input: {
         statement: response.statement,
         variables: response.variables,
         deletedVariables: response.deletedVariables,
+        ...(response.declaredVariables === undefined
+          ? {}
+          : { declaredVariables: response.declaredVariables }),
         ...(response.manifest === undefined ? {} : { manifest: response.manifest }),
         ...(response.checkpointSnapshot === undefined
           ? {}
@@ -315,9 +325,14 @@ export function verifyLeaseResponse(input: {
         name: variable.name,
         version: variable.version,
         epoch: variable.epoch,
+        varType: variable.schema?.varType ?? "",
         value: plaintext,
       });
     }
-    return { variables, warnings: distribution.warnings };
+    return {
+      variables,
+      declared: toDeclaredVariables(distribution.declared),
+      warnings: distribution.warnings,
+    };
   });
 }

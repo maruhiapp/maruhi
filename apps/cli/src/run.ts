@@ -2,12 +2,19 @@
 // (CLAUDE.md ディスクレス不変条件)。ファイル・一時ファイル・ソケット等の
 // 中間経路を作らない。エージェント検出時も run は許可される(値の表示では
 // なく、サンクションされた消費経路であるため — タスク裁定)。
+//
+// 値なしスキーマ(§4.2 レイアウト v2)の fail-fast(設計文書 §1-4 — 裁定
+// CT / CU): presence は硬く(required = true の declared → 子プロセスを
+// **起動せず**型付きエラー)、型は柔らかく(注入直前の平文への advisory 検証 —
+// 不一致は警告のみで実行続行 §14.3-7)。**エラー・警告文面に description を
+// 含めない**(ログ経由の注入面を作らない — session-46 §8 第 3 周)。
 
 import { Context, Effect, Redacted } from "effect";
 
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
-import type { DecryptedVariable } from "./pull.ts";
+import { CliIo } from "./io.ts";
+import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 
 /** Child-process boundary: inject values, inherit non-maruhi env + stdio. */
 export interface ProcessRunnerShape {
@@ -286,6 +293,87 @@ export function buildInjectionEnv(
  */
 export const RUN_COMMAND_REQUIRED =
   "Specify the command to run after `--` (example: maruhi run -- printenv MY_VAR)";
+
+/**
+ * Presence fail-fast (設計文書 §1-4 — 裁定 CT / CU): required = true の
+ * declared 変数が検証済み集合に存在する場合、**子プロセスを起動する前**に
+ * 型付きエラーで終了する(変数名を列挙。判定材料は署名済みステートメント +
+ * マニフェスト被覆のみ — §14.2-8: サーバー申告に依存しない)。required =
+ * false の declared は注入せず情報表示のみ(stderr)。文面はどちらも
+ * description を含めない。
+ */
+export function enforceDeclaredPresence(
+  declared: readonly DeclaredVariable[],
+): Effect.Effect<void, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const missing = declared
+      .filter((variable) => variable.required)
+      .map((variable) => displayText(variable.name))
+      .toSorted();
+    if (missing.length > 0) {
+      // 子プロセス未起動の硬いエラー(presence — verified statements only)
+      return yield* Effect.fail(
+        cliError(
+          `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it). The command was not started`,
+        ),
+      );
+    }
+    const optional = declared
+      .filter((variable) => !variable.required)
+      .map((variable) => displayText(variable.name))
+      .toSorted();
+    if (optional.length > 0) {
+      const io = yield* CliIo;
+      yield* io.logError(
+        `Note: declared variables without values were not injected (declared as not required): ${optional.join(", ")}`,
+      );
+    }
+  });
+}
+
+// advisory 型検証(§14.3-7)の判定。宣言型は閉集合(§4.2 — "" = 未指定は
+// 検査対象外)。判定は注入直前のメモリ内の平文にのみ触れ、結果(真偽)以外を
+// 外へ出さない。number は 10 進表記(整数・小数・指数)のみ受ける(Number()
+// の "0x1f" / "Infinity" 受理を型一致に数えない)
+const NUMBER_TEXT = /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+
+function matchesDeclaredType(varType: "string" | "number" | "boolean" | "url", text: string) {
+  switch (varType) {
+    case "string":
+      return true;
+    case "number":
+      return NUMBER_TEXT.test(text);
+    case "boolean":
+      return text === "true" || text === "false";
+    case "url":
+      return URL.canParse(text);
+  }
+}
+
+/**
+ * Advisory declared-type check at injection time (§14.3-7): mismatches are
+ * warnings only and execution continues (type conformance is never verified —
+ * the declaration is advisory). 文面は変数名・宣言型名のみ(値も description も
+ * 含めない)。不正 UTF-8 はここでは黙って素通しする(buildInjectionEnv が
+ * 変数名付きの硬いエラーにする — 二重報告しない)。
+ */
+export function typeAdvisoryWarnings(variables: readonly DecryptedVariable[]): readonly string[] {
+  const warnings: string[] = [];
+  for (const variable of variables) {
+    if (variable.varType === "") {
+      continue;
+    }
+    // 剥がす理由: 注入直前の advisory 型検証(メモリ内のみ)。判定結果(真偽)
+    // 以外は外へ出ない — 警告文面は変数名と宣言型名だけを運ぶ
+    const text = decodeValueText(Redacted.value(variable.value));
+    if (text !== null && !matchesDeclaredType(variable.varType, text)) {
+      warnings.push(
+        `The value of variable ${displayText(variable.name)} does not match its declared type "${variable.varType}" (the declaration is advisory — CRYPTO_SPEC §14.3; continuing)`,
+      );
+    }
+  }
+  return warnings;
+}
 
 /** `maruhi run`: inject decrypted variables into the child env and run the command. */
 export function runOp(input: {

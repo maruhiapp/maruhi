@@ -36,7 +36,14 @@ export interface ChainHeadFloor {
   readonly hashHex: string;
 }
 
-/** 変数 1 つ分の床(active = 最新値 + 最新ステートメント、deleted = tombstone)。 */
+/**
+ * 変数 1 つ分の床(active = 最新値 + 最新ステートメント、deleted = tombstone、
+ * declared = レイアウト v2 の値未設定宣言 — CRYPTO_SPEC §4.2)。
+ *
+ * declared はメタ側のみを持つ(値床は activation まで空 — session-46 §8 第 1 周)。
+ * 規則 (c) の「床にない変数は version 0 相当」が activation 後の最初の pull に
+ * 自然に適用される(値側の基準を捏造しない)。
+ */
 export type VariableFloor =
   | {
       readonly status: "active";
@@ -47,6 +54,11 @@ export type VariableFloor =
       readonly valueSigHashHex: string;
       readonly metaVersion: number;
       /** 最新 metaVersion の signed bytes ハッシュ(メタ床は巻き戻し検出のみ — §14.3-5)。 */
+      readonly metaSigHashHex: string;
+    }
+  | {
+      readonly status: "declared";
+      readonly metaVersion: number;
       readonly metaSigHashHex: string;
     }
   | {
@@ -439,27 +451,28 @@ function joinMetaSide(
   return { metaVersion: joined.version, metaSigHashHex: joined.hashHex };
 }
 
-/** deleted(終端)と active の join: 削除後の active 観測 = undeletion の証拠。 */
-function joinDeletedWithActive(
+/** deleted(終端)と live(active | declared)の join: 削除後の live 観測 = undeletion の証拠。 */
+function joinDeletedWithLive(
   environmentId: string,
   variableId: string,
   deleted: Extract<VariableFloor, { status: "deleted" }>,
-  active: Extract<VariableFloor, { status: "active" }>,
+  live: Extract<VariableFloor, { status: "active" | "declared" }>,
   sink: ConflictSink,
 ): VariableFloor {
-  if (active.metaVersion > deleted.metaVersion) {
-    // deleted は終端状態(§4.2)— それより進んだ metaVersion の active 観測は
-    // 正当な経路が存在しない(無断復活の証拠)。代表は deleted のまま
+  if (live.metaVersion > deleted.metaVersion) {
+    // deleted は終端状態(§4.2)— それより進んだ metaVersion の active / declared
+    // 観測は正当な経路が存在しない(無断復活の証拠。declared への遷移も禁止
+    // — 裁定 CS)。代表は deleted のまま
     sink({
       kind: "undeletion",
       environmentId,
       variableId,
       firstVersion: deleted.metaVersion,
       firstHashHex: deleted.metaSigHashHex,
-      secondVersion: active.metaVersion,
-      secondHashHex: active.metaSigHashHex,
+      secondVersion: live.metaVersion,
+      secondHashHex: live.metaSigHashHex,
     });
-  } else if (active.metaVersion === deleted.metaVersion) {
+  } else if (live.metaVersion === deleted.metaVersion) {
     // 同一 metaVersion で status が違えば signed bytes も必ず違う = 規則 (b)
     sink({
       kind: "variable-meta",
@@ -467,16 +480,20 @@ function joinDeletedWithActive(
       variableId,
       firstVersion: deleted.metaVersion,
       firstHashHex: deleted.metaSigHashHex,
-      secondVersion: active.metaVersion,
-      secondHashHex: active.metaSigHashHex,
+      secondVersion: live.metaVersion,
+      secondHashHex: live.metaSigHashHex,
     });
   }
   return deleted;
 }
 
 /**
- * 変数床の join。deleted は終端状態(active で上書きしない)、active 同士は
- * 値側(version)とメタ側(metaVersion)を独立に join する。どちらの入力も
+ * 変数床の join。deleted は終端状態(active / declared で上書きしない)、
+ * live(active | declared)同士は値側(version — active のみが持つ)とメタ側
+ * (metaVersion)を独立に join する。declared の値観測は存在しない(§4.2 —
+ * 値床は activation まで空)が、active の値観測が declared 観測で無効化される
+ * ことはない(active → declared の正当な遷移は存在しない — 裁定 CS)ため、
+ * どちらかが active なら代表は active(値側保持)になる。どちらの入力も
  * §6.3 検証を通過した観測なので、同座標の相違はすべて equivocation の証拠。
  */
 function joinVariableFloor(
@@ -490,17 +507,34 @@ function joinVariableFloor(
     return incoming;
   }
   // 片側だけ deleted: metaVersion の大小に依らず deleted(終端)が代表。
-  // active 側が deleted より進んでいれば undeletion、同一版なら規則 (b) の
-  // 証拠として joinDeletedWithActive が sink へ流す
+  // live 側が deleted より進んでいれば undeletion、同一版なら規則 (b) の
+  // 証拠として joinDeletedWithLive が sink へ流す
   if (existing.status === "deleted") {
     if (incoming.status === "deleted") {
       const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
       return { status: "deleted", ...meta };
     }
-    return joinDeletedWithActive(environmentId, variableId, existing, incoming, sink);
+    return joinDeletedWithLive(environmentId, variableId, existing, incoming, sink);
   }
   if (incoming.status === "deleted") {
-    return joinDeletedWithActive(environmentId, variableId, incoming, existing, sink);
+    return joinDeletedWithLive(environmentId, variableId, incoming, existing, sink);
+  }
+  const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
+  if (existing.status === "declared" || incoming.status === "declared") {
+    // 高々片側が active: 値観測はその側のみ(declared は値側を持たない)。
+    // 値側をそのまま保持し、メタ側は join 済みの代表を使う
+    const active =
+      existing.status === "active" ? existing : incoming.status === "active" ? incoming : null;
+    if (active === null) {
+      return { status: "declared", ...meta };
+    }
+    return {
+      status: "active",
+      version: active.version,
+      epoch: active.epoch,
+      valueSigHashHex: active.valueSigHashHex,
+      ...meta,
+    };
   }
   const value = joinVersioned(
     { version: existing.version, hashHex: existing.valueSigHashHex, epoch: existing.epoch },
@@ -516,7 +550,6 @@ function joinVariableFloor(
     }),
     sink,
   );
-  const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
   return {
     status: "active",
     version: value.version,

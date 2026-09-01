@@ -907,7 +907,7 @@ describe("maruhi pull", () => {
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("Multiple active statements with the same name");
+    expect(env.errors.join("\n")).toContain("Multiple live statements with the same name");
   });
 
   it("値署名の bit 反転を復号より前に拒否する(§4.1)", async () => {
@@ -1322,7 +1322,9 @@ describe("メタステートメントの配布時検証(§4.2 / §6.3)", () => {
     const revived = { ...tombstone, variableId: fixture.entryAlpha.variableId };
     const conflict = await startEnv([chainHandler(), pullHandler({ deletedVariables: [revived] })]);
     expect(await runCli(["pull"], conflict.layer)).toBe(1);
-    expect(conflict.errors.join("\n")).toContain("served as both active and deleted");
+    expect(conflict.errors.join("\n")).toContain(
+      "served as both live (active or declared) and deleted",
+    );
 
     // tombstone の署名改竄も拒否(配布し続ける以上、検証もし続ける)
     const flipped = `${tombstone.signatureHex.slice(0, -1)}${
