@@ -243,10 +243,12 @@ Notes:
 
 Of maruhi's unauthenticated surface, the following four are the ones where a
 third party can trigger work that costs money or drain a shared quota (the other
-unauthenticated surfaces `/auth/config` / `/auth/github/start` /
-`/auth/cli/verify` are self-contained lightweight responses; a start request
-carrying a `signup_code` performs one D1 read and has its own default per-IP
-binding, `SIGNUP_START_RATE_LIMIT` at 10/min).
+unauthenticated surfaces stay lightweight: `/auth/github/start` without a
+`signup_code` and `/auth/cli/verify` are self-contained responses with no
+database access; `/auth/config` performs one indexed D1 point read for the
+`signupPolicy` advisory; a start request carrying a `signup_code` performs one
+D1 read and has its own default per-IP binding, `SIGNUP_START_RATE_LIMIT` at
+10/min).
 All four already have server-side defenses (input size caps, stateless MAC
 verification before any lookup, a fixed window per project, and a TTL cache for
 JWKS).
