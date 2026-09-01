@@ -8,7 +8,7 @@ Project-specific guidance for AI coding agents.
 - カスタマイズの検討順: ① `apps/web/theme/` の defineTheme(variant 追加を含む)→ ② xstyle → ③ `ui.package` での合成ラッパー → ④ `ui.package` での新規自作(Astryx の公開 API のみ)→ ⑤ upstream(facebook/astryx)への issue / PR
 
 <!-- ASTRYX:START -->
-Astryx v0.4.7 · 158 components
+Astryx v0.5.2 · 163 components
 CLI: run every command as `bunx astryx <cmd>` (shown below as `astryx ...`).
 
 SETUP (once, in your app entry e.g. main.tsx) — without these, components render unstyled:
@@ -30,7 +30,7 @@ RULES:
 
 MORE CLI:
   search "<query>"   find any component / hook / doc / template / block
-  component --list   158 components by category
+  component --list   163 components by category
   template --list    page + block recipes
   docs <topic>       browser-support, cli-integrations, color, elevation, getting-started, icons, illustrations, internationalization, layout, migration, motion, principles, shape, spacing, styling-libraries, styling, theme, tokens, typography, working-with-ai
   swizzle <Name>     eject component source for deep customization

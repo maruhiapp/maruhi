@@ -58,8 +58,8 @@
       "name": "@maruhi/web",
       "version": "0.0.0",
       "dependencies": {
-        "@astryxdesign/core": "0.4.7",
-        "@astryxdesign/theme-neutral": "0.4.7",
+        "@astryxdesign/core": "0.5.2",
+        "@astryxdesign/theme-neutral": "0.5.2",
         "@funstack/router": "1.3.0",
         "@funstack/static": "1.3.0",
         "@stylexjs/stylex": "0.19.0",
@@ -67,8 +67,8 @@
         "react-dom": "19.2.8",
       },
       "devDependencies": {
-        "@astryxdesign/build": "0.4.7",
-        "@astryxdesign/cli": "0.4.7",
+        "@astryxdesign/build": "0.5.2",
+        "@astryxdesign/cli": "0.5.2",
         "@babel/core": "8.0.1",
         "@maruhi/api-schema": "workspace:*",
         "@stylexjs/babel-plugin": "0.19.0",
@@ -129,13 +129,13 @@
 
     "@astrojs/compiler": ["@astrojs/compiler@4.0.0", "", {}, "sha512-eouss7G8ygdZqHuke033VMcVw5HTZUu+PXd/h06DGDUg/jt5btPYPqh66ENWw/mU78rBrf/oeC4oqoBwMtDMNA=="],
 
-    "@astryxdesign/build": ["@astryxdesign/build@0.4.7", "", { "dependencies": { "fast-glob": "^3.3.0", "glob-parent": "^6.0.0", "is-glob": "^4.0.0" }, "peerDependencies": { "@babel/core": ">=7.0.0", "@stylexjs/babel-plugin": ">=0.18.0", "@stylexjs/unplugin": ">=0.18.0", "vite": "^8.1.3" }, "optionalPeers": ["@stylexjs/unplugin", "vite"] }, "sha512-fbvXLa+bInbgtCJQrg7pitdQ81/mkMLvRb1Co6jV6GyLTY2aKGReFnyFHNrGXm2WUIvRZ2P99Z+l0c3iT13ofA=="],
+    "@astryxdesign/build": ["@astryxdesign/build@0.5.2", "", { "dependencies": { "fast-glob": "^3.3.0", "glob-parent": "^6.0.0", "is-glob": "^4.0.0" }, "peerDependencies": { "@babel/core": ">=7.0.0", "@stylexjs/babel-plugin": ">=0.18.0", "@stylexjs/unplugin": ">=0.18.0", "vite": "^8.1.3" }, "optionalPeers": ["@stylexjs/unplugin", "vite"] }, "sha512-9RqU8QgcBpTxPgiqU394Nrr2SmjfhOZiDeaGvtRlGTm8RcUfguPsLgR5xKB4XX2QwwyDQxiWZRRUUX4BKNNtBQ=="],
 
-    "@astryxdesign/cli": ["@astryxdesign/cli@0.4.7", "", { "dependencies": { "commander": "^12.1.0", "jiti": "^2.7.0", "jscodeshift": "^17.3.0", "zod": "^4.4.3" }, "peerDependencies": { "@astryxdesign/charts": "*", "@astryxdesign/core": "*", "@astryxdesign/lab": "*", "@astryxdesign/theme-neutral": "*", "gpt-tokenizer": "^3.4.0" }, "optionalPeers": ["@astryxdesign/charts", "@astryxdesign/core", "@astryxdesign/lab", "@astryxdesign/theme-neutral"], "bin": { "cli": "./clients/cli/bin/astryx.mjs", "astryx": "./clients/cli/bin/astryx.mjs" } }, "sha512-RI+Pn768nvxVmt+11YWGoXd4aCWFVwKtiUdQugo+wsKufTTxOWbBpk6Gp669YfbnIdS4yGVgDsu1k90bRHnyuw=="],
+    "@astryxdesign/cli": ["@astryxdesign/cli@0.5.2", "", { "dependencies": { "commander": "^12.1.0", "jiti": "^2.7.0", "jscodeshift": "^17.3.0", "zod": "^4.4.3" }, "peerDependencies": { "@astryxdesign/charts": "*", "@astryxdesign/core": "*", "@astryxdesign/lab": "*", "@astryxdesign/theme-neutral": "*", "gpt-tokenizer": "^3.4.0" }, "optionalPeers": ["@astryxdesign/charts", "@astryxdesign/core", "@astryxdesign/lab", "@astryxdesign/theme-neutral"], "bin": { "cli": "./clients/cli/bin/astryx.mjs", "astryx": "./clients/cli/bin/astryx.mjs" } }, "sha512-JKEV7JJZjapMB8fPe+HR/ZRRYD3Qce0c0tt/YjNsHDCUSAYxg0ZSWJgb1zKpqVaJzRws/IN9rKws2GsIDYkrMA=="],
 
-    "@astryxdesign/core": ["@astryxdesign/core@0.4.7", "", { "dependencies": { "intl-messageformat": "^11.2.9" }, "peerDependencies": { "@stylexjs/stylex": "^0.19.0", "react": ">=19.0.0", "react-dom": ">=19.0.0" } }, "sha512-vlPnZFtyqip8R6t7iJk5W6TOB+ssd72jqHVW1g651dx+OwOqADcBZQo2TfDypxeMSU7roRIAMeV/01f+yXpbvQ=="],
+    "@astryxdesign/core": ["@astryxdesign/core@0.5.2", "", { "dependencies": { "intl-messageformat": "^11.2.9" }, "peerDependencies": { "@stylexjs/stylex": "^0.19.0", "react": ">=19.0.0", "react-dom": ">=19.0.0" } }, "sha512-wJXjKIDpvqHG6t6BFzqRSuaJWIC2vMH3+9b4kVjwQE8LTYI5uUY6m8e5RQq06OC4BVTOHmnrhWfAzhsTaXFelw=="],
 
-    "@astryxdesign/theme-neutral": ["@astryxdesign/theme-neutral@0.4.7", "", { "dependencies": { "lucide-react": "^1.18.0" }, "peerDependencies": { "@astryxdesign/core": "0.4.7", "react": ">=19" } }, "sha512-mGxR7ck/1AeA4YkO+sYr+FogxhgmBtPGlEuSyOr2o/1M0X0YMQYjV4ND2ePLBak3JNEyH2/ETMXCSsK6bSjRGA=="],
+    "@astryxdesign/theme-neutral": ["@astryxdesign/theme-neutral@0.5.2", "", { "dependencies": { "lucide-react": "^1.18.0" }, "peerDependencies": { "@astryxdesign/core": "0.5.2", "react": ">=19" } }, "sha512-eVCN+x6OdnQk5Zw3ksAgrIKhDiTzu+0oFi689jyf0TPzFrz50f5VT3OB4SHeGgShp4dzFDWPgz6GUFQda6kTHw=="],
 
     "@babel/code-frame": ["@babel/code-frame@8.0.0", "", { "dependencies": { "@babel/helper-validator-identifier": "^8.0.0", "js-tokens": "^10.0.0" } }, "sha512-dYYg153EyN2Ekbqw2zAsbd6/JR+9N2SEoC7YV2GyyqMM7x9bLDTjBD6XBhSMLH0wtIVyJj03jWNriQhaN+eoCw=="],
 
