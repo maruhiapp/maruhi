@@ -6,7 +6,15 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
-import { createEnvironmentOk, MEMBER, OWNER, READER, requestJson } from "./support/data-fixture.ts";
+import { vectorKeyOf } from "./support/data-crypto.ts";
+import {
+  createEnvironmentOk,
+  MEMBER,
+  OWNER,
+  projectId,
+  READER,
+  requestJson,
+} from "./support/data-fixture.ts";
 import {
   createVariableOk,
   declareVariableOk,
@@ -23,9 +31,21 @@ import {
   VAR,
   varStatements,
 } from "./support/data-scenario.ts";
+import { queryProjectDo } from "./support/project-do.ts";
 import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
 
 registerDataScenario();
+
+/** rename 経路の監査行(イベント名 × variable_id — 分岐の検査用)。 */
+async function reissueAuditRows(
+  event: "var.renamed" | "var.schema_reissued",
+): Promise<readonly Record<string, unknown>[]> {
+  return queryProjectDo(
+    projectId,
+    "SELECT variable_id, actor_key_fingerprint, payload FROM audit_events WHERE event = ?",
+    event,
+  );
+}
 
 describe("遷移とレイアウト単調性(§12-5)", () => {
   it("active → declared(rename 形)は 422 payload-mismatch(status 不変の受理検査)", async () => {
@@ -304,6 +324,55 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
       description: "connection string",
       metaVersion: 2,
     });
+    // 監査は var.schema_reissued(名前不変の再発行 — AUDIT_SPEC §3.3 2026-09-01。
+    // 改名していない操作を var.renamed と記録しない)。author 鍵 FP を写し、
+    // payload は名前スナップショットのみ(スキーマ欄の内容は載せない)
+    expect(await reissueAuditRows("var.renamed")).toHaveLength(0);
+    const reissued = await reissueAuditRows("var.schema_reissued");
+    expect(reissued).toHaveLength(1);
+    expect(reissued[0]).toMatchObject({
+      variable_id: VAR,
+      actor_key_fingerprint: vectorKeyOf(MEMBER).key_fingerprint_hex,
+    });
+    const payload = JSON.parse(String(reissued[0]?.["payload"])) as Record<string, unknown>;
+    expect(payload).toMatchObject({ name: "DATABASE_URL" });
+    expect(payload).not.toHaveProperty("varType");
+    expect(payload).not.toHaveProperty("description");
+  });
+
+  it("名前とスキーマ欄を同時に変える再発行は var.renamed 1 行(名前変更が主事象 — 1 操作 1 行)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await setSchemaPolicyOk("enabled", OWNER);
+    await createVariableV2Request({
+      variableId: VAR,
+      name: "DATABASE_URL",
+      plaintext: "postgres://alpha",
+      dek,
+      schema: { varType: "string", required: true, description: "" },
+    }).then((response) => expect(response.status).toBe(200));
+    const statement = await nextVariableStatement({
+      variableId: VAR,
+      name: "DATABASE_URL_V2",
+      status: "active",
+      authorUserId: MEMBER,
+      v2: v2Fields({ varType: "url", required: false, description: "" }),
+    });
+    const { manifest, record } = await manifestForStatement(statement, MEMBER);
+    const response = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement, manifest },
+    );
+    expect(response.status).toBe(204);
+    varStatements.set(VAR, { statement, authorUserId: MEMBER });
+    record();
+    expect(await reissueAuditRows("var.schema_reissued")).toHaveLength(0);
+    const renamed = await reissueAuditRows("var.renamed");
+    expect(renamed).toHaveLength(1);
+    expect(JSON.parse(String(renamed[0]?.["payload"]))).toMatchObject({
+      name: "DATABASE_URL_V2",
+    });
   });
 
   it("v1 変数への v2 再発行は enabled で受理される(自然な機会での移行)", async () => {
@@ -327,6 +396,10 @@ describe("スキーマ再発行と可逆性(§12-5 / §12-11)", () => {
     expect(response.status).toBe(204);
     varStatements.set(VAR, { statement, authorUserId: MEMBER });
     record();
+    // 名前不変の移行再発行も var.schema_reissued(分岐は名前の byte 比較のみ —
+    // 直前レイアウトに依存しない)
+    expect(await reissueAuditRows("var.renamed")).toHaveLength(0);
+    expect(await reissueAuditRows("var.schema_reissued")).toHaveLength(1);
   });
 
   it("disabled への降格後も既に v2 の変数の継続(rename・削除)は受理され、新規採用だけが止まる(可逆性)", async () => {

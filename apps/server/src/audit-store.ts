@@ -127,6 +127,7 @@ const CLASS1_EVENTS: readonly string[] = [
   "env.deleted",
   "var.created",
   "var.renamed",
+  "var.schema_reissued",
   "var.deleted",
   "var.version_pushed",
   "server.dek_unwrapped",
