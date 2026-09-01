@@ -22,6 +22,20 @@ export interface ResolvedUser {
   readonly created: boolean;
 }
 
+/**
+ * サインアップ拒否の理由(AUTH_SPEC §3 のサインアップ制御 — 2026-09-01 H1)。
+ * 監査 `auth.signup_denied` の payload reason と同語彙(AUDIT_SPEC §3.1)。
+ */
+export type SignupDenialReason = "policy-closed" | "invite-required" | "invite-invalid";
+
+/**
+ * signupPolicy ゲート(AUTH_SPEC §3)を通る get-or-create の結果。既存ユーザーの
+ * 解決は常に成功し、拒否が返るのは「不在 → 作成」分岐だけ(新規作成のみを塞ぐ)。
+ * 拒否時に users / linked_identities / org / membership の行は作られない
+ * (fail-closed)。
+ */
+export type SignupGateResult = ResolvedUser | { readonly denied: SignupDenialReason };
+
 /** 認証済みユーザーが属する org(AUTH_SPEC §9-1)。 */
 export interface UserOrg {
   readonly orgId: string;

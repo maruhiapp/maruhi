@@ -130,6 +130,14 @@ export interface Env {
    * projectStub 到達前の request-level 制限で生成レートを有界にする。
    */
   readonly LEASE_RATE_LIMIT?: RateLimit;
+  /**
+   * サインアップ招待コード付き `GET /auth/github/start` の発信元 IP レート制限
+   * (AUTH_SPEC §3 — 2026-09-01 H1)。コード付き start は事前検証の D1 読みを
+   * 伴う未認証面(検証自体は 256-bit 単回コードのハッシュ照合で存在オラクルに
+   * ならない — 制限は資源保護)。プレーンな start は従来どおり制限なし
+   * (ログイン導線 — サーバー側の状態・外部呼び出しを持たない 302 のみ)。
+   */
+  readonly SIGNUP_START_RATE_LIMIT?: RateLimit;
 }
 
 // ---------------------------------------------------------------------------

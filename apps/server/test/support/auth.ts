@@ -9,6 +9,8 @@
 import type { TokenScope } from "@maruhi/core";
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 
+import { randomBase62, sha256Hex, ulid } from "../../src/ids.ts";
+
 export const BASE = "https://example.com";
 export const JSON_HEADERS = { "content-type": "application/json" };
 const FORM_HEADERS = { "content-type": "application/x-www-form-urlencoded" };
@@ -16,6 +18,7 @@ export const CSRF_HEADERS = { "x-maruhi-csrf": "1" };
 export const SESSION_COOKIE = "__Host-maruhi_session";
 export const STATE_COOKIE = "__Host-maruhi_oauth_state";
 export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
+export const SIGNUP_CODE_COOKIE = "__Host-maruhi_signup";
 
 // FK の親子順に削除する(invitations・監査テーブルは FK なし — 末尾でよい)
 const AUTH_TABLES = [
@@ -34,11 +37,14 @@ const AUTH_TABLES = [
   "invitations",
   "user_audit_events",
   "org_audit_events",
-  // login_failed の窓カウンタ(AUDIT_SPEC §3.1 — 監査行ではない可変状態)
+  // login_failed / signup_denied の窓カウンタ(AUDIT_SPEC §3.1 — 監査行ではない可変状態)
   "login_failed_windows",
   // フロー署名鍵(AUTH_SPEC §4-2)も消す = 各テストが初回生成(冪等・先勝ち)
   // 経路を通る
   "flow_signing_keys",
+  // サインアップ制御(AUTH_SPEC §3 — H1)。既定は行なし = signupPolicy 'open'
+  "signup_invites",
+  "deployment_settings",
 ];
 
 const SEED_TIME_MS = 1754006400000;
@@ -61,6 +67,68 @@ export async function seedUser(userId: string, githubId: number): Promise<void> 
       "INSERT INTO linked_identities (user_id, provider, provider_user_id, provider_login, linked_at) VALUES (?, 'github', ?, ?, ?)",
     ).bind(userId, String(githubId), `user${githubId}`, SEED_TIME_MS),
   ]);
+}
+
+/** signupPolicy の設定(AUTH_SPEC §3 — 運営の SQL 経路と同じ upsert)。 */
+export async function setSignupPolicy(value: string): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO deployment_settings (key, value, updated_at) VALUES ('signup_policy', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+  )
+    .bind(value, SEED_TIME_MS)
+    .run();
+}
+
+/**
+ * サインアップ招待コードのシード(AUTH_SPEC §3 — 発行スクリプトと同じ行形。
+ * 生値を返し、DB にはハッシュのみ入る)。
+ */
+export async function seedSignupInvite(options?: {
+  readonly expiresAtMs?: number;
+}): Promise<{ readonly id: string; readonly code: string }> {
+  const id = ulid();
+  const code = `maruhi_sgn_${randomBase62()}`;
+  const tokenHash = await sha256Hex(code);
+  await env.DB.prepare(
+    "INSERT INTO signup_invites (id, token_hash, status, expires_at, created_at) VALUES (?, ?, 'pending', ?, ?)",
+  )
+    .bind(id, tokenHash, options?.expiresAtMs ?? Date.now() + 7 * 24 * 60 * 60 * 1000, Date.now())
+    .run();
+  return { id, code };
+}
+
+/**
+ * Web サインアップの実経路(start〔省略可の signup_code つき〕→ callback)。
+ * 戻り値は最初に非 302 で終わった応答(start の事前検証ページ / 429)か、
+ * callback の応答(成功 302 / 拒否の案内ページ)。`betweenSteps` は受理時点
+ * 判定(AUTH_SPEC §3)の検査用 — start と callback の間に設定・行を動かす。
+ */
+export async function signupAttempt(
+  githubId: number,
+  options?: {
+    readonly signupCode?: string;
+    readonly betweenSteps?: () => Promise<void>;
+  },
+): Promise<Response> {
+  const startUrl =
+    options?.signupCode === undefined
+      ? `${BASE}/auth/github/start`
+      : `${BASE}/auth/github/start?signup_code=${options.signupCode}`;
+  const start = await SELF.fetch(startUrl, { redirect: "manual" });
+  if (start.status !== 302) {
+    return start;
+  }
+  const state = new URL(start.headers.get("location") ?? "").searchParams.get("state") ?? "";
+  const setCookies = start.headers.getSetCookie();
+  const signupCookie = readCookieValue(setCookies, SIGNUP_CODE_COOKIE);
+  const cookie = [
+    `${STATE_COOKIE}=${state}`,
+    ...(signupCookie === null ? [] : [`${SIGNUP_CODE_COOKIE}=${signupCookie}`]),
+  ].join("; ");
+  await options?.betweenSteps?.();
+  return SELF.fetch(`${BASE}/auth/github/callback?code=code-${githubId}&state=${state}`, {
+    headers: { cookie },
+    redirect: "manual",
+  });
 }
 
 /** org とそのメンバーシップをシードする(init の org member 以上の要件用)。 */

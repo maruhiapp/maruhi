@@ -1323,7 +1323,11 @@ describe("GET /auth/config のサーバー鍵公開面(AUTH_SPEC §4 / CRYPTO_SP
     const { SERVER_ENC_KEY_IKM: _omitted, ...withoutKey } = env;
     const response = await worker.fetch(incoming(`${BASE}/auth/config`), withoutKey as typeof env);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ githubClientId: env.GITHUB_CLIENT_ID });
+    // signupPolicy は常在の advisory(AUTH_SPEC §3 — 既定 'open')
+    expect(await response.json()).toEqual({
+      githubClientId: env.GITHUB_CLIENT_ID,
+      signupPolicy: "open",
+    });
   });
 
   it("treats a malformed ikm as unconfigured (fields omitted, login stays available)", async () => {

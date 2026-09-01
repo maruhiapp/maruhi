@@ -84,9 +84,10 @@ const flowSigningKey: Effect.Effect<CryptoKey, never, FlowSigningKeyRepo> = Effe
  * 配信規律)。CSP はページ内 meta と二重化し(frame-ancestors はヘッダー側
  * のみ — meta では無効)、Referrer-Policy でページ URL の外部リーク(承認
  * ページからの遷移)も塞ぐ。X-Frame-Options は frame-ancestors 未対応の古い
- * ブラウザ向けの併記。
+ * ブラウザ向けの併記。サインアップ制御の案内ページ(handlers-auth.ts —
+ * AUTH_SPEC §3)も同じ応答点を共用する。
  */
-function htmlResponse(html: string, status: number): HttpServerResponse.HttpServerResponse {
+export function htmlResponse(html: string, status: number): HttpServerResponse.HttpServerResponse {
   return HttpServerResponse.text(html, {
     status,
     contentType: "text/html; charset=utf-8",
@@ -266,8 +267,12 @@ export function handleCliCallback(
     const userId = yield* identities.lookupUser(identity);
     if (userId === null) {
       const verificationUrl = `${origin}/auth/cli/verify?${verificationQuery(params, vsig).toString()}`;
+      // 案内文言のみ signupPolicy(AUTH_SPEC §3)へ追随させる — invite 制下で
+      // プレーンなサインアップリンクを出すと拒否ページへ誘導するだけになる。
+      // 受理の正はサーバーゲート(§3 — Web サインアップ側)のまま
+      const signupPolicy = yield* identities.signupPolicy;
       return yield* withCliCookieExpired(
-        htmlResponse(renderSignupGuidancePage(origin, verificationUrl), 200),
+        htmlResponse(renderSignupGuidancePage(origin, verificationUrl, signupPolicy), 200),
       );
     }
     const identityLabel = identity.providerLogin ?? `GitHub account #${identity.providerUserId}`;
