@@ -13,7 +13,7 @@
 // - logout は自トークンの失効(§6 v1 線引き)+ キーチェーンからの削除
 
 import { MIN_CLI_POLL_INTERVAL_SECONDS } from "@maruhi/api-schema";
-import { Duration, Effect, Redacted, Stdio } from "effect";
+import { Duration, Effect, Option, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import { AgentProfileRef } from "./agent-gate.ts";
@@ -104,6 +104,63 @@ function clampExpires(seconds: number): number {
 
 const FLOW_EXPIRED_MESSAGE = "The sign-in request expired. Run `maruhi login` again";
 
+/**
+ * login の事前 fail-fast(AUTH_SPEC §3 / hosted-design.md §2-2 (i)(ii) —
+ * 2026-09-01 H1)。`POST /auth/cli/start` を呼ぶ**前**に `GET /auth/config` の
+ * `signupPolicy` advisory を確認し、`invite` / `closed` のサーバーでは新規希望者に
+ * 「Web でサインアップしてから `maruhi login`」の案内を出す。
+ *
+ * - **誤操作ガードであって認可ではない**(受理の正はサーバー — CLI ログインは
+ *   アカウントを作らない〔裁定 DH〕ため、アカウント不在者はブラウザ脚の
+ *   サインアップ案内ページで必ず止まる。ここで止めるのは無駄なブラウザ往復)
+ * - advisory の取得失敗・フィールド欠落(旧サーバー)では従来どおり進む
+ *   (advisory の欠落で login を壊さない — AUTH_SPEC §3)
+ * - 対話確認(既存アカウント保持の自己申告)は「対話端末 × 非エージェント」の
+ *   ときのみ。判定材料は Stdio / AgentProfileRef サービス経由(ADR-0016 決定 7 の
+ *   既存サービスの流用 — process.* を直に読まない)。非対話環境は案内の表示のみで
+ *   進む(プロンプトで CI・エージェントの login を吊るさない)
+ */
+function signupPolicyPreflight(
+  client: MaruhiClient,
+  io: CliIoShape,
+): Effect.Effect<void, CliError, Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const config = yield* client.auth.authConfig({}).pipe(Effect.option);
+    if (Option.isNone(config)) {
+      return;
+    }
+    const policy = config.value.signupPolicy;
+    if (policy === undefined || policy === "open") {
+      return;
+    }
+    yield* io.log(
+      policy === "invite"
+        ? "This server is invite-only: CLI sign-in works only for existing accounts. If you don't have a maruhi account yet, sign up in your browser first using your sign-up invite link, then run `maruhi login` again"
+        : "This server is not accepting new sign-ups: CLI sign-in works only for existing accounts",
+    );
+    const agent = yield* AgentProfileRef;
+    const stdio = yield* Stdio.Stdio;
+    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    if (agent.isAgent || !stdinIsTerminal || !stdoutIsTerminal) {
+      // 非対話環境では確認を挟まず進む(ガードの目的は善意の無駄打ちの遮断と
+      // 案内 UX — 認可ではない。アカウント不在ならサーバー側の案内ページで止まる)
+      return;
+    }
+    const answer = yield* io.promptLine({
+      prompt: "Do you already have a maruhi account on this server? [y/N] ",
+    });
+    const normalized = answer.trim().toLowerCase();
+    if (normalized !== "y" && normalized !== "yes") {
+      return yield* Effect.fail(
+        cliError(
+          "Aborted before starting the sign-in. Sign up in the browser first, then run `maruhi login` again",
+        ),
+      );
+    }
+  });
+}
+
 /** poll 1 回の帰結(レート制限は失敗ではなく次回間隔の調整として扱う)。 */
 type PollOutcome =
   | { readonly kind: "pending" }
@@ -177,6 +234,9 @@ export function loginOp(input: {
     const io = yield* CliIo;
     const keychain = yield* Keychain;
     const client = yield* makeApiClient({ baseUrl: input.origin });
+
+    // 事前 fail-fast(AUTH_SPEC §3 — signupPolicy advisory の確認。start より前)
+    yield* signupPolicyPreflight(client, io);
 
     // 開始(§4-1 (1) — サーバーは無記録。フロー資格はここで得る 2 識別子のみ)
     const started = yield* client.authCli
