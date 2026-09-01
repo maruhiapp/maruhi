@@ -14,6 +14,6 @@
   "dependencies": {
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
-    "effect": "4.0.0-rc.111"
+    "effect": "4.0.0-rc.112"
   }
 }
