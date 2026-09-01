@@ -14,7 +14,7 @@
  *   import './maruhi.css';
  */
 export const maruhiTheme = {
-  name: 'maruhi',
+  name: "maruhi",
   __built: true,
   tokens: {
     "--font-size-4xs": "0.375rem",
@@ -80,9 +80,12 @@ export const maruhiTheme = {
     "--duration-slow-min": "525ms",
     "--duration-slow": "700ms",
     "--duration-slow-max": "935ms",
-    "--font-family-body": "Figtree, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
-    "--font-family-heading": "Figtree, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
-    "--font-family-code": "ui-monospace, \"SF Mono\", Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace",
+    "--font-family-body":
+      'Figtree, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    "--font-family-heading":
+      'Figtree, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    "--font-family-code":
+      'ui-monospace, "SF Mono", Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
     "--color-syntax-keyword": "light-dark(#700084, #efa8ff)",
     "--color-syntax-string": "light-dark(#005600, #a6d2a2)",
     "--color-syntax-comment": "light-dark(#737373, #a3a3a3)",
@@ -103,7 +106,8 @@ export const maruhiTheme = {
     "--color-background-popover": "light-dark(#FFFBFA, #3B2D2B)",
     "--color-background-muted": "light-dark(#2518170D, #25181780)",
     "--color-accent": "light-dark(#B22A2B, #FFB3A8)",
-    "--color-accent-muted": "light-dark(color-mix(in srgb, var(--color-accent) 20%, transparent), color-mix(in srgb, var(--color-accent) 25%, transparent))",
+    "--color-accent-muted":
+      "light-dark(color-mix(in srgb, var(--color-accent) 20%, transparent), color-mix(in srgb, var(--color-accent) 25%, transparent))",
     "--color-neutral": "light-dark(#2518171A, #F1DEDC33)",
     "--color-overlay": "light-dark(#25181766, #25181799)",
     "--color-overlay-hover": "light-dark(#2518170D, #FFFFFF0D)",
@@ -179,266 +183,268 @@ export const maruhiTheme = {
     "--radius-container": "0.75rem",
     "--radius-page": "1.75rem",
     "--radius-full": "9999px",
-    "--shadow-low": "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 25%)), 0 4px 8px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 40%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 8%))",
-    "--shadow-med": "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 35%)), 0 4px 12px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 12%))",
-    "--shadow-high": "0 4px 6px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), 0 12px 24px light-dark(oklch(0 0 0 / 15%), oklch(0 0 0 / 70%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 15%))",
+    "--shadow-low":
+      "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 25%)), 0 4px 8px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 40%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 8%))",
+    "--shadow-med":
+      "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 35%)), 0 4px 12px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 12%))",
+    "--shadow-high":
+      "0 4px 6px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), 0 12px 24px light-dark(oklch(0 0 0 / 15%), oklch(0 0 0 / 70%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 15%))",
     "--shadow-inset-hover": "inset 0px 0px 0px 2px #0074e24D",
     "--shadow-inset-selected": "inset 0px 0px 0px 2px #0074e280",
     "--shadow-inset-success": "inset 0px 0px 0px 2px #1981004D",
     "--shadow-inset-warning": "inset 0px 0px 0px 2px #ffce2f4D",
     "--shadow-inset-error": "inset 0px 0px 0px 2px #e33f4a4D",
     "--color-background-inverted": "light-dark(#251817, #FFFBFA)",
-    "--color-track": "light-dark(#BFA6A2, #57423F)"
+    "--color-track": "light-dark(#BFA6A2, #57423F)",
   },
   components: {
-    "heading": {
+    heading: {
       "level:1": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-heading-1-size)",
-        "fontWeight": "var(--text-heading-1-weight)",
-        "lineHeight": "var(--text-heading-1-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-heading-1-size)",
+        fontWeight: "var(--text-heading-1-weight)",
+        lineHeight: "var(--text-heading-1-leading)",
       },
       "level:2": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-heading-2-size)",
-        "fontWeight": "var(--text-heading-2-weight)",
-        "lineHeight": "var(--text-heading-2-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-heading-2-size)",
+        fontWeight: "var(--text-heading-2-weight)",
+        lineHeight: "var(--text-heading-2-leading)",
       },
       "level:3": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-heading-3-size)",
-        "fontWeight": "var(--text-heading-3-weight)",
-        "lineHeight": "var(--text-heading-3-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-heading-3-size)",
+        fontWeight: "var(--text-heading-3-weight)",
+        lineHeight: "var(--text-heading-3-leading)",
       },
       "level:4": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-heading-4-size)",
-        "fontWeight": "var(--text-heading-4-weight)",
-        "lineHeight": "var(--text-heading-4-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-heading-4-size)",
+        fontWeight: "var(--text-heading-4-weight)",
+        lineHeight: "var(--text-heading-4-leading)",
       },
       "level:5": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-heading-5-size)",
-        "fontWeight": "var(--text-heading-5-weight)",
-        "lineHeight": "var(--text-heading-5-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-heading-5-size)",
+        fontWeight: "var(--text-heading-5-weight)",
+        lineHeight: "var(--text-heading-5-leading)",
       },
       "level:6": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-heading-6-size)",
-        "fontWeight": "var(--text-heading-6-weight)",
-        "lineHeight": "var(--text-heading-6-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-heading-6-size)",
+        fontWeight: "var(--text-heading-6-weight)",
+        lineHeight: "var(--text-heading-6-leading)",
       },
       "type:display-1": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-display-1-size)",
-        "lineHeight": "var(--text-display-1-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-display-1-size)",
+        lineHeight: "var(--text-display-1-leading)",
       },
       "type:display-2": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-display-2-size)",
-        "lineHeight": "var(--text-display-2-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-display-2-size)",
+        lineHeight: "var(--text-display-2-leading)",
       },
       "type:display-3": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-display-3-size)",
-        "lineHeight": "var(--text-display-3-leading)"
-      }
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-display-3-size)",
+        lineHeight: "var(--text-display-3-leading)",
+      },
     },
-    "text": {
+    text: {
       "type:body": {
-        "fontFamily": "var(--font-family-body)",
-        "fontSize": "var(--text-body-size)",
-        "lineHeight": "var(--text-body-leading)"
+        fontFamily: "var(--font-family-body)",
+        fontSize: "var(--text-body-size)",
+        lineHeight: "var(--text-body-leading)",
       },
       "type:large": {
-        "fontFamily": "var(--font-family-body)",
-        "fontSize": "var(--text-large-size)",
-        "lineHeight": "var(--text-large-leading)"
+        fontFamily: "var(--font-family-body)",
+        fontSize: "var(--text-large-size)",
+        lineHeight: "var(--text-large-leading)",
       },
       "type:label": {
-        "fontFamily": "var(--font-family-body)",
-        "fontSize": "var(--text-label-size)",
-        "lineHeight": "var(--text-label-leading)"
+        fontFamily: "var(--font-family-body)",
+        fontSize: "var(--text-label-size)",
+        lineHeight: "var(--text-label-leading)",
       },
       "type:code": {
-        "fontFamily": "var(--font-family-code)",
-        "fontSize": "var(--text-code-size)",
-        "lineHeight": "var(--text-code-leading)"
+        fontFamily: "var(--font-family-code)",
+        fontSize: "var(--text-code-size)",
+        lineHeight: "var(--text-code-leading)",
       },
       "type:supporting": {
-        "fontFamily": "var(--font-family-body)",
-        "fontSize": "var(--text-supporting-size)",
-        "lineHeight": "var(--text-supporting-leading)"
+        fontFamily: "var(--font-family-body)",
+        fontSize: "var(--text-supporting-size)",
+        lineHeight: "var(--text-supporting-leading)",
       },
       "type:display-1": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-display-1-size)",
-        "lineHeight": "var(--text-display-1-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-display-1-size)",
+        lineHeight: "var(--text-display-1-leading)",
       },
       "type:display-2": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-display-2-size)",
-        "lineHeight": "var(--text-display-2-leading)"
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-display-2-size)",
+        lineHeight: "var(--text-display-2-leading)",
       },
       "type:display-3": {
-        "fontFamily": "var(--font-family-heading)",
-        "fontSize": "var(--text-display-3-size)",
-        "lineHeight": "var(--text-display-3-leading)"
-      }
+        fontFamily: "var(--font-family-heading)",
+        fontSize: "var(--text-display-3-size)",
+        lineHeight: "var(--text-display-3-leading)",
+      },
     },
-    "button": {
+    button: {
       "variant:destructive": {
-        "backgroundColor": "var(--color-error-muted)",
-        "color": "var(--color-error)"
-      }
+        backgroundColor: "var(--color-error-muted)",
+        color: "var(--color-error)",
+      },
     },
-    "badge": {
+    badge: {
       "variant:info": {
-        "backgroundColor": "light-dark(#0074e2, #6d9cfe)",
-        "color": "light-dark(#ffffff, #171717)"
+        backgroundColor: "light-dark(#0074e2, #6d9cfe)",
+        color: "light-dark(#ffffff, #171717)",
       },
       "variant:neutral": {
-        "backgroundColor": "var(--color-background-gray)",
-        "color": "var(--color-text-gray)"
+        backgroundColor: "var(--color-background-gray)",
+        color: "var(--color-text-gray)",
       },
       "variant:success": {
-        "backgroundColor": "light-dark(#198100, #64af4c)",
-        "color": "light-dark(#ffffff, #171717)"
+        backgroundColor: "light-dark(#198100, #64af4c)",
+        color: "light-dark(#ffffff, #171717)",
       },
       "variant:warning": {
-        "backgroundColor": "#ffce2f",
-        "color": "#171717"
+        backgroundColor: "#ffce2f",
+        color: "#171717",
       },
       "variant:error": {
-        "backgroundColor": "light-dark(#c9303a, #ff705d)",
-        "color": "light-dark(#ffffff, #171717)"
+        backgroundColor: "light-dark(#c9303a, #ff705d)",
+        color: "light-dark(#ffffff, #171717)",
       },
       "variant:red": {
-        "backgroundColor": "var(--color-background-red)",
-        "color": "var(--color-text-red)"
+        backgroundColor: "var(--color-background-red)",
+        color: "var(--color-text-red)",
       },
       "variant:orange": {
-        "backgroundColor": "var(--color-background-orange)",
-        "color": "var(--color-text-orange)"
+        backgroundColor: "var(--color-background-orange)",
+        color: "var(--color-text-orange)",
       },
       "variant:yellow": {
-        "backgroundColor": "var(--color-background-yellow)",
-        "color": "var(--color-text-yellow)"
+        backgroundColor: "var(--color-background-yellow)",
+        color: "var(--color-text-yellow)",
       },
       "variant:green": {
-        "backgroundColor": "var(--color-background-green)",
-        "color": "var(--color-text-green)"
+        backgroundColor: "var(--color-background-green)",
+        color: "var(--color-text-green)",
       },
       "variant:teal": {
-        "backgroundColor": "var(--color-background-teal)",
-        "color": "var(--color-text-teal)"
+        backgroundColor: "var(--color-background-teal)",
+        color: "var(--color-text-teal)",
       },
       "variant:cyan": {
-        "backgroundColor": "var(--color-background-cyan)",
-        "color": "var(--color-text-cyan)"
+        backgroundColor: "var(--color-background-cyan)",
+        color: "var(--color-text-cyan)",
       },
       "variant:blue": {
-        "backgroundColor": "var(--color-background-blue)",
-        "color": "var(--color-text-blue)"
+        backgroundColor: "var(--color-background-blue)",
+        color: "var(--color-text-blue)",
       },
       "variant:purple": {
-        "backgroundColor": "var(--color-background-purple)",
-        "color": "var(--color-text-purple)"
+        backgroundColor: "var(--color-background-purple)",
+        color: "var(--color-text-purple)",
       },
       "variant:pink": {
-        "backgroundColor": "var(--color-background-pink)",
-        "color": "var(--color-text-pink)"
+        backgroundColor: "var(--color-background-pink)",
+        color: "var(--color-text-pink)",
       },
       "variant:gray": {
-        "backgroundColor": "var(--color-background-gray)",
-        "color": "var(--color-text-gray)"
-      }
+        backgroundColor: "var(--color-background-gray)",
+        color: "var(--color-text-gray)",
+      },
     },
-    "statusdot": {
+    statusdot: {
       "variant:success": {
-        "backgroundColor": "light-dark(#198100, #64af4c)"
+        backgroundColor: "light-dark(#198100, #64af4c)",
       },
       "variant:warning": {
-        "backgroundColor": "#ffce2f"
+        backgroundColor: "#ffce2f",
       },
       "variant:error": {
-        "backgroundColor": "light-dark(#c9303a, #ff705d)"
+        backgroundColor: "light-dark(#c9303a, #ff705d)",
       },
       "variant:accent": {
-        "backgroundColor": "light-dark(#0074e2, #6d9cfe)"
-      }
+        backgroundColor: "light-dark(#0074e2, #6d9cfe)",
+      },
     },
-    "banner": {
+    banner: {
       "status:info": {
         "--color-accent-muted": "var(--color-background-blue)",
         "--color-text-primary": "var(--color-text-blue)",
         "--color-text-secondary": "var(--color-text-blue)",
-        "--color-accent": "var(--color-text-blue)"
+        "--color-accent": "var(--color-text-blue)",
       },
       "status:success": {
         "--color-text-primary": "var(--color-text-green)",
         "--color-text-secondary": "var(--color-text-green)",
-        "--color-success": "var(--color-text-green)"
+        "--color-success": "var(--color-text-green)",
       },
       "status:warning": {
         "--color-text-primary": "var(--color-text-yellow)",
         "--color-text-secondary": "var(--color-text-yellow)",
-        "--color-warning": "var(--color-text-yellow)"
+        "--color-warning": "var(--color-text-yellow)",
       },
       "status:error": {
         "--color-text-primary": "var(--color-text-red)",
         "--color-text-secondary": "var(--color-text-red)",
-        "--color-error": "var(--color-text-red)"
-      }
+        "--color-error": "var(--color-text-red)",
+      },
     },
-    "switch": {
-      "base": {
-        "--color-background-gray": "var(--color-border-emphasized)"
-      }
+    switch: {
+      base: {
+        "--color-background-gray": "var(--color-border-emphasized)",
+      },
     },
-    "progressbar": {
-      "base": {
-        "--color-background-muted": "var(--color-border-emphasized)"
+    progressbar: {
+      base: {
+        "--color-background-muted": "var(--color-border-emphasized)",
       },
       "variant:accent": {
-        "--color-accent": "#0074e2"
+        "--color-accent": "#0074e2",
       },
       "variant:success": {
-        "--color-success": "#198100"
+        "--color-success": "#198100",
       },
       "variant:warning": {
-        "--color-warning": "#ffce2f"
+        "--color-warning": "#ffce2f",
       },
       "variant:error": {
-        "--color-error": "#c9303a"
-      }
+        "--color-error": "#c9303a",
+      },
     },
-    "card": {
-      "base": {
-        "padding": "var(--spacing-3)"
-      }
+    card: {
+      base: {
+        padding: "var(--spacing-3)",
+      },
     },
-    "section": {
-      "base": {
-        "padding": "var(--spacing-3)"
-      }
-    }
+    section: {
+      base: {
+        padding: "var(--spacing-3)",
+      },
+    },
   },
   __onDark: {
-    "tokens": {
+    tokens: {
       "color-scheme": "dark",
       "--color-text-primary": "var(--color-on-dark)",
       "--color-icon-primary": "var(--color-on-dark)",
-      "--color-accent": "var(--color-on-dark)"
-    }
+      "--color-accent": "var(--color-on-dark)",
+    },
   },
   __onLight: {
-    "tokens": {
+    tokens: {
       "color-scheme": "light",
       "--color-text-primary": "var(--color-on-light)",
       "--color-icon-primary": "var(--color-on-light)",
-      "--color-accent": "var(--color-on-light)"
-    }
+      "--color-accent": "var(--color-on-light)",
+    },
   },
-
 };
