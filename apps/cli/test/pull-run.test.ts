@@ -215,12 +215,16 @@ function chainHandler(): MockHandler {
 function digestStatementsOf(
   variables: readonly unknown[],
   deletedVariables: readonly unknown[],
+  declaredVariables: readonly unknown[] = [],
 ): readonly WireDistributedVariableStatement[] {
   const digestInputs = new Map<string, WireDistributedVariableStatement>();
   for (const entry of variables as readonly {
     readonly statement: WireDistributedVariableStatement;
   }[]) {
     digestInputs.set(entry.statement.variableId, entry.statement);
+  }
+  for (const declared of declaredVariables as readonly WireDistributedVariableStatement[]) {
+    digestInputs.set(declared.variableId, declared);
   }
   for (const tombstone of deletedVariables as readonly WireDistributedVariableStatement[]) {
     digestInputs.set(tombstone.variableId, tombstone);
@@ -232,13 +236,23 @@ function pullHandler(overrides?: {
   readonly deks?: readonly unknown[];
   readonly variables?: readonly unknown[];
   readonly deletedVariables?: readonly unknown[];
+  readonly declaredVariables?: readonly unknown[];
   readonly statement?: unknown;
+  /** マニフェストのダイジェスト入力の上書き(欠落 negative の作成用)。 */
+  readonly digestDeclared?: readonly unknown[];
 }): MockHandler {
   const { built, wraps, entryAlpha, entryBeta, envStatement } = fixture;
+  // 既定 + テストの上書き(spread は存在するキーだけを差し替える)
+  const resolved = {
+    statement: envStatement as unknown,
+    variables: [entryAlpha, entryBeta] as readonly unknown[],
+    deletedVariables: [] as readonly unknown[],
+    declaredVariables: [] as readonly unknown[],
+    deks: wraps as readonly unknown[],
+    digestDeclared: undefined as readonly unknown[] | undefined,
+    ...overrides,
+  };
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    const statement = overrides?.statement ?? envStatement;
-    const variables = overrides?.variables ?? [entryAlpha, entryBeta];
-    const deletedVariables = overrides?.deletedVariables ?? [];
     // マニフェスト(§12-7)は**配布する集合そのもの**から計算する(override で
     // 改竄・差し替えした集合にも一致させる — 各テストの negative はマニフェスト
     // ではなくステートメント / 値の検証で落ちることを検査している)
@@ -248,18 +262,25 @@ function pullHandler(overrides?: {
       epoch: 2,
       issuer: fixture.owner,
       head: headOf(built, 3),
-      envStatement: statement as WireDistributedEnvironmentStatement,
-      statements: digestStatementsOf(variables, deletedVariables),
+      envStatement: resolved.statement as WireDistributedEnvironmentStatement,
+      statements: digestStatementsOf(
+        resolved.variables,
+        resolved.deletedVariables,
+        resolved.digestDeclared ?? resolved.declaredVariables,
+      ),
     });
     return {
       status: 200,
       json: {
         environmentId: ENV_ID,
         currentEpoch: 2,
-        statement,
-        variables,
-        deletedVariables,
-        deks: overrides?.deks ?? wraps,
+        statement: resolved.statement,
+        variables: resolved.variables,
+        deletedVariables: resolved.deletedVariables,
+        ...(resolved.declaredVariables.length === 0
+          ? {}
+          : { declaredVariables: resolved.declaredVariables }),
+        deks: resolved.deks,
         manifest,
       },
     };

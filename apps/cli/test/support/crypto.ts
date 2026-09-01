@@ -280,13 +280,40 @@ export interface WireDistributedValue extends WireEncryptedPayload {
   readonly writerKeyFingerprintHex: string;
 }
 
+/** レイアウト v2 のスキーマ欄(ワイヤ形 — §12-2。required は boolean)。 */
+export interface WireStatementSchema {
+  readonly varType: "" | "string" | "number" | "boolean" | "url";
+  readonly required: boolean;
+  readonly description: string;
+}
+
 /** 配布形の変数メタステートメント(DistributedVariableMetaStatement — §12-2)。 */
 export interface WireDistributedVariableStatement {
   readonly suite: "maruhi/v1";
   readonly environmentId: string;
   readonly variableId: string;
   readonly name: string;
-  readonly status: "active" | "deleted";
+  readonly status: "active" | "deleted" | "declared";
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+  readonly chainHeadHashHex: string;
+  readonly chainHeadSeq: number;
+  readonly signatureHex: string;
+  readonly authorUserId: string;
+  readonly authorKeyFingerprintHex: string;
+  /** レイアウト v2 の運搬フィールド(§12-2 — v1 は 4 つとも不在)。 */
+  readonly layoutVersion?: number;
+  readonly varType?: WireStatementSchema["varType"];
+  readonly required?: boolean;
+  readonly description?: string;
+}
+
+/** 配布形の環境メタステートメント(variableId・v2 フィールドを持たない同型)。 */
+export interface WireDistributedEnvironmentStatement {
+  readonly suite: "maruhi/v1";
+  readonly environmentId: string;
+  readonly name: string;
+  readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
   readonly chainHeadHashHex: string;
@@ -296,27 +323,23 @@ export interface WireDistributedVariableStatement {
   readonly authorKeyFingerprintHex: string;
 }
 
-/** 配布形の環境メタステートメント(variableId を持たない同型)。 */
-export type WireDistributedEnvironmentStatement = Omit<
-  WireDistributedVariableStatement,
-  "variableId"
->;
-
 interface StatementInputBase {
   readonly projectId: string;
   readonly environmentId: string;
   readonly name: string;
   readonly author: TestUser;
   readonly head: { readonly seq: number; readonly hashHex: string };
-  readonly status?: "active" | "deleted";
+  readonly status?: "active" | "deleted" | "declared";
   readonly metaVersion?: number;
   readonly prevMetaSigHashHex?: string;
+  /** レイアウト v2 のスキーマ欄(指定 = v2 ステートメントとして署名する)。 */
+  readonly schema?: WireStatementSchema;
 }
 
 async function signDistributedStatement(
   input: StatementInputBase,
   target: { kind: "variable"; variableId: string } | { kind: "environment" },
-): Promise<WireDistributedEnvironmentStatement> {
+): Promise<WireDistributedEnvironmentStatement & Partial<WireStatementSchema>> {
   const status = input.status ?? "active";
   const metaVersion = input.metaVersion ?? 1;
   const prevMetaSigHashHex = input.prevMetaSigHashHex ?? (metaVersion === 1 ? "" : "cd".repeat(32));
@@ -329,6 +352,17 @@ async function signDistributedStatement(
         target,
         name: input.name,
         status,
+        // v2(§4.2): 署名対象の required は明示文字列("true" | "false")
+        ...(input.schema === undefined
+          ? {}
+          : {
+              layoutVersion: 2,
+              schema: {
+                varType: input.schema.varType,
+                required: input.schema.required ? ("true" as const) : ("false" as const),
+                description: input.schema.description,
+              },
+            }),
         metaVersion,
         prevMetaSigHashHex,
         authorUserId: input.author.userId,
@@ -351,12 +385,14 @@ async function signDistributedStatement(
     signatureHex,
     authorUserId: input.author.userId,
     authorKeyFingerprintHex: input.author.fingerprintHex,
+    ...(input.schema === undefined ? {} : { layoutVersion: 2, ...input.schema }),
   };
 }
 
 /**
  * 変数メタステートメント(§4.2)を author 署名し、配布形(author 情報込み —
- * §12-2)で返す。既定は作成形(metaVersion 1・active・prev 空)。
+ * §12-2)で返す。既定は作成形(metaVersion 1・active・prev 空・v1 レイアウト)。
+ * `schema` を渡すとレイアウト v2(スキーマ欄付き)として署名する。
  */
 export async function statementFor(
   input: StatementInputBase & { readonly variableId: string },
@@ -395,7 +431,9 @@ export interface WireDistributedManifest {
 /** 配布形ステートメント → signed bytes ハッシュ(ダイジェスト・envMeta の材料)。 */
 export async function statementHashOf(
   projectId: string,
-  statement: WireDistributedEnvironmentStatement & { readonly variableId?: string },
+  statement: WireDistributedEnvironmentStatement & {
+    readonly variableId?: string;
+  } & Partial<WireStatementSchema> & { readonly layoutVersion?: number },
 ): Promise<string> {
   return unwrapResult(
     await computeMetaSignedBytesHash({
@@ -408,6 +446,19 @@ export async function statementHashOf(
           : { kind: "variable", variableId: statement.variableId },
       name: statement.name,
       status: statement.status,
+      ...(statement.layoutVersion === undefined ||
+      statement.varType === undefined ||
+      statement.required === undefined ||
+      statement.description === undefined
+        ? {}
+        : {
+            layoutVersion: statement.layoutVersion,
+            schema: {
+              varType: statement.varType,
+              required: statement.required ? ("true" as const) : ("false" as const),
+              description: statement.description,
+            },
+          }),
       metaVersion: statement.metaVersion,
       prevMetaSigHashHex: statement.prevMetaSigHashHex,
       authorUserId: statement.authorUserId,
