@@ -500,7 +500,21 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
 // 画面本体
 // ---------------------------------------------------------------------------
 
-function ProjectTabBody({ tab, projectId }: { tab: string; projectId: string }): ReactNode {
+const PROJECT_TABS = ["overview", "audit", "rotation", "invites"] as const;
+type ProjectTab = (typeof PROJECT_TABS)[number];
+
+const PROJECT_TAB_PANELS: Record<ProjectTab, string> = {
+  overview: "project-panel-overview",
+  audit: "project-panel-audit",
+  rotation: "project-panel-rotation",
+  invites: "project-panel-invites",
+};
+
+function isProjectTab(value: string): value is ProjectTab {
+  return (PROJECT_TABS as ReadonlyArray<string>).includes(value);
+}
+
+function ProjectTabBody({ tab, projectId }: { tab: ProjectTab; projectId: string }): ReactNode {
   if (tab === "audit") return <AuditTab projectId={projectId} />;
   if (tab === "rotation") return <RotationTab projectId={projectId} />;
   // S8(裁定 CP): project 軸の管理面はタブ。失効状態が別プロジェクトへ
@@ -510,16 +524,28 @@ function ProjectTabBody({ tab, projectId }: { tab: string; projectId: string }):
 }
 
 function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState<ProjectTab>("overview");
   return (
     <VStack gap={5}>
-      <TabList value={tab} onChange={setTab} size="md">
-        <Tab value="overview" label="Overview" />
-        <Tab value="audit" label="Audit" />
-        <Tab value="rotation" label="Rotation flags" />
-        <Tab value="invites" label="Invites" />
+      {/* 同一画面内のパネル切替なので navigation landmark ではなく WAI-ARIA tabs */}
+      <TabList
+        value={tab}
+        onChange={(value) => {
+          if (isProjectTab(value)) setTab(value);
+        }}
+        size="md"
+        role="tablist"
+      >
+        <Tab value="overview" label="Overview" panelId={PROJECT_TAB_PANELS.overview} />
+        <Tab value="audit" label="Audit" panelId={PROJECT_TAB_PANELS.audit} />
+        <Tab value="rotation" label="Rotation flags" panelId={PROJECT_TAB_PANELS.rotation} />
+        <Tab value="invites" label="Invites" panelId={PROJECT_TAB_PANELS.invites} />
       </TabList>
-      <ProjectTabBody tab={tab} projectId={projectId} />
+      {PROJECT_TABS.map((id) => (
+        <VStack key={id} id={PROJECT_TAB_PANELS[id]} role="tabpanel" hidden={tab !== id}>
+          {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
+        </VStack>
+      ))}
       <Divider />
       <ServerReportedNote />
     </VStack>
