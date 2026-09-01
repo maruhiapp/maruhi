@@ -102,7 +102,7 @@ bunx wrangler secret put GITHUB_CLIENT_SECRET   # same
 
 ```sh
 curl <deploy-url>/auth/config
-# → {"githubClientId":"<your-client-id>"} means setup is complete
+# → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
 # → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
 #   (list registered secrets with `bunx wrangler secret list` — values are not shown)
@@ -171,12 +171,82 @@ change it while any project already has a grant, re-run `maruhi server revoke` �
 `maruhi server grant` on each of those projects (revoke forces a rotation of
 every environment — CRYPTO_SPEC §7).
 
+## Sign-up policy (optional — who may create accounts)
+
+**The default is `open` and matches the behavior maruhi has always had: anyone
+who can reach your deployment URL and complete GitHub login gets an account.
+If that is what you want (typical for a personal or small-team deployment),
+skip this entire section — there is nothing to configure.**
+
+The server reads a deployment-wide `signupPolicy` (AUTH_SPEC §3) with three
+values:
+
+| Value | Meaning |
+|---|---|
+| `open` (default) | Anyone can sign up. No settings row needed |
+| `invite` | New accounts require a sign-up invite code (below). Existing accounts are unaffected |
+| `closed` | No new accounts at all. Existing accounts are unaffected |
+
+The gate only blocks **account creation**: sign-in for existing users, token
+verification, project invites, and recovery are never affected. A denied sign-up
+creates no rows and is recorded as an `auth.signup_denied` audit event (visible
+in D1 — the operator's view).
+
+### Changing the policy
+
+The policy lives in the `deployment_settings` D1 table. There is deliberately no
+admin UI or settings endpoint — change it with wrangler (takes effect
+immediately, no redeploy):
+
+```sh
+cd apps/server
+bunx wrangler d1 execute maruhi --remote --command \
+  "INSERT INTO deployment_settings (key, value, updated_at) VALUES ('signup_policy', 'invite', unixepoch() * 1000) \
+   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;"
+```
+
+Verify with `curl <deploy-url>/auth/config` — the response reports the effective
+`signupPolicy`. **A mistyped value is treated as `closed` (fail-closed)**: a typo
+never silently opens sign-ups, but it does deny new accounts until you fix it,
+so always check `/auth/config` after changing the value.
+
+### Issuing sign-up invite codes (`invite` mode)
+
+Codes are single-use, expire after 7 days by default, and only permit account
+creation (they carry no project, org, or role). Only the SHA-256 hash is stored;
+the raw code is shown once at issuance. Issue one with the bundled script:
+
+```sh
+cd apps/server
+bun run scripts/issue-signup-invite.ts --origin <deploy-url> [--days 7]
+```
+
+The script prints the code, the sign-up link to send to the invitee
+(`<deploy-url>/auth/github/start?signup_code=…` — the link carries the code),
+and the `wrangler d1 execute` command that registers the hash. Send the code or
+link over a private channel. The invitee signs up in the browser first, then
+runs `maruhi login`.
+
+Notes:
+
+- A code is consumed in the same transaction that creates the account — a failed
+  sign-up never burns a code, and signing in as an **existing** user never
+  consumes one.
+- Under `open`, presented codes are ignored (not consumed).
+- Inviting someone to a **project** (`maruhi invite create`) is separate: under
+  `invite` they also need a sign-up invite code (sent separately) before they
+  can accept.
+- To revoke an unused code, delete its row (the issuance script prints the
+  command).
+
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
 Of maruhi's unauthenticated surface, the following four are the ones where a
 third party can trigger work that costs money or drain a shared quota (the other
 unauthenticated surfaces `/auth/config` / `/auth/github/start` /
-`/auth/cli/verify` are self-contained lightweight responses).
+`/auth/cli/verify` are self-contained lightweight responses; a start request
+carrying a `signup_code` performs one D1 read and has its own default per-IP
+binding, `SIGNUP_START_RATE_LIMIT` at 10/min).
 All four already have server-side defenses (input size caps, stateless MAC
 verification before any lookup, a fixed window per project, and a TTL cache for
 JWKS).
