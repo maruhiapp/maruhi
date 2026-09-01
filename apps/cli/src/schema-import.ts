@@ -36,6 +36,7 @@ import { findHighEntropySubstring } from "./entropy.ts";
 import {
   type EnvFileEntry,
   type EnvFileSkippedLine,
+  MAX_NAME_LENGTH,
   observeValue,
   parseEnvFile,
 } from "./env-file.ts";
@@ -54,6 +55,15 @@ const MAX_DESCRIPTION_LENGTH = 1024;
  * Refuses the import ceremony outside an interactive human terminal: the
  * per-variable approval **is** the ritual, so there is no --yes and no
  * non-interactive path (ADR-0016 決定 7 — the invite / recovery deny class).
+ *
+ * 境界は stdin + stdout の 2 チャネル(値表示・儀式系の一次境界と同じ)であり、
+ * recovery コード・招待リンク生値の **3 チャネル**(stderr も TTY)ゲートには
+ * 揃えない(意図的な線引き): あちらは「他の経路ではディスクに存在しない
+ * capability / 鍵素材」が stderr へ流れるため `2>` での永続化が新しい露出
+ * クラスになるが、import が stderr へ出すもの(候補の提示 — description 候補を
+ * 含む)は**利用者自身のローカルファイルに既に書かれている内容**で、
+ * リダイレクトしても新しい露出は生じない。値そのものはどのチャネルにも
+ * 出さない(観察のみ — env-file.ts)。
  */
 export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.Stdio> = Effect.gen(
   function* () {
@@ -152,9 +162,11 @@ function editName(
       return;
     }
     const name = answer.normalize("NFC");
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    // 形式・長さの検査はパーサ(env-file.ts)と同じ受理集合 — 編集経由だけが
+    // サーバー 400 の遅い失敗点(import ごと停止)へ素通りする形を作らない
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > MAX_NAME_LENGTH) {
       return yield* io.logError(
-        "  Not a valid environment variable name (letters, digits and _ only, not starting with a digit) — keeping the current name",
+        `  Not a valid environment variable name (letters, digits and _ only, not starting with a digit, at most ${MAX_NAME_LENGTH} characters) — keeping the current name`,
       );
     }
     if (isNameTaken(name)) {

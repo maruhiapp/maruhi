@@ -329,6 +329,17 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(existsSync(file)).toBe(true);
   });
 
+  it("編集(e)の改名は形式・長さをパーサと同じ受理集合で検査する(遅い 400 へ素通りさせない)", async () => {
+    const { env, state } = await startImportEnv();
+    const file = await writeEnvFile("SHORT=\n");
+    // 257 文字の改名 → 警告して現状維持 → そのまま承認
+    env.setPromptResponses(["e", "A".repeat(257), "", "", "", "y", ""]);
+    expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("at most 256 characters");
+    const body = state.mutations[0]?.request.body as { statement: Record<string, unknown> };
+    expect(body.statement["name"]).toBe("SHORT");
+  });
+
   it("編集(e)の改名はファイル内の未処理の候補とも衝突させない(ローカル衝突の事前警告)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["ALPHA=", "BETA="].join("\n"));

@@ -38,8 +38,13 @@ import { Redacted } from "effect";
  */
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** 名前の長さ上限(AUTH_SPEC §12-8 の表示名 256 文字と同じ値)。 */
-const MAX_NAME_LENGTH = 256;
+/**
+ * 名前の長さ上限(AUTH_SPEC §12-8 の表示名 256 文字と同じ値)。編集(e)での
+ * 改名(schema-import.ts)も同じ上限を署名・送信より前に検査する — パーサ
+ * だけが検査すると、編集経由の超過がサーバー 400 の遅い失敗点(import ごと
+ * 停止)まで素通りする。
+ */
+export const MAX_NAME_LENGTH = 256;
 
 /** 1 行がスキップされた理由(内容は運ばない — 表示は理由と行番号のみ)。 */
 export type EnvFileSkipReason = "not-an-assignment" | "invalid-name" | "duplicate-name";
