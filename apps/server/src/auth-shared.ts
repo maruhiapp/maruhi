@@ -10,6 +10,7 @@ import { Effect } from "effect";
 import type { Cookies, HttpServerRequest } from "effect/unstable/http";
 import { HttpServerResponse } from "effect/unstable/http";
 
+import type { SignupDenialReason } from "./auth-domain.ts";
 import { D1AuditRepo } from "./db.package/index.ts";
 
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
@@ -28,6 +29,15 @@ export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
 
 /** GitHub の state パラメータの CLI フロー識別プレフィックス(§4-1 (3))。 */
 export const CLI_STATE_PREFIX = "cli.";
+
+/**
+ * サインアップ招待コードの運搬クッキー(AUTH_SPEC §3 — 2026-09-01 H1)。
+ * `GET /auth/github/start?signup_code=…` の開始時事前検証を通ったコードの生値を
+ * callback まで運ぶ(HttpOnly — ブラウザのスクリプト面へ出さない)。コードの
+ * ハッシュ照合・消費 CAS は callback 側(getOrCreateUser の作成 batch)が行う。
+ * state クッキーと同じ 10 分 maxAge・callback の終端で失効する。
+ */
+export const SIGNUP_CODE_COOKIE = "__Host-maruhi_signup";
 
 /** `__Host-` クッキーの共通属性(§5)。 */
 export const HOST_COOKIE_OPTIONS = {
@@ -131,6 +141,29 @@ export function recordLoginFailed(
       { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
       Date.now(),
       { authMethod, reason },
+    ),
+  );
+}
+
+/**
+ * auth.signup_denied の記録(AUDIT_SPEC §3.1 — 2026-09-01 H1)。actor は
+ * login_failed と同じ user_id なしの type=user(拒否時点で内部 user_id は
+ * 存在しない)。提示された外部 ID・コード生値は記録しない。固定窓上限つき
+ * (拒否の洪水による書き込み増幅の有界化 — バケットは reason 単位)。
+ * H3 の「サインアップ拒否の計数」トリップワイヤはこの行を数える。
+ */
+export function recordSignupDenied(
+  reason: SignupDenialReason,
+): Effect.Effect<void, never, D1AuditRepo> {
+  return Effect.flatMap(D1AuditRepo, (audit) =>
+    audit.appendSignupDenied(
+      {
+        event: "auth.signup_denied",
+        actor: {},
+        payload: { authMethod: "github_oauth", reason },
+      },
+      Date.now(),
+      reason,
     ),
   );
 }

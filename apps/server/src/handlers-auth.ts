@@ -25,20 +25,25 @@ import {
   ensureGitHubOAuthConfigured,
   HOST_COOKIE_OPTIONS,
   recordLoginFailed,
+  recordSignupDenied,
   redirectToGitHubAuthorize,
   requestOrigin,
+  SIGNUP_CODE_COOKIE,
   STATE_COOKIE,
 } from "./auth-shared.ts";
 import {
   GitHubApi,
   parseBearerToken,
+  renderSignupClosedPage,
+  renderSignupInviteInvalidPage,
+  renderSignupInviteRequiredPage,
   SESSION_COOKIE,
   statefulGetCsrfViolated,
 } from "./auth.package/index.ts";
 import { ensureKeyMaterialAccess, ensureTokenManagementAccess } from "./authz.ts";
 import { IdentityRepo, RecoveryRepo, TokenRepo } from "./db.package/index.ts";
-import { handleCliCallback, isCliCallbackState } from "./handlers-auth-cli.ts";
-import { constantTimeEqual, randomHex } from "./ids.ts";
+import { handleCliCallback, htmlResponse, isCliCallbackState } from "./handlers-auth-cli.ts";
+import { constantTimeEqual, randomHex, sha256Hex } from "./ids.ts";
 import { ServerKey } from "./server-key.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
@@ -57,8 +62,14 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // 配布チャネルで、どちらも公開情報)。未設定なら両フィールドを省略する
         const serverKey = yield* ServerKey;
         const serverKeyInfo = yield* serverKey.info;
+        // signupPolicy は advisory(AUTH_SPEC §3 — 公開情報。ランディングの
+        // 案内文言と同じ内容で、検証・認可規則の入力にしない)。CLI の login
+        // 事前 fail-fast(hosted-design.md §2-2 (i)(ii))の材料
+        const identities = yield* IdentityRepo;
+        const signupPolicy = yield* identities.signupPolicy;
         return {
           githubClientId: env.GITHUB_CLIENT_ID,
+          signupPolicy,
           ...(serverKeyInfo === null
             ? {}
             : {
@@ -68,15 +79,48 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         };
       }),
     )
-    .handle("githubStart", ({ request }) =>
+    .handle("githubStart", ({ request, query }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
         const state = randomHex(16);
-        return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+        const signupCode = query.signup_code;
+        if (signupCode === undefined) {
+          // プレーンな start(ログイン・open 下のサインアップ)は従来どおり
+          return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+            name: STATE_COOKIE,
+            value: state,
+          });
+        }
+        // サインアップ招待コードの開始時事前検証(AUTH_SPEC §3): 無効な
+        // コードのために OAuth ダンスを走らせない fail-fast。コード付き start は
+        // D1 読みを伴う未認証面なので per-IP レート制限をハンドラ最初に置く
+        // (検証は 256-bit 単回コードのハッシュ照合であり存在オラクルにならない)
+        const allowed = yield* ipRateLimitAllowed(env.SIGNUP_START_RATE_LIMIT, request);
+        if (!allowed) {
+          return yield* Effect.fail(
+            new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
+          );
+        }
+        const identities = yield* IdentityRepo;
+        const tokenHash = yield* Effect.promise(() => sha256Hex(signupCode));
+        const valid = yield* identities.hasPendingSignupInvite(tokenHash, Date.now());
+        if (!valid) {
+          // 不明・失効・消費済みを出し分けないスクリプトなし案内(§3)。
+          // 事前検証は fail-fast であって受理判定ではない — 受理の正は
+          // callback の消費 CAS
+          return htmlResponse(renderSignupInviteInvalidPage(), 400);
+        }
+        // 検証済みコードの生値は HttpOnly クッキーで callback まで運ぶ(§3 —
+        // 消費はアカウント作成と同一トランザクション。ここでは消費しない)
+        const response = yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
           name: STATE_COOKIE,
           value: state,
         });
+        return yield* HttpServerResponse.setCookie(response, SIGNUP_CODE_COOKIE, signupCode, {
+          ...HOST_COOKIE_OPTIONS,
+          maxAge: "10 minutes",
+        }).pipe(Effect.orDie);
       }),
     )
     .handle("githubCallback", ({ request, query }) =>
@@ -123,7 +167,47 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         );
         // GitHub トークンはここで役目を終える(保存しない。§3 / §10)
         const identities = yield* IdentityRepo;
-        const resolved = yield* identities.getOrCreateUser(identity, Date.now());
+        // サインアップ招待コード(AUTH_SPEC §3): 開始時事前検証を通った生値が
+        // クッキーで届く。ハッシュのみを渡し、消費はアカウント作成と同一
+        // トランザクション内の CAS(repo 側)。既存ユーザーの解決では消費されない
+        const signupCode = request.cookies[SIGNUP_CODE_COOKIE];
+        const signupInviteTokenHash =
+          signupCode === undefined ? null : yield* Effect.promise(() => sha256Hex(signupCode));
+        // クッキーは終端応答の形によらず単回で失効させる(§3 — 成功・拒否共通)。
+        // ただしプレーンなログイン(クッキーなし)の応答形は従来のまま変えない
+        const expireSignupCookie = (
+          response: HttpServerResponse.HttpServerResponse,
+        ): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+          signupCode === undefined
+            ? Effect.succeed(response)
+            : HttpServerResponse.expireCookie(response, SIGNUP_CODE_COOKIE, HOST_COOKIE_OPTIONS).pipe(
+                Effect.orDie,
+              );
+        const resolved = yield* identities.getOrCreateUser(
+          identity,
+          Date.now(),
+          signupInviteTokenHash,
+        );
+        if ("denied" in resolved) {
+          // signupPolicy による新規作成の拒否(AUTH_SPEC §3): OAuth は完走して
+          // いるが users / linked_identities の行は作られていない(fail-closed)。
+          // 記録は固定窓上限つきの auth.signup_denied(AUDIT_SPEC §3.1)、応答は
+          // スクリプトなし案内ページ(拒否理由は提示者自身の申請の帰結であり、
+          // 第三者への存在オラクルではない)
+          yield* recordSignupDenied(resolved.denied);
+          const deniedPage =
+            resolved.denied === "policy-closed"
+              ? renderSignupClosedPage()
+              : resolved.denied === "invite-required"
+                ? renderSignupInviteRequiredPage()
+                : renderSignupInviteInvalidPage();
+          const deniedResponse = yield* HttpServerResponse.expireCookie(
+            htmlResponse(deniedPage, 403),
+            STATE_COOKIE,
+            HOST_COOKIE_OPTIONS,
+          ).pipe(Effect.orDie);
+          return yield* expireSignupCookie(deniedResponse);
+        }
         const sessions = yield* SessionService;
         const issued = yield* sessions.issueSession(resolved.userId, "github_oauth");
         const response = HttpServerResponse.redirect(`${origin}/`, { status: 302 });
@@ -133,11 +217,12 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           issued.rawValue,
           { ...HOST_COOKIE_OPTIONS, maxAge: "30 days" },
         ).pipe(Effect.orDie);
-        return yield* HttpServerResponse.expireCookie(
+        const withStateExpired = yield* HttpServerResponse.expireCookie(
           withSession,
           STATE_COOKIE,
           HOST_COOKIE_OPTIONS,
         ).pipe(Effect.orDie);
+        return yield* expireSignupCookie(withStateExpired);
       }),
     )
     .handle("me", () =>

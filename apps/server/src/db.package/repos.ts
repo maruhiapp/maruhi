@@ -8,6 +8,7 @@
 //   effect-d1 ドライバは rc.4 時点で transaction / batch 未対応のため、原子性が
 //   必要な getOrCreateUser(§1-5)が成立しない。D1 の atomic batch を使う
 
+import type { SignupPolicy } from "@maruhi/api-schema";
 import type { OrgRole, TokenScope } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
 import {
@@ -35,6 +36,7 @@ import type {
   RecoveryWrapRecord,
   ResolvedUser,
   SessionRecord,
+  SignupGateResult,
   UserOrg,
   VerifiedIdentity,
 } from "../auth-domain.ts";
@@ -58,6 +60,7 @@ import {
 import {
   apiTokens,
   cliLoginFlows,
+  deploymentSettings,
   flowSigningKeys,
   invitations,
   linkedIdentities,
@@ -68,6 +71,7 @@ import {
   projects,
   recoveryWraps,
   sessions,
+  signupInvites,
   userAuditEvents,
   users,
 } from "./schema.ts";
@@ -81,11 +85,19 @@ const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(
 // ---------------------------------------------------------------------------
 
 interface IdentityRepoShape {
-  /** 単一の冪等な入口。新規作成時は本人 owner のパーソナル org を同時に作る。 */
+  /**
+   * 単一の冪等な入口。新規作成時は本人 owner のパーソナル org を同時に作る。
+   *
+   * signupPolicy ゲート(AUTH_SPEC §3 — 2026-09-01 H1)は「不在 → 作成」分岐の
+   * 直前にあり、既存ユーザーの解決には一切影響しない。`signupInviteTokenHash`
+   * はサインアップ招待コード(提示文字列全体)の SHA-256(未提示は null)。
+   * `invite` 下の作成はコード消費 CAS と同一 D1 batch で行われる。
+   */
   readonly getOrCreateUser: (
     identity: VerifiedIdentity,
     nowMs: number,
-  ) => Effect.Effect<ResolvedUser>;
+    signupInviteTokenHash: string | null,
+  ) => Effect.Effect<SignupGateResult>;
   /**
    * 照会のみ(作成しない — AUTH_SPEC §4-1 (4) (ii)・裁定 DH)。CLI ログインの
    * ブラウザ脚が使う: アカウント不在はサインアップ案内で終了し、一切の
@@ -94,6 +106,23 @@ interface IdentityRepoShape {
   readonly lookupUser: (identity: VerifiedIdentity) => Effect.Effect<string | null>;
   /** ユーザーが属する org 一覧(プロジェクト作成先の発見用。§11-3)。 */
   readonly listUserOrgs: (userId: string) => Effect.Effect<readonly UserOrg[]>;
+  /**
+   * 受理時点の signupPolicy(AUTH_SPEC §3)。行なし = 'open'(既定 = 従来挙動)、
+   * 未知の保存値 = 'closed'(fail-closed — 運営の誤設定を黙って 'open' に
+   * 化けさせない)。`/auth/config` の advisory と CLI サインアップ案内ページの
+   * 文言分岐が読む。
+   */
+  readonly signupPolicy: Effect.Effect<SignupPolicy>;
+  /**
+   * サインアップ招待コードの事前検証(AUTH_SPEC §3 — start の開始時 fail-fast)。
+   * 存在・未消費・未失効のときのみ true。256-bit 乱数・単回なので存在オラクルに
+   * ならない(§15 招待トークンと同水準)。消費はここでは行わない(消費は
+   * getOrCreateUser の作成 batch 内の CAS のみ)。
+   */
+  readonly hasPendingSignupInvite: (
+    tokenHashHex: string,
+    nowMs: number,
+  ) => Effect.Effect<boolean>;
 }
 
 export class IdentityRepo extends Context.Service<IdentityRepo, IdentityRepoShape>()(
@@ -134,12 +163,70 @@ export function isUniqueConflict(error: unknown): boolean {
   return false;
 }
 
+/** deployment_settings の signupPolicy キー(AUTH_SPEC §3)。 */
+const SIGNUP_POLICY_KEY = "signup_policy";
+
+// 未知の保存値の fail-closed 警告は isolate ごとに 1 回だけ出す(/auth/config は
+// 外形監視が定期的に叩く面 — hosted-design.md §5-2 — であり、毎回の warn は
+// ログを溢れさせる)。メッセージは静的(保存値そのものは書かない — §11-5 の規律)
+let warnedUnknownSignupPolicy = false;
+
+/**
+ * 受理時点の signupPolicy の読み取り(AUTH_SPEC §3)。行なし = 'open'、
+ * 未知の値 = 'closed'(fail-closed)。
+ */
+async function readSignupPolicy(db: Db): Promise<SignupPolicy> {
+  const row = await db
+    .select({ value: deploymentSettings.value })
+    .from(deploymentSettings)
+    .where(eq(deploymentSettings.key, SIGNUP_POLICY_KEY))
+    .get();
+  if (row === undefined) {
+    return "open";
+  }
+  if (row.value === "open" || row.value === "invite" || row.value === "closed") {
+    return row.value;
+  }
+  if (!warnedUnknownSignupPolicy) {
+    warnedUnknownSignupPolicy = true;
+    console.warn(
+      "deployment_settings.signup_policy has an unknown value; treating it as 'closed' (fail-closed — fix it with the SQL in docs/SELF_HOSTING.md)",
+    );
+  }
+  return "closed";
+}
+
+/**
+ * 作成 batch 内で評価する signupPolicy 条件(AUTH_SPEC §3 —「判定は受理時点の
+ * 設定」)。読み取り(readSignupPolicy)と作成の間に設定が遷移しても、作成が
+ * 効くのはこの条件が batch のトランザクション内で真のときだけ — 遷移との競合窓を
+ * 作らない(§12-11 の DO 直列化に相当する D1 形)。行なしの既定 'open' は
+ * coalesce が畳む。
+ */
+function signupPolicyIs(value: SignupPolicy): SQL {
+  return sql`(select coalesce((select ${deploymentSettings.value} from ${deploymentSettings} where ${deploymentSettings.key} = ${SIGNUP_POLICY_KEY}), 'open')) = ${value}`;
+}
+
+/** 作成ゲートの指定(AUTH_SPEC §3): open のポリシー条件か、invite の消費 CAS。 */
+type SignupGate = { readonly kind: "open" } | { readonly kind: "invite"; readonly inviteId: string };
+
+/** ゲート敗北(ポリシー遷移・招待コードの並行消費)。呼び出し側が再判定する。 */
+class SignupGateLostError extends Data.TaggedError("SignupGateLost")<object> {}
+
 /**
  * users + linked_identities + パーソナル org + owner membership を atomic batch で
  * 作成する。並行サインアップは (provider, provider_user_id) の PK で片方が失敗する
  * ので、競合時は呼び出し側が再ルックアップする。競合以外の失敗は defect。
  *
- * 監査(AUDIT_SPEC §3.1〜§3.2)も同じ batch で追記する: auth.user_created /
+ * signupPolicy ゲート(AUTH_SPEC §3 — 2026-09-01 H1)は batch 先頭の条件として
+ * 畳む: open は先頭 INSERT の WHERE にポリシー条件、invite は先頭の消費 CAS
+ * (UPDATE — pending・未失効・ポリシー 'invite' のときのみ効く)。後続の全文は
+ * `changes() = 1` で直前の成立に連鎖する(tokenInsertSelect と同じ D1 batch の
+ * 作法)ため、ゲートが負けた batch は**何も書かずに**コミットされる(コードだけ
+ * 燃える形・部分作成の両方が構造的に存在しない)。
+ *
+ * 監査(AUDIT_SPEC §3.1〜§3.2)も同じ batch で追記する: auth.user_created
+ * (invite 消費由来は payload に signupInviteId — AUDIT_SPEC §3.1)/
  * auth.identity_linked(provider 種別名のみ — 数値 ID・login は記録しない)/
  * org.created(パーソナル org 自動作成。org 名は providerLogin 由来のため
  * payload に写さない — §1-2)/ org.member_added(owner 自身)。
@@ -148,55 +235,137 @@ function createUserBatch(
   db: Db,
   identity: VerifiedIdentity,
   nowMs: number,
-): Effect.Effect<string, InsertConflictError> {
+  gate: SignupGate,
+): Effect.Effect<string, InsertConflictError | SignupGateLostError> {
   const userId = ulid(nowMs);
   const orgId = ulid(nowMs);
   const actor: D1AuditActor = { userId };
-  return Effect.tryPromise({
-    try: async () => {
-      await db.batch([
-        db.insert(users).values({
-          id: userId,
-          email: identity.verifiedEmail,
-          emailVerified: identity.verifiedEmail === null ? 0 : 1,
-          createdAt: nowMs,
-          updatedAt: nowMs,
-        }),
-        db.insert(linkedIdentities).values({
-          userId,
-          provider: identity.provider,
-          providerUserId: identity.providerUserId,
-          providerLogin: identity.providerLogin,
-          linkedAt: nowMs,
-        }),
-        db.insert(organizations).values({
-          id: orgId,
-          slug: `u-${userId.toLowerCase()}`,
-          name: identity.providerLogin ?? "personal",
-          createdAt: nowMs,
-        }),
-        db.insert(memberships).values({ orgId, userId, role: "owner" }),
-        userAuditInsert(db, nowMs, { event: "auth.user_created", actor }),
-        userAuditInsert(db, nowMs, {
-          event: "auth.identity_linked",
-          actor,
-          payload: { provider: identity.provider },
-        }),
-        orgAuditInsert(db, nowMs, {
+  const chained = sql`changes() = 1`;
+  // 後続の全文は直前の文の成立(changes() = 1)に連鎖する INSERT…SELECT
+  // (tokenInsertSelect と同じ形)。挿入行はすべて定数選択なので、ゲートが
+  // 負けた batch では 1 行も書かれない
+  const usersInsert = db
+    .insert(users)
+    .select(
+      db
+        .select({
+          id: sql<string>`${userId}`.as("id"),
+          email: sql<string | null>`${identity.verifiedEmail}`.as("email"),
+          emailVerified: sql<number>`${identity.verifiedEmail === null ? 0 : 1}`.as(
+            "email_verified",
+          ),
+          createdAt: sql<number>`${nowMs}`.as("created_at"),
+          updatedAt: sql<number>`${nowMs}`.as("updated_at"),
+        })
+        .from(sql`(select 1)`)
+        .where(gate.kind === "open" ? signupPolicyIs("open") : chained),
+    )
+    .returning({ id: users.id });
+  const trailing = [
+    db.insert(linkedIdentities).select(
+      db.select({
+        userId: sql<string>`${userId}`.as("user_id"),
+        provider: sql<string>`${identity.provider}`.as("provider"),
+        providerUserId: sql<string>`${identity.providerUserId}`.as("provider_user_id"),
+        providerLogin: sql<string | null>`${identity.providerLogin}`.as("provider_login"),
+        linkedAt: sql<number>`${nowMs}`.as("linked_at"),
+      }).from(sql`(select 1)`).where(chained),
+    ),
+    db.insert(organizations).select(
+      db.select({
+        id: sql<string>`${orgId}`.as("id"),
+        slug: sql<string>`${`u-${userId.toLowerCase()}`}`.as("slug"),
+        name: sql<string>`${identity.providerLogin ?? "personal"}`.as("name"),
+        createdAt: sql<number>`${nowMs}`.as("created_at"),
+      }).from(sql`(select 1)`).where(chained),
+    ),
+    db.insert(memberships).select(
+      db.select({
+        orgId: sql<string>`${orgId}`.as("org_id"),
+        userId: sql<string>`${userId}`.as("user_id"),
+        role: sql<string>`'owner'`.as("role"),
+      }).from(sql`(select 1)`).where(chained),
+    ),
+    db.insert(userAuditEvents).select(
+      db
+        .select(
+          guardedAuditSelectColumns({
+            event: "auth.user_created",
+            actor,
+            nowMs,
+            ...(gate.kind === "invite" ? { payload: { signupInviteId: gate.inviteId } } : {}),
+          }),
+        )
+        .from(sql`(select 1)`)
+        .where(chained),
+    ),
+    db.insert(userAuditEvents).select(
+      db
+        .select(
+          guardedAuditSelectColumns({
+            event: "auth.identity_linked",
+            actor,
+            nowMs,
+            payload: { provider: identity.provider },
+          }),
+        )
+        .from(sql`(select 1)`)
+        .where(chained),
+    ),
+    db.insert(orgAuditEvents).select(
+      db.select({
+        ...guardedAuditSelectColumns({
           event: "org.created",
           actor,
-          orgId,
+          nowMs,
           payload: { personal: true },
         }),
-        orgAuditInsert(db, nowMs, {
-          event: "org.member_added",
-          actor,
-          orgId,
-          targetUserId: userId,
-          payload: { role: "owner" },
-        }),
-      ]);
-      return userId;
+        orgId: sql<string>`${orgId}`.as("org_id"),
+      }).from(sql`(select 1)`).where(chained),
+    ),
+    db.insert(orgAuditEvents).select(
+      db
+        .select({
+          ...guardedAuditSelectColumns({
+            event: "org.member_added",
+            actor,
+            nowMs,
+            targetUserId: userId,
+            payload: { role: "owner" },
+          }),
+          orgId: sql<string>`${orgId}`.as("org_id"),
+        })
+        .from(sql`(select 1)`)
+        .where(chained),
+    ),
+  ] as const;
+  return Effect.tryPromise({
+    try: async () => {
+      const createdRows =
+        gate.kind === "invite"
+          ? (
+              await db.batch([
+                // 消費 CAS(AUTH_SPEC §3): pending・未失効・受理時点ポリシーが
+                // 'invite' のときのみ効く。作成と同一トランザクション —
+                // 「作成に失敗した試行がコードだけ燃やす形」も「作成が成功した
+                // のにコードが未消費で残る形」も存在しない
+                db
+                  .update(signupInvites)
+                  .set({ status: "used", usedByUserId: userId, usedAt: nowMs })
+                  .where(
+                    and(
+                      eq(signupInvites.id, gate.inviteId),
+                      eq(signupInvites.status, "pending"),
+                      gt(signupInvites.expiresAt, nowMs),
+                      signupPolicyIs("invite"),
+                    ),
+                  ),
+                usersInsert,
+                ...trailing,
+              ])
+            )[1]
+          : (await db.batch([usersInsert, ...trailing]))[0];
+      return createdRows.length === 1 ? userId : null;
     },
     catch: (error) => {
       if (isUniqueConflict(error)) {
@@ -205,7 +374,11 @@ function createUserBatch(
       // 競合以外の D1 障害はインフラ defect としてそのまま伝播する
       throw error;
     },
-  });
+  }).pipe(
+    Effect.flatMap((created) =>
+      created === null ? Effect.fail(new SignupGateLostError()) : Effect.succeed(created),
+    ),
+  );
 }
 
 /**
@@ -230,27 +403,87 @@ function refreshVerifiedEmail(
   });
 }
 
+/** サインアップ招待コードの pending 行の照会(消費しない — 消費は作成 batch)。 */
+function findPendingSignupInvite(
+  db: Db,
+  tokenHashHex: string,
+  nowMs: number,
+): Effect.Effect<{ readonly id: string } | null> {
+  return run(async () => {
+    const row = await db
+      .select({ id: signupInvites.id })
+      .from(signupInvites)
+      .where(
+        and(
+          eq(signupInvites.tokenHash, tokenHashHex),
+          eq(signupInvites.status, "pending"),
+          gt(signupInvites.expiresAt, nowMs),
+        ),
+      )
+      .get();
+    return row === undefined ? null : row;
+  });
+}
+
 function makeIdentityRepo(db: Db): IdentityRepoShape {
+  // signupPolicy ゲート(AUTH_SPEC §3)つきの単一の冪等な入口(§1-5)。
+  // attempt は SignupGateLost(読み取りと batch の間にポリシーが遷移した・
+  // 招待コードが並行消費された)の再判定回数 — 再帰は毎回設定を読み直すので
+  // 定常状態では 1 回で収束する。収束しない設定の往復は運用異常(defect)
   const getOrCreateUser = (
     identity: VerifiedIdentity,
     nowMs: number,
-  ): Effect.Effect<ResolvedUser> =>
+    signupInviteTokenHash: string | null,
+    attempt = 0,
+  ): Effect.Effect<SignupGateResult> =>
     Effect.flatMap(lookupLinkedUser(db, identity), (existing) => {
       if (existing !== null) {
+        // 既存ユーザーはゲート非通過(AUTH_SPEC §3 — 新規作成だけを塞ぐ)。
+        // 提示されたコードは消費されない
         return Effect.as(refreshVerifiedEmail(db, existing, identity, nowMs), {
           userId: existing,
           created: false,
         } satisfies ResolvedUser);
       }
-      return createUserBatch(db, identity, nowMs).pipe(
-        Effect.map((userId): ResolvedUser => ({ userId, created: true })),
-        Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
-      );
+      const attemptCreate = (gate: SignupGate): Effect.Effect<SignupGateResult> =>
+        createUserBatch(db, identity, nowMs, gate).pipe(
+          Effect.map((userId): SignupGateResult => ({ userId, created: true })),
+          Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
+          Effect.catchTag("SignupGateLost", () =>
+            attempt >= 2
+              ? Effect.die(
+                  new Error("signup gate kept losing against concurrent policy changes"),
+                )
+              : getOrCreateUser(identity, nowMs, signupInviteTokenHash, attempt + 1),
+          ),
+        );
+      return Effect.flatMap(run(() => readSignupPolicy(db)), (policy) => {
+        if (policy === "closed") {
+          return Effect.succeed<SignupGateResult>({ denied: "policy-closed" });
+        }
+        if (policy === "open") {
+          return attemptCreate({ kind: "open" });
+        }
+        if (signupInviteTokenHash === null) {
+          return Effect.succeed<SignupGateResult>({ denied: "invite-required" });
+        }
+        return Effect.flatMap(
+          findPendingSignupInvite(db, signupInviteTokenHash, nowMs),
+          (invite) =>
+            invite === null
+              ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
+              : attemptCreate({ kind: "invite", inviteId: invite.id }),
+        );
+      });
     });
   return {
-    getOrCreateUser,
+    getOrCreateUser: (identity, nowMs, signupInviteTokenHash) =>
+      getOrCreateUser(identity, nowMs, signupInviteTokenHash),
     lookupUser: (identity) => lookupLinkedUser(db, identity),
     listUserOrgs: (userId) => listUserOrgs(db, userId),
+    signupPolicy: Effect.suspend(() => run(() => readSignupPolicy(db))),
+    hasPendingSignupInvite: (tokenHashHex, nowMs) =>
+      Effect.map(findPendingSignupInvite(db, tokenHashHex, nowMs), (row) => row !== null),
   };
 }
 
