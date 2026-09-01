@@ -12,7 +12,11 @@
 // パーサの新規依存を追加しない)。対応する読み取り形(実装裁定 — 主要
 // ランタイムの静的な逐語形のみ):
 //   JS/TS: process.env.X / process.env["X"] / import.meta.env.X / Bun.env.X /
-//          Deno.env.get("X")
+//          Deno.env.get("X")(メンバー参照は optional chaining `?.` も可)、
+//          および env オブジェクトの分割代入
+//          `const { X, Y: alias, Z = "default" } = process.env`
+//          (最頻出イディオム — 拾えないと undeclared 側のトリップワイヤが
+//          JS の典型コードで空振りする)
 //   Python: os.environ["X"] / os.environ.get("X") / os.getenv("X")
 //   Go:     os.Getenv("X") / os.LookupEnv("X")
 //   Ruby:   ENV["X"] / ENV.fetch("X")
@@ -52,10 +56,11 @@ const NAME = "([A-Za-z_][A-Za-z0-9_]*)";
 
 /** 静的な逐語 env 参照のパターン(`${NAME}` の位置 = 変数名のキャプチャ)。 */
 const REFERENCE_SOURCES: readonly string[] = [
-  String.raw`process\.env\.${NAME}`,
+  // JS のメンバー参照は optional chaining(`process.env?.X`)も同じ形の逐語参照
+  String.raw`process\.env\??\.${NAME}`,
   String.raw`process\.env\[["']${NAME}["']\]`,
-  String.raw`import\.meta\.env\.${NAME}`,
-  String.raw`Bun\.env\.${NAME}`,
+  String.raw`import\.meta\.env\??\.${NAME}`,
+  String.raw`Bun\.env\??\.${NAME}`,
   String.raw`Bun\.env\[["']${NAME}["']\]`,
   String.raw`Deno\.env\.get\(\s*["']${NAME}["']\s*\)`,
   String.raw`os\.environ\[["']${NAME}["']\]`,
@@ -72,11 +77,36 @@ const REFERENCE_SOURCES: readonly string[] = [
  * のような「たまたま ENV で終わる識別子」を env 参照と誤認して CI を exit 1 に
  * する形を塞ぐ(pullfrog レビュー対応)。`\b` では足りない(`_` は単語文字)。
  */
-const LEFT_BOUNDARY = String.raw`(?<![A-Za-z0-9_$.])`;
+const LEFT_BOUNDARY_SOURCE = String.raw`(?<![A-Za-z0-9_$.])`;
 
 const REFERENCE_PATTERNS: readonly RegExp[] = REFERENCE_SOURCES.map(
-  (source) => new RegExp(`${LEFT_BOUNDARY}${source}`, "g"),
+  (source) => new RegExp(`${LEFT_BOUNDARY_SOURCE}${source}`, "g"),
 );
+
+/**
+ * env オブジェクトの分割代入(`const { X, Y: alias, Z = "d" } = process.env`)。
+ * キャプチャ 1 = ブレース内全体(名前の取り出しは destructuredNames)。
+ * `[^{}]*` は改行を跨ぐ(複数行の分割代入)。ネストした分割は対象外。
+ */
+const DESTRUCTURE_PATTERN = new RegExp(
+  String.raw`\{([^{}]*)\}\s*=\s*${LEFT_BOUNDARY_SOURCE}(?:process\.env|import\.meta\.env|Bun\.env)(?![.\[?])`,
+  "g",
+);
+
+/** 分割代入のブレース内から env 名を取り出す(rename の左辺・default の左辺)。 */
+function destructuredNames(inner: string): string[] {
+  const names: string[] = [];
+  for (const entry of inner.split(",")) {
+    // `Y: alias` は左辺(プロパティ名 = env 名)、`Z = "d"` も左辺。
+    // 引用符付きキー(`"X": v`)は引用符を剥がして識別子形のみ受ける
+    // (`...rest` や計算プロパティは識別子形に合わず自然に落ちる)
+    const key = (entry.split("=")[0]?.split(":")[0] ?? "").trim().replace(/^["']|["']$/g, "");
+    if (new RegExp(`^${NAME}$`).test(key)) {
+      names.push(key);
+    }
+  }
+  return names;
+}
 
 /** Scans one file's text for literal environment-variable references. */
 export function scanEnvReferences(content: string): ReadonlySet<string> {
@@ -87,6 +117,11 @@ export function scanEnvReferences(content: string): ReadonlySet<string> {
       if (name !== undefined) {
         names.add(name);
       }
+    }
+  }
+  for (const match of content.matchAll(DESTRUCTURE_PATTERN)) {
+    for (const name of destructuredNames(match[1] ?? "")) {
+      names.add(name);
     }
   }
   return names;

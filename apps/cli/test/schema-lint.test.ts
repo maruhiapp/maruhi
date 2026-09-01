@@ -189,6 +189,46 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
     ]);
   });
 
+  it("env オブジェクトの分割代入と optional chaining を拾う(消費者反転の第 2 周)", () => {
+    const found = scanEnvReferences(
+      [
+        "const { FOO, BAR: renamed, BAZ = 'fallback' } = process.env;",
+        "const {",
+        "  MULTI_LINE_VAR,",
+        '  "QUOTED_VAR": q,',
+        "} = process.env;",
+        "const { BUN_DESTRUCTURED } = Bun.env;",
+        "const { VITE_DESTRUCTURED } = import.meta.env;",
+        "const opt = process.env?.OPT_CHAINED;",
+        "const optMeta = import.meta.env?.OPT_META;",
+      ].join("\n"),
+    );
+    expect([...found].toSorted()).toEqual([
+      "BAR",
+      "BAZ",
+      "BUN_DESTRUCTURED",
+      "FOO",
+      "MULTI_LINE_VAR",
+      "OPT_CHAINED",
+      "OPT_META",
+      "QUOTED_VAR",
+      "VITE_DESTRUCTURED",
+    ]);
+  });
+
+  it("分割代入の rest・env でない右辺・識別子形でないキーは拾わない", () => {
+    const found = scanEnvReferences(
+      [
+        "const { ...rest } = process.env;",
+        "const { a, b } = notprocess.env;",
+        "const { c } = someObject;",
+        "const { d } = MY_ENV;",
+      ].join("\n"),
+    );
+    // rest は識別子形に合わず、env 以外の右辺は左境界 + 右辺の固定で一致しない
+    expect(found.size).toBe(0);
+  });
+
   it("識別子の末尾が形にたまたま一致する参照は拾わない(左境界 — pullfrog レビュー対応)", () => {
     const found = scanEnvReferences(
       [
