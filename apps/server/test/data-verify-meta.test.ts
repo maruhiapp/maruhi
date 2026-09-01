@@ -492,9 +492,18 @@ describe("メタステートメントの受理検証(§12-5 のメタ規則 = CR
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     // 実 rename 1,000 回は非現実的なので latest_meta_version を直接引き上げ、
     // 上限直前のステートメント行(prev 検査の predecessor)をシードする
+    // (latest_meta_version の行は必ず存在する、という保存不変条件 —
+    // findVariable の status JOIN の前提 — をシードでも保つ)
     await queryProjectDo(
       projectId,
       "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
+      MAX_VERSIONS_PER_VARIABLE,
+      ENV,
+      VAR,
+    );
+    await queryProjectDo(
+      projectId,
+      "UPDATE variable_meta_statements SET meta_version = ? WHERE environment_id = ? AND variable_id = ?",
       MAX_VERSIONS_PER_VARIABLE,
       ENV,
       VAR,

@@ -116,16 +116,88 @@ export class ValueSignatureRejectedError extends Schema.TaggedError<ValueSignatu
 ) {}
 
 /**
- * 422: a metadata-statement signature (CRYPTO_SPEC §4.2) was rejected. The
- * reason vocabulary is shared with the value write signature (session-12
- * §6-7 — 新理由コードを作らない): `signature-invalid` / `chain-head-unknown` /
- * `chain-head-state-mismatch`(state-mismatch はヘッド時点の在籍・鍵束縛・
- * role、prev の形 / 保存 predecessor との不一致、削除後の再ステートメントを
- * 含む)。
+ * Reason codes for a 422 on a metadata statement (CRYPTO_SPEC §4.2 /
+ * AUTH_SPEC §12-5): the three value-signature reasons (session-12 §6-7 —
+ * 語彙を共有する。state-mismatch はヘッド時点の在籍・鍵束縛・role、prev の形 /
+ * 保存 predecessor との不一致、削除後の再ステートメント、active → declared の
+ * 遷移を含む)plus two layout-v2 reasons the spec names explicitly:
+ *
+ * - `layout-regression` — 直前ステートメントが v2 の変数への v1 後続
+ *   (レイアウト単調性 — CRYPTO_SPEC §4.2。rename 経由のスキーマ欄の黙った
+ *   消失と schema-locked の迂回の遮断)
+ * - `unsupported-layout` — 申告 layoutVersion がこのサーバーのサポート範囲
+ *   (現行 {1, 2})を超える。「古いサーバー × 新しいクライアント」の正常系で
+ *   あり、署名不正(改ざんと区別のつかない失敗)に潰さない(裁定 CR —
+ *   server update required の誠実な破壊様式)
+ */
+export const MetaStatementRejectReasonSchema = Schema.Literals([
+  "signature-invalid",
+  "chain-head-unknown",
+  "chain-head-state-mismatch",
+  "layout-regression",
+  "unsupported-layout",
+]);
+
+/**
+ * 422: a metadata statement (CRYPTO_SPEC §4.2) was rejected. Carries a
+ * reason code only — never signature bytes or hashes.
  */
 export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatementRejectedError>()(
   "MetaStatementRejected",
-  { reason: ValueSignatureRejectReasonSchema },
+  { reason: MetaStatementRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * Reason codes for a 422 from the project schema policy (AUTH_SPEC §12-11 /
+ * §12-5):
+ *
+ * - `schema-policy-disabled` — レイアウト v2 の新規採用(metaVersion 1 の v2
+ *   作成・v1 変数への v2 再発行)を disabled のプロジェクトで受理しない
+ *   (有効化ゲート — 旧検証者保護。既に v2 の変数の継続ステートメントは
+ *   ポリシーに依らず受理される)
+ * - `schema-required` — locked のプロジェクトで変数作成(metaVersion 1)が
+ *   layoutVersion 2 かつ varType 非空を満たさない(作成時の一回検査 —
+ *   後続のスキーマ再発行による引き下げは妨げない)
+ */
+export const SchemaPolicyRejectReasonSchema = Schema.Literals([
+  "schema-policy-disabled",
+  "schema-required",
+]);
+
+/** 422: the request violates the project's schema policy (AUTH_SPEC §12-11). */
+export class SchemaPolicyRejectedError extends Schema.TaggedError<SchemaPolicyRejectedError>()(
+  "SchemaPolicyRejected",
+  { reason: SchemaPolicyRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * 422: a plain value push targeted a declared variable (AUTH_SPEC §12-5).
+ * The first value of a declared variable must arrive through the activation
+ * composite (value version 1 + status-active statement + manifest).
+ */
+export class ActivationRequiredError extends Schema.TaggedError<ActivationRequiredError>()(
+  "ActivationRequired",
+  { variableId: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * Reason codes for a 422 on the schema `description` field (AUTH_SPEC §12-8):
+ * `too-long` = 1024 コードポイント超過、`control-characters` = 制御文字
+ * (改行を含む — 単一行に固定し ANSI エスケープ・改行偽装を受理段で落とす)。
+ * NFC 正規化は要求しない(識別子でなく照合に使わない — name との意図的な差)。
+ */
+export const SchemaDescriptionRejectReasonSchema = Schema.Literals([
+  "too-long",
+  "control-characters",
+]);
+
+/** 422: the schema description violates the §12-8 acceptance policy. */
+export class SchemaDescriptionRejectedError extends Schema.TaggedError<SchemaDescriptionRejectedError>()(
+  "SchemaDescriptionRejected",
+  { reason: SchemaDescriptionRejectReasonSchema },
   { httpApiStatus: 422 },
 ) {}
 

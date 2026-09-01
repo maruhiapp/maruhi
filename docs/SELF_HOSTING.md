@@ -406,6 +406,37 @@ this feature degrades gracefully in both directions:
   constant (`DEFAULT_TOKEN_TTL_DAYS` in `packages/api-schema`), not a
   consensus rule — self-hosted deployments may change it.
 
+**Value-free schemas / statement layout v2 (2026-08-31 release, S2)**: this
+release adds server-side acceptance for variable-statement layout v2 —
+schema fields (type / required / description) and the `declared` state
+(declared-but-no-value variables), gated by a per-project `schemaPolicy`
+setting (`GET`/`PUT /projects/:id/schema-policy`). **The gate defaults to
+`disabled`, so updating the server changes nothing by itself**: v2 writes are
+rejected until a project admin enables them, and v1 acceptance, distribution
+and verification are unchanged. Enabling schemas for a project must follow
+this order (AUTH_SPEC §12-11):
+
+1. **Update the server first** (`git pull` + `bun run deploy` as above). The
+   Durable Object migration (layout columns + the settings table) is
+   automatic on first access; no operator action.
+2. **Update the CLIs and CI workflows everywhere** — every member of the
+   project, not just the one who wants schemas. A not-yet-updated CLI cannot
+   read v2 statements: it rejects `declared` statements at decode time
+   (unknown status — an explicit error) and rejects schema-carrying active
+   statements at signature verification (a warning indistinguishable from
+   tampering). The `disabled` default exists precisely so that one upgraded
+   member's write cannot break the other members' verification.
+3. **Enable per project**: `PUT /projects/:id/schema-policy` with
+   `{"schemaPolicy": "enabled"}` (or `"locked"` to additionally require a
+   declared type on every new variable), as a project admin with an
+   admin-scoped token. The change is auditable
+   (`project.schema_policy_changed`).
+
+Reverting is safe: setting the policy back to `disabled` stops **new** v2
+adoption only — statements already written in v2 stay stored, distributed and
+verifiable, and variables that are already v2 keep their full lifecycle
+(rename, schema re-issue, deletion, and activation of declared variables).
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata

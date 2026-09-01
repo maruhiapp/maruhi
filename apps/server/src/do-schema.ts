@@ -407,6 +407,37 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       );
     },
   },
+  {
+    // 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC
+    // §12-2・§12-5 — 2026-08-30 S2)+ プロジェクト設定 schemaPolicy(§12-11)。
+    //
+    // - layout_version: 保存済みステートメントのワイヤレイアウト(既存行 =
+    //   全部レイアウト 1 — DEFAULT 1 の backfill が正)。次ステートメントの
+    //   レイアウト単調性検査(v2 → v1 後退の拒否)のアンカー実値
+    // - var_type / required / description: v2 のスキーマ欄(v1 行は NULL。
+    //   required は署名対象の "true" / "false" 文字列表現のまま保存する —
+    //   ワイヤ boolean との写像は境界の 1 箇所ずつ)。配布(§12-7)と削除
+    //   ステートメントの直前一致検査(§12-5)の材料
+    // - project_settings: 1 行のプロジェクト設定。行なし = schemaPolicy
+    //   'disabled'(既定 — §12-11)。監査は project.schema_policy_changed
+    //   (AUDIT_SPEC §3.3)
+    //   (environment_meta_statements は対象外 — 環境メタは v1 のまま §4.2)
+    tables: ["project_settings"],
+    apply(sql) {
+      sql.exec(
+        "ALTER TABLE variable_meta_statements ADD COLUMN layout_version INTEGER NOT NULL DEFAULT 1",
+      );
+      sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN var_type TEXT");
+      sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN required TEXT");
+      sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN description TEXT");
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS project_settings (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           schema_policy TEXT NOT NULL
+         )`,
+      );
+    },
+  },
 ];
 
 /**

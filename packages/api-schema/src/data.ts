@@ -116,6 +116,9 @@ export type DistributedEncryptedPayload = typeof DistributedEncryptedPayloadSche
 const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
 const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
+// 変数ステートメントのレイアウト v2 は第 3 の状態 declared を持つ(CRYPTO_SPEC
+// §4.2 — 宣言済み・値未設定。環境メタと v1 レイアウトは従来の 2 値のまま)
+const VariableMetaStatementStatusSchema = Schema.Literals(["active", "deleted", "declared"]);
 // metaVersion 1 は作成専用(status active・prev 空)なので、rename / 削除の
 // リクエスト形は metaVersion >= 2 に固定される(下の narrowed struct)
 const MetaVersionAtLeast2 = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(2));
@@ -165,10 +168,67 @@ const anyLifecycleFields = {
   prevMetaSigHashHex: PrevMetaSigHashHex,
 };
 
+// ---------------------------------------------------------------------------
+// 変数メタステートメントのレイアウト v2(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2 —
+// 2026-08-30)。v1 ステートメントは従来のフィールド構成のまま(layoutVersion・
+// スキーマ欄の 4 フィールドすべて不在 — strict 受理がこれを強制する)、v2 は
+// layoutVersion とスキーマ欄を持つ。環境メタステートメントは対象外(v1 のまま)。
+// ---------------------------------------------------------------------------
+
+/**
+ * varType の閉集合(CRYPTO_SPEC §4.2 — `""` = 未指定。検証 DSL・enum・既定値は
+ * 導入しない — 裁定 CT)。閉集合の判定は Schema 検証(400 — §12-5)。
+ */
+export const MetaVarTypeSchema = Schema.Literals(["", "string", "number", "boolean", "url"]);
+
+/**
+ * ワイヤの layoutVersion(AUTH_SPEC §12-2): **上限を固定しない整数**。v1 は
+ * フィールド不在で表す(省略 = 1)ため、明示値は 2 以上。サポート範囲(現行
+ * {1, 2})の検査は Schema でなく署名検証より前の受理検査が行い、超過は
+ * 「未対応レイアウト」の型付き 422 として現れる(400 の Schema エラー =
+ * 改ざんと区別のつかない失敗にしない誠実な破壊様式 — CRYPTO_SPEC §4.2)。
+ */
+const MetaLayoutVersionSchema = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(2),
+);
+
+// スキーマ欄(v2 で全フィールド必須 — required の省略時解釈をクライアント実装に
+// 分散させない fail-closed。CRYPTO_SPEC §4.2)。description の上限(1024 コード
+// ポイント)・文字種(制御文字拒否)は §12-8 の受理検査(422)であり Schema では
+// 検査しない(表示名の 400 とは意図的に区分が違う)
+const varMetaV2Fields = {
+  layoutVersion: MetaLayoutVersionSchema,
+  varType: MetaVarTypeSchema,
+  required: Schema.Boolean,
+  description: Schema.String,
+};
+
 /** 変数作成に同梱するステートメント(metaVersion 1 — AUTH_SPEC §12-5)。 */
 export const CreateVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...creationLifecycleFields,
+});
+
+/** レイアウト v2 の値同梱作成ステートメント(status active・スキーマ欄付き)。 */
+export const CreateVariableMetaStatementV2Schema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...creationLifecycleFields,
+  ...varMetaV2Fields,
+});
+
+/**
+ * 宣言(declared 作成 — §12-5)のステートメント: 値なしの metaVersion 1。
+ * 「値のない変数は存在しない」の唯一の例外で、レイアウト v2 限定
+ * (CRYPTO_SPEC §4.2 — 裁定 CS)。作成の status は active(値同梱)または
+ * declared(値なし)のみ — deleted の創出はワイヤ形が構造的に拒否する。
+ */
+export const DeclareVariableMetaStatementSchema = Schema.Struct({
+  ...varMetaBaseFields,
+  status: Schema.Literal("declared"),
+  metaVersion: Schema.Literal(1),
+  prevMetaSigHashHex: Schema.Literal(""),
+  ...varMetaV2Fields,
 });
 
 /** 変数 rename のステートメント(metaVersion CAS — §12-5)。 */
@@ -177,10 +237,46 @@ export const RenameVariableMetaStatementSchema = Schema.Struct({
   ...renameLifecycleFields,
 });
 
+/**
+ * レイアウト v2 の rename / スキーマ再発行ステートメント(§12-5 — 受理規則は
+ * 改名と同一)。status は現在の状態を保持する(active のまま、または declared
+ * のままのスキーマ再発行・rename — 状態遷移はこの形では起こせない: status が
+ * 直前ステートメントと不一致なら 422 payload-mismatch。declared → active は
+ * activation 複合のみ、active → declared は禁止 — CRYPTO_SPEC §4.2)。
+ */
+export const RenameVariableMetaStatementV2Schema = Schema.Struct({
+  ...varMetaBaseFields,
+  status: Schema.Literals(["active", "declared"]),
+  metaVersion: MetaVersionAtLeast2,
+  prevMetaSigHashHex: Sha256Hex,
+  ...varMetaV2Fields,
+});
+
+/**
+ * activation(declared → active — §12-5)のステートメント: 最初の値 push との
+ * 複合に同梱する status active・metaVersion + 1 の v2 ステートメント。
+ */
+export const ActivateVariableMetaStatementSchema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...renameLifecycleFields,
+  ...varMetaV2Fields,
+});
+
 /** 変数削除のステートメント(status deleted。name は直前 active 名 — §4.2)。 */
 export const DeleteVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...deleteLifecycleFields,
+});
+
+/**
+ * レイアウト v2 の削除ステートメント(v2 変数の削除は必ず v2 — レイアウト
+ * 単調性)。スキーマ欄・レイアウトは直前ステートメントの値をそのまま保持する
+ * こと(name と同じ規約 — 不一致は 422 payload-mismatch。§12-5)。
+ */
+export const DeleteVariableMetaStatementV2Schema = Schema.Struct({
+  ...varMetaBaseFields,
+  ...deleteLifecycleFields,
+  ...varMetaV2Fields,
 });
 
 /** 環境作成の複合リクエストに同梱するステートメント(§12-4)。 */
@@ -212,7 +308,17 @@ export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
  */
 export const DistributedVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
-  ...anyLifecycleFields,
+  // 変数側の配布は 3 状態(declared はレイアウト v2 のみ — CRYPTO_SPEC §4.2)
+  status: VariableMetaStatementStatusSchema,
+  metaVersion: PositiveInt,
+  prevMetaSigHashHex: PrevMetaSigHashHex,
+  // レイアウト v2 の運搬フィールド(§12-2): v1 ステートメントの配布には
+  // **4 フィールドとも不在**(v1 の配布へ新フィールドを足さない)、v2 では
+  // 4 フィールドとも存在する。存在の結合はサーバーの保存行(受理済み)が保証する
+  layoutVersion: Schema.optionalKey(MetaLayoutVersionSchema),
+  varType: Schema.optionalKey(MetaVarTypeSchema),
+  required: Schema.optionalKey(Schema.Boolean),
+  description: Schema.optionalKey(Schema.String),
   authorUserId: BoundedUserId,
   authorKeyFingerprintHex: KeyFingerprintHex,
 });
@@ -345,6 +451,18 @@ export const CheckpointValueSnapshotSchema = Schema.Struct({
 
 /** The checkpoint-time value snapshot of one environment (§12-7 / §14-2). */
 export type CheckpointValueSnapshot = typeof CheckpointValueSnapshotSchema.Type;
+
+/**
+ * プロジェクトのスキーマポリシー(AUTH_SPEC §12-11 — 有効化ゲートと
+ * schema-locked。既定 disabled): disabled = レイアウト v2 の新規採用を拒否 /
+ * enabled = v2 受理(スキーマ欄は任意)/ locked = enabled + 変数作成に
+ * layoutVersion 2 かつ varType 非空を要求。書き込み受理ポリシーであり、
+ * チェーンには載せない(検証規則の入力にもしない — 配布は advisory)。
+ */
+export const SchemaPolicySchema = Schema.Literals(["disabled", "enabled", "locked"]);
+
+/** The project's schema policy (AUTH_SPEC §12-11). */
+export type SchemaPolicy = typeof SchemaPolicySchema.Type;
 
 /**
  * DEK ラップの受信者クラス(AUTH_SPEC §12-6。2026-08-12): member = チェーン上の

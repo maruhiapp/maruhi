@@ -69,8 +69,26 @@ export interface DekWrapRefInput {
   readonly recipientUserId: string;
 }
 
-/** ステートメントのライフサイクル状態(CRYPTO_SPEC §4.2)。 */
-export type MetaStatementStatusInput = "active" | "deleted";
+/**
+ * ステートメントのライフサイクル状態(CRYPTO_SPEC §4.2)。declared は変数の
+ * レイアウト v2 限定(環境メタと v1 レイアウトは 2 値のまま — ワイヤ Schema が
+ * 強制し、DO 側は保存・検証の型として 3 値を受ける)。
+ */
+export type MetaStatementStatusInput = "active" | "deleted" | "declared";
+
+/** varType の閉集合(CRYPTO_SPEC §4.2 — `""` = 未指定)。 */
+export type MetaVarTypeInput = "" | "string" | "number" | "boolean" | "url";
+
+/**
+ * レイアウト v2 のスキーマ欄(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。required は
+ * ワイヤの boolean のまま運ぶ(署名対象の "true" / "false" 文字列への写像は
+ * 検証点 — verify-meta.ts — の 1 箇所で行う)。
+ */
+export interface MetaVariableSchemaInput {
+  readonly varType: MetaVarTypeInput;
+  readonly required: boolean;
+  readonly description: string;
+}
 
 /**
  * メタデータステートメントの保存入力(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5)。
@@ -86,6 +104,14 @@ export interface MetaStatementInput {
   readonly metaVersion: number;
   /** 直前ステートメントの signed_bytes の SHA-256(metaVersion 1 は空文字列)。 */
   readonly prevMetaSigHashHex: string;
+  /**
+   * ワイヤの layoutVersion(§12-2 — 省略 = 1)。ワイヤ Schema は明示値 2 以上
+   * のみ通し、サポート範囲({1, 2})超過は署名検証より前の受理検査が
+   * `unsupported-layout` の 422 で拒否する(裁定 CR)。
+   */
+  readonly layoutVersion?: number;
+  /** レイアウト v2 のスキーマ欄(layoutVersion 明示時は必ず存在 — ワイヤ形)。 */
+  readonly schema?: MetaVariableSchemaInput;
   /** author が署名時点で最後に検証したチェーンヘッド(§4.2 の認可時点束縛)。 */
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
@@ -103,7 +129,8 @@ export interface DistributedMetaStatementValue {
   readonly suite: WireSuite;
   readonly environmentId: string;
   readonly name: string;
-  readonly status: MetaStatementStatusInput;
+  /** 環境ステートメントは 2 値のまま(declared は変数の v2 限定 — §4.2)。 */
+  readonly status: "active" | "deleted";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
   readonly chainHeadHashHex: string;
@@ -113,9 +140,21 @@ export interface DistributedMetaStatementValue {
   readonly authorKeyFingerprintHex: string;
 }
 
-/** 変数ステートメントの配布形(variableId 付き)。 */
-export interface DistributedVariableMetaStatementValue extends DistributedMetaStatementValue {
+/**
+ * 変数ステートメントの配布形(variableId 付き)。レイアウト v2 の運搬
+ * フィールドは v2 の保存行でのみ 4 つ揃って存在する(v1 の配布へ新フィールドを
+ * 足さない — §12-2)。
+ */
+export interface DistributedVariableMetaStatementValue extends Omit<
+  DistributedMetaStatementValue,
+  "status"
+> {
   readonly variableId: string;
+  readonly status: MetaStatementStatusInput;
+  readonly layoutVersion?: number;
+  readonly varType?: MetaVarTypeInput;
+  readonly required?: boolean;
+  readonly description?: string;
 }
 
 /**
@@ -272,7 +311,15 @@ export interface EnvironmentPullValue {
   })[];
   /** 削除済み変数の deleted ステートメント(保存・配布し続ける — §12-5)。 */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
+  /**
+   * declared 変数の最新ステートメント(§12-7 — 値・バージョンは存在しない。
+   * マニフェストのダイジェスト再計算の材料)。declared が無い環境では省略
+   * (ワイヤの optionalKey と同型)。
+   */
+  readonly declaredVariables?: readonly DistributedVariableMetaStatementValue[];
   readonly deks: readonly RecipientDekValue[];
+  /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — 常に載せる)。 */
+  readonly schemaPolicy: SchemaPolicy;
   /**
    * 最新の環境マニフェスト(§12-7 — 2026-08-18)。undefined はマニフェスト
    * 導入前に作成された環境の移行完了までの過渡状態のみ(保存行があれば必ず
@@ -298,12 +345,23 @@ export interface EnvironmentMetadataPullValue {
   readonly currentEpoch: number;
   /** 環境自身の最新メタステートメント。 */
   readonly statement: DistributedMetaStatementValue;
-  /** アクティブ変数ごとの最新ステートメント(値は伴わない)。 */
+  /**
+   * 削除済みでない全変数の最新ステートメント(値は伴わない)。declared 変数の
+   * ステートメントもここに載る(§12-7 — status が判別を担う)。
+   */
   readonly variables: readonly DistributedVariableMetaStatementValue[];
   /** 削除済み変数の deleted ステートメント(§12-5)。 */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
   /** 最新の環境マニフェスト(メタ検証の完全性はこのモードでも同水準 — §12-7)。 */
   readonly manifest?: DistributedEnvManifestValue;
+  /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — 常に載せる)。 */
+  readonly schemaPolicy: SchemaPolicy;
+}
+
+/** 環境一覧の RPC 値(§12-4 + schemaPolicy の advisory 同梱 — §12-7)。 */
+export interface EnvironmentListValue {
+  readonly environments: readonly EnvironmentSummaryValue[];
+  readonly schemaPolicy: SchemaPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,12 +400,32 @@ export type ValueSignatureRejectReason =
   | "chain-head-state-mismatch";
 
 /**
- * メタステートメントの 422 理由は値署名と同じ 3 語彙を共有する(session-12
- * §6-7 — 新理由コードを作らない)。chain-head-state-mismatch はヘッド時点の
- * 在籍・鍵束縛・role、prev の形 / 保存 predecessor との不一致、削除後の
- * 再ステートメント(revived-after-delete)を含む。
+ * メタステートメントの 422 理由: 値署名の 3 語彙(session-12 §6-7)に、仕様が
+ * エラー名を明示するレイアウト v2 の 2 理由を加える — `layout-regression` =
+ * v2 変数への v1 後続(レイアウト単調性 — §12-5)、`unsupported-layout` =
+ * 申告 layoutVersion がサポート範囲超過(「古いサーバー × 新しいクライアント」の
+ * 正常系 — 裁定 CR。署名不正に潰さない)。chain-head-state-mismatch はヘッド
+ * 時点の在籍・鍵束縛・role、prev の形 / 保存 predecessor との不一致、削除後の
+ * 再ステートメント(revived-after-delete)、active → declared の遷移
+ * (declared-after-active)を含む。api-schema の MetaStatementRejectReasonSchema
+ * と一致させる。
  */
-export type MetaStatementRejectReason = ValueSignatureRejectReason;
+export type MetaStatementRejectReason =
+  | ValueSignatureRejectReason
+  | "layout-regression"
+  | "unsupported-layout";
+
+/**
+ * プロジェクトのスキーマポリシー(AUTH_SPEC §12-11 — 既定 disabled)。受理
+ * 判定は受理時点のポリシー(project DO の直列化の中で読む)。
+ */
+export type SchemaPolicy = "disabled" | "enabled" | "locked";
+
+/** schemaPolicy 由来の 422 理由(§12-11 / §12-5)。 */
+export type SchemaPolicyRejectReason = "schema-policy-disabled" | "schema-required";
+
+/** スキーマ description の受理検査(§12-8)の 422 理由。 */
+export type SchemaDescriptionRejectReason = "too-long" | "control-characters";
 
 /**
  * ヘッド申告の 422 理由も同じ 3 語彙を共有する(AUTH_SPEC §16-1 — 新理由
@@ -451,6 +529,13 @@ export type DataRejection =
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
   | { readonly kind: "meta-rejected"; readonly reason: MetaStatementRejectReason }
+  // schemaPolicy の受理ゲート(§12-11): disabled 下の v2 新規採用 /
+  // locked 下の varType なし作成
+  | { readonly kind: "schema-policy-rejected"; readonly reason: SchemaPolicyRejectReason }
+  // declared 変数への通常 push(§12-5 — activation 複合を要求する)
+  | { readonly kind: "activation-required"; readonly variableId: string }
+  // スキーマ description の受理検査(§12-8 — 1024 コードポイント・制御文字なし)
+  | { readonly kind: "description-rejected"; readonly reason: SchemaDescriptionRejectReason }
   | { readonly kind: "meta-version-conflict"; readonly currentMetaVersion: number }
   | { readonly kind: "manifest-rejected"; readonly reason: ManifestRejectReason }
   // manifestVersion CAS(§12-5 (6))。最新番号のみを返す(勝者のハッシュを

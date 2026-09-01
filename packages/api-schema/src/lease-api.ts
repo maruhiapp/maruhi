@@ -83,6 +83,12 @@ export const LeaseResponseSchema = Schema.Struct({
   statement: DistributedEnvironmentMetaStatementSchema,
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
+  /**
+   * declared 変数の最新ステートメント(§12-7 の配布規則をリース応答にも適用 —
+   * ステートメントのみ・値なし。ワークロードのマニフェストダイジェスト再計算
+   * 〔§9.1 (5)〕の材料。declared 変数が無い環境では載らない)。
+   */
+  declaredVariables: Schema.optionalKey(Schema.Array(DistributedVariableMetaStatementSchema)),
   leases: Schema.Array(LeasedDekSchema),
   /**
    * 最新の環境マニフェスト + issuer 情報(§14-2 — 2026-08-18)。ワークロードの

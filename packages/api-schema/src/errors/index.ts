@@ -42,6 +42,7 @@ export {
   ProjectNotFoundError,
 } from "./chain.ts";
 export {
+  ActivationRequiredError,
   AuditHeadNotReadyError,
   CheckpointMismatchReasonSchema,
   CheckpointStateMismatchError,
@@ -55,10 +56,15 @@ export {
   ManifestRejectReasonSchema,
   ManifestVersionConflictError,
   MetaStatementRejectedError,
+  MetaStatementRejectReasonSchema,
   MetaVersionConflictError,
   NameNotNfcError,
   PayloadMismatchError,
   ResourceConflictReasonSchema,
+  SchemaDescriptionRejectedError,
+  SchemaDescriptionRejectReasonSchema,
+  SchemaPolicyRejectedError,
+  SchemaPolicyRejectReasonSchema,
   ValueSignatureRejectedError,
   ValueSignatureRejectReasonSchema,
   ValueTooLargeError,

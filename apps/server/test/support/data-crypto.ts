@@ -508,22 +508,33 @@ export async function encryptValue(
 // メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)のテスト時署名
 // ---------------------------------------------------------------------------
 
-/** 変数ステートメントのワイヤ表現(VariableMetaStatement — §12-2)。 */
+/**
+ * 変数ステートメントのワイヤ表現(VariableMetaStatement — §12-2)。レイアウト
+ * v2(2026-08-30)では layoutVersion とスキーマ欄の 4 フィールドが揃って存在
+ * する(v1 では全部不在。required はワイヤの boolean)。
+ */
 export interface WireVariableMetaStatement {
   readonly suite: string;
   readonly environmentId: string;
   readonly variableId: string;
   readonly name: string;
-  readonly status: "active" | "deleted";
+  readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
+  readonly layoutVersion?: number;
+  readonly varType?: "" | "string" | "number" | "boolean" | "url";
+  readonly required?: boolean;
+  readonly description?: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
 }
 
-/** 環境ステートメントのワイヤ表現(EnvironmentMetaStatement — §12-2)。 */
-export type WireEnvironmentMetaStatement = Omit<WireVariableMetaStatement, "variableId">;
+/** 環境ステートメントのワイヤ表現(EnvironmentMetaStatement — §12-2。v1 のまま)。 */
+export type WireEnvironmentMetaStatement = Omit<
+  WireVariableMetaStatement,
+  "variableId" | "layoutVersion" | "varType" | "required" | "description"
+> & { readonly status: "active" | "deleted" };
 
 function metaTargetOf(statement: { readonly variableId?: string }): MetaStatementTarget {
   return statement.variableId === undefined
@@ -545,6 +556,21 @@ function metaContextOf(
     target: metaTargetOf(statement),
     name: statement.name,
     status: statement.status,
+    // レイアウト v2 の運搬フィールド → 署名対象(required は "true"/"false" —
+    // CRYPTO_SPEC §4.2 の LP フィールド表現)
+    layoutVersion: statement.layoutVersion,
+    ...(statement.layoutVersion === undefined ||
+    statement.varType === undefined ||
+    statement.required === undefined ||
+    statement.description === undefined
+      ? {}
+      : {
+          schema: {
+            varType: statement.varType,
+            required: statement.required ? ("true" as const) : ("false" as const),
+            description: statement.description,
+          },
+        }),
     metaVersion: statement.metaVersion,
     prevMetaSigHashHex: statement.prevMetaSigHashHex,
     authorUserId,
@@ -603,7 +629,7 @@ export async function metaSignedBytesHashOf(
 /** variables_digest の 1 エントリ(§4.3 — tombstone 込みの全変数の最新形)。 */
 export interface WireDigestEntry {
   readonly variableId: string;
-  readonly status: "active" | "deleted";
+  readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
 }

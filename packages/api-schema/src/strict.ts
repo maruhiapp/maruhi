@@ -121,6 +121,9 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["environments", "remove"],
   ["variables", "create"],
   ["variables", "push"],
+  // activation 複合(§12-5 — 2026-08-30。§12-10 (1) の「値 push・メタ操作」
+  // クラスに属する)
+  ["variables", "activate"],
   ["variables", "rename"],
   ["variables", "remove"],
   ["deks", "register"],
@@ -152,6 +155,9 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["deks", "remove"],
   // (environment, variable) 識別子の列挙のみ(AUDIT_SPEC §7)
   ["rotation", "dismiss"],
+  // schemaPolicy の設定(AUTH_SPEC §12-11 — 署名済み構造を運ばない。3 値の
+  // Literal で Schema 検証が閉じる)
+  ["schemaPolicy", "set"],
 ];
 
 /**

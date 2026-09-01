@@ -39,17 +39,25 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
   handlers
     .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
-        yield* checkValueSize(payload.value);
+        // 作成 2 形の Union(§12-5): active = 値同梱 / declared = 値なし
+        // (ワイヤ Schema が status と値の有無の結合を固定する)。値を伴う
+        // 先行検査(サイズ・AAD 座標)は active 形のみ
+        const value = "value" in payload ? payload.value : undefined;
+        if (value !== undefined) {
+          yield* checkValueSize(value);
+        }
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
         });
         yield* checkManifestCoordinates(payload.manifest, params.environmentId);
-        yield* checkAadCoordinates(payload.value, {
-          projectId: params.projectId,
-          environmentId: params.environmentId,
-          // variableId の保存先はステートメントが確定する(値の AAD との一致検査)
-          variableId: payload.statement.variableId,
-        });
+        if (value !== undefined) {
+          yield* checkAadCoordinates(value, {
+            projectId: params.projectId,
+            environmentId: params.environmentId,
+            // variableId の保存先はステートメントが確定する(値の AAD との一致検査)
+            variableId: payload.statement.variableId,
+          });
+        }
         return yield* callProjectData<VariableVersionValue>()({
           endpoint,
           projectId: params.projectId,
@@ -58,7 +66,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
             stub.createVariable(actor, params.environmentId, {
               variableId: payload.statement.variableId,
               statement: toMetaStatementInput(payload.statement),
-              value: toValueInput(payload.value),
+              ...(value === undefined ? {} : { value: toValueInput(value) }),
               manifest: toManifestInput(payload.manifest),
             }),
         });
@@ -85,6 +93,34 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               // 再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false)
               payload.reencryption === true,
             ),
+        });
+      }),
+    )
+    .handle("activate", ({ params, payload, endpoint }) =>
+      // activation 複合(§12-5): 先行検査は create(値同梱形)と同一で、
+      // variableId は URL が確定する
+      Effect.gen(function* () {
+        yield* checkValueSize(payload.value);
+        yield* checkStatementCoordinates(payload.statement, {
+          environmentId: params.environmentId,
+          variableId: params.variableId,
+        });
+        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
+        yield* checkAadCoordinates(payload.value, {
+          projectId: params.projectId,
+          environmentId: params.environmentId,
+          variableId: params.variableId,
+        });
+        return yield* callProjectData<VariableVersionValue>()({
+          endpoint,
+          projectId: params.projectId,
+          permission: "write",
+          invoke: (stub, actor) =>
+            stub.activateVariable(actor, params.environmentId, params.variableId, {
+              value: toValueInput(payload.value),
+              statement: toMetaStatementInput(payload.statement),
+              manifest: toManifestInput(payload.manifest),
+            }),
         });
       }),
     )
@@ -156,7 +192,13 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
             toWireVariable(params.projectId, params.environmentId, row),
           ),
           deletedVariables: pulled.deletedVariables,
+          // declared 変数のステートメント(§12-7 — 値なし。存在するときのみ載る)
+          ...(pulled.declaredVariables === undefined
+            ? {}
+            : { declaredVariables: pulled.declaredVariables }),
           deks: pulled.deks,
+          // schemaPolicy の advisory 同梱(§12-7 / §12-11)
+          schemaPolicy: pulled.schemaPolicy,
           // 最新マニフェスト(§12-7 — 保存行があれば必ず同梱。欠落 = 移行前の
           // 過渡状態のみで、クライアント側は一律拒否する — CRYPTO_SPEC §6.3)
           ...(pulled.manifest === undefined ? {} : { manifest: pulled.manifest }),

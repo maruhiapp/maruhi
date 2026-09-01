@@ -9,6 +9,7 @@ import {
   environmentsGroup,
   membershipGroup,
   rotationGroup,
+  schemaPolicyGroup,
   variablesGroup,
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit } from "effect";
@@ -574,6 +575,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "epoch-conflict": { kind: "epoch-conflict", currentEpoch: 2 },
     "value-rejected": { kind: "value-rejected", reason: "signature-invalid" },
     "meta-rejected": { kind: "meta-rejected", reason: "signature-invalid" },
+    "schema-policy-rejected": { kind: "schema-policy-rejected", reason: "schema-policy-disabled" },
+    "activation-required": { kind: "activation-required", variableId: "var-contract" },
+    "description-rejected": { kind: "description-rejected", reason: "too-long" },
     "meta-version-conflict": { kind: "meta-version-conflict", currentMetaVersion: 2 },
     "manifest-rejected": { kind: "manifest-rejected", reason: "manifest-digest-mismatch" },
     "manifest-version-conflict": {
@@ -624,6 +628,9 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     "epoch-conflict": "EpochConflict",
     "value-rejected": "ValueSignatureRejected",
     "meta-rejected": "MetaStatementRejected",
+    "schema-policy-rejected": "SchemaPolicyRejected",
+    "activation-required": "ActivationRequired",
+    "description-rejected": "SchemaDescriptionRejected",
     "meta-version-conflict": "MetaVersionConflict",
     "manifest-rejected": "ManifestRejected",
     "manifest-version-conflict": "ManifestVersionConflict",
@@ -648,6 +655,7 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
     variables: variablesGroup,
     deks: deksGroup,
     rotation: rotationGroup,
+    schemaPolicy: schemaPolicyGroup,
     // audit.self は DO を経由しない(D1 のみ)が、写像と宣言の対応表としては
     // 同じ規律で固定する(宣言に無い拒否はすべて die 判定になる)
     audit: auditGroup,
@@ -701,8 +709,8 @@ describe("エラー契約の宣言からの導出(data-http.ts unwrapDataOutcome
       results.map((result) => result.expected),
     );
     // 列挙が壊れて空回り(無条件パス)しないことの防衛線。エンドポイントを
-    // 追加したらこの数を更新する(membership 5 / environments 5 / variables 6 /
-    // deks 3 / rotation 2 / audit 4)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(25);
+    // 追加したらこの数を更新する(membership 5 / environments 5 / variables 7 /
+    // deks 3 / rotation 2 / schemaPolicy 2 / audit 4)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(28);
   });
 });

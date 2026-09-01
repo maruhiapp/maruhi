@@ -19,13 +19,17 @@ import {
   RotateEpochEntrySchema,
 } from "./chain.ts";
 import {
+  ActivateVariableMetaStatementSchema,
   CheckpointValueSnapshotSchema,
   CreateEnvironmentManifestSchema,
   CreateEnvironmentMetaStatementSchema,
   CreateVariableMetaStatementSchema,
+  CreateVariableMetaStatementV2Schema,
+  DeclareVariableMetaStatementSchema,
   DekWrapRefSchema,
   DeleteEnvironmentMetaStatementSchema,
   DeleteVariableMetaStatementSchema,
+  DeleteVariableMetaStatementV2Schema,
   DistributedEncryptedPayloadSchema,
   DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
@@ -35,9 +39,12 @@ import {
   RecipientDekSchema,
   RenameEnvironmentMetaStatementSchema,
   RenameVariableMetaStatementSchema,
+  RenameVariableMetaStatementV2Schema,
+  SchemaPolicySchema,
   WrappedDekSchema,
 } from "./data.ts";
 import {
+  ActivationRequiredError,
   AuditHeadNotReadyError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
@@ -59,6 +66,8 @@ import {
   NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
+  SchemaDescriptionRejectedError,
+  SchemaPolicyRejectedError,
   ValueSignatureRejectedError,
   ValueTooLargeError,
   VariableConflictError,
@@ -134,7 +143,21 @@ export const EnvironmentPullSchema = Schema.Struct({
   statement: DistributedEnvironmentMetaStatementSchema,
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
+  /**
+   * declared 変数の最新ステートメント(§12-7 — 2026-08-30 レイアウト v2)。
+   * 値・バージョンは存在しない(declared だけが正当な値なし状態 — CRYPTO_SPEC
+   * §6.3 の値配布要求)。マニフェストのダイジェスト再計算(§4.3)の材料として
+   * 必須の同梱。declared 変数が無い環境では載らない(optionalKey — 旧サーバー
+   * 応答との decode 互換も兼ねる)。
+   */
+  declaredVariables: Schema.optionalKey(Schema.Array(DistributedVariableMetaStatementSchema)),
   deks: Schema.Array(RecipientDekSchema),
+  /**
+   * プロジェクトの schemaPolicy の advisory 同梱(§12-7 / §12-11 — サーバー
+   * 申告・署名されない。クライアントの用途は UX のみで、検証規則の入力に
+   * しない)。本改訂以降のサーバーは常に載せる(不在 = 旧サーバー)。
+   */
+  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
   /**
    * 最新の環境マニフェスト + issuer 情報(§12-7 — 2026-08-18)。クライアントは
    * ダイジェスト再計算・エポック整合を検証し、**欠落は一律拒否**(CRYPTO_SPEC
@@ -166,10 +189,15 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
   currentEpoch: Schema.Number,
   statement: DistributedEnvironmentMetaStatementSchema,
+  // declared 変数のステートメントもここに載る(削除済みでない全変数の最新形 —
+  // §12-7: declared の配布はステートメントのみで、メタのみモードでは active と
+  // 同じ列に自然に流れる。status フィールドが判別を担う)
   variables: Schema.Array(DistributedVariableMetaStatementSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   /** 最新の環境マニフェスト(メタ検証の完全性はこのモードでも同水準 — §12-7)。 */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
+  /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — EnvironmentPull と同じ規約)。 */
+  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
 });
 
 /**
@@ -304,7 +332,11 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.get("list", "/projects/:projectId/environments", {
       params: projectParams,
-      success: Schema.Struct({ environments: Schema.Array(EnvironmentSummarySchema) }),
+      success: Schema.Struct({
+        environments: Schema.Array(EnvironmentSummarySchema),
+        /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — pull と同じ規約)。 */
+        schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+      }),
       error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   )
@@ -370,15 +402,30 @@ export const variablesGroup = HttpApiGroup.make("variables")
       params: environmentParams,
       // 作成 = version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱
       // (§12-5)。variableId と表示名はステートメントが運ぶ(裸のフィールドを
-      // 併置しない — 二重運搬の不一致面を作らない)
+      // 併置しない — 二重運搬の不一致面を作らない)。
+      //
+      // レイアウト v2(2026-08-30)で作成は 2 形の Union になる: active(値
+      // 同梱 — statement は v1 / v2 のどちらでもよい)と declared(値なし —
+      // v2 限定の宣言。「値のない変数は存在しない」の唯一の例外)。deleted の
+      // 創出はどちらの形にも存在しない(Schema 400 — §12-5 の遷移規則の
+      // ワイヤ面。strict 注釈は Union を越えて伝播する — §12-10 (1))
       payload: strictPayload(
-        Schema.Struct({
-          statement: CreateVariableMetaStatementSchema,
-          value: EncryptedPayloadSchema,
-          // 作成後のメタ状態(新変数のステートメントを含む集合)を反映した
-          // マニフェスト(§12-5 — メタ状態を変える全操作の複合受理)
-          manifest: EnvironmentManifestSchema,
-        }),
+        Schema.Union([
+          Schema.Struct({
+            statement: Schema.Union([
+              CreateVariableMetaStatementSchema,
+              CreateVariableMetaStatementV2Schema,
+            ]),
+            value: EncryptedPayloadSchema,
+            // 作成後のメタ状態(新変数のステートメントを含む集合)を反映した
+            // マニフェスト(§12-5 — メタ状態を変える全操作の複合受理)
+            manifest: EnvironmentManifestSchema,
+          }),
+          Schema.Struct({
+            statement: DeclareVariableMetaStatementSchema,
+            manifest: EnvironmentManifestSchema,
+          }),
+        ]),
       ),
       success: VariableVersionSchema,
       error: [
@@ -402,6 +449,11 @@ export const variablesGroup = HttpApiGroup.make("variables")
         ManifestRejectedError,
         ManifestVersionConflictError,
         NameNotNfcError,
+        // スキーマポリシー(§12-11): disabled 下の v2 新規採用は
+        // schema-policy-disabled、locked 下の varType なし作成は schema-required
+        SchemaPolicyRejectedError,
+        // description の上限・文字種(§12-8 の受理検査 — 422)
+        SchemaDescriptionRejectedError,
         ValueTooLargeError,
         DataLimitExceededError,
       ],
@@ -433,6 +485,53 @@ export const variablesGroup = HttpApiGroup.make("variables")
           VersionConflictError,
           EpochConflictError,
           ValueSignatureRejectedError,
+          // declared 変数への通常 push は activation 複合を要求する(§12-5)
+          ActivationRequiredError,
+          ValueTooLargeError,
+          DataLimitExceededError,
+        ],
+      },
+    ).middleware(AuthMiddleware),
+  )
+  .add(
+    // activation(declared → active — §12-5。2026-08-30 レイアウト v2):
+    // declared 変数への最初の値 push を「値 version 1 + status active の v2
+    // ステートメント(metaVersion + 1)+ マニフェスト」の複合として受理する。
+    // メタ状態が変わるためマニフェスト再発行を伴う(「値の push はマニフェストに
+    // 触れない」不変条件の対象は通常 push — CRYPTO_SPEC §4.3)。
+    // **declared → active 専用**であり「値 push + メタ再発行」の汎用複合では
+    // ない: 対象が declared でない・name が宣言時の名から変わる形は 422
+    // payload-mismatch(status / name)で拒否する(改名は rename 経路が
+    // var.renamed の監査と共に担う。この限定が §12-11 のポリシー免除 —
+    // 直前は必ず v2 — の前提を成立させる)
+    HttpApiEndpoint.post(
+      "activate",
+      "/projects/:projectId/environments/:environmentId/variables/:variableId/activate",
+      {
+        params: variableParams,
+        payload: strictPayload(
+          Schema.Struct({
+            value: EncryptedPayloadSchema,
+            statement: ActivateVariableMetaStatementSchema,
+            manifest: EnvironmentManifestSchema,
+          }),
+        ),
+        success: VariableVersionSchema,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          EnvironmentNotFoundError,
+          VariableNotFoundError,
+          PayloadMismatchError,
+          // declared の latest は常に 0 なので、CAS が値 version 1 を強制する
+          VersionConflictError,
+          EpochConflictError,
+          ValueSignatureRejectedError,
+          MetaStatementRejectedError,
+          MetaVersionConflictError,
+          ManifestRejectedError,
+          ManifestVersionConflictError,
+          SchemaDescriptionRejectedError,
           ValueTooLargeError,
           DataLimitExceededError,
         ],
@@ -445,9 +544,15 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
+        // v2 形は rename とスキーマ再発行(スキーマ欄のみの変更)を兼ねる —
+        // 受理規則は同一(§12-5)。status は現状態を保持する(遷移はこの形では
+        // 起こせない — 不一致は 422 payload-mismatch)
         payload: strictPayload(
           Schema.Struct({
-            statement: RenameVariableMetaStatementSchema,
+            statement: Schema.Union([
+              RenameVariableMetaStatementSchema,
+              RenameVariableMetaStatementV2Schema,
+            ]),
             manifest: EnvironmentManifestSchema,
           }),
         ),
@@ -464,6 +569,10 @@ export const variablesGroup = HttpApiGroup.make("variables")
           ManifestRejectedError,
           ManifestVersionConflictError,
           NameNotNfcError,
+          // disabled 下の v1 変数への v2 再発行は schema-policy-disabled(§12-11。
+          // 既に v2 の変数の継続ステートメントはポリシーに依らず受理される)
+          SchemaPolicyRejectedError,
+          SchemaDescriptionRejectedError,
           DataLimitExceededError,
         ],
       },
@@ -477,10 +586,15 @@ export const variablesGroup = HttpApiGroup.make("variables")
         params: variableParams,
         // 削除も署名付きステートメント(status deleted。name は直前 active 名)+
         // tombstone を含む集合を反映したマニフェスト(§12-5 — マニフェストは
-        // 行数上限の対象外なので削除経路を遮断しない: 保持は最新 1 通 — §12-8)
+        // 行数上限の対象外なので削除経路を遮断しない: 保持は最新 1 通 — §12-8)。
+        // v2 変数の削除は v2 形(スキーマ欄・レイアウトの直前一致 — §12-5。
+        // 継続ステートメントとしてポリシーに依らず受理される — §12-11 の可逆性)
         payload: strictPayload(
           Schema.Struct({
-            statement: DeleteVariableMetaStatementSchema,
+            statement: Schema.Union([
+              DeleteVariableMetaStatementSchema,
+              DeleteVariableMetaStatementV2Schema,
+            ]),
             manifest: EnvironmentManifestSchema,
           }),
         ),
@@ -577,5 +691,35 @@ export const deksGroup = HttpApiGroup.make("deks")
         DekWrapRejectedError,
         DataLimitExceededError,
       ],
+    }).middleware(AuthMiddleware),
+  );
+
+/**
+ * Project schema-policy setting (AUTH_SPEC §12-11 — 有効化ゲートと
+ * schema-locked。2026-08-30)。
+ *
+ * - GET: read スコープ × チェーン role reader 以上(200 = `{ schemaPolicy }`)
+ * - PUT: **admin スコープ × チェーン role admin 以上**(204)。セッション主体は
+ *   拒否(§5 の能力制限の許可列挙外 — 既定 deny がそのまま働く)。変更は
+ *   `project.schema_policy_changed`(AUDIT_SPEC §3.3 — 旧値・新値)を記録する
+ *
+ * 判定順・存在秘匿(非メンバー 404)は §12-3 と同一。ペイロードは署名済み
+ * 構造を運ばない(§12-10 (1) の strict 対象クラス外 — 3 値の Literal で
+ * Schema 検証が閉じる)。
+ */
+export const schemaPolicyGroup = HttpApiGroup.make("schemaPolicy")
+  .add(
+    HttpApiEndpoint.get("get", "/projects/:projectId/schema-policy", {
+      params: projectParams,
+      success: Schema.Struct({ schemaPolicy: SchemaPolicySchema }),
+      error: [ProjectNotFoundError, ForbiddenError],
+    }).middleware(AuthMiddleware),
+  )
+  .add(
+    HttpApiEndpoint.put("set", "/projects/:projectId/schema-policy", {
+      params: projectParams,
+      payload: Schema.Struct({ schemaPolicy: SchemaPolicySchema }),
+      success: HttpApiSchema.NoContent,
+      error: [ProjectNotFoundError, ForbiddenError],
     }).middleware(AuthMiddleware),
   );

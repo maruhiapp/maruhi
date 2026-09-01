@@ -21,7 +21,7 @@ import {
   toManifestInput,
   toMetaStatementInput,
 } from "./data-http.ts";
-import type { EnvironmentSummaryValue } from "./data-plane.ts";
+import type { EnvironmentListValue } from "./data-plane.ts";
 
 /**
  * §12-4: チェーンエントリの actor・ラップの署名者は呼び出し主体と厳密一致。
@@ -102,12 +102,13 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
       }),
     )
     .handle("list", ({ params, endpoint }) =>
-      callProjectData<readonly EnvironmentSummaryValue[]>()({
+      // schemaPolicy の advisory 同梱(§12-7 / §12-11)込みの一覧
+      callProjectData<EnvironmentListValue>()({
         endpoint,
         projectId: params.projectId,
         permission: "read",
         invoke: (stub, actor) => stub.listEnvironments(actor),
-      }).pipe(Effect.map((environments) => ({ environments }))),
+      }),
     )
     .handle("rename", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {

@@ -17,8 +17,11 @@ import type {
   EnvManifestInput,
   MetaStatementInput,
   MetaStatementStatusInput,
+  MetaVariableSchemaInput,
+  MetaVarTypeInput,
   PulledVariableValue,
   RecipientDekValue,
+  SchemaPolicy,
   ValueInput,
   WireSuite,
 } from "./data-plane.ts";
@@ -38,6 +41,13 @@ export interface VariableRow {
   readonly name: string;
   readonly latestMetaVersion: number;
   readonly latestVersion: number;
+  /**
+   * 最新ステートメントの status(declared 変数の判定材料 — §12-5: declared への
+   * 通常 push は activation-required、activation は declared のみが対象)。
+   * 真実源はステートメント行(JOIN で読む — 変数行とステートメント行は同一の
+   * 同期ブロックで書かれる)。
+   */
+  readonly latestStatus: MetaStatementStatusInput;
   readonly deletedAtMs: number | null;
 }
 
@@ -77,11 +87,16 @@ export interface MetaAuthorInfo {
 /**
  * 保存済みステートメントの検証アンカー: サーバー再計算の signed_bytes ハッシュと
  * status。次 metaVersion の prev 検査と削除後の再ステートメント拒否
- * (§12-5 のメタ規則)の入力。
+ * (§12-5 のメタ規則)の入力。layoutVersion は保存実値(レイアウト単調性検査の
+ * アンカー — CRYPTO_SPEC §4.2)、schema は v2 行のスキーマ欄(削除ステートメントの
+ * 直前一致検査 — §12-5 — の材料。v1 行は null)。環境メタは常に layoutVersion 1・
+ * schema null(v2 の対象外)。
  */
-interface MetaAnchor {
+export interface MetaAnchor {
   readonly signedBytesHashHex: string;
   readonly status: MetaStatementStatusInput;
+  readonly layoutVersion: number;
+  readonly schema: MetaVariableSchemaInput | null;
 }
 
 /**
@@ -261,6 +276,11 @@ export interface DataWriteOps {
    * add_member 受理の書き込みフェーズと同じく単一タスク内から呼ぶ。
    */
   readonly deleteHeadAttestation: (attesterUserId: string) => void;
+  /**
+   * schemaPolicy の upsert(AUTH_SPEC §12-11)。監査 project.schema_policy_changed
+   * と同じ同期ブロックで呼ぶ(設定変更と監査行の原子性)。
+   */
+  readonly setSchemaPolicy: (policy: SchemaPolicy) => void;
 }
 
 /** 掃除で削除されたラップの座標(dek.deleted 監査行の材料)。 */
@@ -342,8 +362,18 @@ interface DataStoreShape {
   readonly deletedVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
-  /** アクティブ変数の最新ステートメント一覧(メタデータのみモード — §12-7)。 */
+  /**
+   * 削除済みでない全変数(declared 含む)の最新ステートメント一覧
+   * (メタデータのみモード — §12-7)。
+   */
   readonly activeVariableStatements: (
+    environmentId: string,
+  ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
+  /**
+   * declared 変数の最新ステートメント一覧(値付き pull / リースの同梱材料 —
+   * §12-7。値・バージョンは存在しない)。
+   */
+  readonly declaredVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
@@ -452,6 +482,11 @@ interface DataStoreShape {
     expiresAtMs: number,
     nowMs: number,
   ) => void;
+  /**
+   * プロジェクトの schemaPolicy(AUTH_SPEC §12-11 — 行なし = 既定 disabled)。
+   * 受理判定は DO permit 下の各プログラムがこれを読む(受理時点のポリシー)。
+   */
+  readonly schemaPolicy: Effect.Effect<SchemaPolicy>;
   /** 保存済みヘッド申告の seq(未提出なら null — 単調前進判定の材料。§16-1)。 */
   readonly headAttestationSeq: (attesterUserId: string) => Effect.Effect<number | null>;
   /**
@@ -550,23 +585,92 @@ function storedSuite(value: unknown): WireSuite {
 }
 
 /**
- * メタステートメント列(environmentId / variableId を除く共通部)のデコード。
- * prefix は latestVersions の SQL 別名(ms_*)用 — 擬似行オブジェクトの組み立てを
- * せず、別名付きの行をそのまま読む。
+ * 保存済み status 列 → 環境ステートメントの 2 値(環境メタは v2 の対象外 —
+ * CRYPTO_SPEC §4.2)。既知以外はストレージ破損として defect。
  */
-function statementColumns(
-  row: StoredRow,
-  prefix: string,
-): Omit<DistributedMetaStatementValue, "environmentId"> {
-  const status = stringColumn(row, `${prefix}status`);
-  if (status !== "active" && status !== "deleted") {
+function storedEnvStatus(value: string): "active" | "deleted" {
+  if (value !== "active" && value !== "deleted") {
     // 書き込み経路は Schema の Literal が強制する(既知以外はストレージ破損)
     throw new Error("unexpected status in stored meta statement row");
   }
+  return value;
+}
+
+/** 保存済み status 列 → 変数ステートメントの 3 値(declared は v2 のみ)。 */
+function storedVariableStatus(value: string): MetaStatementStatusInput {
+  if (value !== "active" && value !== "deleted" && value !== "declared") {
+    throw new Error("unexpected status in stored meta statement row");
+  }
+  return value;
+}
+
+/** 保存済み var_type 列 → 閉集合(CRYPTO_SPEC §4.2 — 既知以外は defect)。 */
+function storedVarType(value: string): MetaVarTypeInput {
+  if (
+    value !== "" &&
+    value !== "string" &&
+    value !== "number" &&
+    value !== "boolean" &&
+    value !== "url"
+  ) {
+    throw new Error("unexpected var_type in stored meta statement row");
+  }
+  return value;
+}
+
+/** 保存済み required 列("true" / "false" — 署名対象表現)→ boolean。 */
+function storedRequired(value: string): boolean {
+  if (value !== "true" && value !== "false") {
+    throw new Error("unexpected required in stored meta statement row");
+  }
+  return value === "true";
+}
+
+function nullableStringColumn(row: StoredRow, column: string): string | null {
+  const value = columnValue(row, column);
+  if (value !== null && typeof value !== "string") {
+    throw new Error(`stored column "${column}" is not a string or NULL`);
+  }
+  return value;
+}
+
+/**
+ * レイアウト v2 のスキーマ欄列のデコード(v1 行 = 4 列とも不在扱いで null)。
+ * v2 行のスキーマ欄 NULL は書き込み経路の不変条件違反(defect)。
+ */
+function storedSchemaColumns(row: StoredRow, prefix: string): MetaVariableSchemaInput | null {
+  const layoutVersion = numberColumn(row, `${prefix}layout_version`);
+  if (layoutVersion === 1) {
+    return null;
+  }
+  const varType = nullableStringColumn(row, `${prefix}var_type`);
+  const required = nullableStringColumn(row, `${prefix}required`);
+  const description = nullableStringColumn(row, `${prefix}description`);
+  if (varType === null || required === null || description === null) {
+    throw new Error("layout v2 meta statement row is missing schema columns");
+  }
+  return {
+    varType: storedVarType(varType),
+    required: storedRequired(required),
+    description,
+  };
+}
+
+/**
+ * メタステートメント列(environmentId / variableId を除く共通部)のデコード。
+ * prefix は latestVersions の SQL 別名(ms_*)用 — 擬似行オブジェクトの組み立てを
+ * せず、別名付きの行をそのまま読む。status のデコードは環境(2 値)/ 変数
+ * (3 値)で呼び出し側が選ぶ。
+ */
+function statementColumns<S extends MetaStatementStatusInput>(
+  row: StoredRow,
+  prefix: string,
+  statusOf: (value: string) => S,
+): Omit<DistributedMetaStatementValue, "environmentId" | "status"> & { readonly status: S } {
   return {
     suite: storedSuite(columnValue(row, `${prefix}suite`)),
     name: stringColumn(row, `${prefix}name`),
-    status,
+    status: statusOf(stringColumn(row, `${prefix}status`)),
     metaVersion: numberColumn(row, `${prefix}meta_version`),
     prevMetaSigHashHex: stringColumn(row, `${prefix}prev_meta_sig_hash_hex`),
     chainHeadHashHex: stringColumn(row, `${prefix}chain_head_hash_hex`),
@@ -577,30 +681,81 @@ function statementColumns(
   };
 }
 
-/** メタステートメント行 → 配布形(author 込み。environmentId は列から取る)。 */
+/** 環境メタステートメント行 → 配布形(author 込み。environmentId は列から取る)。 */
 function statementOf(row: StoredRow): DistributedMetaStatementValue {
-  return { environmentId: stringColumn(row, "environment_id"), ...statementColumns(row, "") };
+  return {
+    environmentId: stringColumn(row, "environment_id"),
+    ...statementColumns(row, "", storedEnvStatus),
+  };
+}
+
+/**
+ * 変数ステートメント列 → 配布形の v2 運搬フィールド(§12-2): v1 行では
+ * 4 フィールドとも不在(v1 の配布へ新フィールドを足さない)、v2 行では
+ * layoutVersion + スキーマ欄を展開する。
+ */
+function variableStatementV2Fields(
+  row: StoredRow,
+  prefix: string,
+): Pick<
+  DistributedVariableMetaStatementValue,
+  "layoutVersion" | "varType" | "required" | "description"
+> {
+  const schema = storedSchemaColumns(row, prefix);
+  if (schema === null) {
+    return {};
+  }
+  return {
+    layoutVersion: numberColumn(row, `${prefix}layout_version`),
+    varType: schema.varType,
+    required: schema.required,
+    description: schema.description,
+  };
 }
 
 function variableStatementOf(row: StoredRow): DistributedVariableMetaStatementValue {
-  return { ...statementOf(row), variableId: stringColumn(row, "variable_id") };
+  return {
+    environmentId: stringColumn(row, "environment_id"),
+    variableId: stringColumn(row, "variable_id"),
+    ...statementColumns(row, "", storedVariableStatus),
+    ...variableStatementV2Fields(row, ""),
+  };
 }
 
-function anchorOf(row: StoredRow | undefined): MetaAnchor | null {
+/** 変数ステートメントのアンカー行 → MetaAnchor(layoutVersion は保存実値)。 */
+function variableAnchorOf(row: StoredRow | undefined): MetaAnchor | null {
   if (row === undefined) {
     return null;
   }
-  const status = stringColumn(row, "status");
-  if (status !== "active" && status !== "deleted") {
-    throw new Error("unexpected status in stored meta statement row");
+  return {
+    signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+    status: storedVariableStatus(stringColumn(row, "status")),
+    layoutVersion: numberColumn(row, "layout_version"),
+    schema: storedSchemaColumns(row, ""),
+  };
+}
+
+/** 環境ステートメントのアンカー行 → MetaAnchor(環境メタは常にレイアウト 1)。 */
+function environmentAnchorOf(row: StoredRow | undefined): MetaAnchor | null {
+  if (row === undefined) {
+    return null;
   }
-  return { signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"), status };
+  return {
+    signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+    status: storedEnvStatus(stringColumn(row, "status")),
+    layoutVersion: 1,
+    schema: null,
+  };
 }
 
 // 配布(§12-2)は signed_bytes_hash_hex を選択しない = 配布しない(検証者が
-// 自ら再計算する)。アンカー照会(anchorOf)だけがハッシュ列を読む
+// 自ら再計算する)。アンカー照会(*AnchorOf)だけがハッシュ列を読む
 const MS_COLUMNS =
   "ms.environment_id, ms.suite, ms.name, ms.status, ms.meta_version, ms.prev_meta_sig_hash_hex, ms.chain_head_hash_hex, ms.chain_head_seq, ms.signature_hex, ms.author_user_id, ms.author_key_fingerprint";
+
+// 変数ステートメントは v2 の運搬フィールド列も選択する(環境側の SELECT には
+// 存在しない列 — environment_meta_statements は v2 の対象外)
+const VAR_MS_COLUMNS = `${MS_COLUMNS}, ms.layout_version, ms.var_type, ms.required, ms.description`;
 
 const makeEnvironmentQueries = (sql: SqlStorage) => ({
   findEnvironment: (environmentId: string) =>
@@ -677,7 +832,7 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
     }),
   environmentMetaAnchor: (environmentId: string, metaVersion: number) =>
     Effect.sync(() =>
-      anchorOf(
+      environmentAnchorOf(
         sql
           .exec(
             `SELECT signed_bytes_hash_hex, status FROM environment_meta_statements
@@ -746,8 +901,14 @@ const makeVariableQueries = (sql: SqlStorage) => ({
     Effect.sync(() => {
       const row = sql
         .exec(
-          `SELECT variable_id, name, latest_meta_version, latest_version, deleted_at FROM variables
-           WHERE environment_id = ? AND variable_id = ?`,
+          `SELECT v.variable_id, v.name, v.latest_meta_version, v.latest_version, v.deleted_at,
+                  ms.status
+           FROM variables v
+           JOIN variable_meta_statements ms
+             ON ms.environment_id = v.environment_id
+            AND ms.variable_id = v.variable_id
+            AND ms.meta_version = v.latest_meta_version
+           WHERE v.environment_id = ? AND v.variable_id = ?`,
           environmentId,
           variableId,
         )
@@ -760,15 +921,17 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         name: stringColumn(row, "name"),
         latestMetaVersion: numberColumn(row, "latest_meta_version"),
         latestVersion: numberColumn(row, "latest_version"),
+        latestStatus: storedVariableStatus(stringColumn(row, "status")),
         deletedAtMs: nullableNumberColumn(row, "deleted_at"),
       };
     }),
   variableMetaAnchor: (environmentId: string, variableId: string, metaVersion: number) =>
     Effect.sync(() =>
-      anchorOf(
+      variableAnchorOf(
         sql
           .exec(
-            `SELECT signed_bytes_hash_hex, status FROM variable_meta_statements
+            `SELECT signed_bytes_hash_hex, status, layout_version, var_type, required, description
+             FROM variable_meta_statements
              WHERE environment_id = ? AND variable_id = ? AND meta_version = ?`,
             environmentId,
             variableId,
@@ -781,7 +944,7 @@ const makeVariableQueries = (sql: SqlStorage) => ({
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT ms.variable_id, ${MS_COLUMNS}
+          `SELECT ms.variable_id, ${VAR_MS_COLUMNS}
            FROM variables v
            JOIN variable_meta_statements ms
              ON ms.environment_id = v.environment_id
@@ -795,18 +958,40 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .map(variableStatementOf),
     ),
   // deletedVariableStatements の active 側(メタデータのみモード — §12-7):
-  // 最新ステートメントのみ。値・DEK は選択しない(配布しないため触りもしない)
+  // 最新ステートメントのみ。値・DEK は選択しない(配布しないため触りもしない)。
+  // declared 変数のステートメントも含む(削除済みでない全変数の最新形 —
+  // status が判別を担う)
   activeVariableStatements: (environmentId: string) =>
     Effect.sync(() =>
       sql
         .exec(
-          `SELECT ms.variable_id, ${MS_COLUMNS}
+          `SELECT ms.variable_id, ${VAR_MS_COLUMNS}
            FROM variables v
            JOIN variable_meta_statements ms
              ON ms.environment_id = v.environment_id
             AND ms.variable_id = v.variable_id
             AND ms.meta_version = v.latest_meta_version
            WHERE v.environment_id = ? AND v.deleted_at IS NULL
+           ORDER BY v.created_at, v.variable_id`,
+          environmentId,
+        )
+        .toArray()
+        .map(variableStatementOf),
+    ),
+  // declared 変数の最新ステートメント(値付き pull の同梱材料 — §12-7。値・
+  // バージョンは存在しないため latestVersions には現れない: JOIN が
+  // latest_version 0 の行を自然に除外する)
+  declaredVariableStatements: (environmentId: string) =>
+    Effect.sync(() =>
+      sql
+        .exec(
+          `SELECT ms.variable_id, ${VAR_MS_COLUMNS}
+           FROM variables v
+           JOIN variable_meta_statements ms
+             ON ms.environment_id = v.environment_id
+            AND ms.variable_id = v.variable_id
+            AND ms.meta_version = v.latest_meta_version
+           WHERE v.environment_id = ? AND v.deleted_at IS NULL AND ms.status = 'declared'
            ORDER BY v.created_at, v.variable_id`,
           environmentId,
         )
@@ -842,18 +1027,14 @@ const makeVariableQueries = (sql: SqlStorage) => ({
           environmentId,
         )
         .toArray()
-        .map((row): VariableDigestEntryRow => {
-          const status = stringColumn(row, "status");
-          if (status !== "active" && status !== "deleted") {
-            throw new Error("unexpected status in stored meta statement row");
-          }
-          return {
-            variableId: stringColumn(row, "variable_id"),
-            status,
-            metaVersion: numberColumn(row, "meta_version"),
-            metaSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
-          };
-        }),
+        .map((row): VariableDigestEntryRow => ({
+          variableId: stringColumn(row, "variable_id"),
+          // declared も entry の status 値として自然に載る(CRYPTO_SPEC §4.3 —
+          // 正規形・エンコーダは不変)
+          status: storedVariableStatus(stringColumn(row, "status")),
+          metaVersion: numberColumn(row, "meta_version"),
+          metaSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+        })),
     ),
   // checkpoint values_digest の再計算材料(§6.4): active 変数の最新 version と
   // 保存済み value_signed_bytes ハッシュ。正規順(variable_id のバイト昇順)は
@@ -958,7 +1139,9 @@ const makeVersionQueries = (sql: SqlStorage) => ({
                   ms.chain_head_seq AS ms_chain_head_seq,
                   ms.signature_hex AS ms_signature_hex,
                   ms.author_user_id AS ms_author_user_id,
-                  ms.author_key_fingerprint AS ms_author_key_fingerprint
+                  ms.author_key_fingerprint AS ms_author_key_fingerprint,
+                  ms.layout_version AS ms_layout_version, ms.var_type AS ms_var_type,
+                  ms.required AS ms_required, ms.description AS ms_description
            FROM variables v
            JOIN variable_versions vv
              ON vv.environment_id = v.environment_id
@@ -991,7 +1174,8 @@ const makeVersionQueries = (sql: SqlStorage) => ({
           statement: {
             environmentId,
             variableId: stringColumn(row, "variable_id"),
-            ...statementColumns(row, "ms_"),
+            ...statementColumns(row, "ms_", storedVariableStatus),
+            ...variableStatementV2Fields(row, "ms_"),
           },
         })),
     ),
@@ -1134,6 +1318,25 @@ const makeWrapQueries = (sql: SqlStorage) => ({
       expiresAtMs,
     );
   },
+});
+
+/**
+ * プロジェクト設定(AUTH_SPEC §12-11 — 現状 schemaPolicy のみ)。行なし =
+ * 既定 disabled。既知外の保存値はストレージ破損として defect(storedSuite と
+ * 同じ規律 — 黙って既定へ読み替えない)。
+ */
+const makeSettingsQueries = (sql: SqlStorage) => ({
+  schemaPolicy: Effect.sync((): SchemaPolicy => {
+    const row = sql.exec("SELECT schema_policy FROM project_settings WHERE id = 1").toArray()[0];
+    if (row === undefined) {
+      return "disabled";
+    }
+    const policy = stringColumn(row, "schema_policy");
+    if (policy !== "disabled" && policy !== "enabled" && policy !== "locked") {
+      throw new Error("unexpected schema_policy in stored project settings row");
+    }
+    return policy;
+  }),
 });
 
 /**
@@ -1286,7 +1489,24 @@ function wrapBodyOf(row: Record<string, SqlStorageValue>): {
   };
 }
 
-/** ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。 */
+/**
+ * レイアウト v2 の列値(layout_version + スキーマ欄 — 変数ステートメント専用)。
+ * v1 ステートメントは layout_version 1・スキーマ欄 NULL。required は署名対象の
+ * "true" / "false" 表現で保存する(CRYPTO_SPEC §4.2 の LP フィールドと同一)。
+ */
+function layoutColumnValues(statement: MetaStatementInput): readonly (string | number | null)[] {
+  const layoutVersion = statement.layoutVersion ?? 1;
+  const schema = statement.schema;
+  if (schema === undefined) {
+    return [layoutVersion, null, null, null];
+  }
+  return [layoutVersion, schema.varType, schema.required ? "true" : "false", schema.description];
+}
+
+/**
+ * ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。
+ * 変数側はレイアウト v2 の列({@link layoutColumnValues})も書く。
+ */
 function insertStatementRow(
   sql: SqlStorage,
   table: "variable_meta_statements" | "environment_meta_statements",
@@ -1296,16 +1516,12 @@ function insertStatementRow(
   author: MetaAuthorInfo,
   nowMs: number,
 ): void {
-  const keyColumns =
-    table === "variable_meta_statements"
-      ? "environment_id, variable_id, meta_version"
-      : "environment_id, meta_version";
-  sql.exec(
-    `INSERT INTO ${table}
-       (${keyColumns}, suite, name, status, prev_meta_sig_hash_hex,
-        chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex,
-        author_user_id, author_key_fingerprint, created_at)
-     VALUES (${keys.map(() => "?").join(", ")}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  const isVariable = table === "variable_meta_statements";
+  const keyColumns = isVariable
+    ? "environment_id, variable_id, meta_version"
+    : "environment_id, meta_version";
+  const layoutColumns = isVariable ? ", layout_version, var_type, required, description" : "";
+  const values: readonly (string | number | null)[] = [
     ...keys,
     statement.suite,
     statement.name,
@@ -1318,6 +1534,15 @@ function insertStatementRow(
     author.userId,
     author.keyFingerprintHex,
     nowMs,
+    ...(isVariable ? layoutColumnValues(statement) : []),
+  ];
+  sql.exec(
+    `INSERT INTO ${table}
+       (${keyColumns}, suite, name, status, prev_meta_sig_hash_hex,
+        chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex,
+        author_user_id, author_key_fingerprint, created_at${layoutColumns})
+     VALUES (${values.map(() => "?").join(", ")})`,
+    ...values,
   );
 }
 
@@ -1620,6 +1845,13 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     sql.exec("DELETE FROM head_attestations WHERE attester_user_id = ?", attesterUserId);
     sql.exec("DELETE FROM attestation_windows WHERE attester_user_id = ?", attesterUserId);
   },
+  setSchemaPolicy: (policy) => {
+    sql.exec(
+      `INSERT INTO project_settings (id, schema_policy) VALUES (1, ?)
+       ON CONFLICT (id) DO UPDATE SET schema_policy = excluded.schema_policy`,
+      policy,
+    );
+  },
 });
 
 export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
@@ -1628,6 +1860,7 @@ export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
     ...makeVariableQueries(sql),
     ...makeVersionQueries(sql),
     ...makeWrapQueries(sql),
+    ...makeSettingsQueries(sql),
     ...makeAttestationQueries(sql),
     write: makeWriteOps(sql),
   }));

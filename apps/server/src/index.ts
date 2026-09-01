@@ -34,6 +34,7 @@ import { invitesLive } from "./handlers-invites.ts";
 import { leaseLive } from "./handlers-lease.ts";
 import { membershipLive } from "./handlers-membership.ts";
 import { rotationLive } from "./handlers-rotation.ts";
+import { schemaPolicyLive } from "./handlers-schema-policy.ts";
 import { variablesLive } from "./handlers-variables.ts";
 import { makeOidcVerifier, OidcVerifier } from "./oidc.package/index.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
@@ -98,6 +99,7 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(environmentsLive),
     Layer.provide(variablesLive),
     Layer.provide(deksLive),
+    Layer.provide(schemaPolicyLive),
     Layer.provide(invitesLive),
     Layer.provide(rotationLive),
     Layer.provide(auditLive),
