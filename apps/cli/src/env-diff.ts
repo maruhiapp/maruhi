@@ -1,7 +1,10 @@
 // 環境間のパリティチェック(`maruhi env diff`)。
 //
-// 同一プロジェクト内の 2 環境について**変数名の集合だけ**を比較し、片方にしか
-// 無い名前を報告する(「prod に入れ忘れた」を値を一切見ずに検出する)。
+// 同一プロジェクト内の 2 環境について**変数名の集合**と**スキーマ契約
+// (required・set / declared の状態 — 設計文書 §1-5 の required 軸)**を比較し、
+// 片方にしか無い名前と、両方にあるが契約の食い違う名前を報告する(「prod に
+// 入れ忘れた」「staging には required の宣言がない」を値を一切見ずに検出する)。
+// description は diff 出力に出さない(§2 の消費点規律 — fail-fast・lint と同じ線)。
 //
 // 値も DEK も取得しない: 入力は §12-7 のメタデータのみ pull だけで、平文値を
 // メモリに作らない。サーバーはこのエンドポイントで `var.read` を記録しない
@@ -63,14 +66,40 @@ export interface DiffTarget {
   readonly floor: FloorHandle;
 }
 
+/**
+ * 1 変数の required 契約(検証済みステートメントの schema 欄のみから導出 —
+ * サーバー申告を使わない §14.2-8)。`none` = スキーマ欄なし(レイアウト v1)。
+ */
+export type RequiredContract = "required" | "optional" | "none";
+
+/** 片側にしかない 1 変数(名前・状態・required — description は運ばない §2)。 */
+export interface DiffSideEntry {
+  readonly name: string;
+  /** true = declared(値なし — S3 申し送りの注記)。 */
+  readonly declared: boolean;
+  readonly required: RequiredContract;
+}
+
+/** 両側にある名前のうち、宣言された契約(required / 状態)が食い違うもの。 */
+export interface ContractMismatch {
+  readonly name: string;
+  readonly first: { readonly declared: boolean; readonly required: RequiredContract };
+  readonly second: { readonly declared: boolean; readonly required: RequiredContract };
+}
+
 /** 変数名の集合比較の結果(名前でソート済みの差分と件数)。 */
 export interface EnvironmentDiff {
   readonly firstEnvironmentId: EnvironmentId;
   readonly secondEnvironmentId: EnvironmentId;
-  /** 1 つ目にしか無い変数名(名前でソート済み)。 */
-  readonly onlyInFirst: readonly string[];
-  /** 2 つ目にしか無い変数名(名前でソート済み)。 */
-  readonly onlyInSecond: readonly string[];
+  /** 1 つ目にしか無い変数(名前でソート済み)。 */
+  readonly onlyInFirst: readonly DiffSideEntry[];
+  /** 2 つ目にしか無い変数(名前でソート済み)。 */
+  readonly onlyInSecond: readonly DiffSideEntry[];
+  /**
+   * 両方にある名前のうち required 契約・状態(set / declared)が食い違うもの
+   * (§1-5 の required 軸 — 判定材料は両環境の検証済みステートメントのみ)。
+   */
+  readonly contractMismatches: readonly ContractMismatch[];
   /** 両方にある名前の数。**値が一致することは含意しない**(復号しないため)。 */
   readonly shared: number;
 }
@@ -80,19 +109,36 @@ export interface EnvironmentDiff {
  * 実行環境のロケールで並びが変わるため使わない — 同じ 2 環境を比べた出力が
  * 端末によって別の順に出ると、出力そのものの差分を取れなくなる。
  */
-function sortedNames(names: Iterable<string>): readonly string[] {
-  return [...names].toSorted();
+function sortedByName<T extends { readonly name: string }>(entries: Iterable<T>): readonly T[] {
+  return [...entries].toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function requiredOf(statement: VerifiedVariableStatement): RequiredContract {
+  if (statement.schema === null) {
+    return "none";
+  }
+  return statement.schema.required ? "required" : "optional";
+}
+
+function sideEntryOf(statement: VerifiedVariableStatement): DiffSideEntry {
+  return {
+    name: statement.name,
+    declared: statement.status === "declared",
+    required: requiredOf(statement),
+  };
 }
 
 /**
- * 検証済み変数ステートメント(active + declared の混在 — §12-7)→ 名前の集合。
- * declared も「存在する変数名」として比較に含める(値の有無は本コマンドの比較
- * 対象外 — required 軸の考慮は S4 の `env diff` スキーマ対応)。同一環境内の
+ * 検証済み変数ステートメント(active + declared の混在 — §12-7)→ 名前 →
+ * ステートメントの表。declared も「存在する変数名」として比較に含める(S3 の
+ * 裁定 — declared は第一級の変数 §4.2。値の有無は注記で示す)。同一環境内の
  * 同名は §6.3 の検証(values.ts の checkVerifiedNames)が既に拒否しているので、
- * ここで集合に潰しても事実は落ちない。
+ * ここで表に潰しても事実は落ちない。
  */
-function namesOf(variables: readonly VerifiedVariableStatement[]): ReadonlySet<string> {
-  return new Set(variables.map((variable) => variable.name));
+function statementsByName(
+  variables: readonly VerifiedVariableStatement[],
+): ReadonlyMap<string, VerifiedVariableStatement> {
+  return new Map(variables.map((variable) => [variable.name, variable]));
 }
 
 /**
@@ -162,16 +208,62 @@ export function envDiffOp(input: {
     });
     yield* reportEnvironmentWarnings(input.second.environmentId, second.warnings);
     yield* input.commitHead(second.verified);
-    const firstNames = namesOf(first.variables);
-    const secondNames = namesOf(second.variables);
+    const firstByName = statementsByName(first.variables);
+    const secondByName = statementsByName(second.variables);
+    const contractMismatches: ContractMismatch[] = [];
+    for (const [name, firstStatement] of firstByName) {
+      const secondStatement = secondByName.get(name);
+      if (secondStatement === undefined) {
+        continue;
+      }
+      const firstSide = sideEntryOf(firstStatement);
+      const secondSide = sideEntryOf(secondStatement);
+      if (
+        firstSide.declared !== secondSide.declared ||
+        firstSide.required !== secondSide.required
+      ) {
+        contractMismatches.push({
+          name,
+          first: { declared: firstSide.declared, required: firstSide.required },
+          second: { declared: secondSide.declared, required: secondSide.required },
+        });
+      }
+    }
     return {
       firstEnvironmentId: input.first.environmentId,
       secondEnvironmentId: input.second.environmentId,
-      onlyInFirst: sortedNames([...firstNames].filter((name) => !secondNames.has(name))),
-      onlyInSecond: sortedNames([...secondNames].filter((name) => !firstNames.has(name))),
-      shared: [...firstNames].filter((name) => secondNames.has(name)).length,
+      onlyInFirst: sortedByName(
+        [...firstByName.values()].filter((v) => !secondByName.has(v.name)).map(sideEntryOf),
+      ),
+      onlyInSecond: sortedByName(
+        [...secondByName.values()].filter((v) => !firstByName.has(v.name)).map(sideEntryOf),
+      ),
+      contractMismatches: sortedByName(contractMismatches),
+      shared: [...firstByName.keys()].filter((name) => secondByName.has(name)).length,
     };
   });
+}
+
+/**
+ * 片側にしかない 1 変数の表示注記(§1-5 の required 軸 + declared 注記)。
+ * 出力は名前・状態・required のみ — **description は出さない**(§2 の消費点
+ * 規律: fail-fast エラー・lint レポートと同じ線。diff 出力もログ・CI へ流れる)。
+ * required の充足・宣言は署名済みステートメント由来だが、表示は宣言として扱い
+ * 「verified」の語を使わない(§14.3 の表示規律)。
+ */
+function sideEntryLine(entry: DiffSideEntry): string {
+  const notes = [
+    ...(entry.required === "none" ? [] : [entry.required]),
+    ...(entry.declared ? ["declared — no value set"] : []),
+  ];
+  const suffix = notes.length === 0 ? "" : ` (${notes.join(", ")})`;
+  return `  ${displayText(entry.name)}${suffix}`;
+}
+
+/** 契約食い違いの片側の表示(required / optional / no schema + declared 注記)。 */
+function contractText(side: ContractMismatch["first"]): string {
+  const required = side.required === "none" ? "no schema (layout v1)" : side.required;
+  return side.declared ? `${required}, declared — no value set` : required;
 }
 
 /**
@@ -192,15 +284,26 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
       `Synced and verified: environment ${first} = ${countNoun(diff.onlyInFirst.length + diff.shared, "variable")} / environment ${second} = ${countNoun(diff.onlyInSecond.length + diff.shared, "variable")}`,
     );
     const sides = [
-      { environmentId: first, names: diff.onlyInFirst },
-      { environmentId: second, names: diff.onlyInSecond },
+      { environmentId: first, entries: diff.onlyInFirst },
+      { environmentId: second, entries: diff.onlyInSecond },
     ];
     for (const side of sides) {
       // 件数は名前が 0 件でも必ず出す(出力の形を実行ごとに変えない)
-      yield* io.log(`Variables only in environment ${side.environmentId}: ${side.names.length}`);
-      for (const name of side.names) {
-        yield* io.log(`  ${displayText(name)}`);
+      yield* io.log(`Variables only in environment ${side.environmentId}: ${side.entries.length}`);
+      for (const entry of side.entries) {
+        yield* io.log(sideEntryLine(entry));
       }
+    }
+    // required 軸(§1-5): 両方にある名前でも、宣言された契約(required /
+    // set・declared)が食い違えば表示する。件数行は 0 件でも必ず出す(上と同じ
+    // 「出力の形を実行ごとに変えない」規律)
+    yield* io.log(
+      `Variables in both with a differing schema contract: ${diff.contractMismatches.length}`,
+    );
+    for (const mismatch of diff.contractMismatches) {
+      yield* io.log(
+        `  ${displayText(mismatch.name)} — ${first}: ${contractText(mismatch.first)} / ${second}: ${contractText(mismatch.second)}`,
+      );
     }
     yield* io.log(
       `Variables in both: ${diff.shared} (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)`,

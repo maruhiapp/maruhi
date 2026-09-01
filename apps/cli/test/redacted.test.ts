@@ -782,6 +782,9 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "display.ts": 2,
   // DEK コミットメント計算の入力(暗号境界。産物はハッシュ)
   "env-create.ts": 1,
+  // 値の形の観察(schema import の型推論・実値らしさ — 産物は閉集合の型名と
+  // 真偽値のみ。値・値の断片は外へ出ない)
+  "env-file.ts": 1,
   "env-rotate.ts": 1,
   // ワイヤ境界: 招待受諾要求 / 受諾署名のハッシュ入力 / リンクの表示
   "invite.ts": 3,
@@ -801,6 +804,9 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "push.ts": 2,
   // Base32 化の入力(産物は再び包む)
   "recovery-code.ts": 1,
+  // 明示選択された値 push のエンコード入力(産物は再び Redacted — push.ts の
+  // 暗号境界へ渡る)
+  "schema-import.ts": 1,
   // ラップ / アンラップの鍵導出入力(暗号境界)2 + コード表示 1 +
   // 保存確認の照合 1 + 入力されたコードの解釈 1
   "recovery.ts": 5,

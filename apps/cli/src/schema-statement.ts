@@ -9,6 +9,9 @@
 //     スキーマ再発行(status 不変・metaVersion + 1)
 //   - `maruhi push` の activation(push.ts)— declared → active(metaVersion + 1・
 //     スキーマ欄は宣言時の値を byte-exact に引き継ぐ)
+//   - `maruhi var rm`(var-rm.ts)— v2 変数の削除(status deleted・metaVersion + 1・
+//     スキーマ欄とレイアウトは直前ステートメントの値を byte-exact に保持 —
+//     §4.2 の削除規約。サーバーは不一致を 422 payload-mismatch で強制する)
 //
 // required は署名対象では "true" | "false" の明示文字列(§4.2 — 省略時解釈の
 // 実装分散を許さない fail-closed)、ワイヤでは boolean(§12-2)。変換はこの
@@ -64,6 +67,13 @@ export type WireContinuationStatementV2 = WireVariableStatementV2Base & {
   readonly prevMetaSigHashHex: string;
 };
 
+/** v2 削除のワイヤ形(DeleteVariableMetaStatementV2Schema と構造一致)。 */
+export type WireDeleteStatementV2 = WireVariableStatementV2Base & {
+  readonly status: "deleted";
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+};
+
 export interface SignedStatementV2<Wire> {
   readonly statement: Wire;
   /** 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3 — サーバー申告でない)。 */
@@ -71,7 +81,7 @@ export interface SignedStatementV2<Wire> {
 }
 
 interface LifecycleFields {
-  readonly status: "active" | "declared";
+  readonly status: "active" | "declared" | "deleted";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
 }
@@ -102,11 +112,15 @@ function statementContextV2(input: VariableStatementV2Input, lifecycle: Lifecycl
 
 type StatementContextV2 = ReturnType<typeof statementContextV2>;
 
+/** signV2 内部のワイヤ形(3 status 共通 — 公開型は各関数が narrowing する)。 */
+type WireStatementV2Any = WireVariableStatementV2Base & {
+  readonly status: "active" | "declared" | "deleted";
+  readonly metaVersion: number;
+  readonly prevMetaSigHashHex: string;
+};
+
 /** ワイヤ statement を署名済み context から機械的に導出する(meta-statement.ts と同じ規律)。 */
-function toWireStatementV2(
-  context: StatementContextV2,
-  signatureHex: string,
-): WireContinuationStatementV2 {
+function toWireStatementV2(context: StatementContextV2, signatureHex: string): WireStatementV2Any {
   return {
     suite: context.suite,
     environmentId: context.environmentId,
@@ -129,7 +143,7 @@ function toWireStatementV2(
 function signV2(
   input: VariableStatementV2Input,
   lifecycle: LifecycleFields,
-): Effect.Effect<SignedStatementV2<WireContinuationStatementV2>, CliError> {
+): Effect.Effect<SignedStatementV2<WireStatementV2Any>, CliError> {
   return Effect.gen(function* () {
     const context = statementContextV2(input, lifecycle);
     // 署名 + 自計算ハッシュは v1 作成形と共有(meta-statement.ts)
@@ -184,6 +198,31 @@ export function signContinuationStatementV2<Status extends "active" | "declared"
     (signed) => ({
       // status は入力リテラルで固定済み — ワイヤ形の narrowing のみ
       statement: signed.statement as WireContinuationStatementV2 & { readonly status: Status },
+      metaSigHashHex: signed.metaSigHashHex,
+    }),
+  );
+}
+
+/**
+ * Author-signs a layout-v2 deletion statement (status deleted, metaVersion =
+ * prev + 1 — CRYPTO_SPEC §4.2): the schema fields and the name must carry the
+ * previous statement's values byte-exactly (呼び出し側が検証済みの直前
+ * ステートメントから渡す — 不一致はサーバーが 422 payload-mismatch で強制)。
+ */
+export function signDeleteStatementV2(
+  input: VariableStatementV2Input & {
+    readonly prev: { readonly metaVersion: number; readonly metaSigHashHex: string };
+  },
+): Effect.Effect<SignedStatementV2<WireDeleteStatementV2>, CliError> {
+  return Effect.map(
+    signV2(input, {
+      status: "deleted",
+      metaVersion: input.prev.metaVersion + 1,
+      prevMetaSigHashHex: input.prev.metaSigHashHex,
+    }),
+    (signed) => ({
+      // lifecycle は上のリテラルで固定済み — ワイヤ形の narrowing のみ
+      statement: signed.statement as WireDeleteStatementV2,
       metaSigHashHex: signed.metaSigHashHex,
     }),
   );
