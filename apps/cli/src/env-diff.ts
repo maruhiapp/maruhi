@@ -52,7 +52,7 @@ import type { MaruhiClient } from "./api.ts";
 import type { CliServices } from "./context.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
 import type { CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedActiveStatement } from "./floor-check.ts";
+import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
@@ -85,11 +85,13 @@ function sortedNames(names: Iterable<string>): readonly string[] {
 }
 
 /**
- * 検証済み active ステートメント → 名前の集合。同一環境内の同名 active は
- * §6.3 の検証(values.ts の checkVerifiedNames)が既に拒否しているので、
+ * 検証済み変数ステートメント(active + declared の混在 — §12-7)→ 名前の集合。
+ * declared も「存在する変数名」として比較に含める(値の有無は本コマンドの比較
+ * 対象外 — required 軸の考慮は S4 の `env diff` スキーマ対応)。同一環境内の
+ * 同名は §6.3 の検証(values.ts の checkVerifiedNames)が既に拒否しているので、
  * ここで集合に潰しても事実は落ちない。
  */
-function namesOf(variables: readonly VerifiedActiveStatement[]): ReadonlySet<string> {
+function namesOf(variables: readonly VerifiedVariableStatement[]): ReadonlySet<string> {
   return new Set(variables.map((variable) => variable.name));
 }
 

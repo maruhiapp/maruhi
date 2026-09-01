@@ -41,7 +41,8 @@ function floorVariableLines(violation: Extract<FloorViolation, { kind: "variable
         `    metaVersion=${floor.metaVersion} meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ]
     : [
-        `  floor record (previously verified): status=deleted metaVersion=${floor.metaVersion}`,
+        // declared / deleted はメタ側のみ(値床を持たない — floor.ts)
+        `  floor record (previously verified): status=${floor.status} metaVersion=${floor.metaVersion}`,
         `    meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ];
 }

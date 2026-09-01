@@ -218,6 +218,8 @@ interface LeaseResponseOverrides {
   readonly declaredProjectId?: string;
   readonly currentEpoch?: number;
   readonly variables?: readonly PullEntry[];
+  /** declared 変数の同梱(§14-2 — ci run の presence 検査の材料)。 */
+  readonly declaredVariables?: readonly WireDistributedVariableStatement[];
   /** 追加のリースラップ(重複エポック・チェーン外エポックの負例用)。 */
   readonly extraLeases?: readonly { readonly epoch: number; readonly dek: Uint8Array }[];
 }
@@ -282,6 +284,7 @@ async function leaseResponseFor(
     currentEpoch: 2,
     entries: built.entries,
     variables: [entryAlpha, entryBeta] as readonly PullEntry[],
+    declaredVariables: [] as readonly WireDistributedVariableStatement[],
     dekForEpoch: (_epoch: number, dek: Uint8Array) => dek,
     extraLeases: [] as readonly { readonly epoch: number; readonly dek: Uint8Array }[],
     ...overrides,
@@ -304,6 +307,9 @@ async function leaseResponseFor(
     statement: envStatement,
     variables: resolved.variables,
     deletedVariables: [],
+    ...(resolved.declaredVariables.length === 0
+      ? {}
+      : { declaredVariables: resolved.declaredVariables }),
     manifest: await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -312,7 +318,10 @@ async function leaseResponseFor(
       // 宣言ヘッドは申告エポックが現エポックである位置(create = 2、rotate = 3)
       head: headOf(built, resolved.currentEpoch === 1 ? 2 : 3),
       envStatement,
-      statements: resolved.variables.map((entry) => entry.statement),
+      statements: [
+        ...resolved.variables.map((entry) => entry.statement),
+        ...resolved.declaredVariables,
+      ],
     }),
     leases: [
       await wrapFor(1, dek1),
@@ -429,6 +438,46 @@ describe("maruhi ci run(正常系)", () => {
     const code = await runCli(ciArgs(server, ["--audience", "https://maruhi.example"]), env.layer);
     expect(code).toBe(0);
     expect(oidc.audiences).toEqual(["https://maruhi.example"]);
+  });
+
+  it("required = true の declared がリース応答にあれば子プロセスを起動しない(presence fail-fast — §1-4)", async () => {
+    const declared = await statementFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-required",
+      name: "MUST_HAVE",
+      author: fixture.owner,
+      head: { seq: 1, hashHex: fixture.built.projectId },
+      status: "declared",
+      schema: { varType: "string", required: true, description: "internal note" },
+    });
+    const { env, server } = await startCiEnv([leaseHandler({ declaredVariables: [declared] })]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.runnerCalls).toHaveLength(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Required variables are declared but have no value yet");
+    expect(errors).toContain("MUST_HAVE");
+    // エラー文面に description を含めない(session-46 §8 第 3 周)
+    expect(errors).not.toContain("internal note");
+    expectNoSecretLeak(env);
+  });
+
+  it("required = false の declared は情報表示のみで実行する", async () => {
+    const declared = await statementFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-optional",
+      name: "NICE_TO_HAVE",
+      author: fixture.owner,
+      head: { seq: 1, hashHex: fixture.built.projectId },
+      status: "declared",
+      schema: { varType: "", required: false, description: "" },
+    });
+    const { env, server } = await startCiEnv([leaseHandler({ declaredVariables: [declared] })]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(0);
+    expect(env.runnerCalls).toHaveLength(1);
+    expect(env.runnerCalls[0]?.extraEnv).not.toHaveProperty("NICE_TO_HAVE");
+    expect(env.errors.join("\n")).toContain("declared variables without values were not injected");
   });
 });
 

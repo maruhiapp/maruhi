@@ -10,11 +10,50 @@
 // 注意: test/support/crypto.ts はワイヤ形式を意図的に独立再実装しており、本番
 // 実装とのドリフトを検出する相互チェックとして機能するため、ここへ統合しない。
 
-import { computeMetaSignedBytesHash, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
+import type { MetaStatementContext } from "@maruhi/crypto";
+import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import type { VerifiedProject } from "./sync.ts";
+
+/**
+ * クライアント採番の変数 ID(AUTH_SPEC §12-1 形式)。名前とは独立な乱数 ID に
+ * する: 表示名の変更・削除済み ID の再利用禁止(tombstone)と衝突しないため。
+ * 採番は作成系の全経路(push の create — push.ts、宣言作成 — schema.ts)が
+ * この 1 実装を共有する。
+ */
+export function generateVariableId(): string {
+  return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
+}
+
+/**
+ * 署名 + 自計算 signed-bytes ハッシュの共有実装(v1 作成形 = 本モジュール、
+ * レイアウト v2 形 = schema-statement.ts)。ハッシュは受理されたらローカル床の
+ * メタ記録になる自計算値(§6.3 — サーバー申告でない)。
+ */
+export function signStatementAndHash(
+  context: MetaStatementContext,
+  signingKey: CryptoKey,
+): Effect.Effect<{ readonly signatureHex: string; readonly metaSigHashHex: string }, CliError> {
+  return Effect.gen(function* () {
+    const signature = yield* Effect.tryPromise({
+      try: () => signMetaStatement({ context, signingKey }),
+      catch: () => cliError("Failed to sign the meta statement"),
+    });
+    if (!signature.ok) {
+      return yield* Effect.fail(cliError("Failed to sign the meta statement"));
+    }
+    const metaSigHash = yield* Effect.tryPromise({
+      try: () => computeMetaSignedBytesHash(context),
+      catch: () => cliError("Failed to compute the meta-statement signed-bytes hash"),
+    });
+    if (!metaSigHash.ok) {
+      return yield* Effect.fail(cliError("Failed to compute the meta-statement signed-bytes hash"));
+    }
+    return { signatureHex: signature.value, metaSigHashHex: metaSigHash.value };
+  });
+}
 
 /** 作成ステートメントの対象(§4.2 の target — 変数か環境自身)。 */
 export type CreateStatementTarget =
@@ -122,24 +161,10 @@ export function signCreateStatement(
 ): Effect.Effect<SignedCreateStatement<WireCreateStatementBase>, CliError> {
   return Effect.gen(function* () {
     const context = createStatementContext(input);
-    const signature = yield* Effect.tryPromise({
-      try: () => signMetaStatement({ context, signingKey: input.signingKey }),
-      catch: () => cliError("Failed to sign the meta statement"),
-    });
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the meta statement"));
-    }
-    // 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3)
-    const metaSigHash = yield* Effect.tryPromise({
-      try: () => computeMetaSignedBytesHash(context),
-      catch: () => cliError("Failed to compute the meta-statement signed-bytes hash"),
-    });
-    if (!metaSigHash.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the meta-statement signed-bytes hash"));
-    }
+    const signed = yield* signStatementAndHash(context, input.signingKey);
     return {
-      statement: toWireStatement(context, signature.value),
-      metaSigHashHex: metaSigHash.value,
+      statement: toWireStatement(context, signed.signatureHex),
+      metaSigHashHex: signed.metaSigHashHex,
     };
   });
 }

@@ -19,6 +19,7 @@
 // 持たないため(§4.2)、前進 metaVersion の注入は床を持っても検出されない
 // (§14.3-5 — 最重要の非保証。「検出済み」と誤認する検査をここに置かない)。
 
+import type { MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { CliError } from "./errors.ts";
@@ -42,9 +43,9 @@ import type { VerifiedManifest } from "./manifest.ts";
 import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedPulledValue } from "./values.ts";
 
-/** deleted を含む検証済みメタステートメントの証拠材料。 */
+/** deleted / declared(変数のみ — §4.2 レイアウト v2)を含む検証済みメタステートメントの証拠材料。 */
 export interface VerifiedMetaEvidence {
-  readonly status: "active" | "deleted";
+  readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
   readonly chainHeadSeq: number;
@@ -66,6 +67,12 @@ export interface VerifiedTombstone extends VerifiedMetaEvidence {
 export interface VerifiedPullSnapshot {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedPulledValue[];
+  /**
+   * 検証済み declared ステートメント(値なし — §4.2 レイアウト v2 / §12-7 の
+   * declaredVariables)。値付き応答で declared に値が配布されないことは正当
+   * (declared だけが正当な値なし状態 — CRYPTO_SPEC §6.3)。
+   */
+  readonly declared: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
   /**
    * 検証済みマニフェスト(§4.3)。null は移行経路(--init-manifest)が欠落を
@@ -82,17 +89,35 @@ export interface VerifiedPullSnapshot {
  */
 export interface VerifiedMetadataSnapshot {
   readonly environment: VerifiedMetaEvidence;
-  readonly variables: readonly VerifiedActiveStatement[];
+  /** 削除済みでない全変数の検証済みステートメント(active と declared の混在 — §12-7)。 */
+  readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
   /** 検証済みマニフェスト(欠落は values.ts が拒否済み — メタのみ pull に移行許容はない)。 */
   readonly manifest: VerifiedManifest;
 }
 
-/** 検証済みのアクティブ変数ステートメント(メタデータのみ pull の 1 変数)。 */
-export interface VerifiedActiveStatement extends VerifiedMetaEvidence {
+/**
+ * レイアウト v2 のスキーマ欄(検証済みステートメント由来 — CRYPTO_SPEC §4.2)。
+ * 型は**宣言**であり値との一致は保証されない(§14.3-7 — 表示・検証は advisory)。
+ */
+export interface VerifiedSchemaFields {
+  readonly varType: MetaVarType;
+  readonly required: boolean;
+  readonly description: string;
+}
+
+/**
+ * 検証済みの変数ステートメント(メタデータのみ pull の 1 変数 — active と
+ * declared の両方が流れる §12-7。status フィールドが判別を担う)。
+ */
+export interface VerifiedVariableStatement extends VerifiedMetaEvidence {
   readonly variableId: string;
   /** 検証済みステートメントの name(名前解決はこれ以外を信用しない — §12-2)。 */
   readonly name: string;
+  /** ワイヤの layoutVersion(省略 = 1 — §12-2)。 */
+  readonly layoutVersion: number;
+  /** レイアウト v2 のスキーマ欄(v1 ステートメント = null)。 */
+  readonly schema: VerifiedSchemaFields | null;
 }
 
 /** 配布された値側の証拠材料(座標・ハッシュ・宣言ヘッド・署名と帰属)。 */
@@ -448,6 +473,25 @@ function checkFloorActive(
   return checkFloorActiveMeta(variableId, floor, undefined, tombstone);
 }
 
+/**
+ * 床が declared と記録している変数の検査(メタ水準のみ — declared は値床を
+ * 持たない §4.2)。正当な後続 = activation(active・metaVersion 前進)/
+ * スキーマ再発行(declared のまま前進)/ 削除(tombstone)。後退・同版相違は
+ * 規則 (a)(b)、欠落は variable-omitted。
+ */
+function checkFloorDeclared(
+  variableId: string,
+  floor: Extract<VariableFloor, { status: "declared" }>,
+  meta: VerifiedMetaEvidence | undefined,
+  tombstone: VerifiedTombstone | undefined,
+): FloorViolation | null {
+  const evidence = meta ?? tombstone;
+  if (evidence === undefined) {
+    return { kind: "variable-omitted", variableId, floor };
+  }
+  return checkMetaAgainstFloor("variable", variableId, floor, evidence);
+}
+
 /** 床が deleted と記録している変数の検査(削除は終端状態 — §4.2 / session-15 §2-2)。 */
 function checkFloorDeleted(
   variableId: string,
@@ -483,6 +527,11 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
   floor: EnvironmentFloor,
   environment: VerifiedMetaEvidence,
   activeList: readonly T[],
+  /**
+   * 値付き pull の検証済み declared 集合(§12-7 の declaredVariables)。メタのみ
+   * pull は declared が activeList に混在する(§12-7)ため空を渡す。
+   */
+  declaredList: readonly VerifiedVariableStatement[],
   tombstoneList: readonly VerifiedTombstone[],
   checkActive: (
     variableId: string,
@@ -493,6 +542,7 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
   toMeta: (active: T) => VerifiedMetaEvidence,
 ): FloorViolation | null {
   const actives = new Map(activeList.map((value) => [value.variableId, value]));
+  const declared = new Map(declaredList.map((statement) => [statement.variableId, statement]));
   const tombstones = new Map(tombstoneList.map((tombstone) => [tombstone.variableId, tombstone]));
   const environmentViolation = checkMetaAgainstFloor(
     "environment",
@@ -505,15 +555,17 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
   }
   for (const [variableId, variableFloor] of Object.entries(floor.variables)) {
     const active = actives.get(variableId);
+    // declared / deleted 床のメタ水準検査には declared 配布も証拠として使える。
+    // active 床は値の存在を要求する(active → declared の正当な遷移は存在しない
+    // — §4.2)ため declared 配布を渡さない: 値付き経路では checkActive が
+    // variable-omitted(値の欠落 — §6.3 の値配布要求)として拒否する
+    const meta = active === undefined ? declared.get(variableId) : toMeta(active);
     const violation =
       variableFloor.status === "active"
         ? checkActive(variableId, variableFloor, active, tombstones.get(variableId))
-        : checkFloorDeleted(
-            variableId,
-            variableFloor,
-            active === undefined ? undefined : toMeta(active),
-            tombstones.get(variableId),
-          );
+        : variableFloor.status === "declared"
+          ? checkFloorDeclared(variableId, variableFloor, meta, tombstones.get(variableId))
+          : checkFloorDeleted(variableId, variableFloor, meta, tombstones.get(variableId));
     if (violation !== null) {
       return violation;
     }
@@ -537,6 +589,7 @@ export function checkEnvironmentPull(
     floor,
     snapshot.environment,
     snapshot.variables,
+    snapshot.declared,
     snapshot.tombstones,
     checkFloorActive,
     metaEvidenceOf,
@@ -590,6 +643,8 @@ export function checkEnvironmentMetadataPull(
     floor,
     snapshot.environment,
     snapshot.variables,
+    // メタのみ pull は declared が variables に混在する(§12-7)— 別列はない
+    [],
     snapshot.tombstones,
     checkFloorActiveMeta,
     (statement) => statement,
@@ -624,6 +679,14 @@ export function buildEnvironmentFloor(
       valueSigHashHex: value.signedBytesHashHex,
       metaVersion: value.metaVersion,
       metaSigHashHex: value.metaSignedBytesHashHex,
+    };
+  }
+  for (const declared of snapshot.declared) {
+    // declared はメタ側のみ前進(値床は activation まで空 — §4.2 / session-46 §8)
+    variables[declared.variableId] = {
+      status: "declared",
+      metaVersion: declared.metaVersion,
+      metaSigHashHex: declared.metaSigHashHex,
     };
   }
   for (const tombstone of snapshot.tombstones) {

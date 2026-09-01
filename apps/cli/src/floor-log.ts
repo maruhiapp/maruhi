@@ -198,6 +198,27 @@ function decodeChainHead(value: unknown): ChainHeadFloor | null {
   return { seq: value["seq"], hashHex: value["hashHex"] };
 }
 
+/** active 変数床の値側フィールドの復号(メタ側は共通 — decodeVariableFloor)。 */
+function decodeActiveValueSide(
+  value: Record<string, unknown>,
+): Pick<
+  Extract<VariableFloor, { status: "active" }>,
+  "version" | "epoch" | "valueSigHashHex"
+> | null {
+  if (
+    !isPositiveInteger(value["version"]) ||
+    !isPositiveInteger(value["epoch"]) ||
+    !isHex64(value["valueSigHashHex"])
+  ) {
+    return null;
+  }
+  return {
+    version: value["version"],
+    epoch: value["epoch"],
+    valueSigHashHex: value["valueSigHashHex"],
+  };
+}
+
 function decodeVariableFloor(value: unknown): VariableFloor | null {
   if (!isRecord(value)) {
     return null;
@@ -209,24 +230,15 @@ function decodeVariableFloor(value: unknown): VariableFloor | null {
     metaVersion: value["metaVersion"],
     metaSigHashHex: value["metaSigHashHex"],
   };
-  if (value["status"] === "deleted") {
-    return { status: "deleted", ...meta };
+  // deleted / declared(§4.2 レイアウト v2 の値未設定宣言)はメタ側のみ(値床は空)
+  if (value["status"] === "deleted" || value["status"] === "declared") {
+    return { status: value["status"], ...meta };
   }
-  if (
-    value["status"] !== "active" ||
-    !isPositiveInteger(value["version"]) ||
-    !isPositiveInteger(value["epoch"]) ||
-    !isHex64(value["valueSigHashHex"])
-  ) {
+  if (value["status"] !== "active") {
     return null;
   }
-  return {
-    status: "active",
-    version: value["version"],
-    epoch: value["epoch"],
-    valueSigHashHex: value["valueSigHashHex"],
-    ...meta,
-  };
+  const valueSide = decodeActiveValueSide(value);
+  return valueSide === null ? null : { status: "active", ...valueSide, ...meta };
 }
 
 function decodeManifestFloor(value: unknown): ManifestFloor | null {

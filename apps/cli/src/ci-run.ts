@@ -31,7 +31,7 @@ import { CliIo } from "./io.ts";
 import type { LeaseResponseWire } from "./lease-client.ts";
 import { verifyLeaseResponse } from "./lease-client.ts";
 import { fetchGitHubOidcToken, readLeaseClaims } from "./oidc-github.ts";
-import { ProcessRunner, runOp } from "./run.ts";
+import { enforceDeclaredPresence, ProcessRunner, runOp, typeAdvisoryWarnings } from "./run.ts";
 
 /** `maruhi ci run` の入力(すべて明示フラグ由来 — session-25 §2)。 */
 export interface CiRunInput {
@@ -176,6 +176,12 @@ export function ciRunOp(
     yield* io.logError(
       `Lease verified (chain, statements, value signatures, DEK commitments${anchor === null ? "" : ", repository anchor"}): ${countNoun(material.variables.length, "variable")} (environment ${input.environmentId})`,
     );
+    // presence fail-fast(設計文書 §1-4 — run と同一規則): リース応答に同梱
+    // された検証材料(ステートメント + マニフェスト — §14-2)に対して判定する。
+    // required = true の declared があれば子プロセスは起動しない
+    yield* enforceDeclaredPresence(material.declared);
+    // type は advisory(§14.3-7)— 不一致は警告のみで実行続行
+    yield* logWarnings(typeAdvisoryWarnings(material.variables));
     return yield* runOp({ command: input.command, variables: material.variables });
   });
 }

@@ -38,7 +38,7 @@ import {
   MAX_TOKEN_TTL_DAYS,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
-import type { Role } from "@maruhi/crypto";
+import type { MetaVarType, Role } from "@maruhi/crypto";
 import {
   Cause,
   Console,
@@ -94,6 +94,7 @@ import {
   floorHandleFor,
   loadCheckedFloor,
   openEnvironment,
+  openMetadataEnvironment,
   openMetadataEnvironmentPair,
   openMetadataProject,
   openProject,
@@ -149,7 +150,20 @@ import {
   rotationDismissOp,
   rotationListOp,
 } from "./rotation.ts";
-import { RUN_COMMAND_REQUIRED, runOp } from "./run.ts";
+import {
+  enforceDeclaredPresence,
+  RUN_COMMAND_REQUIRED,
+  runOp,
+  typeAdvisoryWarnings,
+} from "./run.ts";
+import {
+  ensureEntropyAcknowledged,
+  type FieldUpdate,
+  type SchemaFieldUpdates,
+  schemaSetOp,
+  type SchemaSetSummary,
+  schemaShowOp,
+} from "./schema.ts";
 import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
@@ -652,6 +666,43 @@ const memberChangeRoleConfig = {
   "user-id": memberTargetArgument(),
 };
 
+/** `maruhi schema`(表示 — bare 親が show を兼ねる。audit と同じ型)。 */
+const schemaShowConfig = { ...commonFlags() };
+
+/** `--type` の閉集合(CRYPTO_SPEC §4.2 — 裁定 CT)+ 明示クリアの `none`。 */
+const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
+
+const schemaSetConfig = {
+  ...commonFlags(),
+  type: singleValued(
+    "type",
+    `Declared value type (${SCHEMA_TYPES.join(" | ")}; \`none\` clears it back to unspecified)`,
+  ),
+  required: singleFlag(
+    "required",
+    "Declare the variable as required (maruhi run fails fast while it has no value)",
+  ),
+  optional: singleFlag("optional", "Declare the variable as not required"),
+  description: singleValued(
+    "description",
+    "Human-readable description (plaintext metadata visible to the server — never put secret values here)",
+  ),
+  "clear-description": singleFlag(
+    "clear-description",
+    "Clear the description (explicit — an empty --description value is rejected as a likely unset shell variable)",
+  ),
+  "allow-high-entropy": singleFlag(
+    "allow-high-entropy",
+    "Proceed without confirmation when the name or description contains a secret-like high-entropy string (fail-closed otherwise)",
+  ),
+  name: Argument.string("name").pipe(
+    Argument.withDescription(
+      "Variable name (created as a declared variable when it does not exist)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /**
  * 入れ子の段(グループ)→ サブコマンド名 → 宣言。**この表が唯一の出所**で、
  * COMMAND_SPECS(振り分けのキーと診断の宣言・サブコマンド一覧)をここから
@@ -698,6 +749,7 @@ const GROUP_CONFIGS: Readonly<
     reconcile: auditReconcileConfig,
   },
   config: { get: configGetConfig, set: configSetConfig },
+  schema: { set: schemaSetConfig },
 };
 
 /**
@@ -707,6 +759,7 @@ const GROUP_CONFIGS: Readonly<
  */
 const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Param.Any>>>> = {
   audit: auditListConfig,
+  schema: schemaShowConfig,
 };
 
 /**
@@ -947,6 +1000,95 @@ function requireTokenTtlDays(
   return value < 1 || value > MAX_TOKEN_TTL_DAYS
     ? Effect.fail(usageError(`--token-ttl-days must be between 1 and ${MAX_TOKEN_TTL_DAYS}`))
     : Effect.succeed(value);
+}
+
+/**
+ * `maruhi schema`(表示)の本体(bare `maruhi schema` と親ハンドラが共有 —
+ * audit と同じ型)。**鍵なしクラス**(openMetadataEnvironment — メタデータ
+ * のみ pull)で、**agent-gate は適用しない(許可側 — 設計文書 §1-1)**:
+ * 出力は値ゼロ(名前・型・説明・必須・状態のみ)であり、ADR-0016 決定 7 の
+ * 2 層ゲートの適用対象は「値を表示する系」に限られる。エージェント環境で
+ * そのまま動くことが本機能の主用途(deny-list に含めないことはテストで固定)。
+ */
+function runSchemaShow(values: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly env?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const context = yield* openMetadataEnvironment(values);
+    yield* schemaShowOp({
+      client: context.client,
+      verified: context.verified,
+      environmentId: context.environmentId,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+  });
+}
+
+/** `--type` の解釈(未指定 = keep・`none` = 明示クリア。**指定値そのものはエラーに出さない**)。 */
+function parseSchemaTypeFlag(
+  value: string | undefined,
+): Effect.Effect<FieldUpdate<MetaVarType>, CliError> {
+  if (value === undefined) {
+    return Effect.succeed({ kind: "keep" });
+  }
+  if (value === "none") {
+    return Effect.succeed({ kind: "set", value: "" });
+  }
+  if ((SCHEMA_TYPES as readonly string[]).includes(value)) {
+    return Effect.succeed({ kind: "set", value: value as MetaVarType });
+  }
+  return Effect.fail(
+    usageError(`--type must be one of ${SCHEMA_TYPES.join(" | ")} (or \`none\` to clear it)`),
+  );
+}
+
+/**
+ * `schema set` の欄指定の解釈(部分更新 §1-2 — 未指定 = keep、空へ戻すのは
+ * 明示フラグのみ)。矛盾する指定(--required と --optional 等)は usage エラー。
+ */
+function parseSchemaFieldUpdates(values: {
+  readonly type?: string | undefined;
+  readonly required: boolean;
+  readonly optional: boolean;
+  readonly description?: string | undefined;
+  readonly "clear-description": boolean;
+}): Effect.Effect<SchemaFieldUpdates, CliError> {
+  return Effect.gen(function* () {
+    const varType = yield* parseSchemaTypeFlag(values.type);
+    if (values.required && values.optional) {
+      return yield* Effect.fail(
+        usageError("--required and --optional are mutually exclusive (specify at most one)"),
+      );
+    }
+    const required: FieldUpdate<boolean> = values.required
+      ? { kind: "set", value: true }
+      : values.optional
+        ? { kind: "set", value: false }
+        : { kind: "keep" };
+    if (values.description !== undefined && values["clear-description"]) {
+      return yield* Effect.fail(
+        usageError("--description and --clear-description are mutually exclusive"),
+      );
+    }
+    const description: FieldUpdate<string> = values["clear-description"]
+      ? { kind: "set", value: "" }
+      : values.description !== undefined
+        ? { kind: "set", value: values.description }
+        : { kind: "keep" };
+    return { varType, required, description };
+  });
+}
+
+/** `schema set` の成功報告(型は宣言として表示 — 「verified」の語を使わない §14.3)。 */
+function schemaSetReport(name: string, summary: SchemaSetSummary): string {
+  const typeShown = summary.schema.varType === "" ? "-" : summary.schema.varType;
+  if (summary.created) {
+    return `Declared ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}) — no value yet. Set the first value with: printf %s "$VALUE" | maruhi push ${displayText(name)}`;
+  }
+  return `Updated the schema of ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}, metaVersion=${summary.metaVersion})`;
 }
 
 /** 位置引数で受けた設定キーの検証(**指定値そのものはエラーに出さない**)。 */
@@ -1658,6 +1800,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       for (const variable of pulled.variables) {
         yield* io.log(formatPulledLine(variable));
       }
+      // declared(値なしの宣言 — §4.2 レイアウト v2)はメタデータ行として列挙
+      // する(値・バージョンは存在しない。schema の詳細は `maruhi schema`)
+      for (const declared of pulled.declared) {
+        yield* io.log(`${displayText(declared.name)}\t(declared — no value set)`);
+      }
       if (values.show) {
         yield* showValues(pulled.variables);
       }
@@ -1686,6 +1833,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         floor: context.floorHandle,
       });
       yield* logWarnings(pulled.warnings);
+      // presence fail-fast(設計文書 §1-4 — 裁定 CT / CU): required = true の
+      // declared が検証済み集合にあれば、子プロセスを起動せず型付きエラー
+      yield* enforceDeclaredPresence(pulled.declared);
+      // type は advisory(§14.3-7)— 不一致は警告のみで実行続行
+      yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
       // 環境変数名は検証済みステートメント経由(§4.2 / §12-7)。実行制御系
       // 変数名 denylist(run.ts)は検証済み name に適用される防衛層
       onExitCode(yield* runOp({ command, variables: pulled.variables }));
@@ -2153,6 +2305,51 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Command.withSubcommands([configGet, configSet]),
   );
 
+  const schemaSet = Command.make("set", schemaSetConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      // 欄指定の解釈はネットワークより先(部分更新 §1-2 — 未指定 = keep、
+      // 空へ戻すのは明示フラグのみ)
+      const updates = yield* parseSchemaFieldUpdates(values);
+      // エントロピー警告(裁定 CW — fail-closed)は通信・署名より前に判定する
+      yield* ensureEntropyAcknowledged({
+        fields: [
+          { field: "name", text: values.name },
+          ...(updates.description.kind === "set"
+            ? [{ field: "description" as const, text: updates.description.value }]
+            : []),
+        ],
+        allowHighEntropy: values["allow-high-entropy"],
+      });
+      const context = yield* openEnvironment(values);
+      const summary = yield* schemaSetOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        name: values.name,
+        updates,
+        resync: context.resync,
+        floor: context.floorHandle,
+        authorUserId: context.session.userId,
+        signingKey: context.masterKeys.sigKeyPair.privateKey,
+      });
+      yield* logWarnings(summary.warnings);
+      yield* io.log(schemaSetReport(values.name, summary));
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Set a variable's schema fields (type / required / description — a partial update). A missing name is created as a declared variable (no value). A declaration cannot be deleted from the CLI yet — downgrade a mistaken one with --optional so `maruhi run` proceeds",
+    ),
+  );
+
+  // **bare `maruhi schema` = 表示**(設計文書 §1-1 — audit と同じハンドラ付き親)
+  const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
+    Command.withDescription(
+      "Show the environment's declared variable schema (names / types / required / status / descriptions — no values). Bare `maruhi schema` shows; `schema set` writes",
+    ),
+    Command.withSubcommands([schemaSet]),
+  );
+
   const envCreate = Command.make("create", envCreateConfig, (values) =>
     Effect.gen(function* () {
       // 形式は宣言(NonBlank)を通った後の追加検査。ネットワークより前に見る
@@ -2364,6 +2561,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       rotation,
       audit,
       config,
+      schema,
     ]),
   );
 }

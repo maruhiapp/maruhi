@@ -805,7 +805,7 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // 保存確認の照合 1 + 入力されたコードの解釈 1
   "recovery.ts": 5,
   // 子プロセス env への注入直前
-  "run.ts": 1,
+  "run.ts": 2,
   // master 秘密鍵のインポート(hex → 非抽出 CryptoKey)
   "session.ts": 2,
 };

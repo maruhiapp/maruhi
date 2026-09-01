@@ -1385,7 +1385,7 @@ describe("maruhi push", () => {
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("Multiple active statements with the same name");
+    expect(env.errors.join("\n")).toContain("Multiple live statements with the same name");
   });
 
   it("409 後の再取得ステートメントが metaVersion 巻き戻しなら拒否する(§12-5 のメタ同型)", async () => {
@@ -1852,6 +1852,6 @@ describe("maruhi push", () => {
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("deleted statement in the active list");
+    expect(env.errors.join("\n")).toContain("deleted statement in the live list");
   });
 });
