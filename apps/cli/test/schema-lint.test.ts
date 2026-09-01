@@ -189,6 +189,20 @@ describe("scanEnvReferences(走査器 — 実装裁定の逐語形)", () => {
     ]);
   });
 
+  it("識別子の末尾が形にたまたま一致する参照は拾わない(左境界 — pullfrog レビュー対応)", () => {
+    const found = scanEnvReferences(
+      [
+        'const a = MY_ENV["FOO"];',
+        'const b = TEST_ENV.fetch("BAR");',
+        "const c = myprocess.env.BAZ;",
+        'x = chaos.getenv("QUX")',
+      ].join("\n"),
+    );
+    expect(found.size).toBe(0);
+    // 素の形は引き続き拾う(境界の追加が正例を落とさない)
+    expect([...scanEnvReferences('ENV["RUBY_VAR"]')]).toEqual(["RUBY_VAR"]);
+  });
+
   it("動的アクセスは拾わない(best-effort の線 — 検出できると偽らない)", () => {
     const found = scanEnvReferences(
       ["const name = 'DYNAMIC';", "const v = process.env[name];", "const w = os.environ[key]"].join(

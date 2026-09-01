@@ -66,8 +66,16 @@ const REFERENCE_SOURCES: readonly string[] = [
   String.raw`(?:std::)?env::var(?:_os)?\(\s*"${NAME}"\s*\)`,
 ];
 
+/**
+ * 全パターン共通の左境界: 直前が識別子の続き(英数字・`_`・`$`)やメンバー
+ * アクセスの `.` なら一致させない。`MY_ENV["FOO"]` / `TEST_ENV.fetch("BAR")`
+ * のような「たまたま ENV で終わる識別子」を env 参照と誤認して CI を exit 1 に
+ * する形を塞ぐ(pullfrog レビュー対応)。`\b` では足りない(`_` は単語文字)。
+ */
+const LEFT_BOUNDARY = String.raw`(?<![A-Za-z0-9_$.])`;
+
 const REFERENCE_PATTERNS: readonly RegExp[] = REFERENCE_SOURCES.map(
-  (source) => new RegExp(source, "g"),
+  (source) => new RegExp(`${LEFT_BOUNDARY}${source}`, "g"),
 );
 
 /** Scans one file's text for literal environment-variable references. */

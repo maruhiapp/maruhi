@@ -209,6 +209,34 @@ describe("maruhi schema export(§1-6 — 派生スナップショットの生成
     expect(exportedText(first)).toBe(exportedText(second));
   });
 
+  it("`__proto__` という名前の変数も properties の own key として現れる(pullfrog レビュー対応)", async () => {
+    // 名前は署名済みステートメント由来の自由文字列 — 素のオブジェクト代入だと
+    // setter に食われて properties から黙って消え、required だけに残る自己矛盾の
+    // 生成物になる(export / verify が生成器を共有するためバイト比較でも検出不能)
+    const proto = await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-proto",
+      name: "__proto__",
+      author: owner,
+      head: { seq: 1, hashHex: built.projectId },
+      status: "declared",
+      schema: { varType: "string", required: true, description: "" },
+    });
+    const env = await startEnv([chainHandler(), metadataHandler([proto, activeNumber])]);
+    expect(await runCli(["schema", "export"], env.layer)).toBe(0);
+    const output = exportedText(env);
+    const snapshot = JSON.parse(output) as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(Object.hasOwn(snapshot.properties, "__proto__")).toBe(true);
+    expect(snapshot.required).toContain("__proto__");
+    // 生成テキスト自体にも own key として現れる(JSON.parse は own key を作るが、
+    // 生成側が落としていたら文字列にも現れない)
+    expect(output).toContain('"__proto__": {');
+  });
+
   it("agent-gate の deny-list に含まれない(許可側 — 読み取り・値ゼロの同類)", async () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.setAgent({ isAgent: true, name: "testbot" });
@@ -291,6 +319,23 @@ describe("maruhi schema verify-snapshot(§1-6 — CI の乖離検査)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("required list differs");
     expect(errors).toContain("SHOP_URL");
+  });
+
+  it("title の不一致は「別環境のスナップショット」の可能性として名指しする(pullfrog nitpick)", async () => {
+    // 変数集合がたまたま一致する別環境のファイルを generic な整形差の文言に
+    // 落とさない。ファイル側 title の内容(攻撃者が書ける)は報告に出さない
+    const file = await exportedSnapshotFile();
+    const { readFile: read } = await import("node:fs/promises");
+    const parsed = JSON.parse(await read(file, "utf8")) as { title: string };
+    parsed.title = "maruhi variables — environment prod-EVIL\u001b[31m";
+    await writeFile(file, `${JSON.stringify(parsed, null, 2)}\n`);
+    const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
+    expect(await runCli(["schema", "verify-snapshot", file], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("generated for a different environment");
+    // ファイル側 title の内容は端末レポートへ運ばない
+    expect(errors).not.toContain("prod-EVIL");
+    expect(errors).not.toContain("\u001b");
   });
 
   it("JSON でないファイルは誠実に報告して exit 1(改ざん疑いの文面に潰さない)", async () => {

@@ -108,10 +108,12 @@ function buildSchemaSnapshot(
   variables: readonly VerifiedVariableStatement[],
 ): SchemaSnapshot {
   const sorted = variables.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const properties: Record<string, SnapshotProperty> = {};
-  for (const statement of sorted) {
-    properties[statement.name] = propertyOf(statement);
-  }
+  // Object.fromEntries は CreateDataProperty で own key を作る: 素の代入だと
+  // `__proto__` という名前の変数が setter に食われて properties から黙って
+  // 消える(required には残るため生成物が自己矛盾する — pullfrog レビュー対応)
+  const properties: Record<string, SnapshotProperty> = Object.fromEntries(
+    sorted.map((statement) => [statement.name, propertyOf(statement)]),
+  );
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $comment: SNAPSHOT_COMMENT,
@@ -202,7 +204,9 @@ function propertyFieldDivergence(
 ): string[] {
   const details: string[] = [];
   for (const [name, expectedProperty] of Object.entries(expected.properties)) {
-    if (!(name in fileProperties)) {
+    // own-property 参照(`toString` 等の正当な変数名が継承プロパティに解決される
+    // 誤診断を防ぐ — floor.ts の floorRecordGet と同じ規律)
+    if (!Object.hasOwn(fileProperties, name)) {
       continue;
     }
     const fileProperty = recordOf(fileProperties[name]);
@@ -251,6 +255,14 @@ function describeSnapshotDivergence(fileContent: string, expected: SchemaSnapsho
   const record = parsed as Record<string, unknown>;
   const fileProperties = recordOf(record["properties"]);
   const details = [
+    // 変数集合がたまたま一致する別環境のファイルは generic な整形差の文言に
+    // 落ちて読めない — title(環境 ID を含む生成値)の不一致を名指しする
+    // (ファイル側の title の**内容**は出さない: 攻撃者が書ける自由文字列)
+    ...(record["title"] === expected.title
+      ? []
+      : [
+          "the title does not match the generated form (the snapshot may have been generated for a different environment)",
+        ]),
     ...propertySetDivergence(
       new Set(Object.keys(fileProperties)),
       new Set(Object.keys(expected.properties)),
