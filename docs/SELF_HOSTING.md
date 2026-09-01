@@ -468,6 +468,37 @@ per-variable approval is the point of the ceremony, so there is no `--yes`
 and the command refuses non-interactive environments and AI agents. On
 completion it offers (and never defaults to) deleting the source file.
 
+**Schema snapshot and code cross-check (S5)**: three read-only companions
+close out the schema series. All three read only metadata (no values, no
+DEKs, no `var.read` audit rows), need no master key, and work with a
+`MARUHI_TOKEN` session — so they run in CI and in AI-agent environments.
+
+- `maruhi schema export` prints the environment's schema as a JSON Schema
+  subset to stdout. Commit it to your repository
+  (`maruhi schema export > maruhi-schema.json`) so editors, agents and docs
+  tooling can consume the contract without maruhi access. **The snapshot is a
+  generated artifact, not an authority**: it is neither signed nor accepted
+  by the server, the store stays the source of truth, and the file says so in
+  its `$comment`. Anything with maruhi access should read `maruhi schema`
+  instead of the file. One snapshot covers one environment; export each
+  environment you want committed.
+- `maruhi schema verify-snapshot <file>` regenerates the snapshot from the
+  store and fails (exit 1) on any divergence — run it in CI to keep the
+  committed file honest. A hand-edited or stale snapshot survives at most
+  until the next CI run (the same exposure class as any other file in your
+  repository). The divergence report names variables and fields only; it
+  never prints description contents.
+- `maruhi schema lint <path>...` scans source files for literal
+  environment-variable references (`process.env.X`, `os.environ["X"]`,
+  `os.Getenv("X")`, `ENV["X"]`, `env::var("X")` and similar) and cross-checks
+  them against the declared schema. Code reading a name the store does not
+  declare fails the run (exit 1) — declare it with `maruhi schema set`, or
+  exclude runtime variables maruhi does not manage with `--ignore NODE_ENV`
+  (repeatable). Declared names the scanned code never reads are reported but
+  do not fail the run (they may be read dynamically or by another
+  repository). The scan is best-effort by design: dynamic access and
+  unsupported languages are not seen, so an empty report is not a guarantee.
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata
