@@ -28,7 +28,7 @@
     "vitest": "4.1.11"
   },
   "overrides": {
-    "@types/node": "26.2.0"
+    "@types/node": "26.4.0"
   },
   "engines": {
     "bun": "1.4.0"

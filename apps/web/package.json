@@ -17,8 +17,8 @@
   "dependencies": {
     "@astryxdesign/core": "0.4.7",
     "@astryxdesign/theme-neutral": "0.4.7",
-    "@funstack/router": "1.3.0",
-    "@funstack/static": "1.3.0",
+    "@funstack/router": "1.4.0",
+    "@funstack/static": "1.3.1",
     "@stylexjs/stylex": "0.19.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -31,10 +31,10 @@
     "@stylexjs/babel-plugin": "0.19.0",
     "@stylexjs/eslint-plugin": "0.19.0",
     "@stylexjs/unplugin": "0.19.0",
-    "@types/node": "26.2.0",
+    "@types/node": "26.4.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
-    "@vitejs/plugin-react": "6.1.0",
+    "@vitejs/plugin-react": "6.1.1",
     "effect": "4.0.0-rc.111",
     "playwright": "1.62.1",
     "react-doctor": "0.9.12",
