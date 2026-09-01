@@ -32,6 +32,7 @@
 // - 値は stdin から読み、argv に載せない。平文はメモリ上のみ
 
 import {
+  ActivationRequiredError,
   EpochConflictError,
   ManifestVersionConflictError,
   MetaVersionConflictError,
@@ -53,11 +54,17 @@ import type { MaruhiClient } from "./api.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
+import {
+  type FloorHandle,
+  rejectIntentOnServerRejection,
+  type VerifiedSchemaFields,
+} from "./floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
 import { type ManifestDigestEntry, signNextManifest } from "./manifest.ts";
+import { confirmMetaMutation } from "./meta-confirm.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
+import { signContinuationStatementV2 } from "./schema-statement.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import {
   pullVerifiedEnvironment,
@@ -91,19 +98,34 @@ function generateVariableId(): string {
   return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
 }
 
-interface PushTarget {
-  readonly variableId: string;
-  readonly create: boolean;
-  /** 検証済みの現行最新値(create = 新規変数なら null)。prev と equivocation 検査の基準。 */
-  readonly latest: VerifiedPulledValue | null;
+/** activation(declared → active — §12-5)の直前ステートメント材料。 */
+interface ActivationPrev {
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+  /** 宣言時の名前(activation は改名を兼ねない — サーバーが 422 で強制 §12-5)。 */
+  readonly name: string;
+  /** 宣言時のスキーマ欄(activation は byte-exact に引き継ぐ — 部分更新の原則)。 */
+  readonly schema: VerifiedSchemaFields;
 }
 
+/**
+ * push 先の 3 形(§12-5): 新規作成(値 version 1 + metaVersion 1 の複合)、
+ * activation(declared への最初の値 push — 値 version 1 + status active の v2
+ * ステートメント〔metaVersion + 1〕+ マニフェストの複合)、既存 active への
+ * 通常 push(メタに触れない)。
+ */
+type PushTarget =
+  | { readonly kind: "create"; readonly variableId: string }
+  | { readonly kind: "activate"; readonly variableId: string; readonly prev: ActivationPrev }
+  | { readonly kind: "push"; readonly variableId: string; readonly latest: VerifiedPulledValue };
+
 function nextVersionOf(target: PushTarget): number {
-  return target.latest === null ? 1 : target.latest.version + 1;
+  // create / activate はどちらも最初の値(declared は値・バージョンを持たない — §4.2)
+  return target.kind === "push" ? target.latest.version + 1 : 1;
 }
 
 function prevHashOf(target: PushTarget): string {
-  return target.latest === null ? "" : target.latest.signedBytesHashHex;
+  return target.kind === "push" ? target.latest.signedBytesHashHex : "";
 }
 
 /**
@@ -126,12 +148,13 @@ interface ResolvedTarget {
   readonly verified: VerifiedProject;
   readonly warnings: readonly string[];
   /**
-   * 既存変数の解決で行った値付き pull の同梱 DEK(create 解決では null)。
-   * verified と同じビューで検証・開封する前提の生ワイヤ形(§12-7 — listMine
-   * との二重取得の解消: session-11 裁定 3)。
+   * 既存 active 変数の解決で行った値付き pull の同梱 DEK(create / activate
+   * 解決では null — declared は値を持たず値付き pull を要しない)。verified と
+   * 同じビューで検証・開封する前提の生ワイヤ形(§12-7 — listMine との二重取得の
+   * 解消: session-11 裁定 3)。
    */
   readonly deks: readonly RecipientDek[] | null;
-  /** 作成経路のみ: 同梱マニフェストの発行材料(既存変数への push は null)。 */
+  /** create / activate 経路のみ: 同梱マニフェストの発行材料(通常 push は null)。 */
   readonly issueBase: ManifestIssueBase | null;
 }
 
@@ -158,49 +181,81 @@ function resolveTarget(input: {
 }): Effect.Effect<ResolvedTarget, CliError> {
   return Effect.gen(function* () {
     const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    // 同名 active の重複は検証側が拒否済みだが、push 先の同定が応答の並び順に
-    // 依存しない防衛線として残す(§4.2 の解決拒否)
+    // 同名の重複(active / declared を問わず)は検証側が拒否済みだが、push 先の
+    // 同定が応答の並び順に依存しない防衛線として残す(§4.2 の解決拒否)
     const matches = metadata.variables.filter((variable) => variable.name === input.name);
     if (matches.length > 1) {
       return yield* Effect.fail(
         cliError(
-          `Multiple active statements with the same name passed verification (server equivocation): ${input.name}. Refusing to resolve the push target`,
+          `Multiple live statements with the same name passed verification (server equivocation): ${input.name}. Refusing to resolve the push target`,
         ),
       );
     }
+    // メタ操作(create / activate)の同梱マニフェスト(§12-5)の材料: 検証済み
+    // メタデータ pull の直前マニフェスト・現在の集合(declared / tombstone
+    // 込み — §4.3 のダイジェストは全ステートメントを覆う)・環境メタの最新形
+    const issueBase: ManifestIssueBase = {
+      previous: {
+        manifestVersion: metadata.manifest.manifestVersion,
+        signedBytesHashHex: metadata.manifest.signedBytesHashHex,
+      },
+      entries: [
+        ...metadata.variables.map((statement) => ({
+          variableId: statement.variableId,
+          status: statement.status,
+          metaVersion: statement.metaVersion,
+          metaSigHashHex: statement.metaSigHashHex,
+        })),
+        ...metadata.tombstones.map((tombstone) => ({
+          variableId: tombstone.variableId,
+          status: "deleted" as const,
+          metaVersion: tombstone.metaVersion,
+          metaSigHashHex: tombstone.metaSigHashHex,
+        })),
+      ],
+      envMeta: {
+        metaVersion: metadata.environment.metaVersion,
+        sigHashHex: metadata.environment.metaSigHashHex,
+      },
+    };
     const existing = matches[0];
     if (existing === undefined) {
       return {
-        target: { variableId: generateVariableId(), create: true, latest: null },
+        target: { kind: "create", variableId: generateVariableId() },
         verified: metadata.verified,
         warnings: metadata.warnings,
         deks: null,
-        // 作成の同梱マニフェスト(§12-5)の材料: 検証済みメタデータ pull の
-        // 直前マニフェスト・現在の集合(tombstone 込み)・環境メタの最新形
-        issueBase: {
-          previous: {
-            manifestVersion: metadata.manifest.manifestVersion,
-            signedBytesHashHex: metadata.manifest.signedBytesHashHex,
-          },
-          entries: [
-            ...metadata.variables.map((statement) => ({
-              variableId: statement.variableId,
-              status: "active" as const,
-              metaVersion: statement.metaVersion,
-              metaSigHashHex: statement.metaSigHashHex,
-            })),
-            ...metadata.tombstones.map((tombstone) => ({
-              variableId: tombstone.variableId,
-              status: "deleted" as const,
-              metaVersion: tombstone.metaVersion,
-              metaSigHashHex: tombstone.metaSigHashHex,
-            })),
-          ],
-          envMeta: {
-            metaVersion: metadata.environment.metaVersion,
-            sigHashHex: metadata.environment.metaSigHashHex,
+        issueBase,
+      };
+    }
+    if (existing.status === "declared") {
+      // declared への最初の値 push = activation 複合(§12-5)。値は存在しない
+      // ため値付き pull は行わない(var.read を汚さない — 読んでいない値を
+      // 読んだと記録させない)。スキーマ欄・名前は宣言時の値を byte-exact に
+      // 引き継ぐ(改名は rename 経路 — サーバーが 422 payload-mismatch で強制)
+      if (existing.schema === null) {
+        // declared はレイアウト v2 限定(§4.2)— v1 declared は検証段で拒否済み
+        return yield* Effect.fail(
+          cliError(
+            `Variable ${existing.variableId} is declared but carries no schema fields (internal inconsistency)`,
+          ),
+        );
+      }
+      return {
+        target: {
+          kind: "activate",
+          variableId: existing.variableId,
+          prev: {
+            metaVersion: existing.metaVersion,
+            metaSigHashHex: existing.metaSigHashHex,
+            name: existing.name,
+            schema: existing.schema,
           },
         },
+        verified: metadata.verified,
+        warnings: metadata.warnings,
+        deks: null,
+        issueBase,
       };
     }
     const pulled = yield* pullVerifiedEnvironment({ ...input, verified: metadata.verified });
@@ -226,11 +281,11 @@ function resolveTarget(input: {
       );
     }
     return {
-      target: { variableId: existing.variableId, create: false, latest },
+      target: { kind: "push", variableId: existing.variableId, latest },
       verified: pulled.verified,
       warnings: [...metadata.warnings, ...pulled.warnings],
       deks: pulled.deks,
-      // 既存変数への push はメタ状態を変えない = マニフェストを発行しない(§4.3)
+      // 既存 active 変数への push はメタ状態を変えない = マニフェストを発行しない(§4.3)
       issueBase: null,
     };
   });
@@ -332,12 +387,13 @@ interface AcceptedPush {
   /** 受理された自分の書き込みの床レコード(自計算値 — サーバー echo でない)。 */
   readonly floorVariable: VariableFloor;
   /**
-   * 作成経路のみ: 自分が発行したマニフェスト(自計算値)。**床へは直接昇格
-   * しない** — メタ操作の成功は「検証可能な配布物での効果確認」(§12-10 (3))を
-   * 通過して初めて成立し、床のマニフェスト前進は確認 pull の検証済み観測が担う。
+   * メタ操作経路(create / activate)のみ: 自分が発行したマニフェスト(自計算
+   * 値)。**床へは直接昇格しない** — メタ操作の成功は「検証可能な配布物での
+   * 効果確認」(§12-10 (3))を通過して初めて成立し、床のマニフェスト前進は
+   * 確認 pull の検証済み観測が担う。
    */
   readonly selfManifest: ManifestFloor | null;
-  /** 作成経路のみ: 送信前に追記した intent(3-F)の id。効果確認が閉じる。 */
+  /** メタ操作経路のみ: 送信前に追記した intent(3-F)の id。効果確認が閉じる。 */
   readonly intentId: string | null;
   /** 受理時点の状態(床コミットのヘッド・変数 ID の源)。 */
   readonly state: PushState;
@@ -359,12 +415,16 @@ function classifyPushConflict(error: unknown): PushConflict | null {
   if (
     error instanceof VariableConflictError ||
     error instanceof MetaVersionConflictError ||
-    error instanceof ManifestVersionConflictError
+    error instanceof ManifestVersionConflictError ||
+    error instanceof ActivationRequiredError
   ) {
     // create の name 競合 / metaVersion 競合(並行作成・並行 rename)/
     // manifestVersion 競合(並行メタ操作 — §12-5 (6))は名前から解決し直す
     // (§12-5 の再試行 = 再取得 → 検証 → ステートメントとマニフェストの両方を
-    // 再署名。ID 競合は乱数 ID の衝突で実質起こらない)
+    // 再署名。ID 競合は乱数 ID の衝突で実質起こらない)。
+    // ActivationRequired(通常 push が declared に当たった — §12-5)は再同期
+    // でなく activation への切替シグナル: 再解決が declared を見て activation
+    // 複合へ切り替える(設計文書 §3 S3 行)
     return { kind: "variable-conflict" };
   }
   return null;
@@ -391,7 +451,7 @@ interface PushState {
   readonly epoch: number;
   readonly deks: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly target: PushTarget;
-  /** 作成経路のみ: 同梱マニフェストの発行材料(reresolveTarget が取り直す)。 */
+  /** create / activate 経路のみ: 同梱マニフェストの発行材料(reresolveTarget が取り直す)。 */
   readonly issueBase: ManifestIssueBase | null;
   readonly warnings: readonly string[];
 }
@@ -453,23 +513,24 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
       valueSigHashHex: signed.signedBytesHashHex,
     } as const;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
-    if (state.target.create) {
+    if (state.target.kind === "create") {
       // 作成 = version 1 の値 + metaVersion 1 のステートメント + 作成後の集合を
       // 反映したマニフェストの同梱(§12-5)。宣言ヘッドは値署名と同じ「最後に
       // 検証したチェーンヘッド」で、CAS リトライで検証ビューが進めば試行ごとに
       // 三つとも作り直される(meta-statement.ts / manifest.ts の共有実装)
+      const target = state.target;
       const issueBase = state.issueBase;
       if (issueBase === null) {
         return yield* Effect.fail(
           cliError(
-            `Variable ${state.target.variableId} resolved as a creation without manifest material (internal inconsistency)`,
+            `Variable ${target.variableId} resolved as a creation without manifest material (internal inconsistency)`,
           ),
         );
       }
       const created = yield* signCreateStatement({
         verified: state.verified,
         environmentId: input.environmentId,
-        target: { kind: "variable", variableId: state.target.variableId },
+        target: { kind: "variable", variableId: target.variableId },
         name: input.name,
         authorUserId: input.writerUserId,
         signingKey: input.signingKey,
@@ -477,10 +538,10 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
       // 採番した variableId は乱数生成なので、検証済み集合に既に存在することは
       // ない。もし存在したら握り潰して digest から落とさず(サーバーの 422 に
       // 化けて原因が遠くなる)、内部不整合として明示的に失敗させる
-      if (issueBase.entries.some((entry) => entry.variableId === state.target.variableId)) {
+      if (issueBase.entries.some((entry) => entry.variableId === target.variableId)) {
         return yield* Effect.fail(
           cliError(
-            `Variable ${state.target.variableId} resolved as a creation but already exists in the verified statement set (internal inconsistency)`,
+            `Variable ${target.variableId} resolved as a creation but already exists in the verified statement set (internal inconsistency)`,
           ),
         );
       }
@@ -492,7 +553,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         entries: [
           ...issueBase.entries,
           {
-            variableId: state.target.variableId,
+            variableId: target.variableId,
             status: "active" as const,
             metaVersion: 1,
             metaSigHashHex: created.metaSigHashHex,
@@ -515,7 +576,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         environmentId: input.environmentId,
         epoch: state.epoch,
         dekCommitmentHex: null,
-        variableId: state.target.variableId,
+        variableId: target.variableId,
         manifestVersion: manifest.manifestVersion,
         manifestSigHashHex: manifest.manifestSigHashHex,
         declaredHead: {
@@ -549,15 +610,109 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         state,
       };
     }
+    if (state.target.kind === "activate") {
+      // activation(declared → active — §12-5): 値 version 1 + status active の
+      // v2 ステートメント(metaVersion + 1)+ マニフェストの複合。name とスキーマ
+      // 欄は宣言時の値を byte-exact に引き継ぐ(改名は rename 経路 — サーバーが
+      // 422 payload-mismatch で強制。スキーマの変更は `maruhi schema set`)
+      const target = state.target;
+      const issueBase = state.issueBase;
+      if (issueBase === null) {
+        return yield* Effect.fail(
+          cliError(
+            `Variable ${target.variableId} resolved as an activation without manifest material (internal inconsistency)`,
+          ),
+        );
+      }
+      const activation = yield* signContinuationStatementV2({
+        verified: state.verified,
+        environmentId: input.environmentId,
+        variableId: target.variableId,
+        name: target.prev.name,
+        schema: target.prev.schema,
+        status: "active",
+        prev: {
+          metaVersion: target.prev.metaVersion,
+          metaSigHashHex: target.prev.metaSigHashHex,
+        },
+        authorUserId: input.writerUserId,
+        signingKey: input.signingKey,
+      });
+      // マニフェストは declared エントリを activation 後の形へ差し替える(§4.3)
+      const previousEntry = issueBase.entries.find(
+        (entry) => entry.variableId === target.variableId,
+      );
+      if (previousEntry === undefined || previousEntry.status !== "declared") {
+        return yield* Effect.fail(
+          cliError(
+            `Variable ${target.variableId} resolved as an activation but its declared entry is missing from the verified statement set (internal inconsistency)`,
+          ),
+        );
+      }
+      const manifest = yield* signNextManifest({
+        verified: state.verified,
+        environmentId: input.environmentId,
+        epoch: state.epoch,
+        previous: issueBase.previous,
+        entries: [
+          ...issueBase.entries.filter((entry) => entry.variableId !== target.variableId),
+          {
+            variableId: target.variableId,
+            status: "active" as const,
+            metaVersion: target.prev.metaVersion + 1,
+            metaSigHashHex: activation.metaSigHashHex,
+          },
+        ],
+        envMeta: issueBase.envMeta,
+        issuerUserId: input.writerUserId,
+        signingKey: input.signingKey,
+        chainHead: {
+          seq: state.verified.state.headSeq,
+          hashHex: state.verified.state.headHashHex,
+        },
+      });
+      // journal-before-send(3-F): activation はメタ操作の複合(§12-10 (1))
+      const intentId = yield* input.floor.appendIntent({
+        op: "meta-op",
+        environmentId: input.environmentId,
+        epoch: state.epoch,
+        dekCommitmentHex: null,
+        variableId: target.variableId,
+        manifestVersion: manifest.manifestVersion,
+        manifestSigHashHex: manifest.manifestSigHashHex,
+        declaredHead: {
+          seq: state.verified.state.headSeq,
+          hashHex: state.verified.state.headHashHex,
+        },
+      });
+      const accepted = yield* input.client.variables
+        .activate({
+          params: { ...params, variableId: target.variableId },
+          payload: {
+            value: signed.payload,
+            statement: activation.statement,
+            manifest: manifest.manifest,
+          },
+        })
+        .pipe(Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)));
+      return {
+        accepted,
+        floorVariable: {
+          ...valueFloor,
+          metaVersion: target.prev.metaVersion + 1,
+          metaSigHashHex: activation.metaSigHashHex,
+        },
+        selfManifest: {
+          manifestVersion: manifest.manifestVersion,
+          epoch: manifest.epoch,
+          manifestSigHashHex: manifest.manifestSigHashHex,
+        },
+        intentId,
+        state,
+      };
+    }
     // 既存変数の push はメタを変更しない — 床のメタ記録は検証済み latest のまま
     const latest = state.target.latest;
-    if (latest === null) {
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${state.target.variableId} has no verified latest value (internal inconsistency)`,
-        ),
-      );
-    }
     // 既存変数への値 push は 1-E′ / 3-F の適用外(§12-10 (3) — 効果確認に使える
     // 配布物が値 pull しかなく、書き込み経路へ var.read 監査を持ち込むため)。
     // 成功は従来どおりサーバーの CAS + 値署名検証と自床の commitPush が担う
@@ -737,7 +892,7 @@ function adoptConflictWinner(
     }
     const inconsistency = winnerInconsistency(
       state.target.variableId,
-      state.target.latest,
+      state.target.kind === "push" ? state.target.latest : null,
       winner,
       currentVersion,
     );
@@ -747,7 +902,7 @@ function adoptConflictWinner(
     const refreshed = yield* refreshEpochState(input, state, pulled.verified);
     return {
       ...refreshed,
-      target: { ...state.target, create: false, latest: winner },
+      target: { kind: "push", variableId: state.target.variableId, latest: winner },
       // winner の採用 = 既存変数への push(メタ状態を変えない — マニフェスト非発行)
       issueBase: null,
       warnings: [...state.warnings, ...pulled.warnings],
@@ -783,9 +938,11 @@ function nextState(
 ): Effect.Effect<PushState, CliError> {
   switch (outcome.kind) {
     case "version-conflict":
-      // create 経路への VersionConflict は「並行作成された」を意味する
-      // (自分の乱数 ID はサーバーに存在しない)ため、名前から解決し直す
-      if (state.target.create) {
+      // create 経路への VersionConflict は「並行作成された」、activate 経路へは
+      // 「並行 activation で値 version 1 が先に着地した」を意味する(自分の
+      // 送信は保存されていない)。どちらも名前から解決し直す(再解決が active に
+      // なった変数は通常 push 経路 — 値付き pull で winner を検証 — へ入る)
+      if (state.target.kind !== "push") {
         return reresolveTarget(input, state);
       }
       return adoptConflictWinner(input, state, outcome.currentVersion);
@@ -822,70 +979,51 @@ function nextState(
 }
 
 /**
- * 変数作成(メタ操作)の効果確認(AUTH_SPEC §12-10 (3) — 1-E′): 成功 =
- * 「2xx を受け取った」ではなく「検証可能な配布物で効果を確認した」。確認材料は
- * metadata-only pull(var.read を記録しない経路)で、自己発行マニフェストの
- * (version, epoch, signed-bytes hash) と自分の変数 ID の存在を照合する。
- *
- * - 配布マニフェストが自己発行と完全一致 → 確認完了(床のマニフェスト前進は
- *   確認 pull の検証済み観測 — enforceMetadataFloor — が join 済み)
- * - 版が前進していても自分の variableId(乱数採番 — 他者は生成できない)が
- *   検証済み集合に存在 → 効果は確認済み(直後の並行メタ操作に追い越された形)
- * - マニフェスト欠落(旧サーバーの黙殺)・別マニフェスト(同版異ハッシュ)・
- *   variableId の不在 → 失敗。**床は自己発行マニフェストへ前進していない**
- *   (自分の思い込みを床に書かない — 記録されるのは検証済み観測のみ)
+ * 変数作成 / activation(メタ操作)の効果確認(AUTH_SPEC §12-10 (3) — 1-E′)。
+ * 共有実装は meta-confirm.ts — 経路差は「版が前進していた場合の効果の見え方」
+ * のみ: 作成 = 自分の variableId(乱数採番 — 他者は生成できない)の存在、
+ * activation = 発行 metaVersion 以上のステートメント / tombstone の存在
+ * (発行版と同版で別ハッシュが勝った形 — 並行 activation に負けた 2xx — を
+ * 効果ありと誤読しない)。
  */
-function confirmVariableCreation(input: {
+function confirmPushMetaMutation(input: {
   readonly push: PushInput;
   readonly accepted: AcceptedPush;
   readonly selfManifest: ManifestFloor;
 }): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const variableId = input.accepted.state.target.variableId;
-    const metadata = yield* pullVerifiedEnvironmentMetadata({
-      client: input.push.client,
-      verified: input.accepted.state.verified,
-      environmentId: input.push.environmentId,
-      resync: input.push.resync,
-      floor: input.push.floor,
-    }).pipe(
-      Effect.mapError((error) =>
-        cliError(
-          `The variable creation was accepted (2xx), but the post-acceptance confirmation against the verified distribution failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}`,
-        ),
-      ),
-    );
-    const distributed = metadata.manifest;
-    const resolve = (outcome: Parameters<FloorHandle["resolveIntent"]>[1]) =>
-      input.accepted.intentId === null
-        ? Effect.void
-        : input.push.floor.resolveIntent(input.accepted.intentId, outcome);
-    if (
-      distributed.manifestVersion === input.selfManifest.manifestVersion &&
-      distributed.signedBytesHashHex === input.selfManifest.manifestSigHashHex
-    ) {
-      return yield* resolve("accepted");
-    }
-    const present =
-      metadata.variables.some((statement) => statement.variableId === variableId) ||
-      metadata.tombstones.some((tombstone) => tombstone.variableId === variableId);
-    if (distributed.manifestVersion > input.selfManifest.manifestVersion && present) {
-      // 並行メタ操作に追い越されたが、自分の作成の効果は検証済み集合に存在する
-      return yield* resolve("accepted-superseded");
-    }
-    if (distributed.manifestVersion === input.selfManifest.manifestVersion) {
-      yield* resolve("not-accepted");
-      return yield* Effect.fail(
-        cliError(
-          `The variable creation was accepted (2xx), but the server distributes a different manifest at the issued manifestVersion ${input.selfManifest.manifestVersion} (issued signed-bytes hash ${input.selfManifest.manifestSigHashHex}, distributed ${distributed.signedBytesHashHex}). The issued manifest was not stored — treating the creation as unconfirmed (AUTH_SPEC §12-10 (3)); the local floor was not advanced with the issued manifest`,
-        ),
-      );
-    }
-    return yield* Effect.fail(
-      cliError(
-        `The variable creation was accepted (2xx), but its effect could not be confirmed in the verified distribution (variable ${variableId} is absent and the distributed manifestVersion is ${distributed.manifestVersion} vs the issued ${input.selfManifest.manifestVersion}). Treating the creation as unconfirmed (AUTH_SPEC §12-10 (3)) — re-run the command after investigating the server`,
-      ),
-    );
+  const target = input.accepted.state.target;
+  const variableId = target.variableId;
+  const issued = input.accepted.floorVariable;
+  // 発行版と同版のステートメントは自分のハッシュとの一致まで要求する(同版・
+  // 異ハッシュ = 並行 activation に負けた形を「効果あり」と誤読しない)。
+  // 発行版より先へ進んだ形は latest-only の既知制約どおり祖先性を検査できない
+  // (作成経路の「乱数 ID の存在」と同じクラスの残余 — §14.3)
+  const statementConfirms = (statement: {
+    readonly metaVersion: number;
+    readonly metaSigHashHex: string;
+  }) =>
+    statement.metaVersion > issued.metaVersion ||
+    (statement.metaVersion === issued.metaVersion &&
+      statement.metaSigHashHex === issued.metaSigHashHex);
+  return confirmMetaMutation({
+    client: input.push.client,
+    verified: input.accepted.state.verified,
+    environmentId: input.push.environmentId,
+    resync: input.push.resync,
+    floor: input.push.floor,
+    selfManifest: input.selfManifest,
+    intentId: input.accepted.intentId,
+    describe: target.kind === "activate" ? "variable activation" : "variable creation",
+    effectVisible: (metadata) =>
+      target.kind === "create"
+        ? metadata.variables.some((statement) => statement.variableId === variableId) ||
+          metadata.tombstones.some((tombstone) => tombstone.variableId === variableId)
+        : metadata.variables.some(
+            (statement) => statement.variableId === variableId && statementConfirms(statement),
+          ) ||
+          metadata.tombstones.some(
+            (tombstone) => tombstone.variableId === variableId && statementConfirms(tombstone),
+          ),
   });
 }
 
@@ -919,13 +1057,14 @@ export function pushVariable(input: PushInput): Effect.Effect<PushedVersion, Cli
     });
     const acceptedState = outcome.state;
     if (outcome.selfManifest !== null) {
-      // メタ操作(変数作成)の成功の定義 = 検証可能な配布物での効果確認(1-E′)。
-      // **床への記録は確認通過後のみ**(§12-10 (3)): 2xx だけを根拠に自分の
-      // 書き込みを床へ植えると、サーバーが実際には保存していなかった場合に
-      // 「配布されない変数を床が要求し続ける」= 以後の pull がすべて
-      // variable-omitted で恒久拒否される(未確認の思い込みが equivocation
-      // 証拠に化ける)。env create が確認後にのみ v1 床を書くのと同じ規律
-      yield* confirmVariableCreation({
+      // メタ操作(変数作成 / activation)の成功の定義 = 検証可能な配布物での
+      // 効果確認(1-E′)。**床への記録は確認通過後のみ**(§12-10 (3)): 2xx
+      // だけを根拠に自分の書き込みを床へ植えると、サーバーが実際には保存して
+      // いなかった場合に「配布されない変数を床が要求し続ける」= 以後の pull が
+      // すべて variable-omitted で恒久拒否される(未確認の思い込みが
+      // equivocation 証拠に化ける)。env create が確認後にのみ v1 床を書くのと
+      // 同じ規律
+      yield* confirmPushMetaMutation({
         push: normalized,
         accepted: outcome,
         selfManifest: outcome.selfManifest,
