@@ -47,6 +47,51 @@ import { constantTimeEqual, randomHex, sha256Hex } from "./ids.ts";
 import { ServerKey } from "./server-key.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
+/**
+ * サインアップコードクッキーの値の形: `<state>.<code>`(AUTH_SPEC §3)。
+ *
+ * クッキーを発行時の OAuth state に**束縛**する: `__Host-` / path=/ のクッキーは
+ * 同一ブラウザの後続の無関係な OAuth 完了(別の state)にも同送されるため、
+ * 束縛が無いと持ち越されたコードが「そのフローの提示コード」として消費されうる
+ * (PR #133 pullfrog レビュー指摘)。callback は state 一致のときだけコードを
+ * 採用する — 型付きエラー終端(Set-Cookie を運ばない応答)にクッキーが残っても、
+ * 別フローの資格にはならない(残存の無害化)。
+ */
+function signupCookieValue(state: string, code: string): string {
+  return `${state}.${code}`;
+}
+
+/** クッキーからのコード復元(state 不一致・形式不正は「提示なし」に畳む)。 */
+function signupCodeFromCookie(cookie: string | undefined, state: string): string | null {
+  if (cookie === undefined) {
+    return null;
+  }
+  const dot = cookie.indexOf(".");
+  if (dot === -1) {
+    return null;
+  }
+  const code = cookie.slice(dot + 1);
+  return constantTimeEqual(cookie.slice(0, dot), state) && code !== "" ? code : null;
+}
+
+/**
+ * サインアップコードクッキーの単回失効(AUTH_SPEC §3)。リクエストが運んで
+ * きた場合のみ失効を積む(プレーンなログインの応答形は従来のまま変えない)。
+ * HTML / 302 を返す全終端 — 成功・拒否・CLI ブラウザ脚 — に適用する。型付き
+ * エラー終端(AuthFlow 400 / 429 — Set-Cookie を運ばない)に残るクッキーは
+ * state 束縛(上記)が無害化し、10 分の maxAge で自然消滅する。
+ */
+function expireSignupCookieIfPresent(
+  request: { readonly cookies: Readonly<Record<string, string | undefined>> },
+  response: HttpServerResponse.HttpServerResponse,
+): Effect.Effect<HttpServerResponse.HttpServerResponse> {
+  return request.cookies[SIGNUP_CODE_COOKIE] === undefined
+    ? Effect.succeed(response)
+    : HttpServerResponse.expireCookie(response, SIGNUP_CODE_COOKIE, HOST_COOKIE_OPTIONS).pipe(
+        Effect.orDie,
+      );
+}
+
 export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
   handlers
     .handle("authConfig", () =>
@@ -112,15 +157,19 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           return htmlResponse(renderSignupInviteInvalidPage(), 400);
         }
         // 検証済みコードの生値は HttpOnly クッキーで callback まで運ぶ(§3 —
-        // 消費はアカウント作成と同一トランザクション。ここでは消費しない)
+        // 消費はアカウント作成と同一トランザクション。ここでは消費しない)。
+        // 値はこの start の state に束縛する(signupCookieValue — 別フローへの
+        // 持ち越しを資格にしない)
         const response = yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
           name: STATE_COOKIE,
           value: state,
         });
-        return yield* HttpServerResponse.setCookie(response, SIGNUP_CODE_COOKIE, signupCode, {
-          ...HOST_COOKIE_OPTIONS,
-          maxAge: "10 minutes",
-        }).pipe(Effect.orDie);
+        return yield* HttpServerResponse.setCookie(
+          response,
+          SIGNUP_CODE_COOKIE,
+          signupCookieValue(state, signupCode),
+          { ...HOST_COOKIE_OPTIONS, maxAge: "10 minutes" },
+        ).pipe(Effect.orDie);
       }),
     )
     .handle("githubCallback", ({ request, query }) =>
@@ -147,7 +196,11 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // CLI 分岐の全終端はブラウザ向け HTML(handlers-auth-cli.ts)であり、
         // セッションを発行しない(§4-1 (3) — 成果物は poll の PAT のみ)
         if (isCliCallbackState(query.state)) {
-          return yield* handleCliCallback(request, query);
+          // CLI ブラウザ脚はサインアップコードを一切参照しない(裁定 DH —
+          // コードは CLI 経路に載らない)が、同一ブラウザに残ったクッキーは
+          // ここでも単回失効させる(§3 の単回規律 — 参照されない残存を残さない)
+          const cliResponse = yield* handleCliCallback(request, query);
+          return yield* expireSignupCookieIfPresent(request, cliResponse);
         }
         const expectedState = request.cookies[STATE_COOKIE];
         // §3-2: state 検証(不一致は即拒否)
@@ -168,23 +221,13 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // GitHub トークンはここで役目を終える(保存しない。§3 / §10)
         const identities = yield* IdentityRepo;
         // サインアップ招待コード(AUTH_SPEC §3): 開始時事前検証を通った生値が
-        // クッキーで届く。ハッシュのみを渡し、消費はアカウント作成と同一
-        // トランザクション内の CAS(repo 側)。既存ユーザーの解決では消費されない
-        const signupCode = request.cookies[SIGNUP_CODE_COOKIE];
+        // クッキーで届く。値は発行時 state に束縛されており、一致しない持ち越し
+        // クッキー(別フロー由来)は「提示なし」に畳む(signupCodeFromCookie)。
+        // ハッシュのみを渡し、消費はアカウント作成と同一トランザクション内の
+        // CAS(repo 側)。既存ユーザーの解決では消費されない
+        const signupCode = signupCodeFromCookie(request.cookies[SIGNUP_CODE_COOKIE], query.state);
         const signupInviteTokenHash =
-          signupCode === undefined ? null : yield* Effect.promise(() => sha256Hex(signupCode));
-        // クッキーは終端応答の形によらず単回で失効させる(§3 — 成功・拒否共通)。
-        // ただしプレーンなログイン(クッキーなし)の応答形は従来のまま変えない
-        const expireSignupCookie = (
-          response: HttpServerResponse.HttpServerResponse,
-        ): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
-          signupCode === undefined
-            ? Effect.succeed(response)
-            : HttpServerResponse.expireCookie(
-                response,
-                SIGNUP_CODE_COOKIE,
-                HOST_COOKIE_OPTIONS,
-              ).pipe(Effect.orDie);
+          signupCode === null ? null : yield* Effect.promise(() => sha256Hex(signupCode));
         const resolved = yield* identities.getOrCreateUser(
           identity,
           Date.now(),
@@ -208,7 +251,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
             STATE_COOKIE,
             HOST_COOKIE_OPTIONS,
           ).pipe(Effect.orDie);
-          return yield* expireSignupCookie(deniedResponse);
+          return yield* expireSignupCookieIfPresent(request, deniedResponse);
         }
         const sessions = yield* SessionService;
         const issued = yield* sessions.issueSession(resolved.userId, "github_oauth");
@@ -224,7 +267,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           STATE_COOKIE,
           HOST_COOKIE_OPTIONS,
         ).pipe(Effect.orDie);
-        return yield* expireSignupCookie(withStateExpired);
+        return yield* expireSignupCookieIfPresent(request, withStateExpired);
       }),
     )
     .handle("me", () =>

@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   BASE,
+  CLI_STATE_COOKIE,
   cliBrowserLeg,
   loginSession,
   readCookieValue,
@@ -26,6 +27,7 @@ import {
   SIGNUP_CODE_COOKIE,
   signupAttempt,
   startCliFlow,
+  STATE_COOKIE,
 } from "./support/auth.ts";
 
 beforeEach(async () => {
@@ -226,6 +228,69 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
       .bind(invite.id)
       .first<{ status: string }>();
     expect(row?.status).toBe("pending");
+  });
+
+  it("a cookie carried into a different flow is not treated as a presented code (state 束縛 — PR #133 レビュー対応)", async () => {
+    const invite = await seedSignupInvite();
+    // コード付き start でクッキーを得る(このフローは放棄し、コードは使わない)
+    const abandoned = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {
+      redirect: "manual",
+    });
+    expect(abandoned.status).toBe(302);
+    const staleCookie = readCookieValue(abandoned.headers.getSetCookie(), SIGNUP_CODE_COOKIE);
+    expect(staleCookie).not.toBeNull();
+    // 同一ブラウザの後続の**無関係な**フロー(プレーンな start = 別 state)へ持ち越す
+    const plain = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
+    const state = new URL(plain.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    const callback = await SELF.fetch(`${BASE}/auth/github/callback?code=code-717&state=${state}`, {
+      headers: {
+        cookie: `${STATE_COOKIE}=${state}; ${SIGNUP_CODE_COOKIE}=${staleCookie ?? ""}`,
+      },
+      redirect: "manual",
+    });
+    // state 不一致のクッキーは「提示なし」に畳まれる — 持ち越しでの消費は起きない
+    expect(callback.status).toBe(403);
+    expect(await callback.text()).toContain("Sign-ups are invite-only");
+    const row = await env.DB.prepare("SELECT status FROM signup_invites WHERE id = ?")
+      .bind(invite.id)
+      .first<{ status: string }>();
+    expect(row?.status).toBe("pending");
+    // 残存クッキーはこの終端でも単回失効する
+    const expired = callback.headers
+      .getSetCookie()
+      .find((cookie) => cookie.startsWith(`${SIGNUP_CODE_COOKIE}=`));
+    expect(expired).toContain("Max-Age=0");
+  });
+
+  it("the CLI browser leg never reads a signup code but expires a leftover cookie (裁定 DH + 単回規律)", async () => {
+    const invite = await seedSignupInvite();
+    const abandoned = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {
+      redirect: "manual",
+    });
+    const staleCookie = readCookieValue(abandoned.headers.getSetCookie(), SIGNUP_CODE_COOKIE);
+    // CLI ブラウザ脚(コードは CLI 経路に載らない)に残存クッキーを同送する
+    const started = await startCliFlow();
+    const verify = await SELF.fetch(started.verificationUrl, { redirect: "manual" });
+    expect(verify.status).toBe(302);
+    const state = new URL(verify.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    const bound = readCookieValue(verify.headers.getSetCookie(), CLI_STATE_COOKIE);
+    const callback = await SELF.fetch(`${BASE}/auth/github/callback?code=code-718&state=${state}`, {
+      headers: {
+        cookie: `${CLI_STATE_COOKIE}=${bound ?? ""}; ${SIGNUP_CODE_COOKIE}=${staleCookie ?? ""}`,
+      },
+      redirect: "manual",
+    });
+    // アカウント不在 → サインアップ案内(invite 文言)。コードは消費されない
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).toContain("invite-only");
+    const row = await env.DB.prepare("SELECT status FROM signup_invites WHERE id = ?")
+      .bind(invite.id)
+      .first<{ status: string }>();
+    expect(row?.status).toBe("pending");
+    const expired = callback.headers
+      .getSetCookie()
+      .find((cookie) => cookie.startsWith(`${SIGNUP_CODE_COOKIE}=`));
+    expect(expired).toContain("Max-Age=0");
   });
 
   it("applies the policy at acceptance time: a flip to closed between start and callback denies (§3)", async () => {
