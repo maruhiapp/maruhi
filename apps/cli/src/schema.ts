@@ -32,7 +32,7 @@ import type { MaruhiClient } from "./api.ts";
 import { displayText, escapeText, logWarnings } from "./display.ts";
 import { findHighEntropySubstring } from "./entropy.ts";
 import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedSchemaFields } from "./floor-check.ts";
+import type { FloorHandle, VerifiedSchemaFields, VerifiedTombstone } from "./floor-check.ts";
 import { rejectIntentOnServerRejection, type VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import type { ManifestDigestEntry } from "./manifest.ts";
@@ -189,6 +189,18 @@ export interface SchemaSetInput {
   /** 著者(自分の内部 user_id)と master sig 鍵(§4.2)。 */
   readonly authorUserId: string;
   readonly signingKey: CryptoKey;
+  /**
+   * true = 宣言作成のみ許す(`maruhi schema import` — 設計文書 §1-3)。解決先が
+   * 既存変数(active / declared)だった場合は再発行に切り替えず型付きエラーに
+   * する — 再発行は `schema set` の領分で、import は既存名を既定でスキップ
+   * した後の並行作成レースだけがここへ到達する。
+   */
+  readonly requireCreation?: boolean;
+  /**
+   * true = disabled advisory の事前案内を出さない(import が一度だけ自前で
+   * 出すため — 変数ごとの繰り返しはノイズ。受理の正はサーバーのまま §12-11)。
+   */
+  readonly quietDisabledAdvisory?: boolean;
 }
 
 /** schema set の結果(表示は呼び出し側 — effect-cli.ts)。 */
@@ -222,9 +234,11 @@ function applyUpdates(
 }
 
 /** 解決結果: 対象の直前ステートメント(null = 未存在 → 宣言作成)と発行材料。 */
-interface SchemaSetState {
+export interface SchemaSetState {
   readonly verified: VerifiedProject;
   readonly target: VerifiedVariableStatement | null;
+  /** 検証済み tombstone(var rm の「削除済み」判定材料 — 名前を保持する §4.2)。 */
+  readonly tombstones: readonly VerifiedTombstone[];
   readonly manifestBase: {
     readonly previous: { readonly manifestVersion: number; readonly signedBytesHashHex: string };
     readonly entries: readonly ManifestDigestEntry[];
@@ -234,8 +248,19 @@ interface SchemaSetState {
   readonly warnings: readonly string[];
 }
 
-function resolveSchemaTarget(
-  input: SchemaSetInput,
+/**
+ * 名前 → メタ操作対象の解決(検証済みステートメント経由 — §12-2)と、複合の
+ * マニフェスト発行材料の組み立て。schema set(本モジュール)と var rm
+ * (var-rm.ts)が共有する(解決規則が 2 実装に割れると片方だけが同名重複の
+ * 拒否 — equivocation 検出 — を失う)。
+ */
+export function resolveSchemaTarget(
+  input: {
+    readonly client: MaruhiClient;
+    readonly environmentId: EnvironmentId;
+    readonly resync: Effect.Effect<VerifiedProject, CliError>;
+    readonly floor: FloorHandle;
+  },
   verified: VerifiedProject,
   name: string,
 ): Effect.Effect<SchemaSetState, CliError> {
@@ -252,6 +277,7 @@ function resolveSchemaTarget(
     return {
       verified: metadata.verified,
       target: matches[0] ?? null,
+      tombstones: metadata.tombstones,
       manifestBase: {
         previous: {
           manifestVersion: metadata.manifest.manifestVersion,
@@ -353,6 +379,15 @@ function attemptSchemaSet(
     // description "")を基準にする(引き継ぎ元がない — 第 3 ラウンド裁定)
     const base = target?.schema ?? CREATION_DEFAULTS;
     const merged = applyUpdates(base, input.updates);
+    if (input.requireCreation === true && target !== null) {
+      // 宣言専用モード(import): 既存変数への再発行に黙って切り替えない —
+      // 初回解決後の並行作成(レース)だけがここへ到達する
+      return yield* Effect.fail(
+        cliError(
+          `Variable ${displayText(name)} already exists (created concurrently). Import declares new variables only — reissue an existing variable's schema with \`maruhi schema set\``,
+        ),
+      );
+    }
     const rejection = preSignRejection(state, input.updates, merged, name);
     if (rejection !== null) {
       return yield* Effect.fail(rejection);
@@ -501,6 +536,7 @@ export function schemaSetOp(
     // schemaPolicy advisory からの事前案内(SHOULD — §1-2。検証規則の入力に
     // しない: 案内のみで送信は行う — 受理の正はサーバー)
     if (
+      input.quietDisabledAdvisory !== true &&
       initial.advisorySchemaPolicy === "disabled" &&
       (initial.target === null || initial.target.layoutVersion === 1)
     ) {

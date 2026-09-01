@@ -446,13 +446,27 @@ required has no value yet. None of this changes behavior for projects whose
 `schemaPolicy` is `disabled` or for servers that predate the S2 release:
 enabling schemas remains the explicit per-project step 3 above.
 
-Known limitation: the CLI cannot yet **delete** a variable (declared or
-active) — a mistakenly declared name stays visible in `maruhi schema` until a
-delete command ships. A mistaken *required* declaration does not keep
-`maruhi run` broken, though: `maruhi schema set <NAME> --optional` downgrades
-the contract and `run` proceeds (declarations default to required, so a typo
-in a variable name fails `run` loudly rather than silently — that is the
-intended failure direction).
+**Deleting a variable (S4)**: `maruhi var rm <NAME>` deletes a variable —
+declared (no value) or active (every stored value version is deleted
+immediately). Deletion is terminal: a deleted variable cannot be restored,
+and its variable ID is never reused (the *name* can be reused by a new
+variable). The command asks you to re-type the variable name as an explicit
+confirmation; in a non-interactive environment (scripts, CI) it refuses
+unless `--force` is passed. A mistaken *required* declaration does not need
+deletion to unbreak `maruhi run`: `maruhi schema set <NAME> --optional`
+downgrades the contract and `run` proceeds (declarations default to required,
+so a typo in a variable name fails `run` loudly rather than silently — that
+is the intended failure direction).
+
+**Bootstrapping a schema from a .env file (S4)**: `maruhi schema import
+<file>` reads a `.env` / `.env.example` file locally, proposes one schema
+candidate per variable (name, inferred type, required, a description from the
+preceding comment) and asks for per-variable approval — values are observed
+for type inference only and are **never sent** unless you explicitly choose
+to push one (which end-to-end encrypts it, like any `maruhi push`). The
+per-variable approval is the point of the ceremony, so there is no `--yes`
+and the command refuses non-interactive environments and AI agents. On
+completion it offers (and never defaults to) deleting the source file.
 
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
