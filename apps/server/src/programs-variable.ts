@@ -566,6 +566,13 @@ export const renameVariableProgram = (
     });
     const audit = yield* AuditStore;
     const now = Date.now();
+    // 監査イベントの分岐(AUDIT_SPEC §3.3 — 2026-09-01): 名前が実際に変わった
+    // 再発行のみ var.renamed、名前不変の再発行(スキーマ欄の設定・変更 —
+    // §12-5 のスキーマ再発行)は var.schema_reissued。ワイヤは同一操作形の
+    // ため受理時の直前ステートメント名との byte 比較で分岐する(改名して
+    // いない操作を「renamed」と記録しない)。名前とスキーマ欄の同時変更は
+    // var.renamed 1 行(名前変更が主事象 — 1 操作 1 行の記録規律)
+    const event = statement.name === variable.name ? "var.schema_reissued" : "var.renamed";
     yield* Effect.sync(() => {
       store.write.insertVariableMetaStatement(
         environmentId,
@@ -577,7 +584,7 @@ export const renameVariableProgram = (
       );
       acceptedManifest.writeSync(now);
       audit.appendSync(
-        dataEvent(actor, now, "var.renamed", {
+        dataEvent(actor, now, event, {
           environmentId,
           variableId,
           payload: { name: statement.name },
