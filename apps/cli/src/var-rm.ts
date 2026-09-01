@@ -310,14 +310,26 @@ export function varRmOp(
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
     const name = input.name.normalize("NFC");
     const initial = yield* resolveDeletionTarget(input, input.verified, name);
-    // 確認は署名・送信・リトライループより前に 1 回だけ(確認済みの意思を
-    // CAS リトライが引き継ぐ — 再確認はしない: 対象は同一 variableId のまま)
+    // 確認は署名・送信・リトライループより前に 1 回だけ。確認が束縛するのは
+    // **variableId**(名前ではない): 再解決は名前で行うため、並行削除 + 同名の
+    // 新規作成で別の変数が同じ名前に載ることがある — その形は下の recover が
+    // 型付きエラーで止める(確認していない変数を消さない — pullfrog レビュー対応)
     yield* ensureDeletionConfirmed(input, initial.target, name);
+    const confirmedVariableId = initial.target.variableId;
     const accepted = yield* retryOnConflict(initial, {
       maxAttempts: MAX_ATTEMPTS,
       attempt: (state) => attemptDeletion(input, state),
       classify: classifyDeletionConflict,
-      recover: (state) => resolveDeletionTarget(input, state.verified, name),
+      recover: (state) =>
+        resolveDeletionTarget(input, state.verified, name).pipe(
+          Effect.filterOrFail(
+            (next) => next.target.variableId === confirmedVariableId,
+            () =>
+              cliError(
+                `Variable ${displayText(name)} now resolves to a different variable than the one you confirmed (the original was deleted or renamed concurrently, and another variable took the name). Nothing was deleted by this run — re-run maruhi var rm to confirm against the current state`,
+              ),
+          ),
+        ),
       exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
     });
     // 効果確認(1-E′ — §12-10 (3)): 成功の定義は検証可能な配布物での確認。

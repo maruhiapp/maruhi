@@ -349,10 +349,17 @@ function approveCandidate(
   isNameTaken: (name: string) => boolean,
 ): Effect.Effect<ApprovalOutcome, CliError> {
   return Effect.gen(function* () {
-    const observed = observeValue(entry.value);
-    const valueNote = observed.looksReal
-      ? "looks like a real value (not shown)"
-      : "empty or a placeholder";
+    // 忠実に解釈できたと言えない値(閉じない引用符・引用値内のエスケープ —
+    // env-file.ts)は観察にも掛けず、push の提案も出さない(fail-closed —
+    // 誤読した値を暗号化して黙って保存する経路を作らない)
+    const observed = entry.valueFaithful
+      ? observeValue(entry.value)
+      : ({ varType: "", looksReal: false } as const);
+    const valueNote = entry.valueFaithful
+      ? observed.looksReal
+        ? "looks like a real value (not shown)"
+        : "empty or a placeholder"
+      : "could not be parsed faithfully by the line-based parser (unclosed quote or escapes) — pushing it will not be offered";
     const draft: CandidateDraft = {
       name: entry.name,
       varType: observed.varType,
@@ -475,15 +482,17 @@ function pushApprovedValue(
 
 /**
  * 完了時の元ファイル削除の提案(設計文書 §1-3 (4) — 明示確認の上でのみ削除。
- * 既定は削除しない)。
+ * 既定は削除しない)。呼び出し側が「全候補が今回宣言された」ことを確認済み —
+ * プロンプトの文言はその事実を主張する。
  */
 function offerSourceDeletion(
   input: SchemaImportInput,
+  declared: number,
 ): Effect.Effect<{ readonly deleted: boolean }, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const answer = yield* io.promptLine({
-      prompt: `Delete ${displayText(input.filePath)} now that its variables are declared as a signed schema? [y/N]: `,
+      prompt: `All ${countNoun(declared, "variable")} in ${displayText(input.filePath)} are now declared as a signed schema — its last job is done. Delete the file? [y/N]: `,
     });
     if (!isYes(answer)) {
       return { deleted: false };
@@ -517,9 +526,16 @@ function runApprovalLoop(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const importedNames = new Set<string>();
-    const isNameTaken = (name: string) => existingNames.has(name) || importedNames.has(name);
+    // 編集(e)での改名は、ファイル内の**未処理の候補**の名前とも衝突させない
+    // (後続の候補が requireCreation の「already exists」で import ごと止まる
+    // ローカル衝突を、編集時点の警告で防ぐ — pullfrog レビュー対応)
+    const fileNames = new Set(entries.map((candidate) => candidate.name));
     const counts = { declared: 0, activated: 0, skipped: 0, stopped: false };
     for (const entry of entries) {
+      const isNameTaken = (name: string) =>
+        existingNames.has(name) ||
+        importedNames.has(name) ||
+        (fileNames.has(name) && name !== entry.name);
       if (existingNames.has(entry.name)) {
         // 既存の active / declared と同名の候補は既定でスキップして表示する —
         // 再発行は `schema set` の領分(設計文書 §1-3 の線引き)
@@ -582,12 +598,17 @@ export function schemaImportOp(
     yield* io.log(
       `Import finished: ${countNoun(declared, "variable")} declared (${activated} with a value pushed), ${countNoun(skipped, "candidate")} skipped${stopped ? " — stopped before the end" : ""}`,
     );
-    // 完了時の削除提案(設計文書 §1-3 (4))。q での中断時は提案しない(未処理の
-    // 候補が残っている — ファイルの「最後の仕事」がまだ終わっていない)
-    if (stopped) {
+    // 完了時の削除提案(設計文書 §1-3 (4))は「ファイルの全候補が今回宣言
+    // された」実行に限る: q での中断・スキップした候補(s / 既存名)・解釈
+    // できなかった行が 1 つでも残るなら、ファイルの「最後の仕事」はまだ
+    // 終わっていない(pullfrog レビュー対応 — 全スキップの実行に「宣言済み」を
+    // 主張する提案を出さない)
+    const everyCandidateDeclared =
+      !stopped && declared > 0 && skipped === 0 && parsed.skipped.length === 0;
+    if (!everyCandidateDeclared) {
       return { declared, activated, skipped, deletionOffered: false, deleted: false };
     }
-    const deletion = yield* offerSourceDeletion(input);
+    const deletion = yield* offerSourceDeletion(input, declared);
     return { declared, activated, skipped, deletionOffered: true, deleted: deletion.deleted };
   });
 }

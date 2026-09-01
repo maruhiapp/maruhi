@@ -12,9 +12,17 @@
 //   - `export KEY=VALUE`(接頭辞を剥がす)
 //   - `#` 始まりのコメント行(**直前の連続コメント** → description 候補。
 //     空行・非コメント行で候補はリセットする)
-//   - 値の両端の一致する引用符('…' / "…")は 1 対だけ剥がす(エスケープ・
-//     変数展開・複数行値は解釈しない — 解釈の複雑化は値の誤読 = 誤った型推論に
-//     しかならず、宣言はどのみち利用者が対話で承認・編集する)
+//   - 未引用の値のインライン `#` コメント(`PORT=8080 # listen port`)は落とす
+//     (dotenv / `docker --env-file` と同じ線 — コメントを値の一部として
+//     push 経路へ運ばない)
+//   - 値の両端の一致する引用符('…' / "…")は 1 対だけ剥がす。エスケープ・
+//     変数展開・複数行の引用値は**解釈しない**。ここが重要なのは、解釈の単純化が
+//     型推論(観察のみ)だけでなく、利用者が明示選択した場合の**値 push
+//     (activation)にも到達する**ため: 忠実に解釈できたと言えない値
+//     (閉じない引用符・引用値内のエスケープ / 同種引用符)は
+//     `valueFaithful = false` で運び、schema import は push の提案自体を出さない
+//     (fail-closed — 誤読した値を暗号化して黙って保存する経路を作らない。
+//     宣言・型編集は従来どおり利用者の対話承認が正す)
 //
 // 受理できない行は**行番号と理由だけ**を持って skipped に落とす(行の内容は
 // 運ばない — 壊れた行は値そのものでありうる)。
@@ -55,6 +63,13 @@ export interface EnvFileEntry {
   readonly line: number;
   /** 値(読み取り直後に Redacted — 剥がすのは observeValue の観察のみ)。 */
   readonly value: Redacted.Redacted<string>;
+  /**
+   * true = この行ベースのパーサが値を忠実に解釈できたと言える(未引用 +
+   * インラインコメント除去、または完結した引用でエスケープ・同種引用符を
+   * 含まない)。false の値は observeValue に掛けず、push の提案も出さない
+   * (fail-closed — ヘッダコメント参照)。
+   */
+  readonly valueFaithful: boolean;
   /** 直前の連続コメントから組んだ description 候補("" = 候補なし)。 */
   readonly descriptionCandidate: string;
 }
@@ -65,15 +80,32 @@ export interface ParsedEnvFile {
   readonly skipped: readonly EnvFileSkippedLine[];
 }
 
-/** 値の両端の一致する引用符 1 対を剥がす(エスケープは解釈しない)。 */
-function unquote(raw: string): string {
-  if (raw.length >= 2) {
-    const first = raw[0];
-    if ((first === '"' || first === "'") && raw.endsWith(first)) {
-      return raw.slice(1, -1);
+/** 値の解釈結果(faithful = false は push 提案の抑制材料 — ヘッダコメント)。 */
+interface ParsedValue {
+  readonly text: string;
+  readonly faithful: boolean;
+}
+
+/**
+ * 値部分の解釈: 引用符 1 対の除去と、未引用値のインライン `#` コメント除去。
+ * エスケープ・変数展開・複数行は解釈しない — 忠実と言えない形(閉じない
+ * 引用符・引用値内の `\` / 同種引用符)は faithful = false で返す。
+ */
+function parseValue(raw: string): ParsedValue {
+  const first = raw[0];
+  if (first === '"' || first === "'") {
+    if (raw.length >= 2 && raw.endsWith(first)) {
+      const inner = raw.slice(1, -1);
+      // エスケープ(dotenv の二重引用符は \n 等を展開する)や引用符自身の
+      // 混入は、このパーサでは値を忠実に再構成できない
+      return { text: inner, faithful: !inner.includes("\\") && !inner.includes(first) };
     }
+    // 開き引用符が閉じない(複数行の引用値・壊れた行)
+    return { text: raw, faithful: false };
   }
-  return raw;
+  // 未引用: 空白に続く `#` 以降はインラインコメント(dotenv / docker --env-file
+  // と同じ線)。値の一部として push 経路へ運ばない
+  return { text: raw.replace(/\s+#.*$/, "").trim(), faithful: true };
 }
 
 /**
@@ -121,13 +153,13 @@ export function parseEnvFile(content: string): ParsedEnvFile {
       continue;
     }
     seen.add(name);
+    const parsedValue = parseValue(assignment.slice(separator + 1).trim());
     entries.push({
       name,
       line: lineNumber,
       // 値はここで包む — 以降は observeValue の観察でしか剥がさない
-      value: Redacted.make(unquote(assignment.slice(separator + 1).trim()), {
-        label: "env-file-value",
-      }),
+      value: Redacted.make(parsedValue.text, { label: "env-file-value" }),
+      valueFaithful: parsedValue.faithful,
       descriptionCandidate: comments.join(" ").trim(),
     });
     comments = [];

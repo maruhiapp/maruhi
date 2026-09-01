@@ -162,6 +162,26 @@ describe("parseEnvFile(最小 .env パーサ — env-file.ts)", () => {
     ]);
   });
 
+  it("未引用値のインライン # コメントは値の一部にしない(dotenv / docker --env-file の線)", () => {
+    const parsed = parseEnvFile("PORT=8080 # listen port\n");
+    expect(Redacted.value(parsed.entries[0]!.value)).toBe("8080");
+    expect(parsed.entries[0]?.valueFaithful).toBe(true);
+    // コメントを落とした値で型推論が働く
+    expect(observe("8080")).toEqual({ varType: "number", looksReal: true });
+  });
+
+  it("忠実に解釈できない値(閉じない引用符・引用値内のエスケープ)は valueFaithful = false", () => {
+    const parsed = parseEnvFile(
+      ['BROKEN="multi', 'ESCAPED="a\\nb"', "SINGLE='it''s'", 'FINE="plain value"'].join("\n"),
+    );
+    const byName = new Map(parsed.entries.map((entry) => [entry.name, entry]));
+    expect(byName.get("BROKEN")?.valueFaithful).toBe(false);
+    expect(byName.get("ESCAPED")?.valueFaithful).toBe(false);
+    expect(byName.get("SINGLE")?.valueFaithful).toBe(false);
+    expect(byName.get("FINE")?.valueFaithful).toBe(true);
+    expect(Redacted.value(byName.get("FINE")!.value)).toBe("plain value");
+  });
+
   it("observeValue は形の観察だけを返す(boolean / number / url / 未指定・実値らしさ)", () => {
     expect(observe("true")).toEqual({ varType: "boolean", looksReal: true });
     expect(observe("8080")).toEqual({ varType: "number", looksReal: true });
@@ -308,6 +328,20 @@ describe("承認 → declared 登録(値は送信しない)", () => {
     expect(env.prompts).toHaveLength(2);
     expect(existsSync(file)).toBe(true);
   });
+
+  it("編集(e)の改名はファイル内の未処理の候補とも衝突させない(ローカル衝突の事前警告)", async () => {
+    const { env, state } = await startImportEnv();
+    const file = await writeEnvFile(["ALPHA=", "BETA="].join("\n"));
+    // ALPHA を BETA(後続の候補名)へ改名しようとする → 警告して現状維持 →
+    // そのまま承認。BETA も承認
+    env.setPromptResponses(["e", "BETA", "", "", "", "y", "y", ""]);
+    expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("already exists in the environment or in this import");
+    const names = state.mutations.map(
+      (m) => (m.request.body as { statement: Record<string, unknown> }).statement["name"],
+    );
+    expect(names).toEqual(["ALPHA", "BETA"]);
+  });
 });
 
 describe("値 push(activation)の明示選択", () => {
@@ -339,6 +373,19 @@ describe("値 push(activation)の明示選択", () => {
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create", "create"]);
     expect(env.prompts).toHaveLength(3);
+  });
+
+  it("忠実に解釈できない値では push の提案を出さない(fail-closed — 誤読値を送信しない)", async () => {
+    const { env, state } = await startImportEnv();
+    // 閉じない引用符(複数行の引用値の 1 行目の形)— 実値ではあるが、この
+    // パーサでは忠実に再構成できたと言えない
+    const file = await writeEnvFile('CERT="-----BEGIN RSA\n');
+    env.setPromptResponses(["y", ""]);
+    expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
+    // 宣言はされるが activate は起きない・push プロンプトも出ない
+    expect(state.mutations.map((m) => m.kind)).toEqual(["create"]);
+    expect(env.prompts).toHaveLength(2);
+    expect(env.errors.join("\n")).toContain("could not be parsed faithfully");
   });
 });
 
@@ -392,6 +439,27 @@ describe("完了時の削除提案(既定は削除しない)", () => {
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(existsSync(file)).toBe(false);
     expect(env.logs.join("\n")).toContain("Deleted");
+  });
+
+  it("スキップした候補が残る実行では提案しない(全候補が宣言されたときだけ)", async () => {
+    const { env, state } = await startImportEnv();
+    const file = await writeEnvFile(["A=", "B="].join("\n"));
+    // A は宣言・B はスキップ → ファイルの「最後の仕事」は終わっていない
+    env.setPromptResponses(["y", "s"]);
+    expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
+    expect(state.mutations.map((m) => m.kind)).toEqual(["create"]);
+    // プロンプトは承認 2 回だけ(削除提案は出ない)
+    expect(env.prompts).toHaveLength(2);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it("解釈できなかった行が残るファイルにも提案しない", async () => {
+    const { env } = await startImportEnv();
+    const file = await writeEnvFile(["A=", "not an assignment line"].join("\n"));
+    env.setPromptResponses(["y"]);
+    expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
+    expect(env.prompts).toHaveLength(1);
+    expect(existsSync(file)).toBe(true);
   });
 });
 

@@ -22,7 +22,10 @@ import {
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
+  headOf,
   makeTestUser,
+  manifestFor,
+  manifestHashOf,
   statementFor,
   type TestUser,
   type WireDistributedEnvironmentStatement,
@@ -30,7 +33,7 @@ import {
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
-import { MockServer } from "./support/server.ts";
+import { type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const DESCRIPTION = "Primary endpoint of the shop";
@@ -242,6 +245,96 @@ describe("対象の解決(署名・送信より前の型付きエラー)", () =>
     expect(await runCli(["var", "rm", "NO_SUCH", "--force"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not exist in this environment");
     expect(state.mutations).toEqual([]);
+  });
+});
+
+describe("CAS リトライと確認済み対象の束縛", () => {
+  it("再解決が別の variableId を返したら型付きエラーで止まる(確認していない変数を消さない)", async () => {
+    // 確認後の 409(並行メタ操作)→ 再解決で、同じ名前に**別の変数**が載って
+    // いる形(並行削除 + 同名の新規作成)。確認は variableId を束縛するので、
+    // このリトライは進んではならない(pullfrog レビュー対応)
+    const replacement = await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-replacement",
+      name: "SHOP_URL",
+      author: owner,
+      head: { seq: 1, hashHex: built.projectId },
+      status: "declared",
+      schema: { varType: "url", required: true, description: "" },
+    });
+    const firstManifest = await manifestFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      issuer: owner,
+      head: headOf(built, 2),
+      envStatement,
+      statements: [declaredV2],
+    });
+    // 2 回目以降の配布は「置き換え後」の集合(マニフェストは prev 連鎖で前進 —
+    // 同版異ハッシュの equivocation 拒否と混同させない)
+    const secondManifest = await manifestFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      issuer: owner,
+      head: headOf(built, 2),
+      envStatement,
+      statements: [replacement],
+      manifestVersion: 2,
+      prevManifestSigHashHex: await manifestHashOf(built.projectId, firstManifest),
+    });
+    let metadataCalls = 0;
+    const deleteCalls: MockRequest[] = [];
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: built.hashes[built.hashes.length - 1],
+        },
+      })),
+      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull/metadata`, () => {
+        metadataCalls += 1;
+        const first = metadataCalls === 1;
+        return {
+          status: 200,
+          json: {
+            environmentId: ENV_ID,
+            currentEpoch: 1,
+            statement: envStatement,
+            variables: first ? [declaredV2] : [replacement],
+            deletedVariables: [],
+            manifest: first ? firstManifest : secondManifest,
+          },
+        };
+      }),
+      (request) => {
+        if (request.method !== "DELETE") {
+          return null;
+        }
+        deleteCalls.push(request);
+        return { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } };
+      },
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    env.setPromptResponses(["SHOP_URL"]);
+    expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("different variable than the one you confirmed");
+    // 409 で拒否された 1 回だけ — 別 variableId への DELETE は送っていない
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0]?.path.endsWith("/variables/v-declared")).toBe(true);
   });
 });
 
