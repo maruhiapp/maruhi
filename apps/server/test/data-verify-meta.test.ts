@@ -55,9 +55,12 @@ async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]):
     VAR,
   );
   expect(rows.map((row) => row["meta_version"])).toEqual([...expectedMetaVersions]);
+  // 受理されたメタ操作数との不変条件(rename 経路は名前の変更有無で
+  // var.renamed / var.schema_reissued に分岐する — AUDIT_SPEC §3.3 2026-09-01。
+  // 名前不変の受理ケースを将来足しても不変条件が黙って割れないよう両方数える)
   const renamedAudits = await queryProjectDo(
     projectId,
-    "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.renamed', 'var.deleted')",
+    "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.renamed', 'var.schema_reissued', 'var.deleted')",
   );
   expect(renamedAudits[0]?.["n"]).toBe(Math.max(0, expectedMetaVersions.length - 1));
 }
