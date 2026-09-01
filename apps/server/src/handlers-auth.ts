@@ -48,21 +48,30 @@ import { ServerKey } from "./server-key.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
 /**
- * サインアップコードクッキーの値の形: `<state>.<code>`(AUTH_SPEC §3)。
+ * サインアップコードクッキーの値の形: `<state>.<sha256(code)>`(AUTH_SPEC §3)。
  *
- * クッキーを発行時の OAuth state に**束縛**する: `__Host-` / path=/ のクッキーは
+ * **生値ではなくハッシュを運ぶ**(PR #133 第 2 次探索): callback が必要とする
+ * のはハッシュ照合(signup_invites.token_hash)と消費 CAS のみで、生値の再登場
+ * 点が存在しない。ハッシュ運搬により、コード生値のワイヤ出現は start リクエスト
+ * の 1 回だけになり、ブラウザのクッキーストア(devtools・同期・拡張の可視面)に
+ * 生値が残らない — 「生値は発行時に一度だけ」(§5 / §15)の規律の運搬面への適用。
+ *
+ * クッキーは発行時の OAuth state にも**束縛**する: `__Host-` / path=/ のクッキーは
  * 同一ブラウザの後続の無関係な OAuth 完了(別の state)にも同送されるため、
  * 束縛が無いと持ち越されたコードが「そのフローの提示コード」として消費されうる
- * (PR #133 pullfrog レビュー指摘)。callback は state 一致のときだけコードを
+ * (PR #133 pullfrog レビュー指摘)。callback は state 一致のときだけハッシュを
  * 採用する — 型付きエラー終端(Set-Cookie を運ばない応答)にクッキーが残っても、
  * 別フローの資格にはならない(残存の無害化)。
  */
-function signupCookieValue(state: string, code: string): string {
-  return `${state}.${code}`;
+function signupCookieValue(state: string, tokenHashHex: string): string {
+  return `${state}.${tokenHashHex}`;
 }
 
-/** クッキーからのコード復元(state 不一致・形式不正は「提示なし」に畳む)。 */
-function signupCodeFromCookie(cookie: string | undefined, state: string): string | null {
+/** ハッシュのワイヤ形(SHA-256 hex 小文字)。逸脱は「提示なし」に畳む。 */
+const SIGNUP_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+/** クッキーからのコードハッシュ復元(state 不一致・形式不正は「提示なし」)。 */
+function signupInviteHashFromCookie(cookie: string | undefined, state: string): string | null {
   if (cookie === undefined) {
     return null;
   }
@@ -70,8 +79,10 @@ function signupCodeFromCookie(cookie: string | undefined, state: string): string
   if (dot === -1) {
     return null;
   }
-  const code = cookie.slice(dot + 1);
-  return constantTimeEqual(cookie.slice(0, dot), state) && code !== "" ? code : null;
+  const tokenHashHex = cookie.slice(dot + 1);
+  return constantTimeEqual(cookie.slice(0, dot), state) && SIGNUP_HASH_PATTERN.test(tokenHashHex)
+    ? tokenHashHex
+    : null;
 }
 
 /**
@@ -156,9 +167,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           // callback の消費 CAS
           return htmlResponse(renderSignupInviteInvalidPage(), 400);
         }
-        // 検証済みコードの生値は HttpOnly クッキーで callback まで運ぶ(§3 —
-        // 消費はアカウント作成と同一トランザクション。ここでは消費しない)。
-        // 値はこの start の state に束縛する(signupCookieValue — 別フローへの
+        // 検証済みコードの**ハッシュ**を HttpOnly クッキーで callback まで運ぶ
+        // (§3 — 生値のワイヤ出現はこの start リクエストの 1 回だけ。消費は
+        // アカウント作成と同一トランザクション — ここでは消費しない)。値は
+        // この start の state に束縛する(signupCookieValue — 別フローへの
         // 持ち越しを資格にしない)
         const response = yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
           name: STATE_COOKIE,
@@ -167,7 +179,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return yield* HttpServerResponse.setCookie(
           response,
           SIGNUP_CODE_COOKIE,
-          signupCookieValue(state, signupCode),
+          signupCookieValue(state, tokenHash),
           { ...HOST_COOKIE_OPTIONS, maxAge: "10 minutes" },
         ).pipe(Effect.orDie);
       }),
@@ -220,14 +232,15 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         );
         // GitHub トークンはここで役目を終える(保存しない。§3 / §10)
         const identities = yield* IdentityRepo;
-        // サインアップ招待コード(AUTH_SPEC §3): 開始時事前検証を通った生値が
-        // クッキーで届く。値は発行時 state に束縛されており、一致しない持ち越し
-        // クッキー(別フロー由来)は「提示なし」に畳む(signupCodeFromCookie)。
-        // ハッシュのみを渡し、消費はアカウント作成と同一トランザクション内の
-        // CAS(repo 側)。既存ユーザーの解決では消費されない
-        const signupCode = signupCodeFromCookie(request.cookies[SIGNUP_CODE_COOKIE], query.state);
-        const signupInviteTokenHash =
-          signupCode === null ? null : yield* Effect.promise(() => sha256Hex(signupCode));
+        // サインアップ招待コード(AUTH_SPEC §3): 開始時事前検証を通ったコードの
+        // **ハッシュ**がクッキーで届く(生値はこの経路を流れない)。値は発行時
+        // state に束縛されており、一致しない持ち越しクッキー(別フロー由来)は
+        // 「提示なし」に畳む(signupInviteHashFromCookie)。消費はアカウント作成と
+        // 同一トランザクション内の CAS(repo 側)。既存ユーザーの解決では消費されない
+        const signupInviteTokenHash = signupInviteHashFromCookie(
+          request.cookies[SIGNUP_CODE_COOKIE],
+          query.state,
+        );
         const resolved = yield* identities.getOrCreateUser(
           identity,
           Date.now(),

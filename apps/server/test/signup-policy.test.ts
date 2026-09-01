@@ -239,6 +239,10 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(abandoned.status).toBe(302);
     const staleCookie = readCookieValue(abandoned.headers.getSetCookie(), SIGNUP_CODE_COOKIE);
     expect(staleCookie).not.toBeNull();
+    // クッキーが運ぶのはハッシュのみ(生値のワイヤ出現は start の 1 回だけ —
+    // クッキーストアに生値を残さない。AUTH_SPEC §3)
+    expect(staleCookie).not.toContain(invite.code);
+    expect(staleCookie).toMatch(/^[0-9a-f]{32}\.[0-9a-f]{64}$/);
     // 同一ブラウザの後続の**無関係な**フロー(プレーンな start = 別 state)へ持ち越す
     const plain = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
     const state = new URL(plain.headers.get("location") ?? "").searchParams.get("state") ?? "";

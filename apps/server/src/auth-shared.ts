@@ -32,10 +32,12 @@ export const CLI_STATE_PREFIX = "cli.";
 
 /**
  * サインアップ招待コードの運搬クッキー(AUTH_SPEC §3 — 2026-09-01 H1)。
- * `GET /auth/github/start?signup_code=…` の開始時事前検証を通ったコードの生値を
- * callback まで運ぶ(HttpOnly — ブラウザのスクリプト面へ出さない)。コードの
- * ハッシュ照合・消費 CAS は callback 側(getOrCreateUser の作成 batch)が行う。
- * state クッキーと同じ 10 分 maxAge・callback の終端で失効する。
+ * `GET /auth/github/start?signup_code=…` の開始時事前検証を通ったコードの
+ * **SHA-256 ハッシュ**を、発行時 state に束縛して callback まで運ぶ
+ * (HttpOnly。生値のワイヤ出現は start の 1 回だけで、クッキーストアには
+ * 残らない — 値の形と論拠は handlers-auth.ts の signupCookieValue)。
+ * 消費 CAS は callback 側(getOrCreateUser の作成 batch)が行う。
+ * state クッキーと同じ 10 分 maxAge・callback の HTML / 302 終端で失効する。
  */
 export const SIGNUP_CODE_COOKIE = "__Host-maruhi_signup";
 
