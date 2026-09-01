@@ -248,6 +248,7 @@ describe("maruhi env diff", () => {
       "  ZULU",
       `Variables only in environment ${PROD}: 1`,
       "  PROD_ONLY",
+      "Variables in both with a differing schema contract: 0",
       "Variables in both: 1 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     ]);
     // 値 pull / DEK 配布は 1 度も叩かない(pullMetadata だけ)
@@ -303,8 +304,9 @@ describe("maruhi env diff", () => {
       reportEnvironmentDiff({
         firstEnvironmentId: "\u001b[2Kdev" as EnvironmentId,
         secondEnvironmentId: "prod\u0007" as EnvironmentId,
-        onlyInFirst: ["ONLY_DEV"],
+        onlyInFirst: [{ name: "ONLY_DEV", declared: false, required: "none" }],
         onlyInSecond: [],
+        contractMismatches: [],
         shared: 0,
       }).pipe(Effect.provide(env.layer)),
     );
@@ -370,6 +372,7 @@ describe("maruhi env diff", () => {
       `Synced and verified: environment ${DEV} = 2 variables / environment ${PROD} = 2 variables`,
       `Variables only in environment ${DEV}: 0`,
       `Variables only in environment ${PROD}: 0`,
+      "Variables in both with a differing schema contract: 0",
       "Variables in both: 2 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
     ]);
   });
@@ -538,6 +541,124 @@ describe("maruhi env diff", () => {
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
     expect(env.logs).toContain("  ONLY_DEV");
     expect(env.errors.some((line) => line.includes("No master key"))).toBe(false);
+  });
+
+  describe("スキーマ考慮(S4 — 設計文書 §1-5 の required 軸)", () => {
+    /** レイアウト v2 のステートメント(status / schema 指定形)。 */
+    function schemaVariableOf(
+      environmentId: string,
+      variableId: string,
+      name: string,
+      status: "active" | "declared",
+      schema: { varType: "" | "string" | "number" | "boolean" | "url"; required: boolean },
+      description = "",
+    ): Promise<WireDistributedVariableStatement> {
+      return statementFor({
+        projectId: chain.projectId,
+        environmentId,
+        variableId,
+        name,
+        author: owner,
+        head: headOf(chain, 1),
+        status,
+        schema: { varType: schema.varType, required: schema.required, description },
+      });
+    }
+
+    const SECRET_HINT = "Primary endpoint of the shop";
+
+    it("片側にしかない変数に required と declared の注記を添える(description は出さない)", async () => {
+      const dev = [
+        await schemaVariableOf(
+          DEV,
+          "var-req-decl",
+          "REQ_DECL",
+          "declared",
+          { varType: "url", required: true },
+          SECRET_HINT,
+        ),
+        await schemaVariableOf(DEV, "var-opt-decl", "OPT_DECL", "declared", {
+          varType: "",
+          required: false,
+        }),
+        await variableOf(DEV, "var-v1", "V1_ONLY"),
+      ];
+      const env = await startEnv([
+        pullMetadataHandlerOf(DEV, devStatement, dev),
+        pullMetadataHandlerOf(PROD, prodStatement, []),
+      ]);
+      expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
+      expect(env.logs).toContain("  REQ_DECL (required, declared — no value set)");
+      expect(env.logs).toContain("  OPT_DECL (optional, declared — no value set)");
+      // v1(スキーマ欄なし)は従来どおり名前だけ(required を捏造しない)
+      expect(env.logs).toContain("  V1_ONLY");
+      // description は diff 出力に出さない(§2 の消費点規律)し、
+      // 「verified」の語も使わない(§14.3 の表示規律)
+      const output = [...env.logs, ...env.errors].join("\n");
+      expect(output).not.toContain(SECRET_HINT);
+      expect(output.toLowerCase()).not.toContain("verified from");
+    });
+
+    it("両方にある名前でも required 契約・状態の食い違いを報告する(終了コードは 0 のまま)", async () => {
+      const dev = [
+        // 状態の食い違い(dev = set / prod = declared)
+        await schemaVariableOf(DEV, "var-a", "SHARED_STATUS", "active", {
+          varType: "url",
+          required: true,
+        }),
+        // required の食い違い(dev = required / prod = optional)
+        await schemaVariableOf(DEV, "var-b", "SHARED_REQ", "active", {
+          varType: "",
+          required: true,
+        }),
+        // v2 × v1(prod にはスキーマ欄がない)
+        await schemaVariableOf(DEV, "var-c", "SHARED_V1", "active", {
+          varType: "",
+          required: true,
+        }),
+        // 完全一致(報告しない)
+        await schemaVariableOf(DEV, "var-d", "SHARED_SAME", "active", {
+          varType: "",
+          required: true,
+        }),
+      ];
+      const prod = [
+        await schemaVariableOf(
+          PROD,
+          "var-a2",
+          "SHARED_STATUS",
+          "declared",
+          { varType: "url", required: true },
+          SECRET_HINT,
+        ),
+        await schemaVariableOf(PROD, "var-b2", "SHARED_REQ", "active", {
+          varType: "",
+          required: false,
+        }),
+        await variableOf(PROD, "var-c2", "SHARED_V1"),
+        await schemaVariableOf(PROD, "var-d2", "SHARED_SAME", "active", {
+          varType: "",
+          required: true,
+        }),
+      ];
+      const env = await startEnv([
+        pullMetadataHandlerOf(DEV, devStatement, dev),
+        pullMetadataHandlerOf(PROD, prodStatement, prod),
+      ]);
+      expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(0);
+      expect(env.logs).toContain("Variables in both with a differing schema contract: 3");
+      expect(env.logs).toContain(
+        `  SHARED_STATUS — ${DEV}: required / ${PROD}: required, declared — no value set`,
+      );
+      expect(env.logs).toContain(`  SHARED_REQ — ${DEV}: required / ${PROD}: optional`);
+      expect(env.logs).toContain(`  SHARED_V1 — ${DEV}: required / ${PROD}: no schema (layout v1)`);
+      expect(env.logs.some((line) => line.includes("SHARED_SAME —"))).toBe(false);
+      // 両方にある件数は従来どおり(契約の食い違いは共有名の部分集合)
+      expect(env.logs).toContain(
+        "Variables in both: 4 (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)",
+      );
+      expect([...env.logs, ...env.errors].join("\n")).not.toContain(SECRET_HINT);
+    });
   });
 
   describe("書き方の誤り(usage エラー = 2)", () => {
