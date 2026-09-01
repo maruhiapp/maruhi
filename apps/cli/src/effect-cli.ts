@@ -158,6 +158,7 @@ import {
   typeAdvisoryWarnings,
 } from "./run.ts";
 import { ensureImportCeremonyAllowed, schemaImportOp } from "./schema-import.ts";
+import { schemaExportOp, schemaVerifySnapshotOp } from "./schema-snapshot.ts";
 import {
   ensureEntropyAcknowledged,
   type FieldUpdate,
@@ -717,6 +718,20 @@ const schemaImportConfig = {
   ),
 };
 
+/** `maruhi schema export`(派生スナップショットの生成 — 設計文書 §1-6)。 */
+const schemaExportConfig = { ...commonFlags() };
+
+/** `maruhi schema verify-snapshot <file>`(CI の乖離検査 — 設計文書 §1-6)。 */
+const schemaVerifySnapshotConfig = {
+  ...commonFlags(),
+  file: Argument.string("file").pipe(
+    Argument.withDescription(
+      "Path to the committed snapshot file (generate with `maruhi schema export`)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /** `maruhi var rm <NAME>`(変数の削除 — AUTH_SPEC §12-5)。 */
 const varRmConfig = {
   ...commonFlags(),
@@ -776,7 +791,12 @@ const GROUP_CONFIGS: Readonly<
     reconcile: auditReconcileConfig,
   },
   config: { get: configGetConfig, set: configSetConfig },
-  schema: { set: schemaSetConfig, import: schemaImportConfig },
+  schema: {
+    set: schemaSetConfig,
+    import: schemaImportConfig,
+    export: schemaExportConfig,
+    "verify-snapshot": schemaVerifySnapshotConfig,
+  },
   var: { rm: varRmConfig },
 };
 
@@ -2412,12 +2432,63 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  // S5 の 3 コマンド(export / verify-snapshot / lint)は schema(表示)と同じ
+  // 読み取り・値ゼロの鍵なしクラス(openMetadataEnvironment — MARUHI_TOKEN の
+  // セッションで動く = 利用者の CI から実行できる)。agent-gate は適用しない
+  // (許可側 — ADR-0016 決定 7 の適用対象は「値を表示する系」のみ。テストで固定)
+  const schemaExport = Command.make("export", schemaExportConfig, (values) =>
+    Effect.gen(function* () {
+      const context = yield* openMetadataEnvironment(values);
+      yield* schemaExportOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        resync: context.resync,
+        floor: context.floorHandle,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Print the environment's schema snapshot (a JSON Schema subset) to stdout — redirect it into your repository and check it in CI with `schema verify-snapshot`. The store stays the source of truth",
+    ),
+  );
+
+  const schemaVerifySnapshot = Command.make(
+    "verify-snapshot",
+    schemaVerifySnapshotConfig,
+    (values) =>
+      Effect.gen(function* () {
+        const { file, ...flags } = values;
+        // ファイルはネットワークより先に読む(パスの誤りを 1 往復の前に落とす)。
+        // 内容・OS エラー詳細は出さずパスだけで報告する(schema import と同じ規律)
+        const fileContent = yield* Effect.tryPromise({
+          try: () => readFile(file, "utf8"),
+          catch: () =>
+            cliError(`Could not read ${displayText(file)} (check the path and permissions)`),
+        });
+        const context = yield* openMetadataEnvironment(flags);
+        yield* schemaVerifySnapshotOp({
+          client: context.client,
+          verified: context.verified,
+          environmentId: context.environmentId,
+          resync: context.resync,
+          floor: context.floorHandle,
+          filePath: file,
+          fileContent,
+        });
+      }),
+  ).pipe(
+    Command.withDescription(
+      "Verify a committed schema snapshot against the store and fail on any divergence (for CI — the snapshot is generated, the store is the source of truth)",
+    ),
+  );
+
   // **bare `maruhi schema` = 表示**(設計文書 §1-1 — audit と同じハンドラ付き親)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
       "Show the environment's declared variable schema (names / types / required / status / descriptions — no values). Bare `maruhi schema` shows; `schema set` writes",
     ),
-    Command.withSubcommands([schemaSet, schemaImport]),
+    Command.withSubcommands([schemaSet, schemaImport, schemaExport, schemaVerifySnapshot]),
   );
 
   const varRm = Command.make("rm", varRmConfig, (values) =>
