@@ -26,7 +26,6 @@ import {
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
-import { encodeHex } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -38,6 +37,7 @@ import { rejectIntentOnServerRejection, type VerifiedVariableStatement } from ".
 import { CliIo } from "./io.ts";
 import type { ManifestDigestEntry } from "./manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
+import { generateVariableId } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
 import { type VerifiedProject } from "./sync.ts";
@@ -282,11 +282,6 @@ function resolveSchemaTarget(
   });
 }
 
-/** クライアント採番の変数 ID(§12-1 形式 — push.ts の作成経路と同じ規約)。 */
-function generateVariableId(): string {
-  return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
-}
-
 interface AcceptedSchemaSet {
   readonly created: boolean;
   readonly variableId: string;
@@ -300,6 +295,39 @@ interface AcceptedSchemaSet {
   };
   readonly intentId: string;
   readonly state: SchemaSetState;
+}
+
+/**
+ * 署名前のローカル事前検査(fail-closed — 受理の正はサーバー §12-5 のまま)。
+ * null = 通過。
+ *
+ * - v1 の直前ステートメント(スキーマ欄なし)への最初の v2 再発行は required の
+ *   明示を要求する。§1-2 の部分更新は「直前ステートメントの値」の引き継ぎ規則で
+ *   あり、v1 には required の引き継ぎ元が存在しない — 作成既定(true)を黙って
+ *   適用すると、ユーザーが打っていない presence 契約が署名済みステートメントに
+ *   載る(PR #121 pullfrog レビュー対応)。varType / description の既定("")は
+ *   「未指定」の表現で契約を主張しないため、明示は要求しない
+ * - locked の advisory 下の作成は varType 非空を要求する(§1-2 — 作成時の
+ *   一回検査。サーバーは 422 schema-required で強制する)
+ */
+function preSignRejection(
+  state: SchemaSetState,
+  updates: SchemaFieldUpdates,
+  merged: VerifiedSchemaFields,
+  name: string,
+): CliError | null {
+  const target = state.target;
+  if (target !== null && target.layoutVersion === 1 && updates.required.kind === "keep") {
+    return cliError(
+      `Variable ${displayText(name)} predates schemas (its statement is layout v1 and carries no schema fields, so there is no previous "required" value to inherit). State the presence contract explicitly on this first schema reissue: re-run with --required or --optional`,
+    );
+  }
+  if (target === null && state.advisorySchemaPolicy === "locked" && merged.varType === "") {
+    return cliError(
+      "This project's schema policy is locked: creating a variable requires a declared type. Re-run with --type <string|number|boolean|url> (AUTH_SPEC §12-11 — the server enforces this as 422 schema-required)",
+    );
+  }
+  return null;
 }
 
 /** 1 試行(署名・送信)。競合の分類は retryOnConflict の classify が担う。 */
@@ -321,18 +349,13 @@ function attemptSchemaSet(
     const epoch = environment.currentEpoch;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     // 部分更新(§1-2): 直前ステートメントのスキーマ欄を基準に、指定された欄
-    // だけ差し替える。v1 の直前ステートメント(スキーマ欄なし)と新規作成は
-    // 作成既定(required = true・varType ""・description "")を基準にする
+    // だけ差し替える。新規作成は作成既定(required = true・varType ""・
+    // description "")を基準にする(引き継ぎ元がない — 第 3 ラウンド裁定)
     const base = target?.schema ?? CREATION_DEFAULTS;
     const merged = applyUpdates(base, input.updates);
-    // locked の事前検査(§1-2 — 署名前のローカル型付きエラー。受理の正は
-    // サーバー §12-5 のまま): 対象は作成経路のみ(locked は作成時の一回検査)
-    if (target === null && state.advisorySchemaPolicy === "locked" && merged.varType === "") {
-      return yield* Effect.fail(
-        cliError(
-          "This project's schema policy is locked: creating a variable requires a declared type. Re-run with --type <string|number|boolean|url> (AUTH_SPEC §12-11 — the server enforces this as 422 schema-required)",
-        ),
-      );
+    const rejection = preSignRejection(state, input.updates, merged, name);
+    if (rejection !== null) {
+      return yield* Effect.fail(rejection);
     }
     // マニフェスト再発行(§4.3 — 対象エントリを新ステートメントへ差し替え /
     // 追加)と 3-F の intent 追記。作成 / 再発行で共通(実装は meta-confirm.ts —

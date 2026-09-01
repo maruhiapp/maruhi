@@ -62,7 +62,7 @@ import {
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
 import type { ManifestDigestEntry } from "./manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
-import { signCreateStatement } from "./meta-statement.ts";
+import { generateVariableId, signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema-statement.ts";
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
@@ -90,12 +90,6 @@ export interface PushedVersion {
   readonly epoch: number;
   /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — 呼び出し側が表示)。 */
   readonly warnings: readonly string[];
-}
-
-/** クライアント採番の変数 ID(§12-1 形式)。名前とは独立な乱数 ID にする:
- * 表示名の変更・削除済み ID の再利用禁止(tombstone)と衝突しないため。 */
-function generateVariableId(): string {
-  return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
 }
 
 /** activation(declared → active — §12-5)の直前ステートメント材料。 */

@@ -311,10 +311,12 @@ export function enforceDeclaredPresence(
       .map((variable) => displayText(variable.name))
       .toSorted();
     if (missing.length > 0) {
-      // 子プロセス未起動の硬いエラー(presence — verified statements only)
+      // 子プロセス未起動の硬いエラー(presence — verified statements only)。
+      // 復旧導線は 2 つ明示する: 値を設定する(activation)か、宣言が誤りなら
+      // --optional で required を下げる(宣言の削除コマンドは未提供 — PR #121)
       return yield* Effect.fail(
         cliError(
-          `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it). The command was not started`,
+          `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. The command was not started`,
         ),
       );
     }

@@ -446,6 +446,14 @@ required has no value yet. None of this changes behavior for projects whose
 `schemaPolicy` is `disabled` or for servers that predate the S2 release:
 enabling schemas remains the explicit per-project step 3 above.
 
+Known limitation: the CLI cannot yet **delete** a variable (declared or
+active) — a mistakenly declared name stays visible in `maruhi schema` until a
+delete command ships. A mistaken *required* declaration does not keep
+`maruhi run` broken, though: `maruhi schema set <NAME> --optional` downgrades
+the contract and `run` proceeds (declarations default to required, so a typo
+in a variable name fails `run` loudly rather than silently — that is the
+intended failure direction).
+
 **Failure direction after the strict-acceptance release (2026-08-19)**: the
 server now rejects unknown fields in security-critical write requests
 (chain appends, environment creation/rotation, value pushes and metadata

@@ -2338,7 +2338,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Set a variable's schema fields (type / required / description — a partial update). A missing name is created as a declared variable (no value)",
+      "Set a variable's schema fields (type / required / description — a partial update). A missing name is created as a declared variable (no value). A declaration cannot be deleted from the CLI yet — downgrade a mistaken one with --optional so `maruhi run` proceeds",
     ),
   );
 

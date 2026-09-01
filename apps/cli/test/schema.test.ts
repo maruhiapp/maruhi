@@ -677,6 +677,46 @@ describe("maruhi schema set(§1-2)", () => {
     expect(body.statement["description"]).toBe("");
   });
 
+  it("v1 変数への最初の v2 再発行は required の明示を要求する(署名・送信前のローカル拒否)", async () => {
+    // v1 ステートメントに required の引き継ぎ元はない(§1-2 の部分更新は
+    // 「直前の値」の規則)。作成既定 true を黙って適用すると、ユーザーが
+    // 打っていない presence 契約が署名に載る — 明示必須(PR #121 レビュー対応)
+    const env = await startEnv([
+      chainHandler(),
+      metadataHandler({ variables: [activeV1.statement] }),
+    ]);
+    expect(await runCli(["schema", "set", "LEGACY_KEY", "--type", "string"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("layout v1");
+    expect(errors).toContain("--required or --optional");
+    expect(
+      lastServer().requests.filter(
+        (request) => request.method === "POST" || request.method === "PATCH",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("v1 変数の v2 再発行は required 明示で通り、varType / description は未指定の既定('')になる", async () => {
+    const echo: MutationEcho = { body: null, base: [activeV1.statement] };
+    const renameCalls: MockRequest[] = [];
+    const env = await startEnv([
+      chainHandler(),
+      metadataHandler({ variables: [activeV1.statement], echo }),
+      captureRename(echo, renameCalls, "v-legacy"),
+    ]);
+    expect(
+      await runCli(["schema", "set", "LEGACY_KEY", "--type", "string", "--optional"], env.layer),
+    ).toBe(0);
+    expect(renameCalls).toHaveLength(1);
+    const body = renameCalls[0]?.body as { statement: Record<string, unknown> };
+    expect(body.statement["layoutVersion"]).toBe(2);
+    expect(body.statement["varType"]).toBe("string");
+    expect(body.statement["required"]).toBe(false);
+    expect(body.statement["description"]).toBe("");
+    expect(body.statement["status"]).toBe("active");
+    expect(body.statement["metaVersion"]).toBe(2);
+  });
+
   it("locked の advisory 下では --type 未指定の作成を署名・送信前にローカルで拒否する(§1-2)", async () => {
     const env = await startEnv([
       chainHandler(),

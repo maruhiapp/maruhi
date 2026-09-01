@@ -11,11 +11,21 @@
 // 実装とのドリフトを検出する相互チェックとして機能するため、ここへ統合しない。
 
 import type { MetaStatementContext } from "@maruhi/crypto";
-import { computeMetaSignedBytesHash, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
+import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import type { VerifiedProject } from "./sync.ts";
+
+/**
+ * クライアント採番の変数 ID(AUTH_SPEC §12-1 形式)。名前とは独立な乱数 ID に
+ * する: 表示名の変更・削除済み ID の再利用禁止(tombstone)と衝突しないため。
+ * 採番は作成系の全経路(push の create — push.ts、宣言作成 — schema.ts)が
+ * この 1 実装を共有する。
+ */
+export function generateVariableId(): string {
+  return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
+}
 
 /**
  * 署名 + 自計算 signed-bytes ハッシュの共有実装(v1 作成形 = 本モジュール、
