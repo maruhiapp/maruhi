@@ -27,6 +27,7 @@
 // 6. **stdout はコマンドの出力だけ**。コマンド本体の出力は `CliIo.log`、
 //    ヘルプ・診断は `Console`(= `CliIo.logError` = stderr)へ分ける
 
+import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
 import {
@@ -156,6 +157,7 @@ import {
   runOp,
   typeAdvisoryWarnings,
 } from "./run.ts";
+import { ensureImportCeremonyAllowed, schemaImportOp } from "./schema-import.ts";
 import {
   ensureEntropyAcknowledged,
   type FieldUpdate,
@@ -169,6 +171,7 @@ import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./se
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
 import { syncProject } from "./sync.ts";
+import { varRmOp } from "./var-rm.ts";
 import { CLI_VERSION } from "./version.ts";
 
 /** `--` を書き忘れた実行に添える案内(実行対象の渡し方は 1 つだけ)。 */
@@ -703,6 +706,30 @@ const schemaSetConfig = {
   ),
 };
 
+/** `maruhi schema import <file>`(ブートストラップ — 設計文書 §1-3)。 */
+const schemaImportConfig = {
+  ...commonFlags(),
+  file: Argument.string("file").pipe(
+    Argument.withDescription(
+      "Path to a .env / .env.example file to read locally (values are observed for type inference only — never sent unless you explicitly choose to push one)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+/** `maruhi var rm <NAME>`(変数の削除 — AUTH_SPEC §12-5)。 */
+const varRmConfig = {
+  ...commonFlags(),
+  force: singleFlag(
+    "force",
+    "Skip the interactive confirmation (the only non-interactive path — deletion is terminal)",
+  ),
+  name: Argument.string("name").pipe(
+    Argument.withDescription("Variable name to delete (declared or active)"),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /**
  * 入れ子の段(グループ)→ サブコマンド名 → 宣言。**この表が唯一の出所**で、
  * COMMAND_SPECS(振り分けのキーと診断の宣言・サブコマンド一覧)をここから
@@ -749,7 +776,8 @@ const GROUP_CONFIGS: Readonly<
     reconcile: auditReconcileConfig,
   },
   config: { get: configGetConfig, set: configSetConfig },
-  schema: { set: schemaSetConfig },
+  schema: { set: schemaSetConfig, import: schemaImportConfig },
+  var: { rm: varRmConfig },
 };
 
 /**
@@ -2342,12 +2370,89 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const schemaImport = Command.make("import", schemaImportConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      // 儀式ゲート(ADR-0016 決定 7 の儀式系 deny の類型)は**どの通信・ファイル
+      // 読み取りよりも前**に判定する: 変数ごとの対話承認が儀式の核であり、
+      // 一括 --yes は存在しない。既知エージェント検出 + 非対話端末の両層とも
+      // ここで止まる(判定材料は Stdio / AgentProfileRef サービス経由)
+      yield* ensureImportCeremonyAllowed;
+      const { file, ...flags } = values;
+      // ファイルはクライアント側でのみ読む(値は parseEnvFile が読み取り直後に
+      // Redacted で包む — env-file.ts)。読めない場合は内容・OS エラー詳細を
+      // 出さずパスだけで報告する
+      const content = yield* Effect.tryPromise({
+        try: () => readFile(file, "utf8"),
+        catch: () =>
+          cliError(`Could not read ${displayText(file)} (check the path and permissions)`),
+      });
+      const context = yield* openEnvironment(flags);
+      const summary = yield* schemaImportOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        resync: context.resync,
+        floor: context.floorHandle,
+        authorUserId: context.session.userId,
+        signingKey: context.masterKeys.sigKeyPair.privateKey,
+        recipient: context.recipient,
+        filePath: file,
+        content,
+      });
+      if (summary.deletionOffered && !summary.deleted) {
+        yield* io.logError(
+          `Note: ${displayText(file)} was kept. Once every variable it lists is declared, its last job is done — the signed schema (\`maruhi schema\`) becomes the source of truth`,
+        );
+      }
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Import schema candidates from a .env / .env.example file (interactive, per-variable approval — declares names without sending values; optionally push a value per variable)",
+    ),
+  );
+
   // **bare `maruhi schema` = 表示**(設計文書 §1-1 — audit と同じハンドラ付き親)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
       "Show the environment's declared variable schema (names / types / required / status / descriptions — no values). Bare `maruhi schema` shows; `schema set` writes",
     ),
-    Command.withSubcommands([schemaSet]),
+    Command.withSubcommands([schemaSet, schemaImport]),
+  );
+
+  const varRm = Command.make("rm", varRmConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      const context = yield* openEnvironment(values);
+      const summary = yield* varRmOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        name: values.name,
+        force: values.force,
+        resync: context.resync,
+        floor: context.floorHandle,
+        authorUserId: context.session.userId,
+        signingKey: context.masterKeys.sigKeyPair.privateKey,
+      });
+      yield* logWarnings(summary.warnings);
+      const consequence =
+        summary.previousStatus === "active"
+          ? "its value (every stored version) was deleted"
+          : "it had no value (declared only)";
+      yield* io.log(
+        `Deleted ${displayText(values.name)} (${consequence}; metaVersion=${summary.metaVersion}). Deletion is terminal — the variable cannot be restored, though the name can be reused by a new variable`,
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Delete a variable and its values permanently (interactive confirmation, or --force). Works for declared (no value) and active variables",
+    ),
+  );
+
+  const varGroup = Command.make("var").pipe(
+    Command.withDescription("Manage variables (rm — push/pull/run operate on values directly)"),
+    Command.withSubcommands([varRm]),
   );
 
   const envCreate = Command.make("create", envCreateConfig, (values) =>
@@ -2562,6 +2667,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       audit,
       config,
       schema,
+      varGroup,
     ]),
   );
 }
