@@ -11,7 +11,7 @@
 //   ミラー検証 — `maruhi audit verify` — と同一実装を共有する)
 
 import type { AuditEventRecord } from "@maruhi/core";
-import { CHAIN_MIRROR_EVENT_PREFIX } from "@maruhi/core";
+import { auditReadVariablesOf, CHAIN_MIRROR_EVENT_PREFIX, VAR_READ_EVENT } from "@maruhi/core";
 import type { AuditHeadRow } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
 import { Context, Effect, Layer } from "effect";
@@ -53,7 +53,7 @@ export interface VariableLifecycleRow {
   readonly variableId: string;
 }
 
-/** Q3: 対象 user_id の var.read。 */
+/** Q3: 対象 user_id の var.read(旧形の列値と集約形の payload 展開の和 — §3.3)。 */
 export interface VariableReadRow {
   readonly seq: number;
   readonly environmentId: string;
@@ -624,13 +624,124 @@ function resolveCursorSeq(
   return row === undefined ? null : Number(row["seq"]);
 }
 
+/** WHERE 句の断片(条件列 + バインド列)。 */
+interface SqlConditions {
+  readonly conditions: readonly string[];
+  readonly bindings: readonly (string | number)[];
+}
+
+function withCondition(
+  base: SqlConditions,
+  clause: string,
+  bindings: readonly (string | number)[],
+): SqlConditions {
+  return {
+    conditions: [...base.conditions, clause],
+    bindings: [...base.bindings, ...bindings],
+  };
+}
+
+/** seq 降順 + LIMIT の 1 ページ。 */
+function selectPage(
+  sql: SqlStorage,
+  where: SqlConditions,
+  limit: number,
+): readonly StoredAuditEventRow[] {
+  const clause = where.conditions.length === 0 ? "" : ` WHERE ${where.conditions.join(" AND ")}`;
+  return sql
+    .exec(
+      `SELECT ${EVENT_ROW_COLUMNS} FROM audit_events${clause} ORDER BY seq DESC LIMIT ?`,
+      ...where.bindings,
+      limit,
+    )
+    .toArray()
+    .map(toStoredRow);
+}
+
+/**
+ * 集約形 `var.read`(AUDIT_SPEC §3.3 — variable_id IS NULL・payload の
+ * `variables` 列挙)のうち、指定変数を含む行の条件(§7 の variable_id フィルタ /
+ * §4.2 Q4)。変数 ID は列に無いため payload を検査するが、検査対象を **値の
+ * 存在区間(最初の var.version_pushed 〜 最後の var.deleted の seq 範囲)** に
+ * 絞る: 値付き pull は環境の全アクティブ変数を返すので、区間内の集約行はほぼ
+ * 全て当該変数を含み、ページ上限で止まる。区間の外(値の初出前・削除後の pull)
+ * は 1 行も検査しない — 削除済み変数のフィルタで環境の全 pull 履歴を JSON
+ * 走査する形を作らない。下限を var.created でなく値の初出に取るのは、値を
+ * 一度も持たない declared 変数が pull に現れないため(その場合は null =
+ * 集約側クエリを省略する)。admin 未満(class1-or-self)は集約行のうち本人の
+ * 行しか見えない(§6 — var.read はクラス 2)ので `actor_user_id = 本人` を
+ * 明示し、検査対象を ae_actor で本人の行に束縛する(可視性述語の評価順に
+ * 依存して他人の pull 履歴を走査しない)。json_valid は EXISTS の前に置く
+ * (保存行はサーバーが書いた JSON だが、壊れた行で読み取り API を落とさない)。
+ */
+function aggregatedReadContains(
+  sql: SqlStorage,
+  variableId: string,
+  visibility: AuditVisibility,
+): SqlConditions | null {
+  const lifetime = sql
+    .exec(
+      `SELECT
+         (SELECT MIN(seq) FROM audit_events WHERE variable_id = ? AND event = 'var.version_pushed') AS first_value_seq,
+         (SELECT MAX(seq) FROM audit_events WHERE variable_id = ? AND event = 'var.deleted') AS deleted_seq`,
+      variableId,
+      variableId,
+    )
+    .toArray()[0];
+  const firstValueSeq = numberOrNull(lifetime?.["first_value_seq"] ?? null);
+  if (firstValueSeq === null) {
+    return null;
+  }
+  const deletedSeq = numberOrNull(lifetime?.["deleted_seq"] ?? null);
+  const self = visibility.kind === "class1-or-self" ? [visibility.selfUserId] : [];
+  return {
+    conditions: [
+      ...self.map(() => "actor_user_id = ?"),
+      "variable_id IS NULL",
+      "event = ?",
+      "seq > ?",
+      ...(deletedSeq === null ? [] : ["seq < ?"]),
+      "json_valid(payload)",
+      "EXISTS (SELECT 1 FROM json_each(audit_events.payload, '$.variables') WHERE json_extract(json_each.value, '$.variableId') = ?)",
+    ],
+    bindings: [
+      ...self,
+      VAR_READ_EVENT,
+      firstValueSeq,
+      ...(deletedSeq === null ? [] : [deletedSeq]),
+      variableId,
+    ],
+  };
+}
+
+/** seq 降順の 2 列を seq 降順のまま合流し、先頭 limit 件を返す。 */
+function mergeDescending(
+  left: readonly StoredAuditEventRow[],
+  right: readonly StoredAuditEventRow[],
+  limit: number,
+): readonly StoredAuditEventRow[] {
+  const merged: StoredAuditEventRow[] = [];
+  let i = 0;
+  let j = 0;
+  while (merged.length < limit && (i < left.length || j < right.length)) {
+    const a = left[i];
+    const b = right[j];
+    if (b === undefined || (a !== undefined && a.seq > b.seq)) {
+      merged.push(a as StoredAuditEventRow);
+      i += 1;
+    } else {
+      merged.push(b);
+      j += 1;
+    }
+  }
+  return merged;
+}
+
 function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredAuditEventRow[] {
-  const conditions: string[] = [];
-  const bindings: (string | number)[] = [];
+  let where: SqlConditions = { conditions: [], bindings: [] };
   const filter = (clause: string, value: string | number | null): void => {
     if (value !== null) {
-      conditions.push(clause);
-      bindings.push(value);
+      where = withCondition(where, clause, [value]);
     }
   };
   if (query.beforeRowId !== null) {
@@ -646,30 +757,45 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
     // 前置一致は LIKE を使わない(deepsec R1): LIKE だと入力の % / _ が
     // ワイルドカードとして働き、フィルタが名前空間の指定でなくなる。
     // substr 比較は長さと値の 2 バインドだけで、特別扱いの文字を持たない
-    conditions.push("substr(event, 1, ?) = ?");
-    bindings.push(query.eventPrefix.length, query.eventPrefix);
+    where = withCondition(where, "substr(event, 1, ?) = ?", [
+      query.eventPrefix.length,
+      query.eventPrefix,
+    ]);
   }
   if (query.chainSeqPresent) {
-    conditions.push("chain_seq IS NOT NULL");
+    where = withCondition(where, "chain_seq IS NOT NULL", []);
   }
   filter("actor_user_id = ?", query.actorUserId);
   filter("target_user_id = ?", query.targetUserId);
-  filter("variable_id = ?", query.variableId);
   filter("environment_id = ?", query.environmentId);
   const visibility = visibilityCondition(query.visibility);
   if (visibility !== null) {
-    conditions.push(visibility.clause);
-    bindings.push(...visibility.bindings);
+    where = withCondition(where, visibility.clause, visibility.bindings);
   }
-  const where = conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`;
-  return sql
-    .exec(
-      `SELECT ${EVENT_ROW_COLUMNS} FROM audit_events${where} ORDER BY seq DESC LIMIT ?`,
-      ...bindings,
-      query.limit,
-    )
-    .toArray()
-    .map(toStoredRow);
+  if (query.variableId === null) {
+    return selectPage(sql, where, query.limit);
+  }
+  // variable_id フィルタ(§7 / Q4): 旧形(列一致 — ae_var の索引順で limit 件
+  // で止まる)と集約形(payload 検査 — aggregatedReadContains)は別クエリで引き、
+  // seq 降順のまま合流する。1 つの OR にすると SQLite は両項の全一致行を集めて
+  // からソートし、旧形のページングが「索引順 + 早期停止」から「一致行数比例」へ
+  // 退行するため。カーソル・可視性・他のフィルタは両クエリに同一に効く
+  const legacy = selectPage(
+    sql,
+    withCondition(where, "variable_id = ?", [query.variableId]),
+    query.limit,
+  );
+  const aggregated = aggregatedReadContains(sql, query.variableId, query.visibility);
+  if (aggregated === null) {
+    // 値を一度も持たない変数は集約行に現れない — payload 検査を走らせない
+    return legacy;
+  }
+  const listed = selectPage(
+    sql,
+    withCondition(where, aggregated.conditions.join(" AND "), aggregated.bindings),
+    query.limit,
+  );
+  return mergeDescending(legacy, listed, query.limit);
 }
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
@@ -750,20 +876,32 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         variableId: String(row["variable_id"]),
       })),
-  // Q3: (actor_user_id, seq) 索引(ae_actor)
+  // Q3: (actor_user_id, seq) 索引(ae_actor)。旧形(variable_id 列)と集約形
+  // (variable_id IS NULL・payload の variables 列挙 — §3.3)が同一テーブルに
+  // 混在するため、両形を 1 クエリで引いて集約行は列挙を展開する(展開は
+  // 防御的 parse — 壊れた行で検出を defect にしない)。同一 pull の変数は同じ
+  // seq を共有する(§4.1 手順 3 の区間判定は seq 単位なので旧形と同値)
   variableReadsBy: (actorUserId) =>
     sql
       .exec(
-        `SELECT seq, environment_id, variable_id FROM audit_events
-         WHERE actor_user_id = ? AND event = 'var.read' ORDER BY seq`,
+        `SELECT seq, environment_id, variable_id, payload FROM audit_events
+         WHERE actor_user_id = ? AND event = ? ORDER BY seq`,
         actorUserId,
+        VAR_READ_EVENT,
       )
       .toArray()
-      .map((row) => ({
-        seq: Number(row["seq"]),
-        environmentId: String(row["environment_id"]),
-        variableId: String(row["variable_id"]),
-      })),
+      .flatMap((row): VariableReadRow[] => {
+        const seq = Number(row["seq"]);
+        const environmentId = String(row["environment_id"]);
+        if (row["variable_id"] !== null) {
+          return [{ seq, environmentId, variableId: String(row["variable_id"]) }];
+        }
+        return (auditReadVariablesOf(parsePayload(row["payload"])) ?? []).map((variable) => ({
+          seq,
+          environmentId,
+          variableId: variable.variableId,
+        }));
+      }),
   // Q6 の (a) 入力: (actor_key_fingerprint, seq) 索引(ae_actor_fp)
   serverAccessEventsBy: (actorFpHex) =>
     sql
