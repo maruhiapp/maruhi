@@ -457,9 +457,15 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
     // EXPLAIN QUERY PLAN で固定)。`var.read` が引く ae_var / ae_actor / ae_event
     // は触らない。
     //
-    // 適用は DROP → CREATE の再構築(行数比例。本ステップも他と同じく 1
-    // transactionSync で走るため、途中失敗は丸ごと巻き戻る)。行には触れない
-    // (append-only — AUDIT_SPEC §1-4)
+    // 適用は DROP → CREATE の再構築(行数比例 — 本機構で初めての行数比例
+    // ステップ。部分索引は NULL 行のエントリを作らないため走査が主で、実測
+    // 10,000 行で 3 ms)。本ステップも他と同じく 1 transactionSync で走るため、
+    // 途中失敗は丸ごと巻き戻る。**失敗形**: 再構築が 1 リクエストの CPU 上限を
+    // 超える規模の DO があれば、その DO は開くたびに同じ再構築を先頭からやり直して
+    // 開けない状態になり、復旧はステップを外す前方デプロイのみ(コンストラクタ
+    // 失敗の爆風半径 — applyProjectDoMigrations の注記と同じ)。現行のデプロイ
+    // 済み DO はドッグフーディング規模で、大きな DO が存在しない今のうちに入れる
+    // 判断。行には触れない(append-only — AUDIT_SPEC §1-4)
     tables: [],
     apply(sql) {
       sql.exec("DROP INDEX IF EXISTS ae_target");
