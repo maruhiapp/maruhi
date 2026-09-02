@@ -86,6 +86,41 @@ export const MAX_PROJECT_DEK_WRAP_ROWS = 1_000_000;
  */
 export const MAX_ROTATION_DISMISSALS_PER_REQUEST = 10_000;
 
+// ---------------------------------------------------------------------------
+// テナント quota(AUTH_SPEC §11-3 / §12-8 — 2026-09-02 H2。hosted-design.md §3-3)。
+// §12-8 と同じ性格 = 受理ポリシーであり合意規則ではない(セルフホストでの調整は
+// 自由 — docs/SELF_HOSTING.md "Tenant quotas")。値は起草値で、ベータの実測後に
+// 調整する(オープンベータ開放条件 — hosted-design.md §2-1)。
+// ---------------------------------------------------------------------------
+
+/**
+ * §11-3: org あたりのアクティブプロジェクト数。「アクティブ」= v1 では当該 org の
+ * 全 `projects` 行(削除 API が存在しないため。削除導入時に tombstone 除外へ再訪 —
+ * 同節)。org 作成 API は未実装なので v1 の実効はパーソナル org 単位 ≒ ユーザー単位。
+ * 判定は init 受理点(handlers-membership.ts)— org 権限確認の後・DO init の前。
+ * 上限到達時も DO には report-only で問い合わせ、§11-3 の修復経路(already-
+ * initialized + 行欠損)は塞がない。
+ */
+export const MAX_ACTIVE_PROJECTS_PER_ORG = 100;
+
+/**
+ * §12-8 DO ストレージ総量ガードの警告閾値(運用ログ — 静的メッセージのみ、DO
+ * インスタンスごと 1 回)。単位は 10 進 GB(10^9 バイト): プラットフォームの床
+ * 「10 GB」が 10 進・2 進いずれの単位でも、拒否閾値がその下に来る保守側の解釈。
+ */
+export const DO_STORAGE_WARN_BYTES = 8_000_000_000;
+
+/**
+ * §12-8 DO ストレージ総量ガードの拒否閾値。実測 `databaseSize` がこの値以上の
+ * DO では内容の成長面(値 push・変数 / 環境の作成・改名・DEK 登録・
+ * add_member / grant_server)を 422 `project-storage-bytes` で拒否する。読み取り・
+ * 削除・失効・ローテーション・リース・申告・checkpoint は拒否下でも受理される
+ * (同節の明示列挙 — storage-guard.ts)。10 GB の SQLITE_FULL(読み取り可・
+ * 書き込み不能の床)に到達させないための唯一の防衛線であり、閾値を動かす場合も
+ * 床の下に置くこと。
+ */
+export const DO_STORAGE_REJECT_BYTES = 9_000_000_000;
+
 /**
  * AUTH_SPEC §11-5: プロジェクト一覧のサーバー固定ページ(D1 候補基準・
  * project_id 昇順)。1 呼び出しの DO membership 確認をこの件数に有界化する

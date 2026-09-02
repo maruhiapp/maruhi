@@ -26,6 +26,7 @@ import {
 } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
+import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
 import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "./verify-meta.ts";
 
@@ -39,6 +40,10 @@ export const renameEnvironmentProgram = (
   Effect.gen(function* () {
     const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     const environment = yield* requireActiveEnvironment(environmentId);
+    // DO ストレージ総量ガード(§12-8 — H2): 環境の改名はステートメント行 +
+    // マニフェストを積む成長面(存在検査の後・NFC / 一意性 / CAS / 署名の前)。
+    // 削除(deleteEnvironmentProgram)は呼ばない — 解放手段を塞がない
+    yield* ensureStorageAdmitsGrowth;
     yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
     if (yield* store.environmentNameTaken(statement.name, environmentId)) {

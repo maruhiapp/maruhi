@@ -1108,6 +1108,14 @@ interface ProjectRepoShape {
   ) => Effect.Effect<void>;
   readonly exists: (projectId: string) => Effect.Effect<boolean>;
   /**
+   * org のアクティブプロジェクト数(AUTH_SPEC §11-3 の受理上限の判定材料 —
+   * 2026-09-02 H2)。v1 では当該 org の全 `projects` 行(削除 API が無く tombstone
+   * も存在しない — 削除導入時に除外条件を足す)。`proj_org` 索引の count。
+   * best-effort の判定入力であり、DO 受理との原子性は持たない(§11-3 —
+   * 並行 init の僅かな超過は受容)。
+   */
+  readonly countInOrg: (orgId: string) => Effect.Effect<number>;
+  /**
    * 投影の維持(§11-5): add_member 受理後の行挿入と、チェーン取得成功時の
    * lazy 挿入(missing の自己修復 + 投影導入前プロジェクトの無人バックフィル)。
    * 冪等(INSERT OR IGNORE 相当)。
@@ -1182,6 +1190,15 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
           .where(eq(projects.id, projectId))
           .get();
         return row !== undefined;
+      }),
+    countInOrg: (orgId) =>
+      run(async () => {
+        const row = await db
+          .select({ n: count() })
+          .from(projects)
+          .where(eq(projects.orgId, orgId))
+          .get();
+        return row?.n ?? 0;
       }),
     upsertMember: (projectId, userId, nowMs) =>
       run(async () => {
