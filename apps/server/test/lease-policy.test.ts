@@ -16,6 +16,7 @@ import { DataStore } from "../src/data-store.ts";
 import { MAX_LEASES_PER_WINDOW } from "../src/policy.ts";
 import { leaseProgram } from "../src/programs-lease.ts";
 import { makeServerKey, ServerKey } from "../src/server-key.ts";
+import { StorageMeter } from "../src/storage-guard.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -201,6 +202,8 @@ describe("ワークロードリース: サーバー鍵未設定のデプロイ�
         Effect.provideService(ChainStore, chainStore),
         Effect.provideService(DataStore, undefined as never),
         Effect.provideService(AuditStore, undefined as never),
+        // ストレージガードの観測点(§12-8)は発行直前 = この経路では到達しない
+        Effect.provideService(StorageMeter, undefined as never),
       ),
     );
     expect(outcome).toEqual({

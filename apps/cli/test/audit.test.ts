@@ -237,7 +237,76 @@ function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
   };
 }
 
+/** 集約形 var.read の行(AUDIT_SPEC §3.3 — 値付き pull ごとに環境単位 1 行)。 */
+function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = {}): WireRow {
+  return {
+    id: idOf(seq),
+    seq,
+    serverTs: BASE_TS + seq,
+    event: "var.read",
+    actor: { type: "user", userId: member.userId, apiTokenId: "tok-1" },
+    environmentId: ENV_ID,
+    payload: {
+      variables: [
+        { variableId: "va", epoch: 1, version: 2 },
+        { variableId: "vb", epoch: 1, version: 1 },
+      ],
+      ...extraPayload,
+    },
+  };
+}
+
 describe("maruhi audit(list)", () => {
+  it("集約形 var.read は件数の要約で出し、--expand-reads で 1 変数 1 行に展開する", async () => {
+    const built = await baseChain();
+    // seq=5 は変数の列挙以外の payload(authMethod — 旧形なら recorded= に出ていた)を持つ
+    const rows = [
+      ...mirrorRowsOf(built),
+      aggregatedReadRow(4),
+      aggregatedReadRow(5, { authMethod: "github_oauth" }),
+    ];
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+
+    expect(await runCli(["audit"], env.layer)).toBe(0);
+    const summary = env.logs.join("\n");
+    const readLine = env.logs.find((line) => line.startsWith("seq=4\t"));
+    expect(readLine).toContain("read=2 variables");
+    // 列挙(payload)は recorded= として 1 行に流し込まない・展開もしない
+    expect(readLine).not.toContain("recorded=");
+    // 列挙以外の payload は引き続き recorded= に出る(列挙は除く)
+    const withMethod = env.logs.find((line) => line.startsWith("seq=5\t"));
+    expect(withMethod).toContain('recorded={"authMethod":"github_oauth"}');
+    expect(withMethod).not.toContain('"variables"');
+    expect(summary).not.toContain("var=ALPHA");
+    expect(summary).toContain("--expand-reads");
+
+    const expanded = await makeTestEnv();
+    seedSession(expanded, servers[servers.length - 1]?.origin ?? "", owner);
+    await seedConfig(expanded, {
+      server: servers[servers.length - 1]?.origin ?? "",
+      defaultProject: built.projectId,
+    });
+    expect(await runCli(["audit", "--expand-reads"], expanded.layer)).toBe(0);
+    const logs = expanded.logs.join("\n");
+    expect(logs).toContain("read=2 variables");
+    // 展開行: 表示名は検証済みステートメント由来(va = ALPHA)、無い変数は id のみ
+    expect(logs).toContain("- var=ALPHA (va)\tepoch=1\tversion=2");
+    expect(logs).toContain("- var=vb\tepoch=1\tversion=1");
+    expect(logs).not.toContain("Re-run with --expand-reads");
+
+    // --var 指定時は一致した変数の項目を行内に添える(展開はしない)
+    const filtered = await makeTestEnv();
+    seedSession(filtered, servers[servers.length - 1]?.origin ?? "", owner);
+    await seedConfig(filtered, {
+      server: servers[servers.length - 1]?.origin ?? "",
+      defaultProject: built.projectId,
+    });
+    expect(await runCli(["audit", "--var", "va"], filtered.layer)).toBe(0);
+    const matchedLine = filtered.logs.find((line) => line.startsWith("seq=4\t"));
+    expect(matchedLine).toContain("read=2 variables\tmatched=var=ALPHA (va)\tepoch=1\tversion=2");
+    expect(filtered.logs.join("\n")).not.toContain("- var=vb");
+  });
+
   it("行を表示し、名前は検証済みステートメントから解決、ミラー行は突合 OK", async () => {
     const built = await baseChain();
     // payload の名前スナップショットはサーバー申告 — 表示名の位置に昇格しない

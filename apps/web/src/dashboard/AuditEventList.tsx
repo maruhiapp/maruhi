@@ -12,6 +12,7 @@
 //   ステートメント経由)は行わない — 検証を持たない Web での名前解決は
 //   ステートメント検証なしの名前信用になる(AUTH_SPEC §12-2)ため識別子のみ表示
 import { Button } from "@astryxdesign/core/Button";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -19,6 +20,12 @@ import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiFailure, ApiResult } from "./api.ts";
+import {
+  aggregatedReadVariables,
+  listedReadVariableLabel,
+  payloadWithoutVariables,
+  readSummaryLabel,
+} from "./audit-read.ts";
 import { FailureNotice, formatServerTime, LoadingRow } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
@@ -50,6 +57,9 @@ function actorLabel(event: AuditEvent): string {
 
 /** 行の座標情報(target / 環境 / 変数 / epoch / version / chainSeq)を 1 行に畳む。 */
 function detailLabel(event: AuditEvent): string {
+  // 集約形 var.read(AUDIT_SPEC §3.3): 変数の列挙は payload が持ち、ここでは
+  // 件数の要約だけを出す(列挙は PayloadCell の展開)
+  const listed = aggregatedReadVariables(event);
   return [
     labeled("target", event.targetUserId),
     labeled("target key", event.targetKeyFingerprintHex),
@@ -58,6 +68,7 @@ function detailLabel(event: AuditEvent): string {
     labeled("epoch", event.epoch),
     labeled("v", event.version),
     labeled("chain seq", event.chainSeq),
+    listed === null ? undefined : readSummaryLabel(listed.length),
   ]
     .filter(isPresent)
     .join(" · ");
@@ -65,9 +76,40 @@ function detailLabel(event: AuditEvent): string {
 
 function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
   if (event.payload === undefined) return null;
+  const listed = aggregatedReadVariables(event);
+  if (listed === null) {
+    return <RecordedPayload payload={event.payload} />;
+  }
+  // 集約形 var.read: 変数の列挙は折り畳みで展開する(数十〜数百件になりうる —
+  // 既定は閉じた状態で要約〔detailLabel〕だけを見せる)。列挙以外の payload
+  // (authMethod 等)は従来どおり記録どおりの JSON で出す
+  const rest = payloadWithoutVariables(event.payload);
+  return (
+    <VStack gap={0.5}>
+      {rest === null ? null : <RecordedPayload payload={rest} />}
+      <Collapsible
+        trigger={<Text size="sm">Show variables</Text>}
+        defaultIsOpen={false}
+        value={`reads-${event.id}`}
+      >
+        <VStack gap={0.5}>
+          {/* 列挙は variableId 昇順・重複なし(AUDIT_SPEC §3.3)— キーに使える */}
+          {listed.map((variable) => (
+            <Text type="code" size="4xs" wordBreak="break-all" key={variable.variableId}>
+              {listedReadVariableLabel(variable)}
+            </Text>
+          ))}
+        </VStack>
+      </Collapsible>
+    </VStack>
+  );
+}
+
+/** 記録どおりの payload(サーバー申告の JSON をそのまま — 2 行で切り詰め、全文はツールチップ)。 */
+function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
   return (
     <Text type="code" size="4xs" wordBreak="break-all" maxLines={2} hasTruncateTooltip>
-      {JSON.stringify(event.payload)}
+      {JSON.stringify(payload)}
     </Text>
   );
 }

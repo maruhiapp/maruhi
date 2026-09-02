@@ -24,6 +24,11 @@ export {
 } from "./cli-pages.ts";
 export { GitHubApi, makeGitHubApi } from "./github.ts";
 export {
+  renderSignupClosedPage,
+  renderSignupInviteInvalidPage,
+  renderSignupInviteRequiredPage,
+} from "./signup-pages.ts";
+export {
   authMiddlewareImpl,
   parseBearerToken,
   SESSION_COOKIE,

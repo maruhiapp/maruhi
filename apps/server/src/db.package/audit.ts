@@ -135,6 +135,12 @@ function loginFailedBucketKey(bucket: LoginFailedBucket): string {
  */
 const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
 
+/**
+ * auth.signup_denied の抑制マーカー(AUDIT_SPEC §3.1 — 2026-09-01 H1)。
+ * login_failed と同じ固定窓・10 の冪規律で、バケットはイベント名 + reason。
+ */
+const SIGNUP_DENIED_SUPPRESSED_EVENT = "auth.signup_denied_suppressed";
+
 /** 抑制マーカーを残す件数か(1・10・100・… — 上の doc)。 */
 function isSuppressionMilestone(suppressedCount: number): boolean {
   if (suppressedCount < 1) {
@@ -199,6 +205,17 @@ interface D1AuditRepoShape {
     event: D1AuditEventInput,
     serverTs: number,
     bucket: LoginFailedBucket,
+  ) => Effect.Effect<void>;
+  /**
+   * auth.signup_denied 専用の追記(AUDIT_SPEC §3.1 — 2026-09-01 H1)。
+   * login_failed と同じ固定窓上限規律で、バケットは reason 単位(拒否理由ごとに
+   * 独立の枠 — 別理由の洪水が標的型の拒否まで消さない)。提示された外部
+   * provider ID を渡さないこと(§1-2)。
+   */
+  readonly appendSignupDenied: (
+    event: D1AuditEventInput,
+    serverTs: number,
+    reason: string,
   ) => Effect.Effect<void>;
   /**
    * invite.* の project_id スコープ読み取り(§7 の例外規定)。権限軸(当該
@@ -352,6 +369,82 @@ async function selectAuditPage(
   }));
 }
 
+/**
+ * 固定窓上限つきの未認証イベント追記(AUDIT_SPEC §3.1 — auth.login_failed と
+ * auth.signup_denied の共通機構)。
+ *
+ * 窓の計数は監査ログの走査ではなく専用カウンタ行で行う(deepsec R5):
+ * append-only で伸び続ける user_audit_events を未認証経路の追記ごとに走査すると、
+ * 有界にしたい洪水そのものがコスト増幅器になる。窓のリセット・加算・上限判定は
+ * 1 文の条件付き UPSERT に畳み、RETURNING の新しい計数から判定を導く
+ * (recovery 取得計数 — repos.ts — と同じ形)。カウンタテーブルは
+ * loginFailedWindows を共有する(bucketKey が名前空間を分ける — 監査行ではない
+ * 可変状態であり、テーブル名は導入時イベントの歴史名)。
+ */
+async function appendWithFixedWindow(
+  db: Db,
+  event: D1AuditEventInput,
+  serverTs: number,
+  spec: {
+    readonly bucketKey: string;
+    readonly markerEvent: string;
+    /** マーカー payload の分類部(窓長・上限・抑制件数はここで足す)。 */
+    readonly markerBasePayload: Readonly<Record<string, unknown>>;
+  },
+): Promise<void> {
+  const expired = sql`${serverTs} - ${loginFailedWindows.windowStart} >= ${LOGIN_FAILED_WINDOW_MS}`;
+  const underLimit = sql`${loginFailedWindows.recordedCount} < ${LOGIN_FAILED_WINDOW_LIMIT}`;
+  const counted = await db
+    .insert(loginFailedWindows)
+    .values({
+      bucket: spec.bucketKey,
+      windowStart: serverTs,
+      recordedCount: 1,
+      suppressedCount: 0,
+    })
+    .onConflictDoUpdate({
+      target: loginFailedWindows.bucket,
+      set: {
+        windowStart: sql`case when ${expired} then ${serverTs} else ${loginFailedWindows.windowStart} end`,
+        recordedCount: sql`case when ${expired} then 1 when ${underLimit} then ${loginFailedWindows.recordedCount} + 1 else ${loginFailedWindows.recordedCount} end`,
+        suppressedCount: sql`case when ${expired} then 0 when ${underLimit} then ${loginFailedWindows.suppressedCount} else ${loginFailedWindows.suppressedCount} + 1 end`,
+      },
+    })
+    .returning({
+      recordedCount: loginFailedWindows.recordedCount,
+      suppressedCount: loginFailedWindows.suppressedCount,
+    })
+    .get();
+  // 窓内では recorded が上限まで伸びてから suppressed が伸びる(両方が
+  // 同時に進むことはない)。よって「上限に達していて、かつ抑制が 1 件以上」
+  // が抑制されたリクエストの十分条件になる — 上限ちょうどの**最後の許可**は
+  // suppressed = 0 のまま通る
+  const recorded = counted?.recordedCount ?? 1;
+  const suppressed = counted?.suppressedCount ?? 0;
+  if (recorded >= LOGIN_FAILED_WINDOW_LIMIT && suppressed >= 1) {
+    // 個別行は落とすが、抑制を黙って行わない(deepsec M4/R4): 抑制件数が
+    // 10 の冪に達した時点でマーカーを 1 行残す。行の密度と最後の件数から
+    // 抑制の規模が読め、書き込みは件数に対して対数的に有界
+    if (isSuppressionMilestone(suppressed)) {
+      await userAuditInsert(db, serverTs, {
+        event: spec.markerEvent,
+        actor: {},
+        // 個別行の payload は運ばない(AUDIT_SPEC §3.1: マーカーの payload は
+        // 分類部・窓長・上限・抑制件数のみ)。マーカーはこの 1 件ではなく窓の
+        // 状態を表すものなので、最後の個別行を代表させない
+        payload: {
+          ...spec.markerBasePayload,
+          windowMs: LOGIN_FAILED_WINDOW_MS,
+          limit: LOGIN_FAILED_WINDOW_LIMIT,
+          suppressedCount: suppressed,
+        },
+      });
+    }
+    return;
+  }
+  await userAuditInsert(db, serverTs, event);
+}
+
 export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
   return {
     appendUserEvent: (event, serverTs) =>
@@ -359,66 +452,23 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
         await userAuditInsert(db, serverTs, event);
       }),
     appendLoginFailed: (event, serverTs, bucket) =>
-      Effect.promise(async () => {
-        // 窓の計数は監査ログの走査ではなく専用カウンタ行で行う(deepsec R5):
-        // append-only で伸び続ける user_audit_events を未認証経路の追記ごとに
-        // 走査すると、有界にしたい洪水そのものがコスト増幅器になる。窓の
-        // リセット・加算・上限判定は 1 文の条件付き UPSERT に畳み、RETURNING の
-        // 新しい計数から判定を導く(recovery 取得計数 — repos.ts — と同じ形)
-        const bucketKey = loginFailedBucketKey(bucket);
-        const expired = sql`${serverTs} - ${loginFailedWindows.windowStart} >= ${LOGIN_FAILED_WINDOW_MS}`;
-        const underLimit = sql`${loginFailedWindows.recordedCount} < ${LOGIN_FAILED_WINDOW_LIMIT}`;
-        const counted = await db
-          .insert(loginFailedWindows)
-          .values({
-            bucket: bucketKey,
-            windowStart: serverTs,
-            recordedCount: 1,
-            suppressedCount: 0,
-          })
-          .onConflictDoUpdate({
-            target: loginFailedWindows.bucket,
-            set: {
-              windowStart: sql`case when ${expired} then ${serverTs} else ${loginFailedWindows.windowStart} end`,
-              recordedCount: sql`case when ${expired} then 1 when ${underLimit} then ${loginFailedWindows.recordedCount} + 1 else ${loginFailedWindows.recordedCount} end`,
-              suppressedCount: sql`case when ${expired} then 0 when ${underLimit} then ${loginFailedWindows.suppressedCount} else ${loginFailedWindows.suppressedCount} + 1 end`,
-            },
-          })
-          .returning({
-            recordedCount: loginFailedWindows.recordedCount,
-            suppressedCount: loginFailedWindows.suppressedCount,
-          })
-          .get();
-        // 窓内では recorded が上限まで伸びてから suppressed が伸びる(両方が
-        // 同時に進むことはない)。よって「上限に達していて、かつ抑制が 1 件以上」
-        // が抑制されたリクエストの十分条件になる — 上限ちょうどの**最後の許可**は
-        // suppressed = 0 のまま通る
-        const recorded = counted?.recordedCount ?? 1;
-        const suppressed = counted?.suppressedCount ?? 0;
-        if (recorded >= LOGIN_FAILED_WINDOW_LIMIT && suppressed >= 1) {
-          // 個別行は落とすが、抑制を黙って行わない(deepsec M4/R4): 抑制件数が
-          // 10 の冪に達した時点でマーカーを 1 行残す。行の密度と最後の件数から
-          // 抑制の規模が読め、書き込みは件数に対して対数的に有界
-          if (isSuppressionMilestone(suppressed)) {
-            await userAuditInsert(db, serverTs, {
-              event: LOGIN_FAILED_SUPPRESSED_EVENT,
-              actor: {},
-              // 個別行の reason は運ばない(AUDIT_SPEC §3.1: マーカーの payload は
-              // auth_method・reason・窓長・上限・抑制件数のみ)。マーカーはこの 1 件では
-              // なく窓の状態を表すものなので、最後の失敗理由を代表させない
-              payload: {
-                authMethod: bucket.authMethod,
-                reason: bucket.reason,
-                windowMs: LOGIN_FAILED_WINDOW_MS,
-                limit: LOGIN_FAILED_WINDOW_LIMIT,
-                suppressedCount: suppressed,
-              },
-            });
-          }
-          return;
-        }
-        await userAuditInsert(db, serverTs, event);
-      }),
+      Effect.promise(() =>
+        appendWithFixedWindow(db, event, serverTs, {
+          bucketKey: loginFailedBucketKey(bucket),
+          markerEvent: LOGIN_FAILED_SUPPRESSED_EVENT,
+          markerBasePayload: { authMethod: bucket.authMethod, reason: bucket.reason },
+        }),
+      ),
+    appendSignupDenied: (event, serverTs, reason) =>
+      Effect.promise(() =>
+        appendWithFixedWindow(db, event, serverTs, {
+          // バケットの名前空間はイベント名で分ける(login_failed の
+          // [authMethod, reason] キーと衝突しない)
+          bucketKey: JSON.stringify(["auth.signup_denied", reason]),
+          markerEvent: SIGNUP_DENIED_SUPPRESSED_EVENT,
+          markerBasePayload: { authMethod: "github_oauth", reason },
+        }),
+      ),
     readProjectInviteEvents: (projectId, page) =>
       Effect.promise(() =>
         selectAuditPage(

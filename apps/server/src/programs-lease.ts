@@ -39,6 +39,7 @@ import { MAX_LEASE_DENIED_ROWS_PER_WINDOW, MAX_LEASES_PER_WINDOW } from "./polic
 import { requireActiveEnvironment } from "./quotas.ts";
 import type { LeaseWrapOutput } from "./server-key.ts";
 import { ServerKey } from "./server-key.ts";
+import { observeStorageLevel, StorageMeter } from "./storage-guard.ts";
 
 /** worker が渡す、検証済み OIDC トークンのうち認可・束縛に必要な部分だけ。 */
 export interface LeaseTokenFacts {
@@ -159,7 +160,11 @@ export const leaseProgram = (
   ephemeralPubHex: string,
   facts: LeaseTokenFacts,
   cache: StateCache,
-): Effect.Effect<LeaseValue, LeaseRejection, ChainStore | DataStore | AuditStore | ServerKey> =>
+): Effect.Effect<
+  LeaseValue,
+  LeaseRejection,
+  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+> =>
   Effect.gen(function* () {
     const serverKey = yield* ServerKey;
     const serverKeyInfo = yield* serverKey.info;
@@ -303,6 +308,10 @@ export const leaseProgram = (
         }),
       );
 
+    // DO ストレージ総量ガードの観測のみ(AUTH_SPEC §12-8 — 拒否しない。リースは
+    // 拒否下でも受理する面 (e) だが監査行を書く読み取りなので警告の観測点を
+    // 持つ — 値付き pull と同じ理由)。認可の後 = 存在秘匿(§11-2)と両立
+    yield* observeStorageLevel;
     // 監査(AUDIT_SPEC §3.5): server.dek_unwrapped をエポックごと 1 行 +
     // server.lease_issued を環境単位 1 行。actor は `{ server, 鍵 FP }`。
     // **var.read は記録しない**(人間 actor の読み取りの証跡であり、
