@@ -16,9 +16,19 @@
 // 昇格しない)。chain.* 行は検証済みチェーンとの突合結果をラベルで示す。
 // 平文値・鍵素材はこのモジュールを通らない。
 
-import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
-import type { AuditEventRecord } from "@maruhi/core";
-import { CHAIN_MIRROR_EVENT_PREFIX, CHAIN_MIRROR_EVENTS, chainMirrorEvent } from "@maruhi/core";
+import {
+  type AuditEventSchema,
+  DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
+  MAX_AUDIT_EVENTS_PAGE_LIMIT,
+} from "@maruhi/api-schema";
+import type { AuditEventRecord, AuditReadVariable } from "@maruhi/core";
+import {
+  auditReadVariablesOf,
+  CHAIN_MIRROR_EVENT_PREFIX,
+  CHAIN_MIRROR_EVENTS,
+  chainMirrorEvent,
+  VAR_READ_EVENT,
+} from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -31,31 +41,11 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
 
-/** ワイヤの監査イベント(api-schema の AuditEventSchema の受信形)。 */
-export interface WireAuditEvent {
-  /** 行識別子 = row_id(不透明。--before カーソルに使う)。 */
-  readonly id: string;
-  /** 保存採番(admin 可視の project 応答のみ — AUDIT_SPEC §7)。 */
-  readonly seq?: number;
-  readonly serverTs: number;
-  readonly clientTs?: number;
-  readonly event: string;
-  readonly actor: {
-    readonly type: "user" | "server" | "system";
-    readonly userId?: string;
-    readonly keyFingerprintHex?: string;
-    readonly apiTokenId?: string;
-  };
-  readonly targetUserId?: string;
-  readonly targetKeyFingerprintHex?: string;
-  readonly environmentId?: string;
-  readonly variableId?: string;
-  readonly epoch?: number;
-  readonly version?: number;
-  readonly chainSeq?: number;
-  readonly projectId?: string;
-  readonly payload?: Readonly<Record<string, unknown>>;
-}
+/**
+ * ワイヤの監査イベント(api-schema の AuditEventSchema の受信形 — 型は Schema
+ * から導出し、ここで形を複製しない)。全フィールドはサーバー申告(冒頭の TCB 規律)。
+ */
+export type WireAuditEvent = typeof AuditEventSchema.Type;
 
 /** list / invites / self 共通のページ指定。before は前ページ末尾行の id。 */
 export interface AuditPageOptions {
@@ -70,6 +60,27 @@ export interface AuditListFilters {
   readonly targetUserId: string | null;
   readonly environmentId: string | null;
   readonly variableId: string | null;
+}
+
+/** list の表示オプション。 */
+export interface AuditListOptions {
+  /**
+   * 集約形 `var.read`(AUDIT_SPEC §3.3 — 値付き pull ごとに環境単位 1 行)の
+   * 変数列挙を 1 変数 1 行で展開する。既定は件数の要約のみ。
+   */
+  readonly expandReads: boolean;
+}
+
+/**
+ * 集約形 `var.read` の変数列挙(AUDIT_SPEC §3.3)。集約行は変数 ID を列に持たず
+ * (variableId 欠落)、payload の `variables` に返した変数を列挙する。旧形
+ * (variableId あり)と他イベントは null。解釈はサーバーと同じ共有実装。
+ */
+function aggregatedReadOf(event: WireAuditEvent): readonly AuditReadVariable[] | null {
+  if (event.event !== VAR_READ_EVENT || event.variableId !== undefined) {
+    return null;
+  }
+  return auditReadVariablesOf(event.payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,18 +277,26 @@ function describeTarget(event: WireAuditEvent): string | null {
   return null;
 }
 
+/** 変数の表示ラベル(検証済み名があれば `NAME (id)`、なければ id のみ)。 */
+function variableLabel(variableId: string, resolvedName: string | null): string {
+  return resolvedName === null
+    ? displayText(variableId)
+    : `${displayText(resolvedName)} (${displayText(variableId)})`;
+}
+
 /** 座標・数値部の列(env / var / epoch / version — 無いものは出さない)。 */
 function coordinateParts(event: WireAuditEvent, resolvedName: string | null): readonly string[] {
   const parts: string[] = [];
   if (event.environmentId !== undefined) {
     parts.push(`env=${displayText(event.environmentId)}`);
   }
+  const listed = aggregatedReadOf(event);
+  if (listed !== null) {
+    // 集約行: 変数の列挙は payload が持つ(要約は件数のみ。展開は --expand-reads)
+    parts.push(`read=${countNoun(listed.length, "variable")}`);
+  }
   if (event.variableId !== undefined) {
-    const label =
-      resolvedName === null
-        ? displayText(event.variableId)
-        : `${displayText(resolvedName)} (${displayText(event.variableId)})`;
-    parts.push(`var=${label}`);
+    parts.push(`var=${variableLabel(event.variableId, resolvedName)}`);
   }
   if (event.epoch !== undefined) {
     parts.push(`epoch=${event.epoch}`);
@@ -301,12 +320,29 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
       parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
     }
   }
-  if (event.payload !== undefined) {
+  if (event.payload !== undefined && aggregatedReadOf(event) === null) {
     // 記録内容(サーバー申告)であることを明示する接頭辞。名前スナップショット
-    // を含みうるが、表示名の位置(var= ラベル)には昇格しない(TCB 規律)
+    // を含みうるが、表示名の位置(var= ラベル)には昇格しない(TCB 規律)。
+    // 集約形 var.read の payload は変数の列挙そのもので、read= の要約と
+    // --expand-reads の展開行が表示を担う(数十 KB になりうる JSON を 1 行に
+    // 流し込まない)
     parts.push(`recorded=${displayText(JSON.stringify(event.payload))}`);
   }
   return parts;
+}
+
+/**
+ * 集約形 var.read の展開行(1 変数 1 行 — `--expand-reads`)。表示名は検証済み
+ * ステートメント由来のみ(旧形の var= ラベルと同じ TCB 規律)。
+ */
+function expandedReadLines(
+  listed: readonly AuditReadVariable[],
+  names: NameIndex | undefined,
+): readonly string[] {
+  return listed.map(
+    (variable) =>
+      `\t- var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`,
+  );
 }
 
 /** 1 行の描画。表示名(resolvedName)は検証済みステートメント由来のみ。 */
@@ -375,37 +411,58 @@ function fetchProjectEvents(
  * 突合し、不一致(= 改竄の証拠)があれば終了コード 1(invite list の
  * 完全性検査と同じ規律 — 読めたことと健全であることを混ぜない)。
  */
-/** 名前解決の対象になる環境 ID の集合(variableId を持つ行の環境のみ)。 */
-function environmentIdsForNames(events: readonly WireAuditEvent[]): readonly string[] {
+/**
+ * 名前解決の対象になる環境 ID の集合(variableId を持つ行の環境。展開時は
+ * 集約形 var.read の環境も — 展開行が名前を引くため)。
+ */
+function environmentIdsForNames(
+  events: readonly WireAuditEvent[],
+  options: AuditListOptions,
+): readonly string[] {
   const ids = new Set<string>();
   for (const event of events) {
-    if (event.variableId !== undefined && event.environmentId !== undefined) {
+    if (event.environmentId === undefined) {
+      continue;
+    }
+    if (
+      event.variableId !== undefined ||
+      (options.expandReads && aggregatedReadOf(event) !== null)
+    ) {
       ids.add(event.environmentId);
     }
   }
   return [...ids].toSorted();
 }
 
-/** 1 行分の描画結果(本文 + ミラー不一致の警告列)。純関数 — Effect を持たない。 */
+/** 1 行分の描画結果(本文 + 展開行 + ミラー不一致の警告列)。純関数 — Effect を持たない。 */
 function renderListEvent(
   event: WireAuditEvent,
   names: ReadonlyMap<string, NameIndex>,
   entries: ReadonlyMap<number, ChainEntry>,
   headSeq: number,
-): { readonly line: string; readonly warnings: readonly string[] } {
+  options: AuditListOptions,
+): { readonly lines: readonly string[]; readonly warnings: readonly string[] } {
+  const environmentNames =
+    event.environmentId === undefined ? undefined : names.get(event.environmentId);
   const name =
-    event.environmentId === undefined || event.variableId === undefined
-      ? null
-      : (names.get(event.environmentId)?.get(event.variableId) ?? null);
+    event.variableId === undefined ? null : (environmentNames?.get(event.variableId) ?? null);
   const trust = projectMirrorTrustOf(event, entries, headSeq);
   const warnings = mirrorWarnings(event, trust);
-  return { line: formatEventLine(event, name, trust), warnings };
+  const listed = options.expandReads ? aggregatedReadOf(event) : null;
+  return {
+    lines: [
+      formatEventLine(event, name, trust),
+      ...(listed === null ? [] : expandedReadLines(listed, environmentNames)),
+    ],
+    warnings,
+  };
 }
 
 export function auditListOp(
   context: ProjectContextBase,
   page: AuditPageOptions,
   filters: AuditListFilters,
+  options: AuditListOptions,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -414,22 +471,43 @@ export function auditListOp(
       yield* io.log("No audit events (no rows match the filter / cursor)");
       return 0;
     }
-    const names = yield* resolveNames(context, environmentIdsForNames(events));
+    const names = yield* resolveNames(context, environmentIdsForNames(events, options));
     const entries = entryIndexOf(context.verified.entries);
-    let integrityFailures = 0;
-    for (const event of events) {
-      const rendered = renderListEvent(event, names, entries, context.verified.state.headSeq);
-      yield* io.log(rendered.line);
-      integrityFailures += rendered.warnings.length;
-      for (const warning of rendered.warnings) {
-        yield* io.logError(warning);
-      }
+    const integrityFailures = yield* logListEvents(events, (event) =>
+      renderListEvent(event, names, entries, context.verified.state.headSeq, options),
+    );
+    if (!options.expandReads && events.some((event) => aggregatedReadOf(event) !== null)) {
+      yield* io.log(
+        "Note: var.read rows are recorded per value pull and list the variables read (AUDIT_SPEC §3.3). Re-run with --expand-reads to print one line per variable",
+      );
     }
     const hint = continuationHint(events, page.limit, "maruhi audit");
     if (hint !== null) {
       yield* io.log(hint);
     }
     return integrityFailures > 0 ? 1 : 0;
+  });
+}
+
+/** 各行の本文・展開行を stdout へ、ミラー警告を stderr へ出し、警告数を返す。 */
+function logListEvents(
+  events: readonly WireAuditEvent[],
+  render: (event: WireAuditEvent) => ReturnType<typeof renderListEvent>,
+): Effect.Effect<number, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    let integrityFailures = 0;
+    for (const event of events) {
+      const rendered = render(event);
+      for (const line of rendered.lines) {
+        yield* io.log(line);
+      }
+      integrityFailures += rendered.warnings.length;
+      for (const warning of rendered.warnings) {
+        yield* io.logError(warning);
+      }
+    }
+    return integrityFailures;
   });
 }
 
