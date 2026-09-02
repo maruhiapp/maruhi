@@ -22,7 +22,7 @@ export {
   renderDeniedPage,
   renderSignupGuidancePage,
 } from "./cli-pages.ts";
-export { GitHubApi, makeGitHubApi } from "./github.ts";
+export { GitHubApi, type GitHubApiShape, makeGitHubApi } from "./github.ts";
 export {
   renderSignupClosedPage,
   renderSignupInviteInvalidPage,

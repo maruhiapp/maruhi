@@ -18,6 +18,9 @@ export default defineConfig({
       miniflare: {
         // GitHub へのアウトバウンド fetch をフェイクに差し替える(実ネットワーク禁止)
         outboundService: fakeGitHub,
+        // 運用基盤 H3 の退避先(ローカル R2 — wrangler.jsonc の最上位には無い optional
+        // バインディング。hosted 環境の形をテストで再現する)
+        r2Buckets: ["OPS_BACKUP_BUCKET"],
         bindings: {
           // GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET は本番では Workers Secret
           // (wrangler.jsonc には現れない)のため、テストは「設定済みサーバー」の
@@ -29,6 +32,9 @@ export default defineConfig({
           // Secret。リース経路(§14)のテストは、この IKM から導出される実鍵で
           // サーバー宛ラップを作り、サーバーがそれを開封できることまで検証する
           SERVER_ENC_KEY_IKM: "b0".repeat(32),
+          // トリップワイヤ通知の webhook(hosted-ops.md §2-B)。フェイク(fake-github.ts)が
+          // 受ける。送信本文の検査は OpsNotifier の差し替えで行う(ops-alerts.test.ts)
+          OPS_ALERT_WEBHOOK_URL: "https://ops-webhook.test/hook",
           // wrangler.jsonc の assets.run_worker_first の実値(被覆スイープの検査対象)
           TEST_RUN_WORKER_FIRST: (wranglerConfig.assets?.run_worker_first ?? null) as string[],
           // D1 マイグレーション(test 側で applyD1Migrations に渡す)。

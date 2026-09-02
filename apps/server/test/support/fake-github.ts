@@ -200,11 +200,27 @@ async function handleApi(request: OutboundRequest, url: URL): Promise<Response |
   return (await routeCheckToken(request, url)) ?? bearerApiResponse(request, url);
 }
 
+/**
+ * 運用基盤 H3 のトリップワイヤ通知 webhook(vitest.config.ts の OPS_ALERT_WEBHOOK_URL)。
+ * 受け口は 204 を返すだけ(本文の検査は OpsNotifier の差し替えで — ops-alerts.test.ts)。
+ */
+function fakeOpsWebhook(url: URL): Response | null {
+  return url.hostname === "ops-webhook.test" ? new Response(null, { status: 204 }) : null;
+}
+
+async function routeOutbound(request: OutboundRequest, url: URL): Promise<Response | null> {
+  return (
+    fakeOpsWebhook(url) ??
+    (await handleOAuth(request, url)) ??
+    (await handleApi(request, url)) ??
+    fakeOidcIssuer(url)
+  );
+}
+
 export async function fakeGitHub(request: OutboundRequest): Promise<Response> {
   const url = new URL(request.url);
-  const handled =
-    (await handleOAuth(request, url)) ?? (await handleApi(request, url)) ?? fakeOidcIssuer(url);
   return (
-    handled ?? new Response(`unexpected outbound request in tests: ${request.url}`, { status: 500 })
+    (await routeOutbound(request, url)) ??
+    new Response(`unexpected outbound request in tests: ${request.url}`, { status: 500 })
   );
 }

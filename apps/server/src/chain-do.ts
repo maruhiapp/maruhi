@@ -57,7 +57,19 @@ import type {
 import { rejectData, requireMemberState } from "./data-plane.ts";
 import type { StoredHeadAttestation } from "./data-store.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
-import { ensureProjectDoTables } from "./do-schema.ts";
+import {
+  ensureProjectDoTables,
+  PROJECT_DO_TABLES,
+  readProjectDoSchemaVersion,
+} from "./do-schema.ts";
+import type { RestoreFailureCode, SnapshotTrailer } from "./do-snapshot.ts";
+import {
+  readWatermarks,
+  RestoreRefusedError,
+  restoreSnapshot,
+  snapshotObjectKey,
+  writeSnapshot,
+} from "./do-snapshot.ts";
 import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
 import { auditEventsProgram, auditHeadProgram } from "./programs-audit.ts";
 import {
@@ -86,7 +98,13 @@ import {
 } from "./programs-variable.ts";
 import type { EffectiveRotationFlag } from "./rotation-detect.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
-import { ensureStorageAdmitsGrowth, StorageMeter, storageMeterLayer } from "./storage-guard.ts";
+import type { StorageGuardDecision } from "./storage-guard.ts";
+import {
+  ensureStorageAdmitsGrowth,
+  StorageMeter,
+  storageGuardDecision,
+  storageMeterLayer,
+} from "./storage-guard.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
@@ -139,7 +157,87 @@ export interface Env {
    * (ログイン導線 — サーバー側の状態・外部呼び出しを持たない 302 のみ)。
    */
   readonly SIGNUP_START_RATE_LIMIT?: RateLimit;
+  /**
+   * DO → R2 退避の保管先(H3 — docs/notes/hosted-ops.md §2-D / §2-F)。hosted 環境
+   * (`wrangler deploy --env hosted`)のみが持つ optional バインディング。不在 =
+   * 退避しない(セルフホストの既定。スイープは静的 1 行を残して no-op)。
+   */
+  readonly OPS_BACKUP_BUCKET?: R2Bucket;
+  /**
+   * トリップワイヤ通知の webhook(Workers Secret — hosted-ops.md §2-B)。未設定 =
+   * 送信しない(既定は無効)。本文は静的な信号名 + 集計値のみ。
+   */
+  readonly OPS_ALERT_WEBHOOK_URL?: string;
 }
+
+// ---------------------------------------------------------------------------
+// 運用 RPC(H3 — hosted-ops.md §2-D / §2-E)の入出力。worker 内部(cron の
+// スイープ・復元 worker)からのみ呼ばれ、HTTP ハンドラは呼ばない。
+// ---------------------------------------------------------------------------
+
+export interface OpsBackupInput {
+  /** オブジェクトキーの接頭辞(`do`)。キーにプロジェクト ID は載らない。 */
+  readonly keyPrefix: string;
+  readonly nowMs: number;
+  /** これを超える DO は退避しない(oversize)。 */
+  readonly maxBytes: number;
+  /**
+   * 前回成功のウォーターマーク(監査 seq・チェーン seq・ヘッド申告の最新受理時刻)。
+   * 三つとも一致すれば skip(null = 必ず退避)。
+   */
+  readonly skipIfUnchanged: {
+    readonly auditSeq: number;
+    readonly chainSeq: number;
+    readonly attestationMark: number;
+  } | null;
+  /** テスト用: multipart のパート長。 */
+  readonly partBytes?: number;
+}
+
+export type OpsBackupOutcome =
+  | {
+      readonly kind: "uploaded";
+      readonly objectKey: string;
+      readonly bytes: number;
+      readonly auditSeq: number;
+      readonly chainSeq: number;
+      readonly attestationMark: number;
+      readonly storageLevel: StorageGuardDecision;
+      readonly databaseSizeBytes: number;
+      readonly trailer: SnapshotTrailer;
+    }
+  | {
+      readonly kind: "skipped";
+      readonly auditSeq: number;
+      readonly chainSeq: number;
+      readonly attestationMark: number;
+      readonly storageLevel: StorageGuardDecision;
+      readonly databaseSizeBytes: number;
+    }
+  | {
+      readonly kind: "oversize";
+      readonly storageLevel: StorageGuardDecision;
+      readonly databaseSizeBytes: number;
+    }
+  | {
+      readonly kind: "upload-failed";
+      readonly storageLevel: StorageGuardDecision;
+      readonly databaseSizeBytes: number;
+    }
+  | { readonly kind: "no-bucket" };
+
+export type OpsRestoreOutcome =
+  | {
+      readonly kind: "restored";
+      readonly rows: Readonly<Record<string, number>>;
+      readonly chainHeadSeq: number;
+      readonly chainHeadHashHex: string | null;
+      readonly auditMaxSeq: number;
+      /** 復元後に累積ハッシュ列を MAX(seq) まで伸ばして読んだ値(監査行ゼロは空文字列)。 */
+      readonly auditHeadHashHex: string;
+    }
+  | { readonly kind: "refused"; readonly code: RestoreFailureCode }
+  | { readonly kind: "no-bucket" };
 
 // ---------------------------------------------------------------------------
 // 型付きエラー(DO 内部)と RPC 境界の outcome 型
@@ -792,6 +890,149 @@ export class ProjectChainDO extends DurableObject<Env> {
             }),
           ),
         ),
+      ),
+    );
+  }
+
+  // --- 運用 RPC(H3 — hosted-ops.md §2-D / §2-E。HTTP から呼ばれない) ------
+
+  /**
+   * DO → R2 退避(permit 下 = 全表が一貫)。読み出しと書き込みは do-snapshot.ts。
+   * census(AUTH_SPEC §12-8 の判定)は既存の meter と純関数を共有する(H2 の警告行
+   * への接続 — hosted-ops.md §2-C。警告行そのものの文言・1 回規律は変えない)。
+   * 退避の失敗は静的コードで返す(次回スイープで再試行)。
+   */
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(cron のスイープがスタブ経由で呼ぶ)
+  opsBackup(input: OpsBackupInput): Promise<OpsBackupOutcome> {
+    const bucket = this.env.OPS_BACKUP_BUCKET;
+    if (bucket === undefined) {
+      return Promise.resolve({ kind: "no-bucket" });
+    }
+    const sql = this.ctx.storage.sql;
+    const doIdHex = this.ctx.id.toString();
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        Effect.gen(function* () {
+          const meter = yield* StorageMeter;
+          const databaseSizeBytes = meter.databaseSizeBytes();
+          const storageLevel = storageGuardDecision(databaseSizeBytes);
+          const marks = readWatermarks(sql);
+          if (
+            input.skipIfUnchanged !== null &&
+            input.skipIfUnchanged.auditSeq === marks.auditMaxSeq &&
+            input.skipIfUnchanged.chainSeq === marks.chainHeadSeq &&
+            input.skipIfUnchanged.attestationMark === marks.attestationMark
+          ) {
+            return {
+              kind: "skipped",
+              auditSeq: marks.auditMaxSeq,
+              chainSeq: marks.chainHeadSeq,
+              attestationMark: marks.attestationMark,
+              storageLevel,
+              databaseSizeBytes,
+            } satisfies OpsBackupOutcome;
+          }
+          if (databaseSizeBytes > input.maxBytes) {
+            return { kind: "oversize", storageLevel, databaseSizeBytes } satisfies OpsBackupOutcome;
+          }
+          const objectKey = snapshotObjectKey(input.keyPrefix, doIdHex, input.nowMs);
+          const written = yield* Effect.promise(() =>
+            writeSnapshot({
+              sql,
+              tables: PROJECT_DO_TABLES,
+              schemaVersion: readProjectDoSchemaVersion(sql),
+              doIdHex,
+              takenAtMs: input.nowMs,
+              bucket,
+              key: objectKey,
+              ...(input.partBytes === undefined ? {} : { partBytes: input.partBytes }),
+            }).then(
+              (result): OpsBackupOutcome => ({
+                kind: "uploaded",
+                objectKey,
+                bytes: result.bytes,
+                auditSeq: result.trailer.auditMaxSeq,
+                chainSeq: result.trailer.chainHeadSeq,
+                attestationMark: marks.attestationMark,
+                storageLevel,
+                databaseSizeBytes,
+                trailer: result.trailer,
+              }),
+              (error: unknown): OpsBackupOutcome => {
+                // 静的メッセージのみ(種別名まで)。記録は worker 側の D1
+                console.warn(
+                  "project snapshot upload failed; retried on the next sweep",
+                  error instanceof Error ? error.name : "unknown",
+                );
+                return { kind: "upload-failed", storageLevel, databaseSizeBytes };
+              },
+            ),
+          );
+          return written;
+        }),
+      ),
+    );
+  }
+
+  /**
+   * 退避物からの復元(permit 下)。**空の DO にのみ**書く(do-snapshot.ts — 上書き
+   * 経路を作らない)。復元後はインスタンスメモリ(導出状態・監査採番)を破棄し、
+   * 累積ハッシュ列を MAX(seq) まで伸ばして監査ヘッドを返す(突合用)。
+   */
+  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(復元 worker がスタブ経由で呼ぶ)
+  opsRestore(objectKey: string): Promise<OpsRestoreOutcome> {
+    const bucket = this.env.OPS_BACKUP_BUCKET;
+    if (bucket === undefined) {
+      return Promise.resolve({ kind: "no-bucket" });
+    }
+    const storage = this.ctx.storage;
+    const sql = storage.sql;
+    const cache = this.#stateCache;
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        Effect.gen(function* () {
+          const audit = yield* AuditStore;
+          const restored = yield* Effect.promise(async () => {
+            const object = await bucket.get(objectKey);
+            if (object === null) {
+              return new RestoreRefusedError("object-missing");
+            }
+            try {
+              return await restoreSnapshot({
+                storage,
+                tables: PROJECT_DO_TABLES,
+                schemaVersion: readProjectDoSchemaVersion(sql),
+                body: object.body,
+              });
+            } catch (error) {
+              if (error instanceof RestoreRefusedError) {
+                return error;
+              }
+              throw error;
+            } finally {
+              // 成否に依らずメモリを破棄する(部分復元の残骸も配らない)
+              cache.chain = null;
+              cache.current = null;
+              audit.resetSeqCacheSync();
+            }
+          });
+          if (restored instanceof RestoreRefusedError) {
+            return { kind: "refused", code: restored.code } satisfies OpsRestoreOutcome;
+          }
+          // 監査ヘッド列を最後まで伸ばす(有界伸長 — 復元時の一回性の操作なので収束まで回す)
+          while ((yield* audit.ensureHeadCurrent) === "more-remains") {
+            // 各呼び出しが前進するため必ず終わる(audit-store.ts の有界契約)
+          }
+          const marks = readWatermarks(sql);
+          return {
+            kind: "restored",
+            rows: restored.rows,
+            chainHeadSeq: marks.chainHeadSeq,
+            chainHeadHashHex: marks.chainHeadHashHex,
+            auditMaxSeq: marks.auditMaxSeq,
+            auditHeadHashHex: audit.currentHeadHexSync(),
+          } satisfies OpsRestoreOutcome;
+        }),
       ),
     );
   }

@@ -12,6 +12,13 @@ export {
   LOGIN_FAILED_WINDOW_MS,
 } from "./audit.ts";
 export {
+  type OpsBackupAttempt,
+  type OpsCounterMetric,
+  OpsRepo,
+  type OpsRepoShape,
+  opsWindowStart,
+} from "./ops.ts";
+export {
   CliFlowRepo,
   type DbServices,
   FlowSigningKeyRepo,

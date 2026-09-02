@@ -395,3 +395,55 @@ export const orgAuditEvents = sqliteTable("org_audit_events", auditEventColumns,
   // invite.* の project_id スコープ読み取り(AUDIT_SPEC §7 — C1)のページング用
   index("oae_project").on(t.projectId, t.seq),
 ]);
+
+// ---------------------------------------------------------------------------
+// 運用(H3 — docs/notes/hosted-ops.md §6)。監査ログではない**運営限定の可変状態**
+// (hosted-design.md §5-5 — 監査と運用ログを混ぜない)。いずれの表もリクエスト
+// 由来の識別子のうちプロジェクト ID 以外を持たない(ops_backups の project_id は
+// `projects` 表と同じ運営ストア内の参照で、退避オブジェクトのキーには載せない)。
+// ---------------------------------------------------------------------------
+
+/**
+ * 運用カウンタ(固定窓 — hosted-ops.md §2-A)。metric = `github_token_requests`
+ * (GitHub token 請求の自前計数)/ `cli_flow_capacity`(ログインフロー行の作成
+ * 上限到達)。窓は 1 時間、行は評価時に 7 日超を削除する(有界)。
+ */
+export const opsCounters = sqliteTable(
+  "ops_counters",
+  {
+    metric: text("metric").notNull(),
+    /** 固定窓の開始(unix ms、1 時間境界) */
+    windowStart: integer("window_start").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.metric, t.windowStart] })],
+);
+
+/**
+ * DO → R2 退避の記録(hosted-ops.md §4-2)。プロジェクトごと 1 行。do_id_hex は
+ * `idFromName(projectId)` の像(一方向)で、R2 のキーと突合するために持つ。
+ * storage_level は退避時の census(AUTH_SPEC §12-8 の判定 — admit / warn / reject)。
+ */
+export const opsBackups = sqliteTable("ops_backups", {
+  projectId: text("project_id").primaryKey(),
+  doIdHex: text("do_id_hex").notNull(),
+  lastAttemptAt: integer("last_attempt_at").notNull(),
+  lastSuccessAt: integer("last_success_at"),
+  lastObjectKey: text("last_object_key"),
+  lastBytes: integer("last_bytes"),
+  lastAuditSeq: integer("last_audit_seq"),
+  lastChainSeq: integer("last_chain_seq"),
+  /** ヘッド申告の最新受理時刻(skip 規則の第三成分 — do-snapshot.ts readWatermarks) */
+  lastAttestationMark: integer("last_attestation_mark"),
+  storageLevel: text("storage_level"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  /** 静的な失敗コードのみ(エラーメッセージ本文は書かない) */
+  lastFailureCode: text("last_failure_code"),
+});
+
+/** 運用の小さな状態 kv(スイープのカーソル・アラート状態 — JSON 文字列)。 */
+export const opsState = sqliteTable("ops_state", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
