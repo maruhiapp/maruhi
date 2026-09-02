@@ -285,15 +285,23 @@ function variableLabel(variableId: string, resolvedName: string | null): string 
 }
 
 /** 座標・数値部の列(env / var / epoch / version — 無いものは出さない)。 */
-function coordinateParts(event: WireAuditEvent, resolvedName: string | null): readonly string[] {
+function coordinateParts(
+  event: WireAuditEvent,
+  resolvedName: string | null,
+  matched: string | null,
+): readonly string[] {
   const parts: string[] = [];
   if (event.environmentId !== undefined) {
     parts.push(`env=${displayText(event.environmentId)}`);
   }
   const listed = aggregatedReadOf(event);
   if (listed !== null) {
-    // 集約行: 変数の列挙は payload が持つ(要約は件数のみ。展開は --expand-reads)
+    // 集約行: 変数の列挙は payload が持つ(要約は件数のみ。展開は --expand-reads)。
+    // --var 指定時はその変数の項目を添える(行が一致した理由を見せる)
     parts.push(`read=${countNoun(listed.length, "variable")}`);
+    if (matched !== null) {
+      parts.push(`matched=${matched}`);
+    }
   }
   if (event.variableId !== undefined) {
     parts.push(`var=${variableLabel(event.variableId, resolvedName)}`);
@@ -339,10 +347,12 @@ function expandedReadLines(
   listed: readonly AuditReadVariable[],
   names: NameIndex | undefined,
 ): readonly string[] {
-  return listed.map(
-    (variable) =>
-      `\t- var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`,
-  );
+  return listed.map((variable) => `\t- ${listedVariableLabel(variable, names)}`);
+}
+
+/** 集約行の 1 変数の表示形(展開行・--var の一致表示で共用)。 */
+function listedVariableLabel(variable: AuditReadVariable, names: NameIndex | undefined): string {
+  return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
 }
 
 /** 1 行の描画。表示名(resolvedName)は検証済みステートメント由来のみ。 */
@@ -350,6 +360,7 @@ function formatEventLine(
   event: WireAuditEvent,
   resolvedName: string | null,
   trust: MirrorTrust | null,
+  matched: string | null = null,
 ): string {
   const target = describeTarget(event);
   return [
@@ -359,7 +370,7 @@ function formatEventLine(
     displayText(event.event),
     `actor=${describeActor(event)}`,
     ...(target === null ? [] : [target]),
-    ...coordinateParts(event, resolvedName),
+    ...coordinateParts(event, resolvedName, matched),
     ...trailerParts(event, trust),
   ].join("\t");
 }
@@ -418,16 +429,15 @@ function fetchProjectEvents(
 function environmentIdsForNames(
   events: readonly WireAuditEvent[],
   options: AuditListOptions,
+  matchVariableId: string | null,
 ): readonly string[] {
   const ids = new Set<string>();
+  const resolveListed = options.expandReads || matchVariableId !== null;
   for (const event of events) {
     if (event.environmentId === undefined) {
       continue;
     }
-    if (
-      event.variableId !== undefined ||
-      (options.expandReads && aggregatedReadOf(event) !== null)
-    ) {
+    if (event.variableId !== undefined || (resolveListed && aggregatedReadOf(event) !== null)) {
       ids.add(event.environmentId);
     }
   }
@@ -441,6 +451,7 @@ function renderListEvent(
   entries: ReadonlyMap<number, ChainEntry>,
   headSeq: number,
   options: AuditListOptions,
+  matchVariableId: string | null,
 ): { readonly lines: readonly string[]; readonly warnings: readonly string[] } {
   const environmentNames =
     event.environmentId === undefined ? undefined : names.get(event.environmentId);
@@ -448,11 +459,16 @@ function renderListEvent(
     event.variableId === undefined ? null : (environmentNames?.get(event.variableId) ?? null);
   const trust = projectMirrorTrustOf(event, entries, headSeq);
   const warnings = mirrorWarnings(event, trust);
-  const listed = options.expandReads ? aggregatedReadOf(event) : null;
+  const listed = aggregatedReadOf(event);
+  // --var 指定時: 集約行が一致した変数の項目(サーバーは列挙が当該変数を含む行を返す)
+  const hit = listed?.find((variable) => variable.variableId === matchVariableId);
+  const matched = hit === undefined ? null : listedVariableLabel(hit, environmentNames);
   return {
     lines: [
-      formatEventLine(event, name, trust),
-      ...(listed === null ? [] : expandedReadLines(listed, environmentNames)),
+      formatEventLine(event, name, trust, matched),
+      ...(listed === null || !options.expandReads
+        ? []
+        : expandedReadLines(listed, environmentNames)),
     ],
     warnings,
   };
@@ -471,10 +487,20 @@ export function auditListOp(
       yield* io.log("No audit events (no rows match the filter / cursor)");
       return 0;
     }
-    const names = yield* resolveNames(context, environmentIdsForNames(events, options));
+    const names = yield* resolveNames(
+      context,
+      environmentIdsForNames(events, options, filters.variableId),
+    );
     const entries = entryIndexOf(context.verified.entries);
     const integrityFailures = yield* logListEvents(events, (event) =>
-      renderListEvent(event, names, entries, context.verified.state.headSeq, options),
+      renderListEvent(
+        event,
+        names,
+        entries,
+        context.verified.state.headSeq,
+        options,
+        filters.variableId,
+      ),
     );
     if (!options.expandReads && events.some((event) => aggregatedReadOf(event) !== null)) {
       yield* io.log(

@@ -668,7 +668,11 @@ function selectPage(
  * は 1 行も検査しない — 削除済み変数のフィルタで環境の全 pull 履歴を JSON
  * 走査する形を作らない。下限を var.created でなく値の初出に取るのは、値を
  * 一度も持たない declared 変数が pull に現れないため(その場合は null =
- * 集約側クエリを省略する)。admin 未満(class1-or-self)は集約行のうち本人の
+ * 集約側クエリを省略する)。**区間は環境ごとに取り、その和で束縛する**: 変数 ID
+ * はクライアント発行でサーバーの一意性は (環境, 変数) 単位のため、同じ ID が
+ * 複数環境に存在しうる(環境 A で削除済み・B で存命の形で、変数単位の
+ * MAX(deleted) を上限にすると B の集約行を取りこぼす)。`environmentId`
+ * フィルタがあればその環境の区間だけを使う。admin 未満(class1-or-self)は集約行のうち本人の
  * 行しか見えない(§6 — var.read はクラス 2)ので `actor_user_id = 本人` を
  * 明示し、検査対象を ae_actor で本人の行に束縛する(可視性述語の評価順に
  * 依存して他人の pull 履歴を走査しない)。json_valid は EXISTS の前に置く
@@ -677,22 +681,40 @@ function selectPage(
 function aggregatedReadContains(
   sql: SqlStorage,
   variableId: string,
+  environmentId: string | null,
   visibility: AuditVisibility,
 ): SqlConditions | null {
-  const lifetime = sql
+  // 環境ごとの (値の初出 seq, 最後の削除 seq)。ae_var (variable_id, environment_id,
+  // seq) の索引順で環境ごとにまとまる
+  const windows = sql
     .exec(
       `SELECT
-         (SELECT MIN(seq) FROM audit_events WHERE variable_id = ? AND event = 'var.version_pushed') AS first_value_seq,
-         (SELECT MAX(seq) FROM audit_events WHERE variable_id = ? AND event = 'var.deleted') AS deleted_seq`,
+         MIN(CASE WHEN event = 'var.version_pushed' THEN seq END) AS first_value_seq,
+         MAX(CASE WHEN event = 'var.deleted' THEN seq END) AS deleted_seq
+       FROM audit_events
+       WHERE variable_id = ?${environmentId === null ? "" : " AND environment_id = ?"}
+         AND event IN ('var.version_pushed', 'var.deleted')
+       GROUP BY environment_id`,
       variableId,
-      variableId,
+      ...(environmentId === null ? [] : [environmentId]),
     )
-    .toArray()[0];
-  const firstValueSeq = numberOrNull(lifetime?.["first_value_seq"] ?? null);
-  if (firstValueSeq === null) {
+    .toArray()
+    .map((row) => ({
+      firstValueSeq: numberOrNull(row["first_value_seq"] ?? null),
+      deletedSeq: numberOrNull(row["deleted_seq"] ?? null),
+    }))
+    .filter(
+      (window): window is { firstValueSeq: number; deletedSeq: number | null } =>
+        window.firstValueSeq !== null,
+    );
+  if (windows.length === 0) {
     return null;
   }
-  const deletedSeq = numberOrNull(lifetime?.["deleted_seq"] ?? null);
+  // 和集合の外包: 下限は最も早い初出、上限は全環境で削除済みのときだけ最後の削除
+  const firstValueSeq = Math.min(...windows.map((window) => window.firstValueSeq));
+  const deletedSeq = windows.every((window) => window.deletedSeq !== null)
+    ? Math.max(...windows.map((window) => window.deletedSeq as number))
+    : null;
   const self = visibility.kind === "class1-or-self" ? [visibility.selfUserId] : [];
   return {
     conditions: [
@@ -785,7 +807,12 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
     withCondition(where, "variable_id = ?", [query.variableId]),
     query.limit,
   );
-  const aggregated = aggregatedReadContains(sql, query.variableId, query.visibility);
+  const aggregated = aggregatedReadContains(
+    sql,
+    query.variableId,
+    query.environmentId,
+    query.visibility,
+  );
   if (aggregated === null) {
     // 値を一度も持たない変数は集約行に現れない — payload 検査を走らせない
     return legacy;

@@ -161,7 +161,11 @@ describe("密度の実測(行 + 索引のバイト数 — §3.3 / AUTH_SPEC §12
     const measured = await runInDurableObject(stub, (_instance, state) => {
       const sql = state.storage.sql;
       const store = makeAuditStore(sql);
-      const variables = Array.from({ length: 100 }, (_v, i) => `var-${String(i).padStart(4, "0")}`);
+      // 識別子は CLI の実発行形(`v` + 24 hex = 25 文字 — meta-statement.ts)に揃える
+      const variables = Array.from(
+        { length: 100 },
+        (_v, i) => `v${i.toString(16).padStart(24, "0")}`,
+      );
       const measure = (rows: readonly AuditEventInput[]): number => {
         sql.exec("DELETE FROM audit_events");
         const base = sql.databaseSize;
@@ -403,6 +407,18 @@ function capturing(sql: SqlStorage): { readonly sql: SqlStorage; readonly querie
   return { sql: proxy, queries };
 }
 
+/** 行の環境 ID を差し替える(複数環境に同じ変数 ID がある形のシード用)。 */
+function inEnv(row: AuditEventInput, environmentId: string): AuditEventInput {
+  return { ...row, environmentId };
+}
+
+/** var.read 行の環境 ID 列(seq 降順のまま)。 */
+function readEnvironments(
+  rows: readonly { event: string; environmentId: string | null }[],
+): readonly (string | null)[] {
+  return rows.filter((row) => row.event === "var.read").map((row) => row.environmentId);
+}
+
 describe("variable_id フィルタの走査範囲(第 2 次探索 — 判定前に消費する共有資源の有界化)", () => {
   const E = "env-scan-0001";
   const ts = 1_700_000_000_000;
@@ -487,6 +503,56 @@ describe("variable_id フィルタの走査範囲(第 2 次探索 — 判定前�
     expect(result.declaredScans).toBe(0);
     expect(result.activeEvents).toEqual(["var.read", "var.version_pushed", "var.created"]);
     expect(result.activeScans).toBe(1);
+  });
+
+  it("存在区間は環境ごとの和 — 環境 A で削除済みでも環境 B の集約行を取りこぼさない", async () => {
+    const B = "env-scan-0002";
+    const result = await withScanDo(
+      [
+        created("v-shared"),
+        pushed("v-shared"),
+        inEnv(created("v-shared"), B),
+        inEnv(pushed("v-shared"), B),
+        aggregatedRead(READER, E, ["v-shared"]),
+        {
+          serverTs: ts,
+          event: "var.deleted",
+          actorType: "user",
+          actorUserId: OWNER,
+          environmentId: E,
+          variableId: "v-shared",
+        },
+        // A の削除後の B の pull — 変数単位の MAX(deleted) を上限にすると落ちる行
+        aggregatedRead(READER, B, ["v-shared"]),
+      ],
+      (store) => {
+        const all = store.queryEventsSync({
+          ...baseQuery,
+          variableId: "v-shared",
+          visibility: { kind: "admin" },
+        });
+        const onlyA = store.queryEventsSync({
+          ...baseQuery,
+          environmentId: E,
+          variableId: "v-shared",
+          visibility: { kind: "admin" },
+        });
+        const onlyB = store.queryEventsSync({
+          ...baseQuery,
+          environmentId: B,
+          variableId: "v-shared",
+          visibility: { kind: "admin" },
+        });
+        return {
+          all: readEnvironments(all),
+          onlyA: readEnvironments(onlyA),
+          onlyB: readEnvironments(onlyB),
+        };
+      },
+    );
+    expect(result.all).toEqual([B, E]);
+    expect(result.onlyA).toEqual([E]);
+    expect(result.onlyB).toEqual([B]);
   });
 
   it("admin 未満の集約側クエリは本人の actor 行に束縛される(他人の pull 履歴を走査しない)", async () => {

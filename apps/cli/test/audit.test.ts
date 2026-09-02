@@ -283,6 +283,18 @@ describe("maruhi audit(list)", () => {
     expect(logs).toContain("- var=ALPHA (va)\tepoch=1\tversion=2");
     expect(logs).toContain("- var=vb\tepoch=1\tversion=1");
     expect(logs).not.toContain("Re-run with --expand-reads");
+
+    // --var 指定時は一致した変数の項目を行内に添える(展開はしない)
+    const filtered = await makeTestEnv();
+    seedSession(filtered, servers[servers.length - 1]?.origin ?? "", owner);
+    await seedConfig(filtered, {
+      server: servers[servers.length - 1]?.origin ?? "",
+      defaultProject: built.projectId,
+    });
+    expect(await runCli(["audit", "--var", "va"], filtered.layer)).toBe(0);
+    const matchedLine = filtered.logs.find((line) => line.includes("\tvar.read\t"));
+    expect(matchedLine).toContain("read=2 variables\tmatched=var=ALPHA (va)\tepoch=1\tversion=2");
+    expect(filtered.logs.join("\n")).not.toContain("- var=vb");
   });
 
   it("行を表示し、名前は検証済みステートメントから解決、ミラー行は突合 OK", async () => {
