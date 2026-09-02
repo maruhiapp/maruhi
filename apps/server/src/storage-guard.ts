@@ -11,12 +11,13 @@
 // - 実測量の取得は StorageMeter サービス経由(テストは固定サイズの meter を
 //   差し込み、受理経路の結線 — どの面が拒否され、どの面が拒否下でも通るか —
 //   を実プログラムに対して固定する)
-// - 拒否が効く面 = プロジェクト内容の成長面のみ(§12-8 の列挙): 値 push・変数の
+// - 拒否が効く面 = プロジェクト内容の成長面(§12-8 の列挙): 値 push・変数の
 //   作成 / activation / 改名 / スキーマ再発行・環境の改名・環境作成複合・DEK
-//   ラップ登録・add_member / grant_server。読み取り(var.read の監査追記を伴う
-//   一括 pull を含む — 退出経路)・削除系(解放手段)・失効 / 権限縮小系・
-//   ローテーション複合・リース・ヘッド申告・standalone checkpoint・schemaPolicy /
-//   dismiss は**呼ばない**(拒否下でも受理し続ける面 — 同節)。唯一の例外は
+//   ラップ登録・add_member / grant_server、および退出・解放・是正に要らず監査行を
+//   積む schemaPolicy 変更。読み取り(var.read の監査追記を伴う一括 pull を含む —
+//   退出経路)・削除系(解放手段)・失効 / 権限縮小系・ローテーション複合・
+//   リース・ヘッド申告・standalone checkpoint・dismiss は**呼ばない**(拒否下でも
+//   受理し続ける面 — 同節)。唯一の例外は
 //   監査ヘッド派生列の実体化を要する読み取り(ensureStorageAdmitsAuditHead-
 //   Extension — 下記)。ensure* を呼ぶ側の列挙がその契約であり、
 //   storage-guard.test.ts が両方向を固定する

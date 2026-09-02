@@ -19,6 +19,7 @@ import {
   deksGroup,
   environmentsGroup,
   membershipGroup,
+  schemaPolicyGroup,
   variablesGroup,
 } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -61,7 +62,7 @@ import {
   renameEnvironmentProgram,
 } from "../src/programs-environment.ts";
 import { dismissRotationFlagsProgram } from "../src/programs-rotation.ts";
-import { setSchemaPolicyProgram } from "../src/programs-schema-policy.ts";
+import { getSchemaPolicyProgram, setSchemaPolicyProgram } from "../src/programs-schema-policy.ts";
 import {
   activateVariableProgram,
   createVariableProgram,
@@ -202,6 +203,8 @@ describe("エラー契約 — 拒否が効く面の全エンドポイントが 4
       "deks.register": deksGroup.endpoints.register,
       // add_member / grant_server の拒否面(本改訂で宣言を追加)
       "membership.append": membershipGroup.endpoints.append,
+      // schemaPolicy 変更(本改訂で宣言を追加)
+      "schemaPolicy.set": schemaPolicyGroup.endpoints.set,
       // 監査ヘッド派生列の実体化を要する読み取り(本改訂で宣言を追加)と、
       // 非空公証の境界 checkpoint を同梱しうる rotate(既存宣言)
       "audit.auditHead": auditGroup.endpoints.auditHead,
@@ -360,12 +363,16 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           grantServer: rejectionOf(
             await run(appendProgram(fixture.head.hashHex, grantServer.entry, OWNER, cache)),
           ),
+          // 成長面ではないが、退出・解放・是正に要らず監査行を積む設定変更
+          setSchemaPolicy: rejectionOf(
+            await run(setSchemaPolicyProgram(actor(OWNER), "enabled", cache)),
+          ),
         };
         for (const [surface, rejection] of Object.entries(outcomes)) {
           expect(rejection, surface).toEqual(STORAGE_REJECTION);
         }
       });
-      // 拒否域の運用ログは静的メッセージで meter ごと 1 回(11 回の拒否で 1 行)
+      // 拒否域の運用ログは静的メッセージで meter ごと 1 回(12 回の拒否で 1 行)
       expect(errorSpy).toHaveBeenCalledTimes(1);
       const [message] = errorSpy.mock.calls[0] ?? [];
       expect(typeof message).toBe("string");
@@ -513,13 +520,12 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
           ),
         )?.kind,
       ).toBe("attestation-rejected");
-      // (h) 設定・取り下げ — 成功する
-      expect(
-        Exit.isSuccess(await run(setSchemaPolicyProgram(actor(OWNER), "enabled", cache))),
-      ).toBe(true);
+      // (h) 取り下げ — 成功する(フラグ数に有界な監査行)。schemaPolicy の変更は
+      // 拒否対象(上の成長面テスト)、取得は読み取りで通る
       expect(Exit.isSuccess(await run(dismissRotationFlagsProgram(actor(OWNER), [], cache)))).toBe(
         true,
       );
+      expect(Exit.isSuccess(await run(getSchemaPolicyProgram(actor(READER), cache)))).toBe(true);
       // (c) の実受理: 正しい親ヘッドの remove_member は拒否閾値以上でも受理される
       const removed = await run(
         appendProgram(fixture.head.hashHex, removeMember.entry, OWNER, cache),

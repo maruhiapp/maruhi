@@ -284,8 +284,8 @@ measured database size (`databaseSize`) on every write that adds content and:
   writes;
 - at **9 GB** rejects writes that add content — pushing values, creating,
   renaming or re-declaring variables, creating or renaming environments,
-  registering DEK wraps, adding members and granting server access — with 422
-  `DataLimitExceeded` (`project-storage-bytes`).
+  registering DEK wraps, adding members, granting server access and changing
+  the schema policy — with 422 `DataLimitExceeded` (`project-storage-bytes`).
 
 What **keeps working** above 9 GB, by design (AUTH_SPEC §12-8 lists these
 explicitly): all reads (`maruhi pull` / `maruhi run`, chain fetch, audit log —
