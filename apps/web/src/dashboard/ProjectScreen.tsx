@@ -21,6 +21,7 @@ import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { useRouteParams } from "@funstack/router";
+import * as stylex from "@stylexjs/stylex";
 import { type ReactNode, useMemo, useState } from "react";
 
 import { apiGet } from "./api.ts";
@@ -510,6 +511,22 @@ const PROJECT_TAB_PANELS: Record<ProjectTab, string> = {
   invites: "project-panel-invites",
 };
 
+// tabpanel は対応する tab から名前を取る(APG)。Astryx は Tab に自動 id を
+// 振らないので、明示 id を tab 側に置いて aria-labelledby で指す
+const PROJECT_TAB_IDS: Record<ProjectTab, string> = {
+  overview: "project-tab-overview",
+  audit: "project-tab-audit",
+  rotation: "project-tab-rotation",
+  invites: "project-tab-invites",
+};
+
+// `hidden` 属性だけでは隠れない: Astryx の reset(`@layer reset` の
+// `:where([hidden]){display:none}`)より VStack 自身の `display:flex`
+// (`@layer astryx-base`)が勝つ。StyleX 同士なら後勝ちで効く(ADR-0013 ②)
+const panelStyles = stylex.create({
+  hidden: { display: "none" },
+});
+
 function isProjectTab(value: string): value is ProjectTab {
   return (PROJECT_TABS as ReadonlyArray<string>).includes(value);
 }
@@ -537,13 +554,40 @@ function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
         role="tablist"
         aria-label="Project"
       >
-        <Tab value="overview" label="Overview" panelId={PROJECT_TAB_PANELS.overview} />
-        <Tab value="audit" label="Audit" panelId={PROJECT_TAB_PANELS.audit} />
-        <Tab value="rotation" label="Rotation flags" panelId={PROJECT_TAB_PANELS.rotation} />
-        <Tab value="invites" label="Invites" panelId={PROJECT_TAB_PANELS.invites} />
+        <Tab
+          id={PROJECT_TAB_IDS.overview}
+          value="overview"
+          label="Overview"
+          panelId={PROJECT_TAB_PANELS.overview}
+        />
+        <Tab
+          id={PROJECT_TAB_IDS.audit}
+          value="audit"
+          label="Audit"
+          panelId={PROJECT_TAB_PANELS.audit}
+        />
+        <Tab
+          id={PROJECT_TAB_IDS.rotation}
+          value="rotation"
+          label="Rotation flags"
+          panelId={PROJECT_TAB_PANELS.rotation}
+        />
+        <Tab
+          id={PROJECT_TAB_IDS.invites}
+          value="invites"
+          label="Invites"
+          panelId={PROJECT_TAB_PANELS.invites}
+        />
       </TabList>
       {PROJECT_TABS.map((id) => (
-        <VStack key={id} id={PROJECT_TAB_PANELS[id]} role="tabpanel" hidden={tab !== id}>
+        <VStack
+          key={id}
+          id={PROJECT_TAB_PANELS[id]}
+          role="tabpanel"
+          aria-labelledby={PROJECT_TAB_IDS[id]}
+          hidden={tab !== id}
+          xstyle={tab === id ? undefined : panelStyles.hidden}
+        >
           {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
         </VStack>
       ))}

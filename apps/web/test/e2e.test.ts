@@ -591,6 +591,11 @@ async function routeProjectOverview(page: Page): Promise<void> {
 }
 
 /** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
+/** プロジェクト画面の tabpanel の computed `display`(非選択は `none`)。 */
+function panelDisplay(page: Page, tab: string): Promise<string> {
+  return page.locator(`#project-panel-${tab}`).evaluate((el) => getComputedStyle(el).display);
+}
+
 function collectViolations(page: Page): string[] {
   const violations: string[] = [];
   page.on("console", (msg) => {
@@ -767,8 +772,15 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(
       page.getByRole("tab", { name: "Audit" }).getAttribute("aria-controls"),
     ).resolves.toBe("project-panel-audit");
-    await expect(page.locator("#project-panel-overview").isVisible()).resolves.toBe(true);
-    await expect(page.locator("#project-panel-audit").isVisible()).resolves.toBe(false);
+    // tabpanel は対応する tab から名前を取る(APG)
+    await expect(
+      page.locator("#project-panel-audit").getAttribute("aria-labelledby"),
+    ).resolves.toBe(await page.getByRole("tab", { name: "Audit" }).getAttribute("id"));
+    // 非選択パネルは空(高さ 0)なので isVisible() では `display` の上書き負けを
+    // 検知できない。computed display を直接固定する(pullfrog レビュー反映)
+    await expect(panelDisplay(page, "overview")).resolves.toBe("flex");
+    await expect(panelDisplay(page, "audit")).resolves.toBe("none");
+    await expect(page.getByRole("tabpanel").count()).resolves.toBe(1);
 
     // S5 概要: チェーン導出メンバー(サーバー申告)+ 環境 + 変数名(メタのみ pull)
     await page.getByTestId("member-table").waitFor();
@@ -783,8 +795,8 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(
       page.getByRole("tab", { name: "Audit" }).getAttribute("aria-selected"),
     ).resolves.toBe("true");
-    await expect(page.locator("#project-panel-audit").isVisible()).resolves.toBe(true);
-    await expect(page.locator("#project-panel-overview").isVisible()).resolves.toBe(false);
+    await expect(panelDisplay(page, "audit")).resolves.toBe("flex");
+    await expect(panelDisplay(page, "overview")).resolves.toBe("none");
     await page.getByTestId("audit-caption").waitFor();
     await expect(page.getByTestId("audit-caption").textContent()).resolves.toContain(
       "Events visible to your role",
