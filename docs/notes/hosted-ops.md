@@ -293,8 +293,10 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 2. 復元 worker をデプロイ: `wrangler deploy -c wrangler.restore.jsonc`(本番名前空間へ `script_name` で束縛)
 3. ジョブファイルを置く: `wrangler r2 object put <bucket>/restore/jobs/<name>.json --file job.json --remote`、
    `job.json` = `{ "objectKey": "do/<hex>/<ts>.ndjson.gz", "target": "production" }`(演習は `"drill"`)
-4. 1 分以内に cron が拾い、`restore/results/<name>.json` に結果(`ok` + 検証値、または failure code)を書く。
-   `wrangler r2 object get <bucket>/restore/results/<name>.json --pipe --remote`
+4. 1 分以内に cron が拾い(実行前に `restore/running/<name>.json` へ移して claim — 毎分の cron が同じジョブを
+   二重実行しない)、`restore/results/<name>.json` に結果(`ok` + 検証値、または failure code)を書いて running/ を消す。
+   `wrangler r2 object get <bucket>/restore/results/<name>.json --pipe --remote`。結果が無く `restore/running/` に
+   ジョブが残っていれば worker が実行中に落ちた = 対象 DO の状態(空か・チェーンが入ったか)を確かめてから再投入する
 5. 検証: 結果の `chainHeadSeq / chainHeadHashHex / auditMaxSeq / auditHeadHashHex / rows` を退避物のトレーラ
    (`wrangler r2 object get … --pipe | gunzip | tail -1`)と突合。トレーラの `auditHeadHashHex` は退避時点で累積
    ハッシュ列が最新のときだけ非 null(退避は実体化の書き込みをしない)。null の場合は復元側が列を伸ばして返した値を

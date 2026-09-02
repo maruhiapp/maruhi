@@ -435,7 +435,9 @@ wrangler deploy -c wrangler.restore.jsonc
 # Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
 echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
 wrangler r2 object put maruhi-ops-backup/restore/jobs/job-1.json --file job.json --remote
-# Within a minute the result appears; compare it with the snapshot's trailer line
+# Within a minute the job is claimed (moved to restore/running/) and the result appears;
+# compare it with the snapshot's trailer line. A job left under restore/running/ with no
+# result means the worker died mid-restore: check the target DO before resubmitting
 wrangler r2 object get maruhi-ops-backup/restore/results/job-1.json --pipe --remote
 # Remove the restore worker again
 wrangler delete -c wrangler.restore.jsonc

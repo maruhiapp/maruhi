@@ -71,12 +71,28 @@ describe("復元 worker(restore-worker.ts)", () => {
       expect(outcome.verification.auditHeadHashHex).toBe(uploaded.trailer.auditHeadHashHex);
       expect(outcome.verification.rows).toEqual(uploaded.trailer.rows);
     }
-    // ジョブは消え、結果にプロジェクト ID は載らない
+    // ジョブは消え(claim 用の running/ も残らない)、結果にプロジェクト ID は載らない
     expect(await bucket.head("restore/jobs/drill-1.json")).toBeNull();
+    expect(await bucket.head("restore/running/drill-1.json")).toBeNull();
     expect(JSON.stringify(outcome)).not.toContain(projectId);
     // 復元先は本当に同じ DO(製品経路が動く)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
+  });
+
+  it("does not pick up a job that a previous invocation already claimed (restore/running/)", async () => {
+    await seedProjectActivity();
+    const uploaded = await snapshot();
+    // 前の cron が claim して実行中のジョブ(復元は分単位でかかりうる — 毎分の cron が
+    // 同じジョブを再実行して成功の結果を not-empty で上書きしない)
+    await bucket.put(
+      "restore/running/in-flight.json",
+      JSON.stringify({ objectKey: uploaded.objectKey, target: "production" }),
+    );
+    expect(await processRestoreJobs(restoreEnv)).toEqual([]);
+    expect(await bucket.head("restore/results/in-flight.json")).toBeNull();
+    expect(await bucket.head("restore/running/in-flight.json")).not.toBeNull();
+    await bucket.delete("restore/running/in-flight.json");
   });
 
   it("reports static failure codes: malformed job, unavailable drill target, missing snapshot, non-empty DO", async () => {

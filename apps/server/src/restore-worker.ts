@@ -29,6 +29,8 @@ export interface RestoreEnv {
 }
 
 const JOBS_PREFIX = "restore/jobs/";
+/** 実行中のジョブ(claim 済み — 次の cron が同じジョブを拾わない)。 */
+const RUNNING_PREFIX = "restore/running/";
 const RESULTS_PREFIX = "restore/results/";
 
 interface RestoreJob {
@@ -204,7 +206,15 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
   }
 }
 
-/** ジョブを列挙して順に実行し、結果を書いてジョブを消す(1 ジョブ = 1 結果)。 */
+/**
+ * ジョブを列挙して順に実行し、結果を書いてジョブを消す(1 ジョブ = 1 結果)。
+ *
+ * 実行前に `restore/jobs/` → `restore/running/` へ移して claim する: 復元は分単位で
+ * かかりうるのに cron は毎分走るため、ジョブを残したまま実行すると次の呼び出しが同じ
+ * ジョブを拾い、2 回目の RPC が(復元済みで非空の DO に対して)`not-empty` を書いて
+ * 成功の結果を上書きする(PR #137 Bugbot 指摘)。worker が実行中に死んだジョブは
+ * `restore/running/` に残る = 運営が結果と突き合わせて再投入する(hosted-ops.md §5-2)。
+ */
 export async function processRestoreJobs(env: RestoreEnv): Promise<readonly string[]> {
   const listed = await env.OPS_BACKUP_BUCKET.list({ prefix: JOBS_PREFIX });
   const processed: string[] = [];
@@ -215,7 +225,12 @@ export async function processRestoreJobs(env: RestoreEnv): Promise<readonly stri
       continue;
     }
     const body = await env.OPS_BACKUP_BUCKET.get(object.key);
-    const job = body === null ? null : parseJob(await body.text());
+    const text = body === null ? null : await body.text();
+    // claim: 実行前に running/ へ移す(以後の cron は jobs/ に見ない)
+    const runningKey = `${RUNNING_PREFIX}${name}.json`;
+    await env.OPS_BACKUP_BUCKET.put(runningKey, text ?? "");
+    await env.OPS_BACKUP_BUCKET.delete(object.key);
+    const job = text === null ? null : parseJob(text);
     // 「ジョブ 1 つ → 結果 1 つ → ジョブ削除」の不変条件を、想定外の例外でも保つ
     // (結果を書かずに投げると次の cron が同じジョブを拾い続ける)
     let result: RestoreJobResult;
@@ -235,7 +250,7 @@ export async function processRestoreJobs(env: RestoreEnv): Promise<readonly stri
         httpMetadata: { contentType: "application/json" },
       },
     );
-    await env.OPS_BACKUP_BUCKET.delete(object.key);
+    await env.OPS_BACKUP_BUCKET.delete(runningKey);
     processed.push(name);
   }
   return processed;
