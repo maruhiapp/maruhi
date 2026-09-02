@@ -14,6 +14,7 @@
 // 警告(8 GB)の運用ログは静的メッセージ・DO インスタンス(= meter)ごと 1 回。
 
 import {
+  auditGroup,
   DataLimitExceededError,
   deksGroup,
   environmentsGroup,
@@ -46,6 +47,7 @@ import type { DataActor, DataRejection } from "../src/data-plane.ts";
 import type { DataStore } from "../src/data-store.ts";
 import { dataStoreLayer } from "../src/data-store.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "../src/policy.ts";
+import { auditHeadProgram } from "../src/programs-audit.ts";
 import {
   deleteDekWrapsProgram,
   listMyDekWrapsProgram,
@@ -200,6 +202,10 @@ describe("エラー契約 — 拒否が効く面の全エンドポイントが 4
       "deks.register": deksGroup.endpoints.register,
       // add_member / grant_server の拒否面(本改訂で宣言を追加)
       "membership.append": membershipGroup.endpoints.append,
+      // 監査ヘッド派生列の実体化を要する読み取り(本改訂で宣言を追加)と、
+      // 非空公証の境界 checkpoint を同梱しうる rotate(既存宣言)
+      "audit.auditHead": auditGroup.endpoints.auditHead,
+      "environments.rotate": environmentsGroup.endpoints.rotate,
     };
     for (const [label, endpoint] of Object.entries(guarded)) {
       const error = Effect.runSync(
@@ -522,6 +528,59 @@ describe("受理経路の結線 — 拒否閾値以上の DO(§12-8)", () => {
       const snapshot = await run(snapshotProgram(OWNER, cache));
       expect(Exit.isSuccess(snapshot) && snapshot.value.headSeq).toBe(fixture.head.seq + 1);
     });
+  });
+});
+
+describe("監査ヘッド派生列の実体化(§12-8 (a) の例外 — AUDIT_SPEC §5.1 の遅延実体化)", () => {
+  it("rejects the audit-head read only while the derived column lags behind the audit log", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // 監査行はあるが派生列は未実体化(まだ誰も監査ヘッドを読んでいない)→
+      // 実体化 = 監査行数比例の書き込みを要するため、拒否閾値以上では拒否
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        expect(rejectionOf(await run(auditHeadProgram(actor(OWNER), cache)))).toEqual(
+          STORAGE_REJECTION,
+        );
+        // 非空公証の standalone checkpoint も同じ入力で止まる(親ヘッド不一致より
+        // 前 = requireRole(admin) の後に立つ)。空公証(CLI の既定)は通る —
+        // 上のテストの chain-head-conflict がそれ
+        const notarizing = await signedEntry({
+          op: "checkpoint",
+          payload: { environments: [], auditHeadHashHex: "ab".repeat(32) },
+        });
+        expect(
+          rejectionOf(
+            await run(appendProgram(fixture.head.hashHex, notarizing.entry, OWNER, cache)),
+          ),
+        ).toEqual(STORAGE_REJECTION);
+      });
+      // 閾値未満で一度読む = 実体化される
+      const materialized = await runInProject(0, async (run) =>
+        Exit.isSuccess(await run(auditHeadProgram(actor(OWNER), { current: null, chain: null }))),
+      );
+      expect(materialized).toBe(true);
+      // 列が最新なら拒否閾値以上でも読み取りのみ = 通る
+      const current = await runInProject(DO_STORAGE_REJECT_BYTES, async (run) =>
+        Exit.isSuccess(await run(auditHeadProgram(actor(OWNER), { current: null, chain: null }))),
+      );
+      expect(current).toBe(true);
+      // 監査行が増える(値付き pull の var.read — 拒否下でも受理される読み取り)と
+      // 列が再び遅れ、次の監査ヘッド読みは実体化を要するため再び拒否される
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
+          true,
+        );
+        expect(rejectionOf(await run(auditHeadProgram(actor(OWNER), cache)))).toEqual(
+          STORAGE_REJECTION,
+        );
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

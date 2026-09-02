@@ -294,6 +294,10 @@ variables, DEK wraps — the way back under the threshold), member removal,
 server-access revocation, role changes, epoch rotation, workload leases, head
 attestations and periodic checkpoints. The 1 GB between the rejection threshold
 and the platform floor absorbs the bookkeeping those operations still write.
+One read is guarded as if it were a write: fetching the **audit head**
+(`GET /projects/:id/audit-head`, and checkpoints that notarize it) lazily
+materializes a hash column proportional to the audit log, so it is refused above
+9 GB only while that column lags behind the log; once current, it reads freely.
 
 The audit log is append-only and never pruned (AUDIT_SPEC §5.3), so on a busy
 project the dominant growth is `var.read` rows from pulls. The guard is the

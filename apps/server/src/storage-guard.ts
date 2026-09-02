@@ -16,8 +16,10 @@
 //   ラップ登録・add_member / grant_server。読み取り(var.read の監査追記を伴う
 //   一括 pull を含む — 退出経路)・削除系(解放手段)・失効 / 権限縮小系・
 //   ローテーション複合・リース・ヘッド申告・standalone checkpoint・schemaPolicy /
-//   dismiss は**呼ばない**(拒否下でも受理し続ける面 — 同節)。ensure* を呼ぶ
-//   側の列挙がその契約であり、storage-guard.test.ts が両方向を固定する
+//   dismiss は**呼ばない**(拒否下でも受理し続ける面 — 同節)。唯一の例外は
+//   監査ヘッド派生列の実体化を要する読み取り(ensureStorageAdmitsAuditHead-
+//   Extension — 下記)。ensure* を呼ぶ側の列挙がその契約であり、
+//   storage-guard.test.ts が両方向を固定する
 // - 判定位置はメンバーシップ・role・存在(環境 / 変数)・レイアウトのサポート
 //   範囲の検査の後(§11-2 — 非メンバーへプロジェクト状態を返さない。存在検査は
 //   メンバー向けの 404 で、サポート範囲は「更新が必要」の正直なエラーを先に
@@ -31,6 +33,7 @@
 
 import { Context, Effect, Layer } from "effect";
 
+import { AuditStore } from "./audit-store.ts";
 import type { DataRejectedError } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "./policy.ts";
@@ -140,3 +143,23 @@ export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, S
       limit: DO_STORAGE_REJECT_BYTES,
     });
   });
+
+/**
+ * 監査ヘッド派生列(AUDIT_SPEC §5.1 — 遅延実体化)を読む経路のガード
+ * (`GET /audit-head`・非空 audit_head_hash の checkpoint 公証)。読み取り形だが、
+ * 列が MAX(seq) に未到達なら実体化 = **監査行数に比例する書き込み**(行あたり
+ * ハッシュ 1 行 + 索引 — 監査表の数十 %)を伴い、拒否閾値〜床の 1 GB の余裕を
+ * 単独で食い切りうる(未公証のまま 9 GB に達したプロジェクトの初回実体化)。
+ * よって**実体化を要するときだけ**成長面として判定する — 列が最新なら読み取り
+ * のみで、拒否下でも通る(§12-8 の列挙 (a) の例外注記)。
+ */
+export const ensureStorageAdmitsAuditHeadExtension: Effect.Effect<
+  void,
+  DataRejectedError,
+  StorageMeter | AuditStore
+> = Effect.gen(function* () {
+  const audit = yield* AuditStore;
+  if (audit.headColumnBehindSync()) {
+    yield* ensureStorageAdmitsGrowth;
+  }
+});

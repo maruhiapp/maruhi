@@ -246,6 +246,14 @@ interface AuditStoreShape {
    */
   readonly ensureHeadCurrent: Effect.Effect<AuditHeadExtensionOutcome>;
   /**
+   * 累積ハッシュ列が MAX(seq) に未到達か(= 次の ensureHeadCurrent が実体化の
+   * 書き込みを伴うか)。DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2)の入力:
+   * 実体化は監査行数に比例する書き込み(1 行あたりハッシュ 1 行 + 索引)で、
+   * 拒否閾値以上の DO では未実体化の backlog を書かない(storage-guard.ts)。
+   * 読み取りのみ(2 つの索引付き MAX / 存在検査)。
+   */
+  readonly headColumnBehindSync: () => boolean;
+  /**
    * 現在の累積ハッシュ(監査行ゼロは空文字列)。ensureHeadCurrent が
    * "current" を返した後にのみ呼ぶ(有界契約 — 上記)。
    */
@@ -396,6 +404,16 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
       sql,
       options?.maxHeadExtensionChunks ?? MAX_HEAD_EXTENSION_CHUNKS_PER_CALL,
     ),
+    headColumnBehindSync: () => {
+      const row = sql
+        .exec(
+          `SELECT 1 FROM audit_events
+           WHERE seq > (SELECT COALESCE(MAX(seq), 0) FROM audit_head_hashes)
+           LIMIT 1`,
+        )
+        .toArray()[0];
+      return row !== undefined;
+    },
     currentHeadHexSync: () => {
       const row = sql
         .exec("SELECT head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1")
