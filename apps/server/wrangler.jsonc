@@ -157,9 +157,16 @@
       // (`wrangler r2 bucket create maruhi-ops-backup` + ライフサイクル規則 —
       // hosted-ops.md §7 O2)。worker は put / get のみ使う
       "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
-      // Workers Logs(静的ログ行の保持 — hosted-ops.md §1)。リクエストログの Logpush は
-      // 有効化しない(URL パスに capability が載る — hosted-design.md §5-1)
-      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      // Workers Logs(静的ログ行の保持 — hosted-ops.md §1)。**invocation log は無効**:
+      // 既定の Fetch invocation log はリクエストの URL(パス + クエリ)を本文に含み、
+      // /projects/:id(capability — AUTH_SPEC §11-2)や /auth/github/callback?code=… が
+      // 7 日間ログストアに残る(PR #137 Cursor セキュリティレビュー)。console の静的行
+      // だけを残す。リクエストログの Logpush も有効化しない(hosted-design.md §5-1)。
+      // scripts/check-hosted-config.ts が invocation_logs: false を検査する
+      "observability": {
+        "enabled": true,
+        "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 },
+      },
       // 巨大 DO の退避(JSON 化 + gzip)に DO の既定 CPU 30 秒では足りないことがある
       // (hosted-ops.md §4-2)。上限は 5 分
       "limits": { "cpu_ms": 300000 },

@@ -407,7 +407,10 @@ wrangler r2 bucket lifecycle add maruhi-ops-backup --expire-days 35 --abort-mult
 #    higher CPU limit for large snapshots (see the `env.hosted` block in wrangler.jsonc;
 #    put your D1 database_id there and register the same secrets with --env hosted).
 #    Note: a named environment publishes a separate Worker, `maruhi-server-hosted`
-#    (Wrangler's `<name>-<environment>` rule) — the restore worker binds to that name
+#    (Wrangler's `<name>-<environment>` rule) — the restore worker binds to that name.
+#    Workers Logs is enabled there with invocation logs turned OFF: the default
+#    invocation log records request URLs, which carry project ids (capabilities)
+#    and OAuth codes — keep `observability.logs.invocation_logs: false`
 wrangler secret put GITHUB_CLIENT_ID --env hosted
 wrangler secret put GITHUB_CLIENT_SECRET --env hosted
 wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional

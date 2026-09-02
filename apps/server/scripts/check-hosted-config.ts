@@ -81,6 +81,14 @@ if (!(base.triggers.crons as readonly string[]).includes(OPS_HOURLY_CRON)) {
   );
 }
 
+// Workers Logs の invocation log はリクエスト URL(パス + クエリ = capability・OAuth code)を
+// 本文に含むため、hosted 環境では必ず無効にする(hosted-design.md §5-1 — 集計メトリクスのみ)
+if (hosted.observability?.logs?.invocation_logs !== false) {
+  failures.push(
+    "observability: env.hosted must set observability.logs.invocation_logs to false (request URLs carry capabilities)",
+  );
+}
+
 // 復元 worker は本番(hosted)の DO 名前空間へ script_name で束縛する。名前付き環境は
 // `<name>-<env>` の別 Worker を公開するため、束縛先は env.hosted の実効 name と一致
 // していなければならない(不一致はインシデント時にだけ発覚する最悪の場所)
