@@ -470,7 +470,9 @@ export type DataLimitResource =
   | "project-ciphertext-bytes"
   | "dek-wraps-per-request"
   | "dek-wrap-rows"
-  | "rotation-dismissals-per-request";
+  | "rotation-dismissals-per-request"
+  // DO ストレージ総量ガード(§12-8 — H2。storage-guard.ts。limit = 拒否閾値バイト)
+  | "project-storage-bytes";
 
 export type DataRejection =
   | { readonly kind: "not-initialized" }

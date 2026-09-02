@@ -173,6 +173,7 @@ export {
   NameNotNfcError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
+  ProjectLimitError,
   ProjectNotFoundError,
   RecoveryRateLimitedError,
   RecoveryWrapNotFoundError,

@@ -18,6 +18,7 @@ import {
   wrapRefKey,
 } from "./dek-wraps.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
+import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
 
 export const registerDekWrapsProgram = (
   actor: DataActor,
@@ -28,6 +29,10 @@ export const registerDekWrapsProgram = (
   Effect.gen(function* () {
     const { state, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     yield* requireActiveEnvironment(environmentId);
+    // DO ストレージ総量ガード(§12-8 — H2): 登録(バックフィル・修復再登録)は
+    // 成長面(存在検査の後・集合 / 登録署名の検証の前)。削除
+    // (deleteDekWrapsProgram)は呼ばない — 解放手段を塞がない
+    yield* ensureStorageAdmitsGrowth;
     const currentEpoch = currentEpochOf(state, environmentId);
     yield* ensureWrapSetAcceptable(projectId, environmentId, state, member, currentEpoch, wraps);
     const store = yield* DataStore;

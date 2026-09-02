@@ -22,7 +22,12 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
-import { AuditHeadNotReadyError, ForbiddenError, ProjectNotFoundError } from "./errors/index.ts";
+import {
+  AuditHeadNotReadyError,
+  DataLimitExceededError,
+  ForbiddenError,
+  ProjectNotFoundError,
+} from "./errors/index.ts";
 import { hexPattern, hexString, KeyFingerprintHex, PositiveInt } from "./hex.ts";
 
 /** ページの最大件数(AUDIT_SPEC §7: limit ≤ 200。超過は Schema の 400)。 */
@@ -199,6 +204,9 @@ export const auditGroup = HttpApiGroup.make("audit")
       // (AUDIT_SPEC §5.1 の有界伸長 — セッション 38)。retryable — 進捗は保存
       // 済みで再試行は前進する。認可判定(404 / 403)より後にのみ返るため
       // §11-2 の存在秘匿と両立する
-      error: [ProjectNotFoundError, ForbiddenError, AuditHeadNotReadyError],
+      // DataLimitExceeded(422 project-storage-bytes — AUTH_SPEC §12-8 H2):
+      // 派生列が MAX(seq) 未到達で実体化(監査行数比例の書き込み)を要する
+      // ときだけ、拒否閾値以上の DO で返る。列が最新なら読み取りのみで通る
+      error: [ProjectNotFoundError, ForbiddenError, AuditHeadNotReadyError, DataLimitExceededError],
     }).middleware(AuthMiddleware),
   );

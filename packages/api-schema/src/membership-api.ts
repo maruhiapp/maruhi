@@ -25,8 +25,10 @@ import {
   ChainHeadConflictError,
   CheckpointStateMismatchError,
   CompositeRequiredError,
+  DataLimitExceededError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
+  ProjectLimitError,
   ProjectNotFoundError,
 } from "./errors/index.ts";
 import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex } from "./hex.ts";
@@ -116,6 +118,9 @@ export const ProjectListSchema = Schema.Struct({
  * - `init`: submit a genesis entry; the server verifies it and derives the
  *   project id as the genesis entry hash. `orgId` は帰属先 org(§11-3。作成
  *   権限 = org member 以上)。非メンバー・スコープ外への応答は一律 404(§11-2)。
+ *   org のアクティブプロジェクト数が上限(AUTH_SPEC §11-3 — 起草値 100)に
+ *   達している場合、**新規の** genesis は 429 `ProjectLimit`(修復経路 =
+ *   already-initialized の再 init は上限に依らず通る — 2026-09-02 H2)。
  * - `get`: fetch the stored chain for client-side verification (§6.3).
  * - `append`: append one entry; `parentHeadHashHex` is the compare-and-swap
  *   parent (§6.4)。§6.3 の「署名付き申告ヘッド」(ヘッドゴシップ)とは別物。
@@ -139,6 +144,10 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ForbiddenError,
+        // org のアクティブプロジェクト数上限(AUTH_SPEC §11-3 — H2)。新規
+        // genesis のみ。判定は org 権限確認(403)の後 = org 外の主体に上限
+        // 到達の有無を返さない
+        ProjectLimitError,
       ],
     }).middleware(AuthMiddleware),
   )
@@ -184,6 +193,11 @@ export const membershipGroup = HttpApiGroup.make("membership")
         AuditHeadNotReadyError,
         CompositeRequiredError,
         ForbiddenError,
+        // DO ストレージ総量ガード(AUTH_SPEC §12-8 — 2026-09-02 H2): 拒否閾値
+        // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422
+        // `project-storage-bytes` で拒否する。remove_member / revoke_server /
+        // change_role / checkpoint は拒否下でも受理される(同節の明示列挙)
+        DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
   )

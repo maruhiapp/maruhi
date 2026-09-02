@@ -59,6 +59,18 @@ export class ProjectAlreadyInitializedError extends Schema.TaggedError<ProjectAl
 ) {}
 
 /**
+ * 429: the org already holds the maximum number of active projects (AUTH_SPEC
+ * §11-3 — H2 テナント quota。起草値 100). Returned only for a **fresh** genesis:
+ * the §11-3 repair path (already-initialized + missing `projects` row +
+ * genesis actor) is never blocked by this limit. Carries the limit only.
+ */
+export class ProjectLimitError extends Schema.TaggedError<ProjectLimitError>()(
+  "ProjectLimit",
+  { limit: Schema.Number },
+  { httpApiStatus: 429 },
+) {}
+
+/**
  * 409: compare-and-swap failure (CRYPTO_SPEC §6.4) — the append named a parent
  * head that is no longer the current head. The current head is returned so the
  * client can fetch, re-verify, and retry.
