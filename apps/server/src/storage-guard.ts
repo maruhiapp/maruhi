@@ -34,7 +34,10 @@
 //   のみ**(§11-5 / hosted-design.md §5-1 — プロジェクト ID = capability 等の
 //   リクエスト由来識別子を書かない)。DO インスタンスの生存中に警告域・拒否域
 //   それぞれ 1 回(毎受理で出すとログが書き込み計数器になる)。運営側の特定は
-//   Workers Logs のイベント封筒(Durable Object id = idFromName の像)で行う
+//   Workers Logs のイベント封筒(Durable Object id = idFromName の像)で行う。
+//   **観測点は成長面に加えて、監査行を書く読み取り面(値付き pull・リース)にも
+//   置く**(observeStorageLevel — 拒否はしない): pull 主体のプロジェクトは成長面の
+//   書き込みなしに閾値を通過するため、成長面だけでは警告が一度も出ない
 
 import { Context, Effect, Layer } from "effect";
 
@@ -115,32 +118,46 @@ export const storageMeterLayer = (sql: SqlStorage): Layer.Layer<StorageMeter> =>
   Layer.sync(StorageMeter, () => makeStorageMeter(() => sql.databaseSize));
 
 /**
- * 内容の成長面の受理プログラムが呼ぶガード(§12-8)。判定 = reject なら
- * limit-exceeded(resource `project-storage-bytes`、limit = 拒否閾値)で拒否し、
- * warn なら受理したまま運用ログを 1 回出す。呼ばない面(読み取り・削除・失効・
- * ローテーション等)の列挙は冒頭コメントと仕様の明示列挙。
+ * 実測 → 判定 → 運用ログ(観測のみ — 拒否しない)。判定結果を返す。
+ *
+ * 成長面のガード(ensureStorageAdmitsGrowth)の前半であると同時に、**拒否しない
+ * が監査行を書く読み取り面**(値付き pull の var.read・リースの server.* —
+ * §12-8 の列挙 (a)(e))からも呼ぶ: 支配的な成長項が var.read であるプロジェクト
+ * (SELF_HOSTING の記述どおり pull 主体のプロジェクト)は成長面の書き込みを
+ * 伴わずに 8 GB → 9 GB を通過しうるため、警告の観測点を成長面だけに置くと
+ * 「警告帯が運営の対応時間を買う」設計が pull 主体で成立しない(PR #134
+ * pullfrog レビュー指摘)。databaseSize は即時値で I/O を伴わないため、pull の
+ * ホットパスに置いても費用は無視できる。
  */
-export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, StorageMeter> =
+export const observeStorageLevel: Effect.Effect<StorageGuardDecision, never, StorageMeter> =
   Effect.gen(function* () {
     const meter = yield* StorageMeter;
     const decision = storageGuardDecision(meter.databaseSizeBytes());
-    if (decision === "admit") {
-      return;
+    if (decision === "warn" && meter.noteLogged("warn")) {
+      // 静的メッセージのみ(プロジェクト ID・サイズ等の可変値は書かない —
+      // サイズは監視〔H3〕の領分。ここは「到達した」という事実の 1 行)
+      console.warn(
+        "project storage crossed the warning threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are still accepted until the rejection threshold",
+      );
     }
-    if (decision === "warn") {
-      if (meter.noteLogged("warn")) {
-        // 静的メッセージのみ(プロジェクト ID・サイズ等の可変値は書かない —
-        // サイズは監視〔H3〕の領分。ここは「到達した」という事実の 1 行)
-        console.warn(
-          "project storage crossed the warning threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are still accepted until the rejection threshold",
-        );
-      }
-      return;
-    }
-    if (meter.noteLogged("reject")) {
+    if (decision === "reject" && meter.noteLogged("reject")) {
       console.error(
         "project storage reached the rejection threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are rejected until space is freed — reads, deletions, revocations and rotations remain accepted",
       );
+    }
+    return decision;
+  });
+
+/**
+ * 内容の成長面の受理プログラムが呼ぶガード(§12-8)。判定 = reject なら
+ * limit-exceeded(resource `project-storage-bytes`、limit = 拒否閾値)で拒否し、
+ * warn なら受理したまま運用ログを 1 回出す(observeStorageLevel)。呼ばない面
+ * (読み取り・削除・失効・ローテーション等)の列挙は冒頭コメントと仕様の明示列挙。
+ */
+export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, StorageMeter> =
+  Effect.gen(function* () {
+    if ((yield* observeStorageLevel) !== "reject") {
+      return;
     }
     return yield* rejectData({
       kind: "limit-exceeded",

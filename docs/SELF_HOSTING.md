@@ -285,7 +285,10 @@ on every write that adds content and:
 
 - at **8 GB** logs one static warning line per Durable Object instance (no
   project id, no user id — see "Operational logs" below) and keeps accepting
-  writes;
+  writes. The size is also observed (never rejected) on value pulls and
+  workload leases — the reads that append audit rows — so a pull-heavy project
+  whose growth is almost entirely `var.read` still produces the warning before
+  it reaches the rejection threshold;
 - at **9 GB** rejects writes that add content — pushing values, creating,
   renaming or re-declaring variables, creating or renaming environments,
   registering DEK wraps, adding members, granting server access and changing
@@ -305,7 +308,14 @@ materializes a hash column proportional to the audit log, so it is refused above
 
 The audit log is append-only and never pruned (AUDIT_SPEC §5.3), so on a busy
 project the dominant growth is `var.read` rows from pulls. The guard is the
-safety net for that growth; there is no per-tenant audit quota.
+safety net for that growth; there is no per-tenant audit quota. Two of the
+operations that stay open above 9 GB are not constant-size: pulls keep adding
+`var.read` rows, and removing a member or revoking server access writes one
+`rotation.recommended` row per variable (including deleted ones) that the
+departing party could have read — proportional to the project's variable
+history rather than a fixed number. Both are deliberate (exit path and
+security remediation) and sized well inside the 1 GB headroom for realistic
+projects; the warning band exists to give you time before they matter.
 
 Deleting really does bring the measured size down: Durable Object SQLite
 reclaims pages on `DELETE` (verified in workerd — `databaseSize` shrinks back

@@ -618,6 +618,47 @@ describe("警告閾値(§12-8 — 運用ログ)", () => {
     }
   });
 
+  it("warns from the value pull path too (pull-only projects cross the band without growth writes)", async () => {
+    // PR #134 pullfrog レビュー指摘: 支配的な成長項が var.read のプロジェクトは
+    // 成長面の書き込みなしに 8 GB → 9 GB を通過する。観測点が成長面だけだと
+    // 警告帯が「運営の対応時間を買う」設計が pull 主体で成立しない
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        // 観測のみ — pull は受理される(var.read も記録される)
+        for (let i = 0; i < 3; i += 1) {
+          expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
+            true,
+          );
+        }
+        // メタデータのみ pull は監査行を書かない読み取り = 観測点を持たない
+        expect(
+          Exit.isSuccess(await run(pullEnvironmentMetadataProgram(actor(READER), ENV, cache))),
+        ).toBe(true);
+      });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).not.toHaveBeenCalled();
+      // 拒否帯でも pull は通り、拒否域のログが 1 回出る(拒否は起きない)
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
+          true,
+        );
+        expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
+          true,
+        );
+      });
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("stays silent below the warning threshold", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

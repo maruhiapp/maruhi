@@ -26,7 +26,7 @@ import {
 } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
-import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
+import { ensureStorageAdmitsGrowth, observeStorageLevel } from "./storage-guard.ts";
 import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "./verify-meta.ts";
 
@@ -206,6 +206,12 @@ export const pullEnvironmentProgram = (
       environmentId,
       cache,
     );
+    // DO ストレージ総量ガードの観測のみ(§12-8 — 拒否しない): 値付き pull は
+    // var.read を書く読み取りで、pull 主体のプロジェクトの支配的な成長項。
+    // 警告帯(8〜9 GB)の運用ログがここでも出ないと、そのプロジェクトは一度も
+    // 警告されずに拒否帯へ入る(PR #134 pullfrog レビュー指摘)。メンバーシップの
+    // 後(requirePullContext)= 非メンバーには何も観測されない
+    yield* observeStorageLevel;
     const variables = yield* store.latestVersions(environmentId);
     // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
     // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
