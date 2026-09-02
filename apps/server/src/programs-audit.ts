@@ -21,6 +21,7 @@ import { AuditStore } from "./audit-store.ts";
 import type { StateCache } from "./chain-store.ts";
 import type { DataActor } from "./data-plane.ts";
 import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
+import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
 
 /** 読み取りクエリ(RPC 境界を渡る)。フィルタ語彙は AUDIT_SPEC §7 のとおり。 */
 export interface AuditEventsQueryInput {
@@ -146,6 +147,11 @@ export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
     // 有界伸長(セッション 38): 上限到達 = MAX(seq) 未到達なら古いヘッドを
     // 返さず retryable な audit-head-not-ready(503)— 拒否は認可判定(上の
     // 404 / 403)より後なので §11-2 の存在秘匿と両立する
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): 上の実体化が書き込みを
+    // 要する(列が MAX(seq) 未到達)ときだけ、拒否閾値以上の DO では 422
+    // project-storage-bytes で拒否する(監査行そのものの読み取り — auditEvents —
+    // はガード対象外)。認可判定(404 / 403)より後 = §11-2 と両立
+    yield* ensureStorageAdmitsAuditHeadExtension;
     if ((yield* audit.ensureHeadCurrent) === "more-remains") {
       return yield* rejectData({ kind: "audit-head-not-ready" });
     }

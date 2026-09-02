@@ -454,7 +454,14 @@ const auditListConfig = {
   ),
   target: singleValued("target", "Filter by target user_id"),
   env: singleValued("env", "Filter by environment ID"),
-  var: singleValued("var", "Filter by variableId"),
+  var: singleValued(
+    "var",
+    "Filter by variableId (also matches var.read rows whose listed variables include it)",
+  ),
+  expandReads: singleFlag(
+    "expand-reads",
+    "Print the variables listed by var.read rows, one line per variable (default: a count per row)",
+  ),
 };
 
 const auditInvitesConfig = { ...projectFlags(), ...auditPageFlags() };
@@ -2073,6 +2080,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     readonly target?: string | undefined;
     readonly env?: string | undefined;
     readonly var?: string | undefined;
+    readonly expandReads?: boolean | undefined;
   }) =>
     Effect.gen(function* () {
       const page = yield* parseAuditPage(values.limit, values.before);
@@ -2087,7 +2095,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         server: values.server,
         project: values.project,
       });
-      onExitCode(yield* auditListOp(context, page, filters));
+      onExitCode(
+        yield* auditListOp(context, page, filters, { expandReads: values.expandReads ?? false }),
+      );
     });
 
   const auditList = Command.make("list", auditListConfig, runAuditList).pipe(

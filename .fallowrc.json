@@ -13,14 +13,17 @@
   // theme/maruhi.js は astryx theme build の生成物。import 指定子 ../../theme/maruhi.js を
   // fallow は TS 流儀で maruhi.ts に解決するため、実体の .js が未到達と誤検出される。
   // vitest.unit.config.ts(web ユニットテスト)は規約外のファイル名(vitest.config.ts は
-  // e2e が使用済み)でルート vitest.config.ts から文字列参照されるため自動検出されない
+  // e2e が使用済み)でルート vitest.config.ts から文字列参照されるため自動検出されない。
+  // apps/server/scripts は運営者が bun run で直接叩く運用スクリプト(サインアップ招待
+  // コードの発行 — AUTH_SPEC §3)で、製品コードから import されないため手動宣言する
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
     "apps/web/scripts/*.ts",
     "apps/web/theme/maruhi.js",
     "apps/web/vitest.unit.config.ts",
-    "apps/web/test/unit/*.test.ts"
+    "apps/web/test/unit/*.test.ts",
+    "apps/server/scripts/*.ts"
   ],
   // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
   // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。

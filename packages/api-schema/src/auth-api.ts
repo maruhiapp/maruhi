@@ -95,6 +95,21 @@ export const TokenTtlDays = Schema.Number.check(
 );
 
 /**
+ * サインアップ受理ポリシー(AUTH_SPEC §3 — 2026-09-01 H1)。デプロイメント
+ * 単位のサーバー受理ポリシーで、チェーン・署名には載せない(§12-11 の
+ * schemaPolicy と同じクラス)。既定 `open` = 従来挙動と同一。
+ */
+export const SignupPolicySchema = Schema.Literals(["open", "invite", "closed"]);
+export type SignupPolicy = (typeof SignupPolicySchema)["Type"];
+
+/**
+ * サインアップリンクが運ぶ招待コード(AUTH_SPEC §3 — `maruhi_sgn_` + Base62
+ * 43 文字)のワイヤ受理形。未認証面なのでサイズ上限のみ縛る(検証の実体は
+ * サーバーのハッシュ照合 — 形式で存在情報を漏らさない)。
+ */
+export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
+
+/**
  * Public (unauthenticated) server configuration (AUTH_SPEC §4). The GitHub
  * OAuth client_id is public information — it appears in the authorize URL —
  * so exposing it lets a self-hosted CLI resolve it from the server URL alone.
@@ -104,11 +119,18 @@ export const TokenTtlDays = Schema.Number.check(
  * serverEncPubHex は §9 の「サーバーが配布する enc 公開鍵」の配布チャネル
  * (公開鍵は公開情報。FP はその SHA-256 先頭 16 バイトで、CLI は両者の整合を
  * 再計算検証する)。
+ *
+ * signupPolicy(AUTH_SPEC §3 — 2026-09-01 H1)は advisory(公開情報 —
+ * ランディングの案内文言と同じ内容。検証・認可規則の入力にしない)。
+ * optionalKey なのは本フィールドを持たない旧サーバーの応答を導出クライアントが
+ * 壊さないため(欠落時は従来どおり進む — CLI の fail-fast は advisory の
+ * 欠落でログインを止めない)。新サーバーは常に載せる。
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
   serverKeyFingerprintHex: Schema.optionalKey(Schema.String),
   serverEncPubHex: Schema.optionalKey(Schema.String),
+  signupPolicy: Schema.optionalKey(SignupPolicySchema),
 });
 
 /**
@@ -214,9 +236,15 @@ export const authGroup = HttpApiGroup.make("auth")
     }),
   )
   .add(
+    // signup_code(AUTH_SPEC §3 — 2026-09-01 H1): サインアップ招待コードの
+    // 運搬起点。存在すればハンドラが開始時事前検証(per-IP レート制限つき)を
+    // 行い、無効ならスクリプトなし案内ページ(HTML — 成功宣言の 302 を
+    // 経由しない直接応答)で終了、有効なら __Host- クッキーに載せて callback
+    // まで運ぶ。プレーンな start(コードなし)= 従来のログイン導線は不変
     HttpApiEndpoint.get("githubStart", "/auth/github/start", {
+      query: { signup_code: Schema.optionalKey(SignupCodeSchema) },
       success: Redirect,
-      error: [SetupIncompleteError],
+      error: [SetupIncompleteError, AuthRateLimitedError],
     }),
   )
   .add(

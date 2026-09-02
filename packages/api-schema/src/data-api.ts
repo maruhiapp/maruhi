@@ -720,6 +720,9 @@ export const schemaPolicyGroup = HttpApiGroup.make("schemaPolicy")
       params: projectParams,
       payload: Schema.Struct({ schemaPolicy: SchemaPolicySchema }),
       success: HttpApiSchema.NoContent,
-      error: [ProjectNotFoundError, ForbiddenError],
+      // DataLimitExceeded(422 project-storage-bytes — AUTH_SPEC §12-8 H2): 拒否
+      // 閾値以上の DO では設定変更も受理しない(変更ごとに監査行を積む。GET は
+      // 読み取りで通る)
+      error: [ProjectNotFoundError, ForbiddenError, DataLimitExceededError],
     }).middleware(AuthMiddleware),
   );

@@ -30,6 +30,7 @@ import {
   ManifestVersionConflictError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
+  ProjectLimitError,
   ProjectNotFoundError,
   SetupIncompleteError,
   TokenLimitError,
@@ -215,9 +216,13 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ValueTooLargeError),
     (e) => `The value is too large (ciphertext limit ${e.limitBytes} bytes)`,
   ),
-  when(
-    isInstanceOf(DataLimitExceededError),
-    (e) => `Exceeds a server acceptance limit (${e.resource} limit ${e.limit})`,
+  // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2)は resource で見分ける:
+  // 他の数量上限と違い「この要求が足す量」でなく実測量の閾値なので、次の一手
+  // (削除で空ける — 削除・読み取りは拒否下でも通る)を案内する
+  when(isInstanceOf(DataLimitExceededError), (e) =>
+    e.resource === "project-storage-bytes"
+      ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and rotating still work. Delete what you no longer need, then retry`
+      : `Exceeds a server acceptance limit (${e.resource} limit ${e.limit})`,
   ),
   when(
     isInstanceOf(DekWrapRejectedError),
@@ -261,6 +266,13 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(TokenLimitError),
     (e) => `The API-token issuance limit is reached (${e.limit} tokens)`,
   ),
+  // プロジェクト数 / org の受理上限(AUTH_SPEC §11-3 — H2)。新規 init のみが
+  // 対象(既存プロジェクトの修復再 init は上限に依らず通る)
+  when(
+    isInstanceOf(ProjectLimitError),
+    (e) =>
+      `This organization already holds the maximum number of projects (${e.limit} — AUTH_SPEC §11-3). New projects are rejected until the limit is raised by the server operator; existing projects are unaffected`,
+  ),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
   // 型付きクライアントの失敗の 3 種目(上の 2 種と合わせて宣言を尽くす)
   when(Schema.isSchemaError, renderSchemaFailure),
@@ -295,6 +307,7 @@ export function isServerRejection(error: unknown): boolean {
     ManifestRejectedError,
     ManifestVersionConflictError,
     PayloadMismatchError,
+    ProjectLimitError,
     ProjectNotFoundError,
     UnauthorizedError,
     ValueTooLargeError,

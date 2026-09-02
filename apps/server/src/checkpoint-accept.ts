@@ -29,6 +29,7 @@ import { deriveStoredState, updateStateCache } from "./chain-store.ts";
 import { loadInitializedChain, rejectData, requireRole } from "./data-plane.ts";
 import type { CheckpointValueEntryRow } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
+import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
 
 /**
  * checkpoint values_digest の内容突合(CRYPTO_SPEC §6.4)。`values` は受理
@@ -77,6 +78,10 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
       return;
     }
     const audit = yield* AuditStore;
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): 派生列の実体化(監査
+    // 行数比例の書き込み)を要するときだけ成長面として判定する。空の公証
+    // (CLI の境界 / 周期 checkpoint)はここへ来ない = 拒否下でも受理される
+    yield* ensureStorageAdmitsAuditHeadExtension;
     if ((yield* audit.ensureHeadCurrent) === "more-remains") {
       return yield* rejectData({ kind: "audit-head-not-ready" });
     }

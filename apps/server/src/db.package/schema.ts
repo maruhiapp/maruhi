@@ -120,6 +120,52 @@ export const apiTokens = sqliteTable(
 );
 
 /**
+ * デプロイメント単位のサーバー設定(AUTH_SPEC §3 — 2026-09-01 H1)。現状の
+ * キーは `signup_policy`('open' | 'invite' | 'closed'。行なし = 'open')のみ。
+ * 書き込み経路はコードに存在しない — 変更は運営の wrangler / SQL 経路のみ
+ * (docs/SELF_HOSTING.md。管理 UI・設定 API は作らない)。読み手は未知の値を
+ * 'closed' として扱う(fail-closed — repos.ts の readSignupPolicy)。
+ */
+export const deploymentSettings = sqliteTable("deployment_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/**
+ * サインアップ招待コード(AUTH_SPEC §3 — 2026-09-01 H1)。256-bit 乱数 bearer
+ * (`maruhi_sgn_` + Base62)の SHA-256 ハッシュのみ保存・単回(消費 CAS)・
+ * 期限つき(§15 invitations の型の踏襲)。コードはアカウント作成の許可だけを
+ * 運ぶ — プロジェクト・org・role・プロバイダ識別子と結びつけない。
+ *
+ * - 発行は運営操作(scripts/issue-signup-invite.ts + wrangler d1)— サーバーに
+ *   発行経路はない
+ * - 消費(status 'pending' → 'used')はアカウント作成と同一 D1 batch 内の
+ *   CAS(repos.ts — 作成失敗でコードだけ燃える形・作成成功でコードが残る形の
+ *   両方を排除)
+ * - used_by_user_id に FK を張らない: 消費 UPDATE は同一 batch 内で users 行の
+ *   挿入**より前**に実行される(CAS の changes() を作成側の条件が読む)ため、
+ *   参照整合は構造的に張れない(invitations と同じ「FK なし」判断)
+ */
+export const signupInvites = sqliteTable(
+  "signup_invites",
+  {
+    /** ULID(発行スクリプトが採番)。監査 payload の signupInviteId と同じ値 */
+    id: text("id").primaryKey(),
+    /** 提示文字列全体(maruhi_sgn_…)の SHA-256(hex)。生値は発行時のみ */
+    tokenHash: text("token_hash").notNull(),
+    /** 'pending' | 'used'(期限切れは expires_at からの導出 — §15 と同じ) */
+    status: text("status").notNull(),
+    /** 発行 + 7 日(起草値 — 発行スクリプトが計算) */
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+    usedByUserId: text("used_by_user_id"),
+    usedAt: integer("used_at"),
+  },
+  (t) => [uniqueIndex("sgn_token_hash").on(t.tokenHash)],
+);
+
+/**
  * フロー署名鍵(AUTH_SPEC §4-2)。CLI ログインの flowToken / vsig を検証する
  * HMAC-SHA-256 鍵で、初回使用時に自動生成して保存する(冪等 — insert の先勝ち +
  * 読み戻し)。auth 層の資格情報保護であり CRYPTO_SPEC の対象外(E2EE 特性に

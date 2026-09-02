@@ -14,6 +14,7 @@ import type { StateCache } from "./chain-store.ts";
 import type { DataActor, SchemaPolicy } from "./data-plane.ts";
 import { dataEvent, requireMemberState } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
+import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
 
 export const getSchemaPolicyProgram = (actor: DataActor, cache: StateCache) =>
   Effect.gen(function* () {
@@ -29,6 +30,11 @@ export const setSchemaPolicyProgram = (
 ) =>
   Effect.gen(function* () {
     yield* requireMemberState(actor.userId, "admin", cache);
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): 設定変更は内容の成長面
+    // ではないが、退出・解放・セキュリティ是正のいずれにも要らず、変更のたびに
+    // 監査行を積む(admin の反復で非有界)ため拒否対象に含める。取得
+    // (getSchemaPolicyProgram)は読み取り = 拒否下でも通る
+    yield* ensureStorageAdmitsGrowth;
     const store = yield* DataStore;
     const previous = yield* store.schemaPolicy;
     if (previous === schemaPolicy) {
