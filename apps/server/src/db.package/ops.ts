@@ -158,8 +158,14 @@ function backupAttemptColumns(
       return { insert: columns, update: columns };
     }
     case "oversize": {
-      const columns = { storageLevel: attempt.storageLevel, lastFailureCode: "oversize" };
-      return { insert: { ...columns, consecutiveFailures: 0 }, update: columns };
+      // 連続失敗カウンタは 0 に戻す(oversize の間は success が起きないため、先に積んだ
+      // rpc-failed / upload-failed が backup_failing_projects を永久点灯させないように)
+      const columns = {
+        storageLevel: attempt.storageLevel,
+        consecutiveFailures: 0,
+        lastFailureCode: "oversize",
+      };
+      return { insert: columns, update: columns };
     }
     case "skipped": {
       const columns = {

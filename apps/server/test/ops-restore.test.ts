@@ -80,19 +80,38 @@ describe("復元 worker(restore-worker.ts)", () => {
     expect(pull.status).toBe(200);
   });
 
-  it("does not pick up a job that a previous invocation already claimed (restore/running/)", async () => {
+  it("claims the job (moves it out of restore/jobs/) before the restore RPC runs", async () => {
     await seedProjectActivity();
     const uploaded = await snapshot();
-    // 前の cron が claim して実行中のジョブ(復元は分単位でかかりうる — 毎分の cron が
-    // 同じジョブを再実行して成功の結果を not-empty で上書きしない)
     await bucket.put(
-      "restore/running/in-flight.json",
+      "restore/jobs/claimed.json",
       JSON.stringify({ objectKey: uploaded.objectKey, target: "production" }),
     );
-    expect(await processRestoreJobs(restoreEnv)).toEqual([]);
-    expect(await bucket.head("restore/results/in-flight.json")).toBeNull();
-    expect(await bucket.head("restore/running/in-flight.json")).not.toBeNull();
-    await bucket.delete("restore/running/in-flight.json");
+    // 復元 RPC の実行中に jobs/ のキーが既に消え、running/ に移っていること(復元は
+    // 分単位でかかりうる — 次の毎分 cron が同じジョブを拾って成功結果を not-empty で
+    // 上書きしないための不変条件)。名前空間を差し替えて RPC の中から観測する
+    const seen: { jobs: R2Object | null; running: R2Object | null }[] = [];
+    const observingNamespace = {
+      idFromName: (name: string) => env.PROJECT_CHAIN.idFromName(name),
+      get: () => ({
+        opsRestore: async () => {
+          seen.push({
+            jobs: await bucket.head("restore/jobs/claimed.json"),
+            running: await bucket.head("restore/running/claimed.json"),
+          });
+          return { kind: "refused", code: "not-empty" } as const;
+        },
+      }),
+    } as unknown as typeof env.PROJECT_CHAIN;
+    expect(
+      await processRestoreJobs({ ...restoreEnv, PRODUCTION_PROJECT_CHAIN: observingNamespace }),
+    ).toEqual(["claimed"]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.jobs).toBeNull();
+    expect(seen[0]?.running).not.toBeNull();
+    // 完了後は running/ も残らない
+    expect(await bucket.head("restore/running/claimed.json")).toBeNull();
+    expect(await result("claimed")).toEqual({ status: "failed", code: "not-empty" });
   });
 
   it("reports static failure codes: malformed job, unavailable drill target, missing snapshot, non-empty DO", async () => {

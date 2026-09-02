@@ -341,7 +341,7 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 |---|---|---|
 | O1 | Workers Paid の運用アカウント整備(L6)— cron CPU 15 分・DO 10 GB・Time Travel 30 日は Paid 前提 | H3 デプロイ前 |
 | O2 | R2 の有効化(支払い方法の登録)とバケット作成: `wrangler r2 bucket create maruhi-ops-backup`、ライフサイクル `lifecycle add maruhi-ops-backup --expire-days 35 --abort-multipart-days 1`。公開アクセスなし | 同上 |
-| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted`。**注意**: 名前付き環境は `maruhi-server-hosted` という別 Worker(= 別の DO 名前空間)を作る。最上位名 `maruhi-server` で稼働中のプロジェクト DO が運営アカウントにあるなら、hosted への切り替えはデータが付いてこない(退避 → 復元 worker で移すか、最初から hosted 名で運用する)。初回デプロイ前に既存デプロイの有無を確認する(PR #137 レビュー) | 同上 |
+| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted`。**注意**: 名前付き環境は `maruhi-server-hosted` という別 Worker(= 別の DO 名前空間)を作る。最上位名 `maruhi-server` で稼働中のプロジェクト DO が運営アカウントにあるなら、hosted への切り替えはデータが付いてこない(退避 → 復元 worker で移すか、最初から hosted 名で運用する)。初回デプロイ前に既存デプロイの有無を確認する(PR #137 レビュー)。**デプロイ直後に 1 回**、Workers Logs で invocation log が実際に止まっていること(ダッシュボードの Logs 設定で Invocation logs が OFF、または数分後のログに `http.url` を含む行が無い)を目視確認する — CI 8c は設定ファイルの値しか見ない | 同上 |
 | O4 | GitHub: Secrets `CLOUDFLARE_API_TOKEN`(D1 Read + R2 Write に限定)/ `CLOUDFLARE_ACCOUNT_ID`、Variables `OPS_BACKUP_ENABLED=true` / `OPS_BACKUP_BUCKET` / `OPS_BACKUP_AGE_RECIPIENT`。`age-keygen` の秘密鍵は運営端末のキーチェーンへ | 同上 |
 | O5 | 外形監視サービスの契約(`GET /auth/config` を 1 分間隔・連続 3 回失敗で通知) | 招待制ベータ前 |
 | O6 | 運用 GitHub OAuth App(L7 — 本番コールバック URL)。「Enable Device Flow」は無効のまま | H3 デプロイ前 |

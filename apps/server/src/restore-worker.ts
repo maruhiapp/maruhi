@@ -231,8 +231,9 @@ export async function processRestoreJobs(env: RestoreEnv): Promise<readonly stri
     await env.OPS_BACKUP_BUCKET.put(runningKey, text ?? "");
     await env.OPS_BACKUP_BUCKET.delete(object.key);
     const job = text === null ? null : parseJob(text);
-    // 「ジョブ 1 つ → 結果 1 つ → ジョブ削除」の不変条件を、想定外の例外でも保つ
-    // (結果を書かずに投げると次の cron が同じジョブを拾い続ける)
+    // 「ジョブ 1 つ → 結果 1 つ」の不変条件を、想定外の例外でも保つ(ジョブは claim で
+    // 既に jobs/ から消えている — 結果を書かずに投げると running/ に取り残され、
+    // 運営の手当てを待つことになる)
     let result: RestoreJobResult;
     try {
       result = job === null ? { status: "failed", code: "job-malformed" } : await runJob(env, job);
