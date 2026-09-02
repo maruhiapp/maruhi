@@ -94,7 +94,75 @@
   // 不要にしている(AUTH_SPEC §3-2)。未登録のまま立てたサーバーは認証系
   // エンドポイントが 503 SetupIncomplete を返す(handlers-auth.ts)
   "triggers": {
-    // 期限切れセッション行の掃除(提示されない行は resolve 時の掃除では消えない)
-    "crons": ["17 3 * * *"],
+    // 1 本目(日次): 期限切れセッション行の掃除(提示されない行は resolve 時の
+    // 掃除では消えない)。2 本目(毎時): 運用基盤 H3 — DO → R2 退避スイープと
+    // トリップワイヤの評価(src/index.ts が cron 文字列で分岐。文字列は
+    // src/ops-policy.ts の OPS_HOURLY_CRON と手動で一致させること)。退避
+    // バインディング(env.hosted の OPS_BACKUP_BUCKET)が無い既定デプロイでは
+    // 毎時ジョブは D1 を数本読むだけの no-op に近い(docs/SELF_HOSTING.md
+    // "Backups and operations")
+    "crons": ["17 3 * * *", "23 * * * *"],
+  },
+  // hosted 環境(運営のデプロイ — docs/notes/hosted-ops.md §2-F)。
+  // `wrangler deploy --env hosted`。セルフホストの既定(最上位)は無変更で、R2 の
+  // 契約を持たないアカウントの `wrangler deploy` 一発を壊さない。
+  // 非継承キー(durable_objects / d1_databases / ratelimits / r2_buckets)は wrangler
+  // の規則により再宣言が必要 — 最上位との drift は scripts/check-hosted-config.ts
+  // (CI 8c)が検査する。Secrets は `wrangler secret put <NAME> --env hosted`
+  // (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / SERVER_ENC_KEY_IKM に加えて
+  // OPS_ALERT_WEBHOOK_URL — 任意)。
+  "env": {
+    "hosted": {
+      "durable_objects": {
+        "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
+      },
+      "ratelimits": [
+        {
+          "name": "CLI_START_RATE_LIMIT",
+          "namespace_id": "1001",
+          "simple": { "limit": 10, "period": 60 },
+        },
+        {
+          "name": "LEASE_RATE_LIMIT",
+          "namespace_id": "1002",
+          "simple": { "limit": 60, "period": 60 },
+        },
+        {
+          "name": "OAUTH_CALLBACK_RATE_LIMIT",
+          "namespace_id": "1003",
+          "simple": { "limit": 30, "period": 60 },
+        },
+        {
+          "name": "CLI_POLL_RATE_LIMIT",
+          "namespace_id": "1004",
+          "simple": { "limit": 30, "period": 60 },
+        },
+        {
+          "name": "SIGNUP_START_RATE_LIMIT",
+          "namespace_id": "1005",
+          "simple": { "limit": 10, "period": 60 },
+        },
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "maruhi",
+          // 運営: `wrangler d1 create maruhi` の実 ID に置き換える(hosted-ops.md §7 O3)
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "drizzle",
+          "migrations_pattern": "drizzle/*/migration.sql",
+        },
+      ],
+      // DO → R2 退避の保管先(hosted-ops.md §2-D)。バケットは運営が作る
+      // (`wrangler r2 bucket create maruhi-ops-backup` + ライフサイクル規則 —
+      // hosted-ops.md §7 O2)。worker は put / get のみ使う
+      "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
+      // Workers Logs(静的ログ行の保持 — hosted-ops.md §1)。リクエストログの Logpush は
+      // 有効化しない(URL パスに capability が載る — hosted-design.md §5-1)
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      // 巨大 DO の退避(JSON 化 + gzip)に DO の既定 CPU 30 秒では足りないことがある
+      // (hosted-ops.md §4-2)。上限は 5 分
+      "limits": { "cpu_ms": 300000 },
+    },
   },
 }

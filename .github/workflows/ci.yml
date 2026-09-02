@@ -109,6 +109,18 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
 
+      # 運用基盤 H3(docs/notes/hosted-ops.md §2-F): hosted 環境と復元 worker の設定も
+      # 同じ経路で検査し、hosted 環境が最上位のバインディングから drift していない
+      # ことを scripts/check-hosted-config.ts で確かめる
+      - name: 8c. Hosted / restore config dry-run + drift check
+        working-directory: apps/server
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          bunx wrangler deploy --dry-run --env hosted
+          bunx wrangler deploy --dry-run -c wrangler.restore.jsonc
+          bun scripts/check-hosted-config.ts
+
       # Playwright ブラウザ導入(step 9 と 11 の browser テストが共有)。
       # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
       # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは

@@ -24,7 +24,7 @@ import {
 } from "./auth.package/index.ts";
 import type { Env } from "./chain-do.ts";
 import type { DbServices } from "./db.package/index.ts";
-import { makeDbServices, SessionRepo, TokenRepo } from "./db.package/index.ts";
+import { makeDbServices, OpsRepo, SessionRepo, TokenRepo } from "./db.package/index.ts";
 import { auditLive } from "./handlers-audit.ts";
 import { authCliLive } from "./handlers-auth-cli.ts";
 import { authLive } from "./handlers-auth.ts";
@@ -37,6 +37,10 @@ import { rotationLive } from "./handlers-rotation.ts";
 import { schemaPolicyLive } from "./handlers-schema-policy.ts";
 import { variablesLive } from "./handlers-variables.ts";
 import { makeOidcVerifier, OidcVerifier } from "./oidc.package/index.ts";
+import { makeWebhookNotifier, OpsNotifier, runOpsAlerts } from "./ops-alerts.ts";
+import { runBackupSweep } from "./ops-backup.ts";
+import { OPS_HOURLY_CRON } from "./ops-policy.ts";
+import { countingGitHubApi } from "./ops-signals.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
 import { WorkerEnv } from "./worker-env.ts";
@@ -67,7 +71,14 @@ function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
   return dbServices.pipe(
     Context.add(WorkerEnv, env),
-    Context.add(GitHubApi, makeGitHubApi(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET)),
+    // GitHub token 請求の自前計数(H3 — ops-signals.ts。受理面の挙動は不変)
+    Context.add(
+      GitHubApi,
+      countingGitHubApi(
+        makeGitHubApi(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET),
+        Context.get(dbServices, OpsRepo),
+      ),
+    ),
     Context.add(ServerKey, makeServerKey(env.SERVER_ENC_KEY_IKM)),
     // OIDC verifier(AUTH_SPEC §14-1)。JWKS キャッシュを isolate 単位で
     // 抱えるため env ごとに 1 つだけ作る(handlerCache と同じ寿命)
@@ -255,10 +266,27 @@ export default {
       await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest)),
     );
   },
-  // 期限切れセッション行の定期掃除(wrangler.jsonc の triggers.crons)。
-  // resolve 時の掃除(auth.package/session.ts)は「提示された行」しか消せない
-  async scheduled(_controller, env, _ctx): Promise<void> {
-    const sessions = Context.get(makeDbServices(env.DB), SessionRepo);
+  // 定期ジョブ(wrangler.jsonc の triggers.crons — cron 文字列で分岐):
+  // - 毎時(OPS_HOURLY_CRON): 運用基盤 H3 — DO → R2 退避スイープ(ops-backup.ts。
+  //   バインディング無しなら no-op)→ トリップワイヤの評価と通知(ops-alerts.ts)
+  // - それ以外(日次): 期限切れセッション行の掃除。resolve 時の掃除
+  //   (auth.package/session.ts)は「提示された行」しか消せない。cron 文字列が
+  //   空の呼び出し(テストの createScheduledController())もこちら = 既存の契約
+  async scheduled(controller, env, _ctx): Promise<void> {
+    const dbServices = makeDbServices(env.DB);
+    if (controller.cron === OPS_HOURLY_CRON) {
+      const services = dbServices.pipe(
+        Context.add(OpsNotifier, makeWebhookNotifier(env.OPS_ALERT_WEBHOOK_URL)),
+      );
+      await Effect.runPromise(
+        runBackupSweep(env).pipe(
+          Effect.andThen(runOpsAlerts(Date.now())),
+          Effect.provideContext(services),
+        ),
+      );
+      return;
+    }
+    const sessions = Context.get(dbServices, SessionRepo);
     await Effect.runPromise(sessions.deleteExpired(Date.now()));
   },
 } satisfies ExportedHandler<Env>;

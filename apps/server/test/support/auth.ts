@@ -45,6 +45,10 @@ const AUTH_TABLES = [
   // サインアップ制御(AUTH_SPEC §3 — H1)。既定は行なし = signupPolicy 'open'
   "signup_invites",
   "deployment_settings",
+  // 運用基盤 H3(hosted-ops.md §6)— 監査ではない運営限定の可変状態
+  "ops_counters",
+  "ops_backups",
+  "ops_state",
 ];
 
 const SEED_TIME_MS = 1754006400000;

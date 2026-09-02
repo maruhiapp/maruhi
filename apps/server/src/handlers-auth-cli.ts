@@ -54,8 +54,9 @@ import {
   verifyFlowToken,
 } from "./auth.package/index.ts";
 import type { D1AuditRepo } from "./db.package/index.ts";
-import { CliFlowRepo, FlowSigningKeyRepo, IdentityRepo } from "./db.package/index.ts";
+import { CliFlowRepo, FlowSigningKeyRepo, IdentityRepo, OpsRepo } from "./db.package/index.ts";
 import { constantTimeEqual, randomHex, sha256Hex } from "./ids.ts";
+import { noteOpsCounter } from "./ops-signals.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
 /** 発行パラメータ省略時の既定トークン名(§6 の意味論は既定スコープと同じ扱い)。 */
@@ -173,7 +174,7 @@ function admitAndRenderApproval(
   params: CliVerifyParams,
   userId: string,
   identityLabel: string,
-): Effect.Effect<HttpServerResponse.HttpServerResponse, never, CliFlowRepo> {
+): Effect.Effect<HttpServerResponse.HttpServerResponse, never, CliFlowRepo | OpsRepo> {
   return Effect.gen(function* () {
     const ticket = randomHex(32);
     const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
@@ -194,6 +195,11 @@ function admitAndRenderApproval(
     );
     // rejected(別 user_id・期限切れ・終端状態)と capacity(全体上限)はどちらも
     // 一様エラーページ(§4-1 (4) (iii) / §4-2 — チケットは回転していない)
+    if (admission === "capacity") {
+      // 上限到達は正規運用で起きない事象 = H3 のトリップワイヤ(hosted-ops.md §3 行 4)。
+      // 計数のみで応答は変えない
+      yield* noteOpsCounter("cli_flow_capacity");
+    }
     if (admission === "rejected" || admission === "capacity") {
       return uniformErrorPage();
     }
@@ -229,7 +235,7 @@ export function handleCliCallback(
 ): Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   never,
-  WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo
+  WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo | OpsRepo
 > {
   return Effect.gen(function* () {
     // (i)-a: フロー束縛クッキーの復元(state 照合 + vsig 再検証)

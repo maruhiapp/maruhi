@@ -12,6 +12,10 @@ declare namespace Cloudflare {
     CLI_POLL_RATE_LIMIT?: RateLimit;
     LEASE_RATE_LIMIT?: RateLimit;
     OAUTH_CALLBACK_RATE_LIMIT?: RateLimit;
+    SIGNUP_START_RATE_LIMIT?: RateLimit;
+    /** 運用基盤 H3(vitest.config.ts の miniflare r2Buckets / bindings)。 */
+    OPS_BACKUP_BUCKET?: R2Bucket;
+    OPS_ALERT_WEBHOOK_URL?: string;
     /** vitest.config.ts の miniflare bindings で注入(applyD1Migrations 用) */
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
     /**

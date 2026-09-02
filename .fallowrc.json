@@ -15,7 +15,9 @@
   // vitest.unit.config.ts(web ユニットテスト)は規約外のファイル名(vitest.config.ts は
   // e2e が使用済み)でルート vitest.config.ts から文字列参照されるため自動検出されない。
   // apps/server/scripts は運営者が bun run で直接叩く運用スクリプト(サインアップ招待
-  // コードの発行 — AUTH_SPEC §3)で、製品コードから import されないため手動宣言する
+  // コードの発行 — AUTH_SPEC §3)で、製品コードから import されないため手動宣言する。
+  // apps/server/src/restore-worker.ts は wrangler.restore.jsonc の main(復元 worker —
+  // docs/notes/hosted-ops.md §2-E)で、index.ts から import されない別エントリ
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
@@ -23,7 +25,8 @@
     "apps/web/theme/maruhi.js",
     "apps/web/vitest.unit.config.ts",
     "apps/web/test/unit/*.test.ts",
-    "apps/server/scripts/*.ts"
+    "apps/server/scripts/*.ts",
+    "apps/server/src/restore-worker.ts"
   ],
   // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
   // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。

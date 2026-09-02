@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // 復元 worker(運営専用・非 HTTP・非常設 — docs/notes/hosted-ops.md §2-E / §5-2)。
+  // 復元作業のときだけ `wrangler deploy -c wrangler.restore.jsonc` し、終わったら
+  // `wrangler delete -c wrangler.restore.jsonc` で消す。HTTP ハンドラを持たず
+  // (workers.dev も無効)、仕事は毎分の cron が退避バケットの restore/jobs/ を
+  // 読むことだけ。
+  "name": "maruhi-restore",
+  "main": "src/restore-worker.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      // 本番 worker の DO 名前空間(script_name 束縛)。受け側 RPC(opsRestore)は
+      // 空の DO にのみ書く
+      {
+        "name": "PRODUCTION_PROJECT_CHAIN",
+        "class_name": "ProjectChainDO",
+        "script_name": "maruhi-server",
+      },
+      // 演習(drill)用の名前空間 — 本 worker 内の別クラス(本番と交わらない)
+      { "name": "DRILL_PROJECT_CHAIN", "class_name": "RestoreDrillDO" },
+    ],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RestoreDrillDO"] }],
+  "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
+  // 復元先 DO(drill)は ProjectChainDO と同じコードで動くため、本番と同じ Secret
+  // (SERVER_ENC_KEY_IKM 等)は不要 — 復元は DO SQLite への書き戻しと監査ヘッドの
+  // 導出のみで、鍵を使う経路(リース)は通らない
+  "triggers": { "crons": ["* * * * *"] },
+  "limits": { "cpu_ms": 300000 },
+}

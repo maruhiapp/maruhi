@@ -24,7 +24,8 @@ class GitHubAuthError extends Data.TaggedError("GitHubAuth")<{
   readonly reason: "code-exchange-failed" | "token-invalid";
 }> {}
 
-interface GitHubApiShape {
+/** GitHub 認証ダンスの操作(装飾 — ops-signals.ts の計数 — のために公開)。 */
+export interface GitHubApiShape {
   /** Authorization Code を GitHub アクセストークンへ交換する(§3-2)。 */
   readonly exchangeCode: (
     code: string,

@@ -57,6 +57,7 @@ import {
   orgAuditInsert,
   userAuditInsert,
 } from "./audit.ts";
+import { makeOpsRepo, OpsRepo } from "./ops.ts";
 import {
   apiTokens,
   cliLoginFlows,
@@ -1924,7 +1925,8 @@ export type DbServices =
   | InviteRepo
   | FlowSigningKeyRepo
   | CliFlowRepo
-  | D1AuditRepo;
+  | D1AuditRepo
+  | OpsRepo;
 
 /** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
 export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
@@ -1939,5 +1941,7 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(FlowSigningKeyRepo, makeFlowSigningKeyRepo(db)),
     Context.add(CliFlowRepo, makeCliFlowRepo(db)),
     Context.add(D1AuditRepo, makeD1AuditRepo(db)),
+    // 運用(H3 — hosted-ops.md §6): カウンタ・退避記録・状態 kv
+    Context.add(OpsRepo, makeOpsRepo(db)),
   );
 }
