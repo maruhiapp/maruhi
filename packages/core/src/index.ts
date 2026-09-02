@@ -29,9 +29,14 @@ export {
   auditActorOf,
   type AuditEventRecord,
   auditPayloadWith,
+  type AuditReadPayload,
+  auditReadPayload,
+  type AuditReadVariable,
+  auditReadVariablesOf,
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
   chainMirrorEvent,
+  VAR_READ_EVENT,
 } from "./audit.ts";
 export {
   anonymousPrincipal,

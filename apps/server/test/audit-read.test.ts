@@ -13,6 +13,7 @@
 // (共有ヘルパは support/audit-read-scenario.ts。分割の動機は
 // support/membership-scenario.ts 冒頭を参照)。
 
+import { auditReadVariablesOf } from "@maruhi/core";
 import { describe, expect, it } from "vitest";
 
 import { isClass1Event } from "../src/audit-store.ts";
@@ -130,8 +131,19 @@ describe("フィルタ(§7 の語彙)と actor フィルタの権限", () => {
     expect(byVariable.events.length).toBeGreaterThan(0);
     for (const event of byVariable.events) {
       expect(event.environmentId).toBe(ENV);
-      expect(event.variableId).toBe(VAR);
+      if (event.event === "var.read") {
+        // 集約形の var.read(§3.3)は変数 ID を列に持たず、payload の列挙が
+        // 当該変数を含む行がフィルタに一致する(§7 / Q4)
+        expect(event.variableId).toBeUndefined();
+        expect(auditReadVariablesOf(event.payload)?.map((v) => v.variableId)).toContain(VAR);
+      } else {
+        expect(event.variableId).toBe(VAR);
+      }
     }
+    // 旧形の列一致(var.created 等)と集約形の payload 一致の両方が返る
+    expect(eventNames(byVariable.events)).toEqual(
+      expect.arrayContaining(["var.created", "var.version_pushed", "var.read"]),
+    );
     const byTarget = await fetchEvents(token(OWNER), { targetUserId: READER, limit: "200" });
     expect(eventNames(byTarget.events)).toEqual(
       expect.arrayContaining(["chain.member_added", "dek.registered"]),
