@@ -239,6 +239,82 @@ Notes:
 - To revoke an unused code, delete its row (the issuance script prints the
   command).
 
+## Tenant quotas (project count and per-project storage guard)
+
+**The defaults are far above realistic use, and nothing needs configuring.
+Read this section if you want to know what the server refuses and why, or if
+you run a large multi-tenant deployment and want to change the values.**
+
+The server enforces two deployment-wide acceptance limits on top of the
+per-project limits in AUTH_SPEC §12-8 (environments, variables, versions, …).
+Both are **server acceptance policy, not part of the cryptographic protocol**:
+they are plain constants in `apps/server/src/policy.ts`, raising or lowering
+them never invalidates existing chains, and a change takes effect on the next
+deploy. Exceeding a limit always fails with a typed error — nothing degrades
+silently.
+
+| Limit | Default | Constant | Error |
+|---|---|---|---|
+| Active projects per organization | 100 | `MAX_ACTIVE_PROJECTS_PER_ORG` | 429 `ProjectLimit` on `POST /projects` |
+| Per-project Durable Object storage | warn at 8 GB, reject at 9 GB | `DO_STORAGE_WARN_BYTES` / `DO_STORAGE_REJECT_BYTES` | 422 `DataLimitExceeded` with `resource: "project-storage-bytes"` |
+
+### Projects per organization
+
+- Counts every `projects` row of the organization (there is no project deletion
+  API yet, so every project ever created is "active"). Today every user has
+  exactly one personal organization, so in practice this is **100 projects per
+  user**.
+- Only a **new** project creation is refused. Re-running `maruhi project init`
+  for a project that already exists (for example to repair a crash between the
+  chain commit and the D1 row insert — AUTH_SPEC §11-3) always succeeds, even
+  when the organization is at the limit.
+- The check is best-effort: two `init` calls racing at exactly the limit can
+  both succeed. This is an acceptance policy, not a security boundary.
+
+### Per-project storage guard (why 9 GB)
+
+Each project lives in one Durable Object whose SQLite database has a hard
+platform ceiling of **10 GB**. At that ceiling SQLite returns `SQLITE_FULL`:
+the project stays readable but **every write fails, including the deletes that
+would free space**. The guard exists so a project never gets there. It reads the
+measured database size (`databaseSize`) on every write that adds content and:
+
+- at **8 GB** logs one static warning line per Durable Object instance (no
+  project id, no user id — see "Operational logs" below) and keeps accepting
+  writes;
+- at **9 GB** rejects writes that add content — pushing values, creating,
+  renaming or re-declaring variables, creating or renaming environments,
+  registering DEK wraps, adding members and granting server access — with 422
+  `DataLimitExceeded` (`project-storage-bytes`).
+
+What **keeps working** above 9 GB, by design (AUTH_SPEC §12-8 lists these
+explicitly): all reads (`maruhi pull` / `maruhi run`, chain fetch, audit log —
+members can always take their values out), all deletions (environments,
+variables, DEK wraps — the way back under the threshold), member removal,
+server-access revocation, role changes, epoch rotation, workload leases, head
+attestations and periodic checkpoints. The 1 GB between the rejection threshold
+and the platform floor absorbs the bookkeeping those operations still write.
+
+The audit log is append-only and never pruned (AUDIT_SPEC §5.3), so on a busy
+project the dominant growth is `var.read` rows from pulls. The guard is the
+safety net for that growth; there is no per-tenant audit quota.
+
+**Changing the thresholds**: edit the two constants and redeploy. Keep
+`DO_STORAGE_REJECT_BYTES` below 10 GB — the guard is the only thing standing
+between a project and the unrecoverable-by-tenant `SQLITE_FULL` state. The
+values are decimal gigabytes (10^9 bytes), which is conservative under either
+reading of the platform's "10 GB".
+
+### Operational logs
+
+The warning and rejection lines are **static messages**: they carry no project
+id (a project id is effectively a capability — AUTH_SPEC §11-2) and no user
+id. To find out which project is affected, use the Durable Object id in the
+Workers Logs / `wrangler tail` event envelope: it is `idFromName(projectId)`,
+so you can compute it for a project a tenant reports and compare, but the log
+line itself never reveals the project. Alerting on these lines is part of the
+hosted operations work (H3); the log line is the hook it will attach to.
+
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
 Of maruhi's unauthenticated surface, the following four are the ones where a
@@ -614,6 +690,17 @@ so do not miss the warning).
   and subdomain)
 - **`bun run deploy` migration apply returns `couldn't find DB`**:
   `database_id` was not filled in (step 2)
+- **`maruhi project init` says the organization already holds the maximum
+  number of projects (429 `ProjectLimit`)**: the per-organization project
+  limit (default 100 — "Tenant quotas"). Existing projects are unaffected;
+  raise `MAX_ACTIVE_PROJECTS_PER_ORG` in `apps/server/src/policy.ts` and
+  redeploy if the deployment legitimately needs more
+- **Pushes / creates fail with `DataLimitExceeded` and
+  `resource: "project-storage-bytes"` while pulls still work**: the project's
+  Durable Object storage crossed the 9 GB guard ("Tenant quotas"). This is
+  working as intended — have the project admins delete environments,
+  variables or DEK wraps they no longer need (deletes are accepted above the
+  threshold), then retry
 - **`/auth/config` has no `serverKeyFingerprintHex` /
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
