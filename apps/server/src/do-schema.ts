@@ -125,7 +125,9 @@ const PROJECT_DO_DDL = [
      created_at INTEGER NOT NULL,
      PRIMARY KEY (environment_id, epoch, recipient_user_id)
    )`,
-  // AUDIT_SPEC §5.1 のスキーマ(列名・索引とも仕様どおり)
+  // AUDIT_SPEC §5.1 のスキーマ(列名・索引とも仕様どおり。ae_target /
+  // ae_target_fp / ae_actor_fp は後続のマイグレーションステップが部分索引に
+  // 置き換える — 末尾追記のみの規則により step 1 は当初形のまま)
   `CREATE TABLE IF NOT EXISTS audit_events (
      seq INTEGER PRIMARY KEY,
      server_ts INTEGER NOT NULL,
@@ -435,6 +437,42 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
            id INTEGER PRIMARY KEY CHECK (id = 1),
            schema_policy TEXT NOT NULL
          )`,
+      );
+    },
+  },
+  {
+    // audit_events の対象・鍵 FP 索引の部分索引化(2026-09-02 — 監査ログの
+    // 成長密度対策 ①。AUDIT_SPEC §5.1 の索引集合は不変で、述語の追加は
+    // 実装詳細)。
+    //
+    // ae_target(target_user_id)/ ae_target_fp(target_key_fingerprint)/
+    // ae_actor_fp(actor_key_fingerprint)は、支配的な行種 `var.read`(値の読み
+    // 取り — 署名を伴わず対象も持たない)で常に NULL の列に張られている。素の
+    // 索引は NULL 行にもエントリを作るため、読み取り 1 行ごとに 3 索引 ×
+    // (NULL キー + seq)のエントリが積まれ、誰も引かない領域が監査表と同じ速さで
+    // 成長していた。`WHERE <列> IS NOT NULL` の部分索引に置き換えると NULL 行は
+    // 索引に入らない。SQLite は WHERE 句が索引述語を含意するときだけ部分索引を
+    // 使うが、既存の読み手はすべて等値条件(`target_user_id = ?` 等 — 等値は
+    // IS NOT NULL を含意)なので選択される(test/audit-index.test.ts が
+    // EXPLAIN QUERY PLAN で固定)。`var.read` が引く ae_var / ae_actor / ae_event
+    // は触らない。
+    //
+    // 適用は DROP → CREATE の再構築(行数比例。本ステップも他と同じく 1
+    // transactionSync で走るため、途中失敗は丸ごと巻き戻る)。行には触れない
+    // (append-only — AUDIT_SPEC §1-4)
+    tables: [],
+    apply(sql) {
+      sql.exec("DROP INDEX IF EXISTS ae_target");
+      sql.exec("DROP INDEX IF EXISTS ae_target_fp");
+      sql.exec("DROP INDEX IF EXISTS ae_actor_fp");
+      sql.exec(
+        "CREATE INDEX ae_target ON audit_events (target_user_id, seq) WHERE target_user_id IS NOT NULL",
+      );
+      sql.exec(
+        "CREATE INDEX ae_target_fp ON audit_events (target_key_fingerprint, seq) WHERE target_key_fingerprint IS NOT NULL",
+      );
+      sql.exec(
+        "CREATE INDEX ae_actor_fp ON audit_events (actor_key_fingerprint, seq) WHERE actor_key_fingerprint IS NOT NULL",
       );
     },
   },
