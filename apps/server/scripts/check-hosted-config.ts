@@ -10,9 +10,14 @@
 
 import { unstable_readConfig } from "wrangler";
 
+import { OPS_HOURLY_CRON } from "../src/ops-policy.ts";
+
 const configPath = new URL("../wrangler.jsonc", import.meta.url).pathname;
 const base = unstable_readConfig({ config: configPath });
 const hosted = unstable_readConfig({ config: configPath, env: "hosted" });
+const restore = unstable_readConfig({
+  config: new URL("../wrangler.restore.jsonc", import.meta.url).pathname,
+});
 
 const failures: string[] = [];
 
@@ -67,9 +72,28 @@ if (base.r2_buckets.length !== 0) {
   );
 }
 
-// cron は継承される(毎時 cron の文字列は src/ops-policy.ts の OPS_HOURLY_CRON と一致 —
-// そちらは vitest が固定する)。ここでは両環境で同じであることだけ見る
+// cron は継承される。毎時 cron の文字列は index.ts の分岐条件そのもの(OPS_HOURLY_CRON):
+// ずれると毎時ジョブが日次側へ落ちて退避と評価が無言で止まるため、実設定と突き合わせる
 expectSame("triggers.crons", base.triggers.crons, hosted.triggers.crons);
+if (!(base.triggers.crons as readonly string[]).includes(OPS_HOURLY_CRON)) {
+  failures.push(
+    `triggers.crons: OPS_HOURLY_CRON (${OPS_HOURLY_CRON}) is not declared in triggers.crons`,
+  );
+}
+
+// 復元 worker は本番(hosted)の DO 名前空間へ script_name で束縛する。名前付き環境は
+// `<name>-<env>` の別 Worker を公開するため、束縛先は env.hosted の実効 name と一致
+// していなければならない(不一致はインシデント時にだけ発覚する最悪の場所)
+const productionBinding = restore.durable_objects.bindings.find(
+  (binding) => binding.name === "PRODUCTION_PROJECT_CHAIN",
+);
+if (productionBinding === undefined) {
+  failures.push("wrangler.restore.jsonc: PRODUCTION_PROJECT_CHAIN binding is missing");
+} else if (productionBinding.script_name !== hosted.name) {
+  failures.push(
+    `wrangler.restore.jsonc: PRODUCTION_PROJECT_CHAIN.script_name (${String(productionBinding.script_name)}) must equal the hosted worker name (${String(hosted.name)})`,
+  );
+}
 
 if (failures.length > 0) {
   for (const failure of failures) {

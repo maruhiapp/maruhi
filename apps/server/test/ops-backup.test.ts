@@ -212,6 +212,46 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     expect(listed.objects).toEqual([]);
   });
 
+  it("completes a multipart upload whose size is an exact multiple of the part size (no empty final part)", async () => {
+    await seedProjectActivity();
+    await runInDurableObject(stub(), (_instance, state) => {
+      for (let version = 2; version <= 200; version++) {
+        const random = crypto.getRandomValues(new Uint8Array(32 * 1024));
+        const hex = [...random].map((b) => b.toString(16).padStart(2, "0")).join("");
+        state.storage.sql.exec(
+          `INSERT INTO variable_versions (environment_id, variable_id, version, suite, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes,
+             prev_value_sig_hash_hex, chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex, writer_user_id, writer_key_fingerprint, created_at)
+           VALUES ('env-bulk', 'var-bulk', ?, 'maruhi/v1', 1, '00', ?, ?, '', '', 1, '', '', 'user-bulk', 'fp', ?)`,
+          version,
+          hex,
+          hex.length / 2,
+          version,
+        );
+      }
+    });
+    await evictProjectDo(projectId);
+    // 同じ nowMs(= 同じヘッダ・同じキー)で 2 回退避する: 1 回目で圧縮後の総量を測り、
+    // 2 回目はその総量ちょうどをパート長にして「残り 0 バイト」の経路を踏ませる
+    const nowMs = Date.now();
+    const probe = (await stub().opsBackup({ ...backupInput(), nowMs })) as OpsBackupOutcome;
+    expect(probe.kind).toBe("uploaded");
+    if (probe.kind !== "uploaded") {
+      return;
+    }
+    expect(probe.bytes).toBeGreaterThan(5 * 1024 * 1024);
+    const exact = (await stub().opsBackup({
+      ...backupInput(),
+      nowMs,
+      partBytes: probe.bytes,
+    })) as OpsBackupOutcome;
+    expect(exact.kind).toBe("uploaded");
+    if (exact.kind !== "uploaded") {
+      return;
+    }
+    expect(exact.bytes).toBe(probe.bytes);
+    expect((await bucket.head(exact.objectKey))?.size).toBe(probe.bytes);
+  });
+
   it("uses multipart for large snapshots (uniform parts) and still restores identically", async () => {
     await seedProjectActivity();
     // 圧縮の効きにくい行(乱数 hex の暗号文)を直接積み、圧縮後 5 MiB 超にする

@@ -13,11 +13,14 @@
   "durable_objects": {
     "bindings": [
       // 本番 worker の DO 名前空間(script_name 束縛)。受け側 RPC(opsRestore)は
-      // 空の DO にのみ書く
+      // 空の DO にのみ書く。wrangler の名前付き環境は `<name>-<env>` という別 Worker を
+      // 公開するため、`wrangler deploy --env hosted` の実体は `maruhi-server-hosted`
+      // (最上位の `maruhi-server` はセルフホストの既定 — 運営はデプロイしない)。
+      // scripts/check-hosted-config.ts が env.hosted の実効 name と突き合わせる
       {
         "name": "PRODUCTION_PROJECT_CHAIN",
         "class_name": "ProjectChainDO",
-        "script_name": "maruhi-server",
+        "script_name": "maruhi-server-hosted",
       },
       // 演習(drill)用の名前空間 — 本 worker 内の別クラス(本番と交わらない)
       { "name": "DRILL_PROJECT_CHAIN", "class_name": "RestoreDrillDO" },

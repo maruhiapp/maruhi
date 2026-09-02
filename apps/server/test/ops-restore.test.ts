@@ -83,6 +83,13 @@ describe("復元 worker(restore-worker.ts)", () => {
     await seedProjectActivity();
     const uploaded = await snapshot();
     await bucket.put("restore/jobs/bad.json", "not json");
+    // 破損した退避物(gzip ではない・切れた multipart の残骸相当)— 例外を逃がさず
+    // 静的コードで結果を書き、ジョブを消す(消さないと毎分の cron が永久に再試行する)
+    await bucket.put("do/test/corrupt.ndjson.gz", new Uint8Array([1, 2, 3, 4, 5]));
+    await bucket.put(
+      "restore/jobs/corrupt.json",
+      JSON.stringify({ objectKey: "do/test/corrupt.ndjson.gz", target: "production" }),
+    );
     await bucket.put(
       "restore/jobs/drill.json",
       JSON.stringify({ objectKey: uploaded.objectKey, target: "drill" }),
@@ -96,8 +103,10 @@ describe("復元 worker(restore-worker.ts)", () => {
       JSON.stringify({ objectKey: uploaded.objectKey, target: "production" }),
     );
     const processed = await processRestoreJobs(restoreEnv);
-    expect(processed.toSorted()).toEqual(["bad", "drill", "missing", "occupied"]);
+    expect(processed.toSorted()).toEqual(["bad", "corrupt", "drill", "missing", "occupied"]);
     expect(await result("bad")).toEqual({ status: "failed", code: "job-malformed" });
+    expect(await result("corrupt")).toEqual({ status: "failed", code: "snapshot-malformed" });
+    expect(await bucket.head("restore/jobs/corrupt.json")).toBeNull();
     expect(await result("drill")).toEqual({ status: "failed", code: "target-unavailable" });
     expect(await result("missing")).toEqual({ status: "failed", code: "snapshot-missing" });
     expect(await result("occupied")).toEqual({ status: "failed", code: "not-empty" });

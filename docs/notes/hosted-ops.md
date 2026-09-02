@@ -1,6 +1,6 @@
 # hosted-ops — H3: 運用基盤(監視・アラート / バックアップ / リストア演習)の設計
 
-Status: 2026-09-02 起草(H3 実装 PR に同梱)。hosted-design.md §5(裁定 DC)を「実装できる形」へ落とした
+Status: 2026-09-02 起草(H3 実装 PR #137 に同梱)。**実装は完了、H3 の完了条件(§5-3 のリストア演習 — O7)は未了**。hosted-design.md §5(裁定 DC)を「実装できる形」へ落とした
 内部文書。**運営側のみ**の段であり、製品のワイヤ・受理面(AUTH_SPEC / AUDIT_SPEC)は無変更。
 設計探索(候補・上位互換探索・棄却案・一次情報の確認)の記録は本文書に置く(独立の session ノートは作らない)。
 
@@ -177,7 +177,8 @@ CRYPTO_SPEC の改訂として人間に提示する(§7 人間タスク)。
 (チェーンが無い DO は製品から見て未初期化)。スキーマ版は退避時と一致を要求する(不一致は `schema-mismatch` — 運営が
 該当版をデプロイしてから復元する)。
 
-復元 worker は `script_name: maruhi-server` で本番名前空間へ束縛する(target `production`)ほか、自分の DO クラス
+復元 worker は `script_name: maruhi-server-hosted`(wrangler の名前付き環境は `<name>-<env>` の別 Worker を公開する —
+`wrangler deploy --env hosted` の実体。CI 8c が env.hosted の実効 name と突合)で本番名前空間へ束縛する(target `production`)ほか、自分の DO クラス
 `RestoreDrillDO`(ProjectChainDO を継承、名前空間は復元 worker 側)を持ち、**演習(drill)は本番名前空間に触れず**
 drill 名前空間へ復元して検証する(target `drill`)。DO 名は退避物のチェーン genesis(seq 1 の `entry_hash_hex` =
 プロジェクト ID)から導出するため、ジョブファイルにもプロジェクト ID を書かない。
@@ -226,7 +227,7 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 | 4 | ログインフロー行の作成上限到達 | `ops_counters.cli_flow_capacity`(createOrMatch = capacity) | 同上 | ≥ 1 | webhook | 正規運用で起きない(AUTH_SPEC §4-1 (4) (iii))。対応: `cli_login_flows` の未消費行を D1 で確認 → 異常な併走なら WAF で発信元を絞る |
 | 5 | サインアップ拒否 | `user_audit_events` の `auth.signup_denied`(+ `_suppressed`) | 毎時評価 | ≥ 20/時、または suppressed ≥ 1 | webhook | invite 制での善意の無駄打ちで上がる。対応: 拒否理由の分布(reason)を D1 で見る → 案内文言 / 招待配布の見直し |
 | 6 | 認証面の洪水 | `auth.login_failed_suppressed` マーカー(AUDIT_SPEC §3.1) | 毎時評価 | ≥ 1 | webhook | 対応: 429 率(ダッシュボード)と併読 → WAF レート制限(SELF_HOSTING 推奨値)を強める |
-| 7 | 退避の遅れ | `ops_backups`: 最終成功から 48 時間超のプロジェクト数・連続失敗 ≥ 3 のプロジェクト数・`oversize` | 毎時評価 | いずれも ≥ 1 | webhook | 連続失敗: Workers Logs の静的行(failure code)を見る。oversize: 閾値引き上げの判断(§4-2) |
+| 7 | 退避の遅れ | `ops_backups`: 最終成功から **再退避間隔(7 日)+ 1 日** を超えたプロジェクト数・連続失敗 ≥ 3 のプロジェクト数・`oversize` | 毎時評価 | いずれも ≥ 1 | webhook | 遅れの閾値は再退避間隔から導出する(独立に置くと skip され続ける休眠プロジェクトが恒常に遅れに見える — PR #137 レビュー)。連続失敗: Workers Logs の静的行(failure code)を見る。oversize: 閾値引き上げの判断(§4-2) |
 | 8 | 可用性 | 外形監視(`GET /auth/config` の 200 — 既存の未認証・状態なし面) | 外部サービス(人間タスク) | 連続 3 回失敗で page | 外部サービスの通知 | 専用 health エンドポイントは作らない(DC-6) |
 | 9 | エラー率 | Workers ダッシュボードの 5xx 率・DO エラー(プラットフォーム標準メトリクス) | 人が見る(ベータ規模) | ベースライン逸脱 | — | 自前収集しない(同じ信号を 2 経路に書かない) |
 

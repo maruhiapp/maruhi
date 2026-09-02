@@ -16,9 +16,6 @@ export const OPS_GITHUB_TOKEN_REQUESTS_PER_HOUR_THRESHOLD = 1600;
 /** hosted-ops §3 行 5: サインアップ拒否 / 時の警告閾値。 */
 export const OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD = 20;
 
-/** hosted-ops §3 行 7: 最終成功からこの時間を超えたプロジェクトを「退避の遅れ」に数える。 */
-export const OPS_BACKUP_STALE_MS = 48 * 60 * 60 * 1000;
-
 /** hosted-ops §3 行 7: 連続失敗がこの回数以上のプロジェクトを信号にする。 */
 export const OPS_BACKUP_CONSECUTIVE_FAILURES_THRESHOLD = 3;
 
@@ -30,6 +27,15 @@ export const OPS_ALERT_RENOTIFY_MS = 24 * 60 * 60 * 1000;
  * 成功からこの時間を超えたら再退避する(ライフサイクル削除 35 日に先行する)。
  */
 export const OPS_BACKUP_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * hosted-ops §3 行 7: 最終成功からこの時間を超えたプロジェクトを「退避の遅れ」に数える。
+ * 再退避間隔 + 1 日の猶予から**導出**する(独立に起草すると、内容不変で skip され続ける
+ * 休眠プロジェクトが再退避間隔の内側で恒常に「遅れ」に見える — PR #137 pullfrog 指摘)。
+ * 検知が遅くなる対価(スイープの予算不足は最短でも 8 日で表面化)は §8 (b) 第 2 周 (iii)
+ * のとおり受容し、演習(§5-3)の実測で改める。
+ */
+export const OPS_BACKUP_STALE_MS = OPS_BACKUP_REFRESH_MS + 24 * 60 * 60 * 1000;
 
 /**
  * hosted-ops §4-2: これを超える DO は退避せず `oversize` を信号にする(permit

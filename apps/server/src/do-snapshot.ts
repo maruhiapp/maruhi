@@ -192,7 +192,11 @@ class GzipObjectWriter {
     if (this.#upload === null) {
       await this.bucket.put(this.key, last);
     } else {
-      this.#parts.push(await this.#upload.uploadPart(this.#parts.length + 1, last));
+      // 圧縮後の総量が partBytes の倍数ちょうどだと残りは 0 バイト — R2 は空パートを
+      // 拒否するため送らない(PR #137 レビュー)
+      if (last.byteLength > 0) {
+        this.#parts.push(await this.#upload.uploadPart(this.#parts.length + 1, last));
+      }
       await this.#upload.complete(this.#parts);
     }
     return { bytes: this.#totalBytes };
@@ -420,12 +424,13 @@ function wipeTables(sql: SqlStorage, tables: readonly string[]): void {
   }
 }
 
+/** 1 表の行をバッファし、バッチごとに 1 トランザクションで挿入する。 */
 class RowInserter {
   #buffer: (readonly SnapshotScalar[])[] = [];
   readonly #rowsPerStatement: number;
 
   constructor(
-    private readonly sql: SqlStorage,
+    private readonly storage: DurableObjectStorage,
     readonly table: string,
     private readonly columns: readonly string[],
   ) {
@@ -442,6 +447,7 @@ class RowInserter {
     }
   }
 
+  /** バッファ済みの行を 1 トランザクション(transactionSync)で確定する。 */
   flush(): void {
     if (this.#buffer.length === 0) {
       return;
@@ -450,13 +456,15 @@ class RowInserter {
     this.#buffer = [];
     const columnList = this.columns.join(", ");
     const placeholders = `(${this.columns.map(() => "?").join(", ")})`;
-    for (let start = 0; start < rows.length; start += this.#rowsPerStatement) {
-      const chunk = rows.slice(start, start + this.#rowsPerStatement);
-      this.sql.exec(
-        `INSERT INTO ${this.table} (${columnList}) VALUES ${chunk.map(() => placeholders).join(", ")}`,
-        ...chunk.flatMap((values) => values.map(decodeScalar)),
-      );
-    }
+    this.storage.transactionSync(() => {
+      for (let start = 0; start < rows.length; start += this.#rowsPerStatement) {
+        const chunk = rows.slice(start, start + this.#rowsPerStatement);
+        this.storage.sql.exec(
+          `INSERT INTO ${this.table} (${columnList}) VALUES ${chunk.map(() => placeholders).join(", ")}`,
+          ...chunk.flatMap((values) => values.map(decodeScalar)),
+        );
+      }
+    });
   }
 }
 
@@ -530,7 +538,7 @@ class RestoreReader {
       throw new RestoreRefusedError("unknown-table");
     }
     this.#flush();
-    this.#inserter = new RowInserter(this.storage.sql, line.table, line.columns);
+    this.#inserter = new RowInserter(this.storage, line.table, line.columns);
     this.rows[line.table] = 0;
   }
 
@@ -543,12 +551,9 @@ class RestoreReader {
     this.rows[line.table] = (this.rows[line.table] ?? 0) + 1;
   }
 
-  /** バッファ済みの行を 1 トランザクションで確定する。 */
+  /** 進行中の表のバッファを確定する(トランザクションは RowInserter がバッチごとに張る)。 */
   #flush(): void {
-    const inserter = this.#inserter;
-    if (inserter !== null) {
-      this.storage.transactionSync(() => inserter.flush());
-    }
+    this.#inserter?.flush();
   }
 }
 

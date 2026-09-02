@@ -49,8 +49,10 @@ export type RestoreJobResult =
         | "job-malformed"
         | "target-unavailable"
         | "snapshot-missing"
+        | "snapshot-malformed"
         | "genesis-missing"
         | "rpc-failed"
+        | "unexpected"
         | Extract<OpsRestoreOutcome, { kind: "refused" }>["code"]
         | "no-bucket";
     };
@@ -113,6 +115,21 @@ interface ScannedLine {
   readonly values?: readonly unknown[];
 }
 
+class SnapshotMalformedError extends Error {
+  constructor() {
+    super("snapshot malformed");
+  }
+}
+
+/** 1 行を JSON として読む(非 JSON = 破損した退避物 — 静的コードへ畳む)。 */
+function parseScannedLine(line: string): ScannedLine {
+  try {
+    return JSON.parse(line) as ScannedLine;
+  } catch {
+    throw new SnapshotMalformedError();
+  }
+}
+
 /** chain_entries の列名を覚え、seq 1 の行の entry_hash_hex(= プロジェクト ID)を拾う。 */
 class GenesisScanner {
   #chainColumns: readonly string[] | null = null;
@@ -121,15 +138,17 @@ class GenesisScanner {
     if (line === "") {
       return null;
     }
-    const parsed = JSON.parse(line) as ScannedLine;
-    if (parsed.kind === "table" && parsed.table === "chain_entries") {
+    const parsed = parseScannedLine(line);
+    if (parsed.table !== "chain_entries") {
+      return null;
+    }
+    if (parsed.kind === "table") {
       this.#chainColumns = parsed.columns ?? null;
       return null;
     }
-    if (parsed.kind !== "row" || parsed.table !== "chain_entries" || this.#chainColumns === null) {
-      return null;
-    }
-    return genesisHashOf(parsed.values ?? [], this.#chainColumns);
+    return parsed.kind === "row" && this.#chainColumns !== null
+      ? genesisHashOf(parsed.values ?? [], this.#chainColumns)
+      : null;
   }
 }
 
@@ -159,7 +178,15 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
   if (object === null) {
     return { status: "failed", code: "snapshot-missing" };
   }
-  const projectId = await projectIdFromSnapshot(object.body);
+  // 破損した退避物(非 gzip・切れた gzip・非 JSON 行)は静的コードで返す — 例外を
+  // 逃がすとジョブが消えず毎分の cron が永久に同じ失敗を繰り返す(PR #137 レビュー)
+  let projectId: string | null;
+  try {
+    projectId = await projectIdFromSnapshot(object.body);
+  } catch (error) {
+    console.warn("snapshot scan failed", error instanceof Error ? error.name : "unknown");
+    return { status: "failed", code: "snapshot-malformed" };
+  }
   if (projectId === null) {
     return { status: "failed", code: "genesis-missing" };
   }
@@ -189,8 +216,18 @@ export async function processRestoreJobs(env: RestoreEnv): Promise<readonly stri
     }
     const body = await env.OPS_BACKUP_BUCKET.get(object.key);
     const job = body === null ? null : parseJob(await body.text());
-    const result: RestoreJobResult =
-      job === null ? { status: "failed", code: "job-malformed" } : await runJob(env, job);
+    // 「ジョブ 1 つ → 結果 1 つ → ジョブ削除」の不変条件を、想定外の例外でも保つ
+    // (結果を書かずに投げると次の cron が同じジョブを拾い続ける)
+    let result: RestoreJobResult;
+    try {
+      result = job === null ? { status: "failed", code: "job-malformed" } : await runJob(env, job);
+    } catch (error) {
+      console.warn(
+        "restore job failed unexpectedly",
+        error instanceof Error ? error.name : "unknown",
+      );
+      result = { status: "failed", code: "unexpected" };
+    }
     await env.OPS_BACKUP_BUCKET.put(
       `${RESULTS_PREFIX}${name}.json`,
       JSON.stringify(result, null, 2),
