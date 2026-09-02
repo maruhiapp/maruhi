@@ -296,7 +296,7 @@ describe("チェーンミラー(§3.4)", () => {
 });
 
 describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
-  it("records the full lifecycle with gapless seq and per-variable var.read rows", async () => {
+  it("records the full lifecycle with gapless seq and one aggregated var.read row per value pull", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "API_KEY");
     await createVariableOk(dek, "var-second", "SECOND");
@@ -370,8 +370,8 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
       "var.version_pushed",
       "var.created",
       "var.version_pushed",
-      // 一括 pull は変数ごとに 1 行(§3.3)
-      "var.read",
+      // 値付き一括 pull は環境単位 1 行(集約形 — §3.3。2026-09-02。旧: 変数
+      // ごとに 1 行)。返した変数の列挙は payload が持つ
       "var.read",
       "env.renamed",
       "var.renamed",
@@ -384,7 +384,13 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     const created = events[9];
     const pushed = events[10];
     const read = events[13];
-    if (created === undefined || pushed === undefined || read === undefined) {
+    const envRenamedRow = events[14];
+    if (
+      created === undefined ||
+      pushed === undefined ||
+      read === undefined ||
+      envRenamedRow === undefined
+    ) {
       throw new Error("missing audit rows");
     }
     expect(created["variable_id"]).toBe(VAR);
@@ -399,10 +405,21 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
     expect(pushed["version"]).toBe(1);
     expect(pushed["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(read["actor_user_id"]).toBe(READER);
-    expect(read["epoch"]).toBe(1);
-    expect(read["version"]).toBe(1);
+    // 集約形(§3.3): 環境単位の行で変数粒度の列は NULL、返した変数の列挙
+    // (variableId 昇順・epoch / version 付き)を payload に持つ
+    expect(read["environment_id"]).toBe(ENV);
+    expect(read["variable_id"]).toBeNull();
+    expect(read["epoch"]).toBeNull();
+    expect(read["version"]).toBeNull();
+    expect(JSON.parse(String(read["payload"]))).toEqual({
+      variables: [
+        { variableId: VAR, epoch: 1, version: 1 },
+        { variableId: "var-second", epoch: 1, version: 1 },
+      ],
+    });
     // var.read は署名を伴わないため FP を持たない(§3.3 の意味論)
     expect(read["actor_key_fingerprint"]).toBeNull();
+    expect(envRenamedRow["event"]).toBe("env.renamed");
 
     expectMetaAuthorFingerprints(events);
   });
@@ -472,25 +489,34 @@ describe("データ系イベント(§3.3)と無欠番 seq(§5.1)", () => {
 
   it("チャンク分割される一括 append と DO 再起動をまたいでも seq は無欠番(§5.1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // multi-row INSERT の 1 文あたり行数(audit-store.ts の 6 行)を越える
-    // 8 変数を作り、一括 pull の var.read 8 行が複数チャンクに割れて追記される
+    // multi-row INSERT の 1 文あたり行数(audit-store.ts の 5 行)を越える
+    // 8 変数を作り、環境削除のカスケード(var.deleted 8 行 + env.deleted —
+    // §12-4)が複数チャンクに割れて追記される(値付き pull は集約形で 1 行に
+    // なったため — §3.3 — 一括追記の経路は削除カスケードで踏む)
     for (let index = 0; index < 8; index += 1) {
       await createVariableOk(dek, `var-batch-${index}`, `BATCH_${index}`);
     }
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
+    const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
+    expect(removedEnv.status).toBe(204);
 
     // DO 再起動相当: インスタンスメモリの next seq を破棄し、次の追記が
     // MAX(seq) の再読込から続き番号で採番することを確認する
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
     await evictDurableObject(stub);
-    const renamed = await renameEnvironmentRequest(fixture, ENV, "App2", MEMBER);
-    expect(renamed.status).toBe(204);
+    await createEnvironmentOk(fixture, "env-after-restart", "Other");
 
     const events = await readAuditEvents(projectId);
     expect(events.map((event) => event["seq"])).toEqual(events.map((_e, index) => index + 1));
-    expect(events.filter((event) => event["event"] === "var.read").length).toBe(8);
-    expect(events[events.length - 1]?.["event"]).toBe("env.renamed");
+    expect(events.filter((event) => event["event"] === "var.read").length).toBe(1);
+    expect(events.filter((event) => event["event"] === "var.deleted").length).toBe(8);
+    expect(
+      events.some(
+        (event) =>
+          event["event"] === "env.created" && event["environment_id"] === "env-after-restart",
+      ),
+    ).toBe(true);
   });
 
   it("attributes actors: PAT ops carry the token id; session mutations are rejected and leave no row (§2 / AUTH_SPEC §5)", async () => {

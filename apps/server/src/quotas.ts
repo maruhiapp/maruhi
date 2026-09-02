@@ -13,6 +13,7 @@ import { rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
+  MAX_ACTIVE_PROJECTS_PER_ORG,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
   MAX_ENVIRONMENT_ROWS,
   MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
@@ -20,6 +21,18 @@ import {
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
   MAX_VERSIONS_PER_VARIABLE,
 } from "./policy.ts";
+
+/**
+ * AUTH_SPEC §11-3: org あたりのアクティブプロジェクト数上限(2026-09-02 H2)。
+ * 「この org に 1 件追加すると上限を超えるか」を数値のみで判定する純関数
+ * (上限件数の実生成は重いため、判定はユニットテスト用に公開する — 他の
+ * *Exceeded と同じ形)。判定材料の取得(D1 count)と判定点(init 受理 —
+ * org 権限確認の後・DO init の前)は worker 側 handlers-membership.ts。
+ * 上限到達時の扱い(DO への report-only 問い合わせで修復経路を塞がない)も同所。
+ */
+export function projectQuotaExceeded(activeProjectCount: number): boolean {
+  return activeProjectCount + 1 > MAX_ACTIVE_PROJECTS_PER_ORG;
+}
 
 /** 現存(非 tombstone)の環境。存在しなければ environment-not-found。 */
 export const requireActiveEnvironment = (environmentId: string) =>

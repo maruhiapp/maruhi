@@ -13,6 +13,7 @@ import {
   ForbiddenError,
   maruhiApi,
   ProjectAlreadyInitializedError,
+  ProjectLimitError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal } from "@maruhi/core";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
@@ -34,7 +35,12 @@ import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts"
 import { callProjectData, noContent, unwrapDataOutcome } from "./data-http.ts";
 import type { DataOutcome } from "./data-plane.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "./db.package/index.ts";
-import { MAX_ENTRY_CANONICAL_BYTES, PROJECT_LIST_PAGE_SIZE } from "./policy.ts";
+import {
+  MAX_ACTIVE_PROJECTS_PER_ORG,
+  MAX_ENTRY_CANONICAL_BYTES,
+  PROJECT_LIST_PAGE_SIZE,
+} from "./policy.ts";
+import { projectQuotaExceeded } from "./quotas.ts";
 import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 // RPC 境界の outcome → api-schema の型付きエラー / 成功レスポンスへの写像。
@@ -98,6 +104,11 @@ const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
       });
     case "already-initialized":
       return repairOrConflict(projectId, orgId, principal, outcome);
+    case "fresh-not-admitted":
+      // AUTH_SPEC §11-3: org のアクティブプロジェクト数上限。DO は何も書いて
+      // いない(新規初期化を断っただけ)。修復経路は already-initialized 側で
+      // 上限に依らず通っている
+      return Effect.fail(new ProjectLimitError({ limit: MAX_ACTIVE_PROJECTS_PER_ORG }));
     case "project-id-mismatch":
       return Effect.die(new Error("project id mismatch between worker and DO"));
     case "rejected": {
@@ -148,9 +159,18 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         if (orgRole === null) {
           return yield* Effect.fail(new ForbiddenError({ reason: "org-membership-required" }));
         }
+        // §11-3 プロジェクト数 / org 上限(H2): 判定は org 権限確認の後(org 外の
+        // 主体に上限到達の有無を返さない)・DO init の前。判定材料は D1 の
+        // 索引付き count(best-effort — DO 受理と原子化しない: 並行 init の僅かな
+        // 超過は受容。§11-3 の比較と棄却案)。上限到達時も DO には admitFresh =
+        // false で問い合わせる — DO が「初期化済みか」を自分の直列化の中で
+        // 判定し、新規初期化だけを断る(fresh-not-admitted)ため、修復経路
+        // (already-initialized → repairOrConflict)は上限に依らず通る
+        const projects = yield* ProjectRepo;
+        const admitFresh = !projectQuotaExceeded(yield* projects.countInOrg(payload.orgId));
         const env = yield* WorkerEnv;
         const outcome = yield* rpcCall<InitOutcome>(() =>
-          projectStub(env, projectId).init(projectId, payload.entry),
+          projectStub(env, projectId).init(projectId, payload.entry, { admitFresh }),
         );
         return yield* mapInitOutcome(endpoint, projectId, payload.orgId, principal, outcome);
       }),

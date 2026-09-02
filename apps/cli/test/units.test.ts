@@ -2,7 +2,12 @@
 // stdin 正規化、MARUHI_TOKEN 環境変数経路、サーバー URL 解決。
 // (CLI ログインのポーリング規則は login.test.ts — AUTH_SPEC §4)
 
-import { ProjectNotFoundError, UnauthorizedError } from "@maruhi/api-schema";
+import {
+  DataLimitExceededError,
+  ProjectLimitError,
+  ProjectNotFoundError,
+  UnauthorizedError,
+} from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
 import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
@@ -661,6 +666,26 @@ describe("toCliError(サーバー由来文字列の端末中和)", () => {
     const rendered = toCliError(new UnauthorizedError());
     expect(rendered.message).toContain("expired or revoked");
     expect(rendered.message).toContain("maruhi login");
+  });
+
+  it("テナント quota の型付きエラーは不透明な未知へ落ちず、次の一手を案内する(AUTH_SPEC §11-3 / §12-8 — H2)", () => {
+    // 429 ProjectLimit(org のプロジェクト数上限 — 新規 init のみ)
+    const projectLimit = toCliError(new ProjectLimitError({ limit: 100 }));
+    expect(projectLimit.message).not.toContain("Unexpected error");
+    expect(projectLimit.message).toContain("maximum number of projects (100");
+    expect(projectLimit.message).toContain("existing projects are unaffected");
+    // 422 DataLimitExceeded project-storage-bytes(DO ストレージ総量ガード):
+    // 削除・読み取りが拒否下でも通ることを案内する(退出経路・解放手段)
+    const storage = toCliError(
+      new DataLimitExceededError({ resource: "project-storage-bytes", limit: 9_000_000_000 }),
+    );
+    expect(storage.message).toContain("storage guard");
+    expect(storage.message).toContain("9000000000 bytes");
+    expect(storage.message).toContain("reading values");
+    expect(storage.message).toContain("deleting");
+    // 他の §12-8 数量上限は従来の一般形のまま
+    const generic = toCliError(new DataLimitExceededError({ resource: "variables", limit: 1000 }));
+    expect(generic.message).toBe("Exceeds a server acceptance limit (variables limit 1000)");
   });
 
   it("エラー Schema の自由文字列 ID を中和する", () => {

@@ -102,7 +102,7 @@ bunx wrangler secret put GITHUB_CLIENT_SECRET   # same
 
 ```sh
 curl <deploy-url>/auth/config
-# → {"githubClientId":"<your-client-id>"} means setup is complete
+# → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
 # → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
 #   (list registered secrets with `bunx wrangler secret list` — values are not shown)
@@ -171,12 +171,184 @@ change it while any project already has a grant, re-run `maruhi server revoke` �
 `maruhi server grant` on each of those projects (revoke forces a rotation of
 every environment — CRYPTO_SPEC §7).
 
+## Sign-up policy (optional — who may create accounts)
+
+**The default is `open` and matches the behavior maruhi has always had: anyone
+who can reach your deployment URL and complete GitHub login gets an account.
+If that is what you want (typical for a personal or small-team deployment),
+skip this entire section — there is nothing to configure.**
+
+The server reads a deployment-wide `signupPolicy` (AUTH_SPEC §3) with three
+values:
+
+| Value | Meaning |
+|---|---|
+| `open` (default) | Anyone can sign up. No settings row needed |
+| `invite` | New accounts require a sign-up invite code (below). Existing accounts are unaffected |
+| `closed` | No new accounts at all. Existing accounts are unaffected |
+
+The gate only blocks **account creation**: sign-in for existing users, token
+verification, project invites, and recovery are never affected. A denied sign-up
+creates no rows and is recorded as an `auth.signup_denied` audit event (visible
+in D1 — the operator's view).
+
+### Changing the policy
+
+The policy lives in the `deployment_settings` D1 table. There is deliberately no
+admin UI or settings endpoint — change it with wrangler (takes effect
+immediately, no redeploy):
+
+```sh
+cd apps/server
+bunx wrangler d1 execute maruhi --remote --command \
+  "INSERT INTO deployment_settings (key, value, updated_at) VALUES ('signup_policy', 'invite', unixepoch() * 1000) \
+   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;"
+```
+
+Verify with `curl <deploy-url>/auth/config` — the response reports the effective
+`signupPolicy`. **A mistyped value is treated as `closed` (fail-closed)**: a typo
+never silently opens sign-ups, but it does deny new accounts until you fix it,
+so always check `/auth/config` after changing the value.
+
+### Issuing sign-up invite codes (`invite` mode)
+
+Codes are single-use, expire after 7 days by default, and only permit account
+creation (they carry no project, org, or role). Only the SHA-256 hash is stored;
+the raw code is shown once at issuance. Issue one with the bundled script:
+
+```sh
+cd apps/server
+bun run scripts/issue-signup-invite.ts --origin <deploy-url> [--days 7]
+```
+
+The script prints the code, the sign-up link to send to the invitee
+(`<deploy-url>/auth/github/start?signup_code=…` — the link carries the code),
+and the `wrangler d1 execute` command that registers the hash. Send the code or
+link over a private channel. The invitee signs up in the browser first, then
+runs `maruhi login`.
+
+Notes:
+
+- A code is consumed in the same transaction that creates the account — a failed
+  sign-up never burns a code, and signing in as an **existing** user never
+  consumes one.
+- Under `open`, presented codes are ignored (not consumed).
+- Inviting someone to a **project** (`maruhi invite create`) is separate: under
+  `invite` they also need a sign-up invite code (sent separately) before they
+  can accept.
+- To revoke an unused code, delete its row (the issuance script prints the
+  command).
+
+## Tenant quotas (project count and per-project storage guard)
+
+**The defaults are far above realistic use, and nothing needs configuring.
+Read this section if you want to know what the server refuses and why, or if
+you run a large multi-tenant deployment and want to change the values.**
+
+The server enforces two deployment-wide acceptance limits on top of the
+per-project limits in AUTH_SPEC §12-8 (environments, variables, versions, …).
+Both are **server acceptance policy, not part of the cryptographic protocol**:
+they are plain constants in `apps/server/src/policy.ts`, raising or lowering
+them never invalidates existing chains, and a change takes effect on the next
+deploy. Exceeding a limit always fails with a typed error — nothing degrades
+silently.
+
+| Limit | Default | Constant | Error |
+|---|---|---|---|
+| Active projects per organization | 100 | `MAX_ACTIVE_PROJECTS_PER_ORG` | 429 `ProjectLimit` on `POST /projects` |
+| Per-project Durable Object storage | warn at 8 GB, reject at 9 GB | `DO_STORAGE_WARN_BYTES` / `DO_STORAGE_REJECT_BYTES` | 422 `DataLimitExceeded` with `resource: "project-storage-bytes"` |
+
+### Projects per organization
+
+- Counts every `projects` row of the organization (there is no project deletion
+  API yet, so every project ever created is "active"). Today every user has
+  exactly one personal organization, so in practice this is **100 projects per
+  user**.
+- Only a **new** project creation is refused. Re-running `maruhi project init`
+  for a project that already exists (for example to repair a crash between the
+  chain commit and the D1 row insert — AUTH_SPEC §11-3) always succeeds, even
+  when the organization is at the limit.
+- The check is best-effort: two `init` calls racing at exactly the limit can
+  both succeed. This is an acceptance policy, not a security boundary.
+
+### Per-project storage guard (why 9 GB)
+
+Each project lives in one Durable Object whose SQLite database has a hard
+platform ceiling of **10 GB**. At that ceiling SQLite returns `SQLITE_FULL`:
+the project stays readable, and while the platform still lets a bare `DELETE`
+through, every maruhi deletion also **inserts** rows in the same transaction
+(the tombstone statement and the audit events), so **maruhi's own deletes fail
+too** — a project at the ceiling cannot free space by itself, and the operator
+has no tool to reach into Durable Object storage either. The guard exists so a
+project never gets there. It reads the measured database size (`databaseSize`)
+on every write that adds content and:
+
+- at **8 GB** logs one static warning line per Durable Object instance (no
+  project id, no user id — see "Operational logs" below) and keeps accepting
+  writes. The size is also observed (never rejected) on value pulls and
+  workload leases — the reads that append audit rows — so a pull-heavy project
+  whose growth is almost entirely `var.read` still produces the warning before
+  it reaches the rejection threshold;
+- at **9 GB** rejects writes that add content — pushing values, creating,
+  renaming or re-declaring variables, creating or renaming environments,
+  registering DEK wraps, adding members, granting server access and changing
+  the schema policy — with 422 `DataLimitExceeded` (`project-storage-bytes`).
+
+What **keeps working** above 9 GB, by design (AUTH_SPEC §12-8 lists these
+explicitly): all reads (`maruhi pull` / `maruhi run`, chain fetch, audit log —
+members can always take their values out), all deletions (environments,
+variables, DEK wraps — the way back under the threshold), member removal,
+server-access revocation, role changes, epoch rotation, workload leases, head
+attestations and periodic checkpoints. The 1 GB between the rejection threshold
+and the platform floor absorbs the bookkeeping those operations still write.
+One read is guarded as if it were a write: fetching the **audit head**
+(`GET /projects/:id/audit-head`, and checkpoints that notarize it) lazily
+materializes a hash column proportional to the audit log, so it is refused above
+9 GB only while that column lags behind the log; once current, it reads freely.
+
+The audit log is append-only and never pruned (AUDIT_SPEC §5.3), so on a busy
+project the dominant growth is `var.read` rows from pulls. The guard is the
+safety net for that growth; there is no per-tenant audit quota. Two of the
+operations that stay open above 9 GB are not constant-size: pulls keep adding
+`var.read` rows (one row per value pull of an environment, listing the
+variables it returned — AUDIT_SPEC §3.3), and removing a member or revoking server access writes one
+`rotation.recommended` row per variable (including deleted ones) that the
+departing party could have read — proportional to the project's variable
+history rather than a fixed number. Both are deliberate (exit path and
+security remediation) and sized well inside the 1 GB headroom for realistic
+projects; the warning band exists to give you time before they matter.
+
+Deleting really does bring the measured size down: Durable Object SQLite
+reclaims pages on `DELETE` (verified in workerd — `databaseSize` shrinks back
+after a delete; `VACUUM` is not available to the application, so this relies on
+platform behavior).
+
+**Changing the thresholds**: edit the two constants and redeploy. Keep
+`DO_STORAGE_REJECT_BYTES` below 10 GB — the guard is the only thing standing
+between a project and the unrecoverable-by-tenant `SQLITE_FULL` state. The
+values are decimal gigabytes (10^9 bytes), which is conservative under either
+reading of the platform's "10 GB".
+
+### Operational logs
+
+The warning and rejection lines are **static messages**: they carry no project
+id (a project id is effectively a capability — AUTH_SPEC §11-2) and no user
+id. To find out which project is affected, use the Durable Object id in the
+Workers Logs / `wrangler tail` event envelope: it is `idFromName(projectId)`,
+so you can compute it for a project a tenant reports and compare, but the log
+line itself never reveals the project. Alerting on these lines is part of the
+hosted operations work (H3); the log line is the hook it will attach to.
+
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
 Of maruhi's unauthenticated surface, the following four are the ones where a
 third party can trigger work that costs money or drain a shared quota (the other
-unauthenticated surfaces `/auth/config` / `/auth/github/start` /
-`/auth/cli/verify` are self-contained lightweight responses).
+unauthenticated surfaces stay lightweight: `/auth/github/start` without a
+`signup_code` and `/auth/cli/verify` are self-contained responses with no
+database access; `/auth/config` performs one indexed D1 point read for the
+`signupPolicy` advisory; a start request carrying a `signup_code` performs one
+D1 read and has its own default per-IP binding, `SIGNUP_START_RATE_LIMIT` at
+10/min).
 All four already have server-side defenses (input size caps, stateless MAC
 verification before any lookup, a fixed window per project, and a TTL cache for
 JWKS).
@@ -542,6 +714,17 @@ so do not miss the warning).
   and subdomain)
 - **`bun run deploy` migration apply returns `couldn't find DB`**:
   `database_id` was not filled in (step 2)
+- **`maruhi project init` says the organization already holds the maximum
+  number of projects (429 `ProjectLimit`)**: the per-organization project
+  limit (default 100 — "Tenant quotas"). Existing projects are unaffected;
+  raise `MAX_ACTIVE_PROJECTS_PER_ORG` in `apps/server/src/policy.ts` and
+  redeploy if the deployment legitimately needs more
+- **Pushes / creates fail with `DataLimitExceeded` and
+  `resource: "project-storage-bytes"` while pulls still work**: the project's
+  Durable Object storage crossed the 9 GB guard ("Tenant quotas"). This is
+  working as intended — have the project admins delete environments,
+  variables or DEK wraps they no longer need (deletes are accepted above the
+  threshold), then retry
 - **`/auth/config` has no `serverKeyFingerprintHex` /
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters

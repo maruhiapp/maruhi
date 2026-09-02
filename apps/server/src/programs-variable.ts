@@ -29,6 +29,7 @@ import {
   requireActiveEnvironment,
   requireActiveVariable,
 } from "./quotas.ts";
+import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
 import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import {
   acceptMetaStatement,
@@ -215,6 +216,10 @@ export const createVariableProgram = (
     // ensureVariableCreatable)より前(rename / 削除 / activation と同じ規律 —
     // 名前が衝突している v3 クライアントに duplicate-name を返さない)
     yield* ensureSupportedLayout(input.statement);
+    // DO ストレージ総量ガード(§12-8 — H2): メンバーシップ・role・存在・
+    // レイアウトのサポート範囲の後、CAS / 署名 / 数量ポリシー等の意味論的検査の
+    // 前(資源保護は意味論に優先。storage-guard.ts)
+    yield* ensureStorageAdmitsGrowth;
     yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
     // スキーマポリシー(§12-11 — 受理時点のポリシーを permit 下で読む):
     // disabled は v2 の新規採用(metaVersion 1 の v2 作成)を拒否し、locked は
@@ -341,6 +346,10 @@ export const pushVersionProgram = (
     if (variable.latestStatus === "declared") {
       return yield* rejectData({ kind: "activation-required", variableId });
     }
+    // DO ストレージ総量ガード(§12-8 — H2): 存在・種別の検査の後、CAS / 署名の
+    // 前。再暗号化 push も対象(拒否下では新しい値は書けない — 一貫した帰結。
+    // 同節の (d))
+    yield* ensureStorageAdmitsGrowth;
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
     // 判定順(裁定 D): epoch / version CAS → 値署名(署名 → 宣言 head →
     // head 時点状態 → predecessor)→ 数量ポリシー → 原子書き込み。
@@ -416,6 +425,9 @@ export const activateVariableProgram = (
     // 規律 — v3 クライアントには下の status / name ガードや値 CAS の誤誘導
     // エラーでなく、常に正直な update-required を返す)
     yield* ensureSupportedLayout(input.statement);
+    // DO ストレージ総量ガード(§12-8 — H2): 存在・サポート範囲の後、status /
+    // name ガード・CAS・署名の前
+    yield* ensureStorageAdmitsGrowth;
     // activation の対象は declared のみ(§12-5 — 「値 push + メタ再発行」の
     // 汎用複合ではない)。値 CAS は version = latestVersion + 1 しか強制しない
     // ため対象判定を兼ねられず(active 変数へ version N+1 を送れば通過して
@@ -526,6 +538,11 @@ export const renameVariableProgram = (
     // サポート範囲検査は statement 依存の全検査より前(裁定 CR — サポート外
     // レイアウトには以降の検査の誤誘導エラーを返さない)
     yield* ensureSupportedLayout(statement);
+    // DO ストレージ総量ガード(§12-8 — H2): rename / スキーマ再発行はステート
+    // メント行 + マニフェストを積む成長面(metaVersion 上限とは独立に適用)。
+    // 位置は存在・レイアウト検査の後・CAS / 署名検証の前(削除経路と前段を
+    // 共有する形を保つ — 削除はガードを呼ばない)
+    yield* ensureStorageAdmitsGrowth;
     // rename / スキーマ再発行は status 不変(§12-5): declared → active は
     // activation 複合(値同梱)のみ、active → declared は禁止。ワイヤは両
     // status を運べるため、現状態との一致を受理検査で固定する(name の保持

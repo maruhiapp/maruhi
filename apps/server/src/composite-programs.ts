@@ -48,6 +48,7 @@ import {
   expectedWrapRecipientCount,
 } from "./dek-wraps.ts";
 import { ensureEnvironmentQuota, requireActiveEnvironment } from "./quotas.ts";
+import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
 import { acceptEnvManifest, manifestDigestEntries, storedEnvMeta } from "./verify-manifest.ts";
 import { ensureMetaStatementSignature, ensureNfcName } from "./verify-meta.ts";
 
@@ -294,6 +295,11 @@ export const createEnvironmentCompositeProgram = (
       actor.userId,
       cache,
     );
+    // DO ストレージ総量ガード(§12-8 — H2): 環境作成は成長面(環境行・
+    // ステートメント・マニフェスト・全メンバー宛ラップ・スナップショット)。
+    // ローテーション複合(下)は呼ばない — remove 後の義務ローテーション
+    // (CRYPTO_SPEC §7)はセキュリティ是正で、書き込み量は有界(同節 (d))
+    yield* ensureStorageAdmitsGrowth;
     yield* ensureParentHead(chain, input.parentHeadHashHex);
     // 複合内の宣言ヘッド(§12-4): 同梱ステートメント・マニフェストの宣言ヘッドは
     // 追記前の現ヘッド(= 同梱エントリの prev)と厳密一致。CAS 通過後なので

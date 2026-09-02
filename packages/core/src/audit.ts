@@ -204,3 +204,72 @@ export function chainMirrorEvent(entry: ChainEntry, serverTs: number): AuditEven
     actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
   };
 }
+
+// ---------------------------------------------------------------------------
+// `var.read` の集約形(AUDIT_SPEC §3.3 — 2026-09-02): 値付き一括 pull ごとに
+// 環境単位 1 行、返した変数の列挙を payload に持つ。payload の構築(サーバーの
+// pull)と解釈(サーバーの要ローテーション検出・§7 フィルタ、CLI の表示)が
+// 同一実装を共有する — 列挙の形(ソート・キー順)は row_digest(§5.1)の入力
+// バイト列を決めるため、書き手と読み手を 1 箇所に置く。
+// ---------------------------------------------------------------------------
+
+/** The audit event name of a value read (AUDIT_SPEC §3.3). */
+export const VAR_READ_EVENT = "var.read";
+
+/** One variable listed by an aggregated `var.read` row (AUDIT_SPEC §3.3). */
+export interface AuditReadVariable {
+  readonly variableId: string;
+  readonly epoch: number;
+  readonly version: number;
+}
+
+/**
+ * The payload of an aggregated `var.read` row (AUDIT_SPEC §3.3). A type alias
+ * (not an interface) so it stays assignable to the generic payload record.
+ */
+export type AuditReadPayload = {
+  readonly variables: readonly AuditReadVariable[];
+};
+
+/**
+ * Builds the payload of an aggregated `var.read` row: the variables whose
+ * ciphertext one value pull returned, sorted by `variableId` in code-unit
+ * order with the key order fixed to variableId → epoch → version. A pull
+ * returns each active variable at most once, so the list has no duplicates.
+ * The stored JSON bytes feed the audit row digest (AUDIT_SPEC §5.1), which is
+ * why the shape is fixed here rather than left to the caller.
+ */
+export function auditReadPayload(variables: readonly AuditReadVariable[]): AuditReadPayload {
+  const sorted = variables.toSorted((a, b) =>
+    a.variableId < b.variableId ? -1 : a.variableId > b.variableId ? 1 : 0,
+  );
+  return {
+    variables: sorted.map(({ variableId, epoch, version }) => ({ variableId, epoch, version })),
+  };
+}
+
+/**
+ * Reads the variables listed by an aggregated `var.read` payload. Returns
+ * `null` when the payload is not the aggregated form — a legacy per-variable
+ * `var.read` row (variableId in the column, no `variables` list) or an
+ * unrelated event. Entries that are not well-formed are skipped rather than
+ * failing the caller (the audit log is server-managed data; a malformed entry
+ * is corruption to surface, not a reason to abort rotation detection).
+ */
+export function auditReadVariablesOf(
+  payload: Readonly<Record<string, unknown>> | null | undefined,
+): readonly AuditReadVariable[] | null {
+  const listed = payload?.["variables"];
+  if (!Array.isArray(listed)) {
+    return null;
+  }
+  return listed.flatMap((entry: unknown): AuditReadVariable[] => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const { variableId, epoch, version } = entry as Record<string, unknown>;
+    return typeof variableId === "string" && Number.isInteger(epoch) && Number.isInteger(version)
+      ? [{ variableId, epoch: epoch as number, version: version as number }]
+      : [];
+  });
+}

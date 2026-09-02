@@ -591,6 +591,11 @@ async function routeProjectOverview(page: Page): Promise<void> {
 }
 
 /** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
+/** プロジェクト画面の tabpanel の computed `display`(非選択は `none`)。 */
+function panelDisplay(page: Page, tab: string): Promise<string> {
+  return page.locator(`#project-panel-${tab}`).evaluate((el) => getComputedStyle(el).display);
+}
+
 function collectViolations(page: Page): string[] {
   const violations: string[] = [];
   page.on("console", (msg) => {
@@ -759,6 +764,24 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
     await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
 
+    // Astryx 0.5: 同一画面内パネル切替は WAI-ARIA tabs(nav landmark ではない)
+    await expect(page.getByRole("tablist", { name: "Project" }).count()).resolves.toBe(1);
+    await expect(
+      page.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected"),
+    ).resolves.toBe("true");
+    await expect(
+      page.getByRole("tab", { name: "Audit" }).getAttribute("aria-controls"),
+    ).resolves.toBe("project-panel-audit");
+    // tabpanel は対応する tab から名前を取る(APG)
+    await expect(
+      page.locator("#project-panel-audit").getAttribute("aria-labelledby"),
+    ).resolves.toBe(await page.getByRole("tab", { name: "Audit" }).getAttribute("id"));
+    // 非選択パネルは空(高さ 0)なので isVisible() では `display` の上書き負けを
+    // 検知できない。computed display を直接固定する(pullfrog レビュー反映)
+    await expect(panelDisplay(page, "overview")).resolves.toBe("flex");
+    await expect(panelDisplay(page, "audit")).resolves.toBe("none");
+    await expect(page.getByRole("tabpanel").count()).resolves.toBe(1);
+
     // S5 概要: チェーン導出メンバー(サーバー申告)+ 環境 + 変数名(メタのみ pull)
     await page.getByTestId("member-table").waitFor();
     await expect(page.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
@@ -768,7 +791,12 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("DATABASE_URL").count()).resolves.toBeGreaterThan(0);
 
     // S6 監査: 規定文言 + admin 応答由来の seq 列(応答適応)
-    await page.locator('[data-tab-value="audit"]').click();
+    await page.getByRole("tab", { name: "Audit" }).click();
+    await expect(
+      page.getByRole("tab", { name: "Audit" }).getAttribute("aria-selected"),
+    ).resolves.toBe("true");
+    await expect(panelDisplay(page, "audit")).resolves.toBe("flex");
+    await expect(panelDisplay(page, "overview")).resolves.toBe("none");
     await page.getByTestId("audit-caption").waitFor();
     await expect(page.getByTestId("audit-caption").textContent()).resolves.toContain(
       "Events visible to your role",
@@ -783,7 +811,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByText("Not available to your role").first().waitFor();
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
-    await page.locator('[data-tab-value="rotation"]').click();
+    await page.getByRole("tab", { name: "Rotation flags" }).click();
     await page.getByTestId("rotation-table").waitFor();
     await expect(page.getByTestId("rotation-note").textContent()).resolves.toContain(
       "maruhi rotation dismiss",
@@ -881,7 +909,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
 
     await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
-    await page.locator('[data-tab-value="invites"]').click();
+    await page.getByRole("tab", { name: "Invites" }).click();
     await page.getByTestId("invite-table").waitFor();
     // 発行 UI は置かない — CLI への静的案内のみ(ADR-0018 改訂 2)
     await expect(page.getByTestId("invite-notes").textContent()).resolves.toContain(
@@ -914,7 +942,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       (route) => fulfillJson(route, 410, { _tag: "InviteGone", reason: "completed" }),
     );
     await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
-    await page.locator('[data-tab-value="invites"]').click();
+    await page.getByRole("tab", { name: "Invites" }).click();
     await page.getByTestId("invite-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await page.getByRole("button", { name: "Confirm revoke" }).click();
@@ -931,7 +959,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
     // タブは role で事前に隠さない(裁定 CP 第 3 周)— 403 は役割文言で表示
-    await page.locator('[data-tab-value="invites"]').click();
+    await page.getByRole("tab", { name: "Invites" }).click();
     await page.getByText("Not available to your role").first().waitFor();
     await page.close();
   });

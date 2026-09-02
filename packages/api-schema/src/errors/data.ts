@@ -355,9 +355,22 @@ export const DataLimitResourceSchema = Schema.Literals([
   "dek-wrap-rows",
   // 取り下げ対象の列挙上限(AUDIT_SPEC §7 の取り下げ操作 — Wave 2 B2)
   "rotation-dismissals-per-request",
+  // DO ストレージ総量ガード(§12-8 — 2026-09-02 H2): プロジェクト DO の SQLite
+  // 実測量(databaseSize)が拒否閾値(起草値 9 GB)以上のとき、内容の成長面
+  // (値 push・変数 / 環境の作成・改名・DEK 登録・add_member / grant_server)を
+  // 拒否する。limit = 拒否閾値バイト。読み取り・削除・失効・ローテーションは
+  // 拒否下でも受理され続ける(同節の明示列挙)
+  "project-storage-bytes",
 ]);
 
-/** 422: accepting the request would exceed a §12-8 count / size limit. */
+/**
+ * 422: accepting the request would exceed a §12-8 count / size limit.
+ *
+ * `project-storage-bytes` (the DO storage guard) is the one resource whose
+ * `limit` is a threshold on **measured** storage rather than on a count the
+ * request adds to: freeing space (deleting environments / variables / wraps —
+ * all still accepted) is the way back under it.
+ */
 export class DataLimitExceededError extends Schema.TaggedError<DataLimitExceededError>()(
   "DataLimitExceeded",
   { resource: DataLimitResourceSchema, limit: Schema.Number },

@@ -67,6 +67,13 @@
       "namespace_id": "1004",
       "simple": { "limit": 30, "period": 60 },
     },
+    // サインアップ招待コード付き start の事前検証(AUTH_SPEC §3 — 2026-09-01 H1。
+    // コード付き start だけが対象 — プレーンなログイン導線は制限なし)
+    {
+      "name": "SIGNUP_START_RATE_LIMIT",
+      "namespace_id": "1005",
+      "simple": { "limit": 10, "period": 60 },
+    },
   ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectChainDO"] }],
   "d1_databases": [

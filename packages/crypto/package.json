@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260823.1",
+    "@cloudflare/workers-types": "5.20260901.1",
     "@vitest/browser-playwright": "4.1.11",
     "vitest": "4.1.11"
   }
