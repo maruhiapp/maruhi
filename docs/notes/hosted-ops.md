@@ -26,7 +26,7 @@ Status: 2026-09-02 起草(H3 実装 PR #137 に同梱)。**実装は完了、H3 
 | Workers RPC | 直列化した RPC メッセージ上限 32 MiB。大きなデータは byte stream で(rpc docs) | DO 退避は DO 自身が R2 へ書き、RPC の戻り値は集計値のみ(§2-D) |
 | D1: Time Travel | Paid 30 日 / Free 7 日。`wrangler d1 time-travel info <db> [--timestamp]` でブックマーク、`restore <db> --timestamp|--bookmark` は**その場・破壊的**(上書き。進行中クエリは中断。復元しても以前のブックマークは消えない)。追加費用なし(d1/reference/time-travel) | 誤削除・論理破壊の第一手段。運営 runbook §5-1 |
 | D1: export / import | `wrangler d1 export <db> --remote --output=<file> [--table] [--no-schema] [--no-data]`。SQL ダンプ(CREATE + INSERT)。**export 中は他のリクエストをブロック**。仮想表は不可。import は `wrangler d1 execute <db> --remote --file=<sql>`(5 GiB 上限・`BEGIN/COMMIT` は除去)(d1/best-practices/import-export-data) | 定期 export は低トラフィック時刻(02:41 UTC 起草値)に GitHub Actions cron で実行(§4-1)。ブロックは秒〜数十秒の想定(実測は人間タスク) |
-| D1: サイズの観測 | `wrangler d1 info <db> --json`(JSON に `file_size` バイト)(wrangler/commands/d1 + wrangler 4.124 の CLI 実装で `file_size` キーを確認) | D1 総量トリップワイヤ(5 GB)は export ワークフロー内で判定(§3 行 1) |
+| D1: サイズの観測 | `wrangler d1 info <db> --json`(JSON に **`database_size`** バイト — API の `file_size` を wrangler 4.124 が出力前に改名する。旧版は `file_size`。PR #137 レビューで訂正) | D1 総量トリップワイヤ(5 GB)は export ワークフロー内で判定(§3 行 1) |
 | Workers Logs | wrangler `observability.enabled` で有効化。保持 Paid 7 日 / Free 3 日。1 エントリ 256 KB。Paid 月 2,000 万イベント込み・超過 $0.60/百万。`head_sampling_rate` で頭部サンプリング。組み込みのアラート機構は docs に記載なし(workers/observability/logs/workers-logs) | hosted 環境で有効化(`head_sampling_rate` 1)。ただし **`observability.logs.invocation_logs: false` を必須**にする — 既定の Fetch invocation log はリクエスト URL(パス + クエリ)を本文に含み、`/projects/:id`(capability)や `/auth/github/callback?code=…` が保持期間中ログストアに残る(PR #137 Cursor セキュリティレビューで発見。CI 8c が検査)。残るのは console の静的行のみで、per-request 識別子を含まないため全量でも capability の集積にならない。**リクエストログを含む Logpush も有効化しない** — §5-1 |
 | Workers Analytics Engine | binding `analytics_engine_datasets`・`writeDataPoint`(呼び出しあたり 250 点・blob 合計 16 KB)・保持 3 か月・読み出しは SQL API(`/accounts/{id}/analytics_engine/sql` + Account Analytics Read トークン)(analytics-engine/get-started, /limits) | **不採用**(§2-A — 読み出しに API トークンを要し、閾値判定を worker 内で閉じられない) |
 | Cloudflare Notifications | Workers / DO / D1 / R2 向けの通知種別は一覧に**無い**(Health Checks は Pro 以上)(notifications/notification-available — 2026-04-24 版) | プラットフォーム通知に依存しない。運営の webhook へ自前送信(§2-B) |
@@ -127,9 +127,10 @@ DO 請求が発生、(2) 退避の成否・census を集約する場所(D1)へ�
 一貫し(同一タスクの直列化 — chain-do.ts 冒頭の不変条件)、データは DO → R2 へ直行する。**採用 (b)**。
 
 増分は**採らない**: 削除(環境削除カスケード・ラップ削除・tombstone)の追跡が要り、復元の正しさの検証面が増える。
-代わりに **skip 規則**で費用を抑える — `(auditMaxSeq, chainHeadSeq)` が前回成功時と同じ**かつ**前回成功から 7 日以内なら
-退避しない(全変更が監査行 / チェーン行を伴うため、この対が同じ = 内容不変。例外はヘッド申告の upsert と
-リース窓 / 束縛の可変行で、いずれも再生成可能な運用状態 — §4-2 の非可搬項)。7 日で必ず再退避するのは、ライフ
+代わりに **skip 規則**で費用を抑える — `(auditMaxSeq, chainHeadSeq, attestationMark)` が前回成功時と同じ**かつ**前回成功から
+7 日以内なら退避しない(全変更が監査行 / チェーン行を伴う。例外はヘッド申告の upsert — チェーン行も監査行も書かない
+〔AUTH_SPEC §16-1〕ため第三成分 `head_attestations` の `MAX(accepted_at)` を加える〔PR #137 レビュー〕。残る例外は
+リース窓 / 束縛の可変行で、再生成可能な運用状態 — §4-2 の非可搬項)。7 日で必ず再退避するのは、ライフ
 サイクル削除(35 日)により「不変のまま退避物が消える」を防ぐため。
 
 一貫性の対価 = permit 保持時間: 退避中は当該プロジェクトのリクエストが待たされる。所要時間はサイズ比例で、
@@ -340,7 +341,7 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 |---|---|---|
 | O1 | Workers Paid の運用アカウント整備(L6)— cron CPU 15 分・DO 10 GB・Time Travel 30 日は Paid 前提 | H3 デプロイ前 |
 | O2 | R2 の有効化(支払い方法の登録)とバケット作成: `wrangler r2 bucket create maruhi-ops-backup`、ライフサイクル `lifecycle add maruhi-ops-backup --expire-days 35 --abort-multipart-days 1`。公開アクセスなし | 同上 |
-| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted` | 同上 |
+| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted`。**注意**: 名前付き環境は `maruhi-server-hosted` という別 Worker(= 別の DO 名前空間)を作る。最上位名 `maruhi-server` で稼働中のプロジェクト DO が運営アカウントにあるなら、hosted への切り替えはデータが付いてこない(退避 → 復元 worker で移すか、最初から hosted 名で運用する)。初回デプロイ前に既存デプロイの有無を確認する(PR #137 レビュー) | 同上 |
 | O4 | GitHub: Secrets `CLOUDFLARE_API_TOKEN`(D1 Read + R2 Write に限定)/ `CLOUDFLARE_ACCOUNT_ID`、Variables `OPS_BACKUP_ENABLED=true` / `OPS_BACKUP_BUCKET` / `OPS_BACKUP_AGE_RECIPIENT`。`age-keygen` の秘密鍵は運営端末のキーチェーンへ | 同上 |
 | O5 | 外形監視サービスの契約(`GET /auth/config` を 1 分間隔・連続 3 回失敗で通知) | 招待制ベータ前 |
 | O6 | 運用 GitHub OAuth App(L7 — 本番コールバック URL)。「Enable Device Flow」は無効のまま | H3 デプロイ前 |

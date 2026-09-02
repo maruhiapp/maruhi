@@ -34,16 +34,16 @@ const bucket = env.OPS_BACKUP_BUCKET as R2Bucket;
 const stub = () => env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
 const doIdHex = () => env.PROJECT_CHAIN.idFromName(projectId).toString();
 
-const backupInput = (skipIfUnchanged: { auditSeq: number; chainSeq: number } | null = null) => ({
+type SkipMarks = { auditSeq: number; chainSeq: number; attestationMark: number };
+
+const backupInput = (skipIfUnchanged: SkipMarks | null = null) => ({
   keyPrefix: "do",
   nowMs: Date.now(),
   maxBytes: OPS_BACKUP_MAX_BYTES,
   skipIfUnchanged,
 });
 
-async function backup(
-  skipIfUnchanged: { auditSeq: number; chainSeq: number } | null = null,
-): Promise<OpsBackupOutcome> {
+async function backup(skipIfUnchanged: SkipMarks | null = null): Promise<OpsBackupOutcome> {
   return (await stub().opsBackup(backupInput(skipIfUnchanged))) as OpsBackupOutcome;
 }
 
@@ -186,9 +186,31 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     if (first.kind !== "uploaded") {
       return;
     }
-    const marks = { auditSeq: first.auditSeq, chainSeq: first.chainSeq };
+    const marks = {
+      auditSeq: first.auditSeq,
+      chainSeq: first.chainSeq,
+      attestationMark: first.attestationMark,
+    };
     const second = await backup(marks);
     expect(second.kind).toBe("skipped");
+    // ヘッド申告の upsert はチェーン行も監査行も書かない(AUTH_SPEC §16-1)が、
+    // 内容の変化として skip を解除する(第三のウォーターマーク)
+    await runInDurableObject(stub(), (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO head_attestations (attester_user_id, suite, chain_head_seq, chain_head_hash_hex, signature_hex, attester_key_fingerprint, accepted_at)
+         VALUES ('user-attester', 'maruhi/v1', 1, '', '', 'fp', ?)`,
+        Date.now(),
+      );
+    });
+    await evictProjectDo(projectId);
+    const afterAttestation = await backup(marks);
+    expect(afterAttestation.kind).toBe("uploaded");
+    if (afterAttestation.kind !== "uploaded") {
+      return;
+    }
+    expect(afterAttestation.attestationMark).toBeGreaterThan(marks.attestationMark);
+    marks.attestationMark = afterAttestation.attestationMark;
+    expect((await backup(marks)).kind).toBe("skipped");
     // 値付き pull は監査行(var.read)を書く = 内容が変わった扱いで再退避する
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
@@ -324,6 +346,20 @@ describe("退避スイープ(ops-backup.ts)と毎時 cron", () => {
     expect(after?.lastObjectKey).toBe(record?.lastObjectKey);
     // 終端に達したのでカーソルは先頭へ戻る(空文字列)
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
+  });
+
+  it("records oversize without counting it as a consecutive failure", async () => {
+    await seedProjectActivity();
+    const result = await Effect.runPromise(
+      runBackupSweep(workerEnv, { maxBytes: 1 }).pipe(Effect.provideService(OpsRepo, opsRepo())),
+    );
+    expect(result).toMatchObject({ visited: 1, oversize: 1, failed: 0 });
+    const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    expect(record?.lastFailureCode).toBe("oversize");
+    expect(record?.consecutiveFailures).toBe(0);
+    const summary = await opsRepo().backupSummary(Date.now()).pipe(Effect.runPromise);
+    expect(summary.oversizeProjects).toBe(1);
+    expect(summary.failingProjects).toBe(0);
   });
 
   it("is a no-op without the bucket binding (self-hosting default)", async () => {

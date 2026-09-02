@@ -38,6 +38,7 @@ export interface OpsBackupRecord {
   readonly lastBytes: number | null;
   readonly lastAuditSeq: number | null;
   readonly lastChainSeq: number | null;
+  readonly lastAttestationMark: number | null;
   readonly storageLevel: OpsStorageLevel | null;
   readonly consecutiveFailures: number;
   readonly lastFailureCode: OpsBackupFailureCode | null;
@@ -50,11 +51,20 @@ export type OpsBackupAttempt =
       readonly bytes: number;
       readonly auditSeq: number;
       readonly chainSeq: number;
+      readonly attestationMark: number;
       readonly storageLevel: OpsStorageLevel;
     }
   | {
       /** 内容不変で退避を省略(成功として扱わない — last_success は据え置き)。 */
       readonly kind: "skipped";
+      readonly storageLevel: OpsStorageLevel;
+    }
+  | {
+      /**
+       * 上限超過で退避しない(hosted-ops §4-2)。失敗ではない — 連続失敗カウンタを
+       * 触らず、`backup_oversize_projects` だけを点灯させる(PR #137 レビュー)。
+       */
+      readonly kind: "oversize";
       readonly storageLevel: OpsStorageLevel;
     }
   | {
@@ -140,11 +150,16 @@ function backupAttemptColumns(
         lastBytes: attempt.bytes,
         lastAuditSeq: attempt.auditSeq,
         lastChainSeq: attempt.chainSeq,
+        lastAttestationMark: attempt.attestationMark,
         storageLevel: attempt.storageLevel,
         consecutiveFailures: 0,
         lastFailureCode: null,
       };
       return { insert: columns, update: columns };
+    }
+    case "oversize": {
+      const columns = { storageLevel: attempt.storageLevel, lastFailureCode: "oversize" };
+      return { insert: { ...columns, consecutiveFailures: 0 }, update: columns };
     }
     case "skipped": {
       const columns = {
@@ -235,6 +250,7 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
           lastBytes: row.lastBytes,
           lastAuditSeq: row.lastAuditSeq,
           lastChainSeq: row.lastChainSeq,
+          lastAttestationMark: row.lastAttestationMark,
           storageLevel: toStorageLevel(row.storageLevel),
           consecutiveFailures: row.consecutiveFailures,
           lastFailureCode: toFailureCode(row.lastFailureCode),

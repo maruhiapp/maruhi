@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "74feb6ab-2d9d-4f5a-9be3-a12aec264edb",
+  "id": "d61a1961-3a74-40cc-b0c1-7e879f8c799c",
   "prevIds": ["e8ee030d-17c2-4e15-bd20-f9db0c4fb509"],
   "ddl": [
     {
@@ -661,6 +661,16 @@
       "default": null,
       "generated": null,
       "name": "last_chain_seq",
+      "entityType": "columns",
+      "table": "ops_backups"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "last_attestation_mark",
       "entityType": "columns",
       "table": "ops_backups"
     },

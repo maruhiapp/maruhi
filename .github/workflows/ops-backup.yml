@@ -83,9 +83,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          size=$(bunx wrangler d1 info maruhi --env hosted --json | bun --print 'JSON.parse(require("fs").readFileSync(0, "utf8")).file_size')
-          case "$size" in ''|*[!0-9]*) echo "::error::could not read file_size from wrangler d1 info"; exit 1 ;; esac
-          echo "D1 file_size=$size bytes (warn at $D1_SIZE_WARN_BYTES)"
+          # wrangler 4.124 は API の file_size を database_size へ改名して出力する(旧版は file_size)
+          size=$(bunx wrangler d1 info maruhi --env hosted --json | bun --print 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); o.database_size ?? o.file_size')
+          case "$size" in ''|*[!0-9]*) echo "::error::could not read database_size from wrangler d1 info"; exit 1 ;; esac
+          echo "D1 database_size=$size bytes (warn at $D1_SIZE_WARN_BYTES)"
           if [ "$size" -ge "$D1_SIZE_WARN_BYTES" ]; then
             echo "::error::D1 size crossed the warning threshold (hosted-ops.md §3 row 1: plan the audit-D1 split)"
             exit 1

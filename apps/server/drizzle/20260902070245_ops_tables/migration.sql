@@ -7,6 +7,7 @@ CREATE TABLE `ops_backups` (
 	`last_bytes` integer,
 	`last_audit_seq` integer,
 	`last_chain_seq` integer,
+	`last_attestation_mark` integer,
 	`storage_level` text,
 	`consecutive_failures` integer DEFAULT 0 NOT NULL,
 	`last_failure_code` text

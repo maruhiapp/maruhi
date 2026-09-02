@@ -78,6 +78,12 @@ export interface DoWatermarks {
   readonly chainHeadHashHex: string | null;
   readonly auditMaxSeq: number;
   readonly auditHeadHashHex: string | null;
+  /**
+   * ヘッド申告(head_attestations)の最新受理時刻(無ければ 0)。申告の upsert は
+   * チェーン行も監査行も書かない(AUTH_SPEC §16-1)ため、監査 / チェーン seq だけの
+   * skip 規則では申告だけが動くプロジェクトが最大 7 日退避されない(PR #137 レビュー)。
+   */
+  readonly attestationMark: number;
 }
 
 function maxSeq(sql: SqlStorage, table: string): number {
@@ -98,10 +104,14 @@ export function readWatermarks(sql: SqlStorage): DoWatermarks {
           .exec("SELECT head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1")
           .toArray()[0]
       : undefined;
+  const attestation = sql
+    .exec("SELECT COALESCE(MAX(accepted_at), 0) AS m FROM head_attestations")
+    .one();
   return {
     chainHeadSeq,
     chainHeadHashHex: head === undefined ? null : String(head["entry_hash_hex"]),
     auditMaxSeq,
+    attestationMark: Number(attestation["m"]),
     auditHeadHashHex:
       auditMaxSeq === 0 ? "" : auditHead === undefined ? null : String(auditHead["head_hash_hex"]),
   };

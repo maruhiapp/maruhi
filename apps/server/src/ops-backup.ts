@@ -59,12 +59,13 @@ function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
         bytes: outcome.bytes,
         auditSeq: outcome.auditSeq,
         chainSeq: outcome.chainSeq,
+        attestationMark: outcome.attestationMark,
         storageLevel: outcome.storageLevel,
       };
     case "skipped":
       return { kind: "skipped", storageLevel: outcome.storageLevel };
     case "oversize":
-      return { kind: "failure", code: "oversize", storageLevel: outcome.storageLevel };
+      return { kind: "oversize", storageLevel: outcome.storageLevel };
     case "upload-failed":
       return { kind: "failure", code: "upload-failed", storageLevel: outcome.storageLevel };
     case "no-bucket":
@@ -88,8 +89,13 @@ function backupOne(
       record.lastSuccessAt !== null &&
       record.lastAuditSeq !== null &&
       record.lastChainSeq !== null &&
+      record.lastAttestationMark !== null &&
       nowMs - record.lastSuccessAt < OPS_BACKUP_REFRESH_MS
-        ? { auditSeq: record.lastAuditSeq, chainSeq: record.lastChainSeq }
+        ? {
+            auditSeq: record.lastAuditSeq,
+            chainSeq: record.lastChainSeq,
+            attestationMark: record.lastAttestationMark,
+          }
         : null;
     const stub = projectStub(env, projectId);
     const outcome = yield* rpcCall<OpsBackupOutcome>(() =>
@@ -130,7 +136,7 @@ function tally(result: MutableSweepResult, attempt: OpsBackupAttempt): void {
     result.uploaded += 1;
   } else if (attempt.kind === "skipped") {
     result.skipped += 1;
-  } else if (attempt.code === "oversize") {
+  } else if (attempt.kind === "oversize") {
     result.oversize += 1;
   } else {
     result.failed += 1;

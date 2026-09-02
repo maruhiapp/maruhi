@@ -181,8 +181,15 @@ export interface OpsBackupInput {
   readonly nowMs: number;
   /** これを超える DO は退避しない(oversize)。 */
   readonly maxBytes: number;
-  /** 前回成功のウォーターマーク。一致すれば skip(null = 必ず退避)。 */
-  readonly skipIfUnchanged: { readonly auditSeq: number; readonly chainSeq: number } | null;
+  /**
+   * 前回成功のウォーターマーク(監査 seq・チェーン seq・ヘッド申告の最新受理時刻)。
+   * 三つとも一致すれば skip(null = 必ず退避)。
+   */
+  readonly skipIfUnchanged: {
+    readonly auditSeq: number;
+    readonly chainSeq: number;
+    readonly attestationMark: number;
+  } | null;
   /** テスト用: multipart のパート長。 */
   readonly partBytes?: number;
 }
@@ -194,6 +201,7 @@ export type OpsBackupOutcome =
       readonly bytes: number;
       readonly auditSeq: number;
       readonly chainSeq: number;
+      readonly attestationMark: number;
       readonly storageLevel: StorageGuardDecision;
       readonly databaseSizeBytes: number;
       readonly trailer: SnapshotTrailer;
@@ -202,6 +210,7 @@ export type OpsBackupOutcome =
       readonly kind: "skipped";
       readonly auditSeq: number;
       readonly chainSeq: number;
+      readonly attestationMark: number;
       readonly storageLevel: StorageGuardDecision;
       readonly databaseSizeBytes: number;
     }
@@ -911,12 +920,14 @@ export class ProjectChainDO extends DurableObject<Env> {
           if (
             input.skipIfUnchanged !== null &&
             input.skipIfUnchanged.auditSeq === marks.auditMaxSeq &&
-            input.skipIfUnchanged.chainSeq === marks.chainHeadSeq
+            input.skipIfUnchanged.chainSeq === marks.chainHeadSeq &&
+            input.skipIfUnchanged.attestationMark === marks.attestationMark
           ) {
             return {
               kind: "skipped",
               auditSeq: marks.auditMaxSeq,
               chainSeq: marks.chainHeadSeq,
+              attestationMark: marks.attestationMark,
               storageLevel,
               databaseSizeBytes,
             } satisfies OpsBackupOutcome;
@@ -942,6 +953,7 @@ export class ProjectChainDO extends DurableObject<Env> {
                 bytes: result.bytes,
                 auditSeq: result.trailer.auditMaxSeq,
                 chainSeq: result.trailer.chainHeadSeq,
+                attestationMark: marks.attestationMark,
                 storageLevel,
                 databaseSizeBytes,
                 trailer: result.trailer,

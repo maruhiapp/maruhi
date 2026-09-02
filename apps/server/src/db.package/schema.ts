@@ -433,6 +433,8 @@ export const opsBackups = sqliteTable("ops_backups", {
   lastBytes: integer("last_bytes"),
   lastAuditSeq: integer("last_audit_seq"),
   lastChainSeq: integer("last_chain_seq"),
+  /** ヘッド申告の最新受理時刻(skip 規則の第三成分 — do-snapshot.ts readWatermarks) */
+  lastAttestationMark: integer("last_attestation_mark"),
   storageLevel: text("storage_level"),
   consecutiveFailures: integer("consecutive_failures").notNull().default(0),
   /** 静的な失敗コードのみ(エラーメッセージ本文は書かない) */
