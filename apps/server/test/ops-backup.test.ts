@@ -348,8 +348,20 @@ describe("退避スイープ(ops-backup.ts)と毎時 cron", () => {
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
   });
 
-  it("records oversize without counting it as a consecutive failure", async () => {
+  it("records oversize without counting it as a consecutive failure (and clears earlier ones)", async () => {
     await seedProjectActivity();
+    // 先に失敗を 1 回積んでおく: oversize の記録が UPDATE 分岐でもカウンタを 0 へ戻す
+    // ことを検証する(行が無い状態からでは INSERT 分岐しか通らない — PR #137 レビュー)
+    await opsRepo()
+      .recordBackupAttempt(
+        projectId,
+        doIdHex(),
+        { kind: "failure", code: "rpc-failed", storageLevel: null },
+        Date.now(),
+      )
+      .pipe(Effect.runPromise);
+    const before = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    expect(before?.consecutiveFailures).toBe(1);
     const result = await Effect.runPromise(
       runBackupSweep(workerEnv, { maxBytes: 1 }).pipe(Effect.provideService(OpsRepo, opsRepo())),
     );
