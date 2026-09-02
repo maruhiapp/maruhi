@@ -206,15 +206,22 @@ describe("audit_events の部分索引(do-schema.ts — 成長密度対策 ①)"
         );
       }
       const rebuildMs = Date.now() - startedAt;
+      // 既存 DO が実際に通る向き(素の索引 → 部分索引)の後の実測。解放された
+      // ページが databaseSize(#134 のガードが読む指標)に戻るかを固定する
+      const rebuilt = sql.databaseSize;
       sql.exec("DELETE FROM audit_events");
-      return { partial, full, rebuildMs };
+      return { partial, full, rebuildMs, rebuilt };
     });
     // 部分索引は NULL 行を持たないので、3 索引 × 10,000 エントリ分だけ小さい
     expect(measured.full).toBeGreaterThan(measured.partial);
     const perRow = (measured.full - measured.partial) / ROWS;
     console.log(
-      `audit_events partial index: ${ROWS} var.read rows — full ${measured.full} B / partial ${measured.partial} B / delta ${measured.full - measured.partial} B (${perRow.toFixed(1)} B per row, ${(measured.partial / ROWS).toFixed(1)} B per row remaining); partial-index rebuild of ${ROWS} rows took ${measured.rebuildMs} ms`,
+      `audit_events partial index: ${ROWS} var.read rows — full ${measured.full} B / partial ${measured.partial} B / delta ${measured.full - measured.partial} B (${perRow.toFixed(1)} B per row, ${(measured.partial / ROWS).toFixed(1)} B per row remaining); partial-index rebuild of ${ROWS} rows took ${measured.rebuildMs} ms and left databaseSize at ${measured.rebuilt} B`,
     );
+    // migrate-in-place の向き(素の索引を DROP → 部分索引で再構築)でも使用量は
+    // 戻る: 解放ページが freelist に残るなら full のまま、戻るなら partial と同等
+    expect(measured.rebuilt).toBeLessThan(measured.full);
+    expect(measured.rebuilt).toBeLessThanOrEqual(measured.partial);
     // 3 索引 × (NULL キー + seq)のエントリは 1 行あたり数十バイト以上
     expect(perRow).toBeGreaterThan(10);
   });
