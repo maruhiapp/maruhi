@@ -336,8 +336,110 @@ id (a project id is effectively a capability — AUTH_SPEC §11-2) and no user
 id. To find out which project is affected, use the Durable Object id in the
 Workers Logs / `wrangler tail` event envelope: it is `idFromName(projectId)`,
 so you can compute it for a project a tenant reports and compare, but the log
-line itself never reveals the project. Alerting on these lines is part of the
-hosted operations work (H3); the log line is the hook it will attach to.
+line itself never reveals the project. The hourly operations job (see
+"Backups and operations" below) additionally reports the **number** of projects
+in the warning and rejection bands as an aggregate signal; the log line remains
+the place to look for the affected Durable Object.
+
+## Backups and operations (optional)
+
+**Nothing in this section is required.** A plain `wrangler deploy` keeps
+working exactly as before; the features below are opt-in for operators who want
+backups and alerting. Enabling them never changes what tenants can do — the
+product API and its acceptance rules are untouched.
+
+### What you get for free
+
+- **D1 Time Travel** — point-in-time recovery for the last 30 days (7 days on
+  the Free plan) is always on, at no cost:
+  `wrangler d1 time-travel info maruhi --timestamp=<RFC3339>` shows a bookmark,
+  `wrangler d1 time-travel restore maruhi --bookmark=<bookmark>` restores it
+  **in place** (destructive; in-flight queries are cancelled).
+- **Durable Object durability** — project contents live in replicated
+  Durable Object storage. There is no platform-provided export or PITR for it,
+  which is why the application-level snapshot below exists.
+
+### Recommended: periodic D1 export
+
+Run `wrangler d1 export maruhi --remote --output=<file>` on a schedule
+(it blocks other requests to the database while it runs, so pick a quiet
+hour), encrypt the dump with a key you control (e.g. `age`), and keep it
+outside the Workers account. The export contains only what D1 contains: user
+rows, session and token **hashes**, and the authentication audit log — no
+secret values, which never reach the server in plaintext. The reference
+workflow used for the hosted service is
+`.github/workflows/ops-backup.yml` (disabled unless the repository variable
+`OPS_BACKUP_ENABLED` is `true`).
+
+### Optional: project snapshots to R2 and trip-wire alerts
+
+The server ships an hourly cron job (the second entry in `triggers.crons`)
+that does two things **only when the corresponding binding or secret is
+configured**, and is otherwise a no-op:
+
+1. **Snapshots of every project Durable Object to an R2 bucket** — binding
+   `OPS_BACKUP_BUCKET`. Each project is written as one gzip-compressed NDJSON
+   object under `do/<durable-object-id>/<timestamp>.ndjson.gz`. The key uses
+   the Durable Object id (the one-way image of the project id), never the
+   project id itself. Contents are exactly what the Durable Object holds:
+   ciphertext, the membership chain, wrapped DEKs, metadata statements and the
+   audit log — the operator learns nothing from the copy that the Durable
+   Object did not already reveal, and no extra encryption layer is applied
+   (R2 encrypts at rest; keep the bucket private). Unchanged projects are
+   skipped for up to 7 days; retention is your bucket's lifecycle rule.
+2. **Trip-wire alerts** — secret `OPS_ALERT_WEBHOOK_URL`. The job evaluates a
+   fixed set of aggregate signals (GitHub token requests per hour, CLI login
+   flow capacity reached, sign-up denials, login-failure suppression markers,
+   projects in the storage warning / rejection bands, stale or failing
+   snapshots) and POSTs a JSON body `{ service, at, events, text }` to the URL
+   on every state change. The body carries **signal names and numbers only** —
+   no project ids, user ids or tokens. Without the secret, firing signals are
+   written to Workers Logs as static lines instead.
+
+To enable both on your deployment:
+
+```sh
+# 1. Create the bucket (requires R2 to be enabled on the account) and a retention rule
+wrangler r2 bucket create maruhi-ops-backup
+wrangler r2 bucket lifecycle add maruhi-ops-backup --expire-days 35 --abort-multipart-days 1
+
+# 2. Deploy the `hosted` environment, which adds the R2 binding, Workers Logs and a
+#    higher CPU limit for large snapshots (see the `env.hosted` block in wrangler.jsonc;
+#    put your D1 database_id there and register the same secrets with --env hosted)
+wrangler secret put GITHUB_CLIENT_ID --env hosted
+wrangler secret put GITHUB_CLIENT_SECRET --env hosted
+wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
+wrangler d1 migrations apply DB --remote --env hosted
+wrangler deploy --env hosted
+```
+
+The hourly job records its progress in the D1 tables `ops_backups`,
+`ops_counters` and `ops_state`. They are operator state, not audit log: the
+audit log (`AUDIT_SPEC.md`) never receives operational events.
+
+### Restoring a project snapshot
+
+Restores are an operator-only path with **no HTTP surface**: a separate,
+temporary Worker (`wrangler.restore.jsonc`) polls the bucket for job files and
+writes the result back to the bucket. It can only write into an **empty**
+Durable Object — there is no path that overwrites a live project.
+
+```sh
+# Deploy the restore worker only for the duration of the operation
+wrangler deploy -c wrangler.restore.jsonc
+# Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
+echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
+wrangler r2 object put maruhi-ops-backup/restore/jobs/job-1.json --file job.json --remote
+# Within a minute the result appears; compare it with the snapshot's trailer line
+wrangler r2 object get maruhi-ops-backup/restore/results/job-1.json --pipe --remote
+# Remove the restore worker again
+wrangler delete -c wrangler.restore.jsonc
+```
+
+The result reports the restored chain head, the audit head hash and per-table
+row counts; the snapshot's last line (its trailer) carries the same values for
+comparison. The snapshot's schema version must match the deployed server —
+deploy the matching version first if it does not.
 
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 

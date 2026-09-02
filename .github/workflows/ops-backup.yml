@@ -1,0 +1,92 @@
+# 運用基盤 H3 — D1 の定期 export(docs/notes/hosted-ops.md §2-G / §4-1)と D1 総量の
+# トリップワイヤ(同 §3 行 1)。運営(hosted)アカウント専用: リポジトリ変数
+# OPS_BACKUP_ENABLED が "true" のときだけ動く(フォーク・セルフホストでは無効)。
+#
+# 成果物(SQL ダンプ)は age 公開鍵で暗号化し、DO 退避と同じ R2 バケットの d1/ へ置く。
+# 秘密鍵は運営端末のみ・API トークンは D1 Read + R2 Write に限定・成果物も鍵も
+# リポジトリ / Actions artifact には置かない(公開後のリポジトリでは artifact が
+# 第三者に取得されうる)。
+#
+# 必要な Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+# 必要な Variables: OPS_BACKUP_ENABLED=true / OPS_BACKUP_BUCKET(バケット名)/
+#                   OPS_BACKUP_AGE_RECIPIENT(age の受信者公開鍵 "age1…")
+name: ops-backup
+
+on:
+  schedule:
+    # 低トラフィック時刻(export 中は D1 が他のリクエストをブロックする — 一次情報)
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: "1"
+  WRANGLER_SEND_METRICS: "false"
+  # hosted-ops.md §3 行 1: D1 総量の警告閾値(10 進 5 GB)
+  D1_SIZE_WARN_BYTES: "5000000000"
+
+jobs:
+  export:
+    if: ${{ vars.OPS_BACKUP_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install age
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
+
+      # wrangler はワークスペースのピン版(apps/server で bunx)。--env hosted で
+      # 運営 DB(env.hosted の d1_databases)を解決する
+      - name: Export D1 (hosted)
+        working-directory: apps/server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler d1 export maruhi --remote --env hosted --output "$RUNNER_TEMP/d1.sql"
+
+      - name: Encrypt (age, operator public key)
+        env:
+          AGE_RECIPIENT: ${{ vars.OPS_BACKUP_AGE_RECIPIENT }}
+        run: |
+          case "$AGE_RECIPIENT" in age1*) ;; *) echo "::error::OPS_BACKUP_AGE_RECIPIENT is not an age recipient"; exit 1 ;; esac
+          age -r "$AGE_RECIPIENT" -o "$RUNNER_TEMP/d1.sql.age" "$RUNNER_TEMP/d1.sql"
+          rm -f "$RUNNER_TEMP/d1.sql"
+
+      - name: Upload to R2 (d1/<timestamp>.sql.age)
+        working-directory: apps/server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ vars.OPS_BACKUP_BUCKET }}
+        run: |
+          stamp=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          bunx wrangler r2 object put "$BUCKET/d1/$stamp.sql.age" --file "$RUNNER_TEMP/d1.sql.age" --remote --content-type application/octet-stream
+          rm -f "$RUNNER_TEMP/d1.sql.age"
+
+      # D1 総量のトリップワイヤ(hosted-ops.md §3 行 1): 閾値以上でジョブを落とし、
+      # GitHub の失敗通知で運営に届ける(worker 側は D1 の実測量を持たない)
+      - name: D1 size trip-wire
+        working-directory: apps/server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          size=$(bunx wrangler d1 info maruhi --env hosted --json | bun --print 'JSON.parse(require("fs").readFileSync(0, "utf8")).file_size')
+          case "$size" in ''|*[!0-9]*) echo "::error::could not read file_size from wrangler d1 info"; exit 1 ;; esac
+          echo "D1 file_size=$size bytes (warn at $D1_SIZE_WARN_BYTES)"
+          if [ "$size" -ge "$D1_SIZE_WARN_BYTES" ]; then
+            echo "::error::D1 size crossed the warning threshold (hosted-ops.md §3 row 1: plan the audit-D1 split)"
+            exit 1
+          fi
