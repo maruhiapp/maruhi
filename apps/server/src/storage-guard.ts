@@ -3,8 +3,12 @@
 //
 // プロジェクト DO の SQLite 実測量(`SqlStorage.databaseSize`)に警告 / 拒否の
 // 2 段の閾値(policy.ts — 起草値 8 GB / 9 GB)を置き、10 GB の SQLITE_FULL
-// (読み取り可・書き込み不能の床)へ到達させない。監査ログの無期限保持
-// (AUDIT_SPEC §5.3)を覆う唯一の防衛線。
+// (読み取り可・書き込み不能の床)へ到達させない。プラットフォームは床でも素の
+// DELETE を通すが、maruhi の削除操作は tombstone・削除ステートメント・監査行の
+// INSERT を同一タスクで伴うため床では失敗する = テナント自身で解消不能。監査ログの
+// 無期限保持(AUDIT_SPEC §5.3)を覆う唯一の防衛線。削除で databaseSize が縮む
+// こと(workerd 実測 — auto-vacuum 相当。VACUUM はアプリから発行不可)が
+// 「削除で解放される」の根拠。
 //
 // - 判定は純関数(storageGuardDecision — 8〜9 GB の実生成は非現実的なため、
 //   ユニットテスト用に閾値を引数で受ける。quotas.ts の *Exceeded と同じ形)

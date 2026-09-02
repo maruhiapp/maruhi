@@ -275,9 +275,13 @@ silently.
 
 Each project lives in one Durable Object whose SQLite database has a hard
 platform ceiling of **10 GB**. At that ceiling SQLite returns `SQLITE_FULL`:
-the project stays readable but **every write fails, including the deletes that
-would free space**. The guard exists so a project never gets there. It reads the
-measured database size (`databaseSize`) on every write that adds content and:
+the project stays readable, and while the platform still lets a bare `DELETE`
+through, every maruhi deletion also **inserts** rows in the same transaction
+(the tombstone statement and the audit events), so **maruhi's own deletes fail
+too** — a project at the ceiling cannot free space by itself, and the operator
+has no tool to reach into Durable Object storage either. The guard exists so a
+project never gets there. It reads the measured database size (`databaseSize`)
+on every write that adds content and:
 
 - at **8 GB** logs one static warning line per Durable Object instance (no
   project id, no user id — see "Operational logs" below) and keeps accepting
@@ -302,6 +306,11 @@ materializes a hash column proportional to the audit log, so it is refused above
 The audit log is append-only and never pruned (AUDIT_SPEC §5.3), so on a busy
 project the dominant growth is `var.read` rows from pulls. The guard is the
 safety net for that growth; there is no per-tenant audit quota.
+
+Deleting really does bring the measured size down: Durable Object SQLite
+reclaims pages on `DELETE` (verified in workerd — `databaseSize` shrinks back
+after a delete; `VACUUM` is not available to the application, so this relies on
+platform behavior).
 
 **Changing the thresholds**: edit the two constants and redeploy. Keep
 `DO_STORAGE_REJECT_BYTES` below 10 GB — the guard is the only thing standing

@@ -116,7 +116,8 @@ export const DO_STORAGE_WARN_BYTES = 8_000_000_000;
  * add_member / grant_server)を 422 `project-storage-bytes` で拒否する。読み取り・
  * 削除・失効・ローテーション・リース・申告・checkpoint は拒否下でも受理される
  * (同節の明示列挙 — storage-guard.ts)。10 GB の SQLITE_FULL(読み取り可・
- * 書き込み不能の床)に到達させないための唯一の防衛線であり、閾値を動かす場合も
+ * 書き込み不能の床 — maruhi の削除操作も INSERT を伴うため床では失敗し、テナント
+ * 自身で解消できない)に到達させないための唯一の防衛線であり、閾値を動かす場合も
  * 床の下に置くこと。
  */
 export const DO_STORAGE_REJECT_BYTES = 9_000_000_000;
