@@ -88,6 +88,12 @@ if (hosted.observability?.logs?.invocation_logs !== false) {
     "observability: env.hosted must set observability.logs.invocation_logs to false (request URLs carry capabilities)",
   );
 }
+// 二重化: クエリ(OAuth code 等)はログ・トレースの URL から常に落とす(wrangler 4.128)
+if (hosted.observability?.redact_query_string !== true) {
+  failures.push(
+    "observability: env.hosted must set observability.redact_query_string to true (query strings carry OAuth codes)",
+  );
+}
 
 // 復元 worker は本番(hosted)の DO 名前空間へ script_name で束縛する。名前付き環境は
 // `<name>-<env>` の別 Worker を公開するため、束縛先は env.hosted の実効 name と一致

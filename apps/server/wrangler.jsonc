@@ -162,9 +162,13 @@
       // /projects/:id(capability — AUTH_SPEC §11-2)や /auth/github/callback?code=… が
       // 7 日間ログストアに残る(PR #137 Cursor セキュリティレビュー)。console の静的行
       // だけを残す。リクエストログの Logpush も有効化しない(hosted-design.md §5-1)。
-      // scripts/check-hosted-config.ts が invocation_logs: false を検査する
+      // scripts/check-hosted-config.ts が invocation_logs: false を検査する。
+      // redact_query_string(wrangler 4.128)は二重化: 将来 invocation log や
+      // トレースが有効化されても、URL のクエリ(OAuth code 等)はログ・トレースから
+      // 落とす。パス側の capability は invocation_logs: false でしか守れない
       "observability": {
         "enabled": true,
+        "redact_query_string": true,
         "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 },
       },
       // 巨大 DO の退避(JSON 化 + gzip)に DO の既定 CPU 30 秒では足りないことがある

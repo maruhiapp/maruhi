@@ -410,7 +410,9 @@ wrangler r2 bucket lifecycle add maruhi-ops-backup --expire-days 35 --abort-mult
 #    (Wrangler's `<name>-<environment>` rule) — the restore worker binds to that name.
 #    Workers Logs is enabled there with invocation logs turned OFF: the default
 #    invocation log records request URLs, which carry project ids (capabilities)
-#    and OAuth codes — keep `observability.logs.invocation_logs: false`
+#    and OAuth codes — keep `observability.logs.invocation_logs: false` and
+#    `observability.redact_query_string: true` (drops query strings from any
+#    URL that does reach logs or traces)
 wrangler secret put GITHUB_CLIENT_ID --env hosted
 wrangler secret put GITHUB_CLIENT_SECRET --env hosted
 wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
