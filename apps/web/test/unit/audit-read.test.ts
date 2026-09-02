@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   aggregatedReadVariables,
   listedReadVariableLabel,
+  payloadWithoutVariables,
   readSummaryLabel,
 } from "../../src/dashboard/audit-read.ts";
 
@@ -50,6 +51,15 @@ describe("aggregatedReadVariables", () => {
         },
       }),
     ).toEqual([{ variableId: "var-a", epoch: undefined, version: 3 }]);
+  });
+});
+
+describe("payloadWithoutVariables", () => {
+  it("列挙以外のキー(authMethod 等)だけを残し、無ければ null", () => {
+    expect(
+      payloadWithoutVariables({ variables: [{ variableId: "var-a" }], authMethod: "github_oauth" }),
+    ).toEqual({ authMethod: "github_oauth" });
+    expect(payloadWithoutVariables({ variables: [] })).toBeNull();
   });
 });
 

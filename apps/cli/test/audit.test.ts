@@ -238,7 +238,7 @@ function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
 }
 
 /** 集約形 var.read の行(AUDIT_SPEC §3.3 — 値付き pull ごとに環境単位 1 行)。 */
-function aggregatedReadRow(seq: number): WireRow {
+function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = {}): WireRow {
   return {
     id: idOf(seq),
     seq,
@@ -251,6 +251,7 @@ function aggregatedReadRow(seq: number): WireRow {
         { variableId: "va", epoch: 1, version: 2 },
         { variableId: "vb", epoch: 1, version: 1 },
       ],
+      ...extraPayload,
     },
   };
 }
@@ -258,15 +259,24 @@ function aggregatedReadRow(seq: number): WireRow {
 describe("maruhi audit(list)", () => {
   it("集約形 var.read は件数の要約で出し、--expand-reads で 1 変数 1 行に展開する", async () => {
     const built = await baseChain();
-    const rows = [...mirrorRowsOf(built), aggregatedReadRow(4)];
+    // seq=5 は変数の列挙以外の payload(authMethod — 旧形なら recorded= に出ていた)を持つ
+    const rows = [
+      ...mirrorRowsOf(built),
+      aggregatedReadRow(4),
+      aggregatedReadRow(5, { authMethod: "github_oauth" }),
+    ];
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
 
     expect(await runCli(["audit"], env.layer)).toBe(0);
     const summary = env.logs.join("\n");
-    const readLine = env.logs.find((line) => line.includes("\tvar.read\t"));
+    const readLine = env.logs.find((line) => line.startsWith("seq=4\t"));
     expect(readLine).toContain("read=2 variables");
     // 列挙(payload)は recorded= として 1 行に流し込まない・展開もしない
     expect(readLine).not.toContain("recorded=");
+    // 列挙以外の payload は引き続き recorded= に出る(列挙は除く)
+    const withMethod = env.logs.find((line) => line.startsWith("seq=5\t"));
+    expect(withMethod).toContain('recorded={"authMethod":"github_oauth"}');
+    expect(withMethod).not.toContain('"variables"');
     expect(summary).not.toContain("var=ALPHA");
     expect(summary).toContain("--expand-reads");
 
@@ -292,7 +302,7 @@ describe("maruhi audit(list)", () => {
       defaultProject: built.projectId,
     });
     expect(await runCli(["audit", "--var", "va"], filtered.layer)).toBe(0);
-    const matchedLine = filtered.logs.find((line) => line.includes("\tvar.read\t"));
+    const matchedLine = filtered.logs.find((line) => line.startsWith("seq=4\t"));
     expect(matchedLine).toContain("read=2 variables\tmatched=var=ALPHA (va)\tepoch=1\tversion=2");
     expect(filtered.logs.join("\n")).not.toContain("- var=vb");
   });

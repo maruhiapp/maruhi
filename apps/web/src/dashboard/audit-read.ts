@@ -56,6 +56,17 @@ export function aggregatedReadVariables(
     : null;
 }
 
+/**
+ * 集約形 var.read の payload から変数の列挙を除いた残り(authMethod 等)。空なら
+ * null。列挙は折り畳みで見せ、残りは従来どおり記録どおりの JSON で見せる。
+ */
+export function payloadWithoutVariables(
+  payload: NonNullable<AuditEvent["payload"]>,
+): Readonly<Record<string, unknown>> | null {
+  const { variables: _variables, ...rest } = payload;
+  return Object.keys(rest).length === 0 ? null : rest;
+}
+
 /** 一覧の要約(英語 — ADR-0017): "read 3 variables" / "read 1 variable". */
 export function readSummaryLabel(count: number): string {
   return `read ${count} ${count === 1 ? "variable" : "variables"}`;

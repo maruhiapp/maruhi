@@ -328,15 +328,29 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
       parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
     }
   }
-  if (event.payload !== undefined && aggregatedReadOf(event) === null) {
+  const recorded = recordedPayloadOf(event);
+  if (recorded !== null) {
     // 記録内容(サーバー申告)であることを明示する接頭辞。名前スナップショット
-    // を含みうるが、表示名の位置(var= ラベル)には昇格しない(TCB 規律)。
-    // 集約形 var.read の payload は変数の列挙そのもので、read= の要約と
-    // --expand-reads の展開行が表示を担う(数十 KB になりうる JSON を 1 行に
-    // 流し込まない)
-    parts.push(`recorded=${displayText(JSON.stringify(event.payload))}`);
+    // を含みうるが、表示名の位置(var= ラベル)には昇格しない(TCB 規律)
+    parts.push(`recorded=${displayText(JSON.stringify(recorded))}`);
   }
   return parts;
+}
+
+/**
+ * recorded= に出す payload。集約形 var.read は変数の列挙(`variables` — 数十 KB に
+ * なりうる。read= の要約・--var の一致表示・--expand-reads の展開行が担う)を除いた
+ * 残り(authMethod 等 — 旧形なら recorded= に出ていた情報)だけを出す。
+ */
+function recordedPayloadOf(event: WireAuditEvent): Readonly<Record<string, unknown>> | null {
+  if (event.payload === undefined) {
+    return null;
+  }
+  if (aggregatedReadOf(event) === null) {
+    return event.payload;
+  }
+  const { variables: _variables, ...rest } = event.payload;
+  return Object.keys(rest).length === 0 ? null : rest;
 }
 
 /**

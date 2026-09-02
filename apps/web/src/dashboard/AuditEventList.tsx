@@ -23,6 +23,7 @@ import type { ApiFailure, ApiResult } from "./api.ts";
 import {
   aggregatedReadVariables,
   listedReadVariableLabel,
+  payloadWithoutVariables,
   readSummaryLabel,
 } from "./audit-read.ts";
 import { FailureNotice, formatServerTime, LoadingRow } from "./shared.tsx";
@@ -76,10 +77,16 @@ function detailLabel(event: AuditEvent): string {
 function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
   if (event.payload === undefined) return null;
   const listed = aggregatedReadVariables(event);
-  if (listed !== null) {
-    // 集約形 var.read の列挙は折り畳みで展開する(数十〜数百件になりうる —
-    // 既定は閉じた状態で要約〔detailLabel〕だけを見せる)
-    return (
+  if (listed === null) {
+    return <RecordedPayload payload={event.payload} />;
+  }
+  // 集約形 var.read: 変数の列挙は折り畳みで展開する(数十〜数百件になりうる —
+  // 既定は閉じた状態で要約〔detailLabel〕だけを見せる)。列挙以外の payload
+  // (authMethod 等)は従来どおり記録どおりの JSON で出す
+  const rest = payloadWithoutVariables(event.payload);
+  return (
+    <VStack gap={0.5}>
+      {rest === null ? null : <RecordedPayload payload={rest} />}
       <Collapsible
         trigger={<Text size="sm">Show variables</Text>}
         defaultIsOpen={false}
@@ -94,11 +101,15 @@ function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
           ))}
         </VStack>
       </Collapsible>
-    );
-  }
+    </VStack>
+  );
+}
+
+/** 記録どおりの payload(サーバー申告の JSON をそのまま — 2 行で切り詰め、全文はツールチップ)。 */
+function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
   return (
     <Text type="code" size="4xs" wordBreak="break-all" maxLines={2} hasTruncateTooltip>
-      {JSON.stringify(event.payload)}
+      {JSON.stringify(payload)}
     </Text>
   );
 }
