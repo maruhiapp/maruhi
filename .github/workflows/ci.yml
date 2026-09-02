@@ -62,7 +62,7 @@ jobs:
       - name: 4. ImportLint
         run: bunx import-lint --format github
 
-      # fallow 3.21: 解析は 1 回だけ実行し、同じ JSON から CI 向け 2 形式を描画する。
+      # fallow 3.22: 解析は 1 回だけ実行し、同じ JSON から CI 向け 2 形式を描画する。
       # annotations / summary 形式は fork PR でも write トークンなしで描画されるため、
       # PR コメント形式(要トークン)ではなくこちらを使う。ゲート判定(exit code)は
       # audit 本体のものを最後に返す
