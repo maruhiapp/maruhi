@@ -41,7 +41,8 @@ const CLI_PAGE_CSP =
  */
 export const CLI_PAGE_CSP_HEADER = `${CLI_PAGE_CSP}; frame-ancestors 'none'`;
 
-function page(title: string, body: string): string {
+/** スクリプトなしページの共通枠(signup-pages.ts と共用 — 同一の配信規律)。 */
+export function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -78,9 +79,27 @@ export function renderCliErrorPage(): string {
  * サインアップ案内ページ(§4-1 (4) (ii) — 裁定 DH: CLI ログインはアカウントを
  * 作らない)。載せるのは Web ログイン(サインアップの唯一の入口)への導線と
  * フロー再開リンク(verificationUrl)のみ。副作用ゼロ。
+ *
+ * `signupPolicy`(AUTH_SPEC §3 — 2026-09-01 H1)で 1 段目の文言を追随させる:
+ * invite 制下でプレーンなサインアップリンクを案内すると invite-required の
+ * 拒否ページへ誘導するだけになる(hosted-design.md §2-2 の「案内文言の追随」)。
+ * 表示のみの分岐であり、受理の正はサーバーゲート(§3)のまま。
  */
-export function renderSignupGuidancePage(origin: string, verificationUrl: string): string {
+export function renderSignupGuidancePage(
+  origin: string,
+  verificationUrl: string,
+  signupPolicy: "open" | "invite" | "closed",
+): string {
   const signupUrl = `${origin}/auth/github/start`;
+  const signupStep =
+    signupPolicy === "invite"
+      ? `Sign-ups on this server are invite-only: open the sign-up link that came with
+          your sign-up invite code (it carries the code) with this GitHub account. If you
+          don&#39;t have an invite, contact the operator of this server.`
+      : signupPolicy === "closed"
+        ? `Sign-ups on this server are currently closed. Contact the operator of this
+          server about getting an account.`
+        : `<a href="${escapeHtml(signupUrl)}">Sign up in the browser</a> with this GitHub account.`;
   return page(
     "maruhi — sign up first",
     `      <h2>No maruhi account yet</h2>
@@ -89,7 +108,7 @@ export function renderSignupGuidancePage(origin: string, verificationUrl: string
         existing accounts.
       </p>
       <ol>
-        <li><a href="${escapeHtml(signupUrl)}">Sign up in the browser</a> with this GitHub account.</li>
+        <li>${signupStep}</li>
         <li>
           Then <a href="${escapeHtml(verificationUrl)}">resume the CLI sign-in</a> (or open the
           verification link shown in your terminal again).

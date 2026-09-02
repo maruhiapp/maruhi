@@ -4,6 +4,7 @@
 // 判定順(§12-3)と permit 直列化の前提は旧 data-programs.ts のとおり:
 // requireMemberState → 環境の存在 → 意味論的検査 → 数量ポリシー → 原子書き込み。
 
+import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { AuditStore } from "./audit-store.ts";
@@ -26,6 +27,7 @@ import {
 } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
+import { ensureStorageAdmitsGrowth, observeStorageLevel } from "./storage-guard.ts";
 import { acceptManifestForMetaOp } from "./verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "./verify-meta.ts";
 
@@ -39,6 +41,10 @@ export const renameEnvironmentProgram = (
   Effect.gen(function* () {
     const { history, member, projectId } = yield* requireMemberState(actor.userId, "member", cache);
     const environment = yield* requireActiveEnvironment(environmentId);
+    // DO ストレージ総量ガード(§12-8 — H2): 環境の改名はステートメント行 +
+    // マニフェストを積む成長面(存在検査の後・NFC / 一意性 / CAS / 署名の前)。
+    // 削除(deleteEnvironmentProgram)は呼ばない — 解放手段を塞がない
+    yield* ensureStorageAdmitsGrowth;
     yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
     if (yield* store.environmentNameTaken(statement.name, environmentId)) {
@@ -201,6 +207,12 @@ export const pullEnvironmentProgram = (
       environmentId,
       cache,
     );
+    // DO ストレージ総量ガードの観測のみ(§12-8 — 拒否しない): 値付き pull は
+    // var.read を書く読み取りで、pull 主体のプロジェクトの支配的な成長項。
+    // 警告帯(8〜9 GB)の運用ログがここでも出ないと、そのプロジェクトは一度も
+    // 警告されずに拒否帯へ入る(PR #134 pullfrog レビュー指摘)。メンバーシップの
+    // 後(requirePullContext)= 非メンバーには何も観測されない
+    yield* observeStorageLevel;
     const variables = yield* store.latestVersions(environmentId);
     // 削除済み変数の deleted ステートメントも配布し続ける(§12-5 — 削除の
     // 否認・無断復活の検出材料。暗号文は削除済みなので値は伴わない)
@@ -213,22 +225,29 @@ export const pullEnvironmentProgram = (
     // 当該環境を含む最新 checkpoint の保存行(§16-2)があれば必ず同梱する。
     // クライアント規則 2(CRYPTO_SPEC §6.3)は基準あり + 列挙なしを拒否する
     const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
-    // 監査(AUDIT_SPEC §3.3): 一括 pull は返した変数ごとに var.read を 1 行
-    // (返した行に対して記録するため、行とイベントは常に一致する)
+    // 監査(AUDIT_SPEC §3.3 — 集約形。2026-09-02): 値付き一括 pull は環境単位
+    // 1 行で、返した変数の列挙(variableId / epoch / version — 昇順)を payload に
+    // 持つ(variable_id / epoch / version 列は NULL)。返した行に対して記録する
+    // ため、列挙と応答は常に一致する。返した変数が 0 なら記録しない(暗号文を
+    // 配布していない — 記録条件は不変。旧形でも 0 行だった)
     const audit = yield* AuditStore;
     const now = Date.now();
-    yield* Effect.sync(() => {
-      audit.appendManySync(
-        variables.map((variable) =>
-          dataEvent(actor, now, "var.read", {
+    if (variables.length > 0) {
+      yield* Effect.sync(() => {
+        audit.appendSync(
+          dataEvent(actor, now, VAR_READ_EVENT, {
             environmentId,
-            variableId: variable.variableId,
-            epoch: variable.epoch,
-            version: variable.version,
+            payload: auditReadPayload(
+              variables.map((variable) => ({
+                variableId: variable.variableId,
+                epoch: variable.epoch,
+                version: variable.version,
+              })),
+            ),
           }),
-        ),
-      );
-    });
+        );
+      });
+    }
     return {
       environmentId,
       currentEpoch: currentEpochOf(state, environmentId),

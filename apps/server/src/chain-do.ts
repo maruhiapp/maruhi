@@ -86,6 +86,7 @@ import {
 } from "./programs-variable.ts";
 import type { EffectiveRotationFlag } from "./rotation-detect.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
+import { ensureStorageAdmitsGrowth, StorageMeter, storageMeterLayer } from "./storage-guard.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
@@ -130,6 +131,14 @@ export interface Env {
    * projectStub 到達前の request-level 制限で生成レートを有界にする。
    */
   readonly LEASE_RATE_LIMIT?: RateLimit;
+  /**
+   * サインアップ招待コード付き `GET /auth/github/start` の発信元 IP レート制限
+   * (AUTH_SPEC §3 — 2026-09-01 H1)。コード付き start は事前検証の D1 読みを
+   * 伴う未認証面(検証自体は 256-bit 単回コードのハッシュ照合で存在オラクルに
+   * ならない — 制限は資源保護)。プレーンな start は従来どおり制限なし
+   * (ログイン導線 — サーバー側の状態・外部呼び出しを持たない 302 のみ)。
+   */
+  readonly SIGNUP_START_RATE_LIMIT?: RateLimit;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +157,12 @@ class AlreadyInitializedError extends Data.TaggedError("AlreadyInitialized")<{
   readonly headHashHex: string;
 }> {}
 class ProjectIdMismatchError extends Data.TaggedError("ProjectIdMismatch")<object> {}
+/**
+ * 未初期化の DO への init が worker の受理判定(AUTH_SPEC §11-3 のプロジェクト数
+ * 上限)により「新規初期化を認めない」指示で届いた。既存チェーンの有無を判定した
+ * 後にのみ到達する — 初期化済みなら AlreadyInitialized(修復経路)が先に立つ。
+ */
+class FreshInitNotAdmittedError extends Data.TaggedError("FreshInitNotAdmitted")<object> {}
 
 /** チェーンヘッド(受理成功の RPC 値)。 */
 export interface ChainHeadValue {
@@ -181,8 +196,27 @@ export type InitOutcome =
       readonly headSeq: number;
       readonly headHashHex: string;
     }
+  | {
+      /**
+       * 未初期化だったが、worker の受理判定(AUTH_SPEC §11-3 — org のプロジェクト
+       * 数上限)が新規初期化を認めなかった(admitFresh = false)。何も書いて
+       * いない。worker が 429 ProjectLimit に写す。初期化済みの DO はこの
+       * 分岐に到達せず already-initialized(修復経路 / 409)へ進む
+       */
+      readonly kind: "fresh-not-admitted";
+    }
   | { readonly kind: "project-id-mismatch" }
   | { readonly kind: "rejected"; readonly rejection: DataRejection };
+
+/**
+ * init の受理指示(worker → DO)。`admitFresh` = 未初期化の DO への新規初期化を
+ * 認めるか(AUTH_SPEC §11-3 のプロジェクト数上限の判定結果)。false でも DO は
+ * 「初期化済みか」を自分の直列化の中で判定してから答えるため、上限到達時の
+ * §11-3 修復経路(already-initialized + 行欠損)は塞がれない。
+ */
+export interface InitAdmission {
+  readonly admitFresh: boolean;
+}
 
 /** RPC 境界を渡る追記結果。 */
 export type AppendOutcome = DataOutcome<ChainHeadValue>;
@@ -202,7 +236,12 @@ function ensureChainMember(
   return members.has(userId) ? Effect.void : Effect.fail(rejectData({ kind: "not-member" }));
 }
 
-const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateCache) =>
+const initProgram = (
+  expectedProjectId: string,
+  entry: ChainEntry,
+  admission: InitAdmission,
+  cache: StateCache,
+) =>
   Effect.gen(function* () {
     const store = yield* ChainStore;
     const chain = yield* store.load;
@@ -218,6 +257,13 @@ const initProgram = (expectedProjectId: string, entry: ChainEntry, cache: StateC
         headSeq: chain.headSeq,
         headHashHex: chain.headHashHex,
       });
+    }
+    // AUTH_SPEC §11-3 のプロジェクト数上限(worker が判定済み): 上限到達時は
+    // 新規初期化のみを断る。「初期化済みか」の判定(上)の後に置くことで、
+    // 上限到達 org の修復再 init(already-initialized)は上限に依らず通る —
+    // この順序が §11-3「修復経路を上限で塞がない」の実装点
+    if (!admission.admitFresh) {
+      return yield* new FreshInitNotAdmittedError();
     }
     // 空チェーンへの受理 4 手順(容量検査は空チェーンでは自明に通る)。
     // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
@@ -256,12 +302,21 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
     };
   });
 
-const appendProgram = (
+/**
+ * 汎用チェーン追記の受理プログラム(公開はテスト用 — storage-guard.test.ts が
+ * add_member / grant_server の拒否と remove_member / checkpoint の非遮断を、
+ * 実測量を差し替えた StorageMeter の下で直接固定する)。
+ */
+export const appendProgram = (
   parentHeadHashHex: string,
   entry: ChainEntry,
   callerUserId: string,
   cache: StateCache,
-): Effect.Effect<ChainHeadValue, DataRejectedError, ChainStore | AuditStore | DataStore> =>
+): Effect.Effect<
+  ChainHeadValue,
+  DataRejectedError,
+  ChainStore | AuditStore | DataStore | StorageMeter
+> =>
   Effect.gen(function* () {
     // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
     // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
@@ -277,6 +332,14 @@ const appendProgram = (
       return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
+    // DO ストレージ総量ガード(AUTH_SPEC §12-8 — H2): アクセス集合を拡げる
+    // add_member / grant_server のみ(自然な後続のラップバックフィルが拒否対象
+    // のため入口で揃える)。remove_member / revoke_server / change_role(失効・
+    // 権限縮小 = セキュリティ是正)と checkpoint(有界)は拒否下でも受理する。
+    // 位置はメンバーシップの後(§11-2)・CAS / verifyChain の前(資源保護優先)
+    if (entry.op === "add_member" || entry.op === "grant_server") {
+      yield* ensureStorageAdmitsGrowth;
+    }
     yield* ensureParentHead(chain, parentHeadHashHex);
     // 受理 4 手順(サイズ → 容量 → verifyChain → insert + ミラー)は複合経路と
     // 共有(chain-accept.ts)
@@ -286,7 +349,8 @@ const appendProgram = (
     return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
   });
 
-const snapshotProgram = (
+/** チェーン取得(公開はテスト用 — 拒否下でも読み取りが通ることの固定)。 */
+export const snapshotProgram = (
   callerUserId: string,
   cache: StateCache,
 ): Effect.Effect<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> =>
@@ -323,7 +387,7 @@ const memberRoleProgram = (
 // Durable Object(ManagedRuntime パターン。spike-b の確立形)
 // ---------------------------------------------------------------------------
 
-type DoServices = ChainStore | DataStore | AuditStore | ServerKey;
+type DoServices = ChainStore | DataStore | AuditStore | ServerKey | StorageMeter;
 
 /** データプレーンの拒否を RPC outcome へ畳む(成功は ok 側)。 */
 const toDataOutcome = <T, R>(
@@ -351,6 +415,9 @@ export class ProjectChainDO extends DurableObject<Env> {
         chainStoreLayer(ctx.storage.sql, this.#stateCache),
         dataStoreLayer(ctx.storage.sql),
         auditStoreLayer(ctx.storage.sql),
+        // DO ストレージ総量ガードの実測点(AUTH_SPEC §12-8 — storage-guard.ts)。
+        // 運用ログの 1 回限りフラグはこの layer(= インスタンス)に束縛される
+        storageMeterLayer(ctx.storage.sql),
         // リースの開封 + 再ラップは DO 内で行う(programs-lease.ts の冒頭:
         // 監査の原子性)。worker 側の ServerKey とは別インスタンスだが、
         // 同じ Workers Secret から同じ keypair を導出する
@@ -398,14 +465,19 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
-  init(expectedProjectId: string, entry: ChainEntry): Promise<InitOutcome> {
+  init(
+    expectedProjectId: string,
+    entry: ChainEntry,
+    admission: InitAdmission,
+  ): Promise<InitOutcome> {
     // 拒否(DataRejected)は toDataOutcome と同じ rejected 形へ畳む。init 固有の
-    // 「初期化済み」(拒否ではない — 冪等修復の判定材料)と worker 側バグ検出の
+    // 「初期化済み」(拒否ではない — 冪等修復の判定材料)・「新規初期化を認めない」
+    // (worker のプロジェクト数上限 — §11-3)と worker 側バグ検出の
     // project-id-mismatch だけが専用分岐を持つ
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
-          initProgram(expectedProjectId, entry, this.#stateCache).pipe(
+          initProgram(expectedProjectId, entry, admission, this.#stateCache).pipe(
             Effect.map((head): InitOutcome => ({
               kind: "initialized",
               headSeq: head.headSeq,
@@ -419,6 +491,8 @@ export class ProjectChainDO extends DurableObject<Env> {
                   headSeq: error.headSeq,
                   headHashHex: error.headHashHex,
                 }),
+              FreshInitNotAdmitted: (): Effect.Effect<InitOutcome> =>
+                Effect.succeed({ kind: "fresh-not-admitted" }),
               ProjectIdMismatch: (): Effect.Effect<InitOutcome> =>
                 Effect.succeed({ kind: "project-id-mismatch" }),
               DataRejected: (error): Effect.Effect<InitOutcome> =>

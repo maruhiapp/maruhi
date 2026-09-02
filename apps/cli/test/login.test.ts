@@ -205,6 +205,114 @@ describe("maruhi login", () => {
     expect(logs).not.toContain("maruhi_pat_issued");
   });
 
+  describe("signupPolicy の事前 fail-fast(AUTH_SPEC §3 / hosted-design §2-2 (i)(ii))", () => {
+    /** /auth/config が signupPolicy を申告するハンドオフ一式。 */
+    function handoffWithConfig(config: Record<string, unknown>): {
+      handlers: MockHandler[];
+      polls: () => number;
+    } {
+      const handoff = fakeHandoff();
+      return {
+        handlers: [
+          onRequest("GET", "/auth/config", () => ({
+            status: 200,
+            json: { githubClientId: "dummy", ...config },
+          })),
+          ...handoff.handlers,
+        ],
+        polls: handoff.polls,
+      };
+    }
+
+    it("invite 制: 対話端末では既存アカウント保持を確認し、yes なら進む", async () => {
+      const handoff = handoffWithConfig({ signupPolicy: "invite" });
+      const maruhi = await start(handoff.handlers);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+      env.setPromptResponses(["y"]);
+
+      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(env.prompts.join("\n")).toContain("Do you already have a maruhi account");
+      expect(env.logs.join("\n")).toContain("invite-only");
+      // 確認を通過したら通常どおり start → poll へ進む
+      expect(handoff.polls()).toBeGreaterThan(0);
+    });
+
+    it("invite 制: no(既定)なら start を呼ぶ前に案内を出して終了する", async () => {
+      const handoff = handoffWithConfig({ signupPolicy: "invite" });
+      const maruhi = await start(handoff.handlers);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+      env.setPromptResponses([""]);
+
+      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+      // 誤操作ガード(認可ではない): 無駄なブラウザ往復を始めない
+      expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
+      const output = [...env.logs, ...env.errors].join("\n");
+      expect(output).toContain("sign up in your browser first");
+      expect(output).toContain("Sign up in the browser first, then run `maruhi login` again");
+      expect(env.keychain.size).toBe(0);
+    });
+
+    it("closed: 対話端末では確認を挟み、no なら終了する", async () => {
+      const handoff = handoffWithConfig({ signupPolicy: "closed" });
+      const maruhi = await start(handoff.handlers);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+      env.setPromptResponses(["n"]);
+
+      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+      expect(env.logs.join("\n")).toContain("not accepting new sign-ups");
+      expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
+    });
+
+    it("非対話環境(エージェント・パイプ)では案内だけ出して進む(プロンプトで吊るさない)", async () => {
+      for (const shape of ["agent", "piped"] as const) {
+        const handoff = handoffWithConfig({ signupPolicy: "invite" });
+        const maruhi = await start(handoff.handlers);
+        const env = await makeTestEnv();
+        await seedConfig(env, { server: maruhi.origin });
+        if (shape === "agent") {
+          env.setAgent({ isAgent: true, name: "test-agent" });
+        } else {
+          env.setTerminal({ stdin: false });
+        }
+        expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+        expect(env.prompts).toHaveLength(0);
+        expect(env.logs.join("\n")).toContain("invite-only");
+        expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
+      }
+    });
+
+    it("open では確認も案内も挟まない", async () => {
+      const handoff = handoffWithConfig({ signupPolicy: "open" });
+      const maruhi = await start(handoff.handlers);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+
+      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(env.prompts).toHaveLength(0);
+      expect(env.logs.join("\n")).not.toContain("invite-only");
+    });
+
+    it("signupPolicy 未申告(旧サーバー)・/auth/config 不在でも従来どおり進む(advisory の欠落で login を壊さない)", async () => {
+      // 未申告: フィールドなしの 200
+      const withoutField = handoffWithConfig({});
+      const oldServer = await start(withoutField.handlers);
+      const env1 = await makeTestEnv();
+      await seedConfig(env1, { server: oldServer.origin });
+      expect(await runCli(["login", ...FAST_POLL], env1.layer)).toBe(0);
+      expect(env1.prompts).toHaveLength(0);
+      // 不在: /auth/config ハンドラなし(404)— fakeHandoff 素のまま
+      const bare = fakeHandoff();
+      const bareServer = await start(bare.handlers);
+      const env2 = await makeTestEnv();
+      await seedConfig(env2, { server: bareServer.origin });
+      expect(await runCli(["login", ...FAST_POLL], env2.layer)).toBe(0);
+      expect(env2.prompts).toHaveLength(0);
+    });
+  });
+
   it("対話端末 × 非エージェントではブラウザ自動起動を試みる(§4-1 (2) の UX 分岐)", async () => {
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);

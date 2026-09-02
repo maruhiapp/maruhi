@@ -39,6 +39,7 @@ export {
   ChainInvalidReasonSchema,
   CompositeRequiredError,
   ProjectAlreadyInitializedError,
+  ProjectLimitError,
   ProjectNotFoundError,
 } from "./chain.ts";
 export {
