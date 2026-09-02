@@ -34,13 +34,8 @@
     "@types/node": "26.4.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
-<<<<<<< HEAD
-    "@vitejs/plugin-react": "6.1.0",
-    "effect": "4.0.0-rc.112",
-=======
     "@vitejs/plugin-react": "6.1.1",
-    "effect": "4.0.0-rc.111",
->>>>>>> origin/main
+    "effect": "4.0.0-rc.112",
     "playwright": "1.62.1",
     "react-doctor": "0.9.12",
     "vite": "8.2.2",
