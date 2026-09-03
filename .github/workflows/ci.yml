@@ -47,8 +47,21 @@ jobs:
 
       # 既知脆弱性の監査(GHSA アドバイザリ照合)。厳密ピン留め運用は意図しない
       # 更新を防ぐ代わりに既知 CVE の放置に気づきにくいため、CI で常時検知する
+      # --ignore は Blume(apps/site — ビルド時のみ動くメンテナ側ツールチェーン。配信物に
+      # 載らない)の推移依存で、上流に修正版が無いもの(2026-09-03 時点。DP2 — PR #147):
+      #   GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq: image-size@2.0.2(ICNS / JXL / HEIF の
+      #     解析で無限ループ = DoS)。latest が 2.0.2 で修正版なし。Blume の画像最適化がビルド時に
+      #     読むのは自リポジトリの PNG / SVG のみで、信頼できない画像を渡す経路がない
+      #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0(ReDoS)— @astrojs/vercel > @vercel/routing-utils
+      #     の厳密ピン。Vercel へはデプロイしないため実行経路がない。名前単位の overrides で 6.3.0 に
+      #     すると router(express 5 系、^8)まで巻き込むので採らない
+      # いずれも Blume の更新で消える見込み。新しい advisory は引き続き検知する(ignore は ID 単位)
       - name: Audit (bun audit)
-        run: bun audit
+        run: >-
+          bun audit
+          --ignore GHSA-w3rx-r6r6-pgpr
+          --ignore GHSA-5p2g-fcmc-qvqq
+          --ignore GHSA-9wv6-86v2-598j
 
       - name: 1. Format (oxfmt)
         run: bun run fmt:check

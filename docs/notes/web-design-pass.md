@@ -296,7 +296,11 @@ banner(private preview の案内、dismiss は localStorage)/ Edit on GitHub・G
 Ask AI・MCP サーバー(既定 off。server 出力が要る)/ `lastModified`(既定 off。浅い clone で崩れる)。**off にできない外部
 通信は無い**(実測: LP / docs / テーマトグル / 検索 / クライアント遷移の全経路で外部オリジンへの要求ゼロ・CSP 違反ゼロ)。
 
-**新たに出た裁定点**: (I) **ダークモードのロゴ**: `logo.image` の `{ light, dark }` 形で `<img>` 2 枚を出し分ける。dark 用 SVG は
+**新たに出た裁定点**: (L) **`bun audit` の推移依存**: Blume の依存木に image-size@2.0.2(修正版なし)と
+@vercel/routing-utils の path-to-regexp@6.1.0(厳密ピン)が含まれ CI の監査が落ちる。列挙: 名前単位の `overrides`
+(router の ^8 系まで巻き込む)/ 監査ステップの除外 / advisory ID 単位の `--ignore`(採用 — ビルド時のみ動く
+メンテナ側ツールチェーンで配信物に載らず、実行経路も無い。根拠は ci.yml のコメント。Blume 更新で消える見込み)。
+(I) **ダークモードのロゴ**: `logo.image` の `{ light, dark }` 形で `<img>` 2 枚を出し分ける。dark 用 SVG は
 原本の fill を dark accent(`#FF693C`)へ差し替えた生成物(B の生成スクリプト — 手書き hex ゼロ)。currentColor 版
 (`logo-mono.svg`)だと印が文字色になり「朱の印」でなくなるため不採用。(J) **Blume の実行ランタイム**: `bunx --bun blume`(Bun)。
 Node 22.12+ の要求は Bun 上の実測完走で代替し、CI に Node のセットアップを足さない。(K) **配信物の重複フォント**(C)。
