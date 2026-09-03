@@ -70,6 +70,11 @@ The GitHub OAuth callback URL is derived from this deploy URL, so **deploy befor
 you create the OAuth App** (OAuth is not configured yet at this point, so auth
 endpoints return 503 `SetupIncomplete` — that is expected).
 
+Optional: the dashboard's social-preview image tag (`og:image`) needs an absolute
+URL, which is baked in at build time and defaults to the hosted service. To point
+it at your own deployment, set `MARUHI_WEB_ORIGIN=<deploy-url>` in the environment
+when you run `bun run deploy` (it only affects link previews; nothing else reads it).
+
 ### 4. Create a GitHub OAuth App
 
 Create one at https://github.com/settings/applications/new:
