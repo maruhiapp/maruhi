@@ -356,7 +356,11 @@ token** を使う(発行者の離脱・権限変更に影響されない)。権�
 - **Effect HTTP ロガーによる capability のログ残留**(§1 Workers Logs 行)— `disableLogger: true`
 - `r2 bucket lifecycle add` に規則名が必須(§1 R2 行・SELF_HOSTING.md)
 - Actions 用トークンの権限は D1: Edit + Workers R2 Storage: Edit(§2-G・ops-backup.yml・SELF_HOSTING.md)
-- D1 import の文順(§5-1 (3)・SELF_HOSTING.md・新規 `scripts/reorder-d1-dump.ts`)
+- D1 import の文順(§5-1 (3)・SELF_HOSTING.md・新規 `scripts/reorder-d1-dump.ts` — 純関数部 `.lib.ts` を
+  `test/reorder-d1-dump.test.ts` で固定)
+- PR #139 pullfrog レビューで追加: 単一オリジン不変条件(`workers_dev: false` + `routes`)を CI 8c の検査に、
+  capability がログに出ないことの回帰テスト(`test/log-hygiene.test.ts` — Effect ロガーを戻すと落ちる)、
+  `disableLogger` で消える失敗系ログの代わりに 500 のときだけ静的 1 行(index.ts)
 - `deployment_settings` への直 INSERT は `updated_at` NOT NULL — SELF_HOSTING.md の SQL が正(runbook 化)
 - GitHub OAuth App の登録フォームが変更されている(Redirect URIs 複数・"Expire user access tokens")— SELF_HOSTING.md §4
 

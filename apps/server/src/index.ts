@@ -268,9 +268,15 @@ export default {
     if (cappedRequest === null) {
       return withSecurityHeaders(new Response(null, { status: 413 }));
     }
-    return withSecurityHeaders(
-      await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest)),
-    );
+    const response = await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest));
+    // disableLogger(handlerFor)は Effect のロガーの失敗分岐(cause 付き)も止めるため、
+    // 未処理の失敗・defect が Workers Logs に一切残らなくなる。代わりに識別子を含まない
+    // 静的 1 行だけを残す(PR #139 pullfrog 指摘)。503 SetupIncomplete 等の意図した
+    // 5xx は対象外 — 500 は HttpApi が型付きエラーへ写せなかった経路のみ
+    if (response.status === 500) {
+      console.error("unhandled failure at the HTTP boundary (500)");
+    }
+    return withSecurityHeaders(response);
   },
   // 定期ジョブ(wrangler.jsonc の triggers.crons — cron 文字列で分岐):
   // - 毎時(OPS_HOURLY_CRON): 運用基盤 H3 — DO → R2 退避スイープ(ops-backup.ts。
