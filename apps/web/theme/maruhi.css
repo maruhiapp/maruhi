@@ -234,43 +234,43 @@
       --color-syntax-property: light-dark(#005348, #83dac9);
       --color-syntax-punctuation: light-dark(#6e6e6e, #a0a0a0);
       --color-syntax-background: light-dark(#fafafa, #0a0a0a);
-      --color-background-surface: light-dark(#fffbfa, #251817);
-      --color-background-body: light-dark(#ffedea, #1c0d09);
-      --color-background-card: light-dark(#fffbfa, #251817);
-      --color-background-popover: light-dark(#fffbfa, #3b2d2b);
-      --color-background-muted: light-dark(#2518170d, #25181780);
-      --color-accent: light-dark(#b22a2b, #ffb3a8);
+      --color-background-surface: light-dark(#fffbf9, #241915);
+      --color-background-body: light-dark(#ffede7, #1b0d07);
+      --color-background-card: light-dark(#fffbf9, #241915);
+      --color-background-popover: light-dark(#fffbf9, #3a2e29);
+      --color-background-muted: light-dark(#2419150d, #24191580);
+      --color-accent: light-dark(#c1330b, #ff693c);
       --color-accent-muted: light-dark(
         color-mix(in srgb, var(--color-accent) 20%, transparent),
         color-mix(in srgb, var(--color-accent) 25%, transparent)
       );
-      --color-neutral: light-dark(#2518171a, #f1dedc33);
-      --color-overlay: light-dark(#25181766, #25181799);
-      --color-overlay-hover: light-dark(#2518170d, #ffffff0d);
-      --color-overlay-pressed: light-dark(#2518171a, #ffffff1a);
-      --color-text-primary: light-dark(#251817, #f1dedc);
-      --color-text-secondary: light-dark(#57423f, #bfa6a2);
-      --color-text-disabled: light-dark(#a38b88, #6f5956);
+      --color-neutral: light-dark(#2419151a, #f0dfd933);
+      --color-overlay: light-dark(#24191566, #24191599);
+      --color-overlay-hover: light-dark(#2419150d, #ffffff0d);
+      --color-overlay-pressed: light-dark(#2419151a, #ffffff1a);
+      --color-text-primary: light-dark(#241915, #f0dfd9);
+      --color-text-secondary: light-dark(#56423c, #bda69f);
+      --color-text-disabled: light-dark(#a28c85, #6e5a53);
       --color-text-accent: var(--color-accent);
       --color-on-dark: #ffffff;
       --color-on-light: #171717;
-      --color-on-accent: light-dark(#ffffff, #750000);
+      --color-on-accent: light-dark(#ffffff, #241915);
       --color-on-success: light-dark(#ffffff, #171717);
       --color-on-error: light-dark(#ffffff, #171717);
       --color-on-warning: #171717;
       --color-icon-accent: var(--color-accent);
-      --color-icon-primary: light-dark(#251817, #f1dedc);
-      --color-icon-secondary: light-dark(#57423f, #bfa6a2);
-      --color-icon-disabled: light-dark(#a38b88, #6f5956);
+      --color-icon-primary: light-dark(#241915, #f0dfd9);
+      --color-icon-secondary: light-dark(#56423c, #bda69f);
+      --color-icon-disabled: light-dark(#a28c85, #6e5a53);
       --color-success: light-dark(#007004, #9fe59b);
       --color-error: light-dark(#a50c25, #ffc6c1);
       --color-warning: light-dark(#745b00, #fdcf4f);
       --color-success-muted: light-dark(#c5e5c0, #84c9803d);
       --color-error-muted: light-dark(#facecb, #ff9e973d);
       --color-warning-muted: light-dark(#f8da9d, #deb4333d);
-      --color-border: light-dark(#2518171a, #ffedea1a);
-      --color-border-emphasized: light-dark(#a38b88, #796360);
-      --color-skeleton: light-dark(#bfa6a2, #57423f);
+      --color-border: light-dark(#2419151a, #ffede71a);
+      --color-border-emphasized: light-dark(#a28c85, #78645d);
+      --color-skeleton: light-dark(#bda69f, #56423c);
       --color-shadow: light-dark(#0000001a, #0000004d);
       --color-tint-hover: light-dark(black, white);
       --color-background-red: light-dark(#facecb, #ff9e973d);
@@ -336,8 +336,8 @@
       --shadow-inset-success: inset 0px 0px 0px 2px #1981004d;
       --shadow-inset-warning: inset 0px 0px 0px 2px #ffce2f4d;
       --shadow-inset-error: inset 0px 0px 0px 2px #e33f4a4d;
-      --color-background-inverted: light-dark(#251817, #fffbfa);
-      --color-track: light-dark(#bfa6a2, #57423f);
+      --color-background-inverted: light-dark(#241915, #fffbf9);
+      --color-track: light-dark(#bda69f, #56423c);
     }
 
     .astryx-heading.level-1 {
