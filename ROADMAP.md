@@ -38,7 +38,7 @@
 - 監査ログ UI、Web ダッシュボード(**信頼境界は ADR-0018 — 2026-08-18 裁定**: Web は鍵・平文を持たない管理画面。値・鍵操作は各人の CLI、画面は TUI → 値なし `maruhi ui` → 値ありは独立 ADR の段階導入。W0 は「誰がこの画面を見るか」から)**W0(画面設計)完了(2026-08-28 — ADR-0018 改訂 2: Web は「静的案内 + 読み取り + 失効系のみ」、トークン・招待の発行と生値は端末限定、SECURITY_REVIEW L-2 は AUTH_SPEC §6 の既定 TTL で同時解消。画面目録・gap 分析・実装分割 W1〜W3b は docs/notes/web-dashboard-design.md、裁定は docs/notes/session-39.md)**
 - CLI 配布: npm / brew tap / インストールスクリプト、macOS 公証(Apple Developer Program は公開 2〜3 週前に登録)、npm provenance、チェックサム公開
 - 運用側デプロイを Alchemy v2 へ載せる(ADR-0012。現状は素の wrangler 経路のみが実在 — セルフホスト配布物はこのまま維持する)。spike-b / セッション 03 の申し送り: ① state store が常設 worker + secret を張る設計を運用として受け入れるか `state:` を差し替えるか ② worker 名が Alchemy の命名規則(`<stack>-<resource>-<stage>-<hash>`)になるので stage / 命名の明示設定 ③ ソースを Alchemy 非依存に保つため **Async Worker 形式に固定**(Effect ネイティブな Worker/DO 記述を使うと wrangler 経路が壊れる)
-- ユーザーに見える文言を英語へ統一(ADR-0017)。**CLI 分は完了**(ADR-0016 第 3 段階 — コマンド単位の移行 PR + 最終コミットの共有モジュール一括英語化で、`pull` / `run` / `env create` の先行 3 コマンド分も解消済み)。**web / README / インストーラ / 配布物ドキュメント分は完了**(web = `Root.tsx` の `lang="en"`。README / CONTRIBUTING / SELF_HOSTING / install.sh のユーザー可視メッセージ)。docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダのみ)なので、サイト構築時に英語で書く
+- ユーザーに見える文言を英語へ統一(ADR-0017)。**CLI 分は完了**(ADR-0016 第 3 段階 — コマンド単位の移行 PR + 最終コミットの共有モジュール一括英語化で、`pull` / `run` / `env create` の先行 3 コマンド分も解消済み)。**web / README / インストーラ / 配布物ドキュメント分は完了**(web = `Root.tsx` の `lang="en"`。README / CONTRIBUTING / SELF_HOSTING / install.sh のユーザー可視メッセージ)。docs サイト(Blume — `apps/site`、DP2 で構築)も英語で書いている(LP / docs の文言・`blume.config.ts` の banner を含む)
 - docs サイト(Blume)**後回し(2026-08-30 オーナー裁定 — H0)**: 公開の必須物から外す(公開時は README + SELF_HOSTING で足りる)。GA までに構築(H 系列の節を参照)
 
 ## ホステッドクラウド版(H 系列 — 2026-08-30 H0 で実スケジュール化。ADR-0014 改訂 1)

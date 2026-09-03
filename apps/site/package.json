@@ -11,7 +11,8 @@
     "e2e": "vitest run",
     "preview": "wrangler dev --port 8789",
     "theme:build": "bun run scripts/build-theme.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "validate": "bunx --bun blume validate --strict"
   },
   "dependencies": {
     "blume": "1.5.3"

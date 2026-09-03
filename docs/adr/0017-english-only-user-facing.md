@@ -61,7 +61,7 @@ web(`apps/web/src/Root.tsx` の `<html lang="ja">`)と docs サイトは CLI と
 - `packaging/install-test.sh` のラベル文字列(CI 内部。install.sh の文言を grep で固定している箇所だけ道連れに更新)
 - ワークスペースの `apps/cli/package.json` に `description` フィールドは無い(追加しない)。npm へ出すマニフェストは `apps/cli/scripts/build-npm.ts` が組み立て、`description` と同梱 `README.md` は**既に英語**(今回の対象外。英語のまま維持する)
 
-docs サイト(Blume)は実体が未着工(`apps/docs` はプレースホルダのみ)。サイト構築時に英語で書く旨を ROADMAP に残した。
+docs サイト(Blume)は当時未着工(`apps/docs` はプレースホルダのみ)で、サイト構築時に英語で書く旨を ROADMAP に残した。**2026-09-03 DP2 で `apps/site`(LP + docs)として構築し、LP / docs の全文言を英語で書いた**(ADR-0008 改訂 1)。
 
 **裁定**:
 

@@ -218,6 +218,17 @@ const csp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+// Cloudflare の _headers は 1 行 2,000 文字が上限で、超過は黙って落ちる(セキュリティヘッダーの
+// 無言の欠落)。ハッシュの集合は inline 本文の種類数で増えるため、上限をビルド失敗で守る
+const HEADERS_LINE_LIMIT = 2000;
+const cspLine = `  Content-Security-Policy: ${csp}`;
+if (cspLine.length > HEADERS_LINE_LIMIT) {
+  throw new Error(
+    `_headers の CSP 行が ${cspLine.length} 文字で Cloudflare の上限 ${HEADERS_LINE_LIMIT} を超える。` +
+      "inline script / style の種類が増えた(Blume の更新?)— ハッシュの集合を見直すこと",
+  );
+}
+
 // Blume が出した _headers(/docs/*.md 等の charset・トップの Link ヘッダー)は保持し、`/*` の
 // セキュリティヘッダーを追記する(同じパスに複数ブロックが一致しても、ヘッダー名が異なれば併記される)。
 // HSTS は apex 単独(includeSubDomains / preload はゾーン運用側の判断 = 人間タスク)

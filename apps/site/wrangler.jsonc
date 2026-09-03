@@ -13,11 +13,13 @@
   "preview_urls": false,
   "routes": [{ "pattern": "maruhi.app", "custom_domain": true }],
   "assets": {
-    // `bun run build`(blume build + scripts/write-headers.ts)の出力。_headers(CSP 等)込み
+    // `bun run build`(blume build + scripts/postbuild.ts)の出力。_headers(CSP 等)込み
     "directory": "./dist",
     // Blume の内部リンクは末尾スラッシュなし(`/docs/getting-started`)で、出力は
     // `docs/getting-started/index.html`。drop-trailing-slash はその形を正規 URL にし、
-    // `/docs/getting-started/` を 308 で戻す(canonical / sitemap と一致)
+    // `/docs/getting-started/` を 307 で戻す(Cloudflare の仕様は 307 = 一時リダイレクト。
+    // 正規化の信号は各ページの <link rel="canonical"> と sitemap が担い、この設定は
+    // Blume のリンク形式と配信 URL を一致させるだけ)
     "html_handling": "drop-trailing-slash",
     // Blume が 404.html を出す(サイトの chrome 付き)。SPA ではないのでフォールバックしない
     "not_found_handling": "404-page",

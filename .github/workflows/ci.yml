@@ -142,6 +142,11 @@ jobs:
       - name: 8d. Site build (Blume + CSP headers)
         run: bun run --filter @maruhi/site build
 
+      # 内部リンク・アンカー・アセット参照の検証(Blume の validate。--external は付けず
+      # 外部 URL を叩かない — 「言わざる」は CI にも適用)。--strict で警告も落とす
+      - name: 8d2. Site link validation (blume validate)
+        run: bun run --filter @maruhi/site validate
+
       - name: 8e. Site deploy dry-run (static assets config)
         run: bunx wrangler deploy --dry-run
         working-directory: apps/site

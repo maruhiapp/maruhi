@@ -1,4 +1,4 @@
-// apex サイト(LP + docs — Blume)の e2e。ビルド済み dist(+ scripts/write-headers.ts の
+// apex サイト(LP + docs — Blume)の e2e。ビルド済み dist(+ scripts/postbuild.ts の
 // _headers)を **本番と同じ wrangler 設定**(apps/site/wrangler.jsonc — Workers Static Assets のみ)
 // で配信し、Playwright(Chromium)で次を固定する(docs/notes/web-design-pass.md §4 の検証項目):
 //   1. 全リクエストが同一オリジン(外部への通信ゼロ — 「言わざる」)
@@ -139,7 +139,7 @@ describe("site e2e: headers (Workers Static Assets — apps/site/wrangler.jsonc)
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("strict-transport-security")).toContain("max-age=");
-    // Blume が出した _headers(トップの Link ヘッダー)は write-headers.ts が保持する
+    // Blume が出した _headers(トップの Link ヘッダー)は postbuild.ts が保持する
     expect(res.headers.get("link")).toContain("llms.txt");
   });
 
@@ -284,7 +284,13 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     const { requests, violations } = observe(page);
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
-    await page.locator("a[href='/docs/getting-started']").first().click();
+    // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される(pullfrog 指摘の固定)
+    for (const target of ["/docs/getting-started", "/docs/self-hosting"]) {
+      await expect(page.locator(`a[data-blume-card][href='${target}']`).count()).resolves.toBe(1);
+    }
+    // 本文から LP(サイトルート)へのリンクは basePath の書き換えを受けない絶対 URL
+    await expect(page.locator("a[href='/docs/#access']").count()).resolves.toBe(0);
+    await page.locator("a[data-blume-card][href='/docs/getting-started']").click();
     await page.locator("h1", { hasText: "Getting started" }).waitFor();
     expect(new URL(page.url()).pathname).toBe("/docs/getting-started");
     expect(foreignOrigins(requests)).toEqual([]);
