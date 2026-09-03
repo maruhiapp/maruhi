@@ -374,7 +374,7 @@ token 請求 1 回のみ)。(2) (b) GitHub App 移行は本問題の解ではな
 
 | # | タスク | 期限の目安 |
 |---|---|---|
-| L1 | ~~ホステッドの提供ドメイン決定(apex / app サブドメイン)~~ **2026-09-03 裁定済み**: 製品オリジン(API + ダッシュボード)= `my.maruhi.app`〔custom domain で束縛済み・workers.dev は無効〕、apex `maruhi.app` = LP、`maruhi.dev` = docs(ダッシュボードのオリジンは TCB なので LP と分ける — hosted-ops.md §7 O3)。残タスク = apex への LP 配置(DP2 と一体)と `maruhi.dev` の docs 配置。両ドメインは取得済み・ゾーンは運営 CF アカウントにある | DP2(H6 ゲート)前 |
+| L1 | ~~ホステッドの提供ドメイン決定(apex / app サブドメイン)~~ **2026-09-03 裁定済み**: 製品オリジン(API + ダッシュボード)= `my.maruhi.app`〔custom domain で束縛済み・workers.dev は無効〕、apex `maruhi.app` = LP + **docs(`/docs` パス — SEO 集約・1 デプロイ。2026-09-03 改訂: 当初の「`maruhi.dev` = docs」を撤回)**、`maruhi.dev` は取得済みのまま `maruhi.app` へ 301(ダッシュボードのオリジンは TCB なので LP と分ける — hosted-ops.md §7 O3 / docs/notes/web-design-pass.md §1-4)。残タスク = apex への静的サイト配置(DP2 と一体)と `maruhi.dev` のリダイレクト。両ドメインは取得済み・ゾーンは運営 CF アカウントにある | DP2(H6 ゲート)前 |
 | L2 | 商標出願(9 類・42 類 — 既存チェックリスト項) | 公開前に出願着手 |
 | L3 | 利用規約(ToS)・プライバシーポリシー(GDPR / 各国法制の適用整理を含む)・許容利用ポリシー(AUP)。ゼロ知識の線引き(§1)と脅威モデル(§6)を法文書の記述と整合させる。**配信面は web の静的ページ(§9 の web 面 — H4 に帰属)** | 招待制ベータ前 |
 | L4 | サブプロセッサの整理(Cloudflare — DPA 依拠)と開示 | L3 と同時 |
