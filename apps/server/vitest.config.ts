@@ -81,8 +81,10 @@ export default defineConfig({
     // 全件通過することを確認済み。ファイル間の状態依存が疑われる flake が出た
     // 場合は、まず当該ファイルの fixture が「自分の前提状態を自分で作る」規律を
     // 守っているかを確認する(isolate を戻すのは最後の手段)。R2(OPS_BACKUP_BUCKET)
-    // はリセットしていない: バケットを読むテストは必ず自ファイル固有のプレフィックス
-    // で絞る(ops-backup.test.ts の `oversize-test/<doId>/` が現状の唯一の例)。
+    // は共通のリセットを持たない: バケットを読むテストは自ファイル固有のプレフィックス
+    // で絞る(ops-backup.test.ts の `oversize-test/<doId>/`)か、製品のキー配置を
+    // 走査せざるを得ない場合は beforeEach で当該プレフィックスを自分で空にする
+    // (ops-restore.test.ts の `restore/`)。
     //
     // 前提: @cloudflare/vitest-plugin 1.1.2 以降。それ以前(vitest-pool-workers
     // 0.22.0 まで)は SELF.fetch のリクエスト単価が累積リクエスト数に比例して増える
