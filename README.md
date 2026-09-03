@@ -131,6 +131,7 @@ This repository uses different licenses per area ([ADR-0003](docs/adr/0003-licen
 |---|---|
 | Repository default, including `apps/server` and `apps/web` | [FSL-1.1-MIT](LICENSE.md) |
 | `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema` | MIT (`LICENSE` in each directory) |
+| Brand assets in `apps/web/public/` (the ㊙ mark: `logo*.svg`, `favicon*`, `og.png`) | The 秘 outline derives from Noto Sans CJK JP (SIL OFL 1.1) — notice and license text in [`apps/web/public/fonts/OFL-NotoSansCJK.txt`](apps/web/public/fonts/OFL-NotoSansCJK.txt) |
 
 FSL-1.1-MIT (Functional Source License) only restricts offering the software as a competing hosted
 service. Self-hosting, internal use, modification, and redistribution are unrestricted, and the
