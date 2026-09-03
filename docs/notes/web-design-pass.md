@@ -177,6 +177,137 @@ SELF_HOSTING.md に 1 行)。CSP は変更なし(すべて自己配信、`img-sr
   about)は別の検証ページへ移すか、テストの前提を改める(削除で e2e を壊さない)
 - hosted-design.md §7 L1 の改訂: 「`maruhi.dev` = docs」→「docs = `maruhi.app/docs`、`maruhi.dev` は 301」
 
+### DP2 実装時の裁定録(2026-09-03)
+
+各裁定点は DP1 と同じループ(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が尽きるまで生成規則を
+変えて反復 → 選定)で決めた。判断基準は §4 の 3 層に収まる・「言わざる」と依存最小に整合・生成物が少ない・
+O9(Alchemy v2 化)で後から包みやすい・後戻りが安いこと。
+
+**Blume の確認結果(留保の解消 — Blume 1.5.3、`node_modules/blume/docs` と `blume --help`、仮導入ビルドで実測)**:
+(1) **theme tokens の到達範囲**: `theme.accent` / `background` は `{ light, dark }` の 2 値、`theme.css`(プロジェクト
+ルート)で `--blume-background / foreground / muted / muted-foreground / border / accent / accent-foreground / action /
+code-background / radius / font-*` を `:root` と `:root[data-theme="dark"]` に上書きでき、docs と LP の両方に効く。
+(2) **フォント**: `theme.fonts` の 3 ロール(display / body / mono)はローカル woff2 の `variants`(可変レンジ `"100..900"`
+可)を受け、Astro Fonts API が `/_astro/fonts/<hash>.woff2` に自己配信する。**既定は Inter / IBM Plex Mono を Google
+Fonts からビルド時に取得**し、スキーマの default のため無効化できない = ローカル指定が「言わざる」の必須条件(取得は
+ビルド時のみで、配信物からの外部通信ではないが、ビルドの外部依存を作らない)。`<Font>` は `@font-face` を **必ず
+インライン `<style>` で出す**(D の前提)。(3) **Astro 設定の露出**: `build.inlineStylesheets` は直接露出しないが、
+`integrations` が透過するので統合の `astro:config:setup` → `updateConfig` で 'never' に固定できる(実測で効く)。
+(4) **カスタムページ**: `pages/*.astro` を同一ルートにマウントし、`PageLayout`(ヘッダー + テーマ + フォント、サイドバー
+なし)で LP の自由度は十分。`blume:data` から config / navigation / fontCssVars を読む。`basePath: "/docs"` で docs を
+`/docs/*` に載せ、ルートはカスタムページが持つ(公式サポート。Docusaurus の `routeBasePath` 相当)。(5) **component
+overrides / eject**: `components.ts` の `layout` スロット(Header / Footer / Logo …)と `blume eject` がある。DP2 では
+どちらも不要。(6) **外部通信**: 検索 = Orama(ブラウザ内、索引 `/blume-search.json`)、`llms.txt` / raw Markdown /
+Copy as Markdown / WebMCP(ページ内登録のみ)/ OG カード(Takumi、ビルド時ローカル描画)/ sitemap / robots は外部通信
+なし。**analytics は opt-in で無宣言なら何も注入しない**(Vercel / PostHog / 任意 script は宣言時のみ)。Ask AI / MCP
+サーバーは server 出力が要る opt-in(既定 off)。**Open in chat** は ChatGPT / Claude / v0 / Cursor 等へのナビゲーション
+リンク(ユーザー操作時のみ・自動送信なし)。「Give feedback」は GitHub issue の事前入力リンク。`@vercel/analytics` は
+Blume のバンドルに含まれるが `window.va` 不在で no-op(実測: LP / docs の全リクエストが同一オリジン)。(7) **ランタイム**:
+Blume は Node 22.12+ を要求するが `bunx --bun blume build` で Bun 上でも完走する(実測。CI の Node 版に依存しないため
+これを採る)。**Bun の印象の要素分解に対する答え**: 極太 / 幅広の見出しは Archivo の `font-stretch: 112%` + weight 800、
+黒地はシステム追従の dark、コードブロックは本文と同格(LP のヒーローはターミナル)、マスコットの役は ㊙ ロゴ。
+
+**A. パッケージの配置と名前** — 列挙: (i) `apps/site` 新設 + `apps/docs` スタブ削除 / (ii) `apps/docs` を LP 込みで拡張 /
+(iii) LP と docs を別パッケージ / (iv) `apps/web` に Astro を同居 / (v) パッケージを作らずリポジトリ直下に Blume を置く。
+**選定 = (i)** `@maruhi/site`(FSL-1.1-MIT = リポジトリ既定)。名前は「apex サイト = LP + docs」を表し、`apps/docs` の
+名では LP が異物になる。品質ゲート: `typecheck` は `blume.config.ts` / `scripts` / `test` / `theme`(`.astro` / `.mdx` は
+tsc の対象外 — Blume の `blume check` は任意)、oxfmt / oxlint は TS のみ対象で `.astro` は無視、ImportLint は TS 相対
+import(`../web/theme` は参照しない — B)、fallow は entry(`blume.config.ts` / `scripts/*.ts` / unit test)と ignore
+(`public/**` / `.blume/**`)を宣言。ルート vitest projects に `apps/site/vitest.unit.config.ts` を追加。棄却: (iii) は
+テーマ・検索・OG の共有を失い 2 デプロイになる。(iv) は TCB に Blume の依存木(≈ 850 パッケージ)を入れる。(v) は
+ワークスペースの規約から外れる。
+
+**B. テーマトークンの共有** — 列挙: (i) `apps/web/theme/maruhi.ts` から CSS 変数を書き出す生成スクリプト / (ii) 値を手で複製
+し差分検査で漂流検知 / (iii) `packages/brand` に定数を置き両者が import / (iv) `apps/web/theme/brand.ts` に定数を分離し site が
+相対 import / (v) site の config が `maruhi.ts` を直接 import(Astryx の `defineTheme` を評価) / (vi) **生成物 `maruhi.css` を
+入力にする生成スクリプト**(上位互換: 朱 2 値だけでなく HCT 導出の warm neutral〔body / surface / popover / text / border〕も
+同じ経路で取れ、web 側のソースに触れない)。**選定 = (vi)**: `apps/site/scripts/theme.ts` が `maruhi.css` の `light-dark(#…, #…)`
+宣言を抽出し、`theme.css`(Blume tokens)/ `theme/tokens.ts`(config が読む定数)/ `public/logo-dark.svg`(fill を dark accent
+へ)/ 複製資産(favicon / logo / og / apple-touch-icon)を書き出す。生成物はコミットし、`test/unit/theme.test.ts` が
+「再生成 = コミット済み」を検査(DP1 の「生成 CSS と一致」契約と同型)。site 側の手書き hex はゼロ(unit test が検査)。
+棄却: (i)(v) は site に `@astryxdesign/core` の評価を持ち込む。(ii) は二重管理。(iii)(iv) は web の theme を触り、
+neutral の導出値は `maruhi.css` にしか無いので結局 CSS を読む。Blume の `--blume-muted` ← Astryx `surface`、
+`--blume-code-background` ← `popover`(dark で本文より明るい面)、`--blume-radius` ← `--radius-element` と写像した。
+
+**C. フォントの取得・サブセット化・配信** — 列挙: (i) 上流リポジトリの可変 TTF / woff2 をそのまま置く / (ii) `pyftsubset` で
+Latin サブセット化(一回性 /tmp)/ (iii) サブセット化ツールを devDependency / (iv) **Fontsource の variable パッケージ
+(`@fontsource-variable/archivo` / `martian-mono` 5.3.0、Google Fonts と同じ原本を Latin 等のサブセットに分割済みの woff2 +
+OFL 全文)から一回性に取り出す**(銀の弾丸: サブセット化の道具そのものが不要)/ (v) Blume の `theme.fonts` に Google
+provider を指定(ビルド時に Google から取得 — 「言わざる」の趣旨とビルドの外部依存で不可)。**選定 = (iv)**: `archivo-latin-
+wdth-normal.woff2`(90 KB — 幅軸 62〜125% + 太さ 100〜900。見出しの幅広に幅軸が要る)と `martian-mono-latin-wght-normal.woff2`
+(24 KB — 太さ 100〜800。コードに幅軸は不要)。italic は落とす(§1-3)。`unicode-range` は Latin 1 ファイルずつなので不要
+(Astro Fonts API の `@font-face` は `font-display: swap` と fallback metrics を付ける)。置き場は `apps/site/public/fonts/`
+(OFL 全文 `OFL-Archivo.txt` / `OFL-MartianMono.txt` と同じディレクトリ = 配布単位。LP のフッターからリンク)。**Astro Fonts
+API は原本を `/_astro/fonts/<hash>.woff2` に複製して参照する**ため配信物にフォントが 2 経路載る(計 ≈ 113 KB の重複)—
+`/fonts/` の可読 URL + ライセンス同居と、ハッシュ付き最適化配信の両方を取る代償として受容。両書体とも上流の OFL に
+Reserved Font Name の句が無いことを Fontsource の LICENSE(上流のコピー)で再確認(改名不要)。README のライセンス表に
+1 行追加。棄却: (i) は 3 スクリプト込みで数百 KB。(ii)(iii) は道具が増える(Fontsource が同じ結果を配っている)。
+
+**D. LP の作り方と CSP** — 列挙: (i) PageLayout のカスタムページ + scoped `<style>` / (ii) RootLayout(docs の chrome 付き)/
+(iii) `layout.Layout` スロットで shell を自作 / (iv) `blume eject` / (v) LP のみ素の Astro(ADR-0008 改訂)。**選定 = (i)**。
+CSP の実測と対処: (a) Astro の `inlineStylesheets` 'auto' → 統合で **'never'**(medium-zoom 等の小 CSS が外部化された)。
+(b) Blume chrome の **inline `<script>` 6 本**(テーマ初期化・ヘッダー操作・ナビ・ClientRouter のスタイル読み込み等。内容は
+Blume のバージョンで決定的)→ 配信物から収集した **SHA-256 ハッシュで許可**(`apps/web/scripts/write-headers.ts` の方式)。
+(c) Astro Fonts の **`@font-face` `<style>` 2 本**(無効化不能 — 上の確認 (2))→ 同様にハッシュ。(d) テーマトグルが JS で挿す
+遷移抑制 `<style>` → 固定文字列の実在を確認してハッシュ。(e) **Shiki のトークン `style` 属性**(`--shiki-light/dark`)と chrome
+の一部(サイドバーの `padding-inline-start`、CardGroup の `--blume-cols`)= `style-src-attr` はハッシュで許可できない →
+列挙: `style-src-attr 'unsafe-inline'` / `'unsafe-hashes'` + 全属性値の列挙 / ハイライト無効(Blume に無い)/ **ビルド後に
+属性値をクラス `.sa-<hash>` へ写像した 1 本の CSS に外部化**(Shiki 公式 `transformerStyleToClass` と同じ手法を配信物に適用
+— Blume はトランスフォーマを露出しない)。**選定 = 外部化**(`scripts/postbuild.ts` 第 1 段。HTML に `style` 属性が 1 つも
+残らないことをビルドで検査、e2e が docs で `[style]` = 0 とトークン着色の維持を検証)。結果の CSP: `default-src 'none';
+script-src 'self' 'sha256-…'×6; style-src 'self' 'sha256-…'×3; img-src 'self' data:; font-src 'self'; connect-src 'self';
+manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` — **`'unsafe-inline'` は script にも style
+にも無い**。§4 の「`style-src 'self'` を保つ」は「'self' + 決定的な内容のハッシュ」の形で満たす(TCB の `apps/web` と同じ
+解釈)。あわせて `postbuild.ts` が配信物の src / href の外部参照ゼロ(href は自リポジトリの GitHub と製品オリジンのみ許可)
+とインラインイベントハンドラ無しを機械検査し、Blume が出す `_headers`(.md / .txt の charset・トップの Link)を保持して
+`/*` に CSP / nosniff / `Referrer-Policy: no-referrer` / HSTS(apex 単独)を追記する。棄却: (ii) は LP にサイドバーが要らない。
+(iii)(iv) は Blume 既定を捨てて上流追随を失う。(v) は ADR-0008 の改訂が要り、Blume で足りることが実測で分かった。
+
+**E. wrangler 設定の形** — 列挙: (i) 独立 `apps/site/wrangler.jsonc`(assets のみ・`main` なし)/ (ii) `apps/server/wrangler.jsonc`
+に名前付き環境 `site` を足す / (iii) Cloudflare Pages / (iv) 製品 Worker に `/docs` を同梱。**選定 = (i)**: `name: maruhi-site`、
+`routes: [{ pattern: "maruhi.app", custom_domain: true }]`、`workers_dev: false`、`preview_urls: false`、`assets.directory: ./dist`、
+`html_handling: "drop-trailing-slash"`(Blume の内部リンク・canonical・sitemap は末尾スラッシュ無しで、出力は `x/index.html`。
+`/docs/x/` は 308 で `/docs/x` へ)、`not_found_handling: "404-page"`(Blume の `404.html` — chrome 付き)。環境変数なし・設定
+1 本で O9 の宣言化に包みやすい。CI は `wrangler deploy --dry-run` で妥当性を検査(製品 Worker の 8b と同型)。preview は
+ローカル `wrangler dev`(`bun run --filter @maruhi/site preview`)のみ — apex 以外の origin を作らない。棄却: (ii) は環境継承の
+規則で製品側の設定を汚す。(iii) は Pages が Workers 収束の方針で新規採用しない。(iv) は TCB に LP を同居させる(§1-4 違反)。
+
+**F. `my.maruhi.app/` と e2e フックの移し先** — 列挙: (i) `_redirects` で `/` → `/dashboard` 302 / (ii) 最小の案内ページ / (iii) 据え置き
+/ (iv) 案内ページ + 機構検証フックを `/about`(「このデプロイについて」= 診断ページ)へ移す(上位互換: サインイン往復の
+`ResumeToDashboard`〔裁定 BU〕を壊さず、フックに運用上の意味〔ビルド時刻・クライアント動作確認〕を与える)。**選定 = (iv)**:
+`HomePage` = SVG ロゴ(`/logo.svg`、絵文字 ㊙ を置換)+ 「Open the dashboard」+ `maruhi.app` への導線 + 「About this
+deployment」。`AboutPage` = 説明 + Diagnostics(`built-at`・`CounterCard`)。e2e は hydrate 検証を `/about` へ、`/` の待機を
+`home-heading` へ変更(SPA / MPA 劣化・API 呼び出しゼロ・マーカー復帰の検証はそのまま。全 25 件通過)。棄却: (i) は静的
+シェルの `_redirects` だと OAuth 往復後の着地(`/`)が変わり、認証フローの検証が DP2 の範囲を超える。(iii) は LP の重複。
+
+**G. LP の情報構成の粒度** — 列挙: (i) 1 ページに全部 / (ii) インストール / セルフホストをサブページに / (iii) LP は 1 画面 + 全部
+docs へ。**選定 = (i)**(1 ページ・6 節: ヒーロー〔ターミナル〕→ How it works〔4 枚〕→ 1. Install〔README と同じ pre-release
+手順〕→ 2. Sign in〔`config set server` + `login`、鍵生成の儀式を正直に〕→ 3. Get access〔招待制の現状。waitlist の置き場 =
+`#access` の `data-waitlist-placeholder`、H6 で差し替え〕→ Or run it yourself〔`/docs/self-hosting`〕→ フッター〔GitHub /
+Docs / License / 「No analytics, no trackers」/ フォントの OFL リンク〕)。docs の初期コンテンツは 3 ページ(index / getting-
+started / self-hosting)で、仕様書・SELF_HOSTING.md への導線を置く(書き下ろしは最小 — 後続は `blume-update-docs`)。
+棄却: (ii) は内容が薄い段階で階層を増やす。(iii) は「最初の 5 分」の導線が LP で完結しない。
+
+**H. Blume の機能の取捨** — on(外部通信なし・既定): 検索(Orama ローカル)/ `llms.txt` / raw Markdown / Copy as Markdown /
+WebMCP(ページ内登録のみ)/ OG カード(ローカル描画。palette は生成トークン、LP は DP1 の `og.png`)/ sitemap / robots /
+JSON-LD / agent-readability.json / テーマトグル(docs は Blume 既定 — §1-2 の「手動トグルを持たない」はダッシュボードの裁定)/
+banner(private preview の案内、dismiss は localStorage)/ Edit on GitHub・Give feedback(GitHub へのリンク)。**off**:
+`ai.openInChat`(第三者 AI へのリンク — 「言わざる」の趣旨。Copy as Markdown が残る)/ RSS(blog 無し)/ analytics(無宣言)/
+Ask AI・MCP サーバー(既定 off。server 出力が要る)/ `lastModified`(既定 off。浅い clone で崩れる)。**off にできない外部
+通信は無い**(実測: LP / docs / テーマトグル / 検索 / クライアント遷移の全経路で外部オリジンへの要求ゼロ・CSP 違反ゼロ)。
+
+**新たに出た裁定点**: (I) **ダークモードのロゴ**: `logo.image` の `{ light, dark }` 形で `<img>` 2 枚を出し分ける。dark 用 SVG は
+原本の fill を dark accent(`#FF693C`)へ差し替えた生成物(B の生成スクリプト — 手書き hex ゼロ)。currentColor 版
+(`logo-mono.svg`)だと印が文字色になり「朱の印」でなくなるため不採用。(J) **Blume の実行ランタイム**: `bunx --bun blume`(Bun)。
+Node 22.12+ の要求は Bun 上の実測完走で代替し、CI に Node のセットアップを足さない。(K) **配信物の重複フォント**(C)。
+
+**検証(2026-09-03)**: `bun run check` 7 段通過(site は fmt / lint / typecheck / ImportLint / fallow / unit test に乗る)。web e2e
+25 件通過(F 後)。site e2e 11 件通過 — 全リクエスト同一オリジン・CSP 違反ゼロ(LP / docs / トグル / 検索 / クライアント遷移)・
+Archivo / Martian Mono の適用・light / dark の accent と body が `tokens.ts` と一致・`/docs` 到達・末尾スラッシュ正規化・404。
+スクリーンショット(light / dark / mobile)は PR 本文。人間タスク = hosted-ops.md §7 O10(初回デプロイ)/ O11(`maruhi.dev`
+301)/ O12(訪問数はサーバー側集計のみ)。
+
+
 ## 5. DP3〜DP5 の入口(詳細は各 PR で)
 
 - DP3(ダッシュボード): アプリシェル・空状態 / ローディング / エラーの統一(`FailureNotice` 13 か所)・監査ビューアの

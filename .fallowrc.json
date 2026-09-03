@@ -17,7 +17,8 @@
   // apps/server/scripts は運営者が bun run で直接叩く運用スクリプト(サインアップ招待
   // コードの発行 — AUTH_SPEC §3)で、製品コードから import されないため手動宣言する。
   // apps/server/src/restore-worker.ts は wrangler.restore.jsonc の main(復元 worker —
-  // docs/notes/hosted-ops.md §2-E)で、index.ts から import されない別エントリ
+  // docs/notes/hosted-ops.md §2-E)で、index.ts から import されない別エントリ。
+  // apps/site は Blume CLI が blume.config.ts を読み、scripts/ は bun run で直接叩く
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
@@ -26,17 +27,28 @@
     "apps/web/vitest.unit.config.ts",
     "apps/web/test/unit/*.test.ts",
     "apps/server/scripts/*.ts",
-    "apps/server/src/restore-worker.ts"
+    "apps/server/src/restore-worker.ts",
+    "apps/site/blume.config.ts",
+    "apps/site/scripts/*.ts",
+    "apps/site/vitest.unit.config.ts",
+    "apps/site/test/unit/*.test.ts"
   ],
   // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
   // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。
   // apps/web/public は SPA 外の静的配信アセット(invite.html から参照される invite.css 等 —
-  // AUTH_SPEC §15-3)で、モジュールグラフに載らないため未到達と誤検出される
+  // AUTH_SPEC §15-3)で、モジュールグラフに載らないため未到達と誤検出される。
+  // apps/site(Blume)は blume.config.ts が Blume CLI から読まれるエントリで、.astro / .mdx と
+  // public/ の静的資産はモジュールグラフ外。.blume/ は Blume の生成ランタイム(gitignore 済み)
   "ignorePatterns": [
     ".agents/**",
     ".claude/**",
     ".deepsec/**",
     "apps/web/public/**",
+    "apps/site/public/**",
+    "apps/site/docs/**",
+    "apps/site/pages/**",
+    "apps/site/.blume/**",
+    "apps/site/.blume-verify/**",
     "packages/crypto/test-vectors/tools/**"
   ],
   "audit": {

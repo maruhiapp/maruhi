@@ -114,7 +114,8 @@
   "env": {
     "hosted": {
       // 運営の提供ドメイン(2026-09-03 所有者裁定: 製品オリジン = my.maruhi.app、
-      // apex = LP〔L1 で決定〕、docs = maruhi.dev)。ダッシュボードのオリジンは TCB
+      // apex maruhi.app = LP + docs〔/docs — L1 改訂。別 Worker `maruhi-site`、
+      // apps/site/wrangler.jsonc〕、maruhi.dev は 301)。ダッシュボードのオリジンは TCB
       // なので LP と分ける。workers.dev は無効化し、認証エンドポイントの origin を
       // 1 つに固定する(OAuth callback / __Host- cookie / CLI の server URL が束縛される)
       "routes": [{ "pattern": "my.maruhi.app", "custom_domain": true }],

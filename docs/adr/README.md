@@ -1,6 +1,6 @@
 # maruhi Architecture Decision Records
 
-Status: 0001〜0015 は Accepted(0001〜0013 は 2026-08-01 までに承認。0014 は 2026-08-07 提案、PR #37 のマージをもって承認。0015 は 2026-08-14 提案、リリース基盤 PR のマージをもって承認)。0016 / 0017 は 2026-08-16 提案、それぞれ移行 PR / この ADR を追加する PR のマージをもって承認。0018 は 2026-08-18 提案(設計対話で所有者同意 — session-29)、PR #82 のマージで承認済み。0018 改訂 1(UI 契約の先行確定・儀式の TTY 固定・シェル選定の先送り — session-30)は改訂を含む PR のマージをもって承認。0014 改訂 1(ホステッドクラウド版の前倒し — H0、session-47)と 0009 の再判断記録(GitHub 直実装の続行 — 同)は改訂を含む PR のマージをもって承認。
+Status: 0001〜0015 は Accepted(0001〜0013 は 2026-08-01 までに承認。0014 は 2026-08-07 提案、PR #37 のマージをもって承認。0015 は 2026-08-14 提案、リリース基盤 PR のマージをもって承認)。0016 / 0017 は 2026-08-16 提案、それぞれ移行 PR / この ADR を追加する PR のマージをもって承認。0018 は 2026-08-18 提案(設計対話で所有者同意 — session-29)、PR #82 のマージで承認済み。0018 改訂 1(UI 契約の先行確定・儀式の TTY 固定・シェル選定の先送り — session-30)は改訂を含む PR のマージをもって承認。0014 改訂 1(ホステッドクラウド版の前倒し — H0、session-47)と 0009 の再判断記録(GitHub 直実装の続行 — 同)は改訂を含む PR のマージをもって承認。0008 改訂 1(ランディングも Blume — apex `maruhi.app` に LP + docs、web-design-pass.md §1-4 の 2026-09-03 所有者裁定への同期)は DP2 の PR のマージをもって承認。
 これらの決定を覆す実装をエージェントが行うことは禁止。変更提案は ADR の改訂案として人間に提示すること。
 
 ## 索引
@@ -12,7 +12,7 @@ Status: 0001〜0015 は Accepted(0001〜0013 は 2026-08-01 までに承認。00
 - [ADR-0005: HTTP 層は @effect/platform HttpApi(Hono 不使用)](./0005-effect-httpapi.md)
 - [ADR-0006: DB 層は Drizzle v1(Effect サービス境界内に隔離)](./0006-drizzle.md)
 - [ADR-0007: フロントエンドは FunStack(funstack-static + funstack-router)](./0007-funstack.md)
-- [ADR-0008: docs は Blume、ランディングは FunStack](./0008-blume-docs.md)
+- [ADR-0008: docs は Blume、ランディングは FunStack(改訂 1: ランディングも Blume — apex に LP + docs)](./0008-blume-docs.md)
 - [ADR-0009: 認証は GitHub OAuth 直接実装、WorkOS は不採用(再判断ポイント付き)](./0009-github-oauth-direct.md)
 - [ADR-0010: 品質ツールチェーン](./0010-quality-toolchain.md)
 - [ADR-0011: 未安定依存のリスク管理原則](./0011-unstable-deps.md)

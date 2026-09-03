@@ -15,3 +15,7 @@ coverage/
 # checksums.txt から作り、tap リポジトリへコピーする — docs/RELEASING.md)。
 # 形の例は packaging/homebrew/maruhi.example.rb をコミットしている
 packaging/homebrew/maruhi.rb
+
+# Blume の生成ランタイム(apps/site — blume dev / build が毎回作り直す)
+.blume/
+.blume-verify/

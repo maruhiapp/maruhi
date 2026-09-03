@@ -1,0 +1,356 @@
+---
+// LP(apex `maruhi.app/`)— Blume のカスタムページ(docs/notes/web-design-pass.md §4、裁定 D / G)。
+// 「最初の 5 分」(ADR-0014 改訂 1)へ導く順: 価値提案 → インストール → サインイン →
+// 招待制の案内 / waitlist の置き場(フォームは H6)→ セルフホストへの導線。
+// トーン(§2): ダーク基調・アクセント 1 色を限定的に・コード / ターミナルが主役・装飾控えめ・
+// セキュリティは淡々と。書いていない機能は謳わない(pre-release・招待制の現状を正しく書く)。
+//
+// スタイリングは scoped <style>(素の CSS)のみ。色は Blume の theme tokens(--blume-*)を参照し、
+// 生 hex を書かない。間隔・寸法は先頭のカスタムプロパティに集約する(ADR-0013 の精神)。
+// ユーザーに見える文言は英語(ADR-0017)。
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+
+const { config } = data;
+const repo = "https://github.com/maruhiapp/maruhi";
+const productOrigin = "https://my.maruhi.app";
+const title = "maruhi — diskless, end-to-end encrypted secrets";
+---
+
+<PageLayout
+  site={{ title: config.title, description: config.description }}
+  logo={config.logo}
+  banner={config.banner}
+  navigation={data.navigation}
+  favicon={config.favicon}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  ogImage="/og.png"
+  ogImageAlt="The maruhi mark (a vermilion 秘 in a circle) next to the word maruhi"
+  ogImageSize={{ width: 1200, height: 630 }}
+  page={{ title, description: config.description }}
+>
+  <div class="lp">
+    <section class="hero" id="top">
+      <p class="eyebrow">Private preview · invite-only · self-hostable</p>
+      <h1>Secrets that never touch a disk.</h1>
+      <p class="lede">
+        maruhi is a general-purpose secrets manager on Cloudflare. Values are encrypted end to end
+        on your machine, stay ciphertext on the server, and reach your programs only as in-memory
+        environment variables. Everything happens in the CLI.
+      </p>
+      <pre class="terminal" aria-label="Example maruhi session"><code><span class="prompt">$</span> maruhi login
+<span class="out">Opening your browser. Confirm the code <b>PX7Q-4MRH</b> there.</span>
+<span class="prompt">$</span> maruhi push DATABASE_URL
+<span class="out">Pushed DATABASE_URL (version=1, epoch=1)</span>
+<span class="prompt">$</span> maruhi run -- bun start
+<span class="out">Serving on http://localhost:3000</span></code></pre>
+      <p class="actions">
+        <a class="button" href="#install">Install the CLI</a>
+        <a class="link" href="/docs">Read the docs</a>
+        <a class="link" href={repo}>Source on GitHub</a>
+      </p>
+    </section>
+
+    <section class="grid" id="how" aria-labelledby="how-heading">
+      <h2 id="how-heading">How it works</h2>
+      <ul class="cards">
+        <li>
+          <h3>Zero knowledge</h3>
+          <p>
+            Encryption happens in the CLI with WebCrypto and HPKE. The server — hosted or yours —
+            stores and relays ciphertext, and holds no key that could open it.
+          </p>
+        </li>
+        <li>
+          <h3>Diskless</h3>
+          <p>
+            <code>maruhi run -- &lt;command&gt;</code> decrypts in memory and injects values into the
+            child process's environment. maruhi never writes a <code>.env</code> file.
+          </p>
+        </li>
+        <li>
+          <h3>Nothing phones home</h3>
+          <p>
+            No telemetry in the CLI, no third-party scripts in the dashboard — and this page loads no
+            analytics, no trackers, and no external fonts.
+          </p>
+        </li>
+        <li>
+          <h3>Serverless, self-hostable</h3>
+          <p>
+            One Cloudflare Worker with D1 and Durable Objects. Run it on your own account with a
+            single <code>wrangler deploy</code>, or use the hosted service.
+          </p>
+        </li>
+      </ul>
+    </section>
+
+    <section class="step" id="install" aria-labelledby="install-heading">
+      <h2 id="install-heading">1. Install the CLI</h2>
+      <p>
+        Linux and macOS, no Bun required. Releases are pre-release tags until <code>v0.1.0</code>, so
+        pick the latest tag on the
+        <a href={`${repo}/releases`}>Releases page</a> and read the script before running it.
+      </p>
+      <pre class="terminal"><code><span class="comment"># Replace V with the latest tag on the Releases page</span>
+V=&lt;latest-tag&gt;
+curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/$&lbrace;V&rbrace;/packaging/install.sh" -o maruhi-install.sh
+less maruhi-install.sh          <span class="comment"># read it first — this is a secrets manager</span>
+sh maruhi-install.sh --version "$&lbrace;V&rbrace;"</code></pre>
+      <p class="fine">
+        Prebuilt binaries with checksums, Homebrew (from <code>v0.1.0</code>), and npm
+        (<code>bun install -g maruhi@next</code>) are documented in the
+        <a href={`${repo}#install-cli`}>README</a>.
+      </p>
+    </section>
+
+    <section class="step" id="signin" aria-labelledby="signin-heading">
+      <h2 id="signin-heading">2. Sign in</h2>
+      <pre class="terminal"><code>maruhi config set server {productOrigin}
+maruhi login</code></pre>
+      <p>
+        <code>maruhi login</code> opens your browser for a GitHub sign-in and shows the same confirmation
+        code in the terminal and on the page. Compare them, approve, and you are in. The first time,
+        <code>maruhi key generate</code> creates your master key and a recovery code — that is the one
+        ceremony zero knowledge asks of you.
+      </p>
+    </section>
+
+    <section class="step access" id="access" aria-labelledby="access-heading">
+      <h2 id="access-heading">3. Get access</h2>
+      <p>
+        The hosted service at <a href={productOrigin}>my.maruhi.app</a> is in <strong>private
+        preview</strong>. Creating an account requires an invite code, which the sign-in page asks
+        for. A waitlist opens with the invite-only beta; until then, follow the repository for
+        release notes.
+      </p>
+      <!-- waitlist 導線の置き場(H6 で Workers への POST フォームに差し替える — 静的文言のみ) -->
+      <p class="actions" data-waitlist-placeholder>
+        <a class="button" href={`${repo}/releases`}>Watch releases on GitHub</a>
+      </p>
+    </section>
+
+    <section class="step" id="self-host" aria-labelledby="selfhost-heading">
+      <h2 id="selfhost-heading">Or run it yourself</h2>
+      <p>
+        maruhi is built to be self-hosted: clone the repository, create a D1 database, and
+        <code>wrangler deploy</code>. Your deployment is end-to-end encrypted in exactly the same way.
+      </p>
+      <p class="actions">
+        <a class="link" href="/docs/self-hosting">Self-hosting guide</a>
+      </p>
+    </section>
+
+    <footer class="footer">
+      <p>
+        <a href={repo}>GitHub</a> · <a href="/docs">Docs</a> ·
+        <a href={`${repo}/blob/main/LICENSE.md`}>License</a> (FSL-1.1-MIT for the server and web,
+        MIT for the CLI and crypto)
+      </p>
+      <p class="fine">
+        No analytics, no trackers, no third-party scripts. Type set in
+        <a href="/fonts/OFL-Archivo.txt">Archivo</a> and
+        <a href="/fonts/OFL-MartianMono.txt">Martian Mono</a> (SIL Open Font License 1.1), served
+        from this site. The ㊙ mark derives from Noto Sans CJK JP (SIL OFL 1.1).
+      </p>
+    </footer>
+  </div>
+</PageLayout>
+
+<style>
+  .lp {
+    --lp-measure: 44rem;
+    --lp-wide: 64rem;
+    --lp-gutter: 1.5rem;
+    --lp-gap: 1rem;
+    --lp-section: 4.5rem;
+    --lp-hero-size: clamp(2.5rem, 6vw, 4.25rem);
+    --lp-h2-size: clamp(1.5rem, 3vw, 2rem);
+    --lp-terminal-size: 0.875rem;
+    --lp-border: 1px;
+    --lp-button-pad: 0.75rem 1.25rem;
+
+    margin: 0 auto;
+    padding: 0 var(--lp-gutter) var(--lp-section);
+    max-width: var(--lp-wide);
+    color: var(--blume-foreground);
+    font-family: var(--blume-font-body);
+    line-height: 1.6;
+  }
+
+  section,
+  .footer {
+    padding-top: var(--lp-section);
+  }
+
+  .hero h1 {
+    margin: 0 0 var(--lp-gap);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-hero-size);
+    font-weight: 800;
+    /* Archivo の幅軸 — 見出しは幅広・極太で作る(web-design-pass.md §4) */
+    font-stretch: 112%;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    max-width: var(--lp-measure);
+  }
+
+  .eyebrow {
+    margin: 0 0 var(--lp-gap);
+    font-family: var(--blume-font-mono);
+    font-size: var(--lp-terminal-size);
+    color: var(--blume-muted-foreground);
+    text-transform: lowercase;
+  }
+
+  .lede {
+    margin: 0 0 calc(var(--lp-gap) * 2);
+    max-width: var(--lp-measure);
+    font-size: 1.125rem;
+    color: var(--blume-muted-foreground);
+  }
+
+  h2 {
+    margin: 0 0 var(--lp-gap);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-h2-size);
+    font-weight: 700;
+    font-stretch: 105%;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+
+  h3 {
+    margin: 0 0 calc(var(--lp-gap) / 2);
+    font-family: var(--blume-font-display);
+    font-size: 1.125rem;
+    font-weight: 700;
+  }
+
+  p {
+    margin: 0 0 var(--lp-gap);
+    max-width: var(--lp-measure);
+  }
+
+  .fine {
+    font-size: 0.875rem;
+    color: var(--blume-muted-foreground);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--blume-border);
+    text-underline-offset: 0.15em;
+  }
+
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  code {
+    font-family: var(--blume-font-mono);
+    font-size: 0.9em;
+    background: var(--blume-code-background);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: calc(var(--blume-radius) / 2);
+    padding: 0 0.35em;
+  }
+
+  /* ターミナル: コードが主役(§2)。背景は code token、枝葉の装飾は付けない */
+  .terminal {
+    margin: 0 0 calc(var(--lp-gap) * 1.5);
+    padding: var(--lp-gap) calc(var(--lp-gap) * 1.25);
+    max-width: var(--lp-measure);
+    overflow-x: auto;
+    font-family: var(--blume-font-mono);
+    font-size: var(--lp-terminal-size);
+    line-height: 1.7;
+    color: var(--blume-foreground);
+    background: var(--blume-code-background);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: var(--blume-radius);
+  }
+
+  .terminal code {
+    font-size: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+
+  .terminal .prompt {
+    color: var(--blume-accent);
+    user-select: none;
+  }
+
+  .terminal .out,
+  .terminal .comment {
+    color: var(--blume-muted-foreground);
+  }
+
+  .terminal b {
+    color: var(--blume-foreground);
+    font-weight: 700;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--lp-gap);
+    align-items: center;
+  }
+
+  /* アクセントはボタン 1 種に限定する(§2) */
+  .button {
+    display: inline-block;
+    padding: var(--lp-button-pad);
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--blume-accent-foreground);
+    background: var(--blume-accent);
+    border-radius: var(--blume-radius);
+  }
+
+  .button:hover {
+    filter: brightness(1.08);
+  }
+
+  .link {
+    font-weight: 600;
+  }
+
+  .cards {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--lp-gap);
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  }
+
+  .cards li {
+    padding: calc(var(--lp-gap) * 1.25);
+    background: var(--blume-muted);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: var(--blume-radius);
+  }
+
+  .cards p {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--blume-muted-foreground);
+  }
+
+  .footer {
+    border-top: var(--lp-border) solid var(--blume-border);
+    margin-top: var(--lp-section);
+    padding-top: calc(var(--lp-gap) * 2);
+    font-size: 0.9rem;
+    color: var(--blume-muted-foreground);
+  }
+</style>

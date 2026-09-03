@@ -59,7 +59,7 @@ E2EE では復号がクライアントで起きるため、Web フロントの X
 | フロント | React + FunStack(funstack-static + funstack-router)+ Astryx(StyleX ベース。ADR-0013) |
 | CLI | `effect/unstable/cli` + Effect(実装)。gunshi は廃止済み(ADR-0016)。HttpApi 導出型付きクライアント |
 | IaC | 現行デプロイは素の wrangler。Alchemy v2 は ADR-0012 決定済み・未投入。セルフホスト配布物は wrangler のまま |
-| docs | Blume は ADR-0008 決定済み。`apps/docs` はスタブ |
+| LP / docs | Blume(ADR-0008 改訂 1 — LP も Blume)。`apps/site` = apex `maruhi.app`(LP `/` + docs `/docs`)。製品オリジン `my.maruhi.app` とは別デプロイ |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
 
 ## モノレポ構成(予定)
@@ -72,8 +72,8 @@ packages/
 apps/
   server/        # Workers + DO + D1。Effect HttpApi
   cli/           # `effect/unstable/cli` + Effect。`maruhi` / `mh` バイナリ
-  web/           # FunStack ダッシュボード + ランディング
-  docs/          # Blume 予定(ADR-0008)。現状スタブ
+  web/           # FunStack ダッシュボード(製品オリジン my.maruhi.app)
+  site/          # Blume。apex maruhi.app の LP(/)+ docs(/docs)。独立 wrangler 設定
 ```
 
 ## 品質ゲート(コミット前に必ず通す)
