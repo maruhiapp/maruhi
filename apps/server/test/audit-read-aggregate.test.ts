@@ -1,5 +1,5 @@
 // `var.read` の集約形(AUDIT_SPEC §3.3 — 2026-09-02 監査ログの成長密度対策 ②)の
-// テスト。vitest-pool-workers(workerd 実環境)。
+// テスト。@cloudflare/vitest-plugin(workerd 実環境)。
 //
 // 固定するもの:
 // - 記録形: 値付き一括 pull 1 回 = 環境単位 1 行。variable_id / epoch / version

@@ -1,5 +1,5 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 値署名の受理検証(AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4)。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 // 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
 
 import type { ChainEntry } from "@maruhi/crypto";

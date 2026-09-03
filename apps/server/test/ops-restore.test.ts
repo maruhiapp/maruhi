@@ -6,7 +6,7 @@
 // production 相当)で固定する。
 
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import type { OpsBackupOutcome } from "../src/chain-do.ts";
 import { OPS_BACKUP_MAX_BYTES } from "../src/ops-policy.ts";
@@ -21,6 +21,17 @@ registerDataScenario();
 
 const bucket = env.OPS_BACKUP_BUCKET as R2Bucket;
 const restoreEnv = { OPS_BACKUP_BUCKET: bucket, PRODUCTION_PROJECT_CHAIN: env.PROJECT_CHAIN };
+
+// 復元 worker は製品のキー配置(restore/jobs/ 等)を走査し、このファイルはその走査
+// 結果(ジョブ名の集合)に完全一致を課す。プレフィックスを自ファイル固有にはできない
+// ため、テストごとに restore/ 配下を空へ戻して前提状態を自分で作る(R2 はストレージ
+// 分離の対象外 — apps/server/vitest.config.ts の isolate: false の注記)
+beforeEach(async () => {
+  const listed = await bucket.list({ prefix: "restore/" });
+  if (listed.objects.length > 0) {
+    await bucket.delete(listed.objects.map((object) => object.key));
+  }
+});
 
 async function snapshot(): Promise<Extract<OpsBackupOutcome, { kind: "uploaded" }>> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));

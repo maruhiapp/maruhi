@@ -1,5 +1,5 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — suite の永続化・数量ポリシー・判定順・エラー契約導出(AUTH_SPEC §12-2 / §12-3 / §12-8)。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 // 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
 
 import {
