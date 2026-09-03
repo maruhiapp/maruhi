@@ -95,6 +95,20 @@ if (hosted.observability?.redact_query_string !== true) {
   );
 }
 
+// 単一オリジンの不変条件(2026-09-03 所有者裁定 — hosted-ops.md §7 O3): 認証エンドポイント
+// (OAuth callback・__Host- cookie・CLI の server URL)の origin は custom domain 1 つに固定し、
+// workers.dev を第 2 のオリジンとして生かさない。外れると `maruhi-server-hosted.<sub>.workers.dev`
+// が黙って復活する(PR #139 pullfrog 指摘 — 設定値の検査で固定する)
+if (hosted.workers_dev !== false) {
+  failures.push(
+    "workers_dev: env.hosted must set workers_dev to false (auth endpoints must have a single origin)",
+  );
+}
+const hostedRoutes = hosted.routes ?? [];
+if (hostedRoutes.length === 0) {
+  failures.push("routes: env.hosted must declare the product route (custom domain)");
+}
+
 // 復元 worker は本番(hosted)の DO 名前空間へ script_name で束縛する。名前付き環境は
 // `<name>-<env>` の別 Worker を公開するため、束縛先は env.hosted の実効 name と一致
 // していなければならない(不一致はインシデント時にだけ発覚する最悪の場所)

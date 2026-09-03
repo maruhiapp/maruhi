@@ -78,8 +78,9 @@ Create one at https://github.com/settings/applications/new:
 |---|---|
 | Application name | Anything (example: `maruhi (self-hosted)`) |
 | Homepage URL | The deploy URL from step 3 |
-| Authorization callback URL | `<deploy-url>/auth/github/callback` |
+| Redirect URI (older forms call it "Authorization callback URL") | `<deploy-url>/auth/github/callback` — register **exactly one** and leave "Allow wildcard matching" unchecked (the callback origin is fixed per deployment) |
 | Enable Device Flow | **Leave unchecked** (recommended). maruhi does not use it: CLI login goes through the same browser OAuth flow as web login (AUTH_SPEC §4), so enabling it only widens the OAuth App's surface |
+| Expire user access tokens (newer forms) | Either setting works. maruhi uses the GitHub access token once, immediately, to read your identity and then discards it — it never stores the token or reads `refresh_token` — so leaving expiry **on** is the safer default |
 
 After creating it, copy the client_id and issue a client_secret with
 "Generate a new client secret".
@@ -369,7 +370,34 @@ rows, session and token **hashes**, and the authentication audit log — no
 secret values, which never reach the server in plaintext. The reference
 workflow used for the hosted service is
 `.github/workflows/ops-backup.yml` (disabled unless the repository variable
-`OPS_BACKUP_ENABLED` is `true`).
+`OPS_BACKUP_ENABLED` is `true`). The API token it needs is **D1: Edit** plus
+**Workers R2 Storage: Edit** (account scope): `d1 export` fails with
+`Authentication error [10000]` under D1: Read, and `r2 object put` returns 403
+under the bucket-scoped "Workers R2 Storage Bucket Item" permission. Prefer an
+*Account* API token over a user token for CI, and allow a few minutes for
+permission edits to propagate.
+
+#### Restoring a D1 export
+
+`wrangler d1 export` writes each table as `CREATE TABLE` followed by its
+`INSERT`s, in table-creation order — so child tables (e.g. `api_tokens`, which
+references `users`) appear **before** their parents, and the leading
+`PRAGMA defer_foreign_keys=TRUE` is not honoured by the import path. Importing
+the dump as-is fails with `no such table: main.users`. Reorder it first:
+
+```sh
+age -d -i <keyfile> -o d1.sql d1/<timestamp>.sql.age       # decrypt (operator machine)
+bun scripts/reorder-d1-dump.ts d1.sql d1.ordered.sql       # from apps/server
+wrangler d1 create maruhi-restored                          # a NEW database — never import over a live one
+wrangler d1 execute maruhi-restored --remote --file=d1.ordered.sql -y
+rm d1.sql d1.ordered.sql                                    # the decrypted dump is operator data — do not keep it around
+```
+
+The script puts every `CREATE TABLE` first, then the `INSERT`s in foreign-key
+order (parents before children), then the indexes, and drops `BEGIN`/`COMMIT`.
+Compare per-table `select count(*)` against the source afterwards (a few tables
+per statement — D1 caps the number of terms in a compound `SELECT`), then point
+`database_id` in `wrangler.jsonc` at the new database and redeploy.
 
 ### Optional: project snapshots to R2 and trip-wire alerts
 
@@ -400,8 +428,11 @@ To enable both on your deployment:
 
 ```sh
 # 1. Create the bucket (requires R2 to be enabled on the account) and a retention rule
+#    (the rule name is a required positional argument; the bucket also comes with a
+#    default 7-day "abort incomplete multipart" rule)
 wrangler r2 bucket create maruhi-ops-backup
-wrangler r2 bucket lifecycle add maruhi-ops-backup --expire-days 35 --abort-multipart-days 1
+wrangler r2 bucket lifecycle add maruhi-ops-backup retain-35d --expire-days 35 --abort-multipart-days 1
+wrangler r2 bucket dev-url get maruhi-ops-backup            # must say public access is disabled
 
 # 2. Deploy the `hosted` environment, which adds the R2 binding, Workers Logs and a
 #    higher CPU limit for large snapshots (see the `env.hosted` block in wrangler.jsonc;
@@ -447,7 +478,12 @@ wrangler delete -c wrangler.restore.jsonc
 
 The result reports the restored chain head, the audit head hash and per-table
 row counts; the snapshot's last line (its trailer) carries the same values for
-comparison. The snapshot's schema version must match the deployed server —
+comparison (`wrangler r2 object get maruhi-ops-backup/<objectKey> --pipe --remote | gunzip | tail -1`).
+The trailer's `auditHeadHashHex` is `null` when the snapshot was taken before
+the audit-head column had been materialized; in that case compare the restored
+value with the live project's `GET /projects/:id/audit-head` (or recompute it
+from the audit rows — `maruhi audit reconcile` does the same computation).
+The snapshot's schema version must match the deployed server —
 deploy the matching version first if it does not.
 
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints

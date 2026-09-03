@@ -119,7 +119,13 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(platformContext),
     Layer.provide(Layer.succeedContext(services)),
   );
-  const webHandler = HttpRouter.toWebHandler(apiLive);
+  // Effect の既定 HTTP ロガー(HttpMiddleware.logger — "Sent HTTP response" に
+  // `http.url` を注釈する)を無効化する。有効だと Workers Logs に
+  // /projects/:id(capability — AUTH_SPEC §11-2)がリクエストごとに残り、
+  // wrangler の `observability.logs.invocation_logs: false` で塞いだ穴が console
+  // 経路から開き直す(2026-09-03 O7 演習の Workers Logs 実データ確認で発見 —
+  // hosted-ops.md §5-3)。残す console 行は静的メッセージ + 集計値のみ(DC-2)
+  const webHandler = HttpRouter.toWebHandler(apiLive, { disableLogger: true });
   const built: EnvHandler = {
     handler: (request) => webHandler.handler(request, services),
   };
@@ -262,9 +268,15 @@ export default {
     if (cappedRequest === null) {
       return withSecurityHeaders(new Response(null, { status: 413 }));
     }
-    return withSecurityHeaders(
-      await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest)),
-    );
+    const response = await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest));
+    // disableLogger(handlerFor)は Effect のロガーの失敗分岐(cause 付き)も止めるため、
+    // 未処理の失敗・defect が Workers Logs に一切残らなくなる。代わりに識別子を含まない
+    // 静的 1 行だけを残す(PR #139 pullfrog 指摘)。503 SetupIncomplete 等の意図した
+    // 5xx は対象外 — 500 は HttpApi が型付きエラーへ写せなかった経路のみ
+    if (response.status === 500) {
+      console.error("unhandled failure at the HTTP boundary (500)");
+    }
+    return withSecurityHeaders(response);
   },
   // 定期ジョブ(wrangler.jsonc の triggers.crons — cron 文字列で分岐):
   // - 毎時(OPS_HOURLY_CRON): 運用基盤 H3 — DO → R2 退避スイープ(ops-backup.ts。

@@ -113,6 +113,12 @@
   // OPS_ALERT_WEBHOOK_URL — 任意)。
   "env": {
     "hosted": {
+      // 運営の提供ドメイン(2026-09-03 所有者裁定: 製品オリジン = my.maruhi.app、
+      // apex = LP〔L1 で決定〕、docs = maruhi.dev)。ダッシュボードのオリジンは TCB
+      // なので LP と分ける。workers.dev は無効化し、認証エンドポイントの origin を
+      // 1 つに固定する(OAuth callback / __Host- cookie / CLI の server URL が束縛される)
+      "routes": [{ "pattern": "my.maruhi.app", "custom_domain": true }],
+      "workers_dev": false,
       "durable_objects": {
         "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
       },
@@ -147,8 +153,8 @@
         {
           "binding": "DB",
           "database_name": "maruhi",
-          // 運営: `wrangler d1 create maruhi` の実 ID に置き換える(hosted-ops.md §7 O3)
-          "database_id": "00000000-0000-0000-0000-000000000000",
+          // 運営アカウント(maruhi)の実 DB(hosted-ops.md §7 O3 — 2026-09-03 設定。ID は秘密ではない)
+          "database_id": "85cb9161-4aa4-4129-adce-d97e14d2ec55",
           "migrations_dir": "drizzle",
           "migrations_pattern": "drizzle/*/migration.sql",
         },
