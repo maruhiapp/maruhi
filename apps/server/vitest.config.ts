@@ -80,7 +80,9 @@ export default defineConfig({
     // 規律で成り立つ。全 50 ファイルを 1 ワーカー直列・シャッフル順で流しても
     // 全件通過することを確認済み。ファイル間の状態依存が疑われる flake が出た
     // 場合は、まず当該ファイルの fixture が「自分の前提状態を自分で作る」規律を
-    // 守っているかを確認する(isolate を戻すのは最後の手段)。
+    // 守っているかを確認する(isolate を戻すのは最後の手段)。R2(OPS_BACKUP_BUCKET)
+    // はリセットしていない: バケットを読むテストは必ず自ファイル固有のプレフィックス
+    // で絞る(ops-backup.test.ts の `oversize-test/<doId>/` が現状の唯一の例)。
     //
     // 前提: @cloudflare/vitest-plugin 1.1.2 以降。それ以前(vitest-pool-workers
     // 0.22.0 まで)は SELF.fetch のリクエスト単価が累積リクエスト数に比例して増える

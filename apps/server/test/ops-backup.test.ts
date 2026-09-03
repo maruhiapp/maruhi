@@ -1,6 +1,6 @@
 // 運用基盤 H3 — DO → R2 退避と復元(docs/notes/hosted-ops.md §2-D / §2-E / §4-2)。
 //
-// 実プロジェクト DO(vitest-pool-workers)に対し、fixture(API 経由で作った
+// 実プロジェクト DO(@cloudflare/vitest-plugin)に対し、fixture(API 経由で作った
 // チェーン・環境・変数・監査行)を退避し、空にした DO へ書き戻して、チェーンヘッド・
 // 監査ヘッド(ensureHeadCurrent の値)・全表の行・監査 seq の無欠番(AUDIT_SPEC §5.1)が
 // 一致することを固定する。上書き経路が無いこと(非空 DO への復元の拒否)・途中失敗の

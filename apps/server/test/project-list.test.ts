@@ -1,5 +1,5 @@
 // プロジェクト一覧 API(AUTH_SPEC §11-5 — W2a)の統合テスト。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
 //
 // このスイートが固定するもの(session-42 裁定 BL):
 // - 本人 membership のみ(存在秘匿 §11-2 との整合: 他人のプロジェクトは status を

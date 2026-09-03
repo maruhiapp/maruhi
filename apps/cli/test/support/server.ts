@@ -1,7 +1,7 @@
 // テスト用のワイヤレベル HTTP モックサーバー(node:http)。
 //
 // 選定理由(session-11.md の比較参照): wrangler dev spawn はサーバーの
-// fake-github(vitest-pool-workers の fetch 差し替え)が使えず D1 事前適用も
+// fake-github(@cloudflare/vitest-plugin の fetch 差し替え)が使えず D1 事前適用も
 // 要る一方、CLI の本丸であるクライアント検証(§5.1 / §6.3)のテストには
 // 「不正な応答を返すサーバー」が必要で、実サーバーでは作れない。
 // 応答は実 crypto(support/crypto.ts)で組み立て、ワイヤ形は api-schema の

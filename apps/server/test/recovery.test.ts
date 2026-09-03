@@ -1,5 +1,5 @@
 // リカバリーブロブ API の統合テスト(AUTH_SPEC §13。CRYPTO_SPEC §8 のサーバー面)。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の実経路を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の実経路を検証する。
 //
 // ブロブはサーバーから見て不透明な暗号文なので、内容は任意の hex フィクスチャで
 // よい(復号可能性はクライアント側 = CLI のテストが担う)。

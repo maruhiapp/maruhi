@@ -1,6 +1,6 @@
 // 要ローテーション検出(AUDIT_SPEC §4.1)+ フラグビュー / 取り下げ(§6 / §7)+
 // B1a 追補(AUTH_SPEC §12-6 — 409 の保存済み受信者 enc 公開鍵と再追加時掃除)の
-// 統合テスト。vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と
+// 統合テスト。@cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と
 // DO SQLite を検証する。
 //
 // このスイートが固定するもの(変異検証の対応):

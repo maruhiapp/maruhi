@@ -1,5 +1,5 @@
 // プロジェクト数 / org の受理上限(AUTH_SPEC §11-3 — 2026-09-02 H2)の統合テスト。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
 //
 // 上限件数の init を実経路で回すのは重い(1 init = チェーン検証 + D1 batch)ため、
 // 判定材料の `projects` 行は D1 へ直接シードして境界(到達・拒否・解放)を作る。
