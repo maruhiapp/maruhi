@@ -1,4 +1,4 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { unstable_readConfig } from "wrangler";
 
@@ -66,5 +66,32 @@ export default defineConfig({
     // で発行してからベースチェーンを API 再生するため、既定 10s では負荷次第で
     // 超える(実測フレーク)。同じくハング検出は保ったまま余裕を持たせる
     hookTimeout: 30_000,
+    // ファイルごとに workerd を作り直さず、ワーカー(既定 = コア数 - 1)ごとに
+    // 1 つの workerd を使い回す(2026-09-03)。既定の isolate: true ではテスト
+    // ファイル 1 本ごとに Effect + サーバー本体の再 import(実測 5〜6s/ファイル、
+    // 50 ファイルで合計 ~290s CPU)が走り、これがスイート時間の過半を占めていた。
+    // 実測(4 コア): 壁時計 160s → 51s。
+    //
+    // トレードオフ: 同じワーカーが処理するファイル間で D1 / DO / R2 のストレージが
+    // 共有される(vitest-plugin 1.x の分離単位は「ワーカー」)。このスイートの
+    // fixture は元々ファイル内のテスト間でも分離を前提にしておらず、beforeEach で
+    // D1 の認証系テーブル全消去(support/auth.ts resetAuthDb)と対象プロジェクト DO
+    // のリセット(support/project-do.ts)を行うため、ファイル境界を跨いでも同じ
+    // 規律で成り立つ。全 50 ファイルを 1 ワーカー直列・シャッフル順で流しても
+    // 全件通過することを確認済み。ファイル間の状態依存が疑われる flake が出た
+    // 場合は、まず当該ファイルの fixture が「自分の前提状態を自分で作る」規律を
+    // 守っているかを確認する(isolate を戻すのは最後の手段)。
+    //
+    // 前提: @cloudflare/vitest-plugin 1.1.2 以降。それ以前(vitest-pool-workers
+    // 0.22.0 まで)は SELF.fetch のリクエスト単価が累積リクエスト数に比例して増える
+    // ハーネス側の不具合(workers-sdk#15092 / #15446 — 実測 2ms → 125ms/req @800
+    // リクエスト)があり、workerd を使い回すとスイート全体が二次的に遅くなっていた
+    // (PR #120 のファイル分割はその回避策)。
+    isolate: false,
+    // 通過したテストの console 出力は捨てる。サーバーは応答ごとに Effect の
+    // HttpMiddleware.logger が INFO 行("Sent HTTP response")を出すため、CI の
+    // 1 run でログ 1 万数千ブロック(約 9.7 万行)になり、読めない上に転送・描画
+    // コストも払っていた。失敗したテストの出力は従来どおり全部表示される
+    silent: "passed-only",
   },
 });
