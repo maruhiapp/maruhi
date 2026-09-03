@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — DEK 配布・新メンバーの
 // バックフィル・修復経路(AUTH_SPEC §12-6 / CRYPTO_SPEC §7)。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 // 共有フィクスチャ・ヘルパは support/data-scenario.ts(旧 data.test.ts の分割)。
 //
 // スイートの分担(分割の動機は support/membership-scenario.ts 冒頭を参照):

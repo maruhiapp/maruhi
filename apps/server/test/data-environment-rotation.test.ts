@@ -1,7 +1,7 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — エポックとローテーション
 // (§12-4 複合 / §12-5 / §12-6 / CRYPTO_SPEC §7)・境界 checkpoint の複合内整合
 // (§12-4 / CRYPTO_SPEC §4.3 (2))。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 // 環境管理・複合作成の DEK ラップ検証は data-environment.test.ts(分割の動機は
 // support/membership-scenario.ts 冒頭を参照)。
 

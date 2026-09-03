@@ -1,5 +1,5 @@
 // ヘッド申告の受理・保存・配布(CRYPTO_SPEC §6.4 / §6.6、AUTH_SPEC §16-1)の
-// 統合テスト(vitest-pool-workers — workerd 実環境)。session-27 §13-5 の申告項:
+// 統合テスト(@cloudflare/vitest-plugin — workerd 実環境)。session-27 §13-5 の申告項:
 // 単調受理(後退 409・冪等 204)・remove 時の行削除・現メンバーのみ配布・
 // 受理時刻非配布・reader の read スコープ提出可・レート制限。
 //

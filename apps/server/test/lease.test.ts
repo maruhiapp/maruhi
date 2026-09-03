@@ -1,6 +1,6 @@
 // ワークロードリース API(AUTH_SPEC §14 = CRYPTO_SPEC §9.1)の統合テスト —
 // 発行(§14-2)と OIDC 検証段(§14-1 の 401)。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 //
 // リース系スイートの分担(共有ヘルパは support/lease-scenario.ts。分割の動機は
 // support/membership-scenario.ts 冒頭を参照):

@@ -1,5 +1,5 @@
 {
-  // vitest-pool-workers(workerd 実環境テスト)用の最小構成。デプロイはしない。
+  // @cloudflare/vitest-plugin(workerd 実環境テスト)用の最小構成。デプロイはしない。
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "maruhi-crypto-tests",
   "compatibility_date": "2026-07-01",

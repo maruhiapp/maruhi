@@ -78,10 +78,10 @@ apps/
 
 ## 品質ゲート(コミット前に必ず通す)
 
-1. `oxfmt` → 2. `oxlint` → 3. `tsc --noEmit` → 4. ImportLint → 5. fallow(baseline)→ 6. React Doctor(web のみ、diff モード)→ 7. **テスト**(Vitest: crypto/core/CLI は通常環境、サーバー/DO は vitest-pool-workers)
+1. `oxfmt` → 2. `oxlint` → 3. `tsc --noEmit` → 4. ImportLint → 5. fallow(baseline)→ 6. React Doctor(web のみ、diff モード)→ 7. **テスト**(Vitest: crypto/core/CLI は通常環境、サーバー/DO は `@cloudflare/vitest-plugin`〔旧 vitest-pool-workers〕)
 
 - ImportLint の `@public` によるディレクトリカプセル化を尊重する。内部モジュールへの直 import が必要に感じたら、それは公開 API の設計不足なので人間に相談する
-- テスト: サーバー/DO は `@cloudflare/vitest-pool-workers`(workerd 実環境)、crypto/core/CLI は Vitest。`bun:test` は使わない
+- テスト: サーバー/DO は `@cloudflare/vitest-plugin`(旧 `@cloudflare/vitest-pool-workers`。workerd 実環境)、crypto/core/CLI は Vitest。`bun:test` は使わない
 - `packages/crypto` はテストベクター(`test-vectors/`)による検証を必須とする
 - deepsec(`.deepsec/`)はメンテナ向けの任意レビューであり、上の 7 ステップには含めない。手順は `docs/DEEPSEC.md`。エージェント呼び出しは `/deepsec` (`.agents/skills/deepsec`)
 

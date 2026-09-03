@@ -1,6 +1,6 @@
 // メンバーシップログのサーバー保存(CRYPTO_SPEC §6.4)+ 認可(AUTH_SPEC §11)の
 // 統合テスト — genesis 受理・正常系ベクター再生・差分ロードキャッシュ。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite / D1 を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite / D1 を検証する。
 //
 // 共有 fixture・ベクター再生ヘルパは support/membership-scenario.ts(認可・
 // negative・受理ポリシーは membership-authz / membership-negatives-* /

@@ -1,6 +1,6 @@
 // データプレーン API(AUTH_SPEC §12)の統合テスト — 環境マニフェストの複合受理
 // (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.3。PR-M1)。
-// vitest-pool-workers(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
+// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と DO SQLite を検証する。
 //
 // session-27 §13-5 のマニフェスト項の実装テスト: メタ操作との複合受理 /
 // manifestVersion CAS(409 は最新番号のみ)/ サーバーのダイジェスト再計算 /

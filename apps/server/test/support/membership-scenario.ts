@@ -1,12 +1,13 @@
 // メンバーシップログ統合テストの共有シナリオ(旧 membership.test.ts の冒頭
 // ヘルパの分割先 — data-scenario.ts と同じ「共有 fixture + register」パターン)。
 //
-// 分割の動機(2026-09-01): vitest-pool-workers は同一 workerd インスタンス内で
-// SELF.fetch を重ねるほどリクエスト処理が累積的に遅くなる(ファイル先頭 7ms →
-// 1,500 リクエスト後 400ms 超の実測。wrangler dev の同一ワーカーでは劣化なし)。
-// ファイルごとに workerd が作り直されるため、describe 単位でファイルを割ると
-// 劣化がリセットされ、ファイル間はコア数ぶん並列にもなる。ヘルパの意味論は
-// 旧 membership.test.ts と同一。
+// 分割の経緯(2026-09-01): 当時の vitest-pool-workers 0.22.0 には SELF.fetch の
+// リクエスト単価が累積リクエスト数に比例して増えるハーネス側の不具合があり
+// (workers-sdk#15092 / #15446)、ファイルごとに workerd が作り直されることを
+// 利用して describe 単位で割り、劣化をリセットしていた。不具合は
+// @cloudflare/vitest-plugin 1.1.2 で修正され(2026-09-03 に移行)、現在この分割は
+// 性能上必須ではない。ファイル間の並列度(コア数ぶん)と可読性のために維持して
+// いる。ヘルパの意味論は旧 membership.test.ts と同一。
 //
 // テストベクター(packages/crypto/test-vectors/chain-entries.json)の再利用:
 // - 正常系 seq 1〜12 をサーバー経由の受理テストとして再生する(actor ごとの実 PAT
@@ -417,9 +418,10 @@ export async function replayNegativePrefix(negative: {
 /**
  * 各テストファイルの冒頭で 1 回呼ぶ: フィクスチャの beforeEach を登録する。
  *
- * この vitest-pool-workers 構成にはテスト間のストレージ分離がなく、DO SQLite /
- * D1 はファイル内のテスト間で持ち越される。テストごとに明示的に空へ戻し、
- * ベクターユーザーをシードして PAT を取り直す。
+ * この @cloudflare/vitest-plugin 構成のストレージ分離単位はワーカー(isolate:
+ * false — apps/server/vitest.config.ts)で、DO SQLite / D1 はファイル内のテスト間
+ * だけでなく、同じワーカーが処理する他のファイルからも持ち越される。テストごとに
+ * 明示的に空へ戻し、ベクターユーザーをシードして PAT を取り直す。
  */
 export function registerMembershipScenario(): void {
   beforeEach(async () => {
