@@ -3,7 +3,9 @@
 # OPS_BACKUP_ENABLED が "true" のときだけ動く(フォーク・セルフホストでは無効)。
 #
 # 成果物(SQL ダンプ)は age 公開鍵で暗号化し、DO 退避と同じ R2 バケットの d1/ へ置く。
-# 秘密鍵は運営端末のみ・API トークンは D1 Read + R2 Write に限定・成果物も鍵も
+# 秘密鍵は運営端末のみ・API トークンは D1: Edit + Workers R2 Storage: Edit の
+# Account API token(2026-09-03 実測 — D1 Read では export が認証エラー、バケット
+# 限定の Bucket Item 権限では object put が 403。hosted-ops.md §2-G)・成果物も鍵も
 # リポジトリ / Actions artifact には置かない(公開後のリポジトリでは artifact が
 # 第三者に取得されうる)。
 #

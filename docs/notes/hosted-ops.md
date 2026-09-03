@@ -1,6 +1,6 @@
 # hosted-ops — H3: 運用基盤(監視・アラート / バックアップ / リストア演習)の設計
 
-Status: 2026-09-02 起草(H3 実装 PR #137 に同梱)。**実装は完了、H3 の完了条件(§5-3 のリストア演習 — O7)は未了**。hosted-design.md §5(裁定 DC)を「実装できる形」へ落とした
+Status: 2026-09-02 起草(H3 実装 PR #137 に同梱)。**2026-09-03 リストア演習(§5-3 / O7)を実機で実施 — 突合一致で H3 完了**(実施記録は §5-3、実測値は §4-2 / §1、人間タスクの完了日は §7)。hosted-design.md §5(裁定 DC)を「実装できる形」へ落とした
 内部文書。**運営側のみ**の段であり、製品のワイヤ・受理面(AUTH_SPEC / AUDIT_SPEC)は無変更。
 設計探索(候補・上位互換探索・棄却案・一次情報の確認)の記録は本文書に置く(独立の session ノートは作らない)。
 
@@ -19,15 +19,15 @@ Status: 2026-09-02 起草(H3 実装 PR #137 に同梱)。**実装は完了、H3 
 | 項目 | 一次情報(2026-09-02 確認) | 本設計での使い方 |
 |---|---|---|
 | R2: 1 オブジェクト上限 | 単一 PUT 4.995 GiB / multipart 4.995 TiB・パート最小 5 MiB(最終パート除く)・最大 10,000 パート・キー長 1,024 バイト・メタデータ 8 KiB。同一オブジェクトへの同時書き込み 1/秒(超過 429)(r2/platform/limits — 2026-06-08 版) | DO スナップショットは 16 MiB 未満なら単一 `put`、以上は multipart(パート 16 MiB 起草値 → 10 GB でも 640 パート) |
-| R2: 料金 / 無料枠 | Standard: $0.015/GB-月・Class A $4.50/百万・Class B $0.36/百万・egress 無料。無料枠 10 GB-月・Class A 100 万/月・Class B 1,000 万/月(r2/pricing)。ライフサイクル規則(削除 / IA 遷移 / 未完了 multipart の中止)は wrangler `r2 bucket lifecycle add --expire-days / --abort-multipart-days`(r2/buckets/object-lifecycles) | 保持は**バケットのライフサイクル規則**で行う(アプリは削除しない — §4-2)。R2 の有効化には運営アカウントで R2 の契約(支払い方法の登録)が要る = 人間タスク(§7) |
+| R2: 料金 / 無料枠 | Standard: $0.015/GB-月・Class A $4.50/百万・Class B $0.36/百万・egress 無料。無料枠 10 GB-月・Class A 100 万/月・Class B 1,000 万/月(r2/pricing)。ライフサイクル規則(削除 / IA 遷移 / 未完了 multipart の中止)は wrangler `r2 bucket lifecycle add --expire-days / --abort-multipart-days`(r2/buckets/object-lifecycles) | 保持は**バケットのライフサイクル規則**で行う(アプリは削除しない — §4-2)。R2 の有効化には運営アカウントで R2 の契約(支払い方法の登録)が要る = 人間タスク(§7)。**実機(wrangler 4.128)**: `lifecycle add` は規則名が必須の位置引数(`lifecycle add <bucket> <name> --expire-days …`)。バケットには既定の "Default Multipart Abort Rule"(7 日)が付いてくる |
 | Workers: cron の CPU / 実行時間 | Paid: cron 間隔 ≥ 1 時間なら CPU 15 分 / < 1 時間なら 30 秒、壁時計 15 分。Free: CPU 10 ms。メモリ 128 MB / isolate。サブリクエスト Paid 10,000 / 呼び出し(Free 50)。cron 数 Paid 250 / アカウント(Free 5)(workers/platform/limits) | 退避スイープは**毎時 cron**で走らせるが 1 回の予算は壁時計 10 分(起草値)で打ち切り、カーソルで継続する。Free プランでは退避バインディングが無く no-op(CPU 10 ms 内 — D1 読み 1 本) |
 | DO: 上限 | SQLite 10 GB / オブジェクト(Paid)。行 / 文字列 / BLOB 2 MB。文 100 KB・束縛パラメータ 100 / クエリ・列 100 / 表。CPU 30 秒 / リクエスト(`limits.cpu_ms` で 5 分まで)。alarm 壁時計 15 分。Free は SQLite DO のみ・5 GB / アカウント(durable-objects/platform/limits — 2026-06-01 版) | 復元の INSERT は 1 文あたり `floor(100 / 列数)` 行(最大 16 列 → 6 行)。巨大 DO の退避 CPU は `limits.cpu_ms`(hosted 環境のみ 300,000)で緩和 — 上界の議論は §4-2 |
 | DO: SQL cursor | `await` を挟んで再開した cursor は「作成後に挿入・更新・削除された行を観測しうる」(storage-api docs)。`.raw()` で列順配列、`.columnNames` で列名 | 退避の行読みは **rowid キーセット + LIMIT で 1 文ずつ同期に `toArray()`** し、cursor を await 越しに持たない(全表が rowid を持つ — `WITHOUT ROWID` なし) |
 | Workers RPC | 直列化した RPC メッセージ上限 32 MiB。大きなデータは byte stream で(rpc docs) | DO 退避は DO 自身が R2 へ書き、RPC の戻り値は集計値のみ(§2-D) |
 | D1: Time Travel | Paid 30 日 / Free 7 日。`wrangler d1 time-travel info <db> [--timestamp]` でブックマーク、`restore <db> --timestamp|--bookmark` は**その場・破壊的**(上書き。進行中クエリは中断。復元しても以前のブックマークは消えない)。追加費用なし(d1/reference/time-travel) | 誤削除・論理破壊の第一手段。運営 runbook §5-1 |
-| D1: export / import | `wrangler d1 export <db> --remote --output=<file> [--table] [--no-schema] [--no-data]`。SQL ダンプ(CREATE + INSERT)。**export 中は他のリクエストをブロック**。仮想表は不可。import は `wrangler d1 execute <db> --remote --file=<sql>`(5 GiB 上限・`BEGIN/COMMIT` は除去)(d1/best-practices/import-export-data) | 定期 export は低トラフィック時刻(02:41 UTC 起草値)に GitHub Actions cron で実行(§4-1)。ブロックは秒〜数十秒の想定(実測は人間タスク) |
+| D1: export / import | `wrangler d1 export <db> --remote --output=<file> [--table] [--no-schema] [--no-data]`。SQL ダンプ(CREATE + INSERT)。**export 中は他のリクエストをブロック**。仮想表は不可。import は `wrangler d1 execute <db> --remote --file=<sql>`(5 GiB 上限・`BEGIN/COMMIT` は除去)(d1/best-practices/import-export-data) | 定期 export は低トラフィック時刻(02:41 UTC 起草値)に GitHub Actions cron で実行(§4-1)。**実測(2026-09-03・D1 295 KB)**: export ステップ 3 秒(ブロックは 1〜2 秒以内)。import は**ダンプの文順を並べ替えないと失敗する**(export は表ごとに CREATE → INSERT を並べ、`PRAGMA defer_foreign_keys` は import 経路で効かない — `scripts/reorder-d1-dump.ts`、§5-1 (3))。API トークンは **D1: Edit** が要る(Read では export が `Authentication error [10000]`) |
 | D1: サイズの観測 | `wrangler d1 info <db> --json`(JSON に **`database_size`** バイト — API の `file_size` を wrangler 4.124 が出力前に改名する。旧版は `file_size`。PR #137 レビューで訂正) | D1 総量トリップワイヤ(5 GB)は export ワークフロー内で判定(§3 行 1) |
-| Workers Logs | wrangler `observability.enabled` で有効化。保持 Paid 7 日 / Free 3 日。1 エントリ 256 KB。Paid 月 2,000 万イベント込み・超過 $0.60/百万。`head_sampling_rate` で頭部サンプリング。組み込みのアラート機構は docs に記載なし(workers/observability/logs/workers-logs) | hosted 環境で有効化(`head_sampling_rate` 1)。ただし **`observability.logs.invocation_logs: false` を必須**にする — 既定の Fetch invocation log はリクエスト URL(パス + クエリ)を本文に含み、`/projects/:id`(capability)や `/auth/github/callback?code=…` が保持期間中ログストアに残る(PR #137 Cursor セキュリティレビューで発見。CI 8c が検査)。残るのは console の静的行のみで、per-request 識別子を含まないため全量でも capability の集積にならない。**リクエストログを含む Logpush も有効化しない** — §5-1 |
+| Workers Logs | wrangler `observability.enabled` で有効化。保持 Paid 7 日 / Free 3 日。1 エントリ 256 KB。Paid 月 2,000 万イベント込み・超過 $0.60/百万。`head_sampling_rate` で頭部サンプリング。組み込みのアラート機構は docs に記載なし(workers/observability/logs/workers-logs) | hosted 環境で有効化(`head_sampling_rate` 1)。ただし **`observability.logs.invocation_logs: false` を必須**にする — 既定の Fetch invocation log はリクエスト URL(パス + クエリ)を本文に含み、`/projects/:id`(capability)や `/auth/github/callback?code=…` が保持期間中ログストアに残る(PR #137 Cursor セキュリティレビューで発見。CI 8c が検査)。残るのは console の静的行のみで、per-request 識別子を含まないため全量でも capability の集積にならない。**リクエストログを含む Logpush も有効化しない** — §5-1。**2026-09-03 演習で追加発見**: Effect `HttpRouter.toWebHandler` の既定 HTTP ロガーが console 経路で `"Sent HTTP response" {"http.url":"/projects/<id>"}` を出しており、invocation log を切っても capability がログストアに残っていた。`disableLogger: true` で止めた(index.ts)。修正後は正常経路のログが 0 行になることを Workers Logs の実データで確認 |
 | Workers Analytics Engine | binding `analytics_engine_datasets`・`writeDataPoint`(呼び出しあたり 250 点・blob 合計 16 KB)・保持 3 か月・読み出しは SQL API(`/accounts/{id}/analytics_engine/sql` + Account Analytics Read トークン)(analytics-engine/get-started, /limits) | **不採用**(§2-A — 読み出しに API トークンを要し、閾値判定を worker 内で閉じられない) |
 | Cloudflare Notifications | Workers / DO / D1 / R2 向けの通知種別は一覧に**無い**(Health Checks は Pro 以上)(notifications/notification-available — 2026-04-24 版) | プラットフォーム通知に依存しない。運営の webhook へ自前送信(§2-B) |
 | wrangler: 名前付き環境 | `durable_objects` / `d1_databases` / `r2_buckets` / `ratelimits` / `vars` は**非継承**(環境ごとに再宣言)。`triggers` / `assets` / `migrations` / `limits` / `observability` は継承(wrangler config-schema の記述 + configuration docs)。DO binding の `script_name` で他 Worker 定義の DO 名前空間へ束縛可 | hosted 固有バインディングは `env.hosted` に置く(§2-F)。復元 worker は `script_name` で本番名前空間へ束縛(§2-E) |
@@ -218,6 +218,12 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 ときだけ実行(フォークで無駄に失敗しない)。同ワークフローが `wrangler d1 info --json` の `file_size` を 5 GB と比較して
 失敗させる(D1 総量トリップワイヤ — §2-B)。`age` の秘密鍵・API トークン・成果物はリポジトリに置かない。
 
+API トークンの権限(**2026-09-03 実測で訂正** — 起草は「D1 Read + R2 Write」): **D1: Edit** と **Workers R2 Storage: Edit**
+(いずれも Account スコープ)。`d1 export` は Read では `Authentication error [10000]`(export ジョブの作成が書き込み扱い)、
+`r2 object put` はバケット限定の "Workers R2 Storage Bucket Item: Edit" では 403(wrangler の REST 経路はアカウント
+レベルの権限を要求する。バケット限定スコープは S3 互換 API 向け)。運営の CI 用には**ユーザーに紐づかない Account API
+token** を使う(発行者の離脱・権限変更に影響されない)。権限変更の反映には数分かかることがある(編集直後の 403 は待つ)。
+
 ## 3. 監視信号の一覧(hosted-design §5-2 の実装形)
 
 | # | 対象 | 信号(出所) | 収集経路 | 閾値(起草値) | 通知 | 誤検知と対応(runbook 1 行) |
@@ -243,7 +249,10 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
   他リクエストをブロックする(一次情報)ため低トラフィック時刻に置く。含まれるのは D1 の内容そのもの(ユーザー・
   セッション / トークンの**ハッシュ**・監査 — 生値秘密は元より無い)
 - 鍵の所在: `age` 受信者(公開鍵)= GitHub Variables、秘密鍵 = 運営端末(OS キーチェーン等)。API トークン
-  (D1 Read + R2 Write に限定)= GitHub Secrets
+  (D1: Edit + Workers R2 Storage: Edit — §2-G の実測訂正)= GitHub Secrets
+- 実測(2026-09-03 手動起動 — D1 295 KB・219 行): ジョブ全体 25 秒(依存インストール 10 秒・`age` インストール
+  10〜24 秒・**export 3 秒**・暗号化 < 1 秒・R2 upload 2 秒・trip-wire 2 秒)。成果物 16.6 KB。02:41 UTC の起草時刻は
+  この規模では意味を持たない(ブロックが観測できない)ため据え置き — ユーザー基盤の時間帯分布が分かったら改める
 
 ### 4-2. DO → R2
 
@@ -256,7 +265,14 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 - 所要時間の上界(9 GB DO): JSON 化 + gzip を 50〜100 MB/s(起草の見立て — 実測は演習で)とすると 90〜180 秒の
   CPU、アップロードは 16 MiB × 563 パート。DO の CPU 上限(既定 30 秒 → hosted は `limits.cpu_ms` 300,000)と cron の
   壁時計 15 分の内側だが、permit 保持 = テナント待ちが同じ時間になる。よって `OPS_BACKUP_MAX_BYTES`(起草値 2 GB)を
-  超える DO は退避せず `oversize` を信号にする(§3 行 7)。**閾値は演習の実測後に改める**
+  超える DO は退避せず `oversize` を信号にする(§3 行 7)
+- **演習の実測(2026-09-03 — §5-3)**: ドッグフーディング DO(`databaseSize` 188 KB・17 表 47 行)の退避物 5,293 バイト
+  (gzip 後。単一 `put`)。スイープは毎時 `:23` の cron に対し `last_success_at` / カーソル更新が毎回 `:23:56.3〜.9`
+  (4 回連続)= **cron の起動遅延 ≈ 56 秒、スイープ本体 < 1 秒**。skip 規則は seq 不変の 2 回(03:23 / 04:23)で退避せず、
+  seq が進んだ回(02:23)で再退避したことを R2 のオブジェクト数(2)と `last_attempt_at` ≠ `last_success_at` で確認。
+  **9 GB 上界・multipart・DO のサブリクエスト計上はこの規模では観測できない**(§8 (a) の未確認は未確認のまま)。
+  `OPS_BACKUP_MAX_BYTES` 2 GB を改める根拠は得られず**据え置き**。改めるべき時: 実テナントで `databaseSize` が数百 MB
+  級に達したとき、その DO の退避所要(permit 保持時間)を Workers Logs / `last_attempt_at` 差分で測ってから
 - 部分適用の窓: (i) multipart 途中のクラッシュ → 未完了 upload はライフサイクル(1 日)で中止・`ops_backups` は
   失敗として記録(次回再試行)、(ii) 古い退避と新しい退避の混在 → オブジェクトはタイムスタンプ付きで**上書きしない**
   (最新の成功キーは `ops_backups.last_object_key`)、(iii) ロールバックデプロイ → 退避物のヘッダの schemaVersion と
@@ -283,9 +299,15 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 1. 影響範囲の確定(いつから壊れたか)。`wrangler d1 time-travel info maruhi --env hosted --timestamp=<RFC3339>` で
    ブックマークを得る
 2. `wrangler d1 time-travel restore maruhi --env hosted --bookmark=<bookmark>`(その場・破壊的。進行中クエリは中断)
-3. Time Travel の範囲外(30 日超)/ D1 自体の喪失: 新 DB を `wrangler d1 create`、`age -d` で export を復号し
-   `wrangler d1 execute <db> --remote --file=<sql>`(`BEGIN/COMMIT` を除去。5 GiB 超は分割)。`env.hosted` の
-   `database_id` を差し替えて再デプロイ
+3. Time Travel の範囲外(30 日超)/ D1 自体の喪失: 新 DB を `wrangler d1 create`、`age -d -i <keyfile>` で export を
+   復号し、**`bun scripts/reorder-d1-dump.ts <in.sql> <out.sql>` で文順を並べ替えてから**
+   `wrangler d1 execute <db> --remote --file=<out.sql> -y`(5 GiB 超は分割)。並べ替えが要る理由(2026-09-03 実測):
+   export は表ごとに CREATE TABLE → INSERT の塊で並び、外部キーの親表(`users`)より先に子表(`api_tokens` 等)の
+   INSERT が来る。先頭の `PRAGMA defer_foreign_keys=TRUE` は import 経路で効かず、そのままだと `no such table:
+   main.users`、CREATE を前に出すだけだと `FOREIGN KEY constraint failed` で止まる。スクリプトは CREATE TABLE 全部 →
+   INSERT を外部キー依存の親→子順 → CREATE INDEX に並べ、BEGIN/COMMIT を落とす。復号済み SQL は作業後に削除する。
+   その後 `env.hosted` の `database_id` を差し替えて再デプロイ。行数の突合は `select count(*)` を表ごとに(D1 の
+   compound SELECT は項数上限が小さく、全表を 1 文の UNION ALL にすると `too many terms` で失敗する — 4 表ずつ)
 
 ### 5-2. DO
 
@@ -315,6 +337,37 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 4. 所要時間(export のブロック時間・9 GB 上界の見立て)を実測し、本文書の起草値(`OPS_BACKUP_MAX_BYTES`・時刻)を改める
 5. hosted-design.md §9 H3 行に実施日と結果を追記
 
+#### 実施記録(2026-09-03 — 運営アカウント `maruhi`・hosted origin `https://my.maruhi.app`)
+
+対象: 運営のドッグフーディングプロジェクト(env `dev`・変数 5 本・値はダミー。DO id の像 `1fe4a507…`)。
+演習は Claude(Cursor)が運営端末で wrangler を実行し、所有者がブラウザ操作(GitHub OAuth・CLI 承認)と各種
+トークン発行を担当した(伴走セッション)。
+
+| 手順 | 結果 | 所要 / 実測 |
+|---|---|---|
+| (1) スイープ 1 周 | `ops_backups` 1 行(全プロジェクト)・`storage_level=admit`・失敗 0・カーソル終端。01:23Z(init 直後・1,453 B)と 02:23Z(push 後・5,293 B)の 2 世代、03:23Z / 04:23Z は skip | cron 起動 +56 秒・本体 < 1 秒 |
+| (2) DO drill 復元 | `wrangler deploy -c wrangler.restore.jsonc` → `restore/jobs/drill-2026-09-03.json`(`target: "drill"`)→ `restore/results/` に `status: "ok"`。**全 17 表の行数・chainHeadSeq 3・chainHeadHashHex `17274a51…`・auditMaxSeq 17 がトレーラと一致**。トレーラの `auditHeadHashHex` は null(§5-2 (5) のケース)→ 復元側の `5522999b…` を、テナント側で監査行から再計算した h_17 と本番 `GET /audit-head` の申告値と突合し **三者一致**。`running/` 取り残しなし。`wrangler delete` で片付け | ジョブ投入 03:45:13Z → 結果 03:46:14Z 以前(cron 1 分 + 数秒) |
+| (3) D1 復元 | `ops-backup` 手動起動の export(`d1/2026-09-03T03-16-06Z.sql.age`・16.6 KB)を `age -d` で復号 → `maruhi-drill` を新規作成 → **素の import は 2 回失敗**(`no such table: main.users` → CREATE 先出しで `FOREIGN KEY constraint failed`)→ `scripts/reorder-d1-dump.ts` で親→子順に並べ替えて成功(90 文・219 行)。**全 21 表の `count(*)` が本番と一致**。`wrangler d1 delete maruhi-drill` で片付け | import 3 秒 |
+| (4) 実測値 | §4-1 / §4-2 / §1 に反映。起草値の変更なし(根拠不足 — 9 GB 上界はこの規模で観測不能) | — |
+| (5) 記録 | hosted-design.md §9 H3 行・ROADMAP.md H3 行を更新(本 PR) | — |
+
+演習で見つかった欠陥・食い違い(本 PR で修正):
+
+- **Effect HTTP ロガーによる capability のログ残留**(§1 Workers Logs 行)— `disableLogger: true`
+- `r2 bucket lifecycle add` に規則名が必須(§1 R2 行・SELF_HOSTING.md)
+- Actions 用トークンの権限は D1: Edit + Workers R2 Storage: Edit(§2-G・ops-backup.yml・SELF_HOSTING.md)
+- D1 import の文順(§5-1 (3)・SELF_HOSTING.md・新規 `scripts/reorder-d1-dump.ts`)
+- `deployment_settings` への直 INSERT は `updated_at` NOT NULL — SELF_HOSTING.md の SQL が正(runbook 化)
+- GitHub OAuth App の登録フォームが変更されている(Redirect URIs 複数・"Expire user access tokens")— SELF_HOSTING.md §4
+
+運用上の所見(変更はしない — 提案):
+
+- 正常経路の毎時ジョブは Workers Logs に 1 行も出さない(記録は D1 のみ)。「スイープ 1 周・n 件・skip m 件」の
+  静的 1 行があると外形からの健全性確認が楽になる(識別子を含まないので DC-2 に抵触しない)
+- `maruhi login` のフロー期限(10 分)は伴走(人が別チャネルで URL を受け取る)には短い — 単独運用では問題ない
+- CLI の `key generate` は Cursor 端末を AI エージェント環境と判定し recovery code をスキップした(ADR-0016 決定 7
+  の想定どおり)。演習用鍵なので問題ないが、運営の本鍵は人間の端末で作ること
+
 ## 6. 実装の写像
 
 | 層 | 変更 |
@@ -335,19 +388,19 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
 | docs | SELF_HOSTING.md(英語: Backups / Optional operations bindings)、hosted-design §8 gap 4・5 / §9 H3、ROADMAP |
 | テスト | `ops-backup.test.ts`(実 DO: fixture → 退避 → 空 DO へ復元 → ヘッド・監査ヘッド〔`ensureHeadCurrent`〕・行一致・seq 無欠番。skip 規則。census。not-empty 拒否。トレーラ欠落の拒否)、`ops-alerts.test.ts`(カウンタ・評価・遷移・webhook 本文に識別子が無いこと)、`ops-restore.test.ts`(ジョブ処理) |
 
-## 7. 人間タスク(実行しない — 列挙)
+## 7. 人間タスク(実行しない — 列挙。完了日は 2026-09-03 の伴走セッションで記入)
 
-| # | タスク | 段 |
-|---|---|---|
-| O1 | Workers Paid の運用アカウント整備(L6)— cron CPU 15 分・DO 10 GB・Time Travel 30 日は Paid 前提 | H3 デプロイ前 |
-| O2 | R2 の有効化(支払い方法の登録)とバケット作成: `wrangler r2 bucket create maruhi-ops-backup`、ライフサイクル `lifecycle add maruhi-ops-backup --expire-days 35 --abort-multipart-days 1`。公開アクセスなし | 同上 |
-| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted`。**注意**: 名前付き環境は `maruhi-server-hosted` という別 Worker(= 別の DO 名前空間)を作る。最上位名 `maruhi-server` で稼働中のプロジェクト DO が運営アカウントにあるなら、hosted への切り替えはデータが付いてこない(退避 → 復元 worker で移すか、最初から hosted 名で運用する)。初回デプロイ前に既存デプロイの有無を確認する(PR #137 レビュー)。**デプロイ直後に 1 回**、Workers Logs で invocation log が実際に止まっていること(ダッシュボードの Logs 設定で Invocation logs が OFF、または数分後のログに `http.url` を含む行が無い)を目視確認する — CI 8c は設定ファイルの値しか見ない | 同上 |
-| O4 | GitHub: Secrets `CLOUDFLARE_API_TOKEN`(D1 Read + R2 Write に限定)/ `CLOUDFLARE_ACCOUNT_ID`、Variables `OPS_BACKUP_ENABLED=true` / `OPS_BACKUP_BUCKET` / `OPS_BACKUP_AGE_RECIPIENT`。`age-keygen` の秘密鍵は運営端末のキーチェーンへ | 同上 |
-| O5 | 外形監視サービスの契約(`GET /auth/config` を 1 分間隔・連続 3 回失敗で通知) | 招待制ベータ前 |
-| O6 | 運用 GitHub OAuth App(L7 — 本番コールバック URL)。「Enable Device Flow」は無効のまま | H3 デプロイ前 |
-| O7 | リストア演習(§5-3)の実施と実測値の反映。**H3 の完了条件** | 招待制ベータ前 |
-| O8 | 退避物へのアプリ層暗号化(運営鍵)の要否の裁定 — 要るなら CRYPTO_SPEC の改訂として提示(§2-D) | 任意 |
-| O9 | Alchemy v2 化(ADR-0012 / gap 10)— `env.hosted` の内容を Alchemy 宣言へ移す独立 PR | H3 後 |
+| # | タスク | 段 | 状態 |
+|---|---|---|---|
+| O1 | Workers Paid の運用アカウント整備(L6)— cron CPU 15 分・DO 10 GB・Time Travel 30 日は Paid 前提 | H3 デプロイ前 | **済 2026-09-03**(運営アカウント `maruhi`。既存の `maruhi-server`〔2026-08-10 試験デプロイ・D1 0 行・DO 0 件〕はデータ無しと確認し、hosted 名で新規運用) |
+| O2 | R2 の有効化(支払い方法の登録)とバケット作成: `wrangler r2 bucket create maruhi-ops-backup`、ライフサイクル `lifecycle add maruhi-ops-backup retain-35d --expire-days 35 --abort-multipart-days 1`(**規則名は必須の位置引数**)。公開アクセスなし(`dev-url get` が disabled・custom domain なし) | 同上 | **済 2026-09-03** |
+| O3 | `env.hosted` の `database_id`・バケット名を実値に、`wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted`(webhook の受け口 = チャット / メール中継の契約)。`wrangler deploy --env hosted`。**注意**: 名前付き環境は `maruhi-server-hosted` という別 Worker(= 別の DO 名前空間)を作る。最上位名 `maruhi-server` で稼働中のプロジェクト DO が運営アカウントにあるなら、hosted への切り替えはデータが付いてこない(退避 → 復元 worker で移すか、最初から hosted 名で運用する)。初回デプロイ前に既存デプロイの有無を確認する(PR #137 レビュー)。**デプロイ直後に 1 回**、Workers Logs で invocation log が実際に止まっていること(ダッシュボードの Logs 設定で Invocation logs が OFF、または数分後のログに `http.url` を含む行が無い)を目視確認する — CI 8c は設定ファイルの値しか見ない。**提供ドメイン**(所有者裁定 2026-09-03): 製品オリジン = `my.maruhi.app`(`routes` + `custom_domain`、hosted では `workers_dev: false`)、apex `maruhi.app` = LP(L1 で決定)、`maruhi.dev` = docs。ダッシュボードのオリジンは TCB なので LP と分ける。初回ユーザー(運営)のサインアップ後に `deployment_settings.signup_policy` を `invite` へ(SELF_HOSTING.md の SQL) | 同上 | **済 2026-09-03**(Secrets: GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / SERVER_ENC_KEY_IKM / OPS_ALERT_WEBHOOK_URL〔Slack〕。Logs 目視で **Effect HTTP ロガーの漏れを発見・修正** — §1) |
+| O4 | GitHub: Secrets `CLOUDFLARE_API_TOKEN`(**Account API token — D1: Edit + Workers R2 Storage: Edit**。起草の「D1 Read + R2 Write」は実機で不足 — §2-G)/ `CLOUDFLARE_ACCOUNT_ID`、Variables `OPS_BACKUP_ENABLED=true` / `OPS_BACKUP_BUCKET` / `OPS_BACKUP_AGE_RECIPIENT`。`age-keygen` の秘密鍵は運営端末のキーチェーンへ。`workflow_dispatch` で 1 回手動実行して成功を確認 | 同上 | **済 2026-09-03**(手動実行 3 回目で成功 — 権限不足 2 回の実測が §2-G) |
+| O5 | 外形監視サービスの契約(`GET /auth/config` を最短間隔・連続失敗で通知)— Better Stack Uptime を採用。専用 health エンドポイントは作らない | 招待制ベータ前 | **進行中 2026-09-03**(所有者がモニター作成中 — 設定値は確定後に追記) |
+| O6 | 運用 GitHub OAuth App(L7 — 本番コールバック URL)。「Enable Device Flow」は無効のまま。**2026-09 のフォーム**では Redirect URIs(複数可・wildcard 設定制)と "Expire user access tokens" が追加されている — Redirect URI は 1 本(`https://my.maruhi.app/auth/github/callback`)・wildcard オフ、Expire はオンで可(サーバーは access_token を即時使用して捨て、refresh_token を読まない) | H3 デプロイ前 | **済 2026-09-03**(組織 `maruhiapp` 配下) |
+| O7 | リストア演習(§5-3)の実施と実測値の反映。**H3 の完了条件** | 招待制ベータ前 | **済 2026-09-03**(§5-3 実施記録 — DO / D1 とも突合一致) |
+| O8 | 退避物へのアプリ層暗号化(運営鍵)の要否の裁定 — 要るなら CRYPTO_SPEC の改訂として提示(§2-D)。**判断材料(2026-09-03 整理)**: (a) 退避物の内容は DO と同一の E2EE 暗号文 + 公開メタで、運営が読める情報は増えない。(b) R2 は保存時暗号化 + 非公開バケット + アカウントレベル権限のみ。(c) 追加層を入れると鍵管理(運営鍵の保管・ローテーション・復元 worker への配布)が増え、CRYPTO_SPEC 外の暗号操作になる。(d) 脅威は「R2 バケットの権限漏洩で暗号文 + チェーン + 監査(メタデータ)が第三者に渡る」— 平文は渡らないがメンバー構成・変数名・操作履歴は渡る。(e) D1 export は `age` で運営鍵暗号化済みなので非対称。**裁定は所有者へ**: 現状は (a)(b) で不要と見る | 任意 | 未(材料整理のみ) |
+| O9 | Alchemy v2 化(ADR-0012 / gap 10)— `env.hosted` の内容を Alchemy 宣言へ移す独立 PR | H3 後 | 未 |
 
 ## 8. 実装後の第 2 次ゼロベース探索(歩査 — 収束記録。2026-09-02)
 
@@ -358,7 +411,9 @@ Alchemy v2 化(gap 10)の際は `env.hosted` の内容がそのまま Alchemy �
   パート長が揺れて complete が失敗するため、ちょうど partBytes ずつ切り出す形に改めた(実 R2 互換の miniflare で
   5 MiB パート 2 個の multipart を固定)
 - DO 内の R2 呼び出しが DO のサブリクエスト上限に数えられるかは一次情報に記載がなく**未確認**(10 GB でも 640 パート —
-  Workers Paid の 10,000 の内側。演習で実測)
+  Workers Paid の 10,000 の内側)。2026-09-03 の演習は 188 KB の DO(単一 put・1 サブリクエスト)で multipart を通らず、
+  **未確認のまま**。実テナントの DO が 16 MiB を超えて初めて multipart 経路が実機で走る — その回の
+  `ops_backups.last_failure_code`(`upload-failed` / `rpc-failed`)と Workers Logs の静的行で確認する
 - Free プランの cron は CPU 10 ms: 毎時ジョブはバインディング無しなら D1 を数本読むだけ(I/O 待ちは CPU に数えない)。
   それでも超過する環境があれば `triggers.crons` の 2 本目を外せばよい(SELF_HOSTING に明記 — 退避と評価は消える)
 
