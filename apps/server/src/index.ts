@@ -119,7 +119,13 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(platformContext),
     Layer.provide(Layer.succeedContext(services)),
   );
-  const webHandler = HttpRouter.toWebHandler(apiLive);
+  // Effect の既定 HTTP ロガー(HttpMiddleware.logger — "Sent HTTP response" に
+  // `http.url` を注釈する)を無効化する。有効だと Workers Logs に
+  // /projects/:id(capability — AUTH_SPEC §11-2)がリクエストごとに残り、
+  // wrangler の `observability.logs.invocation_logs: false` で塞いだ穴が console
+  // 経路から開き直す(2026-09-03 O7 演習の Workers Logs 実データ確認で発見 —
+  // hosted-ops.md §5-3)。残す console 行は静的メッセージ + 集計値のみ(DC-2)
+  const webHandler = HttpRouter.toWebHandler(apiLive, { disableLogger: true });
   const built: EnvHandler = {
     handler: (request) => webHandler.handler(request, services),
   };
