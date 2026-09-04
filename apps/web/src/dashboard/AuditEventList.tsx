@@ -389,7 +389,7 @@ export function AuditEventList({
       <EmptyNotice
         title={emptyTitle}
         description="No events are visible to your role, as reported by the server."
-        testId={testId}
+        testId={`${testId}-empty`}
       />
     );
   }

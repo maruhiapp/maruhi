@@ -14,7 +14,8 @@
 //       (b) 追記: 既に描けた本体の下に足す(Load more の失敗・失効の失敗)。
 //           行から再操作できる失敗(失効)は onRetry を渡さない
 //     13 か所の呼び出しは AuditEventList(2)/ TokensScreen(2)/ DashboardScreen(2)/
-//     InvitesTab(2)/ ProjectScreen(4)+ DashboardShell(1)= 置換 9 / 追記 4
+//     InvitesTab(2)/ ProjectScreen(4)/ DashboardShell(1 — 旧 DashboardScreen のセッション
+//     失敗表示を移したもの)= 置換 9 / 追記 4
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";

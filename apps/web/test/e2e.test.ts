@@ -861,6 +861,38 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
+  it("renders the audit log as a List with actor / detail fragments at mobile width (DP3 裁定 D — HP5)", async () => {
+    // 768px 以下(AppShell の md)では監査一覧が Table でなく List(1 イベント = 1 項目)に
+    // なり、サイドバーはドロワーへ移る。pullfrog レビュー反映: この経路を CI で固定する
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await routeProjectOverview(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/audit/events`,
+      (route) => fulfillJson(route, 200, projectAuditEvents),
+    );
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: "Audit" }).click();
+    const list = page.getByTestId("audit-list-project");
+    await list.waitFor();
+    // Table ではなく List(ul)で描かれ、行の意味(イベント名・seq・actor・target)は保たれる
+    await expect(list.locator("table").count()).resolves.toBe(0);
+    await expect(list.getByRole("listitem").count()).resolves.toBe(2);
+    await expect(list.getByText("chain.member_added").count()).resolves.toBe(1);
+    await expect(list.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
+    await expect(list.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
+    await expect(list.getByText("seq 1", { exact: true }).count()).resolves.toBe(1);
+    // サイドバーはドロワーへ: トグルで開き、到達点とユーザー id が並ぶ
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    const drawer = page.getByRole("dialog", { name: "Navigation" });
+    await drawer.waitFor();
+    await expect(drawer.getByRole("link", { name: "API tokens" }).count()).resolves.toBe(1);
+    await expect(drawer.getByTestId("signed-in-user").count()).resolves.toBe(1);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
   it("renders the account (self) audit axis without a seq column", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
