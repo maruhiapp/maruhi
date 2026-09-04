@@ -295,6 +295,46 @@ N1 の付帯設計: 同期は環境ごとの opt-in(`autoSync`)とし、producti
 
 **3 ラウンドを通した同期の全体像(改訂)**: **同期先は built-in プリセット(ホスト固定)+ ユーザー所有のトークン。値を変えた人の CLI が直接同期するか CI を起動し、CI がデプロイのたびに再適用し、監査に残る。** サーバーは何も持たず、通知も、エージェント専用のゲートも要らない。
 
+### 補足 10: 同期の第 4 ラウンド — 「同期先 = ベンダー CLI のドライバ」(2026-09-04)
+
+補足 5 の gh 経路(`printenv X | gh secret set X`)を一般化すると、同期の作り方そのものが変わる。
+
+**観察**: 主要な同期先はどれも公式 CLI を持ち、stdin から値を受け取れる — `vercel env add NAME production`(stdin)、`wrangler secret bulk`(stdin の JSON)、`gh secret set NAME`(stdin)、`flyctl secrets set`(引数だが `--stage`)、`railway variables set`、`netlify env:set`(引数 — 後述)。maruhi 自身も `push` を stdin 方式にしている。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| V1. **`maruhi sync <target>` = ベンダー CLI を stdin 経由で駆動するドライバ** | HTTP アダプタ・プリセット・同期先トークンの保管を持たず、`maruhi run` の変種としてベンダー CLI に値を流し込む(`maruhi sync vercel` ≒ 変数ごとに `maruhi run --only VAR -- vercel env add VAR production` を回す)。認証はベンダー CLI 自身のログイン(手元)か、CI ではベンダーのトークン環境変数(`VERCEL_TOKEN` / `CLOUDFLARE_API_TOKEN` 等)を `maruhi ci run` が maruhi の変数から注入 | **◎ 第 4 ラウンドの上位互換**。(1) 同期先トークンを maruhi に保管する必要が消える(手元はベンダー CLI の認証を使う)。(2) HTTP API の upsert / ページング / 環境の対応付けの癖をベンダーが保守する。(3) 自作プリセット(任意 URL)という概念が消え、「任意のコマンド」= `run` と同じ扱いに自然に収まる(補足 9 と整合)。(4) SY5 の gh 経路と同じ形になり、GitHub は特別扱いでなくなる。(5) デプロイ時再適用(補足 7 P3)はこのドライバをデプロイ workflow で呼ぶだけ |
+| V2. HTTP アダプタ + プリセット(補足 1 の S8) | — | ○ **ベンダー CLI が stdin を受けない・引数に値を要求する先の退避経路**(Netlify の `env:set KEY value` は値が引数に出るため `ps` で見える — HTTP API を使う)。Railway は GraphQL、Fly は `flyctl secrets import`(stdin の KEY=VALUE)で V1 可 |
+| V3. ベンダー CLI の有無・版の検出と `npx` / `bunx` での固定 | ドライバの前提確認 | ○ V1 の付帯。CLI 不在なら V2 へ退避、または案内 |
+| V4. `sync diff` はベンダー CLI の一覧(`vercel env ls` 等)と突合 | 値は取得しない(名前と更新時刻のみ)。値の一致確認が要る先は HTTP で読み戻す | ○ |
+
+**V1 の含意**: SY2 のコストは HTTP アダプタ分が減り、ドライバ 1 つあたり 0.5 日程度になる(引数の引用・Windows のシェル差・stdin の改行規則は共通部品)。「同期先トークンをどこに置くか」(補足 4 の残余 (b)・補足 7 P2)は**手元では問題自体が消え**(ベンダー CLI の認証)、CI ではベンダートークンを maruhi の変数として `ci run` で注入する 1 経路に統一される。
+
+**残る V2 対象**: Netlify(値が引数)、AWS SM / GCP SM(`aws secretsmanager put-secret-value --secret-string file:///dev/stdin` は可能だが AWS CLI の導入が重い — CI では OIDC + AWS CLI が普通なので V1 で足りる)。
+
+### 補足 11: GitHub secrets の第 4 ラウンド(2026-09-04)
+
+補足 10 により GitHub は「gh をドライバとする同期先の 1 つ」になり、特別扱いが消えた。新規の上位互換はない。残る改善は Q1(App トークン)と Q2 / Q3(GitHub secrets を空にする案内)のまま。
+
+### 補足 12: キーチェーン不在環境(Codespaces / devcontainer / WSL / 素の Linux)— 案の列挙(2026-09-04)
+
+**問題の本質**: CLI が永続化してよい秘密は OS キーチェーンの中だけ(CLAUDE.md)。キーチェーンがない環境では `login` と鍵の保存が型付きエラーで止まる。これは Windows とは別問題で、**対象層(Web 開発者)の devcontainer / Codespaces / WSL 利用者を丸ごと除外**している。加えて ephemeral な環境(コンテナ再作成)では「新しい端末 = 新しい鍵」になり、毎回メンバー追加か復元が要る。
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| L1. Secret Service の導入レシピ(gnome-keyring + D-Bus。WSL2 は systemd 対応で可、devcontainer は feature 化) | docs のみ | ○ **即日の退避経路**。ephemeral 環境ではキーリングごと消えるので volume 永続化の案内が要る。「動くが不格好」 |
+| L2. **セッション内メモリ保持(`maruhi agent` — ssh-agent 型)** | 常駐プロセスがトークンと master 鍵をメモリに持ち、CLI は unix ソケット越しに使う。ディスクに何も書かない | ○ 不変条件を破らない。コンテナ再起動で消えるため L3 / L4 と組む |
+| L3. **既存のリカバリーラップで同一鍵を復元(`key recover`)** | CRYPTO_SPEC §8 のラップは既にサーバーにある。新環境では `login` → `key recover`(リカバリーコード入力)で**同じ鍵**が戻る = メンバー再追加が不要 | ○ **仕様変更ゼロで今日できる**。ただしリカバリーコードを日常的に端末へ打つのは用途外(取得のレート制限 1 時間 5 回・エージェント環境での儀式拒否)。一時しのぎ |
+| L4. **「封印バックアップ」を §8 の第 2 経路として一般化** | master 鍵をもう 1 つの KEK でラップしてサーバーに置く(構造は §8 と同じ・AAD で用途分離)。KEK の元は (a) パスフレーズ、(b) パスキー PRF。`login` の直後に取得 → 復号 → L2 のメモリへ | **◎ 本命**。ROADMAP「将来」のリカバリー封印バックアップ・パスキー PRF と同じ機構であり、キーチェーン不在問題が着手の理由を与える。端末移行の儀式(ADR-0014 決定 5 の「初回と招待だけ」の 1 つ)も同時に軽くなる |
+| L4-a. パスフレーズ由来 KEK | 低エントロピー → ストレッチング必須。§8 は「パスフレーズ由来の鍵を導入する場合は Argon2id 必須(仕様改訂)」と明記。Argon2id は WebCrypto にない(PBKDF2 はある) | △ **規律との衝突が 2 つ**(§8 の Argon2id 要件 vs WebCrypto のみ)。PBKDF2-SHA256 高反復で §8 を改訂するか、Argon2id の依存(hash-wasm / noble)を例外承認するかの裁定が要る |
+| L4-b. **パスキー PRF 由来 KEK** | WebAuthn PRF 拡張の出力は一様ランダムな高エントロピー秘密 → **リカバリーコードと同じく HKDF(salt 空)で足り、ストレッチング不要**。§8 の構造をそのまま流用できる | **◎ 暗号面では最も素直**。課題は UX 面: PRF は**ブラウザでしか取れない**ため、CLI が遠隔(Codespaces)のときは PRF 出力を CLI へ運ぶ経路が要る |
+| L4-b の経路 (i): 運営配信の Web ページで PRF → CLI の一時公開鍵へ HPKE 封印 → サーバーが暗号文を中継 | — | △ Web に「封印コード」が載る = ADR-0018(hosted Web は鍵・ラップのコードパスを持たない)と衝突。CLI 承認ページは `script-src 'none'` で WebAuthn 自体が動かない |
+| L4-b の経路 (ii): **CLI が配る localhost ページ(MIT 側・`maruhi ui` と同じ配布物)で PRF を取る** | Codespaces / VS Code は localhost をローカルブラウザへポート転送する。WSL は localhost がそのまま通る | ○ ADR-0018 と整合(CLI 配布物の中で完結)。`maruhi ui` 第 2 段の枠組み(UI と鍵保持プロセスの操作別契約)に「PRF を取って渡す」儀式型操作を 1 つ足す形 |
+| L5. WSL から Windows の Credential Manager を interop で使う | — | △ ハック。L1 の WSL2 + systemd + gnome-keyring のほうが素直 |
+| L6. キーチェーン不在では `MARUHI_TOKEN` + 鍵なしクラスの操作のみ許可 | `schema` 系・メタのみ pull など | ○ 既にそう動く。値の操作ができないので解決ではない |
+
+**結論(推奨)**: 順序は **L1(即日・docs)→ L2 + L3(仕様変更ゼロの実用経路)→ L4-b(本命。設計セッション → CRYPTO_SPEC §8 改訂 → 実装)**。L4-a(パスフレーズ)は規律衝突が 2 つあるので、L4-b で足りるなら採らない。L4 は「キーチェーン不在」「端末移行」「リカバリー UX」「パスキー PRF(将来項)」を 1 つの機構で解くため、**設計セッションは招待制ベータ前に置く価値がある**(実装がベータ後になっても、設計が決まっていれば L2 + L3 の暫定経路を正しい方向に置ける)。
+
 ### 補足 3: コストと課金の線(2026-09-04 追記)
 
 競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。
