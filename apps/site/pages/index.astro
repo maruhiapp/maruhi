@@ -96,27 +96,23 @@ const tiles = [
           <figure class="figure">
             <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-files">
               <title id="ill-files">An AI agent reading three project files, including .env</title>
-              <g class="line">
-                <rect x="20" y="24" width="128" height="40" rx="6"></rect>
-                <rect x="20" y="80" width="128" height="40" rx="6"></rect>
-              </g>
-              <rect class="line accent" x="20" y="136" width="128" height="40" rx="6"></rect>
-              <text class="label" x="34" y="49">app.ts</text>
-              <text class="label" x="34" y="105">package.json</text>
-              <text class="label accent-text" x="34" y="161">.env</text>
-              <g class="line dashed">
-                <path d="M148 44 C 190 44, 200 96, 236 96"></path>
+              <g class="line open soft dashed">
+                <path d="M148 44 C 190 44, 200 94, 236 94"></path>
                 <path d="M148 100 L 236 100"></path>
               </g>
-              <path class="line accent" d="M148 156 C 190 156, 200 104, 236 104"></path>
-              <g class="line">
-                <rect x="236" y="72" width="60" height="52" rx="10"></rect>
-                <line x1="266" y1="72" x2="266" y2="58"></line>
-                <circle cx="266" cy="54" r="4"></circle>
-              </g>
-              <circle class="fill" cx="254" cy="96" r="5"></circle>
-              <circle class="fill" cx="278" cy="96" r="5"></circle>
-              <text class="label" x="236" y="146">your agent</text>
+              <path class="key open" d="M148 158 C 190 158, 200 106, 236 106"></path>
+              <rect class="line" x="20" y="22" width="128" height="42" rx="8"></rect>
+              <rect class="line" x="20" y="80" width="128" height="42" rx="8"></rect>
+              <rect class="line env" x="20" y="138" width="128" height="42" rx="8"></rect>
+              <text class="label strong" x="34" y="48">app.ts</text>
+              <text class="label strong" x="34" y="106">package.json</text>
+              <text class="label accent-text" x="34" y="164">.env</text>
+              <line class="line open" x1="266" y1="72" x2="266" y2="60"></line>
+              <circle class="line" cx="266" cy="56" r="4"></circle>
+              <rect class="line" x="236" y="72" width="60" height="54" rx="12"></rect>
+              <circle class="dot" cx="254" cy="97" r="5"></circle>
+              <circle class="dot" cx="278" cy="97" r="5"></circle>
+              <text class="label" x="236" y="150">your agent</text>
             </svg>
           </figure>
         </li>
@@ -139,32 +135,19 @@ const tiles = [
               <title id="ill-server">
                 A laptop holding the key sends ciphertext to a server that has no key
               </title>
-              <g class="line">
-                <rect x="16" y="56" width="96" height="68" rx="6"></rect>
-                <line x1="6" y1="132" x2="122" y2="132"></line>
-              </g>
-              <g class="line accent">
-                <circle cx="46" cy="90" r="9"></circle>
-                <line x1="54" y1="90" x2="86" y2="90"></line>
-                <line x1="78" y1="90" x2="78" y2="98"></line>
-                <line x1="86" y1="90" x2="86" y2="98"></line>
-              </g>
-              <g class="line">
-                <line x1="134" y1="96" x2="200" y2="96"></line>
-                <path d="M192 90 L 200 96 L 192 102"></path>
-              </g>
-              <text class="label" x="130" y="82">ciphertext</text>
-              <g class="line">
-                <rect x="216" y="46" width="88" height="26" rx="4"></rect>
-                <rect x="216" y="80" width="88" height="26" rx="4"></rect>
-                <rect x="216" y="114" width="88" height="26" rx="4"></rect>
-              </g>
-              <g class="fill">
-                <circle cx="228" cy="59" r="3"></circle>
-                <circle cx="228" cy="93" r="3"></circle>
-                <circle cx="228" cy="127" r="3"></circle>
-              </g>
-              <text class="label" x="216" y="164">no key here</text>
+              <rect class="line" x="16" y="52" width="100" height="70" rx="8"></rect>
+              <path class="line open" d="M4 134 H128"></path>
+              <circle class="key" cx="48" cy="88" r="11"></circle>
+              <path class="key open" d="M59 88 H92 M84 88 V98 M92 88 V98"></path>
+              <path class="line open soft" d="M138 96 H198 M188 88 L198 96 L188 104"></path>
+              <text class="label strong" x="132" y="80">ciphertext</text>
+              <rect class="line" x="214" y="42" width="92" height="28" rx="6"></rect>
+              <rect class="line" x="214" y="80" width="92" height="28" rx="6"></rect>
+              <rect class="line" x="214" y="118" width="92" height="28" rx="6"></rect>
+              <circle class="dot" cx="228" cy="56" r="3.5"></circle>
+              <circle class="dot" cx="228" cy="94" r="3.5"></circle>
+              <circle class="dot" cx="228" cy="132" r="3.5"></circle>
+              <text class="label" x="214" y="170">no key here</text>
             </svg>
           </figure>
         </li>
@@ -189,12 +172,10 @@ const tiles = [
                 tiles.map((t) => (
                   <li class={t.reads ? "tile yes" : "tile"}>
                     {t.reads ? (
-                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="line" cx="8" cy="12" r="4.5" />
-                        <line class="line" x1="12.5" y1="12" x2="21" y2="12" />
-                        <line class="line" x1="17" y1="12" x2="17" y2="16" />
-                        <line class="line" x1="21" y1="12" x2="21" y2="16" />
-                      </svg>
+                      <span class="icon seal" aria-hidden="true">
+                        <img class="seal-light" src="/logo.svg" alt="" />
+                        <img class="seal-dark" src="/logo-dark.svg" alt="" />
+                      </span>
                     ) : (
                       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
                         <rect class="line" x="5" y="11" width="14" height="9" rx="2" />
@@ -236,12 +217,8 @@ STRIPE_KEY    string  true      set</span>
               <title id="ill-agents">
                 An agent sees variable names and types, while the values are blacked out
               </title>
-              <g class="line">
-                <rect x="20" y="36" width="196" height="128" rx="6"></rect>
-                <line x1="20" y1="68" x2="216" y2="68"></line>
-                <line x1="20" y1="100" x2="216" y2="100"></line>
-                <line x1="20" y1="132" x2="216" y2="132"></line>
-              </g>
+              <rect class="line" x="20" y="34" width="196" height="132" rx="8"></rect>
+              <path class="line open soft thin" d="M20 68 H216 M20 100 H216 M20 132 H216"></path>
               <text class="label" x="30" y="56">NAME</text>
               <text class="label" x="132" y="56">TYPE</text>
               <text class="label" x="180" y="56">VALUE</text>
@@ -251,18 +228,14 @@ STRIPE_KEY    string  true      set</span>
               <text class="label" x="132" y="88">url</text>
               <text class="label" x="132" y="120">string</text>
               <text class="label" x="132" y="152">string</text>
-              <g class="redacted">
-                <rect x="180" y="78" width="28" height="12" rx="2"></rect>
-                <rect x="180" y="110" width="28" height="12" rx="2"></rect>
-                <rect x="180" y="142" width="28" height="12" rx="2"></rect>
-              </g>
-              <g class="line">
-                <rect x="240" y="74" width="60" height="52" rx="10"></rect>
-                <line x1="270" y1="74" x2="270" y2="60"></line>
-                <circle cx="270" cy="56" r="4"></circle>
-              </g>
-              <circle class="fill" cx="258" cy="98" r="5"></circle>
-              <circle class="fill" cx="282" cy="98" r="5"></circle>
+              <rect class="key" x="180" y="79" width="26" height="10" rx="3"></rect>
+              <rect class="key" x="180" y="111" width="26" height="10" rx="3"></rect>
+              <rect class="key" x="180" y="143" width="26" height="10" rx="3"></rect>
+              <line class="line open" x1="270" y1="74" x2="270" y2="62"></line>
+              <circle class="line" cx="270" cy="58" r="4"></circle>
+              <rect class="line" x="240" y="74" width="60" height="54" rx="12"></rect>
+              <circle class="dot" cx="258" cy="99" r="5"></circle>
+              <circle class="dot" cx="282" cy="99" r="5"></circle>
             </svg>
           </figure>
         </li>
@@ -287,15 +260,12 @@ STRIPE_KEY    string  true      set</span>
                 A single deploy command pointing at a cloud labelled "your account"
               </title>
               <path
-                class="line cloud"
+                class="line"
                 d="M84 120 H236 a30 30 0 0 0 0 -60 a45 45 0 0 0 -80 -20 a38 38 0 0 0 -60 22 a34 34 0 0 0 -12 58 Z"
               ></path>
               <text class="label strong" x="112" y="90">your account</text>
-              <g class="line accent">
-                <line x1="160" y1="176" x2="160" y2="134"></line>
-                <path d="M152 142 L 160 134 L 168 142"></path>
-              </g>
-              <text class="label" x="102" y="194">$ wrangler deploy</text>
+              <path class="key open" d="M160 178 V136 M150 146 L160 136 L170 146"></path>
+              <text class="label" x="102" y="196">$ wrangler deploy</text>
             </svg>
           </figure>
         </li>
@@ -610,7 +580,9 @@ STRIPE_KEY    string  true      set</span>
     margin: 0;
   }
 
-  /* 図: 線画。線は muted、鍵と .env だけ accent(§2 のアクセント規律を図にも適用) */
+  /* 図: 太線ピクトグラム(所有者裁定 2026-09-04 — §4 G 改訂 2)。物体は 3px 丸端の前景色の線 +
+     code 背景色の面。補助線(矢印・接続)は muted。accent は「鍵を持つもの」1 点だけ:
+     01 の .env、02 の鍵、03 の ㊙ 印(ロゴ SVG の再利用)、04 の守られた値、05 の deploy */
   .ill {
     display: block;
     width: 100%;
@@ -618,34 +590,48 @@ STRIPE_KEY    string  true      set</span>
     color: var(--blume-muted-foreground);
   }
 
-  .ill .line,
-  .icon .line {
-    fill: none;
-    stroke: currentColor;
+  .ill .line {
+    fill: var(--blume-code-background);
+    stroke: var(--blume-foreground);
     stroke-width: var(--lp-stroke);
     stroke-linecap: round;
     stroke-linejoin: round;
   }
 
-  .ill .dashed {
-    stroke-dasharray: 4 4;
+  .ill .open {
+    fill: none;
   }
 
-  .ill .accent,
-  .ill .accent .line {
+  .ill .soft {
+    stroke: var(--blume-muted-foreground);
+  }
+
+  .ill .thin {
+    stroke-width: calc(var(--lp-stroke) / 2);
+  }
+
+  .ill .dashed {
+    stroke-dasharray: 5 6;
+  }
+
+  .ill .key {
+    fill: var(--blume-accent);
+    stroke: var(--blume-accent);
+    stroke-width: var(--lp-stroke);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .ill .key.open {
+    fill: none;
+  }
+
+  .ill .env {
     stroke: var(--blume-accent);
   }
 
-  .ill .fill {
-    fill: currentColor;
-  }
-
-  .ill .redacted {
-    fill: var(--blume-border);
-  }
-
-  .ill .cloud {
-    fill: var(--blume-code-background);
+  .ill .dot {
+    fill: var(--blume-foreground);
   }
 
   .ill .label {
@@ -703,14 +689,36 @@ STRIPE_KEY    string  true      set</span>
   }
 
   .icon {
+    display: block;
     width: 1.5rem;
     height: 1.5rem;
     margin-bottom: 0.35rem;
     color: var(--blume-muted-foreground);
   }
 
-  .tile.yes .icon {
-    color: var(--blume-accent);
+  .icon .line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* 鍵を持つのは CLI だけ — その印はロゴの ㊙(light / dark で SVG を出し分け。Blume は <html data-theme> を立てる) */
+  .seal {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .seal img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  :global(html[data-theme="dark"]) .seal .seal-light,
+  :global(html:not([data-theme="dark"])) .seal .seal-dark {
+    display: none;
   }
 
   .plain {
