@@ -374,6 +374,123 @@ F は 404 ページ等 1 箇所の遊びに留保(読み上げ・折り返しに
   `/invite`。CSP `script-src 'none'` のまま自己配信 CSS でブランド統一。確認コードの文字集合を確認
 - DP5(CLI): 出力の一貫性(TTY 規律)・`login` の期限と案内・繰り返し Note の抑制・英語校正・`--help` 整合
 
+### DP3 実装時の裁定録(2026-09-04)
+
+各裁定点は DP1 / DP2 と同じループ(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が尽きるまで
+反復 → 選定)で決めた。判断基準は ADR-0013 の検討順で浅い層に収まる・Astryx 既定に寄せる(§1-2)・
+表示規律(web-dashboard-design.md §4)を 1 つも崩さない・配信物にプレビュー用コードを混ぜない・
+後戻りが安いこと。実測は `apps/web/test/screenshots.ts`(裁定 F)と一回性の axe-core / キーボード
+走査スクリプト(裁定 E)で行った。
+
+**前提の訂正(実装で判明した事実)**: (1) Astryx の `Table` は自前の横スクロール枠(`role="group"` の
+scroll wrapper、`tabindex=0`)を持ち、Layout の padding ぶん左右へ bleed する。W 系列のモバイル幅で表が
+「切れて見えた」のは枠が視覚的なスクロールバーを出さないためで、構造的には読める。よって表の横スクロール
+枠を自作する案(初版の `TableFrame`)は不要で、DP3 の初期実装から取り除いた。(2) `Text` の `wordBreak` は
+maxLines 無しでも適用されるが、空白を含まない 64 hex の識別子は flex 項目の min-content を押し広げるため
+それだけでは折れない(`overflow-wrap: anywhere` + `min-width: 0` が要る — 裁定 H の `HexText`)。
+(3) 内部 user_id は ULID(26 文字 — AUTH_SPEC §9)で、モバイル幅の圧縮バーには「Signed in as + ULID +
+Sign out + トグル」が収まらない(裁定 A の狭幅規則)。(4) `useMediaQuery` は SSR 互換のため初回描画で
+必ず false を返す — 認証済み画面の本文はフェッチ後に描かれるため、Table → List の切替が見えることはない。
+
+**A. アプリシェルの構成と配置** — 列挙: (i) 画面ごとの ad-hoc ヘッダー(現状: /dashboard だけに
+ユーザー表示と Sign out、サブ画面は「← Dashboard」リンクのみ)/ (ii) `AppShell` + `TopNav`(ロゴ・3 到達点・
+ユーザー・Sign out)を認証済み全画面に / (iii) `AppShell` + `SideNav` / (iv) `Layout` の header スロットだけを
+各画面に / (v) **`DashboardShell`(上位互換)**: (ii) に加えて**セッション状態(`GET /auth/me`)をシェルが
+1 か所で持ち**、401 は全画面で同じサインインカード、ok のときだけ本文を描く(旧 `DashboardScreen` の S3 を
+シェルへ移す)。パンくずは親階層だけを渡し現在地は見出しから補う。表示規律の但し書き(`ServerReportedNote`)
+はページ末尾にシェルが 1 回置く。**選定 = (v)**。棄却: (i) はサブ画面からログアウトできず、ユーザー表示も
+無い。(iii) は到達点が 3 つで SideNav の要件(グループ化・増える見込み)を満たさず、Astryx の layout docs も
+「浅く安定した nav は TopNav」。(iv) はランドマーク(skip link / main / nav)とモバイルのドロワーを自作する
+ことになる。**付随の裁定**: (a) 本文は me の確認後に描く(1 往復の直列化を受容 — 401 のとき本文が一瞬
+描かれてから消える形と、子リソースの 401 分岐が並走する形を避ける)。(b) `height="auto"` + `variant="section"`
+— 既定の `elevated` は本文の高さで面が終わり(auto)か、main の内部スクロール(fill)になる。HP5 のモバイル
+閲覧は文書スクロール(アドレスバーの収縮・端までの慣性)が自然なので auto を採り、面の段差を出さない
+section にした(Astryx 既定からの唯一の逸脱で、視覚トークンは触っていない)。(c) 狭い幅(AppShell `md` =
+768px 以下)ではユーザー表示を到達点と一緒にドロワー側(`startContent`)へ移し、バーには Sign out だけを
+残す。(d) e2e は認証済み画面のテストがすべて `/auth/me` をモックする形に追随(`routeSession`)。
+
+**B. 空状態 / ローディング / エラーの統一** — 列挙: (i) 現状維持(空 = `EmptyState` と素の `Text` が混在、
+失敗 = `FailureNotice`、読込 = `LoadingRow`)/ (ii) 空を全部 `EmptyState` に揃えるだけ / (iii) 3 状態を 1 つの
+`ResourceView` に畳む(`useApiResource` 以外の状態 — ページング追記・失効の失敗・シェルの認証 — を覆えず、
+2 つの規律が並ぶ)/ (iv) `FailureNotice` に placement 引数を足す(API を増やす割に見た目は同じ)/ (v)
+**`FailureNotice` の API(failure / onRetry / subject)は変えず、置き方の規律を 2 種に固定し、空状態だけ新部品
+`EmptyNotice` に揃える(上位互換)**。**選定 = (v)**。規律: (a) **置換** = リソース本体の代わりに描き、再取得
+手段があれば `onRetry`。(b) **追記** = 描けた本体の下に足す(Load more の失敗・失効の失敗)。行から再操作できる
+失敗は `onRetry` を渡さない。14 か所(13 + シェルの 1)= 置換 10 / 追記 4 で、各呼び出しにコメントで印を付けた。
+`EmptyNotice` は見出し + 「as reported by the server」の規定文言で、件数を出さない(§4-4)。`LoadingRow` は
+Spinner の `role="status"` に見える文言と同じ label を渡す。**付随**: 概要タブはチェーン取得を先頭リソースに
+して環境一覧をその後に読む(一様 404 / 403 で同じ Banner が節ごとに並ぶ形を避ける — 1 往復の直列化を受容)。
+棄却: (ii) は失敗と読込の規律が文書化されないまま残る。(iii)(iv) は上記。
+
+**C. 監査ビューアの可読性** — 列挙: (i) 現状(5 列。actor = `user · key FP · token id` を 1 文字列、details も
+` · ` 連結)/ (ii) セルを**ラベル付きの断片**に分解(actor = 主体 1 行 + `key` / `token` の断片、details =
+`target` / `env` / `var` / `epoch` / `v` / `chain seq` の対、`var.read` の件数要約は別行)/ (iii) Table を
+`List`(1 イベント = 1 項目)に置き換える(デスクトップの列走査を失う)/ (iv) 列幅の調整のみ / (v) **(ii) +
+狭い幅だけ (iii) に切り替える(上位互換 — 裁定 D)**。**選定 = (v)**。表示規律の確認: 項目・順序・文言は
+変えず(seq は応答適応のまま・「Events visible to your role」の規定文言・`Server time (UTC)`・FP は参照値の
+ままラベル `key` を付けただけで「照合せよ」と読める文言は無い)、件数表示も加えていない。棄却: (i) は
+FP と target が同じ塊で読めない。(iii) 単独は列走査を失う。(iv) は根本(1 文字列)が変わらない。
+
+**D. レスポンシブ方針** — 列挙: (i) 何もしない(Astryx の scroll wrapper に任せる)/ (ii) 全表を狭い幅で
+List 化 / (iii) 監査一覧だけ List 化、他の表は Astryx の横スクロール枠に任せる / (iv) CSS で `td` をブロック化する
+古典手法(Table の ARIA 構造を壊す。StyleX で Astryx 内部を上書きすることになる)/ (v) ブレークポイント
+定数を 1 つに固定して (iii)。**選定 = (v)**: `NARROW_VIEWPORT_QUERY = "(max-width: 768px)"`(AppShell の
+`md` と同じ式 — ナビのドロワー化と本文の表示形切替が同じ幅で起きる)を `shared.tsx` に 1 定義。HP5 の主用途
+(監査を読む)だけ List 形にし、S5 / S8 / S9 の表は横スクロール(枠は `tabindex=0` でキーボードでも
+スクロールできる)。識別子は `HexText` で任意位置折り返し(見出し直下の project ID・chain head・member id・
+key FP・token prefix)。棄却: (ii) は失効の 2 段階ボタンや Token を項目内に組み直す量に対して得るものが
+少ない。(iv) は上記。
+
+**E. a11y 監査の方法と直す範囲** — 列挙: (i) コードの目視のみ / (ii) `@axe-core/playwright` を devDependency
+に追加 / (iii) Playwright の ARIA スナップショット + 手動のキーボード走査 / (iv) React Doctor + `astryx doctor`
+のみ / (v) **axe-core を一回性(scratchpad の `page.evaluate` — CDP 経由なので CSP の対象外)で注入し、
+(iii)(iv) と合わせる(依存を増やさない上位互換)**。**選定 = (v)**。範囲: wcag2a / 2aa / 21a / 21aa +
+best-practice を S4 / S5 / S6(admin・reader・本人軸)/ S8 / S9 × light / dark / mobile の 18 態で実行。
+**所見と処置**: (a) `empty-table-header`(minor)— 失効列と変数名列の空見出し → `Actions` / `Variables` を
+付けた。(b) `color-contrast`(serious)— `SegmentedControl` の非選択ラベルが dark で 4.26:1(12px、AA は
+4.5)→ 監査軸の切替を `ToggleButtonGroup`(single)に置換して解消(Astryx 内部色なので上流候補として
+PR に記載。テーマの色値は触らない — DP1 で確定)。(c) 見出し階層: ページ h1 はシェル(サインイン前は
+カードの「Sign in」が h1)、節は h2(旧 h3 を昇格)、空状態の見出しは h3。(d) ランドマーク: AppShell の
+skip link → `nav[Dashboard]` → main、パンくずは `nav[Breadcrumb]`、モバイルのドロワーは `dialog[Navigation]`
+で Escape で閉じて焦点がトグルへ戻る。(e) フォーカス可視: light / dark とも accent 2px の outline(TextInput
+は枠線色 + 内側リング)。(f) タブは矢印で焦点移動・Enter で選択(手動活性化)。**直さなかったもの**:
+`TopNavHeading` のロゴリンクの焦点リングは 1px の固定色(Astryx 内部)— 実測では両モードで視認できる
+ため据え置き(上流候補に含める)。
+
+**F. 認証が要る画面の目視確認とスクリーンショット** — 列挙: (i) scratchpad のみのスクリプト(再現不能)/
+(ii) **`apps/web/test/screenshots.ts` をコミット**(e2e と同じ `page.route` モック。フィクスチャは
+`test/fixtures.ts` へ切り出して e2e と共用)/ (iii) 配信物にプレビュー用ルート + モックデータ(禁止)/
+(iv) 実 OAuth でログイン(GitHub App の設定が要り、本セッションでは不能)/ (v) (ii) + 結果を所有者向けの
+非公開ページ(Claude の Artifact)に light / dark / mobile と変更前後で並べる(DP2 と同じ)。**選定 = (v)**。
+手順は `screenshots.ts` 先頭に記載(`build` → `preview`(port 8788)→ `screenshots`。出力は
+`apps/web/screenshots/` — .gitignore 済み)。11 画面 × 3 態 = 33 枚、CSP 違反があれば失敗する。
+
+**G. PR の分割** — 列挙: (i) 1 本 / (ii) DP3a(シェル + 状態統一)/ DP3b(監査可読性 + レスポンシブ + a11y)/
+(iii) 3 本以上。**選定 = (i)**: シェルがブレークポイント(D)・ランドマークと見出し階層(E)・状態の統一(B)の
+土台で、分けると DP3a だけでは a11y と e2e の追随が中途半端になる。差分は web の 12 ファイル + 文書で
+レビュー可能な量(コミットは関心ごとに分けた)。
+
+**H. xstyle の繰り返し** — DP3 で出た xstyle は **1 種類のみ**: 識別子の任意位置折り返し(`overflowWrap:
+anywhere` + `wordBreak: break-all` + `minWidth: 0`)。列挙: (i) 各画面で `stylex.create` を書く(3 回以上の
+重複になる)/ (ii) `shared.tsx` に 1 定義 + `HexText` 部品(定義は 1 か所で、使用箇所は 12)/ (iii) `ui.package`
+を新設して置く(③)/ (iv) `defineTheme` の Text variant(①)。**選定 = (ii)** — 定義の重複は作らず、昇格は
+人間の判断に委ねる(CLAUDE.md「逆流させない」)。**昇格候補(PR に列挙)**: `HexText` を ui.package の
+部品または Text の variant(`code-breakable` 等)へ。他に繰り返しはない(既存の tabpanel の `display: none`
+上書きは W 系列のまま 1 か所)。
+
+**新たに出た裁定点**: (I) **軸切替の部品**: SegmentedControl → ToggleButtonGroup(E-(b))。e2e の指し方は
+`radio` → `button[pressed=false]`。(J) **ロゴの色**: シェルのロゴは `public/logo.svg`(light の朱で固定)でなく
+インライン SVG 部品 `MaruhiMark`(`public/logo-mono.svg` と同じパス)を `Icon color="accent"` で描き、
+light / dark の `--color-accent` を継承する(DP1 裁定 A の (v)「currentColor 化」の部分採用)。パスデータの
+二重管理は SVG 側を正としてコメントで結ぶ。(K) **サインイン前のページ見出し**: シェルは me が取れるまで
+ページ見出しを出さず、サインインカードの「Sign in」が h1 になる(「API tokens」の下にサインインカード、
+という形を避ける)。(L) **プロジェクト見出しの短縮形**: h1 は `Project ab…ab`(先頭・末尾 8 桁)、全文は
+直下に `HexText`(`data-testid="project-id"` は据え置き)。
+
+**検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
+web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
+React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
+
 ## 6. スコープ外
 
 - 手動ダークトグル・**ダッシュボード(TCB)側の** Web フォント自己配信(必要になったら再訪 — §1-2 / §1-3)
