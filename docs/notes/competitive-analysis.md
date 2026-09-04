@@ -241,6 +241,27 @@ maruhi の差は「機能の数」ではなく **信頼モデルの既定値** �
 
 ---
 
+## 6-1. LP / docs での使い方(2026-09-04 追記 — 所有者との対話の記録)
+
+**訴求点(優先順)** — いずれも「仕組みを淡々と書く」(web-design-pass.md §2)・「絶対最安全」と言わない(ADR-0014 ガードレール):
+
+1. 運営は値を読めない。それをコードで確かめられる(E2EE 既定 + 復号は MIT の CLI のみ + Web は復号器を持たない)
+2. `.env` を書かない(`maruhi run` のメモリ注入のみ。生成・出力する機能そのものがない — 「ディスクレス run がある」ではなく「書く機能がない」が差)
+3. 自分の Cloudflare アカウントに一発(`wrangler deploy` 約 10 分・無料枠・Postgres / Redis / 常設 VM なし)
+4. 何も送らない(CLI もインストーラも github.com 以外へ通信しない。「言わざる」は直訳せず仕組みで書く)
+5. エージェントには契約だけ渡す(`maruhi schema` = 名前・型・必須のみ。値表示はエージェント環境で fail-closed)
+6. 保証しないことも書く(CRYPTO_SPEC §14.3 → 脅威モデル文書へリンク)
+
+英語コピー案: "Secrets your vendor can't read. Not even us." / "Secrets that never touch disk. `maruhi run` and nothing else." / "One `wrangler deploy`. Your Cloudflare account. Zero telemetry."
+
+**星取表の扱い** — 広い機能比較表は置かない(同期先・SDK・SSO・ローテーション・動的シークレット・GUI・SOC 2 で全滅に近く、行数で薄まる。ADR-0014「機能数でセキュリティを語らない」)。競合名を書いた表は陳腐化と紛争のリスク(Phase の egress proxy は近く実装されうる・Doppler On-prem は形態未公開・Keyway は価格もライセンスも記述が割れる)。
+
+推奨する 2 段構え:
+- **LP**: 競合名を出さず、列を「サーバー側暗号化の vault」「E2EE だが Web で復号する vault」「maruhi」の 3 型にした信頼モデル表 5 行(既定でゼロ知識か / 復号器を配る Web があるか / `.env` を書く機能があるか / 常設 DB が要るか / 外部送信があるか)。型で語れば陳腐化しない
+- **docs**: 競合名付きの詳細比較は日付と出典つきの比較ページとして後で用意(Keyway の /vs/ ページの形)。本書 §2〜§4 が素材。§4 の劣後点も同じページに載せ、訴求点 6 と一貫させる
+
+表示規律: LP でも「verified」の語は署名検証を実際に行う CLI の文脈以外で使わない(CRYPTO_SPEC §14.3-7)。「運営が読めない」は言えるが「安全性が証明された」は言えない。「On-prem」とは言わず "Runs in your own Cloudflare account" と正確に言う(狭義の On-prem = 自社 DC / air-gap は ADR-0001 の帰結として不可)。
+
 ## 7. 申し送り(この比較から出る示唆。決定ではない)
 
 - Phase が「AI egress proxy」を訴求し Infisical が Agent Proxy を GA したことで、**credential brokering は 2026 年内に「あるのが普通」になる**見込み。`maruhi proxy run`(Phase 3 ②)の優先度を再確認する材料

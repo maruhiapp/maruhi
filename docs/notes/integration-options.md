@@ -161,6 +161,40 @@ K8s の ESO、AWS の Secrets Manager 参照のように「プラットフォー
 
 ---
 
+### 補足 1: 同期先の候補(第 2 陣以降 — 2026-09-04 追記)
+
+初期プリセットは Cloudflare Workers / Vercel / Netlify(所有者決定)。その後の候補を 4 系統で整理する。「アダプタで足りる」= SY2 の汎用 HTTP アダプタのプリセット(設定)で済むもの、「専用」= 認証方式が特殊で専用コードが要るもの。
+
+| 系統 | 候補 | 作り | 備考 |
+|---|---|---|---|
+| PaaS(対象層に近い) | Railway、Render、Fly.io、Deno Deploy、Supabase(Edge Functions の secrets)、Cloudflare Pages、Expo EAS、Heroku、DigitalOcean App Platform | ほぼアダプタ | Railway / Fly.io は GraphQL。優先度は対象層(JS で Web を作る個人・小チーム)に近い順 |
+| CI | GitHub Actions secrets(sealed box。Dependabot / Codespaces も同方式)、GitLab CI variables、CircleCI contexts、Bitbucket | GitHub は専用(公開鍵封印 — S6 と同じ部品)、他はアダプタ | 既製アクションが `${{ secrets.X }}` を要求する場面が多く需要が濃い(Shelve が唯一の統合先に選んだ) |
+| クラウドの秘密ストア(企業寄り) | AWS Secrets Manager / SSM Parameter Store、GCP Secret Manager、Azure Key Vault、HashiCorp Vault、1Password | 専用(AWS = SigV4 署名、GCP = サービスアカウント JWT、Azure = Entra ID) | SigV4 はローテーションの AWS コネクタ(§4 R2)と共用 |
+| コンテナ基盤 | Kubernetes Secrets(CI から kubectl)、Docker Swarm | レシピで足りることが多い | |
+
+プリセットは設定ファイルなので、外部からの寄贈を受けやすい形(スキーマ + テスト用のモック応答)にしておき、対応先の数を追わない。
+
+### 補足 2: S4(変更通知)の送信経路 — 設計論点(2026-09-04 追記)
+
+S4 は「呼び鈴であって配達ではない」: 通知には値も変数名も project_id も載せない。サーバーが平文を持たない以上、自動化に貢献できるのは「タイミングを知らせる」ことだけで、S4 はその最小形。S4 なしの S3 は `schedule`(10 分ごと等)か手動起動になり、反映まで最大その間隔の遅れが出る。
+
+GitHub の `repository_dispatch` は認証が要るため、サーバーが GitHub を呼ぶ資格を持つ必要がある。選択肢は 2 つ:
+
+- **maruhi の GitHub App(OAuth App とは別)を登録し、ユーザーがリポジトリにインストールする**。サーバーはインストールトークンを都度発行して呼ぶ(`contents: write` 相当の権限)。ユーザーのトークンを預からずに済む。Shelve と同じ方式。運営(セルフホストでは各運営者)が App を 1 つ登録する人間タスクが要る — hosted-design.md §7 の L 系列に追加候補
+- **汎用 webhook(HMAC 署名付き POST)** をユーザー任意の URL へ送る。GitHub 以外にも使えるが、受け口はユーザーが用意する。任意 URL は SSRF・流出面の検査が要る(§8-2)
+
+ROADMAP の「既知先に限定」は前者を想定。**どちらを先にするかは実装 PR で裁定**(両方持つことも可能 — 既知先 + 署名付き汎用)。
+
+### 補足 3: コストと課金の線(2026-09-04 追記)
+
+競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。
+
+maruhi のスタックでは: **SY1〜SY3 はサーバーコストがゼロ**(実行は各人の機械か CI ランナー)。**SY4 は変更 1 回につき小さな送信 1 回**で、Workers の subrequest に個別課金はなく、リトライは DO alarm で足りる(プロジェクト単位のレート制限は付ける)。本当のコストは保守(同期先 API の変更へのプリセット更新・失敗時の問い合わせ)で、アダプタとプリセットの分離、および「サーバーが同期を実行しない」設計(壊れても運営側の障害にならない)がこれを小さくする。
+
+帰結: **同期は無料枠に置く**(入口のゲート・原価ゼロ・競合の有料化ポイントを無料で出せる差別化)。課金の線は同期件数ではなく org のメンバー数と Enterprise 枠(SSO・監査ストリーミング・商用サポート)に引く。将来セルフホスト向けに S5(サーバー復号 push)を入れる場合だけ、競合と同じ運用コストが運営(セルフホストでは各運営者)に乗る。
+
+---
+
 ## 4. 上流ローテーション
 
 ### 問題の定義
