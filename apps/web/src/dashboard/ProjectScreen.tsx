@@ -25,7 +25,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
-import { DashboardShell } from "./DashboardShell.tsx";
+import { DashboardShell, shortId } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
@@ -600,19 +600,17 @@ function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
   );
 }
 
-/** パンくず用の短縮形(先頭・末尾 8 桁)。全文は見出し直下に HexText で出す。 */
-function shortProjectId(projectId: string): string {
-  return `${projectId.slice(0, 8)}…${projectId.slice(-8)}`;
-}
-
 export function ProjectScreen(): ReactNode {
   const { projectId } = useRouteParams(projectRoute);
   const isProjectId = PROJECT_ID_PATTERN.test(projectId);
+  // 見出しとサイドバーの子項目は短縮形(先頭・末尾 6 桁)。全文は見出し直下に HexText で出す
+  const label = isProjectId ? `Project ${shortId(projectId)}` : "Project";
   return (
     <DashboardShell
       destination="projects"
+      project={isProjectId ? { id: projectId, label: shortId(projectId) } : undefined}
       breadcrumbs={[{ label: "Projects", href: spaPaths.dashboard() }]}
-      title={isProjectId ? `Project ${shortProjectId(projectId)}` : "Project"}
+      title={label}
       intro={<HexText testId="project-id">{projectId}</HexText>}
     >
       {isProjectId ? (

@@ -487,6 +487,31 @@ light / dark の `--color-accent` を継承する(DP1 裁定 A の (v)「current
 という形を避ける)。(L) **プロジェクト見出しの短縮形**: h1 は `Project ab…ab`(先頭・末尾 8 桁)、全文は
 直下に `HexText`(`data-testid="project-id"` は据え置き)。
 
+**A 改訂 1(2026-09-04、所有者レビュー後 — サイドバー型 + Astryx テンプレート起点)**: 所有者の指示
+「レイアウトはサイドバー型に(SaaS の主流で、自分も使いやすい)」「Astryx のテンプレートをもっと積極的に
+使う(ログインもサイドバーもテンプレートにある)」を受け、TopNav 案(A-(v))を **SideNav 案(A-(iii))に
+差し替えた**。所有者の裁定であり、A の「到達点 3 つは TopNav の範囲」という棄却理由は「使い慣れた形」に
+劣後する。形はテンプレートをそのまま起点にする(`astryx template shell-side-nav` / `AppShellSideNavOnly` /
+`SideNavWithHeaderMenu` / `login` / `table-page` / `LayoutHeaderWithActions`): (a) **フレーム** = AppShell +
+`SideNav`(`collapsible`。ヘッダー = `SideNavHeading` + `NavIcon`〔accent の円盤に on-accent の ㊙ = favicon と
+同じ反転版〕、本文 = `SideNavSection` の到達点 3 つ〔Folder / Key / ClipboardDocumentList〕、プロジェクト画面
+では Projects の子項目に現在のプロジェクト〔短縮 ID〕が選択状態で並ぶ、フッター = `SideNavSection`
+"Account"〔ユーザー id → Account audit、Sign out〕— `shell-side-nav` のフッター構成)。モバイル幅では
+AppShell が SideNav をドロワーへ移す(A-(c) の「ユーザー表示をドロワーへ」は SideNav では自然に成立するので
+`useMediaQuery` の分岐を廃止)。(b) **ページ** = `Layout`(fill)の header スロットにパンくず + h1 + 説明
+(`LayoutHeader hasDivider`)、content スロットに本文 + `ServerReportedNote`。main の内部スクロール
+(`table-page` の形。A-(b) の「文書スクロール」は撤回 — テンプレートの既定に寄せる)。(c) **サインイン** =
+`login` テンプレートの形(Center + ロゴ + Card〔h1 "Sign in"・説明・primary の "Sign in with GitHub"〕)。
+資格情報の入力欄は無い(GitHub OAuth のみ)ので Button に `href` を渡してリンクとして描く。サインアウト直後は
+Card 内に info Banner。(d) **アイコン**: テンプレートは `@heroicons/react` を使うか SVG をインラインで持つ。
+依存を増やさない方針で後者を採り、heroicons(MIT)の outline 5 つを `icons.tsx` に写した。列挙した他案:
+SideNav + TopNav の併用(スイート向け — 到達点が薄く 2 本目が余る)/ `LayoutPanelNavigation`(Layout の
+start パネルにナビ — AppShell のドロワーとスキップリンクを失う)/ `Shell Nav`(コマンドパレット付き —
+検索対象が無い)。棄却。e2e は不変(`signed-in-user` / `sign-out` / `login-card` / `sign-in-link` の testid は
+SideNavItem / Card / Button が透過する)。axe 18 態で違反 0、キーボード走査で SideNav の全項目・折りたたみ
+ボタン・ドロワー(Escape で閉じて焦点がトグルへ戻る)を確認。E の「直さなかったもの」に挙げた
+`TopNavHeading` の焦点リングは TopNav を使わなくなったため対象外(SideNavHeading は accent 2px)。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
