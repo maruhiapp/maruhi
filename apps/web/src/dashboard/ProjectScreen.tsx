@@ -36,7 +36,6 @@ import {
   HexText,
   LoadingRow,
   RoleToken,
-  shortId,
 } from "./shared.tsx";
 import type {
   AuditEventsPage,
@@ -599,6 +598,11 @@ function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
       ))}
     </VStack>
   );
+}
+
+/** 識別子の短縮形(先頭・末尾 6 桁 — 見出しとサイドバーの子項目用。全文は HexText で並記する)。 */
+function shortId(id: string): string {
+  return `${id.slice(0, 6)}…${id.slice(-6)}`;
 }
 
 export function ProjectScreen(): ReactNode {

@@ -228,11 +228,6 @@ const hexStyles = stylex.create({
   },
 });
 
-/** 識別子の短縮形(先頭・末尾 6 桁 — 見出しとサイドバーの子項目用。全文は HexText で並記する)。 */
-export function shortId(id: string): string {
-  return `${id.slice(0, 6)}…${id.slice(-6)}`;
-}
-
 /** 識別子の表示(等幅・任意位置で折り返し)。`size` は周囲の密度に合わせる。 */
 export function HexText({
   children,
