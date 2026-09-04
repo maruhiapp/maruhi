@@ -17,7 +17,15 @@ import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
 import { apiPaths } from "./endpoints.ts";
-import { ExpiryCell, FailureNotice, LoadingRow, RevokeControl, RoleToken } from "./shared.tsx";
+import {
+  EmptyNotice,
+  ExpiryCell,
+  FailureNotice,
+  HexText,
+  LoadingRow,
+  RevokeControl,
+  RoleToken,
+} from "./shared.tsx";
 import type { InvitationList, InvitationSummary, InviteStatus } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
 import { type RevocationState, useRevocation } from "./use-revocation.ts";
@@ -97,22 +105,14 @@ function buildInviteColumns(
       key: "inviterUserId",
       header: "Invited by",
       width: proportional(1),
-      renderCell: (row: InviteRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.inviterUserId}
-        </Text>
-      ),
+      renderCell: (row: InviteRow) => <HexText>{row.inviterUserId}</HexText>,
     },
     {
       key: "inviteeUserId",
       header: "Accepted by",
       width: proportional(1),
       renderCell: (row: InviteRow) =>
-        row.inviteeUserId === undefined ? null : (
-          <Text type="code" size="sm" wordBreak="break-all">
-            {row.inviteeUserId}
-          </Text>
-        ),
+        row.inviteeUserId === undefined ? null : <HexText>{row.inviteeUserId}</HexText>,
     },
     {
       key: "expiresAtMs",
@@ -122,7 +122,7 @@ function buildInviteColumns(
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       width: pixel(200),
       renderCell: (row: InviteRow) =>
         isRevocable(row) ? (
@@ -163,9 +163,11 @@ function InvitesTable({
 }): ReactNode {
   if (invitations.length === 0) {
     return (
-      <Text type="supporting" data-testid="invite-empty">
-        No invitations, as reported by the server.
-      </Text>
+      <EmptyNotice
+        title="No invitations"
+        description="Invitations issued for this project appear here, as reported by the server."
+        testId="invite-empty"
+      />
     );
   }
   return (
@@ -193,6 +195,7 @@ function InvitesResource({
   reload: () => void;
   state: ResourceState<InvitationList>;
 }): ReactNode {
+  // 置換形(裁定 B-a)
   if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
@@ -213,7 +216,7 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
   const { revocation, arm, confirm } = useRevocation(revokePath, reload);
   return (
     <VStack gap={4} data-testid="invite-list">
-      <Heading level={3}>Invitations</Heading>
+      <Heading level={2}>Invitations</Heading>
       <InvitesResource
         revocation={revocation}
         onArm={arm}
@@ -221,6 +224,7 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
         reload={reload}
         state={state}
       />
+      {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
       {revocation.failure !== undefined ? (
         <FailureNotice failure={revocation.failure} subject="invitation" />
       ) : null}

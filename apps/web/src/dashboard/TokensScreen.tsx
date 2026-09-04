@@ -10,22 +10,21 @@
 //   fail-closed で期限切れ扱い)は Expired のサーバー申告表示(裁定 CQ)
 // - 失効はインライン 2 段階確認(裁定 CO)。自トークンの失効は稼働中の
 //   CLI / CI を即 401 にするため、帰結の注記をテーブル下へ常時表示する
-import { Card } from "@astryxdesign/core/Card";
-import { Layout, LayoutContent, VStack } from "@astryxdesign/core/Layout";
-import { Link } from "@astryxdesign/core/Link";
+import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode } from "react";
 
+import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
-import { spaPaths } from "./routes.ts";
 import {
+  EmptyNotice,
   ExpiryCell,
   FailureNotice,
   formatServerTime,
+  HexText,
   LoadingRow,
   RevokeControl,
-  ServerReportedNote,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
@@ -76,11 +75,7 @@ function buildTokenColumns(
       key: "tokenPrefix",
       header: "Prefix",
       width: pixel(130),
-      renderCell: (row: TokenRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.tokenPrefix}
-        </Text>
-      ),
+      renderCell: (row: TokenRow) => <HexText>{row.tokenPrefix}</HexText>,
     },
     {
       key: "scopes",
@@ -110,7 +105,7 @@ function buildTokenColumns(
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       width: pixel(200),
       renderCell: (row: TokenRow) => (
         <RevokeControl
@@ -151,9 +146,11 @@ function TokensTable({
 }): ReactNode {
   if (tokens.length === 0) {
     return (
-      <Text type="supporting" data-testid="token-empty">
-        No API tokens, as reported by the server.
-      </Text>
+      <EmptyNotice
+        title="No API tokens"
+        description="Tokens issued to you appear here, as reported by the server."
+        testId="token-empty"
+      />
     );
   }
   return (
@@ -181,6 +178,7 @@ function TokensResource({
   reload: () => void;
   state: ResourceState<TokenList>;
 }): ReactNode {
+  // 置換形(裁定 B-a)
   if (state.kind === "loading") return <LoadingRow label="Loading tokens" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
@@ -200,38 +198,29 @@ export function TokensScreen(): ReactNode {
   // 失効状態は一覧リソースの外に持つ(use-revocation.ts のヘッダーコメント)
   const { revocation, arm, confirm } = useRevocation(apiPaths.tokenRevoke, reload);
   return (
-    <Layout
-      contentWidth={960}
-      padding={6}
-      content={
-        <LayoutContent>
-          <VStack gap={5}>
-            <VStack gap={2}>
-              <Link href={spaPaths.dashboard()}>← Dashboard</Link>
-              <Heading level={1}>API tokens</Heading>
-              <Text type="supporting">
-                Your own API tokens (CLI and CI credentials), as reported by the server.
-              </Text>
-            </VStack>
-            <Card padding={5}>
-              <VStack gap={4} data-testid="token-list">
-                <TokensResource
-                  revocation={revocation}
-                  onArm={arm}
-                  onConfirm={confirm}
-                  reload={reload}
-                  state={state}
-                />
-                {revocation.failure !== undefined ? (
-                  <FailureNotice failure={revocation.failure} subject="token" />
-                ) : null}
-                <TokenNotes />
-                <ServerReportedNote />
-              </VStack>
-            </Card>
-          </VStack>
-        </LayoutContent>
+    <DashboardShell
+      destination="tokens"
+      title="API tokens"
+      intro={
+        <Text as="p" type="supporting">
+          Your own API tokens (CLI and CI credentials), as reported by the server.
+        </Text>
       }
-    />
+    >
+      <VStack gap={4} data-testid="token-list">
+        <TokensResource
+          revocation={revocation}
+          onArm={arm}
+          onConfirm={confirm}
+          reload={reload}
+          state={state}
+        />
+        {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
+        {revocation.failure !== undefined ? (
+          <FailureNotice failure={revocation.failure} subject="token" />
+        ) : null}
+        <TokenNotes />
+      </VStack>
+    </DashboardShell>
   );
 }

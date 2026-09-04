@@ -11,10 +11,19 @@
 // - 全フィールドは記録どおりのサーバー申告値。表示名の解決(検証済み
 //   ステートメント経由)は行わない — 検証を持たない Web での名前解決は
 //   ステートメント検証なしの名前信用になる(AUTH_SPEC §12-2)ため識別子のみ表示
+//
+// DP3(裁定 C / D — docs/notes/web-design-pass.md §5): 可読性は「1 行に畳んだ
+// 文字列」を「ラベル付きの断片」に分解して上げる(actor = 主体 + 鍵 FP + トークン
+// id の 2〜3 行、details = ラベル : 値の対)。文言・項目・順序は変えない(§4 の
+// 表示規律 — 「検証済み」を名乗らない・FP は参照値・件数を出さない)。狭い幅
+// (AppShell の md 以下)では同じ行データを Table でなく List(1 イベント = 1 項目)
+// で描く — HP5(モバイルで監査を読む利害関係者)のための表示形の切替であり、
+// 列の意味は同じ。
 import { Button } from "@astryxdesign/core/Button";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
-import { EmptyState } from "@astryxdesign/core/EmptyState";
-import { VStack } from "@astryxdesign/core/Layout";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { List, ListItem } from "@astryxdesign/core/List";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
@@ -26,7 +35,14 @@ import {
   payloadWithoutVariables,
   readSummaryLabel,
 } from "./audit-read.ts";
-import { FailureNotice, formatServerTime, LoadingRow } from "./shared.tsx";
+import {
+  EmptyNotice,
+  FailureNotice,
+  formatServerTime,
+  HexText,
+  LoadingRow,
+  NARROW_VIEWPORT_QUERY,
+} from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** 1 ページの取得。`before` は前ページ末尾行の row_id(AUDIT_SPEC §7)。 */
@@ -37,41 +53,82 @@ interface AuditRow extends Record<string, unknown> {
   event: AuditEvent;
 }
 
-/** `prefix value` の表示片(値が欠落なら出さない)。 */
-function labeled(prefix: string, value: string | number | undefined): string | undefined {
-  return value === undefined ? undefined : `${prefix} ${value}`;
+/** ラベル : 値 の断片(値が欠落なら出さない)。 */
+interface Fragment {
+  label: string;
+  value: string;
 }
 
-function isPresent(part: string | undefined): part is string {
+function fragment(label: string, value: string | number | undefined): Fragment | undefined {
+  return value === undefined ? undefined : { label, value: String(value) };
+}
+
+function isPresent(part: Fragment | undefined): part is Fragment {
   return part !== undefined;
 }
 
-/** actor の表示形(内部 user_id / server / system + 鍵 FP + トークン id)。 */
-function actorLabel(event: AuditEvent): string {
+/** actor の主体(内部 user_id / server / system)。プロバイダ情報は構造上載らない。 */
+function actorHead(event: AuditEvent): string {
   const actor = event.actor;
-  const head = actor.type === "user" ? (actor.userId ?? "(unknown user)") : actor.type;
-  return [head, labeled("key", actor.keyFingerprintHex), labeled("token", actor.apiTokenId)]
-    .filter(isPresent)
-    .join(" · ");
+  return actor.type === "user" ? (actor.userId ?? "(unknown user)") : actor.type;
 }
 
-/** 行の座標情報(target / 環境 / 変数 / epoch / version / chainSeq)を 1 行に畳む。 */
-function detailLabel(event: AuditEvent): string {
-  // 集約形 var.read(AUDIT_SPEC §3.3): 変数の列挙は payload が持ち、ここでは
-  // 件数の要約だけを出す(列挙は PayloadCell の展開)
-  const listed = aggregatedReadVariables(event);
+/** actor の付随識別子(鍵 FP・トークン id)— 参照値であり照合材料ではない(§4-3)。 */
+function actorFragments(event: AuditEvent): Fragment[] {
   return [
-    labeled("target", event.targetUserId),
-    labeled("target key", event.targetKeyFingerprintHex),
-    labeled("env", event.environmentId),
-    labeled("var", event.variableId),
-    labeled("epoch", event.epoch),
-    labeled("v", event.version),
-    labeled("chain seq", event.chainSeq),
-    listed === null ? undefined : readSummaryLabel(listed.length),
-  ]
-    .filter(isPresent)
-    .join(" · ");
+    fragment("key", event.actor.keyFingerprintHex),
+    fragment("token", event.actor.apiTokenId),
+  ].filter(isPresent);
+}
+
+/** 行の座標情報(target / 環境 / 変数 / epoch / version / chainSeq)。 */
+function detailFragments(event: AuditEvent): Fragment[] {
+  return [
+    fragment("target", event.targetUserId),
+    fragment("target key", event.targetKeyFingerprintHex),
+    fragment("env", event.environmentId),
+    fragment("var", event.variableId),
+    fragment("epoch", event.epoch),
+    fragment("v", event.version),
+    fragment("chain seq", event.chainSeq),
+  ].filter(isPresent);
+}
+
+/**
+ * 集約形 var.read(AUDIT_SPEC §3.3)の件数要約。変数の列挙は payload が持ち、
+ * ここでは要約だけを出す(列挙は PayloadCell の展開)。
+ */
+function ReadSummary({ event }: { event: AuditEvent }): ReactNode {
+  const listed = aggregatedReadVariables(event);
+  if (listed === null) return null;
+  return (
+    <Text type="supporting" size="sm">
+      {readSummaryLabel(listed.length)}
+    </Text>
+  );
+}
+
+/** ラベル付き断片の並び(折り返し可)。 */
+function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
+  if (items.length === 0) return null;
+  return (
+    <HStack gap={2} wrap="wrap" align="center">
+      {items.map((item) => (
+        <Text key={item.label} type="supporting" size="sm">
+          {item.label} <HexText>{item.value}</HexText>
+        </Text>
+      ))}
+    </HStack>
+  );
+}
+
+function ActorCell({ event }: { event: AuditEvent }): ReactNode {
+  return (
+    <VStack gap={0.5}>
+      <HexText>{actorHead(event)}</HexText>
+      <Fragments items={actorFragments(event)} />
+    </VStack>
+  );
 }
 
 function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
@@ -81,7 +138,7 @@ function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
     return <RecordedPayload payload={event.payload} />;
   }
   // 集約形 var.read: 変数の列挙は折り畳みで展開する(数十〜数百件になりうる —
-  // 既定は閉じた状態で要約〔detailLabel〕だけを見せる)。列挙以外の payload
+  // 既定は閉じた状態で要約〔detailFragments〕だけを見せる)。列挙以外の payload
   // (authMethod 等)は従来どおり記録どおりの JSON で出す
   const rest = payloadWithoutVariables(event.payload);
   return (
@@ -95,9 +152,9 @@ function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
         <VStack gap={0.5}>
           {/* 列挙は variableId 昇順・重複なし(AUDIT_SPEC §3.3)— キーに使える */}
           {listed.map((variable) => (
-            <Text type="code" size="4xs" wordBreak="break-all" key={variable.variableId}>
+            <HexText size="2xs" key={variable.variableId}>
               {listedReadVariableLabel(variable)}
-            </Text>
+            </HexText>
           ))}
         </VStack>
       </Collapsible>
@@ -108,9 +165,19 @@ function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
 /** 記録どおりの payload(サーバー申告の JSON をそのまま — 2 行で切り詰め、全文はツールチップ)。 */
 function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
   return (
-    <Text type="code" size="4xs" wordBreak="break-all" maxLines={2} hasTruncateTooltip>
+    <Text type="code" size="2xs" wordBreak="break-all" maxLines={2} hasTruncateTooltip>
       {JSON.stringify(payload)}
     </Text>
+  );
+}
+
+function DetailsCell({ event }: { event: AuditEvent }): ReactNode {
+  return (
+    <VStack gap={1}>
+      <Fragments items={detailFragments(event)} />
+      <ReadSummary event={event} />
+      <PayloadCell event={event} />
+    </VStack>
   );
 }
 
@@ -119,7 +186,7 @@ const SEQ_COLUMN: TableColumn<AuditRow> = {
   header: "Seq",
   width: pixel(72),
   renderCell: (row: AuditRow) => (
-    <Text type="code" size="sm">
+    <Text type="code" size="sm" hasTabularNumbers>
       {row.event.seq ?? ""}
     </Text>
   ),
@@ -131,7 +198,7 @@ const EVENT_COLUMNS: TableColumn<AuditRow>[] = [
     header: "Event",
     width: pixel(200),
     renderCell: (row: AuditRow) => (
-      <Text type="code" size="sm">
+      <Text type="code" size="sm" weight="medium">
         {row.event.event}
       </Text>
     ),
@@ -139,7 +206,7 @@ const EVENT_COLUMNS: TableColumn<AuditRow>[] = [
   {
     key: "when",
     header: "Server time (UTC)",
-    width: pixel(200),
+    width: pixel(210),
     renderCell: (row: AuditRow) => (
       <Text type="supporting" size="sm" hasTabularNumbers>
         {formatServerTime(row.event.serverTs)}
@@ -150,26 +217,64 @@ const EVENT_COLUMNS: TableColumn<AuditRow>[] = [
     key: "actor",
     header: "Actor",
     width: proportional(1),
-    renderCell: (row: AuditRow) => (
-      <Text size="sm" wordBreak="break-all">
-        {actorLabel(row.event)}
-      </Text>
-    ),
+    renderCell: (row: AuditRow) => <ActorCell event={row.event} />,
   },
   {
     key: "details",
     header: "Details",
     width: proportional(1),
-    renderCell: (row: AuditRow) => (
-      <VStack gap={0.5}>
-        <Text size="sm" wordBreak="break-all">
-          {detailLabel(row.event)}
-        </Text>
-        <PayloadCell event={row.event} />
-      </VStack>
-    ),
+    renderCell: (row: AuditRow) => <DetailsCell event={row.event} />,
   },
 ];
+
+/** 狭い幅の 1 イベント = 1 項目(列の意味は Table と同じ。seq は時刻の行に出す)。 */
+function EventListItem({ event }: { event: AuditEvent }): ReactNode {
+  return (
+    <ListItem
+      label={event.event}
+      description={
+        <VStack gap={1}>
+          <HStack gap={2} wrap="wrap" align="center">
+            {event.seq === undefined ? null : (
+              <Text type="supporting" size="sm">
+                seq <HexText>{String(event.seq)}</HexText>
+              </Text>
+            )}
+            <Text type="supporting" size="sm" hasTabularNumbers>
+              {formatServerTime(event.serverTs)}
+            </Text>
+          </HStack>
+          <ActorCell event={event} />
+          <DetailsCell event={event} />
+        </VStack>
+      }
+    />
+  );
+}
+
+function EventsView({
+  events,
+  isNarrow,
+}: {
+  events: ReadonlyArray<AuditEvent>;
+  isNarrow: boolean;
+}): ReactNode {
+  if (isNarrow) {
+    return (
+      <List density="compact" hasDividers>
+        {events.map((event) => (
+          <EventListItem key={event.id} event={event} />
+        ))}
+      </List>
+    );
+  }
+  // seq は admin 可視の project DO 応答にのみ載る(AUDIT_SPEC §7)。列の表示は
+  // 応答適応: 1 行でも seq を運んでいれば列を出す
+  const hasSeq = events.some((event) => event.seq !== undefined);
+  const rows: AuditRow[] = events.map((event) => ({ id: event.id, event }));
+  const columns = hasSeq ? [SEQ_COLUMN, ...EVENT_COLUMNS] : EVENT_COLUMNS;
+  return <Table data={rows} columns={columns} idKey="id" density="compact" dividers="rows" />;
+}
 
 interface LoadedState {
   events: AuditEvent[];
@@ -219,14 +324,11 @@ function LoadedEventsView({
   onLoadMore: () => void;
   testId: string;
 }): ReactNode {
-  // seq は admin 可視の project DO 応答にのみ載る(AUDIT_SPEC §7)。列の表示は
-  // 応答適応: 1 行でも seq を運んでいれば列を出す
-  const hasSeq = loaded.events.some((event) => event.seq !== undefined);
-  const rows: AuditRow[] = loaded.events.map((event) => ({ id: event.id, event }));
-  const columns = hasSeq ? [SEQ_COLUMN, ...EVENT_COLUMNS] : EVENT_COLUMNS;
+  const isNarrow = useMediaQuery(NARROW_VIEWPORT_QUERY);
   return (
-    <VStack gap={3} data-testid={testId}>
-      <Table data={rows} columns={columns} idKey="id" density="compact" dividers="rows" />
+    <VStack gap={3} align="start" data-testid={testId}>
+      <EventsView events={loaded.events} isNarrow={isNarrow} />
+      {/* 追記形(裁定 B-b): 既に描けた一覧の下に Load more の失敗を足す */}
       {failure !== undefined ? <FailureNotice failure={failure} onRetry={onLoadMore} /> : null}
       <LoadMoreRow isLoading={isLoading} exhausted={loaded.exhausted} onLoadMore={onLoadMore} />
     </VStack>
@@ -275,6 +377,7 @@ export function AuditEventList({
   }, [loadMore]);
 
   if (loaded === undefined) {
+    // 置換形(裁定 B-a): 初回ページが取れるまでは本体の代わりに描く
     return failure !== undefined ? (
       <FailureNotice failure={failure} onRetry={() => void loadMore(undefined)} />
     ) : (
@@ -283,11 +386,10 @@ export function AuditEventList({
   }
   if (loaded.events.length === 0) {
     return (
-      <EmptyState
+      <EmptyNotice
         title={emptyTitle}
         description="No events are visible to your role, as reported by the server."
-        headingLevel={3}
-        isCompact
+        testId={testId}
       />
     );
   }

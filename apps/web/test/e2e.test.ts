@@ -32,17 +32,25 @@ import { Schema } from "effect";
 import { type Browser, chromium, type Page, type Route } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type {
-  AuditEvent,
-  ChainSnapshot,
-  EnvironmentList,
-  EnvironmentMetadataPull,
-  InvitationList,
-  Me,
-  ProjectList,
-  RotationFlagList,
-  TokenList,
-} from "../src/dashboard/types.ts";
+import {
+  chainFixture,
+  environmentsFixture,
+  invitationsAfterRevoke,
+  invitationsFixture,
+  meFixture,
+  metadataPullFixture,
+  PROJECT_1,
+  PROJECT_2,
+  PROJECT_GHOST_CURSOR,
+  projectAuditEvents,
+  projectsPage1,
+  projectsPage2,
+  projectsPageEmpty,
+  rotationFlagsFixture,
+  selfAuditEvents,
+  tokensAfterRevoke,
+  tokensFixture,
+} from "./fixtures.ts";
 
 // ポートは固定せず OS に空きを割り当てさせる(CI の並列実行でも衝突しない)
 function getFreePort(): Promise<number> {
@@ -324,249 +332,6 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
 // (src/dashboard/types.ts)に適合するリテラルで、乖離は tsc が検出する。
 // ---------------------------------------------------------------------------
 
-const PROJECT_1 = "ab".repeat(32);
-const PROJECT_2 = "cd".repeat(32);
-const HEX64 = "12".repeat(32);
-const SIG = "34".repeat(64);
-const FP = "56".repeat(16);
-const ROW_ID_1 = "78".repeat(16);
-const ROW_ID_2 = "9a".repeat(16);
-
-const meFixture: Me = { userId: "user_e2e", orgs: [] };
-
-const PROJECT_GHOST_CURSOR = "ef".repeat(32);
-
-const projectsPage1: ProjectList = {
-  projects: [{ projectId: PROJECT_1, role: "admin" }],
-  nextAfter: PROJECT_1,
-};
-// 空ページ + nextAfter(AUTH_SPEC §11-5 — ghost 除外・確認失敗の省略で
-// 候補ページが空になる形)。UI はこれを終端と誤断せずカーソルを進める
-const projectsPageEmpty: ProjectList = {
-  projects: [],
-  nextAfter: PROJECT_GHOST_CURSOR,
-};
-const projectsPage2: ProjectList = {
-  projects: [{ projectId: PROJECT_2, role: "reader" }],
-};
-
-const chainFixture: ChainSnapshot = {
-  projectId: PROJECT_1,
-  headSeq: 2,
-  headHashHex: HEX64,
-  entries: [
-    {
-      suite: "maruhi/v1",
-      seq: 1,
-      prevHashHex: "00".repeat(32),
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
-      timestampMs: 1_756_000_000_000,
-      signatureHex: SIG,
-      op: "genesis",
-      payload: { encPubHex: HEX64, sigPubHex: HEX64 },
-    },
-    {
-      suite: "maruhi/v1",
-      seq: 2,
-      prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
-      timestampMs: 1_756_000_100_000,
-      signatureHex: SIG,
-      op: "add_member",
-      payload: {
-        targetUserId: "user_colleague",
-        encPubHex: HEX64,
-        sigPubHex: HEX64,
-        role: "reader",
-      },
-    },
-  ],
-  attestations: [],
-};
-
-const environmentStatement = {
-  suite: "maruhi/v1",
-  environmentId: "production",
-  name: "production",
-  chainHeadHashHex: HEX64,
-  chainHeadSeq: 1,
-  signatureHex: SIG,
-  status: "active",
-  metaVersion: 1,
-  prevMetaSigHashHex: "",
-  authorUserId: "user_e2e",
-  authorKeyFingerprintHex: FP,
-} as const;
-
-const environmentsFixture: EnvironmentList = {
-  environments: [{ environmentId: "production", currentEpoch: 1, statement: environmentStatement }],
-};
-
-const metadataPullFixture: EnvironmentMetadataPull = {
-  environmentId: "production",
-  currentEpoch: 1,
-  statement: environmentStatement,
-  variables: [
-    {
-      ...environmentStatement,
-      variableId: "var-database-url",
-      name: "DATABASE_URL",
-    },
-  ],
-  deletedVariables: [],
-};
-
-// admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)
-const projectAuditEvents: { events: AuditEvent[] } = {
-  events: [
-    {
-      id: ROW_ID_1,
-      seq: 2,
-      serverTs: 1_756_000_100_000,
-      event: "chain.member_added",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_colleague",
-      chainSeq: 2,
-    },
-    {
-      id: ROW_ID_2,
-      seq: 1,
-      serverTs: 1_756_000_000_000,
-      event: "chain.genesis",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_e2e",
-      chainSeq: 1,
-    },
-  ],
-};
-
-// 本人軸(D1 経路 — seq は誰にも返らない)
-const selfAuditEvents: { events: AuditEvent[] } = {
-  events: [
-    {
-      id: ROW_ID_1,
-      serverTs: 1_756_000_200_000,
-      event: "auth.login_succeeded",
-      actor: { type: "user", userId: "user_e2e" },
-    },
-  ],
-};
-
-const rotationFlagsFixture: RotationFlagList = {
-  flags: [
-    {
-      environmentId: "production",
-      variableId: "var-database-url",
-      basis: "read",
-      targetUserId: "user_colleague",
-      recommendedAtMs: 1_756_000_300_000,
-      triggerChainSeq: 3,
-    },
-  ],
-};
-
-// ---------------------------------------------------------------------------
-// W3b(S8 招待管理・S9 トークン管理)のフィクスチャ。期限は「未来 = 2100 年 /
-// 過去 = 2023 年」の固定値(実行時刻に対して安定 — 裁定 CQ の Expired 表示は
-// クライアント時計との比較なので、境界近傍の値を使わない)
-// ---------------------------------------------------------------------------
-
-const FUTURE_MS = 4_102_444_800_000; // 2100-01-01
-const PAST_MS = 1_700_000_000_000; // 2023-11-14
-
-const acceptanceFixture = {
-  inviteeUserId: "user_colleague",
-  inviteeEncPubHex: HEX64,
-  inviteeSigPubHex: HEX64,
-  signatureHex: SIG,
-  acceptedAtMs: 1_756_000_100_000,
-} as const;
-
-const pendingInvite = {
-  id: "inv-pending",
-  projectId: PROJECT_1,
-  role: "member",
-  status: "pending",
-  inviterUserId: "user_e2e",
-  tokenHashHex: HEX64,
-  createdAtMs: 1_756_000_000_000,
-  expiresAtMs: FUTURE_MS,
-  acceptance: null,
-} as const;
-
-const invitationsFixture: InvitationList = {
-  invitations: [
-    pendingInvite,
-    {
-      id: "inv-accepted",
-      projectId: PROJECT_1,
-      role: "reader",
-      status: "accepted",
-      inviterUserId: "user_e2e",
-      tokenHashHex: HEX64,
-      createdAtMs: 1_756_000_000_000,
-      expiresAtMs: FUTURE_MS,
-      acceptance: acceptanceFixture,
-    },
-    {
-      id: "inv-completed",
-      projectId: PROJECT_1,
-      role: "member",
-      status: "completed",
-      inviterUserId: "user_e2e",
-      tokenHashHex: HEX64,
-      createdAtMs: 1_756_000_000_000,
-      expiresAtMs: PAST_MS,
-      acceptance: acceptanceFixture,
-    },
-  ],
-};
-
-// 失効後のサーバー申告(pending 行が revoked へ) — UI は再取得で写す(裁定 CO)
-const invitationsAfterRevoke: InvitationList = {
-  invitations: [
-    { ...pendingInvite, status: "revoked" },
-    ...invitationsFixture.invitations.slice(1),
-  ],
-};
-
-const tokensFixture: TokenList = {
-  tokens: [
-    {
-      id: "tok-active",
-      name: "ci",
-      tokenPrefix: "maruhi_pat_abcdefgh",
-      scopes: [{ project: "*", permission: "admin" }],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: 1_756_000_100_000,
-      expiresAtMs: FUTURE_MS,
-    },
-    {
-      id: "tok-expired",
-      name: "old-laptop",
-      tokenPrefix: "maruhi_pat_ijklmnop",
-      scopes: [{ project: PROJECT_1, permission: "read" }],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: null,
-      expiresAtMs: PAST_MS,
-    },
-    // 移行(AUTH_SPEC §6 裁定 CE)前の旧無期限行 — 検証側は期限切れ扱い
-    // (fail-closed)。表示は Expired + no expiry recorded(裁定 CQ)
-    {
-      id: "tok-legacy",
-      name: "legacy",
-      tokenPrefix: "maruhi_pat_qrstuvwx",
-      scopes: [],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: null,
-      expiresAtMs: null,
-    },
-  ],
-};
-
-// 指定失効は行の削除(サーバー実装 — 一覧から消える)
-const tokensAfterRevoke: TokenList = { tokens: tokensFixture.tokens.slice(1) };
-
 function fulfillJson(route: Route, status: number, body: unknown): Promise<void> {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
@@ -577,11 +342,20 @@ function unauthorized(route: Route): Promise<void> {
 }
 
 /**
+ * セッション確認のモック。DP3 のアプリシェル(DashboardShell)は認証が要る全画面で
+ * `GET /auth/me` を 1 回呼び、ok のときだけ本文を描く — 実サーバーの 401 応答は
+ * ボディ未読のまま networkidle を妨げるため、認証済み画面のテストはすべてこれを登録する
+ */
+async function routeSession(page: Page): Promise<void> {
+  await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+}
+
+/**
  * プロジェクト画面の初期表示(Overview タブ)の消費面のモック(W3b の S8 テストで
- * 共用)。/auth/me は画面が呼ばないが、他テストと同じ既定として登録しておく。
+ * 共用)。
  */
 async function routeProjectOverview(page: Page): Promise<void> {
-  await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+  await routeSession(page);
   await page.route(
     (url) => url.pathname === `/projects/${PROJECT_1}/chain`,
     (route) => fulfillJson(route, 200, chainFixture),
@@ -807,9 +581,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(page.getByText("Seq", { exact: true }).count()).resolves.toBe(1);
     await expect(page.getByText("chain.member_added").count()).resolves.toBeGreaterThan(0);
     // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)。
-    // W3b で管理タブ "Invites"(S8)が同語で並ぶため、radiogroup(SegmentedControl)
-    // 側を role で指す
-    await page.getByRole("radio", { name: "Invites" }).click();
+    // W3b で管理タブ "Invites"(S8)が同語で並ぶため、ToggleButtonGroup(DP3 で
+    // SegmentedControl から置換)の押下ボタンを role で指す
+    await page.getByRole("button", { name: "Invites", pressed: false }).click();
     await page.getByText("Not available to your role").first().waitFor();
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
@@ -969,6 +743,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   it("lists tokens with server-reported expiry: Expired, no expiry recorded, never (S9)", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, tokensFixture),
@@ -992,6 +767,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     let revoked = false;
     let deleteMethod: string | null = null;
     let deleteCsrf: string | null = null;
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
@@ -1028,6 +804,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       release = resolve;
     });
     let revoked = false;
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
@@ -1062,6 +839,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
   it("shows the token 404 wording on the uniform not-found of targeted revocation (S9)", async () => {
     const page = await browser.newPage();
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, tokensFixture),
@@ -1082,6 +860,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   it("renders the account (self) audit axis without a seq column", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/audit/events",
       (route) => fulfillJson(route, 200, selfAuditEvents),
