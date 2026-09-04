@@ -1,16 +1,18 @@
 ---
 // LP(apex `maruhi.app/`)— Blume のカスタムページ(docs/notes/web-design-pass.md §4、裁定 D / G)。
 //
-// 構成は所有者レビュー(2026-09-04)後の案 A: ADR-0014 の勝ち文句「信じなくてよい相手の範囲が
-// 競合より広い」を 1 本の主張にし、各節が構造でそれを証明する。
-//   Hero(Not even us.)→ Who can read what(信頼境界の表)→ Nothing to leak from disk
-//   → Agents get the contract → Your Cloudflare account → What we don't promise → Get started
-// トーン(§2): ダーク基調・アクセント 1 色を限定的に・コード / ターミナルが主役・装飾控えめ・
-// セキュリティは淡々と。書いていない機能は謳わない。ターミナルの出力行は実際の CLI 文字列
-// (apps/cli/src — push / login / agent-gate / schema)から写す。
+// 構成は所有者レビュー(2026-09-04)後の案 A 改訂 2:「Why の連鎖」。
+//   Hero(Not even us.)→ 5 つの問い(ファイル → サーバー → 鍵 → エージェント → 運営者)を
+//   順に潰していくと maruhi の設計に着地する → What we don't promise → Get started
+// 各問いは「問い → 事実 1〜2 文 → So: maruhi の答え」+ イラスト(インライン SVG)で、
+// 途中の問いだけなら競合でも足りる、を最後まで読むと maruhi にしか着かない、という並び
+// (競合の LP 実測: コマンドは 0〜4 個、脅威から入るのが定石 — §4 G 改訂 2)。
+// コマンドは hero と schema の 2 箇所のみ。install / self-host の手順は docs に置く。
+// トーン(§2): ダーク基調・アクセント 1 色を限定的に・装飾控えめ・セキュリティは淡々と。
+// 書いていない機能は謳わない。ターミナルの出力行は実際の CLI 文字列(apps/cli/src)から写す。
 //
 // スタイリングは scoped <style>(素の CSS)のみ。色は Blume の theme tokens(--blume-*)を参照し、
-// 生 hex を書かない。間隔・寸法は先頭のカスタムプロパティに集約する(ADR-0013 の精神)。
+// 生 hex を書かない。SVG も class で色を当てる(style 属性は使わない — CSP)。
 // ユーザーに見える文言は英語(ADR-0017)。
 import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
@@ -21,38 +23,13 @@ const productOrigin = "https://my.maruhi.app";
 const cryptoSpec = `${repo}/blob/main/docs/CRYPTO_SPEC.md`;
 const title = "maruhi — secrets only you can read. Not even us.";
 
-// 信頼境界の表(ADR-0018 / CRYPTO_SPEC §14.2)。「読める」のは復号器を持つ場所だけ
-const trust = [
-  {
-    who: "Your CLI, on your machine",
-    plaintext: true,
-    how: "The only decryptor. MIT-licensed, so you can read it.",
-  },
-  {
-    who: "The process you run with maruhi run",
-    plaintext: true,
-    how: "Values arrive as environment variables, in memory, for that process only.",
-  },
-  {
-    who: "The server",
-    plaintext: false,
-    how: "Stores and relays ciphertext. Holds no key that could open it.",
-  },
-  {
-    who: "The web dashboard",
-    plaintext: false,
-    how: "Read-only metadata. It ships no decryptor and never receives a key.",
-  },
-  {
-    who: "Us, the operator of my.maruhi.app",
-    plaintext: false,
-    how: "Same ciphertext as everyone else. Nothing to hand over, nothing to leak.",
-  },
-  {
-    who: "An AI agent in your terminal",
-    plaintext: false,
-    how: "Gets the schema. Value display is refused when an agent is detected.",
-  },
+// 信頼境界(ADR-0018 / CRYPTO_SPEC §14.2)。復号器を持つ場所だけが平文を見る
+const tiles = [
+  { who: "Your CLI", note: "and the process it runs", reads: true },
+  { who: "The server", note: "ciphertext only", reads: false },
+  { who: "The dashboard", note: "never gets a key", reads: false },
+  { who: "Us", note: "same ciphertext as you", reads: false },
+  { who: "Your AI agent", note: "schema, not values", reads: false },
 ];
 ---
 
@@ -80,9 +57,8 @@ const trust = [
         <span class="punch">Not even us.</span>
       </h1>
       <p class="lede">
-        maruhi encrypts every value on your machine before it leaves. The server, the dashboard,
-        and the people running them only ever see ciphertext. The one thing that decrypts is an
-        open-source CLI you can read.
+        Out of your files. Out of your vendor's reach. Out of your AI agent's context. And still
+        right there when your app needs them.
       </p>
       <pre class="terminal" aria-label="Example maruhi session"><code><span class="prompt">$</span> maruhi push DATABASE_URL
 <span class="out">Pushed DATABASE_URL (version=1, epoch=1)</span>
@@ -95,153 +71,279 @@ const trust = [
       </p>
     </section>
 
-    <section class="section" id="trust" aria-labelledby="trust-heading">
-      <h2 id="trust-heading">Who can read your secrets</h2>
-      <p>
-        Most secrets managers encrypt at rest and decrypt on the server or in the browser. maruhi
-        moves the decryptor to the one place you already control. Everything else is out of the
-        loop by construction, not by policy.
+    <section class="section" id="why" aria-labelledby="why-heading">
+      <p class="eyebrow">why it is built this way</p>
+      <h2 id="why-heading">Five questions. Each one removes someone from the list.</h2>
+      <p class="lede">
+        Start with a <code>.env</code> file and keep asking who can read it. The answers lead to
+        one design.
       </p>
-      <div class="table-wrap">
-        <table class="trust">
-          <thead>
-            <tr>
-              <th scope="col">Where</th>
-              <th scope="col">Sees plaintext</th>
-              <th scope="col">Why</th>
-            </tr>
-          </thead>
-          <tbody>
-            {
-              trust.map((row) => (
-                <tr>
-                  <th scope="row">{row.who}</th>
-                  <td class={row.plaintext ? "yes" : "no"}>{row.plaintext ? "yes" : "no"}</td>
-                  <td>{row.how}</td>
-                </tr>
-              ))
-            }
-          </tbody>
-        </table>
-      </div>
-      <p class="fine">
-        This is what "zero knowledge" means here: it is a property of the design, and the design is
-        in the <a href={repo}>repository</a> — server, dashboard, CLI, and the crypto specification.
-      </p>
-    </section>
 
-    <section class="section" id="diskless" aria-labelledby="diskless-heading">
-      <h2 id="diskless-heading">Nothing to leak from disk</h2>
-      <p>
-        <code>maruhi run</code> decrypts in memory and hands values to your process as environment
-        variables. When the process exits, they are gone. There is no <code>.env</code> writer, no
-        value export, no "download as file" — not disabled, but absent. A tool that cannot write
-        secrets to disk cannot be talked into it.
-      </p>
-      <pre class="terminal"><code><span class="prompt">$</span> maruhi run -- printenv DATABASE_URL | wc -c
-<span class="out">42</span>
-<span class="prompt">$</span> ls -a .env*
-<span class="out">ls: .env*: No such file or directory</span></code></pre>
-    </section>
+      <ol class="chain">
+        <li class="step" id="files">
+          <div class="text">
+            <p class="num">01</p>
+            <h3>Who reads your files?</h3>
+            <p>
+              Cursor, Copilot, Claude Code: your editor and its agents read every file in the project
+              as context. A <code>.env</code> file is just another file.
+            </p>
+            <p class="so">
+              <strong>So secrets can't be files.</strong>
+              <code>maruhi run</code> puts them in one process's memory, and nowhere else.
+            </p>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-files">
+              <title id="ill-files">An AI agent reading three project files, including .env</title>
+              <g class="line">
+                <rect x="20" y="24" width="128" height="40" rx="6"></rect>
+                <rect x="20" y="80" width="128" height="40" rx="6"></rect>
+              </g>
+              <rect class="line accent" x="20" y="136" width="128" height="40" rx="6"></rect>
+              <text class="label" x="34" y="49">app.ts</text>
+              <text class="label" x="34" y="105">package.json</text>
+              <text class="label accent-text" x="34" y="161">.env</text>
+              <g class="line dashed">
+                <path d="M148 44 C 190 44, 200 96, 236 96"></path>
+                <path d="M148 100 L 236 100"></path>
+              </g>
+              <path class="line accent" d="M148 156 C 190 156, 200 104, 236 104"></path>
+              <g class="line">
+                <rect x="236" y="72" width="60" height="52" rx="10"></rect>
+                <line x1="266" y1="72" x2="266" y2="58"></line>
+                <circle cx="266" cy="54" r="4"></circle>
+              </g>
+              <circle class="fill" cx="254" cy="96" r="5"></circle>
+              <circle class="fill" cx="278" cy="96" r="5"></circle>
+              <text class="label" x="236" y="146">your agent</text>
+            </svg>
+          </figure>
+        </li>
 
-    <section class="section" id="agents" aria-labelledby="agents-heading">
-      <h2 id="agents-heading">Agents get the contract, not the values</h2>
-      <p>
-        A coding agent needs to know which variables exist, their types, and whether they are set. It
-        does not need the values. <code>maruhi schema</code> returns exactly that, and the CLI refuses
-        to display values when it detects it is not being run by a person at a terminal.
-      </p>
-      <pre class="terminal"><code><span class="prompt">$</span> maruhi schema
-<span class="out">NAME          TYPE     REQUIRED  STATUS  DESCRIPTION
-DATABASE_URL  url      true      set     Primary Postgres
-STRIPE_KEY    string   true      set     -
-SENTRY_DSN    string   false     set     -</span>
-<span class="prompt">$</span> maruhi pull --show <span class="comment"># from inside an AI agent session</span>
-<span class="err">maruhi: Refused to display values because an AI agent environment was detected. If you need to inspect a value, run this yourself on an interactive terminal</span></code></pre>
-    </section>
+        <li class="step" id="server">
+          <div class="text">
+            <p class="num">02</p>
+            <h3>Then where do they live?</h3>
+            <p>
+              On a server. With most managers, that server or its web console can decrypt them. So
+              can its staff, a breach, or a subpoena.
+            </p>
+            <p class="so">
+              <strong>So encrypt before anything leaves your machine.</strong>
+              The server only ever stores ciphertext. It has nothing that could open it.
+            </p>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-server">
+              <title id="ill-server">
+                A laptop holding the key sends ciphertext to a server that has no key
+              </title>
+              <g class="line">
+                <rect x="16" y="56" width="96" height="68" rx="6"></rect>
+                <line x1="6" y1="132" x2="122" y2="132"></line>
+              </g>
+              <g class="line accent">
+                <circle cx="46" cy="90" r="9"></circle>
+                <line x1="54" y1="90" x2="86" y2="90"></line>
+                <line x1="78" y1="90" x2="78" y2="98"></line>
+                <line x1="86" y1="90" x2="86" y2="98"></line>
+              </g>
+              <g class="line">
+                <line x1="134" y1="96" x2="200" y2="96"></line>
+                <path d="M192 90 L 200 96 L 192 102"></path>
+              </g>
+              <text class="label" x="130" y="82">ciphertext</text>
+              <g class="line">
+                <rect x="216" y="46" width="88" height="26" rx="4"></rect>
+                <rect x="216" y="80" width="88" height="26" rx="4"></rect>
+                <rect x="216" y="114" width="88" height="26" rx="4"></rect>
+              </g>
+              <g class="fill">
+                <circle cx="228" cy="59" r="3"></circle>
+                <circle cx="228" cy="93" r="3"></circle>
+                <circle cx="228" cy="127" r="3"></circle>
+              </g>
+              <text class="label" x="216" y="164">no key here</text>
+            </svg>
+          </figure>
+        </li>
 
-    <section class="section" id="self-host" aria-labelledby="selfhost-heading">
-      <h2 id="selfhost-heading">Your Cloudflare account. One deploy.</h2>
-      <p>
-        The whole server is one Worker with a D1 database and Durable Objects. No Postgres, no
-        Redis, no VM to patch. It runs on the free plan, and the setup that is specific to maruhi is
-        creating a GitHub OAuth App. About ten minutes.
-      </p>
-      <pre class="terminal"><code><span class="prompt">$</span> git clone {repo}.git && cd maruhi && bun install
-<span class="prompt">$</span> bunx wrangler d1 create maruhi
-<span class="prompt">$</span> bunx wrangler deploy</code></pre>
-      <p class="actions">
-        <a class="link" href="/docs/self-hosting">Self-hosting guide</a>
-      </p>
+        <li class="step" id="key">
+          <div class="text">
+            <p class="num">03</p>
+            <h3>Who holds the key?</h3>
+            <p>
+              End-to-end only counts if the decryptor is small. A dashboard that decrypts is one XSS
+              away from everything. An "export as .env" button undoes question one.
+            </p>
+            <p class="so">
+              <strong>So there is exactly one decryptor:</strong>
+              an MIT-licensed CLI you can read. The dashboard never gets a key. A
+              <code>.env</code> writer does not exist.
+            </p>
+          </div>
+          <figure class="figure">
+            <ul class="tiles" aria-label="Who can read plaintext">
+              {
+                tiles.map((t) => (
+                  <li class={t.reads ? "tile yes" : "tile"}>
+                    {t.reads ? (
+                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="line" cx="8" cy="12" r="4.5" />
+                        <line class="line" x1="12.5" y1="12" x2="21" y2="12" />
+                        <line class="line" x1="17" y1="12" x2="17" y2="16" />
+                        <line class="line" x1="21" y1="12" x2="21" y2="16" />
+                      </svg>
+                    ) : (
+                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect class="line" x="5" y="11" width="14" height="9" rx="2" />
+                        <path class="line" d="M8 11 V8 a4 4 0 0 1 8 0 v3" />
+                      </svg>
+                    )}
+                    <b>{t.who}</b>
+                    <span>{t.note}</span>
+                    <em>{t.reads ? "reads plaintext" : "cannot"}</em>
+                  </li>
+                ))
+              }
+            </ul>
+          </figure>
+        </li>
+
+        <li class="step" id="agents">
+          <div class="text">
+            <p class="num">04</p>
+            <h3>How does the agent still work?</h3>
+            <p>
+              It needs to know which variables exist, their types, and whether they are set. It does
+              not need the values.
+            </p>
+            <p class="so">
+              <strong>So it gets the contract, not the values.</strong>
+              <code>maruhi schema</code> prints the shape. Showing a value is refused when an agent is
+              detected.
+            </p>
+            <pre class="terminal small"><code><span class="prompt">$</span> maruhi schema
+<span class="out">NAME          TYPE    REQUIRED  STATUS
+DATABASE_URL  url     true      set
+STRIPE_KEY    string  true      set</span>
+<span class="prompt">$</span> maruhi pull --show
+<span class="err">maruhi: Refused to display values because an AI agent environment was detected.</span></code></pre>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-agents">
+              <title id="ill-agents">
+                An agent sees variable names and types, while the values are blacked out
+              </title>
+              <g class="line">
+                <rect x="20" y="36" width="196" height="128" rx="6"></rect>
+                <line x1="20" y1="68" x2="216" y2="68"></line>
+                <line x1="20" y1="100" x2="216" y2="100"></line>
+                <line x1="20" y1="132" x2="216" y2="132"></line>
+              </g>
+              <text class="label" x="30" y="56">NAME</text>
+              <text class="label" x="132" y="56">TYPE</text>
+              <text class="label" x="180" y="56">VALUE</text>
+              <text class="label strong" x="30" y="88">DATABASE_URL</text>
+              <text class="label strong" x="30" y="120">STRIPE_KEY</text>
+              <text class="label strong" x="30" y="152">SENTRY_DSN</text>
+              <text class="label" x="132" y="88">url</text>
+              <text class="label" x="132" y="120">string</text>
+              <text class="label" x="132" y="152">string</text>
+              <g class="redacted">
+                <rect x="180" y="78" width="28" height="12" rx="2"></rect>
+                <rect x="180" y="110" width="28" height="12" rx="2"></rect>
+                <rect x="180" y="142" width="28" height="12" rx="2"></rect>
+              </g>
+              <g class="line">
+                <rect x="240" y="74" width="60" height="52" rx="10"></rect>
+                <line x1="270" y1="74" x2="270" y2="60"></line>
+                <circle cx="270" cy="56" r="4"></circle>
+              </g>
+              <circle class="fill" cx="258" cy="98" r="5"></circle>
+              <circle class="fill" cx="282" cy="98" r="5"></circle>
+            </svg>
+          </figure>
+        </li>
+
+        <li class="step" id="operator">
+          <div class="text">
+            <p class="num">05</p>
+            <h3>Who runs the server?</h3>
+            <p>
+              Even ciphertext has an operator: someone who sees the metadata, decides the uptime, and
+              could shut it down. Better if that someone is you.
+            </p>
+            <p class="so">
+              <strong>So the server is one <code>wrangler deploy</code></strong>
+              on your own Cloudflare account, on the free plan. Or use ours. Either way it sends no
+              telemetry, and it sees the same ciphertext as everyone else.
+            </p>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-operator">
+              <title id="ill-operator">
+                A single deploy command pointing at a cloud labelled "your account"
+              </title>
+              <path
+                class="line cloud"
+                d="M84 120 H236 a30 30 0 0 0 0 -60 a45 45 0 0 0 -80 -20 a38 38 0 0 0 -60 22 a34 34 0 0 0 -12 58 Z"
+              ></path>
+              <text class="label strong" x="112" y="90">your account</text>
+              <g class="line accent">
+                <line x1="160" y1="176" x2="160" y2="134"></line>
+                <path d="M152 142 L 160 134 L 168 142"></path>
+              </g>
+              <text class="label" x="102" y="194">$ wrangler deploy</text>
+            </svg>
+          </figure>
+        </li>
+      </ol>
+
+      <p class="closing">What is left on the list is you, and the process you chose to run.</p>
     </section>
 
     <section class="section" id="honest" aria-labelledby="honest-heading">
       <h2 id="honest-heading">What we don't promise</h2>
-      <p>
-        Zero knowledge has edges, and we would rather you read them here than discover them later.
-        From the crypto specification's list of explicit non-guarantees:
-      </p>
+      <p>Zero knowledge has edges. We would rather you read them here.</p>
       <ul class="plain">
         <li>
-          <strong>Availability.</strong> A malicious or broken server can refuse, delete, or delay.
-          The CLI detects and warns; it cannot prevent.
+          <strong>Availability.</strong> A broken or hostile server can refuse or delay. The CLI
+          warns; it cannot prevent.
+        </li>
+        <li><strong>Correct values.</strong> The server cannot check what it cannot read.</li>
+        <li>
+          <strong>Un-reading.</strong> Nothing takes back a value someone already decrypted. Rotate.
         </li>
         <li>
-          <strong>Correctness of values.</strong> An authorized member can write a wrong value. The
-          server cannot check what it cannot read.
-        </li>
-        <li>
-          <strong>Un-reading.</strong> Encryption cannot take back a value someone has already
-          decrypted. Rotate, don't rely on revocation.
-        </li>
-        <li>
-          <strong>Lost keys.</strong> Your master key lives on your devices and in your recovery code.
-          We cannot restore what we never had.
+          <strong>Lost keys.</strong> Your key lives on your devices and in your recovery code. We
+          never had it.
         </li>
       </ul>
       <p class="fine">
-        The full list, with the reasoning, is in the
+        The full list, with reasoning, is in the
         <a href={`${cryptoSpec}#143-明示的な非保証v1`}>crypto specification, §14.3</a> (Japanese).
-        No telemetry anywhere: the CLI, the installer, the dashboard, and this page send nothing to
-        third parties.
       </p>
     </section>
 
     <section class="section" id="start" aria-labelledby="start-heading">
       <h2 id="start-heading">Get started</h2>
       <p>
-        Releases are pre-release tags until <code>v0.1.0</code>. Pick the latest tag on the
-        <a href={`${repo}/releases`}>Releases page</a>, and read the script before running it — this
-        is a secrets manager.
+        Install the CLI, sign in with GitHub, push a secret, run your app. About five minutes; the
+        guide has every command.
       </p>
-      <pre class="terminal"><code><span class="comment"># 1. Install the CLI (Linux / macOS; Bun not required)</span>
-V=&lt;latest-tag&gt;
-curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/$&lbrace;V&rbrace;/packaging/install.sh" -o maruhi-install.sh
-less maruhi-install.sh
-sh maruhi-install.sh --version "$&lbrace;V&rbrace;"
-
-<span class="comment"># 2. Point it at a server and sign in</span>
-maruhi config set server {productOrigin}
-maruhi login
-<span class="out">Confirmation code: PX7Q-4MRH</span></code></pre>
-      <p>
-        <code>maruhi login</code> opens your browser for a GitHub sign-in and shows the same
-        confirmation code in both places. Compare them, approve, and you are in. The first time,
-        <code>maruhi key generate</code> creates your master key and a recovery code — that is the one
-        ceremony zero knowledge asks of you.
-      </p>
-      <p class="fine">
-        Prebuilt binaries with checksums, Homebrew (from <code>v0.1.0</code>), and npm
-        (<code>bun install -g maruhi@next</code>) are in the
-        <a href={`${repo}#install-cli`}>README</a>.
+      <p class="actions">
+        <a class="button" href="/docs/getting-started">Read the getting started guide</a>
+        <a class="link" href="/docs/self-hosting">Self-hosting guide</a>
       </p>
 
       <h3 id="access">Access</h3>
       <p>
-        The hosted service at <a href={productOrigin}>my.maruhi.app</a> is in <strong>private
-        preview</strong>. Creating an account needs an invite code, which the sign-in page asks for. A
-        waitlist opens with the invite-only beta; until then, follow the repository for release
-        notes. Or skip the queue and run it on your own account.
+        The hosted service at <a href={productOrigin}>my.maruhi.app</a> is in <strong
+          >private preview</strong
+        > and needs an invite code. A waitlist opens with the invite-only beta; until then, follow
+        the repository for release notes, or run it on your own account today.
       </p>
       <!-- waitlist 導線の置き場(H6 で Workers への POST フォームに差し替える — 静的文言のみ) -->
       <p class="actions" data-waitlist-placeholder>
@@ -275,8 +377,11 @@ maruhi login
     --lp-section: 4.5rem;
     --lp-hero-size: clamp(2.5rem, 6vw, 4.25rem);
     --lp-h2-size: clamp(1.5rem, 3vw, 2rem);
+    --lp-h3-size: clamp(1.25rem, 2.2vw, 1.5rem);
     --lp-terminal-size: 0.875rem;
     --lp-border: 1px;
+    --lp-rule: 3px;
+    --lp-stroke: 1.5;
     --lp-button-pad: 0.75rem 1.25rem;
 
     margin: 0 auto;
@@ -305,7 +410,7 @@ maruhi login
     max-width: var(--lp-measure);
   }
 
-  /* アクセントは限定的に: 見出しの決め台詞と CTA ボタンのみ(§2) */
+  /* アクセントは限定的に: 見出しの決め台詞・CTA ボタン・図の「鍵」(§2) */
   .hero .punch {
     display: block;
     color: var(--blume-accent);
@@ -333,13 +438,16 @@ maruhi login
     font-stretch: 105%;
     letter-spacing: -0.02em;
     line-height: 1.15;
+    max-width: var(--lp-measure);
   }
 
   h3 {
-    margin: calc(var(--lp-gap) * 2) 0 calc(var(--lp-gap) / 2);
+    margin: 0 0 calc(var(--lp-gap) / 2);
     font-family: var(--blume-font-display);
-    font-size: 1.125rem;
+    font-size: var(--lp-h3-size);
     font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
   }
 
   p {
@@ -372,12 +480,15 @@ maruhi login
     padding: 0 0.35em;
   }
 
-  /* ターミナル: コードが主役(§2)。背景は code token、枝葉の装飾は付けない */
+  /* ターミナル: 証拠として 2 箇所だけ(hero / schema)。背景は code token、装飾は付けない */
   .terminal {
     margin: 0 0 calc(var(--lp-gap) * 1.5);
     padding: var(--lp-gap) calc(var(--lp-gap) * 1.25);
     max-width: var(--lp-measure);
     overflow-x: auto;
+    /* 長い出力行は折り返す(狭い列・モバイルで横スクロールさせない)。表の空白は保つ */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     font-family: var(--blume-font-mono);
     font-size: var(--lp-terminal-size);
     line-height: 1.7;
@@ -385,6 +496,11 @@ maruhi login
     background: var(--blume-code-background);
     border: var(--lp-border) solid var(--blume-border);
     border-radius: var(--blume-radius);
+  }
+
+  .terminal.small {
+    font-size: 0.8rem;
+    margin: var(--lp-gap) 0 0;
   }
 
   .terminal code {
@@ -433,54 +549,168 @@ maruhi login
     font-weight: 600;
   }
 
-  /* 信頼境界の表: 装飾はしない。yes / no だけを目で拾えるようにする */
-  .table-wrap {
-    overflow-x: auto;
-    margin: 0 0 var(--lp-gap);
+  /* Why の連鎖: 番号 → 問い → 事実 → So(左罫)+ 図。偶数段は図を左に */
+  .chain {
+    margin: calc(var(--lp-gap) * 2) 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: calc(var(--lp-section) * 0.8);
   }
 
-  .trust {
+  .step {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: calc(var(--lp-gap) * 3);
+    align-items: center;
+  }
+
+  .step:nth-child(even) .figure {
+    order: -1;
+  }
+
+  @media (max-width: 46rem) {
+    .step {
+      grid-template-columns: minmax(0, 1fr);
+      gap: calc(var(--lp-gap) * 1.5);
+    }
+
+    .step:nth-child(even) .figure {
+      order: 0;
+    }
+  }
+
+  .num {
+    margin: 0 0 calc(var(--lp-gap) / 2);
+    font-family: var(--blume-font-mono);
+    font-size: var(--lp-terminal-size);
+    color: var(--blume-accent);
+  }
+
+  .so {
+    margin: var(--lp-gap) 0 0;
+    padding-left: var(--lp-gap);
+    border-left: var(--lp-rule) solid var(--blume-accent);
+  }
+
+  .so strong {
+    display: block;
+  }
+
+  .closing {
+    margin-top: calc(var(--lp-section) * 0.6);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-h3-size);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    max-width: var(--lp-measure);
+  }
+
+  .figure {
+    margin: 0;
+  }
+
+  /* 図: 線画。線は muted、鍵と .env だけ accent(§2 のアクセント規律を図にも適用) */
+  .ill {
+    display: block;
     width: 100%;
-    max-width: var(--lp-wide);
-    border-collapse: collapse;
-    font-size: 0.95rem;
+    height: auto;
+    color: var(--blume-muted-foreground);
   }
 
-  .trust th,
-  .trust td {
-    text-align: left;
-    vertical-align: top;
-    padding: calc(var(--lp-gap) * 0.7) var(--lp-gap);
-    border-top: var(--lp-border) solid var(--blume-border);
+  .ill .line,
+  .icon .line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: var(--lp-stroke);
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
-  .trust thead th {
+  .ill .dashed {
+    stroke-dasharray: 4 4;
+  }
+
+  .ill .accent,
+  .ill .accent .line {
+    stroke: var(--blume-accent);
+  }
+
+  .ill .fill {
+    fill: currentColor;
+  }
+
+  .ill .redacted {
+    fill: var(--blume-border);
+  }
+
+  .ill .cloud {
+    fill: var(--blume-code-background);
+  }
+
+  .ill .label {
+    font-family: var(--blume-font-mono);
+    font-size: 11px;
+    fill: currentColor;
+  }
+
+  .ill .label.strong {
+    fill: var(--blume-foreground);
+  }
+
+  .ill .accent-text {
+    fill: var(--blume-accent);
+  }
+
+  /* 信頼境界のタイル: 鍵を持つのは CLI だけ */
+  .tiles {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: calc(var(--lp-gap) / 2);
+  }
+
+  .tile {
+    display: grid;
+    gap: 0.15rem;
+    padding: var(--lp-gap);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: var(--blume-radius);
+    color: var(--blume-muted-foreground);
+    font-size: 0.875rem;
+  }
+
+  .tile b {
+    color: var(--blume-foreground);
+  }
+
+  .tile em {
+    font-style: normal;
     font-family: var(--blume-font-mono);
     font-size: 0.75rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-weight: 500;
-    color: var(--blume-muted-foreground);
-    border-top: 0;
   }
 
-  .trust tbody th {
-    font-weight: 600;
-    white-space: nowrap;
+  .tile.yes {
+    grid-column: 1 / -1;
+    border-color: var(--blume-accent);
+    color: var(--blume-foreground);
   }
 
-  .trust td.yes,
-  .trust td.no {
-    font-family: var(--blume-font-mono);
-    white-space: nowrap;
+  .tile.yes em {
+    color: var(--blume-accent);
   }
 
-  .trust td.no {
+  .icon {
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-bottom: 0.35rem;
     color: var(--blume-muted-foreground);
   }
 
-  .trust td:last-child {
-    color: var(--blume-muted-foreground);
+  .tile.yes .icon {
+    color: var(--blume-accent);
   }
 
   .plain {

@@ -332,6 +332,29 @@ ADR-0014 の柵: 「最も安全」と言わない、機能数で争わない、
 未執筆(H5)なので非保証のリンク先は CRYPTO_SPEC §14.3。検証: site e2e 11 件(h1 の断言を新コピーに更新)・`blume validate
 --strict`・fmt / lint / tsc 通過。文言の推敲は初回デプロイ後に続ける(§4 の「構造は今、コピーは後」)。
 
+**G 改訂 2(2026-09-04、所有者レビュー 2 回目)**: 改訂 1 に対する所有者の指摘 = (a) 競合は LP にコマンドを並べていないのでは、
+脅威や「なぜ E2EE / なぜディスクレス」を書いているのでは (b) 文章が多すぎて読むのがしんどい、イラストを入れて読みやすく
+(c) Why が 2 つだけだと「競合でいい」となる — maruhi に自然につながる Why の連鎖にする (d) Cursor / Copilot / Claude Code は
+競合ではないので名前を出してよい。競合 LP の再実測(コマンド数 / 脅威説明): Keyway 4 / あり(「AI エージェントが .env を読む」
+→「ディスクに無ければ読めない」の因果が最も明快)、Infisical 2 / あり(sprawl・長寿命資格情報・エージェントは資格情報を
+持てない)、Doppler 0 / あり(侵害統計)、1Password dev 0 / あり、Phase 3 / **なし**(機能列挙のみ — maruhi に最も近い E2EE 競合が
+「なぜ」を語っていない = 空いている席)、Shelve 1 / ほぼなし。改訂 1 の maruhi はターミナル 5 個で 6 社中最多だった。
+**選定 = 「Why の連鎖」構成**: 5 つの問いを順に潰すと maruhi の設計にしか着地しない並び —
+01 Who reads your files?(エディタとエージェントは全ファイルを文脈として読む → 秘密はファイルにできない → `maruhi run`)
+→ 02 Then where do they live?(サーバー。多くはサーバー / コンソールが復号できる → 出る前に暗号化)→ 03 Who holds the key?
+(復号器が小さくなければ E2EE は意味を持たない。復号するダッシュボードは XSS 一発、export .env は 01 を無に戻す → 復号器は
+MIT の CLI 一つ、ダッシュボードは鍵を持たない、`.env` writer は存在しない)→ 04 How does the agent still work?(名前・型・
+設定済みかだけ要る → `maruhi schema`、値表示は fail-closed)→ 05 Who runs the server?(暗号文にも運営者はいる → 自分の
+CF アカウントへ `wrangler deploy`、またはこちら。どちらもテレメトリなし)→ 締め「残るのは you と you が選んで走らせた
+プロセス」。01 だけなら Keyway / Doppler、02 まで なら Phase、03 以降で maruhi のみ、という設計(指摘 c への答え)。
+各問いは「問い → 事実 1〜2 文 → So: 答え(左罫 accent)」+ 図で、図はインライン SVG の線画(線 = muted、鍵と `.env` だけ
+accent。style 属性は使わず class で色付け — CSP の style-src-attr を増やさない)。03 の図は「誰が平文を読めるか」の
+タイル(改訂 1 の表を圧縮)。コマンドは hero の push → run と 04 の schema の 2 箇所に減らし、install / sign-in / self-host
+の手順は docs(getting-started / self-hosting)へ委ねる。ターミナルは `pre-wrap` で折り返し(狭い列・モバイルで横スクロール
+させない)。棄却: 脅威を文章だけで語る案(指摘 b に反する)/ 図を画像ファイルにする案(テーマ追従できず、`img-src` の
+配信物が増える)/ 表を残す案(タイルで同じ情報を短く出せる)。検証: site e2e 11 件・`blume validate --strict`・postbuild
+(外部参照ゼロ、style 属性の外部化は 9 件で変化なし)・fmt / lint。
+
 ## 5. DP3〜DP5 の入口(詳細は各 PR で)
 
 - DP3(ダッシュボード): アプリシェル・空状態 / ローディング / エラーの統一(`FailureNotice` 13 か所)・監査ビューアの
