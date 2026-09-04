@@ -645,28 +645,46 @@ function shortId(id: string): string {
   return `${id.slice(0, 6)}…${id.slice(-6)}`;
 }
 
-export function ProjectScreen(): ReactNode {
-  const { projectId } = useRouteParams(projectRoute);
+/** 妥当な ID のプロジェクト画面(`detail-page` テンプレートの形: 戻りリンク → h1 → ID → タブ)。 */
+function ProjectPage({ projectId }: { projectId: string }): ReactNode {
   const [tab, setTab] = useState<ProjectTab>("overview");
-  const isProjectId = PROJECT_ID_PATTERN.test(projectId);
   // 見出しとサイドバーの子項目は短縮形(先頭・末尾 6 桁)。全文は見出し直下に HexText で出す
-  const label = isProjectId ? `Project ${shortId(projectId)}` : "Project";
+  const label = shortId(projectId);
   return (
     <DashboardShell
       destination="projects"
-      project={isProjectId ? { id: projectId, label: shortId(projectId) } : undefined}
+      project={{ id: projectId, label }}
       backLink={{ label: "All projects", href: spaPaths.dashboard() }}
-      title={label}
+      title={`Project ${label}`}
       intro={<HexText testId="project-id">{projectId}</HexText>}
-      tabs={isProjectId ? <ProjectTabList tab={tab} onChange={setTab} /> : undefined}
+      tabs={<ProjectTabList tab={tab} onChange={setTab} />}
     >
-      {isProjectId ? (
-        <ProjectTabPanels tab={tab} projectId={projectId} />
-      ) : (
-        <Text as="p" type="supporting">
-          This is not a project ID (a project ID is 64 lowercase hex characters).
-        </Text>
-      )}
+      <ProjectTabPanels tab={tab} projectId={projectId} />
     </DashboardShell>
+  );
+}
+
+/** ID の形式を満たさないパス(サーバーには問い合わせない)。 */
+function InvalidProjectPage({ projectId }: { projectId: string }): ReactNode {
+  return (
+    <DashboardShell
+      destination="projects"
+      backLink={{ label: "All projects", href: spaPaths.dashboard() }}
+      title="Project"
+      intro={<HexText testId="project-id">{projectId}</HexText>}
+    >
+      <Text as="p" type="supporting">
+        This is not a project ID (a project ID is 64 lowercase hex characters).
+      </Text>
+    </DashboardShell>
+  );
+}
+
+export function ProjectScreen(): ReactNode {
+  const { projectId } = useRouteParams(projectRoute);
+  return PROJECT_ID_PATTERN.test(projectId) ? (
+    <ProjectPage projectId={projectId} />
+  ) : (
+    <InvalidProjectPage projectId={projectId} />
   );
 }
