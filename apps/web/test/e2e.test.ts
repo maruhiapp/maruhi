@@ -785,9 +785,13 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
     await page.getByRole("button", { name: "Confirm revoke" }).click();
-    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える
+    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
+    // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
+    // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
+    // (PR #148 CI の 1 回目で顕在化した競合)
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
-    await expect(page.getByText("old-laptop", { exact: true }).count()).resolves.toBe(1);
+    await page.getByText("old-laptop", { exact: true }).waitFor();
+    await expect(page.getByText("ci", { exact: true }).count()).resolves.toBe(0);
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
