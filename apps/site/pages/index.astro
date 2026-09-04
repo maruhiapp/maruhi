@@ -1,0 +1,743 @@
+---
+// LP(apex `maruhi.app/`)— Blume のカスタムページ(docs/notes/web-design-pass.md §4、裁定 D / G)。
+//
+// 構成は所有者レビュー(2026-09-04)後の案 A 改訂 2:「Why の連鎖」。
+//   Hero(Not even us.)→ 5 つの問い(ファイル → サーバー → 鍵 → エージェント → 運営者)を
+//   順に潰していくと maruhi の設計に着地する → What we don't promise → Get started
+// 各問いは「問い → 事実 1〜2 文 → So: maruhi の答え」+ イラスト(インライン SVG)で、
+// 途中の問いだけなら競合でも足りる、を最後まで読むと maruhi にしか着かない、という並び
+// (競合の LP 実測: コマンドは 0〜4 個、脅威から入るのが定石 — §4 G 改訂 2)。
+// コマンドは hero と schema の 2 箇所のみ。install / self-host の手順は docs に置く。
+// トーン(§2): ダーク基調・アクセント 1 色を限定的に・装飾控えめ・セキュリティは淡々と。
+// 書いていない機能は謳わない。ターミナルの出力行は実際の CLI 文字列(apps/cli/src)から写す。
+//
+// スタイリングは scoped <style>(素の CSS)のみ。色は Blume の theme tokens(--blume-*)を参照し、
+// 生 hex を書かない。SVG も class で色を当てる(style 属性は使わない — CSP)。
+// ユーザーに見える文言は英語(ADR-0017)。
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+
+const { config } = data;
+const repo = "https://github.com/maruhiapp/maruhi";
+const productOrigin = "https://my.maruhi.app";
+const cryptoSpec = `${repo}/blob/main/docs/CRYPTO_SPEC.md`;
+const title = "maruhi — secrets only you can read. Not even us.";
+
+// 信頼境界(ADR-0018 / CRYPTO_SPEC §14.2)。復号器を持つ場所だけが平文を見る
+const tiles = [
+  { who: "Your CLI", note: "and the process it runs", reads: true },
+  { who: "The server", note: "ciphertext only", reads: false },
+  { who: "The dashboard", note: "never gets a key", reads: false },
+  { who: "Us", note: "same ciphertext as you", reads: false },
+  { who: "Your AI agent", note: "schema, not values", reads: false },
+];
+---
+
+<PageLayout
+  site={{ title: config.title, description: config.description }}
+  logo={config.logo}
+  banner={config.banner}
+  navigation={data.navigation}
+  favicon={config.favicon}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  ogImage="/og.png"
+  ogImageAlt="The maruhi mark (a vermilion 秘 in a circle) next to the word maruhi"
+  ogImageSize={{ width: 1200, height: 630 }}
+  page={{ title, description: config.description }}
+>
+  <div class="lp">
+    <section class="hero" id="top">
+      <p class="eyebrow">end-to-end encrypted secrets for teams · private preview</p>
+      <h1>
+        Secrets only you can read.
+        <span class="punch">Not even us.</span>
+      </h1>
+      <p class="lede">
+        Out of your files. Out of your vendor's reach. Out of your AI agent's context. And still
+        right there when your app needs them.
+      </p>
+      <pre class="terminal" aria-label="Example maruhi session"><code><span class="prompt">$</span> maruhi push DATABASE_URL
+<span class="out">Pushed DATABASE_URL (version=1, epoch=1)</span>
+<span class="prompt">$</span> maruhi run -- bun start
+<span class="comment"># DATABASE_URL is in this process's environment. Nowhere else.</span></code></pre>
+      <p class="actions">
+        <a class="button" href="#start">Get started</a>
+        <a class="link" href="/docs">Read the docs</a>
+        <a class="link" href={repo}>Source on GitHub</a>
+      </p>
+    </section>
+
+    <section class="section" id="why" aria-labelledby="why-heading">
+      <p class="eyebrow">why it is built this way</p>
+      <h2 id="why-heading">Five questions. Each one removes someone from the list.</h2>
+      <p class="lede">
+        Start with a <code>.env</code> file and keep asking who can read it. The answers lead to
+        one design.
+      </p>
+
+      <ol class="chain">
+        <li class="step" id="files">
+          <div class="text">
+            <p class="num">01</p>
+            <h3>Who reads your files?</h3>
+            <p>
+              Cursor, Copilot, Claude Code: your editor and its agents read every file in the project
+              as context. A <code>.env</code> file is just another file.
+            </p>
+            <p class="so">
+              <strong>So secrets can't be files.</strong>
+              <code>maruhi run</code> puts them in one process's memory, and nowhere else.
+            </p>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-files">
+              <title id="ill-files">An AI agent reading three project files, including .env</title>
+              <g class="line open soft dashed">
+                <path d="M148 44 C 190 44, 200 94, 236 94"></path>
+                <path d="M148 100 L 236 100"></path>
+              </g>
+              <path class="key open" d="M148 158 C 190 158, 200 106, 236 106"></path>
+              <rect class="line" x="20" y="22" width="128" height="42" rx="8"></rect>
+              <rect class="line" x="20" y="80" width="128" height="42" rx="8"></rect>
+              <rect class="line env" x="20" y="138" width="128" height="42" rx="8"></rect>
+              <text class="label strong" x="34" y="48">app.ts</text>
+              <text class="label strong" x="34" y="106">package.json</text>
+              <text class="label accent-text" x="34" y="164">.env</text>
+              <line class="line open" x1="266" y1="72" x2="266" y2="60"></line>
+              <circle class="line" cx="266" cy="56" r="4"></circle>
+              <rect class="line" x="236" y="72" width="60" height="54" rx="12"></rect>
+              <circle class="dot" cx="254" cy="97" r="5"></circle>
+              <circle class="dot" cx="278" cy="97" r="5"></circle>
+              <text class="label" x="236" y="150">your agent</text>
+            </svg>
+          </figure>
+        </li>
+
+        <li class="step" id="server">
+          <div class="text">
+            <p class="num">02</p>
+            <h3>Then where do they live?</h3>
+            <p>
+              On a server. With most managers, that server or its web console can decrypt them. So
+              can its staff, a breach, or a subpoena.
+            </p>
+            <p class="so">
+              <strong>So encrypt before anything leaves your machine.</strong>
+              The server only ever stores ciphertext. It has nothing that could open it.
+            </p>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-server">
+              <title id="ill-server">
+                A laptop holding the key sends ciphertext to a server that has no key
+              </title>
+              <rect class="line" x="16" y="52" width="100" height="70" rx="8"></rect>
+              <path class="line open" d="M4 134 H128"></path>
+              <circle class="key" cx="48" cy="88" r="11"></circle>
+              <path class="key open" d="M59 88 H92 M84 88 V98 M92 88 V98"></path>
+              <path class="line open soft" d="M138 96 H198 M188 88 L198 96 L188 104"></path>
+              <text class="label strong" x="132" y="80">ciphertext</text>
+              <rect class="line" x="214" y="42" width="92" height="28" rx="6"></rect>
+              <rect class="line" x="214" y="80" width="92" height="28" rx="6"></rect>
+              <rect class="line" x="214" y="118" width="92" height="28" rx="6"></rect>
+              <circle class="dot" cx="228" cy="56" r="3.5"></circle>
+              <circle class="dot" cx="228" cy="94" r="3.5"></circle>
+              <circle class="dot" cx="228" cy="132" r="3.5"></circle>
+              <text class="label" x="214" y="170">no key here</text>
+            </svg>
+          </figure>
+        </li>
+
+        <li class="step" id="key">
+          <div class="text">
+            <p class="num">03</p>
+            <h3>Who holds the key?</h3>
+            <p>
+              End-to-end only counts if the decryptor is small. A dashboard that decrypts is one XSS
+              away from everything. An "export as .env" button undoes question one.
+            </p>
+            <p class="so">
+              <strong>So there is exactly one decryptor:</strong>
+              an MIT-licensed CLI you can read. The dashboard never gets a key. A
+              <code>.env</code> writer does not exist.
+            </p>
+          </div>
+          <figure class="figure">
+            <ul class="tiles" aria-label="Who can read plaintext">
+              {
+                tiles.map((t) => (
+                  <li class={t.reads ? "tile yes" : "tile"}>
+                    {t.reads ? (
+                      <span class="icon seal" aria-hidden="true">
+                        <img class="seal-light" src="/logo.svg" alt="" />
+                        <img class="seal-dark" src="/logo-dark.svg" alt="" />
+                      </span>
+                    ) : (
+                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect class="line" x="5" y="11" width="14" height="9" rx="2" />
+                        <path class="line" d="M8 11 V8 a4 4 0 0 1 8 0 v3" />
+                      </svg>
+                    )}
+                    <b>{t.who}</b>
+                    <span>{t.note}</span>
+                    <em>{t.reads ? "reads plaintext" : "cannot"}</em>
+                  </li>
+                ))
+              }
+            </ul>
+          </figure>
+        </li>
+
+        <li class="step" id="agents">
+          <div class="text">
+            <p class="num">04</p>
+            <h3>How does the agent still work?</h3>
+            <p>
+              It needs to know which variables exist, their types, and whether they are set. It does
+              not need the values.
+            </p>
+            <p class="so">
+              <strong>So it gets the contract, not the values.</strong>
+              <code>maruhi schema</code> prints the shape. Showing a value is refused when an agent is
+              detected.
+            </p>
+            <pre class="terminal small"><code><span class="prompt">$</span> maruhi schema
+<span class="out">NAME          TYPE    REQUIRED  STATUS
+DATABASE_URL  url     true      set
+STRIPE_KEY    string  true      set</span>
+<span class="prompt">$</span> maruhi pull --show
+<span class="err">maruhi: Refused to display values because an AI agent environment was detected.</span></code></pre>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-agents">
+              <title id="ill-agents">
+                An agent sees variable names and types, while the values are blacked out
+              </title>
+              <rect class="line" x="20" y="34" width="196" height="132" rx="8"></rect>
+              <path class="line open soft thin" d="M20 68 H216 M20 100 H216 M20 132 H216"></path>
+              <text class="label" x="30" y="56">NAME</text>
+              <text class="label" x="132" y="56">TYPE</text>
+              <text class="label" x="180" y="56">VALUE</text>
+              <text class="label strong" x="30" y="88">DATABASE_URL</text>
+              <text class="label strong" x="30" y="120">STRIPE_KEY</text>
+              <text class="label strong" x="30" y="152">SENTRY_DSN</text>
+              <text class="label" x="132" y="88">url</text>
+              <text class="label" x="132" y="120">string</text>
+              <text class="label" x="132" y="152">string</text>
+              <rect class="key" x="180" y="79" width="26" height="10" rx="3"></rect>
+              <rect class="key" x="180" y="111" width="26" height="10" rx="3"></rect>
+              <rect class="key" x="180" y="143" width="26" height="10" rx="3"></rect>
+              <line class="line open" x1="270" y1="74" x2="270" y2="62"></line>
+              <circle class="line" cx="270" cy="58" r="4"></circle>
+              <rect class="line" x="240" y="74" width="60" height="54" rx="12"></rect>
+              <circle class="dot" cx="258" cy="99" r="5"></circle>
+              <circle class="dot" cx="282" cy="99" r="5"></circle>
+            </svg>
+          </figure>
+        </li>
+
+        <li class="step" id="operator">
+          <div class="text">
+            <p class="num">05</p>
+            <h3>Who runs the server?</h3>
+            <p>
+              Even ciphertext has an operator: someone who sees the metadata, decides the uptime, and
+              could shut it down. Better if that someone is you.
+            </p>
+            <p class="so">
+              <strong>So the server is one <code>wrangler deploy</code></strong>
+              on your own Cloudflare account, on the free plan. Or use ours. Either way it sends no
+              telemetry, and it sees the same ciphertext as everyone else.
+            </p>
+          </div>
+          <figure class="figure">
+            <svg class="ill" viewBox="0 0 320 200" role="img" aria-labelledby="ill-operator">
+              <title id="ill-operator">
+                A single deploy command pointing at a cloud labelled "your account"
+              </title>
+              <path
+                class="line"
+                d="M84 120 H236 a30 30 0 0 0 0 -60 a45 45 0 0 0 -80 -20 a38 38 0 0 0 -60 22 a34 34 0 0 0 -12 58 Z"
+              ></path>
+              <text class="label strong" x="112" y="90">your account</text>
+              <path class="key open" d="M160 178 V136 M150 146 L160 136 L170 146"></path>
+              <text class="label" x="102" y="196">$ wrangler deploy</text>
+            </svg>
+          </figure>
+        </li>
+      </ol>
+
+      <p class="closing">What is left on the list is you, and the process you chose to run.</p>
+    </section>
+
+    <section class="section" id="honest" aria-labelledby="honest-heading">
+      <h2 id="honest-heading">What we don't promise</h2>
+      <p>Zero knowledge has edges. We would rather you read them here.</p>
+      <ul class="plain">
+        <li>
+          <strong>Availability.</strong> A broken or hostile server can refuse or delay. The CLI
+          warns; it cannot prevent.
+        </li>
+        <li><strong>Correct values.</strong> The server cannot check what it cannot read.</li>
+        <li>
+          <strong>Un-reading.</strong> Nothing takes back a value someone already decrypted. Rotate.
+        </li>
+        <li>
+          <strong>Lost keys.</strong> Your key lives on your devices and in your recovery code. We
+          never had it.
+        </li>
+      </ul>
+      <p class="fine">
+        The full list, with reasoning, is in the
+        <a href={`${cryptoSpec}#143-明示的な非保証v1`}>crypto specification, §14.3</a> (Japanese).
+      </p>
+    </section>
+
+    <section class="section" id="start" aria-labelledby="start-heading">
+      <h2 id="start-heading">Get started</h2>
+      <p>
+        Install the CLI, sign in with GitHub, push a secret, run your app. About five minutes; the
+        guide has every command.
+      </p>
+      <p class="actions">
+        <a class="button" href="/docs/getting-started">Read the getting started guide</a>
+        <a class="link" href="/docs/self-hosting">Self-hosting guide</a>
+      </p>
+
+      <h3 id="access">Access</h3>
+      <p>
+        The hosted service at <a href={productOrigin}>my.maruhi.app</a> is in <strong
+          >private preview</strong
+        > and needs an invite code. A waitlist opens with the invite-only beta; until then, follow
+        the repository for release notes, or run it on your own account today.
+      </p>
+      <!-- waitlist 導線の置き場(H6 で Workers への POST フォームに差し替える — 静的文言のみ) -->
+      <p class="actions" data-waitlist-placeholder>
+        <a class="button" href={`${repo}/releases`}>Watch releases on GitHub</a>
+        <a class="link" href="/docs/self-hosting">Self-host instead</a>
+      </p>
+    </section>
+
+    <footer class="footer">
+      <p>
+        <a href={repo}>GitHub</a> · <a href="/docs">Docs</a> ·
+        <a href={`${repo}/blob/main/LICENSE.md`}>License</a> (FSL-1.1-MIT for the server and web,
+        MIT for the CLI and crypto)
+      </p>
+      <p class="fine">
+        No analytics, no trackers, no third-party scripts. Type set in
+        <a href="/fonts/OFL-Archivo.txt">Archivo</a> and
+        <a href="/fonts/OFL-MartianMono.txt">Martian Mono</a> (SIL Open Font License 1.1), served
+        from this site. The ㊙ mark derives from Noto Sans CJK JP (SIL OFL 1.1).
+      </p>
+    </footer>
+  </div>
+</PageLayout>
+
+<style>
+  .lp {
+    --lp-measure: 44rem;
+    --lp-wide: 64rem;
+    --lp-gutter: 1.5rem;
+    --lp-gap: 1rem;
+    --lp-section: 4.5rem;
+    --lp-hero-size: clamp(2.5rem, 6vw, 4.25rem);
+    --lp-h2-size: clamp(1.5rem, 3vw, 2rem);
+    --lp-h3-size: clamp(1.25rem, 2.2vw, 1.5rem);
+    --lp-terminal-size: 0.875rem;
+    --lp-border: 1px;
+    --lp-rule: 3px;
+    --lp-stroke: 1.5;
+    --lp-button-pad: 0.75rem 1.25rem;
+
+    margin: 0 auto;
+    padding: 0 var(--lp-gutter) var(--lp-section);
+    max-width: var(--lp-wide);
+    color: var(--blume-foreground);
+    font-family: var(--blume-font-body);
+    line-height: 1.6;
+  }
+
+  .section,
+  .hero,
+  .footer {
+    padding-top: var(--lp-section);
+  }
+
+  .hero h1 {
+    margin: 0 0 var(--lp-gap);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-hero-size);
+    font-weight: 800;
+    /* Archivo の幅軸 — 見出しは幅広・極太で作る(web-design-pass.md §4) */
+    font-stretch: 112%;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    max-width: var(--lp-measure);
+  }
+
+  /* アクセントは限定的に: 見出しの決め台詞・CTA ボタン・図の「鍵」(§2) */
+  .hero .punch {
+    display: block;
+    color: var(--blume-accent);
+  }
+
+  .eyebrow {
+    margin: 0 0 var(--lp-gap);
+    font-family: var(--blume-font-mono);
+    font-size: var(--lp-terminal-size);
+    color: var(--blume-muted-foreground);
+  }
+
+  .lede {
+    margin: 0 0 calc(var(--lp-gap) * 2);
+    max-width: var(--lp-measure);
+    font-size: 1.125rem;
+    color: var(--blume-muted-foreground);
+  }
+
+  h2 {
+    margin: 0 0 var(--lp-gap);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-h2-size);
+    font-weight: 700;
+    font-stretch: 105%;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    max-width: var(--lp-measure);
+  }
+
+  h3 {
+    margin: 0 0 calc(var(--lp-gap) / 2);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-h3-size);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+
+  p {
+    margin: 0 0 var(--lp-gap);
+    max-width: var(--lp-measure);
+  }
+
+  .fine {
+    font-size: 0.875rem;
+    color: var(--blume-muted-foreground);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--blume-border);
+    text-underline-offset: 0.15em;
+  }
+
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  code {
+    font-family: var(--blume-font-mono);
+    font-size: 0.9em;
+    background: var(--blume-code-background);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: calc(var(--blume-radius) / 2);
+    padding: 0 0.35em;
+  }
+
+  /* ターミナル: 証拠として 2 箇所だけ(hero / schema)。背景は code token、装飾は付けない */
+  .terminal {
+    margin: 0 0 calc(var(--lp-gap) * 1.5);
+    padding: var(--lp-gap) calc(var(--lp-gap) * 1.25);
+    max-width: var(--lp-measure);
+    overflow-x: auto;
+    /* 長い出力行は折り返す(狭い列・モバイルで横スクロールさせない)。表の空白は保つ */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--blume-font-mono);
+    font-size: var(--lp-terminal-size);
+    line-height: 1.7;
+    color: var(--blume-foreground);
+    background: var(--blume-code-background);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: var(--blume-radius);
+  }
+
+  .terminal.small {
+    font-size: 0.8rem;
+    margin: var(--lp-gap) 0 0;
+  }
+
+  .terminal code {
+    font-size: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+
+  .terminal .prompt {
+    color: var(--blume-accent);
+    user-select: none;
+  }
+
+  .terminal .out,
+  .terminal .comment {
+    color: var(--blume-muted-foreground);
+  }
+
+  .terminal .err {
+    color: var(--blume-foreground);
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--lp-gap);
+    align-items: center;
+  }
+
+  .button {
+    display: inline-block;
+    padding: var(--lp-button-pad);
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--blume-accent-foreground);
+    background: var(--blume-accent);
+    border-radius: var(--blume-radius);
+  }
+
+  .button:hover {
+    filter: brightness(1.08);
+  }
+
+  .link {
+    font-weight: 600;
+  }
+
+  /* Why の連鎖: 番号 → 問い → 事実 → So(左罫)+ 図。偶数段は図を左に */
+  .chain {
+    margin: calc(var(--lp-gap) * 2) 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: calc(var(--lp-section) * 0.8);
+  }
+
+  .step {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: calc(var(--lp-gap) * 3);
+    align-items: center;
+  }
+
+  .step:nth-child(even) .figure {
+    order: -1;
+  }
+
+  @media (max-width: 46rem) {
+    .step {
+      grid-template-columns: minmax(0, 1fr);
+      gap: calc(var(--lp-gap) * 1.5);
+    }
+
+    .step:nth-child(even) .figure {
+      order: 0;
+    }
+  }
+
+  .num {
+    margin: 0 0 calc(var(--lp-gap) / 2);
+    font-family: var(--blume-font-mono);
+    font-size: var(--lp-terminal-size);
+    color: var(--blume-accent);
+  }
+
+  .so {
+    margin: var(--lp-gap) 0 0;
+    padding-left: var(--lp-gap);
+    border-left: var(--lp-rule) solid var(--blume-accent);
+  }
+
+  .so strong {
+    display: block;
+  }
+
+  .closing {
+    margin-top: calc(var(--lp-section) * 0.6);
+    font-family: var(--blume-font-display);
+    font-size: var(--lp-h3-size);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    max-width: var(--lp-measure);
+  }
+
+  .figure {
+    margin: 0;
+  }
+
+  /* 図: 太線ピクトグラム(所有者裁定 2026-09-04 — §4 G 改訂 2)。物体は 3px 丸端の前景色の線 +
+     code 背景色の面。補助線(矢印・接続)は muted。accent は「鍵を持つもの」1 点だけ:
+     01 の .env、02 の鍵、03 の ㊙ 印(ロゴ SVG の再利用)、04 の守られた値、05 の deploy */
+  .ill {
+    display: block;
+    width: 100%;
+    height: auto;
+    color: var(--blume-muted-foreground);
+  }
+
+  .ill .line {
+    fill: var(--blume-code-background);
+    stroke: var(--blume-foreground);
+    stroke-width: var(--lp-stroke);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .ill .open {
+    fill: none;
+  }
+
+  .ill .soft {
+    stroke: var(--blume-muted-foreground);
+  }
+
+  .ill .thin {
+    stroke-width: calc(var(--lp-stroke) / 2);
+  }
+
+  .ill .dashed {
+    stroke-dasharray: 5 6;
+  }
+
+  .ill .key {
+    fill: var(--blume-accent);
+    stroke: var(--blume-accent);
+    stroke-width: var(--lp-stroke);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .ill .key.open {
+    fill: none;
+  }
+
+  .ill .env {
+    stroke: var(--blume-accent);
+  }
+
+  .ill .dot {
+    fill: var(--blume-foreground);
+  }
+
+  .ill .label {
+    font-family: var(--blume-font-mono);
+    font-size: 11px;
+    fill: currentColor;
+  }
+
+  .ill .label.strong {
+    fill: var(--blume-foreground);
+  }
+
+  .ill .accent-text {
+    fill: var(--blume-accent);
+  }
+
+  /* 信頼境界のタイル: 鍵を持つのは CLI だけ */
+  .tiles {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: calc(var(--lp-gap) / 2);
+  }
+
+  .tile {
+    display: grid;
+    gap: 0.15rem;
+    padding: var(--lp-gap);
+    border: var(--lp-border) solid var(--blume-border);
+    border-radius: var(--blume-radius);
+    color: var(--blume-muted-foreground);
+    font-size: 0.875rem;
+  }
+
+  .tile b {
+    color: var(--blume-foreground);
+  }
+
+  .tile em {
+    font-style: normal;
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+  }
+
+  .tile.yes {
+    grid-column: 1 / -1;
+    border-color: var(--blume-accent);
+    color: var(--blume-foreground);
+  }
+
+  .tile.yes em {
+    color: var(--blume-accent);
+  }
+
+  .icon {
+    display: block;
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-bottom: 0.35rem;
+    color: var(--blume-muted-foreground);
+  }
+
+  .icon .line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* 鍵を持つのは CLI だけ — その印はロゴの ㊙(light / dark で SVG を出し分け。Blume は <html data-theme> を立てる) */
+  .seal {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .seal img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  :global(html[data-theme="dark"]) .seal .seal-light,
+  :global(html:not([data-theme="dark"])) .seal .seal-dark {
+    display: none;
+  }
+
+  .plain {
+    margin: 0 0 var(--lp-gap);
+    padding: 0;
+    list-style: none;
+    max-width: var(--lp-measure);
+  }
+
+  .plain li {
+    padding: calc(var(--lp-gap) * 0.7) 0;
+    border-top: var(--lp-border) solid var(--blume-border);
+  }
+
+  .footer {
+    border-top: var(--lp-border) solid var(--blume-border);
+    margin-top: var(--lp-section);
+    padding-top: calc(var(--lp-gap) * 2);
+    font-size: 0.9rem;
+    color: var(--blume-muted-foreground);
+  }
+</style>

@@ -1,0 +1,26 @@
+{
+  "name": "@maruhi/site",
+  "version": "0.0.0",
+  "private": true,
+  "license": "FSL-1.1-MIT",
+  "type": "module",
+  "scripts": {
+    "build": "bunx --bun blume build && bun run scripts/postbuild.ts",
+    "deploy": "bun run build && wrangler deploy",
+    "dev": "bunx --bun blume dev",
+    "e2e": "vitest run",
+    "preview": "wrangler dev --port 8789",
+    "theme:build": "bun run scripts/build-theme.ts",
+    "typecheck": "tsc --noEmit",
+    "validate": "bunx --bun blume validate --strict"
+  },
+  "dependencies": {
+    "blume": "1.5.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "playwright": "1.62.1",
+    "vitest": "4.1.11",
+    "wrangler": "4.128.0"
+  }
+}

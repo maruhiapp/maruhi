@@ -171,7 +171,9 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     page.on("console", (msg) => {
       if (msg.text().includes("Content Security Policy")) violations.push(msg.text());
     });
-    await page.goto(BASE, { waitUntil: "networkidle" });
+    // 機構検証フック(built-at / counter)は /about(「このデプロイについて」)に置く
+    // (DP2 裁定 F — docs/notes/web-design-pass.md §4。トップは最小の案内ページ)
+    await page.goto(`${BASE}/about`, { waitUntil: "networkidle" });
 
     // ビルド時 RSC: サーバーコンポーネントが埋めたビルド時刻が表示される
     await expect(page.getByTestId("built-at").textContent()).resolves.toMatch(
@@ -863,7 +865,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       }
     });
     await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
-    await page.getByTestId("built-at").waitFor();
+    await page.getByTestId("home-heading").waitFor();
     expect(apiRequests).toEqual([]);
     await page.close();
   });
@@ -879,7 +881,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       }
     });
     await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
-    await page.getByTestId("built-at").waitFor();
+    await page.getByTestId("home-heading").waitFor();
     // OAuth 中断・失敗(セッション未成立)ではランディングに留まる
     expect(new URL(page.url()).pathname).toBe("/");
     await page.close();

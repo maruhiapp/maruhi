@@ -1,0 +1,30 @@
+---
+title: Self-hosting
+description: Run maruhi on your own Cloudflare account with a single wrangler deploy.
+---
+
+maruhi is designed to be self-hosted: one Cloudflare Worker, one D1 database, and Durable Objects, deployed with the plain `wrangler` CLI from a clone of the repository. There is no separate build artifact and no telemetry.
+
+```sh
+git clone https://github.com/maruhiapp/maruhi.git
+cd maruhi
+bun install
+bunx wrangler login
+```
+
+From there the full guide walks through creating the D1 database, the first deploy, registering a GitHub OAuth App, and connecting the CLI:
+
+<Card
+  title="Self-hosting guide"
+  href="https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md"
+  icon="book-open"
+>
+  `docs/SELF_HOSTING.md` in the repository — prerequisites, the seven setup steps, sign-up policy,
+  quotas, backups, and operations.
+</Card>
+
+## What you get
+
+- The same server, dashboard, and CLI as the hosted service. The server code is [FSL-1.1-MIT](https://github.com/maruhiapp/maruhi/blob/main/LICENSE.md) licensed; the CLI and crypto packages are MIT.
+- End-to-end encryption by default. Your deployment never sees plaintext values either.
+- Optional operations tooling: periodic D1 exports, project snapshots to R2, and trip-wire alerts.

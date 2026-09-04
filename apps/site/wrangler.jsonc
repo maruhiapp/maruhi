@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // apex `maruhi.app` の静的サイト(LP + docs — Blume の静的出力)。Workers Static Assets のみで
+  // Worker コードは持たない(`main` なし)。製品 Worker(apps/server/wrangler.jsonc —
+  // `my.maruhi.app`、TCB)とは別デプロイ(docs/notes/web-design-pass.md §1-4 / §4、裁定 E)。
+  // 設定は 1 本・環境変数なし — 後日 O9(Alchemy v2 化)で宣言に包める形に留める。
+  // 初回の custom domain 束縛・`maruhi.dev` → `maruhi.app` の 301(ゾーンのリダイレクトルール)・
+  // Cloudflare Web Analytics のサーバー側集計は人間タスク(docs/notes/hosted-ops.md §7 O10〜O12)。
+  "name": "maruhi-site",
+  "compatibility_date": "2026-07-01",
+  // apex 以外の origin を作らない(workers.dev / バージョン別プレビューは無効)
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "maruhi.app", "custom_domain": true }],
+  "assets": {
+    // `bun run build`(blume build + scripts/postbuild.ts)の出力。_headers(CSP 等)込み
+    "directory": "./dist",
+    // Blume の内部リンクは末尾スラッシュなし(`/docs/getting-started`)で、出力は
+    // `docs/getting-started/index.html`。drop-trailing-slash はその形を正規 URL にし、
+    // `/docs/getting-started/` を 307 で戻す(Cloudflare の仕様は 307 = 一時リダイレクト。
+    // 正規化の信号は各ページの <link rel="canonical"> と sitemap が担い、この設定は
+    // Blume のリンク形式と配信 URL を一致させるだけ)
+    "html_handling": "drop-trailing-slash",
+    // Blume が 404.html を出す(サイトの chrome 付き)。SPA ではないのでフォールバックしない
+    "not_found_handling": "404-page",
+  },
+}

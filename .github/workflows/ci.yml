@@ -1,6 +1,6 @@
 # 品質ゲート(CLAUDE.md の 7 ステップと同一順序)+ web 統合ステップ
 # 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint → 5. fallow → 6. React Doctor → 7. テスト
-# → 8. web ビルド → 9. web e2e(wrangler dev + Playwright)→ 10. astryx doctor
+# → 8. web ビルド(8d/8e = apex サイト)→ 9. web e2e / 9b. site e2e(wrangler dev + Playwright)→ 10. astryx doctor
 # → 11. crypto 3 環境テスト(workerd / browser / Bun。CRYPTO_SPEC §11)
 name: ci
 
@@ -47,8 +47,21 @@ jobs:
 
       # 既知脆弱性の監査(GHSA アドバイザリ照合)。厳密ピン留め運用は意図しない
       # 更新を防ぐ代わりに既知 CVE の放置に気づきにくいため、CI で常時検知する
+      # --ignore は Blume(apps/site — ビルド時のみ動くメンテナ側ツールチェーン。配信物に
+      # 載らない)の推移依存で、上流に修正版が無いもの(2026-09-03 時点。DP2 — PR #147):
+      #   GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq: image-size@2.0.2(ICNS / JXL / HEIF の
+      #     解析で無限ループ = DoS)。latest が 2.0.2 で修正版なし。Blume の画像最適化がビルド時に
+      #     読むのは自リポジトリの PNG / SVG のみで、信頼できない画像を渡す経路がない
+      #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0(ReDoS)— @astrojs/vercel > @vercel/routing-utils
+      #     の厳密ピン。Vercel へはデプロイしないため実行経路がない。名前単位の overrides で 6.3.0 に
+      #     すると router(express 5 系、^8)まで巻き込むので採らない
+      # いずれも Blume の更新で消える見込み。新しい advisory は引き続き検知する(ignore は ID 単位)
       - name: Audit (bun audit)
-        run: bun audit
+        run: >-
+          bun audit
+          --ignore GHSA-w3rx-r6r6-pgpr
+          --ignore GHSA-5p2g-fcmc-qvqq
+          --ignore GHSA-9wv6-86v2-598j
 
       - name: 1. Format (oxfmt)
         run: bun run fmt:check
@@ -121,7 +134,26 @@ jobs:
           bunx wrangler deploy --dry-run -c wrangler.restore.jsonc
           bun scripts/check-hosted-config.ts
 
-      # Playwright ブラウザ導入(step 9 と 11 の browser テストが共有)。
+      # apex サイト(apps/site — Blume。LP + docs、DP2)。blume build + scripts/postbuild.ts
+      # (style 属性の外部化・inline ハッシュの CSP・外部参照ゼロの機械検査・_headers)を
+      # ビルドの経路で走らせ、独立 wrangler 設定(maruhi-site — Static Assets のみ)の妥当性を
+      # 製品 Worker(8b)と同じ dry-run で検査する。Blume は bunx --bun で Bun 上で実行する
+      # (Node 22.12+ の要求を CI の Node 版に依存させない — web-design-pass.md §4 裁定 J)
+      - name: 8d. Site build (Blume + CSP headers)
+        run: bun run --filter @maruhi/site build
+
+      # 内部リンク・アンカー・アセット参照の検証(Blume の validate。--external は付けず
+      # 外部 URL を叩かない — 「言わざる」は CI にも適用)。--strict で警告も落とす
+      - name: 8d2. Site link validation (blume validate)
+        run: bun run --filter @maruhi/site validate
+
+      - name: 8e. Site deploy dry-run (static assets config)
+        run: bunx wrangler deploy --dry-run
+        working-directory: apps/site
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
+      # Playwright ブラウザ導入(step 9 / 9b / 11 の browser テストが共有)。
       # 旧構成(step 9 内で毎回 playwright install --with-deps)は step 9 の実測
       # 35s〜6m42s の変動要因だった。実測ログでの内訳: Chromium の実行ライブラリは
       # ubuntu-latest(実測時 ubuntu-24.04 noble イメージ)がすべて同梱済みで、
@@ -184,6 +216,12 @@ jobs:
       - name: 9. Web e2e (wrangler dev + Playwright)
         timeout-minutes: 5
         run: bun run --filter @maruhi/web e2e
+
+      # apex サイトの e2e(wrangler dev + Playwright): 全リクエスト同一オリジン・CSP 違反ゼロ・
+      # フォントの自己配信・light / dark の accent・/docs 到達・末尾スラッシュ / 404(step 8d の dist 前提)
+      - name: 9b. Site e2e (wrangler dev + Playwright)
+        timeout-minutes: 5
+        run: bun run --filter @maruhi/site e2e
 
       - name: 10. Astryx doctor (web)
         run: bun run --filter @maruhi/web doctor:astryx

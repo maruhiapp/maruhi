@@ -1,0 +1,55 @@
+---
+title: Getting started
+description: Install the maruhi CLI, connect it to a server, sign in, and push your first secret.
+---
+
+## 1. Install the CLI
+
+The recommended path is the install script (Linux and macOS; Bun is not required). Releases are pre-release tags until `v0.1.0`, so name the tag explicitly:
+
+```sh
+# Replace V with the latest tag on https://github.com/maruhiapp/maruhi/releases
+V=<latest-tag>
+curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/${V}/packaging/install.sh" -o maruhi-install.sh
+less maruhi-install.sh          # read the script before running it
+sh maruhi-install.sh --version "${V}"
+```
+
+Other options — prebuilt binaries with checksums, Homebrew (from `v0.1.0`), and npm (`bun install -g maruhi@next`) — are described in the [README](https://github.com/maruhiapp/maruhi#install-cli), together with the install script's trust model.
+
+## 2. Point the CLI at a server
+
+```sh
+maruhi config set server https://my.maruhi.app   # or the URL of your own deployment
+```
+
+## 3. Sign in
+
+```sh
+maruhi login
+```
+
+`maruhi login` opens your browser for a GitHub sign-in and shows a confirmation code in both places — compare them before approving. During the private preview, creating an account requires an invite code; see [how to get access](https://maruhi.app/#access) on the landing page.
+
+## 4. Generate your master key (first time only)
+
+```sh
+maruhi key generate
+```
+
+This runs on a human's machine and issues a recovery code. Keep it somewhere safe: maruhi is zero-knowledge, so nobody can recover your key for you.
+
+## 5. Create a project and push a secret
+
+```sh
+maruhi project init
+maruhi env create
+maruhi push DATABASE_URL        # reads the value from stdin
+maruhi run -- your-command      # values arrive as environment variables
+```
+
+`maruhi push` encrypts the value it reads from stdin before anything leaves your machine. `maruhi run` decrypts in memory and passes the values to `your-command` as environment variables. Nothing is written to disk.
+
+:::note
+Commands that display plaintext values are refused when the CLI detects it is not attached to an interactive terminal, including inside AI agent environments.
+:::

@@ -1,0 +1,35 @@
+---
+title: Documentation
+description: maruhi is a diskless, end-to-end encrypted secrets manager that runs on Cloudflare. Start here.
+---
+
+maruhi (㊙) stores your team's secrets encrypted end to end, keeps plaintext off every disk, and runs on Cloudflare Workers — either the hosted service at `my.maruhi.app` or your own account with a single `wrangler deploy`.
+
+:::note
+maruhi is in **private preview**. The hosted service is invite-only, and releases are pre-release tags. Expect changes; the [changelog and releases](https://github.com/maruhiapp/maruhi/releases) are the source of truth.
+:::
+
+<CardGroup cols={2}>
+  <Card title="Getting started" href="/docs/getting-started" icon="rocket">
+    Install the CLI, sign in, and run your first command in about five minutes.
+  </Card>
+  <Card title="Self-hosting" href="/docs/self-hosting" icon="server">
+    Deploy maruhi to your own Cloudflare account.
+  </Card>
+</CardGroup>
+
+## How maruhi works
+
+- **End-to-end encrypted, zero knowledge.** Values are encrypted on your machine with WebCrypto and HPKE before they leave it. The server stores and relays ciphertext only.
+- **Diskless.** `maruhi run -- <command>` decrypts in memory and injects values into the child process's environment. No `.env` files are written, ever.
+- **Everything happens in the CLI.** The web dashboard is read-only and never receives a key or a plaintext value.
+- **Nothing phones home.** The CLI, the dashboard, and this site send no telemetry and load no third-party scripts.
+
+## Reference
+
+The specifications live in the repository. They are written in Japanese; the CLI, the dashboard, and this site are in English.
+
+- [Crypto specification](https://github.com/maruhiapp/maruhi/blob/main/docs/CRYPTO_SPEC.md) — the sole source of truth for every cryptographic operation
+- [Authentication and identity specification](https://github.com/maruhiapp/maruhi/blob/main/docs/AUTH_SPEC.md)
+- [Architecture decision records](https://github.com/maruhiapp/maruhi/tree/main/docs/adr)
+- [README](https://github.com/maruhiapp/maruhi#readme) — install options, trust model, and licenses

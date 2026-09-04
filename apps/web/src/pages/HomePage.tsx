@@ -1,40 +1,37 @@
 // サーバーコンポーネント(ビルド時に RSC ペイロードへ固められる)。
-// ビルド時刻を埋め込むことで「ビルド時レンダリングされた静的シェル」であることを検証可能にする。
-import { CounterCard } from "../components/CounterCard.tsx";
+//
+// `my.maruhi.app/` は製品オリジン(TCB)のトップ。LP と docs は apex `maruhi.app`(apps/site —
+// Blume)に移ったため、ここは最小の案内(ロゴ + ダッシュボードへの導線 + 製品サイトへのリンク)だけ
+// を置く(DP2 裁定 F — docs/notes/web-design-pass.md §4)。e2e の機構検証フック(built-at /
+// counter / to-about)は /about(AboutPage — 「このデプロイについて」)へ移した。
 import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
 import { spaPaths } from "../dashboard/routes.ts";
 
-const builtAt = new Date().toISOString();
-
-// S1 ランディング(web-dashboard-design.md §3 S1 — 静的・未認証・API 不要)。
-// 本格的なポリッシュは W2 以降。e2e の機構検証フック(built-at / counter / to-about)は
-// 維持する(スパイク A の CSP・hydration・StyleX 検証の回帰テスト対象)
 export function HomePage() {
   return (
     <main>
       {/* サインイン往復のマーカーがあるときだけ /dashboard へ戻す(裁定 BU)。
           マーカーなしのランディングは API を呼ばない */}
       <ResumeToDashboard />
-      <h1>㊙ maruhi</h1>
-      <p>A general-purpose, diskless secrets manager that runs on Cloudflare.</p>
-      <p>
-        Self-hostable, serverless, and end-to-end encrypted by default. Everything happens in the
-        CLI: <a href="https://github.com/maruhiapp/maruhi#install-cli">install maruhi</a> to get
-        started.
-      </p>
+      {/* ブランドマークは自前 SVG(DP1)。絵文字 ㊙ はテキスト文脈(CLI / README)に限る */}
+      <h1 data-testid="home-heading">
+        <img src="/logo.svg" alt="" width="40" height="40" /> maruhi
+      </h1>
       <p>
         <a href={spaPaths.dashboard()} data-testid="to-dashboard">
-          open the dashboard
+          Open the dashboard
         </a>{" "}
         — a read-only view of your projects (sign-in required).
       </p>
       <p>
+        Docs, installation, and the product overview live at{" "}
+        <a href="https://maruhi.app">maruhi.app</a>. Everything else happens in the CLI.
+      </p>
+      <p>
         <a href={spaPaths.about()} data-testid="to-about">
-          go to about
+          About this deployment
         </a>
       </p>
-      <CounterCard />
-      <p data-testid="built-at">server-rendered at build time: {builtAt}</p>
     </main>
   );
 }

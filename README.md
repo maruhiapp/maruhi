@@ -118,6 +118,7 @@ From the stable release (`v0.1.0`) onward, `bun install -g maruhi` is enough.
 
 ## Docs
 
+- [maruhi.app/docs](https://maruhi.app/docs) — the documentation site (source in `apps/site`; goes live with the hosted beta)
 - [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — crypto specification (sole source of truth; Japanese)
 - [docs/AUTH_SPEC.md](docs/AUTH_SPEC.md) — authentication and identity specification (Japanese)
 - [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — self-hosting guide
@@ -132,6 +133,7 @@ This repository uses different licenses per area ([ADR-0003](docs/adr/0003-licen
 | Repository default, including `apps/server` and `apps/web` | [FSL-1.1-MIT](LICENSE.md) |
 | `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema` | MIT (`LICENSE` in each directory) |
 | Brand assets in `apps/web/public/` (the ㊙ mark: `logo*.svg`, `favicon*`, `og.png`) | The 秘 outline derives from Noto Sans CJK JP (SIL OFL 1.1) — notice and license text in [`apps/web/public/fonts/OFL-NotoSansCJK.txt`](apps/web/public/fonts/OFL-NotoSansCJK.txt) |
+| Web fonts in `apps/site/public/fonts/` (Archivo, Martian Mono — served by the `maruhi.app` site) | SIL OFL 1.1 — notice and license text in [`OFL-Archivo.txt`](apps/site/public/fonts/OFL-Archivo.txt) and [`OFL-MartianMono.txt`](apps/site/public/fonts/OFL-MartianMono.txt) (Latin subsets from [Fontsource](https://fontsource.org), same sources as Google Fonts; neither family declares a Reserved Font Name) |
 
 FSL-1.1-MIT (Functional Source License) only restricts offering the software as a competing hosted
 service. Self-hosting, internal use, modification, and redistribution are unrestricted, and the
