@@ -4,13 +4,26 @@
 // ユーザー可視文言はすべて英語(ADR-0017)。表示規律(設計文書 §4):
 // サーバー申告の言い回しに限り、クライアント側の断定(expired / revoked /
 // not a member 等)を含めない。
+//
+// 空状態 / ローディング / エラーの規律(DP3 裁定 B — docs/notes/web-design-pass.md §5):
+// 各リソースの 3 状態は次の 3 部品だけで描く。画面側で Text / Banner を直接組まない。
+//   - ローディング = `LoadingRow`(スピナー + 何を読んでいるかの 1 行。role="status")
+//   - 空 = `EmptyNotice`(見出し + 「as reported by the server」の説明。件数は出さない)
+//   - 失敗 = `FailureNotice`(HTTP 分類ごとの Banner。置き方は 2 種のみ)
+//       (a) 置換: リソース本体の代わりに描く。再取得手段があれば onRetry を渡す
+//       (b) 追記: 既に描けた本体の下に足す(Load more の失敗・失効の失敗)。
+//           行から再操作できる失敗(失効)は onRetry を渡さない
+//     13 か所の呼び出しは AuditEventList(2)/ TokensScreen(2)/ DashboardScreen(2)/
+//     InvitesTab(2)/ ProjectScreen(4)+ DashboardShell(1)= 置換 9 / 追記 4
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { HStack } from "@astryxdesign/core/Layout";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
+import * as stylex from "@stylexjs/stylex";
 import type { ReactNode } from "react";
 
 import type { ApiFailure } from "./api.ts";
@@ -166,7 +179,10 @@ export function FailureNotice({
   return <StatusNotice failure={failure} onRetry={onRetry} subject={subject} />;
 }
 
-/** ローディング表示(行の置き換え用)。 */
+/**
+ * ローディング表示(リソース本体の置き換え用)。Spinner が role="status" を持ち
+ * label を読み上げる — 見える文言と同じ 1 行にする(裁定 B)。
+ */
 export function LoadingRow({ label }: { label: string }): ReactNode {
   return (
     <HStack gap={2} align="center">
@@ -175,6 +191,67 @@ export function LoadingRow({ label }: { label: string }): ReactNode {
     </HStack>
   );
 }
+
+/**
+ * 空状態(裁定 B)。説明は既定で「as reported by the server」を含む規定文言 —
+ * 件数・不可視クラスの存在を示唆しない(設計文書 §4-4)。`headingLevel` は
+ * 置かれる場所の見出し階層に合わせる(ページ h1 → 節 h2 → 空状態 h3 が既定)。
+ */
+export function EmptyNotice({
+  title,
+  description = "Nothing to show, as reported by the server.",
+  headingLevel = 3,
+  testId,
+}: {
+  title: string;
+  description?: string;
+  headingLevel?: 2 | 3 | 4;
+  testId?: string;
+}): ReactNode {
+  return (
+    <VStack data-testid={testId}>
+      <EmptyState title={title} description={description} headingLevel={headingLevel} isCompact />
+    </VStack>
+  );
+}
+
+// 識別子(64 hex の project ID / チェーンハッシュ / 鍵 FP / row_id)の表示。空白を
+// 含まない長い文字列は Text の wordBreak だけでは折れない(inline 要素の幅が親の
+// flex 項目の min-content を押し広げる)ため、xstyle で anywhere 折りを明示する。
+// DP3 で同じ上書きが繰り返し必要になったので本モジュールに 1 定義だけ置き、
+// 画面側は HexText を使う(variant / ui.package への昇格は人間の判断 — 裁定 H)
+const hexStyles = stylex.create({
+  breakable: {
+    overflowWrap: "anywhere",
+    wordBreak: "break-all",
+    minWidth: 0,
+  },
+});
+
+/** 識別子の表示(等幅・任意位置で折り返し)。`size` は周囲の密度に合わせる。 */
+export function HexText({
+  children,
+  size = "sm",
+  testId,
+}: {
+  children: string;
+  size?: "sm" | "xsm" | "2xs";
+  testId?: string;
+}): ReactNode {
+  return (
+    <Text type="code" size={size} xstyle={hexStyles.breakable} data-testid={testId}>
+      {children}
+    </Text>
+  );
+}
+
+/**
+ * 狭い幅の判定(DP3 裁定 D)。AppShell の mobileNav 既定ブレークポイント `md`
+ * (768px、`(max-width: 768px)`)と同じ式にし、ナビのドロワー化と本文の表示形
+ * 切替(監査一覧の Table → List)が同じ幅で起きるようにする。他の表は Astryx の
+ * Table 自身が横スクロール枠(role="group" の scroll wrapper)を持つのでそのまま。
+ */
+export const NARROW_VIEWPORT_QUERY = "(max-width: 768px)";
 
 /**
  * 期限の表示(裁定 CQ — docs/notes/session-45.md)。表示の主体は常にサーバー
