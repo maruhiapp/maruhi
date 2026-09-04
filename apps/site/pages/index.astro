@@ -1,9 +1,13 @@
 ---
 // LP(apex `maruhi.app/`)— Blume のカスタムページ(docs/notes/web-design-pass.md §4、裁定 D / G)。
-// 「最初の 5 分」(ADR-0014 改訂 1)へ導く順: 価値提案 → インストール → サインイン →
-// 招待制の案内 / waitlist の置き場(フォームは H6)→ セルフホストへの導線。
+//
+// 構成は所有者レビュー(2026-09-04)後の案 A: ADR-0014 の勝ち文句「信じなくてよい相手の範囲が
+// 競合より広い」を 1 本の主張にし、各節が構造でそれを証明する。
+//   Hero(Not even us.)→ Who can read what(信頼境界の表)→ Nothing to leak from disk
+//   → Agents get the contract → Your Cloudflare account → What we don't promise → Get started
 // トーン(§2): ダーク基調・アクセント 1 色を限定的に・コード / ターミナルが主役・装飾控えめ・
-// セキュリティは淡々と。書いていない機能は謳わない(pre-release・招待制の現状を正しく書く)。
+// セキュリティは淡々と。書いていない機能は謳わない。ターミナルの出力行は実際の CLI 文字列
+// (apps/cli/src — push / login / agent-gate / schema)から写す。
 //
 // スタイリングは scoped <style>(素の CSS)のみ。色は Blume の theme tokens(--blume-*)を参照し、
 // 生 hex を書かない。間隔・寸法は先頭のカスタムプロパティに集約する(ADR-0013 の精神)。
@@ -14,7 +18,42 @@ import data from "blume:data";
 const { config } = data;
 const repo = "https://github.com/maruhiapp/maruhi";
 const productOrigin = "https://my.maruhi.app";
-const title = "maruhi — diskless, end-to-end encrypted secrets";
+const cryptoSpec = `${repo}/blob/main/docs/CRYPTO_SPEC.md`;
+const title = "maruhi — secrets only you can read. Not even us.";
+
+// 信頼境界の表(ADR-0018 / CRYPTO_SPEC §14.2)。「読める」のは復号器を持つ場所だけ
+const trust = [
+  {
+    who: "Your CLI, on your machine",
+    plaintext: true,
+    how: "The only decryptor. MIT-licensed, so you can read it.",
+  },
+  {
+    who: "The process you run with maruhi run",
+    plaintext: true,
+    how: "Values arrive as environment variables, in memory, for that process only.",
+  },
+  {
+    who: "The server",
+    plaintext: false,
+    how: "Stores and relays ciphertext. Holds no key that could open it.",
+  },
+  {
+    who: "The web dashboard",
+    plaintext: false,
+    how: "Read-only metadata. It ships no decryptor and never receives a key.",
+  },
+  {
+    who: "Us, the operator of my.maruhi.app",
+    plaintext: false,
+    how: "Same ciphertext as everyone else. Nothing to hand over, nothing to leak.",
+  },
+  {
+    who: "An AI agent in your terminal",
+    plaintext: false,
+    how: "Gets the schema. Value display is refused when an agent is detected.",
+  },
+];
 ---
 
 <PageLayout
@@ -35,113 +74,179 @@ const title = "maruhi — diskless, end-to-end encrypted secrets";
 >
   <div class="lp">
     <section class="hero" id="top">
-      <p class="eyebrow">Private preview · invite-only · self-hostable</p>
-      <h1>Secrets that never touch a disk.</h1>
+      <p class="eyebrow">end-to-end encrypted secrets for teams · private preview</p>
+      <h1>
+        Secrets only you can read.
+        <span class="punch">Not even us.</span>
+      </h1>
       <p class="lede">
-        maruhi is a general-purpose secrets manager on Cloudflare. Values are encrypted end to end
-        on your machine, stay ciphertext on the server, and reach your programs only as in-memory
-        environment variables. Everything happens in the CLI.
+        maruhi encrypts every value on your machine before it leaves. The server, the dashboard,
+        and the people running them only ever see ciphertext. The one thing that decrypts is an
+        open-source CLI you can read.
       </p>
-      <pre class="terminal" aria-label="Example maruhi session"><code><span class="prompt">$</span> maruhi login
-<span class="out">Opening your browser. Confirm the code <b>PX7Q-4MRH</b> there.</span>
-<span class="prompt">$</span> maruhi push DATABASE_URL
+      <pre class="terminal" aria-label="Example maruhi session"><code><span class="prompt">$</span> maruhi push DATABASE_URL
 <span class="out">Pushed DATABASE_URL (version=1, epoch=1)</span>
 <span class="prompt">$</span> maruhi run -- bun start
-<span class="out">Serving on http://localhost:3000</span></code></pre>
+<span class="comment"># DATABASE_URL is in this process's environment. Nowhere else.</span></code></pre>
       <p class="actions">
-        <a class="button" href="#install">Install the CLI</a>
+        <a class="button" href="#start">Get started</a>
         <a class="link" href="/docs">Read the docs</a>
         <a class="link" href={repo}>Source on GitHub</a>
       </p>
     </section>
 
-    <section class="grid" id="how" aria-labelledby="how-heading">
-      <h2 id="how-heading">How it works</h2>
-      <ul class="cards">
+    <section class="section" id="trust" aria-labelledby="trust-heading">
+      <h2 id="trust-heading">Who can read your secrets</h2>
+      <p>
+        Most secrets managers encrypt at rest and decrypt on the server or in the browser. maruhi
+        moves the decryptor to the one place you already control. Everything else is out of the
+        loop by construction, not by policy.
+      </p>
+      <div class="table-wrap">
+        <table class="trust">
+          <thead>
+            <tr>
+              <th scope="col">Where</th>
+              <th scope="col">Sees plaintext</th>
+              <th scope="col">Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            {
+              trust.map((row) => (
+                <tr>
+                  <th scope="row">{row.who}</th>
+                  <td class={row.plaintext ? "yes" : "no"}>{row.plaintext ? "yes" : "no"}</td>
+                  <td>{row.how}</td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="fine">
+        This is what "zero knowledge" means here: it is a property of the design, and the design is
+        in the <a href={repo}>repository</a> — server, dashboard, CLI, and the crypto specification.
+      </p>
+    </section>
+
+    <section class="section" id="diskless" aria-labelledby="diskless-heading">
+      <h2 id="diskless-heading">Nothing to leak from disk</h2>
+      <p>
+        <code>maruhi run</code> decrypts in memory and hands values to your process as environment
+        variables. When the process exits, they are gone. There is no <code>.env</code> writer, no
+        value export, no "download as file" — not disabled, but absent. A tool that cannot write
+        secrets to disk cannot be talked into it.
+      </p>
+      <pre class="terminal"><code><span class="prompt">$</span> maruhi run -- printenv DATABASE_URL | wc -c
+<span class="out">42</span>
+<span class="prompt">$</span> ls -a .env*
+<span class="out">ls: .env*: No such file or directory</span></code></pre>
+    </section>
+
+    <section class="section" id="agents" aria-labelledby="agents-heading">
+      <h2 id="agents-heading">Agents get the contract, not the values</h2>
+      <p>
+        A coding agent needs to know which variables exist, their types, and whether they are set. It
+        does not need the values. <code>maruhi schema</code> returns exactly that, and the CLI refuses
+        to display values when it detects it is not being run by a person at a terminal.
+      </p>
+      <pre class="terminal"><code><span class="prompt">$</span> maruhi schema
+<span class="out">NAME          TYPE     REQUIRED  STATUS  DESCRIPTION
+DATABASE_URL  url      true      set     Primary Postgres
+STRIPE_KEY    string   true      set     -
+SENTRY_DSN    string   false     set     -</span>
+<span class="prompt">$</span> maruhi pull --show <span class="comment"># from inside an AI agent session</span>
+<span class="err">maruhi: Refused to display values because an AI agent environment was detected. If you need to inspect a value, run this yourself on an interactive terminal</span></code></pre>
+    </section>
+
+    <section class="section" id="self-host" aria-labelledby="selfhost-heading">
+      <h2 id="selfhost-heading">Your Cloudflare account. One deploy.</h2>
+      <p>
+        The whole server is one Worker with a D1 database and Durable Objects. No Postgres, no
+        Redis, no VM to patch. It runs on the free plan, and the setup that is specific to maruhi is
+        creating a GitHub OAuth App. About ten minutes.
+      </p>
+      <pre class="terminal"><code><span class="prompt">$</span> git clone {repo}.git && cd maruhi && bun install
+<span class="prompt">$</span> bunx wrangler d1 create maruhi
+<span class="prompt">$</span> bunx wrangler deploy</code></pre>
+      <p class="actions">
+        <a class="link" href="/docs/self-hosting">Self-hosting guide</a>
+      </p>
+    </section>
+
+    <section class="section" id="honest" aria-labelledby="honest-heading">
+      <h2 id="honest-heading">What we don't promise</h2>
+      <p>
+        Zero knowledge has edges, and we would rather you read them here than discover them later.
+        From the crypto specification's list of explicit non-guarantees:
+      </p>
+      <ul class="plain">
         <li>
-          <h3>Zero knowledge</h3>
-          <p>
-            Encryption happens in the CLI with WebCrypto and HPKE. The server — hosted or yours —
-            stores and relays ciphertext, and holds no key that could open it.
-          </p>
+          <strong>Availability.</strong> A malicious or broken server can refuse, delete, or delay.
+          The CLI detects and warns; it cannot prevent.
         </li>
         <li>
-          <h3>Diskless</h3>
-          <p>
-            <code>maruhi run -- &lt;command&gt;</code> decrypts in memory and injects values into the
-            child process's environment. maruhi never writes a <code>.env</code> file.
-          </p>
+          <strong>Correctness of values.</strong> An authorized member can write a wrong value. The
+          server cannot check what it cannot read.
         </li>
         <li>
-          <h3>Nothing phones home</h3>
-          <p>
-            No telemetry in the CLI, no third-party scripts in the dashboard — and this page loads no
-            analytics, no trackers, and no external fonts.
-          </p>
+          <strong>Un-reading.</strong> Encryption cannot take back a value someone has already
+          decrypted. Rotate, don't rely on revocation.
         </li>
         <li>
-          <h3>Serverless, self-hostable</h3>
-          <p>
-            One Cloudflare Worker with D1 and Durable Objects. Run it on your own account with a
-            single <code>wrangler deploy</code>, or use the hosted service.
-          </p>
+          <strong>Lost keys.</strong> Your master key lives on your devices and in your recovery code.
+          We cannot restore what we never had.
         </li>
       </ul>
+      <p class="fine">
+        The full list, with the reasoning, is in the
+        <a href={`${cryptoSpec}#143-明示的な非保証v1`}>crypto specification, §14.3</a> (Japanese).
+        No telemetry anywhere: the CLI, the installer, the dashboard, and this page send nothing to
+        third parties.
+      </p>
     </section>
 
-    <section class="step" id="install" aria-labelledby="install-heading">
-      <h2 id="install-heading">1. Install the CLI</h2>
+    <section class="section" id="start" aria-labelledby="start-heading">
+      <h2 id="start-heading">Get started</h2>
       <p>
-        Linux and macOS, no Bun required. Releases are pre-release tags until <code>v0.1.0</code>, so
-        pick the latest tag on the
-        <a href={`${repo}/releases`}>Releases page</a> and read the script before running it.
+        Releases are pre-release tags until <code>v0.1.0</code>. Pick the latest tag on the
+        <a href={`${repo}/releases`}>Releases page</a>, and read the script before running it — this
+        is a secrets manager.
       </p>
-      <pre class="terminal"><code><span class="comment"># Replace V with the latest tag on the Releases page</span>
+      <pre class="terminal"><code><span class="comment"># 1. Install the CLI (Linux / macOS; Bun not required)</span>
 V=&lt;latest-tag&gt;
 curl -fsSL "https://raw.githubusercontent.com/maruhiapp/maruhi/$&lbrace;V&rbrace;/packaging/install.sh" -o maruhi-install.sh
-less maruhi-install.sh          <span class="comment"># read it first — this is a secrets manager</span>
-sh maruhi-install.sh --version "$&lbrace;V&rbrace;"</code></pre>
-      <p class="fine">
-        Prebuilt binaries with checksums, Homebrew (from <code>v0.1.0</code>), and npm
-        (<code>bun install -g maruhi@next</code>) are documented in the
-        <a href={`${repo}#install-cli`}>README</a>.
-      </p>
-    </section>
+less maruhi-install.sh
+sh maruhi-install.sh --version "$&lbrace;V&rbrace;"
 
-    <section class="step" id="signin" aria-labelledby="signin-heading">
-      <h2 id="signin-heading">2. Sign in</h2>
-      <pre class="terminal"><code>maruhi config set server {productOrigin}
-maruhi login</code></pre>
+<span class="comment"># 2. Point it at a server and sign in</span>
+maruhi config set server {productOrigin}
+maruhi login
+<span class="out">Confirmation code: PX7Q-4MRH</span></code></pre>
       <p>
-        <code>maruhi login</code> opens your browser for a GitHub sign-in and shows the same confirmation
-        code in the terminal and on the page. Compare them, approve, and you are in. The first time,
+        <code>maruhi login</code> opens your browser for a GitHub sign-in and shows the same
+        confirmation code in both places. Compare them, approve, and you are in. The first time,
         <code>maruhi key generate</code> creates your master key and a recovery code — that is the one
         ceremony zero knowledge asks of you.
       </p>
-    </section>
+      <p class="fine">
+        Prebuilt binaries with checksums, Homebrew (from <code>v0.1.0</code>), and npm
+        (<code>bun install -g maruhi@next</code>) are in the
+        <a href={`${repo}#install-cli`}>README</a>.
+      </p>
 
-    <section class="step access" id="access" aria-labelledby="access-heading">
-      <h2 id="access-heading">3. Get access</h2>
+      <h3 id="access">Access</h3>
       <p>
         The hosted service at <a href={productOrigin}>my.maruhi.app</a> is in <strong>private
-        preview</strong>. Creating an account requires an invite code, which the sign-in page asks
-        for. A waitlist opens with the invite-only beta; until then, follow the repository for
-        release notes.
+        preview</strong>. Creating an account needs an invite code, which the sign-in page asks for. A
+        waitlist opens with the invite-only beta; until then, follow the repository for release
+        notes. Or skip the queue and run it on your own account.
       </p>
       <!-- waitlist 導線の置き場(H6 で Workers への POST フォームに差し替える — 静的文言のみ) -->
       <p class="actions" data-waitlist-placeholder>
         <a class="button" href={`${repo}/releases`}>Watch releases on GitHub</a>
-      </p>
-    </section>
-
-    <section class="step" id="self-host" aria-labelledby="selfhost-heading">
-      <h2 id="selfhost-heading">Or run it yourself</h2>
-      <p>
-        maruhi is built to be self-hosted: clone the repository, create a D1 database, and
-        <code>wrangler deploy</code>. Your deployment is end-to-end encrypted in exactly the same way.
-      </p>
-      <p class="actions">
-        <a class="link" href="/docs/self-hosting">Self-hosting guide</a>
+        <a class="link" href="/docs/self-hosting">Self-host instead</a>
       </p>
     </section>
 
@@ -182,7 +287,8 @@ maruhi login</code></pre>
     line-height: 1.6;
   }
 
-  section,
+  .section,
+  .hero,
   .footer {
     padding-top: var(--lp-section);
   }
@@ -199,12 +305,17 @@ maruhi login</code></pre>
     max-width: var(--lp-measure);
   }
 
+  /* アクセントは限定的に: 見出しの決め台詞と CTA ボタンのみ(§2) */
+  .hero .punch {
+    display: block;
+    color: var(--blume-accent);
+  }
+
   .eyebrow {
     margin: 0 0 var(--lp-gap);
     font-family: var(--blume-font-mono);
     font-size: var(--lp-terminal-size);
     color: var(--blume-muted-foreground);
-    text-transform: lowercase;
   }
 
   .lede {
@@ -225,7 +336,7 @@ maruhi login</code></pre>
   }
 
   h3 {
-    margin: 0 0 calc(var(--lp-gap) / 2);
+    margin: calc(var(--lp-gap) * 2) 0 calc(var(--lp-gap) / 2);
     font-family: var(--blume-font-display);
     font-size: 1.125rem;
     font-weight: 700;
@@ -293,9 +404,8 @@ maruhi login</code></pre>
     color: var(--blume-muted-foreground);
   }
 
-  .terminal b {
+  .terminal .err {
     color: var(--blume-foreground);
-    font-weight: 700;
   }
 
   .actions {
@@ -305,7 +415,6 @@ maruhi login</code></pre>
     align-items: center;
   }
 
-  /* アクセントはボタン 1 種に限定する(§2) */
   .button {
     display: inline-block;
     padding: var(--lp-button-pad);
@@ -324,26 +433,66 @@ maruhi login</code></pre>
     font-weight: 600;
   }
 
-  .cards {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: var(--lp-gap);
-    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  /* 信頼境界の表: 装飾はしない。yes / no だけを目で拾えるようにする */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 0 0 var(--lp-gap);
   }
 
-  .cards li {
-    padding: calc(var(--lp-gap) * 1.25);
-    background: var(--blume-muted);
-    border: var(--lp-border) solid var(--blume-border);
-    border-radius: var(--blume-radius);
-  }
-
-  .cards p {
-    margin: 0;
+  .trust {
+    width: 100%;
+    max-width: var(--lp-wide);
+    border-collapse: collapse;
     font-size: 0.95rem;
+  }
+
+  .trust th,
+  .trust td {
+    text-align: left;
+    vertical-align: top;
+    padding: calc(var(--lp-gap) * 0.7) var(--lp-gap);
+    border-top: var(--lp-border) solid var(--blume-border);
+  }
+
+  .trust thead th {
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 500;
     color: var(--blume-muted-foreground);
+    border-top: 0;
+  }
+
+  .trust tbody th {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .trust td.yes,
+  .trust td.no {
+    font-family: var(--blume-font-mono);
+    white-space: nowrap;
+  }
+
+  .trust td.no {
+    color: var(--blume-muted-foreground);
+  }
+
+  .trust td:last-child {
+    color: var(--blume-muted-foreground);
+  }
+
+  .plain {
+    margin: 0 0 var(--lp-gap);
+    padding: 0;
+    list-style: none;
+    max-width: var(--lp-measure);
+  }
+
+  .plain li {
+    padding: calc(var(--lp-gap) * 0.7) 0;
+    border-top: var(--lp-border) solid var(--blume-border);
   }
 
   .footer {

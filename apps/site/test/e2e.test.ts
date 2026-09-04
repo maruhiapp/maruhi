@@ -185,7 +185,7 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     const page = await browser.newPage();
     const { requests, violations } = observe(page);
     await page.goto(BASE, { waitUntil: "networkidle" });
-    await expect(page.locator("h1").first().textContent()).resolves.toContain("never touch a disk");
+    await expect(page.locator("h1").first().textContent()).resolves.toContain("Not even us");
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
     // フォントは自己配信の woff2 が実際に取得される

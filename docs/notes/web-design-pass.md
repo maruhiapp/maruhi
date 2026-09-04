@@ -312,6 +312,26 @@ Archivo / Martian Mono の適用・light / dark の accent と body が `tokens.
 301)/ O12(訪問数はサーバー側集計のみ)。
 
 
+**G 改訂 1(2026-09-04、所有者レビュー後)**: 所有者の評価「デザインは悪くないが構成が微妙で魅力が伝わらない」を受け、
+競合 LP(Phase / Infisical / Doppler / Shelve / Keyway)を実読して差分を整理した。共通項: 全社が AI エージェント対応を前面に出す。
+Phase は E2EE を掲げるが Console 側で復号し `.env` エクスポートを持つ。Keyway は「エージェントが `.env` を読める」を
+ヒーローに置き、サーバー側 AES。Infisical / Doppler はコンプライアンス・規模・統合数で語る。maruhi の差分は「復号器が
+MIT の CLI 一つで、サーバー・ダッシュボード・運営者のいずれも平文を持てない」「`.env` 書き出し機能が存在しない」
+「自分の CF アカウントへ `wrangler deploy` 一発」「エージェントには `maruhi schema` の契約だけ渡し、値表示は fail-closed」
+「非保証(CRYPTO_SPEC §14.3)を自分から書く」の 5 点に集約される(「No telemetry」は Phase も明記しており独自性として
+は押さない)。列挙した構成: **(A)** 信頼境界を軸(「誰が平文を読めるか」の表を最初に置く)/ (B) ディスクレスを軸
+(`maruhi run` の実演から入る)/ (C) セルフホストを軸(`wrangler deploy` から入る)。**選定 = (A)**(所有者裁定)。
+(B) は「diskless run がある」だけでは差別化にならない(ADR-0014)。(C) は Infisical と同じ土俵で語ることになる。
+ヒーローコピーは所有者の「短くインパクト重視」の指示で **「Secrets only you can read. / Not even us.」**(2 行目を accent 色)。
+新構成(1 ページ・7 節): Hero〔`push` → `run` のターミナル〕→ Who can read your secrets〔CLI / run プロセス = yes、server /
+dashboard / operator / AI agent = no の表〕→ Nothing to leak from disk〔`printenv | wc -c` と `ls .env*` の実演〕→ Agents get
+the contract, not the values〔`maruhi schema` の実出力 + 値表示拒否メッセージ〕→ Your Cloudflare account. One deploy.〔3 コマンド〕
+→ What we don't promise〔§14.3 から 4 点〕→ Get started〔install / sign in / Access(`#access`、waitlist placeholder は据え置き)〕。
+ADR-0014 の柵: 「最も安全」と言わない、機能数で争わない、競合名を LP に出さない、ターミナル出力は CLI の実文字列
+(`Pushed … (version=1, epoch=1)` / `Confirmation code:` / agent gate の拒否文 / `schema` の表)を使う。`THREAT_MODEL.md` は
+未執筆(H5)なので非保証のリンク先は CRYPTO_SPEC §14.3。検証: site e2e 11 件(h1 の断言を新コピーに更新)・`blume validate
+--strict`・fmt / lint / tsc 通過。文言の推敲は初回デプロイ後に続ける(§4 の「構造は今、コピーは後」)。
+
 ## 5. DP3〜DP5 の入口(詳細は各 PR で)
 
 - DP3(ダッシュボード): アプリシェル・空状態 / ローディング / エラーの統一(`FailureNotice` 13 か所)・監査ビューアの
