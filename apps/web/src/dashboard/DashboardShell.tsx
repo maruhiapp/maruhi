@@ -342,8 +342,3 @@ export function DashboardShell(props: PageProps): ReactNode {
   }
   return <SignedInFrame {...props} me={auth.me} onSignOut={signOut} />;
 }
-
-/** サイドバーの子項目用の短縮形(先頭・末尾 6 桁)。 */
-export function shortId(id: string): string {
-  return `${id.slice(0, 6)}…${id.slice(-6)}`;
-}

@@ -25,7 +25,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
-import { DashboardShell, shortId } from "./DashboardShell.tsx";
+import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
@@ -36,6 +36,7 @@ import {
   HexText,
   LoadingRow,
   RoleToken,
+  shortId,
 } from "./shared.tsx";
 import type {
   AuditEventsPage,
