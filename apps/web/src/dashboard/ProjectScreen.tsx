@@ -11,8 +11,10 @@
 // - S7: dismiss は置かない(ADR-0018 改訂 2 の境界原則 — 警告の消去)。
 //   CLI `maruhi rotation dismiss` への静的案内のみ
 import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
 import { Divider } from "@astryxdesign/core/Divider";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Heading, Text } from "@astryxdesign/core/Text";
@@ -88,9 +90,26 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
 
 function attestationSummary(snapshot: ChainSnapshot): string {
   const attestations = snapshot.attestations ?? [];
-  if (attestations.length === 0) return "No member head attestations reported.";
+  if (attestations.length === 0) return "None reported";
   const parts = attestations.map((a) => `${a.attesterUserId} at seq ${a.chainHeadSeq}`);
-  return `${attestations.length} member head attestation(s) reported: ${parts.join(" · ")}`;
+  return `${attestations.length} reported: ${parts.join(" · ")}`;
+}
+
+/** チェーンの要約(`detail-page` テンプレートの見出し直下メタデータの形 — 横並びの MetadataList)。 */
+function ChainSummary({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
+  return (
+    <MetadataList orientation="horizontal">
+      <MetadataListItem label="Chain head">
+        <Text hasTabularNumbers>seq {snapshot.headSeq}</Text>
+      </MetadataListItem>
+      <MetadataListItem label="Head digest">
+        <HexText>{snapshot.headHashHex}</HexText>
+      </MetadataListItem>
+      <MetadataListItem label="Member head attestations">
+        <Text>{attestationSummary(snapshot)}</Text>
+      </MetadataListItem>
+    </MetadataList>
+  );
 }
 
 function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): ReactNode {
@@ -122,13 +141,8 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
     sinceSeq: m.sinceSeq,
   }));
   return (
-    <VStack gap={6} data-testid="chain-section">
-      <VStack gap={1}>
-        <Text type="supporting">
-          Chain head: seq {snapshot.headSeq} · <HexText>{snapshot.headHashHex}</HexText>
-        </Text>
-        <Text type="supporting">{attestationSummary(snapshot)}</Text>
-      </VStack>
+    <VStack gap={8} data-testid="chain-section">
+      <ChainSummary snapshot={snapshot} />
       <VStack gap={4}>
         <SectionHeader
           title="Members"
@@ -504,12 +518,20 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
   return (
     <VStack gap={4}>
       <RotationFlagsView flags={state.value.flags} />
-      {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作) */}
-      <Text type="supporting" data-testid="rotation-note">
-        A flag means the upstream credential should be rotated. Rotate the value, then dismiss the
-        flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin). Dismissing is
-        not available in the dashboard.
-      </Text>
+      {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作)。
+          形は Astryx の `CardCallout` ブロック */}
+      <Card variant="muted" data-testid="rotation-note">
+        <VStack gap={2}>
+          <Heading level={4} accessibilityLevel={2}>
+            Rotating and dismissing
+          </Heading>
+          <Text type="body" color="secondary">
+            A flag means the upstream credential should be rotated. Rotate the value, then dismiss
+            the flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin).
+            Dismissing is not available in the dashboard.
+          </Text>
+        </VStack>
+      </Card>
     </VStack>
   );
 }
@@ -557,59 +579,65 @@ function ProjectTabBody({ tab, projectId }: { tab: ProjectTab; projectId: string
   return <OverviewTab projectId={projectId} />;
 }
 
-function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
-  const [tab, setTab] = useState<ProjectTab>("overview");
+/** header スロット用の TabList(同一画面内のパネル切替なので nav landmark でなく WAI-ARIA tabs)。 */
+function ProjectTabList({
+  tab,
+  onChange,
+}: {
+  tab: ProjectTab;
+  onChange: (tab: ProjectTab) => void;
+}): ReactNode {
   return (
-    <VStack gap={6}>
-      {/* 同一画面内のパネル切替なので navigation landmark ではなく WAI-ARIA tabs */}
-      <TabList
-        value={tab}
-        onChange={(value) => {
-          if (isProjectTab(value)) setTab(value);
-        }}
-        size="md"
-        role="tablist"
-        aria-label="Project"
-      >
-        <Tab
-          id={PROJECT_TAB_IDS.overview}
-          value="overview"
-          label="Overview"
-          panelId={PROJECT_TAB_PANELS.overview}
-        />
-        <Tab
-          id={PROJECT_TAB_IDS.audit}
-          value="audit"
-          label="Audit"
-          panelId={PROJECT_TAB_PANELS.audit}
-        />
-        <Tab
-          id={PROJECT_TAB_IDS.rotation}
-          value="rotation"
-          label="Rotation flags"
-          panelId={PROJECT_TAB_PANELS.rotation}
-        />
-        <Tab
-          id={PROJECT_TAB_IDS.invites}
-          value="invites"
-          label="Invites"
-          panelId={PROJECT_TAB_PANELS.invites}
-        />
-      </TabList>
-      {PROJECT_TABS.map((id) => (
-        <VStack
-          key={id}
-          id={PROJECT_TAB_PANELS[id]}
-          role="tabpanel"
-          aria-labelledby={PROJECT_TAB_IDS[id]}
-          hidden={tab !== id}
-          xstyle={tab === id ? undefined : panelStyles.hidden}
-        >
-          {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
-        </VStack>
-      ))}
-    </VStack>
+    <TabList
+      value={tab}
+      onChange={(value) => {
+        if (isProjectTab(value)) onChange(value);
+      }}
+      size="md"
+      role="tablist"
+      aria-label="Project"
+    >
+      <Tab
+        id={PROJECT_TAB_IDS.overview}
+        value="overview"
+        label="Overview"
+        panelId={PROJECT_TAB_PANELS.overview}
+      />
+      <Tab
+        id={PROJECT_TAB_IDS.audit}
+        value="audit"
+        label="Audit"
+        panelId={PROJECT_TAB_PANELS.audit}
+      />
+      <Tab
+        id={PROJECT_TAB_IDS.rotation}
+        value="rotation"
+        label="Rotation flags"
+        panelId={PROJECT_TAB_PANELS.rotation}
+      />
+      <Tab
+        id={PROJECT_TAB_IDS.invites}
+        value="invites"
+        label="Invites"
+        panelId={PROJECT_TAB_PANELS.invites}
+      />
+    </TabList>
   );
+}
+
+function ProjectTabPanels({ tab, projectId }: { tab: ProjectTab; projectId: string }): ReactNode {
+  return PROJECT_TABS.map((id) => (
+    <VStack
+      key={id}
+      id={PROJECT_TAB_PANELS[id]}
+      role="tabpanel"
+      aria-labelledby={PROJECT_TAB_IDS[id]}
+      hidden={tab !== id}
+      xstyle={tab === id ? undefined : panelStyles.hidden}
+    >
+      {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
+    </VStack>
+  ));
 }
 
 /** 識別子の短縮形(先頭・末尾 6 桁 — 見出しとサイドバーの子項目用。全文は HexText で並記する)。 */
@@ -619,6 +647,7 @@ function shortId(id: string): string {
 
 export function ProjectScreen(): ReactNode {
   const { projectId } = useRouteParams(projectRoute);
+  const [tab, setTab] = useState<ProjectTab>("overview");
   const isProjectId = PROJECT_ID_PATTERN.test(projectId);
   // 見出しとサイドバーの子項目は短縮形(先頭・末尾 6 桁)。全文は見出し直下に HexText で出す
   const label = isProjectId ? `Project ${shortId(projectId)}` : "Project";
@@ -626,12 +655,13 @@ export function ProjectScreen(): ReactNode {
     <DashboardShell
       destination="projects"
       project={isProjectId ? { id: projectId, label: shortId(projectId) } : undefined}
-      breadcrumbs={[{ label: "Projects", href: spaPaths.dashboard() }]}
+      backLink={{ label: "All projects", href: spaPaths.dashboard() }}
       title={label}
       intro={<HexText testId="project-id">{projectId}</HexText>}
+      tabs={isProjectId ? <ProjectTabList tab={tab} onChange={setTab} /> : undefined}
     >
       {isProjectId ? (
-        <ProjectTabs projectId={projectId} />
+        <ProjectTabPanels tab={tab} projectId={projectId} />
       ) : (
         <Text as="p" type="supporting">
           This is not a project ID (a project ID is 64 lowercase hex characters).

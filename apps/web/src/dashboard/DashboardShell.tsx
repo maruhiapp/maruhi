@@ -18,16 +18,14 @@
 // (ServerReportedNote)はページ末尾にシェルが 1 回置く。文言はすべて英語(ADR-0017)。
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
-import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Center } from "@astryxdesign/core/Center";
-import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent, LayoutHeader, VStack } from "@astryxdesign/core/Layout";
-import { NavIcon } from "@astryxdesign/core/NavIcon";
+import { Link } from "@astryxdesign/core/Link";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Heading, Text } from "@astryxdesign/core/Text";
-import { type ReactNode, type SVGProps, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
 import { apiPaths } from "./endpoints.ts";
@@ -38,12 +36,6 @@ import {
   KeyIcon,
   UserCircleIcon,
 } from "./icons.tsx";
-import { MaruhiMark } from "./MaruhiMark.tsx";
-
-/** 環なしの「秘」(NavIcon 用)。Icon は ComponentType を受けるので部分適用で渡す。 */
-function MaruhiGlyph(props: SVGProps<SVGSVGElement>): ReactNode {
-  return <MaruhiMark hasRing={false} {...props} />;
-}
 import { markResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
 import { FailureNotice, LoadingRow, ServerReportedNote } from "./shared.tsx";
@@ -52,11 +44,18 @@ import type { Me } from "./types.ts";
 /** サイドバーの到達点(選択状態 = aria-current="page")。project 画面は Projects 配下。 */
 type ShellDestination = "projects" | "tokens" | "account";
 
-/** パンくずの 1 段(最後の段は呼び出し側が isCurrent にしない — 現在地は見出し)。 */
-interface Crumb {
+/** 親階層への戻りリンク(`detail-page` テンプレートの「← All orders」の形)。 */
+interface BackLink {
   label: string;
   href: string;
 }
+
+// ブランド資産(DP1 — apps/web/public)。反転版 = 朱の円盤に白抜きの「秘」= favicon と同形。
+// サイドバー見出し(32px)とサインイン画面(56px)で同じファイルを使う。色はテーマに追随せず
+// 朱で固定(ブラウザのタブの favicon と同じ見え方)
+const LOGO_INVERTED_SRC = "/logo-inverted.svg";
+const SIDE_NAV_LOGO_PX = 32;
+const SIGN_IN_LOGO_PX = 56;
 
 /** 開いているプロジェクト(サイドバーの Projects の子項目として現在地を示す)。 */
 interface CurrentProject {
@@ -129,9 +128,14 @@ function DashboardSideNav({
       header={
         <SideNavHeading
           heading="maruhi"
-          // NavIcon は accent の円盤。中は環なしの「秘」を on-accent(継承色)で描き、favicon と同じ
-          // 反転版(円盤 + 字形)になる — 環付きだと円の中に円が重なって見える
-          icon={<NavIcon icon={<Icon icon={MaruhiGlyph} size="md" />} />}
+          icon={
+            <img
+              src={LOGO_INVERTED_SRC}
+              alt=""
+              width={SIDE_NAV_LOGO_PX}
+              height={SIDE_NAV_LOGO_PX}
+            />
+          }
           headingHref={spaPaths.dashboard()}
         />
       }
@@ -167,7 +171,7 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
     <Center axis="both" padding={6} minHeight="100dvh">
       <VStack gap={4} align="center" width="100%" maxWidth={400}>
         <VStack gap={2} align="center">
-          <Icon icon={MaruhiMark} color="accent" size="lg" />
+          <img src={LOGO_INVERTED_SRC} alt="" width={SIGN_IN_LOGO_PX} height={SIGN_IN_LOGO_PX} />
           <Text type="body" weight="bold" size="lg">
             maruhi
           </Text>
@@ -203,29 +207,33 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
   );
 }
 
+/**
+ * ページ見出し(`detail-page` テンプレートの PageHeader の形): 戻りリンク → h1 → 説明 →
+ * タブ。タブは header スロットに置くことで、本文が内部スクロールしても見え続ける。
+ */
 function PageHeader({
-  breadcrumbs,
+  backLink,
   title,
   intro,
+  tabs,
 }: {
-  breadcrumbs: ReadonlyArray<Crumb> | undefined;
+  backLink: BackLink | undefined;
   title: string;
   intro: ReactNode;
+  tabs: ReactNode;
 }): ReactNode {
   return (
-    <VStack gap={1}>
-      {breadcrumbs === undefined || breadcrumbs.length === 0 ? null : (
-        <Breadcrumbs variant="supporting">
-          {breadcrumbs.map((crumb) => (
-            <BreadcrumbItem key={crumb.href} href={crumb.href}>
-              {crumb.label}
-            </BreadcrumbItem>
-          ))}
-          <BreadcrumbItem isCurrent>{title}</BreadcrumbItem>
-        </Breadcrumbs>
-      )}
-      <Heading level={1}>{title}</Heading>
-      {intro}
+    <VStack gap={3}>
+      <VStack gap={1}>
+        {backLink === undefined ? null : (
+          <Link href={backLink.href} color="secondary">
+            ← {backLink.label}
+          </Link>
+        )}
+        <Heading level={1}>{title}</Heading>
+        {intro}
+      </VStack>
+      {tabs}
     </VStack>
   );
 }
@@ -266,9 +274,11 @@ function useSession(): { auth: AuthState; reload: () => void; signOut: () => voi
 interface PageProps {
   destination: ShellDestination;
   project?: CurrentProject | undefined;
-  breadcrumbs?: ReadonlyArray<Crumb>;
+  backLink?: BackLink;
   title: string;
   intro?: ReactNode;
+  /** header スロットの末尾に置くタブ(TabList)。本文の切替は呼び出し側が持つ。 */
+  tabs?: ReactNode;
   children: ReactNode;
 }
 
@@ -278,9 +288,10 @@ function SignedInFrame({
   onSignOut,
   destination,
   project,
-  breadcrumbs,
+  backLink,
   title,
   intro,
+  tabs,
   children,
 }: PageProps & { me: Me; onSignOut: () => void }): ReactNode {
   return (
@@ -296,7 +307,7 @@ function SignedInFrame({
         padding={6}
         header={
           <LayoutHeader hasDivider>
-            <PageHeader breadcrumbs={breadcrumbs} title={title} intro={intro} />
+            <PageHeader backLink={backLink} title={title} intro={intro} tabs={tabs} />
           </LayoutHeader>
         }
         content={
@@ -325,8 +336,8 @@ function StatusFrame({ children }: { children: ReactNode }): ReactNode {
 
 /**
  * 認証が要る画面の共通フレーム。`title` はページの h1(AppShell は見出しを描かない
- * ので、header スロットの見出しがページの h1 になる)。`breadcrumbs` は親階層のみ渡す
- * (現在地は title から補う)。`intro` は見出し直下の 1〜2 行。`project` を渡すと
+ * ので、header スロットの見出しがページの h1 になる)。`backLink` は親階層への戻り。
+ * `intro` は見出し直下の 1〜2 行、`tabs` は header 末尾の TabList。`project` を渡すと
  * サイドバーの Projects の下に現在のプロジェクトが選択状態で並ぶ。
  */
 export function DashboardShell(props: PageProps): ReactNode {

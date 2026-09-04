@@ -10,9 +10,10 @@
 //   fail-closed で期限切れ扱い)は Expired のサーバー申告表示(裁定 CQ)
 // - 失効はインライン 2 段階確認(裁定 CO)。自トークンの失効は稼働中の
 //   CLI / CI を即 401 にするため、帰結の注記をテーブル下へ常時表示する
+import { Card } from "@astryxdesign/core/Card";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Text } from "@astryxdesign/core/Text";
+import { Heading, Text } from "@astryxdesign/core/Text";
 import { type ReactNode } from "react";
 
 import { DashboardShell } from "./DashboardShell.tsx";
@@ -121,15 +122,25 @@ function buildTokenColumns(
   ];
 }
 
-/** 発行の静的案内(発行 UI は置かない)+ 失効の帰結の注記(裁定 CO)。 */
+/**
+ * 発行の静的案内(発行 UI は置かない)+ 失効の帰結の注記(裁定 CO)。
+ * 形は Astryx の `CardCallout` ブロック(muted の Card + 見出し + 本文)。
+ */
 function TokenNotes(): ReactNode {
   return (
-    <Text type="supporting" data-testid="token-notes">
-      Issuing tokens is not available in the dashboard — a token is issued when you sign in from the
-      CLI: <Text type="code">maruhi login</Text> (raw token values never appear here). Revoking a
-      token immediately signs out any CLI or CI job still using it; sign in again from the CLI to
-      issue a replacement.
-    </Text>
+    <Card variant="muted" data-testid="token-notes">
+      <VStack gap={2}>
+        <Heading level={4} accessibilityLevel={2}>
+          Issuing and revoking
+        </Heading>
+        <Text type="body" color="secondary">
+          Issuing tokens is not available in the dashboard — a token is issued when you sign in from
+          the CLI: <Text type="code">maruhi login</Text> (raw token values never appear here).
+          Revoking a token immediately signs out any CLI or CI job still using it; sign in again
+          from the CLI to issue a replacement.
+        </Text>
+      </VStack>
+    </Card>
   );
 }
 

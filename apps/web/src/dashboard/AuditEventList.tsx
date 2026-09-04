@@ -5,27 +5,30 @@
 //
 // - 見出しは役割適応の規定文言「Events visible to your role」(AUDIT_SPEC §7 —
 //   不可視クラスの存在・件数を示唆しない)
-// - `seq` 列は「応答に seq が載っているか」でのみ出し分ける(役割の事前判定を
+// - `seq` は「応答に seq が載っているか」でのみ出し分ける(役割の事前判定を
 //   クライアントに複製しない — 判定点はサーバー認可だけに保つ)
 // - ページングは `before` カーソル(row_id)の Load more のみ。件数は表示しない
 // - 全フィールドは記録どおりのサーバー申告値。表示名の解決(検証済み
 //   ステートメント経由)は行わない — 検証を持たない Web での名前解決は
 //   ステートメント検証なしの名前信用になる(AUTH_SPEC §12-2)ため識別子のみ表示
 //
-// DP3(裁定 C / D — docs/notes/web-design-pass.md §5): 可読性は「1 行に畳んだ
-// 文字列」を「ラベル付きの断片」に分解して上げる(actor = 主体 + 鍵 FP + トークン
-// id の 2〜3 行、details = ラベル : 値の対)。文言・項目・順序は変えない(§4 の
-// 表示規律 — 「検証済み」を名乗らない・FP は参照値・件数を出さない)。狭い幅
-// (AppShell の md 以下)では同じ行データを Table でなく List(1 イベント = 1 項目)
-// で描く — HP5(モバイルで監査を読む利害関係者)のための表示形の切替であり、
-// 列の意味は同じ。
+// DP3 改訂 3(docs/notes/web-design-pass.md §5 裁定 C 改訂): 形は Astryx の
+// `incident-console` テンプレート(「行の待ち行列 + 選択行のインスペクタ」)に従う。
+// 行 = `List` の `ListItem`(label = イベント名、description = 主体と座標、
+// endContent = サーバー時刻)、選択行の全フィールドは 1024px 超では `LayoutPanel`
+// (`MetadataList`)、以下では全画面 `Dialog`(`detail-page` テンプレートのモバイル型)
+// に出す。Table は使わない(行が読める幅を保つ — HP5)。文言・項目・順序は不変
+// (§4 の表示規律 — 「検証済み」を名乗らない・FP は参照値・件数を出さない)。
 import { Button } from "@astryxdesign/core/Button";
-import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { CodeBlock } from "@astryxdesign/core/CodeBlock";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Divider } from "@astryxdesign/core/Divider";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { HStack, Layout, LayoutContent, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Text } from "@astryxdesign/core/Text";
+import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
+import { Heading, Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiFailure, ApiResult } from "./api.ts";
@@ -40,18 +43,18 @@ import {
   FailureNotice,
   formatServerTime,
   HexText,
+  INSPECTOR_VIEWPORT_QUERY,
   LoadingRow,
-  NARROW_VIEWPORT_QUERY,
 } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** 1 ページの取得。`before` は前ページ末尾行の row_id(AUDIT_SPEC §7)。 */
 export type AuditPageFetcher = (before: string | undefined) => Promise<ApiResult<AuditEventsPage>>;
 
-interface AuditRow extends Record<string, unknown> {
-  id: string;
-  event: AuditEvent;
-}
+// インスペクタの幅(`incident-console` の既定 380。構造幅は生 px でよい — Astryx layout docs)
+const INSPECTOR_WIDTH = 380;
+// MetadataList のラベル列幅(`incident-console` と同じ 96)
+const INSPECTOR_LABEL_WIDTH = 96;
 
 /** ラベル : 値 の断片(値が欠落なら出さない)。 */
 interface Fragment {
@@ -94,20 +97,6 @@ function detailFragments(event: AuditEvent): Fragment[] {
   ].filter(isPresent);
 }
 
-/**
- * 集約形 var.read(AUDIT_SPEC §3.3)の件数要約。変数の列挙は payload が持ち、
- * ここでは要約だけを出す(列挙は PayloadCell の展開)。
- */
-function ReadSummary({ event }: { event: AuditEvent }): ReactNode {
-  const listed = aggregatedReadVariables(event);
-  if (listed === null) return null;
-  return (
-    <Text type="supporting" size="sm">
-      {readSummaryLabel(listed.length)}
-    </Text>
-  );
-}
-
 /** ラベル付き断片の並び(折り返し可)。 */
 function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
   if (items.length === 0) return null;
@@ -122,161 +111,190 @@ function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
   );
 }
 
-function ActorCell({ event }: { event: AuditEvent }): ReactNode {
-  return (
-    <VStack gap={0.5}>
-      <HexText>{actorHead(event)}</HexText>
-      <Fragments items={actorFragments(event)} />
-    </VStack>
-  );
-}
+// ---------------------------------------------------------------------------
+// 行(incident-console の IncidentRows の形)
+// ---------------------------------------------------------------------------
 
-function PayloadCell({ event }: { event: AuditEvent }): ReactNode {
-  if (event.payload === undefined) return null;
+/**
+ * 1 イベント = 1 行。description は主体 + 座標の要約(全フィールドはインスペクタ)。
+ * seq は応答に載っているときだけ先頭に出す(応答適応 — AUDIT_SPEC §7)。
+ */
+function EventRow({
+  event,
+  isSelected,
+  onSelect,
+}: {
+  event: AuditEvent;
+  isSelected: boolean;
+  onSelect: () => void;
+}): ReactNode {
   const listed = aggregatedReadVariables(event);
-  if (listed === null) {
-    return <RecordedPayload payload={event.payload} />;
-  }
-  // 集約形 var.read: 変数の列挙は折り畳みで展開する(数十〜数百件になりうる —
-  // 既定は閉じた状態で要約〔detailFragments〕だけを見せる)。列挙以外の payload
-  // (authMethod 等)は従来どおり記録どおりの JSON で出す
-  const rest = payloadWithoutVariables(event.payload);
-  return (
-    <VStack gap={0.5}>
-      {rest === null ? null : <RecordedPayload payload={rest} />}
-      <Collapsible
-        trigger={<Text size="sm">Show variables</Text>}
-        defaultIsOpen={false}
-        value={`reads-${event.id}`}
-      >
-        <VStack gap={0.5}>
-          {/* 列挙は variableId 昇順・重複なし(AUDIT_SPEC §3.3)— キーに使える */}
-          {listed.map((variable) => (
-            <HexText size="2xs" key={variable.variableId}>
-              {listedReadVariableLabel(variable)}
-            </HexText>
-          ))}
-        </VStack>
-      </Collapsible>
-    </VStack>
-  );
-}
-
-/** 記録どおりの payload(サーバー申告の JSON をそのまま — 2 行で切り詰め、全文はツールチップ)。 */
-function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
-  return (
-    <Text type="code" size="2xs" wordBreak="break-all" maxLines={2} hasTruncateTooltip>
-      {JSON.stringify(payload)}
-    </Text>
-  );
-}
-
-function DetailsCell({ event }: { event: AuditEvent }): ReactNode {
-  return (
-    <VStack gap={1}>
-      <Fragments items={detailFragments(event)} />
-      <ReadSummary event={event} />
-      <PayloadCell event={event} />
-    </VStack>
-  );
-}
-
-const SEQ_COLUMN: TableColumn<AuditRow> = {
-  key: "seq",
-  header: "Seq",
-  width: pixel(72),
-  renderCell: (row: AuditRow) => (
-    <Text type="code" size="sm" hasTabularNumbers>
-      {row.event.seq ?? ""}
-    </Text>
-  ),
-};
-
-const EVENT_COLUMNS: TableColumn<AuditRow>[] = [
-  {
-    key: "event",
-    header: "Event",
-    width: pixel(200),
-    renderCell: (row: AuditRow) => (
-      <Text type="code" size="sm" weight="medium">
-        {row.event.event}
-      </Text>
-    ),
-  },
-  {
-    key: "when",
-    header: "Server time (UTC)",
-    width: pixel(210),
-    renderCell: (row: AuditRow) => (
-      <Text type="supporting" size="sm" hasTabularNumbers>
-        {formatServerTime(row.event.serverTs)}
-      </Text>
-    ),
-  },
-  {
-    key: "actor",
-    header: "Actor",
-    width: proportional(1),
-    renderCell: (row: AuditRow) => <ActorCell event={row.event} />,
-  },
-  {
-    key: "details",
-    header: "Details",
-    width: proportional(1),
-    renderCell: (row: AuditRow) => <DetailsCell event={row.event} />,
-  },
-];
-
-/** 狭い幅の 1 イベント = 1 項目(列の意味は Table と同じ。seq は時刻の行に出す)。 */
-function EventListItem({ event }: { event: AuditEvent }): ReactNode {
   return (
     <ListItem
       label={event.event}
       description={
-        <VStack gap={1}>
-          <HStack gap={2} wrap="wrap" align="center">
-            {event.seq === undefined ? null : (
-              <Text type="supporting" size="sm">
-                seq <HexText>{String(event.seq)}</HexText>
-              </Text>
-            )}
-            <Text type="supporting" size="sm" hasTabularNumbers>
-              {formatServerTime(event.serverTs)}
+        <HStack gap={2} wrap="wrap" align="center">
+          {event.seq === undefined ? null : (
+            <Text type="supporting" size="sm">
+              seq <HexText>{String(event.seq)}</HexText>
             </Text>
-          </HStack>
-          <ActorCell event={event} />
-          <DetailsCell event={event} />
-        </VStack>
+          )}
+          <HexText>{actorHead(event)}</HexText>
+          <Fragments items={detailFragments(event)} />
+          {listed === null ? null : (
+            <Text type="supporting" size="sm">
+              {readSummaryLabel(listed.length)}
+            </Text>
+          )}
+        </HStack>
       }
+      endContent={
+        <Text type="supporting" size="sm" hasTabularNumbers>
+          {formatServerTime(event.serverTs)}
+        </Text>
+      }
+      onClick={onSelect}
+      isSelected={isSelected}
     />
   );
 }
 
-function EventsView({
-  events,
-  isNarrow,
-}: {
-  events: ReadonlyArray<AuditEvent>;
-  isNarrow: boolean;
-}): ReactNode {
-  if (isNarrow) {
-    return (
-      <List density="balanced" hasDividers>
-        {events.map((event) => (
-          <EventListItem key={event.id} event={event} />
-        ))}
-      </List>
-    );
-  }
-  // seq は admin 可視の project DO 応答にのみ載る(AUDIT_SPEC §7)。列の表示は
-  // 応答適応: 1 行でも seq を運んでいれば列を出す
-  const hasSeq = events.some((event) => event.seq !== undefined);
-  const rows: AuditRow[] = events.map((event) => ({ id: event.id, event }));
-  const columns = hasSeq ? [SEQ_COLUMN, ...EVENT_COLUMNS] : EVENT_COLUMNS;
+// ---------------------------------------------------------------------------
+// インスペクタ(incident-console の IncidentInspector の形 — MetadataList)
+// ---------------------------------------------------------------------------
+
+function InspectorItem({ label, value }: { label: string; value: string | undefined }): ReactNode {
+  if (value === undefined) return null;
   return (
-    <Table data={rows} columns={columns} idKey="id" density="balanced" hasHover dividers="rows" />
+    <MetadataListItem label={label}>
+      <HexText>{value}</HexText>
+    </MetadataListItem>
   );
 }
+
+/** 記録どおりの payload(サーバー申告の JSON をそのまま)。 */
+function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
+  return (
+    <CodeBlock
+      code={JSON.stringify(payload, null, 2)}
+      language="json"
+      title="Payload (as recorded)"
+      size="sm"
+      width="100%"
+      isWrapped
+      hasCopyButton={false}
+    />
+  );
+}
+
+function ReadsList({ event }: { event: AuditEvent }): ReactNode {
+  const listed = aggregatedReadVariables(event);
+  if (listed === null) return null;
+  // 集約形 var.read(AUDIT_SPEC §3.3): 変数の列挙は payload が持つ。列挙は
+  // variableId 昇順・重複なし — キーに使える
+  return (
+    <VStack gap={2}>
+      <Heading level={4} accessibilityLevel={3}>
+        {readSummaryLabel(listed.length)}
+      </Heading>
+      <List density="compact">
+        {listed.map((variable) => (
+          <ListItem key={variable.variableId} label={listedReadVariableLabel(variable)} />
+        ))}
+      </List>
+    </VStack>
+  );
+}
+
+/** payload のうち列挙(variables)以外。集約形でなければ payload そのもの。 */
+function recordedPayload(event: AuditEvent): Readonly<Record<string, unknown>> | null {
+  if (event.payload === undefined) return null;
+  return aggregatedReadVariables(event) === null
+    ? event.payload
+    : payloadWithoutVariables(event.payload);
+}
+
+/** 選択行の全フィールド(記録どおり・ラベルは識別子の種類を示すだけ — §4-3)。 */
+function EventInspector({ event }: { event: AuditEvent }): ReactNode {
+  const payload = recordedPayload(event);
+  return (
+    <VStack gap={4}>
+      <VStack gap={1}>
+        <Text type="supporting" color="secondary" hasTabularNumbers>
+          {formatServerTime(event.serverTs)}
+        </Text>
+        <Heading level={3} accessibilityLevel={2}>
+          {event.event}
+        </Heading>
+      </VStack>
+      <Divider />
+      <MetadataList columns="single" label={{ position: "start", width: INSPECTOR_LABEL_WIDTH }}>
+        <InspectorItem
+          label="Seq"
+          value={event.seq === undefined ? undefined : String(event.seq)}
+        />
+        <InspectorItem label="Actor" value={actorHead(event)} />
+        {actorFragments(event).map((item) => (
+          <InspectorItem key={item.label} label={item.label} value={item.value} />
+        ))}
+        {detailFragments(event).map((item) => (
+          <InspectorItem key={item.label} label={item.label} value={item.value} />
+        ))}
+        <InspectorItem label="Row id" value={event.id} />
+      </MetadataList>
+      {payload === null ? null : <RecordedPayload payload={payload} />}
+      <ReadsList event={event} />
+    </VStack>
+  );
+}
+
+/**
+ * 1024px 超: 右のインスペクタ(`incident-console` の end パネルの形。タブパネルの中に
+ * 置くため Layout の end スロットでなく HStack + 縦 Divider で並べる)。
+ * 以下: 全画面 Dialog(`detail-page` テンプレートのモバイル型)。
+ */
+function InspectorSurface({
+  event,
+  hasInspectorPanel,
+  onClose,
+}: {
+  event: AuditEvent | undefined;
+  hasInspectorPanel: boolean;
+  onClose: () => void;
+}): ReactNode {
+  if (hasInspectorPanel) {
+    return (
+      <VStack as="aside" width={INSPECTOR_WIDTH} aria-label="Event details">
+        {event === undefined ? (
+          <EmptyState
+            title="No event selected"
+            description="Select an event to see every recorded field."
+            headingLevel={2}
+            isCompact
+          />
+        ) : (
+          <EventInspector event={event} />
+        )}
+      </VStack>
+    );
+  }
+  return (
+    <Dialog variant="fullscreen" isOpen={event !== undefined} onOpenChange={onClose}>
+      <Layout
+        header={<DialogHeader title="Event details" onOpenChange={onClose} />}
+        content={
+          <LayoutContent padding={4}>
+            {event === undefined ? null : <EventInspector event={event} />}
+          </LayoutContent>
+        }
+      />
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ページング状態
+// ---------------------------------------------------------------------------
 
 interface LoadedState {
   events: AuditEvent[];
@@ -310,7 +328,7 @@ function LoadMoreRow({
 }): ReactNode {
   if (isLoading) return <LoadingRow label="Loading events" />;
   if (exhausted) return null;
-  return <Button label="Load more" variant="secondary" size="sm" onClick={onLoadMore} />;
+  return <Button label="Load more" variant="secondary" onClick={onLoadMore} />;
 }
 
 function LoadedEventsView({
@@ -326,14 +344,47 @@ function LoadedEventsView({
   onLoadMore: () => void;
   testId: string;
 }): ReactNode {
-  const isNarrow = useMediaQuery(NARROW_VIEWPORT_QUERY);
-  return (
-    <VStack gap={3} align="start" data-testid={testId}>
-      <EventsView events={loaded.events} isNarrow={isNarrow} />
+  const hasInspectorPanel = useMediaQuery(INSPECTOR_VIEWPORT_QUERY);
+  const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+  const selected = loaded.events.find((event) => event.id === selectedId);
+  const rows = (
+    <VStack gap={4} align="start" data-testid={testId}>
+      <List density="balanced" hasDividers>
+        {loaded.events.map((event) => (
+          <EventRow
+            key={event.id}
+            event={event}
+            isSelected={event.id === selectedId}
+            onSelect={() => setSelectedId(event.id)}
+          />
+        ))}
+      </List>
       {/* 追記形(裁定 B-b): 既に描けた一覧の下に Load more の失敗を足す */}
       {failure !== undefined ? <FailureNotice failure={failure} onRetry={onLoadMore} /> : null}
       <LoadMoreRow isLoading={isLoading} exhausted={loaded.exhausted} onLoadMore={onLoadMore} />
     </VStack>
+  );
+  const inspector = (
+    <InspectorSurface
+      event={selected}
+      hasInspectorPanel={hasInspectorPanel}
+      onClose={() => setSelectedId(undefined)}
+    />
+  );
+  if (!hasInspectorPanel) {
+    return (
+      <>
+        {rows}
+        {inspector}
+      </>
+    );
+  }
+  return (
+    <HStack gap={6} align="stretch">
+      <StackItem size="fill">{rows}</StackItem>
+      <Divider orientation="vertical" />
+      {inspector}
+    </HStack>
   );
 }
 

@@ -531,6 +531,32 @@ LayoutHeader の h1 + LayoutContent の VStack gap 4)、`settings`(節 = 見出�
 gap 4、概要タブの節間 gap 5 → 8、監査 / Load more 周りを gap 4。Astryx spacing docs の「tight は 0.5〜2、
 section は 4〜8」に合わせ、詰め寄りだった 2〜3 を使わない。e2e 26 件・axe 18 態は不変で通過。
 
+**A / C / J 改訂 3(2026-09-04、所有者レビュー 3 回目 — テンプレートを「参考に実装」・横幅・実 SVG)**:
+所有者の指摘「Table / Form / Settings は採用 / 不採用の話ではなく、テンプレートを参考にして実装する」を
+受け、画面ごとに最も近いテンプレートを 1 つ選んでその構造を写した。(a) **監査ビューア(C 改訂)= `incident-console`**
+(「行の待ち行列 + 選択行のインスペクタ」。Rows, not cards)。行 = `List` の `ListItem`(label = イベント名、
+description = seq〔応答適応〕+ 主体 + 座標の断片、endContent = サーバー時刻、`onClick` + `isSelected`)、
+選択行の全フィールド = `MetadataList`(ラベル幅 96)+ 記録どおりの payload(`CodeBlock` json)+ var.read の
+列挙。1024px 超(`INSPECTOR_VIEWPORT_QUERY`、テンプレートと同じ境界)はインスペクタを右に並べ(タブパネルの
+中なので Layout の end スロットでなく HStack + 縦 Divider + `aside`)、以下は全画面 `Dialog`(`detail-page` の
+モバイル型 — Escape で閉じる)。**Table は使わない**(D の Table → List 切替も不要になり `NARROW_VIEWPORT_QUERY`
+を廃止)。項目・順序・文言・件数非表示は不変(§4)。(b) **プロジェクト画面 = `detail-page`(Order Detail)**:
+header スロットに「← All projects」→ h1 → 全文 ID → `TabList`(タブは header に置き、本文が内部スクロール
+しても見え続ける)。概要は横並びの `MetadataList`(Chain head / Head digest / Member head attestations)→
+Members → Environments。「Head hash」は SPA バンドルの語 `hash` 禁止(AUTH_SPEC §15-3 の tripwire —
+`write-headers.ts`)に当たるため「Head digest」。(c) **注記 = `CardCallout` ブロック**(muted の Card + 見出し +
+本文): tokens / invites / rotation の CLI 案内。(d) **一覧 = `table-page`**(前回の改訂 2 のまま: balanced +
+hasHover + LayoutHeader)。(e) **ロゴ(J 改訂)**: DP1 の実資産 `public/logo-inverted.svg`(朱の円盤に白抜きの
+「秘」= favicon と同形)を `<img>` で使う(サイドバー 32px・サインイン 56px)。インライン SVG 部品
+(`MaruhiMark`)は削除。色は朱で固定(ブラウザのタブの favicon と同じ見え方。dark で accent に追随させるなら
+site と同じ生成物 `logo-inverted-dark.svg` + `<picture>` の案があるが、資産を増やすため見送り)。(f) **横幅**:
+所有者の「コンテンツが横幅いっぱい」への見解 — Layout の `contentWidth` は 1040 で、1920px では中央に
+キャップされる(Artifact の 1920 スクリーンショット)。1280px ではサイドバー 260 を引いた 1020 が上限なので
+いっぱいに見える。Astryx の layout docs は「表・盤面は領域を満たし、散文・フォームはキャップ」で、テンプレートも
+`table-page` = キャップなし、`settings` = 1440、`detail-page` = 1000。よって表のページは現状(1040)を維持し、
+散文は `SectionHeader` の説明と注記(Card)で幅を絞る。960 に下げる案は表の列幅を圧迫するため採らない。
+e2e 26 件(監査の指し方を行 + インスペクタに追随)、axe 24 態(1920 を追加)で違反 0。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。

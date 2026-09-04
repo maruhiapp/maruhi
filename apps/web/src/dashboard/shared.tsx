@@ -272,12 +272,11 @@ export function HexText({
 }
 
 /**
- * 狭い幅の判定(DP3 裁定 D)。AppShell の mobileNav 既定ブレークポイント `md`
- * (768px、`(max-width: 768px)`)と同じ式にし、ナビのドロワー化と本文の表示形
- * 切替(監査一覧の Table → List)が同じ幅で起きるようにする。他の表は Astryx の
- * Table 自身が横スクロール枠(role="group" の scroll wrapper)を持つのでそのまま。
+ * インスペクタ(選択行の詳細パネル)を横に並べられる幅(DP3 裁定 C 改訂)。Astryx の
+ * `incident-console` / `detail-page` テンプレートと同じ 1024px 境界。以下では全画面 Dialog。
+ * 他の表は Astryx の Table 自身が横スクロール枠(role="group" の scroll wrapper)を持つのでそのまま。
  */
-export const NARROW_VIEWPORT_QUERY = "(max-width: 768px)";
+export const INSPECTOR_VIEWPORT_QUERY = "(min-width: 1025px)";
 
 /**
  * 期限の表示(裁定 CQ — docs/notes/session-45.md)。表示の主体は常にサーバー

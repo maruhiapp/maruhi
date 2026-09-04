@@ -578,8 +578,15 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       "Events visible to your role",
     );
     await page.getByTestId("audit-list-project").waitFor();
-    await expect(page.getByText("Seq", { exact: true }).count()).resolves.toBe(1);
+    // DP3 改訂 3: 行 + インスペクタ(incident-console の形)。seq は admin 応答にだけ載り、
+    // 行の先頭に "seq N" として出る(応答適応)
+    await expect(page.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
     await expect(page.getByText("chain.member_added").count()).resolves.toBeGreaterThan(0);
+    // 行を選ぶと 1024px 超では右のパネルに全フィールド(MetadataList)が出る
+    await page.getByRole("listitem").filter({ hasText: "chain.member_added" }).click();
+    const inspector = page.getByLabel("Event details");
+    await inspector.getByText("Row id", { exact: true }).waitFor();
+    await expect(inspector.getByText("user_colleague", { exact: true }).count()).resolves.toBe(1);
     // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)。
     // W3b で管理タブ "Invites"(S8)が同語で並ぶため、ToggleButtonGroup(DP3 で
     // SegmentedControl から置換)の押下ボタンを role で指す
@@ -883,6 +890,12 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await expect(list.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
     await expect(list.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
     await expect(list.getByText("seq 1", { exact: true }).count()).resolves.toBe(1);
+    // 1024px 以下ではインスペクタが全画面 Dialog になる(detail-page のモバイル型)
+    await list.getByRole("listitem").filter({ hasText: "chain.genesis" }).click();
+    const dialog = page.getByRole("dialog", { name: "Event details" });
+    await dialog.getByText("Row id", { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
     // サイドバーはドロワーへ: トグルで開き、到達点とユーザー id が並ぶ
     await page.getByRole("button", { name: "Open navigation" }).click();
     const drawer = page.getByRole("dialog", { name: "Navigation" });
@@ -904,8 +917,8 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/account`, { waitUntil: "networkidle" });
     await page.getByTestId("audit-list-self").waitFor();
     await expect(page.getByText("auth.login_succeeded").count()).resolves.toBeGreaterThan(0);
-    // D1 経路は seq を返さない(AUDIT_SPEC §7)— 列も出ない(応答適応)
-    await expect(page.getByText("Seq", { exact: true }).count()).resolves.toBe(0);
+    // D1 経路は seq を返さない(AUDIT_SPEC §7)— 行にも出ない(応答適応)
+    await expect(page.getByText(/^seq /).count()).resolves.toBe(0);
     expect(violations).toEqual([]);
     await page.close();
   });
