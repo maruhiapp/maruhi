@@ -512,6 +512,25 @@ SideNavItem / Card / Button が透過する)。axe 18 態で違反 0、キーボ
 ボタン・ドロワー(Escape で閉じて焦点がトグルへ戻る)を確認。E の「直さなかったもの」に挙げた
 `TopNavHeading` の焦点リングは TopNav を使わなくなったため対象外(SideNavHeading は accent 2px)。
 
+**A 改訂 2(2026-09-04、所有者レビュー 2 回目 — ロゴ・サインインの位置・余白・Table / Settings テンプレート)**:
+所有者の指摘 4 点への対応。(a) **ロゴ**: NavIcon(accent の円盤)の中に環付きの `MaruhiMark` を置いていたため
+「円の中に円」に見えていた。`MaruhiMark` に `hasRing` を足し、円盤の中は環なしの字形だけ(`size="md"`、
+円盤の約 6 割)にして favicon(DP1 裁定 E の反転版)と同じ「円盤 + 字形」に揃えた。(b) **サインインの位置**:
+`Center minHeight="100%"` は親に高さが無く解決されず上に寄っていた → `minHeight="100dvh"`(`login`
+テンプレートは body の高さを前提に `minHeight: '100%'` を style で置く。本リポジトリは style 禁止なので
+ビューポート単位で同じ結果を得る)。(c) **Table / Form / Settings テンプレートの参照**: 改訂 1 は `shell-side-nav` /
+`login` / `LayoutHeaderWithActions` のみを起点にしていた。`table-page`(`density="balanced"` + `hasHover`、
+LayoutHeader の h1 + LayoutContent の VStack gap 4)、`settings`(節 = 見出し level 3 + 1 行の説明 + 内容、
+節間は Divider、入力を伴う節は `Grid columns={{minWidth: 320}} gap={10}` の 2 列 = 見出し | 入力)、
+`SectionWithDividers` を読み、次を採った: 全 Table を `balanced` + `hasHover`(compact は「ログを高速に
+走査する領域」向けで、監査も所有者の「詰まっている」評価を優先して balanced)、節の見出しブロックを
+`SectionHeader`(`shared.tsx` — `Heading level={3} accessibilityLevel={2}` + supporting の説明。見た目は
+テンプレートの level 3、文書構造は h1 直下の h2 を保つ)に統一、S4 の「Open a project by ID」を settings
+テンプレートの 2 列 Grid に、コントロールのサイズを md(balanced と対)に。`contact-form` は入力欄が無い
+ダッシュボードには当てはまらない。(d) **余白**: ページ本文の節間 gap 6 → 8、節内(見出しブロック → 内容)
+gap 4、概要タブの節間 gap 5 → 8、監査 / Load more 周りを gap 4。Astryx spacing docs の「tight は 0.5〜2、
+section は 4〜8」に合わせ、詰め寄りだった 2〜3 を使わない。e2e 26 件・axe 18 態は不変で通過。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。

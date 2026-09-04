@@ -158,7 +158,8 @@ function TokensTable({
       data={tokens.map(toTokenRow)}
       columns={buildTokenColumns(revocation, onArm, onConfirm)}
       idKey="id"
-      density="compact"
+      density="balanced"
+      hasHover
       dividers="rows"
       data-testid="token-table"
     />

@@ -261,7 +261,7 @@ function EventsView({
 }): ReactNode {
   if (isNarrow) {
     return (
-      <List density="compact" hasDividers>
+      <List density="balanced" hasDividers>
         {events.map((event) => (
           <EventListItem key={event.id} event={event} />
         ))}
@@ -273,7 +273,9 @@ function EventsView({
   const hasSeq = events.some((event) => event.seq !== undefined);
   const rows: AuditRow[] = events.map((event) => ({ id: event.id, event }));
   const columns = hasSeq ? [SEQ_COLUMN, ...EVENT_COLUMNS] : EVENT_COLUMNS;
-  return <Table data={rows} columns={columns} idKey="id" density="compact" dividers="rows" />;
+  return (
+    <Table data={rows} columns={columns} idKey="id" density="balanced" hasHover dividers="rows" />
+  );
 }
 
 interface LoadedState {

@@ -9,7 +9,7 @@
 //   SideNav が AppShell 生成のドロワーへ移る(スキップリンク・main ランドマークも AppShell)
 // - ページ = `table-page` / `LayoutHeaderWithActions`: Layout(fill)の header スロットに
 //   パンくず + h1 + 説明、content スロットに本文。main の内部スクロール
-// - サインイン = `astryx template login`: Center + ロゴ + Card(見出し・説明・主ボタン)
+// - サインイン = `astryx template login`: Center(ビューポート全高)+ ロゴ + Card(見出し・説明・主ボタン)
 //
 // セッション状態(`GET /auth/me`)はシェルが 1 か所で持つ。401 は全画面で同じサインイン
 // 画面に落ち、ok のときだけ本文を描く(子のフェッチは me の確認後 — 1 往復の直列化を
@@ -27,7 +27,7 @@ import { Layout, LayoutContent, LayoutHeader, VStack } from "@astryxdesign/core/
 import { NavIcon } from "@astryxdesign/core/NavIcon";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Heading, Text } from "@astryxdesign/core/Text";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, type SVGProps, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
 import { apiPaths } from "./endpoints.ts";
@@ -39,6 +39,11 @@ import {
   UserCircleIcon,
 } from "./icons.tsx";
 import { MaruhiMark } from "./MaruhiMark.tsx";
+
+/** 環なしの「秘」(NavIcon 用)。Icon は ComponentType を受けるので部分適用で渡す。 */
+function MaruhiGlyph(props: SVGProps<SVGSVGElement>): ReactNode {
+  return <MaruhiMark hasRing={false} {...props} />;
+}
 import { markResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
 import { FailureNotice, LoadingRow, ServerReportedNote } from "./shared.tsx";
@@ -124,8 +129,9 @@ function DashboardSideNav({
       header={
         <SideNavHeading
           heading="maruhi"
-          // NavIcon は accent の円盤。中の ㊙ は on-accent(継承色)で描き、favicon と同じ反転版になる
-          icon={<NavIcon icon={<Icon icon={MaruhiMark} size="sm" />} />}
+          // NavIcon は accent の円盤。中は環なしの「秘」を on-accent(継承色)で描き、favicon と同じ
+          // 反転版(円盤 + 字形)になる — 環付きだと円の中に円が重なって見える
+          icon={<NavIcon icon={<Icon icon={MaruhiGlyph} size="md" />} />}
           headingHref={spaPaths.dashboard()}
         />
       }
@@ -158,7 +164,7 @@ function DashboardSideNav({
 /** サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。 */
 function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
   return (
-    <Center axis="both" padding={6} minHeight="100%">
+    <Center axis="both" padding={6} minHeight="100dvh">
       <VStack gap={4} align="center" width="100%" maxWidth={400}>
         <VStack gap={2} align="center">
           <Icon icon={MaruhiMark} color="accent" size="lg" />
@@ -295,7 +301,7 @@ function SignedInFrame({
         }
         content={
           <LayoutContent>
-            <VStack gap={6}>
+            <VStack gap={8}>
               {children}
               <ServerReportedNote />
             </VStack>
@@ -309,7 +315,7 @@ function SignedInFrame({
 /** セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。 */
 function StatusFrame({ children }: { children: ReactNode }): ReactNode {
   return (
-    <Center axis="both" padding={6} minHeight="100%">
+    <Center axis="both" padding={6} minHeight="100dvh">
       <VStack width="100%" maxWidth={480}>
         {children}
       </VStack>

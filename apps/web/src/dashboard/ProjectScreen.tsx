@@ -36,6 +36,7 @@ import {
   HexText,
   LoadingRow,
   RoleToken,
+  SectionHeader,
 } from "./shared.tsx";
 import type {
   AuditEventsPage,
@@ -96,7 +97,9 @@ function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): R
   if (servers.length === 0) return null;
   return (
     <VStack gap={2}>
-      <Heading level={3}>Granted servers</Heading>
+      <Heading level={4} accessibilityLevel={3}>
+        Granted servers
+      </Heading>
       {servers.map((server) => (
         <HStack key={server.keyFingerprintHex} gap={2} align="center" wrap="wrap">
           <HexText>{server.keyFingerprintHex}</HexText>
@@ -119,20 +122,24 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
     sinceSeq: m.sinceSeq,
   }));
   return (
-    <VStack gap={4} data-testid="chain-section">
+    <VStack gap={6} data-testid="chain-section">
       <VStack gap={1}>
         <Text type="supporting">
           Chain head: seq {snapshot.headSeq} · <HexText>{snapshot.headHashHex}</HexText>
         </Text>
         <Text type="supporting">{attestationSummary(snapshot)}</Text>
       </VStack>
-      <VStack gap={2}>
-        <Heading level={2}>Members</Heading>
+      <VStack gap={4}>
+        <SectionHeader
+          title="Members"
+          description="Chain-derived members and roles, as reported by the server."
+        />
         <Table
           data={memberRows}
           columns={MEMBER_COLUMNS}
           idKey="id"
-          density="compact"
+          density="balanced"
+          hasHover
           dividers="rows"
           data-testid="member-table"
         />
@@ -283,8 +290,11 @@ function EnvironmentsBody({
     setSelectedEnvironmentId(environmentId === selectedEnvironmentId ? undefined : environmentId);
   const rows = environments.map(toEnvironmentRow);
   return (
-    <VStack gap={3}>
-      <Heading level={2}>Environments</Heading>
+    <VStack gap={4}>
+      <SectionHeader
+        title="Environments"
+        description="Environments and their variable names (metadata only — values never appear here)."
+      />
       {rows.length === 0 ? (
         <EmptyNotice
           title="No environments"
@@ -295,7 +305,8 @@ function EnvironmentsBody({
           data={rows}
           columns={buildEnvironmentColumns(selectedEnvironmentId, onToggle)}
           idKey="id"
-          density="compact"
+          density="balanced"
+          hasHover
           dividers="rows"
           data-testid="env-table"
         />
@@ -325,7 +336,7 @@ function OverviewTab({ projectId }: { projectId: string }): ReactNode {
   if (state.kind === "loading") return <LoadingRow label="Loading chain" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
-    <VStack gap={5}>
+    <VStack gap={8}>
       <ChainView snapshot={state.value} />
       <Divider />
       <EnvironmentsSection projectId={projectId} />
@@ -478,7 +489,8 @@ function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): R
       data={flags.map(toFlagRow)}
       columns={FLAG_COLUMNS}
       idKey="id"
-      density="compact"
+      density="balanced"
+      hasHover
       dividers="rows"
       data-testid="rotation-table"
     />
@@ -548,7 +560,7 @@ function ProjectTabBody({ tab, projectId }: { tab: ProjectTab; projectId: string
 function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
   const [tab, setTab] = useState<ProjectTab>("overview");
   return (
-    <VStack gap={5}>
+    <VStack gap={6}>
       {/* 同一画面内のパネル切替なので navigation landmark ではなく WAI-ARIA tabs */}
       <TabList
         value={tab}

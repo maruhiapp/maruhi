@@ -12,7 +12,7 @@
 //   期限切れ pending の掃除も可 — の写し)
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
@@ -25,6 +25,7 @@ import {
   LoadingRow,
   RevokeControl,
   RoleToken,
+  SectionHeader,
 } from "./shared.tsx";
 import type { InvitationList, InvitationSummary, InviteStatus } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
@@ -175,7 +176,8 @@ function InvitesTable({
       data={invitations.map(toInviteRow)}
       columns={buildInviteColumns(revocation, onArm, onConfirm)}
       idKey="id"
-      density="compact"
+      density="balanced"
+      hasHover
       dividers="rows"
       data-testid="invite-table"
     />
@@ -216,7 +218,10 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
   const { revocation, arm, confirm } = useRevocation(revokePath, reload);
   return (
     <VStack gap={4} data-testid="invite-list">
-      <Heading level={2}>Invitations</Heading>
+      <SectionHeader
+        title="Invitations"
+        description="Pending, accepted, and completed invitations for this project, as reported by the server."
+      />
       <InvitesResource
         revocation={revocation}
         onArm={arm}

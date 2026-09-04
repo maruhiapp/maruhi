@@ -22,7 +22,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { Text } from "@astryxdesign/core/Text";
+import { Heading, Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import * as stylex from "@stylexjs/stylex";
 import type { ReactNode } from "react";
@@ -178,6 +178,31 @@ export function FailureNotice({
   if (failure.kind === "forbidden") return <ForbiddenNotice reason={failure.reason} />;
   if (failure.kind === "gone") return <GoneNotice reason={failure.reason} subject={subject} />;
   return <StatusNotice failure={failure} onRetry={onRetry} subject={subject} />;
+}
+
+/**
+ * 節の見出しブロック(Astryx `settings` テンプレートの形: 見出し + 1 行の説明)。
+ * 見た目は level 3、文書構造はページ h1 直下の h2(accessibilityLevel)。
+ */
+export function SectionHeader({
+  title,
+  description,
+}: {
+  title: string;
+  description?: string;
+}): ReactNode {
+  return (
+    <VStack gap={1}>
+      <Heading level={3} accessibilityLevel={2}>
+        {title}
+      </Heading>
+      {description === undefined ? null : (
+        <Text type="supporting" color="secondary">
+          {description}
+        </Text>
+      )}
+    </VStack>
+  );
 }
 
 /**

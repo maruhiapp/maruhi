@@ -9,10 +9,11 @@
 //   の暫定縮退の昇格)
 import { Button } from "@astryxdesign/core/Button";
 import { Divider } from "@astryxdesign/core/Divider";
+import { Grid } from "@astryxdesign/core/Grid";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
@@ -27,6 +28,7 @@ import {
   LoadingRow,
   navigateTo,
   RoleToken,
+  SectionHeader,
 } from "./shared.tsx";
 import type { ProjectList } from "./types.ts";
 
@@ -45,7 +47,11 @@ interface ProjectsState {
   nextAfter: string | undefined;
 }
 
-function OpenByIdCard(): ReactNode {
+/**
+ * プロジェクト ID 直入力(`settings` テンプレートの 2 列 = 見出し + 説明 | 入力)。
+ * 狭い幅では Grid が 1 列に畳む。
+ */
+function OpenByIdSection(): ReactNode {
   const [projectId, setProjectId] = useState("");
   const [showFormatNote, setShowFormatNote] = useState(false);
   const open = () => {
@@ -57,33 +63,35 @@ function OpenByIdCard(): ReactNode {
     }
   };
   return (
-    <VStack gap={2} maxWidth={640}>
-      <Heading level={2}>Open a project by ID</Heading>
-      <Text as="p" type="supporting">
-        A project ID works like a bookmark: paste one to open its overview directly.
-      </Text>
-      <HStack gap={2} align="end" wrap="wrap">
-        <TextInput
-          label="Project ID"
-          isLabelHidden
-          size="sm"
-          value={projectId}
-          onChange={(value) => {
-            setProjectId(value);
-            setShowFormatNote(false);
-          }}
-          data-testid="project-id-input"
-        />
-        <Button label="Open" variant="secondary" size="sm" onClick={open} />
-      </HStack>
-      {showFormatNote ? (
-        <Text as="p" type="supporting" role="alert">
-          A project ID is 64 lowercase hex characters.
-        </Text>
-      ) : null}
-    </VStack>
+    <Grid columns={{ minWidth: 320 }} gap={10}>
+      <SectionHeader
+        title="Open a project by ID"
+        description="A project ID works like a bookmark: paste one to open its overview directly."
+      />
+      <VStack gap={2}>
+        <HStack gap={2} align="end" wrap="wrap">
+          <TextInput
+            label="Project ID"
+            isLabelHidden
+            value={projectId}
+            onChange={(value) => {
+              setProjectId(value);
+              setShowFormatNote(false);
+            }}
+            data-testid="project-id-input"
+          />
+          <Button label="Open" variant="secondary" onClick={open} />
+        </HStack>
+        {showFormatNote ? (
+          <Text as="p" type="supporting" role="alert">
+            A project ID is 64 lowercase hex characters.
+          </Text>
+        ) : null}
+      </VStack>
+    </Grid>
   );
 }
+
 // ---------------------------------------------------------------------------
 // S4: プロジェクト一覧
 // ---------------------------------------------------------------------------
@@ -159,7 +167,6 @@ function ProjectsFooter({
     <Button
       label="Load more"
       variant="secondary"
-      size="sm"
       onClick={onLoadMore}
       data-testid="load-more-projects"
     />
@@ -178,12 +185,13 @@ function ProjectsTableView({
   onLoadMore: () => void;
 }): ReactNode {
   return (
-    <VStack gap={3} align="start" data-testid="project-list">
+    <VStack gap={4} align="start" data-testid="project-list">
       <Table
         data={projects.rows}
         columns={PROJECT_COLUMNS}
         idKey="id"
-        density="compact"
+        density="balanced"
+        hasHover
         dividers="rows"
       />
       {/* 追記形(裁定 B-b): 既に描けた一覧の下に Load more の失敗を足す */}
@@ -260,13 +268,16 @@ export function DashboardScreen(): ReactNode {
         </Text>
       }
     >
-      <VStack gap={6}>
+      <VStack gap={8}>
         <VStack gap={4}>
-          <Heading level={2}>Your projects</Heading>
+          <SectionHeader
+            title="Your projects"
+            description="Open a project to see its members, environments, audit log, and rotation flags."
+          />
           <ProjectListSection />
         </VStack>
         <Divider />
-        <OpenByIdCard />
+        <OpenByIdSection />
       </VStack>
     </DashboardShell>
   );
