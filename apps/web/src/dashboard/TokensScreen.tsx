@@ -24,7 +24,7 @@ import {
   EmptyNotice,
   ExpiryCell,
   FailureNotice,
-  formatServerTime,
+  ServerTime,
   HexText,
   LoadingRow,
   RevokeButton,
@@ -105,18 +105,21 @@ function buildTokenColumns(
     },
     {
       key: "lastUsedAtMs",
-      header: "Last used (UTC)",
-      width: pixel(190),
-      renderCell: (row: TokenRow) => (
-        <Text type="supporting" size="sm" hasTabularNumbers>
-          {row.lastUsedAtMs === null ? "never" : formatServerTime(row.lastUsedAtMs)}
-        </Text>
-      ),
+      header: "Last used",
+      width: pixel(220),
+      renderCell: (row: TokenRow) =>
+        row.lastUsedAtMs === null ? (
+          <Text type="supporting" size="sm">
+            never
+          </Text>
+        ) : (
+          <ServerTime ms={row.lastUsedAtMs} />
+        ),
     },
     {
       key: "expiresAtMs",
-      header: "Expires (UTC)",
-      width: pixel(230),
+      header: "Expires",
+      width: pixel(260),
       renderCell: (row: TokenRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
     },
     {

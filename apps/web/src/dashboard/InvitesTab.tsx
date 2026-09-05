@@ -118,8 +118,8 @@ function buildInviteColumns(
     },
     {
       key: "expiresAtMs",
-      header: "Expires (UTC)",
-      width: pixel(230),
+      header: "Expires",
+      width: pixel(260),
       renderCell: (row: InviteRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
     },
     {

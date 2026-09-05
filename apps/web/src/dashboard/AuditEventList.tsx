@@ -23,7 +23,7 @@
 import { Button } from "@astryxdesign/core/Button";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Collapsible, CollapsibleGroup } from "@astryxdesign/core/Collapsible";
-import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { Text } from "@astryxdesign/core/Text";
@@ -36,7 +36,14 @@ import {
   payloadWithoutVariables,
   readSummaryLabel,
 } from "./audit-read.ts";
-import { EmptyNotice, FailureNotice, formatServerTime, HexText, LoadingRow } from "./shared.tsx";
+import {
+  EmptyNotice,
+  FailureNotice,
+  formatServerTime,
+  HexText,
+  LoadingRow,
+  ServerTime,
+} from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** 1 ページの取得。`before` は前ページ末尾行の row_id(AUDIT_SPEC §7)。 */
@@ -105,41 +112,39 @@ function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
 // ---------------------------------------------------------------------------
 
 /**
- * 1 イベントの要約 = Collapsible のトリガー(ボタン)の中身。主体 → 座標 → 時刻 / seq の順。
- * seq は応答に載っているときだけ出す(応答適応 — AUDIT_SPEC §7)。ボタンの中なので
- * 対話要素を含めない(Text / HexText のみ)。
+ * 1 イベントの要約 = Collapsible のトリガー(ボタン)の中身。主体 → 座標 → seq / 時刻の順。
+ * seq と時刻は 1 行で、イベント名の右に続く(右端に寄せない — 広い画面で名前と時刻の間が
+ * 空かない。裁定 Q)。狭い幅では名前の下へ折り返す。seq は応答に載っているときだけ出す
+ * (応答適応 — AUDIT_SPEC §7)。ボタンの中なので対話要素を含めない(Text / HexText、
+ * Timestamp は hover card なし)。
  */
 function EventSummary({ event }: { event: AuditEvent }): ReactNode {
   const listed = aggregatedReadVariables(event);
   return (
-    <HStack gap={4} align="start" width="100%">
-      <StackItem size="fill">
-        <VStack gap={1}>
-          <Text weight="semibold">{event.event}</Text>
-          <HStack gap={2} wrap="wrap" align="center">
-            <Text type="supporting" size="sm">
-              by <HexText>{actorHead(event)}</HexText>
+    <VStack gap={1}>
+      <HStack gap={4} align="center" wrap="wrap">
+        <Text weight="semibold">{event.event}</Text>
+        <HStack gap={3} align="center">
+          {event.seq === undefined ? null : (
+            <Text type="supporting" size="sm" hasTabularNumbers>
+              seq {event.seq}
             </Text>
-            <Fragments items={detailFragments(event)} />
-            {listed === null ? null : (
-              <Text type="supporting" size="sm">
-                {readSummaryLabel(listed.length)}
-              </Text>
-            )}
-          </HStack>
-        </VStack>
-      </StackItem>
-      <VStack gap={0} align="end">
-        <Text type="supporting" size="sm" hasTabularNumbers>
-          {formatServerTime(event.serverTs)}
+          )}
+          <ServerTime ms={event.serverTs} hasTooltip={false} />
+        </HStack>
+      </HStack>
+      <HStack gap={2} wrap="wrap" align="center">
+        <Text type="supporting" size="sm">
+          by <HexText>{actorHead(event)}</HexText>
         </Text>
-        {event.seq === undefined ? null : (
-          <Text type="supporting" size="sm" hasTabularNumbers>
-            seq {event.seq}
+        <Fragments items={detailFragments(event)} />
+        {listed === null ? null : (
+          <Text type="supporting" size="sm">
+            {readSummaryLabel(listed.length)}
           </Text>
         )}
-      </VStack>
-    </HStack>
+      </HStack>
+    </VStack>
   );
 }
 
@@ -203,6 +208,8 @@ function EventDetails({ event }: { event: AuditEvent }): ReactNode {
     <VStack gap={4}>
       <MetadataList columns="single" label={{ position: "start", width: DETAIL_LABEL_WIDTH }}>
         <DetailItem label="Seq" value={event.seq === undefined ? undefined : String(event.seq)} />
+        {/* 記録どおりのサーバー時刻(UTC の ISO)。行の表示は閲覧者の時間帯 */}
+        <DetailItem label="Recorded at" value={formatServerTime(event.serverTs)} />
         <DetailItem label="Actor" value={actorHead(event)} />
         {actorFragments(event).map((item) => (
           <DetailItem key={item.label} label={item.label} value={item.value} />

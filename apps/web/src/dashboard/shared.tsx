@@ -24,6 +24,7 @@ import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Heading, Text } from "@astryxdesign/core/Text";
+import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
 import * as stylex from "@stylexjs/stylex";
 import type { ReactNode } from "react";
@@ -46,10 +47,53 @@ export function navigateTo(path: string): void {
   }
 }
 
-/** サーバー時刻(ms)の表示形。UTC 明示の ISO 形式(ローカル換算の演出をしない)。 */
+/**
+ * サーバー時刻(ms)の記録値としての表示形。UTC 明示の ISO 形式。人が読む一覧では
+ * `ServerTime` を使い、これは監査の展開部(Recorded at — 記録どおりの値)専用。
+ */
 export function formatServerTime(ms: number): string {
   const date = new Date(ms);
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(ms);
+}
+
+// hover card の行: UTC の絶対時刻と Unix 秒(どちらもコピー可)。表示は閲覧者の時間帯 + 略称
+const SERVER_TIME_TOOLTIP = [
+  { timezoneID: "UTC", label: "UTC", isCopyable: true },
+  { format: "unix_seconds", label: "Unix", isCopyable: true },
+] as const;
+
+/**
+ * サーバー時刻(ms)の人が読む表示(DP3 改訂 6 — 裁定 Q): Astryx `Timestamp`(date_time +
+ * 時間帯の略称)。値はサーバー申告の serverTs / expiresAtMs そのもので、換算は閲覧者の
+ * 時間帯での描画だけ。hover card に UTC と Unix 秒(コピー可)。`hasTooltip={false}` は
+ * ボタンの中(監査行のトリガー)で使う — 入れ子の対話要素を作らない。
+ * 範囲外の ms(Date が Invalid — deepsec 2026-08-22)は生の数値を出す。
+ */
+export function ServerTime({
+  ms,
+  hasTooltip = true,
+}: {
+  ms: number;
+  hasTooltip?: boolean;
+}): ReactNode {
+  const date = new Date(ms);
+  if (!Number.isFinite(date.getTime())) {
+    return (
+      <Text type="supporting" size="sm" hasTabularNumbers>
+        {String(ms)}
+      </Text>
+    );
+  }
+  return (
+    <Timestamp
+      value={date.toISOString()}
+      format="date_time"
+      isTimezoneShown
+      hasTooltip={hasTooltip}
+      tooltipEntries={SERVER_TIME_TOOLTIP}
+      size="sm"
+    />
+  );
 }
 
 const ROLE_TOKEN_COLOR: Record<ChainRole, "purple" | "blue" | "green" | "gray"> = {
@@ -287,9 +331,13 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
   const expired = expiresAtMs === null || expiresAtMs <= Date.now();
   return (
     <HStack gap={2} align="center" wrap="wrap">
-      <Text type="supporting" size="sm" hasTabularNumbers>
-        {expiresAtMs === null ? "no expiry recorded" : formatServerTime(expiresAtMs)}
-      </Text>
+      {expiresAtMs === null ? (
+        <Text type="supporting" size="sm">
+          no expiry recorded
+        </Text>
+      ) : (
+        <ServerTime ms={expiresAtMs} />
+      )}
       {expired ? <Token label="Expired" size="sm" color="red" /> : null}
     </HStack>
   );

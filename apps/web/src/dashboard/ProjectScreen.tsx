@@ -34,7 +34,7 @@ import { projectRoute, spaPaths } from "./routes.ts";
 import {
   EmptyNotice,
   FailureNotice,
-  formatServerTime,
+  ServerTime,
   HexText,
   LoadingRow,
   RoleToken,
@@ -482,13 +482,9 @@ const FLAG_COLUMNS: TableColumn<FlagRow>[] = [
   },
   {
     key: "recommendedAtMs",
-    header: "Recommended at (UTC)",
-    width: pixel(200),
-    renderCell: (row: FlagRow) => (
-      <Text type="supporting" size="sm" hasTabularNumbers>
-        {formatServerTime(row.recommendedAtMs)}
-      </Text>
-    ),
+    header: "Recommended at",
+    width: pixel(220),
+    renderCell: (row: FlagRow) => <ServerTime ms={row.recommendedAtMs} />,
   },
 ];
 

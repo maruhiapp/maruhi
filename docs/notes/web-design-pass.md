@@ -610,6 +610,25 @@ Projects 画面は h1 が一覧の見出しを兼ねる(1 領域に主見出し�
 検証: e2e 26 件(監査の指し方を「行 = button〔aria-expanded〕+ 可視の Row id」に追随、モバイル型の
 Dialog 検査を「同じ列で展開・single で先の行が閉じる」検査に置換)、axe 24 態で違反 0。
 
+**改訂 6(2026-09-05、所有者レビュー 6 回目 — 監査行の時刻が 2 段・Astryx に良い部品は無いか)**:
+
+**Q. サーバー時刻の表示** — 列挙: (i) 現状(`formatServerTime` の UTC ISO 文字列 `2025-08-24T01:48:20.000Z` を
+Text で。監査行では時刻と seq が右端で 2 段)/ (ii) ISO のまま seq と 1 行に並べる / (iii) **Astryx `Timestamp`
+(`format="date_time"` + `isTimezoneShown`)**: 閲覧者の時間帯で `Aug 24, 2025, 1:48 AM UTC` の形、hover card に
+UTC と Unix 秒(コピー可 — `tooltipEntries`)/ (iv) `Timestamp format="auto"`(直近は相対時刻)/ (v) `system_date_time`
+(ISO 風)。→ **(iii) を採用**し、監査行だけでなくサーバー時刻の全表示(tokens の Last used / Expires、invites の
+Expires、rotation の Recommended at、`ExpiryCell`)を `shared.tsx` の `ServerTime` 1 部品に揃える。Astryx の
+Timestamp docs は「生の ISO を出さない」「監査ログでは時間帯の略称を出す」「正確な値が要る記録には
+tooltipEntries でコピー行を付ける」を規範としており、そのまま従った。(iv) は監査の精度(いつ、が主役)に
+合わないので棄却。表の列見出しから「(UTC)」を外す(表示は閲覧者の時間帯 + 略称で、UTC は hover card)。
+値はサーバー申告の ms そのもので、換算は描画だけ — §4 の「as reported by the server」は崩れない。監査行の
+トリガー(ボタン)の中では hover card を切る(`hasTooltip={false}` — 入れ子の対話要素を作らない)代わりに、
+展開部に「Recorded at」として記録どおりの UTC ISO を出す。`formatServerTime` はその 1 用途に残す。
+範囲外の ms(deepsec 2026-08-22 — Invalid Date)は従来どおり生の数値。監査行の右端は seq + 時刻の
+1 行にし、イベント名の右に続ける(右端に寄せない — 広い画面で名前と時刻の間が空かない。狭い幅では
+名前の下へ折り返す)。検証: e2e 26 件、axe 24 態で違反 0(Timestamp を button の中に置いても入れ子の
+対話要素は無い)。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
