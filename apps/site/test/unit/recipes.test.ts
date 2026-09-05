@@ -116,9 +116,13 @@ function expectValuesOffCommandLines(calls: Call[]): void {
   }
 }
 
-/** The xtrace output (`set -x`) of a recipe run never shows an injected value. */
+/**
+ * The xtrace output (`set -x`) of a recipe run never shows an injected value. The trace prefix is
+ * `PS4`, whose default differs per shell (`+ ` in bash / dash, `+zsh:1> ` in zsh), so the proof that
+ * tracing happened is a line starting with `+` that shows the outer `maruhi run` command.
+ */
 function expectValuesOffTrace(stderr: string): void {
-  expect(stderr).toContain("+ ");
+  expect(stderr).toMatch(/^\+.*\bmaruhi run --env production\b/m);
   for (const fragment of valueFragments) {
     expect(stderr).not.toContain(fragment);
   }

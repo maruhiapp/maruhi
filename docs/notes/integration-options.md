@@ -749,9 +749,14 @@ edge runtime は 1 変数 5 KB — 「per variable」と読ませると 30 KiB �
 達した → 継承する PATH / HOME をモジュール定数に出し、xtrace は引数配列と env への 1 分岐に畳んだ(手元の fallow は改訂 2 の後に
 回し直しておらず、CI で発覚 — 以後は改訂ごとに `fallow:audit` まで回す)。
 
+**改訂 4(2026-09-05、Cursor Bugbot〔c7af45b〕)**: xtrace の検査は「`+ ` が stderr にある」をトレースが出た証拠にしていたが、
+`+ ` は bash / dash の既定 `PS4` で、zsh の既定は `+%N:%i> `。Workers の xtrace は外側のシェルしかトレースしない(子は jq)ので、
+zsh が PATH にある機械(macOS)では落ちる。証拠を「`+` で始まり外側の `maruhi run --env production` を含む行」に変え、この環境に
+zsh 5.9 を入れて 4 シェル(sh / bash / zsh / dash)で通した(29 件)。
+
 **検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
-(Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / dash の 3 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕)。
-実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・zsh・macOS(BSD `printenv`)は人間タスク。ページの
+(Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / zsh / dash の 4 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕— zsh は改訂 4 で導入)。
+実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・macOS(BSD `printenv`)は人間タスク。ページの
 light / dark のスクリーンショットは PR の Artifact。
 
 ---
