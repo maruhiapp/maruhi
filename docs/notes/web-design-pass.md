@@ -903,10 +903,32 @@ script 要素 0 を検査する。before / after は 11 ページ × 4 態 = 各
 (ラベル / 値。狭い幅では 1 列)に。tokenName は `<code>` の不活性描画のまま、補足「Chosen by the requester,
 shown verbatim.」を `<small>` に分離。
 
+**B 改訂 1(2026-09-05、pullfrog の初回レビュー — 未定義トークン)**: 指摘 = `pages.css` が参照する
+`--font-weight-semibold` / `--font-weight-medium` は `theme/maruhi.css` では**参照されるだけで定義されず**
+(定義は Astryx core の `astryx.css` にあり、ダッシュボードはそれを追加で読むが儀式ページは読まない)、
+未解決の `var()` が invalid at computed-value time で無言に落ちて、h1 / h2 / `strong`(フィッシングガードの
+一文)/ outcome 行の太字が全部消えていた。目視・axe・e2e のどれも捕まえられない欠陥(スクリーンショットは
+同じ 2 本の CSS を配信するので同じ欠落を再現し、axe は太さを見ず、e2e は背景色しか見ていなかった)。
+列挙: (i) `defineTheme` の `tokens` に `--font-weight-*` を足して `theme:build`(テーマは本 PR の範囲外 —
+触るなら所有者確認)/ (ii) `pages.css` に数値(600 / 500)を書く(Astryx の値の写し)/ (iii) **CSS の
+キーワード `bold` を使う**(h1 / h2 / `strong` は UA 既定が bold なので宣言を置き換えるだけ、brand と
+outcome 行も `bold`。`.code-label` と `.button` の medium は落とす — 大文字 + 字間 / 塗りで足りる)/ (iv)
+`var(--font-weight-semibold, bold)` のフォールバック(後述の機械検査が「未定義だが許容」の例外を持つことに
+なる)/ (v) Astryx core の stylesheet も同梱(数十 KB・儀式ページに不要な規則)。第 1 周の新案: 「参照集合 ⊆
+定義集合」を `write-headers.ts` でビルド時に検査する(あり — 方式の如何に依らず同種の欠陥を構成で塞ぐ)。
+第 2 周: なし。**選定 = (iii) + 機械検査**。テーマに `tokens` を足す (i) は所有者の判断として PR に残す
+(semibold 600 を儀式ページで使うなら `maruhi.ts` への追加が正で、その時は `pages.css` を `var()` に戻す)。
+検査は `pages.css` の `var(--…)` を集め、`theme/maruhi.css` の `--…:` 定義集合との差が空でなければ throw
+(旧 `pages.css` に当てると 2 件を検出、新版は 0 件)。e2e に h1 / outcome 行の `font-weight` = 700 を追加。
+同じレビューで「`theme.css` のバイト等価検査は同じスクリプトが直前に書いた 2 ファイルを比べるだけで
+常に一致する(担保になっていない)」も受け、等価検査の対象から `theme.css` を外し(`invite.html` /
+`pages.css` は vite の publicDir コピーを経由するので意味がある)、`/theme.css` の契約は上のトークン解決
+検査が担う形に改めた。
+
 **検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。サーバーの
 auth / signup-policy テスト 87 件通過。web e2e 30 件通過(`/theme.css` `/pages.css` の実配信・バイト一致・
-再検証ヘッダー、一様エラーページのスタイル適用を追加)。axe 44 態で違反 0。スクリーンショット before / after
-各 44 枚、CSP 違反 0。
+再検証ヘッダー、一様エラーページのスタイル適用と太さを追加)。axe 44 態で違反 0。スクリーンショット
+before / after 各 44 枚(改訂 1 後に撮り直し)、CSP 違反 0。
 
 ## 6. スコープ外
 

@@ -104,19 +104,39 @@ for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
 }
 // 複製忠実性(裁定 BH): vite publicDir のコピーが無変換であること(= レビューした
 // ソースの字面がそのまま配信バイトであること)をバイト等価で固定する。将来の
-// ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する。/theme.css も
-// 同じ契約(配信バイト = theme/maruhi.css)
+// ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する。/theme.css は
+// 上で本スクリプト自身が無変換に書いており(vite を経由しない)、同じ実行内で比べても
+// 常に一致するため対象にしない(pullfrog レビュー反映 — 代わりに下のトークン解決
+// 検査が /theme.css の契約を担う)
 const sourceDir = join(import.meta.dirname, "..", "public");
-for (const [source, asset] of [
-  [join(sourceDir, "invite.html"), "invite.html"],
-  [join(sourceDir, "pages.css"), "pages.css"],
-  [themeSource, "theme.css"],
-] as const) {
-  if (readFileSync(source, "utf8") !== readFileSync(join(publicDir, asset), "utf8")) {
+for (const asset of ["invite.html", "pages.css"]) {
+  if (
+    readFileSync(join(sourceDir, asset), "utf8") !== readFileSync(join(publicDir, asset), "utf8")
+  ) {
     throw new Error(
       `${asset} がソースとビルド出力で一致しない(publicDir の無変換コピーの前提が破れた)`,
     );
   }
+}
+
+// ---- pages.css のトークン解決検査(DP4 改訂 1 — pullfrog レビュー反映) ----
+// スクリプトなしページが読むトークン源は /theme.css(= theme/maruhi.css)だけで、
+// ダッシュボードが追加で読む Astryx core の stylesheet(reset.css / astryx.css)は
+// 届かない。theme/maruhi.css は Astryx core のトークン(font-weight 系)を**参照する
+// だけで定義しない**ものを含むため、pages.css の `var(--…)` が theme/maruhi.css で
+// 定義されないと、未解決の var() が invalid at computed-value time で無言に落ちる
+// (初版はこれで全 font-weight が消えていた)。参照集合 ⊆ 定義集合をビルドで固定する
+const pagesCss = readFileSync(join(sourceDir, "pages.css"), "utf8");
+const themeCss = readFileSync(themeSource, "utf8");
+const definedTokens = new Set([...themeCss.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+const unresolved = [
+  ...new Set([...pagesCss.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((m) => m[1])),
+].filter((token) => !definedTokens.has(token));
+if (unresolved.length > 0) {
+  throw new Error(
+    `pages.css が theme/maruhi.css に無いトークンを参照している: ${unresolved.join(", ")}` +
+      "(スクリプトなしページは /theme.css 以外のトークン源を読まない)",
+  );
 }
 
 // ---- SPA バンドルのフラグメント非読取検査(裁定 BG) ----
@@ -243,5 +263,6 @@ if (
 
 console.log(
   `_headers written (${hashes.length} inline script hash + /invite per-path CSP), ` +
-    `_redirects written (${inviteRedirectRules.length} rules), theme.css + pages.css verified`,
+    `_redirects written (${inviteRedirectRules.length} rules), ` +
+    `pages.css tokens resolved against theme.css (${definedTokens.size} defined)`,
 );

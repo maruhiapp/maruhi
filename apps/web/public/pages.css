@@ -13,6 +13,13 @@
  * that attribute on <html> (the same mark the dashboard root carries). Only layout, spacing and
  * the shapes specific to these pages live here. Browser support matches the dashboard
  * (light-dark(), @scope, CSS custom properties).
+ *
+ * /theme.css is the ONLY token source these pages load (the dashboard additionally loads Astryx's
+ * core stylesheet, these pages do not), so every `var(--…)` here must be defined in theme/maruhi.css
+ * — scripts/write-headers.ts fails the build otherwise. Font weights are the one family of tokens
+ * the theme file references without defining (they come from Astryx core), so weights are written
+ * as CSS keywords: `bold` where the UA default is bold anyway (headings, strong) and where a line
+ * must stand out (brand, outcome). No numeric weights, no brand values.
  */
 
 :root {
@@ -44,7 +51,7 @@ body {
   margin-bottom: 2.5rem;
   font-family: var(--font-family-heading);
   font-size: 1.125rem;
-  font-weight: var(--font-weight-semibold);
+  font-weight: bold;
   letter-spacing: 0.01em;
 }
 
@@ -57,7 +64,7 @@ h1 {
   margin: 0 0 1rem;
   font-family: var(--font-family-heading);
   font-size: var(--font-size-3xl);
-  font-weight: var(--font-weight-semibold);
+  font-weight: bold;
   line-height: 1.25;
   letter-spacing: -0.01em;
   text-wrap: balance;
@@ -67,7 +74,7 @@ h2 {
   margin: 2rem 0 0.75rem;
   font-family: var(--font-family-heading);
   font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-semibold);
+  font-weight: bold;
   line-height: 1.4;
 }
 
@@ -130,7 +137,7 @@ pre code {
 }
 
 strong {
-  font-weight: var(--font-weight-semibold);
+  font-weight: bold;
 }
 
 /* Outcome line ("No account was created." / "No token was issued.") — the one fact each
@@ -139,7 +146,7 @@ strong {
   margin: 1.25rem 0;
   padding: 0.125rem 0 0.125rem 0.875rem;
   border-left: 3px solid var(--color-accent);
-  font-weight: var(--font-weight-semibold);
+  font-weight: bold;
 }
 
 /* Closing note (muted, separated by a hairline). */
@@ -172,7 +179,6 @@ strong {
   margin-bottom: 0.5rem;
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
-  font-weight: var(--font-weight-medium);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -259,7 +265,6 @@ strong {
   background: transparent;
   color: var(--color-text-primary);
   font: inherit;
-  font-weight: var(--font-weight-medium);
   line-height: 1.2;
   cursor: pointer;
 }

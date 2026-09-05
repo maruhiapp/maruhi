@@ -340,6 +340,12 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(maxWidth).toBe("640px");
     const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     expect(background).not.toBe("rgba(0, 0, 0, 0)");
+    // 太さの回帰(pullfrog レビュー反映): 初版は未定義トークンの var() で font-weight が
+    // 無言に落ち、h1 と強調文が normal になっていた。h1 と outcome 行が太字であること
+    for (const selector of ["h1", ".outcome"]) {
+      const weight = await page.locator(selector).evaluate((el) => getComputedStyle(el).fontWeight);
+      expect(weight, selector).toBe("700");
+    }
     // ロゴ(自己配信 SVG)が img-src 'self' 下で読めている
     const logoLoaded = await page
       .locator(".brand img")
