@@ -710,7 +710,7 @@ wrangler をプロジェクトの依存として入れている人はそれを�
 |---|---|---|---|---|---|---|---|
 | Cloudflare Workers `wrangler secret bulk` | 4.128.0(リポジトリのピン) | file 省略で stdin。JSON `{"k":"v"}`(推奨)か `.env`(dotenv 16.3.1 — `#` / 空白 / 引用符で壊れる)。readline で EOF まで。値は文字列のみ。1 回 100 件 | 同名は上書き(1 リクエスト) | JSON で `null` のみ(`.env` 不可) | `--name <worker>` / `-e <env>`(wrangler の名前付き環境) | `WRANGLER_SEND_METRICS=false`(`true`/`false` 厳密)/ `DO_NOT_TRACK=1` / `wrangler telemetry disable` / `send_metrics=false` | `--help` + `cli.js` の `parseBulkInputToObject` / `validateFileSecrets` + dotenv 16.3.1 の実測 + 上流 telemetry.md。空 stdin は exit 0(注意)。デバッグログ `WRANGLER_LOG_PATH` は未監査 |
 | Cloudflare Workers `wrangler secret put NAME` | 4.128.0 | 非対話なら stdin を EOF まで(`readFromStdin`) | 上書き | `secret delete` | 同上 | 同上 | `cli.js`。1 件ごとに新 version をデプロイ(bulk 推奨) |
-| Vercel `vercel env add NAME [env]` | 59.11.7(scratchpad に導入) | stdin が端末でなければ stdin。**最初の data チャンクのみ・500 ms 待ち**。1 行の値は末尾改行 1 つを除去、複数行は残す。env は `production` / `preview` / `development` / カンマ区切り、`[gitbranch]` | `--force`(無いと既存名は失敗)。`vercel env update` も stdin 可 | `vercel env rm NAME [env]` | 位置引数の env + `--project` / `--scope` / link 済みディレクトリ | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks` の `readStandardInput` / `normalizeStdinEnvValue` + 公式 docs/cli/env(2026-08-20)・docs/cli/about-telemetry(2026-03-17)。既定 sensitive(production / preview。development は不可)。`--value` は argv(使わない)。エージェント検出で `--non-interactive` 既定。空 stdin の挙動は未確認(実アカウント) |
+| Vercel `vercel env add NAME [env]` | 59.11.7(scratchpad に導入) | stdin が端末でなければ stdin。**最初の data チャンクのみ・500 ms 待ち**(実測: 65,536 バイトまでは完全に届き、それ以上は 64 KiB で切れる — 改訂 1)。1 行の値は末尾改行 1 つを除去、複数行は残す。env は `production` / `preview` / `development` / カンマ区切り、`[gitbranch]` | `--force`(無いと既存名は失敗)。`vercel env update` も stdin 可 | `vercel env rm NAME [env]` | 位置引数の env + `--project` / `--scope` / link 済みディレクトリ | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks` の `readStandardInput` / `normalizeStdinEnvValue` + 公式 docs/cli/env(2026-08-20)・docs/cli/about-telemetry(2026-03-17)。既定 sensitive(production / preview。development は不可)。`--value` は argv(使わない)。エージェント検出で `--non-interactive` 既定。空 stdin の挙動は未確認(実アカウント) |
 | GitHub Actions `gh secret set NAME` | 2.100.0(scratchpad に展開) | `--body` 省略 + 非対話で stdin を全部読み `TrimRight("\r\n")`。`-f -` で dotenv を stdin から複数件 | 上書き | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1`(+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + 上流 `pkg/cmd/secret/set/set.go` + `gh help environment`。封印はクライアント側。**gh にテレメトリがある**(補足 5 / 8 は gh の送信に触れていない — ここに記す) |
 | Netlify `netlify env:set KEY value` | — | 値が引数(argv に出る) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1`(未確認) | 未導入。exec 不可 = SY4 は http(補足 10 V2 のまま) |
 
@@ -721,6 +721,17 @@ SY2 の exec ドライバへの含意: (a) wrangler は JSON を 1 リクエス�
 レシートが正しい)。(c) gh はテレメトリ off の環境変数を共通部品に加える。(d) 3 つとも「値を argv に載せる」経路(`--value` /
 `--body` / `env:set`)を持つので、ドライバは argv テンプレートに値のプレースホルダを**持たない**設計にする(宣言的プリセットの
 型で禁止)。(e) `maruhi run` の子は stdio 継承なので、exec ドライバは `sh -c` を介さず直接 spawn して stdin に書く形でよい。
+
+**改訂 1(2026-09-05、pullfrog の初回レビュー)**: (1) 前提の訂正 (3) の Vercel の stdin 切り詰めが公開ページに無かった
+(既定 sensitive のため事後に気づけない経路)。`readStandardInput` を **そのまま写した** スクリプトに `printenv BIG | node read.mjs` で
+値を流して実測: 4,000 / 8,000 / 30,000 / 60,000 / 65,536 バイトは各 5 回とも完全に届き、70,000 / 100,000 バイトは **5 回とも
+65,536 バイトで切れた**(Linux のパイプ容量 = Node の読み取り上限 64 KiB。`printenv` は CLI が読む前に書き終えるので、それ以下は
+1 回の読み取りに収まる)。ページの Vercel 節に「64 KiB 超は無言で切れる・sensitive なので後から確かめられない・その大きさの値は
+このレシピに載せない」を 1 行で追記(断定するのは観測した実装の挙動のみ。Vercel 側の上限は未確認なので書かない)。
+(2) nitpick: レシピの検査の正規表現 `> ?[a-z]` は `> "$f"` 等を素通しするので、**`/dev/null` 以外へのリダイレクトを全部拒む**
+`>(?!\s*\/dev\/null)` に。(3) nitpick: jq が無いと Workers の 2 態が黙ってスキップされる → **CI(`CI` 環境変数あり)では jq の
+存在を 1 件の `it` で断言**する(手元の新しい前提にはしない)。(4) nitpick: 「In CI」の文を「`--` 以降のコマンドが同じ」に
+直し、`ci run` 自身のフラグ(server / project / environment / anchor)が要ることを 1 文で添えた。
 
 **検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
 (Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / dash の 3 シェル × Workers 2 態 + Vercel 2 態)。

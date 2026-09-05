@@ -115,13 +115,22 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
     expect(vercelRecipe).toBeDefined();
     for (const block of blocks) {
       expect(block.startsWith("maruhi run --env production -- ")).toBe(true);
-      // 値を argv に載せるフラグ・ディスクに置く形・取得しに行く形を書かない(不変条件)
-      expect(block).not.toMatch(/--value|--env-file|--body|\.env\b|npx|bunx|> ?[a-z]|tee\b/);
+      // 値を argv に載せるフラグ・ディスクに置く形(/dev/null と fd 以外へのリダイレクト)・取得しに行く形を
+      // 書かない(不変条件)
+      expect(block).not.toMatch(
+        /--value|--env-file|--body|\.env\b|npx|bunx|>(?!\s*\/dev\/null|&)|tee\b/,
+      );
     }
   });
 
   it("runs under a POSIX shell available here", () => {
     expect(shells).toContain("sh");
+  });
+
+  it("has jq in CI, so the Workers recipe is never skipped there", () => {
+    // 手元で jq が無いときは Workers の 2 態をスキップするが、CI では静かな劣化にしない(pullfrog 指摘)
+    if (process.env["CI"] === undefined) return;
+    expect(hasJq, "install jq on the CI runner: the Workers recipe check needs it").toBe(true);
   });
 
   describe.each(shells)("under %s", (shell) => {

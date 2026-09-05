@@ -62,11 +62,12 @@ Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy; the `s
 - `--force` overwrites a variable that already exists for the same environment. Without it, the Vercel CLI refuses to add a name that is already there.
 - Values for production and preview are stored as sensitive by default: Vercel does not show them again, in the dashboard or in `vercel env ls`. Pass `--no-sensitive` to opt out (a team policy may forbid it). Development does not accept sensitive values.
 - `printenv` ends the value with a newline, and the Vercel CLI strips one trailing newline from a single-line value. A multi-line value (a PEM key, for example) keeps it.
+- The Vercel CLI reads standard input only once. In a measurement of its reader (CLI 59.11.7), a value larger than 64 KiB arrived cut off at 64 KiB with no error, which is also Vercel's own limit per variable, and a sensitive value cannot be inspected afterwards. Keep values that large out of this recipe.
 - Do not use `--value`: it puts the value on the command line.
 
 ## In CI
 
-In GitHub Actions, `maruhi ci run` accepts the same command line after `--` and needs no sign-in (it uses an OIDC lease and the committed repository anchor). A workflow template for copying values on every deploy is planned.
+In GitHub Actions, `maruhi ci run` runs the same command after `--` and needs no sign-in: its own flags name the server, project, environment, and committed repository anchor, and it uses an OIDC lease instead of a token. A workflow template for copying values on every deploy is planned.
 
 ## Other platforms
 
