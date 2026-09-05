@@ -1080,6 +1080,11 @@ defaultProject <id>`)、`logWarning(\`${warning}\`)`、`Re-login` → `Sign in a
 固定する検査に置き換え。**互換性の注記**: `login` の案内と Note 数か所が stdout → stderr へ移ったので、
 `maruhi login | tee` のようにログへ取っていたラッパーは URL と確認コードを失う(意図した分離。リリースノートに書く)。
 
+**改訂 3(2026-09-05、Cursor Bugbot の再レビュー)**: 改訂 2 (ii) の `scope: "prompt"` は description 長の Note には
+合わない — その Note は候補の提示(`approvalStep` の `describeCandidate`)より**前**に出るので、字下げが直前の
+項目に付いてしまう。run スコープ(字下げなし)に戻した: 行番号を含むので候補ごとに一意で、捨てたのは 1 回なので
+再試行で繰り返す必要もない。prompt スコープを使うのは提示の直後に出る高エントロピー警告だけ。
+
 **検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 867 件
 (+ notice 9 件・help golden 2 件・login 2 件・checkpoint の genesis 基準)。実プロセスの TTY / パイプ採取と
 wrangler dev に対する `maruhi login` の実出力は PR の Artifact。

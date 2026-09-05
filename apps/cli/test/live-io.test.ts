@@ -125,7 +125,8 @@ describe("writeLine(同期書き込みと閉じたパイプ)", () => {
       { cwd: new URL("../../..", import.meta.url).pathname, encoding: "utf8" },
     );
     // 失敗時に原因(bun の不在・スクリプトの構文)が読めるよう stderr を添える
-    expect(result.status, result.stderr).toBe(0);
+    // (bash 側の終了コードは末尾の echo で常に 0 なので、断言は書き手の
+    // 終了コード = writer-exit と 1 行目の到達で行う)
     expect(result.stdout, result.stderr).toContain("line0");
     expect(result.stdout, result.stderr).toContain("writer-exit=0");
     expect(result.stderr).not.toContain("EPIPE");
