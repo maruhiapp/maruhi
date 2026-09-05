@@ -291,7 +291,7 @@ describe("maruhi 固有の規律", () => {
     // 宣言の説明文はヘルプに出る(gunshi 側の各コマンドと同じ水準を保つ —
     // 昇格時に説明を落とすと、ヘルプが名前と型だけの一覧に痩せる)
     expect(full).toContain("Server URL (defaults to config server)");
-    expect(full).toContain("Print values to the terminal");
+    expect(full).toContain("Print the values");
   });
 
   it("`--` の後ろの `-h` は子プロセスの引数(ヘルプ要求として読まない)", async () => {

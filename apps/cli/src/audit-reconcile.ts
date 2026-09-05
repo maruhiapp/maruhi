@@ -42,6 +42,7 @@ import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 
 /** 取得の進捗表示の間隔(ページ数)。巨大ログでの無反応・非停止を可視化する。 */
 const FETCH_PROGRESS_PAGES = 50;
@@ -64,7 +65,7 @@ function ensureEffectiveAdmin(context: ProjectContextBase): Effect.Effect<void, 
     if (role !== "admin" && role !== "owner") {
       return yield* Effect.fail(
         cliError(
-          "maruhi audit reconcile requires effective admin permission (AUDIT_SPEC §6): your chain role on this project is below admin, so the audit rows needed for the reconciliation (class-2 rows and the seq field) are not visible to you",
+          "`maruhi audit reconcile` requires effective admin permission (AUDIT_SPEC §6): your chain role on this project is below admin, so the audit rows needed for the reconciliation (class-2 rows and the seq field) are not visible to you",
         ),
       );
     }
@@ -74,7 +75,7 @@ function ensureEffectiveAdmin(context: ProjectContextBase): Effect.Effect<void, 
       if (granted !== "admin") {
         return yield* Effect.fail(
           cliError(
-            "maruhi audit reconcile requires effective admin permission (AUDIT_SPEC §6): this token's scope for the project is below admin. Re-run with an admin-scoped token (or a session login)",
+            "`maruhi audit reconcile` requires effective admin permission (AUDIT_SPEC §6): this token's scope for the project is below admin. Re-run with an admin-scoped token",
           ),
         );
       }
@@ -293,13 +294,13 @@ function floorViolation(
   if (mirrorSeqs.length > 1) {
     return {
       category: "row-tampering",
-      detail: `the checkpoint at chain seq ${context.previousCheckpointChainSeq} has ${countNoun(mirrorSeqs.length, "chain.checkpointed mirror row")} (mirrors are written exactly once per acceptance — duplicates are forged rows; run maruhi audit verify)`,
+      detail: `the checkpoint at chain seq ${context.previousCheckpointChainSeq} has ${countNoun(mirrorSeqs.length, "chain.checkpointed mirror row")} (mirrors are written exactly once per acceptance — duplicates are forged rows; run \`maruhi audit verify\`)`,
     };
   }
   if (floor === undefined) {
     return {
       category: "row-tampering",
-      detail: `the checkpoint at chain seq ${context.previousCheckpointChainSeq} has no chain.checkpointed mirror row, so the position floor for the checkpoint at chain seq ${context.chainSeq} cannot be established (mirrors are written in the same transaction as acceptance — a missing mirror is evidence of a concealed deletion; run maruhi audit verify)`,
+      detail: `the checkpoint at chain seq ${context.previousCheckpointChainSeq} has no chain.checkpointed mirror row, so the position floor for the checkpoint at chain seq ${context.chainSeq} cannot be established (mirrors are written in the same transaction as acceptance — a missing mirror is evidence of a concealed deletion; run \`maruhi audit verify\`)`,
     };
   }
   if (context.position < floor) {
@@ -433,7 +434,7 @@ export function auditReconcileOp(
       // だけ。無条件の「checks passed」を出さない
       if (checkpoints.notarized === 0) {
         yield* io.log(
-          `Audit reconciliation OK (nothing notarized yet): ${summary} — seq continuity and the declared head's membership verified; the checkpoint checks (a)(b)(c) are vacuous until an effective admin issues an audit-head-attested checkpoint (run maruhi project checkpoint — AUDIT_SPEC §6)`,
+          `Audit reconciliation OK (nothing notarized yet): ${summary} — seq continuity and the declared head's membership verified; the checkpoint checks (a)(b)(c) are vacuous until an effective admin issues an audit-head-attested checkpoint (run \`maruhi project checkpoint\` — AUDIT_SPEC §6)`,
         );
         return 0;
       }
@@ -442,8 +443,8 @@ export function auditReconcileOp(
       );
       // §6 の明示的な残余: 公証済み接頭辞の外(最後の公証以降の行)は本突合の
       // 保護対象外 — 次の公証で前進する
-      yield* io.log(
-        "Note: rows appended after the latest notarized checkpoint are outside the notarized prefix and are not covered until the next attested checkpoint (AUDIT_SPEC §6)",
+      yield* logNote(
+        "rows appended after the latest notarized checkpoint are outside the notarized prefix and are not covered until the next attested checkpoint (AUDIT_SPEC §6)",
       );
       return 0;
     }

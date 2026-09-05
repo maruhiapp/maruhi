@@ -71,7 +71,7 @@ function selectGrant(
     if (found === undefined) {
       return Effect.fail(
         cliError(
-          "No active grant matches --fingerprint (check the fingerprints of active grants with maruhi project verify)",
+          "No active grant matches --fingerprint (check the fingerprints of active grants with `maruhi project verify`)",
         ),
       );
     }

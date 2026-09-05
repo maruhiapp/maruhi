@@ -12,6 +12,7 @@ import { countNoun, logWarnings } from "./display.ts";
 import type { RotationSummary } from "./env-rotate.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
+import { logWarning } from "./notice.ts";
 
 /**
  * 部分完了 / 完了未検証の報告。エポックは進んでおり、旧エポックの DEK 保持者は
@@ -47,8 +48,8 @@ function reportPartialRotation(
       summary.failure === null
         ? "conflicts with concurrent pushes did not resolve"
         : `${stopped}: ${summary.failure}`;
-    yield* io.logError(
-      `Warning: re-encryption for environment ${environmentId} has not completed (${cause}). Values not yet re-encrypted remain under DEKs older than epoch ${summary.epoch} — resolve the cause and re-run maruhi env rotate ${environmentId} to resume from the remainder without advancing the epoch (the re-run rescans the remainder, so the actual number of incomplete variables is confirmed there). However, if the cause is a verification failure or a local floor violation (= contradicting server responses), re-running will not resolve it — investigate the served evidence`,
+    yield* logWarning(
+      `re-encryption for environment ${environmentId} has not completed (${cause}). Values not yet re-encrypted remain under DEKs older than epoch ${summary.epoch} — resolve the cause and re-run \`maruhi env rotate ${environmentId}\` to resume from the remainder without advancing the epoch (the re-run rescans the remainder, so the actual number of incomplete variables is confirmed there). However, if the cause is a verification failure or a local floor violation (= contradicting server responses), re-running will not resolve it — investigate the served evidence`,
     );
     return 1;
   });
@@ -92,7 +93,7 @@ export function reportRotation(
       // いないので、完了報告がローテーション成功に見えてはならない(退職者の
       // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
       yield* io.log(
-        `Done: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped}). **No new epoch was created** (epoch remains ${summary.epoch})`,
+        `Done: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped}). No new epoch was created (epoch remains ${summary.epoch})`,
       );
       if (!rotationRequested) {
         // 理由なしの実行 = 「未完了があれば再開する」ことだけを要求している
@@ -101,8 +102,8 @@ export function reportRotation(
       // ローテーションを要求した実行(--reason / --new-epoch)が再開へ切り替わった
       // ので、**終了コードでも**成功と言わない: `maruhi env rotate prod --reason ...
       // || exit 1` のようなスクリプトが、新エポックなしで成功と受け取る形を塞ぐ
-      yield* io.logError(
-        `Warning: the requested rotation was not performed (the incomplete re-encryption was resumed first). If you still need a new epoch after this run, run the command again or pass --new-epoch`,
+      yield* logWarning(
+        `the requested rotation was not performed (the incomplete re-encryption was resumed first). If you still need a new epoch after this run, run the command again or pass --new-epoch`,
       );
       return 1;
     }

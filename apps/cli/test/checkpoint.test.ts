@@ -649,6 +649,23 @@ describe("maruhi project checkpoint(契機 (ii) — CRYPTO_SPEC §6.3 / AUTH_SPE
 
     // member: 基準なし → 提案 / 新しい基準(公証なしで足りる)→ 提案なし
     expect(await propose(base, member.userId)).toContain("maruhi project checkpoint");
+    // 未発行は「基準 = genesis」として数える(DP5 裁定 C): genesis から 7 日以内
+    // なら提案しない(作成当日から push ごとに出る形を作らない)、7 日を越えたら
+    // 提案する。admin(公証あり基準)も同じ節目
+    const genesisMs = base.entries[0]?.timestampMs ?? 0;
+    const proposeAt = (built: BuiltChain, signerUserId: string, nowMs: number) =>
+      verifiedOf(built).then((verified) =>
+        Effect.runPromise(checkpointProposal({ client, verified, signerUserId, nowMs })),
+      );
+    const day = 24 * 60 * 60 * 1000;
+    expect(await proposeAt(base, member.userId, genesisMs + 6 * day)).toBeNull();
+    expect(await proposeAt(base, owner.userId, genesisMs + 6 * day)).toBeNull();
+    expect(await proposeAt(base, member.userId, genesisMs + 8 * day)).toContain(
+      "maruhi project checkpoint",
+    );
+    expect(await proposeAt(base, owner.userId, genesisMs + 8 * day)).toContain(
+      "notarized audit prefix",
+    );
     const freshPlain = await appendCheckpoint(base, {
       timestampMs: Date.now(),
       auditHeadHashHex: "",

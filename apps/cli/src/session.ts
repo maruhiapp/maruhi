@@ -45,6 +45,7 @@ import {
   type StoredMasterKey,
   tokenEntryName,
 } from "./keychain.ts";
+import { logWarning } from "./notice.ts";
 
 /** A resolved authenticated session against one server. */
 export interface CliSession {
@@ -175,10 +176,9 @@ function warnNearExpiry(
     if (remainingMs <= 0 || remainingMs > TOKEN_EXPIRY_WARNING_WINDOW_MS) {
       return;
     }
-    const io = yield* CliIo;
     const days = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
-    yield* io.logError(
-      `Warning: the maruhi token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
+    yield* logWarning(
+      `the maruhi token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
     );
   });
 }

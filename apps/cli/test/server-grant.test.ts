@@ -212,8 +212,8 @@ describe("maruhi server grant", () => {
 
     const logs = env.logs.join("\n");
     expect(logs).toContain("Backfill: 2 newly registered, 0 already registered");
-    // §9: 開示中の常時明示 + ワード表示
-    expect(logs).toContain("disclosed to the server");
+    // §9: 開示中の常時明示(Note — stderr)+ ワード表示
+    expect(env.errors.join("\n")).toContain("disclosed to the server");
     expect(logs).toContain(serverFpWords[11] ?? "");
   });
 

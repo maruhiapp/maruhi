@@ -216,7 +216,7 @@ export function pullVariables(input: {
         ? pulled.warnings
         : [
             ...pulled.warnings,
-            `Warning: no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A member-add backfill may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator who holds wraps for all epochs to re-run maruhi member add (or re-register through the repair path)`,
+            `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A member-add backfill may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator who holds wraps for all epochs to re-run \`maruhi member add\` (or re-register through the repair path)`,
           ];
 
     const results: DecryptedVariable[] = [];

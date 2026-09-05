@@ -57,6 +57,7 @@ import { countNoun, displayText, logWarnings } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
@@ -317,8 +318,8 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
       diff.onlyInFirst.length + diff.onlyInSecond.length > 0
         ? "For differences you cannot explain, run this again to confirm before filling them in with a push (a push is an irreversible chain append and may overwrite a newer value with an older one)"
         : "Before treating zero differences as proof the environments are in sync, run this again to confirm";
-    yield* io.logError(
-      `Note: the two environments are read sequentially, not atomically (there is no API that reads two environments at once). If another member pushes or deletes during the run, differences may appear that do not exist, and real differences may not appear — ${advice}`,
+    yield* logNote(
+      `the two environments are read sequentially, not atomically (there is no API that reads two environments at once). If another member pushes or deletes during the run, differences may appear that do not exist, and real differences may not appear — ${advice}`,
     );
   });
 }

@@ -32,6 +32,7 @@ import {
 } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
+import { logNote, logWarning } from "./notice.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
@@ -198,23 +199,22 @@ export function loadCheckedFloor(
   resync: Effect.Effect<VerifiedProject, CliError>,
 ): Effect.Effect<CheckedFloor, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const store = yield* FloorStore;
     const loaded = yield* store.load(projectId);
     if (loaded.state === "missing") {
-      yield* io.logError(
-        "Note: this project has no local floor yet (first sync). Persistent rollback / omission detection takes effect from the next run",
+      yield* logNote(
+        "this project has no local floor yet (first sync). Persistent rollback / omission detection takes effect from the next run",
       );
     } else if (loaded.state === "corrupt") {
-      yield* io.logError(
-        "Warning: cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
+      yield* logWarning(
+        "cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
       );
     } else if (loaded.droppedRecords > 0) {
       // 部分的な破損は fold の自己回復で続行できるが、無言にはしない: 落ちた
       // 行が最新の head / manifest 観測だった場合、その座標の検出材料は次の
       // 検証済み観測まで一世代薄くなる(旧保存形の corrupt 警告と同じ可視化水準)
-      yield* io.logError(
-        `Warning: ${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
+      yield* logWarning(
+        `${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
       );
     }
     let view = verified;
@@ -310,7 +310,6 @@ function reconcileCompositeIntents(input: {
   readonly intents: readonly FloorIntent[];
 }): Effect.Effect<boolean, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     let resolved = false;
     for (const intent of input.intents) {
       if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
@@ -321,8 +320,8 @@ function reconcileCompositeIntents(input: {
         // スロットが空 = 送信前のクラッシュか、複合が着地する前に自分が同期した
         // だけかを区別できない。確定させず要照合のまま残す(チェーンが宣言
         // ヘッドを越えて進めば次の照合で accepted / rejected が確定する)
-        yield* io.logError(
-          `Note: an earlier ${intent.op} for environment ${intent.environmentId} is still awaiting confirmation (its chain slot is empty — the request may not have been sent, or may still be in flight). It will be reconciled once the chain advances`,
+        yield* logNote(
+          `an earlier ${intent.op} for environment ${intent.environmentId} is still awaiting confirmation (its chain slot is empty — the request may not have been sent, or may still be in flight). It will be reconciled once the chain advances`,
         );
         continue;
       }
@@ -348,13 +347,13 @@ function reconcileCompositeIntents(input: {
             ? "accepted"
             : "accepted-superseded",
         );
-        yield* io.logError(
-          `Note: an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
+        yield* logNote(
+          `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
         );
       } else {
         yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
-        yield* io.logError(
-          `Note: an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
+        yield* logNote(
+          `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
         );
       }
       resolved = true;
@@ -383,8 +382,8 @@ export function checkInviteAnchor(
     const store = yield* PinStore;
     const loaded = yield* store.load(projectId);
     if (loaded.state === "corrupt") {
-      yield* io.logError(
-        "Warning: cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
+      yield* logWarning(
+        "cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
       );
       return;
     }

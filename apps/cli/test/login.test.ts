@@ -137,7 +137,7 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");
     // start すら呼ばない(ブラウザ承認を求めない)
     expect(maruhi.requests).toHaveLength(0);
-    expect(env.logs.join("\n")).not.toContain("Waiting for approval");
+    expect(env.errors.join("\n")).not.toContain("Waiting for approval");
   });
 
   it("範囲外の --token-ttl-days はどの通信よりも前に落とす(AUTH_SPEC §6 — W3a)", async () => {
@@ -185,9 +185,15 @@ describe("maruhi login", () => {
     // poll はフロー資格の 2 識別子のみを運ぶ(§4-1 (5))
     expect(handoff.pollBodies[0]).toEqual({ flowId: FLOW_ID, flowToken: FLOW_TOKEN });
     const logs = env.logs.join("\n");
-    // 検証 URL とユーザーコードが表示される(フィッシング照合の材料 — §4-1 (2))
-    expect(logs).toContain(VERIFICATION_URL);
-    expect(logs).toContain(USER_CODE);
+    // 検証 URL とユーザーコードは対話の案内(stderr — 裁定 D-2)に出る
+    // (フィッシング照合の材料 — §4-1 (2))。有効期間はサーバー応答から導く
+    const guidance = env.errors.join("\n");
+    expect(guidance).toContain(VERIFICATION_URL);
+    expect(guidance).toContain(`Confirmation code: ${USER_CODE}`);
+    expect(guidance).toContain("This request expires in 15 minutes");
+    expect(guidance).toContain("Waiting for approval");
+    // 結果(stdout)は成功の 1 行 + 期限
+    expect(logs).toContain("Signed in as user-0001");
     // flowToken は資格情報 — ブラウザチャネルにも端末出力にも出ない(§4-1 (1))
     expect(logs).not.toContain(FLOW_TOKEN);
     expect(env.errors.join("\n")).not.toContain(FLOW_TOKEN);
@@ -233,7 +239,7 @@ describe("maruhi login", () => {
 
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
       expect(env.prompts.join("\n")).toContain("Do you already have a maruhi account");
-      expect(env.logs.join("\n")).toContain("invite-only");
+      expect(env.errors.join("\n")).toContain("invite-only");
       // 確認を通過したら通常どおり start → poll へ進む
       expect(handoff.polls()).toBeGreaterThan(0);
     });
@@ -262,7 +268,7 @@ describe("maruhi login", () => {
       env.setPromptResponses(["n"]);
 
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
-      expect(env.logs.join("\n")).toContain("not accepting new sign-ups");
+      expect(env.errors.join("\n")).toContain("not accepting new sign-ups");
       expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
     });
 
@@ -279,7 +285,7 @@ describe("maruhi login", () => {
         }
         expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
         expect(env.prompts).toHaveLength(0);
-        expect(env.logs.join("\n")).toContain("invite-only");
+        expect(env.errors.join("\n")).toContain("invite-only");
         expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
       }
     });
@@ -292,7 +298,7 @@ describe("maruhi login", () => {
 
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
       expect(env.prompts).toHaveLength(0);
-      expect(env.logs.join("\n")).not.toContain("invite-only");
+      expect(env.errors.join("\n")).not.toContain("invite-only");
     });
 
     it("signupPolicy 未申告(旧サーバー)・/auth/config 不在でも従来どおり進む(advisory の欠落で login を壊さない)", async () => {
@@ -322,7 +328,7 @@ describe("maruhi login", () => {
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
-    expect(env.logs.join("\n")).toContain("Opened the browser");
+    expect(env.errors.join("\n")).toContain("Opened your browser");
   });
 
   it("エージェント環境・非対話端末ではブラウザを開かないが、表示 + ポーリングで完走する", async () => {
@@ -340,9 +346,11 @@ describe("maruhi login", () => {
       }
       expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
       expect(env.browserOpens).toHaveLength(0);
-      const logs = env.logs.join("\n");
-      expect(logs).toContain(VERIFICATION_URL);
-      expect(logs).toContain(USER_CODE);
+      const guidance = env.errors.join("\n");
+      expect(guidance).toContain(VERIFICATION_URL);
+      expect(guidance).toContain(USER_CODE);
+      // 自動起動を試みていないので「開けなかった」とも言わない
+      expect(guidance).not.toContain("Could not open a browser");
       expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
     }
   });
@@ -357,7 +365,8 @@ describe("maruhi login", () => {
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
     // 失敗した起動を「開いた」と主張しない(URL の手動オープン案内は常に出ている)
-    expect(env.logs.join("\n")).not.toContain("Opened the browser");
+    expect(env.errors.join("\n")).not.toContain("Opened your browser");
+    expect(env.errors.join("\n")).toContain("Could not open a browser automatically");
   });
 
   it("http(s) 以外・パース不能な verificationUrl は OS opener に渡さない(fail-closed)", async () => {
@@ -390,6 +399,8 @@ describe("maruhi login", () => {
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
     expect(env.logs.join("\n")).not.toContain("\u001b");
+    expect(env.errors.join("\n")).not.toContain("\u001b");
+    expect(env.errors.join("\n")).toContain("Confirmation code: AB\uFFFDCD");
   });
 
   it("ブラウザ側の拒否(denied)はエラーで終了する(§4-1 (4) の拒否操作)", async () => {
@@ -477,6 +488,49 @@ describe("maruhi login", () => {
     expect(handoff.polls()).toBe(0);
   });
 
+  it("有効期間の案内と期限切れの文面はサーバー応答の expiresInSeconds から導く(裁定 D-1)", async () => {
+    // 分単位で切り捨て、1 分未満だけ秒で言う。定数は CLI に無い(サーバーの
+    // TTL を変えても案内が食い違わない)。期限切れの文面にも同じ期間を添える
+    for (const [seconds, window] of [
+      [600, "10 minutes"],
+      [61, "1 minute"],
+      [45, "45 seconds"],
+    ] as const) {
+      const handoff = fakeHandoff({
+        startOverrides: { expiresInSeconds: seconds },
+        finalPoll: { status: 410, json: { _tag: "CliFlowExpired" } },
+      });
+      const maruhi = await start(handoff.handlers);
+      const env = await makeTestEnv();
+      await seedConfig(env, { server: maruhi.origin });
+      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+      const guidance = env.errors.join("\n");
+      expect(guidance).toContain(`This request expires in ${window}`);
+      expect(guidance).toContain(`The sign-in request expired (it was valid for ${window})`);
+    }
+    // 非数・非正は既定(サーバーの起草値と同じ 15 分)へ丸めて案内する
+    const handoff = fakeHandoff({ startOverrides: { expiresInSeconds: -1 } });
+    const maruhi = await start(handoff.handlers);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("This request expires in 15 minutes");
+  });
+
+  it("対話の案内は stderr、結果は stdout(`maruhi login > file` でも案内が見える)", async () => {
+    const handoff = fakeHandoff();
+    const maruhi = await start(handoff.handlers);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+    expect(await runCli(["login", "--token-name", "cli-test", ...FAST_POLL], env.layer)).toBe(0);
+    // stdout は結果だけ(URL・コード・待機表示を混ぜない)
+    expect(env.logs).toEqual([
+      "Signed in as user-0001. The token is stored in the OS keychain",
+      "The token expires on 2099-01-01 (UTC). Signing in again with the same token name (cli-test) rotates it and revokes the old one",
+    ]);
+    expect(env.logs.join("\n")).not.toContain(VERIFICATION_URL);
+  });
+
   it("未設定サーバー(503 SetupIncomplete)はセットアップガイドを案内して失敗する", async () => {
     const maruhi = await start([
       onRequest("POST", "/auth/cli/start", () => ({
@@ -520,9 +574,10 @@ describe("maruhi login", () => {
     // ケースでは「素の再ログイン」を勧めてはならない(同名ローテーションが
     // いま表示したトークン自体を失効させる — PR #108 Bugbot 指摘)。正しい
     // 復し方 = 別名での発行し直し
-    expect(logs).toContain("default token name");
-    expect(logs).toContain("issue it under a distinct name instead");
-    expect(logs).not.toContain("run a plain `maruhi login` afterwards");
+    const notes = env.errors.join("\n");
+    expect(notes).toContain("default token name");
+    expect(notes).toContain("issue it under a distinct name instead");
+    expect(notes).not.toContain("run a plain `maruhi login` afterwards");
     // キーチェーン保存は表示の有無と独立(表示は追加の 1 箇所であって代替でない)
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
   });
@@ -538,9 +593,9 @@ describe("maruhi login", () => {
     expect(
       await runCli(["login", "--token-name", "ci", "--show-token", ...FAST_POLL], env.layer),
     ).toBe(0);
-    const logs = env.logs.join("\n");
-    expect(logs).toContain("run a plain `maruhi login` afterwards");
-    expect(logs).not.toContain("issue it under a distinct name instead");
+    const notes = env.errors.join("\n");
+    expect(notes).toContain("run a plain `maruhi login` afterwards");
+    expect(notes).not.toContain("issue it under a distinct name instead");
   });
 
   it("--show-token は敵対的サーバーの ANSI 注入を可視エスケープに畳む(escapeText — コピー同一性は保つ)", async () => {
@@ -597,7 +652,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
 
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain("`maruhi key recover`");
+    expect(env.errors.join("\n")).toContain("`maruhi key recover`");
   });
 
   it("ログイン後、鍵あり + リカバリー未登録なら発行を促す(保管リマインダ)", async () => {
@@ -754,7 +809,7 @@ describe("maruhi logout", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", maruhi.origin);
     expect(await runCli(["logout"], env.layer)).toBe(0);
     expect(env.keychain.size).toBe(0);
-    expect(env.logs.join("\n")).toContain("MARUHI_TOKEN is set");
+    expect(env.errors.join("\n")).toContain("MARUHI_TOKEN is set");
   });
 
   it("MARUHI_TOKEN が伏字・MARUHI_TOKEN_ORIGIN 未設定なら原因ごとに案内する", async () => {
@@ -780,9 +835,9 @@ describe("maruhi logout", () => {
         env.setEnvVar("MARUHI_TOKEN_ORIGIN", origin);
       }
       expect(await runCli(["logout"], env.layer)).toBe(0);
-      const logs = env.logs.join("\n");
-      expect(logs).toContain(expected);
-      expect(logs).not.toContain("stays authenticated with that token");
+      const notes = env.errors.join("\n");
+      expect(notes).toContain(expected);
+      expect(notes).not.toContain("stays authenticated with that token");
     }
   });
 
@@ -800,9 +855,9 @@ describe("maruhi logout", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
     expect(await runCli(["logout"], env.layer)).toBe(0);
-    const logs = env.logs.join("\n");
-    expect(logs).toContain("not used for authentication");
-    expect(logs).not.toContain("stays authenticated with that token");
+    const notes = env.errors.join("\n");
+    expect(notes).toContain("not used for authentication");
+    expect(notes).not.toContain("stays authenticated with that token");
   });
 
   it("空白だけの MARUHI_TOKEN では警告しない(セッション解決と同じ判定)", async () => {
@@ -817,7 +872,7 @@ describe("maruhi logout", () => {
     );
     env.setEnvVar("MARUHI_TOKEN", " \n");
     expect(await runCli(["logout"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).not.toContain("MARUHI_TOKEN is set");
+    expect(env.errors.join("\n")).not.toContain("MARUHI_TOKEN is set");
   });
 
   it("トークン未保存はエラーメッセージで案内する", async () => {

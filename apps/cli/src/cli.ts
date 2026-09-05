@@ -13,7 +13,7 @@ import { Effect, type Layer } from "effect";
 import type { CliServices } from "./context.ts";
 import { COMMAND_SPECS, ROOT_SPEC_KEY, runEffectCli } from "./effect-cli.ts";
 import { internalErrorKind } from "./failure.ts";
-import { CliIo } from "./io.ts";
+import { logFailure } from "./notice.ts";
 
 export type { CliServices } from "./context.ts";
 
@@ -92,12 +92,9 @@ export async function runCli(
   /** 診断 1 件以上を stderr へ出す(runEffectCli の外側の最終網)。 */
   const reportError = async (messages: readonly string[]): Promise<void> => {
     await Effect.runPromise(
-      Effect.gen(function* () {
-        const io = yield* CliIo;
-        for (const message of messages) {
-          yield* io.logError(`maruhi: ${message}`);
-        }
-      }).pipe(Effect.provide(layer)),
+      Effect.forEach(messages, (message) => logFailure(message), { discard: true }).pipe(
+        Effect.provide(layer),
+      ),
     );
   };
 

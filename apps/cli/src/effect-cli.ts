@@ -77,7 +77,12 @@ import {
   auditSelfOp,
   auditVerifyOp,
 } from "./audit.ts";
-import { ANCHOR_REFRESH_PROPOSAL, checkpointProposal, issueCheckpoint } from "./checkpoint.ts";
+import {
+  ANCHOR_REFRESH_PROPOSAL,
+  ANCHOR_STALE_AFTER_ROTATION,
+  checkpointProposal,
+  issueCheckpoint,
+} from "./checkpoint.ts";
 import { ciRunOp } from "./ci-run.ts";
 import { type CommandSpec, formatterLayer, NON_BLANK_MESSAGE } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
@@ -135,6 +140,7 @@ import {
   memberRemoveOp,
   ROLE_DEMOTED_ROTATION_REASON,
 } from "./member.ts";
+import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
@@ -295,13 +301,13 @@ function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
 /** 環境系コマンドが取る共通フラグ(context.ts の CommonFlags と同じ名前)。 */
 const commonFlags = () => ({
   ...projectFlags(),
-  env: singleValued("env", "Environment ID (defaults to config defaultEnvironment)"),
+  env: singleValued("env", "Environment ID (default: the `defaultEnvironment` setting)"),
 });
 
 /** プロジェクト水準のコマンドが取る共通フラグ(env は取らない)。 */
 const projectFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
-  project: singleValued("project", "Project ID (defaults to config defaultProject)"),
+  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 });
 
 /** セッション水準のコマンドが取る共通フラグ(project も env も取らない)。 */
@@ -311,10 +317,7 @@ const serverOnlyFlags = () => ({
 
 const pullConfig = {
   ...commonFlags(),
-  show: singleFlag(
-    "show",
-    "Print values to the terminal (only allowed on an interactive terminal)",
-  ),
+  show: singleFlag("show", "Print the values (interactive terminals only)"),
 };
 
 /** `run` / `ci run` 共通の実行対象(`--` の後ろ)の宣言。 */
@@ -344,19 +347,13 @@ const runConfig = {
  * (「config へ」ではなく「フラグを書く」)を言う。
  */
 const ciRunConfig = {
-  server: singleValued("server", "Server URL (required — CI mode reads no config file)"),
-  project: singleValued(
-    "project",
-    "Project ID = the pinned genesis hash (required — CRYPTO_SPEC §9.1 verification duty (1))",
-  ),
+  server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
+  project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
   env: singleValued("env", "Environment ID to lease (required)"),
-  audience: singleValued(
-    "audience",
-    "OIDC audience to request (defaults to the server origin — AUTH_SPEC §14-1)",
-  ),
+  audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   anchor: singleValued(
     "anchor",
-    "Path to the committed repository anchor file (generate with `maruhi project anchor` — CRYPTO_SPEC §6.3)",
+    "Path to the committed repository anchor file (generate it with `maruhi project anchor`)",
   ),
   command: runCommandArgument(),
 };
@@ -369,12 +366,14 @@ const ciRunConfig = {
  * 添える — でないと直しようがない(cli-formatter.ts の strayHint)。
  */
 const PUSH_STDIN_HINT =
-  '. Values are read from stdin (example: printf %s "$SECRET" | maruhi push API_KEY)';
+  '. Values are read from stdin (example: `printf %s "$SECRET" | maruhi push API_KEY`)';
 
 const pushConfig = {
   ...commonFlags(),
   name: Argument.string("name").pipe(
-    Argument.withDescription("Variable name (the display name; becomes the env var name)"),
+    Argument.withDescription(
+      "Variable name (the display name; becomes the environment variable name)",
+    ),
     Argument.withSchema(NonBlank),
   ),
 };
@@ -413,7 +412,7 @@ const rotationDismissConfig = {
   // gunshi では optional な 2 つ目の位置引数だった(--all の実行では取らない)。
   // atMost(1) が「--all なら省略」を宣言で表す
   variable: Argument.string("variable").pipe(
-    Argument.withDescription("variableId to dismiss (omit when using --all)"),
+    Argument.withDescription("Variable ID to dismiss (omit with --all)"),
     Argument.withSchema(NonBlank),
     Argument.atMost(1),
     Argument.map((values) => values[0]),
@@ -448,16 +447,10 @@ const auditListConfig = {
     "event",
     "Filter by event kind (e.g. var.version_pushed / chain.member_added)",
   ),
-  actor: singleValued(
-    "actor",
-    "Filter by actor user_id (below admin, only your own user_id — AUDIT_SPEC §6)",
-  ),
-  target: singleValued("target", "Filter by target user_id"),
+  actor: singleValued("actor", "Filter by actor user ID (below admin, only your own)"),
+  target: singleValued("target", "Filter by target user ID"),
   env: singleValued("env", "Filter by environment ID"),
-  var: singleValued(
-    "var",
-    "Filter by variableId (also matches var.read rows whose listed variables include it)",
-  ),
+  var: singleValued("var", "Filter by variable ID (also matches var.read rows that list it)"),
   expandReads: singleFlag(
     "expand-reads",
     "Print the variables listed by var.read rows, one line per variable (default: a count per row)",
@@ -478,7 +471,7 @@ const loginConfig = {
   ...serverOnlyFlags(),
   "token-name": singleValued(
     "token-name",
-    "Token name (re-login with the same name rotates the token; default: cli:<hostname>)",
+    "Token name (signing in again with the same name rotates the token; default: cli:<hostname>)",
   ),
   "token-ttl-days": Flag.integer("token-ttl-days").pipe(
     Flag.withDescription(
@@ -489,7 +482,7 @@ const loginConfig = {
   ),
   "show-token": singleFlag(
     "show-token",
-    "Print the issued token once (to provision MARUHI_TOKEN on runtimes without lease support). Interactive terminals only",
+    "Print the issued token once, to provision MARUHI_TOKEN on a runtime without lease support (interactive terminals only)",
   ),
   "poll-interval": hiddenIntegerValued(
     "poll-interval",
@@ -516,17 +509,17 @@ const projectListConfig = { ...serverOnlyFlags() };
 
 const projectVerifyConfig = {
   ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID to verify (defaults to config defaultProject)"),
+  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 };
 
 const projectAnchorConfig = {
   ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID to anchor (defaults to config defaultProject)"),
+  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 };
 
 const projectCheckpointConfig = {
   ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID to checkpoint (defaults to config defaultProject)"),
+  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 };
 
 /** 環境 ID の位置引数(env のサブコマンド共通。キーは打つときの綴り)。 */
@@ -555,7 +548,7 @@ const envRotateConfig = {
   // マニフェストの検証は緩和しない(manifest.ts)
   "init-manifest": singleFlag(
     "init-manifest",
-    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run this for every environment before upgrading CI — workloads cannot initialize a manifest themselves",
+    "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves",
   ),
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
@@ -575,7 +568,7 @@ const serverGrantConfig = {
   ...projectFlags(),
   environments: singleValued(
     "environments",
-    "Comma-separated environment IDs to disclose (required — least disclosure, environments are explicit)",
+    "Comma-separated environment IDs to disclose (required; environments are always explicit)",
   ),
   "lease-policy": singleValued(
     "lease-policy",
@@ -611,11 +604,11 @@ const inviteAcceptConfig = {
   server: singleValued("server", "Server URL (defaults to config server)"),
   project: singleValued(
     "project",
-    "Project ID (only required when accepting with a raw token — a link carries it)",
+    "Project ID (required only when accepting with a raw token; a link carries it)",
   ),
   "inviter-fingerprint": singleValued(
     "inviter-fingerprint",
-    "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link's if= instead of the interactive ceremony)",
+    "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)",
   ),
   // 招待リンクはトークン生値を内包する = ただの表示可能文字列ではない。
   // `Argument.redacted` で受け、Redacted のまま invite-link.ts の解釈境界へ
@@ -632,7 +625,7 @@ const inviteListConfig = { ...projectFlags() };
 const inviteRevokeConfig = {
   ...projectFlags(),
   "invite-id": Argument.string("invite-id").pipe(
-    Argument.withDescription("Invite id to revoke (see maruhi invite list)"),
+    Argument.withDescription("Invite ID to revoke (see `maruhi invite list`)"),
     Argument.withSchema(NonBlank),
   ),
 };
@@ -653,7 +646,9 @@ const memberAddConfig = {
   // gunshi では 1 段制約のため optional な共有位置引数(target)だったもの。
   // add 専用の宣言になったので「受諾済みが 1 件なら省略可」を atMost(1) で表す
   "invite-id": Argument.string("invite-id").pipe(
-    Argument.withDescription("Invite id to add (may be omitted when exactly one is accepted)"),
+    Argument.withDescription(
+      "Invite ID to add (may be omitted when exactly one invite is accepted)",
+    ),
     Argument.withSchema(NonBlank),
     Argument.atMost(1),
     Argument.map((values) => values[0]),
@@ -663,7 +658,7 @@ const memberAddConfig = {
 /** remove / change-role の対象 user_id(必須・非空)。 */
 const memberTargetArgument = () =>
   Argument.string("user-id").pipe(
-    Argument.withDescription("Target user_id (see the member list in maruhi project verify)"),
+    Argument.withDescription("Target user ID (see the member list in `maruhi project verify`)"),
     Argument.withSchema(NonBlank),
   );
 
@@ -692,7 +687,7 @@ const schemaSetConfig = {
   ),
   required: singleFlag(
     "required",
-    "Declare the variable as required (maruhi run fails fast while it has no value)",
+    "Declare the variable as required (`maruhi run` fails fast while it has no value)",
   ),
   optional: singleFlag("optional", "Declare the variable as not required"),
   description: singleValued(
@@ -720,7 +715,7 @@ const schemaImportConfig = {
   ...commonFlags(),
   file: Argument.string("file").pipe(
     Argument.withDescription(
-      "Path to a .env / .env.example file to read locally (values are observed for type inference only — never sent unless you explicitly choose to push one)",
+      "Path to a .env or .env.example file to read locally (values are observed for type inference only; never sent unless you explicitly choose to push one)",
     ),
     Argument.withSchema(NonBlank),
   ),
@@ -745,7 +740,7 @@ const schemaLintConfig = {
   ...commonFlags(),
   ignore: Flag.string("ignore").pipe(
     Flag.withDescription(
-      "Environment-variable name to exclude from the undeclared check (repeatable — for runtime variables not managed by maruhi, e.g. NODE_ENV)",
+      "Environment-variable name to exclude from the undeclared check (repeatable; for runtime variables not managed by maruhi, e.g. NODE_ENV)",
     ),
     Flag.withSchema(NonBlank),
     // 繰り返し指定を宣言で表す(0 個以上 — atLeast(0) で readonly string[] になる)
@@ -762,7 +757,7 @@ const varRmConfig = {
   ...commonFlags(),
   force: singleFlag(
     "force",
-    "Skip the interactive confirmation (the only non-interactive path — deletion is terminal)",
+    "Skip the interactive confirmation (the only non-interactive path; deletion is permanent)",
   ),
   name: Argument.string("name").pipe(
     Argument.withDescription("Variable name to delete (declared or active)"),
@@ -909,7 +904,7 @@ function commandAfterTerminator(
     if (stray > 0) {
       return yield* Effect.fail(
         usageError(
-          `Unexpected extra arguments (${stray}; contents not shown — they may contain plaintext values). maruhi run takes no positional arguments before \`--\`${RUN_TERMINATOR_HINT}`,
+          `Unexpected extra arguments (${stray}; contents not shown — they may contain plaintext values). \`maruhi run\` takes no positional arguments before \`--\`${RUN_TERMINATOR_HINT}`,
         ),
       );
     }
@@ -1160,7 +1155,7 @@ function parseSchemaFieldUpdates(values: {
 function schemaSetReport(name: string, summary: SchemaSetSummary): string {
   const typeShown = summary.schema.varType === "" ? "-" : summary.schema.varType;
   if (summary.created) {
-    return `Declared ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}) — no value yet. Set the first value with: printf %s "$VALUE" | maruhi push ${displayText(name)}`;
+    return `Declared ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}) — no value yet. Set the first value with: \`printf %s "$VALUE" | maruhi push ${displayText(name)}\``;
   }
   return `Updated the schema of ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}, metaVersion=${summary.metaVersion})`;
 }
@@ -1235,16 +1230,16 @@ function projectVerify(
 
 /**
  * 発行契機 (iii) の提案(CRYPTO_SPEC §6.3): pull / push の成功後に基準
- * チェックポイントの鮮度(7 日超・未発行)を検出したら提案行を出す。提案の
- * 判定失敗でコマンド本体の成功を覆さない(提案は SHOULD の付随)。push では
- * アンカー更新の提案(session-25 §8)を同じ導線に同梱する。
+ * チェックポイントの鮮度(7 日超・未発行 = genesis から 7 日超)を検出したら
+ * 提案を **Note 1 行**で出す。提案の判定失敗でコマンド本体の成功を覆さない
+ * (提案は SHOULD の付随)。push ではアンカー更新の提案(session-25 §8)を
+ * 同じ 1 行の末尾に同梱する(DP5 裁定 C — 2 行に分けない)。
  */
 function proposeCheckpointRefresh(
   context: Pick<ProjectContext, "client" | "verified" | "session">,
   options: { readonly includeAnchor: boolean },
 ): Effect.Effect<void, never, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const proposal = yield* checkpointProposal({
       client: context.client,
       verified: context.verified,
@@ -1254,10 +1249,7 @@ function proposeCheckpointRefresh(
     if (proposal === null) {
       return;
     }
-    yield* io.logError(proposal);
-    if (options.includeAnchor) {
-      yield* io.logError(`Note: ${ANCHOR_REFRESH_PROPOSAL}`);
-    }
+    yield* logNote(options.includeAnchor ? `${proposal}. ${ANCHOR_REFRESH_PROPOSAL}` : proposal);
   }).pipe(Effect.catch(() => Effect.void));
 }
 
@@ -1305,8 +1297,7 @@ function envRotateCommand(
     if (summary.mode === "rotated") {
       // アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b)): エポックが
       // 進んだ = コミット済みアンカーのエポック床が古くなった
-      const io = yield* CliIo;
-      yield* io.logError(`Note: ${ANCHOR_REFRESH_PROPOSAL}`);
+      yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
     }
     return code;
   });
@@ -1463,8 +1454,8 @@ function serverGrantCommand(
       `Done: disclosure to server key ${summary.serverKeyFingerprintHex} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
     );
     // §9: 開示中であることを常時明示する(失効経路もその場で案内する)
-    yield* io.log(
-      "Note: the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run maruhi server revoke (it forces a rotation of every environment — §7)",
+    yield* logNote(
+      "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
     );
   });
 }
@@ -1490,7 +1481,7 @@ function serverRevokeCommand(
     });
     yield* reportRevokeAppend(io, summary);
     const exitCode = yield* reportSweepOutcome(summary, {
-      rerunCommand: "maruhi server revoke",
+      rerunCommand: "`maruhi server revoke`",
       alreadyRotatedBasis: "the revocation",
     });
     if (exitCode === 0) {
@@ -1684,14 +1675,14 @@ function reportSweepOutcome(
     for (const failure of sweep.failed) {
       // §7: active と信じる環境の rotate 拒否を黙ってスキップしない(悪意サーバーに
       // よる選択的なローテーション阻止を不可視にしない)
-      yield* io.logError(
-        `Warning: rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
+      yield* logWarning(
+        `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
       );
       exitCode = 1;
     }
     if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
       // アンカー更新の提案(session-25 §8)— sweep 全体で 1 行だけ出す
-      yield* io.logError(`Note: ${ANCHOR_REFRESH_PROPOSAL}`);
+      yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
     }
     return exitCode;
   });
@@ -1732,7 +1723,7 @@ function memberAddCommand(
 function reportMemberAdd(
   io: CliIoShape,
   summary: MemberAddSummary,
-): Effect.Effect<number, CliError> {
+): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
     const repaired =
       summary.repaired > 0 ? `, ${countNoun(summary.repaired, "old-key wrap")} repaired` : "";
@@ -1741,13 +1732,13 @@ function reportMemberAdd(
     );
     if (summary.failed.length === 0) {
       yield* io.log(
-        "Done: DEK wraps for every environment × every epoch were distributed to the new member (CRYPTO_SPEC §7). Have the new member run maruhi pull and confirm they can decrypt",
+        "Done: DEK wraps for every environment × every epoch were distributed to the new member (CRYPTO_SPEC §7). Have the new member run `maruhi pull` and confirm they can decrypt",
       );
       return 0;
     }
     for (const failure of summary.failed) {
-      yield* io.logError(
-        `Warning: backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run maruhi member add to resume (409 converges as already-registered)`,
+      yield* logWarning(
+        `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member add\` to resume (409 converges as already-registered)`,
       );
     }
     return 1;
@@ -1781,7 +1772,7 @@ function memberRemoveCommand(
       );
     }
     const exitCode = yield* reportSweepOutcome(summary, {
-      rerunCommand: "maruhi member remove",
+      rerunCommand: "`maruhi member remove`",
       alreadyRotatedBasis: "the mandate entry",
     });
     if (exitCode === 0) {
@@ -1834,7 +1825,7 @@ function memberChangeRoleCommand(
       "Demotion below member forces a rotation of every environment (CRYPTO_SPEC §7 — epoch-anchor soundness)",
     );
     const exitCode = yield* reportSweepOutcome(summary.sweep, {
-      rerunCommand: "maruhi member change-role",
+      rerunCommand: "`maruhi member change-role`",
       alreadyRotatedBasis: "the mandate entry",
     });
     if (exitCode === 0) {
@@ -1888,7 +1879,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Sync-check (§6.3) + distribution verification (§5.1) + decrypt, then print metadata",
+      "Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)",
     ),
   );
 
@@ -1918,7 +1909,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "pull + inject decrypted values into the child process environment (memory only) and run the command",
+      "Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`",
     ),
   );
 
@@ -1956,7 +1947,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Encrypt the value read from stdin and push it (one trailing newline is stripped)",
+      "Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)",
     ),
   );
 
@@ -1994,7 +1985,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Log in by approving the request in your browser, and store the maruhi token in the OS keychain",
+      "Sign in by approving a request in your browser, and store the token in the OS keychain",
     ),
   );
 
@@ -2005,14 +1996,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* logoutOp({ origin });
     }),
-  ).pipe(Command.withDescription("Revoke this token and remove it from the OS keychain"));
+  ).pipe(Command.withDescription("Revoke this machine's token and remove it from the OS keychain"));
 
   const rotationList = Command.make("list", rotationListConfig, (values) =>
     Effect.gen(function* () {
       const context = yield* openMetadataProject(values);
       onExitCode(yield* rotationListOp(context));
     }),
-  ).pipe(Command.withDescription("List currently-active rotation flags (AUDIT_SPEC §4.1)"));
+  ).pipe(Command.withDescription("List the currently active rotation flags"));
 
   const rotationDismiss = Command.make("dismiss", rotationDismissConfig, (values) =>
     Effect.gen(function* () {
@@ -2024,7 +2015,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const variableId = values.variable;
       if (variableId !== undefined && !isVariableId(variableId)) {
         return yield* Effect.fail(
-          usageError("Invalid variableId (see maruhi rotation list for the current targets)"),
+          usageError("Invalid variableId (see `maruhi rotation list` for the current targets)"),
         );
       }
       // 要求の形(--all と変数 id の矛盾・対象の欠落)も通信より前に確定する
@@ -2052,7 +2043,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Dismiss rotation flags without rotating (an explicit acceptance of risk — admin)",
+      "Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)",
     ),
   );
 
@@ -2061,7 +2052,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   // 鍵なしクラス)。dismiss の権限(admin 以上 × admin スコープ)はサーバー側が
   // 強制する
   const rotation = Command.make("rotation").pipe(
-    Command.withDescription("Manage rotation flags (list / dismiss — AUDIT_SPEC §4.1)"),
+    Command.withDescription("Manage rotation flags (list / dismiss)"),
     Command.withSubcommands([rotationList, rotationDismiss]),
   );
 
@@ -2102,7 +2093,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const auditList = Command.make("list", auditListConfig, runAuditList).pipe(
     Command.withDescription(
-      "List audit events, cross-checking chain.* mirror rows (AUDIT_SPEC §7)",
+      "List audit events, cross-checking chain.* mirror rows against the verified chain",
     ),
   );
 
@@ -2115,7 +2106,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       });
       onExitCode(yield* auditInvitesOp(context, page));
     }),
-  ).pipe(Command.withDescription("List invite.* audit events (chain-role admin)"));
+  ).pipe(Command.withDescription("List invite.* audit events (admin only)"));
 
   const auditSelf = Command.make("self", auditSelfConfig, (values) =>
     Effect.gen(function* () {
@@ -2123,7 +2114,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       onExitCode(yield* auditSelfOp(context, page));
     }),
-  ).pipe(Command.withDescription("List your own account audit events (AUDIT_SPEC §3.1)"));
+  ).pipe(Command.withDescription("List the audit events of your own account"));
 
   const auditVerify = Command.make("verify", auditVerifyConfig, (values) =>
     Effect.gen(function* () {
@@ -2135,7 +2126,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Verify the chain ↔ mirror bijection (detects missing / forged / altered rows)",
+      "Verify that audit mirror rows match the chain one-to-one (detects missing, forged, or altered rows)",
     ),
   );
 
@@ -2149,7 +2140,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Recompute the audit-head hash column and reconcile notarized checkpoints (effective admin — AUDIT_SPEC §6)",
+      "Recompute the audit-head hash column and reconcile notarized checkpoints (effective admin only)",
     ),
   );
 
@@ -2159,7 +2150,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   // 子だけが走る。不明なサブコマンドは UnknownSubcommand で exit 2)
   const audit = Command.make("audit", auditListConfig, runAuditList).pipe(
     Command.withDescription(
-      "View and verify audit events (list / invites / self / verify / reconcile — AUDIT_SPEC §7). Bare `maruhi audit` runs list",
+      "View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list",
     ),
     Command.withSubcommands([auditList, auditInvites, auditSelf, auditVerify, auditReconcile]),
   );
@@ -2169,7 +2160,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       yield* keyGenerateOp({ session: context.session, client: context.client });
     }),
-  ).pipe(Command.withDescription("Generate the master keypair and store it in the OS keychain"));
+  ).pipe(Command.withDescription("Generate your master key and store it in the OS keychain"));
 
   const keyShow = Command.make("show", keyShowConfig, (values) =>
     Effect.gen(function* () {
@@ -2183,7 +2174,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       const context = yield* openSession(values.server);
       yield* recoverMasterKeyOp({ session: context.session, client: context.client });
     }),
-  ).pipe(Command.withDescription("Restore the master key from a recovery code (CRYPTO_SPEC §8)"));
+  ).pipe(Command.withDescription("Restore the master key from a recovery code"));
 
   const keyRecovery = Command.make("recovery", keyRecoveryConfig, (values) =>
     Effect.gen(function* () {
@@ -2195,12 +2186,10 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         masterKeys,
       });
     }),
-  ).pipe(Command.withDescription("Issue (or reissue) the recovery code (CRYPTO_SPEC §8)"));
+  ).pipe(Command.withDescription("Issue (or reissue) the recovery code"));
 
   const key = Command.make("key").pipe(
-    Command.withDescription(
-      "Manage the master keypair (generate / show / recover / recovery — CRYPTO_SPEC §3 / §8)",
-    ),
+    Command.withDescription("Manage your master key (generate / show / recover / recovery)"),
     Command.withSubcommands([keyGenerate, keyShow, keyRecover, keyRecovery]),
   );
 
@@ -2215,11 +2204,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         ...(values.org === undefined ? {} : { orgFlag: values.org }),
       });
     }),
-  ).pipe(
-    Command.withDescription(
-      "Create a project (sign and submit the genesis entry — AUTH_SPEC §11-3)",
-    ),
-  );
+  ).pipe(Command.withDescription("Create a project (signs and submits the genesis entry)"));
 
   const projectList = Command.make("list", projectListConfig, (values) =>
     Effect.gen(function* () {
@@ -2227,16 +2212,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       yield* projectListOp({ client: context.client });
     }),
   ).pipe(
-    Command.withDescription(
-      "List projects where you are a chain-derived member (server-reported — AUTH_SPEC §11-5)",
-    ),
+    Command.withDescription("List the projects you are a member of (as reported by the server)"),
   );
 
   const projectVerifyCommand = Command.make("verify", projectVerifyConfig, (values) =>
     projectVerify(values.server, values.project),
   ).pipe(
     Command.withDescription(
-      "Verify the chain, local floor, and invite anchor, then print the project state",
+      "Verify the chain, the local floor, and the invite anchor, then print the project state",
     ),
   );
 
@@ -2256,7 +2239,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Print the repository anchor JSON — commit it and pass to `ci run --anchor` (CRYPTO_SPEC §6.3)",
+      "Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)",
     ),
   );
 
@@ -2293,14 +2276,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         `Checkpoint accepted at chain seq ${summary.headSeq}, covering ${countNoun(summary.environmentIds.length, "environment")}${summary.attestedAuditHead ? " (audit head attested)" : ""}`,
       );
       if (summary.skippedEnvironmentIds.length > 0) {
-        yield* io.logError(
-          `Warning: ${countNoun(summary.skippedEnvironmentIds.length, "environment")} could not be covered (${summary.skippedEnvironmentIds.map(displayText).join(", ")}). Re-run maruhi project checkpoint later to cover them`,
+        yield* logWarning(
+          `${countNoun(summary.skippedEnvironmentIds.length, "environment")} could not be covered (${summary.skippedEnvironmentIds.map(displayText).join(", ")}). Re-run \`maruhi project checkpoint\` later to cover them`,
         );
       }
     }),
   ).pipe(
     Command.withDescription(
-      "Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain (CRYPTO_SPEC §6.3)",
+      "Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain",
     ),
   );
 
@@ -2324,14 +2307,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Lease the environment via OIDC (no login, no keychain), verify it, and run the command with injected values (CRYPTO_SPEC §9.1)",
+      "Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`",
     ),
   );
 
   const ci = Command.make("ci").pipe(
-    Command.withDescription(
-      "Workload-lease commands for CI jobs (run — CRYPTO_SPEC §9.1 / AUTH_SPEC §14)",
-    ),
+    Command.withDescription("Commands for CI jobs (run)"),
     Command.withSubcommands([ciRun]),
   );
 
@@ -2345,7 +2326,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       // 値以外を捕まえない(決定 9)
       yield* io.log(config[configKey] ?? "");
     }),
-  ).pipe(Command.withDescription("Print one non-secret config value"));
+  ).pipe(Command.withDescription("Print one non-secret setting to stdout"));
 
   const configSet = Command.make("set", configSetConfig, (values) =>
     Effect.gen(function* () {
@@ -2362,8 +2343,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         Effect.catch((error) =>
           error instanceof ConfigFileCorruptError
             ? Effect.gen(function* () {
-                yield* io.logError(
-                  `Warning: ${toCliError(error).message} — discarding the existing config and recreating it with only this key`,
+                yield* logWarning(
+                  `${toCliError(error).message} — discarding the existing config and recreating it with only this key`,
                 );
                 return {};
               })
@@ -2373,11 +2354,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       yield* store.save({ ...config, [configKey]: values.value });
       yield* io.log(`Set ${configKey}`);
     }),
-  ).pipe(Command.withDescription("Set one non-secret config value"));
+  ).pipe(Command.withDescription("Set one non-secret setting"));
 
   const config = Command.make("config").pipe(
     Command.withDescription(
-      "Manage non-secret settings (get / set); secrets are never stored here",
+      "Manage non-secret settings (get / set). Secrets are never stored here",
     ),
     Command.withSubcommands([configGet, configSet]),
   );
@@ -2415,13 +2396,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Set a variable's schema fields (type / required / description — a partial update). A missing name is created as a declared variable (no value). A declaration cannot be deleted from the CLI yet — downgrade a mistaken one with --optional so `maruhi run` proceeds",
+      "Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds",
     ),
   );
 
   const schemaImport = Command.make("import", schemaImportConfig, (values) =>
     Effect.gen(function* () {
-      const io = yield* CliIo;
       // 儀式ゲート(ADR-0016 決定 7 の儀式系 deny の類型)は**どの通信・ファイル
       // 読み取りよりも前**に判定する: 変数ごとの対話承認が儀式の核であり、
       // 一括 --yes は存在しない。既知エージェント検出 + 非対話端末の両層とも
@@ -2450,14 +2430,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         content,
       });
       if (summary.deletionOffered && !summary.deleted) {
-        yield* io.logError(
-          `Note: ${displayText(file)} was kept. Once every variable it lists is declared, its last job is done — the signed schema (\`maruhi schema\`) becomes the source of truth`,
+        yield* logNote(
+          `${displayText(file)} was kept. Once every variable it lists is declared, its last job is done — the signed schema (\`maruhi schema\`) becomes the source of truth`,
         );
       }
     }),
   ).pipe(
     Command.withDescription(
-      "Import schema candidates from a .env / .env.example file (interactive, per-variable approval — declares names without sending values; optionally push a value per variable)",
+      "Import schema candidates from a .env or .env.example file with interactive per-variable approval (declares names without sending values; optionally pushes a value per variable)",
     ),
   );
 
@@ -2478,7 +2458,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Print the environment's schema snapshot (a JSON Schema subset) to stdout — redirect it into your repository and check it in CI with `schema verify-snapshot`. The store stays the source of truth",
+      "Print the environment's schema snapshot (a JSON Schema subset) to stdout. Commit it and check it in CI with `schema verify-snapshot`; the store stays the source of truth",
     ),
   );
 
@@ -2508,7 +2488,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       }),
   ).pipe(
     Command.withDescription(
-      "Verify a committed schema snapshot against the store and fail on any divergence (for CI — the snapshot is generated, the store is the source of truth)",
+      "Verify a committed schema snapshot against the store and fail on any divergence (for CI; the store is the source of truth)",
     ),
   );
 
@@ -2529,14 +2509,14 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Cross-check environment-variable references in source code against the declared schema (best-effort static scan — names only)",
+      "Cross-check environment-variable references in source code against the declared schema (best-effort static scan; names only)",
     ),
   );
 
   // **bare `maruhi schema` = 表示**(設計文書 §1-1 — audit と同じハンドラ付き親)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
-      "Show the environment's declared variable schema (names / types / required / status / descriptions — no values). Bare `maruhi schema` shows; `schema set` writes",
+      "Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes",
     ),
     Command.withSubcommands([
       schemaSet,
@@ -2573,12 +2553,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Delete a variable and its values permanently (interactive confirmation, or --force). Works for declared (no value) and active variables",
+      "Delete a variable and all of its values permanently (asks for confirmation unless --force). Works for declared and active variables",
     ),
   );
 
   const varGroup = Command.make("var").pipe(
-    Command.withDescription("Manage variables (rm — push/pull/run operate on values directly)"),
+    Command.withDescription("Manage variables (rm). push / pull / run operate on values directly"),
     Command.withSubcommands([varRm]),
   );
 
@@ -2587,17 +2567,17 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       // 形式は宣言(NonBlank)を通った後の追加検査。ネットワークより前に見る
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
-        "maruhi env create dev",
+        "`maruhi env create dev`",
       );
       yield* envCreateCommand(values, environmentId);
     }),
-  ).pipe(Command.withDescription("Create an environment (compound request — §12-4)"));
+  ).pipe(Command.withDescription("Create an environment"));
 
   const envRotate = Command.make("rotate", envRotateConfig, (values) =>
     Effect.gen(function* () {
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
-        "maruhi env rotate dev",
+        "`maruhi env rotate dev`",
       );
       const { reason, "new-epoch": newEpoch, "init-manifest": initManifest, ...flags } = values;
       onExitCode(
@@ -2606,7 +2586,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Rotate the environment's epoch DEK, or resume incomplete re-encryption (§7)",
+      "Rotate the environment's epoch DEK, or resume an incomplete re-encryption",
     ),
   );
 
@@ -2614,11 +2594,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Effect.gen(function* () {
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
-        "maruhi env diff dev prod",
+        "`maruhi env diff dev prod`",
       );
       const otherEnvironmentId = yield* requireEnvironmentId(
         values["other-environment-id"],
-        "maruhi env diff dev prod",
+        "`maruhi env diff dev prod`",
       );
       if (otherEnvironmentId === environmentId) {
         // 同じ環境どうしの比較は必ず空になる = 要求そのものが書き間違い。
@@ -2632,7 +2612,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       yield* envDiffCommand(values, environmentId, otherEnvironmentId);
     }),
   ).pipe(
-    Command.withDescription("Compare the variable-name sets of two environments (names only)"),
+    Command.withDescription(
+      "Compare the variable-name sets of two environments (names only; no values)",
+    ),
   );
 
   // gunshi は 1 段(サブコマンド + positional の action)しか組めないため、
@@ -2655,7 +2637,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Disclose epoch DEKs of selected environments to the server (CRYPTO_SPEC §9)",
+      "Disclose the epoch DEKs of selected environments to the server (selective disclosure)",
     ),
   );
 
@@ -2669,20 +2651,16 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         }),
       );
     }),
-  ).pipe(
-    Command.withDescription(
-      "Revoke a server disclosure and force-rotate every environment (§7 / §9)",
-    ),
-  );
+  ).pipe(Command.withDescription("Revoke a server disclosure and force-rotate every environment"));
 
   const server = Command.make("server").pipe(
-    Command.withDescription("Manage selective disclosure to the server (grant / revoke — §9)"),
+    Command.withDescription("Manage selective disclosure to the server (grant / revoke)"),
     Command.withSubcommands([serverGrant, serverRevoke]),
   );
 
   const inviteCreate = Command.make("create", inviteCreateConfig, (values) =>
     inviteCreateCommand(values),
-  ).pipe(Command.withDescription("Issue an invite and build the invite link (AUTH_SPEC §15)"));
+  ).pipe(Command.withDescription("Issue an invite and build the invite link"));
 
   const inviteAccept = Command.make("accept", inviteAcceptConfig, (values) =>
     inviteAcceptCommand({
@@ -2691,7 +2669,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       target: values.target,
       inviterFingerprint: values["inviter-fingerprint"],
     }),
-  ).pipe(Command.withDescription("Accept an invite link or token (§15-3 / CRYPTO_SPEC §6.5)"));
+  ).pipe(Command.withDescription("Accept an invite link or token"));
 
   const inviteList = Command.make("list", inviteListConfig, (values) =>
     Effect.gen(function* () {
@@ -2699,7 +2677,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "List invites, independently verifying acceptance blocks (§6.5) and issuance pins",
+      "List invites, independently verifying acceptance blocks and issuance pins",
     ),
   );
 
@@ -2715,9 +2693,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   ).pipe(Command.withDescription("Revoke an invite"));
 
   const invite = Command.make("invite").pipe(
-    Command.withDescription(
-      "Manage invites (create / accept / list / revoke — AUTH_SPEC §15 / CRYPTO_SPEC §6.5)",
-    ),
+    Command.withDescription("Manage invites (create / accept / list / revoke)"),
     Command.withSubcommands([inviteCreate, inviteAccept, inviteList, inviteRevoke]),
   );
 
@@ -2734,7 +2710,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Add an accepted invitee as a member (mutual confirmation §6.5 + add_member + backfill)",
+      "Add an accepted invitee as a member (mutual fingerprint confirmation, then key distribution)",
     ),
   );
 
@@ -2748,9 +2724,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         }),
       );
     }),
-  ).pipe(
-    Command.withDescription("Remove a member and force-rotate every environment (CRYPTO_SPEC §7)"),
-  );
+  ).pipe(Command.withDescription("Remove a member and force-rotate every environment"));
 
   const memberChangeRole = Command.make("change-role", memberChangeRoleConfig, (values) =>
     Effect.gen(function* () {
@@ -2764,19 +2738,19 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       );
     }),
   ).pipe(
-    Command.withDescription(
-      "Change a member's role (demotion below member forces a rotation — §7)",
-    ),
+    Command.withDescription("Change a member's role (demoting below member forces a rotation)"),
   );
 
   const member = Command.make("member").pipe(
-    Command.withDescription(
-      "Manage members (add / remove / change-role — CRYPTO_SPEC §6.2 / §6.5 / §7)",
-    ),
+    Command.withDescription("Manage members (add / remove / change-role)"),
     Command.withSubcommands([memberAdd, memberRemove, memberChangeRole]),
   );
 
   return Command.make("maruhi").pipe(
+    // bare `maruhi` / `maruhi --help` の冒頭に製品の一文を置く(裁定 F)
+    Command.withDescription(
+      "Diskless secrets manager: values are encrypted end-to-end and decrypted only in memory, never written to disk",
+    ),
     Command.withSubcommands([
       login,
       logout,
@@ -2891,14 +2865,16 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
     return Effect.void;
   }
   if (failure instanceof CliError) {
-    return io.logError(`maruhi: ${failure.message}`);
+    return io.logError(formatNotice("error", failure.message, io.colorEnabled()));
   }
   // defect(バグ)や上流の未知エラー。**message は出さない**: 打たれた値を
   // 埋め込んだ文面(`Invalid value: <平文>`)でも到達しうるので、制御文字の
   // 中和だけでは規律(打たれた値を診断に出さない)を守れない。無言では飲まず
   // (CLAUDE.md)、型の名前だけを添える(failure.ts の internalErrorKind —
   // gunshi 側の defect 経路と同じ形)
-  return io.logError(`maruhi: internal error (${internalErrorKind(failure)})`);
+  return io.logError(
+    formatNotice("error", `internal error (${internalErrorKind(failure)})`, io.colorEnabled()),
+  );
 }
 
 /**
@@ -2943,7 +2919,8 @@ export async function runEffectCli(
     const exit = yield* Command.runWith(root, { version: CLI_VERSION })([...argv]).pipe(
       Effect.provideService(Stdio.Stdio, withArgs(stdio, argv)),
       Effect.provideService(Console.Console, collectingConsole(diagnostics)),
-      Effect.provide(formatterLayer(commandKey, COMMAND_SPECS, helpRequested)),
+      // 色は stderr の接頭辞・ヘルプの見出しだけ(notice.ts — 判定は CliIo 経由)
+      Effect.provide(formatterLayer(commandKey, COMMAND_SPECS, helpRequested, io.colorEnabled())),
       // 組み込みグローバルフラグは --help / --version だけ(決定 5)
       Effect.provide(CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] })),
       Effect.provide(unusedEnvironment),
@@ -2965,7 +2942,13 @@ export async function runEffectCli(
     return exit;
   });
 
-  const exit = await Effect.runPromise(program.pipe(Effect.provide(layer)));
+  const exit = await Effect.runPromise(
+    program.pipe(
+      // 同一文面の Note / Warning は 1 実行あたり 1 回(notice.ts — 台帳は実行ごと)
+      Effect.provideService(NoticeLedger, new Set<string>()),
+      Effect.provide(layer),
+    ),
+  );
 
   let exitCode = 0;
   // 本番もテストも同じ teardown を通す(ShowHelp の exit 1 → 2 の読み替えが

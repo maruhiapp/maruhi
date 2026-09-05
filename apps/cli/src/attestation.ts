@@ -33,7 +33,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { formatAttestationEvidence } from "./floor-evidence.ts";
 import { type AttestationEvidenceRecord, FloorStore } from "./floor.ts";
-import { CliIo } from "./io.ts";
+import { logNote, logWarning } from "./notice.ts";
 import type { DistributedAttestationWire, VerifiedProject } from "./sync.ts";
 import { resyncExtended } from "./sync.ts";
 
@@ -245,7 +245,6 @@ export function submitHeadAttestationIfAdvanced(input: {
   readonly signingKey: CryptoKey;
 }): Effect.Effect<void, never, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const store = yield* FloorStore;
     const head = { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex };
     const attested = yield* store
@@ -274,8 +273,8 @@ export function submitHeadAttestationIfAdvanced(input: {
       }),
     );
     if (!signed.ok) {
-      yield* io.logError(
-        "Note: could not sign the head attestation for this sync (split-view gossip). This does not affect the current command",
+      yield* logNote(
+        "could not sign the head attestation for this sync (split-view gossip). This does not affect the current command",
       );
       return;
     }
@@ -304,8 +303,8 @@ export function submitHeadAttestationIfAdvanced(input: {
         .saveAttestedHead(input.projectId, head)
         .pipe(
           Effect.catch(() =>
-            io.logError(
-              "Note: the head attestation was submitted but its local tracking file could not be written (the next sync may re-submit the same head, which the server treats as an idempotent success)",
+            logNote(
+              "the head attestation was submitted but its local tracking file could not be written (the next sync may re-submit the same head, which the server treats as an idempotent success)",
             ),
           ),
         );
@@ -313,13 +312,13 @@ export function submitHeadAttestationIfAdvanced(input: {
     }
     // 提出失敗は非失敗(SHOULD)だが黙殺しない — 1 行の警告に落とす
     if (submitted === "regression") {
-      yield* io.logError(
-        "Warning: the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",
+      yield* logWarning(
+        "the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",
       );
       return;
     }
-    yield* io.logError(
-      `Note: could not submit the head attestation for this sync (split-view gossip stays inactive for this account until it succeeds; the server may be running a previous release without PUT /projects/:id/head-attestation). This does not affect the current command (${submitted})`,
+    yield* logNote(
+      `could not submit the head attestation for this sync (split-view gossip stays inactive for this account until it succeeds; the server may be running a previous release without PUT /projects/:id/head-attestation). This does not affect the current command (${submitted})`,
     );
   });
 }

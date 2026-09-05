@@ -19,6 +19,7 @@ import type { RotationSummary } from "./env-rotate.ts";
 import type { CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import { logNote, logWarning } from "./notice.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { verifiedDeletedEnvironments } from "./values.ts";
 
@@ -164,7 +165,7 @@ function unconvergedMandates(
  * エポックアンカーの健全性 — §7 — であり、対象の復帰では消えない)。
  */
 function reversedAdvice(state: string): string {
-  return `${state} — do not re-run the operation against the target; rotating the affected environment individually with maruhi env rotate <environment> --new-epoch --reason ... converges the mandate`;
+  return `${state} — do not re-run the operation against the target; rotating the affected environment individually with \`maruhi env rotate <environment> --new-epoch --reason <text>\` converges the mandate`;
 }
 
 /**
@@ -177,7 +178,7 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
     if (verified.state.members.has(mandate.target)) {
       return reversedAdvice("the target has been re-added");
     }
-    return `re-running maruhi member remove ${displayText(mandate.target)} converges the mandate`;
+    return `re-running \`maruhi member remove ${displayText(mandate.target)}\` converges the mandate`;
   }
   if (mandate.kind === "role-demoted") {
     const member = verified.state.members.get(mandate.target);
@@ -188,12 +189,12 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
     if (ROLE_RANK[member.role] >= ROLE_RANK.member) {
       return reversedAdvice("the target has been re-promoted to member or above");
     }
-    return `re-running maruhi member change-role ${displayText(mandate.target)} (specifying the demoted role) converges the mandate`;
+    return `re-running \`maruhi member change-role ${displayText(mandate.target)}\` (specifying the demoted role) converges the mandate`;
   }
   if (verified.state.serverGrants.has(mandate.target)) {
     return reversedAdvice("the target server key has been re-granted");
   }
-  return "re-running maruhi server revoke converges the mandate";
+  return "re-running `maruhi server revoke` converges the mandate";
 }
 
 /**
@@ -212,13 +213,12 @@ export function resolveUnconvergedMandates(input: {
     if (candidates.length === 0) {
       return candidates;
     }
-    const io = yield* CliIo;
     return yield* verifiedDeletedEnvironmentSet(input.client, input.verified).pipe(
       Effect.map((deletedVerified) => unconvergedMandates(input.verified, deletedVerified)),
       Effect.catch((error) =>
         Effect.gen(function* () {
-          yield* io.logError(
-            `Note: there are candidate unconverged rotation mandates, but they cannot be confirmed because verification of a deleted environment failed (${error.message})`,
+          yield* logNote(
+            `there are candidate unconverged rotation mandates, but they cannot be confirmed because verification of a deleted environment failed (${error.message})`,
           );
           return null;
         }),
@@ -251,8 +251,8 @@ export function warnUnconvergedMandates(input: {
       return;
     }
     const io = yield* CliIo;
-    yield* io.logError(
-      "Warning: there are unconverged rotation mandates (CRYPTO_SPEC §7) — holders of the old DEKs may still be able to read current values:",
+    yield* logWarning(
+      "there are unconverged rotation mandates (CRYPTO_SPEC §7) — holders of the old DEKs may still be able to read current values:",
     );
     for (const mandate of filtered) {
       yield* io.logError(`  ${describeUnconvergedMandate(input.verified, mandate)}`);

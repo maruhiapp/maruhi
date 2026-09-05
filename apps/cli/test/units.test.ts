@@ -247,6 +247,7 @@ describe("showValues(復号後の防衛線)", () => {
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
     stderrIsTerminal: () => true,
+    colorEnabled: () => false,
     openBrowser: () => Effect.succeed(false),
   });
 
@@ -276,7 +277,7 @@ describe("showValues(復号後の防衛線)", () => {
     // (一次 = TTY / 二次 = エージェント検出)であることを固定する
     const piped = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: false });
     expect(Exit.isFailure(piped)).toBe(true);
-    expect(JSON.stringify(piped)).toContain("only allowed on an interactive terminal");
+    expect(JSON.stringify(piped)).toContain("not both an interactive terminal");
     expect(JSON.stringify(piped)).not.toContain("plaintext-value");
 
     const headless = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: true });
@@ -311,6 +312,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      colorEnabled: () => false,
       openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
@@ -348,6 +350,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      colorEnabled: () => false,
       openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
@@ -389,6 +392,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      colorEnabled: () => false,
       openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(

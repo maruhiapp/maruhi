@@ -308,7 +308,7 @@ export function schemaVerifySnapshotOp(
       cliError(
         `Snapshot ${displayText(input.filePath)} diverges from the store (environment ${displayText(input.environmentId)}):\n` +
           details.map((line) => `  - ${line}`).join("\n") +
-          "\nThe store is the source of truth — regenerate the file with: maruhi schema export > <file>",
+          "\nThe store is the source of truth — regenerate the file with: `maruhi schema export` > <file>",
       ),
     );
   });

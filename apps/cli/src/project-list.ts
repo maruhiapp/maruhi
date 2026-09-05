@@ -65,7 +65,7 @@ export function projectListOp(input: {
       yield* io.log(`${displayText(row.projectId)}\trole=${row.role}`);
     }
     yield* io.logError(
-      `${countNoun(rows.length, "project")} as reported by the server — run maruhi project verify --project <id> for verified state`,
+      `${countNoun(rows.length, "project")} as reported by the server — run \`maruhi project verify --project <id>\` for verified state`,
     );
   });
 }

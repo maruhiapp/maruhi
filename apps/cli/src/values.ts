@@ -1291,7 +1291,7 @@ export function verifyLeaseDistribution(input: {
       input.verified.history.latestCheckpointFor(input.environmentId) === undefined
         ? [
             ...result.warnings,
-            `No checkpoint on the verified chain covers environment ${input.environmentId}, so checkpoint integrity (rollback and stale-epoch injection detection — CRYPTO_SPEC §6.3) does not protect this response. A project member should issue one with: maruhi project checkpoint`,
+            `No checkpoint on the verified chain covers environment ${input.environmentId}, so checkpoint integrity (rollback and stale-epoch injection detection — CRYPTO_SPEC §6.3) does not protect this response. A project member should issue one with: \`maruhi project checkpoint\``,
           ]
         : result.warnings;
     return {

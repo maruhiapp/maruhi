@@ -38,6 +38,7 @@ import { CliIo } from "./io.ts";
 import type { ManifestDigestEntry } from "./manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { generateVariableId } from "./meta-statement.ts";
+import { logNote, logWarning } from "./notice.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
 import { type VerifiedProject } from "./sync.ts";
@@ -136,7 +137,7 @@ export function ensureEntropyAcknowledged(input: {
     const warning = `The following input looks like it contains a secret-like high-entropy string: ${described}. Schema metadata is stored in plaintext and is visible to the server — never put real secret values into names or descriptions (values go through \`maruhi push\`, end-to-end encrypted)`;
     if (input.allowHighEntropy) {
       // 明示フラグ = リスクの明示受諾。それでも事実は可視化する(黙って通さない)
-      yield* io.logError(`Warning: ${warning} (--allow-high-entropy was given — continuing)`);
+      yield* logWarning(`${warning} (--allow-high-entropy was given — continuing)`);
       return;
     }
     const stdio = yield* Stdio.Stdio;
@@ -148,7 +149,7 @@ export function ensureEntropyAcknowledged(input: {
         ),
       );
     }
-    yield* io.logError(`Warning: ${warning}`);
+    yield* logWarning(`${warning}`);
     const answer = yield* io.promptLine({
       prompt: "Continue anyway? Type 'yes' to proceed: ",
     });
@@ -356,6 +357,25 @@ function preSignRejection(
   return null;
 }
 
+/**
+ * 検証済みビュー上の環境(無ければ型付きエラー)。schema set / var rm の
+ * 試行が共有する前段(fallow の重複検出の解消 — DP5)。
+ */
+export function requireVerifiedEnvironment(
+  state: SchemaSetState,
+  environmentId: string,
+): Effect.Effect<
+  NonNullable<ReturnType<VerifiedProject["state"]["environments"]["get"]>>,
+  CliError
+> {
+  const environment = state.verified.state.environments.get(environmentId);
+  return environment === undefined
+    ? Effect.fail(
+        cliError(`Environment ${displayText(environmentId)} does not exist on the verified chain`),
+      )
+    : Effect.succeed(environment);
+}
+
 /** 1 試行(署名・送信)。競合の分類は retryOnConflict の classify が担う。 */
 function attemptSchemaSet(
   input: SchemaSetInput,
@@ -364,14 +384,7 @@ function attemptSchemaSet(
 ): Effect.Effect<AcceptedSchemaSet, unknown> {
   return Effect.gen(function* () {
     const target = state.target;
-    const environment = state.verified.state.environments.get(input.environmentId);
-    if (environment === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `Environment ${displayText(input.environmentId)} does not exist on the verified chain`,
-        ),
-      );
-    }
+    const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
     const epoch = environment.currentEpoch;
     const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
     // 部分更新(§1-2): 直前ステートメントのスキーマ欄を基準に、指定された欄
@@ -529,7 +542,6 @@ export function schemaSetOp(
   input: SchemaSetInput,
 ): Effect.Effect<SchemaSetSummary, CliError, CliIo> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
     const name = input.name.normalize("NFC");
     const initial = yield* resolveSchemaTarget(input, input.verified, name);
@@ -540,8 +552,8 @@ export function schemaSetOp(
       initial.advisorySchemaPolicy === "disabled" &&
       (initial.target === null || initial.target.layoutVersion === 1)
     ) {
-      yield* io.logError(
-        "Note: the server reports this project's schema policy as disabled, so it will likely reject new layout-v2 statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
+      yield* logNote(
+        "the server reports this project's schema policy as disabled, so it will likely reject new layout-v2 statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
       );
     }
     const accepted = yield* retryOnConflict(initial, {

@@ -13,6 +13,7 @@ import { Effect, Redacted, type Stdio } from "effect";
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
+import { logWarning } from "./notice.ts";
 
 // Unicode カテゴリ Cc = C0 制御(NUL〜US)+ DEL + C1 制御(ANSI CSI を含む)に
 // 加えて、**行と並び順の整合性を壊す**もの:
@@ -190,16 +191,8 @@ export function formatPulledLine(variable: DisplayableVariable): string {
 }
 
 /** 検証中に収集した SHOULD 警告(非 NFC 名の配布等 — §12-1)を表示する。 */
-// プレフィックスは effect-cli.ts が直接書く「Warning: …」と同じ(共有
-// モジュールの一括英語化 — 第 3 段階の最終コミット — で PR #75 Pullfrog 指摘の
-// 混在を解消した)。
-export function logWarnings(warnings: readonly string[]): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    for (const warning of warnings) {
-      yield* io.logError(`Warning: ${warning}`);
-    }
-  });
+export function logWarnings(warnings: readonly string[]): Effect.Effect<void, never, CliIo> {
+  return Effect.forEach(warnings, (warning) => logWarning(warning), { discard: true });
 }
 
 const strictValueDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -265,7 +258,7 @@ export function showValues(
     // 壊れた値を貼る)。中和が起きたときだけ、原文が別物であることと、
     // 実際の値を渡す手段(run の環境変数注入)を stderr で名指しする
     if (altered.length > 0) {
-      yield* io.logError(warnAlteredDisplay(altered));
+      yield* logWarning(warnAlteredDisplay(altered));
     }
   });
 }
@@ -307,5 +300,5 @@ function renderValue(name: string, shown: string): readonly string[] {
  * 「run を使えば渡せます」と書くと、直後に拒否される手順へ送ることになる。
  */
 function warnAlteredDisplay(names: readonly string[]): string {
-  return `Warning: the values of these variables contain characters unusable in terminal output (control characters or ordering-manipulation characters), shown as \uFFFD instead. The displayed strings do not match the actual values — do not copy and use them. To pass the actual values to a process, use \`maruhi run -- <command>\` (though values containing NUL cannot be passed as env vars, so run rejects them too): ${names.join(", ")}`;
+  return `the values of these variables contain characters unusable in terminal output (control characters or ordering-manipulation characters), shown as \uFFFD instead. The displayed strings do not match the actual values — do not copy and use them. To pass the actual values to a process, use \`maruhi run -- <command>\` (though values containing NUL cannot be passed as env vars, so run rejects them too): ${names.join(", ")}`;
 }

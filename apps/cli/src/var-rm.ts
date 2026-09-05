@@ -32,7 +32,7 @@ import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts"
 import { signStatementAndHash } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signDeleteStatementV2 } from "./schema-statement.ts";
-import { resolveSchemaTarget, type SchemaSetState } from "./schema.ts";
+import { requireVerifiedEnvironment, resolveSchemaTarget, type SchemaSetState } from "./schema.ts";
 import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedEnvironmentMetadata } from "./values.ts";
 
@@ -199,14 +199,7 @@ function attemptDeletion(
 ): Effect.Effect<AcceptedDeletion, unknown> {
   return Effect.gen(function* () {
     const target = state.target;
-    const environment = state.verified.state.environments.get(input.environmentId);
-    if (environment === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `Environment ${displayText(input.environmentId)} does not exist on the verified chain`,
-        ),
-      );
-    }
+    const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
     if (target.status !== "active" && target.status !== "declared") {
       return yield* Effect.fail(
         cliError("The resolved deletion target is not a live variable (internal inconsistency)"),
@@ -326,7 +319,7 @@ export function varRmOp(
             (next) => next.target.variableId === confirmedVariableId,
             () =>
               cliError(
-                `Variable ${displayText(name)} now resolves to a different variable than the one you confirmed (the original was deleted or renamed concurrently, and another variable took the name). Nothing was deleted by this run — re-run maruhi var rm to confirm against the current state`,
+                `Variable ${displayText(name)} now resolves to a different variable than the one you confirmed (the original was deleted or renamed concurrently, and another variable took the name). Nothing was deleted by this run — re-run \`maruhi var rm\` to confirm against the current state`,
               ),
           ),
         ),

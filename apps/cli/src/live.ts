@@ -11,6 +11,8 @@
 
 // サブモジュールを直に読む(パッケージの index は BunRedis 等まで巻き込み、
 // `bun` モジュールを解決できない環境 — Node で走る vitest — で落ちる)
+import { writeSync } from "node:fs";
+
 import * as BunStdio from "@effect/platform-bun/BunStdio";
 import { Duration, Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -24,12 +26,13 @@ import { makeFileFloorStore } from "./floor-log.ts";
 import { floorDirOf, FloorStore } from "./floor.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { KEYCHAIN_SERVICE, Keychain, type KeychainShape } from "./keychain.ts";
+import { shouldUseColor } from "./notice.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import { buildChildEnvironment, ProcessRunner, type ProcessRunnerShape } from "./run.ts";
 
 const keychainUnavailable = () =>
   cliError(
-    "Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN env var instead",
+    "Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — pass a token via the MARUHI_TOKEN environment variable instead",
   );
 
 // keyring デーモン不在の headless Linux では Bun.secrets の書き込みが応答なしで
@@ -321,12 +324,24 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
   }).pipe(Effect.catch(() => Effect.succeed(false)));
 }
 
+/**
+ * 1 行を fd へ同期書き込みする。`console.error` は使わない: Bun は stderr が端末の
+ * とき console.error の出力を**すべて赤で塗る**(実測 `\e[0m\e[31m…\e[0m` —
+ * ヘルプ本文も Note も赤になっていた)。`process.stderr.write` も使わない:
+ * パイプ相手では非同期で、bin.ts の `process.exit` が末尾を切り落とす(実測:
+ * 5 万行中 7,401 行で途切れる)。`writeSync` は端末・パイプ・ファイルのどれでも
+ * 完了してから戻る。
+ */
+function writeLine(fd: 1 | 2, line: string): void {
+  writeSync(fd, `${line}\n`);
+}
+
 function makeLiveIo(): CliIoShape {
   // 非 TTY 入力の行リーダーはプロセスで 1 つ(プロンプト間で未消費行を保持する)
   const readPipedLine = makeStdinLineReader(process.stdin);
   return {
-    log: (line) => Effect.sync(() => console.log(line)),
-    logError: (line) => Effect.sync(() => console.error(line)),
+    log: (line) => Effect.sync(() => writeLine(1, line)),
+    logError: (line) => Effect.sync(() => writeLine(2, line)),
     readStdin: Effect.tryPromise({
       try: async () => {
         const chunks: Uint8Array[] = [];
@@ -366,6 +381,13 @@ function makeLiveIo(): CliIoShape {
     envVar: (name) => process.env[name],
     agentProfile: detectAgentProfile,
     stderrIsTerminal: () => process.stderr.isTTY === true,
+    // 色の可否(stderr の接頭辞だけ — notice.ts)。判定材料の `process.*` は
+    // この実装の中でだけ読む(ADR-0016 決定 5)
+    colorEnabled: () =>
+      shouldUseColor({
+        stderrIsTerminal: process.stderr.isTTY === true,
+        envVar: (name) => process.env[name],
+      }),
     openBrowser: openBrowserLive,
   };
 }

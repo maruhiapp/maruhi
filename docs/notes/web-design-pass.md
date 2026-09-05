@@ -935,6 +935,135 @@ auth / signup-policy テスト 87 件通過。web e2e 30 件通過(`/theme.css` 
 再検証ヘッダー、一様エラーページのスタイル適用と太さを追加)。axe 44 態で違反 0。スクリーンショット
 before / after 各 44 枚(改訂 1 後に撮り直し)、CSP 違反 0。
 
+### DP5 実装時の裁定録(2026-09-05)
+
+対象は CLI の出力面: stderr の通知(Note / Warning / 失敗)と色、繰り返し出る Note の抑制、`login` の案内、
+文言の英語校正、`--help` の整合、ADR-0016 決定 7 の文言。各裁定点は DP1〜DP4 と同じループ(案を 3 つ以上列挙 →
+上位互換 / 銀の弾丸を探索 → 新案が出ない周が 1 回あれば終了 → 選定)で決めた。判断基準は、ADR-0016 の決定
+(打たれた値を診断に出さない・終了コードはエラー型・組み込みフラグは `--help` / `--version` だけ・`process.*` を
+直に読まない・stdout はコマンドの出力だけ)と決定 7 の判定の意味論を 1 つも崩さない・ディスクレス不変条件
+(Note の抑制に平文や機密の状態を持たせない)・新規依存を足さない・サーバー / Web / 仕様書に触らない・
+後戻りが安いこと。
+
+**前提の訂正(実装で判明した事実)**: (1) **Bun の `console.error` は stderr が端末のとき出力全体を赤で塗る**
+(実測 `\e[0m\e[31m…\e[0m`)。「現状 ANSI 色はどこにも使っていない」は誤りで、ヘルプ本文・Note・Warning・
+プロンプトの案内まで**すべて赤**で出ていた(端末の赤は danger の意味なので、Note が警告に見える)。
+(2) `process.stderr.write` / `process.stdout.write` はパイプ相手では非同期で、`bin.ts` の `process.exit` が末尾を
+切り落とす(実測: 5 万行中 7,401 行で途切れる)。`node:fs` の `writeSync` は端末・パイプ・ファイルのどれでも
+完了してから戻る。(3) 実効権限 admin の利用者には、**プロジェクト作成の当日から** push / pull のたびに
+checkpoint の提案が出ていた: 契機 (iii) の admin 側の基準は「公証あり(audit_head_hash 非空)の最新
+checkpoint」だが、環境作成 / rotate の複合に同梱される境界チェックポイント(`boundary-checkpoint.ts`)は
+`auditHeadHashHex: ""` なので基準にならず、「未発行」= 即提案になる。push ではアンカーの Note が同じ導線に
+同梱されるため、1 push あたり Note 2 行が初日から出る。(4) 同期 → 再同期の経路を 2 度通る実行(床違反の再同期
+など)では、同じ Note(ヘッド申告の送信失敗)が 1 コマンドの中で 2 度並ぶ。(5) Note を stdout(`io.log`)へ
+出している箇所が 4 つあった(`audit list` / `audit self` / `logout` の MARUHI_TOKEN 注記 / `key generate`)—
+決定 9(stdout はコマンドの出力だけ)の取りこぼし。(6) サーバーのフロー TTL は `CLI_FLOW_TTL_MS` = 15 分で、
+`POST /auth/cli/start` の `expiresInSeconds` もそこから出る。ROADMAP の「10 分」は誤り。(7) upstream
+(`CliOutput.defaultFormatter`)の色の自動判定は `process.stdout.isTTY` と `NO_COLOR === "1"` を見る —
+stdout 基準(ヘルプは stderr に出す)で、NO_COLOR の規約(非空なら無効)とも食い違う。
+
+**A. 色と記号の TTY 規律** — 列挙: (i) 無色・ASCII のみ(stderr の書き込みを `writeSync` に替えて Bun の赤塗りを
+止めるだけ)/ (ii) **接頭辞だけに色**(`Note:` シアン・`Warning:` 黄・`maruhi:` 赤)+ 全文ヘルプは upstream の
+既定パレット(見出し太字・usage シアン・フラグ名緑)、判定は stderr が端末か + `NO_COLOR` / `FORCE_COLOR` /
+`TERM=dumb` / (iii) 行全体に色(今の Bun の挙動と同じ形 — 本文の値・識別子・URL に色が混ざる)/ (iv) Unicode
+記号(✓ / ⚠ / ✗)/ (v) `--color` フラグ(決定 5 に反する — 組み込みグローバルフラグを増やす)。第 1 周の新案:
+(ii) を「色を付けるのは**定数の接頭辞だけ**」に絞ることで「値・識別子に色を付けない」を規律でなく**構造**で
+保証する(あり)。第 2 周: なし。**選定 = (ii)**。記号は使わない(Windows の端末・非 UTF-8 ロケールでの化けを
+避ける — 接頭辞の語がその役)。DP1 の朱は端末色で真似ない(16 色の赤は danger)。判定は純関数
+`shouldUseColor({ stderrIsTerminal, envVar })`(`FORCE_COLOR` 非空 > `NO_COLOR` 非空 > `TERM=dumb` >
+stderr が端末か)で、`CliIo.colorEnabled()` として本番(`live.ts` — `process.*` を読むのはここだけ)が供給し、
+テストは既定で無色(`setColor(true)` で色経路を検査)。stdout には一切色を付けない(データ)。upstream の
+自動判定は使わず(前提の訂正 (7))、`defaultFormatter({ colors })` に明示で渡す。棄却: (i) は診断の種類が
+一目で分からない(Note が 60 か所以上ある)。(iii)(iv)(v) は上記。
+
+**B. Note / Warning / Error の語彙と宛先** — 語彙の定義: `Note:` = 情報(コマンドは成功。任意の次の一手か状況の
+説明。見逃しても安全性は下がらない)/ `Warning:` = 劣化・要注意(コマンドは続行したが利用者が確認すべき状態。
+見逃すと安全性が下がりうるものは常にこちら — 床の破損・アンカー不一致・署名検証失敗)/ `maruhi:` = 失敗(終了
+コード ≠ 0。1 文目 = 何が起きたか、2 文目 = 次の一手)。宛先は 3 つとも stderr(決定 9)。列挙: (i) 文字列連結の
+まま / (ii) `display.ts` にヘルパー / (iii) `CliIo` にメソッド(`io.note`)/ (iv) **新モジュール `notice.ts`**
+(`logNote` / `logWarning` / `logFailure` + 純関数 `formatNotice`)。第 1 周の新案: (iv) + 継続行(`details`)の
+2 スペース字下げを同じ関数に(あり)。第 2 周: なし。**選定 = (iv)**。約 60 か所の `\`Note: ${…}\`` / `Warning:`
+連結をすべて置換し、stdout に出ていた 4 か所(前提の訂正 (5))を stderr へ移した。`display.ts` の `logWarnings`
+と `cli-formatter.ts` の `maruhi:` 接頭辞も同じ描画を使う。棄却: (iii) は偽の `CliIo` が装飾まで実装することに
+なり、テストが装飾前の行を捕捉できない。
+
+**C. 繰り返し Note の抑制規則** — 列挙: (i) **未発行の基準を genesis の時刻から数える**(同じ 7 日の閾値。状態を
+持たない)/ (ii) プロジェクトごとに「表示済み」を非機密の設定ファイルに記録して 1 日 1 回(新しい永続化の場所と
+多端末での食い違い)/ (iii) `--quiet` 系のフラグ(利用者が覚える必要があり既定を直さない)/ (iv) 文面を短くして
+毎回出す / (v) push のアンカー注記を廃止し rotate だけに残す / (vi) **アンカーの助言を checkpoint 提案と同じ
+1 行に畳む**。第 1 周の新案: (i)+(vi)、および **「同一文面の Note / Warning は 1 コマンド実行あたり 1 回」**
+(`NoticeLedger` — `runEffectCli` が実行ごとに新しい台帳を供給し、台帳が無い文脈では抑制しない。前提の訂正 (4)
+の解消)(あり)。第 2 周: なし。**選定 = (i)+(vi)+台帳**。CRYPTO_SPEC §6.3 (iii) の「7 日超経過または未発行」は
+「未発行 = 基準が genesis のまま」と読み、genesis から 7 日以内は提案しない(提案は SHOULD の付随で、仕様の
+検出条件そのものは変えない — 所有者が仕様の文言に追記したければ人間タスク)。rotate / sweep 後のアンカー注記は
+「エポックが進んだ = 確実に古い」ので無条件のまま(session-35 裁定 P)、文面を短く。**抑制しないもの**: floor の
+破損・アンカー不一致・署名検証失敗・未収束の義務などの Warning は条件も文面の強さも変えない。初回同期の
+「床なし」Note は 1 回きり(床ファイル作成後は出ない)なので据え置き。
+
+**D. `login` の期限と案内文** — D-1 期限: (i) 定数 15 分を CLI に書く / (ii) **サーバー応答の `expiresInSeconds`
+(deadline 判定と同じ丸め値)から「This request expires in 15 minutes」を導く**(分単位で切り捨て、1 分未満だけ秒)。
+期限切れの文面にも同じ期間を添える(「The sign-in request expired (it was valid for 15 minutes). Run `maruhi
+login` again」)/ (iii) 表示しない。**選定 = (ii)**。ROADMAP の「10 分」は 15 分の誤り(ROADMAP の完了注記で
+訂正。サーバーの TTL は変えない)。D-2 宛先: (i) 現状どおり案内も結果も stdout / (ii) **対話の案内(URL・確認
+コード・期限・待機・ブラウザの案内)は stderr、結果(「Signed in as …」・トークンの期限)は stdout** / (iii) 全部
+stderr。**選定 = (ii)** — プロンプトが既に stderr(`live.ts`)で、`maruhi login > file` でも案内が見える。
+D-3 待機中の進捗: (i) 一定間隔で「still waiting」を出す(ログを汚す)/ (ii) `\r` のカウントダウン(TTY 専用の
+描画経路)/ (iii) **出さない**(期限の 1 行が窓を伝える)。**選定 = (iii)**。D-4 ブラウザ: 自動起動を試みて失敗
+したときだけ「Could not open a browser automatically. Open the URL above manually」、成功時は「Opened your
+browser. If nothing appeared, open the URL above manually」、試みない環境(エージェント・非対話)は何も足さない
+(URL の案内が既にある)。D-5 語彙: 承認ページ(DP4)と揃えて「Confirmation code: XXXX-XXXX」+「Approve only
+if the browser shows this exact code (it protects you against phishing)」(「AUTH_SPEC's phishing guard」の
+内部語は消す)。D-6 signupPolicy の事前 fail-fast の案内も stderr。
+
+**E. エラー文の英語校正(用語集)** — 規約: sentence case / 単文は末尾ピリオド無し・複文は文中のピリオドで区切り
+末尾には付けない(現状の 96 件が既にこの形 — 混在の実体はコマンド名の表記だった)/ コマンド・フラグは常に
+バッククォート(`maruhi project checkpoint`)/ 1 文目 = 何が起きたか、2 文目 = 次の一手 / Markdown の `**強調**`
+を端末に出さない。用語: **sign in / sign-in**(prose。コマンドは `maruhi login` のまま)、**server**(origin は
+環境変数名 `MARUHI_TOKEN_ORIGIN` にだけ残る)、**token**(PAT と言わない)、**environment variable**(env var と
+言わない — flag 名 `--env` と ID は別)、**master key**(keypair と言わない)、**recovery code**、**OS keychain**、
+**user ID**(prose。`user_id` はフィールド名として残る)、**epoch DEK**(CRYPTO_SPEC の語)。診断の末尾の仕様参照
+「(CRYPTO_SPEC §6.3)」は残す(issue に貼られたときの追跡性)が、ヘルプには載せない(F)。決定 7 の文面(G)と
+儀式系の拒否文(invite accept / member add / server grant / schema import)は「Refused to …: 何が検出されたか。
+なぜ。どうすればよいか」の順に統一。
+
+**F. `--help` の整合** — 列挙: (i) 説明文の統一だけ / (ii) **golden ファイル**(`test/golden/help.txt` — 全 54 段 +
+bare `maruhi` + `maruhi --help`。`UPDATE_GOLDEN=1` で更新し差分をレビューで読む)+ 機械検査(説明文は大文字の
+動詞始まり・`§` を含まない・ANSI を含まない・stdout を汚さない)/ (iii) 断言だけ(壊れ方が断言の隙間から漏れる)。
+**選定 = (ii)**。規約: 説明文は動詞始まりの 1 行、仕様の § 参照を書かない(利用者はスペックを読めない)、stdin /
+stdout の扱いと危険な操作(permanently / forces a rotation)を書く、グループは「Manage X (a / b / c)」。追加: root に
+製品の一文(bare `maruhi` の冒頭)、`run` / `ci run` の usage 行に `--` を出す(`maruhi run [flags] -- <command...>`
+— 決定 8 の書き方そのもの)、共通フラグの既定は「(default: the `server` setting)」の形。
+
+**G. ADR-0016 決定 7 の文言** — 判定の意味論は不変(一次境界 = stdin と stdout の両方が端末、二次層 = 既知
+エージェント、fail-closed)。エージェント検出: 「Refused to display values: an AI agent environment was detected
+(name). Values are shown only to a person at an interactive terminal, so they never land in an agent's transcript.
+Run this command yourself in a terminal」。TTY 境界: 「Refused to display values: stdin and stdout are not both an
+interactive terminal. Values are shown only to a person at a terminal (pipes, redirects, CI, and AI agents are
+refused), so they never land in a file or a log. Run this command yourself in a terminal, without redirecting its
+input or output」。`maruhi run` を勧めない規律(迂回レシピを渡さない)はそのまま。
+
+**H. TTY 挙動の検証方法** — 単体(`CliIo` / `Stdio` の差し替え): 色の判定(`shouldUseColor` の 4 条件)・接頭辞だけに
+色が付くこと・台帳の抑制・login の期限(`expiresInSeconds` 3 種 + 非数)・stdout / stderr の分離(`env.logs` /
+`env.errors`)・golden。実プロセス(`script -qec` の擬似 TTY と `| cat` / `2>&1` のパイプ): Bun の赤塗りが消えて
+接頭辞だけに色が付くこと、パイプでは ANSI が出ないこと、`NO_COLOR=1` / `FORCE_COLOR=1` の効き、`maruhi
+--version` / `config get` の stdout が汚れないこと、wrangler dev(ダミー `.dev.vars` + ローカル D1 マイグレーション)
+に対する `maruhi login` の実出力(`POST /auth/cli/start` まで。承認は行わない)。before / after は所有者向けの
+Artifact。
+
+**I. ユーザー向け文書** — `apps/site/docs/getting-started.mdx` の記述(ブラウザで確認コードを照合する)は変更後も
+正しい(触らない)。`README.md` に CLI の出力例は無い。`docs/SELF_HOSTING.md` の `maruhi login` の行コメント
+「client_id is resolved from the server」は 2026-08-31 の §4 改訂で消えた仕組みの残骸なので、その 1 行だけ直した。
+
+**新たに出た裁定点**: (J) Bun の `console.error` の赤塗り(前提の訂正 (1))→ `live.ts` の `log` / `logError` を
+`writeSync(1 | 2, …)` に(前提の訂正 (2) により `process.stdout.write` ではなく `writeSync`)。(K) stdout に出ていた
+Note 4 か所 → stderr(テストの断言は `env.errors` へ追随)。(L) `run` の usage に `--`(F に含めた)。(M) fallow の
+複雑度(`checkpointProposal` の閉包)→ `baselineIsStale` を関数に切り出し、重複(`schema set` / `var rm` の環境
+解決)→ `requireVerifiedEnvironment` を共有。
+
+**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 863 件
+(+ notice 9 件・help golden 2 件・login 2 件・checkpoint の genesis 基準)。実プロセスの TTY / パイプ採取と
+wrangler dev に対する `maruhi login` の実出力は PR の Artifact。
+
 ## 6. スコープ外
 
 - 手動ダークトグル・**ダッシュボード(TCB)側の** Web フォント自己配信(必要になったら再訪 — §1-2 / §1-3)

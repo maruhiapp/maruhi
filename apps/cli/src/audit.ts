@@ -39,6 +39,7 @@ import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
 
 /**
@@ -174,7 +175,7 @@ function mirrorTrustOf(
     // 同期後にチェーンが伸びた正直なレースでも起きる — 単独では証拠にしないが、
     // 偽造との区別(head 直後からの連続性)は verify が確定する
     return {
-      label: "mirror=unverified (newer than the local chain — confirm with maruhi audit verify)",
+      label: "mirror=unverified (newer than the local chain — confirm with `maruhi audit verify`)",
       mismatches: [],
     };
   }
@@ -242,7 +243,7 @@ function d1MirrorTrustOf(event: WireAuditEvent): MirrorTrust | null {
 function mirrorWarnings(event: WireAuditEvent, trust: MirrorTrust | null): readonly string[] {
   return (trust?.mismatches ?? []).map(
     (mismatch) =>
-      `Warning: audit row ${event.id} makes a chain provenance claim that is invalid or does not match the verified chain — ${mismatch} (the audit log is server-managed data, so this mismatch is evidence of server-side tampering or corruption — AUDIT_SPEC §6)`,
+      `audit row ${event.id} makes a chain provenance claim that is invalid or does not match the verified chain — ${mismatch} (the audit log is server-managed data, so this mismatch is evidence of server-side tampering or corruption — AUDIT_SPEC §6)`,
   );
 }
 
@@ -400,7 +401,7 @@ function continuationHint(
   if (last === undefined || events.length < pageSize) {
     return null;
   }
-  return `To continue: ${command} --before ${last.id}`;
+  return `To continue: \`${command} --before ${last.id}\``;
 }
 
 // ---------------------------------------------------------------------------
@@ -517,8 +518,8 @@ export function auditListOp(
       ),
     );
     if (!options.expandReads && events.some((event) => aggregatedReadOf(event) !== null)) {
-      yield* io.log(
-        "Note: var.read rows are recorded per value pull and list the variables read (AUDIT_SPEC §3.3). Re-run with --expand-reads to print one line per variable",
+      yield* logNote(
+        "var.read rows are recorded per value pull and list the variables read (AUDIT_SPEC §3.3). Re-run with --expand-reads to print one line per variable",
       );
     }
     const hint = continuationHint(events, page.limit, "maruhi audit");
@@ -544,7 +545,7 @@ function logListEvents(
       }
       integrityFailures += rendered.warnings.length;
       for (const warning of rendered.warnings) {
-        yield* io.logError(warning);
+        yield* logWarning(warning);
       }
     }
     return integrityFailures;
@@ -594,7 +595,7 @@ function fetchAndRenderD1Events(input: {
       yield* io.log(formatEventLine(event, null, trust));
       integrityFailures += warnings.length;
       for (const warning of warnings) {
-        yield* io.logError(warning);
+        yield* logWarning(warning);
       }
     }
     const hint = continuationHint(events, input.page.limit, input.command);
@@ -627,7 +628,6 @@ export function auditSelfOp(
   page: AuditPageOptions,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const rendered = yield* fetchAndRenderD1Events({
       request: context.client.audit.self({ query: pageQueryOf(page) }),
       page,
@@ -637,8 +637,8 @@ export function auditSelfOp(
     const events = rendered.events;
     // 要監視イベント(AUDIT_SPEC §3.1)の含意はここで一度だけ添える
     if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
-      yield* io.log(
-        "Note: auth.recovery_blob_fetched (a fetch of the wrapped master private key) is present. If you do not recognize a fetch, reissue your recovery code (maruhi key recovery) and revoke your tokens and sessions",
+      yield* logNote(
+        "auth.recovery_blob_fetched (a fetch of the wrapped master private key) is present. If you do not recognize a fetch, reissue your recovery code (`maruhi key recovery`) and revoke your tokens and sessions",
       );
     }
     return rendered.integrityFailures > 0 ? 1 : 0;
@@ -899,7 +899,7 @@ export function auditVerifyOp(
       // 未検証の行が残る限り「OK」とは言わない(pullfrog 指摘 — 偽造行が
       // 未検証枠に恒久に居座る形を、成功終了で覆い隠さない)
       yield* io.logError(
-        `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run maruhi audit verify — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
+        `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run \`maruhi audit verify\` — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
       );
     }
     for (const problem of problems) {

@@ -248,7 +248,8 @@ describe("maruhi audit reconcile(AUDIT_SPEC §6 の admin 突合)", () => {
     expect(output).toContain("Audit reconciliation OK");
     expect(output).toContain("4 audit rows recomputed, 2 notarized checkpoints checked");
     // §6 の明示的な残余(公証済み接頭辞の外は保護対象外)を成功時に一言添える
-    expect(output).toContain("not covered until the next attested checkpoint");
+    // (Note — stderr。stdout はコマンドの出力だけ)
+    expect(env.errors.join("\n")).toContain("not covered until the next attested checkpoint");
   });
 
   it("公証ゼロの正例は「checks passed」を出さず、空虚に真であることを明示する", async () => {
