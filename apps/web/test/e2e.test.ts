@@ -1007,4 +1007,21 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     expect(violations).toEqual([]);
     await page.close();
   });
+
+  it("returns to the sign-in screen in place when a screen fetch reports 401", async () => {
+    // 改訂 11 でシェルが遷移をまたいで残るようになった副作用(pullfrog 指摘): 途中で
+    // セッションが失効しても、画面の 401 → シェルへの通知 → その場でサインイン画面
+    // (再読込・再遷移なし)
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await routeSession(page);
+    await page.route((url) => url.pathname === "/auth/tokens", unauthorized);
+    await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
+    await page.getByTestId("login-card").waitFor();
+    await expect(page.getByText("You are signed out.").count()).resolves.toBe(1);
+    await expect(page.getByTestId("signed-in-user").count()).resolves.toBe(0);
+    expect(new URL(page.url()).pathname).toBe("/dashboard/tokens");
+    expect(violations).toEqual([]);
+    await page.close();
+  });
 });

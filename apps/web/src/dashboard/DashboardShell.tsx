@@ -58,6 +58,7 @@ import {
 } from "./icons.tsx";
 import { markResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
+import { SessionExpiredContext } from "./session-expiry.ts";
 import { FailureNotice, LoadingRow, SECTION_GAP, ServerReportedNote } from "./shared.tsx";
 import type { Me } from "./types.ts";
 
@@ -304,7 +305,12 @@ function PageHeader({
  * セッション状態(loading / signed-out / ok / failed)。ok のときだけ me を持つ。
  * サインアウトは成功・401 のどちらでも signed-out(signedOutNow)へ落とす。
  */
-function useSession(): { auth: AuthState; reload: () => void; signOut: () => void } {
+function useSession(): {
+  auth: AuthState;
+  reload: () => void;
+  signOut: () => void;
+  expire: () => void;
+} {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
   const reload = useCallback(() => {
     setAuth({ status: "loading" });
@@ -330,7 +336,9 @@ function useSession(): { auth: AuthState; reload: () => void; signOut: () => voi
       }
     });
   }, []);
-  return { auth, reload, signOut };
+  // 画面のフェッチが 401 を返した(session-expiry.ts)。サインアウト直後と同じ画面へ
+  const expire = useCallback(() => setAuth({ status: "signed-out", signedOutNow: true }), []);
+  return { auth, reload, signOut, expire };
 }
 
 interface PageProps {
@@ -359,10 +367,11 @@ function StatusFrame({ children }: { children: ReactNode }): ReactNode {
 /**
  * 認証が要る画面の親(pathless ルート `dashboardShellRoute` の部品)。セッションを確認し、
  * ok のときだけ AppShell + SideNav の中に子ルート(`Outlet`)を描く。signed-out はサインイン
- * 画面、loading / failed は状態フレーム(ナビなし)。
+ * 画面、loading / failed は状態フレーム(ナビなし)。画面のフェッチが 401 を返したら
+ * (SessionExpiredContext — session-expiry.ts)その場で signed-out へ落とす。
  */
 export function DashboardLayout(): ReactNode {
-  const { auth, reload, signOut } = useSession();
+  const { auth, reload, signOut, expire } = useSession();
   if (auth.status === "loading") {
     return (
       <StatusFrame>
@@ -378,7 +387,11 @@ export function DashboardLayout(): ReactNode {
       </StatusFrame>
     );
   }
-  return <SignedInFrame me={auth.me} onSignOut={signOut} />;
+  return (
+    <SessionExpiredContext.Provider value={expire}>
+      <SignedInFrame me={auth.me} onSignOut={signOut} />
+    </SessionExpiredContext.Provider>
+  );
 }
 
 /** サインイン後のフレーム: サイドバー(現在地は子ルートの申告)+ 子ルート。 */

@@ -758,6 +758,16 @@ mobile = 14 態で実行(違反 0。見出し階層: 見出しの無い箱は h1
 h1 → h2 → h3)。裁定 E の「違反 0」の範囲は「fixtures の非空 24 態 + 空状態 14 態」と明示する
 (FailureNotice の状態は未監査 — Banner の単純な構造で、次の候補)。(e) nit: ProjectScreen の
 `Banner` import を先頭コメントの下へ、shared.tsx からの import を辞書順に。
+(f) 入れ子ルート化の副作用(pullfrog 再々レビュー): 途中でセッションが失効して画面のフェッチが
+401 を返しても、シェルは 1 回しか /auth/me を確認しないので「サインイン済み」から戻れず、
+「Signed out」Banner の「Go to sign-in」(/dashboard への SPA 遷移)も同じシェルの子に着地して
+Banner が繰り返す(改訂 10 までは遷移で再マウントされて再確認 → サインイン画面だった)。
+候補: (1) **401 の通知経路**(`session-expiry.ts` の context — FailureNotice が 401 を描くときに
+親へ知らせ、シェルがその場で signed-out へ落としてサインイン画面を描く)/ (2) 復帰リンクを
+`hardNavigate`(フルリロード — 改訂 11 以前の挙動を明示的に再現)/ (3) 遷移ごとに /auth/me を
+再確認(1 往復が戻る — 改訂 11 の目的に反する)。→ (1) を採用(最初の 401 に反応するだけで
+往復は増えない。再読込も不要)。e2e を 1 件追加(/auth/tokens が 401 → 同じ URL のまま
+サインイン画面 + 「You are signed out.」)。
 
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。

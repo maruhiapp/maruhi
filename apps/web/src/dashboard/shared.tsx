@@ -32,6 +32,7 @@ import type { ReactNode } from "react";
 
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
+import { useReportSessionExpired } from "./session-expiry.ts";
 import type { ChainRole, ForbiddenReason } from "./types.ts";
 
 /**
@@ -211,7 +212,11 @@ function StatusNotice({
   return <UnreachableNotice onRetry={onRetry} />;
 }
 
-/** 401 以外の失敗の画面内表示(401 は各画面がログインカードへ差し替える)。 */
+/**
+ * 失敗の画面内表示。401 はシェルへ「セッション失効」を通知し(session-expiry.ts)、
+ * シェルがその場でサインイン画面に切り替える — 通知が届くまでの 1 描画(またはシェルの
+ * 外)は「Signed out」の Banner が出る。
+ */
 export function FailureNotice({
   failure,
   onRetry,
@@ -221,6 +226,7 @@ export function FailureNotice({
   onRetry?: () => void;
   subject?: FailureSubject;
 }): ReactNode {
+  useReportSessionExpired(failure.kind === "unauthorized");
   if (failure.kind === "forbidden") return <ForbiddenNotice reason={failure.reason} />;
   if (failure.kind === "gone") return <GoneNotice reason={failure.reason} subject={subject} />;
   return <StatusNotice failure={failure} onRetry={onRetry} subject={subject} />;
