@@ -712,6 +712,45 @@ main と同一に戻る)。検証: e2e 26 件、axe 24 態で違反 0。
 縦のリズム: 見出し → 箱 16px、箱 → 次の見出し 40px(節間 `SECTION_GAP`)の対比で見出しが前の箱に付いて
 見えない。検証: `bun run check` 7 段通過、e2e 26 件、axe 24 態で違反 0、CSP 違反 0。
 
+**改訂 11(2026-09-05、PR #148 Cursor Bugbot 指摘 — シェルが遷移ごとに再マウントされる)**:
+
+**T: 認証が要る画面は pathless の親ルート(`DashboardLayout`)の子に置き、シェルを 1 回だけマウントする**。
+指摘: 各画面が自前で `DashboardShell`(セッション状態 + AppShell + SideNav)を持つため、Projects →
+プロジェクト → API tokens → Account audit の遷移のたびに AppShell / SideNav がアンマウントされ、
+「Checking your session」の全画面フレームが出て `GET /auth/me` を再取得してから遷移先が描かれる。
+サイドバーは据え置かれず(折りたたみ状態も消える)、認証済みの遷移が 1 往復とクロームの点滅を払う。
+検証: 事実(routes は App.tsx で並列に bindRoute、DashboardShell は useSession を持つ)。
+候補: (1) **入れ子ルート**(funstack-router の `children` + `Outlet` — docs の「サイドバーが残る
+ダッシュボード」がまさにこの用途)/ (2) モジュール階層のセッションキャッシュ(再取得と
+loading フレームは消えるが、AppShell / SideNav の DOM は遷移ごとに作り直され、折りたたみ状態が
+消える)/ (3) 画面側で条件描画(docs が避けよという形)。→ **(1) を採用**。
+実装: routes.ts に `dashboardShellRoute = route({ id: "dashboard-shell" })`(pathless — パス名を
+消費しないので 4 つの葉ルートのパスは不変、SPA_ROUTES と spa-topology テストも不変。パスを
+持たないので目録には載せない)。App.tsx で 4 ルートをその子に。`DashboardShell.tsx` は 2 層に:
+`DashboardLayout`(親。useSession + AppShell + SideNav + `Outlet`)と `DashboardShell`(画面の
+枠。Layout の header = 見出し、content = 本文)。サイドバーの現在地とプロジェクトの子項目は各画面が
+`destination` / `project` で申告し、context(useState の setter)+ `useLayoutEffect` で親へ上げる
+(描画前に反映し、遷移直後の 1 フレームに前の画面の選択が残らない)。
+棄却: URL から導く `useLocation` — router の Location が `.hash` を持ち、SPA バンドルに語 "hash" が
+入って AUTH_SPEC §15-3 の tripwire(write-headers.ts — 裁定 BG)に当たる(実際にビルドが落ちた)。
+SSG の注意: router は URL 無しの SSR で pathless ルートを描くが、本プロジェクトの静的シェルは
+`#app` にエントリ用の span しか出さず(クライアント木はビルド時に描かない)、影響しない。
+副次: プロジェクト ID の形式判定(64 hex)を `ids.ts` の `isProjectId` に集約(DashboardScreen /
+ProjectScreen の重複リテラルを解消)。e2e を 1 件追加: サイドバーから API tokens → Account audit へ
+SPA 遷移し、`/auth/me` が 1 回のまま・「Checking your session」が出ない・サイドバーの DOM ノードが
+同一(data 属性の印が残る)・aria-current が移ることを検査。見た目の変化なし(スクリーンショット
+33 枚中 29 枚がバイト一致、残り 4 枚はダイアログの backdrop 等のアニメーション途中の差)。
+検証: `bun run check` 7 段通過、e2e 27 件、axe 24 態で違反 0、CSP 違反 0。
+
+同時に pullfrog(ready for review 後の再レビュー)の 3 件に対応: (a) 見出しの無い箱(一覧・監査・
+rotation — ページ h1 の直下)の `EmptyNotice` が既定の h3 で h1 → h3 の飛びになっていた →
+4 か所に `headingLevel={2}`(裁定 E-(c) の「節 h2 → 空状態 h3」は節見出しがある前提。無い箱では
+h2)。(b) `test/screenshots.ts` の s8 が Revoke クリック後に dialog を待たず、注記も改訂 4 以前の
+インライン 2 段階のまま → `alertdialog` の出現を待つ + 注記を更新(待つようにしたら s8 の
+スクリーンショットが改訂 10 とバイト一致した — 以前は競合で揺れていた)。(c) vendored heroicons
+(5 パス)に MIT のライセンス本文が同梱されていなかった → `src/dashboard/MIT-heroicons.txt`
+(フォントの `public/fonts/OFL-*.txt` と同じく、写した資産の隣に置く)+ icons.tsx 冒頭に参照。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。

@@ -28,7 +28,7 @@ import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
-import { shortId } from "./ids.ts";
+import { isProjectId, shortId } from "./ids.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
 import {
@@ -52,8 +52,6 @@ import type {
   RotationFlagList,
 } from "./types.ts";
 import { useApiResource } from "./use-api-resource.ts";
-
-const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 // ---------------------------------------------------------------------------
 // S5: 概要タブ — チェーン(メンバー・ヘッド・サーバー)
@@ -533,6 +531,8 @@ function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): R
       <EmptyNotice
         title="No rotation flags"
         description="No rotation flags are currently effective, as reported by the server."
+        // 見出し無しの箱(タブ内、ページ h1 の直下)なので h2 — 後続の Callout(h2)と並ぶ
+        headingLevel={2}
         testId="rotation-empty"
       />
     );
@@ -713,7 +713,7 @@ function InvalidProjectPage({ projectId }: { projectId: string }): ReactNode {
 
 export function ProjectScreen(): ReactNode {
   const { projectId } = useRouteParams(projectRoute);
-  return PROJECT_ID_PATTERN.test(projectId) ? (
+  return isProjectId(projectId) ? (
     <ProjectPage projectId={projectId} />
   ) : (
     <InvalidProjectPage projectId={projectId} />

@@ -953,4 +953,58 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     expect(violations).toEqual([]);
     await page.close();
   });
+
+  it("keeps the shell mounted across SPA navigation without re-checking the session", async () => {
+    // DP3 改訂 11(PR #148 Bugbot 指摘): 認証が要る画面は pathless の親ルート
+    // (DashboardLayout)の子なので、画面間の遷移でシェルは再マウントされず、
+    // /auth/me の再取得も「Checking your session」の再表示も起きない。サイドバーの
+    // DOM ノードが同一のまま(= 折りたたみ状態などが保たれる)ことで再マウント無しを検査する
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let sessionChecks = 0;
+    await page.route("**/auth/me", (route) => {
+      sessionChecks += 1;
+      return fulfillJson(route, 200, meFixture);
+    });
+    await page.route(
+      (url) => url.pathname === "/projects",
+      (route) => fulfillJson(route, 200, projectsPage2),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, tokensFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/audit/events",
+      (route) => fulfillJson(route, 200, selfAuditEvents),
+    );
+    await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await page.getByTestId("project-list").waitFor();
+    expect(sessionChecks).toBe(1);
+    const userItem = page.getByTestId("signed-in-user");
+    await userItem.evaluate((el) => {
+      (el as HTMLElement).dataset["shellProbe"] = "mounted";
+    });
+    // サイドバーから API tokens へ(SPA 遷移)。h1 が変わり、セッション確認は増えない
+    await page.getByRole("link", { name: "API tokens" }).click();
+    await page.getByTestId("token-table").waitFor();
+    await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe("API tokens");
+    await expect(
+      page.getByRole("link", { name: "API tokens" }).getAttribute("aria-current"),
+    ).resolves.toBe("page");
+    expect(sessionChecks).toBe(1);
+    await expect(page.getByText("Checking your session").count()).resolves.toBe(0);
+    await expect(
+      userItem.evaluate((el) => (el as HTMLElement).dataset["shellProbe"]),
+    ).resolves.toBe("mounted");
+    // 続けて Account audit へ(フッターのユーザー id からも到達できる)
+    await userItem.click();
+    await page.getByTestId("audit-list-self").waitFor();
+    await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe(
+      "Account audit",
+    );
+    expect(sessionChecks).toBe(1);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
 });

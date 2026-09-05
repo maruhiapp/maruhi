@@ -8,11 +8,13 @@ import { bindRoute } from "@funstack/router/server";
 import { Providers } from "./components/Providers.tsx";
 import { AccountAuditScreen } from "./dashboard/AccountAuditScreen.tsx";
 import { DashboardScreen } from "./dashboard/DashboardScreen.tsx";
+import { DashboardLayout } from "./dashboard/DashboardShell.tsx";
 import { ProjectScreen } from "./dashboard/ProjectScreen.tsx";
 import {
   aboutRoute,
   accountAuditRoute,
   dashboardRoute,
+  dashboardShellRoute,
   homeRoute,
   projectRoute,
   tokensRoute,
@@ -26,10 +28,17 @@ import { HomePage } from "./pages/HomePage.tsx";
 const routes = [
   bindRoute(homeRoute, { component: <HomePage /> }),
   bindRoute(aboutRoute, { component: <AboutPage /> }),
-  bindRoute(dashboardRoute, { component: <DashboardScreen /> }),
-  bindRoute(accountAuditRoute, { component: <AccountAuditScreen /> }),
-  bindRoute(tokensRoute, { component: <TokensScreen /> }),
-  bindRoute(projectRoute, { component: <ProjectScreen /> }),
+  // 認証が要る画面は pathless の親(DashboardLayout: セッション + AppShell + SideNav +
+  // Outlet)の子に置く — 遷移でシェルが再マウントされない(routes.ts の dashboardShellRoute)
+  bindRoute(dashboardShellRoute, {
+    component: <DashboardLayout />,
+    children: [
+      bindRoute(dashboardRoute, { component: <DashboardScreen /> }),
+      bindRoute(accountAuditRoute, { component: <AccountAuditScreen /> }),
+      bindRoute(tokensRoute, { component: <TokensScreen /> }),
+      bindRoute(projectRoute, { component: <ProjectScreen /> }),
+    ],
+  }),
 ];
 
 export default function App() {

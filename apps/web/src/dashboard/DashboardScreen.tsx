@@ -19,6 +19,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { type ApiFailure, apiGet } from "./api.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { isProjectId } from "./ids.ts";
 import { spaPaths } from "./routes.ts";
 import {
   EmptyNotice,
@@ -33,10 +34,6 @@ import {
 } from "./shared.tsx";
 import type { ProjectList } from "./types.ts";
 
-// プロジェクト ID の形式(genesis エントリの SHA-256 hex — CRYPTO_SPEC §6.4)。
-// @maruhi/core の isProjectId と同形だが、実行コードを bundle に持ち込まない
-// 方針(裁定 BR)のためリテラルで持つ
-const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
 // 形式エラー(クライアント側の判定 — サーバーには問い合わせない)。TextInput の status に載せる
 const FORMAT_ERROR = {
   type: "error",
@@ -62,7 +59,7 @@ function OpenByIdSection(): ReactNode {
   const [showFormatNote, setShowFormatNote] = useState(false);
   const open = () => {
     const trimmed = projectId.trim();
-    if (PROJECT_ID_PATTERN.test(trimmed)) {
+    if (isProjectId(trimmed)) {
       navigateTo(spaPaths.project(trimmed));
     } else {
       setShowFormatNote(true);
@@ -242,6 +239,8 @@ function ProjectListSection(): ReactNode {
       <EmptyNotice
         title="No projects"
         description="Projects you are a member of appear here, as reported by the server. Create one with the maruhi CLI."
+        // 一覧の箱は見出し無し(ページ h1 が兼ねる)なので h2
+        headingLevel={2}
         testId="project-empty"
       />
     );

@@ -374,6 +374,8 @@ export function AuditEventList({
       <EmptyNotice
         title={emptyTitle}
         description="No events are visible to your role, as reported by the server."
+        // 監査の箱は見出し無し(ページ h1 の直下)なので h2(pullfrog 指摘 — 裁定 E-(c))
+        headingLevel={2}
         testId={`${testId}-empty`}
       />
     );

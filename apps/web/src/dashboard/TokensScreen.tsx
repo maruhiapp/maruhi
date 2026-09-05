@@ -160,6 +160,8 @@ function TokensTable({
       <EmptyNotice
         title="No API tokens"
         description="Tokens issued to you appear here, as reported by the server."
+        // 一覧の箱は見出し無し(ページ h1 が兼ねる)なので h2
+        headingLevel={2}
         testId="token-empty"
       />
     );

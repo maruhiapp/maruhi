@@ -1,4 +1,6 @@
-// サイドバー用のアイコン(Heroicons 2 outline — MIT、© Tailwind Labs)。
+// サイドバー用のアイコン(Heroicons 2 outline — MIT、© Tailwind Labs)。ライセンス本文は
+// 同ディレクトリの MIT-heroicons.txt(MIT は写しに本文と著作権表示を伴わせることを求める —
+// フォントの OFL-*.txt と同じく、写した資産の隣に置く)。
 //
 // Astryx のテンプレート(`astryx template shell-side-nav` / `SideNavWithHeaderMenu`)は
 // @heroicons/react を使うか SVG をインラインで持つ。依存を増やさない方針(CLAUDE.md)に

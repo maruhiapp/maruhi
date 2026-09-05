@@ -18,6 +18,15 @@
 // 受け入れて、401 時に本文が一瞬描かれてから消える形を避ける)。ログアウトは
 // POST /auth/logout + CSRF ヘッダー(api.ts が一律付与)。表示規律の但し書き
 // (ServerReportedNote)はページ末尾にシェルが 1 回置く。文言はすべて英語(ADR-0017)。
+//
+// 2 層構造(DP3 改訂 11 — PR #148 Bugbot 指摘): `DashboardLayout` は pathless の親ルート
+// (routes.ts の dashboardShellRoute)の部品で、セッション状態 + AppShell + SideNav を持ち
+// `Outlet` に子ルートを描く。画面間の遷移で再マウントされないので、/auth/me の再取得・
+// 「Checking your session」の再表示・サイドバーの折りたたみ状態の消失が起きない。
+// `DashboardShell` は各画面が使うページの枠(Layout の header = 見出し、content = 本文)。
+// サイドバーの現在地とプロジェクトの子項目は各画面が `destination` / `project` で申告し、
+// context 経由で親へ上げる(URL から導く `useLocation` は Location の `.hash` を
+// バンドルに持ち込み、AUTH_SPEC §15-3 の tripwire〔語 "hash" の禁止〕に当たるため使わない)。
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
 import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
@@ -27,7 +36,16 @@ import { Center } from "@astryxdesign/core/Center";
 import { Layout, LayoutContent, LayoutHeader, VStack } from "@astryxdesign/core/Layout";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Heading, Text } from "@astryxdesign/core/Text";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { Outlet } from "@funstack/router";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from "react";
 
 import { type ApiFailure, apiGet, apiPost } from "./api.ts";
 import { apiPaths } from "./endpoints.ts";
@@ -73,6 +91,34 @@ const CONTENT_WIDTH = 1200;
 interface CurrentProject {
   id: string;
   label: string;
+}
+
+/** サイドバーの状態(現在地 + 開いているプロジェクト)。各画面が申告し、親のシェルが保持する。 */
+interface ShellNav {
+  destination: ShellDestination;
+  project: CurrentProject | undefined;
+}
+
+// 子ルート(画面)→ 親(シェル)への申告経路。値は useState の setter(同一性が安定)
+const ShellNavContext = createContext<((nav: ShellNav) => void) | undefined>(undefined);
+
+/**
+ * 画面が自分の到達点とプロジェクトをシェルへ申告する。描画前(layout effect)に反映し、
+ * 遷移直後の 1 フレームに前の画面の選択状態が残らないようにする。
+ */
+function useShellNav(destination: ShellDestination, project: CurrentProject | undefined): void {
+  const setNav = useContext(ShellNavContext);
+  const projectId = project?.id;
+  const projectLabel = project?.label;
+  useLayoutEffect(() => {
+    setNav?.({
+      destination,
+      project:
+        projectId === undefined || projectLabel === undefined
+          ? undefined
+          : { id: projectId, label: projectLabel },
+    });
+  }, [setNav, destination, projectId, projectLabel]);
 }
 
 type AuthState =
@@ -289,6 +335,7 @@ function useSession(): { auth: AuthState; reload: () => void; signOut: () => voi
 
 interface PageProps {
   destination: ShellDestination;
+  /** 開いているプロジェクト(サイドバーの子項目 + パンくずの現在地)。 */
   project?: CurrentProject | undefined;
   backLink?: BackLink;
   title: string;
@@ -296,54 +343,6 @@ interface PageProps {
   /** header スロットの末尾に置くタブ(TabList)。本文の切替は呼び出し側が持つ。 */
   tabs?: ReactNode;
   children: ReactNode;
-}
-
-/** サインイン後のフレーム: サイドバー + Layout(header = 見出し、content = 本文)。 */
-function SignedInFrame({
-  me,
-  onSignOut,
-  destination,
-  project,
-  backLink,
-  title,
-  intro,
-  tabs,
-  children,
-}: PageProps & { me: Me; onSignOut: () => void }): ReactNode {
-  return (
-    <AppShell
-      contentPadding={0}
-      sideNav={
-        <DashboardSideNav current={destination} project={project} me={me} onSignOut={onSignOut} />
-      }
-    >
-      <Layout
-        height="auto"
-        contentWidth={CONTENT_WIDTH}
-        padding={6}
-        header={
-          <LayoutHeader>
-            <PageHeader
-              backLink={backLink}
-              crumb={project?.label ?? title}
-              title={title}
-              intro={intro}
-              tabs={tabs}
-            />
-          </LayoutHeader>
-        }
-        content={
-          <LayoutContent>
-            {/* header との間は線でなく余白(裁定 O): header 自身の下余白 16px + 24px = 40px */}
-            <VStack gap={SECTION_GAP} paddingBlockStart={6}>
-              {children}
-              <ServerReportedNote />
-            </VStack>
-          </LayoutContent>
-        }
-      />
-    </AppShell>
-  );
 }
 
 /** セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。 */
@@ -358,12 +357,11 @@ function StatusFrame({ children }: { children: ReactNode }): ReactNode {
 }
 
 /**
- * 認証が要る画面の共通フレーム。`title` はページの h1(AppShell は見出しを描かない
- * ので、header スロットの見出しがページの h1 になる)。`backLink` は親階層への戻り。
- * `intro` は見出し直下の 1〜2 行、`tabs` は header 末尾の TabList。`project` を渡すと
- * サイドバーの Projects の下に現在のプロジェクトが選択状態で並ぶ。
+ * 認証が要る画面の親(pathless ルート `dashboardShellRoute` の部品)。セッションを確認し、
+ * ok のときだけ AppShell + SideNav の中に子ルート(`Outlet`)を描く。signed-out はサインイン
+ * 画面、loading / failed は状態フレーム(ナビなし)。
  */
-export function DashboardShell(props: PageProps): ReactNode {
+export function DashboardLayout(): ReactNode {
   const { auth, reload, signOut } = useSession();
   if (auth.status === "loading") {
     return (
@@ -380,5 +378,72 @@ export function DashboardShell(props: PageProps): ReactNode {
       </StatusFrame>
     );
   }
-  return <SignedInFrame {...props} me={auth.me} onSignOut={signOut} />;
+  return <SignedInFrame me={auth.me} onSignOut={signOut} />;
+}
+
+/** サインイン後のフレーム: サイドバー(現在地は子ルートの申告)+ 子ルート。 */
+function SignedInFrame({ me, onSignOut }: { me: Me; onSignOut: () => void }): ReactNode {
+  const [nav, setNav] = useState<ShellNav>({ destination: "projects", project: undefined });
+  return (
+    <ShellNavContext.Provider value={setNav}>
+      <AppShell
+        contentPadding={0}
+        sideNav={
+          <DashboardSideNav
+            current={nav.destination}
+            project={nav.project}
+            me={me}
+            onSignOut={onSignOut}
+          />
+        }
+      >
+        <Outlet />
+      </AppShell>
+    </ShellNavContext.Provider>
+  );
+}
+
+/**
+ * 画面ごとのページの枠(`DashboardLayout` の Outlet に描かれる)。`title` はページの h1
+ * (AppShell は見出しを描かないので、header スロットの見出しがページの h1 になる)。
+ * `backLink` は親階層への戻り、`intro` は見出し直下の 1〜2 行、`tabs` は header 末尾の
+ * TabList。`destination` / `project` はサイドバーへの申告(useShellNav)。
+ */
+export function DashboardShell({
+  destination,
+  project,
+  backLink,
+  title,
+  intro,
+  tabs,
+  children,
+}: PageProps): ReactNode {
+  useShellNav(destination, project);
+  return (
+    <Layout
+      height="auto"
+      contentWidth={CONTENT_WIDTH}
+      padding={6}
+      header={
+        <LayoutHeader>
+          <PageHeader
+            backLink={backLink}
+            crumb={project?.label ?? title}
+            title={title}
+            intro={intro}
+            tabs={tabs}
+          />
+        </LayoutHeader>
+      }
+      content={
+        <LayoutContent>
+          {/* header との間は線でなく余白(裁定 O): header 自身の下余白 16px + 24px = 40px */}
+          <VStack gap={SECTION_GAP} paddingBlockStart={6}>
+            {children}
+            <ServerReportedNote />
+          </VStack>
+        </LayoutContent>
+      }
+    />
+  );
 }

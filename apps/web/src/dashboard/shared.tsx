@@ -335,7 +335,8 @@ export function Callout({
 /**
  * 空状態(裁定 B)。説明は既定で「as reported by the server」を含む規定文言 —
  * 件数・不可視クラスの存在を示唆しない(設計文書 §4-4)。`headingLevel` は
- * 置かれる場所の見出し階層に合わせる(ページ h1 → 節 h2 → 空状態 h3 が既定)。
+ * 置かれる場所の見出し階層に合わせる(ページ h1 → 節 h2 → 空状態 h3 が既定。見出しの無い
+ * 箱〔一覧・監査・rotation — ページ h1 の直下〕では h2 を渡し、h1 → h3 の飛びを作らない)。
  */
 export function EmptyNotice({
   title,

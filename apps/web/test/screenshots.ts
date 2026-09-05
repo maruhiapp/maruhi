@@ -179,8 +179,10 @@ const SHOTS: ReadonlyArray<Shot> = [
     ready: "[data-testid=member-table]",
     act: async (page) => {
       await openTab(page, "Invites", "[data-testid=invite-table]");
-      // 2 段階失効の武装状態(Cancel / Confirm revoke)を写す
+      // 失効の確認モーダル(AlertDialog — 改訂 4)を写す。mount / アニメーションと競合しない
+      // よう dialog の出現を待つ(pullfrog 指摘: 待たないと素の表を写して黙って通る)
       await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
+      await page.getByRole("alertdialog").waitFor();
     },
   },
   {
