@@ -1,0 +1,77 @@
+---
+title: Deploy targets
+description: Copy values from maruhi to Cloudflare Workers and Vercel with maruhi run and the vendor CLI you already use.
+sidebar:
+  order: 2
+---
+
+Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers and Vercel functions read their environment variables from the platform's own store, so the values have to be copied there before a deploy. These recipes do that with two things you already have: `maruhi run`, and the platform's CLI, signed in the way you normally use it.
+
+## How the recipes work
+
+- `maruhi run` decrypts the environment in memory and hands the values to a child process as environment variables. The child reads each value from its environment (`printenv`, or `jq` through `$ENV`) and writes it to the vendor CLI's standard input.
+- A value never appears on a command line. It is not visible in `ps` or in your shell history, and `set -x` does not echo it. Nothing is written to disk: no `.env` file, no temporary file.
+- The platform stores the plaintext. That is what a deploy target is: its runtime reads the value from its own store, and that store is now one more place that holds the secret.
+- maruhi stays the source of truth, and copying is one way. After you change a value with `maruhi push`, run the recipe again. Nothing is read back from the platform, and a value edited in the platform's dashboard is overwritten by the next copy.
+- The recipes call the vendor CLI you already installed and signed in with (`wrangler login`, `vercel login`). They do not fetch anything with `npx`.
+
+## Before you start
+
+- List the names in the environment with `maruhi pull`. It prints names, versions, and sizes, not values.
+- Copy only what the platform's runtime needs. Public configuration can live in your repository, and platform-owned resources (D1, KV, and R2 bindings on Cloudflare; Vercel Postgres and Blob) are provided by the platform itself.
+- Declare the variables you copy as required (`maruhi schema set NAME --required`) so that `maruhi run` stops before anything is copied when one of them has no value.
+- The recipes are written for POSIX `sh` (bash, zsh, and dash run them unchanged). Windows is not covered; the Windows build of the CLI is experimental.
+
+## Cloudflare Workers
+
+`wrangler secret bulk` reads a JSON object from standard input and stores every entry in one request. `jq` builds that object from the environment, reading each value through `$ENV` so that the values stay off the command line. Run it in the Worker's directory (wrangler takes the Worker name from its configuration file), or pass `--name`.
+
+```sh
+maruhi run --env production -- jq -n --args '
+  $ARGS.positional
+  | map({ key: ., value: ($ENV[.] // error("\(.) has no value")) })
+  | from_entries
+' DATABASE_URL STRIPE_SECRET_KEY \
+  | wrangler secret bulk
+```
+
+Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy. Only `jq` runs under `maruhi run`; wrangler runs outside it and sees nothing but the JSON on its standard input.
+
+- Secrets that already exist under the same names are overwritten. One command handles up to 100 secrets.
+- If a name has no value, `jq` stops with an error and sends nothing, and wrangler reports that it received no input. Nothing is deleted: in this JSON format a key is deleted only when its value is `null`, and the filter above never produces one. The exit status of the pipeline is wrangler's, so in a script under bash or zsh add `set -o pipefail` to surface the `jq` error.
+- Named wrangler environments: `maruhi run --env staging -- jq … | wrangler secret bulk --env staging`. maruhi's `--env` chooses the maruhi environment to decrypt; wrangler's `--env` chooses the wrangler environment to write to.
+- If wrangler is a dependency of the project rather than a global install, invoke the installed copy the way you usually do (for example `npx wrangler secret bulk`).
+
+## Vercel
+
+`vercel env add` reads the value from standard input when standard input is not a terminal. Each variable is one call, so the recipe loops over the names inside `sh`, under a single `maruhi run`. It first checks that every name has a value, then copies them. Run it in the linked project directory (`vercel link`), or pass `--project`.
+
+```sh
+maruhi run --env production -- sh -c '
+  for name in "$@"; do
+    printenv "$name" > /dev/null || { echo "$name has no value" >&2; exit 1; }
+  done
+  for name in "$@"; do
+    printenv "$name" | vercel env add "$name" production --force || exit 1
+  done
+' sh DATABASE_URL STRIPE_SECRET_KEY
+```
+
+Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy; the `sh` before them is the script's `$0`. `production` is the Vercel environment (`production`, `preview`, `development`, or a comma-separated list); maruhi's `--env` chooses the maruhi environment to decrypt.
+
+- `--force` overwrites a variable that already exists for the same environment. Without it, the Vercel CLI refuses to add a name that is already there.
+- Values for production and preview are stored as sensitive by default: Vercel does not show them again, in the dashboard or in `vercel env ls`. Pass `--no-sensitive` to opt out (a team policy may forbid it). Development does not accept sensitive values.
+- `printenv` ends the value with a newline, and the Vercel CLI strips one trailing newline from a single-line value. A multi-line value (a PEM key, for example) keeps it.
+- Do not use `--value`: it puts the value on the command line.
+
+## In CI
+
+In GitHub Actions, `maruhi ci run` accepts the same command line after `--` and needs no sign-in (it uses an OIDC lease and the committed repository anchor). A workflow template for copying values on every deploy is planned.
+
+## Other platforms
+
+The same shape works for any platform whose CLI reads the value from standard input. The Netlify CLI takes the value as a command-line argument, so there is no recipe for it on this page.
+
+## Vendor CLI telemetry
+
+maruhi sends nothing anywhere. The vendor CLIs do send usage data by default; that is their setting, not maruhi's. To switch it off once and for all: `wrangler telemetry disable` and `vercel telemetry disable`. For a single run, set `WRANGLER_SEND_METRICS=false` or `VERCEL_TELEMETRY_DISABLED=1` in your shell.
