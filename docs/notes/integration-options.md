@@ -759,6 +759,7 @@ zsh 5.9 を入れて 4 シェル(sh / bash / zsh / dash)で通した(29 件)。
 ページが zsh を名指しで約束している以上、CI で必ず走らせる: `ci.yml` の依存導入の直後に `apt-get install zsh` の 1 ステップを
 足し(docs だけの PR で workflow に触る唯一の変更 — レシピ検査の前提の導入のみ)、検査側は jq と同じ形で `CI` があるときだけ
 `shells` が `["sh", "bash", "zsh", "dash"]` であることを 1 件の `it` で断言する(手元では従来どおり導入済みのものだけ)。
+pullfrog の nit で `apt-get update -qq` を前置(ランナーイメージの apt リストの鮮度に成否が依存しないように)。
 
 **検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
 (Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / zsh / dash の 4 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕— zsh は改訂 4 で導入)。

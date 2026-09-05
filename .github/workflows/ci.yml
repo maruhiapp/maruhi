@@ -49,7 +49,7 @@ jobs:
       # dash)すべてで回す。ubuntu-latest に zsh は無いので入れる(ページが zsh を名指しで約束しており、
       # 検査側は CI で zsh の存在を断言する — PR #153 改訂 5)
       - name: Install zsh (docs recipe checks)
-        run: sudo apt-get install -y --no-install-recommends zsh
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh
 
       # 既知脆弱性の監査(GHSA アドバイザリ照合)。厳密ピン留め運用は意図しない
       # 更新を防ぐ代わりに既知 CVE の放置に気づきにくいため、CI で常時検知する
