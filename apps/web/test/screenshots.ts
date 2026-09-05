@@ -80,14 +80,9 @@ async function mockApi(
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/environments/production/pull/metadata`,
-    (r) =>
-      json(
-        r,
-        200,
-        opts.empty
-          ? { ...metadataPullFixture, variables: [], deletedVariables: [] }
-          : metadataPullFixture,
-      ),
+    // empty モードでも空にしない: 変数名は環境行を開いたときだけ取得され、環境が空なら
+    // 開く行が無い(変数名の空状態は empty モードでは描けない — SHOTS の注記)
+    (r) => json(r, 200, metadataPullFixture),
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/audit/events`,
