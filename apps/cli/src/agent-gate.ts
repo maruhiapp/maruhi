@@ -71,6 +71,24 @@ export function ensureSensitiveTerminalAllowed(input: {
 }
 
 /**
+ * 一次境界(stdin と stdout が端末か)に落ちた側を名指しする(DP5 追補 G)。
+ * 「両方が端末ではない」と一括りに言うと、`| less` を外せばよいのか
+ * ヒアドキュメントをやめればよいのかが分からない。判定の意味論は不変で、
+ * 文面の材料に判定結果をそのまま使うだけ(新しい検査は足していない)。
+ */
+export function describeNonTerminal(input: {
+  readonly stdinIsTerminal: boolean;
+  readonly stdoutIsTerminal: boolean;
+}): string {
+  if (!input.stdinIsTerminal && !input.stdoutIsTerminal) {
+    return "neither stdin nor stdout is an interactive terminal";
+  }
+  return input.stdinIsTerminal
+    ? "stdout is not an interactive terminal"
+    : "stdin is not an interactive terminal";
+}
+
+/**
  * 既知エージェントを検出したときの拒否文(名前は診断のためだけに出す)。
  * 文面の順は「何が拒否されたか → なぜ → どうすればよいか」(DP5 裁定 G —
  * 判定の意味論は不変)。
@@ -103,7 +121,7 @@ export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdi
       // 「知っているものを止める」ではなく「人間の端末だけ通す」
       return yield* Effect.fail(
         cliError(
-          "Refused to display values: stdin and stdout are not both an interactive terminal. Values are shown only to a person at a terminal (pipes, redirects, CI, and AI agents are refused), so they never land in a file or a log. Run this command yourself in a terminal, without redirecting its input or output",
+          `Refused to display values: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })}. Values are shown only to a person at a terminal (pipes, redirects, CI, and AI agents are refused), so they never land in a file or a log. Run this command yourself in a terminal, without redirecting its input or output`,
         ),
       );
     }

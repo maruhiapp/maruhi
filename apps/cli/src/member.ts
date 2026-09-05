@@ -373,7 +373,7 @@ function ensureAddable(input: {
       }
       return yield* Effect.fail(
         cliError(
-          "The target user ID is already a member with a different key (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with `maruhi invite list` and maruhi project verify",
+          "The target user ID is already a member with a different key (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with `maruhi invite list` and `maruhi project verify`",
         ),
       );
     }

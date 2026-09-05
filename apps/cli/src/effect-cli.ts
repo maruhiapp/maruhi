@@ -184,7 +184,7 @@ import { CLI_VERSION } from "./version.ts";
 
 /** `--` を書き忘れた実行に添える案内(実行対象の渡し方は 1 つだけ)。 */
 const RUN_TERMINATOR_HINT =
-  ". Write the command to run after `--` (example: maruhi run -- printenv MY_VAR)";
+  ". Write the command to run after `--` (example: `maruhi run -- printenv MY_VAR`)";
 
 /* -------------------------------------------------------------------------- */
 /* 宣言(検査は Effect の機構に載せる — 自前の走査を書かない)                 */

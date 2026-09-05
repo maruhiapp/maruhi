@@ -293,7 +293,7 @@ export function buildInjectionEnv(
  * 文面を 1 か所に置く(2 実装が食い違わないように)。
  */
 export const RUN_COMMAND_REQUIRED =
-  "Specify the command to run after `--` (example: maruhi run -- printenv MY_VAR)";
+  "Specify the command to run after `--` (example: `maruhi run -- printenv MY_VAR`)";
 
 /**
  * Presence fail-fast (設計文書 §1-4 — 裁定 CT / CU): required = true の
