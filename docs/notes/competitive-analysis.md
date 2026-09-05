@@ -141,7 +141,7 @@ maruhi の差は「機能の数」ではなく **信頼モデルの既定値** �
 | ロール | チェーン上の 4 role(owner / admin / member / reader) | RBAC + 環境 / パススコープ | RBAC + カスタムロール + 承認 | RBAC + Change Requests | Owner / Admin / Member | GitHub ロールのミラー |
 | 退職時の鍵ローテ | ● エポックローテーション(remove / 降格で全環境 rotate が義務)+ 要ローテーション検出 | ◐ | —(サーバー鍵) | — | — | — |
 | CI 連携 | GitHub Actions のみ。**OIDC + 応答スコープの一時鍵ラップ(リース)**。サーバーは「DEK の仲介者」で値を復号しない・CI へ偽値を注入できない(§9.1)。リポジトリアンカーで CI 側も検証 | サービストークン(OIDC なし)。同期は SSE 必須 | OIDC(GitHub Actions 文書化)・K8s・AWS…・K8s Operator | OIDC Service Account Identities・K8s Operator | GitHub App が Actions secrets に push | `keyway-action`(`.env` 書き出しも可) |
-| クラウド / PaaS 同期 | ○(予定なし。書き込み方向の攻撃面を持たない設計) | ● 多数(SSE 必須) | ● 最多 | ● 最多 | ○ | ◐ Vercel / Netlify / Railway |
+| クラウド / PaaS 同期 | ○ 予定(SY 系列 — 招待制ベータのゲート。第一級は Vercel / Cloudflare Workers) | ● 多数(SSE 必須) | ● 最多 | ● 最多 | ○ | ◐ Vercel / Netlify / Railway |
 | SDK | ○(HttpApi 導出クライアントのみ) | Node / Python / Go | 9 言語 | Node / Python | ○ | ○ |
 | バージョン履歴 / ロールバック | ◐ version 単調・prev 連鎖(表示 UI は未) | ● + PITR | ● + PITR | ● | ○ | ● |
 | ローテーション / 動的シークレット | ○(将来: 上流自動ローテ) | ● / ◐ AWS IAM のみ | ● / ● | ● / ● Enterprise | ○ | ○ |
@@ -207,7 +207,7 @@ maruhi の差は「機能の数」ではなく **信頼モデルの既定値** �
 訴求で隠すべきでない差(ADR-0014 決定 5「正直に切り分ける」)。
 
 - **成熟度・実績**: pre-release、個人開発、ユーザー 0、SOC 2 等なし。Infisical(★29k・Series A)・Doppler(76k orgs)とは桁が違う。Phase も SOC 2 済み
-- **統合の幅**: クラウド / PaaS 同期なし(設計上、書き込み方向の攻撃面を持たない選択でもある)、SDK なし、K8s Operator なし、CI は GitHub Actions のみ。Infisical / Doppler は数十の同期先
+- **統合の幅**: クラウド / PaaS 同期は未実装(SY 系列で着手 — 招待制ベータのゲート)、SDK なし、K8s Operator なし、CI は GitHub Actions のみ。Infisical / Doppler は数十の同期先
 - **認証**: GitHub OAuth のみ。SSO / SAML / SCIM なし(WorkOS 挿入点は確保 — ADR-0009)
 - **値を扱う GUI がない**: Web は読み取り + 失効のみ。値の投入・閲覧・招待受諾・鍵操作はすべて CLI。「ダッシュボードで値を見たい」層には不向き(ADR-0018 の意図的な選択だが、採用の障壁になる)
 - **ゼロ知識の儀式**: 初回の鍵生成・リカバリーコード保管、招待時の指紋相互確認、端末移行。競合(特にサーバー側暗号化の 4 社)にはない手間。「初回と招待だけ」と切り分けて示す
