@@ -855,7 +855,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     await runCli(["key", "show"], nearEnv.layer);
     const nearErrors = nearEnv.errors.join("\n");
     expect(nearErrors).toContain("Warning: the maruhi token expires on");
-    expect(nearErrors).toContain("Re-login with `maruhi login`");
+    expect(nearErrors).toContain("Sign in again with `maruhi login`");
     // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
     expect(server.requests).toHaveLength(0);
 

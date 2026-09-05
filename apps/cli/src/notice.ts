@@ -84,42 +84,48 @@ export function formatNotice(kind: NoticeKind, text: string, color: boolean): st
 }
 
 /**
- * Writes a notice to stderr. `details` are extra lines printed indented under
- * the first line (a list the notice refers to — never colored).
+ * Where a notice belongs. `run` (default): a run-level fact, printed at most
+ * once per command execution. `prompt`: attached to the interactive item
+ * printed just above it (a candidate in `schema import`), so it repeats on
+ * every retry of that item and is indented under it — never deduplicated.
  */
+export interface NoticeOptions {
+  readonly scope?: "run" | "prompt";
+}
+
+/** Writes a notice to stderr (dedupe by exact text within one run — `run` scope only). */
 function logNotice(
   kind: NoticeKind,
   text: string,
-  details: readonly string[],
+  options: NoticeOptions,
 ): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    const scope = options.scope ?? "run";
     const ledger = yield* Effect.serviceOption(NoticeLedger);
-    if (kind !== "error" && Option.isSome(ledger)) {
+    if (kind !== "error" && scope === "run" && Option.isSome(ledger)) {
       const key = `${kind}\u0000${text}`;
       if (ledger.value.has(key)) {
         return;
       }
       ledger.value.add(key);
     }
-    yield* io.logError(formatNotice(kind, text, io.colorEnabled()));
-    for (const detail of details) {
-      yield* io.logError(`  ${detail}`);
-    }
+    const line = formatNotice(kind, text, io.colorEnabled());
+    yield* io.logError(scope === "prompt" ? `  ${line}` : line);
   });
 }
 
 /** Writes `Note: <text>` to stderr (information — the command succeeded). */
-export function logNote(text: string, details: readonly string[] = []) {
-  return logNotice("note", text, details);
+export function logNote(text: string, options: NoticeOptions = {}) {
+  return logNotice("note", text, options);
 }
 
 /** Writes `Warning: <text>` to stderr (degraded or suspicious state — the command continued). */
-export function logWarning(text: string, details: readonly string[] = []) {
-  return logNotice("warning", text, details);
+export function logWarning(text: string, options: NoticeOptions = {}) {
+  return logNotice("warning", text, options);
 }
 
 /** Writes `maruhi: <message>` to stderr (the command failed). */
 export function logFailure(message: string) {
-  return logNotice("error", message, []);
+  return logNotice("error", message, {});
 }

@@ -336,14 +336,25 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
  * `EPIPE` を投げる。console.log はこれを黙って捨てていた(実測)ので同じにする —
  * 読み手はもう要らないと言っており、報告する相手も経路も無い(defect にすると
  * 「読み手が満足した実行」が internal error で終わる — PR #151 Bugbot 指摘)。
- * それ以外の書き込み失敗はそのまま投げる(握り潰さない)。テスト用に公開する。
+ * `EAGAIN`(非ブロッキング fd)は書き切るまで再試行し、部分書き込みは続きから
+ * 書く。それ以外の書き込み失敗はそのまま投げる(握り潰さない)。テスト用に公開する。
  */
-export function writeLine(fd: 1 | 2, line: string): void {
-  try {
-    writeSync(fd, `${line}\n`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EPIPE") {
-      throw error;
+export function writeLine(fd: number, line: string): void {
+  const buffer = Buffer.from(`${line}\n`);
+  let offset = 0;
+  // 部分書き込み(戻り値 < 残り)は続きから、EAGAIN(非ブロッキング fd)は
+  // 書き切るまで再試行、EPIPE は読み手が去ったので終わる(pullfrog 指摘)
+  while (offset < buffer.length) {
+    try {
+      offset += writeSync(fd, buffer, offset);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPIPE") {
+        return;
+      }
+      if (code !== "EAGAIN") {
+        throw error;
+      }
     }
   }
 }

@@ -8,11 +8,14 @@
 // PassThrough に TTY のスタブ(setRawMode / isRaw)を足して駆動する。
 
 import { spawnSync } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it } from "vitest";
 
-import { makeStdinLineReader, readHiddenLine } from "../src/live.ts";
+import { makeStdinLineReader, readHiddenLine, writeLine } from "../src/live.ts";
 
 /** raw mode スタブ付きの擬似 stdin。 */
 function fakeTty(): PassThrough & { isRaw: boolean; setRawMode: (raw: boolean) => void } {
@@ -98,6 +101,18 @@ describe("readHiddenLine(raw mode の非エコー入力)", () => {
 });
 
 describe("writeLine(同期書き込みと閉じたパイプ)", () => {
+  it("1 行 + 改行を fd へ書き切る(ファイル)", () => {
+    const path = join(tmpdir(), `maruhi-writeline-${process.pid}.txt`);
+    const fd = openSync(path, "w");
+    try {
+      writeLine(fd, "first");
+      writeLine(fd, "second");
+    } finally {
+      closeSync(fd);
+    }
+    expect(readFileSync(path, "utf8")).toBe("first\nsecond\n");
+  });
+
   it("読み手が先に閉じたパイプへの書き込み(EPIPE)は defect にせず、プロセスは 0 で終わる", () => {
     // `maruhi … | head -1` の形。writeSync は 2 行目以降で EPIPE を投げるが、
     // console.log と同じく黙って捨てる(PR #151 Bugbot 指摘)。実プロセスで検査する:

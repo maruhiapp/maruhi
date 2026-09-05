@@ -70,21 +70,36 @@ describe("formatNotice(接頭辞の描画)", () => {
 });
 
 describe("logNote / logWarning(宛先と継続行)", () => {
-  it("stderr へ出し、詳細行は 2 スペースの字下げで続く(色は付かない)", async () => {
+  it("stderr へ出し、stdout には何も出ない(色は接頭辞だけ)", async () => {
     const env = await makeTestEnv();
     env.setColor(true);
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* logNote("first");
-        yield* logWarning("second", ["item-a", "item-b"]);
+        yield* logWarning("second");
       }).pipe(Effect.provide(env.layer)),
     );
     expect(env.logs).toEqual([]);
     expect(env.errors).toEqual([
       `${ESC}[36mNote:${ESC}[0m first`,
       `${ESC}[33mWarning:${ESC}[0m second`,
-      "  item-a",
-      "  item-b",
+    ]);
+  });
+
+  it("prompt スコープの通知は字下げされ、台帳があっても再試行のたびに出る", async () => {
+    const env = await makeTestEnv();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* logWarning("per-candidate", { scope: "prompt" });
+        yield* logWarning("per-candidate", { scope: "prompt" });
+        yield* logNote("run-level");
+        yield* logNote("run-level");
+      }).pipe(Effect.provideService(NoticeLedger, new Set<string>()), Effect.provide(env.layer)),
+    );
+    expect(env.errors).toEqual([
+      "  Warning: per-candidate",
+      "  Warning: per-candidate",
+      "Note: run-level",
     ]);
   });
 

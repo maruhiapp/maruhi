@@ -310,8 +310,11 @@ function approvalStep(
       findHighEntropySubstring(draft.description) ?? findHighEntropySubstring(draft.name);
     if (finding !== null) {
       // 警告は検出値そのものを運ばない(秘密でありうる — entropy.ts の規律)
+      // 候補ごとの警告(同じ候補の再試行・同じ形の別候補でも毎回出す — 台帳の
+      // 抑制対象にしない。pullfrog 指摘)。候補の直下に字下げして付ける
       yield* logWarning(
         `the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
+        { scope: "prompt" },
       );
     }
     const answer = interpretApprovalAnswer(
@@ -382,6 +385,7 @@ function approveCandidate(
     if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
       yield* logNote(
         `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
+        { scope: "prompt" },
       );
       draft.description = "";
     }

@@ -305,7 +305,7 @@ export function reportRotationFlagCount(input: {
       Effect.catch((error) =>
         Effect.gen(function* () {
           yield* logNote(
-            `failed to fetch rotation flags (${error.message}) — check with \`maruhi rotation\` list`,
+            `failed to fetch rotation flags (${error.message}) — check with \`maruhi rotation list\``,
           );
           return null;
         }),

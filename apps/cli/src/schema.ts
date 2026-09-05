@@ -149,7 +149,7 @@ export function ensureEntropyAcknowledged(input: {
         ),
       );
     }
-    yield* logWarning(`${warning}`);
+    yield* logWarning(warning);
     const answer = yield* io.promptLine({
       prompt: "Continue anyway? Type 'yes' to proceed: ",
     });

@@ -120,7 +120,7 @@ export function projectInitOp(input: {
     }
 
     yield* io.log(`Created project ${head.projectId}`);
-    yield* io.log(`To make it the default: \`maruhi config set\` defaultProject ${head.projectId}`);
+    yield* io.log(`To make it the default: \`maruhi config set defaultProject ${head.projectId}\``);
     // schema import は独立コマンドのまま(init へ組み込まない — 設計文書 §1-3)。
     // init の完了出力に導線 1 行だけを足す
     yield* io.log(

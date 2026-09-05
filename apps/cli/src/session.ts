@@ -345,7 +345,7 @@ export function resolveSession(
     // 期限接近の事前警告(裁定 CL): 期限はログイン時にレコードへ保存済み
     // (keychain.ts の expiresAtMs)なので、無通信のローカル判定で足りる。
     // 旧レコード(W3a 前のログイン)は欠落 = 警告なし(再ログインで付く)
-    yield* warnNearExpiry(record.expiresAtMs, "Re-login with `maruhi login` to rotate it");
+    yield* warnNearExpiry(record.expiresAtMs, "Sign in again with `maruhi login` to rotate it");
     return {
       origin,
       token: record.token,

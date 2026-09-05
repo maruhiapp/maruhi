@@ -51,9 +51,20 @@ describe("--help の整合(golden)", () => {
     expect(rendered).toBe(golden);
   });
 
-  it("説明文は動詞始まりの 1 行で、仕様の § 参照と ANSI を含まない", async () => {
+  it("色は CliIo の判定に従う: 有効なら見出しが太字、無効(パイプ・NO_COLOR)なら ANSI なし", async () => {
+    const colored = await makeTestEnv();
+    colored.setColor(true);
+    expect(await runCli(["pull", "--help"], colored.layer)).toBe(0);
+    const withColor = colored.errors.join("\n");
+    expect(withColor).toContain(`${ESC}[1mDESCRIPTION${ESC}[0m`);
+    expect(colored.logs).toEqual([]);
+    const plain = await makeTestEnv();
+    expect(await runCli(["pull", "--help"], plain.layer)).toBe(0);
+    expect(plain.errors.join("\n")).not.toContain(ESC);
+  });
+
+  it("説明文は動詞始まりの 1 行で、仕様の § 参照を含まない", async () => {
     const rendered = await renderAll();
-    expect(rendered).not.toContain(ESC);
     expect(rendered).not.toContain("§");
     // DESCRIPTION の直後の行 = 説明文。大文字の動詞で始まる(sentence case)
     const lines = rendered.split("\n");

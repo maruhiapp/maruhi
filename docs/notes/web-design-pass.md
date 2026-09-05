@@ -1067,7 +1067,20 @@ Note 4 か所 → stderr(テストの断言は `env.errors` へ追随)。(L) `ru
 戻す(赤塗りが戻る)。**選定 = (i)** — `writeLine` を公開し、実プロセス(bun の書き手 | `head -1`)で終了コード 0 を
 固定する検査を `live-io.test.ts` に追加。
 
-**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 864 件
+**改訂 2(2026-09-05、pullfrog の初回レビュー)**: (1) `writeLine` は `EPIPE` に加えて `EAGAIN`(非ブロッキング fd)の
+再試行と部分書き込みの継続を持つループに(pullfrog の提案どおり。CI の fallow が `writeLine` を dead export と判定
+したため、テストから直接 import する検査〔ファイルへの書き切り〕も追加)。(2) **B の台帳は per-item の通知に合わない**
+— `schema import` の候補ごとの高エントロピー警告は、同じ候補の再試行(`e` で編集後)や同じ形の別候補で抑制され、
+「理由の見えない yes プロンプト」になる。列挙: (i) 文面に候補名を入れる(再試行では依然抑制される)/ (ii) **通知に
+`scope: "prompt"` を足し、台帳を迂回して候補の直下に 2 スペース字下げで毎回出す**(旧実装の字下げも戻る)/ (iii)
+台帳のキーに呼び出し位置を入れる(位置は文面の同一性と無関係)。**選定 = (ii)**。併せて未使用だった `details`
+引数を落とした(pullfrog nitpick)。(3) バッククォートのずれ 2 か所(`maruhi rotation list` / `maruhi config set
+defaultProject <id>`)、`logWarning(\`${warning}\`)`、`Re-login` → `Sign in again`。(4) `help.test.ts` の「ANSI を含まない」
+断言はテスト環境が無色なので自明だった → `setColor(true)` で見出しが太字になり、無効なら ANSI が無いことを両方
+固定する検査に置き換え。**互換性の注記**: `login` の案内と Note 数か所が stdout → stderr へ移ったので、
+`maruhi login | tee` のようにログへ取っていたラッパーは URL と確認コードを失う(意図した分離。リリースノートに書く)。
+
+**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 867 件
 (+ notice 9 件・help golden 2 件・login 2 件・checkpoint の genesis 基準)。実プロセスの TTY / パイプ採取と
 wrangler dev に対する `maruhi login` の実出力は PR の Artifact。
 
