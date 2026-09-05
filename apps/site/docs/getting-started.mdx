@@ -1,6 +1,8 @@
 ---
 title: Getting started
 description: Install the maruhi CLI, connect it to a server, sign in, and push your first secret.
+sidebar:
+  order: 1
 ---
 
 ## 1. Install the CLI
@@ -53,3 +55,7 @@ maruhi run -- your-command      # values arrive as environment variables
 :::note
 Commands that display plaintext values are refused when the CLI detects it is not attached to an interactive terminal, including inside AI agent environments.
 :::
+
+## Next steps
+
+Deploying to Cloudflare Workers or Vercel? [Deploy targets](/docs/deploy-targets) shows how to copy values there with `maruhi run` and the platform's CLI.

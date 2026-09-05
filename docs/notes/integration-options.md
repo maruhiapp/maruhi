@@ -557,6 +557,215 @@ maruhi のスタックでは: **SY1〜SY3 はサーバーコストがゼロ**(�
 
 帰結: **同期は無料枠に置く**(入口のゲート・原価ゼロ・競合の有料化ポイントを無料で出せる差別化)。課金の線は同期件数ではなく org のメンバー数と Enterprise 枠(SSO・監査ストリーミング・商用サポート)に引く。将来セルフホスト向けに S5(サーバー復号 push)を入れる場合だけ、競合と同じ運用コストが運営(セルフホストでは各運営者)に乗る。
 
+### SY1 実装時の裁定録(2026-09-05)
+
+対象は ROADMAP SY1 = 案 S1(レシピのみ・docs のみ): `maruhi run` と導入済みのベンダー CLI の組み合わせで Cloudflare Workers /
+Vercel へ値を運ぶ手順。CLI / サーバー / Web のコードは変えない。同時に SY2(exec ドライバ)の偵察を兼ね、各ベンダー CLI の実物で
+「stdin の形式・上書き・削除・環境指定・テレメトリの止め方」を確かめて末尾の申し送り表に残す。各裁定点は DP1〜DP5 と同じループ
+(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が出ない周が 1 回あれば終了 → 理由付きで選定)で決めた。判断基準は、
+ディスクレス(平文を `> .env`・一時ファイル・`tee`・ベンダー CLI の file 引数に置かない)・**値を exec される外部コマンドの argv に
+載せない**・一方通行(maruhi が正。同期先からの取り込みを書かない — ADR-0014)・導入済みのベンダー CLI だけ(`npx` / `bunx` で
+取りに行かない・依存追加なし)・**検証していないことを書かない**(確認した版と日付を残す)・英語(ADR-0017・DP5 の用語集)・
+「言わざる」(docs に外部スクリプト・画像なし)・競合比較の表示規律(competitive-analysis.md §6-1 — 星取表を置かない)。
+
+**前提の訂正・発見(実物で判明した事実。日付はすべて 2026-09-05)**:
+(1) **wrangler 4.128.0**(リポジトリの厳密ピン — `bunx wrangler secret bulk --help` + `wrangler-dist/cli.js` の
+`parseBulkInputToObject`): file を省くと stdin を `readline` で EOF まで読み、まず JSON、失敗したら **dotenv 16.3.1** の
+`parse` で `.env` 形式と解釈する。dotenv の規則は `A=abc#def` → `abc`(引用符なしの `#` 以降は捨てる)、前後の空白を
+落とす、二重引用符内の `\n` を改行に展開、引用符内は複数行可(scratchpad で実測)。よって **`.env` 形式は `#`・空白・引用符・
+`\n` を含む値で壊れる**。JSON の値は `null`(= 削除)か文字列のみ(`validateFileSecrets`)。**stdin が空のとき「No content
+found in file, or piped input」を出すが終了コードは 0**(`return logger.error(...)`)。`--name` / `-e` はヘルプどおり。
+(2) **wrangler のテレメトリ**: `WRANGLER_SEND_METRICS` は **`true` / `false` 以外を与えると UserError で落ちる**
+(`getBooleanEnvironmentVariableFactory`)。`DO_NOT_TRACK=1|true` も効き(`isDoNotTrackEnabled`)、`wrangler telemetry disable`
+と `send_metrics = false` もある(上流 `packages/wrangler/telemetry.md` で確認)。デバッグログは `~/.config/.wrangler/logs`
+(`WRANGLER_LOG_PATH`)に書かれる — **値が混入しないかは未監査**(SY2 の D3)。
+(3) **Vercel CLI 59.11.7**(scratchpad へ `bun add vercel@latest` で導入して `env add --help` + `dist/` を読んだ。リポジトリの
+依存には足していない): `env add name [environment] [gitbranch]` は stdin が端末でなければ値を stdin から取る。ただし
+`readStandardInput` は **最初の `data` イベント 1 回分しか読まず、500 ms 以内に何も来なければ `""` に解決する**(パイプの
+チャンク 1 つ = 通常 64 KiB 超の値と、生成が遅い値は切れる)。`normalizeStdinEnvValue` は **1 行の値からだけ末尾の改行 1 つを
+落とし、複数行の値は末尾の改行を残す**。`--force` = 同じ target の既存変数を確認なしで上書き(無いと既存名の追加は失敗)。
+production / preview の既定は **sensitive**(以後ダッシュボードでも `env ls` でも読めない。`--no-sensitive` で抜けられるが
+チーム方針で禁止されうる)、development は sensitive 不可。`--value` フラグが存在する(argv に載る — 使わない)。
+`vercel env update` も stdin を受ける。エージェント検出時は `--non-interactive` が既定になる。テレメトリは
+`VERCEL_TELEMETRY_DISABLED=1`(公式 docs/cli/about-telemetry、最終更新 2026-03-17)か `vercel telemetry disable`。公式
+`docs/cli/env`(最終更新 2026-08-20)は `echo [value] | vercel env add` の例に「シェル履歴に残るので秘密には勧めない」と
+自ら注記している(= 値を argv に載せない規律と同じ線)。
+(4) **gh 2.100.0**(GitHub Releases の tarball を scratchpad へ展開。`secret set --help` + 上流 `pkg/cmd/secret/set/set.go`):
+`--body` を省き対話できないときは stdin を **すべて**読み `TrimRight("\r\n")`。`-f -` で dotenv 形式を stdin から複数件、
+`--env` / `--org` / `--user` / `--app {actions|agents|codespaces|dependabot}` / `-R`。封印(sealed box)はクライアント側。
+**gh にもテレメトリがある**(`gh help environment`: `GH_TELEMETRY=false|0`、`DO_NOT_TRACK=1|true`)— SY5 で off にする対象に加える。
+(5) **maruhi 側**: `run` の子は stdio を継承する(`live.ts` の `Bun.spawn` — `stdin/stdout/stderr: "inherit"`)ので、
+`maruhi run -- jq … | wrangler secret bulk` のように **パイプを外側のシェルに置き、ベンダー CLI を `maruhi run` の外で
+走らせられる**(ベンダー CLI の環境に他の秘密が入らず、`sh -c` の入れ子引用も要らない)。stdout に Note が混ざらないことは
+DP5 の決定 9(通知はすべて stderr)で保証済み。`printenv NAME` は未設定なら何も出さず終了コード 1(GNU / BSD とも)。
+(6) `sh -c '… "$VAL" …'` のようにシェルで値を展開すると、組み込みの引数でも **`set -x`(xtrace)が stderr に値を書く**。
+「外部コマンドの argv に出ない」だけでは足りない。
+(7) jq 1.7 の `$ENV[.] // error(...)`: jq では `""` も真なので空文字列の値は通し、**未設定だけ**が `error`(終了コード 5・
+出力なし)になる。`--args` の位置引数には名前だけが載る。
+(8) Cloudflare の docs は `wrangler secret bulk` のコマンドリファレンス個別ページが取得できず(推測 URL は 404)、
+「Secrets」ページ(developers.cloudflare.com/workers/configuration/secrets/ — 最終更新 2026-07-03)で JSON / `.env` の 2 形式と
+「1 回 100 件」だけ確認した。一次資料はピン留めした版の `--help` と実装(1)。
+
+**A. 置き場所** — 列挙: (i) README に節を足す(README は「読み始める場所」で手順書ではない)/ (ii) `docs/SELF_HOSTING.md`
+(ROADMAP の文面どおりだが読者は運用者で、レシピの読者は CLI 利用者)/ (iii) **`apps/site/docs` に新ページ「Deploy targets」**
+(`/docs/deploy-targets` — SY2〜SY5 が同じページを育てる)/ (iv) `getting-started.mdx` の末尾に節(「最初の 5 分」が長くなり、
+SY2 以降で肥大する)/ (v) 複数箇所に置いて 1 か所を正にする。第 1 周の新案: **(iii) を正にして、README の Docs 一覧と
+getting-started の末尾「Next steps」からは 1 行のリンクだけ**(レシピ本文の複製を作らない)(あり)。同じ周で「対象ごとの
+サブディレクトリ(`deploy-targets/cloudflare-workers.mdx` …)」も検討 → 2 本のレシピに対して重く、SY4 で対象が増えたときに
+分割すればよい(棄却・申し送り)。第 2 周: なし。**選定 = (iii) + リンク**。ページ名は機能名(`sync`)でなく読者の問い
+(「どこへデプロイするか」)で付ける。サイドバーの順序は既定がアルファベット順(Deploy targets が Getting started の前に
+来る)ので、3 ページの frontmatter に `sidebar.order`(1 / 2 / 3)を明示した(`meta.ts` はルート直下に置けるか不明で、
+数字接頭辞はファイル名を変える)。`index.mdx` の Card を 3 枚にし、e2e(`e2e.test.ts`)の Card の断言と `llms.txt` の断言を
+追随させた。
+
+**B. 変数の列挙のしかた** — 列挙: (i) 利用者が名前を書く(`for name in A B`)/ (ii) `maruhi schema export` の JSON から
+`jq` で名前を取る(自動だが、宣言だけで値のない変数も含まれ、入れ子の `maruhi` と 2 本のパイプが要る)/ (iii) `maruhi pull`
+の一覧を切り出す(機械可読を約束していない — 弱い)/ (iv) `run` の内外の `env` を `comm` で比較(壊れやすい)/ (v) 子の
+環境を全部送る(**不可** — `PATH` 等が混ざる)/ (vi) CLI に名前一覧の出力を足す(**SY1 では不可** — SY2)。第 1 周の新案:
+**名前は利用者が明示し、「何があるか」は `maruhi pull`(名前・version・サイズのみ)で見る**(あり — 依存も自動化も要らず、
+「何を運ぶか」を利用者が選ぶことがそのまま W3〔公開設定・プラットフォーム所有の資源は運ばない〕の案内になる)。同じ周で
+**wrangler へ渡す形式**: `.env` 形式は前提の訂正 (1) で壊れる値があるので **JSON 一択**。JSON の組み立ては (a) `printf '{"%s":"%s"}'`
+(値のエスケープができない — 不可)/ (b) **`jq -n --args '$ARGS.positional | map({key: ., value: $ENV[.]}) | from_entries' NAMES…`**
+(値は `$ENV` から読む — argv に出ない・エスケープは jq)/ (c) `node -e` の 1 行(wrangler があれば node もあるが、`bunx wrangler`
+の利用者には無いかもしれず、可読性も落ちる)/ (d) `wrangler secret put NAME` を名前ごとに回す(jq 不要だが 1 件ずつデプロイ)。
+第 2 周の新案: **未設定の名前を `null` にしない**(あり — `$ENV[.]` は未設定で `null` になり、wrangler では `null` = 削除。
+`// error("… has no value")` で fail-closed にする〔前提の訂正 (7)〕)。第 3 周: なし。**選定 = 名前は明示 + `maruhi pull` で確認 +
+JSON は jq (b) + `// error`**。jq が無い環境向けの (d) は 1 行の言及もせず落とした(ページを薄く保つ。要望が出たら追記)。
+値の欠落は `maruhi schema set NAME --required` で `run` が子を起動する前に止まる(既存機能)ことを「Before you start」に書いた。
+
+**C. 値を argv に出さない書き方** — 列挙: (i) 純粋なパイプ(`printenv NAME | vendor`)だけを許す / (ii) 組み込み `printf '%s' "$VAL"`
+の引数は許す(`ps` には出ない)/ (iii) レシピごとに「平文が通る場所」を 1 行で明記する規則。第 1 周の新案: **「レシピは値を
+シェルで展開しない」を構造の規則にする**(あり — 値を読むのは常にそれを消費するプログラム〔`printenv` / jq の `$ENV`〕で、
+`"$VAL"` という展開が一切現れない。これで外部コマンドの argv だけでなく **`set -x` のトレース〔前提の訂正 (6)〕にも出ない**。
+(ii) はこれに反するので棄却)。第 2 周の新案: `sh -c` 自体を無くす(あり — Workers は前提の訂正 (5) によりパイプを外側に置け、
+`sh -c` が消えた。Vercel は変数ごとに 1 呼び出しなのでループが要り、`sh -c '…' sh NAME…` に位置引数で名前を渡す形〔名前だけが
+argv〕にした)。第 3 周: なし。**選定 = 展開しない規則 + ページ冒頭「How the recipes work」に 1 段落で明記**(レシピごとの
+注記は繰り返しになるので置かない)。
+
+**D. 対象の範囲と別項目との境界** — 列挙: (i) Cloudflare Workers + Vercel(2026-09-05 所有者裁定の第一級)/ (ii) + `gh secret set`
+(SY5 第 1 段。同じ形で即日だが別項目)/ (iii) + Netlify(CLI が値を引数に取るため安全なレシピが書けない — SY4 は http)/
+(iv) + Cloudflare Pages(SY4 第 2 陣)。環境の対応付け: (a) 書かない / (b) **コマンド行で `maruhi run --env X` とベンダーの
+環境引数を並べて見せ、「maruhi の `--env` は復号する環境、ベンダーの環境は書き先」と 1 文で区別する** / (c) 対応表。第 1 周の
+新案: gh は実物で検証済み(前提の訂正 (4))なので同居させられるが、**別の ROADMAP 項目の取り込みは裁定の例外(所有者確認)**に
+当たる。本セッションは非対話のため、**ページには載せず、検証結果を下の申し送り表に残して SY5 第 1 段が転記だけで済む形にし、
+同居の可否は PR の人間タスクとして問う**(あり)。第 2 周: なし。**選定 = (i) + (b)**。Netlify は「Other platforms」に
+1 文(「CLI が値を引数に取るのでこのページには載せない」)— 競合比較ではなく事実の注記。Pages は書かない。
+
+**E. CI への言及の深さ** — 列挙: (i) 触れない / (ii) **1 段落の予告**(`maruhi ci run` は `--` 以降に同じコマンド行を受け、
+サインイン不要〔OIDC リース + コミット済みアンカー〕。workflow テンプレートは予定)/ (iii) workflow の全文(SY3 の本体)。
+第 1 周の新案: `maruhi run` → `maruhi ci run --server … --project … --env … --anchor …` の置換だけ示す(あり)→ `ci run` は
+site の docs にまだ 1 行もなく、半端に書くと SY3 で書き直しになる(棄却)。第 2 周: なし。**選定 = (ii)**。GitHub Environments の
+required reviewers(補足 15 X4)は SY3 へ。
+
+**F. 安全性の注記** — 列挙: (i) ページ冒頭の 1 段落 / (ii) レシピごと / (iii) 両方。第 1 周の新案: **冒頭は「How the recipes
+work」の箇条書き 5 点**(値の通り道・argv と履歴と `set -x`・平文は同期先のストアに置かれる〔定義上避けられない〕・maruhi が正で
+一方通行〔ダッシュボードでの手編集は次回で上書き〕・導入済み CLI のみで `npx` しない)**+ 対象固有の注記だけレシピの直下**
+(Vercel の sensitive 既定・複数行値の末尾改行、wrangler の `null` = 削除と終了コード)(あり)。第 2 周: なし。**選定 = 新案**。
+競合名・星取表・「安全」の断言は置かない(§6-1)。
+
+**G. テレメトリ・ログ抑止** — 列挙: (i) レシピのコマンド行に環境変数を混ぜる(`WRANGLER_SEND_METRICS=false maruhi run -- …`)/
+(ii) 注記だけ / (iii) 書かない。第 1 周の新案: **恒久設定(`wrangler telemetry disable` / `vercel telemetry disable`)を主に、
+1 回限りの環境変数を従にした独立の短い節「Vendor CLI telemetry」**(あり — レシピを汚さず、線引き〔maruhi は何も送らない・
+ベンダー CLI の送信はそのツールの設定であって maruhi の責任範囲外〕を 2 文で書ける)。第 2 周: なし。**選定 = 新案**。
+`DO_NOT_TRACK` は Vercel に効かないので書かない。ログ抑止(`WRANGLER_LOG_PATH` のデバッグログ)は未監査なので書かない(申し送り)。
+
+**H. 検証方法** — 列挙: (i) ベンダー CLI と `maruhi` を argv / stdin を記録する偽コマンドに差し替えてレシピのシェル部分を実行 /
+(ii) ピン留め版の `--help` と公式ドキュメント(上の前提の訂正)/ (iii) 実アカウントで通す(所有者の人間タスク)/ (iv) 偽コマンドの
+検査をリポジトリのテストに残す。第 1 周の新案: **(iv) を「ページの本文から ```sh ブロックを切り出してそのまま実行する」形にする**
+(あり — DP5 の golden と同じく、書いた文言と検査対象を一致させ docs の漂流を構造で防ぐ)。置き場は `apps/site/test/unit/recipes.test.ts`
+(ルートの vitest projects = 品質ゲート 7 で走る。ビルド不要)。偽コマンドは `apps/site/test/unit/shims/`(TS 本体 + PATH に置く
+`bin/` の sh ラッパー。fallow には entry として宣言)。第 2 周の新案: **導入済みのシェル(sh / bash / zsh / dash)すべてで回す**
+(あり — K の可搬性の実測)。第 3 周: なし。**選定 = (i)+(ii)+(iv 改)+(iii は人間タスク)**。固定する性質: 値(改行・`"`・`\`・`#`・
+`=`・先頭 `-` を含む)が全コマンドの argv に出ない、wrangler の stdin は JSON オブジェクト 1 つで値が完全一致、Vercel は
+名前ごとに 1 呼び出しで stdin = 値 + 改行、名前に値が無ければ Workers は `error` で **何も送らず `null` を作らない**・Vercel は
+**1 件も送る前に**終了コード 1。jq が無い環境ではスキップ(CI の ubuntu には入っている)。docs だけの PR に検査コードを足す是非:
+CLI / サーバー / Web / packages のコードは触っておらず、検査は docs の一部(文言の golden)と位置づける。
+
+**I. 文体と用語** — 列挙: (i) 「sync」を使う / (ii) **「copy」「hand values to」**(`sync` は SY2 の `maruhi sync` に温存)/
+(iii) 「deploy」。第 1 周の新案: 題は「Deploy targets」、動詞は copy、「maruhi stays the source of truth, and copying is one way」
+の 1 文で一方通行を言う(あり)。第 2 周: なし。**選定 = (ii) + 題**。DP5 の用語集(sign in / server / token / environment
+variable)に揃え、コマンドはバッククォート、`**` 強調なし。docs の文は通常の文(末尾ピリオドあり)。
+
+**J. ROADMAP と設計メモの追随** — SY1 行を完了にして DP3〜DP5 と同じ形の完了注記、本裁定録を §3 末尾(§4 の前)に追記、
+案 S1 への追記は本裁定録末尾の申し送り表で代える(S1 の本文は「土台」の評価のまま正しい)。
+
+**K. シェルの前提** — 列挙: (i) **POSIX `sh`**(dash / bash / zsh で同じ)/ (ii) bash 固有を許す(`set -o pipefail`・`${!name}`)/
+(iii) fish / PowerShell にも触れる。第 1 周の新案: pipefail は「bash か zsh のスクリプトでは足せる」と注記にとどめ、レシピ本体は
+POSIX に閉じる(あり)。Windows は「not covered」の 1 行(CLI の Windows 版が experimental — ROADMAP Phase 2)。`printenv` は
+GNU / BSD とも未設定で終了コード 1、jq の `$ENV` / `--args` は 1.6 以降。第 2 周: なし。**選定 = (i) + 注記**。検証は dash /
+bash / sh で実測(zsh はこの環境に無い — 人間タスク)。
+
+**新たに出た裁定点**: (L) **名前に値が無いときの fail-closed** — Workers は jq の `// error`(前提の訂正 (7))で何も送らない。
+Vercel は空 stdin に対する CLI の挙動が実アカウントなしでは確かめられないため、レシピ側で **全名前の存在を先に検査してから送る**
+2 段ループにした(1 件も送る前に止まる)。(M) **Vercel の複数行値**: `printenv` の末尾改行は 1 行の値からだけ落ちる(前提の
+訂正 (3))ので、複数行の値(PEM)は末尾改行が残ることを注記した。`printf '%s'` で避ける形は C の規則に反するので書かない。
+(N) **wrangler のパイプの終了コード**: wrangler は空 stdin で exit 0 なので jq の失敗は終了コードに出ない — bash / zsh の
+スクリプトでは `set -o pipefail` を勧める 1 文を置いた。(O) **`npx wrangler`**: 「取りに行く形を書かない」規律との整合 —
+wrangler をプロジェクトの依存として入れている人はそれを普段どおり `npx wrangler` で呼ぶ(導入済みの版が動く)ので、その旨を
+1 行だけ書いた(`npx` で未導入の CLI を落とす形ではない)。
+
+**SY2(exec ドライバ)/ SY5 への申し送り — ベンダー CLI の実測表(2026-09-05)**:
+
+| 対象 × コマンド | 版 | stdin の形式 | 上書き | 削除 | 環境指定 | テレメトリ off | 確認方法 |
+|---|---|---|---|---|---|---|---|
+| Cloudflare Workers `wrangler secret bulk` | 4.128.0(リポジトリのピン) | file 省略で stdin。JSON `{"k":"v"}`(推奨)か `.env`(dotenv 16.3.1 — `#` / 空白 / 引用符で壊れる)。readline で EOF まで。値は文字列のみ。1 回 100 件 | 同名は上書き(1 リクエスト) | JSON で `null` のみ(`.env` 不可) | `--name <worker>` / `-e <env>`(wrangler の名前付き環境) | `WRANGLER_SEND_METRICS=false`(`true`/`false` 厳密)/ `DO_NOT_TRACK=1` / `wrangler telemetry disable` / `send_metrics=false` | `--help` + `cli.js` の `parseBulkInputToObject` / `validateFileSecrets` + dotenv 16.3.1 の実測 + 上流 telemetry.md。空 stdin は exit 0(注意)。デバッグログ `WRANGLER_LOG_PATH` は未監査 |
+| Cloudflare Workers `wrangler secret put NAME` | 4.128.0 | 非対話なら stdin を EOF まで(`readFromStdin`) | 上書き | `secret delete` | 同上 | 同上 | `cli.js`。1 件ごとに新 version をデプロイ(bulk 推奨) |
+| Vercel `vercel env add NAME [env]` | 59.11.7(scratchpad に導入) | stdin が端末でなければ stdin。**最初の data チャンクのみ・500 ms 待ち**(実測: 65,536 バイトまでは完全に届き、それ以上は 64 KiB で切れる — 改訂 1)。1 行の値は末尾改行 1 つを除去、複数行は残す。env は `production` / `preview` / `development` / カンマ区切り、`[gitbranch]` | `--force`(無いと既存名は失敗)。`vercel env update` も stdin 可 | `vercel env rm NAME [env]` | 位置引数の env + `--project` / `--scope` / link 済みディレクトリ | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks` の `readStandardInput` / `normalizeStdinEnvValue` + 公式 docs/cli/env(2026-08-20)・docs/cli/about-telemetry(2026-03-17)。既定 sensitive(production / preview。development は不可)。`--value` は argv(使わない)。エージェント検出で `--non-interactive` 既定。空 stdin の挙動は未確認(実アカウント) |
+| GitHub Actions `gh secret set NAME` | 2.100.0(scratchpad に展開) | `--body` 省略 + 非対話で stdin を全部読み `TrimRight("\r\n")`。`-f -` で dotenv を stdin から複数件 | 上書き | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1`(+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + 上流 `pkg/cmd/secret/set/set.go` + `gh help environment`。封印はクライアント側。**gh にテレメトリがある**(補足 5 / 8 は gh の送信に触れていない — ここに記す) |
+| Netlify `netlify env:set KEY value` | — | 値が引数(argv に出る) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1`(未確認) | 未導入。exec 不可 = SY4 は http(補足 10 V2 のまま) |
+
+SY2 の exec ドライバへの含意: (a) wrangler は JSON を 1 リクエストで渡す形が正で、削除は `null` で表せる(レシートとの突合で
+「消すべき名前」を `null` にする)。空入力で exit 0 になる wart はドライバ側で「入力が空なら呼ばない」で吸収する。
+(b) Vercel は変数ごとに 1 プロセスで、stdin は **1 チャンク・500 ms** の制約があるため、ドライバは値を一度に書いて即 close する
+(64 KiB 超は http へ)。既定 sensitive の意味論(読み戻し不可)は `sync diff` を読み戻しに頼れない根拠でもある(補足 13 W2 の
+レシートが正しい)。(c) gh はテレメトリ off の環境変数を共通部品に加える。(d) 3 つとも「値を argv に載せる」経路(`--value` /
+`--body` / `env:set`)を持つので、ドライバは argv テンプレートに値のプレースホルダを**持たない**設計にする(宣言的プリセットの
+型で禁止)。(e) `maruhi run` の子は stdio 継承なので、exec ドライバは `sh -c` を介さず直接 spawn して stdin に書く形でよい。
+
+**改訂 1(2026-09-05、pullfrog の初回レビュー)**: (1) 前提の訂正 (3) の Vercel の stdin 切り詰めが公開ページに無かった
+(既定 sensitive のため事後に気づけない経路)。`readStandardInput` を **そのまま写した** スクリプトに `printenv BIG | node read.mjs` で
+値を流して実測: 4,000 / 8,000 / 30,000 / 60,000 / 65,536 バイトは各 5 回とも完全に届き、70,000 / 100,000 バイトは **5 回とも
+65,536 バイトで切れた**(Linux のパイプ容量 = Node の読み取り上限 64 KiB。`printenv` は CLI が読む前に書き終えるので、それ以下は
+1 回の読み取りに収まる)。ページの Vercel 節に「64 KiB 超は無言で切れる・sensitive なので後から確かめられない・その大きさの値は
+このレシピに載せない」を 1 行で追記(断定するのは観測した実装の挙動のみ。Vercel 側の上限は未確認なので書かない)。
+(2) nitpick: レシピの検査の正規表現 `> ?[a-z]` は `> "$f"` 等を素通しするので、**`/dev/null` 以外へのリダイレクトを全部拒む**
+`>(?!\s*\/dev\/null)` に。(3) nitpick: jq が無いと Workers の 2 態が黙ってスキップされる → **CI(`CI` 環境変数あり)では jq の
+存在を 1 件の `it` で断言**する(手元の新しい前提にはしない)。(4) nitpick: 「In CI」の文を「`--` 以降のコマンドが同じ」に
+直し、`ci run` 自身のフラグ(server / project / environment / anchor)が要ることを 1 文で添えた。
+
+**改訂 2(2026-09-05、pullfrog の並走レビュー〔e6dfb82 に対する 2 本目〕)**: (1) ページが主張する「`set -x` に出ない」が
+機械検査の外だった → `runRecipe` に xtrace の口(外側のシェルを `-x -c` で起動し、偽 `maruhi` は `RECIPE_TEST_XTRACE` が
+あるときレシピ内の `sh -c` を `sh -x -c` として起動する — xtrace は子シェルに継承されないため)を足し、Workers / Vercel の
+両レシピで stderr のトレースに値の断片が無いことを 3 シェルで固定(トレースが実際に出た証拠 = `+ ` と内側の `printenv
+STRIPE_SECRET_KEY` も断言)。(2) nit: 「Windows build is experimental」は README の「Windows is not supported」(インストール
+スクリプト)と読者に食い違って見える → ページは「Windows is not covered」だけに。(3) 改訂 1 の切り詰めの注記に「on Linux」を
+添え、macOS はパイプ容量が小さく `printenv` の書き込みが分かれうるため、実アカウント検証の人間タスクに「大きめの値
+(数十 KiB)」を 1 件足した。
+
+**改訂 3(2026-09-05、pullfrog の差分レビュー〔436b23e〕+ CI)**: (1) 改訂 1 で足した注記の「which is also Vercel's own limit per
+variable」は、裁定録自身が「ベンダー側の上限は書かない」と決めた内容を破っていた(Vercel の 64 KB は 1 デプロイの全変数の合計で、
+edge runtime は 1 変数 5 KB — 「per variable」と読ませると 30 KiB × 3 本が安全に見える)。節を落とし、観測事実(Linux で 64 KiB)と
+「閾値はシステムのパイプ容量に依存する」だけを残した。(2) CI の fallow: 改訂 2 の xtrace の分岐で `runRecipe` の CRAP が閾値 30 に
+達した → 継承する PATH / HOME をモジュール定数に出し、xtrace は引数配列と env への 1 分岐に畳んだ(手元の fallow は改訂 2 の後に
+回し直しておらず、CI で発覚 — 以後は改訂ごとに `fallow:audit` まで回す)。
+
+**改訂 4(2026-09-05、Cursor Bugbot〔c7af45b〕)**: xtrace の検査は「`+ ` が stderr にある」をトレースが出た証拠にしていたが、
+`+ ` は bash / dash の既定 `PS4` で、zsh の既定は `+%N:%i> `。Workers の xtrace は外側のシェルしかトレースしない(子は jq)ので、
+zsh が PATH にある機械(macOS)では落ちる。証拠を「`+` で始まり外側の `maruhi run --env production` を含む行」に変え、この環境に
+zsh 5.9 を入れて 4 シェル(sh / bash / zsh / dash)で通した(29 件)。
+
+**改訂 5(2026-09-05、pullfrog の差分レビュー〔d288c77〕)**: `shells` は導入済みのシェルだけを回すため、zsh の無い
+`ubuntu-latest` では zsh の 6 態が CI で一度も走らず、改訂 4 が塞いだ zsh 限定の失敗もパイプラインでは検出できなかった。
+ページが zsh を名指しで約束している以上、CI で必ず走らせる: `ci.yml` の依存導入の直後に `apt-get install zsh` の 1 ステップを
+足し(docs だけの PR で workflow に触る唯一の変更 — レシピ検査の前提の導入のみ)、検査側は jq と同じ形で `CI` があるときだけ
+`shells` が `["sh", "bash", "zsh", "dash"]` であることを 1 件の `it` で断言する(手元では従来どおり導入済みのものだけ)。
+pullfrog の nit で `apt-get update -qq` を前置(ランナーイメージの apt リストの鮮度に成否が依存しないように)。
+
+**検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
+(Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / zsh / dash の 4 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕— zsh は改訂 4 で導入)。
+実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・macOS(BSD `printenv`)は人間タスク。ページの
+light / dark のスクリーンショットは PR の Artifact。
+
 ---
 
 ## 4. 上流ローテーション

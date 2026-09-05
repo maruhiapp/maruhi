@@ -119,6 +119,7 @@ From the stable release (`v0.1.0`) onward, `bun install -g maruhi` is enough.
 ## Docs
 
 - [maruhi.app/docs](https://maruhi.app/docs) — the documentation site (source in `apps/site`; goes live with the hosted beta)
+- [Deploy targets](https://maruhi.app/docs/deploy-targets) — copying values to Cloudflare Workers and Vercel with `maruhi run` and the vendor CLI (source: [`apps/site/docs/deploy-targets.mdx`](apps/site/docs/deploy-targets.mdx))
 - [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — crypto specification (sole source of truth; Japanese)
 - [docs/AUTH_SPEC.md](docs/AUTH_SPEC.md) — authentication and identity specification (Japanese)
 - [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — self-hosting guide

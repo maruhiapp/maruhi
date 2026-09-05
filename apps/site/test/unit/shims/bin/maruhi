@@ -1,0 +1,3 @@
+#!/bin/sh
+# Test shim (docs recipes). Runs the TypeScript shim next to this directory with Bun.
+exec bun "$(dirname "$0")/../maruhi.ts" "$@"
