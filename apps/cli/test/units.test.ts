@@ -282,6 +282,15 @@ describe("showValues(復号後の防衛線)", () => {
 
     const headless = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: true });
     expect(Exit.isFailure(headless)).toBe(true);
+    expect(JSON.stringify(headless)).toContain("stdin is not an interactive terminal");
+
+    // CI・非対話シェルで一番多い形 = 両方が非端末(pullfrog 指摘 — 3 分岐すべてを固定)
+    const detached = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: false });
+    expect(Exit.isFailure(detached)).toBe(true);
+    expect(JSON.stringify(detached)).toContain(
+      "neither stdin nor stdout is an interactive terminal",
+    );
+    expect(JSON.stringify(detached)).not.toContain("plaintext-value");
 
     const agent = await showOne({
       agent: { isAgent: true, name: "claude" },
