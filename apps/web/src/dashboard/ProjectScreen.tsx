@@ -1,5 +1,6 @@
 "use client";
 
+import { Banner } from "@astryxdesign/core/Banner";
 // S5 プロジェクト概要 / S6 監査(project・invites 軸)/ S7 要ローテーション
 // フラグ(設計文書 §3)。読み取りのみ・全表示はサーバー申告(§4)。
 //
@@ -11,12 +12,11 @@
 // - S7: dismiss は置かない(ADR-0018 改訂 2 の境界原則 — 警告の消去)。
 //   CLI `maruhi rotation dismiss` への静的案内のみ
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
 import { Token } from "@astryxdesign/core/Token";
 import { useRouteParams } from "@funstack/router";
@@ -32,6 +32,7 @@ import { shortId } from "./ids.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
 import {
+  Callout,
   EmptyNotice,
   FailureNotice,
   ServerTime,
@@ -117,23 +118,47 @@ function ChainSummary({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   );
 }
 
+interface ServerRow extends Record<string, unknown> {
+  id: string;
+  scope: string;
+}
+
+const SERVER_COLUMNS: TableColumn<ServerRow>[] = [
+  {
+    key: "id",
+    header: "Server key",
+    width: proportional(1),
+    renderCell: (row: ServerRow) => <HexText>{row.id}</HexText>,
+  },
+  {
+    key: "scope",
+    header: "Scope",
+    width: proportional(1),
+    renderCell: (row: ServerRow) => (
+      <Text type="supporting" size="sm">
+        {row.scope}
+      </Text>
+    ),
+  },
+];
+
+/** 付与済みサーバー鍵(行 = Table — 集合は行で描く。改訂 7)。 */
 function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): ReactNode {
   if (servers.length === 0) return null;
+  const rows: ServerRow[] = servers.map((server) => ({
+    id: server.keyFingerprintHex,
+    scope:
+      server.scopeEnvironmentIds.length === 0
+        ? "no environments in scope"
+        : server.scopeEnvironmentIds.join(", "),
+  }));
   return (
-    <VStack gap={2}>
-      <Heading level={4} accessibilityLevel={3}>
-        Granted servers
-      </Heading>
-      {servers.map((server) => (
-        <HStack key={server.keyFingerprintHex} gap={2} align="center" wrap="wrap">
-          <HexText>{server.keyFingerprintHex}</HexText>
-          <Text type="supporting" size="sm">
-            {server.scopeEnvironmentIds.length === 0
-              ? "no environments in scope"
-              : `scope: ${server.scopeEnvironmentIds.join(", ")}`}
-          </Text>
-        </HStack>
-      ))}
+    <VStack gap={4}>
+      <SectionHeader
+        title="Granted servers"
+        description="Server keys granted on this project and their environment scope, as reported by the server."
+      />
+      <Table data={rows} columns={SERVER_COLUMNS} idKey="id" density="compact" dividers="rows" />
     </VStack>
   );
 }
@@ -188,28 +213,39 @@ function toEnvironmentRow(env: EnvironmentSummary): EnvironmentRow {
   };
 }
 
-function VariableNameRow({
-  statement,
-  deleted,
-}: {
-  statement: { variableId: string; name: string };
+interface VariableRow extends Record<string, unknown> {
+  id: string;
+  name: string;
   deleted: boolean;
-}): ReactNode {
-  return (
-    <HStack gap={2} align="center" wrap="wrap">
-      <Text type="code" size="sm" hasStrikethrough={deleted}>
-        {statement.name}
-      </Text>
-      <HexText size="xsm">{statement.variableId}</HexText>
-      {deleted ? <Token label="deleted" size="sm" color="gray" /> : null}
-    </HStack>
-  );
 }
 
+const VARIABLE_COLUMNS: TableColumn<VariableRow>[] = [
+  {
+    key: "name",
+    header: "Variable",
+    width: proportional(1),
+    renderCell: (row: VariableRow) => (
+      <HStack gap={2} align="center" wrap="wrap">
+        <Text type="code" size="sm" hasStrikethrough={row.deleted}>
+          {row.name}
+        </Text>
+        {row.deleted ? <Token label="deleted" size="sm" color="gray" /> : null}
+      </HStack>
+    ),
+  },
+  {
+    key: "id",
+    header: "Variable ID",
+    width: proportional(1),
+    renderCell: (row: VariableRow) => <HexText>{row.id}</HexText>,
+  },
+];
+
+/** 選択環境の変数名(行 = Table — 集合は行で描く。改訂 7)。値は構造上応答に無い。 */
 function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
-  const rows = [
-    ...pull.variables.map((statement) => ({ statement, deleted: false })),
-    ...pull.deletedVariables.map((statement) => ({ statement, deleted: true })),
+  const rows: VariableRow[] = [
+    ...pull.variables.map((s) => ({ id: s.variableId, name: s.name, deleted: false })),
+    ...pull.deletedVariables.map((s) => ({ id: s.variableId, name: s.name, deleted: true })),
   ];
   return (
     <VStack gap={2} data-testid="variable-list">
@@ -223,9 +259,13 @@ function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
           description="No variable names in this environment, as reported by the server."
         />
       ) : (
-        rows.map(({ statement, deleted }) => (
-          <VariableNameRow key={statement.variableId} statement={statement} deleted={deleted} />
-        ))
+        <Table
+          data={rows}
+          columns={VARIABLE_COLUMNS}
+          idKey="id"
+          density="compact"
+          dividers="rows"
+        />
       )}
     </VStack>
   );
@@ -518,20 +558,12 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
   return (
     <VStack gap={4}>
       <RotationFlagsView flags={state.value.flags} />
-      {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作)。
-          形は Astryx の `CardCallout` ブロック */}
-      <Card variant="muted" data-testid="rotation-note">
-        <VStack gap={2}>
-          <Heading level={4} accessibilityLevel={2}>
-            Rotating and dismissing
-          </Heading>
-          <Text type="body" color="secondary">
-            A flag means the upstream credential should be rotated. Rotate the value, then dismiss
-            the flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin).
-            Dismissing is not available in the dashboard.
-          </Text>
-        </VStack>
-      </Card>
+      {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作) */}
+      <Callout title="Rotating and dismissing" headingLevel={2} testId="rotation-note">
+        A flag means the upstream credential should be rotated. Rotate the value, then dismiss the
+        flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin). Dismissing is
+        not available in the dashboard.
+      </Callout>
     </VStack>
   );
 }
@@ -650,7 +682,7 @@ function ProjectPage({ projectId }: { projectId: string }): ReactNode {
     <DashboardShell
       destination="projects"
       project={{ id: projectId, label }}
-      backLink={{ label: "All projects", href: spaPaths.dashboard() }}
+      backLink={{ label: "Projects", href: spaPaths.dashboard() }}
       title={`Project ${label}`}
       intro={<HexText testId="project-id">{projectId}</HexText>}
       tabs={<ProjectTabList tab={tab} onChange={setTab} />}
@@ -665,13 +697,15 @@ function InvalidProjectPage({ projectId }: { projectId: string }): ReactNode {
   return (
     <DashboardShell
       destination="projects"
-      backLink={{ label: "All projects", href: spaPaths.dashboard() }}
+      backLink={{ label: "Projects", href: spaPaths.dashboard() }}
       title="Project"
       intro={<HexText testId="project-id">{projectId}</HexText>}
     >
-      <Text as="p" type="supporting">
-        This is not a project ID (a project ID is 64 lowercase hex characters).
-      </Text>
+      <Banner
+        status="warning"
+        title="Not a project ID"
+        description="A project ID is 64 lowercase hex characters. Nothing was requested from the server."
+      />
     </DashboardShell>
   );
 }

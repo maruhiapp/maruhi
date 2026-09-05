@@ -36,6 +36,11 @@ import type { ProjectList } from "./types.ts";
 // @maruhi/core の isProjectId と同形だが、実行コードを bundle に持ち込まない
 // 方針(裁定 BR)のためリテラルで持つ
 const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
+// 形式エラー(クライアント側の判定 — サーバーには問い合わせない)。TextInput の status に載せる
+const FORMAT_ERROR = {
+  type: "error",
+  message: "A project ID is 64 lowercase hex characters.",
+} as const;
 
 interface ProjectRow extends Record<string, unknown> {
   id: string;
@@ -68,26 +73,23 @@ function OpenByIdSection(): ReactNode {
         title="Open a project by ID"
         description="A project ID works like a bookmark: paste one to open its overview directly."
       />
-      <VStack gap={2}>
-        <HStack gap={2} align="end" wrap="wrap">
-          <TextInput
-            label="Project ID"
-            isLabelHidden
-            value={projectId}
-            onChange={(value) => {
-              setProjectId(value);
-              setShowFormatNote(false);
-            }}
-            data-testid="project-id-input"
-          />
-          <Button label="Open" variant="secondary" onClick={open} />
-        </HStack>
-        {showFormatNote ? (
-          <Text as="p" type="supporting" role="alert">
-            A project ID is 64 lowercase hex characters.
-          </Text>
-        ) : null}
-      </VStack>
+      {/* 形式エラーは TextInput 自身の status(detached — 入力の下に出る)。Enter でも Open */}
+      <HStack gap={2} align="start" wrap="wrap">
+        <TextInput
+          label="Project ID"
+          isLabelHidden
+          value={projectId}
+          onChange={(value) => {
+            setProjectId(value);
+            setShowFormatNote(false);
+          }}
+          onEnter={open}
+          {...(showFormatNote ? { status: FORMAT_ERROR } : {})}
+          statusVariant="detached"
+          data-testid="project-id-input"
+        />
+        <Button label="Open" variant="secondary" onClick={open} />
+      </HStack>
     </Grid>
   );
 }

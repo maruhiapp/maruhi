@@ -19,6 +19,7 @@
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
@@ -255,15 +256,44 @@ export function SectionHeader({
 }
 
 /**
- * ローディング表示(リソース本体の置き換え用)。Spinner が role="status" を持ち
- * label を読み上げる — 見える文言と同じ 1 行にする(裁定 B)。
+ * ローディング表示(リソース本体の置き換え用)。Astryx `Spinner` の `label` スロット
+ * (文字列は aria-label も兼ねる — 見える文言と読み上げが同じ 1 点。裁定 B / 改訂 7)。
  */
 export function LoadingRow({ label }: { label: string }): ReactNode {
   return (
-    <HStack gap={2} align="center">
-      <Spinner size="sm" aria-label={label} />
-      <Text type="supporting">{label}</Text>
+    <HStack>
+      <Spinner size="sm" label={label} />
     </HStack>
+  );
+}
+
+/**
+ * 注記のブロック(Astryx `CardCallout` ブロックの形: muted の Card + 見出し + 本文)。
+ * CLI への静的案内(発行・失効・dismiss)に使う。`headingLevel` は置かれる場所の
+ * 文書構造に合わせる(見た目は level 4)。改訂 7 で 3 画面の同形を 1 定義に寄せた。
+ */
+export function Callout({
+  title,
+  headingLevel,
+  children,
+  testId,
+}: {
+  title: string;
+  headingLevel: 2 | 3;
+  children: ReactNode;
+  testId?: string;
+}): ReactNode {
+  return (
+    <Card variant="muted" data-testid={testId}>
+      <VStack gap={2}>
+        <Heading level={4} accessibilityLevel={headingLevel}>
+          {title}
+        </Heading>
+        <Text type="body" color="secondary">
+          {children}
+        </Text>
+      </VStack>
+    </Card>
   );
 }
 

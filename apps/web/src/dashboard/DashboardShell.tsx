@@ -20,11 +20,11 @@
 // (ServerReportedNote)はページ末尾にシェルが 1 回置く。文言はすべて英語(ADR-0017)。
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
+import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Center } from "@astryxdesign/core/Center";
 import { Layout, LayoutContent, LayoutHeader, VStack } from "@astryxdesign/core/Layout";
-import { Link } from "@astryxdesign/core/Link";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
@@ -46,7 +46,7 @@ import type { Me } from "./types.ts";
 /** サイドバーの到達点(選択状態 = aria-current="page")。project 画面は Projects 配下。 */
 type ShellDestination = "projects" | "tokens" | "account";
 
-/** 親階層への戻りリンク(`detail-page` テンプレートの「← All orders」の形)。 */
+/** 親階層(パンくずの先頭。現在地はプロジェクトの短縮 ID か title — 改訂 7 で `Breadcrumbs` に)。 */
 interface BackLink {
   label: string;
   href: string;
@@ -220,16 +220,19 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
 }
 
 /**
- * ページ見出し(`detail-page` テンプレートの PageHeader の形): 戻りリンク → h1 → 説明 →
- * タブ。タブ(TabList hasDivider)の下線が header と本文の境界を兼ねる(裁定 O)。
+ * ページ見出し(`detail-page` テンプレートの PageHeader の形): パンくず → h1 → 説明 →
+ * タブ。パンくずは Astryx `Breadcrumbs`(親階層 = リンク、現在地 = aria-current)。
+ * タブ(TabList hasDivider)の下線が header と本文の境界を兼ねる(裁定 O)。
  */
 function PageHeader({
   backLink,
+  crumb,
   title,
   intro,
   tabs,
 }: {
   backLink: BackLink | undefined;
+  crumb: string;
   title: string;
   intro: ReactNode;
   tabs: ReactNode;
@@ -238,9 +241,10 @@ function PageHeader({
     <VStack gap={3}>
       <VStack gap={1}>
         {backLink === undefined ? null : (
-          <Link href={backLink.href} color="secondary">
-            ← {backLink.label}
-          </Link>
+          <Breadcrumbs variant="supporting">
+            <BreadcrumbItem href={backLink.href}>{backLink.label}</BreadcrumbItem>
+            <BreadcrumbItem isCurrent>{crumb}</BreadcrumbItem>
+          </Breadcrumbs>
         )}
         <Heading level={1}>{title}</Heading>
         {intro}
@@ -319,7 +323,13 @@ function SignedInFrame({
         padding={6}
         header={
           <LayoutHeader>
-            <PageHeader backLink={backLink} title={title} intro={intro} tabs={tabs} />
+            <PageHeader
+              backLink={backLink}
+              crumb={project?.label ?? title}
+              title={title}
+              intro={intro}
+              tabs={tabs}
+            />
           </LayoutHeader>
         }
         content={

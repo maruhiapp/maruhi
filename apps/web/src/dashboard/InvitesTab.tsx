@@ -10,15 +10,15 @@
 // - 失効はインライン 2 段階確認(裁定 CO)+ 完了後のサーバー再取得。
 //   Revoke は status が pending | accepted の行のみ(サーバーの受理条件 —
 //   期限切れ pending の掃除も可 — の写し)
-import { Card } from "@astryxdesign/core/Card";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
 import { apiPaths } from "./endpoints.ts";
 import {
+  Callout,
   EmptyNotice,
   ExpiryCell,
   FailureNotice,
@@ -134,24 +134,14 @@ function buildInviteColumns(
   ];
 }
 
-/**
- * 発行の静的案内(発行 UI は置かない — ADR-0018 改訂 2)+ 失効の帰結の注記。
- * 形は Astryx の `CardCallout` ブロック(muted の Card + 見出し + 本文)。
- */
+/** 発行の静的案内(発行 UI は置かない — ADR-0018 改訂 2)+ 失効の帰結の注記。 */
 function InviteNotes(): ReactNode {
   return (
-    <Card variant="muted" data-testid="invite-notes">
-      <VStack gap={2}>
-        <Heading level={4} accessibilityLevel={3}>
-          Issuing and revoking
-        </Heading>
-        <Text type="body" color="secondary">
-          Issuing invitations is not available in the dashboard — issue one from the CLI:{" "}
-          <Text type="code">maruhi invite create</Text> (admin). Revoking makes the invitation link
-          unusable immediately; issue a new invitation to replace it.
-        </Text>
-      </VStack>
-    </Card>
+    <Callout title="Issuing and revoking" headingLevel={3} testId="invite-notes">
+      Issuing invitations is not available in the dashboard — issue one from the CLI:{" "}
+      <Text type="code">maruhi invite create</Text> (admin). Revoking makes the invitation link
+      unusable immediately; issue a new invitation to replace it.
+    </Callout>
   );
 }
 

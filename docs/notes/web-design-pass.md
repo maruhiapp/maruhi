@@ -629,6 +629,32 @@ tooltipEntries でコピー行を付ける」を規範としており、その�
 名前の下へ折り返す)。検証: e2e 26 件、axe 24 態で違反 0(Timestamp を button の中に置いても入れ子の
 対話要素は無い)。
 
+**改訂 7(2026-09-05、所有者レビュー 7 回目 — Astryx の部品が使えるのに自作している箇所の棚卸し)**:
+
+**R. Astryx 部品への置換の棚卸し** — `apps/web/src` の全 JSX を Astryx の 163 部品(`astryx component --list`)と
+突き合わせた。**置換したもの**: (1) `LoadingRow` の Spinner + Text の横並び → `Spinner` の `label` スロット(文字列は
+aria-label も兼ねる — 見える文言と読み上げが 1 点)。(2) Projects の ID 直入力の形式エラー(Text `role="alert"`)→
+`TextInput` の `status`(error + message、`statusVariant="detached"`)。あわせて `onEnter` で Enter でも Open。
+(3) プロジェクト画面の戻りリンク(`Link` の「← All projects」)→ `Breadcrumbs` / `BreadcrumbItem`
+(`variant="supporting"`。親 = Projects へのリンク、現在地 = 短縮 ID に aria-current。nav landmark が付く)。
+`detail-page` テンプレートは Link + 矢印アイコンだが、階層を表す部品が存在するのでそちらに従う。
+(4) 変数名の一覧(HStack の手組み行)と付与済みサーバー鍵(同)→ `Table`(compact、行の hairline。集合は
+行で描く — layout docs)。サーバー鍵は節見出し(`SectionHeader`)付き。(5) CLI 案内の注記(muted Card +
+Heading + Text の同形 × 3)→ `shared.tsx` の `Callout` 1 定義(Astryx の合成は不変 — 重複の解消)。
+(6) 形式外 ID のページ(`InvalidProjectPage`)の Text → `Banner`(warning — 他の通知と同じ形)。
+**置換しないもの(理由)**: (a) `icons.tsx` のインライン heroicons — Astryx はアイコン集合を持たず(`Icon` は
+SVG 部品を受けるだけ)、テンプレート自身が @heroicons/react かインライン SVG。依存を増やさない方針で後者。
+(b) `HexText`(xstyle の anywhere 折り)— `Text` に相当 prop が無い(裁定 H の昇格判断は人間)。(c) タブパネル
+(`VStack role="tabpanel"`)— Astryx に TabPanel 部品が無い(`Tab` の `panelId` で結ぶ設計)。(d) `EmptyNotice` /
+`SectionHeader` / `FailureNotice` / `RevokeDialog` — Astryx 部品の薄い包み(既定文言・置き方の規律を 1 点に持つ)。
+(e) Load more の `Button` — `Pagination` はページ番号型で、カーソル型には合わない。(f) 監査の caption +
+ToggleButtonGroup の HStack — `Toolbar` は操作の並び(above a table)用で、規定文言 + 1 つの切替には過剰。
+(g) 環境表の「Variable names」ボタンで下に変数表を出す形 — `Collapsible` や Table の tree 行(`useTableTreeData`)
+も可能だが、表の行の中に表を入れる形になるため据え置き(次の見直し候補)。(h) `HomePage` / `AboutPage` /
+`CounterCard`(RSC の静的シェル + スパイク)— 生の `<main>` / `<h1>` / `<a>` のまま。DP3 のスコープ外
+(W 系列の spike-a)で、Astryx 化は静的シェルでの `Theme` 適用の設計が要るため別 PR。
+検証: e2e 26 件、axe 24 態で違反 0(Breadcrumbs の nav landmark が 1 つ増える)。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
