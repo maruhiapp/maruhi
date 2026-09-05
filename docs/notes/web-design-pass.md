@@ -655,6 +655,31 @@ ToggleButtonGroup の HStack — `Toolbar` は操作の並び(above a table)用�
 (W 系列の spike-a)で、Astryx 化は静的シェルでの `Theme` 適用の設計が要るため別 PR。
 検証: e2e 26 件、axe 24 態で違反 0(Breadcrumbs の nav landmark が 1 つ増える)。
 
+**改訂 8(2026-09-05、所有者レビュー 8 回目 — 表の枠線が節の幅を越えて伸びる違和感・Card で包む案)**:
+
+**S. 節の容器(表の bleed をどう収めるか)** — 事実: Astryx の `Table`(scroll wrapper)は Layout の padding ぶん
+(24px)負のマージンで領域の縁まで伸びる。Section も同じく縁まで伸びる。layout docs の「1 領域に 1 本の内容線 —
+文字は線の上、行の hover 背景は縁まで bleed」の整列モデルで、`detail-page` テンプレートも同じ見え方。
+列挙: (i) 現状(節見出し + 表。表が見出しの左右を越えて伸びる)/ (ii) **Card で包む**(所有者案 — 試作済み。
+表は収まるが、`component Section` に "If you are tempted to use a Card for a page section, use Section instead"、
+`component Card` に "Don't: Wrap page sections in cards"、layout docs に "x full-width Cards stacked as page
+structure" と明記)/ (iii) `Section` で包む(規範どおりだが、neutral テーマでは section の面 = surface = 本文領域の
+色で見えない)/ (iv) **Section + テーマで面の色**: defineTheme の `components.section['variant:section']`(カスタマイズ
+順 ①)に `color-mix(in oklab, var(--color-background-body) 55%, var(--color-background-surface))` を与え、既定の
+Section を「線を引かない薄いパネル」にする / (v) Section `dividers`(上下の hairline — 線が戻る)/ (vi) Section
+`variant="muted"`(docs は attention 用に限る)/ (vii) Layout の padding を AppShell に移して bleed を 0 に(試作 —
+AppShell の contentPadding が効かず、モバイルで文字が画面端に付くため棄却)。
+→ **(iv) を採用**(所有者の選択)。Section docs の "Use it ... any time you need visual separation between parts of a
+page" のとおり分離は Section の役目で、色はテーマの責務。Astryx の surface 階層(body → surface → card)に沿って
+body 側へ半分寄せた色にし、生 hex は増やさない(トークン参照 + color-mix)。`shared.tsx` の `SectionBlock`
+(Section padding 6 = Layout の padding と同じ 24px で、見出しはページの内容線に乗る。`title` を省くとページ h1 が
+見出しを兼ねる一覧のパネル)で、**すべての集合**(Members / Environments / Granted servers / Invitations /
+Projects / API tokens / Rotation flags / 監査行)を包む。表の行は Section の縁まで伸びるので節に収まって見える。
+Callout(muted の Card)は注記のままで、パネルとは色相が違う。テーマの生成物(`maruhi.css` / `.js`)は
+`bun run theme:build` で再生成(差分は section の 1 規則のみ)。site 側はトークンの写しなので漂流なし
+(`apps/site` の theme:build で差分 0)。検証: e2e 26 件、axe 24 態で違反 0(パネル上の文字コントラストは
+body 相当で AA)。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。

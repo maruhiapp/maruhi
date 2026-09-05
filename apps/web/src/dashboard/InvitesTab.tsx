@@ -27,7 +27,7 @@ import {
   RevokeButton,
   RevokeDialog,
   RoleToken,
-  SectionHeader,
+  SectionBlock,
 } from "./shared.tsx";
 import type { InvitationList, InvitationSummary, InviteStatus } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
@@ -203,11 +203,12 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
   const { revocation, arm, confirm } = useRevocation(revokePath, reload);
   return (
     <VStack gap={4} data-testid="invite-list">
-      <SectionHeader
+      <SectionBlock
         title="Invitations"
         description="Pending, accepted, and completed invitations for this project, as reported by the server."
-      />
-      <InvitesResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+      >
+        <InvitesResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+      </SectionBlock>
       {/* 確認はモーダル(AlertDialogAsyncAction テンプレート) */}
       <RevokeDialog
         isOpen={revocation.armedId !== undefined}

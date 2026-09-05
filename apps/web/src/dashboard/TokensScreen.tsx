@@ -29,6 +29,7 @@ import {
   LoadingRow,
   RevokeButton,
   RevokeDialog,
+  SectionBlock,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
@@ -216,7 +217,9 @@ export function TokensScreen(): ReactNode {
       }
     >
       <VStack gap={4} data-testid="token-list">
-        <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+        <SectionBlock>
+          <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+        </SectionBlock>
         {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
         <RevokeDialog
           isOpen={revocation.armedId !== undefined}

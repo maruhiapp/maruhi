@@ -27,6 +27,7 @@ import {
   LoadingRow,
   navigateTo,
   RoleToken,
+  SectionBlock,
   SectionHeader,
   SECTION_GAP,
 } from "./shared.tsx";
@@ -274,7 +275,9 @@ export function DashboardScreen(): ReactNode {
       {/* ページ見出しが一覧の見出しを兼ねる(1 領域に主見出しは 1 つ — Astryx layout docs)。
           節見出しを持つのは 2 つ目の節(Open a project by ID)だけ */}
       <VStack gap={SECTION_GAP}>
-        <ProjectListSection />
+        <SectionBlock>
+          <ProjectListSection />
+        </SectionBlock>
         <OpenByIdSection />
       </VStack>
     </DashboardShell>

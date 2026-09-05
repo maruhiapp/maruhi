@@ -23,6 +23,7 @@ import { Card } from "@astryxdesign/core/Card";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
+import { Section } from "@astryxdesign/core/Section";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
@@ -241,7 +242,7 @@ export function SectionHeader({
   description,
 }: {
   title: string;
-  description?: string;
+  description?: string | undefined;
 }): ReactNode {
   return (
     <VStack gap={1}>
@@ -252,6 +253,34 @@ export function SectionHeader({
         </Text>
       )}
     </VStack>
+  );
+}
+
+/**
+ * 節のパネル(DP3 改訂 8 — 裁定 S)。Astryx の `Section`(ページの節の既定単位 — Card は
+ * 「独立に並べ替え・削除できる item」用で節には使わない)に、テーマ(maruhi.ts)が面の色を
+ * 与える。Section も中の Table も領域の縁まで伸びる(Astryx の整列モデル)ので、表の行が
+ * 節の中に収まって見える。padding 6 = Layout の padding と同じ 24px で、見出しはページの
+ * 内容線に乗る。`title` を省くと見出し無しのパネル(ページ h1 が見出しを兼ねる一覧)。
+ */
+export function SectionBlock({
+  title,
+  description,
+  children,
+  testId,
+}: {
+  title?: string | undefined;
+  description?: string | undefined;
+  children: ReactNode;
+  testId?: string | undefined;
+}): ReactNode {
+  return (
+    <Section padding={6} data-testid={testId}>
+      <VStack gap={4}>
+        {title === undefined ? null : <SectionHeader title={title} description={description} />}
+        {children}
+      </VStack>
+    </Section>
   );
 }
 

@@ -39,7 +39,7 @@ import {
   HexText,
   LoadingRow,
   RoleToken,
-  SectionHeader,
+  SectionBlock,
   SECTION_GAP,
 } from "./shared.tsx";
 import type {
@@ -153,13 +153,12 @@ function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): R
         : server.scopeEnvironmentIds.join(", "),
   }));
   return (
-    <VStack gap={4}>
-      <SectionHeader
-        title="Granted servers"
-        description="Server keys granted on this project and their environment scope, as reported by the server."
-      />
+    <SectionBlock
+      title="Granted servers"
+      description="Server keys granted on this project and their environment scope, as reported by the server."
+    >
       <Table data={rows} columns={SERVER_COLUMNS} idKey="id" density="compact" dividers="rows" />
-    </VStack>
+    </SectionBlock>
   );
 }
 
@@ -173,11 +172,10 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   return (
     <VStack gap={SECTION_GAP} data-testid="chain-section">
       <ChainSummary snapshot={snapshot} />
-      <VStack gap={4}>
-        <SectionHeader
-          title="Members"
-          description="Chain-derived members and roles, as reported by the server."
-        />
+      <SectionBlock
+        title="Members"
+        description="Chain-derived members and roles, as reported by the server."
+      >
         <Table
           data={memberRows}
           columns={MEMBER_COLUMNS}
@@ -187,7 +185,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
           dividers="rows"
           data-testid="member-table"
         />
-      </VStack>
+      </SectionBlock>
       <ServersList servers={view.servers} />
     </VStack>
   );
@@ -349,11 +347,10 @@ function EnvironmentsBody({
     setSelectedEnvironmentId(environmentId === selectedEnvironmentId ? undefined : environmentId);
   const rows = environments.map(toEnvironmentRow);
   return (
-    <VStack gap={4}>
-      <SectionHeader
-        title="Environments"
-        description="Environments and their variable names (metadata only — values never appear here)."
-      />
+    <SectionBlock
+      title="Environments"
+      description="Environments and their variable names (metadata only — values never appear here)."
+    >
       {rows.length === 0 ? (
         <EmptyNotice
           title="No environments"
@@ -373,7 +370,7 @@ function EnvironmentsBody({
       {selectedEnvironmentId !== undefined ? (
         <VariablesSection projectId={projectId} environmentId={selectedEnvironmentId} />
       ) : null}
-    </VStack>
+    </SectionBlock>
   );
 }
 
@@ -440,19 +437,21 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
           <ToggleButton value="invites" label="Invites" />
         </ToggleButtonGroup>
       </HStack>
-      {axis === "project" ? (
-        <AuditEventList
-          fetchPage={fetchProjectEvents}
-          emptyTitle="No events"
-          testId="audit-list-project"
-        />
-      ) : (
-        <AuditEventList
-          fetchPage={fetchInviteEvents}
-          emptyTitle="No invite events"
-          testId="audit-list-invites"
-        />
-      )}
+      <SectionBlock>
+        {axis === "project" ? (
+          <AuditEventList
+            fetchPage={fetchProjectEvents}
+            emptyTitle="No events"
+            testId="audit-list-project"
+          />
+        ) : (
+          <AuditEventList
+            fetchPage={fetchInviteEvents}
+            emptyTitle="No invite events"
+            testId="audit-list-invites"
+          />
+        )}
+      </SectionBlock>
       <Text type="supporting">
         Completeness checks (gap detection, mirror reconciliation) are the CLI's job:{" "}
         <Text type="code">maruhi audit verify</Text> /{" "}
@@ -557,7 +556,9 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
     <VStack gap={4}>
-      <RotationFlagsView flags={state.value.flags} />
+      <SectionBlock>
+        <RotationFlagsView flags={state.value.flags} />
+      </SectionBlock>
       {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作) */}
       <Callout title="Rotating and dismissing" headingLevel={2} testId="rotation-note">
         A flag means the upstream credential should be rotated. Rotate the value, then dismiss the

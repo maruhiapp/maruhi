@@ -35,6 +35,19 @@ export const maruhiTheme = defineTheme({
     "--color-accent": [VERMILION_LIGHT, VERMILION_DARK],
     "--color-on-accent": [ON_VERMILION_LIGHT, ON_VERMILION_DARK],
   },
+  components: {
+    // Section(ページの節)の既定 variant に面の色を与える(DP3 改訂 8 — 裁定 S)。
+    // neutral テーマでは section の面が surface と同値で、本文領域(surface)の上に置くと
+    // 見えない。Astryx の surface 階層(body → surface → card)に従い、body 側へ半分寄せた
+    // 色で「線を引かない薄いパネル」にする。表の行は Section の縁まで伸びる(Astryx の
+    // 整列モデル)ので、節に収まって見える。値はトークン参照のみ(生 hex を増やさない)
+    section: {
+      "variant:section": {
+        backgroundColor:
+          "color-mix(in oklab, var(--color-background-body) 55%, var(--color-background-surface))",
+      },
+    },
+  },
 });
 
 export default maruhiTheme;

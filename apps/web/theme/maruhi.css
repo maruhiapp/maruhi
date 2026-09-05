@@ -601,6 +601,14 @@
       --astryx-section-padding: var(--spacing-3);
     }
 
+    .astryx-section.section {
+      background-color: color-mix(
+        in oklab,
+        var(--color-background-body) 55%,
+        var(--color-background-surface)
+      );
+    }
+
     .astryx-text.primary {
       color: var(--color-text-primary);
     }

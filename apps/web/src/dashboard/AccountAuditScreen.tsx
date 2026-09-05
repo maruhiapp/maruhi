@@ -10,6 +10,7 @@ import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { SectionBlock } from "./shared.tsx";
 import type { AuditEventsPage } from "./types.ts";
 
 export function AccountAuditScreen(): ReactNode {
@@ -27,11 +28,13 @@ export function AccountAuditScreen(): ReactNode {
         </Text>
       }
     >
-      <AuditEventList
-        fetchPage={fetchPage}
-        emptyTitle="No account events"
-        testId="audit-list-self"
-      />
+      <SectionBlock>
+        <AuditEventList
+          fetchPage={fetchPage}
+          emptyTitle="No account events"
+          testId="audit-list-self"
+        />
+      </SectionBlock>
     </DashboardShell>
   );
 }

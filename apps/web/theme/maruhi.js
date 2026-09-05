@@ -429,6 +429,10 @@ export const maruhiTheme = {
       base: {
         padding: "var(--spacing-3)",
       },
+      "variant:section": {
+        backgroundColor:
+          "color-mix(in oklab, var(--color-background-body) 55%, var(--color-background-surface))",
+      },
     },
   },
   __onDark: {
