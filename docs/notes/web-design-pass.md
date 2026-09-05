@@ -924,6 +924,11 @@ outcome 行も `bold`。`.code-label` と `.button` の medium は落とす — 
 常に一致する(担保になっていない)」も受け、等価検査の対象から `theme.css` を外し(`invite.html` /
 `pages.css` は vite の publicDir コピーを経由するので意味がある)、`/theme.css` の契約は上のトークン解決
 検査が担う形に改めた。
+**改訂 1 の追補(pullfrog 再レビュー)**: 検査が名前の存在しか見ておらず、「定義はあるが値が Astryx core の
+トークンを `var()` で参照する」もの(`theme/maruhi.css` に `--text-heading-1-weight: var(--font-weight-semibold)`
+等が 16 種以上)を `pages.css` が使うと通ってしまう穴を指摘された → 定義を `Map<名前, 値>` で持ち、値の
+`var()` を再帰的に辿って未定義に当たったら経路つきで落とす形に(合成 CSS `var(--text-heading-1-weight)` で
+`--text-heading-1-weight -> --font-weight-semibold` を検出することを確認)。
 
 **検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。サーバーの
 auth / signup-policy テスト 87 件通過。web e2e 30 件通過(`/theme.css` `/pages.css` の実配信・バイト一致・

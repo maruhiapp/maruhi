@@ -125,16 +125,38 @@ for (const asset of ["invite.html", "pages.css"]) {
 // 届かない。theme/maruhi.css は Astryx core のトークン(font-weight 系)を**参照する
 // だけで定義しない**ものを含むため、pages.css の `var(--…)` が theme/maruhi.css で
 // 定義されないと、未解決の var() が invalid at computed-value time で無言に落ちる
-// (初版はこれで全 font-weight が消えていた)。参照集合 ⊆ 定義集合をビルドで固定する
+// (初版はこれで全 font-weight が消えていた)。参照が**値まで**解決することをビルドで
+// 固定する: 名前の存在だけでは足りない — theme/maruhi.css には「定義はあるが値が Astryx
+// core のトークンを var() で参照する」ものが 16 種以上あり(`--text-heading-1-weight:
+// var(--font-weight-semibold)` 等)、それを pages.css が使うと名前の検査は通って値だけ
+// 落ちる(pullfrog 再レビュー反映 — 推移的に辿り、未定義に当たったら経路つきで落とす)。
+// フォールバック付き `var(--x, …)` は pages.css で使わない(改訂 1 の裁定)ので考慮しない
 const pagesCss = readFileSync(join(sourceDir, "pages.css"), "utf8");
 const themeCss = readFileSync(themeSource, "utf8");
-const definedTokens = new Set([...themeCss.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
-const unresolved = [
-  ...new Set([...pagesCss.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((m) => m[1])),
-].filter((token) => !definedTokens.has(token));
-if (unresolved.length > 0) {
+const TOKEN_REF = /var\(\s*(--[a-z0-9-]+)/g;
+const tokenDefinitions = new Map<string, string>();
+for (const m of themeCss.matchAll(/(--[a-z0-9-]+)\s*:([^;{}]*);/g)) {
+  // 同名の再宣言(variant スコープの var() 参照)は先勝ち: 最初の宣言が astryx-base /
+  // astryx-theme のブランド値で、参照側もそれで解決できれば足りる
+  if (!tokenDefinitions.has(m[1]!)) tokenDefinitions.set(m[1]!, m[2]!);
+}
+const unresolvedPaths: string[] = [];
+const visited = new Set<string>();
+function resolveToken(token: string, path: readonly string[]): void {
+  const value = tokenDefinitions.get(token);
+  if (value === undefined) {
+    unresolvedPaths.push(path.join(" -> "));
+    return;
+  }
+  if (visited.has(token)) return;
+  visited.add(token);
+  for (const m of value.matchAll(TOKEN_REF)) resolveToken(m[1]!, [...path, m[1]!]);
+}
+for (const m of pagesCss.matchAll(TOKEN_REF)) resolveToken(m[1]!, [m[1]!]);
+if (unresolvedPaths.length > 0) {
   throw new Error(
-    `pages.css が theme/maruhi.css に無いトークンを参照している: ${unresolved.join(", ")}` +
+    "pages.css のトークン参照が theme/maruhi.css で値まで解決しない: " +
+      `${[...new Set(unresolvedPaths)].join(", ")}` +
       "(スクリプトなしページは /theme.css 以外のトークン源を読まない)",
   );
 }
@@ -264,5 +286,5 @@ if (
 console.log(
   `_headers written (${hashes.length} inline script hash + /invite per-path CSP), ` +
     `_redirects written (${inviteRedirectRules.length} rules), ` +
-    `pages.css tokens resolved against theme.css (${definedTokens.size} defined)`,
+    `pages.css tokens resolved against theme.css (${visited.size} reached, 0 unresolved)`,
 );
