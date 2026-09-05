@@ -124,8 +124,10 @@ describe("writeLine(同期書き込みと閉じたパイプ)", () => {
       ["-c", `bun -e '${script}' | head -1; echo "writer-exit=\${PIPESTATUS[0]}"`],
       { cwd: new URL("../../..", import.meta.url).pathname, encoding: "utf8" },
     );
-    expect(result.stdout).toContain("line0");
-    expect(result.stdout).toContain("writer-exit=0");
+    // 失敗時に原因(bun の不在・スクリプトの構文)が読めるよう stderr を添える
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout, result.stderr).toContain("line0");
+    expect(result.stdout, result.stderr).toContain("writer-exit=0");
     expect(result.stderr).not.toContain("EPIPE");
   });
 });
