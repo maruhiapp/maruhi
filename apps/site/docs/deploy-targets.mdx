@@ -20,7 +20,7 @@ Some platforms do not let you put `maruhi run -- <command>` in front of your app
 - List the names in the environment with `maruhi pull`. It prints names, versions, and sizes, not values.
 - Copy only what the platform's runtime needs. Public configuration can live in your repository, and platform-owned resources (D1, KV, and R2 bindings on Cloudflare; Vercel Postgres and Blob) are provided by the platform itself.
 - Declare the variables you copy as required (`maruhi schema set NAME --required`) so that `maruhi run` stops before anything is copied when one of them has no value.
-- The recipes are written for POSIX `sh` (bash, zsh, and dash run them unchanged). Windows is not covered; the Windows build of the CLI is experimental.
+- The recipes are written for POSIX `sh` (bash, zsh, and dash run them unchanged). Windows is not covered.
 
 ## Cloudflare Workers
 
@@ -62,7 +62,7 @@ Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy; the `s
 - `--force` overwrites a variable that already exists for the same environment. Without it, the Vercel CLI refuses to add a name that is already there.
 - Values for production and preview are stored as sensitive by default: Vercel does not show them again, in the dashboard or in `vercel env ls`. Pass `--no-sensitive` to opt out (a team policy may forbid it). Development does not accept sensitive values.
 - `printenv` ends the value with a newline, and the Vercel CLI strips one trailing newline from a single-line value. A multi-line value (a PEM key, for example) keeps it.
-- The Vercel CLI reads standard input only once. In a measurement of its reader (CLI 59.11.7), a value larger than 64 KiB arrived cut off at 64 KiB with no error, which is also Vercel's own limit per variable, and a sensitive value cannot be inspected afterwards. Keep values that large out of this recipe.
+- The Vercel CLI reads standard input only once. In a measurement of its reader (CLI 59.11.7, on Linux), a value larger than 64 KiB arrived cut off at 64 KiB with no error, which is also Vercel's own limit per variable, and a sensitive value cannot be inspected afterwards. Keep values that large out of this recipe.
 - Do not use `--value`: it puts the value on the command line.
 
 ## In CI

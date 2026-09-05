@@ -1,7 +1,7 @@
 // docs/deploy-targets.mdx のレシピ(SY1 — docs/notes/integration-options.md §3「SY1 実装時の裁定録」裁定 H)を
 // **ページの本文からそのまま切り出して実行**し、次を固定する(DP5 の golden と同じく「書いた文言」と
 // 「検査対象」を一致させ、docs の漂流を構造で防ぐ):
-//   1. 平文の値は外部コマンドの argv に一切現れない(`ps` / シェル履歴 / `set -x` に出ない — 裁定 C)
+//   1. 平文の値は外部コマンドの argv に一切現れず、`set -x` のトレースにも出ない(`ps` / シェル履歴 — 裁定 C)
 //   2. 値はベンダー CLI の stdin だけに届く(wrangler = JSON オブジェクト 1 つ、vercel = 変数ごとに値 + 改行)
 //   3. 名前に値が無いときは何も送らずに失敗する(wrangler の JSON null = 削除を決して作らない)
 //   4. POSIX sh で書かれている(dash / bash / zsh のうち導入済みのもので同じ結果)
@@ -63,19 +63,22 @@ function runRecipe(
   shell: string,
   recipe: string,
   injected: Readonly<Record<string, string>>,
+  options: { readonly xtrace?: boolean } = {},
 ): { calls: Call[]; status: number | null; stderr: string } {
   workDir = mkdtempSync(join(tmpdir(), "maruhi-recipes-"));
   const log = join(workDir, "calls.jsonl");
   const valuesFile = join(workDir, "values.json");
   writeFileSync(log, "");
   writeFileSync(valuesFile, JSON.stringify(injected));
-  const result = spawnSync(shell, ["-c", recipe], {
+  const xtrace = options.xtrace === true;
+  const result = spawnSync(shell, xtrace ? ["-x", "-c", recipe] : ["-c", recipe], {
     cwd: workDir,
     env: {
       PATH: `${shimBin}:${process.env["PATH"] ?? ""}`,
       HOME: process.env["HOME"] ?? workDir,
       RECIPE_TEST_LOG: log,
       RECIPE_TEST_VALUES: valuesFile,
+      ...(xtrace ? { RECIPE_TEST_XTRACE: "1" } : {}),
     },
     encoding: "utf8",
   });
@@ -100,11 +103,21 @@ function argvOf(call: Call): string[] {
   return call.tool === "maruhi" ? [...Object.values(call.flags), ...call.command] : call.argv;
 }
 
+const valueFragments = Object.values(values).flatMap((v) => [v, ...v.split("\n")]);
+
 /** No argv of any recorded command contains an injected value (nor a line of a multi-line one). */
 function expectValuesOffCommandLines(calls: Call[]): void {
   const commandLines = calls.flatMap(argvOf).join("\n");
-  for (const fragment of Object.values(values).flatMap((v) => [v, ...v.split("\n")])) {
+  for (const fragment of valueFragments) {
     expect(commandLines).not.toContain(fragment);
+  }
+}
+
+/** The xtrace output (`set -x`) of a recipe run never shows an injected value. */
+function expectValuesOffTrace(stderr: string): void {
+  expect(stderr).toContain("+ ");
+  for (const fragment of valueFragments) {
+    expect(stderr).not.toContain(fragment);
   }
 }
 
@@ -179,6 +192,23 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
         })),
       );
       expectValuesOffCommandLines(calls);
+    });
+
+    it.skipIf(!hasJq)("Cloudflare Workers: `set -x` never echoes a value", () => {
+      const { status, stderr } = runRecipe(shell, workersRecipe ?? "", values, { xtrace: true });
+      expect(status).toBe(0);
+      expectValuesOffTrace(stderr);
+    });
+
+    it("Vercel: `set -x` never echoes a value (outer shell and the inner `sh -c`)", () => {
+      const { calls, status, stderr } = runRecipe(shell, vercelRecipe ?? "", values, {
+        xtrace: true,
+      });
+      expect(status).toBe(0);
+      expect(vendorCalls(calls)).toHaveLength(2);
+      // 内側の sh も -x で走った証拠(名前ごとの printenv がトレースに出る)
+      expect(stderr).toContain("printenv STRIPE_SECRET_KEY");
+      expectValuesOffTrace(stderr);
     });
 
     it("Vercel: a name without a value stops before anything is copied", () => {

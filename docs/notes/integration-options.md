@@ -733,8 +733,17 @@ SY2 の exec ドライバへの含意: (a) wrangler は JSON を 1 リクエス�
 存在を 1 件の `it` で断言**する(手元の新しい前提にはしない)。(4) nitpick: 「In CI」の文を「`--` 以降のコマンドが同じ」に
 直し、`ci run` 自身のフラグ(server / project / environment / anchor)が要ることを 1 文で添えた。
 
+**改訂 2(2026-09-05、pullfrog の並走レビュー〔e6dfb82 に対する 2 本目〕)**: (1) ページが主張する「`set -x` に出ない」が
+機械検査の外だった → `runRecipe` に xtrace の口(外側のシェルを `-x -c` で起動し、偽 `maruhi` は `RECIPE_TEST_XTRACE` が
+あるときレシピ内の `sh -c` を `sh -x -c` として起動する — xtrace は子シェルに継承されないため)を足し、Workers / Vercel の
+両レシピで stderr のトレースに値の断片が無いことを 3 シェルで固定(トレースが実際に出た証拠 = `+ ` と内側の `printenv
+STRIPE_SECRET_KEY` も断言)。(2) nit: 「Windows build is experimental」は README の「Windows is not supported」(インストール
+スクリプト)と読者に食い違って見える → ページは「Windows is not covered」だけに。(3) 改訂 1 の切り詰めの注記に「on Linux」を
+添え、macOS はパイプ容量が小さく `printenv` の書き込みが分かれうるため、実アカウント検証の人間タスクに「大きめの値
+(数十 KiB)」を 1 件足した。
+
 **検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
-(Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / dash の 3 シェル × Workers 2 態 + Vercel 2 態)。
+(Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / dash の 3 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕)。
 実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・zsh・macOS(BSD `printenv`)は人間タスク。ページの
 light / dark のスクリーンショットは PR の Artifact。
 
