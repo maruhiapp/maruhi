@@ -588,15 +588,24 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       "Events visible to your role",
     );
     await page.getByTestId("audit-list-project").waitFor();
-    // DP3 改訂 3: 行 + インスペクタ(incident-console の形)。seq は admin 応答にだけ載り、
-    // 行の先頭に "seq N" として出る(応答適応)
+    // DP3 改訂 5: 1 列の行 + その場で展開(Collapsible)。seq は admin 応答にだけ載り、
+    // 行の右端に "seq N" として出る(応答適応)
     await expect(page.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
     await expect(page.getByText("chain.member_added").count()).resolves.toBeGreaterThan(0);
-    // 行を選ぶと 1024px 超では右のパネルに全フィールド(MetadataList)が出る
-    await page.getByRole("listitem").filter({ hasText: "chain.member_added" }).click();
-    const inspector = page.getByLabel("Event details");
-    await inspector.getByText("Row id", { exact: true }).waitFor();
-    await expect(inspector.getByText("user_colleague", { exact: true }).count()).resolves.toBe(1);
+    // 行(トリガー = button)を開くとその直下に全フィールド(MetadataList)が出る。
+    // 閉じた展開部は DOM に残る(hidden)ので、可視の要素だけを数える
+    const list = page.getByTestId("audit-list-project");
+    const visibleRowIds = list.getByText("Row id", { exact: true }).locator("visible=true");
+    await expect(visibleRowIds.count()).resolves.toBe(0);
+    const row = list.getByRole("button", { name: /chain\.member_added/ });
+    await row.click();
+    await expect(row.getAttribute("aria-expanded")).resolves.toBe("true");
+    await visibleRowIds.waitFor();
+    await expect(visibleRowIds.count()).resolves.toBe(1);
+    // 展開部にも target(user_colleague)が記録どおり出る(要約行の 1 + 展開部の 1)
+    await expect(
+      list.getByText("user_colleague", { exact: true }).locator("visible=true").count(),
+    ).resolves.toBe(2);
     // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)。
     // W3b で管理タブ "Invites"(S8)が同語で並ぶため、ToggleButtonGroup(DP3 で
     // SegmentedControl から置換)の押下ボタンを role で指す
@@ -885,9 +894,10 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("renders the audit log as a List with actor / detail fragments at mobile width (DP3 裁定 D — HP5)", async () => {
-    // 768px 以下(AppShell の md)では監査一覧が Table でなく List(1 イベント = 1 項目)に
-    // なり、サイドバーはドロワーへ移る。pullfrog レビュー反映: この経路を CI で固定する
+  it("renders the audit log as expandable rows at mobile width (DP3 裁定 D / P — HP5)", async () => {
+    // 監査一覧は幅によらず 1 列の行(Collapsible)で、モバイルでも同じ形のまま行の直下に
+    // 詳細が開く。768px 以下(AppShell の md)ではサイドバーがドロワーへ移る。
+    // pullfrog レビュー反映: この経路を CI で固定する
     const page = await browser.newPage();
     const violations = collectViolations(page);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -900,19 +910,23 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("tab", { name: "Audit" }).click();
     const list = page.getByTestId("audit-list-project");
     await list.waitFor();
-    // Table ではなく List(ul)で描かれ、行の意味(イベント名・seq・actor・target)は保たれる
+    // Table ではなく行(トリガー button)で描かれ、行の意味(イベント名・seq・actor・target)は保たれる
     await expect(list.locator("table").count()).resolves.toBe(0);
-    await expect(list.getByRole("listitem").count()).resolves.toBe(2);
+    await expect(list.getByRole("button", { expanded: false }).count()).resolves.toBe(2);
     await expect(list.getByText("chain.member_added").count()).resolves.toBe(1);
     await expect(list.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
     await expect(list.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
     await expect(list.getByText("seq 1", { exact: true }).count()).resolves.toBe(1);
-    // 1024px 以下ではインスペクタが全画面 Dialog になる(detail-page のモバイル型)
-    await list.getByRole("listitem").filter({ hasText: "chain.genesis" }).click();
-    const dialog = page.getByRole("dialog", { name: "Event details" });
-    await dialog.getByText("Row id", { exact: true }).waitFor();
-    await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "hidden" });
+    // 行を開くと同じ列の直下に全フィールドが出る(Dialog ではない)。single なので
+    // 別の行を開くと先の行は閉じる
+    const genesis = list.getByRole("button", { name: /chain\.genesis/ });
+    const visibleRowIds = list.getByText("Row id", { exact: true }).locator("visible=true");
+    await genesis.click();
+    await visibleRowIds.waitFor();
+    await expect(page.getByRole("dialog").count()).resolves.toBe(0);
+    await list.getByRole("button", { name: /chain\.member_added/ }).click();
+    await expect(genesis.getAttribute("aria-expanded")).resolves.toBe("false");
+    await expect(visibleRowIds.count()).resolves.toBe(1);
     // サイドバーはドロワーへ: トグルで開き、到達点とユーザー id が並ぶ
     await page.getByRole("button", { name: "Open navigation" }).click();
     const drawer = page.getByRole("dialog", { name: "Navigation" });

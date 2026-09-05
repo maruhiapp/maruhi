@@ -12,7 +12,6 @@
 //   CLI `maruhi rotation dismiss` への静的案内のみ
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
-import { Divider } from "@astryxdesign/core/Divider";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -40,6 +39,7 @@ import {
   LoadingRow,
   RoleToken,
   SectionHeader,
+  SECTION_GAP,
 } from "./shared.tsx";
 import type {
   AuditEventsPage,
@@ -146,7 +146,7 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
     sinceSeq: m.sinceSeq,
   }));
   return (
-    <VStack gap={8} data-testid="chain-section">
+    <VStack gap={SECTION_GAP} data-testid="chain-section">
       <ChainSummary snapshot={snapshot} />
       <VStack gap={4}>
         <SectionHeader
@@ -355,9 +355,8 @@ function OverviewTab({ projectId }: { projectId: string }): ReactNode {
   if (state.kind === "loading") return <LoadingRow label="Loading chain" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
-    <VStack gap={8}>
+    <VStack gap={SECTION_GAP}>
       <ChainView snapshot={state.value} />
-      <Divider />
       <EnvironmentsSection projectId={projectId} />
     </VStack>
   );
@@ -601,6 +600,7 @@ function ProjectTabList({
       size="md"
       role="tablist"
       aria-label="Project"
+      hasDivider
     >
       <Tab
         id={PROJECT_TAB_IDS.overview}

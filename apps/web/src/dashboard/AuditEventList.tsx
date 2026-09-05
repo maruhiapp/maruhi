@@ -12,23 +12,21 @@
 //   ステートメント経由)は行わない — 検証を持たない Web での名前解決は
 //   ステートメント検証なしの名前信用になる(AUTH_SPEC §12-2)ため識別子のみ表示
 //
-// DP3 改訂 3(docs/notes/web-design-pass.md §5 裁定 C 改訂): 形は Astryx の
-// `incident-console` テンプレート(「行の待ち行列 + 選択行のインスペクタ」)に従う。
-// 行 = `List` の `ListItem`(label = イベント名、description = 主体と座標、
-// endContent = サーバー時刻)、選択行の全フィールドは 1024px 超では `LayoutPanel`
-// (`MetadataList`)、以下では全画面 `Dialog`(`detail-page` テンプレートのモバイル型)
-// に出す。Table は使わない(行が読める幅を保つ — HP5)。文言・項目・順序は不変
-// (§4 の表示規律 — 「検証済み」を名乗らない・FP は参照値・件数を出さない)。
+// DP3 改訂 5(docs/notes/web-design-pass.md §5 裁定 P): 形は「1 列の行 + その場で展開」。
+// 1 行 = Astryx `Collapsible`(CollapsibleGroup hasDividers — `CollapsibleDividedAccordion`
+// ブロックの形)。トリガー = イベント名・主体・座標・サーバー時刻(+ seq)、展開部 = 全
+// フィールド(MetadataList)+ 記録どおりの payload + var.read の列挙。左右分割(改訂 3 の
+// `incident-console` 形)は広い画面で行と詳細の間が空きすぎ、1024px で形が変わるため撤回。
+// 1 列は幅によらず同じ形で、行の直下に詳細が出る(HP5 — モバイルで監査を読む)。
+// Table は使わない(行が読める幅を保つ)。文言・項目・順序は不変(§4 の表示規律 —
+// 「検証済み」を名乗らない・FP は参照値・件数を出さない)。
 import { Button } from "@astryxdesign/core/Button";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { Divider } from "@astryxdesign/core/Divider";
-import { EmptyState } from "@astryxdesign/core/EmptyState";
-import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { HStack, Layout, LayoutContent, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { Collapsible, CollapsibleGroup } from "@astryxdesign/core/Collapsible";
+import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiFailure, ApiResult } from "./api.ts";
@@ -38,23 +36,14 @@ import {
   payloadWithoutVariables,
   readSummaryLabel,
 } from "./audit-read.ts";
-import {
-  EmptyNotice,
-  FailureNotice,
-  formatServerTime,
-  HexText,
-  INSPECTOR_VIEWPORT_QUERY,
-  LoadingRow,
-} from "./shared.tsx";
+import { EmptyNotice, FailureNotice, formatServerTime, HexText, LoadingRow } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** 1 ページの取得。`before` は前ページ末尾行の row_id(AUDIT_SPEC §7)。 */
 export type AuditPageFetcher = (before: string | undefined) => Promise<ApiResult<AuditEventsPage>>;
 
-// インスペクタの幅(`incident-console` の既定 380。構造幅は生 px でよい — Astryx layout docs)
-const INSPECTOR_WIDTH = 380;
-// MetadataList のラベル列幅(`incident-console` と同じ 96)
-const INSPECTOR_LABEL_WIDTH = 96;
+// 展開部の MetadataList のラベル列幅(`incident-console` のインスペクタと同じ 96)
+const DETAIL_LABEL_WIDTH = 96;
 
 /** ラベル : 値 の断片(値が欠落なら出さない)。 */
 interface Fragment {
@@ -112,62 +101,53 @@ function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// 行(incident-console の IncidentRows の形)
+// 行のトリガー(常に見える要約)
 // ---------------------------------------------------------------------------
 
 /**
- * 1 イベント = 1 行。description は主体 + 座標の要約(全フィールドはインスペクタ)。
- * seq は応答に載っているときだけ先頭に出す(応答適応 — AUDIT_SPEC §7)。
+ * 1 イベントの要約 = Collapsible のトリガー(ボタン)の中身。主体 → 座標 → 時刻 / seq の順。
+ * seq は応答に載っているときだけ出す(応答適応 — AUDIT_SPEC §7)。ボタンの中なので
+ * 対話要素を含めない(Text / HexText のみ)。
  */
-function EventRow({
-  event,
-  isSelected,
-  onSelect,
-}: {
-  event: AuditEvent;
-  isSelected: boolean;
-  onSelect: () => void;
-}): ReactNode {
+function EventSummary({ event }: { event: AuditEvent }): ReactNode {
   const listed = aggregatedReadVariables(event);
   return (
-    <ListItem
-      label={event.event}
-      description={
-        <HStack gap={2} wrap="wrap" align="center">
-          <Text type="supporting" size="sm">
-            by <HexText>{actorHead(event)}</HexText>
-          </Text>
-          <Fragments items={detailFragments(event)} />
-          {listed === null ? null : (
+    <HStack gap={4} align="start" width="100%">
+      <StackItem size="fill">
+        <VStack gap={1}>
+          <Text weight="semibold">{event.event}</Text>
+          <HStack gap={2} wrap="wrap" align="center">
             <Text type="supporting" size="sm">
-              {readSummaryLabel(listed.length)}
+              by <HexText>{actorHead(event)}</HexText>
             </Text>
-          )}
-        </HStack>
-      }
-      endContent={
-        <VStack gap={0} align="end">
-          <Text type="supporting" size="sm" hasTabularNumbers>
-            {formatServerTime(event.serverTs)}
-          </Text>
-          {event.seq === undefined ? null : (
-            <Text type="supporting" size="sm" hasTabularNumbers>
-              seq {event.seq}
-            </Text>
-          )}
+            <Fragments items={detailFragments(event)} />
+            {listed === null ? null : (
+              <Text type="supporting" size="sm">
+                {readSummaryLabel(listed.length)}
+              </Text>
+            )}
+          </HStack>
         </VStack>
-      }
-      onClick={onSelect}
-      isSelected={isSelected}
-    />
+      </StackItem>
+      <VStack gap={0} align="end">
+        <Text type="supporting" size="sm" hasTabularNumbers>
+          {formatServerTime(event.serverTs)}
+        </Text>
+        {event.seq === undefined ? null : (
+          <Text type="supporting" size="sm" hasTabularNumbers>
+            seq {event.seq}
+          </Text>
+        )}
+      </VStack>
+    </HStack>
   );
 }
 
 // ---------------------------------------------------------------------------
-// インスペクタ(incident-console の IncidentInspector の形 — MetadataList)
+// 展開部(全フィールド — MetadataList + 記録どおりの payload)
 // ---------------------------------------------------------------------------
 
-function InspectorItem({ label, value }: { label: string; value: string | undefined }): ReactNode {
+function DetailItem({ label, value }: { label: string; value: string | undefined }): ReactNode {
   if (value === undefined) return null;
   return (
     <MetadataListItem label={label}>
@@ -198,9 +178,7 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   // variableId 昇順・重複なし — キーに使える
   return (
     <VStack gap={2}>
-      <Heading level={4} accessibilityLevel={3}>
-        {readSummaryLabel(listed.length)}
-      </Heading>
+      <Text weight="semibold">{readSummaryLabel(listed.length)}</Text>
       <List density="compact">
         {listed.map((variable) => (
           <ListItem key={variable.variableId} label={listedReadVariableLabel(variable)} />
@@ -218,81 +196,25 @@ function recordedPayload(event: AuditEvent): Readonly<Record<string, unknown>> |
     : payloadWithoutVariables(event.payload);
 }
 
-/** 選択行の全フィールド(記録どおり・ラベルは識別子の種類を示すだけ — §4-3)。 */
-function EventInspector({ event }: { event: AuditEvent }): ReactNode {
+/** 展開部: 記録どおりの全フィールド(ラベルは識別子の種類を示すだけ — §4-3)。 */
+function EventDetails({ event }: { event: AuditEvent }): ReactNode {
   const payload = recordedPayload(event);
   return (
     <VStack gap={4}>
-      <VStack gap={1}>
-        <Text type="supporting" color="secondary" hasTabularNumbers>
-          {formatServerTime(event.serverTs)}
-        </Text>
-        <Heading level={3} accessibilityLevel={2}>
-          {event.event}
-        </Heading>
-      </VStack>
-      <Divider />
-      <MetadataList columns="single" label={{ position: "start", width: INSPECTOR_LABEL_WIDTH }}>
-        <InspectorItem
-          label="Seq"
-          value={event.seq === undefined ? undefined : String(event.seq)}
-        />
-        <InspectorItem label="Actor" value={actorHead(event)} />
+      <MetadataList columns="single" label={{ position: "start", width: DETAIL_LABEL_WIDTH }}>
+        <DetailItem label="Seq" value={event.seq === undefined ? undefined : String(event.seq)} />
+        <DetailItem label="Actor" value={actorHead(event)} />
         {actorFragments(event).map((item) => (
-          <InspectorItem key={item.label} label={item.label} value={item.value} />
+          <DetailItem key={item.label} label={item.label} value={item.value} />
         ))}
         {detailFragments(event).map((item) => (
-          <InspectorItem key={item.label} label={item.label} value={item.value} />
+          <DetailItem key={item.label} label={item.label} value={item.value} />
         ))}
-        <InspectorItem label="Row id" value={event.id} />
+        <DetailItem label="Row id" value={event.id} />
       </MetadataList>
       {payload === null ? null : <RecordedPayload payload={payload} />}
       <ReadsList event={event} />
     </VStack>
-  );
-}
-
-/**
- * 1024px 超: 右のインスペクタ(`incident-console` の end パネルの形。タブパネルの中に
- * 置くため Layout の end スロットでなく HStack + 縦 Divider で並べる)。
- * 以下: 全画面 Dialog(`detail-page` テンプレートのモバイル型)。
- */
-function InspectorSurface({
-  event,
-  hasInspectorPanel,
-  onClose,
-}: {
-  event: AuditEvent | undefined;
-  hasInspectorPanel: boolean;
-  onClose: () => void;
-}): ReactNode {
-  if (hasInspectorPanel) {
-    return (
-      <VStack as="aside" width={INSPECTOR_WIDTH} aria-label="Event details">
-        {event === undefined ? (
-          <EmptyState
-            title="No event selected"
-            description="Select an event to see every recorded field."
-            headingLevel={2}
-            isCompact
-          />
-        ) : (
-          <EventInspector event={event} />
-        )}
-      </VStack>
-    );
-  }
-  return (
-    <Dialog variant="fullscreen" isOpen={event !== undefined} onOpenChange={onClose}>
-      <Layout
-        header={<DialogHeader title="Event details" onOpenChange={onClose} />}
-        content={
-          <LayoutContent padding={4}>
-            {event === undefined ? null : <EventInspector event={event} />}
-          </LayoutContent>
-        }
-      />
-    </Dialog>
   );
 }
 
@@ -332,9 +254,42 @@ function LoadMoreRow({
 }): ReactNode {
   if (isLoading) return <LoadingRow label="Loading events" />;
   if (exhausted) return null;
-  return <Button label="Load more" variant="secondary" onClick={onLoadMore} />;
+  return (
+    <HStack>
+      <Button label="Load more" variant="secondary" onClick={onLoadMore} />
+    </HStack>
+  );
 }
 
+/** CollapsibleGroup(single)の onChange 値 → 開いている行の id(閉じたら undefined)。 */
+function openedId(value: string | string[]): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * 行の一覧(1 列)。開いている行は 1 つ(single)— 展開部を読む間は他の行が動かない。
+ * 展開の状態はこの部品が持ち、ページを継ぎ足しても保たれる。
+ */
+function EventRows({ events }: { events: ReadonlyArray<AuditEvent> }): ReactNode {
+  const [openId, setOpenId] = useState<string | undefined>(undefined);
+  return (
+    <CollapsibleGroup
+      type="single"
+      hasDividers
+      density="balanced"
+      value={openId ?? ""}
+      onChange={(value) => setOpenId(openedId(value))}
+    >
+      {events.map((event) => (
+        <Collapsible key={event.id} value={event.id} trigger={<EventSummary event={event} />}>
+          <EventDetails event={event} />
+        </Collapsible>
+      ))}
+    </CollapsibleGroup>
+  );
+}
+
+/** 初回ページが取れた後の本体: 行 + 追記形の失敗 + Load more。 */
 function LoadedEventsView({
   loaded,
   failure,
@@ -348,47 +303,13 @@ function LoadedEventsView({
   onLoadMore: () => void;
   testId: string;
 }): ReactNode {
-  const hasInspectorPanel = useMediaQuery(INSPECTOR_VIEWPORT_QUERY);
-  const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
-  const selected = loaded.events.find((event) => event.id === selectedId);
-  const rows = (
-    <VStack gap={4} align="start" data-testid={testId}>
-      <List density="balanced" hasDividers>
-        {loaded.events.map((event) => (
-          <EventRow
-            key={event.id}
-            event={event}
-            isSelected={event.id === selectedId}
-            onSelect={() => setSelectedId(event.id)}
-          />
-        ))}
-      </List>
+  return (
+    <VStack gap={4} data-testid={testId}>
+      <EventRows events={loaded.events} />
       {/* 追記形(裁定 B-b): 既に描けた一覧の下に Load more の失敗を足す */}
       {failure !== undefined ? <FailureNotice failure={failure} onRetry={onLoadMore} /> : null}
       <LoadMoreRow isLoading={isLoading} exhausted={loaded.exhausted} onLoadMore={onLoadMore} />
     </VStack>
-  );
-  const inspector = (
-    <InspectorSurface
-      event={selected}
-      hasInspectorPanel={hasInspectorPanel}
-      onClose={() => setSelectedId(undefined)}
-    />
-  );
-  if (!hasInspectorPanel) {
-    return (
-      <>
-        {rows}
-        {inspector}
-      </>
-    );
-  }
-  return (
-    <HStack gap={6} align="stretch">
-      <StackItem size="fill">{rows}</StackItem>
-      <Divider orientation="vertical" />
-      {inspector}
-    </HStack>
   );
 }
 

@@ -8,7 +8,6 @@
 //   (genesis ハッシュ = capability)直入力の補助経路を正式に置く(設計文書 §3 S4
 //   の暫定縮退の昇格)
 import { Button } from "@astryxdesign/core/Button";
-import { Divider } from "@astryxdesign/core/Divider";
 import { Grid } from "@astryxdesign/core/Grid";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
@@ -29,6 +28,7 @@ import {
   navigateTo,
   RoleToken,
   SectionHeader,
+  SECTION_GAP,
 } from "./shared.tsx";
 import type { ProjectList } from "./types.ts";
 
@@ -265,18 +265,14 @@ export function DashboardScreen(): ReactNode {
       intro={
         <Text as="p" type="supporting">
           Projects you are a member of, with your chain-derived role, as reported by the server.
+          Open a project to see its members, environments, audit log, and rotation flags.
         </Text>
       }
     >
-      <VStack gap={8}>
-        <VStack gap={4}>
-          <SectionHeader
-            title="Your projects"
-            description="Open a project to see its members, environments, audit log, and rotation flags."
-          />
-          <ProjectListSection />
-        </VStack>
-        <Divider />
+      {/* ページ見出しが一覧の見出しを兼ねる(1 領域に主見出しは 1 つ — Astryx layout docs)。
+          節見出しを持つのは 2 つ目の節(Open a project by ID)だけ */}
+      <VStack gap={SECTION_GAP}>
+        <ProjectListSection />
         <OpenByIdSection />
       </VStack>
     </DashboardShell>

@@ -7,8 +7,10 @@
 //   SideNav(ヘッダー = ㊙ ロゴ + maruhi、本文 = 到達点、フッター = アカウント〔ユーザー
 //   id → Account audit、Sign out〕)。collapsible。モバイル幅(AppShell の md)では
 //   SideNav が AppShell 生成のドロワーへ移る(スキップリンク・main ランドマークも AppShell)
-// - ページ = `table-page` / `LayoutHeaderWithActions`: Layout(fill)の header スロットに
-//   パンくず + h1 + 説明、content スロットに本文。main の内部スクロール
+// - ページ = `table-page` / `LayoutHeaderWithActions`: Layout(auto)の header スロットに
+//   戻りリンク + h1 + 説明(+ タブ)、content スロットに本文。ページ全体がスクロールする
+//   (header は固定しない — DP3 改訂 5: 見出しと本文を分ける線を引かず余白で分ける。固定
+//   header は線なしでは本文と重なって読めないので固定もやめる)
 // - サインイン = `astryx template login`: Center(ビューポート全高)+ ロゴ + Card(見出し・説明・主ボタン)
 //
 // セッション状態(`GET /auth/me`)はシェルが 1 か所で持つ。401 は全画面で同じサインイン
@@ -38,7 +40,7 @@ import {
 } from "./icons.tsx";
 import { markResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
-import { FailureNotice, LoadingRow, ServerReportedNote } from "./shared.tsx";
+import { FailureNotice, LoadingRow, SECTION_GAP, ServerReportedNote } from "./shared.tsx";
 import type { Me } from "./types.ts";
 
 /** サイドバーの到達点(選択状態 = aria-current="page")。project 画面は Projects 配下。 */
@@ -60,8 +62,12 @@ const SIGN_IN_LOGO_PX = 40;
 
 // 本文の最大幅(全ページ共通の 1 値 — ページごとに変えない)。Astryx の `settings` テンプレートは
 // 1440、`detail-page` は 1000。1200 は 1440px のノート(領域 1180)でちょうど満ち、1920px では中央に
-// 収まる。監査のインスペクタ(380)を並べても行に 800 弱が残る
+// 収まる
 const CONTENT_WIDTH = 1200;
+
+// 区切りの規律(DP3 改訂 5 — 裁定 O): 見出し・節・本文の境界は線でなく余白(SECTION_GAP)で
+// 示す。線は集合の内側(表の行・監査行の hairline)と、タブ行(TabList hasDivider — タブの
+// 下線が header と本文の唯一の境界を兼ねる)だけ
 
 /** 開いているプロジェクト(サイドバーの Projects の子項目として現在地を示す)。 */
 interface CurrentProject {
@@ -215,7 +221,7 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
 
 /**
  * ページ見出し(`detail-page` テンプレートの PageHeader の形): 戻りリンク → h1 → 説明 →
- * タブ。タブは header スロットに置くことで、本文が内部スクロールしても見え続ける。
+ * タブ。タブ(TabList hasDivider)の下線が header と本文の境界を兼ねる(裁定 O)。
  */
 function PageHeader({
   backLink,
@@ -308,17 +314,18 @@ function SignedInFrame({
       }
     >
       <Layout
-        height="fill"
+        height="auto"
         contentWidth={CONTENT_WIDTH}
         padding={6}
         header={
-          <LayoutHeader hasDivider>
+          <LayoutHeader>
             <PageHeader backLink={backLink} title={title} intro={intro} tabs={tabs} />
           </LayoutHeader>
         }
         content={
           <LayoutContent>
-            <VStack gap={8}>
+            {/* header との間は線でなく余白(裁定 O): header 自身の下余白 16px + 24px = 40px */}
+            <VStack gap={SECTION_GAP} paddingBlockStart={6}>
               {children}
               <ServerReportedNote />
             </VStack>

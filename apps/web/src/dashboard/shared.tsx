@@ -182,8 +182,14 @@ export function FailureNotice({
 }
 
 /**
+ * 節間の間隔(DP3 改訂 5 — 裁定 O)。節の境界は線でなく余白で示すので、節内(4)との
+ * 対比がつく 10(40px)を全画面で共有する。
+ */
+export const SECTION_GAP = 10;
+
+/**
  * 節の見出しブロック(Astryx `settings` テンプレートの形: 見出し + 1 行の説明)。
- * 見た目は level 3、文書構造はページ h1 直下の h2(accessibilityLevel)。
+ * ページ h1 直下の h2。節の始まりを線でなく見出しの重さで示す(裁定 O)ので level 2 の見た目。
  */
 export function SectionHeader({
   title,
@@ -194,9 +200,7 @@ export function SectionHeader({
 }): ReactNode {
   return (
     <VStack gap={1}>
-      <Heading level={3} accessibilityLevel={2}>
-        {title}
-      </Heading>
+      <Heading level={2}>{title}</Heading>
       {description === undefined ? null : (
         <Text type="supporting" color="secondary">
           {description}
@@ -271,13 +275,6 @@ export function HexText({
     </Text>
   );
 }
-
-/**
- * インスペクタ(選択行の詳細パネル)を横に並べられる幅(DP3 裁定 C 改訂)。Astryx の
- * `incident-console` / `detail-page` テンプレートと同じ 1024px 境界。以下では全画面 Dialog。
- * 他の表は Astryx の Table 自身が横スクロール枠(role="group" の scroll wrapper)を持つのでそのまま。
- */
-export const INSPECTOR_VIEWPORT_QUERY = "(min-width: 1025px)";
 
 /**
  * 期限の表示(裁定 CQ — docs/notes/session-45.md)。表示の主体は常にサーバー

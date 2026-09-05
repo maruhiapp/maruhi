@@ -577,6 +577,39 @@ Actions 列に縦積みになり行の高さも変わっていた → Astryx の
 (56 → 40)。(d) 検証: e2e 26 件(失効の指し方を alertdialog に追随・in-flight のロックはモーダル + 行の
 isDisabled で検査)、axe 24 態で違反 0。
 
+**改訂 5(2026-09-05、所有者レビュー 5 回目 — 区切り線が多い・タブと header 線の組み合わせ・監査の左右分割)**:
+所有者の 2 点: (1) header と本文を分ける線・本文内の線・表の枠線が重なって「どこからどのコンテンツか」が読めず、
+タブの下線と header の線の組み合わせも据わりが悪い。線でなく余白で分ける案の提示あり。(2) 監査(project 軸 /
+本人軸)の左右分割は、幅 1200 の領域で行と詳細の間が空きすぎて広い画面で変に見える。
+
+**O. 区切りの規律(線か余白か)** — 列挙: (i) 現状(header の全幅 divider + タブの下線 + 節の間の Divider + 表の
+行線 + 監査の縦 Divider)/ (ii) **余白だけ**(所有者案): header の divider と節間の Divider を消し、節間を
+gap 10(40px)に広げ、線は表の行だけ / (iii) **タブ行を唯一の境界に**: (ii) に加え、タブがある画面では
+`TabList hasDivider`(タブの下線と同じ線)が header と本文の境界を兼ねる。タブの無い画面は余白のみ /
+(iv) header を固定したまま divider を消す / (v) 節を `Section`(dividers)や Card で囲う(線が増える — 棄却)。
+→ **(ii) + (iii) を採用**。Astryx layout docs の容器の弱い順(gap → Divider → Section → Card)に従い、
+「境界を線で引かず余白の対比(節内 4 / 節間 10)で読ませ、線は集合の内側(表の行・監査行の hairline)と
+タブ行だけ」に固定する。(iv) は線なしの固定 header が本文と重なって読めないため採らず、**Layout を
+`height="auto"` にしてページ全体をスクロール**させる(GitHub のリポジトリページと同じ形。ページが短く、
+サイドバーは AppShell が固定する)。header の下余白 16px + 本文の `paddingBlockStart` 24px = 40px で節間と
+同じ対比。節見出し(`SectionHeader`)は線の代わりに見出しの重さで節の始まりを示すので level 3 → **level 2**。
+Projects 画面は h1 が一覧の見出しを兼ねる(1 領域に主見出しは 1 つ — layout docs)ため「Your projects」の
+節見出しを外し、説明を intro に統合。表の `dividers="rows"` は据え置き(行の区切りは集合の内側)。
+
+**P. 監査の形(左右分割の撤回)** — 列挙: (i) 現状の行 + 右インスペクタ(`incident-console`)で行の幅の
+バグ(`align="start"` で List が縮む)だけ直す / (ii) 1 列 + 詳細は全幅で Dialog(現状のモバイル型を全幅に)/
+(iii) **1 列 + 行をその場で展開**(`Collapsible` × `CollapsibleGroup hasDividers` — `CollapsibleDividedAccordion`
+ブロックの形。トリガー = 要約、展開部 = MetadataList + payload + var.read の列挙)/ (iv) Table + 展開行
+(モバイルで 5 列が横スクロール — HP5 に反する)/ (v) 左右分割のまま行の幅を 560 に固定(分割は残る)。
+→ **(iii) を採用**。幅によらず同じ 1 列で、詳細は読んでいる行の直下に出る(視線が横へ飛ばない・1024px の
+形の切替と縦 Divider が消える・モバイルと同じ操作)。single(1 行だけ開く)で展開部を読む間に他の行が
+動かない。閉じた展開部は DOM に残る(hidden)ため e2e は可視要素だけを数える。行の並びは改訂 4 の
+「主体 → 対象 → 時刻 / seq(右端)」のまま、チェブロンが行末に付く。`INSPECTOR_VIEWPORT_QUERY` と
+`Dialog` / `EmptyState` / 縦 `Divider` は不要になり削除。項目・文言・seq の応答適応・件数非表示は不変。
+
+検証: e2e 26 件(監査の指し方を「行 = button〔aria-expanded〕+ 可視の Row id」に追随、モバイル型の
+Dialog 検査を「同じ列で展開・single で先の行が閉じる」検査に置換)、axe 24 態で違反 0。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
