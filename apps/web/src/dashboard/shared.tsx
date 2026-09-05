@@ -4,17 +4,35 @@
 // ユーザー可視文言はすべて英語(ADR-0017)。表示規律(設計文書 §4):
 // サーバー申告の言い回しに限り、クライアント側の断定(expired / revoked /
 // not a member 等)を含めない。
+//
+// 空状態 / ローディング / エラーの規律(DP3 裁定 B — docs/notes/web-design-pass.md §5):
+// 各リソースの 3 状態は次の 3 部品だけで描く。画面側で Text / Banner を直接組まない。
+//   - ローディング = `LoadingRow`(スピナー + 何を読んでいるかの 1 行。role="status")
+//   - 空 = `EmptyNotice`(見出し + 「as reported by the server」の説明。件数は出さない)
+//   - 失敗 = `FailureNotice`(HTTP 分類ごとの Banner。置き方は 2 種のみ)
+//       (a) 置換: リソース本体の代わりに描く。再取得手段があれば onRetry を渡す
+//       (b) 追記: 既に描けた本体の下に足す(Load more の失敗・失効の失敗)。
+//           行から再操作できる失敗(失効)は onRetry を渡さない
+//     13 か所の呼び出しは AuditEventList(2)/ TokensScreen(2)/ DashboardScreen(2)/
+//     InvitesTab(2)/ ProjectScreen(4)/ DashboardShell(1 — 旧 DashboardScreen のセッション
+//     失敗表示を移したもの)= 置換 9 / 追記 4
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { HStack } from "@astryxdesign/core/Layout";
+import { Card } from "@astryxdesign/core/Card";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { Text } from "@astryxdesign/core/Text";
+import { Heading, Text } from "@astryxdesign/core/Text";
+import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
+import * as stylex from "@stylexjs/stylex";
 import type { ReactNode } from "react";
 
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
+import { useReportSessionExpired } from "./session-expiry.ts";
 import type { ChainRole, ForbiddenReason } from "./types.ts";
 
 /**
@@ -31,10 +49,53 @@ export function navigateTo(path: string): void {
   }
 }
 
-/** サーバー時刻(ms)の表示形。UTC 明示の ISO 形式(ローカル換算の演出をしない)。 */
+/**
+ * サーバー時刻(ms)の記録値としての表示形。UTC 明示の ISO 形式。人が読む一覧では
+ * `ServerTime` を使い、これは監査の展開部(Recorded at — 記録どおりの値)専用。
+ */
 export function formatServerTime(ms: number): string {
   const date = new Date(ms);
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(ms);
+}
+
+// hover card の行: UTC の絶対時刻と Unix 秒(どちらもコピー可)。表示は閲覧者の時間帯 + 略称
+const SERVER_TIME_TOOLTIP = [
+  { timezoneID: "UTC", label: "UTC", isCopyable: true },
+  { format: "unix_seconds", label: "Unix", isCopyable: true },
+] as const;
+
+/**
+ * サーバー時刻(ms)の人が読む表示(DP3 改訂 6 — 裁定 Q): Astryx `Timestamp`(date_time +
+ * 時間帯の略称)。値はサーバー申告の serverTs / expiresAtMs そのもので、換算は閲覧者の
+ * 時間帯での描画だけ。hover card に UTC と Unix 秒(コピー可)。`hasTooltip={false}` は
+ * ボタンの中(監査行のトリガー)で使う — 入れ子の対話要素を作らない。
+ * 範囲外の ms(Date が Invalid — deepsec 2026-08-22)は生の数値を出す。
+ */
+export function ServerTime({
+  ms,
+  hasTooltip = true,
+}: {
+  ms: number;
+  hasTooltip?: boolean;
+}): ReactNode {
+  const date = new Date(ms);
+  if (!Number.isFinite(date.getTime())) {
+    return (
+      <Text type="supporting" size="sm" hasTabularNumbers>
+        {String(ms)}
+      </Text>
+    );
+  }
+  return (
+    <Timestamp
+      value={date.toISOString()}
+      format="date_time"
+      isTimezoneShown
+      hasTooltip={hasTooltip}
+      tooltipEntries={SERVER_TIME_TOOLTIP}
+      size="sm"
+    />
+  );
 }
 
 const ROLE_TOKEN_COLOR: Record<ChainRole, "purple" | "blue" | "green" | "gray"> = {
@@ -151,7 +212,11 @@ function StatusNotice({
   return <UnreachableNotice onRetry={onRetry} />;
 }
 
-/** 401 以外の失敗の画面内表示(401 は各画面がログインカードへ差し替える)。 */
+/**
+ * 失敗の画面内表示。401 はシェルへ「セッション失効」を通知し(session-expiry.ts)、
+ * シェルがその場でサインイン画面に切り替える — 通知が届くまでの 1 描画(またはシェルの
+ * 外)は「Signed out」の Banner が出る。
+ */
 export function FailureNotice({
   failure,
   onRetry,
@@ -161,18 +226,169 @@ export function FailureNotice({
   onRetry?: () => void;
   subject?: FailureSubject;
 }): ReactNode {
+  useReportSessionExpired(failure.kind === "unauthorized");
   if (failure.kind === "forbidden") return <ForbiddenNotice reason={failure.reason} />;
   if (failure.kind === "gone") return <GoneNotice reason={failure.reason} subject={subject} />;
   return <StatusNotice failure={failure} onRetry={onRetry} subject={subject} />;
 }
 
-/** ローディング表示(行の置き換え用)。 */
+/**
+ * 節間の間隔(DP3 改訂 5 — 裁定 O)。節の境界は線でなく余白で示すので、節内(4)との
+ * 対比がつく 10(40px)を全画面で共有する。
+ */
+export const SECTION_GAP = 10;
+
+/**
+ * 節の見出しブロック(Astryx `settings` テンプレートの形: 見出し + 1 行の説明)。
+ * ページ h1 直下の h2。節の始まりを線でなく見出しの重さで示す(裁定 O)ので level 2 の見た目。
+ */
+export function SectionHeader({
+  title,
+  description,
+}: {
+  title: string;
+  description?: string | undefined;
+}): ReactNode {
+  return (
+    <VStack gap={1}>
+      <Heading level={2}>{title}</Heading>
+      {description === undefined ? null : (
+        <Text type="supporting" color="secondary">
+          {description}
+        </Text>
+      )}
+    </VStack>
+  );
+}
+
+/**
+ * 集合の容器(DP3 改訂 9 → 10 — 裁定 S 改訂): 見出し + 説明はページの content line に置き、
+ * 行の集合だけを `Card`(border 付きの固定幅の箱)に入れる。文字の開始位置がページで 1 本に
+ * 揃い(h1・説明・概要の MetadataList・節見出しが同じ線に乗る)、右にずれるのは枠線のある箱の
+ * 中身だけになる(改訂 10 — 所有者裁定)。Astryx の docs は「ページの節に Card を使わない」
+ * (Section を使う)とするが、maruhi のテーマでは Section の面が本文と同じで節が見えない。
+ * この形では Card が包むのは節でなく集合(表・監査行)なので、Card docs の「自己完結した
+ * 部品の硬い境界」に近い。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので、
+ * 行の線は border の内側で止まる。`title` を省くと箱だけ(ページ h1 が見出しを兼ねる一覧)。
+ */
+export function SectionBlock({
+  title,
+  description,
+  children,
+  testId,
+}: {
+  title?: string | undefined;
+  description?: string | undefined;
+  children: ReactNode;
+  testId?: string | undefined;
+}): ReactNode {
+  const box = (
+    <Card padding={4} data-testid={title === undefined ? testId : undefined}>
+      <VStack gap={4}>{children}</VStack>
+    </Card>
+  );
+  if (title === undefined) return box;
+  return (
+    <VStack gap={4} data-testid={testId}>
+      <SectionHeader title={title} description={description} />
+      {box}
+    </VStack>
+  );
+}
+
+/**
+ * ローディング表示(リソース本体の置き換え用)。Astryx `Spinner` の `label` スロット
+ * (文字列は aria-label も兼ねる — 見える文言と読み上げが同じ 1 点。裁定 B / 改訂 7)。
+ */
 export function LoadingRow({ label }: { label: string }): ReactNode {
   return (
-    <HStack gap={2} align="center">
-      <Spinner size="sm" aria-label={label} />
-      <Text type="supporting">{label}</Text>
+    <HStack>
+      <Spinner size="sm" label={label} />
     </HStack>
+  );
+}
+
+/**
+ * 注記のブロック(Astryx `CardCallout` ブロックの形: muted の Card + 見出し + 本文)。
+ * CLI への静的案内(発行・失効・dismiss)に使う。`headingLevel` は置かれる場所の
+ * 文書構造に合わせる(見た目は level 4)。改訂 7 で 3 画面の同形を 1 定義に寄せた。
+ */
+export function Callout({
+  title,
+  headingLevel,
+  children,
+  testId,
+}: {
+  title: string;
+  headingLevel: 2 | 3;
+  children: ReactNode;
+  testId?: string;
+}): ReactNode {
+  return (
+    <Card variant="muted" data-testid={testId}>
+      <VStack gap={2}>
+        <Heading level={4} accessibilityLevel={headingLevel}>
+          {title}
+        </Heading>
+        <Text type="body" color="secondary">
+          {children}
+        </Text>
+      </VStack>
+    </Card>
+  );
+}
+
+/**
+ * 空状態(裁定 B)。説明は既定で「as reported by the server」を含む規定文言 —
+ * 件数・不可視クラスの存在を示唆しない(設計文書 §4-4)。`headingLevel` は
+ * 置かれる場所の見出し階層に合わせる(ページ h1 → 節 h2 → 空状態 h3 が既定。見出しの無い
+ * 箱〔一覧・監査・rotation — ページ h1 の直下〕では h2 を渡し、h1 → h3 の飛びを作らない)。
+ */
+export function EmptyNotice({
+  title,
+  description = "Nothing to show, as reported by the server.",
+  headingLevel = 3,
+  testId,
+}: {
+  title: string;
+  description?: string;
+  headingLevel?: 2 | 3 | 4;
+  testId?: string;
+}): ReactNode {
+  return (
+    <VStack data-testid={testId}>
+      <EmptyState title={title} description={description} headingLevel={headingLevel} isCompact />
+    </VStack>
+  );
+}
+
+// 識別子(64 hex の project ID / チェーンハッシュ / 鍵 FP / row_id)の表示。空白を
+// 含まない長い文字列は Text の wordBreak だけでは折れない(inline 要素の幅が親の
+// flex 項目の min-content を押し広げる)ため、xstyle で anywhere 折りを明示する。
+// DP3 で同じ上書きが繰り返し必要になったので本モジュールに 1 定義だけ置き、
+// 画面側は HexText を使う(variant / ui.package への昇格は人間の判断 — 裁定 H)
+const hexStyles = stylex.create({
+  breakable: {
+    overflowWrap: "anywhere",
+    wordBreak: "break-all",
+    minWidth: 0,
+  },
+});
+
+/** 識別子の表示(等幅・任意位置で折り返し)。`size` は周囲の密度に合わせる。 */
+export function HexText({
+  children,
+  size = "sm",
+  testId,
+}: {
+  children: string;
+  size?: "sm" | "xsm" | "2xs";
+  testId?: string;
+}): ReactNode {
+  return (
+    <Text type="code" size={size} xstyle={hexStyles.breakable} data-testid={testId}>
+      {children}
+    </Text>
   );
 }
 
@@ -187,53 +403,68 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
   const expired = expiresAtMs === null || expiresAtMs <= Date.now();
   return (
     <HStack gap={2} align="center" wrap="wrap">
-      <Text type="supporting" size="sm" hasTabularNumbers>
-        {expiresAtMs === null ? "no expiry recorded" : formatServerTime(expiresAtMs)}
-      </Text>
+      {expiresAtMs === null ? (
+        <Text type="supporting" size="sm">
+          no expiry recorded
+        </Text>
+      ) : (
+        <ServerTime ms={expiresAtMs} />
+      )}
       {expired ? <Token label="Expired" size="sm" color="red" /> : null}
     </HStack>
   );
 }
 
 /**
- * インライン 2 段階の失効ボタン(裁定 CO — docs/notes/session-45.md)。
- * 武装(armed)状態は親が行単位で管理する(常に 1 行のみ — 別行の武装・
- * Cancel で解除)。確認は destructive バリアント、実行中は isLoading。
- * 失効の帰結の注記は各画面がテーブル下へ常時表示する(武装時だけ出す形より
- * 先に読める)。
+ * 失効の入口(行ごとの ghost ボタン)。確認は `RevokeDialog`(AlertDialog)で行う —
+ * DP3 改訂 4 で裁定 CO のインライン 2 段階(Cancel / Confirm revoke を行内に出す)から
+ * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
+ * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
+ * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
+ * `isLocked` = 別の行の失効が実行中(PR #109 Bugbot 指摘 — in-flight 中は他行を無効化)。
  */
-export function RevokeControl({
-  armed,
-  isPending,
-  isLocked,
+export function RevokeButton({
   onArm,
+  isLocked,
+}: {
+  onArm: () => void;
+  isLocked: boolean;
+}): ReactNode {
+  return <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />;
+}
+
+/**
+ * 失効の確認ダイアログ(テーブルごとに 1 つ。`armedId` が立っている間だけ開く)。
+ * `title` / `description` は対象の名詞と帰結を画面側が与える(裁定 CO の「帰結の注記」を
+ * 確認の場で読ませる)。実行中は action ボタンが isActionLoading、Cancel は閉じるだけ。
+ */
+export function RevokeDialog({
+  isOpen,
+  title,
+  description,
+  isPending,
   onCancel,
   onConfirm,
 }: {
-  armed: boolean;
+  isOpen: boolean;
+  title: string;
+  description: string;
   isPending: boolean;
-  /** 別の行の失効が実行中(PR #109 Bugbot 指摘 — in-flight 中は他行を無効化)。 */
-  isLocked: boolean;
-  onArm: () => void;
   onCancel: () => void;
   onConfirm: () => void;
 }): ReactNode {
-  if (!armed) {
-    return (
-      <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />
-    );
-  }
   return (
-    <HStack gap={2} align="center" wrap="wrap">
-      <Button label="Cancel" variant="ghost" size="sm" onClick={onCancel} isDisabled={isPending} />
-      <Button
-        label="Confirm revoke"
-        variant="destructive"
-        size="sm"
-        onClick={onConfirm}
-        isLoading={isPending}
-      />
-    </HStack>
+    <AlertDialog
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isPending) onCancel();
+      }}
+      title={title}
+      description={description}
+      actionLabel="Revoke"
+      isActionLoading={isPending}
+      onAction={onConfirm}
+    />
   );
 }
 

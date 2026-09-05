@@ -10,22 +10,26 @@
 //   fail-closed で期限切れ扱い)は Expired のサーバー申告表示(裁定 CQ)
 // - 失効はインライン 2 段階確認(裁定 CO)。自トークンの失効は稼働中の
 //   CLI / CI を即 401 にするため、帰結の注記をテーブル下へ常時表示する
-import { Card } from "@astryxdesign/core/Card";
-import { Layout, LayoutContent, VStack } from "@astryxdesign/core/Layout";
-import { Link } from "@astryxdesign/core/Link";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode } from "react";
 
+import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
-import { spaPaths } from "./routes.ts";
+import { shortId } from "./ids.ts";
 import {
+  Callout,
+  EmptyNotice,
   ExpiryCell,
   FailureNotice,
-  formatServerTime,
+  ServerTime,
+  HexText,
   LoadingRow,
-  RevokeControl,
-  ServerReportedNote,
+  RevokeButton,
+  RevokeDialog,
+  SectionBlock,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
@@ -35,14 +39,31 @@ interface TokenRow extends Record<string, unknown> {
   id: string;
   name: string;
   tokenPrefix: string;
-  scopes: string;
+  token: TokenSummary;
   lastUsedAtMs: number | null;
   expiresAtMs: number | null;
 }
 
-/** スコープの表示形(`project:permission` — `*` は全プロジェクト)。 */
-function scopeLabel(token: TokenSummary): string {
-  return token.scopes.map((scope) => `${scope.project}:${scope.permission}`).join(" ");
+/**
+ * スコープの表示(`project:permission` — `*` は全プロジェクト)。project は 64 hex なので
+ * chip には短縮形を出し、全文は aria-description に載せる。
+ */
+function ScopeChips({ token }: { token: TokenSummary }): ReactNode {
+  return (
+    <HStack gap={1} wrap="wrap">
+      {token.scopes.map((scope) => {
+        const project = scope.project === "*" ? "*" : shortId(scope.project);
+        return (
+          <Token
+            key={`${scope.project}:${scope.permission}`}
+            label={`${project}:${scope.permission}`}
+            size="sm"
+            description={`${scope.project}:${scope.permission}`}
+          />
+        );
+      })}
+    </HStack>
+  );
 }
 
 function toTokenRow(token: TokenSummary): TokenRow {
@@ -50,7 +71,7 @@ function toTokenRow(token: TokenSummary): TokenRow {
     id: token.id,
     name: token.name,
     tokenPrefix: token.tokenPrefix,
-    scopes: scopeLabel(token),
+    token,
     lastUsedAtMs: token.lastUsedAtMs,
     expiresAtMs: token.expiresAtMs,
   };
@@ -59,7 +80,6 @@ function toTokenRow(token: TokenSummary): TokenRow {
 function buildTokenColumns(
   revocation: RevocationState,
   onArm: (id: string | undefined) => void,
-  onConfirm: (id: string) => void,
 ): TableColumn<TokenRow>[] {
   return [
     {
@@ -76,51 +96,39 @@ function buildTokenColumns(
       key: "tokenPrefix",
       header: "Prefix",
       width: pixel(130),
-      renderCell: (row: TokenRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.tokenPrefix}
-        </Text>
-      ),
+      renderCell: (row: TokenRow) => <HexText>{row.tokenPrefix}</HexText>,
     },
     {
       key: "scopes",
       header: "Scopes",
       width: proportional(1),
-      renderCell: (row: TokenRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.scopes}
-        </Text>
-      ),
+      renderCell: (row: TokenRow) => <ScopeChips token={row.token} />,
     },
     {
       key: "lastUsedAtMs",
-      header: "Last used (UTC)",
-      width: pixel(190),
-      renderCell: (row: TokenRow) => (
-        <Text type="supporting" size="sm" hasTabularNumbers>
-          {row.lastUsedAtMs === null ? "never" : formatServerTime(row.lastUsedAtMs)}
-        </Text>
-      ),
+      header: "Last used",
+      width: pixel(220),
+      renderCell: (row: TokenRow) =>
+        row.lastUsedAtMs === null ? (
+          <Text type="supporting" size="sm">
+            never
+          </Text>
+        ) : (
+          <ServerTime ms={row.lastUsedAtMs} />
+        ),
     },
     {
       key: "expiresAtMs",
-      header: "Expires (UTC)",
-      width: pixel(230),
+      header: "Expires",
+      width: pixel(260),
       renderCell: (row: TokenRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       width: pixel(200),
       renderCell: (row: TokenRow) => (
-        <RevokeControl
-          armed={revocation.armedId === row.id}
-          isPending={revocation.pendingId === row.id}
-          isLocked={revocation.pendingId !== undefined && revocation.pendingId !== row.id}
-          onArm={() => onArm(row.id)}
-          onCancel={() => onArm(undefined)}
-          onConfirm={() => onConfirm(row.id)}
-        />
+        <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
       ),
     },
   ];
@@ -129,12 +137,12 @@ function buildTokenColumns(
 /** 発行の静的案内(発行 UI は置かない)+ 失効の帰結の注記(裁定 CO)。 */
 function TokenNotes(): ReactNode {
   return (
-    <Text type="supporting" data-testid="token-notes">
+    <Callout title="Issuing and revoking" headingLevel={2} testId="token-notes">
       Issuing tokens is not available in the dashboard — a token is issued when you sign in from the
       CLI: <Text type="code">maruhi login</Text> (raw token values never appear here). Revoking a
       token immediately signs out any CLI or CI job still using it; sign in again from the CLI to
       issue a replacement.
-    </Text>
+    </Callout>
   );
 }
 
@@ -142,26 +150,29 @@ function TokensTable({
   tokens,
   revocation,
   onArm,
-  onConfirm,
 }: {
   tokens: ReadonlyArray<TokenSummary>;
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
-  onConfirm: (id: string) => void;
 }): ReactNode {
   if (tokens.length === 0) {
     return (
-      <Text type="supporting" data-testid="token-empty">
-        No API tokens, as reported by the server.
-      </Text>
+      <EmptyNotice
+        title="No API tokens"
+        description="Tokens issued to you appear here, as reported by the server."
+        // 一覧の箱は見出し無し(ページ h1 が兼ねる)なので h2
+        headingLevel={2}
+        testId="token-empty"
+      />
     );
   }
   return (
     <Table
       data={tokens.map(toTokenRow)}
-      columns={buildTokenColumns(revocation, onArm, onConfirm)}
+      columns={buildTokenColumns(revocation, onArm)}
       idKey="id"
-      density="compact"
+      density="balanced"
+      hasHover
       dividers="rows"
       data-testid="token-table"
     />
@@ -171,28 +182,26 @@ function TokensTable({
 function TokensResource({
   revocation,
   onArm,
-  onConfirm,
   reload,
   state,
 }: {
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
-  onConfirm: (id: string) => void;
   reload: () => void;
   state: ResourceState<TokenList>;
 }): ReactNode {
+  // 置換形(裁定 B-a)
   if (state.kind === "loading") return <LoadingRow label="Loading tokens" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
   }
-  return (
-    <TokensTable
-      tokens={state.value.tokens}
-      revocation={revocation}
-      onArm={onArm}
-      onConfirm={onConfirm}
-    />
-  );
+  return <TokensTable tokens={state.value.tokens} revocation={revocation} onArm={onArm} />;
+}
+
+/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
+function armedName(state: ResourceState<TokenList>, armedId: string | undefined): string {
+  const token = state.kind === "ok" ? state.value.tokens.find((t) => t.id === armedId) : undefined;
+  return token === undefined ? "this token" : `token "${token.name}"`;
 }
 
 export function TokensScreen(): ReactNode {
@@ -200,38 +209,36 @@ export function TokensScreen(): ReactNode {
   // 失効状態は一覧リソースの外に持つ(use-revocation.ts のヘッダーコメント)
   const { revocation, arm, confirm } = useRevocation(apiPaths.tokenRevoke, reload);
   return (
-    <Layout
-      contentWidth={960}
-      padding={6}
-      content={
-        <LayoutContent>
-          <VStack gap={5}>
-            <VStack gap={2}>
-              <Link href={spaPaths.dashboard()}>← Dashboard</Link>
-              <Heading level={1}>API tokens</Heading>
-              <Text type="supporting">
-                Your own API tokens (CLI and CI credentials), as reported by the server.
-              </Text>
-            </VStack>
-            <Card padding={5}>
-              <VStack gap={4} data-testid="token-list">
-                <TokensResource
-                  revocation={revocation}
-                  onArm={arm}
-                  onConfirm={confirm}
-                  reload={reload}
-                  state={state}
-                />
-                {revocation.failure !== undefined ? (
-                  <FailureNotice failure={revocation.failure} subject="token" />
-                ) : null}
-                <TokenNotes />
-                <ServerReportedNote />
-              </VStack>
-            </Card>
-          </VStack>
-        </LayoutContent>
+    <DashboardShell
+      destination="tokens"
+      title="API tokens"
+      intro={
+        <Text as="p" type="supporting">
+          Your own API tokens (CLI and CI credentials), as reported by the server.
+        </Text>
       }
-    />
+    >
+      <VStack gap={4} data-testid="token-list">
+        <SectionBlock>
+          <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+        </SectionBlock>
+        {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
+        <RevokeDialog
+          isOpen={revocation.armedId !== undefined}
+          title={`Revoke ${armedName(state, revocation.armedId)}?`}
+          description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
+          isPending={revocation.pendingId !== undefined}
+          onCancel={() => arm(undefined)}
+          onConfirm={() => {
+            if (revocation.armedId !== undefined) confirm(revocation.armedId);
+          }}
+        />
+        {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
+        {revocation.failure !== undefined ? (
+          <FailureNotice failure={revocation.failure} subject="token" />
+        ) : null}
+        <TokenNotes />
+      </VStack>
+    </DashboardShell>
   );
 }

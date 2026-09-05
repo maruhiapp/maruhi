@@ -11,6 +11,7 @@
     "doctor:astryx": "astryx doctor",
     "e2e": "vitest run",
     "preview": "wrangler dev --config ../server/wrangler.jsonc --port 8788",
+    "screenshots": "bun run test/screenshots.ts",
     "theme:build": "astryx theme build theme/maruhi.ts -o theme/maruhi.css",
     "typecheck": "tsc --noEmit"
   },

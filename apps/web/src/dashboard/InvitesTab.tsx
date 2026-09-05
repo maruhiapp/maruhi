@@ -12,12 +12,23 @@
 //   期限切れ pending の掃除も可 — の写し)
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
 import { apiPaths } from "./endpoints.ts";
-import { ExpiryCell, FailureNotice, LoadingRow, RevokeControl, RoleToken } from "./shared.tsx";
+import {
+  Callout,
+  EmptyNotice,
+  ExpiryCell,
+  FailureNotice,
+  HexText,
+  LoadingRow,
+  RevokeButton,
+  RevokeDialog,
+  RoleToken,
+  SectionBlock,
+} from "./shared.tsx";
 import type { InvitationList, InvitationSummary, InviteStatus } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
 import { type RevocationState, useRevocation } from "./use-revocation.ts";
@@ -78,7 +89,6 @@ function isRevocable(row: InviteRow): boolean {
 function buildInviteColumns(
   revocation: RevocationState,
   onArm: (id: string | undefined) => void,
-  onConfirm: (id: string) => void,
 ): TableColumn<InviteRow>[] {
   return [
     {
@@ -97,43 +107,28 @@ function buildInviteColumns(
       key: "inviterUserId",
       header: "Invited by",
       width: proportional(1),
-      renderCell: (row: InviteRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.inviterUserId}
-        </Text>
-      ),
+      renderCell: (row: InviteRow) => <HexText>{row.inviterUserId}</HexText>,
     },
     {
       key: "inviteeUserId",
       header: "Accepted by",
       width: proportional(1),
       renderCell: (row: InviteRow) =>
-        row.inviteeUserId === undefined ? null : (
-          <Text type="code" size="sm" wordBreak="break-all">
-            {row.inviteeUserId}
-          </Text>
-        ),
+        row.inviteeUserId === undefined ? null : <HexText>{row.inviteeUserId}</HexText>,
     },
     {
       key: "expiresAtMs",
-      header: "Expires (UTC)",
-      width: pixel(230),
+      header: "Expires",
+      width: pixel(260),
       renderCell: (row: InviteRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       width: pixel(200),
       renderCell: (row: InviteRow) =>
         isRevocable(row) ? (
-          <RevokeControl
-            armed={revocation.armedId === row.id}
-            isPending={revocation.pendingId === row.id}
-            isLocked={revocation.pendingId !== undefined && revocation.pendingId !== row.id}
-            onArm={() => onArm(row.id)}
-            onCancel={() => onArm(undefined)}
-            onConfirm={() => onConfirm(row.id)}
-          />
+          <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
         ) : null,
     },
   ];
@@ -142,11 +137,11 @@ function buildInviteColumns(
 /** 発行の静的案内(発行 UI は置かない — ADR-0018 改訂 2)+ 失効の帰結の注記。 */
 function InviteNotes(): ReactNode {
   return (
-    <Text type="supporting" data-testid="invite-notes">
+    <Callout title="Issuing and revoking" headingLevel={3} testId="invite-notes">
       Issuing invitations is not available in the dashboard — issue one from the CLI:{" "}
       <Text type="code">maruhi invite create</Text> (admin). Revoking makes the invitation link
       unusable immediately; issue a new invitation to replace it.
-    </Text>
+    </Callout>
   );
 }
 
@@ -154,26 +149,27 @@ function InvitesTable({
   invitations,
   revocation,
   onArm,
-  onConfirm,
 }: {
   invitations: ReadonlyArray<InvitationSummary>;
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
-  onConfirm: (id: string) => void;
 }): ReactNode {
   if (invitations.length === 0) {
     return (
-      <Text type="supporting" data-testid="invite-empty">
-        No invitations, as reported by the server.
-      </Text>
+      <EmptyNotice
+        title="No invitations"
+        description="Invitations issued for this project appear here, as reported by the server."
+        testId="invite-empty"
+      />
     );
   }
   return (
     <Table
       data={invitations.map(toInviteRow)}
-      columns={buildInviteColumns(revocation, onArm, onConfirm)}
+      columns={buildInviteColumns(revocation, onArm)}
       idKey="id"
-      density="compact"
+      density="balanced"
+      hasHover
       dividers="rows"
       data-testid="invite-table"
     />
@@ -183,25 +179,19 @@ function InvitesTable({
 function InvitesResource({
   revocation,
   onArm,
-  onConfirm,
   reload,
   state,
 }: {
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
-  onConfirm: (id: string) => void;
   reload: () => void;
   state: ResourceState<InvitationList>;
 }): ReactNode {
+  // 置換形(裁定 B-a)
   if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
-    <InvitesTable
-      invitations={state.value.invitations}
-      revocation={revocation}
-      onArm={onArm}
-      onConfirm={onConfirm}
-    />
+    <InvitesTable invitations={state.value.invitations} revocation={revocation} onArm={onArm} />
   );
 }
 
@@ -213,14 +203,24 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
   const { revocation, arm, confirm } = useRevocation(revokePath, reload);
   return (
     <VStack gap={4} data-testid="invite-list">
-      <Heading level={3}>Invitations</Heading>
-      <InvitesResource
-        revocation={revocation}
-        onArm={arm}
-        onConfirm={confirm}
-        reload={reload}
-        state={state}
+      <SectionBlock
+        title="Invitations"
+        description="Pending, accepted, and completed invitations for this project, as reported by the server."
+      >
+        <InvitesResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+      </SectionBlock>
+      {/* 確認はモーダル(AlertDialogAsyncAction テンプレート) */}
+      <RevokeDialog
+        isOpen={revocation.armedId !== undefined}
+        title="Revoke this invitation?"
+        description="The invitation link becomes unusable immediately. Issue a new invitation from the CLI to replace it."
+        isPending={revocation.pendingId !== undefined}
+        onCancel={() => arm(undefined)}
+        onConfirm={() => {
+          if (revocation.armedId !== undefined) confirm(revocation.armedId);
+        }}
       />
+      {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
       {revocation.failure !== undefined ? (
         <FailureNotice failure={revocation.failure} subject="invitation" />
       ) : null}

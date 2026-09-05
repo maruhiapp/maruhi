@@ -32,17 +32,25 @@ import { Schema } from "effect";
 import { type Browser, chromium, type Page, type Route } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type {
-  AuditEvent,
-  ChainSnapshot,
-  EnvironmentList,
-  EnvironmentMetadataPull,
-  InvitationList,
-  Me,
-  ProjectList,
-  RotationFlagList,
-  TokenList,
-} from "../src/dashboard/types.ts";
+import {
+  chainFixture,
+  environmentsFixture,
+  invitationsAfterRevoke,
+  invitationsFixture,
+  meFixture,
+  metadataPullFixture,
+  PROJECT_1,
+  PROJECT_2,
+  PROJECT_GHOST_CURSOR,
+  projectAuditEvents,
+  projectsPage1,
+  projectsPage2,
+  projectsPageEmpty,
+  rotationFlagsFixture,
+  selfAuditEvents,
+  tokensAfterRevoke,
+  tokensFixture,
+} from "./fixtures.ts";
 
 // ポートは固定せず OS に空きを割り当てさせる(CI の並列実行でも衝突しない)
 function getFreePort(): Promise<number> {
@@ -324,249 +332,6 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
 // (src/dashboard/types.ts)に適合するリテラルで、乖離は tsc が検出する。
 // ---------------------------------------------------------------------------
 
-const PROJECT_1 = "ab".repeat(32);
-const PROJECT_2 = "cd".repeat(32);
-const HEX64 = "12".repeat(32);
-const SIG = "34".repeat(64);
-const FP = "56".repeat(16);
-const ROW_ID_1 = "78".repeat(16);
-const ROW_ID_2 = "9a".repeat(16);
-
-const meFixture: Me = { userId: "user_e2e", orgs: [] };
-
-const PROJECT_GHOST_CURSOR = "ef".repeat(32);
-
-const projectsPage1: ProjectList = {
-  projects: [{ projectId: PROJECT_1, role: "admin" }],
-  nextAfter: PROJECT_1,
-};
-// 空ページ + nextAfter(AUTH_SPEC §11-5 — ghost 除外・確認失敗の省略で
-// 候補ページが空になる形)。UI はこれを終端と誤断せずカーソルを進める
-const projectsPageEmpty: ProjectList = {
-  projects: [],
-  nextAfter: PROJECT_GHOST_CURSOR,
-};
-const projectsPage2: ProjectList = {
-  projects: [{ projectId: PROJECT_2, role: "reader" }],
-};
-
-const chainFixture: ChainSnapshot = {
-  projectId: PROJECT_1,
-  headSeq: 2,
-  headHashHex: HEX64,
-  entries: [
-    {
-      suite: "maruhi/v1",
-      seq: 1,
-      prevHashHex: "00".repeat(32),
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
-      timestampMs: 1_756_000_000_000,
-      signatureHex: SIG,
-      op: "genesis",
-      payload: { encPubHex: HEX64, sigPubHex: HEX64 },
-    },
-    {
-      suite: "maruhi/v1",
-      seq: 2,
-      prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
-      timestampMs: 1_756_000_100_000,
-      signatureHex: SIG,
-      op: "add_member",
-      payload: {
-        targetUserId: "user_colleague",
-        encPubHex: HEX64,
-        sigPubHex: HEX64,
-        role: "reader",
-      },
-    },
-  ],
-  attestations: [],
-};
-
-const environmentStatement = {
-  suite: "maruhi/v1",
-  environmentId: "production",
-  name: "production",
-  chainHeadHashHex: HEX64,
-  chainHeadSeq: 1,
-  signatureHex: SIG,
-  status: "active",
-  metaVersion: 1,
-  prevMetaSigHashHex: "",
-  authorUserId: "user_e2e",
-  authorKeyFingerprintHex: FP,
-} as const;
-
-const environmentsFixture: EnvironmentList = {
-  environments: [{ environmentId: "production", currentEpoch: 1, statement: environmentStatement }],
-};
-
-const metadataPullFixture: EnvironmentMetadataPull = {
-  environmentId: "production",
-  currentEpoch: 1,
-  statement: environmentStatement,
-  variables: [
-    {
-      ...environmentStatement,
-      variableId: "var-database-url",
-      name: "DATABASE_URL",
-    },
-  ],
-  deletedVariables: [],
-};
-
-// admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)
-const projectAuditEvents: { events: AuditEvent[] } = {
-  events: [
-    {
-      id: ROW_ID_1,
-      seq: 2,
-      serverTs: 1_756_000_100_000,
-      event: "chain.member_added",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_colleague",
-      chainSeq: 2,
-    },
-    {
-      id: ROW_ID_2,
-      seq: 1,
-      serverTs: 1_756_000_000_000,
-      event: "chain.genesis",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_e2e",
-      chainSeq: 1,
-    },
-  ],
-};
-
-// 本人軸(D1 経路 — seq は誰にも返らない)
-const selfAuditEvents: { events: AuditEvent[] } = {
-  events: [
-    {
-      id: ROW_ID_1,
-      serverTs: 1_756_000_200_000,
-      event: "auth.login_succeeded",
-      actor: { type: "user", userId: "user_e2e" },
-    },
-  ],
-};
-
-const rotationFlagsFixture: RotationFlagList = {
-  flags: [
-    {
-      environmentId: "production",
-      variableId: "var-database-url",
-      basis: "read",
-      targetUserId: "user_colleague",
-      recommendedAtMs: 1_756_000_300_000,
-      triggerChainSeq: 3,
-    },
-  ],
-};
-
-// ---------------------------------------------------------------------------
-// W3b(S8 招待管理・S9 トークン管理)のフィクスチャ。期限は「未来 = 2100 年 /
-// 過去 = 2023 年」の固定値(実行時刻に対して安定 — 裁定 CQ の Expired 表示は
-// クライアント時計との比較なので、境界近傍の値を使わない)
-// ---------------------------------------------------------------------------
-
-const FUTURE_MS = 4_102_444_800_000; // 2100-01-01
-const PAST_MS = 1_700_000_000_000; // 2023-11-14
-
-const acceptanceFixture = {
-  inviteeUserId: "user_colleague",
-  inviteeEncPubHex: HEX64,
-  inviteeSigPubHex: HEX64,
-  signatureHex: SIG,
-  acceptedAtMs: 1_756_000_100_000,
-} as const;
-
-const pendingInvite = {
-  id: "inv-pending",
-  projectId: PROJECT_1,
-  role: "member",
-  status: "pending",
-  inviterUserId: "user_e2e",
-  tokenHashHex: HEX64,
-  createdAtMs: 1_756_000_000_000,
-  expiresAtMs: FUTURE_MS,
-  acceptance: null,
-} as const;
-
-const invitationsFixture: InvitationList = {
-  invitations: [
-    pendingInvite,
-    {
-      id: "inv-accepted",
-      projectId: PROJECT_1,
-      role: "reader",
-      status: "accepted",
-      inviterUserId: "user_e2e",
-      tokenHashHex: HEX64,
-      createdAtMs: 1_756_000_000_000,
-      expiresAtMs: FUTURE_MS,
-      acceptance: acceptanceFixture,
-    },
-    {
-      id: "inv-completed",
-      projectId: PROJECT_1,
-      role: "member",
-      status: "completed",
-      inviterUserId: "user_e2e",
-      tokenHashHex: HEX64,
-      createdAtMs: 1_756_000_000_000,
-      expiresAtMs: PAST_MS,
-      acceptance: acceptanceFixture,
-    },
-  ],
-};
-
-// 失効後のサーバー申告(pending 行が revoked へ) — UI は再取得で写す(裁定 CO)
-const invitationsAfterRevoke: InvitationList = {
-  invitations: [
-    { ...pendingInvite, status: "revoked" },
-    ...invitationsFixture.invitations.slice(1),
-  ],
-};
-
-const tokensFixture: TokenList = {
-  tokens: [
-    {
-      id: "tok-active",
-      name: "ci",
-      tokenPrefix: "maruhi_pat_abcdefgh",
-      scopes: [{ project: "*", permission: "admin" }],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: 1_756_000_100_000,
-      expiresAtMs: FUTURE_MS,
-    },
-    {
-      id: "tok-expired",
-      name: "old-laptop",
-      tokenPrefix: "maruhi_pat_ijklmnop",
-      scopes: [{ project: PROJECT_1, permission: "read" }],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: null,
-      expiresAtMs: PAST_MS,
-    },
-    // 移行(AUTH_SPEC §6 裁定 CE)前の旧無期限行 — 検証側は期限切れ扱い
-    // (fail-closed)。表示は Expired + no expiry recorded(裁定 CQ)
-    {
-      id: "tok-legacy",
-      name: "legacy",
-      tokenPrefix: "maruhi_pat_qrstuvwx",
-      scopes: [],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: null,
-      expiresAtMs: null,
-    },
-  ],
-};
-
-// 指定失効は行の削除(サーバー実装 — 一覧から消える)
-const tokensAfterRevoke: TokenList = { tokens: tokensFixture.tokens.slice(1) };
-
 function fulfillJson(route: Route, status: number, body: unknown): Promise<void> {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
@@ -577,11 +342,20 @@ function unauthorized(route: Route): Promise<void> {
 }
 
 /**
+ * セッション確認のモック。DP3 のアプリシェル(DashboardShell)は認証が要る全画面で
+ * `GET /auth/me` を 1 回呼び、ok のときだけ本文を描く — 実サーバーの 401 応答は
+ * ボディ未読のまま networkidle を妨げるため、認証済み画面のテストはすべてこれを登録する
+ */
+async function routeSession(page: Page): Promise<void> {
+  await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+}
+
+/**
  * プロジェクト画面の初期表示(Overview タブ)の消費面のモック(W3b の S8 テストで
- * 共用)。/auth/me は画面が呼ばないが、他テストと同じ既定として登録しておく。
+ * 共用)。
  */
 async function routeProjectOverview(page: Page): Promise<void> {
-  await page.route("**/auth/me", (route) => fulfillJson(route, 200, meFixture));
+  await routeSession(page);
   await page.route(
     (url) => url.pathname === `/projects/${PROJECT_1}/chain`,
     (route) => fulfillJson(route, 200, chainFixture),
@@ -590,6 +364,16 @@ async function routeProjectOverview(page: Page): Promise<void> {
     (url) => url.pathname === `/projects/${PROJECT_1}/environments`,
     (route) => fulfillJson(route, 200, environmentsFixture),
   );
+}
+
+/**
+ * 失効の確認(DP3 改訂 4 — 裁定 CO のインライン 2 段階から AlertDialog へ)。行の Revoke で
+ * モーダルが開き、その中の Revoke で DELETE が飛ぶ。
+ */
+async function confirmRevoke(page: Page): Promise<void> {
+  const dialog = page.getByRole("alertdialog");
+  await dialog.waitFor();
+  await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
 }
 
 /** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
@@ -804,12 +588,28 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
       "Events visible to your role",
     );
     await page.getByTestId("audit-list-project").waitFor();
-    await expect(page.getByText("Seq", { exact: true }).count()).resolves.toBe(1);
+    // DP3 改訂 5: 1 列の行 + その場で展開(Collapsible)。seq は admin 応答にだけ載り、
+    // 行の右端に "seq N" として出る(応答適応)
+    await expect(page.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
     await expect(page.getByText("chain.member_added").count()).resolves.toBeGreaterThan(0);
+    // 行(トリガー = button)を開くとその直下に全フィールド(MetadataList)が出る。
+    // 閉じた展開部は DOM に残る(hidden)ので、可視の要素だけを数える
+    const list = page.getByTestId("audit-list-project");
+    const visibleRowIds = list.getByText("Row id", { exact: true }).locator("visible=true");
+    await expect(visibleRowIds.count()).resolves.toBe(0);
+    const row = list.getByRole("button", { name: /chain\.member_added/ });
+    await row.click();
+    await expect(row.getAttribute("aria-expanded")).resolves.toBe("true");
+    await visibleRowIds.waitFor();
+    await expect(visibleRowIds.count()).resolves.toBe(1);
+    // 展開部にも target(user_colleague)が記録どおり出る(要約行の 1 + 展開部の 1)
+    await expect(
+      list.getByText("user_colleague", { exact: true }).locator("visible=true").count(),
+    ).resolves.toBe(2);
     // invites 軸(admin 未満)は役割文言のまま表示(存在・件数を示唆しない)。
-    // W3b で管理タブ "Invites"(S8)が同語で並ぶため、radiogroup(SegmentedControl)
-    // 側を role で指す
-    await page.getByRole("radio", { name: "Invites" }).click();
+    // W3b で管理タブ "Invites"(S8)が同語で並ぶため、ToggleButtonGroup(DP3 で
+    // SegmentedControl から置換)の押下ボタンを role で指す
+    await page.getByRole("button", { name: "Invites", pressed: false }).click();
     await page.getByText("Not available to your role").first().waitFor();
 
     // S7 フラグ: 表示 + dismiss の静的案内(dismiss 操作は存在しない)
@@ -919,9 +719,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     // Revoke は pending | accepted 行のみ(completed 行にはボタンが出ない)
     await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(2);
-    // 2 段階確認(裁定 CO): Revoke で武装 → Confirm revoke で実行
+    // 2 段階確認(裁定 CO — DP3 改訂 4 で AlertDialog に): 行の Revoke → モーダルの Revoke で実行
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     // 完了後はサーバー再取得で写す(楽観更新しない) — pending 行が revoked に
     await page.getByText("revoked", { exact: true }).waitFor();
     expect(deleteMethod).toBe("DELETE");
@@ -947,7 +747,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("tab", { name: "Invites" }).click();
     await page.getByTestId("invite-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     await page.getByText("The server reports this invitation as completed.").waitFor();
     await page.close();
   });
@@ -969,6 +769,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
   it("lists tokens with server-reported expiry: Expired, no expiry recorded, never (S9)", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, tokensFixture),
@@ -992,6 +793,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     let revoked = false;
     let deleteMethod: string | null = null;
     let deleteCsrf: string | null = null;
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
@@ -1008,26 +810,33 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
-    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える
+    await confirmRevoke(page);
+    // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
+    // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
+    // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
+    // (PR #148 CI の 1 回目で顕在化した競合)
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
-    await expect(page.getByText("old-laptop", { exact: true }).count()).resolves.toBe(1);
+    await page.getByText("old-laptop", { exact: true }).waitFor();
+    await expect(page.getByText("ci", { exact: true }).count()).resolves.toBe(0);
     expect(deleteMethod).toBe("DELETE");
     expect(deleteCsrf).toBe("1");
     expect(violations).toEqual([]);
     await page.close();
   });
 
-  it("locks other rows while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
+  it("keeps the confirmation modal open and other rows locked while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
     // DELETE の in-flight 中に別行を武装できると、後着の完了が武装状態を
-    // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード +
-    // RevokeControl の isLocked)。DELETE をゲートで保留して実測する
+    // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード)。DP3 改訂 4
+    // では確認が AlertDialog(モーダル)なので、実行中はダイアログが開いたまま
+    // (Escape で閉じない)で他行に触れず、完了後にダイアログが閉じて一覧が再取得される。
+    // DELETE をゲートで保留して実測する
     const page = await browser.newPage();
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     let revoked = false;
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, revoked ? tokensAfterRevoke : tokensFixture),
@@ -1043,17 +852,22 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
-    // in-flight 中: 他行の Revoke は無効(クリックしても武装できない)。
-    // クリック直後の再レンダリングと競合しないようポーリングで待つ。
-    // exact: true が必須(PR #109 pullfrog 指摘): 既定の name 照合は部分一致で、
-    // 実行中行の "Confirm revoke"(isLoading で無効)が DOM 順の先頭に立ち、
-    // isLocked を外してもテストが通ってしまう — 完全一致で未武装行だけを指す
-    const otherRevoke = page.getByRole("button", { name: "Revoke", exact: true }).first();
-    await expect.poll(() => otherRevoke.isDisabled()).toBe(true);
+    await confirmRevoke(page);
+    const dialog = page.getByRole("alertdialog");
+    // in-flight 中: モーダルは開いたまま(Escape も効かない)。行の Revoke は
+    // isLocked で無効(RevokeButton — モーダルの背後でも二層目のガードを保つ)
+    await page.keyboard.press("Escape");
+    await expect(dialog.count()).resolves.toBe(1);
+    const rowRevoke = page
+      .getByTestId("token-table")
+      .getByRole("button", { name: "Revoke", exact: true })
+      .first();
+    await expect.poll(() => rowRevoke.isDisabled()).toBe(true);
     release?.();
-    // 完了 → 再取得で行が消え、残る行の Revoke は再び有効
+    // 完了 → ダイアログが閉じ、再取得で行が消え、残る行の Revoke は再び有効
+    await dialog.waitFor({ state: "hidden" });
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
+    await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect
       .poll(() => page.getByRole("button", { name: "Revoke", exact: true }).first().isDisabled())
       .toBe(false);
@@ -1062,6 +876,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
 
   it("shows the token 404 wording on the uniform not-found of targeted revocation (S9)", async () => {
     const page = await browser.newPage();
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/tokens",
       (route) => fulfillJson(route, 200, tokensFixture),
@@ -1073,15 +888,59 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     // 一様 404(他人の・存在しないを区別しない)を token の名詞で写す(裁定 CN 付随)
     await page.getByText("The server reports no such token for your account.").waitFor();
+    await page.close();
+  });
+
+  it("renders the audit log as expandable rows at mobile width (DP3 裁定 D / P — HP5)", async () => {
+    // 監査一覧は幅によらず 1 列の行(Collapsible)で、モバイルでも同じ形のまま行の直下に
+    // 詳細が開く。768px 以下(AppShell の md)ではサイドバーがドロワーへ移る。
+    // pullfrog レビュー反映: この経路を CI で固定する
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await routeProjectOverview(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/audit/events`,
+      (route) => fulfillJson(route, 200, projectAuditEvents),
+    );
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: "Audit" }).click();
+    const list = page.getByTestId("audit-list-project");
+    await list.waitFor();
+    // Table ではなく行(トリガー button)で描かれ、行の意味(イベント名・seq・actor・target)は保たれる
+    await expect(list.locator("table").count()).resolves.toBe(0);
+    await expect(list.getByRole("button", { expanded: false }).count()).resolves.toBe(2);
+    await expect(list.getByText("chain.member_added").count()).resolves.toBe(1);
+    await expect(list.getByText("user_colleague").count()).resolves.toBeGreaterThan(0);
+    await expect(list.getByText("seq 2", { exact: true }).count()).resolves.toBe(1);
+    await expect(list.getByText("seq 1", { exact: true }).count()).resolves.toBe(1);
+    // 行を開くと同じ列の直下に全フィールドが出る(Dialog ではない)。single なので
+    // 別の行を開くと先の行は閉じる
+    const genesis = list.getByRole("button", { name: /chain\.genesis/ });
+    const visibleRowIds = list.getByText("Row id", { exact: true }).locator("visible=true");
+    await genesis.click();
+    await visibleRowIds.waitFor();
+    await expect(page.getByRole("dialog").count()).resolves.toBe(0);
+    await list.getByRole("button", { name: /chain\.member_added/ }).click();
+    await expect(genesis.getAttribute("aria-expanded")).resolves.toBe("false");
+    await expect(visibleRowIds.count()).resolves.toBe(1);
+    // サイドバーはドロワーへ: トグルで開き、到達点とユーザー id が並ぶ
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    const drawer = page.getByRole("dialog", { name: "Navigation" });
+    await drawer.waitFor();
+    await expect(drawer.getByRole("link", { name: "API tokens" }).count()).resolves.toBe(1);
+    await expect(drawer.getByTestId("signed-in-user").count()).resolves.toBe(1);
+    expect(violations).toEqual([]);
     await page.close();
   });
 
   it("renders the account (self) audit axis without a seq column", async () => {
     const page = await browser.newPage();
     const violations = collectViolations(page);
+    await routeSession(page);
     await page.route(
       (url) => url.pathname === "/auth/audit/events",
       (route) => fulfillJson(route, 200, selfAuditEvents),
@@ -1089,8 +948,79 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/account`, { waitUntil: "networkidle" });
     await page.getByTestId("audit-list-self").waitFor();
     await expect(page.getByText("auth.login_succeeded").count()).resolves.toBeGreaterThan(0);
-    // D1 経路は seq を返さない(AUDIT_SPEC §7)— 列も出ない(応答適応)
-    await expect(page.getByText("Seq", { exact: true }).count()).resolves.toBe(0);
+    // D1 経路は seq を返さない(AUDIT_SPEC §7)— 行にも出ない(応答適応)
+    await expect(page.getByText(/^seq /).count()).resolves.toBe(0);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("keeps the shell mounted across SPA navigation without re-checking the session", async () => {
+    // DP3 改訂 11(PR #148 Bugbot 指摘): 認証が要る画面は pathless の親ルート
+    // (DashboardLayout)の子なので、画面間の遷移でシェルは再マウントされず、
+    // /auth/me の再取得も「Checking your session」の再表示も起きない。サイドバーの
+    // DOM ノードが同一のまま(= 折りたたみ状態などが保たれる)ことで再マウント無しを検査する
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    let sessionChecks = 0;
+    await page.route("**/auth/me", (route) => {
+      sessionChecks += 1;
+      return fulfillJson(route, 200, meFixture);
+    });
+    await page.route(
+      (url) => url.pathname === "/projects",
+      (route) => fulfillJson(route, 200, projectsPage2),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/tokens",
+      (route) => fulfillJson(route, 200, tokensFixture),
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/audit/events",
+      (route) => fulfillJson(route, 200, selfAuditEvents),
+    );
+    await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await page.getByTestId("project-list").waitFor();
+    expect(sessionChecks).toBe(1);
+    const userItem = page.getByTestId("signed-in-user");
+    await userItem.evaluate((el) => {
+      (el as HTMLElement).dataset["shellProbe"] = "mounted";
+    });
+    // サイドバーから API tokens へ(SPA 遷移)。h1 が変わり、セッション確認は増えない
+    await page.getByRole("link", { name: "API tokens" }).click();
+    await page.getByTestId("token-table").waitFor();
+    await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe("API tokens");
+    await expect(
+      page.getByRole("link", { name: "API tokens" }).getAttribute("aria-current"),
+    ).resolves.toBe("page");
+    expect(sessionChecks).toBe(1);
+    await expect(page.getByText("Checking your session").count()).resolves.toBe(0);
+    await expect(
+      userItem.evaluate((el) => (el as HTMLElement).dataset["shellProbe"]),
+    ).resolves.toBe("mounted");
+    // 続けて Account audit へ(フッターのユーザー id からも到達できる)
+    await userItem.click();
+    await page.getByTestId("audit-list-self").waitFor();
+    await expect(page.getByRole("heading", { level: 1 }).textContent()).resolves.toBe(
+      "Account audit",
+    );
+    expect(sessionChecks).toBe(1);
+    expect(violations).toEqual([]);
+    await page.close();
+  });
+
+  it("returns to the sign-in screen in place when a screen fetch reports 401", async () => {
+    // 改訂 11 でシェルが遷移をまたいで残るようになった副作用(pullfrog 指摘): 途中で
+    // セッションが失効しても、画面の 401 → シェルへの通知 → その場でサインイン画面
+    // (再読込・再遷移なし)
+    const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await routeSession(page);
+    await page.route((url) => url.pathname === "/auth/tokens", unauthorized);
+    await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
+    await page.getByTestId("login-card").waitFor();
+    await expect(page.getByText("You are signed out.").count()).resolves.toBe(1);
+    await expect(page.getByTestId("signed-in-user").count()).resolves.toBe(0);
+    expect(new URL(page.url()).pathname).toBe("/dashboard/tokens");
     expect(violations).toEqual([]);
     await page.close();
   });

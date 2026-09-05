@@ -10,15 +10,14 @@
 //   403 は役割文言のまま表示する(タブを事前に隠す role 判定は置かない)
 // - S7: dismiss は置かない(ADR-0018 改訂 2 の境界原則 — 警告の消去)。
 //   CLI `maruhi rotation dismiss` への静的案内のみ
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
-import { Divider } from "@astryxdesign/core/Divider";
-import { HStack, Layout, LayoutContent, VStack } from "@astryxdesign/core/Layout";
-import { Link } from "@astryxdesign/core/Link";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { Heading, Text } from "@astryxdesign/core/Text";
+import { Text } from "@astryxdesign/core/Text";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
 import { Token } from "@astryxdesign/core/Token";
 import { useRouteParams } from "@funstack/router";
 import * as stylex from "@stylexjs/stylex";
@@ -27,15 +26,21 @@ import { type ReactNode, useMemo, useState } from "react";
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
+import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { isProjectId, shortId } from "./ids.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
 import {
+  Callout,
+  EmptyNotice,
   FailureNotice,
-  formatServerTime,
+  HexText,
   LoadingRow,
   RoleToken,
-  ServerReportedNote,
+  SectionBlock,
+  SECTION_GAP,
+  ServerTime,
 } from "./shared.tsx";
 import type {
   AuditEventsPage,
@@ -47,8 +52,6 @@ import type {
   RotationFlagList,
 } from "./types.ts";
 import { useApiResource } from "./use-api-resource.ts";
-
-const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 // ---------------------------------------------------------------------------
 // S5: 概要タブ — チェーン(メンバー・ヘッド・サーバー)
@@ -65,11 +68,7 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
     key: "id",
     header: "User",
     width: proportional(1),
-    renderCell: (row: MemberRow) => (
-      <Text type="code" size="sm" wordBreak="break-all">
-        {row.id}
-      </Text>
-    ),
+    renderCell: (row: MemberRow) => <HexText>{row.id}</HexText>,
   },
   {
     key: "role",
@@ -91,29 +90,73 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
 
 function attestationSummary(snapshot: ChainSnapshot): string {
   const attestations = snapshot.attestations ?? [];
-  if (attestations.length === 0) return "No member head attestations reported.";
+  if (attestations.length === 0) return "None reported";
   const parts = attestations.map((a) => `${a.attesterUserId} at seq ${a.chainHeadSeq}`);
-  return `${attestations.length} member head attestation(s) reported: ${parts.join(" · ")}`;
+  return `${attestations.length} reported: ${parts.join(" · ")}`;
 }
 
+// MetadataList のラベル列幅(`incident-console` のインスペクタと同じ規模。64 hex の値が折り返しても
+// ラベルと値の対応が読める)
+const CHAIN_LABEL_WIDTH = 200;
+
+/** チェーンの要約(`detail-page` テンプレートの見出し直下メタデータの形 — MetadataList)。 */
+function ChainSummary({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
+  return (
+    <MetadataList columns="single" label={{ position: "start", width: CHAIN_LABEL_WIDTH }}>
+      <MetadataListItem label="Chain head">
+        <Text hasTabularNumbers>seq {snapshot.headSeq}</Text>
+      </MetadataListItem>
+      <MetadataListItem label="Head digest">
+        <HexText>{snapshot.headHashHex}</HexText>
+      </MetadataListItem>
+      <MetadataListItem label="Member head attestations">
+        <Text>{attestationSummary(snapshot)}</Text>
+      </MetadataListItem>
+    </MetadataList>
+  );
+}
+
+interface ServerRow extends Record<string, unknown> {
+  id: string;
+  scope: string;
+}
+
+const SERVER_COLUMNS: TableColumn<ServerRow>[] = [
+  {
+    key: "id",
+    header: "Server key",
+    width: proportional(1),
+    renderCell: (row: ServerRow) => <HexText>{row.id}</HexText>,
+  },
+  {
+    key: "scope",
+    header: "Scope",
+    width: proportional(1),
+    renderCell: (row: ServerRow) => (
+      <Text type="supporting" size="sm">
+        {row.scope}
+      </Text>
+    ),
+  },
+];
+
+/** 付与済みサーバー鍵(行 = Table — 集合は行で描く。改訂 7)。 */
 function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): ReactNode {
   if (servers.length === 0) return null;
+  const rows: ServerRow[] = servers.map((server) => ({
+    id: server.keyFingerprintHex,
+    scope:
+      server.scopeEnvironmentIds.length === 0
+        ? "no environments in scope"
+        : server.scopeEnvironmentIds.join(", "),
+  }));
   return (
-    <VStack gap={2}>
-      <Heading level={3}>Granted servers</Heading>
-      {servers.map((server) => (
-        <HStack key={server.keyFingerprintHex} gap={2} align="center" wrap="wrap">
-          <Text type="code" size="sm" wordBreak="break-all">
-            {server.keyFingerprintHex}
-          </Text>
-          <Text type="supporting" size="sm">
-            {server.scopeEnvironmentIds.length === 0
-              ? "no environments in scope"
-              : `scope: ${server.scopeEnvironmentIds.join(", ")}`}
-          </Text>
-        </HStack>
-      ))}
-    </VStack>
+    <SectionBlock
+      title="Granted servers"
+      description="Server keys granted on this project and their environment scope, as reported by the server."
+    >
+      <Table data={rows} columns={SERVER_COLUMNS} idKey="id" density="compact" dividers="rows" />
+    </SectionBlock>
   );
 }
 
@@ -125,37 +168,25 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
     sinceSeq: m.sinceSeq,
   }));
   return (
-    <VStack gap={4} data-testid="chain-section">
-      <VStack gap={1}>
-        <Text type="supporting">
-          Chain head: seq {snapshot.headSeq} ·{" "}
-          <Text type="code" size="sm" wordBreak="break-all">
-            {snapshot.headHashHex}
-          </Text>
-        </Text>
-        <Text type="supporting">{attestationSummary(snapshot)}</Text>
-      </VStack>
-      <VStack gap={2}>
-        <Heading level={3}>Members</Heading>
+    <VStack gap={SECTION_GAP} data-testid="chain-section">
+      <ChainSummary snapshot={snapshot} />
+      <SectionBlock
+        title="Members"
+        description="Chain-derived members and roles, as reported by the server."
+      >
         <Table
           data={memberRows}
           columns={MEMBER_COLUMNS}
           idKey="id"
-          density="compact"
+          density="balanced"
+          hasHover
           dividers="rows"
           data-testid="member-table"
         />
-      </VStack>
+      </SectionBlock>
       <ServersList servers={view.servers} />
     </VStack>
   );
-}
-
-function ChainSection({ projectId }: { projectId: string }): ReactNode {
-  const { state, reload } = useApiResource<ChainSnapshot>(apiPaths.chain(projectId));
-  if (state.kind === "loading") return <LoadingRow label="Loading chain" />;
-  if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
-  return <ChainView snapshot={state.value} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,30 +209,39 @@ function toEnvironmentRow(env: EnvironmentSummary): EnvironmentRow {
   };
 }
 
-function VariableNameRow({
-  statement,
-  deleted,
-}: {
-  statement: { variableId: string; name: string };
+interface VariableRow extends Record<string, unknown> {
+  id: string;
+  name: string;
   deleted: boolean;
-}): ReactNode {
-  return (
-    <HStack gap={2} align="center" wrap="wrap">
-      <Text type="code" size="sm" hasStrikethrough={deleted}>
-        {statement.name}
-      </Text>
-      <Text type="supporting" size="sm" wordBreak="break-all">
-        {statement.variableId}
-      </Text>
-      {deleted ? <Token label="deleted" size="sm" color="gray" /> : null}
-    </HStack>
-  );
 }
 
+const VARIABLE_COLUMNS: TableColumn<VariableRow>[] = [
+  {
+    key: "name",
+    header: "Variable",
+    width: proportional(1),
+    renderCell: (row: VariableRow) => (
+      <HStack gap={2} align="center" wrap="wrap">
+        <Text type="code" size="sm" hasStrikethrough={row.deleted}>
+          {row.name}
+        </Text>
+        {row.deleted ? <Token label="deleted" size="sm" color="gray" /> : null}
+      </HStack>
+    ),
+  },
+  {
+    key: "id",
+    header: "Variable ID",
+    width: proportional(1),
+    renderCell: (row: VariableRow) => <HexText>{row.id}</HexText>,
+  },
+];
+
+/** 選択環境の変数名(行 = Table — 集合は行で描く。改訂 7)。値は構造上応答に無い。 */
 function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
-  const rows = [
-    ...pull.variables.map((statement) => ({ statement, deleted: false })),
-    ...pull.deletedVariables.map((statement) => ({ statement, deleted: true })),
+  const rows: VariableRow[] = [
+    ...pull.variables.map((s) => ({ id: s.variableId, name: s.name, deleted: false })),
+    ...pull.deletedVariables.map((s) => ({ id: s.variableId, name: s.name, deleted: true })),
   ];
   return (
     <VStack gap={2} data-testid="variable-list">
@@ -210,11 +250,18 @@ function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
         statements; values never appear in this dashboard):
       </Text>
       {rows.length === 0 ? (
-        <Text type="supporting">No variables reported.</Text>
+        <EmptyNotice
+          title="No variables"
+          description="No variable names in this environment, as reported by the server."
+        />
       ) : (
-        rows.map(({ statement, deleted }) => (
-          <VariableNameRow key={statement.variableId} statement={statement} deleted={deleted} />
-        ))
+        <Table
+          data={rows}
+          columns={VARIABLE_COLUMNS}
+          idKey="id"
+          density="compact"
+          dividers="rows"
+        />
       )}
     </VStack>
   );
@@ -257,11 +304,7 @@ function buildEnvironmentColumns(
       key: "id",
       header: "Environment ID",
       width: proportional(1),
-      renderCell: (row: EnvironmentRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.id}
-        </Text>
-      ),
+      renderCell: (row: EnvironmentRow) => <HexText>{row.id}</HexText>,
     },
     {
       key: "epoch",
@@ -275,7 +318,7 @@ function buildEnvironmentColumns(
     },
     {
       key: "names",
-      header: "",
+      header: "Variables",
       width: pixel(130),
       renderCell: (row: EnvironmentRow) =>
         row.status === "deleted" ? null : (
@@ -302,16 +345,23 @@ function EnvironmentsBody({
     setSelectedEnvironmentId(environmentId === selectedEnvironmentId ? undefined : environmentId);
   const rows = environments.map(toEnvironmentRow);
   return (
-    <VStack gap={3}>
-      <Heading level={3}>Environments</Heading>
+    <SectionBlock
+      title="Environments"
+      description="Environments and their variable names (metadata only — values never appear here)."
+    >
       {rows.length === 0 ? (
-        <Text type="supporting">No environments reported.</Text>
+        <EmptyNotice
+          title="No environments"
+          description="Environments of this project appear here, as reported by the server."
+          testId="env-empty"
+        />
       ) : (
         <Table
           data={rows}
           columns={buildEnvironmentColumns(selectedEnvironmentId, onToggle)}
           idKey="id"
-          density="compact"
+          density="balanced"
+          hasHover
           dividers="rows"
           data-testid="env-table"
         />
@@ -319,7 +369,7 @@ function EnvironmentsBody({
       {selectedEnvironmentId !== undefined ? (
         <VariablesSection projectId={projectId} environmentId={selectedEnvironmentId} />
       ) : null}
-    </VStack>
+    </SectionBlock>
   );
 }
 
@@ -330,11 +380,19 @@ function EnvironmentsSection({ projectId }: { projectId: string }): ReactNode {
   return <EnvironmentsBody projectId={projectId} environments={state.value.environments} />;
 }
 
+/**
+ * 概要タブ。チェーン取得(§11)をプロジェクトの存在確認を兼ねる先頭リソースとし、
+ * 環境一覧はチェーンが取れてから読む — 一様 404 / 403 のとき同じ Banner が節ごとに
+ * 並ぶ形(DP3 裁定 B の見直しで判明)を避ける。1 往復の直列化は受容。
+ */
 function OverviewTab({ projectId }: { projectId: string }): ReactNode {
+  const { state, reload } = useApiResource<ChainSnapshot>(apiPaths.chain(projectId));
+  // 置換形(裁定 B-a)— 以下 VariablesSection / EnvironmentsSection / RotationTab も同じ
+  if (state.kind === "loading") return <LoadingRow label="Loading chain" />;
+  if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
-    <VStack gap={5}>
-      <ChainSection projectId={projectId} />
-      <Divider />
+    <VStack gap={SECTION_GAP}>
+      <ChainView snapshot={state.value} />
       <EnvironmentsSection projectId={projectId} />
     </VStack>
   );
@@ -363,24 +421,36 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
         <Text type="supporting" data-testid="audit-caption">
           Events visible to your role, as reported by the server.
         </Text>
-        <SegmentedControl label="Audit source" value={axis} onChange={setAxis} size="sm">
-          <SegmentedControlItem value="project" label="Project events" />
-          <SegmentedControlItem value="invites" label="Invites" />
-        </SegmentedControl>
+        {/* 軸の切替は ToggleButtonGroup(single)。SegmentedControl は dark で非選択ラベルの
+            コントラストが 4.26:1(12px)で AA に届かない(DP3 a11y 監査 — 上流候補) */}
+        <ToggleButtonGroup
+          label="Audit source"
+          type="single"
+          value={axis}
+          onChange={(value: string | null) => {
+            if (value !== null) setAxis(value);
+          }}
+          size="sm"
+        >
+          <ToggleButton value="project" label="Project events" />
+          <ToggleButton value="invites" label="Invites" />
+        </ToggleButtonGroup>
       </HStack>
-      {axis === "project" ? (
-        <AuditEventList
-          fetchPage={fetchProjectEvents}
-          emptyTitle="No events"
-          testId="audit-list-project"
-        />
-      ) : (
-        <AuditEventList
-          fetchPage={fetchInviteEvents}
-          emptyTitle="No invite events"
-          testId="audit-list-invites"
-        />
-      )}
+      <SectionBlock>
+        {axis === "project" ? (
+          <AuditEventList
+            fetchPage={fetchProjectEvents}
+            emptyTitle="No events"
+            testId="audit-list-project"
+          />
+        ) : (
+          <AuditEventList
+            fetchPage={fetchInviteEvents}
+            emptyTitle="No invite events"
+            testId="audit-list-invites"
+          />
+        )}
+      </SectionBlock>
       <Text type="supporting">
         Completeness checks (gap detection, mirror reconciliation) are the CLI's job:{" "}
         <Text type="code">maruhi audit verify</Text> /{" "}
@@ -450,22 +520,22 @@ const FLAG_COLUMNS: TableColumn<FlagRow>[] = [
   },
   {
     key: "recommendedAtMs",
-    header: "Recommended at (UTC)",
-    width: pixel(200),
-    renderCell: (row: FlagRow) => (
-      <Text type="supporting" size="sm" hasTabularNumbers>
-        {formatServerTime(row.recommendedAtMs)}
-      </Text>
-    ),
+    header: "Recommended at",
+    width: pixel(220),
+    renderCell: (row: FlagRow) => <ServerTime ms={row.recommendedAtMs} />,
   },
 ];
 
 function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): ReactNode {
   if (flags.length === 0) {
     return (
-      <Text type="supporting" data-testid="rotation-empty">
-        No rotation flags are currently effective, as reported by the server.
-      </Text>
+      <EmptyNotice
+        title="No rotation flags"
+        description="No rotation flags are currently effective, as reported by the server."
+        // 見出し無しの箱(タブ内、ページ h1 の直下)なので h2 — 後続の Callout(h2)と並ぶ
+        headingLevel={2}
+        testId="rotation-empty"
+      />
     );
   }
   return (
@@ -473,7 +543,8 @@ function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): R
       data={flags.map(toFlagRow)}
       columns={FLAG_COLUMNS}
       idKey="id"
-      density="compact"
+      density="balanced"
+      hasHover
       dividers="rows"
       data-testid="rotation-table"
     />
@@ -486,13 +557,15 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
     <VStack gap={4}>
-      <RotationFlagsView flags={state.value.flags} />
+      <SectionBlock>
+        <RotationFlagsView flags={state.value.flags} />
+      </SectionBlock>
       {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作) */}
-      <Text type="supporting" data-testid="rotation-note">
+      <Callout title="Rotating and dismissing" headingLevel={2} testId="rotation-note">
         A flag means the upstream credential should be rotated. Rotate the value, then dismiss the
         flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin). Dismissing is
         not available in the dashboard.
-      </Text>
+      </Callout>
     </VStack>
   );
 }
@@ -540,91 +613,110 @@ function ProjectTabBody({ tab, projectId }: { tab: ProjectTab; projectId: string
   return <OverviewTab projectId={projectId} />;
 }
 
-function ProjectTabs({ projectId }: { projectId: string }): ReactNode {
-  const [tab, setTab] = useState<ProjectTab>("overview");
+/** header スロット用の TabList(同一画面内のパネル切替なので nav landmark でなく WAI-ARIA tabs)。 */
+function ProjectTabList({
+  tab,
+  onChange,
+}: {
+  tab: ProjectTab;
+  onChange: (tab: ProjectTab) => void;
+}): ReactNode {
   return (
-    <VStack gap={5}>
-      {/* 同一画面内のパネル切替なので navigation landmark ではなく WAI-ARIA tabs */}
-      <TabList
-        value={tab}
-        onChange={(value) => {
-          if (isProjectTab(value)) setTab(value);
-        }}
-        size="md"
-        role="tablist"
-        aria-label="Project"
-      >
-        <Tab
-          id={PROJECT_TAB_IDS.overview}
-          value="overview"
-          label="Overview"
-          panelId={PROJECT_TAB_PANELS.overview}
-        />
-        <Tab
-          id={PROJECT_TAB_IDS.audit}
-          value="audit"
-          label="Audit"
-          panelId={PROJECT_TAB_PANELS.audit}
-        />
-        <Tab
-          id={PROJECT_TAB_IDS.rotation}
-          value="rotation"
-          label="Rotation flags"
-          panelId={PROJECT_TAB_PANELS.rotation}
-        />
-        <Tab
-          id={PROJECT_TAB_IDS.invites}
-          value="invites"
-          label="Invites"
-          panelId={PROJECT_TAB_PANELS.invites}
-        />
-      </TabList>
-      {PROJECT_TABS.map((id) => (
-        <VStack
-          key={id}
-          id={PROJECT_TAB_PANELS[id]}
-          role="tabpanel"
-          aria-labelledby={PROJECT_TAB_IDS[id]}
-          hidden={tab !== id}
-          xstyle={tab === id ? undefined : panelStyles.hidden}
-        >
-          {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
-        </VStack>
-      ))}
-      <Divider />
-      <ServerReportedNote />
+    <TabList
+      value={tab}
+      onChange={(value) => {
+        if (isProjectTab(value)) onChange(value);
+      }}
+      size="md"
+      role="tablist"
+      aria-label="Project"
+      hasDivider
+    >
+      <Tab
+        id={PROJECT_TAB_IDS.overview}
+        value="overview"
+        label="Overview"
+        panelId={PROJECT_TAB_PANELS.overview}
+      />
+      <Tab
+        id={PROJECT_TAB_IDS.audit}
+        value="audit"
+        label="Audit"
+        panelId={PROJECT_TAB_PANELS.audit}
+      />
+      <Tab
+        id={PROJECT_TAB_IDS.rotation}
+        value="rotation"
+        label="Rotation flags"
+        panelId={PROJECT_TAB_PANELS.rotation}
+      />
+      <Tab
+        id={PROJECT_TAB_IDS.invites}
+        value="invites"
+        label="Invites"
+        panelId={PROJECT_TAB_PANELS.invites}
+      />
+    </TabList>
+  );
+}
+
+function ProjectTabPanels({ tab, projectId }: { tab: ProjectTab; projectId: string }): ReactNode {
+  return PROJECT_TABS.map((id) => (
+    <VStack
+      key={id}
+      id={PROJECT_TAB_PANELS[id]}
+      role="tabpanel"
+      aria-labelledby={PROJECT_TAB_IDS[id]}
+      hidden={tab !== id}
+      xstyle={tab === id ? undefined : panelStyles.hidden}
+    >
+      {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
     </VStack>
+  ));
+}
+
+/** 妥当な ID のプロジェクト画面(`detail-page` テンプレートの形: 戻りリンク → h1 → ID → タブ)。 */
+function ProjectPage({ projectId }: { projectId: string }): ReactNode {
+  const [tab, setTab] = useState<ProjectTab>("overview");
+  // 見出しとサイドバーの子項目は短縮形(先頭・末尾 6 桁)。全文は見出し直下に HexText で出す
+  const label = shortId(projectId);
+  return (
+    <DashboardShell
+      destination="projects"
+      project={{ id: projectId, label }}
+      backLink={{ label: "Projects", href: spaPaths.dashboard() }}
+      title={`Project ${label}`}
+      intro={<HexText testId="project-id">{projectId}</HexText>}
+      tabs={<ProjectTabList tab={tab} onChange={setTab} />}
+    >
+      <ProjectTabPanels tab={tab} projectId={projectId} />
+    </DashboardShell>
+  );
+}
+
+/** ID の形式を満たさないパス(サーバーには問い合わせない)。 */
+function InvalidProjectPage({ projectId }: { projectId: string }): ReactNode {
+  return (
+    <DashboardShell
+      destination="projects"
+      backLink={{ label: "Projects", href: spaPaths.dashboard() }}
+      title="Project"
+      intro={<HexText testId="project-id">{projectId}</HexText>}
+    >
+      <Banner
+        status="warning"
+        title="Not a project ID"
+        description="A project ID is 64 lowercase hex characters. Nothing was requested from the server."
+      />
+    </DashboardShell>
   );
 }
 
 export function ProjectScreen(): ReactNode {
   const { projectId } = useRouteParams(projectRoute);
-  return (
-    <Layout
-      contentWidth={960}
-      padding={6}
-      content={
-        <LayoutContent>
-          <VStack gap={5}>
-            <VStack gap={2}>
-              <Link href={spaPaths.dashboard()}>← All projects</Link>
-              <Heading level={1}>Project</Heading>
-              <Text type="code" size="sm" wordBreak="break-all" data-testid="project-id">
-                {projectId}
-              </Text>
-            </VStack>
-            <Card padding={5}>
-              {PROJECT_ID_PATTERN.test(projectId) ? (
-                <ProjectTabs projectId={projectId} />
-              ) : (
-                <Text as="p" type="supporting">
-                  This is not a project ID (a project ID is 64 lowercase hex characters).
-                </Text>
-              )}
-            </Card>
-          </VStack>
-        </LayoutContent>
-      }
-    />
+  return isProjectId(projectId) ? (
+    <ProjectPage projectId={projectId} />
+  ) : (
+    <InvalidProjectPage projectId={projectId} />
   );
 }

@@ -19,3 +19,6 @@ packaging/homebrew/maruhi.rb
 # Blume の生成ランタイム(apps/site — blume dev / build が毎回作り直す)
 .blume/
 .blume-verify/
+
+# ダッシュボードのスクリーンショット(apps/web/test/screenshots.ts の出力 — PR に添付する一時物)
+apps/web/screenshots/
