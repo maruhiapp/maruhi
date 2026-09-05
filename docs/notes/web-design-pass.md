@@ -752,11 +752,14 @@ h2)。(b) `test/screenshots.ts` の s8 が Revoke クリック後に dialog を�
 (フォントの `public/fonts/OFL-*.txt` と同じく、写した資産の隣に置く)+ icons.tsx 冒頭に参照。
 (d) レビュー本文の指摘「axe 24 態の証拠は非空の画面だけ」— fixtures は全件非空で、空状態と
 FailureNotice の状態は一度も監査を通っていなかった(実際 (a) は空状態だけの違反)。
-`test/screenshots.ts` に `empty` モード(各集合を空で返す mock)と空状態 6 態(projects /
-audit〔project・self〕/ rotation / invites / tokens)を追加し、axe を空状態 7 画面 × light /
-mobile = 14 態で実行(違反 0。見出し階層: 見出しの無い箱は h1 → h2、Environments の空状態は
-h1 → h2 → h3)。裁定 E の「違反 0」の範囲は「fixtures の非空 24 態 + 空状態 14 態」と明示する
-(FailureNotice の状態は未監査 — Banner の単純な構造で、次の候補)。(e) nit: ProjectScreen の
+`test/screenshots.ts` に `empty` モード(各集合を空で返す mock)と空状態 7 画面(projects /
+overview〔環境〕/ audit〔project・self〕/ rotation / invites / tokens × light / dark / mobile =
+21 枚)を追加し、axe を同じ 7 画面 × light / mobile = 14 態で実行(違反 0。見出し階層: 見出しの
+無い箱は h1 → h2、Environments の空状態は h1 → h2 → h3)。裁定 E の「違反 0」の範囲は
+「fixtures の非空 24 態 + 空状態 14 態」と明示する。未監査: 変数名の空状態(環境はあるが変数が
+無い — empty モードでは環境も空になるので描けない)と FailureNotice の各状態(Banner の単純な
+構造で、次の候補)。pullfrog の再々レビューで「script は 6 態、裁定録は 14 態」の不一致を指摘され、
+環境の空状態を script 側に足して(`/environments` と metadata pull も empty に従う)一致させた。(e) nit: ProjectScreen の
 `Banner` import を先頭コメントの下へ、shared.tsx からの import を辞書順に。
 (f) 入れ子ルート化の副作用(pullfrog 再々レビュー): 途中でセッションが失効して画面のフェッチが
 401 を返しても、シェルは 1 回しか /auth/me を確認しないので「サインイン済み」から戻れず、

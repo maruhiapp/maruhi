@@ -353,6 +353,7 @@ function EnvironmentsBody({
         <EmptyNotice
           title="No environments"
           description="Environments of this project appear here, as reported by the server."
+          testId="env-empty"
         />
       ) : (
         <Table

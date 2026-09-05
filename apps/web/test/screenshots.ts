@@ -76,11 +76,18 @@ async function mockApi(
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/environments`,
-    (r) => json(r, 200, environmentsFixture),
+    (r) => json(r, 200, opts.empty ? { environments: [] } : environmentsFixture),
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/environments/production/pull/metadata`,
-    (r) => json(r, 200, metadataPullFixture),
+    (r) =>
+      json(
+        r,
+        200,
+        opts.empty
+          ? { ...metadataPullFixture, variables: [], deletedVariables: [] }
+          : metadataPullFixture,
+      ),
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/audit/events`,
@@ -213,11 +220,18 @@ const SHOTS: ReadonlyArray<Shot> = [
     },
   },
   { name: "s9-tokens", path: "/dashboard/tokens", ready: "[data-testid=token-table]" },
-  // 空状態(見出しの無い箱では空状態の見出しが h2 — shared.tsx の EmptyNotice)
+  // 空状態(見出しの無い箱では空状態の見出しが h2 — shared.tsx の EmptyNotice)。
+  // 変数名の空状態(環境はあるが変数が無い)は empty モードでは描けない(環境も空になる)
   {
     name: "s4-projects-empty",
     path: "/dashboard",
     ready: "[data-testid=project-empty]",
+    empty: true,
+  },
+  {
+    name: "s5-overview-empty",
+    path: projectPath,
+    ready: "[data-testid=env-empty]",
     empty: true,
   },
   {
