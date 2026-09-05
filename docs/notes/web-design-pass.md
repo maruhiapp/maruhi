@@ -776,6 +776,165 @@ Banner が繰り返す(改訂 10 までは遷移で再マウントされて再�
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
 
+### DP4 実装時の裁定録(2026-09-05)
+
+対象はスクリプトなしの儀式ページ 11 態: CLI ログインの承認 / 完了 / 拒否 / 一様エラー / サインアップ案内
+(signupPolicy 3 種)、サインアップ制御の closed / invite-required / invite-invalid、`/invite`。各裁定点は
+DP1〜DP3 と同じループ(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が出ない周が 1 回あれば終了 →
+選定)で決めた。判断基準は、CSP `script-src 'none'` と meta / ヘッダーの二重化を崩さない・スタイルは自己配信の
+外部 CSS のみ(`style-src 'self'`。inline のハッシュ許可を増やさない)・ブランド値を `apps/web/theme/` の外へ
+複製しない(ADR-0013)・AUTH_SPEC の表示要件と一様性を 1 つも崩さない・配信物にプレビュー用コードを混ぜない・
+後戻りが安いこと。
+
+**前提の訂正(実装で判明した事実)**: (1) `theme/maruhi.css`(`astryx theme build` の生成物)のブランドトークン
+(`--color-accent` / `--font-family-*` / `--radius-*` 等)は `:root` ではなく `@layer astryx-theme` の
+`@scope ([data-astryx-theme="maruhi"])` 配下の `:scope` に定義される。`:root` にあるのはデータ可視化色だけ。
+よってテーマを消費するページは `<html data-astryx-theme="maruhi">`(ダッシュボードのルートと同じ印)が要る。
+(2) Workers Static Assets の既定の配信ヘッダーは `Cache-Control: public, max-age=0, must-revalidate` + ETag
+(wrangler dev で実測。Cloudflare の既定と同じ)。ブラウザは毎回再検証するので、名前固定の CSS を差し替えても
+デプロイ直後の読み込みで新版に切り替わる(裁定 G)。(3) 未設定サーバー(`.dev.vars` なしの wrangler dev = e2e)
+でも `GET /auth/cli/verify?flow=…` は一様エラーページ(400 / HTML)を返すため、サーバー配信ページの実配信は
+e2e からスタイル込みで検査できる(裁定 I)。(4) axe は変更前から存在した違反を 1 件見つけた: `/invite` の
+`pre`(横スクロール)が 390px でキーボード到達不能(`scrollable-region-focusable`、serious)。
+
+**A. CSS の置き場と配信** — 列挙: (i) `apps/web/public` の静的アセット(`/invite.css` と同じ経路。同一オリジン・
+セルフホストでも同梱・`write-headers.ts` のバイト等価検査に載る)/ (ii) Worker のルートで CSS を配信(server が
+自己完結するが、api-schema にスタイル用のエンドポイントが混ざり、`index.ts` の `no-store` も外す必要がある)/
+(iii) インライン `<style>` + ハッシュ許可(不変条件で禁止)/ (iv) Worker が CSS をテキストモジュールとして
+バンドルに埋めて配信(ii の変種。web と server の二重管理)/ (v) `/invite.css` と 1 ファイルに共通化する。
+第 1 周の新案: **(i)+(v) = `apps/web/public/pages.css` を /invite とサーバー配信ページの共有スタイルにする**
+(あり)。第 2 周: なし。**選定 = (i)+(v)**。server 側 HTML は `/pages.css` を参照するだけで、実配信の到達性・
+content-type・ソースとの一致は web の e2e が combined 構成(本番と同じ `apps/server/wrangler.jsonc`)で固定する。
+`vite.config.ts` の `PUBLIC_PASSTHROUGH` と `write-headers.ts` の等価検査を `invite.css` → `pages.css` に。
+`_redirects` の `/invite.css` の盾(200 リライト)は不要になり撤去(66 → 65 本)。名前は「儀式」の内部語を
+避けて `pages.css`(用途 = スクリプトなしページ全般)。棄却: (ii)(iv) は上記。(iii) は禁止。
+
+**B. ブランドトークンの取り込み** — session-41 裁定 BB-b(無彩色のみ)を ROADMAP DP4「自己配信 CSS でブランドを
+統一」(所有者裁定 2026-09-03)が上書きする前提で列挙: (i) 無彩色を維持し ㊙ とワードマークだけで示す(所有者
+裁定に反する)/ (ii) hex を手で写す(ADR-0013 違反)/ (iii) `maruhi.css` から生成 + 乖離テスト(`apps/site` の
+`scripts/theme.ts` 方式。生成スクリプト・生成物・抽出器の複製が要る)/ (iv) **`theme/maruhi.css` そのものを
+無変換で `/theme.css` として同梱し、`pages.css` は `var(--…)` で読むだけにする**(生成物 = テーマファイル
+そのもの。24 KB / gzip 4 KB を儀式ページ 1 回ごとに読む)/ (v) `@layer astryx-base` の `:root` ブロックだけ
+ビルド時に抽出(小さい生成器がまた要り、前提の訂正 (1) により肝心のトークンはそこに無い)。第 1 周の新案: (iv)
+(あり — (iii) の利点〔単一の正・乖離ゼロ〕を保ち、生成器と写しを消す)。第 2 周: なし。**選定 = (iv)**。
+`write-headers.ts` がビルド後に `theme/maruhi.css` → `dist/public/theme.css` を複製し、バイト等価を検査する
+(`pages.css` / `invite.html` と同じ契約)。ページは `data-astryx-theme="maruhi"` を `<html>` に持つ(前提の
+訂正 (1))。付随: Astryx の `@layer reset`(`:where(h1…p, code)` の型設定)も同じスコープで効くが、layer の
+中にあるため `pages.css` の unlayered 規則が常に勝つ — 儀式ページの型は `pages.css` だけ読めば分かる。
+`--font-family-body` の先頭の Figtree は読み込まない(ダッシュボードと同じくシステムフォントへ落ちる —
+§1-3)。棄却: (i)(ii)(v) は上記。(iii) は (iv) に含意される。
+
+**C. 共通枠 `page()` の構造** — 列挙: (i) 現状(h1 = 「㊙ maruhi」、ページの題は h2)/ (ii) 文書型の 1 カラム
+(40rem)+ ブランドヘッダー(見出しでない `header` = ロゴ + ワードマーク)+ **ページの題を h1 に**(旧 h2 → h1、
+h3 → h2)/ (iii) `login` テンプレート型の中央カード(ダッシュボードのサインインと同形。案内ページのような
+長文には向かず、モバイルでは結局全幅)/ (iv) `/invite` と同型(= 文書型)。第 1 周の新案: (ii)+(iv) を 1 つの
+枠に統合し、`/invite` も同じ枠へ寄せる(あり)。第 2 周: なし。**選定 = (ii)+(iv)**。ロゴ: (a) 絵文字 ㊙ の
+テキスト(現状)/ (b) **`<img src="/logo-inverted.svg">` + `img-src 'self'`**(DP3 裁定 J 改訂 3 と同じ実資産・
+同じ朱固定)/ (c) インライン SVG の currentColor(パスの二重管理 — DP3 で棄却済み)/ (d) CSS の
+background-image(同じく `img-src 'self'` が要り、代替テキストの制御が減る)→ **(b)**。CSP は meta と
+ヘッダーの両方で `style-src 'self'; img-src 'self'` に広げ(`'unsafe-inline'`・ハッシュは無し)、`/invite` の
+per-path CSP も同じ形にした。`<meta name="color-scheme">` を CSS 到着前のダーク描画のために置き、favicon の
+`<link rel="icon">` を SPA と同じく載せる。
+
+**D. 確認コードの視認性(フィッシングガードの UX)** — 文字集合の確認: `generateUserCode`(cli-flow.ts)は
+Crockford Base32 の 32 字(I / L / O / U 除外)× 8 字を `XXXX-XXXX` で表示する。残る混同候補は 0 / D、8 / B、
+5 / S、2 / Z。列挙: (i) システム等幅を大きく(2.5rem)・字間 0.14em・単独の要素に置く / (ii) 等幅フォントを
+自己配信(§1-3 の「問題があれば足す」)/ (iii) `font-variant-numeric: slashed-zero`(フォントが `zero` 機能を
+持つときだけ効く。無ければ何も起きない)/ (iv) 群ごとに `span` に分けて間隔を広げる / (v) 文字種を色で塗り分ける
+(コードの一部を強調する形は「ここだけ見ればよい」と誤読させる)。第 1 周の新案: (i)+(iii)(あり — 自己配信
+フォント無しで 0 / D の判別を得る)。第 2 周: なし。**選定 = (i)+(iii)**。実機(Linux Chromium: Liberation Mono /
+DejaVu Sans Mono)では 0 が斜線付きで D と判別でき、8 / B・5 / S・2 / Z も判別できた(スクリーンショット)。
+macOS の SF Mono / Menlo と Windows の Consolas は既定または `zero` で斜線 / 点付きの 0 を持つ。**自己配信の
+等幅フォントは提案しない**(問題が出なかった。CLI 側の表示は DP5)。文言は「Approve only if this code matches
+the one shown in your terminal.」を太字で維持し、コードは "Confirmation code" のラベル付きの面に置く。
+**Approve / Deny の区別**: (a) Approve = accent 塗り + on-accent、Deny = 同サイズの outline、順序は Approve →
+Deny / (b) Deny を先に置く(読み順で拒否が先に目に入るが、正当な利用のたびに逆順を踏ませる)/ (c) 両方
+outline(区別が付かない)/ (d) Approve の前に「一致を確認した」チェックボックス(スクリプトなしで必須化は
+`required` で可能だが、承認の資格はチケットであり、形だけの摩擦を増やす)→ **(a)**。テキスト入力欄が無いので
+Enter の暗黙送信は起きず、焦点はどちらのボタンにも自動では当たらない。
+
+**E. サインアップ案内・拒否ページの文言と構成(H6 の明示項目)** — 列挙: (i) 文言はそのままで見た目だけ /
+(ii) **4 系統(closed / invite-required / invite-invalid / CLI からの案内 × signupPolicy 3 種)を同じ 3 段に揃える:
+何が起きたか(h1 + 1 文)→ 何が起きていないか(`outcome` 行 = 左に accent の線)→ 次にできること(h2 + 箇条書き)**
+/ (iii) closed と invite-required を 1 枚に(ポリシーは公開情報で、出し分けは失敗理由の出し分けではないので
+分ける価値が残る)/ (iv) 理由を詳しく出す(§3 / §4-2 の一様性に反する — 禁止)。**選定 = (ii)**。拒否 3 枚の
+outcome 行は「No account was created.」、CLI 案内は「Nothing has been created or changed by opening this
+page.」、一様エラーと拒否完了は「No token was issued.」。一様性は不変(invite-invalid は無効 / 失効 / 消費済みを
+出し分けず、エラーページはフロー状態を出し分けない)。waitlist の収集面は作らず「contact the operator of this
+server」まで(hosted-design.md §2-2)。既存テストの断言は文言の変更に追随させただけ(`no account was\n
+created` → `No account was created.`)。
+
+**F. `/invite` の扱い** — 列挙: (i) `invite.css` を残して見た目だけ寄せる(2 つの CSS が同じ規則を持つ)/ (ii)
+**共通枠(`/theme.css` + `/pages.css` + ブランドヘッダー)へ移し、独立静的アセットとしての構成(per-path CSP・
+`write-headers.ts` の機械検査・near-miss の 301)はそのまま** / (iii) `/invite` をサーバー配信に移す(§15-3 の
+「独立静的アセット」の構成そのものが変わる — 棄却)。**選定 = (ii)**。h1 は「You have been invited to a maruhi
+project」(旧 h1 はブランド名)。`pre` に `tabindex="0"`(前提の訂正 (4) の修正 — 共有の焦点リングが付く)。
+機械検査は `src="/logo-inverted.svg"`(ルート相対)を既存規則で通し、`img-src 'self'` を meta と per-path CSP の
+両方に足した。e2e の「`/invite.css` が盾で素通しされる」断言は対象が無くなったため外し、`/invite` 自身の 200 だけ
+を残した。
+
+**G. CSS 更新の反映(キャッシュ)** — 列挙: (i) **何もしない**(前提の訂正 (2): 既定が毎回再検証)/ (ii) HTML 側で
+`?v=<hash>` を付ける(server が web のビルドハッシュを知る経路が要る)/ (iii) コンテンツハッシュ名(名前が安定
+せず、サーバー描画 HTML から参照できない — session-41 BB-c と同じ)/ (iv) `_headers` に明示の `cache-control`
+(既定と同値を書くだけ)。**選定 = (i)** + e2e で `/theme.css` / `/pages.css` の `must-revalidate` と ETag を
+固定(既定が変わったら気付く)。Worker 応答(`no-store`)の HTML が古い CSS を掴む窓は「デプロイ直後に
+再検証が 304 を返す」ケースだけで、ETag は内容から計算されるため起きない。
+
+**H. a11y** — 方法は DP3 裁定 E と同じ(axe-core を一回性で注入 — 依存を増やさない)。範囲: 11 ページ × light /
+dark / 390px light / 390px dark = **44 態で違反 0**(wcag2a / 2aa / 21a / 21aa / best-practice)。見出し階層は
+h1 = ページの題 → h2 = 節(What will be granted / What you can do / What to do next / Accept the invite)。
+ランドマークは `header`(banner)→ `main`。焦点リングは accent 2px offset 2px(DP3 E-(e) と同じ見え方)。
+コントラストはテーマ値(text-primary / secondary on body、on-accent on accent、accent のリンク)で、axe の
+color-contrast 指摘なし。直したもの: `/invite` の `pre`(F)。
+
+**I. 目視とスクリーンショットの方法** — 列挙: (i) **描画関数(`render*`)に固定入力を与えて HTML を書き出し、
+`pages.css` / `theme.css` / ロゴと同一オリジンで配信して Chromium で撮る(scratchpad の一回性スクリプト。
+配信物は触らない)**、`/invite` だけ実配信(wrangler dev)/ (ii) 実フロー(`POST /auth/cli/start` → verify →
+GitHub OAuth)を通す(OAuth App が要る — 本セッションでは不能)/ (iii) 配信物にプレビュー用ルートやモック
+データを入れる(禁止)。**選定 = (i)**。加えて e2e が実配信の一様エラーページ(前提の訂正 (3))を Chromium で
+開き、`.page` の幅(40rem)・body の背景色(テーマの変数が解決されたこと)・ロゴの読込・CSP 違反 0・
+script 要素 0 を検査する。before / after は 11 ページ × 4 態 = 各 44 枚(PR 本文の Artifact)。
+
+**新たに出た裁定点**: (J) スタイルシートのパス定数 `PAGE_STYLESHEETS` を export していたが消費者が無く fallow
+の dead export に当たった → 非公開に(参照先の到達性は e2e が担う)。(K) 承認ページの正常系テストに CSP /
+スタイルの断言を足したら cyclomatic 13 で fallow の複雑度閾値に当たった → `expectStyledScriptFreePage` ヘルパー
+に抽出(ヘッダー / meta の両 CSP で `style-src 'self'` / `img-src 'self'` / `'unsafe-inline'` なし / ハッシュ
+なし、`<link>` 2 本、script / style 要素・style 属性なし)。(L) 承認ページの付与内容は `<ul>` から `<dl>`
+(ラベル / 値。狭い幅では 1 列)に。tokenName は `<code>` の不活性描画のまま、補足「Chosen by the requester,
+shown verbatim.」を `<small>` に分離。
+
+**B 改訂 1(2026-09-05、pullfrog の初回レビュー — 未定義トークン)**: 指摘 = `pages.css` が参照する
+`--font-weight-semibold` / `--font-weight-medium` は `theme/maruhi.css` では**参照されるだけで定義されず**
+(定義は Astryx core の `astryx.css` にあり、ダッシュボードはそれを追加で読むが儀式ページは読まない)、
+未解決の `var()` が invalid at computed-value time で無言に落ちて、h1 / h2 / `strong`(フィッシングガードの
+一文)/ outcome 行の太字が全部消えていた。目視・axe・e2e のどれも捕まえられない欠陥(スクリーンショットは
+同じ 2 本の CSS を配信するので同じ欠落を再現し、axe は太さを見ず、e2e は背景色しか見ていなかった)。
+列挙: (i) `defineTheme` の `tokens` に `--font-weight-*` を足して `theme:build`(テーマは本 PR の範囲外 —
+触るなら所有者確認)/ (ii) `pages.css` に数値(600 / 500)を書く(Astryx の値の写し)/ (iii) **CSS の
+キーワード `bold` を使う**(h1 / h2 / `strong` は UA 既定が bold なので宣言を置き換えるだけ、brand と
+outcome 行も `bold`。`.code-label` と `.button` の medium は落とす — 大文字 + 字間 / 塗りで足りる)/ (iv)
+`var(--font-weight-semibold, bold)` のフォールバック(後述の機械検査が「未定義だが許容」の例外を持つことに
+なる)/ (v) Astryx core の stylesheet も同梱(数十 KB・儀式ページに不要な規則)。第 1 周の新案: 「参照集合 ⊆
+定義集合」を `write-headers.ts` でビルド時に検査する(あり — 方式の如何に依らず同種の欠陥を構成で塞ぐ)。
+第 2 周: なし。**選定 = (iii) + 機械検査**。テーマに `tokens` を足す (i) は所有者の判断として PR に残す
+(semibold 600 を儀式ページで使うなら `maruhi.ts` への追加が正で、その時は `pages.css` を `var()` に戻す)。
+検査は `pages.css` の `var(--…)` を集め、`theme/maruhi.css` の `--…:` 定義集合との差が空でなければ throw
+(旧 `pages.css` に当てると 2 件を検出、新版は 0 件)。e2e に h1 / outcome 行の `font-weight` = 700 を追加。
+同じレビューで「`theme.css` のバイト等価検査は同じスクリプトが直前に書いた 2 ファイルを比べるだけで
+常に一致する(担保になっていない)」も受け、等価検査の対象から `theme.css` を外し(`invite.html` /
+`pages.css` は vite の publicDir コピーを経由するので意味がある)、`/theme.css` の契約は上のトークン解決
+検査が担う形に改めた。
+**改訂 1 の追補(pullfrog 再レビュー)**: 検査が名前の存在しか見ておらず、「定義はあるが値が Astryx core の
+トークンを `var()` で参照する」もの(`theme/maruhi.css` に `--text-heading-1-weight: var(--font-weight-semibold)`
+等が 16 種以上)を `pages.css` が使うと通ってしまう穴を指摘された → 定義を `Map<名前, 値>` で持ち、値の
+`var()` を再帰的に辿って未定義に当たったら経路つきで落とす形に(合成 CSS `var(--text-heading-1-weight)` で
+`--text-heading-1-weight -> --font-weight-semibold` を検出することを確認)。
+
+**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。サーバーの
+auth / signup-policy テスト 87 件通過。web e2e 30 件通過(`/theme.css` `/pages.css` の実配信・バイト一致・
+再検証ヘッダー、一様エラーページのスタイル適用と太さを追加)。axe 44 態で違反 0。スクリーンショット
+before / after 各 44 枚(改訂 1 後に撮り直し)、CSP 違反 0。
+
 ## 6. スコープ外
 
 - 手動ダークトグル・**ダッシュボード(TCB)側の** Web フォント自己配信(必要になったら再訪 — §1-2 / §1-3)

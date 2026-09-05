@@ -283,6 +283,30 @@ const startWithPayload = (payload: unknown): Promise<Response> =>
     body: JSON.stringify(payload),
   });
 
+/**
+ * スクリプトなしページの配信規律(DP4): スタイルは自己配信の外部 CSS のみ。ヘッダーと
+ * meta の両方の CSP が style-src / img-src を 'self' に限定し、inline の許可
+ * ('unsafe-inline' / ハッシュ)を持たず、HTML にも script / style 要素・style 属性が無い。
+ * 参照先(/theme.css / /pages.css)の実配信は apps/web の e2e が固定する。
+ */
+function expectStyledScriptFreePage(response: Response, html: string): void {
+  const metaCsp =
+    html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] ?? "";
+  for (const csp of [response.headers.get("content-security-policy") ?? "", metaCsp]) {
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'none'");
+    expect(csp).toContain("style-src 'self'");
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).not.toContain("unsafe-inline");
+    expect(csp).not.toContain("sha256-");
+  }
+  expect(html).toContain('<link rel="stylesheet" href="/theme.css" />');
+  expect(html).toContain('<link rel="stylesheet" href="/pages.css" />');
+  expect(html).not.toContain("<script");
+  expect(html).not.toContain("<style");
+  expect(html).not.toContain(" style=");
+}
+
 describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハンドオフ)", () => {
   it("start → verify → callback → approve → poll で PAT を単回発行する(§4-1 正常系)", async () => {
     await seedUser("user-cli-0001", 901);
@@ -316,6 +340,9 @@ describe("CLI ログイン(AUTH_SPEC §4 — サーバー仲介 web-flow ハン�
     expect(callback.headers.get("referrer-policy")).toBe("no-referrer");
     const html = await callback.text();
     expect(html).toContain(started.userCode);
+    expectStyledScriptFreePage(callback, html);
+    // 確認コードはページ最大の要素として単独の要素に載る(照合 UX — §4-1 (4))
+    expect(html).toContain(`<code class="user-code">${started.userCode}</code>`);
     // 認証済みアイデンティティと付与内容の表示
     expect(html).toContain("user901");
     expect(html).toContain("cli-test");

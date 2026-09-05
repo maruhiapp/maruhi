@@ -7,8 +7,9 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 // publicDir の無変換コピーを layer-split の HTML 注入から守る。
-// write-headers.ts がバイト等価を検査する対象と揃える。
-const PUBLIC_PASSTHROUGH = ["invite.html", "invite.css"] as const;
+// write-headers.ts がバイト等価を検査する対象と揃える(pages.css は /invite と
+// サーバー配信の儀式ページが共有する自己配信スタイル — DP4)。
+const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
 // FunStack は Vite 環境を rsc / client / ssr に分ける。ssr は JS のみで
 // CSS を出さない。@astryxdesign/build 0.5.2 の astryx-build-layer-split は
