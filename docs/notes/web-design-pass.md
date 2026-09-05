@@ -750,6 +750,14 @@ h2)。(b) `test/screenshots.ts` の s8 が Revoke クリック後に dialog を�
 スクリーンショットが改訂 10 とバイト一致した — 以前は競合で揺れていた)。(c) vendored heroicons
 (5 パス)に MIT のライセンス本文が同梱されていなかった → `src/dashboard/MIT-heroicons.txt`
 (フォントの `public/fonts/OFL-*.txt` と同じく、写した資産の隣に置く)+ icons.tsx 冒頭に参照。
+(d) レビュー本文の指摘「axe 24 態の証拠は非空の画面だけ」— fixtures は全件非空で、空状態と
+FailureNotice の状態は一度も監査を通っていなかった(実際 (a) は空状態だけの違反)。
+`test/screenshots.ts` に `empty` モード(各集合を空で返す mock)と空状態 6 態(projects /
+audit〔project・self〕/ rotation / invites / tokens)を追加し、axe を空状態 7 画面 × light /
+mobile = 14 態で実行(違反 0。見出し階層: 見出しの無い箱は h1 → h2、Environments の空状態は
+h1 → h2 → h3)。裁定 E の「違反 0」の範囲は「fixtures の非空 24 態 + 空状態 14 態」と明示する
+(FailureNotice の状態は未監査 — Banner の単純な構造で、次の候補)。(e) nit: ProjectScreen の
+`Banner` import を先頭コメントの下へ、shared.tsx からの import を辞書順に。
 
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。

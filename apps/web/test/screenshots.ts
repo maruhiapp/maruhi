@@ -2,7 +2,8 @@
 //
 // 配信物にプレビュー用ルートやモックデータを混ぜず、e2e と同じ page.route で API だけを
 // 差し替えて実配信(wrangler dev)を Chromium で描く。light / dark / mobile(390px)の
-// 3 態で撮り、CSP 違反があれば失敗する。
+// 3 態で撮り、CSP 違反があれば失敗する。各集合の空状態(`empty`)も撮る — fixtures は
+// 全件非空なので、空状態はここで明示しない限り一度も描かれない(見出し階層が変わる)。
 //
 //   bun run --filter @maruhi/web build
 //   bun run --filter @maruhi/web preview   # 別ターミナル(port 8788)
@@ -44,8 +45,15 @@ function before(route: Route): string | null {
   return new URL(route.request().url()).searchParams.get("before");
 }
 
-/** 全消費面のモック。admin=false は監査 invites 軸 / S8 が 403(役割文言)になる。 */
-async function mockApi(page: Page, opts: { signedIn: boolean; admin: boolean }): Promise<void> {
+/**
+ * 全消費面のモック。admin=false は監査 invites 軸 / S8 が 403(役割文言)になる。
+ * empty=true は各集合を空で返す(空状態 — 見出し階層は集合があるときと変わるので、
+ * axe / 目視の対象に含める。pullfrog 指摘: 空状態は fixtures だけでは決して描かれない)。
+ */
+async function mockApi(
+  page: Page,
+  opts: { signedIn: boolean; admin: boolean; empty: boolean },
+): Promise<void> {
   await page.route("**/auth/me", (r) =>
     opts.signedIn ? json(r, 200, meFixture) : json(r, 401, { _tag: "Unauthorized" }),
   );
@@ -55,7 +63,11 @@ async function mockApi(page: Page, opts: { signedIn: boolean; admin: boolean }):
       json(
         r,
         200,
-        new URL(r.request().url()).searchParams.has("after") ? projectsPage2 : projectsPage1,
+        opts.empty
+          ? { projects: [] }
+          : new URL(r.request().url()).searchParams.has("after")
+            ? projectsPage2
+            : projectsPage1,
       ),
   );
   await page.route(
@@ -73,7 +85,7 @@ async function mockApi(page: Page, opts: { signedIn: boolean; admin: boolean }):
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/audit/events`,
     (r) => {
-      if (before(r) !== null) return json(r, 200, { events: [] });
+      if (opts.empty || before(r) !== null) return json(r, 200, { events: [] });
       // admin 未満の応答には seq が載らない(AUDIT_SPEC §7)
       const events = opts.admin
         ? projectAuditEvents.events
@@ -87,11 +99,14 @@ async function mockApi(page: Page, opts: { signedIn: boolean; admin: boolean }):
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/rotation/flags`,
-    (r) => json(r, 200, rotationFlagsFixture),
+    (r) => json(r, 200, opts.empty ? { flags: [] } : rotationFlagsFixture),
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/invites`,
-    (r) => (opts.admin ? json(r, 200, invitationsFixture) : json(r, 403, FORBIDDEN)),
+    (r) =>
+      opts.admin
+        ? json(r, 200, opts.empty ? { invitations: [] } : invitationsFixture)
+        : json(r, 403, FORBIDDEN),
   );
   await page.route(
     (u) => u.pathname.startsWith(`/projects/${NO_SUCH_PROJECT}/`),
@@ -99,11 +114,11 @@ async function mockApi(page: Page, opts: { signedIn: boolean; admin: boolean }):
   );
   await page.route(
     (u) => u.pathname === "/auth/tokens",
-    (r) => json(r, 200, tokensFixture),
+    (r) => json(r, 200, opts.empty ? { tokens: [] } : tokensFixture),
   );
   await page.route(
     (u) => u.pathname === "/auth/audit/events",
-    (r) => json(r, 200, before(r) !== null ? { events: [] } : selfAuditEvents),
+    (r) => json(r, 200, opts.empty || before(r) !== null ? { events: [] } : selfAuditEvents),
   );
 }
 
@@ -114,6 +129,8 @@ interface Shot {
   act?: (page: Page) => Promise<void>;
   signedIn?: boolean;
   admin?: boolean;
+  /** 集合を空で描く(空状態の見出し階層・文言の確認用)。 */
+  empty?: boolean;
 }
 
 const projectPath = `/dashboard/projects/${PROJECT_1}`;
@@ -196,6 +213,46 @@ const SHOTS: ReadonlyArray<Shot> = [
     },
   },
   { name: "s9-tokens", path: "/dashboard/tokens", ready: "[data-testid=token-table]" },
+  // 空状態(見出しの無い箱では空状態の見出しが h2 — shared.tsx の EmptyNotice)
+  {
+    name: "s4-projects-empty",
+    path: "/dashboard",
+    ready: "[data-testid=project-empty]",
+    empty: true,
+  },
+  {
+    name: "s6-audit-empty",
+    path: projectPath,
+    ready: "[data-testid=member-table]",
+    empty: true,
+    act: (page) => openTab(page, "Audit", "[data-testid=audit-list-project-empty]"),
+  },
+  {
+    name: "s6-account-empty",
+    path: "/dashboard/account",
+    ready: "[data-testid=audit-list-self-empty]",
+    empty: true,
+  },
+  {
+    name: "s7-rotation-empty",
+    path: projectPath,
+    ready: "[data-testid=member-table]",
+    empty: true,
+    act: (page) => openTab(page, "Rotation flags", "[data-testid=rotation-empty]"),
+  },
+  {
+    name: "s8-invites-empty",
+    path: projectPath,
+    ready: "[data-testid=member-table]",
+    empty: true,
+    act: (page) => openTab(page, "Invites", "[data-testid=invite-empty]"),
+  },
+  {
+    name: "s9-tokens-empty",
+    path: "/dashboard/tokens",
+    ready: "[data-testid=token-empty]",
+    empty: true,
+  },
 ];
 
 const MODES = [
@@ -226,7 +283,11 @@ try {
           violations.push(`${shot.name}/${mode.name}: ${message.text()}`);
         }
       });
-      await mockApi(page, { signedIn: shot.signedIn ?? true, admin: shot.admin ?? true });
+      await mockApi(page, {
+        signedIn: shot.signedIn ?? true,
+        admin: shot.admin ?? true,
+        empty: shot.empty ?? false,
+      });
       await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle" });
       await page.locator(shot.ready).first().waitFor();
       if (shot.act) await shot.act(page);

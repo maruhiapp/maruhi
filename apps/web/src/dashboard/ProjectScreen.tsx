@@ -1,6 +1,5 @@
 "use client";
 
-import { Banner } from "@astryxdesign/core/Banner";
 // S5 プロジェクト概要 / S6 監査(project・invites 軸)/ S7 要ローテーション
 // フラグ(設計文書 §3)。読み取りのみ・全表示はサーバー申告(§4)。
 //
@@ -11,6 +10,7 @@ import { Banner } from "@astryxdesign/core/Banner";
 //   403 は役割文言のまま表示する(タブを事前に隠す role 判定は置かない)
 // - S7: dismiss は置かない(ADR-0018 改訂 2 の境界原則 — 警告の消去)。
 //   CLI `maruhi rotation dismiss` への静的案内のみ
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
@@ -35,12 +35,12 @@ import {
   Callout,
   EmptyNotice,
   FailureNotice,
-  ServerTime,
   HexText,
   LoadingRow,
   RoleToken,
   SectionBlock,
   SECTION_GAP,
+  ServerTime,
 } from "./shared.tsx";
 import type {
   AuditEventsPage,
