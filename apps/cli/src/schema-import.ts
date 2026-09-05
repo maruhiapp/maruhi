@@ -383,9 +383,12 @@ function approveCandidate(
       description: entry.descriptionCandidate,
     };
     if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
+      // 候補の提示(approvalStep の describeCandidate)より前に出るので、項目に
+      // ぶら下がる prompt スコープにはしない(字下げが直前の項目に付いてしまう
+      // — PR #151 Bugbot 指摘)。行番号を含むので候補ごとに一意で、再試行で
+      // 繰り返す必要もない(捨てたのは 1 回)
       yield* logNote(
         `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
-        { scope: "prompt" },
       );
       draft.description = "";
     }
