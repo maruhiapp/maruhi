@@ -14,6 +14,7 @@ import { Context, Effect, Redacted } from "effect";
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 
 /** Child-process boundary: inject values, inherit non-maruhi env + stdio. */
@@ -236,7 +237,7 @@ export function buildInjectionEnv(
       if (seenUpper.has(upper)) {
         return yield* Effect.fail(
           cliError(
-            `Variable names collide differing only by letter case (they become the same env var on Windows): ${displayText(variable.name)}`,
+            `Variable names collide differing only by letter case (they become the same environment variable on Windows): ${displayText(variable.name)}`,
           ),
         );
       }
@@ -249,14 +250,14 @@ export function buildInjectionEnv(
       if (!SAFE_ENV_NAME.test(variable.name)) {
         return yield* Effect.fail(
           cliError(
-            `The variable name cannot be injected as an env var (names may use only alphanumerics and _, starting with a letter or _): ${displayText(variable.name)}`,
+            `The variable name cannot be injected as an environment variable (names may use only alphanumerics and _, starting with a letter or _): ${displayText(variable.name)}`,
           ),
         );
       }
       if (isDeniedEnvName(variable.name)) {
         return yield* Effect.fail(
           cliError(
-            `Refusing to inject variable name ${displayText(variable.name)}: it is an execution-control env var (rename the variable)`,
+            `Refusing to inject variable name ${displayText(variable.name)}: it is an execution-control environment variable (rename the variable)`,
           ),
         );
       }
@@ -268,14 +269,14 @@ export function buildInjectionEnv(
       if (value === null) {
         return yield* Effect.fail(
           cliError(
-            `The value of variable ${displayText(variable.name)} is not valid UTF-8 (it cannot be injected as an env var)`,
+            `The value of variable ${displayText(variable.name)} is not valid UTF-8 (it cannot be injected as an environment variable)`,
           ),
         );
       }
       if (value.includes("\0")) {
         return yield* Effect.fail(
           cliError(
-            `The value of variable ${displayText(variable.name)} contains NUL (it cannot be injected as an env var)`,
+            `The value of variable ${displayText(variable.name)} contains NUL (it cannot be injected as an environment variable)`,
           ),
         );
       }
@@ -325,9 +326,8 @@ export function enforceDeclaredPresence(
       .map((variable) => displayText(variable.name))
       .toSorted();
     if (optional.length > 0) {
-      const io = yield* CliIo;
-      yield* io.logError(
-        `Note: declared variables without values were not injected (declared as not required): ${optional.join(", ")}`,
+      yield* logNote(
+        `declared variables without values were not injected (declared as not required): ${optional.join(", ")}`,
       );
     }
   });

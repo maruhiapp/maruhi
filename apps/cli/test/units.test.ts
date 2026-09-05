@@ -247,6 +247,7 @@ describe("showValues(復号後の防衛線)", () => {
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
     stderrIsTerminal: () => true,
+    colorEnabled: () => false,
     openBrowser: () => Effect.succeed(false),
   });
 
@@ -276,7 +277,7 @@ describe("showValues(復号後の防衛線)", () => {
     // (一次 = TTY / 二次 = エージェント検出)であることを固定する
     const piped = await showOne({ stdinIsTerminal: true, stdoutIsTerminal: false });
     expect(Exit.isFailure(piped)).toBe(true);
-    expect(JSON.stringify(piped)).toContain("only allowed on an interactive terminal");
+    expect(JSON.stringify(piped)).toContain("not both an interactive terminal");
     expect(JSON.stringify(piped)).not.toContain("plaintext-value");
 
     const headless = await showOne({ stdinIsTerminal: false, stdoutIsTerminal: true });
@@ -311,6 +312,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      colorEnabled: () => false,
       openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
@@ -348,6 +350,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      colorEnabled: () => false,
       openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
@@ -389,6 +392,7 @@ describe("showValues(復号後の防衛線)", () => {
       envVar: () => undefined,
       agentProfile: () => ({ isAgent: false }),
       stderrIsTerminal: () => true,
+      colorEnabled: () => false,
       openBrowser: () => Effect.succeed(false),
     });
     const exit = await Effect.runPromiseExit(
@@ -851,7 +855,7 @@ describe("MARUHI_TOKEN 環境変数経路", () => {
     await runCli(["key", "show"], nearEnv.layer);
     const nearErrors = nearEnv.errors.join("\n");
     expect(nearErrors).toContain("Warning: the maruhi token expires on");
-    expect(nearErrors).toContain("Re-login with `maruhi login`");
+    expect(nearErrors).toContain("Sign in again with `maruhi login`");
     // 警告は判定に通信を要しない(サーバーへ 1 リクエストも飛ばない)
     expect(server.requests).toHaveLength(0);
 

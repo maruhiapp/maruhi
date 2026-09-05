@@ -70,11 +70,15 @@ export function ensureSensitiveTerminalAllowed(input: {
   });
 }
 
-/** 既知エージェントを検出したときの拒否文(名前は診断のためだけに出す)。 */
+/**
+ * 既知エージェントを検出したときの拒否文(名前は診断のためだけに出す)。
+ * 文面の順は「何が拒否されたか → なぜ → どうすればよいか」(DP5 裁定 G —
+ * 判定の意味論は不変)。
+ */
 function agentRejection(name: string | undefined): CliError {
-  const detected = name === undefined ? "" : `: ${name}`;
+  const detected = name === undefined ? "" : ` (${name})`;
   return cliError(
-    `Refused to display values because an AI agent environment was detected${detected}. If you need to inspect a value, run this yourself on an interactive terminal`,
+    `Refused to display values: an AI agent environment was detected${detected}. Values are shown only to a person at an interactive terminal, so they never land in an agent's transcript. Run this command yourself in a terminal`,
   );
 }
 
@@ -99,7 +103,7 @@ export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdi
       // 「知っているものを止める」ではなく「人間の端末だけ通す」
       return yield* Effect.fail(
         cliError(
-          "Displaying values is only allowed on an interactive terminal (pipes, redirects, CI, and AI agents are refused). Run this as a human on an interactive terminal",
+          "Refused to display values: stdin and stdout are not both an interactive terminal. Values are shown only to a person at a terminal (pipes, redirects, CI, and AI agents are refused), so they never land in a file or a log. Run this command yourself in a terminal, without redirecting its input or output",
         ),
       );
     }

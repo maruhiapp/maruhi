@@ -476,7 +476,7 @@ describe("maruhi member add", () => {
     ]);
     const errors = env.errors.join("\n");
     expect(errors).toContain("slot remains empty");
-    expect(errors).toContain("re-run maruhi member add to resume");
+    expect(errors).toContain("re-run `maruhi member add` to resume");
   });
 
   it("儀式(最終語再入力)を通しても追加でき、エージェント環境ではフラグなしを拒否する", async () => {
@@ -521,7 +521,9 @@ describe("maruhi member add", () => {
     const env2 = await startAddEnv(state2, built.projectId);
     env2.setAgent({ isAgent: true });
     expect(await runCli(["member", "add"], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("the acceptance-key confirmation ceremony cannot run");
+    expect(env2.errors.join("\n")).toContain(
+      "Refused to run the acceptance-key confirmation ceremony",
+    );
     expect(state2.appendedEntries).toHaveLength(0);
   });
 
@@ -741,7 +743,7 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env1.layer),
     ).toBe(1);
-    expect(env1.errors.join("\n")).toContain("pass it explicitly: maruhi member add <invite-id>");
+    expect(env1.errors.join("\n")).toContain("pass it explicitly: `maruhi member add <invite-id>`");
     expect(state1.appendedEntries).toHaveLength(0);
 
     // id 明示: completed 行 + 同一鍵在籍 → 追記せずバックフィルのみ再開する

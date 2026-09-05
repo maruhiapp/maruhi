@@ -1479,7 +1479,7 @@ describe("maruhi env rotate", () => {
     expect(state.rotateBodies).toHaveLength(3);
     const errors = env.errors.join("\n");
     expect(errors).toContain("values-digest-mismatch");
-    expect(errors).toContain("Re-run maruhi env rotate to rebuild the checkpoint");
+    expect(errors).toContain("Re-run `maruhi env rotate` to rebuild the checkpoint");
     // intent 規律(3-F)× 有界再試行の cross-layer(PR-F4): 422 は確定拒否
     // (isServerRejection)なので 3 試行分の intent はすべて rejected で閉じ、
     // 未解決 intent の積み残しも床の前進もない(次の実行に照合義務を残さない)。

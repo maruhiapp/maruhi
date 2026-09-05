@@ -100,7 +100,7 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
   if (error.reason === "server-key-unconfigured") {
     return "This deployment has no server key configured (server-key-unconfigured), so leases cannot be issued. The server administrator should complete the setup in docs/SELF_HOSTING.md";
   }
-  return "The lease is authorized, but the epoch DEKs have not been re-wrapped to the server key yet (server-wraps-missing). An administrator should complete the pending rotation or grant backfill (maruhi env rotate / maruhi server grant), then retry";
+  return "The lease is authorized, but the epoch DEKs have not been re-wrapped to the server key yet (server-wraps-missing). An administrator should complete the pending rotation or grant backfill (`maruhi env rotate` / `maruhi server grant`), then retry";
 }
 
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {

@@ -688,7 +688,7 @@ describe("maruhi env diff", () => {
 
       expect(await runCli(["env", "diff", DEV, "not a valid id"], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: maruhi env diff dev prod)",
+        "maruhi: Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: `maruhi env diff dev prod`)",
       ]);
       expect(env.errors[0]).not.toContain("not a valid id");
       expect(lastServer().requests).toEqual([]);

@@ -732,7 +732,7 @@ describe("maruhi ci run(token-replayed / レート制限 / 503)", () => {
       }),
     ]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("maruhi env rotate / maruhi server grant");
+    expect(env.errors.join("\n")).toContain("`maruhi env rotate` / `maruhi server grant`");
   });
 
   it("404 は lease 特有の一様応答として直し先(座標 / grant / ポリシー)を案内する", async () => {

@@ -220,7 +220,7 @@ export async function checkCheckpointIntegrity(input: {
     // サーバーが保存行を持たない形(通常は到達しない — 保存は受理と原子的
     // §16-2)は新しい checkpoint の発行が基準と保存行を揃え直す
     return rejected(
-      `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). If the server predates the snapshot-distribution release, update the server first; if the server is current, a project member can re-establish a distributable baseline by issuing a fresh checkpoint: maruhi project checkpoint`,
+      `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). If the server predates the snapshot-distribution release, update the server first; if the server is current, a project member can re-establish a distributable baseline by issuing a fresh checkpoint: \`maruhi project checkpoint\``,
     );
   }
   if (baseline === undefined) {

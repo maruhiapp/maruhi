@@ -48,6 +48,7 @@ import { countNoun, displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
@@ -237,7 +238,7 @@ export function scanPaths(paths: readonly string[]): Effect.Effect<LintScan, Cli
 }
 
 const BEST_EFFORT_NOTE =
-  "Note: this is a best-effort static scan of literal references — dynamic access " +
+  "this is a best-effort static scan of literal references — dynamic access " +
   "(e.g. process.env[name]), unsupported languages and generated code are not seen, " +
   "so an empty report is not a guarantee that code and schema agree. Variables " +
   "declared but not read here may be consumed dynamically or by another repository";
@@ -292,7 +293,7 @@ export function schemaLintOp(input: {
     }
     // best-effort の注意書きは結論に依らず常に出す(検査の欠落 ≠ 保証の欠落 —
     // stderr: 助言でありコマンドの出力ではない)
-    yield* io.logError(BEST_EFFORT_NOTE);
+    yield* logNote(BEST_EFFORT_NOTE);
     if (undeclared.length > 0) {
       return yield* Effect.fail(
         cliError(

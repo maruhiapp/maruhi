@@ -37,6 +37,6 @@ export function parseUserFingerprintFlag(
   return parseFingerprintFlag(
     flagName,
     value,
-    "a user key fingerprint is 32 lowercase hex characters — the key fingerprint shown by maruhi key show",
+    "a user key fingerprint is 32 lowercase hex characters — the key fingerprint shown by `maruhi key show`",
   );
 }

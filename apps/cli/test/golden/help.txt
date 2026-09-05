@@ -1,0 +1,992 @@
+$ maruhi
+DESCRIPTION
+  Diskless secrets manager: values are encrypted end-to-end and decrypted only in memory, never written to disk
+
+USAGE
+  maruhi <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  login       Sign in by approving a request in your browser, and store the token in the OS keychain
+  logout      Revoke this machine's token and remove it from the OS keychain
+  pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
+  run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
+  push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
+  ci          Commands for CI jobs (run)
+  env         Manage environments (create / rotate / diff)
+  server      Manage selective disclosure to the server (grant / revoke)
+  invite      Manage invites (create / accept / list / revoke)
+  member      Manage members (add / remove / change-role)
+  key         Manage your master key (generate / show / recover / recovery)
+  project     Manage projects (init / list / verify / anchor / checkpoint)
+  rotation    Manage rotation flags (list / dismiss)
+  audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
+  config      Manage non-secret settings (get / set). Secrets are never stored here
+  schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
+  var         Manage variables (rm). push / pull / run operate on values directly
+
+$ maruhi --help
+DESCRIPTION
+  Diskless secrets manager: values are encrypted end-to-end and decrypted only in memory, never written to disk
+
+USAGE
+  maruhi <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  login       Sign in by approving a request in your browser, and store the token in the OS keychain
+  logout      Revoke this machine's token and remove it from the OS keychain
+  pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
+  run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
+  push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
+  ci          Commands for CI jobs (run)
+  env         Manage environments (create / rotate / diff)
+  server      Manage selective disclosure to the server (grant / revoke)
+  invite      Manage invites (create / accept / list / revoke)
+  member      Manage members (add / remove / change-role)
+  key         Manage your master key (generate / show / recover / recovery)
+  project     Manage projects (init / list / verify / anchor / checkpoint)
+  rotation    Manage rotation flags (list / dismiss)
+  audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
+  config      Manage non-secret settings (get / set). Secrets are never stored here
+  schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
+  var         Manage variables (rm). push / pull / run operate on values directly
+
+$ maruhi login --help
+DESCRIPTION
+  Sign in by approving a request in your browser, and store the token in the OS keychain
+
+USAGE
+  maruhi login [flags]
+
+FLAGS
+  --server string             Server URL (defaults to config server)
+  --token-name string         Token name (signing in again with the same name rotates the token; default: cli:<hostname>)
+  --token-ttl-days integer    Token lifetime in days (1-365; default 90). For unattended use on runtimes without lease support
+  --show-token                Print the issued token once, to provision MARUHI_TOKEN on a runtime without lease support (interactive terminals only)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi logout --help
+DESCRIPTION
+  Revoke this machine's token and remove it from the OS keychain
+
+USAGE
+  maruhi logout [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi pull --help
+DESCRIPTION
+  Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
+
+USAGE
+  maruhi pull [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --show              Print the values (interactive terminals only)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi run --help
+DESCRIPTION
+  Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
+
+USAGE
+  maruhi run [flags] -- <command...>
+
+ARGUMENTS
+  command... string    The command to run, written after `--` (passed to the child as-is)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi push --help
+DESCRIPTION
+  Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
+
+USAGE
+  maruhi push [flags] <name>
+
+ARGUMENTS
+  name string    Variable name (the display name; becomes the environment variable name)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi env --help
+DESCRIPTION
+  Manage environments (create / rotate / diff)
+
+USAGE
+  maruhi env <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  create    Create an environment
+  rotate    Rotate the environment's epoch DEK, or resume an incomplete re-encryption
+  diff      Compare the variable-name sets of two environments (names only; no values)
+
+$ maruhi env create --help
+DESCRIPTION
+  Create an environment
+
+USAGE
+  maruhi env create [flags] <environment-id>
+
+ARGUMENTS
+  environment-id string    Environment ID (e.g. dev / prod)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --name string       Display name (defaults to the environment ID)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi env rotate --help
+DESCRIPTION
+  Rotate the environment's epoch DEK, or resume an incomplete re-encryption
+
+USAGE
+  maruhi env rotate [flags] <environment-id>
+
+ARGUMENTS
+  environment-id string    Environment ID (e.g. dev / prod)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --reason string     Rotation reason (required when creating a new epoch; recorded on the chain)
+  --new-epoch         Always create a new epoch, even when incomplete re-encryption could be resumed instead
+  --init-manifest     Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi env diff --help
+DESCRIPTION
+  Compare the variable-name sets of two environments (names only; no values)
+
+USAGE
+  maruhi env diff [flags] <environment-id> <other-environment-id>
+
+ARGUMENTS
+  environment-id string    First environment ID to compare
+  other-environment-id string Second environment ID to compare
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi server --help
+DESCRIPTION
+  Manage selective disclosure to the server (grant / revoke)
+
+USAGE
+  maruhi server <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  grant     Disclose the epoch DEKs of selected environments to the server (selective disclosure)
+  revoke    Revoke a server disclosure and force-rotate every environment
+
+$ maruhi server grant --help
+DESCRIPTION
+  Disclose the epoch DEKs of selected environments to the server (selective disclosure)
+
+USAGE
+  maruhi server grant [flags]
+
+FLAGS
+  --server string                Server URL (defaults to config server)
+  --project string               Project ID (default: the `defaultProject` setting)
+  --environments string          Comma-separated environment IDs to disclose (required; environments are always explicit)
+  --lease-policy string          Path to a workload lease-policy JSON file (defaults to no lease path)
+  --expect-fingerprint string    Server key fingerprint noted out of band (32 hex chars; replaces the interactive check)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi server revoke --help
+DESCRIPTION
+  Revoke a server disclosure and force-rotate every environment
+
+USAGE
+  maruhi server revoke [flags]
+
+FLAGS
+  --server string         Server URL (defaults to config server)
+  --project string        Project ID (default: the `defaultProject` setting)
+  --fingerprint string    Server key fingerprint to revoke (may be omitted when exactly one grant is active)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi invite --help
+DESCRIPTION
+  Manage invites (create / accept / list / revoke)
+
+USAGE
+  maruhi invite <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  create    Issue an invite and build the invite link
+  accept    Accept an invite link or token
+  list      List invites, independently verifying acceptance blocks and issuance pins
+  revoke    Revoke an invite
+
+$ maruhi invite create --help
+DESCRIPTION
+  Issue an invite and build the invite link
+
+USAGE
+  maruhi invite create [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --role string       Role to grant (required — reader | member | admin)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi invite accept --help
+DESCRIPTION
+  Accept an invite link or token
+
+USAGE
+  maruhi invite accept [flags] <target>
+
+ARGUMENTS
+  target string    Invite link or token (quote the link so the shell does not interpret it)
+
+FLAGS
+  --server string                 Server URL (defaults to config server)
+  --project string                Project ID (required only when accepting with a raw token; a link carries it)
+  --inviter-fingerprint string    Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi invite list --help
+DESCRIPTION
+  List invites, independently verifying acceptance blocks and issuance pins
+
+USAGE
+  maruhi invite list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi invite revoke --help
+DESCRIPTION
+  Revoke an invite
+
+USAGE
+  maruhi invite revoke [flags] <invite-id>
+
+ARGUMENTS
+  invite-id string    Invite ID to revoke (see `maruhi invite list`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi member --help
+DESCRIPTION
+  Manage members (add / remove / change-role)
+
+USAGE
+  maruhi member <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  add            Add an accepted invitee as a member (mutual fingerprint confirmation, then key distribution)
+  remove         Remove a member and force-rotate every environment
+  change-role    Change a member's role (demoting below member forces a rotation)
+
+$ maruhi member add --help
+DESCRIPTION
+  Add an accepted invitee as a member (mutual fingerprint confirmation, then key distribution)
+
+USAGE
+  maruhi member add [flags] [<invite-id...>]
+
+ARGUMENTS
+  invite-id... string    Invite ID to add (may be omitted when exactly one invite is accepted) (optional)
+
+FLAGS
+  --server string                Server URL (defaults to config server)
+  --project string               Project ID (default: the `defaultProject` setting)
+  --expect-fingerprint string    Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi member remove --help
+DESCRIPTION
+  Remove a member and force-rotate every environment
+
+USAGE
+  maruhi member remove [flags] <user-id>
+
+ARGUMENTS
+  user-id string    Target user ID (see the member list in `maruhi project verify`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi member change-role --help
+DESCRIPTION
+  Change a member's role (demoting below member forces a rotation)
+
+USAGE
+  maruhi member change-role [flags] <user-id>
+
+ARGUMENTS
+  user-id string    Target user ID (see the member list in `maruhi project verify`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --role string       New role (required — reader | member | admin | owner)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key --help
+DESCRIPTION
+  Manage your master key (generate / show / recover / recovery)
+
+USAGE
+  maruhi key <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  generate    Generate your master key and store it in the OS keychain
+  show        Print the public keys and fingerprint (never the private keys)
+  recover     Restore the master key from a recovery code
+  recovery    Issue (or reissue) the recovery code
+
+$ maruhi key generate --help
+DESCRIPTION
+  Generate your master key and store it in the OS keychain
+
+USAGE
+  maruhi key generate [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key show --help
+DESCRIPTION
+  Print the public keys and fingerprint (never the private keys)
+
+USAGE
+  maruhi key show [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key recover --help
+DESCRIPTION
+  Restore the master key from a recovery code
+
+USAGE
+  maruhi key recover [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi key recovery --help
+DESCRIPTION
+  Issue (or reissue) the recovery code
+
+USAGE
+  maruhi key recovery [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project --help
+DESCRIPTION
+  Manage projects (init / list / verify / anchor / checkpoint)
+
+USAGE
+  maruhi project <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  init          Create a project (signs and submits the genesis entry)
+  list          List the projects you are a member of (as reported by the server)
+  verify        Verify the chain, the local floor, and the invite anchor, then print the project state
+  anchor        Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)
+  checkpoint    Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain
+
+$ maruhi project init --help
+DESCRIPTION
+  Create a project (signs and submits the genesis entry)
+
+USAGE
+  maruhi project init [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+  --org string       Org to create the project in (needed only when you belong to multiple orgs)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project list --help
+DESCRIPTION
+  List the projects you are a member of (as reported by the server)
+
+USAGE
+  maruhi project list [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project verify --help
+DESCRIPTION
+  Verify the chain, the local floor, and the invite anchor, then print the project state
+
+USAGE
+  maruhi project verify [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project anchor --help
+DESCRIPTION
+  Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)
+
+USAGE
+  maruhi project anchor [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project checkpoint --help
+DESCRIPTION
+  Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain
+
+USAGE
+  maruhi project checkpoint [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi ci --help
+DESCRIPTION
+  Commands for CI jobs (run)
+
+USAGE
+  maruhi ci <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  run    Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
+
+$ maruhi ci run --help
+DESCRIPTION
+  Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
+
+USAGE
+  maruhi ci run [flags] -- <command...>
+
+ARGUMENTS
+  command... string    The command to run, written after `--` (passed to the child as-is)
+
+FLAGS
+  --server string      Server URL (required; CI mode reads no config file)
+  --project string     Project ID, which is the pinned genesis hash (required)
+  --env string         Environment ID to lease (required)
+  --audience string    OIDC audience to request (default: the server origin)
+  --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation --help
+DESCRIPTION
+  Manage rotation flags (list / dismiss)
+
+USAGE
+  maruhi rotation <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  list       List the currently active rotation flags
+  dismiss    Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)
+
+$ maruhi rotation list --help
+DESCRIPTION
+  List the currently active rotation flags
+
+USAGE
+  maruhi rotation list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation dismiss --help
+DESCRIPTION
+  Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)
+
+USAGE
+  maruhi rotation dismiss [flags] [<variable...>]
+
+ARGUMENTS
+  variable... string    Variable ID to dismiss (omit with --all) (optional)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)
+  --all               Dismiss every currently-active flag (an explicit acceptance of risk)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi audit --help
+DESCRIPTION
+  View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
+
+USAGE
+  maruhi audit [subcommand] [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --limit integer     Page size (1-200; default 50)
+  --before string     Show rows older than this row id (pass the value printed by the continuation hint at the end of the previous page)
+  --event string      Filter by event kind (e.g. var.version_pushed / chain.member_added)
+  --actor string      Filter by actor user ID (below admin, only your own)
+  --target string     Filter by target user ID
+  --env string        Filter by environment ID
+  --var string        Filter by variable ID (also matches var.read rows that list it)
+  --expand-reads      Print the variables listed by var.read rows, one line per variable (default: a count per row)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  list         List audit events, cross-checking chain.* mirror rows against the verified chain
+  invites      List invite.* audit events (admin only)
+  self         List the audit events of your own account
+  verify       Verify that audit mirror rows match the chain one-to-one (detects missing, forged, or altered rows)
+  reconcile    Recompute the audit-head hash column and reconcile notarized checkpoints (effective admin only)
+
+$ maruhi audit list --help
+DESCRIPTION
+  List audit events, cross-checking chain.* mirror rows against the verified chain
+
+USAGE
+  maruhi audit list [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --limit integer     Page size (1-200; default 50)
+  --before string     Show rows older than this row id (pass the value printed by the continuation hint at the end of the previous page)
+  --event string      Filter by event kind (e.g. var.version_pushed / chain.member_added)
+  --actor string      Filter by actor user ID (below admin, only your own)
+  --target string     Filter by target user ID
+  --env string        Filter by environment ID
+  --var string        Filter by variable ID (also matches var.read rows that list it)
+  --expand-reads      Print the variables listed by var.read rows, one line per variable (default: a count per row)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi audit invites --help
+DESCRIPTION
+  List invite.* audit events (admin only)
+
+USAGE
+  maruhi audit invites [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --limit integer     Page size (1-200; default 50)
+  --before string     Show rows older than this row id (pass the value printed by the continuation hint at the end of the previous page)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi audit self --help
+DESCRIPTION
+  List the audit events of your own account
+
+USAGE
+  maruhi audit self [flags]
+
+FLAGS
+  --server string    Server URL (defaults to config server)
+  --limit integer    Page size (1-200; default 50)
+  --before string    Show rows older than this row id (pass the value printed by the continuation hint at the end of the previous page)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi audit verify --help
+DESCRIPTION
+  Verify that audit mirror rows match the chain one-to-one (detects missing, forged, or altered rows)
+
+USAGE
+  maruhi audit verify [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi audit reconcile --help
+DESCRIPTION
+  Recompute the audit-head hash column and reconcile notarized checkpoints (effective admin only)
+
+USAGE
+  maruhi audit reconcile [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi config --help
+DESCRIPTION
+  Manage non-secret settings (get / set). Secrets are never stored here
+
+USAGE
+  maruhi config <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  get    Print one non-secret setting to stdout
+  set    Set one non-secret setting
+
+$ maruhi config get --help
+DESCRIPTION
+  Print one non-secret setting to stdout
+
+USAGE
+  maruhi config get [flags] <key>
+
+ARGUMENTS
+  key string    Config key (server | defaultProject | defaultEnvironment)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi config set --help
+DESCRIPTION
+  Set one non-secret setting
+
+USAGE
+  maruhi config set [flags] <key> <value>
+
+ARGUMENTS
+  key string      Config key (server | defaultProject | defaultEnvironment)
+  value string    Value to set
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi schema --help
+DESCRIPTION
+  Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
+
+USAGE
+  maruhi schema [subcommand] [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  set                Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
+  import             Import schema candidates from a .env or .env.example file with interactive per-variable approval (declares names without sending values; optionally pushes a value per variable)
+  export             Print the environment's schema snapshot (a JSON Schema subset) to stdout. Commit it and check it in CI with `schema verify-snapshot`; the store stays the source of truth
+  verify-snapshot    Verify a committed schema snapshot against the store and fail on any divergence (for CI; the store is the source of truth)
+  lint               Cross-check environment-variable references in source code against the declared schema (best-effort static scan; names only)
+
+$ maruhi schema set --help
+DESCRIPTION
+  Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
+
+USAGE
+  maruhi schema set [flags] <name>
+
+ARGUMENTS
+  name string    Variable name (created as a declared variable when it does not exist)
+
+FLAGS
+  --server string         Server URL (defaults to config server)
+  --project string        Project ID (default: the `defaultProject` setting)
+  --env string            Environment ID (default: the `defaultEnvironment` setting)
+  --type string           Declared value type (string | number | boolean | url; `none` clears it back to unspecified)
+  --required              Declare the variable as required (`maruhi run` fails fast while it has no value)
+  --optional              Declare the variable as not required
+  --description string    Human-readable description (plaintext metadata visible to the server — never put secret values here)
+  --clear-description     Clear the description (explicit — an empty --description value is rejected as a likely unset shell variable)
+  --allow-high-entropy    Proceed without confirmation when the name or description contains a secret-like high-entropy string (fail-closed otherwise)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi schema import --help
+DESCRIPTION
+  Import schema candidates from a .env or .env.example file with interactive per-variable approval (declares names without sending values; optionally pushes a value per variable)
+
+USAGE
+  maruhi schema import [flags] <file>
+
+ARGUMENTS
+  file string    Path to a .env or .env.example file to read locally (values are observed for type inference only; never sent unless you explicitly choose to push one)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi schema export --help
+DESCRIPTION
+  Print the environment's schema snapshot (a JSON Schema subset) to stdout. Commit it and check it in CI with `schema verify-snapshot`; the store stays the source of truth
+
+USAGE
+  maruhi schema export [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi schema verify-snapshot --help
+DESCRIPTION
+  Verify a committed schema snapshot against the store and fail on any divergence (for CI; the store is the source of truth)
+
+USAGE
+  maruhi schema verify-snapshot [flags] <file>
+
+ARGUMENTS
+  file string    Path to the committed snapshot file (generate with `maruhi schema export`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi schema lint --help
+DESCRIPTION
+  Cross-check environment-variable references in source code against the declared schema (best-effort static scan; names only)
+
+USAGE
+  maruhi schema lint [flags] <path...>
+
+ARGUMENTS
+  path... string    File or directory to scan for environment-variable references
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --ignore string     Environment-variable name to exclude from the undeclared check (repeatable; for runtime variables not managed by maruhi, e.g. NODE_ENV)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi var --help
+DESCRIPTION
+  Manage variables (rm). push / pull / run operate on values directly
+
+USAGE
+  maruhi var <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  rm    Delete a variable and all of its values permanently (asks for confirmation unless --force). Works for declared and active variables
+
+$ maruhi var rm --help
+DESCRIPTION
+  Delete a variable and all of its values permanently (asks for confirmation unless --force). Works for declared and active variables
+
+USAGE
+  maruhi var rm [flags] <name>
+
+ARGUMENTS
+  name string    Variable name to delete (declared or active)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --force             Skip the interactive confirmation (the only non-interactive path; deletion is permanent)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information

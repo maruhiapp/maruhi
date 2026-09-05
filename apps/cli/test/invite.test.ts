@@ -474,7 +474,7 @@ describe("maruhi invite accept", () => {
 
     expect(await runCli(["invite", "accept", linkFor()], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "the inviter-fingerprint confirmation ceremony cannot run",
+      "Refused to run the inviter-fingerprint confirmation ceremony",
     );
     expect(bodies).toHaveLength(0);
 
@@ -529,7 +529,7 @@ describe("maruhi invite accept", () => {
       signatureHex: body.signatureHex,
     });
     expect(verified.ok).toBe(true);
-    expect(env.logs.join("\n")).toContain("Generated the master keypair");
+    expect(env.logs.join("\n")).toContain("Generated your master key");
   });
 
   it("鍵未生成ガード: リカバリー登録済みなら生成せず key recover へ誘導する", async () => {
@@ -601,7 +601,7 @@ describe("maruhi invite accept", () => {
     await seedConfig(env2, { server: server.origin });
     env2.setAgent({ isAgent: true });
     expect(await runCli(["invite", "accept", TOKEN, "--project", PROJECT_ID], env2.layer)).toBe(1);
-    expect(env2.errors.join("\n")).toContain("acceptance with a raw token was refused");
+    expect(env2.errors.join("\n")).toContain("Refused to accept with a raw token");
   });
 
   it("410 の理由を運用手順に翻訳する(先着受諾 = 横取りの顕在化)", async () => {
@@ -876,6 +876,6 @@ describe("maruhi invite list / revoke", () => {
     expect(env.logs.join("\n")).toContain("Revoked the invite");
 
     expect(await runCli(["invite", "revoke", "inv-0002"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("run maruhi member remove");
+    expect(env.errors.join("\n")).toContain("run `maruhi member remove`");
   });
 });

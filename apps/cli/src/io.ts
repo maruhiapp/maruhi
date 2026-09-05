@@ -43,6 +43,12 @@ export interface CliIoShape {
   /** Recovery code uses stderr; this keeps redirect detection behind the I/O service boundary. */
   readonly stderrIsTerminal: () => boolean;
   /**
+   * Whether stderr notices may use ANSI colors (notice.ts). 本番は
+   * `shouldUseColor`(stderr が端末か + NO_COLOR / FORCE_COLOR / TERM)、
+   * テストは既定で無色。色を付けるのは接頭辞だけで stdout には付けない。
+   */
+  readonly colorEnabled: () => boolean;
+  /**
    * Opens `url` in the default browser (best effort; returns whether the
    * attempt was started). CLI ログインのブラウザ脚(AUTH_SPEC §4-1 (2))の
    * UX 分岐専用 — 呼び出し側が「対話端末 × 非エージェント」のときだけ呼ぶ。

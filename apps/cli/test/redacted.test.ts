@@ -706,6 +706,7 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
     envVar: () => undefined,
     agentProfile: () => ({ isAgent: false }),
     stderrIsTerminal: () => true,
+    colorEnabled: () => false,
     openBrowser: () => Effect.succeed(false),
   });
 

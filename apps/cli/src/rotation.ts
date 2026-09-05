@@ -23,6 +23,7 @@ import { countNoun, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
 /** 導出ビューの 1 フラグ(api-schema の RotationFlagSchema の受信形)。 */
@@ -62,7 +63,6 @@ export function resolveNames(
   environmentIds: readonly string[],
 ): Effect.Effect<ReadonlyMap<string, NameIndex>, never, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const byEnvironment = new Map<string, NameIndex>();
     for (const environmentId of environmentIds) {
       const attempted = yield* Effect.gen(function* () {
@@ -81,8 +81,8 @@ export function resolveNames(
         ),
       );
       if (attempted.kind === "failed") {
-        yield* io.logError(
-          `Note: could not fetch verified metadata for environment ${displayText(environmentId)} (${attempted.message}) — variables are shown by identifier only`,
+        yield* logNote(
+          `could not fetch verified metadata for environment ${displayText(environmentId)} (${attempted.message}) — variables are shown by identifier only`,
         );
         continue;
       }
@@ -152,7 +152,7 @@ export function rotationListOp(
       }
     }
     yield* io.log(
-      "To resolve: rotate the upstream credential and save the new value with maruhi push (the mandated re-encryption alone does not resolve a flag). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with maruhi rotation dismiss as an explicit acceptance of risk (admin)",
+      "To resolve: rotate the upstream credential and save the new value with `maruhi push` (the mandated re-encryption alone does not resolve a flag). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );
     return 0;
   });
@@ -228,7 +228,7 @@ export function parseDismissRequest(input: {
   if (input.environmentId === null || input.variableId === null) {
     return Effect.fail(
       cliError(
-        "Specify what to dismiss: maruhi rotation dismiss <variableId> --env <environmentId> (or --all for every flag)",
+        "Specify what to dismiss: `maruhi rotation dismiss <variableId> --env <environmentId>` (or --all for every flag)",
       ),
     );
   }
@@ -274,7 +274,7 @@ export function rotationDismissOp(input: {
           Effect.fail(
             error instanceof RotationFlagNotFoundError
               ? cliError(
-                  `No active flag for variable ${displayText(error.variableId)} in environment ${displayText(error.environmentId)} (the dismissal was aborted as a whole — check the current targets with maruhi rotation list)`,
+                  `No active flag for variable ${displayText(error.variableId)} in environment ${displayText(error.environmentId)} (the dismissal was aborted as a whole — check the current targets with \`maruhi rotation list\`)`,
                 )
               : toCliError(error),
           ),
@@ -304,8 +304,8 @@ export function reportRotationFlagCount(input: {
     const flags = yield* fetchRotationFlags(input.client, input.projectId).pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
-          yield* io.logError(
-            `Note: failed to fetch rotation flags (${error.message}) — check with maruhi rotation list`,
+          yield* logNote(
+            `failed to fetch rotation flags (${error.message}) — check with \`maruhi rotation list\``,
           );
           return null;
         }),
@@ -323,7 +323,7 @@ export function reportRotationFlagCount(input: {
       return;
     }
     yield* io.log(
-      `Rotation flags: ${countNoun(count, "active flag")} targeting the removed party (encryption cannot revoke already-read values — rotating the upstream credentials is recommended. See maruhi rotation list)`,
+      `Rotation flags: ${countNoun(count, "active flag")} targeting the removed party (encryption cannot revoke already-read values — rotating the upstream credentials is recommended. See \`maruhi rotation list\`)`,
     );
   });
 }

@@ -27,6 +27,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
 import { Keychain, serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
+import { logNote } from "./notice.ts";
 import { issueRecoveryAfterKeygen } from "./recovery.ts";
 import {
   type CliSession,
@@ -119,10 +120,10 @@ export function keyGenerateOp(input: {
     // 並行実行が先に書いている可能性があり、素の set は後勝ちで一方の鍵を
     // 黙って消す。後段のリカバリーコード発行より前に失敗させる
     yield* storeMasterKeyGuarded(entryName, serializeStoredMasterKey(record));
-    yield* io.log("Generated the master keypair and stored it in the OS keychain");
+    yield* io.log("Generated your master key and stored it in the OS keychain");
     yield* io.log(`key fingerprint: ${validated.fingerprintHex}`);
-    yield* io.log(
-      "Note: losing this key means you can no longer decrypt values in the projects you joined. The recovery code is the only way to restore it",
+    yield* logNote(
+      "losing this key means you can no longer decrypt values in the projects you joined. The recovery code is the only way to restore it",
     );
     yield* issueRecoveryAfterKeygen({ session: input.session, client: input.client });
   });
@@ -154,8 +155,8 @@ export function keyShowOp(input: {
       .pipe(Effect.catch(() => Effect.succeed(null)));
     if (status === null) {
       yield* io.log("recovery:        could not be checked");
-      yield* io.logError(
-        "Note: the recovery registration status could not be checked (the server is unreachable or the token is revoked). This does not affect the key information shown above",
+      yield* logNote(
+        "the recovery registration status could not be checked (the server is unreachable or the token is revoked). This does not affect the key information shown above",
       );
     } else if (status.registered) {
       const updated =
@@ -163,8 +164,8 @@ export function keyShowOp(input: {
       yield* io.log(`recovery:        registered${updated}`);
     } else {
       yield* io.log("recovery:        not registered");
-      yield* io.logError(
-        "Note: no recovery code is registered. If you lose this key it cannot be restored — issue one with `maruhi key recovery`",
+      yield* logNote(
+        "no recovery code is registered. If you lose this key it cannot be restored — issue one with `maruhi key recovery`",
       );
     }
   });

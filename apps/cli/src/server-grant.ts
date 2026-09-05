@@ -95,7 +95,7 @@ function scopeNarrowedRejection(
   if (missing.length === 0) {
     return null;
   }
-  return `The disclosure scope can only grow (re-grant rule — CRYPTO_SPEC §6.3). Environments in the existing grant's scope are missing from this invocation: ${missing.join(", ")}. To narrow the scope, run maruhi server revoke (which rotates every environment — §7) and grant again`;
+  return `The disclosure scope can only grow (re-grant rule — CRYPTO_SPEC §6.3). Environments in the existing grant's scope are missing from this invocation: ${missing.join(", ")}. To narrow the scope, run \`maruhi server revoke\` (which rotates every environment — §7) and grant again`;
 }
 
 /** grant_server 実行前の検査一式(再同期後のリトライでも同じ検査を通す)。 */
@@ -221,7 +221,7 @@ function confirmServerKey(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "An AI agent environment was detected, so the server-key confirmation ceremony cannot run. Have a human run this, or pass the fingerprint noted out of band via --expect-fingerprint",
+          "Refused to run the server-key confirmation ceremony: an AI agent environment was detected. Run this yourself in a terminal, or pass the fingerprint noted out of band via --expect-fingerprint",
         ),
       );
     }

@@ -292,7 +292,7 @@ export function missingManifestMessage(environmentId: string): string {
   return (
     `The server did not distribute an environment manifest for ${environmentId}. ` +
     "A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected. " +
-    "If this environment was created before manifests were introduced, a member must initialize it once with: maruhi env rotate " +
+    "If this environment was created before manifests were introduced, a member must initialize it once with: `maruhi env rotate` " +
     `${environmentId} --init-manifest --reason "manifest initialization"`
   );
 }

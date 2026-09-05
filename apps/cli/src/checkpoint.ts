@@ -372,7 +372,7 @@ function appendCheckpoint(
           return toCliError(error);
         }
         return cliError(
-          `Sending the checkpoint failed (${toCliError(error).message}). The entry may or may not have landed — re-running maruhi project checkpoint is safe either way (a landed checkpoint simply becomes the baseline; a re-run notarizes the current view)`,
+          `Sending the checkpoint failed (${toCliError(error).message}). The entry may or may not have landed — re-running \`maruhi project checkpoint\` is safe either way (a landed checkpoint simply becomes the baseline; a re-run notarizes the current view)`,
         );
       }),
     );
@@ -534,7 +534,7 @@ function absorbSendFailure(input: {
       reason: failure.reason,
     });
     input.warnings.push(
-      `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run maruhi project checkpoint later to cover the rest`,
+      `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run \`maruhi project checkpoint\` later to cover the rest`,
     );
     yield* io.log(
       `Retrying with the stable subset of ${stableIds.length} environment(s) (bounded retries exhausted)`,
@@ -582,7 +582,7 @@ function ensureHeadConflictBudget(attempts: number): Effect.Effect<void, CliErro
   return attempts >= MAX_HEAD_CONFLICT_ATTEMPTS
     ? Effect.fail(
         cliError(
-          `The checkpoint's chain-head conflict did not resolve (${MAX_HEAD_CONFLICT_ATTEMPTS} attempts). Wait a moment and re-run maruhi project checkpoint`,
+          `The checkpoint's chain-head conflict did not resolve (${MAX_HEAD_CONFLICT_ATTEMPTS} attempts). Wait a moment and re-run \`maruhi project checkpoint\``,
         ),
       )
     : Effect.void;
@@ -601,7 +601,7 @@ function stableSubsetOrFail(input: {
   if (input.baseline === null) {
     return Effect.fail(
       cliError(
-        `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${input.reason}) even for the stable subset. Wait for the writes to settle and re-run maruhi project checkpoint`,
+        `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${input.reason}) even for the stable subset. Wait for the writes to settle and re-run \`maruhi project checkpoint\``,
       ),
     );
   }
@@ -617,7 +617,7 @@ function stableSubsetOrFail(input: {
   if (stableIds.length === 0) {
     return Effect.fail(
       cliError(
-        `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${input.reason}) for every environment. Wait for the writes to settle and re-run maruhi project checkpoint`,
+        `The checkpoint could not be issued: concurrent writes kept invalidating the acceptance-time match (${input.reason}) for every environment. Wait for the writes to settle and re-run \`maruhi project checkpoint\``,
       ),
     );
   }
@@ -651,7 +651,36 @@ function classifySendFailure(
 // (audit_head_hash 非空)チェックポイント」、それ以外 =「最新のチェック
 // ポイント」— 分けないと member の発行が admin の契機を潰し、公証済み接頭辞が
 // 前進しなくなる(第 5 ラウンド指摘)。
+//
+// **未発行の読み方(DP5 裁定 C)**: 「未発行」は基準が genesis のままである
+// ことなので、経過日数は **genesis の時刻から**数える。境界チェックポイント
+// (複合に同梱 — boundary-checkpoint.ts)は公証なしのため、この読み方をしない
+// と実効権限 admin の利用者には**プロジェクト作成の当日から** push / pull の
+// たびに提案が出る(公証すべき監査ログがまだ無い段階での提案 = 無視する訓練
+// になる)。7 日の閾値は同じで、「発行済みの基準が古い」と「基準が無いまま
+// 7 日過ぎた」を同じ節目で扱う。
 // ---------------------------------------------------------------------------
+
+/** 契機 (iii) の提案文(接頭辞 `Note:` は notice.ts が付ける)。 */
+const PLAIN_BASELINE_PROPOSAL =
+  "this project's checkpoint baseline is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to refresh the rollback-detection baseline (CRYPTO_SPEC §6.3)";
+const ATTESTED_BASELINE_PROPOSAL =
+  "this project's latest notarized checkpoint is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to advance the notarized audit prefix (AUDIT_SPEC §6)";
+
+/**
+ * 基準チェックポイント(無ければ genesis)が 7 日超古いか。基準が無ければ
+ * genesis の時刻(entries[0])から数える(DP5 裁定 C)。エントリが 1 つも無い
+ * 検証済みビューは存在しない(genesis 必須)が、型の上では undefined なので、
+ * その場合は提案側(fail-open で 1 行の Note)に倒す。
+ */
+function baselineIsStale(
+  entry: ChainEntry | null,
+  verified: VerifiedProject,
+  nowMs: number,
+): boolean {
+  const baselineMs = entry === null ? verified.entries[0]?.timestampMs : entry.timestampMs;
+  return baselineMs === undefined || nowMs - baselineMs > CHECKPOINT_PROPOSAL_AGE_MS;
+}
 
 /** チェーン上の最新 checkpoint エントリ(公証あり限定の切り替え付き)。 */
 function latestCheckpointEntry(
@@ -691,12 +720,10 @@ export function checkpointProposal(input: {
     }
     const plainBasis = latestCheckpointEntry(input.verified, false);
     const stale = (entry: ChainEntry | null): boolean =>
-      entry === null || input.nowMs - entry.timestampMs > CHECKPOINT_PROPOSAL_AGE_MS;
+      baselineIsStale(entry, input.verified, input.nowMs);
     const adminRole = member.role === "admin" || member.role === "owner";
     if (!adminRole) {
-      return stale(plainBasis)
-        ? "Note: this project's latest checkpoint baseline is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to refresh the rollback-detection baseline (CRYPTO_SPEC §6.3)"
-        : null;
+      return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
     }
     const attestedBasis = latestCheckpointEntry(input.verified, true);
     if (!stale(attestedBasis)) {
@@ -708,20 +735,23 @@ export function checkpointProposal(input: {
       Effect.catch(() => Effect.succeed(false)),
     );
     if (effectiveAdmin) {
-      return "Note: the latest audit-head-attested checkpoint is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to advance the notarized audit prefix (AUDIT_SPEC §6)";
+      return ATTESTED_BASELINE_PROPOSAL;
     }
-    return stale(plainBasis)
-      ? "Note: this project's latest checkpoint baseline is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to refresh the rollback-detection baseline (CRYPTO_SPEC §6.3)"
-      : null;
+    return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
   });
 }
 
 /**
  * アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b) SHOULD の後半)。
  * rotate 成功時は無条件(アンカーのエポック床が古くなる — アンカーの中核の
- * 検出材料)、push 成功時は契機 (iii) の提案と同じ導線でのみ出す(裁定は
+ * 検出材料)、push 成功時は契機 (iii) の提案と**同じ 1 行**に同梱する(裁定は
  * docs/notes/session-35.md — アンカー使用の有無をローカルで知れないため、
- * push ごとの無条件出力は提案を無視させる訓練になる)。
+ * push ごとの無条件出力は提案を無視させる訓練になる。DP5 裁定 C で 2 行 →
+ * 1 行に畳んだ)。
  */
 export const ANCHOR_REFRESH_PROPOSAL =
-  "If this project commits a repository anchor for CI (CRYPTO_SPEC §6.3), refresh it: `maruhi project anchor > <anchor-file>` and commit the update";
+  "If this project commits a repository anchor for CI (CRYPTO_SPEC §6.3), refresh it afterwards: `maruhi project anchor > <anchor-file>` and commit the update";
+
+/** rotate 成功時のアンカー提案(エポックが進んだ = アンカーは確実に古い)。 */
+export const ANCHOR_STALE_AFTER_ROTATION =
+  "the epoch advanced, so a committed repository anchor (if any) is now stale. Refresh it: `maruhi project anchor > <anchor-file>` and commit the update (CRYPTO_SPEC §6.3)";

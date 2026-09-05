@@ -34,6 +34,7 @@ import {
   verifyAcceptanceBlock,
 } from "./invite.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
@@ -219,7 +220,7 @@ function selectInvitation(
     const row = rows.find((candidate) => candidate.id === inviteId);
     if (row === undefined) {
       return Effect.fail(
-        cliError("The specified invite was not found (check the id with maruhi invite list)"),
+        cliError("The specified invite was not found (check the id with `maruhi invite list`)"),
       );
     }
     if (row.status === "revoked") {
@@ -232,7 +233,7 @@ function selectInvitation(
     if (!withAcceptance(row)) {
       return Effect.fail(
         cliError(
-          "The specified invite has not been accepted yet (check with maruhi invite list after acceptance)",
+          "The specified invite has not been accepted yet (check with `maruhi invite list` after acceptance)",
         ),
       );
     }
@@ -246,7 +247,7 @@ function selectInvitation(
     // 経路が受ける — その導線をここで示す(Cursor bot 指摘)
     return Effect.fail(
       cliError(
-        "There is no accepted invite. To resume the backfill of an invite that completed through add_member, look up the id with maruhi invite list and pass it explicitly: maruhi member add <invite-id>",
+        "There is no accepted invite. To resume the backfill of an invite that completed through add_member, look up the id with `maruhi invite list` and pass it explicitly: `maruhi member add <invite-id>`",
       ),
     );
   }
@@ -306,7 +307,7 @@ function confirmInviteeFingerprint(input: {
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
-          "An AI agent environment was detected, so the acceptance-key confirmation ceremony cannot run. Have a human run this, or pass the acceptance key fingerprint noted out of band via --expect-fingerprint",
+          "Refused to run the acceptance-key confirmation ceremony: an AI agent environment was detected. Run this yourself in a terminal, or pass the acceptance key fingerprint noted out of band via --expect-fingerprint",
         ),
       );
     }
@@ -372,7 +373,7 @@ function ensureAddable(input: {
       }
       return yield* Effect.fail(
         cliError(
-          "The target user_id is already a member with a **different key** (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with maruhi invite list and maruhi project verify",
+          "The target user ID is already a member with a different key (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with `maruhi invite list` and maruhi project verify",
         ),
       );
     }
@@ -513,7 +514,6 @@ function prepareMemberAdd(input: {
   CliIo
 > {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const listed = yield* listInvitations(input.client, input.verified.projectId);
     const row = yield* selectInvitation(listed, input.inviteId);
 
@@ -529,8 +529,8 @@ function prepareMemberAdd(input: {
       );
     }
     if (pin === undefined) {
-      yield* io.logError(
-        "Note: this machine has no issuance pin for this invite (it may have been issued on another device). Confirm that the displayed role matches what was intended at issuance",
+      yield* logNote(
+        "this machine has no issuance pin for this invite (it may have been issued on another device). Confirm that the displayed role matches what was intended at issuance",
       );
     }
 
@@ -687,7 +687,7 @@ export function memberAddOp(input: {
     );
     if (staleWrapSuspected) {
       yield* io.log(
-        "The target user_id was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
+        "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
       );
     }
 
@@ -744,7 +744,7 @@ function ensureRemovable(input: {
       if (!removedBefore) {
         return yield* Effect.fail(
           cliError(
-            "The target is not a member and the chain has no removal record for it (check the user_id)",
+            "The target is not a member and the chain has no removal record for it (check the user ID)",
           ),
         );
       }
@@ -911,7 +911,7 @@ function ensureRoleChangeable(input: {
       input.targetUserId,
     );
     if (target === undefined) {
-      return yield* Effect.fail(cliError("The target is not a member (check the user_id)"));
+      return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
     }
     if (
       input.targetUserId === input.signerUserId &&

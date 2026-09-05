@@ -45,6 +45,7 @@ import {
   type StoredMasterKey,
   tokenEntryName,
 } from "./keychain.ts";
+import { logWarning } from "./notice.ts";
 
 /** A resolved authenticated session against one server. */
 export interface CliSession {
@@ -175,10 +176,9 @@ function warnNearExpiry(
     if (remainingMs <= 0 || remainingMs > TOKEN_EXPIRY_WARNING_WINDOW_MS) {
       return;
     }
-    const io = yield* CliIo;
     const days = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
-    yield* io.logError(
-      `Warning: the maruhi token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
+    yield* logWarning(
+      `the maruhi token expires on ${formatUtcDate(expiresAtMs)} (UTC) — ${days === 1 ? "1 day" : `${days} days`} left. ${reissueHint}`,
     );
   });
 }
@@ -345,7 +345,7 @@ export function resolveSession(
     // 期限接近の事前警告(裁定 CL): 期限はログイン時にレコードへ保存済み
     // (keychain.ts の expiresAtMs)なので、無通信のローカル判定で足りる。
     // 旧レコード(W3a 前のログイン)は欠落 = 警告なし(再ログインで付く)
-    yield* warnNearExpiry(record.expiresAtMs, "Re-login with `maruhi login` to rotate it");
+    yield* warnNearExpiry(record.expiresAtMs, "Sign in again with `maruhi login` to rotate it");
     return {
       origin,
       token: record.token,

@@ -323,7 +323,7 @@ describe("maruhi pull", () => {
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
     expect(errors).toContain("no DEK wraps for you exist at epochs 1");
-    expect(errors).toContain("re-run maruhi member add");
+    expect(errors).toContain("re-run `maruhi member add`");
 
     // 全エポックが揃っていれば警告しない(誤検知なし)
     const complete = await startEnv([chainHandler(), pullHandler()]);
@@ -489,7 +489,7 @@ describe("maruhi pull", () => {
     env.setTerminal({ stdout: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "Displaying values is only allowed on an interactive terminal",
+      "stdin and stdout are not both an interactive terminal",
     );
     expect(env.logs.join("\n")).not.toContain("alpha-value");
     // 復号より前に確定する(平文をそもそも作らない)
@@ -501,7 +501,7 @@ describe("maruhi pull", () => {
     env.setTerminal({ stdin: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "Displaying values is only allowed on an interactive terminal",
+      "stdin and stdout are not both an interactive terminal",
     );
     expect(env.logs.join("\n")).not.toContain("alpha-value");
   });

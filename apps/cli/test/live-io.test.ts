@@ -7,11 +7,15 @@
 //
 // PassThrough に TTY のスタブ(setRawMode / isRaw)を足して駆動する。
 
+import { spawnSync } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it } from "vitest";
 
-import { makeStdinLineReader, readHiddenLine } from "../src/live.ts";
+import { makeStdinLineReader, readHiddenLine, writeLine } from "../src/live.ts";
 
 /** raw mode スタブ付きの擬似 stdin。 */
 function fakeTty(): PassThrough & { isRaw: boolean; setRawMode: (raw: boolean) => void } {
@@ -93,5 +97,38 @@ describe("readHiddenLine(raw mode の非エコー入力)", () => {
     tty.write("AB");
     tty.end();
     await expect(pending).rejects.toThrow("eof");
+  });
+});
+
+describe("writeLine(同期書き込みと閉じたパイプ)", () => {
+  it("1 行 + 改行を fd へ書き切る(ファイル)", () => {
+    const path = join(tmpdir(), `maruhi-writeline-${process.pid}.txt`);
+    const fd = openSync(path, "w");
+    try {
+      writeLine(fd, "first");
+      writeLine(fd, "second");
+    } finally {
+      closeSync(fd);
+    }
+    expect(readFileSync(path, "utf8")).toBe("first\nsecond\n");
+  });
+
+  it("読み手が先に閉じたパイプへの書き込み(EPIPE)は defect にせず、プロセスは 0 で終わる", () => {
+    // `maruhi … | head -1` の形。writeSync は 2 行目以降で EPIPE を投げるが、
+    // console.log と同じく黙って捨てる(PR #151 Bugbot 指摘)。実プロセスで検査する:
+    // 書き手を bun で走らせ、読み手 head が 1 行で閉じた後の終了コードを見る
+    const script =
+      'import { writeLine } from "./apps/cli/src/live.ts"; for (let i = 0; i < 200000; i += 1) writeLine(1, `line${i}`); process.exit(0);';
+    const result = spawnSync(
+      "bash",
+      ["-c", `bun -e '${script}' | head -1; echo "writer-exit=\${PIPESTATUS[0]}"`],
+      { cwd: new URL("../../..", import.meta.url).pathname, encoding: "utf8" },
+    );
+    // 失敗時に原因(bun の不在・スクリプトの構文)が読めるよう stderr を添える
+    // (bash 側の終了コードは末尾の echo で常に 0 なので、断言は書き手の
+    // 終了コード = writer-exit と 1 行目の到達で行う)
+    expect(result.stdout, result.stderr).toContain("line0");
+    expect(result.stdout, result.stderr).toContain("writer-exit=0");
+    expect(result.stderr).not.toContain("EPIPE");
   });
 });

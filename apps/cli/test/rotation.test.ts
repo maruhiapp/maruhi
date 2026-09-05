@@ -362,7 +362,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).toContain(ENV_ID);
     // 行動可能な警告(B2 裁定): 収束コマンドを名指しする
     expect(errors).toContain(
-      `re-running maruhi member remove ${target.userId} converges the mandate`,
+      `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );
   });
 
@@ -383,7 +383,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).toContain("unconverged rotation mandate");
     expect(errors).toContain("the target has been re-added");
     expect(errors).toContain("maruhi env rotate");
-    expect(errors).not.toContain("re-running maruhi member remove");
+    expect(errors).not.toContain("re-running `maruhi member remove");
   });
 
   it("降格後に削除された対象へは change-role の再実行を案内しない(現メンバー限定の操作)", async () => {
@@ -410,7 +410,7 @@ describe("未収束ローテーション義務の常時警告(CRYPTO_SPEC §7 �
     expect(errors).not.toContain("maruhi member change-role");
     // 削除義務の行は従来どおり member remove の再実行を案内する
     expect(errors).toContain(
-      `re-running maruhi member remove ${target.userId} converges the mandate`,
+      `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );
   });
 

@@ -69,6 +69,8 @@ export interface TestEnv {
    */
   setPromptResponses(lines: readonly (string | (() => string))[]): void;
   setAgent(profile: AgentProfile): void;
+  /** stderr の接頭辞の色(notice.ts)。既定は無色 — 断言を素の文字列で書けるように。 */
+  setColor(enabled: boolean): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
   /** openBrowser の成否を偽装する(既定は成功)。 */
@@ -105,6 +107,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let browserOpenSucceeds = true;
   let stdin: Uint8Array = new Uint8Array(0);
   let agent: AgentProfile = { isAgent: false };
+  let colorEnabled = false;
   // 既定は「人間が対話端末で実行した」形(値の表示が許される唯一の形)
   let stdinIsTerminal = true;
   let stdoutIsTerminal = true;
@@ -205,6 +208,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
       envVar: (name) => envVars.get(name),
       agentProfile: () => agent,
       stderrIsTerminal: () => stderrIsTerminal,
+      colorEnabled: () => colorEnabled,
       openBrowser: (url) =>
         Effect.sync(() => {
           browserOpens.push(url);
@@ -246,6 +250,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setAgent(profile) {
       agent = profile;
+    },
+    setColor(enabled) {
+      colorEnabled = enabled;
     },
     setEnvVar(name, value) {
       if (value === undefined) {

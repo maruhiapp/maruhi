@@ -118,7 +118,7 @@ curl <deploy-url>/auth/config
 
 ```sh
 maruhi config set server <deploy-url>
-maruhi login          # client_id is resolved from the server (GET /auth/config)
+maruhi login          # approve the request in your browser (the CLI shows a confirmation code)
 maruhi key generate   # first time only: generate the master key + issue a recovery code (on a human's machine)
 ```
 

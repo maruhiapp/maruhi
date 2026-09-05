@@ -278,7 +278,8 @@ describe("maruhi audit(list)", () => {
     expect(withMethod).toContain('recorded={"authMethod":"github_oauth"}');
     expect(withMethod).not.toContain('"variables"');
     expect(summary).not.toContain("var=ALPHA");
-    expect(summary).toContain("--expand-reads");
+    // 集約形の案内は Note(stderr)— 一覧(stdout)には混ぜない
+    expect(env.errors.join("\n")).toContain("--expand-reads");
 
     const expanded = await makeTestEnv();
     seedSession(expanded, servers[servers.length - 1]?.origin ?? "", owner);
@@ -292,7 +293,7 @@ describe("maruhi audit(list)", () => {
     // 展開行: 表示名は検証済みステートメント由来(va = ALPHA)、無い変数は id のみ
     expect(logs).toContain("- var=ALPHA (va)\tepoch=1\tversion=2");
     expect(logs).toContain("- var=vb\tepoch=1\tversion=1");
-    expect(logs).not.toContain("Re-run with --expand-reads");
+    expect(expanded.errors.join("\n")).not.toContain("--expand-reads");
 
     // --var 指定時は一致した変数の項目を行内に添える(展開はしない)
     const filtered = await makeTestEnv();
@@ -652,7 +653,8 @@ describe("maruhi audit invites / self", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("auth.recovery_blob_fetched");
     expect(logs).toContain("auth.token_created");
-    expect(logs).toContain("reissue your recovery code");
+    // 要監視イベントの含意は Note(stderr)
+    expect(env.errors.join("\n")).toContain("reissue your recovery code");
   });
 });
 

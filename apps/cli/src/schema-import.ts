@@ -43,6 +43,7 @@ import {
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedSchemaFields } from "./floor-check.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
+import { logNote, logWarning } from "./notice.ts";
 import { pushVariable } from "./push.ts";
 import { schemaSetOp } from "./schema.ts";
 import type { VerifiedProject } from "./sync.ts";
@@ -69,10 +70,10 @@ export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.St
   function* () {
     const agent = yield* AgentProfileRef;
     if (agent.isAgent) {
-      const detected = agent.name === undefined ? "" : `: ${agent.name}`;
+      const detected = agent.name === undefined ? "" : ` (${agent.name})`;
       return yield* Effect.fail(
         cliError(
-          `Refused to run schema import because an AI agent environment was detected${detected}. The per-variable approval is the core of this ceremony, so it must be run by a human — agents can read the resulting schema with \`maruhi schema\``,
+          `Refused to run schema import: an AI agent environment was detected${detected}. The per-variable approval is the core of this ceremony, so a person must run it in a terminal (agents can read the resulting schema with \`maruhi schema\`)`,
         ),
       );
     }
@@ -82,7 +83,7 @@ export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.St
     if (!stdinIsTerminal || !stdoutIsTerminal) {
       return yield* Effect.fail(
         cliError(
-          "schema import requires an interactive terminal (pipes, redirects, CI, and AI agents are refused — the per-variable approval is the core of the ceremony, and no --yes bypass exists). Run it yourself on an interactive terminal",
+          "Refused to run schema import: stdin and stdout are not both an interactive terminal (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal",
         ),
       );
     }
@@ -302,15 +303,18 @@ function approvalStep(
   draft: CandidateDraft,
   valueNote: string,
   isNameTaken: (name: string) => boolean,
-): Effect.Effect<ApprovalStep, CliError> {
+): Effect.Effect<ApprovalStep, CliError, CliIo> {
   return Effect.gen(function* () {
     yield* io.logError(describeCandidate(draft, entry.line, valueNote));
     const finding =
       findHighEntropySubstring(draft.description) ?? findHighEntropySubstring(draft.name);
     if (finding !== null) {
       // 警告は検出値そのものを運ばない(秘密でありうる — entropy.ts の規律)
-      yield* io.logError(
-        `  Warning: the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
+      // 候補ごとの警告(同じ候補の再試行・同じ形の別候補でも毎回出す — 台帳の
+      // 抑制対象にしない。pullfrog 指摘)。候補の直下に字下げして付ける
+      yield* logWarning(
+        `the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
+        { scope: "prompt" },
       );
     }
     const answer = interpretApprovalAnswer(
@@ -359,7 +363,7 @@ function approveCandidate(
   io: CliIoShape,
   entry: EnvFileEntry,
   isNameTaken: (name: string) => boolean,
-): Effect.Effect<ApprovalOutcome, CliError> {
+): Effect.Effect<ApprovalOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
     // 忠実に解釈できたと言えない値(閉じない引用符・引用値内のエスケープ —
     // env-file.ts)は観察にも掛けず、push の提案も出さない(fail-closed —
@@ -379,8 +383,12 @@ function approveCandidate(
       description: entry.descriptionCandidate,
     };
     if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
-      yield* io.logError(
-        `  Note: the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
+      // 候補の提示(approvalStep の describeCandidate)より前に出るので、項目に
+      // ぶら下がる prompt スコープにはしない(字下げが直前の項目に付いてしまう
+      // — PR #151 Bugbot 指摘)。行番号を含むので候補ごとに一意で、再試行で
+      // 繰り返す必要もない(捨てたのは 1 回)
+      yield* logNote(
+        `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
       );
       draft.description = "";
     }
@@ -597,8 +605,8 @@ export function schemaImportOp(
     const metadata = yield* pullVerifiedEnvironmentMetadata(input);
     yield* logWarnings(metadata.warnings);
     if (metadata.advisorySchemaPolicy === "disabled") {
-      yield* io.logError(
-        "Note: the server reports this project's schema policy as disabled, so it will likely reject new declarations (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
+      yield* logNote(
+        "the server reports this project's schema policy as disabled, so it will likely reject new declarations (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
       );
     }
     const existingNames = new Set(metadata.variables.map((statement) => statement.name));

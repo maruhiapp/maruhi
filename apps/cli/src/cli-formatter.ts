@@ -23,6 +23,7 @@
 import type { HelpDoc } from "effect/unstable/cli";
 import { CliError, CliOutput } from "effect/unstable/cli";
 
+import { formatNotice } from "./notice.ts";
 import { RUN_COMMAND_REQUIRED } from "./run.ts";
 
 /**
@@ -241,18 +242,32 @@ function maruhiFormatter(
   commandKey: string,
   specs: Readonly<Record<string, CommandSpec>>,
   helpRequested: boolean,
+  colors: boolean,
 ): CliOutput.Formatter {
+  // 失敗の接頭辞 `maruhi:` の描画は notice.ts と共有(色は接頭辞だけ)
   const describe = (error: CliError.CliError): string =>
-    `maruhi: ${describeError(error, commandKey, specs)}`;
-  const fallback = CliOutput.defaultFormatter({ colors: false });
+    formatNotice("error", describeError(error, commandKey, specs), colors);
+  // 全文ヘルプは上流の既定フォーマッタ(見出しの太字・usage / フラグ名の色)に
+  // 乗る。色の可否だけを渡す — 上流の自動判定(`process.stdout.isTTY` と
+  // `NO_COLOR === "1"`)は stdout を見るうえ NO_COLOR の規約(非空で無効)と
+  // 食い違うので使わず、maruhi の判定(shouldUseColor — stderr 基準)で上書きする
+  const fallback = CliOutput.defaultFormatter({ colors });
   // bare 実行でハンドラが走る親(audit = list)では、サブコマンドは必須では
   // ない。上流の usage は一律 `<subcommand>`(必須)と描くので `[subcommand]`
   // へ直す。判定は宣言駆動(フラグとサブコマンドの両方を持つ段 = ハンドラ付き
   // 親だけが該当し、root や通常の親 — flags が空 — には触れない)
   const spec = specs[commandKey];
   const optionalSubcommand = (spec?.flags.length ?? 0) > 0 && (spec?.subcommands?.length ?? 0) > 0;
-  const adjustUsage = (text: string): string =>
-    optionalSubcommand ? text.replace("<subcommand>", "[subcommand]") : text;
+  // `run` は `--` が必須(ADR-0016 決定 8)なのに、上流の usage は可変長の
+  // 位置引数として `<command...>` としか描かない。書き方そのものを usage に
+  // 出す(裁定 F)。置換は usage 行の語だけで、判定は宣言由来のキーで行う
+  const terminatorRequired = commandKey === "run" || commandKey === "ci run";
+  const adjustUsage = (text: string): string => {
+    const withSubcommand = optionalSubcommand ? text.replace("<subcommand>", "[subcommand]") : text;
+    return terminatorRequired
+      ? withSubcommand.replace("<command...>", "-- <command...>")
+      : withSubcommand;
+  };
   return {
     formatHelpDoc: (doc: HelpDoc.HelpDoc) =>
       adjustUsage(helpRequested ? fallback.formatHelpDoc(doc) : `Usage: ${doc.usage}`),
@@ -285,6 +300,7 @@ export function formatterLayer(
   commandKey: string,
   specs: Readonly<Record<string, CommandSpec>>,
   helpRequested: boolean,
+  colors: boolean,
 ) {
-  return CliOutput.layer(maruhiFormatter(commandKey, specs, helpRequested));
+  return CliOutput.layer(maruhiFormatter(commandKey, specs, helpRequested, colors));
 }

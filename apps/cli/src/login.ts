@@ -18,7 +18,7 @@ import type { HttpClient } from "effect/unstable/http";
 
 import { AgentProfileRef } from "./agent-gate.ts";
 import { makeApiClient, type MaruhiClient } from "./api.ts";
-import { displayText, escapeText, formatUtcDate } from "./display.ts";
+import { countNoun, displayText, escapeText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
@@ -33,6 +33,7 @@ import {
   type StoredToken,
   tokenEntryName,
 } from "./keychain.ts";
+import { logNote } from "./notice.ts";
 import { type EnvTokenStatus, envTokenStatus } from "./session.ts";
 
 // サーバー申告値の運用上限(device flow 時代の B3 と同じ論拠): 敵対的・誤設定
@@ -89,9 +90,13 @@ function maybeOpenBrowser(
       return;
     }
     const opened = yield* io.openBrowser(verificationUrl);
-    if (opened) {
-      yield* io.log("Opened the browser (if nothing appeared, open the URL above manually)");
-    }
+    // 案内は stderr(裁定 D-2: 対話の案内はプロンプトと同じ経路。stdout は
+    // ログインの結果だけ)。開けなかったときも黙らない — 表示済みの URL へ誘導する
+    yield* io.logError(
+      opened
+        ? "Opened your browser. If nothing appeared, open the URL above manually"
+        : "Could not open a browser automatically. Open the URL above manually",
+    );
   });
 }
 
@@ -102,7 +107,21 @@ function clampExpires(seconds: number): number {
     : DEFAULT_EXPIRES_IN_SECONDS;
 }
 
-const FLOW_EXPIRED_MESSAGE = "The sign-in request expired. Run `maruhi login` again";
+/**
+ * フローの有効期間の表示(裁定 D-1)。値はサーバー応答の expiresInSeconds
+ * (clampExpires 後 = deadline 判定と同じ値)から導く — CLI に定数を持たない
+ * (サーバーの TTL を変えても CLI の案内が食い違わない)。分単位で切り捨て、
+ * 1 分未満だけ秒で言う。
+ */
+function describeWindow(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  return minutes >= 1 ? countNoun(minutes, "minute") : countNoun(Math.floor(seconds), "second");
+}
+
+/** 期限切れの文面(サーバー申告の期間を添え、次の一手を 1 文で言う)。 */
+function flowExpiredMessage(window: string): string {
+  return `The sign-in request expired (it was valid for ${window}). Run \`maruhi login\` again`;
+}
 
 /**
  * login の事前 fail-fast(AUTH_SPEC §3 / hosted-design.md §2-2 (i)(ii) —
@@ -130,7 +149,8 @@ function signupPolicyPreflight(
     if (policy !== "invite" && policy !== "closed") {
       return;
     }
-    yield* io.log(
+    // 案内は stderr(裁定 D-2)
+    yield* io.logError(
       policy === "invite"
         ? "This server is invite-only: CLI sign-in works only for existing accounts. If you don't have a maruhi account yet, sign up in your browser first using your sign-up invite link, then run `maruhi login` again"
         : "This server is not accepting new sign-ups: CLI sign-in works only for existing accounts",
@@ -187,6 +207,7 @@ function pollOnce(
   client: MaruhiClient,
   flowId: string,
   flowToken: string,
+  window: string,
 ): Effect.Effect<PollOutcome, CliError> {
   return client.authCli.cliPoll({ payload: { flowId, flowToken } }).pipe(
     Effect.flatMap((result): Effect.Effect<PollOutcome, CliError> => {
@@ -199,7 +220,7 @@ function pollOnce(
       return Effect.succeed({ kind: "pending" });
     }),
     // 期限切れ(型付き — §4-2)はポーリングをやめて再ログインを案内する
-    Effect.catchTag("CliFlowExpired", () => Effect.fail(cliError(FLOW_EXPIRED_MESSAGE))),
+    Effect.catchTag("CliFlowExpired", () => Effect.fail(cliError(flowExpiredMessage(window)))),
     // 一様拒否(§4-2): 資格不一致・消費済みフローの再 poll 等。理由は
     // 出し分けられない(サーバーがオラクルを作らない)ので再ログインを案内する
     Effect.catchTag("CliFlowRejected", () =>
@@ -258,34 +279,42 @@ export function loginOp(input: {
       })
       .pipe(Effect.mapError(toCliError));
 
+    // 有効期間はサーバー応答から導く(裁定 D-1 — deadline 判定と同じ丸め値)
+    const expiresInSeconds = clampExpires(started.expiresInSeconds);
+    const window = describeWindow(expiresInSeconds);
+    // 対話の案内は stderr(裁定 D-2: プロンプトと同じ経路。`maruhi login >
+    // file` でも案内が見える)。stdout に出るのはログインの**結果**だけ。
     // verificationUrl / userCode はサーバー由来の外部文字列。制御文字・ANSI を
-    // 生で端末へ流さない(displayText で中和)
-    yield* io.log("Open this URL in your browser to approve the sign-in:");
-    yield* io.log("");
-    yield* io.log(`    ${displayText(started.verificationUrl)}`);
-    yield* io.log("");
-    yield* io.log(`Confirmation code: ${displayText(started.userCode)}`);
-    yield* io.log(
-      "Approve in the browser only if it shows this exact code (AUTH_SPEC's phishing guard)",
+    // 生で端末へ流さない(displayText で中和)。語彙は承認ページ(DP4 —
+    // cli-pages.ts)と揃える: "Confirmation code" / 「一致するときだけ承認」
+    yield* io.logError("Open this URL in your browser to approve the sign-in:");
+    yield* io.logError("");
+    yield* io.logError(`    ${displayText(started.verificationUrl)}`);
+    yield* io.logError("");
+    yield* io.logError(`Confirmation code: ${displayText(started.userCode)}`);
+    yield* io.logError(
+      "Approve only if the browser shows this exact code (it protects you against phishing)",
     );
+    yield* io.logError(`This request expires in ${window}`);
+    yield* io.logError("");
 
     yield* maybeOpenBrowser(io, started.verificationUrl);
-    yield* io.log("Waiting for approval\u2026");
+    yield* io.logError("Waiting for approval\u2026");
 
     // 取得(§4-1 (5))。deadline は sleep の**前**に検査する(次のポーリング
     // 時刻が deadline を越えるならフローは待っている間に失効する)
     const minInterval = input.minIntervalSeconds ?? MIN_CLI_POLL_INTERVAL_SECONDS;
-    const deadlineMs = Date.now() + clampExpires(started.expiresInSeconds) * 1000;
+    const deadlineMs = Date.now() + expiresInSeconds * 1000;
     const initialInterval = clampInterval(started.pollIntervalSeconds, minInterval);
     const poll = (
       intervalSeconds: number,
     ): Effect.Effect<Extract<PollOutcome, { readonly kind: "approved" }>, CliError> =>
       Effect.gen(function* () {
         if (Date.now() + intervalSeconds * 1000 > deadlineMs) {
-          return yield* Effect.fail(cliError(FLOW_EXPIRED_MESSAGE));
+          return yield* Effect.fail(cliError(flowExpiredMessage(window)));
         }
         yield* Effect.sleep(Duration.seconds(intervalSeconds));
-        const outcome = yield* pollOnce(client, started.flowId, started.flowToken);
+        const outcome = yield* pollOnce(client, started.flowId, started.flowToken, window);
         if (outcome.kind === "approved") {
           return outcome;
         }
@@ -328,7 +357,7 @@ export function loginOp(input: {
       ),
     );
     yield* io.log(
-      `Logged in (user: ${displayText(approved.userId)}). The token is stored in the OS keychain`,
+      `Signed in as ${displayText(approved.userId)}. The token is stored in the OS keychain`,
     );
     if (input.showToken) {
       // 生値の唯一の表示点(AUTH_SPEC §6「発行時の端末表示 1 箇所」— 裁定 CK)。
@@ -343,7 +372,7 @@ export function loginOp(input: {
       yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
       yield* io.log("");
       yield* io.log(
-        "This value is not shown again (re-login rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
+        "This value is not shown again (signing in again rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
       );
       // 供給ログインの身元スワップの可視化(裁定 CM): キーチェーンのスロットは
       // origin 単位なので、この発行はこの端末のアクティブトークンも置き換えた。
@@ -351,10 +380,10 @@ export function loginOp(input: {
       // 「素の再ログイン」を勧めると、同名ローテーションが**いま表示した
       // トークン自体を失効させ**、貼り付け先の環境を切断する。既定名なら
       // 「別名で発行し直す」が正しい復し方
-      yield* io.log(
+      yield* logNote(
         input.tokenNameIsDefault
-          ? "Note: this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
-          : "Note: this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
+          ? "this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
+          : "this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
       );
     }
     // 有効期限は発行時に固定される(AUTH_SPEC §6 の既定 TTL — W3a)。期限が
@@ -362,10 +391,7 @@ export function loginOp(input: {
     // 表示は display.ts の total フォーマッタ経由(サーバー申告の無制限 number を
     // Date#toISOString へ直接渡さない — deepsec B1/B4/B5 と同じ規律)
     yield* io.log(
-      `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Re-login (\`maruhi login\`) rotates it`,
-    );
-    yield* io.log(
-      `Re-logging in with the same token name (${input.tokenName}) revokes the old token`,
+      `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Signing in again with the same token name (${input.tokenName}) rotates it and revokes the old one`,
     );
     yield* nextStepHint(input.origin, approved.userId, issuedToken);
   });
@@ -382,28 +408,25 @@ function nextStepHint(
   token: Redacted.Redacted<string>,
 ): Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
     const keychain = yield* Keychain;
     const master = yield* keychain.get(masterKeyEntryName(origin, userId));
     const client = yield* makeApiClient({ baseUrl: origin, token });
     const status = yield* client.auth.recoveryStatus({});
     if (master === null) {
-      yield* io.log(
+      yield* logNote(
         status.registered
-          ? "No master key on this device. You can restore it with your recovery code: `maruhi key recover`"
-          : "No master key yet. Generate one with `maruhi key generate`",
+          ? "no master key on this device. Restore it with your recovery code: `maruhi key recover`"
+          : "no master key yet. Generate one with `maruhi key generate`",
       );
     } else if (!status.registered) {
-      yield* io.logError(
-        "Note: no recovery code is registered. If you lose the key it cannot be restored — issue one with `maruhi key recovery`",
+      yield* logNote(
+        "no recovery code is registered. If you lose the key it cannot be restored — issue one with `maruhi key recovery`",
       );
     }
   }).pipe(
     Effect.catch(() =>
-      Effect.flatMap(CliIo, (io) =>
-        io.logError(
-          "Note: skipped the next-step hint because the recovery registration status could not be checked (login itself is unaffected; check the status with `maruhi key show`)",
-        ),
+      logNote(
+        "skipped the next-step hint because the recovery registration status could not be checked (login itself is unaffected; check the status with `maruhi key show`)",
       ),
     ),
   );
@@ -420,16 +443,16 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
     case "unset":
       return null;
     case "active":
-      return "Note: MARUHI_TOKEN is set, so the CLI stays authenticated with that token (the env-var token is not revoked here; manage it on the environment side)";
+      return "MARUHI_TOKEN is set, so the CLI stays authenticated with that token (the env-var token is not revoked here; manage it on the environment side)";
     case "placeholder":
-      return `Note: ${redactedPlaceholderEnvTokenMessage} (the next command will fail as-is)`;
+      return `${redactedPlaceholderEnvTokenMessage} (the next command will fail as-is)`;
     case "originInvalid":
       // 理由は解決側の文言をそのまま使う(言い換えると次の失敗と食い違う)
-      return `Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN cannot be used, so the token is not used for authentication (${status.reason}). The next command will fail as-is — unset the env vars or fix the reported problem`;
+      return `MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN cannot be used, so the token is not used for authentication (${status.reason}). The next command will fail as-is — unset the env vars or fix the reported problem`;
     case "originMissing":
-      return "Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN is not set, so the token is not used for authentication (the next command will fail as-is — unset MARUHI_TOKEN or set MARUHI_TOKEN_ORIGIN to the target server's origin)";
+      return "MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN is not set, so the token is not used for authentication (the next command will fail as-is — unset MARUHI_TOKEN or set MARUHI_TOKEN_ORIGIN to the target server's origin)";
     case "originMismatch":
-      return "Note: MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN does not match this server, so the token is not used for authentication (the next command will fail as-is — unset the env vars or point MARUHI_TOKEN_ORIGIN at the target server)";
+      return "MARUHI_TOKEN is set, but MARUHI_TOKEN_ORIGIN does not match this server, so the token is not used for authentication (the next command will fail as-is — unset the env vars or point MARUHI_TOKEN_ORIGIN at the target server)";
   }
 }
 
@@ -474,14 +497,14 @@ export function logoutOp(input: {
       Effect.catchTag("Unauthorized", () => Effect.void),
       Effect.mapError(toCliError),
     );
-    yield* io.log("Logged out (the token was revoked and removed from the keychain)");
+    yield* io.log("Signed out. The token was revoked and removed from the OS keychain");
     // resolveSession は MARUHI_TOKEN をキーチェーンより優先する(session.ts)。
     // 環境変数が残っていると「ログアウトしたのに CLI が動き続ける」ため明示する。
     // 判定は envTokenStatus に委ねる: ここで独自に見ると、セッション解決とは
     // 違う結論(空白だけの値・origin 不一致でも「認証されます」)を出してしまう
     const notice = envTokenNotice(yield* envTokenStatus(input.origin));
     if (notice !== null) {
-      yield* io.log(notice);
+      yield* logNote(notice);
     }
   });
 }
