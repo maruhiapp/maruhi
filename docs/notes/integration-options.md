@@ -200,7 +200,7 @@ S4 は「呼び鈴であって配達ではない」: 通知には値も変数名
 GitHub の `repository_dispatch` は認証が要るため、サーバーが GitHub を呼ぶ資格を持つ必要がある。選択肢は 2 つ:
 
 - **maruhi の GitHub App(OAuth App とは別)を登録し、ユーザーがリポジトリにインストールする**。サーバーはインストールトークンを都度発行して呼ぶ(`contents: write` 相当の権限)。ユーザーのトークンを預からずに済む。Shelve と同じ方式。運営(セルフホストでは各運営者)が App を 1 つ登録する人間タスクが要る — hosted-design.md §7 の L 系列に追加候補
-- **汎用 webhook(HMAC 署名付き POST)** をユーザー任意の URL へ送る。GitHub 以外にも使えるが、受け口はユーザーが用意する。任意 URL は SSRF・流出面の検査が要る(§8-2)
+- **汎用 webhook(HMAC 署名付き POST)** をユーザー任意の URL へ送る。GitHub 以外にも使えるが、受け口はユーザーが用意する。任意 URL は SSRF・流出面の検査が要る(§8 項 2)
 
 **推奨(2026-09-04)**: 両方持ち、順序は汎用 → GitHub App。理由: (1) 将来の送信先の大半は「URL に POST」で足りる — Vercel / Netlify の deploy hook は認証なしの秘匿 URL、GitLab の pipeline trigger はトークンをボディに載せるだけ、GitHub も fine-grained PAT を静的ヘッダに置けば動く。汎用の形(URL + 静的ヘッダ + HMAC 署名 + 既知ホスト allowlist)が基本形で、GitHub App はその上の「認証モード」(静的ヘッダの代わりにインストールトークンを都度発行)にすぎない。(2) セルフホストでは App 登録を強いない経路が要る。(3) ホステッドで PAT を預かるのは避けたいので、GitHub App を後から足して PAT 経路を推奨から外す。注意点: 静的ヘッダに置く資格はサーバー(運営)が読める統合用の資格であり、maruhi の E2EE 値ではない — 認証なしの deploy hook を第一選択として案内し、PAT は最小権限(`contents: write` のみ・リポジトリ限定)を求める。**所有者裁定待ち**。
 
