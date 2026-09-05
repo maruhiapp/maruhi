@@ -134,12 +134,9 @@ function EventRow({
       label={event.event}
       description={
         <HStack gap={2} wrap="wrap" align="center">
-          {event.seq === undefined ? null : (
-            <Text type="supporting" size="sm">
-              seq <HexText>{String(event.seq)}</HexText>
-            </Text>
-          )}
-          <HexText>{actorHead(event)}</HexText>
+          <Text type="supporting" size="sm">
+            by <HexText>{actorHead(event)}</HexText>
+          </Text>
           <Fragments items={detailFragments(event)} />
           {listed === null ? null : (
             <Text type="supporting" size="sm">
@@ -149,9 +146,16 @@ function EventRow({
         </HStack>
       }
       endContent={
-        <Text type="supporting" size="sm" hasTabularNumbers>
-          {formatServerTime(event.serverTs)}
-        </Text>
+        <VStack gap={0} align="end">
+          <Text type="supporting" size="sm" hasTabularNumbers>
+            {formatServerTime(event.serverTs)}
+          </Text>
+          {event.seq === undefined ? null : (
+            <Text type="supporting" size="sm" hasTabularNumbers>
+              seq {event.seq}
+            </Text>
+          )}
+        </VStack>
       }
       onClick={onSelect}
       isSelected={isSelected}

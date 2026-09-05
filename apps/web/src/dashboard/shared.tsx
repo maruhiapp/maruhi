@@ -16,6 +16,7 @@
 //     13 か所の呼び出しは AuditEventList(2)/ TokensScreen(2)/ DashboardScreen(2)/
 //     InvitesTab(2)/ ProjectScreen(4)/ DashboardShell(1 — 旧 DashboardScreen のセッション
 //     失敗表示を移したもの)= 置換 9 / 追記 4
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
@@ -298,44 +299,55 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number | null }): Rea
 }
 
 /**
- * インライン 2 段階の失効ボタン(裁定 CO — docs/notes/session-45.md)。
- * 武装(armed)状態は親が行単位で管理する(常に 1 行のみ — 別行の武装・
- * Cancel で解除)。確認は destructive バリアント、実行中は isLoading。
- * 失効の帰結の注記は各画面がテーブル下へ常時表示する(武装時だけ出す形より
- * 先に読める)。
+ * 失効の入口(行ごとの ghost ボタン)。確認は `RevokeDialog`(AlertDialog)で行う —
+ * DP3 改訂 4 で裁定 CO のインライン 2 段階(Cancel / Confirm revoke を行内に出す)から
+ * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
+ * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
+ * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
+ * `isLocked` = 別の行の失効が実行中(PR #109 Bugbot 指摘 — in-flight 中は他行を無効化)。
  */
-export function RevokeControl({
-  armed,
-  isPending,
-  isLocked,
+export function RevokeButton({
   onArm,
+  isLocked,
+}: {
+  onArm: () => void;
+  isLocked: boolean;
+}): ReactNode {
+  return <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />;
+}
+
+/**
+ * 失効の確認ダイアログ(テーブルごとに 1 つ。`armedId` が立っている間だけ開く)。
+ * `title` / `description` は対象の名詞と帰結を画面側が与える(裁定 CO の「帰結の注記」を
+ * 確認の場で読ませる)。実行中は action ボタンが isActionLoading、Cancel は閉じるだけ。
+ */
+export function RevokeDialog({
+  isOpen,
+  title,
+  description,
+  isPending,
   onCancel,
   onConfirm,
 }: {
-  armed: boolean;
+  isOpen: boolean;
+  title: string;
+  description: string;
   isPending: boolean;
-  /** 別の行の失効が実行中(PR #109 Bugbot 指摘 — in-flight 中は他行を無効化)。 */
-  isLocked: boolean;
-  onArm: () => void;
   onCancel: () => void;
   onConfirm: () => void;
 }): ReactNode {
-  if (!armed) {
-    return (
-      <Button label="Revoke" variant="ghost" size="sm" onClick={onArm} isDisabled={isLocked} />
-    );
-  }
   return (
-    <HStack gap={2} align="center" wrap="wrap">
-      <Button label="Cancel" variant="ghost" size="sm" onClick={onCancel} isDisabled={isPending} />
-      <Button
-        label="Confirm revoke"
-        variant="destructive"
-        size="sm"
-        onClick={onConfirm}
-        isLoading={isPending}
-      />
-    </HStack>
+    <AlertDialog
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isPending) onCancel();
+      }}
+      title={title}
+      description={description}
+      actionLabel="Revoke"
+      isActionLoading={isPending}
+      onAction={onConfirm}
+    />
   );
 }
 

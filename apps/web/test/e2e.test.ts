@@ -366,6 +366,16 @@ async function routeProjectOverview(page: Page): Promise<void> {
   );
 }
 
+/**
+ * 失効の確認(DP3 改訂 4 — 裁定 CO のインライン 2 段階から AlertDialog へ)。行の Revoke で
+ * モーダルが開き、その中の Revoke で DELETE が飛ぶ。
+ */
+async function confirmRevoke(page: Page): Promise<void> {
+  const dialog = page.getByRole("alertdialog");
+  await dialog.waitFor();
+  await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
+}
+
 /** ダッシュボード用の CSP violation 収集(既存テストと同じ検出方法)。 */
 /** プロジェクト画面の tabpanel の computed `display`(非選択は `none`)。 */
 function panelDisplay(page: Page, tab: string): Promise<string> {
@@ -700,9 +710,9 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     );
     // Revoke は pending | accepted 行のみ(completed 行にはボタンが出ない)
     await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(2);
-    // 2 段階確認(裁定 CO): Revoke で武装 → Confirm revoke で実行
+    // 2 段階確認(裁定 CO — DP3 改訂 4 で AlertDialog に): 行の Revoke → モーダルの Revoke で実行
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     // 完了後はサーバー再取得で写す(楽観更新しない) — pending 行が revoked に
     await page.getByText("revoked", { exact: true }).waitFor();
     expect(deleteMethod).toBe("DELETE");
@@ -728,7 +738,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.getByRole("tab", { name: "Invites" }).click();
     await page.getByTestId("invite-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     await page.getByText("The server reports this invitation as completed.").waitFor();
     await page.close();
   });
@@ -791,7 +801,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     // 指定失効は行の削除 — 再取得後の一覧から "ci" 行が消える。再取得中は一覧が
     // LoadingRow に置き換わる(裁定 B の置換形)ため、"ci" の detached だけでは
     // 「再取得後の一覧」に到達していない。残る行の再出現を待ってから件数を見る
@@ -805,10 +815,12 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.close();
   });
 
-  it("locks other rows while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
+  it("keeps the confirmation modal open and other rows locked while a revoke is in flight (PR #109 Bugbot 指摘の回帰)", async () => {
     // DELETE の in-flight 中に別行を武装できると、後着の完了が武装状態を
-    // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード +
-    // RevokeControl の isLocked)。DELETE をゲートで保留して実測する
+    // 上書きし、失敗の帰属が別の失効に見える(use-revocation.ts のガード)。DP3 改訂 4
+    // では確認が AlertDialog(モーダル)なので、実行中はダイアログが開いたまま
+    // (Escape で閉じない)で他行に触れず、完了後にダイアログが閉じて一覧が再取得される。
+    // DELETE をゲートで保留して実測する
     const page = await browser.newPage();
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
@@ -831,17 +843,22 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
-    // in-flight 中: 他行の Revoke は無効(クリックしても武装できない)。
-    // クリック直後の再レンダリングと競合しないようポーリングで待つ。
-    // exact: true が必須(PR #109 pullfrog 指摘): 既定の name 照合は部分一致で、
-    // 実行中行の "Confirm revoke"(isLoading で無効)が DOM 順の先頭に立ち、
-    // isLocked を外してもテストが通ってしまう — 完全一致で未武装行だけを指す
-    const otherRevoke = page.getByRole("button", { name: "Revoke", exact: true }).first();
-    await expect.poll(() => otherRevoke.isDisabled()).toBe(true);
+    await confirmRevoke(page);
+    const dialog = page.getByRole("alertdialog");
+    // in-flight 中: モーダルは開いたまま(Escape も効かない)。行の Revoke は
+    // isLocked で無効(RevokeButton — モーダルの背後でも二層目のガードを保つ)
+    await page.keyboard.press("Escape");
+    await expect(dialog.count()).resolves.toBe(1);
+    const rowRevoke = page
+      .getByTestId("token-table")
+      .getByRole("button", { name: "Revoke", exact: true })
+      .first();
+    await expect.poll(() => rowRevoke.isDisabled()).toBe(true);
     release?.();
-    // 完了 → 再取得で行が消え、残る行の Revoke は再び有効
+    // 完了 → ダイアログが閉じ、再取得で行が消え、残る行の Revoke は再び有効
+    await dialog.waitFor({ state: "hidden" });
     await page.getByText("ci", { exact: true }).waitFor({ state: "detached" });
+    await page.getByText("old-laptop", { exact: true }).waitFor();
     await expect
       .poll(() => page.getByRole("button", { name: "Revoke", exact: true }).first().isDisabled())
       .toBe(false);
@@ -862,7 +879,7 @@ describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", 
     await page.goto(`${BASE}/dashboard/tokens`, { waitUntil: "networkidle" });
     await page.getByTestId("token-table").waitFor();
     await page.getByRole("button", { name: "Revoke" }).first().click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
+    await confirmRevoke(page);
     // 一様 404(他人の・存在しないを区別しない)を token の名詞で写す(裁定 CN 付随)
     await page.getByText("The server reports no such token for your account.").waitFor();
     await page.close();

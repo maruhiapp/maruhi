@@ -29,6 +29,7 @@ import { AuditEventList } from "./AuditEventList.tsx";
 import { deriveReportedView, type ReportedServer } from "./chain-view.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { shortId } from "./ids.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
 import {
@@ -95,10 +96,14 @@ function attestationSummary(snapshot: ChainSnapshot): string {
   return `${attestations.length} reported: ${parts.join(" · ")}`;
 }
 
-/** チェーンの要約(`detail-page` テンプレートの見出し直下メタデータの形 — 横並びの MetadataList)。 */
+// MetadataList のラベル列幅(`incident-console` のインスペクタと同じ規模。64 hex の値が折り返しても
+// ラベルと値の対応が読める)
+const CHAIN_LABEL_WIDTH = 200;
+
+/** チェーンの要約(`detail-page` テンプレートの見出し直下メタデータの形 — MetadataList)。 */
 function ChainSummary({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   return (
-    <MetadataList orientation="horizontal">
+    <MetadataList columns="single" label={{ position: "start", width: CHAIN_LABEL_WIDTH }}>
       <MetadataListItem label="Chain head">
         <Text hasTabularNumbers>seq {snapshot.headSeq}</Text>
       </MetadataListItem>
@@ -638,11 +643,6 @@ function ProjectTabPanels({ tab, projectId }: { tab: ProjectTab; projectId: stri
       {tab === id ? <ProjectTabBody tab={id} projectId={projectId} /> : null}
     </VStack>
   ));
-}
-
-/** 識別子の短縮形(先頭・末尾 6 桁 — 見出しとサイドバーの子項目用。全文は HexText で並記する)。 */
-function shortId(id: string): string {
-  return `${id.slice(0, 6)}…${id.slice(-6)}`;
 }
 
 /** 妥当な ID のプロジェクト画面(`detail-page` テンプレートの形: 戻りリンク → h1 → ID → タブ)。 */

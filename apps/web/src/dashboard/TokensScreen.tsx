@@ -11,13 +11,15 @@
 // - 失効はインライン 2 段階確認(裁定 CO)。自トークンの失効は稼働中の
 //   CLI / CI を即 401 にするため、帰結の注記をテーブル下へ常時表示する
 import { Card } from "@astryxdesign/core/Card";
-import { VStack } from "@astryxdesign/core/Layout";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Heading, Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode } from "react";
 
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { shortId } from "./ids.ts";
 import {
   EmptyNotice,
   ExpiryCell,
@@ -25,7 +27,8 @@ import {
   formatServerTime,
   HexText,
   LoadingRow,
-  RevokeControl,
+  RevokeButton,
+  RevokeDialog,
 } from "./shared.tsx";
 import type { TokenList, TokenSummary } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
@@ -35,14 +38,31 @@ interface TokenRow extends Record<string, unknown> {
   id: string;
   name: string;
   tokenPrefix: string;
-  scopes: string;
+  token: TokenSummary;
   lastUsedAtMs: number | null;
   expiresAtMs: number | null;
 }
 
-/** スコープの表示形(`project:permission` — `*` は全プロジェクト)。 */
-function scopeLabel(token: TokenSummary): string {
-  return token.scopes.map((scope) => `${scope.project}:${scope.permission}`).join(" ");
+/**
+ * スコープの表示(`project:permission` — `*` は全プロジェクト)。project は 64 hex なので
+ * chip には短縮形を出し、全文は aria-description に載せる。
+ */
+function ScopeChips({ token }: { token: TokenSummary }): ReactNode {
+  return (
+    <HStack gap={1} wrap="wrap">
+      {token.scopes.map((scope) => {
+        const project = scope.project === "*" ? "*" : shortId(scope.project);
+        return (
+          <Token
+            key={`${scope.project}:${scope.permission}`}
+            label={`${project}:${scope.permission}`}
+            size="sm"
+            description={`${scope.project}:${scope.permission}`}
+          />
+        );
+      })}
+    </HStack>
+  );
 }
 
 function toTokenRow(token: TokenSummary): TokenRow {
@@ -50,7 +70,7 @@ function toTokenRow(token: TokenSummary): TokenRow {
     id: token.id,
     name: token.name,
     tokenPrefix: token.tokenPrefix,
-    scopes: scopeLabel(token),
+    token,
     lastUsedAtMs: token.lastUsedAtMs,
     expiresAtMs: token.expiresAtMs,
   };
@@ -59,7 +79,6 @@ function toTokenRow(token: TokenSummary): TokenRow {
 function buildTokenColumns(
   revocation: RevocationState,
   onArm: (id: string | undefined) => void,
-  onConfirm: (id: string) => void,
 ): TableColumn<TokenRow>[] {
   return [
     {
@@ -82,11 +101,7 @@ function buildTokenColumns(
       key: "scopes",
       header: "Scopes",
       width: proportional(1),
-      renderCell: (row: TokenRow) => (
-        <Text type="code" size="sm" wordBreak="break-all">
-          {row.scopes}
-        </Text>
-      ),
+      renderCell: (row: TokenRow) => <ScopeChips token={row.token} />,
     },
     {
       key: "lastUsedAtMs",
@@ -109,14 +124,7 @@ function buildTokenColumns(
       header: "Actions",
       width: pixel(200),
       renderCell: (row: TokenRow) => (
-        <RevokeControl
-          armed={revocation.armedId === row.id}
-          isPending={revocation.pendingId === row.id}
-          isLocked={revocation.pendingId !== undefined && revocation.pendingId !== row.id}
-          onArm={() => onArm(row.id)}
-          onCancel={() => onArm(undefined)}
-          onConfirm={() => onConfirm(row.id)}
-        />
+        <RevokeButton onArm={() => onArm(row.id)} isLocked={revocation.pendingId !== undefined} />
       ),
     },
   ];
@@ -148,12 +156,10 @@ function TokensTable({
   tokens,
   revocation,
   onArm,
-  onConfirm,
 }: {
   tokens: ReadonlyArray<TokenSummary>;
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
-  onConfirm: (id: string) => void;
 }): ReactNode {
   if (tokens.length === 0) {
     return (
@@ -167,7 +173,7 @@ function TokensTable({
   return (
     <Table
       data={tokens.map(toTokenRow)}
-      columns={buildTokenColumns(revocation, onArm, onConfirm)}
+      columns={buildTokenColumns(revocation, onArm)}
       idKey="id"
       density="balanced"
       hasHover
@@ -180,13 +186,11 @@ function TokensTable({
 function TokensResource({
   revocation,
   onArm,
-  onConfirm,
   reload,
   state,
 }: {
   revocation: RevocationState;
   onArm: (id: string | undefined) => void;
-  onConfirm: (id: string) => void;
   reload: () => void;
   state: ResourceState<TokenList>;
 }): ReactNode {
@@ -195,14 +199,13 @@ function TokensResource({
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
   }
-  return (
-    <TokensTable
-      tokens={state.value.tokens}
-      revocation={revocation}
-      onArm={onArm}
-      onConfirm={onConfirm}
-    />
-  );
+  return <TokensTable tokens={state.value.tokens} revocation={revocation} onArm={onArm} />;
+}
+
+/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
+function armedName(state: ResourceState<TokenList>, armedId: string | undefined): string {
+  const token = state.kind === "ok" ? state.value.tokens.find((t) => t.id === armedId) : undefined;
+  return token === undefined ? "this token" : `token "${token.name}"`;
 }
 
 export function TokensScreen(): ReactNode {
@@ -220,12 +223,17 @@ export function TokensScreen(): ReactNode {
       }
     >
       <VStack gap={4} data-testid="token-list">
-        <TokensResource
-          revocation={revocation}
-          onArm={arm}
-          onConfirm={confirm}
-          reload={reload}
-          state={state}
+        <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
+        {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
+        <RevokeDialog
+          isOpen={revocation.armedId !== undefined}
+          title={`Revoke ${armedName(state, revocation.armedId)}?`}
+          description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
+          isPending={revocation.pendingId !== undefined}
+          onCancel={() => arm(undefined)}
+          onConfirm={() => {
+            if (revocation.armedId !== undefined) confirm(revocation.armedId);
+          }}
         />
         {/* 追記形(裁定 B-b): 失効の失敗は一覧の下に足す。再操作は行から行えるので Retry なし */}
         {revocation.failure !== undefined ? (

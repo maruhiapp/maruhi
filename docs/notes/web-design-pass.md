@@ -557,6 +557,26 @@ site と同じ生成物 `logo-inverted-dark.svg` + `<picture>` の案がある�
 散文は `SectionHeader` の説明と注記(Card)で幅を絞る。960 に下げる案は表の列幅を圧迫するため採らない。
 e2e 26 件(監査の指し方を行 + インスペクタに追随)、axe 24 態(1920 を追加)で違反 0。
 
+**改訂 4(2026-09-05、所有者レビュー 4 回目 — 「本当に良いか」をユーザー体験で自問・横幅・ロゴ)**:
+所有者の 3 点(自分でユーザー体験ベースに評価せよ / ページごとに横幅を変えるのはありえない / ロゴが大きい)
+への回答と処置。(a) **自己評価で見つけた弱点と処置**: ① 失効の確認が行内の Cancel / Confirm revoke で、狭い
+Actions 列に縦積みになり行の高さも変わっていた → Astryx の `AlertDialogAsyncAction` テンプレートの形
+(モーダルの確認 + 対象名と帰結を本文に + 実行中は action にスピナー)へ。**裁定 CO(session-45 —
+インライン 2 段階)の実装形を改める**(武装は常に 1 行・別行の武装で解除・in-flight 中は他行を無効化
+〔PR #109〕は不変。帰結の注記はダイアログ本文で確認の場で読ませ、テーブル下の CardCallout にも残す)。
+② 監査行の description が `seq 2 user_e2e target … chain seq 2` の等幅断片の塊で走査しにくい → 「by
+<actor>」を先頭に、seq は endContent の時刻の下へ(誰が・何を・いつ、の順)。③ トークンの Scopes が
+64 hex × 数件で 5 行に膨らみ表を壊す → `Token` chip(短縮 ID:permission、全文は aria-description)。
+④ 概要の横並び MetadataList は 64 hex の digest が折り返して読めない → 単列(ラベル幅 200)。⑤ 変えない
+と判断したもの: ページ末尾の `ServerReportedNote`(§4-1 の規律。全画面で 1 回)、プロジェクト一覧の
+64 hex 表示(サーバー申告は ID と role だけで、名前は無い — ID が capability)、Row id(サポート時の参照)。
+(b) **横幅**: ページごとに変える意図は無く、改訂 3 の説明が誤解を招いた。実装は最初からシェルの 1 値
+(`contentWidth`)で全ページ共通。値は **1040 → 1200** に統一(1440px のノートで領域 1180 をちょうど満たし、
+1920px で中央に収まる。監査のインスペクタ 380 を並べても行に 800 弱が残る)。(c) **ロゴ**: 同意 — 32px は
+見出し文字(bold 16px)より 2 倍大きく浮いていた。サイドバー 24px(文字高と同格)、サインイン 40px
+(56 → 40)。(d) 検証: e2e 26 件(失効の指し方を alertdialog に追随・in-flight のロックはモーダル + 行の
+isDisabled で検査)、axe 24 態で違反 0。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。

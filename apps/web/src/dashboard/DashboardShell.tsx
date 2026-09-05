@@ -51,11 +51,17 @@ interface BackLink {
 }
 
 // ブランド資産(DP1 — apps/web/public)。反転版 = 朱の円盤に白抜きの「秘」= favicon と同形。
-// サイドバー見出し(32px)とサインイン画面(56px)で同じファイルを使う。色はテーマに追随せず
+// サイドバー見出しとサインイン画面で同じファイルを使う。色はテーマに追随せず
 // 朱で固定(ブラウザのタブの favicon と同じ見え方)
 const LOGO_INVERTED_SRC = "/logo-inverted.svg";
-const SIDE_NAV_LOGO_PX = 32;
-const SIGN_IN_LOGO_PX = 56;
+// 見出しの文字高(bold 16px)と釣り合う 24px。サインインは見出しの上に置くので 40px
+const SIDE_NAV_LOGO_PX = 24;
+const SIGN_IN_LOGO_PX = 40;
+
+// 本文の最大幅(全ページ共通の 1 値 — ページごとに変えない)。Astryx の `settings` テンプレートは
+// 1440、`detail-page` は 1000。1200 は 1440px のノート(領域 1180)でちょうど満ち、1920px では中央に
+// 収まる。監査のインスペクタ(380)を並べても行に 800 弱が残る
+const CONTENT_WIDTH = 1200;
 
 /** 開いているプロジェクト(サイドバーの Projects の子項目として現在地を示す)。 */
 interface CurrentProject {
@@ -303,7 +309,7 @@ function SignedInFrame({
     >
       <Layout
         height="fill"
-        contentWidth={1040}
+        contentWidth={CONTENT_WIDTH}
         padding={6}
         header={
           <LayoutHeader hasDivider>
