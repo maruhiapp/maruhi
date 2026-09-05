@@ -23,7 +23,6 @@ import { Card } from "@astryxdesign/core/Card";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
-import { Section } from "@astryxdesign/core/Section";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
@@ -257,11 +256,11 @@ export function SectionHeader({
 }
 
 /**
- * 節のパネル(DP3 改訂 8 — 裁定 S)。Astryx の `Section`(ページの節の既定単位 — Card は
- * 「独立に並べ替え・削除できる item」用で節には使わない)に、テーマ(maruhi.ts)が面の色を
- * 与える。Section も中の Table も領域の縁まで伸びる(Astryx の整列モデル)ので、表の行が
- * 節の中に収まって見える。padding 6 = Layout の padding と同じ 24px で、見出しはページの
- * 内容線に乗る。`title` を省くと見出し無しのパネル(ページ h1 が見出しを兼ねる一覧)。
+ * 集合の容器(DP3 改訂 9 — 裁定 S 改訂): 見出し + 説明 + 行の集合を `Card`(border 付きの
+ * 固定幅の箱)に入れる。Astryx の docs は「ページの節に Card を使わない」(Section を使う)と
+ * するが、maruhi のテーマでは Section の面が本文と同じで節が見えず、所有者の判断で境界線を
+ * 引く形を採る。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので、行の線は
+ * border の内側で止まる。`title` を省くと見出し無しの箱(ページ h1 が見出しを兼ねる一覧)。
  */
 export function SectionBlock({
   title,
@@ -275,12 +274,12 @@ export function SectionBlock({
   testId?: string | undefined;
 }): ReactNode {
   return (
-    <Section padding={6} data-testid={testId}>
+    <Card padding={4} data-testid={testId}>
       <VStack gap={4}>
         {title === undefined ? null : <SectionHeader title={title} description={description} />}
         {children}
       </VStack>
-    </Section>
+    </Card>
   );
 }
 

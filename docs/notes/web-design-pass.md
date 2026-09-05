@@ -680,6 +680,23 @@ Callout(muted の Card)は注記のままで、パネルとは色相が違う。
 (`apps/site` の theme:build で差分 0)。検証: e2e 26 件、axe 24 態で違反 0(パネル上の文字コントラストは
 body 相当で AA)。
 
+**改訂 9(2026-09-05、所有者レビュー 9 回目 — Section のパネルは不可。固定幅 + border)**:
+
+**S 改訂: 集合の容器は `Card`(border 付きの固定幅の箱)**。改訂 8 の Section + テーマの面の色は、
+所有者の判定で棄却(薄い wash では節が節として見えない)。「固定幅 + border」= 集合ごとの Card。Astryx の
+docs(`component Section` / `component Card` / `docs layout`)は「ページの節に Card を使わない」とするが、
+maruhi のテーマでは Section が節として見えず、境界を見せるには border しかない — **所有者判断で Astryx の
+文言を上書き**する(理由は裁定録に残す。Card docs の "a hard boundary around critical content" の読みも
+併記)。試作 2 案: (A) **見出しを箱の内側**(GitHub の設定画面の Box の形。見出し・説明・表が 1 つの境界に入り、
+見出しの無い集合〔監査行・Projects・API tokens〕でも同じ箱で揃う)/ (B) 見出しを箱の外側(Vercel の形。箱は
+データの容器だけを示し、箱と見出しの所属を余白に頼る)。→ **(A) を採用**(所有者の最終判断は保留中 —
+B への切替は `SectionBlock` の 3 行)。実装: `shared.tsx` の `SectionBlock` = `Card padding={4}` + VStack
+(SectionHeader? + children)。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので行の線は border の
+内側で止まる。箱に入れるのは集合(Members / Environments / Granted servers / Invitations / Projects /
+API tokens / Rotation flags / 監査行)だけで、概要のメタデータ(MetadataList)・「Open a project by ID」・
+CLI 案内の注記(muted の Card)は入れない。テーマの `components.section` 上書きは取り消し(theme/ は
+main と同一に戻る)。検証: e2e 26 件、axe 24 態で違反 0。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
