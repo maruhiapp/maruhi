@@ -488,9 +488,7 @@ describe("maruhi pull", () => {
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdout: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      "stdin and stdout are not both an interactive terminal",
-    );
+    expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
     // 復号より前に確定する(平文をそもそも作らない)
     expect(env.logs.join("\n")).not.toContain("Sync and verification OK");
@@ -500,9 +498,7 @@ describe("maruhi pull", () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setTerminal({ stdin: false });
     expect(await runCli(["pull", "--show"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      "stdin and stdout are not both an interactive terminal",
-    );
+    expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
     expect(env.logs.join("\n")).not.toContain("alpha-value");
   });
 

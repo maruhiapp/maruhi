@@ -213,9 +213,7 @@ describe("儀式系 deny(ADR-0016 決定 7 の類型 — ゲートは読み取�
     const { env } = await startImportEnv();
     env.setTerminal({ stdout: false });
     expect(await runCli(["schema", "import", "/nonexistent/.env"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      "stdin and stdout are not both an interactive terminal",
-    );
+    expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
     expect(lastServer().requests).toEqual([]);
   });
 
@@ -223,9 +221,7 @@ describe("儀式系 deny(ADR-0016 決定 7 の類型 — ゲートは読み取�
     const { env } = await startImportEnv();
     env.setTerminal({ stdin: false });
     expect(await runCli(["schema", "import", "/nonexistent/.env"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      "stdin and stdout are not both an interactive terminal",
-    );
+    expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
   });
 });
 

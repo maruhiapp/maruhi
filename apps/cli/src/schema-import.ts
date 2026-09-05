@@ -28,7 +28,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
-import { AgentProfileRef } from "./agent-gate.ts";
+import { AgentProfileRef, describeNonTerminal } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
 import type { DekRecipient } from "./deks.ts";
 import { countNoun, displayText, escapeText, logWarnings } from "./display.ts";
@@ -83,7 +83,7 @@ export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.St
     if (!stdinIsTerminal || !stdoutIsTerminal) {
       return yield* Effect.fail(
         cliError(
-          "Refused to run schema import: stdin and stdout are not both an interactive terminal (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal",
+          `Refused to run schema import: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal`,
         ),
       );
     }

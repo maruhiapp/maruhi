@@ -1089,6 +1089,53 @@ defaultProject <id>`)、`logWarning(\`${warning}\`)`、`Re-login` → `Sign in a
 (+ notice 9 件・help golden 2 件・login 2 件・checkpoint の genesis 基準)。実プロセスの TTY / パイプ採取と
 wrangler dev に対する `maruhi login` の実出力は PR の Artifact。
 
+### DP5 追補: 薄かった裁定点の再周回(2026-09-05)
+
+PR #151 のマージ後、所有者の問いに答えて自己点検したところ、裁定録のうち A / B / C は「新案が出ない周が 1 回」まで
+回していたが、D 以降は 1 周または列挙のみで決めていた(J の EPIPE と B の台帳の per-item 問題は、もう 1 周
+「この案で何が壊れるか」を問えば自分で出せた種類の穴で、レビューボットに見つけられた)。ここでは D / E / F / G / J を
+同じループで回し直し、周ごとの新案の有無を記す。上位互換が出た E / G は後続 PR で実装、F-(iv) は所有者への提案、
+D / J は据え置き(理由つき)。
+
+**D login(再周回)** — D-1 期限: 第 1 周の新案 = 絶対時刻の併記「(at 09:52 UTC)」(あり)→ 相対表示で足り、UTC の
+絶対時刻は利用者のローカル時刻と食い違って混乱を足す(棄却)。第 2 周: なし。D-2 宛先: 第 1 周の新案 = `/dev/tty` へ
+直接書く(パイプ・リダイレクトの両方を迂回できる)(あり)→ `process.*` / fd を直に触る規律(ADR-0016 決定 5)と
+テスト可能性に反し、確認コードは秘密ではないので迂回の必要もない(棄却)。第 2 周: なし。D-3 待機中の進捗: 第 1 周の
+新案 = 窓の半分が過ぎた時点で 1 行だけ「Still waiting (7 minutes left)」(あり)→ 離席した利用者には有用だが、非 TTY の
+ログにも 1 行増え、期限の 1 行が既に窓を伝えている(棄却 — 実機で「待ちが長い」と感じたら再訪)。第 2 周: なし。
+**結論: 据え置き**。
+
+**E 英語校正(再周回)** — 末尾ピリオド: (i) 無し(現状 96 件が全てこの形)/ (ii) 常に付ける / (iii) 複文だけ付ける。
+第 1 周の新案 = **規約を機械検査にする**(あり — 選択そのものより「守り続ける」方が問題で、用語集は書いた瞬間から
+漂流する)。第 2 周: なし。**選定 = (i) + 検査** `apps/cli/test/message-style.test.ts`: `cliError` / `usageError` /
+`evidenceError` / `io.log` / `io.logError` / `logNote` / `logWarning` に直接渡された文字列リテラルを走査し、
+(1) 末尾ピリオド無し、(2) `maruhi <command>` は必ずバッククォート、(3) `**` を出さない、を固定する(拾った文言が
+300 件以上あることも断言 — 検査の空回りを防ぐ)。初回の走査で (2) の取りこぼしが 1 件残っていた(`member.ts` の
+「and maruhi project verify」)ので直した。用語(sign in / server / token …)の検査は語の出現が文脈依存で
+誤検知が多いため入れない。
+
+**F --help(再周回)** — 第 1 周の新案 = (iv) **docs サイトの CLI リファレンスを golden(`test/golden/help.txt`)から
+生成する**(あり — `--help` と docs の食い違いを構造で消す。単一の正 = 宣言)。ただし `apps/site` の変更なので
+本追補では実装せず所有者への提案に留める(DP2 の Blume 構成に生成ページを足す形。生成物のコミット or ビルド時生成の
+選択が要る)。(v) 例(EXAMPLES 節)の追加 → upstream の HelpDoc に節が無く、説明文に混ぜると 1 行規約が崩れる
+(棄却)。第 2 周: なし。**結論: golden は据え置き、(iv) は提案**。
+
+**G 決定 7 の文言(再周回)** — (i) 現状「stdin and stdout are not both an interactive terminal」/ (ii) 1 行に短縮 /
+(iii) `maruhi run` を勧める(迂回レシピ — 禁止)。第 1 周の新案 = **落ちた側を名指しする**(「stdout is not an
+interactive terminal」/「stdin is not …」/「neither stdin nor stdout …」)(あり — 利用者は `| less` を外すのか
+ヒアドキュメントをやめるのかを文面から判断できる。判定結果を文面の材料に使うだけで、新しい検査は足さない =
+決定 7 の意味論は不変)。第 2 周: なし。**選定 = 名指し**(`agent-gate.ts` の `describeNonTerminal`。`schema
+import` の同型の拒否文にも適用)。
+
+**J writeSync(再周回)** — 「この案で何が壊れるか」を問う周を改めて回した: EPIPE(改訂 1)・EAGAIN / 部分書き込み
+(改訂 2)は済み。残りの候補: (a) Windows のコンソールハンドルへの `writeSync`(非 ASCII の化け・部分書き込み)— この
+環境では検証不能で人間タスクのまま。(b) 代替案 = `process.stdout.write` に戻し、`bin.ts` の `process.exit` の前に
+コールバック付きの空書き込みで flush を待つ(ストリームなら EPIPE は `error` イベント、Windows は libuv の tty 経路)。
+**実測で棄却**: Bun 1.4.0 ではコールバックがデータの到達前に返り、5 万行のパイプ書き込みは flush を待っても
+7,401 行で途切れた(`writeSync` は全行到達)。(c) `Bun.stderr.writer()`(FileSink)— flush の同期性が文書化されて
+おらず、Node 互換の経路(`node:fs`)を離れる利点が無い(棄却)。第 2 周: なし。**結論: 据え置き**。EAGAIN のビジー
+スピンは同期書き込みに固有で、macOS / Windows の実機確認で「書けない fd が長く続く」事例が出たら再訪。
+
 ## 6. スコープ外
 
 - 手動ダークトグル・**ダッシュボード(TCB)側の** Web フォント自己配信(必要になったら再訪 — §1-2 / §1-3)
