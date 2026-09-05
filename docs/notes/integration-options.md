@@ -742,6 +742,13 @@ STRIPE_SECRET_KEY` も断言)。(2) nit: 「Windows build is experimental」は 
 添え、macOS はパイプ容量が小さく `printenv` の書き込みが分かれうるため、実アカウント検証の人間タスクに「大きめの値
 (数十 KiB)」を 1 件足した。
 
+**改訂 3(2026-09-05、pullfrog の差分レビュー〔436b23e〕+ CI)**: (1) 改訂 1 で足した注記の「which is also Vercel's own limit per
+variable」は、裁定録自身が「ベンダー側の上限は書かない」と決めた内容を破っていた(Vercel の 64 KB は 1 デプロイの全変数の合計で、
+edge runtime は 1 変数 5 KB — 「per variable」と読ませると 30 KiB × 3 本が安全に見える)。節を落とし、観測事実(Linux で 64 KiB)と
+「閾値はシステムのパイプ容量に依存する」だけを残した。(2) CI の fallow: 改訂 2 の xtrace の分岐で `runRecipe` の CRAP が閾値 30 に
+達した → 継承する PATH / HOME をモジュール定数に出し、xtrace は引数配列と env への 1 分岐に畳んだ(手元の fallow は改訂 2 の後に
+回し直しておらず、CI で発覚 — 以後は改訂ごとに `fallow:audit` まで回す)。
+
 **検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
 (Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / dash の 3 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕)。
 実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・zsh・macOS(BSD `printenv`)は人間タスク。ページの

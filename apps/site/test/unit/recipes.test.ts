@@ -51,6 +51,8 @@ function hasCommand(shell: string): boolean {
 
 const shells = ["sh", "bash", "zsh", "dash"].filter(hasCommand);
 const hasJq = hasCommand("jq");
+const inheritedPath = process.env["PATH"] ?? "";
+const inheritedHome = process.env["HOME"];
 
 let workDir: string | undefined;
 afterEach(() => {
@@ -70,18 +72,19 @@ function runRecipe(
   const valuesFile = join(workDir, "values.json");
   writeFileSync(log, "");
   writeFileSync(valuesFile, JSON.stringify(injected));
-  const xtrace = options.xtrace === true;
-  const result = spawnSync(shell, xtrace ? ["-x", "-c", recipe] : ["-c", recipe], {
-    cwd: workDir,
-    env: {
-      PATH: `${shimBin}:${process.env["PATH"] ?? ""}`,
-      HOME: process.env["HOME"] ?? workDir,
-      RECIPE_TEST_LOG: log,
-      RECIPE_TEST_VALUES: valuesFile,
-      ...(xtrace ? { RECIPE_TEST_XTRACE: "1" } : {}),
-    },
-    encoding: "utf8",
-  });
+  const env: Record<string, string> = {
+    PATH: `${shimBin}:${inheritedPath}`,
+    HOME: inheritedHome ?? workDir,
+    RECIPE_TEST_LOG: log,
+    RECIPE_TEST_VALUES: valuesFile,
+  };
+  // xtrace: 外側のシェルを -x で起動し、偽 maruhi にはレシピ内の `sh -c` も -x にするよう伝える
+  const args = ["-c", recipe];
+  if (options.xtrace === true) {
+    args.unshift("-x");
+    env["RECIPE_TEST_XTRACE"] = "1";
+  }
+  const result = spawnSync(shell, args, { cwd: workDir, env, encoding: "utf8" });
   const calls = readFileSync(log, "utf8")
     .split("\n")
     .filter((line) => line !== "")
