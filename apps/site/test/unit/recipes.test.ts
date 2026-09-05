@@ -153,6 +153,18 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
     expect(hasJq, "install jq on the CI runner: the Workers recipe check needs it").toBe(true);
   });
 
+  it("has every shell the page names in CI (bash, zsh, dash), so none is silently skipped there", () => {
+    // ページは「bash, zsh, and dash run them unchanged」と約束している。手元では導入済みのものだけを回し、
+    // CI(ci.yml が zsh を入れる)では 4 シェルすべての存在を断言する(pullfrog 指摘)
+    if (process.env["CI"] === undefined) return;
+    expect(shells, "install bash, zsh, and dash on the CI runner").toEqual([
+      "sh",
+      "bash",
+      "zsh",
+      "dash",
+    ]);
+  });
+
   describe.each(shells)("under %s", (shell) => {
     it.skipIf(!hasJq)(
       "Cloudflare Workers: one JSON object on wrangler's stdin, values off argv",

@@ -754,6 +754,12 @@ edge runtime は 1 変数 5 KB — 「per variable」と読ませると 30 KiB �
 zsh が PATH にある機械(macOS)では落ちる。証拠を「`+` で始まり外側の `maruhi run --env production` を含む行」に変え、この環境に
 zsh 5.9 を入れて 4 シェル(sh / bash / zsh / dash)で通した(29 件)。
 
+**改訂 5(2026-09-05、pullfrog の差分レビュー〔d288c77〕)**: `shells` は導入済みのシェルだけを回すため、zsh の無い
+`ubuntu-latest` では zsh の 6 態が CI で一度も走らず、改訂 4 が塞いだ zsh 限定の失敗もパイプラインでは検出できなかった。
+ページが zsh を名指しで約束している以上、CI で必ず走らせる: `ci.yml` の依存導入の直後に `apt-get install zsh` の 1 ステップを
+足し(docs だけの PR で workflow に触る唯一の変更 — レシピ検査の前提の導入のみ)、検査側は jq と同じ形で `CI` があるときだけ
+`shells` が `["sh", "bash", "zsh", "dash"]` であることを 1 件の `it` で断言する(手元では従来どおり導入済みのものだけ)。
+
 **検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
 (Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / zsh / dash の 4 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕— zsh は改訂 4 で導入)。
 実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・macOS(BSD `printenv`)は人間タスク。ページの
