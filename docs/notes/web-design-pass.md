@@ -1060,7 +1060,14 @@ Note 4 か所 → stderr(テストの断言は `env.errors` へ追随)。(L) `ru
 複雑度(`checkpointProposal` の閉包)→ `baselineIsStale` を関数に切り出し、重複(`schema set` / `var rm` の環境
 解決)→ `requireVerifiedEnvironment` を共有。
 
-**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 863 件
+**J 改訂 1(2026-09-05、Cursor Bugbot の初回レビュー — 閉じたパイプ)**: 指摘 = `writeSync` は読み手が先に閉じた
+パイプ(`maruhi pull | head -1` の 2 行目以降)で `EPIPE` を投げ、`Effect.sync` の中なので defect = internal error で
+終わる(旧 `console.log` は黙って捨てていた — 実測)。列挙: (i) `EPIPE` だけ捨てる(読み手はもう要らないと言って
+おり、報告する相手も経路も無い)/ (ii) 全エラーを捨てる(EBADF 等の本物の失敗まで握り潰す)/ (iii) `console.log` に
+戻す(赤塗りが戻る)。**選定 = (i)** — `writeLine` を公開し、実プロセス(bun の書き手 | `head -1`)で終了コード 0 を
+固定する検査を `live-io.test.ts` に追加。
+
+**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 864 件
 (+ notice 9 件・help golden 2 件・login 2 件・checkpoint の genesis 基準)。実プロセスの TTY / パイプ採取と
 wrangler dev に対する `maruhi login` の実出力は PR の Artifact。
 

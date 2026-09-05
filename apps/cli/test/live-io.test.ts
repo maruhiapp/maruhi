@@ -7,6 +7,7 @@
 //
 // PassThrough に TTY のスタブ(setRawMode / isRaw)を足して駆動する。
 
+import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it } from "vitest";
@@ -93,5 +94,23 @@ describe("readHiddenLine(raw mode の非エコー入力)", () => {
     tty.write("AB");
     tty.end();
     await expect(pending).rejects.toThrow("eof");
+  });
+});
+
+describe("writeLine(同期書き込みと閉じたパイプ)", () => {
+  it("読み手が先に閉じたパイプへの書き込み(EPIPE)は defect にせず、プロセスは 0 で終わる", () => {
+    // `maruhi … | head -1` の形。writeSync は 2 行目以降で EPIPE を投げるが、
+    // console.log と同じく黙って捨てる(PR #151 Bugbot 指摘)。実プロセスで検査する:
+    // 書き手を bun で走らせ、読み手 head が 1 行で閉じた後の終了コードを見る
+    const script =
+      'import { writeLine } from "./apps/cli/src/live.ts"; for (let i = 0; i < 200000; i += 1) writeLine(1, `line${i}`); process.exit(0);';
+    const result = spawnSync(
+      "bash",
+      ["-c", `bun -e '${script}' | head -1; echo "writer-exit=\${PIPESTATUS[0]}"`],
+      { cwd: new URL("../../..", import.meta.url).pathname, encoding: "utf8" },
+    );
+    expect(result.stdout).toContain("line0");
+    expect(result.stdout).toContain("writer-exit=0");
+    expect(result.stderr).not.toContain("EPIPE");
   });
 });

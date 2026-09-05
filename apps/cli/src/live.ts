@@ -331,9 +331,21 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
  * パイプ相手では非同期で、bin.ts の `process.exit` が末尾を切り落とす(実測:
  * 5 万行中 7,401 行で途切れる)。`writeSync` は端末・パイプ・ファイルのどれでも
  * 完了してから戻る。
+ *
+ * 読み手が先に閉じたパイプ(`maruhi pull | head -1` の 2 行目以降)への書き込みは
+ * `EPIPE` を投げる。console.log はこれを黙って捨てていた(実測)ので同じにする —
+ * 読み手はもう要らないと言っており、報告する相手も経路も無い(defect にすると
+ * 「読み手が満足した実行」が internal error で終わる — PR #151 Bugbot 指摘)。
+ * それ以外の書き込み失敗はそのまま投げる(握り潰さない)。テスト用に公開する。
  */
-function writeLine(fd: 1 | 2, line: string): void {
-  writeSync(fd, `${line}\n`);
+export function writeLine(fd: 1 | 2, line: string): void {
+  try {
+    writeSync(fd, `${line}\n`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPIPE") {
+      throw error;
+    }
+  }
 }
 
 function makeLiveIo(): CliIoShape {
