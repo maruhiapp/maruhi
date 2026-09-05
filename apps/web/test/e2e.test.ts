@@ -239,6 +239,10 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(res.status).toBe(200);
     const csp = res.headers.get("content-security-policy") ?? "";
     expect(csp).toContain("script-src 'none'");
+    // スタイルとロゴは自己配信のみ(DP4 — /theme.css + /pages.css + ロゴ SVG)
+    expect(csp).toContain("style-src 'self'");
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).not.toContain("unsafe-inline");
     // SPA の CSP('self' + ブートストラップハッシュ許可)がデタッチされ、
     // 2 本目の CSP として残っていないこと
     expect(csp).not.toContain("'self' 'sha256-");
@@ -273,12 +277,79 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
       expect(res.status, `path: ${path}`).toBe(301);
       expect(res.headers.get("location"), `path: ${path}`).toBe("/invite");
     }
-    // 200 リライトの盾: 正規アセットは /invite* の総取りに飲まれず素通しされる
+    // 200 リライトの盾: 正規パスは /invite* の総取りに飲まれず素通しされる
     // (盾が落ちてループ化したら /invite の 3xx でここが検知する)
-    const cssRes = await fetch(`${BASE}/invite.css`, { redirect: "manual" });
-    expect(cssRes.status).toBe(200);
     const inviteRes = await fetch(`${BASE}/invite`, { redirect: "manual" });
     expect(inviteRes.status).toBe(200);
+  });
+
+  // スクリプトなしページの共有アセット(DP4 — docs/notes/web-design-pass.md §5):
+  // /invite とサーバー配信の儀式ページ(apps/server/src/auth.package/cli-pages.ts)が
+  // 参照する /theme.css(apps/web/theme/maruhi.css の無変換同梱)と /pages.css が、
+  // 本番と同じ combined 構成で正しい content-type で届き、配信バイトがソースと一致すること
+  it("serves /theme.css and /pages.css for the script-free pages (self-served, byte-identical)", async () => {
+    const theme = await fetch(`${BASE}/theme.css`);
+    expect(theme.status).toBe(200);
+    expect(theme.headers.get("content-type")).toContain("text/css");
+    expect(await theme.text()).toBe(
+      readFileSync(new URL("../theme/maruhi.css", import.meta.url), "utf8"),
+    );
+    const pages = await fetch(`${BASE}/pages.css`);
+    expect(pages.status).toBe(200);
+    expect(pages.headers.get("content-type")).toContain("text/css");
+    expect(await pages.text()).toBe(
+      readFileSync(new URL("../public/pages.css", import.meta.url), "utf8"),
+    );
+    // 名前固定の CSS の更新反映: Workers Static Assets の既定は毎回の再検証
+    // (max-age=0, must-revalidate + ETag)なので、Worker 応答(no-store)の HTML が
+    // 参照する固定名 CSS もデプロイ直後の読み込みで新版に切り替わる(DP4 裁定 G —
+    // URL のバージョン付けを持たない根拠。既定が変わったらここで気付く)
+    for (const res of [theme, pages]) {
+      expect(res.headers.get("cache-control")).toContain("must-revalidate");
+      expect(res.headers.get("etag")).not.toBeNull();
+    }
+  });
+
+  // サーバー配信の儀式ページが実配信で共有スタイルを受けること。到達点は一様エラー
+  // ページ(`GET /auth/cli/verify` の捏造 flow — 未設定サーバーでも同じページを返す。
+  // AUTH_SPEC §4-2)。承認ページ本体は OAuth を要するためサーバー側テスト
+  // (apps/server/test/auth.test.ts)が同じ page() の出力を検査する
+  it("renders a server-delivered ritual page with the shared stylesheet under CSP", async () => {
+    const res = await fetch(`${BASE}/auth/cli/verify?flow=not-a-real-flow`);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("script-src 'none'");
+    expect(csp).toContain("style-src 'self'");
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    const page = await browser.newPage();
+    const violations: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.text().includes("Content Security Policy")) violations.push(msg.text());
+    });
+    const failed: string[] = [];
+    page.on("response", (r) => {
+      if (r.status() >= 400 && !r.url().endsWith("not-a-real-flow")) failed.push(r.url());
+    });
+    await page.goto(`${BASE}/auth/cli/verify?flow=not-a-real-flow`, { waitUntil: "networkidle" });
+    await expect(page.locator("h1").textContent()).resolves.toContain("can't be used");
+    await expect(page.evaluate(() => document.scripts.length)).resolves.toBe(0);
+    // /pages.css の枠(40rem)と /theme.css のトークン(body の背景色)が両方効いている
+    const maxWidth = await page.locator(".page").evaluate((el) => getComputedStyle(el).maxWidth);
+    expect(maxWidth).toBe("640px");
+    const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(background).not.toBe("rgba(0, 0, 0, 0)");
+    // ロゴ(自己配信 SVG)が img-src 'self' 下で読めている
+    const logoLoaded = await page
+      .locator(".brand img")
+      .evaluate(
+        (el) => (el as HTMLImageElement).complete && (el as HTMLImageElement).naturalWidth > 0,
+      );
+    expect(logoLoaded).toBe(true);
+    expect(violations).toEqual([]);
+    expect(failed).toEqual([]);
+    await page.close();
   });
 
   it("renders /invite with zero scripts under a fragment-bearing URL", async () => {
@@ -294,8 +365,8 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     await expect(page.locator("h1").textContent()).resolves.toContain("maruhi");
     // スクリプトゼロ(<script> 要素が DOM に一切ない)
     await expect(page.evaluate(() => document.scripts.length)).resolves.toBe(0);
-    // スタイルシート(自己配信 /invite.css)が CSP 下で適用されている
-    const maxWidth = await page.locator("main").evaluate((el) => getComputedStyle(el).maxWidth);
+    // スタイルシート(自己配信 /pages.css)が CSP 下で適用されている
+    const maxWidth = await page.locator(".page").evaluate((el) => getComputedStyle(el).maxWidth);
     expect(maxWidth).toBe("640px"); // 40rem
     expect(violations).toEqual([]);
     await page.close();

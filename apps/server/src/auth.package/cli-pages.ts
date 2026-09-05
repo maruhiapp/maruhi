@@ -1,9 +1,14 @@
 // CLI ログインのサーバー描画ページ(AUTH_SPEC §4-1 (4))。
 //
 // 配信規律は §15-3 の招待着地ページと同一: **スクリプトなし**(フォーム POST
-// のみ)・CSP `script-src 'none'`。スタイルシートも持たない(素の UA 描画 —
-// インライン style を CSP で許す例外を増やさない)。文言はすべて英語
-// (ADR-0017)。
+// のみ)・CSP `script-src 'none'`。スタイルは自己配信の外部 CSS のみ
+// (`style-src 'self'` — インライン style / <style> のハッシュ許可は使わない):
+// /theme.css(apps/web/theme/maruhi.css の無変換同梱 = ブランドの正の生成物。
+// ADR-0013 — ここに色や hex を書かない)+ /pages.css(apps/web/public/pages.css —
+// /invite と共有する枠・余白・確認コードの見せ方)。ロゴは自己配信 SVG
+// (`img-src 'self'`)。どちらも apps/web のビルド出力として同じ Worker から配信
+// される(apps/server/wrangler.jsonc の assets — セルフホストでも同梱)。文言は
+// すべて英語(ADR-0017)。裁定は docs/notes/web-design-pass.md §5(DP4)。
 //
 // - tokenName は未認証入力として**不活性描画**する(HTML エスケープ +
 //   <code> による承認文言との視覚的分離。書式・マークアップの解釈なし —
@@ -24,12 +29,20 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * ページが参照する自己配信アセット(apps/web/public / theme のビルド出力)。
+ * 実配信での到達性は apps/web/test/e2e.test.ts が固定する(combined 構成)。
+ */
+const PAGE_STYLESHEETS = ["/theme.css", "/pages.css"] as const;
+const PAGE_LOGO = "/logo-inverted.svg";
+
+/**
  * ページ共通の CSP(meta タグと配信ヘッダーで二重化する — invite.html と同じ
  * 論拠。ヘッダー側の適用点は handlers-auth-cli.ts の htmlResponse)。
- * form-action は承認フォームの POST 先(自オリジン)のみ許す。
+ * style-src / img-src は自己配信のみ、form-action は承認フォームの POST 先
+ * (自オリジン)のみ許す。script-src は 'none' のまま。
  */
 const CLI_PAGE_CSP =
-  "default-src 'none'; script-src 'none'; style-src 'none'; base-uri 'none'; form-action 'self'";
+  "default-src 'none'; script-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'";
 
 /**
  * 配信ヘッダー用の CSP。`frame-ancestors 'none'` は承認ページのクリック
@@ -41,22 +54,39 @@ const CLI_PAGE_CSP =
  */
 export const CLI_PAGE_CSP_HEADER = `${CLI_PAGE_CSP}; frame-ancestors 'none'`;
 
-/** スクリプトなしページの共通枠(signup-pages.ts と共用 — 同一の配信規律)。 */
+/**
+ * スクリプトなしページの共通枠(signup-pages.ts と共用 — 同一の配信規律)。
+ * 構造は invite.html と同じ: ブランドヘッダー(見出しではない)→ main。ページの
+ * 題は body 側の h1。`data-astryx-theme="maruhi"` は /theme.css のトークンが
+ * `@scope ([data-astryx-theme="maruhi"])` 配下で定義されるため(ダッシュボードの
+ * ルートと同じ印)。`meta color-scheme` は CSS 到着前のダーク描画のため。
+ */
 export function page(title: string, body: string): string {
+  const stylesheets = PAGE_STYLESHEETS.map(
+    (href) => `    <link rel="stylesheet" href="${href}" />`,
+  ).join("\n");
   return `<!doctype html>
-<html lang="en">
+<html lang="en" data-astryx-theme="maruhi">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="${CLI_PAGE_CSP}" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <title>${escapeHtml(title)}</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+${stylesheets}
   </head>
   <body>
-    <main>
-      <h1>&#12953; maruhi</h1>
+    <div class="page">
+      <header class="brand">
+        <img src="${PAGE_LOGO}" alt="" width="28" height="28" />
+        <span>maruhi</span>
+      </header>
+      <main>
 ${body}
-    </main>
+      </main>
+    </div>
   </body>
 </html>
 `;
@@ -69,9 +99,10 @@ ${body}
 export function renderCliErrorPage(): string {
   return page(
     "maruhi — CLI sign-in error",
-    `      <h2>This sign-in link can&#39;t be used</h2>
-      <p>The link is invalid, has expired, or was already used.</p>
-      <p>Return to your terminal and run <code>maruhi login</code> again to start over.</p>`,
+    `        <h1>This sign-in link can&#39;t be used</h1>
+        <p>The link is invalid, has expired, or was already used.</p>
+        <p class="outcome">No token was issued.</p>
+        <p>Return to your terminal and run <code>maruhi login</code> again to start over.</p>`,
   );
 }
 
@@ -84,6 +115,9 @@ export function renderCliErrorPage(): string {
  * invite 制下でプレーンなサインアップリンクを案内すると invite-required の
  * 拒否ページへ誘導するだけになる(hosted-design.md §2-2 の「案内文言の追随」)。
  * 表示のみの分岐であり、受理の正はサーバーゲート(§3)のまま。
+ *
+ * 構成は拒否ページ(signup-pages.ts)と同じ 3 段: 何が起きたか → 何が起きて
+ * いないか(outcome 行)→ 次にできること。
  */
 export function renderSignupGuidancePage(
   origin: string,
@@ -93,28 +127,29 @@ export function renderSignupGuidancePage(
   const signupUrl = `${origin}/auth/github/start`;
   const signupStep =
     signupPolicy === "invite"
-      ? `Sign-ups on this server are invite-only: open the sign-up link that came with
-          your sign-up invite code (it carries the code) with this GitHub account. If you
-          don&#39;t have an invite, contact the operator of this server.`
+      ? `Sign-ups on this server are invite-only. Open the sign-up link that came with your
+            sign-up invite code (the link carries the code) with this GitHub account. If you
+            don&#39;t have an invite, contact the operator of this server.`
       : signupPolicy === "closed"
-        ? `Sign-ups on this server are currently closed. Contact the operator of this
-          server about getting an account.`
+        ? `Sign-ups on this server are currently closed. Contact the operator of this server
+            about getting an account.`
         : `<a href="${escapeHtml(signupUrl)}">Sign up in the browser</a> with this GitHub account.`;
   return page(
     "maruhi — sign up first",
-    `      <h2>No maruhi account yet</h2>
-      <p>
-        This GitHub identity is not linked to a maruhi account. CLI sign-in only works for
-        existing accounts.
-      </p>
-      <ol>
-        <li>${signupStep}</li>
-        <li>
-          Then <a href="${escapeHtml(verificationUrl)}">resume the CLI sign-in</a> (or open the
-          verification link shown in your terminal again).
-        </li>
-      </ol>
-      <p>Nothing has been created or changed by opening this page.</p>`,
+    `        <h1>No maruhi account yet</h1>
+        <p>
+          The GitHub account you just signed in with is not linked to a maruhi account, and CLI
+          sign-in only works for existing accounts.
+        </p>
+        <p class="outcome">Nothing has been created or changed by opening this page.</p>
+        <h2>What to do next</h2>
+        <ol>
+          <li>${signupStep}</li>
+          <li>
+            Then <a href="${escapeHtml(verificationUrl)}">resume the CLI sign-in</a> (or open the
+            verification link shown in your terminal again).
+          </li>
+        </ol>`,
   );
 }
 
@@ -140,33 +175,46 @@ function scopeLine(scope: TokenScope): string {
 /**
  * 承認ページ(§4-1 (4) (iv)): userCode + どのアカウントとして承認するか +
  * この承認が発行する PAT の付与内容(tokenName は不活性描画)。承認 / 拒否の
- * 明示操作のみ(フォーム POST)。
+ * 明示操作のみ(フォーム POST)。確認コードはページ最大の要素(照合が
+ * フィッシングの最後の防衛 — §4-3)。
  */
 export function renderApprovalPage(input: ApprovalPageInput): string {
   return page(
     "maruhi — approve CLI sign-in",
-    `      <h2>Approve CLI sign-in?</h2>
-      <p>A command-line sign-in is asking for an access token.</p>
-      <p>
-        Confirmation code: <strong><code>${escapeHtml(input.userCode)}</code></strong>
-      </p>
-      <p>
-        <strong>Approve only if this code matches the one shown in your terminal.</strong>
-        If the codes differ, or you did not start a CLI sign-in, choose Deny.
-      </p>
-      <h3>What will be granted</h3>
-      <ul>
-        <li>Signing in as: <strong>${escapeHtml(input.identityLabel)}</strong></li>
-        <li>Token name (chosen by the requester, shown verbatim): <code>${escapeHtml(input.tokenName)}</code></li>
-${input.scopes.map((scope) => `        ${scopeLine(scope)}`).join("\n")}
-        <li>Expires ${String(input.expiresInDays)} days after issuance</li>
-      </ul>
-      <form method="post" action="/auth/cli/approve">
-        <input type="hidden" name="flowId" value="${escapeHtml(input.flowId)}" />
-        <input type="hidden" name="ticket" value="${escapeHtml(input.ticket)}" />
-        <button type="submit" name="decision" value="approve">Approve</button>
-        <button type="submit" name="decision" value="deny">Deny</button>
-      </form>`,
+    `        <h1>Approve CLI sign-in?</h1>
+        <p>A command-line sign-in is asking for an access token for your maruhi account.</p>
+        <p class="code-panel">
+          <span class="code-label">Confirmation code</span>
+          <code class="user-code">${escapeHtml(input.userCode)}</code>
+        </p>
+        <p>
+          <strong>Approve only if this code matches the one shown in your terminal.</strong>
+          If the codes differ, or you did not start a CLI sign-in, choose Deny.
+        </p>
+        <h2>What will be granted</h2>
+        <dl class="grants">
+          <dt>Signing in as</dt>
+          <dd><strong>${escapeHtml(input.identityLabel)}</strong></dd>
+          <dt>Token name</dt>
+          <dd>
+            <code>${escapeHtml(input.tokenName)}</code>
+            <small>Chosen by the requester, shown verbatim.</small>
+          </dd>
+          <dt>Access</dt>
+          <dd>
+            <ul>
+${input.scopes.map((scope) => `              ${scopeLine(scope)}`).join("\n")}
+            </ul>
+          </dd>
+          <dt>Expires</dt>
+          <dd>${String(input.expiresInDays)} days after issuance</dd>
+        </dl>
+        <form method="post" action="/auth/cli/approve" class="actions">
+          <input type="hidden" name="flowId" value="${escapeHtml(input.flowId)}" />
+          <input type="hidden" name="ticket" value="${escapeHtml(input.ticket)}" />
+          <button type="submit" name="decision" value="approve" class="button button-primary">Approve</button>
+          <button type="submit" name="decision" value="deny" class="button button-secondary">Deny</button>
+        </form>`,
   );
 }
 
@@ -174,12 +222,12 @@ ${input.scopes.map((scope) => `        ${scopeLine(scope)}`).join("\n")}
 export function renderApprovedPage(userCode: string): string {
   return page(
     "maruhi — CLI sign-in approved",
-    `      <h2>Sign-in approved</h2>
-      <p>
-        You approved the CLI sign-in with code <code>${escapeHtml(userCode)}</code>.
-        Return to your terminal &mdash; it will finish signing in shortly.
-      </p>
-      <p>You can close this page.</p>`,
+    `        <h1>Sign-in approved</h1>
+        <p>
+          You approved the CLI sign-in with code <code>${escapeHtml(userCode)}</code>.
+          Return to your terminal &mdash; it will finish signing in shortly.
+        </p>
+        <p>You can close this page.</p>`,
   );
 }
 
@@ -187,8 +235,9 @@ export function renderApprovedPage(userCode: string): string {
 export function renderDeniedPage(): string {
   return page(
     "maruhi — CLI sign-in denied",
-    `      <h2>Sign-in denied</h2>
-      <p>The CLI sign-in was denied. No token was issued.</p>
-      <p>If this was you, you can close this page and run <code>maruhi login</code> again.</p>`,
+    `        <h1>Sign-in denied</h1>
+        <p>The CLI sign-in was denied.</p>
+        <p class="outcome">No token was issued.</p>
+        <p>If this was you, you can close this page and run <code>maruhi login</code> again.</p>`,
   );
 }

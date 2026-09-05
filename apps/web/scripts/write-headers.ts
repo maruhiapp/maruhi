@@ -12,11 +12,24 @@
 //   (3) near-miss パス(大小変種・深いパス)を /invite へ正規化する _redirects の生成
 // で構成として固定する。違反はビルド失敗(throw)にする — 検査は品質ゲート
 // (CI の web ビルドステップ)の経路に載る。裁定の経緯は docs/notes/session-41.md。
+//
+// スクリプトなしページ(/invite + サーバー配信の儀式ページ — DP4)の共通スタイルは
+// public/pages.css(自己配信)で、ブランド値は theme/maruhi.css(`astryx theme build` の
+// 生成物 = ブランドの正の生成物)を **無変換で /theme.css として同梱**して var() で読む
+// (裁定 DP4-B — docs/notes/web-design-pass.md §5。生成スクリプトも写しも持たない:
+// 配信物 = テーマファイルそのもの)。同梱は本スクリプトが行い、バイト等価を検査する。
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const publicDir = join(import.meta.dirname, "..", "dist", "public");
+const themeSource = join(import.meta.dirname, "..", "theme", "maruhi.css");
+
+// ---- /theme.css: ブランドテーマの無変換同梱(DP4 裁定 B) ----
+// vite は theme/maruhi.css を SPA の CSS バンドル(コンテンツハッシュ名)に取り込むため、
+// 静的 HTML / サーバー描画 HTML から安定して参照できる名前が無い。同じ生成物を
+// 固定名で置く(二重管理ではなく同一バイトの複製 — 下の等価検査で固定する)
+writeFileSync(join(publicDir, "theme.css"), readFileSync(themeSource));
 const html = readFileSync(join(publicDir, "index.html"), "utf8");
 
 const inlineScripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
@@ -73,9 +86,10 @@ const metaCspMatch = inviteHtml.match(
 if (metaCspMatch?.[1] === undefined || !metaCspMatch[1].includes("script-src 'none'")) {
   throw new Error("invite.html に meta CSP(script-src 'none')が無い(AUTH_SPEC §15-3)");
 }
-// 外部リソース読み込みなし(全アセット自己配信)。href 属性に限り、自リポジトリの
-// GitHub(CLI 導入への導線のナビゲーションリンク)を許可する。実行時の強制は CSP
-// (default-src 'none' 基調)が担い、この検査はビルド時に早く落とすための二重化
+// 外部リソース読み込みなし(全アセット自己配信 — スタイルシート / ロゴ SVG / favicon は
+// ルート相対)。href 属性に限り、自リポジトリの GitHub(CLI 導入への導線のナビゲーション
+// リンク)を許可する。実行時の強制は CSP(default-src 'none' 基調)が担い、この検査は
+// ビルド時に早く落とすための二重化
 // (プロトコル相対 `//` はルート相対と区別して弾く — pullfrog レビュー反映)
 const allowedExternalNavPrefix = "https://github.com/maruhiapp/maruhi";
 for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
@@ -90,12 +104,15 @@ for (const [, attr, url] of inviteHtml.matchAll(/\b(src|href)="([^"]*)"/g)) {
 }
 // 複製忠実性(裁定 BH): vite publicDir のコピーが無変換であること(= レビューした
 // ソースの字面がそのまま配信バイトであること)をバイト等価で固定する。将来の
-// ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する
+// ビルドプラグインが HTML/CSS を変換し始めた場合に最速で検知する。/theme.css も
+// 同じ契約(配信バイト = theme/maruhi.css)
 const sourceDir = join(import.meta.dirname, "..", "public");
-for (const asset of ["invite.html", "invite.css"]) {
-  if (
-    readFileSync(join(sourceDir, asset), "utf8") !== readFileSync(join(publicDir, asset), "utf8")
-  ) {
+for (const [source, asset] of [
+  [join(sourceDir, "invite.html"), "invite.html"],
+  [join(sourceDir, "pages.css"), "pages.css"],
+  [themeSource, "theme.css"],
+] as const) {
+  if (readFileSync(source, "utf8") !== readFileSync(join(publicDir, asset), "utf8")) {
     throw new Error(
       `${asset} がソースとビルド出力で一致しない(publicDir の無変換コピーの前提が破れた)`,
     );
@@ -135,11 +152,13 @@ for (const file of bundleFiles) {
 }
 
 // /invite の per-path CSP: script-src 'none' で「フラグメントを解釈しない」を構成で強制。
-// ページが使うのは自己配信スタイルのみ。それ以外は全面 'none'
+// ページが使うのは自己配信のスタイル(/theme.css + /pages.css)とロゴ SVG のみ。
+// それ以外は全面 'none'(サーバー配信の儀式ページの CSP — cli-pages.ts — と同じ形)
 const inviteCsp = [
   "default-src 'none'",
   "script-src 'none'",
   "style-src 'self'",
+  "img-src 'self'",
   "base-uri 'none'",
   "form-action 'none'",
   "frame-ancestors 'none'",
@@ -185,17 +204,18 @@ if (inviteBlock === undefined || !inviteBlock.includes("script-src 'none'")) {
 // 「大小変種 × 任意の末尾続き」のクラス全体を、機械生成した _redirects で /invite へ
 // 301 正規化して閉じる(フラグメントはブラウザがリダイレクト越しに保持する)。
 //
-// 構成(先勝ちマッチを利用): ① 正規アセット 2 本の 200 リライト(自分自身への
-// リライト = 素通し)を盾として前置 → ② 大小変種 63 本の末尾スプラット
+// 構成(先勝ちマッチを利用): ① 正規パスの 200 リライト(自分自身へのリライト =
+// 素通し)を盾として前置 → ② 大小変種 63 本の末尾スプラット
 // `/{Variant}* /invite 301` → ③ 小文字総取り `/invite* /invite 301` を最後に。
-// 盾が先にあるため ③ が正規パス自身(自己ループ)と /invite.css(スタイル破壊)に
-// 誤爆しない。全ルールが動的扱いで上限 100 本(超過行は黙って落ちる — 実測)のため
-// 計 66 本に収める。想定外の失敗モードは「盾だけ落ちて ③ が残る」= /invite の
+// 盾が先にあるため ③ が正規パス自身(自己ループ)に誤爆しない(スタイルシートは
+// DP4 で /pages.css へ移り /invite* の外に出たため、旧 /invite.css の盾は不要)。
+// 全ルールが動的扱いで上限 100 本(超過行は黙って落ちる — 実測)のため
+// 計 65 本に収める。想定外の失敗モードは「盾だけ落ちて ③ が残る」= /invite の
 // リダイレクトループ(可用性の喪失。秘匿には影響せず、開けば即分かる)だが、
 // wrangler dev と production は同一のアセットワーカー実装であり選択的欠落の根拠は
 // 無い。挙動全体は e2e が固定する。残余は語中タイポ(/invte 等)のみ = 任意の
 // 404 パスと同じクラス(SPA 側に fragment を読むコードは無い)
-const inviteRedirectRules: string[] = ["/invite /invite 200", "/invite.css /invite.css 200"];
+const inviteRedirectRules: string[] = ["/invite /invite 200"];
 for (let bits = 1; bits < 1 << "invite".length; bits++) {
   let variant = "";
   for (let i = 0; i < "invite".length; i++) {
@@ -210,26 +230,18 @@ writeFileSync(join(publicDir, "_redirects"), `${inviteRedirectRules.join("\n")}\
 // 固定検査: 書き出した _redirects に正規化ルールが実在し、かつ盾(200 リライト)が
 // 総取り(/invite*)より前にあること(先勝ちマッチのループ安全性の順序不変条件)
 const writtenRedirects = readFileSync(join(publicDir, "_redirects"), "utf8");
-for (const required of [
-  "/invite /invite 200",
-  "/invite.css /invite.css 200",
-  "/Invite* /invite 301",
-  "/invite* /invite 301",
-]) {
+for (const required of ["/invite /invite 200", "/Invite* /invite 301", "/invite* /invite 301"]) {
   if (!writtenRedirects.includes(required)) {
     throw new Error(`_redirects に正規化ルールが無い: ${required}`);
   }
 }
 if (
-  writtenRedirects.indexOf("/invite /invite 200") >
-    writtenRedirects.indexOf("/invite* /invite 301") ||
-  writtenRedirects.indexOf("/invite.css /invite.css 200") >
-    writtenRedirects.indexOf("/invite* /invite 301")
+  writtenRedirects.indexOf("/invite /invite 200") > writtenRedirects.indexOf("/invite* /invite 301")
 ) {
   throw new Error("_redirects の順序が壊れている: 200 リライトの盾が /invite* 総取りより後にある");
 }
 
 console.log(
   `_headers written (${hashes.length} inline script hash + /invite per-path CSP), ` +
-    `_redirects written (${inviteRedirectRules.length} rules)`,
+    `_redirects written (${inviteRedirectRules.length} rules), theme.css + pages.css verified`,
 );

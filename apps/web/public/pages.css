@@ -1,0 +1,289 @@
+/*
+ * pages.css — shared stylesheet for maruhi's script-free pages (DP4 — docs/notes/web-design-pass.md §5).
+ *
+ * Consumers: the server-rendered CLI sign-in pages (approval / approved / denied / uniform error /
+ * sign-up guidance — apps/server/src/auth.package/cli-pages.ts), the sign-up control pages
+ * (signup-pages.ts) and the static /invite landing page (public/invite.html). All of them run
+ * under CSP `script-src 'none'; style-src 'self'` — this file is the only styling they get.
+ *
+ * Brand values are NOT written here (ADR-0013: apps/web/theme/ is the single home of the brand).
+ * Every colour / font / radius below is a `var(--…)` read from /theme.css — the unmodified copy of
+ * theme/maruhi.css (`astryx theme build` output) that scripts/write-headers.ts places next to this
+ * file at build time. The tokens are scoped to `[data-astryx-theme="maruhi"]`, so each page sets
+ * that attribute on <html> (the same mark the dashboard root carries). Only layout, spacing and
+ * the shapes specific to these pages live here. Browser support matches the dashboard
+ * (light-dark(), @scope, CSS custom properties).
+ */
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+  font-size: 1rem;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+/* Brand header: the ㊙ mark (self-served SVG) + the lower-case wordmark. Not a heading —
+   the page title is the h1. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 2.5rem;
+  font-family: var(--font-family-heading);
+  font-size: 1.125rem;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.01em;
+}
+
+.brand img {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+h1 {
+  margin: 0 0 1rem;
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+h2 {
+  margin: 2rem 0 0.75rem;
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+.lede {
+  font-size: 1.125rem;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+ol,
+ul {
+  margin: 0 0 1rem;
+  padding-left: 1.5rem;
+}
+
+li {
+  margin-bottom: 0.75rem;
+}
+
+li:last-child {
+  margin-bottom: 0;
+}
+
+code {
+  font-family: var(--font-family-code);
+  font-size: 0.925em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Horizontal scroll needs keyboard reach on narrow screens (axe scrollable-region-focusable),
+   so the <pre> carries tabindex="0" in the markup and gets the shared focus ring. */
+pre {
+  overflow-x: auto;
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  background: var(--color-background-surface);
+}
+
+pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.925rem;
+}
+
+strong {
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Outcome line ("No account was created." / "No token was issued.") — the one fact each
+   landing page must make visible (AUTH_SPEC §3 / ROADMAP H6). */
+.outcome {
+  margin: 1.25rem 0;
+  padding: 0.125rem 0 0.125rem 0.875rem;
+  border-left: 3px solid var(--color-accent);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Closing note (muted, separated by a hairline). */
+.note {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.9375rem;
+}
+
+/* ---- CLI sign-in approval: the confirmation code (phishing guard — AUTH_SPEC §4-1 (4)) ---- */
+
+/* The code is the one thing the person must compare with their terminal, so it is the
+   largest element on the page: system monospace (no web font — §1-3), wide tracking so
+   each glyph stands alone, slashed zero where the font has one (0 vs D), and the group
+   separator kept as a real hyphen inside the same run. The alphabet is Crockford Base32
+   (no I / L / O / U — apps/server/src/auth.package/cli-flow.ts). */
+.code-panel {
+  margin: 1.5rem 0;
+  padding: 1.25rem 1.5rem 1.375rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+  text-align: center;
+}
+
+.code-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.user-code {
+  display: block;
+  padding: 0;
+  background: none;
+  font-family: var(--font-family-code);
+  font-size: 2.5rem;
+  font-variant-numeric: slashed-zero;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+/* Grant details: label / value pairs. One column on narrow screens. */
+.grants {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.5rem 1.5rem;
+  margin: 0 0 1.5rem;
+}
+
+.grants dt {
+  color: var(--color-text-secondary);
+}
+
+.grants dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.grants ul {
+  margin: 0;
+  padding-left: 1.125rem;
+}
+
+.grants li {
+  margin-bottom: 0.25rem;
+}
+
+.grants small {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
+@media (max-width: 30rem) {
+  .page {
+    padding-top: 1.5rem;
+  }
+
+  .grants {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.125rem;
+  }
+
+  .grants dd {
+    margin-bottom: 0.75rem;
+  }
+
+  .user-code {
+    font-size: 2rem;
+  }
+}
+
+/* ---- Actions (Approve / Deny). Approve is the filled accent button; Deny keeps the same
+   size and hit area but stays outlined, so the two read as distinct decisions. ---- */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.button {
+  min-width: 7.5rem;
+  min-height: 2.75rem;
+  padding: 0.625rem 1.25rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.button-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.button-secondary {
+  border-color: var(--color-border-emphasized);
+}
+
+.button:hover {
+  filter: brightness(0.94);
+}
+
+.button-secondary:hover {
+  background: var(--color-overlay-hover);
+  filter: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

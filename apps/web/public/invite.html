@@ -6,8 +6,10 @@
   per-path CSP `script-src 'none'`(scripts/write-headers.ts)と
   ビルド時検査で構成として強制される。ここに script 要素を追加してはならない
   (検査は配信バイト全体を見るため、コメント内の script 開始タグの字面も禁止)。
+  見た目はサーバー配信の儀式ページ(apps/server/src/auth.package/cli-pages.ts)と
+  同じ共通枠(/theme.css + /pages.css、ブランドヘッダー — DP4)。
 -->
-<html lang="en">
+<html lang="en" data-astryx-theme="maruhi">
   <head>
     <meta charset="utf-8" />
     <!--
@@ -18,45 +20,57 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; script-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <title>maruhi — accept your invite</title>
-    <link rel="stylesheet" href="/invite.css" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/theme.css" />
+    <link rel="stylesheet" href="/pages.css" />
   </head>
   <body>
-    <main>
-      <h1>㊙ maruhi</h1>
-      <p class="lede">You have been invited to a maruhi project.</p>
-      <p>
-        maruhi is end-to-end encrypted: accepting an invite declares your keys, and that happens
-        only on your machine, in the maruhi CLI. There is no way to accept an invite in the browser.
-      </p>
-      <h2>Accept the invite</h2>
-      <ol>
-        <li>
-          <a href="https://github.com/maruhiapp/maruhi#install-cli">Install the maruhi CLI</a> if
-          you don't have it yet.
-        </li>
-        <li>
-          Copy the full invite link from your browser's address bar, including everything after
-          <code>#</code>.
-        </li>
-        <li>
-          Pass the link to the CLI as-is (keep the single quotes so your shell doesn't eat the
-          <code>#</code> part):
-          <pre><code>maruhi invite accept '&lt;paste the full invite link here&gt;'</code></pre>
-        </li>
-        <li>
-          The CLI walks you through the rest: verifying the inviter's key fingerprint and declaring
-          your own keys.
-        </li>
-      </ol>
-      <p class="note">
-        This page does not — and cannot — read your invite link. The part after <code>#</code>
-        never leaves your browser: it is not sent to the server, and this page contains no scripts.
-      </p>
-    </main>
+    <div class="page">
+      <header class="brand">
+        <img src="/logo-inverted.svg" alt="" width="28" height="28" />
+        <span>maruhi</span>
+      </header>
+      <main>
+        <h1>You have been invited to a maruhi project</h1>
+        <p class="lede">
+          maruhi is end-to-end encrypted: accepting an invite declares your keys, and that happens
+          only on your machine, in the maruhi CLI. There is no way to accept an invite in the
+          browser.
+        </p>
+        <h2>Accept the invite</h2>
+        <ol>
+          <li>
+            <a href="https://github.com/maruhiapp/maruhi#install-cli">Install the maruhi CLI</a> if
+            you don't have it yet.
+          </li>
+          <li>
+            Copy the full invite link from your browser's address bar, including everything after
+            <code>#</code>.
+          </li>
+          <li>
+            Pass the link to the CLI as-is (keep the single quotes so your shell doesn't eat the
+            <code>#</code> part):
+            <pre
+              tabindex="0"
+            ><code>maruhi invite accept '&lt;paste the full invite link here&gt;'</code></pre>
+          </li>
+          <li>
+            The CLI walks you through the rest: verifying the inviter's key fingerprint and
+            declaring your own keys.
+          </li>
+        </ol>
+        <p class="note">
+          This page does not — and cannot — read your invite link. The part after <code>#</code>
+          never leaves your browser: it is not sent to the server, and this page contains no
+          scripts.
+        </p>
+      </main>
+    </div>
   </body>
 </html>
