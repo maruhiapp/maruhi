@@ -697,6 +697,21 @@ API tokens / Rotation flags / 監査行)だけで、概要のメタデータ(Met
 CLI 案内の注記(muted の Card)は入れない。テーマの `components.section` 上書きは取り消し(theme/ は
 main と同一に戻る)。検証: e2e 26 件、axe 24 態で違反 0。
 
+**改訂 10(2026-09-05、所有者レビュー 10 回目 — 案 A / B の最終判断: 見出しは箱の外)**:
+
+**S 改訂 2: 見出し・説明はページの content line、`Card` が包むのは集合だけ(案 B)**。所有者の理由 —
+案 A では節の見出しが Card の border 1px + padding 16px ぶん右にずれ、Card に入れていない文字(h1・パンくず・
+説明・概要の MetadataList)と開始位置が揃わない。文字の開始線がページで 2 本になるのが違和感。案 B なら文字の
+開始線は 1 本で、右にずれるのは枠線のある箱の中身だけ(枠線が「ここから別のフレーム」と説明する)。エージェントの
+評価も同じ(Vercel / GitHub の設定画面の形。案 A の利点「箱の意味が箱だけで完結する」は 1 ページが短い本
+ダッシュボードでは効かない)。副次効果: Card が包むのが節でなく集合(表・監査行)になるので、Astryx の
+「ページの節に Card を使わない」との距離が縮み、Card docs の「自己完結した部品の硬い境界」の用途に近づく。
+実装: `SectionBlock` = VStack gap 4(SectionHeader + `Card padding={4}`〔VStack gap 4 の children〕)。
+`title` 省略時は Card のみ。監査タブの説明文(規定文言)と軸切替(ToggleButtonGroup)は改訂 5 から箱の外に
+あり(見出し行に相当)、変更なし。`Callout`(muted の Card)の inset は枠のある箱なので同じ原則の内側。
+縦のリズム: 見出し → 箱 16px、箱 → 次の見出し 40px(節間 `SECTION_GAP`)の対比で見出しが前の箱に付いて
+見えない。検証: `bun run check` 7 段通過、e2e 26 件、axe 24 態で違反 0、CSP 違反 0。
+
 **検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
 web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
 React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。

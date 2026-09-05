@@ -256,11 +256,14 @@ export function SectionHeader({
 }
 
 /**
- * 集合の容器(DP3 改訂 9 — 裁定 S 改訂): 見出し + 説明 + 行の集合を `Card`(border 付きの
- * 固定幅の箱)に入れる。Astryx の docs は「ページの節に Card を使わない」(Section を使う)と
- * するが、maruhi のテーマでは Section の面が本文と同じで節が見えず、所有者の判断で境界線を
- * 引く形を採る。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので、行の線は
- * border の内側で止まる。`title` を省くと見出し無しの箱(ページ h1 が見出しを兼ねる一覧)。
+ * 集合の容器(DP3 改訂 9 → 10 — 裁定 S 改訂): 見出し + 説明はページの content line に置き、
+ * 行の集合だけを `Card`(border 付きの固定幅の箱)に入れる。文字の開始位置がページで 1 本に
+ * 揃い(h1・説明・概要の MetadataList・節見出しが同じ線に乗る)、右にずれるのは枠線のある箱の
+ * 中身だけになる(改訂 10 — 所有者裁定)。Astryx の docs は「ページの節に Card を使わない」
+ * (Section を使う)とするが、maruhi のテーマでは Section の面が本文と同じで節が見えない。
+ * この形では Card が包むのは節でなく集合(表・監査行)なので、Card docs の「自己完結した
+ * 部品の硬い境界」に近い。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので、
+ * 行の線は border の内側で止まる。`title` を省くと箱だけ(ページ h1 が見出しを兼ねる一覧)。
  */
 export function SectionBlock({
   title,
@@ -273,13 +276,17 @@ export function SectionBlock({
   children: ReactNode;
   testId?: string | undefined;
 }): ReactNode {
-  return (
-    <Card padding={4} data-testid={testId}>
-      <VStack gap={4}>
-        {title === undefined ? null : <SectionHeader title={title} description={description} />}
-        {children}
-      </VStack>
+  const box = (
+    <Card padding={4} data-testid={title === undefined ? testId : undefined}>
+      <VStack gap={4}>{children}</VStack>
     </Card>
+  );
+  if (title === undefined) return box;
+  return (
+    <VStack gap={4} data-testid={testId}>
+      <SectionHeader title={title} description={description} />
+      {box}
+    </VStack>
   );
 }
 
