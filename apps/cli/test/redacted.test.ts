@@ -776,7 +776,7 @@ describe("復号値の剥がしは値表示ゲートの後ろにある", () => {
  */
 const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // ワイヤ境界: lease リクエストの oidcToken フィールド(A3 — AUTH_SPEC §14-2)
-  "ci-run.ts": 1,
+  "ci-lease.ts": 1,
   // HPKE ラップの入力(暗号境界)
   "dek-wrap.ts": 1,
   // 一覧行のバイト長(値は載せない)+ --show の表示(ゲート通過後)
@@ -819,10 +819,15 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // master 秘密鍵のインポート(hex → 非抽出 CryptoKey)
   "session.ts": 2,
   // sync の stdin 本文の組み立て(JSON — 産物は再び Redacted)1 + 失敗時の
-  // ベンダー出力の伏せ字化(値の断片を探して置き換える — 産物には残らない)1
-  "sync-exec.ts": 2,
-  // 平文長の実測(産物は長さだけ)1 + 送る前の制約検査(産物は真偽と変数名)1
-  "sync-plan.ts": 2,
+  // ベンダー出力の伏せ字化(値の断片 1 + http ドライバの統合トークンの断片 1 を
+  // 探して置き換える — 産物には残らない)
+  "sync-exec.ts": 3,
+  // http ドライバ: リクエスト本文のエントリに値を置く直前(値が maruhi を離れる
+  // 経路。統合トークンは上流の bearerToken が Redacted のまま受けるので剥がさない)
+  "sync-http.ts": 1,
+  // 平文長の実測(産物は長さだけ)1 + 送る前の制約検査(産物は真偽と変数名)1 +
+  // 統合トークンの形の検査(産物は再び Redacted)1
+  "sync-plan.ts": 3,
   // レシート JSON の解釈(名前 → version の写像。秘密値ではない)
   "sync-receipt.ts": 1,
 };

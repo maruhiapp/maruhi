@@ -178,7 +178,14 @@ import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
-import { DEFAULT_SYNC_CONFIG_PATH, loadSyncConfig, requireSyncTarget } from "./sync-config.ts";
+import { ciSyncOp } from "./sync-ci.ts";
+import {
+  checkConfigProject,
+  DEFAULT_SYNC_CONFIG_PATH,
+  loadSyncConfig,
+  requireSyncTarget,
+} from "./sync-config.ts";
+import { syncInitOp } from "./sync-init.ts";
 import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
 import { syncProject } from "./sync.ts";
 import { varRmOp } from "./var-rm.ts";
@@ -358,6 +365,33 @@ const ciRunConfig = {
     "Path to the committed repository anchor file (generate it with `maruhi project anchor`)",
   ),
   command: runCommandArgument(),
+};
+
+/**
+ * `maruhi ci sync <target>` の宣言(SY2 第 2 段 — 裁定 D): `ci run` と同じく
+ * config ファイルを読まない(server / project はフラグで必須)。環境は同期設定の
+ * ターゲットが決めるので `--env` は無い。`--yes` は手元の apply と同じ語。
+ */
+const ciSyncConfig = {
+  server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
+  project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
+  audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
+  anchor: singleValued(
+    "anchor",
+    "Path to the committed repository anchor file (generate it with `maruhi project anchor`)",
+  ),
+  config: singleValued(
+    "config",
+    `Path to the sync config committed in the repository (default: ${DEFAULT_SYNC_CONFIG_PATH})`,
+  ),
+  yes: singleFlag(
+    "yes",
+    "Write to a production target (without it, a production target only shows the plan)",
+  ),
+  target: Argument.string("target").pipe(
+    Argument.withDescription("Target name from the sync config (a key under `targets`)"),
+    Argument.withSchema(NonBlank),
+  ),
 };
 
 /**
@@ -801,6 +835,57 @@ const syncApplyConfig = {
 };
 
 /**
+ * `maruhi sync init <target>` の宣言(SY2 第 2 段 — 裁定 F): ネットワークにも
+ * ファイルにも触れず、フラグから設定 JSON を組んで stdout に出す。
+ */
+const syncInitConfig = {
+  preset: singleValued("preset", "Deploy target kind: vercel or cloudflare-workers (required)"),
+  driver: singleValued(
+    "driver",
+    "How to reach the target: exec (the installed vendor CLI; default) or http (the vendor API with a token stored in maruhi)",
+  ),
+  env: singleValued("env", "maruhi environment ID to copy from (required)"),
+  receipts: singleValued(
+    "receipts",
+    "maruhi environment ID that stores the receipts (required; create it with `maruhi env create`)",
+  ),
+  project: singleValued("project", "Project ID to pin the config to (optional)"),
+  variables: singleValued("variables", 'Comma-separated variable names to copy (default: "all")'),
+  exclude: singleValued(
+    "exclude",
+    'Comma-separated names to leave out (only with the default "all")',
+  ),
+  production: singleFlag(
+    "production",
+    "Mark the target as production (apply then needs --yes; the default follows the preset)",
+  ),
+  cwd: singleValued(
+    "cwd",
+    "exec driver: directory to run the vendor CLI in, relative to the config",
+  ),
+  command: singleValued(
+    "command",
+    "exec driver: path of the installed vendor CLI (default: on PATH)",
+  ),
+  "token-env": singleValued(
+    "token-env",
+    "http driver: maruhi environment ID that holds the vendor's token",
+  ),
+  "token-name": singleValued(
+    "token-name",
+    "http driver: name of the maruhi variable that holds the vendor's token",
+  ),
+  option: Flag.string("option").pipe(
+    Flag.withDescription(
+      "Preset option as key=value (repeatable; for example environment=production, name=my-worker)",
+    ),
+    Flag.withSchema(NonBlank),
+    Flag.atMost(64),
+  ),
+  target: syncTargetArgument(),
+};
+
+/**
  * 入れ子の段(グループ)→ サブコマンド名 → 宣言。**この表が唯一の出所**で、
  * COMMAND_SPECS(振り分けのキーと診断の宣言・サブコマンド一覧)をここから
  * 導く — 親の段を手書きの写しで持つと、サブコマンドを足したときに振り分けと
@@ -836,7 +921,7 @@ const GROUP_CONFIGS: Readonly<
     anchor: projectAnchorConfig,
     checkpoint: projectCheckpointConfig,
   },
-  ci: { run: ciRunConfig },
+  ci: { run: ciRunConfig, sync: ciSyncConfig },
   rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
   audit: {
     list: auditListConfig,
@@ -854,7 +939,7 @@ const GROUP_CONFIGS: Readonly<
     lint: schemaLintConfig,
   },
   var: { rm: varRmConfig },
-  sync: { plan: syncPlanConfig, apply: syncApplyConfig },
+  sync: { plan: syncPlanConfig, apply: syncApplyConfig, init: syncInitConfig },
 };
 
 /**
@@ -1384,6 +1469,13 @@ function requireCiFlag(value: string | undefined, flag: string): Effect.Effect<s
     : Effect.succeed(value);
 }
 
+/** `maruhi sync init` の必須フラグ(書き方の誤り = 2)。 */
+function requireInitFlag(value: string | undefined, flag: string): Effect.Effect<string, CliError> {
+  return value === undefined
+    ? Effect.fail(usageError(`sync init requires ${flag} (pass --preset, --env, and --receipts)`))
+    : Effect.succeed(value);
+}
+
 /** `maruhi ci run -- <cmd>` の本体(検証は ci-run.ts / lease-client.ts)。 */
 function ciRunCommand(values: {
   readonly server?: string | undefined;
@@ -1417,6 +1509,43 @@ function ciRunCommand(values: {
       audience: values.audience ?? origin,
       anchorPath: values.anchor,
       command: values.command,
+    });
+  });
+}
+
+/** `maruhi ci sync <target>` の本体(リースと同期は sync-ci.ts)。 */
+function ciSyncCommand(values: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly audience?: string | undefined;
+  readonly anchor?: string | undefined;
+  readonly config?: string | undefined;
+  readonly yes: boolean;
+  readonly target: string;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    // 形式検証と設定の読み込みはネットワーク・鍵生成より先(ci run と同じ規律)。
+    // `--env` は無い: 環境は同期設定のターゲットが決める
+    const origin = yield* normalizeHttpOrigin(
+      yield* requireCiFlag(values.server, "--server"),
+      "the server URL",
+    );
+    const projectFlag = yield* requireCiFlag(values.project, "--project");
+    if (!isProjectId(projectFlag)) {
+      return yield* Effect.fail(
+        usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
+      );
+    }
+    const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
+    const target = yield* requireSyncTarget(config, values.target);
+    yield* checkConfigProject(config, projectFlag);
+    yield* ciSyncOp({
+      origin,
+      projectId: projectFlag,
+      audience: values.audience ?? origin,
+      anchorPath: values.anchor,
+      target,
+      yes: values.yes,
     });
   });
 }
@@ -1891,24 +2020,21 @@ function openSyncTarget(values: {
     // 設定はネットワークより先に読む(壊れたファイルの検出を往復の後ろに置かない)
     const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
     const target = yield* requireSyncTarget(config, values.target);
-    if (
-      config.projectId !== undefined &&
-      values.project !== undefined &&
-      values.project !== config.projectId
-    ) {
-      return yield* Effect.fail(
-        usageError(
-          "--project does not match the `project` in the sync config (the config belongs to a different project)",
-        ),
-      );
-    }
+    yield* checkConfigProject(config, values.project);
     const context = yield* openProject({
       server: values.server,
       project: values.project ?? config.projectId,
     });
     const sourceFloor = yield* floorHandleFor(context, target.environment);
     const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
-    return { config, target, context, sourceFloor, receiptsFloor };
+    // http ドライバの統合トークンの環境(同期元と同じなら同じ床)
+    const tokenFloor =
+      target.driver.kind !== "http"
+        ? null
+        : target.driver.token.environment === target.environment
+          ? sourceFloor
+          : yield* floorHandleFor(context, target.driver.token.environment);
+    return { config, target, context, sourceFloor, receiptsFloor, tokenFloor };
   });
 }
 
@@ -2384,9 +2510,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const ciSync = Command.make("sync", ciSyncConfig, (values) => ciSyncCommand(values)).pipe(
+    Command.withDescription(
+      "Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes",
+    ),
+  );
+
   const ci = Command.make("ci").pipe(
-    Command.withDescription("Commands for CI jobs (run)"),
-    Command.withSubcommands([ciRun]),
+    Command.withDescription("Commands for CI jobs (run / sync)"),
+    Command.withSubcommands([ciRun, ciSync]),
   );
 
   const configGet = Command.make("get", configGetConfig, (values) =>
@@ -2856,19 +2988,48 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         signingKey: opened.context.masterKeys.sigKeyPair.privateKey,
         yes: values.yes,
         now: () => new Date(),
+        tokenFloor: opened.tokenFloor,
       });
     }),
   ).pipe(
     Command.withDescription(
-      "Decrypt the target's variables in memory and write the changed ones to the deploy target through its installed CLI (values on stdin only), then record what was delivered in the receipt. A production target needs --yes",
+      "Decrypt the target's variables in memory and write the changed ones to the deploy target through its driver (the installed vendor CLI on stdin, or the vendor API with a token stored in maruhi), then record what was delivered in the receipt. A production target needs --yes",
+    ),
+  );
+
+  const syncInit = Command.make("init", syncInitConfig, (values) =>
+    Effect.gen(function* () {
+      const preset = yield* requireInitFlag(values.preset, "--preset");
+      const environment = yield* requireInitFlag(values.env, "--env");
+      const receipts = yield* requireInitFlag(values.receipts, "--receipts");
+      yield* syncInitOp({
+        target: values.target,
+        preset,
+        driver: values.driver,
+        environment,
+        receipts,
+        project: values.project,
+        variables: values.variables,
+        exclude: values.exclude,
+        production: values.production,
+        cwd: values.cwd,
+        command: values.command,
+        tokenEnvironment: values["token-env"],
+        tokenName: values["token-name"],
+        options: values.option,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Print a sync config for one deploy target as JSON to stdout (commit it as maruhi.sync.json). Reads nothing and contacts no server",
     ),
   );
 
   const sync = Command.make("sync").pipe(
     Command.withDescription(
-      "Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository",
+      "Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository",
     ),
-    Command.withSubcommands([syncPlan, syncApply]),
+    Command.withSubcommands([syncInit, syncPlan, syncApply]),
   );
 
   return Command.make("maruhi").pipe(

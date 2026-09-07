@@ -32,7 +32,7 @@ import type { FloorHandle } from "./floor-check.ts";
 import { parseJsonRecord } from "./json-record.ts";
 import { pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
-import type { PresetId } from "./sync-exec.ts";
+import type { PresetId } from "./sync-types.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** What the last apply delivered to one target: variable name → version. */

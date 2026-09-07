@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect, Layer, Redacted, Stdio } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
@@ -106,6 +106,12 @@ export interface TestEnv {
   failFloorIntentAppends(): void;
   /** defect 経路の検査用: 設定読込を throw(非 CliError)にする。 */
   breakConfigLoadWithDefect(): void;
+  /**
+   * ベンダー API(`maruhi sync` の http ドライバ)の宛先を偽サーバーへ向ける。
+   * 本番コードはプリセットの固定ホスト(`https://api.vercel.com` 等)だけを知り、
+   * 差し替える口を持たない — 差し替えは HttpClient の層(テストの境界)で行う。
+   */
+  setVendorOrigin(host: string, origin: string): void;
 }
 
 /** 既定のベンダー CLI の応答(成功・出力なし)。 */
@@ -139,6 +145,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let floorPushCommittable = true;
   let floorIntentAppendable = true;
   let configLoadDefect = false;
+  const vendorOrigins = new Map<string, string>();
 
   const fileStore = makeFileConfigStore(configPath);
   const floorDir = floorDirOf(configPath);
@@ -257,7 +264,25 @@ export async function makeTestEnv(): Promise<TestEnv> {
           return execHandler(call, execCalls.length - 1);
         }),
     }),
-    FetchHttpClient.layer,
+    // 実 fetch の HttpClient。ベンダー API の固定ホストだけを偽サーバーへ写す
+    // (maruhi サーバー向けのリクエストは既に origin が偽サーバー)
+    Layer.effect(
+      HttpClient.HttpClient,
+      Effect.map(HttpClient.HttpClient, (client) =>
+        HttpClient.mapRequest(client, (request) => {
+          for (const [host, origin] of vendorOrigins) {
+            const prefix = `https://${host}`;
+            if (request.url.startsWith(prefix)) {
+              return HttpClientRequest.setUrl(
+                request,
+                `${origin}${request.url.slice(prefix.length)}`,
+              );
+            }
+          }
+          return request;
+        }),
+      ),
+    ).pipe(Layer.provide(FetchHttpClient.layer)),
   );
 
   return {
@@ -317,6 +342,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     breakConfigLoadWithDefect() {
       configLoadDefect = true;
+    },
+    setVendorOrigin(host, origin) {
+      vendorOrigins.set(host, origin);
     },
   };
 }

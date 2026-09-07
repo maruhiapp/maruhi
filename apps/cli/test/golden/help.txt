@@ -15,7 +15,7 @@ SUBCOMMANDS
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
-  ci          Commands for CI jobs (run)
+  ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
@@ -27,7 +27,7 @@ SUBCOMMANDS
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
   var         Manage variables (rm). push / pull / run operate on values directly
-  sync        Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository
+  sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
 $ maruhi --help
 DESCRIPTION
@@ -46,7 +46,7 @@ SUBCOMMANDS
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)
-  ci          Commands for CI jobs (run)
+  ci          Commands for CI jobs (run / sync)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
@@ -58,7 +58,7 @@ SUBCOMMANDS
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
   var         Manage variables (rm). push / pull / run operate on values directly
-  sync        Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository
+  sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
 $ maruhi login --help
 DESCRIPTION
@@ -594,7 +594,7 @@ GLOBAL FLAGS
 
 $ maruhi ci --help
 DESCRIPTION
-  Commands for CI jobs (run)
+  Commands for CI jobs (run / sync)
 
 USAGE
   maruhi ci <subcommand> [flags]
@@ -604,7 +604,8 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  run    Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
+  run     Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
+  sync    Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes
 
 $ maruhi ci run --help
 DESCRIPTION
@@ -622,6 +623,28 @@ FLAGS
   --env string         Environment ID to lease (required)
   --audience string    OIDC audience to request (default: the server origin)
   --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi ci sync --help
+DESCRIPTION
+  Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes
+
+USAGE
+  maruhi ci sync [flags] <target>
+
+ARGUMENTS
+  target string    Target name from the sync config (a key under `targets`)
+
+FLAGS
+  --server string      Server URL (required; CI mode reads no config file)
+  --project string     Project ID, which is the pinned genesis hash (required)
+  --audience string    OIDC audience to request (default: the server origin)
+  --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
+  --config string      Path to the sync config committed in the repository (default: maruhi.sync.json)
+  --yes                Write to a production target (without it, a production target only shows the plan)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -995,7 +1018,7 @@ GLOBAL FLAGS
 
 $ maruhi sync --help
 DESCRIPTION
-  Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository
+  Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
 USAGE
   maruhi sync <subcommand> [flags]
@@ -1005,8 +1028,9 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
+  init     Print a sync config for one deploy target as JSON to stdout (commit it as maruhi.sync.json). Reads nothing and contacts no server
   plan     Show which variables an apply would write to or delete from a deploy target, by name and version (the values are not decrypted, and nothing is read back from the target)
-  apply    Decrypt the target's variables in memory and write the changed ones to the deploy target through its installed CLI (values on stdin only), then record what was delivered in the receipt. A production target needs --yes
+  apply    Decrypt the target's variables in memory and write the changed ones to the deploy target through its driver (the installed vendor CLI on stdin, or the vendor API with a token stored in maruhi), then record what was delivered in the receipt. A production target needs --yes
 
 $ maruhi sync plan --help
 DESCRIPTION
@@ -1029,7 +1053,7 @@ GLOBAL FLAGS
 
 $ maruhi sync apply --help
 DESCRIPTION
-  Decrypt the target's variables in memory and write the changed ones to the deploy target through its installed CLI (values on stdin only), then record what was delivered in the receipt. A production target needs --yes
+  Decrypt the target's variables in memory and write the changed ones to the deploy target through its driver (the installed vendor CLI on stdin, or the vendor API with a token stored in maruhi), then record what was delivered in the receipt. A production target needs --yes
 
 USAGE
   maruhi sync apply [flags] <target>
@@ -1042,6 +1066,35 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --config string     Path to the sync config committed in the repository (default: maruhi.sync.json)
   --yes               Apply to a production target (without it, a production target only shows the plan)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi sync init --help
+DESCRIPTION
+  Print a sync config for one deploy target as JSON to stdout (commit it as maruhi.sync.json). Reads nothing and contacts no server
+
+USAGE
+  maruhi sync init [flags] <target>
+
+ARGUMENTS
+  target string    Target name from the sync config (a key under `targets`)
+
+FLAGS
+  --preset string        Deploy target kind: vercel or cloudflare-workers (required)
+  --driver string        How to reach the target: exec (the installed vendor CLI; default) or http (the vendor API with a token stored in maruhi)
+  --env string           maruhi environment ID to copy from (required)
+  --receipts string      maruhi environment ID that stores the receipts (required; create it with `maruhi env create`)
+  --project string       Project ID to pin the config to (optional)
+  --variables string     Comma-separated variable names to copy (default: "all")
+  --exclude string       Comma-separated names to leave out (only with the default "all")
+  --production           Mark the target as production (apply then needs --yes; the default follows the preset)
+  --cwd string           exec driver: directory to run the vendor CLI in, relative to the config
+  --command string       exec driver: path of the installed vendor CLI (default: on PATH)
+  --token-env string     http driver: maruhi environment ID that holds the vendor's token
+  --token-name string    http driver: name of the maruhi variable that holds the vendor's token
+  --option string        Preset option as key=value (repeatable; for example environment=production, name=my-worker)
 
 GLOBAL FLAGS
   --help, -h       Show help information

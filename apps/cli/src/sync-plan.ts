@@ -1,12 +1,16 @@
 // `maruhi sync plan` / `maruhi sync apply`(SY2 第 1 段 — integration-options.md
-// §3「同期の最終形」の表: exec ドライバ × リポジトリ設定 × レシート × plan / apply)。
+// §3「同期の最終形」の表: ドライバ × リポジトリ設定 × レシート × plan / apply。
+// 第 2 段で http ドライバと、レシートを持たない CI の経路〔sync-ci.ts〕が同じ
+// 芯〔{@link runDriver}〕に載った)。
 //
 // plan = 「レシート(前回届いた version)と maruhi の現在の version の差」を
 // 名前と version だけで示す。同期先は**読み戻さない**(一方通行 — ADR-0014。
 // Vercel の sensitive 値は読み戻せないので、レシートが唯一の突合材料 — 補足 13 W2)。
 // plan は同期元の値を復号しない(値署名の検証までで止まる — values.ts の
-// pullVerifiedEnvironment)。apply は復号し(pull.ts)、ベンダー CLI の stdin に
-// 一度だけ書く(sync-exec.ts)。値は stdout / stderr / エラー文面に出ない。
+// pullVerifiedEnvironment)し、ベンダー API にも触れない。apply は復号し
+// (pull.ts)、exec ドライバならベンダー CLI の stdin に一度だけ書き(sync-exec.ts)、
+// http ドライバならベンダー API のリクエスト本文に載せる(sync-http.ts)。値は
+// stdout / stderr / エラー文面に出ない。
 //
 // production の既定は plan のみ(補足 14 M4): production 扱いのターゲットへの
 // apply は `--yes` を要求する。エージェント環境の専用ゲートは作らない(補足 9 —
@@ -19,6 +23,7 @@
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
+import type { HttpClient } from "effect/unstable/http";
 
 import type { MaruhiClient } from "./api.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -29,14 +34,22 @@ import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type DeclaredVariable, pullVariables, toDeclaredVariables } from "./pull.ts";
 import { enforceDeclaredPresence, ProcessRunner } from "./run.ts";
-import type { SyncTarget } from "./sync-config.ts";
+import type { SyncTarget, TargetDriver } from "./sync-config.ts";
 import {
   buildInvocations,
   checkValueConstraints,
-  type ExecPreset,
   scrubVendorOutput,
   type SyncWrite,
 } from "./sync-exec.ts";
+import {
+  buildBatches,
+  checkIntegrationToken,
+  DEFAULT_HTTP_RETRY,
+  type HttpRetryPolicy,
+  type IntegrationToken,
+  resolveOptions,
+  runBatch,
+} from "./sync-http.ts";
 import {
   loadReceipt,
   type LoadedReceipt,
@@ -91,6 +104,37 @@ function byName<T extends { readonly name: string }>(entries: readonly T[]): Map
   return new Map(entries.map((entry) => [entry.name, entry] as const));
 }
 
+/** 復号済み変数 → plan の材料(apply / ci sync)。平文長は実測する。 */
+export function sourceVariablesOf(
+  variables: readonly {
+    readonly name: string;
+    readonly version: number;
+    readonly required: boolean;
+    readonly value: Redacted.Redacted<Uint8Array>;
+  }[],
+): readonly SourceVariable[] {
+  return variables.map((variable) => ({
+    name: variable.name,
+    version: variable.version,
+    // 剥がす理由: 平文長の実測(産物は長さだけ)。plan 段の暗号文長からの推定と
+    // 同じ値になるが、apply は実際に送るバイト列で判定する
+    byteLength: Redacted.value(variable.value).byteLength,
+    required: variable.required,
+  }));
+}
+
+/** 復号済み変数 → 名前で引ける書き込み材料(値は包んだまま)。 */
+export function writesOf(
+  variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
+): ReadonlyMap<string, SyncWrite> {
+  return byName(variables.map((variable) => ({ name: variable.name, value: variable.value })));
+}
+
+/** 文面用のドライバの呼び名("the vercel CLI" / "the Vercel API")。 */
+function driverLabel(driver: TargetDriver): string {
+  return driver.kind === "exec" ? `the ${driver.spec.command} CLI` : driver.spec.label;
+}
+
 /**
  * Resolves which variables the target carries: the explicit list, or every
  * active variable minus `exclude`. Names in an explicit list that exist
@@ -119,18 +163,18 @@ function selectNames(
 
 /** 1 変数の plan 行(size / 空の制約はここで、内容の制約は apply で)。 */
 function classifyVariable(
-  preset: ExecPreset,
+  driver: TargetDriver,
   variable: SourceVariable,
   previousVersion: number | undefined,
 ): PlanEntry {
   const { name, version } = variable;
-  const { constraints } = preset;
+  const { constraints } = driver.spec;
   if (constraints.nonEmpty && variable.byteLength === 0) {
     return {
       action: "blocked",
       name,
       version,
-      reason: `empty value (the ${preset.command} CLI reads an empty stdin as no value)`,
+      reason: `empty value (${driverLabel(driver)} reads an empty stdin as no value)`,
     };
   }
   if (constraints.maxBytes !== null && variable.byteLength > constraints.maxBytes) {
@@ -138,7 +182,7 @@ function classifyVariable(
       action: "blocked",
       name,
       version,
-      reason: `${variable.byteLength} bytes, above the ${constraints.maxBytes}-byte limit for the ${preset.command} CLI`,
+      reason: `${variable.byteLength} bytes, above the ${constraints.maxBytes}-byte limit for ${driverLabel(driver)}`,
     };
   }
   if (previousVersion === undefined) {
@@ -156,7 +200,7 @@ function compareByName(a: { readonly name: string }, b: { readonly name: string 
 
 /**
  * Computes the plan: receipt versions vs current versions, names only.
- * `blocked` entries come from the preset's size / emptiness constraints
+ * `blocked` entries come from the driver's size / emptiness constraints
  * (content constraints need the plaintext and are checked at apply).
  */
 export function computePlan(input: {
@@ -179,7 +223,7 @@ export function computePlan(input: {
         return [];
       }
       const previousVersion = Object.hasOwn(previous, name) ? previous[name] : undefined;
-      return [classifyVariable(input.target.preset, variable, previousVersion)];
+      return [classifyVariable(input.target.driver, variable, previousVersion)];
     });
     // レシートにあって今は運ばない名前(選択から外れた・maruhi から消えた)= 削除
     const deleted = Object.keys(previous)
@@ -226,18 +270,18 @@ function planLine(entry: PlanEntry): string {
   }
 }
 
-/** 同期先の説明(ヘッダー行用 — プリセットと同期先の環境)。 */
+/** 同期先の説明(ヘッダー行用 — プリセットと同期先の環境とドライバ)。 */
 function describeDestination(target: SyncTarget): string {
   const environment = target.options["environment"];
   const where = typeof environment === "string" ? ` ${displayText(environment)}` : "";
-  return `${target.preset.id}${where}`;
+  return `${target.preset.id}${where} via ${target.driver.kind}`;
 }
 
 /** plan を stdout に出す(コマンドの出力 — 名前と version だけ)。 */
 function reportPlan(
   target: SyncTarget,
   plan: SyncPlan,
-  receipt: SyncReceipt | null,
+  receipt: SyncReceipt | null | "none-in-ci",
 ): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -245,9 +289,11 @@ function reportPlan(
       `Sync plan for target ${displayText(target.name)} (environment ${displayText(target.environment)} -> ${describeDestination(target)}): ${countOf(plan, "add")} to add, ${countOf(plan, "update")} to update, ${countOf(plan, "delete")} to delete, ${countOf(plan, "unchanged")} unchanged, ${countOf(plan, "blocked")} blocked`,
     );
     yield* io.log(
-      receipt === null
-        ? "Last delivery: none (no receipt yet — every selected variable is new to this target)"
-        : `Last delivery: ${displayText(receipt.syncedAt)} (receipt ${displayText(receiptVariableName(target.name))})`,
+      receipt === "none-in-ci"
+        ? "Last delivery: not tracked in CI (no receipt — every selected variable is written again, and nothing is deleted)"
+        : receipt === null
+          ? "Last delivery: none (no receipt yet — every selected variable is new to this target)"
+          : `Last delivery: ${displayText(receipt.syncedAt)} (receipt ${displayText(receiptVariableName(target.name))})`,
     );
     for (const entry of plan.entries) {
       yield* io.log(planLine(entry));
@@ -287,14 +333,21 @@ function loadTargetReceipt(input: SyncContextInput): Effect.Effect<LoadedReceipt
 /**
  * plan / apply 共通の後段: plan を出し、契約の助言を流し、レシートの上限接近を
  * 警告し、blocked が 1 件でもあれば失敗する(apply は何も送らない)。
+ * CI(レシート無し)は `receipt: "none-in-ci"` で同じ段を通る。
  */
-function reviewPlan(
-  input: SyncContextInput,
+export function reviewPlan(
+  target: SyncTarget,
   plan: SyncPlan,
-  loaded: LoadedReceipt,
+  receipt:
+    | { readonly kind: "loaded"; readonly loaded: LoadedReceipt; readonly environmentId: string }
+    | { readonly kind: "none-in-ci" },
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
-    yield* reportPlan(input.target, plan, loaded.receipt);
+    yield* reportPlan(
+      target,
+      plan,
+      receipt.kind === "none-in-ci" ? "none-in-ci" : receipt.loaded.receipt,
+    );
     if (plan.requiredNotSelected.length > 0) {
       yield* logWarning(
         `required variables are not part of this target: ${plan.requiredNotSelected.map(displayText).join(", ")}. The target's runtime will not receive them (add them to the target's variables in the sync config if it needs them)`,
@@ -302,19 +355,21 @@ function reviewPlan(
     }
     // required の宣言だけで値が無い変数が選択にある = 何も運ばない(run と同じ規則)
     yield* enforceDeclaredPresence(plan.declaredRequired, "Nothing was sent");
-    const warning = receiptVersionWarning({
-      target: input.target.name,
-      environmentId: input.receiptsEnvironment,
-      variableVersion: loaded.variableVersion,
-    });
-    if (warning !== null) {
-      yield* logWarning(warning);
+    if (receipt.kind === "loaded") {
+      const warning = receiptVersionWarning({
+        target: target.name,
+        environmentId: receipt.environmentId,
+        variableVersion: receipt.loaded.variableVersion,
+      });
+      if (warning !== null) {
+        yield* logWarning(warning);
+      }
     }
     const blocked = plan.entries.filter((entry) => entry.action === "blocked");
     if (blocked.length > 0) {
       return yield* Effect.fail(
         cliError(
-          `${countNoun(blocked.length, "variable")} cannot be synced with this preset (marked ! above): ${blocked.map((entry) => displayText(entry.name)).join(", ")}. Leave them out of the target, or push values the vendor CLI can carry. Nothing was sent`,
+          `${countNoun(blocked.length, "variable")} cannot be synced with this driver (marked ! above): ${blocked.map((entry) => displayText(entry.name)).join(", ")}. Leave them out of the target, or push values ${driverLabel(target.driver)} can carry. Nothing was sent`,
         ),
       );
     }
@@ -323,7 +378,8 @@ function reviewPlan(
 
 /**
  * `maruhi sync plan <target>`: receipt + verified names and versions of the
- * source environment. The source values are not decrypted.
+ * source environment. The source values are not decrypted, and the vendor
+ * API is not contacted.
  */
 export function syncPlanOp(input: SyncContextInput): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -349,7 +405,11 @@ export function syncPlanOp(input: SyncContextInput): Effect.Effect<void, CliErro
       declared: toDeclaredVariables(pulled.declared),
       receipt: loaded.receipt,
     });
-    yield* reviewPlan(input, plan, loaded);
+    yield* reviewPlan(input.target, plan, {
+      kind: "loaded",
+      loaded,
+      environmentId: input.receiptsEnvironment,
+    });
     if (input.target.production) {
       yield* logNote(
         `target ${displayText(input.target.name)} is a production target: \`maruhi sync apply ${displayText(input.target.name)}\` needs --yes`,
@@ -366,10 +426,14 @@ export interface SyncApplyInput extends SyncContextInput {
   readonly yes: boolean;
   /** 書き手の時計(レシートの syncedAt。判定には使わない)。 */
   readonly now: () => Date;
+  /** 統合トークンの環境の床(http ドライバのときだけ。exec は null)。 */
+  readonly tokenFloor: FloorHandle | null;
+  /** ベンダー API のリトライ(既定は本番の調律。テストで短くする)。 */
+  readonly httpRetry?: HttpRetryPolicy;
 }
 
 /** apply が送るもの(plan の add / update / delete を材料に組む)。 */
-interface ApplyWork {
+export interface ApplyWork {
   readonly writes: readonly SyncWrite[];
   readonly deletes: readonly string[];
   /** 書く変数の version(レシートに記録する座標)。 */
@@ -381,7 +445,7 @@ interface ApplyWork {
  * constraints first (UTF-8, emptiness, size, trailing newline). One
  * refused value means nothing is sent.
  */
-function prepareWork(
+export function prepareWork(
   target: SyncTarget,
   plan: SyncPlan,
   values: ReadonlyMap<string, SyncWrite>,
@@ -404,11 +468,15 @@ function prepareWork(
       if (decodeValueText(plaintext) === null) {
         return yield* Effect.fail(
           cliError(
-            `The value of variable ${displayText(write.name)} is not valid UTF-8 (the ${target.preset.command} CLI takes text on stdin). Nothing was sent`,
+            `The value of variable ${displayText(write.name)} is not valid UTF-8 (${driverLabel(target.driver)} takes text). Nothing was sent`,
           ),
         );
       }
-      const problem = checkValueConstraints(target.preset, write.name, plaintext);
+      const problem = checkValueConstraints(
+        { constraints: target.driver.spec.constraints, label: driverLabel(target.driver) },
+        write.name,
+        plaintext,
+      );
       if (problem !== null) {
         return yield* Effect.fail(cliError(`${problem.message}. Nothing was sent`));
       }
@@ -422,15 +490,17 @@ function prepareWork(
   });
 }
 
-/** ベンダー CLI の実行結果(成功した名前だけをレシートへ進める材料)。 */
-interface ExecResult {
+/** ドライバの実行結果(成功した名前だけをレシートへ進める材料)。 */
+export interface DriverResult {
   readonly written: readonly string[];
   readonly deleted: readonly string[];
   /** 失敗した呼び出し(無ければ null)。 */
   readonly failure: {
     readonly names: readonly string[];
     readonly kind: "write" | "delete";
-    readonly exitCode: number;
+    /** 何が失敗したか(実行体名と終了コード / API の呼び名)。値は運ばない。 */
+    readonly what: string;
+    /** 伏せ字化済みの出力・応答の断片。 */
     readonly output: readonly string[];
   } | null;
 }
@@ -440,16 +510,17 @@ interface ExecResult {
  * succeeded before it is reported so the receipt can record it.
  */
 function runInvocations(
-  target: SyncTarget,
+  driver: Extract<TargetDriver, { kind: "exec" }>,
+  options: SyncTarget["options"],
   work: ApplyWork,
-): Effect.Effect<ExecResult, CliError, ProcessRunner> {
+): Effect.Effect<DriverResult, CliError, ProcessRunner> {
   return Effect.gen(function* () {
     const runner = yield* ProcessRunner;
     const invocations = buildInvocations({
-      preset: target.preset,
-      command: target.command,
-      cwd: target.cwd,
-      options: target.options,
+      preset: driver.spec,
+      command: driver.command,
+      cwd: driver.cwd,
+      options,
       writes: work.writes,
       deletes: work.deletes,
     });
@@ -465,7 +536,7 @@ function runInvocations(
           failure: {
             names: invocation.names,
             kind: invocation.kind,
-            exitCode: outcome.exitCode,
+            what: `${displayText(driver.command)} exited with code ${outcome.exitCode}`,
             // ベンダーの出力は信用しない: 値を伏せ、制御文字を中和し、末尾だけ
             output: scrubVendorOutput(outcome.output, work.writes),
           },
@@ -480,11 +551,151 @@ function runInvocations(
   });
 }
 
+/** ベンダー API への送信(バッチ順。最初の失敗で止め、届いた分を返す)。 */
+function runBatches(
+  driver: Extract<TargetDriver, { kind: "http" }>,
+  options: SyncTarget["options"],
+  work: ApplyWork,
+  token: IntegrationToken,
+  retry: HttpRetryPolicy,
+): Effect.Effect<DriverResult, CliError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const batches = buildBatches({
+      preset: driver.spec,
+      writes: work.writes,
+      deletes: work.deletes,
+    });
+    const target = {
+      preset: driver.spec,
+      options: resolveOptions(driver.spec, options),
+      token,
+      retry,
+    };
+    const written: string[] = [];
+    const deleted: string[] = [];
+    const deleteSet = new Set(work.deletes);
+    for (const batch of batches) {
+      const result = yield* runBatch(target, batch);
+      for (const name of result.delivered) {
+        (deleteSet.has(name) ? deleted : written).push(name);
+      }
+      if (result.failure !== null) {
+        return {
+          written,
+          deleted,
+          failure: {
+            names: result.failure.names,
+            kind: batch.kind,
+            what: `${driver.spec.label} refused the request`,
+            output: result.failure.lines,
+          },
+        };
+      }
+    }
+    return { written, deleted, failure: null };
+  });
+}
+
+/** ドライバの実行に要るもの(exec = プロセス、http = トークン + 通信)。 */
+export interface RunDriverInput {
+  readonly target: SyncTarget;
+  readonly work: ApplyWork;
+  /** http ドライバの統合トークン(exec では null)。 */
+  readonly token: IntegrationToken | null;
+  readonly httpRetry: HttpRetryPolicy;
+}
+
+/**
+ * Runs the target's driver over the prepared work: the installed vendor CLI
+ * (values on stdin) or the vendor API (values in the request body). Prints
+ * one line naming where the plaintext goes before sending anything.
+ */
+export function runDriver(
+  input: RunDriverInput,
+): Effect.Effect<DriverResult, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const { driver } = input.target;
+    if (driver.kind === "exec") {
+      // どの実行体に・どこで渡すかを出力に残す(設定の command / cwd で平文の行き先が
+      // 変わるので、差分だけでなく端末と CI ログでも見えるように — pullfrog 指摘)
+      yield* io.log(`Running ${displayText(driver.command)} in ${displayText(driver.cwd)}`);
+      return yield* runInvocations(driver, input.target.options, input.work);
+    }
+    if (input.token === null) {
+      return yield* Effect.fail(
+        cliError("The http driver needs the integration token (internal inconsistency)"),
+      );
+    }
+    yield* io.log(
+      `Sending to ${driver.spec.host} with the token from variable ${displayText(driver.token.name)} in environment ${displayText(driver.token.environment)}`,
+    );
+    return yield* runBatches(
+      driver,
+      input.target.options,
+      input.work,
+      input.token,
+      input.httpRetry,
+    );
+  });
+}
+
+/** 復号済み変数の中から統合トークンを取り出す(検査つき)。 */
+export function integrationTokenOf(
+  token: { readonly environment: string; readonly name: string },
+  variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
+): Effect.Effect<IntegrationToken, CliError> {
+  const variable = variables.find((entry) => entry.name === token.name);
+  if (variable === undefined) {
+    return Effect.fail(
+      cliError(
+        `The token variable ${displayText(token.name)} does not exist in environment ${displayText(token.environment)}. Push the vendor's token there with \`maruhi push ${displayText(token.name)} --env ${displayText(token.environment)}\` (the token on stdin, without a trailing newline), or fix the target's token in the sync config`,
+      ),
+    );
+  }
+  // 剥がす理由: トークンの形の検査(ヘッダーに載る文字か)。産物は再び Redacted
+  const checked = checkIntegrationToken(token.name, Redacted.value(variable.value));
+  return typeof checked === "string"
+    ? Effect.succeed(Redacted.make(checked, { label: "integration-token" }))
+    : Effect.fail(checked);
+}
+
+/** 統合トークンの取り出し(手元: トークン環境を検証し、その 1 変数だけを復号する)。 */
+function fetchIntegrationToken(
+  input: SyncApplyInput,
+  driver: Extract<TargetDriver, { kind: "http" }>,
+  verified: VerifiedProject,
+): Effect.Effect<
+  { readonly token: IntegrationToken; readonly verified: VerifiedProject },
+  CliError,
+  CliIo
+> {
+  return Effect.gen(function* () {
+    if (input.tokenFloor === null) {
+      return yield* Effect.fail(
+        cliError("No floor handle for the token environment (internal inconsistency)"),
+      );
+    }
+    const pulled = yield* pullVariables({
+      client: input.client,
+      verified,
+      environmentId: driver.token.environment as EnvironmentId,
+      recipient: input.recipient,
+      resync: input.resync,
+      floor: input.tokenFloor,
+      select: (name) => name === driver.token.name,
+    });
+    yield* logWarnings(pulled.warnings);
+    const token = yield* integrationTokenOf(driver.token, pulled.variables);
+    return { token, verified: pulled.verified };
+  });
+}
+
 /** レシートの次の内容(成功した書き込み・削除だけを前回に重ねる)。 */
 function nextReceipt(input: {
   readonly target: SyncTarget;
   readonly previous: SyncReceipt | null;
-  readonly result: ExecResult;
+  readonly result: DriverResult;
   readonly versions: ReadonlyMap<string, number>;
   readonly syncedAt: string;
 }): SyncReceipt {
@@ -553,41 +764,70 @@ function saveReceipt(
   );
 }
 
-/** 実行結果の報告(失敗はベンダー出力の伏せ字化した末尾を添えて型付きエラー)。 */
+/** ドライバの失敗の報告(伏せ字化した出力を添えて型付きエラー)。 */
+export function failDriver(input: {
+  readonly target: SyncTarget;
+  readonly work: ApplyWork;
+  readonly result: DriverResult;
+  /** レシートの作り直しの案内に添える環境(CI = null: レシートが無い)。 */
+  readonly receiptsEnvironment: string | null;
+  /** 残りを見る手段(手元 = plan、CI = 再実行)。 */
+  readonly next: string;
+}): Effect.Effect<never, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const { target, work, result } = input;
+    if (result.failure === null) {
+      return yield* Effect.fail(
+        cliError("failDriver called without a failure (internal inconsistency)"),
+      );
+    }
+    const prefix = target.driver.kind === "exec" ? target.driver.command : target.driver.spec.host;
+    for (const line of result.failure.output) {
+      yield* io.logError(`  ${displayText(prefix)}: ${line}`);
+    }
+    // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
+    // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
+    // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
+    // 先に同期先で手で消すよう言う(pullfrog 指摘)
+    const failed = new Set(result.failure.names);
+    const notAttempted = work.deletes.filter(
+      (name) => !result.deleted.includes(name) && !failed.has(name),
+    );
+    const pendingHint =
+      notAttempted.length === 0
+        ? ""
+        : ` Resetting the receipt also forgets the deletions not attempted yet, so remove these at the target yourself first: ${notAttempted.map(displayText).join(", ")}.`;
+    const deleteHint =
+      result.failure.kind === "delete" && input.receiptsEnvironment !== null
+        ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
+        : "";
+    return yield* Effect.fail(
+      cliError(
+        `${result.failure.what} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted). Its output is shown above with values filtered out.${deleteHint} Fix the cause, then ${input.next}`,
+      ),
+    );
+  });
+}
+
+/** 実行結果の報告(失敗は伏せ字化した出力を添えて型付きエラー)。 */
 function reportApply(
   input: SyncApplyInput,
   work: ApplyWork,
-  result: ExecResult,
+  result: DriverResult,
   receiptVersion: number | null,
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const targetName = displayText(input.target.name);
     if (result.failure !== null) {
-      for (const line of result.failure.output) {
-        yield* io.logError(`  ${input.target.command}: ${line}`);
-      }
-      // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
-      // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
-      // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
-      // 先に同期先で手で消すよう言う(pullfrog 指摘)
-      const failed = new Set(result.failure.names);
-      const notAttempted = work.deletes.filter(
-        (name) => !result.deleted.includes(name) && !failed.has(name),
-      );
-      const pendingHint =
-        notAttempted.length === 0
-          ? ""
-          : ` Resetting the receipt also forgets the deletions not attempted yet, so remove these at the target yourself first: ${notAttempted.map(displayText).join(", ")}.`;
-      const deleteHint =
-        result.failure.kind === "delete"
-          ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
-          : "";
-      return yield* Effect.fail(
-        cliError(
-          `${displayText(input.target.command)} exited with code ${result.failure.exitCode} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted). Its output is shown above with values filtered out.${deleteHint} Fix the cause, then run \`maruhi sync plan ${targetName}\` to see what is left`,
-        ),
-      );
+      return yield* failDriver({
+        target: input.target,
+        work,
+        result,
+        receiptsEnvironment: input.receiptsEnvironment,
+        next: `run \`maruhi sync plan ${targetName}\` to see what is left`,
+      });
     }
     const saved =
       receiptVersion === null
@@ -599,18 +839,34 @@ function reportApply(
   });
 }
 
+/** production ターゲットへの apply には `--yes` が要る(補足 14 M4)。 */
+export function requireProductionConsent(
+  target: SyncTarget,
+  yes: boolean,
+  command: string,
+): Effect.Effect<void, CliError> {
+  if (target.production && !yes) {
+    return Effect.fail(
+      cliError(
+        `Target ${displayText(target.name)} is a production target, so apply needs an explicit --yes. Review the plan above, then re-run \`${command} ${displayText(target.name)} --yes\`. Nothing was sent`,
+      ),
+    );
+  }
+  return Effect.void;
+}
+
 /**
  * `maruhi sync apply <target>`: plan, then write the changed variables to
- * the vendor CLI (stdin only), then record what landed in the receipt.
+ * the target through its driver, then record what landed in the receipt.
  */
 export function syncApplyOp(
   input: SyncApplyInput,
-): Effect.Effect<void, CliError, CliIo | ProcessRunner> {
+): Effect.Effect<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const loaded = yield* loadTargetReceipt(input);
     // apply は復号する(run と同じ経路 — pull.ts)。平文は Redacted のまま
-    // sync-exec.ts の stdin 組み立てまで運ぶ
+    // ドライバの本文 / stdin の組み立てまで運ぶ
     const pulled = yield* pullVariables({
       client: input.client,
       verified: loaded.verified,
@@ -620,46 +876,40 @@ export function syncApplyOp(
       floor: input.sourceFloor,
     });
     yield* logWarnings(pulled.warnings);
-    const source: SourceVariable[] = pulled.variables.map((variable) => ({
-      name: variable.name,
-      version: variable.version,
-      // 剥がす理由: 平文長の実測(産物は長さだけ)。plan 段の暗号文長からの推定と
-      // 同じ値になるが、apply は実際に送るバイト列で判定する
-      byteLength: Redacted.value(variable.value).byteLength,
-      required: variable.required,
-    }));
     const plan = yield* computePlan({
       target: input.target,
-      source,
+      source: sourceVariablesOf(pulled.variables),
       // pull.ts はすでに declared を材料形へ写している
       declared: pulled.declared,
       receipt: loaded.receipt,
     });
-    yield* reviewPlan(input, plan, loaded);
-    const work = yield* prepareWork(
-      input.target,
-      plan,
-      byName(pulled.variables.map((variable) => ({ name: variable.name, value: variable.value }))),
-    );
+    yield* reviewPlan(input.target, plan, {
+      kind: "loaded",
+      loaded,
+      environmentId: input.receiptsEnvironment,
+    });
+    const work = yield* prepareWork(input.target, plan, writesOf(pulled.variables));
     if (work.writes.length === 0 && work.deletes.length === 0) {
       yield* io.log(
         "Nothing to apply: the target already has every selected variable at its current version",
       );
       return;
     }
-    if (input.target.production && !input.yes) {
-      return yield* Effect.fail(
-        cliError(
-          `Target ${displayText(input.target.name)} is a production target, so apply needs an explicit --yes. Review the plan above, then re-run \`maruhi sync apply ${displayText(input.target.name)} --yes\`. Nothing was sent`,
-        ),
-      );
+    yield* requireProductionConsent(input.target, input.yes, "maruhi sync apply");
+    // 統合トークンは送る直前に取り出す(送らずに終わる経路では復号しない)
+    let verified = pulled.verified;
+    let token: IntegrationToken | null = null;
+    if (input.target.driver.kind === "http") {
+      const fetched = yield* fetchIntegrationToken(input, input.target.driver, verified);
+      token = fetched.token;
+      verified = fetched.verified;
     }
-    // どの実行体に・どこで渡すかを出力に残す(設定の command / cwd で平文の行き先が
-    // 変わるので、差分だけでなく端末と CI ログでも見えるように — pullfrog 指摘)
-    yield* io.log(
-      `Running ${displayText(input.target.command)} in ${displayText(input.target.cwd)}`,
-    );
-    const result = yield* runInvocations(input.target, work);
+    const result = yield* runDriver({
+      target: input.target,
+      work,
+      token,
+      httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
+    });
     // レシートは「実際に届いた分」だけ進める。失敗した回でも届いた分は記録し、
     // 次の plan が残りだけを示すようにする
     const receipt = nextReceipt({
@@ -669,13 +919,9 @@ export function syncApplyOp(
       versions: work.versions,
       syncedAt: input.now().toISOString(),
     });
-    // レシートの push は、同期元の pull で前進していることのあるビューから始める
-    // (loadReceipt 時点のビューは古いことがある — Bugbot 指摘)
-    const receiptVersion = yield* saveReceipt(
-      input,
-      { ...loaded, verified: pulled.verified },
-      receipt,
-    );
+    // レシートの push は、同期元(とトークン環境)の pull で前進していることのある
+    // ビューから始める(loadReceipt 時点のビューは古いことがある — Bugbot 指摘)
+    const receiptVersion = yield* saveReceipt(input, { ...loaded, verified }, receipt);
     yield* reportApply(input, work, result, receiptVersion);
   });
 }
