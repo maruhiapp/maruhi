@@ -20,7 +20,9 @@
   // docs/notes/hosted-ops.md §2-E)で、index.ts から import されない別エントリ。
   // apps/site は Blume CLI が blume.config.ts を読み、scripts/ は bun run で直接叩く。
   // apps/site/test/unit/shims は docs のレシピ検査(recipes.test.ts)が PATH 経由で起動する偽の
-  // ベンダー CLI(bin/ の sh ラッパーが bun で実行する)で、import されないため手動宣言する
+  // ベンダー CLI(bin/ の sh ラッパーが bun で実行する)で、import されないため手動宣言する。
+  // apps/cli/test/support/exec-probe.ts は live-exec.test.ts が `bun` で起動する実プロセスの
+  // プローブ(Bun.spawn を Node の vitest から検査するため)で、同じく import されない
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
@@ -34,7 +36,8 @@
     "apps/site/scripts/*.ts",
     "apps/site/vitest.unit.config.ts",
     "apps/site/test/unit/*.test.ts",
-    "apps/site/test/unit/shims/*.ts"
+    "apps/site/test/unit/shims/*.ts",
+    "apps/cli/test/support/exec-probe.ts"
   ],
   // エージェントスキル(ベンダードコンテンツ)、deepsec 隔離ワークスペース、
   // テストベクターの参照生成・検証ツール(使い捨て。製品コードから import されない)は解析対象外。

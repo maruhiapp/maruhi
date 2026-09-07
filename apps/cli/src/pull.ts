@@ -36,6 +36,8 @@ export interface DecryptedVariable {
    * advisory 型検証(run.ts — §14.3-7: 検証は警告のみで実行は続行)にだけ使う。
    */
   readonly varType: MetaVarType;
+  /** required の宣言(レイアウト v2 のスキーマ欄。v1 = false)。`maruhi sync` の完全性検査に使う。 */
+  readonly required: boolean;
   /** 平文バイト列(メモリ上のみ。剥がす箇所は run / show / 再暗号化に限る)。 */
   readonly value: Redacted.Redacted<Uint8Array>;
 }
@@ -55,6 +57,8 @@ export interface DeclaredVariable {
 
 /** 復号済み変数・declared 宣言と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
 export interface PulledVariables {
+  /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。後続の書き込みはこれを引き継ぐ。 */
+  readonly verified: VerifiedProject;
   readonly variables: readonly DecryptedVariable[];
   /** 検証済み declared(値なし — 注入対象外。presence 検査は呼び出し側)。 */
   readonly declared: readonly DeclaredVariable[];
@@ -236,9 +240,15 @@ export function pullVariables(input: {
         version: variable.version,
         epoch: variable.epoch,
         varType: variable.schema?.varType ?? "",
+        required: variable.schema?.required ?? false,
         value: plaintext,
       });
     }
-    return { variables: results, declared: toDeclaredVariables(pulled.declared), warnings };
+    return {
+      verified,
+      variables: results,
+      declared: toDeclaredVariables(pulled.declared),
+      warnings,
+    };
   });
 }

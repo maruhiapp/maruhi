@@ -23,7 +23,11 @@ function shellBlocks(markdown: string): string[] {
   return [...markdown.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1] ?? "");
 }
 
-const blocks = shellBlocks(page);
+const allBlocks = shellBlocks(page);
+// レシピ = `maruhi run --env production -- ` で始まるブロック(SY2 で `maruhi sync` の
+// 使い方の ```sh も同じページに載ったので、本文の順ではなく形で選ぶ)
+const RECIPE_PREFIX = "maruhi run --env production -- ";
+const blocks = allBlocks.filter((b) => b.startsWith(RECIPE_PREFIX));
 const workersRecipe = blocks.find((b) => b.includes("wrangler secret bulk"));
 const vercelRecipe = blocks.find((b) => b.includes("vercel env add"));
 
@@ -122,7 +126,16 @@ function expectValuesOffCommandLines(calls: Call[]): void {
  * tracing happened is a line starting with `+` that shows the outer `maruhi run` command.
  */
 function expectValuesOffTrace(stderr: string): void {
-  expect(stderr).toMatch(/^\+.*\bmaruhi run --env production\b/m);
+  // パイプラインの両側(maruhi run … | wrangler …)は別プロセスで、dash は
+  // トレースを語ごとに書くため、負荷の下では両側の語が同じ stderr で任意に
+  // 交互に並ぶ(実測: `+ maruhi+  run --env production …` /
+  // `  maruhiwrangler run --env secret production bulk`)。語の並びには依存せず、
+  // 「トレースが出た」の証拠は `+` で始まる行があり、外側のコマンドの各語が
+  // 現れること
+  expect(stderr).toMatch(/^\+/m);
+  for (const word of ["maruhi", "run", "--env", "production"]) {
+    expect(stderr).toContain(word);
+  }
   for (const fragment of valueFragments) {
     expect(stderr).not.toContain(fragment);
   }
@@ -133,10 +146,11 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
     expect(blocks).toHaveLength(2);
     expect(workersRecipe).toBeDefined();
     expect(vercelRecipe).toBeDefined();
-    for (const block of blocks) {
-      expect(block.startsWith("maruhi run --env production -- ")).toBe(true);
+    // `maruhi sync` の使い方のブロック(env create / plan / apply)も同じページにある
+    expect(allBlocks.some((b) => b.includes("maruhi sync apply"))).toBe(true);
+    for (const block of allBlocks) {
       // 値を argv に載せるフラグ・ディスクに置く形(/dev/null と fd 以外へのリダイレクト)・取得しに行く形を
-      // 書かない(不変条件)
+      // 書かない(不変条件 — レシピにも sync の例にも)
       expect(block).not.toMatch(
         /--value|--env-file|--body|\.env\b|npx|bunx|>(?!\s*\/dev\/null|&)|tee\b/,
       );
@@ -225,8 +239,11 @@ describe("deploy-targets.mdx recipes (extracted from the page)", () => {
       });
       expect(status).toBe(0);
       expect(vendorCalls(calls)).toHaveLength(2);
-      // 内側の sh も -x で走った証拠(名前ごとの printenv がトレースに出る)
-      expect(stderr).toContain("printenv STRIPE_SECRET_KEY");
+      // 内側の sh も -x で走った証拠(名前ごとの printenv がトレースに出る)。
+      // `printenv "$name" | vercel …` の両側は別プロセスで語が交互に並びうるので、
+      // 語の並びには依存しない(上の expectValuesOffTrace と同じ理由)
+      expect(stderr).toContain("printenv");
+      expect(stderr).toContain("STRIPE_SECRET_KEY");
       expectValuesOffTrace(stderr);
     });
 

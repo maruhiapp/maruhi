@@ -766,6 +766,208 @@ pullfrog の nit で `apt-get update -qq` を前置(ランナーイメージの 
 実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・macOS(BSD `printenv`)は人間タスク。ページの
 light / dark のスクリーンショットは PR の Artifact。
 
+### SY2 実装時の裁定録(2026-09-06)
+
+対象は ROADMAP SY2 = 案 S2 + S8(`maruhi sync <target>`)。SY 系列で初めて CLI のコードを変える。SY2 は 1 本の PR に収まらない
+ので段に切り、本節は**第 1 段**の裁定録(段の切り方は裁定 A)。設計は §3 冒頭「同期の最終形」の表を正とし、本セッションでは
+設計を蒸し返していない。各裁定点は DP1〜DP5 / SY1 と同じループ(候補 3 つ以上 → 上位互換 / 銀の弾丸の探索 → 新案が出ない
+周が 1 回あれば終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(境界値・環境差・失敗時の残骸)を問うた。
+
+**前提の確認(実物・実装で確かめた事実。日付はすべて 2026-09-06)**:
+(1) **CLI の境界**(`Redacted` が剥がれる位置 × 子プロセス): 復号の産物は `pull.ts` で `Redacted` に包まれ、剥がすのは
+`run.ts`(env 注入の直前)・`display.ts`(表示ゲートの後ろ)・`push.ts`(暗号境界)・`env-rotate.ts`(再暗号化)だけ。子プロセスは
+`live.ts` の `Bun.spawn` で **stdio をすべて継承**し、stdin に書く口が無い。`buildChildEnvironment` が `MARUHI_*` を子に渡さない
+(deepsec S6)。CI(`ci-run.ts`)はリースで DEK を受け取るが **§4.1 の書き込み署名に使う master 鍵を持たない**(`pushVariable` は
+`signingKey` = master sig 鍵を要求する)→ CI から maruhi へレシートを書く経路は現状ない。
+(2) **サーバーの上限**(`apps/server/src/policy.ts`): 値の暗号文 64 KiB、環境あたり active 変数 1,000、**変数あたり version
+1,000**、active 環境 100。レシートを「同期のたびに上書きする 1 変数」にすると version 上限に当たる(裁定 F)。
+(3) **API の実装点**: 読み = `values.ts` の `pullVerifiedEnvironment`(値署名の検証まで。復号しない。version あり)/
+`pullVerifiedEnvironmentMetadata`(名前のみ — **version を持たない**ので plan の材料にならない)、復号 = `pull.ts` の
+`pullVariables`、書き = `push.ts` の `pushVariable`(1 変数 1 version)。メタデータのみ pull には version が無いため、**plan は
+値付き pull(暗号文の配布 = `var.read` 監査行)を使い、復号だけをしない**形になる。
+(4) **既存モジュール名**: `apps/cli/src/sync.ts` / `test/sync.test.ts` はチェーン同期(§6.3)。新機能は `sync-config.ts` /
+`sync-exec.ts` / `sync-receipt.ts` / `sync-plan.ts` と `test/sync-command.test.ts` / `test/sync-units.test.ts` に置き、`sync.ts`
+には触れない(裁定 B)。
+(5) **監査**: AUDIT_SPEC §3.3 のプロジェクト データ系イベントはすべてサーバーが記録するもので、クライアントが申告するイベントは
+無い(ROADMAP SY2 (a) の「監査行 `sync.executed`」は補足 15 X3 で (b) として後回しにされている — 裁定 M)。
+(6) **Vercel CLI 59.11.7 の再確認**(scratchpad へ `bun add vercel@latest`。**版は SY1 と同じ 59.11.7 のまま**):
+`readStandardInput` = `setTimeout(resolve(""), 500)` + `stdin.once("data")`(最初のチャンク 1 回)、`normalizeStdinEnvValue` =
+末尾 `\n` / `\r\n` を 1 つ落とし、落とした残りに改行があれば**元の値をそのまま返す**(= 複数行は末尾改行が残る)。`--force` は API
+の `upsert=true`(**rm → add の窓は無い** — 補足 13 D5 は杞憂)、**空 stdin は「値なし」**として `--non-interactive` なら
+`action_required`(失敗)、対話なら値のプロンプト、`--non-interactive` はグローバルフラグ(59.11.7 の `--help` で確認。
+`@vercel/detect-agent` の判定でも既定になる)。wrangler 4.128.0 の `secret bulk --help` は SY1 と同じ(`--name` / `--env` /
+`--config`、file 省略で stdin)。
+(7) **Bun.spawn の stdin**: `ArrayBufferView` を渡すと Bun が書き切ってから閉じる(bun-types 1.4.0 の `SpawnOptions.Readable`)。
+Vercel の「最初のチャンクを 500 ms だけ待つ」読み方に対して、自前のストリーム書き込みより素直な形。
+(8) **macOS のパイプ容量**: Linux の実測(SY1 改訂 1)は 65,536 バイトまで完全だが、macOS のパイプは初期容量 16 KiB で、それを
+超える書き込みは読み手が読むまでブロックする(= Vercel CLI の 1 回の `data` に収まらない)。SY1 の人間タスク(macOS で数十 KiB)は
+未実施なので、上限は環境差を跨いで安全な 16 KiB に置く(裁定 D)。
+
+**A. 段の切り方** — 列挙: (i) 第 1 段 = exec ドライバ(Vercel / Workers)+ リポジトリ設定 + `sync plan` / `sync apply` +
+レシート、第 2 段 = http ドライバ(CI と未導入時。統合トークンは maruhi の変数)+ CI での `sync` + ローテーションのレシート前進
+(M1)、第 3 段 = push 時同期 (c) / `gh workflow run` / autoSync / (ii) レシートを第 2 段へ送り第 1 段は plan なしの apply だけ /
+(iii) http を先にする / (iv) 第 1 段 = exec + 設定 + plan / apply、レシートは第 2 段だが設定に枠だけ予約。第 1 周の新案:
+**M1(`env rotate` がレシートを進める)を第 1 段から外す**(あり — env-rotate.ts は 2,442 行で、再暗号化ループがリポジトリ設定
+〔cwd 依存〕とレシート環境〔それ自身がローテーション対象〕を知る必要があり、第 1 段の 1 PR に載せると危険。外しても apply は
+冪等な上書きで**同じ平文を再送する**だけで安全 — docs に明記)。第 2 周(壊れ方): (ii) は plan が無いと production の既定
+「plan のみ」が成立せず、(iii) は手元の主経路(補足 16)が後回しになる。レシート無しの (iv) は plan が「全部 new」しか言えず
+差分の意味が無い(なし)。**選定 = (i) − M1**。棄却: (ii)(M4 が成立しない)、(iii)(補足 16 に反する)、(iv)(plan が空洞)。
+ROADMAP の SY2 行に段割りを書き、第 1 段の完了注記を付ける(SY2 全体の完了にはしない)。
+
+**B. コマンド名と構成** — 列挙: (i) `maruhi sync plan <target>` / `maruhi sync apply <target>`(位置引数 = 設定のターゲット名)/
+(ii) `maruhi sync <target> --plan` / (iii) `sync plan` の引数なし = 全ターゲット / (iv) `sync init` で設定を生成。第 1 周の新案:
+`--env` を持たない(あり — 環境は設定のターゲットが決める。`--env` を受けると「設定と違う環境を同期先へ運ぶ」形が作れる)。
+第 2 周(壊れ方): (iii) は production を含む全ターゲットへの誤 apply を 1 語で起こす(なし)。**選定 = (i)**、`sync` は真の入れ子
+サブコマンド(ADR-0016 決定 6)、bare `maruhi sync` は書き方の誤り(2)。`sync init` は第 1 段に含めない(設定は 10 行の JSON で、
+docs の例を写せば済む。検証の文面が「どのキーが・なぜ」を言う)。`--help` の説明文は動詞始まり 1 行で、plan は「値を復号しない・
+同期先を読み戻さない」、apply は「値は stdin だけ・レシートに記録・production は `--yes`」を言う。モジュール名は前提の確認 (4)。
+
+**C. リポジトリ設定** — 列挙: (i) `maruhi.sync.json`(既定。`--config <file>` で差し替え)/ (ii) `.maruhi/sync.json` /
+(iii) `package.json` の `maruhi` キー / (iv) アンカーファイルへの同居。形式: JSON + `version: 1` + **未知キー拒否**(打ち間違いを
+黙って無視しない)。`project` は省略可で、指定時は `--project` と照合(食い違いは書き方の誤り 2)、無指定なら `defaultProject`。
+運ぶ変数: (a) 明示リストのみ / (b) 環境の全 active(`"all"`)+ `exclude` / (c) 両方。第 1 周の新案: **レシートの環境を同期元に
+できない検査**(あり — `run --env <receipts>` がレシート変数まで子へ注入する形と、レシート自身を同期先へ運ぶ形を塞ぐ)。第 2 周の
+新案: `options` を**プリセットの宣言(`preset.options`)で検証する**(あり — Vercel の `environment` の閉集合・`sensitive` の
+boolean 等をコードでなくデータで持ち、gh を足すときに検証コードを書かない)。第 3 周(壊れ方): `"all"` で新しい変数を push した
+人が知らずに同期先へ運ぶ形は、W3(公開設定・プラットフォーム所有の資源は運ばない)の案内と `exclude` で受ける。明示リストに
+無い名前(打ち間違い)は**何も運ばずに止める**(なし)。**選定 = (i) + (c)**。棄却: (ii)(隠しディレクトリは `git diff` で
+見落とす)、(iii)(package.json が無いリポジトリ)、(iv)(アンカーは `ci run` が検証する暗号学的材料で、意味が違う)。`cwd` /
+`command` はターゲットごとに設定ファイルからの相対(ベンダー CLI はリンク済みディレクトリ / wrangler の設定ファイルを cwd から
+探す)。`command` は「導入済みの版を指す」ためのもので、既定は PATH 上の `vercel` / `wrangler`(`npx` の既定は作らない)。
+
+**D. exec ドライバのインターフェースと宣言的プリセット** — 列挙: (i) ベンダーごとに関数を書く / (ii) **宣言的なデータ**(コマンド・
+argv テンプレート・stdin の形式〔JSON オブジェクト 1 つ / 値そのもの〕・1 プロセスの件数・テレメトリ off の環境変数・値の制約・
+オプションの宣言)+ 小さなトークン言語 / (iii) JSON ファイルから読む。第 1 周の新案: **argv テンプレートの型に値のトークンを
+持たない**(あり — SY1 申し送りの含意 (d)。`{kind:"name"}` / `{kind:"option"}` / `{kind:"switch"}` だけで、値を argv に載せる
+プリセットは型が書けない。単体テストが宣言を走査して `value` / `body` の綴りが無いことも固定)。第 2 周の新案: Vercel の
+**制約を宣言に持つ**(あり — `maxBytes: 16 KiB`〔前提の確認 (8)〕・`nonEmpty`〔(6) の空 stdin〕・`refuseSingleLineTrailingNewline`
+〔(6) の正規化: 末尾改行 1 つで終わる 1 行の値は Vercel CLI では表現できない。値をそのまま送り、この形だけ拒否する — 改行を足して
+送る案は「末尾改行 1 つの値」で `\n\n` になり複数行扱いで元のまま残るため、どちらの形でも失う〕)。第 3 周(壊れ方): wrangler は
+JSON 文字列なので制約なし(空も改行も残る)。UTF-8 でない値は両方とも拒否(JSON と stdin のテキストの前提)。100 件超は 100 ごとに
+分割し、削除(`null`)は同じバッチに同居。Vercel の削除は `env rm NAME env --yes --non-interactive`。**空の入力では呼ばない**
+(wrangler の exit 0 の wart を吸収)。gh は `["secret","set",{name}]` + raw-value + `GH_TELEMETRY=false` の宣言で載る(SY5 —
+コードなし)(なし)。**選定 = (ii)**(TS のデータ。JSON ファイル化は「JSON + モック応答」の趣旨を型で満たしており、外部ファイルの
+読み込み経路を増やさない)。**ベンダー CLI の出力**: 成功時は捨て、失敗時は**値(と複数行値の各行)を伏せ字化・制御文字を中和した
+末尾 20 行**だけを stderr に出す(`scrubVendorOutput`。best effort であることを文面で言う)。`--non-interactive` は常時付ける
+(プロンプトは待たずに失敗に倒れる)。
+
+**E. `ProcessRunner` の拡張** — 列挙: (i) 既存 `run` の引数を広げる / (ii) **`exec` メソッドを足す**(command / cwd / extraEnv /
+stdin: `Redacted<Uint8Array>` → exit code + 捕捉した出力〔末尾 64 KiB〕)/ (iii) 別サービス `VendorProcess`。第 1 周の新案:
+`Redacted` は **`live.ts` の spawn の直前で剥がす**(あり — 値が maruhi を離れる唯一の点。`redacted.test.ts` の棚卸し表に
+`live.ts: 1` を足す)。第 2 周(壊れ方): 未導入の CLI は `Bun.spawn` が throw → 型付きエラー「Cannot start X … maruhi never
+downloads a vendor CLI」。子の環境は `buildChildEnvironment`(`MARUHI_*` を渡さない — S6)を run と共有(なし)。**選定 = (ii)**。
+テストは偽 `ProcessRunner` が stdin のバイト列を記録し、本番の `Bun.spawn` は vitest(Node)から直接呼べないので `bun` で起動する
+プローブ(`test/support/exec-probe.ts` + `live-exec.test.ts`)で実プロセスを固定(16 KiB が丸ごと届く・`MARUHI_TOKEN` 不在・
+出力の捕捉・exit code・未導入のエラー文)。
+
+**F. レシート** — 置き場: 設定の `receipts.environment`(X3 (a))。名前: (i) `MARUHI_SYNC_RECEIPT_<target>` / (ii)
+`SYNC_RECEIPT_<TARGET>` / (iii) **`sync-receipt:<target>`**。第 1 周の新案: `:` を含む名前は POSIX 識別子でないので、レシート環境を
+誤って `run` に使うと「環境変数として注入できない名前」として変数名だけを添えて止まる(あり — (i) は `MARUHI_` 拒否で「実行制御名」
+の文面になり読者を惑わせる。(ii) は `-` を含むターゲット名の写像で衝突する)。粒度: (a) ターゲットごと 1 変数 / (b) 変数ごと /
+(c) 全ターゲット 1 変数。第 2 周: (b) は active 変数上限に、(c) は無関係なターゲットの書き込みが競合する(なし)。**選定 = (iii)
++ (a)**。version 上限(1,000)への対処: (α) 内容が変わらない apply は書かない / (β) **900 で警告**し `maruhi var rm` で新しい
+レシートを始める案内(次の apply は全件を 1 回書き直す)/ (γ) 自動で削除して作り直す(削除は確認付きの破壊操作で、同期の中に
+埋め込まない)。**選定 = (α) + (β)**。中身 = `{version, target, preset, syncedAt, variables: {name: version}}`(値由来のダイジェスト
+なし — W2。名前で引くので rename は「旧名の delete + 新名の add」として自然に出る。`__proto__` のような名前は null プロトタイプで
+扱う)。**失敗した apply でも届いた分はレシートに書く**(次の plan が残りだけを示す)。レシートが書けなければ警告して続ける
+(同期先は更新済みで、次の apply は冪等)。M1(ローテーションの前進)は第 2 段。
+
+**G. CI モード** — 列挙: (i) 第 1 段で扱わない / (ii) `ci run` の子として環境変数から値を読むモード / (iii) `maruhi ci sync`。
+第 1 周: CI は署名鍵を持たずレシートを書けない(前提の確認 (1))ので、CI の同期は「レシート無しの全件再適用」(補足 7 P3)にしか
+ならず、それは http ドライバと一緒に第 2 段で形を決めるのが自然(あり)。第 2 周: なし。**選定 = (i)**。docs の「In CI」は
+「`maruhi sync` in CI は planned」の 1 文を足すに留める。
+
+**H. http ドライバ** — 第 1 段に含めない(推奨どおり)。通信先の増加(利用者が設定した先 — hosted-design.md §5-1)と統合トークンの
+取り出しは第 2 段の裁定。第 2 周: なし。
+
+**I. push 時同期 / autoSync / CI 起動** — 第 3 段。設定形式には枠を予約しない(未知キー拒否 + `version` で足せる)。
+
+**J. エージェント環境と production の既定** — 列挙: (i) production は **`--yes` 必須**(TTY でも) / (ii) TTY なら確認プロンプト、
+非 TTY は `--yes` / (iii) `--production` 専用フラグ。第 1 周の新案: production の判定を**プリセットが宣言する**(あり — Vercel は
+`environment === "production"`、Workers は名前付き環境なし = トップレベル。`production: true|false` で明示上書き)。第 2 周
+(壊れ方): (ii) はエージェント環境で挙動が分かれ、スクリプトの再現性を損なう。(i) は plan を必ず先に出すので「明示フラグで apply」
+の趣旨を満たす(なし)。**選定 = (i)**(`var rm --yes` と同じ語)。`sync` に新しいエージェントゲートは作らない(補足 9)。
+自作プリセットの作成は第 1 段に無いので TTY ガードも不要。
+
+**K. docs** — 列挙: (i) 別ページ「Sync」 / (ii) **`deploy-targets.mdx` を「`maruhi sync` が主、レシピは代替」に組み替える** /
+(iii) レシピを消す。第 1 周の新案: レシピは「Without maruhi sync」節に**そのまま**残し、`recipes.test.ts` は本文の ```sh を
+「`maruhi run --env production -- ` で始まるブロック」で選ぶ(あり — 数で固定していた検査を形で固定し、sync の使い方の ```sh が
+増えても壊れない。禁止パターンの検査は全 ```sh に掛ける)。第 2 周: なし。**選定 = (ii)**。README / getting-started / index の
+Card は「`maruhi sync`」に。
+
+**L. テスト** — 列挙: (i) `apps/site/test/unit/shims` の偽 CLI を CLI テストから使う / (ii) **偽 `ProcessRunner`(stdin のバイト列を
+記録)+ `bun` で起動する実プロセスのプローブ** / (iii) 実物の CLI。第 1 周の新案: レシートの往復(作成 → 新 version → plan)を
+検査するには「値付き pull と push を受理して状態を進めるモック環境」が要る → `test/support/value-env.ts`(meta-server.ts の
+値つき版。チェーン / deks のハンドラは `chain-handler.ts` に共有)(あり)。第 2 周: なし。**選定 = (ii)**(shims は sh ラッパー
+経由でレシピ用。CLI テストでは値の行き先を ProcessRunner の境界で直接見るほうが強い)。固定する性質: 値が argv / stdout / stderr /
+エラー文面に出ない(複数行値の各行も)、stdin の形式、テレメトリ off の env、cwd、production の `--yes`、レシートの差分だけを
+書く、失敗時に届いた分だけ残る、blocked は何も送らない、末尾改行 / 空 / 16 KiB 超、設定の検証 20 態、未知ターゲットは 2、
+壊れたレシートは fail-closed、version 上限の警告。
+
+**M. 監査行 `sync.executed`** — 作らない(仕様改訂なし)。ROADMAP SY2 行の (a) の文面を「監査行は補足 15 X3 (b) として後回し
+(第 1 段はレシート = (a))」に直す。
+
+**N. 名前の対応付けと除外** — 名前はそのまま(rename の対応を持たない)。除外は `"all"` + `exclude`(C)。
+
+**O. Vercel 固有** — `--force` 常用(upsert — 窓なし)、`sensitive: false` で `--no-sensitive`、`env update` は使わない(`--force` の
+upsert で足りる)、`--non-interactive` 常時、`project` / `scope` / `gitBranch` は options。
+
+**新たに出た裁定点**: (P) **plan は復号しない**が値付き pull を使う(前提の確認 (3) — メタデータのみ pull に version が無い)。
+`var.read` 監査行は plan でも記録される。第 1 周の新案: 暗号文長 − 16(GCM タグ)で平文長を出し、size / 空の制約を plan で示す
+(あり — 内容の制約〔末尾改行〕は apply で)。(Q) **required の完全性**(M5): required の宣言だけで値が無い変数が選択にあれば
+`run` と同じ `enforceDeclaredPresence` で止め(結びの文だけ「Nothing was sent」)、required の active が選択に無ければ Warning。
+(R) **apply の順序**: レシート → 復号 → plan → 制約検査(全件。1 件でも駄目なら何も送らない)→ production の `--yes` →
+ベンダー呼び出し(書き込み → 削除)→ レシート → 報告。
+
+**検証(2026-09-06)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段(CLI 931 件・site-unit 24 件)。`--help` golden の更新
+(sync / sync plan / sync apply の 3 段 + root の一覧)と `message-style.test.ts`。`apps/site` の `validate --strict` / `build` / `e2e`。
+実測: wrangler 4.128.0 の `secret bulk --help`(リポジトリのピン)、Vercel CLI 59.11.7(scratchpad — 版・実装とも SY1 と不変)。
+確認できなかったこと: 実アカウントでの通し・macOS のパイプ容量(16 KiB の上限は保守側の推定)・`WRANGLER_LOG_PATH` のデバッグログ
+の監査(D3 — 据え置き)。
+
+**改訂 1(2026-09-07、Cursor Bugbot〔981312d〕)**: (1) `loadReceipt` が有界再同期で前進した後も pull 前のビューを返しており、
+レシートの push が古いビューから始まっていた(push 自身の再同期で救われるが、pull → 書き込みの他の経路は前進したビューを
+引き継ぐ規律)。`pullVariables` の返り値に `verified` を足し、`loadReceipt` はそれを返す。apply のレシート push は同期元の pull で
+さらに前進したビューから始める。(2) `Bun.spawn` は cwd の不在(ENOENT)・非ディレクトリ(ENOTDIR)でも throw し、実行体の不在と
+同じ「未導入」の文面になっていた。spawn の前に cwd を `stat` し、cwd の問題はそれとして名指しする(「Fix the target's cwd in the
+sync config」)。実行体の不在の文面には OS のエラーコードだけ添える。プローブに cwd 不在の態を追加。(3) wrangler は JSON を受け取る
+ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `\\` / `\n`)で現れ、素の断片だけの伏せ字化を
+すり抜けた。断片ごとに `JSON.stringify` した形も伏せる(単体テストで固定)。
+
+**改訂 2(2026-09-07、pullfrog の初回レビュー〔981312d〕)**: (1) `maruhi.sync.json` は秘密を含まないが**平文の行き先を決める**
+ファイル(`command` / `cwd`)であることを docs に 1 文足し(「CI の workflow と同じ目で差分を見る」)、`apply` が使う実行体と
+ディレクトリを出力に 1 行残す(「Running vercel in <cwd>」)。`command` / `cwd` の制限はしない(`node_modules/.bin/wrangler` が
+正当な用途)。(2) 同期先で先に消された名前をレシートが持ち続けると、`vercel env rm` が失敗し続けて apply が詰まる(同期先を
+読み戻さない設計の帰結)。削除の失敗を警告に格下げして「消えた」ことにする案は、ネットワーク起因の失敗でも消すべき秘密が
+同期先に残るので採らない。**致命のまま、削除の失敗の文面にレシートの作り直し(`maruhi var rm sync-receipt:<target>`)の
+案内を足す**(テストで固定)。`vercel env rm` の不在名の終了コードは人間タスク(実アカウント)で確かめる。(3) `buildInvocations`
+は UTF-8 でない値を `""` に畳んでいた(prepareWork が先に弾くので到達しないが、空の秘密を黙って書く最悪の形)→ 内部不整合
+として throw(文面は値も名前も運ばない。単体テストで固定)。(4) 捕捉出力の上限は UTF-16 の文字数で数えていたので
+`EXEC_OUTPUT_CAP_CHARS` に改名し、「表示の上限であって記憶量の上限ではない(全出力を読んでから切る)」と正直に書く。
+(5) テストの `.replace("1 to add", "0 to add")` をリテラルに。(6) `loadReceipt` の「前進したビューを返す」は改訂 1 で実装済み。
+
+**改訂 3(2026-09-07、pullfrog の差分レビュー〔12519d0〕)**: 改訂 2 の「レシートを作り直す」案内は、最初の削除で止まった
+残りの(未試行の)削除も忘れさせる(作り直したレシートには消す名前が無い)。削除の失敗の文面に、未試行の名前を添えて
+「先に同期先で手で消す」と言う(テストで固定 — 2 つ目の削除が呼ばれていないことも断言)。
+
+**改訂 4(2026-09-07、Cursor Security Agent〔367acd2〕)**: 捕捉したベンダー出力を `live.ts` が**伏せる前に**末尾 64 K 文字で
+切っていた。切れ目にかかった値の後半は断片(値・各行・JSON 逃がし形)のどれとも一致せず、失敗時の表示にそのまま残る
+(Workers の値は 64 KiB 近くまであり、wrangler が本文を echo すれば起きうる)。候補: (i) 切るのを伏せた後に移す(`exec` は全出力を
+そのまま返し、`scrubVendorOutput` が伏せてから末尾 64 K 文字 → 20 行)/ (ii) `live.ts` で行境界に揃えて切る(切れ目の直後の
+改行までを捨てる — 各行の断片で伏せられる)/ (iii) `exec` に伏せ字化の関数を渡す。(iii) は `live.ts` に値を持ち込む層の混線で
+棄却、(ii) は行構造の偶然に頼る(`\r` だけの区切りや改行を含まない巨大出力で保証が崩れる)。**(i) を採る**: 「秘密を含みうる文字列は
+伏せてから切る」という一般則そのもので、記憶量は元から全出力を読んでいたので変わらない(改訂 2 で正直に書いた通り)。
+`EXEC_OUTPUT_CAP_CHARS`(run.ts)は sync-exec.ts の非公開 `SHOWN_TAIL_CHARS` に移り、`ExecOutcome.output` の JSDoc は
+「切らずに丸ごと。伏せてから切る」に。固定: 単体テストは値の 20 文字目に切れ目が来る長さの出力で後半が残らないことを、実プロセスの
+プローブは 70,000 文字の行が丸ごと返ることを断言する。
+
+**第 2 段以降への申し送り**: (1) http ドライバ(CI と未導入時。通信先の増加は hosted-design.md §5-1 の線引きで裁定)、(2) CI での
+`sync`(署名鍵が無いのでレシート無しの再適用 = P3。`ci run` の子は `MARUHI_*` を持たない)、(3) M1(`env rotate` がレシートを
+進める)、(4) `sync init`、(5) 全ターゲット一括の plan(`--all`)、(6) autoSync / push 時同期 / `gh workflow run`、(7) gh プリセット
+(SY5 — 宣言だけで載る形は確認済み)、(8) Vercel の 16 KiB 上限は macOS の実測後に見直す。
+
+---
+
 ---
 
 ## 4. 上流ローテーション

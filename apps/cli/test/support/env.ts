@@ -26,13 +26,21 @@ import {
   tokenEntryName,
 } from "../../src/keychain.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "../../src/pins.ts";
-import { ProcessRunner } from "../../src/run.ts";
+import { type ExecInput, type ExecOutcome, ProcessRunner } from "../../src/run.ts";
 import type { TestUser } from "./crypto.ts";
 
 /** One recorded child-process invocation. */
 export interface RunnerCall {
   readonly command: readonly string[];
   readonly extraEnv: Readonly<Record<string, string>>;
+}
+
+/** One recorded vendor-CLI invocation (`maruhi sync` — stdin is what left maruhi). */
+export interface ExecCall {
+  readonly command: readonly string[];
+  readonly cwd: string;
+  readonly extraEnv: Readonly<Record<string, string>>;
+  readonly stdin: Uint8Array;
 }
 
 /** A fully in-memory test environment for driving `runCli`. */
@@ -42,6 +50,8 @@ export interface TestEnv {
   readonly logs: string[];
   readonly errors: string[];
   readonly runnerCalls: RunnerCall[];
+  /** ベンダー CLI の駆動記録(sync — argv / cwd / env / stdin)。 */
+  readonly execCalls: ExecCall[];
   readonly configPath: string;
   /** ローカル床(§6.3)のディレクトリ(<configDir>/floor)。 */
   readonly floorDir: string;
@@ -73,6 +83,11 @@ export interface TestEnv {
   setColor(enabled: boolean): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
+  /**
+   * ベンダー CLI の駆動結果を偽装する(既定は exit 0・出力なし)。呼び出しごとに
+   * 判定できるよう関数で受ける(N 回目だけ失敗させる等)。
+   */
+  setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome): void;
   /** openBrowser の成否を偽装する(既定は成功)。 */
   setBrowserOpenSucceeds(succeeds: boolean): void;
   /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
@@ -93,6 +108,11 @@ export interface TestEnv {
   breakConfigLoadWithDefect(): void;
 }
 
+/** 既定のベンダー CLI の応答(成功・出力なし)。 */
+function execSucceeds(): ExecOutcome {
+  return { exitCode: 0, output: "" };
+}
+
 export async function makeTestEnv(): Promise<TestEnv> {
   const configDir = await mkdtemp(join(tmpdir(), "maruhi-cli-test-"));
   const configPath = join(configDir, "config.json");
@@ -100,6 +120,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const logs: string[] = [];
   const errors: string[] = [];
   const runnerCalls: RunnerCall[] = [];
+  const execCalls: ExecCall[] = [];
+  let execHandler: (call: ExecCall, index: number) => ExecOutcome = execSucceeds;
   const envVars = new Map<string, string>();
   const prompts: string[] = [];
   const promptResponses: (string | (() => string))[] = [];
@@ -221,6 +243,19 @@ export async function makeTestEnv(): Promise<TestEnv> {
           runnerCalls.push({ command, extraEnv });
           return runnerExitCode;
         }),
+      exec: (input: ExecInput) =>
+        Effect.sync(() => {
+          // 偽の子プロセス: stdin に届いたバイト列を記録する(値がどこへ行ったかの
+          // 検査材料。本番の live.ts では Bun.spawn の stdin)
+          const call: ExecCall = {
+            command: input.command,
+            cwd: input.cwd,
+            extraEnv: input.extraEnv,
+            stdin: Redacted.value(input.stdin),
+          };
+          execCalls.push(call);
+          return execHandler(call, execCalls.length - 1);
+        }),
     }),
     FetchHttpClient.layer,
   );
@@ -231,6 +266,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     logs,
     errors,
     runnerCalls,
+    execCalls,
     configPath,
     floorDir,
     pinsDir,
@@ -263,6 +299,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setRunnerExitCode(code) {
       runnerExitCode = code;
+    },
+    setExecHandler(handler) {
+      execHandler = handler;
     },
     setBrowserOpenSucceeds(succeeds) {
       browserOpenSucceeds = succeeds;

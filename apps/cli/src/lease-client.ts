@@ -48,7 +48,7 @@ import { cliError, type CliError } from "./errors.ts";
 import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
 import { verifyChainSnapshot, type VerifiedProject } from "./sync.ts";
-import { type PulledWire, verifyLeaseDistribution } from "./values.ts";
+import { type PulledWire, type VerifiedPulledValue, verifyLeaseDistribution } from "./values.ts";
 
 /** リース応答のワイヤ形(api-schema の LeaseResponseSchema の構造型)。 */
 export interface LeaseResponseWire {
@@ -307,28 +307,47 @@ export function verifyLeaseResponse(input: {
     });
     // 復号(run / rotate と同じ decryptVerifiedValue — 復号文脈は検証済み
     // 座標から組み、値の epoch に対応するラップの欠けは硬い失敗)
-    const variables: DecryptedVariable[] = [];
-    for (const variable of distribution.variables) {
-      const plaintext = yield* decryptVerifiedValue({
-        verified,
-        environmentId: input.environmentId,
-        variable,
-        deksByEpoch,
-        chainEpoch,
-      });
-      variables.push({
-        variableId: variable.variableId,
-        name: variable.name,
-        version: variable.version,
-        epoch: variable.epoch,
-        varType: variable.schema?.varType ?? "",
-        value: plaintext,
-      });
-    }
+    const variables = yield* decryptDistributed({
+      verified,
+      environmentId: input.environmentId,
+      variables: distribution.variables,
+      deksByEpoch,
+      chainEpoch,
+    });
     return {
       variables,
       declared: toDeclaredVariables(distribution.declared),
       warnings: distribution.warnings,
     };
   });
+}
+
+/** 検証済み配布値をすべて復号する(pull.ts の pullVariables と同じ材料形へ)。 */
+function decryptDistributed(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: EnvironmentId;
+  readonly variables: readonly VerifiedPulledValue[];
+  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
+  readonly chainEpoch: number;
+}): Effect.Effect<readonly DecryptedVariable[], CliError> {
+  return Effect.forEach(input.variables, (variable) =>
+    Effect.map(
+      decryptVerifiedValue({
+        verified: input.verified,
+        environmentId: input.environmentId,
+        variable,
+        deksByEpoch: input.deksByEpoch,
+        chainEpoch: input.chainEpoch,
+      }),
+      (plaintext): DecryptedVariable => ({
+        variableId: variable.variableId,
+        name: variable.name,
+        version: variable.version,
+        epoch: variable.epoch,
+        varType: variable.schema?.varType ?? "",
+        required: variable.schema?.required ?? false,
+        value: plaintext,
+      }),
+    ),
+  );
 }
