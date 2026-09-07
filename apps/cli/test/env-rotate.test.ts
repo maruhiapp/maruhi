@@ -4333,6 +4333,51 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
+  it("レシート環境の未対応レイアウト(誠実な破壊様式)は証拠ではなく、後始末の警告に留まる(pullfrog 指摘)", async () => {
+    const receipt = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1, API_KEY: 1 },
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      // この CLI が知らない layoutVersion(将来の CLI が書いたステートメント — v2 欄は
+      // 揃っている)。署名検証より前に弾かれる
+      receipts: [
+        {
+          ...receipt,
+          statement: {
+            ...receipt.statement,
+            layoutVersion: 3,
+            varType: "",
+            required: false,
+            description: "",
+          },
+        },
+      ],
+    });
+
+    // モックのマニフェストは元のステートメントから組む(モック側の整形が未知の
+    // レイアウトで転ばないように)。CLI はマニフェスト段より前の検証段で弾く
+    fixture.receipts.manifest = await manifestFor({
+      projectId: chainWithReceipts.projectId,
+      environmentId: RECEIPTS_ENV,
+      epoch: 1,
+      issuer: owner,
+      head: headOf(chainWithReceipts, chainWithReceipts.entries.length),
+      envStatement: receiptsStatement,
+      statements: [receipt.statement],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.errors.join("\n")).toContain("could not be advanced (");
+    expect(fixture.env.errors.join("\n")).toContain("This is not a tampering indication");
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
   it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
     const fixture = await startFixture({
       server: {

@@ -142,7 +142,17 @@ export interface PulledWire {
 type VerifyOutcome<T> =
   | { readonly kind: "ok"; readonly value: T }
   | { readonly kind: "future" }
-  | { readonly kind: "rejected"; readonly message: string };
+  | {
+      readonly kind: "rejected";
+      readonly message: string;
+      /**
+       * 証拠(署名済み配布データとチェーン公証・座標の矛盾 — 再実行では解消しない)か。
+       * false は「誠実な破壊様式」= UnsupportedMetaLayout(クライアント更新が要る —
+       * CRYPTO_SPEC §4.2 / 裁定 CR)だけで、改ざん疑いの分類に潰さない
+       * (checkpoint-integrity.ts の rejected と同じ形)。
+       */
+      readonly evidence: boolean;
+    };
 
 /** 申告 AAD の座標成分が期待座標(検証済み genesis / 要求 env / 応答外側 id)と一致するか(§6.3-5)。 */
 function coordinatesMatch(
@@ -193,6 +203,8 @@ function failureOutcome<T>(
   if (error.kind === "UnsupportedMetaLayout") {
     return {
       kind: "rejected",
+      // 誠実な破壊様式(クライアント更新が要る)— 改ざんの証拠ではない(裁定 CR)
+      evidence: false,
       message: `${label} uses statement layout version ${error.layoutVersion ?? "(unknown)"}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
     };
   }
@@ -201,6 +213,7 @@ function failureOutcome<T>(
   }
   return {
     kind: "rejected",
+    evidence: true,
     message: `Verification of ${label} failed (reason=${error.reason ?? error.kind}). It may have been replaced or forged by the server`,
   };
 }
@@ -341,7 +354,7 @@ async function verifyVariableStatement(
 > {
   const layout = wireStatementLayoutOf(statement);
   if (layout === null) {
-    return { kind: "rejected", message: partialLayoutMessage(label) };
+    return { kind: "rejected", message: partialLayoutMessage(label), evidence: true };
   }
   const outcome = await verifyStatement(
     verified,
@@ -370,12 +383,14 @@ async function verifyOne(
   if (!coordinatesMatch(verified, environmentId, variable)) {
     return {
       kind: "rejected",
+      evidence: true,
       message: `Variable ${displayText(variable.variableId)} declares AAD coordinates that do not match the requested context (an inconsistent server response)`,
     };
   }
   if (statement.environmentId !== environmentId || statement.variableId !== variable.variableId) {
     return {
       kind: "rejected",
+      evidence: true,
       message: `Variable ${displayText(variable.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
     };
   }
@@ -394,6 +409,7 @@ async function verifyOne(
     // (declared だけが正当な値なし状態 — §6.3。値の同梱はその逆の矛盾)
     return {
       kind: "rejected",
+      evidence: true,
       message: `Variable ${displayText(variable.variableId)} was served a ${statement.status} statement together with a value (a value must only accompany an active statement — an inconsistent server response)`,
     };
   }
@@ -481,6 +497,7 @@ async function verifyEnvironmentStatement(
   if (statement.environmentId !== environmentId) {
     return {
       kind: "rejected",
+      evidence: true,
       message: `The environment statement's coordinates do not match the requested environment ${environmentId} (possible transplantation)`,
     };
   }
@@ -497,6 +514,7 @@ async function verifyEnvironmentStatement(
   if (statement.status !== "active") {
     return {
       kind: "rejected",
+      evidence: true,
       message: `Environment ${environmentId} was served a deleted statement (distribution of a deleted environment — an inconsistent server response)`,
     };
   }
@@ -522,12 +540,14 @@ async function verifyDeletedStatements(
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Deleted variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested environment`,
       };
     }
     if (seen.has(statement.variableId) || liveIds.has(statement.variableId)) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Variable ${displayText(statement.variableId)} was served as both live (active or declared) and deleted (an unauthorized undeletion = equivocation in transit)`,
       };
     }
@@ -535,6 +555,7 @@ async function verifyDeletedStatements(
     if (statement.status !== "deleted") {
       return {
         kind: "rejected",
+        evidence: true,
         message: `A non-deleted statement was served in the deleted list: ${displayText(statement.variableId)}`,
       };
     }
@@ -603,12 +624,14 @@ async function verifyVariableStatements(
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
       };
     }
     if (seenIds.has(statement.variableId)) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
       };
     }
@@ -625,6 +648,7 @@ async function verifyVariableStatements(
     if (statement.status === "deleted") {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Variable ${displayText(statement.variableId)} was served a deleted statement in the live list (a possible unauthorized undeletion)`,
       };
     }
@@ -662,12 +686,14 @@ async function verifyDeclaredStatements(
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Declared variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
       };
     }
     if (seenIds.has(statement.variableId) || activeIds.has(statement.variableId)) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
       };
     }
@@ -677,6 +703,7 @@ async function verifyDeclaredStatements(
       // 欠けている(値の欠落 G6 — §6.3 の値配布要求)。deleted の混入も拒否
       return {
         kind: "rejected",
+        evidence: true,
         message:
           statement.status === "active"
             ? `Variable ${displayText(statement.variableId)} has a verified active statement, but the value-bearing response carries no value for it (a value omission — CRYPTO_SPEC §6.3: only declared variables legitimately have no value)`
@@ -720,6 +747,7 @@ async function verifyActiveVariables(
     if (seenIds.has(variable.variableId)) {
       return {
         kind: "rejected",
+        evidence: true,
         message: `Duplicate variable IDs within one response (an inconsistent server response): ${variable.variableId}`,
       };
     }
@@ -751,8 +779,11 @@ function verifyStage<T>(
     });
     if (outcome.kind === "rejected") {
       // 配布された署名済みデータが検証を通らない = 証拠(再実行では解消しない —
-      // errors.ts の evidence の定義。後始末の警告に畳まれてはならない — PR #156 改訂 6)
-      return yield* Effect.fail(evidenceError(outcome.message));
+      // errors.ts の evidence の定義。後始末の警告に畳まれてはならない — PR #156 改訂 6)。
+      // 例外は誠実な破壊様式(UnsupportedMetaLayout — 改訂 7)
+      return yield* Effect.fail(
+        outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
+      );
     }
     return outcome.kind === "future"
       ? ({ kind: "future" } as const)
@@ -796,6 +827,8 @@ function verifyManifestStage(input: {
   }
   return verifyStage(
     () =>
+      // マニフェストの拒否は署名済み配布データの矛盾 = 証拠(manifest.ts の結果型は
+      // evidence を持たないので、ここで付ける — 誠実な破壊様式はこの段には無い)
       verifyDistributedManifest({
         verified: input.verified,
         environmentId: input.environmentId,
@@ -806,7 +839,9 @@ function verifyManifestStage(input: {
           sigHashHex: input.environment.metaSigHashHex,
         },
         floorManifest: input.floorManifest,
-      }),
+      }).then((outcome) =>
+        outcome.kind === "rejected" ? { ...outcome, evidence: true } : outcome,
+      ),
     "Environment-manifest verification",
   );
 }

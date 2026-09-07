@@ -1338,6 +1338,14 @@ chain divergence or forgery」)、メタデータ pull の床違反、checkpoint
 副作用は改訂 3 と同じ範囲(`settlePass` の分類)。態を追加: レシート環境の値署名を壊す = 1・「could not be advanced」無し・書き込み 0・
 アンカーの note は出る。
 
+**改訂 7(2026-09-07、pullfrog の差分レビュー〔538d751〕)**: 改訂 6 の一括分類が `UnsupportedMetaLayout`(サポート範囲を超える
+layoutVersion — 裁定 CR で「改ざん疑いに潰さない誠実な破壊様式」と決めた形。文面も「This is not a tampering indication — update
+the maruhi CLI」)まで証拠に巻き込み、`settlePass` では「investigate the server's responses」、後始末では失敗に化けていた →
+`VerifyOutcome` の rejected に `evidence: boolean` を持たせ(checkpoint-integrity.ts と同じ形)、UnsupportedMetaLayout だけ false、
+`verifyStage` がそれで `evidenceError` / `cliError` を選ぶ。`partialLayoutMessage`(v2 欄の部分欠落 = 「an inconsistent server
+response」)は配布の自己矛盾なので証拠側のまま。態を追加: レシート変数のステートメントの layoutVersion を 3 にする = 警告・0・
+書き込み 0・「This is not a tampering indication」。
+
 **第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
 未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは
 補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。(2) 全ターゲット一括の plan(`--all`)。(3) SY3 =
