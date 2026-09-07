@@ -166,6 +166,14 @@ export function decryptVerifiedValue(input: {
   });
 }
 
+/** 復号する変数の絞り込み(`select` 省略 = 全件)。検証済みの集合にだけ掛ける。 */
+function selectedVariables(
+  variables: readonly VerifiedPulledValue[],
+  select: ((name: string) => boolean) | undefined,
+): readonly VerifiedPulledValue[] {
+  return select === undefined ? variables : variables.filter((variable) => select(variable.name));
+}
+
 /**
  * Pulls one environment, verifies every value's write signature and every
  * metadata statement (§4.1 / §4.2 — before any decryption; names come only
@@ -184,6 +192,12 @@ export function pullVariables(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** ローカル床(§6.3 — 検査と検証成功後の原子コミット)。 */
   readonly floor: FloorHandle;
+  /**
+   * 復号する変数を名前で絞る(`maruhi sync` の統合トークン — 環境の他の変数の
+   * 平文をメモリに作らない)。検証(値署名・ステートメント・ラップ)は環境全体に
+   * 対して変わらず行う。省略 = 全 active 変数を復号する。
+   */
+  readonly select?: (name: string) => boolean;
 }): Effect.Effect<PulledVariables, CliError> {
   return Effect.gen(function* () {
     // (1) 値署名の検証(復号より前)。future head なら有界再同期で前進した
@@ -224,7 +238,7 @@ export function pullVariables(input: {
           ];
 
     const results: DecryptedVariable[] = [];
-    for (const variable of pulled.variables) {
+    for (const variable of selectedVariables(pulled.variables, input.select)) {
       // 同名 active の重複はステートメント検証(values.ts)が解決拒否済み
       // (§4.2 — `maruhi run` の環境変数注入が黙って片方を潰す経路はない)
       const plaintext = yield* decryptVerifiedValue({

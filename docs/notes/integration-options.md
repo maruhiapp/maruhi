@@ -966,6 +966,208 @@ sync config」)。実行体の不在の文面には OS のエラーコードだ�
 進める)、(4) `sync init`、(5) 全ターゲット一括の plan(`--all`)、(6) autoSync / push 時同期 / `gh workflow run`、(7) gh プリセット
 (SY5 — 宣言だけで載る形は確認済み)、(8) Vercel の 16 KiB 上限は macOS の実測後に見直す。
 
+#### 第 2 段(2026-09-07)
+
+第 1 段の裁定 A の段割りのうち**第 2 段**を実装した。設計は §3 冒頭「同期の最終形」の表を正とし、蒸し返していない。段の中身の
+入れ替えはしていない(4 項目のうち M1 だけを PR 単位で後ろへ送った — 裁定 A′)。各裁定点は第 1 段と同じループ(候補 3 つ以上 →
+上位互換 / 銀の弾丸 → 新案が出ない周が 1 回あれば終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(境界値・環境差・
+失敗時の残骸・応答本文に何が混ざるか)を問うた。
+
+**前提の確認(実物・実装で確かめた事実。日付はすべて 2026-09-07)**:
+(1) **wrangler 4.128.0 `secret bulk`**(`apps/server/node_modules/wrangler/wrangler-dist/cli.js`): `putBulkSecrets` =
+`PATCH /accounts/{accountId}/workers/scripts/{scriptName}/secrets-bulk`、`Content-Type: application/merge-patch+json`、本文
+`{"secrets": {NAME: {"name","text","type":"secret_text"} | null}}`(null = 削除)、1 リクエスト。`getLegacyScriptName` =
+`args.name && args.env ? \`${name}-${env}\` : args.name ?? config.name`。**Worker 不在の判定は `isWorkerNotFoundError` =
+エラーコード 10007 / 10090**(プロンプトが挙げた 10215 は `VERSION_NOT_DEPLOYED_ERR_CODE` で、`secret put` の「最新版が
+未デプロイ」の別経路)。不在なら wrangler は draft Worker(`PUT …/scripts/{name}` に空の fetch ハンドラ)を作ってから再送する。
+envelope は `{success, errors[{code,message}], messages, result}` で、`fetchResultBase` は `success` だけを見る。429 は
+`Retry-After` を読んで `retryOnAPIFailure` が待つ。API の base は `https://api.cloudflare.com/client/v4`。account ID は wrangler の
+設定 / `CLOUDFLARE_ACCOUNT_ID` / メンバーシップ API から解決する(http ドライバは持たない — 裁定 G)。
+(2) **Vercel CLI 59.11.7**(scratchpad へ `bun add vercel@latest`。**版は SY1 / 第 1 段と同じ 59.11.7**): `env add --force` =
+`addEnvRecord` → `POST /v10/projects/{projectId}/env?upsert=true`、本文 `{type, key, value, target[], customEnvironmentIds?,
+gitBranch?, visibility?}`。`type` は `resolveFinalType`: development を含めば "encrypted"、`--no-sensitive`(かつチームポリシー
+なし)で "encrypted"、それ以外は "sensitive"。`env rm` = `getEnvRecords`(`GET /v10/projects/{id}/env?target=&gitBranch=` — `decrypt`
+は渡さない)で `key` を突合して id を選び `DELETE /v10/projects/{id}/env/{envId}`。team は `client.fetch` が `?teamId=` を付ける
+(`GLOBAL_CLI_QUERY_PARAMS`)。`client.fetch` は `retryAfterMs` があれば `sleep(retryAfterMs + 30 s の乱数)` で再試行、4xx は bail。
+**公開 REST docs**(`vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables`、2026-09-07 更新)は同じ
+エンドポイントに**配列**(一括)を受け、応答は `{created, failed[{error:{code,message,key,…}}]}`(201)。値の上限は
+`vercel.com/docs/environment-variables`: **64 KB / デプロイの合計**(edge runtime は 5 KB / 変数)。1 リクエストの件数上限は
+docs に無い。
+(3) **Bun 1.4.0 の `fetch` は `HTTPS_PROXY` / `https_proxy` を見る**(実測: 到達不能な proxy を指すと `ConnectionRefused`)。
+Effect の `FetchHttpClient.layer` は `globalThis.fetch` なので同じ。CI の proxy 環境で追加設定は要らない。
+(4) **Effect `HttpClientRequest.bearerToken` は `Redacted` をそのまま受ける**(api.ts と同じ)。http ドライバはトークンを剥がさずに
+ヘッダーへ載せられる。`HttpClient.execute` は非 2xx でも応答を返す(status 分岐は自前)。
+(5) **CI の資格**: `ci run` は `verifyLeaseResponse` の材料(復号済み変数 + declared)しか持たず、`pushVariable` が要求する
+master sig 鍵を持たない(第 1 段の前提の確認 (1))。リースは環境単位(`POST /projects/:id/environments/:env/lease`)で、
+**同一 OIDC トークンで複数環境をリースする場合は全リクエストで同一の一時鍵を用いる義務**(AUTH_SPEC §14-1)。
+(6) **既存の剥がし場所**: `ci-run.ts: 1`(oidcToken のワイヤ境界)。lease の前段を `ci-lease.ts` に移したので棚卸し表の
+キーも移る。`sync-exec.ts` の `scrubVendorOutput` に伏せる断片としてトークンを渡すのに 1 か所増える。
+
+**A′. 第 2 段の切り方(PR 単位と順序)** — 列挙: (i) 4 項目を 1 本 / (ii) 2a = http + CI、2b = M1 + `sync init` / (iii) 2a = http +
+`sync init`、2b = CI + M1 / (iv) 1 項目 1 PR(4 本)。第 1 周の新案: **(v) 2a = http + CI + `sync init`、2b = M1 だけ**(あり —
+4 項目のうち env-rotate.ts〔2,442 行〕に触るのは M1 だけで、独立レビューしたい対象を正確に 1 本へ切り出せる。残る 3 項目は
+すべて sync-* / ci-* のモジュールと同じ docs ページ〔deploy-targets〕を触るので、分けると同じ表と同じ節を 2 度書き換える)。
+第 2 周(壊れ方): (ii) / (iii) は `sync init` が http のキー(`driver` / `token`)を知らないまま先に出て、http が来た時点で
+生成物の形が変わる。(iv) は同じ docs ページへ 3 本の PR が競合する。(v) は 2a が大きいが、3 項目は「同じ設定の型の拡張」で
+一体に読める(なし)。**選定 = (v)**。棄却: (i)(env-rotate.ts の独立レビューが第 1 段の裁定 A の理由)、(ii) / (iii)(init が
+http で書き直しになる)、(iv)(docs の競合)。ROADMAP の SY2 行に「第 2 段 = 2a(完了)/ 2b(未)」と書く。
+
+**H. 設定の版** — 列挙: (i) `version: 1` のまま新キーを足す(第 1 段の CLI は「未知のキー」として拒否) / (ii) `version: 2`
+(第 1 段の CLI は「unsupported config version」として拒否) / (iii) 1 と 2 の両方を受ける。第 1 周の新案: 第 1 段の CLI から
+見た違いは**拒否文の文面だけ**(どちらも fail-closed で、第 1 段の設定は (i) なら無変更で読める)。第 1 段は 1 週間前で、
+ベータ前 = 配布物を持つ利用者がいない。`version` は「既存キーの意味が変わったときにだけ上げる互換線」と定義すれば、
+版を上げる理由が無い(あり)。第 2 周(壊れ方): 第 2 段の設定を第 1 段の CLI に食わせると `targets.web has unknown keys
+(driver, token)` — 読者は「知らないキー = CLI が古い」と分かる。第 1 段の設定は第 2 段の CLI でそのまま通る(テストで
+固定)(なし)。**選定 = (i)**。docs の表に「version は両リリースとも 1。古い CLI は新キーを unknown keys として拒む」と書く。
+
+**B. http ドライバのインターフェースと宣言的プリセット** — 設定での表し方: (a) ターゲットに `driver: "exec" | "http"`(既定
+exec。プリセット id は共通) / (b) 別のプリセット id(`vercel-http`) / (c) `token` の有無で推定。第 1 周の新案: レシートは
+プリセット id だけを持つので、(a) なら**ドライバを切り替えてもレシートが引き継がれる**(同じ同期先に同じ名前・version を
+届けた事実はドライバに依らない)。(b) は `decodeReceipt` の閉集合が割れ、docs の表も 2 倍になる(あり)。第 2 周(壊れ方):
+(c) は「キーを 1 つ足しただけで平文の行き先が CLI から API に変わる」形で、`maruhi.sync.json` は「平文の行き先を決める
+ファイル」(第 1 段 改訂 2)なので明示にする。(a) では `cwd` / `command` は exec 限定、`token` は http 限定として**逆の
+組み合わせを拒否**する(黙って無視すると「設定したつもりの cwd が効いていない」を作る)。オプションの宣言はドライバごとに
+持つ(Workers の http は wrangler の設定ファイルを読めないので `accountId` / `name` が必須、`config` は無意味 → 拒否。
+Vercel の http は `projectId` 必須、`project` / `scope`〔CLI のリンク解決〕は無意味 → 拒否)(なし)。**選定 = (a)**。
+宣言の中身: `HttpPreset` = `host`(固定)・`batch`・`write`(method / path / query / contentType / body / entry / entries の
+並べ方 / deletedEntry)・`delete`(`in-write` = merge-patch の null / `lookup` = 一覧で id を引いて DELETE)・`response`
+(閉集合 `cloudflare-v4` / `vercel-env`)・`constraints`・`options`・`derive`(スクリプト名の合成・Vercel の type — 値には
+触れない)・`tokenHint`。**型で決めたこと**: パス / クエリのトークン型 `PathToken` に値・名前のトークンは存在せず、値の
+トークン `{kind:"value"}` は `entry`(本文の 1 変数ぶん)の `EntryToken` にしか無い。単体テストが宣言を走査して固定する
+(exec の argv と同じ姿勢)。`HttpClient` の使い方: `api.ts` は maruhi 専用なので `sync-http.ts` に薄い送信部品(`send`)を
+置き、`HttpClientRequest.make(method)(url, {urlParams}) + bearerToken(Redacted) + setHeader(accept / user-agent) + bodyText`
+→ `client.execute` → `response.text`。リトライ: 通信層の失敗と 429 / 502 / 503 / 504 を最大 3 回、`Retry-After`(秒 /
+HTTP 日付)を 30 秒まで尊重、無ければ 0.5 s から倍々。upsert / 削除は冪等なので再送は安全。`retry.ts` の `retryOnConflict` は
+CAS 競合(再同期 → 再署名)の骨格で、時間待ちのリトライとは形が違うので使わない。`User-Agent` は `maruhi-cli/<CLI_VERSION>`
+(oidc-github.ts の `maruhi-cli` に版を足した形。利用者のデータではなく、ベンダーが流量を帰属させるための識別子)。
+**通信先の増加の位置づけ(hosted-design.md §5-1)**: 「テレメトリ禁止 = クライアント → 外部への送信の禁止」は**利用者に
+ついての情報を、利用者の指示なしに**送ることの禁止。http ドライバは利用者が設定に書いた宛先へ、利用者が `apply` /
+`ci sync` と打ったときにだけ、利用者自身の値を運ぶ。`plan` は触れない。宛先はプリセットが固定し設定で差し替えられない。
+docs の「Vendor CLI telemetry」節に「maruhi が話す相手は maruhi サーバーと、http ドライバで apply したときの設定先だけ」と
+1 文で書いた。第 3 周(壊れ方): Vercel の `created` は**値を echo する**(実物の応答形)→ 成功時は本文を捨て、失敗時は抽出
+した断片(`failed[].error.code / key / message`)だけを `scrubVendorOutput` に通す(値の断片 + トークンの断片 + その JSON
+逃がし形)。Cloudflare の envelope も同じ(`errors[].code / message` + `messages`)。応答が JSON でない(WAF のブロック
+ページ)ときは `HTTP <status>` だけを出す(なし)。
+
+**C. 統合トークンの取り出し** — 列挙: (i) ターゲットに `token: {environment, name}` / (ii) プリセットが変数名を決め
+(`VERCEL_TOKEN`)、ターゲットは環境だけ / (iii) プロジェクト単位の `tokens` 節。第 1 周の新案: 復号の経路は `pullVariables`
+に `select`(名前の述語)を足す(あり — 検証〔値署名・ステートメント・ラップ〕は環境全体に対して変わらず行い、**復号だけを
+1 変数に絞る**。剥がす場所は増えない。`var.read` 監査行は pull 単位で従来どおり)。第 2 周の新案: 同期元と同じ環境に
+トークンを置く形を**許した上で構造で運ばない**(あり — "all" なら `exclude` に無くても除き、明示リストに載っていれば設定の
+誤り。別環境を必須にすると CI のリースが必ず 2 つになり、逆に同一環境を必須にすると `run --env production` がトークンを
+アプリへ注入する)。第 3 周(壊れ方): `echo` で push したトークンは末尾改行を含み、`Authorization` ヘッダーの値に載らない
+(fetch が投げる)→ 送る前に制御文字を検査して変数名だけを言う(`printf %s` を案内)。トークン変数が無ければ push の案内。
+トークンは**送る直前**に取り出す(production の `--yes` が無い・送るものが無い経路では復号しない)。名前の規則は設けない
+(`MARUHI_` 接頭辞は `run` の注入の規則で、トークンは `run` に載せない前提。docs は専用環境を勧める)。最小権限の案内は
+docs(Cloudflare = Workers Scripts: Edit、Vercel = チームにスコープしたトークン + `teamId`)(なし)。**選定 = (i) + select +
+同一環境の構造的除外**。棄却: (ii)(1 プロジェクトに Vercel のトークンが 2 つある形〔チーム違い〕で衝突)、(iii)(節が
+増えるだけで (i) の情報と同じ)。剥がす場所: `Redacted` のまま `bearerToken` に渡すので**ヘッダーで剥がさない**。本文に
+値を置く直前で 1 か所(`sync-http.ts: 1`)、形の検査で 1 か所(`sync-plan.ts` +1)、伏せ字化で 1 か所(`sync-exec.ts` +1)。
+
+**D. CI での `sync`** — コマンドの形: (i) `maruhi ci sync <target>`(`ci run` と同じ明示フラグ + `--config` / `--yes`) /
+(ii) `ci run --sync <target>` / (iii) `sync apply --ci`。第 1 周の新案: リースの前段(一時鍵・OIDC 発行・token-replayed の
+再試行・§9.1 の検証)を `ci-lease.ts` に切り出して `ci run` と共有し、**複数環境を 1 本のトークン・1 つの一時鍵で順に
+リースする**(あり — AUTH_SPEC §14-1 の義務をそのまま形にする。同期元とトークン環境が別なら 2 環境)。第 2 周の新案:
+**レシートを書けないことを型で示す**(あり — `sync-ci.ts` は `sync-receipt.ts` を import せず、署名鍵を受け取らず、要求
+サービス型は `CliIo | ProcessRunner | HttpClient`。plan の芯〔computePlan / prepareWork / runDriver〕は `sync-plan.ts` と共有し、
+レシートは `receipt: null` = 全件 add)。第 3 周(壊れ方): 削除の情報源が無い → **CI は何も削除しない**と docs に明記
+(削除は手元の apply)。CI に TTY は無いが production の `--yes` は**要求する**: 目的は「本番へ書く決定が workflow ファイルに
+見える」ことで、GitHub Environments の required reviewers(補足 15 X4 = SY3)で四眼にする案内を docs に置いた。exec も http も
+CI で使える(exec は wrangler が導入済みのランナー = P3 の形)。`--anchor` は SHOULD のまま。404 の一様応答は
+`LEASE_NOT_FOUND_MESSAGE`(ci-lease.ts)をそのまま使い、文面の `--env` を「the environment in the workflow」に改めた。
+**SY3 との線引き**: 第 2 段 = コマンド + docs「In CI」節の書き換え、SY3 = workflow テンプレート 2 標準形 + 四眼の docs。
+SY3 行の「`maruhi ci run -- maruhi sync <target>` の入れ子」は成り立たない(第 1 段の裁定 G)ので `maruhi ci sync <target>` に
+直した(なし)。**選定 = (i)**。棄却: (ii)(`ci run` は `--` の後ろを実行する契約で、同期は実行ではない)、(iii)(`sync apply`
+はセッション・キーチェーン・床を前提にする経路で、CI モードを混ぜると型の分離が消える)。
+
+**E. M1 — `env rotate` によるレシートの前進** — 第 2 段 2b へ送る(裁定 A′)。本セッションで確かめたこと: (1) `envRotateOp` の
+`reencryptCurrentValues` は受理された自分の書き込みを `written: VerifiedPulledValue[]`(名前・新 version 込み)として持つ
+ので、**候補 (iv)〔変数ごとの新 version を返す〕は追加の往復なしに成立する**。(2) 検証済みビューにもワイヤにも「この version は
+再暗号化で平文は不変」という印は無い(`VerifiedPulledValue` は version / epoch / writer だけ。AUTH_SPEC §12-5 の
+`reencryption` マーカーは受理時の検査で、配布形には残らない)→ 候補 (ii)〔epoch だけ進んだを unchanged 扱い〕は**棄却**
+(値の不変を推定できない)。(3) `alreadyCurrent`(並行 push で既に現エポック)は平文が変わりうるので進めない。(4) 設定は
+cwd 依存で rotate はリポジトリの外からも打たれる → `--config` 明示時のみ進め、無ければ結びで `maruhi sync plan` を案内する形が
+出発点。(5) レシート環境自身のローテーションは、レシート変数の version が進むだけで中身は不変 = 影響なし。2b の裁定録は
+この 5 点から始める。
+
+**F. `sync init`** — 出力先: (i) JSON を stdout(anchor の先例) / (ii) ファイルを書く(既存は拒否) / (iii) `--write` で両方。
+入力: フラグのみ(`<target> --preset --env --receipts [--driver] [--variables] [--exclude] [--production] [--cwd] [--command]
+[--token-env] [--token-name] [--option k=v]… [--project]`) / 対話 / 検証済みビューから環境一覧。第 1 周の新案: **生成物を出す前に
+`parseSyncConfig` に通す**(あり — 往復が構造で保証され、通らなければ理由を添えて書き方の誤り = 2。ネットワークにも
+ファイルにも触れない)。第 2 周(壊れ方): 2 つ目のターゲットの「追記」は既存 JSON の再直列化を伴い、キー順・整形を CLI が
+勝手に変える → 持たない(docs の表で手で足す)。`variables` 省略 = "all" は W3 に反しうる → Note で `exclude` / 明示リストを
+案内。`--production` は true だけ(false は JSON を編集)。対話は TTY 判定と再現性の問題を持ち込むので採らない(なし)。
+**選定 = (i) + フラグのみ + 往復検査**。`--option` は `Flag.atMost(64)` の繰り返し(boolean の宣言は "true" / "false" を写す)。
+
+**G. Vercel / Cloudflare の API 固有** — Cloudflare: account ID は `options.accountId`(必須。`GET /accounts` で引く案は通信と
+権限〔Account Settings: Read〕が増える)。スクリプト名は `derive` で `getLegacyScriptName` の規則を写す。未デプロイ(10007 /
+10090)は **draft Worker を作らず**型付きエラーで `wrangler deploy` を案内(空の Worker を http ドライバが黙って作る形は
+「同期が Worker を作った」を残す)。件数 100 / リクエスト(docs 裏取り済み)。Vercel: 配列 + `upsert=true` で一括、**件数は
+25 / リクエスト**(docs に上限が無いので保守側。総量 64 KB の上限には件数が効かない)、`type` は CLI の `resolveFinalType` を
+写す(development / `sensitive: false` = encrypted、他は sensitive)、`target: [environment]`、`gitBranch`、`teamId` はクエリ。
+削除は一覧(`target` / `gitBranch` で絞る)→ 同名の項目の id を `DELETE`。**一覧に無ければ「既に消えている」として削除済み
+扱い**(exec の `vercel env rm` が不在名で失敗し続ける wart〔第 1 段 改訂 2 / 3〕が http では構造的に消える。一覧は id の
+突合にだけ使い、値は読まない = 一方通行のまま)。DELETE の 404(一覧の直後に並行して消えた)も同じ。`created` の値の echo は
+表示しない。制約: http の Vercel は空値・末尾改行・16 KiB の制約を持たない(CLI の stdin 由来だった)。空文字列を API が
+受けるかは未確認(受けなければ API の失敗として文面に出る)。
+
+**I. テスト** — `test/support/vendor-api.ts`(状態つきの `node:http` — Workers = merge-patch を保存へ適用、Vercel = upsert /
+一覧 / DELETE を状態で、`created` は実物どおり値を echo、`rejectKeys` で部分成功、`override` で 429 / 5xx を差し込む)。
+宛先の差し替えは**製品コードに口を持たず**、`TestEnv.setVendorOrigin(host, origin)` が `HttpClient.mapRequest` で固定ホストを
+偽サーバーへ写す。固定した性質: 値とトークンが URL・クエリ・ヘッダー(Authorization 以外)・stdout・stderr に出ない、本文の形
+(Workers = secrets / Vercel = 配列 + upsert)、スクリプト名の合成、`type` の導出、teamId、削除(null / 一覧 → DELETE、
+production の同名は残す)、429 → 再送、503 × 3 → exit 1 と echo の伏せ字化、10007 の案内、トークン不在 / 改行、同一環境の
+トークンを運ばない、Vercel の部分成功をレシートに割る、403、第 1 段の設定(driver 無し)の後方互換。`ci sync` は `ci-run.test.ts`
+の先例(OIDC 発行 + 実 crypto のリースラップ)で: 2 環境を同じ一時鍵・OIDC 発行 1 回、レシート書き込みゼロ、削除ゼロ、exec
+の stdin、production の `--yes`、フラグ欠落 / project 食い違い = 2、トークン環境の 404 一様応答。`sync init` は往復(JSON →
+`parseSyncConfig`)と usage エラー 6 態。`redacted.test.ts` の棚卸し表: `ci-run.ts` → `ci-lease.ts`、`sync-exec.ts` 3、`sync-http.ts`
+1、`sync-plan.ts` 3。`--help` golden(ci / ci sync / sync / sync init / sync apply の文言)。fallow の複雑度(CRAP > 30)は
+応答の読みとモックのハンドラを関数に割って収めた。
+
+**J. docs** — `deploy-targets.mdx`: 冒頭(2 ドライバ)、「How maruhi sync works」(http の値の経路と応答の扱い)、Set up
+(`maruhi sync init` の例。```sh の禁止パターン検査〔`>` のリダイレクト不可〕があるので stdout をどう保存するかは散文で)、
+config の表(`driver` / `token`、ドライバ別の options、version の互換線)、新節「Without the vendor CLI: the http driver」
+(トークンの作り方と最小権限、専用環境、設定例、Workers / Vercel の違い、リトライ、proxy、失敗表示)、「Receipts」に CI の
+1 点、「In CI」を予告から `maruhi ci sync` の実物へ(リースポリシーの 2 環境・両ドライバ・レシート無し = 削除しない・
+`--yes` と required reviewers・値はログに出ない。workflow テンプレートは SY3 と明記)、「Vendor CLI telemetry」に通信先の
+1 文。`recipes.test.ts` は `maruhi run --env production -- ` で始まるブロックだけを実行し、禁止パターンは全 ```sh に掛かる —
+新しいブロック(`sync init` / `ci sync`)は禁止パターンに触れない。index の Card と README の 1 行を追随。
+
+**検証(2026-09-07)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段(CLI 957 件)。`--help` golden の更新(ci / ci sync /
+sync / sync init / sync apply)と `message-style.test.ts`。`apps/site` の `validate --strict` / `build` / `e2e`。実測: wrangler
+4.128.0 の `putBulkSecrets` / `getLegacyScriptName` / `isWorkerNotFoundError`(10007 / 10090)、Vercel CLI 59.11.7 の
+`addEnvRecord` / `removeEnvRecord` / `getEnvRecords` / `resolveFinalType` / `client.fetch` のリトライ、公開 REST docs(配列と
+`{created, failed}`)、Bun 1.4.0 の `HTTPS_PROXY`。**確認できなかったこと**: 実アカウントでの通し(Cloudflare / Vercel の API
+トークン — 人間タスクに足す)、Vercel の 1 リクエストの件数上限と空文字列の受理、Cloudflare API docs のトークン権限名
+(公開ページは 404 / 権限の記載なし — wrangler と dashboard の表記「Workers Scripts: Edit」に依る)、Cloudflare の
+secrets-bulk が部分失敗を返しうるか(envelope は `success` 1 つなので全か無かとして扱った)。
+
+**改訂 1(2026-09-07、Cursor Bugbot〔abaaf30〕)**: (1) `maruhi ci sync` が `ci run` の必須フラグの文面を流用し、
+「`--env` を渡せ」「config ファイルを読まない」と言っていた(`ci sync` に `--env` は無く、同期設定は読む)→ `requireCiFlag` に
+コマンドを渡し、`ci sync` は「同期設定以外は読まない・環境はターゲットが決める」と言う(テストで固定)。(2) 統合トークンが
+**レシート環境**にあるとき、`openSyncTarget` が同じ環境に 2 つ目の床ハンドルを開いていた(トークンの pull で前進した床を
+レシートの push が知らない)→ 同期元 / レシート環境と同じならその床ハンドルを使う。トークンをレシート環境に置いて apply →
+plan が通る態を足した。
+
+**改訂 2(2026-09-07、pullfrog の初回レビュー〔abaaf30〕)**: (1) Vercel の削除は一覧の**完全性**を仮定していた —
+公開 schema の 200 応答には `{envs, pagination: {count, next, prev}}` の変種があり、続きのページに名前があっても「消えている」
+と読んでレシートから落とす(秘密が同期先に残り続ける、悪い方向の誤り)。候補: (i) `pagination.next` を辿る(パラメータ名を
+docs で確かめられない)/ (ii) **続きがあるのに名前が無ければ fail-closed**(レシートに残し、文面で同期先での手動削除か再 apply を
+案内)。(ii) を採り、宣言に `nextPage: ["pagination", "next"]` を足した。完全な一覧に無い = 削除済み扱いは維持(冪等な削除)。
+(2) `readVercel` は `failed` の**不在**から全件成功を読んでいた(`{}` の 2xx でもレシートに書く)→ 書き込みの 2xx に `created` が
+無ければ「期待した形でない応答」として届いたと読まない(Cloudflare の `success === true` と対称に)。(3) `ci-lease.ts` の
+token-replayed の文面が 2 か所にあった → 定数に。(4) `checkIntegrationToken` は ISO-8859-1 の外の文字も拒む(`Headers` が
+TypeError で落とす経路を型付きエラーに)。(5) docs の `NO_PROXY` は Bun 1.4.0 で実測した(到達不能な proxy + NO_PROXY で到達)
+ので据え置き。
+
+**第 2 段 2b 以降への申し送り**: (1) **M1**(裁定 E の 5 点から。`envRotateOp` の `written` を返り値に載せ、`env rotate
+--config` があれば回した環境を同期元とするターゲットのレシートを再暗号化を完了した変数だけ新 version へ書く。`alreadyCurrent` /
+`remaining > 0` / resumed / レシート環境自身 / 二重書きの無害性 / 900 警告を早める点をテストで固定。docs「Receipts」1 点目を
+実挙動へ)、(2) 全ターゲット一括の plan(`--all`)、(3) 第 3 段(autoSync / push 時同期 / `gh workflow run`)、(4) SY3 = workflow
+テンプレート 2 標準形 + 四眼の docs(`maruhi ci sync` の上に載る)、(5) SY4 Netlify(http プリセットの宣言 1 つ + モック)、
+(6) SY5 gh プリセット(exec の宣言だけで載る形は確認済み)、(7) Vercel の 16 KiB(exec)は macOS の実測後に見直す、
+(8) http の Vercel で空文字列が拒否されるなら `constraints.nonEmpty` を宣言に足す(人間タスクの結果待ち)。
+
 ---
 
 ---

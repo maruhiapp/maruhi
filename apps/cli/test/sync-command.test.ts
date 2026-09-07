@@ -290,7 +290,7 @@ describe("maruhi sync plan", () => {
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
     expect(out).toContain(
-      "Sync plan for target web (environment prod -> vercel production): 2 to add, 0 to update, 0 to delete, 0 unchanged, 0 blocked",
+      "Sync plan for target web (environment prod -> vercel production via exec): 2 to add, 0 to update, 0 to delete, 0 unchanged, 0 blocked",
     );
     expect(out).toContain("Last delivery: none");
     expect(out).toContain("+ ALPHA\tversion 3 (new)");
@@ -365,7 +365,7 @@ describe("maruhi sync plan", () => {
     );
     expect(out).toContain("+ ALPHA\tversion 3 (new)");
     expect(fixture.env.errors.join("\n")).toContain(
-      "2 variables cannot be synced with this preset",
+      "2 variables cannot be synced with this driver",
     );
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(1);
     expect(fixture.env.execCalls).toEqual([]);

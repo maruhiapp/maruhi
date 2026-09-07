@@ -33,9 +33,7 @@ import { Redacted } from "effect";
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ExecInput } from "./run.ts";
-
-/** Preset identifiers accepted by the sync config (`targets.<name>.preset`). */
-export type PresetId = "cloudflare-workers" | "vercel";
+import type { OptionSpec, PresetId, ValueConstraints } from "./sync-types.ts";
 
 /**
  * One argv token of a preset. A literal, the variable name, or a value taken
@@ -56,27 +54,8 @@ export type ArgTemplate =
       readonly flag: string;
     };
 
-/** Declaration of one preset option (validated by sync-config.ts). */
-export interface OptionSpec {
-  readonly type: "string" | "boolean";
-  readonly required: boolean;
-  /** 閉集合(Vercel の環境名など)。 */
-  readonly values?: readonly string[];
-}
-
-/** Value constraints the vendor CLI imposes on what stdin can carry. */
-export interface ValueConstraints {
-  /** 1 値の上限(バイト)。超えると拒否(切り詰めを黙って起こさない)。 */
-  readonly maxBytes: number | null;
-  /** 空の値を拒否する(空 stdin を「値なし」と読む CLI)。 */
-  readonly nonEmpty: boolean;
-  /** 末尾改行 1 つで終わる 1 行の値を拒否する(CLI が落としてしまう)。 */
-  readonly refuseSingleLineTrailingNewline: boolean;
-}
-
 /** A declarative exec preset (data only — no code per vendor). */
 export interface ExecPreset {
-  readonly id: PresetId;
   /** 既定の実行体(PATH 上の導入済み CLI)。 */
   readonly command: string;
   /** 子へ足す非機密の環境変数(テレメトリ off)。 */
@@ -91,8 +70,6 @@ export interface ExecPreset {
   readonly delete: "json-null" | { readonly args: readonly ArgTemplate[] };
   readonly constraints: ValueConstraints;
   readonly options: Readonly<Record<string, OptionSpec>>;
-  /** 明示が無いときの production 判定(誤操作ガードの既定 — sync-config.ts)。 */
-  readonly isProduction: (options: Readonly<Record<string, string | boolean>>) => boolean;
 }
 
 // macOS のパイプは初期容量 16 KiB(それ以上は書き手がブロックし、Vercel CLI の
@@ -105,7 +82,6 @@ const VERCEL_ENVIRONMENTS = ["production", "preview", "development"] as const;
 /** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers). */
 export const EXEC_PRESETS: Readonly<Record<PresetId, ExecPreset>> = {
   "cloudflare-workers": {
-    id: "cloudflare-workers",
     command: "wrangler",
     env: { WRANGLER_SEND_METRICS: "false", DO_NOT_TRACK: "1" },
     transport: "json-object",
@@ -124,11 +100,8 @@ export const EXEC_PRESETS: Readonly<Record<PresetId, ExecPreset>> = {
       environment: { type: "string", required: false },
       config: { type: "string", required: false },
     },
-    // wrangler の名前付き環境なし = トップレベルの Worker(本番)
-    isProduction: (options) => options["environment"] === undefined,
   },
   vercel: {
-    id: "vercel",
     command: "vercel",
     env: { VERCEL_TELEMETRY_DISABLED: "1" },
     transport: "raw-value",
@@ -170,7 +143,6 @@ export const EXEC_PRESETS: Readonly<Record<PresetId, ExecPreset>> = {
       scope: { type: "string", required: false },
       sensitive: { type: "boolean", required: false },
     },
-    isProduction: (options) => options["environment"] === "production",
   },
 };
 
@@ -224,25 +196,25 @@ function renderArgs(
 
 /** 1 値の制約検査(文面は変数名だけを運ぶ)。 */
 export function checkValueConstraints(
-  preset: ExecPreset,
+  driver: { readonly constraints: ValueConstraints; readonly label: string },
   name: string,
   plaintext: Uint8Array,
 ): CliError | null {
   const shown = displayText(name);
-  const { constraints } = preset;
+  const { constraints, label } = driver;
   if (constraints.nonEmpty && plaintext.byteLength === 0) {
     return cliError(
-      `Variable ${shown} is empty, and the ${preset.command} CLI treats an empty value on stdin as no value. Set a non-empty value with \`maruhi push ${shown}\` or leave this variable out of the target`,
+      `Variable ${shown} is empty, and ${label} treats an empty value on stdin as no value. Set a non-empty value with \`maruhi push ${shown}\` or leave this variable out of the target`,
     );
   }
   if (constraints.maxBytes !== null && plaintext.byteLength > constraints.maxBytes) {
     return cliError(
-      `Variable ${shown} is ${plaintext.byteLength} bytes, above the ${constraints.maxBytes}-byte limit maruhi applies for the ${preset.command} CLI (it reads only the first chunk of stdin, so a larger value could be cut off silently). Leave this variable out of the target, or set it through the platform's dashboard`,
+      `Variable ${shown} is ${plaintext.byteLength} bytes, above the ${constraints.maxBytes}-byte limit maruhi applies for ${label} (it reads only the first chunk of stdin, so a larger value could be cut off silently). Leave this variable out of the target, or set it through the platform's dashboard`,
     );
   }
   if (constraints.refuseSingleLineTrailingNewline && endsWithSingleLineNewline(plaintext)) {
     return cliError(
-      `Variable ${shown} is a single line ending with a newline, which the ${preset.command} CLI strips from stdin. Push the value without the trailing newline (\`printf %s\` instead of \`echo\`), or leave this variable out of the target`,
+      `Variable ${shown} is a single line ending with a newline, which ${label} strips from stdin. Push the value without the trailing newline (\`printf %s\` instead of \`echo\`), or leave this variable out of the target`,
     );
   }
   return null;
@@ -360,9 +332,22 @@ function keepTail(text: string, cap: number): string {
  * characters are neutralized, and only then are the last lines kept. Best
  * effort — the output is shown only on failure, prefixed as filtered.
  */
-export function scrubVendorOutput(output: string, values: readonly SyncWrite[]): string[] {
+export function scrubVendorOutput(
+  output: string,
+  values: readonly SyncWrite[],
+  /** 値のほかに伏せる秘密(http ドライバの統合トークン — 応答に echo されうる)。 */
+  tokens: readonly Redacted.Redacted<string>[] = [],
+): string[] {
   let text = output;
   const fragments = new Set<string>();
+  for (const token of tokens) {
+    // 剥がす理由: 出力からの伏せ字化(トークンの断片を探して置き換える。産物には残らない)
+    const secret = Redacted.value(token);
+    if (secret.length > 0) {
+      fragments.add(secret);
+      fragments.add(JSON.stringify(secret).slice(1, -1));
+    }
+  }
   for (const write of values) {
     // 剥がす理由: 出力からの伏せ字化(値の断片を探して置き換える。産物には残らない)
     const plaintext = decodeValueText(Redacted.value(write.value));

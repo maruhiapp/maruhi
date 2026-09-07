@@ -1,16 +1,21 @@
 // `maruhi sync` のリポジトリ設定(SY2 第 1 段 — integration-options.md §3
-// 補足 15 X1「同期の対応付け設定はリポジトリへ(非機密)」)。
+// 補足 15 X1「同期の対応付け設定はリポジトリへ(非機密)」。第 2 段で `driver` /
+// `token` を追加)。
 //
 // 「maruhi 環境 → 同期先(プリセット)/ 同期先の環境 / 運ぶ変数」の対応付けは
 // 秘密ではなく、コードと一緒に版管理される設定。リポジトリアンカー
 // (anchor.ts — `maruhi project anchor` の JSON を利用者がコミットする)と
 // 同じ扱いで、CLI が永続化してよい「非機密の設定」の範囲内(CLAUDE.md)。
-// 統合トークンは持たない(exec ドライバはベンダー CLI 自身のログインを使う —
-// 補足 16)。レシートの置き場(環境 ID)もここで指す(X3 (a))。
+// 統合トークンは持たない: exec ドライバはベンダー CLI 自身のログインを使い
+// (補足 16)、http ドライバは maruhi の普通の変数を**指す**だけ(環境 ID と
+// 変数名 — 補足 15 X2)。レシートの置き場(環境 ID)もここで指す(X3 (a))。
 //
 // 形式: JSON 1 ファイル(既定 `maruhi.sync.json`、`--config` で差し替え)。
 // version フィールドつき・未知のキーは拒否(打ち間違いを黙って無視しない)。
-// 検証の文面は「どのキーが・なぜ」を言い、打たれた値そのものは出さない。
+// `version: 1` は第 1 段のまま(第 2 段のキーはすべて省略可で、第 1 段の設定は
+// そのまま読める。第 1 段の CLI は第 2 段のキーを「未知のキー」として拒否する —
+// 互換の方向は後方のみ。裁定 H)。検証の文面は「どのキーが・なぜ」を言い、
+// 打たれた値そのものは出さない。
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -20,30 +25,56 @@ import { Effect } from "effect";
 
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { parseJsonRecord } from "./json-record.ts";
-import { type ExecPreset, EXEC_PRESETS, type OptionSpec, type PresetId } from "./sync-exec.ts";
+import type { ExecPreset } from "./sync-exec.ts";
+import type { HttpPreset } from "./sync-http.ts";
+import { type SyncPreset, SYNC_PRESETS } from "./sync-preset.ts";
+import type { DriverKind, OptionSpec, PresetId, ResolvedOptions } from "./sync-types.ts";
 
 /** Default location of the sync config, relative to the working directory. */
 export const DEFAULT_SYNC_CONFIG_PATH = "maruhi.sync.json";
+
+/** Where the integration token lives: a normal variable of some environment. */
+export interface TokenRef {
+  readonly environment: string;
+  readonly name: string;
+}
+
+/** How one target is driven: the installed vendor CLI, or the vendor API. */
+export type TargetDriver =
+  | {
+      readonly kind: "exec";
+      readonly spec: ExecPreset;
+      /** ベンダー CLI の実行ディレクトリ(設定ファイルの場所からの相対を解決済み)。 */
+      readonly cwd: string;
+      /** 起動する実行体(既定はプリセットのコマンド名 = PATH 上の導入済み CLI)。 */
+      readonly command: string;
+    }
+  | {
+      readonly kind: "http";
+      readonly spec: HttpPreset;
+      readonly token: TokenRef;
+    };
 
 /** One deploy target: which maruhi environment goes where, and how. */
 export interface SyncTarget {
   /** ターゲット名(設定のキー。レシート変数名の一部になる)。 */
   readonly name: string;
-  readonly preset: ExecPreset;
+  readonly preset: SyncPreset;
+  readonly driver: TargetDriver;
   /** 復号する maruhi 環境 ID。 */
   readonly environment: string;
   /** 運ぶ変数名の明示リスト、または環境の全 active 変数(`"all"`)。 */
   readonly variables: readonly string[] | "all";
-  /** `"all"` から除く名前(公開設定・プラットフォーム所有の資源 — 補足 13 W3)。 */
+  /**
+   * `"all"` から除く名前(公開設定・プラットフォーム所有の資源 — 補足 13 W3)。
+   * 統合トークンが同期元と同じ環境にあれば、その名前は設定に無くてもここに入る
+   * (トークンは運ばない — 構造で保証する)。
+   */
   readonly exclude: readonly string[];
   /** production 扱い(apply に `--yes` が要る — 補足 14 M4)。 */
   readonly production: boolean;
-  /** ベンダー CLI の実行ディレクトリ(設定ファイルの場所からの相対を解決済み)。 */
-  readonly cwd: string;
-  /** 起動する実行体(既定はプリセットのコマンド名 = PATH 上の導入済み CLI)。 */
-  readonly command: string;
-  /** プリセット固有のオプション(プリセットの宣言で検証済み)。 */
-  readonly options: Readonly<Record<string, string | boolean>>;
+  /** プリセット固有のオプション(選んだドライバの宣言で検証済み)。 */
+  readonly options: ResolvedOptions;
 }
 
 /** The parsed repository sync config. */
@@ -97,27 +128,29 @@ function parseOptionValue(
   return { value: given };
 }
 
-/** プリセット固有オプションの検証(宣言 `preset.options` に従う — データ駆動)。 */
+/** プリセット固有オプションの検証(選んだドライバの宣言に従う — データ駆動)。 */
 function parseTargetOptions(
-  preset: ExecPreset,
+  presetId: PresetId,
+  driverKind: DriverKind,
+  declaredOptions: Readonly<Record<string, OptionSpec>>,
   value: unknown,
   path: string,
-): Readonly<Record<string, string | boolean>> | Invalid {
+): ResolvedOptions | Invalid {
   const record = value === undefined ? {} : value;
   if (!isRecord(record)) {
     return `${path} must be an object`;
   }
-  const declared = Object.keys(preset.options);
+  const declared = Object.keys(declaredOptions);
   const unknown = unknownKeys(record, declared);
   if (unknown.length > 0) {
-    return `${path} has unknown keys (${unknown.join(", ")}); the ${preset.id} preset accepts: ${declared.join(", ")}`;
+    return `${path} has unknown keys (${unknown.join(", ")}); the ${presetId} preset with the ${driverKind} driver accepts: ${declared.join(", ")}`;
   }
   const options: Record<string, string | boolean> = {};
-  for (const [key, spec] of Object.entries(preset.options)) {
+  for (const [key, spec] of Object.entries(declaredOptions)) {
     const given = record[key];
     if (given === undefined) {
       if (spec.required) {
-        return `${path}.${key} is required for the ${preset.id} preset${spec.values === undefined ? "" : ` (one of ${spec.values.join(", ")})`}`;
+        return `${path}.${key} is required for the ${presetId} preset with the ${driverKind} driver${spec.values === undefined ? "" : ` (one of ${spec.values.join(", ")})`}`;
       }
       continue;
     }
@@ -132,12 +165,14 @@ function parseTargetOptions(
 
 const TARGET_KEYS = [
   "preset",
+  "driver",
   "environment",
   "variables",
   "exclude",
   "production",
   "cwd",
   "command",
+  "token",
   "options",
 ] as const;
 
@@ -184,16 +219,35 @@ function optionalString(
   return { value: given };
 }
 
-/** ターゲットの実行面(production / cwd / command)の解釈。 */
-function parseTargetExecution(
+/** `token: { environment, name }` の解釈(http ドライバの統合トークンの置き場)。 */
+function parseTokenRef(value: unknown, path: string): TokenRef | Invalid {
+  if (!isRecord(value)) {
+    return `${path} must be an object of the form { "environment": "<environment ID>", "name": "<variable name>" }`;
+  }
+  const unknown = unknownKeys(value, ["environment", "name"]);
+  if (unknown.length > 0) {
+    return `${path} has unknown keys (${unknown.join(", ")}); accepted: environment, name`;
+  }
+  const environment = value["environment"];
+  if (typeof environment !== "string" || !isEnvironmentId(environment)) {
+    return `${path}.environment must be the maruhi environment ID that holds the token`;
+  }
+  const name = value["name"];
+  if (typeof name !== "string" || name.trim().length === 0) {
+    return `${path}.name must be the name of the variable that holds the token`;
+  }
+  return { environment, name };
+}
+
+/** exec ドライバの実行面(cwd / command)の解釈。 */
+function parseExecDriver(
   record: Record<string, unknown>,
   path: string,
-  preset: ExecPreset,
+  spec: ExecPreset,
   configDir: string,
-): { production: boolean | undefined; cwd: string; command: string } | Invalid {
-  const production = record["production"];
-  if (production !== undefined && typeof production !== "boolean") {
-    return `${path}.production must be true or false`;
+): TargetDriver | Invalid {
+  if (record["token"] !== undefined) {
+    return `${path}.token applies only to the http driver (the exec driver uses the vendor CLI's own sign-in)`;
   }
   const cwd = optionalString(record, "cwd", path, "a non-empty relative path");
   if (typeof cwd === "string") {
@@ -203,23 +257,52 @@ function parseTargetExecution(
     record,
     "command",
     path,
-    `a non-empty path to the installed ${preset.command} CLI`,
+    `a non-empty path to the installed ${spec.command} CLI`,
   );
   if (typeof command === "string") {
     return command;
   }
   return {
-    production,
+    kind: "exec",
+    spec,
     cwd: cwd.value === undefined ? configDir : join(configDir, cwd.value),
-    command: command.value ?? preset.command,
+    command: command.value ?? spec.command,
   };
 }
 
-/** ターゲットの形(キー・プリセット・環境)の解釈。 */
+/** http ドライバの資格面(token)の解釈。 */
+function parseHttpDriver(
+  record: Record<string, unknown>,
+  path: string,
+  spec: HttpPreset,
+): TargetDriver | Invalid {
+  for (const key of ["cwd", "command"] as const) {
+    if (record[key] !== undefined) {
+      return `${path}.${key} applies only to the exec driver (the http driver runs no vendor CLI)`;
+    }
+  }
+  if (record["token"] === undefined) {
+    return `${path}.token is required for the http driver: { "environment": "<environment ID>", "name": "<variable name>" } naming the maruhi variable that holds ${spec.tokenHint}`;
+  }
+  const token = parseTokenRef(record["token"], `${path}.token`);
+  if (typeof token === "string") {
+    return token;
+  }
+  return { kind: "http", spec, token };
+}
+
+/** ターゲットの形(キー・プリセット・ドライバ・環境)の解釈。 */
 function parseTargetHead(
   name: string,
   value: unknown,
-): { record: Record<string, unknown>; preset: ExecPreset; environment: string } | Invalid {
+):
+  | {
+      record: Record<string, unknown>;
+      preset: SyncPreset;
+      driverKind: DriverKind;
+      environment: string;
+    }
+  | Invalid {
   const path = `targets.${name}`;
   if (!TARGET_NAME.test(name)) {
     return `target names must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or - (key under targets)`;
@@ -231,20 +314,32 @@ function parseTargetHead(
   if (unknown.length > 0) {
     return `${path} has unknown keys (${unknown.join(", ")}); accepted: ${TARGET_KEYS.join(", ")}`;
   }
-  const presetId = value["preset"];
-  // own-property 参照(`__proto__` 等の継承プロパティをプリセットに解決しない)
-  const preset =
-    typeof presetId === "string" && Object.hasOwn(EXEC_PRESETS, presetId)
-      ? EXEC_PRESETS[presetId as PresetId]
-      : undefined;
+  const preset = presetOf(value["preset"]);
   if (preset === undefined) {
-    return `${path}.preset must be one of ${Object.keys(EXEC_PRESETS).join(", ")}`;
+    return `${path}.preset must be one of ${Object.keys(SYNC_PRESETS).join(", ")}`;
+  }
+  const driverKind = driverKindOf(value["driver"]);
+  if (driverKind === undefined) {
+    return `${path}.driver must be "exec" (the installed vendor CLI; the default) or "http" (the vendor API with a token stored in maruhi)`;
   }
   const environment = value["environment"];
   if (typeof environment !== "string" || !isEnvironmentId(environment)) {
     return `${path}.environment must be a maruhi environment ID`;
   }
-  return { record: value, preset, environment };
+  return { record: value, preset, driverKind, environment };
+}
+
+/** プリセット id の解決(own-property 参照 — `__proto__` 等を解決しない)。 */
+function presetOf(value: unknown): SyncPreset | undefined {
+  return typeof value === "string" && Object.hasOwn(SYNC_PRESETS, value)
+    ? SYNC_PRESETS[value as PresetId]
+    : undefined;
+}
+
+/** `driver` の解決(省略 = exec)。 */
+function driverKindOf(value: unknown): DriverKind | undefined {
+  const driver = value ?? "exec";
+  return driver === "exec" || driver === "http" ? driver : undefined;
 }
 
 function parseTarget(name: string, value: unknown, configDir: string): SyncTarget | Invalid {
@@ -253,32 +348,84 @@ function parseTarget(name: string, value: unknown, configDir: string): SyncTarge
   if (typeof head === "string") {
     return head;
   }
-  const { record, preset, environment } = head;
+  const { record, preset, driverKind, environment } = head;
   const selection = parseVariables(record, path);
   if (typeof selection === "string") {
     return selection;
   }
-  const execution = parseTargetExecution(record, path, preset, configDir);
-  if (typeof execution === "string") {
-    return execution;
+  const production = record["production"];
+  if (production !== undefined && typeof production !== "boolean") {
+    return `${path}.production must be true or false`;
   }
-  const options = parseTargetOptions(preset, record["options"], `${path}.options`);
-  if (typeof options === "string") {
-    return options;
+  const driven = parseDriverAndOptions(record, path, preset, driverKind, configDir);
+  if (typeof driven === "string") {
+    return driven;
+  }
+  const { driver, options } = driven;
+  const exclude = excludeToken(selection, driver, environment, path);
+  if (typeof exclude === "string") {
+    return exclude;
   }
   return {
     name,
     preset,
+    driver,
     environment,
     variables: selection.variables,
-    exclude: selection.exclude,
+    exclude,
     // 明示が無ければプリセットの判定(Vercel = production 環境、Workers = 名前付き
     // 環境なし)。誤操作ガードなので既定は「production 寄り」に倒す
-    production: execution.production ?? preset.isProduction(options),
-    cwd: execution.cwd,
-    command: execution.command,
+    production: production ?? preset.isProduction(options),
     options,
   };
+}
+
+/** ドライバの面(exec = cwd / command、http = token)と、そのドライバの宣言で検証したオプション。 */
+function parseDriverAndOptions(
+  record: Record<string, unknown>,
+  path: string,
+  preset: SyncPreset,
+  driverKind: DriverKind,
+  configDir: string,
+): { readonly driver: TargetDriver; readonly options: ResolvedOptions } | Invalid {
+  const driver =
+    driverKind === "exec"
+      ? parseExecDriver(record, path, preset.exec, configDir)
+      : parseHttpDriver(record, path, preset.http);
+  if (typeof driver === "string") {
+    return driver;
+  }
+  const options = parseTargetOptions(
+    preset.id,
+    driverKind,
+    driver.spec.options,
+    record["options"],
+    `${path}.options`,
+  );
+  return typeof options === "string" ? options : { driver, options };
+}
+
+/**
+ * トークンが同期元と同じ環境にある: 明示リストに載っていれば設定の誤り、"all" なら
+ * 黙って除く(トークンを同期先へ運ばないことを構造で保証する)。
+ */
+function excludeToken(
+  selection: { readonly variables: readonly string[] | "all"; readonly exclude: readonly string[] },
+  driver: TargetDriver,
+  environment: string,
+  path: string,
+): readonly string[] | Invalid {
+  if (driver.kind !== "http" || driver.token.environment !== environment) {
+    return selection.exclude;
+  }
+  if (selection.variables !== "all") {
+    return selection.variables.includes(driver.token.name)
+      ? `${path}.variables lists the token variable (${path}.token.name); the integration token is never copied to the target`
+      : selection.exclude;
+  }
+  return selection.exclude.includes(driver.token.name)
+    ? selection.exclude
+    : [...selection.exclude, driver.token.name];
 }
 
 const ROOT_KEYS = ["version", "project", "receipts", "targets"] as const;
@@ -347,7 +494,7 @@ export function loadSyncConfig(path: string): Effect.Effect<SyncConfig, CliError
       try: () => readFile(path, "utf8"),
       catch: () =>
         cliError(
-          `Cannot read the sync config ${path}. Create it in the repository (see the Deploy targets page in the docs), or pass --config <file>`,
+          `Cannot read the sync config ${path}. Create it with \`maruhi sync init\` (see the Deploy targets page in the docs), or pass --config <file>`,
         ),
     });
     const parsed = parseSyncConfig(content, dirname(path));
@@ -373,4 +520,23 @@ export function requireSyncTarget(
     );
   }
   return Effect.succeed(target);
+}
+
+/** 設定の `project` とフラグの照合(食い違いは書き方の誤り = 2)。 */
+export function checkConfigProject(
+  config: SyncConfig,
+  projectFlag: string | undefined,
+): Effect.Effect<void, CliError> {
+  if (
+    config.projectId !== undefined &&
+    projectFlag !== undefined &&
+    projectFlag !== config.projectId
+  ) {
+    return Effect.fail(
+      usageError(
+        "--project does not match the `project` in the sync config (the config belongs to a different project)",
+      ),
+    );
+  }
+  return Effect.void;
 }

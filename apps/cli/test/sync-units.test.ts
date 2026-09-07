@@ -6,7 +6,7 @@
 import { Effect, Exit, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { parseSyncConfig, type SyncTarget } from "../src/sync-config.ts";
+import { parseSyncConfig, type SyncTarget, type TargetDriver } from "../src/sync-config.ts";
 import {
   buildInvocations,
   checkValueConstraints,
@@ -50,6 +50,14 @@ function parsed(target: Record<string, unknown>): SyncTarget {
   return config.targets.get("t") as SyncTarget;
 }
 
+/** exec ドライバの面(cwd / command)。http だったらテストの前提違い。 */
+function execOf(target: SyncTarget): Extract<TargetDriver, { kind: "exec" }> {
+  if (target.driver.kind !== "exec") {
+    throw new Error("expected the exec driver");
+  }
+  return target.driver;
+}
+
 describe("parseSyncConfig", () => {
   it("Vercel の production は既定で production 扱い、preview は違う。明示が勝つ", () => {
     expect(parsed(vercelTarget()).production).toBe(true);
@@ -64,8 +72,8 @@ describe("parseSyncConfig", () => {
   it("Workers は名前付き環境なしが production、cwd / command は設定からの相対・上書き", () => {
     const top = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
     expect(top.production).toBe(true);
-    expect(top.cwd).toBe("/repo");
-    expect(top.command).toBe("wrangler");
+    expect(execOf(top).cwd).toBe("/repo");
+    expect(execOf(top).command).toBe("wrangler");
     const named = parsed({
       preset: "cloudflare-workers",
       environment: "prod",
@@ -75,8 +83,8 @@ describe("parseSyncConfig", () => {
       options: { environment: "staging" },
     });
     expect(named.production).toBe(false);
-    expect(named.cwd).toBe("/repo/apps/worker");
-    expect(named.command).toBe("node_modules/.bin/wrangler");
+    expect(execOf(named).cwd).toBe("/repo/apps/worker");
+    expect(execOf(named).command).toBe("node_modules/.bin/wrangler");
   });
 
   it.each([
@@ -115,7 +123,7 @@ describe("parseSyncConfig", () => {
     [baseConfig(vercelTarget({ bogus: 1 })), "targets.t has unknown keys (bogus)"],
     [
       baseConfig(vercelTarget({ options: {} })),
-      "targets.t.options.environment is required for the vercel preset (one of production, preview, development)",
+      "targets.t.options.environment is required for the vercel preset with the exec driver (one of production, preview, development)",
     ],
     [
       baseConfig(vercelTarget({ options: { environment: "prod" } })),
@@ -166,9 +174,9 @@ describe("buildInvocations(宣言的プリセット)", () => {
       }),
     );
     const invocations = buildInvocations({
-      preset: target.preset,
-      command: target.command,
-      cwd: target.cwd,
+      preset: target.preset.exec,
+      command: execOf(target).command,
+      cwd: execOf(target).cwd,
       options: target.options,
       writes: [write("A", "value-a"), write("B", "line1\nline2\n")],
       deletes: ["OLD"],
@@ -242,7 +250,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     });
     const writes = Array.from({ length: 150 }, (_, index) => write(`V${index}`, `value ${index}`));
     const invocations = buildInvocations({
-      preset: target.preset,
+      preset: target.preset.exec,
       command: "npx-free/wrangler",
       cwd: "/repo",
       options: target.options,
@@ -281,9 +289,9 @@ describe("buildInvocations(宣言的プリセット)", () => {
     const target = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
     expect(() =>
       buildInvocations({
-        preset: target.preset,
-        command: target.command,
-        cwd: target.cwd,
+        preset: target.preset.exec,
+        command: execOf(target).command,
+        cwd: execOf(target).cwd,
         options: target.options,
         writes: [
           {
@@ -314,8 +322,11 @@ describe("buildInvocations(宣言的プリセット)", () => {
 });
 
 describe("checkValueConstraints", () => {
-  const vercel = EXEC_PRESETS.vercel;
-  const workers = EXEC_PRESETS["cloudflare-workers"];
+  const vercel = { constraints: EXEC_PRESETS.vercel.constraints, label: "the vercel CLI" };
+  const workers = {
+    constraints: EXEC_PRESETS["cloudflare-workers"].constraints,
+    label: "the wrangler CLI",
+  };
 
   it("Vercel: 空・16 KiB 超・末尾改行 1 つの 1 行を拒否し、文面は変数名だけ", () => {
     const secret = "s3cr3t-value";
