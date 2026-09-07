@@ -1311,7 +1311,8 @@ rollback(先に `sync plan` で床を確立してから古い version を配る)
 再同期でも同じ)。候補: (i) sync-rotate.ts で文面を見て仕分ける(脆い)/ (ii) 後始末の再同期を丸ごと失敗にする(改訂 1 の
 逆戻り — 503 で終了コードが変わる)/ (iii) **発生源(sync.ts)で証拠として分類する**。(iii) を採る: errors.ts の `evidence` の定義
 (「署名検証済みデータとチェーン公証・床の矛盾 — 再実行では解消しない」)にこの 4 つは元から該当し、暗号ランタイムの失敗
-(「failed to run」・空チェーン・鍵索引の導出)は据え置く。副作用として env-rotate.ts の巡末再走査(`settlePass`)がこれらを
+(「failed to run」・鍵索引の導出)だけを据え置く(空チェーンは `verifyChainCore` が `ChainInvalid` / `empty-chain` として
+検証段で拒否するので証拠側に入る — sync.ts の `"The chain is empty"` には到達しない。改訂 5 で記述を訂正)。副作用として env-rotate.ts の巡末再走査(`settlePass`)がこれらを
 「未検証(再実行で直る)」でなく「証拠(即時中断)」に分類するようになるが、それは文面が既に主張していた分類であり、既存テストは
 全件通る。態を追加: 再暗号化後に同じ genesis の短いチェーンを配る(検証は通るが延長でない)= 終了コード 1・「not an extension」・
 書き込み 0・「Done: rotated」は出ている。あわせて、後始末の再同期は `context.resync`(= 素の `syncProject`。延長検査を持たない)
@@ -1323,6 +1324,10 @@ rollback(先に `sync plan` で床を確立してから古い version を配る)
 陳腐化は後始末の成否と無関係。裁定 E の出力順を「報告 → アンカーの note → レシートの行」に改め(note を後始末の前へ)、床違反 /
 チェーン差し替えの 2 態で note が出ることを断言に足した。同レビューの「証拠の仕分けがチェーン検証の拒否を覆っていない」は
 改訂 3 で対応済み(レビューは 524c8a2 に対するもの)。
+
+**改訂 5(2026-09-07、pullfrog の差分レビュー〔fad7e29〕)**: 裁定録の改訂 3 の記述で「空チェーンは据え置き」と書いていたが、空
+チェーンは `verifyChainCore` が `ChainInvalid`(`empty-chain`)として先に拒否し、改訂 3 の `evidenceError` 側に入る(`sync.ts` の
+`"The chain is empty"` には到達しない)。据え置きは暗号ランタイムの失敗(「failed to run」・鍵索引の導出)だけ。コードの変更なし。
 
 **第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
 未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは
