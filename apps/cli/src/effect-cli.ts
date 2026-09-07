@@ -1441,9 +1441,11 @@ function envRotateCommand(
           : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
       yield* advanceReceiptsAfterRotation({
         client: context.client,
+        // ローテーションでチェーンは前進している: 後始末は再同期した検証済みビュー
+        // (openEnvironment 時点のビューの延長であることを検査する)から始める。
+        // 再同期の通信失敗は後始末の内側で警告に畳む(Bugbot 指摘)
+        verified: context.verified,
         recipient: context.recipient,
-        // ローテーションでチェーンは前進している: 後始末は再同期した検証済みビューから
-        // 始める(再同期の失敗も後始末の内側で警告に畳む — Bugbot 指摘)
         resync: context.resync,
         config: syncConfig,
         environmentId,

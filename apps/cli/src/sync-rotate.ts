@@ -43,7 +43,7 @@ import {
   storeReceipt,
   type SyncReceipt,
 } from "./sync-receipt.ts";
-import type { VerifiedProject } from "./sync.ts";
+import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /**
  * 設定の `project` と、実際に回したプロジェクトの照合(食い違いは書き方の誤り = 2)。
@@ -116,11 +116,14 @@ function advanceReceipt(
 
 export interface AdvanceReceiptsInput {
   readonly client: MaruhiClient;
+  /** ローテーション前の検証済みビュー(再同期したチェーンがこれの延長であることを検査する基準)。 */
+  readonly verified: VerifiedProject;
   readonly recipient: DekRecipient;
   /**
    * 再同期(チェーン全再検証)。ローテーションでチェーンは前進しているので、後始末は
-   * これで取り直した検証済みビューから始める(前進したビューから始める規律)。
-   * 失敗しても後始末の内側で警告に畳む(ローテーションの終了コードを変えない)。
+   * これで取り直し、`verified` の**延長**であることを確かめた検証済みビューから始める
+   * (前進したビューから始める規律)。通信の失敗は後始末の内側で警告に畳み、検証の
+   * 拒否(証拠)は通す(ローテーションの終了コードを変えるのは証拠だけ)。
    */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly config: SyncConfig;
@@ -282,7 +285,7 @@ export function advanceReceiptsAfterRotation(
     }
     // 再同期の失敗も後始末の失敗: ローテーションは済んでいるので警告に留める
     // (受け皿の外で失敗させると、成功した報告の後で終了コードが 1 に化ける)
-    const synced = yield* asCleanupOutcome(input.resync);
+    const synced = yield* asCleanupOutcome(resyncExtended(input.resync, input.verified));
     if (synced.kind === "failed") {
       yield* logWarning(
         `the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (${synced.error.message}). The next \`maruhi sync plan\` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext`,

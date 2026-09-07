@@ -26,7 +26,7 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { type CliError, cliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 
 /** One key set the chain history binds to a user id (genesis / add_member payload). */
@@ -173,8 +173,10 @@ export function verifyChainSnapshot(input: {
         verified.error.kind === "ChainInvalid"
           ? verified.error
           : { seq: 0, reason: "invalid-payload" };
+      // 配布されたチェーンが検証を通らない = 署名済みデータの矛盾(証拠 — 再実行では
+      // 解消しない。後始末の警告に畳まれてはならない — PR #156 改訂 3)
       return yield* Effect.fail(
-        cliError(
+        evidenceError(
           `Chain verification failed (seq=${seq}, reason=${reason}). The server may be distributing an invalid chain`,
         ),
       );
@@ -193,7 +195,7 @@ export function verifyChainSnapshot(input: {
     });
     if (genesisHash !== projectId) {
       return yield* Effect.fail(
-        cliError(
+        evidenceError(
           `The genesis hash does not match the project ID (suspected server-side chain replacement): expected=${projectId} actual=${genesisHash}`,
         ),
       );
@@ -202,7 +204,7 @@ export function verifyChainSnapshot(input: {
     // サーバー申告のヘッドと導出ヘッドの整合(申告値は信用しない)
     if (state.headSeq !== input.claimedHeadSeq || state.headHashHex !== input.claimedHeadHashHex) {
       return yield* Effect.fail(
-        cliError(
+        evidenceError(
           "The server-declared chain head does not match the fetched entries (the response contradicts itself)",
         ),
       );
@@ -268,7 +270,7 @@ function ensureExtensionOf(
     next.history.entryHashAt(previous.state.headSeq) !== previous.state.headHashHex
   ) {
     return Effect.fail(
-      cliError(
+      evidenceError(
         `The re-synced chain is not an extension of the verified view (seq=${previous.state.headSeq}) (evidence of server-side chain replacement / divergence)`,
       ),
     );

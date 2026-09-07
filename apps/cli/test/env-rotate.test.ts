@@ -4264,6 +4264,44 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.receipts.writes).toEqual([]);
   });
 
+  it("後始末の再同期でチェーンの差し替えを検出したら、証拠として失敗する(警告に畳まない — pullfrog 指摘)", async () => {
+    const pushed: string[] = [];
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+        onPush: (_call, variableId) => {
+          pushed.push(variableId);
+          return undefined;
+        },
+        // 再暗号化が終わった後は、同じ genesis の**短い**チェーン(rotate を含まない
+        // 別の整合チェーン)を配る = 検証は通るが検証済みビューの延長ではない
+        onChain: () =>
+          pushed.length === 2
+            ? {
+                status: 200,
+                json: {
+                  projectId: chainBase.projectId,
+                  entries: chainBase.entries,
+                  headSeq: chainBase.entries.length,
+                  headHashHex: chainBase.hashes[chainBase.hashes.length - 1],
+                },
+              }
+            : undefined,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain("not an extension of the verified view");
+    expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
   it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
     const fixture = await startFixture({
       server: {
