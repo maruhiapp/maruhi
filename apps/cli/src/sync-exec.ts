@@ -343,10 +343,22 @@ export function buildInvocations(input: {
 const SHOWN_TAIL_LINES = 20;
 
 /**
+ * 失敗時に見せるベンダー出力の文字数の上限(UTF-16 の文字数。表示の上限であって
+ * 記憶量の上限ではない)。**伏せた後に**掛ける — 伏せる前に切ると、切れ目に
+ * かかった値の後半が断片に一致しなくなって漏れる(Security Agent 指摘)。
+ */
+const SHOWN_TAIL_CHARS = 64 * 1024;
+
+/** 末尾 `cap` 文字ぶんだけを保つ(先頭から捨てる)。伏せた文字列にだけ使う。 */
+function keepTail(text: string, cap: number): string {
+  return text.length <= cap ? text : text.slice(text.length - cap);
+}
+
+/**
  * Scrubs a vendor CLI's captured output for display: every synced value (and
- * every line of a multi-line one) is replaced, control characters are
- * neutralized, and only the last lines are kept. Best effort — the output is
- * shown only on failure, prefixed as filtered.
+ * every line of a multi-line one) is replaced over the whole output, control
+ * characters are neutralized, and only then are the last lines kept. Best
+ * effort — the output is shown only on failure, prefixed as filtered.
  */
 export function scrubVendorOutput(output: string, values: readonly SyncWrite[]): string[] {
   let text = output;
@@ -372,6 +384,8 @@ export function scrubVendorOutput(output: string, values: readonly SyncWrite[]):
   for (const fragment of [...fragments].toSorted((a, b) => b.length - a.length)) {
     text = text.split(fragment).join("[redacted]");
   }
-  const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+  const lines = keepTail(text, SHOWN_TAIL_CHARS)
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0);
   return lines.slice(-SHOWN_TAIL_LINES).map((line) => displayText(line));
 }

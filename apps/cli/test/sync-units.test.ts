@@ -353,6 +353,20 @@ describe("scrubVendorOutput", () => {
     expect(scrubbed).toContain('{"A":"[redacted]","B":"[redacted]"}');
   });
 
+  it("上限を超える出力でも、切る前に伏せる(切れ目にかかった値の後半を残さない)", () => {
+    // Security Agent 指摘: 伏せる前に末尾 64 K 文字で切ると、切れ目をまたいだ値の
+    // 後半が断片に一致せず、そのまま表示された。値の 20 文字目に切れ目が来る長さ
+    const value = "S".repeat(40);
+    const values = [write("A", value)];
+    const tail = "\nError: request failed";
+    const filler = "f".repeat(64 * 1024 + 20 - value.length - tail.length);
+    const scrubbed = scrubVendorOutput(`${value}${filler}${tail}`, values);
+    expect(scrubbed).toHaveLength(2);
+    expect(scrubbed.join("\n")).not.toContain("SSSSSSSSSS");
+    expect(scrubbed[0]?.length).toBeLessThan(64 * 1024);
+    expect(scrubbed[1]).toBe("Error: request failed");
+  });
+
   it("値と複数行値の各行を伏せ、制御文字を中和し、末尾 20 行だけを残す", () => {
     const values = [write("A", "top-secret"), write("B", "first line\nsecond line")];
     const lines = Array.from({ length: 30 }, (_, index) => `line ${index}`);

@@ -31,7 +31,6 @@ import { shouldUseColor } from "./notice.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import {
   buildChildEnvironment,
-  EXEC_OUTPUT_CAP_CHARS,
   type ExecInput,
   type ExecOutcome,
   ProcessRunner,
@@ -86,17 +85,15 @@ function makeBunKeychain(): KeychainShape {
   };
 }
 
-/** 捕捉した出力の末尾 `cap` 文字ぶんだけを保つ(先頭から捨てる。表示の上限であって記憶量の上限ではない)。 */
-function keepTail(text: string, cap: number): string {
-  return text.length <= cap ? text : text.slice(text.length - cap);
-}
-
 /**
  * ベンダー CLI の駆動(`maruhi sync` の exec ドライバ — sync-exec.ts)。値は
  * 子の stdin に**一度に書いて閉じる**(Bun は ArrayBufferView を stdin に渡すと
  * 書き切ってから閉じる — Vercel CLI の「最初のチャンクを 500 ms だけ待つ」
  * 読み方に合わせる)。stdout / stderr は継承せず捕捉する: ベンダーの出力は
  * 値を含みうるので、そのまま端末へ流さない(表示は呼び出し側が scrub してから)。
+ * ここでは**切らない**: 伏せ字化の前に切ると、切れ目にかかった値の後半が
+ * 断片に一致しなくなって漏れる(Security Agent 指摘)。表示の上限は伏せた後に
+ * sync-exec.ts が掛ける。
  */
 async function execVendor(input: ExecInput): Promise<ExecOutcome> {
   // cwd の不在・非ディレクトリは spawn の ENOENT / ENOTDIR として現れ、実行体の
@@ -122,7 +119,7 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  return { exitCode, output: keepTail(`${stdout}${stderr}`, EXEC_OUTPUT_CAP_CHARS) };
+  return { exitCode, output: `${stdout}${stderr}` };
 }
 
 /** ベンダー CLI の実行ディレクトリ(設定の cwd)が無い・ディレクトリでない。 */

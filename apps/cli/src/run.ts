@@ -32,15 +32,15 @@ export interface ExecInput {
   readonly stdin: Redacted.Redacted<Uint8Array>;
 }
 
-/** Outcome of one driven process: the exit code and its captured, bounded output. */
+/** Outcome of one driven process: the exit code and its captured output. */
 export interface ExecOutcome {
   readonly exitCode: number;
   /**
-   * Combined stdout + stderr of the child, trimmed to the last
-   * {@link EXEC_OUTPUT_CAP_CHARS} characters once the child has exited (it is
-   * a display bound, not a memory bound — the whole output is read first).
-   * Untrusted: it may echo the value, so callers must scrub it before showing
-   * any of it (sync-exec.ts の scrubVendorOutput).
+   * Combined stdout + stderr of the child, whole and untruncated: cutting it
+   * before redaction could leave a suffix of an echoed value that no longer
+   * matches. Untrusted: it may echo the value, so callers must scrub it before
+   * showing any of it, and only then trim it (sync-exec.ts の
+   * scrubVendorOutput).
    */
   readonly output: string;
 }
@@ -59,13 +59,6 @@ export interface ProcessRunnerShape {
    */
   readonly exec: (input: ExecInput) => Effect.Effect<ExecOutcome, CliError>;
 }
-
-/**
- * Cap on the captured output of a driven vendor CLI, in characters (UTF-16
- * code units — not bytes). Output beyond it is dropped from the front; the
- * tail is what carries the failure reason.
- */
-export const EXEC_OUTPUT_CAP_CHARS = 64 * 1024;
 
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
   "cli/ProcessRunner",

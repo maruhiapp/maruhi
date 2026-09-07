@@ -30,6 +30,8 @@ describe("ProcessRunner.exec(live — Bun.spawn)", () => {
     const probe = JSON.parse(lines[0] ?? "") as ProbeResult;
     expect(probe.exitCode).toBe(3);
     expect(probe.output).toContain("len=16384 telemetry=false maruhi=unset");
+    // 出力は切らずに丸ごと返る(切るのは伏せた後 — sync-exec.ts)
+    expect(probe.output).toContain("x".repeat(70_000));
     expect(probe.output).toContain("to-stderr");
     // 未導入のコマンドは型付きエラー(取りに行かない)
     expect(probe.missing).toContain("Cannot start maruhi-probe-not-installed-9f3c");
