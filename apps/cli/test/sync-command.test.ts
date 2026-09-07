@@ -658,7 +658,7 @@ describe("maruhi sync apply", () => {
         await storedReceipt({
           target: "web",
           preset: "vercel",
-          variables: { ALPHA: 3, BETA: 1, GONE: 2 },
+          variables: { ALPHA: 3, BETA: 1, GONE: 2, GONE_TOO: 5 },
         }),
       ],
     });
@@ -673,6 +673,10 @@ describe("maruhi sync apply", () => {
     expect(errors).toContain(
       "reset the receipt with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again",
     );
+    // 最初の削除で止まるので 2 つ目は未試行 — レシートを作り直すと忘れるので名指しする
+    expect(errors).toContain("remove these at the target yourself first: GONE_TOO");
+    // 未試行の削除は呼ばれていない(1 つ目で止まる)
+    expect(fixture.env.execCalls.filter((call) => call.command[2] === "rm")).toHaveLength(1);
     // 消せていない名前はレシートに残す(黙って「消えた」ことにしない)
     expect(fixture.receipts.writes).toEqual([]);
   });

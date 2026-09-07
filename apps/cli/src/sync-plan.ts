@@ -556,6 +556,7 @@ function saveReceipt(
 /** 実行結果の報告(失敗はベンダー出力の伏せ字化した末尾を添えて型付きエラー)。 */
 function reportApply(
   input: SyncApplyInput,
+  work: ApplyWork,
   result: ExecResult,
   receiptVersion: number | null,
 ): Effect.Effect<void, CliError, CliIo> {
@@ -567,10 +568,20 @@ function reportApply(
         yield* io.logError(`  ${input.target.command}: ${line}`);
       }
       // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
-      // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し
+      // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
+      // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
+      // 先に同期先で手で消すよう言う(pullfrog 指摘)
+      const failed = new Set(result.failure.names);
+      const notAttempted = work.deletes.filter(
+        (name) => !result.deleted.includes(name) && !failed.has(name),
+      );
+      const pendingHint =
+        notAttempted.length === 0
+          ? ""
+          : ` Resetting the receipt also forgets the deletions not attempted yet, so remove these at the target yourself first: ${notAttempted.map(displayText).join(", ")}.`;
       const deleteHint =
         result.failure.kind === "delete"
-          ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).`
+          ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
           : "";
       return yield* Effect.fail(
         cliError(
@@ -665,6 +676,6 @@ export function syncApplyOp(
       { ...loaded, verified: pulled.verified },
       receipt,
     );
-    yield* reportApply(input, result, receiptVersion);
+    yield* reportApply(input, work, result, receiptVersion);
   });
 }
