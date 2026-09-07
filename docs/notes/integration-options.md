@@ -1287,6 +1287,13 @@ index / README は `maruhi sync` の紹介のみで変更不要。
 通知は notice.ts・`process.*` は live.ts のみ・新フラグは決定 5 の範囲・golden / message-style)/ 英語 / 依存ゼロ / エージェント環境の
 新しいゲート無し / スコープ(第 3 段・`--all`・Vercel の一覧の続き・SY3〜SY5 は取り込まない)。
 
+**改訂 1(2026-09-07、Cursor Bugbot〔3a88be0〕)**: 後始末の入口で `context.resync` を**受け皿の外**で評価しており、
+`reportRotation` が成功を報告した後に再同期が失敗すると、コマンドが失敗して終了コードが 1 に化け、アンカー更新の note も
+出なかった(`written` が空で何も触らない実行でも)。裁定 D の「後始末の失敗は警告」が再同期には掛かっていなかった穴 →
+再同期を `advanceReceiptsAfterRotation` の内側へ移し、`written` 空 / ターゲット無しの早期終了の**後**で評価し、失敗は
+「the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (…)」の警告に畳む。
+再暗号化が終わった後のチェーン取得だけを落とす態(終了コード 0・レシート書き込み 0・アンカーの note は出る)で固定。
+
 **第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
 未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは
 補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。(2) 全ターゲット一括の plan(`--all`)。(3) SY3 =

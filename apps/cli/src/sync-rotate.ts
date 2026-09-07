@@ -112,9 +112,12 @@ function advanceReceipt(
 
 export interface AdvanceReceiptsInput {
   readonly client: MaruhiClient;
-  /** ローテーション後に再同期した検証済みビュー(前進したビューから始める規律)。 */
-  readonly verified: VerifiedProject;
   readonly recipient: DekRecipient;
+  /**
+   * 再同期(チェーン全再検証)。ローテーションでチェーンは前進しているので、後始末は
+   * これで取り直した検証済みビューから始める(前進したビューから始める規律)。
+   * 失敗しても後始末の内側で警告に畳む(ローテーションの終了コードを変えない)。
+   */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly config: SyncConfig;
   /** 回した環境(この環境を同期元にするターゲットだけが対象)。 */
@@ -250,7 +253,19 @@ export function advanceReceiptsAfterRotation(
       );
       return;
     }
-    let verified = input.verified;
+    // 再同期の失敗も後始末の失敗: ローテーションは済んでいるので警告に留める
+    // (受け皿の外で失敗させると、成功した報告の後で終了コードが 1 に化ける)
+    const synced = yield* input.resync.pipe(
+      Effect.map((verified) => ({ kind: "ok", verified }) as const),
+      Effect.catch((error: CliError) => Effect.succeed({ kind: "failed", error } as const)),
+    );
+    if (synced.kind === "failed") {
+      yield* logWarning(
+        `the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (${synced.error.message}). The next \`maruhi sync plan\` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext`,
+      );
+      return;
+    }
+    let verified = synced.verified;
     for (const target of targets) {
       const attempt = yield* advanceTarget(input, target, verified).pipe(
         Effect.map((done) => ({ kind: "ok", ...done }) as const),

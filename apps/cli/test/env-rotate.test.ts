@@ -4170,6 +4170,37 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
+  it("ローテーション後の再同期に失敗しても、後始末の失敗として警告し終了コードは変えない(Bugbot 指摘)", async () => {
+    const pushed: string[] = [];
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+        onPush: (_call, variableId) => {
+          pushed.push(variableId);
+          return undefined;
+        },
+        // 再暗号化が終わった後のチェーン取得(= 後始末の再同期)だけを落とす
+        onChain: () => (pushed.length === 2 ? { status: 503, bodyText: "unavailable" } : undefined),
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (",
+    );
+    expect(fixture.receipts.writes).toEqual([]);
+    // 後始末の後ろの案内(アンカー更新)も出る
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
+  });
+
   it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
     const fixture = await startFixture({
       server: {
