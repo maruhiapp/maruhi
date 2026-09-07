@@ -1459,14 +1459,23 @@ function envDiffCommand(
  * ワークフロー YAML のレビューに置く)。診断も「config を設定する」ではなく
  * 「フラグを書く」を言う。
  */
-function requireCiFlag(value: string | undefined, flag: string): Effect.Effect<string, CliError> {
-  return value === undefined
-    ? Effect.fail(
-        usageError(
-          `ci run requires ${flag} (CI mode reads no config file — pass --server, --project, and --env explicitly in the workflow)`,
-        ),
-      )
-    : Effect.succeed(value);
+function requireCiFlag(
+  value: string | undefined,
+  flag: string,
+  command: "ci run" | "ci sync" = "ci run",
+): Effect.Effect<string, CliError> {
+  if (value !== undefined) {
+    return Effect.succeed(value);
+  }
+  // `ci sync` に `--env` は無い(環境は同期設定のターゲットが決める)ので、直し方も
+  // コマンドごとに言う(Bugbot 指摘)
+  return Effect.fail(
+    usageError(
+      command === "ci run"
+        ? `ci run requires ${flag} (CI mode reads no config file — pass --server, --project, and --env explicitly in the workflow)`
+        : `ci sync requires ${flag} (CI mode reads no config file except the sync config — pass --server and --project explicitly in the workflow; the environment comes from the target)`,
+    ),
+  );
 }
 
 /** `maruhi sync init` の必須フラグ(書き方の誤り = 2)。 */
@@ -1527,10 +1536,10 @@ function ciSyncCommand(values: {
     // 形式検証と設定の読み込みはネットワーク・鍵生成より先(ci run と同じ規律)。
     // `--env` は無い: 環境は同期設定のターゲットが決める
     const origin = yield* normalizeHttpOrigin(
-      yield* requireCiFlag(values.server, "--server"),
+      yield* requireCiFlag(values.server, "--server", "ci sync"),
       "the server URL",
     );
-    const projectFlag = yield* requireCiFlag(values.project, "--project");
+    const projectFlag = yield* requireCiFlag(values.project, "--project", "ci sync");
     if (!isProjectId(projectFlag)) {
       return yield* Effect.fail(
         usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
@@ -2027,13 +2036,17 @@ function openSyncTarget(values: {
     });
     const sourceFloor = yield* floorHandleFor(context, target.environment);
     const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
-    // http ドライバの統合トークンの環境(同期元と同じなら同じ床)
+    // http ドライバの統合トークンの環境。同期元・レシート環境と同じなら**同じ床
+    // ハンドル**を使う(同じ環境に 2 つのハンドルを持つと、トークンの pull で前進した
+    // 床をレシートの push が知らない — Bugbot 指摘)
     const tokenFloor =
       target.driver.kind !== "http"
         ? null
         : target.driver.token.environment === target.environment
           ? sourceFloor
-          : yield* floorHandleFor(context, target.driver.token.environment);
+          : target.driver.token.environment === config.receiptsEnvironment
+            ? receiptsFloor
+            : yield* floorHandleFor(context, target.driver.token.environment);
     return { config, target, context, sourceFloor, receiptsFloor, tokenFloor };
   });
 }

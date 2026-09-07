@@ -1142,6 +1142,13 @@ sync / sync init / sync apply)と `message-style.test.ts`。`apps/site` の `val
 (公開ページは 404 / 権限の記載なし — wrangler と dashboard の表記「Workers Scripts: Edit」に依る)、Cloudflare の
 secrets-bulk が部分失敗を返しうるか(envelope は `success` 1 つなので全か無かとして扱った)。
 
+**改訂 1(2026-09-07、Cursor Bugbot〔abaaf30〕)**: (1) `maruhi ci sync` が `ci run` の必須フラグの文面を流用し、
+「`--env` を渡せ」「config ファイルを読まない」と言っていた(`ci sync` に `--env` は無く、同期設定は読む)→ `requireCiFlag` に
+コマンドを渡し、`ci sync` は「同期設定以外は読まない・環境はターゲットが決める」と言う(テストで固定)。(2) 統合トークンが
+**レシート環境**にあるとき、`openSyncTarget` が同じ環境に 2 つ目の床ハンドルを開いていた(トークンの pull で前進した床を
+レシートの push が知らない)→ 同期元 / レシート環境と同じならその床ハンドルを使う。トークンをレシート環境に置いて apply →
+plan が通る態を足した。
+
 **第 2 段 2b 以降への申し送り**: (1) **M1**(裁定 E の 5 点から。`envRotateOp` の `written` を返り値に載せ、`env rotate
 --config` があれば回した環境を同期元とするターゲットのレシートを再暗号化を完了した変数だけ新 version へ書く。`alreadyCurrent` /
 `remaining > 0` / resumed / レシート環境自身 / 二重書きの無害性 / 900 警告を早める点をテストで固定。docs「Receipts」1 点目を

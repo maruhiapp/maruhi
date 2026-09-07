@@ -419,7 +419,9 @@ describe("maruhi ci sync", () => {
         fixture.env.layer,
       ),
     ).toBe(2);
-    expect(fixture.env.errors.join("\n")).toContain("ci run requires --server");
+    expect(fixture.env.errors.join("\n")).toContain(
+      "ci sync requires --server (CI mode reads no config file except the sync config — pass --server and --project explicitly in the workflow; the environment comes from the target)",
+    );
     await writeFile(
       fixture.configPath,
       JSON.stringify({

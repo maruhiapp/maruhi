@@ -616,6 +616,39 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expectNoSecretLeak(newline.env, cf.requests);
   });
 
+  it("トークンがレシート環境にあれば同じ床ハンドルで読み、レシートも書ける", async () => {
+    const cf = makeFakeCloudflare({
+      token: CF_TOKEN,
+      scripts: [`${CF_ACCOUNT}/my-worker-staging`],
+    });
+    const fixture = await startFixture({
+      targets: {
+        worker: cloudflareTarget({ token: { environment: RECEIPTS_ENV, name: "CF_API_TOKEN" } }),
+      },
+      receipts: [
+        await variable({
+          environment: RECEIPTS_ENV,
+          variableId: "tc",
+          name: "CF_API_TOKEN",
+          version: 1,
+          plaintext: CF_TOKEN,
+        }),
+      ],
+      vendorHandlers: cf.handlers,
+      vendorHosts: ["api.cloudflare.com"],
+    });
+    expect(await sync(fixture, "apply", "worker"), fixture.env.errors.join("\n")).toBe(0);
+    expect(cf.requests).toHaveLength(1);
+    expect(fixture.receipts.writes.map((entry) => entry.kind)).toEqual(["create"]);
+    expect(await decryptReceipt(fixture, "worker")).toMatchObject({
+      variables: { ALPHA: 3, BETA: 1 },
+    });
+    // 2 回目: 同じ床でレシート(新 version)を読み、トークンも読める
+    expect(await sync(fixture, "plan", "worker"), fixture.env.errors.join("\n")).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("2 unchanged");
+    expectNoSecretLeak(fixture.env, cf.requests);
+  });
+
   it("トークンが同期元と同じ環境にあっても同期先へ運ばない", async () => {
     const cf = makeFakeCloudflare({
       token: CF_TOKEN,
