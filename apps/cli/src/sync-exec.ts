@@ -291,11 +291,17 @@ export function buildInvocations(input: {
   if (preset.transport === "json-object") {
     // 名前 → 値(削除は null)の JSON を 1 プロセスに `batch` 件ずつ
     const entries: (readonly [string, string | null])[] = [
-      ...input.writes.map(
-        (write) =>
-          // 剥がす理由: stdin の JSON 本文の組み立て(産物は再び Redacted に包む)
-          [write.name, decodeValueText(Redacted.value(write.value)) ?? ""] as const,
-      ),
+      ...input.writes.map((write) => {
+        // 剥がす理由: stdin の JSON 本文の組み立て(産物は再び Redacted に包む)
+        const text = decodeValueText(Redacted.value(write.value));
+        if (text === null) {
+          // prepareWork(sync-plan.ts)が送る前に弾いている前提。到達 = 実装の
+          // 不整合なので、空文字列を黙って書く(最悪の形)のでなく落とす。
+          // 文面は値も変数名も運ばない
+          throw new Error("a value that is not valid UTF-8 reached buildInvocations");
+        }
+        return [write.name, text] as const;
+      }),
       ...(preset.delete === "json-null" ? input.deletes.map((name) => [name, null] as const) : []),
     ];
     for (let start = 0; start < entries.length; start += preset.batch) {

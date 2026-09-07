@@ -36,9 +36,11 @@ export interface ExecInput {
 export interface ExecOutcome {
   readonly exitCode: number;
   /**
-   * Combined stdout + stderr of the child, capped at {@link EXEC_OUTPUT_CAP_BYTES}
-   * (the tail is kept). Untrusted: it may echo the value, so callers must scrub
-   * it before showing any of it (sync-exec.ts の scrubOutput).
+   * Combined stdout + stderr of the child, trimmed to the last
+   * {@link EXEC_OUTPUT_CAP_CHARS} characters once the child has exited (it is
+   * a display bound, not a memory bound — the whole output is read first).
+   * Untrusted: it may echo the value, so callers must scrub it before showing
+   * any of it (sync-exec.ts の scrubVendorOutput).
    */
   readonly output: string;
 }
@@ -59,10 +61,11 @@ export interface ProcessRunnerShape {
 }
 
 /**
- * Cap on the captured output of a driven vendor CLI (bytes). Output beyond it
- * is dropped from the front; the tail is what carries the failure reason.
+ * Cap on the captured output of a driven vendor CLI, in characters (UTF-16
+ * code units — not bytes). Output beyond it is dropped from the front; the
+ * tail is what carries the failure reason.
  */
-export const EXEC_OUTPUT_CAP_BYTES = 64 * 1024;
+export const EXEC_OUTPUT_CAP_CHARS = 64 * 1024;
 
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
   "cli/ProcessRunner",

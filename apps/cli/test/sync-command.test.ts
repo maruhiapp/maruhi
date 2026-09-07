@@ -321,9 +321,7 @@ describe("maruhi sync plan", () => {
     });
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
-    expect(out).toContain(
-      "1 to add, 1 to update, 1 to delete, 1 unchanged, 0 blocked".replace("1 to add", "0 to add"),
-    );
+    expect(out).toContain("0 to add, 1 to update, 1 to delete, 1 unchanged, 0 blocked");
     expect(out).toContain("~ ALPHA\tversion 2 -> 3");
     expect(out).toContain("= BETA\tversion 1 (unchanged)");
     expect(out).toContain("- OLD_NAME\t(no longer synced; last delivered version 4)");
@@ -520,6 +518,7 @@ describe("maruhi sync apply", () => {
       variables: { ALPHA: 3, BETA: 1 },
     });
     expect(JSON.stringify(receipt)).not.toContain(ALPHA_VALUE);
+    expect(fixture.env.logs.join("\n")).toContain(`Running vercel in ${fixture.configDir}`);
     expect(fixture.env.logs.join("\n")).toContain(
       "Applied to target web: 2 variables written, 0 deleted. Receipt saved as version 1 of sync-receipt:web in environment sync-receipts",
     );
@@ -651,6 +650,31 @@ describe("maruhi sync apply", () => {
     const out = fixture.env.logs.join("\n");
     expect(out).toContain("= ALPHA\tversion 3 (unchanged)");
     expect(out).toContain("+ BETA\tversion 1 (new)");
+  });
+
+  it("削除の失敗(同期先で既に消されていた形)はレシートの作り直しを案内し、レシートにその名前を残す", async () => {
+    const fixture = await startFixture({
+      receipts: [
+        await storedReceipt({
+          target: "web",
+          preset: "vercel",
+          variables: { ALPHA: 3, BETA: 1, GONE: 2 },
+        }),
+      ],
+    });
+    fixture.env.setExecHandler((call) =>
+      call.command[2] === "rm"
+        ? { exitCode: 1, output: "Error: Environment Variable was not found\n" }
+        : { exitCode: 0, output: "" },
+    );
+    expect(await sync(fixture, "apply", "web", "--yes")).toBe(1);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain("vercel exited with code 1 while deleting GONE");
+    expect(errors).toContain(
+      "reset the receipt with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again",
+    );
+    // 消せていない名前はレシートに残す(黙って「消えた」ことにしない)
+    expect(fixture.receipts.writes).toEqual([]);
   });
 
   it("末尾改行 1 つで終わる 1 行の値は Vercel には送れない(送る前に全件検査して止める)", async () => {

@@ -277,6 +277,25 @@ describe("buildInvocations(宣言的プリセット)", () => {
     expect(invocations[1]?.names).toContain("GONE");
   });
 
+  it("UTF-8 でない値が届いたら空文字列を黙って書かずに落とす(prepareWork が先に弾く前提の防衛線)", () => {
+    const target = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
+    expect(() =>
+      buildInvocations({
+        preset: target.preset,
+        command: target.command,
+        cwd: target.cwd,
+        options: target.options,
+        writes: [
+          {
+            name: "A",
+            value: Redacted.make(new Uint8Array([0xff, 0xfe]), { label: "variable-value" }),
+          },
+        ],
+        deletes: [],
+      }),
+    ).toThrow("not valid UTF-8");
+  });
+
   it("引数テンプレートに値のトークンは存在しない(型で禁止 — 宣言を走査して確かめる)", () => {
     for (const preset of Object.values(EXEC_PRESETS)) {
       const templates = [

@@ -9,7 +9,7 @@ Some platforms do not let you put `maruhi run -- <command>` in front of your app
 
 ## How maruhi sync works
 
-- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel` or `cloudflare-workers`), the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file.
+- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel` or `cloudflare-workers`), the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file. It does decide where the plaintext goes, though: a change to a target's `command` or `cwd` changes which program receives the values, so review edits to this file the way you review a CI workflow. `apply` prints the command and directory it is about to use.
 - `maruhi sync plan <target>` shows what an apply would write or delete, by variable name and version. It does not decrypt the values.
 - `maruhi sync apply <target>` decrypts the target's variables in memory and hands each value to the vendor CLI on its standard input, and nowhere else. A value never appears on a command line, in `ps`, in your shell history, or in a file. The vendor CLI's own output is not shown unless it fails, and then only with the values filtered out.
 - The platform stores the plaintext. That is what a deploy target is: its runtime reads the value from its own store, and that store is now one more place that holds the secret.

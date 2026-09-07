@@ -31,7 +31,7 @@ import { shouldUseColor } from "./notice.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import {
   buildChildEnvironment,
-  EXEC_OUTPUT_CAP_BYTES,
+  EXEC_OUTPUT_CAP_CHARS,
   type ExecInput,
   type ExecOutcome,
   ProcessRunner,
@@ -86,7 +86,7 @@ function makeBunKeychain(): KeychainShape {
   };
 }
 
-/** 捕捉した出力の末尾 `cap` バイトぶんだけを保つ(先頭から捨てる)。 */
+/** 捕捉した出力の末尾 `cap` 文字ぶんだけを保つ(先頭から捨てる。表示の上限であって記憶量の上限ではない)。 */
 function keepTail(text: string, cap: number): string {
   return text.length <= cap ? text : text.slice(text.length - cap);
 }
@@ -122,7 +122,7 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  return { exitCode, output: keepTail(`${stdout}${stderr}`, EXEC_OUTPUT_CAP_BYTES) };
+  return { exitCode, output: keepTail(`${stdout}${stderr}`, EXEC_OUTPUT_CAP_CHARS) };
 }
 
 /** ベンダー CLI の実行ディレクトリ(設定の cwd)が無い・ディレクトリでない。 */

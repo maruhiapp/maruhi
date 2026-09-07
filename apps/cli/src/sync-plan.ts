@@ -566,9 +566,15 @@ function reportApply(
       for (const line of result.failure.output) {
         yield* io.logError(`  ${input.target.command}: ${line}`);
       }
+      // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
+      // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し
+      const deleteHint =
+        result.failure.kind === "delete"
+          ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).`
+          : "";
       return yield* Effect.fail(
         cliError(
-          `${displayText(input.target.command)} exited with code ${result.failure.exitCode} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted). Its output is shown above with values filtered out. Fix the cause, then run \`maruhi sync plan ${targetName}\` to see what is left`,
+          `${displayText(input.target.command)} exited with code ${result.failure.exitCode} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted). Its output is shown above with values filtered out.${deleteHint} Fix the cause, then run \`maruhi sync plan ${targetName}\` to see what is left`,
         ),
       );
     }
@@ -637,6 +643,11 @@ export function syncApplyOp(
         ),
       );
     }
+    // どの実行体に・どこで渡すかを出力に残す(設定の command / cwd で平文の行き先が
+    // 変わるので、差分だけでなく端末と CI ログでも見えるように — pullfrog 指摘)
+    yield* io.log(
+      `Running ${displayText(input.target.command)} in ${displayText(input.target.cwd)}`,
+    );
     const result = yield* runInvocations(input.target, work);
     // レシートは「実際に届いた分」だけ進める。失敗した回でも届いた分は記録し、
     // 次の plan が残りだけを示すようにする
