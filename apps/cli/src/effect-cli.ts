@@ -187,6 +187,7 @@ import {
 } from "./sync-config.ts";
 import { syncInitOp } from "./sync-init.ts";
 import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
+import { advanceReceiptsAfterRotation, checkRotateConfigProject } from "./sync-rotate.ts";
 import { syncProject } from "./sync.ts";
 import { varRmOp } from "./var-rm.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -585,6 +586,12 @@ const envRotateConfig = {
   "init-manifest": singleFlag(
     "init-manifest",
     "Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves",
+  ),
+  // SY2 第 2 段 2b(M1): 明示されたときだけ同期レシートを進める(既定パスへの
+  // 暗黙の探索はしない — rotate はリポジトリの外からも打たれ、設定は cwd 依存)
+  config: singleValued(
+    "config",
+    `Path to the sync config committed in the repository; when given, the receipts of the targets synced from this environment advance to the re-encrypted versions (no default: without it, receipts are left alone)`,
   ),
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
@@ -1380,10 +1387,15 @@ function envRotateCommand(
     readonly reason?: string | undefined;
     readonly newEpoch?: boolean | undefined;
     readonly initManifest?: boolean | undefined;
+    readonly config?: string | undefined;
   },
   environmentId: EnvironmentId,
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
+    // 同期設定(M1)は**ネットワークより先に**読む: 壊れたファイル・別プロジェクトの
+    // 設定の検出をエポックを進めた後ろに置かない(進めた後に落ちると、後始末の
+    // 不備でローテーションが失敗に見える)
+    const syncConfig = flags.config === undefined ? null : yield* loadSyncConfig(flags.config);
     // 環境床(§6.3)を使うため環境コンテキストで開く(環境は位置引数で確定)。
     // 収束系コマンドなので未収束義務の常時警告は抑制する(このコマンド自身の
     // ローテーション報告が同じ事実を伝える — context.ts の OpenProjectOptions)
@@ -1391,6 +1403,9 @@ function envRotateCommand(
       { ...flags, env: environmentId },
       { quietMandateWarning: true },
     );
+    if (syncConfig !== null) {
+      yield* checkRotateConfigProject(syncConfig, context.projectId);
+    }
     const summary = yield* envRotateOp({
       client: context.client,
       verified: context.verified,
@@ -1415,6 +1430,30 @@ function envRotateCommand(
       summary,
       flags.newEpoch === true || flags.reason !== undefined,
     );
+    if (syncConfig !== null) {
+      // 後始末(M1): 受理された再暗号化の分だけレシートを新 version へ進める。
+      // 失敗は警告に留め、終了コードはローテーションの報告のまま(sync-rotate.ts)。
+      // レシート環境が回した環境と同じなら床ハンドルも同じものを使う(同じ環境に
+      // 2 つのハンドルを開かない — 第 2 段の改訂 1 と同じ規律)
+      const receiptsFloor =
+        syncConfig.receiptsEnvironment === environmentId
+          ? context.floorHandle
+          : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
+      yield* advanceReceiptsAfterRotation({
+        client: context.client,
+        // ローテーションでチェーンは前進している: 再同期した検証済みビューから始める
+        verified: yield* context.resync,
+        recipient: context.recipient,
+        resync: context.resync,
+        config: syncConfig,
+        environmentId,
+        written: summary.written,
+        receiptsFloor,
+        writerUserId: context.session.userId,
+        signingKey: context.masterKeys.sigKeyPair.privateKey,
+        now: () => new Date(),
+      });
+    }
     if (summary.mode === "rotated") {
       // アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b)): エポックが
       // 進んだ = コミット済みアンカーのエポック床が古くなった
@@ -2797,9 +2836,18 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         values["environment-id"],
         "`maruhi env rotate dev`",
       );
-      const { reason, "new-epoch": newEpoch, "init-manifest": initManifest, ...flags } = values;
+      const {
+        reason,
+        "new-epoch": newEpoch,
+        "init-manifest": initManifest,
+        config: syncConfig,
+        ...flags
+      } = values;
       onExitCode(
-        yield* envRotateCommand({ ...flags, reason, newEpoch, initManifest }, environmentId),
+        yield* envRotateCommand(
+          { ...flags, reason, newEpoch, initManifest, config: syncConfig },
+          environmentId,
+        ),
       );
     }),
   ).pipe(

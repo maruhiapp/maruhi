@@ -931,7 +931,7 @@ upsert で足りる)、`--non-interactive` 常時、`project` / `scope` / `gitBr
 さらに前進したビューから始める。(2) `Bun.spawn` は cwd の不在(ENOENT)・非ディレクトリ(ENOTDIR)でも throw し、実行体の不在と
 同じ「未導入」の文面になっていた。spawn の前に cwd を `stat` し、cwd の問題はそれとして名指しする(「Fix the target's cwd in the
 sync config」)。実行体の不在の文面には OS のエラーコードだけ添える。プローブに cwd 不在の態を追加。(3) wrangler は JSON を受け取る
-ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `\\` / `\n`)で現れ、素の断片だけの伏せ字化を
+ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `` / `\n`)で現れ、素の断片だけの伏せ字化を
 すり抜けた。断片ごとに `JSON.stringify` した形も伏せる(単体テストで固定)。
 
 **改訂 2(2026-09-07、pullfrog の初回レビュー〔981312d〕)**: (1) `maruhi.sync.json` は秘密を含まないが**平文の行き先を決める**
@@ -1160,13 +1160,141 @@ token-replayed の文面が 2 か所にあった → 定数に。(4) `checkInteg
 TypeError で落とす経路を型付きエラーに)。(5) docs の `NO_PROXY` は Bun 1.4.0 で実測した(到達不能な proxy + NO_PROXY で到達)
 ので据え置き。
 
-**第 2 段 2b 以降への申し送り**: (1) **M1**(裁定 E の 5 点から。`envRotateOp` の `written` を返り値に載せ、`env rotate
+**第 2 段 2b 以降への申し送り**: (1) **M1**(→ 2b で実装 — 下の「#### 第 2 段 2b」。裁定 E の 5 点から。`envRotateOp` の `written` を返り値に載せ、`env rotate
 --config` があれば回した環境を同期元とするターゲットのレシートを再暗号化を完了した変数だけ新 version へ書く。`alreadyCurrent` /
 `remaining > 0` / resumed / レシート環境自身 / 二重書きの無害性 / 900 警告を早める点をテストで固定。docs「Receipts」1 点目を
 実挙動へ)、(2) 全ターゲット一括の plan(`--all`)、(3) 第 3 段(autoSync / push 時同期 / `gh workflow run`)、(4) SY3 = workflow
 テンプレート 2 標準形 + 四眼の docs(`maruhi ci sync` の上に載る)、(5) SY4 Netlify(http プリセットの宣言 1 つ + モック)、
 (6) SY5 gh プリセット(exec の宣言だけで載る形は確認済み)、(7) Vercel の 16 KiB(exec)は macOS の実測後に見直す、
 (8) http の Vercel で空文字列が拒否されるなら `constraints.nonEmpty` を宣言に足す(人間タスクの結果待ち)。
+
+#### 第 2 段 2b(2026-09-07)
+
+第 2 段の裁定 A′ で PR 単位に切り出した **2b = M1(`env rotate` によるレシートの前進)** を実装した(PR #156)。設計は §3 冒頭
+「同期の最終形」の表と補足 14 M1 が正で、蒸し返していない。出発点は第 2 段の裁定 E の 5 点: (1) `reencryptCurrentValues` の
+`written`(名前・新 version 込み)から追加の往復なしに新 version が取れる、(2) 値の不変を示す印はどこにも無い(候補 (ii)
+「epoch だけ進んだを unchanged 扱い」は棄却済み)、(3) `alreadyCurrent` は平文が変わりうるので進めない、(4) 設定は cwd 依存で
+rotate はリポジトリの外からも打たれる → `--config` 明示時のみ、(5) レシート環境自身のローテーションはレシート変数の version が
+進むだけで中身は不変。各裁定点は同じループで決め、「新案なし」の周では壊れ方(境界値・中断・並行操作・二重書き)を問うた。
+
+**前提の確認(実装を読んで確かめた事実。日付はすべて 2026-09-07)**:
+(1) `runPushPass` の `written: VerifiedPulledValue[]` は**受理された自分の書き込み**(署名対象そのものから組む — サーバー echo
+でない)で、名前は検証済みステートメント由来。巡を跨いだ集約は `recordKnown` の台帳(整合検査用)にしか無く、summary には
+**件数だけ**が載っていた。(2) 押し戻し(自分の書き込みの巻き戻し)は巡末の再走査 `reconcileKnown` → `winnerInconsistency` が
+**証拠として即時中断**させる(`abort` → エラー channel)ので、summary が返る経路には現れない。再走査に到達できなかった実行
+(`remainingExact = false`)でも、受理済みの書き込み自体は取り消せない。(3) 設定の検証は**レシート環境を同期元にできない**
+(第 1 段の裁定 C)ので、「回した環境 = レシート環境」のとき、その環境を同期元にするターゲットは存在しない = 進めるものが無い。
+(4) `loadReceipt` は前進した `verified` を返し(第 1 段の改訂 1)、`storeReceipt` は `pushVariable`(§4.1 の署名 = master
+sig 鍵。409 は内部で有界再試行)。値は `Redacted.make` で包んで渡すので剥がす場所は増えない。(5) `sync plan` の状態表(値・
+version のみ)と `Nothing to apply` は sync-plan.ts の既存経路で、レシートが正しく進めば何も変えずに unchanged になる。
+
+**経路 × 変数の状態 × レシートの状態(裁定 A〜D の入力)**:
+
+| 経路 | 変数の状態 | レシート: 無し | 直前 version を指す | 遅れている / 別系統 | 名前が無い |
+|---|---|---|---|---|---|
+| rotated / resumed | 完了(`written`) | 何もしない(静か) | **進める**(v−1 → v) | 据え置き(件数と名前を 1 行) | 据え置き(未同期。言わない) |
+| rotated / resumed | `alreadyCurrent`(並行 push) | — | 据え置き(`written` に無い。平文が変わりうる) | 据え置き | 据え置き |
+| rotated / resumed | `remaining`(未完了・押し戻し) | — | 据え置き(未完了)。押し戻しは中断 = summary 無し | 据え置き | 据え置き |
+| resumed | 前回の実行が進めた変数 | — | この実行の `written` に無い = 据え置き(不変の証拠が無い) | 同左 | 同左 |
+| up-to-date | (何も書かない) | 何もしない | 何もしない(`written` 空) | 何もしない | 何もしない |
+| sweep(revoke / remove / 降格) | — | 対象外(裁定 C — 設定を渡す口が無い) | 対象外 | 対象外 | 対象外 |
+
+**A. `written` の載せ方** — 列挙: (i) `RotationSummary.written: readonly {name, version}[]`(巡と再開を跨いで集約)/ (ii)
+`VerifiedPulledValue[]` をそのまま載せる / (iii) `envRotateOp` の返り値は変えず、コールバックで受ける。第 1 周の新案: (iv)
+**レシートの前進を `envRotateOp` の内側に入れる**(`RotateInput` に設定由来のターゲットを渡す)(あり — 往復は同じだが、
+env-rotate.ts が sync-* を知る形になり、A′ の「env-rotate.ts への変更を最小に独立レビュー」の理由に反する。後始末は外に置く)。
+第 2 周(壊れ方): (ii) は暗号文・署名まで summary に運び、表示層が要らないものを持つ。(iii) は `sweepRotateFor` の 3 呼び出し元に
+no-op を配る。(i) で「最終再走査で完了が確認された名前だけ」に絞る案は、前提 (2) のとおり押し戻しが中断になるため絞る対象が無く、
+`remainingExact = false` の実行で受理済みの書き込みを捨てる理由も無い(進めても、万一巻き戻されていれば plan が changed と
+示すだけ = 無害な側)(なし)。**選定 = (i)**。`ReencryptOutcome` と summary の 4 経路(rotated / resumed / up-to-date /
+再開で押せる対象なし)すべてに載せ、`reencryptCurrentValues` が巡ごとの `attempted.written` を名前と version に写して集める。
+棄却: (ii)(不要な材料)、(iii)(呼び出し元の分岐)、(iv)(A′ に反する)。
+
+**B. 設定の与え方と発火条件** — 列挙: (i) `env rotate --config <path>` 明示時のみ / (ii) cwd に `maruhi.sync.json` があれば
+自動 / (iii) 専用コマンド `maruhi sync ack <target>`(rotate は結びで案内するだけ)。第 1 周の新案: (iv) `--config` 無しのとき
+結びで `maruhi sync plan` を案内する note(なし — 同期を使わない利用者の毎回のローテーションに無関係な note が出る。既存の
+アンカー更新 note とも重なる。docs が言う)。第 2 周(壊れ方): (ii) は別プロジェクトのリポジトリで打つと `project` を省いた設定を
+黙って使い、存在しない環境のレシートを読みに行く(`--config` 明示なら利用者の断言)。(iii) は **M1 の核に反する**: 後から打つ
+`sync ack` には「その version は再暗号化で平文が不変」と「誰かが新しい値を push した」を区別する材料が無く、進めてよいかを
+判定できない(平文の不変を知るのはローテーションの実行者の CLI だけ)。(i) で `--config` を渡したが設定が壊れている / 別
+プロジェクトの場合、**エポックを進めた後に落ちると後始末の不備がローテーションの失敗に見える** → 設定はネットワークより先に読み、
+`project` の照合(`--project` の有無に関わらず解決済みのプロジェクト ID と比べる — 既存の `checkConfigProject` はフラグとしか
+比べない)は `openEnvironment` の直後・`envRotateOp` の**前**に置く(食い違いは書き方の誤り = 2、`rotate` は呼ばれない)(なし)。
+**選定 = (i)**。フラグ名は sync 系と同じ `--config`、説明文は「明示時のみ進める・既定なし」を言う(既定パスがある sync 系の
+文とは別)。棄却: (ii)(誤設定の黙認)、(iii)(判定材料が無い)、(iv)(無関係な note)。
+
+**C. 全環境ローテーション(`server revoke` / `member remove` / 降格)** — 列挙: (i) M1 の対象外(docs に「その後の plan は
+全変数を changed と示す。無害」と明記)/ (ii) これらにも `--config` を足す / (iii) 共通の後始末を `envRotateOp` の外側に置き、
+両経路から呼ぶ。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は退職者対応 = 緊急操作で、設定ファイルの所在(cwd)を前提に
+しにくく、全環境を回すので「どの環境のレシートを」が設定 1 つでは閉じない(複数リポジトリ)。取りこぼしの回収経路: 後から
+`env rotate --config` を打ち直しても up-to-date = 新 version は増えず進まないが、**次の apply が同じ平文を書き直す**(無害・
+冪等)ので回収は自然に起きる。(iii) は (ii) と同じ前提を要る。**選定 = (i)**。sync-rotate.ts は `envRotateCommand` だけが
+呼び、`sweepRotateFor` は型の追加(`written`)以外に触れない。棄却: (ii) / (iii)(緊急操作に設定を持ち込む)。
+
+**D. 前進の規則と書き方** — 進める条件は不変条件のとおり: `written` の (name, v) について `receipt.variables[name] === v − 1`
+のときだけ v へ(**厳密一致**。v−1 より小さい = 遅れ、大きい = 別系統のレシート、無い = 未同期 — いずれも据え置き)。複数
+ターゲット: 設定の順にすべて処理し、1 つの失敗(読み・書き)は警告して次へ(終了コードは変えない)。ビュー: ローテーションで
+チェーンは前進しているので、後始末は `context.resync` した検証済みビューから始め、各ターゲットの `loadReceipt` が返す前進した
+ビューを次へ引き継ぐ(第 1 段の改訂 1 と同じ規律)。床: レシート環境が回した環境と同じなら rotate の床ハンドルを共有し(前提 (3)
+により実際にはターゲットが無く読みも書きも起きないが、同じ環境に 2 つのハンドルを開かない規律は構造で守る)、違えば
+`floorHandleFor`。`preset` は据え置き、`syncedAt` は書き手の時計(表示用)。**内容が変わらなければ書かない**(進めた名前が
+0 なら version を消費しない)。900 警告は書いた後の version で出す(M1 の書き込みも version を消費する — 申し送りの「早める」点)。
+第 1 周の新案: 遅れの判定を `select` されている名前(ターゲットの `variables` / `exclude`)に限る案(なし — レシートにある名前は
+過去に届けた名前であり、ターゲットから外れていても「その version の平文が届いている」事実は変わらない。進めても plan は `-`
+〔no longer synced〕と示し、判定に選択を混ぜる意味が無い)。第 2 周(壊れ方): 別のメンバーが同時に apply して 409 → `pushVariable`
+の内部再試行(勝者を prev にして再送)。二重書きは無害(同じ写像を積むだけ。apply 側は `sameVariables` で書かない)。部分完了
+(`remaining > 0`、終了コード 1)でも受理済みの分は進める(受理は取り消せない。進めないと次の apply が余計に書き直す)。
+`--new-epoch` で未完了の旧エポック値を一気に新エポックへ揃えた場合も、v−1 の照合だけで正しく判定できる(中間エポックを
+経由しない — 直前 version は 1 つ)(なし)。
+
+**E. 出力** — 1 ターゲット 1 行(`Advanced the receipt for target web to the re-encrypted versions of 2 variables (saved as
+version 5 of sync-receipt:web in environment ops)`)。据え置いた分は同じ行に `; 1 variable left as delivered (API_KEY: the receipt
+was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)`(名前は `displayText`)。進めた
+名前が 0 で据え置きだけなら `Receipt for target web not advanced: …`。レシートが無い・確認だけ(`written` 空)は静か。
+回した環境を同期元にするターゲットが無ければ `No sync target in the config is synced from environment dev, so no receipt was
+advanced` の 1 行。失敗は `logWarning`(「the rotation is done, but the receipt … could not be advanced (…). The next
+`maruhi sync plan <target>` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext」
+— saveReceipt と同じ方向)。順序: `reportRotation`(警告 → Done / Partial の行 → 終了コード)→ レシートの行 → アンカー更新の
+note(既存の順序と終了コードを崩さない)。値・平文の長さ・レシートの中身は出さない。
+
+**I. テスト** — フィクスチャの列挙: (i) `env-rotate.test.ts` の `makeServer` を 2 環境に拡張 / (ii) `value-env.ts` に
+`rotate_epoch` の複合受理と epoch の前進を足す / (iii) 両者を**合成**する。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は
+makeServer の複合受理(チェーン追記・ラップの配布・境界 checkpoint・スナップショット)の写しになる。(i) は makeServer が
+`ENV_ID` 固定の 300 行で、2 環境化は既存 70 テストの前提を動かす。(iii) は makeServer(回す環境 dev)の handlers を先に置けば
+チェーンは makeServer の可変な現在形が勝ち、`makeValueEnvironmentServer`(レシート環境 ops、epoch 1 固定)は自環境のパスしか
+見ないので**支援モジュールを変えずに**合成できる(なし)。**選定 = (iii)**、置き場は `env-rotate.test.ts` 末尾の
+`describe("maruhi env rotate --config …")`(makeServer がファイル内なので)。固定した態(14): 完了 → 進む + その後の `sync plan`
+が全件 unchanged + `sync apply` が `Nothing to apply`(二重書き無し・ベンダー CLI 起動 0)/ `--config` 無し = レシート環境への
+リクエスト 0 / 遅れていた変数は据え置き(`~ API_KEY version 1 -> 3`)/ レシートに無い名前は据え置き・進めるものが無ければ書かない /
+`alreadyCurrent` は据え置き(勝者の平文は plan が update と示す)/ `remaining > 0` は完了分だけ・終了コード 1 のまま / resumed は
+再開分だけ(前回の実行が進めた変数は触らない)/ レシート環境自身のローテーション(レシート変数が再暗号化されるだけ・その後の
+plan は unchanged)/ レシート無し = 静か / 複数ターゲット + 1 つの書き込み失敗(警告・残りは進む・終了コード 0)/ 900 警告 /
+`project` の食い違い = 2 で rotate 未送信 / 設定不在 = 1 で rotate 未送信 / up-to-date = 触らない。加えて `redacted.test.ts` の
+棚卸し表(変更なし)、`--help` golden、`message-style.test.ts`、fallow(未使用 export を非公開に)。
+
+**J. docs** — `deploy-targets.mdx`「Receipts」の 1 点目を実挙動へ(`--config` の使い方・進める条件を「平文の不変を知るのは
+ローテーション自身だけ」として説明・据え置く 3 つの場合・`--yes` 不要・`--config` 無しと全環境ローテーションでは進まない = 無害)。
+index / README は `maruhi sync` の紹介のみで変更不要。
+
+**K. ROADMAP と裁定録** — SY2 行の 2b を完了注記へ(日付・PR 番号・裁定の要約)。SY2 全体は第 3 段が残るので完了にしない。
+本節を第 2 段の末尾に追記。
+
+**不変条件の確認**: 仕様改訂なし(暗号操作の追加なし。レシートの前進は `storeReceipt` = §4.1 の署名つきの普通の push。
+チェーン・wire・サーバー・Web・`packages/crypto` は無変更)/ 平文の不変を確かめずに進めない(`written` × 直前 version の厳密一致)/
+ディスクレス(剥がす場所は増えない — 棚卸し表は据え置き。出力は名前・件数・version のみ)/ 一方通行(maruhi サーバーとしか
+話さない。同期先は読まない・書かない)/ CI では書けない(`ci sync` / `ci run` は無変更。`env rotate` は master 鍵を持つ人間の経路)/
+失敗の方向(後始末の失敗は警告・終了コード不変。迷う変数は据え置き)/ ADR-0016(型付きエラー・stdout はコマンドの出力だけ・
+通知は notice.ts・`process.*` は live.ts のみ・新フラグは決定 5 の範囲・golden / message-style)/ 英語 / 依存ゼロ / エージェント環境の
+新しいゲート無し / スコープ(第 3 段・`--all`・Vercel の一覧の続き・SY3〜SY5 は取り込まない)。
+
+**第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
+未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは
+補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。(2) 全ターゲット一括の plan(`--all`)。(3) SY3 =
+workflow テンプレート 2 標準形 + 四眼の docs。(4) SY4 Netlify(http プリセットの宣言 1 つ + モック)。(5) SY5 gh プリセット。
+(6) 人間タスク(未消化・本 PR で追加なし): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、Vercel の一覧が
+ページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。(7) 全環境ローテーション後の
+レシートは次の apply が無害に書き直す(裁定 C)— 需要があれば `server revoke` / `member remove` に `--config` を足す改訂として
+別途裁定する。
 
 ---
 

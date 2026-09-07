@@ -82,7 +82,23 @@ export interface RotationSummary {
   readonly remainingExact: boolean;
   /** 再暗号化を中断させた原因(null = 最後まで走った)。呼び出し側が警告に使う。 */
   readonly failure: string | null;
+  /**
+   * この実行が**受理された**再暗号化の書き込み(名前と新 version。巡と再開を
+   * 跨いで集約)。同期レシートの前進(SY2 第 2 段 2b — M1)の材料: 再暗号化は
+   * 平文を変えないので、ここに載った version は直前 version と同じ平文を持つ。
+   * `alreadyCurrent`(並行 push — 平文が変わりうる)と未完了分は載らない。
+   * 受理済みの書き込みは取り消せないため、再走査に到達できなかった実行
+   * (`remainingExact = false`)でも載せる — 押し戻し(自分の書き込みの巻き戻し)は
+   * 再走査が証拠として中断させるので、summary が返る経路には現れない。
+   */
+  readonly written: readonly ReencryptedVariable[];
   readonly warnings: readonly string[];
+}
+
+/** 受理された再暗号化 1 件(検証済みステートメント由来の名前と新 version)。 */
+export interface ReencryptedVariable {
+  readonly name: string;
+  readonly version: number;
 }
 
 interface RotateInput {
@@ -142,6 +158,8 @@ interface ReencryptOutcome {
    * 事実が呼び出し側の部分完了警告を素通りしてしまうため、結果として返す。
    */
   readonly failure: string | null;
+  /** 受理された自分の書き込み(全巡の集約 — RotationSummary.written の材料)。 */
+  readonly written: readonly ReencryptedVariable[];
 }
 
 /** 409 を返された 1 変数(勝者の検証に要する既知 latest と申告 version を保つ)。 */
@@ -1819,6 +1837,8 @@ function reencryptCurrentValues(input: {
     let staleCount = 0;
     /** この実行で §6.3 検証を通した値(次巡の prev アンカーの整合検査の基準)。 */
     const known = new Map<string, ConflictedTarget>();
+    /** 受理された自分の書き込み(巡を跨いで集約 — レシートの前進の材料)。 */
+    const written: ReencryptedVariable[] = [];
 
     const outcome = (
       remaining: number,
@@ -1830,6 +1850,7 @@ function reencryptCurrentValues(input: {
       remaining,
       remainingExact,
       failure,
+      written,
     });
 
     for (let pass = 1; pass <= MAX_REENCRYPT_PASSES; pass += 1) {
@@ -1845,6 +1866,9 @@ function reencryptCurrentValues(input: {
       });
       reencrypted += attempted.reencrypted;
       warnings.push(...attempted.warnings);
+      written.push(
+        ...attempted.written.map((value) => ({ name: value.name, version: value.version })),
+      );
       recordKnown(known, attempted.written);
       recordConflicts(known, attempted.conflicted);
       const settled = yield* settlePass({
@@ -2036,6 +2060,7 @@ function resumeReencryption(input: {
             remaining: stale.length,
             remainingExact: true,
             failure: nothingDecryptable(stale.length),
+            written: [],
           }
         : yield* reencryptCurrentValues({
             context: reencryptContext(input.input, member, {
@@ -2063,6 +2088,7 @@ function resumeReencryption(input: {
       remaining: outcome.remaining,
       remainingExact: outcome.remainingExact,
       failure: outcome.failure,
+      written: outcome.written,
       warnings: dedupeWarnings(warnings),
     };
   });
@@ -2272,6 +2298,7 @@ function rotateWithWarnings(
         remaining: 0,
         remainingExact: true,
         failure: null,
+        written: [],
         warnings: dedupeWarnings(warnings),
       };
     }
@@ -2350,6 +2377,7 @@ function rotateWithWarnings(
       remaining: outcome.remaining,
       remainingExact: outcome.remainingExact,
       failure: outcome.failure,
+      written: outcome.written,
       warnings: dedupeWarnings(warnings),
     };
   });
