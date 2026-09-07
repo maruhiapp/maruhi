@@ -1149,6 +1149,17 @@ secrets-bulk が部分失敗を返しうるか(envelope は `success` 1 つな�
 レシートの push が知らない)→ 同期元 / レシート環境と同じならその床ハンドルを使う。トークンをレシート環境に置いて apply →
 plan が通る態を足した。
 
+**改訂 2(2026-09-07、pullfrog の初回レビュー〔abaaf30〕)**: (1) Vercel の削除は一覧の**完全性**を仮定していた —
+公開 schema の 200 応答には `{envs, pagination: {count, next, prev}}` の変種があり、続きのページに名前があっても「消えている」
+と読んでレシートから落とす(秘密が同期先に残り続ける、悪い方向の誤り)。候補: (i) `pagination.next` を辿る(パラメータ名を
+docs で確かめられない)/ (ii) **続きがあるのに名前が無ければ fail-closed**(レシートに残し、文面で同期先での手動削除か再 apply を
+案内)。(ii) を採り、宣言に `nextPage: ["pagination", "next"]` を足した。完全な一覧に無い = 削除済み扱いは維持(冪等な削除)。
+(2) `readVercel` は `failed` の**不在**から全件成功を読んでいた(`{}` の 2xx でもレシートに書く)→ 書き込みの 2xx に `created` が
+無ければ「期待した形でない応答」として届いたと読まない(Cloudflare の `success === true` と対称に)。(3) `ci-lease.ts` の
+token-replayed の文面が 2 か所にあった → 定数に。(4) `checkIntegrationToken` は ISO-8859-1 の外の文字も拒む(`Headers` が
+TypeError で落とす経路を型付きエラーに)。(5) docs の `NO_PROXY` は Bun 1.4.0 で実測した(到達不能な proxy + NO_PROXY で到達)
+ので据え置き。
+
 **第 2 段 2b 以降への申し送り**: (1) **M1**(裁定 E の 5 点から。`envRotateOp` の `written` を返り値に載せ、`env rotate
 --config` があれば回した環境を同期元とするターゲットのレシートを再暗号化を完了した変数だけ新 version へ書く。`alreadyCurrent` /
 `remaining > 0` / resumed / レシート環境自身 / 二重書きの無害性 / 900 警告を早める点をテストで固定。docs「Receipts」1 点目を

@@ -76,6 +76,13 @@ type IssueOutcome =
 const LEASE_NOT_FOUND_MESSAGE =
   "The server answered 404 for the lease. The lease endpoint folds these into one uniform answer (existence hiding — AUTH_SPEC §14-1): unknown project, no active grant, a lease-policy mismatch (issuer / audience / claim constraints), and an out-of-scope or unknown environment. Check --server, --project, and the environment in the workflow, and that a project owner granted this workload's identity with `maruhi server grant --lease-policy`";
 
+/**
+ * 2 回連続の先着負け = 発行したそばからコピーが使われている。これ以上の再試行は
+ * しない(上限 1 回)— トークン漏洩の兆候として調査を促す。
+ */
+const TOKEN_REPLAYED_AGAIN_MESSAGE =
+  "The lease was rejected as token-replayed again with a freshly minted token. Someone else is using this job's OIDC tokens — investigate the job's steps and network path for token exfiltration (AUTH_SPEC §14-1)";
+
 /** 発行の 1 試行。`token-replayed` だけを再試行可能として分類する。 */
 function attemptLease(
   input: Parameters<typeof issueLease>[0],
@@ -142,13 +149,7 @@ export function leaseEnvironments(
       let outcome = yield* attemptLease({ ...common, token });
       if (outcome.kind === "replayed") {
         if (retried) {
-          // 2 回連続の先着負け = 発行したそばからコピーが使われている。これ以上の
-          // 再試行はしない(上限 1 回)— トークン漏洩の兆候として調査を促す
-          return yield* Effect.fail(
-            cliError(
-              "The lease was rejected as token-replayed again with a freshly minted token. Someone else is using this job's OIDC tokens — investigate the job's steps and network path for token exfiltration (AUTH_SPEC §14-1)",
-            ),
-          );
+          return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
         }
         // 一時鍵は同じものを提示する(新規トークンは未束縛で、この鍵に束縛される)
         yield* io.logError(
@@ -159,11 +160,7 @@ export function leaseEnvironments(
         claims = yield* readLeaseClaims(token);
         outcome = yield* attemptLease({ ...common, token });
         if (outcome.kind === "replayed") {
-          return yield* Effect.fail(
-            cliError(
-              "The lease was rejected as token-replayed again with a freshly minted token. Someone else is using this job's OIDC tokens — investigate the job's steps and network path for token exfiltration (AUTH_SPEC §14-1)",
-            ),
-          );
+          return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
         }
       }
       // §9.1 の検証義務 (1)〜(4)。何一つ通るまで値は復号されない

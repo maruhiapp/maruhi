@@ -109,6 +109,11 @@ export type HttpDeleteSpec =
         readonly keyField: string;
         readonly idField: string;
         /**
+         * 一覧が続きを持つことを示すフィールドの経路(Vercel = `pagination.next`)。
+         * 続きがあるのに名前が無い一覧は「消えている」の証拠にならない(fail-closed)。
+         */
+        readonly nextPage: readonly [string, string];
+        /**
          * 同期先側の環境の照合(名前が同じでも別の環境のものを消さない):
          * `targetField` の配列が `targetOption` の値を含み、`branchField` が
          * `branchOption` の値(無ければ未設定)と一致する項目だけを消す。
@@ -226,6 +231,7 @@ export const HTTP_PRESETS = {
         itemsField: "envs",
         keyField: "key",
         idField: "id",
+        nextPage: ["pagination", "next"],
         match: {
           targetField: "target",
           targetOption: "environment",
@@ -667,8 +673,26 @@ function readVercel(
       },
     };
   }
+  if (batch.kind === "delete") {
+    return { delivered: batch.names, failure: null };
+  }
+  if (!("created" in body)) {
+    // 書き込みの 2xx に `created` が無い = 期待した形の応答でない(schema の変化・
+    // 中継の応答)。届いたと読まない(pullfrog 指摘)
+    return {
+      delivered: [],
+      failure: {
+        names: batch.names,
+        lines: scrubbed(
+          [`HTTP ${outcome.status} without a created field (unexpected response shape)`],
+          batch.writes,
+          input.token,
+        ),
+      },
+    };
+  }
   const failed = recordsOf(body["failed"]);
-  if (batch.kind === "delete" || failed.length === 0) {
+  if (failed.length === 0) {
     // failed が空なら全件届いたと読む(created の形は 1 件 / 配列で揺れる)
     return { delivered: batch.names, failure: null };
   }
@@ -768,7 +792,8 @@ function lookupIds(
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
   name: string,
 ): Effect.Effect<
-  { readonly ids: readonly string[] } | { readonly failure: readonly string[] },
+  | { readonly ids: readonly string[]; readonly complete: boolean }
+  | { readonly failure: readonly string[] },
   CliError,
   HttpClient.HttpClient
 > {
@@ -790,6 +815,11 @@ function lookupIds(
     }
     const listed: unknown = body[spec.list.itemsField];
     const items: Record<string, unknown>[] = Array.isArray(listed) ? listed.filter(isRecord) : [];
+    // 続きのページがあるか(Vercel の `pagination.next`。無い / null = 一覧は完全)
+    const [pageField, nextField] = spec.list.nextPage;
+    const pagination = body[pageField];
+    const next = isRecord(pagination) ? pagination[nextField] : undefined;
+    const complete = next === undefined || next === null || next === false;
     const target = input.options[spec.list.match.targetOption];
     const branch = input.options[spec.list.match.branchOption];
     const ids = items
@@ -809,7 +839,7 @@ function lookupIds(
         const id = item[spec.list.idField];
         return typeof id === "string" ? [id] : [];
       });
-    return { ids };
+    return { ids, complete };
   });
 }
 
@@ -835,7 +865,20 @@ export function runBatch(
     if ("failure" in looked) {
       return { delivered: [], failure: { names: batch.names, lines: looked.failure } };
     }
-    // 一覧に無い = 同期先で既に消えている(読み戻しは ID の突合だけで、値は読まない)
+    if (looked.ids.length === 0 && !looked.complete) {
+      // 一覧に続きがあるのに名前が無い: 「消えている」とは言えない。届いたと記録せず
+      // レシートに残す(次の apply が再び試す — pullfrog 指摘。fail-closed)
+      return {
+        delivered: [],
+        failure: {
+          names: batch.names,
+          lines: [
+            `${input.preset.label} returned a paginated list of variables, so maruhi could not confirm that ${displayText(name)} is gone from the target. It stays in the receipt; remove it at the target yourself, or apply again`,
+          ],
+        },
+      };
+    }
+    // 完全な一覧に無い = 同期先で既に消えている(読み戻しは ID の突合だけで、値は読まない)
     for (const id of looked.ids) {
       const request = HttpClientRequest.make(spec.remove.method)(
         `https://${input.preset.host}${renderPath(spec.remove.path, input.options, id)}`,
@@ -855,11 +898,14 @@ export function runBatch(
   });
 }
 
-/** C0 制御文字(改行を含む)か DEL を含むか(ヘッダー値に載らない文字)。 */
-function hasControlCharacter(text: string): boolean {
+/**
+ * ヘッダー値に載らない文字を含むか: C0 制御文字(改行を含む)・DEL・ISO-8859-1 の
+ * 外(fetch の `Headers` が TypeError で拒む — 型付きエラーにする)。
+ */
+function hasNonHeaderCharacter(text: string): boolean {
   for (const character of text) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) {
+    if (code < 0x20 || code === 0x7f || code > 0xff) {
       return true;
     }
   }
@@ -873,9 +919,9 @@ export function checkIntegrationToken(name: string, bytes: Uint8Array): CliError
     return cliError(`The token variable ${displayText(name)} is empty or not valid UTF-8`);
   }
   // ヘッダー値に載らない文字(改行・制御文字)は `echo` の末尾改行が典型
-  if (hasControlCharacter(text)) {
+  if (hasNonHeaderCharacter(text)) {
     return cliError(
-      `The token variable ${displayText(name)} contains a newline or control character, so it cannot be sent as an Authorization header. Push the token without a trailing newline (\`printf %s\` instead of \`echo\`)`,
+      `The token variable ${displayText(name)} contains a newline, a control character, or a character outside ISO-8859-1, so it cannot be sent as an Authorization header. Push the token without a trailing newline (\`printf %s\` instead of \`echo\`)`,
     );
   }
   return text;

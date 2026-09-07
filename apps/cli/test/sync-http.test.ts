@@ -19,7 +19,12 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { parseSyncConfig, type SyncTarget } from "../src/sync-config.ts";
-import { buildBatches, HTTP_PRESETS, type PathToken } from "../src/sync-http.ts";
+import {
+  buildBatches,
+  checkIntegrationToken,
+  HTTP_PRESETS,
+  type PathToken,
+} from "../src/sync-http.ts";
 import { receiptVariableName } from "../src/sync-receipt.ts";
 import {
   buildChain,
@@ -380,6 +385,16 @@ describe("http プリセットの宣言", () => {
     }
   });
 
+  it("checkIntegrationToken: 改行・制御文字・ISO-8859-1 の外を型付きエラーで拒み、文面に値を出さない", () => {
+    const encoder = new TextEncoder();
+    expect(checkIntegrationToken("T", encoder.encode("abc-123"))).toBe("abc-123");
+    for (const bad of ["secret-abc\n", "secret-ab\u0001c", "secret-\u00e9\u3042", ""]) {
+      const result = checkIntegrationToken("T", encoder.encode(bad));
+      expect(typeof result).not.toBe("string");
+      expect(String((result as { message: string }).message)).not.toContain("secret-");
+    }
+  });
+
   it("buildBatches: Workers は削除を書き込みに同居させて 100 件ごと、Vercel は 25 件ごと + 削除は 1 件ずつ", () => {
     const writes = Array.from({ length: 120 }, (_, index) => write(`V${index}`));
     const workers = buildBatches({
@@ -610,7 +625,7 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     });
     expect(await sync(newline, "apply", "worker")).toBe(1);
     expect(newline.env.errors.join("\n")).toContain(
-      "The token variable CF_API_TOKEN contains a newline or control character",
+      "The token variable CF_API_TOKEN contains a newline, a control character, or a character outside ISO-8859-1",
     );
     expect(cf.requests).toEqual([]);
     expectNoSecretLeak(newline.env, cf.requests);
@@ -796,6 +811,52 @@ describe("maruhi sync apply (http, Vercel)", () => {
       "Applied to target web: 0 variables written, 1 deleted",
     );
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
+  });
+
+  it("一覧に続きがある(pagination.next)のに名前が無ければ消えたと断じず、レシートに残して exit 1", async () => {
+    const vercel = makeFakeVercel({ token: VERCEL_TOKEN, projectId: "prj_123", paginated: true });
+    const fixture = await startFixture({
+      targets: {
+        web: vercelTarget({
+          variables: ["ALPHA"],
+          options: { environment: "preview", projectId: "prj_123" },
+        }),
+      },
+      receipts: [
+        await receiptVariable({
+          target: "web",
+          preset: "vercel",
+          variables: { ALPHA: 3, GONE: 1 },
+        }),
+      ],
+      vendorHandlers: vercel.handlers,
+      vendorHosts: ["api.vercel.com"],
+    });
+    expect(await sync(fixture, "apply", "web")).toBe(1);
+    expect(vercel.requests.map((request) => request.method)).toEqual(["GET"]);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the Vercel API returned a paginated list of variables, so maruhi could not confirm that GONE is gone from the target. It stays in the receipt",
+    );
+    // レシートは書かれない(GONE が残る = 次の apply が再び試す)
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
+  it("書き込みの 2xx に created が無ければ届いたと読まず、レシートは書かれない", async () => {
+    const vercel = makeFakeVercel({
+      token: VERCEL_TOKEN,
+      projectId: "prj_123",
+      override: () => ({ status: 201, json: {} }),
+    });
+    const fixture = await startFixture({
+      targets: { web: vercelTarget({ options: { environment: "preview", projectId: "prj_123" } }) },
+      vendorHandlers: vercel.handlers,
+      vendorHosts: ["api.vercel.com"],
+    });
+    expect(await sync(fixture, "apply", "web")).toBe(1);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "HTTP 201 without a created field (unexpected response shape)",
+    );
+    expect(fixture.receipts.writes).toEqual([]);
   });
 
   it("トークンが拒否されれば(403)何も届かず、レシートは書かれない", async () => {

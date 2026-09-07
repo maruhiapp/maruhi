@@ -254,6 +254,8 @@ export function makeFakeVercel(input: {
   readonly override?: VendorOverride;
   /** 1 リクエストのうち失敗させる名前(部分成功の再現)。 */
   readonly rejectKeys?: readonly string[];
+  /** 一覧に続きがあると申告する(`pagination.next` — fail-closed の再現)。 */
+  readonly paginated?: boolean;
 }): FakeVercel {
   const envs: FakeVercelEnv[] = [...(input.initial ?? [])];
   const requests: MockRequest[] = [];
@@ -279,7 +281,15 @@ export function makeFakeVercel(input: {
       if (rejected !== null) {
         return rejected === "skip" ? null : rejected;
       }
-      return { status: 200, json: { envs: listEnvs(envs, request.query) } };
+      return {
+        status: 200,
+        json: {
+          envs: listEnvs(envs, request.query),
+          ...(input.paginated === true
+            ? { pagination: { count: envs.length, next: 1_700_000_000_000, prev: null } }
+            : {}),
+        },
+      };
     },
     (request) => {
       const rejected = envCollection(request, "POST");
