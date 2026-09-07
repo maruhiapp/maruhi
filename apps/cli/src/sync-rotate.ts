@@ -15,8 +15,12 @@
 // `alreadyCurrent`(並行 push — 平文が変わりうる)・未完了・レシートに無い名前
 // (未同期)も進めない — 判定に迷う変数は「次の apply が無害に書き直す」側へ倒す。
 //
-// 後始末であってローテーションの一部ではない: ここでの失敗は警告に留め、
-// ローテーション自体の終了コードを変えない(sync-plan.ts の saveReceipt と同じ)。
+// 後始末であってローテーションの一部ではない: ここでの失敗(通信・権限・競合 —
+// 再同期・レシートの読み・書きのどれでも)は警告に留め、ローテーション自体の終了
+// コードを変えない(sync-plan.ts の saveReceipt と同じ)。**例外は証拠**(`CliError.evidence`
+// — 床違反・チェーン置換・equivocation): 正規署名済みデータ同士の矛盾は「次の apply が
+// 書き直す」種類の失敗ではなく、警告に畳むと「apply し直せ」という誤った案内で
+// 改竄の証拠を隠す。証拠だけはそのまま失敗として通す(env-rotate.ts の再走査と同じ規律)。
 // maruhi サーバーとしか話さず、同期先(ベンダー API / CLI)には触れない。出力に
 // 出るのはターゲット名・件数・version・変数名(displayText)だけである。
 
@@ -232,14 +236,37 @@ function reportTarget(
 }
 
 /**
+ * 後始末の失敗の仕分け: 証拠(再実行では解消しない矛盾)はそのまま失敗として
+ * 通し、それ以外は値として持ち帰って警告にする。
+ */
+function asCleanupOutcome<A, R>(
+  effect: Effect.Effect<A, CliError, R>,
+): Effect.Effect<
+  | { readonly kind: "ok"; readonly value: A }
+  | { readonly kind: "failed"; readonly error: CliError },
+  CliError,
+  R
+> {
+  return effect.pipe(
+    Effect.map((value) => ({ kind: "ok", value }) as const),
+    Effect.catch((error: CliError) =>
+      error.evidence === true
+        ? Effect.fail(error)
+        : Effect.succeed({ kind: "failed", error } as const),
+    ),
+  );
+}
+
+/**
  * Advances the receipts of every target synced from the rotated environment
  * to the versions this rotation wrote. A failure on one target is a warning
  * (the rotation is already done; the next apply rewrites the same plaintext),
- * and the remaining targets are still processed.
+ * and the remaining targets are still processed. Only evidence (a floor or
+ * chain verification rejection) fails the command.
  */
 export function advanceReceiptsAfterRotation(
   input: AdvanceReceiptsInput,
-): Effect.Effect<void, never, CliIo> {
+): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     if (input.written.length === 0) {
@@ -255,22 +282,16 @@ export function advanceReceiptsAfterRotation(
     }
     // 再同期の失敗も後始末の失敗: ローテーションは済んでいるので警告に留める
     // (受け皿の外で失敗させると、成功した報告の後で終了コードが 1 に化ける)
-    const synced = yield* input.resync.pipe(
-      Effect.map((verified) => ({ kind: "ok", verified }) as const),
-      Effect.catch((error: CliError) => Effect.succeed({ kind: "failed", error } as const)),
-    );
+    const synced = yield* asCleanupOutcome(input.resync);
     if (synced.kind === "failed") {
       yield* logWarning(
         `the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (${synced.error.message}). The next \`maruhi sync plan\` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext`,
       );
       return;
     }
-    let verified = synced.verified;
+    let verified = synced.value;
     for (const target of targets) {
-      const attempt = yield* advanceTarget(input, target, verified).pipe(
-        Effect.map((done) => ({ kind: "ok", ...done }) as const),
-        Effect.catch((error: CliError) => Effect.succeed({ kind: "failed", error } as const)),
-      );
+      const attempt = yield* asCleanupOutcome(advanceTarget(input, target, verified));
       if (attempt.kind === "failed") {
         // 1 ターゲットの失敗で残りを止めない。終了コードも変えない(後始末)
         yield* logWarning(
@@ -278,8 +299,8 @@ export function advanceReceiptsAfterRotation(
         );
         continue;
       }
-      verified = attempt.verified;
-      yield* reportTarget(target, attempt.outcome, input.config.receiptsEnvironment);
+      verified = attempt.value.verified;
+      yield* reportTarget(target, attempt.value.outcome, input.config.receiptsEnvironment);
     }
   });
 }

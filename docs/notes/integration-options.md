@@ -931,7 +931,7 @@ upsert で足りる)、`--non-interactive` 常時、`project` / `scope` / `gitBr
 さらに前進したビューから始める。(2) `Bun.spawn` は cwd の不在(ENOENT)・非ディレクトリ(ENOTDIR)でも throw し、実行体の不在と
 同じ「未導入」の文面になっていた。spawn の前に cwd を `stat` し、cwd の問題はそれとして名指しする(「Fix the target's cwd in the
 sync config」)。実行体の不在の文面には OS のエラーコードだけ添える。プローブに cwd 不在の態を追加。(3) wrangler は JSON を受け取る
-ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `` / `\n`)で現れ、素の断片だけの伏せ字化を
+ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `\\` / `\n`)で現れ、素の断片だけの伏せ字化を
 すり抜けた。断片ごとに `JSON.stringify` した形も伏せる(単体テストで固定)。
 
 **改訂 2(2026-09-07、pullfrog の初回レビュー〔981312d〕)**: (1) `maruhi.sync.json` は秘密を含まないが**平文の行き先を決める**
@@ -1293,6 +1293,16 @@ index / README は `maruhi sync` の紹介のみで変更不要。
 再同期を `advanceReceiptsAfterRotation` の内側へ移し、`written` 空 / ターゲット無しの早期終了の**後**で評価し、失敗は
 「the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (…)」の警告に畳む。
 再暗号化が終わった後のチェーン取得だけを落とす態(終了コード 0・レシート書き込み 0・アンカーの note は出る)で固定。
+
+**改訂 2(2026-09-07、pullfrog の初回レビュー〔3a88be0〕)**: (1) 裁定 D の「後始末の失敗は警告」がレシート環境の**検証拒否**
+(床違反・チェーン置換・equivocation = `CliError.evidence`)まで畳んでいた。改竄の証拠を「the receipt … could not be advanced (…);
+applying again overwrites them with the same plaintext」という**誤った案内**で包み、終了コード 0 で終える形 → 裁定 D の範囲を
+「通信・権限・競合の失敗(再同期・読み・書き)」に限定し、証拠だけはそのまま失敗として通す(`asCleanupOutcome` — env-rotate.ts の
+再走査が証拠を即時中断にするのと同じ規律。ローテーション自体は済んでいるので報告は先に出ている)。モジュール冒頭に範囲を明記。
+態を 2 つ追加: レシート環境の**読み**の通信失敗(pull の 503)= 警告・終了コード 0・書き込み 0 / レシート環境の value-version
+rollback(先に `sync plan` で床を確立してから古い version を配る)= 証拠として終了コード 1・書き込み 0・「Done: rotated」は出ている。
+(2) `--config` 指定の確認だけの実行でも `context.resync` が無条件に走っていた(往復 1 回の無駄)— 改訂 1 で早期終了の後ろへ
+移したので解消済み。(3) 第 1 段の改訂 1 の記述(JSON の逃がし形の列挙)がバッククォートの整形で `\\` を失っていた → 復元。
 
 **第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
 未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは

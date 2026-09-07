@@ -4201,6 +4201,69 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
+  it("レシート環境の読みの通信失敗は警告に留め、終了コードは変えない(pullfrog 指摘 — 裁定 D の範囲)", async () => {
+    const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+      before: [
+        (request) =>
+          request.method === "GET" && request.path === `${base}/pull`
+            ? { status: 503, bodyText: "unavailable" }
+            : null,
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the rotation is done, but the receipt for target web could not be advanced (",
+    );
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
+  it("レシート環境の検証拒否(床違反 = 証拠)は警告に畳まず、失敗として通す(pullfrog 指摘)", async () => {
+    const newer = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1, API_KEY: 1 },
+      version: 2,
+    });
+    const older = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1 },
+      version: 1,
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [newer],
+    });
+    // 先に plan でレシート環境の床を確立する(version 2 を検証済みとして記録)
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    // サーバーが古い version を配り直す(巻き戻し)
+    const stored = fixture.receipts.variables[0];
+    if (stored === undefined) throw new Error("receipt missing");
+    stored.value = older.value;
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    // ローテーション自体は済んでいる(報告は先に出る)。証拠は「apply し直せ」に化けない
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain("value-version rollback");
+    expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
   it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
     const fixture = await startFixture({
       server: {
