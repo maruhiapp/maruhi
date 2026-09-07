@@ -1430,6 +1430,13 @@ function envRotateCommand(
       summary,
       flags.newEpoch === true || flags.reason !== undefined,
     );
+    if (summary.mode === "rotated") {
+      // アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b)): エポックが
+      // 進んだ = コミット済みアンカーのエポック床が古くなった。後始末(M1)より
+      // **前**に出す: 後始末が証拠で失敗しても、エポックが進んだ事実とアンカーの
+      // 陳腐化は変わらない(pullfrog 指摘 — 改訂 4)
+      yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
+    }
     if (syncConfig !== null) {
       // 後始末(M1): 受理された再暗号化の分だけレシートを新 version へ進める。
       // 失敗は警告に留め、終了コードはローテーションの報告のまま(sync-rotate.ts)。
@@ -1455,11 +1462,6 @@ function envRotateCommand(
         signingKey: context.masterKeys.sigKeyPair.privateKey,
         now: () => new Date(),
       });
-    }
-    if (summary.mode === "rotated") {
-      // アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b)): エポックが
-      // 進んだ = コミット済みアンカーのエポック床が古くなった
-      yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
     }
     return code;
   });

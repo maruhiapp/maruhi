@@ -1254,8 +1254,8 @@ was already behind before the rotation, so the next `maruhi sync plan` shows the
 回した環境を同期元にするターゲットが無ければ `No sync target in the config is synced from environment dev, so no receipt was
 advanced` の 1 行。失敗は `logWarning`(「the rotation is done, but the receipt … could not be advanced (…). The next
 `maruhi sync plan <target>` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext」
-— saveReceipt と同じ方向)。順序: `reportRotation`(警告 → Done / Partial の行 → 終了コード)→ レシートの行 → アンカー更新の
-note(既存の順序と終了コードを崩さない)。値・平文の長さ・レシートの中身は出さない。
+— saveReceipt と同じ方向)。順序: `reportRotation`(警告 → Done / Partial の行 → 終了コード)→ アンカー更新の note → レシートの行
+(改訂 4 で note を後始末の前へ。既存の順序と終了コードを崩さない)。値・平文の長さ・レシートの中身は出さない。
 
 **I. テスト** — フィクスチャの列挙: (i) `env-rotate.test.ts` の `makeServer` を 2 環境に拡張 / (ii) `value-env.ts` に
 `rotate_epoch` の複合受理と epoch の前進を足す / (iii) 両者を**合成**する。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は
@@ -1317,6 +1317,12 @@ rollback(先に `sync plan` で床を確立してから古い version を配る)
 書き込み 0・「Done: rotated」は出ている。あわせて、後始末の再同期は `context.resync`(= 素の `syncProject`。延長検査を持たない)
 でなく `resyncExtended(resync, context.verified)` で行い、ローテーション前の検証済みビューの**延長**であることを確かめる
 (延長検査なしでは、別の整合チェーンが「環境が存在しない」という通常の失敗に化けて警告に畳まれる — この態を書く過程で判明)。
+
+**改訂 4(2026-09-07、pullfrog の差分レビュー〔524c8a2〕)**: 後始末が証拠で失敗できるようになった(改訂 2 / 3)ことで、
+その後ろに置いていたアンカー更新の note(`mode === "rotated"`)が証拠の経路で出なくなっていた — エポックは進んでおりアンカーの
+陳腐化は後始末の成否と無関係。裁定 E の出力順を「報告 → アンカーの note → レシートの行」に改め(note を後始末の前へ)、床違反 /
+チェーン差し替えの 2 態で note が出ることを断言に足した。同レビューの「証拠の仕分けがチェーン検証の拒否を覆っていない」は
+改訂 3 で対応済み(レビューは 524c8a2 に対するもの)。
 
 **第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
 未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは

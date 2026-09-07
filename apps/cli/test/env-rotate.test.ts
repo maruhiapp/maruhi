@@ -4262,6 +4262,10 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.env.errors.join("\n")).toContain("value-version rollback");
     expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
     expect(fixture.receipts.writes).toEqual([]);
+    // エポックは進んでいるので、アンカー更新の案内は証拠の前に出ている
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
   });
 
   it("後始末の再同期でチェーンの差し替えを検出したら、証拠として失敗する(警告に畳まない — pullfrog 指摘)", async () => {
@@ -4300,6 +4304,9 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     expect(fixture.env.errors.join("\n")).toContain("not an extension of the verified view");
     expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
     expect(fixture.receipts.writes).toEqual([]);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
   });
 
   it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
