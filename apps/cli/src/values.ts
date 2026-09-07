@@ -750,7 +750,9 @@ function verifyStage<T>(
       catch: () => cliError(`${description} failed to run (crypto error)`),
     });
     if (outcome.kind === "rejected") {
-      return yield* Effect.fail(cliError(outcome.message));
+      // 配布された署名済みデータが検証を通らない = 証拠(再実行では解消しない —
+      // errors.ts の evidence の定義。後始末の警告に畳まれてはならない — PR #156 改訂 6)
+      return yield* Effect.fail(evidenceError(outcome.message));
     }
     return outcome.kind === "future"
       ? ({ kind: "future" } as const)
@@ -785,7 +787,7 @@ function verifyManifestStage(input: {
     // 記録確立後の欠落拒否 — §6.3 — のチェーン導出版)
     if (input.verified.history.latestCheckpointFor(input.environmentId) !== undefined) {
       return Effect.fail(
-        cliError(
+        evidenceError(
           `The server did not distribute an environment manifest for ${input.environmentId}, although the verified chain carries a checkpoint binding one (manifest suppression — CRYPTO_SPEC §6.3). The migration allowance does not apply to a checkpointed environment`,
         ),
       );
@@ -1150,7 +1152,8 @@ function pullWithBoundedResync<TWire, TVerified>(input: {
       yield* input.accept(advanced, second.value);
       return { view: advanced, wire, value: second.value };
     }
-    return yield* Effect.fail(cliError(input.divergedMessage));
+    // 再同期の後もチェーン上に無い位置へ束縛された配布 = 分岐 / 偽造の証拠
+    return yield* Effect.fail(evidenceError(input.divergedMessage));
   });
 }
 
@@ -1405,8 +1408,9 @@ function enforceMetadataFloor(input: {
       manifest: input.manifest,
     });
     if (violation !== null) {
+      // 床違反は正規署名済みデータ同士の矛盾 = 証拠(値付き pull の enforceFloor と同じ)
       return yield* Effect.fail(
-        cliError(
+        evidenceError(
           formatFloorViolation(
             { projectId: input.verified.projectId, environmentId: input.environmentId },
             violation,

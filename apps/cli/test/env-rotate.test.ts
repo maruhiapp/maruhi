@@ -4309,6 +4309,30 @@ describe("maruhi env rotate --config(同期レシートの前進 — M1)", () =>
     );
   });
 
+  it("レシート環境の値署名が検証を通らなければ、証拠として失敗する(Cursor Security Agent 指摘)", async () => {
+    const receipt = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1, API_KEY: 1 },
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      // 署名を壊した値を配る(偽造された配布のモデル化)
+      receipts: [{ ...receipt, value: { ...receipt.value, signatureHex: "00".repeat(64) } }],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
+  });
+
   it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
     const fixture = await startFixture({
       server: {

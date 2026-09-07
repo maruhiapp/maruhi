@@ -1329,6 +1329,15 @@ rollback(先に `sync plan` で床を確立してから古い version を配る)
 チェーンは `verifyChainCore` が `ChainInvalid`(`empty-chain`)として先に拒否し、改訂 3 の `evidenceError` 側に入る(`sync.ts` の
 `"The chain is empty"` には到達しない)。据え置きは暗号ランタイムの失敗(「failed to run」・鍵索引の導出)だけ。コードの変更なし。
 
+**改訂 6(2026-09-07、Cursor Security Agent〔cdaa1b9〕)**: 改訂 3 はチェーン(`sync.ts`)側だけで、レシート環境の pull /
+push の経路(`values.ts`)にも `evidence` を持たない検証拒否が残っていた — 検証段(`verifyStage`)の rejected(ステートメント /
+値署名 / マニフェストの不成立)、有界再同期の後もチェーン上に無い位置へ束縛された配布(`divergedMessage` — 文面は「evidence of
+chain divergence or forgery」)、メタデータ pull の床違反、checkpoint 束縛のある環境でのマニフェスト握り潰し。これらは後始末の
+仕分けをすり抜けて警告 + 0 に畳まれる(レシートは進めないので未同期は隠れないが、証拠が「apply し直せ」の案内に隠れる)。改訂 3 と
+同じく発生源で `evidenceError` に(暗号ランタイムの失敗・名前の規約違反・マニフェスト欠落〔旧サーバーの可能性〕は据え置き)。
+副作用は改訂 3 と同じ範囲(`settlePass` の分類)。態を追加: レシート環境の値署名を壊す = 1・「could not be advanced」無し・書き込み 0・
+アンカーの note は出る。
+
 **第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
 未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは
 補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。(2) 全ターゲット一括の plan(`--all`)。(3) SY3 =
