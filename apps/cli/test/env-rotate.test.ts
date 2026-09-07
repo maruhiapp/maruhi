@@ -16,6 +16,10 @@
 // 追記し、複合のラップを配布集合へ入れ、push を最新値へ反映する)— これにより
 // 「1 回目でクラッシュ → 2 回目で再開」を同一フィクスチャ上で通しで検査できる。
 
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -36,6 +40,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
+import { receiptVariableName } from "../src/sync-receipt.ts";
 import {
   addMemberOp,
   removeMemberOp,
@@ -67,6 +72,11 @@ import {
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
+import {
+  makeValueEnvironmentServer,
+  type StoredVariable,
+  type ValueEnvironmentState,
+} from "./support/value-env.ts";
 
 const ENV_ID = "dev";
 
@@ -3616,5 +3626,824 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", "staging", "--reason", "テスト"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not exist on the chain");
     expect(state.rotateBodies).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `--config`: 同期レシートの前進(SY2 第 2 段 2b — M1)。回す環境(dev — makeServer が
+// ローテーションの複合受理と再暗号化 push を模す)とレシート環境(ops —
+// makeValueEnvironmentServer。epoch 1 固定の状態つき値環境)を 1 つのモックサーバーに
+// 合成し、rotate → レシートの書き込み → `sync plan` / `sync apply` を同じ状態上で通す。
+// ---------------------------------------------------------------------------
+
+const RECEIPTS_ENV = "ops";
+
+function vercelTarget(environment: string, variables: readonly string[]): Record<string, unknown> {
+  return { preset: "vercel", environment, variables, options: { environment: "production" } };
+}
+
+function output(env: TestEnv): string {
+  return [...env.logs, ...env.errors].join("\n");
+}
+
+describe("maruhi env rotate --config(同期レシートの前進 — M1)", () => {
+  let dekReceipts: Uint8Array;
+  /** genesis + create dev(epoch 1、dek1)+ create ops(epoch 1、dekReceipts)。 */
+  let chainWithReceipts: BuiltChain;
+  let receiptsStatement: WireDistributedEnvironmentStatement;
+  let wrapReceipts: WireRecipientDek;
+
+  beforeAll(async () => {
+    dekReceipts = crypto.getRandomValues(new Uint8Array(32));
+    chainWithReceipts = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(RECEIPTS_ENV, dekReceipts) },
+    ]);
+    receiptsStatement = await environmentStatementFor({
+      projectId: chainWithReceipts.projectId,
+      environmentId: RECEIPTS_ENV,
+      name: RECEIPTS_ENV,
+      author: owner,
+      head: headOf(chainWithReceipts, 1),
+    });
+    wrapReceipts = await wrapDekFor({
+      projectId: chainWithReceipts.projectId,
+      environmentId: RECEIPTS_ENV,
+      epoch: 1,
+      dek: dekReceipts,
+      recipient: owner,
+      signer: owner,
+    });
+  });
+
+  /** 回す環境の 2 変数(DATABASE_URL v1 / API_KEY は version を指定)。 */
+  async function sourceVariables(built: BuiltChain, apiKeyVersion = 1): Promise<PulledVariable[]> {
+    return [
+      await variableAt({
+        built,
+        variableId: "vaa",
+        name: "DATABASE_URL",
+        dek: dek1,
+        epoch: 1,
+        version: 1,
+        plaintext: "postgres://example",
+        headSeq: 2,
+      }),
+      await variableAt({
+        built,
+        variableId: "vbb",
+        name: "API_KEY",
+        dek: dek1,
+        epoch: 1,
+        version: apiKeyVersion,
+        plaintext: "key-abc",
+        headSeq: 2,
+      }),
+    ];
+  }
+
+  /** レシート環境に置かれた既存レシート(前回の同期の結果)。 */
+  async function storedReceipt(input: {
+    readonly target: string;
+    readonly variables: Readonly<Record<string, number>>;
+    readonly version?: number;
+    readonly environmentId?: string;
+    readonly dek?: Uint8Array;
+    readonly built?: BuiltChain;
+  }): Promise<StoredVariable> {
+    const built = input.built ?? chainWithReceipts;
+    const environmentId = input.environmentId ?? RECEIPTS_ENV;
+    const variableId = `receipt-${input.target}`;
+    const statement = await statementFor({
+      projectId: built.projectId,
+      environmentId,
+      variableId,
+      name: receiptVariableName(input.target),
+      author: owner,
+      head: headOf(built, 1),
+    });
+    const value = await encryptValueFor({
+      dek: input.dek ?? dekReceipts,
+      projectId: built.projectId,
+      environmentId,
+      epoch: 1,
+      variableId,
+      version: input.version ?? 1,
+      plaintext: JSON.stringify({
+        version: 1,
+        target: input.target,
+        preset: "vercel",
+        syncedAt: "2026-09-05T00:00:00.000Z",
+        variables: input.variables,
+      }),
+      writer: owner,
+      head: headOf(built, 3),
+    });
+    return { variableId, statement, value };
+  }
+
+  /** 既定の設定: dev を同期元にする Vercel ターゲット `web`、レシートは ops。 */
+  function defaultConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 1,
+      receipts: { environment: RECEIPTS_ENV },
+      targets: { web: vercelTarget(ENV_ID, ["DATABASE_URL", "API_KEY"]) },
+      ...overrides,
+    };
+  }
+
+  interface ReceiptFixture {
+    readonly state: ServerState;
+    readonly receipts: ValueEnvironmentState;
+    readonly env: TestEnv;
+    readonly configPath: string;
+  }
+
+  async function startFixture(input: {
+    readonly server: Omit<ServerOptions, "built"> & { readonly built?: BuiltChain };
+    readonly receipts?: readonly StoredVariable[];
+    readonly config?: Record<string, unknown>;
+    /** 先頭に差し込むハンドラ(レシート環境の書き込み失敗の差し込み等)。 */
+    readonly before?: readonly MockHandler[];
+  }): Promise<ReceiptFixture> {
+    const built = input.server.built ?? chainWithReceipts;
+    const state = makeServer({ ...input.server, built });
+    const receipts = makeValueEnvironmentServer({
+      chain: built,
+      owner,
+      environmentId: RECEIPTS_ENV,
+      envStatement: receiptsStatement,
+      wrap: wrapReceipts,
+      initialVariables: input.receipts ?? [],
+    });
+    // 回す環境のハンドラを先に置く(チェーンは makeServer の可変な現在形が正)
+    const env = await startEnv(
+      [...(input.before ?? []), ...state.handlers, ...receipts.handlers],
+      owner,
+    );
+    const configDir = await mkdtemp(join(tmpdir(), "maruhi-rotate-receipts-"));
+    const configPath = join(configDir, "maruhi.sync.json");
+    await writeFile(configPath, JSON.stringify(input.config ?? defaultConfig()));
+    return { state, receipts: receipts.state, env, configPath };
+  }
+
+  async function devWrap(
+    built: BuiltChain,
+    epoch: number,
+    dek: Uint8Array,
+  ): Promise<WireRecipientDek> {
+    return wrapDekFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch,
+      dek,
+      recipient: owner,
+      signer: owner,
+    });
+  }
+
+  /** レシート環境の最新レシートを復号して変数の写像を返す。 */
+  async function receiptVariablesOf(
+    fixture: ReceiptFixture,
+    target: string,
+  ): Promise<Record<string, number>> {
+    const stored = fixture.receipts.variables.find(
+      (entry) => entry.statement.name === receiptVariableName(target),
+    );
+    if (stored === undefined) throw new Error(`receipt for ${target} missing`);
+    const text = await decryptWire(dekReceipts, stored.value);
+    return (JSON.parse(text) as { variables: Record<string, number> }).variables;
+  }
+
+  function rotate(fixture: ReceiptFixture, ...args: string[]): Promise<number> {
+    return runCli(["env", "rotate", ENV_ID, ...args], fixture.env.layer);
+  }
+
+  it("完了した再暗号化の分だけレシートを新 version へ進め、その後の sync plan は全件 unchanged・apply は何も書かない", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    // 再暗号化 = 2 変数の新 version(値は不変)。レシートは 1 回だけ新 version として書く
+    expect(fixture.state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vbb"]);
+    expect(fixture.receipts.writes.map((write) => write.kind)).toEqual(["version"]);
+    expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 2 });
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Advanced the receipt for target web to the re-encrypted versions of 2 variables (saved as version 2 of sync-receipt:web in environment ops)",
+    );
+    expect(output(fixture.env)).not.toContain("left as delivered");
+    // 出力に平文は出ない(レシートは名前と version だけ)
+    expect(output(fixture.env)).not.toContain("postgres://example");
+    expect(output(fixture.env)).not.toContain("key-abc");
+
+    // その後の plan は全件 unchanged、apply は書くものが無い(二重書きしない)
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "0 to add, 0 to update, 0 to delete, 2 unchanged, 0 blocked",
+    );
+    expect(
+      await runCli(
+        ["sync", "apply", "web", "--yes", "--config", fixture.configPath],
+        fixture.env.layer,
+      ),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("Nothing to apply");
+    expect(fixture.env.execCalls).toHaveLength(0);
+    expect(fixture.receipts.writes).toHaveLength(1);
+  });
+
+  it("--config が無ければレシートには触れない(レシート環境を読みも書きもしない)", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+    const receiptsPulls: string[] = [];
+    // startFixture の後では差し込めないので、レシート環境の読みはサーバーの記録で数える
+    expect(await rotate(fixture, "--reason", "定期")).toBe(0);
+    for (const server of servers) {
+      receiptsPulls.push(
+        ...server.requests
+          .filter((request) => request.path.includes(`/environments/${RECEIPTS_ENV}/`))
+          .map((request) => request.path),
+      );
+    }
+    expect(receiptsPulls).toEqual([]);
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(output(fixture.env)).not.toContain("receipt");
+    // 進めていないので plan は全件 changed(無害 — 次の apply が同じ平文を書き直す)
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "0 to add, 2 to update, 0 to delete, 0 unchanged, 0 blocked",
+    );
+  });
+
+  it("レシートが遅れていた変数は進めない(同期先に届いているのは古い平文)", async () => {
+    const fixture = await startFixture({
+      server: {
+        // API_KEY は同期後にもう一度 push されて version 2(レシートは 1 のまま)
+        variables: await sourceVariables(chainWithReceipts, 2),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    // DATABASE_URL: 1 → 2(直前を指していた)。API_KEY: 1 のまま(3 に進めると
+    // version 2 の未同期の差分を隠す)
+    expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Advanced the receipt for target web to the re-encrypted versions of 1 variable (saved as version 2 of sync-receipt:web in environment ops); 1 variable left as delivered (API_KEY: the receipt was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)",
+    );
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "0 to add, 1 to update, 0 to delete, 1 unchanged, 0 blocked",
+    );
+    expect(fixture.env.logs.join("\n")).toContain("~ API_KEY\tversion 1 -> 3");
+  });
+
+  it("レシートに無い名前(未同期)は進めず、進めるものが無ければレシートを書かない", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts, 2),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      // DATABASE_URL は同期先へ届いていない(レシートに無い)。API_KEY は遅れている
+      receipts: [await storedReceipt({ target: "web", variables: { API_KEY: 1 } })],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Receipt for target web not advanced: 1 variable left as delivered (API_KEY: the receipt was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)",
+    );
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "1 to add, 1 to update, 0 to delete, 0 unchanged, 0 blocked",
+    );
+  });
+
+  it("並行 push で既に現エポックにある変数(alreadyCurrent — 平文が変わりうる)は進めない", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(RECEIPTS_ENV, dekReceipts) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+    ]);
+    const [staleA, staleB] = await sourceVariables(built);
+    if (staleA === undefined || staleB === undefined) throw new Error("fixture");
+    // 409 の後の再取得で見える「他メンバーが新エポックで書いた勝者」(平文は別物)
+    const winner = await variableAt({
+      built,
+      variableId: "vbb",
+      name: "API_KEY",
+      dek: dek2,
+      epoch: 2,
+      version: 2,
+      plaintext: "key-def",
+      headSeq: 4,
+      prevValueSigHashHex: await valueHashOf(staleB.value, owner.userId),
+    });
+    const variables = [staleA, staleB];
+    const fixture = await startFixture({
+      server: {
+        built,
+        variables,
+        deks: [await devWrap(built, 1, dek1), await devWrap(built, 2, dek2)],
+        currentEpoch: 2,
+        onPush: (_call, variableId) => {
+          if (variableId !== "vbb") {
+            return undefined;
+          }
+          variables[1] = winner;
+          return { status: 409, json: { _tag: "VersionConflict", currentVersion: 2 } };
+        },
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 }, built }),
+      ],
+    });
+
+    // 再開経路(エポック 2 に対する未完了): DATABASE_URL だけ自分が再暗号化する
+    expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
+    expect(fixture.state.pushes.map((push) => push.variableId)).toEqual(["vaa"]);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "1 variable already re-encrypted by concurrent updates",
+    );
+    expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
+    expect(output(fixture.env)).not.toContain("left as delivered");
+    // 勝者の平文は同期されていない = plan が update と示す(隠さない)
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("~ API_KEY\tversion 1 -> 2");
+  });
+
+  it("部分完了(remaining > 0)では完了した変数だけ進め、終了コードはローテーションの報告のまま", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+        onPush: (_call, variableId) =>
+          variableId === "vbb" ? { status: 503, bodyText: "unavailable" } : undefined,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(fixture.env.logs.join("\n")).toContain("Partial completion");
+    expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
+    expect(output(fixture.env)).not.toContain("left as delivered");
+  });
+
+  it("再開(resumed)では再開した分だけ進む(前回の実行で進んだ変数は遅れとして残る)", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+        // vbb だけが 1 回目の実行中ずっと落ちる(巡内リトライでも回復しない)
+        onPush: (call, variableId) =>
+          variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    // 1 回目は --config 無し(レシートは触られない)
+    expect(await rotate(fixture, "--reason", "初回")).toBe(1);
+    expect(fixture.receipts.writes).toEqual([]);
+    // 2 回目 = 再開 + --config: この実行が再暗号化した API_KEY だけ進む。1 回目に
+    // 進んだ DATABASE_URL(version 2)は、この実行には「不変」の証拠が無い =
+    // 触らない(次の plan が update と示し、apply が同じ平文を書き直す — 無害な側)
+    expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("resumed re-encryption");
+    expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 1, API_KEY: 2 });
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Advanced the receipt for target web to the re-encrypted versions of 1 variable (saved as version 2 of sync-receipt:web in environment ops)",
+    );
+    expect(output(fixture.env)).not.toContain("left as delivered");
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("~ DATABASE_URL\tversion 1 -> 2");
+    expect(fixture.env.logs.join("\n")).toContain("= API_KEY\tversion 2 (unchanged)");
+  });
+
+  it("レシート環境自身を回した場合はレシート変数が再暗号化されるだけで、進めるターゲットは無い(その後の plan は通る)", async () => {
+    // レシートは dev に置き、同期元は ops(値環境 — epoch 1 固定)にする
+    const sourceInOps = await statementFor({
+      projectId: chainWithReceipts.projectId,
+      environmentId: RECEIPTS_ENV,
+      variableId: "vsrc",
+      name: "DATABASE_URL",
+      author: owner,
+      head: headOf(chainWithReceipts, 1),
+    });
+    const sourceValue = await encryptValueFor({
+      dek: dekReceipts,
+      projectId: chainWithReceipts.projectId,
+      environmentId: RECEIPTS_ENV,
+      epoch: 1,
+      variableId: "vsrc",
+      version: 1,
+      plaintext: "postgres://example",
+      writer: owner,
+      head: headOf(chainWithReceipts, 3),
+    });
+    const receiptInDev = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1 },
+      environmentId: ENV_ID,
+      dek: dek1,
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: [receiptInDev],
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [{ variableId: "vsrc", statement: sourceInOps, value: sourceValue }],
+      config: {
+        version: 1,
+        receipts: { environment: ENV_ID },
+        targets: { web: vercelTarget(RECEIPTS_ENV, ["DATABASE_URL"]) },
+      },
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    // レシート変数そのものが再暗号化される(通常の変数と同じ)。レシートの書き込みは無い
+    expect(fixture.state.pushes.map((push) => push.variableId)).toEqual(["receipt-web"]);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "No sync target in the config is synced from environment dev, so no receipt was advanced",
+    );
+    // 新 version のレシートは中身が不変 = plan は unchanged
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "0 to add, 0 to update, 0 to delete, 1 unchanged, 0 blocked",
+    );
+  });
+
+  it("レシートが無いターゲットは静かに飛ばす", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+    });
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(output(fixture.env)).not.toContain("receipt");
+  });
+
+  it("同じ環境を同期元にする複数ターゲットはすべて処理し、1 つの書き込み失敗で残りを止めず終了コードも変えない", async () => {
+    const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+        await storedReceipt({ target: "worker", variables: { DATABASE_URL: 1 } }),
+      ],
+      config: defaultConfig({
+        targets: {
+          web: vercelTarget(ENV_ID, ["DATABASE_URL", "API_KEY"]),
+          worker: vercelTarget(ENV_ID, ["DATABASE_URL"]),
+        },
+      }),
+      // web のレシートの書き込みだけを落とす
+      before: [
+        (request) =>
+          request.method === "POST" && request.path === `${base}/variables/receipt-web/versions`
+            ? { status: 503, bodyText: "unavailable" }
+            : null,
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the rotation is done, but the receipt for target web could not be advanced (",
+    );
+    expect(fixture.env.errors.join("\n")).toContain(
+      "The next `maruhi sync plan web` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext",
+    );
+    expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 1, API_KEY: 1 });
+    expect(await receiptVariablesOf(fixture, "worker")).toEqual({ DATABASE_URL: 2 });
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Advanced the receipt for target worker to the re-encrypted versions of 1 variable",
+    );
+  });
+
+  it("ローテーション後の再同期に失敗しても、後始末の失敗として警告し終了コードは変えない(Bugbot 指摘)", async () => {
+    const pushed: string[] = [];
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+        onPush: (_call, variableId) => {
+          pushed.push(variableId);
+          return undefined;
+        },
+        // 再暗号化が終わった後のチェーン取得(= 後始末の再同期)だけを落とす
+        onChain: () => (pushed.length === 2 ? { status: 503, bodyText: "unavailable" } : undefined),
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (",
+    );
+    expect(fixture.receipts.writes).toEqual([]);
+    // 後始末の後ろの案内(アンカー更新)も出る
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
+  });
+
+  it("レシート環境の読みの通信失敗は警告に留め、終了コードは変えない(pullfrog 指摘 — 裁定 D の範囲)", async () => {
+    const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+      before: [
+        (request) =>
+          request.method === "GET" && request.path === `${base}/pull`
+            ? { status: 503, bodyText: "unavailable" }
+            : null,
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the rotation is done, but the receipt for target web could not be advanced (",
+    );
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
+  it("レシート環境の検証拒否(床違反 = 証拠)は警告に畳まず、失敗として通す(pullfrog 指摘)", async () => {
+    const newer = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1, API_KEY: 1 },
+      version: 2,
+    });
+    const older = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1 },
+      version: 1,
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [newer],
+    });
+    // 先に plan でレシート環境の床を確立する(version 2 を検証済みとして記録)
+    expect(
+      await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
+    ).toBe(0);
+    // サーバーが古い version を配り直す(巻き戻し)
+    const stored = fixture.receipts.variables[0];
+    if (stored === undefined) throw new Error("receipt missing");
+    stored.value = older.value;
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    // ローテーション自体は済んでいる(報告は先に出る)。証拠は「apply し直せ」に化けない
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain("value-version rollback");
+    expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
+    expect(fixture.receipts.writes).toEqual([]);
+    // エポックは進んでいるので、アンカー更新の案内は証拠の前に出ている
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
+  });
+
+  it("後始末の再同期でチェーンの差し替えを検出したら、証拠として失敗する(警告に畳まない — pullfrog 指摘)", async () => {
+    const pushed: string[] = [];
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+        onPush: (_call, variableId) => {
+          pushed.push(variableId);
+          return undefined;
+        },
+        // 再暗号化が終わった後は、同じ genesis の**短い**チェーン(rotate を含まない
+        // 別の整合チェーン)を配る = 検証は通るが検証済みビューの延長ではない
+        onChain: () =>
+          pushed.length === 2
+            ? {
+                status: 200,
+                json: {
+                  projectId: chainBase.projectId,
+                  entries: chainBase.entries,
+                  headSeq: chainBase.entries.length,
+                  headHashHex: chainBase.hashes[chainBase.hashes.length - 1],
+                },
+              }
+            : undefined,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).toContain("not an extension of the verified view");
+    expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
+  });
+
+  it("レシート環境の値署名が検証を通らなければ、証拠として失敗する(Cursor Security Agent 指摘)", async () => {
+    const receipt = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1, API_KEY: 1 },
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      // 署名を壊した値を配る(偽造された配布のモデル化)
+      receipts: [{ ...receipt, value: { ...receipt.value, signatureHex: "00".repeat(64) } }],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(1);
+    expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
+    expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "a committed repository anchor (if any) is now stale",
+    );
+  });
+
+  it("レシート環境の未対応レイアウト(誠実な破壊様式)は証拠ではなく、後始末の警告に留まる(pullfrog 指摘)", async () => {
+    const receipt = await storedReceipt({
+      target: "web",
+      variables: { DATABASE_URL: 1, API_KEY: 1 },
+    });
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      // この CLI が知らない layoutVersion(将来の CLI が書いたステートメント — v2 欄は
+      // 揃っている)。署名検証より前に弾かれる
+      receipts: [
+        {
+          ...receipt,
+          statement: {
+            ...receipt.statement,
+            layoutVersion: 3,
+            varType: "",
+            required: false,
+            description: "",
+          },
+        },
+      ],
+    });
+
+    // モックのマニフェストは元のステートメントから組む(モック側の整形が未知の
+    // レイアウトで転ばないように)。CLI はマニフェスト段より前の検証段で弾く
+    fixture.receipts.manifest = await manifestFor({
+      projectId: chainWithReceipts.projectId,
+      environmentId: RECEIPTS_ENV,
+      epoch: 1,
+      issuer: owner,
+      head: headOf(chainWithReceipts, chainWithReceipts.entries.length),
+      envStatement: receiptsStatement,
+      statements: [receipt.statement],
+    });
+
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.errors.join("\n")).toContain("could not be advanced (");
+    expect(fixture.env.errors.join("\n")).toContain("This is not a tampering indication");
+    expect(fixture.receipts.writes).toEqual([]);
+  });
+
+  it("レシート変数の version が上限に近づいたら警告する(M1 の書き込みも version を消費する)", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({
+          target: "web",
+          variables: { DATABASE_URL: 1, API_KEY: 1 },
+          version: 899,
+        }),
+      ],
+    });
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "the receipt variable sync-receipt:web is at version 900 of the 1000-version limit per variable",
+    );
+  });
+
+  it("設定の project が回すプロジェクトと違えば、エポックを進める前に書き方の誤りとして止まる(2)", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      config: defaultConfig({ project: "2".repeat(64) }),
+    });
+    expect(await rotate(fixture, "--reason", "定期", "--config", fixture.configPath)).toBe(2);
+    expect(fixture.state.rotateBodies).toHaveLength(0);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "The sync config belongs to a different project (its `project` does not match the project being rotated)",
+    );
+  });
+
+  it("設定が読めなければ、エポックを進める前に止まる(1)", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+    });
+    expect(
+      await rotate(fixture, "--reason", "定期", "--config", `${fixture.configPath}.missing`),
+    ).toBe(1);
+    expect(fixture.state.rotateBodies).toHaveLength(0);
+    expect(fixture.env.errors.join("\n")).toContain("Cannot read the sync config");
+  });
+
+  it("確認だけの実行(up-to-date)は何も再暗号化していないのでレシートに触れない", async () => {
+    const fixture = await startFixture({
+      server: {
+        variables: await sourceVariables(chainWithReceipts),
+        deks: [await devWrap(chainWithReceipts, 1, dek1)],
+        currentEpoch: 1,
+      },
+      receipts: [
+        await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
+      ],
+    });
+    expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain("Check complete");
+    expect(fixture.receipts.writes).toEqual([]);
+    expect(output(fixture.env)).not.toContain("receipt");
   });
 });

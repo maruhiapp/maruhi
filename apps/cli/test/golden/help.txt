@@ -197,6 +197,7 @@ FLAGS
   --reason string     Rotation reason (required when creating a new epoch; recorded on the chain)
   --new-epoch         Always create a new epoch, even when incomplete re-encryption could be resumed instead
   --init-manifest     Initialize the environment manifest (only for environments created before manifests existed; tolerates a missing manifest for this one rotation). Run it for every environment before upgrading CI, because workloads cannot initialize a manifest themselves
+  --config string     Path to the sync config committed in the repository; when given, the receipts of the targets synced from this environment advance to the re-encrypted versions (no default: without it, receipts are left alone)
 
 GLOBAL FLAGS
   --help, -h       Show help information
