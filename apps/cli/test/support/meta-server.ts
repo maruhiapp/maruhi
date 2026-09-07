@@ -7,6 +7,7 @@
 // author / issuer 情報(所有者)を付けて配布する — 検証(§6.3)はクライアント
 // 側の実装が行う(このモックは wire 形の整合だけを保つ)。
 
+import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
 import {
   type BuiltChain,
   headOf,
@@ -88,23 +89,11 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
 
   const handlers: MockHandler[] = [
     // チェーン配布(全長)
-    (request) =>
-      request.method === "GET" && request.path === `/projects/${input.chain.projectId}/chain`
-        ? {
-            status: 200,
-            json: {
-              projectId: input.chain.projectId,
-              entries: input.chain.entries,
-              headSeq: input.chain.entries.length,
-              headHashHex: input.chain.hashes[input.chain.hashes.length - 1],
-            },
-          }
-        : null,
-    // 自分宛 DEK(activation の値 push)
-    (request) =>
-      input.wrap !== undefined && request.method === "GET" && request.path === `${base}/deks`
-        ? { status: 200, json: { deks: [input.wrap] } }
-        : null,
+    chainHandlerOf(input.chain),
+    // 自分宛 DEK(activation の値 push。wrap 未配線なら 404 のまま)
+    ...(input.wrap === undefined
+      ? []
+      : [deksHandlerOf(input.chain.projectId, input.environmentId, [input.wrap])]),
     // メタデータのみ pull(§12-7 — declared は variables に混在)
     async (request) => {
       if (request.method !== "GET" || request.path !== `${base}/pull/metadata`) {

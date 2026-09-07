@@ -138,6 +138,7 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
     name,
     version: 1,
     epoch: 1,
+    required: false,
     varType: "",
     value: Redacted.make(typeof value === "string" ? new TextEncoder().encode(value) : value, {
       label: "variable-value",
@@ -214,6 +215,7 @@ describe("runOp", () => {
   /** 子プロセスを起動しないランナー(起動まで到達したら分かるようにする)。 */
   const spawnedNothing = Layer.succeed(ProcessRunner, {
     run: () => Effect.succeed(0),
+    exec: () => Effect.succeed({ exitCode: 0, output: "" }),
   });
 
   it("実行対象が空白だけでも子プロセスを起動しない(入口の検査と同じ判定)", async () => {

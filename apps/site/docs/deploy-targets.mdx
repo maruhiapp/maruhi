@@ -1,28 +1,127 @@
 ---
 title: Deploy targets
-description: Copy values from maruhi to Cloudflare Workers and Vercel with maruhi run and the vendor CLI you already use.
+description: Copy values from maruhi to Cloudflare Workers and Vercel with maruhi sync and the vendor CLI you already use.
 sidebar:
   order: 2
 ---
 
-Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers and Vercel functions read their environment variables from the platform's own store, so the values have to be copied there before a deploy. These recipes do that with two things you already have: `maruhi run`, and the platform's CLI, signed in the way you normally use it.
+Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers and Vercel functions read their environment variables from the platform's own store, so the values have to be copied there before a deploy. `maruhi sync` does that with the platform's CLI, signed in the way you normally use it, driven by a small config file committed in your repository. If you would rather not use `maruhi sync`, the [shell recipes](#without-maruhi-sync-shell-recipes) at the end of this page do the same with `maruhi run`.
 
-## How the recipes work
+## How maruhi sync works
+
+- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel` or `cloudflare-workers`), the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file.
+- `maruhi sync plan <target>` shows what an apply would write or delete, by variable name and version. It does not decrypt the values.
+- `maruhi sync apply <target>` decrypts the target's variables in memory and hands each value to the vendor CLI on its standard input, and nowhere else. A value never appears on a command line, in `ps`, in your shell history, or in a file. The vendor CLI's own output is not shown unless it fails, and then only with the values filtered out.
+- The platform stores the plaintext. That is what a deploy target is: its runtime reads the value from its own store, and that store is now one more place that holds the secret.
+- maruhi stays the source of truth, and copying is one way. Nothing is read back from the platform. Instead, maruhi keeps a receipt of what it delivered (variable names and versions, never values) as an encrypted variable in a maruhi environment you choose, and `plan` compares that receipt with the current versions. A value edited in the platform's dashboard is not detected and is overwritten by the next apply.
+- `maruhi sync` runs the vendor CLI you already installed and signed in with (`wrangler login`, `vercel login`). It never downloads one, and it switches the vendor CLI's telemetry off for the run.
+
+## Set up
+
+1. Create an environment for the receipts. It is a normal maruhi environment that holds nothing but receipts, so do not use it with `maruhi run`:
+
+   ```sh
+   maruhi env create sync-receipts
+   ```
+
+2. Add `maruhi.sync.json` to the repository root:
+
+   ```json
+   {
+     "version": 1,
+     "receipts": { "environment": "sync-receipts" },
+     "targets": {
+       "web": {
+         "preset": "vercel",
+         "environment": "production",
+         "variables": ["DATABASE_URL", "STRIPE_SECRET_KEY"],
+         "options": { "environment": "production" }
+       },
+       "worker": {
+         "preset": "cloudflare-workers",
+         "environment": "production",
+         "variables": "all",
+         "exclude": ["NEXT_PUBLIC_SITE_URL"],
+         "cwd": "apps/worker",
+         "options": { "name": "my-worker" }
+       }
+     }
+   }
+   ```
+
+3. See the plan, then apply it. The vendor CLI runs in the directory of the config file (or in the target's `cwd`), so it finds the linked Vercel project or the Worker's configuration file the same way it does when you run it by hand:
+
+   ```sh
+   maruhi sync plan web
+   maruhi sync apply web --yes
+   ```
+
+`--yes` is needed for a production target: a Vercel target whose environment is `production`, or a Cloudflare Workers target without a named wrangler environment. For other targets, `apply` runs without it. You can set `"production": true` or `false` on a target to override that default.
+
+The plan lists one line per variable: `+` new to the target, `~` changed since the last delivery (with both versions), `=` unchanged, `-` no longer synced (removed from the list, excluded, or deleted in maruhi; apply deletes it at the target), and `!` cannot be synced by this preset (apply sends nothing until it is resolved).
+
+## The config file
+
+| Key                    | Meaning                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `version`              | Always `1`.                                                                                                                                                        |
+| `project`              | Optional. The project ID this config belongs to; `maruhi sync` uses it instead of `defaultProject`, and refuses a `--project` flag that names a different project. |
+| `receipts.environment` | The maruhi environment that stores the receipts (one variable per target, named `sync-receipt:<target>`). It must not be one of the synced environments.           |
+| `targets.<name>`       | One deploy target. The name is yours (letters, digits, `_`, `-`) and is the argument to `plan` and `apply`.                                                        |
+
+Each target:
+
+| Key           | Meaning                                                                                                                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preset`      | `vercel` or `cloudflare-workers`.                                                                                                                                                                                    |
+| `environment` | The maruhi environment to decrypt.                                                                                                                                                                                   |
+| `variables`   | The names to copy, or `"all"` for every variable of the environment. A listed name that does not exist stops the command before anything is sent.                                                                    |
+| `exclude`     | Only with `"all"`: names not to copy. Public configuration and platform-owned resources (D1, KV, and R2 bindings on Cloudflare; Vercel Postgres and Blob) belong here or outside maruhi altogether.                  |
+| `production`  | Optional. Whether `apply` needs `--yes`. Defaults as described above.                                                                                                                                                |
+| `cwd`         | Optional. Where to run the vendor CLI, relative to the config file. Default: the config file's directory.                                                                                                            |
+| `command`     | Optional. The vendor CLI to run, relative to `cwd`. Default: `vercel` or `wrangler` on `PATH`. Use it when wrangler is a project dependency rather than a global install (for example `node_modules/.bin/wrangler`). |
+| `options`     | Preset-specific, below.                                                                                                                                                                                              |
+
+Vercel options: `environment` (required: `production`, `preview`, or `development`), `gitBranch` (a preview branch), `project` and `scope` (when the directory is not linked, or to be explicit), and `sensitive` (`false` passes `--no-sensitive`).
+
+Cloudflare Workers options: `name` (the Worker; otherwise wrangler reads it from its configuration file), `environment` (a named wrangler environment, passed as `--env`), and `config` (the path of the wrangler configuration file).
+
+Required variables: if a variable in the target's selection is declared as required but has no value yet, `plan` and `apply` stop before anything is sent, the same way `maruhi run` does. If a required variable is not part of the target, `plan` warns.
+
+## Cloudflare Workers
+
+`maruhi sync` runs `wrangler secret bulk`, which reads a JSON object from standard input and stores every entry in one request, up to 100 per call. Larger sets are split into several calls. A variable that is no longer synced is deleted in the same call (a `null` entry). Secrets that already exist under the same names are overwritten. The run sets `WRANGLER_SEND_METRICS=false`.
+
+## Vercel
+
+`maruhi sync` runs `vercel env add <name> <environment> --force --non-interactive` once per variable, with the value on standard input, and `vercel env rm` for a variable that is no longer synced. `--force` makes an existing variable an update rather than an error. `--non-interactive` turns any prompt into a failure rather than a hang. The run sets `VERCEL_TELEMETRY_DISABLED=1`.
+
+- Values for production and preview are stored as sensitive by default: Vercel does not show them again, in the dashboard or in `vercel env ls`. Set `"sensitive": false` in the target's options to opt out (a team policy may forbid it). Development does not accept sensitive values.
+- The Vercel CLI reads standard input only once. Because the amount that arrives in one read depends on the operating system's pipe buffer, `maruhi sync` refuses values above 16 KiB for this preset rather than risk a value cut off silently. Keep very large values out of this target, or set them through the dashboard.
+- The Vercel CLI treats an empty standard input as no value, and strips one trailing newline from a single-line value. `maruhi sync` refuses an empty value and a single-line value that ends with a newline, and names the variable; push such a value without the trailing newline (`printf %s` instead of `echo`).
+
+## Receipts
+
+A receipt records, per target, the version of each variable that was delivered. It is written as a new version of the `sync-receipt:<target>` variable in the receipts environment after every apply that changed something, encrypted and signed like any other variable, so anyone on the project sees the same delivery state. Two consequences:
+
+- `maruhi env rotate` re-encrypts every value as a new version, so after a rotation `plan` shows every variable as changed and the next apply rewrites them with the same plaintext. That is harmless, and a later release will let the rotation advance the receipts itself.
+- A variable can hold at most 1,000 versions. `plan` warns when a receipt is close to that limit; deleting the receipt variable (`maruhi var rm sync-receipt:<target> --env sync-receipts`) starts a fresh one, and the next apply rewrites the target once.
+
+## In CI
+
+In GitHub Actions, `maruhi ci run` runs the same command after `--` and needs no sign-in: its own flags name the server, project, environment, and committed repository anchor, and it uses an OIDC lease instead of a token. That covers the shell recipes below. `maruhi sync` in CI, and a workflow template for copying values on every deploy, are planned.
+
+## Without maruhi sync: shell recipes
+
+The recipes below do the same copy with `maruhi run` and the vendor CLI, without a config file or receipts. They are for platforms where you prefer to see every step, or for scripts that already exist.
 
 - `maruhi run` decrypts the environment in memory and hands the values to a child process as environment variables. The child reads each value from its environment (`printenv`, or `jq` through `$ENV`) and writes it to the vendor CLI's standard input.
 - A value never appears on a command line. It is not visible in `ps` or in your shell history, and `set -x` does not echo it. Nothing is written to disk: no `.env` file, no temporary file.
-- The platform stores the plaintext. That is what a deploy target is: its runtime reads the value from its own store, and that store is now one more place that holds the secret.
-- maruhi stays the source of truth, and copying is one way. After you change a value with `maruhi push`, run the recipe again. Nothing is read back from the platform, and a value edited in the platform's dashboard is overwritten by the next copy.
-- The recipes call the vendor CLI you already installed and signed in with (`wrangler login`, `vercel login`). They do not fetch anything with `npx`.
-
-## Before you start
-
-- List the names in the environment with `maruhi pull`. It prints names, versions, and sizes, not values.
-- Copy only what the platform's runtime needs. Public configuration can live in your repository, and platform-owned resources (D1, KV, and R2 bindings on Cloudflare; Vercel Postgres and Blob) are provided by the platform itself.
-- Declare the variables you copy as required (`maruhi schema set NAME --required`) so that `maruhi run` stops before anything is copied when one of them has no value.
+- After you change a value with `maruhi push`, run the recipe again. Nothing is read back from the platform, and a value edited in the platform's dashboard is overwritten by the next copy.
+- List the names in the environment with `maruhi pull`. It prints names, versions, and sizes, not values. Declare the variables you copy as required (`maruhi schema set NAME --required`) so that `maruhi run` stops before anything is copied when one of them has no value.
 - The recipes are written for POSIX `sh` (bash, zsh, and dash run them unchanged). Windows is not covered.
 
-## Cloudflare Workers
+### Cloudflare Workers
 
 `wrangler secret bulk` reads a JSON object from standard input and stores every entry in one request. `jq` builds that object from the environment, reading each value through `$ENV` so that the values stay off the command line. Run it in the Worker's directory (wrangler takes the Worker name from its configuration file), or pass `--name`.
 
@@ -42,7 +141,7 @@ Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy. Only `
 - Named wrangler environments: `maruhi run --env staging -- jq … | wrangler secret bulk --env staging`. maruhi's `--env` chooses the maruhi environment to decrypt; wrangler's `--env` chooses the wrangler environment to write to.
 - If wrangler is a dependency of the project rather than a global install, invoke the installed copy the way you usually do (for example `npx wrangler secret bulk`).
 
-## Vercel
+### Vercel
 
 `vercel env add` reads the value from standard input when standard input is not a terminal. Each variable is one call, so the recipe loops over the names inside `sh`, under a single `maruhi run`. It first checks that every name has a value, then copies them. Run it in the linked project directory (`vercel link`), or pass `--project`.
 
@@ -65,14 +164,10 @@ Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy; the `s
 - The Vercel CLI reads standard input only once. In a measurement of its reader (CLI 59.11.7, on Linux), a value larger than 64 KiB arrived cut off at 64 KiB with no error; the threshold depends on the system's pipe buffer, and a sensitive value cannot be inspected afterwards. Keep very large values out of this recipe.
 - Do not use `--value`: it puts the value on the command line.
 
-## In CI
-
-In GitHub Actions, `maruhi ci run` runs the same command after `--` and needs no sign-in: its own flags name the server, project, environment, and committed repository anchor, and it uses an OIDC lease instead of a token. A workflow template for copying values on every deploy is planned.
-
 ## Other platforms
 
-The same shape works for any platform whose CLI reads the value from standard input. The Netlify CLI takes the value as a command-line argument, so there is no recipe for it on this page.
+The same shape works for any platform whose CLI reads the value from standard input. The Netlify CLI takes the value as a command-line argument, so there is no preset and no recipe for it on this page.
 
 ## Vendor CLI telemetry
 
-maruhi sends nothing anywhere. The vendor CLIs do send usage data by default; that is their setting, not maruhi's. To switch it off once and for all: `wrangler telemetry disable` and `vercel telemetry disable`. For a single run, set `WRANGLER_SEND_METRICS=false` or `VERCEL_TELEMETRY_DISABLED=1` in your shell.
+maruhi sends nothing anywhere. The vendor CLIs do send usage data by default; that is their setting, not maruhi's. `maruhi sync` switches it off for the vendor process it starts. For the shell recipes, switch it off once and for all with `wrangler telemetry disable` and `vercel telemetry disable`, or for a single run set `WRANGLER_SEND_METRICS=false` or `VERCEL_TELEMETRY_DISABLED=1` in your shell.

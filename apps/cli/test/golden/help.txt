@@ -27,6 +27,7 @@ SUBCOMMANDS
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
   var         Manage variables (rm). push / pull / run operate on values directly
+  sync        Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository
 
 $ maruhi --help
 DESCRIPTION
@@ -57,6 +58,7 @@ SUBCOMMANDS
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
   var         Manage variables (rm). push / pull / run operate on values directly
+  sync        Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository
 
 $ maruhi login --help
 DESCRIPTION
@@ -986,6 +988,60 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
   --force             Skip the interactive confirmation (the only non-interactive path; deletion is permanent)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi sync --help
+DESCRIPTION
+  Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository
+
+USAGE
+  maruhi sync <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  plan     Show which variables an apply would write to or delete from a deploy target, by name and version (the values are not decrypted, and nothing is read back from the target)
+  apply    Decrypt the target's variables in memory and write the changed ones to the deploy target through its installed CLI (values on stdin only), then record what was delivered in the receipt. A production target needs --yes
+
+$ maruhi sync plan --help
+DESCRIPTION
+  Show which variables an apply would write to or delete from a deploy target, by name and version (the values are not decrypted, and nothing is read back from the target)
+
+USAGE
+  maruhi sync plan [flags] <target>
+
+ARGUMENTS
+  target string    Target name from the sync config (a key under `targets`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --config string     Path to the sync config committed in the repository (default: maruhi.sync.json)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi sync apply --help
+DESCRIPTION
+  Decrypt the target's variables in memory and write the changed ones to the deploy target through its installed CLI (values on stdin only), then record what was delivered in the receipt. A production target needs --yes
+
+USAGE
+  maruhi sync apply [flags] <target>
+
+ARGUMENTS
+  target string    Target name from the sync config (a key under `targets`)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --config string     Path to the sync config committed in the repository (default: maruhi.sync.json)
+  --yes               Apply to a production target (without it, a production target only shows the plan)
 
 GLOBAL FLAGS
   --help, -h       Show help information

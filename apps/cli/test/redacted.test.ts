@@ -811,10 +811,20 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // ラップ / アンラップの鍵導出入力(暗号境界)2 + コード表示 1 +
   // 保存確認の照合 1 + 入力されたコードの解釈 1
   "recovery.ts": 5,
+  // ベンダー CLI の stdin への書き込み直前(sync の exec ドライバ — 値が maruhi を
+  // 離れる唯一の経路。argv には載らない)
+  "live.ts": 1,
   // 子プロセス env への注入直前
   "run.ts": 2,
   // master 秘密鍵のインポート(hex → 非抽出 CryptoKey)
   "session.ts": 2,
+  // sync の stdin 本文の組み立て(JSON — 産物は再び Redacted)1 + 失敗時の
+  // ベンダー出力の伏せ字化(値の断片を探して置き換える — 産物には残らない)1
+  "sync-exec.ts": 2,
+  // 平文長の実測(産物は長さだけ)1 + 送る前の制約検査(産物は真偽と変数名)1
+  "sync-plan.ts": 2,
+  // レシート JSON の解釈(名前 → version の写像。秘密値ではない)
+  "sync-receipt.ts": 1,
 };
 
 // 綴り(`Redacted` + `.value`)の照合。書式化で `Redacted\n  .value` へ折られても

@@ -17,6 +17,32 @@ import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
 import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 
+/**
+ * One driven vendor-CLI process (`maruhi sync` — sync-exec.ts). The value
+ * travels only on the child's standard input; `command` carries names and
+ * options, never a value.
+ */
+export interface ExecInput {
+  readonly command: readonly string[];
+  /** Working directory of the child (the vendor CLI resolves its project from it). */
+  readonly cwd: string;
+  /** Non-secret additions to the inherited environment (vendor telemetry off). */
+  readonly extraEnv: Readonly<Record<string, string>>;
+  /** Bytes written to the child's stdin, then closed (the only path a value takes). */
+  readonly stdin: Redacted.Redacted<Uint8Array>;
+}
+
+/** Outcome of one driven process: the exit code and its captured, bounded output. */
+export interface ExecOutcome {
+  readonly exitCode: number;
+  /**
+   * Combined stdout + stderr of the child, capped at {@link EXEC_OUTPUT_CAP_BYTES}
+   * (the tail is kept). Untrusted: it may echo the value, so callers must scrub
+   * it before showing any of it (sync-exec.ts の scrubOutput).
+   */
+  readonly output: string;
+}
+
 /** Child-process boundary: inject values, inherit non-maruhi env + stdio. */
 export interface ProcessRunnerShape {
   /** Runs `command`, merging `extraEnv` into the inherited environment. Returns the exit code. */
@@ -24,7 +50,19 @@ export interface ProcessRunnerShape {
     readonly command: readonly string[];
     readonly extraEnv: Readonly<Record<string, string>>;
   }) => Effect.Effect<number, CliError>;
+  /**
+   * Runs a vendor CLI with bytes on its stdin and its stdio captured
+   * (`maruhi sync`). Fails with a typed error when the command cannot be
+   * started (not installed / not on PATH) — never by fetching it.
+   */
+  readonly exec: (input: ExecInput) => Effect.Effect<ExecOutcome, CliError>;
 }
+
+/**
+ * Cap on the captured output of a driven vendor CLI (bytes). Output beyond it
+ * is dropped from the front; the tail is what carries the failure reason.
+ */
+export const EXEC_OUTPUT_CAP_BYTES = 64 * 1024;
 
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
   "cli/ProcessRunner",
@@ -305,6 +343,8 @@ export const RUN_COMMAND_REQUIRED =
  */
 export function enforceDeclaredPresence(
   declared: readonly DeclaredVariable[],
+  /** 何が起きなかったかの結び(run = 子プロセス未起動、sync = 何も送っていない)。 */
+  outcome = "The command was not started",
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const missing = declared
@@ -317,7 +357,7 @@ export function enforceDeclaredPresence(
       // --optional で required を下げる(宣言の削除コマンドは未提供 — PR #121)
       return yield* Effect.fail(
         cliError(
-          `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. The command was not started`,
+          `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. ${outcome}`,
         ),
       );
     }

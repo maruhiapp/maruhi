@@ -14,7 +14,7 @@
 import { writeSync } from "node:fs";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
-import { Duration, Effect, Layer } from "effect";
+import { Duration, Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { agentInfo } from "std-env";
 
@@ -28,7 +28,14 @@ import { CliIo, type CliIoShape } from "./io.ts";
 import { KEYCHAIN_SERVICE, Keychain, type KeychainShape } from "./keychain.ts";
 import { shouldUseColor } from "./notice.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
-import { buildChildEnvironment, ProcessRunner, type ProcessRunnerShape } from "./run.ts";
+import {
+  buildChildEnvironment,
+  EXEC_OUTPUT_CAP_BYTES,
+  type ExecInput,
+  type ExecOutcome,
+  ProcessRunner,
+  type ProcessRunnerShape,
+} from "./run.ts";
 
 const keychainUnavailable = () =>
   cliError(
@@ -78,6 +85,41 @@ function makeBunKeychain(): KeychainShape {
   };
 }
 
+/** 捕捉した出力の末尾 `cap` バイトぶんだけを保つ(先頭から捨てる)。 */
+function keepTail(text: string, cap: number): string {
+  return text.length <= cap ? text : text.slice(text.length - cap);
+}
+
+/**
+ * ベンダー CLI の駆動(`maruhi sync` の exec ドライバ — sync-exec.ts)。値は
+ * 子の stdin に**一度に書いて閉じる**(Bun は ArrayBufferView を stdin に渡すと
+ * 書き切ってから閉じる — Vercel CLI の「最初のチャンクを 500 ms だけ待つ」
+ * 読み方に合わせる)。stdout / stderr は継承せず捕捉する: ベンダーの出力は
+ * 値を含みうるので、そのまま端末へ流さない(表示は呼び出し側が scrub してから)。
+ */
+function execVendor(input: ExecInput): Promise<ExecOutcome> {
+  // 剥がす理由: 子プロセスの stdin への書き込み(値が maruhi を離れる唯一の
+  // 経路。argv には名前しか載らない — sync-exec.ts の型が保証する)
+  const stdin = Redacted.value(input.stdin);
+  const child = Bun.spawn({
+    cmd: [...input.command],
+    cwd: input.cwd,
+    // run と同じ規律: 親の一般環境は継承し、MARUHI_* は渡さない(deepsec S6)
+    env: buildChildEnvironment(process.env, input.extraEnv),
+    stdin,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return (async () => {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { exitCode, output: keepTail(`${stdout}${stderr}`, EXEC_OUTPUT_CAP_BYTES) };
+  })();
+}
+
 function makeBunProcessRunner(): ProcessRunnerShape {
   return {
     run: ({ command, extraEnv }) =>
@@ -96,6 +138,16 @@ function makeBunProcessRunner(): ProcessRunnerShape {
           return await child.exited;
         },
         catch: () => cliError(`Cannot start the command: ${command[0] ?? ""}`),
+      }),
+    exec: (input) =>
+      Effect.tryPromise({
+        try: () => execVendor(input),
+        // 起動失敗(未導入・PATH に無い)。取りに行かない(導入済みの CLI だけ —
+        // integration-options.md §3 補足 16)
+        catch: () =>
+          cliError(
+            `Cannot start ${input.command[0] ?? ""} (is it installed and on PATH?). maruhi never downloads a vendor CLI: install it and sign in with it, then retry`,
+          ),
       }),
   };
 }

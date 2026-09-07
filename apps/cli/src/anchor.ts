@@ -19,6 +19,7 @@ import { isEnvironmentId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
+import { parseJsonRecord } from "./json-record.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /** A repository anchor file (CRYPTO_SPEC §6.3 out-of-band anchor (b)). */
@@ -95,16 +96,10 @@ function parseAnchorHead(
 
 /** トップレベルの形と version / projectId の解釈(不正なら理由の文字列)。 */
 function anchorRecordOf(content: string): Record<string, unknown> | string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return "not valid JSON";
+  const record = parseJsonRecord(content);
+  if (typeof record === "string") {
+    return record;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return "the top level must be an object";
-  }
-  const record = parsed as Record<string, unknown>;
   if (record["version"] !== 1) {
     return "unsupported anchor version (expected 1)";
   }

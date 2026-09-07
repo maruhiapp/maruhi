@@ -36,6 +36,8 @@ export interface DecryptedVariable {
    * advisory 型検証(run.ts — §14.3-7: 検証は警告のみで実行は続行)にだけ使う。
    */
   readonly varType: MetaVarType;
+  /** required の宣言(レイアウト v2 のスキーマ欄。v1 = false)。`maruhi sync` の完全性検査に使う。 */
+  readonly required: boolean;
   /** 平文バイト列(メモリ上のみ。剥がす箇所は run / show / 再暗号化に限る)。 */
   readonly value: Redacted.Redacted<Uint8Array>;
 }
@@ -236,6 +238,7 @@ export function pullVariables(input: {
         version: variable.version,
         epoch: variable.epoch,
         varType: variable.schema?.varType ?? "",
+        required: variable.schema?.required ?? false,
         value: plaintext,
       });
     }

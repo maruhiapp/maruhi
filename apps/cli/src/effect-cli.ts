@@ -178,6 +178,8 @@ import { serverGrantOp } from "./server-grant.ts";
 import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "./server-revoke.ts";
 import { loadMasterKeys, normalizeHttpOrigin, resolveServerOrigin } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
+import { DEFAULT_SYNC_CONFIG_PATH, loadSyncConfig, requireSyncTarget } from "./sync-config.ts";
+import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
 import { syncProject } from "./sync.ts";
 import { varRmOp } from "./var-rm.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -766,6 +768,39 @@ const varRmConfig = {
 };
 
 /**
+ * `maruhi sync plan` / `apply` の宣言(SY2 第 1 段)。環境はフラグでなく
+ * リポジトリ設定(`maruhi.sync.json` のターゲット)が決めるので `--env` は無い。
+ * `--project` はあるが、設定に `project` があればそれと照合する。
+ */
+const syncTargetArgument = () =>
+  Argument.string("target").pipe(
+    Argument.withDescription("Target name from the sync config (a key under `targets`)"),
+    Argument.withSchema(NonBlank),
+  );
+
+const syncCommonFlags = () => ({
+  ...projectFlags(),
+  config: singleValued(
+    "config",
+    `Path to the sync config committed in the repository (default: ${DEFAULT_SYNC_CONFIG_PATH})`,
+  ),
+});
+
+const syncPlanConfig = {
+  ...syncCommonFlags(),
+  target: syncTargetArgument(),
+};
+
+const syncApplyConfig = {
+  ...syncCommonFlags(),
+  yes: singleFlag(
+    "yes",
+    "Apply to a production target (without it, a production target only shows the plan)",
+  ),
+  target: syncTargetArgument(),
+};
+
+/**
  * 入れ子の段(グループ)→ サブコマンド名 → 宣言。**この表が唯一の出所**で、
  * COMMAND_SPECS(振り分けのキーと診断の宣言・サブコマンド一覧)をここから
  * 導く — 親の段を手書きの写しで持つと、サブコマンドを足したときに振り分けと
@@ -819,6 +854,7 @@ const GROUP_CONFIGS: Readonly<
     lint: schemaLintConfig,
   },
   var: { rm: varRmConfig },
+  sync: { plan: syncPlanConfig, apply: syncApplyConfig },
 };
 
 /**
@@ -1839,6 +1875,43 @@ function memberChangeRoleCommand(
  * コマンド本体。ハンドラは `Effect<void>` しか返せない(`Command.runWith` が
  * 値を捨てる)ので、子プロセスの終了コードは `onExitCode` で持ち出す。
  */
+/**
+ * `maruhi sync` 共通の前段: 設定 → ターゲット → プロジェクト(設定の `project`
+ * とフラグの照合)→ 同期元 / レシート環境の床ハンドル。config はここで 1 回だけ
+ * 読む。プロジェクト前段は 1 回(2 環境を別々に開いて食い違う 2 つの検証済み
+ * ビューで比較しない — env diff と同じ理由)。
+ */
+function openSyncTarget(values: {
+  readonly server: string | undefined;
+  readonly project: string | undefined;
+  readonly config: string | undefined;
+  readonly target: string;
+}) {
+  return Effect.gen(function* () {
+    // 設定はネットワークより先に読む(壊れたファイルの検出を往復の後ろに置かない)
+    const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
+    const target = yield* requireSyncTarget(config, values.target);
+    if (
+      config.projectId !== undefined &&
+      values.project !== undefined &&
+      values.project !== config.projectId
+    ) {
+      return yield* Effect.fail(
+        usageError(
+          "--project does not match the `project` in the sync config (the config belongs to a different project)",
+        ),
+      );
+    }
+    const context = yield* openProject({
+      server: values.server,
+      project: values.project ?? config.projectId,
+    });
+    const sourceFloor = yield* floorHandleFor(context, target.environment);
+    const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
+    return { config, target, context, sourceFloor, receiptsFloor };
+  });
+}
+
 function makeRootCommand(onExitCode: (code: number) => void) {
   const pull = Command.make("pull", pullConfig, (values) =>
     Effect.gen(function* () {
@@ -2746,6 +2819,58 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Command.withSubcommands([memberAdd, memberRemove, memberChangeRole]),
   );
 
+  const syncPlan = Command.make("plan", syncPlanConfig, (values) =>
+    Effect.gen(function* () {
+      const opened = yield* openSyncTarget(values);
+      yield* syncPlanOp({
+        client: opened.context.client,
+        verified: opened.context.verified,
+        recipient: opened.context.recipient,
+        resync: opened.context.resync,
+        target: opened.target,
+        sourceFloor: opened.sourceFloor,
+        receiptsEnvironment: opened.config.receiptsEnvironment as EnvironmentId,
+        receiptsFloor: opened.receiptsFloor,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Show which variables an apply would write to or delete from a deploy target, by name and version (the values are not decrypted, and nothing is read back from the target)",
+    ),
+  );
+
+  const syncApply = Command.make("apply", syncApplyConfig, (values) =>
+    Effect.gen(function* () {
+      const opened = yield* openSyncTarget(values);
+      yield* syncApplyOp({
+        client: opened.context.client,
+        verified: opened.context.verified,
+        recipient: opened.context.recipient,
+        resync: opened.context.resync,
+        target: opened.target,
+        sourceFloor: opened.sourceFloor,
+        receiptsEnvironment: opened.config.receiptsEnvironment as EnvironmentId,
+        receiptsFloor: opened.receiptsFloor,
+        // レシートの署名(§4.1): writer = 自分の内部 user_id、鍵 = master sig 鍵
+        writerUserId: opened.context.session.userId,
+        signingKey: opened.context.masterKeys.sigKeyPair.privateKey,
+        yes: values.yes,
+        now: () => new Date(),
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Decrypt the target's variables in memory and write the changed ones to the deploy target through its installed CLI (values on stdin only), then record what was delivered in the receipt. A production target needs --yes",
+    ),
+  );
+
+  const sync = Command.make("sync").pipe(
+    Command.withDescription(
+      "Copy variables to deploy targets through their installed CLI (plan / apply). Targets are declared in the sync config committed in the repository",
+    ),
+    Command.withSubcommands([syncPlan, syncApply]),
+  );
+
   return Command.make("maruhi").pipe(
     // bare `maruhi` / `maruhi --help` の冒頭に製品の一文を置く(裁定 F)
     Command.withDescription(
@@ -2769,6 +2894,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       config,
       schema,
       varGroup,
+      sync,
     ]),
   );
 }
