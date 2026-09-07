@@ -647,7 +647,13 @@ export function syncApplyOp(
       versions: work.versions,
       syncedAt: input.now().toISOString(),
     });
-    const receiptVersion = yield* saveReceipt(input, loaded, receipt);
+    // レシートの push は、同期元の pull で前進していることのあるビューから始める
+    // (loadReceipt 時点のビューは古いことがある — Bugbot 指摘)
+    const receiptVersion = yield* saveReceipt(
+      input,
+      { ...loaded, verified: pulled.verified },
+      receipt,
+    );
     yield* reportApply(input, result, receiptVersion);
   });
 }

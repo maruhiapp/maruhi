@@ -137,10 +137,11 @@ export function loadReceipt(input: {
     const name = receiptVariableName(input.target);
     const variable = pulled.variables.find((entry) => entry.name === name);
     if (variable === undefined) {
+      // 有界再同期で前進したビューを返す(後続の pull / push が引き継ぐ)
       return {
         receipt: null,
         variableVersion: 0,
-        verified: input.verified,
+        verified: pulled.verified,
         warnings: pulled.warnings,
       };
     }
@@ -158,7 +159,7 @@ export function loadReceipt(input: {
     return {
       receipt: decoded,
       variableVersion: variable.version,
-      verified: input.verified,
+      verified: pulled.verified,
       warnings: pulled.warnings,
     };
   });

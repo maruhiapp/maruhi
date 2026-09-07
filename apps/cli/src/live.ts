@@ -12,6 +12,7 @@
 // サブモジュールを直に読む(パッケージの index は BunRedis 等まで巻き込み、
 // `bun` モジュールを解決できない環境 — Node で走る vitest — で落ちる)
 import { writeSync } from "node:fs";
+import { stat } from "node:fs/promises";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
 import { Duration, Effect, Layer, Redacted } from "effect";
@@ -97,7 +98,13 @@ function keepTail(text: string, cap: number): string {
  * 読み方に合わせる)。stdout / stderr は継承せず捕捉する: ベンダーの出力は
  * 値を含みうるので、そのまま端末へ流さない(表示は呼び出し側が scrub してから)。
  */
-function execVendor(input: ExecInput): Promise<ExecOutcome> {
+async function execVendor(input: ExecInput): Promise<ExecOutcome> {
+  // cwd の不在・非ディレクトリは spawn の ENOENT / ENOTDIR として現れ、実行体の
+  // 不在と区別が付かない(Bugbot 指摘)。先に見て、原因を名指しする
+  const cwdStat = await stat(input.cwd).catch(() => null);
+  if (cwdStat === null || !cwdStat.isDirectory()) {
+    throw new CwdUnavailableError(input.cwd);
+  }
   // 剥がす理由: 子プロセスの stdin への書き込み(値が maruhi を離れる唯一の
   // 経路。argv には名前しか載らない — sync-exec.ts の型が保証する)
   const stdin = Redacted.value(input.stdin);
@@ -110,14 +117,28 @@ function execVendor(input: ExecInput): Promise<ExecOutcome> {
     stdout: "pipe",
     stderr: "pipe",
   });
-  return (async () => {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { exitCode, output: keepTail(`${stdout}${stderr}`, EXEC_OUTPUT_CAP_BYTES) };
-  })();
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { exitCode, output: keepTail(`${stdout}${stderr}`, EXEC_OUTPUT_CAP_BYTES) };
+}
+
+/** ベンダー CLI の実行ディレクトリ(設定の cwd)が無い・ディレクトリでない。 */
+class CwdUnavailableError extends Error {
+  constructor(readonly cwd: string) {
+    super("cwd unavailable");
+  }
+}
+
+/** 起動失敗の文面(値は運ばない — 実行体名・cwd・OS のエラーコードだけ)。 */
+function execStartFailure(input: ExecInput, error: unknown): string {
+  if (error instanceof CwdUnavailableError) {
+    return `Cannot run ${input.command[0] ?? ""}: the target's working directory does not exist or is not a directory (${error.cwd}). Fix the target's cwd in the sync config`;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return `Cannot start ${input.command[0] ?? ""}${code === undefined ? "" : ` (${code})`}: is it installed and on PATH, or named by the target's command in the sync config? maruhi never downloads a vendor CLI: install it and sign in with it, then retry`;
 }
 
 function makeBunProcessRunner(): ProcessRunnerShape {
@@ -142,12 +163,9 @@ function makeBunProcessRunner(): ProcessRunnerShape {
     exec: (input) =>
       Effect.tryPromise({
         try: () => execVendor(input),
-        // 起動失敗(未導入・PATH に無い)。取りに行かない(導入済みの CLI だけ —
-        // integration-options.md §3 補足 16)
-        catch: () =>
-          cliError(
-            `Cannot start ${input.command[0] ?? ""} (is it installed and on PATH?). maruhi never downloads a vendor CLI: install it and sign in with it, then retry`,
-          ),
+        // 起動失敗(未導入・PATH に無い・cwd が無い)。取りに行かない(導入済みの
+        // CLI だけ — integration-options.md §3 補足 16)
+        catch: (error) => cliError(execStartFailure(input, error)),
       }),
   };
 }

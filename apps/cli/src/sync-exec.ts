@@ -352,9 +352,14 @@ export function scrubVendorOutput(output: string, values: readonly SyncWrite[]):
       continue;
     }
     for (const fragment of [plaintext, ...plaintext.split(/\r?\n/)]) {
-      if (fragment.length > 0) {
-        fragments.add(fragment);
+      if (fragment.length === 0) {
+        continue;
       }
+      fragments.add(fragment);
+      // wrangler は JSON を受け取るので、失敗時に本文を echo すると値は JSON
+      // 文字列として(`\"` / `\\` / `\n` に逃がされて)現れる(Bugbot 指摘)。
+      // 逃がした形も断片に加える(素の形と同じなら集合が吸収する)
+      fragments.add(JSON.stringify(fragment).slice(1, -1));
     }
   }
   // 長い断片から置換する(短い断片が長い断片の一部を先に潰して取りこぼさない)

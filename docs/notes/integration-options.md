@@ -925,6 +925,15 @@ upsert で足りる)、`--non-interactive` 常時、`project` / `scope` / `gitBr
 確認できなかったこと: 実アカウントでの通し・macOS のパイプ容量(16 KiB の上限は保守側の推定)・`WRANGLER_LOG_PATH` のデバッグログ
 の監査(D3 — 据え置き)。
 
+**改訂 1(2026-09-07、Cursor Bugbot〔981312d〕)**: (1) `loadReceipt` が有界再同期で前進した後も pull 前のビューを返しており、
+レシートの push が古いビューから始まっていた(push 自身の再同期で救われるが、pull → 書き込みの他の経路は前進したビューを
+引き継ぐ規律)。`pullVariables` の返り値に `verified` を足し、`loadReceipt` はそれを返す。apply のレシート push は同期元の pull で
+さらに前進したビューから始める。(2) `Bun.spawn` は cwd の不在(ENOENT)・非ディレクトリ(ENOTDIR)でも throw し、実行体の不在と
+同じ「未導入」の文面になっていた。spawn の前に cwd を `stat` し、cwd の問題はそれとして名指しする(「Fix the target's cwd in the
+sync config」)。実行体の不在の文面には OS のエラーコードだけ添える。プローブに cwd 不在の態を追加。(3) wrangler は JSON を受け取る
+ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `\\` / `\n`)で現れ、素の断片だけの伏せ字化を
+すり抜けた。断片ごとに `JSON.stringify` した形も伏せる(単体テストで固定)。
+
 **第 2 段以降への申し送り**: (1) http ドライバ(CI と未導入時。通信先の増加は hosted-design.md §5-1 の線引きで裁定)、(2) CI での
 `sync`(署名鍵が無いのでレシート無しの再適用 = P3。`ci run` の子は `MARUHI_*` を持たない)、(3) M1(`env rotate` がレシートを
 進める)、(4) `sync init`、(5) 全ターゲット一括の plan(`--all`)、(6) autoSync / push 時同期 / `gh workflow run`、(7) gh プリセット

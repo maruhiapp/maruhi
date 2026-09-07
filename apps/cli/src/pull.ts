@@ -57,6 +57,8 @@ export interface DeclaredVariable {
 
 /** 復号済み変数・declared 宣言と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
 export interface PulledVariables {
+  /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。後続の書き込みはこれを引き継ぐ。 */
+  readonly verified: VerifiedProject;
   readonly variables: readonly DecryptedVariable[];
   /** 検証済み declared(値なし — 注入対象外。presence 検査は呼び出し側)。 */
   readonly declared: readonly DeclaredVariable[];
@@ -242,6 +244,11 @@ export function pullVariables(input: {
         value: plaintext,
       });
     }
-    return { variables: results, declared: toDeclaredVariables(pulled.declared), warnings };
+    return {
+      verified,
+      variables: results,
+      declared: toDeclaredVariables(pulled.declared),
+      warnings,
+    };
   });
 }

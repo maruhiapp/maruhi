@@ -13,6 +13,7 @@ interface ProbeResult {
   readonly exitCode: number;
   readonly output: string;
   readonly missing: string;
+  readonly badCwd: string;
 }
 
 describe("ProcessRunner.exec(live — Bun.spawn)", () => {
@@ -33,5 +34,10 @@ describe("ProcessRunner.exec(live — Bun.spawn)", () => {
     // 未導入のコマンドは型付きエラー(取りに行かない)
     expect(probe.missing).toContain("Cannot start maruhi-probe-not-installed-9f3c");
     expect(probe.missing).toContain("maruhi never downloads a vendor CLI");
+    expect(probe.missing).toContain("(ENOENT)");
+    // cwd の不在は実行体の不在と区別して名指しする(Bugbot 指摘)
+    expect(probe.badCwd).toContain(
+      "the target's working directory does not exist or is not a directory (/nonexistent-maruhi-probe-dir)",
+    );
   });
 });

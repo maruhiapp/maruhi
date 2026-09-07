@@ -40,7 +40,18 @@ const program = Effect.gen(function* () {
       Effect.map(() => "unexpectedly started"),
       Effect.catch((error) => Effect.succeed(error.message)),
     );
-  return { exitCode: outcome.exitCode, output: outcome.output, missing };
+  const badCwd = yield* runner
+    .exec({
+      command: ["sh", "-c", "true"],
+      cwd: "/nonexistent-maruhi-probe-dir",
+      extraEnv: {},
+      stdin: Redacted.make(new Uint8Array(0), { label: "sync-stdin" }),
+    })
+    .pipe(
+      Effect.map(() => "unexpectedly started"),
+      Effect.catch((error) => Effect.succeed(error.message)),
+    );
+  return { exitCode: outcome.exitCode, output: outcome.output, missing, badCwd };
 });
 
 const result = await Effect.runPromise(program.pipe(Effect.provide(liveLayer())));

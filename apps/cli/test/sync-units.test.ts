@@ -323,6 +323,17 @@ describe("checkValueConstraints", () => {
 });
 
 describe("scrubVendorOutput", () => {
+  it("JSON に逃がされた形の値(wrangler の本文 echo)も伏せる", () => {
+    const values = [write("A", 'quo"te\\back\nnext'), write("B", "plain")];
+    const echoed = `Error: body was ${JSON.stringify({ A: 'quo"te\\back\nnext', B: "plain" })}`;
+    const scrubbed = scrubVendorOutput(echoed, values).join("\n");
+    expect(scrubbed).not.toContain("quo");
+    expect(scrubbed).not.toContain("back");
+    expect(scrubbed).not.toContain("next");
+    expect(scrubbed).not.toContain("plain");
+    expect(scrubbed).toContain('{"A":"[redacted]","B":"[redacted]"}');
+  });
+
   it("値と複数行値の各行を伏せ、制御文字を中和し、末尾 20 行だけを残す", () => {
     const values = [write("A", "top-secret"), write("B", "first line\nsecond line")];
     const lines = Array.from({ length: 30 }, (_, index) => `line ${index}`);
