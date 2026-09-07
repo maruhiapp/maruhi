@@ -879,13 +879,24 @@ export function runBatch(
       };
     }
     // 完全な一覧に無い = 同期先で既に消えている(読み戻しは ID の突合だけで、値は読まない)
-    for (const id of looked.ids) {
+    return yield* removeByIds(input, spec, batch, looked.ids);
+  });
+}
+
+/** 削除の 2 手目: 引いた ID を 1 件ずつ DELETE(404 = 一覧の直後に並行して消された)。 */
+function removeByIds(
+  input: HttpTargetInput,
+  spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
+  batch: HttpBatch,
+  ids: readonly string[],
+): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    for (const id of ids) {
       const request = HttpClientRequest.make(spec.remove.method)(
         `https://${input.preset.host}${renderPath(spec.remove.path, input.options, id)}`,
         { urlParams: renderQuery(spec.remove.query, input.options) },
       );
       const outcome = yield* send(input, request);
-      // 404 = 並行して消された(一覧の直後)。消えていることに変わりはない
       if (outcome.status === 404) {
         continue;
       }
