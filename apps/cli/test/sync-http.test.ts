@@ -1012,9 +1012,9 @@ describe("maruhi sync apply (http, Netlify)", () => {
       initial: [
         {
           key: "BETA",
-          scopes: ["builds", "functions", "runtime", "post_processing"],
+          scopes: ["builds", "functions", "runtime"],
           values: [{ id: "val_prod", value: "keep", context: "production" }],
-          is_secret: false,
+          is_secret: true,
         },
       ],
     });
@@ -1107,6 +1107,7 @@ describe("maruhi sync apply (http, Netlify)", () => {
             siteId: NETLIFY_SITE,
             context: "branch",
             branch: "staging",
+            secret: false,
           },
         }),
       },
@@ -1213,9 +1214,9 @@ describe("maruhi sync apply (http, Netlify)", () => {
       initial: [
         {
           key: "ALPHA",
-          scopes: ["builds"],
+          scopes: ["builds", "functions", "runtime"],
           values: [{ id: "v1", value: "x", context: "deploy-preview" }],
-          is_secret: false,
+          is_secret: true,
         },
       ],
     });
@@ -1226,12 +1227,60 @@ describe("maruhi sync apply (http, Netlify)", () => {
     });
     expect(await sync(fixture2, "apply", "site")).toBe(1);
     expect(fixture2.env.errors.join("\n")).toContain(
-      "error 400: Environment variable ALPHA already exists",
+      "error 422: Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable.",
     );
     expect(fixture2.receipts.writes).toEqual([]);
     // 次の apply は一覧に ALPHA があるので PATCH
     expect(await sync(fixture2, "apply", "site"), fixture2.env.errors.join("\n")).toBe(0);
     expect(raced.requests.at(-1)?.method).toBe("PATCH");
+  });
+
+  it("非 secret で既にある変数に secret のつもりの値は送らずに止める(届いた分はレシートへ)。secret: false なら書く", async () => {
+    const initial = [
+      {
+        key: "BETA",
+        scopes: ["builds", "functions", "runtime", "post_processing"],
+        values: [{ id: "val_dp", value: "readable", context: "deploy-preview" }],
+        is_secret: false,
+      },
+    ];
+    const netlify = netlifyFake({ initial });
+    const fixture = await startFixture({
+      targets: { site: netlifyTarget() },
+      vendorHandlers: netlify.handlers,
+      vendorHosts: ["api.netlify.com"],
+    });
+    expect(await sync(fixture, "apply", "site")).toBe(1);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "BETA already exists at the target with is_secret off, and the config asks for it on. Netlify cannot turn an existing variable into a secret",
+    );
+    expect(errors).toContain(
+      "the Netlify API refused the request while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+    );
+    // BETA には何も送っていない(値は readable のまま = maruhi の値を置いていない)
+    expect(netlify.requests.map((request) => request.method)).toEqual(["GET", "POST"]);
+    expect(netlify.vars.get("BETA")?.values[0]?.value).toBe("readable");
+    expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
+    expectNoSecretLeak(fixture.env, netlify.requests);
+    // secret: false と言えば非 secret の変数に書く(既定の secret を明示で降ろした形)
+    const plain = netlifyFake({ initial });
+    const fixture2 = await startFixture({
+      targets: {
+        site: netlifyTarget({
+          options: {
+            accountId: NETLIFY_ACCOUNT,
+            siteId: NETLIFY_SITE,
+            context: "deploy-preview",
+            secret: false,
+          },
+        }),
+      },
+      vendorHandlers: plain.handlers,
+      vendorHosts: ["api.netlify.com"],
+    });
+    expect(await sync(fixture2, "apply", "site"), fixture2.env.errors.join("\n")).toBe(0);
+    expect(plain.vars.get("BETA")?.values[0]?.value).toBe(BETA_VALUE);
   });
 
   it("429 は Retry-After で待って再送し、5xx が続けば試行を使い切って exit 1(応答の echo は伏せる)。401 では何も届かない", async () => {

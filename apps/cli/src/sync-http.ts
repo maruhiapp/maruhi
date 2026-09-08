@@ -145,6 +145,17 @@ export type HttpWriteStrategy =
       readonly create: HttpWriteSpec;
       /** 一覧にある名前(同上)。 */
       readonly update: HttpWriteSpec;
+      /**
+       * update のリクエストでは**変えられない**属性の守り: 導いたオプションが true なら、
+       * 一覧の項目の `field` も true でなければ書かない(Netlify の `is_secret` — PATCH は
+       * 値しか取らないので、非 secret の変数に secret のつもりの値を黙って置かない)。
+       */
+      readonly updateGuards?: readonly {
+        readonly field: string;
+        readonly option: string;
+        /** 文面の末尾(何をすればよいか)。 */
+        readonly hint: string;
+      }[];
     };
 
 /** A DELETE request of the lookup delete (by ID, or by name for a whole item). */
@@ -409,6 +420,15 @@ export const HTTP_PRESETS = {
           value: { kind: "value" },
         },
       },
+      // PATCH は is_secret を変えられない(前提 (1))。非 secret で既にある変数に secret の
+      // つもりの値を置かない(pullfrog 指摘 — 改訂 1)
+      updateGuards: [
+        {
+          field: "is_secret",
+          option: "isSecret",
+          hint: "Netlify cannot turn an existing variable into a secret through the request that sets one context's value. Mark it as secret in the Netlify dashboard, delete it there and apply again, or set \"secret\": false in the target's options",
+        },
+      ],
     },
     // 削除はこのターゲットの context の値だけ(`DELETE …/value/{id}`)。それが変数の最後の
     // 値なら key ごと消す(空の変数を残さない)。他の context の値には触れない
@@ -1105,16 +1125,37 @@ function isListingComplete(spec: HttpListSpec, body: unknown): boolean {
   return next === undefined || next === null || next === false;
 }
 
-/** 一覧の項目のうち文字列の `keyField` を持つものの名前。 */
-function listedKeys(items: readonly Record<string, unknown>[], keyField: string): Set<string> {
-  const keys = new Set<string>();
+/** 一覧の項目を名前で引ける形に(文字列の `keyField` を持つものだけ)。 */
+function listedByKey(
+  items: readonly Record<string, unknown>[],
+  keyField: string,
+): Map<string, Record<string, unknown>> {
+  const byKey = new Map<string, Record<string, unknown>>();
   for (const item of items) {
     const key = item[keyField];
     if (typeof key === "string") {
-      keys.add(key);
+      byKey.set(key, item);
     }
   }
-  return keys;
+  return byKey;
+}
+
+/**
+ * update で変えられない属性の守り(`updateGuards`): 破っていれば文面(変数名と属性名
+ * だけ。値は載らない)、守れていれば null。
+ */
+function guardUpdate(
+  write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
+  name: string,
+  item: Record<string, unknown>,
+  options: DerivedOptions,
+): string | null {
+  for (const guard of write.updateGuards ?? []) {
+    if (options[guard.option] === true && item[guard.field] !== true) {
+      return `${displayText(name)} already exists at the target with ${guard.field} off, and the config asks for it on. ${guard.hint}`;
+    }
+  }
+  return null;
 }
 
 /** 削除の照合: 要素が「このターゲットの環境」のものか(名前が同じでも別の環境は消さない)。 */
@@ -1206,7 +1247,7 @@ function createOrUpdate(
       input,
       write,
       batch,
-      listedKeys(listing.items, write.list.keyField),
+      listedByKey(listing.items, write.list.keyField),
     );
   });
 }
@@ -1216,13 +1257,20 @@ function writeOneByOne(
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
   batch: HttpBatch,
-  existing: ReadonlySet<string>,
+  existing: ReadonlyMap<string, Record<string, unknown>>,
 ): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const delivered: string[] = [];
     for (const item of batch.writes) {
       const one = singleBatch(item);
-      const spec = existing.has(item.name) ? write.update : write.create;
+      const listed = existing.get(item.name);
+      const refused =
+        listed === undefined ? null : guardUpdate(write, item.name, listed, input.options);
+      if (refused !== null) {
+        // 送らずに止める(値は残らない。届いた分はレシートへ)
+        return { delivered, failure: { names: one.names, lines: [refused] } };
+      }
+      const spec = listed === undefined ? write.create : write.update;
       const outcome = yield* send(input, buildWriteRequest(input, spec, one));
       const result = readResponse(input.preset.response, outcome, one, input);
       if (result.failure !== null) {

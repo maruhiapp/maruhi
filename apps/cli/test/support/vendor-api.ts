@@ -348,7 +348,8 @@ export interface FakeNetlifyVar {
 /**
  * Netlify の偽 API(2026-09-08 に swagger 2.57.1 と netlify-cli で確かめた形):
  * `GET /api/v1/accounts/{account_id}/env?site_id=`(配列)、`POST …/env?site_id=`(配列で
- * 新規作成。**既存 key は拒む** — 実物の応答形は未確認なので 400 `{code, message}`)、
+ * 新規作成。**既存 key は 422** — 文言は Netlify Support Forums #88738 で報告された実物。
+ * swagger には無い)、
  * `PATCH …/env/{key}?site_id=`(既存 key の 1 context の値を作る / 更新する。不在 key は 404)、
  * `DELETE …/env/{key}?site_id=`(key ごと)、`DELETE …/env/{key}/value/{id}?site_id=`。
  * 一覧・作成・更新の応答は値を echo する(secret は空 — 実物は「返さない」)。
@@ -489,7 +490,11 @@ function rejectCreate(
   rejectKeys: readonly string[],
 ): MockResponse | null {
   if (vars.has(item.key)) {
-    return netlifyError(400, `Environment variable ${item.key} already exists`);
+    // 実物の文言(Netlify Support Forums #88738 で報告された応答。swagger には無い)
+    return netlifyError(
+      422,
+      "Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable.",
+    );
   }
   if (rejectKeys.includes(item.key)) {
     return netlifyError(422, `Value for ${item.key} is invalid: ${item.values[0]?.value ?? ""}`);
@@ -497,7 +502,7 @@ function rejectCreate(
   return null;
 }
 
-/** `POST …/env`: 配列で新規作成(既存 key・拒否名は失敗。実物の形は未確認 — 400 で全体を拒む)。 */
+/** `POST …/env`: 配列で新規作成(既存 key = 422〔報告された実物〕・拒否名 = 422。全体を拒む)。 */
 function createVars(
   vars: Map<string, FakeNetlifyVar>,
   body: unknown,

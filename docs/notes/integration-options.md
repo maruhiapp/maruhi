@@ -1853,8 +1853,8 @@ Controller — 「**Secret values are write-only**. After setting a value using 
 human-readable version」「won't return unmasked values … for any deploy context besides `dev`」「Secret values must be set to explicit
 deploy contexts and scopes」「cannot have the `post processing` scope」、secret scanning がビルド出力に値を見つけたら**ビルドを失敗**
 させる。プランの制限は書かれていない(全プラン扱い)。
-(4) **未確認(docs / swagger に無く、実アカウントで確かめる = 人間タスク)**: 既存 key への `POST` の応答(4xx の形か、まさか二重に
-作るか)、`PUT` が不在 key を作るか、`PATCH` 不在 key の status(404 と推定するが実装は依存しない)、配列 `POST` の部分失敗の形、
+(4) **未確認(docs / swagger に無く、実アカウントで確かめる = 人間タスク)**: 既存 key への `POST` の応答(Support Forums の報告では
+422 + 「Environment variable with the same key name already exists on this site …」— 一次資料には無い)、`PUT` が不在 key を作るか、`PATCH` 不在 key の status(404 と推定するが実装は依存しない)、配列 `POST` の部分失敗の形、
 Starter プランで scopes の部分集合(secret の 3 scope)が通るか、429 の `Retry-After` の有無、空文字列の受理、`all` の値と個別
 context の値が同居したときの API の応答(docs の優先規則には依る)、値を全部消した変数が空のまま残るか。
 (5) **コード側の事実**: `SyncPreset` は `exec` / `http` を**両方必須**、`EXEC_PRESETS: Record<PresetId, …>` が全 id の exec を要求、
@@ -1995,7 +1995,23 @@ Pages は需要が出た順に 1 プリセット 1 PR。宣言の型は create-o
 docs)/ 日本語(裁定録・コミット・PR)。エージェント環境の扱いは無変更。スコープ(他の候補・SY5・`--all`・`sync diff`・Netlify の
 exec・レシート形式の版上げは取り込まない)。`Redacted` を剥がす箇所は増えていない。
 
-**確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは 400)、
+**改訂 1(2026-09-08、pullfrog の初回レビュー〔a3e0357〕)**: (1) **secret が update の経路で黙って落ちる** — 既存 key への
+書き込みは `PATCH`(値しか取らない)なので、非 secret で既にある変数に、設定が secret のつもり(既定 true)の値を置いても
+非 secret のまま(UI / API から読める)で、CLI は何も言わなかった。docs には「作成時にだけ効く」と書いていたが、書いた**後に**
+読者が気づく形。候補: (i) 文面で止める(fail-closed。一覧が `is_secret` を返すので追加のリクエスト無しに判定できる)/ (ii) `PUT`
+で secret にする(全 values を置換 = 他 context の値を壊す — 裁定 C で棄却済み)/ (iii) 警告して書く(読める場所に置いてから
+言う)。(i) を採り、宣言の一般化 **`create-or-update.updateGuards`**(「update では変えられない属性: 導いたオプションが true なら
+一覧の項目の `field` も true でなければ送らない」)を足した。Netlify = `{field: "is_secret", option: "isSecret"}`。文面は変数名と
+属性名だけ(値は載らない)+ 宣言の `hint`(dashboard で secret にする / 消して apply し直す / `"secret": false`)。届いた分は
+レシートへ、その変数以降は送らない(他の失敗と同じ形)。逆向き(既に secret の変数に非 secret のつもりの値)は止めない —
+`dev` context は secret を要求できない(`check`)ので、止めると secret 変数の dev 値が書けなくなる。態を 2 つ追加(止まる /
+`secret: false` なら書く)。docs の「Netlify」節に 1 文。(2) **既存 key への `POST` の応答**は Netlify Support Forums(#88738)で
+報告された実物が **422** + 「Environment variable with the same key name already exists on this site. Try a different key or edit
+the existing variable.」— swagger には無い(pullfrog の「open-api で確認」は当たらない)が、二次資料として偽 API をその形に写した
+(実アカウントでの確認は人間タスクのまま)。
+
+**確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
+Support Forums の報告どおり 422)、
 `PATCH` 不在 key の status、`is_secret` + 3 scope が Starter プランで通るか、`all` と個別 context の同居時の API と build の挙動、
 値を全部消した変数が残るか(残らないなら `removeItem` は無害な 404)、429 の `Retry-After`、5,000 文字超の応答、PAT の作成 UI の
 文言(docs の「Applications, Personal access tokens」は docs.netlify.com の記述に依る)、`accountId` に slug と ID のどちらも通るか。
