@@ -1772,6 +1772,19 @@ skipped unless the jobs use a conditional expression that causes the job to cont
 ため、**`if: success() && needs.targets.outputs.list != '[]'`** と明示(暗黙の規則に依存しない — 綴りの一致で免除しないのと
 同じ規律)。機械検査の期待値とテンプレートのコメントを更新。docs の説明文は変えない(「stops with the target's name」のまま)。
 
+**改訂 2(2026-09-08、pullfrog の初回レビュー〔5e138fa〕)**: (1) **トークン変数名の不一致** — 新ページの `worker` ターゲットは
+「Deploy targets の http ドライバ例」を名指ししつつ `CLOUDFLARE_API_TOKEN` と書き、名指し先は `CF_API_TOKEN` だった(両ページを
+なぞると `ci run --env tokens` が渡す名前を wrangler が読まず deploy が落ちる)→ **deploy-targets.mdx 側を `CLOUDFLARE_API_TOKEN`
+に**(push の行と JSON の `token.name`。wrangler が読む名前に揃える。CLI テストのフィクスチャ名 `CF_API_TOKEN` は docs ではないので
+据え置き)。(2) **`SCHEDULED_TARGETS` も設定の実在で検査** — dispatch の入力だけ検査していたので、リストの誤字や設定から消した
+ターゲットが毎回の schedule で無保護の Environment を自動作成してから 404 で落ちる形だった → `targets` job のスクリプトを
+「dispatch なら入力、schedule ならリスト」を同じ `for name in $names` で検査してから JSON 化する形に(態を追加: `web wep` = 1・
+出力なし)。(3) 「CI mode reads no config file」は `ci sync` が `maruhi.sync.json` を読む事実に反する → CLI の文面(「except the
+sync config」)に合わせた。(4) 機械検査の契約一致で `inputOf(contractDispatch)` が `undefined` なら `toMatchObject({})` が無条件に
+通る → 存在を先に断言。(5) nit: 標準形 ① の Environment `production` に reviewers を置くと**毎回の push to main が承認待ち**になる
+(schedule 側は言っていて deploy 側は言っていなかった非対称)→ Four eyes の手順 1 に 1 文。(6) nit: jq 不要の `it` を
+`describe.skipIf(!hasJq)` の外へ。
+
 **SY4 以降への申し送り(SY3 完了)**: (1) **SY4** Netlify(http プリセットの宣言 1 つ + モック応答 — 第 2 段の裁定録の http
 プリセットの形)。(2) **SY5** `gh secret set`(第 1 段 = レシピ、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形が自然。
 第 3 段の `GH_ENV` / `ghArgument` を流用可。bootstrap は fine-grained PAT か App トークン — 補足 8 Q1)。(3) 全ターゲット一括の plan

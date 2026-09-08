@@ -16,7 +16,7 @@ This page covers what a project owner sets up once, a job that runs a command wi
 - **A lease grant whose policy matches the job** (below). A job the policy does not list gets a uniform 404.
 - **The repository anchor**, `.maruhi/anchor.json`, committed and passed as `--anchor`. It is optional, and every template on this page includes it. See [Repository anchor](#repository-anchor).
 
-Everything else is a flag. CI mode reads no config file and no keychain, so the server, the project, and the anchor path are visible in the workflow file, where they are reviewed like the rest of your CI.
+Everything else is a flag. CI mode reads no keychain and no config file except the sync config, `maruhi.sync.json`, so the server, the project, and the anchor path are visible in the workflow file, where they are reviewed like the rest of your CI.
 
 ## Set up once
 
@@ -245,8 +245,9 @@ env:
   SCHEDULED_TARGETS: web
 
 jobs:
-  # Which targets this run syncs: the dispatched one, checked against the
-  # config so that a typo does not create a stray Environment, or the scheduled list
+  # Which targets this run syncs: the dispatched one, or the scheduled list.
+  # Both are checked against the config, so a typo or a removed target stops
+  # here instead of creating a stray Environment below
   targets:
     runs-on: ubuntu-latest
     permissions:
@@ -262,13 +263,12 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
         run: |
-          if [ -n "$TARGET" ]; then
-            jq -e --arg t "$TARGET" '.targets | has($t)' maruhi.sync.json > /dev/null \
-              || { echo "maruhi.sync.json has no target named $TARGET" >&2; exit 1; }
-            list=$(jq -cn --arg t "$TARGET" '[$t]')
-          else
-            list=$(jq -cn --arg s "$SCHEDULED_TARGETS" '$s | split(" ") | map(select(. != ""))')
-          fi
+          if [ -n "$TARGET" ]; then names="$TARGET"; else names="$SCHEDULED_TARGETS"; fi
+          for name in $names; do
+            jq -e --arg t "$name" '.targets | has($t)' maruhi.sync.json > /dev/null \
+              || { echo "maruhi.sync.json has no target named $name" >&2; exit 1; }
+          done
+          list=$(jq -cn --arg s "$names" '$s | split(" ") | map(select(. != ""))')
           echo "list=$list" >> "$GITHUB_OUTPUT"
 
   sync:
@@ -318,7 +318,7 @@ jobs:
 Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy for the `web` target names its Environment, `environment: web`, for the environments `production` and `tokens`; a second CI-synced target is a second element with its own Environment name.
 
 - **From a push.** With `"onPush": "workflow"`, `maruhi push` runs `gh workflow run maruhi-sync.yml -f target=web` with the writer's own GitHub sign-in and reports that the run was accepted. The command line carries the workflow name and the target name, never a value or a variable name; the job reads the values from maruhi. The writer never holds the platform's token.
-- **From the schedule.** `SCHEDULED_TARGETS` is the list of targets the schedule re-applies. It is a choice, not a copy of the config: a target you sync only from your machine (the `preview` target of the example, which uses the vendor CLI with `"onPush": "apply"`) has no token in maruhi and stays off the list. The schedule re-applies the current values of maruhi. It does not compare them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly, on the next run.
+- **From the schedule.** `SCHEDULED_TARGETS` is the list of targets the schedule re-applies, checked against the config like a dispatched name. It is a choice, not a copy of the config: a target you sync only from your machine (the `preview` target of the example, which uses the vendor CLI with `"onPush": "apply"`) has no token in maruhi and stays off the list. The schedule re-applies the current values of maruhi. It does not compare them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly, on the next run.
 - **Which config runs.** `workflow_dispatch` and `schedule` both use the workflow file and the `maruhi.sync.json` of the repository's default branch (or of `workflow.ref` when the target sets it). A target added on a branch does not exist for the dispatched run until the branch is merged; the `targets` job then stops with the target's name.
 - **Several runs for one target.** Pushes in a row, or a push during a scheduled run, queue runs for the same target. The `concurrency` group runs them one at a time, and GitHub keeps at most one run queued per group: a newer one replaces an older one that has not started. Because every run reads the values at the moment it runs, the last run to finish has written the current values, whichever order the runs started in.
 - **Receipts.** CI keeps none, so a `maruhi sync plan web` on your machine still shows what CI delivered as pending, and the next local `maruhi sync apply web --yes` rewrites it once. This is described under [Receipts](/docs/deploy-targets#receipts).
@@ -328,7 +328,7 @@ Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy 
 
 Only a person can write a production target. Locally, that person types `maruhi sync apply <target> --yes`. In CI, the `--yes` is in the workflow file, reviewed with the rest of the repository, and the run itself is started by anyone with write access (a `maruhi push` with `"onPush": "workflow"`, a `gh workflow run`, the Actions tab) or by the schedule. To require a second person before production is written, put the job in a GitHub Environment with required reviewers. maruhi has no approval feature of its own, and does not need one:
 
-1. **Create the Environment** (repository settings, Environments): `production` for the deploy shape, or the target's name (`web`) for the sync shape, whose job references `environment: ${{ matrix.target }}`. A workflow that references an Environment that does not exist creates it, without protection rules, so create it before the first run. In a personal repository the owner does this; in an organization repository it takes admin access.
+1. **Create the Environment** (repository settings, Environments): `production` for the deploy shape, or the target's name (`web`) for the sync shape, whose job references `environment: ${{ matrix.target }}`. A workflow that references an Environment that does not exist creates it, without protection rules, so create it before the first run. In a personal repository the owner does this; in an organization repository it takes admin access. In the deploy shape, reviewers on `production` hold every push to `main` until someone approves the deploy, not only the secrets: add them if that is the deploy policy you want.
 2. **Add required reviewers**: up to six people or teams with at least read access; one approval lets the job proceed, and a rejection fails the run. Turn on **Prevent self-review** so that the person who triggered the run cannot approve it. That is the second pair of eyes. On the Free, Pro, and Team plans, required reviewers are available for public repositories only.
 3. **Restrict deployment branches** to the default branch. `maruhi push` dispatches the workflow on the default branch and the deploy workflow runs on `main`, so nothing legitimate is blocked, and a run from another branch cannot reference the Environment.
 4. **Name the Environment in the lease policy** (`environment: production`, `environment: web`, one element per Environment). The `environment` claim is in the token only when the job references that Environment, and GitHub sends such a job to a runner only after the reviewers approved it. So the maruhi server hands out the production lease only to a run that a reviewer approved: a workflow edited to leave the Environment out gets a 404, whoever edited it.

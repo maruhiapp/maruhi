@@ -140,6 +140,8 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       .workflow_dispatch;
     const contractDispatch = (contract.on as { workflow_dispatch: Record_ }).workflow_dispatch;
     const inputOf = (d: Record_) => (d["inputs"] as Record<string, Record_>)["target"];
+    // 契約側の入力が消えたり改名されたりしても検査が黙って通らないよう、存在を先に断言する(pullfrog 指摘)
+    expect(inputOf(contractDispatch)).toBeDefined();
     expect(inputOf(dispatch)).toMatchObject(inputOf(contractDispatch) ?? {});
     expect(inputOf(dispatch)).toMatchObject({ required: true, type: "string" });
   });
@@ -269,14 +271,14 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       expect(hasJq, "install jq on the CI runner").toBe(true);
     });
 
+    const listStep = targets.steps.find((s) => s.id === "list") as Step;
+
+    it("reads the dispatched target through env, and needs nothing but contents: read", () => {
+      expect(listStep.env).toEqual({ TARGET: "${{ inputs.target }}" });
+      expect(targets.permissions).toEqual({ contents: "read" });
+    });
+
     describe.skipIf(!hasJq)("the targets job's script, run under sh with a sample config", () => {
-      const listStep = targets.steps.find((s) => s.id === "list") as Step;
-
-      it("reads the dispatched target through env, and needs nothing but contents: read", () => {
-        expect(listStep.env).toEqual({ TARGET: "${{ inputs.target }}" });
-        expect(targets.permissions).toEqual({ contents: "read" });
-      });
-
       function runTargets(env: Record<string, string>): {
         status: number | null;
         stderr: string;
@@ -319,6 +321,13 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
           'list=["web","preview"]\n',
         );
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "" }).output).toBe("list=[]\n");
+      });
+
+      it("schedule: a listed target the config does not have stops the run too (no stray Environment)", () => {
+        const { status, stderr, output } = runTargets({ TARGET: "", SCHEDULED_TARGETS: "web wep" });
+        expect(status).toBe(1);
+        expect(stderr).toContain("maruhi.sync.json has no target named wep");
+        expect(output).toBe("");
       });
     });
   });

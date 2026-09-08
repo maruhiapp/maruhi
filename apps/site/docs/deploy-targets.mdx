@@ -123,7 +123,7 @@ In CI, or on a machine where you do not want the vendor CLI, set `"driver": "htt
 
    ```sh
    maruhi env create tokens
-   printf %s "$CLOUDFLARE_API_TOKEN" | maruhi push CF_API_TOKEN --env tokens
+   printf %s "$CLOUDFLARE_API_TOKEN" | maruhi push CLOUDFLARE_API_TOKEN --env tokens
    ```
 
 3. Point the target at it:
@@ -139,7 +139,7 @@ In CI, or on a machine where you do not want the vendor CLI, set `"driver": "htt
          "environment": "production",
          "variables": "all",
          "exclude": ["NEXT_PUBLIC_SITE_URL"],
-         "token": { "environment": "tokens", "name": "CF_API_TOKEN" },
+         "token": { "environment": "tokens", "name": "CLOUDFLARE_API_TOKEN" },
          "options": { "accountId": "0123456789abcdef0123456789abcdef", "name": "my-worker" }
        },
        "web": {
