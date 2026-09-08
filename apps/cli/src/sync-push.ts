@@ -113,6 +113,12 @@ export function decidePushSync(
   },
 ): Effect.Effect<PushSyncDecision, CliError> {
   const { config } = setup;
+  const onPush = [...config.targets.values()].filter((target) => target.onPush !== null);
+  if (onPush.length === 0) {
+    // 手動同期だけの設定: push には無関係(`project` の照合もしない — 設定は
+    // `onPush` を持つときだけ `project` を名乗る義務がある)
+    return Effect.succeed({ kind: "none" });
+  }
   if (config.projectId !== undefined && config.projectId !== input.projectId) {
     if (setup.explicit) {
       return Effect.fail(
@@ -123,11 +129,8 @@ export function decidePushSync(
     }
     return Effect.succeed({ kind: "other-project" });
   }
-  const targets = [...config.targets.values()].filter(
-    (target) =>
-      target.onPush !== null &&
-      target.environment === input.environmentId &&
-      targetCarries(target, input.name),
+  const targets = onPush.filter(
+    (target) => target.environment === input.environmentId && targetCarries(target, input.name),
   );
   return Effect.succeed(targets.length === 0 ? { kind: "none" } : { kind: "targets", targets });
 }

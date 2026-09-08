@@ -196,7 +196,7 @@ A value changes only when someone runs `maruhi push`, so the moment a deploy tar
 }
 ```
 
-`maruhi sync init` writes these keys with `--on-push apply` or `--on-push workflow --workflow maruhi-sync.yml`.
+`maruhi sync init` writes these keys with `--on-push apply` or `--on-push workflow --workflow maruhi-sync.yml` (together with `--project`).
 
 How `maruhi push` finds the config: it reads `--config <file>` when you pass it, and otherwise `maruhi.sync.json` in the working directory when that file exists. A config with `onPush` must name its `project`, and the default file is used only when that project is the one you are pushing to; otherwise the push goes through and a note says the config was left alone. A `--config` you passed explicitly must match, or the command stops before pushing. Only targets whose `environment` is the environment you pushed to, and whose selection includes the variable you pushed, are synced.
 

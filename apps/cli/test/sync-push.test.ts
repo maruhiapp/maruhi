@@ -389,6 +389,17 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(receiptsRequests(fixture)).toBe(0);
   });
 
+  it("onPush を 1 つも持たない設定は project を見ない(別プロジェクトでも 2 にならず、何も言わない)", async () => {
+    const fixture = await startFixture({
+      config: config({ manual: previewTarget({ onPush: undefined }) }, { project: OTHER_PROJECT }),
+    });
+    expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
+    expect(fixture.env.logs.join("\n")).toContain(PUSHED_LINE);
+    // 明示 --config なので「同期する対象が無い」の note は出るが、別プロジェクトの話はしない
+    expect(fixture.env.errors.join("\n")).toContain("no target in the sync config copies");
+    expect(fixture.env.errors.join("\n")).not.toContain("different project");
+  });
+
   it("壊れた既定パスの設定は push の前に落とす(黙って飛ばさない)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
     await writeFile(fixture.configPath, "{ not json");
