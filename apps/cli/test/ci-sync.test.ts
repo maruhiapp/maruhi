@@ -502,9 +502,8 @@ describe("maruhi ci sync", () => {
     expect(await ciSync(fixture, "actions")).toBe(1);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain(
-      "gh could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+      "gh could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted). Cannot start gh (ENOENT): is it installed and on PATH.",
     );
-    expect(errors).toContain("  gh: Cannot start gh (ENOENT): is it installed and on PATH");
     expect(errors).toContain("re-run the job (every selected variable is written again)");
     expect(fixture.env.execCalls).toHaveLength(2);
     expectNoSecretLeak(fixture.env);

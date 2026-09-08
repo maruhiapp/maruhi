@@ -866,10 +866,14 @@ describe("maruhi sync apply", () => {
     );
     expect(await sync(missing, "apply", "web", "--yes")).toBe(1);
     const errors = missing.env.errors.join("\n");
+    // 起動失敗の理由(maruhi 自身の文)は本文の続き。走らなかったプロセスに出力は
+    // 無いので、ベンダー出力の置き場(`  vercel: …`)と「Its output is shown above」
+    // では言わない(pullfrog 指摘・改訂 1)
     expect(errors).toContain(
-      "maruhi: vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted)",
+      "maruhi: vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
-    expect(errors).toContain("  vercel: Cannot start vercel (ENOENT): is it installed and on PATH");
+    expect(errors).not.toContain("  vercel:");
+    expect(errors).not.toContain("Its output is shown above");
     expect(missing.env.execCalls).toHaveLength(1);
     expect(missing.receipts.writes).toEqual([]);
   });
@@ -885,9 +889,8 @@ describe("maruhi sync apply", () => {
     expect(fixture.env.execCalls).toHaveLength(2);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain(
-      "maruhi: vercel could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+      "maruhi: vercel could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted). Cannot start vercel (ENOENT)",
     );
-    expect(errors).toContain("  vercel: Cannot start vercel (ENOENT)");
     expectNoSecretLeak(fixture.env);
     // 成功した ALPHA だけがレシートに載る → 次の plan は BETA だけを示す
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
@@ -923,5 +926,33 @@ describe("maruhi sync apply", () => {
     expect(fixture.env.errors.join("\n")).toContain(
       "The receipt variable sync-receipt:web in environment sync-receipts is not a valid sync receipt (not valid JSON). Remove it with `maruhi var rm sync-receipt:web --env sync-receipts`",
     );
+  });
+
+  it("別プリセットが書いたレシートは拒む(preset の切り替え = 届け先が別。作り直しを名指し)", async () => {
+    // vercel 時代のレシートに、gh の規則では不正な名前が「届いた版のまま」残っている
+    // 形: 名前規則のエラーではなくレシートの取り違えとして先に止まる(pullfrog 指摘)
+    const fixture = await startFixture({
+      sourceVariables: [
+        await sourceVariable({ variableId: "vl", name: "apiKey", version: 1, plaintext: "k" }),
+      ],
+      config: defaultConfig({
+        targets: {
+          web: {
+            preset: "github-actions",
+            environment: SOURCE_ENV,
+            variables: ["apiKey"],
+            options: { repo: "acme/app", environment: "staging" },
+          },
+        },
+      }),
+      receipts: [
+        await storedReceipt({ target: "web", preset: "vercel", variables: { apiKey: 1 } }),
+      ],
+    });
+    expect(await sync(fixture, "plan", "web")).toBe(1);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "The receipt variable sync-receipt:web in environment sync-receipts was written by the vercel preset, but target web is now configured with preset github-actions, so its deliveries do not describe this destination. Remove it with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again (the next apply rewrites every variable of the target)",
+    );
+    expect(fixture.env.execCalls).toEqual([]);
   });
 });

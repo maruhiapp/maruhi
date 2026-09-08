@@ -1263,11 +1263,13 @@ function createOrUpdate(
   return Effect.gen(function* () {
     const listing = yield* fetchListing(input, write.list);
     if ("failure" in listing) {
+      // 一覧は応答が返っている(lines が HTTP status を言う)ので「送っていない」と
+      // 言わない — 何が失敗したかは一覧の失敗として言う(pullfrog 指摘・改訂 1)
       return {
         delivered: [],
         failure: {
           names: batch.names,
-          what: "maruhi did not send the request",
+          what: `${input.preset.label} did not list the existing variables`,
           lines: listing.failure,
         },
       };
@@ -1463,11 +1465,13 @@ function lookupAndRemove(
     const name = batch.names[0] ?? "";
     const listing = yield* fetchListing(input, spec.list);
     if ("failure" in listing) {
+      // 一覧は応答が返っている(lines が HTTP status を言う)ので「送っていない」と
+      // 言わない(pullfrog 指摘・改訂 1)
       return {
         delivered: [],
         failure: {
           names: batch.names,
-          what: "maruhi did not send the request",
+          what: `${input.preset.label} did not list the existing variables`,
           lines: listing.failure,
         },
       };

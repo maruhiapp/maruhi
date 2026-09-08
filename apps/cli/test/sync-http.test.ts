@@ -1474,9 +1474,10 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture3, "apply", "site")).toBe(1);
-    expect(fixture3.env.errors.join("\n")).toContain(
-      "HTTP 401 while listing variables at the target",
-    );
+    const listingErrors = fixture3.env.errors.join("\n");
+    expect(listingErrors).toContain("HTTP 401 while listing variables at the target");
+    // 一覧には応答が返っている: 「送っていない」ではなく一覧の失敗として言う
+    expect(listingErrors).toContain("the Netlify API did not list the existing variables");
     expect(fixture3.receipts.writes).toEqual([]);
     expectNoSecretLeak(fixture3.env, wrongToken.requests);
   });

@@ -2384,8 +2384,10 @@ apply の `checkValueConstraints` は防衛線として据え置き(plan と app
 `!` になったことで「apply まで気づけない」という UX の穴も塞がった。選定 = **(i) 据え置き**。**`blocked` と `delete` の同居**
 (レシートに今の規則で不正な名前)は**削除だけ通す**: 削除は値を運ばず、gh の不正名 delete は 404 → `failDriver` のレシート
 作り直しの案内が既に当たる。不正な名前が gh ターゲットのレシートに居るのは**プリセットを切り替えた場合だけ**(apply は不正名を
-記録する前に止まる。レシートは preset を記録しない)で、その場合は削除自体が別プラットフォーム由来 = 名前規則の問題ではなく
-レシートのリセットで解く(docs の Receipts が既に案内)。棄却: (ii)(rename の同居に良い解が無く実益が小さい)、(iii)(非対称)。
+記録する前に止まる)で、その場合は削除自体が別プラットフォーム由来 = 名前規則の問題ではない。初稿は「レシートは preset を
+記録しない」を前提に docs のリセット案内へ委ねたが、これは誤認(`SyncReceipt.preset` は存在し `decodeReceipt` が検証もして
+いた — pullfrog 指摘)で、**改訂 1 で `loadReceipt` が preset の不一致を名指しで拒む形にした**(下の改訂 1 (1))。棄却:
+(ii)(rename の同居に良い解が無く実益が小さい)、(iii)(非対称)。
 
 **B. `describeDestination` の一般化** — 列挙: (i) `SyncPreset.describe?: (options) => string`(関数 — `isProduction` と同じ置き場)
 / (ii) **`ExecPreset` / `HttpPreset` に `describeOptions: readonly string[]`(載せるオプション名の宣言 — データ)** / (iii) 全
@@ -2415,6 +2417,28 @@ request」)。棄却: (ii)(脆い)、(iii)(誤読が残る)。
 削除して `!` の記述へ、Receipts に「失敗した apply も届いた分を記録する(両ドライバ — 起動できなかった場合も)」を追記。
 github-actions.mdx: 「What can go wrong」の名前の項を「plan が `!` で先に示す」形へ。```sh は増やしていない(recipes.test.ts の
 禁止パターンの対象は不変)。
+
+**改訂 1(2026-09-08 — pullfrog の初回レビュー。3 点 + 追認 1 点)**:
+(1) **preset 切り替えの検出**: 裁定 E の初稿の前提「レシートは preset を記録しない」は誤認 — `SyncReceipt.preset` は存在し
+`decodeReceipt` が既知 preset であることを検証もしていた(ただし**ターゲットの preset と突合していなかった**)。加えて、名前
+検査を plan に入れたことで「別 preset のレシートに残る名前が今の規則で不正・選択にも居て版も一致」の場合が unchanged(旧:
+apply の `prepareWork` は add / update しか検査しない = 通っていた)から blocked に変わり、「昨日まで通っていたターゲットが
+名前規則のエラーで止まる」という読み違いを生む形だった(pullfrog の主指摘)。→ `loadReceipt` に期待 preset を渡し、
+`receipt.preset` と不一致なら「preset X が書いたレシートで、届け先が別。`maruhi var rm …` で作り直し」の型付きエラーで止める
+(plan / apply / rotate 共通。exec ⇄ http のドライバ切り替えは同じ preset id なので従来どおり通る)。態: vercel が書いた
+レシート + github-actions ターゲット + 不正名が届いた版のまま選択に居る形で、名前規則でなくレシートの取り違えとして止まる
+ことを固定。docs(Receipts)にも 1 文追記。
+(2) **一覧の失敗の `what`**: `fetchListing` の失敗は応答が返っている(lines が「HTTP 401 while listing variables at the
+target」)のに「maruhi did not send the request」を付けていた(createOrUpdate / lookupAndRemove の 2 か所)→
+`${label} did not list the existing variables` に(裁定 C の 4 文型 → 5 文型)。態: Netlify の一覧 401 で固定(従来は
+lines だけ固定で `what` は未固定だった)。
+(3) **起動失敗の帰属**: `CliError.message` を `output`(ベンダー出力の置き場 — `failDriver` が実行体名の接頭辞で見せ
+「Its output is shown above」と言う)に置いていた = 走らなかったプロセスの「出力」と呼ぶ不誠実(裁定 D で足した空 output
+ガードと同種の問題の言い残し)→ `DriverResult.failure.detail`(maruhi 自身の説明 — 完成した文)を追加し、本文の続きとして
+見せる。`output` は空になり、接頭辞行も「shown above」も出ない。
+(追認)`ci sync` の名前検査に新しい態は足していない: CI はレシート無し(`receipt: null`)= 全選択が add なので、旧来の
+apply 段 `checkValueConstraints` でも同じ変数で止まっていた。plan 段の検査は CI では「同じ結果に早く着く」だけで新しい網では
+ない(将来の読者が「CI の網も今回増えた」と誤読しないための記録)。
 
 **確認できなかったこと(人間タスク)**: 増減なし — 今回の変更はすべて偽ベンダー / 偽 API(`setExecHandler` の `CliError`・
 `MockServer`)で検証できる形で、SY5 の一覧(実リポジトリでの `gh secret set` の通し等)を据え置く。

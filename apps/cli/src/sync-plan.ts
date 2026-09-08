@@ -355,6 +355,7 @@ function loadTargetReceipt(input: SyncContextInput): Effect.Effect<LoadedReceipt
       resync: input.resync,
       floor: input.receiptsFloor,
       target: input.target.name,
+      preset: input.target.preset.id,
     });
     yield* logWarnings(loaded.warnings);
     return loaded;
@@ -535,7 +536,13 @@ export interface DriverResult {
     readonly kind: "write" | "delete";
     /** 何が失敗したか(実行体名と終了コード / API の呼び名)。値は運ばない。 */
     readonly what: string;
-    /** 伏せ字化済みの出力・応答の断片。 */
+    /**
+     * maruhi 自身の説明(起動失敗の理由と案内 — 完成した文)。ベンダーの出力では
+     * ないので `output` に置かない(failDriver は output をベンダーの発言として
+     * 実行体名 / ホスト名の接頭辞つきで見せる — pullfrog 指摘・改訂 1)。
+     */
+    readonly detail: string | null;
+    /** 伏せ字化済みの出力・応答の断片(ベンダーの発言。無ければ空)。 */
     readonly output: readonly string[];
   } | null;
 }
@@ -580,9 +587,10 @@ function runInvocations(
             names: invocation.names,
             kind: invocation.kind,
             what: `${displayText(driver.command)} could not be started`,
-            // 起動失敗の文面は maruhi 自身のもの(値を運ばない)。ベンダー出力と同じ
-            // 置き場で見せる(http の runBatch が送信の失敗を lines で返す形と同じ)
-            output: [displayText(outcome.startFailure)],
+            // 起動失敗の文面は maruhi 自身のもの(値を運ばない)。走らなかった
+            // プロセスに出力は無いので、ベンダー出力の置き場ではなく detail で運ぶ
+            detail: displayText(outcome.startFailure),
+            output: [],
           },
         };
       }
@@ -594,6 +602,7 @@ function runInvocations(
             names: invocation.names,
             kind: invocation.kind,
             what: `${displayText(driver.command)} exited with code ${outcome.exitCode}`,
+            detail: null,
             // ベンダーの出力は信用しない: 値を伏せ、制御文字を中和し、末尾だけ
             output: scrubVendorOutput(outcome.output, work.writes),
           },
@@ -643,9 +652,11 @@ function runBatches(
           failure: {
             names: result.failure.names,
             kind: batch.kind,
-            // 何が起きたか(拒否 / 未確認の応答 / 送信の失敗 / 未送信)は runBatch が
-            // 失敗の作り手として言い分ける — 「refused」を試行の使い切りに付けない
+            // 何が起きたか(拒否 / 未確認の応答 / 送信の失敗 / 一覧の失敗 / 未送信)は
+            // runBatch が失敗の作り手として言い分ける — 「refused」を試行の使い切りに
+            // 付けない
             what: result.failure.what,
+            detail: null,
             output: result.failure.lines,
           },
         };
@@ -823,6 +834,42 @@ function saveReceipt(
   );
 }
 
+/** ドライバの失敗の本文(純関数 — failDriver がそのまま型付きエラーにする)。 */
+function driverFailureMessage(
+  input: {
+    readonly target: SyncTarget;
+    readonly work: ApplyWork;
+    readonly receiptsEnvironment: string | null;
+    readonly next: string;
+  },
+  result: DriverResult,
+  failure: NonNullable<DriverResult["failure"]>,
+): string {
+  // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
+  // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
+  // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
+  // 先に同期先で手で消すよう言う(pullfrog 指摘)
+  const failed = new Set(failure.names);
+  const notAttempted = input.work.deletes.filter(
+    (name) => !result.deleted.includes(name) && !failed.has(name),
+  );
+  const pendingHint =
+    notAttempted.length === 0
+      ? ""
+      : ` Resetting the receipt also forgets the deletions not attempted yet, so remove these at the target yourself first: ${notAttempted.map(displayText).join(", ")}.`;
+  const deleteHint =
+    failure.kind === "delete" && input.receiptsEnvironment !== null
+      ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
+      : "";
+  // 出力が 1 行も無ければ「上に出ている」と言わない(空の出力で失敗する CLI が
+  // あり、起動できなかったプロセスに出力は無い)
+  const outputHint =
+    failure.output.length === 0 ? "" : " Its output is shown above with values filtered out.";
+  // maruhi 自身の説明(起動失敗の理由と案内)は本文の続きとして言う
+  const detail = failure.detail === null ? "" : ` ${failure.detail}.`;
+  return `${failure.what} while ${failure.kind === "write" ? "writing" : "deleting"} ${failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted).${detail}${outputHint}${deleteHint} Fix the cause, then ${input.next}`;
+}
+
 /** ドライバの失敗の報告(伏せ字化した出力を添えて型付きエラー)。 */
 export function failDriver(input: {
   readonly target: SyncTarget;
@@ -835,42 +882,18 @@ export function failDriver(input: {
 }): Effect.Effect<never, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const { target, work, result } = input;
+    const { target, result } = input;
     if (result.failure === null) {
       return yield* Effect.fail(
         cliError("failDriver called without a failure (internal inconsistency)"),
       );
     }
+    // output はベンダーの発言なので、実行体名 / ホスト名の接頭辞つきで見せる
     const prefix = target.driver.kind === "exec" ? target.driver.command : target.driver.spec.host;
     for (const line of result.failure.output) {
       yield* io.logError(`  ${displayText(prefix)}: ${line}`);
     }
-    // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
-    // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
-    // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
-    // 先に同期先で手で消すよう言う(pullfrog 指摘)
-    const failed = new Set(result.failure.names);
-    const notAttempted = work.deletes.filter(
-      (name) => !result.deleted.includes(name) && !failed.has(name),
-    );
-    const pendingHint =
-      notAttempted.length === 0
-        ? ""
-        : ` Resetting the receipt also forgets the deletions not attempted yet, so remove these at the target yourself first: ${notAttempted.map(displayText).join(", ")}.`;
-    const deleteHint =
-      result.failure.kind === "delete" && input.receiptsEnvironment !== null
-        ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
-        : "";
-    // 出力が 1 行も無ければ「上に出ている」と言わない(空の出力で失敗する CLI がある)
-    const outputHint =
-      result.failure.output.length === 0
-        ? ""
-        : " Its output is shown above with values filtered out.";
-    return yield* Effect.fail(
-      cliError(
-        `${result.failure.what} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted).${outputHint}${deleteHint} Fix the cause, then ${input.next}`,
-      ),
-    );
+    return yield* Effect.fail(cliError(driverFailureMessage(input, result, result.failure)));
   });
 }
 

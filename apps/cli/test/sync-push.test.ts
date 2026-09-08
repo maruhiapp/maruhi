@@ -573,10 +573,8 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain(
-      "Warning: the push is done, but target web could not be synced (vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted)",
+      "Warning: the push is done, but target web could not be synced (vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
-    // 起動失敗の文面(live.ts の execStartFailure)は出力の置き場で見える
-    expect(errors).toContain("  vercel: Cannot start vercel (ENOENT): is it installed and on PATH");
     // 何も届いていないのでレシートは書かない
     expect(fixture.receipts.writes).toEqual([]);
   });
