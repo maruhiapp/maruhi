@@ -28,7 +28,7 @@ import { cliError, type CliError, usageError } from "./errors.ts";
 import { parseJsonRecord } from "./json-record.ts";
 import type { ExecPreset } from "./sync-exec.ts";
 import type { HttpPreset } from "./sync-http.ts";
-import { type SyncPreset, SYNC_PRESETS } from "./sync-preset.ts";
+import { defaultDriverOf, isUnavailable, type SyncPreset, SYNC_PRESETS } from "./sync-preset.ts";
 import type { DriverKind, OptionSpec, PresetId, ResolvedOptions } from "./sync-types.ts";
 
 /** Default location of the sync config, relative to the working directory. */
@@ -349,15 +349,15 @@ function parseTargetHead(
   if (preset === undefined) {
     return `${path}.preset must be one of ${Object.keys(SYNC_PRESETS).join(", ")}`;
   }
-  const driverKind = driverKindOf(value["driver"]);
-  if (driverKind === undefined) {
-    return `${path}.driver must be "exec" (the installed vendor CLI; the default) or "http" (the vendor API with a token stored in maruhi)`;
+  const driverKind = driverKindOf(value["driver"], preset, path);
+  if (typeof driverKind === "string") {
+    return driverKind;
   }
   const environment = value["environment"];
   if (typeof environment !== "string" || !isEnvironmentId(environment)) {
     return `${path}.environment must be a maruhi environment ID`;
   }
-  return { record: value, preset, driverKind, environment };
+  return { record: value, preset, driverKind: driverKind.kind, environment };
 }
 
 /** プリセット id の解決(own-property 参照 — `__proto__` 等を解決しない)。 */
@@ -367,10 +367,23 @@ function presetOf(value: unknown): SyncPreset | undefined {
     : undefined;
 }
 
-/** `driver` の解決(省略 = exec)。 */
-function driverKindOf(value: unknown): DriverKind | undefined {
-  const driver = value ?? "exec";
-  return driver === "exec" || driver === "http" ? driver : undefined;
+/**
+ * `driver` の解決(省略 = プリセットの既定: exec があれば exec、無ければ http)。プリセットが
+ * 持たないドライバを名指しした設定は、その理由(宣言の `unavailable`)を添えて拒む。
+ */
+function driverKindOf(
+  value: unknown,
+  preset: SyncPreset,
+  path: string,
+): { readonly kind: DriverKind } | Invalid {
+  const driver = value ?? defaultDriverOf(preset);
+  if (driver !== "exec" && driver !== "http") {
+    return `${path}.driver must be "exec" (the installed vendor CLI; the default when the preset has one) or "http" (the vendor API with a token stored in maruhi)`;
+  }
+  const declaration = driver === "exec" ? preset.exec : preset.http;
+  return isUnavailable(declaration)
+    ? `${path}.driver: ${declaration.unavailable}; use "${defaultDriverOf(preset)}"`
+    : { kind: driver };
 }
 
 function parseTarget(name: string, value: unknown, configDir: string): SyncTarget | Invalid {
@@ -517,10 +530,7 @@ function parseDriverAndOptions(
   driverKind: DriverKind,
   configDir: string,
 ): { readonly driver: TargetDriver; readonly options: ResolvedOptions } | Invalid {
-  const driver =
-    driverKind === "exec"
-      ? parseExecDriver(record, path, preset.exec, configDir)
-      : parseHttpDriver(record, path, preset.http);
+  const driver = parseDriver(record, path, preset, driverKind, configDir);
   if (typeof driver === "string") {
     return driver;
   }
@@ -531,7 +541,30 @@ function parseDriverAndOptions(
     record["options"],
     `${path}.options`,
   );
-  return typeof options === "string" ? options : { driver, options };
+  if (typeof options === "string") {
+    return options;
+  }
+  // オプション同士の整合(http プリセットの `check` — Netlify の context / branch / secret)
+  const inconsistent = driver.kind === "http" ? (driver.spec.check?.(options) ?? null) : null;
+  return inconsistent === null ? { driver, options } : `${path}.options.${inconsistent}`;
+}
+
+/** 選んだドライバの宣言でターゲットのドライバ面を読む(宣言の不在は parseTargetHead が拒んでいる)。 */
+function parseDriver(
+  record: Record<string, unknown>,
+  path: string,
+  preset: SyncPreset,
+  driverKind: DriverKind,
+  configDir: string,
+): TargetDriver | Invalid {
+  if (driverKind === "exec") {
+    return isUnavailable(preset.exec)
+      ? preset.exec.unavailable
+      : parseExecDriver(record, path, preset.exec, configDir);
+  }
+  return isUnavailable(preset.http)
+    ? preset.http.unavailable
+    : parseHttpDriver(record, path, preset.http);
 }
 
 /**

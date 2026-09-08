@@ -40,7 +40,7 @@ import {
 } from "./support/crypto.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer } from "./support/server.ts";
-import { makeFakeCloudflare } from "./support/vendor-api.ts";
+import { makeFakeCloudflare, makeFakeNetlify } from "./support/vendor-api.ts";
 
 const SOURCE_ENV = "prod";
 const TOKENS_ENV = "tokens";
@@ -276,6 +276,7 @@ async function startCi(input: {
   env.setEnvVar(OIDC_REQUEST_URL_ENV, `${server.origin}/oidc/token`);
   env.setEnvVar(OIDC_REQUEST_TOKEN_ENV, RUNNER_TOKEN);
   env.setVendorOrigin("api.cloudflare.com", server.origin);
+  env.setVendorOrigin("api.netlify.com", server.origin);
   const configDir = await mkdtemp(join(tmpdir(), "maruhi-ci-sync-test-"));
   const configPath = join(configDir, "maruhi.sync.json");
   await writeFile(
@@ -362,6 +363,56 @@ describe("maruhi ci sync", () => {
     expect(maruhiWrites).toEqual([]);
     expect(fixture.env.execCalls).toEqual([]);
     expectNoSecretLeak(fixture.env, cf.requests);
+  });
+
+  it("http(Netlify): 一覧で有無を引き、無い名前は POST・ある名前は PATCH を 1 変数ずつ。レシートは書かない・消さない", async () => {
+    const netlify = makeFakeNetlify({
+      token: CF_TOKEN,
+      accountId: "my-team",
+      siteId: "site-1",
+      initial: [
+        {
+          key: "BETA",
+          scopes: ["builds", "functions", "runtime"],
+          values: [{ id: "v1", value: "old", context: "production" }],
+          is_secret: true,
+        },
+      ],
+    });
+    const fixture = await startCi({
+      environments: [SOURCE_ENV, TOKENS_ENV],
+      targets: {
+        site: {
+          preset: "netlify",
+          environment: SOURCE_ENV,
+          variables: "all",
+          token: { environment: TOKENS_ENV, name: "CF_API_TOKEN" },
+          options: { accountId: "my-team", siteId: "site-1", context: "production" },
+        },
+      },
+      vendorHandlers: netlify.handlers,
+    });
+    expect(await ciSync(fixture, "site", "--yes"), fixture.env.errors.join("\n")).toBe(0);
+    expect(netlify.requests.map((request) => [request.method, request.path])).toEqual([
+      ["GET", "/api/v1/accounts/my-team/env"],
+      ["POST", "/api/v1/accounts/my-team/env"],
+      ["PATCH", "/api/v1/accounts/my-team/env/BETA"],
+    ]);
+    expect(netlify.requests[1]?.body).toEqual([
+      {
+        key: "ALPHA",
+        is_secret: true,
+        scopes: ["builds", "functions", "runtime"],
+        values: [{ context: "production", value: ALPHA_VALUE }],
+      },
+    ]);
+    expect(netlify.vars.get("BETA")?.values).toEqual([
+      { id: "v1", value: "beta-value-ci", context: "production" },
+    ]);
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Applied to target site: 2 variables written (no receipt is kept in CI, and nothing is deleted)",
+    );
+    expectNoSecretLeak(fixture.env, netlify.requests);
   });
 
   it("exec: リースした値をベンダー CLI の stdin に渡す(wrangler が CI に導入済みの形)", async () => {

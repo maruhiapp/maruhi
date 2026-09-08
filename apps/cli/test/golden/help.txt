@@ -1085,8 +1085,8 @@ ARGUMENTS
   target string    Target name from the sync config (a key under `targets`)
 
 FLAGS
-  --preset string        Deploy target kind: vercel or cloudflare-workers (required)
-  --driver string        How to reach the target: exec (the installed vendor CLI; default) or http (the vendor API with a token stored in maruhi)
+  --preset string        Deploy target kind: vercel, cloudflare-workers, or netlify (required)
+  --driver string        How to reach the target: exec (the installed vendor CLI; default when the preset has one) or http (the vendor API with a token stored in maruhi; the only driver for netlify)
   --env string           maruhi environment ID to copy from (required)
   --receipts string      maruhi environment ID that stores the receipts (required; create it with `maruhi env create`)
   --project string       Project ID to pin the config to (optional)

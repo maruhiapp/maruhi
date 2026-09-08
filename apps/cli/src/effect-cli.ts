@@ -855,10 +855,13 @@ const syncApplyConfig = {
  * ファイルにも触れず、フラグから設定 JSON を組んで stdout に出す。
  */
 const syncInitConfig = {
-  preset: singleValued("preset", "Deploy target kind: vercel or cloudflare-workers (required)"),
+  preset: singleValued(
+    "preset",
+    "Deploy target kind: vercel, cloudflare-workers, or netlify (required)",
+  ),
   driver: singleValued(
     "driver",
-    "How to reach the target: exec (the installed vendor CLI; default) or http (the vendor API with a token stored in maruhi)",
+    "How to reach the target: exec (the installed vendor CLI; default when the preset has one) or http (the vendor API with a token stored in maruhi; the only driver for netlify)",
   ),
   env: singleValued("env", "maruhi environment ID to copy from (required)"),
   receipts: singleValued(

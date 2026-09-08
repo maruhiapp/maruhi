@@ -33,7 +33,7 @@ import { Redacted } from "effect";
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ExecInput } from "./run.ts";
-import type { OptionSpec, PresetId, ValueConstraints } from "./sync-types.ts";
+import type { OptionSpec, ValueConstraints } from "./sync-types.ts";
 
 /**
  * One argv token of a preset. A literal, the variable name, or a value taken
@@ -79,8 +79,13 @@ const VERCEL_MAX_VALUE_BYTES = 16 * 1024;
 
 const VERCEL_ENVIRONMENTS = ["production", "preview", "development"] as const;
 
-/** Built-in presets (first-class targets — 2026-09-05 owner decision: Vercel / Cloudflare Workers). */
-export const EXEC_PRESETS: Readonly<Record<PresetId, ExecPreset>> = {
+/**
+ * Built-in exec presets (first-class targets — 2026-09-05 owner decision: Vercel /
+ * Cloudflare Workers). Netlify has none: `netlify env:set KEY value` takes the value
+ * as an argument (SY1 の実測表), so the only safe recipe is the http driver
+ * (sync-preset.ts declares why).
+ */
+export const EXEC_PRESETS = {
   "cloudflare-workers": {
     command: "wrangler",
     env: { WRANGLER_SEND_METRICS: "false", DO_NOT_TRACK: "1" },
@@ -144,7 +149,7 @@ export const EXEC_PRESETS: Readonly<Record<PresetId, ExecPreset>> = {
       sensitive: { type: "boolean", required: false },
     },
   },
-};
+} as const satisfies Readonly<Record<string, ExecPreset>>;
 
 /** One variable to write at the target (the value stays wrapped until spawn). */
 export interface SyncWrite {
