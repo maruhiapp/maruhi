@@ -165,4 +165,72 @@ describe("maruhi sync init", () => {
     expect(http.code).toBe(2);
     expect(http.stderr).toContain("targets.worker.token is required for the http driver");
   });
+  it("--on-push workflow --workflow: onPush と workflow.file を組み、project が無ければ書き方の誤り", async () => {
+    const result = await init(
+      "web",
+      "--preset",
+      "vercel",
+      "--env",
+      "production",
+      "--receipts",
+      "sync-receipts",
+      "--project",
+      "a".repeat(64),
+      "--option",
+      "environment=production",
+      "--on-push",
+      "workflow",
+      "--workflow",
+      "maruhi-sync.yml",
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      project: "a".repeat(64),
+      targets: {
+        web: { onPush: "workflow", workflow: { file: "maruhi-sync.yml" } },
+      },
+    });
+    expect(typeof parseSyncConfig(result.stdout, "/repo")).not.toBe("string");
+    expect(result.stderr).toContain(
+      'Note: the workflow must have a workflow_dispatch trigger with a "target" input',
+    );
+
+    const noProject = await init(
+      "web",
+      "--preset",
+      "vercel",
+      "--env",
+      "production",
+      "--receipts",
+      "sync-receipts",
+      "--option",
+      "environment=preview",
+      "--on-push",
+      "apply",
+    );
+    expect(noProject.code).toBe(2);
+    expect(noProject.stderr).toContain(
+      'The config would be invalid: targets.web.onPush needs the top-level "project"',
+    );
+    expect(noProject.stdout).toBe("");
+
+    // production に apply は組めない(パーサが拒む)
+    const production = await init(
+      "web",
+      "--preset",
+      "vercel",
+      "--env",
+      "production",
+      "--receipts",
+      "sync-receipts",
+      "--project",
+      "a".repeat(64),
+      "--option",
+      "environment=production",
+      "--on-push",
+      "apply",
+    );
+    expect(production.code).toBe(2);
+    expect(production.stderr).toContain('onPush cannot be "apply" for a production target');
+  });
 });

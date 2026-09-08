@@ -277,11 +277,20 @@ function describeDestination(target: SyncTarget): string {
   return `${target.preset.id}${where} via ${target.driver.kind}`;
 }
 
+/** plan の描画の選択(push 直後の apply は unchanged の行を省く — 第 3 段)。 */
+interface PlanDisplay {
+  /** `=` の行を出すか(既定 true。ヘッダーの件数は常に全部)。 */
+  readonly showUnchanged: boolean;
+}
+
+const FULL_PLAN: PlanDisplay = { showUnchanged: true };
+
 /** plan を stdout に出す(コマンドの出力 — 名前と version だけ)。 */
 function reportPlan(
   target: SyncTarget,
   plan: SyncPlan,
   receipt: SyncReceipt | null | "none-in-ci",
+  display: PlanDisplay,
 ): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -296,6 +305,9 @@ function reportPlan(
           : `Last delivery: ${displayText(receipt.syncedAt)} (receipt ${displayText(receiptVariableName(target.name))})`,
     );
     for (const entry of plan.entries) {
+      if (entry.action === "unchanged" && !display.showUnchanged) {
+        continue;
+      }
       yield* io.log(planLine(entry));
     }
   });
@@ -341,12 +353,14 @@ export function reviewPlan(
   receipt:
     | { readonly kind: "loaded"; readonly loaded: LoadedReceipt; readonly environmentId: string }
     | { readonly kind: "none-in-ci" },
+  display: PlanDisplay = FULL_PLAN,
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     yield* reportPlan(
       target,
       plan,
       receipt.kind === "none-in-ci" ? "none-in-ci" : receipt.loaded.receipt,
+      display,
     );
     if (plan.requiredNotSelected.length > 0) {
       yield* logWarning(
@@ -430,6 +444,8 @@ export interface SyncApplyInput extends SyncContextInput {
   readonly tokenFloor: FloorHandle | null;
   /** ベンダー API のリトライ(既定は本番の調律。テストで短くする)。 */
   readonly httpRetry?: HttpRetryPolicy;
+  /** plan の描画(push 直後の apply は unchanged を省く)。 */
+  readonly display?: PlanDisplay;
 }
 
 /** apply が送るもの(plan の add / update / delete を材料に組む)。 */
@@ -883,11 +899,12 @@ export function syncApplyOp(
       declared: pulled.declared,
       receipt: loaded.receipt,
     });
-    yield* reviewPlan(input.target, plan, {
-      kind: "loaded",
-      loaded,
-      environmentId: input.receiptsEnvironment,
-    });
+    yield* reviewPlan(
+      input.target,
+      plan,
+      { kind: "loaded", loaded, environmentId: input.receiptsEnvironment },
+      input.display ?? FULL_PLAN,
+    );
     const work = yield* prepareWork(input.target, plan, writesOf(pulled.variables));
     if (work.writes.length === 0 && work.deletes.length === 0) {
       yield* io.log(

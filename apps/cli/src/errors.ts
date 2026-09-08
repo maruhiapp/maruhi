@@ -4,7 +4,7 @@
 // 鍵素材・トークン生値を含めない。文脈は識別子(プロジェクト ID・変数名・
 // エポック・鍵フィンガープリント等)のみで表現する。
 
-import { Data, Runtime } from "effect";
+import { Data, Effect, Runtime } from "effect";
 
 /** A user-facing CLI failure. The message never carries secret material. */
 export class CliError extends Data.TaggedError("CliError")<{
@@ -52,4 +52,28 @@ export function evidenceError(message: string): CliError {
  */
 export function usageError(message: string): CliError {
   return new CliError({ message, usage: true });
+}
+
+/**
+ * Sorts a cleanup step's failure (`env rotate --config` / `push` の後始末 —
+ * sync-rotate.ts / sync-push.ts): evidence (a contradiction re-running cannot
+ * resolve) keeps failing, everything else comes back as a value so the caller
+ * can warn without changing the exit code of the work already reported.
+ */
+export function asCleanupOutcome<A, R>(
+  effect: Effect.Effect<A, CliError, R>,
+): Effect.Effect<
+  | { readonly kind: "ok"; readonly value: A }
+  | { readonly kind: "failed"; readonly error: CliError },
+  CliError,
+  R
+> {
+  return effect.pipe(
+    Effect.map((value) => ({ kind: "ok", value }) as const),
+    Effect.catch((error: CliError) =>
+      error.evidence === true
+        ? Effect.fail(error)
+        : Effect.succeed({ kind: "failed", error } as const),
+    ),
+  );
 }

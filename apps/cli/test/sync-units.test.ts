@@ -42,6 +42,16 @@ function vercelTarget(overrides: Record<string, unknown> = {}): Record<string, u
   };
 }
 
+/** `project` つきの設定(onPush はこれを要求する)。 */
+function withProject(target: Record<string, unknown>): string {
+  return JSON.stringify({
+    version: 1,
+    project: "a".repeat(64),
+    receipts: { environment: "sync-receipts" },
+    targets: { t: target },
+  });
+}
+
 function parsed(target: Record<string, unknown>): SyncTarget {
   const config = parseSyncConfig(baseConfig(target), "/repo");
   if (typeof config === "string") {
@@ -74,6 +84,7 @@ describe("parseSyncConfig", () => {
     expect(top.production).toBe(true);
     expect(execOf(top).cwd).toBe("/repo");
     expect(execOf(top).command).toBe("wrangler");
+    expect(execOf(top).namedCommand).toBe(false);
     const named = parsed({
       preset: "cloudflare-workers",
       environment: "prod",
@@ -85,6 +96,17 @@ describe("parseSyncConfig", () => {
     expect(named.production).toBe(false);
     expect(execOf(named).cwd).toBe("/repo/apps/worker");
     expect(execOf(named).command).toBe("node_modules/.bin/wrangler");
+    expect(execOf(named).namedCommand).toBe(true);
+    // 既定と同じ綴りでも、設定が書けば「名指し」
+    const spelled = parsed({
+      preset: "vercel",
+      environment: "prod",
+      variables: "all",
+      command: "vercel",
+      options: { environment: "preview" },
+    });
+    expect(execOf(spelled).command).toBe("vercel");
+    expect(execOf(spelled).namedCommand).toBe(true);
   });
 
   it.each([
@@ -145,6 +167,103 @@ describe("parseSyncConfig", () => {
     const result = parseSyncConfig(content, "/repo");
     expect(typeof result).toBe("string");
     expect(result).toContain(reason);
+  });
+
+  it("onPush: apply は production でないターゲットだけ、workflow は file / ref / command(cwd = 設定の場所)、project が要る", () => {
+    const apply = parseSyncConfig(
+      withProject(vercelTarget({ options: { environment: "preview" }, onPush: "apply" })),
+      "/repo",
+    );
+    if (typeof apply === "string") throw new Error(apply);
+    expect(apply.targets.get("t")?.onPush).toEqual({ kind: "apply" });
+    const workflow = parseSyncConfig(
+      withProject(
+        vercelTarget({
+          onPush: "workflow",
+          workflow: { file: "maruhi-sync.yml", ref: "main", command: "tools/gh" },
+        }),
+      ),
+      "/repo",
+    );
+    if (typeof workflow === "string") throw new Error(workflow);
+    // production(Vercel の production 環境)でも CI 起動は可
+    expect(workflow.targets.get("t")?.production).toBe(true);
+    expect(workflow.targets.get("t")?.onPush).toEqual({
+      kind: "workflow",
+      file: "maruhi-sync.yml",
+      ref: "main",
+      command: "tools/gh",
+      namedCommand: true,
+      cwd: "/repo",
+    });
+    const defaults = parseSyncConfig(
+      withProject(vercelTarget({ onPush: "workflow", workflow: { file: "sync.yml" } })),
+      "/repo",
+    );
+    if (typeof defaults === "string") throw new Error(defaults);
+    expect(defaults.targets.get("t")?.onPush).toMatchObject({
+      ref: undefined,
+      command: "gh",
+      namedCommand: false,
+    });
+    // 省略 = 手動のみ
+    expect(parsed(vercelTarget()).onPush).toBeNull();
+  });
+
+  it.each([
+    [
+      vercelTarget({ onPush: "apply" }),
+      'targets.t.onPush cannot be "apply" for a production target',
+    ],
+    [vercelTarget({ onPush: "always" }), 'targets.t.onPush must be "apply"'],
+    [
+      vercelTarget({ onPush: "workflow" }),
+      'targets.t.workflow is required when onPush is "workflow"',
+    ],
+    [
+      vercelTarget({
+        options: { environment: "preview" },
+        onPush: "apply",
+        workflow: { file: "x.yml" },
+      }),
+      'targets.t.workflow applies only when onPush is "workflow"',
+    ],
+    [
+      vercelTarget({ workflow: { file: "x.yml" } }),
+      'targets.t.workflow applies only when onPush is "workflow"',
+    ],
+    [
+      vercelTarget({ onPush: "workflow", workflow: { file: "x.yml", bogus: 1 } }),
+      "targets.t.workflow has unknown keys (bogus)",
+    ],
+    [
+      vercelTarget({ onPush: "workflow", workflow: { file: "" } }),
+      "targets.t.workflow.file must be the workflow's file name",
+    ],
+    [
+      vercelTarget({ onPush: "workflow", workflow: { file: "--ref" } }),
+      "targets.t.workflow.file must be the workflow's file name",
+    ],
+    [
+      vercelTarget({ onPush: "workflow", workflow: { file: "x.yml", ref: "-r" } }),
+      "targets.t.workflow.ref must be a branch or tag name",
+    ],
+    [
+      vercelTarget({ onPush: "workflow", workflow: "x.yml" }),
+      "targets.t.workflow must be an object",
+    ],
+  ])("onPush を拒否する: %o", (target, reason) => {
+    const result = parseSyncConfig(withProject(target), "/repo");
+    expect(typeof result).toBe("string");
+    expect(result).toContain(reason);
+  });
+
+  it("onPush には top-level の project が要る(既定パスの設定を別プロジェクトの push に使わないため)", () => {
+    const result = parseSyncConfig(
+      baseConfig(vercelTarget({ onPush: "workflow", workflow: { file: "x.yml" } })),
+      "/repo",
+    );
+    expect(result).toContain('targets.t.onPush needs the top-level "project"');
   });
 
   it("ターゲット名は環境 ID と同じ字種(レシート変数名の一部になる)", () => {

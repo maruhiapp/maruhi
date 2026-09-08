@@ -187,6 +187,7 @@ import {
 } from "./sync-config.ts";
 import { syncInitOp } from "./sync-init.ts";
 import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
+import { decidePushSync, loadPushSyncConfig, syncAfterPush } from "./sync-push.ts";
 import { advanceReceiptsAfterRotation, checkRotateConfigProject } from "./sync-rotate.ts";
 import { syncProject } from "./sync.ts";
 import { varRmOp } from "./var-rm.ts";
@@ -407,6 +408,14 @@ const PUSH_STDIN_HINT =
 
 const pushConfig = {
   ...commonFlags(),
+  config: singleValued(
+    "config",
+    `Path to the sync config whose "onPush" targets are synced after the push (default: ${DEFAULT_SYNC_CONFIG_PATH} in the working directory, when it exists and names this project)`,
+  ),
+  "no-sync": singleFlag(
+    "no-sync",
+    "Skip the sync after the push (the default sync config is not read; run `maruhi sync apply` once after several pushes)",
+  ),
   name: Argument.string("name").pipe(
     Argument.withDescription(
       "Variable name (the display name; becomes the environment variable name)",
@@ -881,6 +890,14 @@ const syncInitConfig = {
   "token-name": singleValued(
     "token-name",
     "http driver: name of the maruhi variable that holds the vendor's token",
+  ),
+  "on-push": singleValued(
+    "on-push",
+    "Sync after every `maruhi push` to the environment: apply (from this machine) or workflow (trigger the repository's workflow with gh so CI syncs); needs --project",
+  ),
+  workflow: singleValued(
+    "workflow",
+    "With --on-push workflow: the workflow file that runs `maruhi ci sync` (for example maruhi-sync.yml)",
   ),
   option: Flag.string("option").pipe(
     Flag.withDescription(
@@ -2171,7 +2188,23 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const push = Command.make("push", pushConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
+      // 同期設定(第 3 段)は**ネットワークより先に**読む: 壊れたファイル・明示された
+      // 別プロジェクトの設定の検出を push の後ろに置かない(2b の裁定 B と同じ)
+      const syncSetup = yield* loadPushSyncConfig({
+        config: values.config,
+        noSync: values["no-sync"],
+      });
       const context = yield* openEnvironment(values);
+      // 後始末の内容は push の**前**に決める(明示した設定の `project` の食い違いは
+      // 書き方の誤り = 2 で、push は送られない)
+      const syncDecision =
+        syncSetup === null
+          ? null
+          : yield* decidePushSync(syncSetup, {
+              projectId: context.projectId,
+              environmentId: context.environmentId,
+              name: values.name,
+            });
       // stdin は平文が素の bytes で入ってくる起点。ここで包み、以降は
       // Redacted としてしか流さない(剥がすのは push.ts の暗号境界のみ)
       const value = Redacted.make(normalizeStdinValue(yield* io.readStdin), {
@@ -2199,10 +2232,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       // 鮮度検出。アンカー更新の提案(session-25 §8)は同じ導線に同梱する
       // (裁定は docs/notes/session-35.md)
       yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+      if (syncSetup !== null && syncDecision !== null) {
+        // 後始末(第 3 段): `onPush` を持つターゲットへ直接 apply するか CI を起動する。
+        // 失敗は警告に留め、終了コードは push のまま(証拠だけは失敗 — sync-push.ts)
+        yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
+      }
     }),
   ).pipe(
     Command.withDescription(
-      "Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped)",
+      "Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it",
     ),
   );
 
@@ -3081,6 +3119,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         command: values.command,
         tokenEnvironment: values["token-env"],
         tokenName: values["token-name"],
+        onPush: values["on-push"],
+        workflow: values.workflow,
         options: values.option,
       });
     }),

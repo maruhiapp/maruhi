@@ -12,7 +12,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
-import { cliError } from "../../src/errors.ts";
+import { CliError, cliError } from "../../src/errors.ts";
 import { makeFileFloorStore } from "../../src/floor-log.ts";
 import { floorDirOf, FloorStore } from "../../src/floor.ts";
 import { type AgentProfile, CliIo } from "../../src/io.ts";
@@ -87,7 +87,7 @@ export interface TestEnv {
    * ベンダー CLI の駆動結果を偽装する(既定は exit 0・出力なし)。呼び出しごとに
    * 判定できるよう関数で受ける(N 回目だけ失敗させる等)。
    */
-  setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome): void;
+  setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome | CliError): void;
   /** openBrowser の成否を偽装する(既定は成功)。 */
   setBrowserOpenSucceeds(succeeds: boolean): void;
   /** キーチェーン書き込みを失敗させる(login の失効フォールバック検査用)。 */
@@ -127,7 +127,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const errors: string[] = [];
   const runnerCalls: RunnerCall[] = [];
   const execCalls: ExecCall[] = [];
-  let execHandler: (call: ExecCall, index: number) => ExecOutcome = execSucceeds;
+  let execHandler: (call: ExecCall, index: number) => ExecOutcome | CliError = execSucceeds;
   const envVars = new Map<string, string>();
   const prompts: string[] = [];
   const promptResponses: (string | (() => string))[] = [];
@@ -251,7 +251,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
           return runnerExitCode;
         }),
       exec: (input: ExecInput) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           // 偽の子プロセス: stdin に届いたバイト列を記録する(値がどこへ行ったかの
           // 検査材料。本番の live.ts では Bun.spawn の stdin)
           const call: ExecCall = {
@@ -261,7 +261,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
             stdin: Redacted.value(input.stdin),
           };
           execCalls.push(call);
-          return execHandler(call, execCalls.length - 1);
+          const outcome = execHandler(call, execCalls.length - 1);
+          // 起動失敗(未導入 — live.ts の execStartFailure)の偽装は型付きエラーで返す
+          return outcome instanceof CliError ? Effect.fail(outcome) : Effect.succeed(outcome);
         }),
     }),
     // 実 fetch の HttpClient。ベンダー API の固定ホストだけを偽サーバーへ写す

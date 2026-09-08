@@ -1355,6 +1355,231 @@ workflow テンプレート 2 標準形 + 四眼の docs。(4) SY4 Netlify(http 
 レシートは次の apply が無害に書き直す(裁定 C)— 需要があれば `server revoke` / `member remove` に `--config` を足す改訂として
 別途裁定する。
 
+#### 第 3 段(2026-09-08)
+
+SY2 の最終段 = **push 時同期 (c) / `gh workflow run` / autoSync**(PR #157)。設計は §3 冒頭「同期の最終形」の表
+(「運ぶ主体」の行: 値を変えられるのは人間だけ → 変更の瞬間には書き手の CLI がいる → 書き手の CLI が直接同期するか
+`gh workflow run` で CI を起動する)と補足 4 N1 / N2・補足 7 P1 / P2・補足 14 M8 が正で、蒸し返していない。出発点は 2b の
+申し送り (1): 設定形式には枠を予約していない(未知キー拒否 + `version` で足せる — 第 2 段の裁定 I)。書き手の CLI が直接同期
+するか CI を起動するかは補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。各裁定点は同じループで
+決め、「新案なし」の周では壊れ方(境界値・環境差・中断時の残骸・並行操作・二重実行・失敗の方向・エージェント環境)を問うた。
+
+**前提の確認(実物・実装で確かめた事実。日付はすべて 2026-09-08)**:
+(1) `maruhi push`(effect-cli.ts)は `openEnvironment` → stdin を `Redacted` に → `pushVariable`(1 変数 1 version。§4.1 の署名 =
+master 鍵)→ `Pushed …` → `proposeCheckpointRefresh` で、**同期設定を知らず `--config` も無い**。`PushedVersion` は
+`variableId` / `version` / `epoch` / `warnings` だけで検証済みビューを返さない(push はチェーンを進めないので `context.verified`
+のままでよく、後始末の `loadReceipt` が有界再同期を持つ)。push の床ハンドル(`context.floorHandle`)は push で前進している
+ので、同期元の床として**同じハンドル**を渡す(同じ環境に 2 つのハンドルを開かない — 第 2 段の改訂 1 の規律)。
+(2) `syncApplyOp`(sync-plan.ts)の plan は「レシートと現在の version の差」なので、レシートがあれば push 直後の apply が書くのは
+**今 push した変数だけ**(他は unchanged。前回の取りこぼしがあればそれも運ぶ)。レシートが無ければ全件 new = 初回同期。
+`requireProductionConsent` は `--yes` 無しの production を型付きエラーで止める。
+(3) `gh` 2.100.0(cli/cli `pkg/cmd/workflow/run/run.go` / `internal/ghcmd/cmd.go` を取得): `gh workflow run <file> -f key=value`
+(`-f` = raw string、`-F` = `@` 構文つき)。**`--ref` 省略時は `api.RepoDefaultBranch` = リポジトリの既定ブランチ**(現在の
+ブランチではない)。workflow の指定が無く対話できないときは「workflow ID, name, or filename required when not running
+interactively」で失敗。成功時の「Created workflow_dispatch event …」は **stdout が TTY のときだけ**出力され、API は 204 を返すので
+**run の URL は出ない**。終了コード: 0 / 1 = error / 2 = cancel / **4 = auth**(`exitAuth`)/ 8 = pending。テレメトリ:
+`GH_TELEMETRY=false|0`、`DO_NOT_TRACK=1`(SY1 の実測表の gh 行。同行は `GH_NO_UPDATE_NOTIFIER` にも触れる)。
+(4) `ProcessRunner.exec`(run.ts / live.ts)は `ExecInput`(argv / cwd / `extraEnv` / `stdin: Redacted`)→ `ExecOutcome`(終了コードと
+切らない出力)で、`gh workflow run` は「値の無い子プロセス」としてそのまま載る(stdin は空の `Redacted.make` — 剥がす場所は増えない)。
+起動失敗の文面は live.ts の `execStartFailure`(「named by the target's command in the sync config」→ 「a `command` in the sync
+config」に一般化。`workflow.command` も指す)。
+(5) 2b の後始末の規律(sync-rotate.ts の `asCleanupOutcome`: 通信・権限・競合は警告で終了コード不変、`CliError.evidence` だけ
+失敗)は sync-rotate.ts の非公開関数だった → errors.ts へ移して sync-push.ts と共用(重複を作らない)。
+(6) `sync-config.ts` の未知キー拒否により、`onPush` / `workflow` を足しても `version: 1` のまま(省略可 = 手動のみ)。古い CLI は
+新キーを「unknown keys」で拒む(第 2 段の裁定 H で受容済み)。`SyncTarget.production` は解析時に確定している(プリセットの判定 +
+明示上書き)ので、「production に `"apply"`」は**設定の段階で**拒める。
+(7) テストの土台: `makeValueEnvironmentServer`(value-env.ts)は create / new version の push を受理して pull に反映するので、
+「push → 後始末の apply → レシート」が支援モジュール無変更で通る。cwd の既定パスの態は vitest 4 の既定 pool(forks)で
+`process.chdir` が使える(`afterEach` で戻す)。偽 `ProcessRunner` は起動失敗(`CliError`)を返せなかった → `setExecHandler` が
+`ExecOutcome | CliError` を返せるように(env.ts の 1 点)。
+
+**起動の形 × ターゲットの状態 × 設定の所在 × 失敗(裁定 A〜G の入力)**:
+
+| push 先 / 変数 | ターゲット | `onPush` | 設定の所在 | 結果 |
+|---|---|---|---|---|
+| 同期元・運ぶ変数 | preview / 名前付き環境(非 production)、exec / http | `"apply"` | 明示 / 既定(project 一致) | `Pushed` → 提案 → `Syncing target …` → plan(unchanged は省く)→ ドライバ → レシート |
+| 同期元・運ぶ変数 | production | `"apply"` | — | **設定の誤り**(1)。push は送られない(設定はネットワークより先に読む) |
+| 同期元・運ぶ変数 | production / それ以外 | `"workflow"` | 明示 / 既定 | `Pushed` → 提案 → `gh workflow run <file> -f target=<name> [--ref]` → `Triggered …`(受理のみ)。レシート環境へのリクエスト 0 |
+| 同期元・運ばない変数(明示リスト外 / exclude / トークン) | 任意 | 任意 | 任意 | 何もしない(明示 `--config` なら note) |
+| 同期元でない環境 / レシート環境(設定上ありえない) | — | — | — | 同上 |
+| 任意 | 任意 | 無し | 任意 | 何もしない(静か。production の案内も出さない — 毎回の push に無関係な note を出さない) |
+| 任意 | — | — | `--no-sync` | 設定を読まない(push だけ) |
+| 任意 | — | — | 既定パスに無い | 従来の push |
+| 任意 | — | — | 既定パスが壊れている | **1**・push は送られない(黙って飛ばさない) |
+| 任意 | — | — | 明示 `--config` の `project` 不一致 | **2**・push は送られない(2b の裁定 B) |
+| 任意 | — | — | 既定パスの `project` 不一致 | push はそのまま・note・何もしない |
+| 失敗: ベンダー CLI / gh の非 0・起動失敗・運べない値・通信 | — | — | — | 警告・終了コード 0(`Pushed` は出ている)・レシートは進まない = 次の plan が pending |
+| 失敗: gh の終了コード 4 | — | `"workflow"` | — | 「gh is not signed in(`gh auth login`)」を名指し・0 |
+| 失敗: 証拠(レシート環境の床違反・署名の不成立) | — | — | — | **1**(`Pushed` は出ている。警告に畳まない) |
+
+**A. 起動の形と SY3 との境界** — 列挙: (i) 書き手の CLI が直接 apply だけ(補足 4 N1)/ (ii) 書き手の `gh` で CI 起動だけ(補足 7
+P1)/ (iii) **設定でターゲットごとに選ぶ**(`"apply"` = 直接 / `"workflow"` = CI 起動)/ (iv) 両方(直接 apply に失敗したら CI
+起動)。第 1 周の新案: (v) workflow の**最小の例**を docs に置く形(あり — しかし SY3 との境界を問う: テンプレート本体
+〔permissions / OIDC / checkout / 導入 / Environments〕は SY3 の成果物で、本段が置いてよいのは「起動先が満たすべき**契約**」
+= `workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes` の 1 行まで。契約なしには `-f target=` の意味が
+定まらないので契約は本段の面、テンプレートは SY3 のまま = 段の入れ替えは起こさない)。第 2 周(壊れ方): (iv) は「直接 apply の
+失敗 → CI 起動」で平文の行き先(書き手の機械か CI か)が実行ごとに変わり、P1 の「書き手にトークンを持たせない」を黙って崩す
+(逆方向も同じ)。(i) / (ii) はどちらか一方の運用(小チームは直接、資格を絞るチームは CI)を切り捨てる。二重起動: 同じ push で
+同じターゲットは 1 回(設定の順に 1 回ずつ)。同じ workflow ファイルを 2 ターゲットが指せば 2 run(ターゲットごとに 1 run —
+docs に明記)(なし)。**選定 = (iii) + (v) の契約だけ**。棄却: (i) / (ii)(片方の運用を切る)、(iv)(行き先が実行ごとに変わる)、
+テンプレートの取り込み(段の入れ替え = 所有者確認事項。取り込まない)。
+
+**B. 設定の表現と探索** — 表現の列挙: (i) `autoSync: true|false` / (ii) **`onPush: "apply" | "workflow"` + `workflow: { file, ref?,
+command? }`** / (iii) ルートに `onPush` の節を置きターゲット名を列挙 / (iv) 同期元の環境単位。探索の列挙: (a) `push --config` 明示のみ
+(2b の裁定 B)/ (b) **cwd の既定パス `maruhi.sync.json`(+ 明示 `--config`)** / (c) `maruhi config set` で場所を覚える / (d) git
+ルートまで遡る。第 1 周の新案: **`onPush` を持つ設定に top-level `project` を要求する**(あり — 既定パスを黙って読む形の危険
+〔2b の裁定 B: 別プロジェクトのリポジトリで打つと `project` を省いた設定を黙って使う〕を、「名乗った設定にしか使わない」で
+構造的に消す。`sync init` の `project` の案内とも噛み合う。実行時の note でなく**解析時の拒否**にすれば、`onPush` を書いた瞬間に
+`sync plan` でも分かる)。第 2 周(壊れ方): (a) は「同期を忘れる」を「`--config` を忘れる」に置き換えるだけで第 3 段の問題を解かない。
+(c) は機械ごとの設定がリポジトリの設定を指す形で、機械間で漂う。(d) は monorepo の下位ディレクトリから打つ形を救うが、`sync plan`
+も cwd の既定パスしか見ないので揃わない(需要が出たら両方同時に)。(i) は「どちらの形か」を言えない。(iii) / (iv) は環境 →
+ターゲットの写像を二重に持つ。(b) で既定パスが**壊れている**ときは黙って飛ばさず 1 で止める(push の前 — 設定はネットワーク
+より先に読む)。既定パスの `project` 不一致は「この設定はこの push の話ではない」なので push はそのまま行い note(明示なら 2 —
+利用者の断言)。`onPush` を 1 つも持たない設定は push に無関係なので `project` を見ない(手動同期だけの設定に note を出さない)。運ばない変数(明示リスト外・exclude・構造で除かれる統合トークン)の push は何もしない(トークンを push した直後に
+「Nothing to apply」を出さない)。`workflow.file` / `ref` は `-` 始まりを拒む(gh のフラグと読まれる形を設定で作らせない)(なし)。
+**選定 = (ii) + (b)**。キー名は `autoSync` でなく `onPush`(「push の直後」に限る事実を名前が言う。rotate / var rm では起きない)。
+`"off"` の値は持たない(省略 = 手動のみ。継承が無いので明示 off に意味が無い)。棄却: (i) / (iii) / (iv)、(a) / (c) / (d)。
+
+**C. production の既定と `--yes`** — 列挙: (i) production は autoSync の対象外(直接も CI 起動もしない)/ (ii) **直接 apply は不可・
+CI 起動は可** / (iii) `push --yes` で production も直接 apply。第 1 周の新案: production への `"apply"` を**設定の段階で拒む**(あり —
+実行時の note より早く、`sync plan` でも分かる。文面が `"workflow"` への道と `production: false` の上書きを言う)。第 2 周(壊れ方):
+(iii) は第 1 段の裁定 J(plan を先に出し、明示フラグで apply)を崩す — `push --yes` は plan を見る前の同意で、しかも push そのものへの
+同意と混ざる。(i) は補足 7 の標準形 ②(Vercel = 書き手からの CI 起動)を production で使えなくし、四眼(GitHub Environments の
+required reviewers — 補足 15 X4)の置き場を失う。(ii) の CI 起動は値を書く行為ではなく、値を書く決定は workflow ファイルの `--yes`
+(リポジトリでレビュー済み。docs「In CI」の 4 点目)にある(なし)。**選定 = (ii)**。棄却: (i)(標準形 ② を production で失う)、
+(iii)(裁定 J に反する)。
+
+**D. push との結合と後始末の規律** — 列挙: (i) `push` のハンドラの末尾に後始末を足す(2b の `envRotateCommand` と同じ形)/ (ii)
+`pushVariable` の内側に入れる / (iii) **新モジュール `sync-push.ts` に後始末を置き、`push` のハンドラが呼ぶ**。第 1 周の新案:
+`asCleanupOutcome` を errors.ts へ移して 2b と共用(あり — sync-push が sync-rotate を import する向きを作らない)。第 2 周
+(壊れ方): (ii) は push.ts が sync-* を知る(2b の裁定 A (iv) と同じ棄却理由)。読む順序: 設定はネットワークより先(壊れた設定・
+明示の不一致を push の後ろに置かない)、後始末の内容(`decidePushSync`)は `openEnvironment` の後・`pushVariable` の**前**に決める
+(明示の `project` 不一致 = 2 で push は送られない)。出力順: `Pushed` → checkpoint / アンカーの提案 → 後始末(2b の改訂 4 と同じ
+理由 — 後始末が証拠で失敗しても提案は出ている)。複数ターゲット: 設定の順にすべて、1 つの失敗で残りを止めない。床: 同期元 =
+push 先なので `context.floorHandle` を共有、レシート環境は `floorHandleFor`(設定が「同期元 ≠ レシート環境」を保証)、統合トークン
+の環境は `openSyncTarget` と同じ規則(同期元 / レシート環境と同じならそのハンドル)。`yes: false` 固定(production は設定で
+拒まれている。万一到達すれば `requireProductionConsent` が止め警告になる)。plan の描画は unchanged の行だけ省く(`display`
+— 30 変数のターゲットで毎回 30 行の `=` を出さない。ヘッダーの件数と `Running … in …` の行はそのまま = 平文の行き先は見える)
+(なし)。**選定 = (iii)** + 2b の裁定 D の継承。棄却: (i)(ハンドラが肥大)、(ii)(push.ts が sync を知る)。
+
+**E. 複数 push と M8** — 列挙: (i) push ごとに同期 / (ii) **`--no-sync` で抑止し末尾に明示 `sync apply`**(M8 の第 1 案)/ (iii)
+debounce(短い待ち・ディスク上の印)/ (iv) 一括 push コマンド。第 1 周の新案: なし。第 2 周(壊れ方): (iii) は「同期待ち」の印を
+ディスクに置くか、残るプロセスを要る。名前も値も持たない印(「pending」のみ)ならディスクレスに反しないが、機構(印の置き場・
+掃除・並行 push との競合)を 1 つ増やす。Vercel の exec は 1 変数 1 プロセスなので push ごとの同期でもベンダー呼び出しは push
+回数分 = 変数の数と同じ(まとめても減らない)。http は配列 upsert で push ごと 1 リクエスト。`--no-sync` は既定パスの設定を**読まない**
+(明示の `--config` との併用は書き方の誤り = 2 — 指した設定を読まずに済ませる形を黙って通さない。改訂 1)。(iv) は本段の外(なし)。**選定 = (i) + (ii)**。棄却: (iii)(機構の
+追加。需要が出たら再裁定)、(iv)(スコープ外)。
+
+**F. `gh workflow run` の形** — argv: `[command, "workflow", "run", file, "-f", "target=<name>", ("--ref", ref)?]`。`-f`(raw string)を
+使う(`-F` の `@` 構文は要らない)。cwd = **設定ファイルの場所**(exec ドライバと同じ規律。gh はそこの git remote からリポジトリを
+解決する。ターゲットの `cwd` は exec ドライバの面なので使わない)。`ProcessRunner.exec` を流用(stdin 空・`extraEnv` =
+`GH_TELEMETRY=false` / `DO_NOT_TRACK=1` / `GH_NO_UPDATE_NOTIFIER=1`〔SY1 の表の gh 行〕+ `GH_PROMPT_DISABLED=1`〔stdout を捕捉するので
+gh は既に非対話だが、対話を構造で切る〕)。第 1 周の新案: `--ref` の既定は gh に任せる(あり — 既定ブランチ。workflow ファイルと
+CI が読む設定はそこにあり、書き手のブランチが push 済みかに依らない。値は maruhi に既にあるので CI がどのブランチで走っても新鮮)。
+第 2 周(壊れ方): git remote が無い / workflow が無い / `workflow_dispatch` が無い = gh の非 0 + gh 自身の文面(伏せてから末尾を
+`  gh: …` で見せる)+ 「exists on the branch gh dispatches to / has a workflow_dispatch trigger with a "target" input」の案内。終了
+コード 4 = 未ログインを名指し(`gh auth login`)。gh 不在 = live.ts の起動失敗の文面(警告に畳む)。受理の報告は「Triggered
+workflow X for target Y (`gh workflow run` in <dir>)」+ 「CI applies it with `maruhi ci sync` and keeps no receipt, so the next local
+`maruhi sync plan Y` still shows the pushed variable as pending」(裁定 G)。run の URL は gh が出さない(前提 (3))ので添えない(なし)。
+`workflow.command` で gh の実行体を上書きできる(exec の `command` と同じ理由 — PATH に無い導入)。
+
+**G. 未同期の印と回収** — 新しい機構は作らない: レシートの遅れ = 印(`sync plan` が pending)。直接 apply の失敗・CI 起動の失敗の
+文面は「The next `maruhi sync plan <target>` shows the pushed variable as pending; `maruhi sync apply <target>` or CI delivers it」で
+2b と揃える。CI 起動の成功は「運ばれた」ことを意味しない(レシートは CI が書けない)ので、報告の文面で「手元のレシートは進まない
+= 次の手元の plan は pending のまま・apply は 1 回書き直す」と言う(docs「In CI」の 3 点目・「Receipts」の 2 点目に追記)。
+第 1 周の新案: なし。第 2 周: なし。
+
+**H. エージェント環境** — 新しいゲートは作らない(補足 9 — `sync` は `run` と同じ扱い)。「エージェントの push が自動で同期先へ
+届く」形について: `onPush` は**リポジトリの設定で人が決めた opt-in** で、エージェントは設定を変えない限り新しい経路を得ない
+(設定の変更はコードレビューの対象 — docs「How maruhi sync works」の 1 点目)。届く先は非 production だけ(production の直接 apply
+は設定で拒む)で、production は CI の workflow(レビュー済みの `--yes` + 必要なら required reviewers)を経る。エージェントが値を
+持ち出す経路としては `maruhi run -- curl` が既にあり(補足 9 の決定的な事実)、push 時同期は新しい持ち出し経路ではない。よって
+「設定が opt-in である = 人が決めた」で足りる。
+
+**I. テスト** — `test/sync-push.test.ts`(新規。`sync-command.test.ts` の土台 = `makeValueEnvironmentServer` + 偽 `ProcessRunner`)
+の 19 態: push → 直接 apply → レシートが進む(順序・unchanged の行が無い・ベンダー 1 回・stdin = 新しい値・argv に値なし)/ cwd の
+既定パス(`process.chdir`)/ `--no-sync`(ベンダー 0・レシート環境へのリクエスト 0)/ 設定が無い / 明示の `project` 不一致 = 2・push
+未送信 / 既定パスの `project` 不一致 = 0・note / 壊れた既定パス = 1・push 未送信 / 同期元でない環境・運ばない変数・onPush 無し =
+何もしない(明示なら note) / production + `"apply"` = 設定の誤り / ベンダーの失敗 = 警告・0・レシート据え置き・次の plan が
+pending / 起動失敗 = 警告・0 / 運べない値(末尾改行)= 警告・送信 0 / 証拠(value-version rollback)= 1・`Pushed` は出ている /
+`gh workflow run` の argv・cwd・env・stdin 空・値も変数名も無い・レシート環境へのリクエスト 0 / `--ref` 無し + `command` 上書き /
+gh の 4 = 未ログイン / gh の非 0 = 出力の末尾 + 案内(制御文字は中和)/ gh 不在 / 複数ターゲット(apply + workflow)で 1 つの失敗が
+残りを止めない。`sync-units.test.ts` に `onPush` の解析(受理 4 形・拒否 10 形・`project` 要求)、`sync-init.test.ts` に `--on-push`
+の往復(+ `project` 無し = 2・production + apply = 2)。`--help` golden(`push` に `--config` / `--no-sync`、`sync init` に `--on-push` /
+`--workflow`)、`message-style.test.ts`、`redacted.test.ts` の棚卸し表(**変更なし** — sync-push.ts は `Redacted.make` だけ)、
+fallow(`parseWorkflow` の CRAP を `workflowRecord` / `ghArgument` に分けて 30 以下に。`parseSyncConfig` の cognitive を
+`parseTargets` に分けて閾値内。未使用 export は非公開に)。
+
+**J. docs** — `deploy-targets.mdx`: 「How maruhi sync works」に 1 点、「The config file」の表に `onPush` / `workflow` の行(`project` の
+行に「`onPush` があれば必須」)、新節「Sync on push」(2 つの形・production の扱い・設定の探索・失敗時の回収・`--no-sync`・起動先の
+契約 = `workflow_dispatch` + `target` 入力の YAML 断片・`--ref` の既定・テンプレートは planned)、「Receipts」の 2 点目・「In CI」の
+末尾・「Vendor CLI telemetry」に gh。index / README は `maruhi sync` の紹介のみで変更不要。
+
+**K. ROADMAP と裁定録** — SY2 行の第 3 段を完了注記へ(日付・PR 番号・裁定の要約)にし、**SY2 全体を完了**(`- [x]`)。SY3 行の
+② を「書き手からの CI 起動は第 3 段で実装済み。起動先の契約 = …。docs は契約だけ、テンプレートは SY3」に、SY6 の降格理由に
+「第 3 段で実装済み」を添える(降格理由は第 3 段が実装されて初めて成立する)。本節を 2b の末尾に追記。
+
+**不変条件の確認**: 仕様改訂なし(暗号操作の追加なし。直接 apply は既存の `syncApplyOp`、CI 起動は値の無い子プロセス。チェーン・
+wire・サーバー・Web・`packages/crypto` は無変更)/ 平文は書き手の CLI か CI の中だけ(`gh workflow run` の argv は設定由来の
+ターゲット名と workflow 名だけ・stdin 空。剥がす場所は増えない — 棚卸し表は据え置き)/ production は自動で書かない(`"apply"` は
+設定で拒む。CI 起動は書く行為ではなく、書く決定は workflow の `--yes`)/ 一方通行(同期先を読み戻さない・CI の結果を待たない・
+ポーリングしない)/ 失敗の方向(後始末の通信・権限・ベンダー / gh の失敗は警告・終了コード不変。証拠だけ失敗。`Pushed` と提案は
+先に出る。設定の不備と明示の不一致は push の**前**に落とす)/ ディスクレス(永続化は非機密の設定だけ。debounce の印は作らない)/
+ADR-0016(型付きエラー・stdout はコマンドの出力だけ・通知は notice.ts・`process.*` は live.ts のみ・新フラグは決定 5 の範囲・
+golden / message-style)/ 英語 / 依存ゼロ(`gh` は導入済みだけ・`npx` なし)/ エージェント環境の新しいゲート無し(裁定 H)/
+スコープ(SY3 のテンプレート・SY4・SY5・SY6・`--all`・Vercel の一覧の続きは取り込まない)。
+
+**改訂 1(2026-09-08、pullfrog の初回レビュー〔f7f667d〕)**: (1) `applyTarget` が統合トークンの環境の床ハンドルをターゲット
+ごとに `floorHandleFor` で開き直していた — 同じ同期元の 2 つの http ターゲットが 1 つのトークン環境を共有すると、2 つ目が
+push 前の床のスナップショットから始まり、1 つ目のトークン pull で前進した床を知らない(裁定 D の「`openSyncTarget` と同じ
+規則」はループを想定していなかった)→ 1 回の push で環境ごとに床ハンドルを 1 つだけ持つ台帳(`floorLedger` — 同期元 = push の
+ハンドルで初期化し、レシート環境・トークン環境は初回に開いて以後は同じもの)。(2) `--no-sync` が明示の `--config` に黙って勝ち、
+指した設定を読まずに済ませていた → 併用は書き方の誤り(2)。裁定 E を改める。(3) 新規の名前の初回 push(plan が `+`)の態が
+無かった → `GAMMA` の push(値は 1 回だけ stdin へ・レシートに version 1)を追加。(4) テストの生の ESC バイトを `\u001b` に。
+
+**改訂 2(2026-09-08、pullfrog の再レビュー〔6fd9b5d〕)**: (1) 設計の指摘 — `onPush` により、同期の意図の無い `maruhi push` が cwd で
+見つけた `maruhi.sync.json` の名指しする**実行体**(exec の `command` / `workflow.command`)を起動し、平文を stdin で渡す形が
+できた。関門はプロジェクト ID の一致だが、設定はリポジトリにコミットされるので公開リポジトリではプロジェクト ID は公開情報で、
+「fork に置かれた設定 + `cd` してからの日常の push」で成立する。`sync apply` も既定パスを読むが、そちらは利用者が同期を打つ
+(`Running … in …` を見る)。候補: (A) 現状維持 + docs の 1 文 / (B) **既定パスの設定は実行体を名指しできない**(名指しする
+ターゲットは note で飛ばし、`--config` 明示 = 利用者がそのファイルを指す動作でだけ動く。プリセットの既定 = PATH 上の
+`vercel` / `wrangler` / `gh` は動く)/ (C) 既定パスの探索をやめる(裁定 B の (a) — 第 3 段の目的を解かない)。第 1 周の新案:
+`cwd` の上書きも拒む案(なし — `cwd` は実行体を変えない〔PATH 探索〕。変わるのはベンダー CLI が解決する同期先で、それは手で
+その dir で打つのと同じ。fork の `.vercel/project.json` が別プロジェクトを指しても、書き手のログインで書ける先は書き手の
+プロジェクトだけ)。`node_modules/.bin/…` を例外にする案(なし — 判定が曖昧になる。fork に `bun install` した時点で postinstall に
+既に負けているので例外を作る意味も薄い)。第 2 周(壊れ方): (B) は docs が勧める `node_modules/.bin/wrangler` の利用者に既定
+パスの自動同期を与えない(`--config` を毎回、または PATH に載せる)— 安全側の代償として受容し、docs に書く。(A) は平文の
+持ち出し経路を「cwd に入ること」だけで作る(なし)。**選定 = (B)**。`decidePushSync` が既定パスのとき名指しのターゲットを
+`namesCommand` に分け、`syncAfterPush` が note(`target X names the program to run …; pass --config … or run \`maruhi sync apply
+X\``)を出して飛ばす。態を追加(既定パス: 名指しの 2 ターゲットは動かず note・名指し無しの 1 つは動く / 明示: 名指しも動く)。
+(2) docs の「says nothing」を明示 `--config` の note に合わせて訂正。(3) env.ts の errors.ts の import を 1 文に。
+
+**改訂 3(2026-09-08、pullfrog の差分レビュー〔9fdbc55〕)**: (1) 「名指し」の判定を文字列比較(exec: `command !== spec.command` /
+workflow: `command !== "gh"`)で行っていた — 既定の綴り `"gh"` を sync-push.ts が写しており、解析側の既定が変われば全 workflow
+ターゲットが黙って「名指し」になる(既定パスの workflow ターゲットが gh を起動する態が無く、検出できない)。加えて明示の
+`"command": "vercel"` を名指しでない扱いにしていた → **解析時に `namedCommand: boolean`(設定が `command` / `workflow.command` を
+書いた事実)を持ち**、sync-push.ts はそれを読む。既定の綴りを書いても名指し(設定が実行体を書いた事実で判定する — 綴りの一致で
+免除しない)。態を追加(既定パス: `"command": "vercel"` は飛ばす・`workflow.command` 無しの workflow ターゲットは PATH 上の gh で
+起動する)。(2) note の文面: 既に push は済んでいるので「Pass --config … to sync it after this push」は成り立たない → 「Run
+`maruhi sync apply X` now, or pass --config … on the next push」。(3) **検証の穴の申告**: 改訂 2 の「`cwd` は実行体を変えない
+(PATH 探索)」は Linux で確かめた事実(本セッション: Bun 1.4.0 の `Bun.spawn({ cmd: ["vercel"], cwd })` は cwd に実行可能な
+`vercel` があっても PATH に無ければ ENOENT。pullfrog も Bun 1.4.2 で同じ結果)で、**Windows は未確認**(Bun は Windows で別の
+解決経路〔`PATHEXT`〕を持ち、`windows-x64` は配布対象)。Windows が cwd を探索するなら、fork に置かれた `vercel.exe` が既定パスの
+設定から平文を受け取る。人間タスクに追加(Windows で `command` 無しのターゲット + 設定ディレクトリの `vercel.exe` で PATH 側が
+動くことの確認)。cwd を探索すると分かれば、既定パスでは「解決済み `cwd` がプロセスの cwd と違うターゲットも名指し扱い」でなく、
+**既定パスの exec ターゲットを Windows では動かさない**方向で閉じる(実行体の解決規則に依存しない形 — 判定材料は `Stdio` 等の
+サービス経由で取る)。
+
+**第 3 段以降への申し送り(SY2 完了)**: (1) **SY3** = workflow テンプレート 2 標準形 + 四眼の docs。第 3 段の `onPush: "workflow"`
+の起動先は「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes`」の契約を満たす workflow で、docs
+「Sync on push」の YAML 断片がその契約。標準形 ②(Vercel)のテンプレートは `workflow_dispatch`(第 3 段からの起動)と `schedule`
+(定期突合)の両方の trigger を持つ 1 ファイルにできる。(2) 全ターゲット一括の plan(`--all`)。(3) SY4 Netlify(http プリセットの
+宣言 1 つ + モック)。(4) SY5 gh プリセット(`gh secret set` — 第 3 段の `GH_ENV` と `ghArgument` は流用できる)。(5) `sync plan` /
+`push` の既定パス探索を git ルートまで遡る案(裁定 B (d))は需要が出たら両方同時に。(6) debounce(裁定 E (iii))は需要が出たら
+再裁定(名前も値も持たない印の形を先に)。(7) 人間タスク(未消化 — 本 PR で追加: `gh workflow run` の実機での通し〔既定ブランチ
+の workflow 不在・`workflow_dispatch` 不在・未ログインの各文面〕、**Windows での実行体の解決**〔改訂 3 (3)〕): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、
+Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
+
 ---
 
 ---

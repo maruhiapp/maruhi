@@ -14,10 +14,11 @@
 // version フィールドつき・未知のキーは拒否(打ち間違いを黙って無視しない)。
 // `version: 1` は第 1 段のまま(第 2 段のキーはすべて省略可で、第 1 段の設定は
 // そのまま読める。第 1 段の CLI は第 2 段のキーを「未知のキー」として拒否する —
-// 互換の方向は後方のみ。裁定 H)。検証の文面は「どのキーが・なぜ」を言い、
-// 打たれた値そのものは出さない。
+// 互換の方向は後方のみ。裁定 H)。第 3 段の `onPush` / `workflow` も同じ扱い
+// (省略 = 手動同期のみ)。検証の文面は「どのキーが・なぜ」を言い、打たれた値
+// そのものは出さない。
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { isEnvironmentId, isProjectId } from "@maruhi/core";
@@ -48,11 +49,36 @@ export type TargetDriver =
       readonly cwd: string;
       /** 起動する実行体(既定はプリセットのコマンド名 = PATH 上の導入済み CLI)。 */
       readonly command: string;
+      /** 設定が `command` を書いた(= 設定が実行体を名指しした。既定の綴りと同じでも true)。 */
+      readonly namedCommand: boolean;
     }
   | {
       readonly kind: "http";
       readonly spec: HttpPreset;
       readonly token: TokenRef;
+    };
+
+/**
+ * What `maruhi push` does for the target right after a push lands in its
+ * source environment (SY2 第 3 段 — integration-options.md §3 補足 4 N1 /
+ * 補足 7 P1): apply directly from the writer's CLI, or trigger the repository's
+ * workflow with `gh workflow run` so CI applies it (`maruhi ci sync`). The
+ * writer then never holds the target's token. `null` = only by hand.
+ */
+export type OnPush =
+  | { readonly kind: "apply" }
+  | {
+      readonly kind: "workflow";
+      /** The workflow file name (or name / ID) passed to `gh workflow run`. */
+      readonly file: string;
+      /** `--ref` for the dispatch (undefined = gh's default: the repository's default branch). */
+      readonly ref: string | undefined;
+      /** The `gh` executable (default: `gh` on PATH). */
+      readonly command: string;
+      /** The config wrote `workflow.command` (it names the program to run, even if it spells the default). */
+      readonly namedCommand: boolean;
+      /** Where `gh` runs (the config file's directory; gh resolves the repository from its git remote). */
+      readonly cwd: string;
     };
 
 /** One deploy target: which maruhi environment goes where, and how. */
@@ -75,6 +101,8 @@ export interface SyncTarget {
   readonly production: boolean;
   /** プリセット固有のオプション(選んだドライバの宣言で検証済み)。 */
   readonly options: ResolvedOptions;
+  /** push 直後の自動同期(省略 = 手動のみ)。 */
+  readonly onPush: OnPush | null;
 }
 
 /** The parsed repository sync config. */
@@ -174,6 +202,8 @@ const TARGET_KEYS = [
   "command",
   "token",
   "options",
+  "onPush",
+  "workflow",
 ] as const;
 
 function parseVariables(
@@ -267,6 +297,7 @@ function parseExecDriver(
     spec,
     cwd: cwd.value === undefined ? configDir : join(configDir, cwd.value),
     command: command.value ?? spec.command,
+    namedCommand: command.value !== undefined,
   };
 }
 
@@ -366,6 +397,13 @@ function parseTarget(name: string, value: unknown, configDir: string): SyncTarge
   if (typeof exclude === "string") {
     return exclude;
   }
+  // 明示が無ければプリセットの判定(Vercel = production 環境、Workers = 名前付き
+  // 環境なし)。誤操作ガードなので既定は「production 寄り」に倒す
+  const isProduction = production ?? preset.isProduction(options);
+  const onPush = parseOnPush(record, path, isProduction, configDir);
+  if (typeof onPush === "string") {
+    return onPush;
+  }
   return {
     name,
     preset,
@@ -373,11 +411,102 @@ function parseTarget(name: string, value: unknown, configDir: string): SyncTarge
     environment,
     variables: selection.variables,
     exclude,
-    // 明示が無ければプリセットの判定(Vercel = production 環境、Workers = 名前付き
-    // 環境なし)。誤操作ガードなので既定は「production 寄り」に倒す
-    production: production ?? preset.isProduction(options),
+    production: isProduction,
     options,
+    onPush,
   };
+}
+
+/**
+ * `onPush` / `workflow` の解釈(第 3 段 — 裁定 B / C)。`"apply"` は書き手の CLI が
+ * 直接 apply する形で、production ターゲットには**設定の段階で**拒む(production を
+ * 書くのは人が `--yes` を打つ `maruhi sync apply` だけ — 第 1 段の裁定 J)。
+ * `"workflow"` は `gh workflow run` で CI を起動する形で、値を書くのは CI の
+ * workflow(そこに `--yes` が見える)なので production でも可。
+ */
+function parseOnPush(
+  record: Record<string, unknown>,
+  path: string,
+  isProduction: boolean,
+  configDir: string,
+): OnPush | null | Invalid {
+  const onPush = record["onPush"];
+  const workflow = record["workflow"];
+  if (onPush === undefined) {
+    return workflow === undefined
+      ? null
+      : `${path}.workflow applies only when onPush is "workflow"`;
+  }
+  if (onPush !== "apply" && onPush !== "workflow") {
+    return `${path}.onPush must be "apply" (sync from this machine right after \`maruhi push\`) or "workflow" (trigger the repository's workflow with gh so CI syncs); leave it out to sync only by hand`;
+  }
+  if (onPush === "apply") {
+    if (workflow !== undefined) {
+      return `${path}.workflow applies only when onPush is "workflow"`;
+    }
+    if (isProduction) {
+      return `${path}.onPush cannot be "apply" for a production target: production is written only by an explicit \`maruhi sync apply --yes\`. Use "workflow" to let CI write it under the --yes in the workflow file, or set production to false if the target is not production`;
+    }
+    return { kind: "apply" };
+  }
+  return parseWorkflow(workflow, `${path}.workflow`, configDir);
+}
+
+/** `workflow: { file, ref?, command? }` の解釈(`onPush: "workflow"` のとき必須)。 */
+function parseWorkflow(value: unknown, path: string, configDir: string): OnPush | Invalid {
+  const record = workflowRecord(value, path);
+  if (typeof record === "string") {
+    return record;
+  }
+  const file = ghArgument(record["file"]);
+  if (file === undefined) {
+    return `${path}.file must be the workflow's file name (for example maruhi-sync.yml)`;
+  }
+  const ref = record["ref"] === undefined ? undefined : ghArgument(record["ref"]);
+  if (record["ref"] !== undefined && ref === undefined) {
+    return `${path}.ref must be a branch or tag name`;
+  }
+  const command = optionalString(
+    record,
+    "command",
+    path,
+    "a non-empty path to the installed gh CLI",
+  );
+  if (typeof command === "string") {
+    return command;
+  }
+  return {
+    kind: "workflow",
+    file,
+    ref,
+    command: command.value ?? "gh",
+    namedCommand: command.value !== undefined,
+    cwd: configDir,
+  };
+}
+
+/** `workflow` の形(存在・オブジェクト・既知のキー)。 */
+function workflowRecord(value: unknown, path: string): Record<string, unknown> | Invalid {
+  if (value === undefined) {
+    return `${path} is required when onPush is "workflow": { "file": "<workflow file name>" } naming the workflow that runs \`maruhi ci sync\` (it must have a workflow_dispatch trigger with a "target" input)`;
+  }
+  if (!isRecord(value)) {
+    return `${path} must be an object of the form { "file": "<workflow file name>" }`;
+  }
+  const unknown = unknownKeys(value, ["file", "ref", "command"]);
+  return unknown.length > 0
+    ? `${path} has unknown keys (${unknown.join(", ")}); accepted: file, ref, command`
+    : value;
+}
+
+/**
+ * gh の argv に載る設定値(workflow 名・ref): 非空で、`-` で始まらない(フラグと
+ * 読まれる形を設定で作らせない)。
+ */
+function ghArgument(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 && !value.startsWith("-")
+    ? value
+    : undefined;
 }
 
 /** ドライバの面(exec = cwd / command、http = token)と、そのドライバの宣言で検証したオプション。 */
@@ -471,20 +600,40 @@ export function parseSyncConfig(content: string, configDir: string): SyncConfig 
   if (!isRecord(targetsRaw) || Object.keys(targetsRaw).length === 0) {
     return "targets must be an object with at least one target";
   }
+  const targets = parseTargets(targetsRaw, { configDir, receiptsEnvironment, project });
+  return typeof targets === "string"
+    ? targets
+    : { version: 1, projectId: project, receiptsEnvironment, targets };
+}
+
+/** `targets` の各ターゲットの解釈と、設定全体に掛かる検査(レシート環境・`project`)。 */
+function parseTargets(
+  targetsRaw: Record<string, unknown>,
+  root: {
+    readonly configDir: string;
+    readonly receiptsEnvironment: string;
+    readonly project: string | undefined;
+  },
+): ReadonlyMap<string, SyncTarget> | Invalid {
   const targets = new Map<string, SyncTarget>();
   for (const [name, value] of Object.entries(targetsRaw)) {
-    const target = parseTarget(name, value, configDir);
+    const target = parseTarget(name, value, root.configDir);
     if (typeof target === "string") {
       return target;
     }
     // レシートの環境を同期元にしない: `maruhi run --env <receipts>` がレシート
     // 変数まで子へ注入する形と、レシート自身を同期先へ運ぶ形の両方を塞ぐ
-    if (target.environment === receiptsEnvironment) {
-      return `targets.${name}.environment is the receipts environment (${receiptsEnvironment}); receipts must live in an environment that is not synced`;
+    if (target.environment === root.receiptsEnvironment) {
+      return `targets.${name}.environment is the receipts environment (${root.receiptsEnvironment}); receipts must live in an environment that is not synced`;
+    }
+    // push 直後の同期は「この設定がどのプロジェクトのものか」を名乗る設定にしか
+    // 使わない(第 3 段の裁定 B — cwd の設定を別プロジェクトの push に黙って使わない)
+    if (target.onPush !== null && root.project === undefined) {
+      return `targets.${name}.onPush needs the top-level "project": sync on push only uses a config that names its project (add it, or generate the config with \`maruhi sync init --project <project ID>\`)`;
     }
     targets.set(name, target);
   }
-  return { version: 1, projectId: project, receiptsEnvironment, targets };
+  return targets;
 }
 
 /** `--config <file>`(既定 `maruhi.sync.json`)の読み込みと検証。 */
@@ -502,6 +651,32 @@ export function loadSyncConfig(path: string): Effect.Effect<SyncConfig, CliError
       return yield* Effect.fail(cliError(`The sync config ${path} is invalid: ${parsed}`));
     }
     return parsed;
+  });
+}
+
+/**
+ * The default config when it exists in the working directory (`maruhi push`
+ * looks for it without being told): null when the file is absent, and the
+ * same errors as {@link loadSyncConfig} when it exists but cannot be read or
+ * is invalid — a broken config is reported, not skipped.
+ */
+export function loadSyncConfigIfPresent(path: string): Effect.Effect<SyncConfig | null, CliError> {
+  return Effect.gen(function* () {
+    const exists = yield* Effect.tryPromise({
+      try: () => stat(path).then(() => true),
+      catch: (error: unknown) => error,
+    }).pipe(
+      Effect.catch((error: unknown) =>
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? Effect.succeed(false)
+          : Effect.fail(
+              cliError(
+                `Cannot read the sync config ${path} (it exists but is not readable). Fix it, or pass --no-sync to push without syncing`,
+              ),
+            ),
+      ),
+    );
+    return exists ? yield* loadSyncConfig(path) : null;
   });
 }
 
