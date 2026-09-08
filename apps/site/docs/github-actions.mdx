@@ -1,0 +1,353 @@
+---
+title: GitHub Actions
+description: Use maruhi from a GitHub Actions job with no secrets stored on GitHub. Lease values with maruhi ci run, sync deploy targets from CI with maruhi ci sync in two standard shapes, and put production behind a second pair of eyes with GitHub Environments.
+sidebar:
+  order: 3
+---
+
+A GitHub Actions job can use your secrets without storing a single secret on GitHub. `maruhi ci run` and `maruhi ci sync` authenticate with the job's own OIDC token, verify everything they receive against the project's signed chain, and keep the decrypted values in memory. Your GitHub secrets can be empty: the maruhi API token does not exist in CI, and the platform tokens and the values themselves live in maruhi.
+
+This page covers what a project owner sets up once, a job that runs a command with leased values, the two standard shapes for syncing a [deploy target](/docs/deploy-targets) from CI, and how to require a second person before production is written.
+
+## What a job needs
+
+- **The CLI.** The `setup-maruhi` action installs it from the release assets and verifies the SHA-256 checksum before anything is put on the runner. Reference it as `maruhiapp/maruhi/actions/setup-maruhi@<tag>` and pin it to a release tag or a commit SHA, never to a branch: it installs the binary that will hold your decrypted values. Pass `version: <tag>` as well while releases are pre-release tags, because `releases/latest` cannot be resolved yet and the install script refuses to guess. Linux and macOS runners are supported; Windows runners are not.
+- **`permissions: id-token: write` on the job.** Without it the runner does not expose the OIDC token endpoint, and the command stops with an error that says so. maruhi needs no other permission and no `GITHUB_TOKEN` scope.
+- **A lease grant whose policy matches the job** (below). A job the policy does not list gets a uniform 404.
+- **The repository anchor**, `.maruhi/anchor.json`, committed and passed as `--anchor`. It is optional, and every template on this page includes it. See [Repository anchor](#repository-anchor).
+
+Everything else is a flag. CI mode reads no config file and no keychain, so the server, the project, and the anchor path are visible in the workflow file, where they are reviewed like the rest of your CI.
+
+## Set up once
+
+### Grant a lease with a policy
+
+A project **owner** discloses the environments a CI job may lease and, in the same command, the policy that says which jobs may lease them. This runs on the owner's machine, not in CI:
+
+```sh
+maruhi server grant --environments production,tokens --lease-policy lease-policy.json
+```
+
+```json
+[
+  {
+    "issuerUrl": "https://token.actions.githubusercontent.com",
+    "audience": "https://my.maruhi.app",
+    "claimConstraints": {
+      "repository": "acme/app",
+      "environment": "production"
+    }
+  }
+]
+```
+
+- `audience` is your server's origin. That is the audience `maruhi ci run` and `maruhi ci sync` request by default (`--audience` overrides it), and the two must match.
+- `claimConstraints` are exact matches against the claims of the job's OIDC token. Every element needs at least one constraint, and a job is authorized when any one element matches all of its constraints. To allow several jobs, add one element per job.
+- **The policy is one list per project, and a job that matches any element can lease every environment in the grant.** Keep that in mind when you write elements for jobs with different levels of trust; see [Four eyes on production](#four-eyes-on-production).
+- The policy lives on the project's signed chain: only an owner can change it, and the server cannot. Re-run `maruhi server grant` to tighten or replace it at any time. The list of disclosed environments can only grow; shrinking it is `maruhi server revoke`, which rotates every environment.
+
+Claims worth constraining (GitHub's OpenID Connect reference lists them all):
+
+| Claim          | Use it for                                                                                                                                                                                                                                           |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repository`   | Always (`acme/app`). A fork runs its copy of the workflow under its own name, so a token from a fork never matches.                                                                                                                                  |
+| `environment`  | Production (`production`, or the target's name). The claim is present only when the job references a GitHub Environment of that name, which is what lets required reviewers gate the lease. See [Four eyes on production](#four-eyes-on-production). |
+| `ref`          | A job that runs on a branch and references no Environment (`refs/heads/main`). A pull request run carries `refs/pull/<number>/merge`, so list the refs you need, one element each.                                                                   |
+| `workflow_ref` | Pinning one workflow file on one branch (`acme/app/.github/workflows/deploy.yml@refs/heads/main`).                                                                                                                                                   |
+
+Do not constrain `sub`. GitHub changed its default format for repositories created after July 15, 2026 (it now embeds owner and repository IDs), so the value depends on when the repository was created; the claims above do not.
+
+### Repository anchor
+
+A CI job is an unattended client with no memory of the chain head it verified last time, so a compromised server could serve it an old but validly signed view, for example a pre-rotation view that keeps a leaked credential deployed. The repository anchor closes this: a project member commits a small non-secret file with the chain head and the epoch of every environment, and `--anchor` refuses any response whose chain does not contain that head or whose epochs fall below it.
+
+```sh
+maruhi project anchor > .maruhi/anchor.json
+git add .maruhi/anchor.json && git commit -m "chore: update maruhi anchor"
+```
+
+The file contains hashes, sequence numbers, and epoch numbers, and no key material or values. An anchor older than the chain is still accepted (it is a floor), so re-run this after every `maruhi env rotate`: until you do, the anchor cannot tell a pre-rotation view from the current one.
+
+## Run a command with leased values
+
+`maruhi ci run` leases one environment and runs a command with its values in the child process's environment, and nowhere else. This is the shape for tests, builds, and any tool that reads its credentials from environment variables:
+
+```yaml
+# .github/workflows/test.yml
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+# The coordinates the maruhi commands below read through their flags. The
+# names are yours; the CLI reads no environment variable in CI mode
+env:
+  MARUHI_SERVER: https://my.maruhi.app
+  MARUHI_PROJECT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # maruhi ci run authenticates with the job's OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Pin to a release tag or a commit SHA. Replace <tag> with a release tag
+      # that contains the actions/setup-maruhi directory; the same tag is the
+      # version to install (required while releases are pre-release tags)
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
+        with:
+          version: <tag>
+
+      - run: npm ci
+
+      - name: Test with leased values
+        run: >-
+          maruhi ci run
+          --server "$MARUHI_SERVER"
+          --project "$MARUHI_PROJECT"
+          --env test
+          --anchor .maruhi/anchor.json
+          -- npm test
+```
+
+Replace `<tag>`, the two values under `env`, and the environment name. In one round-trip, `maruhi ci run` generates an ephemeral key pair in memory, mints an OIDC token, requests the lease, verifies the chain against the pinned project ID, every signature, every DEK commitment, and the anchor, and only then decrypts. The child gets the values as environment variables; the runner's disk and the job log never see them. To lease several environments in one job, run it once per environment: each invocation mints its own token and its own key.
+
+For a pull request run from a branch of the repository, the policy needs an element that matches it (for example `repository` plus `event_name: pull_request`). A pull request from a fork runs with read-only permissions, so its job cannot request an OIDC token at all, and `maruhi ci run` stops before contacting the server.
+
+## Sync a deploy target from CI
+
+`maruhi ci sync <target>` copies a target from `maruhi.sync.json` the way `maruhi sync apply` does locally, with the differences described under [In CI](/docs/deploy-targets#in-ci): it leases instead of signing in, it keeps no receipt, so it writes every selected variable on every run and deletes nothing, and a production target needs `--yes` in the workflow file. Which shape to use depends on who deploys:
+
+- **You deploy from CI** (Cloudflare Workers, and any platform whose deploy is a command in your workflow): [re-apply on every deploy](#re-apply-on-every-deploy). The secrets are written right before the deploy, by the same job, so the platform never runs a version whose secrets are older than the values in maruhi. Nothing else is needed.
+- **The platform deploys itself from Git** (Vercel, and any Git-integrated platform): [sync on demand and on a schedule](#sync-on-demand-and-on-a-schedule). `maruhi push` triggers the workflow the moment a value changes, and a schedule re-applies the targets you list, in case a value was edited at the platform.
+
+Both shapes use the `http` driver in the templates: the platform's token is a variable in a maruhi environment (`tokens` below), leased by the same job, so nothing is stored on GitHub. The `exec` driver works in CI too if you would rather use the vendor CLI: install it in the job (a project dependency, not `npx`) and let it sign in from a `CLOUDFLARE_API_TOKEN` or `VERCEL_TOKEN` variable in the job's environment. That token is then a GitHub secret, which is what the `http` driver spares you.
+
+### Re-apply on every deploy
+
+A deploy workflow for a Cloudflare Worker. The `worker` target is the one from [the http driver example](/docs/deploy-targets#without-the-vendor-cli-the-http-driver): `driver: http`, `token: { "environment": "tokens", "name": "CLOUDFLARE_API_TOKEN" }`. The same `tokens` environment holds `CLOUDFLARE_ACCOUNT_ID` for wrangler (or put `account_id` in the wrangler configuration file).
+
+```yaml
+# .github/workflows/deploy.yml
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# The coordinates the maruhi commands below read through their flags. The
+# names are yours; the CLI reads no environment variable in CI mode
+env:
+  MARUHI_SERVER: https://my.maruhi.app
+  MARUHI_PROJECT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# Deploys go one at a time. A newer push waiting on this group replaces an
+# older one that has not started yet; the one that runs deploys the latest commit
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # A GitHub Environment. Put required reviewers on it for a second pair of
+    # eyes, and name it in the lease policy (claim "environment")
+    environment: production
+    permissions:
+      id-token: write # maruhi ci sync and ci run authenticate with the job's OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Pin to a release tag or a commit SHA. Replace <tag> with a release tag
+      # that contains the actions/setup-maruhi directory; the same tag is the
+      # version to install (required while releases are pre-release tags)
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
+        with:
+          version: <tag>
+
+      # wrangler as a project dependency (use your package manager)
+      - run: npm ci
+
+      # Secrets first, so the version deployed next starts with them. The
+      # target's token comes from the leased "tokens" environment (http driver).
+      # --yes: this target is production, and the decision to write it is here
+      - name: Sync secrets to the Worker
+        run: >-
+          maruhi ci sync worker --yes
+          --server "$MARUHI_SERVER"
+          --project "$MARUHI_PROJECT"
+          --anchor .maruhi/anchor.json
+
+      # wrangler signs in with CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+      # from the leased environment; they reach wrangler's process and nothing else
+      - name: Deploy
+        run: >-
+          maruhi ci run
+          --server "$MARUHI_SERVER"
+          --project "$MARUHI_PROJECT"
+          --env tokens
+          --anchor .maruhi/anchor.json
+          -- ./node_modules/.bin/wrangler deploy
+```
+
+Replace `<tag>`, the two values under `env`, and the target and environment names. The lease policy for this job is the example under [Grant a lease with a policy](#grant-a-lease-with-a-policy): `repository: acme/app` and `environment: production`, for the environments `production` (the target's source) and `tokens`.
+
+- Each `maruhi ci` command mints its own OIDC token: this job takes two, and three leases (the sync leases `production` and `tokens`, the deploy leases `tokens`). They count against the project's lease window, 300 per hour by default.
+- The `http` driver does not create a Worker. Deploy a new Worker once before the sync step runs against it (the sync stops with a message that says so), or run the two steps in the other order for that first deploy.
+- The [shell recipe](/docs/deploy-targets#cloudflare-workers-1) does the same copy without a config file: `maruhi ci run --env production -- jq … | wrangler secret bulk` before the deploy, with wrangler signed in the same way.
+- A named wrangler environment (`staging`) is a second target with `options.environment` and a second job, or a second workflow; the shape does not change.
+
+### Sync on demand and on a schedule
+
+A sync workflow for the `web` target of the [Sync on push](/docs/deploy-targets#sync-on-push) example, with `driver: http` and `token: { "environment": "tokens", "name": "VERCEL_TOKEN" }` added so that the job has a token, and `"onPush": "workflow"` with `"workflow": { "file": "maruhi-sync.yml" }` so that every `maruhi push` to its environment dispatches this file. The same file has a schedule.
+
+```yaml
+# .github/workflows/maruhi-sync.yml
+name: maruhi sync
+
+on:
+  # `maruhi push` runs `gh workflow run maruhi-sync.yml -f target=<name>` for a
+  # target with "onPush": "workflow". Anyone with write access can dispatch it too
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target name from maruhi.sync.json
+        required: true
+        type: string
+  # Re-apply the targets listed under SCHEDULED_TARGETS, in case a value was
+  # edited at the platform. Runs on the default branch, in UTC
+  schedule:
+    - cron: "37 4 * * *"
+
+permissions: {}
+
+env:
+  # The coordinates the maruhi command below reads through its flags. The
+  # names are yours; the CLI reads no environment variable in CI mode
+  MARUHI_SERVER: https://my.maruhi.app
+  MARUHI_PROJECT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  # The targets the schedule re-applies, separated by spaces. A target whose
+  # GitHub Environment has required reviewers waits for an approval on every run
+  SCHEDULED_TARGETS: web
+
+jobs:
+  # Which targets this run syncs: the dispatched one, checked against the
+  # config so that a typo does not create a stray Environment, or the scheduled list
+  targets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - id: list
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ -n "$TARGET" ]; then
+            jq -e --arg t "$TARGET" '.targets | has($t)' maruhi.sync.json > /dev/null \
+              || { echo "maruhi.sync.json has no target named $TARGET" >&2; exit 1; }
+            list=$(jq -cn --arg t "$TARGET" '[$t]')
+          else
+            list=$(jq -cn --arg s "$SCHEDULED_TARGETS" '$s | split(" ") | map(select(. != ""))')
+          fi
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: targets
+    if: needs.targets.outputs.list != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.targets.outputs.list) }}
+    runs-on: ubuntu-latest
+    # One GitHub Environment per target, named after it. Put required reviewers
+    # on the production target's Environment, and name it in the lease policy
+    environment: ${{ matrix.target }}
+    # Runs for one target go one at a time. A newer run waiting on this group
+    # replaces an older one that has not started; every run writes the current values
+    concurrency:
+      group: maruhi-sync-${{ matrix.target }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write # maruhi ci sync authenticates with the job's OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Pin to a release tag or a commit SHA. Replace <tag> with a release tag
+      # that contains the actions/setup-maruhi directory; the same tag is the
+      # version to install (required while releases are pre-release tags)
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
+        with:
+          version: <tag>
+
+      # --yes: a production target is written only because this file says so
+      - name: Sync the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: >-
+          maruhi ci sync "$TARGET" --yes
+          --server "$MARUHI_SERVER"
+          --project "$MARUHI_PROJECT"
+          --anchor .maruhi/anchor.json
+```
+
+Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy for the `web` target names its Environment, `environment: web`, for the environments `production` and `tokens`; a second CI-synced target is a second element with its own Environment name.
+
+- **From a push.** With `"onPush": "workflow"`, `maruhi push` runs `gh workflow run maruhi-sync.yml -f target=web` with the writer's own GitHub sign-in and reports that the run was accepted. The command line carries the workflow name and the target name, never a value or a variable name; the job reads the values from maruhi. The writer never holds the platform's token.
+- **From the schedule.** `SCHEDULED_TARGETS` is the list of targets the schedule re-applies. It is a choice, not a copy of the config: a target you sync only from your machine (the `preview` target of the example, which uses the vendor CLI with `"onPush": "apply"`) has no token in maruhi and stays off the list. The schedule re-applies the current values of maruhi. It does not compare them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly, on the next run.
+- **Which config runs.** `workflow_dispatch` and `schedule` both use the workflow file and the `maruhi.sync.json` of the repository's default branch (or of `workflow.ref` when the target sets it). A target added on a branch does not exist for the dispatched run until the branch is merged; the `targets` job then stops with the target's name.
+- **Several runs for one target.** Pushes in a row, or a push during a scheduled run, queue runs for the same target. The `concurrency` group runs them one at a time, and GitHub keeps at most one run queued per group: a newer one replaces an older one that has not started. Because every run reads the values at the moment it runs, the last run to finish has written the current values, whichever order the runs started in.
+- **Receipts.** CI keeps none, so a `maruhi sync plan web` on your machine still shows what CI delivered as pending, and the next local `maruhi sync apply web --yes` rewrites it once. This is described under [Receipts](/docs/deploy-targets#receipts).
+- In a public repository, GitHub disables the schedule after 60 days without repository activity; a push re-enables it. Scheduled runs can be delayed under load.
+
+## Four eyes on production
+
+Only a person can write a production target. Locally, that person types `maruhi sync apply <target> --yes`. In CI, the `--yes` is in the workflow file, reviewed with the rest of the repository, and the run itself is started by anyone with write access (a `maruhi push` with `"onPush": "workflow"`, a `gh workflow run`, the Actions tab) or by the schedule. To require a second person before production is written, put the job in a GitHub Environment with required reviewers. maruhi has no approval feature of its own, and does not need one:
+
+1. **Create the Environment** (repository settings, Environments): `production` for the deploy shape, or the target's name (`web`) for the sync shape, whose job references `environment: ${{ matrix.target }}`. A workflow that references an Environment that does not exist creates it, without protection rules, so create it before the first run. In a personal repository the owner does this; in an organization repository it takes admin access.
+2. **Add required reviewers**: up to six people or teams with at least read access; one approval lets the job proceed, and a rejection fails the run. Turn on **Prevent self-review** so that the person who triggered the run cannot approve it. That is the second pair of eyes. On the Free, Pro, and Team plans, required reviewers are available for public repositories only.
+3. **Restrict deployment branches** to the default branch. `maruhi push` dispatches the workflow on the default branch and the deploy workflow runs on `main`, so nothing legitimate is blocked, and a run from another branch cannot reference the Environment.
+4. **Name the Environment in the lease policy** (`environment: production`, `environment: web`, one element per Environment). The `environment` claim is in the token only when the job references that Environment, and GitHub sends such a job to a runner only after the reviewers approved it. So the maruhi server hands out the production lease only to a run that a reviewer approved: a workflow edited to leave the Environment out gets a 404, whoever edited it.
+
+What the reviewers see is the run, its trigger, and the person who started it, not the values: nothing has been decrypted when they decide. They approve the delivery of the current production values of maruhi, which were pushed by a member of the project; the plan the job prints, with variable names and versions, is in the job log after they approve. To look before approving, run `maruhi sync plan <target>` on your machine.
+
+Two limits of the arrangement:
+
+- **The policy is one list per project.** Point 4 holds for every environment in the grant as long as every element of the policy names a protected Environment. If the same policy also has an element for an unprotected job (a preview target synced from CI, or the test job above), that job's identity can lease the production environment too, and only the workflow file keeps it from writing production. Grant the environments such jobs need, and keep production in a grant whose policy names protected Environments only, or sync the non-production targets from the writer's machine with `"onPush": "apply"` instead of from CI.
+- **A scheduled run waits for approval too**, every time. If that is too often, lower the cadence or take production out of `SCHEDULED_TARGETS`: a push still triggers a reviewed sync at once.
+
+A run that waits for approval writes the values as they are when it finally runs, not as they were when it was started, so approving an older run never delivers an older value than the one in maruhi. When several runs for one target wait, approve the newest and reject the rest.
+
+## What can go wrong
+
+- **404 for the lease.** One uniform answer covers an unknown project, no grant, a policy mismatch, and an environment outside the grant. With the right `--server` and `--project`, the usual cause is a claim: the job runs on a branch the policy does not list, references no Environment (or another one) while the policy constrains `environment`, or runs in a fork. Fix the policy with `maruhi server grant --lease-policy` or the workflow, not the server.
+- **Unknown target.** The dispatched run reads the `maruhi.sync.json` of the default branch. Merge the config first.
+- **The target's platform fails.** `maruhi ci sync` shows the platform's answer with the values and the token filtered out, and stops with a non-zero exit code; the next run writes every variable again. A Worker that does not exist yet is the common first-run case (see above).
+- **Anchor check failed.** The response's chain does not contain the anchored head, or an environment's epoch is below the anchored one: the server served an old view, or the anchor belongs to another project. Do not re-run with the anchor removed; look at the server. An anchor that is merely behind the chain is accepted.
+- **After a rotation.** `maruhi env rotate` re-encrypts every value as a new version with the same plaintext. The next CI run writes the re-encrypted values, which is harmless, and the anchor should be updated (above).
+- **429.** The project's lease window is exhausted; the CLI does not retry. Each `maruhi ci` invocation takes one lease per environment it needs.
+- **Values in the log.** They are never printed by maruhi. Keep them out yourself: no `set -x` in a command under `maruhi ci run`, no `echo` of a variable, and nothing written to `$GITHUB_ENV` or `$GITHUB_OUTPUT`, which are files on the runner.
+
+The action's [README](https://github.com/maruhiapp/maruhi/blob/main/actions/setup-maruhi/README.md) lists the remaining server-side answers (`token-replayed`, `server-wraps-missing`, and the others).

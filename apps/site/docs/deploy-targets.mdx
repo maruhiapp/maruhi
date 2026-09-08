@@ -215,7 +215,7 @@ on:
         type: string
 ```
 
-`gh` dispatches the workflow file on the repository's default branch unless the target's `workflow.ref` says otherwise, and it does not need your local branch to be pushed: the value is already in maruhi, and CI reads it from there. A complete template for the two common shapes is planned (see [In CI](#in-ci)).
+`gh` dispatches the workflow file on the repository's default branch unless the target's `workflow.ref` says otherwise, and it does not need your local branch to be pushed: the value is already in maruhi, and CI reads it from there. The complete workflow, with a schedule and a GitHub Environment for production, is on [GitHub Actions](/docs/github-actions#sync-on-demand-and-on-a-schedule).
 
 ## Receipts
 
@@ -239,10 +239,10 @@ maruhi ci sync worker --yes \
 - The job's identity must be granted a lease for the target's environment, and for the token's environment when the target uses the `http` driver with a token stored elsewhere (`maruhi server grant --lease-policy`). Both leases use the same OIDC token and the same ephemeral key.
 - Either driver works. The `http` driver needs nothing installed on the runner; the `exec` driver needs the vendor CLI installed and authenticated on the runner, and in that case the deploy job is often already doing the same with `maruhi ci run -- wrangler deploy`.
 - **CI keeps no receipt.** A CI job holds no signing key, so it cannot write one. `ci sync` therefore writes every selected variable on every run (an idempotent update), and it never deletes anything at the target: removing a variable from the target is done locally with `maruhi sync apply`, which has the receipt.
-- A production target needs `--yes` here too, so the decision to write production is visible in the workflow file. For a second pair of eyes on production, put the job in a GitHub Environment with required reviewers.
+- A production target needs `--yes` here too, so the decision to write production is visible in the workflow file. For a second pair of eyes on production, put the job in a GitHub Environment with required reviewers and name that Environment in the lease policy; see [Four eyes on production](/docs/github-actions#four-eyes-on-production).
 - The values leave the runner only in the request to the platform (`http`) or on the vendor CLI's standard input (`exec`), and never appear in the job log.
 
-The same job can be started by the writer's `maruhi push` through `onPush: "workflow"` (see [Sync on push](#sync-on-push)): give the workflow a `workflow_dispatch` trigger with a `target` input and pass it to `maruhi ci sync`. A workflow template for the two common shapes (re-apply on every deploy, and a scheduled re-apply for Git-integrated platforms) is planned. `maruhi ci run` still covers the [shell recipes](#without-maruhi-sync-shell-recipes) below unchanged.
+The same job can be started by the writer's `maruhi push` through `onPush: "workflow"` (see [Sync on push](#sync-on-push)): give the workflow a `workflow_dispatch` trigger with a `target` input and pass it to `maruhi ci sync`. [GitHub Actions](/docs/github-actions) has the complete workflows for the two common shapes (re-apply on every deploy, and a dispatched plus scheduled re-apply for Git-integrated platforms), the lease policy that goes with them, and the GitHub Environment setup for production. `maruhi ci run` still covers the [shell recipes](#without-maruhi-sync-shell-recipes) below unchanged.
 
 ## Without maruhi sync: shell recipes
 
