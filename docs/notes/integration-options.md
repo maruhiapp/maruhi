@@ -2022,6 +2022,12 @@ Netlify の create には当たらない。候補: (i) create だけ通信層の
 Netlify の create は再送で重複として拒まれるので一覧を引き直して update する」に。Security Agent の指摘(secret が update で落ちる)は
 改訂 1 と同じもの。
 
+**改訂 3(2026-09-08、Cursor Bugbot〔bdae445〕)**: 改訂 2 の引き直しの一覧が**型付きエラーで落ちる**形(通信層・試行の使い切り・
+`Retry-After` が上限超)では、create の失敗の報告に戻らず apply 全体が落ち、同じバッチで先に届いた名前がレシートに残らなかった
+(応答が失敗〔非 2xx〕の形だけを扱っていた)→ 引き直しの `fetchListing` を `Effect.catch` で受け、create の失敗に「Could not
+re-check the target after the failed create: <理由>」を添えて返す(届いた分はレシートへ。理由は `send` の文面 = status と試行数
+だけで値を含まない)。態を追加(422 の後の GET が 503 × 3 → exit 1・ALPHA はレシートに残る)。
+
 **確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
 Support Forums の報告どおり 422)、
 `PATCH` 不在 key の status、`is_secret` + 3 scope が Starter プランで通るか、`all` と個別 context の同居時の API と build の挙動、

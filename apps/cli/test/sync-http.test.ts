@@ -1238,6 +1238,39 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture2.env, raced.requests);
   });
 
+  it("作成の失敗後の引き直しの一覧が落ち続けても、create の失敗として報告し、先に届いた名前はレシートに残る", async () => {
+    const flaky = netlifyFake({
+      rejectKeys: ["BETA"],
+      override: (call, request) =>
+        request.method === "GET" && call > 1
+          ? { status: 503, headers: { "retry-after": "0" } }
+          : undefined,
+    });
+    const fixture = await startFixture({
+      targets: { site: netlifyTarget() },
+      vendorHandlers: flaky.handlers,
+      vendorHosts: ["api.netlify.com"],
+    });
+    expect(await sync(fixture, "apply", "site")).toBe(1);
+    // GET → POST ALPHA → POST BETA(422)→ GET × 3(503)
+    expect(flaky.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "POST",
+      "POST",
+      "GET",
+      "GET",
+      "GET",
+    ]);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain("error 422: Value for BETA is invalid: [redacted]");
+    expect(errors).toContain(
+      "Could not re-check the target after the failed create: the Netlify API answered 503 (3 attempts)",
+    );
+    expect(errors).toContain("delivered before that: 1 variable written, 0 deleted");
+    expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
+    expectNoSecretLeak(fixture.env, flaky.requests);
+  });
+
   it("作成の応答が失われて再送されると既存 key で拒まれる — 一覧を引き直して PATCH に切り替え、届いたと記録する", async () => {
     const lossy = netlifyFake({ loseFirstCreateResponse: true });
     const fixture = await startFixture({

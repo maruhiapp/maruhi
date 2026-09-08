@@ -1311,13 +1311,39 @@ function createOrRecover(
     if (created.failure === null) {
       return created;
     }
-    const listing = yield* fetchListing(input, write.list);
-    if ("failure" in listing || !listing.complete) {
+    // 引き直しの一覧が失敗しても(通信層・試行の使い切り = 型付きエラー)create の失敗の
+    // 報告に戻す: ここで落とすと、同じバッチで先に届いた名前がレシートに残らない(Bugbot 指摘)
+    const listing = yield* fetchListing(input, write.list).pipe(
+      Effect.catch((error: CliError) => Effect.succeed({ failure: [error.message] })),
+    );
+    if ("failure" in listing) {
+      return withRecheckFailure(created, listing.failure);
+    }
+    if (!listing.complete) {
       return created;
     }
     const listed = listedByKey(listing.items, write.list.keyField).get(one.names[0] ?? "");
     return listed === undefined ? created : yield* updateOne(input, write, one, listed);
   });
+}
+
+/** create の失敗に、引き直しの一覧の失敗(伏せ字化済みの行)を添える。 */
+function withRecheckFailure(
+  created: HttpRequestResult,
+  lines: readonly string[],
+): HttpRequestResult {
+  return created.failure === null
+    ? created
+    : {
+        delivered: created.delivered,
+        failure: {
+          names: created.failure.names,
+          lines: [
+            ...created.failure.lines,
+            `Could not re-check the target after the failed create: ${lines.join(" ")}`,
+          ],
+        },
+      };
 }
 
 /**
