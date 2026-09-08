@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-A GitHub Actions job can use your secrets without storing a single secret on GitHub. `maruhi ci run` and `maruhi ci sync` authenticate with the job's own OIDC token, verify everything they receive against the project's signed chain, and keep the decrypted values in memory. Your GitHub secrets can be empty: the maruhi API token does not exist in CI, and the platform tokens and the values themselves live in maruhi.
+A GitHub Actions job can use your secrets without storing a single secret on GitHub. `maruhi ci run` and `maruhi ci sync` authenticate with the job's own OIDC token, verify everything they receive against the project's signed chain, and keep the decrypted values in memory. Your GitHub secrets can be empty: the maruhi API token does not exist in CI, and the platform tokens and the values themselves live in maruhi. The secrets a workflow cannot lease, such as a Dependabot secret, can be [synced into GitHub from maruhi](#github-secrets-as-a-target), with one bootstrap token as the single exception.
 
 This page covers what a project owner sets up once, a job that runs a command with leased values, the two standard shapes for syncing a [deploy target](/docs/deploy-targets) from CI, and how to require a second person before production is written.
 
@@ -129,6 +129,7 @@ For a pull request run from a branch of the repository, the policy needs an elem
 
 - **You deploy from CI** (Cloudflare Workers, and any platform whose deploy is a command in your workflow): [re-apply on every deploy](#re-apply-on-every-deploy). The secrets are written right before the deploy, by the same job, so the platform never runs a version whose secrets are older than the values in maruhi. Nothing else is needed.
 - **The platform deploys itself from Git** (Vercel, Netlify, and any Git-integrated platform): [sync on demand and on a schedule](#sync-on-demand-and-on-a-schedule). `maruhi push` triggers the workflow the moment a value changes, and a schedule re-applies the targets you list, in case a value was edited at the platform.
+- **The target is GitHub itself** (a `github-actions` target that writes repository, Environment, or Dependabot secrets): the same on-demand and scheduled workflow, with one bootstrap token. See [GitHub secrets as a target](#github-secrets-as-a-target).
 
 Both shapes use the `http` driver in the templates: the platform's token is a variable in a maruhi environment (`tokens` below), leased by the same job, so nothing is stored on GitHub. The `exec` driver works in CI too if you would rather use the vendor CLI: install it in the job (a project dependency, not `npx`) and let it sign in from a `CLOUDFLARE_API_TOKEN` or `VERCEL_TOKEN` variable in the job's environment. That token is then a GitHub secret, which is what the `http` driver spares you.
 
@@ -304,10 +305,15 @@ jobs:
         with:
           version: <tag>
 
-      # --yes: a production target is written only because this file says so
+      # --yes: a production target is written only because this file says so.
+      # GH_TOKEN is the one GitHub secret this page needs: the token gh signs in
+      # with to write GitHub secrets for a github-actions target. Store it as a
+      # secret of that target's Environment, so that only its approved runs get
+      # it; for every other target the expression is empty and nothing reads it
       - name: Sync the target
         env:
           TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
         run: >-
           maruhi ci sync "$TARGET" --yes
           --server "$MARUHI_SERVER"
@@ -315,7 +321,7 @@ jobs:
           --anchor .maruhi/anchor.json
 ```
 
-Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy for the `web` target names its Environment, `environment: web`, for the environments `production` and `tokens`; a second CI-synced target is a second element with its own Environment name.
+Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy for the `web` target names its Environment, `environment: web`, for the environments `production` and `tokens`; a second CI-synced target is a second element with its own Environment name. The `GH_TOKEN` line matters only for a [GitHub secrets target](#github-secrets-as-a-target); leave it in place or drop it, the other targets ignore it.
 
 - **From a push.** With `"onPush": "workflow"`, `maruhi push` runs `gh workflow run maruhi-sync.yml -f target=web` with the writer's own GitHub sign-in and reports that the run was accepted. The command line carries the workflow name and the target name, never a value or a variable name; the job reads the values from maruhi. The writer never holds the platform's token.
 - **From the schedule.** `SCHEDULED_TARGETS` is the list of targets the schedule re-applies, checked against the config like a dispatched name. It is a choice, not a copy of the config: a target you sync only from your machine (the `preview` target of the example, which uses the vendor CLI with `"onPush": "apply"`) has no token in maruhi and stays off the list. The schedule re-applies the current values of maruhi. It does not compare them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly, on the next run.
@@ -323,6 +329,26 @@ Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy 
 - **Several runs for one target.** Pushes in a row, or a push during a scheduled run, queue runs for the same target. The `concurrency` group runs them one at a time, and GitHub keeps at most one run queued per group: a newer one replaces an older one that has not started. Because every run reads the values at the moment it runs, the last run to finish has written the current values, whichever order the runs started in.
 - **Receipts.** CI keeps none, so a `maruhi sync plan web` on your machine still shows what CI delivered as pending, and the next local `maruhi sync apply web --yes` rewrites it once. This is described under [Receipts](/docs/deploy-targets#receipts).
 - In a public repository, GitHub disables the schedule after 60 days without repository activity; a push re-enables it. Scheduled runs can be delayed under load.
+
+### GitHub secrets as a target
+
+The goal of this page is a repository whose GitHub secrets are empty. `maruhi ci run` gets there for everything that runs as a command of yours. What it cannot reach is read by GitHub itself before your command runs: the `with:` input of a prebuilt action, a Dependabot secret (registry credentials for its updates), the `secrets: inherit` of a reusable workflow. For the prebuilt action, the better fix is usually to run the vendor CLI it wraps under `maruhi ci run` and drop the secret. For the rest, a `github-actions` target copies the values from maruhi into GitHub secrets, so that they too have one source of truth and one place to rotate them. It runs `gh secret set` on the runner, where `gh` is preinstalled, through the `exec` driver (the preset has no other; see [GitHub Actions secrets](/docs/deploy-targets#github-actions-secrets) for what it writes and refuses):
+
+```json
+"dependabot": {
+  "preset": "github-actions",
+  "environment": "ci",
+  "variables": ["NPM_TOKEN"],
+  "options": { "repo": "acme/app", "app": "dependabot" }
+}
+```
+
+Add the target's name to `SCHEDULED_TARGETS`, or set `"onPush": "workflow"` on it, and the workflow above syncs it like any other target. Two things are specific to it:
+
+- **The bootstrap token is the one exception to empty GitHub secrets.** The job's own `GITHUB_TOKEN` cannot write secrets (there is no `secrets` permission to grant it), so `gh` needs a token that can: a fine-grained personal access token restricted to this one repository, with **Secrets: Read and write** for repository secrets, **Environments: Read and write** for Environment secrets, and **Dependabot secrets: Read and write** for `"app": "dependabot"`, and nothing else (a GitHub App installation token with the same permissions works too). Store it as a secret of the target's GitHub Environment (the Environment named after the target, `dependabot` here), not as a repository secret: the `GH_TOKEN` line in the workflow then resolves to it only in that target's job, after its reviewers approved the run, and to an empty string in every other job. `gh` reads `GH_TOKEN` first and `GITHUB_TOKEN` second; the runner sets neither as an environment variable, so nothing else competes. Set an expiration on the token and rotate it in the Environment when it expires; it is the only credential this page leaves on GitHub.
+- **The target must not write its own bootstrap.** A `github-actions` target with `"variables": "all"` copies every variable of its maruhi environment into GitHub; if that environment held a variable named like the bootstrap secret (`GH_SECRETS_TOKEN` here), the workflow would overwrite the token it runs with. Keep the bootstrap out of maruhi, or out of the target's variables.
+
+What `maruhi ci sync` prints for this target is the plan and `Running gh in …`; `gh`'s own output appears only when it fails, with the values filtered out. Nothing is written to `$GITHUB_ENV` or `$GITHUB_OUTPUT`.
 
 ## Four eyes on production
 
@@ -350,6 +376,8 @@ A run that waits for approval writes the values as they are when it finally runs
 - **Anchor check failed.** The response's chain does not contain the anchored head, or an environment's epoch is below the anchored one: the server served an old view, or the anchor belongs to another project. Do not re-run with the anchor removed; look at the server. An anchor that is merely behind the chain is accepted.
 - **After a rotation.** `maruhi env rotate` re-encrypts every value as a new version with the same plaintext. The next CI run writes the re-encrypted values, which is harmless, and the anchor should be updated (above).
 - **429.** The project's lease window is exhausted; the CLI does not retry. Each `maruhi ci` invocation takes one lease per environment it needs.
+- **`gh` exited with code 4**, or `HTTP 401` / `HTTP 403: Resource not accessible` from `gh secret set`. The `github-actions` target ran without a usable `GH_TOKEN`: the Environment secret is missing, the job does not reference that Environment, or the token lacks the Secrets, Environments, or Dependabot secrets permission for this repository. `failed to fetch public key: HTTP 404` usually means the GitHub Environment named in the target's options does not exist yet, or `repo` names a repository the token cannot see.
+- **A value ends with a newline, or a name is not uppercase.** `maruhi ci sync` refuses to send it to a `github-actions` target and names the variable (`gh` would strip the newline, and GitHub would rename the secret). Push the value without the newline, or rename the variable in maruhi.
 - **Values in the log.** They are never printed by maruhi. Keep them out yourself: no `set -x` in a command under `maruhi ci run`, no `echo` of a variable, and nothing written to `$GITHUB_ENV` or `$GITHUB_OUTPUT`, which are files on the runner.
 
 The action's [README](https://github.com/maruhiapp/maruhi/blob/main/actions/setup-maruhi/README.md) lists the remaining server-side answers (`token-replayed`, `server-wraps-missing`, and the others).

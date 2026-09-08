@@ -6,7 +6,9 @@
 //   2. maruhi を実行する job は `permissions: id-token: write` + `contents: read` だけ(他の write なし)
 //   3. 導入は setup-maruhi をタグで固定(`@<tag>` + `version: <tag>`)、他の action は 40 hex の commit SHA、
 //      checkout は `persist-credentials: false`、`npx` / `curl` で取りに行かない
-//   4. 平文は CI の中だけ: `secrets.` を参照しない、maruhi を実行する step は `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
+//   4. 平文は CI の中だけ: `secrets.` を参照しない(唯一の例外 = 標準形 ② の sync step の
+//      `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}` — GitHub secrets を書く github-actions ターゲットの
+//      bootstrap トークン。SY5 裁定 F)、maruhi を実行する step は `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
 //      `echo "$…"` / `set -x` / `printenv` / `--value` を持たず、`run:` に `${{ }}` を直接展開しない(env 経由)
 //   5. `maruhi ci sync` は `--yes` / `--server` / `--project` / `--anchor .maruhi/anchor.json` を持つ
 //   6. 標準形 ②: `schedule` を持ち、`sync` job は Environment = ターゲット名・ターゲット単位の concurrency
@@ -104,14 +106,54 @@ const withoutComments = (yaml: string) =>
     .join("\n");
 
 /**
+ * The one GitHub secret the templates reference: the bootstrap token `gh` signs in with when a
+ * `github-actions` target writes GitHub secrets (the single exception to "GitHub secrets can be
+ * empty"). It is passed to the sync step as `GH_TOKEN`, and nowhere else.
+ */
+const BOOTSTRAP_ENV = ["GH_TOKEN", "${{ secrets.GH_SECRETS_TOKEN }}"] as const;
+
+interface BootstrapCarrier {
+  readonly value: unknown;
+  readonly runsMaruhi: boolean;
+}
+
+/** The steps whose env carries the bootstrap token: what they pass, and whether they run maruhi. */
+function bootstrapCarriers(workflow: Workflow): BootstrapCarrier[] {
+  return stepsOf(workflow)
+    .filter((step) => step.env?.[BOOTSTRAP_ENV[0]] !== undefined)
+    .map((step) => ({ value: step.env?.[BOOTSTRAP_ENV[0]], runsMaruhi: runsMaruhi(step) }));
+}
+
+/** Every `secrets.<name>` reference in a workflow source. */
+const secretReferences = (source: string): string[] => source.match(/secrets\.\w+/g) ?? [];
+
+/** What a workflow may reference from `secrets`: the bootstrap token in the sync shape, nothing elsewhere. */
+function expectedBootstrap(workflow: Workflow): {
+  readonly refs: string[];
+  readonly carriers: BootstrapCarrier[];
+} {
+  return workflow.name === "maruhi sync"
+    ? {
+        refs: ["secrets.GH_SECRETS_TOKEN"],
+        carriers: [{ value: BOOTSTRAP_ENV[1], runsMaruhi: true }],
+      }
+    : { refs: [], carriers: [] };
+}
+
+/**
  * A step that runs maruhi writes nothing to the runner's files and echoes nothing; its env holds
- * only the target name (the values go to maruhi's child process or request body, nowhere else).
+ * only the target name and the bootstrap token (the values go to maruhi's child process or request
+ * body, nowhere else).
  */
 function expectMaruhiStepKeepsValues(step: Step): void {
   expect(step.run).not.toMatch(
     /GITHUB_OUTPUT|GITHUB_ENV|\becho\b|set -x|printenv|--value|>(?!\s*\/dev\/null)|tee\b/,
   );
-  for (const value of Object.values(step.env ?? {})) {
+  for (const [key, value] of Object.entries(step.env ?? {})) {
+    if (key === BOOTSTRAP_ENV[0]) {
+      expect(value).toBe(BOOTSTRAP_ENV[1]);
+      continue;
+    }
     expect(String(value)).toMatch(/^\$\{\{ (inputs|matrix)\.\w+ \}\}$/);
   }
 }
@@ -174,8 +216,12 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(withoutComments(source).match(/<tag>/g)?.length).toBe(2);
       });
 
-      it("keeps the values inside the job: no GitHub secrets, no expression in run:, no echo / GITHUB_ENV / xtrace around maruhi", () => {
-        expect(source).not.toMatch(/secrets\./);
+      it("keeps the values inside the job: no GitHub secrets (except the one bootstrap token, in the sync step's env), no expression in run:, no echo / GITHUB_ENV / xtrace around maruhi", () => {
+        // `secrets.` は標準形 ② の sync step の `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}` 1 か所だけ
+        // (github-actions ターゲットの bootstrap — SY5 裁定 F)。他の workflow・他の場所には無い
+        const bootstrap = expectedBootstrap(workflow);
+        expect(secretReferences(source)).toEqual(bootstrap.refs);
+        expect(bootstrapCarriers(workflow)).toEqual(bootstrap.carriers);
         expect(source).not.toMatch(/GITHUB_ENV/);
         // 式は env 経由でだけシェルへ渡す(GitHub のスクリプトインジェクション対策)
         for (const step of stepsOf(workflow)) expect(step.run ?? "").not.toMatch(/\$\{\{/);
@@ -262,7 +308,10 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         "cancel-in-progress": false,
       });
       const step = sync.steps.find((s) => /\bmaruhi ci sync\b/.test(s.run ?? ""));
-      expect(step?.env).toEqual({ TARGET: "${{ matrix.target }}" });
+      expect(step?.env).toEqual({
+        TARGET: "${{ matrix.target }}",
+        [BOOTSTRAP_ENV[0]]: BOOTSTRAP_ENV[1],
+      });
       expect(step?.run).toMatch(/maruhi ci sync "\$TARGET" --yes/);
     });
 
