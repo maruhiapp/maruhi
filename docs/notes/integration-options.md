@@ -2403,12 +2403,14 @@ apply の `checkValueConstraints` は防衛線として据え置き(plan と app
 **C. 「refused the request」の文言** — 列挙: (i) **`HttpRequestResult.failure` に `what` を持たせ、失敗の作り手が言い分ける** /
 (ii) `runBatches` が `lines` の先頭から推定 / (iii) 中立な文言に一本化(「did not accept the request」)。第 1 周の新案: なし。
 第 2 周(壊れ方): (ii) は `lines` の形式への暗黙依存 = 伏せ字化や文面の変更で黙って壊れる。(iii) は「送ってすらいない」場合
-(ページ分けガード・Netlify の `is_secret` 更新ガード・一覧の失敗)にも accept 系の語が付き、誤読が残る。(i) は失敗を作る場所が
-何が起きたかを知っている。選定 = **(i)**。4 文型: `${label} refused the request`(非 2xx の拒否)/ `${label} did not confirm the
-write`(2xx だが応答の形が予期と違う)/ `the request to ${label} failed`(転送の失敗・リトライの使い切り — `runBatch` /
-`writeOneByOne` の `Effect.catch`)/ `maruhi did not send the request`(送信前のガード・一覧の失敗)。`sync-http.test.ts` の
-文面固定は新文言に更新(リトライ使い切り = 「the request to … failed」、Netlify の更新ガード = 「maruhi did not send the
-request」)。棄却: (ii)(脆い)、(iii)(誤読が残る)。
+(ページ分けガード・Netlify の `is_secret` 更新ガード)にも accept 系の語が付き、誤読が残る。(i) は失敗を作る場所が
+何が起きたかを知っている。選定 = **(i)**。5 文型(初稿は 4 文型で一覧の失敗を「未送信」に含めていた — 改訂 1 (2) で分離):
+`${label} refused the request`(非 2xx の拒否)/ `${label} did not confirm the write`(2xx だが応答の形が予期と違う)/
+`the request to ${label} failed`(転送の失敗・リトライの使い切り — `runBatch` / `writeOneByOne` の `Effect.catch`)/
+`${label} did not list the existing variables`(一覧の失敗 — 応答は返っている)/ `maruhi did not send the request`
+(送信前のガード — ページ分けガード・Netlify の `is_secret` 更新ガード)。`sync-http.test.ts` の文面固定は新文言に更新
+(リトライ使い切り = 「the request to … failed」、Netlify の更新ガード = 「maruhi did not send the request」、一覧 401 =
+「did not list the existing variables」)。棄却: (ii)(脆い)、(iii)(誤読が残る)。
 
 **F. ROADMAP と裁定録** — 所有者裁定 (b) のとおり SY4 行と親項目を `- [x]` に(SY4 = 第 1 波完了扱いの注記付き)。この節が裁定録。
 
@@ -2439,6 +2441,22 @@ lines だけ固定で `what` は未固定だった)。
 (追認)`ci sync` の名前検査に新しい態は足していない: CI はレシート無し(`receipt: null`)= 全選択が add なので、旧来の
 apply 段 `checkValueConstraints` でも同じ変数で止まっていた。plan 段の検査は CI では「同じ結果に早く着く」だけで新しい網では
 ない(将来の読者が「CI の網も今回増えた」と誤読しないための記録)。
+
+**改訂 2(2026-09-08 — pullfrog の再レビュー。1 点 + nit 2 点)**:
+(1) **preset 不一致エラーに旧届け先の変数名を列挙**: 改訂 1 (1) の拒否文は「`var rm` で作り直し」で終わっていたが、この
+レシートの `{name → version}` は**旧プラットフォームに何が居るかの唯一の記録**で、ガードが `loadReceipt` の中で発火する以上
+plan の一覧も出ない = 消させたら運用者は届いた名前を maruhi から知る手段を失う(pullfrog 指摘)。裁定: 旧届け先の掃除は
+運用者の作業(maruhi は設定が今指していない先に書く・消すことはしない — 触らない方針は据え置き)だが、唯一の記録を黙って
+捨てさせない。→ 拒否文に `driverFailureMessage` の `pendingHint` と同型の 1 文「Those deliveries stay at the ${preset}
+destination and this receipt is their only record, so remove them there yourself first: <names>」を追加(`decoded.variables`
+のキーをソートして列挙。変数ゼロのレシートでは省く)。棄却: 旧届け先を maruhi が消しに行く(設定が指していない先への操作 =
+新しい危険面。しかも旧 preset の資格情報がもう無いのが普通)・docs だけに書く(エラーを読む瞬間に名前が要る)。docs は
+deploy-targets の Receipts に「レシート削除は忘れるだけで、プラットフォームからは何も消えない — 同一届け先の作り直しでは
+それで良く、preset 切り替えでは旧届け先に全部残る」を追記し、http 節の preset 切り替えの文も「エラーが名前を列挙する。先に
+旧プラットフォームで消してから作り直す」に更新。
+(2) nit: `HttpRequestResult.failure.what` の JSDoc の文型列挙が 4 のまま(改訂 1 (2) で 5 文型)→ 5 文型に。
+(3) nit: 裁定 C の本文が「一覧の失敗」を「maruhi did not send the request」の側に残したまま(改訂 1 (2) と矛盾)→ 裁定 C
+自体を 5 文型に書き換え(初稿が 4 文型だった旨は裁定 C に注記)。
 
 **確認できなかったこと(人間タスク)**: 増減なし — 今回の変更はすべて偽ベンダー / 偽 API(`setExecHandler` の `CliError`・
 `MockServer`)で検証できる形で、SY5 の一覧(実リポジトリでの `gh secret set` の通し等)を据え置く。

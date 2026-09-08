@@ -951,7 +951,7 @@ describe("maruhi sync apply", () => {
     });
     expect(await sync(fixture, "plan", "web")).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain(
-      "The receipt variable sync-receipt:web in environment sync-receipts was written by the vercel preset, but target web is now configured with preset github-actions, so its deliveries do not describe this destination. Remove it with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again (the next apply rewrites every variable of the target)",
+      "The receipt variable sync-receipt:web in environment sync-receipts was written by the vercel preset, but target web is now configured with preset github-actions, so its deliveries do not describe this destination. Those deliveries stay at the vercel destination and this receipt is their only record, so remove them there yourself first: apiKey. Remove it with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again (the next apply rewrites every variable of the target)",
     );
     expect(fixture.env.execCalls).toEqual([]);
   });

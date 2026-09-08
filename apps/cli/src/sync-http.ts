@@ -743,8 +743,9 @@ export interface HttpRequestResult {
   readonly failure: {
     readonly names: readonly string[];
     /**
-     * 何が起きたか(エラー文面の先頭 — 拒否 / 未確認の応答 / 送信の失敗 / 未送信を
-     * 言い分ける。詳細は `lines` が言う)。値は運ばない。
+     * 何が起きたか(エラー文面の先頭 — 拒否 / 未確認の応答 / 送信の失敗 /
+     * 一覧の失敗 / 未送信の 5 文型を言い分ける。詳細は `lines` が言う)。
+     * 値は運ばない。
      */
     readonly what: string;
     readonly lines: readonly string[];
