@@ -212,6 +212,12 @@ export interface HttpPreset {
   readonly constraints: ValueConstraints;
   readonly options: Readonly<Record<string, OptionSpec>>;
   /**
+   * 同期先の呼び名を組み立てるオプション名(plan / apply のヘッダー行 —
+   * sync-plan.ts の describeDestination)。宣言順に、設定されている文字列の値だけが
+   * 並ぶ。非機密のオプションだけを載せる(ID 系は冗長なので載せない)。
+   */
+  readonly describeOptions: readonly string[];
+  /**
    * 設定のオプション同士の整合(1 オプションの型・閉集合は `options` の宣言が検査する)。
    * 不正なら理由(設定の検証文面になる。打たれた値は出さない)。
    */
@@ -299,6 +305,7 @@ export const HTTP_PRESETS = {
       name: { type: "string", required: true },
       environment: { type: "string", required: false },
     },
+    describeOptions: ["name", "environment"],
     // wrangler の getLegacyScriptName: 名前付き環境は `<name>-<env>`
     derive: (options) => ({
       scriptName:
@@ -367,6 +374,8 @@ export const HTTP_PRESETS = {
       teamId: { type: "string", required: false },
       sensitive: { type: "boolean", required: false },
     },
+    // projectId / teamId は不透明な ID(ヘッダー行の呼び名にならない)ので載せない
+    describeOptions: ["environment", "gitBranch"],
     // Vercel CLI の resolveFinalType: development は sensitive 不可、--no-sensitive
     // は encrypted(= 読み返せる値)。それ以外は sensitive
     derive: (options) => ({
@@ -460,6 +469,8 @@ export const HTTP_PRESETS = {
       branch: { type: "string", required: false },
       secret: { type: "boolean", required: false },
     },
+    // accountId / siteId は不透明な ID(ヘッダー行の呼び名にならない)ので載せない
+    describeOptions: ["context", "branch"],
     check: (options) => {
       if (options["context"] === "branch" && typeof options["branch"] !== "string") {
         return "branch is required when context is branch (the branch name)";
@@ -729,7 +740,15 @@ export interface HttpRequestResult {
   /** 成功として届いた名前(部分成功の応答〔Vercel の failed〕はここで割れる)。 */
   readonly delivered: readonly string[];
   /** 失敗(null = 全件成功)。文面は伏せ字化済みで変数名と応答の断片だけを運ぶ。 */
-  readonly failure: { readonly names: readonly string[]; readonly lines: readonly string[] } | null;
+  readonly failure: {
+    readonly names: readonly string[];
+    /**
+     * 何が起きたか(エラー文面の先頭 — 拒否 / 未確認の応答 / 送信の失敗 / 未送信を
+     * 言い分ける。詳細は `lines` が言う)。値は運ばない。
+     */
+    readonly what: string;
+    readonly lines: readonly string[];
+  } | null;
 }
 
 const RETRIABLE_STATUSES = new Set([429, 502, 503, 504]);
@@ -886,7 +905,11 @@ function readCloudflare(
   }
   return {
     delivered: [],
-    failure: { names: batch.names, lines: scrubbed(lines, batch.writes, input.token) },
+    failure: {
+      names: batch.names,
+      what: `${input.preset.label} refused the request`,
+      lines: scrubbed(lines, batch.writes, input.token),
+    },
   };
 }
 
@@ -902,6 +925,7 @@ function readVercel(
       delivered: [],
       failure: {
         names: batch.names,
+        what: `${input.preset.label} refused the request`,
         lines: scrubbed(vercelErrorLines(outcome.status, body), batch.writes, input.token),
       },
     };
@@ -916,6 +940,7 @@ function readVercel(
       delivered: [],
       failure: {
         names: batch.names,
+        what: `${input.preset.label} did not confirm the write`,
         lines: scrubbed(
           [`HTTP ${outcome.status} without a created field (unexpected response shape)`],
           batch.writes,
@@ -940,7 +965,14 @@ function readVercel(
       : batch.names.filter((name) => !failedNames.has(name) && createdKeys.has(name));
   const names = batch.names.filter((name) => !delivered.includes(name));
   const lines = [`HTTP ${outcome.status}`, ...failures.map((entry) => entry.line)];
-  return { delivered, failure: { names, lines: scrubbed(lines, batch.writes, input.token) } };
+  return {
+    delivered,
+    failure: {
+      names,
+      what: `${input.preset.label} refused the request`,
+      lines: scrubbed(lines, batch.writes, input.token),
+    },
+  };
 }
 
 /** Vercel の非 2xx 応答(`{error: {code, message}}`)の表示行。 */
@@ -991,12 +1023,15 @@ function readNetlify(
   input: HttpTargetInput,
 ): HttpRequestResult {
   const body = parseJson(outcome.text);
-  const failure = (lines: readonly string[]): HttpRequestResult => ({
+  const failure = (what: string, lines: readonly string[]): HttpRequestResult => ({
     delivered: [],
-    failure: { names: batch.names, lines: scrubbed(lines, batch.writes, input.token) },
+    failure: { names: batch.names, what, lines: scrubbed(lines, batch.writes, input.token) },
   });
   if (outcome.status < 200 || outcome.status >= 300) {
-    return failure(netlifyErrorLines(outcome.status, body));
+    return failure(
+      `${input.preset.label} refused the request`,
+      netlifyErrorLines(outcome.status, body),
+    );
   }
   if (batch.kind === "delete") {
     return { delivered: batch.names, failure: null };
@@ -1004,7 +1039,7 @@ function readNetlify(
   const keys = new Set(keysOf(Array.isArray(body) ? body : [body]));
   return batch.names.every((name) => keys.has(name))
     ? { delivered: batch.names, failure: null }
-    : failure([
+    : failure(`${input.preset.label} did not confirm the write`, [
         `HTTP ${outcome.status} without the variable in the response (unexpected response shape)`,
       ]);
 }
@@ -1228,7 +1263,14 @@ function createOrUpdate(
   return Effect.gen(function* () {
     const listing = yield* fetchListing(input, write.list);
     if ("failure" in listing) {
-      return { delivered: [], failure: { names: batch.names, lines: listing.failure } };
+      return {
+        delivered: [],
+        failure: {
+          names: batch.names,
+          what: "maruhi did not send the request",
+          lines: listing.failure,
+        },
+      };
     }
     if (!listing.complete) {
       // 続きがあるのに一覧で判定すると、既にある名前を create して失敗する(または
@@ -1237,6 +1279,7 @@ function createOrUpdate(
         delivered: [],
         failure: {
           names: batch.names,
+          what: "maruhi did not send the request",
           lines: [
             `${input.preset.label} returned a paginated list of variables, so maruhi could not tell which of them already exist at the target. Nothing was written; apply again later`,
           ],
@@ -1274,7 +1317,14 @@ function writeOneByOne(
           : updateOne(input, write, one, listed)
       ).pipe(
         Effect.catch((error: CliError) =>
-          Effect.succeed({ delivered: [], failure: { names: one.names, lines: [error.message] } }),
+          Effect.succeed({
+            delivered: [],
+            failure: {
+              names: one.names,
+              what: `the request to ${input.preset.label} failed`,
+              lines: [error.message],
+            },
+          }),
         ),
       );
       if (result.failure !== null) {
@@ -1296,7 +1346,10 @@ function updateOne(
   const refused = guardUpdate(write, one.names[0] ?? "", listed, input.options);
   if (refused !== null) {
     // 送らずに止める(値は残らない。届いた分はレシートへ)
-    return Effect.succeed({ delivered: [], failure: { names: one.names, lines: [refused] } });
+    return Effect.succeed({
+      delivered: [],
+      failure: { names: one.names, what: "maruhi did not send the request", lines: [refused] },
+    });
   }
   return Effect.map(send(input, buildWriteRequest(input, write.update, one)), (outcome) =>
     readResponse(input.preset.response, outcome, one, input),
@@ -1347,6 +1400,7 @@ function withRecheckFailure(
         delivered: created.delivered,
         failure: {
           names: created.failure.names,
+          what: created.failure.what,
           lines: [
             ...created.failure.lines,
             `Could not re-check the target after the failed create: ${lines.join(" ")}`,
@@ -1363,9 +1417,9 @@ function withRecheckFailure(
  * バッチの失敗として返す: 呼び出し側(sync-plan.ts の runBatches)は前のバッチで
  * 届いた名前を畳んでいる途中で、ここで落とすとその進みごと消える(削除バッチの
  * 一覧・DELETE、upsert の 2 つ目以降のバッチ — pullfrog 指摘・改訂 5)。http の
- * 全プリセット・全バッチ種別に一様(exec の runInvocations は別の経路で、起動の失敗は
- * 従来どおり型付きエラーのまま — 申し送り)。create-or-update の書き込みは中で 1 変数
- * ずつ受け、届いた分を保つ。
+ * 全プリセット・全バッチ種別に一様(exec の runInvocations も SY 系列の締めで
+ * 同じ形になった — 起動の失敗をその呼び出しの失敗に畳む)。create-or-update の
+ * 書き込みは中で 1 変数ずつ受け、届いた分を保つ。
  */
 export function runBatch(
   input: HttpTargetInput,
@@ -1387,7 +1441,14 @@ export function runBatch(
     return yield* lookupAndRemove(input, spec, batch);
   }).pipe(
     Effect.catch((error: CliError) =>
-      Effect.succeed({ delivered: [], failure: { names: batch.names, lines: [error.message] } }),
+      Effect.succeed({
+        delivered: [],
+        failure: {
+          names: batch.names,
+          what: `the request to ${input.preset.label} failed`,
+          lines: [error.message],
+        },
+      }),
     ),
   );
 }
@@ -1402,7 +1463,14 @@ function lookupAndRemove(
     const name = batch.names[0] ?? "";
     const listing = yield* fetchListing(input, spec.list);
     if ("failure" in listing) {
-      return { delivered: [], failure: { names: batch.names, lines: listing.failure } };
+      return {
+        delivered: [],
+        failure: {
+          names: batch.names,
+          what: "maruhi did not send the request",
+          lines: listing.failure,
+        },
+      };
     }
     const looked = lookupIds(listing.items, spec, name, input.options);
     if (looked.ids.length === 0 && !listing.complete) {
@@ -1412,6 +1480,7 @@ function lookupAndRemove(
         delivered: [],
         failure: {
           names: batch.names,
+          what: "maruhi did not send the request",
           lines: [
             `${input.preset.label} returned a paginated list of variables, so maruhi could not confirm that ${displayText(name)} is gone from the target. It stays in the receipt; remove it at the target yourself, or apply again`,
           ],

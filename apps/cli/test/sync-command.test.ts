@@ -16,6 +16,7 @@ import { decryptVariable } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { cliError } from "../src/errors.ts";
 import { receiptVariableName } from "../src/sync-receipt.ts";
 import {
   buildChain,
@@ -765,6 +766,10 @@ describe("maruhi sync apply", () => {
     expect(calls[0]?.cwd).toBe(fixture.configDir);
     expectNoSecretLeak(fixture.env);
     expect(fixture.env.logs.join("\n")).toContain(`Running gh in ${fixture.configDir}`);
+    // ヘッダー行はプリセットの describeOptions(repo / environment / app)で同期先を名指す
+    expect(fixture.env.logs.join("\n")).toContain(
+      "Sync plan for target actions (environment prod -> github-actions acme/app dependabot via exec)",
+    );
     expect(await decryptReceipt(fixture, "actions")).toMatchObject({
       preset: "github-actions",
       variables: { ALPHA: 3 },
@@ -832,25 +837,64 @@ describe("maruhi sync apply", () => {
         },
       }),
     });
+    // 名前の規則は平文が要らないので plan の段階で ! になる(apply の検査は防衛線)
+    expect(await sync(lower, "plan", "actions")).toBe(1);
+    expect(lower.env.logs.join("\n")).toContain(
+      "! apiKey\tversion 1 (cannot be synced: a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_)",
+    );
     expect(await sync(lower, "apply", "actions")).toBe(1);
     expect(lower.env.errors.join("\n")).toContain(
-      "Variable apiKey has a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_. Rename the variable in maruhi, or leave it out of the target. Nothing was sent",
+      "1 variable cannot be synced with this driver (marked ! above): apiKey. Leave them out of the target, rename them, or push values the gh CLI can carry (each line above says which). Nothing was sent",
     );
     expect(lower.env.execCalls).toEqual([]);
   });
 
-  it("ベンダー CLI が起動できなければ型付きエラー(取りに行かない)", async () => {
+  it("ベンダー CLI が起動できなければ失敗(取りに行かない)。1 つ目の起動失敗 = 届いた分ゼロならレシートを書かない", async () => {
+    // exit 127 相当(コマンド不在をシェルが返す形)も失敗として扱われる
     const fixture = await startFixture({});
-    fixture.env.setExecHandler(() => {
-      throw new Error("unreachable");
-    });
-    // 偽ランナーは起動失敗を表現できないので、本番 live.ts の文面は live-exec.test.ts で固定する。
-    // ここでは exit 127 相当(コマンド不在をシェルが返す形)が失敗として扱われることだけを見る
     fixture.env.setExecHandler(() => ({ exitCode: 127, output: "vercel: command not found\n" }));
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("vercel exited with code 127");
     // 何も届いていない初回の失敗では、空のレシートを書かない(version を無駄にしない)
     expect(fixture.receipts.writes).toEqual([]);
+
+    // 起動そのものの失敗(型付きエラー — live.ts の execStartFailure の形。本番の文面は
+    // live-exec.test.ts で固定)はその呼び出しの失敗になり、同じくレシートを書かない
+    const missing = await startFixture({});
+    missing.env.setExecHandler(() =>
+      cliError("Cannot start vercel (ENOENT): is it installed and on PATH"),
+    );
+    expect(await sync(missing, "apply", "web", "--yes")).toBe(1);
+    const errors = missing.env.errors.join("\n");
+    expect(errors).toContain(
+      "maruhi: vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted)",
+    );
+    expect(errors).toContain("  vercel: Cannot start vercel (ENOENT): is it installed and on PATH");
+    expect(missing.env.execCalls).toHaveLength(1);
+    expect(missing.receipts.writes).toEqual([]);
+  });
+
+  it("2 つ目のベンダー CLI が起動できなくても、先に届いた分はレシートに残る(起動失敗 = その呼び出しの失敗)", async () => {
+    const fixture = await startFixture({});
+    fixture.env.setExecHandler((_call, index) =>
+      index === 0
+        ? { exitCode: 0, output: "" }
+        : cliError("Cannot start vercel (ENOENT): is it installed and on PATH"),
+    );
+    expect(await sync(fixture, "apply", "web", "--yes")).toBe(1);
+    expect(fixture.env.execCalls).toHaveLength(2);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "maruhi: vercel could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+    );
+    expect(errors).toContain("  vercel: Cannot start vercel (ENOENT)");
+    expectNoSecretLeak(fixture.env);
+    // 成功した ALPHA だけがレシートに載る → 次の plan は BETA だけを示す
+    expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
+    expect(await sync(fixture, "plan", "web")).toBe(0);
+    const out = fixture.env.logs.join("\n");
+    expect(out).toContain("= ALPHA\tversion 3 (unchanged)");
+    expect(out).toContain("+ BETA\tversion 1 (new)");
   });
 
   it("壊れたレシート変数は fail-closed(直し方を添える)", async () => {
@@ -881,3 +925,4 @@ describe("maruhi sync apply", () => {
     );
   });
 });
+

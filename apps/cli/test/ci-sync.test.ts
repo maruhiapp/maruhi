@@ -19,6 +19,7 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { cliError } from "../src/errors.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import {
   buildChain,
@@ -478,6 +479,34 @@ describe("maruhi ci sync", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Applied to target actions: 1 variable written (no receipt is kept in CI, and nothing is deleted)",
     );
+    expectNoSecretLeak(fixture.env);
+  });
+
+  it("exec: 2 つ目の起動失敗はその呼び出しの失敗として届いた分を報告し、re-run を案内する(レシートは元々無い)", async () => {
+    const fixture = await startCi({
+      environments: [SOURCE_ENV],
+      targets: {
+        actions: {
+          preset: "github-actions",
+          environment: SOURCE_ENV,
+          variables: "all",
+          options: { environment: "staging" },
+        },
+      },
+    });
+    fixture.env.setExecHandler((_call, index) =>
+      index === 0
+        ? { exitCode: 0, output: "" }
+        : cliError("Cannot start gh (ENOENT): is it installed and on PATH"),
+    );
+    expect(await ciSync(fixture, "actions")).toBe(1);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "gh could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+    );
+    expect(errors).toContain("  gh: Cannot start gh (ENOENT): is it installed and on PATH");
+    expect(errors).toContain("re-run the job (every selected variable is written again)");
+    expect(fixture.env.execCalls).toHaveLength(2);
     expectNoSecretLeak(fixture.env);
   });
 

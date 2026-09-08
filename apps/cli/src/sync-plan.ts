@@ -161,7 +161,7 @@ function selectNames(
   return Effect.succeed([...target.variables].toSorted());
 }
 
-/** 1 変数の plan 行(size / 空の制約はここで、内容の制約は apply で)。 */
+/** 1 変数の plan 行(名前 / size / 空の制約はここで、内容の制約は apply で)。 */
 function classifyVariable(
   driver: TargetDriver,
   variable: SourceVariable,
@@ -169,6 +169,16 @@ function classifyVariable(
 ): PlanEntry {
   const { name, version } = variable;
   const { constraints } = driver.spec;
+  // 名前の規則は平文を要しない = plan で判定できる(apply の checkValueConstraints は
+  // 防衛線として残る)。理由文は名前と規則だけを運ぶ
+  if (constraints.name !== null && !constraints.name.regex.test(name)) {
+    return {
+      action: "blocked",
+      name,
+      version,
+      reason: `a name ${driverLabel(driver)} cannot store as is: ${constraints.name.rule}`,
+    };
+  }
   if (constraints.nonEmpty && variable.byteLength === 0) {
     return {
       action: "blocked",
@@ -200,8 +210,11 @@ function compareByName(a: { readonly name: string }, b: { readonly name: string 
 
 /**
  * Computes the plan: receipt versions vs current versions, names only.
- * `blocked` entries come from the driver's size / emptiness constraints
- * (content constraints need the plaintext and are checked at apply).
+ * `blocked` entries come from the driver's name / size / emptiness
+ * constraints (content constraints need the plaintext and are checked at
+ * apply). A receipt-only name is a `delete` even when the driver could not
+ * store it today: the delete carries no value, and the vendor reports a name
+ * it cannot address.
  */
 export function computePlan(input: {
   readonly target: SyncTarget;
@@ -270,11 +283,17 @@ function planLine(entry: PlanEntry): string {
   }
 }
 
-/** 同期先の説明(ヘッダー行用 — プリセットと同期先の環境とドライバ)。 */
+/**
+ * 同期先の説明(ヘッダー行用): プリセット id と、プリセットが `describeOptions` で
+ * 宣言した「同期先の呼び名」のオプション値(設定されている文字列だけ・宣言順)と
+ * ドライバ。値も秘密も載らない(宣言に非機密のオプション名しか無い)。
+ */
 function describeDestination(target: SyncTarget): string {
-  const environment = target.options["environment"];
-  const where = typeof environment === "string" ? ` ${displayText(environment)}` : "";
-  return `${target.preset.id}${where} via ${target.driver.kind}`;
+  const shown = target.driver.spec.describeOptions.flatMap((option) => {
+    const value = target.options[option];
+    return typeof value === "string" ? [displayText(value)] : [];
+  });
+  return `${[target.preset.id, ...shown].join(" ")} via ${target.driver.kind}`;
 }
 
 /** plan の描画の選択(push 直後の apply は unchanged の行を省く — 第 3 段)。 */
@@ -383,7 +402,7 @@ export function reviewPlan(
     if (blocked.length > 0) {
       return yield* Effect.fail(
         cliError(
-          `${countNoun(blocked.length, "variable")} cannot be synced with this driver (marked ! above): ${blocked.map((entry) => displayText(entry.name)).join(", ")}. Leave them out of the target, or push values ${driverLabel(target.driver)} can carry. Nothing was sent`,
+          `${countNoun(blocked.length, "variable")} cannot be synced with this driver (marked ! above): ${blocked.map((entry) => displayText(entry.name)).join(", ")}. Leave them out of the target, rename them, or push values ${driverLabel(target.driver)} can carry (each line above says which). Nothing was sent`,
         ),
       );
     }
@@ -523,13 +542,16 @@ export interface DriverResult {
 
 /**
  * Runs the vendor processes in order and stops at the first failure. What
- * succeeded before it is reported so the receipt can record it.
+ * succeeded before it is reported so the receipt can record it. A process
+ * that cannot be started (the CLI is not installed, or the cwd is gone) is
+ * that invocation's failure too — like the http driver's runBatch, so a
+ * typed error never drops the names delivered by the invocations before it.
  */
 function runInvocations(
   driver: Extract<TargetDriver, { kind: "exec" }>,
   options: SyncTarget["options"],
   work: ApplyWork,
-): Effect.Effect<DriverResult, CliError, ProcessRunner> {
+): Effect.Effect<DriverResult, never, ProcessRunner> {
   return Effect.gen(function* () {
     const runner = yield* ProcessRunner;
     const invocations = buildInvocations({
@@ -544,7 +566,26 @@ function runInvocations(
     const deleted: string[] = [];
     const deleteSet = new Set(work.deletes);
     for (const invocation of invocations) {
-      const outcome = yield* runner.exec(invocation);
+      // 起動の失敗(型付きエラー — live.ts の execStartFailure)もこの呼び出しの失敗に
+      // 畳む: ここで generator ごと中断すると、前の呼び出しで届いた名前が written /
+      // deleted に畳まれずレシートに残らない(http の runBatch と同じ形 — SY4 改訂 5)
+      const outcome = yield* runner
+        .exec(invocation)
+        .pipe(Effect.catch((error: CliError) => Effect.succeed({ startFailure: error.message })));
+      if ("startFailure" in outcome) {
+        return {
+          written,
+          deleted,
+          failure: {
+            names: invocation.names,
+            kind: invocation.kind,
+            what: `${displayText(driver.command)} could not be started`,
+            // 起動失敗の文面は maruhi 自身のもの(値を運ばない)。ベンダー出力と同じ
+            // 置き場で見せる(http の runBatch が送信の失敗を lines で返す形と同じ)
+            output: [displayText(outcome.startFailure)],
+          },
+        };
+      }
       if (outcome.exitCode !== 0) {
         return {
           written,
@@ -602,7 +643,9 @@ function runBatches(
           failure: {
             names: result.failure.names,
             kind: batch.kind,
-            what: `${driver.spec.label} refused the request`,
+            // 何が起きたか(拒否 / 未確認の応答 / 送信の失敗 / 未送信)は runBatch が
+            // 失敗の作り手として言い分ける — 「refused」を試行の使い切りに付けない
+            what: result.failure.what,
             output: result.failure.lines,
           },
         };
@@ -818,9 +861,14 @@ export function failDriver(input: {
       result.failure.kind === "delete" && input.receiptsEnvironment !== null
         ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
         : "";
+    // 出力が 1 行も無ければ「上に出ている」と言わない(空の出力で失敗する CLI がある)
+    const outputHint =
+      result.failure.output.length === 0
+        ? ""
+        : " Its output is shown above with values filtered out.";
     return yield* Effect.fail(
       cliError(
-        `${result.failure.what} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted). Its output is shown above with values filtered out.${deleteHint} Fix the cause, then ${input.next}`,
+        `${result.failure.what} while ${result.failure.kind === "write" ? "writing" : "deleting"} ${result.failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted).${outputHint}${deleteHint} Fix the cause, then ${input.next}`,
       ),
     );
   });
