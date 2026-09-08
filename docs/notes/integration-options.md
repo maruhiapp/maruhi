@@ -2293,6 +2293,16 @@ CI は削除しない)/ production(リポジトリ secrets と Environment `prod
 ADR-0017(型付きエラー・stdout はコマンドの出力だけ・文言は英語・golden / message-style)/ エージェント環境の扱いは無変更 /
 スコープ(SY4 の残り・`--all`・`sync diff`・ネイティブ封印・GitLab / CircleCI・組織 secrets・sync-plan.ts の 3 点は取り込まない)。
 
+**改訂 1(2026-09-08、pullfrog の初回レビュー〔92be3d3〕)**: (1) `isProduction` が Environment 名を `=== "production"` で
+比べていたが、**GitHub の Environment 名は大文字小文字を区別しない**(docs「Managing environments for deployment」: 「Environment
+names are not case sensitive」)ので、`Production` / `PRODUCTION` の Environment が `--yes` の門をすり抜けていた → 小文字に畳んで
+比べる(態を 2 つ追加)。secret 名で既に採っている「大小を畳む」の規律を Environment 名にも。(2) `repo` の regex が先頭 `-` を
+通していた(`-x/y` が一致。コメントは「構造で除く」と言っていた — pflag は `--repo` の次のトークンを無条件に値として取るので実害
+は無いが、コードとコメントの不一致)→ 各区切りの先頭を英数字に(態を 2 つ追加)。(3) 名前の制約を plan の `!` にも載せる提案
+(名前だけで判定でき平文が要らない。いまは `plan` で `+` に見え `apply` で「Nothing was sent」)— `classifyVariable` = sync-plan.ts
+の変更なので**所有者確認事項**として申し送り (3) に据え置き(pullfrog 自身も「追認と優先度の提案」)。docs の「GitHub Actions
+secrets」節に「`plan` はまだこの名前に印を付けず、`apply` が送る前に拒む」の 1 文を足して、`!` の定義とのずれを隠さない。
+
 **確認できなかったこと(人間タスクに追加)**: **実リポジトリでの `gh secret set` の通し**(レシピ・`sync apply` の gh ターゲット・
 標準形 ② の gh ターゲット〔Environment secret の `GH_SECRETS_TOKEN` が承認後の job にだけ届くこと・他の leg で空文字になること〕)、
 空 stdin に対する API の応答、48 KB の単位(平文か封印後か)、不在 Environment に対する公開鍵取得の status、`gh secret delete` の

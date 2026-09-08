@@ -80,8 +80,10 @@ export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
         "the github-actions preset has no http driver: the GitHub API takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh CLI",
     },
     // リポジトリ secrets(Environment なし)は全 workflow に効く = production 扱い。
-    // Environment secrets はその名前が production のときだけ
+    // Environment secrets はその名前が production のときだけ — GitHub の Environment 名は
+    // 大文字小文字を区別しない(docs「Managing environments」)ので畳んで比べる(pullfrog 指摘)
     isProduction: (options) =>
-      options["environment"] === undefined || options["environment"] === "production",
+      options["environment"] === undefined ||
+      String(options["environment"]).toLowerCase() === "production",
   },
 };

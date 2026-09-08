@@ -185,6 +185,14 @@ describe("parseSyncConfig", () => {
       "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
     ],
     [
+      baseConfig(githubTarget({ options: { repo: "-x/y" } })),
+      "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
+    ],
+    [
+      baseConfig(githubTarget({ options: { repo: "-host/x/y" } })),
+      "targets.t.options.repo must be OWNER/REPO (or HOST/OWNER/REPO)",
+    ],
+    [
       baseConfig(githubTarget({ options: { environment: "-r" } })),
       "targets.t.options.environment must be a GitHub Environment name (not starting with -)",
     ],
@@ -214,6 +222,9 @@ describe("parseSyncConfig", () => {
     expect(repository.production).toBe(true);
     expect(repository.options).toEqual({});
     expect(parsed(githubTarget({ options: { environment: "production" } })).production).toBe(true);
+    // GitHub の Environment 名は大文字小文字を区別しない(pullfrog 指摘)
+    expect(parsed(githubTarget({ options: { environment: "Production" } })).production).toBe(true);
+    expect(parsed(githubTarget({ options: { environment: "PRODUCTION" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "staging" } })).production).toBe(false);
     // Dependabot secrets はリポジトリ単位 = production 扱い(明示で上書き可)
     expect(parsed(githubTarget({ options: { app: "dependabot" } })).production).toBe(true);

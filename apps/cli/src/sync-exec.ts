@@ -123,8 +123,9 @@ const GITHUB_SECRET_APPS = ["actions", "agents", "codespaces", "dependabot"] as 
  */
 const GITHUB_SECRET_NAME = /^(?!GITHUB_)[A-Z_][A-Z0-9_]*$/;
 
-// gh の `-R [HOST/]OWNER/REPO`(先頭 `-` = フラグと読まれる形は構造で除く)
-const GITHUB_REPO = /^(?:[A-Za-z0-9.-]+\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+// gh の `-R [HOST/]OWNER/REPO`。各区切りの先頭は英数字(先頭 `-` = フラグと読まれる形を
+// 構造で除く — pullfrog 指摘: `-x/y` を通さない)
+const GITHUB_REPO = /^(?:[A-Za-z0-9][A-Za-z0-9.-]*\/)?[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/;
 
 // GitHub Environment 名(gh の argv に載る。フラグと読まれる先頭 `-` だけを除く)
 const GITHUB_ENVIRONMENT_NAME = /^[^-\s][^\n\r]*$/;
