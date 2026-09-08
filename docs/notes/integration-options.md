@@ -2028,6 +2028,13 @@ Netlify の create は再送で重複として拒まれるので一覧を引き�
 re-check the target after the failed create: <理由>」を添えて返す(届いた分はレシートへ。理由は `send` の文面 = status と試行数
 だけで値を含まない)。態を追加(422 の後の GET が 503 × 3 → exit 1・ALPHA はレシートに残る)。
 
+**改訂 4(2026-09-08、pullfrog の 3 回目〔bdae445〕)**: 改訂 3 と同じ指摘 + 「1 変数の送信の `send` が試行を使い切る形は
+どの変数でも起きる(改訂 2 は引き金を 1 つ足しただけ)— `writeOneByOne` で部分的な進みを出すか」という問い。create-or-update は
+書き込み全部が 1 バッチなので、途中の型付きエラーで実行全体の進みが消える(upsert のプリセットは 1 バッチ = 1 リクエストで、
+前のバッチの分は `runBatches` が畳んでいる)。→ `writeOneByOne` で 1 変数の送信(create / update)の型付きエラーを受け、その変数の
+失敗として報告し(文面は `send` の文面)、先に届いた名前はレシートへ。態を追加(2 つ目の POST が 503 × 3 → exit 1・ALPHA は
+レシートに残る)。
+
 **確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
 Support Forums の報告どおり 422)、
 `PATCH` 不在 key の status、`is_secret` + 3 scope が Starter プランで通るか、`all` と個別 context の同居時の API と build の挙動、

@@ -1271,6 +1271,40 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expectNoSecretLeak(fixture.env, flaky.requests);
   });
 
+  it("1 変数の送信が試行を使い切っても、その変数の失敗として報告し、先に届いた名前はレシートに残る", async () => {
+    // ALPHA の POST は通り、BETA の POST が 503 × 3
+    let posts = 0;
+    const down = netlifyFake({
+      override: (_call, request) => {
+        if (request.method !== "POST") {
+          return undefined;
+        }
+        posts += 1;
+        return posts === 1 ? undefined : { status: 503, headers: { "retry-after": "0" } };
+      },
+    });
+    const fixture = await startFixture({
+      targets: { site: netlifyTarget() },
+      vendorHandlers: down.handlers,
+      vendorHosts: ["api.netlify.com"],
+    });
+    expect(await sync(fixture, "apply", "site")).toBe(1);
+    expect(down.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "POST",
+      "POST",
+      "POST",
+      "POST",
+    ]);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain("the Netlify API answered 503 (3 attempts)");
+    expect(errors).toContain(
+      "while writing BETA (delivered before that: 1 variable written, 0 deleted)",
+    );
+    expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
+    expectNoSecretLeak(fixture.env, down.requests);
+  });
+
   it("作成の応答が失われて再送されると既存 key で拒まれる — 一覧を引き直して PATCH に切り替え、届いたと記録する", async () => {
     const lossy = netlifyFake({ loseFirstCreateResponse: true });
     const fixture = await startFixture({

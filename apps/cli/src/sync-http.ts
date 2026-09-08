@@ -1264,10 +1264,19 @@ function writeOneByOne(
     for (const item of batch.writes) {
       const one = singleBatch(item);
       const listed = existing.get(item.name);
-      const result =
+      // 1 変数の送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、この
+      // バッチで先に届いた名前を失わない: その変数の失敗として報告し、届いた分はレシートへ
+      // (create-or-update は書き込み全部が 1 バッチなので、落とすと実行全体の進みが消える —
+      // pullfrog 指摘・改訂 4)
+      const result = yield* (
         listed === undefined
-          ? yield* createOrRecover(input, write, one)
-          : yield* updateOne(input, write, one, listed);
+          ? createOrRecover(input, write, one)
+          : updateOne(input, write, one, listed)
+      ).pipe(
+        Effect.catch((error: CliError) =>
+          Effect.succeed({ delivered: [], failure: { names: one.names, lines: [error.message] } }),
+        ),
+      );
       if (result.failure !== null) {
         return { delivered, failure: result.failure };
       }
