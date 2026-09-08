@@ -1,15 +1,15 @@
 ---
 title: Deploy targets
-description: Copy values from maruhi to Cloudflare Workers and Vercel with maruhi sync, through the vendor CLI you already use or the vendor API, locally, from CI, or right after every maruhi push.
+description: Copy values from maruhi to Cloudflare Workers, Vercel, and Netlify with maruhi sync, through the vendor CLI you already use or the vendor API, locally, from CI, or right after every maruhi push.
 sidebar:
   order: 2
 ---
 
-Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers and Vercel functions read their environment variables from the platform's own store, so the values have to be copied there before a deploy. `maruhi sync` does that, driven by a small config file committed in your repository, through one of two drivers: the platform's CLI, signed in the way you normally use it (`exec`, the default), or the platform's API with a token you store in maruhi (`http`, for CI and for machines without the vendor CLI). If you would rather not use `maruhi sync`, the [shell recipes](#without-maruhi-sync-shell-recipes) at the end of this page do the same with `maruhi run`.
+Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers, Vercel functions, and Netlify builds read their environment variables from the platform's own store, so the values have to be copied there before a deploy. `maruhi sync` does that, driven by a small config file committed in your repository, through one of two drivers: the platform's CLI, signed in the way you normally use it (`exec`, the default), or the platform's API with a token you store in maruhi (`http`, for CI and for machines without the vendor CLI). Netlify has only the `http` driver: its CLI takes the value as a command-line argument, which `ps` can see. If you would rather not use `maruhi sync`, the [shell recipes](#without-maruhi-sync-shell-recipes) at the end of this page do the same with `maruhi run`.
 
 ## How maruhi sync works
 
-- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel` or `cloudflare-workers`), the driver, the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file. It does decide where the plaintext goes, though: a change to a target's `command`, `cwd`, or `options` changes which program or which account receives the values, so review edits to this file the way you review a CI workflow. `apply` prints the command and directory, or the API host and the token variable, it is about to use.
+- The mapping from a maruhi environment to a deploy target lives in `maruhi.sync.json` in your repository. It names the preset (`vercel`, `cloudflare-workers`, or `netlify`), the driver, the maruhi environment to decrypt, the variables to copy, and the platform-side environment. It contains no secrets, so it is committed like any other config file. It does decide where the plaintext goes, though: a change to a target's `command`, `cwd`, or `options` changes which program or which account receives the values, so review edits to this file the way you review a CI workflow. `apply` prints the command and directory, or the API host and the token variable, it is about to use.
 - `maruhi sync plan <target>` shows what an apply would write or delete, by variable name and version. It does not decrypt the values.
 - `maruhi sync apply <target>` decrypts the target's variables in memory and hands each value to the vendor CLI on its standard input, and nowhere else. A value never appears on a command line, in `ps`, in your shell history, or in a file. The vendor CLI's own output is not shown unless it fails, and then only with the values filtered out. With the `http` driver, the values travel in the body of a request to the platform's API over TLS instead, and the API's response is treated the same way: discarded on success, shown on failure with values and the token filtered out.
 - The platform stores the plaintext. That is what a deploy target is: its runtime reads the value from its own store, and that store is now one more place that holds the secret.
@@ -62,7 +62,7 @@ Some platforms do not let you put `maruhi run -- <command>` in front of your app
    maruhi sync apply web --yes
    ```
 
-`--yes` is needed for a production target: a Vercel target whose environment is `production`, or a Cloudflare Workers target without a named wrangler environment. For other targets, `apply` runs without it. You can set `"production": true` or `false` on a target to override that default.
+`--yes` is needed for a production target: a Vercel target whose environment is `production`, a Cloudflare Workers target without a named wrangler environment, or a Netlify target whose context is `production` or `all`. For other targets, `apply` runs without it. You can set `"production": true` or `false` on a target to override that default.
 
 The plan lists one line per variable: `+` new to the target, `~` changed since the last delivery (with both versions), `=` unchanged, `-` no longer synced (removed from the list, excluded, or deleted in maruhi; apply deletes it at the target), and `!` cannot be synced by this preset (apply sends nothing until it is resolved).
 
@@ -79,8 +79,8 @@ Each target:
 
 | Key           | Meaning                                                                                                                                                                                                                                                            |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `preset`      | `vercel` or `cloudflare-workers`.                                                                                                                                                                                                                                  |
-| `driver`      | Optional. `exec` (default): the installed vendor CLI. `http`: the vendor API with a token stored in maruhi (see below).                                                                                                                                            |
+| `preset`      | `vercel`, `cloudflare-workers`, or `netlify`.                                                                                                                                                                                                                      |
+| `driver`      | Optional. `exec` (the default when the preset has one): the installed vendor CLI. `http`: the vendor API with a token stored in maruhi (see below). `netlify` has only `http`, so the key can be left out for it.                                                  |
 | `environment` | The maruhi environment to decrypt.                                                                                                                                                                                                                                 |
 | `variables`   | The names to copy, or `"all"` for every variable of the environment. A listed name that does not exist stops the command before anything is sent.                                                                                                                  |
 | `exclude`     | Only with `"all"`: names not to copy. Public configuration and platform-owned resources (D1, KV, and R2 bindings on Cloudflare; Vercel Postgres and Blob) belong here or outside maruhi altogether.                                                                |
@@ -95,6 +95,8 @@ Each target:
 Vercel options with `exec`: `environment` (required: `production`, `preview`, or `development`), `gitBranch` (a preview branch), `project` and `scope` (when the directory is not linked, or to be explicit), and `sensitive` (`false` passes `--no-sensitive`). With `http`: `environment` (required), `gitBranch`, `projectId` (required: the project ID `prj_…` or the project name), `teamId` (the team that owns the project, when the token is a team token), and `sensitive`.
 
 Cloudflare Workers options with `exec`: `name` (the Worker; otherwise wrangler reads it from its configuration file), `environment` (a named wrangler environment, passed as `--env`), and `config` (the path of the wrangler configuration file). With `http`: `accountId` (required), `name` (required: there is no wrangler configuration file to read it from), and `environment` (a named wrangler environment; the Worker is then `<name>-<environment>`, which is how wrangler names it).
+
+Netlify options (`http` only): `accountId` (required: the team's slug, the `<team>` in `app.netlify.com/teams/<team>`, or its ID), `siteId` (required: the site's ID, shown as the project ID in the project's configuration and stored by `netlify link` in `.netlify/state.json`; without it the API would write team-wide shared variables), `context` (required: the deploy context the value is for, one of `production`, `deploy-preview`, `branch-deploy`, `branch`, `dev`, `dev-server`, or `all`), `branch` (with `context: "branch"`, required: the branch name), and `secret` (whether the variable is marked as secret at Netlify; see [Netlify](#netlify) for the default).
 
 The config format is `version: 1` for every release of `maruhi sync`: a file from the first release still parses, and every key added since is optional. An older CLI rejects a file that uses the newer keys as "unknown keys", so upgrade the CLI rather than editing the file.
 
@@ -112,13 +114,23 @@ Required variables: if a variable in the target's selection is declared as requi
 - The Vercel CLI reads standard input only once. Because the amount that arrives in one read depends on the operating system's pipe buffer, `maruhi sync` refuses values above 16 KiB for this preset rather than risk a value cut off silently. Keep very large values out of this target, or set them through the dashboard.
 - The Vercel CLI treats an empty standard input as no value, and strips one trailing newline from a single-line value. `maruhi sync` refuses an empty value and a single-line value that ends with a newline, and names the variable; push such a value without the trailing newline (`printf %s` instead of `echo`).
 
+## Netlify
+
+`maruhi sync` does not run the Netlify CLI (`netlify env:set` takes the value as a command-line argument). The `netlify` preset uses the Netlify API through the [http driver](#without-the-vendor-cli-the-http-driver) below, and that is its only driver. What it writes:
+
+- A Netlify environment variable is one key with one value per deploy context. A target writes the value for the context in its options (`production`, `deploy-preview`, `branch-deploy`, a single `branch`, `dev`, `dev-server`, or `all`) and leaves the other contexts' values alone. A value set for a specific context takes precedence at Netlify over a value set for all contexts, so a target with `"context": "production"` overrides an existing "same value for all contexts" entry for production deploys only.
+- Variables are marked as secret by default (`"secret": true`): Netlify then never shows the value again in its dashboard, CLI, or API, and scans build output for it. Netlify does not accept secret values for the `all`, `dev`, and `dev-server` contexts, so the default is `false` there, and `"secret": true` is a config error for them. Set `"secret": false` to opt out for the other contexts. The flag is applied when maruhi creates the variable; a variable that already exists keeps its flag and scopes, because the API call that sets one context's value does not change them. Change them in the dashboard, or delete the variable there and apply again.
+- Scopes are left to Netlify's default (every scope) when the variable is created, except that a secret variable gets the builds, functions, and runtime scopes, the same three the Netlify CLI uses, because Netlify does not allow secrets in the post processing scope. Choosing scopes yourself is a Pro plan feature and is done in the dashboard.
+- A variable that is no longer synced loses its value for the target's context only, found by ID in the site's variable list. When that was the variable's last value, the variable is deleted as a whole so that no empty variable is left behind. A variable whose only value is for all contexts is not touched by a target with a specific context.
+
 ## Without the vendor CLI: the http driver
 
-In CI, or on a machine where you do not want the vendor CLI, set `"driver": "http"` on a target. `maruhi sync` then talks to the platform's API itself, with a token that you create once at the platform and store in maruhi as a normal variable. The host is fixed by the preset (`api.cloudflare.com`, `api.vercel.com`) and cannot be changed in the config. `plan` never contacts the platform; only `apply` and `ci sync` do, and only for the target you name.
+In CI, or on a machine where you do not want the vendor CLI, set `"driver": "http"` on a target (for `netlify` it is implied). `maruhi sync` then talks to the platform's API itself, with a token that you create once at the platform and store in maruhi as a normal variable. The host is fixed by the preset (`api.cloudflare.com`, `api.vercel.com`, `api.netlify.com`) and cannot be changed in the config. `plan` never contacts the platform; only `apply` and `ci sync` do, and only for the target you name.
 
 1. Create the token at the platform with the least permission the target needs:
    - **Cloudflare Workers**: an API token scoped to the account with the permission **Workers Scripts: Edit** (dashboard: My Profile, API Tokens, Create Token; pick a custom token and add that one permission for the account). The Worker must already exist: unlike wrangler, the http driver does not create a draft Worker.
    - **Vercel**: an access token from Account Settings, Tokens. Scope it to the team that owns the project, and set `teamId` in the target's options when the project belongs to a team.
+   - **Netlify**: a personal access token from User settings, Applications, Personal access tokens (New access token, with an expiration). Netlify has no narrower scope for a token than the user's own access, so create it from an account that is a member of just that team, and set `siteId` in the target's options so that only that site is written.
 2. Store the token in maruhi. Any environment works, and a dedicated one keeps it out of `maruhi run` (push it without a trailing newline: `printf %s`, not `echo`):
 
    ```sh
@@ -149,18 +161,32 @@ In CI, or on a machine where you do not want the vendor CLI, set `"driver": "htt
          "variables": ["DATABASE_URL", "STRIPE_SECRET_KEY"],
          "token": { "environment": "tokens", "name": "VERCEL_TOKEN" },
          "options": { "environment": "production", "projectId": "prj_abc123", "teamId": "team_xyz" }
+       },
+       "site": {
+         "preset": "netlify",
+         "environment": "production",
+         "variables": ["DATABASE_URL", "STRIPE_SECRET_KEY"],
+         "token": { "environment": "tokens", "name": "NETLIFY_TOKEN" },
+         "options": {
+           "accountId": "my-team",
+           "siteId": "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b",
+           "context": "production"
+         }
        }
      }
    }
    ```
 
+   `maruhi sync init site --preset netlify --env production --receipts sync-receipts --token-env tokens --token-name NETLIFY_TOKEN --option accountId=my-team --option siteId=… --option context=production` prints the `site` target.
+
 `plan`, `apply`, and the receipts work exactly as with the `exec` driver, and you can switch a target between the two drivers without losing its receipt. What differs:
 
 - **Cloudflare Workers**: one `PATCH …/secrets-bulk` request per 100 variables, the same request wrangler makes. A variable that is no longer synced is deleted in the same request.
 - **Vercel**: one request per 25 variables with `upsert=true`, so an existing variable is updated in place. A variable that is no longer synced is looked up by name in the project's list for the target environment and branch, then deleted by ID; if the complete list does not contain it, it is treated as deleted. If the list comes back paginated, the variable is not assumed gone: it stays in the receipt and `apply` reports it, so remove it in the dashboard or apply again. Values in the list are never read. The 16 KiB limit of the `exec` driver does not apply (it came from the CLI's stdin handling); Vercel's own limit is 64 KB across all variables of a deployment.
+- **Netlify**: the API has no upsert, so `apply` first lists the site's variables (names only; values in the list are never read), then sends one request per variable: `POST …/env` to create a variable that is not there yet, with the target's context, the `secret` flag, and the scopes described under [Netlify](#netlify), or `PATCH …/env/<name>` to set the target's context on one that exists, which is how the Netlify CLI itself does it. Variables written before a failure stay in the receipt, and a variable created by someone else between the list and the request fails once and is updated on the next apply. A variable that is no longer synced is looked up in the same list and its value for the target's context is deleted by ID (or the whole variable, when that was its last value); a name that is not in the list is treated as deleted. Netlify accepts values up to 5,000 characters; a longer one is refused by the API and reported. Netlify's rate limit of 500 requests per minute is far above what a target needs, and a 429 is retried as below.
 - **Retries**: a 429 or a 502, 503, or 504 answer is retried up to three times, honoring `Retry-After` up to 30 seconds. Writes are idempotent, so a retry is safe.
 - **Proxies**: the CLI honors `HTTPS_PROXY` and `NO_PROXY` for these requests.
-- **Errors**: the API's response is shown only on failure, with the values and the token filtered out. A missing Worker (`10007`) tells you to deploy it first.
+- **Errors**: the API's response is shown only on failure, with the values and the token filtered out. A missing Worker (`10007`) tells you to deploy it first. A Netlify `404` on the list usually means a wrong `accountId` or `siteId`, or a token from an account that is not a member of the team.
 
 The token variable is never part of what is copied: if it lives in the synced environment, it is excluded automatically, and listing it in `variables` is a config error.
 
@@ -299,8 +325,8 @@ Replace `DATABASE_URL STRIPE_SECRET_KEY` with the names you want to copy; the `s
 
 ## Other platforms
 
-The same shape works for any platform whose CLI reads the value from standard input. The Netlify CLI takes the value as a command-line argument, so there is no preset and no recipe for it on this page.
+The same shape works for any platform whose CLI reads the value from standard input. The Netlify CLI takes the value as a command-line argument, so there is no recipe for it; use the `netlify` preset with `maruhi sync` instead, which talks to the Netlify API.
 
 ## Vendor CLI telemetry
 
-maruhi sends nothing about you anywhere. The only network peers of the CLI are your maruhi server and, when you `apply` or `ci sync` a target with the `http` driver, the platform you configured, which receives your own values and nothing else (the request carries a `maruhi-cli/<version>` user agent so that the platform can attribute traffic, and no other identifier). The vendor CLIs do send usage data by default; that is their setting, not maruhi's. `maruhi sync` switches it off for the vendor process it starts, and `maruhi push` does the same for `gh` when it triggers a workflow (`GH_TELEMETRY=false`, `DO_NOT_TRACK=1`, and no update check). For the shell recipes, switch it off once and for all with `wrangler telemetry disable` and `vercel telemetry disable`, or for a single run set `WRANGLER_SEND_METRICS=false` or `VERCEL_TELEMETRY_DISABLED=1` in your shell.
+maruhi sends nothing about you anywhere. The only network peers of the CLI are your maruhi server and, when you `apply` or `ci sync` a target with the `http` driver, the platform you configured, which receives your own values and nothing else (the request carries a `maruhi-cli/<version>` user agent so that the platform can attribute traffic, and no other identifier). The vendor CLIs do send usage data by default; that is their setting, not maruhi's. `maruhi sync` switches it off for the vendor process it starts (it never starts the Netlify CLI), and `maruhi push` does the same for `gh` when it triggers a workflow (`GH_TELEMETRY=false`, `DO_NOT_TRACK=1`, and no update check). For the shell recipes, switch it off once and for all with `wrangler telemetry disable` and `vercel telemetry disable`, or for a single run set `WRANGLER_SEND_METRICS=false` or `VERCEL_TELEMETRY_DISABLED=1` in your shell.
