@@ -142,7 +142,7 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
   --config string     Path to the sync config whose "onPush" targets are synced after the push (default: maruhi.sync.json in the working directory, when it exists and names this project)
-  --no-sync           Skip the sync after the push (the sync config is not read; run `maruhi sync apply` once after several pushes)
+  --no-sync           Skip the sync after the push (the default sync config is not read; run `maruhi sync apply` once after several pushes)
 
 GLOBAL FLAGS
   --help, -h       Show help information

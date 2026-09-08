@@ -65,7 +65,8 @@ export interface PushSyncSetup {
 /**
  * Reads the sync config before the push touches the network: the explicit
  * `--config` must exist; the default path is optional. `--no-sync` reads
- * nothing (the push behaves as if no config existed).
+ * nothing (the push behaves as if no config existed) and cannot be combined
+ * with `--config`.
  */
 export function loadPushSyncConfig(input: {
   readonly config: string | undefined;
@@ -73,6 +74,12 @@ export function loadPushSyncConfig(input: {
 }): Effect.Effect<PushSyncSetup | null, CliError> {
   return Effect.gen(function* () {
     if (input.noSync) {
+      if (input.config !== undefined) {
+        // 指した設定を読まずに済ませる形を黙って通さない(pullfrog 指摘)
+        return yield* Effect.fail(
+          usageError("--no-sync and --config cannot be combined (drop one of them)"),
+        );
+      }
       return null;
     }
     if (input.config !== undefined) {
@@ -211,28 +218,44 @@ function triggerWorkflow(
   });
 }
 
+/**
+ * 1 回の push で環境ごとに床ハンドルを 1 つだけ持つ台帳(同じ環境に 2 つのハンドルを
+ * 開かない — `openSyncTarget` と同じ規律。複数ターゲットが 1 つのトークン環境を共有
+ * するとき、2 つ目が push 前の床のスナップショットから始まらないように — pullfrog 指摘)。
+ */
+function floorLedger(
+  context: EnvironmentContext,
+): (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices> {
+  const handles = new Map<string, FloorHandle>([[context.environmentId, context.floorHandle]]);
+  return (environmentId) =>
+    Effect.gen(function* () {
+      const known = handles.get(environmentId);
+      if (known !== undefined) {
+        return known;
+      }
+      const handle = yield* floorHandleFor(context, environmentId);
+      handles.set(environmentId, handle);
+      return handle;
+    });
+}
+
 /** 直接 apply: 既存の apply をそのまま(unchanged の行は省く)。 */
 function applyTarget(
   context: EnvironmentContext,
   setup: PushSyncSetup,
   target: SyncTarget,
-  receiptsFloor: FloorHandle,
+  floorOf: (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices>,
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     yield* io.log(
       `Syncing target ${displayText(target.name)} after the push (onPush in ${displayText(setup.path)})`,
     );
-    // 統合トークンの環境の床: 同期元(= push 先)なら push の床ハンドル、レシート環境
-    // ならそのハンドル、それ以外は新しく開く(同じ環境に 2 つのハンドルを開かない)
+    // 床ハンドルは環境ごとに 1 つ(同期元 = push 先は push のハンドル、レシート環境と
+    // 統合トークンの環境は台帳が返す同じもの)
+    const receiptsFloor = yield* floorOf(setup.config.receiptsEnvironment);
     const tokenFloor =
-      target.driver.kind !== "http"
-        ? null
-        : target.driver.token.environment === target.environment
-          ? context.floorHandle
-          : target.driver.token.environment === setup.config.receiptsEnvironment
-            ? receiptsFloor
-            : yield* floorHandleFor(context, target.driver.token.environment);
+      target.driver.kind !== "http" ? null : yield* floorOf(target.driver.token.environment);
     yield* syncApplyOp({
       client: context.client,
       verified: context.verified,
@@ -282,8 +305,7 @@ export function syncAfterPush(input: {
       }
       return;
     }
-    // レシート環境の床ハンドルは 1 つ(同期元とは別の環境 — 設定が保証する)
-    const receiptsFloor = yield* floorHandleFor(context, setup.config.receiptsEnvironment);
+    const floorOf = floorLedger(context);
     for (const target of decision.targets) {
       const onPush = target.onPush;
       if (onPush === null) {
@@ -291,7 +313,7 @@ export function syncAfterPush(input: {
       }
       const attempt = yield* asCleanupOutcome(
         onPush.kind === "apply"
-          ? applyTarget(context, setup, target, receiptsFloor)
+          ? applyTarget(context, setup, target, floorOf)
           : triggerWorkflow(target, onPush),
       );
       if (attempt.kind === "failed") {

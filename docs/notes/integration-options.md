@@ -1466,8 +1466,8 @@ push 先なので `context.floorHandle` を共有、レシート環境は `floor
 debounce(短い待ち・ディスク上の印)/ (iv) 一括 push コマンド。第 1 周の新案: なし。第 2 周(壊れ方): (iii) は「同期待ち」の印を
 ディスクに置くか、残るプロセスを要る。名前も値も持たない印(「pending」のみ)ならディスクレスに反しないが、機構(印の置き場・
 掃除・並行 push との競合)を 1 つ増やす。Vercel の exec は 1 変数 1 プロセスなので push ごとの同期でもベンダー呼び出しは push
-回数分 = 変数の数と同じ(まとめても減らない)。http は配列 upsert で push ごと 1 リクエスト。`--no-sync` は設定を**読まない**
-(`--config` と併用しても読まない — 使わない設定を検証しない)。(iv) は本段の外(なし)。**選定 = (i) + (ii)**。棄却: (iii)(機構の
+回数分 = 変数の数と同じ(まとめても減らない)。http は配列 upsert で push ごと 1 リクエスト。`--no-sync` は既定パスの設定を**読まない**
+(明示の `--config` との併用は書き方の誤り = 2 — 指した設定を読まずに済ませる形を黙って通さない。改訂 1)。(iv) は本段の外(なし)。**選定 = (i) + (ii)**。棄却: (iii)(機構の
 追加。需要が出たら再裁定)、(iv)(スコープ外)。
 
 **F. `gh workflow run` の形** — argv: `[command, "workflow", "run", file, "-f", "target=<name>", ("--ref", ref)?]`。`-f`(raw string)を
@@ -1528,6 +1528,14 @@ wire・サーバー・Web・`packages/crypto` は無変更)/ 平文は書き手�
 ADR-0016(型付きエラー・stdout はコマンドの出力だけ・通知は notice.ts・`process.*` は live.ts のみ・新フラグは決定 5 の範囲・
 golden / message-style)/ 英語 / 依存ゼロ(`gh` は導入済みだけ・`npx` なし)/ エージェント環境の新しいゲート無し(裁定 H)/
 スコープ(SY3 のテンプレート・SY4・SY5・SY6・`--all`・Vercel の一覧の続きは取り込まない)。
+
+**改訂 1(2026-09-08、pullfrog の初回レビュー〔f7f667d〕)**: (1) `applyTarget` が統合トークンの環境の床ハンドルをターゲット
+ごとに `floorHandleFor` で開き直していた — 同じ同期元の 2 つの http ターゲットが 1 つのトークン環境を共有すると、2 つ目が
+push 前の床のスナップショットから始まり、1 つ目のトークン pull で前進した床を知らない(裁定 D の「`openSyncTarget` と同じ
+規則」はループを想定していなかった)→ 1 回の push で環境ごとに床ハンドルを 1 つだけ持つ台帳(`floorLedger` — 同期元 = push の
+ハンドルで初期化し、レシート環境・トークン環境は初回に開いて以後は同じもの)。(2) `--no-sync` が明示の `--config` に黙って勝ち、
+指した設定を読まずに済ませていた → 併用は書き方の誤り(2)。裁定 E を改める。(3) 新規の名前の初回 push(plan が `+`)の態が
+無かった → `GAMMA` の push(値は 1 回だけ stdin へ・レシートに version 1)を追加。(4) テストの生の ESC バイトを `\u001b` に。
 
 **第 3 段以降への申し送り(SY2 完了)**: (1) **SY3** = workflow テンプレート 2 標準形 + 四眼の docs。第 3 段の `onPush: "workflow"`
 の起動先は「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes`」の契約を満たす workflow で、docs

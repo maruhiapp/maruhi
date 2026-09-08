@@ -414,7 +414,7 @@ const pushConfig = {
   ),
   "no-sync": singleFlag(
     "no-sync",
-    "Skip the sync after the push (the sync config is not read; run `maruhi sync apply` once after several pushes)",
+    "Skip the sync after the push (the default sync config is not read; run `maruhi sync apply` once after several pushes)",
   ),
   name: Argument.string("name").pipe(
     Argument.withDescription(

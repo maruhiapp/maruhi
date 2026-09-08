@@ -236,10 +236,19 @@ async function startFixture(input: {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/** `printf %s "$VALUE" | maruhi push <name> --env prod [...args]`。 */
+/** `printf %s "$VALUE" | maruhi push ALPHA --env prod [...args]`。 */
 function push(fixture: Fixture, value: string, ...args: string[]): Promise<number> {
+  return pushNamed(fixture, "ALPHA", value, ...args);
+}
+
+function pushNamed(
+  fixture: Fixture,
+  name: string,
+  value: string,
+  ...args: string[]
+): Promise<number> {
   fixture.env.setStdin(encoder.encode(value));
-  return runCli(["push", "ALPHA", "--env", SOURCE_ENV, ...args], fixture.env.layer);
+  return runCli(["push", name, "--env", SOURCE_ENV, ...args], fixture.env.layer);
 }
 
 function pushWithConfig(fixture: Fixture, value: string, ...args: string[]): Promise<number> {
@@ -343,9 +352,37 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     });
   });
 
+  it("初回の変数(新規の名前)の push: plan は + で、値は 1 回だけ stdin へ、レシートに version 1 が載る", async () => {
+    const fixture = await startFixture({
+      config: config({ web: previewTarget({ variables: ["ALPHA", "BETA", "GAMMA"] }) }),
+      receipts: [await storedReceipt({ target: "web", variables: { ALPHA: 3, BETA: 1 } })],
+    });
+    expect(await pushNamed(fixture, "GAMMA", NEW_VALUE, "--config", fixture.configPath)).toBe(0);
+    const out = fixture.env.logs.join("\n");
+    expect(out).toContain("Pushed GAMMA (version=1, epoch=1)");
+    expect(out).toContain("1 to add, 0 to update, 0 to delete, 2 unchanged, 0 blocked");
+    expect(out).toContain("+ GAMMA\tversion 1 (new)");
+    expect(fixture.env.execCalls.map((call) => call.command)).toEqual([
+      ["vercel", "env", "add", "GAMMA", "preview", "--force", "--non-interactive"],
+    ]);
+    expect(fixture.env.execCalls.map(stdinText)).toEqual([NEW_VALUE]);
+    expect(await decryptReceipt(fixture, "web")).toMatchObject({
+      variables: { ALPHA: 3, BETA: 1, GAMMA: 1 },
+    });
+    expectNoSecretLeak(fixture.env);
+  });
+
+  it("--no-sync と --config の併用は書き方の誤り(2)で、push は送られない", async () => {
+    const fixture = await startFixture({ config: config({ web: previewTarget() }) });
+    expect(await pushWithConfig(fixture, NEW_VALUE, "--no-sync")).toBe(2);
+    expect(fixture.env.errors.join("\n")).toContain("--no-sync and --config cannot be combined");
+    expect(fixture.source.writes).toEqual([]);
+  });
+
   it("--no-sync: 設定を読まず push だけを行う(ベンダー CLI 0・レシート環境へのリクエスト 0)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
-    expect(await pushWithConfig(fixture, NEW_VALUE, "--no-sync")).toBe(0);
+    process.chdir(fixture.configDir);
+    expect(await push(fixture, NEW_VALUE, "--no-sync")).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain(PUSHED_LINE);
     expect(fixture.env.logs.join("\n")).not.toContain("Syncing");
     expect(fixture.env.execCalls).toEqual([]);
@@ -589,12 +626,12 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     const fixture = await startFixture({ config: config({ web: workflowTarget() }) });
     fixture.env.setExecHandler(() => ({
       exitCode: 1,
-      output: "could not find any workflows named maruhi-sync.yml\n[31mred[0m\n",
+      output: "could not find any workflows named maruhi-sync.yml\n\u001b[31mred\u001b[0m\n",
     }));
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain("  gh: could not find any workflows named maruhi-sync.yml");
-    expect(errors).not.toContain("");
+    expect(errors).not.toContain("\u001b");
     expect(errors).toContain(
       'Warning: the push is done, but workflow maruhi-sync.yml was not triggered for target web (gh exited with code 1; its output is shown above). Check that the workflow exists on the branch gh dispatches to and has a workflow_dispatch trigger with a "target" input',
     );
