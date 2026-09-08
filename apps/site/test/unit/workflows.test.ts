@@ -316,8 +316,12 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(output).toBe("");
       });
 
-      it("schedule: the listed targets, in order, ignoring extra spaces; an empty list when none is listed", () => {
+      it("schedule: the listed targets, in order, split on any whitespace; an empty list when none is listed", () => {
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web  preview " }).output).toBe(
+          'list=["web","preview"]\n',
+        );
+        // 検査のループと JSON 化が同じ分割から出る(タブ・改行区切りでも 1 要素に潰れない — pullfrog 指摘)
+        expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web\tpreview\n" }).output).toBe(
           'list=["web","preview"]\n',
         );
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "" }).output).toBe("list=[]\n");

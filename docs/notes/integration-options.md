@@ -1785,6 +1785,12 @@ sync config」)に合わせた。(4) 機械検査の契約一致で `inputOf(con
 (schedule 側は言っていて deploy 側は言っていなかった非対称)→ Four eyes の手順 1 に 1 文。(6) nit: jq 不要の `it` を
 `describe.skipIf(!hasJq)` の外へ。
 
+**改訂 3(2026-09-08、pullfrog の差分レビュー〔c0176f1〕)**: `targets` job の検査ループ(シェルの語分割 = 空白・タブ・改行)と JSON 化
+(jq の `split(" ")`)が別の分割で、タブ・改行区切りの `SCHEDULED_TARGETS`(YAML の `|` ブロック等)では検査は個別に通り JSON は
+1 要素 `"web\napi"` になって未検査のまま `environment:` に届く(この job が防ぐはずの無保護 Environment の自動作成)→ JSON 化を
+**同じ語分割**から作る(`printf '%s\n' $names | jq -cRn '[inputs | select(. != "")]'`)。態を追加(`"web\tpreview\n"` →
+`["web","preview"]`)。コメントの「separated by spaces」を「whitespace」に。
+
 **SY4 以降への申し送り(SY3 完了)**: (1) **SY4** Netlify(http プリセットの宣言 1 つ + モック応答 — 第 2 段の裁定録の http
 プリセットの形)。(2) **SY5** `gh secret set`(第 1 段 = レシピ、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形が自然。
 第 3 段の `GH_ENV` / `ghArgument` を流用可。bootstrap は fine-grained PAT か App トークン — 補足 8 Q1)。(3) 全ターゲット一括の plan

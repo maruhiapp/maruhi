@@ -240,7 +240,7 @@ env:
   # names are yours; the CLI reads no environment variable in CI mode
   MARUHI_SERVER: https://my.maruhi.app
   MARUHI_PROJECT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  # The targets the schedule re-applies, separated by spaces. A target whose
+  # The targets the schedule re-applies, separated by whitespace. A target whose
   # GitHub Environment has required reviewers waits for an approval on every run
   SCHEDULED_TARGETS: web
 
@@ -268,7 +268,7 @@ jobs:
             jq -e --arg t "$name" '.targets | has($t)' maruhi.sync.json > /dev/null \
               || { echo "maruhi.sync.json has no target named $name" >&2; exit 1; }
           done
-          list=$(jq -cn --arg s "$names" '$s | split(" ") | map(select(. != ""))')
+          list=$(printf '%s\n' $names | jq -cRn '[inputs | select(. != "")]')
           echo "list=$list" >> "$GITHUB_OUTPUT"
 
   sync:
